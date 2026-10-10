@@ -252,6 +252,7 @@ const (
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
 	settingAutoRetest          = "agent_auto_retest"
+	settingTokenBudget         = "task_token_budget"
 	settingWebSearchOn         = "web_search_enabled"
 	settingWebSearchBackend    = "web_search_backend"
 	settingBraveKey            = "brave_search_api_key"
