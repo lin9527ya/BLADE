@@ -1,0 +1,58 @@
+# 中间件/服务默认口令。格式即 hydra -C 的 user:pass 一行一条。
+# 纪律（SKILL.md §三）：先用默认口令，命中一个即停；低速、锁定即止。
+# —— Tomcat
+tomcat:tomcat
+admin:admin
+manager:manager
+manager:s3cret
+role1:role1
+both:both
+admin:tomcat
+# —— WebLogic
+weblogic:weblogic
+weblogic:weblogic123
+system:password
+# —— Jenkins
+admin:admin
+admin:password
+jenkins:jenkins
+# —— Nexus / SonarQube / Harbor / GitLab
+admin:admin123
+admin:admin123456
+admin:sonar
+admin:harbor12345
+root:5iveL!fe
+# —— 数据库
+root:root
+root:123456
+root:password
+mysql:mysql
+postgres:postgres
+postgres:123456
+sa:sa
+sa:123456
+redis:redis
+# —— SSH / FTP / 通用设备
+root:toor
+root:admin
+admin:123456
+admin:admin888
+ftp:ftp
+ftp:anonymous
+anonymous:anonymous
+test:test
+guest:guest
+user:user
+# —— 中间件/消息/监控（RabbitMQ / Zabbix / Grafana / Nacos / Druid）
+guest:guest
+Admin:zabbix
+admin:zabbix
+admin:grafana
+nacos:nacos
+admin:nacos
+druid:druid
+# —— 运维/编排
+admin:admin@123
+admin:P@ssw0rd
+admin:Admin@123
+operator:operator

@@ -86,7 +86,7 @@ description: 收集网站API接口时调用该skill。
 | 门禁 | 何时 | 参考脚本 → OUTDIR 副本 | 常见必改项 |
 |---|---|---|---|
 | **A（静态）** | Phase 0 后、**第一次**跑 harvest/spider 前 | `harvest_static.py` / `spider_mpa.py` | **多数站点默认 regex 可直接跑**；仅 manifest/方言不匹配时改 endpoint 正则、webpack/Vite `publicPath`、MPA exclude/cookie |
-| **B（运行时）** | Phase 2 后、跑 depth/coverage 前 | `runtime_harvest.js` / `preload.js` + `config.json` | Cookie/localStorage 键、neutralize 成功值、stubs、login 正则、api 前缀、hash/history |
+| **B（运行时）** | Phase 2 后、跑 depth/coverage 前 | `runtime_harvest.js`（puppeteer）/ `collect.mjs`（Playwright，零安装，自动找 npx 缓存与系统 Chromium）/ `preload.js` + `config.json` | Cookie/localStorage 键、neutralize 成功值、stubs、login 正则、api 前缀、hash/history |
 
 **SPA 强制顺序**（不可交换；Phase 编号优先于「先探索再脚本」）：
 

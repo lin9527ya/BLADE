@@ -35,10 +35,25 @@
   };
 
   window.__API_RECON_PRELOAD__ = true;
-  window.__API_RECON_LOG__ = window.__API_RECON_LOG__ || new Set();
-  window.__API_RECON_DETAIL__ = window.__API_RECON_DETAIL__ || [];
-  window.__API_RECON_ROUTES__ = window.__API_RECON_ROUTES__ || new Set();
+  // 跨导航保活：页面跳转（如被重定向到 /login）会销毁 window 状态，经
+  // sessionStorage 续存，导出时仍是同一份记录。
+  var RECON_STORE = '__api_recon_state__';
+  var reconSaved = null;
+  try { reconSaved = JSON.parse(sessionStorage.getItem(RECON_STORE) || 'null'); } catch (e) { /* private mode */ }
+  window.__API_RECON_LOG__ = new Set((reconSaved && reconSaved.log) || []);
+  window.__API_RECON_DETAIL__ = (reconSaved && reconSaved.detail) || [];
+  window.__API_RECON_ROUTES__ = new Set((reconSaved && reconSaved.routes) || []);
   window.__API_RECON_OBSERVE__ = window.__API_RECON_OBSERVE__ || { storage: [], headers: [] };
+
+  function persistRecon() {
+    try {
+      sessionStorage.setItem(RECON_STORE, JSON.stringify({
+        log: Array.from(window.__API_RECON_LOG__).slice(-3000),
+        detail: window.__API_RECON_DETAIL__.slice(-500),
+        routes: Array.from(window.__API_RECON_ROUTES__).slice(-2000),
+      }));
+    } catch (e) { /* 配额/隐私模式：丢弃本次持久化，内存记录不受影响 */ }
+  }
 
   function trunc(s, n) {
     n = n || CONFIG.respMax || 600;
@@ -59,6 +74,7 @@
       const p = m[0].split('?')[0];
       if (!/\.(svg|png|jpg|gif|ico)$/i.test(p)) window.__API_RECON_LOG__.add('GET ' + p);
     }
+    persistRecon();
   }
 
   function recordApi(url, method) {
@@ -70,9 +86,13 @@
 
   function recordApiDetail(entry) {
     recordApi(entry.url, entry.method);
-    if (!CONFIG.recordDetail) return;
+    if (!CONFIG.recordDetail) {
+      persistRecon();
+      return;
+    }
     window.__API_RECON_DETAIL__.push(entry);
     if (entry.responseBody) extractApiUrlsFromText(entry.responseBody);
+    persistRecon();
   }
 
   function blocked(url) {
@@ -141,7 +161,10 @@
       router.replace = wrapNav(router.replace.bind(router));
       if (router.getRoutes) {
         router.getRoutes().forEach(function (r) {
-          if (r.path) window.__API_RECON_ROUTES__.add(r.path);
+          if (r.path) {
+            window.__API_RECON_ROUTES__.add(r.path);
+            persistRecon();
+          }
         });
       }
     } catch (e) { /* ignore */ }
