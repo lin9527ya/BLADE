@@ -181,6 +181,8 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at   TIMESTAMPTZ,
+    heartbeat_at     TIMESTAMPTZ,
+    lease_expires_at TIMESTAMPTZ,
     CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
@@ -205,6 +207,12 @@ ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS semantic_note    TEXT NOT
 -- a node most recently went from "has a live downstream branch" to none (NULL = hot).
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS content_version  INT    NOT NULL DEFAULT 0;
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS cold_since_round BIGINT;
+-- 意图租约(Cairn 式 claim/heartbeat/release):Worker 领取意图时盖章并预置到期时间,之后
+-- 每个活动(LLM 回合/工具调用)续租一次——心跳即进度证据。心跳停止超过 TTL 的 running
+-- 意图由任务协调器的看门狗取消(遗留 work)并回收为 open 重新领取(从既有 transcript 续跑),
+-- 防止卡死/僵死的 Worker 让意图永久占位。owner 记当前领取者(work#N / chat)。
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS heartbeat_at     TIMESTAMPTZ;
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
 -- ck_node_kind: existing installs predate the 'digest' kind — recreate to allow it.
 DO $$
 BEGIN

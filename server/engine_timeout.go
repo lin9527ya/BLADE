@@ -21,6 +21,10 @@ const (
 	settleDrainGrace     = 90 * time.Second // 等在跑 worker 优雅收尾的上限;超过则硬 cancel
 	deadlinePollInterval = 2 * time.Second  // deadline 未盖章/LLM 未就绪时的轮询间隔
 	deadlineMaxSleep     = 30 * time.Second // 单次最长睡眠(便于周期复查终态)
+	// intentLeaseRenewInterval 意图租约续租节流：每个活动最多每 TTL/3 续一次租（心跳=进度
+	// 证据，见 runIntent）；leaseSweepInterval 是租约看门狗的扫描节奏。
+	intentLeaseRenewInterval = db.IntentLeaseTTL / 3
+	leaseSweepInterval       = 30 * time.Second
 )
 
 // ---------- settling 状态 ----------
@@ -130,8 +134,9 @@ func (e *Engine) clockCtx(base context.Context, t *Task, final bool) context.Con
 // Called from Run() and from the restart reload path, so non-active timeout tasks
 // still get settled after their deadline even without live planner/worker loops.
 func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
-	// 预算护栏与超时用同一条协调器：只配预算（无超时）的任务同样需要它轮询用量。
-	if t == nil || (t.TimeoutSeconds <= 0 && e.tokenBudget() <= 0) {
+	// 超时、token 预算与意图租约看门狗共用这一条协调器：什么都没配的任务也需要它跑
+	// 看门狗（预算按设置逐轮判定，未配置则每轮是廉价读）。
+	if t == nil {
 		return
 	}
 	e.deleteMu.RLock()
@@ -151,6 +156,7 @@ func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
 // deadlineCoordinator waits until the task's absolute deadline, then runs the settle
 // sequence. Absolute wall-clock: it keeps counting through pauses.
 func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
+	var lastLeaseSweep time.Time // 零值 → 首轮立即扫一次，之后按 leaseSweepInterval 节流
 	for {
 		select {
 		case <-ctx.Done():
@@ -159,6 +165,12 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 		}
 		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
 			return // already finished (goals met / failed) — nothing to time out
+		}
+		// 意图租约看门狗：独立节流(30s)，与 timeout/budget 的检查节奏解耦；收尾期间不扫
+		// (drain 正在等 Worker 优雅收尾，别用回收打断它)。
+		if time.Since(lastLeaseSweep) >= leaseSweepInterval && !e.isSettling(t.ID) {
+			lastLeaseSweep = time.Now()
+			e.sweepExpiredLeases(t)
 		}
 		// token 预算护栏：70/85/95% 各投递一次收敛提示；达到 100% 复用超时收尾时序
 		// （停派/领新意图 → drain → 终局 planner 轮 → 定终态）。
@@ -192,6 +204,38 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 		}
 		e.settleTask(ctx, t)
 		return
+	}
+}
+
+// sweepExpiredLeases is the intent-lease watchdog: a running intent whose heartbeat
+// stopped for longer than db.IntentLeaseTTL is a zombie (its worker hung or died). Each
+// is cancelled with a named cause — a live-but-stalled run settles itself back to open —
+// and reclaimed to 'open' in the DB so the pool re-runs it from its transcript.
+func (e *Engine) sweepExpiredLeases(t *Task) {
+	leases, err := t.Store.ExpiredIntentLeases()
+	if err != nil || len(leases) == 0 {
+		return
+	}
+	for _, l := range leases {
+		live := e.cancelWork(l.IntentID, agent.AbortWorkLeaseExpired)
+		reopened, err := t.Store.ReopenExpiredIntent(l.IntentID, l.Owner)
+		if err != nil {
+			log.Printf("[lease] task %s 意图 #%d 回收失败: %v", t.ID, l.IntentID, err)
+			continue
+		}
+		if !reopened {
+			continue // 扫描与回收之间被续租/收尾——竞态输者静默退出
+		}
+		seen := "未知"
+		if l.LastSeen != nil {
+			seen = l.LastSeen.Format("2006-01-02 15:04:05")
+		}
+		log.Printf("[lease] task %s 意图 #%d(owner=%s) 心跳停止(最后 %s)，回收重派(live work=%v)", t.ID, l.IntentID, l.Owner, seen, live)
+		uid := l.IntentID
+		e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "system", Kind: "system",
+			Summary: "意图租约到期回收",
+			Detail:  fmt.Sprintf("owner=%s 心跳停止超过 %s，意图已退回 open 重新领取（worker 从既有 transcript 续跑，已写入的产出保留）", l.Owner, db.IntentLeaseTTL)})
+		t.Notify() // 图里出现了重新可领的意图 → 唤醒 planner
 	}
 }
 

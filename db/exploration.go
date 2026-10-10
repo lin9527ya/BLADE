@@ -310,7 +310,7 @@ func (s *ExplorationStore) DeleteGoal(id int64) error {
 // backend restart or crashed worker goroutine left it stuck) would otherwise spin
 // forever in the UI. Workers resume from their transcript, so reopening is safe.
 func (s *ExplorationStore) ResetRunningIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL
 WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 	if err != nil {
 		return 0, err
@@ -366,7 +366,7 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, termin
 func (s *ExplorationStore) CompareAndSetIntentState(id int64, expected, state string) (bool, error) {
 	terminal := state == "done" || state == "negative" || state == "out-of-scope" || state == "blocked" || state == "exhausted" || state == "stopped"
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state=$1, blocked_reason=NULL, content_version=content_version+1,
+SET state=$1, blocked_reason=NULL, content_version=content_version+1, lease_expires_at=NULL,
     semantic_outcome = CASE WHEN $5 THEN semantic_outcome ELSE '' END,
     semantic_note    = CASE WHEN $5 THEN semantic_note    ELSE '' END,
     completed_at = CASE WHEN $5 THEN now() ELSE NULL END
@@ -1198,10 +1198,79 @@ WHERE exploration_id=$1 AND kind='goal' AND state='open')`, s.expID).Scan(&exist
 	return exists, err
 }
 
-// ClaimIntent atomically moves an open intent to running. Returns true if claimed.
-func (s *ExplorationStore) ClaimIntent(id int64, owner string) (bool, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id, s.expID)
+// IntentLeaseTTL is the intent lease window: a running intent whose last heartbeat is
+// older than this is treated as a zombie (its worker hung or died) and reclaimed by the
+// task coordinator's watchdog. It must exceed the longest legitimate silent stretch of a
+// run — one LLM call with no tool activity — with margin; renewals happen on every
+// activity, throttled to TTL/3 (see the engine's runIntent).
+const IntentLeaseTTL = 15 * time.Minute
+
+// ClaimIntent atomically moves an open intent to running, stamping the claimer, the
+// heartbeat and a fresh lease expiry. Returns true if claimed.
+func (s *ExplorationStore) ClaimIntent(id int64, owner string, ttl time.Duration) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
+heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id, s.expID, int64(ttl/time.Second))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// TouchIntentLease renews the lease on a running intent still owned by owner (heartbeat
+// stamp + expiry extension). Returns false when the lease is no longer ours (the intent
+// moved on, or another owner took over) — the caller's work is then no longer
+// authoritative and its final state write will lose the CAS anyway.
+func (s *ExplorationStore) TouchIntentLease(id int64, owner string, ttl time.Duration) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running' AND COALESCE(owner,'')=$3`, id, s.expID, owner, int64(ttl/time.Second))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ExpiredLease is one running intent whose lease lapsed — the watchdog's reap list.
+type ExpiredLease struct {
+	IntentID int64
+	Owner    string
+	LastSeen *time.Time // heartbeat_at, nil when never stamped
+}
+
+// ExpiredIntentLeases lists running intents whose lease lapsed. Intents without a lease
+// (paused, or never claimed through ClaimIntent) are not listed: no lease, no watchdog
+// jurisdiction.
+func (s *ExplorationStore) ExpiredIntentLeases() ([]ExpiredLease, error) {
+	rows, err := s.db.Query(`SELECT id, COALESCE(owner,''), heartbeat_at FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state='running'
+  AND lease_expires_at IS NOT NULL AND lease_expires_at < now()
+ORDER BY lease_expires_at`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ExpiredLease
+	for rows.Next() {
+		var l ExpiredLease
+		if err := rows.Scan(&l.IntentID, &l.Owner, &l.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// ReopenExpiredIntent reclaims ONE lapsed lease: running -> open, owner cleared, so the
+// pool re-claims it (the worker resumes from its transcript; graph writes already made
+// stay). Guarded on the same owner AND a still-lapsed lease, so a worker that renewed or
+// settled between the watchdog's scan and its reap wins the race harmlessly (false).
+func (s *ExplorationStore) ReopenExpiredIntent(id int64, owner string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='open', owner='', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
+  AND COALESCE(owner,'')=$3 AND lease_expires_at IS NOT NULL AND lease_expires_at < now()`, id, s.expID, owner)
 	if err != nil {
 		return false, err
 	}
