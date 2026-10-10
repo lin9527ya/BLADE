@@ -5,7 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -276,12 +276,18 @@ function TaskDetailInner() {
   }, [load]);
 
   async function togglePause() {
-    if (task && ["done", "failed", "timeout"].includes(task.status)) return;
-    const next = !paused;
+    if (!task) return;
+    // 终态任务（done/failed/timeout）→「继续运行」：若 frontier 里还有从未执行的
+    // 意图，后端会复活任务让 worker 重新领取；没有遗留时后端拒绝并给出提示。
+    const terminal = ["done", "failed", "timeout"].includes(task.status);
+    let action: "pause" | "resume" = "pause";
+    if (terminal || paused) action = "resume";
     try {
-      await api.controlTask(id, next ? "pause" : "resume");
-      setPaused(next);
-      toast.success(next ? "已暂停探索" : "已恢复探索");
+      await api.controlTask(id, action);
+      if (!terminal) setPaused(action === "pause");
+      if (terminal) toast.success("已继续运行：worker 将重新领取未执行的意图");
+      else toast.success(action === "pause" ? "已暂停探索" : "已恢复探索");
+      load();
     } catch (e) {
       toast.error("操作失败：" + (e as Error).message);
     }
@@ -315,7 +321,6 @@ function TaskDetailInner() {
     );
   }
 
-  const completed = task.status === "done";
   const terminal = ["done", "failed", "timeout"].includes(task.status);
   const archiveLifecycleEligible = terminal || paused || task.status === "paused";
   const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
@@ -328,9 +333,11 @@ function TaskDetailInner() {
   let controlIcon = <PauseIcon data-icon="inline-start" />;
   let controlLabel = "暂停";
   if (terminal) {
-    controlVariant = "secondary";
-    controlIcon = <CheckIcon data-icon="inline-start" />;
-    controlLabel = completed ? "已完成" : "已结束";
+    // 终态不再显示灰掉的「已完成」——那让人找不到恢复入口；统一给「继续运行」，
+    // 有没有可跑的遗留意图由后端裁决（没有会明确报错并指出替代路径）。
+    controlVariant = "default";
+    controlIcon = <PlayIcon data-icon="inline-start" />;
+    controlLabel = "继续运行";
   } else if (paused) {
     controlVariant = "default";
     controlIcon = <PlayIcon data-icon="inline-start" />;

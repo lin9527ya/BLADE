@@ -11,6 +11,7 @@ import {
   CoinsIcon,
   ListChecksIcon,
   PencilIcon,
+  PlayIcon,
   PlusIcon,
   RefreshCwIcon,
   ShieldAlertIcon,
@@ -19,6 +20,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -118,6 +120,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   } | null>(null);
   // 正在重跑的意图 id（含 "__all__" 表示批量），用于禁用按钮 + 转圈。
   const [rerunning, setRerunning] = React.useState<Set<string>>(new Set());
+  // 终态任务「继续运行」进行中。
+  const [resuming, setResuming] = React.useState(false);
   // 测试范围列表 + 新增表单状态。
   const [scope, setScope] = React.useState<TaskScopeRow[]>([]);
   const [scopeKind, setScopeKind] = React.useState<TaskScopeRow["kind"]>("root_domain");
@@ -344,6 +348,22 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       // ignore
     } finally {
       markRerun("__all__", false);
+    }
+  };
+
+  // 终态任务的「继续运行」：后端复活任务（仅当 frontier 里确有从未执行的 open 意图，
+  // 否则明确报错并指出替代路径），worker 重新领取它们。乐观更新任务态，轮询兜底。
+  const resumeTerminal = async () => {
+    if (resuming) return;
+    setResuming(true);
+    try {
+      await api.controlTask(taskId, "resume");
+      toast.success("已继续运行：worker 将重新领取未执行的意图");
+      setTask((prev) => (prev ? { ...prev, status: "running", completed_unix: 0 } : prev));
+    } catch (e) {
+      toast.error(`继续运行失败：${(e as Error).message}`);
+    } finally {
+      setResuming(false);
     }
   };
 
@@ -1036,6 +1056,29 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 仅显示前 20 条，点「全部重跑」处理剩余 {blocked.length - 20} 条。
               </p>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 终态但仍有未执行意图：任务因目标达成/收束而结束，frontier 里却留着从未跑过的
+          方向（规划者已停跑，没人再领）。明确解释状态 + 一键继续运行。 */}
+      {["done", "failed", "timeout"].includes(task?.status ?? "") && open.length > 0 && (
+        <Card className="border-amber-500/40">
+          <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <AlertTriangleIcon className="size-4 text-amber-500" />
+              任务已结束{task?.status === "done" ? "（目标已达成）" : ""}，但仍有 {open.length} 条意图从未执行
+            </CardTitle>
+            <Button size="sm" disabled={resuming} onClick={() => void resumeTerminal()}>
+              <PlayIcon className={`size-3.5 ${resuming ? "animate-pulse" : ""}`} />
+              继续运行
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground text-xs">
+              这些方向还在 frontier 里：点「继续运行」让 worker 重新领取执行（已写回图谱的事实与漏洞保留）；跑完、frontier
+              抽干后任务会再次收束。
+            </p>
           </CardContent>
         </Card>
       )}
