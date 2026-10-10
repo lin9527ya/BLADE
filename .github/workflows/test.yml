@@ -61,5 +61,7 @@ jobs:
           cache: true
       - name: 内嵌前端构建二进制（发布同款）
         run: |
+          # dist 是构建产物(gitignored)：全新检出里 server/webui/ 不存在，先建再同步。
+          mkdir -p server/webui/dist
           rsync -a --delete web/out/ server/webui/dist/
           CGO_ENABLED=0 go build -tags embedui -trimpath -o /tmp/artex ./cmd/artex
