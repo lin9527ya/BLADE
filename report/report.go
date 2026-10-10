@@ -30,6 +30,28 @@ type Input struct {
 	// Coverage is the in-scope asset × risk-area matrix (未触及 classes are the
 	// complement of each asset's cells against db.RiskAreas).
 	Coverage []db.CoverageMatrixAsset
+	// Retests lists findings whose latest completed retest verdict is not
+	// "reproduced" — 复核存疑（inconclusive）或确认修复（fixed），值得点名。
+	Retests []RetestNote
+}
+
+// RetestNote is one finding with a latest retest verdict worth surfacing.
+type RetestNote struct {
+	Node    *db.Node
+	Verdict string
+}
+
+// retestVerdictLabel renders one retest verdict for the report.
+func retestVerdictLabel(v string) string {
+	switch v {
+	case "reproduced":
+		return "仍可复现"
+	case "fixed":
+		return "已修复（复测确认）"
+	case "inconclusive":
+		return "未复现（存疑，需重新审视或重派）"
+	}
+	return v
 }
 
 // Retracted is one finding retracted after retesting disproved it.
@@ -164,6 +186,18 @@ func Markdown(in Input) string {
 				fmt.Fprintf(&b, "  - %s：%s（%s）\n", c.RiskArea, strings.Join(parts, "、"), strings.Join(c.Intents, ", "))
 			}
 			fmt.Fprintf(&b, "  - 未触及类：%d/%d\n", len(db.RiskAreas)-len(a.Cells), len(db.RiskAreas))
+		}
+		b.WriteString("\n")
+	}
+
+	// 复核结论（最新复测非"复现"）。
+	fmt.Fprintf(&b, "## 复核结论（最新复测非“复现”）\n\n")
+	if len(in.Retests) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, rn := range in.Retests {
+			f := parseFinding(rn.Node)
+			fmt.Fprintf(&b, "- #%d [%s] %s — 复测结论：%s\n", rn.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), retestVerdictLabel(rn.Verdict))
 		}
 		b.WriteString("\n")
 	}

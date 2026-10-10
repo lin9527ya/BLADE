@@ -3308,6 +3308,7 @@ func (s *Server) settingsPayload() map[string]any {
 	return map[string]any{
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"agent_auto_retest":        s.m.pg.GetBool(settingAutoRetest, false),
 		"llm_record":               s.m.LLMRecordEnabled(),
 		"web_search_enabled":       on,
 		"web_search_backend":       backend,
@@ -3378,6 +3379,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TrafficCapture      *bool `json:"traffic_capture"`
 		AgentTrafficBinding *bool `json:"agent_traffic_binding"`
+		AgentAutoRetest     *bool `json:"agent_auto_retest"`
 		LLMRecord           *bool `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
@@ -3519,6 +3521,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// Pinned tasks' planner/worker and per-profile chat agents hold providers
 		// built under the OLD switch state — drop them so they pick up the new one.
 		s.invalidateProfileAgents()
+	}
+	if req.AgentAutoRetest != nil {
+		if err := s.m.pg.SetBool(settingAutoRetest, *req.AgentAutoRetest); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if req.AgentTrafficBinding != nil {
 		if err := s.m.pg.SetBool(settingAgentTrafficBinding, *req.AgentTrafficBinding); err != nil {
@@ -3887,6 +3895,22 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	coverage, _ := t.Store.CoverageMatrix(tid)
+	// 复核结论：最新复测非"复现"的发现一并点名（存疑的会被 planner/人工再次审视）。
+	verdicts, _ := s.m.pg.LatestRetestVerdicts(tid)
+	liveByID := map[int64]*db.Node{}
+	for _, n := range live {
+		liveByID[n.ID] = n
+	}
+	var retestNotes []report.RetestNote
+	for nodeID, verdict := range verdicts {
+		if verdict == "reproduced" {
+			continue
+		}
+		if n, ok := liveByID[nodeID]; ok {
+			retestNotes = append(retestNotes, report.RetestNote{Node: n, Verdict: verdict})
+		}
+	}
+	sort.Slice(retestNotes, func(i, j int) bool { return retestNotes[i].Node.ID < retestNotes[j].Node.ID })
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
 		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
@@ -3896,7 +3920,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage,
+		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)
