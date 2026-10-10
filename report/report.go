@@ -33,6 +33,37 @@ type Input struct {
 	// Retests lists findings whose latest completed retest verdict is not
 	// "reproduced" — 复核存疑（inconclusive）或确认修复（fixed），值得点名。
 	Retests []RetestNote
+	// ConfidenceByNode carries the honest-calibration label (high/medium/low) for
+	// in-body findings keyed by finding node id; "" = 未标定 (named in the report).
+	ConfidenceByNode map[int64]string
+	// RuledOut lists candidates closed with counterevidence (status ruled_out):
+	// 不进正文，但留档——"没找到控制点 ≠ 安全" 的对账面。
+	RuledOut []CandidateNote
+	// ProofGaps lists candidates closed as open_proof_gap: 存疑待补证，不得视为安全。
+	ProofGaps []CandidateNote
+}
+
+// CandidateNote is one closed candidate (ruled_out / open_proof_gap) with its
+// note and confidence label, sourced from the findings row.
+type CandidateNote struct {
+	Node            *db.Node
+	Counterevidence string
+	ProofGap        string
+	Confidence      string
+}
+
+// confidenceLabel renders the honest-calibration label; "" is named explicitly
+// instead of guessed.
+func confidenceLabel(c string) string {
+	switch c {
+	case db.ConfidenceHigh:
+		return "高（可复现触发链）"
+	case db.ConfidenceMedium:
+		return "中（观察到强异常，未构造完整对照）"
+	case db.ConfidenceLow:
+		return "低（据指纹/版本/现象推断）"
+	}
+	return "未标定"
 }
 
 // RetestNote is one finding with a latest retest verdict worth surfacing.
@@ -114,6 +145,8 @@ func Markdown(in Input) string {
 	// summary
 	fmt.Fprintf(&b, "## 摘要\n\n")
 	fmt.Fprintf(&b, "- 确认发现：**%d** 个\n", len(in.Findings))
+	fmt.Fprintf(&b, "- 已排除候选：**%d** 个（有反证，不进正文）\n", len(in.RuledOut))
+	fmt.Fprintf(&b, "- 存疑待补证：**%d** 个（不得视为安全）\n", len(in.ProofGaps))
 	fmt.Fprintf(&b, "- 资产：")
 	var types []string
 	for t := range in.AssetCounts {
@@ -133,13 +166,19 @@ func Markdown(in Input) string {
 	if len(in.Findings) == 0 {
 		b.WriteString("_本次未确认漏洞。_\n\n")
 	} else {
-		fs := make([]findingView, 0, len(in.Findings))
-		for _, n := range in.Findings {
-			fs = append(fs, parseFinding(n))
+		type findingRow struct {
+			node *db.Node
+			view findingView
 		}
-		sort.SliceStable(fs, func(i, j int) bool { return sevRank[fs[i].Severity] < sevRank[fs[j].Severity] })
-		for i, f := range fs {
+		rows := make([]findingRow, 0, len(in.Findings))
+		for _, n := range in.Findings {
+			rows = append(rows, findingRow{n, parseFinding(n)})
+		}
+		sort.SliceStable(rows, func(i, j int) bool { return sevRank[rows[i].view.Severity] < sevRank[rows[j].view.Severity] })
+		for i, r := range rows {
+			f := r.view
 			fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
+			fmt.Fprintf(&b, "**置信度**：%s\n\n", confidenceLabel(in.ConfidenceByNode[r.node.ID]))
 			fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))
 			if f.PoC != "" {
 				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
@@ -155,6 +194,30 @@ func Markdown(in Input) string {
 		for _, n := range in.NoEvidence {
 			f := parseFinding(n)
 			fmt.Fprintf(&b, "- #%d [%s] %s\n", n.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
+		}
+		b.WriteString("\n")
+	}
+
+	// 已排除候选（有反证）：不进正文，但留档——"没找到控制点 ≠ 安全" 的对账面。
+	fmt.Fprintf(&b, "## 已排除候选（有反证；不进正文，保留在案）\n\n")
+	if len(in.RuledOut) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, c := range in.RuledOut {
+			f := parseFinding(c.Node)
+			fmt.Fprintf(&b, "- #%d [%s] %s — 反证：%s（置信度：%s）\n", c.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.Counterevidence, "（未记录）"), confidenceLabel(c.Confidence))
+		}
+		b.WriteString("\n")
+	}
+
+	// 存疑待补证：闭合不了的候选明写缺口（"缺信息 ≠ 安全"），不得当作已覆盖。
+	fmt.Fprintf(&b, "## 存疑待补证（缺口未闭合，不得视为安全）\n\n")
+	if len(in.ProofGaps) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, c := range in.ProofGaps {
+			f := parseFinding(c.Node)
+			fmt.Fprintf(&b, "- #%d [%s] %s — 缺口：%s（置信度：%s）\n", c.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.ProofGap, "（未记录）"), confidenceLabel(c.Confidence))
 		}
 		b.WriteString("\n")
 	}

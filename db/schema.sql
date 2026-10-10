@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
         (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
         (kind='goal'    AND state IN ('open','met','abandoned')) OR
         (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
-        (kind='finding' AND state IN ('confirmed','dismissed')) OR
+        (kind='finding' AND state IN ('confirmed','dismissed','ruled_out','open_proof_gap')) OR
         (kind='hint'    AND state IN ('active','consumed')) OR
         (kind='digest'  AND state IN ('active','superseded'))
     )
@@ -228,7 +228,8 @@ BEGIN
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
--- 'deleted' (intent soft-delete rev), or 'negative' (intent semantic-outcome rev) branches.
+-- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev), or
+-- 'ruled_out' (finding candidate-closure rev) branches.
 DO $$
 BEGIN
     IF EXISTS (
@@ -238,7 +239,8 @@ BEGIN
           AND (pg_get_constraintdef(oid) NOT LIKE '%paused%'
                OR pg_get_constraintdef(oid) NOT LIKE '%superseded%'
                OR pg_get_constraintdef(oid) NOT LIKE '%deleted%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%negative%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%negative%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%ruled_out%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
@@ -246,7 +248,7 @@ BEGIN
             (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
             (kind='goal'    AND state IN ('open','met','abandoned')) OR
             (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
-            (kind='finding' AND state IN ('confirmed','dismissed')) OR
+            (kind='finding' AND state IN ('confirmed','dismissed','ruled_out','open_proof_gap')) OR
             (kind='hint'    AND state IN ('active','consumed')) OR
             (kind='digest'  AND state IN ('active','superseded'))
         );
@@ -1107,9 +1109,18 @@ CREATE TABLE IF NOT EXISTS findings (
     asset_ids   JSONB NOT NULL DEFAULT '[]',
     -- 处置状态：pending 待处理 / in_progress 处理中 / confirmed 已确认 / resolved 已处理 / fixed 已修复 /
     -- false_positive 误报 / ignored 忽略 / duplicate 重复 / risk_accepted 风险接受 /
-    -- retracted 已撤回(复测推翻,墓碑保留不进报告正文,原因见 retract_reason)。
+    -- retracted 已撤回(复测推翻,墓碑保留不进报告正文,原因见 retract_reason) /
+    -- ruled_out 已排除(反证闭合:counterevidence 点名控制点) /
+    -- open_proof_gap 存疑待补证(proof_gap 写清缺什么;候选不得静默关闭)。
     -- 取值不加 CHECK：旧库靠下面的 ALTER 补列,CHECK 无法回填,统一由 server 侧白名单校验。
     status      TEXT NOT NULL DEFAULT 'pending',
+    -- 置信度诚实标定：high 可复现触发链 / medium 直接观察到强异常但未构造完整对照 /
+    -- low 据指纹/版本/现象推断。空=未标定(报告会点名)。
+    confidence  TEXT NOT NULL DEFAULT '',
+    -- ruled_out 的反证：点名阻断该候选的控制点/机制,以及它为何不在攻击者路径上。
+    counterevidence TEXT NOT NULL DEFAULT '',
+    -- open_proof_gap 的缺口：缺什么信息、下一步怎么补（"没找到控制点 ≠ 安全"）。
+    proof_gap   TEXT NOT NULL DEFAULT '',
     -- 漏洞详细报告(Markdown)；默认空,仅详情页读取/展示,不进列表接口以免 payload 膨胀。
     report      TEXT NOT NULL DEFAULT '',
     -- 撤回原因(status='retracted' 时必填语义):复测推翻后写入,随报告「已撤回」段展示。
@@ -1121,6 +1132,10 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
 -- 撤回原因(status='retracted')：旧库幂等补列。
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS retract_reason TEXT NOT NULL DEFAULT '';
+-- 候选闭合(strix 三态纪律)：confidence 诚实标定 + ruled_out 反证 + open_proof_gap 缺口。旧库幂等补列。
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS confidence      TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS counterevidence TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS proof_gap       TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);

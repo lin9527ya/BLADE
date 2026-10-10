@@ -79,6 +79,10 @@ const finding: Record<string, StatusMeta> = {
   risk_accepted: { label: "风险接受", tone: "violet" },
   // retracted = 复测推翻后撤回；墓碑保留、不进报告正文，原因见 retract_reason。
   retracted: { label: "已撤回", tone: "slate" },
+  // ruled_out = 反证闭合（counterevidence 点名控制点）；候选不进报告正文，保留在案。
+  ruled_out: { label: "已排除", tone: "slate" },
+  // open_proof_gap = 存疑待补证（proof_gap 写清缺什么）；不得视为安全。
+  open_proof_gap: { label: "存疑待补证", tone: "amber" },
 };
 
 const engine: Record<string, StatusMeta> = {
