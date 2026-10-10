@@ -252,16 +252,24 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
-	s.restoreTaskRuntimes()
+	// 注意：任务恢复(RestoreTaskRuntimes)不在这里——构造器只做装配、不启动后台任务。
+	// 生产路径由 main 显式调用（重启后恢复任务）；测试构造服务器时因此不会被库里
+	// 遗留的未终态任务"劫持"：那些任务会真跑起来、把文件写进测试的临时工作目录，
+	// 与 t.TempDir() 的清理竞态（偶发 "directory not empty"）。
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
 }
 
+// RestoreTaskRuntimes rebuilds in-memory task handles from PG at boot and restarts
+// the loops of every task that had been admitted (reload-resume), resetting stale
+// running intents on the way. It is a BOOT action, deliberately not part of New:
+// a constructor that starts background work makes any test that builds a server
+// inherit whatever tasks happen to sit in the shared database.
 // Restored deadline and worker loops must inherit the same context as new tasks,
 // including the side-question checkpoint publisher installed during startup.
-func (s *Server) restoreTaskRuntimes() {
+func (s *Server) RestoreTaskRuntimes() {
 	m := s.m
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).

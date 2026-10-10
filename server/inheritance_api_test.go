@@ -16,7 +16,8 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer m.Close()
+	// 注册在前 → LIFO 最后执行：先停任务协程、再删 TempDir、最后关库。
+	t.Cleanup(func() { _ = m.Close() })
 
 	source, err := m.CreateTaskWithOptions("detail source", "source goal", db.TaskCreateOptions{})
 	if err != nil {
@@ -53,6 +54,11 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 	}
 
 	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+	// 停在 TempDir 清理之前：取消两个任务的运行时并等待协程退出。
+	t.Cleanup(func() {
+		s.engine.StopTask(current.ID)
+		s.engine.StopTask(source.ID)
+	})
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)
