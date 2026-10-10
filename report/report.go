@@ -24,6 +24,9 @@ type Input struct {
 	Retracted []Retracted
 	// NotProbed lists intents that ended blocked/exhausted — 没测成不得当作已测干净。
 	NotProbed []NotProbed
+	// NoEvidence lists findings with no bound traffic evidence — HTTP 类漏洞的证据
+	// 需要人工核对（静态/非 HTTP 结论可忽略本段）。
+	NoEvidence []*db.Node
 }
 
 // Retracted is one finding retracted after retesting disproved it.
@@ -117,6 +120,18 @@ func Markdown(in Input) string {
 				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
 			}
 		}
+	}
+
+	// 无流量证据的发现：HTTP 类漏洞缺绑定流量时单独列出，供人工核对。
+	fmt.Fprintf(&b, "## 无流量证据的发现（HTTP 类需人工核对）\n\n")
+	if len(in.NoEvidence) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, n := range in.NoEvidence {
+			f := parseFinding(n)
+			fmt.Fprintf(&b, "- #%d [%s] %s\n", n.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
+		}
+		b.WriteString("\n")
 	}
 
 	// 未测成（blocked/exhausted）：不得当作已测干净。
