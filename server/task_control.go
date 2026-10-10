@@ -136,6 +136,27 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		out.Paused, out.Status = true, "paused"
 		go s.reconcileConcurrency()
 	case "resume":
+		// 终态任务的「继续运行」：任务因目标达成/收束而结束时，frontier 里可能还留着
+		// 从未执行(open)的意图——规划者已停跑，没人会再领它们。仅当确有这类遗留工作
+		// 才复活（worker 重新领取，frontier 抽干后任务再次收束）；没有遗留就明确拒绝，
+		// 复活一个没有可跑工作的任务只会空转一轮再结束。
+		if isTerminalStatus(t.lifecycleSnapshot().Status) {
+			pending, err := s.pendingOpenIntents(t)
+			if err != nil {
+				return out, err
+			}
+			if pending == 0 {
+				return out, fmt.Errorf("任务已结束且没有未执行的意图(open)：如需继续，请在主 Agent 会话里补充目标(set_goals，会自动复活任务)或新意图")
+			}
+			queued, err := s.admitTask(t, "resume")
+			if err != nil {
+				return out, err
+			}
+			out.Queued = queued
+			out.Status = map[bool]string{true: "queued", false: "running"}[queued]
+			log.Printf("[task] #%s 终态继续运行（遗留 %d 条未执行意图）", t.ID, pending)
+			return out, nil
+		}
 		queued, err := s.admitPausedTask(t)
 		if err != nil {
 			return out, err
@@ -147,6 +168,22 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 	}
 	log.Printf("[task] #%s %s", t.ID, map[string]string{"pause": "已暂停", "resume": "已继续"}[action])
 	return out, nil
+}
+
+// pendingOpenIntents counts intents never executed (state open) — the leftover
+// work a finished task can be revived for.
+func (s *Server) pendingOpenIntents(t *Task) (int, error) {
+	intents, err := t.Store.ListByKind(db.KindIntent, 1000000)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, in := range intents {
+		if in.State == "open" {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // intentSummaryOf 取意图 payload 里的 summary,供删除通知在意图节点消失(真删除)前留档。
