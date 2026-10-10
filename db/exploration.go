@@ -263,6 +263,61 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 	return err
 }
 
+// SingleOpenGoal returns the task's only open goal id, or 0 when there are zero
+// or several. Callers use it to auto-attach a new intent to the obvious goal, and
+// to stay silent (no guessing) when the choice is ambiguous.
+func (s *ExplorationStore) SingleOpenGoal() (int64, error) {
+	rows, err := s.db.Query(`SELECT id FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='goal' AND state='open' ORDER BY id LIMIT 2`, s.expID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	return 0, nil
+}
+
+// LinkIntentToGoal writes goal --spawns--> intent — the 目标分解 axis of the
+// lineage (which goal this direction serves). It is deliberately separate from
+// the knowledge axis (fact/finding --derived_from--> intent): both coexist, and
+// the goal edge still lets the intent trace back to the task root through it.
+// Validates that the goal is this task's open goal. Returns false (no error) when
+// either id is 0 — callers treat that as "nothing to link".
+func (s *ExplorationStore) LinkIntentToGoal(goalID, intentID int64) (bool, error) {
+	if goalID <= 0 || intentID <= 0 {
+		return false, nil
+	}
+	var ok bool
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 AND kind='goal' AND state='open')`, goalID, s.expID).Scan(&ok); err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("goal %d 不是本任务未达成(open)的目标", goalID)
+	}
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 AND kind='intent')`, intentID, s.expID).Scan(&ok); err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("意图 %d 不存在于本任务", intentID)
+	}
+	return true, s.Link(goalID, RelSpawns, intentID)
+}
+
 // SetNodeState updates any node's state (never deletes). content_version bumps
 // so a folded member's state flip invalidates its digest's cached body (§5.3).
 func (s *ExplorationStore) SetNodeState(id int64, state string) error {
