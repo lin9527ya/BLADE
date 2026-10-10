@@ -275,8 +275,9 @@ func (s *Server) restoreTaskRuntimes() {
 		if lifecycle.Paused {
 			s.engine.Pause(t.ID, agent.AbortPausedOnReload)
 		}
-		// 任务级超时:为每个未终态、带 timeout 的任务起 deadline 协调器,独立于 planner/worker
-		// loop——非活跃任务重启后也能在到点后被收尾(deadline 已过则立即走收尾时序)。
+		// 任务级协调器:为每个未终态任务起 deadline 协调器(超时到点收尾 + token 预算 +
+		// 意图租约看门狗),独立于 planner/worker loop——非活跃任务重启后也能在到点后被
+		// 收尾(deadline 已过则立即走收尾时序),僵死的 running 意图也会被看门狗回收。
 		if !isTerminalStatus(lifecycle.Status) {
 			s.engine.startDeadlineCoordinator(s.ctx, t)
 		}

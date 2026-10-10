@@ -42,11 +42,11 @@ func TestExplorationFlow(t *testing.T) {
 	}
 
 	// atomic claim: first wins, second on same id fails
-	ok, err := es.ClaimIntent(i2, "worker-1")
+	ok, err := es.ClaimIntent(i2, "worker-1", IntentLeaseTTL)
 	if err != nil || !ok {
 		t.Fatalf("claim i2: ok=%v err=%v", ok, err)
 	}
-	ok2, _ := es.ClaimIntent(i2, "worker-2")
+	ok2, _ := es.ClaimIntent(i2, "worker-2", IntentLeaseTTL)
 	if ok2 {
 		t.Fatalf("double-claim should fail")
 	}
@@ -146,7 +146,7 @@ func TestIntentPauseResumeAndCancelCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := es.ClaimIntent(intentID, "worker-control-test"); err != nil || !claimed {
+	if claimed, err := es.ClaimIntent(intentID, "worker-control-test", IntentLeaseTTL); err != nil || !claimed {
 		t.Fatalf("initial claim: claimed=%v err=%v", claimed, err)
 	}
 	if err := es.SetIntentState(intentID, "paused"); err != nil {
@@ -162,13 +162,13 @@ func TestIntentPauseResumeAndCancelCleanup(t *testing.T) {
 			t.Fatalf("paused intent %d must not enter frontier", intentID)
 		}
 	}
-	if claimed, err := es.ClaimIntent(intentID, "worker-while-paused"); err != nil || claimed {
+	if claimed, err := es.ClaimIntent(intentID, "worker-while-paused", IntentLeaseTTL); err != nil || claimed {
 		t.Fatalf("paused intent claim: claimed=%v err=%v", claimed, err)
 	}
 	if err := es.SetIntentState(intentID, "open"); err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := es.ClaimIntent(intentID, "worker-after-resume"); err != nil || !claimed {
+	if claimed, err := es.ClaimIntent(intentID, "worker-after-resume", IntentLeaseTTL); err != nil || !claimed {
 		t.Fatalf("resumed intent claim: claimed=%v err=%v", claimed, err)
 	}
 	if err := es.SetIntentState(intentID, "paused"); err != nil {

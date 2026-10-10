@@ -401,6 +401,21 @@ func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
 	e.workMu.Unlock()
 }
 
+// cancelWork cancels the work currently running intentID with the given named cause —
+// the lease watchdog's way to stop a stalled run. Returns whether a live work was
+// registered at that moment; a dead goroutine has none, and the watchdog's DB-side
+// reclaim stands either way.
+func (e *Engine) cancelWork(intentID int64, cause error) bool {
+	e.workMu.Lock()
+	run := e.work[intentID]
+	e.workMu.Unlock()
+	if run == nil {
+		return false
+	}
+	run.cancel(cause)
+	return true
+}
+
 // detachWork removes the live control handle once Execute has returned. complete
 // must be called after the final intent state write so a waiting cancel handler can
 // safely delete the worker's blackboard output without racing a late write.
@@ -766,7 +781,7 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		name := fmt.Sprintf("work#%d", i+1)
 		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
 	}
-	e.startDeadlineCoordinator(ctx, t) // 任务级超时定时器(仅 timeout>0;去重)
+	e.startDeadlineCoordinator(ctx, t) // 任务级协调器(超时/预算/租约看门狗;去重,常开)
 	// 仅在「完全没有活动意图(open+running)」时才 kick 首轮规划。带种子意图的任务:种子已
 	// 是 open,或已被上面刚起的 worker 抢先 claim 成 running——两种都算「有活干」,一律跳过
 	// 首轮 planner,worker 直接领种子意图开跑,跑完由 NotifyDone/心跳唤醒 planner。
@@ -998,10 +1013,25 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// wrap the guard hooks so steer_work can inject a mid-run course-correction
 	// for THIS intent (drained before the worker's next tool call).
 	iid := intent.ID
+	// 意图租约心跳：每个活动(LLM 回合/工具调用)最多每 TTL/3 续一次租——心跳即进度证据，
+	// 长时间无活动的 running 意图由任务协调器的看门狗取消并回收重派。续租失败（租约已
+	// 易主）只记日志：本 run 的终态写入会因 CAS 失败而自然让位。
+	var lastLeaseRenew atomic.Int64
+	renewLease := func() {
+		now := time.Now().UnixNano()
+		last := lastLeaseRenew.Load()
+		if now-last < int64(intentLeaseRenewInterval) || !lastLeaseRenew.CompareAndSwap(last, now) {
+			return
+		}
+		if ok, err := t.Store.TouchIntentLease(iid, name, db.IntentLeaseTTL); err == nil && !ok {
+			log.Printf("[worker %s] task %s 意图 #%d 租约已易主，续租未生效", name, t.ID, iid)
+		}
+	}
+	emitRenew := func(r db.Activity) { renewLease(); emit(r) }
 	taskEmit := func(a db.Activity) {
 		nid := iid
 		a.NodeID, a.Worker = &nid, name
-		emit(a)
+		emitRenew(a)
 	}
 	label := fmt.Sprintf("%s · #%d", name, iid)
 	workCtx = intercept.WithTaskContext(workCtx, t.ID, label, taskEmit)
@@ -1020,9 +1050,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var wrote agent.WriteCounts
 	var err error
 	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emitRenew, e.m.enrich, t.NotifyFinding, requestID, message)
 	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emitRenew, e.m.enrich, t.NotifyFinding)
 	}
 	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
@@ -1039,9 +1069,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		e.BeginLLMCall(t.ID)
 		if hasChatMessage {
-			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emitRenew, e.m.enrich, t.NotifyFinding, requestID, message)
 		} else {
-			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emitRenew, e.m.enrich, t.NotifyFinding)
 		}
 		e.EndLLMCall(t.ID)
 	}
@@ -1062,6 +1092,8 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			action = "pause"
 		case errors.Is(workCause, agent.AbortWorkCancelledByUser):
 			action = "cancel"
+		case errors.Is(workCause, agent.AbortWorkLeaseExpired):
+			action = "lease"
 		}
 	}
 	var controlErr error
@@ -1086,6 +1118,17 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			return true
 		}
 		log.Printf("[worker %s] task %s 意图 #%d 已停止，等待取消清理", name, t.ID, intent.ID)
+		e.touch(t.ID)
+		return true
+	}
+	if action == "lease" {
+		// 租约到期被看门狗回收：意图退回 open 重新领取（从 transcript 续跑）。看门狗通常
+		// 已先一步把状态 CAS 到 open，此时这里转换失败属预期，只记一行日志。
+		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
+			log.Printf("[worker %s] task %s 意图 #%d 租约回收回退(预期:看门狗已改状态): %v", name, t.ID, intent.ID, err)
+		} else {
+			log.Printf("[worker %s] task %s 意图 #%d 因租约到期结束，已退回 open 等待重派", name, t.ID, intent.ID)
+		}
 		e.touch(t.ID)
 		return true
 	}
@@ -1207,6 +1250,9 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 		return fmt.Errorf("%w: 意图不再是 paused 状态", db.ErrIntentStateConflict)
 	}
 	node.State, node.Owner = "running", "chat"
+	if _, err := t.Store.TouchIntentLease(intentID, "chat", db.IntentLeaseTTL); err != nil {
+		log.Printf("[chat] 意图 #%d 租约盖章失败: %v", intentID, err)
+	}
 	// Record the human turn as a visible activity BEFORE the run starts, so it is
 	// ordered ahead of any worker step and never appears without the run happening.
 	// Keep the UI copy concise; ExecuteWithMessage writes the server-resolved
@@ -1247,7 +1293,7 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 func (e *Engine) claimNext(t *Task, name string) *db.Node {
 	fr, _ := t.Store.Frontier(20)
 	for _, in := range fr {
-		if ok, _ := t.Store.ClaimIntent(in.ID, name); ok {
+		if ok, _ := t.Store.ClaimIntent(in.ID, name, db.IntentLeaseTTL); ok {
 			return in
 		}
 	}

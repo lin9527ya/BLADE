@@ -164,7 +164,7 @@ func TestExplorationDirectSourceReadView(t *testing.T) {
 	if len(frontier) != 1 || frontier[0].ID != currentIntent {
 		t.Fatalf("source intent leaked into local frontier: %+v", frontier)
 	}
-	if claimed, err := currentStore.ClaimIntent(sourceIntent, "wrong-task-worker"); err != nil || claimed {
+	if claimed, err := currentStore.ClaimIntent(sourceIntent, "wrong-task-worker", IntentLeaseTTL); err != nil || claimed {
 		t.Fatalf("source intent must not be claimable: claimed=%v err=%v", claimed, err)
 	}
 	if got, err := currentStore.GetNodeWithSources(sourceIntent); err != nil || got != nil {

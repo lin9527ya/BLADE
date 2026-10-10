@@ -24,7 +24,7 @@ func TestCompareAndSetIntentStateAllowsSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := store.ClaimIntent(intentID, "worker"); err != nil || !claimed {
+	if claimed, err := store.ClaimIntent(intentID, "worker", IntentLeaseTTL); err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
 
@@ -74,7 +74,7 @@ func TestCancelIntentPreservesTokenMeteringWithoutDoubleCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := store.ClaimIntent(intentID, "work#1"); err != nil || !claimed {
+	if claimed, err := store.ClaimIntent(intentID, "work#1", IntentLeaseTTL); err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
 
@@ -262,7 +262,7 @@ func TestCancelIntentPreservesOutputsYieldedByAnotherIntent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if claimed, err := store.ClaimIntent(first, "work#1"); err != nil || !claimed {
+	if claimed, err := store.ClaimIntent(first, "work#1", IntentLeaseTTL); err != nil || !claimed {
 		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
 	}
 	if err := store.SetIntentState(first, "paused"); err != nil {
