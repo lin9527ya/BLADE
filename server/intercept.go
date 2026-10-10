@@ -25,7 +25,7 @@ const judgeWorkerLane = "judge"
 // chatGuard returns a guard wired with the manager's interceptor, used for chat
 // conversations. Called once per applyLLM so a new LLM config always gets a fresh guard.
 func (s *Server) chatGuard() *guard.Guard {
-	return guard.NewWithInterceptor(s.m.interceptor)
+	return guard.NewWithInterceptor(s.m.interceptor, 0)
 }
 
 // wireInterceptReviewer installs the LLM fallback judge into the interceptor. The
