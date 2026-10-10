@@ -39,7 +39,15 @@ const FINDING_STATUSES: FindingStatus[] = [
   "duplicate",
   "risk_accepted",
   "retracted",
+  "ruled_out",
+  "open_proof_gap",
 ];
+
+const CONFIDENCE_LABELS: Record<string, string> = {
+  high: "高（可复现触发链）",
+  medium: "中（强异常，未构造完整对照）",
+  low: "低（据指纹/版本/现象推断）",
+};
 
 function fmtTime(ts: string) {
   return new Date(ts).toLocaleString("zh-CN");
@@ -173,6 +181,20 @@ function FindingDetailInner() {
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "（无摘要）"}</p>
                 </CardContent>
               </Card>
+              {(finding.counterevidence || finding.proof_gap) && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">
+                      {finding.status === "ruled_out" ? "反证（点名控制点）" : "存疑缺口（未闭合，不得视为安全）"}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                      {finding.counterevidence || finding.proof_gap}
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
               <FindingRetestPanel key={id} findingId={id} readOnly={finding.inherited} onCompleted={load} />
               <Card>
                 <CardHeader>
@@ -271,6 +293,13 @@ function FindingDetailInner() {
                       </SelectContent>
                     </Select>
                   )}
+                </FieldRow>
+
+                {/* 置信度标定 */}
+                <FieldRow label="置信度">
+                  <span className="text-xs text-muted-foreground">
+                    {CONFIDENCE_LABELS[finding.confidence ?? ""] ?? "未标定"}
+                  </span>
                 </FieldRow>
 
                 {/* 漏洞类型 */}

@@ -480,7 +480,10 @@ export type FindingStatus =
   | "ignored"
   | "duplicate"
   | "risk_accepted"
-  | "retracted";
+  | "retracted"
+  // ruled_out = 反证闭合（counterevidence 点名控制点）；open_proof_gap = 存疑待补证（明写缺口）。
+  | "ruled_out"
+  | "open_proof_gap";
 
 // FindingAsset 是一个漏洞绑定的资产(已在后端预渲染 label)。
 export interface FindingAsset {
@@ -503,6 +506,9 @@ export interface Finding {
   summary: string;
   evidence: string;
   report?: string; // 详细报告(Markdown);仅详情接口返回,列表为空
+  confidence?: string; // 置信度标定 high/medium/low;空=未标定
+  counterevidence?: string; // ruled_out 的反证（点名控制点）
+  proof_gap?: string; // open_proof_gap 的缺口说明
   intent_id?: string;
   param_id?: string;
   task_id?: string;

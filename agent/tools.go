@@ -1223,22 +1223,26 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"vulnclass": str("漏洞类别"), "name": str("漏洞名称"), "severity": str("critical|high|medium|low"), "summary": str("发现摘要"),
 		"intent_id": idp("当前任务的意图 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id"},
 		"evidence":         str("证据/PoC 文本"),
+		"confidence":       map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}, "description": "置信度诚实标定（必填）：high=可复现的触发链（有对照请求、可重放）；medium=直接观察到强异常但未构造完整对照/未确证可利用；low=据指纹/版本/现象推断、未直接触发。不要虚标——标不高就用 close_candidate 记存疑。"},
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。高危/严重漏洞尽量给出【成对证据】：proof（触发漏洞的请求）+ baseline（同接口的正常对照请求）——没有对照时在 note 里说明原因；证据不足的漏洞会在报告里单独列为「待核对」。",
 			"items": obj(map[string]any{"traffic_id": str("traffic_search 返回的真实流量 ID"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("该流量如何支持漏洞结论")}, "traffic_id")},
-	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+	}, "vulnclass", "severity", "summary", "confidence"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
-			VulnClass, Name, Severity, Summary, Evidence string
-			IntentID                                     json.RawMessage   `json:"intent_id"`
-			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
-			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
-			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
+			VulnClass, Name, Severity, Summary, Evidence, Confidence string
+			IntentID                                                 json.RawMessage   `json:"intent_id"`
+			AssetIDs                                                 []json.RawMessage `json:"asset_ids"`
+			TrafficRefs                                              []db.TrafficRef   `json:"traffic_refs"`
+			EvidenceHintID                                           json.RawMessage   `json:"evidence_hint_id"`
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil
+		}
+		if !db.ValidConfidence(a.Confidence) {
+			return actool.Errorf("confidence 取值必须是 high|medium|low（诚实标定；缺省=未标定，报告会点名）"), nil
 		}
 		// Auto-binding off: ignore the evidence params instead of rejecting the call.
 		// stripTrafficParameters already removes them from the advertised schema, but
@@ -1255,7 +1259,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs)}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: pidList(a.AssetIDs)}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -1296,6 +1300,59 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		raw, _ := json.Marshal(result)
 		return actool.Text(fmt.Sprintf("finding recorded: %d\n%s", recorded.NodeID, raw)), nil
+	})
+}
+
+// closeCandidate 闭合一条【没成为漏洞】的候选（strix 三态闭合纪律）：候选要么经
+// report_finding 成为 confirmed，要么在这里落到 ruled_out（带反证：点名控制点）或
+// open_proof_gap（写清缺什么）——不得静默丢弃。"没找到控制点 ≠ 安全"。
+func (t *ToolSet) closeCandidate() actool.CoreTool {
+	return writeTool("close_candidate", "闭合一条【未成为漏洞】的候选，留下反证或缺口（三态纪律：没找到控制点 ≠ 安全，禁止静默丢弃候选）。ruled_out=已排除，必须用 counterevidence 点名阻断它的具体控制点；open_proof_gap=存疑待补证，必须用 proof_gap 写清缺什么。确认漏洞请用 report_finding。", obj(map[string]any{
+		"candidate":       str("候选一句话（假设的漏洞点，如“/login 的 user 参数疑似 SQLi”）"),
+		"outcome":         map[string]any{"type": "string", "enum": []string{"ruled_out", "open_proof_gap"}, "description": "ruled_out 已排除（有反证）/ open_proof_gap 存疑待补证（不默关）"},
+		"counterevidence": str("outcome=ruled_out 必填：点名阻断该候选的具体控制点/机制（如参数化查询、WAF 规则、鉴权校验），以及它为何不在攻击者路径上"),
+		"proof_gap":       str("outcome=open_proof_gap 必填：缺什么信息、为什么本次闭合不了、下一步怎么补"),
+		"confidence":      map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}, "description": "必填：high=反证路径已实际验证 / medium=直接观察到阻断现象但未完整复现 / low=据版本/指纹/经验推断"},
+		"vulnclass":       str("候选的漏洞类别（如 sqli/xss/idor）"),
+		"severity":        str("若成立时的严重度 critical|high|medium|low（可选）"),
+		"intent_id":       idp("当前任务的意图 id"),
+		"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "候选涉及的资产 id（可选）"},
+	}, "candidate", "outcome", "confidence"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		var a struct {
+			Candidate, Outcome, Counterevidence, ProofGap, Confidence, VulnClass, Severity string
+			IntentID                                                                       json.RawMessage   `json:"intent_id"`
+			AssetIDs                                                                       []json.RawMessage `json:"asset_ids"`
+		}
+		if err := json.Unmarshal(in, &a); err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		if t.ts == nil {
+			return actool.Errorf("close_candidate 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接候选结论与反证，由任务 Agent 登记。"), nil
+		}
+		if strings.TrimSpace(a.Candidate) == "" {
+			return actool.Errorf("candidate 不能为空：一句话写清被闭合的候选是什么"), nil
+		}
+		intentID := pid(a.IntentID)
+		if intentID <= 0 {
+			intentID = t.ownerNode
+		}
+		rec, err := t.ts.RecordCandidateClosure(ctx, db.CandidateClosureInput{
+			TaskID: t.taskID, IntentID: intentID,
+			VulnClass: a.VulnClass, Name: a.Candidate, Severity: a.Severity, Summary: a.Candidate, Worker: t.worker,
+			Outcome: a.Outcome, Counterevidence: a.Counterevidence, ProofGap: a.ProofGap, Confidence: a.Confidence,
+			AssetIDs: pidList(a.AssetIDs),
+		})
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		if t.notifyFinding != nil {
+			t.notifyFinding(intentID, a.Candidate)
+		} else if t.notify != nil {
+			t.notify()
+		}
+		t.writes.Findings++
+		raw, _ := json.Marshal(rec)
+		return actool.Text(fmt.Sprintf("candidate closed: %s\n%s", a.Outcome, raw)), nil
 	})
 }
 

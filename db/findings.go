@@ -31,6 +31,9 @@ type DBFinding struct {
 	Worker          string
 	AssetIDs        []int64
 	Status          string
+	Confidence      string // 置信度标定 high/medium/low;"" = 未标定
+	Counterevidence string // ruled_out 的反证(点名控制点)
+	ProofGap        string // open_proof_gap 的缺口说明
 	Report          string // 详细报告(Markdown);仅 GetFinding 填充,列表查询不带
 	CreatedAt       time.Time
 	TaskDescription string // populated via LEFT JOIN on tasks
@@ -48,13 +51,34 @@ const (
 	FindingDuplicate     = "duplicate"      // 重复
 	FindingRiskAccepted  = "risk_accepted"  // 风险接受
 	FindingRetracted     = "retracted"      // 已撤回(复测推翻;墓碑保留,原因见 retract_reason)
+	FindingRuledOut      = "ruled_out"      // 已排除(反证闭合;counterevidence 点名控制点)
+	FindingOpenProofGap  = "open_proof_gap" // 存疑待补证(proof_gap 写清缺什么;不得视为安全)
 )
 
 // ValidFindingStatus reports whether s is a known triage state.
 func ValidFindingStatus(s string) bool {
 	switch s {
 	case FindingPending, FindingInProgress, FindingConfirmed, FindingResolved, FindingFixed,
-		FindingFalsePositive, FindingIgnored, FindingDuplicate, FindingRiskAccepted, FindingRetracted:
+		FindingFalsePositive, FindingIgnored, FindingDuplicate, FindingRiskAccepted, FindingRetracted,
+		FindingRuledOut, FindingOpenProofGap:
+		return true
+	}
+	return false
+}
+
+// Confidence levels for the honest-calibration label on findings and candidates.
+// "" means 未标定 (legacy rows and reports that predate the field) — the report
+// names those explicitly instead of guessing.
+const (
+	ConfidenceHigh   = "high"   // 可复现的触发链（有对照/可重放）
+	ConfidenceMedium = "medium" // 直接观察到强异常，未构造完整对照或未确证可利用
+	ConfidenceLow    = "low"    // 据指纹/版本/现象推断（inferred），未直接触发
+)
+
+// ValidConfidence reports whether c is a known confidence label ("" = 未标定).
+func ValidConfidence(c string) bool {
+	switch c {
+	case "", ConfidenceHigh, ConfidenceMedium, ConfidenceLow:
 		return true
 	}
 	return false
@@ -106,7 +130,8 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.name, ''), f.severity, f.summary,
 	       f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
- (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id)`
+ (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id),
+	       COALESCE(f.confidence, ''), COALESCE(f.counterevidence, ''), COALESCE(f.proof_gap, '')`
 
 // scanFindings materializes rows selected via findingSelectCols.
 func scanFindings(rows interface {
@@ -119,7 +144,8 @@ func scanFindings(rows interface {
 		f := &DBFinding{}
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
-			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount); err != nil {
+			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount,
+			&f.Confidence, &f.Counterevidence, &f.ProofGap); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -512,7 +538,8 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
-			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report); err != nil {
+			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount,
+			&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.Report); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -640,7 +667,8 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		WHERE f.id = $1`, id).Scan(
 		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
-		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report)
+		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount,
+		&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.Report)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -799,6 +827,14 @@ type FindingMeta struct {
 	AssetIDs []int64
 	// RetractReason is set when Status == FindingRetracted.
 	RetractReason string
+	// Confidence is the honest-calibration label (high/medium/low; "" = 未标定).
+	Confidence string
+	// Counterevidence is set when Status == FindingRuledOut: the control point
+	// that blocks the candidate and why it is off the attacker path.
+	Counterevidence string
+	// ProofGap is set when Status == FindingOpenProofGap: what is missing to
+	// close the candidate ("没找到控制点 ≠ 安全").
+	ProofGap string
 }
 
 // FindingMetaByNodeID maps a task's finding node ids to their standalone-row
@@ -816,7 +852,8 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 	if taskID <= 0 {
 		return out, nil
 	}
-	rows, err := d.Query(`SELECT node_id, id, COALESCE(status,'pending'), asset_ids, COALESCE(retract_reason,''), (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=findings.id) FROM findings
+	rows, err := d.Query(`SELECT node_id, id, COALESCE(status,'pending'), asset_ids, COALESCE(retract_reason,''), (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=findings.id),
+			COALESCE(confidence,''), COALESCE(counterevidence,''), COALESCE(proof_gap,'') FROM findings
 		WHERE task_id=$1 AND node_id IS NOT NULL`, taskID)
 	if err != nil {
 		return out, err
@@ -826,7 +863,8 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 		var nid int64
 		var m FindingMeta
 		var aidsJSON string
-		if err := rows.Scan(&nid, &m.ID, &m.Status, &aidsJSON, &m.RetractReason, &m.TrafficCount); err != nil {
+		if err := rows.Scan(&nid, &m.ID, &m.Status, &aidsJSON, &m.RetractReason, &m.TrafficCount,
+			&m.Confidence, &m.Counterevidence, &m.ProofGap); err != nil {
 			return out, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &m.AssetIDs)

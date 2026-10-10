@@ -2263,24 +2263,47 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Status        *string `json:"status"`
-		Severity      *string `json:"severity"`
-		Name          *string `json:"name"`
-		VulnClass     *string `json:"vulnclass"`
-		RetractReason *string `json:"retract_reason"`
+		Status          *string `json:"status"`
+		Severity        *string `json:"severity"`
+		Name            *string `json:"name"`
+		VulnClass       *string `json:"vulnclass"`
+		RetractReason   *string `json:"retract_reason"`
+		Confidence      *string `json:"confidence"`
+		Counterevidence *string `json:"counterevidence"`
+		ProofGap        *string `json:"proof_gap"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
-	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil {
-		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass")
+	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil &&
+		body.Confidence == nil && body.Counterevidence == nil && body.ProofGap == nil {
+		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass/confidence/counterevidence/proof_gap")
 		return
 	}
 	if body.Status != nil {
 		if !db.ValidFindingStatus(*body.Status) {
 			writeErr(w, 400, "bad status: "+*body.Status)
 			return
+		}
+		// 候选闭合（ruled_out / open_proof_gap）同样要求带注记：反证点名控制点、
+		// 存疑写清缺口——候选不得静默关闭。校验先行，避免状态翻过去了注记却缺失。
+		if *body.Status == db.FindingRuledOut || *body.Status == db.FindingOpenProofGap {
+			note := ""
+			if *body.Status == db.FindingRuledOut && body.Counterevidence != nil {
+				note = strings.TrimSpace(*body.Counterevidence)
+			}
+			if *body.Status == db.FindingOpenProofGap && body.ProofGap != nil {
+				note = strings.TrimSpace(*body.ProofGap)
+			}
+			if note == "" {
+				if *body.Status == db.FindingRuledOut {
+					writeErr(w, 400, "ruled_out 需要 counterevidence（点名阻断该候选的控制点）")
+				} else {
+					writeErr(w, 400, "open_proof_gap 需要 proof_gap（写清缺什么信息）")
+				}
+				return
+			}
 		}
 		// 撤回是终局语义：必须带原因（先落原因再翻状态，推送事件里原因已就位）。
 		if *body.Status == db.FindingRetracted {
@@ -2347,6 +2370,29 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		}
 		if n == 0 {
 			writeErr(w, 404, "finding not found")
+			return
+		}
+	}
+	if body.Status != nil && (*body.Status == db.FindingRuledOut || *body.Status == db.FindingOpenProofGap) {
+		var counter, gap string
+		if body.Counterevidence != nil {
+			counter = *body.Counterevidence
+		}
+		if body.ProofGap != nil {
+			gap = *body.ProofGap
+		}
+		if _, err := s.m.pg.SetFindingClosure(id, *body.Status, counter, gap); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if body.Confidence != nil {
+		if !db.ValidConfidence(*body.Confidence) {
+			writeErr(w, 400, "bad confidence: "+*body.Confidence)
+			return
+		}
+		if _, err := s.m.pg.SetFindingConfidence(id, *body.Confidence); err != nil {
+			writeErr(w, 500, err.Error())
 			return
 		}
 	}
@@ -3887,12 +3933,23 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	meta, _ := s.m.pg.FindingMetaByNodeID(tid)
 	live := make([]*db.Node, 0, len(findings))
 	var retracted []report.Retracted
+	var ruledOut, proofGaps []report.CandidateNote
+	confidenceByNode := map[int64]string{}
 	for _, n := range findings {
-		if m, ok := meta[n.ID]; ok && m.Status == db.FindingRetracted {
-			retracted = append(retracted, report.Retracted{Node: n, Reason: m.RetractReason})
-			continue
+		m, ok := meta[n.ID]
+		if ok && m.Confidence != "" {
+			confidenceByNode[n.ID] = m.Confidence
 		}
-		live = append(live, n)
+		switch {
+		case ok && m.Status == db.FindingRetracted:
+			retracted = append(retracted, report.Retracted{Node: n, Reason: m.RetractReason})
+		case n.State == db.FindingRuledOut || (ok && m.Status == db.FindingRuledOut):
+			ruledOut = append(ruledOut, report.CandidateNote{Node: n, Counterevidence: m.Counterevidence, ProofGap: m.ProofGap, Confidence: m.Confidence})
+		case n.State == db.FindingOpenProofGap || (ok && m.Status == db.FindingOpenProofGap):
+			proofGaps = append(proofGaps, report.CandidateNote{Node: n, Counterevidence: m.Counterevidence, ProofGap: m.ProofGap, Confidence: m.Confidence})
+		default:
+			live = append(live, n)
+		}
 	}
 	intents, _ := t.Store.ListByKind(db.KindIntent, 1000)
 	var notProbed []report.NotProbed
@@ -3934,6 +3991,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
+		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)
