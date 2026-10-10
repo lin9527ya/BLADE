@@ -21,6 +21,11 @@ type DeferredInfo struct {
 	GlobalNames     []string          // MCP names to list in the system-prompt block
 	Unlock          *actool.UnlockSet // shared call-gate; nil when no MCP tools
 	UnlockSkill     func(skillName string)
+	// AlwaysSkills is the pre-rendered 常驻技能 block: the full instructions of the
+	// agent's always-on skills (≤5), riding in the stable system prefix so they are
+	// followed on every request without the model having to invoke the Skill tool.
+	// Empty = no always-on skills.
+	AlwaysSkills string
 }
 
 // ToolAugment, if set, returns the EXTRA tools an agent should see beyond its

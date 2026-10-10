@@ -1009,8 +1009,50 @@ func (d *DB) SkillAgents(skillName string) ([]int64, error) {
 	return out, rows.Err()
 }
 
-// SetAgentSkillVisibility replaces all skill visibility for an agent.
-func (d *DB) SetAgentSkillVisibility(agentID int64, names []string) error {
+// MaxAlwaysSkills caps the 常驻 (always-injected) skills per agent. Constant skills
+// are inlined into every request's stable system prefix (分层注入的常量层), so the set
+// must stay small enough to keep attention and cost in check — strix 同款 ≤5 预算。
+const MaxAlwaysSkills = 5
+
+// SkillBinding is one (agent, skill) row: visible, and optionally 常驻 (its full
+// instructions ride in the agent's stable system prefix on every request).
+type SkillBinding struct {
+	Name   string `json:"name"`
+	Always bool   `json:"always"`
+}
+
+// AgentAlwaysSkillNames returns the 常驻 skill directory names of an agent
+// (visible AND always), in stable name order.
+func (d *DB) AgentAlwaysSkillNames(agentID int64) ([]string, error) {
+	rows, err := d.Query(`SELECT skill_name FROM agent_skill_visibility WHERE agent_id=$1 AND enabled AND always ORDER BY skill_name`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// SetAgentSkillBindings replaces all skill visibility for an agent in one
+// transaction, carrying the 常驻 flags. At most MaxAlwaysSkills bindings may be
+// 常驻 — the cap is enforced here so every entry point (web/api) shares it.
+func (d *DB) SetAgentSkillBindings(agentID int64, bindings []SkillBinding) error {
+	always := 0
+	for _, b := range bindings {
+		if b.Always {
+			always++
+		}
+	}
+	if always > MaxAlwaysSkills {
+		return fmt.Errorf("常驻技能最多 %d 条（当前 %d 条）：常驻技能会整段注入每次请求的 system 前缀，超量会稀释注意力并推高成本", MaxAlwaysSkills, always)
+	}
 	tx, err := d.Begin()
 	if err != nil {
 		return err
@@ -1019,13 +1061,22 @@ func (d *DB) SetAgentSkillVisibility(agentID int64, names []string) error {
 	if _, err := tx.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=$1`, agentID); err != nil {
 		return err
 	}
-	for _, name := range names {
-		if _, err := tx.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES ($1,$2,true)
-ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true`, agentID, name); err != nil {
+	for _, b := range bindings {
+		if _, err := tx.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled,always) VALUES ($1,$2,true,$3)
+ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true, always=EXCLUDED.always`, agentID, b.Name, b.Always); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// SetAgentSkillVisibility replaces all skill visibility for an agent (no 常驻 flags).
+func (d *DB) SetAgentSkillVisibility(agentID int64, names []string) error {
+	bindings := make([]SkillBinding, 0, len(names))
+	for _, name := range names {
+		bindings = append(bindings, SkillBinding{Name: name})
+	}
+	return d.SetAgentSkillBindings(agentID, bindings)
 }
 
 // ToggleSkillVisibility sets one (agent, skill_name) visibility on/off.

@@ -30,6 +30,9 @@ import type { Agent, AgentDetail, AgentTrigger, MCPServer, PromptVar, PromptVers
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep this list in sync with traffic.SeedToolMetas.
+// 常驻技能上限（与后端 db.MaxAlwaysSkills 一致）：常驻正文整段注入 system 稳定段。
+const MAX_ALWAYS_SKILLS = 5;
+
 const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
 
 // AgentEditor is the tabbed editor for one agent, used inside the agents-page
@@ -49,6 +52,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const [prompt, setPrompt] = React.useState("");
   const [mcpVisible, setMcpVisible] = React.useState<number[]>([]);
   const [skillVisible, setSkillVisible] = React.useState<string[]>([]);
+  // 可见 skill 中的「常驻」子集：正文整段注入 system 稳定段，≤5 条。
+  const [skillAlways, setSkillAlways] = React.useState<string[]>([]);
   const [preview, setPreview] = React.useState("");
   const [maxTurns, setMaxTurns] = React.useState("0");
   const [runSecs, setRunSecs] = React.useState("600");
@@ -89,6 +94,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         setVersions(d.versions ?? []);
         setMcpVisible(d.visibility?.mcp ?? []);
         setSkillVisible(d.visibility?.skill ?? []);
+        setSkillAlways(d.visibility?.skill_always ?? []);
         setMaxTurns(String(d.agent?.max_turns ?? 0));
         setRunSecs(String(d.agent?.run_seconds ?? 600));
         setLlmProfileId(d.agent?.llm_profile_id != null ? String(d.agent.llm_profile_id) : "");
@@ -198,18 +204,23 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   }
   // applyVis optimistically updates, persists, and toasts success/failure. On
   // failure it reverts to the prior selection so the UI never lies about state.
-  async function applyVis(nextMcp: number[], nextSkill: string[], okMsg: string) {
+  async function applyVis(nextMcp: number[], nextSkill: string[], okMsg: string, nextAlways?: string[]) {
     const prevMcp = mcpVisible;
     const prevSkill = skillVisible;
+    const prevAlways = skillAlways;
+    // 常驻集合必须 ⊆ 可见集合（取消可见连带取消常驻）。
+    const always = (nextAlways ?? skillAlways).filter((n) => nextSkill.includes(n));
     setMcpVisible(nextMcp);
     setSkillVisible(nextSkill);
+    setSkillAlways(always);
     try {
-      await api.setAgentVisibility(agentKey, nextMcp, nextSkill);
+      await api.setAgentVisibility(agentKey, nextMcp, nextSkill, always);
       toast.success(okMsg);
       onSaved?.(); // refresh the list so the card's MCP/Skill counts stay in sync
     } catch (e) {
       setMcpVisible(prevMcp);
       setSkillVisible(prevSkill);
+      setSkillAlways(prevAlways);
       toast.error("保存失败：" + (e as Error).message);
     }
   }
@@ -228,6 +239,20 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       mcpVisible,
       on ? skillVisible.filter((x) => x !== name) : [...skillVisible, name],
       `${on ? "已取消" : "已开启"} Skill「${name}」可见`,
+    );
+  }
+  // 常驻开关：正文整段注入 system 稳定段（每次请求），≤5 条（与 strix 同款预算）。
+  function toggleAlways(name: string) {
+    const on = skillAlways.includes(name);
+    if (!on && skillAlways.length >= MAX_ALWAYS_SKILLS) {
+      toast.error(`常驻技能最多 ${MAX_ALWAYS_SKILLS} 条：常驻正文会整段注入每次请求的 system 前缀，超量会稀释注意力并推高成本`);
+      return;
+    }
+    void applyVis(
+      mcpVisible,
+      skillVisible,
+      `${on ? "已取消" : "已设为"}常驻 Skill「${name}」`,
+      on ? skillAlways.filter((x) => x !== name) : [...skillAlways, name],
     );
   }
   async function toggleTool(t: Tool) {
@@ -605,17 +630,43 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         </div>
       </TabsContent>
 
-      {/* Skill 可见性 */}
+      {/* Skill 可见性 + 常驻分层 */}
       <TabsContent value="skill" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <p className="text-muted-foreground mb-3 text-xs">勾选此 Agent 可见的 Skill。</p>
+        <p className="text-muted-foreground mb-3 text-xs">
+          勾选此 Agent 可见的 Skill；可见的 Skill 可再标「常驻」——常驻技能的正文会整段注入该 Agent
+          每次请求的 system 稳定段（随缓存前缀走），不依赖模型主动调用 Skill 工具，适合「必须始终遵守」的规则型技能（最多
+          {" "}
+          {MAX_ALWAYS_SKILLS} 条，当前 {skillAlways.length} 条）。
+        </p>
         <div className="grid gap-2">
-          {skills.map((s) => (
-            <label key={s.name} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={skillVisible.includes(s.name)} onCheckedChange={() => toggleSkill(s.name)} />
-              <span className="font-mono text-xs">{s.name}</span>
-              {s.description && <span className="text-muted-foreground ml-auto truncate text-xs">{s.description}</span>}
-            </label>
-          ))}
+          {skills.map((s) => {
+            const visible = skillVisible.includes(s.name);
+            const always = skillAlways.includes(s.name);
+            return (
+              <div key={s.name} className="flex items-center gap-2 rounded-md border p-2 text-sm">
+                <Checkbox checked={visible} onCheckedChange={() => toggleSkill(s.name)} />
+                <span className="font-mono text-xs">{s.name}</span>
+                {visible && (
+                  <button
+                    type="button"
+                    onClick={() => toggleAlways(s.name)}
+                    title="常驻：技能正文整段注入 system 稳定段（≤5 条）"
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                      always
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {always ? "常驻 ✓" : "设为常驻"}
+                  </button>
+                )}
+                {s.description && (
+                  <span className="text-muted-foreground ml-auto truncate text-xs">{s.description}</span>
+                )}
+              </div>
+            );
+          })}
           {skills.length === 0 && <span className="text-muted-foreground text-xs">（暂无 Skill）</span>}
         </div>
       </TabsContent>

@@ -1079,9 +1079,11 @@ export const api = {
     get<{ variables: PromptVar[] }>(`/agents/${key}/variables`).then((r) => arr(r.variables)),
   previewAgentPrompt: (key: string, template: string, sample?: Record<string, string>) =>
     post<{ rendered: string; error?: string }>(`/agents/${key}/prompt/preview`, { template, sample }),
-  getAgentVisibility: (key: string) => get<{ mcp: number[]; skill: string[] }>(`/agents/${key}/visibility`),
-  setAgentVisibility: (key: string, mcp: number[], skill: string[]) =>
-    put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill }),
+  getAgentVisibility: (key: string) =>
+    get<{ mcp: number[]; skill: string[]; skill_always?: string[] }>(`/agents/${key}/visibility`),
+  // skillAlways：可见 skill 中的「常驻」子集（正文整段注入 system 稳定段，≤5 条，后端强制）。
+  setAgentVisibility: (key: string, mcp: number[], skill: string[], skillAlways: string[] = []) =>
+    put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill, skill_always: skillAlways }),
 
   // ---- tools (内置工具目录) ----
   tools: () => get<{ tools: Tool[] }>("/tools").then((r) => arr(r.tools)),

@@ -711,7 +711,11 @@ func (s *Server) pgGetAgentVisibility(w http.ResponseWriter, r *http.Request) {
 	if sk == nil {
 		sk = []string{}
 	}
-	writeJSON(w, 200, map[string]any{"mcp": mcp, "skill": sk})
+	always, _ := pg.AgentAlwaysSkillNames(a.ID)
+	if always == nil {
+		always = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"mcp": mcp, "skill": sk, "skill_always": always})
 }
 
 func (s *Server) pgSetAgentVisibility(w http.ResponseWriter, r *http.Request) {
@@ -720,8 +724,9 @@ func (s *Server) pgSetAgentVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		MCP   []int64  `json:"mcp"`
-		Skill []string `json:"skill"`
+		MCP         []int64  `json:"mcp"`
+		Skill       []string `json:"skill"`
+		SkillAlways []string `json:"skill_always"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -731,7 +736,20 @@ func (s *Server) pgSetAgentVisibility(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := pg.SetAgentSkillVisibility(a.ID, body.Skill); err != nil {
+	// 常驻标记只对同时可见的 skill 生效；上限在 db 层统一强制，这里先行给出 400。
+	alwaysSet := map[string]bool{}
+	for _, name := range body.SkillAlways {
+		alwaysSet[name] = true
+	}
+	if len(alwaysSet) > db.MaxAlwaysSkills {
+		writeErr(w, 400, fmt.Sprintf("常驻技能最多 %d 条（当前 %d 条）", db.MaxAlwaysSkills, len(alwaysSet)))
+		return
+	}
+	bindings := make([]db.SkillBinding, 0, len(body.Skill))
+	for _, name := range body.Skill {
+		bindings = append(bindings, db.SkillBinding{Name: name, Always: alwaysSet[name]})
+	}
+	if err := pg.SetAgentSkillBindings(a.ID, bindings); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}

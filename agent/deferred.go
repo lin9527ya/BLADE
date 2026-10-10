@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
@@ -18,10 +19,19 @@ import (
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
 	sysText += def.FindingGuidance
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
-	if block == "" {
+	always := strings.TrimSpace(def.AlwaysSkills)
+	if always == "" && block == "" {
 		return []string{sysText}, 0
 	}
-	system = []string{sysText, block}
+	// 分层注入：常量层（常驻技能正文）在前、deferred 工具块在后，二者都是会话固定的
+	// 稳定段，随整段 system 一起被缓存（boundary 覆盖全部）。
+	system = []string{sysText}
+	if always != "" {
+		system = append(system, always)
+	}
+	if block != "" {
+		system = append(system, block)
+	}
 	boundary = len(system) // b >= len → whole system prompt cached (SDK guard)
 	return system, boundary
 }

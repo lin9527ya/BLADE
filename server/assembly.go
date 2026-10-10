@@ -51,6 +51,33 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				}
 			}
 		}
+		// --- 常驻技能（分层注入的常量层）：正文整段预渲染，随 DeferredInfo 注入 system
+		// 稳定段（在 deferred 工具块之前、同属缓存前缀）——「规则一律常驻」，不依赖模型
+		// 想起调用 Skill 工具。上限在写入侧强制（db.MaxAlwaysSkills）。 ---
+		alwaysText := ""
+		if reg != nil {
+			if alwaysNames, _ := pg.AgentAlwaysSkillNames(a.ID); len(alwaysNames) > 0 {
+				byDir := make(map[string]skill.Skill, len(alwaysNames))
+				for _, s := range reg.List() {
+					if s.Dir != "" {
+						byDir[filepath.Base(s.Dir)] = s
+					}
+				}
+				var b strings.Builder
+				for _, name := range alwaysNames { // ORDER BY skill_name → 输出稳定（缓存友好）
+					s, ok := byDir[name]
+					if !ok {
+						continue
+					}
+					if b.Len() == 0 {
+						b.WriteString("## 【常驻技能 · 始终遵守】\n以下技能已随本 agent 常驻加载（无需再调用 Skill 工具）；把它们当作硬性作业规范执行。\n")
+					}
+					b.WriteString("\n### " + s.Name + "\n" + strings.TrimSpace(s.Instructions) + "\n")
+				}
+				alwaysText = b.String()
+			}
+		}
+
 		// A server named by any visible skill's `mcps:` is skill-gated: its tools
 		// are deferred + locked (not in the global block) until that skill loads.
 		gated := map[string]bool{}
@@ -170,10 +197,11 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			}
 		}
 		def := agent.DeferredInfo{
-			Deferred:    allNames,
-			GlobalNames: globalNames,
-			Unlock:      unlock,
-			UnlockSkill: unlockSkill,
+			Deferred:     allNames,
+			GlobalNames:  globalNames,
+			Unlock:       unlock,
+			UnlockSkill:  unlockSkill,
+			AlwaysSkills: alwaysText,
 		}
 		return extra, def, cleanup
 	}

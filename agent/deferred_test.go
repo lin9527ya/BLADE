@@ -50,6 +50,36 @@ func TestDeferredSystem_GatedNotInBlock(t *testing.T) {
 	}
 }
 
+func TestDeferredSystem_AlwaysSkillsLayer(t *testing.T) {
+	// 常驻技能（常量层）排在 deferred 工具块之前，二者同属稳定段、一起被缓存。
+	def := DeferredInfo{
+		AlwaysSkills: "## 【常驻技能 · 始终遵守】\n### src-rules\n规则正文",
+		GlobalNames:  []string{"mcp__browser__navigate"},
+	}
+	sys, boundary := deferredSystem("SYS", def)
+	if len(sys) != 3 {
+		t.Fatalf("want [SYS, always, deferred], got %v", sys)
+	}
+	if sys[1] != def.AlwaysSkills || !strings.Contains(sys[2], "<available-deferred-tools>") {
+		t.Fatalf("layer order wrong:\n%s\n%s", sys[1], sys[2])
+	}
+	if boundary != len(sys) {
+		t.Fatalf("boundary=%d want %d (whole prompt cached)", boundary, len(sys))
+	}
+
+	// 只有常驻、没有 deferred 块：两段 + boundary 覆盖全部。
+	sys, boundary = deferredSystem("SYS", DeferredInfo{AlwaysSkills: "RULES"})
+	if len(sys) != 2 || sys[1] != "RULES" || boundary != 2 {
+		t.Fatalf("always-only: %v,%d", sys, boundary)
+	}
+
+	// 空白常驻等效于没有：行为与旧版完全一致。
+	sys, boundary = deferredSystem("SYS", DeferredInfo{AlwaysSkills: "   \n"})
+	if len(sys) != 1 || sys[0] != "SYS" || boundary != 0 {
+		t.Fatalf("blank always must be inert: %v,%d", sys, boundary)
+	}
+}
+
 func TestSeedUnlockFromHistory(t *testing.T) {
 	skillCall := func(name string) llm.ContentBlock {
 		return llm.ContentBlock{Type: llm.BlockToolUse, Name: "Skill", Input: json.RawMessage(`{"name":"` + name + `"}`)}

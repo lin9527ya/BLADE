@@ -905,10 +905,15 @@ CREATE TABLE IF NOT EXISTS agent_skill_visibility (
     agent_id   BIGINT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     skill_name TEXT   NOT NULL,
     enabled    BOOLEAN NOT NULL DEFAULT true,
+    -- always=true 为「常驻技能」：正文整段注入该 agent 每次请求的 system 稳定段
+    -- （缓存前缀内），不依赖模型主动调用 Skill 工具（分层注入的常量层，≤5 条）。
+    always     BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (agent_id, skill_name)
 );
 CREATE INDEX IF NOT EXISTS idx_askv_skill ON agent_skill_visibility(skill_name);
+-- 常驻标记：旧库幂等补列。
+ALTER TABLE agent_skill_visibility ADD COLUMN IF NOT EXISTS always BOOLEAN NOT NULL DEFAULT false;
 
 -- Skill 调用账本（见 db/skill_usage.go）。一次 Skill() 调用一行，只记维度不记正文。
 -- 刻意不设外键：任务/会话删除后统计仍要保留（与 llm_usage 同理），skill 本身也只是
