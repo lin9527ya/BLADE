@@ -52,6 +52,7 @@ export const FINDING_STATUSES: FindingStatus[] = [
   "ignored",
   "duplicate",
   "risk_accepted",
+  "retracted",
 ];
 
 export const UNASSIGNED_TASK = "__unassigned__";

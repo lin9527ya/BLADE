@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
-        (kind='intent'  AND state IN ('open','running','paused','done','blocked','exhausted','stopped','deleted')) OR
+        (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
         (kind='goal'    AND state IN ('open','met','abandoned')) OR
         (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
         (kind='finding' AND state IN ('confirmed','dismissed')) OR
@@ -195,6 +195,11 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
 -- 意图假删除(soft delete):state='deleted' 时,delete_reason 记用户填写的删除原因。
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS delete_reason TEXT;
+-- 意图语义终态(与 state 互补):worker 经 conclude_intent 声明 negative(探针确实发出且回包否定
+-- 该假设)与 out-of-scope(超出授权范围);engine 收尾时若 state 将为 done 且语义非空,以语义为准。
+-- blocked/exhausted 依旧由 engine 依失败原因判定——没测成永远不覆盖成 negative。
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS semantic_outcome TEXT NOT NULL DEFAULT '';
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS semantic_note    TEXT NOT NULL DEFAULT '';
 -- cold-digest (§2.3/§5.3): content_version bumps on any change that could alter a
 -- digest body (summary/state/confidence); cold_since_round stamps the planner round
 -- a node most recently went from "has a live downstream branch" to none (NULL = hot).
@@ -215,7 +220,7 @@ BEGIN
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
--- or 'deleted' (intent soft-delete rev) branches.
+-- 'deleted' (intent soft-delete rev), or 'negative' (intent semantic-outcome rev) branches.
 DO $$
 BEGIN
     IF EXISTS (
@@ -224,12 +229,13 @@ BEGIN
           AND conname='ck_node_state'
           AND (pg_get_constraintdef(oid) NOT LIKE '%paused%'
                OR pg_get_constraintdef(oid) NOT LIKE '%superseded%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%deleted%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%deleted%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%negative%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
             (kind='begin'   AND state IN ('open')) OR
-            (kind='intent'  AND state IN ('open','running','paused','done','blocked','exhausted','stopped','deleted')) OR
+            (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
             (kind='goal'    AND state IN ('open','met','abandoned')) OR
             (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
             (kind='finding' AND state IN ('confirmed','dismissed')) OR
@@ -1092,16 +1098,21 @@ CREATE TABLE IF NOT EXISTS findings (
     worker      TEXT NOT NULL DEFAULT '',
     asset_ids   JSONB NOT NULL DEFAULT '[]',
     -- 处置状态：pending 待处理 / in_progress 处理中 / confirmed 已确认 / resolved 已处理 / fixed 已修复 /
-    -- false_positive 误报 / ignored 忽略 / duplicate 重复 / risk_accepted 风险接受。
+    -- false_positive 误报 / ignored 忽略 / duplicate 重复 / risk_accepted 风险接受 /
+    -- retracted 已撤回(复测推翻,墓碑保留不进报告正文,原因见 retract_reason)。
     -- 取值不加 CHECK：旧库靠下面的 ALTER 补列,CHECK 无法回填,统一由 server 侧白名单校验。
     status      TEXT NOT NULL DEFAULT 'pending',
     -- 漏洞详细报告(Markdown)；默认空,仅详情页读取/展示,不进列表接口以免 payload 膨胀。
     report      TEXT NOT NULL DEFAULT '',
+    -- 撤回原因(status='retracted' 时必填语义):复测推翻后写入,随报告「已撤回」段展示。
+    retract_reason TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+-- 撤回原因(status='retracted')：旧库幂等补列。
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS retract_reason TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);

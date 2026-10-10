@@ -19,6 +19,37 @@ type Input struct {
 	GeneratedAt time.Time
 	AssetCounts map[string]int
 	Findings    []*db.Node
+	// Retracted lists findings retracted after retesting disproved them; they
+	// stay on file (墓碑) but leave the findings body.
+	Retracted []Retracted
+	// NotProbed lists intents that ended blocked/exhausted — 没测成不得当作已测干净。
+	NotProbed []NotProbed
+}
+
+// Retracted is one finding retracted after retesting disproved it.
+type Retracted struct {
+	Node   *db.Node
+	Reason string
+}
+
+// NotProbed is one intent that ended without a real probe (blocked/exhausted).
+type NotProbed struct {
+	Node *db.Node
+}
+
+// nodeLabel extracts a human-readable label from a node payload (intent uses
+// title/summary; falls back through common keys).
+func nodeLabel(n *db.Node) string {
+	var m map[string]any
+	if err := json.Unmarshal(n.Payload, &m); err != nil {
+		return ""
+	}
+	for _, k := range []string{"title", "summary", "name", "description", "goal"} {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 type findingView struct {
@@ -86,6 +117,37 @@ func Markdown(in Input) string {
 				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
 			}
 		}
+	}
+
+	// 未测成（blocked/exhausted）：不得当作已测干净。
+	fmt.Fprintf(&b, "## 未测成（blocked/exhausted，不得当作已测干净）\n\n")
+	if len(in.NotProbed) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, np := range in.NotProbed {
+			reason := ""
+			if np.Node.BlockedReason != "" {
+				reason = " — " + np.Node.BlockedReason
+			}
+			label := nodeLabel(np.Node)
+			if label == "" {
+				label = "（无标题）"
+			}
+			fmt.Fprintf(&b, "- #%d [%s] %s%s\n", np.Node.ID, np.Node.State, label, reason)
+		}
+		b.WriteString("\n")
+	}
+
+	// 已撤回（复测推翻；不进正文，保留在案）。
+	fmt.Fprintf(&b, "## 已撤回（复测推翻；不进正文，保留在案）\n\n")
+	if len(in.Retracted) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, r := range in.Retracted {
+			f := parseFinding(r.Node)
+			fmt.Fprintf(&b, "- #%d [%s] %s — 原因：%s\n", r.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(r.Reason, "（未记录）"))
+		}
+		b.WriteString("\n")
 	}
 
 	return b.String()

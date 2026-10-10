@@ -1143,6 +1143,15 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		state = "exhausted"
 		log.Printf("[worker %s] intent %d 运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
 	}
+	// 语义终态提升：worker 经 conclude_intent 声明 negative / out-of-scope 时，正常完成的
+	// 意图以语义为准；blocked / exhausted 压过它——没测成不是结论（与上面的分流注释同一条纪律）。
+	if state == "done" {
+		if outcome, outcomeErr := t.Store.GetIntentSemanticOutcome(intent.ID); outcomeErr == nil {
+			if outcome == "negative" || outcome == "out-of-scope" {
+				state = outcome
+			}
+		}
+	}
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
 		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
 	} else {

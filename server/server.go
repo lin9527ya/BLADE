@@ -2262,10 +2262,11 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Status    *string `json:"status"`
-		Severity  *string `json:"severity"`
-		Name      *string `json:"name"`
-		VulnClass *string `json:"vulnclass"`
+		Status        *string `json:"status"`
+		Severity      *string `json:"severity"`
+		Name          *string `json:"name"`
+		VulnClass     *string `json:"vulnclass"`
+		RetractReason *string `json:"retract_reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
@@ -2279,6 +2280,21 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		if !db.ValidFindingStatus(*body.Status) {
 			writeErr(w, 400, "bad status: "+*body.Status)
 			return
+		}
+		// 撤回是终局语义：必须带原因（先落原因再翻状态，推送事件里原因已就位）。
+		if *body.Status == db.FindingRetracted {
+			reason := ""
+			if body.RetractReason != nil {
+				reason = strings.TrimSpace(*body.RetractReason)
+			}
+			if reason == "" {
+				writeErr(w, 400, "retracted 需要 retract_reason（撤回原因）")
+				return
+			}
+			if _, err := s.m.pg.SetFindingRetractReason(id, reason); err != nil {
+				writeErr(w, 500, err.Error())
+				return
+			}
 		}
 		// 走带通知的版本：状态更新与「状态变更推送事件」在同一事务里落库，
 		// 避免出现状态已改而推送事件丢失的窗口。事件登记失败不影响状态更新，
@@ -2421,7 +2437,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 
 func inheritedIntentResult(state string) bool {
 	switch state {
-	case "done", "blocked", "exhausted", "stopped":
+	case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
 		return true
 	default:
 		return false
@@ -3845,6 +3861,25 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	// 撤回(retracted)的漏洞出正文、进「已撤回」段；blocked/exhausted 的意图单列「未测成」。
+	tid, _ := strconv.ParseInt(t.ID, 10, 64)
+	meta, _ := s.m.pg.FindingMetaByNodeID(tid)
+	live := make([]*db.Node, 0, len(findings))
+	var retracted []report.Retracted
+	for _, n := range findings {
+		if m, ok := meta[n.ID]; ok && m.Status == db.FindingRetracted {
+			retracted = append(retracted, report.Retracted{Node: n, Reason: m.RetractReason})
+			continue
+		}
+		live = append(live, n)
+	}
+	intents, _ := t.Store.ListByKind(db.KindIntent, 1000)
+	var notProbed []report.NotProbed
+	for _, n := range intents {
+		if n.State == "blocked" || n.State == "exhausted" {
+			notProbed = append(notProbed, report.NotProbed{Node: n})
+		}
+	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
 		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
@@ -3854,7 +3889,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: findings,
+		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

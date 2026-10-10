@@ -350,9 +350,12 @@ WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
 
 func (s *ExplorationStore) SetIntentState(id int64, state string) error {
 	// terminal states stamp completed_at; reopening (back to open/running) clears it.
-	terminal := state == "done" || state == "blocked" || state == "exhausted" || state == "stopped"
+	terminal := state == "done" || state == "negative" || state == "out-of-scope" || state == "blocked" || state == "exhausted" || state == "stopped"
 	_, err := s.db.Exec(`UPDATE exploration_nodes
-SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $4 THEN now() ELSE NULL END
+SET state=$1, blocked_reason=NULL, content_version=content_version+1,
+    semantic_outcome = CASE WHEN $4 THEN semantic_outcome ELSE '' END,
+    semantic_note    = CASE WHEN $4 THEN semantic_note    ELSE '' END,
+    completed_at = CASE WHEN $4 THEN now() ELSE NULL END
 WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, terminal)
 	return err
 }
@@ -361,15 +364,41 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, termin
 // state still matches expected. It is the state boundary used by pause/resume and
 // worker settlement, so a stale API read cannot overwrite a concurrent finish.
 func (s *ExplorationStore) CompareAndSetIntentState(id int64, expected, state string) (bool, error) {
-	terminal := state == "done" || state == "blocked" || state == "exhausted" || state == "stopped"
+	terminal := state == "done" || state == "negative" || state == "out-of-scope" || state == "blocked" || state == "exhausted" || state == "stopped"
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $5 THEN now() ELSE NULL END
+SET state=$1, blocked_reason=NULL, content_version=content_version+1,
+    semantic_outcome = CASE WHEN $5 THEN semantic_outcome ELSE '' END,
+    semantic_note    = CASE WHEN $5 THEN semantic_note    ELSE '' END,
+    completed_at = CASE WHEN $5 THEN now() ELSE NULL END
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.expID, expected, terminal)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// SetIntentSemanticOutcome records a worker's semantic conclusion on a RUNNING
+// intent (negative = 探针确实发出且回包明确否定该假设 / out-of-scope = 超出授权范围)。
+// The engine promotes it to the final state at settlement; a line that ends
+// blocked/exhausted keeps those states — 没测成永远不覆盖成语义结论。
+func (s *ExplorationStore) SetIntentSemanticOutcome(id int64, outcome, note string) error {
+	_, err := s.db.Exec(`UPDATE exploration_nodes
+SET semantic_outcome=$1, semantic_note=$2, content_version=content_version+1
+WHERE id=$3 AND exploration_id=$4 AND kind='intent' AND state='running'`, outcome, note, id, s.expID)
+	return err
+}
+
+// GetIntentSemanticOutcome reads the semantic conclusion of one intent ('' when
+// the worker declared none).
+func (s *ExplorationStore) GetIntentSemanticOutcome(id int64) (string, error) {
+	var outcome string
+	err := s.db.QueryRow(`SELECT semantic_outcome FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 AND kind='intent'`, id, s.expID).Scan(&outcome)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return outcome, err
 }
 
 // IntentCleanup summarizes the blackboard records removed when a user cancels
@@ -804,7 +833,7 @@ func (s *ExplorationStore) countByKindFiltered(kind, q string) (int, error) {
 func (s *ExplorationStore) CountFinishedIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state IN ('done','blocked','exhausted')`, s.expID).Scan(&n)
+WHERE exploration_id=$1 AND kind='intent' AND state IN ('done','negative','out-of-scope','blocked','exhausted')`, s.expID).Scan(&n)
 	return n, err
 }
 
@@ -1116,7 +1145,7 @@ func (s *ExplorationStore) FindingIntentsTerminal() (map[int64]int64, error) {
 	JOIN exploration_nodes finding ON finding.id=e.dst_id AND finding.exploration_id=e.exploration_id
 	JOIN exploration_nodes intent ON intent.id=e.src_id AND intent.exploration_id=e.exploration_id
 	WHERE e.exploration_id=$1 AND e.rel=$2 AND finding.kind='finding'
-	  AND intent.kind='intent' AND intent.state IN ('done','blocked','exhausted','stopped')`, s.expID, RelYields)
+	  AND intent.kind='intent' AND intent.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')`, s.expID, RelYields)
 	if err != nil {
 		return nil, err
 	}
@@ -1524,7 +1553,7 @@ func (s *ExplorationStore) ActivityListForTerminalIntent(nodeID, sinceID int64, 
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 	WHERE a.exploration_id=$1 AND a.node_id=$2 AND a.id>$3
-	  AND n.kind='intent' AND n.state IN ('done','blocked','exhausted','stopped')
+	  AND n.kind='intent' AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 	  AND a.kind NOT IN ('thinking','usage')
 	ORDER BY a.id LIMIT $4`, s.expID, nodeID, sinceID, limit)
 	if err != nil {
@@ -1645,7 +1674,7 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 	WHERE a.exploration_id=$1 AND a.node_id=$2
-	  AND n.kind='intent' AND n.state IN ('done','blocked','exhausted','stopped')
+	  AND n.kind='intent' AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 	  AND a.kind NOT IN ('thinking','usage')
 	  AND ($3 <= 0 OR a.id < $3)
 	ORDER BY a.id DESC LIMIT $4`, s.expID, nodeID, before, limit+1)
@@ -1795,7 +1824,7 @@ func (s *ExplorationStore) ActivityTraceForTerminalIntent(nodeID int64, limit in
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 	WHERE a.exploration_id=$1 AND a.node_id=$2 AND n.kind='intent'
-	  AND n.state IN ('done','blocked','exhausted','stopped')
+	  AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 	  AND a.kind NOT IN ('thinking','usage')
 	ORDER BY a.id LIMIT $3`, s.expID, nodeID, limit)
 	if err != nil {
@@ -1843,7 +1872,7 @@ func (s *ExplorationStore) ActivityTraceSearchForTerminalIntent(nodeID int64, q 
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 	WHERE a.exploration_id=$1 AND a.node_id=$2 AND n.kind='intent'
-	  AND n.state IN ('done','blocked','exhausted','stopped')
+	  AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 	  AND a.kind NOT IN ('thinking','usage')
 	  AND (a.summary ILIKE $3 OR a.detail ILIKE $3)
 	ORDER BY a.id LIMIT $4`, s.expID, nodeID, like, limit)
@@ -1865,7 +1894,7 @@ func (s *ExplorationStore) ActivityTraceSearchTerminalIntents(q string, limit in
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 	WHERE a.exploration_id=$1 AND n.kind='intent'
-	  AND n.state IN ('done','blocked','exhausted','stopped')
+	  AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 	  AND a.kind NOT IN ('thinking','usage')
 	  AND (a.summary ILIKE $2 OR a.detail ILIKE $2)
 	ORDER BY a.id LIMIT $3`, s.expID, like, limit)
@@ -1996,7 +2025,7 @@ func (s *ExplorationStore) ActivityByIDsForTerminalIntents(ids []int64) ([]Activ
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 		WHERE a.exploration_id=$1 AND a.kind NOT IN ('thinking','usage') AND n.kind='intent'
-	  AND n.state IN ('done','blocked','exhausted','stopped')
+	  AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 	  AND a.id IN (`+strings.Join(ph, ",")+`) ORDER BY a.id`, args...)
 	if err != nil {
 		return nil, err

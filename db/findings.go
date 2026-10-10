@@ -47,13 +47,14 @@ const (
 	FindingIgnored       = "ignored"        // 忽略
 	FindingDuplicate     = "duplicate"      // 重复
 	FindingRiskAccepted  = "risk_accepted"  // 风险接受
+	FindingRetracted     = "retracted"      // 已撤回(复测推翻;墓碑保留,原因见 retract_reason)
 )
 
 // ValidFindingStatus reports whether s is a known triage state.
 func ValidFindingStatus(s string) bool {
 	switch s {
 	case FindingPending, FindingInProgress, FindingConfirmed, FindingResolved, FindingFixed,
-		FindingFalsePositive, FindingIgnored, FindingDuplicate, FindingRiskAccepted:
+		FindingFalsePositive, FindingIgnored, FindingDuplicate, FindingRiskAccepted, FindingRetracted:
 		return true
 	}
 	return false
@@ -702,6 +703,16 @@ func (d *DB) SetFindingStatus(id int64, status string) (int64, error) {
 	return res.RowsAffected()
 }
 
+// SetFindingRetractReason records why a finding was retracted. Call it BEFORE
+// flipping status to retracted（先因后果：状态翻转会触发推送，原因应已就位）。
+func (d *DB) SetFindingRetractReason(id int64, reason string) (int64, error) {
+	res, err := d.Exec(`UPDATE findings SET retract_reason=$1 WHERE id=$2`, reason, id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetFindingReportByNodeID sets the Markdown report on the standalone finding row
 // whose node_id matches — report_finding returns that node id, so an agent tool
 // can address the finding it just created. Returns rows affected (0 when no row).
@@ -757,6 +768,8 @@ type FindingMeta struct {
 	ID       int64
 	Status   string
 	AssetIDs []int64
+	// RetractReason is set when Status == FindingRetracted.
+	RetractReason string
 }
 
 // FindingMetaByNodeID maps a task's finding node ids to their standalone-row
@@ -774,7 +787,7 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 	if taskID <= 0 {
 		return out, nil
 	}
-	rows, err := d.Query(`SELECT node_id, id, COALESCE(status,'pending'), asset_ids, (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=findings.id) FROM findings
+	rows, err := d.Query(`SELECT node_id, id, COALESCE(status,'pending'), asset_ids, COALESCE(retract_reason,''), (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=findings.id) FROM findings
 		WHERE task_id=$1 AND node_id IS NOT NULL`, taskID)
 	if err != nil {
 		return out, err
@@ -784,7 +797,7 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 		var nid int64
 		var m FindingMeta
 		var aidsJSON string
-		if err := rows.Scan(&nid, &m.ID, &m.Status, &aidsJSON, &m.TrafficCount); err != nil {
+		if err := rows.Scan(&nid, &m.ID, &m.Status, &aidsJSON, &m.RetractReason, &m.TrafficCount); err != nil {
 			return out, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &m.AssetIDs)

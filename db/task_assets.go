@@ -401,7 +401,7 @@ JOIN exploration_nodes intent ON intent.exploration_id=context.exploration_id AN
 JOIN exploration_anchors anchor ON anchor.node_id=intent.id
 JOIN assets asset ON asset.id=anchor.asset_id
 LEFT JOIN task_asset_links link ON link.task_id=context.task_id AND link.asset_id=asset.id
-WHERE NOT context.inherited OR intent.state IN ('done','blocked','exhausted','stopped')
+WHERE NOT context.inherited OR intent.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped')
 ORDER BY context.inherited, intent.id DESC, asset.id`, taskID)
 	if err != nil {
 		return nil, err

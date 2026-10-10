@@ -406,7 +406,7 @@ export interface Company {
 // ---- Exploration graph (per task) ----
 export type ExploreKind = "task" | "begin" | "goal" | "intent" | "fact" | "finding" | "hint" | "digest";
 export type GoalState = "open" | "met" | "abandoned";
-export type IntentState = "open" | "running" | "paused" | "done" | "blocked" | "exhausted" | "stopped";
+export type IntentState = "open" | "running" | "paused" | "done" | "negative" | "out-of-scope" | "blocked" | "exhausted" | "stopped";
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
 export type ExploreRel = "spawns" | "derived_from" | "yields" | "proves" | "covers";
@@ -469,7 +469,7 @@ export interface TaskConstraint {
 // ---- Findings ----
 export type Severity = "critical" | "high" | "medium" | "low";
 
-// 漏洞处置状态:待处理 / 处理中 / 已确认 / 已处理 / 已修复 / 误报 / 忽略 / 重复 / 风险接受。
+// 漏洞处置状态:待处理 / 处理中 / 已确认 / 已处理 / 已修复 / 误报 / 忽略 / 重复 / 风险接受 / 已撤回。
 export type FindingStatus =
   | "pending"
   | "in_progress"
@@ -479,7 +479,8 @@ export type FindingStatus =
   | "false_positive"
   | "ignored"
   | "duplicate"
-  | "risk_accepted";
+  | "risk_accepted"
+  | "retracted";
 
 // FindingAsset 是一个漏洞绑定的资产(已在后端预渲染 label)。
 export interface FindingAsset {
