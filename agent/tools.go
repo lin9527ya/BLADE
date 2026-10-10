@@ -417,7 +417,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		switch n.State {
 		case "running":
 			running = append(running, n)
-		case "done", "blocked", "exhausted":
+		case "done", "negative", "out-of-scope", "blocked", "exhausted":
 			if hidden(n.ID) {
 				continue // in a cold_digest and still cold — shown via cold_digests (§6.2)
 			}
@@ -640,7 +640,7 @@ func recentTerminalIntents(store *db.ExplorationStore, limit int) []*db.Node {
 		}
 		for _, intent := range page {
 			switch intent.State {
-			case "done", "blocked", "exhausted", "stopped":
+			case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
 				out = append(out, intent)
 			}
 			if len(out) >= limit {
@@ -862,7 +862,7 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 
 func inheritedIntentSummaryState(state string) bool {
 	switch state {
-	case "done", "blocked", "exhausted", "stopped":
+	case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
 		return true
 	default:
 		return false
@@ -1348,6 +1348,40 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	}
 	t.writes.Facts++
 	return id, nil
+}
+
+// concludeIntent 让 worker 对领到的意图声明【语义终态】：negative（探针确实发出且有回包，
+// 回包明确否定该假设）/ out-of-scope（该方向超出任务授权范围）。引擎在正常完成时以语义为准；
+// 失败/超时仍记 blocked/exhausted——没测成不是结论。
+func (t *ToolSet) concludeIntent() actool.CoreTool {
+	return t.writeExpTool("conclude_intent",
+		"声明你领到的意图的【语义终态】——只在该方向真正得出结论时调用一次：\n"+
+			"  · negative：探针确实发出且有回包，回包【明确否定】了该假设（note 写清是什么证据否定）。\n"+
+			"  · out-of-scope：该方向超出了任务授权范围（note 写清越界点）。\n"+
+			"正常完成时意图将以你声明的语义收尾；若因失败/超时收尾仍是 blocked/exhausted——没测成不得用本工具包装成结论。",
+		obj(map[string]any{
+			"outcome": str("negative（探针实证否定）| out-of-scope（超出授权范围）"),
+			"note":    str("一句话原因：negative 写清是什么证据否定；out-of-scope 写清越界点"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Outcome string `json:"outcome"`
+				Note    string `json:"note"`
+			}
+			_ = json.Unmarshal(in, &a)
+			outcome := strings.TrimSpace(a.Outcome)
+			if outcome != "negative" && outcome != "out-of-scope" {
+				return actool.Errorf("conclude_intent: outcome 必须是 negative 或 out-of-scope"), nil
+			}
+			if t.ownerNode <= 0 {
+				return actool.Errorf("conclude_intent: 当前没有运行中的意图（ownerNode 未设置）"), nil
+			}
+			if err := t.ts.SetIntentSemanticOutcome(t.ownerNode, outcome, strings.TrimSpace(a.Note)); err != nil {
+				return actool.Errorf("conclude_intent: " + err.Error()), nil
+			}
+			return actool.Text(fmt.Sprintf("已记录意图 #%d 的语义终态 %s：正常完成时以 %s 收尾；若因失败/超时收尾仍记 blocked/exhausted。", t.ownerNode, outcome, outcome)), nil
+		},
+	)
 }
 
 func (t *ToolSet) recordFact() actool.CoreTool {

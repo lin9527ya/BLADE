@@ -36,6 +36,10 @@ const intent: Record<string, StatusMeta> = {
   running: { label: "执行中", tone: "blue" },
   paused: { label: "已暂停", tone: "amber" },
   done: { label: "已完成", tone: "green" },
+  // negative = 探针确实发出且有回包、回包明确否定该假设（worker 经 conclude_intent 声明）。
+  negative: { label: "已测(未发现)", tone: "green" },
+  // out-of-scope = 该方向超出任务授权范围（worker 经 conclude_intent 声明）。
+  "out-of-scope": { label: "范围外", tone: "slate" },
   // blocked = 模型/API/网络故障重试用尽，这条意图基本没真正探成（非目标拦截）。
   blocked: { label: "执行出错", tone: "red" },
   // exhausted = 达到步数/时间预算被中途掐断、只写回部分结果（非方向已探尽）。
@@ -73,6 +77,8 @@ const finding: Record<string, StatusMeta> = {
   ignored: { label: "忽略", tone: "neutral" },
   duplicate: { label: "重复", tone: "neutral" },
   risk_accepted: { label: "风险接受", tone: "violet" },
+  // retracted = 复测推翻后撤回；墓碑保留、不进报告正文，原因见 retract_reason。
+  retracted: { label: "已撤回", tone: "slate" },
 };
 
 const engine: Record<string, StatusMeta> = {

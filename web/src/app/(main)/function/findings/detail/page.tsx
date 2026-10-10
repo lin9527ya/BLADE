@@ -38,6 +38,7 @@ const FINDING_STATUSES: FindingStatus[] = [
   "ignored",
   "duplicate",
   "risk_accepted",
+  "retracted",
 ];
 
 function fmtTime(ts: string) {

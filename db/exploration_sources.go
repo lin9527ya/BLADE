@@ -73,7 +73,7 @@ func markInheritedActivities(in []Activity, taskID int64) []Activity {
 
 func inheritedIntentTerminal(state string) bool {
 	switch state {
-	case "done", "blocked", "exhausted", "stopped":
+	case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
 		return true
 	default:
 		return false
