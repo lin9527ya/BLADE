@@ -147,6 +147,37 @@ func (sc *Scheduler) fireIntervals(triggers []*db.AgentTrigger) {
 	}
 }
 
+// startAutoRetests launches one retester conversation per new finding when the
+// agent_auto_retest setting is on. Failures are logged and skipped — an auto
+// retest must never break the scheduler tick.
+func (sc *Scheduler) startAutoRetests(events []db.TaskEvent) {
+	a, err := sc.pg.GetAgentByKey(db.FindingRetestAgentKey)
+	if err != nil || a == nil || !a.Enabled {
+		return
+	}
+	for _, e := range events {
+		meta, err := sc.pg.FindingMetaByNodeID(e.TaskID)
+		if err != nil {
+			continue
+		}
+		m, ok := meta[e.NodeID]
+		if !ok || m.ID <= 0 {
+			continue
+		}
+		retest, conv, created, err := sc.pg.CreateFindingRetest(context.Background(), m.ID, "自动复测：接收新漏洞时独立复核（设置 agent_auto_retest 可关闭）")
+		if err != nil || !created {
+			log.Printf("[auto-retest] finding=%d: %v (created=%v)", m.ID, err, created)
+			continue
+		}
+		busyKey := sc.s.convBusyKey(conv.ID)
+		sc.s.chatMu.Lock()
+		sc.s.chatBusy[busyKey] = true
+		sc.s.chatMu.Unlock()
+		sc.s.runConversation(conv, retest.InitialMessage(), busyKey)
+		log.Printf("[auto-retest] finding=%d 已启动独立复测会话 conv=%d", m.ID, conv.ID)
+	}
+}
+
 // fireFindings fires on_finding triggers for findings above the persisted
 // watermark (monotonic node id → no double-fire across restarts).
 func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
@@ -160,6 +191,12 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 	events, err := sc.pg.NewFindingsSince(last)
 	if err != nil || len(events) == 0 {
 		return
+	}
+	// 自动复测（Observer）：开关开启时为每个新 finding 启动独立复测会话
+	// （复用 retester 话路：CreateFindingRetest + 会话运行）。默认关——
+	// 每个 finding 都会产生一次独立 LLM 复测开销。
+	if sc.pg.GetBool(settingAutoRetest, false) {
+		sc.startAutoRetests(events)
 	}
 	// Advance the watermark whether or not any on_finding trigger is active: a
 	// finding fires only for triggers live at the moment it appears. Otherwise a

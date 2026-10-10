@@ -703,6 +703,35 @@ func (d *DB) SetFindingStatus(id int64, status string) (int64, error) {
 	return res.RowsAffected()
 }
 
+// LatestRetestVerdicts maps finding NODE ids of one task to the verdict of the
+// latest completed retest carrying a verdict (reproduced / fixed / inconclusive).
+// The report surfaces the non-"reproduced" ones: 复核存疑或确认修复。
+func (d *DB) LatestRetestVerdicts(taskID int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if taskID <= 0 {
+		return out, nil
+	}
+	rows, err := d.Query(`SELECT f.node_id, r.verdict
+FROM finding_retests r JOIN findings f ON f.id = r.finding_id
+WHERE f.task_id=$1 AND f.node_id IS NOT NULL AND r.status='completed' AND r.verdict <> ''
+ORDER BY r.id DESC`, taskID)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID int64
+		var verdict string
+		if err := rows.Scan(&nodeID, &verdict); err != nil {
+			return out, err
+		}
+		if _, seen := out[nodeID]; !seen {
+			out[nodeID] = verdict // id DESC → first row per node is the latest
+		}
+	}
+	return out, rows.Err()
+}
+
 // SetFindingRetractReason records why a finding was retracted. Call it BEFORE
 // flipping status to retracted（先因后果：状态翻转会触发推送，原因应已就位）。
 func (d *DB) SetFindingRetractReason(id int64, reason string) (int64, error) {
