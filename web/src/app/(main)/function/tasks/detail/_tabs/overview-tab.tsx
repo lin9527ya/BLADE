@@ -44,6 +44,15 @@ import type {
 } from "@/lib/types";
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
+// budgetBarTone：按预算用量占比取进度条颜色（与后端 70/85/95/100 档位一致）。
+function budgetBarTone(pct: number): string {
+  if (pct >= 100) return "bg-red-500";
+  if (pct >= 95) return "bg-red-400";
+  if (pct >= 85) return "bg-amber-500";
+  if (pct >= 70) return "bg-yellow-500";
+  return "bg-emerald-500";
+}
+
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
@@ -130,6 +139,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [scopeErr, setScopeErr] = React.useState("");
   // 按模型的 token 用量（来自常开的 llm_usage 计量账本，逐次精确）。
   const [modelTokens, setModelTokens] = React.useState<ModelTokenStat[]>([]);
+  // 任务级 token 预算（全局设置 task_token_budget；0=关闭）。与用量同屏对照，只取一次。
+  const [tokenBudget, setTokenBudget] = React.useState(0);
+  React.useEffect(() => {
+    api
+      .settings()
+      .then((s) => setTokenBudget(s.task_token_budget ?? 0))
+      .catch(() => undefined);
+  }, []);
   // 目标管理：目标列表 + 新增表单 + 行内编辑状态。
   const [goals, setGoals] = React.useState<TaskGoal[]>([]);
   const [goalText, setGoalText] = React.useState("");
@@ -450,6 +467,10 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 },
   );
 
+  // 预算对照：用量 = 输入+输出（与后端 BudgetStage 的计量口径一致）。
+  const budgetUsed = tokenTotals.input + tokenTotals.output;
+  const budgetPct = tokenBudget > 0 ? (budgetUsed / tokenBudget) * 100 : 0;
+
   return (
     <div className="flex flex-col gap-4">
       {/* 原始任务描述与目标(创建时填写的),置顶便于随时回看。 */}
@@ -765,6 +786,33 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          {tokenBudget > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-baseline justify-between text-xs">
+                <span className="text-muted-foreground">任务 Token 预算（全局设置）</span>
+                <span className="tabular-nums">
+                  {fmtTokens(budgetUsed)} / {fmtTokens(tokenBudget)}（{Math.round(budgetPct)}%）
+                </span>
+              </div>
+              <div className="bg-muted relative h-2 overflow-hidden rounded-full">
+                <div
+                  className={`h-full rounded-full ${budgetBarTone(budgetPct)}`}
+                  style={{ width: `${Math.min(100, budgetPct)}%` }}
+                />
+                {[70, 85, 95].map((p) => (
+                  <span key={p} className="bg-background/80 absolute top-0 h-full w-px" style={{ left: `${p}%` }} />
+                ))}
+              </div>
+              <span className="text-muted-foreground text-[10px]">
+                到 70% 提示收敛 / 85% 只保高价值方向 / 95% 告急 / 100% 自动进入收尾（各档在会话时间线留痕）。
+              </span>
+            </div>
+          )}
+          {tokenBudget <= 0 && (
+            <span className="text-muted-foreground text-[10px]">
+              未设任务 Token 预算（系统设置页可开启）：开启后到 70/85/95% 向规划者投递收敛提示，100% 自动收尾。
+            </span>
+          )}
           {modelTokens.length > 0 ? (
             <>
               {/* 合计总览 */}
@@ -1076,8 +1124,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardHeader>
           <CardContent>
             <p className="text-muted-foreground text-xs">
-              这些方向还在 frontier 里：点「继续运行」让 worker 重新领取执行（已写回图谱的事实与漏洞保留）；跑完、frontier
-              抽干后任务会再次收束。
+              这些方向还在 frontier 里：点「继续运行」让 worker
+              重新领取执行（已写回图谱的事实与漏洞保留）；跑完、frontier 抽干后任务会再次收束。
             </p>
           </CardContent>
         </Card>

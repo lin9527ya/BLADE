@@ -165,6 +165,15 @@ const POLL_MS = 10_000;
 const MAX_SOURCE_TASKS = 8;
 
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
+// budgetTextTone：按预算用量占比取文字颜色（与后端 70/85/95/100 档位一致）。
+function budgetTextTone(pct: number): string {
+  if (pct >= 100) return "text-red-500";
+  if (pct >= 95) return "text-red-400";
+  if (pct >= 85) return "text-amber-500";
+  if (pct >= 70) return "text-yellow-600";
+  return "text-muted-foreground";
+}
+
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
@@ -305,6 +314,14 @@ function compareTasks(left: Task, right: Task, field: TaskSortField, direction: 
 export default function TasksPage() {
   const [activeTab, setActiveTab] = React.useState("current");
   const [tasks, setTasks] = React.useState<Task[]>([]);
+  // 任务级 token 预算（全局设置；0=关闭）：给列表的 Token 列做用量/预算对照，只取一次。
+  const [tokenBudget, setTokenBudget] = React.useState(0);
+  React.useEffect(() => {
+    api
+      .settings()
+      .then((s) => setTokenBudget(s.task_token_budget ?? 0))
+      .catch(() => undefined);
+  }, []);
   const [categories, setCategories] = React.useState<TaskCategory[]>([]);
   const [categoriesLoaded, setCategoriesLoaded] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -991,6 +1008,7 @@ export default function TasksPage() {
                       onArchive={queueTaskArchive}
                       selected={selectedIds.has(task.id)}
                       onSelectedChange={toggleSelected}
+                      tokenBudget={tokenBudget}
                     />
                   ))}
                 </TableBody>
@@ -1166,8 +1184,10 @@ const TaskRow = React.memo(function TaskRow({
   onArchive,
   selected,
   onSelectedChange,
+  tokenBudget,
 }: {
   task: Task;
+  tokenBudget: number;
   nowSec: number;
   onDelete: (id: string, options: DeleteTaskOptions) => Promise<void>;
   onControl: (id: string, action: "pause" | "resume") => Promise<void>;
@@ -1177,6 +1197,8 @@ const TaskRow = React.memo(function TaskRow({
   selected: boolean;
   onSelectedChange: (id: string, checked: boolean) => void;
 }) {
+  const tokenUsed = task.tokens ? task.tokens.input_tokens + task.tokens.output_tokens : 0;
+  const budgetPct = tokenBudget > 0 ? (tokenUsed / tokenBudget) * 100 : 0;
   return (
     <TableRow className="group border-border/60" data-state={selected ? "selected" : undefined}>
       <TableCell>
@@ -1223,9 +1245,7 @@ const TaskRow = React.memo(function TaskRow({
           const f = task.findings;
           const total = f ? f.critical + f.high + f.medium + f.low : 0;
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
-          const seg = (n: number, cls: string) => (
-            <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>
-          );
+          const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
             <span className="font-medium whitespace-nowrap" title="严重 / 高 / 中 / 低">
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
@@ -1264,7 +1284,8 @@ const TaskRow = React.memo(function TaskRow({
         className="text-right text-xs whitespace-nowrap tabular-nums"
         title={
           task.tokens
-            ? `输入 ${task.tokens.input_tokens} · 缓存 ${task.tokens.cache_read_tokens} · 输出 ${task.tokens.output_tokens}`
+            ? `输入 ${task.tokens.input_tokens} · 缓存 ${task.tokens.cache_read_tokens} · 输出 ${task.tokens.output_tokens}` +
+              (tokenBudget > 0 ? ` · 任务预算 ${tokenBudget}（已用 ${Math.round(budgetPct)}%）` : "")
             : undefined
         }
       >
@@ -1275,6 +1296,12 @@ const TaskRow = React.memo(function TaskRow({
             <span className="text-foreground">{fmtTokens(task.tokens.cache_read_tokens)}</span>
             {" · 出 "}
             <span className="text-foreground">{fmtTokens(task.tokens.output_tokens)}</span>
+            {tokenBudget > 0 && (
+              <>
+                {" · "}
+                <span className={cn("font-medium", budgetTextTone(budgetPct))}>{Math.round(budgetPct)}%</span>
+              </>
+            )}
           </span>
         ) : (
           "—"
