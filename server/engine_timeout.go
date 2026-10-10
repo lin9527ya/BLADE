@@ -180,6 +180,8 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 				e.budgetNotice(t, stage, used, budget)
 				if stage == "exhausted" {
 					log.Printf("[budget] task %s token 预算耗尽 (%d/%d)，进入收尾时序", t.ID, used, budget)
+					e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+						Summary: fmt.Sprintf("Token 预算耗尽（%d/%d），进入收尾时序", used, budget)})
 					e.settleTask(ctx, t)
 					return
 				}

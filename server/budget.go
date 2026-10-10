@@ -6,11 +6,13 @@ package server
 // 进入 planner 输入（与人工提示同路）。
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/db"
 )
 
 // BudgetStage classifies token usage against a task budget:
@@ -30,6 +32,19 @@ func BudgetStage(used, budget int64) string {
 		return "notice"
 	}
 	return ""
+}
+
+// budgetStagePercent renders a stage's threshold for display.
+func budgetStagePercent(stage string) string {
+	switch stage {
+	case "notice":
+		return "70%"
+	case "urgent":
+		return "85%"
+	case "critical":
+		return "95%"
+	}
+	return stage
 }
 
 // BudgetNoticeText renders the planner-facing notice for one stage.
@@ -90,5 +105,10 @@ func (e *Engine) budgetNotice(t *Task, stage string, used, budget int64) {
 	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "hint", Hints: []string{text}})
 	t.trigMu.Unlock()
 	t.Notify()
+	// 时间线留痕：档位提示既进 planner（hint），也落一条 system 活动，让人在
+	// 会话/图谱时间线上看到"何时触发了哪一档"，而不是只存在于 planner 上下文里。
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+		Summary: fmt.Sprintf("Token 预算 %s（%d/%d）", budgetStagePercent(stage), used, budget),
+		Detail:  text})
 	log.Printf("[budget] task %s %s (%d/%d)，已向 planner 投递预算提示", t.ID, stage, used, budget)
 }

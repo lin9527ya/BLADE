@@ -277,8 +277,25 @@ func accP4(t *testing.T, e *accEnv) {
 	if n := strings.Count(hints(), "预算提示 70%"); n != 1 {
 		t.Fatalf("70%% 提示应只投一次，实际 %d 次：%q", n, hints())
 	}
+	// 档位提示同时要在时间线留痕（system 活动），而不只存在于 planner 上下文里。
+	timeline := func() string {
+		acts, _, err := task.Store.ActivityList(nil, 0, 200)
+		if err != nil {
+			t.Fatalf("activity list: %v", err)
+		}
+		var b strings.Builder
+		for _, a := range acts {
+			b.WriteString(a.Summary)
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+	e.mustContain(timeline(), "Token 预算 70%", "时间线 70% 档位")
+	e.mustContain(timeline(), "Token 预算 85%", "时间线 85% 档位")
+
 	use(150, 0) // 1000/1000 → exhausted
 	waitFor("进入收尾时序(settling)", func() bool { return e.s.engine.isSettling(task.ID) })
+	e.mustContain(timeline(), "Token 预算耗尽", "时间线耗尽记录")
 }
 
 func accP5(t *testing.T, e *accEnv) {
