@@ -1393,8 +1393,9 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	// 自定义会话头名照该配置来：非空则测试请求也发这个头(值为一次性随机 session id，
 	// 见 TestConnection)。opencode zen 等强制要求 x-opencode-session 的端点，缺了它
-	// 直接 400，必须在测试路径上也带上，否则"对话通、测试 400"。
-	cfg.SessionHeaderKey = req.SessionHeaderKey
+	// 直接 400，必须在测试路径上也带上，否则"对话通、测试 400"。表单没填时按端点补
+	// 默认头名(opencode.ai ⇒ x-opencode-session)，保证"没填也能测通"。
+	cfg.SessionHeaderKey = db.DefaultSessionHeaderKey(req.BaseURL, req.SessionHeaderKey)
 	// API Key 解析优先级：表单输入 > 指定 profile 存的 key > 全局配置的 key。
 	// 已存 profile 的 key 不回传浏览器，所以测试已存配置时表单为空，需从 DB 取。
 	// 会话头名同理：表单未带时用已存 profile 的值兜底。

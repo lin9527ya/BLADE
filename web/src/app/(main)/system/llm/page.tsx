@@ -328,6 +328,14 @@ function ProfileSheet({
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
+
+  // opencode zen 网关强制要求 x-opencode-session（缺了 400 MissingSessionID）：
+  // 地址是 opencode.ai 且输入框留空时，测试/保存都自动按该头名走（后端也有同款兜底）。
+  const effectiveSessionHeader = (url: string, key: string): string => {
+    const k = key.trim();
+    if (k) return k;
+    return /(^|\.)opencode\.ai/i.test(url) ? "x-opencode-session" : "";
+  };
   const [retry, setRetry] = React.useState<LLMRetryOverride>(ZERO_OVERRIDE); // 本配置的重试覆盖;全 0=跟随全局
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -400,7 +408,7 @@ function ProfileSheet({
         toStore(effort),
         profileId,
         streaming,
-        sessionHeaderKey.trim(),
+        effectiveSessionHeader(baseUrl, sessionHeaderKey),
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
@@ -443,7 +451,7 @@ function ProfileSheet({
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
-        session_header_key: sessionHeaderKey.trim(),
+        session_header_key: effectiveSessionHeader(baseUrl, sessionHeaderKey),
         retry,
       });
       if (isNew) toast.success(`已新建：${name.trim()}（在卡片上「设为激活」以启用）`);
@@ -583,14 +591,17 @@ function ProfileSheet({
             <Input
               id="p-session-header"
               className="font-mono"
-              placeholder="如 x-session-id（留空=不发送）"
+              autoComplete="off"
+              placeholder="如 x-opencode-session（opencode.ai 端点必须；留空=不发送）"
               value={sessionHeaderKey}
               onChange={(e) => setSessionHeaderKey(e.target.value)}
             />
             <p className="text-muted-foreground text-xs">
               填写头名后，每次请求都会带上这个 HTTP 头，头值自动填为 <b>当前会话的 session id</b>（chat 会话如
               conv-12、worker 如 exp3-worker-i87）。用于按 session-id 头做提示缓存 /
-              粘性路由的网关；同一会话多轮稳定、不同会话互不相同。留空则不发送。
+              粘性路由的网关；同一会话多轮稳定、不同会话互不相同。留空则不发送（
+              <b>opencode.ai 端点例外</b>：会自动按 x-opencode-session 发送，否则网关直接 400）。
+              浏览器若把用户名等自动填充进来（此前把「admin」填进过本框），请清空。
             </p>
           </div>
 
@@ -599,6 +610,7 @@ function ProfileSheet({
             <Input
               id="p-api-key"
               type="password"
+              autoComplete="new-password"
               placeholder={keyHint ? `已设置（${keyHint}），留空保持不变` : "sk-…"}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}

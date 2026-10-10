@@ -194,3 +194,25 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestDefaultSessionHeaderKey pins the gateway defaulting: opencode.ai endpoints
+// get x-opencode-session when the caller left the header empty (the gateway 400s
+// without it), an explicit choice is never overridden, and every other endpoint
+// keeps 留空=不发送.
+func TestDefaultSessionHeaderKey(t *testing.T) {
+	cases := []struct{ baseURL, key, want string }{
+		{"https://opencode.ai/zen/go/v1", "", "x-opencode-session"},
+		{"https://opencode.ai/zen/go/v1", "  ", "x-opencode-session"},
+		{"https://api.opencode.ai/v1", "", "x-opencode-session"},
+		{"https://opencode.ai/zen/go/v1", "x-my-session", "x-my-session"},
+		{"https://api.commandcode.ai/provider/v1", "", ""},
+		{"https://example.com/opencode.ai", "", ""}, // 路径里出现不算
+		{"not a url", "", ""},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := DefaultSessionHeaderKey(c.baseURL, c.key); got != c.want {
+			t.Fatalf("DefaultSessionHeaderKey(%q,%q)=%q want %q", c.baseURL, c.key, got, c.want)
+		}
+	}
+}
