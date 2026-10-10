@@ -1022,27 +1022,42 @@ type intentItem struct {
 	Summary   string            `json:"summary"`
 	AssetIDs  []json.RawMessage `json:"asset_ids"`
 	ParentIDs []json.RawMessage `json:"parent_ids"`
+	GoalID    json.RawMessage   `json:"goal_id"`
 	Priority  int               `json:"priority"`
 	RiskArea  string            `json:"risk_area"`
 }
 
-// addOneIntent 创建一条意图节点并连上游血缘，返回 id。
-// 约束：意图只能锚在已确认知识上——每个 parent_id 必须是已存在的 fact/finding
-// 节点（不能挂在别的意图/目标/提示上）。顶层全新方向留空 parent_ids，兜底连 origin fact。
-// 这样"每个意图都连到 fact 节点、且是发现驱动而非凭空规划"从创建路径上被强制。
-func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
+// addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
+// 血缘有两条正交的轴：
+//   - 知识轴：parent_ids → derived_from（只能锚已确认的 fact/finding），顶层留空时兜底连 origin fact；
+//   - 目标轴：goal_id → spawns（本条方向服务哪个目标）。显式指定必须是本任务的 open 目标；
+//     省略时恰有一个 open 目标则自动挂；零个（goalless）正常不挂；多个不猜，回执提示指名。
+//
+// 挂上目标后不再写 origin 兜底边——意图经目标仍可回溯任务起点（README/链路图的形状）。
+func (t *ToolSet) addOneIntent(it intentItem) (int64, string, error) {
 	if strings.TrimSpace(it.Summary) == "" {
-		return 0, fmt.Errorf("summary 不能为空")
+		return 0, "", fmt.Errorf("summary 不能为空")
 	}
 	// 先校验锚点（建节点前，避免坏锚点留下孤儿意图）。
 	parents := pidList(it.ParentIDs)
 	for _, pidv := range parents {
 		n, err := t.ts.GetNodeWithSources(pidv)
 		if err != nil || n == nil {
-			return 0, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", pidv)
+			return 0, "", fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", pidv)
 		}
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
-			return 0, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上，不能挂在意图/目标/提示上；顶层全新方向请留空 parent_ids", pidv, n.Kind)
+			return 0, "", fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上，不能挂在意图/目标/提示上；顶层全新方向请留空 parent_ids", pidv, n.Kind)
+		}
+	}
+	// 目标轴校验（同样在建节点前）：显式 goal_id 必须是本任务的 open 目标。
+	goalID := pid(it.GoalID)
+	if goalID > 0 {
+		g, err := t.ts.GetNode(goalID)
+		if err != nil || g == nil || g.Kind != db.KindGoal {
+			return 0, "", fmt.Errorf("goal_id %d 不是本任务的目标节点（目标 id 见 graph_overview 的 goals；只有确实没有明确目标时才留空）", goalID)
+		}
+		if g.State != "open" {
+			return 0, "", fmt.Errorf("goal_id %d 已是 %s 状态：意图只能挂到未达成(open)的目标上", goalID, g.State)
 		}
 	}
 	priority := it.Priority
@@ -1054,7 +1069,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	if t.as != nil && len(anchors) > 0 {
 		hits, err := t.as.CheckAssetsIntercept(t.taskID, anchors)
 		if err != nil {
-			return 0, fmt.Errorf("资产拦截校验失败：%w", err)
+			return 0, "", fmt.Errorf("资产拦截校验失败：%w", err)
 		}
 		if len(hits) > 0 {
 			var b strings.Builder
@@ -1062,7 +1077,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			for _, h := range hits {
 				fmt.Fprintf(&b, "\n - %s", h.Describe())
 			}
-			return 0, fmt.Errorf("%s", b.String())
+			return 0, "", fmt.Errorf("%s", b.String())
 		}
 	}
 	payload := map[string]any{"summary": it.Summary, "risk_area": db.NormalizeRiskArea(it.RiskArea)}
@@ -1071,22 +1086,45 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	}
 	id, err := t.ts.AddIntent(payload, priority, anchors, "planner")
 	if err != nil {
-		return 0, err
+		return 0, "", err
+	}
+	// 目标轴：没显式指名时，恰有一个 open 目标就自动挂；多个不猜（回执提示）。
+	note := ""
+	if goalID == 0 {
+		if only, err := t.ts.SingleOpenGoal(); err == nil && only > 0 {
+			goalID = only
+		} else if err == nil {
+			if goals, gErr := t.ts.ListByKind(db.KindGoal, 1000); gErr == nil {
+				open := 0
+				for _, g := range goals {
+					if g.State == "open" {
+						open++
+					}
+				}
+				if open > 1 {
+					note = "本任务有多个未达成目标，本条意图未挂目标：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals），链路图才能显示「目标→意图」。"
+				}
+			}
+		}
+	}
+	if goalID > 0 {
+		_, _ = t.ts.LinkIntentToGoal(goalID, id) // 校验已在前置完成；此处 best-effort
 	}
 	// upstream lineage: link each (validated) fact/finding parent → this intent, so
 	// "multiple facts combine into one new intent" is expressible.
 	for _, parent := range parents {
 		_ = t.ts.Link(parent, db.RelDerivedFrom, id)
 	}
-	// a top-level intent (no explicit parent) connects to the origin fact, so every
+	// a top-level intent with NO goal edge connects to the origin fact, so every
 	// intent still traces back to a fact node — at task start the only fact is the
-	// origin, and the first intents derive from it.
-	if len(parents) == 0 {
+	// origin, and the first intents derive from it. (With a goal edge the intent
+	// already reaches the origin through the goal.)
+	if len(parents) == 0 && goalID == 0 {
 		if origin, _ := t.ts.OriginFactID(); origin > 0 {
 			_ = t.ts.Link(origin, db.RelDerivedFrom, id)
 		}
 	}
-	return id, nil
+	return id, note, nil
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
@@ -1097,6 +1135,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"summary":    str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
+			"goal_id":    idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
 			"priority":   intp("优先级 0-10，默认5"),
 			"risk_area":  str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**尽量填写**——报告与覆盖度按「范围内资产 × 风险类」统计已测/未测成/未触及。"),
 		}),
@@ -1115,14 +1154,18 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			createdAny := false
+			goalNote := ""
 			for i, it := range items {
-				id, err := t.addOneIntent(it)
+				id, note, err := t.addOneIntent(it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
 				}
 				ids[i] = id
 				createdAny = true
+				if note != "" {
+					goalNote = note
+				}
 			}
 
 			// 人经主 agent 直投意图 → 若任务已 done（无 open 目标的 goalless 分支），把它
@@ -1137,11 +1180,17 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
+				if goalNote != "" {
+					return actool.Text(fmt.Sprintf("intent created: %d\n%s", ids[0], goalNote)), nil
+				}
 				return actool.Text(fmt.Sprintf("intent created: %d", ids[0])), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
+			}
+			if goalNote != "" {
+				out["goal_note"] = goalNote
 			}
 			return jsonResult(out)
 		})
