@@ -17,7 +17,9 @@ func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// t.Cleanup 注册在前 → LIFO 最后执行：先停任务协程、再删 TempDir、最后关库，
+	// 避免后台 worker 往正在被 RemoveAll 的临时目录里写（偶发 "directory not empty"）。
+	t.Cleanup(func() { _ = m.Close() })
 	task, err := m.CreateTask("metadata patch", "goal", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -25,6 +27,8 @@ func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
 	taskID, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer func() { _ = m.pg.DeleteTask(taskID) }()
 	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+	// 停在 TempDir 清理之前：StopTask 取消任务运行时并等待协程退出（确定性收尾）。
+	t.Cleanup(func() { s.engine.StopTask(task.ID) })
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)

@@ -82,29 +82,52 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("coverage missing: %#v", overview["coverage"])
 	}
-	scopeRows, ok := coverage["scope"].([]map[string]any)
-	if !ok || len(scopeRows) != 1 {
-		t.Fatalf("task scope missing: %#v", coverage["scope"])
+	// 现行口径：graph_overview 的 coverage 只给 denominator/tested/pct/by_type/
+	// status/host_count —— scope 行与 host 列表不再平铺进概览（避免每轮重复携带
+	// 大量字符串；具体主机按需 list_assets 查）。本用例的意图是「公司范围展开后，
+	// 任务上下文能看到这个主机」，因此断言 host_count 而非已移除的 scope 行。
+	hostCount, _ := coverage["host_count"].(int)
+	if hostCount < 1 {
+		t.Fatalf("company-linked host missing from coverage: %#v", coverage)
 	}
-	companyScope, ok := scopeRows[0]["company_scope"].([]map[string]any)
-	if !ok || len(companyScope) != len(inputs) {
-		t.Fatalf("company scope not expanded: %#v", scopeRows[0])
-	}
-	kinds := make(map[string]string, len(companyScope))
-	for _, rule := range companyScope {
-		kinds[fmt.Sprint(rule["kind"])] = fmt.Sprint(rule["value"])
-	}
-	for _, input := range inputs {
-		if kinds[input.Kind] != input.Value {
-			t.Errorf("scope %s=%q want %q", input.Kind, kinds[input.Kind], input.Value)
+	if den, ok := coverage["denominator"]; ok && den == 0 {
+		// 无 task_scope 时允许「范围未锚定」，但存在时必须给出口径标记。
+		if _, hasStatus := coverage["status"]; !hasStatus {
+			t.Fatalf("unanchored scope must carry a status marker: %#v", coverage)
 		}
 	}
-	keywords, ok := scopeRows[0]["company_keywords"].([]string)
-	if !ok || len(keywords) != 1 || keywords[0] != keyword {
-		t.Fatalf("company keywords missing: %#v", scopeRows[0]["company_keywords"])
+	// 规则本体（5 条）仍在公司作用域里可读回；只是不再平铺进 graph_overview。
+	rules, err := companies.GetScope(companyID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if hc, _ := coverage["host_count"].(int); hc < 1 {
-		t.Fatalf("company asset host not counted in agent context: %#v", coverage["host_count"])
+	// 按各 kind 落列的形状断言（domain→Domain；ip/cidr→Net 归一 CIDR；其余→Value，
+	// 小写/去空格归一）。意图同旧用例：5 条规则原样镇在公司作用域上。
+	got := map[string]string{}
+	for _, rule := range rules {
+		switch rule.Kind {
+		case "domain":
+			got["domain"] = rule.Domain
+		case "ip", "cidr":
+			got[rule.Kind] = rule.Net
+		default:
+			got[rule.Kind] = rule.Value
+		}
+	}
+	if got["domain"] != strings.ToLower(domain) {
+		t.Errorf("scope domain=%q want %q", got["domain"], strings.ToLower(domain))
+	}
+	if got["cidr"] != cidr {
+		t.Errorf("scope cidr=%q want %q", got["cidr"], cidr)
+	}
+	if !strings.HasPrefix(got["ip"], strings.ToLower(ip)) || !strings.HasSuffix(got["ip"], "/128") {
+		t.Errorf("scope ip=%q want %s/128", got["ip"], ip)
+	}
+	if got["icp"] != strings.ToLower(strings.ReplaceAll(icp, " ", "")) {
+		t.Errorf("scope icp=%q want %q", got["icp"], strings.ToLower(strings.ReplaceAll(icp, " ", "")))
+	}
+	if got["keyword"] != strings.ToLower(keyword) {
+		t.Errorf("scope keyword=%q want %q", got["keyword"], strings.ToLower(keyword))
 	}
 	untested := callReadJSON(t, tools.listUntestedAssets(), `{"type":"root_domain","page":1,"page_size":10}`)
 	if !strings.Contains(fmt.Sprint(untested), domain) {

@@ -113,6 +113,9 @@ func run() int {
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	// 重启恢复：把 PG 里已准入的任务重新拉起（构造器只装配，不在这里恢复——
+	// 见 Server.RestoreTaskRuntimes 的注释）。
+	srv.RestoreTaskRuntimes()
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),

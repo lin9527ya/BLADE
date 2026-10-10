@@ -1,0 +1,65 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # ① Go：vet + 全量测试。测试跑在真实 Postgres 上（隔离库 artex_test）；多包共享
+  #    同一个库，必须 -p 1 串行（默认包级并行会相互污染出假失败）。
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: artex
+          POSTGRES_DB: artex_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U artex -d artex_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      ARTEX_PG_DSN: postgres://artex:artex@127.0.0.1:5432/artex_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test（串行，count=1 防缓存）
+        run: go test -count=1 -p 1 ./...
+
+  # ② Web + 端到端构建：前端静态导出（含类型检查）后按发布口径构建内嵌二进制的
+  #    embedui 版本——把"发布时才炸"的问题提前到 push 上。
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - name: 前端静态导出
+        run: npm run build:static
+        working-directory: web
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 内嵌前端构建二进制（发布同款）
+        run: |
+          rsync -a --delete web/out/ server/webui/dist/
+          CGO_ENABLED=0 go build -tags embedui -trimpath -o /tmp/artex ./cmd/artex
