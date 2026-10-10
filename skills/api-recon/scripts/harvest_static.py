@@ -90,7 +90,8 @@ ASSET_EXT = re.compile(r'\.(js|css|png|jpe?g|svg|gif|woff2?|ttf|ico|map|json|mp4
 def extract_endpoints(js_text):
     paths = set()
     # quoted ('/...'), double-quoted, and backtick template paths
-    for m in re.findall(r'''["'`](/[A-Za-z0-9_\-./{}$:]+)["'`]''', js_text):
+    # 查询串（?a=1&b=2）属于 endpoint 本体：字符类含 ?=&%，否则带参 URL 整条漏采
+    for m in re.findall(r'''["'`](/[A-Za-z0-9_\-./{}$:?=&%]{1,140})["'`]''', js_text):
         paths.add(m)
     # concatenation heads:  "/api/x/" + var
     for m in re.findall(r'''["'](/[A-Za-z0-9_\-./]+/)["']\s*\+''', js_text):
