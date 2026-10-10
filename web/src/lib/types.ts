@@ -1162,7 +1162,7 @@ export interface AgentDetail {
   prompt: string;
   variables: PromptVar[];
   versions: PromptVersion[];
-  visibility: { mcp: number[]; skill: string[] };
+  visibility: { mcp: number[]; skill: string[]; skill_always?: string[] };
   // 可绑定的 LLM 配置候选(供「默认模型」下拉)；当前绑定见 agent.llm_profile_id
   llm_profiles?: { id: number; name: string; model: string; is_default: boolean }[];
   wrapup_prompt?: string; // 已保存的收尾提示词(空=用内置默认)
