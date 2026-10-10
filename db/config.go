@@ -6,8 +6,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
+
+// DefaultSessionHeaderKey fills the session-id header name a gateway requires when
+// the caller left it empty. opencode zen (opencode.ai) rejects requests without
+// `x-opencode-session` (400 MissingSessionID) on both real runs and the connection
+// test, so profiles pointing there get the header by default; every other endpoint
+// keeps 留空=不发送. Applied on read (scanProfile) and on write (SaveProfile), so a
+// legacy row behaves like a fresh one without a migration.
+func DefaultSessionHeaderKey(baseURL, key string) string {
+	if strings.TrimSpace(key) != "" {
+		return key
+	}
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return key
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai") {
+		return "x-opencode-session"
+	}
+	return key
+}
 
 // ---------- LLM profiles ----------
 
@@ -86,12 +109,17 @@ const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
 func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile) error {
-	return sc.Scan(&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.Proxy, &p.Model, into,
+	if err := sc.Scan(&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.Proxy, &p.Model, into,
 		&p.RatePerSecond, &p.RatePerMinute, &p.ContextWindowK, &p.ReasoningEffort, &p.IsDefault, &p.Priority, &p.PoolExclude, &p.ThinkingType, &p.Streaming,
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
 		&p.Retry.Empty.Attempts, &p.Retry.Empty.IntervalMS,
-		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS)
+		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS); err != nil {
+		return err
+	}
+	// 旧行（或 API 直建的行）没填会话头时，按端点补齐网关强制要求的头名。
+	p.SessionHeaderKey = DefaultSessionHeaderKey(p.BaseURL, p.SessionHeaderKey)
+	return nil
 }
 
 func (d *DB) ListProfiles() ([]*LLMProfile, error) {
@@ -158,6 +186,7 @@ ORDER BY is_default DESC, priority DESC, id ASC`)
 
 // SaveProfile inserts (id==0) or updates a profile. Empty apiKey on update keeps existing.
 func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
+	p.SessionHeaderKey = DefaultSessionHeaderKey(p.BaseURL, p.SessionHeaderKey)
 	hint := p.APIKeyHint
 	if len(p.APIKey) >= 4 {
 		hint = "…" + p.APIKey[len(p.APIKey)-4:]
