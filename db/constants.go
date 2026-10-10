@@ -1,5 +1,27 @@
 package db
 
+import "strings"
+
+// RiskAreas is the closed risk-class vocabulary an intent payload may carry
+// (payload.risk_area). The coverage matrix is keyed by it: 注入类归 sqli，
+// 命令执行与反序列化归 rce，对象级越权 idor、功能级越权 authz，不贴合时用 other。
+var RiskAreas = []string{
+	"sqli", "xss", "rce", "ssrf", "ssti", "xxe",
+	"idor", "authz", "auth", "logic", "upload", "traversal", "disclosure", "other",
+}
+
+// NormalizeRiskArea maps a planner-supplied token onto the closed vocabulary
+// (unknown/empty → "other").
+func NormalizeRiskArea(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	for _, area := range RiskAreas {
+		if v == area {
+			return v
+		}
+	}
+	return "other"
+}
+
 // Exploration node kinds (exploration_nodes.kind).
 const (
 	KindBegin   = "begin"   // DEPRECATED: legacy task root; new tasks seed an origin fact (KindFact + StateOrigin) instead
