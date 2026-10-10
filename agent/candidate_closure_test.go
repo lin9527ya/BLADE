@@ -71,6 +71,21 @@ func TestCloseCandidateValidation(t *testing.T) {
 	if notices != 1 {
 		t.Fatalf("successful closure notified %d times", notices)
 	}
+
+	// open_proof_gap 成功路径：proof_gap 参数必须真正绑定（历史 bug：结构体漏 json tag，
+	// Go 的字段名匹配不认下划线 → 该参数永远为空、该态永远被拒）。
+	res, err = tool.Call(context.Background(), json.RawMessage(`{"candidate":"搜索框疑似存储型 XSS","outcome":"open_proof_gap","proof_gap":"缺登录态，无法验证渲染执行","confidence":"low","vulnclass":"xss"}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "candidate closed: open_proof_gap") {
+		t.Fatalf("open_proof_gap happy path rejected: %v %s", err, res.Flatten())
+	}
+	var gapOut db.RecordedFinding
+	if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &gapOut); err != nil {
+		t.Fatal(err)
+	}
+	gf, err := d.GetFinding(gapOut.FindingID)
+	if err != nil || gf == nil || gf.Status != db.FindingOpenProofGap || !strings.Contains(gf.ProofGap, "登录态") {
+		t.Fatalf("proof_gap not persisted: %+v err=%v", gf, err)
+	}
 }
 
 // TestReportFindingStoresConfidence pins that the honest-calibration label

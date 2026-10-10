@@ -1367,10 +1367,18 @@ func (t *ToolSet) closeCandidate() actool.CoreTool {
 		"intent_id":       idp("当前任务的意图 id"),
 		"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "候选涉及的资产 id（可选）"},
 	}, "candidate", "outcome", "confidence"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		// 显式 json tag：Go 的字段名匹配不认下划线（proof_gap ≠ ProofGap），
+		// 漏标会让该参数永远绑定不上（静默失效；验收清单抓过这个）。
 		var a struct {
-			Candidate, Outcome, Counterevidence, ProofGap, Confidence, VulnClass, Severity string
-			IntentID                                                                       json.RawMessage   `json:"intent_id"`
-			AssetIDs                                                                       []json.RawMessage `json:"asset_ids"`
+			Candidate       string            `json:"candidate"`
+			Outcome         string            `json:"outcome"`
+			Counterevidence string            `json:"counterevidence"`
+			ProofGap        string            `json:"proof_gap"`
+			Confidence      string            `json:"confidence"`
+			VulnClass       string            `json:"vulnclass"`
+			Severity        string            `json:"severity"`
+			IntentID        json.RawMessage   `json:"intent_id"`
+			AssetIDs        []json.RawMessage `json:"asset_ids"`
 		}
 		if err := json.Unmarshal(in, &a); err != nil {
 			return actool.Errorf(err.Error()), nil
