@@ -129,6 +129,10 @@ type Interceptor struct {
 	enabledTools map[string]bool // nil means not loaded yet
 	pending      *pendingManager
 	reviewer     Reviewer // nil = LLM fallback judge not wired
+
+	// RoE scope gate (see scope.go): per-task scope rows with a small TTL cache.
+	scopeMu    sync.Mutex
+	scopeCache map[int64]scopeCacheEntry
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.

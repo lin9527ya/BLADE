@@ -1,10 +1,11 @@
 // Package guard implements the safety boundary layer (docs §11): an audit log,
-// user-configured intercept-rule evaluation, and Observer/G5 failure attribution.
-// Every tool call passes through the PreToolUse hook before executing.
-// (The RoE authorization-scope mechanism was removed; a replacement may be added
-// later.) Destructive/exfil gating is no longer hard-coded here — it lives in the
-// DB intercept rules (seeded as ordinary [内置] rules, so users can disable or
-// delete them), evaluated via applyIntercept.
+// user-configured intercept-rule evaluation, Observer/G5 failure attribution,
+// and the RoE authorization-scope gate (intercept.CheckScope: tool calls whose
+// network targets fall outside the task's task_scope are gated before any rule
+// runs; mode off|ask|deny, default off). Every tool call passes through the
+// PreToolUse hook before executing. Destructive/exfil gating is not hard-coded
+// here — it lives in the DB intercept rules (seeded as ordinary [内置] rules, so
+// users can disable or delete them), evaluated via applyIntercept.
 package guard
 
 import (
@@ -34,17 +35,19 @@ type Guard struct {
 	attrib      map[string]int // failure attribution counts (Observer / G5)
 	reg         *hook.Registry
 	interceptor *intercept.Interceptor // optional; nil disables user-configured rules
+	taskID      int64                  // RoE scope-gate context; 0 = unscoped (no enforcement)
 }
 
 // New creates a Guard without user-configured intercept rules (used for pentest
 // tasks where the Interceptor is not yet available).
-func New() *Guard { return newGuard(nil) }
+func New() *Guard { return newGuard(nil, 0) }
 
-// NewWithInterceptor creates a Guard with user-configured intercept rules.
-func NewWithInterceptor(ic *intercept.Interceptor) *Guard { return newGuard(ic) }
+// NewWithInterceptor creates a Guard with user-configured intercept rules and
+// the owning task id (RoE scope enforcement; taskID=0 disables the gate).
+func NewWithInterceptor(ic *intercept.Interceptor, taskID int64) *Guard { return newGuard(ic, taskID) }
 
-func newGuard(ic *intercept.Interceptor) *Guard {
-	g := &Guard{attrib: map[string]int{}, interceptor: ic}
+func newGuard(ic *intercept.Interceptor, taskID int64) *Guard {
+	g := &Guard{attrib: map[string]int{}, interceptor: ic, taskID: taskID}
 	g.reg = hook.NewRegistry().
 		On(hook.PreToolUse, g.preToolUse).
 		On(hook.PostToolUse, g.postToolUse)
@@ -88,6 +91,10 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 		return hook.Result{}
 	}
 	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)
+	// RoE 授权范围先行：越界目标高于一切规则配置（模式见 intercept.ScopeMode）。
+	if dec, hit := g.interceptor.CheckScope(ctx, g.taskID, ev.ToolName, ev.Input); hit {
+		return g.settle(ctx, ev, dec)
+	}
 	dec, matched := g.interceptor.Match(ev.ToolName, ev.Input)
 	if !matched {
 		// No rule matched. Ask the LLM fallback judge (if enabled); when it is off
@@ -98,6 +105,13 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 		}
 		dec = d
 	}
+	return g.settle(ctx, ev, dec)
+}
+
+// settle applies one intercept verdict — a rule, the LLM fallback judge, or the
+// RoE scope gate — to a tool call: deny blocks, allow records the approval,
+// ask waits for the user.
+func (g *Guard) settle(ctx context.Context, ev hook.Event, dec intercept.Decision) hook.Result {
 	switch dec.Action {
 	case "deny":
 		// 观测:deny 命中不阻塞审批,直接记一条 denied（历史/任务拦截页可见）。
