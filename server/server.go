@@ -3309,6 +3309,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"agent_auto_retest":        s.m.pg.GetBool(settingAutoRetest, false),
+		"task_token_budget":        s.taskTokenBudget(),
 		"llm_record":               s.m.LLMRecordEnabled(),
 		"web_search_enabled":       on,
 		"web_search_backend":       backend,
@@ -3377,10 +3378,11 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // off, agents get no proxy config, no traffic tools, and no proxy prompt content.
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TrafficCapture      *bool `json:"traffic_capture"`
-		AgentTrafficBinding *bool `json:"agent_traffic_binding"`
-		AgentAutoRetest     *bool `json:"agent_auto_retest"`
-		LLMRecord           *bool `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+		TrafficCapture      *bool  `json:"traffic_capture"`
+		AgentTrafficBinding *bool  `json:"agent_traffic_binding"`
+		AgentAutoRetest     *bool  `json:"agent_auto_retest"`
+		TaskTokenBudget     *int64 `json:"task_token_budget"`
+		LLMRecord           *bool  `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 		WebSearchEnabled *bool   `json:"web_search_enabled"`
@@ -3524,6 +3526,16 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AgentAutoRetest != nil {
 		if err := s.m.pg.SetBool(settingAutoRetest, *req.AgentAutoRetest); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.TaskTokenBudget != nil {
+		v := *req.TaskTokenBudget
+		if v < 0 {
+			v = 0
+		}
+		if err := s.m.pg.SetSetting(settingTokenBudget, strconv.FormatInt(v, 10)); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

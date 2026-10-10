@@ -63,6 +63,14 @@ func (d *DB) EnsureLLMUsageTable() error {
 	return tx.Commit()
 }
 
+// TokenUsedByTask sums input+output tokens recorded for one task (taskID is the
+// same string the caller passes to TokenByModel). 0 when nothing recorded yet.
+func (d *DB) TokenUsedByTask(taskID string) (int64, error) {
+	var used int64
+	err := d.QueryRow(`SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM llm_usage WHERE COALESCE(task_id,'')=$1`, taskID).Scan(&used)
+	return used, err
+}
+
 // InsertLLMUsage appends one metering row. Best-effort: callers log and continue on
 // error (a lost metering row must never break the LLM call).
 func (d *DB) InsertLLMUsage(u *LLMUsage) error {

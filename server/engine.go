@@ -142,6 +142,7 @@ type Engine struct {
 	stamped      sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
 	inflight     sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
 	coordStarted sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
+	budgetStage  sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
 
 	// resolve returns a task's dedicated planner/worker (wired by the server as the
 	// authoritative task-router). nil,nil means this task is deliberately unavailable

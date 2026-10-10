@@ -89,6 +89,7 @@ func (e *Engine) resetTimeoutRevival(taskID string) {
 	e.deadline.Delete(taskID)
 	e.stamped.Delete(taskID)
 	e.coordStarted.Delete(taskID)
+	e.budgetStage.Delete(taskID)
 }
 
 // stampFirstRun records first_run_at + deadline_at on the FIRST real run (LLM ready)
@@ -129,7 +130,8 @@ func (e *Engine) clockCtx(base context.Context, t *Task, final bool) context.Con
 // Called from Run() and from the restart reload path, so non-active timeout tasks
 // still get settled after their deadline even without live planner/worker loops.
 func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
-	if t == nil || t.TimeoutSeconds <= 0 {
+	// 预算护栏与超时用同一条协调器：只配预算（无超时）的任务同样需要它轮询用量。
+	if t == nil || (t.TimeoutSeconds <= 0 && e.tokenBudget() <= 0) {
 		return
 	}
 	e.deleteMu.RLock()
@@ -157,6 +159,19 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 		}
 		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
 			return // already finished (goals met / failed) — nothing to time out
+		}
+		// token 预算护栏：70/85/95% 各投递一次收敛提示；达到 100% 复用超时收尾时序
+		// （停派/领新意图 → drain → 终局 planner 轮 → 定终态）。
+		if budget := e.tokenBudget(); budget > 0 {
+			if used, err := e.m.pg.TokenUsedByTask(t.ID); err == nil {
+				stage := BudgetStage(used, budget)
+				e.budgetNotice(t, stage, used, budget)
+				if stage == "exhausted" {
+					log.Printf("[budget] task %s token 预算耗尽 (%d/%d)，进入收尾时序", t.ID, used, budget)
+					e.settleTask(ctx, t)
+					return
+				}
+			}
 		}
 		dl := e.taskDeadline(t)
 		if dl <= 0 {

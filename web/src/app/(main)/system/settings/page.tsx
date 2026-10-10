@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, GaugeIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,9 @@ export default function SystemSettingsPage() {
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
+  // 任务级 token 预算(0 = 关闭)。
+  const [tokenBudget, setTokenBudget] = React.useState("0");
+  const [savingBudget, setSavingBudget] = React.useState(false);
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
   const [injectWorker, setInjectWorker] = React.useState(true);
@@ -57,6 +60,7 @@ export default function SystemSettingsPage() {
     setGlobalProxyInput(s.global_proxy ?? "");
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
+    setTokenBudget(String(s.task_token_budget ?? 0));
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
@@ -77,6 +81,23 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingWorkers(false));
+  };
+
+  const saveTokenBudget = () => {
+    const n = Number(tokenBudget.trim() === "" ? "0" : tokenBudget);
+    if (!Number.isInteger(n) || n < 0) {
+      toast.error("token 预算必须是不小于 0 的整数（0 = 关闭）");
+      return;
+    }
+    setSavingBudget(true);
+    api
+      .setSettings({ task_token_budget: n })
+      .then((s) => {
+        apply(s);
+        toast.success(n > 0 ? `已保存任务 token 预算（${n}）` : "已关闭任务 token 预算护栏");
+      })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .finally(() => setSavingBudget(false));
   };
 
   const savePython = () => {
@@ -360,6 +381,42 @@ export default function SystemSettingsPage() {
             </div>
             <p className="text-muted-foreground text-xs">
               {globalProxyInput.trim() ? "已配置 · 所有目标流量经此代理出网" : "未配置 · 目标流量直连出网"}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <GaugeIcon className="size-4" />
+              任务 Token 预算
+            </CardTitle>
+            <CardDescription>
+              按任务累计 LLM 用量（输入+输出）：到 <b>70% / 85% / 95%</b> 各向 planner
+              投递一次收敛提示，达到 <b>100%</b> 时任务进入收尾——停派新意图、收在跑方向、出终局报告，不再无限消耗。
+              留空或填 <b>0</b> = 关闭护栏。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <Label htmlFor="token-budget" className="text-sm font-normal text-muted-foreground">
+              预算（token 数）
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="token-budget"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="例如 2000000（0 = 关闭）"
+                value={tokenBudget}
+                disabled={!loaded || savingBudget}
+                onChange={(e) => setTokenBudget(e.target.value)}
+              />
+              <Button type="button" onClick={saveTokenBudget} disabled={!loaded || savingBudget}>
+                保存
+              </Button>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              {Number(tokenBudget) > 0 ? "已配置 · 到量提示并自动收尾" : "未配置 · 任务不设 token 上限"}
             </p>
           </CardContent>
         </Card>

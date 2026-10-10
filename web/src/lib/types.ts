@@ -929,6 +929,9 @@ export interface Settings {
   global_proxy?: string;
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
+  // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，
+  // 100% 时任务进入收尾(停派新意图 → drain → 终局报告)。0 或空 = 关闭。
+  task_token_budget?: number;
   // 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
   task_concurrency_enabled?: boolean; // 默认 false
   task_concurrency_limit?: number; // 开启后默认 5
