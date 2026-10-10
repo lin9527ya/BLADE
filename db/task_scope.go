@@ -323,6 +323,126 @@ tested AS (
   WHERE en.exploration_id = $2 AND en.kind = 'fact'
 )`
 
+// CoverageMatrixCell is one (in-scope asset × risk area) cell of the coverage matrix.
+type CoverageMatrixCell struct {
+	RiskArea  string   `json:"risk_area"`
+	Tested    int      `json:"tested"`     // 终态 done/negative
+	Failed    int      `json:"failed"`     // blocked/exhausted —— 未测成
+	InFlight  int      `json:"in_flight"`  // open/running/paused
+	OutOfScope int     `json:"out_of_scope"` // out-of-scope —— 越界结论，不算已测也不算未测成
+	Intents   []string `json:"intents"`    // "#<id> <state>"，供报告点名
+}
+
+// CoverageMatrixAsset is one in-scope asset row of the matrix (cells keyed by risk area).
+type CoverageMatrixAsset struct {
+	ID    int64                `json:"id"`
+	Type  string               `json:"type"`
+	Label string               `json:"label"`
+	Facts int                  `json:"facts"` // 锚定于该资产的事实数（证据）
+	Cells []CoverageMatrixCell `json:"cells"`
+}
+
+// CoverageMatrix derives the per-asset risk-area coverage matrix of THIS task:
+// in-scope assets (task_scope × assets) × the risk areas recorded on their
+// anchored intents, with outcome counts (已测/未测成/进行中/范围外) and fact
+// evidence. Areas with no recorded intent are absent — callers compare against
+// db.RiskAreas for 未触及.
+func (s *ExplorationStore) CoverageMatrix(taskID int64) ([]CoverageMatrixAsset, error) {
+	rows, err := s.db.Query(`WITH `+covTargetCTE+`
+SELECT t.id, t.type, t.label FROM target t ORDER BY t.type, t.label`, taskID, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	assets := []CoverageMatrixAsset{}
+	index := map[int64]int{}
+	for rows.Next() {
+		var a CoverageMatrixAsset
+		if err := rows.Scan(&a.ID, &a.Type, &a.Label); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		a.Cells = []CoverageMatrixCell{}
+		index[a.ID] = len(assets)
+		assets = append(assets, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	type cellKey struct {
+		asset int64
+		area  string
+	}
+	cellIdx := map[cellKey]int{}
+	prows, err := s.db.Query(`WITH `+covTargetCTE+`
+SELECT ea.asset_id, COALESCE(NULLIF(en.payload->>'risk_area',''),'other') AS area, en.state, en.id
+FROM target t
+JOIN exploration_anchors ea ON ea.asset_id = t.id
+JOIN exploration_nodes en ON en.id = ea.node_id AND en.exploration_id = $2 AND en.kind = 'intent'
+ORDER BY ea.asset_id, area, en.id`, taskID, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	for prows.Next() {
+		var assetID, nodeID int64
+		var area, state string
+		if err := prows.Scan(&assetID, &area, &state, &nodeID); err != nil {
+			prows.Close()
+			return nil, err
+		}
+		ai, ok := index[assetID]
+		if !ok {
+			continue
+		}
+		key := cellKey{assetID, area}
+		ci, ok := cellIdx[key]
+		if !ok {
+			assets[ai].Cells = append(assets[ai].Cells, CoverageMatrixCell{RiskArea: area, Intents: []string{}})
+			ci = len(assets[ai].Cells) - 1
+			cellIdx[key] = ci
+		}
+		cell := &assets[ai].Cells[ci]
+		switch state {
+		case "done", "negative":
+			cell.Tested++
+		case "blocked", "exhausted":
+			cell.Failed++
+		case "out-of-scope":
+			cell.OutOfScope++
+		default:
+			cell.InFlight++
+		}
+		cell.Intents = append(cell.Intents, fmt.Sprintf("#%d %s", nodeID, state))
+	}
+	prows.Close()
+	if err := prows.Err(); err != nil {
+		return nil, err
+	}
+
+	frows, err := s.db.Query(`WITH `+covTargetCTE+`
+SELECT ea.asset_id, count(DISTINCT en.id)
+FROM target t
+JOIN exploration_anchors ea ON ea.asset_id = t.id
+JOIN exploration_nodes en ON en.id = ea.node_id AND en.exploration_id = $2 AND en.kind = 'fact'
+GROUP BY ea.asset_id`, taskID, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer frows.Close()
+	for frows.Next() {
+		var assetID int64
+		var n int
+		if err := frows.Scan(&assetID, &n); err != nil {
+			return nil, err
+		}
+		if ai, ok := index[assetID]; ok {
+			assets[ai].Facts = n
+		}
+	}
+	return assets, frows.Err()
+}
+
 // TaskCoverage computes rough per-type coverage for a task. taskID indexes
 // task_scope + assets; expID indexes the fact anchors. Reference figure only.
 func (s *AssetStore) TaskCoverage(taskID, expID int64) (*Coverage, error) {

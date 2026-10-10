@@ -1,0 +1,116 @@
+package db
+
+import (
+	"sort"
+	"testing"
+)
+
+// coverageMatrixFixture builds one task with an explicit root-domain scope and
+// its exploration. Cleanup removes the exploration, task and scope wholesale.
+func coverageMatrixFixture(t *testing.T) (*DB, int64, int64) {
+	t.Helper()
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	task, err := d.CreateTask("coverage-matrix-test", "matrix goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expID int64
+	if err := d.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, task.ID).Scan(&expID); err != nil {
+		t.Fatalf("exploration for task: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+		_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
+		d.Close()
+	})
+	if _, err := d.Assets().AddAgentScope(task.ID, "root_domain", "matrix-test.example", "test scope", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	return d, task.ID, expID
+}
+
+// TestCoverageMatrixOutcomesAndEvidence derives the per-asset risk-area matrix
+// from anchored intents: outcome buckets per state — 已测(done/negative) /
+// 未测成(blocked/exhausted) / 进行中 — plus fact evidence per asset; a missing
+// risk_area folds to "other".
+func TestCoverageMatrixOutcomesAndEvidence(t *testing.T) {
+	d, taskID, expID := coverageMatrixFixture(t)
+	as := d.Assets()
+	a1, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "api.matrix-test.example", TaskID: taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "www.matrix-test.example", TaskID: taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := d.Exploration(expID)
+
+	tested, err := st.AddIntent(map[string]any{"summary": "sqli on api", "risk_area": "sqli"}, 5, []int64{a1}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIntentState(tested, "negative"); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := st.AddIntent(map[string]any{"summary": "ssrf on api", "risk_area": "ssrf"}, 5, []int64{a1}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIntentState(failed, "blocked"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddIntent(map[string]any{"summary": "xss on www"}, 5, []int64{a2}, "planner"); err != nil {
+		t.Fatal(err)
+	}
+
+	// One anchored fact as a1's evidence.
+	var factID int64
+	if err := d.QueryRow(`INSERT INTO exploration_nodes(exploration_id, kind, state, payload, priority)
+		VALUES ($1,'fact','confirmed','{}'::jsonb,0) RETURNING id`, expID).Scan(&factID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Anchor(factID, a1); err != nil {
+		t.Fatal(err)
+	}
+
+	assets, err := st.CoverageMatrix(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// UpsertSubdomain also upserts the root domain, so the scope (root_domain=matrix-test.example)
+	// matches three assets: api… < matrix-test.example < www… (alphabetical).
+	if len(assets) != 3 {
+		t.Fatalf("want 3 in-scope assets, got %d: %+v", len(assets), assets)
+	}
+	sort.Slice(assets, func(i, j int) bool { return assets[i].Label < assets[j].Label })
+	api, root, www := assets[0], assets[1], assets[2]
+	if root.Type != "root_domain" || len(root.Cells) != 0 || root.Facts != 0 {
+		t.Fatalf("root asset = %+v, want bare in-scope root", root)
+	}
+	if api.Facts != 1 {
+		t.Fatalf("api facts = %d, want 1", api.Facts)
+	}
+	if len(api.Cells) != 2 {
+		t.Fatalf("api cells = %+v, want 2 (sqli,ssrf)", api.Cells)
+	}
+	byArea := map[string]CoverageMatrixCell{}
+	for _, c := range api.Cells {
+		byArea[c.RiskArea] = c
+	}
+	if c := byArea["sqli"]; c.Tested != 1 || c.Failed != 0 || len(c.Intents) != 1 {
+		t.Fatalf("sqli cell = %+v", c)
+	}
+	if c := byArea["ssrf"]; c.Failed != 1 || c.Tested != 0 {
+		t.Fatalf("ssrf cell = %+v", c)
+	}
+	if len(www.Cells) != 1 || www.Cells[0].RiskArea != "other" || www.Cells[0].InFlight != 1 {
+		t.Fatalf("www cells = %+v, want one in-flight 'other'", www.Cells)
+	}
+	if www.Facts != 0 {
+		t.Fatalf("www facts = %d, want 0", www.Facts)
+	}
+}

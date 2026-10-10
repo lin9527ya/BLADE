@@ -27,6 +27,9 @@ type Input struct {
 	// NoEvidence lists findings with no bound traffic evidence — HTTP 类漏洞的证据
 	// 需要人工核对（静态/非 HTTP 结论可忽略本段）。
 	NoEvidence []*db.Node
+	// Coverage is the in-scope asset × risk-area matrix (未触及 classes are the
+	// complement of each asset's cells against db.RiskAreas).
+	Coverage []db.CoverageMatrixAsset
 }
 
 // Retracted is one finding retracted after retesting disproved it.
@@ -130,6 +133,37 @@ func Markdown(in Input) string {
 		for _, n := range in.NoEvidence {
 			f := parseFinding(n)
 			fmt.Fprintf(&b, "- #%d [%s] %s\n", n.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
+		}
+		b.WriteString("\n")
+	}
+
+	// 覆盖矩阵（范围内资产 × 风险类）：已测/未测成/进行中/范围外 + 未触及类计数。
+	fmt.Fprintf(&b, "## 覆盖矩阵（范围内资产 × 风险类）\n\n")
+	if len(in.Coverage) == 0 {
+		b.WriteString("_（无范围内资产）_\n\n")
+	} else {
+		for _, a := range in.Coverage {
+			fmt.Fprintf(&b, "- [%s] %s（%d 事实）\n", a.Type, a.Label, a.Facts)
+			if len(a.Cells) == 0 {
+				b.WriteString("  - （无风险类记录）\n")
+			}
+			for _, c := range a.Cells {
+				parts := make([]string, 0, 4)
+				if c.Tested > 0 {
+					parts = append(parts, fmt.Sprintf("已测 %d", c.Tested))
+				}
+				if c.Failed > 0 {
+					parts = append(parts, fmt.Sprintf("未测成 %d", c.Failed))
+				}
+				if c.InFlight > 0 {
+					parts = append(parts, fmt.Sprintf("进行中 %d", c.InFlight))
+				}
+				if c.OutOfScope > 0 {
+					parts = append(parts, fmt.Sprintf("范围外 %d", c.OutOfScope))
+				}
+				fmt.Fprintf(&b, "  - %s：%s（%s）\n", c.RiskArea, strings.Join(parts, "、"), strings.Join(c.Intents, ", "))
+			}
+			fmt.Fprintf(&b, "  - 未触及类：%d/%d\n", len(db.RiskAreas)-len(a.Cells), len(db.RiskAreas))
 		}
 		b.WriteString("\n")
 	}

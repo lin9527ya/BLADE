@@ -482,6 +482,28 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 	)
 }
 
+// coverageMatrix 让规划者按需拉「范围内资产 × 风险类」覆盖矩阵：每个资产的已测/
+// 未测成/进行中/范围外计数、事实证据数与意图点名；未出现的风险类即未触及。
+func (t *ToolSet) coverageMatrix() actool.CoreTool {
+	return readTool(
+		"coverage_matrix",
+		"查询本任务「覆盖矩阵」：范围内资产(task_scope) × 风险类(intent 的 risk_area) → "+
+			"已测(done/negative)/未测成(blocked/exhausted)/进行中/范围外 计数 + 该资产锚定的事实证据数。"+
+			"未出现的风险类即【未触及】（对照 risk_areas 全集）。规划补测方向前先调它。仅任务上下文可用。",
+		obj(map[string]any{}),
+		func(_ context.Context, _ json.RawMessage) (actool.Result, error) {
+			if t.ts == nil || t.taskID <= 0 {
+				return actool.Errorf("coverage_matrix 需要任务上下文"), nil
+			}
+			assets, err := t.ts.CoverageMatrix(t.taskID)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(map[string]any{"risk_areas": db.RiskAreas, "assets": assets})
+		},
+	)
+}
+
 // listUntestedAssets lets the plan agent pull the current + directly inherited
 // scope's not-yet-tested assets on demand (filter by type, paginated).
 func (t *ToolSet) listUntestedAssets() actool.CoreTool {
@@ -681,6 +703,9 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),
+		// coverage_matrix：按需拉「范围内资产 × 风险类」覆盖矩阵（已测/未测成/进行中/
+		// 范围外 + 事实证据数），规划补测方向前先看它。
+		t.coverageMatrix(),
 	}
 }
 
