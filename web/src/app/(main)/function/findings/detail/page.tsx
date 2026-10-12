@@ -5,7 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
-import { ArrowLeftIcon, ArrowUpRightIcon, ShieldAlertIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowUpRightIcon, FileDownIcon, FileTextIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
@@ -70,6 +70,20 @@ function FindingDetailInner() {
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
+  // SRC 交付件导出中（md/docx），用于禁用按钮。
+  const [exporting, setExporting] = React.useState<"md" | "docx" | null>(null);
+  async function exportSrc(format: "md" | "docx") {
+    if (exporting) return;
+    setExporting(format);
+    try {
+      await api.downloadSrcReport(id, format);
+      toast.success(format === "docx" ? "已导出 docx（可提交件）" : "已导出 SRC 简报（Markdown）");
+    } catch (e) {
+      toast.error(`导出失败：${(e as Error).message}`);
+    } finally {
+      setExporting(null);
+    }
+  }
 
   const load = React.useCallback(() => {
     if (!id) {
@@ -159,6 +173,30 @@ function FindingDetailInner() {
           {finding.inherited && finding.source_task_id && (
             <Badge variant="outline">来源任务 #{finding.source_task_id} · 只读</Badge>
           )}
+          <div className="ml-auto flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-xs"
+              disabled={exporting !== null}
+              onClick={() => void exportSrc("md")}
+              title="按 src-dig 报告规范导出 Markdown 简报（标题/URL/等级/接口清单/整包，描述与危害留规范占位）"
+            >
+              <FileTextIcon className="size-3.5" />
+              SRC 简报
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-xs"
+              disabled={exporting !== null}
+              onClick={() => void exportSrc("docx")}
+              title="导出 docx 可提交件（同一份骨架的 Word 版式）"
+            >
+              <FileDownIcon className="size-3.5" />
+              docx
+            </Button>
+          </div>
         </div>
         <TabsList>
           <TabsTrigger value="overview">概览</TabsTrigger>

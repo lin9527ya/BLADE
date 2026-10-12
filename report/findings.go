@@ -27,8 +27,8 @@ func sortFindingsForExport(fs []*db.DBFinding) {
 	})
 }
 
-// findingTitle 取漏洞可读标题:名称 → 类别 → 「未分类」。
-func findingTitle(f *db.DBFinding) string {
+// FindingTitle 取漏洞可读标题:名称 → 类别 → 「未分类」（导出给交付面复用同一口径）。
+func FindingTitle(f *db.DBFinding) string {
 	return nz(f.Name, nz(f.VulnClass, "未分类"))
 }
 
@@ -64,7 +64,7 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 
 	b.WriteString("## 漏洞明细\n\n")
 	for i, f := range items {
-		fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), findingTitle(f))
+		fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), FindingTitle(f))
 		if f.VulnClass != "" {
 			fmt.Fprintf(&b, "- **类别**：%s\n", f.VulnClass)
 		}
@@ -93,7 +93,7 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 // SingleFindingMarkdown 渲染单条漏洞为一份独立 Markdown(用于「一漏洞一文件」打包)。
 func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# [%s] %s\n\n", strings.ToUpper(nz(f.Severity, "info")), findingTitle(f))
+	fmt.Fprintf(&b, "# [%s] %s\n\n", strings.ToUpper(nz(f.Severity, "info")), FindingTitle(f))
 	if f.VulnClass != "" {
 		fmt.Fprintf(&b, "- **类别**：%s\n", f.VulnClass)
 	}
@@ -125,7 +125,7 @@ var unsafeFilenameChars = regexp.MustCompile(`[^\p{Han}\p{L}\p{N}._-]+`)
 // `critical_SQL注入_#123.md`。去掉路径分隔符与控制字符,避免 zip 内非法路径。
 func FindingFilename(f *db.DBFinding) string {
 	sev := nz(f.Severity, "info")
-	title := findingTitle(f)
+	title := FindingTitle(f)
 	name := fmt.Sprintf("%s_%s_#%d", sev, title, f.ID)
 	name = unsafeFilenameChars.ReplaceAllString(name, "_")
 	name = strings.Trim(name, "._")
@@ -153,7 +153,7 @@ func FindingsCSV(fs []*db.DBFinding) []byte {
 	for _, f := range items {
 		_ = w.Write([]string{
 			fmt.Sprintf("%d", f.ID),
-			findingTitle(f),
+			FindingTitle(f),
 			f.VulnClass,
 			nz(f.Severity, "info"),
 			nz(f.Status, "pending"),

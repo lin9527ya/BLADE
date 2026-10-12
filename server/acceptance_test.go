@@ -1,7 +1,10 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,7 +20,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-// TestAcceptance 是 P1–P7 机制的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// TestAcceptance 是 P1–P7 机制 + P11 交付导出的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -47,13 +50,14 @@ func TestAcceptance(t *testing.T) {
 	}
 	env := &accEnv{t: t, m: m, s: s, token: token, ctx: ctx}
 
-	t.Run("P1 语义终态与发现撤回入报告", func(t *testing.T) { accP1(t, env) })
-	t.Run("P2 覆盖矩阵（资产×风险类）入报告", func(t *testing.T) { accP2(t, env) })
-	t.Run("P3 复测结论入报告复核段", func(t *testing.T) { accP3(t, env) })
-	t.Run("P4 预算 70/85% 提示与 100% 收尾时序", func(t *testing.T) { accP4(t, env) })
-	t.Run("P5 租约看门狗回收僵死意图", func(t *testing.T) { accP5(t, env) })
-	t.Run("P6 候选三态闭合入报告", func(t *testing.T) { accP6(t, env) })
-	t.Run("P7 常驻技能注入 system 稳定段", func(t *testing.T) { accP7(t, env) })
+	t.Run("P1 语义终态与发现撤回入报告", func(t *testing.T) { accP1(t, env.forTest(t)) })
+	t.Run("P2 覆盖矩阵（资产×风险类）入报告", func(t *testing.T) { accP2(t, env.forTest(t)) })
+	t.Run("P3 复测结论入报告复核段", func(t *testing.T) { accP3(t, env.forTest(t)) })
+	t.Run("P4 预算 70/85% 提示与 100% 收尾时序", func(t *testing.T) { accP4(t, env.forTest(t)) })
+	t.Run("P5 租约看门狗回收僵死意图", func(t *testing.T) { accP5(t, env.forTest(t)) })
+	t.Run("P6 候选三态闭合入报告", func(t *testing.T) { accP6(t, env.forTest(t)) })
+	t.Run("P7 常驻技能注入 system 稳定段", func(t *testing.T) { accP7(t, env.forTest(t)) })
+	t.Run("P11 SRC 交付导出（简报 md → docx 可提交件）", func(t *testing.T) { accP11(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -65,6 +69,14 @@ type accEnv struct {
 }
 
 // newTask 建一个验收任务，并登记收尾：停引擎运行时 → 清本任务 findings/用量行 → 删任务。
+// forTest rebinds the env to a subtest's *testing.T so a failure reds only that
+// subtest (FailNow on the parent would abort the remaining checklist).
+func (e *accEnv) forTest(t *testing.T) *accEnv {
+	c := *e
+	c.t = t
+	return &c
+}
+
 func (e *accEnv) newTask(desc, goal string) (*Task, int64) {
 	e.t.Helper()
 	task, err := e.m.CreateTask(desc, goal, nil, 0, 0)
@@ -351,6 +363,91 @@ func accP6(t *testing.T, e *accEnv) {
 	e.mustContain(md, "服务端参数化查询", "反证文本")
 	e.mustContain(md, "## 存疑待补证（缺口未闭合，不得视为安全）", "存疑段")
 	e.mustContain(md, "缺登录态", "缺口文本")
+}
+
+// accP11 走完交付面全链：真实 report_finding 落一条发现 → 绑定一条 proof 原始报文 →
+// GET src-report（8 块骨架 + 整包）→ GET src-report.docx（合法 OOXML zip，正文含整包）。
+func accP11(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p11", "SRC 交付导出")
+	fid, _ := e.newFinding(task, tid, `{"vulnclass":"sqli","severity":"high","summary":"搜索接口注入（交付导出验收）","evidence":"curl http://x/search?q=1 单引号触发报错","confidence":"high"}`)
+
+	// 绑定一条 proof 证据（原始报文头），让导出能生成「涉及接口清单 + 整包步骤」。
+	sn := db.TrafficEvidenceSnapshot{
+		SourceTrafficID: "acc-p11-1",
+		URL:             "https://acc-p11.example/search?q=1'",
+		Method:          "GET",
+		Status:          500,
+		ContentType:     "text/html",
+		ReqHead:         "GET /search?q=1' HTTP/1.1\nHost: acc-p11.example\nAccept-Encoding: gzip, deflate\nConnection: close",
+		RespHead:        "HTTP/1.1 500 Internal Server Error",
+	}
+	sn = sn.Normalize()
+	sn.ID = db.TrafficSnapshotID(sn)
+	if err := e.m.pg.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		return db.AddFindingTrafficTx(tx, fid, []db.PreparedTrafficEvidence{{
+			Ref:      db.TrafficRef{Role: "proof", Note: "打穿请求"},
+			Snapshot: sn,
+		}})
+	}); err != nil {
+		t.Fatalf("bind proof traffic: %v", err)
+	}
+
+	fidStr := strconv.FormatInt(fid, 10)
+	rec := e.request(http.MethodGet, "/api/findings/"+fidStr+"/src-report", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("src-report status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	md := rec.Body.String()
+	for _, want := range []string{
+		"漏洞标题：",
+		"目标网站URL：https://acc-p11.example/search?q=1'",
+		"漏洞等级：高危",
+		"漏洞描述：\n",
+		"漏洞危害：\n",
+		"涉及接口清单\n1、GET https://acc-p11.example/search?q=1'（打穿请求（proof）",
+		"复现步骤\n1、打穿请求（proof）：打穿请求\n```\nGET /search?q=1' HTTP/1.1\nHost: acc-p11.example",
+		"修复建议\n",
+	} {
+		e.mustContain(md, want, "SRC 简报")
+	}
+	for _, line := range strings.Split(md, "\n") {
+		if strings.TrimSpace(line) == "#" {
+			t.Fatalf("SRC 简报出现半角 # 分隔行：\n%s", md)
+		}
+	}
+
+	rec = e.request(http.MethodGet, "/api/findings/"+fidStr+"/src-report.docx", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("docx status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("docx 不是合法 zip：%v", err)
+	}
+	var doc string
+	for _, f := range zr.File {
+		if f.Name != "word/document.xml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc = string(b)
+	}
+	if doc == "" {
+		t.Fatal("docx 缺少 word/document.xml")
+	}
+	for _, want := range []string{"漏洞等级", "复现步骤", "GET /search?q=1", "Host: acc-p11.example", "修复建议"} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("docx 正文缺少 %q", want)
+		}
+	}
 }
 
 func accP7(t *testing.T, e *accEnv) {
