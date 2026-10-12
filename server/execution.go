@@ -145,6 +145,9 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 		run.hardTimer = time.AfterFunc(timeout, func() {
 			run.hardKilled.Store(true)
 			killGroup(cmd)
+			// SIGTERM 不是每个进程都听：宽限后强杀整组，兑现"硬超时上限"的承诺
+			// （否则僵住的进程会让台账一直挂在 running，收尾门也跟着悬着）。
+			time.AfterFunc(execCancelGrace, func() { hardKillGroup(cmd) })
 		})
 	}
 	s.mu.Lock()
