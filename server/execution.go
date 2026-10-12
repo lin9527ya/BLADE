@@ -39,6 +39,9 @@ type ExecutionService struct {
 	mu     sync.Mutex
 	live   map[int64]*execRun
 	onDone func(*db.ToolExecution)
+	// envFor 由 host 注入：托管执行必须拿到与 agent Bash 同一份环境（记录代理 +
+	// CA 信任），否则长任务的流量绕过 MITM——证据链断在这里，而且 TLS 会失败。
+	envFor func() []string
 }
 
 type execRun struct {
@@ -65,6 +68,14 @@ func NewExecutionService(pg *db.DB, dir string) *ExecutionService {
 func (s *ExecutionService) SetOnDone(fn func(*db.ToolExecution)) {
 	s.mu.Lock()
 	s.onDone = fn
+	s.mu.Unlock()
+}
+
+// SetEnvResolver 注入每次提交时求值的子进程环境（记录代理地址与 CA 会随开关变化，
+// 所以按次读取而不是构造时固定）。
+func (s *ExecutionService) SetEnvResolver(fn func() []string) {
+	s.mu.Lock()
+	s.envFor = fn
 	s.mu.Unlock()
 }
 
@@ -104,6 +115,16 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 	argv := shellCommandArgs(command)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	startDetached(cmd)
+	// 与 agent Bash 同环境同目录：走记录代理、信任 CA、相对产物落在本意图目录。
+	if taskID != "" {
+		cmd.Dir = agent.EnsureRunDir(s.dir, taskID, intentID)
+	}
+	s.mu.Lock()
+	envFor := s.envFor
+	s.mu.Unlock()
+	if envFor != nil {
+		cmd.Env = append(os.Environ(), envFor()...)
+	}
 	run := &execRun{id: id, taskID: taskID, intentID: intentID, cmd: cmd, logFile: logFile,
 		tail: newTailRing(execTailBytes), done: make(chan struct{})}
 	w := io.MultiWriter(logFile, writerFunc(func(p []byte) (int, error) {

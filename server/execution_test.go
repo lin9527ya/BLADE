@@ -103,6 +103,31 @@ func TestExecutionServiceSubmitAndWait(t *testing.T) {
 	}
 }
 
+// TestExecutionServiceInheritsAgentShellEnvAndCwd pins the P13 shell contract: a
+// hosted command runs in the intent's work dir (relative artifacts land where the
+// agent expects them) and carries the env the resolver hands it — the recording
+// proxy + CA, without which a long scan bypasses the MITM and fails TLS.
+func TestExecutionServiceInheritsAgentShellEnvAndCwd(t *testing.T) {
+	svc, _, td, task := newExecFixture(t)
+	svc.SetEnvResolver(func() []string { return []string{"ARTEX_EXEC_TEST_ENV=proxied"} })
+	st, err := svc.Submit(context.Background(), task, 7, "work#1",
+		`pwd; printf 'env=%s\n' "$ARTEX_EXEC_TEST_ENV"`, "环境与目录", 0)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	fin := waitTerminal(t, svc, st.ID, 15*time.Second)
+	if fin.Status != db.ExecCompleted {
+		t.Fatalf("status=%s want completed: %+v", fin.Status, fin)
+	}
+	wantDir := filepath.Join(td, "tasks", task, "i7")
+	if !strings.Contains(fin.Tail, wantDir) {
+		t.Fatalf("长任务必须在意图工作目录里跑 %q，实际输出 %q", wantDir, fin.Tail)
+	}
+	if !strings.Contains(fin.Tail, "env=proxied") {
+		t.Fatalf("托管执行必须继承注入的环境（记录代理/CA）: %q", fin.Tail)
+	}
+}
+
 // TestExecutionServiceCancelKillsProcessGroupAndRecordsReason pins cancel: the
 // reason lands in the ledger (and comes back to the caller), the process group is
 // killed for real (the command never reaches its trailing marker), and the row is

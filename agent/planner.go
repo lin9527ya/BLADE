@@ -37,10 +37,10 @@ type Planner struct {
 	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
 	nonStreamingFn    func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
-	execService ExecService
-	noaEnabledFn      func() bool                            // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn       func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor         *Compactor                             // cold-node compaction (§7); nil = disabled
+	execService  ExecService
+	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn  func() int  // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor    *Compactor  // cold-node compaction (§7); nil = disabled
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
