@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -162,6 +163,8 @@ func auditFor(ctx context.Context, dec Decision, input []byte, status string) *d
 	a.ModelInput, a.ModelInputDigest = dec.ModelInput, dec.ModelInputDigest
 	a.RuleName, a.ConfigDigest, a.ProfileID = dec.RuleName, dec.ConfigDigest, dec.ProfileID
 	a.MatchedSurface, a.MatchedText = dec.MatchedSurface, dec.MatchedText
+	a.ModelVerdict = dec.ModelVerdict
+	a.ModelReply = clipRunes(strings.TrimSpace(dec.RawReply), 2000)
 	a.ExecutionStatus = "not_started"
 	if status == "allowed" {
 		a.EffectiveAction, a.ExecutionStatus = "allow", "awaiting_result"

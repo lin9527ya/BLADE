@@ -204,6 +204,7 @@ const defaultJudge = (): JudgeConfig => ({
   fail_action: "allow",
   ask_timeout_seconds: 300,
   ask_timeout_action: "deny",
+  structured: true,
 });
 
 function JudgeCard() {
@@ -386,6 +387,22 @@ function JudgeCard() {
                       if (n > 0) patch({ timeout_seconds: n });
                     }}
                   />
+                </Field>
+                <Field label="裁决方式">
+                  <Select
+                    value={cfg.structured ? "structured" : "free"}
+                    onValueChange={(v) => patch({ structured: v === "structured" })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="structured">结构化裁决（推荐）</SelectItem>
+                      <SelectItem value="free">自由文本裁决</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-muted-foreground text-xs">
+                    结构化：模型只给各轴把握（可用性/数据/账号/配置/渗透动作）与建议裁决，最终 allow/ask/deny
+                    由平台代码按固定阈值算出，边界可复现、可单测；自由文本：沿用模型直接给裁决 + 说明的旧协议。
+                  </p>
                 </Field>
                 <Field label="模型失败时（出错 / 超时 / 无法解析）">
                   <Select value={cfg.fail_action} onValueChange={(v) => patch({ fail_action: v as JudgeConfig["fail_action"] })}>

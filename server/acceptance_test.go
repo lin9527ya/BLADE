@@ -26,7 +26,8 @@ import (
 	"github.com/Autumn-27/norma/llm"
 )
 
-// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
+// + P15 结构化裁决与改参放行的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -67,6 +68,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P12 拦截遮挡面与失效安全", func(t *testing.T) { accP12(t, env.forTest(t)) })
 	t.Run("P13 执行台账与意图收尾门", func(t *testing.T) { accP13(t, env.forTest(t)) })
 	t.Run("P14 领域化压缩与常驻索引", func(t *testing.T) { accP14(t, env.forTest(t)) })
+	t.Run("P15 结构化裁决与改参放行", func(t *testing.T) { accP15(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -985,3 +987,196 @@ func accP14(t *testing.T, e *accEnv) {
 
 // dumpPathRe 从摘要请求文本里抓原文落盘的绝对路径。
 var dumpPathRe = regexp.MustCompile(`/[^\s。，、）()]+?\.txt`)
+
+// accP15 走完 P15 的两条链：①结构化裁决——模型只给各轴把握与建议，allow/ask/deny 由
+// 代码阈值算出（0.9 破坏分压过模型 approve；低破坏 + 渗透动作压过模型 deny；畸形输出
+// 落到失败策略 ask；默认失败动作与默认结构化开关防回归）；②改参放行——审批人可以改参，
+// 但只许收窄：越界 400，合法收窄真的替换进工具调用并留 narrow_diff 审计。顺带验交付
+// 证据门（无绑定流量的发现导出 warnings 非空）。
+func accP15(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p15", "结构化裁决与改参放行")
+	ctx := intercept.WithTaskContext(context.Background(), task.ID, "acceptance", nil)
+	ic := e.s.m.interceptor
+
+	// —— ① 结构化裁决：假裁判按脚本回结构化 JSON，动作由代码阈值定 ——
+	oldEnabled, hadEnabled, _ := e.m.pg.GetSetting("llm_judge_enabled")
+	oldStructured, hadStructured, _ := e.m.pg.GetSetting("llm_judge_structured")
+	oldFail, hadFail, _ := e.m.pg.GetSetting("llm_judge_fail_action")
+	t.Cleanup(func() {
+		restore := func(key, val string, had bool) {
+			if had {
+				_ = e.m.pg.SetSetting(key, val)
+			} else {
+				_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, key)
+			}
+		}
+		restore("llm_judge_enabled", oldEnabled, hadEnabled)
+		restore("llm_judge_structured", oldStructured, hadStructured)
+		restore("llm_judge_fail_action", oldFail, hadFail)
+	})
+	for k, v := range map[string]string{"llm_judge_enabled": "true", "llm_judge_structured": "true"} {
+		if err := e.m.pg.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 默认失败动作必须是 ask（防回归：放宽方向的默认值会让故障变成静默放行）。
+	// 复用库里可能残留旧默认值 allow —— 先清掉这一行，测的是"没有配置时的默认"。
+	if _, err := e.m.pg.Exec(`DELETE FROM settings WHERE key='llm_judge_fail_action'`); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ic.GetJudgeConfig()
+	if cfg.FailAction != "ask" {
+		t.Fatalf("裁判失败默认动作 = %q，want ask", cfg.FailAction)
+	}
+	if !cfg.Structured {
+		t.Fatal("结构化裁决必须默认开启")
+	}
+
+	reply := ""
+	ic.SetReviewer(func(context.Context, int64, string, intercept.ReviewInput) (intercept.Decision, error) {
+		// 关键：Reviewer 只回【原始文本】，动作由 intercept.Judge 按代码阈值算。
+		return intercept.Decision{RawReply: reply}, nil
+	})
+	judge := func(raw string, in string) intercept.Decision {
+		reply = raw
+		dec, ok := ic.Judge(ctx, "Bash", json.RawMessage(in))
+		if !ok {
+			t.Fatalf("裁判未产出裁决（raw=%s）", raw)
+		}
+		return dec
+	}
+	call := `{"command":"mysql -e \"UPDATE accounts SET balance=0\""}`
+
+	// 破坏性轴 0.9 + 模型建议 allow → 代码仍然 deny。
+	dec := judge(`{"nouls":{"irreversible_data_loss":0.9,"authorized_pentest_payload":0.2},"choice":"allow","choice_conf":0.99,"comment":"改余额"}`, call)
+	if dec.Action != "deny" || !strings.Contains(dec.Message, "不可逆数据破坏") {
+		t.Fatalf("破坏轴 0.9 必须 deny: %+v", dec)
+	}
+	if dec.ModelVerdict == "" {
+		t.Fatal("结构化裁决必须进 audit（ModelVerdict 为空）")
+	}
+
+	// 全轴 <0.35 + 渗透轴 0.8 + 模型 reject 0.9 → 代码 allow（明显的渗透动作不该被模型砍掉）。
+	dec = judge(`{"nouls":{"destroys_availability":0.1,"irreversible_data_loss":0.2,"credential_or_acl_change":0.1,"config_tamper":0.1,"authorized_pentest_payload":0.8},"choice":"deny","choice_conf":0.9,"comment":"注入探测"}`, call)
+	if dec.Action != "allow" {
+		t.Fatalf("低破坏 + 渗透动作必须 allow: %+v", dec)
+	}
+
+	// 空/畸形 verdict → 失败策略 = ask。
+	for _, bad := range []string{"", "我看还是放行吧", `{"nouls":{"whatever":0.9},"choice":"allow","choice_conf":0.9}`, `{"nouls":{},"choice":"allow"}`} {
+		dec = judge(bad, call)
+		if dec.Action != "ask" || !dec.ModelFallback {
+			t.Fatalf("畸形裁决必须按失败策略转人工: raw=%q dec=%+v", bad, dec)
+		}
+	}
+
+	// —— ② 改参放行：只许收窄，且真的替换进工具调用 ——
+	if _, err := e.m.pg.CreateInterceptRule("acc-p15-ask-curl", "tool_input", "string", "curl", "ask", "", 100, true, false, 0, "deny"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM intercept_rules WHERE name=$1`, "acc-p15-ask-curl") })
+	ic.Invalidate()
+	original := `{"command":"curl -X POST http://acc-p15.example/api/import -d @big.txt --max-time 600"}`
+	// 合法收窄示例：从原命令里删掉 -X POST / -d @big.txt / --max-time 600（保序删字符）。
+	narrowed := `{"command":"curl http://acc-p15.example/api/import"}`
+
+	g := guard.NewWithInterceptor(ic, tid)
+	type hookOut struct {
+		blocked bool
+		reason  string
+		updated []byte
+	}
+	done := make(chan hookOut, 1)
+	go func() {
+		blocked, reason, updated := g.Hooks().PreToolUse(ctx, "Bash", []byte(original))
+		done <- hookOut{blocked, reason, updated}
+	}()
+
+	// 等 pending 行出现。
+	pendingID := int64(0)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && pendingID == 0 {
+		_ = e.m.pg.QueryRow(`SELECT COALESCE(MAX(id),0) FROM intercept_pending WHERE task_id=$1 AND status='pending'`, task.ID).Scan(&pendingID)
+		if pendingID == 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if pendingID == 0 {
+		t.Fatal("ask 规则没有生成待审批记录")
+	}
+	idStr := strconv.FormatInt(pendingID, 10)
+
+	// 越界改参（新增键 / 加长命令）→ 400，且审批仍然待定。
+	for _, bad := range []string{
+		`{"decision":"allowed","edited_input":{"command":"curl http://acc-p15.example/api/import","extra":"x"}}`,
+		`{"decision":"allowed","edited_input":{"command":"curl -X POST http://acc-p15.example/api/import -d @big.txt --max-time 600 --retry 9"}}`,
+	} {
+		rec := e.request(http.MethodPost, "/api/intercept/pending/"+idStr+"/decide", bad)
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "收窄") {
+			t.Fatalf("越界改参必须 400 且说明只许收窄: code=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// 合法收窄 → 200，钩子返回的就是改后的参数。
+	rec := e.request(http.MethodPost, "/api/intercept/pending/"+idStr+"/decide",
+		`{"decision":"allowed","edited_input":`+narrowed+`}`)
+	if rec.Code != 200 {
+		t.Fatalf("合法收窄放行失败: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case out := <-done:
+		if out.blocked {
+			t.Fatalf("合法收窄后不应拦截: %s", out.reason)
+		}
+		var got, want map[string]any
+		if err := json.Unmarshal(out.updated, &got); err != nil {
+			t.Fatalf("钩子未返回改后参数（updated=%q）: %v", out.updated, err)
+		}
+		_ = json.Unmarshal([]byte(narrowed), &want)
+		if got["command"] != want["command"] {
+			t.Fatalf("执行参数不是改后的收窄版: got=%v want=%v", got, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("审批已决定但钩子没有返回")
+	}
+	// audit 里能回答"到底放行了哪份参数"。
+	var audit string
+	if err := e.m.pg.QueryRow(`SELECT COALESCE(audit::text,'') FROM intercept_pending WHERE id=$1`, pendingID).Scan(&audit); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		EffectiveAction string   `json:"effective_action"`
+		NarrowDiff      []string `json:"narrow_diff"`
+		EditedInput     struct {
+			Command string `json:"command"`
+		} `json:"edited_input"`
+	}
+	if err := json.Unmarshal([]byte(audit), &parsed); err != nil {
+		t.Fatalf("审计不是 JSON: %v (%s)", err, audit)
+	}
+	if parsed.EffectiveAction != "allow" || len(parsed.NarrowDiff) == 0 || parsed.EditedInput.Command != "curl http://acc-p15.example/api/import" {
+		t.Fatalf("audit 未记录收窄结果: %+v", parsed)
+	}
+
+	// —— ③ 交付证据门：无绑定流量的发现，warnings 非空 ——
+	fid, _ := e.newFinding(task, tid, `{"vulnclass":"xss","severity":"medium","summary":"证据门验收","evidence":"未绑定流量","confidence":"low"}`)
+	rec = e.request(http.MethodGet, "/api/findings/"+strconv.FormatInt(fid, 10)+"/src-report/check", "")
+	if rec.Code != 200 {
+		t.Fatalf("证据门接口 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var gate struct {
+		Ready    bool     `json:"ready"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &gate); err != nil {
+		t.Fatal(err)
+	}
+	if gate.Ready || len(gate.Warnings) == 0 {
+		t.Fatalf("无证据发现必须给出 warnings: %+v", gate)
+	}
+	mdRec := e.request(http.MethodGet, "/api/findings/"+strconv.FormatInt(fid, 10)+"/src-report", "")
+	if mdRec.Code != http.StatusOK {
+		t.Fatalf("src-report status=%d body=%s", mdRec.Code, mdRec.Body.String())
+	}
+	e.mustContain(mdRec.Body.String(), "⚠", "简报备注区的证据门警告")
+}

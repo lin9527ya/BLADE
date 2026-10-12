@@ -55,9 +55,12 @@ func (s *Server) wireInterceptReviewer() {
 		}
 		v := intercept.ParseVerdict(text)
 		if v.Action == "" {
-			return intercept.Decision{ProfileID: profileID}, fmt.Errorf("模型裁决格式无效，必须包含裁决、实际操作、成功后的后果和命中规则")
+			// 自由文本契约解析不出来：开启结构化裁决（P15）时这是预期内的——原始
+			// 回复交给 intercept.Judge 按结构化协议解析并由代码阈值定动作；两种
+			// 契约都解析不了则走失败策略（默认 ask）。
+			return intercept.Decision{ProfileID: profileID, RawReply: text}, nil
 		}
-		return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID}, nil
+		return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID, RawReply: text}, nil
 	})
 }
 
@@ -363,6 +366,9 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Decision string `json:"decision"` // "allowed" | "denied"
+		// EditedInput（P15）：人对参数的修改。只在与原参数一致或更保守（Narrow 通过）
+		// 时才接受——不合规直接 400，绝不"改了再校验失败仍按原参数放行"。
+		EditedInput json.RawMessage `json:"edited_input"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -372,7 +378,27 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "decision 必须是 allowed 或 denied")
 		return
 	}
-	if err := s.m.interceptor.Decide(id, req.Decision == "allowed"); err != nil {
+	var edited json.RawMessage
+	var diff []string
+	if len(req.EditedInput) > 0 && req.Decision == "allowed" {
+		detail, err := s.m.pg.GetInterceptDetail(id)
+		if err != nil || detail == nil {
+			writeErr(w, 404, "审批记录不存在")
+			return
+		}
+		// 原参数以库里的为准（前端传回来的"原文"不可信）。
+		if len(detail.ToolInput) == 0 {
+			writeErr(w, 500, "审批记录里没有原参数")
+			return
+		}
+		out, ok := intercept.Narrow(detail.ToolName, detail.ToolInput, req.EditedInput)
+		if !ok {
+			writeErr(w, 400, "改参只允许收窄："+strings.Join(out.Diff, "；"))
+			return
+		}
+		edited, diff = out.Input, out.Diff
+	}
+	if err := s.m.interceptor.DecideWithInput(id, req.Decision == "allowed", edited, diff); err != nil {
 		if errors.Is(err, intercept.ErrAlreadyDecided) {
 			writeErr(w, 409, err.Error())
 			return

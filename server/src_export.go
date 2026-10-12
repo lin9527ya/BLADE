@@ -26,6 +26,8 @@ import (
 func (s *Server) registerSrcExport(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/findings/{id}/src-report", s.getFindingSrcReport)
 	mux.HandleFunc("GET /api/findings/{id}/src-report.docx", s.getFindingSrcReportDocx)
+	// 证据门（P15）：下载前先看"这份简报缺什么"。
+	mux.HandleFunc("GET /api/findings/{id}/src-report/check", s.getFindingSrcReportCheck)
 }
 
 func (s *Server) srcFinding(w http.ResponseWriter, r *http.Request) *db.DBFinding {
@@ -48,7 +50,7 @@ func (s *Server) srcFinding(w http.ResponseWriter, r *http.Request) *db.DBFindin
 
 // buildSrcInput assembles the export skeleton from the finding row, its anchored
 // assets and its bound traffic evidence.
-func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) report.SrcInput {
+func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) (report.SrcInput, []string) {
 	in := report.SrcInput{
 		Title:     report.FindingTitle(f),
 		Severity:  f.Severity,
@@ -74,9 +76,14 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) report.SrcI
 		}
 	}
 
+	// warnings 是导出前的证据缺项清单（P15 交付证据门）。空 = 本发现可以直接交。
+	var warnings []string
 	traffic, err := s.m.pg.GetFindingTraffic(ctx, f.ID)
 	if err != nil {
 		traffic = nil
+	}
+	if traffic == nil || len(traffic.Bindings) == 0 {
+		warnings = append(warnings, "该发现没有任何绑定流量：复现步骤与整包证据缺失，请先绑定流量再交付。")
 	}
 	store := s.evidenceStore()
 	if traffic != nil {
@@ -118,7 +125,7 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) report.SrcI
 			in.Steps[0].Desc += "（同接口正常对照：" + baselineNote + "，对照请求不单独成步）"
 		}
 		if stepNo == 0 {
-			in.Notes = append(in.Notes, "已绑定流量中没有 proof/verification 角色：复现步骤缺少整包证据，请补绑后重新导出。")
+			warnings = append(warnings, "已绑定流量中没有 proof/verification 角色：复现步骤缺少整包证据，请补绑后重新导出。")
 		}
 	}
 
@@ -127,19 +134,24 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) report.SrcI
 		notes = append(notes, "来源任务："+clipRunes(f.TaskDescription, 80))
 	}
 	if f.Status == db.FindingRetracted {
-		notes = append([]string{"⚠ 该发现已撤回（复测推翻），不要提交；如需提交请先重新确认。"}, notes...)
+		warnings = append(warnings, "该发现已撤回（复测推翻），不要提交；如需提交请先重新确认。")
 	}
 	// P13：所属任务还有长任务执行在跑 → 输出尚未落地，此刻的证据可能不完整。
 	if f.TaskID != nil {
 		if x := s.m.Executions(); x != nil {
 			if n := len(x.ActiveForTask(itoa64(*f.TaskID))); n > 0 {
-				notes = append([]string{fmt.Sprintf(
-					"⚠ 所属任务仍有 %d 个长任务执行未结束（扫描/枚举输出未落地）：本次证据可能不完整，建议等执行收束后重新导出。", n)}, notes...)
+				warnings = append(warnings, fmt.Sprintf(
+					"所属任务仍有 %d 个长任务执行未结束（扫描/枚举输出未落地）：本次证据可能不完整，建议等执行收束后重新导出。", n))
 			}
 		}
 	}
+	// 证据门（P15）：缺项既进 Notes 顶部（人下载就看得见），也由 API 以 warnings[]
+	// 单独返回（前端/自动化在下载前就能看到）。两者同一份来源，不会各说各话。
+	for _, w := range warnings {
+		notes = append(notes, "⚠ "+w)
+	}
 	in.Notes = append(notes, in.Notes...)
-	return in
+	return in, warnings
 }
 
 // srcBindingSource renders an endpoint's provenance for 涉及接口清单.
@@ -208,7 +220,7 @@ func (s *Server) getFindingSrcReport(w http.ResponseWriter, r *http.Request) {
 	if f == nil {
 		return
 	}
-	in := s.buildSrcInput(r.Context(), f)
+	in, _ := s.buildSrcInput(r.Context(), f)
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(report.SrcFilename(in.Title, ".md")))
 	w.WriteHeader(http.StatusOK)
@@ -220,7 +232,7 @@ func (s *Server) getFindingSrcReportDocx(w http.ResponseWriter, r *http.Request)
 	if f == nil {
 		return
 	}
-	in := s.buildSrcInput(r.Context(), f)
+	in, _ := s.buildSrcInput(r.Context(), f)
 	blob, err := report.SrcDOCX(in)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -230,4 +242,25 @@ func (s *Server) getFindingSrcReportDocx(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(report.SrcFilename(in.Title, ".docx")))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(blob)
+}
+
+// getFindingSrcReportCheck is the delivery evidence gate (P15): it reports what a
+// submission would be missing BEFORE anyone downloads it — no bound traffic, no
+// proof/verification step, a retracted finding, still-running long tasks. The
+// export itself is never blocked (a human decides); the gate makes the gap loud.
+func (s *Server) getFindingSrcReportCheck(w http.ResponseWriter, r *http.Request) {
+	f := s.srcFinding(w, r)
+	if f == nil {
+		return
+	}
+	in, warnings := s.buildSrcInput(r.Context(), f)
+	if warnings == nil {
+		warnings = []string{}
+	}
+	writeJSON(w, 200, map[string]any{
+		"ready":     len(warnings) == 0,
+		"warnings":  warnings,
+		"steps":     len(in.Steps),
+		"endpoints": len(in.Endpoints),
+	})
 }

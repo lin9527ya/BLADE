@@ -83,28 +83,36 @@ type compiledRule struct {
 }
 
 // pendingManager tracks in-flight "ask" requests via per-request channels.
-type pendingManager struct {
-	mu sync.Mutex
-	ch map[int64]chan bool
+// AskOutcome 是一次人工审批的结论：允许与否，以及（可选）人改过的参数。
+// Edited 非空表示"改参放行"——调用方必须先用 Narrow 复核再执行。
+type AskOutcome struct {
+	Allowed bool
+	Edited  json.RawMessage
+	Diff    []string
 }
 
-func newPendingManager() *pendingManager { return &pendingManager{ch: map[int64]chan bool{}} }
+type pendingManager struct {
+	mu sync.Mutex
+	ch map[int64]chan AskOutcome
+}
 
-func (p *pendingManager) add(id int64) chan bool {
-	ch := make(chan bool, 1)
+func newPendingManager() *pendingManager { return &pendingManager{ch: map[int64]chan AskOutcome{}} }
+
+func (p *pendingManager) add(id int64) chan AskOutcome {
+	ch := make(chan AskOutcome, 1)
 	p.mu.Lock()
 	p.ch[id] = ch
 	p.mu.Unlock()
 	return ch
 }
 
-func (p *pendingManager) resolve(id int64, allowed bool) {
+func (p *pendingManager) resolve(id int64, out AskOutcome) {
 	p.mu.Lock()
 	ch, ok := p.ch[id]
 	delete(p.ch, id)
 	p.mu.Unlock()
 	if ok {
-		ch <- allowed
+		ch <- out
 	}
 }
 
@@ -313,6 +321,12 @@ type Decision struct {
 	// intercept audit —— P12 遮挡面：让「为什么命中/为什么没命中」可复盘。
 	MatchedSurface string
 	MatchedText    string
+	// RawReply 是裁判模型的原始回复（P15）：结构化模式下由 Judge 解析成
+	// StructuredVerdict 再按代码阈值定动作。不进 audit JSON（audit 存 ModelVerdict）。
+	RawReply string
+	// ModelVerdict 是结构化裁决压缩成的一行 JSON，写进 audit —— 复盘"模型当时
+	// 各轴打了多少分、建议什么、置信多少"。
+	ModelVerdict string
 }
 
 // --- LLM fallback judge ---
@@ -330,14 +344,21 @@ const (
 	settingJudgeFailAction       = "llm_judge_fail_action"
 	settingJudgeAskTimeoutSecs   = "llm_judge_ask_timeout_seconds"
 	settingJudgeAskTimeoutAction = "llm_judge_ask_timeout_action"
+	settingJudgeStructured       = "llm_judge_structured"
 )
 
 // Judge default values.
 const (
-	defaultJudgeTimeoutSecs      = 15
-	defaultJudgeFailAction       = "allow"
+	defaultJudgeTimeoutSecs = 15
+	// defaultJudgeFailAction 是裁判【失败】时的动作（模型不可用/输出无法解析）。
+	// P15 起为 ask：放宽方向的默认值让"配了裁判"在故障时退化成静默放行——与 P12
+	// 把规则加载失败改成 ask 同一条纪律（失效安全）。想放行可在设置页显式改成 allow。
+	defaultJudgeFailAction       = "ask"
 	defaultJudgeAskTimeoutSecs   = 300
 	defaultJudgeAskTimeoutAction = "deny"
+	// defaultJudgeStructured 默认开启结构化裁决（P15）：模型给各轴把握与建议，
+	// 最终动作由 intercept.DecideStructured 按代码里的阈值算出。
+	defaultJudgeStructured = true
 )
 
 // JudgeConfig is the resolved LLM-fallback-judge configuration. Prompt is always
@@ -350,6 +371,9 @@ type JudgeConfig struct {
 	FailAction        string `json:"fail_action"` // allow|ask|deny
 	AskTimeoutSeconds int    `json:"ask_timeout_seconds"`
 	AskTimeoutAction  string `json:"ask_timeout_action"` // allow|deny
+	// Structured：结构化裁决（P15）。开启时裁判按"各轴把握 + 建议 choice + 置信度"
+	// 输出，最终 allow/ask/deny 由代码阈值决定（intercept.DecideStructured）。
+	Structured bool `json:"structured"`
 }
 
 // judgeConfig reads the judge configuration from settings, applying defaults for
@@ -363,6 +387,7 @@ func (i *Interceptor) judgeConfig() JudgeConfig {
 		FailAction:        i.getSettingChoice(settingJudgeFailAction, defaultJudgeFailAction, "allow", "ask", "deny"),
 		AskTimeoutSeconds: i.getSettingInt(settingJudgeAskTimeoutSecs, defaultJudgeAskTimeoutSecs),
 		AskTimeoutAction:  i.getSettingChoice(settingJudgeAskTimeoutAction, defaultJudgeAskTimeoutAction, "allow", "deny"),
+		Structured:        i.db.GetBool(settingJudgeStructured, defaultJudgeStructured),
 	}
 	// Prompt: stored value if non-empty, else the built-in template.
 	if v, ok, _ := i.db.GetSetting(settingJudgePrompt); ok && strings.TrimSpace(v) != "" {
@@ -439,6 +464,9 @@ func (i *Interceptor) SetJudgeConfig(c JudgeConfig) error {
 	if err := i.db.SetSetting(settingJudgeAskTimeoutAction, c.AskTimeoutAction); err != nil {
 		return err
 	}
+	if err := i.db.SetBool(settingJudgeStructured, c.Structured); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -465,7 +493,7 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 	}
 
 	input, contextErr := BuildReviewInput(cctx, tool, arguments)
-	cfg.Prompt = EffectiveJudgePrompt(cfg.Prompt)
+	cfg.Prompt = EffectiveJudgePromptFor(cfg.Prompt, cfg.Structured)
 	var out Decision
 	var err error
 	var modelInput []byte
@@ -477,6 +505,18 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 		modelInput, _ = json.Marshal(input)
 		out, err = rv(cctx, cfg.ProfileID, cfg.Prompt, input)
 	}
+	if err == nil && cfg.Structured && out.Action == "" {
+		// 结构化模式：Reviewer 只回原始文本，动作由这里按代码阈值算。
+		// 解析失败不在这里定动作——下面 switch 会走失败策略（默认 ask）。
+		if sv, perr := ParseStructuredVerdict(out.RawReply); perr == nil {
+			action, reason := DecideStructured(sv)
+			out.Action = action
+			out.Message = reason
+			out.ModelVerdict = StructuredVerdictJSON(sv)
+		} else {
+			out.Message = "结构化裁决解析失败：" + perr.Error()
+		}
+	}
 	if err != nil {
 		out = Decision{ProfileID: out.ProfileID, ModelFallback: true, Action: cfg.FailAction, Message: "模型审批失败,按失败策略处理: " + err.Error()}
 	}
@@ -484,7 +524,14 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 	case "allow", "ask", "deny":
 		// valid verdict
 	default:
-		out = Decision{ProfileID: out.ProfileID, ModelFallback: true, Action: cfg.FailAction, Message: "模型输出无法解析,按失败策略处理"}
+		msg := "模型输出无法解析,按失败策略处理"
+		if cfg.Structured {
+			msg = "模型输出无法解析为结构化裁决,按失败策略处理"
+		}
+		if out.Message != "" && strings.HasPrefix(out.Message, "结构化裁决解析失败：") {
+			msg += "：" + strings.TrimPrefix(out.Message, "结构化裁决解析失败：")
+		}
+		out = Decision{ProfileID: out.ProfileID, ModelFallback: true, Action: cfg.FailAction, Message: msg}
 	}
 	// A model verdict never carries a rule; keep RuleID 0 (→ NULL) for history.
 	out.RuleID = 0
@@ -699,7 +746,7 @@ func (i *Interceptor) Log(ctx context.Context, convID int64, dec Decision, toolN
 // pending record is still created (conversation_id = NULL) so the approvals
 // page shows it and the sidebar badge lights up. The worker thread blocks just
 // like in a chat session — the user must visit the approvals page to unblock it.
-func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision, toolName string, input []byte) bool {
+func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision, toolName string, input []byte) (AskOutcome, bool) {
 	ruleID := dec.RuleID
 	taskID, agentName := taskInfoFromCtx(ctx)
 	taskEmit := taskEmitFromCtx(ctx)
@@ -707,7 +754,7 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	audit := auditFor(ctx, dec, input, "pending")
 	pendingID, err := i.db.CreateInterceptPending(ruleID, convID, taskID, agentName, toolName, input, dec.Message, audit)
 	if err != nil {
-		return false
+		return AskOutcome{}, false
 	}
 
 	i.bindResult(ctx, pendingID, audit)
@@ -717,7 +764,7 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	// registered. Re-read after registration so that decision cannot be lost;
 	// later decisions will be delivered through ch.
 	if saved, err := i.db.GetInterceptDetail(pendingID); err == nil && saved != nil && saved.Status != "pending" {
-		return saved.Status == "allowed" || (saved.Audit != nil && saved.Audit.EffectiveAction == "allow")
+		return AskOutcome{Allowed: saved.Status == "allowed" || (saved.Audit != nil && saved.Audit.EffectiveAction == "allow")}, true
 	}
 
 	detail, _ := json.Marshal(map[string]any{
@@ -743,12 +790,12 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	if !dec.TimeoutEnabled {
 		// No timeout: wait indefinitely until user decides or worker stops.
 		select {
-		case allowed := <-ch:
-			return allowed
+		case out := <-ch:
+			return out, out.Allowed
 		case <-ctx.Done():
 			_, _ = i.db.ResolveIntercept(pendingID, "denied", "deny", "工作已取消")
 			_ = i.db.CompleteIntercept(pendingID, audit.RunID, audit.ToolUseID, "not_executed", "执行前工作已取消", false)
-			return false
+			return AskOutcome{}, false
 		}
 	}
 
@@ -759,8 +806,8 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	timer := time.NewTimer(time.Duration(secs) * time.Second)
 	defer timer.Stop()
 	select {
-	case allowed := <-ch:
-		return allowed
+	case out := <-ch:
+		return out, out.Allowed
 	case <-timer.C:
 		allowed := dec.TimeoutAction == "allow"
 		action := "deny"
@@ -769,17 +816,18 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 		}
 		resolved, err := i.db.ResolveIntercept(pendingID, "timeout", action, "审批超时，按超时策略处理")
 		if err != nil {
-			return false
+			return AskOutcome{}, false
 		}
 		if !resolved {
 			detail, err := i.db.GetInterceptDetail(pendingID)
-			return err == nil && detail != nil && (detail.Status == "allowed" || (detail.Audit != nil && detail.Audit.EffectiveAction == "allow"))
+			ok := err == nil && detail != nil && (detail.Status == "allowed" || (detail.Audit != nil && detail.Audit.EffectiveAction == "allow"))
+			return AskOutcome{Allowed: ok}, ok
 		}
-		return allowed
+		return AskOutcome{Allowed: allowed}, allowed
 	case <-ctx.Done():
 		_, _ = i.db.ResolveIntercept(pendingID, "denied", "deny", "工作已取消")
 		_ = i.db.CompleteIntercept(pendingID, audit.RunID, audit.ToolUseID, "not_executed", "执行前工作已取消", false)
-		return false
+		return AskOutcome{}, false
 	}
 }
 
@@ -787,6 +835,17 @@ var ErrAlreadyDecided = errors.New("审批已处理或不存在，请刷新记�
 
 // Decide resolves a pending request. Called by the HTTP decide endpoint.
 func (i *Interceptor) Decide(pendingID int64, allowed bool) error {
+	return i.DecideWithInput(pendingID, allowed, nil, nil)
+}
+
+// DecideWithInput resolves a pending request, optionally with the human-edited
+// (narrowed) arguments. edited must already have passed Narrow — the caller
+// (HTTP handler) validates first so a bad edit is a 400, not a half-applied
+// decision; the guard re-validates before executing as a second line of defense.
+//
+// The edit and its diff go into the audit next to the decision, so the record
+// answers "which exact arguments were approved" and not merely "approved".
+func (i *Interceptor) DecideWithInput(pendingID int64, allowed bool, edited json.RawMessage, diff []string) error {
 	status := "denied"
 	if allowed {
 		status = "allowed"
@@ -795,13 +854,18 @@ func (i *Interceptor) Decide(pendingID int64, allowed bool) error {
 	if allowed {
 		action, reason = "allow", "人工允许执行"
 	}
-	resolved, err := i.db.ResolveIntercept(pendingID, status, action, reason)
+	var extra map[string]any
+	if allowed && len(edited) > 0 {
+		reason = "人工改参放行（只许收窄）：" + strings.Join(diff, "；")
+		extra = map[string]any{"edited_input": json.RawMessage(edited), "narrow_diff": diff}
+	}
+	resolved, err := i.db.ResolveInterceptWith(pendingID, status, action, reason, extra)
 	if err != nil {
 		return err
 	}
 	if !resolved {
 		return ErrAlreadyDecided
 	}
-	i.pending.resolve(pendingID, allowed)
+	i.pending.resolve(pendingID, AskOutcome{Allowed: allowed, Edited: edited, Diff: diff})
 	return nil
 }

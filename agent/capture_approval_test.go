@@ -44,7 +44,10 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 		name, action, status, execution string
 		manual, approve, toolError      bool
 	}{
-		{"model_fallback", "invalid", "allowed", "succeeded", false, false, false},
+		// P15：裁判输出无法解析时走失败策略，默认已从 allow 改成 ask —— 这里
+		// 等 1 秒超时（本用例的 AskTimeoutAction=allow）后放行，因此状态是 timeout
+		// 而不是 allowed，InitialAction 是 ask 而不是 allow。
+		{"model_fallback", "invalid", "timeout", "succeeded", false, false, false},
 		{"model_allow", "allow", "allowed", "succeeded", false, false, false},
 		{"model_deny", "deny", "denied", "not_executed", false, false, false},
 		{"human_allow_tool_error", "ask", "allowed", "failed", true, true, true},
@@ -114,7 +117,7 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 			a := detail.Audit
 			initialAction := tc.action
 			if tc.action == "invalid" {
-				initialAction = "allow"
+				initialAction = "ask" // P15 失败策略默认 ask（失效安全）
 			}
 			wantUserMessage := "record this review"
 			if initialAction == "allow" {

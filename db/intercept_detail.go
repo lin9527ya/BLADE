@@ -40,8 +40,13 @@ type InterceptAudit struct {
 	// MatchedSurface / MatchedText：规则命中的具体表面（raw | nested_string |
 	// nested_key | percent_decoded:N | tool_name）与命中片段——P12 遮挡面，
 	// 让「为什么命中/为什么没命中」可复盘。
-	MatchedSurface   string     `json:"matched_surface,omitempty"`
-	MatchedText      string     `json:"matched_text,omitempty"`
+	MatchedSurface string `json:"matched_surface,omitempty"`
+	MatchedText    string `json:"matched_text,omitempty"`
+	// ModelVerdict：结构化裁判（P15）打出的各轴把握与建议，一行 JSON —— 让
+	// "模型当时怎么判的、代码为什么这么定"都可复盘。ModelReply 是模型原始回复
+	// （截断），解析失败时它就是唯一的线索。
+	ModelVerdict     string     `json:"model_verdict,omitempty"`
+	ModelReply       string     `json:"model_reply,omitempty"`
 	ProfileID        int64      `json:"profile_id,omitempty"`
 	ExecutionStatus  string     `json:"execution_status"`
 	Output           string     `json:"output,omitempty"`
@@ -79,13 +84,24 @@ func (d *DB) GetInterceptDetail(id int64) (*InterceptDetail, error) {
 // ResolveIntercept atomically settles a pending request. A timeout cannot
 // overwrite a human decision and repeat decisions cannot rewrite history.
 func (d *DB) ResolveIntercept(id int64, status, action, reason string) (bool, error) {
+	return d.ResolveInterceptWith(id, status, action, reason, nil)
+}
+
+// ResolveInterceptWith is ResolveIntercept plus audit fields for this decision —
+// P15 用它把「人工改参放行」的收窄结果（edited_input / narrow_diff）一并写进
+// audit，事后再看这条审批时，"到底放行了哪份参数"是可核对的。
+func (d *DB) ResolveInterceptWith(id int64, status, action, reason string, extra map[string]any) (bool, error) {
 	execution := "not_executed"
 	if action == "allow" {
 		execution = "awaiting_result"
 	}
-	patch, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"effective_action": action, "decision_reason": reason, "execution_status": execution,
-	})
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	patch, err := json.Marshal(fields)
 	if err != nil {
 		return false, err
 	}

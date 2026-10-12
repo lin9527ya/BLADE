@@ -1258,8 +1258,13 @@ export const api = {
   // ---- intercept pending (ask) ----
   interceptPending: () => get<{ pending: InterceptPending[] }>("/intercept/pending").then((r) => arr(r.pending)),
   interceptGetOne: (id: number) => get<InterceptPending>(`/intercept/pending/${id}`),
-  interceptDecide: (id: number, decision: "allowed" | "denied") =>
-    post<{ ok: boolean }>(`/intercept/pending/${id}/decide`, { decision }),
+  // editedInput（P15）：改参放行。只允许"比原参数更保守"的修改，服务端用
+  // intercept.Narrow 复核，不合规返回 400 并把越界原因写在 message 里。
+  interceptDecide: (id: number, decision: "allowed" | "denied", editedInput?: unknown) =>
+    post<{ ok: boolean }>(`/intercept/pending/${id}/decide`, {
+      decision,
+      ...(editedInput === undefined ? {} : { edited_input: editedInput }),
+    }),
   interceptExecution: (id: number, conversationId?: number) =>
     get<import("@/lib/types").InterceptExecution>(
       `/intercept/history/${id}/execution${conversationId ? `?conversation=${conversationId}` : ""}`,
