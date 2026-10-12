@@ -196,6 +196,24 @@ func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = ad
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 
+// ProxyEnv exposes proxyEnv to the host: a command the host launches on the agent's
+// behalf (P13 托管长任务) must get the SAME env as the agent's own Bash tool, or its
+// traffic would bypass the recording MITM (no evidence binding) and fail TLS.
+func ProxyEnv(proxyAddr, caCert string) []string { return proxyEnv(proxyAddr, caCert) }
+
+// EnsureRunDir is the same convention as ensureRunDir for callers holding the task
+// id in the ledger's string form (the P13 execution service): a host-launched long
+// task then runs in the directory the agent's Bash tool uses, so relative artifacts
+// land where the agent expects them.
+func EnsureRunDir(base, taskID string, intentID int64) string {
+	dir := filepath.Join(base, "tasks", taskID)
+	if intentID > 0 {
+		dir = filepath.Join(dir, "i"+strconv.FormatInt(intentID, 10))
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
 // proxyEnv builds the Bash-subprocess env that routes child-command HTTP through
 // the egress proxy (the recording MITM when capture is on, or the global proxy
 // directly when it is off) and, only when a MITM CA is present, makes the common

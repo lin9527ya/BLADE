@@ -380,6 +380,8 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// P13：执行服务在建 Manager 时就位（不启后台协程——巡检由 RestoreTaskRuntimes 拉起，
 	// 与"构造器不做后台工作"的既有纪律一致）。
 	m.execs = NewExecutionService(pg, dir)
+	// 托管执行与 agent Bash 同环境（记录代理 + CA 信任），按次求值以跟随开关变化。
+	m.execs.SetEnvResolver(func() []string { return agent.ProxyEnv(m.ProxyAddr(), m.ProxyCACert()) })
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
