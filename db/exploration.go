@@ -1344,6 +1344,41 @@ WHERE exploration_id=$1 AND node_id=$2 AND kind IN ('tool_use','tool_result')`, 
 	return n, err
 }
 
+// NodeDigest is a one-line view of a node (id/state/summary) for the P14 resident
+// context index: one query, no payload replay, no edges.
+type NodeDigest struct {
+	ID      int64
+	State   string
+	Summary string
+}
+
+// ListNodeDigests returns nodes of one kind, newest first, capped — optionally
+// filtered to a set of states (empty = all states). Used to re-inject a compact
+// graph index into every model request (see agent.DomainCompactor), so it must
+// stay cheap: single table, single query.
+func (s *ExplorationStore) ListNodeDigests(kind string, states []string, limit int) ([]NodeDigest, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(`SELECT id, COALESCE(state,''), COALESCE(payload->>'summary','')
+FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 AND (COALESCE(array_length($3::text[],1),0)=0 OR state = ANY($3::text[]))
+ORDER BY id DESC LIMIT $4`, s.expID, kind, states, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []NodeDigest{}
+	for rows.Next() {
+		var d NodeDigest
+		if err := rows.Scan(&d.ID, &d.State, &d.Summary); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // Stats returns node counts grouped by kind (for dashboard).
 func (s *ExplorationStore) Stats() (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT kind, count(*) FROM exploration_nodes WHERE exploration_id=$1 GROUP BY kind`, s.expID)

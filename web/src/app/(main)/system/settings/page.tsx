@@ -474,6 +474,10 @@ export default function SystemSettingsPage() {
               <b>规划者 / 执行者 / 主 Agent / 对话</b>）改用 noa 接管上下文，取代内置压缩，
               压缩原文会归档到任务工作目录下便于回溯。切换即时生效（对之后启动的运行生效），无需重建 Agent；
               关闭后立即恢复内置压缩。
+              <br />
+              <b>注意（与 P14 领域化压缩互斥）</b>：默认走的是「领域化压缩 + 常驻索引」
+              （7 段渗透领域摘要、压缩前原文落盘可回读、每轮附目标/约束/活跃方向索引）。
+              开启 noa 后这一层整体让位——两者抢同一个上下文管理器槽位，不会叠加。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-between gap-4">

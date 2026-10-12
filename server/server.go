@@ -186,6 +186,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return t, true
 		}
+		// P14：领域化压缩模板（settings.compaction_prompt）。空/缺失 → 内置 7 段模板。
+		agent.CompactionPromptOverride = func() (string, bool) {
+			v, ok, err := m.pg.GetSetting(settingCompactionPrompt)
+			if err != nil || !ok || strings.TrimSpace(v) == "" {
+				return "", false
+			}
+			return v, true
+		}
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 		agent.WrapupOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
