@@ -271,6 +271,11 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 // including the side-question checkpoint publisher installed during startup.
 func (s *Server) RestoreTaskRuntimes() {
 	m := s.m
+	// P13：先把上一进程遗留的活跃执行对账成 orphaned（不是 failed——没有任何观察），
+	// 再拉起周期巡检；必须在任务循环启动前完成，否则收尾门会把这些僵尸行当成在跑。
+	if x := m.Executions(); x != nil {
+		x.StartOrphanReconciler(s.ctx)
+	}
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).
 	for _, t := range m.LoadExisting() {

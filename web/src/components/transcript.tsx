@@ -129,7 +129,15 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
   return out;
 }
 
-const kindLabel = (k: string) => (k === "thinking" ? "推理" : k === "result" ? "总结" : "说明");
+// kindLabel names the generic (non-tool) activity kinds; anything else is 说明.
+const KIND_LABELS: Record<string, string> = {
+  thinking: "推理",
+  result: "总结",
+  execution_pending: "长任务待收束", // P13: 收笔时托管执行仍在跑，意图暂不判完
+  execution_done: "长任务已收束", // P13: 托管执行收束，意图退回待领续跑
+};
+
+const kindLabel = (k: string) => KIND_LABELS[k] ?? "说明";
 
 function ActivityTime({ ts }: { ts: string }) {
   const date = new Date(ts);

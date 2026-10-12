@@ -222,6 +222,7 @@ type Manager struct {
 	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
+	execs       *ExecutionService      // P13 长任务执行台账（托管进程活过 agent run）
 
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
@@ -376,6 +377,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		log.Printf("[llmusage] create table: %v", err)
 	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	// P13：执行服务在建 Manager 时就位（不启后台协程——巡检由 RestoreTaskRuntimes 拉起，
+	// 与"构造器不做后台工作"的既有纪律一致）。
+	m.execs = NewExecutionService(pg, dir)
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -446,6 +450,19 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// restart with capture already on keeps Playwright routed through the proxy.
 	m.syncBrowserMCPProxy()
 	return m, nil
+}
+
+// Executions returns the long-task execution service (P13). Nil when a Manager was
+// built as a bare literal (tests); every caller must tolerate nil.
+func (m *Manager) Executions() *ExecutionService { return m.execs }
+
+// CancelTaskExecutions cancels every in-flight execution of a task (任务停止/删除时调用)
+// and returns how many were asked to stop.
+func (m *Manager) CancelTaskExecutions(taskID, reason string) int {
+	if m == nil || m.execs == nil {
+		return 0
+	}
+	return m.execs.CancelAll(taskID, reason)
 }
 
 // TrafficEnabled reports whether traffic capture is on (default off). When off,

@@ -62,6 +62,15 @@ var (
 	AbortChatTurnFinished = cause("chat_turn_finished", "本轮对话已正常结束并释放 context",
 		"本轮对话已正常结束，服务端正在释放该轮 context 资源。这不是运行中断；若它出现在中断消息中，说明取消与收场事件发生了竞态")
 
+	// 托管长任务（P13 执行台账）。这三个原因也写进 tool_executions 台账的
+	// error/cancel_note 字段——同一个解释只维护一份，工具回给模型看的就是它。
+	AbortExecutionCancelledByUser = cause("execution_cancelled_by_user", "用户/模型取消了这条长任务执行",
+		"取消是一次完成的操作，不是失败：进程组被终止，台账记为 cancelled，cancel_note 里保留取消理由。如果这条执行是某条意图的证据来源，请据此改用其它手段重测。")
+	AbortExecutionHardTimeout = cause("execution_hard_timeout", "长任务到达硬超时上限",
+		"run_execution 的 timeout 到点：进程组被终止，台账记为 hard_timeout。这是硬上限而非判断——输出可能已部分写入台账的 partial_tail 与输出文件。需要更长时间就重起一次并给更大的 timeout。")
+	AbortExecutionOrphaned = cause("execution_orphaned", "执行进程已丢失（服务重启或进程死亡）",
+		"平台重启或托管进程消失，这条执行无人接管：台账记为 orphaned，且**不是 failed**——没有任何关于其结果的观察。请重新起一次执行。")
+
 	// Process-level and per-run hard backstop.
 	AbortShutdown = cause("shutdown", "后端进程正在关闭",
 		"后端进程收到 SIGINT 或 SIGTERM，正在重启、更新或关闭。所有运行中的 Agent 会被取消；重启后残留的 running 意图会重置为 open 并重新执行")

@@ -22,7 +22,7 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 )
 
-// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -61,6 +61,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P7 常驻技能注入 system 稳定段", func(t *testing.T) { accP7(t, env.forTest(t)) })
 	t.Run("P11 SRC 交付导出（简报 md → docx 可提交件）", func(t *testing.T) { accP11(t, env.forTest(t)) })
 	t.Run("P12 拦截遮挡面与失效安全", func(t *testing.T) { accP12(t, env.forTest(t)) })
+	t.Run("P13 执行台账与意图收尾门", func(t *testing.T) { accP13(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -94,6 +95,7 @@ func (e *accEnv) newTask(desc, goal string) (*Task, int64) {
 		e.s.engine.StopTask(task.ID)
 		_, _ = e.m.pg.Exec(`DELETE FROM findings WHERE task_id=$1`, tid)
 		_, _ = e.m.pg.Exec(`DELETE FROM llm_usage WHERE task_id=$1`, task.ID)
+		_, _ = e.m.pg.Exec(`DELETE FROM tool_executions WHERE task_id=$1`, task.ID)
 		_ = e.m.pg.DeleteTask(tid)
 	})
 	return task, tid
@@ -613,4 +615,243 @@ func accP7(t *testing.T, e *accEnv) {
 	if !strings.Contains(def.AlwaysSkills, "【常驻技能 · 始终遵守】") || !strings.Contains(def.AlwaysSkills, "永远先读证据") {
 		t.Fatalf("常驻技能未注入 system 稳定段：%q", def.AlwaysSkills)
 	}
+}
+
+// accP13 走完托管长任务的整条契约：工具起执行（id + 绝对输出路径）、有界等待超时
+// 不是错误、worker 收笔时执行还在跑则意图不判完（收尾门 + execution_pending）、
+// 执行落终态后观察者把意图退回 open 续跑（execution_done + 唤醒 planner）、看门狗
+// 对有在跑执行的意图让路、重启遗留行对账为 orphaned 而非 failed、取消理由回传并
+// 落库、negative 证据门先拒后过。
+func accP13(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p13", "托管长任务与收尾门")
+	st := task.Store
+	svc := e.m.Executions()
+	if svc == nil {
+		t.Fatal("执行服务未接线")
+	}
+	ctx := context.Background()
+
+	intent, err := st.AddIntent(map[string]any{"summary": "起一条长任务再收笔"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimIntent(intent, "work#1", db.IntentLeaseTTL); err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	tsx := agent.NewToolSet(st, "work#1")
+	tsx.SetTaskID(tid)
+	tsx.SetOwnerNode(intent)
+	tsx.SetExecService(svc)
+	runTool := workflowTool(t, tsx.WorkerTools(), "run_execution")
+	waitTool := workflowTool(t, tsx.WorkerTools(), "wait_execution")
+	cancelTool := workflowTool(t, tsx.WorkerTools(), "cancel_execution")
+
+	// ① run_execution：返回 execution_id 与输出文件的绝对路径，文件真实存在。
+	res, err := runTool.Call(ctx, json.RawMessage(`{"command":"sleep 4","description":"验收：长任务","timeout_ms":0}`), nil)
+	if err != nil || !strings.Contains(res.Flatten(), "execution started: ") {
+		t.Fatalf("run_execution: %v %s", err, res.Flatten())
+	}
+	var started struct {
+		ID         int64  `json:"execution_id"`
+		Status     string `json:"status"`
+		OutputPath string `json:"output_path"`
+	}
+	if err := json.Unmarshal([]byte(execSnapshotJSON(t, res.Flatten())), &started); err != nil {
+		t.Fatalf("decode execution snapshot: %v raw=%s", err, res.Flatten())
+	}
+	if started.ID <= 0 || started.Status != db.ExecRunning {
+		t.Fatalf("执行快照不对: %+v", started)
+	}
+	if !filepath.IsAbs(started.OutputPath) || !strings.Contains(started.OutputPath, filepath.Join("tasks", task.ID, "executions")) {
+		t.Fatalf("输出路径必须是任务执行目录下的绝对路径: %q", started.OutputPath)
+	}
+	if _, err := os.Stat(started.OutputPath); err != nil {
+		t.Fatalf("输出文件不存在: %v", err)
+	}
+
+	// ② wait_execution 到点仍是 running → 正常返回（不是错误），并带部分输出字段。
+	wres, err := waitTool.Call(ctx, json.RawMessage(`{"execution_id":`+itoa64(started.ID)+`,"timeout_ms":300}`), nil)
+	if err != nil {
+		t.Fatalf("wait_execution: %v", err)
+	}
+	if !strings.Contains(wres.Flatten(), "超时是观察不是失败") || !strings.Contains(wres.Flatten(), "running") {
+		t.Fatalf("超时等待必须读作观察而非失败: %s", wres.Flatten())
+	}
+
+	// ③ 收尾门：执行在跑 → 意图不判完，留 running + execution_pending 时间线。
+	if !e.s.engine.execGate(task, intent, "work#1") {
+		t.Fatal("有在跑执行时必须拦住收尾")
+	}
+	node, err := st.GetNode(intent)
+	if err != nil || node == nil || node.State != "running" {
+		t.Fatalf("收尾门后意图仍在 running: %+v err=%v", node, err)
+	}
+	if !activitySeen(t, st, "execution_pending") {
+		t.Fatal("时间线缺少 execution_pending")
+	}
+	// 反向对照：名下没有在跑执行的意图，门必须放行（否则任何意图都收不了尾）。
+	quiet, err := st.AddIntent(map[string]any{"summary": "没有长任务的意图"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.s.engine.execGate(task, quiet, "work#1") {
+		t.Fatal("没有在跑执行时门必须放行")
+	}
+
+	// ④ 看门狗让路：租约过期但执行在跑 → 不收这条意图。
+	if _, err := e.m.pg.Exec(`UPDATE exploration_nodes SET heartbeat_at=now()-interval '30 minutes', lease_expires_at=now()-interval '15 minutes' WHERE id=$1`, intent); err != nil {
+		t.Fatal(err)
+	}
+	e.s.engine.sweepExpiredLeases(task)
+	if node, _ := st.GetNode(intent); node == nil || node.State != "running" {
+		t.Fatalf("有在跑执行时看门狗不得回收: %+v", node)
+	}
+
+	// ⑤ 执行落终态 → 观察者把意图退回 open 并写 execution_done（planner 被唤醒）。
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, _ := st.GetNode(intent); n != nil && n.State == "open" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if node, _ := st.GetNode(intent); node == nil || node.State != "open" {
+		t.Fatalf("执行收束后意图应退回 open: %+v", node)
+	}
+	if !activitySeen(t, st, "execution_done") {
+		t.Fatal("时间线缺少 execution_done")
+	}
+	row, err := e.m.pg.GetExecution(started.ID)
+	if err != nil || row == nil || row.Status != db.ExecCompleted {
+		t.Fatalf("执行终态落库: %+v err=%v", row, err)
+	}
+
+	// ⑥ 取消理由回传并落库。
+	cres, err := runTool.Call(ctx, json.RawMessage(`{"command":"sleep 30","description":"验收：取消"}`), nil)
+	if err != nil || !strings.Contains(cres.Flatten(), "execution started: ") {
+		t.Fatalf("run_execution(取消用): %v %s", err, cres.Flatten())
+	}
+	var victim struct {
+		ID int64 `json:"execution_id"`
+	}
+	if err := json.Unmarshal([]byte(execSnapshotJSON(t, cres.Flatten())), &victim); err != nil {
+		t.Fatal(err)
+	}
+	kres, err := cancelTool.Call(ctx, json.RawMessage(`{"execution_id":`+itoa64(victim.ID)+`,"reason":"方向错误，改打别的接口"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(kres.Flatten(), "方向错误，改打别的接口") {
+		t.Fatalf("取消理由必须回传模型: %s", kres.Flatten())
+	}
+	cancelDeadline := time.Now().Add(15 * time.Second)
+	var crow *db.ToolExecution
+	for time.Now().Before(cancelDeadline) {
+		crow, _ = e.m.pg.GetExecution(victim.ID)
+		if crow != nil && db.ExecutionTerminal(crow.Status) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if crow == nil || crow.Status != db.ExecCancelled || crow.CancelNote != "方向错误，改打别的接口" {
+		t.Fatalf("取消必须落库并保真理由: %+v", crow)
+	}
+
+	// ⑦ 重启遗留行对账：orphaned（不是 failed）。
+	left, err := e.m.pg.CreateExecution(&db.ToolExecution{TaskID: task.ID, Worker: "work#1", Tool: "run_execution", Command: "nuclei -u https://stale"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.pg.MarkExecutionRunning(left); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ReconcileOrphaned(); n < 1 {
+		t.Fatalf("对账应至少标 1 条，实际 %d", n)
+	}
+	if got, _ := e.m.pg.GetExecution(left); got == nil || got.Status != db.ExecOrphaned {
+		t.Fatalf("遗留行应为 orphaned（绝不为 failed）: %+v", got)
+	}
+
+	// ⑧ negative 证据门：零证据先拒，补一次真实执行后过。
+	// 用一条【全新】意图：上面那条已经跑过执行，本来就该放行——证据门判的是"这个
+	// 方向到底有没有真实探针证据"，不是"这个任务有没有跑过东西"。
+	probeIntent, err := st.AddIntent(map[string]any{"summary": "没有探针证据的意图"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimIntent(probeIntent, "work#1", db.IntentLeaseTTL); err != nil || !ok {
+		t.Fatalf("claim probe intent: ok=%v err=%v", ok, err)
+	}
+	ptx := agent.NewToolSet(st, "work#1")
+	ptx.SetTaskID(tid)
+	ptx.SetOwnerNode(probeIntent)
+	ptx.SetExecService(svc)
+	conclude := workflowTool(t, ptx.WorkerTools(), "conclude_intent")
+	probeRun := workflowTool(t, ptx.WorkerTools(), "run_execution")
+	zeroRes, err := conclude.Call(ctx, json.RawMessage(`{"outcome":"negative","note":"探针未发现"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(zeroRes.Flatten(), "不能声明 negative") {
+		t.Fatalf("零证据的 negative 必须被拒: %s", zeroRes.Flatten())
+	}
+	if got, err := st.GetIntentSemanticOutcome(probeIntent); err != nil || got != "" {
+		t.Fatalf("被拒的 negative 不得落库: %q err=%v", got, err)
+	}
+	// 补一次真实执行并等它收束 → 同一句 negative 通过。
+	ev, err := probeRun.Call(ctx, json.RawMessage(`{"command":"true","description":"验收：探针证据"}`), nil)
+	if err != nil || !strings.Contains(ev.Flatten(), "execution started: ") {
+		t.Fatalf("run_execution(证据): %v %s", err, ev.Flatten())
+	}
+	var probe struct {
+		ID int64 `json:"execution_id"`
+	}
+	if err := json.Unmarshal([]byte(execSnapshotJSON(t, ev.Flatten())), &probe); err != nil {
+		t.Fatal(err)
+	}
+	probeDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(probeDeadline) {
+		st2, _ := svc.Get(ctx, probe.ID)
+		if !agent.ExecActive(st2.Status) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	okRes, err := conclude.Call(ctx, json.RawMessage(`{"outcome":"negative","note":"探针已发出且回包否定"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(okRes.Flatten(), "已记录意图") {
+		t.Fatalf("有真实执行证据后 negative 应通过: %s", okRes.Flatten())
+	}
+	if got, err := st.GetIntentSemanticOutcome(probeIntent); err != nil || got != "negative" {
+		t.Fatalf("通过后语义终态应落库: %q err=%v", got, err)
+	}
+}
+
+// execSnapshotJSON pulls the snapshot object out of a run_execution tool result
+// ("execution started: <id>\n<json>\n提示：…") and insists it carries an id.
+func execSnapshotJSON(t *testing.T, text string) string {
+	t.Helper()
+	lines := strings.SplitN(text, "\n", 3)
+	if len(lines) < 2 {
+		t.Fatalf("执行工具返回里没有快照 JSON: %q", text)
+	}
+	return strings.TrimSpace(lines[1])
+}
+
+// activitySeen reports whether the task's timeline contains an activity of kind k.
+func activitySeen(t *testing.T, st *db.ExplorationStore, kind string) bool {
+	t.Helper()
+	acts, _, err := st.ActivityList(nil, 0, 200)
+	if err != nil {
+		t.Fatalf("activity list: %v", err)
+	}
+	for _, a := range acts {
+		if a.Kind == kind {
+			return true
+		}
+	}
+	return false
 }

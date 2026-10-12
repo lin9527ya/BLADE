@@ -72,6 +72,11 @@ const (
 	modelErrorRetries      = 2               // model_error 收场后额外重试的次数
 	modelErrorRetryBackoff = 3 * time.Second // 每次重试前的退避
 	workControlWaitTimeout = 30 * time.Second
+
+	// P13 执行观察者：托管长任务落终态后把意图退回 open 的轮询节奏与守望上限
+	// （上限只是兜底，正常路径由 StopTask/任务收尾取消执行而立即收束）。
+	execWatchPoll = 5 * time.Second
+	execWatchMax  = 24 * time.Hour
 )
 
 var errWorkControlConflict = errors.New("work control conflict")
@@ -143,6 +148,7 @@ type Engine struct {
 	inflight     sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
 	coordStarted sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
 	budgetStage  sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
+	execWatch    sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
 
 	// resolve returns a task's dedicated planner/worker (wired by the server as the
 	// authoritative task-router). nil,nil means this task is deliberately unavailable
@@ -249,6 +255,12 @@ func (e *Engine) StopTask(taskID string) {
 	e.deleteMu.Lock()
 	e.deleting.Store(taskID, true)
 	e.deleteMu.Unlock()
+
+	// P13：任务停止/删除时把托管的长任务也收掉（执行进程独立于 agent run 存活，
+	// 不会随 run 结束自然消失）。暂停不在此列——暂停不误杀长任务。
+	if n := e.m.CancelTaskExecutions(taskID, "任务已停止，执行被取消"); n > 0 {
+		log.Printf("[exec] task %s 停止：取消 %d 个在跑执行", taskID, n)
+	}
 
 	e.cancelExec(taskID, agent.AbortTaskDeleted)
 	e.runtimeMu.Lock()
@@ -1174,6 +1186,13 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	if err != nil {
 		log.Printf("[worker %s] intent %d: %v", name, intent.ID, err)
 	}
+	// ── P13 意图收尾门 ── 本次 run 正常收笔（err==nil）才走：托管长任务还在跑时
+	// 不做终态判定（详见 execGate）。blocked（run 自身出错）不走此门——没测成不是
+	// 结论，也不会被当成测干净。
+	if err == nil && e.execGate(t, intent.ID, name) {
+		e.touch(t.ID)
+		return true
+	}
 	// terminal分流：撞步数上限 ≠ 完成。max_turns→exhausted（规划者据此知道这个方向
 	// 试过但没真正做完、需换角度，而非当成已覆盖永久跳过）；出错→blocked；正常→done。
 	state := "done"
@@ -1207,6 +1226,118 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	e.touch(t.ID)
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
+}
+
+// execGate is the P13 finalization gate. A run that finishes normally while ITS OWN
+// hosted long tasks (nuclei/ffuf/nmap scans, dictionary batches) are still running
+// must not settle the intent: the output is not in yet, and settling now would be
+// "宣布这方向探完了 while the scan is still going". The intent stays running and
+// an execution watcher is registered — when the executions reach a terminal state
+// the intent goes back to 'open' (the pool re-claims it, the worker resumes from its
+// transcript) and the planner is woken. Returns true when the caller must not settle.
+//
+// Factored out of runIntent so the acceptance suite can drive the decision against a
+// real ledger without a live LLM run.
+func (e *Engine) execGate(t *Task, intentID int64, worker string) bool {
+	if e.isSettling(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		return false
+	}
+	execs := e.m.Executions()
+	if execs == nil {
+		return false
+	}
+	active := execs.ActiveForIntent(intentID)
+	if len(active) == 0 {
+		return false
+	}
+	parts := make([]string, 0, len(active))
+	for _, a := range active {
+		desc := a.Description
+		if desc == "" {
+			desc = preview(a.Command, 60)
+		}
+		parts = append(parts, fmt.Sprintf("#%d %s: %s", a.ID, a.Tool, desc))
+	}
+	log.Printf("[worker %s] task %s 意图 #%d 收笔但仍有 %d 个执行在跑，意图保持 running: %s",
+		worker, t.ID, intentID, len(active), strings.Join(parts, " / "))
+	nid := intentID
+	e.emitActivity(t, db.Activity{NodeID: &nid, Worker: worker, Kind: "execution_pending",
+		Summary: fmt.Sprintf("收笔待执行：%d 个长任务仍在跑，意图暂不判完", len(active)),
+		Detail:  "在跑：" + strings.Join(parts, " / ") + "\n执行全部落终态后本意图会自动退回 open 续跑（已写入的产出保留）。"})
+	e.watchExecutions(t, intentID)
+	return true
+}
+
+// watchExecutions is the execution watcher behind the P13 finalization gate: it
+// polls the ledger until the intent has no in-flight execution left, then returns
+// the intent to 'open' (the pool re-claims it and the worker resumes from its
+// transcript) and wakes the planner with a done-trigger. Registered at most once
+// per intent — the intent stays running while the watcher lives, so only one run
+// can have parked it. In-memory by design: a restart is covered by orphan
+// reconciliation (those rows go terminal) plus the lease watchdog.
+func (e *Engine) watchExecutions(t *Task, intentID int64) {
+	if _, loaded := e.execWatch.LoadOrStore(intentID, true); loaded {
+		return
+	}
+	go func() {
+		defer e.execWatch.Delete(intentID)
+		execs := e.m.Executions()
+		if execs == nil {
+			return
+		}
+		deadline := time.Now().Add(execWatchMax)
+		for time.Now().Before(deadline) {
+			if len(execs.ActiveForIntent(intentID)) == 0 {
+				break
+			}
+			if sleepCtx(context.Background(), execWatchPoll) {
+				return // 引擎整体关停
+			}
+		}
+		rows, _ := execs.ListForIntent(intentID)
+		// 执行落终态 → 把这条意图交回可领取状态。CAS 失败（意图已被别的路径收走/
+		// 任务已停）只记一行日志：终态已有人负责，观察者静默退出。
+		reopened, err := t.Store.CompareAndSetIntentState(intentID, "running", "open")
+		if err != nil {
+			log.Printf("[exec] task %s 意图 #%d 执行收束后回退失败: %v", t.ID, intentID, err)
+			return
+		}
+		if !reopened {
+			log.Printf("[exec] task %s 意图 #%d 执行收束，但意图已不在 running（无需回退）", t.ID, intentID)
+			return
+		}
+		nid := intentID
+		e.emitActivity(t, db.Activity{NodeID: &nid, Worker: "system", Kind: "execution_done",
+			Summary: "长任务执行收束，意图退回待领续跑", Detail: executionDigest(rows)})
+		log.Printf("[exec] task %s 意图 #%d 执行收束，已退回 open", t.ID, intentID)
+		e.touch(t.ID)
+		t.NotifyDone(intentID)
+	}()
+}
+
+// executionDigest renders the intent's executions as one readable block (the
+// activity detail; the planner reads it back through node_detail).
+func executionDigest(rows []*db.ToolExecution) string {
+	if len(rows) == 0 {
+		return "（无执行记录）"
+	}
+	var b strings.Builder
+	for i, r := range rows {
+		if i >= 10 {
+			b.WriteString(fmt.Sprintf("… 共 %d 条执行记录\n", len(rows)))
+			break
+		}
+		exit := "-"
+		if r.ExitCode != nil {
+			exit = strconv.Itoa(*r.ExitCode)
+		}
+		b.WriteString(fmt.Sprintf("#%d [%s] %s exit=%s bytes=%d\n  命令: %s\n  输出: %s\n",
+			r.ID, r.Status, r.Error, exit, r.OutputBytes, preview(r.Command, 160), r.OutputPath))
+		if tail := strings.TrimSpace(r.PartialTail); tail != "" {
+			b.WriteString("  末尾输出: " + preview(tail, 400) + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // runDetachedIntent runs one paused intent OUTSIDE the worker pool in its own
