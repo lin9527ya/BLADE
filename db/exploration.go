@@ -1333,6 +1333,17 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
 	return n == 1, nil
 }
 
+// CountNodeToolActivity counts the node's recorded tool calls (tool_use /
+// tool_result activities). It is the P13 negative-evidence gate's second source:
+// a claim of "探针实证否定" must be backed by at least one real tool call on the
+// intent (or one托管执行记录).
+func (s *ExplorationStore) CountNodeToolActivity(nodeID int64) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT count(*) FROM activity
+WHERE exploration_id=$1 AND node_id=$2 AND kind IN ('tool_use','tool_result')`, s.expID, nodeID).Scan(&n)
+	return n, err
+}
+
 // Stats returns node counts grouped by kind (for dashboard).
 func (s *ExplorationStore) Stats() (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT kind, count(*) FROM exploration_nodes WHERE exploration_id=$1 GROUP BY kind`, s.expID)

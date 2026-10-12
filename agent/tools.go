@@ -63,6 +63,9 @@ type ToolSet struct {
 	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
 	// are filtered out of the agent's tool list. The scope field stays regardless.
 	coverageDisabled bool
+	// execService（P13）由 host 注入：长任务执行的托管后端。nil = 未接线，
+	// 四个执行工具会返回可读拒绝而不是静默消失。
+	execService ExecService
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
@@ -224,6 +227,9 @@ func (t *ToolSet) SetEnrich(e EnrichTrigger) { t.enrich = e }
 // intent node; planner/main: the begin root). Assets created/referenced while
 // ownerNode is set are anchored to it as lineage (not visibility).
 func (t *ToolSet) SetOwnerNode(id int64) { t.ownerNode = id }
+
+// SetExecService 注入长任务执行服务（P13）；nil 表示本运行环境不支持后台执行。
+func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 
 // anchorOwner records a lineage edge from this run's owner node to an asset
 // (no-op if unset). Provenance only — the asset graph is global and shared, so
@@ -1492,6 +1498,21 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 			if t.ownerNode <= 0 {
 				return actool.Errorf("conclude_intent: 当前没有运行中的意图（ownerNode 未设置）"), nil
 			}
+			// P13 negative 证据门：negative 是"探针确实发出且回包否定"的断言，不是
+			// "我没打进去"的委婉说法。本意图零真实执行/零工具调用记录 → 拒绝，并给出
+			// 可操作的分岔：没测成如实说没测成，探过就补上探针证据（工具调用/长任务执行）。
+			if outcome == "negative" {
+				ran := int64(0)
+				if t.execService != nil {
+					ran, _ = t.execService.CountRanForIntent(t.ownerNode)
+				}
+				acts, _ := t.ts.CountNodeToolActivity(t.ownerNode)
+				if ran == 0 && acts == 0 {
+					return actool.Errorf(fmt.Sprintf("conclude_intent: 意图 #%d 没有任何工具调用/执行记录，不能声明 negative——"+
+						"negative 的含义是【探针确实发出且回包明确否定】。确实没测成就如实说明没测成（让意图以 blocked/exhausted 收尾）；"+
+						"确实探过就先给出探针证据（真实工具调用，或长任务用 run_execution 起、wait_execution 收），再声明 negative。", t.ownerNode)), nil
+				}
+			}
 			if err := t.ts.SetIntentSemanticOutcome(t.ownerNode, outcome, strings.TrimSpace(a.Note)); err != nil {
 				return actool.Errorf("conclude_intent: " + err.Error()), nil
 			}
@@ -2187,6 +2208,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
 		t.killWorkTool(), t.steerWorkTool(),
+		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
+		t.runExecution(), t.waitExecution(), t.getExecution(), t.cancelExecution(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。

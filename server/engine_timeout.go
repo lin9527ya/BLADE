@@ -219,6 +219,12 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 		return
 	}
 	for _, l := range leases {
+		// P13：这条意图还有托管长任务在跑——心跳停不是因为 worker 僵死，而是收尾门
+		// 主动把意图留在 running 等执行落地。租约过期是预期内的（无人续租），回收会
+		// 把意图从观察者手里抢走，跳过；执行收束后观察者自会放它回 open。
+		if execs := e.m.Executions(); execs != nil && len(execs.ActiveForIntent(l.IntentID)) > 0 {
+			continue
+		}
 		live := e.cancelWork(l.IntentID, agent.AbortWorkLeaseExpired)
 		reopened, err := t.Store.ReopenExpiredIntent(l.IntentID, l.Owner)
 		if err != nil {
@@ -251,10 +257,22 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 	// ④ 等在跑 worker/planner drain(在跑 run 因夹逼的 MaxDuration 自行进收尾);
 	// 超过 grace 仍未清空 → 硬 cancel 该任务 exec ctx(settling-aware 分支正确归类)。
 	hardStop := time.Now().Add(settleDrainGrace)
-	for e.inflightCount(t.ID) > 0 {
+	for {
+		execs := e.m.Executions()
+		pendingExecs := 0
+		if execs != nil {
+			pendingExecs = len(execs.ActiveForTask(t.ID))
+		}
+		if e.inflightCount(t.ID) == 0 && pendingExecs == 0 {
+			break
+		}
 		if time.Now().After(hardStop) {
-			log.Printf("[deadline] task %s drain 超时(%s),硬取消在跑 run", t.ID, settleDrainGrace)
+			log.Printf("[deadline] task %s drain 超时(%s),硬取消在跑 run(%d 个执行在跑)", t.ID, settleDrainGrace, pendingExecs)
 			e.cancelExec(t.ID, agent.AbortSettleDrainTimeout)
+			// P13：任务收尾不等长任务——托管执行一并取消（收尾后没人再读它的输出）。
+			if n := e.m.CancelTaskExecutions(t.ID, "任务收尾，执行被取消"); n > 0 {
+				log.Printf("[deadline] task %s 收尾取消 %d 个在跑执行", t.ID, n)
+			}
 			_ = sleepCtx(ctx, 3*time.Second) // 给 worker 分支一点时间落库/归类
 			break
 		}

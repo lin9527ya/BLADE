@@ -634,7 +634,9 @@ export type ActivityKind =
   | "usage" // live cumulative token usage (per model turn); not rendered
   | "llm_switch" // automatic/manual task-level LLM switch
   | "llm_failover" // task-level provider switch / chain exhaustion audit event
-  | "intercept_request"; // user-approval request from the intercept layer
+  | "intercept_request" // user-approval request from the intercept layer
+  | "execution_pending" // P13: 收笔时托管长任务仍在跑，意图暂不判完
+  | "execution_done"; // P13: 托管执行收束，意图退回待领续跑
 
 // ChatAttachment 是一次上传的文件:path 相对该会话/任务工作目录(即 agent 的 CWD)。
 export interface ChatAttachment {

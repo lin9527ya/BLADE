@@ -261,6 +261,38 @@ DROP TRIGGER IF EXISTS trg_expnodes_upd ON exploration_nodes;
 CREATE TRIGGER trg_expnodes_upd BEFORE UPDATE ON exploration_nodes
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 工具执行台账（P13）：长任务（扫描/爆破/批量枚举）不再随 agent run 的 Session 结束
+-- 被静默杀掉——执行进程独立进程组存活、输出落盘（绝对路径）、状态入台账；意图收尾门
+-- 与租约看门狗都以本表的活跃行为准。orphaned = 服务重启后遗留（有意不计入 failed）。
+-- intent_id 刻意不设外键：意图被硬删后，台账仍要保留（与 llm_usage 同理）。
+CREATE TABLE IF NOT EXISTS tool_executions (
+    id           BIGSERIAL PRIMARY KEY,
+    task_id      TEXT NOT NULL DEFAULT '',
+    intent_id    BIGINT,
+    worker       TEXT NOT NULL DEFAULT '',
+    tool         TEXT NOT NULL DEFAULT '',
+    command      TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'queued'
+                 CHECK (status IN ('queued','running','completed','failed','cancelled','hard_timeout','orphaned')),
+    exit_code    INTEGER,
+    output_path  TEXT NOT NULL DEFAULT '',
+    output_bytes BIGINT NOT NULL DEFAULT 0,
+    partial_tail TEXT NOT NULL DEFAULT '',
+    cancel_note  TEXT NOT NULL DEFAULT '',
+    error        TEXT NOT NULL DEFAULT '',
+    started_at   TIMESTAMPTZ,
+    ended_at     TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_tool_exec_intent  ON tool_executions(intent_id, status);
+CREATE INDEX IF NOT EXISTS idx_tool_exec_task    ON tool_executions(task_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_exec_active  ON tool_executions(status) WHERE status IN ('queued','running');
+DROP TRIGGER IF EXISTS trg_tool_exec_upd ON tool_executions;
+CREATE TRIGGER trg_tool_exec_upd BEFORE UPDATE ON tool_executions
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 CREATE TABLE IF NOT EXISTS exploration_edges (
     exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
     src_id         BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,

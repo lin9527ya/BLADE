@@ -36,6 +36,8 @@ type Planner struct {
 	workDir           string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
 	nonStreamingFn    func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
+	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
+	execService ExecService
 	noaEnabledFn      func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn       func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor         *Compactor                             // cold-node compaction (§7); nil = disabled
@@ -62,6 +64,9 @@ func (p *Planner) SetCompactor(c *Compactor) { p.compactor = c }
 // SetNonStreaming wires a resolver deciding whether runs use the non-streaming
 // model path (true = non-streaming). nil/unset = streaming (default).
 func (p *Planner) SetNonStreaming(fn func() bool) { p.nonStreamingFn = fn }
+
+// SetExecService 注入长任务执行服务（P13）；nil = 未接线（工具返回可读拒绝）。
+func (p *Planner) SetExecService(svc ExecService) { p.execService = svc }
 
 func (p *Planner) nonStreaming() bool { return p.nonStreamingFn != nil && p.nonStreamingFn() }
 
@@ -360,6 +365,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
+	tsx.SetExecService(p.execService)
 	tsx.SetFindingRecorder(p.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())

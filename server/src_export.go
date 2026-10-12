@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -127,6 +128,15 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) report.SrcI
 	}
 	if f.Status == db.FindingRetracted {
 		notes = append([]string{"⚠ 该发现已撤回（复测推翻），不要提交；如需提交请先重新确认。"}, notes...)
+	}
+	// P13：所属任务还有长任务执行在跑 → 输出尚未落地，此刻的证据可能不完整。
+	if f.TaskID != nil {
+		if x := s.m.Executions(); x != nil {
+			if n := len(x.ActiveForTask(itoa64(*f.TaskID))); n > 0 {
+				notes = append([]string{fmt.Sprintf(
+					"⚠ 所属任务仍有 %d 个长任务执行未结束（扫描/枚举输出未落地）：本次证据可能不完整，建议等执行收束后重新导出。", n)}, notes...)
+			}
+		}
 	}
 	in.Notes = append(notes, in.Notes...)
 	return in

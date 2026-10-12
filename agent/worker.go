@@ -78,6 +78,8 @@ type Worker struct {
 	// path. Read per run so a profile/task toggle takes effect without rebuilding
 	// the agent. nil = streaming (default).
 	nonStreamingFn func() bool
+	// execService（P13）由 host 注入：长任务执行的托管后端（进程活过本次 run）。
+	execService ExecService
 	// noaEnabledFn resolves whether this run uses the experimental noa context-
 	// compression mechanism. Read per run, like nonStreaming. nil = off (built-in
 	// compaction).
@@ -115,6 +117,9 @@ func hasWorkerChatMessage(messages []llm.Message, requestID string) bool {
 // model path (true = non-streaming). nil/unset = streaming (default). Read per
 // run so a profile or task-chain toggle takes effect without rebuilding.
 func (w *Worker) SetNonStreaming(fn func() bool) { w.nonStreamingFn = fn }
+
+// SetExecService 注入长任务执行服务（P13）；nil = 未接线（工具返回可读拒绝）。
+func (w *Worker) SetExecService(svc ExecService) { w.execService = svc }
 
 func (w *Worker) nonStreaming() bool { return w.nonStreamingFn != nil && w.nonStreamingFn() }
 
@@ -291,7 +296,20 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerExecSpec()
+}
+
+// workerExecSpec is 段 [D]: the code-owned long-task contract (P13). Appended the
+// same way as 段 [B]/[C] — the DB-editable body cannot remove it. It fixes the two
+// semantics the model must not get wrong: 超时是观察不是失败, and 还有执行在跑就不能
+// 声称这条意图探完了 (the platform will hold the intent open anyway).
+func workerExecSpec() string {
+	return "\n\n**长任务托管（run_execution）**：\n" +
+		"- 预计超过 2 分钟的任务（nuclei/ffuf/nmap 等扫描器、目录/子域/参数枚举、字典跑批、大批量请求）**一律用 run_execution 起**：" +
+		"它把进程托管在独立会话组里，**活过你这次运行**——你收笔、被暂停、换模型都不会杀掉它；输出实时落盘（返回里给出绝对路径），状态记进执行台账。几秒级的短命令仍直接用 Bash。\n" +
+		"- 起来之后用 wait_execution 有界等待（默认 60 秒，可给 timeout_ms 调大）：**超时是观察不是失败**——它返回当下的 running 快照和部分输出，你可以先去干别的、过一会儿再 get_execution / wait_execution 看进展。\n" +
+		"- **只要这条意图名下还有执行在跑（running/queued），就不能声称这条意图探完了**：平台不会让它收尾，执行落终态后这条意图会自动退回待领，你会在新的运行里读到完整输出并把结论写回。\n" +
+		"- 要收掉一条执行用 cancel_execution 并写明理由（理由记进台账，会回传给模型和审计）；不要用 kill/pkill 直接杀进程——那会绕过台账。"
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -369,6 +387,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetOwnerNode(intent.ID)         // assets this worker discovers anchor to its intent → visible to the task
+	tsx.SetExecService(w.execService)   // P13：长任务执行（进程活过本次 run）
 	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
 	tsx.SetNotifyFinding(notifyFinding) // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
@@ -423,9 +442,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)
-	settle := wrapupSettlement("worker", []string{"Bash"})
+	// 收尾阶段不再起新长任务（run_execution 收起），但 wait/get/cancel_execution
+	// 保留：收尾恰恰要把在跑的执行交代清楚（等它、读它的部分输出、或明确取消）。
+	settle := wrapupSettlement("worker", []string{"Bash", "run_execution"})
 	if tc.DeadlineUnix > 0 {
-		settle = wrapupSettlementForTask("worker", []string{"Bash"}, clamped)
+		settle = wrapupSettlementForTask("worker", []string{"Bash", "run_execution"}, clamped)
 	}
 	opts := agentcore.Options{
 		Provider:        w.prov,

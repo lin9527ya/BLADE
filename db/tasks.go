@@ -644,6 +644,8 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 	}
 	// llm_usage (the token metering ledger) is intentionally NOT deleted with the
 	// task — it is kept as historical accounting even after the task is gone.
+	// tool_executions (P13 执行台账) likewise stays: 谁在什么时候跑了哪条长任务、
+	// 结果与理由如何，是一份审计账；任务工作目录本身也不随删除清理，输出文件仍在。
 	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=$1`, id); err != nil {
 		return result, err
 	}
