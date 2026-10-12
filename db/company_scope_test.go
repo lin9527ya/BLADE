@@ -342,6 +342,14 @@ func TestCompanyScopeAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertCompany: %v", err)
 	}
+	// 公司和它的 scope 必须清干净：uniq 由 MAX(asset id) 派生，同一台库上重复跑会算出
+	// 同一个域名，遗留的 scope 会把下一次运行的"建 scope 前"资产直接归属掉（本测试在
+	// 复用库上因此长期假红）。注册在资产清理【之前】= 先于它执行（t.Cleanup 是 LIFO）。
+	t.Cleanup(func() {
+		_, _ = d.Exec(`UPDATE assets SET company_id=NULL WHERE company_id=$1`, cid)
+		_, _ = d.Exec(`DELETE FROM company_scope WHERE company_id=$1`, cid)
+		_, _ = d.Exec(`DELETE FROM companies WHERE id=$1`, cid)
+	})
 
 	// a pre-existing asset (inserted BEFORE any scope) — must be back-filled.
 	preID, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: sub})
