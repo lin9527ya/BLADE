@@ -312,8 +312,10 @@ func accP4(t *testing.T, e *accEnv) {
 		}
 		return b.String()
 	}
-	e.mustContain(timeline(), "Token 预算 70%", "时间线 70% 档位")
-	e.mustContain(timeline(), "Token 预算 85%", "时间线 85% 档位")
+	// 时间线断言也走等待：活动写入与提示投递是两个动作，别把"提示到了"当成
+	// "时间线已落"（产品侧已改成活动先落，这里再等一次，双保险）。
+	waitFor("时间线 70% 档位", func() bool { return strings.Contains(timeline(), "Token 预算 70%") })
+	waitFor("时间线 85% 档位", func() bool { return strings.Contains(timeline(), "Token 预算 85%") })
 
 	use(150, 0) // 1000/1000 → exhausted
 	waitFor("进入收尾时序(settling)", func() bool { return e.s.engine.isSettling(task.ID) })
