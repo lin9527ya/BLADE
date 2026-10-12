@@ -262,15 +262,73 @@ function ModelReviewContext({ input }: { input: InterceptReviewInput }) {
   );
 }
 
-type Decide = (id: number, decision: "allowed" | "denied") => Promise<void>;
+type Decide = (id: number, decision: "allowed" | "denied", editedInput?: unknown) => Promise<void>;
+
+// NarrowEditor（P15 改参放行）：人可以对参数做【更保守】的修改后再放行。只允许收窄
+// ——删键、缩短字符串、下调数值、true→false、数组变短、目标只减不增；服务端复核，
+// 越界会被拒。默认填原参数，人改哪算哪。
+function NarrowEditor({
+  row,
+  busy,
+  decide,
+  onClose,
+}: {
+  row: InterceptApprovalRow;
+  busy: boolean;
+  decide: Decide;
+  onClose: () => void;
+}) {
+  const initial = React.useMemo(() => JSON.stringify(row.tool_input ?? {}, null, 2), [row.tool_input]);
+  const [text, setText] = React.useState(initial);
+  const submit = () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      toast.error(`改后的参数不是合法 JSON：${(e as Error).message}`);
+      return;
+    }
+    void decide(row.id, "allowed", parsed).then(onClose);
+  };
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+      <div className="text-muted-foreground text-xs">
+        改参放行只允许<strong>收窄</strong>：删键、从字符串里删字符（保序，不得新增/改写/重排）、
+        下调数值、true→false、数组变短、目标只减不增。任何加长或新增都会被平台拒绝。
+      </div>
+      <textarea
+        className="min-h-40 w-full rounded-md border bg-background p-2 font-mono text-xs"
+        value={text}
+        spellCheck={false}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="flex gap-2">
+        <Button size="sm" disabled={busy} onClick={submit}>
+          <CheckIcon data-icon="inline-start" />
+          按改后参数放行
+        </Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={onClose}>
+          取消
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function DecisionActions({ row, busy, decide }: { row: InterceptApprovalRow; busy: boolean; decide: Decide }) {
+  const [editing, setEditing] = React.useState(false);
   if (row.status !== "pending") return null;
+  if (editing) {
+    return <NarrowEditor row={row} busy={busy} decide={decide} onClose={() => setEditing(false)} />;
+  }
   return (
     <div className="flex flex-wrap gap-2">
       <Button size="sm" disabled={busy} onClick={() => void decide(row.id, "allowed")}>
         <CheckIcon data-icon="inline-start" />
         允许
+      </Button>
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(true)}>
+        改参放行
       </Button>
       <Button size="sm" variant="destructive" disabled={busy} onClick={() => void decide(row.id, "denied")}>
         <XIcon data-icon="inline-start" />
@@ -738,12 +796,12 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
     setLoading(true);
   };
 
-  const decide: Decide = async (id, decision) => {
+  const decide: Decide = async (id, decision, editedInput) => {
     if (decisionLock.current) return;
     decisionLock.current = true;
     setDeciding(true);
     try {
-      await api.interceptDecide(id, decision);
+      await api.interceptDecide(id, decision, editedInput);
       // Invalidate a list request started before this decision.
       request.current++;
       // Optimistically drop the decided item from the independent pending queue
@@ -753,7 +811,9 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       );
       setPendingRows((prev) => prev.filter((row) => row.id !== id));
       setRevision((v) => v + 1);
-      toast.success(decision === "allowed" ? "已允许执行" : "已拒绝执行");
+      toast.success(
+        decision === "allowed" ? (editedInput === undefined ? "已允许执行" : "已按收窄后的参数放行") : "已拒绝执行",
+      );
       // Re-fetch counts and rows: a decided item may no longer match the filter.
       await latestLoad.current(true);
     } catch (e) {

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,10 +130,30 @@ func (g *Guard) settle(ctx context.Context, ev hook.Event, dec intercept.Decisio
 			return g.block(ev.ToolName, systemBlockMessage("工作已取消，平台安全管控阻止执行"), "")
 		}
 		convID := intercept.ConvIDFromContext(ctx)
-		if !g.interceptor.HandleAsk(ctx, convID, dec, ev.ToolName, ev.Input) {
+		out, ok := g.interceptor.HandleAsk(ctx, convID, dec, ev.ToolName, ev.Input)
+		if !ok {
 			return g.block(ev.ToolName, systemBlockMessage("人工审批未通过（用户拒绝或审批超时）"), "")
 		}
-		return hook.Result{}
+		if len(out.Edited) == 0 {
+			return hook.Result{}
+		}
+		// 改参放行（P15）：人改过的参数是【一次全新的执行】，必须先证明它比原来
+		// 更保守（Narrow 只许收窄），再拿改后参数重跑 RoE 与规则——改参不能变成
+		// 绕过裁决的后门。任一步不通过就拦下，绝不执行未复核的参数。
+		narrowed, ok := intercept.Narrow(ev.ToolName, ev.Input, out.Edited)
+		if !ok {
+			g.record(ev.ToolName, "block", "改参越界："+strings.Join(narrowed.Diff, "；"), "")
+			return g.block(ev.ToolName, systemBlockMessage("人工改参越界（只允许收窄）"), "")
+		}
+		if dec, hit := g.interceptor.CheckScope(ctx, g.taskID, ev.ToolName, narrowed.Input); hit && dec.Action == "deny" {
+			g.interceptor.Log(ctx, convID, dec, ev.ToolName, narrowed.Input, "denied")
+			return g.block(ev.ToolName, systemBlockMessage("改后参数超出授权范围"), "")
+		}
+		if dec, matched := g.interceptor.Match(ev.ToolName, narrowed.Input); matched && dec.Action == "deny" {
+			g.interceptor.Log(ctx, convID, dec, ev.ToolName, narrowed.Input, "denied")
+			return g.block(ev.ToolName, systemBlockMessage(dec.Message), "")
+		}
+		return hook.Result{UpdatedInput: narrowed.Input}
 	}
 	return hook.Result{}
 }
