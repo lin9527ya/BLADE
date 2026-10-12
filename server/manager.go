@@ -265,6 +265,10 @@ const (
 	settingGlobalProxy = "global_proxy"
 	settingWorkers     = "workers"
 	settingLLMRecord   = "llm_record"
+	// settingCompactionPrompt（P14）是领域化压缩模板（7 段）。空 = 用内置模板。
+	// 刻意放 settings 而不是 agent_prompts：它不是某个 agent 的提示词，没有对应
+	// agent 行；塞进 agent_prompts 需要在 Agent 管理里凭空多出一个假 agent。
+	settingCompactionPrompt = "compaction_prompt"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
 	// 不可用(余额不足/key 失效/限流/服务异常)时自动切到下一个配置。
 	// settingLLMPoolBindFallback 仅在轮询开启时有意义:默认关闭,即 agent/任务显式

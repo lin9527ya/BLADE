@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,9 +21,12 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/harness"
+	"github.com/Autumn-27/norma/llm"
 )
 
-// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -62,6 +66,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P11 SRC 交付导出（简报 md → docx 可提交件）", func(t *testing.T) { accP11(t, env.forTest(t)) })
 	t.Run("P12 拦截遮挡面与失效安全", func(t *testing.T) { accP12(t, env.forTest(t)) })
 	t.Run("P13 执行台账与意图收尾门", func(t *testing.T) { accP13(t, env.forTest(t)) })
+	t.Run("P14 领域化压缩与常驻索引", func(t *testing.T) { accP14(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -855,3 +860,126 @@ func activitySeen(t *testing.T, st *db.ExplorationStore, kind string) bool {
 	}
 	return false
 }
+
+// accP14 走完 P14 的两半：常驻索引（目标原文 + 约束原文 + 活跃方向 + 发现一行式，
+// 每个请求附一次、压缩吃不掉）与领域化摘要（7 段模板 + 被压原文落盘并把【绝对路径】
+// 写进摘要请求）。用假 Provider 抓请求，不花真实 LLM 调用。
+func accP14(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p14", "领域化压缩与常驻索引")
+	st := task.Store
+	ctx := context.Background()
+
+	if _, err := st.AddGoal(map[string]any{"text": "拿 example.com 后台管理权限"}, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddConstraint("deny", "禁止对生产数据库做任何写操作", "user"); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := st.AddIntent(map[string]any{"summary": "枚举后台登录口的弱口令"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimIntent(intent, "work#1", db.IntentLeaseTTL); err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	fid, _ := e.newFinding(task, tid, `{"vulnclass":"sqli","severity":"high","summary":"后台登录口 SQL 注入（已复现）","evidence":"sleep 5 生效","confidence":"high"}`)
+
+	// 假 provider：抓住摘要请求，回一段合法摘要。
+	var captured *llm.CompletionRequest
+	prov := &retestProvider{complete: func(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+		r := req
+		captured = &r
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("## 1. 授权范围与约束\n（无）")}}, "end_turn", llm.Usage{}, nil
+	}}
+
+	dumpDir := t.TempDir()
+	opts := &agentcore.Options{Provider: prov, NonStreaming: true}
+	agent.InstallContextManager(opts, 200000, dumpDir, func() string {
+		return agent.BuildContextIndex(agent.ContextIndexVars{
+			Store:  st,
+			Intent: &db.Node{ID: intent, Payload: []byte(`{"summary":"枚举后台登录口的弱口令"}`)},
+		})
+	})
+	if opts.Compactor == nil {
+		t.Fatal("P14 上下文管理器未装上")
+	}
+	if opts.Compaction != nil {
+		t.Fatal("Compactor 与 Compaction 必须互斥（Compaction 须被清空）")
+	}
+	// noa 已占槽位时不得被覆盖（互斥而非静默覆盖）。
+	noaOwned := &agentcore.Options{Provider: prov, Compactor: opts.Compactor}
+	agent.InstallContextManager(noaOwned, 200000, dumpDir, nil)
+	if noaOwned.Compactor != harness.Compactor(opts.Compactor) {
+		t.Fatal("已占用的 Compactor 槽位被静默覆盖")
+	}
+
+	view, ok := opts.Compactor.(harness.ContextView)
+	if !ok {
+		t.Fatal("DomainCompactor 必须实现 harness.ContextView（否则索引进不了请求）")
+	}
+	msgs := []llm.Message{llm.UserText("开始吧")}
+	out := view.View(ctx, msgs)
+	if len(out) != len(msgs)+1 {
+		t.Fatalf("常驻索引必须每请求附一次：%d → %d", len(msgs), len(out))
+	}
+	if len(msgs) != 1 {
+		t.Fatal("View 必须是纯投影：不得改动宿主历史")
+	}
+	idx := out[len(out)-1].Text()
+	for _, want := range []string{
+		"拿 example.com 后台管理权限",     // 目标原文
+		"禁止对生产数据库做任何写操作",           // 约束原文
+		"intent-" + itoa64(intent), // 活跃方向
+		"后台登录口 SQL 注入（已复现）",        // 发现一行式
+	} {
+		if !strings.Contains(idx, want) {
+			t.Fatalf("常驻索引缺少 %q:\n%s", want, idx)
+		}
+	}
+	if fid <= 0 {
+		t.Fatal("finding 未落库")
+	}
+
+	// 真压缩：喂一段超长历史 → 摘要请求必须带 7 段模板与原文落盘的绝对路径。
+	// 标记句放最前面：SDK 会保留最近 N 条作为不摘要的尾巴，只有前面的才进落盘原文。
+	big := []llm.Message{llm.UserText("这条用户原话必须出现在落盘原文里：只测 example.com，别碰别的")}
+	for i := 0; i < 6; i++ {
+		big = append(big,
+			llm.UserText(strings.Repeat("A", 30000)),
+			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(strings.Repeat("B", 30000))}})
+	}
+	_ = opts.Compactor.Pre(ctx, big, 900000)
+	if captured == nil {
+		t.Fatal("超过阈值却没有发起摘要请求")
+	}
+	prompt := captured.Messages[len(captured.Messages)-1].Text()
+	for _, section := range []string{
+		"## 1. 授权范围与约束", "## 2. 资产与服务枚举", "## 3. 架构与薄弱点", "## 4. 已确认漏洞与攻击路径",
+		"## 5. 工具核心发现", "## 6. 所有用户消息", "## 7. 进度·死路·下一步",
+	} {
+		e.mustContain(prompt, section, "领域压缩模板小节")
+	}
+	m := dumpPathRe.FindString(prompt)
+	if m == "" || !filepath.IsAbs(m) {
+		t.Fatalf("摘要请求必须给出原文落盘的绝对路径:\n%s", prompt)
+	}
+	body, err := os.ReadFile(m)
+	if err != nil {
+		t.Fatalf("落盘原文不可读: %v", err)
+	}
+	e.mustContain(string(body), "只测 example.com，别碰别的", "落盘原文里的用户原话")
+
+	// 设置页可覆盖模板：DB 里有 compaction_prompt → override 生效。
+	if err := e.m.pg.SetSetting(settingCompactionPrompt, "自定义压缩模板 {{.DumpPath}}"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingCompactionPrompt) })
+	captured = nil
+	_ = opts.Compactor.Pre(ctx, big, 900000)
+	if captured == nil || !strings.Contains(captured.Messages[len(captured.Messages)-1].Text(), "自定义压缩模板") {
+		t.Fatal("DB 覆盖的压缩模板未生效")
+	}
+}
+
+// dumpPathRe 从摘要请求文本里抓原文落盘的绝对路径。
+var dumpPathRe = regexp.MustCompile(`/[^\s。，、）()]+?\.txt`)

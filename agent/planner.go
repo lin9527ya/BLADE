@@ -70,6 +70,12 @@ func (p *Planner) SetExecService(svc ExecService) { p.execService = svc }
 
 func (p *Planner) nonStreaming() bool { return p.nonStreamingFn != nil && p.nonStreamingFn() }
 
+// PlannerSessionID is the transcript AND noa-archive session id of a task's planner
+// session (one accumulating conversation per task, shared by both stores).
+func PlannerSessionID(explorationID int64) string {
+	return fmt.Sprintf("exp%d-planner", explorationID)
+}
+
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
 // context-compression mechanism. nil/unset = off (built-in compaction). Read per
 // run so the settings toggle takes effect without rebuilding the agent.
@@ -435,7 +441,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		ToolOutputDir:         cmdOutDir(taskDir),
 		MaxTurns:              p.maxTurns, // 0 = unlimited (configurable in agent management)
 		MaxDuration:           maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
-		Compaction:            compactionConfig(p.compactionWindow()),
 		// 跨唤醒共享的规划待办：让串行链在多轮之间保留（session 是新的，store 不是）。
 		Todos: p.todoFor(ts.ID()),
 		// 命中【本轮】步数预算→ SDK 跑收尾:把本轮已想清楚的结论落地(该派的 add_intent、
@@ -447,11 +452,17 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx
-		opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
+		opts.SessionID = PlannerSessionID(ts.ID())
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())
+	// 与 transcript 同一个 SessionID（见 PlannerSessionID）：历史与 noa 归档同源。
+	noaSession := PlannerSessionID(ts.ID())
 	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
+	// P14 领域上下文（详见 agent/compactor.go）：规划者被压缩吃掉态势后，常驻索引仍带着
+	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。
+	InstallContextManager(&opts, p.compactionWindow(), taskDir, func() string {
+		return BuildContextIndex(ContextIndexVars{Store: ts})
+	})
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。
 	// 开场白按「本轮有无具体变动」分两种：有变动 → 指向下方【实际变动】块；无变动

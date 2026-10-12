@@ -35,6 +35,18 @@ type MainAgent struct {
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 }
 
+// MainSessionID is the transcript AND noa-archive session id of a main-agent
+// conversation segment. Segment 0 keeps the legacy "exp<N>-main" name so existing
+// transcripts still resume; each later segment gets its own file for a clean context.
+// Both stores must use this one rule — a resumed transcript and its noa archive have
+// to describe the same conversation.
+func MainSessionID(explorationID int64, seg int) string {
+	if seg > 0 {
+		return fmt.Sprintf("exp%d-main-s%d", explorationID, seg)
+	}
+	return fmt.Sprintf("exp%d-main", explorationID)
+}
+
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
 // context-compression mechanism. nil/unset = off (built-in compaction). Read per
 // run so the settings toggle takes effect without rebuilding the agent.
@@ -156,9 +168,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		BashEnv:               proxyEnv(m.proxyAddr, m.proxyCACert), // Bash 子命令默认走代理+信任 CA
 		WorkingDir:            mainDir,                              // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir:         cmdOutDir(mainDir),
-		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
-		Compaction:            compactionConfig(m.compactionWindow()), // long chats stay within the window
-		Todos:                 actool.NewTodoStore(),                  // 会话级临时待办（TodoWrite），纯规划用，退出即丢
+		MaxTurns:              m.maxTurns,            // 0 = unlimited (configurable in agent management)
+		Todos:                 actool.NewTodoStore(), // 会话级临时待办（TodoWrite），纯规划用，退出即丢
 		// 命中预算(步数)→ SDK 跑收尾:向用户输出一句进展总结。Prompt 与收尾轮数可后台编辑(默认 10 轮)。
 		Settlement:   wrapupSettlement("mainagent", nil),
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
@@ -168,18 +179,19 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		opts.Transcript = m.tx
 		// Segment 0 keeps the legacy "exp%d-main" name so existing transcripts still
 		// load; each new session (seg>=1) gets its own file for a clean context.
-		opts.SessionID = fmt.Sprintf("exp%d-main", ts.ID())
-		if mainSeg > 0 {
-			opts.SessionID = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
-		}
+		opts.SessionID = MainSessionID(ts.ID(), mainSeg)
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	// session id 与 transcript 同规则(分段感知),使归档与恢复对齐。
-	noaSession := fmt.Sprintf("exp%d-main", ts.ID())
-	if mainSeg > 0 {
-		noaSession = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
-	}
+	// 与 transcript 同一个 SessionID（同一规则、同一分段）：恢复历史与 noa 归档
+	// 永远指向同一次会话，不会一套分段落一套不分段。
+	noaSession := MainSessionID(ts.ID(), mainSeg)
 	enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, noaWarn(noaSession))
+	// P14 领域上下文：主 agent 与人的长对话最容易被压缩吃掉"人说过什么"——领域摘要模板
+	// 强制逐字保留所有用户消息，常驻索引另外带上目标/约束/图状态。
+	InstallContextManager(&opts, m.compactionWindow(), mainDir, func() string {
+		return BuildContextIndex(ContextIndexVars{Store: ts})
+	})
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()

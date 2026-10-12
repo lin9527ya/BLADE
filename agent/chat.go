@@ -149,7 +149,6 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		WorkingDir:            sessionWorkDir,
 		MaxTurns:              maxTurns,
 		MaxDuration:           maxDuration,
-		Compaction:            compactionConfig(c.window),
 		Todos:                 actool.NewTodoStore(),
 		// large tool output spills to cmd-output/ under the session dir.
 		// 截断上限用 SDK 默认(tool.Capture 的 30000 字符)。
@@ -169,6 +168,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
+	// P14 领域上下文：独立会话没有探索图（index 传 nil），收益在摘要侧——领域模板强制
+	// 逐字保留"所有用户消息"，原文落盘可回读。
+	InstallContextManager(&opts, c.window, sessionWorkDir, nil)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()
