@@ -101,14 +101,16 @@ func (e *Engine) budgetNotice(t *Task, stage string, used, budget int64) {
 	if text == "" {
 		return
 	}
+	// 时间线留痕先落：档位提示既进 planner（hint），也落一条 system 活动，让人在
+	// 会话/图谱时间线上看到"何时触发了哪一档"，而不是只存在于 planner 上下文里。
+	// 顺序有意是"活动先落、hint 后投"：谁看到提示（含验收断言）时，时间线一定已有痕，
+	// 不会出现"提示到了、时间线还没写"的观察窗口。
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+		Summary: fmt.Sprintf("Token 预算 %s（%d/%d）", budgetStagePercent(stage), used, budget),
+		Detail:  text})
 	t.trigMu.Lock()
 	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "hint", Hints: []string{text}})
 	t.trigMu.Unlock()
 	t.Notify()
-	// 时间线留痕：档位提示既进 planner（hint），也落一条 system 活动，让人在
-	// 会话/图谱时间线上看到"何时触发了哪一档"，而不是只存在于 planner 上下文里。
-	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
-		Summary: fmt.Sprintf("Token 预算 %s（%d/%d）", budgetStagePercent(stage), used, budget),
-		Detail:  text})
 	log.Printf("[budget] task %s %s (%d/%d)，已向 planner 投递预算提示", t.ID, stage, used, budget)
 }
