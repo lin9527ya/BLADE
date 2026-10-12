@@ -451,6 +451,35 @@ export const api = {
     if (!r.ok) throw new Error(`上传失败: ${r.status}`);
     return r.json() as Promise<{ uploaded: number }>;
   },
+  // downloadSrcReport 下载单条发现的 SRC 交付件（md 简报 / docx 可提交件）。
+  // 服务端按 src-dig 报告规范渲染 8 块骨架；文件名取 Content-Disposition（= 漏洞标题）。
+  downloadSrcReport: async (findingId: string, format: "md" | "docx") => {
+    const token = getToken();
+    const path =
+      format === "docx" ? `/api/findings/${findingId}/src-report.docx` : `/api/findings/${findingId}/src-report`;
+    const r = await fetch(path, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    let name = `finding-${findingId}.${format}`;
+    const cd = r.headers.get("Content-Disposition") ?? "";
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    if (m) {
+      try {
+        name = decodeURIComponent(m[1]);
+      } catch {
+        /* 保留回退文件名 */
+      }
+    }
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
+
   workspaceDownload: async (path: string) => {
     let blob: Blob;
     if (MOCK) {
