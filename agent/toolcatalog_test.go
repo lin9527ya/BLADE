@@ -82,3 +82,35 @@ func TestDecorateToolInjectsDefaults(t *testing.T) {
 		t.Errorf("limit = %v, want 9 (no override)", seen["limit"])
 	}
 }
+
+// TestDomainToolCatalogCoversAll pins the catalog completeness invariant：经
+// AllDomainTools()（服务器为非任务 agent 构建工具绑定注册表用的并集）可达的每个
+// 工具，必须出现在 BuiltinToolSeeds()（用户在 UI 上可勾选绑定的目录）里——目录之外的
+// 工具是「静默不可绑」的：新工具加进了构造器却漏进目录，用户永远看不到它。
+func TestDomainToolCatalogCoversAll(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	seeds := map[string]bool{}
+	for _, seed := range BuiltinToolSeeds() {
+		seeds[seed.Key] = true
+	}
+	if len(seeds) == 0 {
+		t.Fatal("BuiltinToolSeeds 为空：目录构造已失效")
+	}
+	for _, tool := range ts.AllDomainTools() {
+		if !seeds[tool.Name()] {
+			t.Errorf("工具 %q 可经 AllDomainTools 触达但不在 BuiltinToolSeeds 目录里：加到 builtinToolsByAgent 的某个 agent 列表，否则用户无法绑定它", tool.Name())
+		}
+	}
+}
+
+// TestDefaultUnboundNotBound pins the escape hatch itself：defaultUnbound 里的工具
+// 在目录（BuiltinToolSeeds）里必须绑定为空——注意它仍可留在某个 agent 的 base 工具集
+// 里（如 goal_met 在 PlannerTools：让 seed 能构造它拿到 desc/schema，用户手动绑回后
+// 运行时才留得住），被判定的口径是 seed 的 Agents 列表，不是 base 成员资格。
+func TestDefaultUnboundNotBound(t *testing.T) {
+	for _, seed := range BuiltinToolSeeds() {
+		if defaultUnbound[seed.Key] && len(seed.Agents) > 0 {
+			t.Errorf("工具 %q 在 defaultUnbound 里但在目录中仍绑定 %v：应强制为空（须显式 opt-in）", seed.Key, seed.Agents)
+		}
+	}
+}

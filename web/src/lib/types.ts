@@ -1264,6 +1264,17 @@ export type InterceptAction = "allow" | "deny" | "ask";
 export type InterceptMatchTarget = "tool_name" | "tool_input";
 export type InterceptMatchType = "string" | "regex";
 
+// InterceptRuleTestResult 是规则 dry-run 的返回（P12）：命中面、渲染后的文案与
+// 展开出的候选面（规则实际逐条看过的文本）。
+export interface InterceptRuleTestResult {
+  matched: boolean;
+  matched_text?: string;
+  matched_surface?: string;
+  rendered_message?: string;
+  candidates?: { text: string; surface: string }[];
+  candidates_checked?: number;
+}
+
 export interface InterceptRule {
   id: number;
   name: string;

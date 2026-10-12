@@ -246,7 +246,16 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.enabledTools == nil {
-		_ = i.loadLocked()
+		if err := i.loadLocked(); err != nil {
+			// 失效安全（P12）：设置读不出来时退回硬编码默认集——配了拦截面的工具
+			// 不能因为一次 DB 抖动就整体退出拦截面（宁可多拦，不可漏拦）。
+			for _, n := range defaultEnabledTools {
+				if n == name {
+					return true
+				}
+			}
+			return false
+		}
 	}
 	return i.enabledTools[name]
 }
@@ -299,12 +308,21 @@ type Decision struct {
 	TimeoutEnabled   bool
 	TimeoutSeconds   int
 	TimeoutAction    string // "deny" | "allow"
+	// MatchedSurface / MatchedText 记录规则命中的具体表面（raw | nested_string |
+	// nested_key | percent_decoded:N | tool_name）与命中文本片段（截断），写入
+	// intercept audit —— P12 遮挡面：让「为什么命中/为什么没命中」可复盘。
+	MatchedSurface string
+	MatchedText    string
 }
 
 // --- LLM fallback judge ---
 
-// Judge settings keys (stored in the settings KV table). See docs §3.
+// settingLoadFailAction 规则快照加载失败（DB 读不到）时的裁决：allow|ask|deny。
+// 默认 ask（失效安全）——此前实现是静默按「未命中」放行；对配了 deny 规则/授权
+// 边界的用户，静默放行意味着规则看起来还在、实际已经失效。
 const (
+	settingLoadFailAction        = "intercept_load_fail_action"
+	defaultLoadFailAction        = "ask"
 	settingJudgeEnabled          = "llm_judge_enabled"
 	settingJudgeProfileID        = "llm_judge_profile_id"
 	settingJudgePrompt           = "llm_judge_prompt"
@@ -511,44 +529,140 @@ func judgeActionLabel(action string) string {
 // (Decision{}, false) if no rule matches.
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
-	if err != nil || len(rules) == 0 {
+	if err != nil {
+		// 失效安全（P12）：规则读不出来不再静默放行。默认 ask（转人工），
+		// 可经 setting 配成 allow（旧行为）/deny。
+		action := i.getSettingChoice(settingLoadFailAction, defaultLoadFailAction, "allow", "ask", "deny")
+		if action == "allow" {
+			return Decision{}, false
+		}
+		return Decision{
+			RuleName: "[拦截规则加载失败]",
+			Action:   action,
+			Message:  "拦截规则未能加载（" + err.Error() + "），按失效安全策略处理",
+		}, true
+	}
+	if len(rules) == 0 {
 		return Decision{}, false
 	}
 	for _, r := range rules {
-		if ruleMatches(r, toolName, input) {
-			msg := r.Message
-			if msg == "" {
-				msg = defaultMessage(r.Action, r.Name)
-			}
-			configJSON, _ := json.Marshal(r.InterceptRule)
-			return Decision{
-				RuleName: r.Name, ConfigDigest: digestInput(configJSON),
-				Action:         r.Action,
-				Message:        msg,
-				RuleID:         r.ID,
-				TimeoutEnabled: r.TimeoutEnabled,
-				TimeoutSeconds: r.TimeoutSeconds,
-				TimeoutAction:  r.TimeoutAction,
-			}, true
+		text, surface, ok := matchRule(r, toolName, input)
+		if !ok {
+			continue
 		}
+		configJSON, _ := json.Marshal(r.InterceptRule)
+		return Decision{
+			RuleName: r.Name, ConfigDigest: digestInput(configJSON),
+			Action:         r.Action,
+			Message:        renderRuleMessage(r, text, toolName),
+			RuleID:         r.ID,
+			TimeoutEnabled: r.TimeoutEnabled,
+			TimeoutSeconds: r.TimeoutSeconds,
+			TimeoutAction:  r.TimeoutAction,
+			MatchedText:    clipRunes(text, 200),
+			MatchedSurface: surface,
+		}, true
 	}
 	return Decision{}, false
 }
 
-func ruleMatches(r compiledRule, toolName string, input []byte) bool {
-	var subject string
+// matchRule 在规则的一个匹配面上找第一处命中，返回命中文本与其表面
+// （tool_name 规则仍只匹配工具名；tool_input 规则遍历 candidateTexts 的全部候选面）。
+func matchRule(r compiledRule, toolName string, input []byte) (text, surface string, ok bool) {
 	switch r.MatchTarget {
 	case "tool_name":
-		subject = toolName
+		if ruleMatchesText(r, toolName) {
+			return toolName, "tool_name", true
+		}
+		return "", "", false
 	case "tool_input":
-		subject = string(input)
-	default:
-		return false
+		for _, c := range candidateTexts(input) {
+			if ruleMatchesText(r, c.Text) {
+				return c.Text, c.Surface, true
+			}
+		}
+		return "", "", false
 	}
+	return "", "", false
+}
+
+func ruleMatchesText(r compiledRule, subject string) bool {
 	if r.MatchType == "regex" {
 		return r.re != nil && r.re.MatchString(subject)
 	}
 	return strings.Contains(subject, r.Pattern)
+}
+
+// renderRuleMessage 渲染规则文案：支持 {match}/{tool}/{rule} 占位；命中部分截断
+// 后再代入，且用单次 strings.NewReplacer——命中文本里写着的 "{tool}" 之类不会被
+// 再替换成别的变量（防命中内容注入模板）。
+func renderRuleMessage(r compiledRule, matched, toolName string) string {
+	msg := r.Message
+	if msg == "" {
+		return defaultMessage(r.Action, r.Name)
+	}
+	if !strings.Contains(msg, "{") {
+		return msg
+	}
+	return strings.NewReplacer(
+		"{match}", clipRunes(matched, 500),
+		"{tool}", toolName,
+		"{rule}", r.Name,
+	).Replace(msg)
+}
+
+// CandidatePreview 是 dry-run 展示用的一条匹配面（文本截断 + 表面标注）。
+type CandidatePreview struct {
+	Text    string `json:"text"`
+	Surface string `json:"surface"`
+}
+
+// CandidateSurfaces 把一次工具调用的输入展开成规则实际会逐条判定的候选面，
+// 供「规则测试」展示（limit<=0 时默认 50）。只读、不接触数据库。
+func CandidateSurfaces(input []byte, limit int) []CandidatePreview {
+	if limit <= 0 {
+		limit = 50
+	}
+	cands := candidateTexts(input)
+	out := make([]CandidatePreview, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, CandidatePreview{Text: clipRunes(c.Text, 300), Surface: c.Surface})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// PreviewRule dry-runs 一条规则定义（未落库）against 一次样例调用：与真实匹配
+// 路径共用同一套候选面展开与文案渲染；返回首个命中的文本/表面与渲染后的文案。
+// 非法正则返回 error；不写任何数据库记录。
+func PreviewRule(toolName string, input []byte, matchTarget, matchType, pattern, action, ruleName, message string) (matched bool, text, surface, rendered string, err error) {
+	cr := compiledRule{InterceptRule: db.InterceptRule{
+		Name: ruleName, MatchTarget: matchTarget, MatchType: matchType,
+		Pattern: pattern, Action: action, Message: message,
+	}}
+	if matchType == "regex" {
+		re, cerr := regexp.Compile(pattern)
+		if cerr != nil {
+			return false, "", "", "", cerr
+		}
+		cr.re = re
+	}
+	t, s, ok := matchRule(cr, toolName, input)
+	if !ok {
+		return false, "", "", "", nil
+	}
+	return true, clipRunes(t, 500), s, renderRuleMessage(cr, t, toolName), nil
+}
+
+// clipRunes 截断到 max 个字符（超出加省略号），用于审计与文案。
+func clipRunes(s string, max int) string {
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max]) + "…"
 }
 
 func defaultMessage(action, name string) string {
