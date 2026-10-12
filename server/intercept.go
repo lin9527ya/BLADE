@@ -125,6 +125,11 @@ func (s *Server) interceptCreateRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// 条数上限（P12）：每条规则都要在每次工具调用上跑一遍，无限增长会拖慢热路径。
+	if rules, err := pg.ListInterceptRules(); err == nil && len(rules) >= maxInterceptRules {
+		writeErr(w, 400, fmt.Sprintf("拦截规则已达上限 %d 条，请先清理不用的规则", maxInterceptRules))
+		return
+	}
 	rule, err := pg.CreateInterceptRule(req.Name, req.MatchTarget, req.MatchType, req.Pattern, req.Action, req.Message, req.Priority, req.Enabled, req.TimeoutEnabled, req.TimeoutSeconds, req.TimeoutAction)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -478,9 +483,21 @@ type interceptRuleReq struct {
 	TimeoutAction  string `json:"timeout_action"`
 }
 
+// 规则字段上限：pattern/message 是每次工具调用都要跑的热数据，超长既是误配
+// 也放大每个调用的匹配成本（P12）。
+const (
+	maxInterceptRuleNameLen    = 200
+	maxInterceptRulePatternLen = 4096
+	maxInterceptRuleMessageLen = 4096
+	maxInterceptRules          = 500
+)
+
 func validateInterceptRuleReq(req interceptRuleReq) error {
 	if req.Name == "" {
 		return fmt.Errorf("name 不能为空")
+	}
+	if len([]rune(req.Name)) > maxInterceptRuleNameLen {
+		return fmt.Errorf("name 过长（≤%d 字符）", maxInterceptRuleNameLen)
 	}
 	switch req.MatchTarget {
 	case "tool_name", "tool_input":
@@ -495,6 +512,12 @@ func validateInterceptRuleReq(req interceptRuleReq) error {
 	if req.Pattern == "" {
 		return fmt.Errorf("pattern 不能为空")
 	}
+	if len(req.Pattern) > maxInterceptRulePatternLen {
+		return fmt.Errorf("pattern 过长（≤%d 字节）", maxInterceptRulePatternLen)
+	}
+	if len([]rune(req.Message)) > maxInterceptRuleMessageLen {
+		return fmt.Errorf("message 过长（≤%d 字符）", maxInterceptRuleMessageLen)
+	}
 	switch req.Action {
 	case "allow", "deny", "ask":
 	default:
@@ -506,6 +529,56 @@ func validateInterceptRuleReq(req interceptRuleReq) error {
 		}
 	}
 	return nil
+}
+
+// interceptTestRule 是规则的 dry-run：拿样例工具调用跑一遍候选面展开与匹配，
+// 不落库、不产生 intercept_pending 记录（P12「可验证」）。也顺带返回展开后的
+// 候选面，让用户看见「这条规则到底看了些什么」。
+func (s *Server) interceptTestRule(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name           string `json:"name"`
+		MatchTarget    string `json:"match_target"`
+		MatchType      string `json:"match_type"`
+		Pattern        string `json:"pattern"`
+		Action         string `json:"action"`
+		Message        string `json:"message"`
+		SampleToolName string `json:"sample_tool_name"`
+		SampleInput    string `json:"sample_input"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if err := validateInterceptRuleReq(interceptRuleReq{
+		Name: req.Name, MatchTarget: req.MatchTarget, MatchType: req.MatchType,
+		Pattern: req.Pattern, Action: req.Action, Message: req.Message,
+	}); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.SampleToolName) == "" {
+		writeErr(w, 400, "sample_tool_name 不能为空")
+		return
+	}
+	input := []byte(req.SampleInput)
+	if strings.TrimSpace(req.SampleInput) == "" {
+		input = []byte("{}")
+	}
+	matched, text, surface, rendered, err := intercept.PreviewRule(
+		req.SampleToolName, input, req.MatchTarget, req.MatchType, req.Pattern, req.Action, req.Name, req.Message,
+	)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"matched":            matched,
+		"matched_text":       text,
+		"matched_surface":    surface,
+		"rendered_message":   rendered,
+		"candidates":         intercept.CandidateSurfaces(input, 50),
+		"candidates_checked": len(intercept.CandidateSurfaces(input, 0)),
+	})
 }
 
 func (s *Server) interceptDetail(w http.ResponseWriter, r *http.Request) {

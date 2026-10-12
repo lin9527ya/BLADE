@@ -52,6 +52,7 @@ import type {
   InterceptDetail,
   InterceptPending,
   InterceptRule,
+  InterceptRuleTestResult,
   JudgeConfig,
   JudgeUsage,
   LLMPoolStatus,
@@ -1231,6 +1232,18 @@ export const api = {
   deleteInterceptRule: (id: number) => del<{ deleted: number }>(`/intercept/rules/${id}`),
   toggleInterceptRule: (id: number, enabled: boolean) =>
     post<{ ok: boolean; enabled: boolean }>(`/intercept/rules/${id}/toggle`, { enabled }),
+  // testInterceptRule 是规则 dry-run（P12）：不落库、不产生审批记录，返回命中面与
+  // 展开后的候选文本，供「测试这条规则」面板校准 pattern。
+  testInterceptRule: (payload: {
+    name: string;
+    match_target: string;
+    match_type: string;
+    pattern: string;
+    action: string;
+    message: string;
+    sample_tool_name: string;
+    sample_input: string;
+  }) => post<InterceptRuleTestResult>("/intercept/rules/test", payload),
 
   // ---- asset intercept rules（资产拦截：全局黑名单） ----
   assetInterceptRules: () => get<{ rules: AssetInterceptRule[] }>("/asset-intercept/rules").then((r) => arr(r.rules)),

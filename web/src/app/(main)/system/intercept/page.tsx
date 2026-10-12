@@ -54,6 +54,7 @@ import { api } from "@/lib/api";
 import type {
   InterceptAction,
   InterceptRule,
+  InterceptRuleTestResult,
   JudgeConfig,
   JudgeDayUsage,
   JudgeUsage,
@@ -448,6 +449,11 @@ export default function InterceptPage() {
   const [saving, setSaving]   = React.useState(false);
   const [regexErr, setRegexErr] = React.useState("");
   const [regexWarn, setRegexWarn] = React.useState(false); // true = JS 无法解析但可能是合法 Go 语法
+  // 规则 dry-run（P12）：样例调用 + 结果；不落库。
+  const [testTool, setTestTool] = React.useState("Bash");
+  const [testInput, setTestInput] = React.useState('{"command":"curl http://example.com/"}');
+  const [testResult, setTestResult] = React.useState<InterceptRuleTestResult | null>(null);
+  const [testing, setTesting] = React.useState(false);
 
   // ---- tool scope dialog ----
   const [scopeOpen, setScopeOpen]       = React.useState(false);
@@ -538,6 +544,29 @@ export default function InterceptPage() {
       toast.error((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // dry-run：拿样例调用跑一遍规则（与真实匹配同一套候选面展开），不落库。
+  async function handleTestRule() {
+    if (!form.pattern.trim()) { toast.error("模式不能为空"); return; }
+    setTesting(true);
+    try {
+      const r = await api.testInterceptRule({
+        name: form.name || "测试规则",
+        match_target: form.match_target,
+        match_type: form.match_type,
+        pattern: form.pattern,
+        action: form.action,
+        message: form.message,
+        sample_tool_name: testTool.trim() || "Bash",
+        sample_input: testInput,
+      });
+      setTestResult(r);
+    } catch (e) {
+      toast.error(`测试失败：${(e as Error).message}`);
+    } finally {
+      setTesting(false);
     }
   }
 
@@ -828,6 +857,75 @@ export default function InterceptPage() {
                 <p className="text-xs text-amber-600 mt-1">包含 Go RE2 扩展语法（如 <code className="font-mono">(?i)</code>），浏览器无法预览，提交后由服务端验证</p>
               )}
             </Field>
+
+            <Separator />
+
+            {/* 规则 dry-run（P12）：样例工具调用 → 命中面/渲染文案/展开的候选文本 */}
+            <div className="rounded-md border p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-sm font-medium">测试这条规则（不落库）</span>
+                <Button type="button" size="sm" variant="outline" disabled={testing} onClick={() => void handleTestRule()}>
+                  {testing ? "测试中…" : "运行测试"}
+                </Button>
+              </div>
+              <div className="grid gap-2">
+                <Input
+                  value={testTool}
+                  onChange={(e) => setTestTool(e.target.value)}
+                  placeholder="样例工具名，如 Bash"
+                  className="font-mono text-xs"
+                />
+                <Textarea
+                  value={testInput}
+                  onChange={(e) => setTestInput(e.target.value)}
+                  rows={3}
+                  placeholder='样例工具输入（JSON），如 {"command":"curl http://x/"}'
+                  className="font-mono text-xs"
+                />
+              </div>
+              {testResult && (
+                <div className="mt-2 flex flex-col gap-1.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    {testResult.matched ? (
+                      <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">命中</Badge>
+                    ) : (
+                      <Badge variant="outline">未命中</Badge>
+                    )}
+                    {testResult.matched_surface && (
+                      <span className="text-muted-foreground">
+                        命中面：<code className="font-mono">{testResult.matched_surface}</code>
+                      </span>
+                    )}
+                    {typeof testResult.candidates_checked === "number" && (
+                      <span className="text-muted-foreground">共检 {testResult.candidates_checked} 个候选面</span>
+                    )}
+                  </div>
+                  {testResult.matched_text && (
+                    <div className="text-muted-foreground break-all">
+                      命中文本：<code className="font-mono">{testResult.matched_text}</code>
+                    </div>
+                  )}
+                  {testResult.rendered_message && (
+                    <div className="text-muted-foreground break-all">
+                      返回给模型：<code className="font-mono">{testResult.rendered_message}</code>
+                    </div>
+                  )}
+                  {testResult.candidates && testResult.candidates.length > 0 && (
+                    <details>
+                      <summary className="text-muted-foreground cursor-pointer">展开候选面（规则逐条看过的文本）</summary>
+                      <ul className="mt-1 flex flex-col gap-0.5">
+                        {testResult.candidates.map((c) => (
+                          <li key={`${c.surface}\u0000${c.text}`} className="flex items-start gap-1.5">
+                            <code className="text-muted-foreground shrink-0 text-[10px]">{c.surface}</code>
+                            <code className="min-w-0 break-all font-mono">{c.text}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
 
             <Separator />
 

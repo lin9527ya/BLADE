@@ -37,11 +37,16 @@ type InterceptAudit struct {
 	DecisionReason   string                  `json:"decision_reason,omitempty"`
 	RuleName         string                  `json:"rule_name,omitempty"`
 	ConfigDigest     string                  `json:"config_digest,omitempty"`
-	ProfileID        int64                   `json:"profile_id,omitempty"`
-	ExecutionStatus  string                  `json:"execution_status"`
-	Output           string                  `json:"output,omitempty"`
-	OutputTruncated  bool                    `json:"output_truncated,omitempty"`
-	ExecutionEndedAt *time.Time              `json:"execution_ended_at,omitempty"`
+	// MatchedSurface / MatchedText：规则命中的具体表面（raw | nested_string |
+	// nested_key | percent_decoded:N | tool_name）与命中片段——P12 遮挡面，
+	// 让「为什么命中/为什么没命中」可复盘。
+	MatchedSurface   string     `json:"matched_surface,omitempty"`
+	MatchedText      string     `json:"matched_text,omitempty"`
+	ProfileID        int64      `json:"profile_id,omitempty"`
+	ExecutionStatus  string     `json:"execution_status"`
+	Output           string     `json:"output,omitempty"`
+	OutputTruncated  bool       `json:"output_truncated,omitempty"`
+	ExecutionEndedAt *time.Time `json:"execution_ended_at,omitempty"`
 }
 
 type InterceptDetail struct {

