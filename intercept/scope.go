@@ -44,11 +44,14 @@ func (i *Interceptor) ScopeMode() string {
 	return i.getSettingChoice(settingScopeMode, "off", "off", "ask", "deny")
 }
 
-// shellCommandOf extracts the command surface a tool call carries, mirroring the
-// guard's audit extraction (Bash + the interactive-shell tools).
+// shellCommandOf extracts the network-target-bearing surface a tool call carries:
+// the command field for shell-class tools, the URL for WebFetch. Tools not listed
+// here carry no target this gate can read — a network-capable tool that gets added
+// without a case here silently loses RoE coverage, so register new ones here (and
+// in defaultEnabledTools) alongside the tool itself.
 func shellCommandOf(toolName string, input []byte) string {
 	switch toolName {
-	case "Bash", "shell_open":
+	case "Bash", "shell_open", "run_execution":
 		var in struct {
 			Command string `json:"command"`
 		}
@@ -60,6 +63,12 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return in.Text
+	case "WebFetch":
+		var in struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return in.URL
 	}
 	return ""
 }
