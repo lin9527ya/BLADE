@@ -9,6 +9,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
@@ -37,7 +38,10 @@ type Planner struct {
 	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
 	nonStreamingFn    func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
-	execService  ExecService
+	execService ExecService
+	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
+	// 改策略下一轮生效，无需重建 agent。
+	policyFn     func() *policy.Effective
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn  func() int  // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor    *Compactor  // cold-node compaction (§7); nil = disabled
@@ -67,6 +71,17 @@ func (p *Planner) SetNonStreaming(fn func() bool) { p.nonStreamingFn = fn }
 
 // SetExecService 注入长任务执行服务（P13）；nil = 未接线（工具返回可读拒绝）。
 func (p *Planner) SetExecService(svc ExecService) { p.execService = svc }
+
+// SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
+func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = fn }
+
+// policy 取本轮的策略快照（解析器未接线 → nil = 不判定）。
+func (p *Planner) policy() *policy.Effective {
+	if p.policyFn == nil {
+		return nil
+	}
+	return p.policyFn()
+}
 
 func (p *Planner) nonStreaming() bool { return p.nonStreamingFn != nil && p.nonStreamingFn() }
 
@@ -290,6 +305,43 @@ func truncOutput(s string, n int) string {
 	return string(r[:n]) + " …（已截断，完整见 get_worker_output）"
 }
 
+// derefPolicy 把可空策略转成零值（HardFloorText 等纯函数按值接收）。
+func derefPolicy(p *policy.Effective) policy.Effective {
+	if p == nil {
+		return policy.Effective{}
+	}
+	return *p
+}
+
+// stallNoticeFromStore 读本任务最近的策略拒绝记录并渲染成"不要重复这些方向"的提示。
+// 走库而不是新回调：跨进程重启不丢、验收可直接断言、也不给 ToolSet 再加回调。
+func stallNoticeFromStore(ts *db.ExplorationStore, eff policy.Effective) string {
+	rows, err := ts.RecentPolicyRejects(10)
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	notes := make([]policy.RejectNote, 0, len(rows))
+	for _, r := range rows {
+		var meta struct {
+			IntentSummary string `json:"intent_summary"`
+			ItemLabel     string `json:"item_label"`
+			PolicyItem    string `json:"policy_item"`
+			Matched       string `json:"matched"`
+			Benign        bool   `json:"benign"`
+		}
+		if len(r.Metadata) > 0 {
+			_ = json.Unmarshal(r.Metadata, &meta)
+		}
+		if meta.Benign {
+			continue // 否定语境放行的记录不进"别再试"清单
+		}
+		notes = append(notes, policy.RejectNote{
+			Summary: meta.IntentSummary, ItemLabel: meta.ItemLabel, ItemID: meta.PolicyItem, Matched: meta.Matched,
+		})
+	}
+	return policy.StallNoticeText(notes, eff)
+}
+
 // renderGraphOverview folds the pre-computed graph_overview snapshot into the
 // wake-up prompt so the planner starts each round with the full situation in
 // hand — saving the round-trip it would otherwise spend calling the tool. It is
@@ -372,6 +424,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
 	tsx.SetExecService(p.execService)
+	pol := p.policy()
+	tsx.SetPolicy(pol)       // 意图层硬门（add_intent）
+	tsx.SetPolicyAudit(emit) // 被拒留痕进时间线
 	tsx.SetFindingRecorder(p.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
@@ -407,6 +462,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
+	// P20：探索策略段不受 wantConstraints 开关控制——它是操作者声明的硬边界。
+	sysBody += policyBlock(pol, ts)
 	system, boundary := deferredSystem(sysBody, def)
 	// planner 无自身墙钟预算;有 deadline 时把 MaxDuration 夹逼到剩余,让在跑的规划轮在
 	// 任务到点时进收尾(因超时→任务超时词,因步数→per-run 词)。
@@ -475,9 +532,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		// 也没排队方向)。明确告知 planner 并强制其本轮补出新方向,别只复查在跑意图后空转一轮。
 		if active, err := ts.HasActiveIntent(); err == nil && !active {
 			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
+			if pol != nil && !pol.IsZero() {
+				lead += "\n（若【策略允许的范围内】确已无可行方向：本轮产出 0 条意图，并把「策略内已无可行方向」写成一条 fact——这不叫停摆，系统会据此收尾。）"
+			}
 		}
 	}
-	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
+	// P20：被拒摘要进下一轮输入（硬拒但不闭环 = 模型会无限重试同一方向）。
+	if pol != nil && !pol.IsZero() {
+		situational += stallNoticeFromStore(ts, *pol)
+	}
+	// P20：硬底线在有策略时改写成"只在策略内成立"——否则提示词自相矛盾：
+	// 一边要求必须派人，一边把提出来的人全拒掉。
+	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。" +
+		policy.HardFloorText(derefPolicy(pol)) +
 		renderPlannerTodos(opts.Todos.List())
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。

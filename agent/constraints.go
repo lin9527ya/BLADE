@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/policy"
 )
 
 // constraintBlock renders this task's operation constraints (task_constraints) as a
@@ -11,6 +12,21 @@ import (
 // grouped; empty string when there are no constraints (or ts is nil). The framing
 // deliberately puts these ABOVE the exploration/expansion heuristics so a declared
 // boundary wins the tug-of-war against "chase another entry surface".
+// policyBlock 渲染任务级探索策略段（P20）。与 constraintBlock 并列注入，但**不设
+// 开关**：策略是操作者声明的硬边界，不能被任何设置悄悄关掉（code-owned 段的意义）。
+func policyBlock(p *policy.Effective, ts *db.ExplorationStore) string {
+	if p == nil || p.IsZero() {
+		return ""
+	}
+	used := 0
+	if ts != nil {
+		if n, err := ts.CountIntents(); err == nil {
+			used = n
+		}
+	}
+	return policy.RenderBlock(*p, used)
+}
+
 func constraintBlock(ts *db.ExplorationStore) string {
 	if ts == nil {
 		return ""

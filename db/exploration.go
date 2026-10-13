@@ -444,7 +444,7 @@ WHERE id=$3 AND exploration_id=$4 AND kind='intent' AND state='running'`, outcom
 	return err
 }
 
-// GetIntentSemanticOutcome reads the semantic conclusion of one intent ('' when
+// GetIntentSemanticOutcome reads the semantic conclusion of one intent (” when
 // the worker declared none).
 func (s *ExplorationStore) GetIntentSemanticOutcome(id int64) (string, error) {
 	var outcome string
@@ -1331,6 +1331,53 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
 	}
 	n, _ := res.RowsAffected()
 	return n == 1, nil
+}
+
+// RecentPolicyRejects returns the exploration's most recent policy rejections,
+// newest first (P20：planner 下一轮要看到"上一轮想做什么、被哪条策略拦了"，
+// 否则它会无限重试同一方向——硬拒但不闭环是这类设计最典型的翻车点).
+func (s *ExplorationStore) RecentPolicyRejects(limit int) ([]Activity, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	rows, err := s.db.Query(`SELECT id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''),
+COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), COALESCE(detail,''), metadata, created_at,
+input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg
+FROM activity WHERE exploration_id=$1 AND kind='policy_reject' ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError,
+			&a.Summary, &a.Detail, &a.Metadata, &a.CreatedAt, &a.InputTokens, &a.OutputTokens,
+			&a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// LastIntentCreatedAt returns the creation time of the most recent intent node
+// (nil = 没有任何意图). P20 的停摆判定用它回答"窗口内探索还在推进吗"。
+func (s *ExplorationStore) LastIntentCreatedAt() (*time.Time, error) {
+	var ts *time.Time
+	err := s.db.QueryRow(`SELECT max(created_at) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'`, s.expID).Scan(&ts)
+	if err != nil {
+		return nil, err
+	}
+	return ts, nil
+}
+
+// CountIntents returns how many intent nodes this exploration has (P20 的意图额度口径 =
+// 累计创建过的意图，含种子意图与人直投的——它是"总量预算"，不是"当前存量"）。
+func (s *ExplorationStore) CountIntents() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'`, s.expID).Scan(&n)
+	return n, err
 }
 
 // ToolUseSample is one recorded tool call (name + raw input) from the activity log.

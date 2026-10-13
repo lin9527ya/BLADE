@@ -12,6 +12,13 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
+// toolsQ 是 P20 意图额度的验收辅助：裸 ToolSet 没有"本轮已用几条"的上下文，
+// 取一份空额度快照（未接策略时判定完全跳过，行为与从前一致）。
+func toolsQ() *intentQuota { return &intentQuota{} }
+
+// disabledToolsQ 同上（coverage-disabled 场景用的 ToolSet）。
+func disabledToolsQ() *intentQuota { return &intentQuota{} }
+
 func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {
 	t.Helper()
 	result, err := tool.Call(context.Background(), json.RawMessage(input), nil)
@@ -149,7 +156,7 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	intentID, _, err := tools.addOneIntent(intentItem{
 		Summary:  "test associated company asset",
 		AssetIDs: []json.RawMessage{assetJSON},
-	})
+	}, toolsQ())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +194,7 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	disabledIntentID, _, err := disabledTools.addOneIntent(intentItem{
 		Summary:  "test associated company asset without coverage metrics",
 		AssetIDs: []json.RawMessage{assetJSON},
-	})
+	}, disabledToolsQ())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +291,7 @@ func TestBlackboardToolsReadDirectSources(t *testing.T) {
 	parentID, _ := json.Marshal(sourceFact)
 	derivedID, _, err := tools.addOneIntent(intentItem{
 		Summary: "derive locally from shared fact", ParentIDs: []json.RawMessage{parentID},
-	})
+	}, toolsQ())
 	if err != nil {
 		t.Fatalf("derive from inherited fact: %v", err)
 	}

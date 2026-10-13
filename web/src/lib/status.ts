@@ -58,6 +58,7 @@ const task: Record<string, StatusMeta> = {
   done: { label: "已完成", tone: "green" },
   failed: { label: "失败", tone: "red" },
   timeout: { label: "已超时", tone: "amber" },
+  policy_blocked: { label: "策略封死", tone: "slate" }, // P20：探索策略内无可行方向而收尾（改策略/加目标可复活）
 };
 
 const severity: Record<string, StatusMeta> = {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/traffic"
 )
 
@@ -61,6 +62,10 @@ type TaskDTO struct {
 	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
+	// P20 探索策略限制摘要(列表页角标用);明细(额度/覆盖层/近期被拒)走 GET /api/tasks/{id}/policy。
+	PolicyTechniques []string `json:"policy_techniques,omitempty"`
+	PolicyWrites     []string `json:"policy_writes,omitempty"`
+	PolicyMaxIntents int      `json:"policy_max_intents,omitempty"`
 }
 
 // FindingSeverityDTO 是任务列表里按严重度分档的漏洞计数（严重/高/中/低）。
@@ -109,6 +114,11 @@ func taskDTO(t *Task, status string) TaskDTO {
 		sourceIDs = append(sourceIDs, i64s(id))
 	}
 	profileIDs := append(make([]int64, 0, len(llmState.ProfileIDs)), llmState.ProfileIDs...)
+	var polTech, polWrites []string
+	polMax := 0
+	if doc := policy.ParseDoc(t.ExplorationPolicy); doc != nil {
+		polTech, polWrites, polMax = doc.Effective.Techniques, doc.Effective.ForbiddenWrites, doc.Effective.MaxIntentsTotal
+	}
 	return TaskDTO{
 		ID:                 t.ID,
 		ExplorationID:      t.ExpID,
@@ -134,6 +144,9 @@ func taskDTO(t *Task, status string) TaskDTO {
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,
+		PolicyTechniques:   polTech,
+		PolicyWrites:       polWrites,
+		PolicyMaxIntents:   polMax,
 	}
 }
 

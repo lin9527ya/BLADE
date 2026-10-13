@@ -6,6 +6,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
@@ -33,6 +34,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	policyFn        func() *policy.Effective               // resolver: task exploration policy (P20; nil = none)
 }
 
 // MainSessionID is the transcript AND noa-archive session id of a main-agent
@@ -93,6 +95,16 @@ func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
 
+// SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
+func (m *MainAgent) SetPolicyResolver(fn func() *policy.Effective) { m.policyFn = fn }
+
+func (m *MainAgent) policy() *policy.Effective {
+	if m.policyFn == nil {
+		return nil
+	}
+	return m.policyFn()
+}
+
 // mainAgentDefaultTmpl is the built-in EDITABLE body (段 [A]) of the main agent
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the 中间
 // 产物输出规约 tail is code-owned (artifactSpec), appended after rendering.
@@ -123,6 +135,13 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // worker/planner sessions — not just the final answer.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
 	tsx := NewToolSet(ts, "human")
+	// P20：主 agent 也能 add_intent（人经聊天直投方向）→ 同一道策略门 + 同一份留痕。
+	tsx.SetPolicy(m.policy())
+	tsx.SetPolicyAudit(func(r db.Activity) {
+		if emit != nil {
+			emit(r)
+		}
+	})
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())

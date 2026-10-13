@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -80,6 +81,8 @@ type Worker struct {
 	nonStreamingFn func() bool
 	// execService（P13）由 host 注入：长任务执行的托管后端（进程活过本次 run）。
 	execService ExecService
+	// policyFn（P20）解析本任务的探索策略；nil = 无策略。每个 run 现读。
+	policyFn func() *policy.Effective
 	// noaEnabledFn resolves whether this run uses the experimental noa context-
 	// compression mechanism. Read per run, like nonStreaming. nil = off (built-in
 	// compaction).
@@ -120,6 +123,16 @@ func (w *Worker) SetNonStreaming(fn func() bool) { w.nonStreamingFn = fn }
 
 // SetExecService 注入长任务执行服务（P13）；nil = 未接线（工具返回可读拒绝）。
 func (w *Worker) SetExecService(svc ExecService) { w.execService = svc }
+
+// SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
+func (w *Worker) SetPolicyResolver(fn func() *policy.Effective) { w.policyFn = fn }
+
+func (w *Worker) policy() *policy.Effective {
+	if w.policyFn == nil {
+		return nil
+	}
+	return w.policyFn()
+}
 
 func (w *Worker) nonStreaming() bool { return w.nonStreamingFn != nil && w.nonStreamingFn() }
 
@@ -410,8 +423,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
-	tsx.SetOwnerNode(intent.ID)         // assets this worker discovers anchor to its intent → visible to the task
-	tsx.SetExecService(w.execService)   // P13：长任务执行（进程活过本次 run）
+	tsx.SetOwnerNode(intent.ID)       // assets this worker discovers anchor to its intent → visible to the task
+	tsx.SetExecService(w.execService) // P13：长任务执行（进程活过本次 run）
+	pol := w.policy()
+	tsx.SetPolicy(pol)                  // P20：worker 本身不派意图，但策略段要进它的 system（见下）
 	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
 	tsx.SetNotifyFinding(notifyFinding) // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
@@ -441,6 +456,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
+	// P20：探索策略段（不受开关控制）——worker 是"探测"的执行者，禁用手段与只读声明
+	// 在这里必须与 planner 看到的一致，否则它会照着被禁的方向硬干、直到命令层拦下。
+	sysBody += policyBlock(pol, ts)
 	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
 	sysBody += renderIntentTask(intent)
 	if as != nil {
