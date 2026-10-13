@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-14
+
 ### 计划任务
 
 #### 新增的功能
@@ -129,6 +131,33 @@
   `executions/`（执行台账日志）、`compaction/`（压缩原文）同处 `<数据目录>/tasks/<任务>/...`。
   于是任务删除时已有的文件清理、备份、人工排查都只需要面对一个根；`$TMPDIR` 既不随宿主
   生命周期、也可能挂在 tmpfs 上（重启即失）。
+
+### 拦截
+
+#### 修复的问题
+
+- **堵住授权范围门的 `run_execution` 逃逸**：worker 提示词要求「预计超过 2 分钟的任务
+  （nuclei/ffuf/nmap 等扫描器）一律用 `run_execution` 起」，而它恰好是整个拦截面上唯一没门的
+  执行路径——**不在默认启用集里**，于是拦截规则、LLM 兜底裁判、RoE 范围门被一起跳过；即便把它
+  加进启用集，**目标抽取器也不认识它的 `command` 参数**，范围门仍然看不到它携带的目标。两层
+  独立的漏、只补一层不成立，越界扫描因此可以畅通无阻且全程静默。现在：
+  - 目标抽取覆盖 `run_execution`（`command`）与 `WebFetch`（`url`）；
+  - 默认启用集纳入 `run_execution`，恢复破坏性/外泄规则与兜底裁判的管辖；
+  - **范围门提到工具启用集之前**——`intercept` 的包注释一直写着「授权边界高于一切规则配置」，
+    而实现把 `IsToolEnabled` 排在 `CheckScope` 之前，两者相反。改后授权边界不再取决于某个工具
+    有没有被登记，顺带也解掉了「已保存过 `intercept_enabled_tools` 的用户拿不到新默认项」的
+    迁移问题。
+  - 回归用例补在 `intercept/scope_test.go`。那里此前只测两个纯函数、**从未经过工具名这一层**，
+    这正是它长期没被发现的原因：测的是「门在」，不是「门覆盖了所有出口」。
+
+### Agent
+
+#### 修复的问题
+
+- **`graph_overview` 的 `findings_total` / `facts` 改为真计数**：原实现取
+  `len(ListByKind(kind, 1000))`，任务超过 1000 个漏洞/事实后报出去的是「截断窗口的大小」而不是
+  总数——而 `findings_total` 是 planner 判定目标是否达成的依据，一个被封顶的数字会静默低估已完成
+  的产出。改为 `COUNT` 真计数；findings 列表顺势只取要展示的那一窗（原本拉 1000 行只为显示 10 行）。
 
 ## [0.3.15] - 2026-10-07
 
@@ -1012,7 +1041,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/Autumn-27/ARTEX/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/lin9527ya/ARTEX/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lin9527ya/ARTEX/releases/tag/v0.4.0
 [0.3.10]: https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/Autumn-27/ARTEX/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/Autumn-27/ARTEX/compare/v0.3.7...v0.3.8
