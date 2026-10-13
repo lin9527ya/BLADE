@@ -96,6 +96,23 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("list tasks: %d", code)
 	}
+	// 断言要看列表内容，不能只看状态码：此前 out 在这里被赋值后未读即被下面那次
+	// doRetry 覆盖（staticcheck SA4006），于是「它出现在任务列表里」这句注释其实
+	// 从未被验证过——绿灯掩盖了一条没跑到的断言。
+	list, ok := out["tasks"].([]any)
+	if !ok {
+		t.Fatalf("list tasks: 响应里没有 tasks 数组：%v", out)
+	}
+	found := false
+	for _, item := range list {
+		if row, ok := item.(map[string]any); ok && row["id"] == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("task %s 未出现在 /api/tasks 列表（共 %d 条）", id, len(list))
+	}
 
 	// The task detail header consumes the top-level engine mode while some clients
 	// read the active-task snapshot. Keep both representations in sync.
