@@ -28,6 +28,9 @@ func (s *Server) registerSrcExport(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/findings/{id}/src-report.docx", s.getFindingSrcReportDocx)
 	// 证据门（P15）：下载前先看"这份简报缺什么"。
 	mux.HandleFunc("GET /api/findings/{id}/src-report/check", s.getFindingSrcReportCheck)
+	// 批量交付（P19）：一个任务的全部发现 -> 计划预览 / 打包下载。
+	mux.HandleFunc("GET /api/tasks/{id}/src-batch", s.getTaskSrcBatch)
+	mux.HandleFunc("GET /api/tasks/{id}/src-report.zip", s.getTaskSrcReportZip)
 }
 
 func (s *Server) srcFinding(w http.ResponseWriter, r *http.Request) *db.DBFinding {
@@ -77,14 +80,17 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) (report.Src
 	}
 
 	// warnings 是导出前的证据缺项清单（P15 交付证据门）。空 = 本发现可以直接交。
-	var warnings []string
 	traffic, err := s.m.pg.GetFindingTraffic(ctx, f.ID)
 	if err != nil {
 		traffic = nil
 	}
-	if traffic == nil || len(traffic.Bindings) == 0 {
-		warnings = append(warnings, "该发现没有任何绑定流量：复现步骤与整包证据缺失，请先绑定流量再交付。")
+	var roles []string
+	if traffic != nil {
+		for _, b := range traffic.Bindings {
+			roles = append(roles, b.Role)
+		}
 	}
+	warnings := s.srcWarnings(f, roles)
 	store := s.evidenceStore()
 	if traffic != nil {
 		seen := map[string]bool{}
@@ -124,14 +130,40 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) (report.Src
 		if baselineNote != "" && len(in.Steps) > 0 {
 			in.Steps[0].Desc += "（同接口正常对照：" + baselineNote + "，对照请求不单独成步）"
 		}
-		if stepNo == 0 {
-			warnings = append(warnings, "已绑定流量中没有 proof/verification 角色：复现步骤缺少整包证据，请补绑后重新导出。")
-		}
 	}
 
 	notes := []string{"发现 #" + itoa64(f.ID) + " · 证据版本 v" + itoa64(f.EvidenceVersion) + " · 生成时间 " + time.Now().Format("2006-01-02 15:04:05")}
 	if strings.TrimSpace(f.TaskDescription) != "" {
 		notes = append(notes, "来源任务："+clipRunes(f.TaskDescription, 80))
+	}
+	// 证据门（P15）：缺项既进 Notes 顶部（人下载就看得见），也由 API 以 warnings[]
+	// 单独返回（前端/自动化在下载前就能看到）。两者同一份来源，不会各说各话。
+	for _, w := range warnings {
+		notes = append(notes, "⚠ "+w)
+	}
+	in.Notes = append(notes, in.Notes...)
+	return in, warnings
+}
+
+// srcWarnings 是「交付证据门」的唯一实现（P19 起）：每条发现导出前缺什么。
+// roles 是该发现的绑定流量角色（空 = 没有任何绑定）。调用方给它，是因为批量交付
+// 走的是"一次查完所有发现的绑定"的批量路径，不该为了算警告再逐条查一遍库——
+// 两处必须给同一份清单，否则批量包里的话和单条导出的话会互相打架。
+func (s *Server) srcWarnings(f *db.DBFinding, roles []string) []string {
+	var warnings []string
+	if len(roles) == 0 {
+		warnings = append(warnings, "该发现没有任何绑定流量：复现步骤与整包证据缺失，请先绑定流量再交付。")
+	} else {
+		hasProof := false
+		for _, r := range roles {
+			if r == "proof" || r == "verification" {
+				hasProof = true
+				break
+			}
+		}
+		if !hasProof {
+			warnings = append(warnings, "已绑定流量中没有 proof/verification 角色：复现步骤缺少整包证据，请补绑后重新导出。")
+		}
 	}
 	if f.Status == db.FindingRetracted {
 		warnings = append(warnings, "该发现已撤回（复测推翻），不要提交；如需提交请先重新确认。")
@@ -145,13 +177,7 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) (report.Src
 			}
 		}
 	}
-	// 证据门（P15）：缺项既进 Notes 顶部（人下载就看得见），也由 API 以 warnings[]
-	// 单独返回（前端/自动化在下载前就能看到）。两者同一份来源，不会各说各话。
-	for _, w := range warnings {
-		notes = append(notes, "⚠ "+w)
-	}
-	in.Notes = append(notes, in.Notes...)
-	return in, warnings
+	return warnings
 }
 
 // srcBindingSource renders an endpoint's provenance for 涉及接口清单.
