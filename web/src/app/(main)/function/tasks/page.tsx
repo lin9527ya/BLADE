@@ -48,6 +48,7 @@ import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-ed
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
+import { ScheduleTasksSheet } from "@/components/schedule-tasks-sheet";
 import { TaskTemplateControls } from "@/components/task-template-controls";
 import {
   AlertDialog,
@@ -925,6 +926,7 @@ export default function TasksPage() {
                 onChanged={refreshCategoriesAndTasks}
                 onTaskMoved={applyTaskCategoryMove}
               />
+              <ScheduleTasksSheet categories={categories} onCreated={refreshCategoriesAndTasks} />
               <CreateTaskSheet
                 tasks={tasks}
                 categories={categories}

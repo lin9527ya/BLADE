@@ -77,6 +77,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P19 批量交付与同源归并", func(t *testing.T) { accP19(t, env.forTest(t)) })
 	t.Run("P20 探索策略门（意图门/命令门/额度/继承快照/停摆收尾）", func(t *testing.T) { accP20(t, env.forTest(t)) })
 	t.Run("P21 情报/测绘工具面（FOFA：查询/落盘/台账/配额/边界）", func(t *testing.T) { accP21(t, env.forTest(t)) })
+	t.Run("P22 计划任务（结构化频率/CAS 防重复/失败留痕/立即运行）", func(t *testing.T) { accP22(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -2170,5 +2171,219 @@ func accP21(t *testing.T, e *accEnv) {
 	}
 	if !strings.Contains(ures.Flatten(), "未知情报源") {
 		t.Fatalf("未注册的源应给可读错误: %s", ures.Flatten())
+	}
+}
+
+// accP22 走完计划任务：结构化频率（不引 cron）→ 到点按规格建任务（规格原样落地：描述/目标/
+// 任务级拦截规则都跟着走）→ **CAS 抢跑不重复**（再 tick 一次不建第二个）→ 禁用即停 →
+// 触发失败如实落 last_error 且不建空任务 → 「立即运行」是额外一次、不改排期 →
+// 非法频率/空目标写入即 400。
+func accP22(t *testing.T, e *accEnv) {
+	// 收尾：删掉本用例造的计划任务与它们建出来的任务。
+	var createdTasks []string
+	t.Cleanup(func() {
+		for _, id := range createdTasks {
+			e.s.engine.StopTask(id)
+			if n, err := strconv.ParseInt(id, 10, 64); err == nil {
+				_ = e.m.pg.DeleteTask(n)
+			}
+		}
+		_, _ = e.m.pg.Exec(`DELETE FROM task_schedules WHERE name LIKE 'acceptance-p22%'`)
+	})
+
+	// ① 建计划任务：每 6 小时，规格里带一条任务级拦截规则（证明规格原样落地）。
+	rec := e.request(http.MethodPost, "/api/task-schedules", `{
+		"name":"acceptance-p22-hourly",
+		"frequency":{"kind":"every_hours","every_hours":6},
+		"task_spec":{"description":"acceptance-p22 巡检","goal":"对 example.com 做只读复测",
+			"intercept_rules":[{"action":"block","kind":"fuzzy_domain","pattern":"never.example.com","note":"验收：规格里的规则要跟着走"}]}
+	}`)
+	if rec.Code != 201 {
+		t.Fatalf("建计划任务 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var schedDTO struct {
+		ID            int64  `json:"id"`
+		Enabled       bool   `json:"enabled"`
+		FrequencyText string `json:"frequency_text"`
+		NextRunAt     string `json:"next_run_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &schedDTO); err != nil {
+		t.Fatal(err)
+	}
+	if schedDTO.FrequencyText != "每 6 小时" || !schedDTO.Enabled || schedDTO.NextRunAt == "" {
+		t.Fatalf("计划任务应答不对: %s", rec.Body.String())
+	}
+	next, err := time.Parse(time.RFC3339, schedDTO.NextRunAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(next); d < 5*time.Hour+50*time.Minute || d > 6*time.Hour {
+		t.Fatalf("下次运行应在约 6 小时后，实际 %s", d)
+	}
+
+	// ② 手动把它置为"已到点"，驱动一次 tick：应按规格建任务、并把排期推到下一次。
+	if _, err := e.m.pg.Exec(`UPDATE task_schedules SET next_run_at=now()-interval '1 minute' WHERE id=$1`, schedDTO.ID); err != nil {
+		t.Fatal(err)
+	}
+	sc := newScheduler(e.s)
+	sc.runDueSchedules(e.ctx)
+	row, err := e.m.pg.GetTaskSchedule(schedDTO.ID)
+	if err != nil || row == nil {
+		t.Fatalf("读计划任务: %v", err)
+	}
+	if row.LastTaskID == "" || row.LastError != "" {
+		t.Fatalf("到点应建成任务且无错误: task=%q err=%q", row.LastTaskID, row.LastError)
+	}
+	createdTasks = append(createdTasks, row.LastTaskID)
+	if row.NextRunAt == nil || !row.NextRunAt.After(time.Now().Add(5*time.Hour)) {
+		t.Fatalf("触发后应把排期推到下一次: %v", row.NextRunAt)
+	}
+	taskID, _ := strconv.ParseInt(row.LastTaskID, 10, 64)
+	pgTask, err := e.m.pg.GetTask(taskID)
+	if err != nil || pgTask == nil {
+		t.Fatalf("读建成任务: %v", err)
+	}
+	if pgTask.Description != "acceptance-p22 巡检" || pgTask.Goal != "对 example.com 做只读复测" {
+		t.Fatalf("规格没有原样落地: %+v", pgTask)
+	}
+	var ruleCount int
+	if err := e.m.pg.QueryRow(`SELECT count(*) FROM task_intercept_rules WHERE task_id=$1 AND pattern='never.example.com'`, row.LastTaskID).Scan(&ruleCount); err != nil {
+		t.Fatal(err)
+	}
+	if ruleCount != 1 {
+		t.Fatalf("规格里的任务级拦截规则应跟着建出来，实际 %d 条", ruleCount)
+	}
+
+	// ③ 再 tick 一次：排期已推到未来 → **不重复建任务**。
+	if _, err := e.m.pg.Exec(`UPDATE task_schedules SET last_task_id='' WHERE id=$1`, schedDTO.ID); err != nil {
+		t.Fatal(err)
+	}
+	sc.runDueSchedules(e.ctx)
+	if row2, _ := e.m.pg.GetTaskSchedule(schedDTO.ID); row2 != nil && row2.LastTaskID != "" {
+		t.Fatalf("不该重复建任务，却又建了 #%s", row2.LastTaskID)
+	}
+	var dupCount int
+	if err := e.m.pg.QueryRow(`SELECT count(*) FROM tasks WHERE description='acceptance-p22 巡检'`).Scan(&dupCount); err != nil {
+		t.Fatal(err)
+	}
+	if dupCount != 1 {
+		t.Fatalf("同一时刻只该建一个任务，实际 %d 个", dupCount)
+	}
+
+	// ④ 「立即运行」是额外一次，不改排期。
+	before, _ := e.m.pg.GetTaskSchedule(schedDTO.ID)
+	rec = e.request(http.MethodPost, "/api/task-schedules/"+strconv.FormatInt(schedDTO.ID, 10)+"/run", "")
+	if rec.Code != 200 {
+		t.Fatalf("立即运行 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var runResp struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &runResp); err != nil {
+		t.Fatal(err)
+	}
+	createdTasks = append(createdTasks, runResp.TaskID)
+	after, _ := e.m.pg.GetTaskSchedule(schedDTO.ID)
+	if after.NextRunAt == nil || before.NextRunAt == nil || !after.NextRunAt.Equal(*before.NextRunAt) {
+		t.Fatalf("立即运行不该改排期: before=%v after=%v", before.NextRunAt, after.NextRunAt)
+	}
+	if after.LastTaskID != runResp.TaskID {
+		t.Fatalf("立即运行应记 last_task_id: %q", after.LastTaskID)
+	}
+
+	// ⑤ 禁用即停：清空排期，强制置过期也不触发。
+	rec = e.request(http.MethodPatch, "/api/task-schedules/"+strconv.FormatInt(schedDTO.ID, 10), `{"enabled":false}`)
+	if rec.Code != 200 {
+		t.Fatalf("禁用 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if row3, _ := e.m.pg.GetTaskSchedule(schedDTO.ID); row3.NextRunAt != nil {
+		t.Fatalf("禁用后应清空排期: %v", row3.NextRunAt)
+	}
+	if _, err := e.m.pg.Exec(`UPDATE task_schedules SET next_run_at=now()-interval '1 minute', last_task_id='' WHERE id=$1`, schedDTO.ID); err != nil {
+		t.Fatal(err)
+	}
+	sc.runDueSchedules(e.ctx)
+	if row4, _ := e.m.pg.GetTaskSchedule(schedDTO.ID); row4.LastTaskID != "" {
+		t.Fatalf("禁用后不该再触发: %s", row4.LastTaskID)
+	}
+
+	// ⑥ 触发失败：分类被删 → 如实落 last_error、不建空任务、排期照推（不热循环重试）。
+	rec = e.request(http.MethodPost, "/api/task-schedules", `{
+		"name":"acceptance-p22-broken",
+		"frequency":{"kind":"every_minutes","every_minutes":30},
+		"task_spec":{"description":"acceptance-p22 坏规格","goal":"g","category_id":999999}
+	}`)
+	// 建的时候就该被拦（分类不存在）→ 400；换一条"建好后再变坏"的路径验证触发期失败。
+	if rec.Code != 400 {
+		t.Fatalf("不存在的分类应在写入时就拒: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodPost, "/api/task-schedules", `{
+		"name":"acceptance-p22-broken2",
+		"frequency":{"kind":"every_minutes","every_minutes":30},
+		"task_spec":{"description":"acceptance-p22 坏规格","goal":"g"}
+	}`)
+	if rec.Code != 201 {
+		t.Fatalf("建坏规格计划 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var broken struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &broken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.pg.Exec(`UPDATE task_schedules SET task_spec = jsonb_set(task_spec, '{description}', '""') WHERE id=$1`, broken.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.pg.Exec(`UPDATE task_schedules SET next_run_at=now()-interval '1 minute' WHERE id=$1`, broken.ID); err != nil {
+		t.Fatal(err)
+	}
+	sc.runDueSchedules(e.ctx)
+	brow, _ := e.m.pg.GetTaskSchedule(broken.ID)
+	if brow == nil || brow.LastError == "" {
+		t.Fatalf("触发失败必须如实落 last_error: %+v", brow)
+	}
+	if brow.LastTaskID != "" {
+		t.Fatalf("失败时不该记任务 id: %s", brow.LastTaskID)
+	}
+	if brow.NextRunAt == nil || !brow.NextRunAt.After(time.Now()) {
+		t.Fatalf("失败也要把排期推到下一次（否则每 5s 热循环重试）: %v", brow.NextRunAt)
+	}
+
+	// ⑦ 非法频率 / 空目标：写入即 400。
+	if rec := e.request(http.MethodPost, "/api/task-schedules",
+		`{"name":"acceptance-p22-bad","frequency":{"kind":"every_minutes","every_minutes":1},"task_spec":{"description":"d","goal":"g"}}`); rec.Code != 400 {
+		t.Fatalf("非法频率应 400: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.request(http.MethodPost, "/api/task-schedules",
+		`{"name":"acceptance-p22-bad2","frequency":{"kind":"cron","at":"* * * * *"},"task_spec":{"description":"d","goal":"g"}}`); rec.Code != 400 {
+		t.Fatalf("cron 表达式应被拒（本设计不支持）: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.request(http.MethodPost, "/api/task-schedules",
+		`{"name":"acceptance-p22-bad3","frequency":{"kind":"daily_at","at":"09:30"},"task_spec":{"description":"d","goal":"  "}}`); rec.Code != 400 {
+		t.Fatalf("空目标应 400: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// ⑧ 列表：人话频率 + 状态齐备（UI 直接渲染）。
+	rec = e.request(http.MethodGet, "/api/task-schedules", "")
+	var listed struct {
+		Schedules []struct {
+			ID            int64  `json:"id"`
+			Name          string `json:"name"`
+			FrequencyText string `json:"frequency_text"`
+			Enabled       bool   `json:"enabled"`
+			LastError     string `json:"last_error"`
+		} `json:"schedules"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range listed.Schedules {
+		if s.ID == broken.ID {
+			found = s.FrequencyText == "每 30 分钟" && s.LastError != ""
+		}
+	}
+	if !found {
+		t.Fatalf("列表应给出人话频率与上次错误: %+v", listed.Schedules)
 	}
 }
