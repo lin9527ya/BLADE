@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### SDK（norma）
+
+#### 变更
+
+- **norma 转为个人维护线**：上游 `Autumn-27/norma` 不再发版，SDK 侧修复改由 fork
+  [`lin9527ya/Norma`](https://github.com/lin9527ya/Norma) 维护并打 tag，`go.mod` 用
+  `replace` 指向它（fork 保留原 module path，import 路径不变）。维护线自带 CI，
+  **每个 tag 都自带一次全绿测试**；差异台账在该仓库的 `FORK.md`，操作流程见
+  `docs/SDK维护线.md`。
+- **当前接线 `v0.4.5`**，累计包含：溢出输出指针恒为绝对路径；截断按 UTF-8 rune 边界
+  对齐（不再切出半个汉字）；会话关闭不再删除后台任务输出目录（后台输出与"完整输出
+  已存到 <路径>"的指针不再变死链）；子进程注入非交互默认环境（`PAGER`/`GIT_PAGER`/
+  `SYSTEMD_PAGER=cat`、`DEBIAN_FRONTEND=noninteractive`，避免守着一个没人看的终端）；
+  模型调用在手工组装的配置下不再因缺 HTTP client 而 panic；noa 溢出时学习 provider
+  报出的真实窗口（此前该学习路径无调用者）。
+
 ## [0.3.15] - 2026-10-07
 
 ### 拦截
