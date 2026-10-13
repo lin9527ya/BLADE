@@ -325,12 +325,12 @@ tested AS (
 
 // CoverageMatrixCell is one (in-scope asset × risk area) cell of the coverage matrix.
 type CoverageMatrixCell struct {
-	RiskArea  string   `json:"risk_area"`
-	Tested    int      `json:"tested"`     // 终态 done/negative
-	Failed    int      `json:"failed"`     // blocked/exhausted —— 未测成
-	InFlight  int      `json:"in_flight"`  // open/running/paused
-	OutOfScope int     `json:"out_of_scope"` // out-of-scope —— 越界结论，不算已测也不算未测成
-	Intents   []string `json:"intents"`    // "#<id> <state>"，供报告点名
+	RiskArea   string   `json:"risk_area"`
+	Tested     int      `json:"tested"`       // 终态 done/negative
+	Failed     int      `json:"failed"`       // blocked/exhausted —— 未测成
+	InFlight   int      `json:"in_flight"`    // open/running/paused
+	OutOfScope int      `json:"out_of_scope"` // out-of-scope —— 越界结论，不算已测也不算未测成
+	Intents    []string `json:"intents"`      // "#<id> <state>"，供报告点名
 }
 
 // CoverageMatrixAsset is one in-scope asset row of the matrix (cells keyed by risk area).
