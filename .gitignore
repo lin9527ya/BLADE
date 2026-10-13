@@ -42,6 +42,8 @@ Thumbs.db
 /artex.old
 /artex.failed
 /artex.upgrade.json
+# start.sh 的运行日志（README 的 nohup ./start.sh >artex.log 2>&1 & 会留）
+/artex.log
 /server/webui/dist/
 /dist/
 
