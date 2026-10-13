@@ -60,3 +60,8 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// norma = 个人维护线（2026-10-13 起）：上游不再发版，SDK 侧修复直接落在
+// github.com/lin9527ya/Norma 上并打 tag，本行是唯一消费入口。
+// v0.4.4 = 溢出指针绝对路径 / 截断对齐 UTF-8 / Cleanup 保留输出 / 非交互默认环境。
+replace github.com/Autumn-27/norma => github.com/lin9527ya/Norma v0.4.4

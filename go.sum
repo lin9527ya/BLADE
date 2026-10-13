@@ -1,5 +1,3 @@
-github.com/Autumn-27/norma v0.4.3 h1:DnmOhJPL6OZSMnCVYO5Ujh4yVINuDarEickVi9jx1hI=
-github.com/Autumn-27/norma v0.4.3/go.mod h1:BudWrf7iHl96FgHqFr/HwN3mKYmGjJDt+xL2ZHXfFZw=
 github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
 github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3dyBCFEj5IhUbnKptjxatkF07cF2ak3yi77so=
@@ -48,6 +46,8 @@ github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
+github.com/lin9527ya/Norma v0.4.4 h1:qPIuVqlfz0ENvIL9uYJb5F59vu2xs+sJvP+8M174HqE=
+github.com/lin9527ya/Norma v0.4.4/go.mod h1:BudWrf7iHl96FgHqFr/HwN3mKYmGjJDt+xL2ZHXfFZw=
 github.com/lqqyt2423/go-mitmproxy v1.9.2 h1:+QTbDyUUaVRmEavPq0/eWzJ2K+K4JdL4ff91s/adnxk=
 github.com/lqqyt2423/go-mitmproxy v1.9.2/go.mod h1:6H5PR+nbVsiGQJC/Y98GHJItyFcmP/Z0txAgjhG2a80=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
