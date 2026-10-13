@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -46,6 +47,7 @@ import type {
   ExplorationPolicyDefault,
   PolicyRuleDraft,
   ConstraintCompilePreview,
+  CustomRule,
 } from "@/lib/types";
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
@@ -1574,6 +1576,7 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
   const [vocab, setVocab] = React.useState<ExplorationPolicyDefault | null>(null);
   const [tech, setTech] = React.useState<string[]>([]);
   const [writes, setWrites] = React.useState<string[]>([]);
+  const [custom, setCustom] = React.useState<CustomRule[]>([]);
   const [maxRound, setMaxRound] = React.useState("0");
   const [maxOpen, setMaxOpen] = React.useState("0");
   const [maxTotal, setMaxTotal] = React.useState("0");
@@ -1590,6 +1593,7 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
       // 编辑态从"当前生效"起步（继承时显示继承来的值；保存后即成显式覆盖）。
       setTech([...p.effective.techniques]);
       setWrites([...p.effective.forbidden_writes]);
+      setCustom((p.effective.custom ?? []).map((r) => ({ ...r })));
       setMaxRound(String(p.effective.max_intents_per_round));
       setMaxOpen(String(p.effective.max_open_intents));
       setMaxTotal(String(p.effective.max_intents_total));
@@ -1615,13 +1619,14 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
       const next = await api.saveTaskPolicy(taskId, {
         techniques: tech,
         forbidden_writes: writes,
+        custom: custom.filter((r) => r.pattern.trim() !== ""),
         max_intents_per_round: Number(maxRound) || 0,
         max_open_intents: Number(maxOpen) || 0,
         max_intents_total: Number(maxTotal) || 0,
       });
       setPol(next);
       setPreview(null);
-      toast.success("探索策略已保存：意图层下一轮生效，命令门已重建");
+      toast.success("探索策略已保存：意图层下一轮生效，命令门已重建（含自定义条目）");
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -1637,6 +1642,7 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
       setPol(next);
       setTech([]);
       setWrites([]);
+      setCustom([]);
       setMaxRound("0");
       setMaxOpen("0");
       setMaxTotal("0");
@@ -1690,7 +1696,8 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
           <ShieldAlertIcon className="size-4 text-red-500" /> 探索策略
           <span className="text-muted-foreground text-xs font-normal">
             （意图层：不符合策略的方向直接不进探索图并说明理由；命令层：编译成任务级拦截规则，只对本任务
-            生效、换措辞也绕不过。改动下一轮规划生效，不回溯已有意图。「禁止」是平台的边界，不会解除系统内置的破坏性拦截）
+            生效、换措辞也绕不过。词表覆盖不到时可手写自定义条目（关键词或正则，「仅命令」层只拦工具调用）。
+            改动下一轮规划生效，不回溯已有意图。「禁止」是平台的边界，不会解除系统内置的破坏性拦截）
           </span>
         </CardTitle>
       </CardHeader>
@@ -1753,6 +1760,16 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">自定义禁止条目（词表覆盖不到时手写）</span>
+          <CustomRulesEditor
+            rules={custom}
+            onChange={setCustom}
+            disabled={busy}
+            limit={pol?.custom_limit ?? 16}
+          />
         </div>
 
         <div className="flex flex-col gap-1.5">

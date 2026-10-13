@@ -27,6 +27,20 @@ func RenderBlock(e Effective, intentsUsed int) string {
 			}
 		}
 	}
+	if len(e.Custom) > 0 {
+		b.WriteString("\n一之二、操作者为本任务手写的额外禁止条目（与上同等效力；命中的方向不要提、也不要执行）：\n")
+		for _, r := range e.Custom {
+			scope := "意图与命令都判"
+			if r.IsCommandOnly() {
+				scope = "只判命令（说说没关系，做出来会被拦）"
+			}
+			kind := "关键词"
+			if r.Regex {
+				kind = "正则"
+			}
+			fmt.Fprintf(&b, "- %s（%s：%s；%s）\n", r.Display(), kind, r.Pattern, scope)
+		}
+	}
 	if e.MaxIntentsPerRound > 0 || e.MaxOpenIntents > 0 || e.MaxIntentsTotal > 0 {
 		b.WriteString("\n二、节奏：")
 		var parts []string

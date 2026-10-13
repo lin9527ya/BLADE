@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -64,6 +65,31 @@ func (e Effective) CheckIntent(in IntentInput) Verdict {
 				return Verdict{Allow: true, ItemID: w.ID, ItemLabel: w.Label, Where: "summary", Matched: hit.Matched, Benign: true}
 			}
 			return Verdict{ItemID: w.ID, ItemLabel: w.Label, Where: "summary", Matched: hit.Matched, Hint: w.Hint}
+		}
+	}
+	// 自定义条目（操作者手写）最后判：词表是通用底线，自定义是"这家/这单特有的边界"。
+	for _, r := range e.Custom {
+		if r.IsCommandOnly() {
+			continue // 只作用于命令层：意图措辞不判
+		}
+		label := "自定义·" + r.Display()
+		hint := "这是操作者为本任务设定的自定义边界：换措辞同样会被拒；若确需调整，请让操作者在任务页/设置页改这条策略。"
+		if r.Regex {
+			re, err := regexp.Compile(r.Pattern)
+			if err != nil {
+				continue // 非法正则不该让整次判定失败（写入侧 Validate 已拦）
+			}
+			if loc := re.FindStringIndex(in.Summary); loc != nil {
+				return Verdict{ItemID: "custom", ItemLabel: label, Where: "summary",
+					Matched: in.Summary[loc[0]:loc[1]], Hint: hint}
+			}
+			continue
+		}
+		if hit, ok := MatchWords(in.Summary, []string{r.Pattern}); ok {
+			if Negated(in.Summary, hit.Where) {
+				return Verdict{Allow: true, ItemID: "custom", ItemLabel: label, Where: "summary", Matched: hit.Matched, Benign: true}
+			}
+			return Verdict{ItemID: "custom", ItemLabel: label, Where: "summary", Matched: hit.Matched, Hint: hint}
 		}
 	}
 	return Verdict{Allow: true}

@@ -65,6 +65,7 @@ type TaskDTO struct {
 	// P20 探索策略限制摘要(列表页角标用);明细(额度/覆盖层/近期被拒)走 GET /api/tasks/{id}/policy。
 	PolicyTechniques []string `json:"policy_techniques,omitempty"`
 	PolicyWrites     []string `json:"policy_writes,omitempty"`
+	PolicyCustom     int      `json:"policy_custom,omitempty"`
 	PolicyMaxIntents int      `json:"policy_max_intents,omitempty"`
 }
 
@@ -115,9 +116,10 @@ func taskDTO(t *Task, status string) TaskDTO {
 	}
 	profileIDs := append(make([]int64, 0, len(llmState.ProfileIDs)), llmState.ProfileIDs...)
 	var polTech, polWrites []string
-	polMax := 0
+	polCustom, polMax := 0, 0
 	if doc := policy.ParseDoc(t.ExplorationPolicy); doc != nil {
 		polTech, polWrites, polMax = doc.Effective.Techniques, doc.Effective.ForbiddenWrites, doc.Effective.MaxIntentsTotal
+		polCustom = len(doc.Effective.Custom)
 	}
 	return TaskDTO{
 		ID:                 t.ID,
@@ -146,6 +148,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CoverageEnabled:    t.CoverageEnabled,
 		PolicyTechniques:   polTech,
 		PolicyWrites:       polWrites,
+		PolicyCustom:       polCustom,
 		PolicyMaxIntents:   polMax,
 	}
 }

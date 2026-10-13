@@ -5,6 +5,7 @@ import * as React from "react";
 import { CpuIcon, FlaskConicalIcon, GaugeIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { ExplorationPolicyDefault, Settings } from "@/lib/types";
+import type { CustomRule, ExplorationPolicyDefault, Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -45,6 +46,7 @@ export default function SystemSettingsPage() {
   const [polDefault, setPolDefault] = React.useState<ExplorationPolicyDefault | null>(null);
   const [polTech, setPolTech] = React.useState<string[]>([]);
   const [polWrites, setPolWrites] = React.useState<string[]>([]);
+  const [polCustom, setPolCustom] = React.useState<CustomRule[]>([]);
   const [savingPol, setSavingPol] = React.useState(false);
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
@@ -81,6 +83,7 @@ export default function SystemSettingsPage() {
         setPolDefault(pd);
         setPolTech([...pd.effective.techniques]);
         setPolWrites([...pd.effective.forbidden_writes]);
+        setPolCustom((pd.effective.custom ?? []).map((r) => ({ ...r })));
       })
       .catch(() => {});
     return () => {
@@ -92,12 +95,17 @@ export default function SystemSettingsPage() {
     setSavingPol(true);
     try {
       // 全局默认 = 出厂默认 + 这里的覆盖；两轴显式提交，避免"看着没禁、其实继承着什么"。
-      const r = await api.saveExplorationPolicyDefault({ techniques: polTech, forbidden_writes: polWrites });
+      const r = await api.saveExplorationPolicyDefault({
+        techniques: polTech,
+        forbidden_writes: polWrites,
+        custom: polCustom.filter((x) => x.pattern.trim() !== ""),
+      });
       toast.success(`探索策略全局默认已更新（第 ${r.version} 版）：只影响之后新建的任务`);
       const pd = await api.explorationPolicyDefault();
       setPolDefault(pd);
       setPolTech([...pd.effective.techniques]);
       setPolWrites([...pd.effective.forbidden_writes]);
+      setPolCustom((pd.effective.custom ?? []).map((x) => ({ ...x })));
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -475,8 +483,9 @@ export default function SystemSettingsPage() {
               自己的快照（运行中的任务不会被这里改动意外改变边界），任务页可单独覆盖。
               <br />
               生效方式与任务页一致：不符合的<b>探索方向不会进探索图</b>（拒绝时说明命中什么、往哪改），同一份策略
-              还会编译成<b>任务级拦截规则</b>兜住命令层——换措辞也绕不过。这里是<b>加法</b>：平台内置的破坏性
-              拦截（删除类请求等）始终生效，不因这里放开而解除。
+              还会编译成<b>任务级拦截规则</b>兜住命令层——换措辞也绕不过。词表覆盖不到时可以手写
+              <b>自定义禁止条目</b>（关键词或正则；「仅命令」层只拦工具调用、不判意图措辞）。
+              这里是<b>加法</b>：平台内置的破坏性拦截（删除类请求等）始终生效，不因这里放开而解除。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -531,6 +540,16 @@ export default function SystemSettingsPage() {
                       );
                     })}
                   </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium">自定义禁止条目（词表覆盖不到时手写）</span>
+                  <CustomRulesEditor
+                    rules={polCustom}
+                    onChange={setPolCustom}
+                    disabled={savingPol}
+                    limit={polDefault.custom_limit ?? 16}
+                    patternLimit={polDefault.custom_pattern_limit ?? 200}
+                  />
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <Button type="button" onClick={() => void savePolicyDefault()} disabled={savingPol}>

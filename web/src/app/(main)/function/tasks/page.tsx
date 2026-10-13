@@ -121,9 +121,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
+import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import type {
   AssetInterceptRuleInput,
   ChatAttachment,
+  CustomRule,
   ExplorationPolicyDefault,
   Company,
   DeleteTaskOptions,
@@ -1234,12 +1236,17 @@ const TaskRow = React.memo(function TaskRow({
       </TableCell>
       <TableCell>
         <StatusBadge domain="task" value={task.status} dot />
-        {(task.policy_techniques?.length ?? 0) + (task.policy_writes?.length ?? 0) > 0 && (
+        {(task.policy_techniques?.length ?? 0) +
+          (task.policy_writes?.length ?? 0) +
+          (task.policy_custom ?? 0) >
+          0 && (
           <span
             className="text-muted-foreground ml-1.5 rounded border px-1 py-0.5 text-[10px]"
             title={`探索策略：禁用 ${task.policy_techniques?.length ?? 0} 类手段、${
               task.policy_writes?.length ?? 0
-            } 类敏感写${task.policy_max_intents ? `；意图总上限 ${task.policy_max_intents}` : ""}（任务页「探索策略」卡可改）`}
+            } 类敏感写${task.policy_custom ? `、${task.policy_custom} 条自定义条目` : ""}${
+              task.policy_max_intents ? `；意图总上限 ${task.policy_max_intents}` : ""
+            }（任务页「探索策略」卡可改）`}
           >
             策略
           </span>
@@ -3132,6 +3139,7 @@ function CreateTaskSheet({
   const [policyVocab, setPolicyVocab] = React.useState<ExplorationPolicyDefault | null>(null);
   const [policyTech, setPolicyTech] = React.useState<string[]>([]);
   const [policyWrites, setPolicyWrites] = React.useState<string[]>([]);
+  const [policyRules, setPolicyRules] = React.useState<CustomRule[]>([]);
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
@@ -3184,6 +3192,7 @@ function CreateTaskSheet({
         setPolicyVocab(pd);
         setPolicyTech([...pd.effective.techniques]);
         setPolicyWrites([...pd.effective.forbidden_writes]);
+        setPolicyRules((pd.effective.custom ?? []).map((r) => ({ ...r })));
       })
       .catch(() => {});
     return () => {
@@ -3222,7 +3231,11 @@ function CreateTaskSheet({
         // 勾了自定义才发覆盖层（两轴显式：勾选状态就是本任务的最终策略）；
         // 不勾则整段省略 → 服务端按当时的全局默认落快照。
         explorationPolicy: policyCustom
-          ? { techniques: policyTech, forbidden_writes: policyWrites }
+          ? {
+              techniques: policyTech,
+              forbidden_writes: policyWrites,
+              custom: policyRules.filter((r) => r.pattern.trim() !== ""),
+            }
           : undefined,
       });
       toast.success("任务已创建");
@@ -3536,6 +3549,13 @@ function CreateTaskSheet({
                           );
                         })}
                       </div>
+                      <span className="text-xs font-medium">自定义禁止条目（词表覆盖不到时手写）</span>
+                      <CustomRulesEditor
+                        rules={policyRules}
+                        onChange={setPolicyRules}
+                        limit={policyVocab?.custom_limit ?? 16}
+                        patternLimit={policyVocab?.custom_pattern_limit ?? 200}
+                      />
                       <p className="text-muted-foreground text-xs">
                         生效方式：不符策略的探索方向不会进探索图（拒绝时说明命中什么、往哪改），同一份策略还会
                         编译成仅本任务生效的拦截规则兜住命令层。这里是加法——平台内置的破坏性拦截始终生效。

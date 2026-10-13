@@ -2,6 +2,7 @@ package policy
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -264,5 +265,130 @@ func TestRenderBlockAndHardFloor(t *testing.T) {
 	}
 	if StallNoticeText(nil, eff) != "" {
 		t.Fatal("没有被拒记录时不该注入摘要")
+	}
+}
+
+// 自定义条目（操作者手写）：关键词走词边界/子串并享受否定豁免，正则原样匹配不豁免，
+// command 层只进命令门；写入侧 Validate 拒绝非法正则、超长、超量与总规则数超限。
+func TestCustomRules(t *testing.T) {
+	base := Effective{Techniques: []string{"bruteforce"}}
+
+	// ① 关键词：意图层拦、留痕可读、编译成命令门规则。
+	eff := Merge(base, Override{Custom: &[]CustomRule{{Label: "别碰这个后台", Pattern: "wp-admin"}}})
+	v := eff.CheckIntent(IntentInput{Summary: "扫一下 http://t/wp-admin/ 下的插件"})
+	if v.Allow || v.ItemLabel != "自定义·别碰这个后台" || v.Matched != "wp-admin" {
+		t.Fatalf("自定义关键词没拦住: %+v", v)
+	}
+	if !strings.Contains(RejectText(v, "扫一下 wp-admin"), "wp-admin") {
+		t.Fatal("拒绝理由必须带命中片段")
+	}
+	// 否定语境与词表同款豁免（"检查 wp-admin 是否有弱口令"是合规评估方向）。
+	if bv := eff.CheckIntent(IntentInput{Summary: "检查是否有 wp-admin 目录暴露"}); !bv.Allow || !bv.Benign {
+		t.Fatalf("否定语境应放行但留痕: %+v", bv)
+	}
+	// 词边界：域名里的 wp-admin 也该命中（它就是那个路径），但不该命中无关词。
+	if av := eff.CheckIntent(IntentInput{Summary: "看一眼 oldwp-admins 这个资产"}); !av.Allow {
+		t.Fatalf("不该命中词内嵌的近似串: %+v", av)
+	}
+	rules := eff.CompileRules()
+	found := false
+	for _, r := range rules {
+		if r.ItemID == "custom" {
+			found = true
+			if !strings.Contains(r.Name, "别碰这个后台") {
+				t.Fatalf("规则名应带自定义标签: %s", r.Name)
+			}
+			if !regexp.MustCompile(r.Pattern).MatchString("curl http://t/wp-admin/admin.php") {
+				t.Fatalf("自定义规则匹配不上: %s", r.Pattern)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("自定义条目没编译出规则")
+	}
+
+	// ② 正则：按原文匹配（大小写不敏感），不套否定豁免。
+	re := Merge(base, Override{Custom: &[]CustomRule{{Label: "内部接口", Pattern: `/internal/(?:admin|debug)`, Regex: true}}})
+	if rv := re.CheckIntent(IntentInput{Summary: "访问 /internal/admin/users 看权限"}); rv.Allow {
+		t.Fatalf("自定义正则没拦住: %+v", rv)
+	}
+	if bv := re.CheckIntent(IntentInput{Summary: "检查是否存在 /internal/admin 的鉴权"}); bv.Allow {
+		t.Fatalf("正则条目不套否定豁免（操作者写的是精确形状）: %+v", bv)
+	}
+	if ok := re.CheckIntent(IntentInput{Summary: "访问 /internal/list 看权限"}); !ok.Allow {
+		t.Fatalf("不该命中未匹配的正则: %+v", ok)
+	}
+
+	// ③ command 层：意图措辞不判，但命令门照样拦。
+	cmd := Merge(base, Override{Custom: &[]CustomRule{{Label: "生产库", Pattern: "prod-db.internal", Layer: CustomLayerCommand}}})
+	if cv := cmd.CheckIntent(IntentInput{Summary: "连一下 prod-db.internal 看版本"}); !cv.Allow {
+		t.Fatalf("command 层条目不该判意图: %+v", cv)
+	}
+	if !strings.Contains(RenderBlock(cmd, 0), "prod-db.internal") || !strings.Contains(RenderBlock(cmd, 0), "只判命令") {
+		t.Fatal("提示词段必须写明 command 层条目的作用面")
+	}
+	hit := false
+	for _, r := range cmd.CompileRules() {
+		if r.ItemID == "custom" && regexp.MustCompile(r.Pattern).MatchString("nmap prod-db.internal") {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatal("command 层条目必须进命令门")
+	}
+
+	// ④ Validate：非法正则 / 超长 / 超量 / 总规则数超限都要拒绝（写不进去要说清楚）。
+	if err := Validate(Merge(base, Override{Custom: &[]CustomRule{{Pattern: "(unclosed", Regex: true}}})); err == nil || !strings.Contains(err.Error(), "不是合法正则") {
+		t.Fatalf("非法正则必须被拒: %v", err)
+	}
+	if err := Validate(Merge(base, Override{Custom: &[]CustomRule{{Pattern: "(unclosed"}}})); err != nil {
+		t.Fatalf("关键词类型下括号是普通字符，不该按正则校验: %v", err)
+	}
+	if err := Validate(Merge(base, Override{Custom: &[]CustomRule{{Pattern: strings.Repeat("a", MaxCustomPatternLen+1)}}})); err == nil {
+		t.Fatal("超长条目必须被拒")
+	}
+	many := make([]CustomRule, 0, MaxCustomRules+1)
+	for i := 0; i <= MaxCustomRules; i++ {
+		many = append(many, CustomRule{Pattern: "rule-" + strconv.Itoa(i)})
+	}
+	if err := Validate(Merge(base, Override{Custom: &many})); err == nil || !strings.Contains(err.Error(), "最多") {
+		t.Fatalf("超量必须被拒: %v", err)
+	}
+	// 总规则数是硬上限：词表项 + 自定义条目都必须落在里面（加词表项时这条会红，
+	// 提醒同步抬高 MaxPolicyRules 或压低 MaxCustomRules）。
+	if total := len(Techniques) + len(WriteItems) + MaxCustomRules; total > MaxPolicyRules {
+		t.Fatalf("上限算术被破坏：词表 %d + 写 %d + 自定义 %d = %d > %d",
+			len(Techniques), len(WriteItems), MaxCustomRules, total, MaxPolicyRules)
+	}
+	// 去重后合法：重复条目不该被算两次。
+	dup := []CustomRule{{Pattern: "dup"}, {Pattern: "dup"}, {Pattern: " dup "}}
+	if err := Validate(Merge(base, Override{Custom: &dup})); err != nil {
+		t.Fatalf("重复条目去重后应合法: %v", err)
+	}
+	if n := len(Normalize(Effective{Custom: dup}).Custom); n != 1 {
+		t.Fatalf("去重后应剩 1 条，实际 %d", n)
+	}
+	// 空条目不进策略（也不该让策略变"非零"）。
+	if z := Merge(Effective{}, Override{Custom: &[]CustomRule{{Pattern: "  "}}}); !z.IsZero() {
+		t.Fatalf("空白条目应被丢弃: %+v", z)
+	}
+}
+
+// 自定义条目的落库往返：override 与 effective 两侧都要保住（UI 编辑的是 override）。
+func TestCustomRulesDocRoundTrip(t *testing.T) {
+	eff := Merge(Effective{}, Override{Custom: &[]CustomRule{{Label: "L", Pattern: "p", Layer: CustomLayerCommand}}})
+	raw, err := MarshalDoc(3, Override{Custom: &[]CustomRule{{Label: "L", Pattern: "p", Layer: CustomLayerCommand}}}, eff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := ParseDoc(raw)
+	if doc == nil || len(doc.Effective.Custom) != 1 || doc.Effective.Custom[0].Pattern != "p" {
+		t.Fatalf("effective 侧丢了: %s", raw)
+	}
+	if doc.Override.Custom == nil || len(*doc.Override.Custom) != 1 || (*doc.Override.Custom)[0].Layer != CustomLayerCommand {
+		t.Fatalf("override 侧丢了: %s", raw)
+	}
+	if doc.Override.IsZero() {
+		t.Fatal("有自定义条目时 override 不该算'空'（否则 UI 会显示成继承）")
 	}
 }

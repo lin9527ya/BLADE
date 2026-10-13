@@ -70,8 +70,8 @@ func (s *Server) newTaskPolicy(override *policy.Override) (json.RawMessage, erro
 		ov = *override
 	}
 	eff := policy.Merge(global, ov)
-	if unknown := policy.UnknownIDs(eff); len(unknown) > 0 {
-		return nil, fmt.Errorf("探索策略里有未知条目：%s", strings.Join(unknown, "、"))
+	if verr := policy.Validate(eff); verr != nil {
+		return nil, fmt.Errorf("探索策略无效：%w", verr)
 	}
 	if eff.IsZero() {
 		return nil, nil
@@ -95,7 +95,8 @@ func (s *Server) getExplorationPolicyDefault(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	writeJSON(w, 200, map[string]any{"effective": eff, "version": ver, "override": ov,
-		"techniques": policy.Techniques, "writes": policy.WriteItems})
+		"techniques": policy.Techniques, "writes": policy.WriteItems,
+		"custom_limit": policy.MaxCustomRules, "custom_pattern_limit": policy.MaxCustomPatternLen})
 }
 
 // putExplorationPolicyDefault 保存全局默认策略（新任务继承；老任务不回溯）。
@@ -114,8 +115,8 @@ func (s *Server) putExplorationPolicyDefault(w http.ResponseWriter, r *http.Requ
 	base := policy.Default()
 	eff := policy.Merge(base, body.Override)
 	if !body.Reset {
-		if unknown := policy.UnknownIDs(eff); len(unknown) > 0 {
-			writeErr(w, 400, "策略里有未知条目："+strings.Join(unknown, "、"))
+		if verr := policy.Validate(eff); verr != nil {
+			writeErr(w, 400, verr.Error())
 			return
 		}
 	} else {
@@ -216,6 +217,9 @@ func policyDiffText(old, new policy.Effective) string {
 	if diff := stringSetDiff(old.ForbiddenWrites, new.ForbiddenWrites); diff != "" {
 		parts = append(parts, "敏感写 "+diff)
 	}
+	if diff := customRulesDiff(old.Custom, new.Custom); diff != "" {
+		parts = append(parts, "自定义条目 "+diff)
+	}
 	if old.MaxIntentsPerRound != new.MaxIntentsPerRound {
 		parts = append(parts, fmt.Sprintf("每轮意图上限 %d→%d", old.MaxIntentsPerRound, new.MaxIntentsPerRound))
 	}
@@ -229,6 +233,46 @@ func policyDiffText(old, new policy.Effective) string {
 		return "（无变化）"
 	}
 	return strings.Join(parts, "；")
+}
+
+// customRulesDiff 生成自定义条目的人话 diff（按 显示名/layer 认条目）。
+func customRulesDiff(old, new []policy.CustomRule) string {
+	key := func(r policy.CustomRule) string { return r.Display() + "|" + r.Layer }
+	o, n := map[string]bool{}, map[string]bool{}
+	var order []string
+	for _, r := range old {
+		k := key(r)
+		if !o[k] {
+			o[k] = true
+			order = append(order, k)
+		}
+	}
+	for _, r := range new {
+		k := key(r)
+		if !n[k] {
+			n[k] = true
+			if !o[k] {
+				order = append(order, k)
+			}
+		}
+	}
+	var added, removed []string
+	for _, k := range order {
+		switch {
+		case n[k] && !o[k]:
+			added = append(added, strings.SplitN(k, "|", 2)[0])
+		case o[k] && !n[k]:
+			removed = append(removed, strings.SplitN(k, "|", 2)[0])
+		}
+	}
+	var parts []string
+	if len(added) > 0 {
+		parts = append(parts, "新增 "+strings.Join(added, "、"))
+	}
+	if len(removed) > 0 {
+		parts = append(parts, "移除 "+strings.Join(removed, "、"))
+	}
+	return strings.Join(parts, "，")
 }
 
 func stringSetDiff(old, new []string) string {
@@ -280,6 +324,8 @@ type policyDTO struct {
 	IntentsTotal int `json:"intents_total"`
 	// RuleCount 是命令门当前实际落库的规则数（含为 0 的自愈判断）。
 	RuleCount int `json:"rule_count"`
+	// CustomLimit 是自定义禁止条目的条数上限（UI 据此禁用"添加"）。
+	CustomLimit int `json:"custom_limit"`
 	// RecentRejects 是最近的策略拒绝摘要（供策略卡显示"模型想做什么、被拦了什么"）。
 	RecentRejects []policy.RejectNote `json:"recent_rejects"`
 }
@@ -333,6 +379,7 @@ func (s *Server) buildPolicyDTO(t *Task) policyDTO {
 		}
 	}
 	dto.IntentsTotal = dto.Effective.MaxIntentsTotal
+	dto.CustomLimit = policy.MaxCustomRules
 	return dto
 }
 
@@ -383,8 +430,8 @@ func (s *Server) patchTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	eff := policy.Merge(global, body.Override)
-	if unknown := policy.UnknownIDs(eff); len(unknown) > 0 {
-		writeErr(w, 400, "策略里有未知条目："+strings.Join(unknown, "、"))
+	if verr := policy.Validate(eff); verr != nil {
+		writeErr(w, 400, verr.Error())
 		return
 	}
 	doc, err := policy.MarshalDoc(gv, body.Override, eff)

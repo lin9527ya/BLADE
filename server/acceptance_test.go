@@ -1713,10 +1713,75 @@ func accP20(t *testing.T, e *accEnv) {
 		t.Fatal("清空策略后命令门规则仍在拦（删了策略却留着规则）")
 	}
 
+	// ⑤c 自定义条目（词表覆盖不到时操作者手写）：关键词两条层都判、command 层只判命令、
+	// 正则按原文判、非法正则写不进去（400 说清楚）。
+	rec = e.request(http.MethodPatch, "/api/tasks/"+task.ID+"/policy",
+		`{"override":{"techniques":[],"forbidden_writes":[],"custom":[`+
+			`{"label":"别碰后台","pattern":"wp-admin"},`+
+			`{"pattern":"/internal/(?:admin|debug)","regex":true},`+
+			`{"label":"生产库","pattern":"prod-db.internal","layer":"command"}]}}`)
+	if rec.Code != 200 {
+		t.Fatalf("保存自定义条目 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pol); err != nil {
+		t.Fatal(err)
+	}
+	if len(pol.Effective.Custom) != 3 || pol.Override.Custom == nil || len(*pol.Override.Custom) != 3 {
+		t.Fatalf("自定义条目没落库（effective/override 各应 3 条）: %+v", pol.Effective.Custom)
+	}
+	reload()
+	res, err = intentTool.Call(context.Background(),
+		json.RawMessage(`{"summary":"扫一下 /wp-admin/ 下面的插件漏洞"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flat := res.Flatten(); !strings.Contains(flat, "自定义·别碰后台") || !strings.Contains(flat, "wp-admin") {
+		t.Fatalf("自定义关键词没拦住意图或理由不完整: %s", flat)
+	}
+	res, err = intentTool.Call(context.Background(),
+		json.RawMessage(`{"summary":"看一眼 /internal/debug 的角色配置"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flat := res.Flatten(); !strings.Contains(flat, "自定义·/internal/(?:admin|debug)") {
+		t.Fatalf("自定义正则没拦住意图: %s", flat)
+	}
+	// command 层：意图措辞不判（"说说没关系"），但命令门照样拦。
+	res, err = intentTool.Call(context.Background(),
+		json.RawMessage(`{"summary":"连 prod-db.internal 看下版本，只读"}`), nil)
+	if err != nil || !strings.Contains(res.Flatten(), "intent created: ") {
+		t.Fatalf("command 层条目不该判意图措辞: %v %s", err, res.Flatten())
+	}
+	blocked, reason, _ := g.Hooks().PreToolUse(ctx, "Bash", bash("curl -s http://t/wp-admin/admin.php"))
+	if !blocked || !strings.Contains(reason, "别碰后台") {
+		t.Fatalf("自定义关键词没进命令门: blocked=%v reason=%q", blocked, reason)
+	}
+	blocked, reason, _ = g.Hooks().PreToolUse(ctx, "Bash", bash("nmap -sV prod-db.internal"))
+	if !blocked || !strings.Contains(reason, "生产库") {
+		t.Fatalf("command 层自定义条目没进命令门: blocked=%v reason=%q", blocked, reason)
+	}
+	if b, _, _ := og.Hooks().PreToolUse(otherCtx, "Bash", bash("curl -s http://t/wp-admin/admin.php")); b {
+		t.Fatal("自定义条目的规则外溢到了别的任务")
+	}
+	// 非法正则：写入即 400，并说明是哪个条目、错在哪。
+	rec = e.request(http.MethodPatch, "/api/tasks/"+task.ID+"/policy",
+		`{"override":{"custom":[{"label":"坏正则","pattern":"(unclosed","regex":true}]}}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不是合法正则") {
+		t.Fatalf("非法正则必须 400 并说明原因: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
 	// ⑥ 全局默认继承 / 覆盖 / 快照：改全局默认不回溯已建任务（各自持有 effective 快照）。
-	rec = e.request(http.MethodPut, "/api/settings/exploration-policy", `{"override":{"techniques":["dos"]}}`)
+	rec = e.request(http.MethodPut, "/api/settings/exploration-policy",
+		`{"override":{"techniques":["dos"],"custom":[{"label":"全局禁碰","pattern":"pay-gateway"}]}}`)
 	if rec.Code != 200 {
 		t.Fatalf("保存全局默认 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pd struct {
+		CustomLimit int `json:"custom_limit"`
+	}
+	rec = e.request(http.MethodGet, "/api/settings/exploration-policy", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil || pd.CustomLimit <= 0 {
+		t.Fatalf("全局默认应答缺少自定义条目上限: %v %s", err, rec.Body.String())
 	}
 	inherit := e.newTaskHTTP(t, `{"description":"acceptance-p20-inherit","goal":"继承全局默认"}`)
 	rec = e.request(http.MethodGet, "/api/tasks/"+inherit+"/policy", "")
@@ -1725,6 +1790,9 @@ func accP20(t *testing.T, e *accEnv) {
 	}
 	if pol.Custom || len(pol.Effective.Techniques) != 1 || pol.Effective.Techniques[0] != "dos" {
 		t.Fatalf("新任务应继承当时的全局默认: custom=%v eff=%+v", pol.Custom, pol.Effective)
+	}
+	if len(pol.Effective.Custom) != 1 || pol.Effective.Custom[0].Pattern != "pay-gateway" {
+		t.Fatalf("全局默认里的自定义条目没被继承: %+v", pol.Effective.Custom)
 	}
 	// 显式覆盖为空 = 本任务不禁（"继承"与"显式清空"必须可区分，否则用户关不掉全局默认）。
 	override := e.newTaskHTTP(t, `{"description":"acceptance-p20-override","goal":"显式不禁任何手段","exploration_policy":{"techniques":[]}}`)
@@ -1775,6 +1843,7 @@ func accP20(t *testing.T, e *accEnv) {
 		}
 	}
 	time.Sleep(2200 * time.Millisecond) // 让"最后一次成功创建意图"落到窗口之外
+	// （⑤c 建的那条 command 层意图已在上面被置 done，不会挡住停摆判定。）
 	for i := 0; i < policyStallMinRejects; i++ {
 		if _, err := intentTool.Call(context.Background(),
 			json.RawMessage(`{"summary":"继续用 hydra 爆破这个登录口"}`), nil); err != nil {
