@@ -607,6 +607,46 @@ export interface IntelTestResult {
   daily_quota?: number;
 }
 
+// ---- P22 计划任务 ----
+
+/** 结构化频率（刻意不是 cron 字符串：覆盖巡检需要，且没有方言/边界歧义）。 */
+export interface ScheduleFrequency {
+  kind: "every_minutes" | "every_hours" | "daily_at" | "weekly_at";
+  every_minutes?: number;
+  every_hours?: number;
+  at?: string; // "HH:MM"
+  weekday?: number; // 0=周日 … 6=周六
+}
+
+/** 到点要建的任务规格（与建任务表单同形状的子集；计划任务存整份，不引用模板）。 */
+export interface ScheduleTaskSpec {
+  name?: string;
+  description: string;
+  goal: string;
+  category_id?: number;
+  template_id?: number;
+  llm_profile_ids?: number[];
+  company_ids?: number[];
+  timeout_seconds?: number;
+  plan_heartbeat_seconds?: number;
+  coverage_enabled?: boolean;
+  seed_first_intent?: boolean;
+}
+
+export interface TaskSchedule {
+  id: number;
+  name: string;
+  enabled: boolean;
+  task_spec: ScheduleTaskSpec;
+  frequency: ScheduleFrequency;
+  frequency_text: string;
+  next_run_at?: string;
+  last_run_at?: string;
+  last_task_id?: string;
+  last_error?: string;
+  created_at: string;
+}
+
 /** P19 批量交付计划：一个任务全部发现的清单 + 证据门 + 疑似重复分组。 */
 export interface TaskSrcBatchEntry {
   id: number;

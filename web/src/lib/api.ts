@@ -32,7 +32,10 @@ import type {
   IntelTestResult,
   ExplorationPolicyOverride,
   PolicyRuleDraft,
+  ScheduleFrequency,
+  ScheduleTaskSpec,
   TaskPolicy,
+  TaskSchedule,
   Conversation,
   TaskSrcBatchPlan,
   ConvTokenSummary,
@@ -465,6 +468,20 @@ export const api = {
   // 按当前策略清理"未领取"的意图（运行中的不动）。
   pruneTaskPolicy: (id: string) =>
     post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
+  // ---- P22 计划任务 ----
+  taskSchedules: () =>
+    get<{ schedules: TaskSchedule[] | null }>(`/task-schedules`).then((r) => arr(r.schedules)),
+  createTaskSchedule: (input: { name: string; enabled: boolean; task_spec: ScheduleTaskSpec; frequency: ScheduleFrequency }) =>
+    post<TaskSchedule>(`/task-schedules`, input),
+  updateTaskSchedule: (
+    id: number,
+    input: { name?: string; enabled?: boolean; task_spec?: ScheduleTaskSpec; frequency?: ScheduleFrequency },
+  ) => patch<TaskSchedule>(`/task-schedules/${id}`, input),
+  deleteTaskSchedule: (id: number) => del<{ deleted: boolean }>(`/task-schedules/${id}`),
+  // 立即按规格建一个任务（额外一次运行，不改排期）。
+  runTaskScheduleNow: (id: number) =>
+    post<{ task_id: string; note: string }>(`/task-schedules/${id}/run`, {}),
+
   // ---- P21 情报源 ----
   // 测试连接：用当前设置打一次源的信息接口，回显账号与剩余额度（不回显 key）。
   testIntelSource: (provider?: string) =>

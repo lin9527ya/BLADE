@@ -1491,3 +1491,25 @@ CREATE TABLE IF NOT EXISTS intel_queries (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_intel_queries_created ON intel_queries(created_at DESC);
+
+-- P22 计划任务：按结构化频率（每 N 分钟/小时、每天 HH:MM、每周 W HH:MM）到点自动建任务。
+-- task_spec 存"每次原样建一个任务"的规格（与创建任务 API 同形状的子集）——刻意存整份
+-- 而不是引用模板：模板是给人预填表单用的，计划任务要的是**确定的可重放规格**，
+-- 模板后来被改了不该悄悄改变已在跑的计划。频率同样存 JSONB（sched.Frequency）。
+CREATE TABLE IF NOT EXISTS task_schedules (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    task_spec    JSONB NOT NULL DEFAULT '{}',
+    frequency    JSONB NOT NULL DEFAULT '{}',
+    -- next_run_at 兼作"到期判据"与"CAS 锁"：到点先把 next_run_at 推到下一次（原子），
+    -- 推成功的那次才去建任务，于是多 tick/多实例/重启都不会重复建。
+    -- 进程停机期间错过的次数不追补（开机只跑一次），改由人工用「立即运行」补。
+    next_run_at  TIMESTAMPTZ,
+    last_run_at  TIMESTAMPTZ,
+    last_task_id TEXT NOT NULL DEFAULT '',
+    last_error   TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_schedules_due ON task_schedules(next_run_at) WHERE enabled;
