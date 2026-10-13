@@ -10,20 +10,25 @@ import (
 
 // InterceptRule is one row of intercept_rules.
 type InterceptRule struct {
-	ID             int64     `json:"id"`
-	Name           string    `json:"name"`
-	Enabled        bool      `json:"enabled"`
-	Priority       int       `json:"priority"`
-	MatchTarget    string    `json:"match_target"`
-	MatchType      string    `json:"match_type"`
-	Pattern        string    `json:"pattern"`
-	Action         string    `json:"action"`
-	Message        string    `json:"message"`
-	TimeoutEnabled bool      `json:"timeout_enabled"`
-	TimeoutSeconds int       `json:"timeout_seconds"`
-	TimeoutAction  string    `json:"timeout_action"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Enabled        bool   `json:"enabled"`
+	Priority       int    `json:"priority"`
+	MatchTarget    string `json:"match_target"`
+	MatchType      string `json:"match_type"`
+	Pattern        string `json:"pattern"`
+	Action         string `json:"action"`
+	Message        string `json:"message"`
+	TimeoutEnabled bool   `json:"timeout_enabled"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	TimeoutAction  string `json:"timeout_action"`
+	// TaskID：'' = 全局规则（拦截页管理的那批）；非空 = 只对这一个任务生效的规则，
+	// 由该任务的操作约束编译而来（P18）。两者在匹配时并集，全局优先同优先级的旧序。
+	TaskID string `json:"task_id,omitempty"`
+	// SourceConstraintID：本规则由哪条 task_constraints 生成（NULL = 手工/内置）。
+	SourceConstraintID *int64    `json:"source_constraint_id,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // InterceptPending is one row of intercept_pending.
@@ -42,20 +47,43 @@ type InterceptPending struct {
 	CreatedAt      time.Time       `json:"created_at"`
 }
 
-const interceptRuleCols = `id, name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, created_at, updated_at`
+const interceptRuleCols = `id, name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, COALESCE(task_id,''), source_constraint_id, created_at, updated_at`
 
 func scanInterceptRule(row interface{ Scan(...any) error }) (InterceptRule, error) {
 	var r InterceptRule
 	err := row.Scan(&r.ID, &r.Name, &r.Enabled, &r.Priority,
 		&r.MatchTarget, &r.MatchType, &r.Pattern, &r.Action, &r.Message,
 		&r.TimeoutEnabled, &r.TimeoutSeconds, &r.TimeoutAction,
-		&r.CreatedAt, &r.UpdatedAt)
+		&r.TaskID, &r.SourceConstraintID, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
 }
 
-// ListInterceptRules returns all rules ordered by priority DESC then id.
+// ListInterceptRules returns the GLOBAL rules (task_id=”) ordered by priority
+// DESC then id. Task-scoped rules are managed with their task (see
+// ListInterceptRulesForTask) and deliberately do not show up on the global
+// intercept page.
 func (d *DB) ListInterceptRules() ([]InterceptRule, error) {
-	rows, err := d.Query(`SELECT ` + interceptRuleCols + ` FROM intercept_rules ORDER BY priority DESC, id`)
+	return d.listInterceptRules(`WHERE COALESCE(task_id,'')=''`)
+}
+
+// ListAllInterceptRules returns EVERY rule (global + task-scoped). The matcher's
+// cache loads this and filters per task at match time; the admin page wants the
+// global-only view instead (ListInterceptRules).
+func (d *DB) ListAllInterceptRules() ([]InterceptRule, error) {
+	return d.listInterceptRules("")
+}
+
+// ListInterceptRulesForTask returns the rules that apply to one task: the global
+// ones plus that task's own (constraint-compiled) rules.
+func (d *DB) ListInterceptRulesForTask(taskID string) ([]InterceptRule, error) {
+	if taskID == "" {
+		return d.ListInterceptRules()
+	}
+	return d.listInterceptRules(`WHERE COALESCE(task_id,'') IN ('', $1)`, taskID)
+}
+
+func (d *DB) listInterceptRules(where string, args ...any) ([]InterceptRule, error) {
+	rows, err := d.Query(`SELECT `+interceptRuleCols+` FROM intercept_rules `+where+` ORDER BY priority DESC, id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +97,75 @@ func (d *DB) ListInterceptRules() ([]InterceptRule, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// CreateTaskRule inserts a task-scoped rule (P18：由任务约束编译而来)。
+func (d *DB) CreateTaskRule(r InterceptRule) (InterceptRule, error) {
+	row := d.QueryRow(`
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, task_id, source_constraint_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+RETURNING `+interceptRuleCols,
+		r.Name, r.Enabled, r.Priority, r.MatchTarget, r.MatchType, r.Pattern, r.Action, r.Message,
+		r.TimeoutEnabled, r.TimeoutSeconds, r.TimeoutAction, r.TaskID, r.SourceConstraintID)
+	return scanInterceptRule(row)
+}
+
+// ListTaskRulesByConstraint returns the rules one constraint compiled into.
+func (d *DB) ListTaskRulesByConstraint(taskID string, constraintID int64) ([]InterceptRule, error) {
+	rows, err := d.Query(`SELECT `+interceptRuleCols+` FROM intercept_rules
+WHERE COALESCE(task_id,'')=$1 AND source_constraint_id=$2 ORDER BY id`, taskID, constraintID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InterceptRule
+	for rows.Next() {
+		r, err := scanInterceptRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteTaskRulesByConstraint removes the rules one constraint compiled into
+// (约束被删除/改写成不可编译时调用)。Returns how many rows went away.
+func (d *DB) DeleteTaskRulesByConstraint(taskID string, constraintID int64) (int64, error) {
+	res, err := d.Exec(`DELETE FROM intercept_rules WHERE COALESCE(task_id,'')=$1 AND source_constraint_id=$2`, taskID, constraintID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// CountRulesByConstraint returns, per source constraint id, how many task rules it
+// currently compiles to (P18：约束面板显示"已生效几条").
+func (d *DB) CountRulesByConstraint(taskID string) (map[int64]int, error) {
+	rows, err := d.Query(`SELECT source_constraint_id, count(*) FROM intercept_rules
+WHERE COALESCE(task_id,'')=$1 AND source_constraint_id IS NOT NULL GROUP BY source_constraint_id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// CountTaskRules counts a task's own rules (约束编译的条数上限用它).
+func (d *DB) CountTaskRules(taskID string) (int, error) {
+	var n int
+	err := d.QueryRow(`SELECT count(*) FROM intercept_rules WHERE COALESCE(task_id,'')=$1`, taskID).Scan(&n)
+	return n, err
 }
 
 // CreateInterceptRule inserts a new rule.

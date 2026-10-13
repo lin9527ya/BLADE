@@ -175,7 +175,9 @@ func (i *Interceptor) Invalidate() {
 }
 
 func (i *Interceptor) loadLocked() error {
-	rules, err := i.db.ListInterceptRules()
+	// 缓存装【全部】规则（全局 + 任务级）：任务级规则要在匹配时按 task 过滤，
+	// 所以不能在这里就按全局筛掉（那会让任务规则永远不生效）。
+	rules, err := i.db.ListAllInterceptRules()
 	if err != nil {
 		return err
 	}
@@ -571,10 +573,22 @@ func judgeActionLabel(action string) string {
 	}
 }
 
-// Match evaluates the rule list (priority DESC) against a tool call.
-// Returns (Decision, true) for the first matching enabled rule, or
-// (Decision{}, false) if no rule matches.
+// Match evaluates the GLOBAL rule list (priority DESC) against a tool call —
+// the path for callers with no task context (chat, admin dry-run). Task-scoped
+// rules never apply here: they exist for one engagement only.
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
+	return i.match("", toolName, input)
+}
+
+// MatchForTask evaluates everything that applies to one task: the global rules
+// plus the rules that task's constraints compiled into (P18). Rules are already
+// ordered by priority DESC, so an equal-priority task rule cannot silently
+// outrank a global one; a task may raise priority explicitly if it wants to.
+func (i *Interceptor) MatchForTask(taskID string, toolName string, input []byte) (Decision, bool) {
+	return i.match(taskID, toolName, input)
+}
+
+func (i *Interceptor) match(taskID, toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
 	if err != nil {
 		// 失效安全（P12）：规则读不出来不再静默放行。默认 ask（转人工），
@@ -593,6 +607,10 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 		return Decision{}, false
 	}
 	for _, r := range rules {
+		// 任务级规则只在它自己的任务里参与匹配（P18）。
+		if r.TaskID != "" && r.TaskID != taskID {
+			continue
+		}
 		text, surface, ok := matchRule(r, toolName, input)
 		if !ok {
 			continue

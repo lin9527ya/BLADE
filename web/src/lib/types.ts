@@ -464,6 +464,44 @@ export interface TaskConstraint {
   text: string;
   origin?: string;
   ts?: string;
+  /** P18：这条约束当前编译出几条任务级拦截规则（0/缺省 = 尚未生效，仍只是提示词约束）。 */
+  compiled_rules?: number;
+}
+
+/** P18 约束编译：一条候选拦截规则 + 它在最近真实调用里的命中预览。 */
+export interface ConstraintRuleDraft {
+  name: string;
+  match_target: string;
+  match_type: string;
+  pattern: string;
+  action: string;
+  message: string;
+  priority: number;
+  surface: string;
+}
+
+export interface ConstraintScopeDraft {
+  kind: string;
+  value: string;
+  note: string;
+}
+
+export interface ConstraintCompilePreview {
+  pattern: string;
+  matched: number;
+  total: number;
+  samples: string[];
+}
+
+export interface ConstraintCompileResult {
+  constraint_id: number;
+  kind: ConstraintKind;
+  text: string;
+  rules: ConstraintRuleDraft[] | null;
+  scope: ConstraintScopeDraft[] | null;
+  note: string;
+  preview: ConstraintCompilePreview[] | null;
+  scopes?: { id: number; kind: string; domain?: string; value?: string; source: string; reason: string }[] | null;
 }
 
 // ---- Findings ----

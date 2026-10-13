@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,7 +97,8 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if dec, hit := g.interceptor.CheckScope(ctx, g.taskID, ev.ToolName, ev.Input); hit {
 		return g.settle(ctx, ev, dec)
 	}
-	dec, matched := g.interceptor.Match(ev.ToolName, ev.Input)
+	// 任务级规则（由该任务的操作约束编译而来，P18）与全局规则并集参与匹配。
+	dec, matched := g.interceptor.MatchForTask(g.taskKey(), ev.ToolName, ev.Input)
 	if !matched {
 		// No rule matched. Ask the LLM fallback judge (if enabled); when it is off
 		// or unwired, keep current behavior and allow.
@@ -149,7 +151,7 @@ func (g *Guard) settle(ctx context.Context, ev hook.Event, dec intercept.Decisio
 			g.interceptor.Log(ctx, convID, dec, ev.ToolName, narrowed.Input, "denied")
 			return g.block(ev.ToolName, systemBlockMessage("改后参数超出授权范围"), "")
 		}
-		if dec, matched := g.interceptor.Match(ev.ToolName, narrowed.Input); matched && dec.Action == "deny" {
+		if dec, matched := g.interceptor.MatchForTask(g.taskKey(), ev.ToolName, narrowed.Input); matched && dec.Action == "deny" {
 			g.interceptor.Log(ctx, convID, dec, ev.ToolName, narrowed.Input, "denied")
 			return g.block(ev.ToolName, systemBlockMessage(dec.Message), "")
 		}
@@ -206,6 +208,15 @@ func (g *Guard) Attributions() map[string]int {
 		out[k] = v
 	}
 	return out
+}
+
+// taskKey renders the guard's task id in the ledger's string form ("" = unscoped,
+// e.g. a chat session — then only global rules apply).
+func (g *Guard) taskKey() string {
+	if g.taskID <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(g.taskID, 10)
 }
 
 func (g *Guard) block(tool, reason, cmd string) hook.Result {

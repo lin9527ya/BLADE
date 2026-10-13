@@ -1099,6 +1099,12 @@ CREATE TABLE IF NOT EXISTS intercept_rules (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- P18 任务级规则：由「任务操作约束」编译而来（'' = 全局规则，保持既有语义）。
+-- source_constraint_id 记录它由哪条约束生成，便于约束删除时一并清理与审计回溯。
+ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS task_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS source_constraint_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_intercept_rules_task ON intercept_rules(task_id) WHERE task_id <> '';
+
 DROP TRIGGER IF EXISTS trg_intercept_rules_upd ON intercept_rules;
 CREATE TRIGGER trg_intercept_rules_upd BEFORE UPDATE ON intercept_rules
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

@@ -42,7 +42,16 @@ func (s *Server) listConstraints(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"constraints": constraintDTOs(rows)})
+	dtos := constraintDTOs(rows)
+	// P18：带上"这条约束编译出几条规则"，面板据此显示已生效/未生效。
+	if counts, err := s.m.pg.CountRulesByConstraint(t.ID); err == nil {
+		for i := range dtos {
+			if id, e := strconv.ParseInt(dtos[i].ID, 10, 64); e == nil {
+				dtos[i].CompiledRules = counts[id]
+			}
+		}
+	}
+	writeJSON(w, 200, map[string]any{"constraints": dtos})
 }
 
 // addConstraint 人工新增一条操作约束(kind=allow|deny)。不通知 planner。
@@ -124,7 +133,11 @@ func (s *Server) editConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(cid, 10), Kind: kind, Text: text})
+	// 约束原文变了，此前编译出的规则就不再代表它：一并撤掉，由人重新预览确认后再应用
+	// （静默改规则比不生效更危险——人会以为拦的还是原来那条）。
+	dropped := s.dropConstraintRules(t.ID, cid)
+	dto := ConstraintDTO{ID: strconv.FormatInt(cid, 10), Kind: kind, Text: text}
+	writeJSON(w, 200, map[string]any{"constraint": dto, "dropped_rules": dropped})
 }
 
 // deleteConstraint 人工删除一条约束。不通知 planner。
@@ -149,6 +162,9 @@ func (s *Server) deleteConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// 约束没了，它编译出来的任务级规则也必须没：否则规则会继续拦，而人已经看不到
+	// 它为什么存在（P18）。
+	s.dropConstraintRules(t.ID, cid)
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 

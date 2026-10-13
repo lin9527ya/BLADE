@@ -1333,6 +1333,36 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
 	return n == 1, nil
 }
 
+// ToolUseSample is one recorded tool call (name + raw input) from the activity log.
+type ToolUseSample struct {
+	Tool  string `json:"tool"`
+	Input string `json:"input"`
+}
+
+// RecentToolUseInputs returns the most recent tool calls of this exploration,
+// newest first. The activity log records EVERY call (matched rules or not), so it
+// is the honest sample behind "这条约束编译出的规则会命中什么"（P18 编译预览）。
+func (s *ExplorationStore) RecentToolUseInputs(limit int) ([]ToolUseSample, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT COALESCE(tool,''), COALESCE(detail,'') FROM activity
+WHERE exploration_id=$1 AND kind='tool_use' AND COALESCE(tool,'') <> '' ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToolUseSample{}
+	for rows.Next() {
+		var sm ToolUseSample
+		if err := rows.Scan(&sm.Tool, &sm.Input); err != nil {
+			return nil, err
+		}
+		out = append(out, sm)
+	}
+	return out, rows.Err()
+}
+
 // CountNodeToolActivity counts the node's recorded tool calls (tool_use /
 // tool_result activities). It is the P13 negative-evidence gate's second source:
 // a claim of "探针实证否定" must be backed by at least one real tool call on the

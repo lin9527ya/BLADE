@@ -24,6 +24,7 @@ import type {
   Company,
   CompanyScopeMutation,
   CompanyScopeRule,
+  ConstraintCompileResult,
   Conversation,
   ConvTokenSummary,
   CoverageAssetRefs,
@@ -404,8 +405,17 @@ export const api = {
   addConstraint: (id: string, text: string, kind: TaskConstraint["kind"]) =>
     post<TaskConstraint>(`/tasks/${id}/constraints`, { text, kind }),
   // 修改约束（文本 + allow/deny）。
+  // 改约束会撤掉它编译出的规则（语义变了就不该继续按旧规则拦），返回撤销条数。
   updateConstraint: (id: string, constraintId: string, text: string, kind: TaskConstraint["kind"]) =>
-    patch<TaskConstraint>(`/tasks/${id}/constraints/${constraintId}`, { text, kind }),
+    patch<{ constraint: TaskConstraint; dropped_rules: number }>(`/tasks/${id}/constraints/${constraintId}`, {
+      text,
+      kind,
+    }),
+  // P18：编译（只读预览）与应用（落库为任务级规则 / 授权范围）。
+  compileConstraint: (id: string, constraintId: string) =>
+    post<ConstraintCompileResult>(`/tasks/${id}/constraints/${constraintId}/compile`, {}),
+  applyConstraint: (id: string, constraintId: string) =>
+    post<ConstraintCompileResult>(`/tasks/${id}/constraints/${constraintId}/apply`, {}),
   // 删除约束。
   deleteConstraint: (id: string, constraintId: string) =>
     del<{ ok: boolean }>(`/tasks/${id}/constraints/${constraintId}`),

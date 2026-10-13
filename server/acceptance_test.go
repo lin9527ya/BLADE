@@ -27,7 +27,7 @@ import (
 )
 
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
-// + P15 结构化裁决与改参放行的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// + P15 结构化裁决与改参放行 + P18 约束可执行化的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -69,6 +69,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P13 执行台账与意图收尾门", func(t *testing.T) { accP13(t, env.forTest(t)) })
 	t.Run("P14 领域化压缩与常驻索引", func(t *testing.T) { accP14(t, env.forTest(t)) })
 	t.Run("P15 结构化裁决与改参放行", func(t *testing.T) { accP15(t, env.forTest(t)) })
+	t.Run("P18 约束可执行化（编译为任务级规则）", func(t *testing.T) { accP18(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -1179,4 +1180,202 @@ func accP15(t *testing.T, e *accEnv) {
 		t.Fatalf("src-report status=%d body=%s", mdRec.Code, mdRec.Body.String())
 	}
 	e.mustContain(mdRec.Body.String(), "⚠", "简报备注区的证据门警告")
+}
+
+// accP18 走完「约束 → 可执行」这条链：deny 约束确定性编译成任务级拦截规则（只抽目标
+// 与已知工具名，不做意图推断），预览拿本任务真实发生过的调用当样本；应用后在本任务里
+// **确定性拦截**、在别的任务里不生效；allow 约束编译进授权范围；抽不出东西的约束如实
+// 说明；改约束会撤掉已生效规则（不静默改语义）；删约束连带删规则。
+func accP18(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p18", "约束可执行化")
+	other, otherTid := e.newTask("acceptance-p18-other", "另一个任务（任务级规则不该外溢）")
+	// 环境变量优先于 setting；本用例要验的是规则层，先把 RoE 关掉保证确定性。
+	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	oldMode, hadMode, _ := e.m.pg.GetSetting("intercept_scope_mode")
+	t.Cleanup(func() {
+		if hadMode {
+			_ = e.m.pg.SetSetting("intercept_scope_mode", oldMode)
+		} else {
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, "intercept_scope_mode")
+		}
+		_, _ = e.m.pg.Exec(`DELETE FROM intercept_rules WHERE COALESCE(task_id,'') <> ''`)
+		e.s.m.interceptor.Invalidate()
+	})
+	if err := e.m.pg.SetSetting("intercept_scope_mode", "off"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := intercept.WithTaskContext(context.Background(), task.ID, "acceptance", nil)
+	otherCtx := intercept.WithTaskContext(context.Background(), other.ID, "acceptance", nil)
+
+	// ① 新增一条带目标的 deny 约束，编译 → 确定性抽到目标，生成 1 条规则。
+	rec := e.request(http.MethodPost, "/api/tasks/"+task.ID+"/constraints",
+		`{"kind":"deny","text":"禁止访问 admin.example.com 这个管理后台"}`)
+	if rec.Code != 200 {
+		t.Fatalf("新增约束 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created ConstraintDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	// cid1 全程指第一条（deny）约束：后面还会新建别的约束，别把 id 变量串了。
+	cid1 := created.ID
+	base := "/api/tasks/" + task.ID + "/constraints/" + cid1
+	rec = e.request(http.MethodPost, base+"/compile", "")
+	if rec.Code != 200 {
+		t.Fatalf("compile status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var draft struct {
+		Note  string `json:"note"`
+		Rules []struct {
+			Pattern     string `json:"pattern"`
+			MatchTarget string `json:"match_target"`
+			Action      string `json:"action"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	if len(draft.Rules) != 1 || draft.Rules[0].Pattern != "admin.example.com" || draft.Rules[0].Action != "deny" {
+		t.Fatalf("确定性编译结果不对: %+v（note=%s）", draft.Rules, draft.Note)
+	}
+
+	// ② 先造一条"本任务真实发生过"的调用记录（预览的样本来源是活动日志里的 tool_use），
+	// 再编译 → 预览命中 1 条。
+	g := guard.NewWithInterceptor(e.s.m.interceptor, tid)
+	if _, err := task.Store.AppendActivity(db.Activity{Kind: "tool_use", Tool: "Bash",
+		Summary: "Bash curl http://admin.example.com/login",
+		Detail:  `{"command":"curl http://admin.example.com/login"}`}); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.request(http.MethodPost, base+"/compile", "")
+	if rec.Code != 200 {
+		t.Fatalf("compile(二) status=%d", rec.Code)
+	}
+	var withPreview struct {
+		Preview []struct {
+			Pattern string `json:"pattern"`
+			Matched int    `json:"matched"`
+			Total   int    `json:"total"`
+		} `json:"preview"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &withPreview); err != nil {
+		t.Fatal(err)
+	}
+	if len(withPreview.Preview) != 1 || withPreview.Preview[0].Matched != 1 || withPreview.Preview[0].Total < 1 {
+		t.Fatalf("预览没有用真实调用当样本: %+v", withPreview.Preview)
+	}
+
+	// ③ 应用 → 落成本任务的任务级规则；本任务里确定性拦截，别的任务不受影响。
+	rec = e.request(http.MethodPost, base+"/apply", "")
+	if rec.Code != 200 {
+		t.Fatalf("apply status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	blocked, reason, _ := g.Hooks().PreToolUse(ctx, "Bash", []byte(`{"command":"curl http://admin.example.com/login"}`))
+	if !blocked || !strings.Contains(reason, "任务操作约束") {
+		t.Fatalf("约束没有变成确定性拦截: blocked=%v reason=%q", blocked, reason)
+	}
+	og := guard.NewWithInterceptor(e.s.m.interceptor, otherTid)
+	blockedOther, _, _ := og.Hooks().PreToolUse(otherCtx, "Bash", []byte(`{"command":"curl http://admin.example.com/login"}`))
+	if blockedOther {
+		t.Fatal("任务级规则外溢到了别的任务")
+	}
+	// 列表里这条约束应显示"已生效 1 条"。
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/constraints", "")
+	var listed struct {
+		Constraints []ConstraintDTO `json:"constraints"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range listed.Constraints {
+		if c.ID == cid1 {
+			found = c.CompiledRules == 1
+		}
+	}
+	if !found {
+		t.Fatalf("约束列表没有显示已生效规则数: %+v", listed.Constraints)
+	}
+
+	// ④ allow 约束 → 编译进授权范围（RoE 允许面），不生成拦截规则。
+	rec = e.request(http.MethodPost, "/api/tasks/"+task.ID+"/constraints",
+		`{"kind":"allow","text":"允许范围包含 api.example.com"}`)
+	var allowConstraint ConstraintDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &allowConstraint); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.request(http.MethodPost, "/api/tasks/"+task.ID+"/constraints/"+allowConstraint.ID+"/apply", "")
+	if rec.Code != 200 {
+		t.Fatalf("allow apply status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var allowResp struct {
+		Note   string `json:"note"`
+		Scopes []struct {
+			Kind   string `json:"kind"`
+			Domain string `json:"domain"`
+		} `json:"scopes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &allowResp); err != nil {
+		t.Fatalf("%v (body=%s)", err, rec.Body.String())
+	}
+	// root_domain 归一化：允许 api.example.com → 授权范围记 example.com（与范围面板同一口径）。
+	if len(allowResp.Scopes) != 1 || allowResp.Scopes[0].Kind != "root_domain" || allowResp.Scopes[0].Domain != "example.com" {
+		t.Fatalf("allow 约束没有进授权范围: scopes=%+v body=%s", allowResp.Scopes, rec.Body.String())
+	}
+	if rows, err := e.m.Assets().ListTaskScope(tid); err != nil || len(rows) == 0 {
+		t.Fatalf("授权范围里没有这条: %v %d", err, len(rows))
+	}
+
+	// ⑤ 抽不出目标的约束：如实说明，不硬造规则。
+	rec = e.request(http.MethodPost, "/api/tasks/"+task.ID+"/constraints",
+		`{"kind":"deny","text":"禁止对生产数据库做任何写操作"}`)
+	var vagueConstraint ConstraintDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &vagueConstraint); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.request(http.MethodPost, "/api/tasks/"+task.ID+"/constraints/"+vagueConstraint.ID+"/compile", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	if len(draft.Rules) != 0 || !strings.Contains(draft.Note, "无法确定性编译") {
+		t.Fatalf("抽不出目标时应如实说明而不是硬造规则: rules=%d note=%s", len(draft.Rules), draft.Note)
+	}
+
+	// ⑥ 改约束 → 已生效规则被撤（不静默保留旧语义）。
+	rec = e.request(http.MethodPatch, base, `{"kind":"deny","text":"禁止访问 admin2.example.com"}`)
+	if rec.Code != 200 {
+		t.Fatalf("edit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if n, _ := e.m.pg.CountRulesByConstraint(task.ID); n[parseInt64(t, cid1)] != 0 {
+		t.Fatalf("改约束后旧规则没撤: %+v", n)
+	}
+	if blocked, _, _ := g.Hooks().PreToolUse(ctx, "Bash", []byte(`{"command":"curl http://admin.example.com/login"}`)); blocked {
+		t.Fatal("改约束后旧规则仍在拦（语义已变却继续生效）")
+	}
+
+	// ⑦ 删约束 → 规则一并删除，不留孤儿。
+	rec = e.request(http.MethodPost, base+"/apply", "")
+	if rec.Code != 200 {
+		t.Fatalf("re-apply status=%d", rec.Code)
+	}
+	if n, _ := e.m.pg.CountRulesByConstraint(task.ID); n[parseInt64(t, cid1)] == 0 {
+		t.Fatal("重新应用后应有规则")
+	}
+	rec = e.request(http.MethodDelete, base, "")
+	if rec.Code != 200 {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if n, _ := e.m.pg.CountRulesByConstraint(task.ID); n[parseInt64(t, cid1)] != 0 {
+		t.Fatalf("删约束后规则成了孤儿: %+v", n)
+	}
+}
+
+// parseInt64 解析 DTO 里的字符串 id。
+func parseInt64(t *testing.T, s string) int64 {
+	t.Helper()
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("bad id %q: %v", s, err)
+	}
+	return n
 }
