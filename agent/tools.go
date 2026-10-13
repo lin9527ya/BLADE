@@ -523,15 +523,27 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
-	out["findings_total"] = len(vulnNodes)             // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
-	out["facts"] = len(factNodes)                      // 探索事实/结论数（含否定结论）
+	//
+	// 计数走 COUNT 而不是 len(列表)：ListByKind 有行数上限，任务超过上限后 len() 报的是
+	// 截断窗口的大小而不是总数——findings_total 是目标判定的依据，不能骗人。findings 列表
+	// 只取要展示的那一窗（findingListCap），也不必为此多拉行。
+	const findingListCap = 10
+	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, findingListCap) // newest first
+	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000)              // newest first；recent_facts 的候选窗
+	if total, err := t.ts.CountByKind(db.KindFinding); err == nil {
+		out["findings_total"] = total // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
+	} else {
+		out["findings_total"] = len(vulnNodes)
+	}
+	if total, err := t.ts.CountByKind(db.KindFact); err == nil {
+		out["facts"] = total // 探索事实/结论数（含否定结论）
+	} else {
+		out["facts"] = len(factNodes)
+	}
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
 	// evidence/assets/vulnclass/severity/state 等仍可用 list_findings / node_detail(id) 取。
-	const findingListCap = 10
 	findingList := make([]map[string]any, 0, findingListCap)
 	for _, n := range vulnNodes {
 		if len(findingList) >= findingListCap {
