@@ -902,6 +902,16 @@ WHERE exploration_id=$1 AND kind='intent' AND state='open'`, s.expID).Scan(&n)
 	return n, err
 }
 
+// CountByKind counts this exploration's nodes of one kind. graph_overview 的
+// findings_total / facts 用它：ListByKind 有行数上限，取 len() 会在任务超过上限后
+// 把「截断的窗口大小」当成总数报出去，而 findings_total 是目标判定的依据。
+func (s *ExplorationStore) CountByKind(kind string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2`, s.expID, kind).Scan(&n)
+	return n, err
+}
+
 // GetNode returns one node of this exploration by id (nil, nil if not found).
 func (s *ExplorationStore) GetNode(id int64) (*Node, error) {
 	n, err := scanNode(s.db.QueryRow(`SELECT `+nodeCols+` FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID))
