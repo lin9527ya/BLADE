@@ -468,6 +468,35 @@ export interface TaskConstraint {
   compiled_rules?: number;
 }
 
+/** P19 批量交付计划：一个任务全部发现的清单 + 证据门 + 疑似重复分组。 */
+export interface TaskSrcBatchEntry {
+  id: number;
+  title: string;
+  severity: string;
+  severity_cn: string;
+  vuln_class: string;
+  target: string;
+  status: string;
+  steps: number;
+  endpoints: number;
+  warnings: string[] | null;
+  fingerprint?: string;
+  duplicate_group?: number;
+  included: boolean;
+}
+
+export interface TaskSrcBatchPlan {
+  task_id: string;
+  task_name: string;
+  goal: string;
+  generated_at: string;
+  entries: TaskSrcBatchEntry[] | null;
+  duplicate_groups: number[][] | null;
+  warnings: string[] | null;
+  included: number;
+  skipped: number;
+}
+
 /** P18 约束编译：一条候选拦截规则 + 它在最近真实调用里的命中预览。 */
 export interface ConstraintRuleDraft {
   name: string;

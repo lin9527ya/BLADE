@@ -26,6 +26,7 @@ import type {
   CompanyScopeRule,
   ConstraintCompileResult,
   Conversation,
+  TaskSrcBatchPlan,
   ConvTokenSummary,
   CoverageAssetRefs,
   CoverageGraphData,
@@ -472,6 +473,35 @@ export const api = {
     if (!r.ok) throw new Error(`导出失败: ${r.status}`);
     const blob = await r.blob();
     let name = `finding-${findingId}.${format}`;
+    const cd = r.headers.get("Content-Disposition") ?? "";
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    if (m) {
+      try {
+        name = decodeURIComponent(m[1]);
+      } catch {
+        /* 保留回退文件名 */
+      }
+    }
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
+
+  // P19 批量交付：先取交付计划（清单/证据门/疑似重复），再下载整包。
+  taskSrcBatch: (id: string) => get<TaskSrcBatchPlan>(`/tasks/${id}/src-batch`),
+  downloadTaskSrcZip: async (id: string) => {
+    const token = getToken();
+    const r = await fetch(`/api/tasks/${id}/src-report.zip`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    let name = `task-${id}-交付包.zip`;
     const cd = r.headers.get("Content-Disposition") ?? "";
     const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
     if (m) {

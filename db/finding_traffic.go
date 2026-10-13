@@ -240,6 +240,38 @@ func bumpEvidenceVersionTx(tx *sql.Tx, findingID int64) error {
 	return err
 }
 
+// FindingEndpoint is one bound traffic endpoint (method + URL + role) of a finding.
+type FindingEndpoint struct {
+	FindingID int64
+	Method    string
+	URL       string
+	Role      string
+}
+
+// FindingEndpoints returns the bound endpoints of the given findings in ONE query.
+// P19 的归并与批量交付按整批发现算指纹/清单，不能每条发现各查一次流量。
+func (d *DB) FindingEndpoints(ids []int64) (map[int64][]FindingEndpoint, error) {
+	out := map[int64][]FindingEndpoint{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := d.Query(`SELECT b.finding_id, s.method, s.url, b.role
+FROM finding_traffic_bindings b JOIN traffic_evidence_snapshots s ON s.id = b.snapshot_id
+WHERE b.finding_id = ANY($1) ORDER BY b.finding_id, b.position, b.id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e FindingEndpoint
+		if err := rows.Scan(&e.FindingID, &e.Method, &e.URL, &e.Role); err != nil {
+			return nil, err
+		}
+		out[e.FindingID] = append(out[e.FindingID], e)
+	}
+	return out, rows.Err()
+}
+
 func FindingTrafficTx(tx *sql.Tx, findingID int64) (*FindingTraffic, error) {
 	out := &FindingTraffic{FindingID: findingID, Bindings: []FindingTrafficBinding{}}
 	if err := tx.QueryRow(`SELECT evidence_version,report_evidence_version FROM findings WHERE id=$1`, findingID).Scan(&out.Version, &out.ReportVersion); err != nil {

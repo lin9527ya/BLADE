@@ -27,7 +27,7 @@ import (
 )
 
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
-// + P15 结构化裁决与改参放行 + P18 约束可执行化的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
+// + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
 // 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
@@ -70,6 +70,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P14 领域化压缩与常驻索引", func(t *testing.T) { accP14(t, env.forTest(t)) })
 	t.Run("P15 结构化裁决与改参放行", func(t *testing.T) { accP15(t, env.forTest(t)) })
 	t.Run("P18 约束可执行化（编译为任务级规则）", func(t *testing.T) { accP18(t, env.forTest(t)) })
+	t.Run("P19 批量交付与同源归并", func(t *testing.T) { accP19(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -1378,4 +1379,157 @@ func parseInt64(t *testing.T, s string) int64 {
 		t.Fatalf("bad id %q: %v", s, err)
 	}
 	return n
+}
+
+// accP19 走完批量交付：一个任务的全部发现打成一份交付包——提交说明（清单 + 证据门 +
+// 疑似重复分组）+ 每条发现的规范简报与 docx；同源（同漏洞类型 + 同端点集合）的发现
+// 被归成一组提示合并提交；已撤回的不进包但在说明里交代清楚。
+func accP19(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p19", "批量交付")
+	// A/B 是同一个洞的两次登记（同类型、同端点、payload 不同）→ 应归为一组；
+	// C 是同一端点上的另一种洞 → 不归组；D 已撤回 → 不进包。
+	fA, _ := e.newFinding(task, tid, `{"vulnclass":"sqli","name":"用户接口注入（第一份）","severity":"high","summary":"用户接口注入（第一份）","evidence":"id=1 触发","confidence":"high"}`)
+	fB, _ := e.newFinding(task, tid, `{"vulnclass":"sqli","name":"用户接口注入（重复登记）","severity":"high","summary":"用户接口注入（重复登记）","evidence":"id=2 触发","confidence":"high"}`)
+	fC, _ := e.newFinding(task, tid, `{"vulnclass":"xss","severity":"medium","summary":"同一端点的反射型 XSS","evidence":"q= 回显","confidence":"medium"}`)
+	fD, _ := e.newFinding(task, tid, `{"vulnclass":"ssrf","severity":"low","summary":"后来被推翻的那条","evidence":"复测推翻","confidence":"low"}`)
+
+	bind := func(fid int64, url, role string) {
+		sn := db.TrafficEvidenceSnapshot{
+			SourceTrafficID: "acc-p19-" + strconv.FormatInt(fid, 10),
+			URL:             url, Method: "GET", Status: 200, ContentType: "application/json",
+			ReqHead:  "GET " + url + " HTTP/1.1\nHost: app.example.com",
+			RespHead: "HTTP/1.1 200 OK",
+		}
+		sn = sn.Normalize()
+		sn.ID = db.TrafficSnapshotID(sn)
+		if err := e.m.pg.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+			return db.AddFindingTrafficTx(tx, fid, []db.PreparedTrafficEvidence{{
+				Ref: db.TrafficRef{Role: role, Note: "验收"}, Snapshot: sn,
+			}})
+		}); err != nil {
+			t.Fatalf("bind traffic: %v", err)
+		}
+	}
+	bind(fA, "https://app.example.com/api/user?id=1", "proof")
+	bind(fB, "https://app.example.com/api/user?id=99", "proof") // 同端点、不同 payload
+	bind(fC, "https://app.example.com/api/user?id=1", "proof")
+	// fD 不绑定任何流量，且改成已撤回：既不进包（撤回），也不该出现在清单的进包部分。
+	if rec := e.request(http.MethodPatch, "/api/exploration/findings/"+strconv.FormatInt(fD, 10),
+		`{"status":"retracted","retract_reason":"复测推翻"}`); rec.Code != 200 {
+		t.Fatalf("撤回发现 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// ① 计划预览：归并分组 + 证据门。
+	rec := e.request(http.MethodGet, "/api/tasks/"+task.ID+"/src-batch", "")
+	if rec.Code != 200 {
+		t.Fatalf("src-batch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var plan struct {
+		Included int `json:"included"`
+		Skipped  int `json:"skipped"`
+		Entries  []struct {
+			ID             int64    `json:"id"`
+			Fingerprint    string   `json:"fingerprint"`
+			DuplicateGroup int      `json:"duplicate_group"`
+			Warnings       []string `json:"warnings"`
+			Included       bool     `json:"included"`
+		} `json:"entries"`
+		Groups [][]int64 `json:"duplicate_groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &plan); err != nil {
+		t.Fatalf("%v body=%s", err, rec.Body.String())
+	}
+	if plan.Included != 3 || plan.Skipped != 1 {
+		t.Fatalf("进包/跳过数不对: %+v", plan)
+	}
+	groupOf := map[int64]int{}
+	for i, g := range plan.Groups {
+		for _, id := range g {
+			groupOf[id] = i + 1
+		}
+	}
+	if len(plan.Groups) != 1 || groupOf[fA] != 1 || groupOf[fB] != 1 {
+		t.Fatalf("同源发现没有被归成一组: groups=%v", plan.Groups)
+	}
+	if groupOf[fC] != 0 {
+		t.Fatalf("同一端点上的另一种洞不该归组: %+v", groupOf)
+	}
+	// 指纹来自"类型 + 端点"，与标题措辞无关：A/B 标题不同但指纹相同。
+	var fpA, fpB string
+	for _, en := range plan.Entries {
+		if en.ID == fA {
+			fpA = en.Fingerprint
+		}
+		if en.ID == fB {
+			fpB = en.Fingerprint
+		}
+	}
+	if fpA == "" || fpA != fpB {
+		t.Fatalf("指纹不稳定: A=%q B=%q", fpA, fpB)
+	}
+
+	// ② 打包下载：提交说明 + 每条进包发现的 md/docx；撤回的不在包里。
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/src-report.zip", "")
+	if rec.Code != 200 {
+		t.Fatalf("zip status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("交付包不是合法 zip：%v", err)
+	}
+	files := map[string]bool{}
+	var readme string
+	for _, f := range zr.File {
+		files[f.Name] = true
+		if f.Name == "提交说明.md" {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			readme = string(b)
+		}
+	}
+	if !files["提交说明.md"] {
+		t.Fatal("交付包缺少提交说明.md")
+	}
+	mdCount, docxCount := 0, 0
+	for name := range files {
+		if strings.HasPrefix(name, "findings/") && strings.HasSuffix(name, ".md") {
+			mdCount++
+		}
+		if strings.HasPrefix(name, "findings/") && strings.HasSuffix(name, ".docx") {
+			docxCount++
+		}
+		if strings.Contains(name, strconv.FormatInt(fD, 10)) {
+			t.Fatalf("已撤回的发现不该进包: %s", name)
+		}
+	}
+	if mdCount != 3 || docxCount != 3 {
+		t.Fatalf("进包附件数不对: md=%d docx=%d（files=%v）", mdCount, docxCount, files)
+	}
+	// 提交说明：清单条目、疑似重复分组、撤回说明。
+	e.mustContain(readme, "## 三、疑似重复（同一漏洞被多次登记）", "提交说明的重复分组段")
+	e.mustContain(readme, "组 1（指纹 "+fpA+"）", "重复组编号与指纹")
+	e.mustContain(readme, "第一份", "清单里的发现标题")
+	e.mustContain(readme, "未进包的发现", "撤回发现的交代")
+	e.mustContain(readme, "## 二、导出前的证据门", "证据门段")
+	// 证据门要指出"没人绑流量"这件事：三条进包的都绑了 proof，所以此处应为"无"。
+	e.mustContain(readme, "无：每条进包发现的证据都完整", "证据门结论")
+	// 单条导出与批量包口吻一致：该发现自己的 src-report 里也是同一份警告清单（这里为空）。
+	rec = e.request(http.MethodGet, "/api/findings/"+strconv.FormatInt(fA, 10)+"/src-report/check", "")
+	var gate struct {
+		Ready    bool     `json:"ready"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &gate); err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Ready || len(gate.Warnings) != 0 {
+		t.Fatalf("证据完整的发现不该有警告: %+v", gate)
+	}
 }
