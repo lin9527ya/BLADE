@@ -36,6 +36,7 @@ func TestTaskIDContextUsesExplicitRegistryID(t *testing.T) {
 	if got := TaskIDFrom(WithTaskID(ctx, "   ")); got != "42" {
 		t.Fatalf("blank task id should preserve parent context, got %q", got)
 	}
+	//lint:ignore SA1012 本用例专门验证 nil ctx 的防御分支（llmrec.go 里 TaskIDFrom 显式判 nil）
 	if got := TaskIDFrom(nil); got != "" {
 		t.Fatalf("nil context returned %q", got)
 	}

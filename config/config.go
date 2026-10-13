@@ -188,5 +188,5 @@ func Redact(dsn string) string {
 			u.User = url.UserPassword(u.User.Username(), "****")
 		}
 	}
-	return fmt.Sprintf("%s", u.String())
+	return u.String()
 }

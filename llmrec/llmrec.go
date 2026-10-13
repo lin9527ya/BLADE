@@ -318,11 +318,8 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 	}
 	respBody, _ := json.Marshal(resp)
 
-	model := ""
-	if len(req.System) > 0 {
-		// model is not in CompletionRequest; use the configured model name
-	}
-	model = r.model
+	// model 不在 CompletionRequest 里，只能用配置的模型名。
+	model := r.model
 
 	rec := &db.LLMRecord{
 		SessionID:    session,
