@@ -13,12 +13,17 @@
   `replace` 指向它（fork 保留原 module path，import 路径不变）。维护线自带 CI，
   **每个 tag 都自带一次全绿测试**；差异台账在该仓库的 `FORK.md`，操作流程见
   `docs/SDK维护线.md`。
-- **当前接线 `v0.4.5`**，累计包含：溢出输出指针恒为绝对路径；截断按 UTF-8 rune 边界
+- **当前接线 `v0.4.6`**，累计包含：溢出输出指针恒为绝对路径；截断按 UTF-8 rune 边界
   对齐（不再切出半个汉字）；会话关闭不再删除后台任务输出目录（后台输出与"完整输出
   已存到 <路径>"的指针不再变死链）；子进程注入非交互默认环境（`PAGER`/`GIT_PAGER`/
   `SYSTEMD_PAGER=cat`、`DEBIAN_FRONTEND=noninteractive`，避免守着一个没人看的终端）；
   模型调用在手工组装的配置下不再因缺 HTTP client 而 panic；noa 溢出时学习 provider
-  报出的真实窗口（此前该学习路径无调用者）。
+  报出的真实窗口（此前该学习路径无调用者）；**后台任务输出改由宿主指定根目录**。
+- **一次运行的所有产物同根**：后台任务输出（Bash 超时自动转后台、`TaskOutput`/`TaskMonitor`
+  的文件）从 `$TMPDIR/norma` 移到本次运行目录下的 `task-output/`，与 `cmd-output/`、
+  `executions/`（执行台账日志）、`compaction/`（压缩原文）同处 `<数据目录>/tasks/<任务>/...`。
+  于是任务删除时已有的文件清理、备份、人工排查都只需要面对一个根；`$TMPDIR` 既不随宿主
+  生命周期、也可能挂在 tmpfs 上（重启即失）。
 
 ## [0.3.15] - 2026-10-07
 

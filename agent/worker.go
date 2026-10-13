@@ -309,6 +309,12 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
+// taskOutDir is where the SDK's background tasks (Bash 的后台化、TaskOutput 等) 落盘。
+// 放在本次运行目录下（而不是 SDK 默认的 $TMPDIR/norma）：与 cmd-output / 执行台账 /
+// 压缩落盘同根，任务删除时的文件清理、备份、人工排查都只面对一个根，$TMPDIR 既不随
+// 宿主生命周期、也可能挂在 tmpfs 上（重启即失）。
+func taskOutDir(dir string) string { return filepath.Join(dir, "task-output") }
+
 func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
@@ -503,6 +509,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// large tool output spills to cmd-output/ with a head + pointer (SDK tool.Capture);
 		// full output preserved on disk. 截断上限用 SDK 默认(30000 字符)。
 		ToolOutputDir: cmdOutDir(runDir),
+		TaskOutputDir: taskOutDir(runDir),
 		Todos:         actool.NewTodoStore(), // 会话级临时待办（TodoWrite），纯规划用，退出即丢
 		NonStreaming:  w.nonStreaming(),      // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:     w.maxTokens(),         // 0 = 不发上限,由服务端默认值决定
