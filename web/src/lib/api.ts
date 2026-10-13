@@ -439,8 +439,14 @@ export const api = {
         ...p.effective,
         techniques: arr(p.effective.techniques),
         forbidden_writes: arr(p.effective.forbidden_writes),
+        custom: arr(p.effective.custom),
       },
-      global: { ...p.global, techniques: arr(p.global.techniques), forbidden_writes: arr(p.global.forbidden_writes) },
+      global: {
+        ...p.global,
+        techniques: arr(p.global.techniques),
+        forbidden_writes: arr(p.global.forbidden_writes),
+        custom: arr(p.global.custom),
+      },
       recent_rejects: arr(p.recent_rejects),
     })),
   // 保存任务策略（整份覆盖层）：解析成 effective 快照落库，并重建命令门。改动下一轮规划生效。

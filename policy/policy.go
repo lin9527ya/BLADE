@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -20,6 +21,8 @@ type Effective struct {
 	Techniques []string `json:"techniques"`
 	// ForbiddenWrites 是禁止的写操作 id（policy.WriteItems 的 ID）。
 	ForbiddenWrites []string `json:"forbidden_writes"`
+	// Custom 是操作者手写的额外禁止条目（词表的逃生舱；数量与形状由 Validate 把关）。
+	Custom []CustomRule `json:"custom,omitempty"`
 
 	// 节奏面：0 = 不限。
 	MaxIntentsPerRound int `json:"max_intents_per_round"`
@@ -29,25 +32,63 @@ type Effective struct {
 
 // IsZero 报告这份策略是否什么都没限制（执行点据此完全跳过策略逻辑）。
 func (e Effective) IsZero() bool {
-	return len(e.Techniques) == 0 && len(e.ForbiddenWrites) == 0 &&
+	return len(e.Techniques) == 0 && len(e.ForbiddenWrites) == 0 && len(e.Custom) == 0 &&
 		e.MaxIntentsPerRound <= 0 && e.MaxOpenIntents <= 0 && e.MaxIntentsTotal <= 0
 }
+
+// 自定义条目的生效层。
+const (
+	// CustomLayerBoth：意图层与命令层都判（默认）——"这个方向别提，也别做"。
+	CustomLayerBoth = "both"
+	// CustomLayerCommand：只编译进命令门——用于"说起来没关系、做出来才有事"的形状
+	// （例如某个只读接口的写路径），避免按措辞误伤意图。
+	CustomLayerCommand = "command"
+)
+
+// CustomRule 是操作者手写的一条边界条目（词表覆盖不到的"这个别碰"由它兜）。
+// 它是**禁止**语义（本策略只做限制，不做白名单），判定规则：
+//   - Regex=false：关键词。ASCII 走词边界（`.` 视为词内字符），中文走子串；与词表同款
+//     否定语境豁免（"检查是否有 X"这类合规方向放行但留痕）。
+//   - Regex=true：真正则（大小写不敏感），原样进命令门；意图层按原文匹配、不套否定豁免
+//     （操作者写的是精确形状，不该被语义豁免掉）。
+type CustomRule struct {
+	// Label 是显示名（拒绝理由与规则名里用它）；空则显示 Pattern。
+	Label string `json:"label,omitempty"`
+	// Pattern 是匹配内容：关键词或正则。
+	Pattern string `json:"pattern"`
+	// Regex=true 时 Pattern 按正则解释。
+	Regex bool `json:"regex,omitempty"`
+	// Layer：both（默认）| command。
+	Layer string `json:"layer,omitempty"`
+}
+
+// Display 返回这条自定义条目的显示名。
+func (r CustomRule) Display() string {
+	if l := strings.TrimSpace(r.Label); l != "" {
+		return l
+	}
+	return r.Pattern
+}
+
+// IsCommandOnly 报告这条是否只作用于命令层。
+func (r CustomRule) IsCommandOnly() bool { return r.Layer == CustomLayerCommand }
 
 // Override 是任务自己的覆盖层：**指针字段**让"没填"（继承）与"显式清空"可区分——
 // 数组 nil = 继承全局、[] = 显式不禁；数值 nil = 继承、0 = 不限。
 type Override struct {
-	Techniques         *[]string `json:"techniques,omitempty"`
-	ForbiddenWrites    *[]string `json:"forbidden_writes,omitempty"`
-	MaxIntentsPerRound *int      `json:"max_intents_per_round,omitempty"`
-	MaxOpenIntents     *int      `json:"max_open_intents,omitempty"`
-	MaxIntentsTotal    *int      `json:"max_intents_total,omitempty"`
+	Techniques         *[]string     `json:"techniques,omitempty"`
+	ForbiddenWrites    *[]string     `json:"forbidden_writes,omitempty"`
+	Custom             *[]CustomRule `json:"custom,omitempty"`
+	MaxIntentsPerRound *int          `json:"max_intents_per_round,omitempty"`
+	MaxOpenIntents     *int          `json:"max_open_intents,omitempty"`
+	MaxIntentsTotal    *int          `json:"max_intents_total,omitempty"`
 }
 
 // IsZero 报告覆盖层是否什么都没改（全 nil）——用于区分"这个任务是显式配过策略"还是
 // "创建时把全局默认抄了一份快照"。两者落库形状相同，语义不同（UI 要显示"继承自全局默认"）。
 func (o Override) IsZero() bool {
-	return o.Techniques == nil && o.ForbiddenWrites == nil && o.MaxIntentsPerRound == nil &&
-		o.MaxOpenIntents == nil && o.MaxIntentsTotal == nil
+	return o.Techniques == nil && o.ForbiddenWrites == nil && o.Custom == nil &&
+		o.MaxIntentsPerRound == nil && o.MaxOpenIntents == nil && o.MaxIntentsTotal == nil
 }
 
 // Doc 是落库的完整策略文档：override（UI 编辑的那层）+ effective（解析结果）+
@@ -111,6 +152,9 @@ func Merge(base Effective, ov Override) Effective {
 	if ov.ForbiddenWrites != nil {
 		out.ForbiddenWrites = append([]string(nil), (*ov.ForbiddenWrites)...)
 	}
+	if ov.Custom != nil {
+		out.Custom = append([]CustomRule(nil), (*ov.Custom)...)
+	}
 	if ov.MaxIntentsPerRound != nil {
 		out.MaxIntentsPerRound = *ov.MaxIntentsPerRound
 	}
@@ -128,10 +172,39 @@ func Merge(base Effective, ov Override) Effective {
 func Normalize(e Effective) Effective {
 	e.Techniques, _ = normalizeIDs(e.Techniques, func(id string) bool { _, ok := techniqueByID[id]; return ok })
 	e.ForbiddenWrites, _ = normalizeIDs(e.ForbiddenWrites, func(id string) bool { _, ok := writeItemByID[id]; return ok })
+	e.Custom = normalizeCustom(e.Custom)
 	e.MaxIntentsPerRound = max0(e.MaxIntentsPerRound)
 	e.MaxOpenIntents = max0(e.MaxOpenIntents)
 	e.MaxIntentsTotal = max0(e.MaxIntentsTotal)
 	return e
+}
+
+// Validate 是写入侧的唯一把关口：未知 id、自定义条目的合法性（正则可编译、长度）、
+// 数量上限、以及"总规则数不超上限"都在这里拒绝——**写不进去要说清楚，不静默丢**
+// （静默丢会让操作者以为边界生效了，实际没有）。
+func Validate(e Effective) error {
+	if unknown := UnknownIDs(e); len(unknown) > 0 {
+		return fmt.Errorf("策略里有未知条目：%s", strings.Join(unknown, "、"))
+	}
+	n := Normalize(e)
+	if len(n.Custom) > MaxCustomRules {
+		return fmt.Errorf("自定义禁止条目最多 %d 条（当前 %d 条）", MaxCustomRules, len(n.Custom))
+	}
+	for _, r := range n.Custom {
+		if len(r.Pattern) > MaxCustomPatternLen {
+			return fmt.Errorf("自定义条目「%s」太长（上限 %d 字符）", r.Display(), MaxCustomPatternLen)
+		}
+		if r.Regex {
+			if _, err := regexp.Compile(r.Pattern); err != nil {
+				return fmt.Errorf("自定义条目「%s」不是合法正则：%v", r.Display(), err)
+			}
+		}
+	}
+	if total := len(n.Techniques) + len(n.ForbiddenWrites) + len(n.Custom); total > MaxPolicyRules {
+		return fmt.Errorf("规则总条数超上限（%d > %d）：手段 %d + 敏感写 %d + 自定义 %d",
+			total, MaxPolicyRules, len(n.Techniques), len(n.ForbiddenWrites), len(n.Custom))
+	}
+	return nil
 }
 
 // UnknownIDs 返回词表里不存在的 id（写入侧据此 400 拒绝，而不是静默丢弃）。
@@ -148,6 +221,40 @@ func UnknownIDs(e Effective) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// normalizeCustom 归一自定义条目：去空白、丢空条目、层归一（未知层→both）、按
+// (pattern,regex,layer) 去重并按 Pattern 排序（顺序稳定，便于 diff 与落库比较）。
+// **不在这里做数量/合法性拒绝**——那是 Validate 的事：写入侧要 400 说明白，不能静默丢。
+func normalizeCustom(in []CustomRule) []CustomRule {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]CustomRule, 0, len(in))
+	for _, r := range in {
+		r.Pattern = strings.TrimSpace(r.Pattern)
+		r.Label = strings.TrimSpace(r.Label)
+		if r.Pattern == "" {
+			continue
+		}
+		if r.Layer != CustomLayerCommand {
+			r.Layer = CustomLayerBoth
+		}
+		key := fmt.Sprintf("%s|%t|%s", r.Pattern, r.Regex, r.Layer)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Pattern != out[j].Pattern {
+			return out[i].Pattern < out[j].Pattern
+		}
+		return out[i].Layer < out[j].Layer
+	})
 	return out
 }
 

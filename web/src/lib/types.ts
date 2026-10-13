@@ -50,6 +50,7 @@ export interface Task {
   // P20 探索策略限制摘要（列表角标用）；明细走 GET /api/tasks/{id}/policy。
   policy_techniques?: string[] | null;
   policy_writes?: string[] | null;
+  policy_custom?: number;
   policy_max_intents?: number;
 }
 
@@ -482,12 +483,25 @@ export interface TaskConstraint {
 
 // ---- P20 探索策略 ----
 
+/**
+ * 自定义禁止条目（策略的逃生舱）：词表覆盖不到时操作者手写一条。
+ * Regex=false 走关键词（ASCII 词边界 / 中文子串，与词表同款否定语境豁免）；
+ * Regex=true 按正则原文匹配（不套否定豁免）。Layer="command" 时只编译进命令门，不判意图措辞。
+ */
+export interface CustomRule {
+  label?: string;
+  pattern: string;
+  regex?: boolean;
+  layer?: "both" | "command";
+}
+
 /** 一份解析完成的策略（执行点读的就是它）。0 = 不限。 */
 export interface ExplorationPolicyEffective {
   version: number;
   source: string; // global_default | task
   techniques: string[];
   forbidden_writes: string[];
+  custom?: CustomRule[] | null;
   max_intents_per_round: number;
   max_open_intents: number;
   max_intents_total: number;
@@ -497,6 +511,7 @@ export interface ExplorationPolicyEffective {
 export interface ExplorationPolicyOverride {
   techniques?: string[];
   forbidden_writes?: string[];
+  custom?: CustomRule[];
   max_intents_per_round?: number;
   max_open_intents?: number;
   max_intents_total?: number;
@@ -547,6 +562,7 @@ export interface TaskPolicy {
   intents_used: number;
   intents_total: number;
   rule_count: number; // 命令门当前落库的规则数
+  custom_limit: number; // 自定义条目的条数上限（UI 据此禁用"添加"）
   recent_rejects: PolicyRejectNote[] | null;
 }
 
@@ -556,6 +572,8 @@ export interface ExplorationPolicyDefault {
   override: ExplorationPolicyOverride;
   techniques: PolicyTechnique[];
   writes: PolicyWriteItem[];
+  custom_limit: number;
+  custom_pattern_limit: number;
 }
 
 /** P19 批量交付计划：一个任务全部发现的清单 + 证据门 + 疑似重复分组。 */
