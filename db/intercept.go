@@ -26,9 +26,12 @@ type InterceptRule struct {
 	// 由该任务的操作约束编译而来（P18）。两者在匹配时并集，全局优先同优先级的旧序。
 	TaskID string `json:"task_id,omitempty"`
 	// SourceConstraintID：本规则由哪条 task_constraints 生成（NULL = 手工/内置）。
-	SourceConstraintID *int64    `json:"source_constraint_id,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	SourceConstraintID *int64 `json:"source_constraint_id,omitempty"`
+	// Source 标明规则的产出者：'' = 手工/内置 | 'constraint'（P18 约束编译）|
+	// 'policy'（P20 探索策略编译）。策略规则按 source 整批替换，与约束互不干扰。
+	Source    string    `json:"source,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // InterceptPending is one row of intercept_pending.
@@ -47,14 +50,20 @@ type InterceptPending struct {
 	CreatedAt      time.Time       `json:"created_at"`
 }
 
-const interceptRuleCols = `id, name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, COALESCE(task_id,''), source_constraint_id, created_at, updated_at`
+const interceptRuleCols = `id, name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, COALESCE(task_id,''), source_constraint_id, COALESCE(source,''), created_at, updated_at`
+
+// 规则来源常量（intercept_rules.source）。
+const (
+	RuleSourceConstraint = "constraint"
+	RuleSourcePolicy     = "policy"
+)
 
 func scanInterceptRule(row interface{ Scan(...any) error }) (InterceptRule, error) {
 	var r InterceptRule
 	err := row.Scan(&r.ID, &r.Name, &r.Enabled, &r.Priority,
 		&r.MatchTarget, &r.MatchType, &r.Pattern, &r.Action, &r.Message,
 		&r.TimeoutEnabled, &r.TimeoutSeconds, &r.TimeoutAction,
-		&r.TaskID, &r.SourceConstraintID, &r.CreatedAt, &r.UpdatedAt)
+		&r.TaskID, &r.SourceConstraintID, &r.Source, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
 }
 
@@ -102,11 +111,11 @@ func (d *DB) listInterceptRules(where string, args ...any) ([]InterceptRule, err
 // CreateTaskRule inserts a task-scoped rule (P18：由任务约束编译而来)。
 func (d *DB) CreateTaskRule(r InterceptRule) (InterceptRule, error) {
 	row := d.QueryRow(`
-INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, task_id, source_constraint_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, task_id, source_constraint_id, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING `+interceptRuleCols,
 		r.Name, r.Enabled, r.Priority, r.MatchTarget, r.MatchType, r.Pattern, r.Action, r.Message,
-		r.TimeoutEnabled, r.TimeoutSeconds, r.TimeoutAction, r.TaskID, r.SourceConstraintID)
+		r.TimeoutEnabled, r.TimeoutSeconds, r.TimeoutAction, r.TaskID, r.SourceConstraintID, r.Source)
 	return scanInterceptRule(row)
 }
 
@@ -138,6 +147,42 @@ func (d *DB) DeleteTaskRulesByConstraint(taskID string, constraintID int64) (int
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// ReplaceTaskRulesBySource atomically replaces every rule a producer owns for one
+// task (delete + insert in ONE transaction).
+//
+// 为什么必须是一个事务：策略/约束的"先删后插"如果分开提交，插入失败就会留下
+// **边界消失**（fail-open）——与 P12 起的失效安全纪律直接冲突。事务里失败则旧规则
+// 原样保留（fail-closed），调用方在提交成功后再 Invalidate() 规则缓存。
+func (d *DB) ReplaceTaskRulesBySource(taskID, source string, rules []InterceptRule) (int, error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM intercept_rules WHERE COALESCE(task_id,'')=$1 AND COALESCE(source,'')=$2`, taskID, source); err != nil {
+		return 0, err
+	}
+	for _, r := range rules {
+		if _, err := tx.Exec(`INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, task_id, source_constraint_id, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			r.Name, r.Enabled, r.Priority, r.MatchTarget, r.MatchType, r.Pattern, r.Action, r.Message,
+			r.TimeoutEnabled, r.TimeoutSeconds, r.TimeoutAction, r.TaskID, r.SourceConstraintID, r.Source); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(rules), nil
+}
+
+// CountTaskRulesBySource counts a task's rules owned by one producer.
+func (d *DB) CountTaskRulesBySource(taskID, source string) (int, error) {
+	var n int
+	err := d.QueryRow(`SELECT count(*) FROM intercept_rules WHERE COALESCE(task_id,'')=$1 AND COALESCE(source,'')=$2`, taskID, source).Scan(&n)
+	return n, err
 }
 
 // CountRulesByConstraint returns, per source constraint id, how many task rules it

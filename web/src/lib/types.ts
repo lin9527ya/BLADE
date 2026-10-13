@@ -1,7 +1,15 @@
 // ARTEX domain model — types used across the UI.
 // Derived from the functional spec (section 7: 关键数据形状).
 
-export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
+export type TaskStatus =
+  | "created"
+  | "queued"
+  | "running"
+  | "paused"
+  | "done"
+  | "failed"
+  | "timeout"
+  | "policy_blocked"; // P20：探索策略内已无可行方向而收尾（不是超时——改策略/加目标即可复活）
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
@@ -39,6 +47,10 @@ export interface Task {
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
+  // P20 探索策略限制摘要（列表角标用）；明细走 GET /api/tasks/{id}/policy。
+  policy_techniques?: string[] | null;
+  policy_writes?: string[] | null;
+  policy_max_intents?: number;
 }
 
 export interface TaskCategory {
@@ -468,6 +480,84 @@ export interface TaskConstraint {
   compiled_rules?: number;
 }
 
+// ---- P20 探索策略 ----
+
+/** 一份解析完成的策略（执行点读的就是它）。0 = 不限。 */
+export interface ExplorationPolicyEffective {
+  version: number;
+  source: string; // global_default | task
+  techniques: string[];
+  forbidden_writes: string[];
+  max_intents_per_round: number;
+  max_open_intents: number;
+  max_intents_total: number;
+}
+
+/** 任务自己的覆盖层：字段缺省 = 继承，显式空数组 = 本任务不禁该项，0 = 不限。 */
+export interface ExplorationPolicyOverride {
+  techniques?: string[];
+  forbidden_writes?: string[];
+  max_intents_per_round?: number;
+  max_open_intents?: number;
+  max_intents_total?: number;
+}
+
+/** 词表项（设置页/策略卡渲染"禁了什么、为什么"）。 */
+export interface PolicyTechnique {
+  id: string;
+  label: string;
+  hint: string;
+  words: string[];
+}
+export interface PolicyWriteItem {
+  id: string;
+  label: string;
+  hint: string;
+  words: string[];
+  patterns: string[];
+}
+
+/** 策略编译出的规则草案（命令门；落库前）。 */
+export interface PolicyRuleDraft {
+  name: string;
+  match_target: string;
+  match_type: string;
+  pattern: string;
+  action: string;
+  message: string;
+  priority: number;
+  item_id: string;
+  item_label: string;
+}
+
+/** 近期被拒的一条意图（模型想做什么、被哪条策略拦）。 */
+export interface PolicyRejectNote {
+  summary: string;
+  item_label: string;
+  item_id: string;
+  matched: string;
+}
+
+export interface TaskPolicy {
+  effective: ExplorationPolicyEffective;
+  override: ExplorationPolicyOverride;
+  global: ExplorationPolicyEffective;
+  global_version: number;
+  custom: boolean; // 本任务自己配过（false = 创建时抄的全局默认快照）
+  intents_used: number;
+  intents_total: number;
+  rule_count: number; // 命令门当前落库的规则数
+  recent_rejects: PolicyRejectNote[] | null;
+}
+
+export interface ExplorationPolicyDefault {
+  effective: ExplorationPolicyEffective;
+  version: number;
+  override: ExplorationPolicyOverride;
+  techniques: PolicyTechnique[];
+  writes: PolicyWriteItem[];
+}
+
 /** P19 批量交付计划：一个任务全部发现的清单 + 证据门 + 疑似重复分组。 */
 export interface TaskSrcBatchEntry {
   id: number;
@@ -703,7 +793,9 @@ export type ActivityKind =
   | "llm_failover" // task-level provider switch / chain exhaustion audit event
   | "intercept_request" // user-approval request from the intercept layer
   | "execution_pending" // P13: 收笔时托管长任务仍在跑，意图暂不判完
-  | "execution_done"; // P13: 托管执行收束，意图退回待领续跑
+  | "execution_done" // P13: 托管执行收束，意图退回待领续跑
+  | "policy_reject" // P20: 意图被任务探索策略硬拒（不落图，但时间线留痕）
+  | "policy_update"; // P20: 策略保存/清空/按新策略清理未领取意图
 
 // ChatAttachment 是一次上传的文件:path 相对该会话/任务工作目录(即 agent 的 CWD)。
 export interface ChatAttachment {

@@ -24,7 +24,13 @@ import type {
   Company,
   CompanyScopeMutation,
   CompanyScopeRule,
+  ConstraintCompilePreview,
   ConstraintCompileResult,
+  ExplorationPolicyDefault,
+  ExplorationPolicyEffective,
+  ExplorationPolicyOverride,
+  PolicyRuleDraft,
+  TaskPolicy,
   Conversation,
   TaskSrcBatchPlan,
   ConvTokenSummary,
@@ -263,6 +269,8 @@ export const api = {
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
+    // P20：任务级探索策略覆盖层；省略 = 完全继承当时的全局默认（服务端解析成快照落库）。
+    explorationPolicy?: ExplorationPolicyOverride;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -277,6 +285,7 @@ export const api = {
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
+      exploration_policy: input.explorationPolicy ?? null, // P20 探索策略覆盖层(null=继承全局默认)
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
@@ -420,6 +429,40 @@ export const api = {
   // 删除约束。
   deleteConstraint: (id: string, constraintId: string) =>
     del<{ ok: boolean }>(`/tasks/${id}/constraints/${constraintId}`),
+
+  // ---- P20 探索策略（任务级 + 全局默认）----
+  // Go 把 nil slice 序列化成 null——统一归一成 []，UI 侧不用到处判空。
+  taskPolicy: (id: string) =>
+    get<TaskPolicy>(`/tasks/${id}/policy`).then((p) => ({
+      ...p,
+      effective: {
+        ...p.effective,
+        techniques: arr(p.effective.techniques),
+        forbidden_writes: arr(p.effective.forbidden_writes),
+      },
+      global: { ...p.global, techniques: arr(p.global.techniques), forbidden_writes: arr(p.global.forbidden_writes) },
+      recent_rejects: arr(p.recent_rejects),
+    })),
+  // 保存任务策略（整份覆盖层）：解析成 effective 快照落库，并重建命令门。改动下一轮规划生效。
+  saveTaskPolicy: (id: string, override: ExplorationPolicyOverride) =>
+    patch<TaskPolicy>(`/tasks/${id}/policy`, { override }),
+  // 清空覆盖层（回到"无策略"；不动全局默认）。
+  resetTaskPolicy: (id: string) => del<TaskPolicy>(`/tasks/${id}/policy`),
+  // 只读预览：这套策略会编译出哪些规则、每条命中最近多少条真实调用。
+  previewTaskPolicy: (id: string) =>
+    post<{ rules: PolicyRuleDraft[] | null; preview: ConstraintCompilePreview[] | null }>(
+      `/tasks/${id}/policy/preview`,
+      {},
+    ).then((r) => ({ rules: arr(r.rules), preview: arr(r.preview) })),
+  // 按当前策略清理"未领取"的意图（运行中的不动）。
+  pruneTaskPolicy: (id: string) =>
+    post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
+  explorationPolicyDefault: () => get<ExplorationPolicyDefault>(`/settings/exploration-policy`),
+  saveExplorationPolicyDefault: (override: ExplorationPolicyOverride) =>
+    put<{ effective: ExplorationPolicyEffective; version: number; note: string }>(
+      `/settings/exploration-policy`,
+      { override },
+    ),
 
   // ---- 任务级资产拦截/允许规则（总览）----
   taskInterceptRules: (id: string) =>

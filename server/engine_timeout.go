@@ -10,6 +10,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/policy"
 )
 
 // 任务级超时协调器(见 docs/任务级超时与收尾设计.md §4/§8.5)。
@@ -157,6 +158,7 @@ func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
 // sequence. Absolute wall-clock: it keeps counting through pauses.
 func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 	var lastLeaseSweep time.Time // 零值 → 首轮立即扫一次，之后按 leaseSweepInterval 节流
+	var lastStallCheck time.Time // 同上（P20 策略停摆判定）
 	for {
 		select {
 		case <-ctx.Done():
@@ -182,9 +184,20 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 					log.Printf("[budget] task %s token 预算耗尽 (%d/%d)，进入收尾时序", t.ID, used, budget)
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
 						Summary: fmt.Sprintf("Token 预算耗尽（%d/%d），进入收尾时序", used, budget)})
-					e.settleTask(ctx, t)
+					e.settleTask(ctx, t, "Token 预算耗尽", "timeout")
 					return
 				}
+			}
+		}
+		// P20 探索策略停摆：策略内已无可行方向（窗口内被拒达阈值、期间没有任何成功
+		// 创建的意图、也没有在跑的活）——再唤醒 planner 只会继续烧 token，主动收尾。
+		// 终态用 policy_blocked（不是 timeout）：改策略或加目标即可复活，UI 也该显示
+		// "策略封死"而不是"超时"。
+		if time.Since(lastStallCheck) >= policyStallCheckInterval && !e.isSettling(t.ID) {
+			lastStallCheck = time.Now()
+			if e.policyStall(t) {
+				e.settlePolicyStall(ctx, t)
+				return
 			}
 		}
 		dl := e.taskDeadline(t)
@@ -204,7 +217,7 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 			}
 			continue
 		}
-		e.settleTask(ctx, t)
+		e.settleTask(ctx, t, "到达超时上限", "timeout")
 		return
 	}
 }
@@ -247,12 +260,78 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 	}
 }
 
+// settlePolicyStall 是"策略停摆"的收尾动作：先留痕再走与超时/预算共用的收尾时序，
+// 只是终态记 policy_blocked（"策略封死"与"超时"是两回事，改策略/加目标即可复活）。
+func (e *Engine) settlePolicyStall(ctx context.Context, t *Task) {
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+		Summary: fmt.Sprintf("探索策略内已无可行方向（近 %s 内被拒 ≥ %d 条且无新增意图），任务进入收尾", policyStallWindow, policyStallMinRejects)})
+	log.Printf("[policy] task %s 策略停摆，进入收尾时序", t.ID)
+	e.settleTask(ctx, t, "探索策略内已无可行方向", "policy_blocked")
+}
+
+// policyStall 判定"策略内已无可行方向"：任务有非空策略、真的没活干（无待领/在跑意图、
+// 无在跑执行或 run）、窗口内被拒达阈值且期间没有任何成功创建的意图。
+// 抽成方法便于验收直接驱动（不用等真跑满一个窗口）。
+func (e *Engine) policyStall(t *Task) bool {
+	pgTask, err := e.m.pg.GetTask(parseIntDefault(t.ID))
+	if err != nil || pgTask == nil {
+		return false
+	}
+	doc := policy.ParseDoc(pgTask.ExplorationPolicy)
+	if doc == nil || doc.Effective.IsZero() {
+		return false // 无策略的任务永不受此影响
+	}
+	if active, err := t.Store.HasActiveIntent(); err != nil || active {
+		return false
+	}
+	if x := e.m.Executions(); x != nil && len(x.ActiveForTask(t.ID)) > 0 {
+		return false
+	}
+	if e.inflightCount(t.ID) > 0 {
+		return false
+	}
+	rejects, err := t.Store.RecentPolicyRejects(50)
+	if err != nil {
+		return false
+	}
+	cutoff := time.Now().Add(-policyStallWindow)
+	recent := 0
+	oldest := time.Time{}
+	for _, r := range rejects {
+		if r.CreatedAt.Before(cutoff) {
+			continue
+		}
+		recent++
+		if oldest.IsZero() || r.CreatedAt.Before(oldest) {
+			oldest = r.CreatedAt
+		}
+	}
+	if recent < policyStallMinRejects {
+		return false
+	}
+	// 窗口起点之后成功创建过意图 → 探索仍在推进，只是偶尔被拒。
+	if last, err := t.Store.LastIntentCreatedAt(); err == nil && last != nil && last.After(cutoff) {
+		return false
+	}
+	return time.Since(oldest) >= policyStallGrace
+}
+
 // settleTask runs the ordered settle sequence once (§4 steps ①–⑥).
-func (e *Engine) settleTask(ctx context.Context, t *Task) {
+//
+// why 说明"为什么收尾"（超时/预算耗尽/探索策略停摆），进日志与时间线；
+// fallback 是非 met 时的终态（默认 timeout；策略停摆用 policy_blocked——
+// 把"策略封死"显示成"已超时"是事实错误，而本设计的全部价值就在理由明确）。
+func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback string) {
 	if !e.markSettling(t.ID) {
 		return
 	}
-	log.Printf("[deadline] task %s 到达超时上限,进入收尾时序", t.ID)
+	if why == "" {
+		why = "到达超时上限"
+	}
+	if fallback == "" {
+		fallback = "timeout"
+	}
+	log.Printf("[deadline] task %s %s,进入收尾时序", t.ID, why)
 
 	// ④ 等在跑 worker/planner drain(在跑 run 因夹逼的 MaxDuration 自行进收尾);
 	// 超过 grace 仍未清空 → 硬 cancel 该任务 exec ctx(settling-aware 分支正确归类)。
@@ -290,7 +369,7 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 
 	// ⑥ 定终态(带守卫):met → done(completed);否则 timeout。若常规路径已先落 done,
 	// 守卫(SetTaskStatusGuarded)会拒绝覆盖,保留 completed 语义。
-	status := "timeout"
+	status := fallback
 	if met {
 		status = "done"
 	}

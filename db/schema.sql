@@ -559,7 +559,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     exploration_id BIGINT NOT NULL UNIQUE
                      REFERENCES explorations(id) ON DELETE RESTRICT,
     status         TEXT NOT NULL DEFAULT 'created'
-                     CHECK (status IN ('created','running','paused','done','failed','timeout')),
+                     CHECK (status IN ('created','running','paused','done','failed','timeout','policy_blocked')),
     paused         BOOLEAN NOT NULL DEFAULT false,
     queued         BOOLEAN NOT NULL DEFAULT false,
     queued_at      TIMESTAMPTZ,
@@ -1083,6 +1083,14 @@ CREATE TABLE IF NOT EXISTS scheduler_state (
 -- =====================================================================
 -- K. 拦截规则
 -- =====================================================================
+-- P20 任务级探索策略：结构化边界声明（JSONB 文档，见 policy 包）。NULL = 无策略，
+-- 行为与从前完全一致（老任务不回溯，需要时在任务页点「恢复为全局默认」）。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS exploration_policy JSONB;
+-- 旧库把 status 约束换成含 policy_blocked 的新集合（幂等：先删后加）。
+ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_status_check;
+ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
+    CHECK (status IN ('created','running','paused','done','failed','timeout','policy_blocked'));
+
 CREATE TABLE IF NOT EXISTS intercept_rules (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT NOT NULL,
@@ -1103,6 +1111,10 @@ CREATE TABLE IF NOT EXISTS intercept_rules (
 -- source_constraint_id 记录它由哪条约束生成，便于约束删除时一并清理与审计回溯。
 ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS task_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS source_constraint_id BIGINT;
+-- P20 规则来源：'' = 手工/内置 | 'constraint' = P18 约束编译 | 'policy' = 探索策略编译。
+-- 策略规则按 source 整批替换（ReplaceTaskRulesBySource），与 P18 的按约束替换互不干扰。
+ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+UPDATE intercept_rules SET source='constraint' WHERE source_constraint_id IS NOT NULL AND source='';
 CREATE INDEX IF NOT EXISTS idx_intercept_rules_task ON intercept_rules(task_id) WHERE task_id <> '';
 
 DROP TRIGGER IF EXISTS trg_intercept_rules_upd ON intercept_rules;

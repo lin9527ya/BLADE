@@ -33,6 +33,18 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 	if seedFirstIntent {
 		s.seedFirstIntent(t)
 	}
+	// P20：把任务策略编译成命令门规则（任务级拦截规则）。这里同时承担**自愈**：
+	// 规则是策略的直接派生物，若库里一条都没有（首次启动、被手工删过、旧版本升级），
+	// 就按当前策略重建——留着"策略在、规则没了"的状态等于边界静默失效。
+	if eff := s.taskPolicyByID(parseIntDefault(t.ID)); eff != nil && !eff.IsZero() {
+		if n, err := s.m.pg.CountTaskRulesBySource(t.ID, db.RuleSourcePolicy); err == nil && n == 0 {
+			if applied, aerr := s.applyTaskPolicyRules(t); aerr != nil {
+				log.Printf("[policy] task %s 命令门规则重建失败: %v", t.ID, aerr)
+			} else if applied > 0 {
+				log.Printf("[policy] task %s 已按探索策略重建 %d 条命令门规则", t.ID, applied)
+			}
+		}
+	}
 	s.engine.decInflight(t.ID)
 	if _, err := s.admitTask(t, "bootstrap"); err != nil {
 		log.Printf("[concurrency] task %s 启动失败: %v", t.ID, err)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/policy"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -66,6 +68,15 @@ type ToolSet struct {
 	// execService（P13）由 host 注入：长任务执行的托管后端。nil = 未接线，
 	// 四个执行工具会返回可读拒绝而不是静默消失。
 	execService ExecService
+	// pol（P20）是本任务的探索策略：意图层硬门（add_intent）按它判定。
+	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
+	pol *policy.Effective
+	// intentsRound 计本 ToolSet 生命周期内成功创建的意图数 —— planner 每轮新建一个
+	// ToolSet，所以它天然是"本轮已用额度"。
+	intentsRound int
+	// emitPolicy 是"意图被策略拒绝"的留痕通道（引擎的 emitActivity）。
+	// nil 时退回直接写库 + 日志，保证不静默丢。
+	emitPolicy func(db.Activity)
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
@@ -230,6 +241,71 @@ func (t *ToolSet) SetOwnerNode(id int64) { t.ownerNode = id }
 
 // SetExecService 注入长任务执行服务（P13）；nil 表示本运行环境不支持后台执行。
 func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
+
+// SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
+func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
+
+// SetPolicyAudit 注入"意图被策略拒绝"的留痕通道（引擎活动流）。
+func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
+
+// beginIntentQuota 在一次 add_intent 调用开始时取额度快照：库存量各查一次库，
+// 本轮用量从 ToolSet 计数起算并在批量循环里累加（一批 4 条不该打 8 次库）。
+func (t *ToolSet) beginIntentQuota() *intentQuota {
+	q := &intentQuota{round: t.intentsRound}
+	if t.pol != nil && !t.pol.IsZero() && t.ts != nil {
+		if n, err := t.ts.CountOpenIntents(); err == nil {
+			q.open = n
+		}
+		if n, err := t.ts.CountIntents(); err == nil {
+			q.total = n
+		}
+	}
+	return q
+}
+
+// intentQuota 是一次 add_intent 调用期间共享的额度视图。
+type intentQuota struct {
+	open  int
+	total int
+	round int
+}
+
+// reportPolicyReject 把一次拒绝写进时间线：模型想做什么、被哪条策略拦、命中什么。
+// 图里不落这条意图（刻意——不污染探索与去重），但人必须看得见。
+func (t *ToolSet) reportPolicyReject(it intentItem, v policy.Verdict) {
+	meta, _ := json.Marshal(map[string]any{
+		"intent_summary": it.Summary,
+		"policy_item":    v.ItemID,
+		"item_label":     v.ItemLabel,
+		"where":          v.Where,
+		"matched":        v.Matched,
+		"benign":         v.Benign,
+		"risk_area":      db.NormalizeRiskArea(it.RiskArea),
+	})
+	summary := fmt.Sprintf("探索策略拒绝：%s", v.ItemLabel)
+	if v.Benign {
+		summary = fmt.Sprintf("探索策略放行（否定语境，仅留痕）：%s", v.ItemLabel)
+	}
+	act := db.Activity{Worker: "system", Kind: "policy_reject", Summary: summary,
+		Detail:   fmt.Sprintf("意图：「%s」\n命中：%s（%s）%s\n", it.Summary, v.ItemLabel, v.ItemID, matchNote(v)),
+		Metadata: meta}
+	if t.emitPolicy != nil {
+		t.emitPolicy(act)
+		return
+	}
+	if t.ts != nil {
+		if _, err := t.ts.AppendActivity(act); err != nil {
+			log.Printf("[policy] 拒绝留痕失败: %v", err)
+		}
+	}
+}
+
+func matchNote(v policy.Verdict) string {
+	if v.Matched == "" {
+		return ""
+	}
+	return "命中词「" + v.Matched + "」"
+}
 
 // anchorOwner records a lineage edge from this run's owner node to an asset
 // (no-op if unset). Provenance only — the asset graph is global and shared, so
@@ -1040,9 +1116,25 @@ type intentItem struct {
 //     省略时恰有一个 open 目标则自动挂；零个（goalless）正常不挂；多个不猜，回执提示指名。
 //
 // 挂上目标后不再写 origin 兜底边——意图经目标仍可回溯任务起点（README/链路图的形状）。
-func (t *ToolSet) addOneIntent(it intentItem) (int64, string, error) {
+func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, "", fmt.Errorf("summary 不能为空")
+	}
+	// ── P20 探索策略门（意图层，硬拒）──
+	// 放在所有 DB 结构校验之前：额度用尽/方向被禁时，不该再为一条注定被拒的意图
+	// 去查 parent/goal，模型也该先听到"别再往这个方向想"。
+	if t.pol != nil && !t.pol.IsZero() {
+		in := policy.IntentInput{Summary: it.Summary, OpenCount: q.open, RoundUsed: q.round, TotalUsed: q.total}
+		v := t.pol.CheckIntent(in)
+		if !v.Allow {
+			t.reportPolicyReject(it, v)
+			return 0, "", fmt.Errorf("%s", policy.RejectText(v, it.Summary))
+		}
+		if v.Benign {
+			// 命中词表但处于否定语境（"检查是否有爆破防护"）：放行，但留痕——
+			// 事后能看出策略是不是太糙、误放了多少。
+			t.reportPolicyReject(it, v)
+		}
 	}
 	// 先校验锚点（建节点前，避免坏锚点留下孤儿意图）。
 	parents := pidList(it.ParentIDs)
@@ -1094,6 +1186,8 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
+	q.round++
+	t.intentsRound++
 	// 目标轴：没显式指名时，恰有一个 open 目标就自动挂；多个不猜（回执提示）。
 	note := ""
 	if goalID == 0 {
@@ -1157,12 +1251,14 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				items = []intentItem{a.intentItem}
 			}
 
+			// 一次调用共享一份额度快照（库存量各查一次库，本轮用量在循环里累加）。
+			quota := t.beginIntentQuota()
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			createdAny := false
 			goalNote := ""
 			for i, it := range items {
-				id, note, err := t.addOneIntent(it)
+				id, note, err := t.addOneIntent(it, quota)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue

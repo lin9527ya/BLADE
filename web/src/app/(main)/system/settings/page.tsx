@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { Settings } from "@/lib/types";
+import type { ExplorationPolicyDefault, Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -41,6 +41,11 @@ export default function SystemSettingsPage() {
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
+  // P20 探索策略的全局默认（新建任务继承；已存在的任务各自持有快照，不被回溯）。
+  const [polDefault, setPolDefault] = React.useState<ExplorationPolicyDefault | null>(null);
+  const [polTech, setPolTech] = React.useState<string[]>([]);
+  const [polWrites, setPolWrites] = React.useState<string[]>([]);
+  const [savingPol, setSavingPol] = React.useState(false);
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
   const [injectWorker, setInjectWorker] = React.useState(true);
@@ -65,6 +70,44 @@ export default function SystemSettingsPage() {
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
   }, []);
+
+  // 全局默认策略：独立加载（不进 apply——它由 /api/settings 触发，而策略走自己的端点）。
+  React.useEffect(() => {
+    let alive = true;
+    void api
+      .explorationPolicyDefault()
+      .then((pd) => {
+        if (!alive) return;
+        setPolDefault(pd);
+        setPolTech([...pd.effective.techniques]);
+        setPolWrites([...pd.effective.forbidden_writes]);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const savePolicyDefault = async () => {
+    setSavingPol(true);
+    try {
+      // 全局默认 = 出厂默认 + 这里的覆盖；两轴显式提交，避免"看着没禁、其实继承着什么"。
+      const r = await api.saveExplorationPolicyDefault({ techniques: polTech, forbidden_writes: polWrites });
+      toast.success(`探索策略全局默认已更新（第 ${r.version} 版）：只影响之后新建的任务`);
+      const pd = await api.explorationPolicyDefault();
+      setPolDefault(pd);
+      setPolTech([...pd.effective.techniques]);
+      setPolWrites([...pd.effective.forbidden_writes]);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSavingPol(false);
+    }
+  };
+
+  const togglePolicyChip = (list: string[], set: (v: string[]) => void, id: string) => {
+    set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  };
 
   const saveWorkers = () => {
     const n = Number(workers);
@@ -418,6 +461,92 @@ export default function SystemSettingsPage() {
             <p className="text-muted-foreground text-xs">
               {Number(tokenBudget) > 0 ? "已配置 · 到量提示并自动收尾" : "未配置 · 任务不设 token 上限"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldAlertIcon className="size-4" />
+              探索策略（全局默认）
+            </CardTitle>
+            <CardDescription>
+              给「探索链路」划边界的默认值，<b>只影响之后新建的任务</b>——每个任务创建时会把当时的默认解析成
+              自己的快照（运行中的任务不会被这里改动意外改变边界），任务页可单独覆盖。
+              <br />
+              生效方式与任务页一致：不符合的<b>探索方向不会进探索图</b>（拒绝时说明命中什么、往哪改），同一份策略
+              还会编译成<b>任务级拦截规则</b>兜住命令层——换措辞也绕不过。这里是<b>加法</b>：平台内置的破坏性
+              拦截（删除类请求等）始终生效，不因这里放开而解除。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {polDefault ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium">默认禁用手段</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {polDefault.techniques.map((t) => {
+                      const on = polTech.includes(t.id);
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          title={t.hint}
+                          disabled={savingPol}
+                          onClick={() => togglePolicyChip(polTech, setPolTech, t.id)}
+                          className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                            on
+                              ? "border-red-500/40 bg-red-500/15 text-red-600 dark:text-red-400"
+                              : "border-border text-muted-foreground hover:bg-muted"
+                          }`}
+                        >
+                          {on ? "禁止 · " : ""}
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium">默认禁止的敏感写</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {polDefault.writes.map((w) => {
+                      const on = polWrites.includes(w.id);
+                      return (
+                        <button
+                          key={w.id}
+                          type="button"
+                          title={w.hint}
+                          disabled={savingPol}
+                          onClick={() => togglePolicyChip(polWrites, setPolWrites, w.id)}
+                          className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                            on
+                              ? "border-red-500/40 bg-red-500/15 text-red-600 dark:text-red-400"
+                              : "border-border text-muted-foreground hover:bg-muted"
+                          }`}
+                        >
+                          {on ? "禁止 · " : ""}
+                          {w.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button type="button" onClick={() => void savePolicyDefault()} disabled={savingPol}>
+                    保存默认
+                  </Button>
+                  <span className="text-muted-foreground text-xs">
+                    当前第 {polDefault.version} 版
+                    {polDefault.effective.max_intents_per_round
+                      ? ` · 每轮最多 ${polDefault.effective.max_intents_per_round} 条意图`
+                      : " · 每轮意图数不限"}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <p className="text-muted-foreground text-sm">加载中…</p>
+            )}
           </CardContent>
         </Card>
 

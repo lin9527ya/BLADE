@@ -24,6 +24,7 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/llm"
@@ -748,6 +749,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/tasks/{id}/constraints/{cid}", s.editConstraint)    // 约束管理:修改约束
 	mux.HandleFunc("DELETE /api/tasks/{id}/constraints/{cid}", s.deleteConstraint) // 约束管理:删除约束
 	// P18 约束可执行化：把约束编译成任务级拦截规则 / 授权范围（compile 只读预览，apply 落库）。
+	mux.HandleFunc("GET /api/tasks/{id}/policy", s.getTaskPolicy)              // P20 探索策略:读生效策略+覆盖层+额度+近期被拒
+	mux.HandleFunc("PATCH /api/tasks/{id}/policy", s.patchTaskPolicy)          // P20 探索策略:保存(下一轮规划生效,不回溯已有意图)
+	mux.HandleFunc("DELETE /api/tasks/{id}/policy", s.patchTaskPolicy)         // P20 探索策略:清空覆盖(回到无策略)
+	mux.HandleFunc("POST /api/tasks/{id}/policy/preview", s.previewTaskPolicy) // P20 探索策略:编译预览(只读,拿本任务真实调用当样本)
+	mux.HandleFunc("POST /api/tasks/{id}/policy/prune", s.pruneTaskPolicy)     // P20 探索策略:清理被新策略禁止的未领取意图
 	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/compile", s.compileConstraint)
 	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/apply", s.applyConstraint)
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)
@@ -825,6 +831,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
+	mux.HandleFunc("GET /api/settings/exploration-policy", s.getExplorationPolicyDefault) // P20 全局默认探索策略(新任务继承)
+	mux.HandleFunc("PUT /api/settings/exploration-policy", s.putExplorationPolicyDefault)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
@@ -1485,6 +1493,8 @@ type createTaskReq struct {
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏 add_task_scope/list_untested_assets。company 关联不受影响。
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
+	// ExplorationPolicy(P20) 任务级探索策略覆盖层;省略/null=完全继承当时的全局默认。
+	ExplorationPolicy *policy.Override `json:"exploration_policy,omitempty"`
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1536,12 +1546,18 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "任务级拦截规则无效："+err.Error())
 		return
 	}
+	policyDoc, err := s.newTaskPolicy(req.ExplorationPolicy)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
-		CoverageEnabled: req.CoverageEnabled,
-		InterceptRules:  interceptRules,
+		CoverageEnabled:   req.CoverageEnabled,
+		InterceptRules:    interceptRules,
+		ExplorationPolicy: policyDoc,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

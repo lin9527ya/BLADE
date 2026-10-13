@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,11 @@ type Task struct {
 	// list_untested_assets、态势里不注入 coverage 块(scope 字段仍保留)。company 关联
 	// (task_scope kind=company)与此开关无关，永不受影响。见 db/task_scope.go。
 	CoverageEnabled bool `json:"coverage_enabled"`
+	// ExplorationPolicy 是任务级探索策略文档（P20，JSONB；nil/空 = 无策略，
+	// 行为与从前完全一致）。执行点（意图门/提示词段/命令门）只读它里面的
+	// effective 快照，绝不回头读全局设置——这样"改全局默认"与"运行中的任务"
+	// 之间不存在竞态。
+	ExplorationPolicy json.RawMessage `json:"exploration_policy,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -71,8 +77,17 @@ type TaskDeletePreparation struct {
 
 // IsTerminal reports whether a task status is a terminal (finished) state.
 // 单一真源，替换散落各处的 done/failed 硬编码判定。
+// TerminalStatuses 是任务的全部终态。policy_blocked = 探索策略内已无可行方向、
+// 平台主动收尾（P20）——它不是超时，也不等于失败：改策略或加目标即可复活。
+var TerminalStatuses = []string{"done", "failed", "timeout", "policy_blocked"}
+
 func IsTerminal(status string) bool {
-	return status == "done" || status == "failed" || status == "timeout"
+	for _, t := range TerminalStatuses {
+		if status == t {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateTask creates an exploration + task in one transaction and returns the task.
@@ -156,6 +171,9 @@ type TaskCreateOptions struct {
 	CoverageEnabled *bool
 	// InterceptRules 是任务级资产拦截规则,创建时随任务在同一事务内写入 task_intercept_rules。
 	InterceptRules []TaskInterceptRuleInput
+	// ExplorationPolicy 是任务级探索策略文档（P20）；nil/空 = 无策略（= 与从前一致）。
+	// 由服务端在创建时把「全局默认 + 任务覆盖」解析成 effective 后落库（快照语义）。
+	ExplorationPolicy json.RawMessage
 }
 
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
@@ -225,12 +243,19 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		CoverageEnabled: coverageEnabled,
 	}
+	// P20：创建时就把「全局默认 + 创建页覆盖」解析成 effective 快照落库，此后执行点
+	// 只读这份快照——全局默认怎么改都不会影响已建任务（快照语义）。
+	var policyRaw any
+	if len(opts.ExplorationPolicy) > 0 {
+		policyRaw = string(opts.ExplorationPolicy)
+	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, exploration_policy)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, policyRaw).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
+	t.ExplorationPolicy = append(json.RawMessage(nil), opts.ExplorationPolicy...)
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
 		return nil, err
 	}
@@ -344,15 +369,26 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(exploration_policy,'{}'::jsonb)`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ExplorationPolicy); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
 	return &t, nil
+}
+
+// UpdateTaskExplorationPolicy replaces a task's exploration-policy document (P20).
+// Empty raw clears it (任务回到"无策略"，执行点随即不再做任何策略判定).
+func (d *DB) UpdateTaskExplorationPolicy(id int64, raw json.RawMessage) error {
+	var arg any
+	if len(bytes.TrimSpace(raw)) > 0 {
+		arg = []byte(raw)
+	}
+	_, err := d.Exec(`UPDATE tasks SET exploration_policy=$1 WHERE id=$2`, arg, id)
+	return err
 }
 
 // SetParentRef records a task's parent task id (编排 agent spawn_task 关联).
@@ -495,7 +531,7 @@ func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err er
 UPDATE tasks
    SET status = $1,
        completed_at = COALESCE(completed_at, now())
- WHERE id = $2 AND status NOT IN ('done','failed','timeout')`, status, id)
+ WHERE id = $2 AND status NOT IN ('done','failed','timeout','policy_blocked')`, status, id)
 	if err != nil {
 		return false, err
 	}

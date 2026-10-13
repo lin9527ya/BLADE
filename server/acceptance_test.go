@@ -71,6 +71,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P15 结构化裁决与改参放行", func(t *testing.T) { accP15(t, env.forTest(t)) })
 	t.Run("P18 约束可执行化（编译为任务级规则）", func(t *testing.T) { accP18(t, env.forTest(t)) })
 	t.Run("P19 批量交付与同源归并", func(t *testing.T) { accP19(t, env.forTest(t)) })
+	t.Run("P20 探索策略门（意图门/命令门/额度/继承快照/停摆收尾）", func(t *testing.T) { accP20(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -1532,4 +1533,282 @@ func accP19(t *testing.T, e *accEnv) {
 	if !gate.Ready || len(gate.Warnings) != 0 {
 		t.Fatalf("证据完整的发现不该有警告: %+v", gate)
 	}
+}
+
+// accP20 走完「探索策略」的三层执行点：意图内容被硬拒且理由可操作（同时留痕、但不落图）、
+// 策略内的正常方向不受影响；同一份策略编译成任务级命令门（本任务拦、别任务不拦、读源码不
+// 误伤）；额度到位即停工；全局默认可继承可覆盖而任务持有快照（改全局不回溯）；策略内确实
+// 无路可走时以 policy_blocked 体面收尾（而不是继续空转烧 token）。
+func accP20(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p20", "探索策略门：手段面/节奏面/敏感写")
+	other, otherTid := e.newTask("acceptance-p20-other", "另一个任务（策略不该外溢）")
+	// 规则层要确定性判定：先把 RoE 关掉（否则"被拦"的理由可能是授权范围而非策略），
+	// 并在收尾时把全局默认策略恢复原状（后面还有别的子测试）。
+	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	oldMode, hadMode, _ := e.m.pg.GetSetting("intercept_scope_mode")
+	oldPol, hadPol, _ := e.m.pg.GetSetting(settingExplorationPolicy)
+	t.Cleanup(func() {
+		if hadMode {
+			_ = e.m.pg.SetSetting("intercept_scope_mode", oldMode)
+		} else {
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, "intercept_scope_mode")
+		}
+		if hadPol {
+			_ = e.m.pg.SetSetting(settingExplorationPolicy, oldPol)
+		} else {
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingExplorationPolicy)
+		}
+		_, _ = e.m.pg.Exec(`DELETE FROM intercept_rules WHERE COALESCE(task_id,'') <> ''`)
+		e.s.m.interceptor.Invalidate()
+	})
+	if err := e.m.pg.SetSetting("intercept_scope_mode", "off"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := intercept.WithTaskContext(context.Background(), task.ID, "acceptance", nil)
+	otherCtx := intercept.WithTaskContext(context.Background(), other.ID, "acceptance", nil)
+	bash := func(cmd string) []byte { b, _ := json.Marshal(map[string]string{"command": cmd}); return b }
+
+	// ① 保存策略：禁口令爆破（手段面）+ 禁 PUT/PATCH 与脱库（敏感写）。五轴全给全值，
+	// 免得断言被"继承来的全局默认"污染。保存即重建命令门 → 规则数 = 1 手段 + 2 写。
+	rec := e.request(http.MethodPatch, "/api/tasks/"+task.ID+"/policy",
+		`{"override":{"techniques":["bruteforce"],"forbidden_writes":["http_write_method","db_dump"],`+
+			`"max_intents_per_round":0,"max_open_intents":0,"max_intents_total":0}}`)
+	if rec.Code != 200 {
+		t.Fatalf("保存策略 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pol policyDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &pol); err != nil {
+		t.Fatal(err)
+	}
+	if len(pol.Effective.Techniques) != 1 || pol.Effective.Techniques[0] != "bruteforce" ||
+		len(pol.Effective.ForbiddenWrites) != 2 {
+		t.Fatalf("生效策略不是覆盖后的结果: %+v", pol.Effective)
+	}
+	if pol.RuleCount != 3 {
+		t.Fatalf("命令门规则数应为 1+2=3，实际 %d", pol.RuleCount)
+	}
+
+	// ② 意图门：命中禁用手段 → 硬拒。理由要能让人（和模型）看懂命中什么、往哪改；
+	// 被拒的意图不落图（不污染探索与去重），但时间线必须留痕。
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	// 生产里 ToolSet 每 run 新建并现读策略（改策略下一轮生效）；验收里对应"每次改完重新读"。
+	reload := func() { tsx.SetPolicy(e.s.taskPolicyByID(tid)) }
+	reload()
+	intentTool := workflowTool(t, tsx.PlannerTools(), "add_intent")
+	before, err := task.Store.CountIntents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := intentTool.Call(context.Background(),
+		json.RawMessage(`{"summary":"用 hydra 对登录口做爆破，找出弱口令账号"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := res.Flatten()
+	for _, want := range []string{"探索策略·硬拒绝", "口令爆破", "bruteforce", "未写入探索图", "合规改写建议"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("拒绝理由缺少 %q：%s", want, flat)
+		}
+	}
+	if after, _ := task.Store.CountIntents(); after != before {
+		t.Fatalf("被拒的意图不该落图：%d → %d", before, after)
+	}
+	rejects, err := task.Store.RecentPolicyRejects(10)
+	if err != nil || len(rejects) == 0 {
+		t.Fatalf("被拒意图必须留痕: %v %d", err, len(rejects))
+	}
+	if !strings.Contains(rejects[0].Detail, "hydra 对登录口做爆破") || !strings.Contains(rejects[0].Summary, "口令爆破") {
+		t.Fatalf("留痕没有写清想做什么/被什么拦: %s | %s", rejects[0].Summary, rejects[0].Detail)
+	}
+
+	// ③ 定向而非全拒：策略内的正常方向照常进图（否则这道门会把探索一起打死）。
+	res, err = intentTool.Call(context.Background(),
+		json.RawMessage(`{"summary":"枚举 /api/v1/users 的对象级越权，比较两个账号的返回差异"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Flatten(), "intent created: ") {
+		t.Fatalf("策略内的正常方向被误拒：%s", res.Flatten())
+	}
+	if after, _ := task.Store.CountIntents(); after != before+1 {
+		t.Fatalf("正常方向应进图：%d → %d", before, after)
+	}
+
+	// ④ 命令门 + 作用域：同一份策略编译出的任务级规则在本任务拦、在别的任务不生效，
+	// 且只认"真的在执行写"的形状（读源码/看关键字不误伤）。
+	g := guard.NewWithInterceptor(e.s.m.interceptor, tid)
+	og := guard.NewWithInterceptor(e.s.m.interceptor, otherTid)
+	for _, tc := range []struct{ name, cmd, want string }{
+		{"PUT 写方法", "curl -X PUT http://api.example.com/api/user/1 -d x=1", "HTTP 写方法"},
+		{"脱库导出", "sqlmap -u http://api.example.com/item?id=1 --dump", "脱库"},
+	} {
+		blocked, reason, _ := g.Hooks().PreToolUse(ctx, "Bash", bash(tc.cmd))
+		if !blocked || !strings.Contains(reason, "任务探索策略") || !strings.Contains(reason, tc.want) {
+			t.Fatalf("%s 没被策略命令门拦住: blocked=%v reason=%q", tc.name, blocked, reason)
+		}
+		if b, _, _ := og.Hooks().PreToolUse(otherCtx, "Bash", bash(tc.cmd)); b {
+			t.Fatalf("%s 的策略规则外溢到了别的任务", tc.name)
+		}
+	}
+	for _, cmd := range []string{
+		`grep -n "DELETE FROM" ./readme.md`, // 读源码里的 SQL 关键字 ≠ 执行写
+		`echo "update available"`,
+		`curl -X POST http://api.example.com/login -d u=1`, // 裸 POST 不在敏感写清单（只读接口大量用 POST）
+	} {
+		if blocked, reason, _ := g.Hooks().PreToolUse(ctx, "Bash", bash(cmd)); blocked {
+			t.Fatalf("策略误伤了只读操作: %s → %s", cmd, reason)
+		}
+	}
+
+	// ⑤ 节奏面（额度）：总数上限 2 时，第 2 条放行、第 3 条被拒且理由指向"别再派了"。
+	rec = e.request(http.MethodPatch, "/api/tasks/"+task.ID+"/policy",
+		`{"override":{"techniques":["bruteforce"],"forbidden_writes":["http_write_method","db_dump"],`+
+			`"max_intents_per_round":0,"max_open_intents":0,"max_intents_total":2}}`)
+	if rec.Code != 200 {
+		t.Fatalf("改额度 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	reload()
+	res, err = intentTool.Call(context.Background(), json.RawMessage(`{"summary":"检查订单接口的越权读取"}`), nil)
+	if err != nil || !strings.Contains(res.Flatten(), "intent created: ") {
+		t.Fatalf("额度内的意图应放行: %v %s", err, res.Flatten())
+	}
+	res, err = intentTool.Call(context.Background(), json.RawMessage(`{"summary":"再看一眼导出接口的越权"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Flatten(), "意图总预算") || !strings.Contains(res.Flatten(), "上限 2") {
+		t.Fatalf("额度用尽应拒绝并说明上限: %s", res.Flatten())
+	}
+
+	// ⑤b 清空覆盖（DELETE 无 body）：回到"无策略"——命令门规则一并撤掉，策略卡回到继承态。
+	rec = e.request(http.MethodDelete, "/api/tasks/"+task.ID+"/policy", "")
+	if rec.Code != 200 {
+		t.Fatalf("清空策略 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pol); err != nil {
+		t.Fatal(err)
+	}
+	if pol.Custom || pol.RuleCount != 0 {
+		t.Fatalf("清空后不该还有自定义策略/命令门规则: custom=%v rules=%d", pol.Custom, pol.RuleCount)
+	}
+	if blocked, _, _ := g.Hooks().PreToolUse(ctx, "Bash", bash("curl -X PUT http://api.example.com/api/user/1 -d x=1")); blocked {
+		t.Fatal("清空策略后命令门规则仍在拦（删了策略却留着规则）")
+	}
+
+	// ⑥ 全局默认继承 / 覆盖 / 快照：改全局默认不回溯已建任务（各自持有 effective 快照）。
+	rec = e.request(http.MethodPut, "/api/settings/exploration-policy", `{"override":{"techniques":["dos"]}}`)
+	if rec.Code != 200 {
+		t.Fatalf("保存全局默认 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	inherit := e.newTaskHTTP(t, `{"description":"acceptance-p20-inherit","goal":"继承全局默认"}`)
+	rec = e.request(http.MethodGet, "/api/tasks/"+inherit+"/policy", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &pol); err != nil {
+		t.Fatal(err)
+	}
+	if pol.Custom || len(pol.Effective.Techniques) != 1 || pol.Effective.Techniques[0] != "dos" {
+		t.Fatalf("新任务应继承当时的全局默认: custom=%v eff=%+v", pol.Custom, pol.Effective)
+	}
+	// 显式覆盖为空 = 本任务不禁（"继承"与"显式清空"必须可区分，否则用户关不掉全局默认）。
+	override := e.newTaskHTTP(t, `{"description":"acceptance-p20-override","goal":"显式不禁任何手段","exploration_policy":{"techniques":[]}}`)
+	rec = e.request(http.MethodGet, "/api/tasks/"+override+"/policy", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &pol); err != nil {
+		t.Fatal(err)
+	}
+	if !pol.Custom || len(pol.Effective.Techniques) != 0 {
+		t.Fatalf("显式清空没有生效: custom=%v eff=%+v", pol.Custom, pol.Effective)
+	}
+	// 改全局默认 → 已建任务不动（快照语义：运行中的任务不会被"另一处改了设置"改变边界）。
+	rec = e.request(http.MethodPut, "/api/settings/exploration-policy", `{"override":{"techniques":["dos","webshell"]}}`)
+	if rec.Code != 200 {
+		t.Fatalf("二次保存全局默认 status=%d", rec.Code)
+	}
+	rec = e.request(http.MethodGet, "/api/tasks/"+inherit+"/policy", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &pol); err != nil {
+		t.Fatal(err)
+	}
+	if len(pol.Effective.Techniques) != 1 || pol.Effective.Techniques[0] != "dos" {
+		t.Fatalf("改全局默认回溯了已建任务（快照语义被破坏）: %+v", pol.Effective.Techniques)
+	}
+
+	// ⑦ 停摆收尾：策略内确实无路可走时（窗口内被拒达阈值 + 期间没有任何新意图 + 真的没活干），
+	// 不再无限唤醒 planner，而是以 policy_blocked 收尾。窗口/阈值临时调小，驱动的仍是生产
+	// 那条判定与收尾路径。
+	savedW, savedN, savedG := policyStallWindow, policyStallMinRejects, policyStallGrace
+	t.Cleanup(func() { policyStallWindow, policyStallMinRejects, policyStallGrace = savedW, savedN, savedG })
+	policyStallWindow, policyStallMinRejects, policyStallGrace = 2*time.Second, 3, 0
+	// ⑤b 把策略清空了，这里重新装一条（停摆判定要求"有策略"——没策略的任务永远不因此收尾）。
+	rec = e.request(http.MethodPatch, "/api/tasks/"+task.ID+"/policy",
+		`{"override":{"techniques":["bruteforce"],"forbidden_writes":[],"max_intents_per_round":0,`+
+			`"max_open_intents":0,"max_intents_total":0}}`)
+	if rec.Code != 200 {
+		t.Fatalf("重装策略 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	reload()
+	// 在跑/待领的意图都清掉（③⑤ 建的那两条）：否则"还有活干"，停摆判定本就不该成立。
+	open, err := task.Store.ListByKind(db.KindIntent, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range open {
+		if n.State == "open" {
+			if _, err := task.Store.CompareAndSetIntentState(n.ID, "open", "done"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	time.Sleep(2200 * time.Millisecond) // 让"最后一次成功创建意图"落到窗口之外
+	for i := 0; i < policyStallMinRejects; i++ {
+		if _, err := intentTool.Call(context.Background(),
+			json.RawMessage(`{"summary":"继续用 hydra 爆破这个登录口"}`), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !e.s.engine.policyStall(task) {
+		t.Fatal("窗口内连续被拒且无新意图，应判定为策略停摆")
+	}
+	// 用已取消的 ctx 驱动正式收尾路径：终局 planner 轮直接返回（验收环境没有 LLM），
+	// 终态落 policy_blocked（不是 timeout——"策略封死"与"超时"必须能分清）。
+	cctx, cancel := context.WithCancel(e.ctx)
+	cancel()
+	e.s.engine.settlePolicyStall(cctx, task)
+	if got := e.m.TaskStatus(task.ID); got != "policy_blocked" {
+		t.Fatalf("策略停摆的终态应为 policy_blocked，实际 %q", got)
+	}
+	acts, _, err := task.Store.ActivityList(nil, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range acts {
+		if strings.Contains(a.Summary, "探索策略内已无可行方向") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("收尾没有在时间线上说明原因（策略停摆必须留下可解释的痕迹）")
+	}
+}
+
+// newTaskHTTP 走真实的 HTTP 建任务路径（创建时的策略快照解析只在服务端做，必须从这里进），
+// 返回任务 id；收尾时停引擎运行时并删任务。
+func (e *accEnv) newTaskHTTP(t *testing.T, body string) string {
+	t.Helper()
+	rec := e.request(http.MethodPost, "/api/tasks", body)
+	if rec.Code != 201 {
+		t.Fatalf("建任务 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created TaskDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	e.s.engine.StopTask(created.ID) // 验收环境没有 LLM：停掉后台运行，断言只看策略状态
+	t.Cleanup(func() {
+		e.s.engine.StopTask(created.ID)
+		if id, err := strconv.ParseInt(created.ID, 10, 64); err == nil {
+			_, _ = e.m.pg.Exec(`DELETE FROM intercept_rules WHERE task_id=$1`, created.ID)
+			_ = e.m.pg.DeleteTask(id)
+		}
+	})
+	return created.ID
 }

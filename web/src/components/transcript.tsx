@@ -135,6 +135,8 @@ const KIND_LABELS: Record<string, string> = {
   result: "总结",
   execution_pending: "长任务待收束", // P13: 收笔时托管执行仍在跑，意图暂不判完
   execution_done: "长任务已收束", // P13: 托管执行收束，意图退回待领续跑
+  policy_reject: "探索策略拒绝", // P20: 意图被任务策略硬拒（不落图，但必须看得见）
+  policy_update: "探索策略变更", // P20: 策略保存/清空/按新策略清理意图
 };
 
 const kindLabel = (k: string) => KIND_LABELS[k] ?? "说明";
