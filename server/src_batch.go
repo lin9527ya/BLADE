@@ -77,8 +77,7 @@ func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, err
 		Entries:     make([]srcBatchEntry, 0, len(rows)),
 	}
 	type groupInfo struct {
-		group int
-		ids   []int64
+		ids []int64
 	}
 	byFingerprint := map[string]*groupInfo{}
 	for _, f := range rows {

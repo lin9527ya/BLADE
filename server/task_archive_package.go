@@ -693,6 +693,8 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 			if err := os.MkdirAll(target, archiveDirMode); err != nil {
 				return err
 			}
+		//lint:ignore SA1019 TypeRegA 的 deprecated 只针对常量名（推荐改称 TypeReg）；它表示旧式 tar
+		// 用 NUL typeflag 记录的普通文件，删掉这一支会让这类合法归档落到 default 被静默跳过。
 		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(target), archiveDirMode); err != nil {
 				return err

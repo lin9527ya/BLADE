@@ -216,6 +216,7 @@ func TestMainSideConcurrencyAndIndependentCancellation(t *testing.T) {
 			defer stopSide()
 			var mu sync.Mutex
 			bound := Bind(p, Model{Model: "blocking"})
+			//lint:ignore SA2001 回调无状态可更新；这一次加解锁是让 publisher 在并发路径上真实同步一次，去掉会改变本用例的同步形态
 			mainCtx, deps := Attach(WithPublisher(mainCtx, func(Snapshot) { mu.Lock(); mu.Unlock() }), Parent{ConversationID: 3}, harness.QueryDeps{}, bound)
 			mainDone, sideDone := make(chan struct{}), make(chan Answer, 1)
 			go func() {

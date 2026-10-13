@@ -28,10 +28,6 @@ import (
 //   - **配额与审计**：每次真实外呼都落 intel_queries 台账，并有平台侧每日上限
 //     （intel_daily_quota，默认 200）——FOFA 自己的额度之外再加一道闸。
 
-// intelToolKeys 是情报工具默认绑定的 key（planner 决策方向、worker 执行侦察、
-// mainagent 人工直查；不绑 goals/auto）。
-var intelToolKeys = []string{"intel_search"}
-
 func (s *Server) intelTools() []actool.CoreTool {
 	return []actool.CoreTool{s.toolIntelSearch()}
 }

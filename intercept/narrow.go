@@ -185,9 +185,9 @@ func isSubsequence(edited, original string) bool {
 	if edited == "" {
 		return true
 	}
-	e, o := []rune(edited), []rune(original)
+	e := []rune(edited)
 	i := 0
-	for _, r := range o {
+	for _, r := range original {
 		if i < len(e) && e[i] == r {
 			i++
 			if i == len(e) {
