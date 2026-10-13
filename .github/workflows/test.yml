@@ -36,8 +36,17 @@ jobs:
           cache: true
       - name: go vet
         run: go vet ./...
+      # 只查已跟踪的 .go 文件（git ls-files），避免走进 web/node_modules 之类的未跟踪目录。
+      - name: gofmt
+        run: |
+          unformatted="$(git ls-files '*.go' | xargs gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未按 gofmt 对齐："
+            echo "$unformatted"
+            exit 1
+          fi
       # 版本钉死：staticcheck 新版可能加检查项，用 @latest 会让 CI 某天无声变红。
-      # 检查项在仓库根的 staticcheck.conf（关 ST1005），个别定点抑制用行内 //lint:ignore。
+      # 检查项在仓库根的 staticcheck.conf（关 ST 风格家族），个别定点抑制用行内 //lint:ignore。
       - name: staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
