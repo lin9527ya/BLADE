@@ -296,14 +296,15 @@ func (s *Server) getTaskPolicy(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildPolicyDTO(t *Task) policyDTO {
 	global, gv := s.globalPolicy()
 	dto := policyDTO{Global: global, GlobalVersion: gv}
-	doc := policy.ParseDoc(t.ExplorationPolicy)
-	if doc != nil {
-		// Custom = 本任务自己配过（覆盖层非空）。创建时抄的全局默认快照不算"自定义"，
-		// 否则 UI 会把"继承"显示成"已改"，用户就不知道该去哪一层改。
-		dto.Custom = !doc.Override.IsZero()
-		dto.Override = doc.Override
-		if eff := s.taskPolicyByID(parseIntDefault(t.ID)); eff != nil {
-			dto.Effective = *eff
+	// 一律以库里的行为准（Task 上的 ExplorationPolicy 只在创建时写一次；策略改动后
+	// 内存副本会陈旧，而且在并发请求里读写同一个字段本身就是数据竞争）。
+	if pgTask, err := s.m.pg.GetTask(parseIntDefault(t.ID)); err == nil && pgTask != nil {
+		if doc := policy.ParseDoc(pgTask.ExplorationPolicy); doc != nil {
+			// Custom = 本任务自己配过（覆盖层非空）。创建时抄的全局默认快照不算"自定义"，
+			// 否则 UI 会把"继承"显示成"已改"，用户就不知道该去哪一层改。
+			dto.Custom = !doc.Override.IsZero()
+			dto.Override = doc.Override
+			dto.Effective = doc.Effective
 		}
 	}
 	if n, err := s.m.pg.CountTaskRulesBySource(t.ID, db.RuleSourcePolicy); err == nil {
@@ -373,7 +374,6 @@ func (s *Server) patchTaskPolicy(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		t.ExplorationPolicy = nil
 		if _, err := s.applyTaskPolicyRules(t); err != nil {
 			writeErr(w, 500, err.Error())
 			return
@@ -396,7 +396,6 @@ func (s *Server) patchTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	t.ExplorationPolicy = doc
 	n, err := s.applyTaskPolicyRules(t)
 	if err != nil {
 		writeErr(w, 500, err.Error())
