@@ -152,8 +152,12 @@ func (i *Interceptor) SetReviewer(r Reviewer) {
 
 // defaultEnabledTools is the hard-coded set of tools that enter the intercept
 // rule system when no intercept_enabled_tools setting has been saved.
+//
+// run_execution 是 shell 类工具（后台长任务，worker 段 [D] 把 nmap/nuclei 这类扫描
+// 导流到它）——漏登记意味着规则与裁判对它不生效。RoE 范围门不受本列表约束
+// （见 guard.applyIntercept 的排序），但这条仍必须在此，否则破坏性/外泄规则看不住它。
 var defaultEnabledTools = []string{
-	"Bash", "WebFetch", "web_search",
+	"Bash", "run_execution", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",
 }

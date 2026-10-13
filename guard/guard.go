@@ -89,13 +89,19 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
-	if !g.interceptor.IsToolEnabled(ev.ToolName) {
-		return hook.Result{}
-	}
 	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)
 	// RoE 授权范围先行：越界目标高于一切规则配置（模式见 intercept.ScopeMode）。
+	// 这一道刻意排在 IsToolEnabled 之前——授权边界不该因为某个工具没被登记进
+	// intercept_enabled_tools 就整条失效（run_execution 曾是这种漏网：它不在默认
+	// 启用集里，于是规则、裁判、范围门一起跳过，越界扫描畅通无阻）。
+	// CheckScope 在 mode=off / taskID=0 / 抽不到目标 / 无可用范围行时立即返回，
+	// 所以提前不会给每次工具调用增加实质代价。
 	if dec, hit := g.interceptor.CheckScope(ctx, g.taskID, ev.ToolName, ev.Input); hit {
 		return g.settle(ctx, ev, dec)
+	}
+	// 规则与裁判面仍按用户登记的启用集生效。
+	if !g.interceptor.IsToolEnabled(ev.ToolName) {
+		return hook.Result{}
 	}
 	// 任务级规则（由该任务的操作约束编译而来，P18）与全局规则并集参与匹配。
 	dec, matched := g.interceptor.MatchForTask(g.taskKey(), ev.ToolName, ev.Input)

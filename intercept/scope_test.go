@@ -35,6 +35,120 @@ func TestExtractTargets(t *testing.T) {
 	}
 }
 
+// TestShellCommandOfExtractsNetworkTargets pins the tool-name → target-surface
+// dispatch. This is the layer the RoE gate actually consumes, and the layer that
+// was silently absent for run_execution and WebFetch: both carry a network target
+// (command / url) but had no case here, so CheckScope saw an empty surface and
+// returned early — the authorization boundary never ran for them.
+//
+// 纯函数断言，不依赖数据库：intercept 包不引 DB 夹具，而这一层本来就不需要库。
+func TestShellCommandOfExtractsNetworkTargets(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		input    string
+		wantHost string // "" = 该工具不承载可抽取的目标
+	}{
+		{
+			"run_execution carries a long scan command",
+			"run_execution",
+			`{"command":"nmap -sV -p- 8.8.8.8","description":"长扫描"}`,
+			"8.8.8.8",
+		},
+		{
+			"run_execution command with url",
+			"run_execution",
+			`{"command":"nuclei -u https://evil.example.com","timeout_ms":60000}`,
+			"evil.example.com",
+		},
+		{"WebFetch carries the target url", "WebFetch", `{"url":"https://evil.example.com/x","extract":true}`, "evil.example.com"},
+		{"Bash still works", "Bash", `{"command":"curl https://evil.example.com/x"}`, "evil.example.com"},
+		{"shell_open still works", "shell_open", `{"command":"nmap 8.8.8.8"}`, "8.8.8.8"},
+		{"shell_send still works", "shell_send", `{"text":"curl http://8.8.8.8/x"}`, "8.8.8.8"},
+		{"non-network tool yields nothing", "insert_assets", `{"host":"evil.example.com"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			surface := shellCommandOf(tc.tool, []byte(tc.input))
+			hits := ExtractTargets(surface)
+			if tc.wantHost == "" {
+				if len(hits) != 0 {
+					t.Fatalf("%s: expected no extractable target, got %v", tc.tool, hits)
+				}
+				return
+			}
+			for _, h := range hits {
+				if h == tc.wantHost {
+					return
+				}
+			}
+			t.Fatalf("%s: target %q not extracted from surface %q (got %v) — RoE gate would pass this call",
+				tc.tool, tc.wantHost, surface, hits)
+		})
+	}
+}
+
+// TestScopeGateSeesOutOfScopeTargetFromRunExecution is the regression for the
+// escape chain: worker 段 [D] steers nmap/nuclei/ffuf into run_execution, so a
+// deny-mode task must be able to see (and therefore gate) the target carried by
+// that tool. Composes the same two pure steps CheckScope runs before its DB
+// lookup — if this yields the out-of-scope host, CheckScope reaches its scope
+// comparison instead of returning early.
+func TestScopeGateSeesOutOfScopeTargetFromRunExecution(t *testing.T) {
+	scope := usableScope([]db.TaskScope{
+		{Kind: "root_domain", Domain: "in-scope.example.com"},
+		{Kind: "cidr", Net: "10.0.0.0/24"},
+	})
+
+	cases := []struct {
+		tool    string
+		input   string
+		want    string // 门必须看见的目标
+		inScope bool
+	}{
+		{"run_execution", `{"command":"nmap -sV -p- 8.8.8.8","description":"扫描"}`, "8.8.8.8", false},
+		{"run_execution", `{"command":"ffuf -u https://api.in-scope.example.com/FUZZ"}`, "api.in-scope.example.com", true},
+		{"WebFetch", `{"url":"https://evil.example.com/x"}`, "evil.example.com", false},
+		{"WebFetch", `{"url":"https://in-scope.example.com/x"}`, "in-scope.example.com", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool+" "+tc.want, func(t *testing.T) {
+			hits := ExtractTargetsDetailed(shellCommandOf(tc.tool, []byte(tc.input)))
+			found := false
+			for _, h := range hits {
+				if h.Value == tc.want {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s: gate never sees %q — it would pass this call in deny mode", tc.tool, tc.want)
+			}
+			if got := targetInScope(scope, tc.want); got != tc.inScope {
+				t.Fatalf("targetInScope(%q) = %v, want %v", tc.want, got, tc.inScope)
+			}
+		})
+	}
+}
+
+// TestDefaultEnabledToolsCoverRunExecution pins the other half of the fix:
+// run_execution must also enter the rule + judge surface. The RoE gate no longer
+// depends on this list (guard.applyIntercept runs it first), but a tool missing
+// here loses destructive/exfil rule coverage entirely.
+func TestDefaultEnabledToolsCoverRunExecution(t *testing.T) {
+	for _, want := range []string{"Bash", "run_execution", "WebFetch"} {
+		found := false
+		for _, n := range defaultEnabledTools {
+			if n == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%q missing from defaultEnabledTools — it would skip the rule and judge surface", want)
+		}
+	}
+}
+
 func TestTargetInScope(t *testing.T) {
 	rows := usableScope([]db.TaskScope{
 		{Kind: "root_domain", Domain: "example.com"},
