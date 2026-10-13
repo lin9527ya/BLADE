@@ -576,6 +576,37 @@ export interface ExplorationPolicyDefault {
   custom_pattern_limit: number;
 }
 
+// ---- P21 情报/测绘 ----
+
+/** 一次情报查询的台账行（审计 + 用量）。 */
+export interface IntelQueryRow {
+  id: number;
+  provider: string;
+  expr: string;
+  total_hits: number;
+  returned: number;
+  task_id?: string;
+  intent_id?: number;
+  worker?: string;
+  error?: string;
+  created_at: string;
+}
+
+export interface IntelQueryList {
+  queries: IntelQueryRow[] | null;
+  used_today: number;
+  daily_quota: number;
+}
+
+/** 「测试连接」的应答（ok=false 时 error 是人话；ok=true 时 info 是源自己的账号信息）。 */
+export interface IntelTestResult {
+  ok: boolean;
+  error?: string;
+  info?: Record<string, unknown>;
+  used_today?: number;
+  daily_quota?: number;
+}
+
 /** P19 批量交付计划：一个任务全部发现的清单 + 证据门 + 疑似重复分组。 */
 export interface TaskSrcBatchEntry {
   id: number;
@@ -813,7 +844,8 @@ export type ActivityKind =
   | "execution_pending" // P13: 收笔时托管长任务仍在跑，意图暂不判完
   | "execution_done" // P13: 托管执行收束，意图退回待领续跑
   | "policy_reject" // P20: 意图被任务探索策略硬拒（不落图，但时间线留痕）
-  | "policy_update"; // P20: 策略保存/清空/按新策略清理未领取意图
+  | "policy_update" // P20: 策略保存/清空/按新策略清理未领取意图
+  | "intel_query"; // P21: 情报/测绘查询（表达式 + 命中数 + 完整结果落盘路径）
 
 // ChatAttachment 是一次上传的文件:path 相对该会话/任务工作目录(即 agent 的 CWD)。
 export interface ChatAttachment {
@@ -1112,6 +1144,15 @@ export interface Settings {
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
   // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
   global_proxy?: string;
+  // ---- P21 情报源（先接 FOFA）----
+  // key 与 web search 同款：只写不读，读侧只给 fofa_key_set 布尔。
+  fofa_key_set?: boolean;
+  fofa_key?: string; // write-only：PUT 时传，"" = 清空
+  fofa_email?: string; // FOFA 老账号需要；新账号留空
+  fofa_base_url?: string; // 空 = 官方端点；企业版/自建可改
+  fofa_proxy?: string; // 独立出口；空 = 跟随全局代理
+  intel_daily_quota?: number; // 平台侧每日调用上限；0 = 不限
+  intel_used_today?: number; // 只读回显：今日已用次数
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
   // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，

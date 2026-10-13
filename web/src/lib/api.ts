@@ -28,6 +28,8 @@ import type {
   ConstraintCompileResult,
   ExplorationPolicyDefault,
   ExplorationPolicyEffective,
+  IntelQueryList,
+  IntelTestResult,
   ExplorationPolicyOverride,
   PolicyRuleDraft,
   TaskPolicy,
@@ -463,6 +465,12 @@ export const api = {
   // 按当前策略清理"未领取"的意图（运行中的不动）。
   pruneTaskPolicy: (id: string) =>
     post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
+  // ---- P21 情报源 ----
+  // 测试连接：用当前设置打一次源的信息接口，回显账号与剩余额度（不回显 key）。
+  testIntelSource: (provider?: string) =>
+    post<IntelTestResult>(`/settings/intel/test`, { provider: provider ?? "" }),
+  // 查询台账 + 今日用量（设置页展示与排障）。
+  intelQueries: () => get<IntelQueryList>(`/settings/intel/queries`),
   explorationPolicyDefault: () => get<ExplorationPolicyDefault>(`/settings/exploration-policy`),
   saveExplorationPolicyDefault: (override: ExplorationPolicyOverride) =>
     put<{ effective: ExplorationPolicyEffective; version: number; note: string }>(

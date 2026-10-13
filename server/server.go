@@ -833,6 +833,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("GET /api/settings/exploration-policy", s.getExplorationPolicyDefault) // P20 全局默认探索策略(新任务继承)
 	mux.HandleFunc("PUT /api/settings/exploration-policy", s.putExplorationPolicyDefault)
+	mux.HandleFunc("POST /api/settings/intel/test", s.testIntelSource)    // P21 情报源:测试连接(回显账号/剩余额度,不回显 key)
+	mux.HandleFunc("GET /api/settings/intel/queries", s.listIntelQueries) // P21 情报源:查询台账与今日用量
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
@@ -3400,6 +3402,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
+	intelKey, _, _ := s.m.pg.GetSetting(settingIntelKey)
+	intelEmail, _, _ := s.m.pg.GetSetting(settingIntelEmail)
+	intelBaseURL, _, _ := s.m.pg.GetSetting(settingIntelBaseURL)
+	intelProxy, _, _ := s.m.pg.GetSetting(settingIntelProxy)
+	intelUsed, _ := s.intelUsageToday(context.Background())
 	concOn, concLimit := s.m.ConcurrencyLimit()
 	if concLimit == 0 {
 		concLimit = defaultConcurrencyLimit // 关闭时也回显一个合理默认值给 UI
@@ -3432,6 +3439,13 @@ func (s *Server) settingsPayload() map[string]any {
 		"noa_compaction": s.m.NoaCompactionEnabled(),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
+		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
+		"fofa_key_set":               strings.TrimSpace(intelKey) != "",
+		"fofa_email":                 intelEmail,
+		"fofa_base_url":              intelBaseURL,
+		"fofa_proxy":                 intelProxy,
+		"intel_daily_quota":          s.intelDailyQuota(),
+		"intel_used_today":           intelUsed,
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
 		"notify_public_base_url":     notifyPublicBaseURL(s.m.pg),
 		"notify_digest_interval_min": notifyDigestIntervalMin(s.m.pg),
@@ -3509,6 +3523,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyEnabled    *bool   `json:"notify_enabled"`
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
+		// P21 情报源。key：null=不改、""=清空；base_url/proxy 同理；quota：0=不限。
+		FOFAKey         *string `json:"fofa_key"`
+		FOFAEmail       *string `json:"fofa_email"`
+		FOFABaseURL     *string `json:"fofa_base_url"`
+		FOFAProxy       *string `json:"fofa_proxy"`
+		IntelDailyQuota *int    `json:"intel_daily_quota"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -3560,6 +3580,35 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingNotifyDigestMinutes, strconv.Itoa(*req.NotifyDigestMins)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	// P21 情报源：都是"每调用现读"的键，保存即生效，无需重建 agent。
+	// key/email/base_url/proxy：null=不改、""=清空；quota：0=不限。
+	for _, f := range []struct {
+		key string
+		val *string
+	}{
+		{settingIntelKey, req.FOFAKey},
+		{settingIntelEmail, req.FOFAEmail},
+		{settingIntelBaseURL, req.FOFABaseURL},
+		{settingIntelProxy, req.FOFAProxy},
+	} {
+		if f.val == nil {
+			continue
+		}
+		if err := s.m.pg.SetSetting(f.key, strings.TrimSpace(*f.val)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.IntelDailyQuota != nil {
+		if *req.IntelDailyQuota < 0 || *req.IntelDailyQuota > 100000 {
+			writeErr(w, 400, "情报每日上限需在 0（不限）到 100000 之间")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingIntelDailyQuota, strconv.Itoa(*req.IntelDailyQuota)); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
