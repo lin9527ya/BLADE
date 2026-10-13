@@ -1473,3 +1473,21 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
     ON notification_deliveries(batch_id) WHERE batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
+
+-- P21 情报/测绘查询台账：既做审计（谁在什么时候用什么表达式查了什么），也做平台侧
+-- 的每日配额计数（FOFA 自己的额度之外再加一道闸，防模型一天把额度刷光）。
+-- 刻意**不**级联删除任务：任务删了，查询花掉的额度也是花掉了，账要留着。
+CREATE TABLE IF NOT EXISTS intel_queries (
+    id          BIGSERIAL PRIMARY KEY,
+    provider    TEXT NOT NULL,
+    expr        TEXT NOT NULL,
+    -- 服务端报告的总命中数（不是返回条数）；失败时记 0。
+    total_hits  INTEGER NOT NULL DEFAULT 0,
+    returned    INTEGER NOT NULL DEFAULT 0,
+    task_id     TEXT NOT NULL DEFAULT '',
+    intent_id   BIGINT NOT NULL DEFAULT 0,
+    worker      TEXT NOT NULL DEFAULT '',
+    error       TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_intel_queries_created ON intel_queries(created_at DESC);

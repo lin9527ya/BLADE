@@ -5,21 +5,25 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
+	"github.com/Autumn-27/artex/intel"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
@@ -72,6 +76,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P18 约束可执行化（编译为任务级规则）", func(t *testing.T) { accP18(t, env.forTest(t)) })
 	t.Run("P19 批量交付与同源归并", func(t *testing.T) { accP19(t, env.forTest(t)) })
 	t.Run("P20 探索策略门（意图门/命令门/额度/继承快照/停摆收尾）", func(t *testing.T) { accP20(t, env.forTest(t)) })
+	t.Run("P21 情报/测绘工具面（FOFA：查询/落盘/台账/配额/边界）", func(t *testing.T) { accP21(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -1897,4 +1902,273 @@ func (e *accEnv) newTaskHTTP(t *testing.T, body string) string {
 		}
 	})
 	return created.ID
+}
+
+// accP21 走完情报/测绘工具面：假 FOFA（httptest + 设置里的 base_url，与企业版/自建端点
+// 走同一个开关）→ 未配 key 时给可读指引且**不外呼** → 配 key 后查询：表达式原样送达、
+// 回执给紧凑清单 + 完整结果落盘路径（大结果不灌上下文）→ 时间线留 intel_query 痕迹 →
+// 台账与今日用量可见 → 配额到顶即拒并说明用量 → 设置页只回显"是否已配 key"不回显明文 →
+// 「测试连接」打 info 回显剩余额度 → 查到的东西要变成意图目标时**照样被资产拦截挡住**。
+func accP21(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p21", "情报/测绘工具面（先接 FOFA）")
+
+	// 假 FOFA：两条路径分别对应查询与账号信息。
+	var calls int32
+	var lastQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		switch r.URL.Path {
+		case "/api/v1/search/all":
+			lastQuery = r.URL.Query()
+			_, _ = w.Write([]byte(`{"error":false,"size":123,"page":1,"results":[
+				["https://a.example.com:8443","1.2.3.4","8443","https","example.com","后台登录","nginx"],
+				["http://b.example.com","5.6.7.8","80","http","example.com","",""],
+				["http://c.example.com","9.9.9.9","8080","http","example.com","Jenkins","Jetty"]
+			]}`))
+		case "/api/v1/info/my":
+			_, _ = w.Write([]byte(`{"error":false,"email":"acc@example.com","remain_free_point":999}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// 设置是全局的：改之前记下来，跑完恢复（后面的子测试还要用这套设置）。
+	saveSetting := func(key string) (string, bool) {
+		v, ok, _ := e.m.pg.GetSetting(key)
+		return v, ok
+	}
+	restore := map[string]struct {
+		v  string
+		ok bool
+	}{}
+	for _, k := range []string{settingIntelKey, settingIntelBaseURL, settingIntelDailyQuota} {
+		v, ok := saveSetting(k)
+		restore[k] = struct {
+			v  string
+			ok bool
+		}{v, ok}
+	}
+	t.Cleanup(func() {
+		for k, r := range restore {
+			if r.ok {
+				_ = e.m.pg.SetSetting(k, r.v)
+			} else {
+				_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, k)
+			}
+		}
+	})
+
+	intelTool := workflowTool(t, e.s.intelTools(), "intel_search")
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: tid})
+	call := func(expr string) string {
+		t.Helper()
+		res, err := intelTool.Call(ctx, json.RawMessage(`{"expr":`+strconv.Quote(expr)+`}`), nil)
+		if err != nil {
+			t.Fatalf("intel_search: %v", err)
+		}
+		return res.Flatten()
+	}
+
+	// ① 未配 key：可读指引，且一次外呼都没有。
+	rec := e.request(http.MethodPut, "/api/settings",
+		`{"fofa_key":"","fofa_base_url":`+strconv.Quote(srv.URL)+`}`)
+	if rec.Code != 200 {
+		t.Fatalf("保存情报源设置 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if flat := call(`domain="example.com"`); !strings.Contains(flat, "还没配 API Key") {
+		t.Fatalf("未配 key 应给可读指引: %s", flat)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("未配 key 时不该发起外呼，实际 %d 次", n)
+	}
+
+	// ② 配 key（假 key）→ 查询：表达式原样送达、回执含清单与落盘路径。
+	rec = e.request(http.MethodPut, "/api/settings",
+		`{"fofa_key":"acc-key","fofa_base_url":`+strconv.Quote(srv.URL)+`,"intel_daily_quota":50}`)
+	if rec.Code != 200 {
+		t.Fatalf("保存 key status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	const expr = `domain="example.com" && protocol="http"`
+	flat := call(expr)
+	if !strings.Contains(flat, "命中 123 条") || !strings.Contains(flat, "a.example.com") ||
+		!strings.Contains(flat, "1.2.3.4:8443") {
+		t.Fatalf("回执应含总数与紧凑清单: %s", flat)
+	}
+	if lastQuery.Get("key") != "acc-key" {
+		t.Fatalf("key 没送达假服务: %v", lastQuery)
+	}
+	if raw, err := base64.StdEncoding.DecodeString(lastQuery.Get("qbase64")); err != nil || string(raw) != expr {
+		t.Fatalf("表达式没有原样编码送达: %q err=%v", raw, err)
+	}
+	if !strings.Contains(lastQuery.Get("fields"), "host") || !strings.Contains(lastQuery.Get("fields"), "title") {
+		t.Fatalf("默认字段集不对: %q", lastQuery.Get("fields"))
+	}
+	spool := ""
+	for _, line := range strings.Split(flat, "\n") {
+		if i := strings.Index(line, "完整结果（JSON，含全部字段）："); i >= 0 {
+			spool = strings.TrimSpace(line[i+len("完整结果（JSON，含全部字段）："):])
+		}
+	}
+	if spool == "" || !filepath.IsAbs(spool) {
+		t.Fatalf("回执必须给绝对路径的完整结果文件: %s", flat)
+	}
+	raw, err := os.ReadFile(spool)
+	if err != nil {
+		t.Fatalf("完整结果文件读不到: %v", err)
+	}
+	var spooled intel.Result
+	if err := json.Unmarshal(raw, &spooled); err != nil {
+		t.Fatalf("完整结果不是合法 JSON: %v", err)
+	}
+	if len(spooled.Assets) != 3 || spooled.Total != 123 || spooled.Expr != expr {
+		t.Fatalf("落盘结果不完整: %+v", spooled)
+	}
+	if !strings.Contains(spool, filepath.Join("tasks", task.ID)) {
+		t.Fatalf("任务级产物应落在任务目录下: %s", spool)
+	}
+	if !strings.Contains(flat, "insert_assets") || !strings.Contains(flat, "add_task_scope") {
+		t.Fatalf("回执必须说清「只查不入库/不扩范围」的下一步: %s", flat)
+	}
+
+	// ③ 时间线留痕（持久化副作用走等待）。
+	if !waitActivity(t, task.Store, "intel_query", 5*time.Second) {
+		t.Fatal("情报查询必须留 intel_query 痕迹")
+	}
+	acts, _, err := task.Store.ActivityList(nil, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 列表行只带 summary（detail 一律懒加载，与时间线其它活动同款）；细节走 ActivityDetail。
+	var auditID int64
+	for _, a := range acts {
+		if a.Kind == "intel_query" && strings.Contains(a.Summary, "命中 123 条") {
+			auditID = a.ID
+		}
+	}
+	if auditID == 0 {
+		t.Fatal("intel_query 痕迹没写清命中多少")
+	}
+	detail, err := task.Store.ActivityDetail(auditID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail, expr) || !strings.Contains(detail, spool) {
+		t.Fatalf("intel_query 细节应含表达式与落盘路径: %s", detail)
+	}
+
+	// ④ 台账与今日用量（设置接口 + 台账接口）。
+	rec = e.request(http.MethodGet, "/api/settings/intel/queries", "")
+	var ledger struct {
+		Queries []struct {
+			Provider string `json:"provider"`
+			Expr     string `json:"expr"`
+			Total    int    `json:"total_hits"`
+			TaskID   string `json:"task_id"`
+		} `json:"queries"`
+		UsedToday  int `json:"used_today"`
+		DailyQuota int `json:"daily_quota"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &ledger); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Queries) == 0 || ledger.Queries[0].Provider != "fofa" ||
+		ledger.Queries[0].Expr != expr || ledger.Queries[0].Total != 123 || ledger.Queries[0].TaskID != task.ID {
+		t.Fatalf("查询台账不对: %+v", ledger.Queries)
+	}
+	if ledger.UsedToday < 1 || ledger.DailyQuota != 50 {
+		t.Fatalf("用量/配额回显不对: %+v", ledger)
+	}
+
+	// ⑤ 配额到顶即拒，且理由里给用量与出口。
+	rec = e.request(http.MethodPut, "/api/settings", `{"intel_daily_quota":1}`)
+	if rec.Code != 200 {
+		t.Fatalf("改配额 status=%d", rec.Code)
+	}
+	// 配额是"当天全实例"口径，验收库可能带着更早的调用（重跑不重建库时）——
+	// 所以只钉"给上限、给用量、给出口"，不钉具体数字。
+	if flat := call(`domain="example.com"`); !strings.Contains(flat, "每日上限") ||
+		!regexp.MustCompile(`今日 \d+/1 次`).MatchString(flat) ||
+		!strings.Contains(flat, "系统设置 → 情报源") {
+		t.Fatalf("超配额应拒绝并说明用量与出口: %s", flat)
+	}
+
+	// ⑥ 设置回显：只给布尔，不给明文。
+	rec = e.request(http.MethodGet, "/api/settings", "")
+	body := rec.Body.String()
+	if !strings.Contains(body, `"fofa_key_set":true`) {
+		t.Fatalf("设置页应回显 key 已配置: %s", body)
+	}
+	if strings.Contains(body, "acc-key") {
+		t.Fatal("设置接口绝不能回显 key 明文")
+	}
+
+	// ⑦ 测试连接：打 info 路径并回显账号与剩余额度。
+	rec = e.request(http.MethodPost, "/api/settings/intel/test", `{"provider":"fofa"}`)
+	var probe struct {
+		OK   bool           `json:"ok"`
+		Info map[string]any `json:"info"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &probe); err != nil {
+		t.Fatal(err)
+	}
+	if !probe.OK || probe.Info["email"] != "acc@example.com" ||
+		probe.Info["remain_free_point"].(float64) != 999 {
+		t.Fatalf("测试连接应答不对: %s", rec.Body.String())
+	}
+
+	// ⑧ 查到的东西要当意图目标时，照样被资产拦截挡住（情报不等于授权）。
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	tsx.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
+	insTool := workflowTool(t, tsx.WorkerTools(), "insert_assets")
+	ires, err := insTool.Call(ctx, json.RawMessage(`{"assets":[{"type":"subdomain","domain":"a.example.com"}]}`), nil)
+	if err != nil || !strings.Contains(ires.Flatten(), "results") {
+		t.Fatalf("insert_assets: %v %s", err, ires.Flatten())
+	}
+	var insOut struct {
+		Results []struct {
+			ID   int64  `json:"id"`
+			Type string `json:"type"`
+		} `json:"results"`
+	}
+	// insert_assets 的回执就是一段紧凑 JSON（jsonResult 不带表头），从第一个 { 起解。
+	rawIns := ires.Flatten()
+	if i := strings.Index(rawIns, "{"); i >= 0 {
+		rawIns = rawIns[i:]
+	}
+	if err := json.Unmarshal([]byte(rawIns), &insOut); err != nil {
+		t.Fatalf("decode insert_assets: %v raw=%s", err, ires.Flatten())
+	}
+	if len(insOut.Results) != 1 || insOut.Results[0].ID == 0 {
+		t.Fatalf("资产没登记进去: %s", ires.Flatten())
+	}
+	assetID := insOut.Results[0].ID
+	if _, err := e.m.Assets().CreateTaskInterceptRule(tid, "block", "fuzzy_domain", "example.com",
+		"验收：情报结果不得越界", true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM task_intercept_rules WHERE task_id=$1`, tid) })
+	intentTool := workflowTool(t, tsx.PlannerTools(), "add_intent")
+	tsx.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
+	pres, err := intentTool.Call(ctx, json.RawMessage(
+		`{"summary":"对情报查到的 a.example.com 做未授权访问测试","asset_ids":[`+strconv.FormatInt(assetID, 10)+`]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flat := pres.Flatten(); !strings.Contains(flat, "未通过测试范围校验") {
+		t.Fatalf("命中资产拦截的意图必须被拒: %s", flat)
+	}
+
+	// ⑨ 未知 provider 给可读错误（框架留了加源的口子，但别静默串到别的源）。
+	if flat := call(`domain="example.com"`); strings.Contains(flat, "命中") {
+		t.Fatalf("配额已到顶，不该再有成功查询: %s", flat)
+	}
+	ures, err := intelTool.Call(ctx, json.RawMessage(`{"provider":"quake","expr":"x"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ures.Flatten(), "未知情报源") {
+		t.Fatalf("未注册的源应给可读错误: %s", ures.Flatten())
+	}
 }

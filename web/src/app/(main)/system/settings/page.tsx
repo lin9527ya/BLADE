@@ -2,7 +2,8 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, GaugeIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, GaugeIcon, KeyboardIcon, RadarIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
@@ -14,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { CustomRule, ExplorationPolicyDefault, Settings } from "@/lib/types";
+import type { CustomRule, ExplorationPolicyDefault, IntelQueryRow, Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -42,6 +43,18 @@ export default function SystemSettingsPage() {
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
+  // P21 情报源（先接 FOFA）。key 只写不读：页面只显示"是否已配置"，输入框留空 = 不改。
+  const [intelKeyInput, setIntelKeyInput] = React.useState("");
+  const [intelKeySet, setIntelKeySet] = React.useState(false);
+  const [intelEmail, setIntelEmail] = React.useState("");
+  const [intelBaseURL, setIntelBaseURL] = React.useState("");
+  const [intelProxy, setIntelProxy] = React.useState("");
+  const [intelQuota, setIntelQuota] = React.useState("200");
+  const [intelUsed, setIntelUsed] = React.useState(0);
+  const [intelBusy, setIntelBusy] = React.useState(false);
+  const [intelTesting, setIntelTesting] = React.useState(false);
+  const [intelTestMsg, setIntelTestMsg] = React.useState("");
+  const [intelRows, setIntelRows] = React.useState<IntelQueryRow[]>([]);
   // P20 探索策略的全局默认（新建任务继承；已存在的任务各自持有快照，不被回溯）。
   const [polDefault, setPolDefault] = React.useState<ExplorationPolicyDefault | null>(null);
   const [polTech, setPolTech] = React.useState<string[]>([]);
@@ -71,6 +84,12 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setIntelKeySet(!!s.fofa_key_set);
+    setIntelEmail(s.fofa_email ?? "");
+    setIntelBaseURL(s.fofa_base_url ?? "");
+    setIntelProxy(s.fofa_proxy ?? "");
+    setIntelQuota(String(s.intel_daily_quota ?? 200));
+    setIntelUsed(s.intel_used_today ?? 0);
   }, []);
 
   // 全局默认策略：独立加载（不进 apply——它由 /api/settings 触发，而策略走自己的端点）。
@@ -115,6 +134,82 @@ export default function SystemSettingsPage() {
 
   const togglePolicyChip = (list: string[], set: (v: string[]) => void, id: string) => {
     set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  };
+
+  // 情报台账（用量 + 排障）：进页面拉一次，保存/测试后再刷新。
+  const loadIntelQueries = React.useCallback(() => {
+    void api
+      .intelQueries()
+      .then((r) => {
+        setIntelRows(r.queries ?? []);
+        setIntelUsed(r.used_today);
+      })
+      .catch(() => {});
+  }, []);
+
+  React.useEffect(() => {
+    loadIntelQueries();
+  }, [loadIntelQueries]);
+
+  const saveIntel = async () => {
+    setIntelBusy(true);
+    try {
+      const patch: Record<string, unknown> = {
+        fofa_email: intelEmail.trim(),
+        fofa_base_url: intelBaseURL.trim(),
+        fofa_proxy: intelProxy.trim(),
+        intel_daily_quota: Math.max(0, Number(intelQuota) || 0),
+      };
+      // 留空 = 不改 key（要清空就点"清除 Key"）。
+      if (intelKeyInput.trim() !== "") patch.fofa_key = intelKeyInput.trim();
+      const s2 = await api.setSettings(patch);
+      apply(s2);
+      setIntelKeyInput("");
+      toast.success("情报源设置已保存");
+      loadIntelQueries();
+    } catch (e) {
+      toast.error("保存失败：" + (e as Error).message);
+    } finally {
+      setIntelBusy(false);
+    }
+  };
+
+  const clearIntelKey = async () => {
+    setIntelBusy(true);
+    try {
+      const s2 = await api.setSettings({ fofa_key: "" });
+      apply(s2);
+      setIntelKeyInput("");
+      toast.success("已清除情报源 API Key（情报查询工具会提示未配置）");
+    } catch (e) {
+      toast.error("清除失败：" + (e as Error).message);
+    } finally {
+      setIntelBusy(false);
+    }
+  };
+
+  const testIntel = async () => {
+    setIntelTesting(true);
+    setIntelTestMsg("");
+    try {
+      const r = await api.testIntelSource("fofa");
+      if (!r.ok) {
+        setIntelTestMsg("连接失败：" + (r.error ?? "未知错误"));
+      } else {
+        const info = r.info ?? {};
+        const parts = ["连接成功"];
+        if (info.email) parts.push(`账号 ${String(info.email)}`);
+        if (typeof info.remain_free_point === "number") parts.push(`剩余额度 ${info.remain_free_point}`);
+        if (typeof info.remain_api_query === "number") parts.push(`剩余查询 ${info.remain_api_query}`);
+        parts.push(`平台侧今日 ${r.used_today ?? 0}/${r.daily_quota ?? 0} 次`);
+        setIntelTestMsg(parts.join(" · "));
+      }
+      loadIntelQueries();
+    } catch (e) {
+      setIntelTestMsg("连接失败：" + (e as Error).message);
+    } finally {
+      setIntelTesting(false);
+    }
   };
 
   const saveWorkers = () => {
@@ -469,6 +564,131 @@ export default function SystemSettingsPage() {
             <p className="text-muted-foreground text-xs">
               {Number(tokenBudget) > 0 ? "已配置 · 到量提示并自动收尾" : "未配置 · 任务不设 token 上限"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <RadarIcon className="size-4" />
+              情报源（测绘引擎）
+            </CardTitle>
+            <CardDescription>
+              给 Agent 一个"自己去查互联网资产"的工具（当前接入 <b>FOFA</b>）。查到的东西
+              <b>只进回执、不入库、不自动纳入测试范围</b>——要不要登记成资产（insert_assets）、
+              要不要纳入本任务范围（add_task_scope）由 Agent 或人显式决定，资产拦截规则照常生效。
+              <br />
+              每次真实查询都会记入台账并占用<b>平台侧每日上限</b>（FOFA 自己的额度之外再加一道闸，
+              防模型一天把额度刷光）。Key 只存不回显，页面只显示"是否已配置"。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="fofa-key">API Key{intelKeySet ? "（已配置）" : "（未配置）"}</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="fofa-key"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={intelKeySet ? "已配置 · 留空表示不修改" : "填入 FOFA API Key"}
+                  value={intelKeyInput}
+                  onChange={(e) => setIntelKeyInput(e.target.value)}
+                  disabled={!loaded || intelBusy}
+                />
+                {intelKeySet && (
+                  <Button type="button" variant="outline" onClick={() => void clearIntelKey()} disabled={intelBusy}>
+                    清除 Key
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="fofa-email" className="text-sm font-normal text-muted-foreground">
+                  FOFA 账号邮箱（老账号需要，新账号留空）
+                </Label>
+                <Input
+                  id="fofa-email"
+                  autoComplete="off"
+                  placeholder="可选"
+                  value={intelEmail}
+                  onChange={(e) => setIntelEmail(e.target.value)}
+                  disabled={!loaded || intelBusy}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="fofa-base" className="text-sm font-normal text-muted-foreground">
+                  API 端点（企业版/自建可改，留空用官方）
+                </Label>
+                <Input
+                  id="fofa-base"
+                  autoComplete="off"
+                  placeholder="https://fofa.info"
+                  value={intelBaseURL}
+                  onChange={(e) => setIntelBaseURL(e.target.value)}
+                  disabled={!loaded || intelBusy}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="fofa-proxy" className="text-sm font-normal text-muted-foreground">
+                  独立出口代理（留空跟随全局代理）
+                </Label>
+                <Input
+                  id="fofa-proxy"
+                  autoComplete="off"
+                  placeholder="http://127.0.0.1:7897"
+                  value={intelProxy}
+                  onChange={(e) => setIntelProxy(e.target.value)}
+                  disabled={!loaded || intelBusy}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="intel-quota" className="text-sm font-normal text-muted-foreground">
+                  平台侧每日上限（0 = 不限；今日已用 {intelUsed} 次）
+                </Label>
+                <Input
+                  id="intel-quota"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={intelQuota}
+                  onChange={(e) => setIntelQuota(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || intelBusy}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" onClick={() => void saveIntel()} disabled={!loaded || intelBusy}>
+                保存
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void testIntel()} disabled={!loaded || intelTesting}>
+                {intelTesting ? "测试中…" : "测试连接"}
+              </Button>
+              {intelTestMsg && <span className="text-muted-foreground text-xs">{intelTestMsg}</span>}
+            </div>
+            {intelRows.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium">最近查询（审计与排障）</span>
+                {intelRows.slice(0, 5).map((q) => (
+                  <div key={q.id} className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-muted-foreground tabular-nums">
+                      {new Date(q.created_at).toLocaleString("zh-CN", { hour12: false })}
+                    </span>
+                    <code className="bg-muted max-w-80 truncate rounded px-1">{q.expr}</code>
+                    <span className={q.error ? "text-red-500" : "text-muted-foreground"}>
+                      {q.error ? `失败：${q.error}` : `命中 ${q.total_hits} 条 · 取回 ${q.returned} 条`}
+                    </span>
+                    {q.task_id && (
+                      <Link
+                        href={`/function/tasks/detail?id=${encodeURIComponent(q.task_id)}`}
+                        className="hover:underline"
+                      >
+                        任务 #{q.task_id}
+                      </Link>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 

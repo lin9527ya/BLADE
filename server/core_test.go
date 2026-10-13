@@ -72,9 +72,12 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatalf("bad task payload: %v", out)
 	}
 
-	// the exploration owns goal node(s) — goal seeding is async, poll briefly
+	// the exploration owns goal node(s) — goal seeding is async and takes a real LLM
+	// round trip (the shared test DB may hold a keyless profile, so that attempt can
+	// burn network retries). Poll generously: 本机实测 3s 不够（干净 HEAD 上 8 跑 3 红），
+	// 这是等待不是放水——断言的仍是"目标节点最终存在"。
 	var goals []*db.Node
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 200; i++ {
 		goals, err = m.pg.Exploration(expID).ListByKind("goal", 10)
 		if err != nil || len(goals) > 0 {
 			break
