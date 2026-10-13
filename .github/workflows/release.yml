@@ -98,8 +98,14 @@ jobs:
 
   # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
   #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）
+  #
+  #    **默认跳过**：镜像目标由仓库变量 DOCKERHUB_IMAGE 决定（例：lin9527ya/artex），未设置
+  #    就不跑。本仓 fork 自 Autumn-27/ARTEX，把上游命名空间硬编码在这里的话，第一次发版就会
+  #    把镜像推进**别人的** Docker Hub 仓库。启用方式：建仓库变量 DOCKERHUB_IMAGE，并加
+  #    DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret——填好后本 job 自动生效。
   docker:
     needs: binaries
+    if: vars.DOCKERHUB_IMAGE != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # 取 Dockerfile 与 skills/
@@ -120,7 +126,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: autumn27/artex
+          images: ${{ vars.DOCKERHUB_IMAGE }}
           tags: |
             type=ref,event=tag
             type=raw,value=latest
