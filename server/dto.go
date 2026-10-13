@@ -249,6 +249,9 @@ type ConstraintDTO struct {
 	Text   string `json:"text"`
 	Origin string `json:"origin,omitempty"`
 	TS     string `json:"ts,omitempty"`
+	// CompiledRules（P18）：这条约束当前编译出了几条任务级拦截规则（0 = 尚未生效，
+	// 仍只是提示词里的约束）。改约束会清零，需要重新预览确认后应用。
+	CompiledRules int `json:"compiled_rules,omitempty"`
 }
 
 func taskNodeDTOs(in []*db.Node) []TaskNodeDTO {

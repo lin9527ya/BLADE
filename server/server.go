@@ -747,6 +747,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/constraints", s.addConstraint)            // 约束管理:新增约束(不通知 planner)
 	mux.HandleFunc("PATCH /api/tasks/{id}/constraints/{cid}", s.editConstraint)    // 约束管理:修改约束
 	mux.HandleFunc("DELETE /api/tasks/{id}/constraints/{cid}", s.deleteConstraint) // 约束管理:删除约束
+	// P18 约束可执行化：把约束编译成任务级拦截规则 / 授权范围（compile 只读预览，apply 落库）。
+	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/compile", s.compileConstraint)
+	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/apply", s.applyConstraint)
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)
 	mux.HandleFunc("PUT /api/tasks/{id}/llm", s.updateTaskLLMProfiles)
 	mux.HandleFunc("GET /api/tasks/{id}/llm/resolution", s.taskLLMResolutionHandler)

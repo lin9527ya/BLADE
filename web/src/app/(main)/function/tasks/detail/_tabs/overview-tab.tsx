@@ -33,6 +33,7 @@ import { api } from "@/lib/api";
 import type {
   AssetInterceptKind,
   AssetInterceptRule,
+  ConstraintCompileResult,
   Finding,
   ModelTokenStat,
   Stats,
@@ -165,6 +166,10 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [editingConId, setEditingConId] = React.useState<string | null>(null);
   const [editConText, setEditConText] = React.useState("");
   const [editConKind, setEditConKind] = React.useState<TaskConstraint["kind"]>("deny");
+  // P18 约束可执行化：把约束编译成任务级拦截规则前的预览状态。
+  const [compileFor, setCompileFor] = React.useState<string | null>(null);
+  const [compileResult, setCompileResult] = React.useState<ConstraintCompileResult | null>(null);
+  const [compileBusy, setCompileBusy] = React.useState(false);
 
   const loadTokens = React.useCallback(async () => {
     try {
@@ -290,7 +295,10 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setConBusy(true);
     setConErr("");
     try {
-      await api.updateConstraint(taskId, c.id, text, editConKind);
+      const res = await api.updateConstraint(taskId, c.id, text, editConKind);
+      if (res.dropped_rules > 0) {
+        toast.info(`约束已改，撤掉了它此前生效的 ${res.dropped_rules} 条拦截规则；需要重新「编译为规则」才会再生效`);
+      }
       cancelEditConstraint();
       await loadConstraints();
     } catch (e) {
@@ -306,6 +314,44 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       await api.deleteConstraint(taskId, c.id);
     } catch {
       await loadConstraints(); // 删除失败：重新拉取还原
+    }
+  };
+
+  // openCompile 先编译（只读），让人看到"会生成哪些规则、会命中最近哪些真实调用"再决定。
+  const openCompile = async (c: TaskConstraint) => {
+    setCompileFor(c.id);
+    setCompileResult(null);
+    setCompileBusy(true);
+    setConErr("");
+    try {
+      setCompileResult(await api.compileConstraint(taskId, c.id));
+    } catch (e) {
+      setConErr(e instanceof Error ? e.message : "编译失败");
+      setCompileFor(null);
+    } finally {
+      setCompileBusy(false);
+    }
+  };
+
+  const applyCompile = async (c: TaskConstraint) => {
+    setCompileBusy(true);
+    setConErr("");
+    try {
+      const res = await api.applyConstraint(taskId, c.id);
+      const n = res.rules?.length ?? 0;
+      const sc = res.scopes?.length ?? 0;
+      toast.success(
+        n + sc > 0
+          ? `已生效：${n > 0 ? `${n} 条拦截规则` : ""}${n > 0 && sc > 0 ? " + " : ""}${sc > 0 ? `${sc} 条授权范围` : ""}（只对本任务生效）`
+          : "没有可编译的内容（见说明）",
+      );
+      setCompileFor(null);
+      setCompileResult(null);
+      await loadConstraints();
+    } catch (e) {
+      setConErr(e instanceof Error ? e.message : "应用失败");
+    } finally {
+      setCompileBusy(false);
     }
   };
 
@@ -621,7 +667,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardTitle className="flex items-center gap-2 text-base">
             <ShieldAlertIcon className="size-4 text-amber-500" /> 操作约束
             <span className="text-muted-foreground text-xs font-normal">
-              （框定 planner/worker 的探索边界，共 {constraints.length} 条；改动下一轮规划生效）
+              （共 {constraints.length} 条；默认只作提示词约束注入 planner/worker，改动下一轮规划生效。
+              点盾牌图标可把它编译成任务级拦截规则 —— 抽得到目标/工具名的约束会变成硬拦截，只对本任务生效）
             </span>
           </CardTitle>
         </CardHeader>
@@ -701,35 +748,134 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     </Button>
                   </div>
                 ) : (
-                  <div key={c.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
-                        c.kind === "allow"
-                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                          : "bg-red-500/15 text-red-600 dark:text-red-400"
-                      }`}
-                    >
-                      {c.kind === "allow" ? "允许" : "禁止"}
-                    </span>
-                    <span className="min-w-0 flex-1 break-words">{c.text}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy}
-                      onClick={() => startEditConstraint(c)}
-                    >
-                      <PencilIcon className="size-3.5" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy}
-                      onClick={() => void removeConstraint(c)}
-                    >
-                      <Trash2Icon className="size-3.5 text-red-500" />
-                    </Button>
+                  <div key={c.id} className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                      <span
+                        className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+                          c.kind === "allow"
+                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                            : "bg-red-500/15 text-red-600 dark:text-red-400"
+                        }`}
+                      >
+                        {c.kind === "allow" ? "允许" : "禁止"}
+                      </span>
+                      <span className="min-w-0 flex-1 break-words">{c.text}</span>
+                      {c.compiled_rules ? (
+                        <span
+                          className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-600 text-xs dark:text-sky-400"
+                          title="已编译为任务级拦截规则，只对本任务生效"
+                        >
+                          已生效 {c.compiled_rules} 条
+                        </span>
+                      ) : (
+                        <span
+                          className="shrink-0 text-muted-foreground text-xs"
+                          title="当前只作为提示词约束注入 planner/worker（建议，不是硬拦截）"
+                        >
+                          仅提示词
+                        </span>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0 px-1.5"
+                        disabled={conBusy || compileBusy}
+                        title="编译为任务级拦截规则（先预览再应用）"
+                        onClick={() => void openCompile(c)}
+                      >
+                        <ShieldCheckIcon className="size-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0 px-1.5"
+                        disabled={conBusy}
+                        onClick={() => startEditConstraint(c)}
+                      >
+                        <PencilIcon className="size-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0 px-1.5"
+                        disabled={conBusy}
+                        onClick={() => void removeConstraint(c)}
+                      >
+                        <Trash2Icon className="size-3.5 text-red-500" />
+                      </Button>
+                    </div>
+                    {compileFor === c.id ? (
+                      <div className="flex flex-col gap-2 rounded-md border border-dashed bg-muted/30 p-2.5 text-xs">
+                        <div className="text-muted-foreground">
+                          {compileBusy && !compileResult ? "编译中…" : (compileResult?.note ?? "")}
+                        </div>
+                        {compileResult?.rules?.length ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium">
+                              将生成 {compileResult.rules.length} 条拦截规则（只对本任务生效）：
+                            </span>
+                            {compileResult.rules.map((r) => {
+                              const pv = compileResult.preview?.find((x) => x.pattern === r.pattern);
+                              return (
+                                <div
+                                  key={r.pattern}
+                                  className="flex flex-col gap-0.5 rounded border bg-background px-2 py-1"
+                                >
+                                  <span className="break-all font-mono">
+                                    {r.action} · {r.pattern}
+                                  </span>
+                                  {pv ? (
+                                    <span className="text-muted-foreground">
+                                      会命中最近 {pv.total} 次工具调用中的 {pv.matched} 次
+                                      {pv.samples.length > 0 ? `（如：${pv.samples[0]}）` : ""}
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted-foreground">本任务还没有可对照的历史调用</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                        {compileResult?.scope?.length ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium">
+                              将加入本任务授权范围（RoE 允许面）{compileResult.scope.length} 条：
+                            </span>
+                            {compileResult.scope.map((sc) => (
+                              <span key={`${sc.kind}:${sc.value}`} className="break-all font-mono">
+                                {sc.kind} · {sc.value}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            disabled={
+                              compileBusy ||
+                              !((compileResult?.rules?.length ?? 0) + (compileResult?.scope?.length ?? 0))
+                            }
+                            onClick={() => void applyCompile(c)}
+                          >
+                            应用
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs"
+                            disabled={compileBusy}
+                            onClick={() => {
+                              setCompileFor(null);
+                              setCompileResult(null);
+                            }}
+                          >
+                            取消
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ),
               )}
