@@ -699,7 +699,7 @@ func accP13(t *testing.T, e *accEnv) {
 	if err != nil || node == nil || node.State != "running" {
 		t.Fatalf("收尾门后意图仍在 running: %+v err=%v", node, err)
 	}
-	if !activitySeen(t, st, "execution_pending") {
+	if !waitActivity(t, st, "execution_pending", 10*time.Second) {
 		t.Fatal("时间线缺少 execution_pending")
 	}
 	// 反向对照：名下没有在跑执行的意图，门必须放行（否则任何意图都收不了尾）。
@@ -731,7 +731,7 @@ func accP13(t *testing.T, e *accEnv) {
 	if node, _ := st.GetNode(intent); node == nil || node.State != "open" {
 		t.Fatalf("执行收束后意图应退回 open: %+v", node)
 	}
-	if !activitySeen(t, st, "execution_done") {
+	if !waitActivity(t, st, "execution_done", 10*time.Second) {
 		t.Fatal("时间线缺少 execution_done")
 	}
 	row, err := e.m.pg.GetExecution(started.ID)
@@ -851,6 +851,23 @@ func execSnapshotJSON(t *testing.T, text string) string {
 		t.Fatalf("执行工具返回里没有快照 JSON: %q", text)
 	}
 	return strings.TrimSpace(lines[1])
+}
+
+// waitActivity 轮询等一条时间线活动出现（观察持久化副作用一律走等待，不立刻断言——
+// 生产侧的"改状态"与"落痕"是两次写，中间存在毫秒级窗口；这是 accP4 起反复出现的
+// flake 形态，见 CHANGELOG 的 e6330f4 与 accP13 的 CI 复现）。
+func waitActivity(t *testing.T, st *db.ExplorationStore, kind string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if activitySeen(t, st, kind) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // activitySeen reports whether the task's timeline contains an activity of kind k.
