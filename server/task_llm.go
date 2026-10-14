@@ -601,6 +601,10 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactor(agent.NewCompactor(plannerRuntime, "task-router"))
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
 	main.SetFindingRecorder(s.evidenceStore())
+	// 任务内的人在环路也要过拦截面：它同样带 Bash/WebFetch，而且这里拿得到任务的真实 id，
+	// 所以拦截规则、LLM 兜底裁判、RoE 授权范围门都该生效（此前漏挂——guard 是任务自带的，
+	// 却没有接到 mainagent 的 run 上，等于这条路径三样门都没有）。
+	main.SetGuard(t.Guard)
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)

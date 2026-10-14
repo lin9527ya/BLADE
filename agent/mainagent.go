@@ -5,9 +5,11 @@ import (
 	"fmt"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/hook"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
@@ -35,6 +37,28 @@ type MainAgent struct {
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	policyFn        func() *policy.Effective               // resolver: task exploration policy (P20; nil = none)
+	// guard（可选）把拦截规则、LLM 兜底裁判与 RoE 授权范围门挂到本 agent 的每一次 run 上。
+	// nil = 不挂、无任何拦截。接线方式与 ChatAgent 一致——任务内的人在环路同样能执行命令，
+	// 而且这里拿得到任务的**真实 id**，所以范围门本就该生效（此前漏挂，见下）。
+	guard *guard.Guard
+}
+
+// SetGuard attaches a guard (intercept rules + LLM judge + RoE scope gate) to this
+// agent's runs. nil = no hooks at all.
+//
+// 与 ChatAgent 的同名方法对齐：两者都是"人在环路"的入口、都带 Bash/WebFetch，所以拦截面
+// 不该一个有、一个没有。区别在 taskID——本 agent 由任务侧构造，guard 用的是该任务的真实 id，
+// 因而 RoE 范围门对它**生效**；聊天页那种没有任务的上下文无从判定范围，只能不适用。
+func (m *MainAgent) SetGuard(g *guard.Guard) { m.guard = g }
+
+// guardHooks 返回本次 run 该挂的 hooks（nil = 不挂）。抽成方法是为了让「挂了 guard 就必须
+// 产出 hooks」这条不变量可被断言：这条接线一旦断掉，任务内的人在环路就**三样门全无**（拦截
+// 规则 / LLM 兜底裁判 / RoE 范围门），而且不会有任何报错——属于最该被钉住的静默失效。
+func (m *MainAgent) guardHooks() *hook.Registry {
+	if m.guard == nil {
+		return nil
+	}
+	return m.guard.Hooks()
 }
 
 // MainSessionID is the transcript AND noa-archive session id of a main-agent
@@ -194,6 +218,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		Settlement:   wrapupSettlement("mainagent", nil),
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    m.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
+	}
+	if h := m.guardHooks(); h != nil {
+		opts.Hooks = h
 	}
 	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per segment
 		opts.Transcript = m.tx
