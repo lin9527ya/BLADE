@@ -4,12 +4,14 @@ import * as React from "react";
 import { toast } from "sonner";
 import {
   ChevronRightIcon,
+  EyeIcon,
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
   FileTextIcon,
   FilePlusIcon,
   PlusIcon,
+  SearchIcon,
   Trash2Icon,
   UploadIcon,
   AlertTriangleIcon,
@@ -30,6 +32,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +51,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Markdown } from "@/components/markdown";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { Agent, SkillItem, MCPServer, SkillCall, MissingSkill } from "@/lib/types";
@@ -339,6 +350,20 @@ export default function SkillsPage() {
   const [usageCalls, setUsageCalls] = React.useState<SkillCall[]>([]);
   const [usageLoading, setUsageLoading] = React.useState(false);
   const [missing, setMissing] = React.useState<MissingSkill[]>([]);
+  const [skillQuery, setSkillQuery] = React.useState("");
+
+  // 技能列表本地过滤（零后端改动，照 MCP 页工具筛选同款）：名字 / 描述 / 任意文件名命中即可。
+  // 只筛行——不动展开态，也不清空已选中的技能（编辑到一半不该被搜索框踢走）。
+  const filteredSkills = React.useMemo(() => {
+    const q = skillQuery.trim().toLowerCase();
+    if (!q) return skills;
+    return skills.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        (s.description ?? "").toLowerCase().includes(q) ||
+        s.files.some((f) => f.toLowerCase().includes(q)),
+    );
+  }, [skills, skillQuery]);
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const load = React.useCallback(() => {
@@ -758,20 +783,40 @@ export default function SkillsPage() {
               <UploadIcon className="size-3.5" />
               {uploading ? "上传中…" : "上传压缩包"}
             </Button>
+            <div className="relative">
+              <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+              <Input
+                className="h-8 pl-7 text-xs"
+                placeholder="搜索技能 / 描述 / 文件名"
+                value={skillQuery}
+                onChange={(e) => setSkillQuery(e.target.value)}
+              />
+            </div>
+            {skillQuery.trim() !== "" && (
+              <p className="text-muted-foreground text-[11px]">
+                {filteredSkills.length} / {skills.length} 个技能命中
+              </p>
+            )}
           </div>
           {/* Radix viewport wraps children in a display:table div that grows with
               content — force it to block so long names truncate instead of
               widening the rows past the sidebar. */}
           <ScrollArea className="flex-1 [&>[data-slot=scroll-area-viewport]>div]:!block">
             <div className="p-1">
-              {skills.map((s) => {
+              {filteredSkills.map((s) => {
                 const isOpen = expanded.has(s.name);
                 const tree = buildTree(s.files);
                 const isSkillSelected = selected?.skill === s.name && selected.path === null;
+                const granted = (visibility[s.name] ?? []).length;
                 return (
                   <div key={s.name}>
                     {/* skill 根节点 */}
                     <div
+                      title={[
+                        s.description || "（无描述）",
+                        `${s.files.length} 个文件`,
+                        granted > 0 ? `${granted} 个 Agent 可见` : "未授权给任何 Agent——谁都调不到它",
+                      ].join("\n")}
                       className={cn(
                         "group relative flex cursor-pointer select-none items-center gap-1 rounded px-2 py-1 text-sm",
                         isSkillSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
@@ -787,6 +832,11 @@ export default function SkillsPage() {
                         : <FolderIcon className="size-3.5 shrink-0 text-blue-500" />
                       }
                       <span className="min-w-0 flex-1 truncate font-semibold" title={s.name}>{s.name}</span>
+                      {granted === 0 && (
+                        <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
+                          未授权
+                        </span>
+                      )}
                       {s.calls > 0 && (
                         <span
                           className="shrink-0 rounded bg-muted px-1 text-[10px] tabular-nums text-muted-foreground"
@@ -828,6 +878,9 @@ export default function SkillsPage() {
 
               {skills.length === 0 && (
                 <p className="p-3 text-xs text-muted-foreground">暂无 Skill，点击「新建」开始</p>
+              )}
+              {skills.length > 0 && filteredSkills.length === 0 && (
+                <p className="p-3 text-xs text-muted-foreground">没有匹配「{skillQuery}」的技能。</p>
               )}
             </div>
           </ScrollArea>
@@ -965,7 +1018,34 @@ export default function SkillsPage() {
                 <span className="font-medium text-foreground">{selected.skill}</span>
                 <span>/</span>
                 <span className="font-mono">{selected.path}</span>
-                <Button size="sm" className="ml-auto" onClick={saveFile} disabled={!dirty || saving}>
+                {/* markdown 文件给个渲染预览（照 agent-editor 的现成模式）：渲染的是编辑器里的
+                    当前内容，含尚未保存的改动——文本本来就在 state 里，不需要后端预览接口。 */}
+                {selected.path.toLowerCase().endsWith(".md") && (
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button size="sm" variant="outline" className="ml-auto">
+                        <EyeIcon className="size-3.5" /> 预览渲染
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-2xl">
+                      <DialogHeader>
+                        <DialogTitle>渲染预览</DialogTitle>
+                        <DialogDescription>
+                          {selected.skill} / {selected.path}（含尚未保存的改动）
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="bg-muted/30 max-h-[60vh] overflow-auto rounded-md border p-3 text-sm">
+                        <Markdown text={fileContent} />
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                )}
+                <Button
+                  size="sm"
+                  className={selected.path.toLowerCase().endsWith(".md") ? undefined : "ml-auto"}
+                  onClick={saveFile}
+                  disabled={!dirty || saving}
+                >
                   {saving ? "保存中…" : "保存"}
                 </Button>
               </div>
