@@ -290,6 +290,10 @@ const (
 	settingExecCPUSeconds = "exec_cpu_seconds"
 	settingExecMemoryMB   = "exec_memory_mb"
 	settingExecMaxProcs   = "exec_max_procs"
+	// settingExecMaxActive 是本任务**同时**可有多少条后台执行的上限（0 = 不限）。与上面三条
+	// 互补：那三条限的是「每一条执行能吃多少」（ulimit 前导），这条限的是「同时有几条」——
+	// 单条被 CPU 限额兜住，但 agent 若起了一百条，机器照样被打满。
+	settingExecMaxActive = "exec_max_active"
 	// P24 外部 MCP 的并发上限与熔断（每 server；0 = 不限/用默认）。
 	settingMCPMaxConcurrent   = "mcp_max_concurrent_per_server"
 	settingMCPBreakerFails    = "mcp_breaker_threshold"
@@ -308,6 +312,9 @@ const (
 	defaultExecCPUSeconds = 1800
 	defaultExecMemoryMB   = 0
 	defaultExecMaxProcs   = 0
+	// 同时执行数默认 8：3 个 worker 各自在跑的之外还容得下一些跨意图累积的长扫描，
+	// 又不至于让一条跑飞的循环把机器塞满。0 = 不限。
+	defaultExecMaxActive = 8
 	// 外部 MCP：每 server 最多 2 个并发调用；连续 5 次失败开熔断 60s。
 	defaultMCPMaxConcurrent   = 2
 	defaultMCPBreakerFails    = 5

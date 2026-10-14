@@ -226,6 +226,15 @@ WHERE task_id=$1 ORDER BY id DESC LIMIT $2`, taskID, limit)
 	return out, rows.Err()
 }
 
+// CountActiveExecutions 数一个任务尚未落终态（queued/running）的执行条数。
+// 只为计数而存在——要行不要拿 ListActiveExecutions 再 len()（那是取全量当计数用）。
+func (d *DB) CountActiveExecutions(taskID string) (int, error) {
+	var n int
+	err := d.QueryRow(`SELECT COUNT(*) FROM tool_executions
+WHERE task_id=$1 AND status IN ($2,$3)`, taskID, ExecQueued, ExecRunning).Scan(&n)
+	return n, err
+}
+
 // ListActiveExecutions of one task (for停任务时的 CancelAll 与收尾门).
 func (d *DB) ListActiveExecutions(taskID string) ([]*ToolExecution, error) {
 	rows, err := d.Query(`SELECT `+executionCols+` FROM tool_executions

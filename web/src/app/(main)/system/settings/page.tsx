@@ -86,6 +86,7 @@ export default function SystemSettingsPage() {
   const [execCPU, setExecCPU] = React.useState("1800");
   const [execMem, setExecMem] = React.useState("0");
   const [execProcs, setExecProcs] = React.useState("0");
+  const [execMaxActive, setExecMaxActive] = React.useState("8");
   const [mcpConcurrent, setMcpConcurrent] = React.useState("2");
   const [mcpBreakerFails, setMcpBreakerFails] = React.useState("5");
   const [mcpBreakerCooldown, setMcpBreakerCooldown] = React.useState("60");
@@ -140,6 +141,7 @@ export default function SystemSettingsPage() {
     setExecCPU(String(s.exec_cpu_seconds ?? 1800));
     setExecMem(String(s.exec_memory_mb ?? 0));
     setExecProcs(String(s.exec_max_procs ?? 0));
+    setExecMaxActive(String(s.exec_max_active ?? 8));
     setMcpConcurrent(String(s.mcp_max_concurrent_per_server ?? 2));
     setMcpBreakerFails(String(s.mcp_breaker_threshold ?? 5));
     setMcpBreakerCooldown(String(s.mcp_breaker_cooldown_sec ?? 60));
@@ -272,6 +274,7 @@ export default function SystemSettingsPage() {
         exec_cpu_seconds: Math.max(0, Number(execCPU) || 0),
         exec_memory_mb: Math.max(0, Number(execMem) || 0),
         exec_max_procs: Math.max(0, Number(execProcs) || 0),
+        exec_max_active: Math.max(0, Number(execMaxActive) || 0),
         mcp_max_concurrent_per_server: Math.max(0, Number(mcpConcurrent) || 0),
         mcp_breaker_threshold: Math.max(0, Number(mcpBreakerFails) || 0),
         mcp_breaker_cooldown_sec: Math.max(0, Number(mcpBreakerCooldown) || 0),
@@ -1150,6 +1153,15 @@ export default function SystemSettingsPage() {
                     inputMode="numeric"
                     value={execProcs}
                     onChange={(e) => setExecProcs(e.target.value.replace(/[^0-9]/g, ""))}
+                    disabled={!loaded || savingLimits}
+                  />
+                </Field>
+                <Field label="同时执行数上限（0 = 不限）" htmlFor="exec-max-active">
+                  <Input
+                    id="exec-max-active"
+                    inputMode="numeric"
+                    value={execMaxActive}
+                    onChange={(e) => setExecMaxActive(e.target.value.replace(/[^0-9]/g, ""))}
                     disabled={!loaded || savingLimits}
                   />
                 </Field>
