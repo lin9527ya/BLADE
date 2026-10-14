@@ -117,9 +117,20 @@ func run() int {
 	// 见 Server.RestoreTaskRuntimes 的注释）。
 	srv.RestoreTaskRuntimes()
 	httpSrv := &http.Server{
-		Addr:              *addr,
-		Handler:           srv.Handler(),
+		Addr:    *addr,
+		Handler: srv.Handler(),
+		// 请求头 10s：慢速握手（slowloris）在读完首行之前就被挡掉。
 		ReadHeaderTimeout: 10 * time.Second,
+		// 读整个请求（含体）30s。本服务的请求体都是小 JSON；请求读完之后不再读，
+		// 因此长连接的 SSE 响应不受它影响。
+		ReadTimeout: 30 * time.Second,
+		// 空闲（keep-alive、无在途请求）连接 2 分钟后回收，避免连接堆积占 fd。
+		IdleTimeout: 2 * time.Minute,
+		// **有意不设 WriteTimeout**：/api/logs/stream、探索活动流、旁路提问、更新进度都是
+		// SSE 长连接（server.go:3065/3137、side_questions.go:544、update.go:339），而
+		// WriteTimeout 是按整段响应计时的——设了会把它们按「写了 N 秒」掐断，表现为
+		// 「活动流跑一会儿就断」。要限制单次响应的写入时长，应在具体 handler 里用
+		// http.ResponseController 按需设 deadline，而不是在这里一刀切。
 	}
 
 	go func() {
