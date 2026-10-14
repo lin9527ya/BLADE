@@ -2,7 +2,7 @@
 // user-configured intercept-rule evaluation, Observer/G5 failure attribution,
 // and the RoE authorization-scope gate (intercept.CheckScope: tool calls whose
 // network targets fall outside the task's task_scope are gated before any rule
-// runs; mode off|ask|deny, default off). Every tool call passes through the
+// runs; mode off|ask|deny, default ask). Every tool call passes through the
 // PreToolUse hook before executing. Destructive/exfil gating is not hard-coded
 // here — it lives in the DB intercept rules (seeded as ordinary [内置] rules, so
 // users can disable or delete them), evaluated via applyIntercept.
