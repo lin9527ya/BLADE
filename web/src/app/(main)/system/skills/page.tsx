@@ -813,10 +813,14 @@ export default function SkillsPage() {
                     {/* skill 根节点 */}
                     <div
                       title={[
+                        s.meta_error ? `⚠ frontmatter 无效：${s.meta_error}` : "",
+                        s.meta_warning ? `⚠ ${s.meta_warning}` : "",
                         s.description || "（无描述）",
                         `${s.files.length} 个文件`,
                         granted > 0 ? `${granted} 个 Agent 可见` : "未授权给任何 Agent——谁都调不到它",
-                      ].join("\n")}
+                      ]
+                        .filter(Boolean)
+                        .join("\n")}
                       className={cn(
                         "group relative flex cursor-pointer select-none items-center gap-1 rounded px-2 py-1 text-sm",
                         isSkillSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
@@ -832,6 +836,14 @@ export default function SkillsPage() {
                         : <FolderIcon className="size-3.5 shrink-0 text-blue-500" />
                       }
                       <span className="min-w-0 flex-1 truncate font-semibold" title={s.name}>{s.name}</span>
+                      {s.meta_error && (
+                        <span
+                          className="border-destructive/50 text-destructive shrink-0 rounded border px-1 text-[10px]"
+                          title={`frontmatter 无效：${s.meta_error}`}
+                        >
+                          frontmatter 无效
+                        </span>
+                      )}
                       {granted === 0 && (
                         <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">
                           未授权
@@ -912,6 +924,33 @@ export default function SkillsPage() {
                   )}
                 </div>
               </div>
+
+              {/* frontmatter 体检：硬错误（写入会被拒）红、软警告（缺字段）琥珀。
+                  拒绝不等于死路——文件编辑器是逐字节保存的，给个直达按钮。 */}
+              {(selectedSkill.meta_error || selectedSkill.meta_warning) && (
+                <div
+                  className={cn(
+                    "flex flex-wrap items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed",
+                    selectedSkill.meta_error
+                      ? "border-destructive/50 bg-destructive/5 text-destructive"
+                      : "border-amber-500/50 bg-amber-500/5 text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  <span className="min-w-0 flex-1">
+                    <b>{selectedSkill.meta_error ? "frontmatter 无效：" : "清单提示："}</b>
+                    {selectedSkill.meta_error ?? selectedSkill.meta_warning}
+                    {selectedSkill.meta_error && "　元数据改动（关联 MCP / 描述等）会被拒绝并说明原因。"}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 shrink-0 px-2 text-xs"
+                    onClick={() => setSelected({ skill: selectedSkill.name, path: "SKILL.md" })}
+                  >
+                    <FileTextIcon className="size-3" /> 打开 SKILL.md
+                  </Button>
+                </div>
+              )}
 
               {/* 左右分栏：配置（MCP/可见性）在左为主，调用统计在右为辅。
                   lg 以下放不下时用 flex-row-reverse 回落到单列——统计因 DOM 顺序在前，
