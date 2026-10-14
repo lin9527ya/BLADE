@@ -100,7 +100,9 @@ export function NavMain({ items }: NavMainProps) {
       return item.subItems.some((sub) => path.startsWith(sub.url));
     }
 
-    return path === item.url;
+    // 精确匹配 + 前缀匹配：详情页/别名页（如 /function/tasks/detail、/system/intercept/assets）
+    // 也该把它的所属入口点亮；没有任何条目 URL 是另一条的前缀，不会双重高亮。
+    return path === item.url || path.startsWith(item.url + "/");
   };
 
   const isSubItemActive = (url: string) => {
@@ -171,11 +173,16 @@ function InterceptPendingBadge() {
       try {
         const list = await api.interceptPending();
         if (live) setCount(list.length);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
     poll();
     const t = setInterval(poll, 5000);
-    return () => { live = false; clearInterval(t); };
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
   }, []);
   if (count === 0) return null;
   return (
@@ -199,7 +206,7 @@ function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
           <span>{item.title}</span>
         </Link>
       </SidebarMenuButton>
-      {item.id === "approvals" ? <InterceptPendingBadge /> : <NavItemBadge badge={item.badge} />}
+      {item.liveBadge === "intercept_pending" ? <InterceptPendingBadge /> : <NavItemBadge badge={item.badge} />}
     </SidebarMenuItem>
   );
 }
@@ -272,7 +279,7 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
             <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
           </SidebarMenuButton>
         </CollapsibleTrigger>
-        <NavItemBadge badge={item.badge} />
+        {item.liveBadge === "intercept_pending" ? <InterceptPendingBadge /> : <NavItemBadge badge={item.badge} />}
 
         <CollapsibleContent>
           <SidebarMenuSub>

@@ -1,9 +1,14 @@
-import { ApprovalRecords } from "@/components/approval-records";
+"use client";
 
+import * as React from "react";
+
+import { InterceptWorkbench } from "../_components/intercept-workbench";
+
+// 兼容别名：旧地址（审批记录）落在合并页的「审批记录」分区。
 export default function ApprovalsPage() {
   return (
-    <div className="flex min-w-0 flex-1 flex-col p-4 sm:p-6">
-      <ApprovalRecords />
-    </div>
+    <React.Suspense fallback={null}>
+      <InterceptWorkbench initialSection="approvals" />
+    </React.Suspense>
   );
 }

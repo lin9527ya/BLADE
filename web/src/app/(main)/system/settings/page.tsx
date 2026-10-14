@@ -17,6 +17,8 @@ import Link from "next/link";
 import { toast } from "sonner";
 
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
+import { Advanced, Field, PageShell, Section, SectionNav, SubBlock, SwitchRow } from "@/components/page-sections";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,22 +31,15 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
 import type { CustomRule, ExplorationPolicyDefault, IntelQueryRow, Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
-
-// ---- 分区骨架（照 CyberStrikeAI 的设置页）：左侧分区导航 + 单分区内容面板 ----
-// 内容面板刻意不用卡片：层级靠「分区标题 h2 → 子块 h3（下方细线）→ 字段标签/说明小字」的
-// 排版实现（CS 同款），避免十几张卡片边框互相抢注意力。保存语义保持 ARTEX 原样：
-// 单字段行是「输入框 + 保存」inline；多字段子块把主操作放子块标题行右侧（CS 的编辑器同款）。
 
 const SECTIONS = [
   { id: "basic", label: "基本设置" },
@@ -57,112 +52,6 @@ const SECTIONS = [
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
-
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <section className="flex flex-col gap-8">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-        {hint && <p className="text-muted-foreground text-sm leading-relaxed">{hint}</p>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function SubBlock({
-  title,
-  icon,
-  actions,
-  children,
-}: {
-  title: string;
-  icon?: React.ReactNode;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-2 border-b pb-2">
-        {icon}
-        <h3 className="text-base font-medium">{title}</h3>
-        {actions && <div className="ml-auto flex flex-wrap items-center gap-2">{actions}</div>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-/** Field：标签在上、控件、说明小字在下（CS 的 .form-hint 同款）。 */
-function Field({
-  label,
-  htmlFor,
-  hint,
-  children,
-}: {
-  label: React.ReactNode;
-  htmlFor?: string;
-  hint?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="grid gap-2">
-      <Label htmlFor={htmlFor} className="text-sm font-normal text-muted-foreground">
-        {label}
-      </Label>
-      {children}
-      {hint && <p className="text-muted-foreground text-xs leading-relaxed">{hint}</p>}
-    </div>
-  );
-}
-
-/** SwitchRow：开关行——标签在左、开关在右，说明小字在下方（与旧卡片观感一致）。 */
-function SwitchRow({
-  id,
-  label,
-  hint,
-  checked,
-  disabled,
-  onChange,
-  describedBy,
-}: {
-  id: string;
-  label: React.ReactNode;
-  hint?: React.ReactNode;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-  describedBy?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-4">
-        <Label htmlFor={id} className="text-sm font-normal text-muted-foreground">
-          {label}
-        </Label>
-        <Switch id={id} checked={checked} disabled={disabled} onCheckedChange={onChange} aria-describedby={describedBy} />
-      </div>
-      {hint && (
-        <p id={describedBy} className="text-muted-foreground text-xs leading-relaxed">
-          {hint}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** Advanced：约定「默认可见 = 常用，折叠 = 高级」（CS 同款），与任务页「高级设置」同一交互。 */
-function Advanced({ title = "高级设置", children }: { title?: string; children: React.ReactNode }) {
-  return (
-    <Collapsible>
-      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-xs font-medium">
-        <ChevronRightIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
-        {title}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="mt-4 flex flex-col gap-4">{children}</CollapsibleContent>
-    </Collapsible>
-  );
-}
 
 export default function SystemSettingsPage() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
@@ -606,33 +495,10 @@ export default function SystemSettingsPage() {
   const braveNeedsKey = webSearch && backend === "brave-free" && !braveKeySet;
 
   return (
-    <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-8">
-      {/* 分区导航：窄屏是顶部粘性 chips 条，lg+ 是左侧固定栏（照 CyberStrikeAI 的两栏骨架；
-          切换只换右侧内容，sticky 让长分区滚动时导航不丢）。 */}
-      <nav
-        aria-label="设置分区"
-        className="bg-background/95 sticky top-0 z-10 -mx-4 flex gap-1 overflow-x-auto px-4 py-2 backdrop-blur md:-mx-6 md:px-6 lg:mx-0 lg:w-44 lg:shrink-0 lg:flex-col lg:gap-0.5 lg:self-start lg:overflow-visible lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none"
-      >
-        {SECTIONS.map((sec) => (
-          <button
-            key={sec.id}
-            type="button"
-            aria-current={section === sec.id ? "true" : undefined}
-            onClick={() => setSection(sec.id)}
-            className={cn(
-              "shrink-0 rounded-md px-3 py-1.5 text-left text-sm whitespace-nowrap transition-colors",
-              "lg:w-full lg:rounded-l-none lg:border-l-2 lg:py-2",
-              section === sec.id
-                ? "bg-muted text-foreground font-medium lg:border-primary"
-                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground lg:border-transparent",
-            )}
-          >
-            {sec.label}
-          </button>
-        ))}
-      </nav>
+    <PageShell
+      nav={<SectionNav sections={SECTIONS} active={section} onChange={(id) => setSection(id as SectionId)} ariaLabel="设置分区" />}
+    >
 
-      <div className="flex min-w-0 flex-1 flex-col gap-10">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">系统配置</h1>
           <p className="text-muted-foreground text-sm">全局运行时开关</p>
@@ -1400,7 +1266,6 @@ export default function SystemSettingsPage() {
             </SubBlock>
           </Section>
         )}
-      </div>
-    </div>
+    </PageShell>
   );
 }
