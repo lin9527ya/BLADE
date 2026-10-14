@@ -484,6 +484,13 @@ func (s *Server) pgGetAgent(w http.ResponseWriter, r *http.Request) {
 	if sk == nil {
 		sk = []string{}
 	}
+	// skill_always（常驻技能）必须一起返回：agent 编辑器据此渲染"常驻"勾选并在保存时整份回传；
+	// 漏了它 → 前端恒为 []，保存任何一次可见性都会把该 agent 的常驻标记**静默清空**
+	// （唯一返回它的 /agents/{key}/visibility 那条路由，前端从未调用过）。
+	always, _ := pg.AgentAlwaysSkillNames(a.ID)
+	if always == nil {
+		always = []string{}
+	}
 	// 可选 LLM 配置列表(id/name/model/是否默认),供前端渲染 "默认模型" 下拉;当前绑定见 agent.llm_profile_id。
 	profs, _ := pg.ListProfiles()
 	llmProfiles := make([]map[string]any, 0, len(profs))
@@ -494,7 +501,7 @@ func (s *Server) pgGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"agent": agentDTO(a), "prompt": cur, "variables": vars, "versions": vers,
-		"visibility":   map[string]any{"mcp": mcp, "skill": sk},
+		"visibility":   map[string]any{"mcp": mcp, "skill": sk, "skill_always": always},
 		"llm_profiles": llmProfiles, // 可绑定的 LLM 配置候选
 
 		"wrapup_prompt":            a.WrapupPrompt,                  // 已保存的收尾提示词(空=用内置默认)

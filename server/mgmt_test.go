@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Autumn-27/artex/db"
 )
 
 // TestMgmtAPI exercises the PostgreSQL-backed management API through the real mux.
@@ -110,4 +112,87 @@ func itoaTest(n int64) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// TestAgentPayloadCarriesSkillAlways 钉住一个契约：GET /api/agents/{key} 的 visibility 必须
+// 带上 skill_always（常驻技能）。agent 编辑器据此渲染"常驻"勾选，并在保存可见性时整份回传；
+// 一旦这个字段缺席，前端恒为 []，保存任何一次可见性都会把该 agent 的常驻标记**静默清空**
+// （唯一返回它的 /agents/{key}/visibility 那条路由，前端从未调用过——这个坑就是这么来的）。
+func TestAgentPayloadCarriesSkillAlways(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("database unavailable (%v) — skipping", err)
+	}
+	if m.pg == nil {
+		t.Skip("postgres unavailable — skipping")
+	}
+	td := t.TempDir()
+	s := New(context.Background(), m, td, td, td)
+	h := s.Handler()
+	tok, err := signJWT(s.jwtKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func(method, path string, body any) (int, map[string]any) {
+		var r *http.Request
+		if body != nil {
+			b, _ := json.Marshal(body)
+			r = httptest.NewRequest(method, path, bytes.NewReader(b))
+		} else {
+			r = httptest.NewRequest(method, path, nil)
+		}
+		r.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		var out map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	const key = "always_contract_probe"
+	_, _ = do("DELETE", "/api/agents/"+key, nil)
+	if code, out := do("POST", "/api/agents", map[string]string{"key": key, "name": "常驻契约探针"}); code != 200 {
+		t.Fatalf("create agent: %d %v", code, out)
+	}
+	a, err := m.pg.GetAgentByKey(key)
+	if err != nil || a == nil {
+		t.Fatalf("agent row: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = do("DELETE", "/api/agents/"+key, nil)
+		_ = m.pg.SetAgentSkillBindings(a.ID, nil)
+	})
+	if err := m.pg.SetAgentSkillBindings(a.ID, []db.SkillBinding{{Name: "always-rules", Always: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 详情载荷必须带 skill_always（编辑器读的就是它）。
+	code, out := do("GET", "/api/agents/"+key, nil)
+	if code != 200 {
+		t.Fatalf("get agent: %d", code)
+	}
+	vis, _ := out["visibility"].(map[string]any)
+	if vis == nil {
+		t.Fatalf("payload missing visibility: %v", out)
+	}
+	got, ok := vis["skill_always"].([]any)
+	if !ok || len(got) != 1 || got[0] != "always-rules" {
+		t.Fatalf("visibility.skill_always 缺失或不对（编辑器会因此清空常驻）: %#v", vis["skill_always"])
+	}
+
+	// ② 与专门那条路由同源（两边必须一致，否则"读一处写另一处"照样丢）。
+	_, vout := do("GET", "/api/agents/"+key+"/visibility", nil)
+	if vout["skill_always"] == nil || len(vout["skill_always"].([]any)) != 1 {
+		t.Fatalf("visibility 路由不一致: %v", vout)
+	}
+
+	// ③ 按编辑器的方式整份回传（带上读到的 skill_always）→ 常驻保留。
+	code, _ = do("PUT", "/api/agents/"+key+"/visibility",
+		map[string]any{"mcp": []int64{}, "skill": []string{"always-rules"}, "skill_always": []string{"always-rules"}})
+	if code != 200 {
+		t.Fatalf("set visibility: %d", code)
+	}
+	if names, err := m.pg.AgentAlwaysSkillNames(a.ID); err != nil || len(names) != 1 || names[0] != "always-rules" {
+		t.Fatalf("整份回传后常驻应保留: %v %v", names, err)
+	}
 }
