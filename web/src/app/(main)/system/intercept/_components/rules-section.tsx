@@ -6,14 +6,20 @@ import { BotIcon, ListFilterIcon, PencilIcon, PlusIcon, ShieldAlertIcon, Trash2I
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -456,13 +462,16 @@ export function RulesSection() {
         </CardContent>
       </Card>
 
-      {/* ---- editor sheet ---- */}
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="flex flex-col gap-0 p-0 sm:max-w-md">
-          <SheetHeader className="border-b px-6 py-4">
-            <SheetTitle>{editing ? "编辑规则" : "新建规则"}</SheetTitle>
-            <SheetDescription className="text-xs">优先级越大越先匹配；首条命中规则生效，后续跳过</SheetDescription>
-          </SheetHeader>
+      {/* ---- editor dialog ---- */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          className="sm:max-w-md flex flex-col overflow-hidden p-0 gap-0"
+          style={{ maxHeight: "min(85vh, 720px)" }}
+        >
+          <DialogHeader className="shrink-0 border-b px-6 py-4">
+            <DialogTitle>{editing ? "编辑规则" : "新建规则"}</DialogTitle>
+            <DialogDescription className="text-xs">优先级越大越先匹配；首条命中规则生效，后续跳过</DialogDescription>
+          </DialogHeader>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
             <Field label="名称">
@@ -678,16 +687,16 @@ export function RulesSection() {
             </div>
           </div>
 
-          <SheetFooter className="border-t px-6 py-4 flex-row justify-end gap-2">
+          <DialogFooter className="shrink-0 border-t px-6 py-4 flex-row justify-end gap-2">
             <Button variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button onClick={handleSave} disabled={saving || !!regexErr}>
               {saving ? "保存中…" : "保存"}
             </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ---- scope dialog ---- */}
       <Dialog open={scopeOpen} onOpenChange={setScopeOpen}>

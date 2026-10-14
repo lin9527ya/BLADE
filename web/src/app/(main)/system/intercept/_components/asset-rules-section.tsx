@@ -12,7 +12,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -250,13 +257,16 @@ export function AssetRulesSection() {
         </CardContent>
       </Card>
 
-      {/* editor sheet */}
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="flex flex-col gap-0 p-0 sm:max-w-md">
-          <SheetHeader className="border-b px-6 py-4">
-            <SheetTitle>{editing ? "编辑资产拦截规则" : "新建资产拦截规则"}</SheetTitle>
-            <SheetDescription className="text-xs">命中此规则的目标资产会被全局拦截</SheetDescription>
-          </SheetHeader>
+      {/* editor dialog */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          className="sm:max-w-md flex flex-col overflow-hidden p-0 gap-0"
+          style={{ maxHeight: "min(85vh, 720px)" }}
+        >
+          <DialogHeader className="shrink-0 border-b px-6 py-4">
+            <DialogTitle>{editing ? "编辑资产拦截规则" : "新建资产拦截规则"}</DialogTitle>
+            <DialogDescription className="text-xs">命中此规则的目标资产会被全局拦截</DialogDescription>
+          </DialogHeader>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
             <Field label="匹配类型">
@@ -318,16 +328,16 @@ export function AssetRulesSection() {
             </div>
           </div>
 
-          <SheetFooter className="border-t px-6 py-4 flex-row justify-end gap-2">
+          <DialogFooter className="shrink-0 border-t px-6 py-4 flex-row justify-end gap-2">
             <Button variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving ? "保存中…" : "保存"}
             </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
