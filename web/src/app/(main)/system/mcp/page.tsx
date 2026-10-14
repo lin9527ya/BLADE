@@ -107,7 +107,6 @@ export default function MCPPage() {
   }, [load]);
 
   const selected = servers.find((s) => s.id === selectedId) ?? null;
-  const selectedGuard = selected ? guards[selected.name] : undefined;
   const enabledCount = servers.filter((s) => s.enabled).length;
   const breakerCount = servers.filter((s) => guards[s.name]?.open).length;
 
