@@ -4,10 +4,13 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"time"
@@ -21,6 +24,45 @@ import (
 var schemaSQL string
 
 const schemaMigrationLockKey int64 = 7337741001
+
+// settingSchemaFingerprint 记录最近一次被应用的 schema.sql 指纹。「重启即迁移」意味着库的结构
+// 由**最近一次启动的二进制**决定，事后想回答「这个库是哪一版结构」时，除了这份记录没有别的依据
+// ——schema 里只有并发迁移用的 advisory lock，没有版本号。
+const settingSchemaFingerprint = "schema_fingerprint"
+
+// recordSchemaFingerprint 在迁移完成后把当前嵌入 schema.sql 的 sha256 写进 settings。
+// **只有变了才写、才打日志**：正常重启（指纹没变）既不产生写也不产生噪音，而结构一变就有一行
+// 「schema 已变更」——那正是排障时想知道的事。
+// 失败只记一行日志：它只是可观测性，不该拦住启动。
+func recordSchemaFingerprint(conn *sql.Conn) {
+	ctx := context.Background()
+	sum := sha256.Sum256([]byte(schemaSQL))
+	want := hex.EncodeToString(sum[:])
+	var prev string
+	_ = conn.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, settingSchemaFingerprint).Scan(&prev)
+	if prev == want {
+		return
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO settings(key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, settingSchemaFingerprint, want); err != nil {
+		log.Printf("[pg] schema 指纹落库失败（不影响启动）: %v", err)
+		return
+	}
+	if prev == "" {
+		log.Printf("[pg] schema 指纹已记录: %s", shortSum(want))
+		return
+	}
+	log.Printf("[pg] schema 已变更: %s → %s（本次启动应用了新结构）", shortSum(prev), shortSum(want))
+}
+
+// shortSum 取指纹前 12 位用于日志；对异常短的存量值原样返回——那条路径跑在启动里，
+// 一个手改过的 setting 不该让进程 panic。
+func shortSum(s string) string {
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:12]
+}
 
 // maxOpenConns 是连接池上限，见 Open 里的说明。取值远低于 PostgreSQL 默认的
 // max_connections=100，同时远高于应用自身的嵌套取连接深度（启动期的 schema
@@ -163,6 +205,9 @@ func Open(dsn string) (*DB, error) {
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}
+		// 记指纹（在同一把迁移锁内，且用同一个 checked-out 连接），让「这个库是哪一版结构」
+		// 事后可查。见 recordSchemaFingerprint 的说明。
+		recordSchemaFingerprint(conn)
 		return nil
 	})
 	if err != nil {
