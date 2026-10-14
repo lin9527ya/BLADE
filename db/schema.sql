@@ -1513,3 +1513,30 @@ CREATE TABLE IF NOT EXISTS task_schedules (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_task_schedules_due ON task_schedules(next_run_at) WHERE enabled;
+
+-- P23 公司级知识层：跨任务、跨人的"这家公司已知什么"。
+-- 与探索图的分工：探索图是**一个任务**的推理过程（goal/intent/fact/finding 及其血缘），
+-- 公司知识是**沉淀下来、已被复核过**的结论（"WAF 是 X""登录口在 Y""上次测过 Z 已修"），
+-- 供同公司的其它任务以只读背景知识读到。
+-- 刻意只做显式沉淀（工具/按钮），不做自动灌入：跨任务结论质量参差，自动沉淀会把"已知"
+-- 变成噪音。status 只两态（active/deprecated）：废弃保留痕迹（与发现撤回同款纪律）。
+CREATE TABLE IF NOT EXISTS company_knowledge (
+    id           BIGSERIAL PRIMARY KEY,
+    company_id   BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    -- fact 事实 / conclusion 结论 / asset_hint 资产线索 / playbook_hint 打法提示
+    -- （封闭词表，取值不加 CHECK，由 server 侧白名单归一，与 findings.status 同理）
+    kind         TEXT NOT NULL DEFAULT 'fact',
+    summary      TEXT NOT NULL,
+    detail       TEXT NOT NULL DEFAULT '',
+    -- 来源可回溯：哪个任务、哪个图节点沉淀来的（节点可能属于上游任务）。
+    source_task_id TEXT NOT NULL DEFAULT '',
+    source_node_id BIGINT NOT NULL DEFAULT 0,
+    -- 置信度：high / medium / low / 空（空 = 没标，不猜）。
+    confidence   TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'active',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deprecated_at TIMESTAMPTZ,
+    deprecated_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_company_knowledge_company
+    ON company_knowledge(company_id, id DESC);

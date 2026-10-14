@@ -458,6 +458,17 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		hsum = append(hsum, hint)
 	}
 	out["hints"] = hsum
+	// P23 公司级知识：同公司其它任务沉淀的已确认结论（只读背景）。**刻意不与本任务图混同**：
+	// "别的任务测过 X"不等于"本任务测过 X"，所以单独一段 + 一句说明，不参与本任务去重。
+	if ks := t.companyKnowledgeRows(); len(ks) > 0 {
+		lines := make([]string, 0, len(ks))
+		for _, k := range ks {
+			lines = append(lines, renderKnowledgeLine(k))
+		}
+		out["company_knowledge"] = lines
+		out["company_knowledge_note"] = "以上来自同公司【其它任务】的沉淀（只读）：当先验用，需要时自己复核；" +
+			"它们不代表本任务已测过——本任务的进度仍以本任务图为准。"
+	}
 	// lineage from the exploration edges: an intent's parents (what it
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
@@ -2320,6 +2331,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.cancelExecution(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
+		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。
+		t.promoteKnowledge(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。
 		t.listCompanies(),
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，

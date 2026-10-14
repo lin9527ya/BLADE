@@ -24,6 +24,7 @@ import type {
   Company,
   CompanyScopeMutation,
   CompanyScopeRule,
+  CompanyKnowledge,
   ConstraintCompilePreview,
   ConstraintCompileResult,
   ExplorationPolicyDefault,
@@ -468,6 +469,22 @@ export const api = {
   // 按当前策略清理"未领取"的意图（运行中的不动）。
   pruneTaskPolicy: (id: string) =>
     post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
+  // ---- P23 公司级知识 ----
+  companyKnowledge: (companyId: number) =>
+    get<{ knowledge: CompanyKnowledge[] | null; active: number; total: number }>(
+      `/companies/${companyId}/knowledge`,
+    ).then((r) => ({ knowledge: arr(r.knowledge), active: r.active ?? 0, total: r.total ?? 0 })),
+  // 废弃必须给理由（后来人最需要的就是这句）；恢复清空理由。
+  deprecateCompanyKnowledge: (companyId: number, id: number, reason: string) =>
+    patch<CompanyKnowledge>(`/companies/${companyId}/knowledge/${id}`, { status: "deprecated", reason }),
+  restoreCompanyKnowledge: (companyId: number, id: number) =>
+    patch<CompanyKnowledge>(`/companies/${companyId}/knowledge/${id}`, { status: "active" }),
+  // 从发现详情页沉淀（与 Agent 的 promote_knowledge 工具同一条判定与写入路径）。
+  promoteFindingKnowledge: (
+    findingId: number | string,
+    input: { company_id: number; kind?: string; summary?: string; detail?: string; confidence?: string },
+  ) => post<CompanyKnowledge>(`/findings/${findingId}/promote-knowledge`, input),
+
   // ---- P22 计划任务 ----
   taskSchedules: () =>
     get<{ schedules: TaskSchedule[] | null }>(`/task-schedules`).then((r) => arr(r.schedules)),

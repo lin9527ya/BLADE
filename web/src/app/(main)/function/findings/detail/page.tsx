@@ -8,6 +8,7 @@ import { useSearchParams } from "next/navigation";
 import { ArrowLeftIcon, ArrowUpRightIcon, FileDownIcon, FileTextIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { PromoteKnowledgeDialog } from "@/components/promote-knowledge-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
@@ -174,6 +175,7 @@ function FindingDetailInner() {
             <Badge variant="outline">来源任务 #{finding.source_task_id} · 只读</Badge>
           )}
           <div className="ml-auto flex items-center gap-1.5">
+            <PromoteKnowledgeDialog finding={finding} />
             <Button
               size="sm"
               variant="outline"

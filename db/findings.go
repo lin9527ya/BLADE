@@ -55,6 +55,29 @@ const (
 	FindingOpenProofGap  = "open_proof_gap" // 存疑待补证(proof_gap 写清缺什么;不得视为安全)
 )
 
+// FindingPromotableForKnowledge 判断一条发现的 triage 状态是否允许沉淀成公司知识（P23）。
+// 被推翻/排除/重复的结论沉淀出去会误导后来人，一律拒；其余状态（含待处理）由调用方
+// 决定要不要提示——这里只拦"与结论本身矛盾"的那些。
+func FindingPromotableForKnowledge(status string) error {
+	switch status {
+	case FindingFalsePositive, FindingRetracted, FindingRuledOut, FindingDuplicate:
+		return fmt.Errorf("发现当前状态是 %s（误报/已撤回/已排除/重复）：被推翻的结论不能沉淀为知识", status)
+	}
+	return nil
+}
+
+// FindingStatusByNodeID 取某个 finding 节点对应的独立 findings 行状态（"" = 没有对应行）。
+// 沉淀门（P23）用它：**节点状态不反映 triage 状态**——撤回只翻 findings 行、图节点仍是
+// confirmed，只判节点状态会把被推翻的结论放出去（验收抓出来的）。
+func (s *ExplorationStore) FindingStatusByNodeID(nodeID int64) (string, error) {
+	var st string
+	err := s.db.QueryRow(`SELECT COALESCE(status,'') FROM findings WHERE node_id=$1`, nodeID).Scan(&st)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return st, err
+}
+
 // ValidFindingStatus reports whether s is a known triage state.
 func ValidFindingStatus(s string) bool {
 	switch s {
