@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,18 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 	}
 	if len([]rune(command)) > execMaxCommandRune {
 		return agent.ExecStatus{}, fmt.Errorf("命令过长（>%d 字符）：长脚本请先落盘再执行短命令", execMaxCommandRune)
+	}
+	// 同时执行数上限：与 P24 的资源限额互补——那三条限的是「每一条能吃多少」（ulimit 前导），
+	// 这条限的是「同时有几条」。单条被 CPU 限额兜住，但 agent 若起了一百条，机器照样被打满。
+	// 0 = 不限。读不到计数就放行（与资产闸门同一条纪律：一次 DB 抖动不该挡死 agent 的正常工具
+	// 调用），但必须留日志——不静默。
+	if maxActive := execMaxActiveFromSettings(s.pg); maxActive > 0 {
+		if n, err := s.pg.CountActiveExecutions(taskID); err != nil {
+			log.Printf("[exec] 活跃执行数读取失败，本次不拦: %v", err)
+		} else if n >= maxActive {
+			return agent.ExecStatus{}, fmt.Errorf(
+				"本任务同时运行的后台执行已达上限（%d/%d）：先 wait_execution 等已有的收尾，或用 cancel_execution 取消一条，再起新的", n, maxActive)
+		}
 	}
 	logDir := filepath.Join(s.dir, "tasks", taskID, "executions")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -469,4 +482,20 @@ func (r *tailRing) String() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return string(r.data)
+}
+
+// execMaxActiveFromSettings 读「本任务同时可有多少条后台执行」的上限（0 = 不限）。
+func execMaxActiveFromSettings(pg *db.DB) int {
+	if pg == nil {
+		return defaultExecMaxActive
+	}
+	v, ok, _ := pg.GetSetting(settingExecMaxActive)
+	if !ok || strings.TrimSpace(v) == "" {
+		return defaultExecMaxActive
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return defaultExecMaxActive
+	}
+	return n
 }

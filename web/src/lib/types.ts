@@ -1217,6 +1217,7 @@ export interface Settings {
   exec_cpu_seconds?: number;
   exec_memory_mb?: number;
   exec_max_procs?: number;
+  exec_max_active?: number;
   mcp_max_concurrent_per_server?: number;
   mcp_breaker_threshold?: number;
   mcp_breaker_cooldown_sec?: number;
