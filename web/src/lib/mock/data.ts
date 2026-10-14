@@ -3201,7 +3201,19 @@ export const mcpServers: MCPServer[] = [
 
 export const mcpToolsById: Record<number, MCPTool[]> = {
   1: [
-    { name: "host_info", description: "查询某 IP 的 Shodan 主机信息", enabled: true },
+    {
+      name: "host_info",
+      description: "查询某 IP 的 Shodan 主机信息",
+      enabled: true,
+      schema: {
+        type: "object",
+        properties: {
+          ip: { type: "string", description: "目标 IP" },
+          history: { type: "boolean", description: "是否包含历史记录" },
+        },
+        required: ["ip"],
+      },
+    },
     { name: "search", description: "Shodan 搜索", enabled: true },
     // 演示工具级开关的停用态（P25）。
     { name: "dns_resolve", description: "DNS 解析", enabled: false },

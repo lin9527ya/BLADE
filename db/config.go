@@ -942,16 +942,17 @@ func (d *DB) SetMCPToolEnabled(serverID int64, name string, enabled bool) error 
 	return nil
 }
 
-// MCPTool is one cached tool of an MCP server (name + description + its switch).
+// MCPTool is one cached tool of an MCP server (name + description + switch + input schema).
 type MCPTool struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Enabled     bool   `json:"enabled"` // 工具级开关：false = 不注入任何 Agent
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Enabled     bool            `json:"enabled"`          // 工具级开关：false = 不注入任何 Agent
+	Schema      json.RawMessage `json:"schema,omitempty"` // 发现时抓到的 inputSchema（给 UI 展开参数表）
 }
 
-// MCPToolsDetailed returns the cached tools (name + description + switch) for a server.
+// MCPToolsDetailed returns the cached tools (name + description + switch + schema).
 func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
-	rows, err := d.Query(`SELECT tool_name, COALESCE(description,''), enabled FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	rows, err := d.Query(`SELECT tool_name, COALESCE(description,''), enabled, COALESCE(schema,'null'::jsonb) FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -959,8 +960,12 @@ func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
 	var out []MCPTool
 	for rows.Next() {
 		var t MCPTool
-		if err := rows.Scan(&t.Name, &t.Description, &t.Enabled); err != nil {
+		var schema []byte
+		if err := rows.Scan(&t.Name, &t.Description, &t.Enabled, &schema); err != nil {
 			return nil, err
+		}
+		if string(schema) != "null" {
+			t.Schema = json.RawMessage(schema)
 		}
 		out = append(out, t)
 	}
@@ -998,8 +1003,13 @@ func (d *DB) SaveMCPTools(serverID int64, tools []MCPTool) error {
 		return err
 	}
 	for _, t := range tools {
-		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description, enabled) VALUES ($1,$2,$3,$4)
-ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description`, serverID, t.Name, t.Description, !off[t.Name]); err != nil {
+		schema := string(t.Schema)
+		if schema == "" {
+			schema = "null"
+		}
+		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description, enabled, schema) VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description, schema=EXCLUDED.schema`,
+			serverID, t.Name, t.Description, !off[t.Name], schema); err != nil {
 			return err
 		}
 	}
