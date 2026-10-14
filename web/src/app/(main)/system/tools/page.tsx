@@ -483,7 +483,7 @@ export default function ToolsPage() {
       </Tabs>
 
       <Dialog open={!!selected} onOpenChange={(o) => !o && setSelectedKey(null)}>
-        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
           {selected && (
             <>
               <DialogHeader className="border-b px-4 py-3">
@@ -670,7 +670,7 @@ function CustomToolDialog({
 
   return (
     <Dialog open={!!edit} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <DialogHeader className="border-b px-4 py-3">
           <DialogTitle>{isNew ? "新建自定义工具" : `编辑 ${tool?.key}`}</DialogTitle>
           <DialogDescription>shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http 需写执行规格。</DialogDescription>

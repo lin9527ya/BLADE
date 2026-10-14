@@ -2940,7 +2940,7 @@ function CategoryManagementDialog({
             分类管理
           </Button>
         </DialogTrigger>
-        <DialogContent className="grid max-h-[88vh] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <DialogContent className="grid max-h-[88vh] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-4xl">
           <DialogHeader className="border-b px-6 py-5">
             <DialogTitle>任务分类管理</DialogTitle>
             <DialogDescription>分类用于任务筛选与归档；修改不会影响任务执行，删除后任务会移入未分类。</DialogDescription>
