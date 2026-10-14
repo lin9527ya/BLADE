@@ -60,7 +60,7 @@ func TestAcceptance(t *testing.T) {
 		}
 		_ = m.Close()
 	})
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}

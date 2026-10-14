@@ -23,7 +23,7 @@ func TestMgmtAPI(t *testing.T) {
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
-	tok, err := signJWT(s.jwtKey)
+	tok, err := signJWT(s.signKey.get())
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestAgentPayloadCarriesSkillAlways(t *testing.T) {
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
-	tok, err := signJWT(s.jwtKey)
+	tok, err := signJWT(s.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -45,6 +47,33 @@ func validatePassword(pw string) string {
 	return ""
 }
 
+// newJWTKey 生成一把 32 字符的随机签名密钥。
+func newJWTKey() ([]byte, error) {
+	buf := make([]byte, 32)
+	for i := range buf {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(keyChars))))
+		if err != nil {
+			return nil, fmt.Errorf("generate jwt key: %w", err)
+		}
+		buf[i] = keyChars[n.Int64()]
+	}
+	return buf, nil
+}
+
+// rotateJWTKey 落盘一把新密钥并返回它，用于吊销既有 token（改密码时调用）。
+// 换密钥即等于吊销**全部**已签发 token——本系统单用户，所以"全部"就是你自己那几个
+// 会话。比引入 jti/黑名单简单，也不需要额外的存储。
+func rotateJWTKey(path string) ([]byte, error) {
+	key, err := newJWTKey()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		return nil, fmt.Errorf("write jwt key: %w", err)
+	}
+	return key, nil
+}
+
 // loadOrCreateJWTKey reads the 32-byte signing key from keyDir/jwt.key. keyDir is
 // the project base dir (next to the executable), NOT the browsable workspace root
 // (dataDir) — the signing key must never be listable/downloadable via the file
@@ -68,19 +97,70 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
 		return []byte(strings.TrimSpace(string(data))), nil
 	}
-	buf := make([]byte, 32)
-	for i := range buf {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(keyChars))))
-		if err != nil {
-			return nil, fmt.Errorf("generate jwt key: %w", err)
-		}
-		buf[i] = keyChars[n.Int64()]
+	buf, err := newJWTKey()
+	if err != nil {
+		return nil, err
 	}
 	if err := os.WriteFile(path, buf, 0600); err != nil {
 		return nil, fmt.Errorf("write jwt key: %w", err)
 	}
 	log.Printf("[auth] 新 JWT key 已写入 %s", path)
 	return buf, nil
+}
+
+// signingKey 持有当前的 HS256 签名密钥。用 atomic 而不是裸 []byte 是因为改密码会**轮换**
+// 它（见 authChangePassword），而 requireAuth 每个请求都要读——轮换与并发读必须不打架。
+// 包成结构体、只经方法访问，是为了让"绕过锁直接读字段"在编译期就不成立。
+type signingKey struct{ v atomic.Value } // []byte
+
+func (k *signingKey) get() []byte {
+	b, _ := k.v.Load().([]byte)
+	return b
+}
+
+func (k *signingKey) set(b []byte) { k.v.Store(b) }
+
+// loginGuard 是登录失败节流。本系统用户名固定、密码是唯一的门，而 bcrypt 只让每次尝试变慢、
+// 不限制次数——没有节流就等于把门敞着让在线爆破随便试。失败累计到阈值后锁一段时间，成功后清零。
+// 状态在内存、重启归零：目的是抬高在线爆破成本，不是持久化封禁（单机自用也不需要后者）。
+type loginGuard struct {
+	mu          sync.Mutex
+	failures    int
+	lockedUntil time.Time
+}
+
+const (
+	loginMaxFailures = 5
+	loginLockoutFor  = 5 * time.Minute
+)
+
+// lockedFor 在锁定期内返回剩余时长与 true。
+func (g *loginGuard) lockedFor() (time.Duration, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if left := time.Until(g.lockedUntil); left > 0 {
+		return left, true
+	}
+	return 0, false
+}
+
+// fail 记一次失败；达到阈值就开启（或延长）锁定期并返回它。
+func (g *loginGuard) fail() time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failures++
+	if g.failures >= loginMaxFailures {
+		g.lockedUntil = time.Now().Add(loginLockoutFor)
+		return loginLockoutFor
+	}
+	return 0
+}
+
+func (g *loginGuard) succeed() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failures = 0
+	g.lockedUntil = time.Time{}
 }
 
 // signJWT issues a 7-day HS256 token for user ARTEX.
@@ -129,7 +209,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "未授权")
 			return
 		}
-		if !verifyJWT(tok, s.jwtKey) {
+		if !verifyJWT(tok, s.signKey.get()) {
 			writeErr(w, 401, "token 无效或已过期")
 			return
 		}
@@ -197,7 +277,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码已设置")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	tok, err := signJWT(s.signKey.get())
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -213,7 +293,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	if !verifyJWT(extractToken(r), s.jwtKey) {
+	if !verifyJWT(extractToken(r), s.signKey.get()) {
 		writeErr(w, 401, "未授权")
 		return
 	}
@@ -255,13 +335,36 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true})
+	// 改密码即轮换签名密钥 = 立刻吊销此前签发的**所有** token。不这么做的话，被偷走的那个
+	// 7 天 token 会一直有效到自然过期——改密码就失去了「止损」的意义。（本系统单用户，
+	// 所以「所有 token」就是你自己那几个会话；轮换后本次请求所用的 token 也随失效，
+	// 前端会退回登录页重新登录，这是预期行为。）
+	newKey, rotErr := rotateJWTKey(s.jwtKeyPath)
+	if rotErr != nil {
+		// 密码已经改成功了，但旧 token 没失效——如实说，别报个 ok 让人以为已经止损。
+		log.Printf("[auth] 改密码后轮换 JWT key 失败: %v", rotErr)
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "tokens_revoked": false,
+			"warning": "密码已更新，但签名密钥轮换失败：此前签发的 token 仍然有效。请重试改密码或重启服务。",
+		})
+		return
+	}
+	s.signKey.set(newKey)
+	log.Printf("[auth] 密码已更新，JWT key 已轮换（既有 token 全部失效）")
+	writeJSON(w, 200, map[string]any{"ok": true, "tokens_revoked": true})
 }
 
 // POST /api/auth/login — validates username/password and returns a JWT.
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
+		return
+	}
+	// 节流先于一切：锁定期内连用户名/密码都不看，直接拒——否则爆破者仍能用每次
+	// 请求的时序/回包差异继续试探。
+	if left, locked := s.login.lockedFor(); locked {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
+		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，请 %s 后重试", left.Round(time.Second)))
 		return
 	}
 	var req struct {
@@ -273,6 +376,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Username != "ARTEX" {
+		s.login.fail()
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
@@ -286,10 +390,15 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		if lockFor := s.login.fail(); lockFor > 0 {
+			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor))
+			return
+		}
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	s.login.succeed()
+	tok, err := signJWT(s.signKey.get())
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
