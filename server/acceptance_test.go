@@ -35,7 +35,8 @@ import (
 
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
-// + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关的端到端
+// + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
+// + P26 CSV 资产导入的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -86,6 +87,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P23 公司级知识层（跨任务只读先验/来源可回溯/废弃恢复/唯一写口）", func(t *testing.T) { accP23(t, env.forTest(t)) })
 	t.Run("P24 执行限额与 MCP 熔断（限额真生效/信号归类/开闸不打服务端/重置恢复）", func(t *testing.T) { accP24(t, env.forTest(t)) })
 	t.Run("P25 MCP 工具级开关（关掉即不注入/刷新不翻回/口径自洽/未知名字 404）", func(t *testing.T) { accP25(t, env.forTest(t)) })
+	t.Run("P26 CSV 资产导入（预览只读/预览与落库口径一致/重复只合并不新增/来源如实）", func(t *testing.T) { accP26(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3088,5 +3090,165 @@ func accP25(t *testing.T, e *accEnv) {
 		`{"name":"acc_p25_nope","enabled":false}`)
 	if rec.Code != 404 {
 		t.Fatalf("未知工具应 404，实际 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// accP26 CSV 资产导入：把「先预览再应用」这条契约钉在端到端上——预览一个字节都不写、
+// 预览说的数与应用落库的数同出一源、同一份清单导入两次只合并不新增、任务关联的来源如实标 csv。
+//
+// 域名带纳秒后缀：验收库若被复用（直接 go test 而不走 acceptance.sh 的一次性库），
+// 固定名字会撞上上一轮留下的资产，让「新增/已存在」的断言变成掷骰子。
+func accP26(t *testing.T, e *accEnv) {
+	_, tid := e.newTask("acceptance-p26", "CSV 导入")
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	root := "acc-p26-" + suffix + ".example"
+	sub := "api." + root
+	site := "https://" + sub + ":8443/login"
+	portHost := "www." + root
+	t.Cleanup(func() {
+		_, _ = e.m.Assets().DeleteByHost(sub)
+		_, _ = e.m.Assets().DeleteByHost(root)
+	})
+
+	// domain/url 两列。前四行是四种目标形状，后三行刻意是「进不去」与「打折」的形状。
+	csvBody := strings.Join([]string{
+		"domain,url",
+		root + ",",
+		sub + "," + site,
+		portHost + ":8443,",
+		"subdomain,",
+		"1234,",
+		"ftp://" + root + ",",
+	}, "\n")
+	payload, _ := json.Marshal(map[string]any{"csv": csvBody, "task_id": tid})
+
+	// ① 预览：只读。报告总数/分类/新增/跳过/警告，并给出逐条样例。
+	rec := e.request(http.MethodPost, "/api/assets/import/preview", string(payload))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("预览 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Total        int               `json:"total"`
+		New          int               `json:"new"`
+		Existing     int               `json:"existing"`
+		Duplicates   int               `json:"duplicates"`
+		ByType       map[string]int    `json:"by_type"`
+		Unrecognized []assetImportNote `json:"unrecognized"`
+		Warnings     []assetImportNote `json:"warnings"`
+		Samples      []struct {
+			Line     int    `json:"line"`
+			Value    string `json:"value"`
+			Type     string `json:"type"`
+			Existing bool   `json:"existing"`
+		} `json:"samples"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("预览解码失败: %v raw=%s", err, rec.Body.String())
+	}
+	if preview.Total != 4 || preview.New != 4 || preview.Existing != 0 {
+		t.Fatalf("预览口径不对：total=%d new=%d existing=%d（应 4/4/0）body=%s",
+			preview.Total, preview.New, preview.Existing, rec.Body.String())
+	}
+	if preview.ByType["root_domain"] != 1 || preview.ByType["subdomain"] != 2 || preview.ByType["service"] != 1 {
+		t.Errorf("分类计数不对：%v", preview.ByType)
+	}
+	if len(preview.Unrecognized) != 3 {
+		t.Errorf("该如实报出 3 行进不去的（类型词/纯数字/ftp），得到 %v", preview.Unrecognized)
+	}
+	if len(preview.Warnings) != 1 || !strings.Contains(preview.Warnings[0].Reason, "8443") {
+		t.Errorf("host:port 该有一条端口未登记的警告，得到 %v", preview.Warnings)
+	}
+	if len(preview.Samples) != 4 {
+		t.Errorf("样例该逐条列出 4 条，得到 %d", len(preview.Samples))
+	}
+
+	// ② 预览必须只读：库里不该有任何一条。
+	// 限定 root_domain/subdomain 两类：服务资产也会带 domain 列（从 URL 里提的主机名），
+	// 不限定就会把服务行也算进来。
+	var present int
+	if err := e.m.pg.QueryRow(`
+SELECT count(*) FROM assets WHERE type IN ('root_domain','subdomain') AND domain = ANY($1::text[])`,
+		"{"+strings.Join([]string{root, sub, portHost}, ",")+"}").Scan(&present); err != nil {
+		t.Fatalf("查资产失败: %v", err)
+	}
+	if present != 0 {
+		t.Fatalf("预览写了库：已存在 %d 条", present)
+	}
+
+	// ③ 应用：新增数与预览一致。
+	rec = e.request(http.MethodPost, "/api/assets/import", string(payload))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应用 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var applied struct {
+		Created int `json:"created"`
+		Merged  int `json:"merged"`
+		Errors  []struct {
+			Line  int    `json:"line"`
+			Value string `json:"value"`
+			Error string `json:"error"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
+		t.Fatalf("应用解码失败: %v raw=%s", err, rec.Body.String())
+	}
+	if applied.Created != preview.New || applied.Merged != preview.Existing {
+		t.Fatalf("预览与落库口径不一致：预览 new=%d existing=%d，落库 created=%d merged=%d",
+			preview.New, preview.Existing, applied.Created, applied.Merged)
+	}
+	if len(applied.Errors) != 0 {
+		t.Fatalf("不该有落库错误：%v", applied.Errors)
+	}
+
+	// ④ 幂等：同一份清单再导一次，一条都不新增。
+	rec = e.request(http.MethodPost, "/api/assets/import", string(payload))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("二次导入 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	applied = struct {
+		Created int `json:"created"`
+		Merged  int `json:"merged"`
+		Errors  []struct {
+			Line  int    `json:"line"`
+			Value string `json:"value"`
+			Error string `json:"error"`
+		} `json:"errors"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
+		t.Fatalf("二次导入解码失败: %v", err)
+	}
+	if applied.Created != 0 || applied.Merged != 4 {
+		t.Fatalf("重复导入该只合并：created=%d merged=%d（应 0/4）", applied.Created, applied.Merged)
+	}
+	var rows int
+	if err := e.m.pg.QueryRow(`
+SELECT count(*) FROM assets WHERE type IN ('root_domain','subdomain') AND domain = ANY($1::text[])`,
+		"{"+strings.Join([]string{root, sub, portHost}, ",")+"}").Scan(&rows); err != nil {
+		t.Fatalf("查资产失败: %v", err)
+	}
+	if rows != 3 {
+		t.Fatalf("重复导入产生了重复行：同名资产 %d 条（应 3）", rows)
+	}
+
+	// ⑤ 任务关联与来源：导入到任务时要能在任务资产里查到，且来源如实标 csv。
+	// 子域的行是 sub，root_domain 的行是 root（UpsertSubdomain 顺带确保的根域）。
+	var source, summary string
+	if err := e.m.pg.QueryRow(`
+SELECT l.source, l.source_summary FROM task_asset_links l JOIN assets a ON a.id=l.asset_id
+WHERE l.task_id=$1 AND a.domain=$2`, tid, sub).Scan(&source, &summary); err != nil {
+		t.Fatalf("任务资产关联不存在（导入没进任务的测试资产）：%v", err)
+	}
+	if source != "csv" {
+		t.Errorf("来源该标成 csv，得到 %q", source)
+	}
+	if !strings.Contains(summary, "CSV") {
+		t.Errorf("来源说明该点明 CSV，得到 %q", summary)
+	}
+
+	// ⑥ 任务不存在时如实报错，而不是「说成功、任务里什么都没有」。
+	badPayload, _ := json.Marshal(map[string]any{"csv": "example.com", "task_id": 1 << 40})
+	rec = e.request(http.MethodPost, "/api/assets/import", string(badPayload))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("不存在的任务应 404，实际 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

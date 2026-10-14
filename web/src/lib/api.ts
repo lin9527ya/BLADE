@@ -14,6 +14,8 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  AssetImportPreview,
+  AssetImportResult,
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
@@ -666,6 +668,11 @@ export const api = {
     get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
   deleteAssets: (ids: number[]) =>
     http<{ deleted: number }>("/assets", { method: "DELETE", body: JSON.stringify({ ids }) }),
+  // CSV 目标清单导入。同一份 CSV 喂两条路径：preview 只读、import 才写——所以
+  // 「预览说会新增 N 条」与「导入真的新增几条」出自服务端同一段代码。
+  previewAssetImport: (csv: string, taskId = 0) =>
+    post<AssetImportPreview>("/assets/import/preview", { csv, task_id: taskId }),
+  importAssets: (csv: string, taskId = 0) => post<AssetImportResult>("/assets/import", { csv, task_id: taskId }),
   // task-scoped view of the same endpoint — server-side paginated like `assets`
   taskAssets: (taskId: string, type = "", limit = 50, offset = 0) =>
     get<{ count: number; total: number; assets: Asset[] }>(

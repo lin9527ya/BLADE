@@ -1100,6 +1100,85 @@ func (s *AssetStore) CountByType(typ string) (int, error) {
 	return n, err
 }
 
+// AssetKeyPresence 报告一批自然键里哪些已经在库里。
+//
+// 存在的理由：Upsert* 全是幂等合并（ON CONFLICT DO UPDATE）且只返回 id，**不区分新建与
+// 合并**——所以「这次导入会新增多少条、合并多少条」只能在写之前先查一次。
+//
+// 三个 map 的键都是**调用方传入的原文**，不是归一化后的值：归一化规则是写入路径的一部分
+// （nkey.go 的 DomainKey / assets.go 的 normalizeURL），复制一份到调用方迟早会漂移——
+// 那时「已存在」会静默变成「新增」，而这种错没人看得出来。这里在内部归一、对外按原文回答。
+type AssetKeyPresence struct {
+	Domains map[string]bool // root_domain + 无 record_type 的 subdomain
+	IPs     map[string]bool
+	URLs    map[string]bool // http 服务
+}
+
+// ExistingAssetKeys 逐类查询哪些键已在库。空入参类目直接跳过（不发空查询）。
+func (s *AssetStore) ExistingAssetKeys(domains, ips, urls []string) (AssetKeyPresence, error) {
+	presence := AssetKeyPresence{
+		Domains: make(map[string]bool),
+		IPs:     make(map[string]bool),
+		URLs:    make(map[string]bool),
+	}
+	// 子域导入不带 record_type，自然键即 (domain, '')；只在别的 record_type 下存在的同名域
+	// 是另一行，如实算「新增」。
+	if err := s.markExisting(domains, DomainKey, presence.Domains, `
+SELECT DISTINCT domain FROM assets
+WHERE domain = ANY($1::text[])
+  AND (type = 'root_domain' OR (type = 'subdomain' AND COALESCE(record_type,'') = ''))`); err != nil {
+		return presence, err
+	}
+	if err := s.markExisting(ips, IPKey, presence.IPs,
+		`SELECT ip FROM assets WHERE type = 'ip' AND ip = ANY($1::text[])`); err != nil {
+		return presence, err
+	}
+	if err := s.markExisting(urls, normalizeURL, presence.URLs,
+		`SELECT url FROM assets WHERE type = 'service' AND service_type = 'http' AND url = ANY($1::text[])`); err != nil {
+		return presence, err
+	}
+	return presence, nil
+}
+
+// markExisting 归一化 raw 值、查一次库、把命中的**原文**记进 out。
+// normalize 是写入路径用的那个函数（参数化传入，保证读写同源）。
+func (s *AssetStore) markExisting(raw []string, normalize func(string) string, out map[string]bool, query string) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	// 多个原文可能归一到同一个键（大小写、末尾点、URL 尾斜杠），按归一值反查原文。
+	normToRaw := make(map[string][]string, len(raw))
+	norm := make([]string, 0, len(raw))
+	for _, r := range raw {
+		n := normalize(r)
+		if n == "" {
+			continue
+		}
+		if _, seen := normToRaw[n]; !seen {
+			norm = append(norm, n)
+		}
+		normToRaw[n] = append(normToRaw[n], r)
+	}
+	if len(norm) == 0 {
+		return nil
+	}
+	rows, err := s.db.Query(query, marshalStringArray(norm))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return err
+		}
+		for _, r := range normToRaw[k] {
+			out[r] = true
+		}
+	}
+	return rows.Err()
+}
+
 // QueryByCompany returns assets for a company, optionally filtered by type.
 // limit <= 0 means no limit.
 func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset int) ([]*Asset, error) {

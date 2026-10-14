@@ -416,6 +416,46 @@ export interface Company {
   scope?: ScopeRow[];
 }
 
+// CSV 资产导入。预览与应用共用同一份解析器（server/asset_import.go）——预览里的
+// new/existing 与应用后的 created/merged 同出一源，所以两边数字必然对得上。
+export interface AssetImportNote {
+  line: number;
+  value: string;
+  reason: string;
+}
+
+export interface AssetImportSample {
+  line: number;
+  value: string;
+  type: string; // root_domain | subdomain | ip | service
+  existing: boolean;
+}
+
+export interface AssetImportPreview {
+  total: number;
+  by_type: Record<string, number>;
+  new: number;
+  existing: number;
+  duplicates: number;
+  unrecognized: AssetImportNote[]; // 进不去的（含行号与原因）
+  warnings: AssetImportNote[]; // 进去了但有折扣的（如 host:port 的端口未登记）
+  samples: AssetImportSample[];
+  samples_truncated?: number;
+  parse_error?: string;
+  task_id: number;
+}
+
+export interface AssetImportResult {
+  created: number;
+  merged: number;
+  by_type: Record<string, number>;
+  unrecognized: AssetImportNote[];
+  warnings: AssetImportNote[];
+  errors?: { line: number; value: string; error: string }[];
+  parse_error?: string;
+  task_id: number;
+}
+
 // ---- Exploration graph (per task) ----
 export type ExploreKind = "task" | "begin" | "goal" | "intent" | "fact" | "finding" | "hint" | "digest";
 export type GoalState = "open" | "met" | "abandoned";
