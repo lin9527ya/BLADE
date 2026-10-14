@@ -36,7 +36,7 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
-// + P26 CSV 资产导入的端到端
+// + P26 CSV 资产导入 + P27 战果层（据点/凭据）的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -88,6 +88,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P24 执行限额与 MCP 熔断（限额真生效/信号归类/开闸不打服务端/重置恢复）", func(t *testing.T) { accP24(t, env.forTest(t)) })
 	t.Run("P25 MCP 工具级开关（关掉即不注入/刷新不翻回/口径自洽/未知名字 404）", func(t *testing.T) { accP25(t, env.forTest(t)) })
 	t.Run("P26 CSV 资产导入（预览只读/预览与落库口径一致/重复只合并不新增/来源如实）", func(t *testing.T) { accP26(t, env.forTest(t)) })
+	t.Run("P27 战果层（据点/凭据入概览与报告，凭据本体不外流）", func(t *testing.T) { accP27(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3250,5 +3251,61 @@ WHERE l.task_id=$1 AND a.domain=$2`, tid, sub).Scan(&source, &summary); err != n
 	rec = e.request(http.MethodPost, "/api/assets/import", string(badPayload))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("不存在的任务应 404，实际 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// accP27 战果层：据点/凭据经真实的 worker 工具写回 → graph_overview 可见 → 报告成段。
+//
+// 端到端才能钉住的两件事：①报告里必须有战果——没有的话，任务打穿了一条链而交付物看不出来，
+// 等于白打穿；②**凭据本体绝不进报告**——报告会被下载、被打进 P19 的批量交付包，在里面印
+// 可用的凭据就是把战果随交付物一起发走。
+func accP27(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p27", "战果层")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	intentID, err := task.Store.AddIntent(map[string]any{"summary": "打穿上传点"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentArg := strconv.FormatInt(intentID, 10)
+
+	foothold := workflowTool(t, tsx.WorkerTools(), "report_foothold")
+	res, err := foothold.Call(context.Background(), json.RawMessage(
+		`{"summary":"在 web01 上拿到 www-data 的反弹 shell","access":"反弹 shell","privilege":"user",`+
+			`"evidence":"nc -lvnp 4444 → connect to 10.0.0.9:47112","confidence":"high","intent_id":`+intentArg+`}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "foothold recorded: ") {
+		t.Fatalf("report_foothold: %v %s", err, res.Flatten())
+	}
+
+	// 凭据本体用一个不可能偶然撞上的串，好让"报告里有没有它"是个确定性断言。
+	const secret = "ACC-P27-SECRET-do-not-print"
+	cred := workflowTool(t, tsx.WorkerTools(), "report_credential")
+	res, err = cred.Call(context.Background(), json.RawMessage(
+		`{"summary":"在 web01 的 wp-config.php 里读到数据库口令","kind":"password","username":"wp_user",`+
+			`"secret":"`+secret+`","evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+intentArg+`}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "credential recorded: ") {
+		t.Fatalf("report_credential: %v %s", err, res.Flatten())
+	}
+
+	// ① 规划层看得见：计数与窗口都要在 graph_overview 里。
+	overview := workflowTool(t, tsx.PlannerTools(), "graph_overview")
+	ores, err := overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("graph_overview: %v", err)
+	}
+	flat := ores.Flatten()
+	e.mustContain(flat, `"footholds_total":1`, "概览的据点计数")
+	e.mustContain(flat, `"credentials_total":1`, "概览的凭据计数")
+	e.mustContain(flat, "反弹 shell", "概览里的据点摘要")
+
+	// ② 报告成段，且凭据本体不在里面。
+	md := e.report(task)
+	e.mustContain(md, "## 战果（已攻陷的通路与取得的凭据）", "战果段")
+	e.mustContain(md, "在 web01 上拿到 www-data 的反弹 shell", "据点摘要")
+	e.mustContain(md, "wp_user", "凭据身份")
+	e.mustContain(md, "当前可用", "战果状态")
+	if strings.Contains(md, secret) {
+		t.Fatalf("凭据本体进了报告——报告会随交付物外流：\n%s", md)
 	}
 }

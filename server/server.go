@@ -4156,10 +4156,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			counts[ty] = len(ns)
 		}
 	}
+	// 战果：据点与凭据各取全量（同 findings 的取法）。它们不进 digest（coldgraph 只折
+	// intent/fact），所以不会被折叠吞掉，按 kind 直取即可。
+	footholds, _ := t.Store.ListByKind(db.KindFoothold, 1000)
+	credentials, _ := t.Store.ListByKind(db.KindCredential, 1000)
+
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
+		Footholds: footholds, Credentials: credentials,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

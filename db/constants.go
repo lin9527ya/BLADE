@@ -31,6 +31,19 @@ const (
 	KindFinding = "finding" // a confirmed vulnerability (report_finding), distinct from a fact
 	KindHint    = "hint"
 	KindDigest  = "digest" // a compressed fold of cold intents/facts (cold-digest-spec §1); lossless — members kept, restorable by id
+	// 战果层：利用成功之后的产物。此前 worker 只能把「拿到了 shell」压成一段 fact 文本，
+	// 于是规划层看不到「我有哪些据点、能横到哪、握着哪些凭据」——每轮都从外面重新打一遍，
+	// 交付报告里的「提权/横向」也只能靠文案。这两个 kind 把战果变成可以据此规划的一等公民。
+	KindFoothold   = "foothold"   // 一个在手的据点（反弹 shell / SSH / 会话），挂在被攻陷的资产上
+	KindCredential = "credential" // 从据点上读到的一条凭据（口令 / 哈希 / 密钥 / 令牌）
+)
+
+// 战果节点（kind='foothold'/'credential'）的状态：只有两态——在手 / 掉了。
+// 战果的全部价值就在「现在还能不能用」，再多的状态只是要人维护、且没人会维护的字段；
+// 「曾经用过但已失效」由 report 的说明承载，不需要一个状态位。
+const (
+	StateLootActive = "active" // 据点还能连、凭据还能用
+	StateLootLost   = "lost"   // 掉了：据点断了、凭据失效（复测/复用失败后如实标记）
 )
 
 // Digest node states (kind='digest'). A digest is 'active' while it renders in

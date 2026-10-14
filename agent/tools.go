@@ -153,20 +153,26 @@ type EnrichTrigger interface {
 // WriteCounts breaks down what a worker persisted this run, by node kind, so the
 // engine can log an accurate "wrote back" summary instead of lumping assets and
 // findings under "facts" (record_fact → Facts, insert_assets → Assets,
-// report_finding → Findings; each element of a batch counts once).
+// report_finding → Findings, report_foothold/report_credential → 战果; each
+// element of a batch counts once).
 type WriteCounts struct {
-	Facts    int
-	Assets   int
-	Findings int
+	Facts       int
+	Assets      int
+	Findings    int
+	Footholds   int
+	Credentials int
 }
 
 // Total is every node persisted this run, regardless of kind — the
 // "explored but persisted nothing" signal (Total == 0).
-func (w WriteCounts) Total() int { return w.Facts + w.Assets + w.Findings }
+func (w WriteCounts) Total() int {
+	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials
+}
 
-// String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0".
+// String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0 据点1 凭据2".
 func (w WriteCounts) String() string {
-	return fmt.Sprintf("事实%d 资产%d 漏洞%d", w.Facts, w.Assets, w.Findings)
+	return fmt.Sprintf("事实%d 资产%d 漏洞%d 据点%d 凭据%d",
+		w.Facts, w.Assets, w.Findings, w.Footholds, w.Credentials)
 }
 
 // Writes reports what this run wrote back, split by node kind (so the engine can
@@ -603,6 +609,30 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		recentDone = recentDone[:recentDoneCap]
 	}
 	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf)
+	// 战果（据点 / 凭据）：利用成功之后的产物。计数走 COUNT，理由同 findings_total——列表有
+	// 行数上限，len() 报的是窗口大小而不是总数，而「手上有几个据点」正是 planner 判断能不能
+	// 继续往深打的依据，一个被封顶的数字会静默低估战果。
+	//
+	// compactLoot 用的是**字段白名单**：凭据的 secret 因此结构性地进不了概览——概览会被折进
+	// 每一轮 planner 与 worker 的提示词、还可能进日志，那里不该出现任务里最敏感的那一行。
+	// 要看凭据原文，用 node_detail(id)。
+	const lootListCap = 8
+	footholdNodes, _ := t.ts.ListByKind(db.KindFoothold, lootListCap) // newest first
+	credNodes, _ := t.ts.ListByKind(db.KindCredential, lootListCap)
+	if total, err := t.ts.CountByKind(db.KindFoothold); err == nil {
+		out["footholds_total"] = total
+	} else {
+		out["footholds_total"] = len(footholdNodes)
+	}
+	if total, err := t.ts.CountByKind(db.KindCredential); err == nil {
+		out["credentials_total"] = total
+	} else {
+		out["credentials_total"] = len(credNodes)
+	}
+	// 战果不会被折进 digest（coldgraph.foldableKind 只认 intent/fact），所以这里不需要
+	// 像 recent_facts 那样给 hidden() 留出口。
+	out["footholds"] = compactLoot(footholdNodes, factFrom, "access", "privilege")
+	out["credentials"] = compactLoot(credNodes, factFrom, "kind", "username")
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
 	// 只给裸 id（仍可 expand_digest 展开），避免冷区唯一出口被无限拉长。
 	const coldDigestsCap = 15
@@ -984,6 +1014,34 @@ func compactNode(n *db.Node) map[string]any {
 		inheritedMap(m, n.SourceTaskID)
 	}
 	return m
+}
+
+// compactLoot 把战果节点压成概览行：{id, state, summary, from_intent?, keep…}。
+//
+// keep 是**白名单**，不是黑名单：只有列出的 payload 字段会被带出。凭据的 secret 因此
+// 不可能因为「忘了删」而漏进概览——加字段时得显式写进来，那一步是能看见的。
+func compactLoot(nodes []*db.Node, from map[int64]int64, keep ...string) []map[string]any {
+	out := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		var p map[string]any
+		if json.Unmarshal(n.Payload, &p) != nil {
+			continue
+		}
+		m := map[string]any{"id": n.ID, "state": n.State, "summary": p["summary"]}
+		for _, k := range keep {
+			if v, ok := p[k]; ok && v != nil && v != "" {
+				m[k] = v
+			}
+		}
+		if fromID := from[n.ID]; fromID > 0 {
+			m["from_intent"] = fromID
+		}
+		if n.Inherited {
+			inheritedMap(m, n.SourceTaskID)
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // compactFinding is compactNode plus the vuln-specific vulnclass/severity.
@@ -1692,6 +1750,159 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 				out["errors"] = errs
 			}
 			return jsonResult(out)
+		})
+}
+
+// =====================================================================
+// 战果（据点 / 凭据）
+// =====================================================================
+//
+// 利用成功之后的产物此前无处安放：worker 只能把「拿到了 shell」压成一段 fact 文本，于是
+// 规划层看不到「我有哪些据点、能横到哪、握着哪些凭据」——每轮都从外面重新打一遍，报告里的
+// 「提权/横向」也只能靠文案。这里给两者各自的 kind，复用既有的节点 / 锚点 / 边机制
+// （不新造存储）：graph_overview 与报告按 kind 取用即可。
+
+// lootBase 是据点与凭据共有的字段，形状照 fact：一句话结论 + 细节 + 一行证据 + 置信度，
+// 外加归属的意图与资产。
+type lootBase struct {
+	Summary    string            `json:"summary"`
+	Detail     string            `json:"detail"`
+	Evidence   string            `json:"evidence"`
+	Confidence string            `json:"confidence"`
+	IntentID   json.RawMessage   `json:"intent_id"`
+	AssetIDs   []json.RawMessage `json:"asset_ids"`
+}
+
+type footholdItem struct {
+	lootBase
+	Access    string `json:"access"`    // 怎么进去的：反弹 shell / SSH / RDP / webshell
+	Privilege string `json:"privilege"` // 进去时的权限：user / root / SYSTEM
+}
+
+type credentialItem struct {
+	lootBase
+	Kind     string `json:"kind"`     // password / hash / key / token
+	Username string `json:"username"` // 凭据对应的账号（哈希/密钥可能没有）
+	Secret   string `json:"secret"`   // 凭据本体
+}
+
+// recordLoot 写一个战果节点并连到产生它的意图（intent→yields→战果，与 fact/finding 同链）。
+//
+// **故意比 record_fact 严**：summary、evidence、confidence 三者缺一不可。战果会被规划层
+// 当作既定事实拿去规划「能从这条通路往下做什么」，一条编出来的 shell 会让后续所有意图跑空，
+// 而且看不出是哪里错的——所以宁可拒收，也不要一条没有证据的战果入库。
+func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]string) (int64, error) {
+	summary := strings.TrimSpace(base.Summary)
+	if summary == "" {
+		return 0, fmt.Errorf("summary 不能为空")
+	}
+	if strings.TrimSpace(base.Evidence) == "" {
+		return 0, fmt.Errorf("evidence 不能为空：战果会被规划层当作既定事实使用，没留下可核对的一行输出就不算数")
+	}
+	// 注意这里比 report_finding 严一档：db.ValidConfidence("") 是放行的（对漏洞而言空 =
+	// 未标定，报告会点名），但战果的 schema 把 confidence 列进了 required——那就让它真的必填，
+	// 而不是留一个只有模型才看得见的摆设。
+	if strings.TrimSpace(base.Confidence) == "" {
+		return 0, fmt.Errorf("confidence 不能为空：战果要标清你有多确定（high 亲手敲过 / medium 成功但未复验 / low 据现象推断）")
+	}
+	if !db.ValidConfidence(base.Confidence) {
+		return 0, fmt.Errorf("confidence 取值必须是 high|medium|low（诚实标定）")
+	}
+	intent := pid(base.IntentID)
+	if intent > 0 {
+		node, err := t.ts.GetNode(intent)
+		if err != nil || node == nil || node.Kind != db.KindIntent {
+			return 0, fmt.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）")
+		}
+	}
+	payload := map[string]any{"summary": summary}
+	for k, v := range map[string]string{
+		"detail": base.Detail, "evidence": base.Evidence, "confidence": base.Confidence,
+	} {
+		if s := strings.TrimSpace(v); s != "" {
+			payload[k] = s
+		}
+	}
+	for k, v := range extra {
+		if s := strings.TrimSpace(v); s != "" {
+			payload[k] = s
+		}
+	}
+	// priority 8：frontier 只取 intent，这个值不影响调度；它只如实标出这是高价值产物。
+	id, err := t.ts.AddNode(kind, payload, 8, db.StateLootActive, t.worker, pidList(base.AssetIDs))
+	if err != nil {
+		return 0, err
+	}
+	if intent > 0 {
+		_ = t.ts.Link(intent, db.RelYields, id)
+	}
+	return id, nil
+}
+
+// reportFoothold 记录一个真正拿到手的据点。worker 侧。
+func (t *ToolSet) reportFoothold() actool.CoreTool {
+	return t.writeExpTool("report_foothold",
+		"记录一个【真正拿到手、现在还能用】的据点（反弹 shell / SSH / webshell / 会话），连到产生它的意图。"+
+			"这是规划层判断「能往哪深打」的依据：**不记等于没拿到**——别的 worker 不知道这条通路存在，会从外面重新打一遍。"+
+			"必须给 evidence（命令 + 能证明这条通路真的存在的输出）与 confidence；拿不出可核对的输出就不算数（工具会拒收）。"+
+			"据点已失效时不要新记一条，改为用 record_fact 说明它掉了。",
+		obj(map[string]any{
+			"summary":    str("一句话：【哪台主机】上拿到了【什么权限】的【什么通路】"),
+			"access":     str("怎么进去的：反弹 shell / SSH / RDP / webshell / 其他（如实写）"),
+			"privilege":  str("进去时的权限：user / root / SYSTEM / 其他（如实标，别拔高）"),
+			"detail":     str("细节：连法、端口、会话标识、后续可用的命令等"),
+			"evidence":   str("【一行】关键证据：命令 + 能证明这条通路真的存在的输出（必填）"),
+			"confidence": str("high（亲手敲过、当场有效）| medium（成功但未复验）| low（据现象推断、尚未确认）"),
+			"intent_id":  idp("当前任务的意图 id（你领到的意图）"),
+			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "被攻陷的资产 id"},
+		}, "summary", "evidence", "confidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a footholdItem
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id, err := t.recordLoot(db.KindFoothold, a.lootBase, map[string]string{
+				"access": a.Access, "privilege": a.Privilege,
+			})
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			t.writes.Footholds++
+			return actool.Text(fmt.Sprintf("foothold recorded: %d", id)), nil
+		})
+}
+
+// reportCredential 记录一条从据点上读到的凭据。worker 侧。
+func (t *ToolSet) reportCredential() actool.CoreTool {
+	return t.writeExpTool("report_credential",
+		"记录一条【真实读到】的凭据（口令 / 哈希 / 密钥 / 令牌），连到产生它的意图。"+
+			"凭据是横向与提权的抓手：记下来，规划层才会派「拿它去哪试」的意图；不记就只能重挖一遍。"+
+			"必须给 evidence（读到它的那条命令与输出）与 confidence；**不要把猜测的、试出来的弱口令当成读到的凭据**——"+
+			"后者用 record_fact 记结论。",
+		obj(map[string]any{
+			"summary":    str("一句话：【在哪台主机/哪个位置】读到了【谁】的【什么凭据】"),
+			"kind":       str("password（明文口令）| hash（哈希）| key（私钥/密钥）| token（令牌/票据）"),
+			"username":   str("凭据对应的账号（哈希、密钥可能没有，可省略）"),
+			"secret":     str("凭据本体（原文；报告与交付包只印身份与来源，不印这一项）"),
+			"detail":     str("细节：从哪个文件/配置/内存里读到的，可用于哪些系统等"),
+			"evidence":   str("【一行】关键证据：读到它的那条命令 + 关键输出行（必填）"),
+			"confidence": str("high（明文直接读到）| medium（格式像但未验证）| low（据线索推断，尚未确认）"),
+			"intent_id":  idp("当前任务的意图 id（你领到的意图）"),
+			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "凭据所在的资产 id"},
+		}, "summary", "evidence", "confidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a credentialItem
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id, err := t.recordLoot(db.KindCredential, a.lootBase, map[string]string{
+				"kind": a.Kind, "username": a.Username, "secret": a.Secret,
+			})
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			t.writes.Credentials++
+			return actool.Text(fmt.Sprintf("credential recorded: %d", id)), nil
 		})
 }
 

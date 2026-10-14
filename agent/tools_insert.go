@@ -668,6 +668,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// list_findings 保留：报漏洞前先查本任务已确认漏洞，避免重复上报同一漏洞。
 		t.listFindings(),
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
+		// 战果：拿到据点/凭据是「往深打穿」的产物，必须由产出它的 worker 当场记下来，
+		// 否则规划层看不见这条通路，下一轮从外面重打一遍。
+		t.reportFoothold(), t.reportCredential(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(),
@@ -703,6 +706,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally)
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
+		// 战果：人机对话里也能补记——人在跑任务时拿到的据点/凭据同样要进图，才算数。
+		t.reportFoothold(), t.reportCredential(),
 		// promote_knowledge（P23）：人机对话里也可把结论沉淀给公司（只读背景，供别的任务用）。
 		t.promoteKnowledge(),
 		t.addTaskScope(),
