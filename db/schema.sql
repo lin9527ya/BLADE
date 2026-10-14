@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     completed_at   TIMESTAMPTZ,
     heartbeat_at     TIMESTAMPTZ,
     lease_expires_at TIMESTAMPTZ,
-    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest')),
+    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
         (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
@@ -191,7 +191,11 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
         (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
         (kind='finding' AND state IN ('confirmed','dismissed','ruled_out','open_proof_gap')) OR
         (kind='hint'    AND state IN ('active','consumed')) OR
-        (kind='digest'  AND state IN ('active','superseded'))
+        (kind='digest'  AND state IN ('active','superseded')) OR
+        -- 战果：据点与凭据都只有「在手 / 掉了」两态。不设待确认、不复核——
+        -- 它们的价值就在于「现在能不能用」，语义再多也只是要人维护的字段。
+        (kind='foothold'   AND state IN ('active','lost')) OR
+        (kind='credential' AND state IN ('active','lost'))
     )
 );
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
@@ -213,23 +217,24 @@ ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS cold_since_round BIGINT;
 -- 防止卡死/僵死的 Worker 让意图永久占位。owner 记当前领取者(work#N / chat)。
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS heartbeat_at     TIMESTAMPTZ;
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
--- ck_node_kind: existing installs predate the 'digest' kind — recreate to allow it.
+-- ck_node_kind: existing installs predate the 'digest' / 战果 kinds — recreate to allow them.
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid='exploration_nodes'::regclass
           AND conname='ck_node_kind'
-          AND pg_get_constraintdef(oid) NOT LIKE '%digest%'
+          AND (pg_get_constraintdef(oid) NOT LIKE '%digest%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%foothold%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_kind;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_kind
-            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest'));
+            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential'));
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
--- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev), or
--- 'ruled_out' (finding candidate-closure rev) branches.
+-- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev),
+-- 'ruled_out' (finding candidate-closure rev), or 'foothold' (战果 rev) branches.
 DO $$
 BEGIN
     IF EXISTS (
@@ -240,7 +245,8 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%superseded%'
                OR pg_get_constraintdef(oid) NOT LIKE '%deleted%'
                OR pg_get_constraintdef(oid) NOT LIKE '%negative%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%ruled_out%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%ruled_out%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%foothold%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
@@ -250,7 +256,9 @@ BEGIN
             (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
             (kind='finding' AND state IN ('confirmed','dismissed','ruled_out','open_proof_gap')) OR
             (kind='hint'    AND state IN ('active','consumed')) OR
-            (kind='digest'  AND state IN ('active','superseded'))
+            (kind='digest'  AND state IN ('active','superseded')) OR
+            (kind='foothold'   AND state IN ('active','lost')) OR
+            (kind='credential' AND state IN ('active','lost'))
         );
     END IF;
 END $$;

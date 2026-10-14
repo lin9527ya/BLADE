@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  AnchorIcon,
   ArrowDownIcon,
   ArrowUpIcon,
   ArrowUpToLineIcon,
@@ -12,6 +13,7 @@ import {
   CompassIcon,
   FlagIcon,
   FlaskConicalIcon,
+  KeyIcon,
   LayersIcon,
   LightbulbIcon,
   type LucideIcon,
@@ -90,10 +92,24 @@ const KIND_META: Record<string, KindMeta> = {
     dot: "bg-teal-500",
     chip: "bg-teal-500/15 text-teal-600 dark:text-teal-400",
   },
+  // 战果：利用成功之后的产物。单独配色是必须的——它们此前会落进 `?? KIND_META.fact`
+  // 的兜底里显示成「事实」，人就看不出「这个任务打穿了什么」。
+  foothold: {
+    label: "据点",
+    icon: AnchorIcon,
+    dot: "bg-orange-500",
+    chip: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
+  },
+  credential: {
+    label: "凭据",
+    icon: KeyIcon,
+    dot: "bg-cyan-500",
+    chip: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+  },
 };
 
 // 可筛选的类型。起点(fact/state=origin)不单独列,它跟着「事实」一起过滤。
-const FILTER_KINDS: ExploreKind[] = ["goal", "intent", "fact", "finding", "hint", "digest"];
+const FILTER_KINDS: ExploreKind[] = ["goal", "intent", "fact", "finding", "hint", "digest", "foothold", "credential"];
 
 const REL_LABEL: Record<string, string> = {
   spawns: "派生",

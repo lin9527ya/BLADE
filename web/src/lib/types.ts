@@ -457,7 +457,18 @@ export interface AssetImportResult {
 }
 
 // ---- Exploration graph (per task) ----
-export type ExploreKind = "task" | "begin" | "goal" | "intent" | "fact" | "finding" | "hint" | "digest";
+export type ExploreKind =
+  | "task"
+  | "begin"
+  | "goal"
+  | "intent"
+  | "fact"
+  | "finding"
+  | "hint"
+  | "digest"
+  // 战果：据点（已攻陷的通路）与凭据（读到的口令/哈希/密钥/令牌）。
+  | "foothold"
+  | "credential";
 export type GoalState = "open" | "met" | "abandoned";
 export type IntentState = "open" | "running" | "paused" | "done" | "negative" | "out-of-scope" | "blocked" | "exhausted" | "stopped";
 export type FindingState = "confirmed" | "dismissed";

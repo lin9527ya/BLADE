@@ -41,6 +41,15 @@ type Input struct {
 	RuledOut []CandidateNote
 	// ProofGaps lists candidates closed as open_proof_gap: 存疑待补证，不得视为安全。
 	ProofGaps []CandidateNote
+	// Footholds / Credentials 是战果层（利用成功之后的产物）：据点是已攻陷且当前可用的
+	// 通路，凭据是真实读到的口令/哈希/密钥/令牌。
+	//
+	// **凭据本体不进报告**：报告是要交出去的文档（还能被打进 P19 的批量交付包），在里面印
+	// 可用的凭据，等于把战果随交付物一起发走。报告只印身份与来源——类型、账号、取自哪里、
+	// 怎么读到的；要看原文在任务记录里用节点详情。据点则连细节一起印（那是"怎么进去的"，
+	// 属于报告该讲清楚的事）。
+	Footholds   []*db.Node
+	Credentials []*db.Node
 }
 
 // CandidateNote is one closed candidate (ruled_out / open_proof_gap) with its
@@ -135,6 +144,75 @@ func parseFinding(n *db.Node) findingView {
 
 var sevRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "": 4}
 
+// lootView 是战果节点渲染所需的最小字段集。Secret 只用于判断"这条凭据有没有本体"
+// ——**它不参与渲染**，见 Input.Footholds 处的说明。
+type lootView struct {
+	Summary   string
+	Detail    string
+	Evidence  string
+	Access    string
+	Privilege string
+	Kind      string
+	Username  string
+	Secret    string
+}
+
+func parseLoot(n *db.Node) lootView {
+	var p struct {
+		Summary   string `json:"summary"`
+		Detail    string `json:"detail"`
+		Evidence  string `json:"evidence"`
+		Access    string `json:"access"`
+		Privilege string `json:"privilege"`
+		Kind      string `json:"kind"`
+		Username  string `json:"username"`
+		Secret    string `json:"secret"`
+	}
+	_ = json.Unmarshal(n.Payload, &p)
+	return lootView{p.Summary, p.Detail, p.Evidence, p.Access, p.Privilege, p.Kind, p.Username, p.Secret}
+}
+
+// prefixIf 渲染「标签：值」；值为空时返回空串（交给 writeLootMeta 略去）。
+func prefixIf(label, value string) string {
+	if value == "" {
+		return ""
+	}
+	return label + "：" + value
+}
+
+// credentialBodyNote 是报告对凭据本体的处理：只说有没有，不印内容。
+// 印出来等于把可用凭据随交付物一起发走——报告是会被提交、被转发的文档。
+func credentialBodyNote(secret string) string {
+	if secret == "" {
+		return ""
+	}
+	return "已取得（原文不写入报告）"
+}
+
+// lootStateLabel 渲染战果状态。未标定/未知的状态原样输出，不猜。
+func lootStateLabel(s string) string {
+	switch s {
+	case db.StateLootActive:
+		return "当前可用"
+	case db.StateLootLost:
+		return "已失效"
+	}
+	return s
+}
+
+// writeLootMeta 渲染战果的「一行元信息」（类型/通路/权限/状态），空项自动略去。
+func writeLootMeta(b *strings.Builder, parts []string) {
+	kept := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) > 0 {
+		fmt.Fprintf(b, "- %s\n", strings.Join(kept, " · "))
+	}
+}
+
 // Markdown renders the report.
 func Markdown(in Input) string {
 	var b strings.Builder
@@ -147,6 +225,7 @@ func Markdown(in Input) string {
 	fmt.Fprintf(&b, "- 确认发现：**%d** 个\n", len(in.Findings))
 	fmt.Fprintf(&b, "- 已排除候选：**%d** 个（有反证，不进正文）\n", len(in.RuledOut))
 	fmt.Fprintf(&b, "- 存疑待补证：**%d** 个（不得视为安全）\n", len(in.ProofGaps))
+	fmt.Fprintf(&b, "- 战果：据点 **%d** 个、凭据 **%d** 条\n", len(in.Footholds), len(in.Credentials))
 	fmt.Fprintf(&b, "- 资产：")
 	var types []string
 	for t := range in.AssetCounts {
@@ -160,6 +239,51 @@ func Markdown(in Input) string {
 		fmt.Fprintf(&b, "%s %d", t, in.AssetCounts[t])
 	}
 	b.WriteString("\n\n")
+
+	// 战果（利用成功之后的产物）。排在「发现」之前：它是"拿到了什么"的直接交代——
+	// 发现说的是"哪里有洞"，战果说的是"这些洞已经打通到什么程度"。
+	fmt.Fprintf(&b, "## 战果（已攻陷的通路与取得的凭据）\n\n")
+	if len(in.Footholds) == 0 && len(in.Credentials) == 0 {
+		b.WriteString("_本次未取得据点或凭据。_\n\n")
+	} else {
+		if len(in.Footholds) > 0 {
+			fmt.Fprintf(&b, "### 据点（%d）\n\n", len(in.Footholds))
+			for i, n := range in.Footholds {
+				v := parseLoot(n)
+				fmt.Fprintf(&b, "**%d. %s**\n\n", i+1, nz(v.Summary, "（未填摘要）"))
+				writeLootMeta(&b, []string{
+					prefixIf("通路", v.Access),
+					prefixIf("权限", v.Privilege),
+					lootStateLabel(n.State),
+				})
+				if v.Detail != "" {
+					fmt.Fprintf(&b, "- 细节：%s\n", v.Detail)
+				}
+				if v.Evidence != "" {
+					fmt.Fprintf(&b, "- 证据：`%s`\n", v.Evidence)
+				}
+				b.WriteString("\n")
+			}
+		}
+		if len(in.Credentials) > 0 {
+			fmt.Fprintf(&b, "### 凭据（%d）\n\n", len(in.Credentials))
+			b.WriteString("_仅列身份与来源；**凭据本体不写入报告**（报告会随交付物外流），需要时在任务记录内查看。_\n\n")
+			for i, n := range in.Credentials {
+				v := parseLoot(n)
+				fmt.Fprintf(&b, "**%d. %s**\n\n", i+1, nz(v.Summary, "（未填摘要）"))
+				writeLootMeta(&b, []string{
+					prefixIf("类型", v.Kind),
+					prefixIf("账号", v.Username),
+					prefixIf("本体", credentialBodyNote(v.Secret)),
+					lootStateLabel(n.State),
+				})
+				if v.Evidence != "" {
+					fmt.Fprintf(&b, "- 证据：`%s`\n", v.Evidence)
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
 
 	// findings
 	fmt.Fprintf(&b, "## 发现\n\n")
