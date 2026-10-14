@@ -48,15 +48,6 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
@@ -1015,18 +1006,18 @@ function CompanyDialog({ onSaved }: { onSaved: () => void }) {
   };
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
         <Button size="sm">
           <BuildingIcon data-icon="inline-start" /> 新增企业
         </Button>
-      </SheetTrigger>
-      <SheetContent className="w-full! max-w-none! gap-0 p-0 sm:w-[520px]! sm:max-w-[520px]!">
-        <SheetHeader className="border-b p-6">
-          <SheetTitle>新增企业</SheetTitle>
-          <SheetDescription>配置企业及其资产范围。关键词只作为 Agent 提示，不会自动归属资产。</SheetDescription>
-        </SheetHeader>
-        <div className="flex-1 overflow-y-auto p-6">
+      </DialogTrigger>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
+        <DialogHeader className="border-b p-6">
+          <DialogTitle>新增企业</DialogTitle>
+          <DialogDescription>配置企业及其资产范围。关键词只作为 Agent 提示，不会自动归属资产。</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="cn-name">企业名称</FieldLabel>
@@ -1040,16 +1031,16 @@ function CompanyDialog({ onSaved }: { onSaved: () => void }) {
             <ScopeTextEditor id="cn-scope" value={scopeText} onValueChange={setScopeText} parsed={parsedScope} />
           </FieldGroup>
         </div>
-        <SheetFooter className="flex-row justify-end gap-2 border-t p-4">
+        <DialogFooter className="flex-row justify-end gap-2 border-t p-4">
           <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>
             取消
           </Button>
           <Button onClick={submit} disabled={busy || !name.trim() || parsedScope.errors.length > 0}>
             {busy ? "保存中…" : "保存"}
           </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

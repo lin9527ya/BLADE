@@ -36,6 +36,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -43,13 +44,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import {
-  Sheet,
-  SheetContent,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/markdown";
 import { cn } from "@/lib/utils";
@@ -1132,11 +1126,11 @@ export default function SkillsPage() {
       </AlertDialog>
 
       {/* ── 新建 Skill 对话框 ── */}
-      <Sheet open={newOpen} onOpenChange={setNewOpen}>
-        <SheetContent side="right" className="flex w-full flex-col gap-0 data-[side=right]:sm:max-w-xl">
-          <SheetHeader className="px-4 pt-4">
-            <SheetTitle>新建 Skill</SheetTitle>
-          </SheetHeader>
+      <Dialog open={newOpen} onOpenChange={setNewOpen}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="border-b px-4 py-3">
+            <DialogTitle>新建 Skill</DialogTitle>
+          </DialogHeader>
           <Tabs defaultValue="basic" className="flex min-h-0 flex-1 flex-col">
             <TabsList className="mx-4 mt-3 shrink-0 justify-start">
               <TabsTrigger value="basic">基本信息</TabsTrigger>
@@ -1235,12 +1229,12 @@ export default function SkillsPage() {
             </TabsContent>
           </Tabs>
 
-          <SheetFooter className="flex-row justify-end gap-2 border-t px-4 py-3">
+          <DialogFooter className="flex-row justify-end gap-2 border-t px-4 py-3">
             <Button variant="outline" onClick={() => setNewOpen(false)}>取消</Button>
             <Button onClick={createNewSkill} disabled={creatingSkill}>{creatingSkill ? "创建中…" : "创建"}</Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

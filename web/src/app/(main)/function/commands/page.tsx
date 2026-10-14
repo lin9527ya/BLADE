@@ -10,7 +10,6 @@ import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import type { CommandRecord, ToolStat } from "@/lib/types";
@@ -332,13 +331,13 @@ export default function CommandsPage() {
         </DialogContent>
       </Dialog>
 
-      <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent className="w-full! max-w-none! gap-0 p-0 sm:w-[46rem]! sm:max-w-[46rem]!">
+      <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {selected && (
             <>
-              <SheetHeader className="border-b px-5 py-4">
-                <SheetTitle className="pr-8">工具执行详情</SheetTitle>
-                <SheetDescription>{fmtTime(selected.created_at)}</SheetDescription>
+              <DialogHeader className="border-b px-5 py-4">
+                <DialogTitle className="pr-8">工具执行详情</DialogTitle>
+                <DialogDescription>{fmtTime(selected.created_at)}</DialogDescription>
                 <div className="flex flex-wrap items-center gap-2 pt-2">
                   <Badge variant="outline" className="text-xs font-mono">
                     #{selected.exploration_id}
@@ -359,7 +358,7 @@ export default function CommandsPage() {
                     </Badge>
                   )}
                 </div>
-              </SheetHeader>
+              </DialogHeader>
               <div className="grid min-h-0 flex-1 grid-rows-2 divide-y">
                 <div className="flex min-h-0 min-w-0 flex-col">
                   <div className="border-b px-5 py-2 text-xs font-medium text-muted-foreground">输入 Input</div>
@@ -385,8 +384,8 @@ export default function CommandsPage() {
               </div>
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

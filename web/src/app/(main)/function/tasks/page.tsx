@@ -48,7 +48,7 @@ import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-ed
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
-import { ScheduleTasksSheet } from "@/components/schedule-tasks-sheet";
+import { ScheduleTasksDialog } from "@/components/schedule-tasks-dialog";
 import { TaskTemplateControls } from "@/components/task-template-controls";
 import {
   AlertDialog,
@@ -103,16 +103,6 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  Sheet,
-  SheetClose,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -920,13 +910,13 @@ export default function TasksPage() {
                 </>
               )}
               <ConcurrencySettingsDialog />
-              <CategoryManagementSheet
+              <CategoryManagementDialog
                 categories={categories}
                 tasks={tasks}
                 onChanged={refreshCategoriesAndTasks}
                 onTaskMoved={applyTaskCategoryMove}
               />
-              <ScheduleTasksSheet categories={categories} onCreated={refreshCategoriesAndTasks} />
+              <ScheduleTasksDialog categories={categories} onCreated={refreshCategoriesAndTasks} />
               <CreateTaskSheet
                 tasks={tasks}
                 categories={categories}
@@ -2785,7 +2775,7 @@ function CategoryTaskDragPreview({ task }: { task: Task }) {
   );
 }
 
-function CategoryManagementSheet({
+function CategoryManagementDialog({
   categories,
   tasks,
   onChanged,
@@ -2943,18 +2933,18 @@ function CategoryManagementSheet({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetTrigger asChild>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
           <Button size="sm" variant="outline">
             <TagsIcon data-icon="inline-start" />
             分类管理
           </Button>
-        </SheetTrigger>
-        <SheetContent className="grid h-full w-full! max-w-none! grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:w-[48rem]! sm:max-w-[48rem]!">
-          <SheetHeader className="border-b px-6 py-5">
-            <SheetTitle>任务分类管理</SheetTitle>
-            <SheetDescription>分类用于任务筛选与归档；修改不会影响任务执行，删除后任务会移入未分类。</SheetDescription>
-          </SheetHeader>
+        </DialogTrigger>
+        <DialogContent className="grid max-h-[88vh] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="border-b px-6 py-5">
+            <DialogTitle>任务分类管理</DialogTitle>
+            <DialogDescription>分类用于任务筛选与归档；修改不会影响任务执行，删除后任务会移入未分类。</DialogDescription>
+          </DialogHeader>
           <DndContext
             sensors={sensors}
             onDragStart={handleDragStart}
@@ -3051,7 +3041,7 @@ function CategoryManagementSheet({
             </div>
             <DragOverlay>{activeTask ? <CategoryTaskDragPreview task={activeTask} /> : null}</DragOverlay>
           </DndContext>
-          <SheetFooter className="border-t px-6 py-4 sm:flex-row sm:items-center">
+          <DialogFooter className="border-t px-6 py-4 sm:flex-row sm:items-center">
             {selectedCategory && (
               <Button
                 type="button"
@@ -3077,9 +3067,9 @@ function CategoryManagementSheet({
                 {saveLabel}
               </Button>
             )}
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -3267,25 +3257,23 @@ function CreateTaskSheet({
   }
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
         <Button size="sm">
           <PlusIcon /> 新建任务
         </Button>
-      </SheetTrigger>
-      {/* 45vw 宽的右侧抽屉:整屏高度可滚动,长表单不再受弹窗高度限制。窄屏退化为全宽。
-            内容为 flex 列:头/脚固定,中间字段区 flex-1 独立滚动。 */}
-      <SheetContent
+      </DialogTrigger>
+      {/* 居中弹窗:内容为 flex 列——头/脚固定,中间字段区 flex-1 独立滚动,高度上限 88vh。 */}
+      <DialogContent
         ref={sheetContentRef}
-        side="right"
-        className="w-full! max-w-none! gap-0 p-0 sm:w-[45vw]! sm:max-w-[45vw]!"
+        className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
       >
-        <SheetHeader className="border-b p-6">
-          <SheetTitle>新建任务</SheetTitle>
-          <SheetDescription>填写测试对象与目标，高级参数可按需展开。</SheetDescription>
-        </SheetHeader>
+        <DialogHeader className="border-b p-6">
+          <DialogTitle>新建任务</DialogTitle>
+          <DialogDescription>填写测试对象与目标，高级参数可按需展开。</DialogDescription>
+        </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
           <div className="grid gap-5">
             <TaskTemplateControls
               description={description}
@@ -3570,16 +3558,16 @@ function CreateTaskSheet({
           </div>
         </div>
 
-        <SheetFooter className="flex-row justify-end gap-2 border-t p-4">
-          <SheetClose asChild>
+        <DialogFooter className="flex-row justify-end gap-2 border-t p-4">
+          <DialogClose asChild>
             <Button variant="outline">取消</Button>
-          </SheetClose>
+          </DialogClose>
           <Button onClick={createTask} disabled={creating || uploading}>
             {creating && <Spinner data-icon="inline-start" />}
             {creating ? "创建中" : "创建"}
           </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
