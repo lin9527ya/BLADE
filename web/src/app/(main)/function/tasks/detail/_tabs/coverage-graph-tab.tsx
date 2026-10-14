@@ -19,11 +19,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import type { CoverageAssetRef, CoverageAssetRefs, CoverageGraphEdge, CoverageGraphNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -325,23 +325,23 @@ function AssetSheet({
     };
   }, [node, taskId]);
   return (
-    <Sheet open={node !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 data-[side=right]:sm:max-w-md">
+    <Dialog open={node !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
         {node && meta && Icon && (
           <>
-            <SheetHeader className="border-b p-4">
+            <DialogHeader className="border-b p-4">
               <div className="flex items-center gap-2.5 pr-8">
                 <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
-                  <SheetTitle className="leading-tight">{meta.label}</SheetTitle>
+                  <DialogTitle className="leading-tight">{meta.label}</DialogTitle>
                   <span className="text-muted-foreground truncate font-mono text-xs" title={node.label}>
                     {node.label}
                   </span>
                 </div>
               </div>
-            </SheetHeader>
+            </DialogHeader>
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex w-full min-w-0 flex-col gap-4 p-4">
                 <section>
@@ -389,8 +389,8 @@ function AssetSheet({
             </ScrollArea>
           </>
         )}
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -408,16 +408,16 @@ function FoldSheet({
   const meta = fold ? kindMeta[fold.kind] : null;
   const Icon = meta?.icon;
   return (
-    <Sheet open={fold !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 data-[side=right]:sm:max-w-md">
+    <Dialog open={fold !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
         {fold && meta && Icon && (
           <>
-            <SheetHeader className="border-b p-4">
-              <SheetTitle className="text-base">
+            <DialogHeader className="border-b p-4">
+              <DialogTitle className="text-base">
                 未展示的{meta.label}（{fold.hidden.length}）
-              </SheetTitle>
+              </DialogTitle>
               <p className="text-muted-foreground text-xs">已测优先展示。点「展示更多」把下一批拉进图里。</p>
-            </SheetHeader>
+            </DialogHeader>
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex flex-col gap-1 p-3">
                 {fold.hidden.map((n) => (
@@ -450,8 +450,8 @@ function FoldSheet({
             </div>
           </>
         )}
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
 

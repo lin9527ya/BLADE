@@ -27,13 +27,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Sheet,
-  SheetContent,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
   Dialog,
   DialogContent,
   DialogFooter,
@@ -282,19 +275,19 @@ export default function WorkspacePage() {
       </Card>
 
       {/* 文件查看 / 编辑 */}
-      <Sheet open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
-        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-2xl">
+      <Dialog open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
           {edit && (
             <>
-              <SheetHeader className="border-b p-4">
-                <SheetTitle className="flex items-center gap-2 truncate font-mono text-sm">
+              <DialogHeader className="border-b p-4">
+                <DialogTitle className="flex items-center gap-2 truncate font-mono text-sm">
                   <FileIcon className="size-4 shrink-0" />
                   <span className="truncate" title={edit.file.path}>
                     {edit.file.path}
                   </span>
-                </SheetTitle>
+                </DialogTitle>
                 <span className="text-muted-foreground text-xs">{fmtSize(edit.file.size)}</span>
-              </SheetHeader>
+              </DialogHeader>
 
               {edit.file.binary || edit.file.too_large ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
@@ -315,7 +308,7 @@ export default function WorkspacePage() {
                       className="h-full min-h-[50vh] resize-none font-mono text-xs leading-relaxed"
                     />
                   </div>
-                  <SheetFooter className="flex-row items-center justify-between border-t p-3">
+                  <DialogFooter className="flex-row items-center justify-between border-t p-3">
                     <span className="text-muted-foreground text-xs">{edit.dirty ? "未保存的修改" : "已同步"}</span>
                     <div className="flex gap-2">
                       <Button
@@ -328,13 +321,13 @@ export default function WorkspacePage() {
                         <SaveIcon /> {edit.saving ? "保存中…" : "保存"}
                       </Button>
                     </div>
-                  </SheetFooter>
+                  </DialogFooter>
                 </>
               )}
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
 
       {/* 新建文件夹 */}
       <Dialog open={mkdirOpen} onOpenChange={setMkdirOpen}>

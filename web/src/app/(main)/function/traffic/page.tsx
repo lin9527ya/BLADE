@@ -36,7 +36,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SortableHead } from "@/components/ui/sortable-head";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -726,11 +732,11 @@ export default function TrafficPage() {
           onBound={() => setSelectedFlows(new Set())}
         />
       ) : null}
-      <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent className="w-full! max-w-none! gap-0 p-0 sm:w-[48rem]! sm:max-w-[48rem]!">
+      <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {selected && (
             <>
-              <SheetHeader className="border-b px-5 py-4">
+              <DialogHeader className="border-b px-5 py-4">
                 <div className="flex items-center gap-2 pr-8">
                   <MethodBadge method={selected.method} />
                   <Badge variant="secondary" className={cn("font-mono tabular-nums", statusTone(selected.status))}>
@@ -738,9 +744,9 @@ export default function TrafficPage() {
                   </Badge>
                   <span className="ml-auto text-xs text-muted-foreground tabular-nums">{fmtTime(selected.ts)}</span>
                 </div>
-                <SheetTitle className="break-all font-mono">{selected.host}</SheetTitle>
-                <SheetDescription className="break-all font-mono">{selected.url}</SheetDescription>
-              </SheetHeader>
+                <DialogTitle className="break-all font-mono">{selected.host}</DialogTitle>
+                <DialogDescription className="break-all font-mono">{selected.url}</DialogDescription>
+              </DialogHeader>
               <Tabs defaultValue="request" className="min-h-0 flex-1 gap-0">
                 <TabsList className="mx-5 mt-4 grid w-auto grid-cols-2">
                   <TabsTrigger value="request">请求 Request</TabsTrigger>
@@ -769,8 +775,8 @@ export default function TrafficPage() {
               </Tabs>
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={deleteMode !== null}

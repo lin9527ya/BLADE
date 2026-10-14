@@ -33,7 +33,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -304,15 +311,15 @@ function AddTaskAssetsSheet({
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full sm:max-w-xl">
-        <SheetHeader>
-          <SheetTitle>新增测试资产</SheetTitle>
-          <SheetDescription>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogHeader className="border-b px-4 py-3">
+          <DialogTitle>新增测试资产</DialogTitle>
+          <DialogDescription>
             直接填写测试范围。域名和 IP 会创建或复用全局资产；CIDR、ICP 和关键词作为 Agent 范围上下文。
-          </SheetDescription>
-        </SheetHeader>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
           <ScopeTextEditor
             id="task-asset-scope"
             value={scopeText}
@@ -322,7 +329,7 @@ function AddTaskAssetsSheet({
             description="每行一条，自动识别域名、IP、CIDR、ICP 备案和关键词。"
           />
         </div>
-        <SheetFooter>
+        <DialogFooter className="flex-row justify-end gap-2 border-t px-4 py-3">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             取消
           </Button>
@@ -333,9 +340,9 @@ function AddTaskAssetsSheet({
             {saving ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
             登记 {parsedScope.rules.length > 0 ? parsedScope.rules.length : ""} 条
           </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

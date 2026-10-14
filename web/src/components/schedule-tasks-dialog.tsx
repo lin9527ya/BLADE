@@ -9,14 +9,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { ScheduleFrequency, TaskCategory, TaskSchedule, TaskTemplate } from "@/lib/types";
 
 /**
- * ScheduleTasksSheet 管理「计划任务」（P22）：按结构化频率到点自动建任务。
+ * ScheduleTasksDialog 管理「计划任务」（P22）：按结构化频率到点自动建任务。
  *
  * 语义（与后端 server/schedules.go 一致）：
  *  · 一份计划任务 = 一份**确定的可重放规格**（描述/目标/分类/拦截规则…）+ 一个频率；
@@ -48,7 +56,7 @@ function fmtLocal(ts?: string): string {
   return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-export function ScheduleTasksSheet({
+export function ScheduleTasksDialog({
   categories,
   onCreated,
 }: {
@@ -201,23 +209,23 @@ export function ScheduleTasksSheet({
   }
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
         <Button size="sm" variant="outline">
           <CalendarClockIcon data-icon="inline-start" />
           计划任务
         </Button>
-      </SheetTrigger>
-      <SheetContent side="right" className="w-full! max-w-none! gap-0 p-0 sm:w-[40vw]! sm:max-w-[40vw]!">
-        <SheetHeader className="border-b p-6">
-          <SheetTitle>计划任务</SheetTitle>
-          <SheetDescription>
+      </DialogTrigger>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <DialogHeader className="border-b p-6">
+          <DialogTitle>计划任务</DialogTitle>
+          <DialogDescription>
             按固定节奏自动建任务（定期复测 / 新资产巡检）。到点按这里的规格原样建一个普通任务，
             推送与交付走既有链路；停机期间错过的次数不追补，急就跑「立即运行」。
-          </SheetDescription>
-        </SheetHeader>
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {formOpen ? (
             <div className="grid gap-4">
               <div className="grid gap-2">
@@ -413,7 +421,7 @@ export function ScheduleTasksSheet({
             </div>
           )}
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }

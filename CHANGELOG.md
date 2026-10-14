@@ -48,6 +48,19 @@
 
 #### 变更
 
+- **全站的右侧抽屉统一改居中弹窗（收口）**：继工具/MCP/LLM/Agent 之后，把剩下所有「点一下从右边滑出」
+  的界面都改了——**拦截与审批**（命令拦截规则、资产拦截规则）、**通知推送**（新增/编辑渠道）、
+  **任务**（分类管理、新建任务、计划任务、任务模板管理）、**资产**（新增企业、任务详情里新增测试资产）、
+  **命令**（工具执行详情）、**流量**（请求/响应记录详情）、**工作区**（文件预览/编辑）、
+  **技能**（新建 Skill）、**覆盖图**（节点详情、折叠分组）。全部统一为「头固定（border-b）/
+  内芯 flex-1 min-h-0 滚动 / 底部操作条固定」的居中弹窗，宽度从原来的 30–48vw 抽屉换成
+  内容尺寸（`sm:max-w-md`～`sm:max-w-4xl`）。字段、校验、API 与动作按钮一行未动；
+  `ProfileSheet`/`PoolSheet`/`CategoryManagementSheet`/`ScheduleTasksSheet` 这些名字也跟着改掉
+  （`schedule-tasks-sheet.tsx` → `schedule-tasks-dialog.tsx`），免得下次按名字去找滚动锁。
+  现在应用里只剩移动端侧栏（`ui/sidebar.tsx`）还是抽屉——那是导航，不是功能面板。
+
+#### 变更
+
 - **LLM 与 Agent 的编辑器也从右侧抽屉改成居中弹窗**（与工具页、MCP 页同一改法）：模型配置
   （`ProfileSheet` → `ProfileDialog`，`sm:max-w-xl`）、LLM 轮询/故障转移（`PoolSheet` → `PoolDialog`，
   `sm:max-w-lg`）、Agent 编辑器（45vw 抽屉 → `sm:max-w-4xl`，6 个 tab 的工具/技能/MCP 列表更宽了）。

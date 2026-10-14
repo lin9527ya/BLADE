@@ -11,7 +11,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -411,17 +417,17 @@ export default function NotifyPage() {
         </TabsContent>
       </Tabs>
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="w-full data-[side=right]:sm:max-w-lg">
-          <SheetHeader>
-            <SheetTitle>{editing ? editing.name : "添加通知渠道"}</SheetTitle>
-            <SheetDescription>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <DialogHeader className="border-b px-4 py-3">
+            <DialogTitle>{editing ? editing.name : "添加通知渠道"}</DialogTitle>
+            <DialogDescription>
               {KIND_LABEL[form.kind] ?? form.kind}
               {defaultRate > 0 ? ` · 默认限流 ${defaultRate} 条/分钟` : " · 不限流"}
-            </SheetDescription>
-          </SheetHeader>
+            </DialogDescription>
+          </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label>渠道类型</Label>
@@ -598,8 +604,8 @@ export default function NotifyPage() {
               )}
             </div>
           </div>
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
