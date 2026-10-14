@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-14
+
+### 构建
+
+#### 修复的问题
+
+- **修复 Windows 构建被 P24 打断**：P24 的资源限额实现（`ulimit` 前导 + 取进程信号）整份放在
+  一个带 `//go:build !windows` 的文件里，而 `execution.go` / `server.go` 是**无条件**引用那些
+  符号的——于是 **Windows 交叉编译编译不过**。现在按平台拆开：类型与读设置留在平台无关的文件，
+  `ulimit` 那套归 `*_unix.go`，Windows 补一份桩——**如实标注"本平台不支持、本次未限住"**
+  （applied_* 全 false + Note 说明），而不是假装限住。这正是 P24 自己的纪律：探测不到就如实记录。
+  - **这个断裂藏了一整个功能周期才暴露**：CI 的测试与构建都在 Linux 上跑，**只有 release 工作流
+    跨平台构建**，而它只在打 tag 时运行。v0.4.0 是在 P24 落地之前打的 tag，所以上一次发布正常；
+    **v0.4.1 是 P24 之后的第一个 tag**，于是第一次暴露——五个平台里 Windows 编译失败、其余四个
+    被 matrix 的 fail-fast 连坐取消、`release` job 因 `needs: binaries` 被跳过，结果是
+    **tag 有了、GitHub Release 却没建成**。
+
+### 测试基础设施
+
+#### 变更
+
+- **CI 每次 push 都把五个发布目标各编一遍**（linux/darwin 的 amd64+arm64、windows/amd64）。
+  此前这项检查只存在于 release 工作流里、且只在打 tag 时跑，平台相关的构建断裂因此能潜伏很久
+  ——上面那条就是这么被藏住的。现在 push 即暴露。
+
 ## [0.4.1] - 2026-10-14
 
 ### 技能清单与 frontmatter 安全
@@ -1327,7 +1352,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/ARTEX/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/lin9527ya/ARTEX/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/lin9527ya/ARTEX/releases/tag/v0.4.2
 [0.4.1]: https://github.com/lin9527ya/ARTEX/releases/tag/v0.4.1
 [0.4.0]: https://github.com/lin9527ya/ARTEX/releases/tag/v0.4.0
 [0.3.10]: https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10
