@@ -846,6 +846,8 @@ type MCPServer struct {
 	Enabled   bool            `json:"enabled"`
 	Insecure  bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
 	Tools     []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
+	// ToolsDisabled: 缓存里被工具级开关关掉的数量（工具仍然照常缓存，只是不注入任何 Agent）。
+	ToolsDisabled int `json:"tools_disabled"`
 }
 
 func (d *DB) ListMCP() ([]*MCPServer, error) {
@@ -871,38 +873,85 @@ func (d *DB) ListMCP() ([]*MCPServer, error) {
 	rows.Close() // free the connection before the per-server tool-cache queries below
 	// Attach each server's cached tool names (best-effort; empty until discovered).
 	for _, m := range out {
-		m.Tools, _ = d.MCPToolNames(m.ID)
+		m.Tools, m.ToolsDisabled, _ = d.MCPToolSummary(m.ID)
 	}
 	return out, nil
 }
 
-// MCPToolNames returns the cached tool names for a server (empty until discovered).
-func (d *DB) MCPToolNames(serverID int64) ([]string, error) {
-	rows, err := d.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+// MCPToolSummary returns the cached tool names for a server (empty until discovered)
+// plus how many of them are switched off (工具级开关；关掉的仍留在缓存里，只是不注入)。
+func (d *DB) MCPToolSummary(serverID int64) (names []string, disabled int, err error) {
+	rows, err := d.Query(`SELECT tool_name, enabled FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		var on bool
+		if err := rows.Scan(&n, &on); err != nil {
+			return nil, 0, err
+		}
+		names = append(names, n)
+		if !on {
+			disabled++
+		}
+	}
+	return names, disabled, rows.Err()
+}
+
+// MCPDisabledTools returns the set of tool names switched off for a server. The agent
+// tool wiring (server/assembly.go) uses it to keep those tools out of every Agent's
+// tool surface — the switch is global, so one filter covers both the directly-visible
+// (global block) and the skill-gated (unlock-on-load) paths.
+func (d *DB) MCPDisabledTools(serverID int64) (map[string]bool, error) {
+	rows, err := d.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=$1 AND NOT enabled`, serverID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	out := map[string]bool{}
 	for rows.Next() {
 		var n string
 		if err := rows.Scan(&n); err != nil {
 			return nil, err
 		}
-		out = append(out, n)
+		out[n] = true
 	}
 	return out, rows.Err()
 }
 
-// MCPTool is one cached tool of an MCP server (name + description).
+// ErrMCPToolNotFound：要开关的工具不在该 server 的缓存里（名字拼错 / 缓存过期）。
+var ErrMCPToolNotFound = errors.New("工具不在缓存里（先刷新工具列表再改）")
+
+// SetMCPToolEnabled flips the per-tool switch of one cached tool. The row must exist
+// (the cache is the source of truth for which tools a server has) — an unknown name is
+// an error, not a silent no-op, so the API can answer 404 instead of pretending.
+func (d *DB) SetMCPToolEnabled(serverID int64, name string, enabled bool) error {
+	res, err := d.Exec(`UPDATE mcp_tools_cache SET enabled=$3 WHERE server_id=$1 AND tool_name=$2`, serverID, name, enabled)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrMCPToolNotFound, name)
+	}
+	return nil
+}
+
+// MCPTool is one cached tool of an MCP server (name + description + its switch).
 type MCPTool struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"` // 工具级开关：false = 不注入任何 Agent
 }
 
-// MCPToolsDetailed returns the cached tools (name + description) for a server.
+// MCPToolsDetailed returns the cached tools (name + description + switch) for a server.
 func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
-	rows, err := d.Query(`SELECT tool_name, COALESCE(description,'') FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	rows, err := d.Query(`SELECT tool_name, COALESCE(description,''), enabled FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -910,7 +959,7 @@ func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
 	var out []MCPTool
 	for rows.Next() {
 		var t MCPTool
-		if err := rows.Scan(&t.Name, &t.Description); err != nil {
+		if err := rows.Scan(&t.Name, &t.Description, &t.Enabled); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -919,18 +968,38 @@ func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
 }
 
 // SaveMCPTools replaces the cached tool list for a server (called after discovery).
+// 人的工具级开关必须活过重发现：这里先记下关掉的名字，重建缓存时按名字写回 false
+// （否则每次刷新 / 启动自动发现都会把开关悄悄翻回默认——那才是这个开关最危险的失效）。
+// 名字不在新列表里 = 工具已从 server 上消失，开关随之作废；新出现的工具默认启用。
 func (d *DB) SaveMCPTools(serverID int64, tools []MCPTool) error {
 	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	off := map[string]bool{}
+	rows, err := tx.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=$1 AND NOT enabled`, serverID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
+		}
+		off[n] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID); err != nil {
 		return err
 	}
 	for _, t := range tools {
-		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description) VALUES ($1,$2,$3)
-ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description`, serverID, t.Name, t.Description); err != nil {
+		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description, enabled) VALUES ($1,$2,$3,$4)
+ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description`, serverID, t.Name, t.Description, !off[t.Name]); err != nil {
 			return err
 		}
 	}

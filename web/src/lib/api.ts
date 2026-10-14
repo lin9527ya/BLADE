@@ -1279,6 +1279,9 @@ export const api = {
   deleteMcpServer: (id: number) => del<{ deleted: number }>(`/mcp/${id}`),
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),
   refreshMcpServer: (id: number) => post<{ tools: MCPTool[] }>(`/mcp/${id}/refresh`, {}).then((r) => arr(r.tools)),
+  // P25：工具级开关（全局）——关掉的工具不再注入任何 Agent 的工具面。
+  toggleMcpTool: (id: number, name: string, enabled: boolean) =>
+    post<{ ok: boolean; name: string; enabled: boolean }>(`/mcp/${id}/tools/toggle`, { name, enabled }),
 
   // ---- 资产同步 (ScopeSentry 数据源) ----
   ssStatus: () =>

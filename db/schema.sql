@@ -918,9 +918,14 @@ CREATE TABLE IF NOT EXISTS mcp_tools_cache (
     tool_name     TEXT NOT NULL,
     description   TEXT,
     schema        JSONB,
+    -- 工具级开关：false = 这个工具不注入任何 Agent 的工具面（全局，不分 Agent）。
+    -- 重发现（刷新 / 启动自动发现）由 db.SaveMCPTools 按名字保留该标记。
+    enabled       BOOLEAN NOT NULL DEFAULT true,
     discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (server_id, tool_name)
 );
+-- 旧库补列(schema.sql 每次启动都会 Exec)。
+ALTER TABLE mcp_tools_cache ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true;
 
 -- =====================================================================
 -- G. 可见性：agent × mcp / skill

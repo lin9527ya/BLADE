@@ -1475,6 +1475,7 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
+  tools_disabled?: number; // P25：其中被工具级开关关掉的数量
 }
 
 /** P24：外部 MCP 的并发/熔断快照（mcphttp 按 server 名维护）。 */
@@ -1491,6 +1492,8 @@ export interface MCPGuardStatus {
 export interface MCPTool {
   name: string;
   description: string;
+  /** P25 工具级开关：false = 该工具不注入任何 Agent 的工具面（全局）。 */
+  enabled: boolean;
 }
 
 // ---- Skills ----

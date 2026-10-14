@@ -48,6 +48,13 @@ const emptyForm: FormState = {
   insecure: false,
 };
 
+// bareToolName：缓存里的工具名是全名 mcp__<server>__<tool>（mcphttp.ToolName）。右栏里
+// server 已是页面主体，展示时去掉前缀；开关发的仍是全名（后端按缓存名匹配）。
+function bareToolName(server: string, full: string): string {
+  const prefix = `mcp__${server}__`;
+  return full.startsWith(prefix) ? full.slice(prefix.length) : full;
+}
+
 // InfoRow：明细行——左标签右值，值等宽可换行（URL/命令/错误都长）。
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -80,6 +87,7 @@ export default function MCPPage() {
   const [tools, setTools] = React.useState<MCPTool[]>([]);
   const [toolsLoading, setToolsLoading] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [togglingTool, setTogglingTool] = React.useState<string | null>(null); // 正在翻转的工具名
 
   const load = React.useCallback(() => {
     api
@@ -108,6 +116,7 @@ export default function MCPPage() {
 
   const selected = servers.find((s) => s.id === selectedId) ?? null;
   const enabledCount = servers.filter((s) => s.enabled).length;
+  const toolsDisabled = tools.filter((t) => !t.enabled).length;
   const breakerCount = servers.filter((s) => guards[s.name]?.open).length;
 
   const filteredTools = React.useMemo(() => {
@@ -260,6 +269,24 @@ export default function MCPPage() {
       load();
     } catch (e) {
       toast.error("操作失败：" + (e as Error).message);
+    }
+  }
+
+  // P25：工具级开关（全局）——关掉的工具不再注入任何 Agent 的工具面。
+  // 先本地翻转（开关手感即时），再用服务端结果对账；失败就重新拉一遍缓存。
+  async function toggleTool(t: MCPTool, enabled: boolean) {
+    if (!selected) return;
+    setTogglingTool(t.name);
+    setTools((ts) => ts.map((x) => (x.name === t.name ? { ...x, enabled } : x)));
+    try {
+      await api.toggleMcpTool(selected.id, t.name, enabled);
+      toast.success(enabled ? `已启用「${t.name}」` : `已停用「${t.name}」：不再注入任何 Agent 的工具面`);
+      load(); // 左栏的「N 个工具 · M 停用」跟着变
+    } catch (e) {
+      toast.error("操作失败：" + (e as Error).message);
+      await loadTools(selected.id);
+    } finally {
+      setTogglingTool(null);
     }
   }
 
@@ -500,7 +527,7 @@ export default function MCPPage() {
         </SubBlock>
 
         <SubBlock
-          title={`工具列表${tools.length ? `（${tools.length}）` : ""}`}
+          title={`工具列表${tools.length ? `（${tools.length}${toolsDisabled ? ` · ${toolsDisabled} 个已停用` : ""}）` : ""}`}
           actions={
             <>
               <div className="relative">
@@ -527,11 +554,32 @@ export default function MCPPage() {
           ) : (
             <div className="flex flex-col divide-y">
               {filteredTools.map((t) => (
-                <div key={t.name} className="py-2.5">
-                  <code className="font-mono text-sm">{t.name}</code>
-                  {t.description && (
-                    <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
-                  )}
+                <div key={t.name} className="flex items-start gap-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code
+                        className={cn("font-mono text-sm", !t.enabled && "text-muted-foreground")}
+                        title={t.name}
+                      >
+                        {bareToolName(s.name, t.name)}
+                      </code>
+                      {!t.enabled && (
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                          已停用
+                        </Badge>
+                      )}
+                    </div>
+                    {t.description && (
+                      <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
+                    )}
+                  </div>
+                  <Switch
+                    checked={t.enabled}
+                    disabled={togglingTool === t.name}
+                    onCheckedChange={(v) => void toggleTool(t, v)}
+                    aria-label={`启用工具 ${t.name}`}
+                    title="关掉后该工具不注入任何 Agent 的工具面（全局，与 Agent 无关）"
+                  />
                 </div>
               ))}
             </div>
@@ -633,6 +681,7 @@ export default function MCPPage() {
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-muted-foreground text-xs">
                         {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
+                        {(s.tools_disabled ?? 0) > 0 ? ` · ${s.tools_disabled} 停用` : ""}
                       </span>
                       {!s.enabled && (
                         <Badge variant="outline" className="text-destructive px-1.5 py-0 text-[10px]">

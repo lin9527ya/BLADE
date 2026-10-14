@@ -3185,6 +3185,7 @@ export const mcpServers: MCPServer[] = [
     env: {},
     enabled: true,
     tools: ["host_info", "search", "dns_resolve"],
+    tools_disabled: 1,
   },
   {
     id: 2,
@@ -3200,14 +3201,15 @@ export const mcpServers: MCPServer[] = [
 
 export const mcpToolsById: Record<number, MCPTool[]> = {
   1: [
-    { name: "host_info", description: "查询某 IP 的 Shodan 主机信息" },
-    { name: "search", description: "Shodan 搜索" },
-    { name: "dns_resolve", description: "DNS 解析" },
+    { name: "host_info", description: "查询某 IP 的 Shodan 主机信息", enabled: true },
+    { name: "search", description: "Shodan 搜索", enabled: true },
+    // 演示工具级开关的停用态（P25）。
+    { name: "dns_resolve", description: "DNS 解析", enabled: false },
   ],
   2: [
-    { name: "browser_navigate", description: "浏览器打开 URL" },
-    { name: "browser_click", description: "点击元素" },
-    { name: "browser_snapshot", description: "抓取可访问性快照" },
+    { name: "browser_navigate", description: "浏览器打开 URL", enabled: true },
+    { name: "browser_click", description: "点击元素", enabled: true },
+    { name: "browser_snapshot", description: "抓取可访问性快照", enabled: true },
   ],
 };
 
