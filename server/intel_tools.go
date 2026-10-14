@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -140,16 +141,32 @@ func (s *Server) toolIntelSearch() actool.CoreTool {
 			row := db.IntelQuery{Provider: name, Expr: a.Expr, TaskID: taskID, IntentID: ri.IntentID}
 			if err != nil {
 				row.Error = err.Error()
-				_ = s.m.pg.RecordIntelQuery(ctx, row)
-				return actool.Errorf("查询失败：" + err.Error()), nil
+				note := ""
+				if lerr := s.m.pg.RecordIntelQuery(ctx, row); lerr != nil {
+					note = ledgerWriteWarn(lerr)
+				}
+				return actool.Errorf("查询失败：" + err.Error() + note), nil
 			}
 			row.TotalHits, row.Returned = res.Total, len(res.Assets)
-			_ = s.m.pg.RecordIntelQuery(ctx, row)
+			note := ""
+			if lerr := s.m.pg.RecordIntelQuery(ctx, row); lerr != nil {
+				note = ledgerWriteWarn(lerr)
+			}
 
 			spoolPath := s.spoolIntelResult(taskID, name, res)
 			s.auditIntelQuery(ri, name, a.Expr, res, spoolPath, time.Since(start))
-			return actool.Text(renderIntelResult(res, spoolPath, used+1, quota)), nil
+			return actool.Text(renderIntelResult(res, spoolPath, used+1, quota) + note), nil
 		})
+}
+
+// ledgerWriteWarn 处置「配额台账写失败」：一条日志 + 一段附在回执里的话。
+//
+// 台账同时是**配额计数器**（intelUsageToday 读它），所以静默失败不只是少一条审计记录：这次
+// 调用没被计数 → 下一次读到的 used 偏低 → 平台侧每日上限可以被悄悄超出。**静默失效的闸等于
+// 没有闸**，而且模型与人都看不到。查询本身已经发生、收不回来，所以不中断调用，但必须说出来。
+func ledgerWriteWarn(err error) string {
+	log.Printf("[intel] 配额台账写入失败：本次未计数，平台每日配额统计会偏低：%v", err)
+	return "\n\n（注意：本次查询未能记入台账——它同时是配额计数器，因此平台侧每日配额统计会偏低，请留意额度。）"
 }
 
 // spoolIntelResult 把完整结果落盘并返回绝对路径（大结果不灌进模型上下文；
