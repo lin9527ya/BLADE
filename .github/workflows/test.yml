@@ -62,6 +62,19 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -count=1 -p 1 ./...
+      # 跨平台编译：此前**只有 release 工作流**跨平台构建，而它只在打 tag 时跑——于是平台相关的
+      # 构建断裂能藏一整个功能周期。2026-10-14 的 v0.4.1 就是这么翻车的：P24 把限额实现放进
+      # 带 `//go:build !windows` 的文件、别处却无条件引用，Windows 编译失败 → matrix fail-fast
+      # 连坐取消其余四个平台 → release job 被 needs 跳过 → tag 有了、Release 没建成。
+      # 这里每次 push 就把五个发布目标各编一遍。CGO_ENABLED=0：交叉编译不接 cgo。
+      - name: 跨平台构建（与 release 同目标）
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            echo "— $target"
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build ./... || exit 1
+          done
 
   # ② Web + 端到端构建：前端静态导出（含类型检查）后按发布口径构建内嵌二进制的
   #    embedui 版本——把"发布时才炸"的问题提前到 push 上。
