@@ -904,7 +904,8 @@ export type ActivityKind =
   | "execution_done" // P13: 托管执行收束，意图退回待领续跑
   | "policy_reject" // P20: 意图被任务探索策略硬拒（不落图，但时间线留痕）
   | "policy_update" // P20: 策略保存/清空/按新策略清理未领取意图
-  | "intel_query"; // P21: 情报/测绘查询（表达式 + 命中数 + 完整结果落盘路径）
+  | "intel_query" // P21: 情报/测绘查询（表达式 + 命中数 + 完整结果落盘路径）
+  | "intercept_wait"; // 无超时审批的等待中标记（同时是意图租约的心跳，防止被看门狗回收）
 
 // ChatAttachment 是一次上传的文件:path 相对该会话/任务工作目录(即 agent 的 CWD)。
 export interface ChatAttachment {
