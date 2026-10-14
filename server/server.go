@@ -793,6 +793,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
+	// CSV 目标清单导入：预览只读、应用才写（同一份解析器，见 server/asset_import.go）。
+	mux.HandleFunc("POST /api/assets/import/preview", s.assetImportPreview)
+	mux.HandleFunc("POST /api/assets/import", s.assetImportApply)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)
