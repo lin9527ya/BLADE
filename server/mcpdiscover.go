@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -58,7 +59,14 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 	}
 	tools := make([]db.MCPTool, 0, len(ts))
 	for _, t := range ts {
-		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
+		// schema 一并缓存：右栏工具行展开参数表要用它，免去为看一眼参数去连外部 server。
+		var schema json.RawMessage
+		if sc := t.InputSchema(); len(sc) > 0 {
+			if b, err := json.Marshal(sc); err == nil {
+				schema = b
+			}
+		}
+		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description(), Schema: schema})
 	}
 	if err := s.m.pg.SaveMCPTools(m.ID, tools); err != nil {
 		return err

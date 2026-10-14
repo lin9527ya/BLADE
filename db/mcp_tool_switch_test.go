@@ -1,15 +1,18 @@
 package db
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
-// TestMCPToolSwitch 覆盖工具级开关（P25）的三条契约：
+// TestMCPToolSwitch 覆盖工具级开关与 schema 缓存（P25）的四条契约：
 //
 //	① 关掉的工具在缓存的三处读取里口径一致（MCPToolsDetailed / MCPDisabledTools / MCPToolSummary）；
 //	② 重发现（SaveMCPTools 重建缓存）**不会**把人的开关翻回默认——这是这个开关最危险的失效形态；
-//	③ 名字不在缓存里 → ErrMCPToolNotFound（API 据此 404，而不是静默成功或静默失败）。
+//	③ 名字不在缓存里 → ErrMCPToolNotFound（API 据此 404，而不是静默成功或静默失败）；
+//	④ 发现时抓到的 inputSchema 随缓存往返，重发现拿到新 schema 会更新（展开参数表靠它）。
 func TestMCPToolSwitch(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
@@ -28,14 +31,19 @@ func TestMCPToolSwitch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.DeleteMCP(id) })
 
-	seed := func(names ...string) []MCPTool {
+	// seed：alpha 带一份 schema（参数 q），其余只有名字+描述。
+	seed := func(qField string, names ...string) []MCPTool {
 		out := make([]MCPTool, 0, len(names))
 		for _, n := range names {
-			out = append(out, MCPTool{Name: n, Description: "d-" + n})
+			t := MCPTool{Name: n, Description: "d-" + n}
+			if n == "alpha" && qField != "" {
+				t.Schema = json.RawMessage(`{"type":"object","properties":{"` + qField + `":{"type":"string"}}}`)
+			}
+			out = append(out, t)
 		}
 		return out
 	}
-	if err := d.SaveMCPTools(id, seed("alpha", "beta")); err != nil {
+	if err := d.SaveMCPTools(id, seed("q", "alpha", "beta")); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -75,8 +83,13 @@ func TestMCPToolSwitch(t *testing.T) {
 		t.Fatalf("停用计数应为 1，实际 %d", disabled)
 	}
 
-	// ② 重发现：多出一个 gamma，人的开关必须活下来。
-	if err := d.SaveMCPTools(id, seed("alpha", "beta", "gamma")); err != nil {
+	// ④ schema 随缓存往返（展开参数表的数据源）。
+	if len(det) == 0 || !strings.Contains(string(det[0].Schema), `"q"`) {
+		t.Fatalf("schema 应随缓存往返: %+v", det)
+	}
+
+	// ② 重发现：多出一个 gamma、alpha 的 schema 换成 q2，人的开关必须活下来。
+	if err := d.SaveMCPTools(id, seed("q2", "alpha", "beta", "gamma")); err != nil {
 		t.Fatalf("重发现: %v", err)
 	}
 	det, err = d.MCPToolsDetailed(id)
@@ -89,6 +102,16 @@ func TestMCPToolSwitch(t *testing.T) {
 	}
 	if len(got) != 3 || got["alpha"] || !got["beta"] || !got["gamma"] {
 		t.Fatalf("重发现后开关被翻回默认了: %+v", det)
+	}
+	// ④ 重发现拿到的新 schema 要落库（老 schema 不能粘住）。
+	var alphaSchema string
+	for _, x := range det {
+		if x.Name == "alpha" {
+			alphaSchema = string(x.Schema)
+		}
+	}
+	if !strings.Contains(alphaSchema, `"q2"`) || strings.Contains(alphaSchema, `"q":`) {
+		t.Fatalf("重发现应更新 schema: %s", alphaSchema)
 	}
 
 	// ③ 未知工具名报错（不静默成功）。

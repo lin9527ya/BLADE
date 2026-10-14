@@ -1494,6 +1494,21 @@ export interface MCPTool {
   description: string;
   /** P25 工具级开关：false = 该工具不注入任何 Agent 的工具面（全局）。 */
   enabled: boolean;
+  /** 发现时缓存的 inputSchema（JSON Schema 子集），右栏工具行展开参数表用。 */
+  schema?: MCPToolSchema;
+}
+
+export interface MCPToolSchema {
+  type?: string;
+  properties?: Record<string, MCPToolSchemaProp>;
+  required?: string[];
+}
+
+export interface MCPToolSchemaProp {
+  type?: string;
+  description?: string;
+  enum?: unknown[];
+  items?: MCPToolSchema;
 }
 
 // ---- Skills ----

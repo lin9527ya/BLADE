@@ -2,7 +2,16 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { PencilIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SearchIcon, ServerIcon, Trash2Icon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  PencilIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  SearchIcon,
+  ServerIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 import { SubBlock } from "@/components/page-sections";
 import {
@@ -26,7 +35,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { MCPServer, MCPGuardStatus, MCPTool, Agent } from "@/lib/types";
+import type { MCPServer, MCPGuardStatus, MCPTool, MCPToolSchema, MCPToolSchemaProp, Agent } from "@/lib/types";
 
 type Transport = "stdio" | "http" | "sse";
 type FormState = {
@@ -47,6 +56,82 @@ const emptyForm: FormState = {
   env: "",
   insecure: false,
 };
+
+// 工具行展开的参数表：inputSchema 的 properties 平铺成行；array<object> 再把
+// items.properties 作为子行带进来（与工具页参数表同一读法，这里只读）。
+type SchemaRow = {
+  name: string;
+  type: string;
+  required: boolean;
+  desc: string;
+  enumText: string;
+  child: boolean;
+};
+
+function schemaRows(schema?: MCPToolSchema): SchemaRow[] {
+  const rows: SchemaRow[] = [];
+  const push = (name: string, p: MCPToolSchemaProp | undefined, required: boolean, child: boolean) => {
+    rows.push({
+      name,
+      type: p?.type ?? "",
+      required,
+      desc: p?.description ?? "",
+      enumText: p?.enum?.length ? ` · ${p.enum.map((v) => String(v)).join("|")}` : "",
+      child,
+    });
+  };
+  const required = new Set(schema?.required ?? []);
+  for (const [name, p] of Object.entries(schema?.properties ?? {})) {
+    push(name, p, required.has(name), false);
+    const sub = p?.items?.properties;
+    if (p?.type === "array" && sub && Object.keys(sub).length > 0) {
+      const subReq = new Set(p.items?.required ?? []);
+      for (const [sn, sp] of Object.entries(sub)) {
+        push(sn, sp, subReq.has(sn), true);
+      }
+    }
+  }
+  return rows;
+}
+
+// ToolParams：工具行展开后的只读参数表（inputSchema 子集）。
+function ToolParams({ schema }: { schema?: MCPToolSchema }) {
+  const rows = schemaRows(schema);
+  if (rows.length === 0) {
+    return (
+      <p className="text-muted-foreground mt-2 ml-5 text-xs">
+        该工具没有声明参数（或这次发现没取到 schema——点「刷新」重新发现）。
+      </p>
+    );
+  }
+  return (
+    <div className="bg-muted/30 mt-2 ml-5 overflow-x-auto rounded-md border p-2">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-muted-foreground text-left">
+            <th className="py-0.5 pr-3 font-normal">参数</th>
+            <th className="py-0.5 pr-3 font-normal">类型</th>
+            <th className="py-0.5 pr-3 font-normal">必填</th>
+            <th className="py-0.5 font-normal">说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={(r.child ? "·" : "") + r.name} className="align-top">
+              <td className="py-0.5 pr-3 font-mono">{r.child ? `↳ ${r.name}` : r.name}</td>
+              <td className="text-muted-foreground py-0.5 pr-3 font-mono">
+                {r.type || "?"}
+                {r.enumText}
+              </td>
+              <td className="text-muted-foreground py-0.5 pr-3">{r.required ? "是" : ""}</td>
+              <td className="text-muted-foreground py-0.5">{r.desc}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 // bareToolName：缓存里的工具名是全名 mcp__<server>__<tool>（mcphttp.ToolName）。右栏里
 // server 已是页面主体，展示时去掉前缀；开关发的仍是全名（后端按缓存名匹配）。
@@ -88,6 +173,7 @@ export default function MCPPage() {
   const [toolsLoading, setToolsLoading] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
   const [togglingTool, setTogglingTool] = React.useState<string | null>(null); // 正在翻转的工具名
+  const [expandedTools, setExpandedTools] = React.useState<Set<string>>(new Set()); // 展开了参数表的工具名
 
   const load = React.useCallback(() => {
     api
@@ -125,9 +211,22 @@ export default function MCPPage() {
     return tools.filter((t) => t.name.toLowerCase().includes(q) || (t.description ?? "").toLowerCase().includes(q));
   }, [tools, toolQuery]);
 
+  function toggleToolRow(name: string) {
+    setExpandedTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }
+
   function selectServer(s: MCPServer) {
     setSelectedId(s.id);
     setToolQuery("");
+    setExpandedTools(new Set());
     void loadTools(s.id);
   }
 
@@ -554,32 +653,49 @@ export default function MCPPage() {
           ) : (
             <div className="flex flex-col divide-y">
               {filteredTools.map((t) => (
-                <div key={t.name} className="flex items-start gap-3 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <code
-                        className={cn("font-mono text-sm", !t.enabled && "text-muted-foreground")}
-                        title={t.name}
-                      >
-                        {bareToolName(s.name, t.name)}
-                      </code>
-                      {!t.enabled && (
-                        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                          已停用
-                        </Badge>
-                      )}
-                    </div>
-                    {t.description && (
-                      <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
-                    )}
+                <div key={t.name} className="py-2.5">
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleToolRow(t.name)}
+                      aria-expanded={expandedTools.has(t.name)}
+                      title="展开参数表"
+                      className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                    >
+                      <ChevronRightIcon
+                        className={cn(
+                          "text-muted-foreground mt-0.5 size-3.5 shrink-0 transition-transform",
+                          expandedTools.has(t.name) && "rotate-90",
+                        )}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <code
+                            className={cn("font-mono text-sm", !t.enabled && "text-muted-foreground")}
+                            title={t.name}
+                          >
+                            {bareToolName(s.name, t.name)}
+                          </code>
+                          {!t.enabled && (
+                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                              已停用
+                            </Badge>
+                          )}
+                        </div>
+                        {t.description && (
+                          <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
+                        )}
+                      </div>
+                    </button>
+                    <Switch
+                      checked={t.enabled}
+                      disabled={togglingTool === t.name}
+                      onCheckedChange={(v) => void toggleTool(t, v)}
+                      aria-label={`启用工具 ${t.name}`}
+                      title="关掉后该工具不注入任何 Agent 的工具面（全局，与 Agent 无关）"
+                    />
                   </div>
-                  <Switch
-                    checked={t.enabled}
-                    disabled={togglingTool === t.name}
-                    onCheckedChange={(v) => void toggleTool(t, v)}
-                    aria-label={`启用工具 ${t.name}`}
-                    title="关掉后该工具不注入任何 Agent 的工具面（全局，与 Agent 无关）"
-                  />
+                  {expandedTools.has(t.name) && <ToolParams schema={t.schema} />}
                 </div>
               ))}
             </div>

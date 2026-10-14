@@ -2892,7 +2892,9 @@ func fakeMCPToolServer(t *testing.T) string {
 			case "tools/list":
 				result = map[string]any{"tools": []any{
 					map[string]any{"name": "acc_p25_keep", "description": "保留的工具",
-						"inputSchema": map[string]any{"type": "object"}},
+						"inputSchema": map[string]any{"type": "object",
+							"properties": map[string]any{"target": map[string]any{"type": "string", "description": "目标"}},
+							"required":   []any{"target"}}},
 					map[string]any{"name": "acc_p25_off", "description": "将被关掉的工具",
 						"inputSchema": map[string]any{"type": "object"}},
 				}}
@@ -2951,9 +2953,10 @@ func accP25(t *testing.T, e *accEnv) {
 
 	// 建 server 时已自动发现 → 缓存里应有我们的两件工具，且默认全开。
 	type toolRow struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Enabled     bool   `json:"enabled"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Enabled     bool            `json:"enabled"`
+		Schema      json.RawMessage `json:"schema"`
 	}
 	listTools := func() []toolRow {
 		t.Helper()
@@ -2982,6 +2985,10 @@ func accP25(t *testing.T, e *accEnv) {
 	}
 	if !byName[fullName[keepTool]].Enabled || !byName[fullName[offTool]].Enabled {
 		t.Fatalf("新发现的工具默认应启用: %+v", byName)
+	}
+	// 发现时抓到的 inputSchema 要随缓存给到前端（右栏展开参数表用它，不必再连外部 server）。
+	if !strings.Contains(string(byName[fullName[keepTool]].Schema), `"target"`) {
+		t.Fatalf("工具 schema 应随缓存返回: %s", byName[fullName[keepTool]].Schema)
 	}
 
 	// 装 augment（照 accP7：换掉包级变量并在收尾还原）并把这台 server 绑给 worker。
