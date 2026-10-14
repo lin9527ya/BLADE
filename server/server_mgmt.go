@@ -1055,6 +1055,10 @@ type skillFileNode struct {
 	Compatibility string   `json:"compatibility,omitempty"`
 	MCPs          []string `json:"mcps,omitempty"`
 	Files         []string `json:"files"`
+	// frontmatter 体检（skill_frontmatter.go）：MetaError=前导块不合法（元数据改动会被拒，
+	// 因为按 key: value 重排会改坏正文）；MetaWarning=缺 name/description 这类清单问题。
+	MetaError   string `json:"meta_error,omitempty"`
+	MetaWarning string `json:"meta_warning,omitempty"`
 	// Usage ledger (db/skill_usage.go). Calls is 0 and LastUsed nil for a skill that
 	// was never invoked — the ledger only has rows for skills agents actually loaded.
 	Calls    int        `json:"calls"`
@@ -1110,6 +1114,9 @@ func (s *Server) fsListSkills(w http.ResponseWriter, r *http.Request) {
 		node.Files, _ = walkSkillFiles(filepath.Join(s.skillDir, dirName))
 		if node.Files == nil {
 			node.Files = []string{}
+		}
+		if raw, rerr := os.ReadFile(filepath.Join(s.skillDir, dirName, "SKILL.md")); rerr == nil {
+			node.MetaError, node.MetaWarning = skillManifestIssues(raw)
 		}
 		nodes = append(nodes, node)
 	}
@@ -1271,6 +1278,11 @@ func (s *Server) fsUpdateSkillMeta(w http.ResponseWriter, r *http.Request) {
 // fields given as non-nil pointers. The instruction body (after the closing ---) is
 // preserved verbatim. Returns an error if the file has no recognisable frontmatter.
 func rewriteSkillFrontmatter(content []byte, mcps *[]string, description, license, compatibility *string) ([]byte, error) {
+	// 改写前先确认"这段确实形如 frontmatter"：确认不了就拒绝，绝不按 key: value 重排
+	// （历史上漏了收口 --- 的文件就是这样被一次界面操作改坏的，见 skill_frontmatter.go）。
+	if err := validateSkillFrontmatter(content); err != nil {
+		return nil, err
+	}
 	lines := strings.Split(string(content), "\n")
 	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
 		return nil, fmt.Errorf("SKILL.md has no YAML frontmatter")

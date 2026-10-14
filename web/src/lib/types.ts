@@ -1526,6 +1526,10 @@ export interface SkillItem {
   tasks: number; // 加载过它的任务数（chat 会话不计入）
   usage_agents: string[]; // 加载过它的 agent key
   last_used?: string;
+  /** 前导块不合法（元数据改动会被拒，见后端 skill_frontmatter.go）。 */
+  meta_error?: string;
+  /** 清单问题（缺 name/description 之类）。 */
+  meta_warning?: string;
 }
 
 // SkillCall 是一次 Skill() 调用（单个 skill 的最近调用列表）。
