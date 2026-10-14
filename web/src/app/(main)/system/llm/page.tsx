@@ -23,7 +23,13 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
@@ -103,7 +109,7 @@ function healthOf(p: LLMProfile, m?: LLMPoolMember): Health {
 // 轮询配置抽屉
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PoolSheet({
+function PoolDialog({
   open,
   onOpenChange,
   pool,
@@ -158,19 +164,19 @@ function PoolSheet({
   const tripped = chain.filter((m) => m.state === "tripped");
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex flex-col gap-0 p-0 data-[side=right]:sm:max-w-lg">
-        <SheetHeader className="px-4">
-          <SheetTitle className="flex items-center gap-2">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogHeader className="border-b px-4 py-3">
+          <DialogTitle className="flex items-center gap-2">
             <ZapIcon className="size-4" /> LLM 轮询 · 故障转移
-          </SheetTitle>
-          <SheetDescription>
+          </DialogTitle>
+          <DialogDescription>
             开启后，<b>未指定模型</b>的 Agent 在当前配置不可用（余额不足 / Key 失效 / 限流 /
             服务异常）时自动切到下一个配置。
-          </SheetDescription>
-        </SheetHeader>
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
             <div className="grid gap-0.5">
               <Label className="text-sm">启用轮询</Label>
@@ -289,8 +295,8 @@ function PoolSheet({
             </>
           )}
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -298,7 +304,7 @@ function PoolSheet({
 // 模型配置抽屉（新建 / 编辑共用同一套表单）
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ProfileSheet({
+function ProfileDialog({
   profile,
   open,
   onOpenChange,
@@ -466,28 +472,25 @@ function ProfileSheet({
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        className="flex flex-col gap-0 p-0 data-[side=right]:min-w-[420px] data-[side=right]:sm:max-w-xl"
-      >
-        <SheetHeader className="px-4">
-          <SheetTitle className="flex items-center gap-2">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogHeader className="border-b px-4 py-3">
+          <DialogTitle className="flex items-center gap-2">
             {isNew ? "新建模型配置" : `编辑：${profile?.name}`}
             {profile?.is_default && (
               <Badge variant="outline" className="border-amber-400/50 text-amber-500">
                 激活中
               </Badge>
             )}
-          </SheetTitle>
-          <SheetDescription>
+          </DialogTitle>
+          <DialogDescription>
             {isNew
               ? "新建后不会自动激活，请在卡片上「设为激活」以启用。"
               : "修改后点击保存；激活配置保存后对全部 Agent 立即生效。"}
-          </SheetDescription>
-        </SheetHeader>
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="p-name">名称</Label>
@@ -523,7 +526,7 @@ function ProfileSheet({
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               />
-              {/* modal: 这个 Popover 的内容被 portal 到 <body>，在 Sheet 的滚动锁之外，
+              {/* modal: 这个 Popover 的内容被 portal 到 <body>，在弹窗的滚动锁之外，
                   不加 modal 时列表能渲染却滚不动。modal 让它自己持有最上层滚动锁。 */}
               <Popover open={modelsOpen} onOpenChange={setModelsOpen} modal>
                 <PopoverTrigger asChild>
@@ -790,8 +793,8 @@ function ProfileSheet({
             {isNew ? "新建" : "保存"}
           </Button>
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -995,8 +998,8 @@ export default function LLMPage() {
         </TabsContent>
       </Tabs>
 
-      <ProfileSheet profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
-      <PoolSheet open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
+      <ProfileDialog profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
+      <PoolDialog open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
     </div>
   );
 }

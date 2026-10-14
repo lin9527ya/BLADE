@@ -36,12 +36,11 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { AgentEditor } from "@/components/agent-editor";
 import { api } from "@/lib/api";
 import type { Agent } from "@/lib/types";
 
-// AgentGridCard is one clickable tile opening the agent's editor drawer. Custom
+// AgentGridCard is one clickable tile opening the agent's editor dialog. Custom
 // (non-builtin) agents get a delete button.
 function AgentGridCard({
   agent,
@@ -254,15 +253,12 @@ export default function AgentsPage() {
         </CardContent>
       </Card>
 
-      <Sheet open={!!editing} onOpenChange={(o) => !o && setEditKey(null)}>
-        <SheetContent
-          side="right"
-          className="flex flex-col gap-0 p-0 data-[side=right]:w-[45vw] data-[side=right]:sm:max-w-[45vw]"
-        >
+      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditKey(null)}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
           {editing && (
             <>
-              <SheetHeader className="px-4">
-                <SheetTitle className="flex items-center gap-2">
+              <DialogHeader className="border-b px-4 py-3">
+                <DialogTitle className="flex items-center gap-2">
                   {editing.name}
                   <span className="text-muted-foreground font-mono text-xs">{editing.key}</span>
                   {!editing.builtin && (
@@ -270,14 +266,14 @@ export default function AgentsPage() {
                       自定义
                     </Badge>
                   )}
-                </SheetTitle>
-                <SheetDescription>{editing.description || "提示词、配置、可见资源与工具绑定"}</SheetDescription>
-              </SheetHeader>
+                </DialogTitle>
+                <DialogDescription>{editing.description || "提示词、配置、可见资源与工具绑定"}</DialogDescription>
+              </DialogHeader>
               <AgentEditor agentKey={editing.key} onSaved={reload} />
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
