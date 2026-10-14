@@ -760,6 +760,14 @@ func (i *Interceptor) Log(ctx context.Context, convID int64, dec Decision, toolN
 	}
 }
 
+// askKeepAliveInterval 是「无超时审批」等待期间的 keep-alive 节拍：意图租约的心跳由活动
+// 驱动（server 的 emitRenew → renewLease），干等期间一条活动都没有，租约到期就会被看门狗
+// 判成僵尸意图回收，连带把这次审批判成 deny——人工只要慢于 IntentLeaseTTL，决定就落不了地。
+// 取 TTL/4，比 engine 的续租节流（TTL/3）密一档：节流会把偶尔早到的 tick 丢掉，密一档留出
+// 余量，不会因为连丢两次就让租约到期。
+// 是变量而非常量，方便测试把它调小（否则一个用例要等 3m45s）。
+var askKeepAliveInterval = db.IntentLeaseTTL / 4
+
 // HandleAsk creates a pending approval record and blocks until the user decides
 // (via /api/intercept/pending/{id}/decide) or the per-rule timeout elapses.
 // Returns true if the user approved.
@@ -810,14 +818,41 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	}
 
 	if !dec.TimeoutEnabled {
-		// No timeout: wait indefinitely until user decides or worker stops.
-		select {
-		case out := <-ch:
-			return out, out.Allowed
-		case <-ctx.Done():
-			_, _ = i.db.ResolveIntercept(pendingID, "denied", "deny", "工作已取消")
-			_ = i.db.CompleteIntercept(pendingID, audit.RunID, audit.ToolUseID, "not_executed", "执行前工作已取消", false)
-			return AskOutcome{}, false
+		// 规则没启用超时 = 一直等人工决定（等到对方决定，或工作被取消）。
+		//
+		// 但**不能什么都不做地干等**：意图租约的心跳是由「活动」驱动的（server/engine.go
+		// 的 emitRenew → renewLease，只有发活动才续租）。干等期间一条活动都没有，租约就会
+		// 在 db.IntentLeaseTTL 后到期、被任务看门狗判成僵尸意图回收。后果不是"多等一会儿"：
+		// 回收会取消本 work 的 ctx，本函数随即走 ctx.Done() 把这次审批**判成 deny**——人工
+		// 只要慢于 IntentLeaseTTL，他的决定就永远落不了地，而 agent 会把这次工具调用当成
+		// 「平台拒绝了」继续往下走。即：人的决定被静默丢掉。
+		//
+		// 所以等待期间按节拍投一条 keep-alive 活动：租约续上（心跳=这是合法等待，不是僵死），
+		// 任务时间线上也留下「仍在等待人工审批」的可见痕迹，而不是无声地转圈。
+		//
+		// 节拍取 TTL/4，比 engine 的续租节流（TTL/3）密一档：节流会把偶尔早到的 tick 丢掉，
+		// 密一档留出余量，不会因为连丢两次就让租约到期。常量在 server 包（intercept 不能
+		// 反向依赖它），这里直接用 db 里的那个。
+		var keepAlive <-chan time.Time // nil = 该上下文没有意图租约（如对话），select 上永远阻塞
+		if taskEmit != nil {
+			tk := time.NewTicker(askKeepAliveInterval)
+			defer tk.Stop()
+			keepAlive = tk.C
+		}
+		for {
+			select {
+			case out := <-ch:
+				return out, out.Allowed
+			case <-keepAlive:
+				taskEmit(db.Activity{
+					Kind:    "intercept_wait",
+					Summary: fmt.Sprintf("仍在等待人工审批 (#%d)：工具 %s", pendingID, toolName),
+				})
+			case <-ctx.Done():
+				_, _ = i.db.ResolveIntercept(pendingID, "denied", "deny", "工作已取消")
+				_ = i.db.CompleteIntercept(pendingID, audit.RunID, audit.ToolUseID, "not_executed", "执行前工作已取消", false)
+				return AskOutcome{}, false
+			}
 		}
 	}
 
