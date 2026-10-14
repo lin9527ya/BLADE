@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
+import { auth } from "@/lib/auth";
 
 export function ChangePasswordDialog({
   open,
@@ -51,9 +52,17 @@ export function ChangePasswordDialog({
     setSaving(true);
     api
       .changePassword(oldPassword, newPassword)
-      .then(() => {
-        toast.success("密码已修改");
+      .then((res) => {
+        // 改密码会轮换签名密钥 → **本次会话的 token 也随失效**，必须送回登录页：
+        // 留着它只会让后续每个请求都 401。轮换失败时后端带 warning，如实转达而不假装成功。
         onOpenChange(false);
+        if (res?.tokens_revoked === false) {
+          toast.error(res.warning ?? "密码已修改，但旧 token 未失效");
+          return;
+        }
+        toast.success("密码已修改，请重新登录");
+        auth.clearToken();
+        window.location.href = "/login";
       })
       .catch((err) => toast.error(`修改失败：${(err as Error).message}`))
       .finally(() => setSaving(false));
@@ -66,7 +75,7 @@ export function ChangePasswordDialog({
           <DialogHeader>
             <DialogTitle>修改密码</DialogTitle>
             <DialogDescription>
-              用户名固定为 <b>ARTEX</b>。需先输入当前密码验证；修改后已签发的登录 token 仍有效直至过期。
+              用户名固定为 <b>ARTEX</b>。需先输入当前密码验证；修改后<b>已签发的登录 token 会立即失效</b>（服务端轮换签名密钥），需要重新登录。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 py-4">

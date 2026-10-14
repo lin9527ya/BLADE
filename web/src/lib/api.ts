@@ -178,7 +178,6 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // to the Go backend on :8787, whose CORS is open.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
   return `# ARTEX 渗透测试报告 — Acme Corp
@@ -202,13 +201,31 @@ function mockReport(_task?: string): string {
 > （demo）本报告由 mock 数据生成，仅用于界面演示。`;
 }
 
+// baseIsCrossOrigin 判断 SSE 是否落在与页面不同的源上。
+function baseIsCrossOrigin(base: string): boolean {
+  if (!base) return false; // 空 = 同源（生产默认）
+  if (!/^https?:\/\//i.test(base)) return false; // 相对路径 = 同源
+  if (typeof window === "undefined") return true; // 拿不到页面地址时保守当跨源
+  try {
+    return new URL(base, window.location.href).origin !== window.location.origin;
+  } catch {
+    return true;
+  }
+}
+
+// SSE 的凭据只在**跨源**时才放进查询串：EventSource 不支持自定义头，而跨源请求又带不上
+// 同站 cookie（SameSite=Lax），那种情况下 ?token= 是唯一可行的认证方式。
+//
+// 同源（生产默认 base 为空）时**不带**：让浏览器用 artex_token cookie 认证，URL 里就不出现
+// 凭据——否则它会进浏览器历史，以及反向代理的 access log（README 的 nginx 示例默认记录
+// $request，其中含查询串）。开发态前端在 :5173、后端在 :8787，属跨源，仍走 ?token=。
 export function sseUrl(path: string): string {
   const base =
     process.env.NEXT_PUBLIC_SSE_BASE ??
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
-  const token = getToken();
+  const token = baseIsCrossOrigin(base) ? getToken() : null;
   const sep = path.includes("?") ? "&" : "?";
   return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
 }
@@ -257,7 +274,7 @@ export const api = {
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+    post<{ ok: boolean; tokens_revoked?: boolean; warning?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
   // ---- tasks ----
   tasks: () =>

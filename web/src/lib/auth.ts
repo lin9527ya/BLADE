@@ -19,8 +19,13 @@ export const auth = {
 
   setToken(token: string): void {
     localStorage.setItem(TOKEN_KEY, token);
-    // 同步写 cookie，供 Next.js middleware 服务端读取
-    document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+    // 同步写 cookie，供 Next.js middleware 服务端读取。
+    // HTTPS 下带 Secure：否则一次明文 HTTP 请求就可能把它带出去（本地跑 HTTP 时不加，
+    // 加了 cookie 反而会失效）。
+    // 这里做不到 HttpOnly——cookie 由 JS 写，而且 token 本来就存在 localStorage 里；
+    // 要真正挡住 XSS 读凭据，得整体改成服务端 Set-Cookie 的 HttpOnly 方案，属架构级改动。
+    const secure = location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
   },
 
   clearToken(): void {
