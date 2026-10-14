@@ -330,7 +330,14 @@ func (i *Interceptor) scopeRows(taskID int64) ([]db.TaskScope, error) {
 // failure behavior.
 func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName string, input json.RawMessage) (Decision, bool) {
 	mode := i.ScopeMode()
-	if mode == "off" || taskID == 0 {
+	if mode == "off" {
+		return Decision{}, false
+	}
+	// taskID == 0 是**没有任务**的上下文（对话页 / 平台 Auto agent）：它们没有 task_scope 行
+	// 可比，所以这里不是"漏判"，而是**无从判起**——那类上下文照常受拦截规则与 LLM 兜底裁判
+	// 约束，只是不落在 RoE 上。任务**内**的人在环路（mainagent）拿得到任务的真实 id，走的是
+	// 正常判定路径，不受这条影响。
+	if taskID == 0 {
 		return Decision{}, false
 	}
 	cmd := shellCommandOf(toolName, input)
