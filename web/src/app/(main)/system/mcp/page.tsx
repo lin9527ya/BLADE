@@ -2,7 +2,13 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { PlusIcon, RefreshCwIcon, ServerIcon, Trash2Icon } from "lucide-react";
+import {
+  PlusIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  ServerIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +27,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { MCPServer, MCPTool, Agent } from "@/lib/types";
+import type { MCPServer, MCPGuardStatus, MCPTool, Agent } from "@/lib/types";
 
 type Transport = "stdio" | "http" | "sse";
 type FormState = {
@@ -45,6 +51,8 @@ const emptyForm: FormState = {
 
 export default function MCPPage() {
   const [servers, setServers] = React.useState<MCPServer[]>([]);
+  // P24 守卫快照（按 server 名）：熔断中/并发占用/最后错误，供卡片展示与手动重置。
+  const [guards, setGuards] = React.useState<Record<string, MCPGuardStatus>>({});
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [visibility, setVisibility] = React.useState<Record<number, string[]>>({});
 
@@ -60,9 +68,10 @@ export default function MCPPage() {
   const load = React.useCallback(() => {
     api.agents().then(setAgents).catch(() => {});
     api
-      .mcpServers()
-      .then((ss) => {
+      .mcpServersWithGuards()
+      .then(({ servers: ss, guards: gs }) => {
         setServers(ss);
+        setGuards(gs);
         ss.forEach((s) =>
           api
             .resourceVisibility("mcp", s.id)
@@ -214,6 +223,17 @@ export default function MCPPage() {
       load();
     } catch (e) {
       toast.error("操作失败：" + (e as Error).message);
+    }
+  }
+
+  // P24：手动重置该 server 的熔断（修好配置/服务恢复后用；失败会重新计数）。
+  async function resetGuard(s: MCPServer) {
+    try {
+      const r = await api.resetMcpGuard(s.id);
+      toast.success(r.note || `已重置「${s.name}」的熔断`);
+      load();
+    } catch (e) {
+      toast.error("重置失败：" + (e as Error).message);
     }
   }
 
@@ -390,6 +410,11 @@ export default function MCPPage() {
                   {s.transport}
                 </Badge>
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  {guards[s.name]?.open && (
+                    <Badge variant="destructive" className="text-[11px]" title={guards[s.name]?.last_error}>
+                      熔断中 {guards[s.name]?.open_remaining_sec ?? 0}s
+                    </Badge>
+                  )}
                   <Switch
                     checked={s.enabled}
                     onCheckedChange={() => toggleEnabled(s)}
@@ -407,6 +432,28 @@ export default function MCPPage() {
               </div>
             </CardHeader>
             <CardContent className="grid gap-3">
+              {(guards[s.name]?.open || (guards[s.name]?.consecutive_failures ?? 0) > 0) && (
+                <div className="flex flex-wrap items-center gap-2 text-xs" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-muted-foreground">
+                    外部调用守卫：并发上限 {guards[s.name]?.max_concurrent === 0 ? "不限" : guards[s.name]?.max_concurrent}
+                    {guards[s.name]?.inflight ? ` · 进行中 ${guards[s.name]?.inflight}` : ""}
+                    {(guards[s.name]?.consecutive_failures ?? 0) > 0
+                      ? ` · 连续失败 ${guards[s.name]?.consecutive_failures}`
+                      : ""}
+                  </span>
+                  {(guards[s.name]?.open || (guards[s.name]?.consecutive_failures ?? 0) > 0) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => void resetGuard(s)}
+                      title="清除熔断计数并立刻恢复真实调用（若服务仍不健康会重新计数）"
+                    >
+                      <RotateCcwIcon className="size-3.5" /> 重置熔断
+                    </Button>
+                  )}
+                </div>
+              )}
               <p className="text-muted-foreground text-sm">
                 {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
               </p>

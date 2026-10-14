@@ -23,6 +23,8 @@ type ExecStatus struct {
 	Tail        string `json:"partial_tail,omitempty"`
 	CancelNote  string `json:"cancel_note,omitempty"`
 	Error       string `json:"error,omitempty"`
+	// Limits 是本次执行的资源限额快照（P24）：请求了什么、哪些真的生效。空 = 没设限额。
+	Limits string `json:"limits,omitempty"`
 }
 
 // ExecActive 报告执行是否仍在跑（工具层措辞与收尾门共用同一口径）。

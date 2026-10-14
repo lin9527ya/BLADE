@@ -43,6 +43,14 @@ export default function SystemSettingsPage() {
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
+  // P24 执行资源限额与外部 MCP 守卫（0 = 不限；保存即对之后提交的执行/调用生效）。
+  const [execCPU, setExecCPU] = React.useState("1800");
+  const [execMem, setExecMem] = React.useState("0");
+  const [execProcs, setExecProcs] = React.useState("0");
+  const [mcpConcurrent, setMcpConcurrent] = React.useState("2");
+  const [mcpBreakerFails, setMcpBreakerFails] = React.useState("5");
+  const [mcpBreakerCooldown, setMcpBreakerCooldown] = React.useState("60");
+  const [savingLimits, setSavingLimits] = React.useState(false);
   // P21 情报源（先接 FOFA）。key 只写不读：页面只显示"是否已配置"，输入框留空 = 不改。
   const [intelKeyInput, setIntelKeyInput] = React.useState("");
   const [intelKeySet, setIntelKeySet] = React.useState(false);
@@ -90,6 +98,12 @@ export default function SystemSettingsPage() {
     setIntelProxy(s.fofa_proxy ?? "");
     setIntelQuota(String(s.intel_daily_quota ?? 200));
     setIntelUsed(s.intel_used_today ?? 0);
+    setExecCPU(String(s.exec_cpu_seconds ?? 1800));
+    setExecMem(String(s.exec_memory_mb ?? 0));
+    setExecProcs(String(s.exec_max_procs ?? 0));
+    setMcpConcurrent(String(s.mcp_max_concurrent_per_server ?? 2));
+    setMcpBreakerFails(String(s.mcp_breaker_threshold ?? 5));
+    setMcpBreakerCooldown(String(s.mcp_breaker_cooldown_sec ?? 60));
   }, []);
 
   // 全局默认策略：独立加载（不进 apply——它由 /api/settings 触发，而策略走自己的端点）。
@@ -209,6 +223,26 @@ export default function SystemSettingsPage() {
       setIntelTestMsg("连接失败：" + (e as Error).message);
     } finally {
       setIntelTesting(false);
+    }
+  };
+
+  const saveLimits = async () => {
+    setSavingLimits(true);
+    try {
+      const s2 = await api.setSettings({
+        exec_cpu_seconds: Math.max(0, Number(execCPU) || 0),
+        exec_memory_mb: Math.max(0, Number(execMem) || 0),
+        exec_max_procs: Math.max(0, Number(execProcs) || 0),
+        mcp_max_concurrent_per_server: Math.max(0, Number(mcpConcurrent) || 0),
+        mcp_breaker_threshold: Math.max(0, Number(mcpBreakerFails) || 0),
+        mcp_breaker_cooldown_sec: Math.max(0, Number(mcpBreakerCooldown) || 0),
+      });
+      apply(s2);
+      toast.success("已保存：对之后提交的长任务执行与 MCP 调用生效");
+    } catch (e) {
+      toast.error("保存失败：" + (e as Error).message);
+    } finally {
+      setSavingLimits(false);
     }
   };
 
@@ -564,6 +598,111 @@ export default function SystemSettingsPage() {
             <p className="text-muted-foreground text-xs">
               {Number(tokenBudget) > 0 ? "已配置 · 到量提示并自动收尾" : "未配置 · 任务不设 token 上限"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <GaugeIcon className="size-4" />
+              长任务执行限额与 MCP 守卫
+            </CardTitle>
+            <CardDescription>
+              长任务（run_execution）此前只有硬超时，没有 CPU/内存/进程数上限——一条跑飞的扫描
+              就能把平台自己这台机器打满。这里给每次执行加 <code>ulimit</code> 前导（**0 = 该轴不限**）：
+              请求了什么、本机是否真的生效，都会如实记进执行台账（本机 <code>/bin/sh</code> 不支持某项时
+              记"未生效"，不假装限住了）。
+              <br />
+              外部 MCP server 挂掉或变慢时，Agent 会一轮轮重试、把时间全烧在等待上。守卫给每个 server
+              加**并发上限**与**连续失败熔断**：开闸期间直接快速失败并说明原因（不发网络请求），
+              冷却后放行一次真实调用，成功即恢复；也可以在 MCP 页手动重置。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="grid gap-2">
+                <Label htmlFor="exec-cpu" className="text-sm font-normal text-muted-foreground">
+                  CPU 上限（秒，0 = 不限）
+                </Label>
+                <Input
+                  id="exec-cpu"
+                  inputMode="numeric"
+                  value={execCPU}
+                  onChange={(e) => setExecCPU(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || savingLimits}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="exec-mem" className="text-sm font-normal text-muted-foreground">
+                  内存上限（MB，0 = 不限）
+                </Label>
+                <Input
+                  id="exec-mem"
+                  inputMode="numeric"
+                  value={execMem}
+                  onChange={(e) => setExecMem(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || savingLimits}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="exec-procs" className="text-sm font-normal text-muted-foreground">
+                  进程数上限（0 = 不限）
+                </Label>
+                <Input
+                  id="exec-procs"
+                  inputMode="numeric"
+                  value={execProcs}
+                  onChange={(e) => setExecProcs(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || savingLimits}
+                />
+              </div>
+            </div>
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-conc" className="text-sm font-normal text-muted-foreground">
+                  MCP 每 server 并发上限（0 = 不限）
+                </Label>
+                <Input
+                  id="mcp-conc"
+                  inputMode="numeric"
+                  value={mcpConcurrent}
+                  onChange={(e) => setMcpConcurrent(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || savingLimits}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-fails" className="text-sm font-normal text-muted-foreground">
+                  连续失败多少次熔断
+                </Label>
+                <Input
+                  id="mcp-fails"
+                  inputMode="numeric"
+                  value={mcpBreakerFails}
+                  onChange={(e) => setMcpBreakerFails(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || savingLimits}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-cool" className="text-sm font-normal text-muted-foreground">
+                  熔断冷却（秒）
+                </Label>
+                <Input
+                  id="mcp-cool"
+                  inputMode="numeric"
+                  value={mcpBreakerCooldown}
+                  onChange={(e) => setMcpBreakerCooldown(e.target.value.replace(/[^0-9]/g, ""))}
+                  disabled={!loaded || savingLimits}
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button type="button" onClick={() => void saveLimits()} disabled={!loaded || savingLimits}>
+                保存
+              </Button>
+              <span className="text-muted-foreground text-xs">
+                限额只在**长任务执行**上生效；普通 Bash 调用不受影响（它本身有 run 级超时）。
+              </span>
+            </div>
           </CardContent>
         </Card>
 

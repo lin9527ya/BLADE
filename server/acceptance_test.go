@@ -26,6 +26,7 @@ import (
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intel"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/mcphttp"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -80,6 +81,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P21 情报/测绘工具面（FOFA：查询/落盘/台账/配额/边界）", func(t *testing.T) { accP21(t, env.forTest(t)) })
 	t.Run("P22 计划任务（结构化频率/CAS 防重复/失败留痕/立即运行）", func(t *testing.T) { accP22(t, env.forTest(t)) })
 	t.Run("P23 公司级知识层（跨任务只读先验/来源可回溯/废弃恢复/唯一写口）", func(t *testing.T) { accP23(t, env.forTest(t)) })
+	t.Run("P24 执行限额与 MCP 熔断（限额真生效/信号归类/开闸不打服务端/重置恢复）", func(t *testing.T) { accP24(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -2590,3 +2592,244 @@ func (e *accEnv) newTaskWithCompanies(t *testing.T, desc, goal string, companyID
 
 // tidBOf 取任务 id（newTask 已返回，这里只是让读取方的书写与 A 对称）。
 func tidBOf(t *testing.T, e *accEnv, task *Task) int64 { t.Helper(); return parseInt64(t, task.ID) }
+
+// accP24 走完执行限额与 MCP 熔断：
+//
+//	① 内存限额真的限住（同一条命令：设了限额 → 失败且台账写明限额；清掉 → 成功）；
+//	② CPU 限额被撞到时，台账理由是"被信号终止（很可能触发 ulimit -t）"而不是含糊的失败；
+//	③ 台账的 limits 快照说清"请求了什么、哪些真生效"（本机不支持某轴时如实标注）；
+//	④ MCP：设置 → 解析器 → 库行为 → API 可见 → 手动重置，整条链走通（连续失败开闸后
+//	   **不再打服务端**，重置后恢复真实调用）。
+func accP24(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p24", "执行限额与 MCP 熔断")
+
+	// 设置收尾：本用例改过的键全部恢复原值。
+	saved := map[string]struct {
+		v  string
+		ok bool
+	}{}
+	for _, k := range []string{settingExecCPUSeconds, settingExecMemoryMB, settingExecMaxProcs,
+		settingMCPMaxConcurrent, settingMCPBreakerFails, settingMCPBreakerCooldown} {
+		v, ok, _ := e.m.pg.GetSetting(k)
+		saved[k] = struct {
+			v  string
+			ok bool
+		}{v, ok}
+	}
+	t.Cleanup(func() {
+		for k, r := range saved {
+			if r.ok {
+				_ = e.m.pg.SetSetting(k, r.v)
+			} else {
+				_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, k)
+			}
+		}
+	})
+
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	tsx.SetExecService(e.m.Executions())
+	runTool := workflowTool(t, tsx.WorkerTools(), "run_execution")
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: tid})
+
+	// runAndWait 起一条执行并等它落终态，返回台账行。
+	runAndWait := func(command string) *db.ToolExecution {
+		t.Helper()
+		res, err := runTool.Call(ctx, json.RawMessage(`{"command":`+strconv.Quote(command)+`}`), nil)
+		if err != nil || !strings.Contains(res.Flatten(), "execution started: ") {
+			t.Fatalf("run_execution: %v %s", err, res.Flatten())
+		}
+		var id int64
+		if _, err := fmt.Sscanf(res.Flatten(), "execution started: %d", &id); err != nil || id == 0 {
+			t.Fatalf("解析 execution_id 失败: %s", res.Flatten())
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			row, err := e.m.pg.GetExecution(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row != nil && !agent.ExecActive(row.Status) {
+				return row
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Fatalf("执行 %d 30s 未落终态", id)
+		return nil
+	}
+
+	// ① 内存限额：设 256MB → 申请 500MB 的命令失败；清掉限额 → 同一条命令成功。
+	// 用 python3 申请内存（环境里必有：自定义工具的解释器探测在用）。
+	const memCmd = `python3 -c "x=bytearray(500*1024*1024); print(len(x))"`
+	rec := e.request(http.MethodPut, "/api/settings", `{"exec_memory_mb":256,"exec_cpu_seconds":0,"exec_max_procs":0}`)
+	if rec.Code != 200 {
+		t.Fatalf("设置内存限额 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	limited := runAndWait(memCmd)
+	var snap struct {
+		MemoryMB   int    `json:"memory_mb"`
+		AppliedMem bool   `json:"applied_mem"`
+		Note       string `json:"note"`
+	}
+	if len(limited.Limits) == 0 {
+		t.Fatal("台账必须记限额快照")
+	}
+	if err := json.Unmarshal(limited.Limits, &snap); err != nil {
+		t.Fatalf("限额快照不是合法 JSON: %s (%v)", limited.Limits, err)
+	}
+	if snap.MemoryMB != 256 {
+		t.Fatalf("限额快照没记请求值: %s", limited.Limits)
+	}
+	if !snap.AppliedMem {
+		t.Skipf("本机 /bin/sh 不支持 ulimit -v（快照如实记了：%s）：内存轴限额无法验证", limited.Limits)
+	}
+	if limited.Status == db.ExecCompleted && limited.ExitCode != nil && *limited.ExitCode == 0 {
+		t.Fatalf("500MB 分配在 256MB 限额下不该成功: %+v", limited)
+	}
+	full, err := os.ReadFile(limited.OutputPath)
+	if err != nil {
+		t.Fatalf("读执行输出: %v", err)
+	}
+	if !strings.Contains(string(full), "MemoryError") {
+		t.Fatalf("输出应显示分配失败（MemoryError）: %s", string(full))
+	}
+	// 清掉限额 → 同一条命令应当成功（这才证明"是限额让它失败"）。
+	if rec := e.request(http.MethodPut, "/api/settings", `{"exec_memory_mb":0}`); rec.Code != 200 {
+		t.Fatalf("清内存限额 status=%d", rec.Code)
+	}
+	unlimited := runAndWait(memCmd)
+	if unlimited.Status != db.ExecCompleted || unlimited.ExitCode == nil || *unlimited.ExitCode != 0 {
+		t.Fatalf("去掉限额后同一条命令应当成功: %+v", unlimited)
+	}
+
+	// ② CPU 限额：1 秒上限 + 死循环（exec 让外层 shell 自己变成死循环进程，
+	// 这样撞限额的是我们的直接子进程，信号归类才可验证）。
+	if rec := e.request(http.MethodPut, "/api/settings", `{"exec_cpu_seconds":1}`); rec.Code != 200 {
+		t.Fatalf("设置 CPU 限额 status=%d", rec.Code)
+	}
+	spin := runAndWait(`exec /bin/sh -c 'i=0; while true; do i=$((i+1)); done'`)
+	if spin.Status == db.ExecCompleted {
+		t.Fatalf("死循环不该正常结束: %+v", spin)
+	}
+	if !strings.Contains(spin.Error, "信号 24") || !strings.Contains(spin.Error, "CPU 限额") {
+		t.Fatalf("撞 CPU 限额的理由要说清楚（当前: %q）", spin.Error)
+	}
+	if rec := e.request(http.MethodPut, "/api/settings", `{"exec_cpu_seconds":0}`); rec.Code != 200 {
+		t.Fatalf("清 CPU 限额 status=%d", rec.Code)
+	}
+
+	// ③ 设置回显：三个执行限额键可读可写（UI 靠它渲染）。
+	rec = e.request(http.MethodGet, "/api/settings", "")
+	var st struct {
+		ExecCPUSeconds *int `json:"exec_cpu_seconds"`
+		ExecMemoryMB   *int `json:"exec_memory_mb"`
+		MCPConcurrent  *int `json:"mcp_max_concurrent_per_server"`
+		MCPBreaker     *int `json:"mcp_breaker_threshold"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.ExecCPUSeconds == nil || st.ExecMemoryMB == nil || st.MCPConcurrent == nil || st.MCPBreaker == nil {
+		t.Fatalf("设置载荷缺少 P24 字段: %s", rec.Body.String())
+	}
+
+	// ④ MCP 熔断端到端：假服务永远 500 → 连续失败开闸 → 不再打服务端 → API 可见 → 重置恢复。
+	var mcpCalls int32
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&mcpCalls, 1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(bad.Close)
+	mcpName := "acceptance-p24-bad"
+	if rec := e.request(http.MethodPost, "/api/mcp", fmt.Sprintf(
+		`{"name":%q,"transport":"http","url":%q,"enabled":true}`, mcpName, bad.URL)); rec.Code != 200 && rec.Code != 201 {
+		t.Fatalf("建 MCP status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var mcpRow struct {
+		ID int64 `json:"id"`
+	}
+	// 列表里拿到 id（POST 可能不返回整行）。
+	getMCPID := func() int64 {
+		rec := e.request(http.MethodGet, "/api/mcp", "")
+		var listed struct {
+			Servers []struct {
+				ID   int64  `json:"id"`
+				Name string `json:"name"`
+			} `json:"servers"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range listed.Servers {
+			if s.Name == mcpName {
+				return s.ID
+			}
+		}
+		return 0
+	}
+	mcpRow.ID = getMCPID()
+	if mcpRow.ID == 0 {
+		t.Fatal("MCP 没建出来")
+	}
+	t.Cleanup(func() {
+		_, _ = e.m.pg.Exec(`DELETE FROM mcp_servers WHERE name=$1`, mcpName)
+		mcphttp.ResetGuard(mcpName)
+	})
+	// 阈值 3、冷却拉长（保证测试窗口内一直是开闸态）。
+	if rec := e.request(http.MethodPut, "/api/settings",
+		`{"mcp_breaker_threshold":3,"mcp_breaker_cooldown_sec":120,"mcp_max_concurrent_per_server":2}`); rec.Code != 200 {
+		t.Fatalf("设置 MCP 守卫 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	fail := func() error {
+		cl, err := mcphttp.New(context.Background(), mcpName, bad.URL, nil, false)
+		if err == nil {
+			_ = cl.Close()
+		}
+		return err
+	}
+	for i := 0; i < 3; i++ {
+		if err := fail(); err == nil {
+			t.Fatal("坏服务不该连接成功")
+		}
+	}
+	before := atomic.LoadInt32(&mcpCalls)
+	start := time.Now()
+	err = fail()
+	if err == nil || !strings.Contains(err.Error(), "熔断冷却") {
+		t.Fatalf("连续失败后应熔断并说明: %v", err)
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("熔断应立刻失败: %s", time.Since(start))
+	}
+	if got := atomic.LoadInt32(&mcpCalls); got != before {
+		t.Fatalf("熔断期内不该再打服务端（%d → %d）", before, got)
+	}
+	// API 可见：列表附 guards，开闸 + 剩余秒 + 服务名。
+	rec = e.request(http.MethodGet, "/api/mcp", "")
+	var withGuards struct {
+		Guards map[string]struct {
+			Open             bool   `json:"open"`
+			OpenRemainingSec int    `json:"open_remaining_sec"`
+			MaxConcurrent    int    `json:"max_concurrent"`
+			LastError        string `json:"last_error"`
+		} `json:"guards"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &withGuards); err != nil {
+		t.Fatal(err)
+	}
+	g, ok := withGuards.Guards[mcpName]
+	if !ok || !g.Open || g.OpenRemainingSec <= 0 || g.MaxConcurrent != 2 || g.LastError == "" {
+		t.Fatalf("MCP 列表应带守卫快照: %+v (body=%s)", withGuards.Guards, rec.Body.String())
+	}
+	// 手动重置 → 恢复真实调用（计数增长，且错误不再是熔断话术）。
+	rec = e.request(http.MethodPost, "/api/mcp/"+strconv.FormatInt(mcpRow.ID, 10)+"/guard/reset", "")
+	if rec.Code != 200 {
+		t.Fatalf("重置熔断 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := fail(); err == nil || strings.Contains(err.Error(), "熔断冷却") {
+		t.Fatalf("重置后应恢复真实调用: %v", err)
+	}
+	if got := atomic.LoadInt32(&mcpCalls); got <= before {
+		t.Fatal("重置后应真的打了服务端")
+	}
+}

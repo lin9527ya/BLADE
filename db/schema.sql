@@ -286,6 +286,9 @@ CREATE TABLE IF NOT EXISTS tool_executions (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+-- P24 资源限额快照：这次执行**请求了**哪些限额、哪些**真的生效**（本机 sh 不支持某项时
+-- 如实记 applied=false，不静默当成"已限住"）。人/模型据此判断"命令失败是不是撞了限额"。
+ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS limits JSONB NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_tool_exec_intent  ON tool_executions(intent_id, status);
 CREATE INDEX IF NOT EXISTS idx_tool_exec_task    ON tool_executions(task_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_exec_active  ON tool_executions(status) WHERE status IN ('queued','running');

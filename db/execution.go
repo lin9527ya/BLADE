@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -39,35 +40,37 @@ func ExecutionTerminal(status string) bool {
 
 // ToolExecution is one row of the ledger.
 type ToolExecution struct {
-	ID          int64      `json:"id"`
-	TaskID      string     `json:"task_id"`
-	IntentID    int64      `json:"intent_id,omitempty"`
-	Worker      string     `json:"worker"`
-	Tool        string     `json:"tool"`
-	Command     string     `json:"command"`
-	Description string     `json:"description,omitempty"`
-	Status      string     `json:"status"`
-	ExitCode    *int       `json:"exit_code,omitempty"`
-	OutputPath  string     `json:"output_path"`
-	OutputBytes int64      `json:"output_bytes"`
-	PartialTail string     `json:"partial_tail,omitempty"`
-	CancelNote  string     `json:"cancel_note,omitempty"`
-	Error       string     `json:"error,omitempty"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	EndedAt     *time.Time `json:"ended_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// Limits 是资源限额快照（P24）：请求值 + 实际生效情况（本机不支持某项时如实标注）。
+	Limits      json.RawMessage `json:"limits,omitempty"`
+	ID          int64           `json:"id"`
+	TaskID      string          `json:"task_id"`
+	IntentID    int64           `json:"intent_id,omitempty"`
+	Worker      string          `json:"worker"`
+	Tool        string          `json:"tool"`
+	Command     string          `json:"command"`
+	Description string          `json:"description,omitempty"`
+	Status      string          `json:"status"`
+	ExitCode    *int            `json:"exit_code,omitempty"`
+	OutputPath  string          `json:"output_path"`
+	OutputBytes int64           `json:"output_bytes"`
+	PartialTail string          `json:"partial_tail,omitempty"`
+	CancelNote  string          `json:"cancel_note,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	StartedAt   *time.Time      `json:"started_at,omitempty"`
+	EndedAt     *time.Time      `json:"ended_at,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
 }
 
 const executionCols = `id, task_id, COALESCE(intent_id,0), worker, tool, command, COALESCE(description,''), status,
 	COALESCE(exit_code,-1), output_path, output_bytes, partial_tail, cancel_note, error,
-	started_at, ended_at, created_at`
+	started_at, ended_at, created_at, limits`
 
 func scanExecution(sc interface{ Scan(...any) error }) (*ToolExecution, error) {
 	var e ToolExecution
 	var exit int
 	if err := sc.Scan(&e.ID, &e.TaskID, &e.IntentID, &e.Worker, &e.Tool, &e.Command, &e.Description, &e.Status,
 		&exit, &e.OutputPath, &e.OutputBytes, &e.PartialTail, &e.CancelNote, &e.Error,
-		&e.StartedAt, &e.EndedAt, &e.CreatedAt); err != nil {
+		&e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.Limits); err != nil {
 		return nil, err
 	}
 	if exit >= 0 {
@@ -128,6 +131,15 @@ func (d *DB) TouchExecutionTail(id int64, tail string, outputBytes int64) error 
 // SetExecutionCancelNote records WHY an execution was cancelled (human/task reason).
 func (d *DB) SetExecutionCancelNote(id int64, note string) error {
 	_, err := d.Exec(`UPDATE tool_executions SET cancel_note=$1 WHERE id=$2`, note, id)
+	return err
+}
+
+// SetExecutionLimits 落一次执行的限额快照（提交时写一次，之后不变）。
+func (d *DB) SetExecutionLimits(id int64, raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	_, err := d.Exec(`UPDATE tool_executions SET limits=$2, updated_at=now() WHERE id=$1`, id, string(raw))
 	return err
 }
 

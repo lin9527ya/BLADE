@@ -1212,6 +1212,13 @@ export interface Settings {
   fofa_proxy?: string; // 独立出口；空 = 跟随全局代理
   intel_daily_quota?: number; // 平台侧每日调用上限；0 = 不限
   intel_used_today?: number; // 只读回显：今日已用次数
+  // ---- P24 执行资源限额（0 = 该轴不限）与外部 MCP 守卫 ----
+  exec_cpu_seconds?: number;
+  exec_memory_mb?: number;
+  exec_max_procs?: number;
+  mcp_max_concurrent_per_server?: number;
+  mcp_breaker_threshold?: number;
+  mcp_breaker_cooldown_sec?: number;
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
   // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，
@@ -1468,6 +1475,17 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
+}
+
+/** P24：外部 MCP 的并发/熔断快照（mcphttp 按 server 名维护）。 */
+export interface MCPGuardStatus {
+  server: string;
+  max_concurrent: number; // 0 = 不限
+  inflight: number;
+  consecutive_failures: number;
+  open: boolean;
+  open_remaining_sec?: number;
+  last_error?: string;
 }
 
 export interface MCPTool {
