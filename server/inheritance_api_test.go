@@ -59,7 +59,7 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 		s.engine.StopTask(current.ID)
 		s.engine.StopTask(source.ID)
 	})
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}

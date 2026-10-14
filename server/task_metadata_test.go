@@ -29,7 +29,7 @@ func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
 	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
 	// 停在 TempDir 清理之前：StopTask 取消任务运行时并等待协程退出（确定性收尾）。
 	t.Cleanup(func() { s.engine.StopTask(task.ID) })
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestConversationBatchDeleteReportsMissing(t *testing.T) {
 		_ = m.pg.DeleteConversation(first.ID)
 		_ = m.pg.DeleteConversation(second.ID)
 	}()
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}
