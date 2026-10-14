@@ -391,20 +391,34 @@ func (c *Client) Close() error {
 // --- JSON-RPC over Streamable HTTP ---
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	// P24 守卫：并发上限（排到槽位再发）+ 熔断（开闸时立刻失败，不空等超时）。
+	// 熔断只由**传输层失败**计数（连不上/空应答）：RPC 层错误说明 server 答了、
+	// 只是这次请求不对（比如工具名写错），那不是"server 不健康"，不该开闸。
+	cfg := guardConfigFor(c.server)
+	g := guardFor(c.server)
+	if err := g.acquire(ctx, c.server, cfg); err != nil {
+		return nil, err
+	}
+	defer g.release()
+
 	c.mu.Lock()
 	c.nextID++
 	id := c.nextID
 	c.mu.Unlock()
 	resp, err := c.roundTrip(ctx, rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}, true)
 	if err != nil {
+		g.failure(err, cfg)
 		return nil, err
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("mcp: empty response for %s", method)
+		empty := fmt.Errorf("mcp: empty response for %s", method)
+		g.failure(empty, cfg)
+		return nil, empty
 	}
 	if resp.Error != nil {
 		return nil, resp.Error
 	}
+	g.success()
 	return resp.Result, nil
 }
 

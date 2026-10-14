@@ -31,6 +31,7 @@ import type {
   ExplorationPolicyEffective,
   IntelQueryList,
   IntelTestResult,
+  MCPGuardStatus,
   ExplorationPolicyOverride,
   PolicyRuleDraft,
   ScheduleFrequency,
@@ -1266,6 +1267,14 @@ export const api = {
 
   // ---- mcp ----
   mcpServers: () => get<{ servers: MCPServer[] }>("/mcp").then((r) => arr(r.servers)),
+  // P24：MCP 列表 + 每个 server 的并发/熔断快照（只给 MCP 页用；其它页面只关心列表）。
+  mcpServersWithGuards: () =>
+    get<{ servers: MCPServer[]; guards?: Record<string, MCPGuardStatus> }>("/mcp").then((r) => ({
+      servers: arr(r.servers),
+      guards: r.guards ?? {},
+    })),
+  // P24：手动重置某个 MCP server 的熔断（修好配置/服务恢复后用）。
+  resetMcpGuard: (id: number) => post<{ reset: boolean; server: string; note: string }>(`/mcp/${id}/guard/reset`, {}),
   saveMcpServer: (m: Partial<MCPServer>) => post<{ id: number }>("/mcp", m),
   deleteMcpServer: (id: number) => del<{ deleted: number }>(`/mcp/${id}`),
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),

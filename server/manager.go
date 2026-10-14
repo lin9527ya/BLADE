@@ -285,6 +285,15 @@ const (
 	// agent(planner/worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction。
 	// 每 run 读一次,切换只影响之后启动的 run。
 	settingNoaCompaction = "noa_compaction"
+	// P24 长任务执行的资源限额（ulimit 前导；0 = 该轴不限）。默认只开 CPU 一个上限
+	// （1800s 兜住跑飞的扫描），内存/进程数默认不限——它们更容易误伤正常工具。
+	settingExecCPUSeconds = "exec_cpu_seconds"
+	settingExecMemoryMB   = "exec_memory_mb"
+	settingExecMaxProcs   = "exec_max_procs"
+	// P24 外部 MCP 的并发上限与熔断（每 server；0 = 不限/用默认）。
+	settingMCPMaxConcurrent   = "mcp_max_concurrent_per_server"
+	settingMCPBreakerFails    = "mcp_breaker_threshold"
+	settingMCPBreakerCooldown = "mcp_breaker_cooldown_sec"
 	// P21 情报/测绘（先接 FOFA）。key 只存不回显（设置页只给 fofa_key_set 布尔）；
 	// base_url 便于企业版/自建端点，也是验收把请求指到假服务的入口；
 	// proxy 是独立出口（空 = 跟随全局代理）；daily_quota 是平台侧每日调用闸门。
@@ -295,6 +304,14 @@ const (
 	settingIntelDailyQuota = "intel_daily_quota"
 	// defaultIntelDailyQuota 是没设 quota 时的平台侧每日上限（0 = 不限，设了才生效）。
 	defaultIntelDailyQuota = 200
+	// P24 默认值：CPU 30 分钟上限；内存/进程数不限（0）。
+	defaultExecCPUSeconds = 1800
+	defaultExecMemoryMB   = 0
+	defaultExecMaxProcs   = 0
+	// 外部 MCP：每 server 最多 2 个并发调用；连续 5 次失败开熔断 60s。
+	defaultMCPMaxConcurrent   = 2
+	defaultMCPBreakerFails    = 5
+	defaultMCPBreakerCooldown = 60
 	// defaultWebSearchBackend is used when web search is on but no backend was picked.
 	defaultWebSearchBackend = "ddgs"
 	// deepSeekWebSearchBackend borrows the active LLM profile instead of its own

@@ -112,7 +112,16 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 		return agent.ExecStatus{}, err
 	}
 
-	argv := shellCommandArgs(command)
+	// P24 资源限额：按当前设置给这次执行加 ulimit 前导，并把"请求了什么/哪些真生效"
+	// 落进台账（本机不支持某轴时如实标注，不静默当成已限住）。
+	lim := execLimitsFromSettings(s.pg)
+	runCommand, snap := applyExecLimits(command, lim)
+	if len(marshalExecLimits(snap)) > 0 && !lim.IsZero() {
+		if lerr := s.pg.SetExecutionLimits(id, marshalExecLimits(snap)); lerr != nil {
+			log.Printf("[exec] %d 限额快照落库失败: %v", id, lerr)
+		}
+	}
+	argv := shellCommandArgs(runCommand)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	startDetached(cmd)
 	// 与 agent Bash 同环境同目录：走记录代理、信任 CA、相对产物落在本意图目录。
@@ -161,7 +170,13 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 			Tool: "run_execution", Command: command, Description: strings.TrimSpace(desc),
 			Status: db.ExecRunning, OutputPath: path}
 	}
-	return toExecStatus(row, run), nil
+	st := toExecStatus(row, run)
+	if !lim.IsZero() {
+		if b := marshalExecLimits(snap); len(b) > 0 {
+			st.Limits = string(b)
+		}
+	}
+	return st, nil
 }
 
 // reap waits for the process, lands the terminal state in the ledger, and fires onDone.
@@ -193,6 +208,14 @@ func (s *ExecutionService) reap(run *execRun) {
 	}
 	if status == db.ExecFailed && err != nil {
 		errMsg = err.Error()
+	}
+	// 撞 CPU 限额：内核先发 SIGXCPU(24)，进程若继续再 SIGKILL(9)——具体收到哪个取决于
+	// 进程是否处理了 SIGXCPU，所以两个都认。归类仍是 failed，但理由写明"被信号终止"，
+	// 让台账与模型能区分"被自己的限额杀掉"和"命令本身报错"（限额快照在 limits 字段）。
+	if status == db.ExecFailed {
+		if sig, ok := signaledBy(run.cmd); ok && (sig == 24 || sig == 9) {
+			errMsg = fmt.Sprintf("进程被信号 %d 终止（信号 24=CPU 限额 SIGXCPU，9=硬杀）：若本次设了 CPU 限额（ulimit -t）就是撞限的表现；台账 limits 字段有本次限额快照（原始错误：%s）", sig, errMsg)
+		}
 	}
 	if ferr := s.pg.FinishExecution(run.id, status, exitCode, run.bytes.Load(), run.tail.String(), errMsg); ferr != nil {
 		log.Printf("[exec] %d 终态落库失败: %v", run.id, ferr)
@@ -411,6 +434,9 @@ func toExecStatus(row *db.ToolExecution, run *execRun) agent.ExecStatus {
 	if run != nil {
 		st.Tail = run.tail.String()
 		st.OutputBytes = run.bytes.Load()
+	}
+	if len(row.Limits) > 0 && string(row.Limits) != "{}" {
+		st.Limits = string(row.Limits)
 	}
 	return st
 }

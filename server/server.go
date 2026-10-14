@@ -236,6 +236,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
+		s.installMCPGuard()           // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
 		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
@@ -914,6 +915,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/mcp/{id}", s.pgDeleteMCP)
 	mux.HandleFunc("GET /api/mcp/{id}/tools", s.pgMCPTools)
 	mux.HandleFunc("POST /api/mcp/{id}/refresh", s.pgRefreshMCP)
+	mux.HandleFunc("POST /api/mcp/{id}/guard/reset", s.pgResetMCPGuard) // P24 手动重置该 server 的熔断
 	// 资产同步 — ScopeSentry 数据源
 	mux.HandleFunc("GET /api/sync/scopesentry/status", s.syncSSStatus)
 	mux.HandleFunc("POST /api/sync/scopesentry/datasource", s.syncSSDatasource)
@@ -3450,15 +3452,22 @@ func (s *Server) settingsPayload() map[string]any {
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
-		"fofa_key_set":               strings.TrimSpace(intelKey) != "",
-		"fofa_email":                 intelEmail,
-		"fofa_base_url":              intelBaseURL,
-		"fofa_proxy":                 intelProxy,
-		"intel_daily_quota":          s.intelDailyQuota(),
-		"intel_used_today":           intelUsed,
-		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
-		"notify_public_base_url":     notifyPublicBaseURL(s.m.pg),
-		"notify_digest_interval_min": notifyDigestIntervalMin(s.m.pg),
+		"fofa_key_set":      strings.TrimSpace(intelKey) != "",
+		"fofa_email":        intelEmail,
+		"fofa_base_url":     intelBaseURL,
+		"fofa_proxy":        intelProxy,
+		"intel_daily_quota": s.intelDailyQuota(),
+		"intel_used_today":  intelUsed,
+		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
+		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
+		"exec_memory_mb":                execLimitsFromSettings(s.m.pg).MemoryMB,
+		"exec_max_procs":                execLimitsFromSettings(s.m.pg).MaxProcs,
+		"mcp_max_concurrent_per_server": s.mcpGuardSetting(settingMCPMaxConcurrent, defaultMCPMaxConcurrent),
+		"mcp_breaker_threshold":         s.mcpGuardSetting(settingMCPBreakerFails, defaultMCPBreakerFails),
+		"mcp_breaker_cooldown_sec":      s.mcpGuardSetting(settingMCPBreakerCooldown, defaultMCPBreakerCooldown),
+		"notify_enabled":                s.m.pg.GetBool(settingNotifyEnabled, true),
+		"notify_public_base_url":        notifyPublicBaseURL(s.m.pg),
+		"notify_digest_interval_min":    notifyDigestIntervalMin(s.m.pg),
 	}
 }
 
@@ -3539,6 +3548,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		FOFABaseURL     *string `json:"fofa_base_url"`
 		FOFAProxy       *string `json:"fofa_proxy"`
 		IntelDailyQuota *int    `json:"intel_daily_quota"`
+		// P24：执行资源限额（0 = 该轴不限）与外部 MCP 守卫（并发上限/熔断阈值/冷却秒）。
+		ExecCPUSeconds     *int `json:"exec_cpu_seconds"`
+		ExecMemoryMB       *int `json:"exec_memory_mb"`
+		ExecMaxProcs       *int `json:"exec_max_procs"`
+		MCPMaxConcurrent   *int `json:"mcp_max_concurrent_per_server"`
+		MCPBreakerFails    *int `json:"mcp_breaker_threshold"`
+		MCPBreakerCooldown *int `json:"mcp_breaker_cooldown_sec"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -3619,6 +3635,32 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingIntelDailyQuota, strconv.Itoa(*req.IntelDailyQuota)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	// P24 资源限额与 MCP 守卫：都是"每调用现读"的键，保存即对之后提交的执行/调用生效。
+	for _, f := range []struct {
+		key  string
+		val  *int
+		max  int
+		name string
+	}{
+		{settingExecCPUSeconds, req.ExecCPUSeconds, 86400, "CPU 限额（秒）"},
+		{settingExecMemoryMB, req.ExecMemoryMB, 1048576, "内存限额（MB）"},
+		{settingExecMaxProcs, req.ExecMaxProcs, 65536, "进程数限额"},
+		{settingMCPMaxConcurrent, req.MCPMaxConcurrent, 128, "MCP 并发上限"},
+		{settingMCPBreakerFails, req.MCPBreakerFails, 1000, "MCP 熔断阈值"},
+		{settingMCPBreakerCooldown, req.MCPBreakerCooldown, 86400, "MCP 熔断冷却（秒）"},
+	} {
+		if f.val == nil {
+			continue
+		}
+		if *f.val < 0 || *f.val > f.max {
+			writeErr(w, 400, fmt.Sprintf("%s 需在 0（不限）到 %d 之间", f.name, f.max))
+			return
+		}
+		if err := s.m.pg.SetSetting(f.key, strconv.Itoa(*f.val)); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

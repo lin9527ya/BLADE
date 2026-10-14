@@ -25,6 +25,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/mcphttp"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -875,7 +876,40 @@ func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	if ms == nil {
 		ms = []*db.MCPServer{}
 	}
-	writeJSON(w, 200, map[string]any{"servers": ms})
+	// P24：附上每个 server 的并发/熔断快照（UI 显示"熔断中（剩余 Ns）"+ 手动重置）。
+	guards := map[string]mcphttp.GuardStatus{}
+	for _, st := range mcphttp.GuardStatuses() {
+		guards[st.Server] = st
+	}
+	writeJSON(w, 200, map[string]any{"servers": ms, "guards": guards})
+}
+
+// pgResetMCPGuard 手动重置某个 MCP server 的熔断（人修好配置/服务恢复后用）。
+func (s *Server) pgResetMCPGuard(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	id := parseIntDefault(r.PathValue("id"))
+	rows, err := pg.ListMCP()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	name := ""
+	for _, row := range rows {
+		if row.ID == id {
+			name = row.Name
+			break
+		}
+	}
+	if name == "" {
+		writeErr(w, 404, "MCP 不存在")
+		return
+	}
+	mcphttp.ResetGuard(name)
+	writeJSON(w, 200, map[string]any{"reset": true, "server": name,
+		"note": "熔断已重置：下一次调用会真实打服务端；若仍不健康会重新计数。"})
 }
 
 func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
