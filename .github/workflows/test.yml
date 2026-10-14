@@ -51,8 +51,17 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
           "$(go env GOPATH)/bin/staticcheck" ./...
-      - name: go test（串行，count=1 防缓存）
-        run: go test -count=1 -p 1 ./...
+      # -race 抓并发缺陷：本仓的 agent 包有 9 个包级可变函数变量（由 server 启动时赋值、
+      # 无锁无 Once），测试里也有手工改它们再回滚的写法——只要将来某个测试同时用上
+      # t.Parallel()，就会变成偶发红而无人知晓。实测当前全量在 -race 下 0 告警（agent 包也
+      # 绿），先立住这条护栏。
+      # CGO_ENABLED 显式声明：-race 需要 cgo，CI 镜像自带 gcc（默认值本会是 1），但写死免得
+      # 将来 runner 变了默认值、-race 静默失效或直接报错。
+      # 代价：本机实测全量 57s → 107s（1.9×）。
+      - name: go test（串行，count=1 防缓存；-race 抓并发缺陷）
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -p 1 ./...
 
   # ② Web + 端到端构建：前端静态导出（含类型检查）后按发布口径构建内嵌二进制的
   #    embedui 版本——把"发布时才炸"的问题提前到 push 上。
