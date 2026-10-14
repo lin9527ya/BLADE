@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,8 +34,10 @@ import (
 )
 
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
-// + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并的端到端验收清单：驱动真实的 HTTP 处理器、真实的工具
-// 与真实的引擎路径（只有 LLM 与外部目标被夹具替代），每个机制一个子测试。
+// + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
+// + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关的端到端
+// 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
+// 每个机制一个子测试。
 //
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
 //	./acceptance.sh                                     # 一键：一次性隔离库 + 清单
@@ -82,6 +85,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P22 计划任务（结构化频率/CAS 防重复/失败留痕/立即运行）", func(t *testing.T) { accP22(t, env.forTest(t)) })
 	t.Run("P23 公司级知识层（跨任务只读先验/来源可回溯/废弃恢复/唯一写口）", func(t *testing.T) { accP23(t, env.forTest(t)) })
 	t.Run("P24 执行限额与 MCP 熔断（限额真生效/信号归类/开闸不打服务端/重置恢复）", func(t *testing.T) { accP24(t, env.forTest(t)) })
+	t.Run("P25 MCP 工具级开关（关掉即不注入/刷新不翻回/口径自洽/未知名字 404）", func(t *testing.T) { accP25(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -2831,5 +2835,251 @@ func accP24(t *testing.T, e *accEnv) {
 	}
 	if got := atomic.LoadInt32(&mcpCalls); got <= before {
 		t.Fatal("重置后应真的打了服务端")
+	}
+}
+
+// fakeMCPToolServer 起一个最小可用的 MCP（SSE 传输，两件工具），给 accP25 用：
+// 只实现 initialize / tools/list，够 assembly 的连接 + 列工具路径走通。支持多条
+// 并发流（ToolAugment 每次调用都会新开一条）。返回 /sse 端点 URL。
+func fakeMCPToolServer(t *testing.T) string {
+	t.Helper()
+	var mu sync.Mutex
+	streams := map[string]chan []byte{}
+	var seq int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sse":
+			id := fmt.Sprintf("acc-p25-%d", atomic.AddInt64(&seq, 1))
+			ch := make(chan []byte, 8)
+			mu.Lock()
+			streams[id] = ch
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			fmt.Fprintf(w, "event: endpoint\ndata: %s/message?sessionId=%s\n\n", "http://"+r.Host, id)
+			w.(http.Flusher).Flush()
+			for {
+				select {
+				case payload := <-ch:
+					fmt.Fprintf(w, "event: message\ndata: %s\n\n", payload)
+					w.(http.Flusher).Flush()
+				case <-r.Context().Done():
+					mu.Lock()
+					delete(streams, id)
+					mu.Unlock()
+					return
+				}
+			}
+		case "/message":
+			var req struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			if req.ID == 0 {
+				return // notification（initialized 等）无需回包
+			}
+			var result any
+			switch req.Method {
+			case "initialize":
+				result = map[string]any{"protocolVersion": "2024-11-05",
+					"capabilities": map[string]any{"tools": map[string]any{}},
+					"serverInfo":   map[string]any{"name": "acc-p25", "version": "1"}}
+			case "tools/list":
+				result = map[string]any{"tools": []any{
+					map[string]any{"name": "acc_p25_keep", "description": "保留的工具",
+						"inputSchema": map[string]any{"type": "object"}},
+					map[string]any{"name": "acc_p25_off", "description": "将被关掉的工具",
+						"inputSchema": map[string]any{"type": "object"}},
+				}}
+			default:
+				result = map[string]any{}
+			}
+			res, err := json.Marshal(result)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": json.RawMessage(res)})
+			mu.Lock()
+			ch := streams[r.URL.Query().Get("sessionId")]
+			mu.Unlock()
+			if ch != nil {
+				ch <- payload
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/sse"
+}
+
+// accP25 走完 MCP 工具级开关（全局）：
+//
+//	① 关掉的工具**真的不在 Agent 的工具面里**（ToolAugment 连上 server 后按开关过滤），
+//	   同一台 server 的其它工具不受影响；
+//	② 重新发现（POST /{id}/refresh，走 SaveMCPTools 重建缓存）**不会把人的开关翻回默认**；
+//	③ 三处口径自洽：列表的 tools_disabled、工具列表的 enabled、开关回执；
+//	④ 名字不在缓存里 → 404（不静默成功）。
+func accP25(t *testing.T, e *accEnv) {
+	const (
+		keepTool = "acc_p25_keep"
+		offTool  = "acc_p25_off"
+	)
+	mcpName := "acceptance-p25-switch"
+	rec := e.request(http.MethodPost, "/api/mcp",
+		fmt.Sprintf(`{"name":%q,"transport":"sse","url":%q,"enabled":true}`, mcpName, fakeMCPToolServer(t)))
+	if rec.Code != 200 && rec.Code != 201 {
+		t.Fatalf("建 MCP status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == 0 {
+		t.Fatalf("建 MCP 未返回 id: %s (%v)", rec.Body.String(), err)
+	}
+	id := created.ID
+	t.Cleanup(func() {
+		_, _ = e.m.pg.Exec(`DELETE FROM mcp_servers WHERE id=$1`, id)
+		mcphttp.ResetGuard(mcpName)
+	})
+
+	// 建 server 时已自动发现 → 缓存里应有我们的两件工具，且默认全开。
+	type toolRow struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Enabled     bool   `json:"enabled"`
+	}
+	listTools := func() []toolRow {
+		t.Helper()
+		rec := e.request(http.MethodGet, "/api/mcp/"+strconv.FormatInt(id, 10)+"/tools", "")
+		var payload struct {
+			Tools []toolRow `json:"tools"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("工具列表不是合法 JSON: %s (%v)", rec.Body.String(), err)
+		}
+		return payload.Tools
+	}
+	// 缓存里存的是**全名** mcp__server__tool（mcphttp.ToolName）——UI 与开关都用它。
+	fullName := map[string]string{}
+	byName := map[string]toolRow{}
+	for _, x := range listTools() {
+		for _, suffix := range []string{keepTool, offTool} {
+			if strings.HasSuffix(x.Name, suffix) {
+				fullName[suffix] = x.Name
+			}
+		}
+		byName[x.Name] = x
+	}
+	if len(byName) != 2 || fullName[keepTool] == "" || fullName[offTool] == "" {
+		t.Fatalf("自动发现应缓存两件工具（mcp__%s__ 前缀）: %+v", mcpName, byName)
+	}
+	if !byName[fullName[keepTool]].Enabled || !byName[fullName[offTool]].Enabled {
+		t.Fatalf("新发现的工具默认应启用: %+v", byName)
+	}
+
+	// 装 augment（照 accP7：换掉包级变量并在收尾还原）并把这台 server 绑给 worker。
+	oldAugment := agent.ToolAugment
+	wireAgentAugment(e.m.pg, t.TempDir(), nil)
+	t.Cleanup(func() { agent.ToolAugment = oldAugment })
+	a, err := e.m.pg.GetAgentByKey("worker")
+	if err != nil || a == nil {
+		t.Fatalf("worker agent: %v", err)
+	}
+	prevVis, err := e.m.pg.AgentVisible(a.ID, "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.pg.SetAgentVisibilityKind(a.ID, "mcp", append(append([]int64{}, prevVis...), id)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.m.pg.SetAgentVisibilityKind(a.ID, "mcp", prevVis) })
+
+	// toolSurface 跑一次真实的 ToolAugment，返回它给 worker 的工具名集合。
+	toolSurface := func() string {
+		t.Helper()
+		tools, _, cleanup := agent.ToolAugment(context.Background(), "worker")
+		if cleanup != nil {
+			defer cleanup()
+		}
+		var b strings.Builder
+		for _, tl := range tools {
+			b.WriteString(tl.Name())
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+
+	before := toolSurface()
+	if !strings.Contains(before, keepTool) || !strings.Contains(before, offTool) {
+		t.Fatalf("开关都还开着时两件工具都该在工具面里:\n%s", before)
+	}
+
+	// ① 关掉一件：它从工具面消失，另一件不受影响。
+	rec = e.request(http.MethodPost, "/api/mcp/"+strconv.FormatInt(id, 10)+"/tools/toggle",
+		fmt.Sprintf(`{"name":%q,"enabled":false}`, fullName[offTool]))
+	if rec.Code != 200 {
+		t.Fatalf("关工具 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	after := toolSurface()
+	if strings.Contains(after, offTool) {
+		t.Fatalf("关掉的工具不该再注入任何 Agent:\n%s", after)
+	}
+	if !strings.Contains(after, keepTool) {
+		t.Fatalf("同 server 的其它工具不该受影响:\n%s", after)
+	}
+
+	// ② 重新发现不得把开关翻回默认（走 SaveMCPTools 重建缓存）。
+	rec = e.request(http.MethodPost, "/api/mcp/"+strconv.FormatInt(id, 10)+"/refresh", "")
+	if rec.Code != 200 {
+		t.Fatalf("刷新 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stale := map[string]toolRow{}
+	for _, x := range listTools() {
+		stale[x.Name] = x
+	}
+	if stale[fullName[offTool]].Enabled {
+		t.Fatalf("重发现把人的开关翻回默认了: %+v", stale[fullName[offTool]])
+	}
+	if again := toolSurface(); strings.Contains(again, offTool) {
+		t.Fatalf("刷新后关掉的工具仍不该注入:\n%s", again)
+	}
+
+	// ③ 列表口径：停用计数与工具级 enabled 自洽。
+	rec = e.request(http.MethodGet, "/api/mcp", "")
+	var listed struct {
+		Servers []struct {
+			ID            int64  `json:"id"`
+			Name          string `json:"name"`
+			ToolsDisabled int    `json:"tools_disabled"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range listed.Servers {
+		if s.ID == id {
+			found = true
+			if s.ToolsDisabled != 1 {
+				t.Fatalf("列表的 tools_disabled 应为 1: %+v", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("列表里找不到刚建的 MCP: %s", rec.Body.String())
+	}
+
+	// ④ 未知名字 → 404（既不静默成功也不静默失败）。
+	rec = e.request(http.MethodPost, "/api/mcp/"+strconv.FormatInt(id, 10)+"/tools/toggle",
+		`{"name":"acc_p25_nope","enabled":false}`)
+	if rec.Code != 404 {
+		t.Fatalf("未知工具应 404，实际 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

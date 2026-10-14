@@ -996,6 +996,38 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"tools": tools})
 }
 
+// pgToggleMCPTool 翻转一个 MCP 工具的**全局**开关（P25）：关掉的工具不再进入任何 Agent
+// 的工具面（下一次构建工具面时生效，见 assembly.go 的注入点）。开关只认缓存里的行——
+// 名字不在缓存里就 404 说清楚（不是静默成功，也不是静默失败）。
+func (s *Server) pgToggleMCPTool(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	id := parseIntDefault(r.PathValue("id"))
+	var body struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeErr(w, 400, "缺少工具名")
+		return
+	}
+	if err := pg.SetMCPToolEnabled(id, body.Name, body.Enabled); err != nil {
+		if errors.Is(err, db.ErrMCPToolNotFound) {
+			writeErr(w, 404, err.Error())
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "name": body.Name, "enabled": body.Enabled})
+}
+
 // pgMCPTools returns one MCP's cached tools (name + description) for the detail UI.
 func (s *Server) pgMCPTools(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)

@@ -121,7 +121,14 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
 					continue
 				}
+				// 工具级开关（全局）：关掉的工具在这里就被丢掉——收集 allNames /
+				// globalNames / serverTools 之前过滤一次，于是「直接可见 → 全局块」
+				// 与「skill-gated → 解锁」两条注入路径同时拿不到它。
+				off, _ := pg.MCPDisabledTools(m.ID)
 				for _, t := range ts {
+					if off[t.Name()] {
+						continue
+					}
 					extra = append(extra, t)
 					allNames = append(allNames, t.Name())
 					serverTools[m.Name] = append(serverTools[m.Name], t.Name())

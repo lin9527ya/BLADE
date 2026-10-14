@@ -915,7 +915,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/mcp/{id}", s.pgDeleteMCP)
 	mux.HandleFunc("GET /api/mcp/{id}/tools", s.pgMCPTools)
 	mux.HandleFunc("POST /api/mcp/{id}/refresh", s.pgRefreshMCP)
-	mux.HandleFunc("POST /api/mcp/{id}/guard/reset", s.pgResetMCPGuard) // P24 手动重置该 server 的熔断
+	mux.HandleFunc("POST /api/mcp/{id}/guard/reset", s.pgResetMCPGuard)  // P24 手动重置该 server 的熔断
+	mux.HandleFunc("POST /api/mcp/{id}/tools/toggle", s.pgToggleMCPTool) // P25 工具级开关（关掉=不注入任何 Agent）
 	// 资产同步 — ScopeSentry 数据源
 	mux.HandleFunc("GET /api/sync/scopesentry/status", s.syncSSStatus)
 	mux.HandleFunc("POST /api/sync/scopesentry/datasource", s.syncSSDatasource)

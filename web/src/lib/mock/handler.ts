@@ -2374,6 +2374,15 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── mcp ──
   if (path === "/mcp" && m === "GET") return { servers: D.mcpServers };
   if (path === "/mcp" && m === "POST") return { id: 3 };
+  // P25：工具级开关（demo 里直接改内存 mock，开关手感真实）
+  if (seg[0] === "mcp" && seg[2] === "tools" && seg[3] === "toggle") {
+    const list = D.mcpToolsById[Number(seg[1])] ?? [];
+    const name = String(b.name ?? "");
+    const on = b.enabled !== false;
+    const t = list.find((x) => x.name === name);
+    if (t) t.enabled = on;
+    return { ok: true, name, enabled: on };
+  }
   if (seg[0] === "mcp" && seg[2] === "tools") return { tools: D.mcpToolsById[Number(seg[1])] ?? [] };
   if (seg[0] === "mcp" && seg[2] === "refresh") return { tools: D.mcpToolsById[Number(seg[1])] ?? [] };
   if (seg[0] === "mcp" && seg.length === 2 && m === "DELETE") return { deleted: Number(seg[1]) };
