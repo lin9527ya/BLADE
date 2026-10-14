@@ -205,6 +205,53 @@ func TestScopeModeEnvOverride(t *testing.T) {
 	}
 }
 
+// TestScopeModeDefaultsToAsk 钉住缺省值：既没有 env 覆盖、也没有保存过 setting 时取 **ask**。
+//
+// 默认 off 意味着越界调用**静默放行**——agent 走出任务授权范围时没有任何人被告知，而这恰是最
+// 该被看见的一件事。ask 让越界先落到人手里（宁停勿越）。这条缺省值决定了一个实例的默认安全姿态，
+// 值得钉死；同时断言显式保存的值仍然优先（用户能改回去）。
+func TestScopeModeDefaultsToAsk(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) — skipping", err)
+	}
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	// 清掉环境覆盖：本用例测的是「setting 也没保存过」这条缺省路径。
+	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+
+	old, had, err := d.GetSetting(settingScopeMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { // defer 晚于上面的 d.Close() 注册，因而先执行——池子还活着
+		if had {
+			_ = d.SetSetting(settingScopeMode, old)
+			return
+		}
+		_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, settingScopeMode)
+	}()
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, settingScopeMode); err != nil {
+		t.Fatal(err)
+	}
+
+	i := New(d)
+	if got := i.ScopeMode(); got != "ask" {
+		t.Fatalf("缺省 ScopeMode() = %q，want ask（off 会让越界调用静默放行）", got)
+	}
+
+	if err := d.SetSetting(settingScopeMode, "off"); err != nil {
+		t.Fatal(err)
+	}
+	if got := i.ScopeMode(); got != "off" {
+		t.Fatalf("显式保存 off 后 ScopeMode() = %q，want off", got)
+	}
+}
+
 // TestExtractTargetsDetailedDecodesObfuscation pins the P12 anti-obfuscation
 // pass: percent-encoded and one-level base64 targets are still extracted, with
 // their source labelled for the audit trail; binary base64 noise is rejected.

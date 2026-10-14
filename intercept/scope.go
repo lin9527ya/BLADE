@@ -2,8 +2,16 @@ package intercept
 
 // RoE（授权范围）执行层：工具调用携带的网络目标若落在任务 task_scope 之外，在
 // intercept 规则与 LLM 兜底裁判之前先行裁决（ask / deny）——授权边界高于一切
-// 规则配置。默认 off；模式存 setting `intercept_scope_mode`（off|ask|deny），
-// 环境变量 ARTEX_SCOPE_ENFORCEMENT 优先，供 .env 驱动的部署直接开启。
+// 规则配置。默认 **ask**；模式存 setting `intercept_scope_mode`（off|ask|deny），
+// 环境变量 ARTEX_SCOPE_ENFORCEMENT 优先，供 .env 驱动的部署直接指定。
+//
+// 默认取 ask 而不是 off：off 意味着越界调用**静默放行**——agent 走出授权范围时没有任何
+// 人被告知，而这正是最该被看见的一件事。ask 让越界先落到人手里（宁停勿越）。
+//
+// 注意 ask 的决策**不带超时**（见 CheckScope 返回的 Decision 不设 TimeoutEnabled），
+// 所以它会一直等到人裁决、或该工作被取消为止。这是刻意的：授权边界上「等」比「替你
+// 决定」更安全，而且等待期间会持续续租、不会被看门狗回收（见 HandleAsk）。要自动裁决
+// 就写 setting 为 deny，或用 ARTEX_SCOPE_ENFORCEMENT=deny。
 //
 // 只在任务声明了可用的范围行（root_domain/subdomain/ip/cidr/keyword）时才生效；
 // 纯 company/icp 行不参与主机匹配（公司展开由资产图侧完成），无可用范围行的任务
@@ -36,12 +44,13 @@ type scopeCacheEntry struct {
 	at   time.Time
 }
 
-// ScopeMode resolves the enforcement mode: env override > DB setting > off.
+// ScopeMode resolves the enforcement mode: env override > DB setting > ask.
+// 未被 env 或 setting 指定时取 ask——见包注释里为什么不是 off。
 func (i *Interceptor) ScopeMode() string {
 	if v := strings.TrimSpace(os.Getenv("ARTEX_SCOPE_ENFORCEMENT")); v == "off" || v == "ask" || v == "deny" {
 		return v
 	}
-	return i.getSettingChoice(settingScopeMode, "off", "off", "ask", "deny")
+	return i.getSettingChoice(settingScopeMode, "ask", "off", "ask", "deny")
 }
 
 // shellCommandOf extracts the network-target-bearing surface a tool call carries:
