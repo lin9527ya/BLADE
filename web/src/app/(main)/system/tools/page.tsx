@@ -28,12 +28,12 @@ import {
 } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import type { Agent, Tool } from "@/lib/types";
 
@@ -482,17 +482,14 @@ export default function ToolsPage() {
         </TabsContent>
       </Tabs>
 
-      <Sheet open={!!selected} onOpenChange={(o) => !o && setSelectedKey(null)}>
-        <SheetContent
-          side="right"
-          className="gap-0 p-0 data-[side=right]:w-[30vw] data-[side=right]:sm:max-w-[30vw]"
-        >
+      <Dialog open={!!selected} onOpenChange={(o) => !o && setSelectedKey(null)}>
+        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {selected && (
             <>
-              <SheetHeader className="px-4">
-                <SheetTitle className="font-mono">{selected.key}</SheetTitle>
-                <SheetDescription>编辑描述、参数默认值与 Agent 绑定</SheetDescription>
-              </SheetHeader>
+              <DialogHeader className="border-b px-4 py-3">
+                <DialogTitle className="font-mono">{selected.key}</DialogTitle>
+                <DialogDescription>编辑描述、参数默认值与 Agent 绑定</DialogDescription>
+              </DialogHeader>
               <ToolEditor
                 key={selected.key}
                 tool={selected}
@@ -503,8 +500,8 @@ export default function ToolsPage() {
               />
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
 
       <CustomToolDialog
         edit={customEdit}
@@ -672,17 +669,14 @@ function CustomToolDialog({
   }
 
   return (
-    <Sheet open={!!edit} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent
-        side="right"
-        className="flex flex-col gap-0 p-0 data-[side=right]:w-[45vw] data-[side=right]:sm:max-w-[45vw] data-[side=right]:min-w-[480px]"
-      >
-        <SheetHeader className="px-4">
-          <SheetTitle>{isNew ? "新建自定义工具" : `编辑 ${tool?.key}`}</SheetTitle>
-          <SheetDescription>shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http 需写执行规格。</SheetDescription>
-        </SheetHeader>
+    <Dialog open={!!edit} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="border-b px-4 py-3">
+          <DialogTitle>{isNew ? "新建自定义工具" : `编辑 ${tool?.key}`}</DialogTitle>
+          <DialogDescription>shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http 需写执行规格。</DialogDescription>
+        </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <div className="grid gap-1.5">
             <Label className="text-xs">Key</Label>
             <Input className="font-mono" placeholder="如 nmap_scan" value={key} disabled={!isNew}
@@ -827,7 +821,7 @@ function CustomToolDialog({
         </div>
 
         <Separator />
-        <div className="flex items-center gap-2 p-4">
+        <div className="flex items-center gap-2 px-4 py-3">
           <Button size="sm" onClick={save} disabled={saving}>
             <SaveIcon /> {isNew ? "创建" : "保存"}
           </Button>
@@ -837,7 +831,7 @@ function CustomToolDialog({
             </Button>
           )}
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
