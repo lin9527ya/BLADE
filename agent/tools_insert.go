@@ -703,6 +703,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally)
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
+		// promote_knowledge（P23）：人机对话里也可把结论沉淀给公司（只读背景，供别的任务用）。
+		t.promoteKnowledge(),
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),

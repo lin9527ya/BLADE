@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
+import { CompanyKnowledgeDialog } from "@/components/company-knowledge-dialog";
 import { ScopeTextEditor } from "@/components/scope-text-editor";
 import {
   AlertDialog,
@@ -385,6 +386,7 @@ export default function AssetsPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          <CompanyKnowledgeDialog company={c} onChanged={refresh} />
                           <EditScopeDialog company={c} onSaved={refresh} />
                           <AppendScopeDialog company={c} onSaved={refresh} />
                           <Button

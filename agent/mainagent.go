@@ -210,7 +210,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// P14 领域上下文：主 agent 与人的长对话最容易被压缩吃掉"人说过什么"——领域摘要模板
 	// 强制逐字保留所有用户消息，常驻索引另外带上目标/约束/图状态。
 	InstallContextManager(&opts, m.compactionWindow(), mainDir, func() string {
-		return BuildContextIndex(ContextIndexVars{Store: ts})
+		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines()})
 	})
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

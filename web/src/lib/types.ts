@@ -607,6 +607,25 @@ export interface IntelTestResult {
   daily_quota?: number;
 }
 
+// ---- P23 公司级知识 ----
+
+/** 一条公司级知识（跨任务只读背景；来源可回溯，废弃保留痕迹）。 */
+export interface CompanyKnowledge {
+  id: number;
+  company_id: number;
+  company_name?: string;
+  kind: "fact" | "conclusion" | "asset_hint" | "playbook_hint";
+  summary: string;
+  detail?: string;
+  source_task_id?: string;
+  source_node_id?: number;
+  confidence?: "high" | "medium" | "low" | "";
+  status: "active" | "deprecated";
+  created_at: string;
+  deprecated_at?: string;
+  deprecated_reason?: string;
+}
+
 // ---- P22 计划任务 ----
 
 /** 结构化频率（刻意不是 cron 字符串：覆盖巡检需要，且没有方言/边界歧义）。 */

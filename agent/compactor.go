@@ -110,6 +110,27 @@ func (d *DomainCompactor) indexBlock() string {
 type ContextIndexVars struct {
 	Store  *db.ExplorationStore
 	Intent *db.Node // worker 的本条意图（可空）
+	// CompanyLines 是"同公司其它任务沉淀"的一行式（P23，可空）。由调用方从 ToolSet 现读
+	// （agent 包不持有 DB 句柄）；注入面刻意收紧到 ≤5 行——它每个请求都发一次。
+	CompanyLines []string
+}
+
+// renderCompanySection 渲染常驻索引里的"本公司已知"段（P23）。≤5 行 + 截断提示 +
+// 只读先验的定性说明——索引每个请求都发一次，注入面必须收紧。
+func renderCompanySection(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n本公司已知（同公司其它任务的沉淀·只读先验·不代表本任务已测）：")
+	for i, line := range lines {
+		if i >= 5 {
+			b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（要全量调 graph_overview 的 company_knowledge）", len(lines)-5))
+			break
+		}
+		b.WriteString("\n  · " + line)
+	}
+	return b.String()
 }
 
 // BuildContextIndex 构造常驻索引正文：目标原文、约束原文、活跃方向、发现一行式与计数。
@@ -136,6 +157,7 @@ func BuildContextIndex(v ContextIndexVars) string {
 		b.WriteString("\n操作约束（原文，最高优先级）：")
 		b.WriteString(cb)
 	}
+	b.WriteString(renderCompanySection(v.CompanyLines))
 	if v.Intent != nil {
 		sum := digestSummary(v.Intent)
 		b.WriteString(fmt.Sprintf("\n本工作意图：intent-%d %s（写回事实/发现时用它）", v.Intent.ID, clipLine(sum, 160)))

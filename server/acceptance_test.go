@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P20 探索策略门（意图门/命令门/额度/继承快照/停摆收尾）", func(t *testing.T) { accP20(t, env.forTest(t)) })
 	t.Run("P21 情报/测绘工具面（FOFA：查询/落盘/台账/配额/边界）", func(t *testing.T) { accP21(t, env.forTest(t)) })
 	t.Run("P22 计划任务（结构化频率/CAS 防重复/失败留痕/立即运行）", func(t *testing.T) { accP22(t, env.forTest(t)) })
+	t.Run("P23 公司级知识层（跨任务只读先验/来源可回溯/废弃恢复/唯一写口）", func(t *testing.T) { accP23(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -2387,3 +2389,204 @@ func accP22(t *testing.T, e *accEnv) {
 		t.Fatalf("列表应给出人话频率与上次错误: %+v", listed.Schedules)
 	}
 }
+
+// accP23 走完公司级知识层：任务 A 把一条已确认结论沉淀给公司 → **无血缘**的同公司任务 B 在
+// 态势（graph_overview）里读到它且带来源 → 别的公司看不到 → 废弃（必填理由）后两边都看不到、
+// 恢复后又可见 → 只读性：Agent 只有沉淀工具、没有改/废工具，且沉淀工具拒绝写错公司 →
+// 发现详情页那条入口与工具同规则（被撤回的发现不能沉淀）。
+func accP23(t *testing.T, e *accEnv) {
+	companies := e.m.Assets().Companies()
+	companyA, err := companies.UpsertByName("acceptance-p23-A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	companyB, err := companies.UpsertByName("acceptance-p23-B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.m.pg.Exec(`DELETE FROM company_knowledge WHERE company_id IN ($1,$2)`, companyA, companyB)
+		_ = companies.DeleteCompany(companyA)
+		_ = companies.DeleteCompany(companyB)
+	})
+
+	// 两个同公司但**没有任何血缘**的任务（task_relations 里互不引用）。
+	taskA, tidA := e.newTaskWithCompanies(t, "acceptance-p23-A", "沉淀方", companyA)
+	taskB, _ := e.newTaskWithCompanies(t, "acceptance-p23-B", "读取方（与本任务无血缘）", companyA)
+	other, otherTid := e.newTaskWithCompanies(t, "acceptance-p23-other", "别的公司", companyB)
+
+	// ① 任务 A：报一条发现（节点 confirmed）→ 用工具沉淀给公司 A。
+	fid, nodeID := e.newFinding(taskA, tidA,
+		`{"vulnclass":"authz","severity":"medium","summary":"后台列表接口未校验角色，普通账号可读全量用户","evidence":"账号 B 请求 /api/admin/users 返回 200","confidence":"high"}`)
+	tsxA := agent.NewToolSet(taskA.Store, "planner")
+	tsxA.SetTaskID(tidA)
+	tsxA.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
+	promote := workflowTool(t, tsxA.PlannerTools(), "promote_knowledge")
+	pres, err := promote.Call(context.Background(), json.RawMessage(fmt.Sprintf(
+		`{"company_id":%d,"node_id":%d,"kind":"conclusion","confidence":"high","detail":"复现：普通账号打 /api/admin/users"}`,
+		companyA, nodeID)), nil)
+	if err != nil || !strings.Contains(pres.Flatten(), `"id"`) {
+		t.Fatalf("沉淀失败: %v %s", err, pres.Flatten())
+	}
+	var kid int64
+	{
+		raw := pres.Flatten()
+		if i := strings.Index(raw, "{"); i >= 0 {
+			raw = raw[i:]
+		}
+		var out struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatalf("decode promote: %v %s", err, pres.Flatten())
+		}
+		kid = out.ID
+	}
+	if kid == 0 {
+		t.Fatalf("没有拿到知识 id: %s", pres.Flatten())
+	}
+
+	// ② 无血缘的同公司任务 B：态势里读到它 + 来源 + 只读说明。
+	tsxB := agent.NewToolSet(taskB.Store, "planner")
+	tsxB.SetTaskID(tidBOf(t, e, taskB))
+	tsxB.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
+	overview := workflowTool(t, tsxB.PlannerTools(), "graph_overview")
+	ores, err := overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := ores.Flatten()
+	if !strings.Contains(flat, "后台列表接口未校验角色") {
+		t.Fatalf("同公司无血缘任务应读到沉淀：%s", flat)
+	}
+	if !strings.Contains(flat, "来自任务 #"+taskA.ID) {
+		t.Fatalf("读到知识必须带来源任务：%s", flat)
+	}
+	if !strings.Contains(flat, "不代表本任务已测过") {
+		t.Fatalf("必须写明这是只读先验、不是本任务已测：%s", flat)
+	}
+
+	// ③ 别的公司看不到。
+	tsxOther := agent.NewToolSet(other.Store, "planner")
+	tsxOther.SetTaskID(otherTid)
+	tsxOther.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
+	oresOther, err := workflowTool(t, tsxOther.PlannerTools(), "graph_overview").Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(oresOther.Flatten(), "后台列表接口未校验角色") {
+		t.Fatalf("别的公司不该看到: %s", oresOther.Flatten())
+	}
+
+	// ④ 列表接口（含已废弃）+ 废弃必须给理由 + 废弃后两边都读不到 + 恢复后又可见。
+	rec := e.request(http.MethodGet, "/api/companies/"+strconv.FormatInt(companyA, 10)+"/knowledge", "")
+	var listed struct {
+		Knowledge []struct {
+			ID     int64  `json:"id"`
+			Status string `json:"status"`
+		} `json:"knowledge"`
+		Active int `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Knowledge) != 1 || listed.Knowledge[0].Status != "active" || listed.Active != 1 {
+		t.Fatalf("知识列表不对: %s", rec.Body.String())
+	}
+	base := "/api/companies/" + strconv.FormatInt(companyA, 10) + "/knowledge/" + strconv.FormatInt(kid, 10)
+	if rec := e.request(http.MethodPatch, base, `{"status":"deprecated"}`); rec.Code != 400 {
+		t.Fatalf("废弃不给理由应 400: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.request(http.MethodPatch, base, `{"status":"deprecated","reason":"复测发现该接口已加角色校验"}`); rec.Code != 200 {
+		t.Fatalf("废弃失败: %d %s", rec.Code, rec.Body.String())
+	}
+	ores, _ = overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if strings.Contains(ores.Flatten(), "后台列表接口未校验角色") {
+		t.Fatalf("废弃后不该再注入: %s", ores.Flatten())
+	}
+	if rec := e.request(http.MethodPatch, base, `{"status":"active"}`); rec.Code != 200 {
+		t.Fatalf("恢复失败: %d %s", rec.Code, rec.Body.String())
+	}
+	ores, _ = overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if !strings.Contains(ores.Flatten(), "后台列表接口未校验角色") {
+		t.Fatalf("恢复后应重新注入: %s", ores.Flatten())
+	}
+
+	// ⑤ 只读性：Agent 侧只有"沉淀"这一个写口——没有任何改/废工具。
+	allTools := map[string]bool{}
+	for _, tool := range append(tsxA.PlannerTools(), tsxA.WorkerTools()...) {
+		allTools[tool.Name()] = true
+	}
+	for _, tool := range tsxA.MainAgentTools() {
+		allTools[tool.Name()] = true
+	}
+	if !allTools["promote_knowledge"] {
+		t.Fatal("planner 应能用 promote_knowledge")
+	}
+	for name := range allTools {
+		if name == "promote_knowledge" {
+			continue
+		}
+		if strings.Contains(name, "knowledge") {
+			t.Fatalf("Agent 不该有第二个知识写口（改/废是人的动作）: %s", name)
+		}
+	}
+	// 沉淀工具拒绝写错公司（后来人会当真的用，写错比不写更糟）。
+	bad, err := promote.Call(context.Background(), json.RawMessage(fmt.Sprintf(
+		`{"company_id":%d,"node_id":%d,"summary":"x"}`, companyB, nodeID)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bad.Flatten(), "不是本任务关联的企业") {
+		t.Fatalf("不该允许沉淀到任意公司: %s", bad.Flatten())
+	}
+
+	// ⑥ 发现详情页入口：与工具同规则（confirmed 才能沉淀）——先撤回再沉淀应被拒。
+	retractedFid, retractedNode := e.newFinding(taskA, tidA,
+		`{"vulnclass":"xss","severity":"low","summary":"反射型 XSS（待推翻）","evidence":"原样回显","confidence":"low"}`)
+	rec = e.request(http.MethodPatch, "/api/exploration/findings/"+strconv.FormatInt(retractedFid, 10),
+		`{"status":"retracted","retract_reason":"复测推翻：输出被 HTML 编码"}`)
+	if rec.Code != 200 {
+		t.Fatalf("撤回 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodPost, "/api/findings/"+strconv.FormatInt(retractedFid, 10)+"/promote-knowledge",
+		fmt.Sprintf(`{"company_id":%d,"summary":"反射型 XSS"}`, companyA))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不能沉淀为知识") {
+		t.Fatalf("被撤回的发现不能沉淀: %d %s", rec.Code, rec.Body.String())
+	}
+	// 未撤回的那条走页面入口可以沉淀（同一写入路径）。
+	rec = e.request(http.MethodPost, "/api/findings/"+strconv.FormatInt(fid, 10)+"/promote-knowledge",
+		fmt.Sprintf(`{"company_id":%d,"kind":"asset_hint","summary":"后台接口面：/api/admin/*"}`, companyA))
+	if rec.Code != 200 {
+		t.Fatalf("页面入口沉淀失败: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, "/api/companies/"+strconv.FormatInt(companyA, 10)+"/knowledge", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if listed.Active != 2 {
+		t.Fatalf("页面入口应沉淀出第 2 条（active=2）: %s", rec.Body.String())
+	}
+	_ = retractedNode
+}
+
+// newTaskWithCompanies 建一个关联了指定企业的任务（走真实建任务路径：task_scope 落 company 行）。
+func (e *accEnv) newTaskWithCompanies(t *testing.T, desc, goal string, companyID int64) (*Task, int64) {
+	t.Helper()
+	task, err := e.m.CreateTaskWithOptions(desc, goal, db.TaskCreateOptions{CompanyIDs: []int64{companyID}})
+	if err != nil {
+		t.Fatalf("create task with company: %v", err)
+	}
+	tid := parseInt64(t, task.ID)
+	t.Cleanup(func() {
+		e.s.engine.StopTask(task.ID)
+		_, _ = e.m.pg.Exec(`DELETE FROM findings WHERE task_id=$1`, tid)
+		_, _ = e.m.pg.Exec(`DELETE FROM llm_usage WHERE task_id=$1`, task.ID)
+		_, _ = e.m.pg.Exec(`DELETE FROM tool_executions WHERE task_id=$1`, task.ID)
+		_ = e.m.pg.DeleteTask(tid)
+	})
+	return task, tid
+}
+
+// tidBOf 取任务 id（newTask 已返回，这里只是让读取方的书写与 A 对称）。
+func tidBOf(t *testing.T, e *accEnv, task *Task) int64 { t.Helper(); return parseInt64(t, task.ID) }
