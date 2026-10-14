@@ -23,8 +23,11 @@ import (
 //   - **只查不扩**：本工具只返回候选，不写资产库、不动任务范围；要用哪条由 agent 显式
 //     调 insert_assets / add_task_scope（与人手工喂资产走同一条路）。
 //   - **不过 RoE 但也不绕过它**：查 FOFA 是访问第三方 API，不是访问目标，因此不落在
-//     授权范围门（intercept/scope.go 只对 Bash/shell_* 抽目标）——但 agent 拿结果去
-//     curl/nmap 真目标时照样被 RoE 拦，边界不缺。
+//     授权范围门（intercept/scope.go 的 shellCommandOf 只从 Bash/shell_*/run_execution/
+//     WebFetch 的参数里抽目标）——但 agent 拿结果去 curl/nmap 真目标时照样被 RoE 拦，
+//     边界不缺。**注意：查询表达式本身不做范围判定**，表达式里若带内部资产线索（公司名、
+//     内网域名），它会原样发给第三方引擎——这是"只查不扩"的另一面，用它之前请自行确认
+//     可接受。
 //   - **配额与审计**：每次真实外呼都落 intel_queries 台账，并有平台侧每日上限
 //     （intel_daily_quota，默认 200）——FOFA 自己的额度之外再加一道闸。
 
