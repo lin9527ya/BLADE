@@ -276,7 +276,7 @@ export default function WorkspacePage() {
 
       {/* 文件查看 / 编辑 */}
       <Dialog open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {edit && (
             <>
               <DialogHeader className="border-b p-4">

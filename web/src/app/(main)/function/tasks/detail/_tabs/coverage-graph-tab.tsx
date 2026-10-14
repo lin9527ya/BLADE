@@ -326,7 +326,7 @@ function AssetSheet({
   }, [node, taskId]);
   return (
     <Dialog open={node !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
         {node && meta && Icon && (
           <>
             <DialogHeader className="border-b p-4">
@@ -409,7 +409,7 @@ function FoldSheet({
   const Icon = meta?.icon;
   return (
     <Dialog open={fold !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
         {fold && meta && Icon && (
           <>
             <DialogHeader className="border-b p-4">

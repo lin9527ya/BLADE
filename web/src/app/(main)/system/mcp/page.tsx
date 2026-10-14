@@ -837,7 +837,7 @@ export default function MCPPage() {
 
       {/* 添加 / 编辑：居中弹窗（7 个字段；工具列表已在右栏，弹窗只管配置） */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>{editing ? editing.name : "添加 MCP 服务器"}</DialogTitle>
             <DialogDescription>stdio（本地起进程）或 http（远程 Streamable HTTP）</DialogDescription>

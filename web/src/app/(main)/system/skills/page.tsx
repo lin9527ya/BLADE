@@ -1127,7 +1127,7 @@ export default function SkillsPage() {
 
       {/* ── 新建 Skill 对话框 ── */}
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>新建 Skill</DialogTitle>
           </DialogHeader>

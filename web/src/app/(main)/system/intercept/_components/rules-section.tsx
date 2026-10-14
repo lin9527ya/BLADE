@@ -465,7 +465,7 @@ export function RulesSection() {
       {/* ---- editor dialog ---- */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="sm:max-w-md flex flex-col overflow-hidden p-0 gap-0"
+          className="sm:max-w-2xl flex flex-col overflow-hidden p-0 gap-0"
           style={{ maxHeight: "min(85vh, 720px)" }}
         >
           <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -701,7 +701,7 @@ export function RulesSection() {
       {/* ---- scope dialog ---- */}
       <Dialog open={scopeOpen} onOpenChange={setScopeOpen}>
         <DialogContent
-          className="sm:max-w-lg flex flex-col overflow-hidden p-0 gap-0"
+          className="sm:max-w-2xl flex flex-col overflow-hidden p-0 gap-0"
           style={{ maxHeight: "min(80vh, 560px)" }}
         >
           <DialogHeader className="shrink-0 border-b px-6 py-4">

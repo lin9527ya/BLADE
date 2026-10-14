@@ -211,7 +211,7 @@ function TaskTemplateManager({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="grid max-h-[88vh] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <DialogContent className="grid max-h-[88vh] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-4xl">
           <DialogHeader className="border-b px-6 py-5">
             <DialogTitle>任务模板管理</DialogTitle>
             <DialogDescription>模板保存描述、目标、分类与任务级拦截/允许规则；修改不会影响已经创建的任务。</DialogDescription>

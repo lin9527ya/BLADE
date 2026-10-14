@@ -733,7 +733,7 @@ export default function TrafficPage() {
         />
       ) : null}
       <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
           {selected && (
             <>
               <DialogHeader className="border-b px-5 py-4">

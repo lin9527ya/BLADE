@@ -254,7 +254,7 @@ export default function AgentsPage() {
       </Card>
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditKey(null)}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
           {editing && (
             <>
               <DialogHeader className="border-b px-4 py-3">

@@ -418,7 +418,7 @@ export default function NotifyPage() {
       </Tabs>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>{editing ? editing.name : "添加通知渠道"}</DialogTitle>
             <DialogDescription>

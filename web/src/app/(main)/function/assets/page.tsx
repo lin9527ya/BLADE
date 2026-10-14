@@ -1012,7 +1012,7 @@ function CompanyDialog({ onSaved }: { onSaved: () => void }) {
           <BuildingIcon data-icon="inline-start" /> 新增企业
         </Button>
       </DialogTrigger>
-      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <DialogHeader className="border-b p-6">
           <DialogTitle>新增企业</DialogTitle>
           <DialogDescription>配置企业及其资产范围。关键词只作为 Agent 提示，不会自动归属资产。</DialogDescription>
