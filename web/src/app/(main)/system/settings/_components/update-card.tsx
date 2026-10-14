@@ -238,7 +238,7 @@ export function UpdateCard() {
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
             无法连接 GitHub：{info.error}
-            {"　"}可在上方配置全局代理后重试。
+            {"　"}可在设置页的「网络与代理」里配置全局代理后重试。
           </p>
         )}
 
