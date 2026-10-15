@@ -38,7 +38,7 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
-// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证的端到端
+// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -95,6 +95,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P29 战果动用（意图声明 uses → outstanding 归零 → 删意图不带走访据）", func(t *testing.T) { accP29(t, env.forTest(t)) })
 	t.Run("P30 攻击路径（由 uses/yields 边重建，进报告）", func(t *testing.T) { accP30(t, env.forTest(t)) })
 	t.Run("P31 检测验证（三态分记，不进「检出率」；报告成段）", func(t *testing.T) { accP31(t, env.forTest(t)) })
+	t.Run("P32 授权范围设置（模式+时间窗经 API 存取，写错当场退回且不改动已存值）", func(t *testing.T) { accP32(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3755,4 +3756,64 @@ func accP31(t *testing.T, e *accEnv) {
 	e.mustContain(md, "—— 未检出：读 /etc/shadow 无任何告警", "未检出条")
 	e.mustContain(md, "—— 无法判定：日志服务当晚挂了，无从判定", "无法判定条")
 	e.mustContain(md, "不能读成防御没拦住", "防误读脚注")
+}
+
+// accP32 授权范围设置（页面可配）：空间门模式 + 作业时间窗经 API 存取，写错要当场退回。
+//
+// 特别钉住「写错不改动已存的值」：若先落库再校验，一条解析不了的窗口会留在库里，之后
+// **每一次**工具调用都会落到人工确认上（CheckScope 对无法解析的窗口如实 ask），而用户
+// 多半要等任务跑不动了才发现。
+func accP32(t *testing.T, e *accEnv) {
+	// 两个键可能本就有值（别的用例设过），跑完还原。
+	for _, key := range []string{intercept.SettingScopeMode, intercept.SettingScopeHours} {
+		old, had, err := e.m.pg.GetSetting(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = e.m.pg.SetSetting(key, old)
+				return
+			}
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, key)
+		})
+	}
+
+	// ① 正常写入并读回。
+	rec := e.request(http.MethodPut, "/api/settings",
+		`{"intercept_scope_mode":"deny","intercept_scope_hours":"09:00-18:00"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存授权范围 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"intercept_scope_hours":"09:00-18:00"`, "读回的作业时间窗")
+	e.mustContain(rec.Body.String(), `"intercept_scope_mode":"deny"`, "读回的越界处置")
+
+	// ② 写错的窗口要被当场退回，且**不改动已存的值**。
+	for _, bad := range []string{"9点到6点", "09:00", "09:00-09:00"} {
+		rec = e.request(http.MethodPut, "/api/settings", `{"intercept_scope_hours":"`+bad+`"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("窗口 %q 该被拒（400），得到 %d：%s", bad, rec.Code, rec.Body.String())
+		}
+		got, _, _ := e.m.pg.GetSetting(intercept.SettingScopeHours)
+		if got != "09:00-18:00" {
+			t.Fatalf("写 %q 被拒后，已存的窗口被改动了：%q", bad, got)
+		}
+	}
+
+	// ③ 模式取值也要挡（否则拦截层会静默回落到默认 ask，用户以为设成了 deny）。
+	rec = e.request(http.MethodPut, "/api/settings", `{"intercept_scope_mode":"block"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法模式该被拒（400），得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, "/api/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取设置 status=%d", rec.Code)
+	}
+	e.mustContain(rec.Body.String(), `"intercept_scope_hours":"09:00-18:00"`, "拒绝非法模式后窗口仍在")
+
+	// ④ 清空窗口 = 不限时（合法的"关掉时间维度"写法）。
+	rec = e.request(http.MethodPut, "/api/settings", `{"intercept_scope_hours":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("清空窗口该被接受，得到 %d：%s", rec.Code, rec.Body.String())
+	}
 }

@@ -114,6 +114,11 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  // 授权范围（RoE）：空间门模式 + 作业时间窗。模式回生效值，另存一个 env 覆盖标志。
+  const [scopeMode, setScopeMode] = React.useState("ask");
+  const [scopeModeEnv, setScopeModeEnv] = React.useState(false);
+  const [scopeHours, setScopeHours] = React.useState("");
+  const [savingScope, setSavingScope] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
 
@@ -132,6 +137,9 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setScopeMode(s.intercept_scope_mode ?? "ask");
+    setScopeModeEnv(!!s.intercept_scope_mode_env);
+    setScopeHours(s.intercept_scope_hours ?? "");
     setIntelKeySet(!!s.fofa_key_set);
     setIntelEmail(s.fofa_email ?? "");
     setIntelBaseURL(s.fofa_base_url ?? "");
@@ -366,6 +374,20 @@ export default function SystemSettingsPage() {
       .setSettings({ constraints_inject_planner: v })
       .then(apply)
       .catch(() => setInjectPlanner(!v)); // revert on failure
+  };
+
+  // 授权范围两个设置一起保存：它们是同一条边界的两维（能打哪些目标 + 什么时候能打），
+  // 分开存会让用户停在"改了一半"的状态上。拦截层每调用现读，所以改完即时生效。
+  const saveScope = () => {
+    setSavingScope(true);
+    api
+      .setSettings({ intercept_scope_mode: scopeMode, intercept_scope_hours: scopeHours.trim() })
+      .then((next) => {
+        apply(next);
+        toast.success("已保存授权范围设置");
+      })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .finally(() => setSavingScope(false));
   };
 
   const toggleAgentTrafficBinding = (v: boolean) => {
@@ -956,8 +978,63 @@ export default function SystemSettingsPage() {
         {section === "policy" && (
           <Section
             title="安全与策略"
-            hint="探索策略只影响之后新建的任务（每个任务创建时抄一份快照）；操作约束注入下一轮读取即生效。"
+            hint="授权范围改完即时生效；探索策略只影响之后新建的任务（创建时抄一份快照）；操作约束注入下一轮读取即生效。"
           >
+            <SubBlock
+              title="授权范围（RoE）"
+              icon={<ShieldAlertIcon className="text-muted-foreground size-4" />}
+              actions={
+                <Button type="button" size="sm" onClick={saveScope} disabled={!loaded || savingScope}>
+                  保存
+                </Button>
+              }
+            >
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                授权边界的两个维度：<b>能打哪些目标</b>（目标越出任务的 task_scope 时怎么处置）与
+                <b>什么时候能打</b>（作业时间窗）。两者都由拦截层在每次工具调用前判定，<b>改完即时生效</b>
+                ；时间检查排在目标检查<b>之前</b>——窗口之外根本不该发起动作，与目标在不在范围内无关。
+              </p>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="目标越界时" htmlFor="scope-mode">
+                  <Select
+                    value={scopeMode}
+                    onValueChange={setScopeMode}
+                    disabled={!loaded || savingScope || scopeModeEnv}
+                  >
+                    <SelectTrigger id="scope-mode" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">off —— 不检查，越界静默放行</SelectItem>
+                      <SelectItem value="ask">ask —— 越界先交给人审批（默认）</SelectItem>
+                      <SelectItem value="deny">deny —— 越界直接拒绝</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {scopeModeEnv && (
+                    <p className="text-muted-foreground text-xs">
+                      环境变量 ARTEX_SCOPE_ENFORCEMENT 正压着这项设置，页面改不动它。
+                    </p>
+                  )}
+                </Field>
+                <Field label="作业时间窗（留空 = 不限时）" htmlFor="scope-hours">
+                  <Input
+                    id="scope-hours"
+                    autoComplete="off"
+                    placeholder="09:00-18:00；跨夜 22:00-06:00；多段用逗号"
+                    value={scopeHours}
+                    onChange={(e) => setScopeHours(e.target.value)}
+                    disabled={!loaded || savingScope}
+                  />
+                </Field>
+              </div>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                时间窗支持多段（<code>09:00-12:00,14:00-18:00</code>）与跨夜（<code>22:00-06:00</code>
+                = 当天 22:00 到次日 06:00）；区间左闭右开，"到 18:00"不含 18:00 那一刻起的动作。
+                <b>写错会被拒绝保存</b>——一条解析不了的窗口会让之后每次调用都落到人工确认上，
+                不如当场退回。时区取平台所在机器的本地时间。
+              </p>
+            </SubBlock>
+
             <SubBlock
               title="探索策略（全局默认）"
               icon={<ShieldAlertIcon className="text-muted-foreground size-4" />}

@@ -16,6 +16,13 @@ package intercept
 // 只在任务声明了可用的范围行（root_domain/subdomain/ip/cidr/keyword）时才生效；
 // 纯 company/icp 行不参与主机匹配（公司展开由资产图侧完成），无可用范围行的任务
 // 不改变原有行为。
+//
+// 时间维度见 window.go：授权不只是「能打哪些目标」，还包括「什么时候能打」——窗口存
+// setting `intercept_scope_hours`（如 `09:00-18:00`，跨夜写 `22:00-06:00`，空 = 不限时），
+// 与空间门共用上面这个模式开关，并在同一路径上**先于目标判定**生效。
+//
+// 这两个设置目前都只能经 DB（settings 表）或环境变量配置，未进系统配置页——与
+// scope_mode 的现状一致；要改成页面可配的话，两者一起做才合理。
 
 import (
 	"context"
@@ -33,7 +40,9 @@ import (
 	"github.com/lin9527ya/artex/db"
 )
 
-const settingScopeMode = "intercept_scope_mode"
+// SettingScopeMode / SettingScopeHours 是授权边界的两个设置键。导出是为了让设置接口
+// 用同一个常量而不是复制字符串字面量——复制迟早会漂移成两个不一样的 key。
+const SettingScopeMode = "intercept_scope_mode"
 
 // scopeCacheTTL bounds how long a task's scope rows are reused between checks
 // (Bash calls are frequent; scope rows change rarely).
@@ -50,7 +59,7 @@ func (i *Interceptor) ScopeMode() string {
 	if v := strings.TrimSpace(os.Getenv("ARTEX_SCOPE_ENFORCEMENT")); v == "off" || v == "ask" || v == "deny" {
 		return v
 	}
-	return i.getSettingChoice(settingScopeMode, "ask", "off", "ask", "deny")
+	return i.getSettingChoice(SettingScopeMode, "ask", "off", "ask", "deny")
 }
 
 // shellCommandOf extracts the network-target-bearing surface a tool call carries:
@@ -343,6 +352,25 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 	cmd := shellCommandOf(toolName, input)
 	if cmd == "" {
 		return Decision{}, false
+	}
+	// 作业时间窗：授权不只是「能打哪些目标」，还包括「什么时候能打」。刻意排在目标判定**之前**
+	// ——窗口之外根本不该发起动作，与目标在不在范围内无关。
+	//
+	// 配置解析失败时如实拒绝并说清怎么改：一条写错的窗口设置若静默失效，恰恰会让客户验收时
+	// 要核对的那一项无声消失（同 P12「范围读不出来时不放行」的理由）。
+	if w, err := i.scopeHours(); err != nil {
+		return Decision{
+			Action:   "ask",
+			RuleName: "[RoE] 作业时间窗",
+			Message:  "作业时间窗设置无法解析，无法确认当前是否在允许时段内，需要人工确认：" + err.Error(),
+		}, true
+	} else if now := scopeNow(); !w.allows(now) {
+		return Decision{
+			Action:   mode,
+			RuleName: "[RoE] 作业时间窗",
+			Message: fmt.Sprintf("当前不在授权作业时间窗内（允许 %s，本机时间 %s）：窗口外请勿发起动作",
+				w.Describe(), now.Format("15:04")),
+		}, true
 	}
 	hits := ExtractTargetsDetailed(cmd)
 	if len(hits) == 0 {
