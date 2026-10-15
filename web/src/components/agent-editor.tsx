@@ -193,8 +193,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         patch.max_turns = Math.max(0, Math.floor(Number(maxTurns) || 0));
         patch.run_seconds = Math.max(0, Math.floor(Number(runSecs) || 0));
       }
-      if (showWebSearch) patch.web_search = webSearch;
-      if (showInteractiveShell) patch.interactive_shell = interactiveShell;
+      // web_search / interactive_shell 已改成勾选即生效，不再由「保存配置」提交——
+      // 留着它们会让"改了别的字段再点保存"把开关的当前值再写一遍，多一条无人需要的写路径。
       await api.saveAgentConfig(agentKey, patch);
       toast.success("已保存运行配置（立即生效）");
       reload();
@@ -202,6 +202,26 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       toast.error("保存失败：" + (e as Error).message);
     }
   }
+  // applySwitch 把「勾选即生效」做成与同页可见性复选框同一套纪律：先乐观切换、
+  // 再落库，失败回滚并说明。
+  //
+  // 为什么不再走「保存配置」：这个开关紧挨着「保存为新版本」（那个只存提示词版本），
+  // 用户按直觉点后者时勾选会被 reload 弹回去，而"没保存"与"保存了但没生效"长得一模一样
+  // （对话里 web_search 照样不可用，且没有任何提示）。即时生效把这层歧义消掉。
+  async function applySwitch(field: "web_search" | "interactive_shell", next: boolean, label: string) {
+    const setter = field === "web_search" ? setWebSearch : setInteractiveShell;
+    const prev = field === "web_search" ? webSearch : interactiveShell;
+    setter(next);
+    try {
+      await api.saveAgentConfig(agentKey, { [field]: next });
+      toast.success(`已${next ? "开启" : "关闭"}${label}（立即生效）`);
+      reload();
+    } catch (e) {
+      setter(prev);
+      toast.error("保存失败：" + (e as Error).message);
+    }
+  }
+
   // applyVis optimistically updates, persists, and toasts success/failure. On
   // failure it reverts to the prior selection so the UI never lies about state.
   async function applyVis(nextMcp: number[], nextSkill: string[], okMsg: string, nextAlways?: string[]) {
@@ -356,13 +376,13 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                     id="web-search"
                     checked={webSearch}
                     disabled={!webSearchGlobalOn}
-                    onCheckedChange={setWebSearch}
+                    onCheckedChange={(v) => void applySwitch("web_search", v, "网络搜索")}
                   />
                   <div className="grid gap-0.5">
                     <Label htmlFor="web-search" className="text-sm">网络搜索</Label>
                     <span className="text-muted-foreground text-xs">
                       {webSearchGlobalOn
-                        ? "为该 Agent 开启后（点上方保存生效），可用 web_search 联网检索"
+                        ? "勾选即生效：该 Agent 的对话/任务可用 web_search 联网检索（开关本身受「系统配置」的全局开关门控）"
                         : "需先在「系统配置」开启网络搜索并配置后端，才能在此启用"}
                     </span>
                   </div>
@@ -373,12 +393,12 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                   <Switch
                     id="interactive-shell"
                     checked={interactiveShell}
-                    onCheckedChange={setInteractiveShell}
+                    onCheckedChange={(v) => void applySwitch("interactive_shell", v, "交互式 Shell")}
                   />
                   <div className="grid gap-0.5">
                     <Label htmlFor="interactive-shell" className="text-sm">交互式 Shell</Label>
                     <span className="text-muted-foreground text-xs">
-                      为该 Agent 开启后（点上方保存生效），可用持久 PTY 会话工具（shell_open/send/read/close/list）驱动 msfconsole/ssh/REPL 等交互程序
+                      勾选即生效：可用持久 PTY 会话工具（shell_open/send/read/close/list）驱动 msfconsole/ssh/REPL 等交互程序
                     </span>
                   </div>
                 </div>
