@@ -161,18 +161,19 @@ type WriteCounts struct {
 	Findings    int
 	Footholds   int
 	Credentials int
+	Detections  int
 }
 
 // Total is every node persisted this run, regardless of kind — the
 // "explored but persisted nothing" signal (Total == 0).
 func (w WriteCounts) Total() int {
-	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials
+	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials + w.Detections
 }
 
 // String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0 据点1 凭据2".
 func (w WriteCounts) String() string {
-	return fmt.Sprintf("事实%d 资产%d 漏洞%d 据点%d 凭据%d",
-		w.Facts, w.Assets, w.Findings, w.Footholds, w.Credentials)
+	return fmt.Sprintf("事实%d 资产%d 漏洞%d 据点%d 凭据%d 检测%d",
+		w.Facts, w.Assets, w.Findings, w.Footholds, w.Credentials, w.Detections)
 }
 
 // Writes reports what this run wrote back, split by node kind (so the engine can
@@ -683,6 +684,24 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	out["footholds"] = compactLoot(footholdWindow, factFrom, usedLoot, "access", "privilege")
 	out["credentials"] = compactLoot(credWindow, factFrom, usedLoot, "kind", "username")
+	// 检测验证：这一手做完之后，防御侧有没有响。三态分别计数而不是合成一个"检出率"——
+	// **把 unknown 混进分母就是把「测不到」读成「没响」**，那会给出一个比不给更危险的结论。
+	const detectionListCap = 8
+	allDetections, _ := t.ts.ListByKind(db.KindDetection, 1000) // newest first
+	if total, err := t.ts.CountByKind(db.KindDetection); err == nil {
+		out["detections_total"] = total
+	} else {
+		out["detections_total"] = len(allDetections)
+	}
+	if results := detectionResults(allDetections); len(results) > 0 {
+		out["detection_results"] = results
+	}
+	detectionWindow := allDetections
+	if len(detectionWindow) > detectionListCap {
+		detectionWindow = detectionWindow[:detectionListCap]
+	}
+	// 复用 compactLoot：检测的状态永远不是 active，所以「outstanding」那套对它天然不生效。
+	out["detections"] = compactLoot(detectionWindow, factFrom, nil, "technique")
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
 	// 只给裸 id（仍可 expand_digest 展开），避免冷区唯一出口被无限拉长。
 	const coldDigestsCap = 15
@@ -1064,6 +1083,19 @@ func compactNode(n *db.Node) map[string]any {
 		inheritedMap(m, n.SourceTaskID)
 	}
 	return m
+}
+
+// detectionResults 统计检测验证的三态各有多少条。三态**分别计数、不合成"检出率"**：
+// 把 unknown 混进分母就是把「测不到」读成「没响」。
+func detectionResults(nodes []*db.Node) map[string]int {
+	out := map[string]int{}
+	for _, n := range nodes {
+		switch n.State {
+		case db.StateDetectionTriggered, db.StateDetectionNotTriggered, db.StateDetectionUnknown:
+			out[n.State]++
+		}
+	}
+	return out
 }
 
 // lootOutstanding 报告一条战果是不是「在手、但还没有被真正动用过」。
@@ -1999,6 +2031,95 @@ func (t *ToolSet) reportCredential() actool.CoreTool {
 			}
 			t.writes.Credentials++
 			return actool.Text(fmt.Sprintf("credential recorded: %d", id)), nil
+		})
+}
+
+// detectionItem 是一次检测验证的记录。
+type detectionItem struct {
+	Summary    string            `json:"summary"`
+	Technique  string            `json:"technique"`
+	Result     string            `json:"result"`
+	Detail     string            `json:"detail"`
+	Evidence   string            `json:"evidence"`
+	Confidence string            `json:"confidence"`
+	IntentID   json.RawMessage   `json:"intent_id"`
+	AssetIDs   []json.RawMessage `json:"asset_ids"`
+}
+
+// reportDetection 记录一次检测验证：这一手做完之后，防御侧有没有响。
+//
+// 这是本仓唯一一个**主动去问"我们被抓到了吗"**的工具，也是「平台」与「扫描器」的分水岭。
+// 三态里 unknown 必须与 not_triggered 分开：**「日志里没这条」和「日志里没有该时段」是两回事**，
+// 合成一档就是把"没看见"读成"没拦住"——那时给出的结论比不给更危险。
+func (t *ToolSet) reportDetection() actool.CoreTool {
+	return t.writeExpTool("report_detection_check",
+		"记录一次【检测验证】：你刚做的这一手（按 ATT&CK 技术标），防御侧有没有响。"+
+			"三态必须分清：**triggered**=确实响了（有日志/告警为证）、**not_triggered**=确实没响（你查过、该时段确实没有记录）、"+
+			"**unknown**=你没法判定（没有日志源、没权限看、时段对不上）——**unknown 不是「没响」**，别把「我没看到」写成「它没拦住」。"+
+			"必须给 evidence（你查了哪里、看到了什么）与 confidence；查不出所以然就老实记 unknown。",
+		obj(map[string]any{
+			"summary":    str("一句话：【这个动作】有没有被【哪一侧的什么】发现"),
+			"technique":  str("被验证的 ATT&CK 技术 ID（T#### 或 T####.###；本动作对应哪一手）"),
+			"result":     map[string]any{"type": "string", "enum": []string{db.StateDetectionTriggered, db.StateDetectionNotTriggered, db.StateDetectionUnknown}, "description": "triggered=确实响了 / not_triggered=确实没响 / unknown=无从判定（**不是「没响」**）"},
+			"detail":     str("细节：查的是哪个日志源/告警平台、时间窗怎么对的、看到了什么"),
+			"evidence":   str("【一行】关键证据：查询命令 + 关键输出（或「该时段无记录」这一事实本身）"),
+			"confidence": str("high（直接看到日志/告警）/ medium（间接推断）/ low（仅凭现象）"),
+			"intent_id":  idp("当前任务的意图 id（你领到的意图）"),
+			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "被测试/被观测的资产 id"},
+		}, "summary", "technique", "result", "evidence", "confidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a detectionItem
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			summary := strings.TrimSpace(a.Summary)
+			if summary == "" {
+				return actool.Errorf("summary 不能为空"), nil
+			}
+			// 技术 ID 复用意图那套归一化：同一个形状规则，别在两处各写一份。
+			techs := db.NormalizeTechniques([]string{a.Technique})
+			if len(techs) != 1 {
+				return actool.Errorf(fmt.Sprintf("technique 必须是单个 ATT&CK 技术 ID（T#### 或 T####.###），收到 %q", a.Technique)), nil
+			}
+			switch a.Result {
+			case db.StateDetectionTriggered, db.StateDetectionNotTriggered, db.StateDetectionUnknown:
+			default:
+				return actool.Errorf(fmt.Sprintf("result 必须是 triggered / not_triggered / unknown（三态要分清：unknown 不是「没响」），收到 %q", a.Result)), nil
+			}
+			if strings.TrimSpace(a.Evidence) == "" {
+				return actool.Errorf("evidence 不能为空：你查了哪里、看到了什么——「没看到」本身也要有据（查的哪个源、哪个时段）"), nil
+			}
+			if strings.TrimSpace(a.Confidence) == "" {
+				return actool.Errorf("confidence 不能为空：high 直接看到日志 / medium 间接推断 / low 仅凭现象"), nil
+			}
+			if !db.ValidConfidence(a.Confidence) {
+				return actool.Errorf("confidence 取值必须是 high|medium|low"), nil
+			}
+			intent := pid(a.IntentID)
+			if intent > 0 {
+				node, err := t.ts.GetNode(intent)
+				if err != nil || node == nil || node.Kind != db.KindIntent {
+					return actool.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）"), nil
+				}
+			}
+			payload := map[string]any{"summary": summary, "technique": techs[0]}
+			for k, v := range map[string]string{
+				"detail": a.Detail, "evidence": a.Evidence, "confidence": a.Confidence,
+			} {
+				if s := strings.TrimSpace(v); s != "" {
+					payload[k] = s
+				}
+			}
+			// state 就是结果本身：kind='detection' 的三态在 schema 里已经定死，这里不另立一档。
+			id, err := t.ts.AddNode(db.KindDetection, payload, 6, a.Result, t.worker, pidList(a.AssetIDs))
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if intent > 0 {
+				_ = t.ts.Link(intent, db.RelYields, id) // 与 fact/finding/战果同一条链
+			}
+			t.writes.Detections++
+			return actool.Text(fmt.Sprintf("detection check recorded: %d", id)), nil
 		})
 }
 

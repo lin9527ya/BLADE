@@ -64,6 +64,40 @@ type Input struct {
 	// 红队的交付物本来就是按技术组织的——客户要的是「你打了哪些 TTP」，不是「你试过哪些方向」。
 	// 只列 ID、不翻译成技术名：那需要内置一份会过期的 ATT&CK 表，而 ID 是行内通用语。
 	TechniqueTally map[string]int
+	// Detections 是检测验证记录（这一手有没有被检出）。三态各自成词，**绝不合成「检出率」**——
+	// 把 unknown 混进分母就是把「测不到」读成「没响」。
+	Detections []*db.Node
+}
+
+// detectionView 是检测验证节点渲染所需的最小字段集。
+type detectionView struct {
+	Technique string
+	Summary   string
+	Evidence  string
+}
+
+func parseDetection(n *db.Node) detectionView {
+	var p struct {
+		Technique string `json:"technique"`
+		Summary   string `json:"summary"`
+		Evidence  string `json:"evidence"`
+	}
+	_ = json.Unmarshal(n.Payload, &p)
+	return detectionView{p.Technique, p.Summary, p.Evidence}
+}
+
+// detectionResultLabel 渲染检测三态。三态**各自成词**——尤其 unknown 不能并进 not_triggered，
+// 那会把「我们没看到」说成「它没拦住」，给出一个比不给更危险的结论。
+func detectionResultLabel(state string) string {
+	switch state {
+	case db.StateDetectionTriggered:
+		return "已检出"
+	case db.StateDetectionNotTriggered:
+		return "未检出"
+	case db.StateDetectionUnknown:
+		return "无法判定"
+	}
+	return state
 }
 
 // LootUse 是一条战果被哪条意图动用过。
@@ -389,6 +423,25 @@ func Markdown(in Input) string {
 			fmt.Fprintf(&b, "- %s —— %d 条意图\n", id, in.TechniqueTally[id])
 		}
 		b.WriteString("\n")
+	}
+
+	// 检测验证：这一手有没有被检出。排在技术覆盖之后——它按技术组织，是同一份数据的另一面。
+	if len(in.Detections) > 0 {
+		fmt.Fprintf(&b, "## 检测验证（这一手有没有被检出）\n\n")
+		for _, n := range in.Detections {
+			v := parseDetection(n)
+			fmt.Fprintf(&b, "- %s —— %s", nz(v.Technique, "（未标技术）"), detectionResultLabel(n.State))
+			if v.Summary != "" {
+				fmt.Fprintf(&b, "：%s", v.Summary)
+			}
+			b.WriteString("\n")
+			if v.Evidence != "" {
+				fmt.Fprintf(&b, "  - 证据：`%s`\n", v.Evidence)
+			}
+		}
+		b.WriteString("\n")
+		// 这条脚注就是这一节存在的理由：把 unknown 读成「未检出」会得出比不给更危险的结论。
+		b.WriteString("_「无法判定」不等于「未被检出」：它说的是本工具查不到证据（没有日志源、没权限、时段对不上），**不能读成防御没拦住**。_\n\n")
 	}
 
 	// findings

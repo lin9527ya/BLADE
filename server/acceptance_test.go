@@ -38,7 +38,7 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
-// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径的端到端
+// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -94,6 +94,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P28 资产 FOFA 检索导入与存储清理（同配额台账/二次导入只合并/试算不动盘）", func(t *testing.T) { accP28(t, env.forTest(t)) })
 	t.Run("P29 战果动用（意图声明 uses → outstanding 归零 → 删意图不带走访据）", func(t *testing.T) { accP29(t, env.forTest(t)) })
 	t.Run("P30 攻击路径（由 uses/yields 边重建，进报告）", func(t *testing.T) { accP30(t, env.forTest(t)) })
+	t.Run("P31 检测验证（三态分记，不进「检出率」；报告成段）", func(t *testing.T) { accP31(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3711,4 +3712,47 @@ func accP30(t *testing.T, e *accEnv) {
 	e.mustContain(md, "## 技术覆盖（ATT&CK）", "技术覆盖段")
 	e.mustContain(md, "- T1552.001 —— 1 条意图", "凭据文件技术")
 	e.mustContain(md, "- T1021.004 —— 1 条意图", "远程服务技术（大小写重复项该被归一成一条）")
+}
+
+// accP31 检测验证：worker 记下一次「这一手有没有被检出」→ 概览分态计数 → 报告成段。
+//
+// 钉住的是三态**不能合成一个「检出率」**：把 unknown 混进分母，就是把「我们没看到」读成
+// 「它没拦住」——那会给出一个比不给更危险的结论。这也是本仓证据门一贯的口径。
+func accP31(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p31", "检测验证")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	check := workflowTool(t, tsx.WorkerTools(), "report_detection_check")
+	for _, c := range []struct{ result, summary string }{
+		{"triggered", "编码命令被 EDR 抓到"},
+		{"not_triggered", "读 /etc/shadow 无任何告警"},
+		{"unknown", "日志服务当晚挂了，无从判定"},
+	} {
+		res, err := check.Call(context.Background(), json.RawMessage(
+			`{"summary":"`+c.summary+`","technique":"T1059.001","result":"`+c.result+`",`+
+				`"evidence":"查了 sysmon","confidence":"high"}`), nil)
+		if err != nil || !strings.HasPrefix(res.Flatten(), "detection check recorded: ") {
+			t.Fatalf("%s 没记上：%v %s", c.result, err, res.Flatten())
+		}
+	}
+
+	// ① 概览：三态分别计数，不合成检出率。
+	res, err := workflowTool(t, tsx.PlannerTools(), "graph_overview").Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("graph_overview: %v", err)
+	}
+	flat := res.Flatten()
+	e.mustContain(flat, `"detections_total":3`, "检测记录总数")
+	e.mustContain(flat, `"triggered":1`, "已检出计数")
+	e.mustContain(flat, `"not_triggered":1`, "未检出计数")
+	e.mustContain(flat, `"unknown":1`, "无法判定计数")
+
+	// ② 报告：三态各自成词 + 那条防误读的脚注。
+	md := e.report(task)
+	e.mustContain(md, "## 检测验证（这一手有没有被检出）", "检测验证段")
+	e.mustContain(md, "—— 已检出：编码命令被 EDR 抓到", "已检出条")
+	e.mustContain(md, "—— 未检出：读 /etc/shadow 无任何告警", "未检出条")
+	e.mustContain(md, "—— 无法判定：日志服务当晚挂了，无从判定", "无法判定条")
+	e.mustContain(md, "不能读成防御没拦住", "防误读脚注")
 }

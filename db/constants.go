@@ -70,6 +70,21 @@ const (
 	// 交付报告里的「提权/横向」也只能靠文案。这两个 kind 把战果变成可以据此规划的一等公民。
 	KindFoothold   = "foothold"   // 一个在手的据点（反弹 shell / SSH / 会话），挂在被攻陷的资产上
 	KindCredential = "credential" // 从据点上读到的一条凭据（口令 / 哈希 / 密钥 / 令牌）
+	// 检测验证（purple team）：一次进攻动作做完之后，这一手**有没有被检出**。
+	//
+	// 它是「平台」与「扫描器」的分水岭：只会打的是扫描器，能回答「这套防御拦不拦得住」的才是平台。
+	// 而且它恰恰是本项目最适合做的一件事——它需要攻防两侧都可控，而实验室正是唯一同时具备两侧的地方。
+	KindDetection = "detection"
+)
+
+// 检测验证节点的状态：三态，且 **unknown 必须独立存在**。
+//
+// 「测不到」和「没响」是两件完全不同的事，合成一档会把"日志没留/没权限看"读成"防御没拦住"——
+// 那正是本仓证据门一贯要防的那种错（同 P24 的「没限住就要如实说」）。
+const (
+	StateDetectionTriggered    = "triggered"     // 防御侧确实响了（有日志/告警为证）
+	StateDetectionNotTriggered = "not_triggered" // 确实没响（证据：查询过、该时段无记录）
+	StateDetectionUnknown      = "unknown"       // 无从判定（没日志源、没权限、时段对不上…）——不是"没响"
 )
 
 // 战果节点（kind='foothold'/'credential'）的状态：只有两态——在手 / 掉了。
