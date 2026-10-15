@@ -230,3 +230,115 @@ func TestAssetExtraFields(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestNormalizeFofaRespTolerant 钉住「第三方中转站/自建」的常见结构差异：
+// 官方形态（顶层 results + 数组行 + size）必须原样可用，其余变体收敛到同一份归一结果。
+// 解析不出来要**报错**，不是返回空结果——把"结构不认识"当成"没查到"，人会以为目标不存在。
+func TestNormalizeFofaRespTolerant(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantErr    string
+		wantSize   int
+		wantFields []string
+		wantRows   [][]string
+	}{
+		{
+			name:       "官方：顶层 results + 数组行 + size",
+			body:       `{"error":false,"size":42,"page":1,"fields":["host","ip","port"],"results":[["a.com","1.2.3.4","443"]]}`,
+			wantSize:   42,
+			wantFields: []string{"host", "ip", "port"},
+			wantRows:   [][]string{{"a.com", "1.2.3.4", "443"}},
+		},
+		{
+			name:       "中转站：结果在 data.results、计数叫 total",
+			body:       `{"code":0,"data":{"total":7,"results":[["b.com","5.6.7.8","80"]]}}`,
+			wantSize:   7,
+			wantFields: nil, // 应答没给 fields：调用方回落到自己请求的列序
+			wantRows:   [][]string{{"b.com", "5.6.7.8", "80"}},
+		},
+		{
+			name:       "中转站：结果在 result.results、行是对象（键序稳定）",
+			body:       `{"success":true,"result":{"results":[{"port":8080,"host":"c.com","ip":"9.9.9.9"}],"size":1}}`,
+			wantSize:   1,
+			wantFields: []string{"host", "ip", "port"},
+			wantRows:   [][]string{{"c.com", "9.9.9.9", "8080"}},
+		},
+		{
+			name:       "计数在根上、数字是字符串",
+			body:       `{"total":"12","results":[["d.com"]]}`,
+			wantSize:   12,
+			wantRows:   [][]string{{"d.com"}},
+			wantFields: nil,
+		},
+		{
+			name:    "官方式错误：error=true + errmsg",
+			body:    `{"error":true,"errmsg":"[-700] 账号无效"}`,
+			wantErr: "账号无效",
+		},
+		{
+			name:    "中转站式错误：code!=0 + message",
+			body:    `{"code":401,"message":"key 已过期"}`,
+			wantErr: "key 已过期",
+		},
+		{
+			name:    "结构不认识：不是 results 数组 → 报错（不是空结果）",
+			body:    `{"hits":{"list":[]}}`,
+			wantErr: "找不到 results 数组",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := normalizeFofaResp([]byte(c.body))
+			if c.wantErr != "" {
+				if err == nil {
+					t.Fatalf("应当报错")
+				}
+				if !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("错误应含 %q，实际 %v", c.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("不该报错：%v", err)
+			}
+			if got.Size != c.wantSize {
+				t.Fatalf("size 应为 %d，实际 %d", c.wantSize, got.Size)
+			}
+			if len(c.wantFields) > 0 {
+				if strings.Join(got.Fields, ",") != strings.Join(c.wantFields, ",") {
+					t.Fatalf("fields 应为 %v，实际 %v", c.wantFields, got.Fields)
+				}
+			} else if len(got.Fields) != 0 {
+				t.Fatalf("应答没给 fields 时不该凭空造列：%v", got.Fields)
+			}
+			if len(got.Rows) != len(c.wantRows) {
+				t.Fatalf("行数应为 %d，实际 %d", len(c.wantRows), len(got.Rows))
+			}
+			for i := range c.wantRows {
+				if strings.Join(got.Rows[i], ",") != strings.Join(c.wantRows[i], ",") {
+					t.Fatalf("第 %d 行应为 %v，实际 %v", i, c.wantRows[i], got.Rows[i])
+				}
+			}
+		})
+	}
+}
+
+// TestFOFASearchUsesResponseFieldOrder 钉住列名以**应答给的为准**：
+// 中转站少给/多给列时，用请求的列序硬套会把值错位到别的列上。
+func TestFOFASearchUsesResponseFieldOrder(t *testing.T) {
+	srv, _ := fakeFOFA(t, func(w http.ResponseWriter, r *http.Request, _ *int) {
+		// 应答给的列序与请求不同（中转站常见）
+		_, _ = w.Write([]byte(`{"error":false,"size":1,"fields":["ip","host"],"results":[["1.2.3.4","a.com"]]}`))
+	})
+	res, err := fofaWith(srv.URL, "k").Search(context.Background(), Query{Expr: "domain=\"a.com\"", Fields: []string{"host", "ip"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Fields, ",") != "ip,host" {
+		t.Fatalf("列名应以应答为准：%v", res.Fields)
+	}
+	if len(res.Assets) != 1 || res.Assets[0].IP != "1.2.3.4" || !strings.Contains(res.Assets[0].Host, "a.com") {
+		t.Fatalf("值应按应答列序对齐：%+v", res.Assets)
+	}
+}

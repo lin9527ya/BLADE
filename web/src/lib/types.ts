@@ -1266,6 +1266,12 @@ export interface Settings {
   intel_used_today?: number; // 只读回显：今日已用次数
   // ---- P24 执行资源限额（0 = 该轴不限）与外部 MCP 守卫 ----
   exec_cpu_seconds?: number;
+  // P28 存储清理：每个分类的保留天数（0/未设 = 不清理）。
+  storage_retention_tasks_days?: number;
+  storage_retention_sessions_days?: number;
+  storage_retention_drafts_days?: number;
+  storage_retention_transcripts_days?: number;
+  storage_retention_binary_days?: number;
   exec_memory_mb?: number;
   exec_max_procs?: number;
   exec_max_active?: number;
@@ -1583,6 +1589,72 @@ export interface SkillItem {
   meta_error?: string;
   /** 清单问题（缺 name/description 之类）。 */
   meta_warning?: string;
+}
+
+// ---- P28：FOFA 检索与存储清理 ----
+
+/** 情报源返回的一条资产（与后端 intel.Asset 对齐；extra 装请求的其余字段）。 */
+export interface IntelAsset {
+  host?: string;
+  ip?: string;
+  port?: number;
+  protocol?: string;
+  domain?: string;
+  title?: string;
+  server?: string;
+  icp?: string;
+  extra?: Record<string, string>;
+}
+
+export interface IntelSearchResult {
+  provider: string;
+  expr: string;
+  fields: string[];
+  total: number;
+  returned: number;
+  assets: IntelAsset[];
+  spool?: string;
+  used_today: number;
+  daily_quota: number;
+  note?: string;
+}
+
+/** 存储体检里的一条可删单元。 */
+export interface StorageUnit {
+  name: string;
+  path: string;
+  bytes: number;
+  mod_time: string;
+  protected?: string;
+}
+
+export interface StorageCategoryReport {
+  key: string;
+  label: string;
+  stats_only?: string;
+  retention_days: number;
+  units: number;
+  bytes: number;
+  expired_units: number;
+  expired_bytes: number;
+  protected_units: number;
+  items?: StorageUnit[];
+}
+
+export interface StorageReport {
+  dir: string;
+  disk_total: number;
+  disk_free: number;
+  scanned_at: string;
+  categories: StorageCategoryReport[];
+}
+
+export interface StorageCleanResult {
+  deleted: { category: string; name: string; bytes: number; mod_time: string }[];
+  deleted_bytes: number;
+  failures: string[];
+  report: StorageReport;
+  last_clean: Record<string, unknown>;
 }
 
 // SkillCall 是一次 Skill() 调用（单个 skill 的最近调用列表）。

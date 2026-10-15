@@ -368,9 +368,8 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 				assets, err = as.QueryByTask(taskID, typ, limit, offset)
 			}
 		default:
-			if typ == "" {
-				typ = "root_domain"
-			}
+			// typ == "" 是全类型（资产页「全部类型」）：不再兜底成 root_domain——
+			// 那会让"没传类型"与"只看根域名"变成同一件事，前端一改就静默看错数据。
 			total, err = as.CountByType(typ)
 			if err == nil && offset < total {
 				assets, err = as.QueryByType(typ, limit, offset)

@@ -57,7 +57,7 @@ admin "DROP DATABASE IF EXISTS $DB_NAME"
 admin "CREATE DATABASE $DB_NAME"
 export ARTEX_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME?#")"
 
-echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27，逐机制 PASS/FAIL）"
+echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28，逐机制 PASS/FAIL）"
 rc=0
 go test -count=1 -run TestAcceptance -v ./server/ || rc=1
 

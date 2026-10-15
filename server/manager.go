@@ -308,6 +308,14 @@ const (
 	settingIntelDailyQuota = "intel_daily_quota"
 	// defaultIntelDailyQuota 是没设 quota 时的平台侧每日上限（0 = 不限，设了才生效）。
 	defaultIntelDailyQuota = 200
+	// P28 存储清理：每个分类一个保留天数设置（0/未设 = **不清理**，默认不动任何东西——
+	// 这是能在生产上放心装上的前提）；lastClean 记最后一次执行的摘要，页面上可见。
+	settingStorageRetentionTasks      = "storage_retention_tasks_days"
+	settingStorageRetentionSessions   = "storage_retention_sessions_days"
+	settingStorageRetentionDrafts     = "storage_retention_drafts_days"
+	settingStorageRetentionTranscript = "storage_retention_transcripts_days"
+	settingStorageRetentionBinary     = "storage_retention_binary_days"
+	settingStorageLastClean           = "storage_last_clean"
 	// P24 默认值：CPU 30 分钟上限；内存/进程数不限（0）。
 	defaultExecCPUSeconds = 1800
 	defaultExecMemoryMB   = 0

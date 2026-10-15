@@ -856,6 +856,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings/exploration-policy", s.getExplorationPolicyDefault) // P20 全局默认探索策略(新任务继承)
 	mux.HandleFunc("PUT /api/settings/exploration-policy", s.putExplorationPolicyDefault)
 	mux.HandleFunc("POST /api/settings/intel/test", s.testIntelSource)    // P21 情报源:测试连接(回显账号/剩余额度,不回显 key)
+	mux.HandleFunc("POST /api/intel/search", s.searchIntelAssets)         // P28 资产页 FOFA 检索（与工具同一执行路径）
+	mux.HandleFunc("GET /api/storage/report", s.getStorageReport)         // P28 存储体检（试算，只读）
+	mux.HandleFunc("POST /api/storage/clean", s.cleanStorage)             // P28 存储清理（只删过期且未受保护的单元）
 	mux.HandleFunc("GET /api/settings/intel/queries", s.listIntelQueries) // P21 情报源:查询台账与今日用量
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
@@ -3470,6 +3473,12 @@ func (s *Server) settingsPayload() map[string]any {
 		"fofa_proxy":        intelProxy,
 		"intel_daily_quota": s.intelDailyQuota(),
 		"intel_used_today":  intelUsed,
+		// P28 存储清理：每个分类的保留天数（0 = 不清理；默认全 0，装上什么都不动）。
+		"storage_retention_tasks_days":       s.storageRetentionDays(settingStorageRetentionTasks),
+		"storage_retention_sessions_days":    s.storageRetentionDays(settingStorageRetentionSessions),
+		"storage_retention_drafts_days":      s.storageRetentionDays(settingStorageRetentionDrafts),
+		"storage_retention_transcripts_days": s.storageRetentionDays(settingStorageRetentionTranscript),
+		"storage_retention_binary_days":      s.storageRetentionDays(settingStorageRetentionBinary),
 		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
 		"exec_memory_mb":                execLimitsFromSettings(s.m.pg).MemoryMB,
@@ -3562,13 +3571,19 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		FOFAProxy       *string `json:"fofa_proxy"`
 		IntelDailyQuota *int    `json:"intel_daily_quota"`
 		// P24：执行资源限额（0 = 该轴不限）与外部 MCP 守卫（并发上限/熔断阈值/冷却秒）。
-		ExecCPUSeconds     *int `json:"exec_cpu_seconds"`
-		ExecMemoryMB       *int `json:"exec_memory_mb"`
-		ExecMaxProcs       *int `json:"exec_max_procs"`
-		ExecMaxActive      *int `json:"exec_max_active"`
-		MCPMaxConcurrent   *int `json:"mcp_max_concurrent_per_server"`
-		MCPBreakerFails    *int `json:"mcp_breaker_threshold"`
-		MCPBreakerCooldown *int `json:"mcp_breaker_cooldown_sec"`
+		ExecCPUSeconds *int `json:"exec_cpu_seconds"`
+		// P28 存储清理保留天数（0 = 不清理）。
+		StorageRetentionTasks      *int `json:"storage_retention_tasks_days"`
+		StorageRetentionSessions   *int `json:"storage_retention_sessions_days"`
+		StorageRetentionDrafts     *int `json:"storage_retention_drafts_days"`
+		StorageRetentionTranscript *int `json:"storage_retention_transcripts_days"`
+		StorageRetentionBinary     *int `json:"storage_retention_binary_days"`
+		ExecMemoryMB               *int `json:"exec_memory_mb"`
+		ExecMaxProcs               *int `json:"exec_max_procs"`
+		ExecMaxActive              *int `json:"exec_max_active"`
+		MCPMaxConcurrent           *int `json:"mcp_max_concurrent_per_server"`
+		MCPBreakerFails            *int `json:"mcp_breaker_threshold"`
+		MCPBreakerCooldown         *int `json:"mcp_breaker_cooldown_sec"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -3667,6 +3682,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingMCPMaxConcurrent, req.MCPMaxConcurrent, 128, "MCP 并发上限"},
 		{settingMCPBreakerFails, req.MCPBreakerFails, 1000, "MCP 熔断阈值"},
 		{settingMCPBreakerCooldown, req.MCPBreakerCooldown, 86400, "MCP 熔断冷却（秒）"},
+		// P28 存储清理：保留天数（0 = 不清理；上限 10 年，防手滑写成天文数字）
+		{settingStorageRetentionTasks, req.StorageRetentionTasks, 3650, "任务产物保留天数"},
+		{settingStorageRetentionSessions, req.StorageRetentionSessions, 3650, "会话目录保留天数"},
+		{settingStorageRetentionDrafts, req.StorageRetentionDrafts, 3650, "草稿保留天数"},
+		{settingStorageRetentionTranscript, req.StorageRetentionTranscript, 3650, "转写保留天数"},
+		{settingStorageRetentionBinary, req.StorageRetentionBinary, 3650, "更新残留保留天数"},
 	} {
 		if f.val == nil {
 			continue
