@@ -25,6 +25,8 @@ import (
 	"github.com/lin9527ya/Norma/agentcore"
 	"github.com/lin9527ya/Norma/harness"
 	"github.com/lin9527ya/Norma/llm"
+	actool "github.com/lin9527ya/Norma/tool"
+
 	"github.com/lin9527ya/artex/agent"
 	"github.com/lin9527ya/artex/db"
 	"github.com/lin9527ya/artex/guard"
@@ -36,7 +38,7 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
-// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用的端到端
+// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -91,6 +93,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P27 战果层（据点/凭据入概览与报告，凭据本体不外流）", func(t *testing.T) { accP27(t, env.forTest(t)) })
 	t.Run("P28 资产 FOFA 检索导入与存储清理（同配额台账/二次导入只合并/试算不动盘）", func(t *testing.T) { accP28(t, env.forTest(t)) })
 	t.Run("P29 战果动用（意图声明 uses → outstanding 归零 → 删意图不带走访据）", func(t *testing.T) { accP29(t, env.forTest(t)) })
+	t.Run("P30 攻击路径（由 uses/yields 边重建，进报告）", func(t *testing.T) { accP30(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3632,4 +3635,80 @@ func accP29(t *testing.T, e *accEnv) {
 	e.mustContain(overviewOut(), `"outstanding_loot_total":1`, "用过它的意图没了，据点该重新算 outstanding")
 	// 报告也跟着回到「尚未动用」——两边口径必须一致，否则交付物会讲一个图里不成立的故事。
 	e.mustContain(e.report(task), "尚未动用", "取消后报告该说它尚未动用")
+}
+
+// accP30 攻击路径：把 uses/yields 两种边接成一条读得出来的路，并进报告。
+//
+// 兑现的是分析里那句「报告里的提权/横向只能靠文案」：这条路径**不是另写的叙述**，是从图里
+// 已经记着的边重建出来的——所以它必然与图一致，图变了它跟着变。
+func accP30(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p30", "攻击路径")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	nodeID := func(out string) int64 {
+		t.Helper()
+		line, _, _ := strings.Cut(out, "\n")
+		_, raw, _ := strings.Cut(line, ": ")
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			t.Fatalf("回执里没有节点 id：%q", out)
+		}
+		return id
+	}
+	// worker 面与 planner 面分开取：战果是 worker 写的，意图只有 planner 能派。
+	callOn := func(face []actool.CoreTool, toolName, in string) string {
+		t.Helper()
+		res, err := workflowTool(t, face, toolName).Call(context.Background(), json.RawMessage(in), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		return res.Flatten()
+	}
+	worker := tsx.WorkerTools()
+	planner := tsx.PlannerTools()
+
+	// 第一步：打下 web01，再用它去读配置。
+	fhA := nodeID(callOn(worker, "report_foothold",
+		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
+			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
+	i1Out := callOn(planner, "add_intent",
+		`{"summary":"读 wp-config 找数据库口令","uses_loot_ids":[`+strconv.FormatInt(fhA, 10)+`],`+
+			`"techniques":["T1552.001"]}`)
+	if !strings.HasPrefix(i1Out, "intent created: ") {
+		t.Fatalf("第一步意图没建上：%s", i1Out)
+	}
+	i1 := nodeID(i1Out)
+	callOn(worker, "report_credential",
+		`{"summary":"wp_user 口令","kind":"password","username":"wp_user","secret":"s",`+
+			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+strconv.FormatInt(i1, 10)+`}`)
+
+	// 第二步：用凭据横到 db01。凭据节点 id 从上一步的产出去取（它是 report_credential 建的，
+	// 回执里那段 JSON 不必再解一遍）。
+	creds, err := task.Store.ListByKind(db.KindCredential, 10)
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("该正好有一条凭据，得到 %d 条 (err=%v)", len(creds), err)
+	}
+	credID := creds[0].ID
+	i2Out := callOn(planner, "add_intent",
+		`{"summary":"用 wp_user 横向到 db01","uses_loot_ids":[`+strconv.FormatInt(credID, 10)+`],`+
+			`"techniques":["T1021.004","t1021.004"]}`)
+	if !strings.HasPrefix(i2Out, "intent created: ") {
+		t.Fatalf("第二步意图没建上：%s", i2Out)
+	}
+	i2 := nodeID(i2Out)
+	callOn(worker, "report_foothold",
+		`{"summary":"在 db01 上拿到 root 的 shell","access":"SSH","privilege":"root",`+
+			`"evidence":"ssh root@db01 成功","confidence":"high","intent_id":`+strconv.FormatInt(i2, 10)+`}`)
+
+	md := e.report(task)
+	e.mustContain(md, "## 攻击路径（从已得的访问展开）", "攻击路径段")
+	e.mustContain(md, "起点 据点「在 web01 上拿到 root 的反弹 shell」", "路径起点")
+	e.mustContain(md, fmt.Sprintf("intent-%d「读 wp-config 找数据库口令」 [T1552.001] → 得到：凭据「wp_user 口令」", i1), "第一跳（含技术标注）")
+	e.mustContain(md, fmt.Sprintf("intent-%d「用 wp_user 横向到 db01」 [T1021.004] → 得到：据点「在 db01 上拿到 root 的 shell」", i2), "第二跳（含技术标注）")
+
+	// ATT&CK：交付物按技术组织，客户要的是「你打了哪些 TTP」。
+	e.mustContain(md, "## 技术覆盖（ATT&CK）", "技术覆盖段")
+	e.mustContain(md, "- T1552.001 —— 1 条意图", "凭据文件技术")
+	e.mustContain(md, "- T1021.004 —— 1 条意图", "远程服务技术（大小写重复项该被归一成一条）")
 }

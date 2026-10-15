@@ -1,6 +1,10 @@
 package db
 
-import "strings"
+import (
+	"encoding/json"
+	"regexp"
+	"strings"
+)
 
 // RiskAreas is the closed risk-class vocabulary an intent payload may carry
 // (payload.risk_area). The coverage matrix is keyed by it: 注入类归 sqli，
@@ -20,6 +24,36 @@ func NormalizeRiskArea(v string) string {
 		}
 	}
 	return "other"
+}
+
+// maxIntentTechniques 是单条意图允许携带的 ATT&CK 技术数上限。
+const maxIntentTechniques = 8
+
+// reAttackTechnique 是 MITRE ATT&CK 技术 ID 的**形状**：T1190 / T1552.001。
+//
+// 只查形状，不查它是否真实存在——那需要内置一份 ATT&CK 表，而表会过期、会需要维护。
+// 取舍是：形状合法但其实是错的 ID，读者一眼能看穿（ATT&CK ID 是行内通用语）；
+// 而放任自由文本，连"这是个 ID"都保证不了。
+var reAttackTechnique = regexp.MustCompile(`^T\d{4}(\.\d{3})?$`)
+
+// NormalizeTechniques 归一化一组 ATT&CK 技术 ID：大写、去空白、按形状过滤、去重、限长。
+// 保留书写顺序。**非法项直接丢弃而不是拒绝整条意图**——标错一个 ID 不该让整条方向作废，
+// 它是标注，不是约束。
+func NormalizeTechniques(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		t := strings.ToUpper(strings.TrimSpace(raw))
+		if t == "" || seen[t] || !reAttackTechnique.MatchString(t) {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+		if len(out) >= maxIntentTechniques {
+			break
+		}
+	}
+	return out
 }
 
 // Exploration node kinds (exploration_nodes.kind).
@@ -45,6 +79,39 @@ const (
 	StateLootActive = "active" // 据点还能连、凭据还能用
 	StateLootLost   = "lost"   // 掉了：据点断了、凭据失效（复测/复用失败后如实标记）
 )
+
+// TechniqueTally 统计一组意图节点用到的 ATT&CK 技术（技术 ID → 意图数）。
+//
+// **软删除的意图不计**：用户主动把它拿掉了，不该还留在覆盖率里。其余都计——被 blocked 的
+// 方向也算「试过」，覆盖率答的是「打过哪些面」，不是「哪些面打赢了」。
+//
+// 与 LootConsumingIntentState 同理放在 db：agent 用它渲染 graph_overview 的技术统计、
+// server 用它生成报告的技术覆盖表，同一条规则写两处迟早会漂移成两套数字。
+func TechniqueTally(intents []*Node) map[string]int {
+	tally := map[string]int{}
+	for _, n := range intents {
+		if n.State == StateIntentDeleted {
+			continue
+		}
+		for _, t := range NodeTechniques(n) {
+			tally[t]++
+		}
+	}
+	return tally
+}
+
+// NodeTechniques 读出一个意图节点携带的 ATT&CK 技术 ID（payload.techniques）。
+// 空/畸形 payload 一律当作没有标注，不报错——标注是附加信息，不该阻断任何读取路径。
+func NodeTechniques(n *Node) []string {
+	if n == nil {
+		return nil
+	}
+	var p struct {
+		Techniques []string `json:"techniques"`
+	}
+	_ = json.Unmarshal(n.Payload, &p)
+	return p.Techniques
+}
 
 // LootConsumingIntentState 报告「以这个意图状态收场的意图，算不算真的动用了它声明的那条战果」。
 //

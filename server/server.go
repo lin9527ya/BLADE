@@ -4198,6 +4198,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// 判定**：中途 blocked/exhausted 收场的意图不算动用，否则到手的能力会在报告里假装已被处理。
 	intentState := make(map[int64]string, len(intents))
 	intentSummary := make(map[int64]string, len(intents))
+	intentTech := make(map[int64][]string, len(intents))
 	for _, n := range intents {
 		intentState[n.ID] = n.State
 		var p struct {
@@ -4205,8 +4206,13 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(n.Payload, &p)
 		intentSummary[n.ID] = p.Summary
+		intentTech[n.ID] = db.NodeTechniques(n)
 	}
+	// 技术覆盖与 agent 侧的概览统计共用 db.TechniqueTally——同一条规则（软删除不计）
+	// 分两处写，报告和图迟早会报出两个不同的数字。
+	techniqueTally := db.TechniqueTally(intents)
 	lootUsedBy := map[int64][]report.LootUse{}
+	var chains []report.AttackChain
 	if edges, err := t.Store.Edges(5000); err == nil {
 		for _, e := range edges {
 			if e.Rel != db.RelUses || !db.LootConsumingIntentState(intentState[e.From]) {
@@ -4217,13 +4223,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 				Summary:  intentSummary[e.From],
 			})
 		}
+		// 攻击路径：把 uses/yields 两种边接起来读（见 server/attack_chains.go）。不引入新模型。
+		chains = buildAttackChains(edges, lootLabels(footholds, credentials), intentSummary, intentState, intentTech)
 	}
 
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
-		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy,
+		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy, Chains: chains,
+		TechniqueTally: techniqueTally,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)
