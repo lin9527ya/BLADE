@@ -226,8 +226,16 @@ export default function StoragePage() {
               数据目录 <span className="font-mono text-xs">{report.dir}</span>
             </span>
             <span>
-              磁盘：已用 <b className="tabular-nums">{diskUsedPct}%</b>，可用{" "}
-              <b className="tabular-nums">{fmtBytes(report.disk_free)}</b> / 共 {fmtBytes(report.disk_total)}
+              {report.disk_total > 0 ? (
+                <>
+                  磁盘：已用 <b className="tabular-nums">{diskUsedPct}%</b>，可用{" "}
+                  <b className="tabular-nums">{fmtBytes(report.disk_free)}</b> / 共 {fmtBytes(report.disk_total)}
+                </>
+              ) : (
+                // 本平台没实现磁盘用量（见 server/storage_usage_windows.go）——如实说"未知"，
+                // 不显示一个假的 0%。清理判定本来就不依赖它。
+                <span className="text-muted-foreground">磁盘用量：未知（本平台未实现）</span>
+              )}
             </span>
             <span className="text-muted-foreground">试算于 {fmtWhen(report.scanned_at)}</span>
             {typeof lastClean.at === "string" && (
