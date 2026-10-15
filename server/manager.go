@@ -638,20 +638,7 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 		on = false
 	}
 	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
-	// 三个"服务端搜索"后端共用同一组载体字段（DeepSeek* 是历史命名，实际含义是
-	// "这次搜索打到哪个端点、用哪个 key 与模型"）。
-	switch backend {
-	case deepSeekWebSearchBackend:
-		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.deepSeekSearchCreds()
-	case opencodeWebSearchBackend, commandCodeWebSearchBackend:
-		// **面向 SDK 的名字归一为 "deepseek"**：SDK 的白名单只认
-		// ddgs / brave-free / tavily / deepseek 四个——它区分的是"哪套搜索机制"，
-		// 不区分端点。opencode / commandcode 与 deepseek 是同一机制（anthropic 兼容
-		// messages + web_search 工具），区别只在打到哪个端点、用谁的 key。
-		// 库里与 UI 仍保留各自的真名（设置页显示、审计都对得上）。
-		o.Backend = deepSeekWebSearchBackend
-		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = m.namedProfileSearchCreds(backend)
-	}
+	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = m.searchBackendForSDK(backend)
 	return o
 }
 
@@ -662,6 +649,28 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 // states the requirement and the user decides. A profile that can't serve it
 // simply fails at search time (or at the settings page's 测试 button), which is
 // the same feedback every other backend gives for a bad key.
+// searchBackendForSDK 把 UI 侧的后端名解析成 **SDK 能用的那份配置**：
+// 归一后的后端名 + 凭据（激活配置或同名配置）+ 路由头。线上工具（WebSearchOpts）与
+// 设置页的「测试搜索」**共用这一个函数**——各写一份的代价是实打实的：opencode 的路由头
+// 就是这么被漏掉的（测试打的是激活配置、不带头，于是"测试报 400、工具也不可能通"）。
+//
+// 三个"服务端搜索"后端共用同一组载体字段（DeepSeek* 是历史命名，实际含义是
+// "这次搜索打到哪个端点、用哪个 key 与模型"）。SDK 的白名单只认
+// ddgs / brave-free / tavily / deepseek——它区分的是"哪套搜索机制"，不区分端点，
+// 所以 opencode / commandcode 面向 SDK **归一为 deepseek**；库里与 UI 保留真名。
+func (m *Manager) searchBackendForSDK(backend string) (string, string, string, string, map[string]string) {
+	switch backend {
+	case deepSeekWebSearchBackend:
+		base, key, model := m.deepSeekSearchCreds()
+		return deepSeekWebSearchBackend, base, key, model, nil
+	case opencodeWebSearchBackend, commandCodeWebSearchBackend:
+		base, key, model, headers := m.namedProfileSearchCreds(backend)
+		return deepSeekWebSearchBackend, base, key, model, headers
+	default:
+		return backend, "", "", "", nil
+	}
+}
+
 // namedProfileSearchCreds 借用一个**具名** LLM 配置（opencode / commandcode）的端点与 key。
 // 模型固定为 searchBackendModel，不跟随配置里写的模型——搜索链路的模型是产品决定，不是
 // 用户在该配置里选的那个。
