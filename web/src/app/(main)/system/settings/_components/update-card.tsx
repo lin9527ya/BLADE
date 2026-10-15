@@ -13,6 +13,8 @@ import {
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -44,6 +46,31 @@ export function UpdateCard() {
   // 与 progress 分开：暂存完成后进程就没了，SSE 会断，此时要切到轮询 /api/health。
   const [restarting, setRestarting] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  // 释放源是私有仓库：release 接口要 GitHub token。**只存不回显**——这里只显示是否已配，
+  // 输入框留空 = 不改；点保存才提交（值不回填，所以"已配置"不等于能把旧值读出来）。
+  const [tokenSet, setTokenSet] = React.useState(false);
+  const [token, setToken] = React.useState("");
+  const [savingToken, setSavingToken] = React.useState(false);
+  React.useEffect(() => {
+    api.settings().then((s) => setTokenSet(!!s.update_token_set)).catch(() => {});
+  }, []);
+  async function saveToken() {
+    if (!token.trim()) {
+      toast.error("先填入 token（留空不提交）");
+      return;
+    }
+    setSavingToken(true);
+    try {
+      await api.setSettings({ update_github_token: token.trim() });
+      setToken("");
+      setTokenSet(true);
+      toast.success("已保存更新用的 GitHub token（立即生效）");
+    } catch (e) {
+      toast.error("保存失败：" + (e as Error).message);
+    } finally {
+      setSavingToken(false);
+    }
+  }
 
   // quiet 同时决定要不要绕过后端缓存：进页面时的自动检查用缓存（顶栏刚查过），
   // 用户手动点「检查更新」则强制回源，否则刚发布的版本要等缓存过期才看得到。
@@ -282,6 +309,28 @@ export function UpdateCard() {
             </p>
           </div>
         )}
+
+        <div className="grid gap-2 border-t pt-3">
+          <Label className="text-xs text-muted-foreground">
+            发布源访问令牌（GitHub token{tokenSet ? "：已配置" : "：未配置"}）
+          </Label>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              type="password"
+              className="h-8 max-w-72 font-mono text-xs"
+              placeholder={tokenSet ? "已配置（留空即不改）" : "ghp_… / github_pat_…"}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <Button variant="outline" size="sm" onClick={() => void saveToken()} disabled={savingToken}>
+              {savingToken ? "保存中…" : "保存令牌"}
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            发布源是私有仓库时，GitHub 的 release 接口需要带令牌才读得到；令牌只存不回显、
+            只在 github.com 与 api.github.com 上发送（下载重定向到对象存储时不会带上）。
+          </p>
+        </div>
 
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={() => check(false)} disabled={checking || busy || restarting}>

@@ -3430,6 +3430,7 @@ func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
 	intelKey, _, _ := s.m.pg.GetSetting(settingIntelKey)
+	updateToken, _, _ := s.m.pg.GetSetting(settingUpdateToken)
 	intelEmail, _, _ := s.m.pg.GetSetting(settingIntelEmail)
 	intelBaseURL, _, _ := s.m.pg.GetSetting(settingIntelBaseURL)
 	intelProxy, _, _ := s.m.pg.GetSetting(settingIntelProxy)
@@ -3468,6 +3469,7 @@ func (s *Server) settingsPayload() map[string]any {
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
 		"fofa_key_set":      strings.TrimSpace(intelKey) != "",
+		"update_token_set":  strings.TrimSpace(updateToken) != "", // 自更新 token：只回布尔
 		"fofa_email":        intelEmail,
 		"fofa_base_url":     intelBaseURL,
 		"fofa_proxy":        intelProxy,
@@ -3566,6 +3568,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
 		// P21 情报源。key：null=不改、""=清空；base_url/proxy 同理；quota：0=不限。
 		FOFAKey         *string `json:"fofa_key"`
+		UpdateToken     *string `json:"update_github_token"` // 自更新 token（只存不回显）
 		FOFAEmail       *string `json:"fofa_email"`
 		FOFABaseURL     *string `json:"fofa_base_url"`
 		FOFAProxy       *string `json:"fofa_proxy"`
@@ -3646,6 +3649,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		val *string
 	}{
 		{settingIntelKey, req.FOFAKey},
+		{settingUpdateToken, req.UpdateToken},
 		{settingIntelEmail, req.FOFAEmail},
 		{settingIntelBaseURL, req.FOFABaseURL},
 		{settingIntelProxy, req.FOFAProxy},

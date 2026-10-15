@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,16 @@ var (
 func RestartRequested() <-chan struct{} { return restartCh }
 
 func requestRestart() { restartOnce.Do(func() { close(restartCh) }) }
+
+// updateToken 现读自更新用的 GitHub token（私有发布源的 release 接口需要它）。
+// 每次取用都读库：换 token 立即生效，不需要重启；**只存不回显**（设置页只显示是否已配）。
+func (s *Server) updateToken() string {
+	if s.m == nil || s.m.pg == nil {
+		return ""
+	}
+	v, _, _ := s.m.pg.GetSetting(settingUpdateToken)
+	return strings.TrimSpace(v)
+}
 
 // bootState 是本次启动时 selfupdate.Bootstrap 的结论（升级成功 / 刚回滚 /
 // 暂存件被丢弃），由 main 注入，供 /api/update/check 如实告诉前端上一次升级的下场。
@@ -227,7 +238,7 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 
 	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
 	force := r.URL.Query().Get("force") != ""
-	client := selfupdate.NewClient(s.m.GlobalProxy())
+	client := selfupdate.NewClient(s.m.GlobalProxy(), s.updateToken())
 	rel, err := relCache.get(r.Context(), client, force)
 	if err != nil {
 		out["error"] = err.Error()
@@ -271,7 +282,7 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
-	client := selfupdate.NewClient(s.m.GlobalProxy())
+	client := selfupdate.NewClient(s.m.GlobalProxy(), s.updateToken())
 	rel, err := relCache.get(r.Context(), client, false)
 	if err != nil {
 		writeErr(w, 502, err.Error())

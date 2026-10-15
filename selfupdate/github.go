@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// Repo 是发布源。写死而不是做成配置项：更新源可配等于给任何能改配置的人一条
+// Repo 是发布源。**写死**而不是做成配置项：更新源可配等于给任何能改配置的人一条
 // 远程代码执行通道，对一个渗透测试平台来说这个口子开不得。
-const Repo = "Autumn-27/artex"
+// 值是本仓自己（2026-10-15 起）：原先指向上游 Autumn-27/artex，而那个仓库已不存在。
+const Repo = "lin9527ya/artex"
 
 // latestURL 是 GitHub 的"最新正式版"接口。它会自动跳过 prerelease 和 draft。
 const latestURL = "https://api.github.com/repos/" + Repo + "/releases/latest"
@@ -47,11 +48,37 @@ type Asset struct {
 	Size int64  `json:"size"`
 }
 
+// authTransport 只在 GitHub 自己的主机上附 Authorization：私有仓库的 release 接口与
+// 下载入口需要它，而下载会 302 到对象存储（objects.githubusercontent.com 等）——**把
+// token 转发给那些主机等于把它交给第三方**，所以按主机白名单加，不是无脑全加。
+type authTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (a authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if a.token != "" && req.URL != nil {
+		switch req.URL.Host {
+		case "api.github.com", "github.com", "raw.githubusercontent.com":
+			r2 := req.Clone(req.Context())
+			r2.Header.Set("Authorization", "Bearer "+a.token)
+			req = r2
+		}
+	}
+	base := a.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
 // NewClient 构造一个只认 GitHub 域名的 HTTP 客户端。proxy 为空则直连。
 //
 // 刻意不复用默认 Transport：升级链路必须强制走 TLS 且校验证书，不能被别处
 // 设置的 InsecureSkipVerify 之类影响到。
-func NewClient(proxy string) *http.Client {
+// NewClient 建更新链路用的 HTTP 客户端。token 可选（私有仓库必须给）：只存不回显，
+// 由调用方**每次现读**设置传进来——换 token 立即生效，不需要重启。
+func NewClient(proxy string, token ...string) *http.Client {
 	tr := &http.Transport{
 		ForceAttemptHTTP2:   true,
 		TLSHandshakeTimeout: 15 * time.Second,
@@ -61,8 +88,12 @@ func NewClient(proxy string) *http.Client {
 			tr.Proxy = http.ProxyURL(pu)
 		}
 	}
+	tok := ""
+	if len(token) > 0 {
+		tok = strings.TrimSpace(token[0])
+	}
 	return &http.Client{
-		Transport: tr,
+		Transport: authTransport{base: tr, token: tok},
 		Timeout:   30 * time.Minute, // 下载整包，不能按请求级超时卡死
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
