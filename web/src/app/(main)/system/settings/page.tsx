@@ -637,7 +637,7 @@ export default function SystemSettingsPage() {
                       <SelectItem value="tavily">Tavily（需 Key）</SelectItem>
                       <SelectItem value="deepseek">DeepSeek（官方 · 复用激活配置）</SelectItem>
                       <SelectItem value="opencode">opencode（借用同名 LLM 配置 · flash）</SelectItem>
-                      <SelectItem value="commandcode">commandcode（借用同名 LLM 配置 · flash）</SelectItem>
+                      <SelectItem value="commandcode">commandcode（原生搜索通道）</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -655,13 +655,22 @@ export default function SystemSettingsPage() {
                         <b>必须使用 anthropic 协议</b>
                         ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。切换 LLM 配置后此来源可能失效。
                       </>
+                    ) : backend === "opencode" ? (
+                      <>
+                        借用<b>名为 opencode 的 LLM 配置</b>的端点与 Key，走 Anthropic 兼容的
+                        <code> /v1/messages</code> + 服务端 <code>web_search</code> 工具，
+                        搜索模型<b>固定 deepseek-v4-flash</b>（实测：同端点上 v4.1-flash 不执行服务端工具，
+                        只会空想一轮）。配置里<b>必须填会话头名字</b>（opencode 要求
+                        <code> x-opencode-session</code>，缺了直接 400）且<b>协议为 anthropic</b>。
+                        改配置后<b>立即生效</b>。
+                      </>
                     ) : (
                       <>
-                        该来源借用<b>名为 {backend} 的 LLM 配置</b>的端点与 Key（搜索模型
-                        <b>固定 deepseek-v4.1-flash</b>，不跟随该配置里选的模型）；该配置
-                        <b>必须使用 anthropic 协议</b>——服务端搜索只在该协议下可用。配置不存在、或协议不对时
-                        <b>直接报错、不会回退到别的配置</b>（避免"我明明选了 {backend} 却打到别处"）。
-                        改该配置的端点/Key 后此来源<b>立即生效</b>。
+                        走 commandcode 的<b>原生搜索通道</b>（<code>/alpha/web-search</code>）：
+                        <b>与模型无关、与 LLM 配额解耦</b>——它没有"消息 + 工具"这条路
+                        （<code>/messages</code> 只服务 Claude 系，deepseek 只在
+                        <code>/responses</code> 上且拒收内置 web_search 工具）。只需该配置的
+                        端点与 Key 可用，<b>不用管它选的模型与协议</b>。
                       </>
                     )}
                   </p>

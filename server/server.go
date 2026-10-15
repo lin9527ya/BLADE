@@ -3867,8 +3867,10 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	// 与线上工具**同一套解析**（后端归一 + 凭据 + 路由头）——自己拼一份的话，
 	// "测试通过但工具不能用"是迟早的事（opencode 的 x-opencode-session 就是这么漏的）。
 	cfg := actool.WebSearchConfig{BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
-	backend, cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekHeaders = s.m.searchBackendForSDK(backend)
-	cfg.Backend = backend
+	res := s.m.searchBackendForSDK(backend)
+	backend, cfg.Backend = res.Backend, res.Backend
+	cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekHeaders = res.BaseURL, res.APIKey, res.Model, res.Headers
+	cfg.CommandCodeBaseURL, cfg.CommandCodeAPIKey = res.CCBaseURL, res.CCAPIKey
 	// Hard cap so a slow/blocked proxy can't hang the request.
 	wall := 30 * time.Second
 	// deepseek 的凭据不在表单里，来自当前激活的 LLM 配置；同时它每次搜索都跑一次

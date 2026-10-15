@@ -50,6 +50,11 @@ type WebSearchOpts struct {
 	DeepSeekBaseURL string
 	DeepSeekAPIKey  string
 	DeepSeekModel   string
+	// CommandCodeBaseURL / CommandCodeAPIKey 配置 commandcode 的**原生**搜索通道
+	// （/alpha/web-search）：与模型无关、与 LLM 配额解耦——它的 /messages 只服务
+	// Claude 系、deepseek 只在 /responses 上且拒收内置 web_search 工具。
+	CommandCodeBaseURL string
+	CommandCodeAPIKey  string
 	// Headers 是这次搜索要额外带的 HTTP 头（可空）：有些中转端点强制要求路由头
 	// （如 opencode zen 的 x-opencode-session），缺了直接 400。由宿主按配置决定。
 	Headers map[string]string
@@ -514,7 +519,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebSearchBackend:      w.webSearch.Backend,
 		BraveSearchAPIKey:     w.webSearch.BraveKey,
 		TavilySearchAPIKey:    w.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: w.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: w.webSearch.Headers,
+		DeepSeekSearchBaseURL: w.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: w.webSearch.Headers, CommandCodeSearchBaseURL: w.webSearch.CommandCodeBaseURL, CommandCodeSearchAPIKey: w.webSearch.CommandCodeAPIKey,
 		DeepSeekSearchAPIKey: w.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:  w.webSearch.DeepSeekModel,
 		WebSearchProxy:       w.webSearch.Proxy,
