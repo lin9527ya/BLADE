@@ -4,6 +4,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import {
   ChevronRightIcon,
+  SparklesIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -34,6 +35,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { MCP_CATALOG } from "@/lib/mcp-catalog";
 import { cn } from "@/lib/utils";
 import type { MCPServer, MCPGuardStatus, MCPTool, MCPToolSchema, MCPToolSchemaProp, Agent } from "@/lib/types";
 
@@ -172,6 +174,7 @@ export default function MCPPage() {
   const [tools, setTools] = React.useState<MCPTool[]>([]);
   const [toolsLoading, setToolsLoading] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [catalogOpen, setCatalogOpen] = React.useState(false); // 推荐目录弹窗
   const [togglingTool, setTogglingTool] = React.useState<string | null>(null); // 正在翻转的工具名
   const [expandedTools, setExpandedTools] = React.useState<Set<string>>(new Set()); // 展开了参数表的工具名
 
@@ -251,6 +254,24 @@ export default function MCPPage() {
     return Object.entries(env ?? {})
       .map(([k, v]) => `${k}=${v}`)
       .join("\n");
+  }
+
+  // addFromCatalog 把推荐项**预填**进「添加 MCP」弹窗：仍然由人确认后保存，
+  // 不会自动创建任何东西（"由我决定是否默认安装"）。
+  function addFromCatalog(item: (typeof MCP_CATALOG)[number]) {
+    setEditing(null);
+    setForm({
+      name: item.name,
+      transport: item.transport,
+      command: item.command ?? "",
+      args: item.args ?? "",
+      url: item.url ?? "",
+      env: item.env ?? "",
+      insecure: false,
+    });
+    setTools([]);
+    setCatalogOpen(false);
+    setOpen(true);
   }
 
   function openAdd() {
@@ -736,6 +757,9 @@ export default function MCPPage() {
           <Button size="sm" variant="outline" onClick={load}>
             <RefreshCwIcon className="size-3.5" /> 刷新
           </Button>
+          <Button size="sm" variant="outline" onClick={() => setCatalogOpen(true)}>
+            <SparklesIcon className="size-3.5" /> 推荐
+          </Button>
           <Button size="sm" onClick={openAdd}>
             <PlusIcon className="size-3.5" /> 添加 MCP
           </Button>
@@ -834,6 +858,49 @@ export default function MCPPage() {
           )}
         </div>
       </div>
+
+      {/* 推荐目录：只预填、不安装。收录标准见 lib/mcp-catalog.ts 顶部注释 */}
+      <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="border-b px-6 py-4">
+            <DialogTitle>推荐 MCP</DialogTitle>
+            <DialogDescription className="text-xs">
+              点「预填」只会把命令、参数与环境变量填进添加弹窗，**仍需你确认保存**；不会自动安装任何东西。
+              收录标准：与平台既有能力互补（不重复文件/知识/搜索类）。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            <div className="flex flex-col divide-y">
+              {MCP_CATALOG.map((item) => (
+                <div key={item.name} className="flex items-start gap-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{item.title}</span>
+                      <Badge variant="outline" className="px-1.5 py-0 text-[10px] uppercase">
+                        {item.transport}
+                      </Badge>
+                      <code className="text-muted-foreground font-mono text-[11px]">{item.name}</code>
+                    </div>
+                    <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{item.desc}</p>
+                    {(item.needs || item.note) && (
+                      <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
+                        {item.needs && <>需要：{item.needs}　</>}
+                        {item.note}
+                      </p>
+                    )}
+                    <p className="text-muted-foreground mt-1 font-mono text-[11px]">
+                      {item.transport === "stdio" ? `${item.command} ${item.args ?? ""}` : (item.url ?? "")}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => addFromCatalog(item)}>
+                    预填
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 添加 / 编辑：居中弹窗（7 个字段；工具列表已在右栏，弹窗只管配置） */}
       <Dialog open={open} onOpenChange={setOpen}>
