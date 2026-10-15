@@ -1272,6 +1272,9 @@ export interface Settings {
   storage_retention_drafts_days?: number;
   storage_retention_transcripts_days?: number;
   storage_retention_binary_days?: number;
+  // 自更新用的 GitHub token（私有发布源）：只回布尔"是否已配"，值不回显。
+  update_token_set?: boolean;
+  update_github_token?: string;
   exec_memory_mb?: number;
   exec_max_procs?: number;
   exec_max_active?: number;

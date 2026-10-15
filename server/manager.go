@@ -316,6 +316,8 @@ const (
 	settingStorageRetentionTranscript = "storage_retention_transcripts_days"
 	settingStorageRetentionBinary     = "storage_retention_binary_days"
 	settingStorageLastClean           = "storage_last_clean"
+	// 自更新的 GitHub token（私有发布源需要）。只存不回显：设置页只给 update_token_set 布尔。
+	settingUpdateToken = "update_github_token"
 	// P24 默认值：CPU 30 分钟上限；内存/进程数不限（0）。
 	defaultExecCPUSeconds = 1800
 	defaultExecMemoryMB   = 0

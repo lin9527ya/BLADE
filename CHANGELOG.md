@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 自更新
+
+#### 修复
+
+- **自更新补上 GitHub token 支持（发布源是私有仓库时必需）**：`selfupdate` 的发布源此前写死
+  `Autumn-27/artex`——那个仓库**已不存在**（GraphQL 查不到），而本仓 `lin9527ya/artex` 是私有仓库、
+  updater 又不带凭据，所以更新链路必然 404。现在：发布源常量改为本仓（**仍是编译期常量、运行时不可配**
+  ——"更新源可配 = RCE 通道"这条前提没动），凭据走新设置 `update_github_token`（只存不回显，
+  设置页「更新」卡里有输入框，留空即不改，**现读现用、换令牌立即生效**）。
+  · **令牌只在 GitHub 自己的主机上发送**（`api.github.com` / `github.com` / `raw.githubusercontent.com`）：
+    下载会 302 到对象存储（`objects.githubusercontent.com` 等），把令牌转发过去等于交给第三方——
+    这条边界由 `authTransport` 的主机白名单保证，并有单测钉住（含"未配 token 时一个头都不加"）。
+  · 未配令牌时行为与从前一致（公开源照样能用）。
+
 ### 依赖与命名空间
 
 #### 变更
