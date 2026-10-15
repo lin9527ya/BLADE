@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lin9527ya/artex/db"
 )
@@ -50,6 +51,18 @@ type Input struct {
 	// 属于报告该讲清楚的事）。
 	Footholds   []*db.Node
 	Credentials []*db.Node
+	// LootUsedBy 记录每条战果被哪些意图动用过（战果节点 id → 用它的意图）。
+	//
+	// 这是交付物里最接近「攻击链」的东西：只写「拿到了这个据点」是资产清单，写清「拿它走到了
+	// 哪一步」才是作业叙述。空 = 到手但还没被真正用过（见 agent 侧的 lootConsumingState：
+	// 中途 blocked/exhausted 收场的意图不算动用，否则到手的能力会在报告里假装已被处理）。
+	LootUsedBy map[int64][]LootUse
+}
+
+// LootUse 是一条战果被哪条意图动用过。
+type LootUse struct {
+	IntentID int64
+	Summary  string
 }
 
 // CandidateNote is one closed candidate (ruled_out / open_proof_gap) with its
@@ -200,6 +213,30 @@ func lootStateLabel(s string) string {
 	return s
 }
 
+// clipRunes 按 rune 截断（不切出半个汉字），用于把意图摘要压进一行。
+func clipRunes(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
+}
+
+// writeLootUses 渲染「这条战果被用在了哪一步」——交付物里的作业叙述靠它串起来。
+// 已失效又没用过的什么都不写：它已经不是一个机会了，占一行只是噪声。
+func writeLootUses(b *strings.Builder, uses []LootUse, active bool) {
+	switch {
+	case len(uses) > 0:
+		parts := make([]string, 0, len(uses))
+		for _, u := range uses {
+			parts = append(parts, fmt.Sprintf("intent-%d「%s」", u.IntentID, clipRunes(u.Summary, 60)))
+		}
+		fmt.Fprintf(b, "- 动用于：%s\n", strings.Join(parts, "；"))
+	case active:
+		b.WriteString("- 尚未动用\n")
+	}
+}
+
 // writeLootMeta 渲染战果的「一行元信息」（类型/通路/权限/状态），空项自动略去。
 func writeLootMeta(b *strings.Builder, parts []string) {
 	kept := parts[:0]
@@ -256,6 +293,7 @@ func Markdown(in Input) string {
 					prefixIf("权限", v.Privilege),
 					lootStateLabel(n.State),
 				})
+				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 				if v.Detail != "" {
 					fmt.Fprintf(&b, "- 细节：%s\n", v.Detail)
 				}
@@ -277,6 +315,7 @@ func Markdown(in Input) string {
 					prefixIf("本体", credentialBodyNote(v.Secret)),
 					lootStateLabel(n.State),
 				})
+				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 				if v.Evidence != "" {
 					fmt.Fprintf(&b, "- 证据：`%s`\n", v.Evidence)
 				}

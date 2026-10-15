@@ -483,7 +483,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	parentsOf := map[int64][]int64{}
 	yieldsOf := map[int64][]int64{}
 	factFrom := map[int64]int64{}
-	usedLoot := map[int64]bool{} // 被某条意图以 uses 指向过的战果
+	lootUsers := map[int64][]int64{} // 战果 → 用过它的意图（算不算「真动用」还取决于那些意图的收场状态，见 lootConsumingState）
 	for _, e := range edges {
 		switch e.Rel {
 		case db.RelDerivedFrom, db.RelSpawns: // upstream: derived_from (fact/finding/intent→intent) or spawns (origin fact→goal, legacy begin→intent)
@@ -491,8 +491,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		case db.RelYields: // intent --yields--> fact/finding
 			yieldsOf[e.From] = append(yieldsOf[e.From], e.To)
 			factFrom[e.To] = e.From
-		case db.RelUses: // intent --uses--> 战果：这条已得的访问已经被某条方向接手了
-			usedLoot[e.To] = true
+		case db.RelUses: // intent --uses--> 战果
+			lootUsers[e.To] = append(lootUsers[e.To], e.From)
 		}
 	}
 	// cold-digest §6: members folded into an active digest are shown via cold_digests
@@ -612,6 +612,21 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		recentDone = recentDone[:recentDoneCap]
 	}
 	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf)
+	// 战果是否算「已被动用」，取决于用过它的那些意图是怎么收场的——只在 edges 里看到一条
+	// uses 是不够的（见 lootConsumingState）。intentState 复用上面已加载的 all。
+	intentState := make(map[int64]string, len(all))
+	for _, n := range all {
+		intentState[n.ID] = n.State
+	}
+	usedLoot := map[int64]bool{}
+	for lootID, users := range lootUsers {
+		for _, uid := range users {
+			if db.LootConsumingIntentState(intentState[uid]) {
+				usedLoot[lootID] = true
+				break
+			}
+		}
+	}
 	// 战果（据点 / 凭据）：利用成功之后的产物。计数走 COUNT，理由同 findings_total——列表有
 	// 行数上限，len() 报的是窗口大小而不是总数，而「手上有几个据点」正是 planner 判断能不能
 	// 继续往深打的依据，一个被封顶的数字会静默低估战果。
@@ -1045,7 +1060,8 @@ func compactNode(n *db.Node) map[string]any {
 	return m
 }
 
-// lootOutstanding 报告一条战果是不是「在手、但还没有任何意图动用过」。
+// lootOutstanding 报告一条战果是不是「在手、但还没有被真正动用过」。
+// 「算不算真动用」的判定在 db.LootConsumingIntentState（agent 与 server 共用一份口径）。
 // 已失效(state != active)的不算：不能用就不是机会。
 func lootOutstanding(n *db.Node, used map[int64]bool) bool {
 	return n.State == db.StateLootActive && !used[n.ID]
