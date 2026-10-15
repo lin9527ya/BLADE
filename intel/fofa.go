@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -57,16 +59,173 @@ func (f *fofa) base() string {
 	return fofaDefaultBaseURL
 }
 
-// fofaResp 是 /api/v1/search/all 的应答。
-type fofaResp struct {
-	Error    bool       `json:"error"`
-	ErrMsg   string     `json:"errmsg"`
-	Size     int        `json:"size"`
-	Page     int        `json:"page"`
-	Results  [][]string `json:"results"`
-	Mode     string     `json:"mode"`
-	Query    string     `json:"query"`
-	Required int        `json:"required_fpoints"`
+// fofaNorm 是归一化后的应答：官方与常见中转站/自建（字段名与嵌套层不同）都收敛到这一份。
+type fofaNorm struct {
+	ErrMsg string
+	Size   int      // 服务端报告的命中总数（不是本次返回条数）
+	Fields []string // 列名，顺序即行内单元格顺序
+	Rows   [][]string
+}
+
+// normalizeFofaResp 容忍三种常见结构差异，**明确列出支持什么**而不是"尽力猜"：
+//  1. 结果容器位置：顶层 results ／ data.results ／ result.results；
+//  2. 行的形状：数组（按 fields 对齐，官方形态）／对象（键序即列序，部分中转站）；
+//  3. 计数键名：size ／ total（部分中转站只给 total）；
+//  4. 错误表示：error=true ／ success=false ／ code != 0，错误文案取 errmsg/message/msg。
+//
+// 解析不出来就返回错误并附应答片段——**不返回"空结果"**：把结构不认识当成"没查到"
+// 会让人以为目标不存在，而真相是这次解析失败。
+func normalizeFofaResp(body []byte) (*fofaNorm, error) {
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, fmt.Errorf("FOFA 应答不是合法 JSON（%v）：%s", err, clipBody(body))
+	}
+	if msg := fofaErrorOf(root); msg != "" {
+		return nil, fofaError(msg)
+	}
+	container := root
+	for _, key := range []string{"data", "result"} {
+		if m, ok := root[key].(map[string]any); ok {
+			if _, has := m["results"]; has {
+				container = m
+				break
+			}
+		}
+	}
+	// 区分两种"没行"：**键在但为 null** = 权威的"零命中"（合法应答，返回空结果）；
+	// **键不在** = 结构不认识（报错）。把后者当空结果会让人以为目标不存在。
+	rawAny, has := container["results"]
+	if !has {
+		return nil, fmt.Errorf("FOFA 应答里找不到 results 数组（支持顶层 / data / result 三种位置）：%s", clipBody(body))
+	}
+	rawRows, _ := rawAny.([]any)
+	if rawAny != nil && rawRows == nil {
+		return nil, fmt.Errorf("FOFA 应答的 results 不是数组（实际是 %T）：%s", rawAny, clipBody(body))
+	}
+	fields := stringList(container["fields"])
+	if len(fields) == 0 {
+		fields = stringList(root["fields"])
+	}
+	out := &fofaNorm{Fields: fields}
+	for _, rr := range rawRows {
+		switch row := rr.(type) {
+		case []any:
+			cells := make([]string, 0, len(row))
+			for _, c := range row {
+				cells = append(cells, cellString(c))
+			}
+			out.Rows = append(out.Rows, cells)
+		case map[string]any:
+			if len(out.Fields) == 0 {
+				out.Fields = keyOrder(row)
+			}
+			cells := make([]string, 0, len(out.Fields))
+			for _, f := range out.Fields {
+				cells = append(cells, cellString(row[f]))
+			}
+			out.Rows = append(out.Rows, cells)
+		default:
+			out.Rows = append(out.Rows, []string{cellString(rr)})
+		}
+	}
+	out.Size = intOf(container["size"], intOf(container["total"], intOf(root["size"], intOf(root["total"], len(out.Rows)))))
+	return out, nil
+}
+
+// fofaErrorOf 识别三种错误表示，返回面向用户的文案（空串 = 不是错误）。
+func fofaErrorOf(m map[string]any) string {
+	if b, ok := m["error"].(bool); ok && b {
+		return firstString(m, "errmsg", "message", "msg")
+	}
+	if b, ok := m["success"].(bool); ok && !b {
+		return firstString(m, "errmsg", "message", "msg")
+	}
+	if code, ok := m["code"]; ok {
+		if n, ok := numOf(code); ok && n != 0 {
+			return firstString(m, "errmsg", "message", "msg")
+		}
+	}
+	return ""
+}
+
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return "FOFA 返回了错误（未给出 errmsg）"
+}
+
+func stringList(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, x := range arr {
+		if s, ok := x.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// keyOrder 按固定顺序列出对象键：encoding/json 解成 map 后已丢原始顺序，这里按字典序
+// 给出**稳定**的列序（测试与前端都依赖稳定），并在文档里写明这一点。
+func keyOrder(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cellString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case float64:
+		if x == math.Trunc(x) {
+			return strconv.FormatInt(int64(x), 10)
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(x)
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return fmt.Sprintf("%v", x)
+		}
+		return string(b)
+	}
+}
+
+func numOf(v any) (int, bool) {
+	switch x := v.(type) {
+	case float64: // JSON 解出来的数字
+		return int(x), true
+	case int: // 内部嵌套调用传回来的原生 int（漏了它会让「内层算出的值」被当成解析不了）
+		return x, true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// intOf 返回第一个能解析成整数的候选值。
+func intOf(vs ...any) int {
+	for _, v := range vs {
+		if n, ok := numOf(v); ok {
+			return n
+		}
+	}
+	return 0
 }
 
 func (f *fofa) Search(ctx context.Context, q Query) (Result, error) {
@@ -103,17 +262,19 @@ func (f *fofa) Search(ctx context.Context, q Query) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	var resp fofaResp
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return Result{}, fmt.Errorf("FOFA 应答不是合法 JSON（%v）：%s", err, clipBody(body))
+	norm, err := normalizeFofaResp(body)
+	if err != nil {
+		return Result{}, err
 	}
-	if resp.Error {
-		return Result{}, fofaError(resp.ErrMsg)
+	// 列名以**应答给的为准**（拿 fields 回来对账）：中转站可能少给或多给列，
+	// 用我们请求的顺序硬套会把值错位到别的列上。
+	cols := fields
+	if len(norm.Fields) > 0 {
+		cols = norm.Fields
 	}
-
-	res := Result{Provider: "fofa", Expr: expr, Fields: fields, Total: resp.Size, QueriedAt: time.Now()}
-	for _, row := range resp.Results {
-		res.Assets = append(res.Assets, assetFromRow(fields, row))
+	res := Result{Provider: "fofa", Expr: expr, Fields: cols, Total: norm.Size, QueriedAt: time.Now()}
+	for _, row := range norm.Rows {
+		res.Assets = append(res.Assets, assetFromRow(cols, row))
 	}
 	return res, nil
 }

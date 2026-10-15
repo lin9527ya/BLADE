@@ -108,55 +108,83 @@ func (s *Server) toolIntelSearch() actool.CoreTool {
 				Fields   []string `json:"fields"`
 			}
 			_ = json.Unmarshal(in, &a)
-			if strings.TrimSpace(a.Expr) == "" {
-				return actool.Errorf("expr 不能为空（FOFA 语法，如 domain=\"example.com\"）"), nil
-			}
-			name := strings.TrimSpace(a.Provider)
-			if name == "" {
-				name = intel.Names()[0]
-			}
-			cfg := s.intelConfig()
-			prov, err := intel.New(name, cfg)
-			if err != nil {
-				return actool.Errorf(err.Error()), nil
-			}
-			// 未配置 key 是"本地就没法发"的情况：给可读指引，不占配额、不落台账。
-			if cfg.Key == "" {
-				return actool.Errorf(fmt.Sprintf("情报源 %s 还没配 API Key：请在 系统设置 → 情报源 里填入（平台不代你申请 key）", name)), nil
-			}
-			used, quota := s.intelUsageToday(ctx)
-			if quota > 0 && used >= quota {
-				return actool.Errorf(fmt.Sprintf("情报查询已达平台侧每日上限（今日 %d/%d 次）：请明天再查，或在 系统设置 → 情报源 调整上限；"+
-					"也可以用已有资产继续推进，不必依赖新查询", used, quota)), nil
-			}
-
 			ri := agent.RunInfoFrom(ctx)
 			start := time.Now()
-			res, err := prov.Search(ctx, intel.Query{Expr: a.Expr, Limit: a.Limit, Fields: a.Fields})
-			taskID := ""
-			if ri.TaskID > 0 {
-				taskID = strconv.FormatInt(ri.TaskID, 10)
-			}
-			// 台账：成功与真实外呼失败都记（失败的调用也算用掉一次尝试）。
-			row := db.IntelQuery{Provider: name, Expr: a.Expr, TaskID: taskID, IntentID: ri.IntentID}
+			res, spoolPath, used, quota, note, err := s.intelSearch(ctx, ri, intelSearchRequest{
+				Provider: a.Provider, Expr: a.Expr, Limit: a.Limit, Fields: a.Fields,
+			})
 			if err != nil {
-				row.Error = err.Error()
-				note := ""
-				if lerr := s.m.pg.RecordIntelQuery(ctx, row); lerr != nil {
-					note = ledgerWriteWarn(lerr)
-				}
-				return actool.Errorf("查询失败：" + err.Error() + note), nil
+				return actool.Errorf(err.Error() + note), nil
 			}
-			row.TotalHits, row.Returned = res.Total, len(res.Assets)
-			note := ""
-			if lerr := s.m.pg.RecordIntelQuery(ctx, row); lerr != nil {
-				note = ledgerWriteWarn(lerr)
-			}
-
-			spoolPath := s.spoolIntelResult(taskID, name, res)
-			s.auditIntelQuery(ri, name, a.Expr, res, spoolPath, time.Since(start))
+			s.auditIntelQuery(ri, res.Provider, res.Expr, res, spoolPath, time.Since(start))
 			return actool.Text(renderIntelResult(res, spoolPath, used+1, quota) + note), nil
 		})
+}
+
+// intelSearchRequest 是一次情报查询的入参（agent 工具与资产页的 FOFA 检索共用）。
+type intelSearchRequest struct {
+	Provider string
+	Expr     string
+	Limit    int
+	Fields   []string
+}
+
+// intelUserError 标记"改配置就能解决"的失败（没配 key、配额用尽、表达式为空、未知源）。
+// HTTP 端点据此回 400（用户可修），其余（上游失败/解析失败）回 502（可重试）。
+type intelUserError struct{ msg string }
+
+func (e intelUserError) Error() string { return e.msg }
+
+// intelSearch 是情报查询的**唯一执行路径**：未配 key、配额耗尽、外呼失败、台账写失败的
+// 分支与话术只有这一份——agent 工具与 HTTP 端点若各写一遍，迟早一处改了一处没改
+// （配额是闸，闸的判定只能有一处）。
+// 返回值：结果、落盘路径、今日已用、每日上限、台账告警附言、（面向用户的）错误。
+func (s *Server) intelSearch(ctx context.Context, ri agent.RunInfo, req intelSearchRequest) (intel.Result, string, int, int, string, error) {
+	if strings.TrimSpace(req.Expr) == "" {
+		return intel.Result{}, "", 0, 0, "", intelUserError{"expr 不能为空（FOFA 语法，如 domain=\"example.com\"）"}
+	}
+	name := strings.TrimSpace(req.Provider)
+	if name == "" {
+		name = intel.Names()[0]
+	}
+	cfg := s.intelConfig()
+	prov, err := intel.New(name, cfg)
+	if err != nil {
+		return intel.Result{}, "", 0, 0, "", intelUserError{err.Error()}
+	}
+	// 未配置 key 是"本地就没法发"的情况：给可读指引，不占配额、不落台账。
+	if cfg.Key == "" {
+		return intel.Result{}, "", 0, 0, "", intelUserError{fmt.Sprintf(
+			"情报源 %s 还没配 API Key：请在 系统设置 → 情报源 里填入（平台不代你申请 key）", name)}
+	}
+	used, quota := s.intelUsageToday(ctx)
+	if quota > 0 && used >= quota {
+		return intel.Result{}, "", used, quota, "", intelUserError{fmt.Sprintf(
+			"情报查询已达平台侧每日上限（今日 %d/%d 次）：请明天再查，或在 系统设置 → 情报源 调整上限；"+
+				"也可以用已有资产继续推进，不必依赖新查询", used, quota)}
+	}
+
+	res, serr := prov.Search(ctx, intel.Query{Expr: req.Expr, Limit: req.Limit, Fields: req.Fields})
+	taskID := ""
+	if ri.TaskID > 0 {
+		taskID = strconv.FormatInt(ri.TaskID, 10)
+	}
+	// 台账：成功与真实外呼失败都记（失败的调用也算用掉一次尝试）。
+	row := db.IntelQuery{Provider: name, Expr: req.Expr, TaskID: taskID, IntentID: ri.IntentID}
+	if serr != nil {
+		row.Error = serr.Error()
+		note := ""
+		if lerr := s.m.pg.RecordIntelQuery(ctx, row); lerr != nil {
+			note = ledgerWriteWarn(lerr)
+		}
+		return intel.Result{}, "", used, quota, note, fmt.Errorf("查询失败：%w", serr)
+	}
+	row.TotalHits, row.Returned = res.Total, len(res.Assets)
+	note := ""
+	if lerr := s.m.pg.RecordIntelQuery(ctx, row); lerr != nil {
+		note = ledgerWriteWarn(lerr)
+	}
+	return res, s.spoolIntelResult(taskID, name, res), used, quota, note, nil
 }
 
 // ledgerWriteWarn 处置「配额台账写失败」：一条日志 + 一段附在回执里的话。

@@ -13,6 +13,7 @@ import {
   Network,
   Plug,
   Radio,
+  HardDrive,
   ScrollText,
   Settings2,
   ShieldAlert,
@@ -118,6 +119,8 @@ export const sidebarItems: NavGroup[] = [
       },
       { id: "notify", title: "通知推送", url: "/system/notify", icon: BellRing },
       { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
+      // P28：存储体检与清理（试算 → 执行，默认保留天数全 0 = 什么都不删）。
+      { id: "storage", title: "存储", url: "/system/storage", icon: HardDrive },
       { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2 },
     ],
   },

@@ -89,6 +89,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P25 MCP 工具级开关（关掉即不注入/刷新不翻回/口径自洽/未知名字 404）", func(t *testing.T) { accP25(t, env.forTest(t)) })
 	t.Run("P26 CSV 资产导入（预览只读/预览与落库口径一致/重复只合并不新增/来源如实）", func(t *testing.T) { accP26(t, env.forTest(t)) })
 	t.Run("P27 战果层（据点/凭据入概览与报告，凭据本体不外流）", func(t *testing.T) { accP27(t, env.forTest(t)) })
+	t.Run("P28 资产 FOFA 检索导入与存储清理（同配额台账/二次导入只合并/试算不动盘）", func(t *testing.T) { accP28(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3307,5 +3308,253 @@ func accP27(t *testing.T, e *accEnv) {
 	e.mustContain(md, "当前可用", "战果状态")
 	if strings.Contains(md, secret) {
 		t.Fatalf("凭据本体进了报告——报告会随交付物外流：\n%s", md)
+	}
+}
+
+// accP28 走完 P28 的两条链：资产页的 FOFA 检索导入，与存储清理。
+//
+//	① 检索：假 FOFA（官方结构）→ POST /api/intel/search 出结果 → 进查询台账 → 配额耗尽时被拒；
+//	② 导入：结果折成 CSV 走 **P26 同一套** preview/apply → 新增；**再导一次不新增**（只合并）；
+//	③ 清理：试算**不动盘** → 执行只删过期项、在跑任务的产物毫发无伤 → traffic 只统计不清理。
+func accP28(t *testing.T, e *accEnv) {
+	// ── 假 FOFA：官方结构（results 数组 + size） ──────────────────────────────
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.URL.Path != "/api/v1/search/all" {
+			w.WriteHeader(404)
+			return
+		}
+		_, _ = w.Write([]byte(`{"error":false,"size":3,"page":1,"fields":["host","ip","port","protocol","domain","title","server"],"results":[
+			["https://acc28-a.example.com:8443","10.28.0.1","8443","https","example.com","后台登录","nginx"],
+			["http://acc28-b.example.com","10.28.0.2","80","http","example.com","",""],
+			["http://acc28-c.example.com","10.28.0.3","8080","http","example.com","Jenkins","Jetty"]
+		]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	// 设置是全局的：改前记下、跑完恢复（与 accP21 同一纪律）。
+	restore := map[string]struct {
+		v  string
+		ok bool
+	}{}
+	for _, k := range []string{settingIntelKey, settingIntelBaseURL, settingIntelDailyQuota,
+		settingStorageRetentionTasks, settingStorageRetentionSessions} {
+		v, ok, _ := e.m.pg.GetSetting(k)
+		restore[k] = struct {
+			v  string
+			ok bool
+		}{v, ok}
+	}
+	t.Cleanup(func() {
+		for k, r := range restore {
+			if r.ok {
+				_ = e.m.pg.SetSetting(k, r.v)
+			} else {
+				_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, k)
+			}
+		}
+	})
+	if rec := e.request(http.MethodPut, "/api/settings",
+		fmt.Sprintf(`{"fofa_key":"acc-p28-key","fofa_base_url":%q,"intel_daily_quota":0}`, srv.URL)); rec.Code != 200 {
+		t.Fatalf("设置情报源 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// ① 检索：结果 + 台账。
+	rec := e.request(http.MethodPost, "/api/intel/search", `{"expr":"domain=\"example.com\"","limit":10}`)
+	if rec.Code != 200 {
+		t.Fatalf("FOFA 检索 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var search struct {
+		Total    int `json:"total"`
+		Returned int `json:"returned"`
+		Fields   []string
+		Assets   []struct {
+			Host string `json:"host"`
+			IP   string `json:"ip"`
+			Port int    `json:"port"`
+		} `json:"assets"`
+		UsedToday int    `json:"used_today"`
+		Spool     string `json:"spool"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &search); err != nil {
+		t.Fatalf("检索应答不是合法 JSON: %v", err)
+	}
+	if search.Total != 3 || search.Returned != 3 || len(search.Assets) != 3 {
+		t.Fatalf("应命中 3 条（size=3）：total=%d returned=%d len=%d", search.Total, search.Returned, len(search.Assets))
+	}
+	// 验收库是共享的（accP21 也查过 FOFA），不能断言"正好 1"——断言"这次确实被计入了"。
+	if search.UsedToday < 1 {
+		t.Fatalf("本次查询应计入今日用量，实际 %d", search.UsedToday)
+	}
+	if search.Spool == "" {
+		t.Fatal("大结果应落盘并给出路径")
+	}
+	ledger, err := e.m.pg.ListIntelQueries(context.Background(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range ledger {
+		if row.Provider == "fofa" && strings.Contains(row.Expr, "example.com") && row.Returned == 3 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("查询应进台账：%+v", ledger)
+	}
+
+	// ② 导入：折成 CSV 走 P26 同一套；再导一次**不新增**。
+	// FOFA 的 host 字段常常就是**带协议的 URL**：导入器的列语义是死的（host 列只认 host、
+	// url 列只认 URL），所以按值的形状分列——URL 进 url 列，其余进 host 列，且只在无端口时补端口。
+	// 前端弹窗同一口径（同一个坑，测试先踩到）。
+	csvLines := []string{"host,url"}
+	for _, a := range search.Assets {
+		v := a.Host
+		if a.Port > 0 && !strings.Contains(v, ":") {
+			v = fmt.Sprintf("%s:%d", v, a.Port)
+		}
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			csvLines = append(csvLines, ","+v)
+		} else {
+			csvLines = append(csvLines, v+",")
+		}
+	}
+	csv := strings.Join(csvLines, "\n")
+	preview := e.request(http.MethodPost, "/api/assets/import/preview", fmt.Sprintf(`{"csv":%q}`, csv))
+	if preview.Code != 200 || !strings.Contains(preview.Body.String(), `"total":3`) {
+		t.Fatalf("导入预览应识别 3 行: status=%d body=%s", preview.Code, preview.Body.String())
+	}
+	type importResult struct {
+		Created int `json:"created"`
+		Merged  int `json:"merged"`
+	}
+	var first importResult
+	rec = e.request(http.MethodPost, "/api/assets/import", fmt.Sprintf(`{"csv":%q}`, csv))
+	if rec.Code != 200 {
+		t.Fatalf("导入 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Created == 0 {
+		t.Fatalf("首次导入应有新增：%+v", first)
+	}
+	var second importResult
+	rec = e.request(http.MethodPost, "/api/assets/import", fmt.Sprintf(`{"csv":%q}`, csv))
+	if rec.Code != 200 {
+		t.Fatalf("二次导入 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Created != 0 || second.Merged == 0 {
+		t.Fatalf("二次导入应只合并不新增：%+v", second)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM assets WHERE domain LIKE 'acc28-%'`) })
+
+	// ①b 配额闸门：把上限设成已用量，下一次查询必须被拒并说明原因。
+	if rec := e.request(http.MethodPut, "/api/settings", `{"intel_daily_quota":1}`); rec.Code != 200 {
+		t.Fatalf("设配额 status=%d", rec.Code)
+	}
+	rec = e.request(http.MethodPost, "/api/intel/search", `{"expr":"domain=\"example.com\""}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "每日上限") {
+		t.Fatalf("配额耗尽应 400 且说明：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// ── ③ 存储清理 ──────────────────────────────────────────────────────────
+	// 一个在跑的任务（受保护）+ 一个"过期"的假任务目录。
+	task, tid := e.newTask("acceptance-p28-storage", "存储清理")
+	_ = task
+	liveDir := filepath.Join(e.m.dir, "tasks", strconv.FormatInt(tid, 10))
+	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(liveDir, "keep.txt"), []byte("live"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := filepath.Join(e.m.dir, "tasks", "28-000-old")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldFile := filepath.Join(oldDir, "old.log")
+	if err := os.WriteFile(oldFile, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longAgo := time.Now().Add(-90 * 24 * time.Hour)
+	if err := os.Chtimes(oldFile, longAgo, longAgo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(oldDir) })
+
+	if rec := e.request(http.MethodPut, "/api/settings", `{"storage_retention_tasks_days":30}`); rec.Code != 200 {
+		t.Fatalf("设保留天数 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, "/api/storage/report", "")
+	if rec.Code != 200 {
+		t.Fatalf("试算 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var inspect struct {
+		Report struct {
+			Categories []struct {
+				Key           string `json:"key"`
+				StatsOnly     string `json:"stats_only"`
+				RetentionDays int    `json:"retention_days"`
+				ExpiredUnits  int    `json:"expired_units"`
+				Protected     int    `json:"protected_units"`
+			} `json:"categories"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &inspect); err != nil {
+		t.Fatal(err)
+	}
+	var tasksCat, trafficCat *struct {
+		Key           string `json:"key"`
+		StatsOnly     string `json:"stats_only"`
+		RetentionDays int    `json:"retention_days"`
+		ExpiredUnits  int    `json:"expired_units"`
+		Protected     int    `json:"protected_units"`
+	}
+	for i := range inspect.Report.Categories {
+		switch inspect.Report.Categories[i].Key {
+		case "tasks":
+			tasksCat = &inspect.Report.Categories[i]
+		case "traffic":
+			trafficCat = &inspect.Report.Categories[i]
+		}
+	}
+	if tasksCat == nil || tasksCat.RetentionDays != 30 || tasksCat.ExpiredUnits < 1 || tasksCat.Protected < 1 {
+		t.Fatalf("试算应显示 30 天保留、至少 1 项过期、至少 1 项受保护：%+v", tasksCat)
+	}
+	if trafficCat == nil || trafficCat.StatsOnly == "" {
+		t.Fatalf("流量分类必须如实标成只统计不清理：%+v", trafficCat)
+	}
+	// 试算不动盘。
+	if _, err := os.Stat(oldDir); err != nil {
+		t.Fatalf("试算不该删任何东西：%v", err)
+	}
+
+	rec = e.request(http.MethodPost, "/api/storage/clean", `{"categories":["tasks"]}`)
+	if rec.Code != 200 {
+		t.Fatalf("清理 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var cleanRes struct {
+		Deleted []struct {
+			Category string `json:"category"`
+			Name     string `json:"name"`
+		} `json:"deleted"`
+		Failures []string `json:"failures"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &cleanRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleanRes.Deleted) < 1 {
+		t.Fatalf("应至少删掉那一个过期目录：%+v（失败 %v）", cleanRes.Deleted, cleanRes.Failures)
+	}
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Fatalf("过期目录应已删除：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(liveDir, "keep.txt")); err != nil {
+		t.Fatalf("在跑任务的产物必须毫发无伤：%v", err)
 	}
 }

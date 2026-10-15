@@ -7,8 +7,11 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   GlobeIcon,
+  DownloadIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
+  LayersIcon,
+  RadarIcon,
   LinkIcon,
   type LucideIcon,
   NetworkIcon,
@@ -21,6 +24,7 @@ import { toast } from "sonner";
 import { AssetDslSearch } from "@/components/asset-dsl-search";
 import { CompanyKnowledgeDialog } from "@/components/company-knowledge-dialog";
 import { AssetImportDialog } from "@/components/asset-import-dialog";
+import { FofaSearchDialog } from "@/components/fofa-search-dialog";
 import { ScopeTextEditor } from "@/components/scope-text-editor";
 import {
   AlertDialog,
@@ -91,6 +95,8 @@ function statusTone(code: number) {
 const PAGE_SIZES = [25, 50, 100, 200];
 
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
+  // P28：「全部」是默认档——6 类资产同在一张表里，类型降级为列 + 筛选，不再一类一个标签。
+  { key: "all", label: "全部", icon: LayersIcon },
   { key: "company", label: "企业", icon: BuildingIcon },
   { key: "root_domain", label: "根域名", icon: GlobeIcon },
   { key: "ip", label: "IP", icon: NetworkIcon },
@@ -102,6 +108,7 @@ const TABS: { key: string; label: string; icon: LucideIcon }[] = [
 
 export default function AssetsPage() {
   const [rows, setRows] = React.useState<Asset[]>([]);
+  const [exporting, setExporting] = React.useState(false);
   const [total, setTotal] = React.useState(0);
   const [companies, setCompanies] = React.useState<Company[]>([]);
   const [counts, setCounts] = React.useState<Record<string, number>>({});
@@ -247,7 +254,9 @@ export default function AssetsPage() {
     const offset = page * size;
     const run = async () => {
       try {
-        const r = dsl ? await api.searchAssets(dsl, tab, size, offset) : await api.assets(tab, size, offset);
+        // 「全部」把 type 传空：后端空类型 = 全类型（P28），DSL 也随之跨类型匹配。
+        const typ = tab === "all" ? "" : tab;
+        const r = dsl ? await api.searchAssets(dsl, typ, size, offset) : await api.assets(typ, size, offset);
         if (assetsRequestRef.current !== request) return;
         setRows(r.assets);
         setRowsTab(tab);
@@ -305,6 +314,62 @@ export default function AssetsPage() {
     />
   );
 
+  // exportCSV 导出**当前筛选条件**下的资产（不是当前页）：逐页拉取，封顶 5000 行并如实提示截断。
+  // 列名用导入侧认得的 host/ip/url（P26 的表头口径），因此导出的文件可以直接再导入。
+  async function exportCSV() {
+    const cap = 5000;
+    const pageSize = 500;
+    setExporting(true);
+    try {
+      const typ = tab === "all" ? "" : tab;
+      const dsl = query.trim();
+      const out: string[] = ["host,ip,url,type,title,company,last_seen"];
+      let offset = 0;
+      let total = 0;
+      for (;;) {
+        const r = dsl
+          ? await api.searchAssets(dsl, typ, pageSize, offset)
+          : await api.assets(typ, pageSize, offset);
+        total = r.total;
+        for (const a of r.assets) {
+          const host = a.domain || a.root_domain || "";
+          const url = a.url || "";
+          out.push(
+            [
+              host,
+              a.ip || a.c_segment || "",
+              url,
+              KIND_LABEL[a.type] ?? a.type,
+              a.page_title || a.app_name || a.service_name || "",
+              companyName(a.company_id),
+              a.last_seen || "",
+            ]
+              .map(csvCell)
+              .join(","),
+          );
+        }
+        offset += r.assets.length;
+        if (r.assets.length === 0 || offset >= r.total || out.length - 1 >= cap) break;
+      }
+      const truncated = total > out.length - 1;
+      const blob = new Blob(["\ufeff" + out.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `artex-assets-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast.success(
+        truncated
+          ? `已导出 ${out.length - 1} 行（命中 ${total} 条，封顶 ${cap} 行，其余请缩小筛选后再导）`
+          : `已导出 ${out.length - 1} 行`,
+      );
+    } catch (e) {
+      toast.error("导出失败：" + String((e as Error)?.message ?? e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="flex h-[calc(100vh-6rem)] min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
@@ -320,6 +385,11 @@ export default function AssetsPage() {
               <Trash2Icon className="size-3.5" /> 删除已选 ({selected.size})
             </Button>
           )}
+          <Button variant="outline" size="sm" onClick={() => void exportCSV()} disabled={exporting}>
+            <DownloadIcon className={cn("size-4", exporting && "animate-spin")} />
+            {exporting ? "导出中…" : "导出 CSV"}
+          </Button>
+          <FofaSearchDialog onImported={refresh} />
           <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
             <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
           </Button>
@@ -411,322 +481,65 @@ export default function AssetsPage() {
           </Card>
         </TabsContent>
 
-        {/* 根域名 */}
-        <TabsContent value="root_domain" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-          {searchBox}
-          <AssetCard
-            cols={["", "域名", "ICP 备案", "归属企业", ""]}
-            loaded={loaded}
-            total={total}
-            page={page}
-            size={size}
-            onSize={setSize}
-            onPage={setPage}
-            rows={currentRows}
-            selected={selected}
-            onToggleAll={(ids) => toggleSelectAll(ids)}
-          >
-            {slice(tabData("root_domain")).map((a) => (
-              <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                <TableCell className="w-8 pr-0">
-                  <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                </TableCell>
-                <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
-                <TableCell className="text-xs">{a.icp || "—"}</TableCell>
-                <TableCell className="text-xs">
-                  {companyName(a.company_id) || <span className="text-muted-foreground">未归属</span>}
-                </TableCell>
-                <TableCell className="w-8 pl-0">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => openDelete([a.id])}
-                    aria-label={`删除资产 ${a.domain || a.id}`}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </AssetCard>
-        </TabsContent>
-
-        {/* IP */}
-        <TabsContent value="ip" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-          {searchBox}
-          <AssetCard
-            cols={["", "IP", "C段", "绑定域名", "开放端口", ""]}
-            loaded={loaded}
-            total={total}
-            page={page}
-            size={size}
-            onSize={setSize}
-            onPage={setPage}
-            rows={currentRows}
-            selected={selected}
-            onToggleAll={(ids) => toggleSelectAll(ids)}
-          >
-            {slice(tabData("ip")).map((a) => (
-              <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                <TableCell className="w-8 pr-0">
-                  <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                </TableCell>
-                <TableCell className="font-mono text-xs font-medium">{a.ip}</TableCell>
-                <TableCell className="font-mono text-xs">{a.c_segment || "—"}</TableCell>
-                <TableCell>
-                  <Chips items={a.bound_domains ?? []} mono />
-                </TableCell>
-                <TableCell>
-                  <Chips
-                    items={(a.open_ports ?? []).map((p) => (p.service ? `${p.port}/${p.service}` : String(p.port)))}
-                    mono
-                  />
-                </TableCell>
-                <TableCell className="w-8 pl-0">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => openDelete([a.id])}
-                    aria-label={`删除资产 ${a.ip || a.id}`}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </AssetCard>
-        </TabsContent>
-
-        {/* 子域名 */}
-        <TabsContent value="subdomain" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-          {searchBox}
-          <AssetCard
-            cols={["", "域名", "根域名", "解析类型", "解析值", ""]}
-            loaded={loaded}
-            total={total}
-            page={page}
-            size={size}
-            onSize={setSize}
-            onPage={setPage}
-            rows={currentRows}
-            selected={selected}
-            onToggleAll={(ids) => toggleSelectAll(ids)}
-          >
-            {slice(tabData("subdomain")).map((a) => (
-              <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                <TableCell className="w-8 pr-0">
-                  <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                </TableCell>
-                <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
-                <TableCell className="font-mono text-xs">{a.root_domain || "—"}</TableCell>
-                <TableCell className="text-xs">{a.record_type || "—"}</TableCell>
-                <TableCell className="max-w-xs truncate font-mono text-xs">
-                  {(Array.isArray(a.record_value) ? a.record_value.join(", ") : a.record_value) || "—"}
-                </TableCell>
-                <TableCell className="w-8 pl-0">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => openDelete([a.id])}
-                    aria-label={`删除资产 ${a.domain || a.id}`}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </AssetCard>
-        </TabsContent>
-
-        {/* 应用 */}
-        <TabsContent value="app" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-          {searchBox}
-          <AssetCard
-            cols={["", "应用名", "Bundle ID", "分类", "ICP 备案", ""]}
-            loaded={loaded}
-            total={total}
-            page={page}
-            size={size}
-            onSize={setSize}
-            onPage={setPage}
-            rows={currentRows}
-            selected={selected}
-            onToggleAll={(ids) => toggleSelectAll(ids)}
-          >
-            {slice(tabData("app")).map((a) => (
-              <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                <TableCell className="w-8 pr-0">
-                  <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                </TableCell>
-                <TableCell className="text-xs font-medium">{a.app_name || "—"}</TableCell>
-                <TableCell className="font-mono text-xs">{a.bundle_id || "—"}</TableCell>
-                <TableCell className="text-xs">{a.category || "—"}</TableCell>
-                <TableCell className="text-xs">{a.app_icp || "—"}</TableCell>
-                <TableCell className="w-8 pl-0">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => openDelete([a.id])}
-                    aria-label={`删除资产 ${a.app_name || a.id}`}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </AssetCard>
-        </TabsContent>
-
-        {/* 服务 */}
-        <TabsContent value="service" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-          {searchBox}
-          <AssetCard
-            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", ""]}
-            loaded={loaded}
-            total={total}
-            page={page}
-            size={size}
-            onSize={setSize}
-            onPage={setPage}
-            rows={currentRows}
-            selected={selected}
-            onToggleAll={(ids) => toggleSelectAll(ids)}
-          >
-            {slice(tabData("service")).map((a) => {
-              const isHttp = a.service_type === "http";
-              const svc = a.service_name || (isHttp ? "http" : "") || a.service_type || "";
-              let domainCell: React.ReactNode = "—";
-              if (isHttp && a.url) {
-                domainCell = (
-                  <a
-                    href={a.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    {a.domain || a.url}
-                  </a>
-                );
-              } else if (a.domain) {
-                domainCell = a.domain;
+        {/* 资产表：全部类型与 6 类资产共用同一张表——「全部」下多一列类型，选中某一类时该列隐藏。
+            列按 kind 渲染目标与附加信息（assetTarget/assetPortStatus/assetExtras），
+            不再一类一张表：加一类资产不用再抄一份表格代码。 */}
+        {(["all", "root_domain", "ip", "subdomain", "app", "service", "endpoint"] as const).map((kind) => (
+          <TabsContent key={kind} value={kind} className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
+            {searchBox}
+            <AssetCard
+              cols={
+                kind === "all"
+                  ? ["", "类型", "目标", "端口 / 状态", "标题 / 技术", "归属企业", "最后发现", ""]
+                  : ["", "目标", "端口 / 状态", "标题 / 技术", "归属企业", "最后发现", ""]
               }
-              return (
+              loaded={loaded}
+              total={total}
+              page={page}
+              size={size}
+              onSize={setSize}
+              onPage={setPage}
+              rows={currentRows}
+              selected={selected}
+              onToggleAll={(ids) => toggleSelectAll(ids)}
+            >
+              {slice(tabData(kind)).map((a) => (
                 <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
                   <TableCell className="w-8 pr-0">
                     <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                   </TableCell>
+                  {kind === "all" && (
+                    <TableCell>
+                      <Badge variant="secondary" className="text-[11px]">
+                        {KIND_LABEL[a.type] ?? a.type}
+                      </Badge>
+                    </TableCell>
+                  )}
+                  <TableCell className="font-mono text-xs font-medium">{assetTarget(a)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{assetPortStatus(a)}</TableCell>
+                  <TableCell className="max-w-[22rem] truncate text-xs text-muted-foreground" title={assetExtras(a)}>
+                    {assetExtras(a)}
+                  </TableCell>
                   <TableCell className="text-xs">
-                    <Badge variant={isHttp ? "default" : "secondary"} className="font-mono text-[10px]">
-                      {svc || "—"}
-                    </Badge>
+                    {companyName(a.company_id) || <span className="text-muted-foreground">未归属</span>}
                   </TableCell>
-                  <TableCell className="max-w-[14rem] truncate font-mono text-xs" title={a.domain || a.url}>
-                    {domainCell}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{a.ip || "—"}</TableCell>
-                  <TableCell className="font-mono text-xs tabular-nums">{a.port || "—"}</TableCell>
-                  <TableCell>
-                    {a.status_code != null ? (
-                      <span className={cn("font-mono text-xs font-semibold tabular-nums", statusTone(a.status_code))}>
-                        {a.status_code}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell className="max-w-[12rem] truncate text-xs" title={a.page_title}>
-                    {a.page_title || "—"}
-                  </TableCell>
-                  <TableCell>
-                    <Chips items={a.technologies ?? []} />
-                  </TableCell>
-                  <TableCell>
-                    {(a.auth ?? []).length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      (a.auth ?? []).map((authItem, i) => {
-                        const item = authItem as Record<string, string>;
-                        const label = item.type || item.username || "认证";
-                        return (
-                          <span key={i} className="inline-flex items-center gap-1 text-[11px]">
-                            <KeyRoundIcon className="size-3 text-muted-foreground" />
-                            <span className="font-mono">{label}</span>
-                          </span>
-                        );
-                      })
-                    )}
-                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{fmtSeen(a.last_seen)}</TableCell>
                   <TableCell className="w-8 pl-0">
                     <Button
                       variant="ghost"
                       size="icon"
                       className="size-7 text-muted-foreground hover:text-destructive"
                       onClick={() => openDelete([a.id])}
-                      aria-label={`删除资产 ${a.url || a.id}`}
+                      aria-label={`删除资产 ${assetTarget(a)}`}
                     >
                       <Trash2Icon className="size-3.5" />
                     </Button>
                   </TableCell>
                 </TableRow>
-              );
-            })}
-          </AssetCard>
-        </TabsContent>
-
-        {/* 接口 */}
-        <TabsContent value="endpoint" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-          {searchBox}
-          <AssetCard
-            cols={["", "方法", "完整地址", "参数", ""]}
-            loaded={loaded}
-            total={total}
-            page={page}
-            size={size}
-            onSize={setSize}
-            onPage={setPage}
-            rows={currentRows}
-            selected={selected}
-            onToggleAll={(ids) => toggleSelectAll(ids)}
-          >
-            {slice(tabData("endpoint")).map((a) => (
-              <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                <TableCell className="w-8 pr-0">
-                  <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                </TableCell>
-                <TableCell className="w-16">
-                  <MethodBadge method={a.method || ""} />
-                </TableCell>
-                <TableCell className="max-w-sm truncate font-mono text-xs" title={a.url}>
-                  {a.url || "—"}
-                </TableCell>
-                <TableCell>
-                  <Chips
-                    items={(a.params ?? []).map((p) => {
-                      const item = p as Record<string, string>;
-                      return item.name ? `${item.name}(${item.location || "?"})` : "?";
-                    })}
-                    mono
-                  />
-                </TableCell>
-                <TableCell className="w-8 pl-0">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => openDelete([a.id])}
-                    aria-label={`删除资产 ${a.url || a.id}`}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </AssetCard>
-        </TabsContent>
+              ))}
+            </AssetCard>
+          </TabsContent>
+        ))}
       </Tabs>
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -803,6 +616,72 @@ export default function AssetsPage() {
       </AlertDialog>
     </div>
   );
+}
+
+// csvCell：CSV 单元格转义（含逗号/引号/换行就加引号，引号翻倍）。
+function csvCell(v: string): string {
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+// KIND_LABEL：类型列的中文名（与 TABS 的标签同一套词）。
+const KIND_LABEL: Record<string, string> = {
+  company: "企业",
+  root_domain: "根域名",
+  ip: "IP",
+  subdomain: "子域名",
+  app: "应用",
+  service: "服务",
+  endpoint: "接口",
+};
+
+// assetTarget：一列容纳 6 类资产的「它是什么」——域名/IP/应用名/服务名/接口。
+function assetTarget(a: Asset): string {
+  switch (a.type) {
+    case "ip":
+      return a.ip || a.c_segment || "—";
+    case "root_domain":
+      return a.domain || "—";
+    case "subdomain":
+      return [a.domain || a.root_domain, a.record_type].filter(Boolean).join(" · ") || "—";
+    case "app":
+      return a.app_name || a.bundle_id || "—";
+    case "service":
+      return a.service_name || a.url || "—";
+    case "endpoint":
+      return (a.method ? a.method + " " : "") + (a.url || "—");
+    default:
+      return a.domain || a.ip || a.url || "—";
+  }
+}
+
+// assetPortStatus：端口 / HTTP 状态 / 开放端口数，有什么显示什么。
+function assetPortStatus(a: Asset): string {
+  const bits: string[] = [];
+  if (a.port) bits.push(`:${a.port}`);
+  if (typeof a.status_code === "number" && a.status_code > 0) bits.push(String(a.status_code));
+  if (a.open_ports?.length) bits.push(`${a.open_ports.length} 个开放端口`);
+  return bits.join(" · ") || "—";
+}
+
+// assetExtras：标题 / 技术栈 / 备案——一行里最能让"这条是什么"认出来的信息。
+function assetExtras(a: Asset): string {
+  const bits: string[] = [];
+  if (a.page_title) bits.push(a.page_title);
+  if (a.technologies?.length) bits.push(a.technologies.slice(0, 3).join(", "));
+  if (a.icp) bits.push(`ICP ${a.icp}`);
+  return bits.join(" · ") || "—";
+}
+
+// fmtSeen：last_seen 的紧凑显示（今天只给时分，其余给日期）。
+function fmtSeen(ts?: string): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
 function AssetCard({

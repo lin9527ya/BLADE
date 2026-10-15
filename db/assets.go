@@ -1064,6 +1064,8 @@ RETURNING id`,
 // =====================================================================
 
 // QueryByType returns assets rows of a given type, newest first.
+// QueryByType 按类型取资产；**typ == "" 表示全类型**（资产页「全部类型」那一档——
+// 图谱里 6 类资产同表，全类型就是不加条件，不该在前端拼 6 次查询）。
 func (s *AssetStore) QueryByType(typ string, limit, offset int) ([]*Asset, error) {
 	if limit <= 0 {
 		limit = 50
@@ -1071,6 +1073,11 @@ func (s *AssetStore) QueryByType(typ string, limit, offset int) ([]*Asset, error
 	if offset < 0 {
 		offset = 0
 	}
+	where, args := "", []any{}
+	if typ != "" {
+		where, args = "WHERE type = $1", []any{typ}
+	}
+	args = append(args, limit, offset)
 	rows, err := s.db.Query(`
 SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(domain,''), COALESCE(root_domain,''), COALESCE(ip,''),
@@ -1082,10 +1089,9 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
-FROM assets
-WHERE type = $1
+FROM assets `+where+`
 ORDER BY last_seen DESC, id DESC
-LIMIT $2 OFFSET $3`, typ, limit, offset)
+LIMIT $`+itoa(int64(len(args)-1))+` OFFSET $`+itoa(int64(len(args))), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1094,9 +1100,15 @@ LIMIT $2 OFFSET $3`, typ, limit, offset)
 }
 
 // CountByType returns the total number of assets of a type (for server-side pagination).
+// typ == "" counts every kind (same contract as QueryByType).
 func (s *AssetStore) CountByType(typ string) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT count(*) FROM assets WHERE type = $1`, typ).Scan(&n)
+	var err error
+	if typ == "" {
+		err = s.db.QueryRow(`SELECT count(*) FROM assets`).Scan(&n)
+		return n, err
+	}
+	err = s.db.QueryRow(`SELECT count(*) FROM assets WHERE type = $1`, typ).Scan(&n)
 	return n, err
 }
 
