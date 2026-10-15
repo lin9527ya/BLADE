@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 依赖与命名空间
+
+#### 变更
+
+- **模块路径全部改到自己名下，不再出现原作者命名空间**：`github.com/Autumn-27/artex` →
+  `github.com/lin9527ya/artex`（本仓 192 个文件的自引用 + README/相关文档），
+  norma SDK 的 fork 也把 module path 改成 `github.com/lin9527ya/Norma`（**v0.5.0**，
+  该仓 93 个文件的自引用一并改完并已打 tag），于是 ARTEX 侧**不再需要 `replace`**——
+  `require github.com/lin9527ya/Norma v0.5.0` 直接引。
+  · 动机：路径写着上游名字时，人和模型读 `go.mod` 都会得出"代码来自原作者"（实际从
+    2026-10-13 起就是个人维护线），这次事故就是这么被误读出来的。
+  · 该 fork 是**公开**仓库，换路径不影响 CI/本地拉取，也不需要新增任何凭据。
+  · `go.sum` 里的新条目由 `go mod tidy` 生成；旧路径的历史条目随 replace 一起消失。
+
 ### Agent 编辑器
 
 #### 修复

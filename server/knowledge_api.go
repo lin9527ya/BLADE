@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/lin9527ya/artex/db"
 )
 
 // P23 公司级知识的 HTTP 面：

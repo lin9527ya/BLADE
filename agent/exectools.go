@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/lin9527ya/Norma/tool"
 )
 
 // P13 长任务执行工具：与 Bash 的关键区别是**活过本次 agent run**——命令交给 host

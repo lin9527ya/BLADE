@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/artex/db"
 )
 
 // toolsQ 是 P20 意图额度的验收辅助：裸 ToolSet 没有"本轮已用几条"的上下文，

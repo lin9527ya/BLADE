@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/tool"
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/guard"
+	"github.com/lin9527ya/artex/intercept"
 )
 
 // Real PostgreSQL + SDK hooks: Worker reviews receive the current call only.

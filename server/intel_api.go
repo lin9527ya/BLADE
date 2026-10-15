@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/intel"
+	"github.com/lin9527ya/artex/agent"
+	"github.com/lin9527ya/artex/intel"
 )
 
 // P21 情报源的两个小接口：测试连接（设置页按钮）与台账（用量/排障）。

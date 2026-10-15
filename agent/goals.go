@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/llm"
-	acperm "github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/llm"
+	acperm "github.com/lin9527ya/Norma/permission"
+	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/Norma/transcript"
+	"github.com/lin9527ya/artex/db"
 )
 
 // goalsDefaultTmpl is the built-in EDITABLE body (段 [A]) of the goals-decomposer

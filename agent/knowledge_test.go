@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/lin9527ya/artex/db"
 )
 
 // 一行式渲染：类型标签、置信度、来源任务都要出现（后来人靠这三样判断可信度与出处）。

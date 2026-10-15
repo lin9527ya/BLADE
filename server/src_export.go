@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/evidence"
-	"github.com/Autumn-27/artex/report"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/evidence"
+	"github.com/lin9527ya/artex/report"
 )
 
 // 交付面（P11）：把一条发现导出成 src-dig 报告规范的可提交件。

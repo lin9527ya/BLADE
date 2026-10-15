@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/lin9527ya/artex/db"
 )
 
 // TestCloseCandidateValidation pins the three-state discipline at the tool

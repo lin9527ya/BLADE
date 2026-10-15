@@ -11,12 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lin9527ya/Norma/harness"
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/artex/agent"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/intercept"
 )
 
 // isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE

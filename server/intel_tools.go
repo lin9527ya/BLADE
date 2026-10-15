@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intel"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/artex/agent"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/intel"
 )
 
 // P21 情报/测绘工具面：让 agent 自己去外部测绘引擎（先接 FOFA）查目标面资产，

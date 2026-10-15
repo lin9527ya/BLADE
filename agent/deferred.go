@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/Autumn-27/norma/llm"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/lin9527ya/Norma/llm"
+	actool "github.com/lin9527ya/Norma/tool"
 )
 
 // deferredSystem builds an agent's system-prompt segments and cache boundary from

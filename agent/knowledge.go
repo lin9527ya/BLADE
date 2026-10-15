@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/artex/db"
 )
 
 // P23 公司级知识层（agent 侧）：把"这家公司已知什么"作为**只读背景知识**注入

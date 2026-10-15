@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/lin9527ya/Norma/tool"
 )
 
 // fakeExecService records what the tools asked for and replays canned snapshots.

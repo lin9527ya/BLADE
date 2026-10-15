@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/compaction"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/compaction"
+	"github.com/lin9527ya/Norma/harness"
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/artex/db"
 )
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }

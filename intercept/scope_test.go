@@ -3,7 +3,7 @@ package intercept
 import (
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/lin9527ya/artex/db"
 )
 
 func TestExtractTargets(t *testing.T) {
