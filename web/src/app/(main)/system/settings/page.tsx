@@ -635,19 +635,35 @@ export default function SystemSettingsPage() {
                       <SelectItem value="ddgs">DuckDuckGo（ddgs · 免费无 Key）</SelectItem>
                       <SelectItem value="brave-free">Brave（免费版 · 需 Key）</SelectItem>
                       <SelectItem value="tavily">Tavily（需 Key）</SelectItem>
-                      <SelectItem value="deepseek">DeepSeek（官方）</SelectItem>
+                      <SelectItem value="deepseek">DeepSeek（官方 · 复用激活配置）</SelectItem>
+                      <SelectItem value="opencode">opencode（借用同名 LLM 配置 · flash）</SelectItem>
+                      <SelectItem value="commandcode">commandcode（借用同名 LLM 配置 · flash）</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
               )}
 
-              {webSearch && backend === "deepseek" && (
+              {webSearch && (backend === "deepseek" || backend === "opencode" || backend === "commandcode") && (
                 <div className="border-border/60 bg-muted/30 flex flex-col gap-2 rounded-md border p-3">
-                  <p className="text-sm font-medium">DeepSeek 官方联网搜索</p>
+                  <p className="text-sm font-medium">
+                    {backend === "deepseek" ? "DeepSeek 官方联网搜索" : `${backend} 联网搜索`}
+                  </p>
                   <p className="text-muted-foreground text-xs leading-relaxed">
-                    该来源直接复用<b>当前激活的 LLM 配置</b>。因此它<b>仅支持 DeepSeek 官方模型</b>，且该配置
-                    <b>必须使用 anthropic 协议</b>
-                    ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。切换 LLM 配置后此来源可能失效。
+                    {backend === "deepseek" ? (
+                      <>
+                        该来源直接复用<b>当前激活的 LLM 配置</b>。因此它<b>仅支持 DeepSeek 官方模型</b>，且该配置
+                        <b>必须使用 anthropic 协议</b>
+                        ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。切换 LLM 配置后此来源可能失效。
+                      </>
+                    ) : (
+                      <>
+                        该来源借用<b>名为 {backend} 的 LLM 配置</b>的端点与 Key（搜索模型
+                        <b>固定 deepseek-v4.1-flash</b>，不跟随该配置里选的模型）；该配置
+                        <b>必须使用 anthropic 协议</b>——服务端搜索只在该协议下可用。配置不存在、或协议不对时
+                        <b>直接报错、不会回退到别的配置</b>（避免"我明明选了 {backend} 却打到别处"）。
+                        改该配置的端点/Key 后此来源<b>立即生效</b>。
+                      </>
+                    )}
                   </p>
                   <p className="text-muted-foreground text-xs leading-relaxed">
                     与其它来源不同，搜索由 <b>DeepSeek 服务端执行</b>：每次搜索会额外消耗一次模型调用（产生 Token

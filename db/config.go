@@ -149,6 +149,17 @@ func (d *DB) ActiveProfile() (*LLMProfile, error) {
 	return &p, err
 }
 
+// ProfileByName returns one profile (api key included) by its name, or nil if not found.
+// 用在"联网搜索借用某个具名配置"这类场景：按名字比按 id 稳（配置重建后 id 会变）。
+func (d *DB) ProfileByName(name string) (*LLMProfile, error) {
+	var p LLMProfile
+	err := scanProfile(d.QueryRow(`SELECT `+profileColsKey+` FROM llm_profiles WHERE name=$1 LIMIT 1`, name), &p.APIKey, &p)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &p, err
+}
+
 // ProfileByID returns one profile with its api key by id, or nil if not found.
 // Used to run a task on a specific (non-default) LLM profile.
 func (d *DB) ProfileByID(id int64) (*LLMProfile, error) {
