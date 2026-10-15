@@ -42,10 +42,25 @@ type Release struct {
 }
 
 // Asset 是 Release 上挂的一个文件。
+//
+// URL 是浏览器下载地址，APIURL 是 release JSON 的 `url` 字段（API 资产端点）。
+// **私有仓库必须走 APIURL**：实测 `browser_download_url` 即使带令牌也返回 404
+// （那条 URL 对私有仓库是按会话/重定向设计的），而 API 端点带
+// `Accept: application/octet-stream` 会 302 到签名地址、正常取到内容。
 type Asset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-	Size int64  `json:"size"`
+	Name   string `json:"name"`
+	URL    string `json:"browser_download_url"`
+	APIURL string `json:"url"`
+	Size   int64  `json:"size"`
+}
+
+// DownloadURL 挑实际用来下载的地址：有 API 端点就优先（公开仓库同样适用，
+// 行为一致；没有它再退回浏览器地址）。
+func (a Asset) DownloadURL() string {
+	if strings.TrimSpace(a.APIURL) != "" {
+		return a.APIURL
+	}
+	return a.URL
 }
 
 // authTransport 只在 GitHub 自己的主机上附 Authorization：私有仓库的 release 接口与
