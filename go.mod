@@ -1,13 +1,13 @@
-module github.com/Autumn-27/artex
+module github.com/lin9527ya/artex
 
 go 1.26.3
 
 require (
-	github.com/Autumn-27/norma v0.4.3 // 路径沿用上游；**实际代码** = 下方 replace 到 lin9527ya/Norma（个人维护线）
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/compress v1.18.6
+	github.com/lin9527ya/Norma v0.5.0
 	github.com/lqqyt2423/go-mitmproxy v1.9.2
 	github.com/miekg/dns v1.1.72
 	github.com/projectdiscovery/dnsx v1.2.3
@@ -62,6 +62,7 @@ require (
 )
 
 // norma = 个人维护线（2026-10-13 起）：上游不再发版，SDK 侧修复直接落在
-// github.com/lin9527ya/Norma 上并打 tag，本行是唯一消费入口。
+// github.com/lin9527ya/Norma 上并打 tag，上面那行 require 是唯一消费入口。
+// v0.5.0 起该仓库的 module path 已是自己的（此前沿用上游路径要靠 replace 指过来，
+// 那会让读 go.mod 的人/模型误以为代码来自原作者）。
 // v0.4.4 = 溢出指针绝对路径 / 截断对齐 UTF-8 / Cleanup 保留输出 / 非交互默认环境。
-replace github.com/Autumn-27/norma => github.com/lin9527ya/Norma v0.4.6

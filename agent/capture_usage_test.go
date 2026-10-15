@@ -6,9 +6,9 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/artex/db"
 )
 
 type captureUsageProvider struct {

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/traffic"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/traffic"
 )
 
 type Store struct {

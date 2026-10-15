@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Autumn-27/artex/policy"
+	"github.com/lin9527ya/artex/policy"
 )
 
 // 策略文档的读写往返（P20）：落库什么、读出来就是什么；清空 = 回到"无策略"。

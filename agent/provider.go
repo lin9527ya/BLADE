@@ -20,12 +20,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/compaction"
-	"github.com/Autumn-27/norma/llm"
-	acperm "github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/compaction"
+	"github.com/lin9527ya/Norma/llm"
+	acperm "github.com/lin9527ya/Norma/permission"
+	"github.com/lin9527ya/Norma/transcript"
+	"github.com/lin9527ya/artex/llmrec"
 )
 
 // Config describes the LLM backend resolved from the environment.

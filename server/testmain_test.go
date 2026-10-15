@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lin9527ya/artex/db"
 )
 
 // degrade 报告"库不可用"时的降级。测试仍然照跑（守住本地无库也能 `go test` 的能力），

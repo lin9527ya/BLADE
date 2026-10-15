@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/lin9527ya/artex/db"
 )
 
 // P24 资源限额：长任务执行（run_execution）此前只有硬超时，没有 CPU/内存/进程数上限——

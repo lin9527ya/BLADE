@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/lin9527ya/Norma/tool"
 )
 
 // TestIntelSearchReportsLedgerWriteFailure 钉住「配额台账写失败不能静默」。

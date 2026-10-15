@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/intercept"
 )
 
 // P18 约束可执行化（HTTP 面）：

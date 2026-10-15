@@ -22,15 +22,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intel"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/mcphttp"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/harness"
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/artex/agent"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/guard"
+	"github.com/lin9527ya/artex/intel"
+	"github.com/lin9527ya/artex/intercept"
+	"github.com/lin9527ya/artex/mcphttp"
 )
 
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩

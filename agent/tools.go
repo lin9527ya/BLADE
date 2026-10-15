@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/policy"
-	acperm "github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	acperm "github.com/lin9527ya/Norma/permission"
+	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/artex/policy"
 )
 
 // compactIntents distills intents to {id, summary, state, asset_ids, parents,
