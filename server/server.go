@@ -704,6 +704,13 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
+	// 战役：任务之上的一层（归属 + 聚合）。归属走声明式的 PUT —— 一次给出应当包含的全部任务。
+	mux.HandleFunc("GET /api/campaigns", s.listCampaigns)
+	mux.HandleFunc("POST /api/campaigns", s.createCampaign)
+	mux.HandleFunc("GET /api/campaigns/{id}", s.getCampaign)
+	mux.HandleFunc("PATCH /api/campaigns/{id}", s.patchCampaign)
+	mux.HandleFunc("DELETE /api/campaigns/{id}", s.deleteCampaign)
+	mux.HandleFunc("PUT /api/campaigns/{id}/tasks", s.putCampaignTasks)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)
