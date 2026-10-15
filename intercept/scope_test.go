@@ -1,7 +1,11 @@
 package intercept
 
 import (
+	"context"
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/lin9527ya/artex/db"
 )
@@ -224,18 +228,18 @@ func TestScopeModeDefaultsToAsk(t *testing.T) {
 	// 清掉环境覆盖：本用例测的是「setting 也没保存过」这条缺省路径。
 	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
 
-	old, had, err := d.GetSetting(settingScopeMode)
+	old, had, err := d.GetSetting(SettingScopeMode)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { // defer 晚于上面的 d.Close() 注册，因而先执行——池子还活着
 		if had {
-			_ = d.SetSetting(settingScopeMode, old)
+			_ = d.SetSetting(SettingScopeMode, old)
 			return
 		}
-		_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, settingScopeMode)
+		_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, SettingScopeMode)
 	}()
-	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, settingScopeMode); err != nil {
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, SettingScopeMode); err != nil {
 		t.Fatal(err)
 	}
 
@@ -244,7 +248,7 @@ func TestScopeModeDefaultsToAsk(t *testing.T) {
 		t.Fatalf("缺省 ScopeMode() = %q，want ask（off 会让越界调用静默放行）", got)
 	}
 
-	if err := d.SetSetting(settingScopeMode, "off"); err != nil {
+	if err := d.SetSetting(SettingScopeMode, "off"); err != nil {
 		t.Fatal(err)
 	}
 	if got := i.ScopeMode(); got != "off" {
@@ -286,5 +290,102 @@ func TestExtractTargetsDetailedDecodesObfuscation(t *testing.T) {
 	// 明文行为不回归
 	if got := ExtractTargets(`curl https://plain.example.com/x`); len(got) != 1 || got[0] != "plain.example.com" {
 		t.Fatalf("plain extraction regressed: %v", got)
+	}
+}
+
+// setSetting 把某个设置临时改成给定值，返回还原函数（原来是"没设过"就删掉）。
+func setSetting(t *testing.T, d *db.DB, key, val string) func() {
+	t.Helper()
+	old, had, err := d.GetSetting(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetSetting(key, val); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if had {
+			_ = d.SetSetting(key, old)
+			return
+		}
+		_, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, key)
+	}
+}
+
+// 作业时间窗要在判定路径上真的拦下来，而且**排在目标判定之前**——窗口外根本不该发起动作，
+// 与目标在不在范围内无关（本用例刻意不铺任何 task_scope 行，拦它只能是时间）。
+//
+// 时钟是注入的：窗口判定的全部正确性在于"某一时刻在不在区间内"，不注入就只能写靠真实时间
+// 碰运气的用例。
+func TestScopeGateBlocksOutsideWindow(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) — skipping", err)
+	}
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "") // 走 setting，不走 env 覆盖
+	defer setSetting(t, d, SettingScopeMode, "deny")()
+	defer setSetting(t, d, SettingScopeHours, "09:00-18:00")()
+	i := New(d)
+
+	cmd := json.RawMessage(`{"command":"nmap evil.example"}`)
+
+	oldNow := scopeNow
+	defer func() { scopeNow = oldNow }()
+
+	// 23:30 在窗口外 → 拦，理由点明是时间窗。
+	scopeNow = func() time.Time { return time.Date(2026, 10, 15, 23, 30, 0, 0, time.Local) }
+	dec, hit := i.CheckScope(context.Background(), 1, "Bash", cmd)
+	if !hit {
+		t.Fatal("窗口外本该被拦")
+	}
+	if dec.Action != "deny" {
+		t.Errorf("该按 scope 模式 deny 裁决，得到 %q", dec.Action)
+	}
+	if !strings.Contains(dec.RuleName, "时间窗") {
+		t.Errorf("裁决理由该点明时间窗，得到 %q", dec.RuleName)
+	}
+
+	// 10:00 在窗口内 → 不因时间被拦（本用例没有范围行，走到目标判定后自然放行）。
+	scopeNow = func() time.Time { return time.Date(2026, 10, 15, 10, 0, 0, 0, time.Local) }
+	if _, hit := i.CheckScope(context.Background(), 1, "Bash", cmd); hit {
+		t.Fatal("窗口内不该因时间被拦")
+	}
+}
+
+// 窗口设置写错时**如实拒绝并说清怎么改**，不静默当成"不限时"——一条写错的窗口若静默失效，
+// 恰恰是客户验收时要核对的那一项无声消失（同 P12「范围读不出来时不放行」）。
+func TestScopeGateFailsLoudOnBadWindow(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) — skipping", err)
+	}
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	defer setSetting(t, d, SettingScopeMode, "deny")()
+	defer setSetting(t, d, SettingScopeHours, "9 点到 6 点")() // 写给人看的话，不是格式
+	i := New(d)
+
+	dec, hit := i.CheckScope(context.Background(), 1, "Bash", json.RawMessage(`{"command":"nmap evil.example"}`))
+	if !hit {
+		t.Fatal("窗口格式错时该如实拦下，而不是当成不限时放行")
+	}
+	if dec.Action != "ask" {
+		t.Errorf("格式错属于「无从判定」，该 ask 交给人，得到 %q", dec.Action)
+	}
+	for _, want := range []string{"时间窗", "09:00-18:00"} { // 要说清是哪个设置、以及正确写法长什么样
+		if !strings.Contains(dec.Message, want) {
+			t.Errorf("消息该点明 %q：%s", want, dec.Message)
+		}
 	}
 }

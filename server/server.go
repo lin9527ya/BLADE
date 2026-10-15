@@ -3426,6 +3426,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.settingsPayload())
 }
 
+// scopeHoursSetting 读原始作业时间窗设置串（空 = 不限时）。原样回显用户写的那串，不做归一化
+// ——页面要显示的就是他填的东西，改了才改得回去。
+func scopeHoursSetting(pg *db.DB) string {
+	v, _, _ := pg.GetSetting(intercept.SettingScopeHours)
+	return strings.TrimSpace(v)
+}
+
 func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
@@ -3465,6 +3472,12 @@ func (s *Server) settingsPayload() map[string]any {
 		// 实验功能:noa 模型驱动上下文压缩(默认关)。开启后平台接入的四类 agent 由 noa
 		// 接管上下文压缩,取代内置 compaction;每 run 读一次,对之后启动的 run 生效。
 		"noa_compaction": s.m.NoaCompactionEnabled(),
+		// 授权范围（RoE）：空间门模式 + 作业时间窗（空 = 不限时）。
+		// 模式回的是**生效值**（env 覆盖优先于 setting），并单独给一个 env 标志——页面据此提示
+		// 「环境变量把它压住了」，否则用户改了没反应会莫名其妙。
+		"intercept_scope_mode":     s.m.interceptor.ScopeMode(),
+		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("ARTEX_SCOPE_ENFORCEMENT")) != "",
+		"intercept_scope_hours":    scopeHoursSetting(s.m.pg),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
@@ -3559,6 +3572,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 操作约束注入范围开关(默认都开);即时生效(planner/worker 每轮读),无需重建 agent。
 		ConstraintsInjectPlanner *bool `json:"constraints_inject_planner"`
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
+		// 授权范围（RoE）两个设置：空间门模式 + 作业时间窗。空串 hours = 不限时。
+		// 拦截层每调用现读，即时生效。
+		ScopeMode  *string `json:"intercept_scope_mode"`
+		ScopeHours *string `json:"intercept_scope_hours"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
 		NoaCompaction *bool `json:"noa_compaction"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
@@ -3591,6 +3608,33 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	// 授权范围（RoE）：空间门（目标在不在 task_scope 内，模式 off|ask|deny）与时间门
+	// （作业时间窗）。两个都由拦截层**每调用现读 setting**，所以改完即时生效，不需要重建 agent
+	// ——因此刻意不进下面的 changed 分支。
+	if req.ScopeMode != nil {
+		v := strings.TrimSpace(*req.ScopeMode)
+		if v != "off" && v != "ask" && v != "deny" {
+			writeErr(w, 400, "授权范围模式必须是 off / ask / deny")
+			return
+		}
+		if err := s.m.pg.SetSetting(intercept.SettingScopeMode, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.ScopeHours != nil {
+		// 落库前挡住格式错误：存进去一条解析不了的窗口，之后**每一次**工具调用都会落到人工确认上
+		// （CheckScope 对无法解析的窗口如实 ask），而用户多半要等任务跑不动了才发现。
+		v := strings.TrimSpace(*req.ScopeHours)
+		if err := intercept.ValidateScopeHours(v); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if err := s.m.pg.SetSetting(intercept.SettingScopeHours, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
