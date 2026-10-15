@@ -339,7 +339,11 @@ const (
 	// 模型**固定** searchBackendModel：这两个中转站上服务端 web_search 用 flash 档。
 	opencodeWebSearchBackend    = "opencode"
 	commandCodeWebSearchBackend = "commandcode"
-	searchBackendModel          = "deepseek-v4.1-flash"
+	// 实测（2026-10-15，对 opencode /zen/go/v1 + x-opencode-session）：
+	//   deepseek-v4-flash   → stop_reason=end_turn，返回 server_tool_use{name:"web_search"} ✓ 真搜
+	//   deepseek-v4.1-flash → 只有 thinking、一个工具调用都没有（该中转上不执行服务端工具）
+	// 所以固定用 v4-flash。要换模型先按上面那条实测复验，别只看模型名像不像。
+	searchBackendModel          = "deepseek-v4-flash"
 	// defaultWorkers is the concurrent work-agent count when the setting is unset.
 	defaultWorkers = 3
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
