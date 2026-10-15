@@ -650,7 +650,7 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 		// messages + web_search 工具），区别只在打到哪个端点、用谁的 key。
 		// 库里与 UI 仍保留各自的真名（设置页显示、审计都对得上）。
 		o.Backend = deepSeekWebSearchBackend
-		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.namedProfileSearchCreds(backend)
+		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = m.namedProfileSearchCreds(backend)
 	}
 	return o
 }
@@ -667,12 +667,18 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 // 用户在该配置里选的那个。
 // 配置不存在时返回空串：与 deepseek 那边同一处置——设置页会提示、搜索时报明确的错，
 // 而不是在这里偷偷回退到别的配置（那会让"我明明选了 opencode"变成打到别处）。
-func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model string) {
+func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model string, headers map[string]string) {
 	p, err := m.pg.ProfileByName(name)
 	if err != nil || p == nil {
-		return "", "", ""
+		return "", "", "", nil
 	}
-	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel
+	// 配置里点名了 session_header_key 的端点（如 opencode zen 的 x-opencode-session）
+	// 要求每个请求带路由头，缺了直接 400。值用**稳定**串（按配置名派生）：它只影响
+	// 路由/缓存亲和，不需要每次变化；稳定反而对端点的缓存更友好。
+	if k := strings.TrimSpace(p.SessionHeaderKey); k != "" {
+		headers = map[string]string{k: "artex-" + name}
+	}
+	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel, headers
 }
 
 func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string) {

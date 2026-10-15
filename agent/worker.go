@@ -50,6 +50,9 @@ type WebSearchOpts struct {
 	DeepSeekBaseURL string
 	DeepSeekAPIKey  string
 	DeepSeekModel   string
+	// Headers 是这次搜索要额外带的 HTTP 头（可空）：有些中转端点强制要求路由头
+	// （如 opencode zen 的 x-opencode-session），缺了直接 400。由宿主按配置决定。
+	Headers map[string]string
 }
 
 type Worker struct {
@@ -511,10 +514,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebSearchBackend:      w.webSearch.Backend,
 		BraveSearchAPIKey:     w.webSearch.BraveKey,
 		TavilySearchAPIKey:    w.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: w.webSearch.DeepSeekBaseURL,
-		DeepSeekSearchAPIKey:  w.webSearch.DeepSeekAPIKey,
-		DeepSeekSearchModel:   w.webSearch.DeepSeekModel,
-		WebSearchProxy:        w.webSearch.Proxy,
+		DeepSeekSearchBaseURL: w.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: w.webSearch.Headers,
+		DeepSeekSearchAPIKey: w.webSearch.DeepSeekAPIKey,
+		DeepSeekSearchModel:  w.webSearch.DeepSeekModel,
+		WebSearchProxy:       w.webSearch.Proxy,
 		// Bash 子命令的 HTTP 默认走记录代理 + 信任其 CA（工具无需 -x/-k）。
 		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
 		WorkingDir: runDir,
