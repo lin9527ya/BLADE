@@ -251,3 +251,48 @@ func TestMarkdownChainStepTechniques(t *testing.T) {
 		t.Errorf("跳上的技术标注没渲染出来：\n%s", md)
 	}
 }
+
+// detNode 造一个检测验证节点：kind='detection'，state 就是结果。
+func detNode(id int64, state, tech, summary string) *db.Node {
+	b, _ := json.Marshal(map[string]any{"summary": summary, "technique": tech, "evidence": "查了 sysmon"})
+	return &db.Node{ID: id, Kind: db.KindDetection, State: state, Payload: b}
+}
+
+// 检测验证段：三态**各自成词**，尤其「无法判定」不能并进「未检出」——那会把「我们没看到」
+// 说成「它没拦住」，给出一个比不给更危险的结论。末尾那条脚注就是这一节存在的理由。
+func TestMarkdownDetectionSection(t *testing.T) {
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Detections: []*db.Node{
+			detNode(1, db.StateDetectionTriggered, "T1059.001", "编码命令被 EDR 抓到"),
+			detNode(2, db.StateDetectionNotTriggered, "T1552.001", "读 /etc/shadow 无任何告警"),
+			detNode(3, db.StateDetectionUnknown, "T1021.004", "日志服务当晚挂了"),
+		},
+	})
+	for _, want := range []string{
+		"## 检测验证（这一手有没有被检出）",
+		"- T1059.001 —— 已检出：编码命令被 EDR 抓到",
+		"- T1552.001 —— 未检出：读 /etc/shadow 无任何告警",
+		"- T1021.004 —— 无法判定：日志服务当晚挂了",
+		"「无法判定」不等于「未被检出」",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("检测验证段缺少 %q\n---\n%s", want, md)
+		}
+	}
+	// 三态必须三个词各自出现，不能有任何一个被并进别的档。
+	for _, w := range []string{"已检出", "未检出", "无法判定"} {
+		if strings.Count(md, "—— "+w) != 1 {
+			t.Errorf("三态里的 %q 没有独立成条：\n%s", w, md)
+		}
+	}
+	// 段落顺序：技术覆盖 → 检测验证（同一份数据的另一面）。
+	if !(strings.Index(md, "## 技术覆盖") < strings.Index(md, "## 检测验证")) {
+		t.Errorf("检测验证该排在技术覆盖之后：\n%s", md)
+	}
+	// 没有记录时不出这一节。
+	empty := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0)})
+	if strings.Contains(empty, "检测验证") {
+		t.Errorf("没有检测记录时不该出现这一节：\n%s", empty)
+	}
+}

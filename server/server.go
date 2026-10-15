@@ -4190,6 +4190,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// intent/fact），所以不会被折叠吞掉，按 kind 直取即可。
 	footholds, _ := t.Store.ListByKind(db.KindFoothold, 1000)
 	credentials, _ := t.Store.ListByKind(db.KindCredential, 1000)
+	// 检测验证：同样按 kind 直取全量（也不进 digest）。
+	detections, _ := t.Store.ListByKind(db.KindDetection, 1000)
 
 	// 战果动用关系（intent --uses--> 战果）：交付物里最接近「攻击链」的东西——只写「拿到了
 	// 什么」是资产清单，写清「拿它走到了哪一步」才是作业叙述。
@@ -4232,7 +4234,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy, Chains: chains,
-		TechniqueTally: techniqueTally,
+		TechniqueTally: techniqueTally, Detections: detections,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

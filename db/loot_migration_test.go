@@ -21,15 +21,15 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 	}
 	defer d.Close()
 
-	// 先清掉可能残留的战果行（上一轮失败留下的）。不清的话，「降级回旧约束」这一步会以
+	// 先清掉可能残留的战果/检测行（上一轮失败留下的）。不清的话，「降级回旧约束」这一步会以
 	// check constraint is violated by some row 失败——那条信息离真正的原因很远，很容易
 	// 被误读成"迁移块没生效"。本用例要能重复跑，这一步是前提。
-	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2)`, KindFoothold, KindCredential); err != nil {
+	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2, $3)`, KindFoothold, KindCredential, KindDetection); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		if restored, err := Open(testDSN(t)); err == nil {
-			_, _ = restored.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2)`, KindFoothold, KindCredential)
+			_, _ = restored.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2, $3)`, KindFoothold, KindCredential, KindDetection)
 			restored.Close()
 		}
 	})
@@ -71,7 +71,7 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 WHERE conrelid='exploration_nodes'::regclass AND conname='ck_node_kind'`).Scan(&def); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(def, "foothold") || !strings.Contains(def, "credential") {
+	if !strings.Contains(def, "foothold") || !strings.Contains(def, "credential") || !strings.Contains(def, "detection") {
 		t.Fatalf("老库的 ck_node_kind 没被重建：%s", def)
 	}
 	var edgeDef string
@@ -94,6 +94,10 @@ WHERE conrelid='exploration_edges'::regclass AND conname='ck_edge_rel'`).Scan(&e
 	for _, c := range []struct{ kind, state string }{
 		{KindFoothold, StateLootActive},
 		{KindCredential, StateLootActive},
+		// 检测三态都插一遍：kind 重建了而 state 少了某一支的话，这里会被 ck_node_state 拦下。
+		{KindDetection, StateDetectionTriggered},
+		{KindDetection, StateDetectionNotTriggered},
+		{KindDetection, StateDetectionUnknown},
 	} {
 		id, err := ts.AddNode(c.kind, map[string]any{"summary": "x"}, 8, c.state, "work#1", nil)
 		if err != nil {

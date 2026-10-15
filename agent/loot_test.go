@@ -18,8 +18,9 @@ import (
 //   2. 编不出证据的战果会不会被拒收（战果会被当作既定事实拿去规划，编一条会让后续意图跑空）；
 //   3. 凭据本体有没有漏进概览（概览会被折进每一轮提示词、还可能进日志）。
 
-// newLootWorker 建一个带意图的任务，返回可调用工具的 ToolSet、任务内的探索存储、意图 id。
-func newLootWorker(t *testing.T) (*ToolSet, *db.ExplorationStore, int64) {
+// newToolWorker 建一个带意图的任务，返回可调用工具的 ToolSet、任务内的探索存储、意图 id。
+// （战果与检测验证的用例共用。）
+func newToolWorker(t *testing.T) (*ToolSet, *db.ExplorationStore, int64) {
 	t.Helper()
 	d := testDB(t)
 	t.Cleanup(func() { d.Close() })
@@ -38,8 +39,8 @@ func newLootWorker(t *testing.T) (*ToolSet, *db.ExplorationStore, int64) {
 	return tools, ts, intent
 }
 
-// callLoot 按名字取工具并调用，返回渲染文本。
-func callLoot(t *testing.T, tools []actool.CoreTool, name, input string) string {
+// callTool 按名字取工具并调用，返回渲染文本（战果与检测验证的用例共用）。
+func callTool(t *testing.T, tools []actool.CoreTool, name, input string) string {
 	t.Helper()
 	for _, tl := range tools {
 		if tl.Name() != name {
@@ -56,8 +57,8 @@ func callLoot(t *testing.T, tools []actool.CoreTool, name, input string) string 
 }
 
 func TestReportFootholdRecordsNodeAndLineage(t *testing.T) {
-	tools, ts, intent := newLootWorker(t)
-	out := callLoot(t, tools.WorkerTools(), "report_foothold",
+	tools, ts, intent := newToolWorker(t)
+	out := callTool(t, tools.WorkerTools(), "report_foothold",
 		`{"summary":"在 web01 上拿到 www-data 的反弹 shell","access":"反弹 shell","privilege":"user",`+
 			`"detail":"nc -lvnp 4444 接回 10.0.0.9:47112","evidence":"nc -lvnp 4444 → connect to 10.0.0.9:47112",`+
 			`"confidence":"high","intent_id":`+strconv.FormatInt(intent, 10)+`}`)
@@ -105,7 +106,7 @@ func TestReportFootholdRecordsNodeAndLineage(t *testing.T) {
 // 往下做什么」，一条编出来的 shell 会让后续所有意图跑空，而且看不出错在哪。被拒收的
 // 调用一个字节都不该写进图。
 func TestReportLootRejectsEvidenceFreeClaims(t *testing.T) {
-	tools, ts, intent := newLootWorker(t)
+	tools, ts, intent := newToolWorker(t)
 	id := strconv.FormatInt(intent, 10)
 	cases := []struct{ name, tool, in, want string }{
 		{"据点缺 evidence", "report_foothold", `{"summary":"拿到 shell","confidence":"high","intent_id":` + id + `}`, "evidence"},
@@ -116,7 +117,7 @@ func TestReportLootRejectsEvidenceFreeClaims(t *testing.T) {
 		{"凭据缺 confidence", "report_credential", `{"summary":"读到 root 口令","kind":"password","secret":"x","evidence":"cat /etc/shadow","intent_id":` + id + `}`, "confidence"},
 	}
 	for _, c := range cases {
-		out := callLoot(t, tools.WorkerTools(), c.tool, c.in)
+		out := callTool(t, tools.WorkerTools(), c.tool, c.in)
 		if strings.HasPrefix(out, "foothold recorded: ") || strings.HasPrefix(out, "credential recorded: ") {
 			t.Fatalf("%s：本该被拒，却记录成功：%s", c.name, out)
 		}
@@ -136,8 +137,8 @@ func TestReportLootRejectsEvidenceFreeClaims(t *testing.T) {
 }
 
 func TestReportCredentialRecords(t *testing.T) {
-	tools, ts, intent := newLootWorker(t)
-	out := callLoot(t, tools.WorkerTools(), "report_credential",
+	tools, ts, intent := newToolWorker(t)
+	out := callTool(t, tools.WorkerTools(), "report_credential",
 		`{"summary":"在 web01 的 wp-config.php 里读到数据库口令","kind":"password","username":"wp_user",`+
 			`"secret":"db-pass-123","detail":"./wp-config.php: define('DB_PASSWORD', ...)","evidence":"grep DB_PASSWORD wp-config.php",`+
 			`"confidence":"high","intent_id":`+strconv.FormatInt(intent, 10)+`}`)
@@ -163,9 +164,9 @@ func TestReportCredentialRecords(t *testing.T) {
 // 改成「拷一份 payload 再删 secret」，这里立刻红。同时钉住另一半：身份必须还在，
 // 否则概览不带 secret 就不是"安全"，而是"没用"。
 func TestGraphOverviewNeverLeaksCredentialSecret(t *testing.T) {
-	tools, _, intent := newLootWorker(t)
+	tools, _, intent := newToolWorker(t)
 	const secret = "Sup3rS3cret-db-passw0rd"
-	out := callLoot(t, tools.WorkerTools(), "report_credential",
+	out := callTool(t, tools.WorkerTools(), "report_credential",
 		`{"summary":"读到数据库口令","kind":"password","username":"wp_user","secret":"`+secret+`",`+
 			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+strconv.FormatInt(intent, 10)+`}`)
 	if !strings.HasPrefix(out, "credential recorded: ") {
@@ -187,7 +188,7 @@ func TestGraphOverviewNeverLeaksCredentialSecret(t *testing.T) {
 // 计数必须是真的 COUNT 而不是展示窗口的长度：窗口就是用来截断的，
 // 「手上有几个据点」是 planner 判断能不能继续往深的依据，被封顶的数字会静默低估战果。
 func TestGraphOverviewReportsTrueLootTotals(t *testing.T) {
-	tools, ts, _ := newLootWorker(t)
+	tools, ts, _ := newToolWorker(t)
 	const want = 12 // 超过 lootListCap(8)
 	for i := 0; i < want; i++ {
 		if _, err := ts.AddNode(db.KindCredential, map[string]any{
@@ -237,8 +238,8 @@ func TestLootToolsAreOnBothToolFaces(t *testing.T) {
 // 战果轴：意图声明「我在动用哪次已得的访问」→ 建 uses 边 → 概览里那条战果随即不再是
 // outstanding。这一条把 P27 那句「打穿之后要接着用」从散文变成了可核对的状态。
 func TestIntentUsesLootClearsOutstanding(t *testing.T) {
-	tools, ts, _ := newLootWorker(t)
-	footholdID := lootNodeID(t, callLoot(t, tools.WorkerTools(), "report_foothold",
+	tools, ts, _ := newToolWorker(t)
+	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
 		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
 
@@ -247,7 +248,7 @@ func TestIntentUsesLootClearsOutstanding(t *testing.T) {
 		t.Fatalf("刚记下的据点该是 outstanding：got=%d out=%v", got, out["outstanding_loot_total"])
 	}
 
-	intentOut := callLoot(t, tools.PlannerTools(), "add_intent",
+	intentOut := callTool(t, tools.PlannerTools(), "add_intent",
 		`{"summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
 	if !strings.HasPrefix(intentOut, "intent created: ") {
 		t.Fatalf("带 uses_loot_ids 的意图没建上：%s", intentOut)
@@ -286,12 +287,12 @@ func TestIntentUsesLootClearsOutstanding(t *testing.T) {
 // 向下做独占级联，而战果**不在受保护集里**（只有目标和 origin fact 在）。若 uses 当初
 // 选了 derived_from，删掉一条用过据点的意图就会把据点本身带走——那是证据级数据。
 func TestDeletingUsingIntentKeepsLoot(t *testing.T) {
-	tools, ts, _ := newLootWorker(t)
-	footholdID := lootNodeID(t, callLoot(t, tools.WorkerTools(), "report_foothold",
+	tools, ts, _ := newToolWorker(t)
+	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
 		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
 
-	intentOut := callLoot(t, tools.PlannerTools(), "add_intent",
+	intentOut := callTool(t, tools.PlannerTools(), "add_intent",
 		`{"summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
 	if !strings.HasPrefix(intentOut, "intent created: ") {
 		t.Fatalf("意图没建上：%s", intentOut)
@@ -318,9 +319,9 @@ func TestDeletingUsingIntentKeepsLoot(t *testing.T) {
 
 // uses_loot_ids 只接受本任务里仍在手的真实战果——填错要在建节点前被拒，且说清为什么。
 func TestIntentUsesLootValidation(t *testing.T) {
-	tools, ts, intent := newLootWorker(t)
-	// 一个非战果节点（就用 newLootWorker 建的那条意图）与一个已失效的战果。
-	live := lootNodeID(t, callLoot(t, tools.WorkerTools(), "report_foothold",
+	tools, ts, intent := newToolWorker(t)
+	// 一个非战果节点（就用 newToolWorker 建的那条意图）与一个已失效的战果。
+	live := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
 		`{"summary":"在手据点","access":"SSH","privilege":"user","evidence":"ssh 登录成功","confidence":"high"}`))
 	lost, err := ts.AddNode(db.KindFoothold, map[string]any{"summary": "掉了的据点"}, 8, db.StateLootLost, "work#1", nil)
 	if err != nil {
@@ -336,7 +337,7 @@ func TestIntentUsesLootValidation(t *testing.T) {
 		{"已失效的战果", strconv.FormatInt(lost, 10), "已失效"},
 	}
 	for _, c := range cases {
-		out := callLoot(t, tools.PlannerTools(), "add_intent",
+		out := callTool(t, tools.PlannerTools(), "add_intent",
 			`{"summary":"x","uses_loot_ids":[`+c.ids+`]}`)
 		if strings.HasPrefix(out, "intent created: ") {
 			t.Fatalf("%s：本该被拒，却建成了：%s", c.name, out)
@@ -347,7 +348,7 @@ func TestIntentUsesLootValidation(t *testing.T) {
 	}
 
 	// 在手的战果则放行（对照组，证明上面的拒绝不是因为参数本身没通）。
-	if out := callLoot(t, tools.PlannerTools(), "add_intent",
+	if out := callTool(t, tools.PlannerTools(), "add_intent",
 		`{"summary":"用它在手的据点","uses_loot_ids":[`+strconv.FormatInt(live, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("在手的战果该被接受：%s", out)
 	}
@@ -374,11 +375,11 @@ func lootNodeID(t *testing.T, out string) int64 {
 // 会在图里静默烂掉，planner 再也不会回头看它——而「静默失效」正是本仓一贯要防的东西。
 // 判据是 db.LootConsumingIntentState，与 server 渲染报告的「动用于」共用一份口径。
 func TestLootStaysOutstandingWhenUsingIntentDiedMidway(t *testing.T) {
-	tools, ts, _ := newLootWorker(t)
-	footholdID := lootNodeID(t, callLoot(t, tools.WorkerTools(), "report_foothold",
+	tools, ts, _ := newToolWorker(t)
+	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
 		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
-	intentID := lootNodeID(t, callLoot(t, tools.PlannerTools(), "add_intent",
+	intentID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
 		`{"summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`))
 
 	outstanding := func() int {
