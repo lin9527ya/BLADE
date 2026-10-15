@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lin9527ya/artex/db"
 )
@@ -115,5 +116,51 @@ func TestMarkdownLootSectionEmpty(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("空战果段缺少 %q\n---\n%s", want, md)
 		}
+	}
+}
+
+// 战果段要讲清「拿到的东西用在了哪一步」。
+//
+// 只列「拿到了这个据点/这条凭据」是资产清单；写清它被哪条意图动用，才是作业叙述——这是交付物
+// 里最接近「攻击链」的东西，也是 LootUsedBy 存在的理由。到手但没用过的要如实写「尚未动用」，
+// 否则读报告的人会以为它已被推进。
+func TestMarkdownLootUses(t *testing.T) {
+	used := lootNode(1, db.KindFoothold, db.StateLootActive, map[string]any{
+		"summary": "在 web01 上拿到 root 的反弹 shell", "access": "反弹 shell", "privilege": "root",
+	})
+	idle := lootNode(2, db.KindCredential, db.StateLootActive, map[string]any{
+		"summary": "在 web01 读到数据库口令", "kind": "password", "username": "wp_user",
+	})
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Footholds: []*db.Node{used}, Credentials: []*db.Node{idle},
+		LootUsedBy: map[int64][]LootUse{
+			1: {{IntentID: 12, Summary: "以 web01 为跳板看内网还有什么"}},
+		},
+	})
+	if !strings.Contains(md, "- 动用于：intent-12「以 web01 为跳板看内网还有什么」") {
+		t.Errorf("据点该带出「动用于哪条意图」：\n%s", md)
+	}
+	// 没被用过的凭据要如实说，不能默不作声。
+	if !strings.Contains(md, "- 尚未动用") {
+		t.Errorf("到手但没用过的凭据该写「尚未动用」：\n%s", md)
+	}
+	// 「已动用于 intent-12」与「尚未动用」不能同时出现在同一条上。
+	if n := strings.Count(md, "尚未动用"); n != 1 {
+		t.Errorf("「尚未动用」应只出现 1 次（只有那条凭据），实际 %d 次", n)
+	}
+
+	// 长摘要按 rune 截断，不切出半个汉字。
+	long := strings.Repeat("多步", 60)
+	md = Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Footholds:  []*db.Node{lootNode(3, db.KindFoothold, db.StateLootActive, map[string]any{"summary": "x"})},
+		LootUsedBy: map[int64][]LootUse{3: {{IntentID: 7, Summary: long}}},
+	})
+	if !strings.Contains(md, "…") {
+		t.Errorf("超长摘要该被截断：\n%s", md)
+	}
+	if !utf8.ValidString(md) {
+		t.Error("截断切出了非法 UTF-8（半个汉字）")
 	}
 }

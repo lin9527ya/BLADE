@@ -4191,11 +4191,39 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	footholds, _ := t.Store.ListByKind(db.KindFoothold, 1000)
 	credentials, _ := t.Store.ListByKind(db.KindCredential, 1000)
 
+	// 战果动用关系（intent --uses--> 战果）：交付物里最接近「攻击链」的东西——只写「拿到了
+	// 什么」是资产清单，写清「拿它走到了哪一步」才是作业叙述。
+	//
+	// 「算不算真动用」复用 db.LootConsumingIntentState，与 agent 侧算 outstanding 是**同一条
+	// 判定**：中途 blocked/exhausted 收场的意图不算动用，否则到手的能力会在报告里假装已被处理。
+	intentState := make(map[int64]string, len(intents))
+	intentSummary := make(map[int64]string, len(intents))
+	for _, n := range intents {
+		intentState[n.ID] = n.State
+		var p struct {
+			Summary string `json:"summary"`
+		}
+		_ = json.Unmarshal(n.Payload, &p)
+		intentSummary[n.ID] = p.Summary
+	}
+	lootUsedBy := map[int64][]report.LootUse{}
+	if edges, err := t.Store.Edges(5000); err == nil {
+		for _, e := range edges {
+			if e.Rel != db.RelUses || !db.LootConsumingIntentState(intentState[e.From]) {
+				continue
+			}
+			lootUsedBy[e.To] = append(lootUsedBy[e.To], report.LootUse{
+				IntentID: e.From,
+				Summary:  intentSummary[e.From],
+			})
+		}
+	}
+
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
-		Footholds: footholds, Credentials: credentials,
+		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

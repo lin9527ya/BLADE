@@ -46,6 +46,24 @@ const (
 	StateLootLost   = "lost"   // 掉了：据点断了、凭据失效（复测/复用失败后如实标记）
 )
 
+// LootConsumingIntentState 报告「以这个意图状态收场的意图，算不算真的动用了它声明的那条战果」。
+//
+// 中途没善终的（blocked 模型/网络失败、exhausted 预算耗尽被掐断、stopped 被打断）**不算**：
+// 它们没能把那次访问真的用出去。若就此把战果标成「已动用」，这条到手的能力会在图里静默烂掉
+// ——而「静默失效」正是本仓一贯要防的东西（同 P24 的「没限住就要如实说」）。用户主动删掉的
+// (deleted) 同样不算。其余状态都算已处理：open/running 在推进、done 跑完、negative 探针确实
+// 发出且被否定、out-of-scope 已判定不做（重派反而是错的）。
+//
+// 放在 db 而不是 agent：agent 用它算 outstanding、server 用它渲染报告的「动用于」一行——
+// 同一条判定分两处写，迟早会漂移成两套口径。
+func LootConsumingIntentState(state string) bool {
+	switch state {
+	case "blocked", "exhausted", "stopped", StateIntentDeleted:
+		return false
+	}
+	return true
+}
+
 // Digest node states (kind='digest'). A digest is 'active' while it renders in
 // graph_overview; major compaction retires a merged-away segment to 'superseded'
 // (its covers edges repointed to the new digest) — cold-digest-spec §5.1.

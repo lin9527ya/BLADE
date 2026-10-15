@@ -367,3 +367,42 @@ func lootNodeID(t *testing.T, out string) int64 {
 	}
 	return id
 }
+
+// 中途没善终的意图（blocked/exhausted/stopped）**不算**真的动用了战果。
+//
+// 这是这一层最容易出错的地方：若一条 blocked 的意图就把战果永久标成「已处理」，那条到手的能力
+// 会在图里静默烂掉，planner 再也不会回头看它——而「静默失效」正是本仓一贯要防的东西。
+// 判据是 db.LootConsumingIntentState，与 server 渲染报告的「动用于」共用一份口径。
+func TestLootStaysOutstandingWhenUsingIntentDiedMidway(t *testing.T) {
+	tools, ts, _ := newLootWorker(t)
+	footholdID := lootNodeID(t, callLoot(t, tools.WorkerTools(), "report_foothold",
+		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
+			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
+	intentID := lootNodeID(t, callLoot(t, tools.PlannerTools(), "add_intent",
+		`{"summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`))
+
+	outstanding := func() int {
+		t.Helper()
+		return tools.graphOverviewData()["outstanding_loot_total"].(int)
+	}
+	if got := outstanding(); got != 0 {
+		t.Fatalf("意图刚派出（open），据点该算已被接手：got=%d", got)
+	}
+
+	for _, dead := range []string{"blocked", "exhausted", "stopped"} {
+		if err := ts.SetIntentState(intentID, dead); err != nil {
+			t.Fatalf("置状态 %s: %v", dead, err)
+		}
+		if got := outstanding(); got != 1 {
+			t.Fatalf("意图以 %s 收场（没能把这次访问用出去），据点该重新算 outstanding：got=%d", dead, got)
+		}
+	}
+
+	// 真的跑完了才算用出去。
+	if err := ts.SetIntentState(intentID, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if got := outstanding(); got != 0 {
+		t.Fatalf("意图跑完(done)后据点不该还算 outstanding：got=%d", got)
+	}
+}

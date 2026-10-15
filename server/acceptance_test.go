@@ -3612,6 +3612,9 @@ func accP29(t *testing.T, e *accEnv) {
 	// ③ 归零
 	e.mustContain(overviewOut(), `"outstanding_loot_total":0`, "已被动用的据点不该还算 outstanding")
 
+	// ③b 报告里讲清「拿它走到了哪一步」。只列「拿到了什么」是资产清单，写清动用关系才是作业叙述。
+	e.mustContain(e.report(task), "动用于：intent-", "报告里的战果动用关系")
+
 	// ④ 新边经 HTTP 到达前端图的边表（前端按 rel 上色/标注，认不出的会退化成裸 rel 串）
 	rec := e.request(http.MethodGet, "/api/exploration/graph?task="+task.ID, "")
 	if rec.Code != http.StatusOK {
@@ -3627,4 +3630,6 @@ func accP29(t *testing.T, e *accEnv) {
 		t.Fatalf("删掉调用它的意图把据点一起带走了（战果是证据级数据，不能被级联）：%v err=%v", nodes, err)
 	}
 	e.mustContain(overviewOut(), `"outstanding_loot_total":1`, "用过它的意图没了，据点该重新算 outstanding")
+	// 报告也跟着回到「尚未动用」——两边口径必须一致，否则交付物会讲一个图里不成立的故事。
+	e.mustContain(e.report(task), "尚未动用", "取消后报告该说它尚未动用")
 }
