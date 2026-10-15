@@ -236,7 +236,7 @@ func TestLootToolsAreOnBothToolFaces(t *testing.T) {
 }
 
 // 战果轴：意图声明「我在动用哪次已得的访问」→ 建 uses 边 → 概览里那条战果随即不再是
-// outstanding。这一条把 P27 那句「打穿之后要接着用」从散文变成了可核对的状态。
+// outstanding。这一条把「哪些能力还没被接管」从散文变成了可核对的状态。
 func TestIntentUsesLootClearsOutstanding(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
