@@ -343,7 +343,7 @@ const (
 	//   deepseek-v4-flash   → stop_reason=end_turn，返回 server_tool_use{name:"web_search"} ✓ 真搜
 	//   deepseek-v4.1-flash → 只有 thinking、一个工具调用都没有（该中转上不执行服务端工具）
 	// 所以固定用 v4-flash。要换模型先按上面那条实测复验，别只看模型名像不像。
-	searchBackendModel          = "deepseek-v4-flash"
+	searchBackendModel = "deepseek-v4-flash"
 	// defaultWorkers is the concurrent work-agent count when the setting is unset.
 	defaultWorkers = 3
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
@@ -642,7 +642,9 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 		on = false
 	}
 	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
-	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = m.searchBackendForSDK(backend)
+	r := m.searchBackendForSDK(backend)
+	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = r.Backend, r.BaseURL, r.APIKey, r.Model, r.Headers
+	o.CommandCodeBaseURL, o.CommandCodeAPIKey = r.CCBaseURL, r.CCAPIKey
 	return o
 }
 
@@ -662,16 +664,38 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 // "这次搜索打到哪个端点、用哪个 key 与模型"）。SDK 的白名单只认
 // ddgs / brave-free / tavily / deepseek——它区分的是"哪套搜索机制"，不区分端点，
 // 所以 opencode / commandcode 面向 SDK **归一为 deepseek**；库里与 UI 保留真名。
-func (m *Manager) searchBackendForSDK(backend string) (string, string, string, string, map[string]string) {
+type searchBackendResolution struct {
+	Backend   string // 面向 SDK 的后端名
+	BaseURL   string // 服务端搜索端点（deepseek 机制用）
+	APIKey    string
+	Model     string
+	Headers   map[string]string
+	CCBaseURL string // commandcode 原生通道
+	CCAPIKey  string
+}
+
+func (m *Manager) searchBackendForSDK(backend string) searchBackendResolution {
 	switch backend {
 	case deepSeekWebSearchBackend:
 		base, key, model := m.deepSeekSearchCreds()
-		return deepSeekWebSearchBackend, base, key, model, nil
-	case opencodeWebSearchBackend, commandCodeWebSearchBackend:
+		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model}
+	case opencodeWebSearchBackend:
+		// opencode 与 deepseek 同机制（anthropic + web_search 工具），只是换端点/凭据 →
+		// 面向 SDK 归一为 deepseek（SDK 的白名单只区分"哪套机制"）。
 		base, key, model, headers := m.namedProfileSearchCreds(backend)
-		return deepSeekWebSearchBackend, base, key, model, headers
+		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model, Headers: headers}
+	case commandCodeWebSearchBackend:
+		// commandcode 走**它自己的原生搜索通道**（/alpha/web-search）：与模型无关、
+		// 与 LLM 配额解耦。它没有"消息 + 工具"这条路（/messages 只服务 Claude 系，
+		// deepseek 只在 /responses 上且拒收内置 web_search 工具），所以不归一。
+		p, err := m.pg.ProfileByName(backend)
+		if err != nil || p == nil {
+			return searchBackendResolution{Backend: commandCodeWebSearchBackend}
+		}
+		return searchBackendResolution{Backend: commandCodeWebSearchBackend,
+			CCBaseURL: strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), CCAPIKey: p.APIKey}
 	default:
-		return backend, "", "", "", nil
+		return searchBackendResolution{Backend: backend}
 	}
 }
 

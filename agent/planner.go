@@ -490,7 +490,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		WebSearchBackend:      p.webSearch.Backend,
 		BraveSearchAPIKey:     p.webSearch.BraveKey,
 		TavilySearchAPIKey:    p.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: p.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: p.webSearch.Headers,
+		DeepSeekSearchBaseURL: p.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: p.webSearch.Headers, CommandCodeSearchBaseURL: p.webSearch.CommandCodeBaseURL, CommandCodeSearchAPIKey: p.webSearch.CommandCodeAPIKey,
 		DeepSeekSearchAPIKey: p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:  p.webSearch.DeepSeekModel,
 		WebSearchProxy:       p.webSearch.Proxy,

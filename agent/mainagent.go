@@ -204,7 +204,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		WebSearchBackend:      m.webSearch.Backend,
 		BraveSearchAPIKey:     m.webSearch.BraveKey,
 		TavilySearchAPIKey:    m.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: m.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: m.webSearch.Headers,
+		DeepSeekSearchBaseURL: m.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: m.webSearch.Headers, CommandCodeSearchBaseURL: m.webSearch.CommandCodeBaseURL, CommandCodeSearchAPIKey: m.webSearch.CommandCodeAPIKey,
 		DeepSeekSearchAPIKey: m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:  m.webSearch.DeepSeekModel,
 		WebSearchProxy:       m.webSearch.Proxy,

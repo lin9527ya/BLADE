@@ -141,7 +141,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		WebSearchBackend:      ws.Backend,
 		BraveSearchAPIKey:     ws.BraveKey,
 		TavilySearchAPIKey:    ws.TavilyKey,
-		DeepSeekSearchBaseURL: ws.DeepSeekBaseURL, DeepSeekSearchHeaders: ws.Headers,
+		DeepSeekSearchBaseURL: ws.DeepSeekBaseURL, DeepSeekSearchHeaders: ws.Headers, CommandCodeSearchBaseURL: ws.CommandCodeBaseURL, CommandCodeSearchAPIKey: ws.CommandCodeAPIKey,
 		DeepSeekSearchAPIKey: ws.DeepSeekAPIKey,
 		DeepSeekSearchModel:  ws.DeepSeekModel,
 		WebSearchProxy:       ws.Proxy,
