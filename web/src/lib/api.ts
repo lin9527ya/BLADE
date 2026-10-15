@@ -15,6 +15,8 @@ import type {
   ArchiveBatchItem,
   Asset,
   AssetImportPreview,
+  Campaign,
+  CampaignSummary,
   AssetImportResult,
   AssetInterceptRule,
   AssetInterceptRuleInput,
@@ -697,6 +699,20 @@ export const api = {
   detachTaskAsset: (taskId: string, assetId: number) => del<{ detached: number }>(`/tasks/${taskId}/assets/${assetId}`),
   taskIntentAssets: (taskId: string) =>
     get<{ assets: IntentAsset[] }>(`/tasks/${taskId}/intent-assets`).then((r) => arr(r.assets)),
+
+  // ---- campaigns（战役：任务之上的一层；归属 + 聚合）----
+  campaigns: () => get<{ campaigns: Campaign[] }>("/campaigns").then((r) => r?.campaigns ?? []),
+  campaign: (id: number) => get<CampaignSummary>(`/campaigns/${id}`),
+  createCampaign: (name: string, note = "") => post<Campaign>("/campaigns", { name, note }),
+  updateCampaign: (id: number, body: { name?: string; note?: string; company_id?: number }) =>
+    patch<Campaign>(`/campaigns/${id}`, body),
+  deleteCampaign: (id: number) => del<{ deleted: boolean; tasks_unbound: number }>(`/campaigns/${id}`),
+  // 声明式：给出这次作业应当包含的全部任务，多退少补。
+  setCampaignTasks: (id: number, taskIds: number[]) =>
+    http<{ added: number[]; removed: number[] }>(`/campaigns/${id}/tasks`, {
+      method: "PUT",
+      body: JSON.stringify({ task_ids: taskIds }),
+    }),
 
   // ---- companies (企业 + 资产范围；归属唯一来源) ----
   companies: () => get<Company[]>("/companies").then(arr),

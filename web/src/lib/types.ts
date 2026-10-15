@@ -2086,3 +2086,33 @@ export interface InterceptExecution {
   items: Activity[];
 }
 
+// 战役：任务之上的一层（一个客户、若干目标、一份交付物）。
+export interface Campaign {
+  id: number;
+  name: string;
+  company_id?: number;
+  note: string;
+  created_at: string;
+  updated_at: string;
+  task_count?: number;
+}
+
+// 汇总里每个任务的一行。
+export interface CampaignTaskBrief {
+  id: number;
+  name: string;
+  status: string;
+  findings: number;
+  footholds: number;
+  credentials: number;
+  detections: number;
+}
+
+// GET /api/campaigns/{id}：归属 + 跨任务聚合。techniques / detection_results 无数据时缺省。
+export interface CampaignSummary {
+  campaign: Campaign;
+  tasks: CampaignTaskBrief[];
+  totals: { tasks: number; findings: number; footholds: number; credentials: number; detections: number };
+  techniques?: Record<string, number>;
+  detection_results?: Record<string, number>;
+}

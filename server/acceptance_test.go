@@ -38,7 +38,7 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
-// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置的端到端
+// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -96,6 +96,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P30 攻击路径（由 uses/yields 边重建，进报告）", func(t *testing.T) { accP30(t, env.forTest(t)) })
 	t.Run("P31 检测验证（三态分记，不进「检出率」；报告成段）", func(t *testing.T) { accP31(t, env.forTest(t)) })
 	t.Run("P32 授权范围设置（模式+时间窗经 API 存取，写错当场退回且不改动已存值）", func(t *testing.T) { accP32(t, env.forTest(t)) })
+	t.Run("P33 战役层（归属与聚合；删战役只解绑不删任务）", func(t *testing.T) { accP33(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3815,5 +3816,65 @@ func accP32(t *testing.T, e *accEnv) {
 	rec = e.request(http.MethodPut, "/api/settings", `{"intercept_scope_hours":""}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("清空窗口该被接受，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+}
+
+// accP33 战役层：任务之上的归属与聚合。
+//
+// 单个任务只管自己打穿了什么；一次作业要看的是"这轮总共拿到了什么"。这里钉住跨任务归属与
+// 数字，以及**删战役只解绑、不删任务**——任务是被归档与交付的单位，不该因为"把作业归错了组"消失。
+func accP33(t *testing.T, e *accEnv) {
+	_, tid1 := e.newTask("acceptance-p33-a", "战役里的第一个任务")
+	_, tid2 := e.newTask("acceptance-p33-b", "战役里的第二个任务")
+	sid := func(id int64) string { return strconv.FormatInt(id, 10) }
+
+	rec := e.request(http.MethodPost, "/api/campaigns", `{"name":"acc-p33 作业","note":"验收用"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("建战役 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var c struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil || c.ID == 0 {
+		t.Fatalf("建战役回执解析失败：%v %s", err, rec.Body.String())
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM campaigns WHERE id=$1`, c.ID) })
+
+	// ① 判重看归一化后的名字：多打空格、换大小写都算同一个作业。
+	rec = e.request(http.MethodPost, "/api/campaigns", `{"name":"  ACC-P33   作业 "}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("同名（归一化后）战役该被拒 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+
+	// ② 声明式归属：一次给出应包含的全部任务。
+	rec = e.request(http.MethodPut, "/api/campaigns/"+sid(c.ID)+"/tasks",
+		`{"task_ids":[`+sid(tid1)+`,`+sid(tid2)+`]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("归属 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, "/api/campaigns/"+sid(c.ID), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("汇总 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"tasks":2`, "汇总里的任务总数")
+
+	// ③ 多退少补：只留一个，另一个自动解绑。
+	rec = e.request(http.MethodPut, "/api/campaigns/"+sid(c.ID)+"/tasks", `{"task_ids":[`+sid(tid1)+`]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("重新归属 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// removed 在 PUT 的回执里（不是汇总里）。
+	e.mustContain(rec.Body.String(), `"removed":[`+sid(tid2)+`]`, "被解绑的那个任务")
+	rec = e.request(http.MethodGet, "/api/campaigns/"+sid(c.ID), "")
+	e.mustContain(rec.Body.String(), `"tasks":1`, "多退少补后只剩一个")
+
+	// ④ 删战役：只解绑，任务本身还在。
+	rec = e.request(http.MethodDelete, "/api/campaigns/"+sid(c.ID), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("删战役 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"tasks_unbound":1`, "解绑数")
+	if task, err := e.m.pg.GetTask(tid1); err != nil || task == nil {
+		t.Fatalf("删战役把任务一起删了（任务是被归档与交付的单位，不该消失）：%v err=%v", task, err)
 	}
 }

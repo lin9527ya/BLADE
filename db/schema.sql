@@ -569,6 +569,26 @@ DROP TRIGGER IF EXISTS trg_task_categories_upd ON task_categories;
 CREATE TRIGGER trg_task_categories_upd BEFORE UPDATE ON task_categories
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 战役：任务之上的一层。真实红队作业的单位不是「一个任务」，而是「一次作业」——
+-- 一个客户、若干目标、一份交付物。此前代码里 engagement 就是 task 的同义词
+-- （见 server/manager.go 的注释），跨目标作业只能靠人自己记住哪几个任务是一起的。
+--
+-- 刻意保持很薄：这里只做**归属与聚合**，不做编排（依赖、顺序、调度仍在任务层）。
+-- 一个任务至多属于一个战役（0/1，可为空），因为「同一个任务算不算两次作业的一部分」
+-- 是个没有答案的问题，允许 N:N 只会让人纠结。
+CREATE TABLE IF NOT EXISTS campaigns (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    company_id BIGINT REFERENCES companies(id) ON DELETE SET NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS trg_campaigns_upd ON campaigns;
+CREATE TRIGGER trg_campaigns_upd BEFORE UPDATE ON campaigns
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 CREATE TABLE IF NOT EXISTS tasks (
     id             BIGSERIAL PRIMARY KEY,
     name           TEXT NOT NULL DEFAULT '',
@@ -602,6 +622,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
+-- 任务所属战役（0/1，可为空）。删战役只解绑任务、不删任务——任务是被归档与交付的单位，
+-- 不该因为"把作业归错了组"而消失。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS campaign_id BIGINT REFERENCES campaigns(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_campaign ON tasks(campaign_id) WHERE campaign_id IS NOT NULL;
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
