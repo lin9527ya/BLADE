@@ -141,15 +141,15 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		WebSearchBackend:      ws.Backend,
 		BraveSearchAPIKey:     ws.BraveKey,
 		TavilySearchAPIKey:    ws.TavilyKey,
-		DeepSeekSearchBaseURL: ws.DeepSeekBaseURL,
-		DeepSeekSearchAPIKey:  ws.DeepSeekAPIKey,
-		DeepSeekSearchModel:   ws.DeepSeekModel,
-		WebSearchProxy:        ws.Proxy,
-		BashEnv:               proxyEnv(c.proxyAddr, c.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:            sessionWorkDir,
-		MaxTurns:              maxTurns,
-		MaxDuration:           maxDuration,
-		Todos:                 actool.NewTodoStore(),
+		DeepSeekSearchBaseURL: ws.DeepSeekBaseURL, DeepSeekSearchHeaders: ws.Headers,
+		DeepSeekSearchAPIKey: ws.DeepSeekAPIKey,
+		DeepSeekSearchModel:  ws.DeepSeekModel,
+		WebSearchProxy:       ws.Proxy,
+		BashEnv:              proxyEnv(c.proxyAddr, c.proxyCACert), // Bash 子命令默认走代理+信任 CA
+		WorkingDir:           sessionWorkDir,
+		MaxTurns:             maxTurns,
+		MaxDuration:          maxDuration,
+		Todos:                actool.NewTodoStore(),
 		// large tool output spills to cmd-output/ under the session dir.
 		// 截断上限用 SDK 默认(tool.Capture 的 30000 字符)。
 		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),
