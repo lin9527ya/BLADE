@@ -334,6 +334,12 @@ const (
 	// deepSeekWebSearchBackend borrows the active LLM profile instead of its own
 	// key, so it only works on an anthropic-format profile pointed at DeepSeek.
 	deepSeekWebSearchBackend = "deepseek"
+	// opencode / commandcode：借用具名 LLM 配置（名字就叫这两个）的端点与 key，
+	// 与 deepseek 那条同一机制，区别只是"按名字取"而不是"取激活的"。
+	// 模型**固定** searchBackendModel：这两个中转站上服务端 web_search 用 flash 档。
+	opencodeWebSearchBackend    = "opencode"
+	commandCodeWebSearchBackend = "commandcode"
+	searchBackendModel          = "deepseek-v4.1-flash"
 	// defaultWorkers is the concurrent work-agent count when the setting is unset.
 	defaultWorkers = 3
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
@@ -632,8 +638,13 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 		on = false
 	}
 	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
-	if backend == deepSeekWebSearchBackend {
+	// 三个"服务端搜索"后端共用同一组载体字段（DeepSeek* 是历史命名，实际含义是
+	// "这次搜索打到哪个端点、用哪个 key 与模型"）。
+	switch backend {
+	case deepSeekWebSearchBackend:
 		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.deepSeekSearchCreds()
+	case opencodeWebSearchBackend, commandCodeWebSearchBackend:
+		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.namedProfileSearchCreds(backend)
 	}
 	return o
 }
@@ -645,6 +656,19 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 // states the requirement and the user decides. A profile that can't serve it
 // simply fails at search time (or at the settings page's 测试 button), which is
 // the same feedback every other backend gives for a bad key.
+// namedProfileSearchCreds 借用一个**具名** LLM 配置（opencode / commandcode）的端点与 key。
+// 模型固定为 searchBackendModel，不跟随配置里写的模型——搜索链路的模型是产品决定，不是
+// 用户在该配置里选的那个。
+// 配置不存在时返回空串：与 deepseek 那边同一处置——设置页会提示、搜索时报明确的错，
+// 而不是在这里偷偷回退到别的配置（那会让"我明明选了 opencode"变成打到别处）。
+func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model string) {
+	p, err := m.pg.ProfileByName(name)
+	if err != nil || p == nil {
+		return "", "", ""
+	}
+	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel
+}
+
 func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string) {
 	p, err := m.pg.ActiveProfile()
 	if err != nil || p == nil {
