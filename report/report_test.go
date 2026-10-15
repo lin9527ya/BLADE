@@ -164,3 +164,90 @@ func TestMarkdownLootUses(t *testing.T) {
 		t.Error("截断切出了非法 UTF-8（半个汉字）")
 	}
 }
+
+// 攻击路径段：把「拿到了什么」之后的「用它走到了哪一步」连成一条读得出来的路。
+// 这是分析里那句「报告里的提权/横向只能靠文案」的兑现点——路径来自图里已记的 uses/yields 边，
+// 不是另写一段叙述。
+func TestMarkdownAttackChains(t *testing.T) {
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Chains: []AttackChain{{
+			Head: "据点「在 web01 上拿到 root 的反弹 shell」",
+			Steps: []ChainStep{
+				{IntentID: 13, Summary: "读 wp-config 找数据库口令", Produced: []string{"凭据「wp_user 口令」"}},
+				{IntentID: 21, Summary: "用 wp_user 横向到 db01", Produced: []string{"据点「db01 的 root shell」"}},
+			},
+		}},
+	})
+	for _, want := range []string{
+		"## 攻击路径（从已得的访问展开）",
+		"**路径 1**：起点 据点「在 web01 上拿到 root 的反弹 shell」",
+		"- intent-13「读 wp-config 找数据库口令」 → 得到：凭据「wp_user 口令」",
+		"- intent-21「用 wp_user 横向到 db01」 → 得到：据点「db01 的 root shell」",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("攻击路径段缺少 %q\n---\n%s", want, md)
+		}
+	}
+	// 顺序：战果（拿到了什么）→ 攻击路径（用它走到了哪）→ 发现。读者是按这条线读的。
+	iLoot := strings.Index(md, "## 战果")
+	iChain := strings.Index(md, "## 攻击路径")
+	iFind := strings.Index(md, "## 发现")
+	if !(iLoot < iChain && iChain < iFind) {
+		t.Errorf("段落顺序不对：战果=%d 攻击路径=%d 发现=%d", iLoot, iChain, iFind)
+	}
+}
+
+// 没有多步链时不出这一节——空壳标题会被读成「渲染坏了」。
+func TestMarkdownAttackChainsAbsentWhenEmpty(t *testing.T) {
+	md := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0)})
+	if strings.Contains(md, "攻击路径") {
+		t.Errorf("没有链时不该出现攻击路径段：\n%s", md)
+	}
+}
+
+// 技术覆盖（ATT&CK）：红队交付物是按技术组织的——客户要的是「你打了哪些 TTP」。
+// 顺序必须稳定（按 ID 升序），否则同一个任务两次生成的报告会不一样。
+func TestMarkdownTechniqueTally(t *testing.T) {
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		TechniqueTally: map[string]int{"T1552.001": 2, "T1190": 3, "T1021": 1},
+	})
+	for _, want := range []string{
+		"## 技术覆盖（ATT&CK）",
+		"- T1021 —— 1 条意图",
+		"- T1190 —— 3 条意图",
+		"- T1552.001 —— 2 条意图",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("技术覆盖缺少 %q\n---\n%s", want, md)
+		}
+	}
+	if !(strings.Index(md, "T1021") < strings.Index(md, "T1190") &&
+		strings.Index(md, "T1190") < strings.Index(md, "T1552.001")) {
+		t.Errorf("技术表该按 ID 升序（否则两次生成的报告不一致）：\n%s", md)
+	}
+	// 没标注技术时不出这一节。
+	empty := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0)})
+	if strings.Contains(empty, "技术覆盖") {
+		t.Errorf("没有技术标注时不该出现技术覆盖段：\n%s", empty)
+	}
+}
+
+// 攻击路径上的每一跳要带上它的 ATT&CK 标注——「用 T1552.001 读了凭据」才是一句完整的话。
+func TestMarkdownChainStepTechniques(t *testing.T) {
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Chains: []AttackChain{{
+			Head: "据点「web01 的 root shell」",
+			Steps: []ChainStep{{
+				IntentID: 13, Summary: "读 wp-config",
+				Techniques: []string{"T1552.001", "T1083"},
+				Produced:   []string{"凭据「wp_user 口令」"},
+			}},
+		}},
+	})
+	if !strings.Contains(md, "- intent-13「读 wp-config」 [T1552.001 T1083] → 得到：凭据「wp_user 口令」") {
+		t.Errorf("跳上的技术标注没渲染出来：\n%s", md)
+	}
+}

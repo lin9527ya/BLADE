@@ -57,12 +57,43 @@ type Input struct {
 	// 哪一步」才是作业叙述。空 = 到手但还没被真正用过（见 agent 侧的 lootConsumingState：
 	// 中途 blocked/exhausted 收场的意图不算动用，否则到手的能力会在报告里假装已被处理）。
 	LootUsedBy map[int64][]LootUse
+	// Chains 是重建出来的攻击路径（见 AttackChain）。空 = 本次没有多步链，报告里不出这一节。
+	Chains []AttackChain
+	// TechniqueTally 是本次作业用到的 ATT&CK 技术（技术 ID → 意图数）。
+	//
+	// 红队的交付物本来就是按技术组织的——客户要的是「你打了哪些 TTP」，不是「你试过哪些方向」。
+	// 只列 ID、不翻译成技术名：那需要内置一份会过期的 ATT&CK 表，而 ID 是行内通用语。
+	TechniqueTally map[string]int
 }
 
 // LootUse 是一条战果被哪条意图动用过。
 type LootUse struct {
 	IntentID int64
 	Summary  string
+}
+
+// AttackChain 是重建出来的一条攻击路径：从一次最初的落脚开始，之后每一步动用了什么、又拿到了什么。
+//
+// 它**不引入新模型**——只是把已经记在图里的两种边接起来读：
+//
+//	intent --uses-->   战果（这一步动用了哪次已得的访问）
+//	intent --yields--> 战果（这一步产出了什么）
+//
+// 红队作业的单位从来不是「一个漏洞」，而是「一条走得通的路径」。报告里只写「拿到了什么」是
+// 资产清单，把路径连起来才是作业叙述——这一段就是用来兑现这件事的。
+type AttackChain struct {
+	Head  string      // 起点战果的可读标签
+	Steps []ChainStep // 从起点往外走的顺序
+}
+
+// ChainStep 是攻击路径上的一跳。
+type ChainStep struct {
+	IntentID int64
+	Summary  string
+	// Techniques 是这一步用到的 ATT&CK 技术 ID（可为空）。标在跳上而不是汇总在别处，
+	// 是因为「用 T1552.001 读了凭据、拿到 wp_user」才是一句完整的话。
+	Techniques []string
+	Produced   []string // 这一步产出的战果标签（可能多条）
 }
 
 // CandidateNote is one closed candidate (ruled_out / open_proof_gap) with its
@@ -322,6 +353,42 @@ func Markdown(in Input) string {
 				b.WriteString("\n")
 			}
 		}
+	}
+
+	// 攻击路径：把 uses / yields 两种边接起来读——「拿到了什么」之后的「用它走到了哪一步」。
+	// 只有真有多步链时才出这一节：一条战果被用一用是常态，那不叫路径。
+	if len(in.Chains) > 0 {
+		fmt.Fprintf(&b, "## 攻击路径（从已得的访问展开）\n\n")
+		for i, c := range in.Chains {
+			fmt.Fprintf(&b, "**路径 %d**：起点 %s\n\n", i+1, c.Head)
+			for _, s := range c.Steps {
+				fmt.Fprintf(&b, "- intent-%d「%s」", s.IntentID, clipRunes(s.Summary, 80))
+				if len(s.Techniques) > 0 {
+					fmt.Fprintf(&b, " [%s]", strings.Join(s.Techniques, " "))
+				}
+				if len(s.Produced) > 0 {
+					fmt.Fprintf(&b, " → 得到：%s", strings.Join(s.Produced, "、"))
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// 技术覆盖（ATT&CK）：整场作业用过的技术汇总。红队的交付物本来就是按技术组织的——
+	// 客户要的是「你打了哪些 TTP」，不是「你试过哪些方向」。只列 ID 不翻译技术名：
+	// 那需要内置一份会过期的 ATT&CK 表，而 ID 是行内通用语。
+	if len(in.TechniqueTally) > 0 {
+		fmt.Fprintf(&b, "## 技术覆盖（ATT&CK）\n\n")
+		ids := make([]string, 0, len(in.TechniqueTally))
+		for id := range in.TechniqueTally {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			fmt.Fprintf(&b, "- %s —— %d 条意图\n", id, in.TechniqueTally[id])
+		}
+		b.WriteString("\n")
 	}
 
 	// findings

@@ -627,6 +627,12 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			}
 		}
 	}
+	// ATT&CK 技术覆盖：本任务各技术出现在几条意图里。对 planner 的用处是「哪些面已经打过、
+	// 哪些技术还没试过」；对交付物的用处是报告里那张技术表的同一份数据。
+	// 软删除的意图不计（用户主动拿掉了），其余都计——被 blocked 的方向也算「试过」。
+	if tally := db.TechniqueTally(all); len(tally) > 0 {
+		out["technique_tally"] = tally
+	}
 	// 战果（据点 / 凭据）：利用成功之后的产物。计数走 COUNT，理由同 findings_total——列表有
 	// 行数上限，len() 报的是窗口大小而不是总数，而「手上有几个据点」正是 planner 判断能不能
 	// 继续往深打的依据，一个被封顶的数字会静默低估战果。
@@ -1246,6 +1252,7 @@ type intentItem struct {
 	GoalID      json.RawMessage   `json:"goal_id"`
 	Priority    int               `json:"priority"`
 	RiskArea    string            `json:"risk_area"`
+	Techniques  []string          `json:"techniques"`
 }
 
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
@@ -1336,6 +1343,11 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		}
 	}
 	payload := map[string]any{"summary": it.Summary, "risk_area": db.NormalizeRiskArea(it.RiskArea)}
+	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
+	// 不在这里返错。它是给交付物用的分类，不是约束。
+	if techs := db.NormalizeTechniques(it.Techniques); len(techs) > 0 {
+		payload["techniques"] = techs
+	}
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
@@ -1402,6 +1414,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"uses_loot_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":      intp("优先级 0-10，默认5"),
 			"risk_area":     str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**尽量填写**——报告与覆盖度按「范围内资产 × 风险类」统计已测/未测成/未触及。"),
+			"techniques":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
