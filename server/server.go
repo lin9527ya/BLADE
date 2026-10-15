@@ -3864,7 +3864,11 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.TavilyKey) != "" {
 		tavilyKey = req.TavilyKey
 	}
-	cfg := actool.WebSearchConfig{Backend: backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
+	// 与线上工具**同一套解析**（后端归一 + 凭据 + 路由头）——自己拼一份的话，
+	// "测试通过但工具不能用"是迟早的事（opencode 的 x-opencode-session 就是这么漏的）。
+	cfg := actool.WebSearchConfig{BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
+	backend, cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekHeaders = s.m.searchBackendForSDK(backend)
+	cfg.Backend = backend
 	// Hard cap so a slow/blocked proxy can't hang the request.
 	wall := 30 * time.Second
 	// deepseek 的凭据不在表单里，来自当前激活的 LLM 配置；同时它每次搜索都跑一次
@@ -3872,7 +3876,6 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	// 本来就是给用户自己确认的手段，真跑不通时下面的报错比预判更有信息量。
 	probeQuery := "test"
 	if strings.TrimSpace(backend) == deepSeekWebSearchBackend {
-		cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel = s.m.deepSeekSearchCreds()
 		wall = 120 * time.Second
 		// 搜索词由 DeepSeek 端的模型自行决定，"test" 太空泛会让它跳过搜索直接作答。
 		probeQuery = "DeepSeek company official website"
