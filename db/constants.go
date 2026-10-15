@@ -72,4 +72,11 @@ const (
 	RelYields      = "yields"
 	RelProves      = "proves"
 	RelCovers      = "covers" // digest --covers--> member (cold-digest-spec §1); source of truth for "which digest folds node X"
+	// RelUses：intent --uses--> 战果（据点/凭据）——「这条意图在动用那次已得的访问」。
+	//
+	// 为什么不复用 derived_from（语义上最接近的那条）：删除一条意图时会沿
+	// yields/derived_from 向下做独占级联（db/exploration.go 的 downOf），而战果节点若
+	// 被当成「下游」，删掉一条用过它的意图就可能连带把据点/凭据本身删掉——那是证据级
+	// 数据，不能挂在会被级联的关系上。单独一条边把它隔离在这套级联之外。
+	RelUses = "uses"
 )

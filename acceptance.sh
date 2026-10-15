@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩 + P18 约束可执行化 + P19 批量交付
 # + P15 结构化裁决与改参放行 + P20 探索策略门 + P21 情报/测绘工具面 + P22 计划任务 + P23 公司知识
-# + P24 执行限额与 MCP 熔断 + P25 MCP 工具级开关 + P26 CSV 资产导入 + P27 战果层的端到端验收清单：在一次性隔离库(artex_acceptance)上跑 server.TestAcceptance，
+# + P24 执行限额与 MCP 熔断 + P25 MCP 工具级开关 + P26 CSV 资产导入 + P27 战果层 + P29 战果动用的端到端验收清单：在一次性隔离库(artex_acceptance)上跑 server.TestAcceptance，
 # 逐机制输出 PASS/FAIL——每次大改后重跑它即可，无需真实 LLM 与外部目标。
 #
 #   ./acceptance.sh           # 建库 → 跑清单 → 删库
@@ -57,7 +57,7 @@ admin "DROP DATABASE IF EXISTS $DB_NAME"
 admin "CREATE DATABASE $DB_NAME"
 export ARTEX_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME?#")"
 
-echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28，逐机制 PASS/FAIL）"
+echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28 + P29，逐机制 PASS/FAIL）"
 rc=0
 go test -count=1 -run TestAcceptance -v ./server/ || rc=1
 

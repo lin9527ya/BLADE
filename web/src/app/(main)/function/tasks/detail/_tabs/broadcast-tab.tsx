@@ -117,6 +117,7 @@ const REL_LABEL: Record<string, string> = {
   yields: "产出",
   proves: "证明",
   covers: "压缩",
+  uses: "动用",
 };
 
 // goal / intent 的状态语义由全局 status 表提供(StatusBadge);其余类型的状态只在
