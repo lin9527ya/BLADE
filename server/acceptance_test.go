@@ -36,7 +36,7 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
-// + P26 CSV 资产导入 + P27 战果层（据点/凭据）的端到端
+// + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
 //
@@ -90,6 +90,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P26 CSV 资产导入（预览只读/预览与落库口径一致/重复只合并不新增/来源如实）", func(t *testing.T) { accP26(t, env.forTest(t)) })
 	t.Run("P27 战果层（据点/凭据入概览与报告，凭据本体不外流）", func(t *testing.T) { accP27(t, env.forTest(t)) })
 	t.Run("P28 资产 FOFA 检索导入与存储清理（同配额台账/二次导入只合并/试算不动盘）", func(t *testing.T) { accP28(t, env.forTest(t)) })
+	t.Run("P29 战果动用（意图声明 uses → outstanding 归零 → 删意图不带走访据）", func(t *testing.T) { accP29(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3557,4 +3558,73 @@ func accP28(t *testing.T, e *accEnv) {
 	if _, err := os.Stat(filepath.Join(liveDir, "keep.txt")); err != nil {
 		t.Fatalf("在跑任务的产物必须毫发无伤：%v", err)
 	}
+}
+
+// accP29 战果轴：意图声明「我在动用哪条战果」→ graph_overview 的 outstanding 归零 → 新边经
+// HTTP 到达前端图的边表。钉的是「打穿之后要接着用」从提示词散文变成可核对状态这件事。
+//
+// 最后一步（删掉那条意图）守的是一个设计选择：uses 当初若复用 derived_from，删除时会沿边做
+// 独占级联，把据点本身一起带走——战果是证据级数据，不能挂在会被级联的关系上。
+func accP29(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p29", "战果动用")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	nodeID := func(out string) int64 {
+		t.Helper()
+		line, _, _ := strings.Cut(out, "\n")
+		_, raw, _ := strings.Cut(line, ": ")
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			t.Fatalf("回执里没有节点 id：%q", out)
+		}
+		return id
+	}
+	overview := workflowTool(t, tsx.PlannerTools(), "graph_overview")
+	overviewOut := func() string {
+		t.Helper()
+		res, err := overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+		if err != nil {
+			t.Fatalf("graph_overview: %v", err)
+		}
+		return res.Flatten()
+	}
+
+	res, err := workflowTool(t, tsx.WorkerTools(), "report_foothold").Call(context.Background(), json.RawMessage(
+		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
+			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "foothold recorded: ") {
+		t.Fatalf("report_foothold: %v %s", err, res.Flatten())
+	}
+	footholdID := nodeID(res.Flatten())
+
+	// ① 到手但还没人动用 → outstanding
+	e.mustContain(overviewOut(), `"outstanding_loot_total":1`, "刚到手的据点该是 outstanding")
+
+	// ② 派一条意图动用它
+	res, err = workflowTool(t, tsx.PlannerTools(), "add_intent").Call(context.Background(), json.RawMessage(
+		`{"summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "intent created: ") {
+		t.Fatalf("add_intent（带 uses_loot_ids）: %v %s", err, res.Flatten())
+	}
+	intentID := nodeID(res.Flatten())
+
+	// ③ 归零
+	e.mustContain(overviewOut(), `"outstanding_loot_total":0`, "已被动用的据点不该还算 outstanding")
+
+	// ④ 新边经 HTTP 到达前端图的边表（前端按 rel 上色/标注，认不出的会退化成裸 rel 串）
+	rec := e.request(http.MethodGet, "/api/exploration/graph?task="+task.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exploration/graph status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"rel":"uses"`, "uses 边")
+
+	// ⑤ 删掉那条意图：据点必须活下来，且重新变成 outstanding
+	if _, err := task.Store.CancelIntent(intentID); err != nil {
+		t.Fatalf("取消意图: %v", err)
+	}
+	if nodes, err := task.Store.ListByKind(db.KindFoothold, 10); err != nil || len(nodes) != 1 {
+		t.Fatalf("删掉调用它的意图把据点一起带走了（战果是证据级数据，不能被级联）：%v err=%v", nodes, err)
+	}
+	e.mustContain(overviewOut(), `"outstanding_loot_total":1`, "用过它的意图没了，据点该重新算 outstanding")
 }

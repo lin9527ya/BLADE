@@ -45,14 +45,17 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
             (kind='hint'    AND state IN ('active','consumed')) OR
             (kind='digest'  AND state IN ('active','superseded'))
         )`
-	for _, c := range []struct{ name, def string }{
-		{"ck_node_kind", oldKind},
-		{"ck_node_state", oldState},
+	// 战果（P27）引入 'uses' 时，边关系表也要一起放开——同一个坑在两张表上各有一份。
+	const oldEdgeRel = `CHECK (rel IN ('spawns','derived_from','yields','proves','covers'))`
+	for _, c := range []struct{ table, name, def string }{
+		{"exploration_nodes", "ck_node_kind", oldKind},
+		{"exploration_nodes", "ck_node_state", oldState},
+		{"exploration_edges", "ck_edge_rel", oldEdgeRel},
 	} {
-		if _, err := d.Exec(`ALTER TABLE exploration_nodes DROP CONSTRAINT ` + c.name); err != nil {
+		if _, err := d.Exec(`ALTER TABLE ` + c.table + ` DROP CONSTRAINT ` + c.name); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := d.Exec(`ALTER TABLE exploration_nodes ADD CONSTRAINT ` + c.name + " " + c.def); err != nil {
+		if _, err := d.Exec(`ALTER TABLE ` + c.table + ` ADD CONSTRAINT ` + c.name + " " + c.def); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -71,6 +74,14 @@ WHERE conrelid='exploration_nodes'::regclass AND conname='ck_node_kind'`).Scan(&
 	if !strings.Contains(def, "foothold") || !strings.Contains(def, "credential") {
 		t.Fatalf("老库的 ck_node_kind 没被重建：%s", def)
 	}
+	var edgeDef string
+	if err := d2.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+WHERE conrelid='exploration_edges'::regclass AND conname='ck_edge_rel'`).Scan(&edgeDef); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(edgeDef, "uses") {
+		t.Fatalf("老库的 ck_edge_rel 没被重建：%s", edgeDef)
+	}
 
 	// 真插一条：kind 重建了而 state 分支漏掉的话，这里会被 ck_node_state 拦下。
 	task, err := d2.CreateTaskWithOptions("loot migration", "老库升级", TaskCreateOptions{})
@@ -79,12 +90,24 @@ WHERE conrelid='exploration_nodes'::regclass AND conname='ck_node_kind'`).Scan(&
 	}
 	t.Cleanup(func() { _ = d2.DeleteTask(task.ID) })
 	ts := d2.Exploration(task.ExplorationID)
+	lootIDs := make([]int64, 0, 2)
 	for _, c := range []struct{ kind, state string }{
 		{KindFoothold, StateLootActive},
 		{KindCredential, StateLootActive},
 	} {
-		if _, err := ts.AddNode(c.kind, map[string]any{"summary": "x"}, 8, c.state, "work#1", nil); err != nil {
+		id, err := ts.AddNode(c.kind, map[string]any{"summary": "x"}, 8, c.state, "work#1", nil)
+		if err != nil {
 			t.Fatalf("升级后的库仍写不进 %s/%s 节点：%v", c.kind, c.state, err)
 		}
+		lootIDs = append(lootIDs, id)
+	}
+
+	// 真落一条 uses 边：边关系没重建的话，这里会被 ck_edge_rel 拦下。
+	intent, err := ts.AddIntent(map[string]any{"summary": "动用战果"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Link(intent, RelUses, lootIDs[0]); err != nil {
+		t.Fatalf("升级后的库仍写不进 uses 边：%v", err)
 	}
 }

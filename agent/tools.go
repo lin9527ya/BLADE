@@ -483,6 +483,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	parentsOf := map[int64][]int64{}
 	yieldsOf := map[int64][]int64{}
 	factFrom := map[int64]int64{}
+	usedLoot := map[int64]bool{} // 被某条意图以 uses 指向过的战果
 	for _, e := range edges {
 		switch e.Rel {
 		case db.RelDerivedFrom, db.RelSpawns: // upstream: derived_from (fact/finding/intent→intent) or spawns (origin fact→goal, legacy begin→intent)
@@ -490,6 +491,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		case db.RelYields: // intent --yields--> fact/finding
 			yieldsOf[e.From] = append(yieldsOf[e.From], e.To)
 			factFrom[e.To] = e.From
+		case db.RelUses: // intent --uses--> 战果：这条已得的访问已经被某条方向接手了
+			usedLoot[e.To] = true
 		}
 	}
 	// cold-digest §6: members folded into an active digest are shown via cold_digests
@@ -616,23 +619,49 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// compactLoot 用的是**字段白名单**：凭据的 secret 因此结构性地进不了概览——概览会被折进
 	// 每一轮 planner 与 worker 的提示词、还可能进日志，那里不该出现任务里最敏感的那一行。
 	// 要看凭据原文，用 node_detail(id)。
+	//
+	// **outstanding**：在手、且还没有任何意图以 uses 指向它的战果——「拿到了、但还没动用的能力」。
+	// 这正是 planner 自己看不出的一件事：它看得到战果**是什么**，看不出哪一条**已经被别的意图
+	// 接手了**。所以这一层给的是一条信息（历史事实），不是一句劝告。
+	//
+	// 计数按**全量**算（战果稀疏，一个任务通常就几条），只有展示窗口才截断——否则 outstanding
+	// 计数会和当年 findings_total 一样，在条目超过窗口后开始骗人。
 	const lootListCap = 8
-	footholdNodes, _ := t.ts.ListByKind(db.KindFoothold, lootListCap) // newest first
-	credNodes, _ := t.ts.ListByKind(db.KindCredential, lootListCap)
+	allFootholds, _ := t.ts.ListByKind(db.KindFoothold, 1000) // newest first
+	allCreds, _ := t.ts.ListByKind(db.KindCredential, 1000)
 	if total, err := t.ts.CountByKind(db.KindFoothold); err == nil {
 		out["footholds_total"] = total
 	} else {
-		out["footholds_total"] = len(footholdNodes)
+		out["footholds_total"] = len(allFootholds)
 	}
 	if total, err := t.ts.CountByKind(db.KindCredential); err == nil {
 		out["credentials_total"] = total
 	} else {
-		out["credentials_total"] = len(credNodes)
+		out["credentials_total"] = len(allCreds)
 	}
+	outstanding := 0
+	for _, n := range allFootholds {
+		if lootOutstanding(n, usedLoot) {
+			outstanding++
+		}
+	}
+	for _, n := range allCreds {
+		if lootOutstanding(n, usedLoot) {
+			outstanding++
+		}
+	}
+	out["outstanding_loot_total"] = outstanding
 	// 战果不会被折进 digest（coldgraph.foldableKind 只认 intent/fact），所以这里不需要
 	// 像 recent_facts 那样给 hidden() 留出口。
-	out["footholds"] = compactLoot(footholdNodes, factFrom, "access", "privilege")
-	out["credentials"] = compactLoot(credNodes, factFrom, "kind", "username")
+	footholdWindow, credWindow := allFootholds, allCreds
+	if len(footholdWindow) > lootListCap {
+		footholdWindow = footholdWindow[:lootListCap]
+	}
+	if len(credWindow) > lootListCap {
+		credWindow = credWindow[:lootListCap]
+	}
+	out["footholds"] = compactLoot(footholdWindow, factFrom, usedLoot, "access", "privilege")
+	out["credentials"] = compactLoot(credWindow, factFrom, usedLoot, "kind", "username")
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
 	// 只给裸 id（仍可 expand_digest 展开），避免冷区唯一出口被无限拉长。
 	const coldDigestsCap = 15
@@ -1016,11 +1045,20 @@ func compactNode(n *db.Node) map[string]any {
 	return m
 }
 
-// compactLoot 把战果节点压成概览行：{id, state, summary, from_intent?, keep…}。
+// lootOutstanding 报告一条战果是不是「在手、但还没有任何意图动用过」。
+// 已失效(state != active)的不算：不能用就不是机会。
+func lootOutstanding(n *db.Node, used map[int64]bool) bool {
+	return n.State == db.StateLootActive && !used[n.ID]
+}
+
+// compactLoot 把战果节点压成概览行：{id, state, summary, from_intent?, outstanding?, keep…}。
 //
 // keep 是**白名单**，不是黑名单：只有列出的 payload 字段会被带出。凭据的 secret 因此
 // 不可能因为「忘了删」而漏进概览——加字段时得显式写进来，那一步是能看见的。
-func compactLoot(nodes []*db.Node, from map[int64]int64, keep ...string) []map[string]any {
+//
+// outstanding 只在为真时出现（在手 + 未被任何意图 uses）。false 不写出来：概览是给模型读的，
+// 缺省即「已接手/已失效」，多一个 false 只是噪声。
+func compactLoot(nodes []*db.Node, from map[int64]int64, used map[int64]bool, keep ...string) []map[string]any {
 	out := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
 		var p map[string]any
@@ -1035,6 +1073,9 @@ func compactLoot(nodes []*db.Node, from map[int64]int64, keep ...string) []map[s
 		}
 		if fromID := from[n.ID]; fromID > 0 {
 			m["from_intent"] = fromID
+		}
+		if lootOutstanding(n, used) {
+			m["outstanding"] = true
 		}
 		if n.Inherited {
 			inheritedMap(m, n.SourceTaskID)
@@ -1182,19 +1223,22 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 
 // intentItem 是 add_intent 批量/单条的一条探索方向。
 type intentItem struct {
-	Summary   string            `json:"summary"`
-	AssetIDs  []json.RawMessage `json:"asset_ids"`
-	ParentIDs []json.RawMessage `json:"parent_ids"`
-	GoalID    json.RawMessage   `json:"goal_id"`
-	Priority  int               `json:"priority"`
-	RiskArea  string            `json:"risk_area"`
+	Summary     string            `json:"summary"`
+	AssetIDs    []json.RawMessage `json:"asset_ids"`
+	ParentIDs   []json.RawMessage `json:"parent_ids"`
+	UsesLootIDs []json.RawMessage `json:"uses_loot_ids"`
+	GoalID      json.RawMessage   `json:"goal_id"`
+	Priority    int               `json:"priority"`
+	RiskArea    string            `json:"risk_area"`
 }
 
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
-// 血缘有两条正交的轴：
+// 血缘有三条正交的轴：
 //   - 知识轴：parent_ids → derived_from（只能锚已确认的 fact/finding），顶层留空时兜底连 origin fact；
 //   - 目标轴：goal_id → spawns（本条方向服务哪个目标）。显式指定必须是本任务的 open 目标；
 //     省略时恰有一个 open 目标则自动挂；零个（goalless）正常不挂；多个不猜，回执提示指名。
+//   - 战果轴：uses_loot_ids → uses（本条方向在动用哪次已得的访问：据点/凭据）。只接受本任务里
+//     仍在手(active)的战果；这条边是「哪些战果还没被推进过」的唯一依据。
 //
 // 挂上目标后不再写 origin 兜底边——意图经目标仍可回溯任务起点（README/链路图的形状）。
 func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
@@ -1237,6 +1281,22 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		}
 		if g.State != "open" {
 			return 0, "", fmt.Errorf("goal_id %d 已是 %s 状态：意图只能挂到未达成(open)的目标上", goalID, g.State)
+		}
+	}
+	// 战果轴校验（同样在建节点前）：uses_loot_ids 必须是本任务里真实存在、且仍在手的战果。
+	// 拒收已失效的战果是有意义的——据点掉了/凭据失效了还按它派意图，等于派一条注定跑空的活，
+	// 不如让 planner 当场听到「这条已经不能用了」。
+	lootIDs := pidList(it.UsesLootIDs)
+	for _, lid := range lootIDs {
+		n, err := t.ts.GetNode(lid)
+		if err != nil || n == nil {
+			return 0, "", fmt.Errorf("uses_loot_ids 里的 %d 不存在于本任务：只能填 graph_overview 里 footholds/credentials 的节点 id", lid)
+		}
+		if n.Kind != db.KindFoothold && n.Kind != db.KindCredential {
+			return 0, "", fmt.Errorf("uses_loot_ids 里的 %d 是 %q 节点，不是战果：只能填据点(foothold)或凭据(credential)的节点 id", lid, n.Kind)
+		}
+		if n.State != db.StateLootActive {
+			return 0, "", fmt.Errorf("战果节点 %d 当前状态是 %q（已失效）：不能按它派意图，请先确认它是否还能用", lid, n.State)
 		}
 	}
 	priority := it.Priority
@@ -1296,6 +1356,12 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	for _, parent := range parents {
 		_ = t.ts.Link(parent, db.RelDerivedFrom, id)
 	}
+	// 战果轴：本意图在动用哪次已得的访问（意图 --uses--> 据点/凭据）。这条边是
+	// graph_overview 算出「哪些战果还没被推进过」的唯一依据——那是 planner 自己拿不到的信息：
+	// 它看得到战果**是什么**，但看不出哪一条**已经被别的意图接手了**。
+	for _, lid := range lootIDs {
+		_ = t.ts.Link(id, db.RelUses, lid)
+	}
 	// a top-level intent with NO goal edge connects to the origin fact, so every
 	// intent still traces back to a fact node — at task start the only fact is the
 	// origin, and the first intents derive from it. (With a goal edge the intent
@@ -1312,13 +1378,14 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么。\n"+
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。",
 		obj(map[string]any{
-			"intents":    map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":    str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
-			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
-			"goal_id":    idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
-			"priority":   intp("优先级 0-10，默认5"),
-			"risk_area":  str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**尽量填写**——报告与覆盖度按「范围内资产 × 风险类」统计已测/未测成/未触及。"),
+			"intents":       map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"summary":       str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
+			"asset_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
+			"parent_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
+			"goal_id":       idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
+			"uses_loot_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
+			"priority":      intp("优先级 0-10，默认5"),
+			"risk_area":     str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**尽量填写**——报告与覆盖度按「范围内资产 × 风险类」统计已测/未测成/未触及。"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {

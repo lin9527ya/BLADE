@@ -312,23 +312,25 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (exploration_id, src_id, rel, dst_id),
     CONSTRAINT ck_edge_noself CHECK (src_id <> dst_id),
-    CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers'))
+    CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses'))
 );
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
 -- cold-digest (§1): the 'covers' relation (digest→member) postdates shipped installs,
 -- whose rel CHECK is an inline auto-named constraint. Find and recreate it as ck_edge_rel.
+-- 战果层（P27）又加了 'uses'，探针同样要能识别出来。
 DO $$
 DECLARE cname text;
 BEGIN
     SELECT conname INTO cname FROM pg_constraint
      WHERE conrelid='exploration_edges'::regclass AND contype='c'
        AND pg_get_constraintdef(oid) LIKE '%rel%'
-       AND pg_get_constraintdef(oid) NOT LIKE '%covers%';
+       AND (pg_get_constraintdef(oid) NOT LIKE '%covers%'
+            OR pg_get_constraintdef(oid) NOT LIKE '%uses%');
     IF cname IS NOT NULL THEN
         EXECUTE 'ALTER TABLE exploration_edges DROP CONSTRAINT '||quote_ident(cname);
         ALTER TABLE exploration_edges ADD CONSTRAINT ck_edge_rel
-            CHECK (rel IN ('spawns','derived_from','yields','proves','covers'));
+            CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses'));
     END IF;
 END $$;
 
