@@ -644,6 +644,12 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	case deepSeekWebSearchBackend:
 		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.deepSeekSearchCreds()
 	case opencodeWebSearchBackend, commandCodeWebSearchBackend:
+		// **面向 SDK 的名字归一为 "deepseek"**：SDK 的白名单只认
+		// ddgs / brave-free / tavily / deepseek 四个——它区分的是"哪套搜索机制"，
+		// 不区分端点。opencode / commandcode 与 deepseek 是同一机制（anthropic 兼容
+		// messages + web_search 工具），区别只在打到哪个端点、用谁的 key。
+		// 库里与 UI 仍保留各自的真名（设置页显示、审计都对得上）。
+		o.Backend = deepSeekWebSearchBackend
 		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.namedProfileSearchCreds(backend)
 	}
 	return o
