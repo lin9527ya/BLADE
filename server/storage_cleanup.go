@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
@@ -232,15 +231,6 @@ func (s *Server) storageCategoryRoot(key string) string {
 		return filepath.Dir(exe)
 	}
 	return ""
-}
-
-// diskUsage 返回数据目录所在文件系统的总容量与可用量（读不到就返回 0，页面上按"未知"显示）。
-func diskUsage(path string) (total, free int64) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, 0
-	}
-	return int64(st.Blocks) * int64(st.Bsize), int64(st.Bavail) * int64(st.Bsize)
 }
 
 // storageReport 生成整份体检报告（试算：只读，不动盘）。
