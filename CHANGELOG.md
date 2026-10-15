@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 自更新
+
+#### 修复
+
+- **私有仓库的更新下载走 API 资产端点**（v0.4.5）：实测 `browser_download_url` 即使带令牌对
+  私有仓库也返回 404，`api.github.com/.../releases/assets/<id>` + `Accept: application/octet-stream`
+  才取得到（302 到签名地址）。`Asset.DownloadURL()` 优先 API 端点、`get()` 统一带该 Accept 头；
+  公开仓库行为不变。
+  · 该缺陷只在"私有仓库 + 真点一次更新"时才暴露——此前的发布源常量指向一个已不存在的仓库，
+    把整条链路的问题都掩盖了。**2026-10-15 已端到端演练通过**（v0.4.5 → 一键更新 → v0.4.6：
+    读取 release → API 端点下载 → SHA256 校验 → 暂存 → 退出 75 → start.sh 拉起）。
+
 ## [0.4.3] - 2026-10-15
 
 ### 自更新
