@@ -476,8 +476,7 @@ flowchart TB
 
 ## 参考
 
-- **ARTEX** —— 本项目的原始版本：<https://github.com/Autumn-27/ARTEX>
-  （原作者仓库当前已不可达；本仓库曾用名 `lin9527ya/ARTEX`，2026-10 改名为 BLADE）
+- https://github.com/Autumn-27/ARTEX
 - https://github.com/oritera/Cairn
 
 
