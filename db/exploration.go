@@ -263,6 +263,45 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 	return err
 }
 
+// LinkAttrs 与 Link 是同一条幂等边，额外带 attrs（目前只有 AD 的 can 边用：{"rights":[…]}"）。
+//
+// 已存在则**覆盖** attrs：多条权限合并成一条边时的并集在 Go 侧算好（见 server/ad_import.go），
+// 这里不做 SQL 里的 jsonb 数组并集——那种表达式没人能在 review 时一眼看懂。
+func (s *ExplorationStore) LinkAttrs(from int64, rel string, to int64, attrs map[string]any) error {
+	raw, _ := json.Marshal(attrs)
+	_, err := s.db.Exec(`
+INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id, attrs) VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (exploration_id, src_id, rel, dst_id) DO UPDATE SET attrs=EXCLUDED.attrs`, s.expID, from, rel, to, string(raw))
+	return err
+}
+
+// FindADNodeBySID 在本探索内按 payload.sid 找一条 AD 对象节点，找不到返回 0（不是错误）。
+//
+// SID 是 AD 对象的**跨采集稳定身份**：换一轮采集、换一种域名写法，SID 都不变。
+// 导入的「同 sid 复用节点」就靠它，所以查询打在 payload->>'sid' 上而不是名字上。
+func (s *ExplorationStore) FindADNodeBySID(sid string) (int64, error) {
+	if sid == "" {
+		return 0, nil
+	}
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 AND payload->>'sid'=$3 ORDER BY id LIMIT 1`,
+		s.expID, KindADObject, sid).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
+// SetNodePayload 覆盖一条节点的 payload（限定 kind，避免误写别的类型）。AD 重导入用它把
+// 对象的最新属性刷上去——节点的身份是 SID，属性是会变的（改名、启用/禁用、换了所属组）。
+func (s *ExplorationStore) SetNodePayload(id int64, kind string, payload map[string]any) error {
+	raw, _ := json.Marshal(payload)
+	_, err := s.db.Exec(`UPDATE exploration_nodes SET payload=$1 WHERE id=$2 AND exploration_id=$3 AND kind=$4`,
+		string(raw), id, s.expID, kind)
+	return err
+}
+
 // SingleOpenGoal returns the task's only open goal id, or 0 when there are zero
 // or several. Callers use it to auto-attach a new intent to the obvious goal, and
 // to stay silent (no guessing) when the choice is ambiguous.
@@ -1048,7 +1087,7 @@ func (s *ExplorationStore) EdgesTouching(ids []int64) ([]Edge, error) {
 		marks = append(marks, "$"+fmt.Sprint(len(args)))
 	}
 	list := strings.Join(marks, ",")
-	rows, err := s.db.Query(`SELECT src_id, rel, dst_id FROM exploration_edges
+	rows, err := s.db.Query(`SELECT src_id, rel, dst_id, COALESCE(attrs,'{}'::jsonb) FROM exploration_edges
 WHERE exploration_id=$1 AND (src_id IN (`+list+`) OR dst_id IN (`+list+`))`, args...)
 	if err != nil {
 		return nil, err
@@ -1057,9 +1096,11 @@ WHERE exploration_id=$1 AND (src_id IN (`+list+`) OR dst_id IN (`+list+`))`, arg
 	var out []Edge
 	for rows.Next() {
 		var e Edge
-		if err := rows.Scan(&e.From, &e.Rel, &e.To); err != nil {
+		var attrs []byte
+		if err := rows.Scan(&e.From, &e.Rel, &e.To, &attrs); err != nil {
 			return nil, err
 		}
+		e.Attrs = json.RawMessage(attrs)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -1070,6 +1111,22 @@ type Edge struct {
 	From int64
 	Rel  string
 	To   int64
+	// Attrs 是边上的附加语义（AD 的 can 边放 {"rights":[...]}）。其余关系的边是空对象，
+	// 读方按「没有就是没有」处理，不必区分 nil / {}。
+	Attrs json.RawMessage
+}
+
+// EdgeRights 读出一条 can 边的权限名列表（attrs.rights）。空/畸形一律当作没有——
+// 标注是附加信息，不该阻断任何读取路径（同 NodeTechniques）。
+func EdgeRights(e Edge) []string {
+	if len(e.Attrs) == 0 {
+		return nil
+	}
+	var a struct {
+		Rights []string `json:"rights"`
+	}
+	_ = json.Unmarshal(e.Attrs, &a)
+	return a.Rights
 }
 
 // Edges lists exploration edges (for graph viz).
@@ -1077,7 +1134,7 @@ func (s *ExplorationStore) Edges(limit int) ([]Edge, error) {
 	if limit <= 0 {
 		limit = 5000
 	}
-	rows, err := s.db.Query(`SELECT src_id, rel, dst_id FROM exploration_edges WHERE exploration_id=$1 LIMIT $2`, s.expID, limit)
+	rows, err := s.db.Query(`SELECT src_id, rel, dst_id, COALESCE(attrs,'{}'::jsonb) FROM exploration_edges WHERE exploration_id=$1 LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1085,9 +1142,11 @@ func (s *ExplorationStore) Edges(limit int) ([]Edge, error) {
 	var out []Edge
 	for rows.Next() {
 		var e Edge
-		if err := rows.Scan(&e.From, &e.Rel, &e.To); err != nil {
+		var attrs []byte
+		if err := rows.Scan(&e.From, &e.Rel, &e.To, &attrs); err != nil {
 			return nil, err
 		}
+		e.Attrs = json.RawMessage(attrs)
 		out = append(out, e)
 	}
 	return out, rows.Err()

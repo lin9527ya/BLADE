@@ -468,12 +468,93 @@ export type ExploreKind =
   | "digest"
   // 战果：据点（已攻陷的通路）与凭据（读到的口令/哈希/密钥/令牌）。
   | "foothold"
-  | "credential";
+  | "credential"
+  // 检测验证：一次进攻动作有没有被检出。
+  | "detection"
+  // AD 对象：BloodHound/SharpHound 采集回来的域内对象（用户/组/机器/域/OU/GPO），
+  // 靠 payload.category 分类——一种 kind 装六类对象，理由见 server/ad_import.go 的开头。
+  | "ad_object";
 export type GoalState = "open" | "met" | "abandoned";
 export type IntentState = "open" | "running" | "paused" | "done" | "negative" | "out-of-scope" | "blocked" | "exhausted" | "stopped";
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
-export type ExploreRel = "spawns" | "derived_from" | "yields" | "proves" | "covers";
+export type ExploreRel =
+  | "spawns"
+  | "derived_from"
+  | "yields"
+  | "proves"
+  | "covers"
+  | "uses"
+  // AD 域内拓扑（P32）：成员 / 本机管理员 / 有会话 / 权限（具体权限名在边的 attrs.rights 里）。
+  | "member_of"
+  | "admin_to"
+  | "session_on"
+  | "can";
+
+// ---- AD 攻击路径导入（P32） ----
+
+export interface ADImportFile {
+  name: string;
+  json: string;
+}
+
+export interface ADImportPreview {
+  task_id: number;
+  objects: Record<string, number>;
+  edges: Record<string, number>;
+  nodes_new: number;
+  nodes_existing: number;
+  edges_new: number;
+  edges_existing: number;
+  highvalue: { name: string; category: string; stub?: boolean; tags?: string[] }[];
+  warnings: string[];
+  stubs: { name: string; category: string; why: string }[];
+  skipped_rights?: Record<string, number>;
+  unresolved_edges?: number;
+  unknown_objects?: number;
+}
+
+export interface ADImportResult {
+  task_id: number;
+  nodes_created: number;
+  nodes_updated: number;
+  edges_created: number;
+  edges_merged: number;
+  objects: Record<string, number>;
+  edges: Record<string, number>;
+  warnings: string[];
+  edges_unresolved?: number;
+  skipped_rights?: Record<string, number>;
+  failures?: number;
+  errors?: string[];
+}
+
+export interface ADHop {
+  from: string;
+  rel: string;
+  to: string;
+  rights?: string[];
+  note?: string;
+}
+
+export interface ADPath {
+  start: string;
+  target: string;
+  target_tags?: string[];
+  steps: ADHop[];
+}
+
+export interface ADPathsResponse {
+  paths: ADPath[];
+  stats: {
+    objects?: Record<string, number>;
+    edges?: Record<string, number>;
+    nodes?: number;
+    highvalue?: number;
+  };
+  starts: { id: number; name: string; owned?: boolean }[];
+  start_id?: number;
+}
 
 export interface TaskNode {
   id: string;

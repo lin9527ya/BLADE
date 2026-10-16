@@ -711,6 +711,30 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			out["cold_digests_more"] = more // 被截断的更旧 digest 的 id；用 expand_digest(id) 展开
 		}
 	}
+	// AD 域内路径（P32）：导入过 BloodHound/SharpHound 采集结果时，给一条**摘要**——
+	// 有多少域内对象、几条能走到高价值目标的现成路、最省事的那条长什么样。
+	// 只给摘要不给全量：路径可能几十条，全塞进每一轮提示词是纯浪费；要看全部用 ad_paths 工具。
+	// 域内数据为空时这一段不出现（没导过采集结果的任务，提示词里不该多出无关内容）。
+	if t.ts != nil {
+		if adNodes, err := t.ts.ListByKind(db.KindADObject, 20000); err == nil && len(adNodes) > 0 {
+			if adEdges, err := t.ts.Edges(20000); err == nil {
+				res := db.ADPaths(adNodes, adEdges, 0)
+				ad := map[string]any{
+					"objects": res.Objects, "highvalue_targets": res.HighValue,
+					"paths_total": len(res.Paths),
+				}
+				const adPathPreview = 3
+				if len(res.Paths) > 0 {
+					preview := res.Paths
+					if len(preview) > adPathPreview {
+						preview = preview[:adPathPreview]
+					}
+					ad["shortest_paths"] = preview
+				}
+				out["ad_graph"] = ad
+			}
+		}
+	}
 	// the original task (root) so the planner always has it, not just the
 	// decomposed goals.
 	if description, goal, err := t.ts.Root(); err == nil {
@@ -2772,5 +2796,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),
+		// ad_paths（P32）：读导入的域内采集结果推出的攻击路径（非特权账号 → 高价值目标）。
+		t.adPaths(),
 	}
 }

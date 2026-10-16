@@ -75,6 +75,12 @@ const (
 	// 它是「平台」与「扫描器」的分水岭：只会打的是扫描器，能回答「这套防御拦不拦得住」的才是平台。
 	// 而且它恰恰是本项目最适合做的一件事——它需要攻防两侧都可控，而实验室正是唯一同时具备两侧的地方。
 	KindDetection = "detection"
+	// AD 层（P32）：BloodHound/SharpHound 采集回来的域内对象（用户/组/机器/域/OU/GPO）。
+	//
+	// 只占**一个** kind，靠 payload.category 分类：六个 kind 意味着 ck_node_kind 与
+	// ck_node_state 两处列表都得跟着长，而 AD 对象的状态语义完全一致（都是「采集到的事实」），
+	// 拆开只有维护成本、没有表达力。P27 的 foothold/credential 已经是这个形状。
+	KindADObject = "ad_object"
 )
 
 // 检测验证节点的状态：三态，且 **unknown 必须独立存在**。
@@ -86,6 +92,13 @@ const (
 	StateDetectionNotTriggered = "not_triggered" // 确实没响（证据：查询过、该时段无记录）
 	StateDetectionUnknown      = "unknown"       // 无从判定（没日志源、没权限、时段对不上…）——不是"没响"
 )
+
+// AD 对象只有一个状态：active（这次采集里它在）。
+//
+// 刻意**不做**「上次采集有、这次没有 → stale」：采集是分文件的（用户可能只导 users.json），
+// 按缺席判 stale 会把整片 computers 误标成过期。缺席是「这次没采」，不是「没了」——
+// 本仓一贯不把「没测到」写成结论（同 P24/P31）。
+const StateADActive = "active"
 
 // 战果节点（kind='foothold'/'credential'）的状态：只有两态——在手 / 掉了。
 // 战果的全部价值就在「现在还能不能用」，再多的状态只是要人维护、且没人会维护的字段；
@@ -179,4 +192,15 @@ const (
 	// 被当成「下游」，删掉一条用过它的意图就可能连带把据点/凭据本身删掉——那是证据级
 	// 数据，不能挂在会被级联的关系上。单独一条边把它隔离在这套级联之外。
 	RelUses = "uses"
+	// AD 攻击路径（P32）：域内对象的四种关系，直接映射 BloodHound 的语义，不合并——
+	// 「谁是谁的成员」「谁是本机管理员」「谁在这台机器上有会话」「谁对谁有什么权限」
+	// 是四条不同的路，路径视图要能分别读出来。
+	RelMemberOf  = "member_of"  // 子对象 --member_of--> 父组
+	RelAdminTo   = "admin_to"   // principal --admin_to--> computer（本机管理员）
+	RelSessionOn = "session_on" // user --session_on--> computer（在这台机器上有会话）
+	// RelCan：ACE 长尾——具体权限名写在 attrs.rights 数组里（GenericAll/DCSync/CanRDP/…）。
+	//
+	// 收成一条 rel 而不是每种权限一条，是因为权限名是**开放集合**（BloodHound 每版都在加），
+	// 每加一个就改一次列级 CHECK 是不能接受的；attrs 就是留给它的扩展点。
+	RelCan = "can"
 )

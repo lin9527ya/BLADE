@@ -803,6 +803,12 @@ func (s *Server) Handler() http.Handler {
 	// CSV 目标清单导入：预览只读、应用才写（同一份解析器，见 server/asset_import.go）。
 	mux.HandleFunc("POST /api/assets/import/preview", s.assetImportPreview)
 	mux.HandleFunc("POST /api/assets/import", s.assetImportApply)
+	// AD 攻击路径（P32）：采集结果导入任务图 + 从图里读域内路径。
+	// 导入是**数据摄入**、不产生对目标的动作，因此与资产导入同理不过 RoE/命令门；
+	// 但"据此去打"走的仍是既有的意图/命令门，这一点别混。
+	mux.HandleFunc("POST /api/ad/import/preview", s.adImportPreview)
+	mux.HandleFunc("POST /api/ad/import", s.adImportApply)
+	mux.HandleFunc("GET /api/tasks/{id}/ad-paths", s.taskADPaths)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)
@@ -4279,12 +4285,14 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		// 攻击路径：把 uses/yields 两种边接起来读（见 server/attack_chains.go）。不引入新模型。
 		chains = buildAttackChains(edges, lootLabels(footholds, credentials), intentSummary, intentState, intentTech)
 	}
+	// 域内路径（P32）：与任务页的「AD 攻击路径」同一份实现——报告里写的和页面看到的不该是两个答案。
+	adPaths := adPathsForReport(t.Store)
 
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
-		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy, Chains: chains,
+		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")

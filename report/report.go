@@ -59,6 +59,9 @@ type Input struct {
 	LootUsedBy map[int64][]LootUse
 	// Chains 是重建出来的攻击路径（见 AttackChain）。空 = 本次没有多步链，报告里不出这一节。
 	Chains []AttackChain
+	// ADPaths 是域内攻击路径（见 ADPath）：从手头账号到高价值目标的最短利用链。
+	// 空 = 这次没有导过 AD 采集结果（或图里没有可达的高价值目标），报告里不出这一节。
+	ADPaths []ADPath
 	// TechniqueTally 是本次作业用到的 ATT&CK 技术（技术 ID → 意图数）。
 	//
 	// 红队的交付物本来就是按技术组织的——客户要的是「你打了哪些 TTP」，不是「你试过哪些方向」。
@@ -129,6 +132,17 @@ type ChainStep struct {
 	Techniques []string
 	Produced   []string // 这一步产出的战果标签（可能多条）
 }
+
+// ADPath / ADHop 是域内攻击路径（P32）。定义在 db（db/ad_paths.go）——页面、报告、
+// agent 工具三处读同一份实现，别名在这里只是让 report 的调用点读起来自然。
+//
+// 与 AttackChain 分开：那一条讲「这次作业里哪一步动用了哪次访问」（作业叙述），
+// 这一条讲「域里本来存在哪条路」（拓扑）。两者的边与节点都不同，合成一条只会两边都读不清。
+type ADPath = db.ADPath
+type ADHop = db.ADHop
+
+// ADRelLabel 把边类型翻成报告里的中文（同 db.ADRelLabel：报告与页面必须是同一套词）。
+func ADRelLabel(rel string) string { return db.ADRelLabel(rel) }
 
 // CandidateNote is one closed candidate (ruled_out / open_proof_gap) with its
 // note and confidence label, sourced from the findings row.
@@ -402,6 +416,32 @@ func Markdown(in Input) string {
 				}
 				if len(s.Produced) > 0 {
 					fmt.Fprintf(&b, " → 得到：%s", strings.Join(s.Produced, "、"))
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// 域内攻击路径（P32）：来自导入的 BloodHound/SharpHound 采集结果。与上面那条「攻击路径」
+	// 是两件事——上面讲这次作业怎么走的，这里讲域里本来存在哪条路。分开写，别让客户把
+	// 「我们会走到这」读成「我们已经走到了这」。
+	if len(in.ADPaths) > 0 {
+		fmt.Fprintf(&b, "## AD 攻击路径（域内可达，来自采集结果）\n\n")
+		fmt.Fprintf(&b, "> 以下路径由目录采集结果推导，表示**存在**这条利用链，不代表已实施。\n\n")
+		for i, p := range in.ADPaths {
+			fmt.Fprintf(&b, "**路径 %d**：%s → %s", i+1, p.Start, p.Target)
+			if len(p.TargetTags) > 0 {
+				fmt.Fprintf(&b, "（%s）", strings.Join(p.TargetTags, "、"))
+			}
+			b.WriteString("\n\n")
+			for _, s := range p.Steps {
+				fmt.Fprintf(&b, "- %s --%s--> %s", s.From, ADRelLabel(s.Rel), s.To)
+				if len(s.Rights) > 0 {
+					fmt.Fprintf(&b, " [%s]", strings.Join(s.Rights, " "))
+				}
+				if s.Note != "" {
+					fmt.Fprintf(&b, "：%s", s.Note)
 				}
 				b.WriteString("\n")
 			}
