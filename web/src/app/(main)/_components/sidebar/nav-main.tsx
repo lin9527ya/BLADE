@@ -29,6 +29,7 @@ import {
   SidebarMenuSubItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type {
   NavBadge,
@@ -85,6 +86,29 @@ function hasSubItems(item: NavMainItem): item is NavMainParentItem {
 }
 
 export function NavMain({ items }: NavMainProps) {
+  const { t } = useI18n();
+  // 在这里一次性把标题翻好再往下传：链接/折叠/图标兜底/顶部 tooltip 都在读 item.title，
+  // 替换一处比在每个渲染点包一层 t() 少改十来处，也不会漏掉 tooltip 这类边角。
+  // 词条键按 id 走（nav.<id>），中文原文当兜底——没翻译的地方显示中文，不显示键名。
+  const localized = React.useMemo(
+    () =>
+      items.map((group) => ({
+        ...group,
+        label: group.label ? t(`nav.group.${group.id}`, group.label) : group.label,
+        // 判别联合（链接项 subItems?: never / 父项 subItems: […]）用 subItems 是否有值来分，
+        // 而不是 `"subItems" in item`：后者在这套类型下没能收窄。
+        items: group.items.map((item) =>
+          item.subItems
+            ? {
+                ...item,
+                title: t(`nav.${item.id}`, item.title),
+                subItems: item.subItems.map((sub) => ({ ...sub, title: t(`nav.${sub.id}`, sub.title) })),
+              }
+            : { ...item, title: t(`nav.${item.id}`, item.title) },
+        ),
+      })),
+    [items, t],
+  );
   const rawPath = usePathname();
   // 路由段含中文，pathname 可能是百分号编码，解码后再与导航 url 比较，保证高亮命中。
   const path = (() => {
@@ -115,7 +139,7 @@ export function NavMain({ items }: NavMainProps) {
 
   return (
     <>
-      {items.map((group) => (
+      {localized.map((group) => (
         <SidebarGroup key={group.id}>
           {group.label && (
             <SidebarGroupLabel className="group-data-[collapsible=icon]:pointer-events-none">

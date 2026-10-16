@@ -22,6 +22,8 @@ export type PreferencePersistence = "none" | "client-cookie" | "server-cookie" |
  * All available preference keys and their value types.
  */
 export type PreferenceValueMap = {
+  /** 界面语言（P41）：zh 为源文，en 走 lib/i18n/en.ts 的词典。 */
+  language: "zh" | "en";
   theme_mode: ThemeMode;
   theme_preset: ThemePreset;
   font: FontKey;
@@ -66,6 +68,7 @@ type PreferencePersistenceConfig = {
  * Default preference values on first load.
  */
 export const PREFERENCE_DEFAULTS: PreferenceValueMap = {
+  language: "zh",
   theme_mode: "light",
   theme_preset: "default",
   font: "geist",
@@ -80,6 +83,7 @@ export const PREFERENCE_DEFAULTS: PreferenceValueMap = {
  * You can change these per-key.
  */
 export const PREFERENCE_PERSISTENCE: PreferencePersistenceConfig = {
+  language: "client-cookie",
   theme_mode: "client-cookie",
   theme_preset: "client-cookie",
   font: "client-cookie",

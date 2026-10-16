@@ -10,6 +10,7 @@ import { PREFERENCE_DEFAULTS, PREFERENCE_PERSISTENCE } from "@/lib/preferences/p
 
 export function ThemeBootScript() {
   const persistence = JSON.stringify({
+    language: PREFERENCE_PERSISTENCE.language,
     theme_mode: PREFERENCE_PERSISTENCE.theme_mode,
     theme_preset: PREFERENCE_PERSISTENCE.theme_preset,
     font: PREFERENCE_PERSISTENCE.font,
@@ -20,6 +21,7 @@ export function ThemeBootScript() {
   });
 
   const defaults = JSON.stringify({
+    language: PREFERENCE_DEFAULTS.language,
     theme_mode: PREFERENCE_DEFAULTS.theme_mode,
     theme_preset: PREFERENCE_DEFAULTS.theme_preset,
     font: PREFERENCE_DEFAULTS.font,
@@ -69,6 +71,11 @@ export function ThemeBootScript() {
 
           return value;
         }
+
+        // 界面语言（P41）：在样式生效之前就把 <html lang> 定下来——读屏、浏览器翻译、
+        // 以及 :lang() 选择器都靠它，晚一步就是"页面已是英文、语言还是中文"的错位。
+        var rawLang = readPreference("language", DEFAULTS.language);
+        root.setAttribute("lang", rawLang === "en" ? "en" : "zh-CN");
 
         var rawMode = readPreference("theme_mode", DEFAULTS.theme_mode);
         var rawPreset = readPreference("theme_preset", DEFAULTS.theme_preset);
