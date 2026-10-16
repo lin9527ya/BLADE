@@ -566,6 +566,18 @@ export interface ScopeEnforcement {
   paused_tasks: number;
 }
 
+/** 凭据明文的受控入口返回（P36）：明文只在人主动点开时出，且服务端会为此留痕。 */
+export interface CredentialReveal {
+  id: number;
+  kind: string;
+  username: string;
+  secret: string;
+  fingerprint: string;
+  summary: string;
+  revealed_by: string;
+  note?: string;
+}
+
 export interface ADHop {
   from: string;
   rel: string;
@@ -594,6 +606,8 @@ export interface ADPathsResponse {
 }
 
 export interface TaskNode {
+  /** 凭据节点才有：明文不进界面的前提下，用指纹指认一条凭据（P36）。 */
+  fingerprint?: string;
   id: string;
   type: ExploreKind;
   payload?: string;

@@ -683,7 +683,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		credWindow = credWindow[:lootListCap]
 	}
 	out["footholds"] = compactLoot(footholdWindow, factFrom, usedLoot, "access", "privilege")
-	out["credentials"] = compactLoot(credWindow, factFrom, usedLoot, "kind", "username")
+	out["credentials"] = compactCredentials(credWindow, factFrom, usedLoot)
 	// 检测验证：这一手做完之后，防御侧有没有响。三态分别计数而不是合成一个"检出率"——
 	// **把 unknown 混进分母就是把「测不到」读成「没响」**，那会给出一个比不给更危险的结论。
 	const detectionListCap = 8
@@ -1159,6 +1159,46 @@ func compactLoot(nodes []*db.Node, from map[int64]int64, used map[int64]bool, ke
 			inheritedMap(m, n.SourceTaskID)
 		}
 		out = append(out, m)
+	}
+	return out
+}
+
+// compactCredentials 是凭据版的 compactLoot（P36）：在战果那套字段之上补三样**规划层真正需要**的
+// 东西——指纹（可指认但**不含明文**）、能登哪（targets）、以及"哪条目标上验证过"。
+//
+// 明文照旧不进概览：概览会被折进每一轮提示词、还可能进日志。指纹让模型能在多轮之间指认
+// 「就是那条 wp_user 的口令」，而不需要看到它。
+func compactCredentials(nodes []*db.Node, from map[int64]int64, used map[int64]bool) []map[string]any {
+	out := compactLoot(nodes, from, used, "kind", "username", "confidence")
+	for i, n := range nodes {
+		if i >= len(out) {
+			break
+		}
+		v := db.ParseCredential(n)
+		if fp := v.Fingerprint(); fp != "" {
+			out[i]["fingerprint"] = fp
+		}
+		if len(v.Targets) > 0 {
+			targets := make([]map[string]any, 0, len(v.Targets))
+			for _, t := range v.Targets {
+				m := map[string]any{"host": t.Host}
+				if t.Port > 0 {
+					m["port"] = t.Port
+				}
+				if t.Service != "" {
+					m["service"] = t.Service
+				}
+				if t.Verified {
+					m["verified"] = true
+				}
+				targets = append(targets, m)
+			}
+			out[i]["targets"] = targets
+			if len(v.VerifiedTargets()) == 0 {
+				// 明确说清"没验证过"：缺省不写会让人把它读成"能登"，而它只是个候选目标。
+				out[i]["unverified"] = true
+			}
+		}
 	}
 	return out
 }
@@ -1936,6 +1976,32 @@ type credentialItem struct {
 	Kind     string `json:"kind"`     // password / hash / key / token
 	Username string `json:"username"` // 凭据对应的账号（哈希/密钥可能没有）
 	Secret   string `json:"secret"`   // 凭据本体
+	// Targets 是「这条凭据能登哪」（P36）。每条可带自己的 verified + evidence：
+	// 验证是**对某条目标**的结论——同一条口令在 A 机器能登、B 机器不能很常见。
+	Targets []db.CredentialTarget `json:"targets"`
+}
+
+// normalizeTargets 清掉空目标、去重合并、稳定排序，并**挡住"声称验证过却没有证据"**。
+// 与战果那套证据门同一条理由：verified 会被规划层当成既定事实（"这条能登，直接用它横向"），
+// 一条编出来的验证会让后续意图跑空，而且看不出是哪里错的。
+func normalizeTargets(in []db.CredentialTarget) ([]db.CredentialTarget, error) {
+	var out []db.CredentialTarget
+	for _, t := range in {
+		t.Host = strings.TrimSpace(t.Host)
+		t.Service = strings.TrimSpace(t.Service)
+		t.Protocol = strings.TrimSpace(t.Protocol)
+		t.Evidence = strings.TrimSpace(t.Evidence)
+		t.Note = strings.TrimSpace(t.Note)
+		if t.Host == "" {
+			continue
+		}
+		if t.Verified && t.Evidence == "" {
+			return nil, fmt.Errorf("目标 %s 标了 verified=true，但没有 evidence：验证过的结论必须留下那一行输出（它会被拿去规划「直接用这条凭据横向」）", t.Host)
+		}
+		out = db.MergeCredentialTarget(out, t)
+	}
+	db.SortCredentialTargets(out)
+	return out, nil
 }
 
 // recordLoot 写一个战果节点并连到产生它的意图（intent→yields→战果，与 fact/finding 同链）。
@@ -1943,7 +2009,7 @@ type credentialItem struct {
 // **故意比 record_fact 严**：summary、evidence、confidence 三者缺一不可。战果会被规划层
 // 当作既定事实拿去规划「能从这条通路往下做什么」，一条编出来的 shell 会让后续所有意图跑空，
 // 而且看不出是哪里错的——所以宁可拒收，也不要一条没有证据的战果入库。
-func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]string) (int64, error) {
+func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (int64, error) {
 	summary := strings.TrimSpace(base.Summary)
 	if summary == "" {
 		return 0, fmt.Errorf("summary 不能为空")
@@ -1976,8 +2042,19 @@ func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]string
 		}
 	}
 	for k, v := range extra {
-		if s := strings.TrimSpace(v); s != "" {
-			payload[k] = s
+		switch val := v.(type) {
+		case string:
+			if s := strings.TrimSpace(val); s != "" {
+				payload[k] = s
+			}
+		case []db.CredentialTarget:
+			if len(val) > 0 {
+				payload[k] = val
+			}
+		case nil:
+			// 空值不写：payload 里出现 "targets": [] 只会让读的人以为"确实一条都没有"。
+		default:
+			payload[k] = val
 		}
 	}
 	// priority 8：frontier 只取 intent，这个值不影响调度；它只如实标出这是高价值产物。
@@ -2013,7 +2090,7 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			id, err := t.recordLoot(db.KindFoothold, a.lootBase, map[string]string{
+			id, err := t.recordLoot(db.KindFoothold, a.lootBase, map[string]any{
 				"access": a.Access, "privilege": a.Privilege,
 			})
 			if err != nil {
@@ -2024,19 +2101,102 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 		})
 }
 
+// verifyCredential 把一条已有凭据的**可利用性**补上：在哪条目标上实测登入成功过。
+//
+// 为什么单独一个工具而不是"再 report 一次"：重复 report 会多出一条凭据节点，图上就出现两条
+// 一样的凭据、规划层还得自己判断哪条是真的。凭据的身份是它自己（那个节点），验证是对它的补充。
+//
+// 证据门与战果同一条：没有那一行输出，verified 就只是一个说法——而它会被拿去规划"直接用这条
+// 凭据横向"，说不清的验证等于把后续意图往空里送。
+func (t *ToolSet) verifyCredential() actool.CoreTool {
+	return t.writeExpTool("verify_credential",
+		"把一条【已记录】的凭据标成「在某条目标上实测登入成功」。用在：你真的拿它登进去了（ssh/mysql/rdp/smb… 成功）。"+
+			"必须给 evidence（登录成功的命令 + 关键输出行）与 host；重复验证同一目标会自动合并，已验证过不会被抹掉。"+
+			"**只在真的成功时用**：没成功就如实记 fact（「试过、不通」也是有价值的结论），不要标 verified。",
+		obj(map[string]any{
+			"credential_id": idp("要标记的凭据节点 id（report_credential 回执里的那个数）"),
+			"host":          str("在哪台目标上登成功了（域名或 IP）"),
+			"port":          intp("端口（可省略）"),
+			"service":       str("什么服务：ssh / rdp / smb / winrm / mysql / http / 其他"),
+			"protocol":      str("怎么连（可省略）"),
+			"evidence":      str("【一行】登录成功的命令 + 关键输出行（必填）"),
+			"note":          str("备注（可省略）"),
+		}, "credential_id", "host", "evidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				CredentialID json.RawMessage `json:"credential_id"`
+				Host         string          `json:"host"`
+				Port         int             `json:"port"`
+				Service      string          `json:"service"`
+				Protocol     string          `json:"protocol"`
+				Evidence     string          `json:"evidence"`
+				Note         string          `json:"note"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id := pid(a.CredentialID)
+			if id <= 0 {
+				return actool.Errorf("credential_id 必填：要标记哪一条凭据（report_credential 的回执里给了）"), nil
+			}
+			node, err := t.ts.GetNode(id)
+			if err != nil || node == nil || node.Kind != db.KindCredential {
+				return actool.Errorf("credential_id 必须是本任务里的一条凭据节点"), nil
+			}
+			// 合并后整份写回：payload 里还有 secret/summary 等字段，只改 targets 而不动其余。
+			var payload map[string]any
+			if err := json.Unmarshal(node.Payload, &payload); err != nil || payload == nil {
+				payload = map[string]any{}
+			}
+			cur := db.ParseCredential(node)
+			merged := db.MergeCredentialTarget(cur.Targets, db.CredentialTarget{
+				Host: a.Host, Port: a.Port, Service: a.Service, Protocol: a.Protocol,
+				Verified: true, Evidence: strings.TrimSpace(a.Evidence), Note: a.Note,
+			})
+			db.SortCredentialTargets(merged)
+			payload["targets"] = merged
+			if err := t.ts.SetNodePayload(id, db.KindCredential, payload); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return actool.Text(fmt.Sprintf("credential %d verified on %s（指纹 %s）",
+				id, merged[len(merged)-1].Label(), cur.Fingerprint())), nil
+		})
+}
+
 // reportCredential 记录一条从据点上读到的凭据。worker 侧。
 func (t *ToolSet) reportCredential() actool.CoreTool {
 	return t.writeExpTool("report_credential",
 		"记录一条【真实读到】的凭据（口令 / 哈希 / 密钥 / 令牌），连到产生它的意图。"+
 			"凭据是横向与提权的抓手：记下来，规划层才会派「拿它去哪试」的意图；不记就只能重挖一遍。"+
 			"必须给 evidence（读到它的那条命令与输出）与 confidence；**不要把猜测的、试出来的弱口令当成读到的凭据**——"+
-			"后者用 record_fact 记结论。",
+			"后者用 record_fact 记结论。"+
+			"\n\n**尽量给 targets（这条凭据能登哪）**：只写「我握着 wp_user 的口令」时，规划层只能派一条"+
+			"「拿它去试试」的意图，试出来的结论又会丢掉；写清能登的目标（主机/端口/服务），"+
+			"它就能直接派「用它登 X 做 Y」。已经实测登入成功的那条目标标 `verified: true` **并附上那一行输出**"+
+			"（没证据的 verified 会被拒收）——verified 是比 confidence 更硬的东西：confidence 说的是"+
+			"「我多确定读到的是真凭据」，verified 说的是「我用它真的进去了」。",
 		obj(map[string]any{
-			"summary":    str("一句话：【在哪台主机/哪个位置】读到了【谁】的【什么凭据】"),
-			"kind":       str("password（明文口令）| hash（哈希）| key（私钥/密钥）| token（令牌/票据）"),
-			"username":   str("凭据对应的账号（哈希、密钥可能没有，可省略）"),
-			"secret":     str("凭据本体（原文；报告与交付包只印身份与来源，不印这一项）"),
-			"detail":     str("细节：从哪个文件/配置/内存里读到的，可用于哪些系统等"),
+			"summary":  str("一句话：【在哪台主机/哪个位置】读到了【谁】的【什么凭据】"),
+			"kind":     str("password（明文口令）| hash（哈希）| key（私钥/密钥）| token（令牌/票据）"),
+			"username": str("凭据对应的账号（哈希、密钥可能没有，可省略）"),
+			"secret":   str("凭据本体（原文；报告与交付包只印身份与指纹，不印这一项）"),
+			"targets": map[string]any{
+				"type":        "array",
+				"description": "这条凭据能登哪（可选但强烈建议）：每条 {host, port?, service?, protocol?, verified?, evidence?, note?}。同一条目标重复给会自动合并。",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"host":     str("目标主机（域名或 IP）"),
+						"port":     intp("端口（可省略）"),
+						"service":  str("什么服务：ssh / rdp / smb / winrm / mysql / http / 其他（如实写）"),
+						"protocol": str("怎么连（可与 service 不同，可省略）"),
+						"verified": map[string]any{"type": "boolean", "description": "是否在这条目标上**实测登入成功**（true 时必须给 evidence）"},
+						"evidence": str("验证的那一行输出（verified=true 时必填）"),
+						"note":     str("备注（可省略）"),
+					},
+				},
+			},
+			"detail":     str("细节：从哪个文件/配置/内存里读到的等"),
 			"evidence":   str("【一行】关键证据：读到它的那条命令 + 关键输出行（必填）"),
 			"confidence": str("high（明文直接读到）| medium（格式像但未验证）| low（据线索推断，尚未确认）"),
 			"intent_id":  idp("当前任务的意图 id（你领到的意图）"),
@@ -2047,8 +2207,12 @@ func (t *ToolSet) reportCredential() actool.CoreTool {
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			id, err := t.recordLoot(db.KindCredential, a.lootBase, map[string]string{
-				"kind": a.Kind, "username": a.Username, "secret": a.Secret,
+			targets, err := normalizeTargets(a.Targets)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id, err := t.recordLoot(db.KindCredential, a.lootBase, map[string]any{
+				"kind": a.Kind, "username": a.Username, "secret": a.Secret, "targets": targets,
 			})
 			if err != nil {
 				return actool.Errorf(err.Error()), nil

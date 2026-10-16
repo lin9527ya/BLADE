@@ -818,6 +818,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/scope/enforcement", s.scopeEnforcementStatus)
 	mux.HandleFunc("POST /api/scope/kill-switch", s.setKillSwitch)
 	mux.HandleFunc("POST /api/scope/resume-all", s.resumeAllTasks)
+	// P36：凭据明文的受控入口（有副作用——写留痕，所以是 POST 不是 GET）。
+	mux.HandleFunc("POST /api/credentials/{id}/reveal", s.revealCredential)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)

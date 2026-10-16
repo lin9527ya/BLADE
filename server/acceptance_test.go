@@ -41,6 +41,7 @@ import (
 // + P26 CSV 资产导入 + P27 战果层 + P28 资产检索导入与存储清理 + P29 战果动用 + P30 攻击路径
 // + P31 检测验证 + P32 授权范围设置 + P33 战役层 + P34 AD 攻击路径导入
 // + P35 停机开关与作业时间窗
+// + P36 凭据可利用面
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -102,6 +103,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P33 战役层（归属与聚合；删战役只解绑不删任务）", func(t *testing.T) { accP33(t, env.forTest(t)) })
 	t.Run("P34 AD 攻击路径导入（预览只读/路径可读/重导只合并/坏输入退回）", func(t *testing.T) { accP34(t, env.forTest(t)) })
 	t.Run("P35 停机开关与作业时间窗（到点全停/三层拦得住/恢复靠手动/回执可查）", func(t *testing.T) { accP35(t, env.forTest(t)) })
+	t.Run("P36 凭据可利用面（能登哪/验证要有证据/明文受控且留痕）", func(t *testing.T) { accP36(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -4333,5 +4335,128 @@ func accP35(t *testing.T, e *accEnv) {
 	raw, _, _ = e.m.pg.GetSetting(settingScopeWindowState)
 	if !strings.Contains(raw, "parse_error") {
 		t.Errorf("窗口解析失败该在状态里说出来：%q", raw)
+	}
+}
+
+// accP36 凭据可利用面：把 credential 节点从「在手/掉了」做成能据此行动的东西——
+// 能登哪、验证过没有、以及**明文只在受控入口出且留痕**。
+func accP36(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p36", "凭据可利用面")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	worker := tsx.WorkerTools()
+	planner := tsx.PlannerTools()
+
+	nodeID := func(out string) int64 {
+		t.Helper()
+		line, _, _ := strings.Cut(out, "\n")
+		_, raw, _ := strings.Cut(line, ": ")
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			t.Fatalf("回执里没有节点 id：%q", out)
+		}
+		return id
+	}
+	callOn := func(face []actool.CoreTool, toolName, in string) string {
+		t.Helper()
+		res, err := workflowTool(t, face, toolName).Call(context.Background(), json.RawMessage(in), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		return res.Flatten()
+	}
+
+	intentOut := callOn(planner, "add_intent", `{"summary":"读 wp-config 找数据库口令"}`)
+	if !strings.HasPrefix(intentOut, "intent created: ") {
+		t.Fatalf("意图没建上：%s", intentOut)
+	}
+	intentID := nodeID(intentOut)
+
+	// ① 声称验证过却没有证据 → 工具拒收（与战果同一道证据门）。
+	out := callOn(worker, "report_credential",
+		`{"summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"acc-p36-secret",`+
+			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+strconv.FormatInt(intentID, 10)+`,`+
+			`"targets":[{"host":"acc-p36-db01","port":3306,"service":"mysql","verified":true}]}`)
+	if !strings.Contains(out, "没有 evidence") {
+		t.Fatalf("没证据的 verified 该被拒收：%s", out)
+	}
+
+	// ② 正常记一条：一条已验证 + 一条待验证。
+	out = callOn(worker, "report_credential",
+		`{"summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"acc-p36-secret",`+
+			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+strconv.FormatInt(intentID, 10)+`,`+
+			`"targets":[{"host":"acc-p36-db01","port":3306,"service":"mysql","verified":true,`+
+			`"evidence":"mysql -h acc-p36-db01 -u wp_user → 登录成功"},{"host":"acc-p36-db02","service":"mysql"}]}`)
+	if !strings.HasPrefix(out, "credential recorded: ") {
+		t.Fatalf("凭据没记上：%s", out)
+	}
+	credID := nodeID(out)
+
+	// ③ 报告：有指纹、有可登目标、**没有明文**。报告是要交出去的文档，还会被打进批量交付包。
+	md := e.report(task)
+	fp := db.CredentialFingerprint("password", "wp_user", "acc-p36-secret")
+	e.mustContain(md, "指纹："+fp, "报告里的凭据指纹")
+	e.mustContain(md, "可登目标：acc-p36-db01:3306（mysql）（已验证可登）、acc-p36-db02（mysql）（待验证）", "可登目标与验证状态")
+	if strings.Contains(md, "acc-p36-secret") {
+		t.Fatalf("凭据明文进了报告：\n%s", md)
+	}
+
+	// ④ 图形接口给指纹（界面默认脱敏靠它指认），同样不含明文。
+	rec := e.request(http.MethodGet, "/api/exploration/graph?task="+task.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("graph status=%d", rec.Code)
+	}
+	e.mustContain(rec.Body.String(), `"fingerprint":"`+fp+`"`, "图形接口的凭据指纹")
+	// 明文**不随节点接口下发**（服务端把 payload 里的 secret 摘掉、换成 secret_redacted 标记）：
+	// 报告、概览、提示词三处不印明文，界面这一处也不该拿到它——"明文只在受控入口出"要真的是
+	// 只有那一个入口，而不是"界面上有、只是没人细看"。
+	if strings.Contains(rec.Body.String(), "acc-p36-secret") {
+		t.Fatalf("凭据明文随节点接口下发了：\n%s", rec.Body.String())
+	}
+	// payload 是以 JSON 字符串下发的，里面的引号被转义过——断言标记名就够了。
+	e.mustContain(rec.Body.String(), "secret_redacted", "脱敏标记（界面据此显示可查看入口）")
+
+	// ⑤ 明文受控入口：POST 取回原文，且**那一次留痕**（任务时间线里能查到谁什么时候看过）。
+	rec = e.request(http.MethodPost, "/api/credentials/"+strconv.FormatInt(credID, 10)+"/reveal?task="+task.ID, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("取明文 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), "acc-p36-secret", "受控入口返回的明文")
+	e.mustContain(rec.Body.String(), `"fingerprint":"`+fp+`"`, "受控入口返回的指纹")
+	acts, _, err := task.Store.ActivityList(nil, 0, 200)
+	if err != nil {
+		t.Fatalf("读时间线失败：%v", err)
+	}
+	seen := false
+	for _, a := range acts {
+		if strings.Contains(a.Summary, "查看凭据明文") && strings.Contains(a.Summary, fp) {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Errorf("查看明文该在任务时间线留一条痕：%+v", acts)
+	}
+
+	// ⑥ 受控入口只认凭据、且只认本任务的：指向意图节点 → 404；指向别的任务的凭据 → 404。
+	if rec := e.request(http.MethodPost,
+		"/api/credentials/"+strconv.FormatInt(intentID, 10)+"/reveal?task="+task.ID, `{}`); rec.Code != 404 {
+		t.Errorf("非凭据节点该 404，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	if rec := e.request(http.MethodPost,
+		"/api/credentials/"+strconv.FormatInt(credID, 10)+"/reveal?task=999999", `{}`); rec.Code != 404 {
+		t.Errorf("别的任务/不存在的任务该 404，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+
+	// ⑦ verify_credential：后来真的登成功了，补上验证（不新记一条凭据）。
+	out = callOn(worker, "verify_credential",
+		`{"credential_id":`+strconv.FormatInt(credID, 10)+`,"host":"acc-p36-db02","service":"mysql",`+
+			`"evidence":"mysql -h acc-p36-db02 -u wp_user → 登录成功"}`)
+	if !strings.Contains(out, "verified on") {
+		t.Fatalf("验证没记上：%s", out)
+	}
+	md = e.report(task)
+	e.mustContain(md, "acc-p36-db02（mysql）（已验证可登）", "补上的验证进了报告")
+	if strings.Contains(md, "acc-p36-secret") {
+		t.Fatalf("补验证后明文进了报告：\n%s", md)
 	}
 }

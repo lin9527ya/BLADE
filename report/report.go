@@ -247,21 +247,34 @@ type lootView struct {
 	Kind      string
 	Username  string
 	Secret    string
+	// Targets 是凭据能登哪（P36）：报告要能写出「这条口令能登 db01:3306（已验证）」，
+	// 而不是只写「拿到一条凭据」。
+	Targets []db.CredentialTarget
+}
+
+// Fingerprint 是凭据的短指纹（脱敏展示：报告里指认一条凭据靠它，不靠明文）。
+func (v lootView) Fingerprint() string {
+	return db.CredentialFingerprint(v.Kind, v.Username, v.Secret)
 }
 
 func parseLoot(n *db.Node) lootView {
 	var p struct {
-		Summary   string `json:"summary"`
-		Detail    string `json:"detail"`
-		Evidence  string `json:"evidence"`
-		Access    string `json:"access"`
-		Privilege string `json:"privilege"`
-		Kind      string `json:"kind"`
-		Username  string `json:"username"`
-		Secret    string `json:"secret"`
+		Summary   string                `json:"summary"`
+		Detail    string                `json:"detail"`
+		Evidence  string                `json:"evidence"`
+		Access    string                `json:"access"`
+		Privilege string                `json:"privilege"`
+		Kind      string                `json:"kind"`
+		Username  string                `json:"username"`
+		Secret    string                `json:"secret"`
+		Targets   []db.CredentialTarget `json:"targets"`
 	}
 	_ = json.Unmarshal(n.Payload, &p)
-	return lootView{p.Summary, p.Detail, p.Evidence, p.Access, p.Privilege, p.Kind, p.Username, p.Secret}
+	return lootView{
+		Summary: p.Summary, Detail: p.Detail, Evidence: p.Evidence,
+		Access: p.Access, Privilege: p.Privilege,
+		Kind: p.Kind, Username: p.Username, Secret: p.Secret, Targets: p.Targets,
+	}
 }
 
 // prefixIf 渲染「标签：值」；值为空时返回空串（交给 writeLootMeta 略去）。
@@ -270,15 +283,6 @@ func prefixIf(label, value string) string {
 		return ""
 	}
 	return label + "：" + value
-}
-
-// credentialBodyNote 是报告对凭据本体的处理：只说有没有，不印内容。
-// 印出来等于把可用凭据随交付物一起发走——报告是会被提交、被转发的文档。
-func credentialBodyNote(secret string) string {
-	if secret == "" {
-		return ""
-	}
-	return "已取得（原文不写入报告）"
 }
 
 // lootStateLabel 渲染战果状态。未标定/未知的状态原样输出，不猜。
@@ -384,16 +388,36 @@ func Markdown(in Input) string {
 		}
 		if len(in.Credentials) > 0 {
 			fmt.Fprintf(&b, "### 凭据（%d）\n\n", len(in.Credentials))
-			b.WriteString("_仅列身份与来源；**凭据本体不写入报告**（报告会随交付物外流），需要时在任务记录内查看。_\n\n")
+			b.WriteString("_仅列身份、**指纹**与来源；**凭据本体不写入报告**（报告会随交付物外流）。" +
+				"指纹是本体 sha256 的前 8 位：它让同一条凭据在多份报告与界面之间可指认，却反推不出明文。" +
+				"需要原文时在任务记录内按需查看（每次查看都会留痕）。_\n\n")
 			for i, n := range in.Credentials {
 				v := parseLoot(n)
 				fmt.Fprintf(&b, "**%d. %s**\n\n", i+1, nz(v.Summary, "（未填摘要）"))
 				writeLootMeta(&b, []string{
 					prefixIf("类型", v.Kind),
 					prefixIf("账号", v.Username),
-					prefixIf("本体", credentialBodyNote(v.Secret)),
+					prefixIf("指纹", v.Fingerprint()),
 					lootStateLabel(n.State),
 				})
+				// 能登哪：**验证过的与没验证的分开写**——列在一起会让人以为"列出来的都能登"，
+				// 而"待验证"恰恰是还没证实的部分。
+				if len(v.Targets) > 0 {
+					lines := make([]string, 0, len(v.Targets))
+					for _, t := range v.Targets {
+						if t.Verified {
+							lines = append(lines, t.Label()+"（已验证可登）")
+							continue
+						}
+						lines = append(lines, t.Label()+"（待验证）")
+					}
+					fmt.Fprintf(&b, "- 可登目标：%s\n", strings.Join(lines, "、"))
+				}
+				for _, t := range v.Targets {
+					if t.Verified && t.Evidence != "" {
+						fmt.Fprintf(&b, "- 验证证据（%s）：`%s`\n", t.Label(), t.Evidence)
+					}
+				}
 				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 				if v.Evidence != "" {
 					fmt.Fprintf(&b, "- 证据：`%s`\n", v.Evidence)
