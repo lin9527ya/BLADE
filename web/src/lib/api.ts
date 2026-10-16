@@ -12,6 +12,7 @@ import type {
   KillSwitchReceipt,
   ScopeEnforcement,
   TimelineResponse,
+  OpsecKnowledgeResponse,
   Activity,
   ADImportFile,
   ADImportPreview,
@@ -694,6 +695,8 @@ export const api = {
     post<ADImportResult>("/ad/import", { task_id: Number(taskId), files }),
   // 停机开关与作业时间窗的执行侧（P35）。停机**立即生效**（不等 scheduler tick）；
   // 解除与「继续全部」都不自动恢复任务，所以是两个独立动作。
+  // 可检出性知识库一览（P38，只读）：让团队看得见这份清单覆盖到哪、边界在哪。
+  opsecKnowledge: () => get<OpsecKnowledgeResponse>("/opsec/knowledge"),
   // 作业时间线（P37）：页面读的与导出的走服务端同一份装配（客户拿到的那份不该与界面对不上）。
   taskTimeline: (taskId: string, kinds = "") =>
     get<TimelineResponse>(`/tasks/${encodeURIComponent(taskId)}/timeline${kinds ? `?kinds=${encodeURIComponent(kinds)}` : ""}`),

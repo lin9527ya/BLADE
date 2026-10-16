@@ -566,6 +566,22 @@ export interface ScopeEnforcement {
   paused_tasks: number;
 }
 
+// ---- 事前可检出性知识库（P38，只读一览） ----
+
+export interface OpsecKnowledgeEntry {
+  id: string;
+  title: string;
+  where: string[];
+  signals?: string[];
+  exposure: string;
+  note: string;
+}
+
+export interface OpsecKnowledgeResponse {
+  entries: OpsecKnowledgeEntry[];
+  note: string;
+}
+
 // ---- 作业时间线（P37） ----
 
 export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "detection" | "note" | "step";

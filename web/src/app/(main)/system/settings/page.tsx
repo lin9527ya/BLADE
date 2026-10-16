@@ -12,6 +12,7 @@ import {
   RadioTowerIcon,
   SearchIcon,
   OctagonXIcon,
+  ScanSearchIcon,
   ShieldAlertIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -39,9 +40,30 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { CustomRule, ExplorationPolicyDefault, IntelQueryRow, ScopeEnforcement, Settings } from "@/lib/types";
+import type {
+  CustomRule,
+  ExplorationPolicyDefault,
+  IntelQueryRow,
+  OpsecKnowledgeResponse,
+  ScopeEnforcement,
+  Settings,
+} from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
+
+// 预计可见度的排序权重（高 → 低）。字符串比较会把"中"排到"低"前面，那正是这张清单
+// 最该避免的误导——人扫一眼顺序就形成了印象。
+function exposureWeight(exposure: string): number {
+  switch (exposure) {
+    case "高":
+      return 3;
+    case "中":
+      return 2;
+    case "低":
+      return 1;
+  }
+  return 0;
+}
 
 const SECTIONS = [
   { id: "basic", label: "基本设置" },
@@ -125,6 +147,8 @@ export default function SystemSettingsPage() {
   const [enforce, setEnforce] = React.useState<ScopeEnforcement | null>(null);
   const [killReason, setKillReason] = React.useState("");
   const [killBusy, setKillBusy] = React.useState(false);
+  // P38 可检出性知识库（只读一览）：让人看得见这份清单覆盖到哪、边界在哪。
+  const [opsecKB, setOpsecKB] = React.useState<OpsecKnowledgeResponse | null>(null);
   const [resumeBusy, setResumeBusy] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
@@ -409,6 +433,15 @@ export default function SystemSettingsPage() {
   React.useEffect(() => {
     loadEnforcement();
   }, [loadEnforcement]);
+
+  React.useEffect(() => {
+    api
+      .opsecKnowledge()
+      .then(setOpsecKB)
+      .catch(() => {
+        /* 读不到就不显示这张清单：它是参考资料，不该自己变成错误源 */
+      });
+  }, []);
 
   const doKillSwitch = (on: boolean) => {
     setKillBusy(true);
@@ -1190,6 +1223,49 @@ export default function SystemSettingsPage() {
                     </ul>
                   )}
                 </div>
+              )}
+            </SubBlock>
+
+            <SubBlock
+              title="可检出性知识库（事前）"
+              icon={<ScanSearchIcon className="text-muted-foreground size-4" />}
+            >
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                动手**之前**就能知道"这一手会留下什么"：平台按命令在下面这张表里查，命中了就把
+                「留在哪 / 具体信号 / 预计可见度」贴在**审批卡**上（人做决定的那一刻），agent 也能用
+                opsec_notes 工具主动查。
+                <br />
+                两条边界写在这里免得误读：①这是**预计**不是实测——实测结论走「检测验证」（P31），
+                两者刻意分开；②**没被收录不代表没有日志**，只代表这份清单没有依据。本库刻意保守，
+                只收公开、可核对的信号。
+              </p>
+              {opsecKB ? (
+                <>
+                  <p className="text-muted-foreground text-xs">
+                    共 {opsecKB.entries.length} 类手法；按预计可见度从高到低列。
+                  </p>
+                  <ul className="flex flex-col gap-2">
+                    {[...opsecKB.entries]
+                      .sort((a, b) => exposureWeight(b.exposure) - exposureWeight(a.exposure))
+                      .map((e) => (
+                        <li key={e.id} className="rounded-md border p-2.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={e.exposure === "高" ? "destructive" : "secondary"} className="shrink-0">
+                              可见度 {e.exposure}
+                            </Badge>
+                            <span className="text-sm font-medium">{e.title}</span>
+                          </div>
+                          <p className="text-muted-foreground mt-1 text-xs">
+                            留在哪：{e.where.join(" / ")}
+                            {(e.signals?.length ?? 0) > 0 ? ` · 信号：${(e.signals ?? []).join("；")}` : ""}
+                          </p>
+                          <p className="mt-1 text-xs break-words">{e.note}</p>
+                        </li>
+                      ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="text-muted-foreground text-xs">知识库加载中…</p>
               )}
             </SubBlock>
 
