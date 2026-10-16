@@ -19,7 +19,7 @@ import (
 
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 本文件实现自定义工具执行器(docs/自定义工具设计.md)。system=false 的 tools 行按

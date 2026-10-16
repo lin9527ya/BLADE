@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 // P13 执行服务：把长任务（扫描、目录爆破、批量枚举、字典跑批）从 agent run 里摘出来

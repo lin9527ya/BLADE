@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // P23 公司级知识层（agent 侧）：把"这家公司已知什么"作为**只读背景知识**注入

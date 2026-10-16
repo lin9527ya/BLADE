@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // P23 公司级知识的 HTTP 面：

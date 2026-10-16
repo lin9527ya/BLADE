@@ -16,9 +16,9 @@ import (
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/Norma/transcript"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/policy"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/policy"
 )
 
 // Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
@@ -108,7 +108,7 @@ func WorkerSessionID(explorationID, intentID int64) string {
 	return fmt.Sprintf("exp%d-worker-i%d", explorationID, intentID)
 }
 
-const workerChatMarkerPrefix = "<!-- ARTEX_WORKER_CHAT:"
+const workerChatMarkerPrefix = "<!-- BLADE_WORKER_CHAT:"
 
 func workerChatMarker(requestID string) string {
 	return workerChatMarkerPrefix + requestID + " -->"

@@ -1,4 +1,4 @@
-// ARTEX domain model — types used across the UI.
+// BLADE domain model — types used across the UI.
 // Derived from the functional spec (section 7: 关键数据形状).
 
 export type TaskStatus =
@@ -1487,7 +1487,7 @@ export interface Settings {
   intercept_scope_hours?: string;
   /** 面向目标的产物语言（P41）：zh 默认不约束 / en 一律 ASCII 英文。与界面语言无关。 */
   artifact_language?: "zh" | "en";
-  /** 界面显示名（P42）：空 = 内置 "ARTEX"。只覆盖运行时标题；静态 HTML 的 title 是构建期常量。 */
+  /** 界面显示名（P42）：空 = 内置 "BLADE"。只覆盖运行时标题；静态 HTML 的 title 是构建期常量。 */
   site_name?: string;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
@@ -2244,7 +2244,7 @@ export interface UpdateCheck {
   os: string;
   arch: string;
   repo: string;
-  /** 是否存在可回滚的上一版本（artex.old）。 */
+  /** 是否存在可回滚的上一版本（blade.old）。 */
   has_backup: boolean;
   /** 本次启动时自更新自举的结论（换装失败 / 已回滚等），无事发生时为空。 */
   boot_notice?: string;

@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // cgNode is the minimal node view the cold-graph algorithms need.

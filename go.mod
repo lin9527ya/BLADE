@@ -1,4 +1,4 @@
-module github.com/lin9527ya/artex
+module github.com/lin9527ya/blade
 
 go 1.26.3
 

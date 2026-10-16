@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
 )
 
 // 停机开关与作业时间窗的**执行侧**（P35）。

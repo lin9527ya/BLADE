@@ -6,13 +6,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/policy"
-	"github.com/lin9527ya/artex/traffic"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/policy"
+	"github.com/lin9527ya/blade/traffic"
 )
 
 // DTO/serialization layer: each handler emits EXACTLY the frontend's spec shapes
-// (artex/web/src/lib/types.ts). These reshape db package structs so the
+// (blade/web/src/lib/types.ts). These reshape db package structs so the
 // internal DB model never leaks over the API. The db structs and the frontend are
 // the canonical contracts; this file maps one onto the other.
 

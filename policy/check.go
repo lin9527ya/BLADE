@@ -101,7 +101,7 @@ func (e Effective) CheckIntent(in IntentInput) Verdict {
 // 不是目标侧的防御（否则它会本能地换编码/换措辞再试）；③ 往哪改是合规的。
 func RejectText(v Verdict, summary string) string {
 	var b strings.Builder
-	b.WriteString("【ARTEX 探索策略·硬拒绝】本条意图未写入探索图（不计入待领方向，也不会被执行）。\n")
+	b.WriteString("【BLADE 探索策略·硬拒绝】本条意图未写入探索图（不计入待领方向，也不会被执行）。\n")
 	if v.Matched != "" {
 		fmt.Fprintf(&b, "命中条目：%s（%s）——命中词「%s」位于意图描述。\n", v.ItemLabel, v.ItemID, v.Matched)
 	} else {

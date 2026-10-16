@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 战役 API：任务之上的一层（见 db/campaigns.go 与 schema.sql 的 campaigns 注释）。

@@ -12,9 +12,9 @@ import (
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/Norma/transcript"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/policy"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/policy"
 )
 
 // Planner is the event-driven LLM planner (docs §4.3): each time the asset or

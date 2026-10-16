@@ -13,7 +13,7 @@ import (
 	"sort"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // digestMemberEntry builds the compact per-member view expand_digest returns —

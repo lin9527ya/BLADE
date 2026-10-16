@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/agent"
+	"github.com/lin9527ya/blade/agent"
 )
 
 func TestEngineDeleteBarrierRejectsNewTaskOperations(t *testing.T) {

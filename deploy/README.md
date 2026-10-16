@@ -28,7 +28,7 @@ FOFA / Shodan / ZoomEye / Censys 都是全 IPv4 扫描 + 协议指纹。所以�
 | CF 代理 + 防火墙只放 CF 段 | 开 443，只对 CF 可见 | ★★★ |
 | 公网直连 + 改标题换端口 | 开 8787，全网可见 | ★（只是"不那么显眼"） |
 
-**ARTEX 平台侧已经默认按最安全的一档做**（见下面第五节）：不显式写地址就只绑 loopback。
+**BLADE 平台侧已经默认按最安全的一档做**（见下面第五节）：不显式写地址就只绑 loopback。
 
 ---
 
@@ -39,9 +39,9 @@ FOFA / Shodan / ZoomEye / Censys 都是全 IPv4 扫描 + 协议指纹。所以�
 ```bash
 # VPS 上
 cloudflared tunnel login
-cloudflared tunnel create artex
+cloudflared tunnel create blade
 cp deploy/cloudflared.yml /etc/cloudflared/config.yml   # 填上 tunnel id 与凭据路径
-cloudflared tunnel route dns artex console.example.com
+cloudflared tunnel route dns blade console.example.com
 cloudflared tunnel ingress validate
 sudo cloudflared service install
 ```
@@ -57,7 +57,7 @@ ssh -N -L 8787:127.0.0.1:8787 you@your-vps
 # 浏览器打开 http://127.0.0.1:8787
 ```
 
-VPS 上什么都不用改（ARTEX 默认就绑 loopback）。想更省心就用 Tailscale/WireGuard，把它当内网机器用。
+VPS 上什么都不用改（BLADE 默认就绑 loopback）。想更省心就用 Tailscale/WireGuard，把它当内网机器用。
 
 ---
 
@@ -72,7 +72,7 @@ VPS 上什么都不用改（ARTEX 默认就绑 loopback）。想更省心就用 
 2. **源站证书用 Cloudflare Origin Certificate**（15 年、**不进 CT 日志**）。
    **不要**用 Let's Encrypt——那会把域名送进 CT 日志。
 3. **反代按 `deploy/nginx-cloudflare.conf` 配**：`set_real_ip_from` + `CF-Connecting-IP`，
-   并把 `proxy_buffering off`（ARTEX 的活动流是 SSE，开着缓冲会"跑一会儿就断"）。
+   并把 `proxy_buffering off`（BLADE 的活动流是 SSE，开着缓冲会"跑一会儿就断"）。
 
 > 域名本身别带业务含义（`pentest.`、`attack.`、公司名都别用）：域名是公开的。
 
@@ -80,13 +80,13 @@ VPS 上什么都不用改（ARTEX 默认就绑 loopback）。想更省心就用 
 
 ## 四、进程守护（systemd）
 
-仓库里的 `start.sh` 只做一件事：把 artex 跑起来、按退出码决定要不要再拉起。注册成服务用
-`deploy/artex.service`：
+仓库里的 `start.sh` 只做一件事：把 blade 跑起来、按退出码决定要不要再拉起。注册成服务用
+`deploy/blade.service`：
 
 ```bash
-sudo cp deploy/artex.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now artex
-journalctl -u artex -f
+sudo cp deploy/blade.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now blade
+journalctl -u blade -f
 ```
 
 它与 `start.sh` 的退出码约定是配套的：`0` = 停（不重启）、`75` = "换新版本再跑"（自更新用）。
@@ -137,7 +137,7 @@ nmap -Pn -p 5432 <你的VPS IP>
 
 ## 七、还值得加（运维层，平台不管）
 
-- **fail2ban**：ARTEX 自身有登录节流（5 次失败锁 5 分钟、全局计数、内存态），但公网形态下
+- **fail2ban**：BLADE 自身有登录节流（5 次失败锁 5 分钟、全局计数、内存态），但公网形态下
   按 IP 封禁更有意义——反代日志 + fail2ban 是标准做法。
 - **Cloudflare Access**：Tunnel 或代理形态下都建议加，等于在登录页之前再放一道门。
 - **只跑需要的服务**：VPS 上别顺手装一堆东西；每一个开放端口都是给自己加的一分可见度。

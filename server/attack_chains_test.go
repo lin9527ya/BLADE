@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 攻击路径重建是纯函数（只读边与标签表），所以这些用例不连库。

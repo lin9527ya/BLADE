@@ -10,10 +10,10 @@ import (
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/Norma/transcript"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/guard"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/policy"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/guard"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/policy"
 )
 
 // MainAgent is the thin human-interface orchestrator (docs §4.2 / §7). The human

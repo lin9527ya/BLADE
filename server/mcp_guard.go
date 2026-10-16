@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/mcphttp"
+	"github.com/lin9527ya/blade/mcphttp"
 )
 
 // P24 把设置里的 MCP 守卫参数接到 mcphttp 的全局解析器上（每调用现读：改设置立即生效，

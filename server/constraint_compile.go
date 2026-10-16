@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
 )
 
 // P18 约束可执行化（HTTP 面）：

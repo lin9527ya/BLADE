@@ -1,7 +1,7 @@
 // 推荐 MCP 目录（P28 续）：**只做预填，不自动安装**——用户点哪一条才把那条的命令/参数
 // 填进「添加 MCP」弹窗，仍然由人过一眼再保存。新增推荐项只影响这个列表，不动任何已有配置。
 //
-// 收录标准：与 ARTEX 既有能力**互补**，不重复它已经有的东西。
+// 收录标准：与 BLADE 既有能力**互补**，不重复它已经有的东西。
 // 刻意不收：filesystem（已有 Read/Write/Bash + 工作区）、memory / knowledge-graph（已有公司知识层
 // 与图谱）、搜索类（平台内建搜索后端）、puppeteer（与 playwright 重复）、直连平台自己数据库的。
 
@@ -58,7 +58,7 @@ export const MCP_CATALOG: MCPCatalogItem[] = [
   {
     name: "burp",
     title: "Burp Suite MCP",
-    desc: "把 Burp 的 sitemap / 主动扫描 / Repeater 交给 agent。ARTEX 自带 MITM 记录与拦截，Burp 的扫描器与生态是差异面。",
+    desc: "把 Burp 的 sitemap / 主动扫描 / Repeater 交给 agent。BLADE 自带 MITM 记录与拦截，Burp 的扫描器与生态是差异面。",
     transport: "sse",
     url: "http://127.0.0.1:9876/sse",
     needs: "Burp 常驻，并安装官方 MCP 扩展（扩展里会给出实际的 host/port）",

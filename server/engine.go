@@ -14,9 +14,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lin9527ya/Norma/harness"
 	"github.com/lin9527ya/Norma/llm"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
 )
 
 // isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE

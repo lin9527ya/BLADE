@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // testDB opens a DB connection, skipping if PG is unavailable.

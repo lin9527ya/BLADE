@@ -148,7 +148,7 @@ export default function SystemSettingsPage() {
   // P41 面向目标的产物语言（默认 zh = 不约束）。与界面语言是两件事，刻意分开放。
   const [artifactLang, setArtifactLang] = React.useState<"zh" | "en">("zh");
   const [savingArtifactLang, setSavingArtifactLang] = React.useState(false);
-  // P42 显示名（空 = 内置 ARTEX）。
+  // P42 显示名（空 = 内置 BLADE）。
   const [siteName, setSiteName] = React.useState("");
   const [savingSiteName, setSavingSiteName] = React.useState(false);
   // P35 停机开关与作业时间窗的**执行状态**（不是设置）：到点/停机时平台停到哪一步了。
@@ -1134,7 +1134,7 @@ export default function SystemSettingsPage() {
                   </Select>
                   {scopeModeEnv && (
                     <p className="text-muted-foreground text-xs">
-                      环境变量 ARTEX_SCOPE_ENFORCEMENT 正压着这项设置，页面改不动它。
+                      环境变量 BLADE_SCOPE_ENFORCEMENT 正压着这项设置，页面改不动它。
                     </p>
                   )}
                 </Field>
@@ -1217,7 +1217,7 @@ export default function SystemSettingsPage() {
               </p>
               {enforce?.kill_switch_forced_by_env && (
                 <p className="text-destructive text-xs leading-relaxed">
-                  环境变量 ARTEX_KILL_SWITCH 正强制停机，页面解除不了：要恢复请去掉该变量并重启平台。
+                  环境变量 BLADE_KILL_SWITCH 正强制停机，页面解除不了：要恢复请去掉该变量并重启平台。
                 </p>
               )}
               <div className="flex flex-wrap items-end gap-3">

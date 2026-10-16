@@ -17,7 +17,7 @@ import (
 	"github.com/lin9527ya/Norma/compaction"
 	"github.com/lin9527ya/Norma/harness"
 	"github.com/lin9527ya/Norma/llm"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // P14 领域化上下文管理。两件事：
@@ -28,7 +28,7 @@ import (
 //  2. ContextView：每次模型请求在尾部附一份【常驻索引】（目标/约束原文 + 活跃意图 +
 //     发现一行式 + 计数）。View 是纯投影、不写回历史，所以压缩吃不掉它；放尾部而不是
 //     头部是刻意的 —— 头部是 prompt cache 的前缀，动态内容放头部会让整段历史每轮
-//     掉缓存（与 ARTEX 把态势块放 user 尾部的既有取舍一致）。
+//     掉缓存（与 BLADE 把态势块放 user 尾部的既有取舍一致）。
 //
 // 委托关系：Pre/Reactive/IsOverflow 原样交给 SDK 的 compaction.Compactor（阈值、微压缩、
 // 边界、技能重注入全不变），我们只换"怎么摘要"和"发出去之前投影成什么样"。
@@ -59,7 +59,7 @@ var (
 // per-request index builder. index may be nil (no injection).
 func NewDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string, index func() string) *DomainCompactor {
 	return &DomainCompactor{
-		inner: compaction.New(cfg, artexSummarizer(prov, maxTokens, nonStreaming, dumpDir)),
+		inner: compaction.New(cfg, bladeSummarizer(prov, maxTokens, nonStreaming, dumpDir)),
 		index: index,
 		ttl:   contextIndexTTL,
 	}
@@ -300,10 +300,10 @@ func compactionPromptTemplate(dumpPath string) string {
 	return out
 }
 
-// artexSummarizer 替换 SDK 的 ProviderSummarizer：同样的"重放真实消息 + 追加摘要请求"
+// bladeSummarizer 替换 SDK 的 ProviderSummarizer：同样的"重放真实消息 + 追加摘要请求"
 // 形状与溢出重试，但 ① 摘要请求前把被压掉的原文落盘并把绝对路径写进提示词；
 // ② 用领域 7 段模板而不是 claude-code 的通用模板。
-func artexSummarizer(prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string) compaction.Summarizer {
+func bladeSummarizer(prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string) compaction.Summarizer {
 	maxOut := 20000
 	if maxTokens > 0 && maxTokens < maxOut {
 		maxOut = maxTokens

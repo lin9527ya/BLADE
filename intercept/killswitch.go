@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 停机开关：一句话——**现在全停**。
@@ -27,8 +27,8 @@ const SettingKillSwitch = "kill_switch"
 //
 // 为什么要有它：库里的设置只有平台自己读得到——如果出事的原因恰恰是平台（或它的数据库），
 // 那么"从界面上关掉它"这条路本身就不可信。重启时带上这个变量是最外层的刹车，
-// 与 ARTEX_SCOPE_ENFORCEMENT 同一种做法（同一类需求：让部署者能在配置之外压一档）。
-const EnvKillSwitch = "ARTEX_KILL_SWITCH"
+// 与 BLADE_SCOPE_ENFORCEMENT 同一种做法（同一类需求：让部署者能在配置之外压一档）。
+const EnvKillSwitch = "BLADE_KILL_SWITCH"
 
 // KillSwitchEvent 是一次开关动作（开/关各一条），进历史。
 type KillSwitchEvent struct {

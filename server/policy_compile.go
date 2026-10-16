@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/policy"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/policy"
 )
 
 // P20 探索策略的服务端面：

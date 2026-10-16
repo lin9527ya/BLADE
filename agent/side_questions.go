@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/lin9527ya/Norma/agentcore"
-	"github.com/lin9527ya/artex/sidequestion"
+	"github.com/lin9527ya/blade/sidequestion"
 )
 
 func attachSideCapture(ctx context.Context, opts *agentcore.Options) context.Context {

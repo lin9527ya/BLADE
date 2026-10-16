@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩 + P18 约束可执行化 + P19 批量交付
 # + P15 结构化裁决与改参放行 + P20 探索策略门 + P21 情报/测绘工具面 + P22 计划任务 + P23 公司知识
-# + P24 执行限额与 MCP 熔断 + P25 MCP 工具级开关 + P26 CSV 资产导入 + P27 战果层 + P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端验收清单 + P34 AD 攻击路径导入：在一次性隔离库(artex_acceptance)上跑 server.TestAcceptance，
+# + P24 执行限额与 MCP 熔断 + P25 MCP 工具级开关 + P26 CSV 资产导入 + P27 战果层 + P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端验收清单 + P34 AD 攻击路径导入：在一次性隔离库(blade_acceptance)上跑 server.TestAcceptance，
 # 逐机制输出 PASS/FAIL——每次大改后重跑它即可，无需真实 LLM 与外部目标。
 #
 #   ./acceptance.sh           # 建库 → 跑清单 → 删库
 #   ./acceptance.sh --keep    # 保留库（排障用）
 #
-# 连接信息：ARTEX_PG_DSN 优先，否则取 config.json 的 database 段。
-# 建库/删库：本机 psql 可用就用它，否则回退 docker exec artex-pg。
+# 连接信息：BLADE_PG_DSN 优先，否则取 config.json 的 database 段。
+# 建库/删库：本机 psql 可用就用它，否则回退 docker exec blade-pg。
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DB_NAME=artex_acceptance
+DB_NAME=blade_acceptance
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
@@ -22,11 +22,11 @@ import json, os, shlex, urllib.parse
 def parts(dsn):
     u = urllib.parse.urlparse(dsn)
     return (u.hostname or "127.0.0.1", u.port or 5432,
-            urllib.parse.unquote(u.username or "artex"),
+            urllib.parse.unquote(u.username or "blade"),
             urllib.parse.unquote(u.password or ""))
 
-if os.environ.get("ARTEX_PG_DSN"):
-    host, port, user, pw = parts(os.environ["ARTEX_PG_DSN"])
+if os.environ.get("BLADE_PG_DSN"):
+    host, port, user, pw = parts(os.environ["BLADE_PG_DSN"])
 else:
     d = json.load(open("config.json"))["database"]
     host, port, user, pw = d["host"], int(d["port"]), d["user"], d["password"]
@@ -44,10 +44,10 @@ PY
 admin() {
   if command -v psql >/dev/null 2>&1; then
     PGPASSWORD="$PG_RAW_PASSWORD" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -q -c "$1"
-  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx artex-pg; then
-    docker exec -i artex-pg env PGPASSWORD="$PG_RAW_PASSWORD" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -q -c "$1"
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx blade-pg; then
+    docker exec -i blade-pg env PGPASSWORD="$PG_RAW_PASSWORD" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -q -c "$1"
   else
-    echo "找不到 psql，也没有 artex-pg 容器：请设置 ARTEX_PG_DSN 或安装 postgresql-client" >&2
+    echo "找不到 psql，也没有 blade-pg 容器：请设置 BLADE_PG_DSN 或安装 postgresql-client" >&2
     exit 1
   fi
 }
@@ -55,7 +55,7 @@ admin() {
 echo "==> 重建验收库 $DB_NAME"
 admin "DROP DATABASE IF EXISTS $DB_NAME"
 admin "CREATE DATABASE $DB_NAME"
-export ARTEX_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME?#")"
+export BLADE_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME?#")"
 
 echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28 + P29 + P30 + P31 + P32 + P33 + P34 + P35 + P36 + P37 + P38 + P39 + P40 + P41 + P42，逐机制 PASS/FAIL）"
 rc=0

@@ -59,7 +59,7 @@ export function SafetyBanner() {
           <span>
             <b>停机开关已启用</b>
             {st.kill_switch.reason ? `（理由：${st.kill_switch.reason}）` : ""}：所有任务已暂停、动作一律拒绝
-            {st.kill_switch_forced_by_env ? "；环境变量 ARTEX_KILL_SWITCH 强制生效中，页面解除不了" : ""}。
+            {st.kill_switch_forced_by_env ? "；环境变量 BLADE_KILL_SWITCH 强制生效中，页面解除不了" : ""}。
           </span>
         ) : st.window.parse_error ? (
           <span>

@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 平台操作工具(给内置 Auto agent 用):建/改 skill、自定义工具、MCP。都是 host 工具,

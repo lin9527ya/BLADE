@@ -17,10 +17,10 @@ import (
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/llmrec"
-	"github.com/lin9527ya/artex/sidequestion"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/llmrec"
+	"github.com/lin9527ya/blade/sidequestion"
 )
 
 type sideRun struct {
@@ -52,7 +52,7 @@ func bindSideProvider(p llm.Provider, cfg agent.Config, id int64, name string) l
 
 func (s *Server) initSideQuestions() {
 	s.side = &sideQuestionState{pending: map[string]sidequestion.Snapshot{}, latest: map[string]sidequestion.Snapshot{}, seen: map[string][2]int64{}, runs: map[string]sideRun{}, done: make(chan struct{})}
-	if n, err := strconv.Atoi(os.Getenv("ARTEX_BTW_MAX_OUTPUT_TOKENS")); err == nil && n >= 256 && n <= 32768 {
+	if n, err := strconv.Atoi(os.Getenv("BLADE_BTW_MAX_OUTPUT_TOKENS")); err == nil && n >= 256 && n <= 32768 {
 		s.side.outputTokens = n
 	}
 	if s.m.pg == nil {

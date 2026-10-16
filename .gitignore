@@ -35,15 +35,15 @@ Thumbs.db
 .claude/
 
 # 内嵌前端的单二进制产物
-/artex
+/blade
 # 一键更新在可执行文件旁留下的中间产物（暂存件 / 备份 / 失败版本 / 升级标记）
-/artex.new
-/artex.new.sha256
-/artex.old
-/artex.failed
-/artex.upgrade.json
-# start.sh 的运行日志（README 的 nohup ./start.sh >artex.log 2>&1 & 会留）
-/artex.log
+/blade.new
+/blade.new.sha256
+/blade.old
+/blade.failed
+/blade.upgrade.json
+# start.sh 的运行日志（README 的 nohup ./start.sh >blade.log 2>&1 & 会留）
+/blade.log
 /server/webui/dist/
 /dist/
 

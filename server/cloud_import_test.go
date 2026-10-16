@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 云上枚举结果导入（P39）的单测：吃 AWS 授权明细与 K8s RBAC 两种形状、

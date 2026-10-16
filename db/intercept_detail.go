@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/lin9527ya/artex/opsec"
+	"github.com/lin9527ya/blade/opsec"
 )
 
 // InterceptContextEntry is a bounded, recorded session event, not model reasoning.

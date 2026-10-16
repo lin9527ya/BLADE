@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // AD 攻击路径导入（P32）：把 BloodHound / SharpHound 的采集 JSON 落进任务的探索图。

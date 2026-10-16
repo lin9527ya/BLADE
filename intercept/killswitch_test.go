@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 停机开关与作业时间窗是**两层里靠上的那一层**（管"这一次调用放不放行"；

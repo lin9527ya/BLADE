@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // FindingRecorder is injected by the host; agents never synthesize or copy

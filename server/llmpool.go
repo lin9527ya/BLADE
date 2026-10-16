@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/lin9527ya/Norma/llm"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/llmpool"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/llmpool"
 )
 
 // LLM 轮询(故障转移)的服务端接线。设计见 docs/LLM轮询设计.md：

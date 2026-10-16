@@ -140,7 +140,7 @@ import type {
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("artex_token");
+  return localStorage.getItem("blade_token");
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -156,8 +156,8 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (r.status === 401) {
     if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
+      localStorage.removeItem("blade_token");
+      document.cookie = "blade_token=; path=/; max-age=0";
       window.location.href = "/login";
     }
     throw new Error("未授权");
@@ -196,7 +196,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
-  return `# ARTEX 渗透测试报告 — Acme Corp
+  return `# BLADE 渗透测试报告 — Acme Corp
 
 ## 概览
 - 范围：acme.com（含 www / admin / api / shop / vpn 子域）
@@ -232,7 +232,7 @@ function baseIsCrossOrigin(base: string): boolean {
 // SSE 的凭据只在**跨源**时才放进查询串：EventSource 不支持自定义头，而跨源请求又带不上
 // 同站 cookie（SameSite=Lax），那种情况下 ?token= 是唯一可行的认证方式。
 //
-// 同源（生产默认 base 为空）时**不带**：让浏览器用 artex_token cookie 认证，URL 里就不出现
+// 同源（生产默认 base 为空）时**不带**：让浏览器用 blade_token cookie 认证，URL 里就不出现
 // 凭据——否则它会进浏览器历史，以及反向代理的 access log（README 的 nginx 示例默认记录
 // $request，其中含查询串）。开发态前端在 :5173、后端在 :8787，属跨源，仍走 ?token=。
 export function sseUrl(path: string): string {

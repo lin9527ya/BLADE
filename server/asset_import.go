@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 资产 CSV 导入：把一份目标清单批量登记成资产。

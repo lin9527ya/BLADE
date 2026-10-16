@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/selfupdate"
+	"github.com/lin9527ya/blade/selfupdate"
 )
 
 // releaseCache 是保护 GitHub 配额的那一层：未认证的 API 只有 60 次/小时/IP，

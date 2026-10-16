@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 const maxTaskAssetRequestBytes = 512 << 10

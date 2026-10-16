@@ -23,22 +23,22 @@ import (
 	"github.com/lin9527ya/Norma/llm"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/Norma/transcript"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/llmpool"
-	"github.com/lin9527ya/artex/llmrec"
-	"github.com/lin9527ya/artex/policy"
-	"github.com/lin9527ya/artex/report"
-	"github.com/lin9527ya/artex/traffic"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/llmpool"
+	"github.com/lin9527ya/blade/llmrec"
+	"github.com/lin9527ya/blade/policy"
+	"github.com/lin9527ya/blade/report"
+	"github.com/lin9527ya/blade/traffic"
 )
 
-// BuildVersion is the backend application version, injected from cmd/artex at
+// BuildVersion is the backend application version, injected from cmd/blade at
 // startup (which in turn gets it from -ldflags "-X main.version=<tag>").
 // Defaults to "dev" for local builds. Exposed to the frontend via GET /api/health.
 var BuildVersion = "dev"
 
-// Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
+// Server exposes the BLADE backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
 	m      *Manager
@@ -1058,7 +1058,7 @@ func (s *Server) Handler() http.Handler {
 
 // health 是**唯一免认证**的信息端点，所以它必须**不自报家门**（P42）。
 //
-// 它此前返回 {"ok":true,"service":"artex","version":"v0.4.x"}——那是个明牌指纹：公网上任何人
+// 它此前返回 {"ok":true,"service":"blade","version":"v0.4.x"}——那是个明牌指纹：公网上任何人
 // 请求一次就知道这是什么、什么版本（测绘引擎连指纹比对都省了）。现在只回一个 ok；版本与构建
 // 信息移到需要登录的 /api/system/info。
 //
@@ -1069,7 +1069,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 // systemInfo 是需要登录的版本/构建信息（P42 从 /api/health 搬过来）。
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
+	writeJSON(w, 200, map[string]any{"ok": true, "service": "blade", "version": BuildVersion})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
@@ -2280,7 +2280,7 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stage, err := os.MkdirTemp("", "artex-finding-export-")
+	stage, err := os.MkdirTemp("", "blade-finding-export-")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -3497,7 +3497,7 @@ func corsAllowedOriginsSetting(pg *db.DB) string {
 	return strings.TrimSpace(v)
 }
 
-// siteNameSetting 读界面显示名（空 = 内置 ARTEX）。
+// siteNameSetting 读界面显示名（空 = 内置 BLADE）。
 func siteNameSetting(pg *db.DB) string {
 	v, ok, err := pg.GetSetting(settingSiteName)
 	if err != nil || !ok {
@@ -3563,7 +3563,7 @@ func (s *Server) settingsPayload() map[string]any {
 		// 模式回的是**生效值**（env 覆盖优先于 setting），并单独给一个 env 标志——页面据此提示
 		// 「环境变量把它压住了」，否则用户改了没反应会莫名其妙。
 		"intercept_scope_mode":     s.m.interceptor.ScopeMode(),
-		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("ARTEX_SCOPE_ENFORCEMENT")) != "",
+		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("BLADE_SCOPE_ENFORCEMENT")) != "",
 		"intercept_scope_hours":    scopeHoursSetting(s.m.pg),
 		// P41 面向目标的产物语言：回**生效值**（缺省即 zh），页面据此显示当前档位。
 		"artifact_language":    artifactLanguageSetting(s.m.pg),
@@ -3670,7 +3670,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
 		// agent 侧每 run 现读，改完即时生效。与界面语言无关。
 		ArtifactLanguage *string `json:"artifact_language"`
-		// P42 界面显示名（空 = 内置 ARTEX）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
+		// P42 界面显示名（空 = 内置 BLADE）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
 		SiteName *string `json:"site_name"`
 		// P42 允许跨源访问 API 的来源白名单（逗号分隔；空 = 不发 CORS 头）。
 		CORSAllowedOrigins *string `json:"cors_allowed_origins"`

@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 
-	"github.com/lin9527ya/artex/opsec"
+	"github.com/lin9527ya/blade/opsec"
 )
 
 const (

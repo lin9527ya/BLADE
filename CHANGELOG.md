@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### 改名为 BLADE（清除 ARTEX 特征）
+
+#### 变更
+
+- **项目全面改名：ARTEX → BLADE**。仓库、Go 模块路径、可执行文件名、环境变量前缀、界面显示名一次换完
+  （567 个文件），目的是**不留暴露用途与出处的特征**，同时满足"被扫到也认不出是什么"的那半边。
+  · 仓库：`lin9527ya/ARTEX` → `lin9527ya/BLADE`（GitHub 会重定向旧链接；**Releases 跟随仓库**，
+    所以一键更新仍然可用——已部署的旧版本走的旧路径会被 302 到新仓库）。
+    原作者的 `upstream` remote 一并移除（那个仓库早已不可达）。
+  · Go 模块：`github.com/lin9527ya/artex` → `github.com/lin9527ya/blade`（185 个文件）；`cmd/artex` → `cmd/blade`。
+  · 环境变量：**`ARTEX_*` → `BLADE_*`**（`BLADE_PG_DSN` / `BLADE_LLM_*` / `BLADE_SCOPE_ENFORCEMENT` /
+    `BLADE_KILL_SWITCH` / `BLADE_TAG` / `BLADE_CONFIG` / `BLADE_SKILL_DIR` / `BLADE_BTW_MAX_OUTPUT_TOKENS`；
+    前端的 `AUTOPENTEST_API` → `BLADE_API`）。**旧变量名不再兼容**——升级时要改自己的 `.env`
+    与 systemd unit（`deploy/blade.service` 已同步）。
+  · 可执行文件：`artex` → `blade`（`start.sh` 的 `BIN`、Dockerfile 的 `/app/blade`、
+    `deploy/blade.service`、CI 的 dist 路径都同步）。
+  · 界面：默认标题改成**中性**的 `BLADE`（原来的"BLADE — 自主渗透测试控制台"会把用途写在
+    `<title>` 里，被扫到一次就等于告诉对方这台机器上有攻击平台）；图标与 logo 换成新的
+    `favicon1.ico`（16/32/48），旧的 `logo.svg` 删除。
+  · `docker-compose.yml` 的镜像不再指向**上游作者的** `autumn27/artex`，改成 `build: .`（本地构建）；
+    同时修掉上一版 ports 段的 YAML 缩进错误（会让 `docker compose` 解析失败）。
+- **数据库**：新装默认用 `blade` 用户与库（`install.sh` / `docker-compose.yml` 的默认值）；
+  本机已存在的库已迁移（备份 → `CREATE DATABASE blade TEMPLATE artex` → 指向新库），
+  旧的 `artex` 库暂时保留以留回滚余地。
+- **未改**（外部不可见，改它们只有迁移风险）：Go 包内的变量名与函数名里不含品牌；
+  运行期数据目录仍是 `data/`；PG 数据卷名仍是 `artex-pg`（只在 `docker volume ls` 可见）。
+
 ### 公网部署隐身与加固（默认不暴露 / 去指纹）
 
 #### 变更（**默认行为变了**）
