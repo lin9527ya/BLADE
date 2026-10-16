@@ -17,7 +17,7 @@ func TestTraceExactCorrelationAndSnapshot(t *testing.T) {
 	callCtx := WithCall(ctx, "Write", []byte(`{ "n":12345678901234567890, "path":"a" }`))
 	// "pending" (the ask path) keeps the full snapshot; see TestAuditAllowDropsSnapshot
 	// for why a routine allow does not.
-	a := auditFor(callCtx, Decision{Action: "ask"}, nil, "pending")
+	a := auditFor(callCtx, Decision{Action: "ask"}, "Read", nil, "pending")
 	if a.Correlation != "exact" || a.ToolUseID != "call-a" || len(a.Context) != 1 || a.Context[0].Text != "prior message" {
 		t.Fatalf("wrong snapshot: %+v", a)
 	}
@@ -43,7 +43,7 @@ func TestAuditAllowDropsSnapshot(t *testing.T) {
 	ctx, trace := WithTrace(context.Background(), "a long user prompt", []db.InterceptContextEntry{{Kind: "user", Text: "prior message"}})
 	input := []byte(`{"path":"a"}`)
 	trace.Start("call-a", "Write", input)
-	a := auditFor(WithCall(ctx, "Write", input), Decision{Action: "allow", RuleName: "auto"}, input, "allowed")
+	a := auditFor(WithCall(ctx, "Write", input), Decision{Action: "allow", RuleName: "auto"}, "Read", input, "allowed")
 	if a.UserMessage != "" || a.UserTruncated || a.Context != nil || a.ContextTruncated {
 		t.Fatalf("allow kept the replay snapshot: %+v", a)
 	}
@@ -55,7 +55,7 @@ func TestAuditAllowDropsSnapshot(t *testing.T) {
 	// A denial is rare and worth the full context, so it keeps its snapshot.
 	denied := []byte(`{"path":"b"}`)
 	trace.Start("call-b", "Write", denied)
-	d := auditFor(WithCall(ctx, "Write", denied), Decision{Action: "deny"}, denied, "denied")
+	d := auditFor(WithCall(ctx, "Write", denied), Decision{Action: "deny"}, "Read", denied, "denied")
 	if len(d.Context) == 0 || d.Context[0].Text != "prior message" || d.UserMessage == "" {
 		t.Fatalf("deny lost the snapshot: %+v", d)
 	}
@@ -67,13 +67,13 @@ func TestTraceIdenticalParallelCallsAreNeverGuessed(t *testing.T) {
 	trace.Start("first", "Bash", input)
 	trace.Start("second", "Bash", input)
 	for range 2 {
-		a := auditFor(WithCall(ctx, "Bash", input), Decision{}, input, "pending")
+		a := auditFor(WithCall(ctx, "Bash", input), Decision{}, "Read", input, "pending")
 		if a.Correlation != "ambiguous" || a.ToolUseID != "" {
 			t.Fatalf("guessed identity: %+v", a)
 		}
 	}
 	trace.Complete("first", "first-result", false)
-	a := auditFor(WithCall(ctx, "Bash", input), Decision{}, input, "pending")
+	a := auditFor(WithCall(ctx, "Bash", input), Decision{}, "Read", input, "pending")
 	if a.Correlation != "ambiguous" {
 		t.Fatal("ambiguity must survive the other call completing")
 	}
@@ -83,12 +83,12 @@ func TestTraceSequentialIdenticalCallsAndRunIsolation(t *testing.T) {
 	ctx, trace := WithTrace(context.Background(), "test", nil)
 	input := []byte(`{}`)
 	trace.Start("a", "Read", input)
-	a := auditFor(WithCall(ctx, "Read", input), Decision{}, input, "pending")
+	a := auditFor(WithCall(ctx, "Read", input), Decision{}, "Read", input, "pending")
 	trace.Start("b", "Read", input)
-	b := auditFor(WithCall(ctx, "Read", input), Decision{}, input, "pending")
+	b := auditFor(WithCall(ctx, "Read", input), Decision{}, "Read", input, "pending")
 	other, next := WithTrace(context.Background(), "next run", nil)
 	next.Start("a", "Read", input)
-	c := auditFor(WithCall(other, "Read", input), Decision{}, input, "pending")
+	c := auditFor(WithCall(other, "Read", input), Decision{}, "Read", input, "pending")
 	if a.ToolUseID != "a" || b.ToolUseID != "b" || a.RunID == c.RunID {
 		t.Fatal("run or call identities overlap")
 	}
@@ -100,7 +100,7 @@ func TestTraceBoundsAndMissingResult(t *testing.T) {
 		trace.Append(db.InterceptContextEntry{Kind: "text", Text: strings.Repeat("中", entryLimit)})
 	}
 	trace.Start("a", "Read", []byte(`{}`))
-	a := auditFor(WithCall(ctx, "Read", []byte(`{}`)), Decision{}, nil, "pending")
+	a := auditFor(WithCall(ctx, "Read", []byte(`{}`)), Decision{}, "Read", nil, "pending")
 	if !a.UserTruncated || !a.ContextTruncated || len(a.Context) != contextLimit || !utf8.ValidString(a.UserMessage) {
 		t.Fatal("unbounded/invalid snapshot")
 	}
@@ -124,7 +124,7 @@ func TestTraceConcurrentDistinctCalls(t *testing.T) {
 		wg.Go(func() {
 			input := []byte(`{"path":"` + id + `"}`)
 			trace.Start(id, "Read", input)
-			a := auditFor(WithCall(ctx, "Read", input), Decision{}, input, "allowed")
+			a := auditFor(WithCall(ctx, "Read", input), Decision{}, "Read", input, "allowed")
 			if a.ToolUseID != id {
 				t.Errorf("got %s for %s", a.ToolUseID, id)
 			}

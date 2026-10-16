@@ -2139,6 +2139,21 @@ export interface InterceptAudit {
   output?: string;
   output_truncated?: boolean;
   execution_ended_at?: string;
+  /** 事前可检出性（P38）：这一手**预计**会留下什么。与 P31 的实测（detection）刻意分开。 */
+  opsec_notes?: OpsecNote[];
+  /** 知识库没收录这条命令——**不代表没有日志**，只代表我们没有依据。 */
+  opsec_uncovered?: boolean;
+  opsec_command?: string;
+}
+
+export interface OpsecNote {
+  id: string;
+  title: string;
+  where: string[];
+  signals?: string[];
+  /** 低 / 中 / 高 */
+  exposure: string;
+  note: string;
 }
 export interface InterceptDetail extends InterceptApprovalRow {
   audit: InterceptAudit | null;

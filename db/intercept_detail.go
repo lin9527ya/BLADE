@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lin9527ya/artex/opsec"
 )
 
 // InterceptContextEntry is a bounded, recorded session event, not model reasoning.
@@ -52,6 +54,17 @@ type InterceptAudit struct {
 	Output           string     `json:"output,omitempty"`
 	OutputTruncated  bool       `json:"output_truncated,omitempty"`
 	ExecutionEndedAt *time.Time `json:"execution_ended_at,omitempty"`
+
+	// OpsecNotes 是这一手**预计**会留下的东西（P38，事前知识库 opsec）。
+	//
+	// 与 P31 的检测验证刻意分开、措辞也分开：这里从来不说「没被检出」，只说「预计会落在哪里」。
+	// 混起来就是把预期读成实测——本仓在检测三态上已经把这条线画死了（unknown 必须独立存在）。
+	OpsecNotes []opsec.Note `json:"opsec_notes,omitempty"`
+	// OpsecUncovered = 知识库没收录这条命令。**必须显式带上**：读的人若把「没有提示」当成
+	// 「没有日志」，这个功能就成了误导。
+	OpsecUncovered bool `json:"opsec_uncovered,omitempty"`
+	// OpsecCommand 是判定时抽出来的那条命令（原始输入是 JSON，命令在某个字段里）。
+	OpsecCommand string `json:"opsec_command,omitempty"`
 }
 
 type InterceptDetail struct {

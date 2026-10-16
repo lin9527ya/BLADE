@@ -2962,5 +2962,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listUntestedAssets(),
 		// ad_paths（P32）：读导入的域内采集结果推出的攻击路径（非特权账号 → 高价值目标）。
 		t.adPaths(),
+		// opsec_notes（P38）：派意图前查这一手预计会留下什么（事前知识库，与 P31 的实测分开）。
+		t.opsecNotes(),
 	}
 }

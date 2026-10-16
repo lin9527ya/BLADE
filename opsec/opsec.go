@@ -209,7 +209,9 @@ var compiled = func() []matchWords {
 			// 词边界：避免 「at」 命中 「cat」、「ir」 命中 「dir」。命令里常见的前后字符是空格、
 			// 斜杠、引号、分号——把它们当边界而不是 \b，因为 「curl|bash」 这种紧贴写法也要命中。
 			boundary := `(^|[\s/|;&("'` + "`" + `])`
-			tail := `($|[\s/|;&)"'` + "`" + `])`
+			// 尾部边界多一个 `.`：工具常以 `secretsdump.py` / `linpeas.sh` 这种形式出现，
+			// 少了它就会把这些最典型的工具名漏掉（漏报比误报更值得修——漏了就等于说"没收录"）。
+			tail := `($|[\s/|;&)"'.` + "`" + `])`
 			re, err := regexp.Compile(boundary + pat + tail)
 			if err != nil {
 				continue
