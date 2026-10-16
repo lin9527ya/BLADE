@@ -128,6 +128,19 @@ func (i *Interceptor) scopeHours() (*scopeWindow, error) {
 	return parseScopeHours(raw)
 }
 
+// WindowAllows 是给**执行侧**用的窗口判定（server/scope_enforce.go 的到点暂停）：
+// 传原始设置串与一个时刻，回答"这一刻允不允许动手"。空串 = 不限时 = 允许。
+//
+// 与 scopeHours() 的区别只是取设置的方式（那边从库读、这边由调用方给串）：判定逻辑共用
+// parseScopeHours/allows，不另写一份——"某一刻在不在窗口内"这件事有两个实现，迟早会不一致。
+func WindowAllows(raw string, t time.Time) (bool, error) {
+	w, err := parseScopeHours(raw)
+	if err != nil {
+		return false, err
+	}
+	return w.allows(t), nil
+}
+
 // ValidateScopeHours 校验一个作业时间窗设置串，供设置接口在**落库前**挡住格式错误。
 //
 // 为什么要在这里挡：存进去一条解析不了的窗口，之后每一次工具调用都会落到人工确认上

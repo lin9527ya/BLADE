@@ -11,6 +11,7 @@ import {
   RadarIcon,
   RadioTowerIcon,
   SearchIcon,
+  OctagonXIcon,
   ShieldAlertIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -30,6 +31,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,7 +39,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { CustomRule, ExplorationPolicyDefault, IntelQueryRow, Settings } from "@/lib/types";
+import type { CustomRule, ExplorationPolicyDefault, IntelQueryRow, ScopeEnforcement, Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -119,6 +121,11 @@ export default function SystemSettingsPage() {
   const [scopeModeEnv, setScopeModeEnv] = React.useState(false);
   const [scopeHours, setScopeHours] = React.useState("");
   const [savingScope, setSavingScope] = React.useState(false);
+  // P35 停机开关与作业时间窗的**执行状态**（不是设置）：到点/停机时平台停到哪一步了。
+  const [enforce, setEnforce] = React.useState<ScopeEnforcement | null>(null);
+  const [killReason, setKillReason] = React.useState("");
+  const [killBusy, setKillBusy] = React.useState(false);
+  const [resumeBusy, setResumeBusy] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
 
@@ -388,6 +395,47 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingScope(false));
+  };
+
+  const loadEnforcement = React.useCallback(() => {
+    api
+      .scopeEnforcement()
+      .then(setEnforce)
+      .catch(() => {
+        /* 读不到就不显示状态块：它是提示，不该自己变成错误源 */
+      });
+  }, []);
+
+  React.useEffect(() => {
+    loadEnforcement();
+  }, [loadEnforcement]);
+
+  const doKillSwitch = (on: boolean) => {
+    setKillBusy(true);
+    api
+      .setKillSwitch(on, killReason.trim())
+      .then((r) => {
+        setEnforce((prev) =>
+          prev ? { ...prev, kill_switch: r.kill_switch, paused_tasks: prev.paused_tasks + r.tasks_paused } : prev,
+        );
+        toast.success(r.note + (r.errors?.length ? `；${r.errors.length} 项失败` : ""));
+        if (!on) setKillReason("");
+        loadEnforcement();
+      })
+      .catch((e) => toast.error("操作失败：" + (e as Error).message))
+      .finally(() => setKillBusy(false));
+  };
+
+  const doResumeAll = () => {
+    setResumeBusy(true);
+    api
+      .resumeAllTasks()
+      .then((r) => {
+        toast.success(`已继续 ${r.resumed} 个任务` + (r.errors?.length ? `；${r.errors.length} 项失败` : ""));
+        loadEnforcement();
+      })
+      .catch((e) => toast.error("继续失败：" + (e as Error).message))
+      .finally(() => setResumeBusy(false));
   };
 
   const toggleAgentTrafficBinding = (v: boolean) => {
@@ -1033,6 +1081,116 @@ export default function SystemSettingsPage() {
                 <b>写错会被拒绝保存</b>——一条解析不了的窗口会让之后每次调用都落到人工确认上，
                 不如当场退回。时区取平台所在机器的本地时间。
               </p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                配了窗口就是<b>硬边界</b>：窗口外不发动作（与上面那个模式无关，off 也照样拦），
+                到点平台会<b>暂停所有在跑任务</b>并取消在跑的长任务；窗口重开<b>不会自动恢复</b>，
+                要在这里点「继续全部暂停任务」。没配窗口 = 不限时。
+              </p>
+              {enforce && enforce.window.window !== "" && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-xs">
+                  <Badge variant={enforce.window.in_window ? "secondary" : "destructive"}>
+                    {enforce.window.in_window ? "当前在窗口内" : "当前在窗口外"}
+                  </Badge>
+                  <span className="text-muted-foreground font-mono">{enforce.window.window}</span>
+                  {enforce.window.last_closed_at && (
+                    <span className="text-muted-foreground">
+                      上次关闭：{new Date(enforce.window.last_closed_at).toLocaleString("zh-CN")}
+                    </span>
+                  )}
+                  {enforce.window.paused_now > 0 && (
+                    <span className="text-muted-foreground">本轮因窗口暂停 {enforce.window.paused_now} 个任务</span>
+                  )}
+                </div>
+              )}
+              {enforce?.window.parse_error && (
+                <p className="text-destructive text-xs leading-relaxed">
+                  窗口设置解析失败：{enforce.window.parse_error}
+                </p>
+              )}
+            </SubBlock>
+
+            <SubBlock
+              title="停机开关（紧急停止）"
+              icon={<OctagonXIcon className="text-muted-foreground size-4" />}
+              actions={
+                enforce?.kill_switch.on ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => doKillSwitch(false)}
+                    disabled={killBusy || enforce.kill_switch_forced_by_env}
+                  >
+                    解除停机
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => doKillSwitch(true)}
+                    disabled={killBusy || enforce?.kill_switch_forced_by_env}
+                  >
+                    <OctagonXIcon data-icon="inline-start" /> 立即停机
+                  </Button>
+                )
+              }
+            >
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                一句话：<b>现在全停</b>。启用后立刻暂停所有在跑任务、终止在跑的长任务、拒绝一切动作类工具调用，
+                并停止补位排队任务（排队任务保持排队，位置不丢）。<b>解除后不自动恢复任务</b>——恢复意味着平台
+                重新对目标动手，那一下该由人按下。
+              </p>
+              {enforce?.kill_switch_forced_by_env && (
+                <p className="text-destructive text-xs leading-relaxed">
+                  环境变量 ARTEX_KILL_SWITCH 正强制停机，页面解除不了：要恢复请去掉该变量并重启平台。
+                </p>
+              )}
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-64 flex-1">
+                  <Field label="停机理由（记进回执）" htmlFor="kill-reason">
+                    <Input
+                      id="kill-reason"
+                      autoComplete="off"
+                      placeholder="例：客户来电叫停 / 打错了目标 / 平台维护"
+                      value={killReason}
+                      onChange={(e) => setKillReason(e.target.value)}
+                      disabled={killBusy || !!enforce?.kill_switch.on}
+                    />
+                  </Field>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={doResumeAll}
+                  disabled={resumeBusy || !enforce || enforce.paused_tasks === 0}
+                >
+                  继续全部暂停任务{enforce && enforce.paused_tasks > 0 ? `（${enforce.paused_tasks}）` : ""}
+                </Button>
+              </div>
+              {enforce?.kill_switch.at && (
+                <div className="text-muted-foreground space-y-1 text-xs">
+                  <p>
+                    最近一次动作：
+                    <b>{enforce.kill_switch.on ? "启用停机" : "解除停机"}</b>
+                    {` · ${new Date(enforce.kill_switch.at).toLocaleString("zh-CN")}`}
+                    {enforce.kill_switch.by ? ` · ${enforce.kill_switch.by}` : ""}
+                    {enforce.kill_switch.reason ? ` · 理由：${enforce.kill_switch.reason}` : ""}
+                    {enforce.kill_switch.tasks_paused ? ` · 暂停 ${enforce.kill_switch.tasks_paused} 个任务` : ""}
+                  </p>
+                  {(enforce.kill_switch.history?.length ?? 0) > 1 && (
+                    <ul className="space-y-0.5">
+                      {enforce.kill_switch.history?.slice(1, 6).map((h) => (
+                        <li key={h.at + String(h.on)}>
+                          {h.on ? "启用" : "解除"} · {new Date(h.at).toLocaleString("zh-CN")}
+                          {h.by ? ` · ${h.by}` : ""}
+                          {h.reason ? ` · ${h.reason}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </SubBlock>
 
             <SubBlock

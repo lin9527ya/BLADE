@@ -338,6 +338,46 @@ func (i *Interceptor) scopeRows(taskID int64) ([]db.TaskScope, error) {
 // all return (zero, false) — enforcement fails open, matching the judge's
 // failure behavior.
 func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName string, input json.RawMessage) (Decision, bool) {
+	// 只判**动作类**工具（能对目标动手的那些）。停机期间读图、记事实这类仍然可用：
+	// 停的是"动手"，不是"看"——把人锁在平台外面没有任何安全收益。
+	cmd := shellCommandOf(toolName, input)
+	if cmd == "" {
+		return Decision{}, false
+	}
+	// ① 停机开关（P35）：刻意排在模式判定**之前**。它不是"授权范围的一档"，而是"现在就停"——
+	// scope_mode=off 只意味着不做空间判定，不该顺手把紧急停机也关掉（那是最不该有的耦合）。
+	if on, reason := i.KillSwitchOn(); on {
+		return Decision{
+			Action:   "deny",
+			RuleName: "[停机开关]",
+			Message:  "平台已启用停机开关，所有动作一律拒绝（理由：" + reason + "）。解除开关后任务需要手动继续。",
+		}, true
+	}
+	// ② 作业时间窗：授权不只是「能打哪些目标」，还包括「什么时候能打」。同样排在空间判定之前
+	// ——窗口之外根本不该发起动作，与目标在不在范围内无关。
+	//
+	// P35 起窗口**与 scope_mode 解耦**：窗口是你自己配的授权边界，配了就该生效。
+	// 此前 off 档会连窗口一起跳过，"设了窗口却什么都没拦"；现在 off 只关空间判定。
+	// 窗口外是**硬拒**而不是审批项：窗口外该不该动手不是一个人临时能答的问题，
+	// 要放宽就去改窗口设置（页面上写着怎么改）。
+	//
+	// 配置解析失败时如实交人工：一条写错的窗口设置若静默失效，恰恰会让客户验收时要核对的
+	// 那一项无声消失（同 P12「范围读不出来时不放行」的理由）。
+	if w, err := i.scopeHours(); err != nil {
+		return Decision{
+			Action:   "ask",
+			RuleName: "[RoE] 作业时间窗",
+			Message:  "作业时间窗设置无法解析，无法确认当前是否在允许时段内，需要人工确认：" + err.Error(),
+		}, true
+	} else if now := scopeNow(); !w.allows(now) {
+		return Decision{
+			Action:   "deny",
+			RuleName: "[RoE] 作业时间窗",
+			Message: fmt.Sprintf("当前不在授权作业时间窗内（允许 %s，本机时间 %s）：窗口外不发动作；要放宽请改作业时间窗设置",
+				w.Describe(), now.Format("15:04")),
+		}, true
+	}
+	// ③ 空间门。off = 不做空间判定；此时后面那些"无从判起"的降级（taskID==0）也就无从谈起了。
 	mode := i.ScopeMode()
 	if mode == "off" {
 		return Decision{}, false
@@ -348,29 +388,6 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 	// 正常判定路径，不受这条影响。
 	if taskID == 0 {
 		return Decision{}, false
-	}
-	cmd := shellCommandOf(toolName, input)
-	if cmd == "" {
-		return Decision{}, false
-	}
-	// 作业时间窗：授权不只是「能打哪些目标」，还包括「什么时候能打」。刻意排在目标判定**之前**
-	// ——窗口之外根本不该发起动作，与目标在不在范围内无关。
-	//
-	// 配置解析失败时如实拒绝并说清怎么改：一条写错的窗口设置若静默失效，恰恰会让客户验收时
-	// 要核对的那一项无声消失（同 P12「范围读不出来时不放行」的理由）。
-	if w, err := i.scopeHours(); err != nil {
-		return Decision{
-			Action:   "ask",
-			RuleName: "[RoE] 作业时间窗",
-			Message:  "作业时间窗设置无法解析，无法确认当前是否在允许时段内，需要人工确认：" + err.Error(),
-		}, true
-	} else if now := scopeNow(); !w.allows(now) {
-		return Decision{
-			Action:   mode,
-			RuleName: "[RoE] 作业时间窗",
-			Message: fmt.Sprintf("当前不在授权作业时间窗内（允许 %s，本机时间 %s）：窗口外请勿发起动作",
-				w.Describe(), now.Format("15:04")),
-		}, true
 	}
 	hits := ExtractTargetsDetailed(cmd)
 	if len(hits) == 0 {

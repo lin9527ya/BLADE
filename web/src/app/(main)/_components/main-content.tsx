@@ -14,6 +14,8 @@ import { AccountSwitcher } from "./sidebar/account-switcher";
 import { LayoutControls } from "./sidebar/layout-controls";
 import { SearchDialog } from "./sidebar/search-dialog";
 import { ThemeSwitcher } from "./sidebar/theme-switcher";
+import { SafetyBanner } from "@/components/safety-banner";
+
 import { UpdateBadge } from "./update-badge";
 
 // 任务详情页保持原样：它自带头部/Tabs 与内边距，这里不再叠加全局头部和 padding。
@@ -43,8 +45,15 @@ export function MainContent({ children }: { children: ReactNode }) {
       .catch(() => setVersion(""));
   }, []);
 
+  // 全幅页（任务详情）也要看到停机/窗口状态——恰恰是最该看见的地方：
+  // 任务页上"什么都没动"和"平台被停了"长得一样。
   if (isFullBleed(pathname)) {
-    return <>{children}</>;
+    return (
+      <>
+        <SafetyBanner />
+        {children}
+      </>
+    );
   }
 
   return (
@@ -75,6 +84,7 @@ export function MainContent({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
+      <SafetyBanner />
       <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden p-4 has-data-[content-padding=false]:p-0 md:p-6 md:has-data-[content-padding=false]:p-0">
         {children}
       </div>

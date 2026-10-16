@@ -8,6 +8,8 @@ import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import type {
   ActiveFindingRetest,
+  KillSwitchReceipt,
+  ScopeEnforcement,
   Activity,
   ADImportFile,
   ADImportPreview,
@@ -688,6 +690,15 @@ export const api = {
     post<ADImportPreview>("/ad/import/preview", { task_id: Number(taskId), files }),
   importAD: (taskId: string, files: ADImportFile[]) =>
     post<ADImportResult>("/ad/import", { task_id: Number(taskId), files }),
+  // 停机开关与作业时间窗的执行侧（P35）。停机**立即生效**（不等 scheduler tick）；
+  // 解除与「继续全部」都不自动恢复任务，所以是两个独立动作。
+  scopeEnforcement: () => get<ScopeEnforcement>("/scope/enforcement"),
+  setKillSwitch: (on: boolean, reason = "") =>
+    post<{ kill_switch: KillSwitchReceipt; tasks_paused: number; note: string; errors?: string[] }>(
+      "/scope/kill-switch",
+      { on, reason },
+    ),
+  resumeAllTasks: () => post<{ resumed: number; errors?: string[] }>("/scope/resume-all", {}),
   adPaths: (taskId: string, start = 0) =>
     get<ADPathsResponse>(`/tasks/${encodeURIComponent(taskId)}/ad-paths${start > 0 ? `?start=${start}` : ""}`),
   // task-scoped view of the same endpoint — server-side paginated like `assets`

@@ -265,6 +265,11 @@ func (s *Server) startAdmittedTask(t *Task, mode string) {
 func (s *Server) reconcileConcurrency() {
 	s.concMu.Lock()
 	defer s.concMu.Unlock()
+	// 停机开关 / 作业时间窗（P35）：停止状态下不补位。排队任务**保持排队**——它们没在跑，
+	// 暂停它们反而会丢掉队列位置；入口层拦住就够了，等解除/窗口重开自然补位。
+	if s.safetyAdmissionBlocked() {
+		return
+	}
 	enabled, limit := s.m.ConcurrencyLimit()
 
 	// A task whose provider chain becomes unavailable cannot do useful work and

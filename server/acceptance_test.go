@@ -40,6 +40,7 @@ import (
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
 // + P26 CSV 资产导入 + P27 战果层 + P28 资产检索导入与存储清理 + P29 战果动用 + P30 攻击路径
 // + P31 检测验证 + P32 授权范围设置 + P33 战役层 + P34 AD 攻击路径导入
+// + P35 停机开关与作业时间窗
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -100,6 +101,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P32 授权范围设置（模式+时间窗经 API 存取，写错当场退回且不改动已存值）", func(t *testing.T) { accP32(t, env.forTest(t)) })
 	t.Run("P33 战役层（归属与聚合；删战役只解绑不删任务）", func(t *testing.T) { accP33(t, env.forTest(t)) })
 	t.Run("P34 AD 攻击路径导入（预览只读/路径可读/重导只合并/坏输入退回）", func(t *testing.T) { accP34(t, env.forTest(t)) })
+	t.Run("P35 停机开关与作业时间窗（到点全停/三层拦得住/恢复靠手动/回执可查）", func(t *testing.T) { accP35(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -4079,5 +4081,257 @@ func accP34(t *testing.T, e *accEnv) {
 	ghost, _ := json.Marshal(map[string]any{"task_id": tid + 999999, "files": []map[string]string{{"name": "u.json", "json": users}}})
 	if rec := e.request(http.MethodPost, "/api/ad/import", string(ghost)); rec.Code != 404 {
 		t.Errorf("任务不存在该 404，实际 %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// taskCount 数当前库里的任务条数（不含已删除）——用于断言"这一 tick 有没有起新工作"。
+func (e *accEnv) taskCount() int {
+	e.t.Helper()
+	var n int
+	if err := e.m.pg.QueryRow(`SELECT count(*) FROM tasks WHERE deleted_at IS NULL`).Scan(&n); err != nil {
+		e.t.Fatalf("count tasks: %v", err)
+	}
+	return n
+}
+
+// accP35 停机开关与作业时间窗的**执行侧**：到点/停机时把整个平台停下来。
+//
+// 钉住的是"三层一起才算停住"：任务层（暂停 + 取消在跑的 run）、入口层（不补位）、
+// 调用层（动作类工具被拒）。以及两条刻意的行为选择：
+//
+//	· 窗口与 scope_mode 解耦——off 只关空间判定，不关时间；
+//	· 恢复一律手动——解除停机不会顺手把任务放起来。
+func accP35(t *testing.T, e *accEnv) {
+	for _, key := range []string{
+		intercept.SettingKillSwitch, intercept.SettingScopeHours, settingScopeWindowState,
+	} {
+		old, had, err := e.m.pg.GetSetting(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = e.m.pg.SetSetting(key, old)
+				return
+			}
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, key)
+		})
+	}
+
+	task, tid := e.newTask("acceptance-p35", "停机开关与作业时间窗")
+	taskID := task.ID
+
+	pausedNow := func() bool {
+		cur, ok := e.m.Task(taskID)
+		return ok && cur.lifecycleSnapshot().Paused
+	}
+
+	// ① 作业时间窗：先设成"现在在窗口内"跑一遍（让状态进入 in_window），
+	//    再设成"现在不在"的时段 → 执行侧到点就把在跑的任务停下来。
+	now := time.Now()
+	open := fmt.Sprintf("%02d:%02d-%02d:%02d",
+		(now.Hour()+23)%24, now.Minute(), (now.Hour()+1)%24, now.Minute())
+	closed := fmt.Sprintf("%02d:%02d-%02d:%02d",
+		(now.Hour()+2)%24, now.Minute(), (now.Hour()+3)%24, now.Minute())
+	if err := e.m.pg.SetSetting(intercept.SettingScopeHours, open); err != nil {
+		t.Fatal(err)
+	}
+	e.s.enforceScopeEnforcement()
+	raw0, _, _ := e.m.pg.GetSetting(settingScopeWindowState)
+	if !strings.Contains(raw0, `"in_window":true`) {
+		t.Fatalf("窗口内该记为 in_window：%q", raw0)
+	}
+	if err := e.m.pg.SetSetting(intercept.SettingScopeHours, closed); err != nil {
+		t.Fatal(err)
+	}
+	e.s.enforceScopeEnforcement()
+	if !pausedNow() {
+		t.Fatalf("窗口外该把任务停下来（窗口 %s，本机 %s）", closed, now.Format("15:04"))
+	}
+	var st scopeWindowState
+	raw, _, _ := e.m.pg.GetSetting(settingScopeWindowState)
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		t.Fatalf("窗口状态该落库：%v raw=%q", err, raw)
+	}
+	if st.InWindow || st.LastClosedAt == "" || st.PausedNow == 0 {
+		t.Errorf("窗口状态不对：%+v", st)
+	}
+	// 任务时间线上要有一句"为什么停的"——恢复后回头看，这是唯一能解释中断的东西。
+	acts, _, err := task.Store.ActivityList(nil, 0, 200)
+	if err != nil {
+		t.Fatalf("读时间线失败：%v", err)
+	}
+	foundReason := false
+	for _, a := range acts {
+		if strings.Contains(a.Summary, "作业时间窗") {
+			foundReason = true
+		}
+	}
+	if !foundReason {
+		t.Errorf("暂停时该在任务时间线留一句原因：%+v", acts)
+	}
+
+	// ② 窗口清空（=不限时）+ 手动继续 → 恢复；**不自动恢复**是刻意的。
+	if err := e.m.pg.SetSetting(intercept.SettingScopeHours, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.s.enforceScopeEnforcement()
+	if !pausedNow() {
+		t.Error("窗口重开不该自动恢复任务（恢复要人点一下）")
+	}
+	rec := e.request(http.MethodPost, "/api/scope/resume-all", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("继续全部 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if pausedNow() {
+		t.Error("手动继续后任务该恢复")
+	}
+
+	// ③ 停机开关：一条 API 就把平台停下来——立刻（不等 tick）、有回执、动作被拒。
+	rec = e.request(http.MethodPost, "/api/scope/kill-switch", `{"on":true,"reason":"验收：现场叫停"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("停机 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), "现场叫停", "回执里的停机理由")
+	e.mustContain(rec.Body.String(), `"tasks_paused":1`, "回执里被暂停的任务数")
+	if !pausedNow() {
+		t.Fatal("停机该立刻暂停在跑的任务")
+	}
+	if !e.s.safetyAdmissionBlocked() {
+		t.Error("停机期间入口层该拦住新任务补位")
+	}
+	// 调用层：动作类工具被硬拒（scope_mode 是 off 也拦——停机不是授权范围的一档）。
+	dec, hit := e.m.interceptor.CheckScope(context.Background(), tid, "Bash",
+		json.RawMessage(`{"command":"nmap 10.0.0.1"}`))
+	if !hit || dec.Action != "deny" || !strings.Contains(dec.RuleName, "停机开关") {
+		t.Errorf("停机期间动作该被硬拒：hit=%v action=%q rule=%q", hit, dec.Action, dec.RuleName)
+	}
+
+	// ④ 停止状态下"继续全部"要被挡住并说清为什么（否则用户会以为按钮坏了）。
+	rec = e.request(http.MethodPost, "/api/scope/resume-all", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("停机期间继续全部该 409，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), "停机", "409 的理由")
+
+	// ⑤ 解除：回执历史两条（开、关），**不自动恢复**任务。
+	rec = e.request(http.MethodPost, "/api/scope/kill-switch", `{"on":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("解除 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !pausedNow() {
+		t.Error("解除停机不该自动恢复任务（恢复要人点一下）")
+	}
+	var status scopeEnforcementResponse
+	rec = e.request(http.MethodGet, "/api/scope/enforcement", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("状态解码失败：%v", err)
+	}
+	if status.KillSwitch.On {
+		t.Error("解除后开关该是关的")
+	}
+	if len(status.KillSwitch.History) != 2 || !status.KillSwitch.History[0].On == false {
+		t.Errorf("回执历史该有开、关两条（新的在前）：%+v", status.KillSwitch.History)
+	}
+	if status.KillSwitch.History[0].By == "" {
+		t.Error("回执该记下是谁发起的")
+	}
+	rec = e.request(http.MethodPost, "/api/scope/resume-all", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("解除后继续全部 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"resumed":1`, "恢复的任务数")
+	if pausedNow() {
+		t.Error("继续全部之后任务该在跑")
+	}
+
+	// ⑥ 幂等：重复开/关要被拒（400），不产生一条假回执。
+	if rec := e.request(http.MethodPost, "/api/scope/kill-switch", `{"on":false}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("开关本来就是关的，再关该 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+
+	// ⑦ 停止状态下**不起任何新工作**：到点的计划任务不跑（否则一个 5 分钟一次的计划
+	//    在停机一小时里会堆出十二条跑不动的任务）。解除后这一 tick 立刻补上——
+	//    水位不推进，所以是"晚触发"而不是"丢触发"。
+	if _, err := e.m.pg.Exec(`DELETE FROM task_schedules WHERE name LIKE 'acceptance-p35%'`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// 计划任务跑出来的任务是它自己建的，不在 newTask 的收尾里——顺手带走。
+		rows, err := e.m.pg.Query(`SELECT last_task_id FROM task_schedules WHERE name LIKE 'acceptance-p35%' AND last_task_id > 0`)
+		if err == nil {
+			var ids []int64
+			for rows.Next() {
+				var id int64
+				if rows.Scan(&id) == nil {
+					ids = append(ids, id)
+				}
+			}
+			rows.Close()
+			for _, id := range ids {
+				_, _ = e.m.pg.Exec(`DELETE FROM findings WHERE task_id=$1`, id)
+				_ = e.m.pg.DeleteTask(id)
+			}
+		}
+		_, _ = e.m.pg.Exec(`DELETE FROM task_schedules WHERE name LIKE 'acceptance-p35%'`)
+	})
+	rec = e.request(http.MethodPost, "/api/task-schedules", `{
+		"name":"acceptance-p35-sched",
+		"frequency":{"kind":"every_hours","every_hours":1},
+		"task_spec":{"description":"acceptance-p35 停机守卫","goal":"验证停机期间不起新工作"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("建计划任务 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var schedDTO struct {
+		ID        int64 `json:"id"`
+		LastRunID int64 `json:"last_task_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &schedDTO); err != nil {
+		t.Fatalf("计划任务解码失败：%v raw=%s", err, rec.Body.String())
+	}
+	before := e.taskCount()
+	if _, err := e.m.pg.Exec(`UPDATE task_schedules SET next_run_at=now()-interval '1 minute' WHERE id=$1`, schedDTO.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.pg.SetSetting(intercept.SettingKillSwitch,
+		`{"on":true,"at":"`+time.Now().Format(time.RFC3339)+`","reason":"验收：停机守卫"}`); err != nil {
+		t.Fatal(err)
+	}
+	e.s.sched.tickOnce(e.ctx)
+	if got := e.taskCount(); got != before {
+		t.Errorf("停机期间到点的计划任务不该建任务：%d → %d", before, got)
+	}
+	// 解除后同一个 tick 立刻补上（水位没推进）。
+	rec = e.request(http.MethodPost, "/api/scope/kill-switch", `{"on":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("解除停机 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.s.sched.tickOnce(e.ctx)
+	if got := e.taskCount(); got != before+1 {
+		t.Errorf("解除后到点的计划任务该补跑一次：%d → %d", before, got)
+	}
+	// 停机期间我们自己的任务也被停了（这正是"全停"的意思）——恢复它，好让 ⑧ 只看窗口那件事。
+	if rec := e.request(http.MethodPost, "/api/scope/resume-all", ""); rec.Code != http.StatusOK {
+		t.Fatalf("继续全部 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if pausedNow() {
+		t.Fatal("恢复后任务该在跑")
+	}
+
+	// ⑧ 窗口写错（绕过接口校验直接写库）时**不因配置错误让全平台停工**，
+	//    但要在状态里醒目地说出来——拦截层已经对每次调用转人工，那一堆待审批很难查。
+	if err := e.m.pg.SetSetting(intercept.SettingScopeHours, "9 点到 6 点"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.enforceScopeEnforcement()
+	if pausedNow() {
+		t.Error("窗口格式错时不该把任务全停了（那不是授权判定，是配置写错）")
+	}
+	raw, _, _ = e.m.pg.GetSetting(settingScopeWindowState)
+	if !strings.Contains(raw, "parse_error") {
+		t.Errorf("窗口解析失败该在状态里说出来：%q", raw)
 	}
 }
