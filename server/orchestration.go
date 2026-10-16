@@ -504,6 +504,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedPlannerListAssetsBinding()
+	s.seedGraphToolBindings()
 	s.seedCompanyScopeRebind()
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
@@ -848,6 +849,30 @@ func (s *Server) seedPlannerListAssetsBinding() {
 // something a worker does mid-exploration. Fresh DBs already get planner via
 // PlannerTools() and lack worker via WorkerTools(); this only backfills old rows.
 // One-shot + flag-guarded so a user who later re-binds worker isn't overridden.
+// seedGraphToolBindings 把「图相关工具」补绑到平台级 agent（auto / pentest）——一次性、只加不减。
+//
+// 为什么：这几个工具（域内/云上枚举的摄入、攻击路径、事前可检出性）最初只绑了
+// planner/worker/mainagent，而**写图的 insert_assets / list_assets 是绑 auto + pentest 的**。
+// 于是从对话页（Auto / 渗透测试）里"把这份 SharpHound 结果导进任务图"这件事根本调不到——
+// 而人恰恰最可能从对话里做这件事。同一族工具、两套绑定，是个说不通的差异。
+//
+// 只加不减：用户自己解绑过的不动（与 company_scope_rebind 同一条纪律）。
+func (s *Server) seedGraphToolBindings() {
+	const flag = "graph_tools_bind_auto_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	keys := []string{"ingest_ad_data", "ingest_cloud_data", "ad_paths", "opsec_notes"}
+	for _, agentKey := range []string{"auto", "pentest"} {
+		if err := s.m.pg.AddAgentToToolBinding(agentKey, keys); err != nil {
+			log.Printf("[tools] 图相关工具绑定到 %s 失败: %v", agentKey, err)
+			return
+		}
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[tools] 图相关工具（摄入/路径/可检出性）已补绑 auto/pentest（一次性）")
+}
+
 func (s *Server) seedCompanyScopeRebind() {
 	const flag = "company_scope_rebind_v1" // worker→planner 默认绑定切换
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
