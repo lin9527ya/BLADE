@@ -820,6 +820,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scope/resume-all", s.resumeAllTasks)
 	// P36：凭据明文的受控入口（有副作用——写留痕，所以是 POST 不是 GET）。
 	mux.HandleFunc("POST /api/credentials/{id}/reveal", s.revealCredential)
+	// P37 作业时间线：页面读的与导出的**同一份装配**（客户拿到的那份不该和界面对不上）。
+	mux.HandleFunc("GET /api/tasks/{id}/timeline", s.taskTimeline)
+	mux.HandleFunc("GET /api/tasks/{id}/timeline.md", s.taskTimelineExport)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)

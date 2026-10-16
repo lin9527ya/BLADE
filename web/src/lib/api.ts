@@ -11,6 +11,7 @@ import type {
   CredentialReveal,
   KillSwitchReceipt,
   ScopeEnforcement,
+  TimelineResponse,
   Activity,
   ADImportFile,
   ADImportPreview,
@@ -693,6 +694,26 @@ export const api = {
     post<ADImportResult>("/ad/import", { task_id: Number(taskId), files }),
   // 停机开关与作业时间窗的执行侧（P35）。停机**立即生效**（不等 scheduler tick）；
   // 解除与「继续全部」都不自动恢复任务，所以是两个独立动作。
+  // 作业时间线（P37）：页面读的与导出的走服务端同一份装配（客户拿到的那份不该与界面对不上）。
+  taskTimeline: (taskId: string, kinds = "") =>
+    get<TimelineResponse>(`/tasks/${encodeURIComponent(taskId)}/timeline${kinds ? `?kinds=${encodeURIComponent(kinds)}` : ""}`),
+  downloadTaskTimeline: async (taskId: string, kinds = "") => {
+    const token = getToken();
+    const r = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/timeline.md${kinds ? `?kinds=${encodeURIComponent(kinds)}` : ""}`,
+      { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } },
+    );
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = `timeline-task-${taskId}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
   // 凭据明文的受控入口（P36）：POST 而不是 GET——它有副作用（服务端写一条"谁看了明文"的留痕）。
   revealCredential: (nodeId: string, taskId: string) =>
     post<CredentialReveal>(`/credentials/${encodeURIComponent(nodeId)}/reveal?task=${encodeURIComponent(taskId)}`, {}),
