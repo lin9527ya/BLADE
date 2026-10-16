@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // TestLeaseWatchdogReclaimsStalledIntent drives the engine sweep directly: a running

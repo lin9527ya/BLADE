@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 // hasSkillTool reports whether the packed tool set contains the Skill meta-tool.

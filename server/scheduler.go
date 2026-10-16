@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // Scheduler drives P3 triggers: on each tick it fires due interval triggers and

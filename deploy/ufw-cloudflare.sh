@@ -51,5 +51,5 @@ cat <<'NOTE'
   1. 源站证书用 **Cloudflare Origin Certificate**（15 年、不进 CT 日志），别用 Let's Encrypt
      —— 后者的证书会进证书透明日志，域名与 IP 就被 Censys 这类引擎收录了。
   2. 反代按 deploy/nginx-cloudflare.conf 配（含 set_real_ip_from 与 SSE 免缓冲）。
-  3. ARTEX 自己保持默认 loopback 监听（`-addr 127.0.0.1:8787`），反代再用 proxy_pass 接。
+  3. BLADE 自己保持默认 loopback 监听（`-addr 127.0.0.1:8787`），反代再用 proxy_pass 接。
 NOTE

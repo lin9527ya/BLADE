@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // degrade 报告"库不可用"时的降级。测试仍然照跑（守住本地无库也能 `go test` 的能力），
@@ -18,7 +18,7 @@ func degrade(step string, err error) {
 	fmt.Fprintf(os.Stderr,
 		"\n!!! server 测试降级：%s 失败（%v）\n"+
 			"!!! 跨包 advisory lock 与 llm_profiles 清理未生效。\n"+
-			"!!! 此后的失败可能是跨包竞态而非代码问题；要确定性请把 ARTEX_PG_DSN 指向一个可用的库。\n\n",
+			"!!! 此后的失败可能是跨包竞态而非代码问题；要确定性请把 BLADE_PG_DSN 指向一个可用的库。\n\n",
 		step, err)
 }
 

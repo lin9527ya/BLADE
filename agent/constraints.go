@@ -3,8 +3,8 @@ package agent
 import (
 	"strings"
 
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/policy"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/policy"
 )
 
 // constraintBlock renders this task's operation constraints (task_constraints) as a

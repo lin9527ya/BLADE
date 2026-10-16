@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // TestCandidateTextsExpandsSurfaces pins the 遮挡面 expansion: nested string

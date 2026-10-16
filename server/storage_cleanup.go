@@ -15,13 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // P28 存储清理：把 <数据目录> 下的产物按分类扫描 → 保留天数 → **试算（不动盘）** → 执行。
 //
 // 与 CyberStrikeAI 的 storage.Cleaner 同构（Inspect/Clean 两段式、按分类保留、报告先行），
-// 但判定依据按 ARTEX 的真值来：
+// 但判定依据按 BLADE 的真值来：
 //   - 「过期」用单元内**最新写入时间**（递归取 max mtime）——它不是访问时间的猜测，
 //     是"最后一次落笔"，可解释、可复现；
 //   - 「不能删」用 **DB 里非终态的任务集合**（running/queued/paused…），不用文件时间启发式

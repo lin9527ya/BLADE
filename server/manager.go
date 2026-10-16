@@ -15,12 +15,12 @@ import (
 	"time"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/agent"
-	pgdb "github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/enrich"
-	"github.com/lin9527ya/artex/guard"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/traffic"
+	"github.com/lin9527ya/blade/agent"
+	pgdb "github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/enrich"
+	"github.com/lin9527ya/blade/guard"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/traffic"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -279,7 +279,7 @@ const (
 	// settingCORSAllowedOrigins（P42）是允许跨源访问 API 的来源白名单（逗号分隔）。
 	// 空 = 不发 CORS 头（同源前端不需要它）；填 "*" 才是真的全开放——得自己写出来。
 	settingCORSAllowedOrigins = "cors_allowed_origins"
-	// settingSiteName（P42）是界面显示名（空 = 内置 "ARTEX"）。给在意隐身的人一个改名的口子：
+	// settingSiteName（P42）是界面显示名（空 = 内置 "BLADE"）。给在意隐身的人一个改名的口子：
 	// 名字本身是低成本指纹。**注意它只改运行时显示的标题**——静态 HTML 里的 <title> 是构建期
 	// 常量（web/src/config/app-config.ts），要连爬虫看到的也改掉得改那里重新构建（README 有写）。
 	settingSiteName = "site_name"
@@ -724,7 +724,7 @@ func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model s
 	// 要求每个请求带路由头，缺了直接 400。值用**稳定**串（按配置名派生）：它只影响
 	// 路由/缓存亲和，不需要每次变化；稳定反而对端点的缓存更友好。
 	if k := strings.TrimSpace(p.SessionHeaderKey); k != "" {
-		headers = map[string]string{k: "artex-" + name}
+		headers = map[string]string{k: "blade-" + name}
 	}
 	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel, headers
 }

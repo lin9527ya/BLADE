@@ -3,8 +3,8 @@ package server
 import (
 	"time"
 
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 重试策略的服务端解析，见 docs/LLM重试设计.md。五层里：

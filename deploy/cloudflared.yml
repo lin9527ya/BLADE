@@ -6,9 +6,9 @@
 #
 # 用法（在 VPS 上）：
 #   cloudflared tunnel login
-#   cloudflared tunnel create artex
+#   cloudflared tunnel create blade
 #   # 把下面 credentials-file 换成 tunnel create 输出的那个 json
-#   cloudflared tunnel route dns artex console.example.com
+#   cloudflared tunnel route dns blade console.example.com
 #   sudo cp cloudflared.yml /etc/cloudflared/config.yml
 #   sudo cloudflared service install     # 注册成服务
 #   cloudflared tunnel ingress validate  # 校验这份配置
@@ -22,7 +22,7 @@ ingress:
   - hostname: console.example.com
     service: http://127.0.0.1:8787
     originRequest:
-      # ARTEX 的活动流/日志流是 SSE 长连接：别让 CF 缓冲或提前掐断。
+      # BLADE 的活动流/日志流是 SSE 长连接：别让 CF 缓冲或提前掐断。
       disableChunkedEncoding: false
       connectTimeout: 30s
       # 本机是明文 http（闭环内），不需要 CF 去校验源站证书。

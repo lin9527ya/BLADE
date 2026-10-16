@@ -14,9 +14,9 @@ import (
 	"unicode/utf8"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/evidence"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/evidence"
 )
 
 func (s *Server) evidenceStore() *evidence.Store {

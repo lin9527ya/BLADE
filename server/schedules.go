@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/policy"
-	"github.com/lin9527ya/artex/sched"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/policy"
+	"github.com/lin9527ya/blade/sched"
 )
 
 // P22 计划任务：按结构化频率到点自动建任务。

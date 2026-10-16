@@ -16,9 +16,9 @@ import (
 
 	"github.com/lin9527ya/Norma/harness"
 	"github.com/lin9527ya/Norma/llm"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/sidequestion"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/sidequestion"
 )
 
 type sideHTTPProvider struct {

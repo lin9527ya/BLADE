@@ -16,9 +16,9 @@ import (
 
 	"github.com/lin9527ya/Norma/llm"
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/intercept"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/intercept"
 )
 
 type retestProvider struct {

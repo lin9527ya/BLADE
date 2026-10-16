@@ -8,7 +8,7 @@ import (
 
 	"github.com/lin9527ya/Norma/agentcore"
 	"github.com/lin9527ya/Norma/llm"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 type captureUsageProvider struct {

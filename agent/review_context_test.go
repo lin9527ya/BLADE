@@ -9,9 +9,9 @@ import (
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/guard"
-	"github.com/lin9527ya/artex/intercept"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/guard"
+	"github.com/lin9527ya/blade/intercept"
 )
 
 // Real PostgreSQL + SDK hooks: Worker reviews receive the current call only.

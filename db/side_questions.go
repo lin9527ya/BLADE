@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/lin9527ya/artex/sidequestion"
+	"github.com/lin9527ya/blade/sidequestion"
 )
 
 var ErrSideBusy = errors.New("当前会话已有旁路问题正在回答")

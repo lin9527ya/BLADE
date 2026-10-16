@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	actool "github.com/lin9527ya/Norma/tool"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 func workflowCall(t *testing.T, ctx context.Context, tool actool.CoreTool, input any, wantError bool) string {

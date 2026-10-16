@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // ad_paths 工具：域内采集数据导进来之后，规划/执行侧要**看得见**这条路。

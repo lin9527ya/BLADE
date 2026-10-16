@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 func TestExtractTargets(t *testing.T) {
@@ -199,11 +199,11 @@ func TestUsableScopeFiltersUnmatchableKinds(t *testing.T) {
 
 func TestScopeModeEnvOverride(t *testing.T) {
 	i := &Interceptor{}
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "deny")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "deny")
 	if got := i.ScopeMode(); got != "deny" {
 		t.Fatalf("got %q want deny", got)
 	}
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "off")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "off")
 	if got := i.ScopeMode(); got != "off" {
 		t.Fatalf("got %q want off", got)
 	}
@@ -226,7 +226,7 @@ func TestScopeModeDefaultsToAsk(t *testing.T) {
 	defer d.Close()
 
 	// 清掉环境覆盖：本用例测的是「setting 也没保存过」这条缺省路径。
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "")
 
 	old, had, err := d.GetSetting(SettingScopeMode)
 	if err != nil {
@@ -328,7 +328,7 @@ func TestScopeGateBlocksOutsideWindow(t *testing.T) {
 	}
 	defer d.Close()
 
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "") // 走 setting，不走 env 覆盖
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "") // 走 setting，不走 env 覆盖
 	defer setSetting(t, d, SettingScopeMode, "deny")()
 	defer setSetting(t, d, SettingScopeHours, "09:00-18:00")()
 	i := New(d)
@@ -371,7 +371,7 @@ func TestScopeGateFailsLoudOnBadWindow(t *testing.T) {
 	}
 	defer d.Close()
 
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "")
 	defer setSetting(t, d, SettingScopeMode, "deny")()
 	defer setSetting(t, d, SettingScopeHours, "9 点到 6 点")() // 写给人看的话，不是格式
 	i := New(d)

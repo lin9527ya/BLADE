@@ -50,21 +50,21 @@ jobs:
           path: server/webui/dist
       - name: Build and package with build.sh
         env:
-          ARTEX_TARGET_OS: ${{ matrix.goos }}
-          ARTEX_TARGET_ARCH: ${{ matrix.goarch }}
-          ARTEX_BUILD_VERSION: ${{ github.ref_name }}
-          ARTEX_SKIP_FRONTEND: "1"
-          ARTEX_SKIP_NPM_CI: "1"
+          BLADE_TARGET_OS: ${{ matrix.goos }}
+          BLADE_TARGET_ARCH: ${{ matrix.goarch }}
+          BLADE_BUILD_VERSION: ${{ github.ref_name }}
+          BLADE_SKIP_FRONTEND: "1"
+          BLADE_SKIP_NPM_CI: "1"
           # UPX 自解压 ELF 在部分 Linux 内核、虚拟化和安全策略下会崩溃。
           # Release 使用 Go linker 裁剪和 zip 压缩，优先保证可移植性。
-          ARTEX_COMPRESS: "0"
-          ARTEX_PACKAGE: "1"
-          ARTEX_PACKAGE_DIR: dist
+          BLADE_COMPRESS: "0"
+          BLADE_PACKAGE: "1"
+          BLADE_PACKAGE_DIR: dist
         run: |
-          ./build.sh --target "${ARTEX_TARGET_OS}/${ARTEX_TARGET_ARCH}"
+          ./build.sh --target "${BLADE_TARGET_OS}/${BLADE_TARGET_ARCH}"
       - name: Smoke test Linux amd64 binary
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        run: dist/artex-linux-amd64/artex -h
+        run: dist/blade-linux-amd64/blade -h
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -74,7 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bin-linux-${{ matrix.goarch }}
-          path: dist/artex-linux-${{ matrix.goarch }}/artex
+          path: dist/blade-linux-${{ matrix.goarch }}/blade
 
   # ③ 汇总所有 zip → 创建 GitHub Release
   release:
@@ -99,8 +99,8 @@ jobs:
   # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
   #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）
   #
-  #    **默认跳过**：镜像目标由仓库变量 DOCKERHUB_IMAGE 决定（例：lin9527ya/artex），未设置
-  #    就不跑。本仓 fork 自 Autumn-27/ARTEX，把上游命名空间硬编码在这里的话，第一次发版就会
+  #    **默认跳过**：镜像目标由仓库变量 DOCKERHUB_IMAGE 决定（例：lin9527ya/blade），未设置
+  #    就不跑。本仓 fork 自 Autumn-27/BLADE，把上游命名空间硬编码在这里的话，第一次发版就会
   #    把镜像推进**别人的** Docker Hub 仓库。启用方式：建仓库变量 DOCKERHUB_IMAGE，并加
   #    DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret——填好后本 job 自动生效。
   docker:

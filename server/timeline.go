@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/report"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/report"
 )
 
 // 作业时间线（P37）：把几路**已经记着**的东西按时间串成一条线。

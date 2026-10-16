@@ -22,11 +22,11 @@ func TestAuthTransportAddsTokenOnlyForGitHubHosts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	send("https://api.github.com/repos/lin9527ya/artex/releases/latest")
+	send("https://api.github.com/repos/lin9527ya/blade/releases/latest")
 	if gotAuth != "Bearer ghp_secret" {
 		t.Fatalf("API 主机必须带 token，实际 %q", gotAuth)
 	}
-	send("https://github.com/lin9527ya/artex/releases/download/v1/x.tar.gz")
+	send("https://github.com/lin9527ya/blade/releases/download/v1/x.tar.gz")
 	if gotAuth != "Bearer ghp_secret" {
 		t.Fatalf("github.com 下载入口必须带 token，实际 %q", gotAuth)
 	}

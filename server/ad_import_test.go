@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // AD 导入的映射单测：吃两种 SharpHound 形状、成员方向、ACL 白名单、DN/知名 RID 的 stub、

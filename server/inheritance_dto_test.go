@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 func TestInheritedDTOProvenance(t *testing.T) {

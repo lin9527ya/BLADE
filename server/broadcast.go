@@ -3,7 +3,7 @@ package server
 import (
 	"sync"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // Broadcaster is a per-task in-process pub/sub for live activity events. The

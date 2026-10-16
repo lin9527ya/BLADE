@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
-	pgdb "github.com/lin9527ya/artex/db"
+	pgdb "github.com/lin9527ya/blade/db"
 )
 
 const (

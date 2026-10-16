@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/db"
 )
 
 // helper: intent/fact node

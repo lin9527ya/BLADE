@@ -1,4 +1,4 @@
-// Package intel 是 ARTEX 的「情报/测绘数据源」抽象：把外部空间测绘引擎（FOFA、将来
+// Package intel 是 BLADE 的「情报/测绘数据源」抽象：把外部空间测绘引擎（FOFA、将来
 // 的 Quake/ZoomEye/Shodan、企业信息收集）统一成一条查询接口，供 agent 工具调用。
 //
 // 设计纪律：

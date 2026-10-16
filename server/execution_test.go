@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 // newExecFixture builds the P13 execution service over the test database and a
@@ -58,7 +58,7 @@ func TestExecutionServiceSubmitAndWait(t *testing.T) {
 	svc, _, _, task := newExecFixture(t)
 	ctx := context.Background()
 
-	st, err := svc.Submit(ctx, task, 0, "work#1", "printf 'hello-artex\\n'; sleep 5", "测试：部分输出", 0)
+	st, err := svc.Submit(ctx, task, 0, "work#1", "printf 'hello-blade\\n'; sleep 5", "测试：部分输出", 0)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestExecutionServiceSubmitAndWait(t *testing.T) {
 	if mid.Status != db.ExecRunning {
 		t.Fatalf("expected still-running snapshot, got %+v", mid)
 	}
-	if !strings.Contains(mid.Tail, "hello-artex") {
+	if !strings.Contains(mid.Tail, "hello-blade") {
 		t.Fatalf("partial output not surfaced: %q", mid.Tail)
 	}
 
@@ -98,7 +98,7 @@ func TestExecutionServiceSubmitAndWait(t *testing.T) {
 		t.Fatalf("output bytes not accounted: %+v", done)
 	}
 	body, err := os.ReadFile(st.OutputPath)
-	if err != nil || !strings.Contains(string(body), "hello-artex") {
+	if err != nil || !strings.Contains(string(body), "hello-blade") {
 		t.Fatalf("output file content: %v %q", err, string(body))
 	}
 }
@@ -109,9 +109,9 @@ func TestExecutionServiceSubmitAndWait(t *testing.T) {
 // proxy + CA, without which a long scan bypasses the MITM and fails TLS.
 func TestExecutionServiceInheritsAgentShellEnvAndCwd(t *testing.T) {
 	svc, _, td, task := newExecFixture(t)
-	svc.SetEnvResolver(func() []string { return []string{"ARTEX_EXEC_TEST_ENV=proxied"} })
+	svc.SetEnvResolver(func() []string { return []string{"BLADE_EXEC_TEST_ENV=proxied"} })
 	st, err := svc.Submit(context.Background(), task, 7, "work#1",
-		`pwd; printf 'env=%s\n' "$ARTEX_EXEC_TEST_ENV"`, "环境与目录", 0)
+		`pwd; printf 'env=%s\n' "$BLADE_EXEC_TEST_ENV"`, "环境与目录", 0)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}

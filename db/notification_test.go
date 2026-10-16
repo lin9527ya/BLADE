@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lin9527ya/artex/notify"
+	"github.com/lin9527ya/blade/notify"
 )
 
 // 本文件的用例都会真连 PostgreSQL（无库时跳过）。这些 SQL 用到了

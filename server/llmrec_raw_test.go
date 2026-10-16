@@ -11,8 +11,8 @@ import (
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/llmrec"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/llmrec"
 )
 
 // Full chain against a real PG: Recorder → norma provider → capturing transport

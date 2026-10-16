@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/lin9527ya/artex/opsec"
+	"github.com/lin9527ya/blade/opsec"
 )
 
 // 可检出性知识库一览（P38）：只读。

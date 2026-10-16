@@ -11,8 +11,8 @@ import (
 
 	actool "github.com/lin9527ya/Norma/tool"
 
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 图数据摄入工具（P40）：把 agent **在目标里跑出来的**枚举结果直接落进图。

@@ -27,12 +27,12 @@ import (
 	"github.com/lin9527ya/Norma/llm"
 	actool "github.com/lin9527ya/Norma/tool"
 
-	"github.com/lin9527ya/artex/agent"
-	"github.com/lin9527ya/artex/db"
-	"github.com/lin9527ya/artex/guard"
-	"github.com/lin9527ya/artex/intel"
-	"github.com/lin9527ya/artex/intercept"
-	"github.com/lin9527ya/artex/mcphttp"
+	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/guard"
+	"github.com/lin9527ya/blade/intel"
+	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/mcphttp"
 )
 
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
@@ -515,9 +515,9 @@ func accP11(t *testing.T, e *accEnv) {
 // 绕过 deny 规则、RoE 对 base64 目标可见、规则加载失败失效安全、dry-run 不落库。
 func accP12(t *testing.T, e *accEnv) {
 	task, tid := e.newTask("acceptance-p12", "拦截遮挡面")
-	// 环境变量 ARTEX_SCOPE_ENFORCEMENT 优先于 setting（部署可用 .env 强制开关）；
+	// 环境变量 BLADE_SCOPE_ENFORCEMENT 优先于 setting（部署可用 .env 强制开关）；
 	// 本用例要验证的是 setting 路径与抽取逻辑，先清掉环境覆盖保证确定性。
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "")
 	// 与生产同款：把任务上下文挂进 ctx（guard 的审计行按 task_id 归属）。
 	ctx := intercept.WithTaskContext(context.Background(), task.ID, "acceptance", nil)
 
@@ -1253,7 +1253,7 @@ func accP18(t *testing.T, e *accEnv) {
 	task, tid := e.newTask("acceptance-p18", "约束可执行化")
 	other, otherTid := e.newTask("acceptance-p18-other", "另一个任务（任务级规则不该外溢）")
 	// 环境变量优先于 setting；本用例要验的是规则层，先把 RoE 关掉保证确定性。
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "")
 	oldMode, hadMode, _ := e.m.pg.GetSetting("intercept_scope_mode")
 	t.Cleanup(func() {
 		if hadMode {
@@ -1605,7 +1605,7 @@ func accP20(t *testing.T, e *accEnv) {
 	other, otherTid := e.newTask("acceptance-p20-other", "另一个任务（策略不该外溢）")
 	// 规则层要确定性判定：先把 RoE 关掉（否则"被拦"的理由可能是授权范围而非策略），
 	// 并在收尾时把全局默认策略恢复原状（后面还有别的子测试）。
-	t.Setenv("ARTEX_SCOPE_ENFORCEMENT", "")
+	t.Setenv("BLADE_SCOPE_ENFORCEMENT", "")
 	oldMode, hadMode, _ := e.m.pg.GetSetting("intercept_scope_mode")
 	oldPol, hadPol, _ := e.m.pg.GetSetting(settingExplorationPolicy)
 	t.Cleanup(func() {
@@ -5231,7 +5231,7 @@ func accP42(t *testing.T, e *accEnv) {
 	}
 
 	// ① /api/health 免认证，但**不自报家门**：只回 ok。
-	// 它此前回 {"ok":true,"service":"artex","version":"v0.4.x"}——公网上任何人请求一次就知道这是
+	// 它此前回 {"ok":true,"service":"blade","version":"v0.4.x"}——公网上任何人请求一次就知道这是
 	// 什么、什么版本，连指纹比对都省了。
 	rec := e.request(http.MethodGet, "/api/health", "")
 	if rec.Code != http.StatusOK {
@@ -5239,7 +5239,7 @@ func accP42(t *testing.T, e *accEnv) {
 	}
 	body := rec.Body.String()
 	e.mustContain(body, `"ok":true`, "health 仍要报活")
-	for _, leak := range []string{"artex", "ARTEX", "version"} {
+	for _, leak := range []string{"blade", "BLADE", "version"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("免认证的 /api/health 不该出现 %q：%s", leak, body)
 		}
