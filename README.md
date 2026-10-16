@@ -4,16 +4,11 @@
 
 AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
-
-🌐 **在线 Demo**： [https://blade-demo.vercel.app/](https://blade-demo.vercel.app/)
-
 </div>
 
 ---
 
 ## 截图预览
-
-> 完整交互见[在线 Demo](https://blade-demo.vercel.app/)。
 
 | 仪表盘（总览 / Token 消耗 / 活动流） | 任务列表 |
 | :---: | :---: |
@@ -479,20 +474,11 @@ flowchart TB
 
 ---
 
-## 交流群
-
-扫码关注微信公众号 **SecSentry**，在公众号后台私信即可入群交流。
-
-<div align="center">
-
-<img src="screenshots/wx.png" alt="微信公众号 SecSentry" width="480" />
-
-</div>
-
----
 ## 参考
 
-https://github.com/oritera/Cairn
+- **ARTEX** —— 本项目的原始版本：<https://github.com/Autumn-27/ARTEX>
+  （原作者仓库当前已不可达；本仓库曾用名 `lin9527ya/ARTEX`，2026-10 改名为 BLADE）
+- https://github.com/oritera/Cairn
 
 
 ## 许可与免责声明
