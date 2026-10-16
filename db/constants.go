@@ -81,6 +81,14 @@ const (
 	// ck_node_state 两处列表都得跟着长，而 AD 对象的状态语义完全一致（都是「采集到的事实」），
 	// 拆开只有维护成本、没有表达力。P27 的 foothold/credential 已经是这个形状。
 	KindADObject = "ad_object"
+	// 云对象（P39，G 项）：云上枚举回来的身份与授权（账号/用户/组/角色/策略、K8s 的
+	// ServiceAccount/Role/ClusterRole 与绑定关系）。
+	//
+	// 与 ad_object 分开成两个 kind，而不是合成"身份对象"：两者的**枚举来源、可读字段、
+	// 路径语义**都不同（域内讲"谁能到域管"，云上讲"谁能拿到 admin 策略/集群管理员"），
+	// 合成一个只会让 payload 变成一堆互不相干的字段。它们共用同一套边与同一条路径算法
+	// （member_of / can 顺势走），所以图上仍是一条路。
+	KindCloudObject = "cloud_object"
 )
 
 // 检测验证节点的状态：三态，且 **unknown 必须独立存在**。
@@ -99,6 +107,10 @@ const (
 // 按缺席判 stale 会把整片 computers 误标成过期。缺席是「这次没采」，不是「没了」——
 // 本仓一贯不把「没测到」写成结论（同 P24/P31）。
 const StateADActive = "active"
+
+// 云对象同样只有一态：active（这次枚举里它在）。理由与 AD 相同——枚举是分文件的
+// （可能只导了 K8s、没导 IAM），按缺席判过期会把整片未导的部分误标成没了。
+const StateCloudActive = "active"
 
 // 战果节点（kind='foothold'/'credential'）的状态：只有两态——在手 / 掉了。
 // 战果的全部价值就在「现在还能不能用」，再多的状态只是要人维护、且没人会维护的字段；
@@ -203,4 +215,10 @@ const (
 	// 收成一条 rel 而不是每种权限一条，是因为权限名是**开放集合**（BloodHound 每版都在加），
 	// 每加一个就改一次列级 CHECK 是不能接受的；attrs 就是留给它的扩展点。
 	RelCan = "can"
+	// 云上的关系**不新造边**：它们本来就能被这四条表达——
+	//   IAM 用户 → 组：member_of
+	//   主体 → 策略（附加/内联）：can，rights 写 attached / inline
+	//   谁可以代入某个角色：can，right="assume_role"（方向是 主体 --can--> 角色）
+	//   K8s 主体 → Role/ClusterRole：can，right 写 "clusterrole:cluster-admin" 这类
+	// 少一条边就少一份要维护的语义，路径算法（db/ad_paths.go）也就能同时走域内与云上。
 )

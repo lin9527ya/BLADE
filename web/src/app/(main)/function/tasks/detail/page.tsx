@@ -62,7 +62,7 @@ const TABS = [
   { value: "retests", label: "复测" },
   { value: "assets", label: "测试资产" },
   { value: "coverage", label: "资产覆盖图" },
-  { value: "ad", label: "AD 攻击路径" },
+  { value: "ad", label: "攻击路径（域内/云上）" },
   { value: "intercept", label: "拦截审批" },
   { value: "report", label: "报告" },
 ];

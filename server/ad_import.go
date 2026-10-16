@@ -641,7 +641,7 @@ func sidName(sid string) (string, bool, bool) {
 
 // buildADPlan 把若干采集文件映射成节点与边。纯函数——预览与应用共用同一份结果，
 // 单测也直接打它，不必起库。
-func buildADPlan(files []adImportFile, plan *adPlan) {
+func buildADPlan(files []graphImportFile, plan *adPlan) {
 	type rawObj struct {
 		file string
 		obj  map[string]any
@@ -968,13 +968,14 @@ func shObjList(o map[string]any, key string) []map[string]any {
 
 // ---------- HTTP ----------
 
-// adImportFile 是一个上传的采集文件。名字只用于报错时说清是哪个文件——判类不靠它。
-type adImportFile struct {
+// graphImportFile 是一个上传的采集文件。名字只用于报错时说清是哪个文件——判类不靠它。
+// graphImportFile 是一个上传的枚举结果文件（AD 的 SharpHound 与云上的 aws-cli/kubectl 输出共用）。
+type graphImportFile struct {
 	Name string `json:"name"`
 	JSON string `json:"json"`
 }
 
-func (f adImportFile) displayName() string {
+func (f graphImportFile) displayName() string {
 	if strings.TrimSpace(f.Name) == "" {
 		return "（未命名文件）"
 	}
@@ -982,8 +983,8 @@ func (f adImportFile) displayName() string {
 }
 
 type adImportReq struct {
-	TaskID int64          `json:"task_id"`
-	Files  []adImportFile `json:"files"`
+	TaskID int64             `json:"task_id"`
+	Files  []graphImportFile `json:"files"`
 }
 
 // adImportPlan 是「计划 + 落点」：两条路径共用，保证预览与应用同源。

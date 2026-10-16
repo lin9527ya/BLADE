@@ -17,13 +17,43 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
-import type { ADImportFile, ADImportPreview } from "@/lib/types";
+import type { ADImportFile, ADImportPreview, ADImportResult } from "@/lib/types";
 
-// AD 采集结果导入：把 BloodHound/SharpHound 的 JSON 落进这个任务的探索图。
+// 枚举结果导入：把**离线枚举**的 JSON 落进这个任务的探索图（AD 的 SharpHound / 云上的
+// aws-cli、kubectl 输出）。两种来源共用同一套纪律与同一份界面——它们进的是同一张图。
 //
 // 与资产 CSV 导入同规矩：**预览作废**——文件清单一变，上一份预览就清掉，
-// 「拿旧预览配新文件」点不下应用。采集结果是分文件的（users/groups/computers/domains…），
-// 所以这里一次收多个：跨文件的主体引用（组、会话里的账号）在同一份计划里才解析得出来。
+// 「拿旧预览配新文件」点不下应用。枚举结果是分文件的（users/groups/… 或 IAM/K8s 各一份），
+// 所以这里一次收多个：跨文件的主体引用（组、会话里的账号、绑定指向的角色）在同一份计划里
+// 才解析得出来。
+
+type ImportSource = "ad" | "cloud";
+
+const SOURCE: Record<
+  ImportSource,
+  { title: string; trigger: string; desc: string; accept: string[]; preview: (t: string, f: ADImportFile[]) => Promise<ADImportPreview>; apply: (t: string, f: ADImportFile[]) => Promise<ADImportResult> }
+> = {
+  ad: {
+    title: "导入 AD 采集结果",
+    trigger: "导入采集结果",
+    desc: "把 SharpHound / BloodHound 导出的 JSON（users.json、groups.json、computers.json、domains.json…）一次全选进来，先「检查」看清会导什么，确认无误再落库。已存在的对象按 SID 合并，不会重复登记。",
+    accept: [".json"],
+    preview: (t, f) => api.previewADImport(t, f),
+    apply: (t, f) => api.importAD(t, f),
+  },
+  cloud: {
+    title: "导入云上枚举结果",
+    trigger: "导入云上枚举结果",
+    desc:
+      "把云上枚举的 JSON 导进来（同一张图，与域内数据一起算路径）。支持两种：" +
+      "① AWS `aws iam get-account-authorization-details` 的输出；" +
+      "② K8s `kubectl get clusterroles,clusterrolebindings,roles,rolebindings,serviceaccounts -A -o json` 的输出。" +
+      "**平台不持有云凭据**——枚举在有凭据的那台机器上做，这里只读离线结果。",
+    accept: [".json"],
+    preview: (t, f) => api.previewCloudImport(t, f),
+    apply: (t, f) => api.importCloud(t, f),
+  },
+};
 
 const CATEGORY_LABEL: Record<string, string> = {
   user: "用户",
@@ -52,10 +82,14 @@ function countSummary(counts: Record<string, number>, labels: Record<string, str
 export function ADImportDialog({
   taskId,
   onImported,
+  source = "ad",
 }: {
   taskId: string;
   onImported: () => void;
+  /** 吃哪一种枚举结果：AD 的 SharpHound / 云上的 aws-cli、kubectl 输出。 */
+  source?: ImportSource;
 }) {
+  const cfg = SOURCE[source];
   const [open, setOpen] = React.useState(false);
   const [files, setFiles] = React.useState<ADImportFile[]>([]);
   const [preview, setPreview] = React.useState<ADImportPreview | null>(null);
@@ -67,7 +101,7 @@ export function ADImportDialog({
     if (!open) return;
     setFiles([]);
     setPreview(null);
-  }, [open]);
+  }, [open, source]);
 
   const addFiles = async (picked: FileList | null) => {
     if (!picked || picked.length === 0) return;
@@ -86,7 +120,7 @@ export function ADImportDialog({
   const runPreview = async () => {
     setBusy(true);
     try {
-      setPreview(await api.previewADImport(taskId, files));
+      setPreview(await cfg.preview(taskId, files));
     } catch (e) {
       toast.error(`预览失败：${String((e as Error)?.message ?? e)}`);
     } finally {
@@ -97,7 +131,7 @@ export function ADImportDialog({
   const apply = async () => {
     setApplying(true);
     try {
-      const res = await api.importAD(taskId, files);
+      const res = await cfg.apply(taskId, files);
       const parts = [`新增 ${res.nodes_created} 个对象`, `合并 ${res.nodes_updated} 个`, `新建 ${res.edges_created} 条关系`];
       if ((res.failures ?? 0) > 0) {
         toast.warning(`${parts.join("、")}；${res.failures} 项失败`);
@@ -119,16 +153,13 @@ export function ADImportDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm">
-          <UploadIcon data-icon="inline-start" /> 导入采集结果
+          <UploadIcon data-icon="inline-start" /> {cfg.trigger}
         </Button>
       </DialogTrigger>
       <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
         <DialogHeader className="border-b p-6">
-          <DialogTitle>导入 AD 采集结果</DialogTitle>
-          <DialogDescription>
-            把 SharpHound / BloodHound 导出的 JSON（users.json、groups.json、computers.json、domains.json…）
-            一次全选进来，先「检查」看清会导什么，确认无误再落库。已存在的对象按 SID 合并，不会重复登记。
-          </DialogDescription>
+          <DialogTitle>{cfg.title}</DialogTitle>
+          <DialogDescription>{cfg.desc}</DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
@@ -140,7 +171,7 @@ export function ADImportDialog({
               ref={fileRef}
               type="file"
               multiple
-              accept=".json,application/json"
+              accept={cfg.accept.join(",") + ",application/json"}
               className="hidden"
               onChange={(e) => {
                 void addFiles(e.target.files);

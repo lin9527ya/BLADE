@@ -447,12 +447,12 @@ func Markdown(in Input) string {
 		}
 	}
 
-	// 域内攻击路径（P32）：来自导入的 BloodHound/SharpHound 采集结果。与上面那条「攻击路径」
-	// 是两件事——上面讲这次作业怎么走的，这里讲域里本来存在哪条路。分开写，别让客户把
-	// 「我们会走到这」读成「我们已经走到了这」。
+	// 域内/云上攻击路径（P32 / P39）：来自导入的枚举结果（SharpHound 采集、AWS 授权明细、
+	// K8s RBAC）。与上面那条「攻击路径」是两件事——上面讲这次作业怎么走的，这里讲环境里
+	// 本来存在哪条路。分开写，别让客户把「我们会走到这」读成「我们已经走到了这」。
 	if len(in.ADPaths) > 0 {
-		fmt.Fprintf(&b, "## AD 攻击路径（域内可达，来自采集结果）\n\n")
-		fmt.Fprintf(&b, "> 以下路径由目录采集结果推导，表示**存在**这条利用链，不代表已实施。\n\n")
+		fmt.Fprintf(&b, "## 攻击路径（域内/云上可达，来自枚举结果）\n\n")
+		fmt.Fprintf(&b, "> 以下路径由导入的枚举结果推导（域内的目录采集、云上的 IAM/RBAC 枚举），表示**存在**这条利用链，不代表已实施。\n\n")
 		for i, p := range in.ADPaths {
 			fmt.Fprintf(&b, "**路径 %d**：%s → %s", i+1, p.Start, p.Target)
 			if len(p.TargetTags) > 0 {

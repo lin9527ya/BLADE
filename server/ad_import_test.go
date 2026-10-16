@@ -78,9 +78,9 @@ func shGroup(name, sid string) string {
 	}`
 }
 
-func filesFor(json string) adImportFile { return adImportFile{Name: "x.json", JSON: json} }
+func filesFor(json string) graphImportFile { return graphImportFile{Name: "x.json", JSON: json} }
 
-func buildPlanFor(t *testing.T, files ...adImportFile) *adPlan {
+func buildPlanFor(t *testing.T, files ...graphImportFile) *adPlan {
 	t.Helper()
 	p := newADPlan()
 	buildADPlan(files, p)

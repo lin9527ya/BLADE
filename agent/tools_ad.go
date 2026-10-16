@@ -20,9 +20,11 @@ import (
 func (t *ToolSet) adPaths() actool.CoreTool {
 	return readTool(
 		"ad_paths",
-		"读域内攻击路径（域内对象与关系来自导入的 BloodHound/SharpHound 采集结果）。"+
-			"返回从**非特权账号**出发、到高价值目标（Domain Admins / Enterprise Admins / 域控等）的最短利用链，"+
-			"每跳带关系类型（member_of 成员 / admin_to 本机管理员 / session_on 有会话 / can 权限）与一句说明。\n"+
+		"读攻击路径：**域内与云上一起读**（域内对象来自导入的 BloodHound/SharpHound 采集结果，"+
+			"云上对象来自导入的 AWS 授权明细 / K8s RBAC 枚举结果；两者共用同一套边与同一条路径算法）。"+
+			"返回从**非特权身份**（域内账号、云上用户与 ServiceAccount）出发、到高价值目标的"+
+			"最短利用链，每跳带关系类型（member_of 成员 / admin_to 本机管理员 / session_on 有会话 / "+
+			"can 权限——云上的 attached / inline / assume_role / clusterrole:xxx 都落在 can 上）与一句说明。\n"+
 			"注意两点：①「有会话」那一跳是反着走的（你在机器上已有权限 → 机器上有此账号的会话 → 可取它的凭据）；"+
 			"②这里只说明路存在，**不代表已实施**——真去打仍要按常规走意图与命令门。\n"+
 			"域内数据是空的（没导过采集结果）时返回空列表。可用 start 指定起点节点 id。",

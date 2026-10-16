@@ -170,3 +170,44 @@ func TestADPathStepsCapped(t *testing.T) {
 		t.Errorf("超过 %d 跳的目标不该报出来：%+v", ADPathMaxSteps, paths)
 	}
 }
+
+// 云上（P39）：起点该收 ServiceAccount（泄漏的 SA token 与口令一样常见），但**不收角色**——
+// 角色是"代入的目标"，把它当起点会让"角色挂着 admin 策略"这种一跳结论把真正那条路挤掉
+// （与"DA 一跳走到 DA"是同一个错误）。
+func TestADPathCloudStartsExcludeRoles(t *testing.T) {
+	nodes := []*Node{
+		adPathTestNode(t, 1, "alice", "user", false, false),
+		adPathTestNode(t, 2, "ns1/runner", "service_account", false, false),
+		adPathTestNode(t, 3, "app-role", "role", false, false),
+		adPathTestNode(t, 4, "AdministratorAccess", "policy", true, false),
+		adPathTestNode(t, 5, "cluster-admin", "role", true, false),
+	}
+	edges := []Edge{
+		{From: 1, Rel: RelCan, To: 4, Attrs: json.RawMessage(`{"rights":["attached"]}`)},
+		{From: 2, Rel: RelCan, To: 5, Attrs: json.RawMessage(`{"rights":["clusterrole:cluster-admin"]}`)},
+		{From: 3, Rel: RelCan, To: 4, Attrs: json.RawMessage(`{"rights":["attached"]}`)},
+	}
+	res := ADPaths(nodes, edges, 0)
+	starts := map[int64]bool{}
+	for _, s := range res.Starts {
+		starts[s.ID] = true
+	}
+	if !starts[1] || !starts[2] {
+		t.Errorf("用户与 ServiceAccount 该是起点：%+v", res.Starts)
+	}
+	if starts[3] {
+		t.Errorf("角色不该是起点（它是代入的目标）：%+v", res.Starts)
+	}
+	// 两个高价值目标各报一条（alice → admin 策略、SA → cluster-admin 角色）；
+	// 角色不是起点，所以"app-role → admin 策略"那条不该出现。
+	if len(res.Paths) != 2 {
+		t.Fatalf("该报两条路径（每个高价值目标各一条）：%+v", res.Paths)
+	}
+	targets := map[string]string{}
+	for _, p := range res.Paths {
+		targets[p.Target] = p.Start
+	}
+	if targets["AdministratorAccess"] != "alice" || targets["cluster-admin"] != "ns1/runner" {
+		t.Errorf("两条路的起点/目标不对：%+v", targets)
+	}
+}

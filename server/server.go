@@ -822,6 +822,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/credentials/{id}/reveal", s.revealCredential)
 	// P38：可检出性知识库一览（只读——让人看得见这份清单的边界在哪）。
 	mux.HandleFunc("GET /api/opsec/knowledge", s.opsecKnowledge)
+	// P39 云上枚举结果导入（G 项）：与 AD 导入同一套契约、同一张图。
+	mux.HandleFunc("POST /api/cloud/import/preview", s.cloudImportPreview)
+	mux.HandleFunc("POST /api/cloud/import", s.cloudImportApply)
 	// P37 作业时间线：页面读的与导出的**同一份装配**（客户拿到的那份不该和界面对不上）。
 	mux.HandleFunc("GET /api/tasks/{id}/timeline", s.taskTimeline)
 	mux.HandleFunc("GET /api/tasks/{id}/timeline.md", s.taskTimelineExport)

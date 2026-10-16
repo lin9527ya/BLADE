@@ -512,6 +512,8 @@ export interface ADImportPreview {
   skipped_rights?: Record<string, number>;
   unresolved_edges?: number;
   unknown_objects?: number;
+  /** 云上导入才有：未建模的东西（服务主体、Namespace…）如实计数。 */
+  skipped?: Record<string, number>;
 }
 
 export interface ADImportResult {
@@ -525,6 +527,7 @@ export interface ADImportResult {
   warnings: string[];
   edges_unresolved?: number;
   skipped_rights?: Record<string, number>;
+  skipped?: Record<string, number>;
   failures?: number;
   errors?: string[];
 }
