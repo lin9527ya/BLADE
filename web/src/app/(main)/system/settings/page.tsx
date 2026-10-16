@@ -1240,10 +1240,10 @@ export default function SystemSettingsPage() {
                 只收公开、可核对的信号。
               </p>
               {opsecKB ? (
-                <>
-                  <p className="text-muted-foreground text-xs">
-                    共 {opsecKB.entries.length} 类手法；按预计可见度从高到低列。
-                  </p>
+                // 条目默认收起（下拉）：全长十几条，铺开会把整个「安全与策略」顶下去，
+                // 而真正需要逐条看它的人会自己展开。上面那两条口径始终可见——那才是这张卡
+                // 最该被读到的部分。
+                <Advanced title={`知识库条目（${opsecKB.entries.length} 类，按预计可见度排序）`}>
                   <ul className="flex flex-col gap-2">
                     {[...opsecKB.entries]
                       .sort((a, b) => exposureWeight(b.exposure) - exposureWeight(a.exposure))
@@ -1263,7 +1263,7 @@ export default function SystemSettingsPage() {
                         </li>
                       ))}
                   </ul>
-                </>
+                </Advanced>
               ) : (
                 <p className="text-muted-foreground text-xs">知识库加载中…</p>
               )}
