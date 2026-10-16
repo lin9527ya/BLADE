@@ -683,6 +683,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
 		// node_detail：worker 拿到 intent_id/节点 id 后可查该节点完整详情（配合上面的回看）。
 		t.nodeDetail(),
+		// ad_paths（P32）：手上已经有域内凭据/会话时，读「从这到 DA/域控怎么走」——
+		// 域内横向的下一步该由正在那台机器上的 worker 决定，而不是等规划层猜。
+		t.adPaths(),
 		// P13 长任务执行：进程活过本次 run、输出落盘、状态进台账。未接线（nil 服务）
 		// 时工具返回可读拒绝，绑定可见性与目录 seed 不受影响。
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.cancelExecution(),
@@ -716,6 +719,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// coverage_matrix：按需拉「范围内资产 × 风险类」覆盖矩阵（已测/未测成/进行中/
 		// 范围外 + 事实证据数），规划补测方向前先看它。
 		t.coverageMatrix(),
+		// ad_paths（P32）：手上已有域内凭据/会话时，读「从这到 DA/域控怎么走」（来自导入的采集结果）。
+		t.adPaths(),
 	}
 }
 

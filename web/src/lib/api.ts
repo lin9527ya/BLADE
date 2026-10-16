@@ -9,6 +9,10 @@ import { mockHandle } from "@/lib/mock/handler";
 import type {
   ActiveFindingRetest,
   Activity,
+  ADImportFile,
+  ADImportPreview,
+  ADImportResult,
+  ADPathsResponse,
   Agent,
   AgentDetail,
   AgentTrigger,
@@ -678,6 +682,14 @@ export const api = {
   previewAssetImport: (csv: string, taskId = 0) =>
     post<AssetImportPreview>("/assets/import/preview", { csv, task_id: taskId }),
   importAssets: (csv: string, taskId = 0) => post<AssetImportResult>("/assets/import", { csv, task_id: taskId }),
+  // AD 攻击路径（P32）：把 BloodHound/SharpHound 采集结果导进任务的图。与资产导入同规矩——
+  // 预览只读、应用才写，两边出自服务端同一段代码。task_id 必填：图挂在任务的探索图上。
+  previewADImport: (taskId: string, files: ADImportFile[]) =>
+    post<ADImportPreview>("/ad/import/preview", { task_id: Number(taskId), files }),
+  importAD: (taskId: string, files: ADImportFile[]) =>
+    post<ADImportResult>("/ad/import", { task_id: Number(taskId), files }),
+  adPaths: (taskId: string, start = 0) =>
+    get<ADPathsResponse>(`/tasks/${encodeURIComponent(taskId)}/ad-paths${start > 0 ? `?start=${start}` : ""}`),
   // task-scoped view of the same endpoint — server-side paginated like `assets`
   taskAssets: (taskId: string, type = "", limit = 50, offset = 0) =>
     get<{ count: number; total: number; assets: Asset[] }>(

@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     completed_at   TIMESTAMPTZ,
     heartbeat_at     TIMESTAMPTZ,
     lease_expires_at TIMESTAMPTZ,
-    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection')),
+    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
         (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
@@ -198,7 +198,10 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
         (kind='credential' AND state IN ('active','lost')) OR
         -- 检测验证：一次进攻动作做完了，这一手有没有被检出。三态里 **unknown 必须独立存在**
         -- ——「测不到」和「没响」是两件事，合成一个会把"日志没留"读成"防御没拦"。
-        (kind='detection'  AND state IN ('triggered','not_triggered','unknown'))
+        (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
+        -- AD 对象（P32）：采集回来的域内对象只有「在」这一态。不做 stale——采集是分文件的，
+        -- 按缺席判过期会把整片未导的类别误标成没了（见 db/constants.go StateADActive）。
+        (kind='ad_object'  AND state IN ('active'))
     )
 );
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
@@ -220,7 +223,7 @@ ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS cold_since_round BIGINT;
 -- 防止卡死/僵死的 Worker 让意图永久占位。owner 记当前领取者(work#N / chat)。
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS heartbeat_at     TIMESTAMPTZ;
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
--- ck_node_kind: existing installs predate the 'digest' / 战果 / 检测 kinds — recreate to allow them.
+-- ck_node_kind: existing installs predate the 'digest' / 战果 / 检测 / AD kinds — recreate to allow them.
 DO $$
 BEGIN
     IF EXISTS (
@@ -229,16 +232,18 @@ BEGIN
           AND conname='ck_node_kind'
           AND (pg_get_constraintdef(oid) NOT LIKE '%digest%'
                OR pg_get_constraintdef(oid) NOT LIKE '%foothold%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%detection%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%detection%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_kind;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_kind
-            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection'));
+            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object'));
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
 -- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev),
--- 'ruled_out' (finding candidate-closure rev), 'foothold' (战果 rev), or 'not_triggered' (检测 rev) branches.
+-- 'ruled_out' (finding candidate-closure rev), 'foothold' (战果 rev), 'not_triggered' (检测 rev),
+-- or 'ad_object' (AD rev) branches.
 DO $$
 BEGIN
     IF EXISTS (
@@ -251,7 +256,8 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%negative%'
                OR pg_get_constraintdef(oid) NOT LIKE '%ruled_out%'
                OR pg_get_constraintdef(oid) NOT LIKE '%foothold%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%not_triggered%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%not_triggered%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
@@ -264,7 +270,8 @@ BEGIN
             (kind='digest'  AND state IN ('active','superseded')) OR
             (kind='foothold'   AND state IN ('active','lost')) OR
             (kind='credential' AND state IN ('active','lost')) OR
-            (kind='detection'  AND state IN ('triggered','not_triggered','unknown'))
+            (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
+            (kind='ad_object'  AND state IN ('active'))
         );
     END IF;
 END $$;
@@ -315,16 +322,21 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
     src_id         BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
     dst_id         BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
     rel            TEXT NOT NULL,
+    -- attrs 挂边上的附加语义。目前只有 AD 的 can 边用：{"rights":["GenericAll","DCSync"]}。
+    -- 做成列而不是把权限名编进 rel，是因为权限名是开放集合——每加一个就动 CHECK 不可接受。
+    attrs          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (exploration_id, src_id, rel, dst_id),
     CONSTRAINT ck_edge_noself CHECK (src_id <> dst_id),
-    CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses'))
+    CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses',
+                                          'member_of','admin_to','session_on','can'))
 );
+ALTER TABLE exploration_edges ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
 -- cold-digest (§1): the 'covers' relation (digest→member) postdates shipped installs,
 -- whose rel CHECK is an inline auto-named constraint. Find and recreate it as ck_edge_rel.
--- 战果层（P27）又加了 'uses'，探针同样要能识别出来。
+-- 战果层（P27）又加了 'uses'、AD 层（P32）加了 member_of/admin_to/session_on/can，探针同样要能识别出来。
 DO $$
 DECLARE cname text;
 BEGIN
@@ -332,11 +344,13 @@ BEGIN
      WHERE conrelid='exploration_edges'::regclass AND contype='c'
        AND pg_get_constraintdef(oid) LIKE '%rel%'
        AND (pg_get_constraintdef(oid) NOT LIKE '%covers%'
-            OR pg_get_constraintdef(oid) NOT LIKE '%uses%');
+            OR pg_get_constraintdef(oid) NOT LIKE '%uses%'
+            OR pg_get_constraintdef(oid) NOT LIKE '%member_of%');
     IF cname IS NOT NULL THEN
         EXECUTE 'ALTER TABLE exploration_edges DROP CONSTRAINT '||quote_ident(cname);
         ALTER TABLE exploration_edges ADD CONSTRAINT ck_edge_rel
-            CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses'));
+            CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses',
+                           'member_of','admin_to','session_on','can'));
     END IF;
 END $$;
 

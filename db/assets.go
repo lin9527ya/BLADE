@@ -1476,6 +1476,52 @@ func (s *AssetStore) GetByIDs(ids []int64) ([]*Asset, error) {
 	return scanAssets(rows)
 }
 
+// IDsByHosts 给一批主机名/IP 找已有的资产 id（host → id），找不到的不在返回里。
+//
+// 用途是 AD 导入时的**锚定**：域内机器（computer 的 DNSHostName）若同时是资产图里的一条资产，
+// 就在两者之间建 exploration_anchors——域内对象与外部资产图由此打通，而不是两套各说各话。
+// 一条 SQL 查完（domain 与 ip 两列各一次），不做 N 次单查。域名按 DomainKey 归一后比较，
+// 与库里存的口径一致；库里若存着大小写不同的历史行，靠 lower() 兜底。
+func (s *AssetStore) IDsByHosts(hosts []string) (map[string]int64, error) {
+	out := map[string]int64{}
+	if len(hosts) == 0 {
+		return out, nil
+	}
+	keys := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		if k := DomainKey(h); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT id, COALESCE(NULLIF(lower(domain),''), lower(ip))
+FROM assets
+WHERE lower(domain) = ANY($1::text[]) OR lower(ip) = ANY($1::text[])
+ORDER BY (type='root_domain') DESC, id`, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var host sql.NullString
+		if err := rows.Scan(&id, &host); err != nil {
+			return nil, err
+		}
+		if !host.Valid || host.String == "" {
+			continue
+		}
+		// 先到的赢：排序把 root_domain 排在后面（一条 IP 行比它所属的根域更贴近那台机器），
+		// 所以这里用「已有则跳过」，让更具体的资产 id 留下。
+		if _, ok := out[host.String]; !ok {
+			out[host.String] = id
+		}
+	}
+	return out, rows.Err()
+}
+
 // DeleteByCompanyID hard-deletes all assets belonging to a company. Returns rows deleted.
 func (s *AssetStore) DeleteByCompanyID(companyID int64) (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM assets WHERE company_id = $1`, companyID)

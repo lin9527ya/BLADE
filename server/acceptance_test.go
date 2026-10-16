@@ -38,6 +38,8 @@ import (
 // TestAcceptance 是 P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩
 // + P15 结构化裁决与改参放行 + P18 约束可执行化 + P19 批量交付与同源归并 + P20 探索策略门
 // + P21 情报测绘 + P22 计划任务 + P23 公司知识 + P24 执行限额与熔断 + P25 MCP 工具级开关
+// + P26 CSV 资产导入 + P27 战果层 + P28 资产检索导入与存储清理 + P29 战果动用 + P30 攻击路径
+// + P31 检测验证 + P32 授权范围设置 + P33 战役层 + P34 AD 攻击路径导入
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -97,6 +99,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P31 检测验证（三态分记，不进「检出率」；报告成段）", func(t *testing.T) { accP31(t, env.forTest(t)) })
 	t.Run("P32 授权范围设置（模式+时间窗经 API 存取，写错当场退回且不改动已存值）", func(t *testing.T) { accP32(t, env.forTest(t)) })
 	t.Run("P33 战役层（归属与聚合；删战役只解绑不删任务）", func(t *testing.T) { accP33(t, env.forTest(t)) })
+	t.Run("P34 AD 攻击路径导入（预览只读/路径可读/重导只合并/坏输入退回）", func(t *testing.T) { accP34(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -3876,5 +3879,205 @@ func accP33(t *testing.T, e *accEnv) {
 	e.mustContain(rec.Body.String(), `"tasks_unbound":1`, "解绑数")
 	if task, err := e.m.pg.GetTask(tid1); err != nil || task == nil {
 		t.Fatalf("删战役把任务一起删了（任务是被归档与交付的单位，不该消失）：%v err=%v", task, err)
+	}
+}
+
+// accP34 AD 攻击路径导入（BloodHound/SharpHound → 图 → 路径）：
+// 预览一个字节都不写、应用后路径真能读出来（含「机器上有人家的会话」那一跳）、
+// 重导只合并不新增、坏输入当场退回。
+//
+// 这条验收钉的是「域内路径不是另写的一段文案」：页面读的 /api/tasks/{id}/ad-paths 与报告里的
+// AD 段出自同一份实现，所以只要图对了，两边必然一致。
+func accP34(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p34", "AD 攻击路径")
+
+	// 一套最小的域：普通账号 jdoe 是 IT Support 成员；IT Support 是 WS01 的本机管理员；
+	// DA 在 WS01 上有会话；DA 属于 Domain Admins。这正是红队最常走的那条路。
+	users := `[{
+	  "SID":"S-1-5-21-77-88-99-1105","ObjectIdentifier":"S-1-5-21-77-88-99-1105",
+	  "MemberOf":["CN=IT Support,CN=Users,DC=lab,DC=local"],
+	  "Aces":[{"PrincipalSID":"S-1-5-21-77-88-99-512","PrincipalType":"Group","RightName":"ReadProperty"}],
+	  "Properties":{"name":"JDOE@LAB.LOCAL","samaccountname":"jdoe","domain":"LAB.LOCAL",
+	    "distinguishedname":"CN=John Doe,CN=Users,DC=lab,DC=local","enabled":true,"hasspn":true}
+	},{
+	  "SID":"S-1-5-21-77-88-99-1106","ObjectIdentifier":"S-1-5-21-77-88-99-1106",
+	  "Properties":{"name":"DA@LAB.LOCAL","samaccountname":"da","domain":"LAB.LOCAL",
+	    "distinguishedname":"CN=Domain Admin,CN=Users,DC=lab,DC=local","enabled":true,"admincount":true}
+	}]`
+	groups := `[{
+	  "SID":"S-1-5-21-77-88-99-2001","ObjectIdentifier":"S-1-5-21-77-88-99-2001",
+	  "Members":[{"ObjectIdentifier":"S-1-5-21-77-88-99-1105","ObjectType":"User"}],
+	  "Properties":{"name":"IT SUPPORT@LAB.LOCAL","samaccountname":"it support","domain":"LAB.LOCAL",
+	    "distinguishedname":"CN=IT Support,CN=Users,DC=lab,DC=local"}
+	},{
+	  "SID":"S-1-5-21-77-88-99-512","ObjectIdentifier":"S-1-5-21-77-88-99-512",
+	  "Members":[{"ObjectIdentifier":"S-1-5-21-77-88-99-1106","ObjectType":"User"}],
+	  "Properties":{"name":"DOMAIN ADMINS@LAB.LOCAL","samaccountname":"domain admins","domain":"LAB.LOCAL",
+	    "distinguishedname":"CN=Domain Admins,CN=Users,DC=lab,DC=local","admincount":true}
+	}]`
+	computers := `[{
+	  "SID":"S-1-5-21-77-88-99-3001","ObjectIdentifier":"S-1-5-21-77-88-99-3001",
+	  "Sessions":{"S-1-5-21-77-88-99-1106":["WS01"]},
+	  "LocalAdmins":{"Collected":true,"Results":[{"ObjectIdentifier":"S-1-5-21-77-88-99-2001","ObjectType":"Group"}]},
+	  "RemoteDesktopUsers":{"Collected":true,"Results":[{"ObjectIdentifier":"S-1-5-21-77-88-99-2001","ObjectType":"Group"}]},
+	  "Properties":{"name":"WS01.LAB.LOCAL","samaccountname":"WS01$","operatingsystem":"Windows 10",
+	    "domain":"LAB.LOCAL","distinguishedname":"CN=WS01,CN=Computers,DC=lab,DC=local","enabled":true}
+	}]`
+	domains := `{"meta":{"type":"domains"},"data":[{
+	  "SID":"S-1-5-21-77-88-99","ObjectIdentifier":"S-1-5-21-77-88-99",
+	  "Trusts":[{"TargetDomainSid":"S-1-5-21-900-900-900","TargetDomainName":"OTHER.LOCAL",
+	             "TrustDirection":"Bidirectional","TrustType":"External","IsTransitive":true}],
+	  "Properties":{"name":"LAB.LOCAL","domain":"LAB.LOCAL","distinguishedname":"DC=lab,DC=local","highvalue":true}
+	}]`
+
+	files := func() string {
+		b, _ := json.Marshal(map[string]any{"task_id": tid, "files": []map[string]string{
+			{"name": "users.json", "json": users},
+			{"name": "groups.json", "json": groups},
+			{"name": "computers.json", "json": computers},
+			{"name": "domains.json", "json": domains},
+		}})
+		return string(b)
+	}
+
+	// ① 预览：只读，且把「会导入什么」说清楚（对象/边分类计数、高价值清单、跳过的权限）。
+	rec := e.request(http.MethodPost, "/api/ad/import/preview", files())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("预览 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Objects   map[string]int `json:"objects"`
+		Edges     map[string]int `json:"edges"`
+		NodesNew  int            `json:"nodes_new"`
+		HighValue []struct {
+			Name     string `json:"name"`
+			Category string `json:"category"`
+		} `json:"highvalue"`
+		SkippedRights map[string]int `json:"skipped_rights"`
+		Warnings      []string       `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("预览解码失败：%v raw=%s", err, rec.Body.String())
+	}
+	if preview.NodesNew == 0 {
+		t.Fatalf("预览该报出会新增节点：%s", rec.Body.String())
+	}
+	if preview.Objects["user"] != 2 || preview.Objects["group"] != 2 || preview.Objects["computer"] != 1 {
+		t.Errorf("对象分类计数不对：%v", preview.Objects)
+	}
+	if preview.Edges["member_of"] == 0 || preview.Edges["admin_to"] == 0 || preview.Edges["session_on"] == 0 {
+		t.Errorf("三类关系都该有边：%v", preview.Edges)
+	}
+	if preview.SkippedRights["ReadProperty"] != 1 {
+		t.Errorf("白名单外的 ACE 该如实报出：%v", preview.SkippedRights)
+	}
+	foundDA := false
+	for _, h := range preview.HighValue {
+		if strings.Contains(h.Name, "DOMAIN ADMINS") {
+			foundDA = true
+		}
+	}
+	if !foundDA {
+		t.Errorf("高价值清单里该有 Domain Admins：%v", preview.HighValue)
+	}
+
+	// ② 预览必须只读。
+	if nodes, err := task.Store.ListByKind(db.KindADObject, 10); err != nil || len(nodes) != 0 {
+		t.Fatalf("预览写了库：%d 个 AD 节点 (err=%v)", len(nodes), err)
+	}
+
+	// ③ 应用。
+	rec = e.request(http.MethodPost, "/api/ad/import", files())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应用 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var applied struct {
+		NodesCreated int `json:"nodes_created"`
+		NodesUpdated int `json:"nodes_updated"`
+		EdgesCreated int `json:"edges_created"`
+		Failures     int `json:"failures"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
+		t.Fatalf("应用解码失败：%v raw=%s", err, rec.Body.String())
+	}
+	if applied.NodesCreated == 0 || applied.EdgesCreated == 0 || applied.Failures != 0 {
+		t.Fatalf("应用结果不对：%s", rec.Body.String())
+	}
+
+	// ④ 路径：页面读的那条接口。必须能读出 jdoe → … → Domain Admins，
+	//    且中间那一跳是**机器上的会话**（反着走的那条）。
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/ad-paths", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("路径 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pathsResp struct {
+		Paths []struct {
+			Start  string `json:"start"`
+			Target string `json:"target"`
+			Steps  []struct {
+				From string `json:"from"`
+				Rel  string `json:"rel"`
+				To   string `json:"to"`
+				Note string `json:"note"`
+			} `json:"steps"`
+		} `json:"paths"`
+		Stats map[string]any `json:"stats"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pathsResp); err != nil {
+		t.Fatalf("路径解码失败：%v raw=%s", err, rec.Body.String())
+	}
+	var daPath []string
+	for _, p := range pathsResp.Paths {
+		if strings.Contains(p.Target, "DOMAIN ADMINS") {
+			for _, s := range p.Steps {
+				daPath = append(daPath, s.Rel)
+			}
+			if !strings.Contains(p.Start, "JDOE") {
+				t.Errorf("到 DA 的路该从普通账号 JDOE 出发，实际 %q", p.Start)
+			}
+		}
+	}
+	if got := strings.Join(daPath, ">"); got != "member_of>admin_to>session_on>member_of" {
+		t.Fatalf("到 Domain Admins 的跳序不对：%q（路径=%s）", got, rec.Body.String())
+	}
+
+	// ⑤ 报告：AD 段与页面同源，报告里必须有，且写清「存在不等于已实施」。
+	md := e.report(task)
+	e.mustContain(md, "AD 攻击路径", "报告该有 AD 攻击路径段")
+	e.mustContain(md, "不代表已实施", "报告该说明这些路是推导出来的")
+
+	// ⑥ 幂等：同一份采集再导一次，只合并、不新增。
+	rec = e.request(http.MethodPost, "/api/ad/import", files())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("重导 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var again struct {
+		NodesCreated int `json:"nodes_created"`
+		NodesUpdated int `json:"nodes_updated"`
+		EdgesCreated int `json:"edges_created"`
+		EdgesMerged  int `json:"edges_merged"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &again); err != nil {
+		t.Fatalf("重导解码失败：%v", err)
+	}
+	if again.NodesCreated != 0 || again.EdgesCreated != 0 {
+		t.Fatalf("重导该只合并不新增：%s", rec.Body.String())
+	}
+	if again.NodesUpdated == 0 || again.EdgesMerged == 0 {
+		t.Errorf("重导该报出合并数：%s", rec.Body.String())
+	}
+
+	// ⑦ 坏输入当场退回：不是采集结果 / 没给任务 / 任务不存在。
+	bad, _ := json.Marshal(map[string]any{"task_id": tid, "files": []map[string]string{{"name": "x.json", "json": "not json"}}})
+	if rec := e.request(http.MethodPost, "/api/ad/import/preview", string(bad)); rec.Code != http.StatusOK {
+		t.Fatalf("坏文件该以 200 返回「解析失败」的预览（文件级错误不炸整个请求）：%d %s", rec.Code, rec.Body.String())
+	}
+	noTask, _ := json.Marshal(map[string]any{"files": []map[string]string{{"name": "u.json", "json": users}}})
+	if rec := e.request(http.MethodPost, "/api/ad/import", string(noTask)); rec.Code != 400 {
+		t.Errorf("没给 task_id 该 400，实际 %d %s", rec.Code, rec.Body.String())
+	}
+	ghost, _ := json.Marshal(map[string]any{"task_id": tid + 999999, "files": []map[string]string{{"name": "u.json", "json": users}}})
+	if rec := e.request(http.MethodPost, "/api/ad/import", string(ghost)); rec.Code != 404 {
+		t.Errorf("任务不存在该 404，实际 %d %s", rec.Code, rec.Body.String())
 	}
 }
