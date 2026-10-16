@@ -42,6 +42,7 @@ import (
 // + P31 检测验证 + P32 授权范围设置 + P33 战役层 + P34 AD 攻击路径导入
 // + P35 停机开关与作业时间窗
 // + P36 凭据可利用面
+// + P37 作业时间线
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -104,6 +105,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P34 AD 攻击路径导入（预览只读/路径可读/重导只合并/坏输入退回）", func(t *testing.T) { accP34(t, env.forTest(t)) })
 	t.Run("P35 停机开关与作业时间窗（到点全停/三层拦得住/恢复靠手动/回执可查）", func(t *testing.T) { accP35(t, env.forTest(t)) })
 	t.Run("P36 凭据可利用面（能登哪/验证要有证据/明文受控且留痕）", func(t *testing.T) { accP36(t, env.forTest(t)) })
+	t.Run("P37 作业时间线（台账/审批/发现/战果/检测串一条线；导出与页面同源）", func(t *testing.T) { accP37(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -4459,4 +4461,184 @@ func accP36(t *testing.T, e *accEnv) {
 	if strings.Contains(md, "acc-p36-secret") {
 		t.Fatalf("补验证后明文进了报告：\n%s", md)
 	}
+}
+
+// accP37 作业时间线：把台账 / 审批 / 发现 / 战果 / 检测验证串成一条**可交付**的线，
+// 且页面读的与导出的**同一份装配**。
+//
+// 台账那一格直接插行而不是真跑一次执行：执行本身的行为由 accP13/24 覆盖，这里考的是
+// 时间线怎么读它（尤其是把 cancel_note/error 一并带出来）。
+func accP37(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p37", "作业时间线")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	worker := tsx.WorkerTools()
+	planner := tsx.PlannerTools()
+
+	callOn := func(face []actool.CoreTool, toolName, in string) string {
+		t.Helper()
+		res, err := workflowTool(t, face, toolName).Call(context.Background(), json.RawMessage(in), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		return res.Flatten()
+	}
+
+	intentOut := callOn(planner, "add_intent", `{"summary":"读配置找凭据","techniques":["T1552.001"]}`)
+	if !strings.HasPrefix(intentOut, "intent created: ") {
+		t.Fatalf("意图没建上：%s", intentOut)
+	}
+
+	// ① 五路各来一条：执行台账（直接插行）/ 审批 / 发现 / 战果（共 2 条）/ 检测验证。
+	if _, err := e.m.pg.Exec(`
+INSERT INTO tool_executions(task_id, worker, tool, command, description, status, exit_code,
+                           output_path, cancel_note, started_at, ended_at)
+VALUES($1,'work#1','run_execution','nmap -sV acc-p37.example','验收：时间线里的执行台账','cancelled',-1,
+       '/tmp/acc-p37.log','用户/模型取消了这条长任务执行', now()-interval '30 minutes', now()-interval '28 minutes')`,
+		task.ID); err != nil {
+		t.Fatalf("插执行台账失败：%v", err)
+	}
+	var expID int64
+	if err := e.m.pg.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, tid).Scan(&expID); err != nil {
+		t.Fatalf("取 exploration_id 失败：%v", err)
+	}
+	// 系统留言（默认进时间线）与原始步骤（只随 kinds=all 进）：两档的分界正是时间线该守的那条线。
+	if _, err := e.m.pg.Exec(`
+INSERT INTO activity(exploration_id, worker, kind, summary, created_at)
+VALUES($1,'system','text','停机开关已启用：验收', now()-interval '10 minutes')`, expID); err != nil {
+		t.Fatalf("插系统留言失败：%v", err)
+	}
+	if _, err := e.m.pg.Exec(`
+INSERT INTO activity(exploration_id, worker, kind, tool, summary, created_at)
+VALUES($1,'work#1','tool_use','Bash','curl -s http://acc-p37.example/robots.txt', now()-interval '9 minutes')`, expID); err != nil {
+		t.Fatalf("插原始步骤失败：%v", err)
+	}
+	if _, err := e.m.pg.Exec(`
+INSERT INTO intercept_pending(task_id, agent_name, tool_name, tool_input, status, reason, decision_source, created_at, decided_at)
+VALUES($1,'work#1','Bash','{"command":"nmap acc-p37.example"}','denied',
+       '越出任务范围：acc-p37.example 不在 task_scope 内','rule', now()-interval '25 minutes', now()-interval '25 minutes')`,
+		task.ID); err != nil {
+		t.Fatalf("插审批记录失败：%v", err)
+	}
+	e.newFinding(task, tid, `{"vulnclass":"weak_password","severity":"high","summary":"后台弱口令","evidence":"admin/admin 登录成功","confidence":"high"}`)
+	callOn(worker, "report_foothold",
+		`{"summary":"在 acc-p37-web01 上拿到 root 的 shell","access":"反弹 shell","privilege":"root",`+
+			`"evidence":"nc -lvnp 4444 → connect","confidence":"high"}`)
+	callOn(worker, "report_credential",
+		`{"summary":"读到 acc-p37 数据库口令","kind":"password","username":"wp_user","secret":"acc-p37-secret",`+
+			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high",`+
+			`"targets":[{"host":"acc-p37-db01","port":3306,"service":"mysql","verified":true,"evidence":"mysql 登录成功"}]}`)
+	callOn(worker, "report_detection_check",
+		`{"result":"not_triggered","summary":"读 /etc/shadow 无任何告警","technique":"T1003.008",`+
+			`"evidence":"查询 EDR 控制台该时段无记录","confidence":"high"}`)
+
+	// ② 页面读的那条接口：五类里程碑各在，且**按时间正序**。
+	rec := e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("时间线 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var tl struct {
+		Events []TimelineEvent `json:"events"`
+		Counts map[string]int  `json:"counts"`
+		From   string          `json:"from"`
+		To     string          `json:"to"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &tl); err != nil {
+		t.Fatalf("解码失败：%v raw=%s", err, rec.Body.String())
+	}
+	for _, kind := range []string{"execution", "approval", "finding", "loot", "detection"} {
+		if tl.Counts[kind] == 0 {
+			t.Errorf("时间线缺少 %s 这一类：%v\n%s", kind, tl.Counts, rec.Body.String())
+		}
+	}
+	if tl.Counts["loot"] != 2 {
+		t.Errorf("战果该有两条（据点 + 凭据）：%v", tl.Counts)
+	}
+	ordered := true
+	for i := 1; i < len(tl.Events); i++ {
+		if tl.Events[i-1].At > tl.Events[i].At {
+			ordered = false
+		}
+	}
+	if !ordered {
+		t.Errorf("时间线该按时间正序：%+v", tl.Events)
+	}
+	if tl.From == "" || tl.To == "" {
+		t.Errorf("时间范围该报出来：from=%q to=%q", tl.From, tl.To)
+	}
+	// 执行那一格要带出**为什么收场**（cancel_note）——复盘时这正是要看的东西。
+	foundCancel := false
+	for _, ev := range tl.Events {
+		if ev.Kind == "execution" {
+			if ev.State != "cancelled" || !strings.Contains(ev.Detail, "取消了这条长任务执行") {
+				t.Errorf("执行那一格该带状态与取消理由：%+v", ev)
+			}
+			foundCancel = true
+		}
+	}
+	if !foundCancel {
+		t.Error("时间线里没有执行那一格")
+	}
+	// 审批那一格要带判定来源与理由——那是"授权边界真的生效过"的证据。
+	foundApproval := false
+	for _, ev := range tl.Events {
+		if ev.Kind == "approval" {
+			if ev.State != "denied" || !strings.Contains(ev.Detail, "不在 task_scope 内") {
+				t.Errorf("审批那一格该带结论与理由：%+v", ev)
+			}
+			foundApproval = true
+		}
+	}
+	if !foundApproval {
+		t.Error("时间线里没有审批那一格")
+	}
+
+	// ③ 默认**不含**原始步骤；kinds=all 才带上（时间线是交付物，默认不塞过程流水）。
+	if tl.Counts["step"] != 0 {
+		t.Errorf("默认不该带原始步骤：%v", tl.Counts)
+	}
+	if tl.Counts["note"] != 1 {
+		t.Errorf("系统留言默认该在时间线里：%v", tl.Counts)
+	}
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline?kinds=all", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("kinds=all status=%d", rec.Code)
+	}
+	var all struct {
+		Counts map[string]int `json:"counts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if all.Counts["step"] != 1 {
+		t.Errorf("kinds=all 该带上原始步骤：%v", all.Counts)
+	}
+
+	// ④ 导出：与页面同一份装配，且**凭据只出指纹不出明文**（交付件是要发给客户的）。
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline.md", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("导出 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	md := rec.Body.String()
+	e.mustContain(md, "# 作业时间线：acceptance-p37", "导出件的标题")
+	e.mustContain(md, "| 时间 | 类别 | 事件 | 收场 | 依据 |", "导出件的表头")
+	e.mustContain(md, "验收：时间线里的执行台账", "导出件里的执行那一格")
+	e.mustContain(md, "不在 task_scope 内", "导出件里的审批理由")
+	fp := db.CredentialFingerprint("password", "wp_user", "acc-p37-secret")
+	e.mustContain(md, "指纹："+fp, "导出件里的凭据指纹")
+	if strings.Contains(md, "acc-p37-secret") {
+		t.Fatalf("凭据明文进了交付件：\n%s", md)
+	}
+	if strings.Contains(md, "| 步骤 |") {
+		t.Errorf("导出默认不该含原始步骤：\n%s", md)
+	}
+
+	// ⑤ 空任务：如实说没有，而不是给一份空表。
+	empty, emptyTid := e.newTask("acceptance-p37-empty", "空时间线")
+	_ = emptyTid
+	rec = e.request(http.MethodGet, "/api/tasks/"+empty.ID+"/timeline.md", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("空任务导出 status=%d", rec.Code)
+	}
+	e.mustContain(rec.Body.String(), "没有可列入时间线的事件", "空任务如实交代")
 }

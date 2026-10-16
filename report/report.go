@@ -277,8 +277,8 @@ func parseLoot(n *db.Node) lootView {
 	}
 }
 
-// prefixIf 渲染「标签：值」；值为空时返回空串（交给 writeLootMeta 略去）。
-func prefixIf(label, value string) string {
+// PrefixIf 渲染「标签：值」；值为空时返回空串（交给 writeLootMeta 略去）。
+func PrefixIf(label, value string) string {
 	if value == "" {
 		return ""
 	}
@@ -372,8 +372,8 @@ func Markdown(in Input) string {
 				v := parseLoot(n)
 				fmt.Fprintf(&b, "**%d. %s**\n\n", i+1, nz(v.Summary, "（未填摘要）"))
 				writeLootMeta(&b, []string{
-					prefixIf("通路", v.Access),
-					prefixIf("权限", v.Privilege),
+					PrefixIf("通路", v.Access),
+					PrefixIf("权限", v.Privilege),
 					lootStateLabel(n.State),
 				})
 				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
@@ -395,9 +395,9 @@ func Markdown(in Input) string {
 				v := parseLoot(n)
 				fmt.Fprintf(&b, "**%d. %s**\n\n", i+1, nz(v.Summary, "（未填摘要）"))
 				writeLootMeta(&b, []string{
-					prefixIf("类型", v.Kind),
-					prefixIf("账号", v.Username),
-					prefixIf("指纹", v.Fingerprint()),
+					PrefixIf("类型", v.Kind),
+					PrefixIf("账号", v.Username),
+					PrefixIf("指纹", v.Fingerprint()),
 					lootStateLabel(n.State),
 				})
 				// 能登哪：**验证过的与没验证的分开写**——列在一起会让人以为"列出来的都能登"，

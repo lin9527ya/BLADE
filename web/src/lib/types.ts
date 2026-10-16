@@ -566,6 +566,33 @@ export interface ScopeEnforcement {
   paused_tasks: number;
 }
 
+// ---- 作业时间线（P37） ----
+
+export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "detection" | "note" | "step";
+
+export interface TimelineEvent {
+  at: string;
+  kind: TimelineKind;
+  title: string;
+  detail?: string;
+  state?: string;
+  /** state 的人话（服务端一起下发：交付件与界面不该各自再翻译一遍）。 */
+  state_label?: string;
+  ref_type?: string;
+  ref_id?: number;
+}
+
+export interface TimelineResponse {
+  task_id: string;
+  from?: string;
+  to?: string;
+  kinds: TimelineKind[];
+  events: TimelineEvent[];
+  /** 被截掉的更早事件数（如实报出："只显示了一部分"要让人看得见）。 */
+  truncated?: number;
+  counts: Record<string, number>;
+}
+
 /** 凭据明文的受控入口返回（P36）：明文只在人主动点开时出，且服务端会为此留痕。 */
 export interface CredentialReveal {
   id: number;
