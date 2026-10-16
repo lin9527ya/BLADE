@@ -237,13 +237,25 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
-**常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
+**常用参数**：`./start.sh -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
 
-### 反向代理部署（HTTPS / 只开放 443）
+> **默认只绑 loopback**：不写 `-addr` 就是 `127.0.0.1:8787`（前端+API 都只在本机可达）。
+> 公网部署**不要**图省事改成 `:8787`——那等于把管理端交出去，测绘引擎一次全网扫描就会收录它。
+> 正确的两条路（Cloudflare Tunnel / SSH 隧道）见 [`deploy/README.md`](deploy/README.md)。
+> 另外：流量代理绑到非 loopback 时程序会**拒绝启动**（它没有任何来源校验，绑出去就是无认证的开放代理）。
 
-前端和 API/SSE 都由同一个后端端口（默认 `:8787`）提供，实时活动流默认走**同源**地址，因此**无需配置 `NEXT_PUBLIC_SSE_BASE`**，公网只开放 443、把 8787 留在内网即可。
+### 公网部署（隐身与加固）
 
-SSE 是长连接 + 持续推送，反代**必须关闭缓冲**，否则浏览器能连上却收不到事件（表现为活动流一直转圈）。Nginx 示例：
+**先读 [`deploy/README.md`](deploy/README.md)**——里面有完整的两套方案（Cloudflare Tunnel 零入站端口 / CF 代理 + 防火墙白名单）、systemd 单元、以及一份部署后自检清单。
+
+三条最要紧的：
+1. **别把管理端暴露到公网**：默认已绑 loopback，对外走 Cloudflare Tunnel 或 SSH 隧道；
+2. **用 Cloudflare Origin Certificate**（不进 CT 日志）；Let's Encrypt 的证书会进 CT 日志，域名与 IP 就被测绘引擎收录了；
+3. **直连公网时，防火墙只放 Cloudflare 的来源段**（`deploy/ufw-cloudflare.sh`），否则扫描器直连你的真实 IP，CF 白搭。
+
+前端和 API/SSE 都由同一个后端端口（默认 `127.0.0.1:8787`）提供，活动流默认走**同源**，因此无需配置 `NEXT_PUBLIC_SSE_BASE`。
+
+SSE 是长连接 + 持续推送，反代**必须关闭缓冲**，否则浏览器能连上却收不到事件（表现为活动流一直转圈）。完整的 Nginx 示例（含 Cloudflare 真实 IP 与只接受 CF 来源）见 [`deploy/nginx-cloudflare.conf`](deploy/nginx-cloudflare.conf)。最小形态：
 
 ```nginx
 server {

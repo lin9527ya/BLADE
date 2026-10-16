@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lin9527ya/Norma/llm"
 	actool "github.com/lin9527ya/Norma/tool"
@@ -43,6 +44,11 @@ type Server struct {
 	m      *Manager
 	engine *Engine
 	ctx    context.Context
+	// CORS 白名单缓存（P42）：中间件在每个 API 请求上跑，设置不能每请求读一次。
+	corsMu    sync.Mutex
+	corsCache []string
+	corsAt    time.Time
+
 	// sched 是 P3 触发器/计划任务的调度器（P35 起存下来：停机时的 tick 行为要可断言）。
 	sched *Scheduler
 
@@ -702,6 +708,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 
 	mux.HandleFunc("GET /api/health", s.health)
+	// 版本信息（需登录）：从 /api/health 搬过来，免得免认证端点自报家门。
+	mux.HandleFunc("GET /api/system/info", s.systemInfo)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
 	mux.HandleFunc("GET /api/logs/history", s.getLogsHistory)
@@ -1039,7 +1047,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := cors(s.requireAuth(mux))
+	api := cors(s.requireAuth(mux), s.corsAllowedOrigins)
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -1048,7 +1056,19 @@ func (s *Server) Handler() http.Handler {
 
 // --- handlers ---
 
+// health 是**唯一免认证**的信息端点，所以它必须**不自报家门**（P42）。
+//
+// 它此前返回 {"ok":true,"service":"artex","version":"v0.4.x"}——那是个明牌指纹：公网上任何人
+// 请求一次就知道这是什么、什么版本（测绘引擎连指纹比对都省了）。现在只回一个 ok；版本与构建
+// 信息移到需要登录的 /api/system/info。
+//
+// 保留它免认证是必须的：反向代理/隧道/监控的健康检查都靠它，而它们通常没有 token。
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// systemInfo 是需要登录的版本/构建信息（P42 从 /api/health 搬过来）。
+func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
 }
 
@@ -3468,6 +3488,24 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 
 // scopeHoursSetting 读原始作业时间窗设置串（空 = 不限时）。原样回显用户写的那串，不做归一化
 // ——页面要显示的就是他填的东西，改了才改得回去。
+// corsAllowedOriginsSetting 读 CORS 白名单原文（空 = 不发 CORS 头）。
+func corsAllowedOriginsSetting(pg *db.DB) string {
+	v, ok, err := pg.GetSetting(settingCORSAllowedOrigins)
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+// siteNameSetting 读界面显示名（空 = 内置 ARTEX）。
+func siteNameSetting(pg *db.DB) string {
+	v, ok, err := pg.GetSetting(settingSiteName)
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
 // artifactLanguageSetting 读面向目标的产物语言（缺省 zh = 不约束）。
 func artifactLanguageSetting(pg *db.DB) string {
 	v, ok, err := pg.GetSetting(settingArtifactLanguage)
@@ -3528,7 +3566,9 @@ func (s *Server) settingsPayload() map[string]any {
 		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("ARTEX_SCOPE_ENFORCEMENT")) != "",
 		"intercept_scope_hours":    scopeHoursSetting(s.m.pg),
 		// P41 面向目标的产物语言：回**生效值**（缺省即 zh），页面据此显示当前档位。
-		"artifact_language": artifactLanguageSetting(s.m.pg),
+		"artifact_language":    artifactLanguageSetting(s.m.pg),
+		"site_name":            siteNameSetting(s.m.pg),
+		"cors_allowed_origins": corsAllowedOriginsSetting(s.m.pg),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
@@ -3630,6 +3670,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
 		// agent 侧每 run 现读，改完即时生效。与界面语言无关。
 		ArtifactLanguage *string `json:"artifact_language"`
+		// P42 界面显示名（空 = 内置 ARTEX）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
+		SiteName *string `json:"site_name"`
+		// P42 允许跨源访问 API 的来源白名单（逗号分隔；空 = 不发 CORS 头）。
+		CORSAllowedOrigins *string `json:"cors_allowed_origins"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
 		NoaCompaction *bool `json:"noa_compaction"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
@@ -3702,6 +3746,31 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingArtifactLanguage, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.CORSAllowedOrigins != nil {
+		v := strings.TrimSpace(*req.CORSAllowedOrigins)
+		if utf8.RuneCountInString(v) > 500 {
+			writeErr(w, 400, "CORS 来源列表过长（最多 500 字）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingCORSAllowedOrigins, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		s.corsMu.Lock()
+		s.corsAt = time.Time{} // 立刻失效缓存，改完即时生效（与其它设置同一口径）
+		s.corsMu.Unlock()
+	}
+	if req.SiteName != nil {
+		v := strings.TrimSpace(*req.SiteName)
+		if utf8.RuneCountInString(v) > 60 {
+			writeErr(w, 400, "显示名过长（最多 60 字）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingSiteName, v); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -4373,17 +4442,52 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request) {
 
 // --- utils ---
 
-func cors(next http.Handler) http.Handler {
+// cors 只对**显式配置**的来源发 CORS 头（P42）。此前无条件发
+// `Access-Control-Allow-Origin: *`——单机自用平台的前端与 API 同源，根本不需要它；而"无脑全开放"
+// 既是可指纹特征，也把 API 暴露给任意网页的跨源读取。
+//
+// 需要跨源时把来源填进设置 `cors_allowed_origins`（逗号分隔；填 "*" 才是真的全开放，得自己写出来）。
+func cors(next http.Handler, allowed func() []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			for _, a := range allowed() {
+				if a == "*" || strings.EqualFold(a, origin) {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Add("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+					break
+				}
+			}
+		}
+		// 预检照旧快速回 204：不在白名单时它不带任何 CORS 头，浏览器自然会拒。
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// corsAllowedOrigins 读设置 `cors_allowed_origins`（逗号分隔），带 60 秒缓存——
+// 这个中间件在每个 API 请求上跑，每请求读一次库不值当（拦截层按"每次工具调用"读设置，
+// 那是另一个量级）。
+func (s *Server) corsAllowedOrigins() []string {
+	s.corsMu.Lock()
+	defer s.corsMu.Unlock()
+	if time.Since(s.corsAt) < time.Minute {
+		return s.corsCache
+	}
+	var out []string
+	if v, ok, err := s.m.pg.GetSetting(settingCORSAllowedOrigins); err == nil && ok {
+		for _, part := range strings.Split(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	s.corsCache, s.corsAt = out, time.Now()
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

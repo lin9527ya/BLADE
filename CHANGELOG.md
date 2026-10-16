@@ -4,6 +4,44 @@
 
 ## [Unreleased]
 
+### 公网部署隐身与加固（默认不暴露 / 去指纹）
+
+#### 变更（**默认行为变了**）
+
+- **默认只绑 loopback**：`-addr` 默认从 `:8787` 改成 `127.0.0.1:8787`；Docker 镜像 CMD 的流量代理
+  从 `:8788` 改成 `127.0.0.1:8788`；`docker-compose.yml` 的 8787 映射改成 `127.0.0.1:8787:8787`；
+  `install.sh` 起 Postgres 改成 `-p 127.0.0.1:5432:5432`。
+  · 理由：**测绘引擎（FOFA/Shodan/ZoomEye/Censys）收录的前提是"扫到你的端口"**，所以默认不暴露
+    是唯一有效的手段——要对外必须先显式写出来。此前照文档 `-addr :8787 -proxy :8788` 部署就是全暴露，
+    而 Docker 镜像更把流量代理绑成 `0.0.0.0:8788`。
+  · **本机自用不受影响**（本来就是 127.0.0.1 访问）；从别的机器/局域网直连 8787 会连不上——这是有意的。
+
+#### 新增的功能
+
+- **开放代理护栏**：`go-mitmproxy` 的 Options 里**没有**来源过滤/认证 hook，所以流量代理一旦绑到
+  loopback 之外就是个**无认证的开放代理**（任何人可借它上网，测绘引擎直接标 open proxy）。
+  现在**默认拒绝启动**，要开放必须显式加 `-allow-open-proxy`；管理端绑非 loopback 时也会提示
+  正确的暴露方式。判断放在 flag 解析之后、碰数据库之前。
+- **`/api/health` 不再自报家门**：从 `{"ok":true,"service":"artex","version":…}` 改成 `{"ok":true}`
+  ——它免认证，原样返回等于公网上任何人请求一次就知道这是什么、什么版本。版本移到需要登录的
+  `GET /api/system/info`（前端顶栏改读它）。
+- **CORS 默认不发头**：此前无条件 `Access-Control-Allow-Origin: *`；单机自用平台的前端与 API 同源，
+  根本不需要它，而"无脑全开放"既是可指纹特征、也把 API 暴露给任意网页的跨源读取。现在只对设置
+  `cors_allowed_origins` 里显式列出的来源发（填 `*` 才是真全开放，得自己写出来）。
+- **显示名可配**：设置 `site_name`（空 = 内置名）覆盖运行时标题——名字是低成本指纹。静态 HTML 里的
+  名字是构建期常量（`web/src/config/app-config.ts`），要连它一起换掉得改那里重新构建。
+- **`deploy/` 部署包**：`README.md`（两套方案 + 部署后自检清单）、`cloudflared.yml`（Cloudflare
+  Tunnel：源站零入站端口，最隐身）、`ufw-cloudflare.sh`（只放行 Cloudflare 段，段从官方端点拉）、
+  `nginx-cloudflare.conf`（CF 真实 IP + SSE 免缓冲 + 只接受 CF 来源）、`artex.service`（systemd 单元，
+  与 start.sh 的 0/75 退出码约定配套）。README 的部署章一并改写（原来教人绑全接口）。
+- 验收 accP42 + `listenIsLoopback` 单测。
+
+#### 说明
+
+- **公开 CA 的证书会进 CT 日志**（Cloudflare 边缘证书亦然）→ 用域名就必然域名公开；但**源站 IP 可以
+  不公开**。所以推荐 Cloudflare Tunnel（源站零端口）或 CF 代理 + 防火墙只放 CF 段；源站证书用
+  **Cloudflare Origin Certificate**（不进 CT），别用 Let's Encrypt。
+
 ### 出站产物语言（OPSEC）
 
 #### 新增的功能

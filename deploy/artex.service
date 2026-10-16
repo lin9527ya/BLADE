@@ -1,0 +1,45 @@
+# ARTEX 的 systemd 单元示例。
+#
+# 为什么需要它：仓库里只有 start.sh（守护循环），没有服务注册——靠 `nohup ./start.sh &`
+# 常驻在重启后会掉。这里给一份可直接用的单元。
+#
+# 与 start.sh 的退出码约定配合（见 start.sh 顶部注释）：
+#   0  = 用户主动停止（不该重启）
+#   75 = "请重启我"（自更新/回滚已就绪，应用新版本）
+#   其他 = 崩溃 → start.sh 自己退避重跑
+[Unit]
+Description=ARTEX pentest console
+Documentation=https://github.com/lin9527ya/ARTEX
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/artex
+ExecStart=/opt/artex/start.sh
+User=artex
+Group=artex
+
+# 0 是"停"：不算失败，不重启。
+SuccessExitStatus=0
+# 75 是"换个新版本再跑"：必须重启，且要无视 Restart= 的限制。
+RestartForceExitStatus=75
+Restart=on-failure
+# start.sh 内部已有退避（1→2→4…60s），这里给个不与之打架的兜底节奏。
+RestartSec=5
+
+# 监听面默认就是 loopback（P42：默认不暴露）。对外访问走 Cloudflare Tunnel 或 SSH 隧道，
+# 见 deploy/README.md。**不要**为了图省事加 `-addr :8787`——那会让扫描器直接看到它。
+Environment=ARTEX_CONFIG=/opt/artex/config.json
+
+# 日志进 journal（服务自己的 /logs 页另有一份内存环形缓冲与 server_logs 表）。
+StandardOutput=journal
+StandardError=journal
+# 基本的自保：限制它拿到不该拿的能力
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

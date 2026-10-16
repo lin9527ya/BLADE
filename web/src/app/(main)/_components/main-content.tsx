@@ -39,9 +39,24 @@ export function MainContent({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [version, setVersion] = useState("");
 
+  // P42 显示名：设置里填了就覆盖运行时标题（名字本身是低成本指纹，给个改名的口子）。
+  // 注意只覆盖**运行时**标题；爬虫抓到的静态 HTML 里仍是构建期常量（见 app-config.ts）。
   useEffect(() => {
     api
-      .health()
+      .settings()
+      .then((s) => {
+        const name = (s.site_name ?? "").trim();
+        if (name) document.title = name;
+      })
+      .catch(() => {
+        /* 读不到就保持内置标题 */
+      });
+  }, []);
+
+  useEffect(() => {
+    // 版本走 /system/info（需登录）——/health 已改成只回 ok，不再自报家门（P42 去指纹）。
+    api
+      .systemInfo()
       .then((h) => setVersion((h.version ?? "").replace(/^v(?=\d)/, "")))
       .catch(() => setVersion(""));
   }, []);
