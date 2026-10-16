@@ -5088,7 +5088,10 @@ func accP40(t *testing.T, e *accEnv) {
 		if !enabled {
 			t.Errorf("%s 该默认启用", name)
 		}
-		for _, want := range []string{"worker", "planner", "mainagent"} {
+		// 三面执行 agent + 平台级 agent（auto/pentest）都要有：**写图的 insert_assets/list_assets
+		// 就绑这一套**，而人最可能从对话页（Auto/渗透测试）里说"把这份结果导进去"——
+		// 同一族工具两套绑定，会让工具在"看起来该有"的地方不可见（用户报过这个）。
+		for _, want := range []string{"worker", "planner", "mainagent", "auto", "pentest"} {
 			if !strings.Contains(string(agents), `"`+want+`"`) {
 				t.Errorf("%s 该默认绑 %s：agents=%s", name, want, agents)
 			}
