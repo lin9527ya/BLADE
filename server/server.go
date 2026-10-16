@@ -43,6 +43,8 @@ type Server struct {
 	m      *Manager
 	engine *Engine
 	ctx    context.Context
+	// sched 是 P3 触发器/计划任务的调度器（P35 起存下来：停机时的 tick 行为要可断言）。
+	sched *Scheduler
 
 	skillDir string // root directory for skill subdirectories
 	// signKey 是 HS256 签名密钥（见 auth.go 的 signingKey）：改密码会**轮换**它以立刻吊销
@@ -243,9 +245,11 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[retester] seed: %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
-		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
-		s.installMCPGuard()           // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
-		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+		s.seedPythonInterpreter() // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
+		s.installMCPGuard()       // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
+		// P35：把 Scheduler 存下来，让"停机时这一 tick 做了什么"可被断言（tickOnce）。
+		s.sched = newScheduler(s)
+		go s.sched.Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
 		go newNotifier(s).Run(s.ctx)
@@ -809,6 +813,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/ad/import/preview", s.adImportPreview)
 	mux.HandleFunc("POST /api/ad/import", s.adImportApply)
 	mux.HandleFunc("GET /api/tasks/{id}/ad-paths", s.taskADPaths)
+	// P35 停机开关与作业时间窗的执行侧：状态查询 + 两个动作（停机/解除、继续全部）。
+	// 停机是**立即生效**的（不等 scheduler tick）：现场叫停时那 5 秒不该等。
+	mux.HandleFunc("GET /api/scope/enforcement", s.scopeEnforcementStatus)
+	mux.HandleFunc("POST /api/scope/kill-switch", s.setKillSwitch)
+	mux.HandleFunc("POST /api/scope/resume-all", s.resumeAllTasks)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)

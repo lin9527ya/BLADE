@@ -50,11 +50,28 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			sc.s.reconcileConcurrency() // 并发上限:有空位就把排队任务补位启动
-			sc.step()
-			sc.runDueSchedules(ctx) // P22 计划任务:到点按规格建任务(CAS 抢跑,不重复)
+			sc.tickOnce(ctx)
 		}
 	}
+}
+
+// tickOnce 是一个 tick 的全部动作。抽出来是为了**可测**：Run 里的 5 秒 ticker 让
+// "停机时这一 tick 到底做了什么"没法断言，而这里正是 P35 那两条守卫生效的地方。
+func (sc *Scheduler) tickOnce(ctx context.Context) {
+	// 停机开关 / 作业时间窗（P35）排在补位**之前**：到点或停机时先把在跑的任务停下来，
+	// 再谈补位——顺序反了的话，这一 tick 会先把排队任务放起来、下一 tick 才停。
+	sc.s.enforceScopeEnforcement()
+	// 停止状态下**不起任何新工作**：不补位、不触发 agent、不跑计划任务。
+	//
+	// 计划任务与触发器都是"开始动手"。停着的时候放它们起来，只会堆出一串跑不动的东西
+	// （一个 5 分钟一次的计划任务，停一小时就是十二条排队任务），而水位不推进，
+	// 解除后该触发的一次性补上——与 P22「停机期间错过的次数不追补」同一口径。
+	if sc.s.safetyAdmissionBlocked() {
+		return
+	}
+	sc.s.reconcileConcurrency() // 并发上限:有空位就把排队任务补位启动
+	sc.step()
+	sc.runDueSchedules(ctx) // P22 计划任务:到点按规格建任务(CAS 抢跑,不重复)
 }
 
 // init seeds the watermarks on first run so pre-existing findings/goals don't all

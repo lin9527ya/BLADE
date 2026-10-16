@@ -529,6 +529,43 @@ export interface ADImportResult {
   errors?: string[];
 }
 
+// ---- 停机开关与作业时间窗的执行状态（P35） ----
+
+export interface KillSwitchEvent {
+  on: boolean;
+  at: string;
+  by?: string;
+  reason?: string;
+  tasks_paused?: number;
+}
+
+export interface KillSwitchReceipt {
+  on: boolean;
+  at?: string;
+  by?: string;
+  reason?: string;
+  tasks_paused?: number;
+  history?: KillSwitchEvent[];
+}
+
+export interface ScopeWindowState {
+  in_window: boolean;
+  window: string;
+  at: string;
+  paused_now: number;
+  paused_total: number;
+  last_closed_at?: string;
+  last_opened_at?: string;
+  parse_error?: string;
+}
+
+export interface ScopeEnforcement {
+  kill_switch: KillSwitchReceipt;
+  kill_switch_forced_by_env: boolean;
+  window: ScopeWindowState;
+  paused_tasks: number;
+}
+
 export interface ADHop {
   from: string;
   rel: string;
