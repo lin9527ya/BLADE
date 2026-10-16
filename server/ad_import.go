@@ -1032,15 +1032,26 @@ func (s *Server) buildADImportPlan(w http.ResponseWriter, r *http.Request) (*adI
 		return nil, false
 	}
 	store := s.m.pg.Exploration(task.ExplorationID)
+	plan, err := planADImport(store, req.Files)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return nil, false
+	}
+	plan.TaskID = req.TaskID
+	return plan, true
+}
 
+// planADImport 建计划并读回既有节点/边。**页面导入与 agent 工具共用**（见
+// server/graph_ingest_tools.go）：agent 在目标里跑出采集结果时走的是同一条落库路径，
+// 两处各写一份迟早会报出两个不同的数字。
+func planADImport(store *db.ExplorationStore, files []graphImportFile) (*adImportPlan, error) {
 	plan := newADPlan()
-	buildADPlan(req.Files, plan)
+	buildADPlan(files, plan)
 
 	// 已存在的节点/边：预览要能说清「这次会新增多少、合并多少」。
 	nodes, err := store.ListByKind(db.KindADObject, 20000)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return nil, false
+		return nil, err
 	}
 	existingNodes := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
@@ -1054,15 +1065,25 @@ func (s *Server) buildADImportPlan(w http.ResponseWriter, r *http.Request) (*adI
 	}
 	edges, err := store.Edges(20000)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return nil, false
+		return nil, err
 	}
 	existingEdges := make(map[string][]string, len(edges))
 	for _, e := range edges {
 		key := strconv.FormatInt(e.From, 10) + "|" + e.Rel + "|" + strconv.FormatInt(e.To, 10)
 		existingEdges[key] = db.EdgeRights(e)
 	}
-	return &adImportPlan{TaskID: req.TaskID, Store: store, Plan: plan, ExistingNodes: existingNodes, ExistingEdges: existingEdges}, true
+	return &adImportPlan{Store: store, Plan: plan, ExistingNodes: existingNodes, ExistingEdges: existingEdges}, nil
+}
+
+// adApplyOutcome 是一次落库的结果（页面导入与 agent 工具共用同一份统计口径）。
+type adApplyOutcome struct {
+	Created  int
+	Updated  int
+	Linked   int
+	Relinked int
+	Missing  int
+	Failed   int
+	Errs     []string
 }
 
 // adObjectCounts 按类统计节点数（含 stub，单列出来）。
@@ -1187,7 +1208,32 @@ func (s *Server) adImportApply(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	out := s.applyADImport(p)
+	resp := map[string]any{
+		"task_id":       p.TaskID,
+		"nodes_created": out.Created,
+		"nodes_updated": out.Updated,
+		"edges_created": out.Linked,
+		"edges_merged":  out.Relinked,
+		"objects":       p.Plan.objectCounts(),
+		"edges":         p.Plan.edgeCounts(),
+		"warnings":      p.Plan.Warnings,
+	}
+	if out.Missing > 0 {
+		resp["edges_unresolved"] = out.Missing
+	}
+	if len(p.Plan.SkippedRights) > 0 {
+		resp["skipped_rights"] = p.Plan.SkippedRights
+	}
+	if out.Failed > 0 {
+		resp["failures"] = out.Failed
+		resp["errors"] = out.Errs
+	}
+	writeJSON(w, 200, resp)
+}
 
+// applyADImport 落库。页面导入与 agent 工具走的是**这一份实现**。
+func (s *Server) applyADImport(p *adImportPlan) adApplyOutcome {
 	// 锚定用：机器名 → 资产 id。一条 SQL 查完，不按节点逐个查。
 	var hosts []string
 	for _, n := range p.Plan.Nodes {
@@ -1302,25 +1348,8 @@ func (s *Server) adImportApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := map[string]any{
-		"task_id":       p.TaskID,
-		"nodes_created": created,
-		"nodes_updated": updated,
-		"edges_created": linked,
-		"edges_merged":  relinked,
-		"objects":       p.Plan.objectCounts(),
-		"edges":         p.Plan.edgeCounts(),
-		"warnings":      p.Plan.Warnings,
+	return adApplyOutcome{
+		Created: created, Updated: updated, Linked: linked, Relinked: relinked,
+		Missing: missing, Failed: failed, Errs: errs,
 	}
-	if missing > 0 {
-		resp["edges_unresolved"] = missing
-	}
-	if len(p.Plan.SkippedRights) > 0 {
-		resp["skipped_rights"] = p.Plan.SkippedRights
-	}
-	if failed > 0 {
-		resp["failures"] = failed
-		resp["errors"] = errs
-	}
-	writeJSON(w, 200, resp)
 }

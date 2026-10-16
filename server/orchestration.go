@@ -40,8 +40,9 @@ func jsonResult(v any) (actool.Result, error) {
 func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools := append(s.m.HostTools(), s.orchestrationTools()...)
 	tools = append(tools, s.findingRetestTools()...)
-	tools = append(tools, s.platformTools()...) // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
-	tools = append(tools, s.intelTools()...)    // P21 情报/测绘工具(默认绑 planner/worker/mainagent)
+	tools = append(tools, s.platformTools()...)    // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
+	tools = append(tools, s.intelTools()...)       // P21 情报/测绘工具(默认绑 planner/worker/mainagent)
+	tools = append(tools, s.graphIngestTools()...) // P40 域内/云上枚举结果的摄入(同绑三面)
 	custom, err := s.customTools()
 	if err != nil {
 		log.Printf("[custom-tool] 加载失败: %v", err)
@@ -493,6 +494,12 @@ func (s *Server) seedOrchestrationTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, intelAgents)
 	}
+	// P40 图数据摄入：同样绑三面——**worker 是产出方**（在机器上跑出枚举结果的人当场记，
+	// 否则图还是空的），planner 据此规划方向，人在对话里也能补录。
+	for _, t := range s.graphIngestTools() {
+		schema, _ := json.Marshal(t.InputSchema())
+		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, intelAgents)
+	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
@@ -521,12 +528,13 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v8_intel_search"
+	const flag = "tool_schema_refresh_v9_graph_ingest"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
 	tools := append(s.orchestrationTools(), s.platformTools()...)
 	tools = append(tools, s.intelTools()...)
+	tools = append(tools, s.graphIngestTools()...)
 	for _, t := range tools {
 		schema, _ := json.Marshal(t.InputSchema())
 		if err := s.m.pg.RefreshToolDefaults(t.Name(), t.Description(), schema); err != nil {

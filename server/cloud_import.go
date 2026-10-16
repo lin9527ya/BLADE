@@ -788,14 +788,23 @@ func (s *Server) buildCloudImportPlan(w http.ResponseWriter, r *http.Request) (*
 		return nil, false
 	}
 	store := s.m.pg.Exploration(task.ExplorationID)
-
-	plan := newCloudPlan()
-	buildCloudPlan(req.Files, plan)
-
-	nodes, err := store.ListByKind(db.KindCloudObject, 20000)
+	plan, err := planCloudImport(store, req.Files)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return nil, false
+	}
+	plan.TaskID = req.TaskID
+	return plan, true
+}
+
+// planCloudImport 建计划并读回既有节点/边。**页面导入与 agent 工具共用**——agent 在目标里
+// 拿着偷到的 key 跑出授权明细时，走的是与页面导入完全相同的那条落库路径。
+func planCloudImport(store *db.ExplorationStore, files []graphImportFile) (*cloudImportPlan, error) {
+	plan := newCloudPlan()
+	buildCloudPlan(files, plan)
+	nodes, err := store.ListByKind(db.KindCloudObject, 20000)
+	if err != nil {
+		return nil, err
 	}
 	existingNodes := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
@@ -805,15 +814,25 @@ func (s *Server) buildCloudImportPlan(w http.ResponseWriter, r *http.Request) (*
 	}
 	edges, err := store.Edges(20000)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return nil, false
+		return nil, err
 	}
 	existingEdges := make(map[string][]string, len(edges))
 	for _, e := range edges {
 		key := strconv.FormatInt(e.From, 10) + "|" + e.Rel + "|" + strconv.FormatInt(e.To, 10)
 		existingEdges[key] = db.EdgeRights(e)
 	}
-	return &cloudImportPlan{TaskID: req.TaskID, Store: store, Plan: plan, ExistingNodes: existingNodes, ExistingEdges: existingEdges}, true
+	return &cloudImportPlan{Store: store, Plan: plan, ExistingNodes: existingNodes, ExistingEdges: existingEdges}, nil
+}
+
+// cloudApplyOutcome 是一次落库的结果（页面导入与 agent 工具共用同一份统计口径）。
+type cloudApplyOutcome struct {
+	Created  int
+	Updated  int
+	Linked   int
+	Relinked int
+	Missing  int
+	Failed   int
+	Errs     []string
 }
 
 // cloudNodeKeyOf 读回一个云节点的身份键。键存在 payload.key 里——
@@ -883,6 +902,32 @@ func (s *Server) cloudImportApply(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	out := s.applyCloudImport(p)
+	resp := map[string]any{
+		"task_id":       p.TaskID,
+		"nodes_created": out.Created,
+		"nodes_updated": out.Updated,
+		"edges_created": out.Linked,
+		"edges_merged":  out.Relinked,
+		"objects":       p.Plan.objectCounts(),
+		"edges":         p.Plan.edgeCounts(),
+		"warnings":      p.Plan.Warnings,
+	}
+	if out.Missing > 0 {
+		resp["edges_unresolved"] = out.Missing
+	}
+	if len(p.Plan.Skipped) > 0 {
+		resp["skipped"] = p.Plan.Skipped
+	}
+	if out.Failed > 0 {
+		resp["failures"] = out.Failed
+		resp["errors"] = out.Errs
+	}
+	writeJSON(w, 200, resp)
+}
+
+// applyCloudImport 落库。页面导入与 agent 工具走的是**这一份实现**。
+func (s *Server) applyCloudImport(p *cloudImportPlan) cloudApplyOutcome {
 	keys := make([]string, 0, len(p.Plan.Nodes))
 	for k := range p.Plan.Nodes {
 		keys = append(keys, k)
@@ -965,27 +1010,10 @@ func (s *Server) cloudImportApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := map[string]any{
-		"task_id":       p.TaskID,
-		"nodes_created": created,
-		"nodes_updated": updated,
-		"edges_created": linked,
-		"edges_merged":  relinked,
-		"objects":       p.Plan.objectCounts(),
-		"edges":         p.Plan.edgeCounts(),
-		"warnings":      p.Plan.Warnings,
+	return cloudApplyOutcome{
+		Created: created, Updated: updated, Linked: linked, Relinked: relinked,
+		Missing: missing, Failed: failed, Errs: errs,
 	}
-	if missing > 0 {
-		resp["edges_unresolved"] = missing
-	}
-	if len(p.Plan.Skipped) > 0 {
-		resp["skipped"] = p.Plan.Skipped
-	}
-	if failed > 0 {
-		resp["failures"] = failed
-		resp["errors"] = errs
-	}
-	writeJSON(w, 200, resp)
 }
 
 // findByPayloadKey 按 payload.key 找一条云节点（找不到返回 0，不是错误）。

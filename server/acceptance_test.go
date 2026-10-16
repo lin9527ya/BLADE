@@ -45,6 +45,7 @@ import (
 // + P37 作业时间线
 // + P38 事前可检出性
 // + P39 云上枚举结果导入
+// + P40 图数据摄入工具（agent 侧入口）
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -110,6 +111,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P37 作业时间线（台账/审批/发现/战果/检测串一条线；导出与页面同源）", func(t *testing.T) { accP37(t, env.forTest(t)) })
 	t.Run("P38 事前可检出性（命中给笔记/没收录明说/落在审批卡上/非动作工具不标）", func(t *testing.T) { accP38(t, env.forTest(t)) })
 	t.Run("P39 云上枚举导入（AWS IAM + K8s RBAC 进同一张图，路径一起读）", func(t *testing.T) { accP39(t, env.forTest(t)) })
+	t.Run("P40 图数据摄入工具（agent 跑出来的枚举结果直接落进图）", func(t *testing.T) { accP40(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -4981,5 +4983,115 @@ func accP39(t *testing.T, e *accEnv) {
 	ghost, _ := json.Marshal(map[string]any{"task_id": tid + 999999, "files": []map[string]string{{"name": "a.json", "json": awsDoc}}})
 	if rec := e.request(http.MethodPost, "/api/cloud/import", string(ghost)); rec.Code != 404 {
 		t.Errorf("任务不存在该 404，得到 %d", rec.Code)
+	}
+}
+
+// accP40 图数据摄入工具：agent 在目标里跑出来的枚举结果，直接落进图（不再只有"页面导入"一个入口）。
+//
+// 钉住的是**同一份实现**：工具走的是页面导入那条 plan/apply 路径，所以两边看到的图与回执口径
+// 必然一致；以及"没有任务上下文就不给导"（图数据总得挂在某张图上）。
+func accP40(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p40", "图数据摄入")
+
+	var expID int64
+	if err := e.m.pg.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, tid).Scan(&expID); err != nil {
+		t.Fatalf("取 exploration_id 失败：%v", err)
+	}
+	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: tid, ExplorationID: expID})
+	tools := e.s.graphIngestTools()
+
+	// ① 域内：内联一份 SharpHound 形状的用户对象 → 落进图 + 回执说清导了什么。
+	adJSON := `[{"SID":"S-1-5-21-55-66-77-1105","ObjectIdentifier":"S-1-5-21-55-66-77-1105",
+	  "MemberOf":["CN=Domain Admins,CN=Users,DC=acc40,DC=local"],
+	  "Properties":{"name":"ACC40USER@ACC40.LOCAL","samaccountname":"acc40user","domain":"ACC40.LOCAL",
+	    "distinguishedname":"CN=Acc40 User,CN=Users,DC=acc40,DC=local","enabled":true}}]`
+	res, err := workflowTool(t, tools, "ingest_ad_data").Call(ctx,
+		json.RawMessage(`{"json":`+strconv.Quote(adJSON)+`}`), nil)
+	if err != nil {
+		t.Fatalf("ingest_ad_data: %v", err)
+	}
+	out := res.Flatten()
+	e.mustContain(out, "域内枚举结果已摄入", "域内摄入回执")
+	e.mustContain(out, "Domain Admins", "回执里的高价值目标")
+	e.mustContain(out, "ad_paths", "回执该指下一步")
+	nodes, err := task.Store.ListByKind(db.KindADObject, 10)
+	if err != nil || len(nodes) != 2 { // 用户 + Domain Admins（stub）
+		t.Fatalf("该落两个 AD 对象（用户 + 推断的组），得到 %d 个 (err=%v)", len(nodes), err)
+	}
+
+	// ② 云上：内联一份 AWS 授权明细 → 落进图；路径视图一起读得出。
+	aws := `{"UserDetailList":[{"UserName":"acc40-alice","Arn":"arn:aws:iam::111122223333:user/acc40-alice",
+	  "GroupList":[],"AttachedManagedPolicies":[{"PolicyName":"AdministratorAccess",
+	  "PolicyArn":"arn:aws:iam::aws:policy/AdministratorAccess"}]}],
+	  "Policies":[{"PolicyName":"AdministratorAccess","Arn":"arn:aws:iam::aws:policy/AdministratorAccess",
+	  "PolicyVersionList":[{"IsDefaultVersion":true,"Document":{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}}]}]}`
+	res, err = workflowTool(t, tools, "ingest_cloud_data").Call(ctx,
+		json.RawMessage(`{"json":`+strconv.Quote(aws)+`}`), nil)
+	if err != nil {
+		t.Fatalf("ingest_cloud_data: %v", err)
+	}
+	e.mustContain(res.Flatten(), "云上枚举结果已摄入", "云上摄入回执")
+	if c, err := task.Store.CountByKind(db.KindCloudObject); err != nil || c == 0 {
+		t.Fatalf("云对象没落库：%d (err=%v)", c, err)
+	}
+
+	// ③ 与页面导入同一份数据：**重导只合并**（工具与页面走同一条 plan/apply，所以这条必然成立）。
+	res, err = workflowTool(t, tools, "ingest_cloud_data").Call(ctx,
+		json.RawMessage(`{"json":`+strconv.Quote(aws)+`}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.mustContain(res.Flatten(), "新增 0 个对象", "重导该只合并")
+
+	// ④ 攻击路径：域内 + 云上一起读（云上那条从新摄入的 alice 到 admin 策略）。
+	rec := e.request(http.MethodGet, "/api/tasks/"+task.ID+"/ad-paths", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("路径 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), "AdministratorAccess", "路径视图该读到刚摄入的云上目标")
+
+	// ⑤ 文件路径形态：写一份到盘上再摄入（agent 在目标里落盘的产物就是这种用法）。
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "users.json"), []byte(adJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err = workflowTool(t, tools, "ingest_ad_data").Call(ctx,
+		json.RawMessage(`{"paths":[`+strconv.Quote(dir)+`]}`), nil)
+	if err != nil {
+		t.Fatalf("按目录摄入失败：%v", err)
+	}
+	e.mustContain(res.Flatten(), "users.json", "回执该列出读到的文件")
+
+	// ⑥ 坏输入与缺上下文：都如实拒绝，不静默。
+	if _, err := workflowTool(t, tools, "ingest_ad_data").Call(ctx,
+		json.RawMessage(`{}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	res, _ = workflowTool(t, tools, "ingest_ad_data").Call(ctx, json.RawMessage(`{}`), nil)
+	e.mustContain(res.Flatten(), "至少要给一个", "空入参该被拒")
+	res, _ = workflowTool(t, tools, "ingest_cloud_data").Call(ctx,
+		json.RawMessage(`{"json":"{\"hello\":1}"}`), nil)
+	e.mustContain(res.Flatten(), "不是云上枚举结果", "不是枚举结果的内容该如实说")
+	// 没有任务上下文（ExplorationID=0）→ 明确拒绝。
+	res, _ = workflowTool(t, tools, "ingest_ad_data").Call(context.Background(),
+		json.RawMessage(`{"json":`+strconv.Quote(adJSON)+`}`), nil)
+	e.mustContain(res.Flatten(), "任务上下文", "缺任务上下文该说明白")
+
+	// ⑦ 工具真的 seed 进工具表、并绑到三面——**agent 看得见才算接上**：
+	// 光有 Call 得通的实现，但没进工具表（或没绑 worker）的话，产出方根本调不到它。
+	for _, name := range []string{"ingest_ad_data", "ingest_cloud_data"} {
+		var agents []byte
+		var enabled bool
+		if err := e.m.pg.QueryRow(`SELECT agents, enabled FROM tools WHERE key=$1`, name).Scan(&agents, &enabled); err != nil {
+			t.Fatalf("%s 没 seed 进工具表：%v", name, err)
+		}
+		if !enabled {
+			t.Errorf("%s 该默认启用", name)
+		}
+		for _, want := range []string{"worker", "planner", "mainagent"} {
+			if !strings.Contains(string(agents), `"`+want+`"`) {
+				t.Errorf("%s 该默认绑 %s：agents=%s", name, want, agents)
+			}
+		}
 	}
 }
