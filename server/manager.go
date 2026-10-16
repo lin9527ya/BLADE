@@ -272,6 +272,10 @@ const (
 	// 刻意放 settings 而不是 agent_prompts：它不是某个 agent 的提示词，没有对应
 	// agent 行；塞进 agent_prompts 需要在 Agent 管理里凭空多出一个假 agent。
 	settingCompactionPrompt = "compaction_prompt"
+	// settingArtifactLanguage（P41）是**面向目标的产物语言**（zh 默认不约束 / en 一律 ASCII 英文）。
+	// 与界面语言无关：界面是操作者看的，产物是目标能看到的——耦合起来会出一个隐蔽的错
+	// （切个界面顺手改了出站内容）。agent 侧每 run 现读（agent.ArtifactLanguage），改完即时生效。
+	settingArtifactLanguage = "artifact_language"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
 	// 不可用(余额不足/key 失效/限流/服务异常)时自动切到下一个配置。
 	// settingLLMPoolBindFallback 仅在轮询开启时有意义:默认关闭,即 agent/任务显式

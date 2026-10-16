@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Where 是留痕位置的大类。
@@ -29,6 +30,12 @@ const (
 	WhereNetwork      = "网络侧"      // 边界设备、代理、IDS 的流量记录
 	WhereApp          = "应用日志"     // web/数据库/中间件自身的 access log
 	WhereLocal        = "本机痕迹"     // 被控端自身的 shell 历史、临时文件
+)
+
+// Detector 取值：代码判定型的条目（不靠关键词表）。
+const (
+	DetectorNone     = ""    // 关键词匹配（默认）
+	DetectorLanguage = "han" // 命令里出现汉字（语言画像痕迹）
 )
 
 // 预计可见度：多容易被看见（不是「会不会被拦」）。
@@ -46,7 +53,13 @@ type Note struct {
 	Title string `json:"title"`
 	// Match 是命令里出现的词（词边界匹配，避免 「at」 命中 「cat」 这类误报）。
 	Match []string `json:"-"`
-	Where []string `json:"where"`
+	// Detector 非空 = 这条由**代码判定**，而不是关键词匹配（此时 Match 可为空）。
+	//
+	// 为什么不把这类判断塞进 Match：Match 经 regexp.QuoteMeta 编译，**只支持字面词**——
+	// 「命令里含汉字」是个字符类，表达不了；而且「命中关键词」与「按字符集判定」是两种不同的
+	// 判断，混在一个字段里读不懂。目前只有一类：出站产物里的语言痕迹。
+	Detector string   `json:"detector,omitempty"`
+	Where    []string `json:"where"`
 	// Signals 是具体信号（事件 ID / 日志名 / 遥测项）。
 	Signals []string `json:"signals,omitempty"`
 	// Exposure 是**预计**可见度。
@@ -179,6 +192,23 @@ var Knowledge = []Note{
 		Note:     "枚举脚本会在短时间内读取大量系统文件，主机侧监控（尤其 FIM）容易看出异常。",
 	},
 	{
+		ID: "language-trace", Title: "语言痕迹：出站产物里出现汉字",
+		// 这条不靠关键词：它由代码按字符集判定（见 Note.Detector）。
+		Detector: DetectorLanguage,
+		Where:    []string{WhereTargetSystem, WhereLocal},
+		Signals: []string{
+			"目标侧日志/审计里出现汉字（命令参数、落地文件名、payload 里的标记字符串）",
+			"被控端 shell 历史与落地文件里的中文注释、中文临时文件名",
+			"防护设备的告警标题、SIEM 的检索结果里出现汉字——运维一眼就能看出这条不是本地常态",
+		},
+		Exposure: ExposureMedium,
+		Note: "中文本身不是错：中文站点的探针参数、中文用户名枚举、中文提示词注入本来就该用中文。" +
+			"但它是**最省事的归类线索**——一条全英文命令在日志里平平无奇，一条带汉字参数的命令很容易" +
+			"被读成「外部测试方」。平台默认不拦（产物语言默认不约束），只在这里标出来；" +
+			"要发中文时请在意图或 fact 里写明业务理由。把「系统设置 → 安全与策略 → 产物语言」切到英文，" +
+			"可以让面向目标的产物一律 ASCII，不留这条线索。",
+	},
+	{
 		ID: "anti-forensics", Title: "清理痕迹（history -c / 删日志 / 时间戳）",
 		Match: []string{"history -c", "unset HISTFILE", "shred", "wevtutil cl", "Clear-EventLog", "timestomp", "log cleaner"},
 		Where: []string{WhereTargetSystem, WhereEDR},
@@ -225,6 +255,26 @@ var compiled = func() []matchWords {
 	return out
 }()
 
+// hanRunes 抽出字符串里出现的汉字（去重、保持出现顺序、最多 24 个）。
+//
+// **判汉字而不是"非 ASCII"**：全角标点、emoji、重音字母都不是语言画像——它们不指向任何一种
+// 母语。只有汉字才是"这条命令可能出自中文使用者"的线索。
+func hanRunes(s string) []string {
+	seen := map[rune]bool{}
+	var out []string
+	for _, r := range s {
+		if !unicode.Is(unicode.Han, r) || seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, string(r))
+		if len(out) >= 24 {
+			break
+		}
+	}
+	return out
+}
+
 // Annotate 给一条命令标注**预计**的可检出性。命中不了就如实说没收录。
 //
 // 为什么宁可说「没收录」：这个功能的全部价值在于让人对「会留下什么」有预期。若命中不了时返回空列表
@@ -242,6 +292,19 @@ func Annotate(command string) Result {
 				hits = append(hits, mw.note)
 				break
 			}
+		}
+	}
+	// 代码判定型条目（语言痕迹）：在关键词之后统一跑一遍。命中时把**具体是哪几个字**附到
+	// Signals 里——回执与审批卡上写「本次命中：测 试」比只写「含汉字」有用得多（要能一眼看到
+	// 自己写了什么，才知道该不该留）。
+	for _, n := range Knowledge {
+		if n.Detector != DetectorLanguage {
+			continue
+		}
+		if got := hanRunes(cmd); len(got) > 0 {
+			hit := n
+			hit.Signals = append(append([]string{}, n.Signals...), "本次命中："+strings.Join(got, " "))
+			hits = append(hits, hit)
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].ID < hits[j].ID })

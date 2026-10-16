@@ -104,7 +104,16 @@ func TestKnowledgeEntriesAreComplete(t *testing.T) {
 			t.Errorf("笔记 id 缺失或重复：%q", n.ID)
 		}
 		seen[n.ID] = true
-		if n.Title == "" || len(n.Match) == 0 || len(n.Where) == 0 || n.Note == "" {
+		// 两种条目都要能自证：关键词型给 Match，代码判定型给已知的 Detector。
+		knowsMatch := len(n.Match) > 0
+		knowsDetector := n.Detector == DetectorLanguage
+		if !knowsMatch && !knowsDetector {
+			t.Errorf("%s 既没有关键词也没有可识别的判定器：%+v", n.ID, n)
+		}
+		if n.Detector != DetectorNone && n.Detector != DetectorLanguage {
+			t.Errorf("%s 的 Detector 取值未收录：%q", n.ID, n.Detector)
+		}
+		if n.Title == "" || len(n.Where) == 0 || n.Note == "" {
 			t.Errorf("%s 缺字段：%+v", n.ID, n)
 		}
 		if len(n.Signals) == 0 {
@@ -113,5 +122,55 @@ func TestKnowledgeEntriesAreComplete(t *testing.T) {
 		if ExposureRank(n.Exposure) == 0 {
 			t.Errorf("%s 的可见度取值不在 低/中/高 里：%q", n.ID, n.Exposure)
 		}
+	}
+}
+
+// 语言痕迹（P41）：命令里出现**汉字**时才标——不是"非 ASCII"。
+// 全角标点、emoji、重音字母都不指向任何母语，标它们只会制造噪声。
+func TestAnnotateFlagsHanCharacters(t *testing.T) {
+	res := Annotate(`echo "测试注入点" > /tmp/x`)
+	if res.Uncovered {
+		t.Fatalf("带汉字的命令该有笔记：%+v", res)
+	}
+	var hit *Note
+	for i := range res.Notes {
+		if res.Notes[i].ID == "language-trace" {
+			hit = &res.Notes[i]
+		}
+	}
+	if hit == nil {
+		t.Fatalf("该命中 language-trace：%+v", res.Notes)
+	}
+	if hit.Detector != DetectorLanguage {
+		t.Errorf("该条该标明由代码判定：%+v", hit)
+	}
+	// 回执要说清**具体是哪几个字**——只写"含汉字"，读的人还得自己回去翻命令。
+	joined := strings.Join(hit.Signals, " | ")
+	for _, want := range []string{"本次命中：", "测", "试"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("命中回执该点明 %q：%s", want, joined)
+		}
+	}
+}
+
+func TestAnnotateIgnoresNonHanNonASCII(t *testing.T) {
+	// 全角标点 / emoji / 重音字母：不是任何一种母语的线索，不该标。
+	for _, cmd := range []string{"echo hello", "curl http://x/％20", "printf 'café'", "echo '🚀'"} {
+		res := Annotate(cmd)
+		for _, n := range res.Notes {
+			if n.ID == "language-trace" {
+				t.Errorf("%q 不该被判成语言痕迹（判的是汉字，不是「非 ASCII」）：%+v", cmd, n)
+			}
+		}
+	}
+}
+
+func TestHanRunesDedupes(t *testing.T) {
+	got := hanRunes("测测试试 test 测")
+	if strings.Join(got, "") != "测试" {
+		t.Errorf("该去重并保持出现顺序：%v", got)
+	}
+	if len(hanRunes("no chinese here")) != 0 {
+		t.Error("没有汉字时该返回空")
 	}
 }
