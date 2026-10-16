@@ -407,3 +407,90 @@ func TestLootStaysOutstandingWhenUsingIntentDiedMidway(t *testing.T) {
 		t.Fatalf("意图跑完(done)后据点不该还算 outstanding：got=%d", got)
 	}
 }
+
+// 凭据的可利用面（P36）：能登哪要记下来，验证过的要有证据，概览里给指纹不给明文。
+func TestCredentialTargetsAndVerify(t *testing.T) {
+	tools, ts, intent := newToolWorker(t)
+	worker := tools.WorkerTools()
+	_ = ts
+
+	// ① 声称验证过却没有证据 → 拒收（verified 会被拿去规划"直接用这条凭据横向"）。
+	out := callTool(t, worker, "report_credential",
+		`{"summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"s3cret",`+
+			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high",`+
+			`"targets":[{"host":"db01","port":3306,"service":"mysql","verified":true}]}`)
+	if !strings.Contains(out, "没有 evidence") {
+		t.Fatalf("没证据的 verified 该被拒收：%s", out)
+	}
+
+	// ② 正常记一条：一条已验证、一条待验证。
+	out = callTool(t, worker, "report_credential",
+		`{"summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"s3cret",`+
+			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+fmt.Sprint(intent)+`,`+
+			`"targets":[{"host":"db01","port":3306,"service":"mysql","verified":true,`+
+			`"evidence":"mysql -h db01 -u wp_user → 登录成功"},{"host":"db02","service":"mysql"}]}`)
+	if !strings.HasPrefix(out, "credential recorded: ") {
+		t.Fatalf("凭据没记上：%s", out)
+	}
+	id := int64(0)
+	if _, err := fmt.Sscanf(out, "credential recorded: %d", &id); err != nil || id <= 0 {
+		t.Fatalf("回执里没有节点 id：%q", out)
+	}
+	node, err := ts.GetNode(id)
+	if err != nil || node == nil {
+		t.Fatalf("取节点失败：%v", err)
+	}
+	v := db.ParseCredential(node)
+	if len(v.Targets) != 2 || len(v.VerifiedTargets()) != 1 {
+		t.Fatalf("目标该落两条、其中一条已验证：%+v", v.Targets)
+	}
+
+	// ③ 概览：给指纹与目标，**不给明文**（概览会被折进每一轮提示词、还可能进日志）。
+	ov := callTool(t, tools.PlannerTools(), "graph_overview", `{}`)
+	if strings.Contains(ov, "s3cret") {
+		t.Fatalf("凭据明文进了概览：\n%s", ov)
+	}
+	for _, want := range []string{`"fingerprint"`, `"targets"`, `"verified":true`} {
+		if !strings.Contains(ov, want) {
+			t.Errorf("概览缺少 %q：\n%s", want, ov)
+		}
+	}
+	// 一条"只登记了目标、还没验证过"的凭据：概览要显式标 unverified，而不是让它看起来跟
+	// 已验证的一样——缺省不写会被读成"能登"。
+	if out := callTool(t, worker, "report_credential",
+		`{"summary":"另一条待验证口令","kind":"password","username":"svc","secret":"s3cret2",`+
+			`"evidence":"cat /etc/app.conf","confidence":"medium","intent_id":`+fmt.Sprint(intent)+`,`+
+			`"targets":[{"host":"app01","service":"ssh"}]}`); !strings.HasPrefix(out, "credential recorded: ") {
+		t.Fatalf("第二条凭据没记上：%s", out)
+	}
+	ov = callTool(t, tools.PlannerTools(), "graph_overview", `{}`)
+	if !strings.Contains(ov, `"unverified":true`) {
+		t.Errorf("只有待验证目标时该标 unverified：\n%s", ov)
+	}
+
+	// ④ verify_credential：把后来真的登成功的目标补上（不新记一条凭据）。
+	out = callTool(t, worker, "verify_credential",
+		`{"credential_id":`+fmt.Sprint(id)+`,"host":"db02","service":"mysql",`+
+			`"evidence":"mysql -h db02 -u wp_user → 登录成功"}`)
+	if !strings.Contains(out, "verified on") {
+		t.Fatalf("验证没记上：%s", out)
+	}
+	node, _ = ts.GetNode(id)
+	v = db.ParseCredential(node)
+	if len(v.VerifiedTargets()) != 2 {
+		t.Errorf("两条目标都该已验证：%+v", v.Targets)
+	}
+	if len(v.Targets) != 2 {
+		t.Errorf("验证不该新造一条目标：%+v", v.Targets)
+	}
+	// 凭据本体没被这次写入弄丢。
+	if v.Secret != "s3cret" || v.Username != "wp_user" {
+		t.Errorf("合并写回时把其它字段弄丢了：%+v", v)
+	}
+
+	// ⑤ 拿一个非凭据节点去验证 → 拒绝（否则什么节点都能被标成"验证过的凭据"）。
+	if out := callTool(t, worker, "verify_credential",
+		`{"credential_id":`+fmt.Sprint(intent)+`,"host":"db01","evidence":"x"}`); !strings.Contains(out, "凭据节点") {
+		t.Errorf("非凭据节点该被拒：%s", out)
+	}
+}

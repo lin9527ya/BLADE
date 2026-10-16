@@ -8,6 +8,7 @@ import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import type {
   ActiveFindingRetest,
+  CredentialReveal,
   KillSwitchReceipt,
   ScopeEnforcement,
   Activity,
@@ -692,6 +693,9 @@ export const api = {
     post<ADImportResult>("/ad/import", { task_id: Number(taskId), files }),
   // 停机开关与作业时间窗的执行侧（P35）。停机**立即生效**（不等 scheduler tick）；
   // 解除与「继续全部」都不自动恢复任务，所以是两个独立动作。
+  // 凭据明文的受控入口（P36）：POST 而不是 GET——它有副作用（服务端写一条"谁看了明文"的留痕）。
+  revealCredential: (nodeId: string, taskId: string) =>
+    post<CredentialReveal>(`/credentials/${encodeURIComponent(nodeId)}/reveal?task=${encodeURIComponent(taskId)}`, {}),
   scopeEnforcement: () => get<ScopeEnforcement>("/scope/enforcement"),
   setKillSwitch: (on: boolean, reason = "") =>
     post<{ kill_switch: KillSwitchReceipt; tasks_paused: number; note: string; errors?: string[] }>(

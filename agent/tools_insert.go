@@ -671,6 +671,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// 战果：拿到据点/凭据是「往深打穿」的产物，必须由产出它的 worker 当场记下来，
 		// 否则规划层看不见这条通路，下一轮从外面重打一遍。
 		t.reportFoothold(), t.reportCredential(), t.reportDetection(),
+		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
+		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
+		t.verifyCredential(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(),
@@ -711,6 +714,9 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
 		// 战果：人机对话里也能补记——人在跑任务时拿到的据点/凭据同样要进图，才算数。
 		t.reportFoothold(), t.reportCredential(), t.reportDetection(),
+		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
+		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
+		t.verifyCredential(),
 		// promote_knowledge（P23）：人机对话里也可把结论沉淀给公司（只读背景，供别的任务用）。
 		t.promoteKnowledge(),
 		t.addTaskScope(),

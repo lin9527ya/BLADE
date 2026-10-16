@@ -81,7 +81,14 @@ func TestMarkdownLootSection(t *testing.T) {
 		"summary": "在 web01 的 wp-config.php 里读到数据库口令", "kind": "password",
 		"username": "wp_user", "secret": secret,
 		"evidence": "grep DB_PASSWORD wp-config.php",
+		// P36：能登哪。验证过的与没验证的要分开写——列在一起会让人以为"列出来的都能登"。
+		"targets": []map[string]any{
+			{"host": "db01", "port": 3306, "service": "mysql", "verified": true,
+				"evidence": "mysql -h db01 -u wp_user -p… → 登录成功"},
+			{"host": "db02", "service": "mysql"},
+		},
 	})
+	fp := db.CredentialFingerprint("password", "wp_user", secret)
 	md := Markdown(Input{
 		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
 		Footholds: []*db.Node{foothold}, Credentials: []*db.Node{cred},
@@ -94,7 +101,9 @@ func TestMarkdownLootSection(t *testing.T) {
 		"- 通路：反弹 shell · 权限：user · 当前可用",
 		"- 细节：nc -lvnp 4444 接回 10.0.0.9:47112",
 		"### 凭据（1）",
-		"- 类型：password · 账号：wp_user · 本体：已取得（原文不写入报告） · 当前可用",
+		"- 类型：password · 账号：wp_user · 指纹：" + fp + " · 当前可用",
+		"- 可登目标：db01:3306（mysql）（已验证可登）、db02（mysql）（待验证）",
+		"- 验证证据（db01:3306（mysql））：`mysql -h db01 -u wp_user -p… → 登录成功`",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("报告缺少 %q\n---\n%s", want, md)
@@ -102,6 +111,23 @@ func TestMarkdownLootSection(t *testing.T) {
 	}
 	if strings.Contains(md, secret) {
 		t.Fatalf("凭据本体进了报告：\n%s", md)
+	}
+	// 指纹是"可指认但不可反推"的那一半：报告里必须**有它**（否则多份报告之间说不清是哪条凭据），
+	// 又必须**只有它**（上面已经断言明文不在）。
+	if len(fp) != 8 {
+		t.Errorf("指纹该是 8 位十六进制：%q", fp)
+	}
+}
+
+// 没有 targets 的凭据（老数据/只登记了身份）不该渲染出"可登目标"这一行——
+// 空的那一行会被读成"哪儿都能登"。
+func TestMarkdownCredentialWithoutTargets(t *testing.T) {
+	cred := lootNode(3, db.KindCredential, db.StateLootActive, map[string]any{
+		"summary": "读到一条口令", "kind": "password", "username": "u", "secret": "s",
+	})
+	md := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0), Credentials: []*db.Node{cred}})
+	if strings.Contains(md, "可登目标") {
+		t.Errorf("没有 targets 时不该出现「可登目标」：\n%s", md)
 	}
 }
 

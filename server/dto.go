@@ -203,6 +203,8 @@ type TaskNodeDTO struct {
 	SourceTaskID string `json:"source_task_id,omitempty"`
 	Inherited    bool   `json:"inherited,omitempty"`
 	DeleteReason string `json:"delete_reason,omitempty"` // 意图假删除(state='deleted')时的删除原因
+	// Fingerprint 只在凭据节点上非空（P36）：明文不进界面与报告，指认一条凭据靠它。
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {
@@ -220,7 +222,41 @@ func taskNodeDTO(n *db.Node) TaskNodeDTO {
 		d.SourceTaskID = i64s(n.SourceTaskID)
 	}
 	d.Inherited = n.Inherited
+	// 凭据（P36）：指纹随 DTO 下发（脱敏展示靠它指认一条凭据），**明文从 payload 里摘掉**。
+	//
+	// 为什么摘：报告、概览、提示词三处早就不印明文了，而界面上一直能看到——它躺在节点 payload
+	// 里被整个下发。摘掉之后"明文只在受控入口出"才是真的（那个入口会写留痕），而不是
+	// "界面上有、只是没人细看"。想反推指纹也做不到：指纹是 sha256 前 8 位。
+	if n.Kind == db.KindCredential {
+		v := db.ParseCredential(n)
+		d.Fingerprint = v.Fingerprint()
+		d.Payload = redactCredentialSecret(n.Payload)
+	}
 	return d
+}
+
+// redactCredentialSecret 把凭据 payload 里的 secret 换成 secret_redacted 标记。
+// 标记而不是直接删：界面据此显示"已脱敏、可点开查看"，否则那一行会静静消失、
+// 让人以为这条凭据根本没本体。
+func redactCredentialSecret(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		// 解析不了就整份不下发：宁可少给，不能把可能含明文的原文原样送出去。
+		return ""
+	}
+	if _, ok := m["secret"]; !ok {
+		return string(raw)
+	}
+	delete(m, "secret")
+	m["secret_redacted"] = true
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // GoalDTO is a goal node with its payload unpacked into text/vulnclass — the shape
