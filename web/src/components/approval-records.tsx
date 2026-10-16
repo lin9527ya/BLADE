@@ -454,6 +454,36 @@ export function ApprovalDetail({
               </>
             ) : null}
           </dl>
+          {/* 事前可检出性（P38）：人做决定的那一刻最该看到"这一手会留下什么"。
+              刻意标成**预计**——实测结论走检测验证（P31），两者混起来就是把预期读成实测。 */}
+          {(audit?.opsec_notes?.length ?? 0) > 0 ? (
+            <div className="rounded-md border p-3">
+              <p className="text-muted-foreground mb-2 text-xs font-medium">
+                可检出性（预计 · 来自知识库，不是实测）
+              </p>
+              <ul className="flex flex-col gap-2">
+                {(audit?.opsec_notes ?? []).map((n) => (
+                  <li key={n.id} className="text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={n.exposure === "高" ? "destructive" : "secondary"} className="shrink-0">
+                        可见度 {n.exposure}
+                      </Badge>
+                      <span className="font-medium">{n.title}</span>
+                    </div>
+                    <p className="text-muted-foreground mt-0.5">
+                      留在哪：{n.where.join(" / ")}
+                      {(n.signals?.length ?? 0) > 0 ? ` · 信号：${(n.signals ?? []).join("；")}` : ""}
+                    </p>
+                    <p className="mt-0.5 break-words">{n.note}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : audit?.opsec_uncovered ? (
+            <p className="text-muted-foreground rounded-md border p-3 text-xs">
+              可检出性：知识库没有收录这条命令——**这不代表没有日志**，只是本库没有依据。必要时用检测验证记录实测结果。
+            </p>
+          ) : null}
           {!readOnly ? <DecisionActions row={current} busy={busy} decide={decide} /> : null}
         </div>
       </div>

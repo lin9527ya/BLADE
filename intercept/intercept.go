@@ -753,7 +753,7 @@ func defaultMessage(action, name string) string {
 // (status='pending') is unaffected, so it still shows only asks awaiting a decision.
 func (i *Interceptor) Log(ctx context.Context, convID int64, dec Decision, toolName string, input []byte, status string) {
 	taskID, agentName := taskInfoFromCtx(ctx)
-	audit := auditFor(ctx, dec, input, status)
+	audit := auditFor(ctx, dec, toolName, input, status)
 	id, err := i.db.CreateDecidedIntercept(dec.RuleID, convID, taskID, agentName, toolName, input, status, dec.Message, audit)
 	if err == nil {
 		i.bindResult(ctx, id, audit)
@@ -781,7 +781,7 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	taskID, agentName := taskInfoFromCtx(ctx)
 	taskEmit := taskEmitFromCtx(ctx)
 
-	audit := auditFor(ctx, dec, input, "pending")
+	audit := auditFor(ctx, dec, toolName, input, "pending")
 	pendingID, err := i.db.CreateInterceptPending(ruleID, convID, taskID, agentName, toolName, input, dec.Message, audit)
 	if err != nil {
 		return AskOutcome{}, false

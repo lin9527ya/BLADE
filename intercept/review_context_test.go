@@ -121,7 +121,7 @@ func TestReviewInputAuditRetention(t *testing.T) {
 	} {
 		dec := Decision{Action: "allow", ModelInput: input, ModelInputDigest: digestInput(input)}
 		for _, status := range []string{"allowed", "pending", "denied"} {
-			a := auditFor(t.Context(), dec, []byte(`{}`), status)
+			a := auditFor(t.Context(), dec, "Read", []byte(`{}`), status)
 			if string(a.ModelInput) != string(input) || a.ModelInputDigest != digestInput(input) {
 				t.Fatal("review snapshot changed")
 			}
@@ -152,7 +152,7 @@ func TestAutomaticAllowRetainsActualReviewContext(t *testing.T) {
 	}
 	raw, _ := json.Marshal(input)
 	reason := "实际操作：读取测试文件；成功后的后果：返回文件内容；命中规则：A5"
-	a := auditFor(ctx, Decision{Action: "allow", Message: reason, ModelInput: raw, ModelInputDigest: digestInput(raw)}, args, "allowed")
+	a := auditFor(ctx, Decision{Action: "allow", Message: reason, ModelInput: raw, ModelInputDigest: digestInput(raw)}, "Read", args, "allowed")
 	var saved ReviewInput
 	if json.Unmarshal(a.ModelInput, &saved) != nil || saved.Background == nil || saved.Background.Text != "请读取刚创建的文件" || saved.Version != 4 || a.Correlation != "exact" || a.ToolUseID != "current" || a.InitialReason != reason {
 		t.Fatal("automatic allow lost the model's input or explanation")

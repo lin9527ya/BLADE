@@ -43,6 +43,7 @@ import (
 // + P35 停机开关与作业时间窗
 // + P36 凭据可利用面
 // + P37 作业时间线
+// + P38 事前可检出性
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -106,6 +107,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P35 停机开关与作业时间窗（到点全停/三层拦得住/恢复靠手动/回执可查）", func(t *testing.T) { accP35(t, env.forTest(t)) })
 	t.Run("P36 凭据可利用面（能登哪/验证要有证据/明文受控且留痕）", func(t *testing.T) { accP36(t, env.forTest(t)) })
 	t.Run("P37 作业时间线（台账/审批/发现/战果/检测串一条线；导出与页面同源）", func(t *testing.T) { accP37(t, env.forTest(t)) })
+	t.Run("P38 事前可检出性（命中给笔记/没收录明说/落在审批卡上/非动作工具不标）", func(t *testing.T) { accP38(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -4641,4 +4643,129 @@ VALUES($1,'work#1','Bash','{"command":"nmap acc-p37.example"}','denied',
 		t.Fatalf("空任务导出 status=%d", rec.Code)
 	}
 	e.mustContain(rec.Body.String(), "没有可列入时间线的事件", "空任务如实交代")
+}
+
+// accP38 事前可检出性：动手前就知道"这一手会留下什么"，而且它落在**人要决定的那个地方**
+// （审批卡上），不是躺在某个日志里。
+//
+// 与 P31 的分界同样是这一条验收要钉的：这里给的是**预期**，P31 给的是**实测**——两者混起来
+// 就是把"预计会留痕"读成"确实被检出"，或者反过来把"没收录"读成"没有日志"。
+func accP38(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p38", "事前可检出性")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	callTool := func(name, in string) string {
+		t.Helper()
+		res, err := workflowTool(t, tsx.WorkerTools(), name).Call(context.Background(), json.RawMessage(in), nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return res.Flatten()
+	}
+
+	// ① 工具：命中知识库给笔记（留在哪 / 信号 / 可见度 / 说明）。
+	out := callTool("opsec_notes", `{"command":"procdump -ma lsass.exe lsass.dmp"}`)
+	var res struct {
+		Notes []struct {
+			ID       string   `json:"id"`
+			Title    string   `json:"title"`
+			Where    []string `json:"where"`
+			Signals  []string `json:"signals"`
+			Exposure string   `json:"exposure"`
+			Note     string   `json:"note"`
+		} `json:"notes"`
+		Uncovered bool   `json:"uncovered"`
+		Message   string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("工具输出不是 JSON：%v raw=%s", err, out)
+	}
+	if res.Uncovered || len(res.Notes) == 0 {
+		t.Fatalf("该命中 LSASS 那一类：%s", out)
+	}
+	hit := false
+	for _, n := range res.Notes {
+		if n.ID == "lsass-access" {
+			hit = true
+			if n.Exposure == "" || len(n.Where) == 0 || len(n.Signals) == 0 || n.Note == "" {
+				t.Errorf("笔记该说清留在哪、有哪些信号、可见度多少：%+v", n)
+			}
+		}
+	}
+	if !hit {
+		t.Errorf("该命中 lsass-access：%s", out)
+	}
+
+	// ② 没收录时**明说**，且话术里点明"不代表没有日志"——这是这个功能唯一的失败方式。
+	out = callTool("opsec_notes", `{"command":"echo hello"}`)
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Uncovered || len(res.Notes) != 0 {
+		t.Fatalf("未收录该显式说明：%s", out)
+	}
+	if !strings.Contains(res.Message, "不代表没有日志") {
+		t.Errorf("话术该点明「没收录 ≠ 没有日志」：%s", res.Message)
+	}
+
+	// ③ 落在审批卡上：判定时就算好、随审计落库（事后补算没有意义）。
+	ctx := intercept.WithTaskContext(context.Background(), task.ID, "work#1", nil)
+	dec := intercept.Decision{Action: "ask", RuleName: "验收规则", Message: "验收：需要人工审批"}
+	e.m.interceptor.Log(ctx, 0, dec, "Bash", json.RawMessage(`{"command":"secretsdump.py corp/admin@10.0.0.5"}`), "allowed")
+
+	var auditRaw []byte
+	var pendingID int64
+	if err := e.m.pg.QueryRow(`
+SELECT id, COALESCE(audit::text,'') FROM intercept_pending
+WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&pendingID, &auditRaw); err != nil {
+		t.Fatalf("取审批记录失败：%v", err)
+	}
+	if pendingID == 0 {
+		t.Fatal("审批记录没落库")
+	}
+	var audit struct {
+		OpsecNotes []struct {
+			ID string `json:"id"`
+		} `json:"opsec_notes"`
+		OpsecUncovered bool   `json:"opsec_uncovered"`
+		OpsecCommand   string `json:"opsec_command"`
+	}
+	if err := json.Unmarshal(auditRaw, &audit); err != nil {
+		t.Fatalf("审计不是 JSON：%v raw=%s", err, auditRaw)
+	}
+	if len(audit.OpsecNotes) == 0 {
+		t.Fatalf("审批记录该带上可检出性笔记：%s", auditRaw)
+	}
+	found := false
+	for _, n := range audit.OpsecNotes {
+		if n.ID == "dcsync" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("该命中 dcsync：%s", auditRaw)
+	}
+	if audit.OpsecCommand == "" {
+		t.Error("该记下判定针对的命令原文（复盘时要知道算的是哪条）")
+	}
+
+	// ④ 接出来的详情接口把它带给审批卡（人做决定的地方）。详情走 history 那条路由
+	// （pending/{id} 只给待批行本身，不带审计）。
+	rec := e.request(http.MethodGet, "/api/intercept/history/"+strconv.FormatInt(pendingID, 10), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("审批详情 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"opsec_notes"`, "详情接口里的可检出性笔记")
+	e.mustContain(rec.Body.String(), "dcsync", "命中的那一条笔记")
+
+	// ⑤ 非动作类工具不标注：谈可检出性没有意义，也不该在审计里多一段空话。
+	e.m.interceptor.Log(ctx, 0, dec, "Read", json.RawMessage(`{"file_path":"/etc/hosts"}`), "allowed")
+	var auditRaw2 []byte
+	if err := e.m.pg.QueryRow(`SELECT COALESCE(audit::text,'') FROM intercept_pending WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&auditRaw2); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(auditRaw2), "opsec_") {
+		t.Errorf("非动作工具不该带可检出性标注：%s", auditRaw2)
+	}
 }

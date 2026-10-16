@@ -13,6 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/lin9527ya/artex/db"
+
+	"github.com/lin9527ya/artex/opsec"
 )
 
 const (
@@ -153,7 +155,7 @@ func (t *Trace) Finish() {
 	}
 }
 
-func auditFor(ctx context.Context, dec Decision, input []byte, status string) *db.InterceptAudit {
+func auditFor(ctx context.Context, dec Decision, toolName string, input []byte, status string) *db.InterceptAudit {
 	a, ok := ctx.Value(callKey{}).(db.InterceptAudit)
 	if !ok {
 		a = db.InterceptAudit{Correlation: "unavailable", InputDigest: digestInput(input), CapturedAt: time.Now().UTC()}
@@ -166,6 +168,20 @@ func auditFor(ctx context.Context, dec Decision, input []byte, status string) *d
 	a.ModelVerdict = dec.ModelVerdict
 	a.ModelReply = clipRunes(strings.TrimSpace(dec.RawReply), 2000)
 	a.ExecutionStatus = "not_started"
+	// 事前可检出性（P38）：这一手**预计**会留下什么。判定时就算好、随审计一起落库——
+	// 事后补算没有意义（那时命令早跑完了），而人要做的决定恰恰在这一刻。
+	//
+	// 只看动作类工具（shellCommandOf 认得的那几种）：其余工具不产生对目标的动作，
+	// 谈可检出性没有意义。命中不了时如实记 uncovered，**不写"无"**——"没有提示"和
+	// "没有日志"是两件事（同 P31 的 unknown 纪律）。
+	if cmd := shellCommandOf(toolName, input); cmd != "" {
+		a.OpsecCommand = clipRunes(cmd, 500)
+		if res := opsec.Annotate(cmd); len(res.Notes) > 0 {
+			a.OpsecNotes = res.Notes
+		} else {
+			a.OpsecUncovered = true
+		}
+	}
 	if status == "allowed" {
 		a.EffectiveAction, a.ExecutionStatus = "allow", "awaiting_result"
 		if a.Correlation != "exact" {
