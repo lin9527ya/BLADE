@@ -40,11 +40,19 @@ func (s *Server) taskADPaths(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// adPathsFor 装配一次 AD 路径读：图 + 路径 + 统计 + 起点候选。
+// adPathsFor 装配一次路径读：图 + 路径 + 统计 + 起点候选。
+//
+// **域内与云上一起读**：两者共用同一套边（member_of / can），路径算法也是同一条
+// （db/ad_paths.go）。分开读会得到一个荒唐的结果——同一条链上只要跨了域/云边界就断掉，
+// 而现实里"从一台机器上的凭据到云上 admin 角色"正是要连起来看的那种路径。
 func adPathsFor(store *db.ExplorationStore, startID int64) (adPathsResponse, error) {
-	nodes, err := store.ListByKind(db.KindADObject, 20000)
-	if err != nil {
-		return adPathsResponse{}, err
+	var nodes []*db.Node
+	for _, kind := range []string{db.KindADObject, db.KindCloudObject} {
+		ns, err := store.ListByKind(kind, 20000)
+		if err != nil {
+			return adPathsResponse{}, err
+		}
+		nodes = append(nodes, ns...)
 	}
 	edges, err := store.Edges(20000)
 	if err != nil {

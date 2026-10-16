@@ -44,6 +44,7 @@ import (
 // + P36 凭据可利用面
 // + P37 作业时间线
 // + P38 事前可检出性
+// + P39 云上枚举结果导入
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -108,6 +109,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P36 凭据可利用面（能登哪/验证要有证据/明文受控且留痕）", func(t *testing.T) { accP36(t, env.forTest(t)) })
 	t.Run("P37 作业时间线（台账/审批/发现/战果/检测串一条线；导出与页面同源）", func(t *testing.T) { accP37(t, env.forTest(t)) })
 	t.Run("P38 事前可检出性（命中给笔记/没收录明说/落在审批卡上/非动作工具不标）", func(t *testing.T) { accP38(t, env.forTest(t)) })
+	t.Run("P39 云上枚举导入（AWS IAM + K8s RBAC 进同一张图，路径一起读）", func(t *testing.T) { accP39(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -4051,7 +4053,7 @@ func accP34(t *testing.T, e *accEnv) {
 
 	// ⑤ 报告：AD 段与页面同源，报告里必须有，且写清「存在不等于已实施」。
 	md := e.report(task)
-	e.mustContain(md, "AD 攻击路径", "报告该有 AD 攻击路径段")
+	e.mustContain(md, "攻击路径（域内/云上可达", "报告该有攻击路径段")
 	e.mustContain(md, "不代表已实施", "报告该说明这些路是推导出来的")
 
 	// ⑥ 幂等：同一份采集再导一次，只合并、不新增。
@@ -4799,5 +4801,185 @@ WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&pendingID, &auditRaw)
 	}
 	if strings.Contains(string(auditRaw2), "opsec_") {
 		t.Errorf("非动作工具不该带可检出性标注：%s", auditRaw2)
+	}
+}
+
+// accP39 云上枚举结果导入（G 项）：AWS 授权明细 + K8s RBAC 进同一张图，与域内共用同一条路径算法。
+//
+// 这一条验收要钉住的是"云上不是另一个应用"：导入进去的云对象，攻击路径视图零改动就能读出
+// 「谁能拿到 admin 策略 / 集群管理员」，因为两者共用同一套边与同一个 BFS。
+func accP39(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("acceptance-p39", "云上枚举导入")
+
+	awsDoc := `{
+	  "UserDetailList":[
+	    {"UserName":"acc-p39-alice","Arn":"arn:aws:iam::210987654321:user/acc-p39-alice",
+	     "GroupList":["acc-p39-admins"],
+	     "AttachedManagedPolicies":[{"PolicyName":"AdministratorAccess","PolicyArn":"arn:aws:iam::aws:policy/AdministratorAccess"}]},
+	    {"UserName":"acc-p39-bob","Arn":"arn:aws:iam::210987654321:user/acc-p39-bob","GroupList":[]}
+	  ],
+	  "GroupDetailList":[
+	    {"GroupName":"acc-p39-admins","Arn":"arn:aws:iam::210987654321:group/acc-p39-admins"}
+	  ],
+	  "RoleDetailList":[
+	    {"RoleName":"acc-p39-app","Arn":"arn:aws:iam::210987654321:role/acc-p39-app",
+	     "AssumeRolePolicyDocument":{"Statement":[
+	       {"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::210987654321:user/acc-p39-alice"},"Action":"sts:AssumeRole"},
+	       {"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}}
+	  ],
+	  "Policies":[
+	    {"PolicyName":"AdministratorAccess","Arn":"arn:aws:iam::aws:policy/AdministratorAccess",
+	     "PolicyVersionList":[{"IsDefaultVersion":true,"Document":{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}}]}
+	  ]
+	}`
+	k8sDoc := `{"kind":"List","items":[
+	  {"kind":"ClusterRole","metadata":{"name":"acc-p39-cluster-admin"},
+	   "rules":[{"apiGroups":["*"],"resources":["*"],"verbs":["*"]}]},
+	  {"kind":"ClusterRoleBinding","metadata":{"name":"acc-p39-bind"},
+	   "roleRef":{"kind":"ClusterRole","name":"acc-p39-cluster-admin"},
+	   "subjects":[{"kind":"ServiceAccount","name":"system:serviceaccount:acc39:runner","namespace":"acc39"}]},
+	  {"kind":"ServiceAccount","metadata":{"name":"runner","namespace":"acc39"}},
+	  {"kind":"Namespace","metadata":{"name":"acc39"}}
+	]}`
+	body := func() string {
+		b, _ := json.Marshal(map[string]any{"task_id": tid, "files": []map[string]string{
+			{"name": "aws-authz.json", "json": awsDoc},
+			{"name": "k8s-rbac.json", "json": k8sDoc},
+		}})
+		return string(b)
+	}
+
+	// ① 预览：只读，且把"会导入什么、认出了什么高价值目标"说清楚。
+	rec := e.request(http.MethodPost, "/api/cloud/import/preview", body())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("预览 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Objects   map[string]int `json:"objects"`
+		NodesNew  int            `json:"nodes_new"`
+		HighValue []struct {
+			Name     string `json:"name"`
+			Category string `json:"category"`
+		} `json:"highvalue"`
+		Warnings []string       `json:"warnings"`
+		Skipped  map[string]int `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("预览解码失败：%v raw=%s", err, rec.Body.String())
+	}
+	if preview.NodesNew == 0 || preview.Objects["user"] != 2 || preview.Objects["policy"] == 0 {
+		t.Fatalf("预览口径不对：%+v", preview)
+	}
+	hv := map[string]bool{}
+	for _, h := range preview.HighValue {
+		hv[h.Name] = true
+	}
+	if !hv["AdministratorAccess"] || !hv["acc-p39-cluster-admin"] {
+		t.Errorf("高价值目标该认出 admin 策略与集群管理员：%+v", preview.HighValue)
+	}
+	if len(preview.Skipped) == 0 {
+		t.Errorf("未建模的东西该如实计数（服务主体/Namespace）：%s", rec.Body.String())
+	}
+
+	// ② 预览只读。
+	if nodes, err := task.Store.ListByKind(db.KindCloudObject, 10); err != nil || len(nodes) != 0 {
+		t.Fatalf("预览写了库：%d 个云对象 (err=%v)", len(nodes), err)
+	}
+
+	// ③ 应用。
+	rec = e.request(http.MethodPost, "/api/cloud/import", body())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应用 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var applied struct {
+		NodesCreated int `json:"nodes_created"`
+		EdgesCreated int `json:"edges_created"`
+		Failures     int `json:"failures"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied.NodesCreated == 0 || applied.EdgesCreated == 0 || applied.Failures != 0 {
+		t.Fatalf("应用结果不对：%s", rec.Body.String())
+	}
+
+	// ④ 攻击路径：与域内**同一个视图、同一条算法**，读得出"谁能到管理员"。
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/ad-paths", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("路径 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pathsResp struct {
+		Paths []struct {
+			Start  string `json:"start"`
+			Target string `json:"target"`
+			Steps  []struct {
+				From   string   `json:"from"`
+				Rel    string   `json:"rel"`
+				To     string   `json:"to"`
+				Rights []string `json:"rights"`
+				Note   string   `json:"note"`
+			} `json:"steps"`
+		} `json:"paths"`
+		Stats map[string]any `json:"stats"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pathsResp); err != nil {
+		t.Fatalf("路径解码失败：%v", err)
+	}
+	byTarget := map[string][]string{}
+	for _, p := range pathsResp.Paths {
+		for _, s := range p.Steps {
+			byTarget[p.Target] = append(byTarget[p.Target], s.Rel)
+		}
+	}
+	if _, ok := byTarget["AdministratorAccess"]; !ok {
+		t.Errorf("该读出到 admin 策略的路径：%s", rec.Body.String())
+	}
+	if _, ok := byTarget["acc-p39-cluster-admin"]; !ok {
+		t.Errorf("该读出到集群管理员的路径：%s", rec.Body.String())
+	}
+	// 云上那一跳要有自己的说明（不是 AD 那套"可写入该组"的话）。
+	foundCloudNote := false
+	for _, p := range pathsResp.Paths {
+		for _, s := range p.Steps {
+			if strings.Contains(s.Note, "策略") || strings.Contains(s.Note, "角色") {
+				foundCloudNote = true
+			}
+		}
+	}
+	if !foundCloudNote {
+		t.Errorf("云上那一跳该有对应的说明：%s", rec.Body.String())
+	}
+
+	// ⑤ 幂等：同一份枚举再导一次只合并。
+	rec = e.request(http.MethodPost, "/api/cloud/import", body())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("重导 status=%d", rec.Code)
+	}
+	var again struct {
+		NodesCreated int `json:"nodes_created"`
+		EdgesCreated int `json:"edges_created"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &again); err != nil {
+		t.Fatal(err)
+	}
+	if again.NodesCreated != 0 || again.EdgesCreated != 0 {
+		t.Fatalf("重导该只合并不新增：%s", rec.Body.String())
+	}
+
+	// ⑥ 坏输入：不是云上枚举结果的 JSON → 200 的预览里如实说（文件级错误不炸整个请求）；
+	//    缺 task_id / 任务不存在 → 400 / 404。
+	bad, _ := json.Marshal(map[string]any{"task_id": tid, "files": []map[string]string{
+		{"name": "x.json", "json": `{"hello":1}`}}})
+	rec = e.request(http.MethodPost, "/api/cloud/import/preview", string(bad))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "不是云上枚举结果") {
+		t.Fatalf("坏文件该在预览里如实说明：%d %s", rec.Code, rec.Body.String())
+	}
+	noTask, _ := json.Marshal(map[string]any{"files": []map[string]string{{"name": "a.json", "json": awsDoc}}})
+	if rec := e.request(http.MethodPost, "/api/cloud/import", string(noTask)); rec.Code != 400 {
+		t.Errorf("缺 task_id 该 400，得到 %d", rec.Code)
+	}
+	ghost, _ := json.Marshal(map[string]any{"task_id": tid + 999999, "files": []map[string]string{{"name": "a.json", "json": awsDoc}}})
+	if rec := e.request(http.MethodPost, "/api/cloud/import", string(ghost)); rec.Code != 404 {
+		t.Errorf("任务不存在该 404，得到 %d", rec.Code)
 	}
 }

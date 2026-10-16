@@ -275,22 +275,36 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO UPDATE SET attrs=EXCLUDED.a
 	return err
 }
 
-// FindADNodeBySID 在本探索内按 payload.sid 找一条 AD 对象节点，找不到返回 0（不是错误）。
+// FindNodeByPayload 在本探索内按 payload 里某一个键的值找一条节点（找不到返回 0，不是错误）。
 //
-// SID 是 AD 对象的**跨采集稳定身份**：换一轮采集、换一种域名写法，SID 都不变。
-// 导入的「同 sid 复用节点」就靠它，所以查询打在 payload->>'sid' 上而不是名字上。
-func (s *ExplorationStore) FindADNodeBySID(sid string) (int64, error) {
-	if sid == "" {
+// AD 用 payload.sid、云上用 payload.key——身份键的**键名**不同，机制是一回事：身份是
+// 跨枚举稳定、可查回来的东西，导入的「同一条对象复用节点」就靠它。打在 payload 上而不是
+// 名字上：名字会变（改名、换写法），身份不会。
+//
+// field 只允许字母数字下划线：它拼进 SQL 的 -> 路径里，参数化不了（那是标识符不是值）。
+// 调用方传的都是代码里的常量，这里再挡一道，免得将来有人把用户输入接进来。
+func (s *ExplorationStore) FindNodeByPayload(kind, field, value string) (int64, error) {
+	if value == "" || field == "" {
 		return 0, nil
+	}
+	for _, r := range field {
+		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return 0, fmt.Errorf("非法的 payload 字段名 %q", field)
+		}
 	}
 	var id int64
 	err := s.db.QueryRow(`SELECT id FROM exploration_nodes
-WHERE exploration_id=$1 AND kind=$2 AND payload->>'sid'=$3 ORDER BY id LIMIT 1`,
-		s.expID, KindADObject, sid).Scan(&id)
+WHERE exploration_id=$1 AND kind=$2 AND payload->>$3=$4 ORDER BY id LIMIT 1`,
+		s.expID, kind, field, value).Scan(&id)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
 	return id, err
+}
+
+// FindADNodeBySID 在本探索内按 payload.sid 找一条 AD 对象节点（FindNodeByPayload 的特例）。
+func (s *ExplorationStore) FindADNodeBySID(sid string) (int64, error) {
+	return s.FindNodeByPayload(KindADObject, "sid", sid)
 }
 
 // SetNodePayload 覆盖一条节点的 payload（限定 kind，避免误写别的类型）。AD 重导入用它把

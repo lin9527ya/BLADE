@@ -693,6 +693,12 @@ export const api = {
     post<ADImportPreview>("/ad/import/preview", { task_id: Number(taskId), files }),
   importAD: (taskId: string, files: ADImportFile[]) =>
     post<ADImportResult>("/ad/import", { task_id: Number(taskId), files }),
+  // 云上枚举结果导入（P39）：与 AD 导入同一套契约、同一张图（所以路径视图能一起读）。
+  // 平台**不持有云凭据**：枚举在凭据所在的地方做（aws-cli / kubectl），这里只读离线结果。
+  previewCloudImport: (taskId: string, files: ADImportFile[]) =>
+    post<ADImportPreview>("/cloud/import/preview", { task_id: Number(taskId), files }),
+  importCloud: (taskId: string, files: ADImportFile[]) =>
+    post<ADImportResult>("/cloud/import", { task_id: Number(taskId), files }),
   // 停机开关与作业时间窗的执行侧（P35）。停机**立即生效**（不等 scheduler tick）；
   // 解除与「继续全部」都不自动恢复任务，所以是两个独立动作。
   // 可检出性知识库一览（P38，只读）：让团队看得见这份清单覆盖到哪、边界在哪。

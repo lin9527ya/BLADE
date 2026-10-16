@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+### 云上枚举结果导入（云原生面）
+
+#### 新增的功能
+
+- **把云上的身份与授权读成同一张图**：新节点 kind `cloud_object`（`payload.category` 分
+  account / user / group / role / policy / service_account / cluster），吃两种**离线枚举结果**，
+  按内容判、不按文件名：
+  · AWS `aws iam get-account-authorization-details` 的输出——用户 / 组 / 角色 / 托管与内联策略、
+    组成员、附加关系、角色信任（**谁可以 assume 它**）；
+  · K8s `kubectl get clusterroles,clusterrolebindings,roles,rolebindings,serviceaccounts -A -o json`
+    的输出——主体 → Role/ClusterRole 的绑定（ServiceAccount 按 `ns/name` 归一，
+    `system:authenticated` 这类宽主体带 `broad` 标签）。
+  · **平台不持有云凭据，也不该持有**：枚举在有凭据的那台机器上做（aws-cli / kubectl / ScoutSuite
+    之类），平台只读离线结果。这既是部署现实（云凭据交给一个渗透平台保管，本身就是个新风险面），
+    也是本项目唯一能端到端验证的形态（本机没有云 CLI、没有云凭据）。
+- **与域内共用同一条路径算法**：云上关系**不新造边**——组成员是 `member_of`，策略附加/内联与
+  K8s 绑定都落在 `can` 上（`attrs.rights` 写清 `attached` / `inline` / `assume_role` /
+  `clusterrole:xxx`）。于是攻击路径视图零改动就把「谁能拿到 admin 策略 / 集群管理员」读出来了，
+  域内与云上还能连成一条链（"从一台机器上的凭据到云上 admin 角色"正是要连起来看的那种路径）。
+  · 管理员等价**只认一种写法**：AWS 的 `Action:* + Resource:*`、K8s 的 `verbs:* + resources:*`。
+    不做"看起来很大"的推断（`iam:*` 之类是强权限但不等价于完全控制）——判宽了，高价值目标这张表
+    就失去分辨力。
+  · 路径起点收**用户与 ServiceAccount**（泄漏的 SA token 与口令一样常见），**不收角色**：角色是
+    "代入的目标"，把它当起点会让"某角色挂着 admin 策略"这种一跳结论把真正那条路挤掉。
+  · 未建模的东西**如实计数**（指向服务主体的信任、Namespace 对象…），不静默丢。
+- 前端：任务的「攻击路径」标签页（原「AD 攻击路径」）里多一个「导入云上枚举结果」，
+  与域内导入共用同一套预览/应用纪律与同一个界面组件。
+
 ### 事前可检出性（OPSEC 知识库）
 
 #### 新增的功能

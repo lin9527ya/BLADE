@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     completed_at   TIMESTAMPTZ,
     heartbeat_at     TIMESTAMPTZ,
     lease_expires_at TIMESTAMPTZ,
-    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object')),
+    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object','cloud_object')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
         (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
@@ -201,7 +201,9 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
         (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
         -- AD 对象（P32）：采集回来的域内对象只有「在」这一态。不做 stale——采集是分文件的，
         -- 按缺席判过期会把整片未导的类别误标成没了（见 db/constants.go StateADActive）。
-        (kind='ad_object'  AND state IN ('active'))
+        (kind='ad_object'  AND state IN ('active')) OR
+        -- 云对象（P39）：同 AD——只有「在」这一态，不做 stale（枚举是分文件的）。
+        (kind='cloud_object' AND state IN ('active'))
     )
 );
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
@@ -233,17 +235,18 @@ BEGIN
           AND (pg_get_constraintdef(oid) NOT LIKE '%digest%'
                OR pg_get_constraintdef(oid) NOT LIKE '%foothold%'
                OR pg_get_constraintdef(oid) NOT LIKE '%detection%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_kind;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_kind
-            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object'));
+            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object','cloud_object'));
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
 -- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev),
 -- 'ruled_out' (finding candidate-closure rev), 'foothold' (战果 rev), 'not_triggered' (检测 rev),
--- or 'ad_object' (AD rev) branches.
+-- 'ad_object' (AD rev), or 'cloud_object' (云对象 rev) branches.
 DO $$
 BEGIN
     IF EXISTS (
@@ -257,7 +260,8 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%ruled_out%'
                OR pg_get_constraintdef(oid) NOT LIKE '%foothold%'
                OR pg_get_constraintdef(oid) NOT LIKE '%not_triggered%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
@@ -271,7 +275,8 @@ BEGIN
             (kind='foothold'   AND state IN ('active','lost')) OR
             (kind='credential' AND state IN ('active','lost')) OR
             (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
-            (kind='ad_object'  AND state IN ('active'))
+            (kind='ad_object'  AND state IN ('active')) OR
+            (kind='cloud_object' AND state IN ('active'))
         );
     END IF;
 END $$;

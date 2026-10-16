@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // AD 攻击路径重建（P32）：在导入进来的域内图上，回答「从手头的账号出发，怎么走到高价值目标」。
@@ -226,7 +227,12 @@ func (g *ADPathGraph) Starts(only int64) []int64 {
 			owned = append(owned, id)
 			continue
 		}
-		if n.Category == "user" && !g.privileged(id) {
+		// 起点 = 能**被握在手里**的身份：用户与 ServiceAccount（云上泄漏的 SA token 与口令一样
+		// 常见，而且往往就是那条路的开头）。
+		//
+		// **不含角色**：角色是"代入的目标"（信任边正指向它），把它当起点会让"某角色挂着 admin
+		// 策略"这种一跳结论把真正那条路挤掉——与"DA 一跳走到 DA"是同一个错误。
+		if (n.Category == "user" || n.Category == "service_account") && !g.privileged(id) {
 			users = append(users, id)
 		}
 	}
@@ -394,6 +400,15 @@ func (g *ADPathGraph) hopNote(s ADStep) string {
 		return false
 	}
 	switch {
+	// 云上（P39）：权利名是 attached/inline/assume_role/roleRef 那几种，与域内的 ACE 名不重叠，
+	// 所以两类分支可以并列判、不会互相误伤。
+	case target != nil && target.Category == "policy" && has("attached", "inline"):
+		return "该主体被授予此策略：它允许的动作与资源就此到手"
+	case target != nil && target.Category == "role" && has("assume_role"):
+		return "可代入该角色（承担它的权限）"
+	case target != nil && target.Category == "role" && len(rights) > 0 &&
+		(strings.HasPrefix(rights[0], "clusterrole:") || strings.HasPrefix(rights[0], "role:")):
+		return "该绑定把此角色授予它，随后受角色规则约束"
 	case target != nil && target.Category == "group" && has("GenericAll", "WriteDacl", "WriteOwner", "Owner", "AddMember", "GenericWrite"):
 		return "可写入该组（加成员或改 ACL），随后继承它下面的一切权限"
 	case target != nil && target.Category == "user" && has("ForceChangePassword", "GenericAll", "WriteDacl", "WriteOwner", "Owner", "AddKeyCredentialLink"):

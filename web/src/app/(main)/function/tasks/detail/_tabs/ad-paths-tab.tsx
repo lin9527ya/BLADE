@@ -12,18 +12,30 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { api } from "@/lib/api";
 import type { ADPath, ADPathsResponse } from "@/lib/types";
 
-// AD 攻击路径（P32）：把导入的域内拓扑读成「从手头账号到高价值目标」的最短路。
+// 攻击路径（P32 域内 / P39 云上）：把导入的拓扑读成「从手头账号到高价值目标」的最短路。
+//
+// 域内（AD 采集结果）与云上（IAM 授权明细 / K8s RBAC）进的是**同一张图**、走的是同一条
+// 路径算法（db/ad_paths.go：member_of / can 顺势走），所以这里一起读——现实里"从一台机器上的
+// 凭据到云上 admin 角色"正是要连起来看的那种路径。
 //
 // 这一页只读图、不碰目标：路径表示**存在**这条利用链，要不要走、怎么走仍走既有的意图与命令门。
-// 起点默认是全部非特权账号（域管自己不算「手头的账号」——那会让「DA 一跳走到 DA」把真路挤掉）。
+// 起点默认是全部非特权账号（域管/管理员自己不算「手头的账号」——那会让「DA 一跳走到 DA」把真路挤掉）。
 
 const CATEGORY_LABEL: Record<string, string> = {
+  // 域内（AD）
   user: "用户",
   group: "组",
   computer: "机器",
   domain: "域",
   ou: "OU",
   gpo: "GPO",
+  // 云上（P39）：主体与授权
+  account: "账号",
+  role: "角色",
+  policy: "策略",
+  service_account: "服务账号",
+  namespace: "命名空间",
+  cluster: "集群",
   stub: "推断节点",
   unknown: "未知",
 };
@@ -107,6 +119,7 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
         <CardContent className="flex flex-col gap-3 p-4">
           <div className="flex flex-wrap items-center gap-2">
             <ADImportDialog taskId={taskId} onImported={() => load(Number(start))} />
+            <ADImportDialog taskId={taskId} source="cloud" onImported={() => load(Number(start))} />
             <Button variant="ghost" size="sm" onClick={() => load(Number(start))} disabled={loading}>
               {loading ? <LoaderIcon className="animate-spin" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
               刷新
@@ -157,8 +170,9 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              还没有域内数据：导入一次 SharpHound / BloodHound 采集结果，就能看到从手头账号到
-              Domain Admins、域控这些目标的最短利用链。
+              还没有域内/云上数据：导入一次 SharpHound / BloodHound 采集结果（域内），或
+              aws-cli / kubectl 的枚举输出（云上），就能看到从手头账号到 Domain Admins、域控、
+              admin 策略、集群管理员这些目标的最短利用链。
             </p>
           )}
 
