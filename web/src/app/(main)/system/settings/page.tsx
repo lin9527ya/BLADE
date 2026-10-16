@@ -11,6 +11,7 @@ import {
   RadarIcon,
   RadioTowerIcon,
   SearchIcon,
+  LanguagesIcon,
   OctagonXIcon,
   ScanSearchIcon,
   ShieldAlertIcon,
@@ -143,6 +144,9 @@ export default function SystemSettingsPage() {
   const [scopeModeEnv, setScopeModeEnv] = React.useState(false);
   const [scopeHours, setScopeHours] = React.useState("");
   const [savingScope, setSavingScope] = React.useState(false);
+  // P41 面向目标的产物语言（默认 zh = 不约束）。与界面语言是两件事，刻意分开放。
+  const [artifactLang, setArtifactLang] = React.useState<"zh" | "en">("zh");
+  const [savingArtifactLang, setSavingArtifactLang] = React.useState(false);
   // P35 停机开关与作业时间窗的**执行状态**（不是设置）：到点/停机时平台停到哪一步了。
   const [enforce, setEnforce] = React.useState<ScopeEnforcement | null>(null);
   const [killReason, setKillReason] = React.useState("");
@@ -171,6 +175,7 @@ export default function SystemSettingsPage() {
     setScopeMode(s.intercept_scope_mode ?? "ask");
     setScopeModeEnv(!!s.intercept_scope_mode_env);
     setScopeHours(s.intercept_scope_hours ?? "");
+    setArtifactLang(s.artifact_language === "en" ? "en" : "zh");
     setIntelKeySet(!!s.fofa_key_set);
     setIntelEmail(s.fofa_email ?? "");
     setIntelBaseURL(s.fofa_base_url ?? "");
@@ -419,6 +424,23 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingScope(false));
+  };
+
+  const saveArtifactLang = (next: "zh" | "en") => {
+    const prev = artifactLang;
+    setArtifactLang(next); // 乐观切换（与同页其它开关同一套纪律），失败回滚
+    setSavingArtifactLang(true);
+    api
+      .setSettings({ artifact_language: next })
+      .then((s) => {
+        apply(s);
+        toast.success(next === "en" ? "已切换：面向目标的产物一律英文" : "已切换：不约束产物语言（可用中文）");
+      })
+      .catch((e) => {
+        setArtifactLang(prev);
+        toast.error("保存失败：" + (e as Error).message);
+      })
+      .finally(() => setSavingArtifactLang(false));
   };
 
   const loadEnforcement = React.useCallback(() => {
@@ -1224,6 +1246,44 @@ export default function SystemSettingsPage() {
                   )}
                 </div>
               )}
+            </SubBlock>
+
+            <SubBlock
+              title="产物语言（面向目标）"
+              icon={<LanguagesIcon className="text-muted-foreground size-4" />}
+            >
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                **发给目标的东西**用什么语言：命令与参数、payload、落地文件名、脚本注释。
+                它和「界面语言」是两件事——界面是你自己看的，产物是<strong>目标与它的日志</strong>能看到的，
+                所以刻意分开设置（否则切个界面会顺手改掉出站内容）。
+              </p>
+              <div className="flex flex-wrap items-end gap-3">
+                <Field label="产物语言" htmlFor="artifact-language">
+                  <Select
+                    value={artifactLang}
+                    onValueChange={(v) => {
+                      if (!loaded || savingArtifactLang) return;
+                      if (v === "zh" || v === "en") saveArtifactLang(v);
+                    }}
+                    disabled={!loaded || savingArtifactLang}
+                  >
+                    <SelectTrigger id="artifact-language" className="w-80">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="zh">中文（不约束，默认）</SelectItem>
+                      <SelectItem value="en">英文（面向目标的产物一律 ASCII）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                <strong>中文不是错</strong>：打中文站点时，中文的探针参数、中文用户名枚举本来就该用中文。
+                但中文是<strong>最省事的归类线索</strong>——一条带汉字参数的命令在日志里很容易被读成"外部测试方"。
+                默认不约束；切到英文后，规约随系统提示词下发（只能改设置，改不掉那段规约），
+                模型确需中文时会照用并在意图里说明理由。
+                出站命令里出现汉字时，审批卡上会多一条「语言痕迹」的可检出性笔记（只标注，不拦）。
+              </p>
             </SubBlock>
 
             <SubBlock

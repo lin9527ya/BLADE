@@ -205,6 +205,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return v, true
 		}
+		// P41 出站产物语言：agent 侧每 run 现读 → 改完即时生效，不需要重建 agent。
+		agent.ArtifactLanguage = func() string {
+			v, ok, err := m.pg.GetSetting(settingArtifactLanguage)
+			if err != nil || !ok {
+				return agent.ArtifactLangZh
+			}
+			return strings.TrimSpace(v)
+		}
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 		agent.WrapupOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
@@ -3460,6 +3468,15 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 
 // scopeHoursSetting 读原始作业时间窗设置串（空 = 不限时）。原样回显用户写的那串，不做归一化
 // ——页面要显示的就是他填的东西，改了才改得回去。
+// artifactLanguageSetting 读面向目标的产物语言（缺省 zh = 不约束）。
+func artifactLanguageSetting(pg *db.DB) string {
+	v, ok, err := pg.GetSetting(settingArtifactLanguage)
+	if err != nil || !ok || strings.TrimSpace(v) == "" {
+		return agent.ArtifactLangZh
+	}
+	return strings.TrimSpace(v)
+}
+
 func scopeHoursSetting(pg *db.DB) string {
 	v, _, _ := pg.GetSetting(intercept.SettingScopeHours)
 	return strings.TrimSpace(v)
@@ -3510,6 +3527,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"intercept_scope_mode":     s.m.interceptor.ScopeMode(),
 		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("ARTEX_SCOPE_ENFORCEMENT")) != "",
 		"intercept_scope_hours":    scopeHoursSetting(s.m.pg),
+		// P41 面向目标的产物语言：回**生效值**（缺省即 zh），页面据此显示当前档位。
+		"artifact_language": artifactLanguageSetting(s.m.pg),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
@@ -3608,6 +3627,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 拦截层每调用现读，即时生效。
 		ScopeMode  *string `json:"intercept_scope_mode"`
 		ScopeHours *string `json:"intercept_scope_hours"`
+		// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
+		// agent 侧每 run 现读，改完即时生效。与界面语言无关。
+		ArtifactLanguage *string `json:"artifact_language"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
 		NoaCompaction *bool `json:"noa_compaction"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
@@ -3664,6 +3686,22 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(intercept.SettingScopeHours, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.ArtifactLanguage != nil {
+		// 取值当场校验：写进一个不认识的档，agent 侧会当成"不约束"静默放行——那正是
+		// 本仓一路在防的静默降级。空串 = 回到默认（zh）。
+		v := strings.TrimSpace(*req.ArtifactLanguage)
+		if v == "" {
+			v = agent.ArtifactLangZh
+		}
+		if v != agent.ArtifactLangZh && v != agent.ArtifactLangEn {
+			writeErr(w, 400, "产物语言必须是 zh / en（zh = 不约束，en = 面向目标的产物一律英文）")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingArtifactLanguage, v); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

@@ -46,6 +46,7 @@ import (
 // + P38 事前可检出性
 // + P39 云上枚举结果导入
 // + P40 图数据摄入工具（agent 侧入口）
+// + P41 出站产物语言与中文痕迹标注
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -112,6 +113,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P38 事前可检出性（命中给笔记/没收录明说/落在审批卡上/非动作工具不标）", func(t *testing.T) { accP38(t, env.forTest(t)) })
 	t.Run("P39 云上枚举导入（AWS IAM + K8s RBAC 进同一张图，路径一起读）", func(t *testing.T) { accP39(t, env.forTest(t)) })
 	t.Run("P40 图数据摄入工具（agent 跑出来的枚举结果直接落进图）", func(t *testing.T) { accP40(t, env.forTest(t)) })
+	t.Run("P41 产物语言与中文痕迹（设置可切/写错退回/痕迹进审计只标注）", func(t *testing.T) { accP41(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -5097,4 +5099,113 @@ func accP40(t *testing.T, e *accEnv) {
 			}
 		}
 	}
+}
+
+// accP41 出站产物语言 + 中文痕迹标注：把「发给目标的东西用什么语言」做成可切换的设置，
+// 并把"命令里带了汉字"标进审批审计（只标注，不拦——中文有时就是业务需要）。
+//
+// 分层验收：server 侧验**接线**（设置读写 + agent 侧读到的值），agent 侧的单测验**拼装**
+// （en 才有那段规约、zh 一个字符都不加）。两边合起来才是"切了设置真的生效"。
+func accP41(t *testing.T, e *accEnv) {
+	for _, key := range []string{settingArtifactLanguage} {
+		old, had, err := e.m.pg.GetSetting(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = e.m.pg.SetSetting(key, old)
+				return
+			}
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, key)
+		})
+	}
+
+	// ① 设置读写：切到 en 并回显。
+	rec := e.request(http.MethodPut, "/api/settings", `{"artifact_language":"en"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存产物语言 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"artifact_language":"en"`, "读回的产物语言")
+	// 接线通不通，看 agent 侧读到的值——提示词拼装由 agent 包的单测负责。
+	if got := agent.ArtifactLanguage(); got != agent.ArtifactLangEn {
+		t.Fatalf("agent 侧该读到 en，得到 %q", got)
+	}
+
+	// ② 非法取值当场退回，且**不改动已存值**（存进去会在 agent 侧被当成"不约束"静默放行，
+	// 那正是最难查的一类失效）。
+	rec = e.request(http.MethodPut, "/api/settings", `{"artifact_language":"jp"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法取值该 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	if got := agent.ArtifactLanguage(); got != agent.ArtifactLangEn {
+		t.Fatalf("被拒后不该改动已存值，agent 侧读到 %q", got)
+	}
+
+	// ③ 空串 = 回到默认（不约束）。
+	rec = e.request(http.MethodPut, "/api/settings", `{"artifact_language":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("清空该被接受，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"artifact_language":"zh"`, "清空后回到默认 zh")
+
+	// ④ 中文痕迹进审计：在任务上下文里记一条带汉字的命令。
+	task, _ := e.newTask("acceptance-p41", "产物语言与中文痕迹")
+	ctx := intercept.WithTaskContext(context.Background(), task.ID, "work#1", nil)
+	dec := intercept.Decision{Action: "ask", RuleName: "验收规则", Message: "验收：需要人工审批"}
+	e.m.interceptor.Log(ctx, 0, dec, "Bash",
+		json.RawMessage(`{"command":"echo \"测试注入点\" > /tmp/acc41.txt"}`), "allowed")
+
+	var auditRaw []byte
+	var pendingID int64
+	if err := e.m.pg.QueryRow(`SELECT id, COALESCE(audit::text,'') FROM intercept_pending
+WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&pendingID, &auditRaw); err != nil {
+		t.Fatalf("取审批记录失败：%v", err)
+	}
+	var audit struct {
+		OpsecNotes []struct {
+			ID       string   `json:"id"`
+			Signals  []string `json:"signals"`
+			Detector string   `json:"detector"`
+		} `json:"opsec_notes"`
+	}
+	if err := json.Unmarshal(auditRaw, &audit); err != nil {
+		t.Fatalf("审计不是 JSON：%v raw=%s", err, auditRaw)
+	}
+	foundLang := false
+	for _, n := range audit.OpsecNotes {
+		if n.ID != "language-trace" {
+			continue
+		}
+		foundLang = true
+		if n.Detector == "" {
+			t.Errorf("语言痕迹该标明由代码判定：%+v", n)
+		}
+		// 回执要说清**具体是哪几个字**——只写"含汉字"还得回去翻命令。
+		if joined := strings.Join(n.Signals, " "); !strings.Contains(joined, "本次命中：") || !strings.Contains(joined, "测") {
+			t.Errorf("该说清命中的是哪些字：%s", joined)
+		}
+	}
+	if !foundLang {
+		t.Fatalf("带汉字的命令该在审计里留下语言痕迹：%s", auditRaw)
+	}
+
+	// ⑤ 纯英文命令不标（判的是汉字，不是"非 ASCII"）——同一条流水线上再记一条。
+	e.m.interceptor.Log(ctx, 0, dec, "Bash",
+		json.RawMessage(`{"command":"curl -s http://acc41.example/api/v1/users"}`), "allowed")
+	if err := e.m.pg.QueryRow(`SELECT COALESCE(audit::text,'') FROM intercept_pending
+WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&auditRaw); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(auditRaw), "language-trace") {
+		t.Errorf("纯英文命令不该被标成语言痕迹：%s", auditRaw)
+	}
+
+	// ⑥ 只读一览：能看见这条目，且带 detector 字段（让人知道它不是关键词匹配）。
+	rec = e.request(http.MethodGet, "/api/opsec/knowledge", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("知识库一览 status=%d", rec.Code)
+	}
+	e.mustContain(rec.Body.String(), `"id":"language-trace"`, "一览里的语言痕迹条目")
+	e.mustContain(rec.Body.String(), `"detector":"han"`, "该条目的判定器取值")
 }

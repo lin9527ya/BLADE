@@ -18,6 +18,10 @@ import (
 // block to add.
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
 	sysText += def.FindingGuidance
+	// 出站产物语言（P41）：放在这里而不是各 agent 的拼装点——四个 agent（planner/worker/
+	// mainagent/chat）都从这里出 system 段，一处覆盖全部。与常驻技能同层：会话固定、随整段缓存。
+	// zh（默认）时它返回空串，一个字符都不加。
+	sysText += artifactLanguageBlock()
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
 	always := strings.TrimSpace(def.AlwaysSkills)
 	if always == "" && block == "" {
