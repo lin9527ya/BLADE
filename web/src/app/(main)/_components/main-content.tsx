@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { AccountSwitcher } from "./sidebar/account-switcher";
 import { LayoutControls } from "./sidebar/layout-controls";
 import { SearchDialog } from "./sidebar/search-dialog";
+import { LanguageSwitcher } from "./sidebar/language-switcher";
 import { ThemeSwitcher } from "./sidebar/theme-switcher";
 import { SafetyBanner } from "@/components/safety-banner";
 
@@ -79,6 +80,7 @@ export function MainContent({ children }: { children: ReactNode }) {
             )}
             <UpdateBadge />
             <LayoutControls />
+            <LanguageSwitcher />
             <ThemeSwitcher />
             <AccountSwitcher users={[currentUser]} />
           </div>

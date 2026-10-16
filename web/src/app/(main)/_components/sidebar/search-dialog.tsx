@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/command";
 import type { NavMainItem } from "@/navigation/sidebar/sidebar-items";
 import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
+import { useI18n } from "@/lib/i18n";
 
 type SearchItem = {
   id: string;
@@ -36,7 +37,9 @@ function getSubItemGroup(groupLabel: string | undefined, itemTitle: string) {
   return sidebarGroupLabels.has(itemTitle) ? (groupLabel ?? "Other") : itemTitle;
 }
 
-const searchItems: SearchItem[] = sidebarItems.flatMap((group) =>
+// 原始（中文）结构：分组判定的逻辑跑在它上面——那一套是拿"标题恰好等于组名"来判父子关系的
+// （上游模板的写法），翻过再比会失配。翻译只发生在展示层。
+const rawSearchItems: SearchItem[] = sidebarItems.flatMap((group) =>
   group.items.flatMap((item) => {
     if (item.subItems) {
       return item.subItems.map((sub) => ({
@@ -67,7 +70,7 @@ function getAvailableItems(items: SearchItem[]) {
   return items.filter((item) => !item.disabled && !item.url.includes("coming-soon"));
 }
 
-const recommendations = getAvailableItems(searchItems);
+const rawRecommendations = getAvailableItems(rawSearchItems);
 
 function groupBy(items: SearchItem[]) {
   const groups = [...new Set(items.map((item) => item.group))];
@@ -78,9 +81,18 @@ function groupBy(items: SearchItem[]) {
 }
 
 export function SearchDialog() {
+  const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const router = useRouter();
+  const searchItems = React.useMemo(
+    () => rawSearchItems.map((item) => ({ ...item, label: t(`nav.${item.id}`, item.label) })),
+    [t],
+  );
+  const recommendations = React.useMemo(
+    () => rawRecommendations.map((item) => ({ ...item, label: t(`nav.${item.id}`, item.label) })),
+    [t],
+  );
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -145,9 +157,13 @@ export function SearchDialog() {
       </Button>
       <CommandDialog open={open} onOpenChange={handleOpenChange}>
         <Command>
-          <CommandInput placeholder="Search dashboards, users, and more…" value={query} onValueChange={setQuery} />
+          <CommandInput
+            placeholder={t("sidebar.searchMenu", "搜索页面与功能…（Ctrl/⌘ + J 随时唤起）")}
+            value={query}
+            onValueChange={setQuery}
+          />
           <CommandList>
-            <CommandEmpty>No results found.</CommandEmpty>
+            <CommandEmpty>{t("sidebar.noResults", "没有匹配的页面")}</CommandEmpty>
             {query ? renderGroups(searchItems) : renderGroups(recommendations)}
           </CommandList>
         </Command>
