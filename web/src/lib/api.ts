@@ -283,7 +283,9 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
 
 export const api = {
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
-  health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
+  // health 只回 ok（P42 去指纹：免认证端点不自报家门）；版本走需登录的 /system/info。
+  health: () => get<{ ok: boolean }>("/health"),
+  systemInfo: () => get<{ ok: boolean; service: string; version: string }>("/system/info"),
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),

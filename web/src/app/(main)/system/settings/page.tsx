@@ -11,6 +11,7 @@ import {
   RadarIcon,
   RadioTowerIcon,
   SearchIcon,
+  EyeOffIcon,
   LanguagesIcon,
   OctagonXIcon,
   ScanSearchIcon,
@@ -147,6 +148,9 @@ export default function SystemSettingsPage() {
   // P41 面向目标的产物语言（默认 zh = 不约束）。与界面语言是两件事，刻意分开放。
   const [artifactLang, setArtifactLang] = React.useState<"zh" | "en">("zh");
   const [savingArtifactLang, setSavingArtifactLang] = React.useState(false);
+  // P42 显示名（空 = 内置 ARTEX）。
+  const [siteName, setSiteName] = React.useState("");
+  const [savingSiteName, setSavingSiteName] = React.useState(false);
   // P35 停机开关与作业时间窗的**执行状态**（不是设置）：到点/停机时平台停到哪一步了。
   const [enforce, setEnforce] = React.useState<ScopeEnforcement | null>(null);
   const [killReason, setKillReason] = React.useState("");
@@ -176,6 +180,7 @@ export default function SystemSettingsPage() {
     setScopeModeEnv(!!s.intercept_scope_mode_env);
     setScopeHours(s.intercept_scope_hours ?? "");
     setArtifactLang(s.artifact_language === "en" ? "en" : "zh");
+    setSiteName(s.site_name ?? "");
     setIntelKeySet(!!s.fofa_key_set);
     setIntelEmail(s.fofa_email ?? "");
     setIntelBaseURL(s.fofa_base_url ?? "");
@@ -441,6 +446,20 @@ export default function SystemSettingsPage() {
         toast.error("保存失败：" + (e as Error).message);
       })
       .finally(() => setSavingArtifactLang(false));
+  };
+
+  const saveSiteName = () => {
+    setSavingSiteName(true);
+    api
+      .setSettings({ site_name: siteName.trim() })
+      .then((next) => {
+        apply(next);
+        const name = siteName.trim();
+        if (name) document.title = name;
+        toast.success("已保存显示名" + (name ? "" : "（回到内置名）"));
+      })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .finally(() => setSavingSiteName(false));
   };
 
   const loadEnforcement = React.useCallback(() => {
@@ -1246,6 +1265,39 @@ export default function SystemSettingsPage() {
                   )}
                 </div>
               )}
+            </SubBlock>
+
+            <SubBlock
+              title="对外显示名"
+              icon={<EyeOffIcon className="text-muted-foreground size-4" />}
+              actions={
+                <Button type="button" size="sm" onClick={saveSiteName} disabled={!loaded || savingSiteName}>
+                  保存
+                </Button>
+              }
+            >
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                界面与浏览器标签上显示的名字（留空 = 内置名）。名字本身是**低成本指纹**——
+                被扫到页面时，一个暴露用途的名字会让对方立刻知道这是什么、值不值得继续。
+                在意隐身就填个中性名。
+              </p>
+              <div className="max-w-md">
+                <Field label="显示名" htmlFor="site-name" hint="留空 = 内置名">
+                  <Input
+                    id="site-name"
+                    autoComplete="off"
+                    placeholder="例如 Monitor / Console（留空用内置名）"
+                    value={siteName}
+                    onChange={(e) => setSiteName(e.target.value)}
+                    disabled={!loaded || savingSiteName}
+                  />
+                </Field>
+              </div>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                只管**运行时**标题；爬虫抓到的静态 HTML 里仍是构建期的名字（
+                <code className="text-[11px]">web/src/config/app-config.ts</code>），
+                要连它一起换掉得改那里重新构建——部署文档里有写。
+              </p>
             </SubBlock>
 
             <SubBlock

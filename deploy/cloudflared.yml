@@ -1,0 +1,31 @@
+# Cloudflare Tunnel 配置示例 —— **推荐方案：源站零入站端口**。
+#
+# 为什么这是最隐身的做法：cloudflared 从 VPS **主动外连** Cloudflare，公网上不需要在 VPS 上
+# 开任何入站端口。扫描器扫这台机器的 IPv4/IPv6，所有端口都是关的 → 测绘引擎无从收录。
+# 相比"开 443 + 防火墙只放 Cloudflare 段"，它连"发现这个 IP 上有 443"的机会都不给。
+#
+# 用法（在 VPS 上）：
+#   cloudflared tunnel login
+#   cloudflared tunnel create artex
+#   # 把下面 credentials-file 换成 tunnel create 输出的那个 json
+#   cloudflared tunnel route dns artex console.example.com
+#   sudo cp cloudflared.yml /etc/cloudflared/config.yml
+#   sudo cloudflared service install     # 注册成服务
+#   cloudflared tunnel ingress validate  # 校验这份配置
+#
+# 再加一道门：在 Cloudflare Zero Trust 里给这个 hostname 建一条 Access 策略
+# （邮箱 OTP / Service Token）。这样即使域名被别人知道，没有那道门也进不来。
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_ID.json
+
+ingress:
+  - hostname: console.example.com
+    service: http://127.0.0.1:8787
+    originRequest:
+      # ARTEX 的活动流/日志流是 SSE 长连接：别让 CF 缓冲或提前掐断。
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+      # 本机是明文 http（闭环内），不需要 CF 去校验源站证书。
+      noTLSVerify: false
+  # 兜底：没匹配上的 hostname 一律 404，别让它成为默认反代。
+  - service: http_status:404

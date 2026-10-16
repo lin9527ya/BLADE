@@ -8,11 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,13 +52,63 @@ func main() {
 	os.Exit(run())
 }
 
+// listenIsLoopback 判一个监听地址是不是只绑本机。空 host（如 ":8787"、"0.0.0.0:8787"）
+// 表示绑全部网卡 → **不是** loopback。只认 127.0.0.0/8、::1、localhost。
+func listenIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// 没有端口部分的写法（如裸 "8787"）交给 net.Listen 判，这里保守地当成"非 loopback"，
+		// 宁可多喊一句告警，也不要漏报一次暴露。
+		host = addr
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
 func run() int {
 	var (
-		addr    = flag.String("addr", ":8787", "HTTP listen address")
+		// 默认**只绑 loopback**（P42）：测绘引擎与个人扫描收录的前提是"扫到你的端口"，
+		// 所以默认不暴露是唯一有效的手段——要对外必须先显式写出来（`-addr :8787`）。
+		// 公网部署的两条正路（Cloudflare Tunnel / SSH 隧道）都不需要它监听公网，见 deploy/。
+		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default: loopback only)")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
+		// 只在明确知道自己在做什么时才允许把流量代理开成对外——见下面 run() 里的护栏。
+		allowOpenProxy = flag.Bool("allow-open-proxy", false, "allow binding the traffic proxy to a non-loopback address (turns this host into an unauthenticated open proxy)")
 	)
 	flag.Parse()
+
+	// ---- 暴露面护栏（P42）----
+	//
+	// 流量代理由 go-mitmproxy 提供，它的 Options 里**没有**来源过滤/认证 hook（只有
+	// Addr/SslInsecure/CaRootPath 等），所以"绑到公网"就等于开了一个**无认证的开放代理**：
+	// 任何人都能借它上网，测绘引擎还会直接把它标成 open proxy。这类状态一旦出现就是实质危险
+	// （你在为别人的攻击提供跳板），所以这里 **fail-closed**：默认拒绝启动，要开放必须显式加
+	// -allow-open-proxy。宁可服务起不来、日志里写得明明白白，也不要静默变成一个跳板。
+	//
+	// 放在 flag 解析之后、**碰数据库之前**：拒绝启动时不该连库、不该连 LLM。
+	if *proxy != "" && !listenIsLoopback(*proxy) && !*allowOpenProxy {
+		log.Printf("[安全] 拒绝启动：流量代理绑在 %s（非 loopback）。go-mitmproxy 不校验任何来源，"+
+			"这会让本机成为**无认证的开放代理**——任何人可借它上网，测绘引擎会直接标记 open proxy。\n"+
+			"  改回 127.0.0.1:8788（默认），或确需如此时显式加 -allow-open-proxy。", *proxy)
+		return 1
+	}
+	if *proxy != "" && !listenIsLoopback(*proxy) {
+		log.Printf("[安全] 流量代理已按显式要求绑在 %s：本机现在是**无认证的开放代理**，请确认这是你要的", *proxy)
+	}
+	// 管理端绑非 loopback 是**正常部署**（反代/隧道场景），不拦，但提醒一句正确的暴露方式。
+	if !listenIsLoopback(*addr) {
+		log.Printf("[安全] 管理端绑在 %s（非 loopback）：请确保它只对该信任的来源可达——"+
+			"走 Cloudflare / 反代时用防火墙只放行其来源段，或改用 Cloudflare Tunnel / SSH 隧道"+
+			"让源站零入站端口（见 deploy/）", *addr)
+	}
 
 	// hand the build version to the server package so GET /api/health can report it
 	// to the frontend top bar.

@@ -47,6 +47,7 @@ import (
 // + P39 云上枚举结果导入
 // + P40 图数据摄入工具（agent 侧入口）
 // + P41 出站产物语言与中文痕迹标注
+// + P42 公开发布面加固（默认不暴露 / 免认证端点不自报家门 / CORS 默认不发头）
 // + P26 CSV 资产导入 + P27 战果层（据点/凭据）+ P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端
 // 验收清单：驱动真实的 HTTP 处理器、真实的工具与真实的引擎路径（只有 LLM 与外部目标被夹具替代），
 // 每个机制一个子测试。
@@ -114,6 +115,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P39 云上枚举导入（AWS IAM + K8s RBAC 进同一张图，路径一起读）", func(t *testing.T) { accP39(t, env.forTest(t)) })
 	t.Run("P40 图数据摄入工具（agent 跑出来的枚举结果直接落进图）", func(t *testing.T) { accP40(t, env.forTest(t)) })
 	t.Run("P41 产物语言与中文痕迹（设置可切/写错退回/痕迹进审计只标注）", func(t *testing.T) { accP41(t, env.forTest(t)) })
+	t.Run("P42 公开面加固（免认证端点不自报家门/CORS 默认不发/显示名可配）", func(t *testing.T) { accP42(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -5208,4 +5210,110 @@ WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&auditRaw); err != nil
 	}
 	e.mustContain(rec.Body.String(), `"id":"language-trace"`, "一览里的语言痕迹条目")
 	e.mustContain(rec.Body.String(), `"detector":"han"`, "该条目的判定器取值")
+}
+
+// accP42 公开发布面加固（反测绘）：默认不暴露、免认证端点不自报家门、CORS 默认不发头。
+//
+// 这几条的共同点是"默认值必须安全"——被扫到时它们是**唯一**能起作用的东西（改标题换端口都只是辅助）。
+func accP42(t *testing.T, e *accEnv) {
+	for _, key := range []string{settingCORSAllowedOrigins, settingSiteName} {
+		old, had, err := e.m.pg.GetSetting(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = e.m.pg.SetSetting(key, old)
+				return
+			}
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, key)
+		})
+	}
+
+	// ① /api/health 免认证，但**不自报家门**：只回 ok。
+	// 它此前回 {"ok":true,"service":"artex","version":"v0.4.x"}——公网上任何人请求一次就知道这是
+	// 什么、什么版本，连指纹比对都省了。
+	rec := e.request(http.MethodGet, "/api/health", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health status=%d", rec.Code)
+	}
+	body := rec.Body.String()
+	e.mustContain(body, `"ok":true`, "health 仍要报活")
+	for _, leak := range []string{"artex", "ARTEX", "version"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("免认证的 /api/health 不该出现 %q：%s", leak, body)
+		}
+	}
+
+	// ② 版本信息搬到需要登录的 /api/system/info：无 token → 401，带 token → 有版本。
+	// 不带 token 的裸请求（e.request 会自动带 token，这里手工构造）。
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/system/info", nil)
+		w := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("无 token 访问 /api/system/info 该 401，得到 %d（body=%s）", w.Code, w.Body.String())
+		}
+	}
+	rec = e.request(http.MethodGet, "/api/system/info", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("带 token 该 200，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"version"`, "登录后仍要能看到版本（顶栏显示它）")
+
+	// ③ CORS 默认**不发**头：同源前端不需要它，而"无脑全开放"既是可指纹特征、
+	// 也把 API 暴露给任意网页的跨源读取。
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		w := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(w, req)
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("默认不该发 CORS 头，得到 %q", got)
+		}
+	}
+	// 显式配置白名单后才发，且只对匹配的来源。
+	if rec := e.request(http.MethodPut, "/api/settings",
+		`{"cors_allowed_origins":"https://console.example.com"}`); rec.Code != http.StatusOK {
+		t.Fatalf("设置 CORS 白名单 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.s.corsMu.Lock()
+	e.s.corsAt = time.Time{} // 清缓存（生产里 60 秒自然过期）
+	e.s.corsMu.Unlock()
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		req.Header.Set("Origin", "https://console.example.com")
+		w := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(w, req)
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://console.example.com" {
+			t.Errorf("白名单内的来源该收到 CORS 头，得到 %q", got)
+		}
+	}
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		req.Header.Set("Origin", "https://other.example")
+		w := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(w, req)
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("白名单外的来源不该收到 CORS 头，得到 %q", got)
+		}
+	}
+
+	// ④ 显示名可配（名字是低成本指纹）：写进去能读回来，超长当场退回。
+	rec = e.request(http.MethodPut, "/api/settings", `{"site_name":"Monitor"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("设置显示名 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	e.mustContain(rec.Body.String(), `"site_name":"Monitor"`, "读回的显示名")
+	if rec := e.request(http.MethodPut, "/api/settings",
+		`{"site_name":"`+strings.Repeat("长", 61)+`"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("超长显示名该 400，得到 %d", rec.Code)
+	}
+
+	// ⑤ 路由契约未被破坏：/api/health 仍在免认证白名单里，/api/system/info 不在。
+	// （有了新端点就得确认它没被顺手加进公开面——那是这个功能最容易出的错。）
+	rec = e.request(http.MethodGet, "/api/health", "")
+	if rec.Code == http.StatusUnauthorized {
+		t.Error("/api/health 必须保持免认证（反代/隧道/监控的健康检查要靠它，它们没有 token）")
+	}
 }

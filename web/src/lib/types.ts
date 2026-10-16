@@ -1487,6 +1487,8 @@ export interface Settings {
   intercept_scope_hours?: string;
   /** 面向目标的产物语言（P41）：zh 默认不约束 / en 一律 ASCII 英文。与界面语言无关。 */
   artifact_language?: "zh" | "en";
+  /** 界面显示名（P42）：空 = 内置 "ARTEX"。只覆盖运行时标题；静态 HTML 的 title 是构建期常量。 */
+  site_name?: string;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链

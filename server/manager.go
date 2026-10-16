@@ -276,6 +276,13 @@ const (
 	// 与界面语言无关：界面是操作者看的，产物是目标能看到的——耦合起来会出一个隐蔽的错
 	// （切个界面顺手改了出站内容）。agent 侧每 run 现读（agent.ArtifactLanguage），改完即时生效。
 	settingArtifactLanguage = "artifact_language"
+	// settingCORSAllowedOrigins（P42）是允许跨源访问 API 的来源白名单（逗号分隔）。
+	// 空 = 不发 CORS 头（同源前端不需要它）；填 "*" 才是真的全开放——得自己写出来。
+	settingCORSAllowedOrigins = "cors_allowed_origins"
+	// settingSiteName（P42）是界面显示名（空 = 内置 "ARTEX"）。给在意隐身的人一个改名的口子：
+	// 名字本身是低成本指纹。**注意它只改运行时显示的标题**——静态 HTML 里的 <title> 是构建期
+	// 常量（web/src/config/app-config.ts），要连爬虫看到的也改掉得改那里重新构建（README 有写）。
+	settingSiteName = "site_name"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
 	// 不可用(余额不足/key 失效/限流/服务异常)时自动切到下一个配置。
 	// settingLLMPoolBindFallback 仅在轮询开启时有意义:默认关闭,即 agent/任务显式
