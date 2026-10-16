@@ -4759,7 +4759,39 @@ WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&pendingID, &auditRaw)
 	e.mustContain(rec.Body.String(), `"opsec_notes"`, "详情接口里的可检出性笔记")
 	e.mustContain(rec.Body.String(), "dcsync", "命中的那一条笔记")
 
-	// ⑤ 非动作类工具不标注：谈可检出性没有意义，也不该在审计里多一段空话。
+	// ⑤ 只读一览：团队要能看见这份清单覆盖到哪、边界在哪（不知道边界，就会把"没提示"当"没日志"）。
+	rec = e.request(http.MethodGet, "/api/opsec/knowledge", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("知识库一览 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var kb struct {
+		Entries []struct {
+			ID       string   `json:"id"`
+			Title    string   `json:"title"`
+			Where    []string `json:"where"`
+			Signals  []string `json:"signals"`
+			Exposure string   `json:"exposure"`
+			Note     string   `json:"note"`
+		} `json:"entries"`
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &kb); err != nil {
+		t.Fatalf("一览解码失败：%v", err)
+	}
+	if len(kb.Entries) < 10 {
+		t.Errorf("一览该列出知识库条目：%d 条", len(kb.Entries))
+	}
+	for _, en := range kb.Entries {
+		if en.ID == "" || en.Title == "" || len(en.Where) == 0 || len(en.Signals) == 0 ||
+			en.Exposure == "" || en.Note == "" {
+			t.Errorf("条目该自证（留在哪/信号/可见度/说明）：%+v", en)
+		}
+	}
+	// 口径要写在这一页上：预计 ≠ 实测；没收录 ≠ 没有日志。
+	e.mustContain(kb.Note, "预计", "一览的口径说明")
+	e.mustContain(kb.Note, "不代表没有日志", "没收录时的口径")
+
+	// ⑥ 非动作类工具不标注：谈可检出性没有意义，也不该在审计里多一段空话。
 	e.m.interceptor.Log(ctx, 0, dec, "Read", json.RawMessage(`{"file_path":"/etc/hosts"}`), "allowed")
 	var auditRaw2 []byte
 	if err := e.m.pg.QueryRow(`SELECT COALESCE(audit::text,'') FROM intercept_pending WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, task.ID).Scan(&auditRaw2); err != nil {
