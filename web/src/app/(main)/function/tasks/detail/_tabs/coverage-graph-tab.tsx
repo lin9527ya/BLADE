@@ -240,17 +240,60 @@ function toG6Nodes(renderNodes: RenderNode[]): G6NodeDatum[] {
 // 回调形参用 unknown 满足 G6 签名，内部用 nd() 强转回我们的顶层结构。
 const nd = (d: unknown) => d as G6NodeDatum;
 
-// 已测=实色高亮；范围内未测=灰；范围外/折叠=更淡的灰 + 虚线描边。
-function nodeFill(d: G6NodeDatum): string {
-  if (d.fold) return "#f1f5f9";
-  if (!d.inScope) return "#e2e8f0";
-  if (d.tested) return kindMeta[d.kind].hex;
-  return "#94a3b8";
+// G6 是**画布渲染**，CSS 变量在 canvas 里不生效——颜色必须在建图时取成具体值。所以这里读
+// 计算样式，并在主题切换时重建图；否则切到深色后画布仍是一块白板（这正是它此前的问题）。
+function cssColor(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
 }
-function nodeStroke(d: G6NodeDatum): string {
-  if (d.fold || !d.inScope) return "#94a3b8";
-  if (d.tested) return "#0f766e";
-  return "#64748b";
+
+// useDarkMode 跟随 <html> 上的 .dark（theme-boot 在预渲染阶段就设好，切换时只改这个 class）。
+function useDarkMode(): boolean {
+  const [dark, setDark] = React.useState(
+    () => typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
+  );
+  React.useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setDark(root.classList.contains("dark"));
+    sync();
+    const ob = new MutationObserver(sync);
+    ob.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => ob.disconnect();
+  }, []);
+  return dark;
+}
+
+// coveragePalette 把画布用到的颜色一次取齐：画布/标签/连线来自语义 token（随主题变），
+// 只有"已测/未测"那几个状态色需要人工给一对亮暗值——token 里没有这个语义。
+function coveragePalette(dark: boolean) {
+  return {
+    canvas: cssColor("--muted", dark ? "#18181b" : "#f0f2f7"),
+    label: cssColor("--muted-foreground", dark ? "#a1a1aa" : "#475569"),
+    labelBg: cssColor("--card", dark ? "rgba(24,24,27,0.85)" : "rgba(255,255,255,0.75)"),
+    edge: cssColor("--border", dark ? "#3f3f46" : "#cbd5e1"),
+    foldFill: cssColor("--muted", dark ? "#27272a" : "#f1f5f9"),
+    outFill: cssColor("--secondary", dark ? "#27272a" : "#e2e8f0"),
+    untestedFill: cssColor("--muted-foreground", dark ? "#71717a" : "#94a3b8"),
+    mutedStroke: cssColor("--muted-foreground", dark ? "#71717a" : "#94a3b8"),
+    testedStroke: dark ? "#2dd4bf" : "#0f766e",
+    outlineStroke: cssColor("--muted-foreground", dark ? "#a1a1aa" : "#64748b"),
+  };
+}
+
+type CoveragePalette = ReturnType<typeof coveragePalette>;
+
+// 已测=实色高亮；范围内未测=灰；范围外/折叠=更淡的灰 + 虚线描边。
+function nodeFill(d: G6NodeDatum, p: CoveragePalette): string {
+  if (d.fold) return p.foldFill;
+  if (!d.inScope) return p.outFill;
+  if (d.tested) return kindMeta[d.kind].hex;
+  return p.untestedFill;
+}
+function nodeStroke(d: G6NodeDatum, p: CoveragePalette): string {
+  if (d.fold || !d.inScope) return p.mutedStroke;
+  if (d.tested) return p.testedStroke;
+  return p.outlineStroke;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +500,9 @@ function FoldSheet({
 
 // ---------------------------------------------------------------------------
 function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; coverageEnabled?: boolean }) {
+  // 画布颜色随主题变：dark 变化会换一份 palette，进而触发下面的建图 effect 重建图。
+  const dark = useDarkMode();
+  const palette = React.useMemo(() => coveragePalette(dark), [dark]);
   const [data, setData] = React.useState<{
     nodes: CoverageGraphNode[];
     edges: CoverageGraphEdge[];
@@ -542,12 +588,12 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
         container: containerRef.current,
         autoResize: true,
         autoFit: "view",
-        background: "#f0f2f7",
+        background: palette.canvas,
         node: {
           style: {
             size: (d: unknown) => nd(d).size,
-            fill: (d: unknown) => nodeFill(nd(d)),
-            stroke: (d: unknown) => nodeStroke(nd(d)),
+            fill: (d: unknown) => nodeFill(nd(d), palette),
+            stroke: (d: unknown) => nodeStroke(nd(d), palette),
             lineWidth: (d: unknown) => (nd(d).fold || !nd(d).inScope ? 1 : 1.5),
             lineDash: (d: unknown) => (nd(d).fold || !nd(d).inScope ? [3, 3] : [0]),
             iconSrc: (d: unknown) => (nd(d).fold ? FOLD_ICON : KIND_ICON[nd(d).kind]),
@@ -556,15 +602,15 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
             labelText: (d: unknown) => nd(d).lbl,
             labelFontSize: 10,
             labelPlacement: "bottom",
-            labelFill: "#475569",
+            labelFill: palette.label,
             labelBackground: true,
-            labelBackgroundFill: "rgba(255,255,255,0.75)",
+            labelBackgroundFill: palette.labelBg,
             labelBackgroundRadius: 3,
             labelPadding: [1, 3],
           },
         },
         edge: {
-          style: { stroke: "#cbd5e1", lineWidth: 1, endArrow: false },
+          style: { stroke: palette.edge, lineWidth: 1, endArrow: false },
         },
         layout: {
           type: "d3-force",
@@ -607,7 +653,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
       graph?.destroy();
       graphRef.current = null;
     };
-  }, [applyData]);
+  }, [applyData, palette]);
 
   // 可见集合变化 → 重新灌数据 + 布局。sig 只作为重排触发器（applyData 读 gDataRef）。
   // biome-ignore lint/correctness/useExhaustiveDependencies: sig 是刻意的重排触发依赖

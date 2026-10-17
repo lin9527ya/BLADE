@@ -168,19 +168,19 @@ function mergeBySeq(current: Activity[], incoming: Activity[]): Activity[] {
 function statusIcon(status: SessionStatus) {
   switch (status) {
     case "running": // 执行中
-      return <Loader2Icon className="size-3.5 animate-spin text-blue-500" />;
+      return <Loader2Icon className="size-3.5 animate-spin text-blue-500 dark:text-blue-400" />;
     case "paused":
-      return <PauseIcon className="size-3.5 text-amber-500" />;
+      return <PauseIcon className="size-3.5 text-amber-500 dark:text-amber-400" />;
     case "pending": // 待领取(open intent)
       return <ClockIcon className="size-3.5 text-muted-foreground" />;
     case "done": // 完成
-      return <CircleCheckIcon className="size-3.5 text-emerald-500" />;
+      return <CircleCheckIcon className="size-3.5 text-emerald-500 dark:text-emerald-400" />;
     case "stopped": // 取消/停止(被 planner 终止)
       return <CircleSlashIcon className="size-3.5 text-amber-500" />;
     case "blocked": // 出错
-      return <CircleXIcon className="size-3.5 text-red-500" />;
+      return <CircleXIcon className="size-3.5 text-red-500 dark:text-red-400" />;
     case "exhausted": // 步数耗尽(撞 max_turns)
-      return <ZapOffIcon className="size-3.5 text-violet-500" />;
+      return <ZapOffIcon className="size-3.5 text-violet-500 dark:text-violet-400" />;
     case "deleted": // 用户假删除
       return <CircleSlashIcon className="size-3.5 text-muted-foreground" />;
   }
