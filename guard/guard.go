@@ -99,6 +99,16 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if dec, hit := g.interceptor.CheckScope(ctx, g.taskID, ev.ToolName, ev.Input); hit {
 		return g.settle(ctx, ev, dec)
 	}
+	// 凭据尝试预算（P43）：对同一个目标的同一个账号试太多次会锁掉客户账号——它与
+	// 内置规则拒 rm -rf / DROP TABLE 是同一类事（别把目标搞坏），补的是后渗透阶段
+	// 唯一没人管的那一格。
+	//
+	// 排在 IsToolEnabled **之前**，理由与上面 CheckScope 完全相同、也是同一个坑：
+	// 凭据尝试走 Bash / run_execution，而 run_execution 曾因不在默认启用集里让
+	// "规则、裁判、范围门一起跳过"。这里同时完成记账（见 intercept/credential.go）。
+	if dec, hit := g.interceptor.CheckCredentialBudget(ctx, g.taskID, ev.ToolName, ev.Input); hit {
+		return g.settle(ctx, ev, dec)
+	}
 	// 规则与裁判面仍按用户登记的启用集生效。
 	if !g.interceptor.IsToolEnabled(ev.ToolName) {
 		return hook.Result{}

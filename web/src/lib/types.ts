@@ -471,6 +471,9 @@ export type ExploreKind =
   | "credential"
   // 检测验证：一次进攻动作有没有被检出。
   | "detection"
+  // 遗留物（P43）：我们**留在目标上**的东西——webshell、上传的文件、建的账号、计划任务。
+  // 它跟其它战果是反的：那些记"我们拿到了什么"，它记"我们给客户留下了什么"。
+  | "artifact"
   // AD 对象：BloodHound/SharpHound 采集回来的域内对象（用户/组/机器/域/OU/GPO），
   // 靠 payload.category 分类——一种 kind 装六类对象，理由见 server/ad_import.go 的开头。
   | "ad_object";
@@ -1487,6 +1490,16 @@ export interface Settings {
   intercept_scope_hours?: string;
   /** 面向目标的产物语言（P41）：zh 默认不约束 / en 一律 ASCII 英文。与界面语言无关。 */
   artifact_language?: "zh" | "en";
+  /**
+   * 凭据尝试预算（P43）：窗口（30 分钟）内对同一 (目标, 账号) 允许的尝试次数，0 = 不限。
+   * 超预算后按 credential_attempt_budget_action 处置。回的是**生效值**（缺省 3）。
+   *
+   * 它保护的是**客户的账号**：域账号被锁会让业务中断，与内置规则拒 rm -rf / DROP TABLE
+   * 同属"别把目标搞坏"。计的是**尝试次数**不是失败次数——shell 层分不出成败，宁可多问一句。
+   */
+  credential_attempt_budget?: number;
+  /** 超预算后的裁决：allow / ask（默认）/ deny。 */
+  credential_attempt_budget_action?: "allow" | "ask" | "deny";
   /** 界面显示名（P42）：空 = 内置 "BLADE"。只覆盖运行时标题；静态 HTML 的 title 是构建期常量。 */
   site_name?: string;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
@@ -1892,6 +1905,13 @@ export interface Stats {
   roe_enabled: boolean;
   findings_confirmed: number;
   active_task?: Partial<Task>;
+  /**
+   * 遗留物（P43）：我们留在目标上的东西。`uncleaned` 与 `unknown` **分开给**——
+   * unknown 是"没去确认还在不在"，并进未清理会把"我们不知道"说成"我们确认它还留着"。
+   */
+  artifacts_total?: number;
+  artifacts_uncleaned?: number;
+  artifacts_unknown?: number;
 }
 
 // ---- Intercept Rules ----

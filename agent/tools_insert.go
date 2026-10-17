@@ -671,6 +671,10 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// 战果：拿到据点/凭据是「往深打穿」的产物，必须由产出它的 worker 当场记下来，
 		// 否则规划层看不见这条通路，下一轮从外面重打一遍。
 		t.reportFoothold(), t.reportCredential(), t.reportDetection(),
+		// 遗留物（P43）：我们留在目标上的东西。它跟其它战果是反的——那些记"拿到了什么"，
+		// 这个记"给客户留下了什么"。没清掉的 webshell 是留在客户系统上的后门，
+		// 而交付时也要能说清我们动过什么。
+		t.reportArtifact(), t.markArtifactCleared(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),
@@ -715,7 +719,9 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
 		// 战果：人机对话里也能补记——人在跑任务时拿到的据点/凭据同样要进图，才算数。
+		// 遗留物同理：人在现场手动落的东西，也该有人能替它销账。
 		t.reportFoothold(), t.reportCredential(), t.reportDetection(),
+		t.reportArtifact(), t.markArtifactCleared(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),

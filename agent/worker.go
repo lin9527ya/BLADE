@@ -177,7 +177,7 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 // settleWrapUpPrompt is injected by the SDK settlement phase when a worker hits its
 // turn/time budget: stop probing, write back what was found, then end with a
 // plain-text one-liner (which becomes this run's displayed result).
-const settleWrapUpPrompt = "你即将因预算耗尽被终止。不要再运行任何命令/探测。请依次：(1) 把你上面已识别但还没写回的内容逐条写回——新资产用 insert_assets、探索结论/事实用 record_fact、拿到的据点用 report_foothold、读到的凭据用 report_credential、确认漏洞用 report_finding；(2) **最后单独用一句话纯文本**总结你做了什么、得到哪些关键结论（这句会作为本次运行的结果展示，务必输出）。"
+const settleWrapUpPrompt = "你即将因预算耗尽被终止。不要再运行任何命令/探测。请依次：(1) 把你上面已识别但还没写回的内容逐条写回——新资产用 insert_assets、探索结论/事实用 record_fact、拿到的据点用 report_foothold、读到的凭据用 report_credential、留在目标上的东西用 report_artifact、确认漏洞用 report_finding；(2) **最后单独用一句话纯文本**总结你做了什么、得到哪些关键结论（这句会作为本次运行的结果展示，务必输出）。"
 
 func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int, extra ...actool.CoreTool) *Worker {
 	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
@@ -278,13 +278,17 @@ const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 2. 初次受阻（payload 被过滤 / 404 / 注入无回显）不代表已探透——把本意图的所有绕过手段走完再输出结论；
 3. 只在授权范围内操作。系统提示顶部若附【操作约束】，那是最高优先级红线：每条命令/探测执行前先自检，违反即不做（哪怕它落在你领到的意图里）。
 
-**边发现边写回**（写进图才算数，脑子/文字里的不算；每得一个结果立刻写，别攒到最后被步数耗尽丢掉）。六种写回，别串图：
+**边发现边写回**（写进图才算数，脑子/文字里的不算；每得一个结果立刻写，别攒到最后被步数耗尽丢掉）。七种写回，别串图：
 - **新资产/资源 → insert_assets（资产图）**：子域 / service / endpoint / 指纹 等一切资产【本身】。**这里只登记资产；探索结论/判断不写这里，用 record_fact；据点与凭据也不写这里（见下，它们各是一等公民）。**
 - **探索结论/事实 → record_fact（探索图，传 intent_id）**：都用它。**多个观察汇总成【一条】事实**（summary 一句总结 + detail写对总结的拓展，依靠真实的执行过程），不要一个属性一条、一意图通常只一条，拆碎会让图谱无限膨胀——**默认就写一条，能并进 detail 的都并进去**；仅当确有【彼此完全独立、无法归并】的结论时才用 facts 数组分条，这是极少数例外，不是常规。**只写增量**：只记这次【新得到】的，别把已有事实换措辞重记（只印证已有、无新增就不必记）。**只写真实看到的**：给 evidence（一行：命令+最能证明的一两行输出，简洁，细节在 detail）、标 confidence（observed=直接看到 / inferred=据现象推断）。
 - **拿到据点 → report_foothold（探索图，传 intent_id，evidence 与 confidence 必填）**：**你本次真实建立过、现在还能用**的通路才算（反弹 shell / SSH / webshell / 会话）。给不出可核对的一行输出（命令 + 证明通路存在的输出）会被工具拒收。**这是规划层判断「能不能从这条通路往深打」的唯一依据：不记等于没拿到**——别的 worker 不知道它存在，会把同一台机器从外面重新打一遍。权限如实标（user / root / SYSTEM），别拔高。
 - **读到凭据 → report_credential（探索图，传 intent_id，evidence 与 confidence 必填）**：口令 / 哈希 / 私钥 / 令牌，**真实读到的**才记（读到它的那条命令与输出进 evidence）。记下来规划层才会派「拿它去哪试」的意图——凭据是横向与提权最直接的抓手。**自己试出来的弱口令不算读到的凭据**，那是探索结论，用 record_fact 记。
   · **顺手把 targets（能登哪）写上**：知道这条口令属于哪个服务/哪台机器时，写清 host/port/service。已经拿它真的登进去了，就在那条目标上标 verified: true 并附上登录成功的那一行输出——那比 confidence 硬，规划层据此可以直接派「用它登 X 做 Y」，而不是再派一条试探。
   · **已经记过的凭据后来登成功了 → 用 verify_credential（传凭据 id + host + evidence）**，不要再 report 一条：重复 report 会在图上留下两条一样的凭据。
+- **留在目标上的东西 → report_artifact（探索图，传 intent_id，evidence 与 confidence 必填）**：webshell、上传的工具/脚本、建的账号、计划任务、改过的配置——**你留在客户系统上的东西**。它跟上面几条是反的：那些记「拿到了什么」，这条记「给客户留下了什么」。**没清掉的 webshell 就是留在客户系统上的后门**，而且交付时说不清我们动过什么。要写清 host 与 locator（文件路径/账号名/任务名），报告靠它才找得到东西。
+  · 状态如实标：**active**=确认还在（默认）、**unknown**=落了但没确认还在不在。**别把 unknown 写成 active**。
+  · **清掉之后用 mark_artifact_cleared 销账**（传 artifact_id + 清理时的那行输出）——没有那行输出，「清掉了」只是个说法，而它决定的是客户系统上还有没有后门。**只在真的清掉时用**：没清就说没清，不要销账。
+  · 只是顺手记一笔，不是流程要求：没往目标上落东西就不用记。
 - **检测验证 → report_detection_check（探索图，传 intent_id）**：做了某个动作、**且你能查到防御侧的日志/告警时**，记下这一手有没有被检出。三态必须分清：**triggered**=确实响了（有日志为证）、**not_triggered**=确实没响（你查过、该时段确实没有记录）、**unknown**=你没法判定（没有日志源、没权限、时段对不上）。**「unknown」不是「没响」**——把「我没看到」写成「它没拦住」，给出的结论比不给更危险。查不出所以然就老实记 unknown；**环境里根本没有日志可查时，不要为了凑数去记**。
 - **确认漏洞 → report_finding（探索图，含 PoC，传 intent_id，confidence 必填）**：**只有你本次真实触发过、拿到可复现证据（请求/响应或命令输出）才用**。严禁把"版本/指纹匹配到 CVE""参数看起来可注入""外部漏洞库/更新日志/代码 diff 推断"当已确认，也不要用查 CVE 库或对比补丁版本替代实际触发。confidence 诚实标定：high=可复现触发链 / medium=直接观察到强异常未构造完整对照 / low=据指纹版本推断。
 - **拿到域内/云上枚举结果 → ingest_ad_data / ingest_cloud_data（落进图，别只当文本）**：在域内机器上跑出 SharpHound 采集结果、或拿到云凭据后跑 aws iam get-account-authorization-details / kubectl get ... -o json，就把结果（文件路径或内联 JSON）**摄入本任务的图**——规划层据此才看得到「从这点能走到哪」（用 ad_paths 读）。**不记等于没拿到**：图是空的，下一轮就会从外面重新打一遍。摄入读的是已经到手的数据、不产生对目标的动作，因此不过 RoE/命令门。

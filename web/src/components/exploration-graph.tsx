@@ -31,6 +31,7 @@ import {
   Lightbulb,
   type LucideIcon,
   Network,
+  PackageOpen,
   ShieldCheck,
   Target,
 } from "lucide-react";
@@ -99,6 +100,8 @@ const typeMeta: Record<ExploreKind, TypeMeta> = {
   foothold: { label: "据点", icon: Anchor, iconBg: "bg-orange-500", chip: "bg-orange-500/15 text-orange-600 dark:text-orange-400", hex: "#f97316" },
   credential: { label: "凭据", icon: Key, iconBg: "bg-cyan-500", chip: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400", hex: "#06b6d4" },
   detection: { label: "检测验证", icon: ShieldCheck, iconBg: "bg-sky-500", chip: "bg-sky-500/15 text-sky-600 dark:text-sky-400", hex: "#0ea5e9" },
+  // 遗留物：我们留在目标上的东西。它跟其它战果是反的——那些是"拿到了什么"，这个是"留下了什么"。
+  artifact: { label: "遗留物", icon: PackageOpen, iconBg: "bg-violet-500", chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400", hex: "#8b5cf6" },
   // AD 对象：域内采集来的对象（用户/组/机器/域…），具体是哪一类写在 payload.category 上。
   ad_object: { label: "AD 对象", icon: Network, iconBg: "bg-purple-500", chip: "bg-purple-500/15 text-purple-600 dark:text-purple-400", hex: "#a855f7" },
 };
@@ -125,6 +128,7 @@ const summaryFields: Record<ExploreKind, string[]> = {
   foothold: ["summary"],
   credential: ["summary"],
   detection: ["summary"],
+  artifact: ["summary"],
   // AD 对象没有 summary：它的"名字"就是它的身份（JDOE@CORP.LOCAL / DC.CORP.LOCAL）。
   ad_object: ["name", "sam"],
 };

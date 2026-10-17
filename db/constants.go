@@ -70,6 +70,13 @@ const (
 	// 交付报告里的「提权/横向」也只能靠文案。这两个 kind 把战果变成可以据此规划的一等公民。
 	KindFoothold   = "foothold"   // 一个在手的据点（反弹 shell / SSH / 会话），挂在被攻陷的资产上
 	KindCredential = "credential" // 从据点上读到的一条凭据（口令 / 哈希 / 密钥 / 令牌）
+	// 遗留物（P43）：我们**留在目标上**的东西——webshell、上传的工具、建的账号、计划任务、
+	// 改过的配置。
+	//
+	// 它跟其它战果是反的：据点与凭据是"我们拿到了什么"，遗留物是"我们给客户留下了什么"。
+	// 没清掉的 webshell 就是留在客户系统上的后门，而在此之前平台没有任何地方记过这件事，
+	// 交付时也说不清动过什么。这个 kind 就是那本台账。
+	KindArtifact = "artifact"
 	// 检测验证（purple team）：一次进攻动作做完之后，这一手**有没有被检出**。
 	//
 	// 它是「平台」与「扫描器」的分水岭：只会打的是扫描器，能回答「这套防御拦不拦得住」的才是平台。
@@ -118,6 +125,17 @@ const StateCloudActive = "active"
 const (
 	StateLootActive = "active" // 据点还能连、凭据还能用
 	StateLootLost   = "lost"   // 掉了：据点断了、凭据失效（复测/复用失败后如实标记）
+)
+
+// 遗留物节点（kind='artifact'）的状态：**还留在目标上 / 已清理 / 不知道**。
+//
+// 三态是必要的，别压成两态：`unknown`（没去确认过还在不在）跟 `active`（确认还在）在
+// 交付物里是完全不同的两句话——"我们没清"与"我们不知道清没清"必须分开说。
+// 这与检测三态是同一条纪律：unknown 不许并进任何一档。
+const (
+	StateArtifactActive  = "active"  // 还留在目标上（未清理）
+	StateArtifactRemoved = "removed" // 已清理（清理时的那行输出为证）
+	StateArtifactUnknown = "unknown" // 没去确认还在不在——不是"已清理"
 )
 
 // TechniqueTally 统计一组意图节点用到的 ATT&CK 技术（技术 ID → 意图数）。

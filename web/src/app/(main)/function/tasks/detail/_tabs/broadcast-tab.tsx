@@ -17,6 +17,7 @@ import {
   LayersIcon,
   LightbulbIcon,
   type LucideIcon,
+  PackageOpenIcon,
   PauseIcon,
   PlayIcon,
   SearchIcon,
@@ -106,10 +107,28 @@ const KIND_META: Record<string, KindMeta> = {
     dot: "bg-cyan-500",
     chip: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
   },
+  // 遗留物：我们留在目标上的东西。与战果相反——那些是"拿到了什么"，这个是"留下了什么"，
+  // 没清掉的就是留在客户系统上的后门，所以单独配色、单独可筛。
+  artifact: {
+    label: "遗留物",
+    icon: PackageOpenIcon,
+    dot: "bg-violet-500",
+    chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
+  },
 };
 
 // 可筛选的类型。起点(fact/state=origin)不单独列,它跟着「事实」一起过滤。
-const FILTER_KINDS: ExploreKind[] = ["goal", "intent", "fact", "finding", "hint", "digest", "foothold", "credential"];
+const FILTER_KINDS: ExploreKind[] = [
+  "goal",
+  "intent",
+  "fact",
+  "finding",
+  "hint",
+  "digest",
+  "foothold",
+  "credential",
+  "artifact",
+];
 
 const REL_LABEL: Record<string, string> = {
   spawns: "派生",

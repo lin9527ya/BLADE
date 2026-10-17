@@ -51,6 +51,11 @@ type Input struct {
 	// 属于报告该讲清楚的事）。
 	Footholds   []*db.Node
 	Credentials []*db.Node
+	// Artifacts 是**我们留在目标上**的东西（P43）：webshell、上传的文件、建的账号、计划任务、
+	// 改过的配置。它跟 Footholds/Credentials 是反的——那两个记"我们拿到了什么"，
+	// 这个记"我们给客户留下了什么"。没清掉的 webshell 就是留在客户系统上的后门，
+	// 交付时也必须能说清我们动过什么。
+	Artifacts []*db.Node
 	// LootUsedBy 记录每条战果被哪些意图动用过（战果节点 id → 用它的意图）。
 	//
 	// 这是交付物里最接近「攻击链」的东西：只写「拿到了这个据点」是资产清单，写清「拿它走到了
@@ -70,6 +75,11 @@ type Input struct {
 	// Detections 是检测验证记录（这一手有没有被检出）。三态各自成词，**绝不合成「检出率」**——
 	// 把 unknown 混进分母就是把「测不到」读成「没响」。
 	Detections []*db.Node
+	// CredentialAttempts 是凭据尝试台账（P43）：本次作业对**哪个目标的哪个账号**试了几次凭据。
+	//
+	// 它跟 Credentials 是两个方向：Credentials 说"拿到了什么"，这里说"动过谁"。
+	// 交付物里后者同样要交代——客户复盘时最想知道的就是自己的账号有没有被反复试过。
+	CredentialAttempts []db.CredentialAttempt
 }
 
 // detectionView 是检测验证节点渲染所需的最小字段集。
@@ -346,6 +356,15 @@ func Markdown(in Input) string {
 	fmt.Fprintf(&b, "- 已排除候选：**%d** 个（有反证，不进正文）\n", len(in.RuledOut))
 	fmt.Fprintf(&b, "- 存疑待补证：**%d** 个（不得视为安全）\n", len(in.ProofGaps))
 	fmt.Fprintf(&b, "- 战果：据点 **%d** 个、凭据 **%d** 条\n", len(in.Footholds), len(in.Credentials))
+	if len(in.Artifacts) > 0 {
+		uncleaned := 0
+		for _, n := range in.Artifacts {
+			if n.State == db.StateArtifactActive {
+				uncleaned++
+			}
+		}
+		fmt.Fprintf(&b, "- 遗留物：**%d** 件（其中**未清理 %d 件**）\n", len(in.Artifacts), uncleaned)
+	}
 	fmt.Fprintf(&b, "- 资产：")
 	var types []string
 	for t := range in.AssetCounts {
@@ -427,6 +446,18 @@ func Markdown(in Input) string {
 		}
 	}
 
+	// 遗留物：我们留在目标上、可能还没清掉的东西。紧挨着战果——两者是同一类产物的两个方向
+	// （拿到了什么 / 留下了什么），分太远会让人忘了还有这一节。
+	if len(in.Artifacts) > 0 {
+		writeArtifacts(&b, in.Artifacts)
+	}
+
+	// 凭据尝试台账（P43）：与「战果」是两个方向——战果说"拿到了什么"，这里说"动过谁"。
+	// 交付物里后者同样要交代：客户复盘时最想知道自己的账号有没有被反复试过。
+	if len(in.CredentialAttempts) > 0 {
+		writeCredentialAttempts(&b, in.CredentialAttempts)
+	}
+
 	// 攻击路径：把 uses / yields 两种边接起来读——「拿到了什么」之后的「用它走到了哪一步」。
 	// 只有真有多步链时才出这一节：一条战果被用一用是常态，那不叫路径。
 	if len(in.Chains) > 0 {
@@ -490,22 +521,55 @@ func Markdown(in Input) string {
 	}
 
 	// 检测验证：这一手有没有被检出。排在技术覆盖之后——它按技术组织，是同一份数据的另一面。
-	if len(in.Detections) > 0 {
-		fmt.Fprintf(&b, "## 检测验证（这一手有没有被检出）\n\n")
+	//
+	// 这一节同时回答「预期与实测」那个问题：**打了多少手 vs 核了多少手**。两边的动作集合
+	// 并不相同（技术覆盖数的是意图上的技术标注，检测验证数的是真去查过的手），所以只并列、
+	// **绝不相除**——合成一个比值会得到一个像「检出率」却不是的东西。
+	if len(in.Detections) > 0 || len(in.TechniqueTally) > 0 {
+		techniqueMarks := 0
+		for _, n := range in.TechniqueTally {
+			techniqueMarks += n
+		}
+		triggered, notTriggered, unknown := 0, 0, 0
 		for _, n := range in.Detections {
-			v := parseDetection(n)
-			fmt.Fprintf(&b, "- %s —— %s", nz(v.Technique, "（未标技术）"), detectionResultLabel(n.State))
-			if v.Summary != "" {
-				fmt.Fprintf(&b, "：%s", v.Summary)
-			}
-			b.WriteString("\n")
-			if v.Evidence != "" {
-				fmt.Fprintf(&b, "  - 证据：`%s`\n", v.Evidence)
+			switch n.State {
+			case db.StateDetectionTriggered:
+				triggered++
+			case db.StateDetectionNotTriggered:
+				notTriggered++
+			case db.StateDetectionUnknown:
+				unknown++
 			}
 		}
-		b.WriteString("\n")
-		// 这条脚注就是这一节存在的理由：把 unknown 读成「未检出」会得出比不给更危险的结论。
+		fmt.Fprintf(&b, "## 检测验证（这一手有没有被检出）\n\n")
+		if len(in.Detections) == 0 {
+			fmt.Fprintf(&b, "本次作业的意图里共标了 **%d** 处 ATT&CK 技术，但**没有留下任何检测验证结论**"+
+				"——这不代表没被检出，只是没有去核。\n\n", techniqueMarks)
+		} else {
+			fmt.Fprintf(&b, "本次作业的意图里共标了 **%d** 处 ATT&CK 技术；其中 **%d 手**留下了检测验证结论——"+
+				"已检出 **%d**、未检出 **%d**、无法判定 **%d**。\n\n",
+				techniqueMarks, len(in.Detections), triggered, notTriggered, unknown)
+			for _, n := range in.Detections {
+				v := parseDetection(n)
+				fmt.Fprintf(&b, "- %s —— %s", nz(v.Technique, "（未标技术）"), detectionResultLabel(n.State))
+				if v.Summary != "" {
+					fmt.Fprintf(&b, "：%s", v.Summary)
+				}
+				b.WriteString("\n")
+				if v.Evidence != "" {
+					fmt.Fprintf(&b, "  - 证据：`%s`\n", v.Evidence)
+				}
+			}
+			b.WriteString("\n")
+		}
+		// 这两条脚注就是这一节存在的理由。
+		// 第一条：把 unknown 读成「未检出」会得出比不给更危险的结论。
 		b.WriteString("_「无法判定」不等于「未被检出」：它说的是本工具查不到证据（没有日志源、没权限、时段对不上），**不能读成防御没拦住**。_\n\n")
+		// 第二条：上面那两个数**不是同一批动作**，相除会得到一个像「检出率」却不是的东西。
+		b.WriteString("_上面「技术标注数」与「检测验证手数」只并列、**不相除**：前者数的是意图上的技术标注，" +
+			"后者数的是真去查过的手，两边动作集合不同。预期侧（每条命令**预计**会留下什么）由可检出性知识库" +
+			"在**审批那一刻**逐条给出，见任务记录里的审批卡与「系统设置 → 安全与策略 → 可检出性知识库」——" +
+			"它按动作逐条记，不在这里汇总。_\n\n")
 	}
 
 	// findings
@@ -651,4 +715,149 @@ func nz(s, d string) string {
 		return d
 	}
 	return s
+}
+
+// writeCredentialAttempts 渲染凭据尝试台账（P43）。
+//
+// 按 (目标, 账号) 归并后只报次数：逐条列出每次尝试的命令原文对交付物没有价值，
+// 有价值的是"对哪个账号试了几次、有没有成批喷过"。
+//
+// 口径必须写在正文里，否则这张表会被读成"失败了几次"——它记的是**尝试**次数，
+// shell 层分不出成败，平台刻意取保守方向（宁可多问一句，也不让客户的账号被锁）。
+func writeCredentialAttempts(b *strings.Builder, rows []db.CredentialAttempt) {
+	type key struct{ host, account string }
+	type agg struct {
+		single, spray int
+		tools         map[string]bool
+	}
+	groups := map[key]*agg{}
+	var order []key
+	for _, r := range rows {
+		k := key{r.Host, r.Account}
+		g := groups[k]
+		if g == nil {
+			g = &agg{tools: map[string]bool{}}
+			groups[k] = g
+			order = append(order, k)
+		}
+		if r.Spray {
+			g.spray++
+		} else {
+			g.single++
+		}
+		if r.Tool != "" {
+			g.tools[r.Tool] = true
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		if order[i].host != order[j].host {
+			return order[i].host < order[j].host
+		}
+		return order[i].account < order[j].account
+	})
+
+	fmt.Fprintf(b, "## 凭据尝试台账（动过哪些账号）\n\n")
+	b.WriteString("_本节记的是**我们试了哪些账号**，不是试成了什么（战果见上）。口径：计的是" +
+		"**尝试次数**，不是失败次数——shell 层分不出成败，平台刻意取保守方向（宁可多问一句）。" +
+		"**成批尝试**（爆破器或带口令表）单独标出：一次调用可能是几百次真实尝试，不按次数计。_\n\n")
+
+	single, spray := 0, 0
+	for _, k := range order {
+		g := groups[k]
+		single += g.single
+		spray += g.spray
+		who := "**" + k.host + "**"
+		if k.account == "" {
+			// 抽不出账号时**明说抽不出来**，不含糊成"某账号"——读的人要能判断平台看清了多少。
+			who += "（未抽出账号）"
+		} else {
+			who += " 的账号 `" + k.account + "`"
+		}
+		var parts []string
+		if g.single > 0 {
+			parts = append(parts, fmt.Sprintf("单次尝试 **%d** 次", g.single))
+		}
+		if g.spray > 0 {
+			parts = append(parts, fmt.Sprintf("**成批尝试 %d 次**（爆破器/带口令表，一次调用可能是几百次真实尝试）", g.spray))
+		}
+		line := fmt.Sprintf("- %s：%s", who, strings.Join(parts, "；"))
+		if len(g.tools) > 0 {
+			var ts []string
+			for t := range g.tools {
+				ts = append(ts, t)
+			}
+			sort.Strings(ts)
+			line += "（手法：" + strings.Join(ts, "、") + "）"
+		}
+		b.WriteString(line + "\n")
+	}
+	fmt.Fprintf(b, "\n合计：单次尝试 **%d** 次，成批尝试 **%d** 次，涉及 **%d** 个目标账号组合。\n\n",
+		single, spray, len(order))
+}
+
+// writeArtifacts 渲染「遗留物与清理」（P43）。
+//
+// 排序按**未清理优先**：交付物里最要紧的一句话就是"还有东西留在客户系统上"。
+// 三态各自成词——unknown（没去确认）不能并进 active（确认还在），那会把"我们不知道清没清"
+// 说成"我们确认它还在"（同检测三态的纪律，方向相反、道理一样）。
+func writeArtifacts(b *strings.Builder, nodes []*db.Node) {
+	type row struct {
+		n *db.Node
+		a db.Artifact
+	}
+	rows := make([]row, 0, len(nodes))
+	for _, n := range nodes {
+		rows = append(rows, row{n, db.ParseArtifact(n)})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if ri, rj := db.ArtifactStateRank(rows[i].n.State), db.ArtifactStateRank(rows[j].n.State); ri != rj {
+			return ri < rj
+		}
+		if rows[i].a.Host != rows[j].a.Host {
+			return rows[i].a.Host < rows[j].a.Host
+		}
+		return rows[i].a.Locator < rows[j].a.Locator
+	})
+
+	active, unknown, removed := 0, 0, 0
+	for _, r := range rows {
+		switch r.n.State {
+		case db.StateArtifactActive:
+			active++
+		case db.StateArtifactUnknown:
+			unknown++
+		case db.StateArtifactRemoved:
+			removed++
+		}
+	}
+
+	fmt.Fprintf(b, "## 遗留物与清理（我们留在目标上的东西）\n\n")
+	if active > 0 {
+		fmt.Fprintf(b, "> **注意：有 %d 件遗留物仍留在目标上未清理。**\n\n", active)
+	}
+	fmt.Fprintf(b, "合计 **%d** 件——未清理 **%d**、未确认 **%d**、已清理 **%d**。\n\n",
+		len(rows), active, unknown, removed)
+	for i, r := range rows {
+		a := r.a
+		fmt.Fprintf(b, "**%d. %s**\n\n", i+1, nz(a.Summary, "（未填摘要）"))
+		writeLootMeta(b, []string{
+			PrefixIf("分类", db.ArtifactKindLabel(a.Kind)),
+			PrefixIf("主机", a.Host),
+			PrefixIf("位置", a.Locator),
+			db.ArtifactStateLabel(r.n.State),
+		})
+		if a.Cleanup != "" {
+			fmt.Fprintf(b, "- 怎么清：%s\n", a.Cleanup)
+		}
+		if r.n.State == db.StateArtifactRemoved && a.RemovedEvidence != "" {
+			fmt.Fprintf(b, "- 清理证据：`%s`\n", a.RemovedEvidence)
+		}
+		if a.Detail != "" {
+			fmt.Fprintf(b, "- 细节：%s\n", a.Detail)
+		}
+		if a.Evidence != "" {
+			fmt.Fprintf(b, "- 落地证据：`%s`\n", a.Evidence)
+		}
+		b.WriteString("\n")
+	}
 }

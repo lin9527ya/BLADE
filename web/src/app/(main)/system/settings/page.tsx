@@ -148,6 +148,10 @@ export default function SystemSettingsPage() {
   // P41 面向目标的产物语言（默认 zh = 不约束）。与界面语言是两件事，刻意分开放。
   const [artifactLang, setArtifactLang] = React.useState<"zh" | "en">("zh");
   const [savingArtifactLang, setSavingArtifactLang] = React.useState(false);
+  // P43 凭据尝试预算：窗口内对同一 (目标, 账号) 允许试几次（0 = 不限），超了怎么处置。
+  const [credBudget, setCredBudget] = React.useState("3");
+  const [credBudgetAction, setCredBudgetAction] = React.useState<"allow" | "ask" | "deny">("ask");
+  const [savingCredBudget, setSavingCredBudget] = React.useState(false);
   // P42 显示名（空 = 内置 BLADE）。
   const [siteName, setSiteName] = React.useState("");
   const [savingSiteName, setSavingSiteName] = React.useState(false);
@@ -180,6 +184,8 @@ export default function SystemSettingsPage() {
     setScopeModeEnv(!!s.intercept_scope_mode_env);
     setScopeHours(s.intercept_scope_hours ?? "");
     setArtifactLang(s.artifact_language === "en" ? "en" : "zh");
+    setCredBudget(String(s.credential_attempt_budget ?? 3));
+    setCredBudgetAction(s.credential_attempt_budget_action ?? "ask");
     setSiteName(s.site_name ?? "");
     setIntelKeySet(!!s.fofa_key_set);
     setIntelEmail(s.fofa_email ?? "");
@@ -446,6 +452,29 @@ export default function SystemSettingsPage() {
         toast.error("保存失败：" + (e as Error).message);
       })
       .finally(() => setSavingArtifactLang(false));
+  };
+
+  const saveCredBudget = () => {
+    const n = Number(credBudget);
+    if (!Number.isInteger(n) || n < 0 || n > 1000) {
+      toast.error("凭据尝试预算必须是 0–1000 的整数（0 = 不限）");
+      return;
+    }
+    const prevB = credBudget;
+    const prevA = credBudgetAction;
+    setSavingCredBudget(true);
+    api
+      .setSettings({ credential_attempt_budget: n, credential_attempt_budget_action: credBudgetAction })
+      .then((s) => {
+        apply(s);
+        toast.success(n === 0 ? "已保存：不限制凭据尝试次数" : `已保存：同一账号超过 ${n} 次转「${credBudgetAction}」`);
+      })
+      .catch((e) => {
+        setCredBudget(prevB);
+        setCredBudgetAction(prevA);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingCredBudget(false));
   };
 
   const saveSiteName = () => {
@@ -1335,6 +1364,71 @@ export default function SystemSettingsPage() {
                 默认不约束；切到英文后，规约随系统提示词下发（只能改设置，改不掉那段规约），
                 模型确需中文时会照用并在意图里说明理由。
                 出站命令里出现汉字时，审批卡上会多一条「语言痕迹」的可检出性笔记（只标注，不拦）。
+              </p>
+            </SubBlock>
+
+            <SubBlock
+              title="凭据尝试预算（后渗透）"
+              icon={<ShieldAlertIcon className="size-4 text-muted-foreground" />}
+            >
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                后渗透阶段最容易伤到客户的一件事是<strong>账号锁定</strong>：对着 AD 试几百个口令，
+                锁掉的是客户的业务账号。平台在动作发起前识别凭据尝试（hydra / nxc / sshpass / mysql /
+                curl -u / impacket / evil-winrm / xfreerdp 等），按
+                <strong>目标 + 账号</strong>在 30 分钟窗口内计数。
+              </p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                两条口径要看清：<strong>计的是尝试次数，不是失败次数</strong>——shell 层分不出成败，
+                宁可多问一句（误报的代价是人工点一下，漏报的代价是账号被锁）；
+                <strong>成批尝试不计数</strong>——`hydra -P rockyou.txt` 是一次调用、几百次真实尝试，
+                按次数预估没有意义，它单独就构成越界，直接进裁决。
+              </p>
+              <div className="flex flex-wrap items-end gap-3">
+                <Field
+                  label="窗口内允许的尝试次数"
+                  htmlFor="cred-budget"
+                  hint="0 = 不限（靶场/本地自用）。默认 3。"
+                >
+                  <Input
+                    id="cred-budget"
+                    type="number"
+                    min={0}
+                    max={1000}
+                    className="w-32 font-mono text-sm"
+                    placeholder="3"
+                    value={credBudget}
+                    disabled={!loaded || savingCredBudget}
+                    onChange={(e) => setCredBudget(e.target.value)}
+                  />
+                </Field>
+                <Field label="超预算后" htmlFor="cred-budget-action">
+                  <Select
+                    value={credBudgetAction}
+                    onValueChange={(v) => {
+                      if (!loaded || savingCredBudget) return;
+                      if (v === "allow" || v === "ask" || v === "deny") setCredBudgetAction(v);
+                    }}
+                    disabled={!loaded || savingCredBudget}
+                  >
+                    <SelectTrigger id="cred-budget-action" className="w-64">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ask">转人工审批（默认）</SelectItem>
+                      <SelectItem value="deny">直接拒绝</SelectItem>
+                      <SelectItem value="allow">放行（只记账不拦）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Button onClick={saveCredBudget} disabled={!loaded || savingCredBudget}>
+                  保存
+                </Button>
+              </div>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                默认<strong>转人工审批</strong>而不是直接拒绝：人一看就知道"这是靶场"或"这个账号没有锁定策略"，
+                而平台不知道。每次尝试都会进台账（无论拦不拦），报告里会列出<strong>动过哪个账号、试了几次</strong>
+                ——那是客户复盘时要核对的东西。它保护的是目标的可用性，与内置规则拒 <code>rm -rf /</code>、
+                <code>DROP TABLE</code> 是同一类。
               </p>
             </SubBlock>
 
