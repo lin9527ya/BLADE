@@ -525,6 +525,37 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* 遗留物（P43）：我们留在目标上的东西。放在最前面——任务收尾前最该被看见的一条，
+          没清掉的 webshell 就是留在客户系统上的后门。
+          active 与 unknown 分开说：unknown 是"没去确认还在不在"，并进未清理会把
+          "我们不知道"说成"我们确认它还留着"（同检测三态的纪律）。 */}
+      {((stats?.artifacts_uncleaned ?? 0) > 0 || (stats?.artifacts_unknown ?? 0) > 0) && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangleIcon className="size-4 text-amber-600 dark:text-amber-400" />
+              遗留物未清
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-1.5 text-sm">
+            {(stats?.artifacts_uncleaned ?? 0) > 0 && (
+              <p>
+                有 <strong className="tabular-nums">{stats?.artifacts_uncleaned}</strong> 件遗留物
+                <strong>仍留在目标上未清理</strong>——没清掉的 webshell 就是留在客户系统上的后门。
+              </p>
+            )}
+            {(stats?.artifacts_unknown ?? 0) > 0 && (
+              <p className="text-muted-foreground">
+                另有 <span className="tabular-nums">{stats?.artifacts_unknown}</span> 件
+                <strong>未确认</strong>还在不在（不是「已清理」，只是没去核）。
+              </p>
+            )}
+            <p className="text-muted-foreground text-xs">
+              清单与清理方式见导出的报告「遗留物与清理」一节，或在播报板/图里按「遗留物」筛选。
+            </p>
+          </CardContent>
+        </Card>
+      )}
       {/* 原始任务描述与目标(创建时填写的),置顶便于随时回看。 */}
       <Card>
         <CardHeader>

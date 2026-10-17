@@ -1107,6 +1107,26 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	st, _ := t.Store.Stats()
 	out["exploration"] = st
 
+	// 遗留物（P43）：我们留在目标上、还没清理的东西。任务页据此给一条内联提示——
+	// 这是任务收尾前最该被看见的一个数（没清掉的 webshell 就是留在客户系统上的后门）。
+	//
+	// active 与 unknown **分开给**：unknown 是"没去确认还在不在"，把它并进未清理会
+	// 把"我们不知道"说成"我们确认它还留着"（同检测三态的纪律）。
+	if arts, err := t.Store.ListByKind(db.KindArtifact, 1000); err == nil {
+		uncleaned, unknown := 0, 0
+		for _, a := range arts {
+			switch a.State {
+			case db.StateArtifactActive:
+				uncleaned++
+			case db.StateArtifactUnknown:
+				unknown++
+			}
+		}
+		out["artifacts_total"] = len(arts)
+		out["artifacts_uncleaned"] = uncleaned
+		out["artifacts_unknown"] = unknown
+	}
+
 	// per-task running state + heartbeat (distinct from "LLM configured").
 	intents, _ := t.Store.ListByKind(db.KindIntent, 100000)
 	inFlight := 0
@@ -3566,9 +3586,12 @@ func (s *Server) settingsPayload() map[string]any {
 		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("BLADE_SCOPE_ENFORCEMENT")) != "",
 		"intercept_scope_hours":    scopeHoursSetting(s.m.pg),
 		// P41 面向目标的产物语言：回**生效值**（缺省即 zh），页面据此显示当前档位。
-		"artifact_language":    artifactLanguageSetting(s.m.pg),
-		"site_name":            siteNameSetting(s.m.pg),
-		"cors_allowed_origins": corsAllowedOriginsSetting(s.m.pg),
+		"artifact_language": artifactLanguageSetting(s.m.pg),
+		// P43 凭据尝试预算：回**生效值**（缺省 3 / ask），页面据此显示当前档位。
+		"credential_attempt_budget":        s.m.interceptor.CredentialBudget(),
+		"credential_attempt_budget_action": s.m.interceptor.CredentialBudgetAction(),
+		"site_name":                        siteNameSetting(s.m.pg),
+		"cors_allowed_origins":             corsAllowedOriginsSetting(s.m.pg),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
@@ -3670,6 +3693,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
 		// agent 侧每 run 现读，改完即时生效。与界面语言无关。
 		ArtifactLanguage *string `json:"artifact_language"`
+		// P43 凭据尝试预算：窗口内对同一 (目标, 账号) 允许的尝试次数（0 = 不限），
+		// 以及超预算后的裁决（allow|ask|deny）。拦截层每调用现读，即时生效。
+		CredentialBudget       *int    `json:"credential_attempt_budget"`
+		CredentialBudgetAction *string `json:"credential_attempt_budget_action"`
 		// P42 界面显示名（空 = 内置 BLADE）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
 		SiteName *string `json:"site_name"`
 		// P42 允许跨源访问 API 的来源白名单（逗号分隔；空 = 不发 CORS 头）。
@@ -3746,6 +3773,32 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingArtifactLanguage, v); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.CredentialBudget != nil {
+		// 负数没有意义：0 已经是"不限"了，-1 只会让判定侧多一种要解释的状态。
+		v := *req.CredentialBudget
+		if v < 0 || v > 1000 {
+			writeErr(w, 400, "凭据尝试预算必须是 0–1000（0 = 不限）")
+			return
+		}
+		if err := s.m.pg.SetSetting(intercept.SettingCredentialBudget, strconv.Itoa(v)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.CredentialBudgetAction != nil {
+		// 同产物语言：写进一个不认识的档，判定侧会退回默认（ask）——那是静默降级，当场拒掉。
+		v := strings.TrimSpace(*req.CredentialBudgetAction)
+		switch v {
+		case "allow", "ask", "deny":
+		default:
+			writeErr(w, 400, "超预算处置必须是 allow / ask / deny")
+			return
+		}
+		if err := s.m.pg.SetSetting(intercept.SettingCredentialBudgetAction, v); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -4373,6 +4426,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// intent/fact），所以不会被折叠吞掉，按 kind 直取即可。
 	footholds, _ := t.Store.ListByKind(db.KindFoothold, 1000)
 	credentials, _ := t.Store.ListByKind(db.KindCredential, 1000)
+	// 遗留物（P43）：我们留在目标上的东西。同样按 kind 直取全量。
+	artifacts, _ := t.Store.ListByKind(db.KindArtifact, 1000)
 	// 检测验证：同样按 kind 直取全量（也不进 digest）。
 	detections, _ := t.Store.ListByKind(db.KindDetection, 1000)
 
@@ -4409,17 +4464,25 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		// 攻击路径：把 uses/yields 两种边接起来读（见 server/attack_chains.go）。不引入新模型。
-		chains = buildAttackChains(edges, lootLabels(footholds, credentials), intentSummary, intentState, intentTech)
+		chains = buildAttackChains(edges, lootLabels(footholds, credentials, artifacts), intentSummary, intentState, intentTech)
 	}
 	// 域内路径（P32）：与任务页的「AD 攻击路径」同一份实现——报告里写的和页面看到的不该是两个答案。
 	adPaths := adPathsForReport(t.Store)
+
+	// 凭据尝试台账（P43）：报告要说清"动过谁的账号"——那是客户复盘时最想核对的一件事。
+	// 读不出来时记日志、**不静默略过**：报告里少一节，比让人以为"一次都没试过"安全得多。
+	credAttempts, err := s.m.pg.ListCredentialAttempts(tid)
+	if err != nil {
+		log.Printf("[report] 任务 %s 凭据尝试台账读取失败：%v", t.ID, err)
+	}
 
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
-		Footholds: footholds, Credentials: credentials, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,
+		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
+		CredentialAttempts: credAttempts,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

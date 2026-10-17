@@ -162,12 +162,13 @@ type WriteCounts struct {
 	Footholds   int
 	Credentials int
 	Detections  int
+	Artifacts   int
 }
 
 // Total is every node persisted this run, regardless of kind — the
 // "explored but persisted nothing" signal (Total == 0).
 func (w WriteCounts) Total() int {
-	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials + w.Detections
+	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials + w.Detections + w.Artifacts
 }
 
 // String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0 据点1 凭据2".
@@ -1963,6 +1964,9 @@ type lootBase struct {
 	Confidence string            `json:"confidence"`
 	IntentID   json.RawMessage   `json:"intent_id"`
 	AssetIDs   []json.RawMessage `json:"asset_ids"`
+	// State 是节点的初始状态；空 = 用该 kind 的默认（战果一律 StateLootActive）。
+	// 只有遗留物会用到它——"落了但没确认还在不在"必须能如实记成 unknown。
+	State string `json:"state"`
 }
 
 type footholdItem struct {
@@ -2058,7 +2062,11 @@ func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (
 		}
 	}
 	// priority 8：frontier 只取 intent，这个值不影响调度；它只如实标出这是高价值产物。
-	id, err := t.ts.AddNode(kind, payload, 8, db.StateLootActive, t.worker, pidList(base.AssetIDs))
+	state := strings.TrimSpace(base.State)
+	if state == "" {
+		state = db.StateLootActive
+	}
+	id, err := t.ts.AddNode(kind, payload, 8, state, t.worker, pidList(base.AssetIDs))
 	if err != nil {
 		return 0, err
 	}
@@ -2232,6 +2240,113 @@ type detectionItem struct {
 	Confidence string            `json:"confidence"`
 	IntentID   json.RawMessage   `json:"intent_id"`
 	AssetIDs   []json.RawMessage `json:"asset_ids"`
+}
+
+// reportArtifact 记录一件**我们留在目标上**的东西：webshell、上传的文件、建的账号、计划任务、改过的配置。
+//
+// 它跟其它战果是反的——据点与凭据记"我们拿到了什么"，它记"我们给客户留下了什么"。
+// 没清掉的 webshell 就是留在客户系统上的后门，而交付时也要能说清我们动过什么。
+//
+// **它不是一道流程要求，是一条信息**：落了东西说一声，仅此而已。工具描述只陈述后果，
+// 不排序、不强制——与 report_detection_check 那条反强制条款同调。
+func (t *ToolSet) reportArtifact() actool.CoreTool {
+	return t.writeExpTool("report_artifact",
+		"记一件【你留在目标上】的东西：webshell、上传的工具/脚本、建的账号、计划任务、改过的配置。"+
+			"**没清掉的 webshell 是留在客户系统上的后门**，而且交付时说不清我们动过什么——所以落了东西就记一条。"+
+			"必须给 evidence（落地/创建的那一行输出）与 confidence（战果同一条证据门）。"+
+			"清掉之后用 mark_artifact_cleared 销账，不要重复 report。",
+		obj(map[string]any{
+			"summary":    str("一句话：在【哪台主机】的【哪里】放了/建了【什么】"),
+			"kind":       str("分类：webshell / upload（上传的文件）/ account（账号）/ scheduled_task / config_change / service / other"),
+			"host":       str("落在哪台目标上（域名或 IP）"),
+			"locator":    str("具体位置：文件路径 / 账号名 / 任务名 / 注册表键——**报告要靠它才找得到东西**"),
+			"cleanup":    str("怎么清（命令或步骤）；写下来，清理的人不用重新推一遍"),
+			"state":      str("active（确认还在，默认）| unknown（落了但没确认还在不在）——**别把 unknown 写成 active**"),
+			"detail":     str("细节：为什么放它、有没有用上、注意什么"),
+			"evidence":   str("【一行】落地/创建时的命令 + 关键输出（必填）"),
+			"confidence": str("high（亲手敲过、当场可见）| medium（成功但未复验）| low（据现象推断、尚未确认）"),
+			"intent_id":  idp("当前任务的意图 id（你领到的意图）"),
+			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "所在的资产 id"},
+		}, "summary", "evidence", "confidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				lootBase
+				Kind    string `json:"kind"`
+				Host    string `json:"host"`
+				Locator string `json:"locator"`
+				Cleanup string `json:"cleanup"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			// 状态**不做归一**：猜错会让"没清"显示成"清了"，那是这本账唯一不能犯的错。
+			if s := strings.TrimSpace(a.State); s != "" && !db.ValidArtifactState(s) {
+				return actool.Errorf("state 必须是 active | removed | unknown（别把没确认的写成 active，也别把没清的写成 removed）"), nil
+			}
+			id, err := t.recordLoot(db.KindArtifact, a.lootBase, map[string]any{
+				"kind":    db.NormalizeArtifactKind(a.Kind),
+				"host":    a.Host,
+				"locator": a.Locator,
+				"cleanup": a.Cleanup,
+			})
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			t.writes.Artifacts++
+			return actool.Text(fmt.Sprintf("artifact recorded: %d", id)), nil
+		})
+}
+
+// markArtifactCleared 把一件遗留物标成【已清理】。
+//
+// 与 verify_credential 是同一个形状、同一条理由：**没有清理时的那行输出，"我清掉了"就只是个说法**，
+// 而它决定的是"客户系统上还有没有后门"。所以 evidence 必填，与战果的证据门同一条线。
+func (t *ToolSet) markArtifactCleared() actool.CoreTool {
+	return t.writeExpTool("mark_artifact_cleared",
+		"把一件【已记录】的遗留物标成「已清理」。用在：你真的把它删掉/停掉/恢复了，并留下了输出。"+
+			"必须给 evidence（清理命令 + 关键输出行）——没有它，「清掉了」只是个说法，而它决定的是客户系统上还有没有后门。"+
+			"**只在真的清掉时用**：没清就说没清，不要销账。",
+		obj(map[string]any{
+			"artifact_id": idp("要销账的遗留物节点 id（report_artifact 回执里的那个数）"),
+			"evidence":    str("【一行】清理命令 + 关键输出行（必填）"),
+			"note":        str("备注（可省略）：残留、需人工确认的部分等"),
+		}, "artifact_id", "evidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				ArtifactID json.RawMessage `json:"artifact_id"`
+				Evidence   string          `json:"evidence"`
+				Note       string          `json:"note"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id := pid(a.ArtifactID)
+			if id <= 0 {
+				return actool.Errorf("artifact_id 必填：要销账哪一件遗留物（report_artifact 的回执里给了）"), nil
+			}
+			if strings.TrimSpace(a.Evidence) == "" {
+				return actool.Errorf("evidence 必填：清理的那一行输出——没有它，「清掉了」只是个说法，而它决定的是客户系统上还有没有后门"), nil
+			}
+			node, err := t.ts.GetNode(id)
+			if err != nil || node == nil || node.Kind != db.KindArtifact {
+				return actool.Errorf("artifact_id 必须是本任务里的一件遗留物节点"), nil
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(node.Payload, &payload); err != nil || payload == nil {
+				payload = map[string]any{}
+			}
+			payload["removed_evidence"] = strings.TrimSpace(a.Evidence)
+			if n := strings.TrimSpace(a.Note); n != "" {
+				payload["removed_note"] = n
+			}
+			if err := t.ts.SetNodePayload(id, db.KindArtifact, payload); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if err := t.ts.SetNodeState(id, db.StateArtifactRemoved); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return actool.Text(fmt.Sprintf("artifact %d marked cleared", id)), nil
+		})
 }
 
 // reportDetection 记录一次检测验证：这一手做完之后，防御侧有没有响。

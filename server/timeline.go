@@ -29,6 +29,7 @@ const (
 	tlKindApproval  = "approval"  // 三层拦截的审批决定（规则 / 模型 / 人工）
 	tlKindFinding   = "finding"   // 确认漏洞（含已撤回）
 	tlKindLoot      = "loot"      // 据点 / 凭据
+	tlKindArtifact  = "artifact"  // 遗留物（我们留在目标上的东西）
 	tlKindDetection = "detection" // 检测验证（三态）
 	tlKindNote      = "note"      // 系统留在时间线上的话（策略拒绝、停机、目标变更…）
 	tlKindStep      = "step"      // 原始步骤流水（activity 的 tool_use/round…），只随 kinds=all 出
@@ -36,7 +37,7 @@ const (
 
 // timelineMilestoneKinds 是默认集合。顺序即文档顺序（导出时按时间重排，与这里无关）。
 var timelineMilestoneKinds = []string{
-	tlKindExecution, tlKindApproval, tlKindFinding, tlKindLoot, tlKindDetection, tlKindNote,
+	tlKindExecution, tlKindApproval, tlKindFinding, tlKindLoot, tlKindArtifact, tlKindDetection, tlKindNote,
 }
 
 // TimelineEvent 是时间线上的一格。
@@ -113,6 +114,17 @@ func timelineStateLabel(kind, state string) string {
 			return "在手"
 		case db.StateLootLost:
 			return "已失效"
+		}
+	case tlKindArtifact:
+		// 遗留物的三态**各自成词**：unknown 不能并进 active，那会把"我们没去确认"
+		// 说成"我们确认它还留着"（同检测三态的纪律）。
+		switch state {
+		case db.StateArtifactActive:
+			return "未清理"
+		case db.StateArtifactRemoved:
+			return "已清理"
+		case db.StateArtifactUnknown:
+			return "未确认"
 		}
 	case tlKindDetection:
 		switch state {
@@ -285,8 +297,17 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 			})
 		}
 	}
-	if want[tlKindLoot] {
-		for _, kind := range []string{db.KindFoothold, db.KindCredential} {
+	if want[tlKindLoot] || want[tlKindArtifact] {
+		// 遗留物与战果同属"图上的产物"，但**各自的 kind 分开发**：它们的收场词表不一样
+		// （在手/已失效 vs 未清理/已清理/未确认），混在一格会逼出一套含糊的通用词。
+		for _, kind := range []string{db.KindFoothold, db.KindCredential, db.KindArtifact} {
+			tlKind := tlKindLoot
+			if kind == db.KindArtifact {
+				tlKind = tlKindArtifact
+			}
+			if !want[tlKind] {
+				continue
+			}
 			nodes, err := t.Store.ListByKind(kind, 1000)
 			if err != nil {
 				return timelineResponse{}, err
@@ -302,19 +323,27 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 				_ = json.Unmarshal(n.Payload, &p)
 				label := "据点"
 				detail := ""
-				if kind == db.KindCredential {
+				switch kind {
+				case db.KindCredential:
 					label = "凭据"
 					// 时间线上同样不给明文，指纹才是指认用的东西（见 db.CredentialFingerprint）。
 					detail = strings.TrimSpace(strings.Join(nonEmpty(
 						report.PrefixIf("账号", p.Username), report.PrefixIf("指纹", db.ParseCredential(n).Fingerprint())), " · "))
-				} else {
+				case db.KindArtifact:
+					label = "遗留物"
+					av := db.ParseArtifact(n)
+					detail = strings.TrimSpace(strings.Join(nonEmpty(
+						report.PrefixIf("分类", db.ArtifactKindLabel(av.Kind)),
+						report.PrefixIf("位置", av.Locator),
+						report.PrefixIf("主机", av.Host)), " · "))
+				default:
 					detail = strings.TrimSpace(strings.Join(nonEmpty(
 						report.PrefixIf("通路", p.Access), report.PrefixIf("权限", p.Privilege)), " · "))
 				}
 				events = append(events, TimelineEvent{
-					At: rfc3339(n.CreatedAt), Kind: tlKindLoot,
+					At: rfc3339(n.CreatedAt), Kind: tlKind,
 					Title: label + "：" + clipRunes(p.Summary, 120), Detail: detail, State: n.State,
-					StateLabel: timelineStateLabel(tlKindLoot, n.State),
+					StateLabel: timelineStateLabel(tlKind, n.State),
 					RefType:    "node", RefID: n.ID,
 				})
 			}

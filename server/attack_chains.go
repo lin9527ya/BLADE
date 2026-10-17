@@ -94,7 +94,7 @@ func buildAttackChains(edges []db.Edge, lootLabel map[int64]string, intentSummar
 // lootLabels 把战果节点压成 id → 可读标签。**带类型前缀**（据点「…」/ 凭据「…」）：路径上
 // 每一跳拿到的是据点还是凭据，读的人必须一眼看得出，否则「用 X 拿到 Y」会失去意义。
 func lootLabels(groups ...[]*db.Node) map[int64]string {
-	kindLabel := map[string]string{db.KindFoothold: "据点", db.KindCredential: "凭据"}
+	kindLabel := map[string]string{db.KindFoothold: "据点", db.KindCredential: "凭据", db.KindArtifact: "遗留物"}
 	out := map[int64]string{}
 	for _, group := range groups {
 		for _, n := range group {

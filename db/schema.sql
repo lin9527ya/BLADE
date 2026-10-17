@@ -236,17 +236,18 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%foothold%'
                OR pg_get_constraintdef(oid) NOT LIKE '%detection%'
                OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%artifact%'
                OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_kind;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_kind
-            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object','cloud_object'));
+            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','artifact','ad_object','cloud_object'));
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
 -- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev),
 -- 'ruled_out' (finding candidate-closure rev), 'foothold' (战果 rev), 'not_triggered' (检测 rev),
--- 'ad_object' (AD rev), or 'cloud_object' (云对象 rev) branches.
+-- 'ad_object' (AD rev), 'removed' (遗留物 rev), or 'cloud_object' (云对象 rev) branches.
 DO $$
 BEGIN
     IF EXISTS (
@@ -260,6 +261,7 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%ruled_out%'
                OR pg_get_constraintdef(oid) NOT LIKE '%foothold%'
                OR pg_get_constraintdef(oid) NOT LIKE '%not_triggered%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%removed%'
                OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
                OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%')
     ) THEN
@@ -275,6 +277,7 @@ BEGIN
             (kind='foothold'   AND state IN ('active','lost')) OR
             (kind='credential' AND state IN ('active','lost')) OR
             (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
+            (kind='artifact'   AND state IN ('active','removed','unknown')) OR
             (kind='ad_object'  AND state IN ('active')) OR
             (kind='cloud_object' AND state IN ('active'))
         );
@@ -1607,3 +1610,32 @@ CREATE TABLE IF NOT EXISTS company_knowledge (
 );
 CREATE INDEX IF NOT EXISTS idx_company_knowledge_company
     ON company_knowledge(company_id, id DESC);
+
+-- P43 凭据尝试台账：对**哪个目标的哪个账号**试了几次凭据。
+--
+-- 为什么要有这张表（而不是从 tool_executions 里现算）：护栏要拦的是"对同一个账号试太多次"
+-- ——域账号被锁会让客户业务中断，这跟"禁 DROP TABLE / rm -rf"是同一类事（别把目标搞坏），
+-- 而在此之前它是唯一没人管的一类。按 (task, host, account) 计数需要索引，现算既慢又脆。
+--
+-- 它同时是**交付物证据**："本次作业对 db01 的 svc_backup 尝试了 3 次"正是客户复盘要看的
+-- 东西，所以它进报告，不只是内部计数。
+--
+-- 口径要说清（报告与审批卡同样要写）：记的是**尝试次数**，不是失败次数。shell 层分不出
+-- 成败，宁可多问一句——误报的代价是人工点一下，漏报的代价是客户的账号被锁。
+CREATE TABLE IF NOT EXISTS credential_attempts (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL,
+    host       TEXT NOT NULL,
+    account    TEXT NOT NULL DEFAULT '',
+    -- 识别出这条命令用的是什么手法（hydra/nxc/sshpass…），给人看的。
+    tool       TEXT NOT NULL DEFAULT '',
+    command    TEXT NOT NULL DEFAULT '',
+    -- spray 为真 = 这条命令**本身就是成批尝试**（爆破器，或带了口令表/用户名表）：
+    -- 一次调用可能是几百次真实尝试，按"次数"计没有意义。
+    spray      BOOLEAN NOT NULL DEFAULT false,
+    at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cred_attempts_budget
+    ON credential_attempts (task_id, host, account, at DESC);
+CREATE INDEX IF NOT EXISTS idx_cred_attempts_task
+    ON credential_attempts (task_id, id);

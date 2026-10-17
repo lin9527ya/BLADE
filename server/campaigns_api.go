@@ -105,6 +105,10 @@ type campaignTaskBrief struct {
 	Footholds   int    `json:"footholds"`
 	Credentials int    `json:"credentials"`
 	Detections  int    `json:"detections"`
+	// ArtifactsUncleaned 是**还留在客户系统上、没清理**的遗留物件数（P43）。
+	// 只报未清理的那个数：把清掉的也算进去会稀释掉唯一要紧的那条信息——
+	// 「这次作业结束时，客户系统上还有几样东西是我们留下的」。
+	ArtifactsUncleaned int `json:"artifacts_uncleaned"`
 }
 
 // campaignSummary 汇总一次作业：它的任务、以及跨任务相加的产出。
@@ -139,12 +143,14 @@ func (s *Server) campaignSummary(id int64) (map[string]any, error) {
 		b.Footholds, _ = t.Store.CountByKind(db.KindFoothold)
 		b.Credentials, _ = t.Store.CountByKind(db.KindCredential)
 		b.Detections, _ = t.Store.CountByKind(db.KindDetection)
+		b.ArtifactsUncleaned = uncleanedArtifacts(t)
 		briefs = append(briefs, b)
 		totals["tasks"]++
 		totals["findings"] += b.Findings
 		totals["footholds"] += b.Footholds
 		totals["credentials"] += b.Credentials
 		totals["detections"] += b.Detections
+		totals["artifacts_uncleaned"] += b.ArtifactsUncleaned
 
 		// 技术覆盖：与任务报告同一条判定（软删除不计）。
 		if intents, err := t.Store.ListByKind(db.KindIntent, 100000); err == nil {
@@ -325,4 +331,23 @@ func (s *Server) campaignID(w http.ResponseWriter, r *http.Request) (int64, bool
 		return 0, false
 	}
 	return id, true
+}
+
+// uncleanedArtifacts 数一个任务里**未清理**的遗留物件数（P43）。
+//
+// 只数 active，不数 unknown：unknown 是"没去确认还在不在"，把它并进未清理会把
+// "我们不知道"说成"我们确认它还留着"（同检测三态的纪律）。但它也**不是安全**——
+// 界面上 unknown 单独一格显示，这里只负责给出"确定还留着"的那个数。
+func uncleanedArtifacts(t *Task) int {
+	nodes, err := t.Store.ListByKind(db.KindArtifact, 1000)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, node := range nodes {
+		if node.State == db.StateArtifactActive {
+			n++
+		}
+	}
+	return n
 }

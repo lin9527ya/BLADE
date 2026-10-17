@@ -116,6 +116,9 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P40 图数据摄入工具（agent 跑出来的枚举结果直接落进图）", func(t *testing.T) { accP40(t, env.forTest(t)) })
 	t.Run("P41 产物语言与中文痕迹（设置可切/写错退回/痕迹进审计只标注）", func(t *testing.T) { accP41(t, env.forTest(t)) })
 	t.Run("P42 公开面加固（免认证端点不自报家门/CORS 默认不发/显示名可配）", func(t *testing.T) { accP42(t, env.forTest(t)) })
+	t.Run("P43 凭据尝试预算（按目标+账号计数/成批尝试一次即越界/排在启用集之前）", func(t *testing.T) { accP43(t, env.forTest(t)) })
+	t.Run("P44 遗留物台账（落在目标上的东西/状态不归一/销账要清理证据）", func(t *testing.T) { accP44(t, env.forTest(t)) })
+	t.Run("P45 预期与实测对账（打了多少 vs 核了多少/没核要如实说/三态不相除）", func(t *testing.T) { accP45(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -5315,5 +5318,364 @@ func accP42(t *testing.T, e *accEnv) {
 	rec = e.request(http.MethodGet, "/api/health", "")
 	if rec.Code == http.StatusUnauthorized {
 		t.Error("/api/health 必须保持免认证（反代/隧道/监控的健康检查要靠它，它们没有 token）")
+	}
+}
+
+// accP43 凭据尝试预算：后渗透阶段唯一没人管、却最容易伤到客户的一件事是**账号锁定**。
+// 平台在动作发起前识别凭据尝试，按 (目标, 账号) 在窗口内计数，超预算转人工。
+//
+// 三条要钉死的口径：①计的是尝试次数不是失败次数（shell 层分不出成败，宁可多问一句）；
+// ②成批尝试（爆破器 / 带口令表）不计数，一次调用就构成越界；③它排在 IsToolEnabled
+// 之前——run_execution 曾因不在启用集里让规则与范围门一起跳过，凭据尝试走的正是这条路。
+func accP43(t *testing.T, e *accEnv) {
+	for _, key := range []string{intercept.SettingCredentialBudget, intercept.SettingCredentialBudgetAction} {
+		old, had, err := e.m.pg.GetSetting(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = e.m.pg.SetSetting(key, old)
+				return
+			}
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, key)
+		})
+	}
+	oldTools, err := e.s.m.interceptor.GetEnabledTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.s.m.interceptor.SetEnabledTools(oldTools) })
+
+	task, tid := e.newTask("accP43", "凭据尝试预算")
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM credential_attempts WHERE task_id=$1`, tid) })
+
+	ctx := context.Background()
+	ic := e.s.m.interceptor
+	setBudget := func(n int, action string) {
+		t.Helper()
+		if err := e.m.pg.SetSetting(intercept.SettingCredentialBudget, strconv.Itoa(n)); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.m.pg.SetSetting(intercept.SettingCredentialBudgetAction, action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bash := func(cmd string) json.RawMessage {
+		b, _ := json.Marshal(map[string]string{"command": cmd})
+		return b
+	}
+
+	// ① 预算内的尝试放行，但仍要进台账——报告问的是"我们动过谁的账号"，
+	// 那个答案不该取决于当时有没有超预算。
+	setBudget(2, "ask")
+	for i := 0; i < 2; i++ {
+		if dec, hit := ic.CheckCredentialBudget(ctx, tid, "Bash",
+			bash(fmt.Sprintf("nxc smb 10.0.0.5 -u svc_backup -p 'try%d'", i))); hit {
+			t.Fatalf("第 %d 次尝试在预算内，不该拦：%s", i+1, dec.Message)
+		}
+	}
+	rows, err := e.m.pg.ListCredentialAttempts(tid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("预算内的尝试也要进台账，得到 %d 行，want 2", len(rows))
+	}
+	if rows[0].Host != "10.0.0.5" || rows[0].Account != "svc_backup" {
+		t.Fatalf("台账要记清目标与账号，得到 host=%q account=%q", rows[0].Host, rows[0].Account)
+	}
+	if rows[0].Spray {
+		t.Error("单口令打一发不是成批尝试，spray 不该为真")
+	}
+
+	// ② 超预算：第 3 次转裁决，消息里要能读到目标、账号、第几次、预算
+	dec, hit := ic.CheckCredentialBudget(ctx, tid, "Bash",
+		bash("nxc smb 10.0.0.5 -u svc_backup -p 'try3'"))
+	if !hit {
+		t.Fatal("第 3 次已超预算（2），必须产生裁决")
+	}
+	if dec.Action != "ask" {
+		t.Fatalf("超预算处置 = %q，want ask", dec.Action)
+	}
+	for _, want := range []string{"10.0.0.5", "svc_backup", "3", "尝试次数"} {
+		if !strings.Contains(dec.Message, want) {
+			t.Errorf("裁决消息里缺 %q：%s", want, dec.Message)
+		}
+	}
+
+	// ③ 换个账号、换个主机各算各的——预算按 (目标, 账号) 计，不互相顶掉
+	if _, hit := ic.CheckCredentialBudget(ctx, tid, "Bash",
+		bash("nxc smb 10.0.0.5 -u other_user -p 'x'")); hit {
+		t.Error("同主机换个账号是另一本账，不该被前面的尝试顶掉")
+	}
+	if _, hit := ic.CheckCredentialBudget(ctx, tid, "Bash",
+		bash("nxc smb 10.0.0.9 -u svc_backup -p 'x'")); hit {
+		t.Error("换个主机是另一本账，不该被顶掉")
+	}
+
+	// ④ 成批尝试不计数：`hydra -P rockyou.txt` 是一次**调用**、几百次真实尝试，
+	// 按次数预估毫无意义——它单独就构成越界，哪怕这本账一次都没记过。
+	_, tid2 := e.newTask("accP43-spray", "成批尝试")
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM credential_attempts WHERE task_id=$1`, tid2) })
+	dec, hit = ic.CheckCredentialBudget(ctx, tid2, "Bash",
+		bash("hydra -l admin -P /usr/share/wordlists/rockyou.txt ssh://10.0.0.6"))
+	if !hit {
+		t.Fatal("成批尝试一次调用就该越界，不该等计数")
+	}
+	if !strings.Contains(dec.Message, "成批尝试") {
+		t.Errorf("成批尝试的裁决要说清它为什么不算次数：%s", dec.Message)
+	}
+	sprayRows, err := e.m.pg.ListCredentialAttempts(tid2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sprayRows) != 1 || !sprayRows[0].Spray {
+		t.Fatalf("成批尝试要如实记 spray=true，得到 %+v", sprayRows)
+	}
+
+	// ⑤ 预算 0 = 不限（靶场逃生舱）：怎么试都不拦，但**仍然记账**——
+	// 不限的是"拦"，不是"记"。
+	setBudget(0, "ask")
+	for i := 0; i < 5; i++ {
+		if _, hit := ic.CheckCredentialBudget(ctx, tid, "Bash",
+			bash("nxc smb 10.0.0.5 -u svc_backup -p 'x'")); hit {
+			t.Fatalf("预算 0 = 不限，第 %d 次不该拦", i+1)
+		}
+	}
+	if n, err := e.m.pg.CountCredentialAttempts(tid, "10.0.0.5", "svc_backup", time.Now().Add(-time.Hour)); err != nil || n != 8 {
+		t.Fatalf("预算 0 时仍要记账：count=%d err=%v，want 8", n, err)
+	}
+
+	// ⑥ 咽喉点顺序：把 run_execution 移出启用集，它照样要被凭据预算看住。
+	// 这是 run_execution 漏网（不在默认启用集 → 规则/裁判/范围门一起跳过）的回归测试。
+	setBudget(1, "deny")
+	var kept []string
+	for _, tl := range oldTools {
+		if tl != "run_execution" {
+			kept = append(kept, tl)
+		}
+	}
+	if err := ic.SetEnabledTools(kept); err != nil {
+		t.Fatal(err)
+	}
+	_, tid3 := e.newTask("accP43-order", "咽喉点顺序")
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM credential_attempts WHERE task_id=$1`, tid3) })
+	g := guard.NewWithInterceptor(ic, tid3)
+	// 先打两发让这本账超预算（预算 1），再验证第三发经 guard 被拦。
+	for i := 0; i < 2; i++ {
+		g.Hooks().PreToolUse(ctx, "run_execution",
+			[]byte(fmt.Sprintf(`{"command":"nxc smb 10.0.0.8 -u svc -p 'try%d'"}`, i)))
+	}
+	blocked, reason, _ := g.Hooks().PreToolUse(ctx, "run_execution",
+		[]byte(`{"command":"nxc smb 10.0.0.8 -u svc -p 'try3'"}`))
+	if !blocked {
+		t.Fatalf("run_execution 不在启用集里也必须被凭据预算看住（reason=%q）", reason)
+	}
+	if !strings.Contains(reason, "凭据尝试") || !strings.Contains(reason, "预算") {
+		t.Errorf("拦截理由要让模型看懂是凭据预算拦的：%q", reason)
+	}
+
+	// ⑦ 设置校验：非法值 400 且**不改已存值**（同产物语言那条纪律）
+	if rec := e.request(http.MethodPut, "/api/settings", `{"credential_attempt_budget":-1}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("负预算该 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	if rec := e.request(http.MethodPut, "/api/settings", `{"credential_attempt_budget_action":"block"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("非法处置该 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	if v, _, _ := e.m.pg.GetSetting(intercept.SettingCredentialBudgetAction); v != "deny" {
+		t.Errorf("被拒的写入不该改掉已存值，得到 %q", v)
+	}
+	if rec := e.request(http.MethodGet, "/api/settings", ""); rec.Code != http.StatusOK {
+		t.Fatal("读设置失败")
+	} else {
+		e.mustContain(rec.Body.String(), `"credential_attempt_budget":1`, "读回的凭据预算")
+		e.mustContain(rec.Body.String(), `"credential_attempt_budget_action":"deny"`, "读回的超预算处置")
+	}
+
+	// ⑧ 报告要能交代"动过谁的账号"——那是客户复盘时最想核对的一件事。
+	// 且必须写明口径：它记的是**尝试**次数，不是失败次数，否则这张表会被读错。
+	md := e.report(task)
+	e.mustContain(md, "凭据尝试台账", "报告里的凭据尝试台账")
+	e.mustContain(md, "svc_backup", "台账要点名账号")
+	e.mustContain(md, "不是失败次数", "台账要写明口径")
+	e.mustContain(md, "成批尝试", "成批尝试要单独标出")
+}
+
+// accP44 遗留物台账：我们**留在目标上**的东西。
+//
+// 它跟其它战果是反的——据点与凭据记"我们拿到了什么"，它记"我们给客户留下了什么"。
+// 没清掉的 webshell 就是留在客户系统上的后门，而交付时也要能说清我们动过什么。
+//
+// 三条要钉死：①证据门与战果同一条（说不清的遗留物进不了台账）；②状态**不做归一**
+// （把没确认的写成 active、把没清的写成 removed，是这本账唯一不能犯的错）；
+// ③"已清理"必须有清理时的那行输出——没有它，「清掉了」只是个说法。
+func accP44(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("accP44", "遗留物台账")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	intentID, err := task.Store.AddIntent(map[string]any{"summary": "在 web01 落一个 webshell"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentArg := strconv.FormatInt(intentID, 10)
+
+	report := workflowTool(t, tsx.WorkerTools(), "report_artifact")
+	cleared := workflowTool(t, tsx.WorkerTools(), "mark_artifact_cleared")
+
+	// ① 记一件 webshell（未清理）
+	res, err := report.Call(context.Background(), json.RawMessage(
+		`{"summary":"在 web01 的 uploads 目录落了 webshell","kind":"web_shell","host":"10.0.0.9",`+
+			`"locator":"/var/www/html/uploads/x.php","cleanup":"rm -f /var/www/html/uploads/x.php",`+
+			`"evidence":"echo '<?php ...' > x.php && curl -s http://10.0.0.9/uploads/x.php?c=id","confidence":"high","intent_id":`+intentArg+`}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "artifact recorded: ") {
+		t.Fatalf("report_artifact: %v %s", err, res.Flatten())
+	}
+	shellID := strings.TrimSpace(strings.TrimPrefix(res.Flatten(), "artifact recorded: "))
+
+	// 分类要归一到词表：写 web_shell 也该落进 webshell，而不是变成一个自由文本分类
+	// （那会让报告没法归类）。
+	shellIDNum, err := strconv.ParseInt(shellID, 10, 64)
+	if err != nil {
+		t.Fatalf("回执里的 id 解析失败：%v", err)
+	}
+	shellNode, err := task.Store.GetNode(shellIDNum)
+	if err != nil || shellNode == nil || shellNode.Kind != db.KindArtifact {
+		t.Fatalf("遗留物节点没落对：%v %+v", err, shellNode)
+	}
+	if got := db.ParseArtifact(shellNode).Kind; got != db.ArtifactWebshell {
+		t.Errorf("分类没归一：web_shell → %q，want %q", got, db.ArtifactWebshell)
+	}
+	if shellNode.State != db.StateArtifactActive {
+		t.Errorf("默认状态该是 active，得到 %q", shellNode.State)
+	}
+
+	// ② 再记一件"落了但没确认还在不在"——状态**不做归一**，unknown 必须如实存下来。
+	res, err = report.Call(context.Background(), json.RawMessage(
+		`{"summary":"在 db01 建了一个后门账号","kind":"account","host":"10.0.0.7","locator":"svc_backup2",`+
+			`"state":"unknown","evidence":"useradd svc_backup2 && id svc_backup2","confidence":"medium","intent_id":`+intentArg+`}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "artifact recorded: ") {
+		t.Fatalf("report_artifact(unknown): %v %s", err, res.Flatten())
+	}
+	acctID, _ := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(res.Flatten(), "artifact recorded: ")), 10, 64)
+	acctNode, _ := task.Store.GetNode(acctID)
+	if acctNode == nil || acctNode.State != db.StateArtifactUnknown {
+		t.Fatalf("state=unknown 要如实存下来，得到 %+v", acctNode)
+	}
+
+	// ③ 再记一件**保持未清理**的上传文件——后面要验"未清理计数"只数 active。
+	res, err = report.Call(context.Background(), json.RawMessage(
+		`{"summary":"往 web01 传了扫描器","kind":"upload","host":"10.0.0.9","locator":"/tmp/nuclei",`+
+			`"evidence":"scp nuclei web01:/tmp/nuclei && ls -l /tmp/nuclei","confidence":"high","intent_id":`+intentArg+`}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "artifact recorded: ") {
+		t.Fatalf("report_artifact(upload): %v %s", err, res.Flatten())
+	}
+
+	// ④ 拒收类断言：工具用 actool.Errorf 返回 IsError 的 Result（不是 Go error），
+	// 所以判据是 IsError，不是 err != nil。
+	rejected := func(what string, tool actool.CoreTool, in string) {
+		t.Helper()
+		r, err := tool.Call(context.Background(), json.RawMessage(in), nil)
+		if err != nil {
+			t.Fatalf("%s: 不该是 Go error：%v", what, err)
+		}
+		if !r.IsError {
+			t.Errorf("%s：该被拒收，实际放行了：%s", what, r.Flatten())
+		}
+	}
+	// 非法状态（猜错会把"没清"显示成"清了"）
+	rejected("非法 state", report,
+		`{"summary":"x","host":"10.0.0.9","state":"maybe","evidence":"y","confidence":"high"}`)
+	// 证据门与战果同一条：没有那行输出就不算数
+	rejected("缺 evidence", report, `{"summary":"在 web01 落了东西","host":"10.0.0.9","confidence":"high"}`)
+	// 「清掉了」必须有清理时的那行输出——没有它只是个说法
+	rejected("销账缺 evidence", cleared, `{"artifact_id":`+shellID+`}`)
+	// 拿别的 kind 的 id 来销账也要挡住
+	rejected("销账指向非节点", cleared,
+		`{"artifact_id":`+strconv.FormatInt(intentID, 10)+`,"evidence":"rm -f x"}`)
+
+	// ⑥ 真清掉：状态转 removed，清理证据进 payload
+	res, err = cleared.Call(context.Background(), json.RawMessage(
+		`{"artifact_id":`+shellID+`,"evidence":"rm -f /var/www/html/uploads/x.php && curl -s -o /dev/null -w '%{http_code}' http://10.0.0.9/uploads/x.php → 404"}`), nil)
+	if err != nil {
+		t.Fatalf("mark_artifact_cleared: %v", err)
+	}
+	shellNode, _ = task.Store.GetNode(shellIDNum)
+	if shellNode == nil || shellNode.State != db.StateArtifactRemoved {
+		t.Fatalf("销账后状态该是 removed，得到 %+v", shellNode)
+	}
+	if got := db.ParseArtifact(shellNode).RemovedEvidence; !strings.Contains(got, "404") {
+		t.Errorf("清理证据要进 payload，得到 %q", got)
+	}
+
+	// ⑦ 报告成段：未清理的那件要点名，且**未清理计数**要准（已清理的不算进去）
+	md := e.report(task)
+	e.mustContain(md, "## 遗留物与清理", "报告里的遗留物段")
+	e.mustContain(md, "svc_backup2", "未清理的遗留物要点名")
+	e.mustContain(md, "未清理 **1**", "未清理计数只数 active（已清理的不算进去）")
+	e.mustContain(md, "有 1 件遗留物仍留在目标上未清理", "报告顶部要给出未清理警告")
+	e.mustContain(md, "/tmp/nuclei", "未清理的那件要点出位置")
+	e.mustContain(md, "已清理", "已清理的状态要能读出来")
+
+	// ⑧ 时间线：遗留物自成一格，且它的三态词与战果的"在手/已失效"不是一套
+	rec := e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline?kinds=artifact", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("时间线 status=%d", rec.Code)
+	}
+	e.mustContain(rec.Body.String(), "遗留物", "时间线上的遗留物事件")
+	e.mustContain(rec.Body.String(), "未清理", "时间线上的遗留物状态词")
+}
+
+// accP45 预期与实测对账：报告要回答「打了多少手 vs 核了多少手」。
+//
+// 这是这个平台最该回答、也最容易糊弄过去的一个问题。两条硬约束：
+// ① 没核过检测时**如实说没核**，不能略过不提（"没核"不等于"没被检出"）；
+// ② 三态**绝不相除**——把「无法判定」并进分母就是把"测不到"读成"没响"。
+func accP45(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("accP45", "预期与实测对账")
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+
+	// 带技术标注的意图 = 「打了多少」的那一侧
+	if _, err := task.Store.AddIntent(map[string]any{
+		"summary": "用编码命令打一发", "techniques": []string{"T1059.001"},
+	}, 5, nil, "planner"); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 只有技术标注、没核过检测：报告要**如实说没核过**，而不是把这一节整个略过
+	//（略过会让"没核"看起来像"没问题"）。
+	md := e.report(task)
+	e.mustContain(md, "## 检测验证", "没有检测结论时这一节仍要出")
+	e.mustContain(md, "没有留下任何检测验证结论", "要说清是没核")
+	e.mustContain(md, "这不代表没被检出", "没核 ≠ 没被检出")
+
+	// ② 三种结论各记一条：计数分别给，且写明核了多少手
+	check := workflowTool(t, tsx.WorkerTools(), "report_detection_check")
+	for _, c := range []struct{ result, summary string }{
+		{"triggered", "编码命令被 EDR 抓到"},
+		{"not_triggered", "读 /etc/shadow 无任何告警"},
+		{"unknown", "日志服务当晚挂了，无从判定"},
+	} {
+		res, err := check.Call(context.Background(), json.RawMessage(
+			`{"summary":"`+c.summary+`","technique":"T1059.001","result":"`+c.result+`",`+
+				`"evidence":"查了 sysmon","confidence":"high"}`), nil)
+		if err != nil || !strings.HasPrefix(res.Flatten(), "detection check recorded: ") {
+			t.Fatalf("%s 没记上：%v %s", c.result, err, res.Flatten())
+		}
+	}
+	md = e.report(task)
+	e.mustContain(md, "已检出 **1**", "已检出计数")
+	e.mustContain(md, "未检出 **1**", "未检出计数")
+	e.mustContain(md, "无法判定 **1**", "无法判定计数")
+	e.mustContain(md, "**3 手**留下了检测验证结论", "核了多少手")
+	e.mustContain(md, "不相除", "要写明为什么不合成")
+
+	// ③ 硬约束：**绝不出现「检出率」**——三态相除就是把"测不到"读成"没响"。
+	for _, banned := range []string{"检出率", "检出比例", "detection rate"} {
+		if strings.Contains(md, banned) {
+			t.Errorf("报告里不该出现 %q：三态不能相除", banned)
+		}
 	}
 }
