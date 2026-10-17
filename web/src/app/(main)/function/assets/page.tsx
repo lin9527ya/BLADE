@@ -61,13 +61,13 @@ import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const METHOD_COLOR: Record<string, string> = {
-  GET: "bg-emerald-100 text-emerald-700",
-  POST: "bg-blue-100 text-blue-700",
-  PUT: "bg-amber-100 text-amber-700",
-  PATCH: "bg-orange-100 text-orange-700",
-  DELETE: "bg-red-100 text-red-700",
-  HEAD: "bg-purple-100 text-purple-700",
-  OPTIONS: "bg-slate-100 text-slate-600",
+  GET: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
+  POST: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400",
+  PUT: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400",
+  PATCH: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400",
+  DELETE: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400",
+  HEAD: "bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-400",
+  OPTIONS: "bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400",
 };
 
 function MethodBadge({ method }: { method: string }) {
@@ -85,10 +85,10 @@ function MethodBadge({ method }: { method: string }) {
 }
 
 function statusTone(code: number) {
-  if (code >= 500) return "text-red-500";
-  if (code >= 400) return "text-amber-500";
-  if (code >= 300) return "text-blue-500";
-  if (code >= 200) return "text-emerald-500";
+  if (code >= 500) return "text-red-500 dark:text-red-400";
+  if (code >= 400) return "text-amber-500 dark:text-amber-400";
+  if (code >= 300) return "text-blue-500 dark:text-blue-400";
+  if (code >= 200) return "text-emerald-500 dark:text-emerald-400";
   return "text-muted-foreground";
 }
 

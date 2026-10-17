@@ -161,10 +161,10 @@ const MAX_SOURCE_TASKS = 8;
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
 // budgetTextTone：按预算用量占比取文字颜色（与后端 70/85/95/100 档位一致）。
 function budgetTextTone(pct: number): string {
-  if (pct >= 100) return "text-red-500";
-  if (pct >= 95) return "text-red-400";
-  if (pct >= 85) return "text-amber-500";
-  if (pct >= 70) return "text-yellow-600";
+  if (pct >= 100) return "text-red-500 dark:text-red-400";
+  if (pct >= 95) return "text-red-400 dark:text-red-300";
+  if (pct >= 85) return "text-amber-500 dark:text-amber-400";
+  if (pct >= 70) return "text-yellow-600 dark:text-yellow-400";
   return "text-muted-foreground";
 }
 
@@ -790,8 +790,13 @@ export default function TasksPage() {
   );
 
   return (
-    <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4">
-      <TabsList className="mx-4 lg:mx-6">
+    <div className="flex flex-col gap-4">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">任务</h1>
+        <p className="text-muted-foreground text-sm">每个任务是一次独立的探索：一个目标、一棵探索图、一份交付物。</p>
+      </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <TabsList>
         <TabsTrigger value="current">当前任务</TabsTrigger>
         <TabsTrigger value="archived">已归档</TabsTrigger>
       </TabsList>
@@ -1027,6 +1032,7 @@ export default function TasksPage() {
         <TaskArchivesPanel onChanged={load} />
       </TabsContent>
     </Tabs>
+    </div>
   );
 }
 

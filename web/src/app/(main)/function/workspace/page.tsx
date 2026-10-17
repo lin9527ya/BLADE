@@ -164,6 +164,10 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">工作空间</h1>
+        <p className="text-muted-foreground text-sm">任务产物与上传文件的浏览、编辑与下载。</p>
+      </div>
       {/* 头部：面包屑 + 操作 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1 text-sm">

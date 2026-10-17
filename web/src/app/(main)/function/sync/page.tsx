@@ -35,9 +35,9 @@ const ASSET_TYPES: { key: string; label: string }[] = [
 
 export default function AssetSyncPage() {
   return (
-    <div className="p-4 md:p-6">
+    <div>
       <div className="mb-4">
-        <h1 className="font-semibold text-xl">资产同步</h1>
+        <h1 className="text-xl font-semibold tracking-tight">资产同步</h1>
         <p className="text-muted-foreground text-sm">从外部数据源同步资产入库</p>
       </div>
       <Tabs defaultValue="scopesentry">
