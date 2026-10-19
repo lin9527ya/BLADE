@@ -176,6 +176,11 @@ CREATE TABLE IF NOT EXISTS llm_records (
 );
 CREATE INDEX IF NOT EXISTS idx_llm_records_ts ON llm_records(ts);
 CREATE INDEX IF NOT EXISTS idx_llm_records_session ON llm_records(session_id);
+-- 按任务过滤是这个表唯一的深查询路径（列表筛选、按任务删除、任务级联清理）。
+-- 用部分索引：查询侧一律是 task_id = $1（非空），NULL 行永远不会被匹配到，
+-- 排除它们能让索引明显更小。此前没有这个索引，而每行带 4 个 TEXT 大字段，
+-- 一次全表扫的代价很高。
+CREATE INDEX IF NOT EXISTS idx_llm_records_task ON llm_records(task_id) WHERE task_id IS NOT NULL;
 `
 
 // llmRecordsMigrate adds new columns to existing tables.
@@ -242,7 +247,10 @@ func (d *DB) ListLLMRecords(model, session, task string, page, size int) ([]LLMR
 		argN++
 	}
 	if task != "" {
-		where += fmt.Sprintf(` AND COALESCE(task_id,'') = $%d`, argN)
+		// 裸列比较（不用 COALESCE 包裹）：task 非空时才进这个分支，语义与
+		// COALESCE(task_id,'')=$N 等价，但能让 idx_llm_records_task 生效——
+		// 该表每行带 4 个 TEXT 大字段，全表扫的代价很高。
+		where += fmt.Sprintf(` AND task_id = $%d`, argN)
 		args = append(args, task)
 		argN++
 	}
@@ -316,8 +324,16 @@ WHERE COALESCE(task_id,'') <> '' GROUP BY task_id ORDER BY MAX(id) DESC`)
 
 // DeleteLLMRecords removes every LLM record for one exact task_id — the same
 // match the page's task picker/filter uses. Returns rows deleted.
+//
+// 空 task 返回 0 而不是删任何东西：旧写法 COALESCE(task_id,'')='' 会把**所有
+// task_id 为 NULL 的行**（即全部非任务 LLM 记录）一次删光，空入参在这里是危险输入，
+// 不是"匹配全部"。调用方本就挡了空值，这道守卫是防将来新增调用方踩坑。
+// 比较用裸列以命中 idx_llm_records_task。
 func (d *DB) DeleteLLMRecords(task string) (int64, error) {
-	res, err := d.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'') = $1`, task)
+	if task == "" {
+		return 0, nil
+	}
+	res, err := d.Exec(`DELETE FROM llm_records WHERE task_id = $1`, task)
 	if err != nil {
 		return 0, err
 	}
