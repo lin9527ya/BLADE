@@ -699,6 +699,31 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+
+	// /api/* goes through CORS + JWT; everything else is served by the embedded
+	// frontend (public — auth is enforced client-side and on the API). With the
+	// no-embed build the webui handler just 404s (run `next dev` separately).
+	api := cors(s.requireAuth(mux), s.corsAllowedOrigins)
+	root := http.NewServeMux()
+	root.Handle("/api/", api)
+	root.Handle("/", s.webuiHandler())
+	return root
+}
+
+// routeRegistrar 是路由注册面的最小接口：Handler() 传 *http.ServeMux，测试传
+// 记录型实现，把**真实注册**的路由清点出来（契约测试与路由快照都用它）。
+//
+// 为什么必须是运行时清点、而不是扫源码字面量：registerSideRoutes 用循环生成
+// 9 条路由、registerFindingTraffic 用字符串拼接生成 7 条——AST 只认 BasicLit，
+// 这 16 条它一条也看不见（此前契约测试正是这样漏掉整个 traffic 改动面的）。
+type routeRegistrar interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+// registerRoutes 是**唯一**的路由注册入口：所有 /api/ 路由都在这里挂上。
+// 以后拆成多个 registerXxx 也必须从这里串起来，否则契约测试与路由快照都看不到。
+func (s *Server) registerRoutes(mux routeRegistrar) {
 	s.registerSideRoutes(mux)
 
 	// Auth routes — exempt from JWT check (handled in requireAuth)
@@ -1043,15 +1068,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/intercept/judge", s.interceptGetJudgeConfig)
 	mux.HandleFunc("PUT /api/intercept/judge", s.interceptSetJudgeConfig)
 	mux.HandleFunc("GET /api/intercept/judge/usage", s.interceptJudgeUsage) // 兜底审批累计 token 用量
-
-	// /api/* goes through CORS + JWT; everything else is served by the embedded
-	// frontend (public — auth is enforced client-side and on the API). With the
-	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := cors(s.requireAuth(mux), s.corsAllowedOrigins)
-	root := http.NewServeMux()
-	root.Handle("/api/", api)
-	root.Handle("/", s.webuiHandler())
-	return root
 }
 
 // --- handlers ---

@@ -79,7 +79,7 @@ WHERE key=$1 AND system AND NOT(COALESCE(schema->'properties','{}'::jsonb) ? $2)
 	_ = s.m.pg.SetSetting(flag, "true")
 }
 
-func (s *Server) registerFindingTraffic(mux *http.ServeMux) {
+func (s *Server) registerFindingTraffic(mux routeRegistrar) {
 	base := "/api/exploration/findings/{id}/traffic"
 	mux.HandleFunc("GET "+base, s.getFindingTraffic)
 	mux.HandleFunc("POST "+base, s.bindFindingTraffic)

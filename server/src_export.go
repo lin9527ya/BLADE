@@ -23,7 +23,7 @@ import (
 // 证据的原始报文）——描述、危害、修复建议给规范占位提示，交人工按写作纪律补写。
 // 两种输出（Markdown / docx）共用同一份 report.SrcInput，版式一致。
 
-func (s *Server) registerSrcExport(mux *http.ServeMux) {
+func (s *Server) registerSrcExport(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/findings/{id}/src-report", s.getFindingSrcReport)
 	mux.HandleFunc("GET /api/findings/{id}/src-report.docx", s.getFindingSrcReportDocx)
 	// 证据门（P15）：下载前先看"这份简报缺什么"。
