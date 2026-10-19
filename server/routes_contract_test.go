@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -12,11 +13,20 @@ import (
 )
 
 // P12 路由契约测试（做法对齐 CyberStrikeAI internal/security/route_inventory_test.go）：
-// 用 go/parser 把 server.go 里注册的路由面变成可断言的清单——「新增一条公开路由」
-// （JWT 豁免）或「把路由挂到 root mux」都必须先改这里的显式登记表，否则测试失败。
-// 4000+ 行的 Handler() 里漏一层鉴权就是一个越权面，靠人眼审是审不过来的。
+// 把路由面变成可断言的清单——「新增一条公开路由」（JWT 豁免）或「把路由挂到 root mux」
+// 都必须先改这里的显式登记表，否则测试失败。4000+ 行的 Handler() 里漏一层鉴权就是一个
+// 越权面，靠人眼审是审不过来的。
+//
+// **清点方式是运行时而非扫源码**（2026-10 改）：原先用 go/parser 扫 server.go 的字符串
+// 字面量，两个盲区：① 只扫 server.go，而 src_export.go / finding_traffic.go /
+// side_questions.go 里还有 23 条；② 即使扫了那些文件，AST 也只认 BasicLit，而
+// registerFindingTraffic 用拼接、registerSideRoutes 用循环——这 16 条一条也看不见
+// （整个 traffic 改动面，含 PATCH/DELETE/PUT，此前不在契约内）。现在改用
+// inventoryPatterns（见 routes_snapshot_test.go）：真实调用 registerRoutes，
+// 用记录型 registrar 抄下挂上去的每一条。
 
 // scanRouteLiterals 扫描 src 里 `ident.HandleFunc("METHOD /path", ...)` 的第一参字面量。
+// 只用于 root mux 的误用检查——路由清点请用 inventoryPatterns。
 func scanRouteLiterals(t *testing.T, src, ident string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -57,10 +67,32 @@ func routePath(route string) string {
 	return route
 }
 
+// countInPackage 统计本包所有非测试 .go 文件里 needle 出现的次数。
+// 用全包而不是只看 server.go：路由一旦分散到多个文件，只盯一个文件就是新的盲区。
+func countInPackage(t *testing.T, needle string) int {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += strings.Count(string(b), needle)
+	}
+	return total
+}
+
 func TestRouteInventoryContract(t *testing.T) {
-	muxRoutes := scanRouteLiterals(t, "server.go", "mux")
-	if len(muxRoutes) < 200 {
-		t.Fatalf("只扫到 %d 条 mux 路由（<200）：解析模式可能已失效，先修测试再谈契约", len(muxRoutes))
+	muxRoutes := inventoryPatterns(t)
+	if len(muxRoutes) < 300 {
+		t.Fatalf("只清点到 %d 条 mux 路由（<300）：registerRoutes 可能没被完整调用，先修测试再谈契约", len(muxRoutes))
 	}
 
 	// ① 所有 mux 路由必须落在 /api/ 下——mux 只被挂到 root 的 "/api/"，混入别的
@@ -96,16 +128,13 @@ func TestRouteInventoryContract(t *testing.T) {
 	}
 
 	// ③ root mux 只允许两个已知挂载；新增 root.Handle* 等于在 JWT 之外开新面。
+	// 用全包统计（不只是 server.go）：把路由拆到别的文件后，这里仍要拦得住。
 	rootMounts := scanRouteLiterals(t, "server.go", "root")
 	if len(rootMounts) > 0 {
 		// root.Handle 不是 HandleFunc，这里只在误用 HandleFunc 时报警。
 		t.Errorf("root mux 上出现 HandleFunc 注册 %v：所有 API 路由必须走受 requireAuth 保护的 mux", rootMounts)
 	}
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(src), "root.Handle("); got != 2 {
+	if got := countInPackage(t, "root.Handle("); got != 2 {
 		t.Errorf("root mux 的挂载数 = %d，want 2（/api/ + 前端兜底）：新增挂载必须先审阅", got)
 	}
 }
