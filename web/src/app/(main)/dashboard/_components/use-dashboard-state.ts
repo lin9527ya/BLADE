@@ -27,6 +27,20 @@ import type {
 // 抽成 hook 是为了让页面本体只剩五行面板的 JSX。
 // 各面板通过 `ReturnType<typeof useDashboardState>` 拿到同一份状态。
 
+// 这几个助手是**纯函数**（只看入参），所以放在模块作用域。写成 hook 内的函数声明会
+// 每次渲染都拿到新身份，任何把它们放进依赖数组的 useMemo 都会因此永远失效。
+function kindLabel(a: Activity): string {
+  if (a.kind === "tool_use") return a.tool ?? "tool_use";
+  if (a.kind === "tool_result") return "tool_result";
+  return a.kind;
+}
+
+function workerBg(w: string): string {
+  if (w === "planner") return "bg-violet-500/10 text-violet-400 border-violet-500/20";
+  if (w === "mainagent") return "bg-cyan-500/10 text-cyan-400 border-cyan-500/20";
+  return "bg-blue-500/10 text-blue-400 border-blue-500/20";
+}
+
 export function useDashboardState() {
   // data state
   const [tasks, setTasks] = React.useState<Task[]>([]);
@@ -181,7 +195,7 @@ export function useDashboardState() {
       .slice(0, 8);
   }, [assetCounts]);
 
-  const assetMax = assetByType[0]?.[1] ?? 1;
+  const assetMax = React.useMemo(() => assetByType[0]?.[1] ?? 1, [assetByType]);
 
   // traffic status code breakdown
   const trafficByCodes = React.useMemo(() => {
@@ -195,12 +209,17 @@ export function useDashboardState() {
       .map(([code, n]) => ({ code: Number(code), n }));
   }, [traffic]);
 
-  const trafficMax = Math.max(...trafficByCodes.map((x) => x.n), 1);
-  const recentTraffic = [...traffic].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 5);
+  const trafficMax = React.useMemo(() => Math.max(...trafficByCodes.map((x) => x.n), 1), [trafficByCodes]);
+  // 这两个此前每次渲染都重跑：recentTraffic 尤其贵（整份 traffic 拷贝 + 排序 + 切片），
+  // 而 dashboard 每 5 秒就因轮询重渲染一次，成本会一直累积。
+  const recentTraffic = React.useMemo(
+    () => [...traffic].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 5),
+    [traffic],
+  );
 
   // system
-  const activeProfile = llmProfiles.find((p) => p.is_default);
-  const enabledTools = tools.filter((t) => t.enabled);
+  const activeProfile = React.useMemo(() => llmProfiles.find((p) => p.is_default), [llmProfiles]);
+  const enabledTools = React.useMemo(() => tools.filter((t) => t.enabled), [tools]);
   const pendingCount = pending.length;
 
   // ── token stats per LLM profile ──────────────────────────────────────────
@@ -349,90 +368,81 @@ export function useDashboardState() {
 
   const dailyTokenData = tokenVersion === "new" ? dailyTokenDataNew : dailyTokenDataOld;
 
-  // activity kind label
-  function kindLabel(a: Activity): string {
-    if (a.kind === "tool_use") return a.tool ?? "tool_use";
-    if (a.kind === "tool_result") return "tool_result";
-    return a.kind;
-  }
+  // ── 面板切片 ───────────────────────────────────────────────────────────────
+  // 此前页面把整个返回对象交给 5 个面板，而那个对象**每次渲染都是新的**——任何一个
+  // 字段变了，5 个面板全部重渲染（dashboard 每 5 秒轮询一次，成本一直累积）。切成
+  // 按面板的稳定对象后，只有真正用到变化字段的那个面板会重渲染。
+  // 纯拆分：数据获取与派生逻辑一行没动。
+  const statCards = React.useMemo(
+    () => ({ tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens }),
+    [tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens],
+  );
+  const tokenCard = React.useMemo(
+    () => ({
+      activity,
+      llmProfiles,
+      defaultProfileId,
+      tokenVersion,
+      setTokenVersion,
+      tokenTab,
+      setTokenTab,
+      tokenDays,
+      setTokenDays,
+      tokenByProfile,
+      displayedTokens,
+      dailyTokenData,
+    }),
+    [
+      activity,
+      llmProfiles,
+      defaultProfileId,
+      tokenVersion,
+      setTokenVersion,
+      tokenTab,
+      setTokenTab,
+      tokenDays,
+      setTokenDays,
+      tokenByProfile,
+      displayedTokens,
+      dailyTokenData,
+    ],
+  );
+  // kindLabel / workerBg 现在是模块级纯函数，身份恒定，放进切片不会导致失效。
+  const activityRow = React.useMemo(
+    () => ({ tasks, findings, activity, recentFindings, recentActivity, kindLabel, workerBg }),
+    [tasks, findings, activity, recentFindings, recentActivity],
+  );
+  const taskTable = React.useMemo(() => ({ tasks, sortedTasks }), [tasks, sortedTasks]);
+  const assetTraffic = React.useMemo(
+    () => ({
+      stats,
+      settings,
+      pending,
+      traffic,
+      totalAssets,
+      assetByType,
+      assetMax,
+      trafficByCodes,
+      trafficMax,
+      recentTraffic,
+      activeProfile,
+      pendingCount,
+    }),
+    [
+      stats,
+      settings,
+      pending,
+      traffic,
+      totalAssets,
+      assetByType,
+      assetMax,
+      trafficByCodes,
+      trafficMax,
+      recentTraffic,
+      activeProfile,
+      pendingCount,
+    ],
+  );
 
-  function workerColor(w: string): string {
-    if (w === "planner") return "text-violet-400";
-    if (w === "mainagent") return "text-cyan-400";
-    return "text-blue-400";
-  }
-
-  function workerBg(w: string): string {
-    if (w === "planner") return "bg-violet-500/10 text-violet-400 border-violet-500/20";
-    if (w === "mainagent") return "bg-cyan-500/10 text-cyan-400 border-cyan-500/20";
-    return "bg-blue-500/10 text-blue-400 border-blue-500/20";
-  }
-
-  return {
-    tasks,
-    setTasks,
-    findings,
-    setFindings,
-    stats,
-    setStats,
-    settings,
-    setSettings,
-    pending,
-    setPending,
-    activity,
-    setActivity,
-    tokens,
-    setTokens,
-    convTokens,
-    setConvTokens,
-    usageStats,
-    setUsageStats,
-    assetCounts,
-    setAssetCounts,
-    traffic,
-    setTraffic,
-    agents,
-    setAgents,
-    mcpServers,
-    setMcpServers,
-    skills,
-    setSkills,
-    tools,
-    setTools,
-    llmProfiles,
-    setLLMProfiles,
-    taskSignatureRef,
-    tasksByStatus,
-    findingsBySev,
-    sortedTasks,
-    recentFindings,
-    recentActivity,
-    totalAssets,
-    assetByType,
-    assetMax,
-    trafficByCodes,
-    trafficMax,
-    recentTraffic,
-    activeProfile,
-    enabledTools,
-    pendingCount,
-    defaultProfileId,
-    tokenVersion,
-    setTokenVersion,
-    tokenTab,
-    setTokenTab,
-    tokenDays,
-    setTokenDays,
-    profileIdByName,
-    tokenByProfileOld,
-    tokenByProfileNew,
-    tokenByProfile,
-    displayedTokens,
-    dailyTokenDataOld,
-    dailyTokenDataNew,
-    dailyTokenData,
-    kindLabel,
-    workerColor,
-    workerBg,
-  };
+  return { statCards, tokenCard, activityRow, taskTable, assetTraffic };
 }

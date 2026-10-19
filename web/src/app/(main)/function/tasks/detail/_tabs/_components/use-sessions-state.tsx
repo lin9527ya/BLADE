@@ -436,9 +436,8 @@ export function useSessionsState(taskId: string) {
   );
 
   // Re-render on a timer so "streaming" liveness recomputes as activity goes stale.
+  // 这个 tick 挪到 recentLive 定义之后（见下方）——它只在「有东西正在流式」时才需要跑。
   const [, setTick] = React.useState(0);
-  // 只为让「流式中」的活性随时间重算。不可见时暂停：后台标签页不需要为这几个字重渲染。
-  usePolling(() => setTick((t) => t + 1), 1500);
 
   // ── first load + single task SSE ────────────────────────────────────────────────
   // On task open: load Main's latest page, take the task-level snapshot cursor from
@@ -770,6 +769,15 @@ export function useSessionsState(taskId: string) {
   );
   const currentMainKey = mainSessionKey(currentSeg);
   const plannerLive = recentLive("plan");
+
+  // 只在「有东西正在流式」时才需要周期性重渲染：没有活的会话时，「活」这个渲染期判断
+  // （recentLive 读 Date.now()）不会随时间改变，周期重渲染纯属浪费。此前是无条件每 1.5
+  // 秒重渲染整个 hook——40 次/分钟，每次都把全部派生值重建一遍，而任务详情页大部分时间
+  // 是没东西在跑的。
+  // intervalMs=0 是 usePolling 的「只跑一次不重复」：不排下一次，也就彻底不再重渲染。
+  // 有新活动进来（store 变化）会重新渲染，那时 anyLive 转真、那个 1.5 秒的 tick 自己接回来。
+  const anyLive = sending || mainChatRunning === true || Object.keys(store).some((k) => recentLive(k));
+  usePolling(() => setTick((t) => t + 1), anyLive ? 1500 : 0);
 
   // Which main segment is streaming RIGHT NOW. A main turn is serialized per task, so at
   // most one segment is live. Gate on the real running flag (sending / mainChatRunning)

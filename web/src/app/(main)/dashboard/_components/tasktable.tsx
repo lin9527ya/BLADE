@@ -13,7 +13,7 @@ import { Progress } from "@/components/ui/progress";
 import { fmtRel } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
-export function RowTaskTable({ s }: { s: ReturnType<typeof useDashboardState> }) {
+export function RowTaskTable({ s }: { s: ReturnType<typeof useDashboardState>["taskTable"] }) {
   const { tasks, sortedTasks } = s;
 
   return (

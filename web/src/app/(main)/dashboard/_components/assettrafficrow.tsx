@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { ASSET_COLORS, ASSET_TYPE_LABELS, SectionTitle, statusBg, statusColor } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
-export function RowAssetTraffic({ s }: { s: ReturnType<typeof useDashboardState> }) {
+export function RowAssetTraffic({ s }: { s: ReturnType<typeof useDashboardState>["assetTraffic"] }) {
   const {
     stats,
     settings,

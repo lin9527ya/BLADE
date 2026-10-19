@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { dailyTrendConfig, fmtTokens } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
-export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState> }) {
+export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState>["tokenCard"] }) {
   const {
     activity,
     llmProfiles,
