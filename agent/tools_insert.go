@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"strconv"
@@ -350,7 +351,9 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					if t.ownerNode > 0 {
 						summary = fmt.Sprintf("Worker 意图 #%d 通过 insert_assets 登记", t.ownerNode)
 					}
-					_ = t.as.SetTaskAssetSource(taskID, id, "agent", summary, sourceNodeID)
+					if err := t.as.SetTaskAssetSource(taskID, id, "agent", summary, sourceNodeID); err != nil {
+						log.Printf("[insert_assets] 标注来源失败 task=%d asset=%d: %v（资产已建立，只是来源缺失）", taskID, id, err)
+					}
 				}
 				// 自动入测试范围(source='auto')：只对 worker 顶层显式插入的这一项，按其
 				// 类型加保守范围；side-effect 派生的资产不经此处，故范围不盲目扩大。taskID=0 时无操作。
@@ -361,7 +364,9 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					if svcIP == "" {
 						svcIP = item.IP
 					}
-					_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
+					if err := t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP); err != nil {
+						log.Printf("[insert_assets] 自动入范围失败 task=%d type=%s: %v（范围边界可能少一条）", taskID, typ, err)
+					}
 				}
 			}
 

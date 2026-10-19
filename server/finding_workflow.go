@@ -26,7 +26,9 @@ func (s *Server) seedFindingWorkflowTools() {
 			// migration below — the two are independent.
 			log.Printf("[evidence] upgrade traffic_search description: %v", err)
 		} else {
-			_ = s.m.pg.SetSetting(hostSearchDescriptionFlag, "true")
+			if err := s.m.pg.SetSetting(hostSearchDescriptionFlag, "true"); err != nil {
+				log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", hostSearchDescriptionFlag, err)
+			}
 		}
 	}
 	const flag = "finding_workflow_tools_v2_reporter"
@@ -103,7 +105,9 @@ func (s *Server) seedFindingWorkflowTools() {
 	if err := s.m.pg.AddAgentToToolBinding("reporter", []string{"bind_finding_traffic"}); err != nil {
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 func objectProperty(parent map[string]any, key string) map[string]any {

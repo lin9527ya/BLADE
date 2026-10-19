@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -294,7 +295,9 @@ func (s *Server) assetImportApply(w http.ResponseWriter, r *http.Request) {
 		}
 		if plan.TaskID > 0 {
 			// 来源如实标注：任务页的「测试资产」按来源分组，混进 "api" 会让「这批是怎么来的」查不清。
-			_ = as.SetTaskAssetSource(plan.TaskID, id, "csv", "通过 CSV 导入登记", nil)
+			if serr := as.SetTaskAssetSource(plan.TaskID, id, "csv", "通过 CSV 导入登记", nil); serr != nil {
+				log.Printf("[assets] 标注来源失败 task=%d asset=%d: %v（资产已建立，只是来源缺失）", plan.TaskID, id, serr)
+			}
 		}
 		if plan.existing(it) {
 			merged++

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -514,7 +515,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 				// 资产覆盖度功能关闭时不再累积测试范围(分母)。
 				if coverageEnabled {
 					for _, a := range assets {
-						_ = as.AddAutoScope(taskID, a.Type, a.Domain, a.URL, a.IP)
+						if err := as.AddAutoScope(taskID, a.Type, a.Domain, a.URL, a.IP); err != nil {
+							log.Printf("[worker] 自动入范围失败 task=%d type=%s: %v（范围边界可能少一条）", taskID, a.Type, err)
+						}
 					}
 				}
 			}

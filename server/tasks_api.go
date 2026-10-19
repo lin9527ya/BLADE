@@ -613,7 +613,9 @@ func (s *Server) seed(t *Task, text string) {
 			rootID, _ = as.UpsertRootDomain(db.UpsertRootDomainReq{Domain: host, TaskID: taskID})
 		}
 		if rootID > 0 {
-			_ = as.SetTaskAssetSource(taskID, rootID, "task", "由任务描述或目标初始化", nil)
+			if err := as.SetTaskAssetSource(taskID, rootID, "task", "由任务描述或目标初始化", nil); err != nil {
+				log.Printf("[assets] 标注来源失败 task=%d asset=%d: %v（资产已建立，只是来源缺失）", taskID, rootID, err)
+			}
 		}
 	}
 	// anchor the seeded assets to this task's begin root as lineage/provenance

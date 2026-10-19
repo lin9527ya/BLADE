@@ -76,7 +76,9 @@ WHERE key=$1 AND system AND NOT(COALESCE(schema->'properties','{}'::jsonb) ? $2)
 			return
 		}
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 func (s *Server) registerFindingTraffic(mux routeRegistrar) {

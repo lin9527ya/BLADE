@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -123,7 +124,10 @@ func (s *Server) putExplorationPolicyDefault(w http.ResponseWriter, r *http.Requ
 		eff = base
 	}
 	if old, ok, err := s.m.pg.GetSetting(settingExplorationPolicy); err == nil && ok && old != "" {
-		_ = s.m.pg.SetSetting(settingExplorationPolicy+"_prev", old)
+		if perr := s.m.pg.SetSetting(settingExplorationPolicy+"_prev", old); perr != nil {
+			// 上一版策略没存下来，就没法回滚——值得留痕。
+			log.Printf("[policy] 保存上一版策略失败（将无法回滚到旧版）: %v", perr)
+		}
 	}
 	eff.Version = prevVer + 1
 	raw, err := json.Marshal(map[string]any{"version": eff.Version, "override": body.Override, "effective": eff})

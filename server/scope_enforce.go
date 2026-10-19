@@ -62,7 +62,9 @@ func writeScopeWindowState(d *db.DB, st scopeWindowState) {
 		return
 	}
 	if b, err := json.Marshal(st); err == nil {
-		_ = d.SetSetting(settingScopeWindowState, string(b))
+		if serr := d.SetSetting(settingScopeWindowState, string(b)); serr != nil {
+			log.Printf("[scope] 记录作业时间窗状态失败: %v（重启后可能重放一次进入/离开）", serr)
+		}
 	}
 }
 

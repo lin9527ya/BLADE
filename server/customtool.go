@@ -208,7 +208,9 @@ func (s *Server) seedPythonInterpreter() {
 		return
 	}
 	if p := detectPython(); p != "" {
-		_ = s.m.pg.SetSetting(settingPythonInterp, p)
+		if serr := s.m.pg.SetSetting(settingPythonInterp, p); serr != nil {
+			log.Printf("[tools] 记录自动检测到的 python 解释器失败: %v（下次启动会重新探测）", serr)
+		}
 		log.Printf("[custom-tool] 自动检测到 python 解释器: %s", p)
 	}
 }

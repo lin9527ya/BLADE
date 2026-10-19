@@ -295,7 +295,9 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 		if _, err := d.Exec(`UPDATE agents SET interactive_shell=true WHERE key IN ('planner','worker','mainagent','auto')`); err != nil {
 			return fmt.Errorf("seed interactive_shell defaults: %w", err)
 		}
-		_ = d.SetSetting("interactive_shell_default_v1", "true")
+		if err := d.SetSetting("interactive_shell_default_v1", "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 interactive_shell_default_v1 失败: %v（下次启动会重跑，操作本身幂等）", err)
+		}
 	}
 	// Seed the built-in browser (Playwright) MCP once — DISABLED by default (用户
 	// 需要时自行启用), no proxy by default. The traffic-capture toggle injects/strips
