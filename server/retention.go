@@ -39,8 +39,8 @@ func (s *Server) runRetentionSweep(ctx context.Context) {
 		return
 	}
 	for _, spec := range storageCategories {
-		if spec.DBTable == "" {
-			continue
+		if spec.DBTable == "" && !spec.TrafficIndex {
+			continue // 文件分类由存储页手动触发，不参与每日自动清理
 		}
 		days := s.storageRetentionDays(spec.SettingKey)
 		if days <= 0 {

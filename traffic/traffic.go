@@ -1066,6 +1066,91 @@ func (t *Traffic) DeleteHost(host string) (int64, error) {
 	return n, nil
 }
 
+// DeleteOlderThan removes every exchange recorded before cutoff — the retention
+// sweep's entry point. Returns the number of exchanges deleted.
+//
+// 这个操作必须留在 traffic 包内：索引行、正文行、blob 引用与磁盘上的 blob/
+// 遗留目录是**一套**东西，绕过这个包去删（比如直接删目录）会把索引打烂——
+// 存储页此前把流量标成"只统计不清理"，理由就是这个。
+//
+// 与 DeleteHost 有一处关键差异：按时间删**不能**把命中的 host 目录整棵删掉。
+// 同一个 host 的流量是连续写入的，它的目录里很可能既有过期文件也有新文件；
+// 只有当某个 host 在删完之后一条 exchange 都不剩时，它的遗留目录才跟着走。
+func (t *Traffic) DeleteOlderThan(cutoff time.Time) (int64, error) {
+	ts := cutoff.Unix()
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
+
+	// 候选 host 必须在删行**之前**取：删完索引就不再是"哪些 host 被这次过滤命中"
+	// 的记录了（与 DeleteHost 里 hostTrees 的道理相同）。
+	hosts, err := t.hostsMatching(`ts < ?`, ts)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := t.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+	n, err := t.deleteWhere(tx, `ts < ?`, ts)
+	if err != nil {
+		return 0, err
+	}
+	// 删完再判：只有行已经清空的 host，其遗留目录才该删。
+	var legacy []string
+	for _, h := range hosts {
+		var left int
+		if err := tx.QueryRow(`SELECT count(*) FROM exchanges WHERE host = ?`, h).Scan(&left); err != nil {
+			return 0, err
+		}
+		if left == 0 {
+			legacy = append(legacy, filepath.Join(t.dir, sanitize(h)))
+		}
+	}
+	// Staged before the commit so a filesystem failure can still abort the whole
+	// deletion, and before gcBlobs so reference collection sees the correct live set.
+	stageDir, moves, err := t.stageTrees(legacy)
+	if err != nil {
+		return 0, errors.Join(err, restoreTrees(stageDir, moves))
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, errors.Join(fmt.Errorf("提交流量索引删除: %w", err), restoreTrees(stageDir, moves))
+	}
+	t.reapStage(stageDir)
+	if n > 0 {
+		t.reclaim()
+		if err := t.gcBlobs(); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+// RetentionStats reports the recorder archive's totals and how much of it predates
+// cutoff — the storage page's dry-run view (totals matter because "这张表现在多大"
+// 是独立于保留策略的信息，也是发现无限增长的入口）。
+// Reads the index only (idx_ex_ts covers the time filter); nothing on disk is touched.
+func (t *Traffic) RetentionStats(cutoff time.Time) (st RetentionArchiveStat, err error) {
+	ts := cutoff.Unix()
+	err = t.db.QueryRow(`
+SELECT count(*),
+       COALESCE(sum(req_len + resp_len), 0),
+       COALESCE(sum(CASE WHEN ts < ? THEN 1 ELSE 0 END), 0),
+       COALESCE(sum(CASE WHEN ts < ? THEN req_len + resp_len ELSE 0 END), 0)
+FROM exchanges`, ts, ts).Scan(&st.Exchanges, &st.BodyBytes, &st.ExpiredExchanges, &st.ExpiredBytes)
+	return st, err
+}
+
+// RetentionArchiveStat 是流量归档在一次体检里的计数与体积。
+// BodyBytes/ExpiredBytes 是录制时记下的正文字节数（req_len+resp_len），
+// 不含索引与 blob 的额外开销——与数据库分类同样按"行载荷"口径，不虚报。
+type RetentionArchiveStat struct {
+	Exchanges        int64 `json:"exchanges"`
+	BodyBytes        int64 `json:"body_bytes"`
+	ExpiredExchanges int64 `json:"expired_exchanges"`
+	ExpiredBytes     int64 `json:"expired_bytes"`
+}
+
 // DeleteAll removes every recorded exchange — the page's clear-everything
 // action. It differs from the host-scoped deletions in two ways. It sweeps host
 // directories without consulting the index, because "clear everything" should
@@ -1200,6 +1285,24 @@ func (t *Traffic) deleteWhere(tx *sql.Tx, where string, args ...any) (int64, err
 	return n, nil
 }
 
+// hostsMatching returns the distinct hosts of exchanges matching a condition.
+func (t *Traffic) hostsMatching(where string, args ...any) ([]string, error) {
+	rows, err := t.db.Query(`SELECT DISTINCT host FROM exchanges WHERE `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hosts []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
+}
+
 // hostTrees returns the on-disk directory of every host matching the condition.
 // Exchanges recorded since bodies moved into SQLite have no directory at all, so
 // most of these paths simply will not exist — staging skips those. The lookup is
@@ -1207,20 +1310,15 @@ func (t *Traffic) deleteWhere(tx *sql.Tx, where string, args ...any) (int64, err
 // already gone can still have an orphaned directory, and deleting the host should
 // take that with it.
 func (t *Traffic) hostTrees(where string, args ...any) ([]string, error) {
-	rows, err := t.db.Query(`SELECT DISTINCT host FROM exchanges WHERE `+where, args...)
+	hosts, err := t.hostsMatching(where, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var dirs []string
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
-			return nil, err
-		}
+	dirs := make([]string, 0, len(hosts))
+	for _, h := range hosts {
 		dirs = append(dirs, filepath.Join(t.dir, sanitize(h)))
 	}
-	return dirs, rows.Err()
+	return dirs, nil
 }
 
 type stagedTrafficPath struct {

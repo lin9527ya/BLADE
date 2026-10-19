@@ -3301,6 +3301,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"storage_retention_server_logs_days":       s.storageRetentionDays(settingRetentionServerLogs),
 		"storage_retention_llm_record_bodies_days": s.storageRetentionDays(settingRetentionLLMRecordBodys),
 		"storage_retention_llm_records_days":       s.storageRetentionDays(settingRetentionLLMRecords),
+		"storage_retention_traffic_days":           s.storageRetentionDays(settingRetentionTraffic),
 		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
 		"exec_memory_mb":                execLimitsFromSettings(s.m.pg).MemoryMB,
@@ -3422,6 +3423,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		RetentionServerLogs     *int `json:"storage_retention_server_logs_days"`
 		RetentionLLMRecordBodys *int `json:"storage_retention_llm_record_bodies_days"`
 		RetentionLLMRecords     *int `json:"storage_retention_llm_records_days"`
+		RetentionTraffic        *int `json:"storage_retention_traffic_days"`
 		ExecMemoryMB            *int `json:"exec_memory_mb"`
 		ExecMaxProcs            *int `json:"exec_max_procs"`
 		ExecMaxActive           *int `json:"exec_max_active"`
@@ -3633,6 +3635,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingRetentionServerLogs, req.RetentionServerLogs, 3650, "后端日志保留天数"},
 		{settingRetentionLLMRecordBodys, req.RetentionLLMRecordBodys, 3650, "LLM 录制载荷保留天数"},
 		{settingRetentionLLMRecords, req.RetentionLLMRecords, 3650, "LLM 录制整行保留天数"},
+		{settingRetentionTraffic, req.RetentionTraffic, 3650, "流量归档保留天数"},
 	} {
 		if f.val == nil {
 			continue

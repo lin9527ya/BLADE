@@ -335,7 +335,10 @@ const (
 	settingRetentionServerLogs     = "storage_retention_server_logs_days"
 	settingRetentionLLMRecords     = "storage_retention_llm_records_days"
 	settingRetentionLLMRecordBodys = "storage_retention_llm_record_bodies_days"
-	settingStorageLastClean        = "storage_last_clean"
+	// 流量归档的保留天数。它不在数据库里而在流量记录器自己的 SQLite + blob 目录里，
+	// 删除必须走 traffic 包的 API（见 traffic.DeleteOlderThan）。
+	settingRetentionTraffic = "storage_retention_traffic_days"
+	settingStorageLastClean = "storage_last_clean"
 	// 自更新的 GitHub token（私有发布源需要）。只存不回显：设置页只给 update_token_set 布尔。
 	settingUpdateToken = "update_github_token"
 	// P24 默认值：CPU 30 分钟上限；内存/进程数不限（0）。
