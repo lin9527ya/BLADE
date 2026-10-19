@@ -2,19 +2,6 @@
 
 import * as React from "react";
 
-import { fmtTime, TreeNode, buildTree, sortNodes, Selected, Creating, PendingDelete } from "./skills-helpers";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { api } from "@/lib/api";
-import {
-  Agent,
-  MCPServer,
-  MissingSkill,
-  SkillCall,
-  SkillItem,
-} from "@/lib/types";
-import { cn } from "@/lib/utils";
 import {
   ChevronRightIcon,
   FilePlusIcon,
@@ -25,6 +12,22 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { api } from "@/lib/api";
+import type { Agent, MCPServer, MissingSkill, SkillCall, SkillItem } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+import {
+  buildTree,
+  type Creating,
+  fmtTime,
+  type PendingDelete,
+  type Selected,
+  sortNodes,
+  type TreeNode,
+} from "./skills-helpers";
 
 // 技能页的状态与取数：技能树、选中节点、新建/编辑/删除、可见性与调用统计。
 
@@ -91,20 +94,35 @@ export function useSkillsState() {
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const load = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => {});
-    api.mcpServers().then(setMcpOptions).catch(() => {});
-    api.missingSkills().then(setMissing).catch(() => {});
-    api.skills().then((ss) => {
-      setSkills(ss);
-      ss.forEach((s) =>
-        api.skillVisibility(s.name)
-          .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
-          .catch(() => {}),
-      );
-    }).catch(() => {});
+    api
+      .agents()
+      .then(setAgents)
+      .catch(() => {});
+    api
+      .mcpServers()
+      .then(setMcpOptions)
+      .catch(() => {});
+    api
+      .missingSkills()
+      .then(setMissing)
+      .catch(() => {});
+    api
+      .skills()
+      .then((ss) => {
+        setSkills(ss);
+        ss.forEach((s) =>
+          api
+            .skillVisibility(s.name)
+            .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
+            .catch(() => {}),
+        );
+      })
+      .catch(() => {});
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   // ── Upload a .zip skill ───────────────────────────────────────────────────
   async function uploadZip(file: File, overwrite = false) {
@@ -150,20 +168,32 @@ export function useSkillsState() {
 
   // Recent calls for the selected skill (detail panel only).
   React.useEffect(() => {
-    if (!selected || selected.path !== null) { setUsageCalls([]); return; }
+    if (!selected || selected.path !== null) {
+      setUsageCalls([]);
+      return;
+    }
     const name = selected.skill;
     setUsageLoading(true);
-    api.skillUsage(name, 20)
+    api
+      .skillUsage(name, 20)
       .then((calls) => setUsageCalls(calls))
       .catch(() => setUsageCalls([]))
       .finally(() => setUsageLoading(false));
   }, [selected]);
 
   React.useEffect(() => {
-    if (!selected || selected.path === null) { setFileContent(""); setDirty(false); return; }
+    if (!selected || selected.path === null) {
+      setFileContent("");
+      setDirty(false);
+      return;
+    }
     setFileLoading(true);
-    api.readSkillFile(selected.skill, selected.path)
-      .then((c) => { setFileContent(c); setDirty(false); })
+    api
+      .readSkillFile(selected.skill, selected.path)
+      .then((c) => {
+        setFileContent(c);
+        setDirty(false);
+      })
       .catch(() => toast.error("读取文件失败"))
       .finally(() => setFileLoading(false));
   }, [selected]);
@@ -172,7 +202,8 @@ export function useSkillsState() {
   function toggleExpanded(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -202,12 +233,19 @@ export function useSkillsState() {
   // Use a ref snapshot so commitCreate reads the latest creating value
   // without depending on potentially stale closure state.
   const creatingRef = React.useRef<Creating>(null);
-  React.useEffect(() => { creatingRef.current = creating; }, [creating]);
+  React.useEffect(() => {
+    creatingRef.current = creating;
+  }, [creating]);
   const newEntryRef = React.useRef("");
-  React.useEffect(() => { newEntryRef.current = newEntryName; }, [newEntryName]);
+  React.useEffect(() => {
+    newEntryRef.current = newEntryName;
+  }, [newEntryName]);
 
   async function commitCreate() {
-    if (cancelRef.current) { cancelRef.current = false; return; }
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      return;
+    }
     const c = creatingRef.current;
     const name = newEntryRef.current.trim();
     setCreating(null);
@@ -282,13 +320,13 @@ export function useSkillsState() {
       setDirty(false);
     } catch (e) {
       toast.error("保存失败：" + (e as Error).message);
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function toggleSkillMcp(skillName: string, mcpName: string, mcpOn: boolean) {
-    const next = mcpOn
-      ? [...detailMcps, mcpName]
-      : detailMcps.filter((n) => n !== mcpName);
+    const next = mcpOn ? [...detailMcps, mcpName] : detailMcps.filter((n) => n !== mcpName);
     setDetailMcps(next);
     try {
       await api.updateSkillMeta(skillName, { mcps: next });
@@ -314,13 +352,20 @@ export function useSkillsState() {
   }
 
   async function createNewSkill() {
-    if (!newName.trim()) { toast.error("请填写 name"); return; }
-    if (!newDesc.trim()) { toast.error("description 为必填项"); return; }
+    if (!newName.trim()) {
+      toast.error("请填写 name");
+      return;
+    }
+    if (!newDesc.trim()) {
+      toast.error("description 为必填项");
+      return;
+    }
     setCreatingSkill(true);
     try {
       const name = newName.trim();
       await api.createSkill({
-        name, description: newDesc.trim(),
+        name,
+        description: newDesc.trim(),
         license: newLicense.trim() || undefined,
         compatibility: newCompat.trim() || undefined,
         mcps: newMcps.length ? newMcps : undefined,
@@ -330,27 +375,31 @@ export function useSkillsState() {
       await Promise.all(newVisibility.map((id) => api.toggleSkillVisibility(id, name, true)));
       toast.success("已创建 Skill");
       setNewOpen(false);
-      setNewName(""); setNewDesc(""); setNewLicense(""); setNewCompat(""); setNewInst("");
-      setNewMcps([]); setNewVisibility([]);
+      setNewName("");
+      setNewDesc("");
+      setNewLicense("");
+      setNewCompat("");
+      setNewInst("");
+      setNewMcps([]);
+      setNewVisibility([]);
       load();
     } catch (e) {
       toast.error("创建失败：" + (e as Error).message);
-    } finally { setCreatingSkill(false); }
+    } finally {
+      setCreatingSkill(false);
+    }
   }
 
   // ── Inline input JSX helper (NOT a React component — avoids remount on re-render) ──
   // Defined as a plain function returning JSX so React never sees a new component type.
   function inlineInputJSX(indent: number) {
     return (
-      <div
-        key="__inline_create__"
-        className="flex items-center gap-1 py-0.5 pr-2"
-        style={{ paddingLeft: indent }}
-      >
-        {creating?.kind === "dir"
-          ? <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
-          : <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        }
+      <div key="__inline_create__" className="flex items-center gap-1 py-0.5 pr-2" style={{ paddingLeft: indent }}>
+        {creating?.kind === "dir" ? (
+          <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
+        ) : (
+          <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
         <Input
           ref={inlineRef}
           className="h-6 flex-1 px-1 py-0 font-mono text-xs"
@@ -358,10 +407,15 @@ export function useSkillsState() {
           value={newEntryName}
           onChange={(e) => setNewEntryName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") { cancelRef.current = false; void commitCreate(); }
+            if (e.key === "Enter") {
+              cancelRef.current = false;
+              void commitCreate();
+            }
             if (e.key === "Escape") cancelCreate();
           }}
-          onBlur={() => { void commitCreate(); }}
+          onBlur={() => {
+            void commitCreate();
+          }}
         />
       </div>
     );
@@ -384,23 +438,50 @@ export function useSkillsState() {
               onClick={() => toggleExpanded(key)}
             >
               <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-              {open
-                ? <FolderOpenIcon className="size-3.5 shrink-0 text-amber-500" />
-                : <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
-              }
-              <span className="min-w-0 flex-1 truncate" title={node.path}>{node.name}</span>
+              {open ? (
+                <FolderOpenIcon className="size-3.5 shrink-0 text-amber-500" />
+              ) : (
+                <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
+              )}
+              <span className="min-w-0 flex-1 truncate" title={node.path}>
+                {node.name}
+              </span>
               {/* Absolute so a long name can never push the actions out of view */}
               <span className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded bg-muted pl-1 group-hover:flex">
-                <Button size="icon" variant="ghost" className="size-5" title="新建文件"
-                  onClick={(e) => { e.stopPropagation(); startCreate(skill, node.path, "file"); }}>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  title="新建文件"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startCreate(skill, node.path, "file");
+                  }}
+                >
                   <FilePlusIcon className="size-3 text-muted-foreground" />
                 </Button>
-                <Button size="icon" variant="ghost" className="size-5" title="新建文件夹"
-                  onClick={(e) => { e.stopPropagation(); startCreate(skill, node.path, "dir"); }}>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  title="新建文件夹"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startCreate(skill, node.path, "dir");
+                  }}
+                >
                   <FolderPlusIcon className="size-3 text-muted-foreground" />
                 </Button>
-                <Button size="icon" variant="ghost" className="size-5" title="删除文件夹"
-                  onClick={(e) => { e.stopPropagation(); setPendingDelete({ kind: "dir", skill, path: node.path }); }}>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  title="删除文件夹"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDelete({ kind: "dir", skill, path: node.path });
+                  }}
+                >
                   <Trash2Icon className="size-3 text-destructive" />
                 </Button>
               </span>
@@ -408,8 +489,7 @@ export function useSkillsState() {
             {open && (
               <>
                 {renderTree(node.children, skill, depth + 1)}
-                {creating?.skill === skill && creating.inDir === node.path &&
-                  inlineInputJSX(baseIndent + 14)}
+                {creating?.skill === skill && creating.inDir === node.path && inlineInputJSX(baseIndent + 14)}
               </>
             )}
           </div>
@@ -429,14 +509,25 @@ export function useSkillsState() {
           onClick={() => setSelected({ skill, path: node.path })}
         >
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate font-mono text-xs" title={node.path}>{node.name}</span>
-          <span className={cn(
-            "absolute inset-y-0 right-1 hidden items-center rounded pl-1 group-hover:flex",
-            isSelected ? "bg-accent" : "bg-muted",
-          )}>
-            <Button size="icon" variant="ghost" className="size-5"
+          <span className="min-w-0 flex-1 truncate font-mono text-xs" title={node.path}>
+            {node.name}
+          </span>
+          <span
+            className={cn(
+              "absolute inset-y-0 right-1 hidden items-center rounded pl-1 group-hover:flex",
+              isSelected ? "bg-accent" : "bg-muted",
+            )}
+          >
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-5"
               title="删除文件"
-              onClick={(e) => { e.stopPropagation(); setPendingDelete({ kind: "file", skill, path: node.path }); }}>
+              onClick={(e) => {
+                e.stopPropagation();
+                setPendingDelete({ kind: "file", skill, path: node.path });
+              }}
+            >
               <Trash2Icon className="size-3 text-destructive" />
             </Button>
           </span>
@@ -445,11 +536,90 @@ export function useSkillsState() {
     });
   }
 
-  const selectedSkill = selected
-    ? skills.find((s) => s.name === selected.skill) ?? null
-    : null;
+  const selectedSkill = selected ? (skills.find((s) => s.name === selected.skill) ?? null) : null;
 
   return {
-    skills, setSkills, agents, setAgents, selected, setSelected, visibility, setVisibility, expanded, setExpanded, fileContent, setFileContent, fileLoading, setFileLoading, dirty, setDirty, saving, setSaving, creating, setCreating, newEntryName, setNewEntryName, inlineRef, cancelRef, newOpen, setNewOpen, newName, setNewName, newDesc, setNewDesc, newLicense, setNewLicense, newCompat, setNewCompat, newInst, setNewInst, newMcps, setNewMcps, newVisibility, setNewVisibility, mcpOptions, setMcpOptions, creatingSkill, setCreatingSkill, uploading, setUploading, uploadRef, detailMcps, setDetailMcps, pendingDelete, setPendingDelete, deleting, setDeleting, usageCalls, setUsageCalls, usageLoading, setUsageLoading, missing, setMissing, skillQuery, setSkillQuery, filteredSkills, load, onUploadPick, toggleExpanded, ensureExpanded, startCreate, creatingRef, newEntryRef, cancelCreate, inlineInputJSX, renderTree, selectedSkill, uploadZip, commitCreate, deletePath, deleteSkill, runPendingDelete, saveFile, toggleSkillMcp, toggleVisibility, createNewSkill,
+    skills,
+    setSkills,
+    agents,
+    setAgents,
+    selected,
+    setSelected,
+    visibility,
+    setVisibility,
+    expanded,
+    setExpanded,
+    fileContent,
+    setFileContent,
+    fileLoading,
+    setFileLoading,
+    dirty,
+    setDirty,
+    saving,
+    setSaving,
+    creating,
+    setCreating,
+    newEntryName,
+    setNewEntryName,
+    inlineRef,
+    cancelRef,
+    newOpen,
+    setNewOpen,
+    newName,
+    setNewName,
+    newDesc,
+    setNewDesc,
+    newLicense,
+    setNewLicense,
+    newCompat,
+    setNewCompat,
+    newInst,
+    setNewInst,
+    newMcps,
+    setNewMcps,
+    newVisibility,
+    setNewVisibility,
+    mcpOptions,
+    setMcpOptions,
+    creatingSkill,
+    setCreatingSkill,
+    uploading,
+    setUploading,
+    uploadRef,
+    detailMcps,
+    setDetailMcps,
+    pendingDelete,
+    setPendingDelete,
+    deleting,
+    setDeleting,
+    usageCalls,
+    setUsageCalls,
+    usageLoading,
+    setUsageLoading,
+    missing,
+    setMissing,
+    skillQuery,
+    setSkillQuery,
+    filteredSkills,
+    load,
+    onUploadPick,
+    toggleExpanded,
+    ensureExpanded,
+    startCreate,
+    creatingRef,
+    newEntryRef,
+    cancelCreate,
+    inlineInputJSX,
+    renderTree,
+    selectedSkill,
+    uploadZip,
+    commitCreate,
+    deletePath,
+    deleteSkill,
+    runPendingDelete,
+    saveFile,
+    toggleSkillMcp,
+    toggleVisibility,
+    createNewSkill,
   };
 }

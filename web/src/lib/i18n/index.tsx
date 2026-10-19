@@ -47,20 +47,12 @@ export function translate(lang: Lang, key: string, zh: string, vars?: Record<str
   return out;
 }
 
-export function I18nProvider({
-  initialLang,
-  children,
-}: {
-  initialLang?: Lang;
-  children: React.ReactNode;
-}) {
+export function I18nProvider({ initialLang, children }: { initialLang?: Lang; children: React.ReactNode }) {
   const [lang, setLangState] = React.useState<Lang>(initialLang ?? PREFERENCE_DEFAULTS.language);
 
   // 首次挂载时从 cookie 读一次：静态导出没有服务端渲染这一步，language 只能在客户端落定。
   React.useEffect(() => {
-    const cookie = document.cookie
-      .split("; ")
-      .find((c) => c.startsWith("language="));
+    const cookie = document.cookie.split("; ").find((c) => c.startsWith("language="));
     const value = cookie ? decodeURIComponent(cookie.split("=")[1] ?? "") : "";
     if (isLang(value) && value !== lang) setLangState(value);
     // 只在挂载时同步一次；之后以 store 为准（切语言写 cookie + setState）。

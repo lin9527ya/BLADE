@@ -3,21 +3,22 @@
 import * as React from "react";
 
 import Link from "next/link";
+
+import { ActivityIcon, ArrowUpRightIcon, BugIcon } from "lucide-react";
+
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ActivityIcon, ArrowUpRightIcon, BugIcon } from "lucide-react";
 
-import type { useDashboardState } from "./use-dashboard-state";
 import { fmtRel } from "./dashboard-helpers";
+import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowActivity({ s }: { s: ReturnType<typeof useDashboardState> }) {
   const { tasks, findings, activity, recentFindings, recentActivity, kindLabel, workerBg } = s;
 
   return (
     <>
-
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {/* 活动流 */}
         <Card className="p-4">
@@ -125,7 +126,6 @@ export function RowActivity({ s }: { s: ReturnType<typeof useDashboardState> }) 
           </div>
         </Card>
       </div>
-
     </>
   );
 }

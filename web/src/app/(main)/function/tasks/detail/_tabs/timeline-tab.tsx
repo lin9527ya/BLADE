@@ -110,11 +110,19 @@ export function TimelineTab({ taskId }: { taskId: string }) {
         <CardContent className="flex flex-col gap-3 p-4">
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={doExport} disabled={exporting || !data}>
-              {exporting ? <LoaderIcon className="animate-spin" data-icon="inline-start" /> : <DownloadIcon data-icon="inline-start" />}
+              {exporting ? (
+                <LoaderIcon className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <DownloadIcon data-icon="inline-start" />
+              )}
               导出 .md
             </Button>
             <Button variant="ghost" size="sm" onClick={() => load(withSteps)} disabled={loading}>
-              {loading ? <LoaderIcon className="animate-spin" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+              {loading ? (
+                <LoaderIcon className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <RefreshCwIcon data-icon="inline-start" />
+              )}
               刷新
             </Button>
             <label className="ml-auto flex items-center gap-2 text-xs">
@@ -133,8 +141,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
 
           <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
             <span>
-              里程碑 {total} 条
-              {withSteps && (counts.step ?? 0) > 0 ? ` · 步骤 ${counts.step} 条` : ""}
+              里程碑 {total} 条{withSteps && (counts.step ?? 0) > 0 ? ` · 步骤 ${counts.step} 条` : ""}
             </span>
             {data?.from && (
               <span>

@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import {
+import type {
   Activity,
   Agent,
   ConvTokenSummary,
@@ -51,82 +51,87 @@ export function useDashboardState() {
   // 去重用的 signature 必须**跨轮询持久**：hook 的回调每次渲染重建，写成回调里的
   // `let signature` 会随渲染重置，去重就失效了（每次轮询都重新 setTasks）。
   const taskSignatureRef = React.useRef("");
-  usePolling(
-    async (alive) => {
-      // 失败由 hook 接住并退避重试（原先的 try/catch 只吞掉、不退避）。
-      const tr = await api.tasks();
-      if (!alive()) return;
-      const nextSignature = JSON.stringify(tr.tasks);
-      if (nextSignature !== taskSignatureRef.current) {
-        taskSignatureRef.current = nextSignature;
-        setTasks(tr.tasks);
-      }
-    },
-    5000,
-  );
+  usePolling(async (alive) => {
+    // 失败由 hook 接住并退避重试（原先的 try/catch 只吞掉、不退避）。
+    const tr = await api.tasks();
+    if (!alive()) return;
+    const nextSignature = JSON.stringify(tr.tasks);
+    if (nextSignature !== taskSignatureRef.current) {
+      taskSignatureRef.current = nextSignature;
+      setTasks(tr.tasks);
+    }
+  }, 5000);
 
   // The remaining fast sources stay batched so one poll causes a single render.
-  usePolling(async (alive) => {
-    let loading = false;
-    const load = async () => {
-      if (loading) return;
-      loading = true;
-      try {
-        const [findings, stats, settings, pending, activity, tokens, conversationTokens] = await Promise.all([
-          api.findings(),
-          api.stats(),
-          api.settings(),
-          api.interceptPending(),
-          api.activity(undefined, { limit: 30 }),
-          api.tokenStats(),
-          api.conversationTokens(),
-        ]);
-        if (!alive()) return;
-        setFindings(findings);
-        setStats(stats);
-        setSettings(settings);
-        setPending(pending);
-        setActivity(activity.items);
-        setTokens(tokens.total ?? null);
-        setConvTokens(conversationTokens);
-      } catch {
-        // Preserve stale data and retry on the next interval.
-      } finally {
-        loading = false;
-      }
-    };
-    void load();
-  }, 5000, []);
+  usePolling(
+    async (alive) => {
+      let loading = false;
+      const load = async () => {
+        if (loading) return;
+        loading = true;
+        try {
+          const [findings, stats, settings, pending, activity, tokens, conversationTokens] = await Promise.all([
+            api.findings(),
+            api.stats(),
+            api.settings(),
+            api.interceptPending(),
+            api.activity(undefined, { limit: 30 }),
+            api.tokenStats(),
+            api.conversationTokens(),
+          ]);
+          if (!alive()) return;
+          setFindings(findings);
+          setStats(stats);
+          setSettings(settings);
+          setPending(pending);
+          setActivity(activity.items);
+          setTokens(tokens.total ?? null);
+          setConvTokens(conversationTokens);
+        } catch {
+          // Preserve stale data and retry on the next interval.
+        } finally {
+          loading = false;
+        }
+      };
+      void load();
+    },
+    5000,
+    [],
+  );
 
   // slow poll: traffic, assets, system-static (every 15s)
-  usePolling(async (alive) => {
-    const load = async () => {
-      try {
-        const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
-          api.traffic(0, 50),
-          api.assetCounts(),
-          api.agents(),
-          api.mcpServers(),
-          api.skills(),
-          api.tools(),
-          api.llmProfiles(),
-          api.usageStats(365),
-        ]);
-        if (!alive()) return;
-        setTraffic(traf.exchanges ?? []);
-        setAssetCounts(counts ?? {});
-        setAgents(agentList);
-        setMcpServers(mcpList);
-        setSkills(skillList);
-        setTools(toolList);
-        setLLMProfiles(profileList);
-        setUsageStats(usage);
-      } catch {
-        /* transient errors */
-      }
-    };
-    void load();
-  }, 15000, []);
+  usePolling(
+    async (alive) => {
+      const load = async () => {
+        try {
+          const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
+            api.traffic(0, 50),
+            api.assetCounts(),
+            api.agents(),
+            api.mcpServers(),
+            api.skills(),
+            api.tools(),
+            api.llmProfiles(),
+            api.usageStats(365),
+          ]);
+          if (!alive()) return;
+          setTraffic(traf.exchanges ?? []);
+          setAssetCounts(counts ?? {});
+          setAgents(agentList);
+          setMcpServers(mcpList);
+          setSkills(skillList);
+          setTools(toolList);
+          setLLMProfiles(profileList);
+          setUsageStats(usage);
+        } catch {
+          /* transient errors */
+        }
+      };
+      void load();
+    },
+    15000,
+    [],
+  );
 
   // ── derived ───────────────────────────────────────────────────────────────
 
@@ -364,6 +369,70 @@ export function useDashboardState() {
   }
 
   return {
-    tasks, setTasks, findings, setFindings, stats, setStats, settings, setSettings, pending, setPending, activity, setActivity, tokens, setTokens, convTokens, setConvTokens, usageStats, setUsageStats, assetCounts, setAssetCounts, traffic, setTraffic, agents, setAgents, mcpServers, setMcpServers, skills, setSkills, tools, setTools, llmProfiles, setLLMProfiles, taskSignatureRef, tasksByStatus, findingsBySev, sortedTasks, recentFindings, recentActivity, totalAssets, assetByType, assetMax, trafficByCodes, trafficMax, recentTraffic, activeProfile, enabledTools, pendingCount, defaultProfileId, tokenVersion, setTokenVersion, tokenTab, setTokenTab, tokenDays, setTokenDays, profileIdByName, tokenByProfileOld, tokenByProfileNew, tokenByProfile, displayedTokens, dailyTokenDataOld, dailyTokenDataNew, dailyTokenData, kindLabel, workerColor, workerBg
+    tasks,
+    setTasks,
+    findings,
+    setFindings,
+    stats,
+    setStats,
+    settings,
+    setSettings,
+    pending,
+    setPending,
+    activity,
+    setActivity,
+    tokens,
+    setTokens,
+    convTokens,
+    setConvTokens,
+    usageStats,
+    setUsageStats,
+    assetCounts,
+    setAssetCounts,
+    traffic,
+    setTraffic,
+    agents,
+    setAgents,
+    mcpServers,
+    setMcpServers,
+    skills,
+    setSkills,
+    tools,
+    setTools,
+    llmProfiles,
+    setLLMProfiles,
+    taskSignatureRef,
+    tasksByStatus,
+    findingsBySev,
+    sortedTasks,
+    recentFindings,
+    recentActivity,
+    totalAssets,
+    assetByType,
+    assetMax,
+    trafficByCodes,
+    trafficMax,
+    recentTraffic,
+    activeProfile,
+    enabledTools,
+    pendingCount,
+    defaultProfileId,
+    tokenVersion,
+    setTokenVersion,
+    tokenTab,
+    setTokenTab,
+    tokenDays,
+    setTokenDays,
+    profileIdByName,
+    tokenByProfileOld,
+    tokenByProfileNew,
+    tokenByProfile,
+    displayedTokens,
+    dailyTokenDataOld,
+    dailyTokenDataNew,
+    dailyTokenData,
+    kindLabel,
+    workerColor,
+    workerBg,
   };
 }

@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { toast } from "sonner";
+
 import { HardDriveIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -205,8 +206,8 @@ export default function StoragePage() {
             <HardDriveIcon className="size-5" /> 存储
           </h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            体检数据目录下的产物占用，按分类设保留天数后再清。只删超过保留期、且不在跑的任务产物；
-            保留天数 0 = 不清理（默认全 0，装上什么都不会动）。
+            体检数据目录下的产物占用，按分类设保留天数后再清。只删超过保留期、且不在跑的任务产物； 保留天数 0 =
+            不清理（默认全 0，装上什么都不会动）。
           </p>
         </div>
         <div className="flex items-center gap-2">

@@ -1,8 +1,8 @@
 "use client";
 
-import * as React from "react";
+import type * as React from "react";
 
-import { MCPToolSchema, MCPToolSchemaProp } from "@/lib/types";
+import type { MCPToolSchema, MCPToolSchemaProp } from "@/lib/types";
 
 // MCP 页的类型与展示基件：传输方式、表单状态、参数行解析与信息行。
 

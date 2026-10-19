@@ -2,7 +2,8 @@
 
 import * as React from "react";
 
-import { ParamRow, TRAFFIC_TOOL_KEYS, applyRows, toRows } from "./tool-helpers";
+import { RotateCcwIcon, SaveIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,9 +14,9 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { Agent, Tool } from "@/lib/types";
-import { RotateCcwIcon, SaveIcon } from "lucide-react";
-import { toast } from "sonner";
+import type { Agent, Tool } from "@/lib/types";
+
+import { applyRows, type ParamRow, TRAFFIC_TOOL_KEYS, toRows } from "./tool-helpers";
 
 // 内置工具的单工具编辑表单与网格卡片。
 
@@ -42,8 +43,7 @@ export function ToolEditor({
 
   const setRow = (i: number, patch: Partial<ParamRow>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const toggleAgent = (k: string) =>
-    setBound((b) => (b.includes(k) ? b.filter((x) => x !== k) : [...b, k]));
+  const toggleAgent = (k: string) => setBound((b) => (b.includes(k) ? b.filter((x) => x !== k) : [...b, k]));
 
   async function save() {
     setSaving(true);
@@ -122,16 +122,13 @@ export function ToolEditor({
 
         {/* params */}
         <div className="grid gap-2">
-          <Label className="text-muted-foreground text-xs">
-            参数（名称 / 类型 / 必填只读；描述与默认值可改）
-          </Label>
+          <Label className="text-muted-foreground text-xs">参数（名称 / 类型 / 必填只读；描述与默认值可改）</Label>
           {rows.length === 0 && <span className="text-muted-foreground text-xs">（无参数）</span>}
           {rows.map((r, i) => (
             <div
               key={(r.parentKey ?? "") + "." + r.name}
-              className={r.parentKey
-                ? "border-l-2 border-muted ml-3 pl-3 grid gap-2 py-2"
-                : "grid gap-2 rounded-md border p-3"
+              className={
+                r.parentKey ? "border-l-2 border-muted ml-3 pl-3 grid gap-2 py-2" : "grid gap-2 rounded-md border p-3"
               }
             >
               <div className="flex flex-wrap items-center gap-2">
@@ -145,9 +142,7 @@ export function ToolEditor({
                     必填
                   </Badge>
                 )}
-                {r.parentKey && (
-                  <span className="text-muted-foreground text-[10px]">items 子字段</span>
-                )}
+                {r.parentKey && <span className="text-muted-foreground text-[10px]">items 子字段</span>}
               </div>
               <div className="grid gap-2">
                 <div className="grid gap-1">
@@ -224,13 +219,9 @@ export function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => voi
           调用 {tool.calls ?? 0}
         </Badge>
       </div>
-      <p className="text-muted-foreground line-clamp-1 h-4 text-xs">
-        {tool.description || "（无描述）"}
-      </p>
+      <p className="text-muted-foreground line-clamp-1 h-4 text-xs">{tool.description || "（无描述）"}</p>
       <div className="mt-auto flex flex-wrap gap-1 pt-1">
-        {tool.agents.length === 0 && (
-          <span className="text-muted-foreground text-[10px]">（未绑定 Agent）</span>
-        )}
+        {tool.agents.length === 0 && <span className="text-muted-foreground text-[10px]">（未绑定 Agent）</span>}
         {tool.agents.map((a) => (
           <Badge key={a} variant="outline" className="px-1.5 py-0 text-[10px]">
             {a}

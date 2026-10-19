@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { usePolling } from "@/hooks/use-polling";
 
-import { Card, CardContent } from "@/components/ui/card";
 import { ExplorationGraph } from "@/components/exploration-graph";
+import { Card, CardContent } from "@/components/ui/card";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { Edge, TaskNode } from "@/lib/types";
 
@@ -15,30 +15,34 @@ export function GraphTab({ taskId }: { taskId: string }) {
   // 才不会被 20s 轮询打断而顿挫)。只取影响渲染的字段。
   const sigRef = React.useRef("");
 
-  usePolling(async (alive) => {
-    sigRef.current = ""; // 换任务:强制下一次刷新
-    const load = () => {
-      api
-        .explorationGraph(taskId)
-        .then((g) => {
-          if (!alive()) return;
-          const ns = g.nodes ?? [];
-          const es = g.edges ?? [];
-          const sig = JSON.stringify([
-            ns.map((n) => [n.id, n.type, n.state, n.priority, n.payload]),
-            es.map((e) => [e.src, e.dst, e.rel]),
-          ]);
-          if (sig === sigRef.current) return; // 无变化 → 不重建
-          sigRef.current = sig;
-          setNodes(ns);
-          setEdges(es);
-        })
-        .catch(() => {
-          /* keep last good data */
-        });
-    };
-    load();
-  }, 20000, [taskId]);
+  usePolling(
+    async (alive) => {
+      sigRef.current = ""; // 换任务:强制下一次刷新
+      const load = () => {
+        api
+          .explorationGraph(taskId)
+          .then((g) => {
+            if (!alive()) return;
+            const ns = g.nodes ?? [];
+            const es = g.edges ?? [];
+            const sig = JSON.stringify([
+              ns.map((n) => [n.id, n.type, n.state, n.priority, n.payload]),
+              es.map((e) => [e.src, e.dst, e.rel]),
+            ]);
+            if (sig === sigRef.current) return; // 无变化 → 不重建
+            sigRef.current = sig;
+            setNodes(ns);
+            setEdges(es);
+          })
+          .catch(() => {
+            /* keep last good data */
+          });
+      };
+      load();
+    },
+    20000,
+    [taskId],
+  );
 
   return (
     <Card>

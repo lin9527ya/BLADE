@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { InterceptApprovalRow } from "@/lib/types";
+import type { InterceptApprovalRow } from "@/lib/types";
 
 // 审批页的共享小工具：时间/来源/命名格式化。
 // 列表、详情与展示基件都要用，独立成模块以避免循环导入。

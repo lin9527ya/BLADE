@@ -1,9 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { AssetTreeState, GroupFindingsState, FlatFindingsState, FINDING_LIST_PREFERENCE_KEY, FindingView, FINDING_VIEWS, EMPTY_ASSET_TREE, EMPTY_FLAT_STATE, findingGroupKey, EMPTY_STATS } from "./_components/findings-helpers";
-import { useFindingsState } from "./_components/use-findings-state";
-import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -41,6 +38,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { statusMeta } from "@/lib/status";
@@ -57,6 +55,18 @@ import { cn } from "@/lib/utils";
 
 import { AssetTree, assetPathOf } from "./_components/asset-tree";
 import {
+  AssetTreeState,
+  EMPTY_ASSET_TREE,
+  EMPTY_FLAT_STATE,
+  EMPTY_STATS,
+  FINDING_LIST_PREFERENCE_KEY,
+  FINDING_VIEWS,
+  type FindingView,
+  FlatFindingsState,
+  findingGroupKey,
+  GroupFindingsState,
+} from "./_components/findings-helpers";
+import {
   FINDING_STATUSES,
   type FindingEdit,
   type FindingReport,
@@ -67,7 +77,7 @@ import {
   SEVERITIES,
   UNASSIGNED_TASK,
 } from "./_components/findings-table";
-
+import { useFindingsState } from "./_components/use-findings-state";
 
 export default function FindingsPage() {
   const {

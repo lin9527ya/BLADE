@@ -87,9 +87,7 @@ export function TablePagination({
             </SelectContent>
           </Select>
         )}
-        <span className="tabular-nums">
-          {known ? `${from}–${to} / ${total}` : `第 ${safePage} 页`}
-        </span>
+        <span className="tabular-nums">{known ? `${from}–${to} / ${total}` : `第 ${safePage} 页`}</span>
         <Button
           variant="outline"
           size="icon"

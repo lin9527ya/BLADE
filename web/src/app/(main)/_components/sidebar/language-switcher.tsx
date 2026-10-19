@@ -17,7 +17,9 @@ export function LanguageSwitcher() {
       size="icon"
       onClick={() => setLang(next)}
       aria-label={t("prefs.language", "语言")}
-      title={lang === "zh" ? t("prefs.language.switchToEn", "切换到 English") : t("prefs.language.switchToZh", "切换到中文")}
+      title={
+        lang === "zh" ? t("prefs.language.switchToEn", "切换到 English") : t("prefs.language.switchToZh", "切换到中文")
+      }
     >
       <span className="flex items-center gap-1">
         <Languages className="size-4" />

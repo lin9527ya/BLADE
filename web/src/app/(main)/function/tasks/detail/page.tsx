@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -37,13 +36,13 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { LLMProfile, Task } from "@/lib/types";
 
+import { ADPathsTab } from "./_tabs/ad-paths-tab";
 import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
-import { ADPathsTab } from "./_tabs/ad-paths-tab";
-import { TimelineTab } from "./_tabs/timeline-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
 import { GraphTab } from "./_tabs/graph-tab";
@@ -52,6 +51,7 @@ import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
+import { TimelineTab } from "./_tabs/timeline-tab";
 
 const TABS = [
   { value: "sessions", label: "会话" },
@@ -226,18 +226,22 @@ function TaskDetailInner() {
       .catch(() => setProfiles([]));
   }, []);
 
-  usePolling(async (alive) => {
-    const load = () =>
-      api
-        .interceptTask(id)
-        .then((rows) => {
-          if (alive()) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-  }, 5000, [id]);
+  usePolling(
+    async (alive) => {
+      const load = () =>
+        api
+          .interceptTask(id)
+          .then((rows) => {
+            if (alive()) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+          })
+          .catch(() => {
+            // Polling is best-effort; the next interval retries automatically.
+          });
+      void load();
+    },
+    5000,
+    [id],
+  );
 
   const taskLoadInFlight = React.useRef<string | null>(null);
   const load = React.useCallback(() => {
@@ -268,11 +272,7 @@ function TaskDetailInner() {
         }
       });
   }, [id]);
-  usePolling(
-    () => load(),
-    5000,
-    [load],
-  );
+  usePolling(() => load(), 5000, [load]);
 
   async function togglePause() {
     if (!task) return;

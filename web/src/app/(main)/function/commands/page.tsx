@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { TablePagination } from "@/components/table-pagination";
 
 import { BarChart3Icon, Loader2Icon, SearchIcon, TerminalIcon } from "lucide-react";
 
+import { TablePagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";

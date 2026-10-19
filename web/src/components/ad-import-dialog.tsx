@@ -31,7 +31,14 @@ type ImportSource = "ad" | "cloud";
 
 const SOURCE: Record<
   ImportSource,
-  { title: string; trigger: string; desc: string; accept: string[]; preview: (t: string, f: ADImportFile[]) => Promise<ADImportPreview>; apply: (t: string, f: ADImportFile[]) => Promise<ADImportResult> }
+  {
+    title: string;
+    trigger: string;
+    desc: string;
+    accept: string[];
+    preview: (t: string, f: ADImportFile[]) => Promise<ADImportPreview>;
+    apply: (t: string, f: ADImportFile[]) => Promise<ADImportResult>;
+  }
 > = {
   ad: {
     title: "导入 AD 采集结果",
@@ -132,7 +139,11 @@ export function ADImportDialog({
     setApplying(true);
     try {
       const res = await cfg.apply(taskId, files);
-      const parts = [`新增 ${res.nodes_created} 个对象`, `合并 ${res.nodes_updated} 个`, `新建 ${res.edges_created} 条关系`];
+      const parts = [
+        `新增 ${res.nodes_created} 个对象`,
+        `合并 ${res.nodes_updated} 个`,
+        `新建 ${res.edges_created} 条关系`,
+      ];
       if ((res.failures ?? 0) > 0) {
         toast.warning(`${parts.join("、")}；${res.failures} 项失败`);
       } else if (res.warnings.length > 0) {
@@ -178,7 +189,9 @@ export function ADImportDialog({
                 e.target.value = ""; // 同一个文件能连着选第二次
               }}
             />
-            <span className="text-xs text-muted-foreground">采集结果里没有的引用（未导的组/账号）会标成「推断节点」，不会被丢掉</span>
+            <span className="text-xs text-muted-foreground">
+              采集结果里没有的引用（未导的组/账号）会标成「推断节点」，不会被丢掉
+            </span>
           </div>
 
           {files.length > 0 && (
@@ -249,7 +262,9 @@ export function ADImportDialog({
 
               {preview.skipped_rights && Object.keys(preview.skipped_rights).length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">未建边的权限（白名单外，避免图被噪声淹没）</p>
+                  <p className="text-xs font-medium text-muted-foreground">
+                    未建边的权限（白名单外，避免图被噪声淹没）
+                  </p>
                   <p className="font-mono text-xs text-muted-foreground">
                     {Object.entries(preview.skipped_rights)
                       .map(([k, v]) => `${k}×${v}`)

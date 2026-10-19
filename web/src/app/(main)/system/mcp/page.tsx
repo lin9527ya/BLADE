@@ -1,26 +1,36 @@
 "use client";
 
 import * as React from "react";
-import { MCPDialogs } from "./_components/mcp-dialogs";
-import { FormState, ToolParams, bareToolName, InfoRow, emptyForm } from "./_components/mcp-parts";
+
+import {
+  ChevronRightIcon,
+  PencilIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  SearchIcon,
+  ServerIcon,
+  SparklesIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
-import { ChevronRightIcon, SparklesIcon, PencilIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SearchIcon, ServerIcon, Trash2Icon } from "lucide-react";
 
 import { SubBlock } from "@/components/page-sections";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { MCP_CATALOG } from "@/lib/mcp-catalog";
+import type { MCP_CATALOG } from "@/lib/mcp-catalog";
+import type { Agent, MCPGuardStatus, MCPServer, MCPTool } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { MCPServer, MCPGuardStatus, MCPTool, Agent } from "@/lib/types";
+
+import { MCPDialogs } from "./_components/mcp-dialogs";
+import { bareToolName, emptyForm, type FormState, InfoRow, ToolParams } from "./_components/mcp-parts";
 
 export default function MCPPage() {
   const [servers, setServers] = React.useState<MCPServer[]>([]);

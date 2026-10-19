@@ -2,26 +2,21 @@
 
 import * as React from "react";
 
-import { cooldownText } from "./llm-helpers";
+import { RotateCcwIcon, ZapIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import { LLMPoolStatus } from "@/lib/types";
+import type { LLMPoolStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { RotateCcwIcon, ZapIcon } from "lucide-react";
-import { toast } from "sonner";
+
+import { cooldownText } from "./llm-helpers";
 
 // LLM 轮询链（故障转移）配置抽屉：开关、成员顺序与健康状态。
 
@@ -39,11 +34,11 @@ export function PoolDialog({
   const [busy, setBusy] = React.useState(false);
 
   // 冷却倒计时是后端算出的剩余秒数——抽屉开着且有配置不正常时才定时拉，让它走起来。
-  usePolling(
-    () => onReload(),
-    open && pool?.enabled && pool.chain.some((m) => m.state !== "ok") ? 10_000 : 0,
-    [open, pool, onReload],
-  );
+  usePolling(() => onReload(), open && pool?.enabled && pool.chain.some((m) => m.state !== "ok") ? 10_000 : 0, [
+    open,
+    pool,
+    onReload,
+  ]);
 
   async function toggle(patch: { llm_pool_enabled?: boolean; llm_pool_bind_fallback?: boolean }) {
     if (busy) return;

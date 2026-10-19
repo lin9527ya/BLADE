@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { Agent, Conversation } from "@/lib/types";
+import type { Agent, Conversation } from "@/lib/types";
 
 // 对话页的纯函数、常量与类型。
 

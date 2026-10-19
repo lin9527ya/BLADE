@@ -8,11 +8,11 @@ import { useSearchParams } from "next/navigation";
 import { ArrowLeftIcon, ArrowUpRightIcon, FileDownIcon, FileTextIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { PromoteKnowledgeDialog } from "@/components/promote-knowledge-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
 import { Markdown } from "@/components/markdown";
+import { PromoteKnowledgeDialog } from "@/components/promote-knowledge-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";

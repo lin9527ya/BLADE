@@ -1,29 +1,59 @@
 "use client";
 
 import * as React from "react";
-import { AssetCard, CompanyAvatar, CompanyDialog, EditScopeDialog, AppendScopeDialog, KIND_LABEL, csvCell, assetTarget, assetPortStatus, assetExtras, fmtSeen } from "./_components/asset-parts";
 
-import { BuildingIcon, GlobeIcon, DownloadIcon, LayoutTemplateIcon, LayersIcon, LinkIcon, type LucideIcon, NetworkIcon, RefreshCwIcon, SmartphoneIcon, Trash2Icon } from "lucide-react";
+import {
+  BuildingIcon,
+  DownloadIcon,
+  GlobeIcon,
+  LayersIcon,
+  LayoutTemplateIcon,
+  LinkIcon,
+  type LucideIcon,
+  NetworkIcon,
+  RefreshCwIcon,
+  SmartphoneIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
-import { CompanyKnowledgeDialog } from "@/components/company-knowledge-dialog";
 import { AssetImportDialog } from "@/components/asset-import-dialog";
+import { CompanyKnowledgeDialog } from "@/components/company-knowledge-dialog";
 import { FofaSearchDialog } from "@/components/fofa-search-dialog";
-
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-
-import { Asset, Company } from "@/lib/types";
+import type { Asset, Company } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import {
+  AppendScopeDialog,
+  AssetCard,
+  assetExtras,
+  assetPortStatus,
+  assetTarget,
+  CompanyAvatar,
+  CompanyDialog,
+  csvCell,
+  EditScopeDialog,
+  fmtSeen,
+  KIND_LABEL,
+} from "./_components/asset-parts";
 
 const METHOD_COLOR: Record<string, string> = {
   GET: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
@@ -290,9 +320,7 @@ export default function AssetsPage() {
       let offset = 0;
       let total = 0;
       for (;;) {
-        const r = dsl
-          ? await api.searchAssets(dsl, typ, pageSize, offset)
-          : await api.assets(typ, pageSize, offset);
+        const r = dsl ? await api.searchAssets(dsl, typ, pageSize, offset) : await api.assets(typ, pageSize, offset);
         total = r.total;
         for (const a of r.assets) {
           const host = a.domain || a.root_domain || "";

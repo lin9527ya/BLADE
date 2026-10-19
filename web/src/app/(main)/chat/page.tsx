@@ -1,26 +1,36 @@
 "use client";
 
 import * as React from "react";
-import { CONVERSATION_LIST_PAGE, COLLAPSED_AGENTS_KEY, groupByAgent, conversationIsPinned } from "./_components/chat-helpers";
-import { DraftChat, ChatView } from "./_components/chat-messages";
-import { ConversationItem, AgentGroupHeader } from "./_components/chat-sidebar";
 
 import { Bot, ListChecksIcon, Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import { api } from "@/lib/api";
-
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
+import type { Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
 
-import { Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
+import {
+  COLLAPSED_AGENTS_KEY,
+  CONVERSATION_LIST_PAGE,
+  conversationIsPinned,
+  groupByAgent,
+} from "./_components/chat-helpers";
+import { ChatView, DraftChat } from "./_components/chat-messages";
+import { AgentGroupHeader, ConversationItem } from "./_components/chat-sidebar";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 
@@ -32,15 +42,18 @@ export default function ChatPage() {
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [sourceRequested, setSourceRequested] = React.useState(false);
   const [convsLoaded, setConvsLoaded] = React.useState(false);
-  const selectConversation = React.useCallback((id: number | null) => {
-    if (id !== selectedId) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("approval");
-      setSourceRequested(false);
-      window.history.replaceState(null, "", url);
-    }
-    setSelectedId(id);
-  }, [selectedId]);
+  const selectConversation = React.useCallback(
+    (id: number | null) => {
+      if (id !== selectedId) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("approval");
+        setSourceRequested(false);
+        window.history.replaceState(null, "", url);
+      }
+      setSelectedId(id);
+    },
+    [selectedId],
+  );
 
   const [renamingId, setRenamingId] = React.useState<number | null>(null);
   const [renameText, setRenameText] = React.useState("");
@@ -67,7 +80,10 @@ export default function ChatPage() {
     const seq = ++conversationListSeq.current;
     try {
       const items = await api.conversations();
-      if (seq === conversationListSeq.current) { setConvs(items); setConvsLoaded(true); }
+      if (seq === conversationListSeq.current) {
+        setConvs(items);
+        setConvsLoaded(true);
+      }
     } catch {
       // Preserve the selected transcript and list on a transient poll failure.
     }

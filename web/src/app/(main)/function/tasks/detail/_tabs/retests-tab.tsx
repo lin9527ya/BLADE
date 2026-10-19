@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { TablePagination } from "@/components/table-pagination";
 
 import Link from "next/link";
 
@@ -9,6 +8,7 @@ import { ArrowUpRightIcon } from "lucide-react";
 
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { StatusBadge } from "@/components/status-badge";
+import { TablePagination } from "@/components/table-pagination";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";

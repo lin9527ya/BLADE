@@ -42,7 +42,15 @@ import {
   ComboboxList,
   ComboboxValue,
 } from "@/components/ui/combobox";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -528,7 +536,9 @@ export function CategoryManagementDialog({
         <DialogContent className="grid max-h-[88vh] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-4xl">
           <DialogHeader className="border-b px-6 py-5">
             <DialogTitle>任务分类管理</DialogTitle>
-            <DialogDescription>分类用于任务筛选与归档；修改不会影响任务执行，删除后任务会移入未分类。</DialogDescription>
+            <DialogDescription>
+              分类用于任务筛选与归档；修改不会影响任务执行，删除后任务会移入未分类。
+            </DialogDescription>
           </DialogHeader>
           <DndContext
             sensors={sensors}

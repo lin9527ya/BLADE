@@ -2,28 +2,34 @@
 
 import * as React from "react";
 
+import { ZapIcon } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
+
 import { Card } from "@/components/ui/card";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { cn } from "@/lib/utils";
-import { ZapIcon } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  XAxis,
-  YAxis,
-} from "recharts";
 
+import { dailyTrendConfig, fmtTokens } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
-import { dailyTrendConfig } from "./dashboard-helpers";
-import { fmtTokens } from "./dashboard-helpers";
 
 export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState> }) {
-  const { activity, llmProfiles, defaultProfileId, tokenVersion, setTokenVersion, tokenTab, setTokenTab, tokenDays, setTokenDays, tokenByProfile, displayedTokens, dailyTokenData } = s;
+  const {
+    activity,
+    llmProfiles,
+    defaultProfileId,
+    tokenVersion,
+    setTokenVersion,
+    tokenTab,
+    setTokenTab,
+    tokenDays,
+    setTokenDays,
+    tokenByProfile,
+    displayedTokens,
+    dailyTokenData,
+  } = s;
 
   return (
     <>
-
       <Card className="p-4">
         {/* Header */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">

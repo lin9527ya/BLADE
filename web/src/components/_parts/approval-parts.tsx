@@ -2,21 +2,16 @@
 
 import * as React from "react";
 
-import { originLabel, source } from "./approval-helpers";
+import { BotIcon, CheckIcon, ChevronDownIcon, CopyIcon, XIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { api } from "@/lib/api";
-import { InterceptApprovalRow, InterceptAudit, InterceptReviewInput } from "@/lib/types";
-import {
-  BotIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  CopyIcon,
-  XIcon,
-} from "lucide-react";
-import { toast } from "sonner";
+import type { InterceptApprovalRow, InterceptAudit, InterceptReviewInput } from "@/lib/types";
+
+import { originLabel, source } from "./approval-helpers";
 
 // 审批页的展示基件：来源标签、状态徽标、匹配单元格、代码块、模型复核上下文与决策按钮。
 

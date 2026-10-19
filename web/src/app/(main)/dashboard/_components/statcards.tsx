@@ -2,24 +2,18 @@
 
 import * as React from "react";
 
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  ActivityIcon,
-  BugIcon,
-  NetworkIcon,
-  TargetIcon,
-  ZapIcon,
-} from "lucide-react";
+import { ActivityIcon, BugIcon, NetworkIcon, TargetIcon, ZapIcon } from "lucide-react";
 
-import type { useDashboardState } from "./use-dashboard-state";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+
 import { fmtTokens, LiveDot } from "./dashboard-helpers";
+import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState> }) {
   const { tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
 
   return (
     <>
-
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {/* 活跃任务 */}
         <Card className="gap-1">

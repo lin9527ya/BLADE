@@ -4,6 +4,22 @@ import * as React from "react";
 
 import Link from "next/link";
 
+import {
+  ArrowDownIcon,
+  ArrowUpDownIcon,
+  ArrowUpIcon,
+  EyeIcon,
+  Loader2Icon,
+  PauseIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
+  PlayIcon,
+  SlidersHorizontalIcon,
+  StarIcon,
+} from "lucide-react";
+import { toast } from "sonner";
+
 import { StatusBadge } from "@/components/status-badge";
 import { AlertDialog } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
@@ -24,28 +40,23 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { TableCell, TableHead, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { type SortDirection } from "@/lib/sort-preference";
-import { DeleteTaskOptions, Task } from "@/lib/types";
+import type { SortDirection } from "@/lib/sort-preference";
+import type { DeleteTaskOptions, Task } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  ArrowDownIcon,
-  ArrowUpDownIcon,
-  ArrowUpIcon,
-  EyeIcon,
-  Loader2Icon,
-  PauseIcon,
-  PencilIcon,
-  PinIcon,
-  PinOffIcon,
-  PlayIcon,
-  SlidersHorizontalIcon,
-  StarIcon,
-} from "lucide-react";
-import { toast } from "sonner";
 
 import { TaskArchiveAction } from "./task-archives";
 import { DeleteTaskDialog } from "./task-dialogs";
-import { POLL_MS, budgetTextTone, fmtDateTime, fmtDuration, fmtTokens, taskControlAction, taskDuration, taskIsPinned, type TaskSortField } from "./task-helpers";
+import {
+  budgetTextTone,
+  fmtDateTime,
+  fmtDuration,
+  fmtTokens,
+  POLL_MS,
+  type TaskSortField,
+  taskControlAction,
+  taskDuration,
+  taskIsPinned,
+} from "./task-helpers";
 
 // 任务表格：表头（可排序）、任务行与行内的重命名 / 置顶 / 暂停恢复控件，
 // 以及并发设置弹窗。
@@ -251,10 +262,7 @@ export const TaskRow = React.memo(function TaskRow({
       </TableCell>
       <TableCell>
         <StatusBadge domain="task" value={task.status} dot />
-        {(task.policy_techniques?.length ?? 0) +
-          (task.policy_writes?.length ?? 0) +
-          (task.policy_custom ?? 0) >
-          0 && (
+        {(task.policy_techniques?.length ?? 0) + (task.policy_writes?.length ?? 0) + (task.policy_custom ?? 0) > 0 && (
           <span
             className="text-muted-foreground ml-1.5 rounded border px-1 py-0.5 text-[10px]"
             title={`探索策略：禁用 ${task.policy_techniques?.length ?? 0} 类手段、${

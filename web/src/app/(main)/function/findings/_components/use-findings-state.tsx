@@ -1,19 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { AssetTreeState, GroupFindingsState, FlatFindingsState, FINDING_LIST_PREFERENCE_KEY, FindingView, FINDING_VIEWS, EMPTY_ASSET_TREE, EMPTY_FLAT_STATE, findingGroupKey, EMPTY_STATS } from "./findings-helpers";
 
-import { assetPathOf } from "./asset-tree";
-import {
-  FINDING_STATUSES,
-  FindingsTable,
-  SEVERITIES,
-  UNASSIGNED_TASK,
-  findingRowKey,
-  isSameFinding,
-  type FindingEdit,
-  type FindingReport,
-} from "./findings-table";
+import { BugIcon, ClockIcon, InfoIcon, ShieldAlertIcon, TriangleAlertIcon } from "lucide-react";
+import { toast } from "sonner";
+
 import { TablePagination } from "@/components/table-pagination";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -21,22 +12,31 @@ import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { statusMeta } from "@/lib/status";
+import type { ActiveFindingRetest, Finding, FindingGroup, FindingStats, FindingStatus, Severity } from "@/lib/types";
+
+import { assetPathOf } from "./asset-tree";
 import {
-  ActiveFindingRetest,
-  Finding,
-  FindingGroup,
-  FindingStats,
-  FindingStatus,
-  Severity,
-} from "@/lib/types";
+  type AssetTreeState,
+  EMPTY_ASSET_TREE,
+  EMPTY_FLAT_STATE,
+  EMPTY_STATS,
+  FINDING_LIST_PREFERENCE_KEY,
+  FINDING_VIEWS,
+  type FindingView,
+  type FlatFindingsState,
+  findingGroupKey,
+  type GroupFindingsState,
+} from "./findings-helpers";
 import {
-  BugIcon,
-  ClockIcon,
-  InfoIcon,
-  ShieldAlertIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
-import { toast } from "sonner";
+  FINDING_STATUSES,
+  type FindingEdit,
+  type FindingReport,
+  FindingsTable,
+  findingRowKey,
+  isSameFinding,
+  SEVERITIES,
+  UNASSIGNED_TASK,
+} from "./findings-table";
 
 // 发现页的状态与取数：平铺/分组两种视图、资产树、筛选与轮询。
 
@@ -475,22 +475,26 @@ export function useFindingsState() {
 
   // Whole-table aggregates (stat cards + vuln-class options) — independent of the
   // current page, so they stay exact.
-  usePolling(async (alive) => {
-    const load = () => {
-      api
-        .findingStats()
-        .then((s) => {
-          if (alive()) {
-            setStats(s);
-            setStatsLoaded(true);
-          }
-        })
-        .catch(() => {
-          // Keep the previous aggregate snapshot until the next poll.
-        });
-    };
-    load();
-  }, 5000, []);
+  usePolling(
+    async (alive) => {
+      const load = () => {
+        api
+          .findingStats()
+          .then((s) => {
+            if (alive()) {
+              setStats(s);
+              setStatsLoaded(true);
+            }
+          })
+          .catch(() => {
+            // Keep the previous aggregate snapshot until the next poll.
+          });
+      };
+      load();
+    },
+    5000,
+    [],
+  );
 
   React.useEffect(() => {
     if (!statsLoaded) return;
@@ -720,6 +724,114 @@ export function useFindingsState() {
   );
 
   return {
-    view, setView, severity, setSeverity, status, setStatus, vulnclass, setVulnclass, task, setTask, sort, setSort, search, setSearch, query, setQuery, expanded, setExpanded, flat, setFlat, flatPage, setFlatPage, flatPageSize, setFlatPageSize, assetTree, setAssetTree, assetScope, setAssetScope, groups, setGroups, groupTotal, setGroupTotal, expandedGroups, setExpandedGroups, groupFindings, setGroupFindings, total, setTotal, stats, setStats, statsLoaded, setStatsLoaded, preferencesHydrated, setPreferencesHydrated, page, setPage, pageSize, setPageSize, deepenFinding, setDeepenFinding, retestFinding, setRetestFinding, activeRetests, setActiveRetests, activeRetestFingerprint, retestRefreshVersion, deepenDescription, setDeepenDescription, deepening, setDeepening, filterFingerprint, activeFilterFingerprint, setFindings, selectedIds, setSelectedIds, exportOpen, setExportOpen, exportScope, setExportScope, exportFormat, setExportFormat, exporting, setExporting, toggleSelected, toggleSelectedPage, openExport, flatRequest, assetTreeRequest, groupRequests, groupsRequest, flatStateRef, expandedGroupsRef, groupFindingsRef, visibleGroupKeysRef, activeAssetScope, loadFlat, loadAssetTree, refreshGroups, loadGroup, toggleGroup, refreshAfterMutation, updateStatus, reports, setReports, edit, setEdit, saving, setSaving, toggleRow, saveEdit, deleteFinding, openDeepen, statCards, filteredTotal, assetPath, rowProps, flatListCard, doExport, submitDeepen,
+    view,
+    setView,
+    severity,
+    setSeverity,
+    status,
+    setStatus,
+    vulnclass,
+    setVulnclass,
+    task,
+    setTask,
+    sort,
+    setSort,
+    search,
+    setSearch,
+    query,
+    setQuery,
+    expanded,
+    setExpanded,
+    flat,
+    setFlat,
+    flatPage,
+    setFlatPage,
+    flatPageSize,
+    setFlatPageSize,
+    assetTree,
+    setAssetTree,
+    assetScope,
+    setAssetScope,
+    groups,
+    setGroups,
+    groupTotal,
+    setGroupTotal,
+    expandedGroups,
+    setExpandedGroups,
+    groupFindings,
+    setGroupFindings,
+    total,
+    setTotal,
+    stats,
+    setStats,
+    statsLoaded,
+    setStatsLoaded,
+    preferencesHydrated,
+    setPreferencesHydrated,
+    page,
+    setPage,
+    pageSize,
+    setPageSize,
+    deepenFinding,
+    setDeepenFinding,
+    retestFinding,
+    setRetestFinding,
+    activeRetests,
+    setActiveRetests,
+    activeRetestFingerprint,
+    retestRefreshVersion,
+    deepenDescription,
+    setDeepenDescription,
+    deepening,
+    setDeepening,
+    filterFingerprint,
+    activeFilterFingerprint,
+    setFindings,
+    selectedIds,
+    setSelectedIds,
+    exportOpen,
+    setExportOpen,
+    exportScope,
+    setExportScope,
+    exportFormat,
+    setExportFormat,
+    exporting,
+    setExporting,
+    toggleSelected,
+    toggleSelectedPage,
+    openExport,
+    flatRequest,
+    assetTreeRequest,
+    groupRequests,
+    groupsRequest,
+    flatStateRef,
+    expandedGroupsRef,
+    groupFindingsRef,
+    visibleGroupKeysRef,
+    activeAssetScope,
+    loadFlat,
+    loadAssetTree,
+    refreshGroups,
+    loadGroup,
+    toggleGroup,
+    refreshAfterMutation,
+    updateStatus,
+    reports,
+    setReports,
+    edit,
+    setEdit,
+    saving,
+    setSaving,
+    toggleRow,
+    saveEdit,
+    deleteFinding,
+    openDeepen,
+    statCards,
+    filteredTotal,
+    assetPath,
+    rowProps,
+    flatListCard,
+    doExport,
+    submitDeepen,
   };
 }

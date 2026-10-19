@@ -2,6 +2,9 @@
 
 import * as React from "react";
 
+import { ChevronRightIcon, Loader2Icon, PaperclipIcon, PlusIcon } from "lucide-react";
+import { toast } from "sonner";
+
 import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-editor";
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { StatusBadge } from "@/components/status-badge";
@@ -38,7 +41,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import {
+import type {
   AssetInterceptRuleInput,
   Company,
   CustomRule,
@@ -47,11 +50,9 @@ import {
   Task,
   TaskCategory,
 } from "@/lib/types";
-import { ChevronRightIcon, Loader2Icon, PaperclipIcon, PlusIcon } from "lucide-react";
-import { toast } from "sonner";
 
 import { CategoryPicker, CompanyPicker } from "./task-categories";
-import { MAX_SOURCE_TASKS, appendUploads } from "./task-helpers";
+import { appendUploads, MAX_SOURCE_TASKS } from "./task-helpers";
 
 // CreateTaskSheet is the 新建任务 drawer. Its form state lives HERE, not in TasksPage: with
 // 描述/目标 held by the page component every keystroke re-rendered the whole task table
@@ -500,11 +501,7 @@ export function CreateTaskSheet({
                 </div>
                 <div className="grid gap-2">
                   <label htmlFor="policy-custom" className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      id="policy-custom"
-                      checked={policyCustom}
-                      onCheckedChange={(v) => setPolicyCustom(!!v)}
-                    />
+                    <Checkbox id="policy-custom" checked={policyCustom} onCheckedChange={(v) => setPolicyCustom(!!v)} />
                     自定义本任务的探索策略（默认继承全局默认）
                   </label>
                   {!policyCustom ? (

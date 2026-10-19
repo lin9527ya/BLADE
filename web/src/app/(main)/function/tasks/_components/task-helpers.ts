@@ -154,7 +154,13 @@ export function taskCreatedUnix(task: Task): number {
   return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
 }
 
-export function compareTasks(left: Task, right: Task, field: TaskSortField, direction: SortDirection, nowSec: number): number {
+export function compareTasks(
+  left: Task,
+  right: Task,
+  field: TaskSortField,
+  direction: SortDirection,
+  nowSec: number,
+): number {
   const leftPinned = taskIsPinned(left);
   const rightPinned = taskIsPinned(right);
   if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;

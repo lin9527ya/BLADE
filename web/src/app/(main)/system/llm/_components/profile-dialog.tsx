@@ -2,39 +2,30 @@
 
 import * as React from "react";
 
-import { EFFORT_LEVELS, MAX_TOKENS_FIELDS, MAX_TOKENS_FIELD_HINTS, NONE, THINKING_TYPES, fromStore, toStore } from "./llm-helpers";
+import { Loader2Icon, PlugZapIcon, PlusIcon, RefreshCwIcon, SaveIcon } from "lucide-react";
+import { toast } from "sonner";
 
-import { ProfileRetryFields, ZERO_OVERRIDE } from "./retry";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import { LLMProfile, LLMRetryOverride } from "@/lib/types";
+import type { LLMProfile, LLMRetryOverride } from "@/lib/types";
+
 import {
-  Loader2Icon,
-  PlugZapIcon,
-  PlusIcon,
-  RefreshCwIcon,
-  SaveIcon,
-} from "lucide-react";
-import { toast } from "sonner";
+  EFFORT_LEVELS,
+  fromStore,
+  MAX_TOKENS_FIELD_HINTS,
+  MAX_TOKENS_FIELDS,
+  NONE,
+  THINKING_TYPES,
+  toStore,
+} from "./llm-helpers";
+import { ProfileRetryFields, ZERO_OVERRIDE } from "./retry";
 
 // LLM 配置档（provider / 模型 / 代理 / 参数）的编辑弹窗。
 

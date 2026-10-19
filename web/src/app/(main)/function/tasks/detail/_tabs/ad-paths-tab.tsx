@@ -121,7 +121,11 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
             <ADImportDialog taskId={taskId} onImported={() => load(Number(start))} />
             <ADImportDialog taskId={taskId} source="cloud" onImported={() => load(Number(start))} />
             <Button variant="ghost" size="sm" onClick={() => load(Number(start))} disabled={loading}>
-              {loading ? <LoaderIcon className="animate-spin" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+              {loading ? (
+                <LoaderIcon className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <RefreshCwIcon data-icon="inline-start" />
+              )}
               刷新
             </Button>
             {(data?.starts.length ?? 0) > 0 && (
@@ -170,9 +174,9 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              还没有域内/云上数据：导入一次 SharpHound / BloodHound 采集结果（域内），或
-              aws-cli / kubectl 的枚举输出（云上），就能看到从手头账号到 Domain Admins、域控、
-              admin 策略、集群管理员这些目标的最短利用链。
+              还没有域内/云上数据：导入一次 SharpHound / BloodHound 采集结果（域内），或 aws-cli / kubectl
+              的枚举输出（云上），就能看到从手头账号到 Domain Admins、域控、 admin
+              策略、集群管理员这些目标的最短利用链。
             </p>
           )}
 

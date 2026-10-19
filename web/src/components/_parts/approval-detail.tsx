@@ -2,26 +2,31 @@
 
 import * as React from "react";
 
-import { fmtTime, originLabel, source } from "./approval-helpers";
-import { ApprovalOrigin, CodeBlock, Decide, DecisionActions, MatchCell, ModelReviewContext, StatusBadge, actionLabels, contextLabels, executionLabels } from "./approval-parts";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { InterceptApprovalRow, InterceptDetail } from "@/lib/types";
+import type { InterceptApprovalRow, InterceptDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+
+import { fmtTime, originLabel, source } from "./approval-helpers";
+import {
+  ApprovalOrigin,
+  actionLabels,
+  CodeBlock,
+  contextLabels,
+  type Decide,
+  DecisionActions,
+  executionLabels,
+  MatchCell,
+  ModelReviewContext,
+  StatusBadge,
+} from "./approval-parts";
 
 // 审批详情面板与审批列表（含列可见性计算）。
 
@@ -145,9 +150,7 @@ export function ApprovalDetail({
               刻意标成**预计**——实测结论走检测验证（P31），两者混起来就是把预期读成实测。 */}
           {(audit?.opsec_notes?.length ?? 0) > 0 ? (
             <div className="rounded-md border p-3">
-              <p className="text-muted-foreground mb-2 text-xs font-medium">
-                可检出性（预计 · 来自知识库，不是实测）
-              </p>
+              <p className="text-muted-foreground mb-2 text-xs font-medium">可检出性（预计 · 来自知识库，不是实测）</p>
               <ul className="flex flex-col gap-2">
                 {(audit?.opsec_notes ?? []).map((n) => (
                   <li key={n.id} className="text-xs">

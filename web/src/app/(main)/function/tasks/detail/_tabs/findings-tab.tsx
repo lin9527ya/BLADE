@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -21,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import { statusMeta } from "@/lib/status";
@@ -162,19 +162,23 @@ export function FindingsTab({ taskId }: { taskId: string }) {
     "desc",
   );
 
-  usePolling(async (active) => {
-    const load = () => {
-      api
-        .findings(taskId)
-        .then((fs) => {
-          if (active()) setFindings(fs);
-        })
-        .catch(() => {
-          // Keep the last successful snapshot during transient refresh failures.
-        });
-    };
-    load();
-  }, 3000, [taskId]);
+  usePolling(
+    async (active) => {
+      const load = () => {
+        api
+          .findings(taskId)
+          .then((fs) => {
+            if (active()) setFindings(fs);
+          })
+          .catch(() => {
+            // Keep the last successful snapshot during transient refresh failures.
+          });
+      };
+      load();
+    },
+    3000,
+    [taskId],
+  );
 
   const onStatus = React.useCallback(async (f: Finding, next: FindingStatus) => {
     if (f.inherited || !f.finding_id || next === f.status) return;
@@ -272,36 +276,36 @@ export function FindingsTab({ taskId }: { taskId: string }) {
         </CardContent>
       </Card>
       <Card className="overflow-hidden py-0">
-      <CardContent className="px-0">
-        <div className="flex items-center border-b px-4 py-2 text-xs text-muted-foreground">
-          <span className="min-w-0 flex-1">漏洞</span>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 outline-none focus-visible:underline"
-            aria-label={`发现时间当前${sortPreference.direction === "asc" ? "正序" : "倒序"}，点击切换排序方向`}
-            onClick={() =>
-              setSortPreference((current) => ({
-                field: "time",
-                direction: current.direction === "asc" ? "desc" : "asc",
-              }))
-            }
-          >
-            <span>发现时间</span>
-            {sortPreference.direction === "asc" ? (
-              <ArrowUpIcon className="size-3.5" />
-            ) : (
-              <ArrowDownIcon className="size-3.5" />
-            )}
-          </button>
-        </div>
-        {items.map((f) => (
-          <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
-        ))}
-        {items.length === 0 && (
-          <p className="px-4 py-8 text-center text-sm text-muted-foreground">本任务及直接关联任务暂无确认发现。</p>
-        )}
-      </CardContent>
-    </Card>
+        <CardContent className="px-0">
+          <div className="flex items-center border-b px-4 py-2 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1">漏洞</span>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 outline-none focus-visible:underline"
+              aria-label={`发现时间当前${sortPreference.direction === "asc" ? "正序" : "倒序"}，点击切换排序方向`}
+              onClick={() =>
+                setSortPreference((current) => ({
+                  field: "time",
+                  direction: current.direction === "asc" ? "desc" : "asc",
+                }))
+              }
+            >
+              <span>发现时间</span>
+              {sortPreference.direction === "asc" ? (
+                <ArrowUpIcon className="size-3.5" />
+              ) : (
+                <ArrowDownIcon className="size-3.5" />
+              )}
+            </button>
+          </div>
+          {items.map((f) => (
+            <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
+          ))}
+          {items.length === 0 && (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">本任务及直接关联任务暂无确认发现。</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

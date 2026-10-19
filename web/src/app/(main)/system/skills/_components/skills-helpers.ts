@@ -2,7 +2,6 @@
 
 import * as React from "react";
 
-
 // 技能页的类型与纯函数：技能树构建/排序、选中/新建/待删三态。
 
 export function fmtTime(ts?: string) {
@@ -18,7 +17,7 @@ export function fmtTime(ts?: string) {
 // ── Tree node ──────────────────────────────────────────────────────────────
 export interface TreeNode {
   name: string;
-  path: string;   // relative to skill root, dirs WITHOUT trailing slash
+  path: string; // relative to skill root, dirs WITHOUT trailing slash
   type: "file" | "dir";
   children: TreeNode[];
 }
@@ -84,9 +83,7 @@ export function sortNodes(nodes: TreeNode[]): void {
 }
 
 // ── State types ───────────────────────────────────────────────────────────
-export type Selected =
-  | { skill: string; path: null }
-  | { skill: string; path: string };
+export type Selected = { skill: string; path: null } | { skill: string; path: string };
 
 export type Creating = {
   skill: string;

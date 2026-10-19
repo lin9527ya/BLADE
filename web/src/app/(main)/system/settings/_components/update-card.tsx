@@ -13,10 +13,10 @@ import {
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { api, sseUrl } from "@/lib/api";
 import type { UpdateCheck, UpdateProgress } from "@/lib/types";
@@ -52,7 +52,10 @@ export function UpdateCard() {
   const [token, setToken] = React.useState("");
   const [savingToken, setSavingToken] = React.useState(false);
   React.useEffect(() => {
-    api.settings().then((s) => setTokenSet(!!s.update_token_set)).catch(() => {});
+    api
+      .settings()
+      .then((s) => setTokenSet(!!s.update_token_set))
+      .catch(() => {});
   }, []);
   async function saveToken() {
     if (!token.trim()) {
@@ -327,8 +330,8 @@ export function UpdateCard() {
             </Button>
           </div>
           <p className="text-muted-foreground text-xs leading-relaxed">
-            发布源是私有仓库时，GitHub 的 release 接口需要带令牌才读得到；令牌只存不回显、
-            只在 github.com 与 api.github.com 上发送（下载重定向到对象存储时不会带上）。
+            发布源是私有仓库时，GitHub 的 release 接口需要带令牌才读得到；令牌只存不回显、 只在 github.com 与
+            api.github.com 上发送（下载重定向到对象存储时不会带上）。
           </p>
         </div>
 

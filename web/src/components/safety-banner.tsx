@@ -1,12 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
 import { OctagonXIcon, ShieldAlertIcon } from "lucide-react";
 
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { ScopeEnforcement } from "@/lib/types";
 
@@ -22,19 +22,23 @@ const POLL_MS = 30000;
 export function SafetyBanner() {
   const [st, setSt] = React.useState<ScopeEnforcement | null>(null);
 
-  usePolling(async (alive) => {
-    const load = () => {
-      api
-        .scopeEnforcement()
-        .then((d) => {
-          if (alive()) setSt(d);
-        })
-        .catch(() => {
-          /* 读不到就不显示：这条是提示，不该自己变成错误源 */
-        });
-    };
-    load();
-  }, POLL_MS, []);
+  usePolling(
+    async (alive) => {
+      const load = () => {
+        api
+          .scopeEnforcement()
+          .then((d) => {
+            if (alive()) setSt(d);
+          })
+          .catch(() => {
+            /* 读不到就不显示：这条是提示，不该自己变成错误源 */
+          });
+      };
+      load();
+    },
+    POLL_MS,
+    [],
+  );
 
   if (!st) return null;
 
@@ -48,7 +52,11 @@ export function SafetyBanner() {
 
   return (
     <div className={`flex items-start gap-2 border-b px-4 py-2 text-xs lg:px-6 ${tone}`}>
-      {killed ? <OctagonXIcon className="mt-0.5 size-3.5 shrink-0" /> : <ShieldAlertIcon className="mt-0.5 size-3.5 shrink-0" />}
+      {killed ? (
+        <OctagonXIcon className="mt-0.5 size-3.5 shrink-0" />
+      ) : (
+        <ShieldAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+      )}
       <div className="min-w-0 flex-1">
         {killed ? (
           <span>

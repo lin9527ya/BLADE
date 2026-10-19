@@ -1,26 +1,44 @@
 "use client";
 
 import * as React from "react";
-import { AgentTriggersTab, DiffView } from "./_parts/agent-triggers-tab";
-import { toast } from "sonner";
-import { EyeIcon, GitCompareIcon, RotateCcwIcon, SaveIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { EyeIcon, GitCompareIcon, RotateCcwIcon, SaveIcon } from "lucide-react";
+import { toast } from "sonner";
+
+import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
-import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Markdown } from "@/components/markdown";
 import { api } from "@/lib/api";
+import {
+  Agent,
+  type AgentDetail,
+  type MCPServer,
+  type PromptVar,
+  type PromptVersion,
+  type Settings,
+  type SkillItem,
+  type Tool,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Agent, AgentDetail, MCPServer, PromptVar, PromptVersion, Settings, SkillItem, Tool } from "@/lib/types";
+
+import { AgentTriggersTab, DiffView } from "./_parts/agent-triggers-tab";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep this list in sync with traffic.SeedToolMetas.
@@ -69,10 +87,22 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const [settings, setSettings] = React.useState<Settings | null>(null);
 
   React.useEffect(() => {
-    api.mcpServers().then(setMcp).catch(() => {});
-    api.skills().then(setSkills).catch(() => {});
-    api.tools().then(setTools).catch(() => {});
-    api.settings().then(setSettings).catch(() => {});
+    api
+      .mcpServers()
+      .then(setMcp)
+      .catch(() => {});
+    api
+      .skills()
+      .then(setSkills)
+      .catch(() => {});
+    api
+      .tools()
+      .then(setTools)
+      .catch(() => {});
+    api
+      .settings()
+      .then(setSettings)
+      .catch(() => {});
   }, []);
   // global gates: traffic tools need 流量捕获, web search needs the master switch.
   const captureOn = !!settings?.traffic_capture;
@@ -259,7 +289,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   function toggleAlways(name: string) {
     const on = skillAlways.includes(name);
     if (!on && skillAlways.length >= MAX_ALWAYS_SKILLS) {
-      toast.error(`常驻技能最多 ${MAX_ALWAYS_SKILLS} 条：常驻正文会整段注入每次请求的 system 前缀，超量会稀释注意力并推高成本`);
+      toast.error(
+        `常驻技能最多 ${MAX_ALWAYS_SKILLS} 条：常驻正文会整段注入每次请求的 system 前缀，超量会稀释注意力并推高成本`,
+      );
       return;
     }
     void applyVis(
@@ -286,7 +318,10 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
     } catch (e) {
       toast.error("保存工具绑定失败：" + (e as Error).message);
       reload();
-      api.tools().then(setTools).catch(() => {});
+      api
+        .tools()
+        .then(setTools)
+        .catch(() => {});
     }
   }
 
@@ -324,9 +359,14 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             <div className="grid gap-3 rounded-md border p-3">
               {showLLM && (
                 <div className="grid gap-1.5">
-                  <Label htmlFor="llm-profile" className="text-xs">默认模型（LLM 配置）</Label>
+                  <Label htmlFor="llm-profile" className="text-xs">
+                    默认模型（LLM 配置）
+                  </Label>
                   <div className="flex flex-wrap items-center gap-3">
-                    <Select value={llmProfileId || "__follow__"} onValueChange={(v) => setLlmProfileId(v === "__follow__" ? "" : v)}>
+                    <Select
+                      value={llmProfileId || "__follow__"}
+                      onValueChange={(v) => setLlmProfileId(v === "__follow__" ? "" : v)}
+                    >
                       <SelectTrigger id="llm-profile" className="h-8 w-72">
                         <SelectValue />
                       </SelectTrigger>
@@ -340,7 +380,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                       </SelectContent>
                     </Select>
                     <span className="text-muted-foreground max-w-md text-xs">
-                      为该 Agent 绑定固定 LLM 配置（点「保存配置」生效）。优先级：Agent 绑定 &gt; 任务/会话指定 &gt; 全局激活。
+                      为该 Agent 绑定固定 LLM 配置（点「保存配置」生效）。优先级：Agent 绑定 &gt; 任务/会话指定 &gt;
+                      全局激活。
                     </span>
                   </div>
                 </div>
@@ -349,14 +390,30 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                 {showConfig && (
                   <>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="max-turns" className="text-xs">最大循环次数（0=不限）</Label>
-                      <Input id="max-turns" type="number" min={0} className="h-8 w-32"
-                        value={maxTurns} onChange={(e) => setMaxTurns(e.target.value)} />
+                      <Label htmlFor="max-turns" className="text-xs">
+                        最大循环次数（0=不限）
+                      </Label>
+                      <Input
+                        id="max-turns"
+                        type="number"
+                        min={0}
+                        className="h-8 w-32"
+                        value={maxTurns}
+                        onChange={(e) => setMaxTurns(e.target.value)}
+                      />
                     </div>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="run-seconds" className="text-xs">运行时长（秒，0=不限）</Label>
-                      <Input id="run-seconds" type="number" min={0} className="h-8 w-32"
-                        value={runSecs} onChange={(e) => setRunSecs(e.target.value)} />
+                      <Label htmlFor="run-seconds" className="text-xs">
+                        运行时长（秒，0=不限）
+                      </Label>
+                      <Input
+                        id="run-seconds"
+                        type="number"
+                        min={0}
+                        className="h-8 w-32"
+                        value={runSecs}
+                        onChange={(e) => setRunSecs(e.target.value)}
+                      />
                     </div>
                   </>
                 )}
@@ -373,7 +430,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                     onCheckedChange={(v) => void applySwitch("web_search", v, "网络搜索")}
                   />
                   <div className="grid gap-0.5">
-                    <Label htmlFor="web-search" className="text-sm">网络搜索</Label>
+                    <Label htmlFor="web-search" className="text-sm">
+                      网络搜索
+                    </Label>
                     <span className="text-muted-foreground text-xs">
                       {webSearchGlobalOn
                         ? "勾选即生效：该 Agent 的对话/任务可用 web_search 联网检索（开关本身受「系统配置」的全局开关门控）"
@@ -390,9 +449,12 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                     onCheckedChange={(v) => void applySwitch("interactive_shell", v, "交互式 Shell")}
                   />
                   <div className="grid gap-0.5">
-                    <Label htmlFor="interactive-shell" className="text-sm">交互式 Shell</Label>
+                    <Label htmlFor="interactive-shell" className="text-sm">
+                      交互式 Shell
+                    </Label>
                     <span className="text-muted-foreground text-xs">
-                      勾选即生效：可用持久 PTY 会话工具（shell_open/send/read/close/list）驱动 msfconsole/ssh/REPL 等交互程序
+                      勾选即生效：可用持久 PTY 会话工具（shell_open/send/read/close/list）驱动 msfconsole/ssh/REPL
+                      等交互程序
                     </span>
                   </div>
                 </div>
@@ -406,10 +468,15 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
               {variables.map((v) => (
                 <Tooltip key={v.name}>
                   <TooltipTrigger asChild>
-                    <button type="button" onClick={() => setPrompt((p) => `${p}{{.${v.name}}}`)}
-                      className="hover:bg-muted inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 font-mono text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setPrompt((p) => `${p}{{.${v.name}}}`)}
+                      className="hover:bg-muted inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 font-mono text-xs"
+                    >
                       {`{{.${v.name}}}`}
-                      <Badge variant="secondary" className="px-1 py-0 text-[10px]">{v.source}</Badge>
+                      <Badge variant="secondary" className="px-1 py-0 text-[10px]">
+                        {v.source}
+                      </Badge>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">
@@ -422,8 +489,13 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             </div>
           </div>
 
-          <Textarea className="font-mono text-xs" rows={16} value={prompt}
-            placeholder="留空则使用内置默认提示词" onChange={(e) => setPrompt(e.target.value)} />
+          <Textarea
+            className="font-mono text-xs"
+            rows={16}
+            value={prompt}
+            placeholder="留空则使用内置默认提示词"
+            onChange={(e) => setPrompt(e.target.value)}
+          />
 
           <div className="flex flex-wrap gap-2">
             <Dialog>
@@ -455,13 +527,25 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             <Label className="text-muted-foreground text-xs">版本历史</Label>
             <ul className="grid gap-1">
               {versions.map((ver, i) => (
-                <li key={ver.version} className="flex items-center gap-2 rounded-md px-1 py-0.5 text-xs hover:bg-muted/50">
+                <li
+                  key={ver.version}
+                  className="flex items-center gap-2 rounded-md px-1 py-0.5 text-xs hover:bg-muted/50"
+                >
                   <span className="font-mono shrink-0">v{ver.version}</span>
-                  {i === 0 && <Badge variant="secondary" className="px-1.5 py-0 shrink-0">当前</Badge>}
+                  {i === 0 && (
+                    <Badge variant="secondary" className="px-1.5 py-0 shrink-0">
+                      当前
+                    </Badge>
+                  )}
                   <span className="text-muted-foreground truncate flex-1">{ver.note}</span>
                   {ver.ts && (
                     <span className="text-muted-foreground/60 shrink-0 tabular-nums">
-                      {new Date(ver.ts).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {new Date(ver.ts).toLocaleDateString("zh-CN", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </span>
                   )}
                   <Button variant="ghost" size="icon-sm" className="size-6 shrink-0" onClick={() => setViewVer(ver)}>
@@ -481,13 +565,20 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
           </div>
 
           {/* 查看版本 dialog */}
-          <Dialog open={!!viewVer} onOpenChange={(o) => { if (!o) setViewVer(null); }}>
+          <Dialog
+            open={!!viewVer}
+            onOpenChange={(o) => {
+              if (!o) setViewVer(null);
+            }}
+          >
             <DialogContent className="sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>
                   v{viewVer?.version}
                   {viewVer?.version === versions[0]?.version && (
-                    <Badge variant="secondary" className="ml-2 px-1.5 py-0 align-middle">当前</Badge>
+                    <Badge variant="secondary" className="ml-2 px-1.5 py-0 align-middle">
+                      当前
+                    </Badge>
                   )}
                 </DialogTitle>
                 <DialogDescription>
@@ -504,15 +595,29 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
               </pre>
               <div className="flex gap-2 justify-end">
                 {viewVer && viewVer.version !== versions[0]?.version && (
-                  <Button variant="outline" size="sm" onClick={() => {
-                    if (viewVer) { setDiffVer(viewVer); setViewVer(null); }
-                  }}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (viewVer) {
+                        setDiffVer(viewVer);
+                        setViewVer(null);
+                      }
+                    }}
+                  >
                     <GitCompareIcon className="mr-1 size-3.5" /> 与当前版本对比
                   </Button>
                 )}
-                <Button size="sm" onClick={() => {
-                  if (viewVer) { setPrompt(viewVer.template_text); setViewVer(null); toast.success(`已加载 v${viewVer.version} 到编辑器，确认后点「保存为新版本」`); }
-                }}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (viewVer) {
+                      setPrompt(viewVer.template_text);
+                      setViewVer(null);
+                      toast.success(`已加载 v${viewVer.version} 到编辑器，确认后点「保存为新版本」`);
+                    }
+                  }}
+                >
                   加载到编辑器
                 </Button>
               </div>
@@ -520,14 +625,23 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
           </Dialog>
 
           {/* 版本对比 dialog */}
-          <Dialog open={!!diffVer} onOpenChange={(o) => { if (!o) setDiffVer(null); }}>
+          <Dialog
+            open={!!diffVer}
+            onOpenChange={(o) => {
+              if (!o) setDiffVer(null);
+            }}
+          >
             <DialogContent className="sm:max-w-3xl">
               <DialogHeader>
-                <DialogTitle>版本对比：v{diffVer?.version} → v{versions[0]?.version}（当前）</DialogTitle>
+                <DialogTitle>
+                  版本对比：v{diffVer?.version} → v{versions[0]?.version}（当前）
+                </DialogTitle>
                 <DialogDescription>
                   <span className="inline-flex items-center gap-3 text-xs">
                     <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-600 dark:text-red-400">- 删除</span>
-                    <span className="rounded bg-green-500/15 px-1.5 py-0.5 text-green-600 dark:text-green-400">+ 新增</span>
+                    <span className="rounded bg-green-500/15 px-1.5 py-0.5 text-green-600 dark:text-green-400">
+                      + 新增
+                    </span>
                   </span>
                 </DialogDescription>
               </DialogHeader>
@@ -547,9 +661,13 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
           <div className="flex items-center gap-2">
             <Label className="text-xs">收尾提示词正文</Label>
             {wrapup.trim() ? (
-              <Badge variant="secondary" className="px-1.5 py-0">自定义</Badge>
+              <Badge variant="secondary" className="px-1.5 py-0">
+                自定义
+              </Badge>
             ) : (
-              <Badge variant="outline" className="px-1.5 py-0">使用内置默认</Badge>
+              <Badge variant="outline" className="px-1.5 py-0">
+                使用内置默认
+              </Badge>
             )}
           </div>
           <Textarea
@@ -563,12 +681,22 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             <Label htmlFor="wrapup-turns" className="text-xs">
               收尾轮数（收尾阶段自身最多跑几轮；0=用内置默认 {wrapupTurnsDefault} 轮）
             </Label>
-            <Input id="wrapup-turns" type="number" min={0} className="h-8 w-32"
-              value={wrapupTurns} onChange={(e) => setWrapupTurns(e.target.value)} />
+            <Input
+              id="wrapup-turns"
+              type="number"
+              min={0}
+              className="h-8 w-32"
+              value={wrapupTurns}
+              onChange={(e) => setWrapupTurns(e.target.value)}
+            />
           </div>
           <div className="flex gap-2">
-            <Button size="sm" onClick={saveWrapup}>保存</Button>
-            <Button size="sm" variant="outline" onClick={resetWrapup}>恢复默认</Button>
+            <Button size="sm" onClick={saveWrapup}>
+              保存
+            </Button>
+            <Button size="sm" variant="outline" onClick={resetWrapup}>
+              恢复默认
+            </Button>
           </div>
           {wrapupDefault && (
             <>
@@ -586,15 +714,20 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             <>
               <Separator className="my-2" />
               <p className="text-muted-foreground text-xs leading-relaxed">
-                <b>任务超时收尾</b>（与上面的 per-run 收尾是<b>两套</b>）：当<b>整个任务</b>到达超时上限、即将结束时注入。
-                与 per-run 语义常相反（如 planner：per-run 说“别停继续规划”，任务超时说“到点停止、做最后判定”）。留空则用内置默认。
+                <b>任务超时收尾</b>（与上面的 per-run 收尾是<b>两套</b>）：当<b>整个任务</b>
+                到达超时上限、即将结束时注入。 与 per-run 语义常相反（如 planner：per-run
+                说“别停继续规划”，任务超时说“到点停止、做最后判定”）。留空则用内置默认。
               </p>
               <div className="flex items-center gap-2">
                 <Label className="text-xs">任务超时收尾提示词正文</Label>
                 {ttWrapup.trim() ? (
-                  <Badge variant="secondary" className="px-1.5 py-0">自定义</Badge>
+                  <Badge variant="secondary" className="px-1.5 py-0">
+                    自定义
+                  </Badge>
                 ) : (
-                  <Badge variant="outline" className="px-1.5 py-0">使用内置默认</Badge>
+                  <Badge variant="outline" className="px-1.5 py-0">
+                    使用内置默认
+                  </Badge>
                 )}
               </div>
               <Textarea
@@ -608,12 +741,22 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                 <Label htmlFor="tt-turns" className="text-xs">
                   收尾轮数（0=用内置默认 {ttTurnsDefault} 轮）
                 </Label>
-                <Input id="tt-turns" type="number" min={0} className="h-8 w-32"
-                  value={ttTurns} onChange={(e) => setTtTurns(e.target.value)} />
+                <Input
+                  id="tt-turns"
+                  type="number"
+                  min={0}
+                  className="h-8 w-32"
+                  value={ttTurns}
+                  onChange={(e) => setTtTurns(e.target.value)}
+                />
               </div>
               <div className="flex gap-2">
-                <Button size="sm" onClick={saveTaskTimeoutWrapup}>保存</Button>
-                <Button size="sm" variant="outline" onClick={resetTaskTimeoutWrapup}>恢复默认</Button>
+                <Button size="sm" onClick={saveTaskTimeoutWrapup}>
+                  保存
+                </Button>
+                <Button size="sm" variant="outline" onClick={resetTaskTimeoutWrapup}>
+                  恢复默认
+                </Button>
               </div>
               {ttWrapupDefault && (
                 <div className="grid gap-1.5">
@@ -646,9 +789,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       {/* Skill 可见性 + 常驻分层 */}
       <TabsContent value="skill" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         <p className="text-muted-foreground mb-3 text-xs">
-          勾选此 Agent 可见的 Skill；可见的 Skill 可再标「常驻」——常驻技能的正文会整段注入该 Agent
-          每次请求的 system 稳定段（随缓存前缀走），不依赖模型主动调用 Skill 工具，适合「必须始终遵守」的规则型技能（最多
-          {" "}
+          勾选此 Agent 可见的 Skill；可见的 Skill 可再标「常驻」——常驻技能的正文会整段注入该 Agent 每次请求的 system
+          稳定段（随缓存前缀走），不依赖模型主动调用 Skill 工具，适合「必须始终遵守」的规则型技能（最多{" "}
           {MAX_ALWAYS_SKILLS} 条，当前 {skillAlways.length} 条）。
         </p>
         <div className="grid gap-2">
@@ -694,10 +836,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             return (
               <label
                 key={t.key}
-                className={cn(
-                  "flex items-center gap-2 rounded-md border p-2 text-sm",
-                  gated && "opacity-60",
-                )}
+                className={cn("flex items-center gap-2 rounded-md border p-2 text-sm", gated && "opacity-60")}
               >
                 <Checkbox
                   checked={t.agents.includes(agentKey)}
@@ -706,10 +845,14 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                 />
                 <span className="font-mono text-xs">{t.key}</span>
                 {isTraffic && (
-                  <Badge variant="secondary" className="px-1 py-0 text-[9px]">流量</Badge>
+                  <Badge variant="secondary" className="px-1 py-0 text-[9px]">
+                    流量
+                  </Badge>
                 )}
                 {!t.enabled && (
-                  <Badge variant="outline" className="text-destructive px-1 py-0 text-[9px]">已停用</Badge>
+                  <Badge variant="outline" className="text-destructive px-1 py-0 text-[9px]">
+                    已停用
+                  </Badge>
                 )}
                 {gated ? (
                   <span className="text-muted-foreground ml-auto text-xs">需开启流量捕获</span>
@@ -738,4 +881,3 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 }
 
 // ---------- Diff helpers ----------
-

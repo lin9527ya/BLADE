@@ -1,9 +1,11 @@
 "use client";
 
 import * as React from "react";
+
 import { FolderKanbanIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
+import { Field } from "@/components/page-sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,7 +17,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field } from "@/components/page-sections";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
@@ -296,7 +297,12 @@ export default function CampaignsPage() {
                             variant="ghost"
                             size="sm"
                             disabled={busy}
-                            onClick={() => void setMembers(summary, memberIds.filter((id) => id !== t.id))}
+                            onClick={() =>
+                              void setMembers(
+                                summary,
+                                memberIds.filter((id) => id !== t.id),
+                              )
+                            }
                           >
                             移出
                           </Button>

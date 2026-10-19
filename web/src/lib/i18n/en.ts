@@ -39,7 +39,8 @@ export const en: Record<string, string> = {
   "prefs.restore": "Restore defaults",
   "prefs.language.switchToEn": "Switch to English",
   "prefs.language.switchToZh": "切换到中文",
-  "prefs.language.note": "English coverage is still being filled in page by page — untranslated areas show the Chinese source text (never internal keys).",
+  "prefs.language.note":
+    "English coverage is still being filled in page by page — untranslated areas show the Chinese source text (never internal keys).",
 
   // ---- 侧栏导航 ----
   "nav.group.1": "Operations",
