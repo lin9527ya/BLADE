@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import {
   AnchorIcon,
@@ -493,11 +494,9 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   // 不动列表，免得翻页/展开时内容在脚下变。
   const atLive = page === 1 && order === "desc";
 
-  React.useEffect(() => {
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(t);
-  }, []);
+  // 时钟：每 30 秒重算一次相对时间。不可见时由 usePolling 暂停——后台标签页
+  // 没必要为"多久以前"这几个字每秒重渲染。
+  usePolling(() => setNow(Date.now()), 30000);
 
   // 输入防抖:打字停 300ms 才真正查询,并回到第一页。
   React.useEffect(() => {
@@ -508,26 +507,32 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
     return () => clearTimeout(t);
   }, [queryInput]);
 
+  // 「本次查询是否已渲染过内容」必须**跨轮询持久**（hook 回调每次渲染重建），所以放 ref；
+  // 换查询时由下面这个 effect 清掉——与旧的 effect 重建同义，声明在 usePolling 之前
+  // 保证它在轮询跑第一发之前执行。
+  const renderedRef = React.useRef(false);
   React.useEffect(() => {
-    let alive = true;
-    let rendered = false; // 本次查询是否已经把内容渲染出来过
-    // 换任务/筛选/排序 = 换了一条播报流:清掉「新」标记和未读基线。翻页不算换流,
-    // 否则回到最新时就没有未读计数可算了。
-    const stream = `${taskId}|${kinds.join(",")}|${query}|${order}`;
-    if (streamRef.current !== stream) {
-      streamRef.current = stream;
-      seenRef.current = new Set();
-      baselineRef.current = null;
-      setPending(0);
-    }
-    const load = () =>
-      api
+    renderedRef.current = false;
+  }, [taskId, page, size, kinds, query, order, live, atLive]);
+
+  usePolling(
+    (alive) => {
+      // 换任务/筛选/排序 = 换了一条播报流:清掉「新」标记和未读基线。翻页不算换流,
+      // 否则回到最新时就没有未读计数可算了。
+      const stream = `${taskId}|${kinds.join(",")}|${query}|${order}`;
+      if (streamRef.current !== stream) {
+        streamRef.current = stream;
+        seenRef.current = new Set();
+        baselineRef.current = null;
+        setPending(0);
+      }
+      return api
         .explorationNodes(taskId, { page, size, kinds, q: query, order })
         .then((r) => {
-          if (!alive) return;
+          if (!alive()) return;
           // 直播位每轮都刷新;其它位置只渲染第一次,之后轮询仅更新未读计数。
-          if (atLive || !rendered) {
-            rendered = true;
+          if (atLive || !renderedRef.current) {
+            renderedRef.current = true;
             setItems(r.items);
             setEdges(r.edges);
             setRefs(r.refs);
@@ -549,18 +554,10 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // 轮询是尽力而为:保留上一次成功的播报内容,下一轮自动重试。
         });
-    void load();
-    if (!live) {
-      return () => {
-        alive = false;
-      };
-    }
-    const timer = setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [taskId, page, size, kinds, query, order, live, atLive]);
+    },
+    live ? POLL_MS : 0, // 非实时模式只拉一次
+    [taskId, page, size, kinds, query, order, live, atLive],
+  );
 
   const toggleKind = (kind: ExploreKind) => {
     setKinds((cur) => (cur.includes(kind) ? cur.filter((k) => k !== kind) : [...cur, kind]));

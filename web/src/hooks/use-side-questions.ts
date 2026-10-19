@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import { toast } from "sonner";
 
@@ -117,12 +118,15 @@ export function useSideQuestions(parent: string | null) {
     };
   }, [parent]);
 
-  useEffect(() => {
-    if (!open || !parent) return;
-    void load();
-    const timer = setInterval(() => void load(), 2000);
-    return () => clearInterval(timer);
-  }, [open, parent, load]);
+  // 抽屉开着且有 parent 才轮询；关着时 intervalMs=0（只跑一次，回调里直接返回）。
+  usePolling(
+    () => {
+      if (!open || !parent) return;
+      return load();
+    },
+    open && parent ? 2000 : 0,
+    [open, parent, load],
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Reconnect after a clear attempt invalidates older callbacks.
   useEffect(() => {

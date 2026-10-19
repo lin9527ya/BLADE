@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import {
   ArrowUpIcon,
@@ -780,13 +781,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   );
 
   // ── task token total (whole task, all agents) ───────────────────────────────────
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     const load = () =>
       api
         .tokenStats(taskId)
         .then((r) => {
-          if (!alive) return;
+          if (!alive()) return;
           setTaskTokens(r.total);
           setSessionTokens(Object.fromEntries(r.sessions.map((item) => [item.session, item])));
         })
@@ -794,22 +794,16 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           // Polling is best-effort; the next interval retries automatically.
         });
     void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [taskId]);
+  }, 5000, [taskId]);
 
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     setMainChatRunning(null);
     const load = () => {
       const request = ++chatStatusRequestRef.current;
       return api
         .chatStatus(taskId)
         .then(({ running }) => {
-          if (alive && chatStatusRequestRef.current === request) setMainChatRunning(running);
+          if (alive() && chatStatusRequestRef.current === request) setMainChatRunning(running);
         })
         .catch(() => {
           // Keep the last authoritative value. Before the first success, recent
@@ -817,57 +811,38 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         });
     };
     void load();
-    const timer = setInterval(load, 2000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [taskId]);
+  }, 2000, [taskId]);
 
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     const load = () =>
       api
         .taskLLMResolution(taskId)
         .then((value) => {
-          if (alive) setLLMResolutions(value);
+          if (alive()) setLLMResolutions(value);
         })
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
     void load();
-    const timer = setInterval(load, 10_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [taskId]);
+  }, 10_000, [taskId]);
 
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     const load = () =>
       api
         .interceptTask(taskId)
         .then((rows) => {
-          if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
+          if (alive()) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
         })
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
     void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [taskId]);
+  }, 5000, [taskId]);
 
   // Re-render on a timer so "streaming" liveness recomputes as activity goes stale.
   const [, setTick] = React.useState(0);
-  React.useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 1500);
-    return () => clearInterval(id);
-  }, []);
+  // 只为让「流式中」的活性随时间重算。不可见时暂停：后台标签页不需要为这几个字重渲染。
+  usePolling(() => setTick((t) => t + 1), 1500);
 
   // ── first load + single task SSE ────────────────────────────────────────────────
   // On task open: load Main's latest page, take the task-level snapshot cursor from
@@ -1047,28 +1022,21 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     };
   }, [taskId, patchStore]);
 
-  React.useEffect(() => {
-    let active = true;
+  usePolling(async (active) => {
     const load = () =>
       api
         .taskIntentAssets(taskId)
         .then((assets) => {
-          if (active) setIntentAssets(assets);
+          if (active()) setIntentAssets(assets);
         })
         .catch(() => {
           // The next poll retries; Worker controls and transcripts remain available.
         });
     void load();
-    const timer = setInterval(load, 5000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [taskId]);
+  }, 5000, [taskId]);
 
   // ── worker (intent) session list — paged, poll first page lightly ───────────────
-  React.useEffect(() => {
-    let active = true;
+  usePolling(async (active) => {
     firstIntentsRef.current = [];
     setIntents([]);
     setOlderIntents([]);
@@ -1078,7 +1046,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       api
         .intentsPage(taskId, 0, 300)
         .then((r) => {
-          if (!active) return;
+          if (!active()) return;
           const freshIds = new Set(r.items.map((item) => item.id));
           const oldestFreshId = r.items.reduce((minimum, item) => Math.min(minimum, Number(item.id)), Infinity);
           const displaced = r.hasMore
@@ -1099,12 +1067,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           // Polling is best-effort; the next interval retries automatically.
         });
     void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
-  }, [taskId]);
+  }, 5000, [taskId]);
 
   const loadOlderIntents = React.useCallback(() => {
     if (loadingOlderIntents) return;

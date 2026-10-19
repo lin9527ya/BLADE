@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -225,24 +226,18 @@ function TaskDetailInner() {
       .catch(() => setProfiles([]));
   }, []);
 
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     const load = () =>
       api
         .interceptTask(id)
         .then((rows) => {
-          if (alive) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+          if (alive()) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
         })
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
     void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [id]);
+  }, 5000, [id]);
 
   const taskLoadInFlight = React.useRef<string | null>(null);
   const load = React.useCallback(() => {
@@ -273,11 +268,11 @@ function TaskDetailInner() {
         }
       });
   }, [id]);
-  React.useEffect(() => {
-    load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  }, [load]);
+  usePolling(
+    () => load(),
+    5000,
+    [load],
+  );
 
   async function togglePause() {
     if (!task) return;

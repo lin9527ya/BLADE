@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -150,38 +151,25 @@ export default function DashboardPage() {
 
   // The task list is the most expensive dashboard source. Poll it independently
   // so a large history cannot hold back every other dashboard panel.
-  React.useEffect(() => {
-    let alive = true;
-    let loading = false;
-    let signature = "";
-    const load = async () => {
-      if (loading) return;
-      loading = true;
-      try {
-        const tr = await api.tasks();
-        if (!alive) return;
-        const nextSignature = JSON.stringify(tr.tasks);
-        if (nextSignature !== signature) {
-          signature = nextSignature;
-          setTasks(tr.tasks);
-        }
-      } catch {
-        /* transient errors — next poll retries */
-      } finally {
-        loading = false;
+  // 去重用的 signature 必须**跨轮询持久**：hook 的回调每次渲染重建，写成回调里的
+  // `let signature` 会随渲染重置，去重就失效了（每次轮询都重新 setTasks）。
+  const taskSignatureRef = React.useRef("");
+  usePolling(
+    async (alive) => {
+      // 失败由 hook 接住并退避重试（原先的 try/catch 只吞掉、不退避）。
+      const tr = await api.tasks();
+      if (!alive()) return;
+      const nextSignature = JSON.stringify(tr.tasks);
+      if (nextSignature !== taskSignatureRef.current) {
+        taskSignatureRef.current = nextSignature;
+        setTasks(tr.tasks);
       }
-    };
-    void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+    },
+    5000,
+  );
 
   // The remaining fast sources stay batched so one poll causes a single render.
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     let loading = false;
     const load = async () => {
       if (loading) return;
@@ -196,7 +184,7 @@ export default function DashboardPage() {
           api.tokenStats(),
           api.conversationTokens(),
         ]);
-        if (!alive) return;
+        if (!alive()) return;
         setFindings(findings);
         setStats(stats);
         setSettings(settings);
@@ -211,16 +199,10 @@ export default function DashboardPage() {
       }
     };
     void load();
-    const timer = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+  }, 5000, []);
 
   // slow poll: traffic, assets, system-static (every 15s)
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     const load = async () => {
       try {
         const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
@@ -233,7 +215,7 @@ export default function DashboardPage() {
           api.llmProfiles(),
           api.usageStats(365),
         ]);
-        if (!alive) return;
+        if (!alive()) return;
         setTraffic(traf.exchanges ?? []);
         setAssetCounts(counts ?? {});
         setAgents(agentList);
@@ -247,12 +229,7 @@ export default function DashboardPage() {
       }
     };
     void load();
-    const t = setInterval(load, 15000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+  }, 15000, []);
 
   // ── derived ───────────────────────────────────────────────────────────────
 

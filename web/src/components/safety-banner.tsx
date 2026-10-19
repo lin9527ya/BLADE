@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -21,25 +22,19 @@ const POLL_MS = 30000;
 export function SafetyBanner() {
   const [st, setSt] = React.useState<ScopeEnforcement | null>(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  usePolling(async (alive) => {
     const load = () => {
       api
         .scopeEnforcement()
         .then((d) => {
-          if (!cancelled) setSt(d);
+          if (alive()) setSt(d);
         })
         .catch(() => {
           /* 读不到就不显示：这条是提示，不该自己变成错误源 */
         });
     };
     load();
-    const timer = setInterval(load, POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
+  }, POLL_MS, []);
 
   if (!st) return null;
 
