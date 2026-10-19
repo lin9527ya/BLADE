@@ -1,6 +1,7 @@
 package intercept
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 
 func TestCredentialBudgetNilDBDoesNotGate(t *testing.T) {
 	i := &Interceptor{} // db 为 nil：不能因此拦人，也不能因此 panic
-	if _, hit := i.CheckCredentialBudget(nil, 1, "Bash",
+	if _, hit := i.CheckCredentialBudget(context.TODO(), 1, "Bash",
 		json.RawMessage(`{"command":"nxc smb 10.0.0.5 -u a -p b"}`)); hit {
 		t.Fatal("无库时不该产生裁决（护栏不可用不等于动作被禁）")
 	}

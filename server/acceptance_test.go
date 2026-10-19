@@ -5596,7 +5596,7 @@ func accP44(t *testing.T, e *accEnv) {
 		`{"artifact_id":`+strconv.FormatInt(intentID, 10)+`,"evidence":"rm -f x"}`)
 
 	// ⑥ 真清掉：状态转 removed，清理证据进 payload
-	res, err = cleared.Call(context.Background(), json.RawMessage(
+	_, err = cleared.Call(context.Background(), json.RawMessage(
 		`{"artifact_id":`+shellID+`,"evidence":"rm -f /var/www/html/uploads/x.php && curl -s -o /dev/null -w '%{http_code}' http://10.0.0.9/uploads/x.php → 404"}`), nil)
 	if err != nil {
 		t.Fatalf("mark_artifact_cleared: %v", err)
