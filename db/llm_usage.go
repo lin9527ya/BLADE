@@ -65,9 +65,17 @@ func (d *DB) EnsureLLMUsageTable() error {
 
 // TokenUsedByTask sums input+output tokens recorded for one task (taskID is the
 // same string the caller passes to TokenByModel). 0 when nothing recorded yet.
+//
+// task_id 为空时 InsertLLMUsage 存的是 NULL（写入用 NULLIF($1,'')），所以空入参
+// 永远匹配不到行——直接短路，别去扫表。比较写成裸列相等是为了让 idx_llm_usage_task
+// 真正生效：此前写成 COALESCE(task_id,'')=$1，表达式让索引失效，而本函数跑在
+// 「每个运行中任务每 2 秒一次」的轮询里（见 server/engine_timeout.go 的 token 预算护栏）。
 func (d *DB) TokenUsedByTask(taskID string) (int64, error) {
+	if taskID == "" {
+		return 0, nil
+	}
 	var used int64
-	err := d.QueryRow(`SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM llm_usage WHERE COALESCE(task_id,'')=$1`, taskID).Scan(&used)
+	err := d.QueryRow(`SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM llm_usage WHERE task_id=$1`, taskID).Scan(&used)
 	return used, err
 }
 
@@ -90,13 +98,19 @@ VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$
 // first, from the always-on llm_usage ledger. taskID is the task registry id.
 // Accurate even with per-agent model bindings, pool rotation/failover, and
 // interrupted runs, since every call (success or error) is metered.
+//
+// 同 TokenUsedByTask：空 taskID 短路（空值存为 NULL），比较用裸列以命中
+// idx_llm_usage_model(task_id, model)。
 func (d *DB) TokenByModel(taskID string) ([]ModelTokenStat, error) {
+	if taskID == "" {
+		return []ModelTokenStat{}, nil
+	}
 	rows, err := d.Query(`
 SELECT COALESCE(NULLIF(model,''),'(unknown)') AS model, COUNT(*) AS calls,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
 FROM llm_usage
-WHERE COALESCE(task_id,'') = $1
+WHERE task_id = $1
 GROUP BY model
 ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 	if err != nil {

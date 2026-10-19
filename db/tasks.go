@@ -672,7 +672,7 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 		result.FindingsDeleted, _ = res.RowsAffected()
 	}
 	if deleteLLMRecords {
-		res, err := tx.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(id, 10))
+		res, err := tx.Exec(`DELETE FROM llm_records WHERE task_id=$1`, strconv.FormatInt(id, 10))
 		if err != nil {
 			return result, err
 		}
