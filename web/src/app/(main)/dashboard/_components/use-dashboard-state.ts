@@ -6,18 +6,14 @@ import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type {
   Activity,
-  Agent,
   ConvTokenSummary,
   Finding,
   InterceptPending,
   LLMProfile,
-  MCPServer,
   Settings,
-  SkillItem,
   Stats,
   Task,
   TokenTotal,
-  Tool,
   TrafficExchange,
   UsageStats,
 } from "@/lib/types";
@@ -54,10 +50,6 @@ export function useDashboardState() {
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
-  const [agents, setAgents] = React.useState<Agent[]>([]);
-  const [mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
-  const [skills, setSkills] = React.useState<SkillItem[]>([]);
-  const [tools, setTools] = React.useState<Tool[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
 
   // The task list is the most expensive dashboard source. Poll it independently
@@ -118,23 +110,19 @@ export function useDashboardState() {
     async (alive) => {
       const load = async () => {
         try {
-          const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
+          // 只取**真正会被渲染**的东西。此前这里还拉了 agents / mcpServers /
+          // skills / tools，但 dashboard 上没有任何面板读它们（唯一的 tools 下游
+          // enabledTools 自己也是死的）——等于每 15 秒白发四个请求。要加相关面板时
+          // 再把对应的源加回来。
+          const [traf, counts, profileList, usage] = await Promise.all([
             api.traffic(0, 50),
             api.assetCounts(),
-            api.agents(),
-            api.mcpServers(),
-            api.skills(),
-            api.tools(),
             api.llmProfiles(),
             api.usageStats(365),
           ]);
           if (!alive()) return;
           setTraffic(traf.exchanges ?? []);
           setAssetCounts(counts ?? {});
-          setAgents(agentList);
-          setMcpServers(mcpList);
-          setSkills(skillList);
-          setTools(toolList);
           setLLMProfiles(profileList);
           setUsageStats(usage);
         } catch {
@@ -219,7 +207,6 @@ export function useDashboardState() {
 
   // system
   const activeProfile = React.useMemo(() => llmProfiles.find((p) => p.is_default), [llmProfiles]);
-  const enabledTools = React.useMemo(() => tools.filter((t) => t.enabled), [tools]);
   const pendingCount = pending.length;
 
   // ── token stats per LLM profile ──────────────────────────────────────────
