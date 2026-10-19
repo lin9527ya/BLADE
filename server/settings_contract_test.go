@@ -4,10 +4,38 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 )
+
+// parsePackage 解析本包所有非测试 .go 文件。
+//
+// 契约测试**刻意不绑文件名**：函数在文件之间搬来搬去是常规重构（server.go 已按域拆成
+// 若干 *_api.go），绑死某一份文件会让测试在拆分后静默抽到 0 个键。下面那条 <40 的断言
+// 就是为这种情况留的警报——它响过一次（拆 server.go 时），那一次是真的。
+func parsePackage(t *testing.T) []*ast.File {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var out []*ast.File
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		out = append(out, f)
+	}
+	return out
+}
 
 // 设置项契约测试：get 与 put 必须覆盖同一批键。
 //
@@ -24,79 +52,73 @@ import (
 // ——而后者恰恰是要防的。
 
 // putSettingsFields 抽出 putSettings 里匿名 struct 的 json 标签。
-func putSettingsFields(t *testing.T, src string) []string {
+func putSettingsFields(t *testing.T) []string {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, src, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", src, err)
-	}
 	var out []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "putSettings" {
-			return true
-		}
-		ast.Inspect(fn, func(m ast.Node) bool {
-			st, ok := m.(*ast.StructType)
-			if !ok {
+	for _, f := range parsePackage(t) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "putSettings" {
 				return true
 			}
-			for _, fld := range st.Fields.List {
-				if fld.Tag == nil {
-					continue
+			ast.Inspect(fn, func(m ast.Node) bool {
+				st, ok := m.(*ast.StructType)
+				if !ok {
+					return true
 				}
-				if name := jsonTagName(fld.Tag.Value); name != "" {
-					out = append(out, name)
+				for _, fld := range st.Fields.List {
+					if fld.Tag == nil {
+						continue
+					}
+					if name := jsonTagName(fld.Tag.Value); name != "" {
+						out = append(out, name)
+					}
 				}
-			}
-			return true
+				return true
+			})
+			return false
 		})
-		return false
-	})
+	}
 	sort.Strings(out)
 	return out
 }
 
 // settingsPayloadKeys 抽出 settingsPayload 返回的 map 字面量的键。
-func settingsPayloadKeys(t *testing.T, src string) []string {
+func settingsPayloadKeys(t *testing.T) []string {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, src, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", src, err)
-	}
 	var out []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "settingsPayload" {
-			return true
-		}
-		ast.Inspect(fn, func(m ast.Node) bool {
-			cl, ok := m.(*ast.CompositeLit)
-			if !ok || cl.Type == nil {
+	for _, f := range parsePackage(t) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "settingsPayload" {
 				return true
 			}
-			mt, ok := cl.Type.(*ast.MapType)
-			if !ok {
-				return true
-			}
-			if id, ok := mt.Value.(*ast.Ident); !ok || id.Name != "any" {
-				return true
-			}
-			for _, el := range cl.Elts {
-				kv, ok := el.(*ast.KeyValueExpr)
+			ast.Inspect(fn, func(m ast.Node) bool {
+				cl, ok := m.(*ast.CompositeLit)
+				if !ok || cl.Type == nil {
+					return true
+				}
+				mt, ok := cl.Type.(*ast.MapType)
 				if !ok {
-					continue
+					return true
 				}
-				if lit, ok := kv.Key.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-					out = append(out, trimQuotes(lit.Value))
+				if id, ok := mt.Value.(*ast.Ident); !ok || id.Name != "any" {
+					return true
 				}
-			}
-			return true
+				for _, el := range cl.Elts {
+					kv, ok := el.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					if lit, ok := kv.Key.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						out = append(out, trimQuotes(lit.Value))
+					}
+				}
+				return true
+			})
+			return false
 		})
-		return false
-	})
+	}
 	sort.Strings(out)
 	return out
 }
@@ -138,8 +160,8 @@ func indexOf(s, sub string) int {
 }
 
 func TestSettingsGetPutContract(t *testing.T) {
-	putFields := putSettingsFields(t, "server.go")
-	getKeys := settingsPayloadKeys(t, "server.go")
+	putFields := putSettingsFields(t)
+	getKeys := settingsPayloadKeys(t)
 	if len(putFields) < 40 || len(getKeys) < 40 {
 		t.Fatalf("只抽到 put=%d / get=%d 个键（<40）：解析模式可能已失效，先修测试再谈契约",
 			len(putFields), len(getKeys))
