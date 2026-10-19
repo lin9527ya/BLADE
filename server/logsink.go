@@ -98,7 +98,7 @@ func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
 
 		// Async writer: picks from channel and inserts into server_logs.
 		// Uses os.Stderr directly to report errors and avoids recursive log calls.
-		go func() {
+		goSafe("logsink/writer", nil, func() {
 			for {
 				select {
 				case req, ok := <-ch:
@@ -123,7 +123,7 @@ func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
 					return
 				}
 			}
-		}()
+		})
 	})
 }
 

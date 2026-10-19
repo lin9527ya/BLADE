@@ -479,12 +479,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		}
 		if tr != nil {
 			m.traffic = tr
-			go func() {
+			goSafe("manager/traffic-proxy", nil, func() {
 				log.Printf("[traffic] recording proxy on %s (set HTTP_PROXY=%s + trust _ca CA)", proxyAddr, tr.ProxyAddr())
 				if err := tr.Start(); err != nil {
 					log.Printf("[traffic] proxy stopped: %v", err)
 				}
-			}()
+			})
 		}
 	}
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording

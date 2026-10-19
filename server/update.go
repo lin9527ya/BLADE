@@ -302,7 +302,7 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
+	goSafe("update/stage", nil, func() {
 		// 刻意用 s.ctx 而不是请求的 ctx：HTTP 响应一返回请求就结束了，
 		// 挂在它上面下载会立刻被取消。
 		err := selfupdate.Stage(s.ctx, client, rel, current, func(ph selfupdate.Phase, pct int, msg string) {
@@ -317,7 +317,7 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 		// 留一点时间把最后一条进度推给前端，再触发退出。
 		time.Sleep(1500 * time.Millisecond)
 		requestRestart()
-	}()
+	})
 
 	writeJSON(w, 202, map[string]any{"ok": true, "target": rel.TagName})
 }
@@ -334,10 +334,10 @@ func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[update] 已手动回滚到上一版本，即将退出以完成切换")
 	writeJSON(w, 202, map[string]any{"ok": true})
-	go func() {
+	goSafe("update/restart", nil, func() {
 		time.Sleep(500 * time.Millisecond)
 		requestRestart()
-	}()
+	})
 }
 
 // updateStream 以 SSE 推送更新进度。

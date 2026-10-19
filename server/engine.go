@@ -242,10 +242,22 @@ func (e *Engine) registerTaskRoutines(parent context.Context, taskID string, cou
 }
 
 func runTaskRoutine(rt *taskRuntime, fn func(context.Context)) {
-	go func() {
-		defer rt.wg.Done()
-		fn(rt.ctx)
-	}()
+	goSafe("engine/task-routine", &rt.wg, func() { fn(rt.ctx) })
+}
+
+// runtimeCtx returns the task's runtime context, or context.Background() when the
+// task has no registered runtime (never started, or already torn down).
+//
+// 长生命周期助手必须用它，而不是 context.Background()：Background 的 Done() 是 nil
+// channel，select 里那个分支永远等不到，等于这个 goroutine 无法被取消——StopTask
+// 调 rt.cancel() 也打断不了它。
+func (e *Engine) runtimeCtx(taskID string) context.Context {
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
+	if rt := e.runtimes[taskID]; rt != nil {
+		return rt.ctx
+	}
+	return context.Background()
 }
 
 // StopTask permanently stops every long-lived goroutine and removes all Engine
@@ -1282,7 +1294,7 @@ func (e *Engine) watchExecutions(t *Task, intentID int64) {
 	if _, loaded := e.execWatch.LoadOrStore(intentID, true); loaded {
 		return
 	}
-	go func() {
+	goSafe("engine/execution-watch", nil, func() {
 		defer e.execWatch.Delete(intentID)
 		execs := e.m.Executions()
 		if execs == nil {
@@ -1293,8 +1305,8 @@ func (e *Engine) watchExecutions(t *Task, intentID int64) {
 			if len(execs.ActiveForIntent(intentID)) == 0 {
 				break
 			}
-			if sleepCtx(context.Background(), execWatchPoll) {
-				return // 引擎整体关停
+			if sleepCtx(e.runtimeCtx(t.ID), execWatchPoll) {
+				return // 任务已停止/删除（rt.cancel）——观察者随之退出
 			}
 		}
 		rows, _ := execs.ListForIntent(intentID)
@@ -1315,7 +1327,7 @@ func (e *Engine) watchExecutions(t *Task, intentID int64) {
 		log.Printf("[exec] task %s 意图 #%d 执行收束，已退回 open", t.ID, intentID)
 		e.touch(t.ID)
 		t.NotifyDone(intentID)
-	}()
+	})
 }
 
 // executionDigest renders the intent's executions as one readable block (the
@@ -1394,10 +1406,10 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	uid := intentID
 	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message})
 	release = false // ownership of the admission passes to the goroutine
-	go func() {
+	goSafe("engine/run-intent-chat", nil, func() {
 		defer e.decInflight(t.ID)
 		e.runIntent(ctx, t, "chat", worker, node, requestID, agentMessage)
-	}()
+	})
 	return nil
 }
 

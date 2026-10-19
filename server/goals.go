@@ -248,10 +248,10 @@ func (s *Server) startAdmittedTask(t *Task, mode string) {
 		if s.engine.IsPaused(t.ID) {
 			s.engine.Resume(t)
 		}
-		go func() {
+		goSafe("goals/start-engine", nil, func() {
 			defer s.engine.decInflight(t.ID)
 			s.startTaskEngine(t)
-		}()
+		})
 		return
 	}
 	s.engine.Run(s.ctx, t)

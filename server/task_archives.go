@@ -58,8 +58,7 @@ func (s *Server) startTaskArchiveWorker() {
 		return
 	}
 	s.archiveWG.Add(1)
-	go func() {
-		defer s.archiveWG.Done()
+	goSafe("task-archive/worker", &s.archiveWG, func() {
 		ticker := time.NewTicker(taskArchivePollInterval)
 		defer ticker.Stop()
 		for {
@@ -73,7 +72,7 @@ func (s *Server) startTaskArchiveWorker() {
 			case <-ticker.C:
 			}
 		}
-	}()
+	})
 	s.notifyTaskArchiveWorker()
 }
 

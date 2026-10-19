@@ -175,7 +175,7 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 	s.mu.Lock()
 	s.live[id] = run
 	s.mu.Unlock()
-	go s.reap(run)
+	goSafe("execution/reap", nil, func() { s.reap(run) })
 
 	row, _ := s.pg.GetExecution(id)
 	if row == nil {
@@ -326,7 +326,7 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 	if run != nil {
 		run.cancelled.Store(true)
 		killGroup(run.cmd)
-		go func() {
+		goSafe("execution/cancel-grace", nil, func() {
 			select {
 			case <-run.done:
 			case <-time.After(execCancelGrace):
@@ -334,7 +334,7 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 					hardKillGroup(run.cmd)
 				}
 			}
-		}()
+		})
 		return true, nil
 	}
 	row, err := s.pg.GetExecution(id)
@@ -419,7 +419,7 @@ func (s *ExecutionService) ReconcileOrphaned() int64 {
 // StartOrphanReconciler runs the periodic sweep (restart leftovers + lost goroutines).
 func (s *ExecutionService) StartOrphanReconciler(ctx context.Context) {
 	s.ReconcileOrphaned()
-	go func() {
+	goSafe("execution/orphan-reconciler", nil, func() {
 		t := time.NewTicker(execReconcileGap)
 		defer t.Stop()
 		for {
@@ -430,7 +430,7 @@ func (s *ExecutionService) StartOrphanReconciler(ctx context.Context) {
 				s.ReconcileOrphaned()
 			}
 		}
-	}()
+	})
 }
 
 // toExecStatus 转换台账行到跨层快照；live 非空时以内存尾巴/字节数为准。

@@ -284,7 +284,7 @@ func (s *Server) setKillSwitch(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("[scope] 停机开关已解除（%s）", by)
 		// 入口层立刻放行（不必等下一个 tick）；**不**顺手恢复任务。
-		go s.reconcileConcurrency()
+		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
 	}
 	resp := map[string]any{
 		"kill_switch": cur, "tasks_paused": paused,

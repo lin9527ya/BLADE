@@ -469,7 +469,7 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 	if len(userMessage) == 1 {
 		ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: userMessage[0]})
 	}
-	go s.runConversationTurn(ctx, cancel, c, msg, busyKey)
+	goSafe("conversations/turn", nil, func() { s.runConversationTurn(ctx, cancel, c, msg, busyKey) })
 }
 
 // runConversationSync runs ONE agent turn on a conversation and BLOCKS until the
@@ -639,7 +639,7 @@ func (s *Server) pumpLocked(agentKey string) {
 	for s.triggerActive[agentKey] < limit && len(s.triggerQ[agentKey]) > 0 {
 		item := s.nextTriggerRun(agentKey, cfg)
 		s.triggerActive[agentKey]++
-		go s.runAndPump(agentKey, item)
+		goSafe("conversations/trigger-run", nil, func() { s.runAndPump(agentKey, item) })
 	}
 }
 

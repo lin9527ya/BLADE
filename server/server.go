@@ -258,18 +258,18 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
-		go s.evidenceStore().RunGC(s.ctx)
+		goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(s.ctx) })
 		s.seedPythonInterpreter() // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		s.installMCPGuard()       // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
 		// P35：把 Scheduler 存下来，让"停机时这一 tick 做了什么"可被断言（tickOnce）。
 		s.sched = newScheduler(s)
-		go s.sched.Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+		goSafe("server/scheduler", nil, func() { s.sched.Run(s.ctx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
-		go newNotifier(s).Run(s.ctx)
+		goSafe("server/notifier", nil, func() { newNotifier(s).Run(s.ctx) })
 		// Fill the tool cache for any enabled MCP that has none yet (notably the
 		// seeded browser MCP on first run). Async so it never blocks startup.
-		go s.discoverEmptyMCPsOnStartup()
+		goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup() })
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
@@ -292,7 +292,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 生产路径由 main 显式调用（重启后恢复任务）；测试构造服务器时因此不会被库里
 	// 遗留的未终态任务"劫持"：那些任务会真跑起来、把文件写进测试的临时工作目录，
 	// 与 t.TempDir() 的清理竞态（偶发 "directory not empty"）。
-	go s.reconcileConcurrency()
+	goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
@@ -1419,7 +1419,7 @@ func (s *Server) updateTaskLLMProfiles(w http.ResponseWriter, r *http.Request) {
 	// live slot and postpones an unavailable task's pause/queue transition until
 	// the call returns; a nudge lets an idle running task resume promptly.
 	t.Notify()
-	go s.reconcileConcurrency()
+	goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
 	llmState := t.llmStateSnapshot()
 	result := map[string]any{
 		"id": t.ID, "llm_profile_ids": llmState.ProfileIDs,
@@ -3649,7 +3649,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 立即协调一次:关闭时放行全部排队,调高上限时补位启动,不必等下一个 tick。
-		go s.reconcileConcurrency()
+		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
 	}
 	if req.PythonInterp != nil {
 		if err := s.m.pg.SetSetting(settingPythonInterp, strings.TrimSpace(*req.PythonInterp)); err != nil {
@@ -3932,7 +3932,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		// a page reload / proxy timeout cancelled it mid-run ("context canceled"). The
 		// steps + final answer stream back live via SSE (worker="mainagent"), so the
 		// handler returns immediately and the browser never needs to hold the request.
-		go func() {
+		goSafe("server/task-chat", nil, func() {
 			defer func() {
 				s.finishTaskChat(t.ID, cancel)
 			}()
@@ -3955,7 +3955,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			if err != nil && ctx.Err() == nil {
 				s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", IsError: true, Summary: "（主 Agent 出错：" + err.Error() + "）", MainSeg: segPtr})
 			}
-		}()
+		})
 		writeJSON(w, 202, map[string]any{"status": "accepted", "mode": "llm"})
 		return
 	}

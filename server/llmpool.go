@@ -29,14 +29,14 @@ func newLLMHealthRegistry(pg *db.DB) *llmpool.Registry {
 			t := st.OpenUntil
 			h.OpenUntil = &t
 		}
-		go func() {
+		goSafe("llmpool/save-health", nil, func() {
 			if err := pg.SaveLLMHealth(h); err != nil {
 				log.Printf("[llmpool] 熔断状态落库失败: %v", err)
 			}
-		}()
+		})
 	}
 	forget := func(id int64) {
-		go func() { _ = pg.ClearLLMHealth(id) }()
+		goSafe("llmpool/clear-health", nil, func() { _ = pg.ClearLLMHealth(id) })
 	}
 	reg := llmpool.NewRegistry(persist, forget)
 	// Restore only windows that haven't expired (LoadLLMHealth filters), so a
