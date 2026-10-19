@@ -400,7 +400,10 @@ export default function SkillsPage() {
                 return (
                   <div key={s.name}>
                     {/* skill 根节点 */}
+                    {/* biome-ignore lint/a11y/useSemanticElements: 节点内含自己的操作按钮，用原生 <button> 会造成按钮嵌套（非法 HTML） */}
                     <div
+                      role="button"
+                      tabIndex={0}
                       title={[
                         s.meta_error ? `⚠ frontmatter 无效：${s.meta_error}` : "",
                         s.meta_warning ? `⚠ ${s.meta_warning}` : "",
@@ -417,6 +420,13 @@ export default function SkillsPage() {
                       onClick={() => {
                         toggleExpanded(s.name);
                         setSelected({ skill: s.name, path: null });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleExpanded(s.name);
+                          setSelected({ skill: s.name, path: null });
+                        }
                       }}
                     >
                       <ChevronRightIcon

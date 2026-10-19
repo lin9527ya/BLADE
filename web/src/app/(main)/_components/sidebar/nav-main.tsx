@@ -203,7 +203,7 @@ function InterceptPendingBadge() {
           /* ignore */
         }
       }
-      poll();
+      void poll();
     },
     5000,
     [],

@@ -207,7 +207,7 @@ export default function SystemSettingsPage() {
         <p className="text-muted-foreground text-sm">全局运行时开关</p>
       </div>
 
-      {section === "basic" && <BasicSection s={s} />}
+      {section === "basic" && <BasicSection />}
 
       {section === "network" && <NetworkSection s={s} />}
 

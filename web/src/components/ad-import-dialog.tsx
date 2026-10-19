@@ -104,6 +104,7 @@ export function ADImportDialog({
   const [applying, setApplying] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: source 变化时清空上一次的导入状态；effect 体内只重置 state、不读取 source。
   React.useEffect(() => {
     if (!open) return;
     setFiles([]);

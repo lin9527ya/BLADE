@@ -181,11 +181,13 @@ export default function LLMRecordsPage() {
   }, [session]);
 
   // Reset page on filter change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 这组依赖是「筛选条件变化」的触发信号，effect 体内只重置页码、不读取它们。
   React.useEffect(() => {
     setPage(0);
   }, [sessionQ, model, size, pickedTask]);
 
   // Load list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 是手动刷新触发器，仅在 effect 外被读取；放进依赖是为了强制重跑。
   React.useEffect(() => {
     let alive = true;
     setLoading(true);

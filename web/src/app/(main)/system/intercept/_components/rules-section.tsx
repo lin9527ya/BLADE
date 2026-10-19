@@ -169,8 +169,8 @@ export function RulesSection() {
   }, []);
 
   React.useEffect(() => {
-    load();
-    loadScope();
+    void load();
+    void loadScope();
   }, [load, loadScope]);
 
   React.useEffect(() => {
@@ -246,7 +246,7 @@ export function RulesSection() {
         toast.success("规则已创建");
       }
       setOpen(false);
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -284,7 +284,7 @@ export function RulesSection() {
     try {
       await api.deleteInterceptRule(id);
       toast.success("规则已删除");
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -293,7 +293,7 @@ export function RulesSection() {
   async function handleToggle(rule: InterceptRule) {
     try {
       await api.toggleInterceptRule(rule.id, !rule.enabled);
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     }

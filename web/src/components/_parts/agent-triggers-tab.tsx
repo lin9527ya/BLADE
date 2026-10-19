@@ -280,7 +280,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
               onValueChange={(v) => {
                 const rm = v as "serial" | "parallel";
                 setRunMode(rm);
-                saveBehavior({ trigger_run_mode: rm });
+                void saveBehavior({ trigger_run_mode: rm });
               }}
             >
               <SelectTrigger size="sm" className="h-8 w-40">
@@ -301,7 +301,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
               onValueChange={(v) => {
                 const mm = v as "by_task" | "all" | "none";
                 setMergeMode(mm);
-                saveBehavior({ trigger_merge_mode: mm });
+                void saveBehavior({ trigger_merge_mode: mm });
               }}
             >
               <SelectTrigger size="sm" className="h-8 w-44">
@@ -330,7 +330,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
                 onBlur={() => {
                   const n = Math.max(0, Math.floor(Number(maxParallel) || 0));
                   setMaxParallel(String(n));
-                  saveBehavior({ trigger_max_parallel: n });
+                  void saveBehavior({ trigger_max_parallel: n });
                 }}
               />
             </div>

@@ -271,7 +271,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   function toggleMcp(id: number) {
     const on = mcpVisible.includes(id);
     const name = mcp.find((m) => m.id === id)?.name ?? String(id);
-    applyVis(
+    void applyVis(
       on ? mcpVisible.filter((x) => x !== id) : [...mcpVisible, id],
       skillVisible,
       `${on ? "已取消" : "已开启"} MCP「${name}」可见`,
@@ -279,7 +279,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   }
   function toggleSkill(name: string) {
     const on = skillVisible.includes(name);
-    applyVis(
+    void applyVis(
       mcpVisible,
       on ? skillVisible.filter((x) => x !== name) : [...skillVisible, name],
       `${on ? "已取消" : "已开启"} Skill「${name}」可见`,
