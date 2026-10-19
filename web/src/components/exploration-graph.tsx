@@ -128,7 +128,11 @@ function computeLayout(nodes: TaskNode[], edges: Edge[]): Map<string, { x: numbe
   for (const id of order) columns[layer.get(id) ?? 0].push(id);
 
   const colIndexOf = new Map<string, number>();
-  columns.forEach((ids, c) => ids.forEach((id) => colIndexOf.set(id, c)));
+  columns.forEach((ids, c) => {
+    ids.forEach((id) => {
+      colIndexOf.set(id, c);
+    });
+  });
   const neighbors = new Map<string, string[]>();
   for (const e of valid) {
     const cs = colIndexOf.get(e.src);
@@ -164,7 +168,9 @@ function computeLayout(nodes: TaskNode[], edges: Edge[]): Map<string, { x: numbe
   const pos = new Map<string, { x: number; y: number }>();
   columns.forEach((ids, c) => {
     const startY = midline - ((ids.length - 1) * ROW_H) / 2;
-    ids.forEach((id, i) => pos.set(id, { x: c * COL_W, y: startY + i * ROW_H }));
+    ids.forEach((id, i) => {
+      pos.set(id, { x: c * COL_W, y: startY + i * ROW_H });
+    });
   });
   return pos;
 }

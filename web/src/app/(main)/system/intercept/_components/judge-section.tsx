@@ -121,12 +121,12 @@ export function JudgeSection() {
   }, []);
 
   React.useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   // 开启后(含初次加载把开关读为 true 时)拉取审批用量统计。
   React.useEffect(() => {
-    if (cfg.enabled) loadUsage();
+    if (cfg.enabled) void loadUsage();
   }, [cfg.enabled, loadUsage]);
 
   function patch(p: Partial<JudgeConfig>) {

@@ -91,6 +91,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
 
   usePolling(() => load(), 5000, [load]);
   // 轮询停止（卸载或依赖变化）时让在途请求作废——与旧的 clearInterval 同一时机。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load 变化即代表轮询重启，需作废在途请求；effect 体内不读取 load。
   React.useEffect(
     () => () => {
       request.current++;

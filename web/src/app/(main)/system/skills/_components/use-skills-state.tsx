@@ -110,12 +110,12 @@ export function useSkillsState() {
       .skills()
       .then((ss) => {
         setSkills(ss);
-        ss.forEach((s) =>
-          api
+        ss.forEach((s) => {
+          void api
             .skillVisibility(s.name)
             .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
-            .catch(() => {}),
-        );
+            .catch(() => {});
+        });
       })
       .catch(() => {});
   }, []);
@@ -149,7 +149,7 @@ export function useSkillsState() {
   function onUploadPick(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     e.target.value = ""; // reset so picking the same file again re-fires
-    if (f) uploadZip(f);
+    if (f) void uploadZip(f);
   }
 
   React.useEffect(() => {
@@ -432,10 +432,19 @@ export function useSkillsState() {
         const open = expanded.has(key);
         return (
           <div key={node.path}>
+            {/* biome-ignore lint/a11y/useSemanticElements: 节点内含自己的操作按钮，用原生 <button> 会造成按钮嵌套（非法 HTML） */}
             <div
+              role="button"
+              tabIndex={0}
               className="group relative flex cursor-pointer select-none items-center gap-1 rounded py-0.5 pr-1 text-sm hover:bg-muted"
               style={{ paddingLeft: baseIndent }}
               onClick={() => toggleExpanded(key)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleExpanded(key);
+                }
+              }}
             >
               <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
               {open ? (
@@ -499,14 +508,23 @@ export function useSkillsState() {
       // file node
       const isSelected = selected?.skill === skill && selected.path === node.path;
       return (
+        // biome-ignore lint/a11y/useSemanticElements: 节点内含自己的操作按钮，用原生 <button> 会造成按钮嵌套（非法 HTML）
         <div
           key={node.path}
+          role="button"
+          tabIndex={0}
           className={cn(
             "group relative flex cursor-pointer select-none items-center gap-1 rounded py-0.5 pr-1 text-sm",
             isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
           )}
           style={{ paddingLeft: baseIndent + 16 }}
           onClick={() => setSelected({ skill, path: node.path })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setSelected({ skill, path: node.path });
+            }
+          }}
         >
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate font-mono text-xs" title={node.path}>

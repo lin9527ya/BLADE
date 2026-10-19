@@ -511,6 +511,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   // 换查询时由下面这个 effect 清掉——与旧的 effect 重建同义，声明在 usePolling 之前
   // 保证它在轮询跑第一发之前执行。
   const renderedRef = React.useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 这组依赖定义「播报流身份」，换流时清掉已渲染标记；effect 体内只写 ref、不读取它们。
   React.useEffect(() => {
     renderedRef.current = false;
   }, [taskId, page, size, kinds, query, order, live, atLive]);

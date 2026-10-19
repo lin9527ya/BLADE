@@ -65,9 +65,22 @@
         "noNestedComponentDefinitions": "error",
         "noUndeclaredDependencies": "error"
       },
+      "a11y": {
+        // label 里包着 shadcn 的受控组件（Input/Checkbox/Switch）是合法的隐式关联，
+        // 但 biome 只认原生 input/select/textarea，认不出这些自定义组件名。
+        "noLabelWithoutControl": {
+          "level": "error",
+          "options": {
+            "inputComponents": ["Input", "Checkbox", "Switch"]
+          }
+        }
+      },
       "nursery": {
         "useSortedClasses": "on",
-        "useNullishCoalescing": "error",
+        // 关掉：本仓库的 || 几乎都是「显示兜底」语义（`a.domain || "—"`），字段为空串时
+        // 确实要落到兜底文案，换成 ?? 反而会渲染出空白；另有 `disabled || rules.length >= limit`
+        // 这类布尔逻辑，改 ?? 直接是错的语义。逐处审查 23 例后确认全部为误报。
+        "useNullishCoalescing": "off",
         "noFloatingPromises": "error",
         "noMisusedPromises": "error"
       },
@@ -89,7 +102,10 @@
       "suspicious": {
         "noArrayIndexKey": "warn",
         "noConstantBinaryExpressions": "error",
-        "noEmptyBlockStatements": "error",
+        // 关掉：本仓库的 fire-and-forget 请求统一用 `.catch(() => {})` 显式吞掉错误
+        // （30 处）。该规则在 biome 2.5.1 没有 allowEmptyCatch 之类的选项（schema 为空对象），
+        // 只能整体关闭；空 catch 是有意为之，不是漏写。
+        "noEmptyBlockStatements": "off",
         "noUnknownAtRules": "off",
         "noImportCycles": "error",
         "noUnnecessaryConditions": "warn"

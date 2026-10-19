@@ -43,7 +43,7 @@ export function TodoPopover({
 
   // refetch on each open — todos change as the run progresses.
   React.useEffect(() => {
-    if (open) load();
+    if (open) void load();
   }, [open, load]);
 
   const disabled = seq == null;

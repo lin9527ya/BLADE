@@ -162,6 +162,7 @@ export default function LogsPage() {
     );
   }, [lines, q, level]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filtered 是「列表内容变了」的触发信号，用于在贴底时重新滚到底；effect 体内不读取它。
   React.useEffect(() => {
     if (stick.current && !paused) bottom.current?.scrollIntoView();
   }, [filtered, paused]);

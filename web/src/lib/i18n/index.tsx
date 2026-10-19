@@ -51,12 +51,12 @@ export function I18nProvider({ initialLang, children }: { initialLang?: Lang; ch
   const [lang, setLangState] = React.useState<Lang>(initialLang ?? PREFERENCE_DEFAULTS.language);
 
   // 首次挂载时从 cookie 读一次：静态导出没有服务端渲染这一步，language 只能在客户端落定。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 仅挂载时同步一次；把 lang 放进依赖会在切语言后回读旧 cookie，把用户刚选的语言顶回去。
   React.useEffect(() => {
     const cookie = document.cookie.split("; ").find((c) => c.startsWith("language="));
     const value = cookie ? decodeURIComponent(cookie.split("=")[1] ?? "") : "";
     if (isLang(value) && value !== lang) setLangState(value);
     // 只在挂载时同步一次；之后以 store 为准（切语言写 cookie + setState）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   React.useEffect(() => {

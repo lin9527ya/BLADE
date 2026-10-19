@@ -67,12 +67,12 @@ export default function MCPPage() {
         setGuards(gs);
         // 选中的 server 被删掉后（别处删除/刷新后消失）右栏退回空态。
         setSelectedId((prev) => (prev !== null && ss.some((s) => s.id === prev) ? prev : null));
-        ss.forEach((s) =>
-          api
+        ss.forEach((s) => {
+          void api
             .resourceVisibility("mcp", s.id)
             .then((ids) => setVisibility((v) => ({ ...v, [s.id]: ids })))
-            .catch(() => {}),
-        );
+            .catch(() => {});
+        });
       })
       .catch(() => {});
   }, []);
