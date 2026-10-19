@@ -426,6 +426,9 @@ CREATE INDEX IF NOT EXISTS idx_act_result_usage ON activity(exploration_id)
     INCLUDE (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
     WHERE kind='result';
 CREATE INDEX IF NOT EXISTS idx_act_latest ON activity(exploration_id, created_at DESC);
+-- 数据保留（按时间清理）要的是**全局**按 created_at 的扫描。上面那些索引前导列都是
+-- exploration_id，对这个查询用不上——没有本索引时每次清理都是全表扫。
+CREATE INDEX IF NOT EXISTS idx_act_created ON activity(created_at);
 
 -- main_sessions records the resettable main-agent conversation segments of a task.
 -- Segment 0 (the original session) is implicit and never stored; this table holds
@@ -1343,6 +1346,9 @@ CREATE TABLE IF NOT EXISTS server_logs (
     text       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_server_logs_id ON server_logs(id DESC);
+-- 数据保留按 created_at 清理；idx_server_logs_id 是给页面翻页的（id DESC），
+-- 方向与过滤条件都对不上，清理时用不上。
+CREATE INDEX IF NOT EXISTS idx_server_logs_created ON server_logs(created_at);
 
 -- Independent /btw history and the latest provider-ready main checkpoint.
 CREATE TABLE IF NOT EXISTS side_question_sessions (

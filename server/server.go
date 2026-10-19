@@ -259,6 +259,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[retester] seed: %v", err)
 		}
 		goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(s.ctx) })
+		// 数据库侧的保留清理（llm_usage / activity / server_logs / llm_records）。
+		// 默认全 0 = 不清理，所以这里起 goroutine 不会删任何东西。
+		s.startRetentionSweeper(s.ctx)
 		s.seedPythonInterpreter() // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		s.installMCPGuard()       // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
 		// P35：把 Scheduler 存下来，让"停机时这一 tick 做了什么"可被断言（tickOnce）。
@@ -3292,6 +3295,12 @@ func (s *Server) settingsPayload() map[string]any {
 		"storage_retention_drafts_days":      s.storageRetentionDays(settingStorageRetentionDrafts),
 		"storage_retention_transcripts_days": s.storageRetentionDays(settingStorageRetentionTranscript),
 		"storage_retention_binary_days":      s.storageRetentionDays(settingStorageRetentionBinary),
+		// 数据库侧同一套保留契约。前三个是 always-on 写的表（无限增长主力）。
+		"storage_retention_llm_usage_days":         s.storageRetentionDays(settingRetentionLLMUsage),
+		"storage_retention_activity_days":          s.storageRetentionDays(settingRetentionActivity),
+		"storage_retention_server_logs_days":       s.storageRetentionDays(settingRetentionServerLogs),
+		"storage_retention_llm_record_bodies_days": s.storageRetentionDays(settingRetentionLLMRecordBodys),
+		"storage_retention_llm_records_days":       s.storageRetentionDays(settingRetentionLLMRecords),
 		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
 		"exec_memory_mb":                execLimitsFromSettings(s.m.pg).MemoryMB,
@@ -3407,12 +3416,18 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		StorageRetentionDrafts     *int `json:"storage_retention_drafts_days"`
 		StorageRetentionTranscript *int `json:"storage_retention_transcripts_days"`
 		StorageRetentionBinary     *int `json:"storage_retention_binary_days"`
-		ExecMemoryMB               *int `json:"exec_memory_mb"`
-		ExecMaxProcs               *int `json:"exec_max_procs"`
-		ExecMaxActive              *int `json:"exec_max_active"`
-		MCPMaxConcurrent           *int `json:"mcp_max_concurrent_per_server"`
-		MCPBreakerFails            *int `json:"mcp_breaker_threshold"`
-		MCPBreakerCooldown         *int `json:"mcp_breaker_cooldown_sec"`
+		// 数据库侧保留天数（同一套 0 = 不清理）。改完由后台清理器按日生效。
+		RetentionLLMUsage       *int `json:"storage_retention_llm_usage_days"`
+		RetentionActivity       *int `json:"storage_retention_activity_days"`
+		RetentionServerLogs     *int `json:"storage_retention_server_logs_days"`
+		RetentionLLMRecordBodys *int `json:"storage_retention_llm_record_bodies_days"`
+		RetentionLLMRecords     *int `json:"storage_retention_llm_records_days"`
+		ExecMemoryMB            *int `json:"exec_memory_mb"`
+		ExecMaxProcs            *int `json:"exec_max_procs"`
+		ExecMaxActive           *int `json:"exec_max_active"`
+		MCPMaxConcurrent        *int `json:"mcp_max_concurrent_per_server"`
+		MCPBreakerFails         *int `json:"mcp_breaker_threshold"`
+		MCPBreakerCooldown      *int `json:"mcp_breaker_cooldown_sec"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -3612,6 +3627,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingStorageRetentionDrafts, req.StorageRetentionDrafts, 3650, "草稿保留天数"},
 		{settingStorageRetentionTranscript, req.StorageRetentionTranscript, 3650, "转写保留天数"},
 		{settingStorageRetentionBinary, req.StorageRetentionBinary, 3650, "更新残留保留天数"},
+		// 数据库侧保留天数（同一套 0 = 不清理、上限 10 年）
+		{settingRetentionLLMUsage, req.RetentionLLMUsage, 3650, "LLM 用量台账保留天数"},
+		{settingRetentionActivity, req.RetentionActivity, 3650, "执行活动流保留天数"},
+		{settingRetentionServerLogs, req.RetentionServerLogs, 3650, "后端日志保留天数"},
+		{settingRetentionLLMRecordBodys, req.RetentionLLMRecordBodys, 3650, "LLM 录制载荷保留天数"},
+		{settingRetentionLLMRecords, req.RetentionLLMRecords, 3650, "LLM 录制整行保留天数"},
 	} {
 		if f.val == nil {
 			continue

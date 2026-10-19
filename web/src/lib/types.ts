@@ -1454,6 +1454,11 @@ export interface Settings {
   storage_retention_drafts_days?: number;
   storage_retention_transcripts_days?: number;
   storage_retention_binary_days?: number;
+  storage_retention_llm_usage_days?: number;
+  storage_retention_activity_days?: number;
+  storage_retention_server_logs_days?: number;
+  storage_retention_llm_records_days?: number;
+  storage_retention_llm_record_bodies_days?: number;
   // 自更新用的 GitHub token（私有发布源）：只回布尔"是否已配"，值不回显。
   update_token_set?: boolean;
   update_github_token?: string;
