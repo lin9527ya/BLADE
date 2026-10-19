@@ -190,67 +190,71 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		defer s.llm.mu.Unlock()
 		return s.llm.on
 	})
-	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
-	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
-		agent.PromptOverride = func(key string) (string, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil {
-				return "", false
-			}
-			t, err := m.pg.CurrentPrompt(a.ID)
-			if err != nil || t == "" {
-				return "", false
-			}
-			return t, true
-		}
-		// P14：领域化压缩模板（settings.compaction_prompt）。空/缺失 → 内置 7 段模板。
-		agent.CompactionPromptOverride = func() (string, bool) {
-			v, ok, err := m.pg.GetSetting(settingCompactionPrompt)
-			if err != nil || !ok || strings.TrimSpace(v) == "" {
-				return "", false
-			}
-			return v, true
-		}
-		// P41 出站产物语言：agent 侧每 run 现读 → 改完即时生效，不需要重建 agent。
-		agent.ArtifactLanguage = func() string {
-			v, ok, err := m.pg.GetSetting(settingArtifactLanguage)
-			if err != nil || !ok {
-				return agent.ArtifactLangZh
-			}
-			return strings.TrimSpace(v)
-		}
-		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
-		agent.WrapupOverride = func(key string) (string, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.WrapupPrompt == "" {
-				return "", false
-			}
-			return a.WrapupPrompt, true
-		}
-		// Wire DB-stored wrap-up turn budgets. 0 / missing → built-in per-agent default.
-		agent.WrapupMaxTurnsOverride = func(key string) (int, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.WrapupMaxTurns <= 0 {
-				return 0, false
-			}
-			return a.WrapupMaxTurns, true
-		}
-		// Wire DB-stored TASK-TIMEOUT wrap-up prompt/turns (worker/planner). Empty/0 → default.
-		agent.WrapupTaskTimeoutOverride = func(key string) (string, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.TaskTimeoutWrapupPrompt == "" {
-				return "", false
-			}
-			return a.TaskTimeoutWrapupPrompt, true
-		}
-		agent.WrapupTaskTimeoutTurnsOverride = func(key string) (int, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.TaskTimeoutWrapupMaxTurns <= 0 {
-				return 0, false
-			}
-			return a.TaskTimeoutWrapupMaxTurns, true
-		}
+		// 注入 agent 依赖的外部能力（prompt 模板 / 产物语言 / 收尾词覆盖）。
+		// 工具类的三项由下面的 wireAgentAugment / wireTools 用「读-改-写」接上。
+		agent.SetOverrides(agent.Overrides{
+			// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
+			// override row, agents keep their built-in defaults — behavior is unchanged.
+			PromptOverride: func(key string) (string, bool) {
+				a, err := m.pg.GetAgentByKey(key)
+				if err != nil || a == nil {
+					return "", false
+				}
+				t, err := m.pg.CurrentPrompt(a.ID)
+				if err != nil || t == "" {
+					return "", false
+				}
+				return t, true
+			},
+			// P14：领域化压缩模板（settings.compaction_prompt）。空/缺失 → 内置 7 段模板。
+			CompactionPromptOverride: func() (string, bool) {
+				v, ok, err := m.pg.GetSetting(settingCompactionPrompt)
+				if err != nil || !ok || strings.TrimSpace(v) == "" {
+					return "", false
+				}
+				return v, true
+			},
+			// P41 出站产物语言：agent 侧每 run 现读 → 改完即时生效，不需要重建 agent。
+			ArtifactLanguage: func() string {
+				v, ok, err := m.pg.GetSetting(settingArtifactLanguage)
+				if err != nil || !ok {
+					return agent.ArtifactLangZh
+				}
+				return strings.TrimSpace(v)
+			},
+			// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
+			WrapupOverride: func(key string) (string, bool) {
+				a, err := m.pg.GetAgentByKey(key)
+				if err != nil || a == nil || a.WrapupPrompt == "" {
+					return "", false
+				}
+				return a.WrapupPrompt, true
+			},
+			// Wire DB-stored wrap-up turn budgets. 0 / missing → built-in per-agent default.
+			WrapupMaxTurnsOverride: func(key string) (int, bool) {
+				a, err := m.pg.GetAgentByKey(key)
+				if err != nil || a == nil || a.WrapupMaxTurns <= 0 {
+					return 0, false
+				}
+				return a.WrapupMaxTurns, true
+			},
+			// Wire DB-stored TASK-TIMEOUT wrap-up prompt/turns (worker/planner). Empty/0 → default.
+			WrapupTaskTimeoutOverride: func(key string) (string, bool) {
+				a, err := m.pg.GetAgentByKey(key)
+				if err != nil || a == nil || a.TaskTimeoutWrapupPrompt == "" {
+					return "", false
+				}
+				return a.TaskTimeoutWrapupPrompt, true
+			},
+			WrapupTaskTimeoutTurnsOverride: func(key string) (int, bool) {
+				a, err := m.pg.GetAgentByKey(key)
+				if err != nil || a == nil || a.TaskTimeoutWrapupMaxTurns <= 0 {
+					return 0, false
+				}
+				return a.TaskTimeoutWrapupMaxTurns, true
+			},
+		})
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
