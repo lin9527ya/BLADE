@@ -221,11 +221,15 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 	switch {
 	case strings.HasPrefix(m, "意图") || strings.HasPrefix(lower, "intent"):
 		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(m, "意图"), "intent"))
-		_, _ = t.Store.AddIntent(map[string]any{"summary": text}, 9, nil, "human")
+		if _, err := t.Store.AddIntent(map[string]any{"summary": text}, 9, nil, "human"); err != nil {
+			return "注入意图失败（没有写入任何东西）：" + err.Error()
+		}
 		return "已注入一条高优先级意图：" + text
 	case strings.HasPrefix(m, "提示") || strings.HasPrefix(lower, "hint"):
 		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(m, "提示"), "hint"))
-		_, _ = t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil)
+		if _, err := t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil); err != nil {
+			return "记录提示失败（没有写入任何东西）：" + err.Error()
+		}
 		return "已记录提示，规划者下次会读到：" + text
 	default:
 		assetCounts, _ := s.m.Assets().CountsByType()
