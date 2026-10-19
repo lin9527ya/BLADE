@@ -134,7 +134,7 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		// compensated and does not lose an otherwise valid conversation turn.
 		s.cancelTaskChat(t.ID, agent.AbortChatPausedWithTask)
 		out.Paused, out.Status = true, "paused"
-		go s.reconcileConcurrency()
+		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
 	case "resume":
 		// 终态任务的「继续运行」：任务因目标达成/收束而结束时，frontier 里可能还留着
 		// 从未执行(open)的意图——规划者已停跑，没人会再领它们。仅当确有这类遗留工作

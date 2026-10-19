@@ -215,3 +215,36 @@ func TestBootstrapAdmissionClearsQueuedPauseBarrier(t *testing.T) {
 		t.Fatal("bootstrap admission left the queued task behind the pause barrier")
 	}
 }
+
+// TestRuntimeCtxFollowsTaskCancellation pins the execution watcher's interruptibility.
+// The watcher used to sleep on context.Background(), whose Done() is a nil channel —
+// the select branch never fired, so deleting a task could not stop it and it ran on
+// until execWatchMax (24h). It must observe the task's runtime context instead.
+func TestRuntimeCtxFollowsTaskCancellation(t *testing.T) {
+	e := NewEngine(nil)
+
+	// No runtime registered → Background, which is exactly the uncancellable case.
+	if ctx := e.runtimeCtx("t1"); ctx.Done() != nil {
+		t.Fatal("unregistered task should fall back to context.Background()")
+	}
+
+	rt := e.registerTaskRoutines(context.Background(), "t1", 0)
+	ctx := e.runtimeCtx("t1")
+	if ctx != rt.ctx {
+		t.Fatal("runtimeCtx did not return the task's runtime context")
+	}
+
+	// This is the watcher's actual call: it must return promptly once the task is
+	// cancelled, not sleep out the full interval.
+	rt.cancel()
+	done := make(chan bool, 1)
+	go func() { done <- sleepCtx(ctx, time.Hour) }()
+	select {
+	case interrupted := <-done:
+		if !interrupted {
+			t.Fatal("sleepCtx slept instead of observing the cancelled task context")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sleepCtx did not observe the cancelled task context")
+	}
+}
