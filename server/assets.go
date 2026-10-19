@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -541,7 +542,9 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if req.TaskID > 0 {
-			_ = as.SetTaskAssetSource(req.TaskID, id, "api", "通过资产 API 登记", nil)
+			if serr := as.SetTaskAssetSource(req.TaskID, id, "api", "通过资产 API 登记", nil); serr != nil {
+				log.Printf("[assets] 标注来源失败 task=%d asset=%d: %v（资产已建立，只是来源缺失）", req.TaskID, id, serr)
+			}
 		}
 		results = append(results, result{Index: i, ID: id, Type: a.Type})
 	}

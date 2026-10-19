@@ -319,7 +319,9 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			if a.ParentRef != "" {
 				t.ParentRef = a.ParentRef
 				if id, e := strconv.ParseInt(t.ID, 10, 64); e == nil {
-					_ = s.m.PG().SetParentRef(id, a.ParentRef)
+					if perr := s.m.PG().SetParentRef(id, a.ParentRef); perr != nil {
+						log.Printf("[orchestration] 记录父子任务关联失败 task=%d parent=%s: %v", id, a.ParentRef, perr)
+					}
 				}
 			}
 			// 共享的建后流程,与 HTTP 建任务(server.go createTask)复用同一段 launchTask:
@@ -597,7 +599,9 @@ func (s *Server) refreshBuiltinToolSchemas() {
 			log.Printf("[tools] refresh %s desc failed: %v", sd.Key, err)
 		}
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 	log.Printf("[tools] 已刷新 orchestration/platform 工具 schema 到代码默认(一次性)")
 }
 
@@ -615,7 +619,9 @@ func (s *Server) unbindGoalMetDefault() {
 		log.Printf("[tools] goal_met 解绑 planner 失败: %v", err)
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // reseedGoalsPrompt 把 goals 目标拆解器的提示词刷成【当前代码默认】——因为默认正文新增了
@@ -628,7 +634,11 @@ func (s *Server) reseedGoalsPrompt() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}() // 无论成功与否只尝试一次
 	a, err := s.m.pg.GetAgentByKey("goals")
 	if err != nil || a == nil {
 		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
@@ -658,7 +668,11 @@ func (s *Server) reseedMainAgentPrompt() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}() // 无论成功与否只尝试一次
 	a, err := s.m.pg.GetAgentByKey("mainagent")
 	if err != nil || a == nil {
 		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
@@ -689,7 +703,11 @@ func (s *Server) reseedPlannerPrompt() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}() // 无论成功与否只尝试一次
 	a, err := s.m.pg.GetAgentByKey("planner")
 	if err != nil || a == nil {
 		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
@@ -719,7 +737,11 @@ func (s *Server) reseedWorkerPrompt() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}() // 无论成功与否只尝试一次
 	a, err := s.m.pg.GetAgentByKey("worker")
 	if err != nil || a == nil {
 		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
@@ -794,7 +816,11 @@ func (s *Server) upgradeReporterTriggerMessage() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 只尝试一次
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}() // 只尝试一次
 	triggers, err := s.m.pg.ListTriggersFor("reporter")
 	if err != nil {
 		log.Printf("[reporter] 读取触发器失败: %v", err)
@@ -822,7 +848,11 @@ func (s *Server) seedReporterAgent() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}() // 无论成功与否只尝试一次
 
 	if exist, _ := s.m.pg.GetAgentByKey("reporter"); exist != nil {
 		return // key 已被占用(用户手建过)——不覆盖
@@ -955,7 +985,9 @@ func (s *Server) seedAutoReportFindingBinding() {
 		log.Printf("[auto] report_finding 默认绑定失败: %v", err)
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // seedPlannerDefaultBindings adds "planner" to report_finding's binding ONCE
@@ -971,7 +1003,9 @@ func (s *Server) seedPlannerDefaultBindings() {
 		log.Printf("[planner] report_finding 默认绑定失败: %v", err)
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // seedPlannerListAssetsBinding adds "planner" to list_assets's binding ONCE
@@ -988,7 +1022,9 @@ func (s *Server) seedPlannerListAssetsBinding() {
 		log.Printf("[planner] list_assets 默认绑定失败: %v", err)
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // seedCompanyScopeRebind changes add_company_scope's default binding ONCE on
@@ -1017,7 +1053,9 @@ func (s *Server) seedGraphToolBindings() {
 			return
 		}
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 	log.Printf("[tools] 图相关工具（摄入/路径/可检出性）已补绑 auto/pentest（一次性）")
 }
 
@@ -1034,7 +1072,9 @@ func (s *Server) seedCompanyScopeRebind() {
 		log.Printf("[worker] add_company_scope 解绑失败: %v", err)
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // seedWorkerReadToolsUnbind strips the read-context tools off worker's default
@@ -1062,7 +1102,9 @@ func (s *Server) seedWorkerReadToolsUnbind() {
 			return // 出错则不落 flag，下次启动重试
 		}
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // seedWorkerReadbackRebind re-binds the cross-work look-back / drill-down tools onto
@@ -1082,7 +1124,9 @@ func (s *Server) seedWorkerReadbackRebind() {
 		log.Printf("[worker] 回看/详情工具补绑失败: %v", err)
 		return // 出错则不落 flag，下次启动重试
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }
 
 // seedAutoDefaultBindings adds "auto" to the task-op + platform tools' bindings
@@ -1105,5 +1149,7 @@ func (s *Server) seedAutoDefaultBindings() {
 		log.Printf("[auto] 默认绑定失败: %v", err)
 		return
 	}
-	_ = s.m.pg.SetSetting(flag, "true")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
 }

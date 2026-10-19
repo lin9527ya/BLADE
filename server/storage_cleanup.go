@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -512,7 +513,9 @@ func (s *Server) cleanStorage(w http.ResponseWriter, r *http.Request) {
 		"items":      deleted,
 	}
 	if raw, merr := json.Marshal(summary); merr == nil {
-		_ = s.m.pg.SetSetting(settingStorageLastClean, string(raw))
+		if serr := s.m.pg.SetSetting(settingStorageLastClean, string(raw)); serr != nil {
+			log.Printf("[storage] 记录上次清理摘要失败: %v（清理本身已完成，只是页面看不到记录）", serr)
+		}
 	}
 	// 这条是**成功**汇总：以前因为文案里有「失败 %d 项」被判成红色 error（那个数字
 	// 通常是 0）。级别由调用点写明。

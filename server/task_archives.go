@@ -86,6 +86,10 @@ func (s *Server) notifyTaskArchiveWorker() {
 	}
 }
 
+// 归档进度更新（UpdateTaskArchiveProgress）刻意保持 best-effort：它只驱动页面上的
+// 进度条，失败不影响归档本身，而每几秒一次的高频写入不值得为它加错误分支。
+// 任务真正的成败由 FinishTaskArchiveJob 记录。
+
 func (s *Server) runOneTaskArchiveJob() error {
 	job, err := s.m.pg.ClaimTaskArchiveJob(s.ctx)
 	if err != nil || job == nil {

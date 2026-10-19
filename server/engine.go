@@ -1288,7 +1288,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 	}
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
-		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
+		if rerr := t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota); rerr != nil {
+			log.Printf("[worker %s] task %s 意图 #%d 记录阻塞原因失败: %v", name, t.ID, intent.ID, rerr)
+		}
 	} else {
 		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 终态 %s 落库失败: %v", name, t.ID, intent.ID, state, stateErr)
