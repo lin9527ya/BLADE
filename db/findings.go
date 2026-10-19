@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -816,9 +817,13 @@ func (d *DB) setFindingCol(id int64, col, jsonKey, val string) (int64, error) {
 		return 0, err
 	}
 	if nodeID != nil {
-		_, _ = d.Exec(`UPDATE exploration_nodes
+		// finding 列已经改好了，这里只是同步节点 payload；两者不在同一事务里，所以失败
+		// 不回滚——但必须留下痕迹，否则两边会静默不一致（图上显示旧值，列表显示新值）。
+		if _, err := d.Exec(`UPDATE exploration_nodes
 			SET payload = jsonb_set(payload, '{`+jsonKey+`}', to_jsonb($1::text))
-			WHERE id = $2`, val, *nodeID)
+			WHERE id = $2`, val, *nodeID); err != nil {
+			log.Printf("[findings] 同步节点 payload 失败 finding=%d node=%d key=%s: %v", id, *nodeID, jsonKey, err)
+		}
 	}
 	return 1, nil
 }

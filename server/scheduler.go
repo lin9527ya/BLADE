@@ -76,6 +76,16 @@ func (sc *Scheduler) tickOnce(ctx context.Context) {
 
 // init seeds the watermarks on first run so pre-existing findings/goals don't all
 // fire at once — only events created AFTER the scheduler first starts count.
+// setWatermark 记录水位，**失败时留下痕迹**。
+//
+// 水位写不进去，下一 tick 会把同一批事件再触发一次——重复建任务、重复复测。此前这些
+// 写入全是 `_ =`，失败完全无声，只能靠"怎么多了一个任务"去倒推。
+func (sc *Scheduler) setWatermark(key string, maxID int64) {
+	if err := sc.pg.SetSchedState(key, strconv.FormatInt(maxID, 10)); err != nil {
+		log.Printf("[scheduler] 记录水位 %s=%d 失败: %v（下一 tick 可能重复触发）", key, maxID, err)
+	}
+}
+
 func (sc *Scheduler) init() {
 	if sc.mustState(schedKeyLastFinding) == "" {
 		var maxID int64
@@ -86,7 +96,7 @@ func (sc *Scheduler) init() {
 				}
 			}
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastFinding, strconv.FormatInt(maxID, 10))
+		sc.setWatermark(schedKeyLastFinding, maxID)
 	}
 	if sc.mustState(schedKeyFiredGoals) == "" {
 		set := map[int64]bool{}
@@ -106,7 +116,7 @@ func (sc *Scheduler) init() {
 				}
 			}
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
+		sc.setWatermark(schedKeyLastTimeout, maxID)
 	}
 	if sc.mustState(schedKeyLastToolCall) == "" {
 		var maxID int64
@@ -117,7 +127,7 @@ func (sc *Scheduler) init() {
 				}
 			}
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastToolCall, strconv.FormatInt(maxID, 10))
+		sc.setWatermark(schedKeyLastToolCall, maxID)
 	}
 	if sc.mustState(schedKeyLastTaskCreate) == "" {
 		var maxID int64
@@ -128,7 +138,7 @@ func (sc *Scheduler) init() {
 				}
 			}
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastTaskCreate, strconv.FormatInt(maxID, 10))
+		sc.setWatermark(schedKeyLastTaskCreate, maxID)
 	}
 }
 
@@ -244,7 +254,7 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("finding 触发 · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastFinding, strconv.FormatInt(maxID, 10))
+	sc.setWatermark(schedKeyLastFinding, maxID)
 }
 
 // fireGoals fires on_goal_met triggers for met goals not yet in the fired set.
@@ -310,7 +320,7 @@ func (sc *Scheduler) fireTaskTimeouts(triggers []*db.AgentTrigger) {
 			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
+	sc.setWatermark(schedKeyLastTimeout, maxID)
 }
 
 // fireTaskCreates fires on_task_create triggers for tasks newly created above the
@@ -341,7 +351,7 @@ func (sc *Scheduler) fireTaskCreates(triggers []*db.AgentTrigger) {
 			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("任务创建触发 · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastTaskCreate, strconv.FormatInt(maxID, 10))
+	sc.setWatermark(schedKeyLastTaskCreate, maxID)
 }
 
 // fireToolCalls fires on_tool_call triggers for tool calls (tool_result rows) above
@@ -386,7 +396,7 @@ func (sc *Scheduler) fireToolCalls(triggers []*db.AgentTrigger) {
 			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("工具触发 · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastToolCall, strconv.FormatInt(maxID, 10))
+	sc.setWatermark(schedKeyLastToolCall, maxID)
 }
 
 // containsFold reports whether name is in set (case-insensitive).
