@@ -21,74 +21,9 @@ const RowTokenCard = dynamic(() => import("./_components/tokencard").then((m) =>
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const s = useDashboardState();
-  const {
-    tasks,
-    setTasks,
-    findings,
-    setFindings,
-    stats,
-    setStats,
-    settings,
-    setSettings,
-    pending,
-    setPending,
-    activity,
-    setActivity,
-    tokens,
-    setTokens,
-    convTokens,
-    setConvTokens,
-    usageStats,
-    setUsageStats,
-    assetCounts,
-    setAssetCounts,
-    traffic,
-    setTraffic,
-    agents,
-    setAgents,
-    mcpServers,
-    setMcpServers,
-    skills,
-    setSkills,
-    tools,
-    setTools,
-    llmProfiles,
-    setLLMProfiles,
-    taskSignatureRef,
-    tasksByStatus,
-    findingsBySev,
-    sortedTasks,
-    recentFindings,
-    recentActivity,
-    totalAssets,
-    assetByType,
-    assetMax,
-    trafficByCodes,
-    trafficMax,
-    recentTraffic,
-    activeProfile,
-    enabledTools,
-    pendingCount,
-    defaultProfileId,
-    tokenVersion,
-    setTokenVersion,
-    tokenTab,
-    setTokenTab,
-    tokenDays,
-    setTokenDays,
-    profileIdByName,
-    tokenByProfileOld,
-    tokenByProfileNew,
-    tokenByProfile,
-    displayedTokens,
-    dailyTokenDataOld,
-    dailyTokenDataNew,
-    dailyTokenData,
-    kindLabel,
-    workerColor,
-    workerBg,
-  } = s;
+  // 每个面板拿自己那份切片（hook 里按面板 memo 过）。此前页面把整个返回对象交给
+  // 5 个面板，任一字段变化都会让它们**全部**重渲染；切成切片后只有受影响的那个重渲染。
+  const { statCards, tokenCard, activityRow, taskTable, assetTraffic } = useDashboardState();
 
   // ── render ────────────────────────────────────────────────────────────────
 
@@ -101,18 +36,18 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Row 1: 5 stat cards ── */}
-      <RowStatCards s={s} />
+      <RowStatCards s={statCards} />
 
       {/* ── Row 2: LLM Token 消耗 ── */}
-      <RowTokenCard s={s} />
+      <RowTokenCard s={tokenCard} />
 
       {/* ── Row 3: 活动流 | 发现 ── */}
-      <RowActivity s={s} />
+      <RowActivity s={activityRow} />
       {/* ── Row 4: 任务表格 ── */}
-      <RowTaskTable s={s} />
+      <RowTaskTable s={taskTable} />
 
       {/* ── Row 5: 资产分布 | 流量状态码 | 拦截 & 待审批 ── */}
-      <RowAssetTraffic s={s} />
+      <RowAssetTraffic s={assetTraffic} />
     </div>
   );
 }

@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { fmtTokens, LiveDot } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
-export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState> }) {
+export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["statCards"] }) {
   const { tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
 
   return (
