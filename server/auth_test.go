@@ -125,13 +125,13 @@ func TestChangePasswordRevokesExistingTokens(t *testing.T) {
 	defer m.Close()
 	defer seedPassword(t, m, "old-password-123")()
 
-	s := &Server{m: m, jwtKeyPath: filepath.Join(t.TempDir(), jwtKeyFilename)}
+	s := &Server{m: m, auth: authState{jwtKeyPath: filepath.Join(t.TempDir(), jwtKeyFilename)}}
 	oldKey, err := newJWTKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.signKey.set(oldKey)
-	oldToken, err := signJWT(s.signKey.get())
+	s.auth.signKey.set(oldKey)
+	oldToken, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +145,10 @@ func TestChangePasswordRevokesExistingTokens(t *testing.T) {
 		t.Fatalf("改密码应 200，得到 %d：%s", w.Code, w.Body.String())
 	}
 
-	if verifyJWT(oldToken, s.signKey.get()) {
+	if verifyJWT(oldToken, s.auth.signKey.get()) {
 		t.Fatal("改密码后旧 token 仍然有效——被偷走的凭据改密码也救不回来，这条修复就白做了")
 	}
-	if !verifyJWT(mustSign(t, s), s.signKey.get()) {
+	if !verifyJWT(mustSign(t, s), s.auth.signKey.get()) {
 		t.Fatal("轮换后的新密钥签不出可验证的 token")
 	}
 }
@@ -156,7 +156,7 @@ func TestChangePasswordRevokesExistingTokens(t *testing.T) {
 // mustSign 用当前密钥签一个 token，用于断言轮换后的密钥是**可用**的（而不只是"不等于旧的"）。
 func mustSign(t *testing.T, s *Server) string {
 	t.Helper()
-	tok, err := signJWT(s.signKey.get())
+	tok, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestLoginThrottleLocksAfterRepeatedFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.signKey.set(key)
+	s.auth.signKey.set(key)
 
 	login := func(pw string) int {
 		w := httptest.NewRecorder()
@@ -198,7 +198,7 @@ func TestLoginThrottleLocksAfterRepeatedFailures(t *testing.T) {
 		t.Fatalf("锁定期内**即使密码正确**也应 429（节流先于校验），得到 %d", code)
 	}
 
-	s.login.succeed() // 等价于锁定期结束/成功登录后的复位
+	s.auth.login.succeed() // 等价于锁定期结束/成功登录后的复位
 	if code := login("right-password"); code != 200 {
 		t.Fatalf("复位后正确密码应 200，得到 %d", code)
 	}

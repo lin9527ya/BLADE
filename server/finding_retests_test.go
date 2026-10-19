@@ -47,7 +47,7 @@ func newRetestServer(t *testing.T) (*Server, int64) {
 	td := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{ctx: ctx, m: &Manager{pg: pg, dir: td, tasks: map[string]*Task{}},
-		chatBusy: map[string]bool{}, chatCancel: map[string]context.CancelCauseFunc{}}
+		chatRuns: chatState{busy: map[string]bool{}, cancel: map[string]context.CancelCauseFunc{}}}
 	if err := s.seedFindingRetester(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +73,8 @@ func newRetestServer(t *testing.T) (*Server, int64) {
 }
 
 func setRetestProvider(s *Server, p retestProvider) {
-	s.chatAgent = agent.NewChatAgent(p, "test", s.m.dir, nil, 10000)
-	s.chatAgent.SetNonStreaming(func() bool { return true })
+	s.llm.chatAgent = agent.NewChatAgent(p, "test", s.m.dir, nil, 10000)
+	s.llm.chatAgent.SetNonStreaming(func() bool { return true })
 }
 
 func retestRequest(handler http.HandlerFunc, method string, id int64, body string) *httptest.ResponseRecorder {
@@ -89,9 +89,9 @@ func waitRetestIdle(t *testing.T, s *Server) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		s.chatMu.Lock()
-		n := len(s.chatBusy)
-		s.chatMu.Unlock()
+		s.chatRuns.mu.Lock()
+		n := len(s.chatRuns.busy)
+		s.chatRuns.mu.Unlock()
 		if n == 0 {
 			return
 		}

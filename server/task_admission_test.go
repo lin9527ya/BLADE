@@ -26,7 +26,7 @@ func newAdmissionTestServer(m *Manager, available func(*Task) bool) *Server {
 		}
 		return nil, nil
 	})
-	return &Server{m: m, engine: e, ctx: ctx, chatBusy: map[string]bool{}, chatCancel: map[string]context.CancelCauseFunc{}}
+	return &Server{m: m, engine: e, ctx: ctx, chatRuns: chatState{busy: map[string]bool{}, cancel: map[string]context.CancelCauseFunc{}}}
 }
 
 func restoreConcurrencySetting(t *testing.T, m *Manager) func() {
@@ -561,7 +561,7 @@ func TestTaskLLMResolutionRejectsInvalidExplicitProfile(t *testing.T) {
 		_ = m.pg.DeleteProfile(profileID)
 	}()
 
-	s := &Server{m: m, provByProfile: map[int64]*provEntry{}}
+	s := &Server{m: m, providers: providerState{byProfile: map[int64]*provEntry{}}}
 	got, err := s.resolveTaskRoleLLM(task, "worker")
 	if err != nil {
 		t.Fatal(err)
@@ -611,7 +611,7 @@ func TestTaskLLMResolutionPrefersAgentBindingOverTaskChain(t *testing.T) {
 		_ = m.pg.DeleteProfile(chainID)
 	}()
 
-	s := &Server{m: m, provByProfile: map[int64]*provEntry{}}
+	s := &Server{m: m, providers: providerState{byProfile: map[int64]*provEntry{}}}
 	got, err := s.resolveTaskRoleLLM(task, "worker")
 	if err != nil {
 		t.Fatal(err)

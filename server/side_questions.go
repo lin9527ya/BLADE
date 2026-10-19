@@ -197,9 +197,9 @@ func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
 		}
 		p, cfg, ok = s.providerForProfile(model.ProfileID)
 	} else {
-		s.cfgMu.Lock()
-		p, cfg, ok = s.llmDirect, s.llmCfg, s.llmOn
-		s.cfgMu.Unlock()
+		s.llm.mu.Lock()
+		p, cfg, ok = s.llm.direct, s.llm.cfg, s.llm.on
+		s.llm.mu.Unlock()
 	}
 	if !ok || p == nil || sideModel(cfg, model.ProfileID, model.Name).Identity != model.Identity {
 		return nil, errors.New("模型配置已删除或变化，请先运行主 Agent 更新上下文")

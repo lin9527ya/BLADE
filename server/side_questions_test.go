@@ -145,17 +145,17 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, chatBusy: map[string]bool{}}
-	s.signKey.set([]byte("btw-test-signing-key-only"))
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, chatRuns: chatState{busy: map[string]bool{}}}
+	s.auth.signKey.set([]byte("btw-test-signing-key-only"))
 	s.initSideQuestions()
 	p := &sideHTTPProvider{started: make(chan llm.CompletionRequest, 16), release: make(chan struct{})}
 	cfg := agent.Config{Format: llm.FormatOpenAI, BaseURL: "http://fixture.invalid", Model: "fixture", Stream: true}
-	s.cfgMu.Lock()
-	s.llmCfg = cfg
-	s.llmOn = true
-	s.llmDirect = bindSideProvider(p, cfg, 0, "fixture")
-	s.cfgMu.Unlock()
-	token, err := signJWT(s.signKey.get())
+	s.llm.mu.Lock()
+	s.llm.cfg = cfg
+	s.llm.on = true
+	s.llm.direct = bindSideProvider(p, cfg, 0, "fixture")
+	s.llm.mu.Unlock()
+	token, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func (f *sideHTTPFixture) conversation(t *testing.T) (sidequestion.Parent, strin
 }
 func (f *sideHTTPFixture) checkpoint(t *testing.T, p sidequestion.Parent) sidequestion.Snapshot {
 	t.Helper()
-	snap := sidequestion.Snapshot{Parent: p, RunID: time.Now().UnixNano(), Version: 1, CapturedAt: time.Now().UTC(), Model: sideModel(f.s.llmCfg, 0, "fixture"), Request: llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("main context marker")}}}
+	snap := sidequestion.Snapshot{Parent: p, RunID: time.Now().UnixNano(), Version: 1, CapturedAt: time.Now().UTC(), Model: sideModel(f.s.llm.cfg, 0, "fixture"), Request: llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("main context marker")}}}
 	if err := f.m.pg.SaveSideSnapshot(t.Context(), snap); err != nil {
 		t.Fatal(err)
 	}
@@ -231,9 +231,9 @@ func TestSideHTTPBusyIsolationClearAndReconnect(t *testing.T) {
 	f.call(t, "POST", path, map[string]string{"question": "old session", "client_request_id": "old"}, 409)
 	f.checkpoint(t, p)
 	// Main busy status must not reject the side request.
-	f.s.chatMu.Lock()
-	f.s.chatBusy[fmt.Sprintf("conv-%d", p.ConversationID)] = true
-	f.s.chatMu.Unlock()
+	f.s.chatRuns.mu.Lock()
+	f.s.chatRuns.busy[fmt.Sprintf("conv-%d", p.ConversationID)] = true
+	f.s.chatRuns.mu.Unlock()
 	e := decodeSide(t, f.call(t, "POST", path, map[string]string{"question": "question", "client_request_id": "one"}, 202))
 	select {
 	case req := <-f.provider.started:
@@ -280,9 +280,9 @@ func TestSideHTTPBusyIsolationClearAndReconnect(t *testing.T) {
 	if done.Answer != "partial answer" || done.Usage.InputTokens != 19 {
 		t.Fatalf("cancel lost partial/usage: %+v", done)
 	}
-	f.s.chatMu.Lock()
-	mainBusy := f.s.chatBusy[fmt.Sprintf("conv-%d", p.ConversationID)]
-	f.s.chatMu.Unlock()
+	f.s.chatRuns.mu.Lock()
+	mainBusy := f.s.chatRuns.busy[fmt.Sprintf("conv-%d", p.ConversationID)]
+	f.s.chatRuns.mu.Unlock()
 	if !mainBusy {
 		t.Fatal("side cancellation stopped main")
 	}
@@ -297,9 +297,9 @@ func TestSideHTTPBusyIsolationClearAndReconnect(t *testing.T) {
 	if err := f.m.pg.QueryRow(`SELECT count(*) FROM conversation_activities WHERE conversation_id=$1`, p.ConversationID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("side contaminated main activity %d %v", count, err)
 	}
-	f.s.cfgMu.Lock()
-	f.s.llmCfg.Model = "changed"
-	f.s.cfgMu.Unlock()
+	f.s.llm.mu.Lock()
+	f.s.llm.cfg.Model = "changed"
+	f.s.llm.mu.Unlock()
 	f.call(t, "GET", path, nil, 200)
 	f.call(t, "POST", path, map[string]string{"question": "changed config", "client_request_id": "new"}, 409)
 }
@@ -356,7 +356,7 @@ func TestSideHTTPGlobalLimitTaskWorkerAndDeletion(t *testing.T) {
 func TestSideCheckpointPersistsBeforeAdmissionAndRestart(t *testing.T) {
 	f := newSideHTTPFixture(t)
 	p, path := f.conversation(t)
-	bound := bindSideProvider(f.provider, f.s.llmCfg, 0, "fixture")
+	bound := bindSideProvider(f.provider, f.s.llm.cfg, 0, "fixture")
 	ctx, deps := sidequestion.Attach(f.s.ctx, p, harness.QueryDeps{}, bound)
 	mainCtx, stopMain := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -391,7 +391,7 @@ func TestSideCheckpointPersistsBeforeAdmissionAndRestart(t *testing.T) {
 	}
 	ctx2, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	restarted := &Server{m: f.m, ctx: ctx2, llmCfg: f.s.llmCfg, llmDirect: bound, llmOn: true}
+	restarted := &Server{m: f.m, ctx: ctx2, llm: llmState{cfg: f.s.llm.cfg, direct: bound, on: true}}
 	restarted.initSideQuestions()
 	if got := waitSide(t, f.m.pg, orphan.ID, "interrupted"); got.Answer != "saved before crash" {
 		t.Fatal("restart discarded partial answer")
@@ -426,7 +426,7 @@ func TestSideRejectsDeletedOrChangedCachedProfile(t *testing.T) {
 	if !ok {
 		t.Fatal("profile unavailable")
 	}
-	f.s.provByProfile = map[int64]*provEntry{id: {prov: f.provider, cfg: cfg}}
+	f.s.providers.byProfile = map[int64]*provEntry{id: {prov: f.provider, cfg: cfg}}
 	model := sideModel(cfg, id, p.Name)
 	if _, err = f.s.sideProvider(model); err != nil {
 		t.Fatal(err)
@@ -521,7 +521,7 @@ func TestSideRestoredWorkerRuntimePublishesNewCheckpoint(t *testing.T) {
 	}
 	p := sidequestion.Parent{TaskID: id, ExplorationID: task.ExpID, IntentID: iid}
 	close(f.provider.release)
-	bound := bindSideProvider(f.provider, f.s.llmCfg, 0, "fixture")
+	bound := bindSideProvider(f.provider, f.s.llm.cfg, 0, "fixture")
 	ctx, deps := sidequestion.Attach(runtime.ctx, p, harness.QueryDeps{}, bound)
 	_, _, _, err = deps.CallModelSync(ctx, llm.CompletionRequest{Messages: []llm.Message{llm.UserText("after restart context")}})
 	if err != nil {

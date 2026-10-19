@@ -24,99 +24,104 @@ var BuildVersion = "dev"
 // Server exposes the BLADE backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	m      *Manager
-	engine *Engine
-	ctx    context.Context
-	// CORS 白名单缓存（P42）：中间件在每个 API 请求上跑，设置不能每请求读一次。
-	corsMu    sync.Mutex
-	corsCache []string
-	corsAt    time.Time
-
-	// sched 是 P3 触发器/计划任务的调度器（P35 起存下来：停机时的 tick 行为要可断言）。
-	sched *Scheduler
-
+	m        *Manager
+	engine   *Engine
+	ctx      context.Context
+	sched    *Scheduler
 	skillDir string // root directory for skill subdirectories
-	// signKey 是 HS256 签名密钥（见 auth.go 的 signingKey）：改密码会**轮换**它以立刻吊销
-	// 既有 token，而 requireAuth 每请求都要读，所以经方法访问、不直读字段。
-	// jwtKeyPath 是它的落盘位置（baseDir/jwt.key），轮换时覆写。
-	signKey    signingKey
-	jwtKeyPath string
-	// login 是登录失败节流（见 auth.go 的 loginGuard）。
-	login loginGuard
+	side     *sideQuestionState
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
 	// free slots off the same snapshot and over-promote past the limit.
 	concMu sync.Mutex
 
-	cfgMu     sync.Mutex
+	// 下面按域聚成子结构（P2 第二步）。放在子结构里而不是平铺在 Server 上，
+	// 是为了让每个域的状态与它自己的锁待在一起——此前 10 个 mutex 混在 37 个字段里，
+	// 很难看出哪把锁保护哪些数据。
+	cors      corsState
+	auth      authState
+	llm       llmState
+	providers providerState
+	chatRuns  chatState
+	triggers  triggerState
+	agents    agentState
+	archive   archiveState
+}
+
+// corsState 是 CORS 白名单缓存（P42）：中间件在每个 API 请求上跑，设置不能每请求读一次。
+type corsState struct {
+	mu    sync.Mutex
+	cache []string
+	at    time.Time
+}
+
+// authState 是 JWT 签名密钥与登录节流。
+type authState struct {
+	// signKey 是 HS256 签名密钥（见 auth.go 的 signingKey）：改密码会**轮换**它以立刻
+	// 吊销既有 token，而 requireAuth 每请求都要读，所以经方法访问、不直读字段。
+	// jwtKeyPath 是它的落盘位置（baseDir/jwt.key），轮换时覆写。
+	signKey    signingKey
+	jwtKeyPath string
+	login      loginGuard // 登录失败节流（见 auth.go）
+}
+
+// llmState 是 LLM 配置与全局 provider 的运行时状态。
+type llmState struct {
+	mu        sync.Mutex
 	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
-	// llmProv is the fully-decorated global provider (recorder + failover chain)
+	// prov is the fully-decorated global provider (recorder + failover chain)
 	// installed by applyLLM. Task routers use it after an explicit chain is cleared.
-	llmProv   llm.Provider
-	llmDirect llm.Provider // concrete global provider, before any failover pool
-	llmCfg    agent.Config // current LLM config (key not exposed)
-	llmOn     bool
-	llmProf   string // active LLM profile name (for llmrec tagging)
+	prov    llm.Provider
+	direct  llm.Provider // concrete global provider, before any failover pool
+	cfg     agent.Config // current LLM config (key not exposed)
+	on      bool
+	profile string // active LLM profile name (for llmrec tagging)
+}
 
-	// chatBusy guards the per-task main-agent run: the chat handler launches the
-	// agent on the server's background ctx (not the request ctx) and returns
-	// immediately, so a page reload / proxy timeout can't abort a live run. This
-	// map serializes turns per task — one main-agent run at a time per task, so
-	// concurrent messages don't corrupt the shared exp<id>-main transcript.
-	chatMu   sync.Mutex
-	chatBusy map[string]bool
-	// chatCancel holds the cancel func for each in-flight conversation run (keyed by
-	// convBusyKey), so a manual stop can abort JUST that session's agent run. Set/
-	// cleared alongside chatBusy under chatMu. Aborting a run does NOT touch the P3
-	// trigger queue — the drain goroutine simply proceeds to the next queued fire.
-	chatCancel map[string]context.CancelCauseFunc
+// providerState 缓存按配置构建的 provider / ChatAgent，以及进程级的熔断状态。
+type providerState struct {
+	// mu 保护 chatAgents（chat 页按 profile 缓存的 ChatAgent，编辑 profile 后失效）。
+	mu         sync.Mutex
+	chatAgents map[int64]*agent.ChatAgent
 
-	// triggerQ buffers P3 trigger fires PER AGENT. A per-agent "pump" launches runs up
-	// to a concurrency limit derived from the agent's策略: serial → limit 1 (+ optional
-	// merge); parallel → limit = trigger_max_parallel (0=∞), no merge. triggerActive
-	// counts in-flight runs per agent (replaces a boolean drain flag); a run's
-	// completion decrements it and re-pumps to fill the freed slot. triggerCfg caches
-	// the agent's last-read策略 so the pump never queries the DB while holding queueMu.
-	// Distinct agents always run concurrently. Queue is in-memory (matches chatBusy); a
-	// restart drops pending fires — the scheduler re-fires from watermarks next tick.
-	queueMu       sync.Mutex
-	triggerQ      map[string][]triggeredRun
-	triggerActive map[string]int
-	triggerCfg    map[string]triggerBehavior
+	// cacheMu 保护 byProfile / cacheGen：每个 profile 只建一个 provider，让绑定或
+	// pin 到同一 profile 的 agent 共享同一个实例——因而共享同一个限流器。
+	cacheMu   sync.Mutex
+	byProfile map[int64]*provEntry
+	cacheGen  uint64
 
-	// profChatAgents caches a per-profile ChatAgent (chat page), keyed by profile id.
-	// Built lazily on first use; invalidated when any profile is saved/activated/deleted
-	// so edits take effect.
-	profMu         sync.Mutex
-	profChatAgents map[int64]*agent.ChatAgent // per-profile ChatAgent cache (chat page)
+	// health 是 LLM 轮询的进程级熔断状态。刻意放在 provider 缓存**之外**：重建链
+	// （保存无关 profile、改个开关）不该抹掉"哪个后端没额度/被限流"这件事。
+	health *llmpool.Registry
+}
 
-	// provByProfile caches ONE provider per LLM profile id so every agent bound or
-	// pinned to the same profile shares a single provider instance — hence one rate
-	// limiter. applyLLM also resolves the persisted global-active profile through this
-	// cache, so global fallback and task chains do not accidentally double the
-	// configured request rate. Cleared on profile edits, then repopulated by active reapply.
-	provCacheMu   sync.Mutex
-	provByProfile map[int64]*provEntry
-	provCacheGen  uint64
+// chatState 串行化每个任务的主 agent 运行：同一任务同时只跑一轮。
+type chatState struct {
+	mu   sync.Mutex
+	busy map[string]bool
+	// cancel 持有每个在跑会话的 cancel（按 convBusyKey），手动停止只中止那一个会话。
+	cancel map[string]context.CancelCauseFunc
+}
 
-	// llmHealth is the process-wide circuit-breaker state for LLM failover (轮询).
-	// It deliberately lives OUTSIDE the provider caches: rebuilding the chain
-	// (saving an unrelated profile, flipping a setting) must not erase what we
-	// learned about which backends are out of credit / rate-limited.
-	llmHealth *llmpool.Registry
+// triggerState 是 P3 触发器队列：按 agent 分桶、计数在跑、缓存策略。
+type triggerState struct {
+	mu     sync.Mutex
+	queue  map[string][]triggeredRun
+	active map[string]int
+	cfg    map[string]triggerBehavior
+}
 
-	// Explicit task chains use one task-scoped dynamic provider shared by goals,
-	// planner, workers, and the main agent. Bundles are stable; their runtime reads
-	// the persisted current profile at every new LLM call.
-	taskAgentMu sync.Mutex
-	taskAgents  map[string]*taskAgentBundle
+// agentState 是显式任务链使用的任务级 agent 组合。
+type agentState struct {
+	mu      sync.Mutex
+	bundles map[string]*taskAgentBundle
+}
 
-	// Cold task archives run through one persistent FIFO worker. The buffered wake
-	// channel coalesces enqueue bursts; the database remains the source of truth.
-	archiveWake chan struct{}
-	archiveWG   sync.WaitGroup
-	side        *sideQuestionState
+// archiveState 是冷任务归档的后台工作者。
+type archiveState struct {
+	wake chan struct{}
+	wg   sync.WaitGroup
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -143,14 +148,27 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, chatBusy: map[string]bool{},
-		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
-		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
-		profChatAgents: map[int64]*agent.ChatAgent{},
-		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
-	s.signKey.set(key)
-	s.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)
+	s := &Server{
+		m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir,
+		chatRuns: chatState{
+			busy:   map[string]bool{},
+			cancel: map[string]context.CancelCauseFunc{},
+		},
+		triggers: triggerState{
+			queue:  map[string][]triggeredRun{},
+			active: map[string]int{},
+			cfg:    map[string]triggerBehavior{},
+		},
+		providers: providerState{
+			chatAgents: map[int64]*agent.ChatAgent{},
+			byProfile:  map[int64]*provEntry{},
+			health:     newLLMHealthRegistry(m.pg),
+		},
+		agents:  agentState{bundles: map[string]*taskAgentBundle{}},
+		archive: archiveState{wake: make(chan struct{}, 1)},
+	}
+	s.auth.signKey.set(key)
+	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -168,9 +186,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// Global readiness (Ready()/llm_configured): a global active LLM provider is
 	// installed. Task-level runnability is separate (ReadyFor → the resolver above).
 	s.engine.SetReadiness(func() bool {
-		s.cfgMu.Lock()
-		defer s.cfgMu.Unlock()
-		return s.llmOn
+		s.llm.mu.Lock()
+		defer s.llm.mu.Unlock()
+		return s.llm.on
 	})
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
@@ -418,10 +436,10 @@ func cors(next http.Handler, allowed func() []string) http.Handler {
 // 这个中间件在每个 API 请求上跑，每请求读一次库不值当（拦截层按"每次工具调用"读设置，
 // 那是另一个量级）。
 func (s *Server) corsAllowedOrigins() []string {
-	s.corsMu.Lock()
-	defer s.corsMu.Unlock()
-	if time.Since(s.corsAt) < time.Minute {
-		return s.corsCache
+	s.cors.mu.Lock()
+	defer s.cors.mu.Unlock()
+	if time.Since(s.cors.at) < time.Minute {
+		return s.cors.cache
 	}
 	var out []string
 	if v, ok, err := s.m.pg.GetSetting(settingCORSAllowedOrigins); err == nil && ok {
@@ -431,7 +449,7 @@ func (s *Server) corsAllowedOrigins() []string {
 			}
 		}
 	}
-	s.corsCache, s.corsAt = out, time.Now()
+	s.cors.cache, s.cors.at = out, time.Now()
 	return out
 }
 

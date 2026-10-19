@@ -14,7 +14,7 @@ import (
 //   - 全局激活配置这条路径(agent 未绑定、任务未 pin)才轮询;
 //   - 绑定/pin 的路径默认独占该配置,失败即失败(可由 llm_pool_bind_fallback 打开兜底);
 //   - 链序 = 激活配置 → 其余按 priority DESC,排除 pool_exclude 的;
-//   - 熔断状态进程级共享(s.llmHealth),重建 pool 不清空。
+//   - 熔断状态进程级共享(s.providers.health),重建 pool 不清空。
 
 // newLLMHealthRegistry builds the process-wide circuit-breaker registry, mirroring
 // state into PG so a cooling-off window survives a restart. Writes are async and
@@ -122,7 +122,7 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 	if len(members) < 2 {
 		return nil // nothing to fail over to
 	}
-	return llmpool.New(members, s.llmHealth)
+	return llmpool.New(members, s.providers.health)
 }
 
 // poolForActive wraps the globally-active provider in the failover chain. Returns
@@ -191,7 +191,7 @@ func (s *Server) llmPoolStatus() map[string]any {
 	if err != nil {
 		return out
 	}
-	health := s.llmHealth.Snapshot()
+	health := s.providers.health.Snapshot()
 	now := time.Now()
 	// Chain order: active first, then priority DESC / id ASC — the same ordering
 	// PoolProfiles applies, recomputed here so excluded ones can be shown in place.

@@ -18,7 +18,7 @@ func TestWorkerControlRoutes(t *testing.T) {
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
-	token, err := signJWT(s.signKey.get())
+	token, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
 	}

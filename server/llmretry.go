@@ -57,8 +57,8 @@ func (s *Server) applyProfileRetry(cfg *agent.Config, p *db.LLMProfile) {
 // startup and whenever the policy is saved.
 func (s *Server) applyRetryPolicy() {
 	pol := s.retryPolicy()
-	if s.llmHealth != nil {
-		s.llmHealth.SetPolicy(pol.Breaker.Attempts, pol.Breaker.Interval())
+	if s.providers.health != nil {
+		s.providers.health.SetPolicy(pol.Breaker.Attempts, pol.Breaker.Interval())
 	}
 }
 

@@ -85,22 +85,22 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	// Admission is serialized with deletion's chat cancellation. Mark every chat
 	// turn busy before its first activity/file write, including rule-mode turns.
 	// If deletion wins the race, the second barrier check rejects this request.
-	s.chatMu.Lock()
+	s.chatRuns.mu.Lock()
 	if s.engine.IsDeleting(t.ID) {
-		s.chatMu.Unlock()
+		s.chatRuns.mu.Unlock()
 		writeErr(w, 409, "任务正在删除，无法发送新消息")
 		return
 	}
-	if s.chatBusy[t.ID] {
-		s.chatMu.Unlock()
+	if s.chatRuns.busy[t.ID] {
+		s.chatRuns.mu.Unlock()
 		writeErr(w, 409, "主 Agent 正在处理上一条消息，请稍候")
 		return
 	}
 	ctx, cancel := context.WithCancelCause(s.ctx)
 	ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: req.Message})
-	s.chatBusy[t.ID] = true
-	s.chatCancel[t.ID] = cancel
-	s.chatMu.Unlock()
+	s.chatRuns.busy[t.ID] = true
+	s.chatRuns.cancel[t.ID] = cancel
+	s.chatRuns.mu.Unlock()
 
 	// The turn belongs to whichever main-agent segment the user is chatting in (any
 	// segment is interactive, like the top-level chat conversations). Stamp every
@@ -166,21 +166,21 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cancelTaskChat(taskID string, cause error) bool {
-	s.chatMu.Lock()
-	cancel := s.chatCancel[taskID]
+	s.chatRuns.mu.Lock()
+	cancel := s.chatRuns.cancel[taskID]
 	if cancel != nil {
 		cancel(cause)
 	}
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Unlock()
 	return cancel != nil
 }
 
 func (s *Server) finishTaskChat(taskID string, cancel context.CancelCauseFunc) {
 	cancel(agent.AbortChatTurnFinished)
-	s.chatMu.Lock()
-	delete(s.chatBusy, taskID)
-	delete(s.chatCancel, taskID)
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	delete(s.chatRuns.busy, taskID)
+	delete(s.chatRuns.cancel, taskID)
+	s.chatRuns.mu.Unlock()
 }
 
 // taskChatStatus reports the authoritative state of the task's main-agent turn.
@@ -192,9 +192,9 @@ func (s *Server) taskChatStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "task not found")
 		return
 	}
-	s.chatMu.Lock()
-	running := s.chatBusy[t.ID]
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	running := s.chatRuns.busy[t.ID]
+	s.chatRuns.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"running": running})
 }
 

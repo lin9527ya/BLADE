@@ -174,9 +174,9 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 			// PostgreSQL is already gone. Complete runtime teardown and return the
 			// auditable counts together with the post-commit cleanup warning.
 			s.engine.StopTask(id)
-			s.taskAgentMu.Lock()
-			delete(s.taskAgents, id)
-			s.taskAgentMu.Unlock()
+			s.agents.mu.Lock()
+			delete(s.agents.bundles, id)
+			s.agents.mu.Unlock()
 			deleted = true
 			writeCommittedTaskDelete(w, result, err)
 			return
@@ -188,9 +188,9 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	// resolve it. Now stop and join every task-owned Engine goroutine and clear its
 	// lifecycle maps before releasing the delete barrier.
 	s.engine.StopTask(id)
-	s.taskAgentMu.Lock()
-	delete(s.taskAgents, id)
-	s.taskAgentMu.Unlock()
+	s.agents.mu.Lock()
+	delete(s.agents.bundles, id)
+	s.agents.mu.Unlock()
 	deleted = true
 	writeJSON(w, 200, result)
 }
@@ -204,9 +204,9 @@ func (s *Server) waitTaskQuiescent(ctx context.Context, taskID string) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		s.chatMu.Lock()
-		chatBusy := s.chatBusy[taskID]
-		s.chatMu.Unlock()
+		s.chatRuns.mu.Lock()
+		chatBusy := s.chatRuns.busy[taskID]
+		s.chatRuns.mu.Unlock()
 		if s.engine.inflightCount(taskID) == 0 && !chatBusy {
 			return nil
 		}
@@ -451,9 +451,9 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 	// web search). Rebuild them even when no global profile is configured.
 	s.invalidateTaskAgents()
 	// rebuild the live agents so the new max_turns/run_seconds/binding apply without a restart.
-	s.cfgMu.Lock()
-	cfg, on := s.llmCfg, s.llmOn
-	s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	cfg, on := s.llm.cfg, s.llm.on
+	s.llm.mu.Unlock()
 	if on {
 		_ = s.applyLLM(cfg)
 	}
@@ -1991,8 +1991,8 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.invalidateProfileAgents() // drop cached agents for the removed profile
-	s.llmHealth.Reset(id)       // its breaker state is meaningless now (row is FK-cascaded away)
+	s.invalidateProfileAgents()  // drop cached agents for the removed profile
+	s.providers.health.Reset(id) // its breaker state is meaningless now (row is FK-cascaded away)
 	s.restoreTasksAfterProfileDelete(pg)
 	// Cache invalidation also removed the active profile's shared provider entry.
 	// Reapply after task-state sync so the wake-up observes the post-delete chain.
@@ -2066,10 +2066,10 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.ID > 0 {
-		s.llmHealth.Reset(body.ID)
+		s.providers.health.Reset(body.ID)
 	} else {
-		for id := range s.llmHealth.Snapshot() {
-			s.llmHealth.Reset(id)
+		for id := range s.providers.health.Snapshot() {
+			s.providers.health.Reset(id)
 		}
 	}
 	writeJSON(w, 200, s.llmPoolStatus())

@@ -73,7 +73,7 @@ func TestAcceptance(t *testing.T) {
 		}
 		_ = m.Close()
 	})
-	token, err := signJWT(s.signKey.get())
+	token, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5354,9 +5354,9 @@ func accP42(t *testing.T, e *accEnv) {
 		`{"cors_allowed_origins":"https://console.example.com"}`); rec.Code != http.StatusOK {
 		t.Fatalf("设置 CORS 白名单 status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	e.s.corsMu.Lock()
-	e.s.corsAt = time.Time{} // 清缓存（生产里 60 秒自然过期）
-	e.s.corsMu.Unlock()
+	e.s.cors.mu.Lock()
+	e.s.cors.at = time.Time{} // 清缓存（生产里 60 秒自然过期）
+	e.s.cors.mu.Unlock()
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 		req.Header.Set("Origin", "https://console.example.com")

@@ -188,9 +188,9 @@ func (sc *Scheduler) startAutoRetests(events []db.TaskEvent) {
 			continue
 		}
 		busyKey := sc.s.convBusyKey(conv.ID)
-		sc.s.chatMu.Lock()
-		sc.s.chatBusy[busyKey] = true
-		sc.s.chatMu.Unlock()
+		sc.s.chatRuns.mu.Lock()
+		sc.s.chatRuns.busy[busyKey] = true
+		sc.s.chatRuns.mu.Unlock()
 		sc.s.runConversation(conv, retest.InitialMessage(), busyKey)
 		log.Printf("[auto-retest] finding=%d 已启动独立复测会话 conv=%d", m.ID, conv.ID)
 	}

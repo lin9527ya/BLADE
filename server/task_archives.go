@@ -57,8 +57,8 @@ func (s *Server) startTaskArchiveWorker() {
 		log.Printf("[task-archive] worker disabled because startup recovery is incomplete")
 		return
 	}
-	s.archiveWG.Add(1)
-	goSafe("task-archive/worker", &s.archiveWG, func() {
+	s.archive.wg.Add(1)
+	goSafe("task-archive/worker", &s.archive.wg, func() {
 		ticker := time.NewTicker(taskArchivePollInterval)
 		defer ticker.Stop()
 		for {
@@ -68,7 +68,7 @@ func (s *Server) startTaskArchiveWorker() {
 			select {
 			case <-s.ctx.Done():
 				return
-			case <-s.archiveWake:
+			case <-s.archive.wake:
 			case <-ticker.C:
 			}
 		}
@@ -77,11 +77,11 @@ func (s *Server) startTaskArchiveWorker() {
 }
 
 func (s *Server) notifyTaskArchiveWorker() {
-	if s == nil || s.archiveWake == nil {
+	if s == nil || s.archive.wake == nil {
 		return
 	}
 	select {
-	case s.archiveWake <- struct{}{}:
+	case s.archive.wake <- struct{}{}:
 	default:
 	}
 }
@@ -230,9 +230,9 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		_ = s.m.pg.AppendTaskArchiveWarning(job.ID, warning)
 	}
 	s.engine.StopTask(taskID)
-	s.taskAgentMu.Lock()
-	delete(s.taskAgents, taskID)
-	s.taskAgentMu.Unlock()
+	s.agents.mu.Lock()
+	delete(s.agents.bundles, taskID)
+	s.agents.mu.Unlock()
 	s.m.forgetTask(taskID, job.TaskID)
 	return nil
 }
