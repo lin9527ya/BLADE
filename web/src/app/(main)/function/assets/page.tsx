@@ -1,24 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 
-import {
-  BuildingIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  GlobeIcon,
-  DownloadIcon,
-  KeyRoundIcon,
-  LayoutTemplateIcon,
-  LayersIcon,
-  RadarIcon,
-  LinkIcon,
-  type LucideIcon,
-  NetworkIcon,
-  RefreshCwIcon,
-  SmartphoneIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { BuildingIcon, GlobeIcon, DownloadIcon, KeyRoundIcon, LayoutTemplateIcon, LayersIcon, RadarIcon, LinkIcon, type LucideIcon, NetworkIcon, RefreshCwIcon, SmartphoneIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
@@ -710,9 +695,6 @@ function AssetCard({
   children: React.ReactNode;
 }) {
   const childRows = React.Children.toArray(children);
-  const pageCount = Math.max(1, Math.ceil(total / size));
-  const start = total === 0 ? 0 : page * size + 1;
-  const end = page * size + childRows.length;
 
   const pageIds = dataRows?.map((r) => r.id) ?? [];
   const allSelected = pageIds.length > 0 && selected != null && pageIds.every((id) => selected.has(id));
@@ -752,50 +734,15 @@ function AssetCard({
         </Table>
       </div>
       {total > 0 && (
-        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
-          <Select value={String(size)} onValueChange={(v) => onSize(Number(v))}>
-            <SelectTrigger size="sm" className="h-7 w-24">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {PAGE_SIZES.map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    {n} / 页
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <span className="tabular-nums">
-            {start}–{end} / {total}
-          </span>
-          {pageCount > 1 && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                disabled={page <= 0}
-                onClick={() => onPage((p) => Math.max(0, p - 1))}
-              >
-                <ChevronLeftIcon />
-              </Button>
-              <span className="tabular-nums">
-                {page + 1} / {pageCount}
-              </span>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                disabled={page + 1 >= pageCount}
-                onClick={() => onPage((p) => Math.min(pageCount - 1, p + 1))}
-              >
-                <ChevronRightIcon />
-              </Button>
-            </div>
-          )}
-        </div>
+        <TablePagination
+          variant="compact"
+          page={page + 1}
+          pageSize={size}
+          total={total}
+          onPageChange={(p) => onPage(p - 1)}
+          onPageSizeChange={onSize}
+          pageSizeOptions={PAGE_SIZES}
+        />
       )}
     </Card>
   );

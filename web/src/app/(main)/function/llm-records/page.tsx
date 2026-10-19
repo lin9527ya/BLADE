@@ -1,17 +1,8 @@
 "use client";
 
 import * as React from "react";
-import {
-  RadioIcon,
-  SearchIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  Loader2Icon,
-  XIcon,
-  Trash2Icon,
-  CopyIcon,
-  CheckIcon,
-} from "lucide-react";
+import { TablePagination } from "@/components/table-pagination";
+import { RadioIcon, SearchIcon, Loader2Icon, XIcon, Trash2Icon, CopyIcon, CheckIcon } from "lucide-react";
 
 import {
   AlertDialog,
@@ -250,9 +241,6 @@ export default function LLMRecordsPage() {
     return () => { alive = false; };
   }, [selected]);
 
-  const totalPages = Math.max(1, Math.ceil(total / size));
-  const rangeStart = total === 0 ? 0 : page * size + 1;
-  const rangeEnd = page * size + records.length;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -345,32 +333,13 @@ export default function LLMRecordsPage() {
           </label>
         </div>
 
-        <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="tabular-nums">
-            {rangeStart}–{rangeEnd} / {total}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            className="size-8"
-            disabled={page <= 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-          >
-            <ChevronLeftIcon />
-          </Button>
-          <span className="tabular-nums">
-            {page + 1} / {totalPages}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            className="size-8"
-            disabled={page + 1 >= totalPages}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-          >
-            <ChevronRightIcon />
-          </Button>
-        </div>
+        <TablePagination
+          variant="compact"
+          page={page + 1}
+          pageSize={size}
+          total={total}
+          onPageChange={(p) => setPage(p - 1)}
+        />
       </div>
 
       {/* History table + inline detail (Burp-style split) */}

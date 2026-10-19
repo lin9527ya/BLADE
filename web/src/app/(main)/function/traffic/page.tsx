@@ -1,21 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 import { usePolling } from "@/hooks/use-polling";
 
-import {
-  ArrowDownWideNarrowIcon,
-  ArrowUpNarrowWideIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  EraserIcon,
-  FilterXIcon,
-  ListChecksIcon,
-  Loader2Icon,
-  RadioTowerIcon,
-  SearchIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { ArrowDownWideNarrowIcon, ArrowUpNarrowWideIcon, EraserIcon, FilterXIcon, ListChecksIcon, Loader2Icon, RadioTowerIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { HttpCodeBlock } from "@/components/http-code-block";
@@ -334,9 +323,6 @@ export default function TrafficPage() {
 
   const exchanges = React.useMemo(() => traffic?.exchanges ?? [], [traffic]);
   const total = traffic?.total ?? exchanges.length;
-  const pageCount = Math.max(1, Math.ceil(total / size));
-  const rangeStart = total === 0 ? 0 : page * size + 1;
-  const rangeEnd = page * size + exchanges.length;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -515,32 +501,13 @@ export default function TrafficPage() {
           </SelectContent>
         </Select>
 
-        <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="tabular-nums">
-            {rangeStart}–{rangeEnd} / {total}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            className="size-8"
-            disabled={page <= 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-          >
-            <ChevronLeftIcon />
-          </Button>
-          <span className="tabular-nums">
-            {page + 1} / {pageCount}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            className="size-8"
-            disabled={page + 1 >= pageCount}
-            onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-          >
-            <ChevronRightIcon />
-          </Button>
-        </div>
+        <TablePagination
+          variant="compact"
+          page={page + 1}
+          pageSize={size}
+          total={total}
+          onPageChange={(p) => setPage(p - 1)}
+        />
       </div>
 
       {/* Advanced filters (issue #177): narrow 660k+ exchanges down to the one packet. */}

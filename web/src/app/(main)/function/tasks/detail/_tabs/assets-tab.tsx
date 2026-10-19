@@ -1,21 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 import { usePolling } from "@/hooks/use-polling";
 
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  GlobeIcon,
-  KeyRoundIcon,
-  LayoutTemplateIcon,
-  LinkIcon,
-  type LucideIcon,
-  NetworkIcon,
-  PlusIcon,
-  SmartphoneIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { GlobeIcon, KeyRoundIcon, LayoutTemplateIcon, LinkIcon, type LucideIcon, NetworkIcon, PlusIcon, SmartphoneIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
@@ -182,9 +171,6 @@ function AssetCard({
   total: number;
 }) {
   const rows = React.Children.toArray(children);
-  const pageCount = Math.max(1, Math.ceil(total / size));
-  const start = total === 0 ? 0 : page * size + 1;
-  const end = Math.min(total, page * size + rows.length);
   let tableRows: React.ReactNode;
   if (!loaded) {
     tableRows = (
@@ -221,54 +207,18 @@ function AssetCard({
       </CardContent>
       {total > 0 ? (
         <CardFooter className="gap-2 px-3 py-1.5 text-muted-foreground text-xs">
-          <Select
-            value={String(size)}
-            onValueChange={(value) => {
-              onSize(Number(value));
+          <TablePagination
+            variant="compact"
+            page={page + 1}
+            pageSize={size}
+            total={total}
+            onPageChange={(p) => onPage(p - 1)}
+            onPageSizeChange={(s) => {
+              onSize(s);
               onPage(0);
             }}
-          >
-            <SelectTrigger size="sm" className="w-24">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {PAGE_SIZES.map((value) => (
-                  <SelectItem key={value} value={String(value)}>
-                    {value} / 页
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <span className="tabular-nums">
-            {start}–{end} / {total}
-          </span>
-          {pageCount > 1 ? (
-            <div className="ml-auto flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="icon-sm"
-                disabled={page <= 0}
-                onClick={() => onPage(Math.max(0, page - 1))}
-                aria-label="上一页"
-              >
-                <ChevronLeftIcon />
-              </Button>
-              <span className="tabular-nums">
-                {page + 1} / {pageCount}
-              </span>
-              <Button
-                variant="outline"
-                size="icon-sm"
-                disabled={page + 1 >= pageCount}
-                onClick={() => onPage(Math.min(pageCount - 1, page + 1))}
-                aria-label="下一页"
-              >
-                <ChevronRightIcon />
-              </Button>
-            </div>
-          ) : null}
+            pageSizeOptions={PAGE_SIZES}
+          />
         </CardFooter>
       ) : null}
     </Card>
