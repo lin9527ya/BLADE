@@ -438,23 +438,58 @@ func TestListCompanies(t *testing.T) {
 	defer d.Close()
 	cs := d.Companies()
 
-	id, _, err := cs.UpsertCompany("ListTestCorp", "")
+	withScope, _, err := cs.UpsertCompany("ListTestCorp", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanupCompany(d, id)
+	defer cleanupCompany(d, withScope)
+	noScope, _, err := cs.UpsertCompany("ListTestCorpEmpty", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupCompany(d, noScope)
+
+	if added, _, _, _ := cs.AddScope(withScope, []string{"example.com", "10.0.0.1"}, "test"); added != 2 {
+		t.Fatalf("seed scope: added %d, want 2", added)
+	}
 
 	companies, err := cs.ListCompanies()
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	byID := make(map[int64]*CompanyWithScope, len(companies))
 	for _, c := range companies {
-		if c.ID == id {
-			found = true
+		byID[c.ID] = c
+	}
+	if byID[withScope] == nil {
+		t.Fatal("ListCompanies: created company not found")
+	}
+
+	// scope 必须被**一次批量取回**并挂到对应公司上（此前是逐公司 GetScope 的 N+1）。
+	// 与 GetScope 逐条比对，确保批量路径没有漏挂或串行。
+	want, err := cs.GetScope(withScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := byID[withScope].Scope
+	if len(got) != len(want) || len(got) != 2 {
+		t.Fatalf("withScope.Scope = %d 条，want %d（与 GetScope 同口径）", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID || got[i].Kind != want[i].Kind {
+			t.Fatalf("scope[%d] = %+v，want %+v", i, got[i], want[i])
 		}
 	}
-	if !found {
-		t.Error("ListCompanies: created company not found")
+
+	// 没有规则的公司必须是**空切片而不是 nil**：JSON 里 [] 与 null 不同，而 GetScope
+	// 一直返回空切片——批量路径要保持同一口径，否则前端会突然从 [] 变成 null。
+	if byID[noScope] == nil {
+		t.Fatal("ListCompanies: 没有 scope 的公司没有被列出")
+	}
+	if byID[noScope].Scope == nil {
+		t.Fatal("没有 scope 的公司，Scope 应为空切片而不是 nil（[] 与 null 在 JSON 里不同）")
+	}
+	if len(byID[noScope].Scope) != 0 {
+		t.Fatalf("没有 scope 的公司不该有规则，实际 %d 条", len(byID[noScope].Scope))
 	}
 }

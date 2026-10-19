@@ -283,14 +283,50 @@ ORDER BY c.name`)
 		return nil, err
 	}
 
-	// fetch scope rules for each company
-	for _, cws := range out {
-		cws.Scope, err = s.GetScope(cws.ID)
-		if err != nil {
-			return nil, err
+	// 一次取回所有公司的 scope，而不是列完公司后逐个 GetScope——那是 N+1：
+	// 有多少公司就多发多少次查询，而 companies 列表页每次刷新都会走这里。
+	if len(out) > 0 {
+		ids := make([]int64, 0, len(out))
+		for _, cws := range out {
+			ids = append(ids, cws.ID)
+		}
+		byCompany, serr := s.scopeByCompany(ids)
+		if serr != nil {
+			return nil, serr
+		}
+		for _, cws := range out {
+			// 与 GetScope 同口径：没有规则时是空切片而不是 nil（JSON 里 [] 与 null 不同）。
+			if v, ok := byCompany[cws.ID]; ok {
+				cws.Scope = v
+			} else {
+				cws.Scope = []ScopeRule{}
+			}
 		}
 	}
 	return out, nil
+}
+
+// scopeByCompany 一次取回多家公司的 scope 规则并按公司分组——ListCompanies 的批量来源。
+func (s *CompanyStore) scopeByCompany(companyIDs []int64) (map[int64][]ScopeRule, error) {
+	rows, err := s.db.Query(`
+SELECT id, company_id, kind,
+       COALESCE(domain,''), COALESCE(net::text,''), COALESCE(value,''), raw, COALESCE(reason,'')
+FROM company_scope
+WHERE company_id = ANY($1)
+ORDER BY company_id, id`, companyIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64][]ScopeRule, len(companyIDs))
+	for rows.Next() {
+		var r ScopeRule
+		if err := rows.Scan(&r.ID, &r.CompanyID, &r.Kind, &r.Domain, &r.Net, &r.Value, &r.Raw, &r.Reason); err != nil {
+			return nil, err
+		}
+		out[r.CompanyID] = append(out[r.CompanyID], r)
+	}
+	return out, rows.Err()
 }
 
 // GetScope returns all scope rules for a company.
