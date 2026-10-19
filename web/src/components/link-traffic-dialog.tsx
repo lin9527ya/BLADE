@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 
 import { toast } from "sonner";
 
@@ -130,22 +131,14 @@ export function LinkTrafficDialog({
             </p>
           ) : null}
         </div>
-        <div className="flex items-center justify-between gap-2">
-          <Button variant="outline" size="sm" disabled={loading || page <= 1} onClick={() => setPage((p) => p - 1)}>
-            上一页
-          </Button>
-          <span className="text-xs">
-            第 {page} 页 · 共 {data?.total ?? 0} 条
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={loading || page * 20 >= (data?.total ?? 0)}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            下一页
-          </Button>
-        </div>
+        <TablePagination
+          variant="compact"
+          page={page}
+          pageSize={20}
+          total={data?.total ?? 0}
+          onPageChange={setPage}
+          busy={loading}
+        />
         <p className="text-sm">
           {selected ? `已选漏洞：#${selected.finding_id} ${selected.name || selected.vulnclass}` : "请选择一个漏洞"}
         </p>

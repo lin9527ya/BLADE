@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 
 import { toast } from "sonner";
 
@@ -241,25 +242,14 @@ export function TrafficPickerDialog({
             <span className="text-sm">
               已选 {selected.size} 条 · 共 {data?.total ?? 0} 条
             </span>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={loading || page === 0}
-                onClick={() => setPage((p) => p - 1)}
-              >
-                上一页
-              </Button>
-              <span className="text-xs">第 {page + 1} 页</span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={loading || (page + 1) * 25 >= (data?.total ?? 0)}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                下一页
-              </Button>
-            </div>
+            <TablePagination
+              variant="compact"
+              page={page + 1}
+              pageSize={25}
+              total={data?.total ?? 0}
+              onPageChange={(p) => setPage(p - 1)}
+              busy={loading}
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" disabled={busy} onClick={onClose}>

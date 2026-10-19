@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 
 import { AlertCircleIcon, CheckCircle2Icon, DownloadIcon, PlugZapIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -428,21 +429,15 @@ function SyncWorkbench() {
           </Table>
         </div>
 
-        {/* 分页 */}
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => setPage((p) => p - 1)}>
-            上一页
-          </Button>
-          <span className="text-muted-foreground text-xs">第 {page} 页</span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={rows.length < 50 || loading}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            下一页
-          </Button>
-        </div>
+        {/* 分页（ScopeSentry 的接口不给总数，用「还有没有下一页」判断）*/}
+        <TablePagination
+          variant="compact"
+          page={page}
+          pageSize={50}
+          hasNext={rows.length >= 50}
+          onPageChange={setPage}
+          busy={loading}
+        />
 
         {/* 结果 */}
         {result && <SyncResult result={result} />}

@@ -1,10 +1,11 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 
 import Link from "next/link";
 
-import { ArrowUpRightIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { ArrowUpRightIcon } from "lucide-react";
 
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { StatusBadge } from "@/components/status-badge";
@@ -116,28 +117,14 @@ export function RetestsTab({ taskId }: { taskId: string }) {
             ) : null}
           </CardContent>
           {data && data.total > PAGE_SIZE ? (
-            <CardFooter className="justify-between gap-2">
-              <Button
-                variant="outline"
-                size="icon-sm"
-                aria-label="上一页漏洞"
-                disabled={page === 1}
-                onClick={() => setPage(page - 1)}
-              >
-                <ChevronLeftIcon />
-              </Button>
-              <span className="text-muted-foreground text-xs">
-                第 {page} / {Math.ceil(data.total / PAGE_SIZE)} 页
-              </span>
-              <Button
-                variant="outline"
-                size="icon-sm"
-                aria-label="下一页漏洞"
-                disabled={page * PAGE_SIZE >= data.total}
-                onClick={() => setPage(page + 1)}
-              >
-                <ChevronRightIcon />
-              </Button>
+            <CardFooter>
+              <TablePagination
+                variant="compact"
+                page={page}
+                pageSize={PAGE_SIZE}
+                total={data.total}
+                onPageChange={setPage}
+              />
             </CardFooter>
           ) : null}
         </Card>

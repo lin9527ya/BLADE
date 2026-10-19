@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 
 import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -161,17 +162,14 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
       </Card>
 
       {maxPage > 1 && (
-        <div className="flex items-center justify-end gap-2">
-          <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            上一页
-          </Button>
-          <span className="text-muted-foreground text-sm">
-            {page} / {maxPage}
-          </span>
-          <Button size="sm" variant="outline" disabled={page >= maxPage} onClick={() => setPage((p) => p + 1)}>
-            下一页
-          </Button>
-        </div>
+        <TablePagination
+          variant="compact"
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPage}
+          busy={loading}
+        />
       )}
     </div>
   );

@@ -1,29 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { TablePagination } from "@/components/table-pagination";
 import { usePolling } from "@/hooks/use-polling";
 
-import {
-  AnchorIcon,
-  ArrowDownIcon,
-  ArrowUpIcon,
-  ArrowUpToLineIcon,
-  BugIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  CompassIcon,
-  FlagIcon,
-  FlaskConicalIcon,
-  KeyIcon,
-  LayersIcon,
-  LightbulbIcon,
-  type LucideIcon,
-  PackageOpenIcon,
-  PauseIcon,
-  PlayIcon,
-  SearchIcon,
-  TargetIcon,
-} from "lucide-react";
+import { AnchorIcon, ArrowDownIcon, ArrowUpIcon, ArrowUpToLineIcon, BugIcon, ChevronRightIcon, CompassIcon, FlagIcon, FlaskConicalIcon, KeyIcon, LayersIcon, LightbulbIcon, type LucideIcon, PackageOpenIcon, PauseIcon, PlayIcon, SearchIcon, TargetIcon } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -579,8 +560,6 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   }, [refs, items]);
 
   const pageCount = Math.max(1, Math.ceil(total / size));
-  const start = total === 0 ? 0 : (page - 1) * size + 1;
-  const end = (page - 1) * size + items.length;
 
   // 换任务或筛选后条数变少时,把越界的页码收回来。
   React.useEffect(() => {
@@ -715,52 +694,18 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
       </CardContent>
 
       <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground">
-        <Select
-          value={String(size)}
-          onValueChange={(v) => {
-            setSize(Number(v));
+        <TablePagination
+          variant="compact"
+          page={page}
+          pageSize={size}
+          total={total}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => {
+            setSize(s);
             setPage(1);
           }}
-        >
-          <SelectTrigger size="sm" className="h-7 w-24">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {PAGE_SIZES.map((n) => (
-                <SelectItem key={n} value={String(n)}>
-                  {n} / 页
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-        <span className="tabular-nums">
-          {start}–{end} / {total}
-        </span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon-sm"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            aria-label="上一页"
-          >
-            <ChevronLeftIcon />
-          </Button>
-          <span className="tabular-nums">
-            {page} / {pageCount}
-          </span>
-          <Button
-            variant="outline"
-            size="icon-sm"
-            disabled={page >= pageCount}
-            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            aria-label="下一页"
-          >
-            <ChevronRightIcon />
-          </Button>
-        </div>
+          pageSizeOptions={PAGE_SIZES}
+        />
       </CardFooter>
     </Card>
   );
