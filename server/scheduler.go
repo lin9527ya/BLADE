@@ -140,12 +140,23 @@ func (sc *Scheduler) step() {
 	if len(triggers) == 0 {
 		return
 	}
-	sc.fireIntervals(triggers)
-	sc.fireFindings(triggers)
-	sc.fireGoals(triggers)
-	sc.fireTaskTimeouts(triggers)
-	sc.fireToolCalls(triggers)
-	sc.fireTaskCreates(triggers)
+	// 每个「开始新工作」的入口前都**就近复查**一次停机开关 / 作业时间窗。
+	// tickOnce 开头查过一次，但一个 tick 本身要跑一会儿（补位、读触发器、逐个 fire），
+	// 中途开关被打开时必须立刻停手——否则会出现「开关已经打开、这一 tick 仍又起一批
+	// 工作」。P35 的「停机期间不该建任务」偶发失败就是撞在这个窗口上。
+	for _, fire := range []func([]*db.AgentTrigger){
+		sc.fireIntervals,
+		sc.fireFindings,
+		sc.fireGoals,
+		sc.fireTaskTimeouts,
+		sc.fireToolCalls,
+		sc.fireTaskCreates,
+	} {
+		if sc.s.safetyAdmissionBlocked() {
+			return
+		}
+		fire(triggers)
+	}
 }
 
 // fireIntervals fires triggers whose interval has elapsed since last_fire.
