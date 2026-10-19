@@ -47,7 +47,17 @@ var logSink = &logSinkT{cap: 3000, subs: map[chan LogLine]struct{}{}, out: os.St
 
 // StartLogCapture redirects the standard log package through the in-memory sink
 // (still writing to stderr). Call once at startup, as early as possible.
+//
+// 注意这里**不要**顺手 slog.SetDefault：那会把 log 包的输出整个劫持进 slog
+// （见 slogbridge.go 里 appLogger 的说明）。slog 侧由 appLogger 独立接入本 sink。
 func StartLogCapture() { log.SetOutput(logSink) }
+
+// emit 收下一条**级别与 tag 已确定**的记录（slog 桥用）。与 Write 的区别：不再走
+// parseLog 的关键词猜测——slog 的调用点本来就写明了级别与 tag。
+func (s *logSinkT) emit(level, tag, text string) {
+	_, _ = s.out.Write([]byte(time.Now().Format("2006/01/02 15:04:05") + " " + text + "\n"))
+	s.add(LogLine{TS: time.Now().Format(time.RFC3339), Level: level, Tag: tag, Text: text})
+}
 
 // SetDB wires a postgres DB into the sink once (idempotent). It:
 //  1. Restores the last 100 log rows from DB into the ring so the /logs page

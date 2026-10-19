@@ -1074,8 +1074,11 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	for attempt := 1; attempt <= maxRetries &&
 		retryableWorkerModelError(reason, err) &&
 		workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.isSettling(t.ID); attempt++ {
-		log.Printf("[worker %s] task %s 意图 #%d model_error 收场，%v 后重试 (%d/%d)",
-			name, t.ID, intent.ID, retryBackoff, attempt, maxRetries)
+		// 重试是**警告**不是错误：以前因「重试」二字被判成 error，而这条恰恰说明
+		// 平台正在按预期自愈。
+		slogFor("worker").Warn("model_error 收场，稍后重试",
+			"worker", name, "task", t.ID, "intent", intent.ID,
+			"backoff", retryBackoff.String(), "attempt", attempt, "max", maxRetries)
 		if sleepCtx(workCtx, retryBackoff) {
 			break // 退避期间被取消（终止/暂停）→ 交给下方分支处理
 		}

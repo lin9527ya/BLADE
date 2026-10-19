@@ -1841,7 +1841,8 @@ func (s *Server) seed(t *Task, text string) {
 	}
 	// P0-1 guard: never treat the configured LLM gateway as a target.
 	if gw := s.llmHost(); gw != "" && host == gw {
-		log.Printf("[seed] task %s: 目标 %q 是 LLM 网关，拒绝作为渗透目标", t.ID, host)
+		// 这是 guard 的**决策**（有意拒绝），不是故障——以前因「拒绝」二字被判成 error。
+		slogFor("seed").Warn("目标是 LLM 网关，不作为渗透目标", "task", t.ID, "host", host)
 		return
 	}
 

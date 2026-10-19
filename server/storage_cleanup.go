@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -333,7 +332,10 @@ func (s *Server) cleanStorage(w http.ResponseWriter, r *http.Request) {
 	if raw, merr := json.Marshal(summary); merr == nil {
 		_ = s.m.pg.SetSetting(settingStorageLastClean, string(raw))
 	}
-	log.Printf("[storage] 清理完成：删除 %d 项、释放 %d 字节，失败 %d 项", len(deleted), deletedBytes, len(failures))
+	// 这条是**成功**汇总：以前因为文案里有「失败 %d 项」被判成红色 error（那个数字
+	// 通常是 0）。级别由调用点写明。
+	slogFor("storage").Info("清理完成",
+		"deleted", len(deleted), "freed_bytes", deletedBytes, "failed", len(failures))
 
 	// 删完再体检一次：页面拿到的 always 是**当下真实**的占用，而不是"删之前的报告减一减"。
 	after, rerr := s.storageReport(r.Context())

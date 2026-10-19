@@ -1,8 +1,7 @@
 package server
 
 import (
-	"bytes"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -12,14 +11,30 @@ import (
 
 var reHexID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
-// captureLog 把标准日志临时接到缓冲区，返回取内容的函数。
-func captureLog(t *testing.T) func() string {
+// installSlogBridge 在测试里装上 slog 桥（生产由 StartLogCapture 一并完成），
+// 返回取「此后新增日志行」的函数。断言直接看日志环，比解析文本更准。
+func installSlogBridge(t *testing.T) func() []LogLine {
 	t.Helper()
-	var buf bytes.Buffer
-	old := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(old) })
-	return buf.String
+	old := appLogger
+	appLogger = slog.New(&logSinkHandler{min: slog.LevelInfo})
+	t.Cleanup(func() { appLogger = old })
+
+	_, mark := logSink.recent(0, 0)
+	// 取走即推进标记：每次调用只返回「上次调用之后」新增的行，便于分阶段断言。
+	return func() []LogLine {
+		lines, cursor := logSink.recent(mark, 100)
+		mark = cursor
+		return lines
+	}
+}
+
+// textsOf 把若干日志行拼成一段文本，便于做「包含 / 不包含」断言。
+func textsOf(lines []LogLine) string {
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(l.Level + "|" + l.Tag + "|" + l.Text + "\n")
+	}
+	return b.String()
 }
 
 func TestRequestIDAssignedAndEchoed(t *testing.T) {
@@ -100,43 +115,61 @@ func TestRequestIDAcceptsMaxLength(t *testing.T) {
 
 // 出错必记；正常且快的请求不记（前端十几处轮询，全量记会把环形缓冲冲掉）。
 func TestRequestIDLogsErrorsNotFastSuccess(t *testing.T) {
-	read := captureLog(t)
+	newLines := installSlogBridge(t)
 
 	h := withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/boom") {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/boom"):
 			writeErr(w, 500, "炸了")
-			return
+		case strings.HasSuffix(r.URL.Path, "/denied"):
+			writeErr(w, 403, "没权限")
+		default:
+			w.WriteHeader(200)
 		}
-		w.WriteHeader(200)
 	}))
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/ok", nil))
-	if out := read(); out != "" {
-		t.Errorf("正常且快的请求不该记访问日志，得到 %q", out)
+	if lines := newLines(); len(lines) != 0 {
+		t.Errorf("正常且快的请求不该记访问日志，得到 %v", lines)
 	}
 
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/boom", nil))
-	out := read()
-	if !strings.Contains(out, "[req]") || !strings.Contains(out, "500") || !strings.Contains(out, "/api/boom") {
-		t.Fatalf("出错请求应记一条带状态码与路径的访问日志，得到 %q", out)
+	lines := newLines()
+	if len(lines) != 1 {
+		t.Fatalf("出错请求应恰好记 1 条访问日志，得到 %d 条：%v", len(lines), lines)
 	}
-	if id := rr.Header().Get("X-Request-Id"); !strings.Contains(out, id) {
-		t.Fatalf("访问日志里的 id 应与响应头一致（%q），得到 %q", id, out)
+	got := lines[0]
+	if got.Tag != "req" || got.Level != "error" {
+		t.Errorf("500 该是 tag=req / level=error，得到 tag=%q level=%q", got.Tag, got.Level)
+	}
+	if !strings.Contains(got.Text, "/api/boom") || !strings.Contains(got.Text, "status=500") {
+		t.Errorf("访问日志该带路径与状态码，得到 %q", got.Text)
+	}
+	if id := rr.Header().Get("X-Request-Id"); !strings.Contains(got.Text, id) {
+		t.Errorf("访问日志里的 id 应与响应头一致（%q），得到 %q", id, got.Text)
+	}
+
+	// 4xx 是警告不是错误——以前走关键词兜底，一条 403 因为不含「失败」被判成 info。
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/denied", nil))
+	lines = newLines()
+	if len(lines) != 1 || lines[0].Level != "warn" {
+		t.Fatalf("4xx 该记 warn，得到 %v", lines)
 	}
 }
 
 // 跨源 SSE 把凭据放在 ?token= 里：日志只记 path，绝不能把 query 落盘。
 func TestRequestIDLogOmitsQuery(t *testing.T) {
-	read := captureLog(t)
+	newLines := installSlogBridge(t)
 	h := withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "未授权")
 	}))
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/logs/stream?token=super-secret", nil))
-	out := read()
+	out := textsOf(newLines())
 	if strings.Contains(out, "super-secret") || strings.Contains(out, "token=") {
 		t.Fatalf("访问日志泄漏了 query（含凭据），得到 %q", out)
 	}
@@ -147,13 +180,13 @@ func TestRequestIDLogOmitsQuery(t *testing.T) {
 
 // 预检不该产生访问日志（浏览器每次跨源请求都会发）。
 func TestRequestIDSkipsPreflight(t *testing.T) {
-	read := captureLog(t)
+	newLines := installSlogBridge(t)
 	h := withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodOptions, "/api/tasks", nil))
-	if out := read(); out != "" {
-		t.Errorf("OPTIONS 预检不该记访问日志，得到 %q", out)
+	if lines := newLines(); len(lines) != 0 {
+		t.Errorf("OPTIONS 预检不该记访问日志，得到 %v", lines)
 	}
 	if rr.Header().Get("X-Request-Id") == "" {
 		t.Error("预检也该带上 X-Request-Id")
@@ -162,7 +195,7 @@ func TestRequestIDSkipsPreflight(t *testing.T) {
 
 // SSE 是长连接，断开时耗时必然「很长」——那不是慢，不该被记成慢请求。
 func TestRequestIDSkipsSSE(t *testing.T) {
-	read := captureLog(t)
+	newLines := installSlogBridge(t)
 	h := withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
@@ -170,8 +203,8 @@ func TestRequestIDSkipsSSE(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil))
-	if out := read(); out != "" {
-		t.Errorf("SSE 响应不该记访问日志，得到 %q", out)
+	if lines := newLines(); len(lines) != 0 {
+		t.Errorf("SSE 响应不该记访问日志，得到 %v", lines)
 	}
 }
 
