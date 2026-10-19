@@ -7,7 +7,7 @@
     "build": "next build",
     "build:static": "NEXT_EXPORT=1 next build",
     "start": "next start",
-    "test": "node --experimental-strip-types --test \"src/lib/*.test.mjs\"",
+    "test": "node --experimental-strip-types --test \"src/lib/*.test.mjs\" \"src/hooks/*.test.mjs\"",
     "lint": "biome lint",
     "format": "biome format --write",
     "check": "biome check",

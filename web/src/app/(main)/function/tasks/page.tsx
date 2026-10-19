@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -492,12 +493,14 @@ export default function TasksPage() {
       });
   }, []);
 
-  React.useEffect(() => {
-    load();
-    loadCategories();
-    const i = setInterval(load, POLL_MS);
-    return () => clearInterval(i);
-  }, [load, loadCategories]);
+  usePolling(
+    () => {
+      load();
+      loadCategories();
+    },
+    POLL_MS,
+    [load, loadCategories],
+  );
 
   const refreshCategoriesAndTasks = React.useCallback(() => {
     lastRef.current = "";
@@ -530,12 +533,14 @@ export default function TasksPage() {
   const hasRunning = React.useMemo(() => tasks.some((t) => t.status === "running"), [tasks]);
 
   // tick every second so running tasks' 运行时长 counts up live.
-  React.useEffect(() => {
-    if (!hasRunning) return;
-    setNowSec(Math.floor(Date.now() / 1000));
-    const i = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(i);
-  }, [hasRunning]);
+  usePolling(
+    () => {
+      if (!hasRunning) return;
+      setNowSec(Math.floor(Date.now() / 1000));
+    },
+    hasRunning ? 1000 : 0,
+    [hasRunning],
+  );
 
   const deleteTask = React.useCallback(
     async (id: string, options: DeleteTaskOptions) => {
@@ -1734,11 +1739,11 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
     }
   }, [onChanged, page, pageSize, query, stateFilter]);
 
-  React.useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 2_000);
-    return () => clearInterval(timer);
-  }, [load]);
+  usePolling(
+    () => load(),
+    2_000,
+    [load],
+  );
 
   const selectable = React.useMemo(
     () => archives.filter((archive) => !ARCHIVE_PROCESSING_STATES.has(archive.state)),

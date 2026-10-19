@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import {
   ActivityIcon,
@@ -436,8 +437,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     }
   };
 
-  React.useEffect(() => {
-    let cancelled = false;
+  usePolling(async (alive) => {
     let loading = false;
 
     const load = async () => {
@@ -450,7 +450,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           api.intents(taskId),
           api.findings(taskId),
         ]);
-        if (cancelled) return;
+        if (!alive()) return;
         const activeTask = statsResp.active_task;
         setTask(
           activeTask
@@ -472,7 +472,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         api
           .taskCoverage(taskId)
           .then((c) => {
-            if (!cancelled) setCoverage(c);
+            if (alive()) setCoverage(c);
           })
           .catch(() => {
             // A transient coverage failure is retried by the next poll.
@@ -489,17 +489,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     void loadTokens();
     void loadGoals();
     void loadConstraints();
-    const timer = setInterval(() => {
-      void load();
-      void loadTokens();
-      void loadGoals();
-      void loadConstraints();
-    }, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
+  }, 3000, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
 
   const running = intents.filter((i) => i.state === "running");
   const open = intents.filter((i) => i.state === "open");

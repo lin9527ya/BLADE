@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import {
   ArrowDownWideNarrowIcon,
@@ -204,9 +205,9 @@ export default function TrafficPage() {
   // Load the current page. Auto-refresh only on page 0 (newest) so paging back
   // through history isn't yanked out from under the user.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
-  React.useEffect(() => {
-    let alive = true;
-    const load = () => {
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
+  usePolling(
+    (alive) => {
       api
         .traffic(page, size, hostQ, method, queryQ, {
           body: bodyQ,
@@ -218,7 +219,7 @@ export default function TrafficPage() {
           order: sort.direction,
         })
         .then((r) => {
-          if (alive) setTraffic(r);
+          if (alive()) setTraffic(r);
         })
         .catch(() => {
           // Keep the last successful snapshot during transient refresh failures.
@@ -226,22 +227,16 @@ export default function TrafficPage() {
       api
         .trafficHosts()
         .then((r) => {
-          if (alive) setHosts(r.hosts ?? []);
+          if (alive()) setHosts(r.hosts ?? []);
         })
         .catch(() => {
           // Keep the last successful host list during transient refresh failures.
         });
-    };
-    load();
-    const t = setInterval(() => {
-      if (page !== 0) return; // only auto-refresh the newest page
-      load();
-    }, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick]);
+    },
+    // 只在最新页自动刷新；往回翻历史不该被脚下抽走。
+    page === 0 ? 5000 : 0,
+    [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick],
+  );
 
   // Delete traffic for the current host filter (substring) or the checked
   // hosts (exact batch), then refetch.
@@ -834,3 +829,4 @@ export default function TrafficPage() {
     </div>
   );
 }
+

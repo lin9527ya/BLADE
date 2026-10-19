@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import { useSearchParams } from "next/navigation";
 
@@ -39,23 +40,17 @@ export function InterceptWorkbench({ initialSection }: { initialSection?: Sectio
   // 待审批条数：与侧栏红点同一个数据源，进页面先拉一次、之后每 10s 刷一次。
   const [pending, setPending] = React.useState(0);
 
-  React.useEffect(() => {
-    let live = true;
+  usePolling(async (live) => {
     const poll = () => {
       void api
         .interceptPending()
         .then((list) => {
-          if (live) setPending(list.length);
+          if (live()) setPending(list.length);
         })
         .catch(() => {});
     };
     poll();
-    const t = setInterval(poll, 10000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, []);
+  }, 10000, []);
 
   // 深链：?tab=xxx 变化时切过去（静态导出下由外层 Suspense 兜住 useSearchParams）。
   React.useEffect(() => {

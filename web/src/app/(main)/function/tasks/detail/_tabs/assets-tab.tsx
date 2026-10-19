@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import {
   ChevronLeftIcon,
@@ -383,11 +384,15 @@ export function AssetsTab({ taskId }: { taskId: string }) {
   React.useEffect(() => setPage(0), [tab, size, query]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is an explicit manual-reload trigger.
-  React.useEffect(() => {
-    let active = true;
-    const dsl = query.trim();
-    const request = ++assetsRequestRef.current;
-    const load = async () => {
+  usePolling(
+    async (alive) => {
+      const dsl = query.trim();
+      const request = ++assetsRequestRef.current;
+      // 输入防抖：打字停 400ms 才真正查。等待期间被新一轮取代（alive() 变 false）就放弃。
+      if (dsl) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (!alive()) return;
+      }
       setLoading(true);
       try {
         // The search always stays within this task's assets: taskAssets and
@@ -398,13 +403,13 @@ export function AssetsTab({ taskId }: { taskId: string }) {
             : api.taskAssets(taskId, tab, size, page * size),
           api.assetCounts(taskId),
         ]);
-        if (!active || assetsRequestRef.current !== request) return;
+        if (!alive() || assetsRequestRef.current !== request) return;
         setRows(current.assets);
         setTotal(current.total);
         setCounts(nextCounts ?? {});
         setDslError("");
       } catch (reason) {
-        if (!active || assetsRequestRef.current !== request) return;
+        if (!alive() || assetsRequestRef.current !== request) return;
         const message = String((reason as Error)?.message ?? reason);
         if (dsl) {
           setDslError(message);
@@ -414,21 +419,15 @@ export function AssetsTab({ taskId }: { taskId: string }) {
           toast.error(`加载任务资产失败：${message}`);
         }
       } finally {
-        if (active && assetsRequestRef.current === request) {
+        if (alive() && assetsRequestRef.current === request) {
           setLoading(false);
           setLoaded(true);
         }
       }
-    };
-    // Debounce DSL keystrokes; plain (re)loads and polling run immediately.
-    const debounce = setTimeout(() => void load(), dsl ? 400 : 0);
-    const timer = setInterval(() => void load(), 10_000);
-    return () => {
-      active = false;
-      clearTimeout(debounce);
-      clearInterval(timer);
-    };
-  }, [page, query, refreshKey, size, tab, taskId]);
+    },
+    10_000,
+    [page, query, refreshKey, size, tab, taskId],
+  );
 
   React.useEffect(() => {
     const maxPage = Math.max(0, Math.ceil(total / size) - 1);

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -161,25 +162,19 @@ export function FindingsTab({ taskId }: { taskId: string }) {
     "desc",
   );
 
-  React.useEffect(() => {
-    let active = true;
+  usePolling(async (active) => {
     const load = () => {
       api
         .findings(taskId)
         .then((fs) => {
-          if (active) setFindings(fs);
+          if (active()) setFindings(fs);
         })
         .catch(() => {
           // Keep the last successful snapshot during transient refresh failures.
         });
     };
     load();
-    const t = setInterval(load, 3000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
-  }, [taskId]);
+  }, 3000, [taskId]);
 
   const onStatus = React.useCallback(async (f: Finding, next: FindingStatus) => {
     if (f.inherited || !f.finding_id || next === f.status) return;

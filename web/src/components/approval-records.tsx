@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import {
   BotIcon,
@@ -801,14 +802,18 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const latestLoad = React.useRef(load);
   latestLoad.current = load;
 
-  React.useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 5000);
-    return () => {
+  usePolling(
+    () => load(),
+    5000,
+    [load],
+  );
+  // 轮询停止（卸载或依赖变化）时让在途请求作废——与旧的 clearInterval 同一时机。
+  React.useEffect(
+    () => () => {
       request.current++;
-      clearInterval(timer);
-    };
-  }, [load]);
+    },
+    [load],
+  );
 
   const changePageSize = (next: number) => {
     setPageSize(next);

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
@@ -530,10 +531,11 @@ export default function FindingsPage() {
   // 只轮询当前视图:平铺视图刷当前页,分组视图刷组头与每个已展开的组(其分页彼此独立)。
   // 资产视图只查一次(见下面的 return),它的左树是导航结构,没必要每 5 秒重算。
   // 等偏好水合后再发首个请求,否则会先按默认视图/筛选白拉一次。
-  React.useEffect(() => {
-    if (!preferencesHydrated) return;
-    void activeRetestFingerprint; // 包括不定时轮询的资产视图，也在复测结束后刷新处置状态。
-    const refresh = () => {
+  // 只轮询非资产视图：资产视图的左树是导航结构，没必要每 5 秒重算（intervalMs=0 → 只跑一次）。
+  usePolling(
+    (alive) => {
+      if (!preferencesHydrated) return;
+      void activeRetestFingerprint; // 包括不定时轮询的资产视图，也在复测结束后刷新处置状态。
       if (view === "flat" || view === "asset") {
         if (!flatStateRef.current.loading) void loadFlat();
         return;
@@ -544,12 +546,10 @@ export default function FindingsPage() {
         const state = groupFindingsRef.current[key];
         if (state?.loaded && !state.loading) void loadGroup(key, state.page, state.pageSize);
       }
-    };
-    refresh();
-    if (view === "asset") return;
-    const timer = setInterval(refresh, 5000);
-    return () => clearInterval(timer);
-  }, [activeRetestFingerprint, loadFlat, loadGroup, preferencesHydrated, refreshGroups, view]);
+    },
+    view === "asset" ? 0 : 5000,
+    [activeRetestFingerprint, loadFlat, loadGroup, preferencesHydrated, refreshGroups, view],
+  );
 
   React.useEffect(() => {
     const lastPage = Math.max(1, Math.ceil(groupTotal / pageSize));
@@ -564,13 +564,12 @@ export default function FindingsPage() {
 
   // Whole-table aggregates (stat cards + vuln-class options) — independent of the
   // current page, so they stay exact.
-  React.useEffect(() => {
-    let alive = true;
+  usePolling(async (alive) => {
     const load = () => {
       api
         .findingStats()
         .then((s) => {
-          if (alive) {
+          if (alive()) {
             setStats(s);
             setStatsLoaded(true);
           }
@@ -580,12 +579,7 @@ export default function FindingsPage() {
         });
     };
     load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+  }, 5000, []);
 
   React.useEffect(() => {
     if (!statsLoaded) return;
