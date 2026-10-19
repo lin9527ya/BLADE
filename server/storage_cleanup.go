@@ -42,6 +42,10 @@ type storageCategorySpec struct {
 	// DBBodies = 这一档只清空 llm_records 的四个大 TEXT 载荷、保留元数据行
 	// （第一级回收）。与整行删的 DBTable 档位分开设置，因为两者保留期通常不同。
 	DBBodies bool
+	// TrafficIndex = 这是流量录制器的归档（不在 Postgres 里，而在它自己的 SQLite
+	// 索引 + blob 目录里）。统计与删除都走 traffic 包的 API——绕过那个包直接删文件
+	// 会把索引打烂，这正是这一档此前标着"只统计不清理"的原因。
+	TrafficIndex bool
 }
 
 // storageCategories 是参与体检的分类。顺序即页面顺序：先文件、后数据库。
@@ -51,7 +55,9 @@ var storageCategories = []storageCategorySpec{
 	{Key: "drafts", Label: "草稿暂存", SettingKey: settingStorageRetentionDrafts},
 	{Key: "transcripts", Label: "会话转写", SettingKey: settingStorageRetentionTranscript},
 	{Key: "binary", Label: "更新残留（旧二进制）", SettingKey: settingStorageRetentionBinary},
-	{Key: "traffic", Label: "流量归档", StatsOnly: "blobs 与索引是一套，绕过 traffic 包删除会把索引打烂——先用流量页的归档/导出，或在 traffic 里补删除 API"},
+	// 流量归档此后可清：traffic.DeleteOlderThan 在同一个写锁下同时删索引行、正文行、
+	// blob 引用与磁盘上的 blob/遗留目录，并按"该 host 还有没有新流量"决定目录去留。
+	{Key: "traffic", Label: "流量归档（录制器）", SettingKey: settingRetentionTraffic, TrafficIndex: true},
 	// 数据库侧。前三个是 always-on 写的表（每次 LLM 调用一行 / 每个 agent 步骤一行 /
 	// 每条服务端日志一行），是无限增长的主力，也是这里最该配的。
 	{Key: "db_llm_usage", Label: "LLM 用量台账（数据库）", SettingKey: settingRetentionLLMUsage, DBTable: db.RetentionLLMUsage},
@@ -155,11 +161,28 @@ func (s *Server) retentionProtection() (tasks []string, explorations []int64, er
 // "这张表现在多大"是独立于保留策略的信息，也是发现无限增长的入口）。
 func (s *Server) scanRetentionCategory(ctx context.Context, spec storageCategorySpec, days int) (storageCategoryReport, error) {
 	rep := storageCategoryReport{Key: spec.Key, Label: spec.Label, RetentionDays: days}
+	now := time.Now()
+	if spec.TrafficIndex {
+		// 流量归档在录制器自己的 SQLite 里。它不归属任务——删的是"多久以前的流量"，
+		// 不是"哪个任务的流量"——所以没有需要保护的任务集合。
+		tr := s.m.Traffic()
+		if tr == nil {
+			return rep, nil // 没启用录制 = 空分类，不是错误
+		}
+		st, err := tr.RetentionStats(now.AddDate(0, 0, -days))
+		if err != nil {
+			return rep, err
+		}
+		rep.Units, rep.Bytes = int(st.Exchanges), st.BodyBytes
+		if days > 0 {
+			rep.ExpiredUnits, rep.ExpiredBytes = int(st.ExpiredExchanges), st.ExpiredBytes
+		}
+		return rep, nil
+	}
 	tasks, explorations, err := s.retentionProtection()
 	if err != nil {
 		return rep, fmt.Errorf("读取任务状态失败（拿不到'哪些任务在跑'就不该开始清理）：%w", err)
 	}
-	now := time.Now()
 	if spec.DBBodies {
 		// 第一级回收自己的视图：还有载荷可清的行。两档保留期不同，所以分开统计。
 		all, err := s.m.pg.LLMRecordPayloadStats(ctx, now, tasks)
@@ -211,11 +234,21 @@ func (s *Server) purgeRetentionCategory(ctx context.Context, spec storageCategor
 	if days <= 0 {
 		return 0, nil
 	}
+	cutoff := time.Now().AddDate(0, 0, -days)
+	if spec.TrafficIndex {
+		// 走 traffic 包的 API：索引行、正文行、blob 引用与磁盘 blob/遗留目录要一起
+		// 处理，且目录去留取决于"该 host 还有没有新流量"。绕开这个包直接删文件会把
+		// 索引打烂。
+		tr := s.m.Traffic()
+		if tr == nil {
+			return 0, nil
+		}
+		return tr.DeleteOlderThan(cutoff)
+	}
 	tasks, explorations, err := s.retentionProtection()
 	if err != nil {
 		return 0, err
 	}
-	cutoff := time.Now().AddDate(0, 0, -days)
 	if spec.DBBodies {
 		return s.m.pg.StripLLMRecordBodiesBefore(ctx, cutoff, tasks, 0)
 	}
@@ -366,7 +399,7 @@ func (s *Server) storageReport(ctx context.Context) (*storageReport, error) {
 		days := s.storageRetentionDays(spec.SettingKey)
 		var cat storageCategoryReport
 		var cerr error
-		if spec.DBTable != "" {
+		if spec.DBTable != "" || spec.TrafficIndex {
 			cat, cerr = s.scanRetentionCategory(ctx, spec, days)
 		} else {
 			cat, cerr = s.scanStorageCategory(spec, days, protected)
@@ -436,7 +469,7 @@ func (s *Server) cleanStorage(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		if spec.DBTable != "" {
+		if spec.DBTable != "" || spec.TrafficIndex {
 			n, derr := s.purgeRetentionCategory(r.Context(), spec, cat.RetentionDays)
 			if derr != nil {
 				failures = append(failures, fmt.Sprintf("%s：%v", cat.Label, derr))

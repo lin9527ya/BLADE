@@ -3368,7 +3368,8 @@ func accP28(t *testing.T, e *accEnv) {
 		ok bool
 	}{}
 	for _, k := range []string{settingIntelKey, settingIntelBaseURL, settingIntelDailyQuota,
-		settingStorageRetentionTasks, settingStorageRetentionSessions, settingRetentionLLMUsage} {
+		settingStorageRetentionTasks, settingStorageRetentionSessions, settingRetentionLLMUsage,
+		settingRetentionTraffic} {
 		v, ok, _ := e.m.pg.GetSetting(k)
 		restore[k] = struct {
 			v  string
@@ -3555,8 +3556,19 @@ func accP28(t *testing.T, e *accEnv) {
 	if tasksCat == nil || tasksCat.RetentionDays != 30 || tasksCat.ExpiredUnits < 1 || tasksCat.Protected < 1 {
 		t.Fatalf("试算应显示 30 天保留、至少 1 项过期、至少 1 项受保护：%+v", tasksCat)
 	}
-	if trafficCat == nil || trafficCat.StatsOnly == "" {
-		t.Fatalf("流量分类必须如实标成只统计不清理：%+v", trafficCat)
+	// 流量归档此后可清：删除走 traffic 包的 API（索引行/正文行/blob 引用/磁盘目录
+	// 一套处理），所以不再是"只统计不清理"。验收这台没起录制器（proxyAddr 为空），
+	// 所以这里只钉"分类已接入、不再是 StatsOnly、保留天数能往返"；真正的删除语义
+	// 由 traffic 包的单测覆盖（含"仍在新流量的 host 目录不许删"那条）。
+	if trafficCat == nil || trafficCat.StatsOnly != "" {
+		t.Fatalf("流量分类应已可清理（不再是只统计）：%+v", trafficCat)
+	}
+	if rec := e.request(http.MethodPut, "/api/settings", `{"storage_retention_traffic_days":15}`); rec.Code != 200 {
+		t.Fatalf("设流量保留天数 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, "/api/settings", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"storage_retention_traffic_days":15`) {
+		t.Fatalf("流量保留天数没落库：status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	// 试算不动盘。
 	if _, err := os.Stat(oldDir); err != nil {
