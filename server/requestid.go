@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -122,8 +122,14 @@ func withRequestID(next http.Handler) http.Handler {
 		// 只记 r.URL.Path，**不记 RawQuery**：跨源 SSE 会把凭据放在 ?token= 里
 		// （见前端 sseUrl），记进日志等于把 token 落进 server_logs 并显示在日志页。
 		if elapsed := time.Since(start); status >= 400 || elapsed >= slowRequestThreshold {
-			log.Printf("[req] %s %s %s %d %dms %dB",
-				requestID(r.Context()), r.Method, r.URL.Path, status, elapsed.Milliseconds(), rec.bytes)
+			// 级别由状态码给出。以前走关键词兜底，一条 500 因为不含「失败」被判成 info。
+			level := slog.LevelWarn
+			if status >= 500 {
+				level = slog.LevelError
+			}
+			slogFor("req").Log(r.Context(), level, "请求",
+				"id", requestID(r.Context()), "method", r.Method, "path", r.URL.Path,
+				"status", status, "ms", elapsed.Milliseconds(), "bytes", rec.bytes)
 		}
 	})
 }
