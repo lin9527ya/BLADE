@@ -326,7 +326,16 @@ const (
 	settingStorageRetentionDrafts     = "storage_retention_drafts_days"
 	settingStorageRetentionTranscript = "storage_retention_transcripts_days"
 	settingStorageRetentionBinary     = "storage_retention_binary_days"
-	settingStorageLastClean           = "storage_last_clean"
+	// 数据库侧的数据保留，同一套契约（0/未设 = 不清理）。前三个是 always-on 写的表，
+	// 也是无限增长的主力；llm_records 默认不写（llm_record 开关），所以放在后面。
+	// llm_records 是两级回收：先按 bodies 的天数只清四个大 TEXT 载荷（保留元数据行），
+	// 更早的再由 records 的天数整行删。
+	settingRetentionLLMUsage       = "storage_retention_llm_usage_days"
+	settingRetentionActivity       = "storage_retention_activity_days"
+	settingRetentionServerLogs     = "storage_retention_server_logs_days"
+	settingRetentionLLMRecords     = "storage_retention_llm_records_days"
+	settingRetentionLLMRecordBodys = "storage_retention_llm_record_bodies_days"
+	settingStorageLastClean        = "storage_last_clean"
 	// 自更新的 GitHub token（私有发布源需要）。只存不回显：设置页只给 update_token_set 布尔。
 	settingUpdateToken = "update_github_token"
 	// P24 默认值：CPU 30 分钟上限；内存/进程数不限（0）。

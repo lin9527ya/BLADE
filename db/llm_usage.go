@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
+-- 数据保留按 ts 清理。上面三个索引前导列都不是时间，全表扫；本表是 always-on
+-- 写的（每次 LLM 调用一行），是无限增长的主力，必须能按时间走索引。
+CREATE INDEX IF NOT EXISTS idx_llm_usage_ts    ON llm_usage(ts);
 `
 
 // EnsureLLMUsageTable creates the llm_usage metering table if it does not exist.
@@ -66,9 +69,9 @@ func (d *DB) EnsureLLMUsageTable() error {
 // TokenUsedByTask sums input+output tokens recorded for one task (taskID is the
 // same string the caller passes to TokenByModel). 0 when nothing recorded yet.
 //
-// task_id 为空时 InsertLLMUsage 存的是 NULL（写入用 NULLIF($1,'')），所以空入参
+// task_id 为空时 InsertLLMUsage 存的是 NULL（写入侧把空串转成 NULL），所以空入参
 // 永远匹配不到行——直接短路，别去扫表。比较写成裸列相等是为了让 idx_llm_usage_task
-// 真正生效：此前写成 COALESCE(task_id,'')=$1，表达式让索引失效，而本函数跑在
+// 真正生效：此前用 COALESCE 把 task_id 包起来再比，表达式让索引失效，而本函数跑在
 // 「每个运行中任务每 2 秒一次」的轮询里（见 server/engine_timeout.go 的 token 预算护栏）。
 func (d *DB) TokenUsedByTask(taskID string) (int64, error) {
 	if taskID == "" {

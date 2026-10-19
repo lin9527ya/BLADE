@@ -3368,7 +3368,7 @@ func accP28(t *testing.T, e *accEnv) {
 		ok bool
 	}{}
 	for _, k := range []string{settingIntelKey, settingIntelBaseURL, settingIntelDailyQuota,
-		settingStorageRetentionTasks, settingStorageRetentionSessions} {
+		settingStorageRetentionTasks, settingStorageRetentionSessions, settingRetentionLLMUsage} {
 		v, ok, _ := e.m.pg.GetSetting(k)
 		restore[k] = struct {
 			v  string
@@ -3585,6 +3585,68 @@ func accP28(t *testing.T, e *accEnv) {
 	}
 	if _, err := os.Stat(filepath.Join(liveDir, "keep.txt")); err != nil {
 		t.Fatalf("在跑任务的产物必须毫发无伤：%v", err)
+	}
+
+	// ── ④ 数据库保留：同一套契约的数据库侧 ───────────────────────────────────
+	// 钉三件事：报告里看得见 DB 分类；默认 0 = 不清理（有旧行也不标记可删）；
+	// 配了保留期后真按时间删，且在跑任务的记录不受影响。
+	dbCat := func() (days, units, expired, protected int) {
+		t.Helper()
+		rec := e.request(http.MethodGet, "/api/storage/report", "")
+		if rec.Code != 200 {
+			t.Fatalf("试算 status=%d", rec.Code)
+		}
+		var rep struct {
+			Report struct {
+				Categories []struct {
+					Key           string `json:"key"`
+					RetentionDays int    `json:"retention_days"`
+					Units         int    `json:"units"`
+					ExpiredUnits  int    `json:"expired_units"`
+					Protected     int    `json:"protected_units"`
+				} `json:"categories"`
+			} `json:"report"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range rep.Report.Categories {
+			if c.Key == "db_llm_usage" {
+				return c.RetentionDays, c.Units, c.ExpiredUnits, c.Protected
+			}
+		}
+		t.Fatal("报告里没有 db_llm_usage 分类——数据库侧没接进体检")
+		return 0, 0, 0, 0
+	}
+	for _, taskID := range []string{"28-000-old", strconv.FormatInt(tid, 10)} {
+		if _, err := e.m.pg.Exec(
+			`INSERT INTO llm_usage(ts, task_id, model, input_tokens) VALUES ($1,$2,'acc-p28',1)`,
+			time.Now().Add(-200*24*time.Hour), taskID); err != nil {
+			t.Fatalf("seed llm_usage(%s): %v", taskID, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM llm_usage WHERE model='acc-p28'`) })
+
+	if days, units, expired, _ := dbCat(); days != 0 || expired != 0 || units < 2 {
+		t.Fatalf("默认 0 应不标记任何可删项，但仍要显示占用：days=%d units=%d expired=%d", days, units, expired)
+	}
+	if rec := e.request(http.MethodPut, "/api/settings", `{"storage_retention_llm_usage_days":30}`); rec.Code != 200 {
+		t.Fatalf("设数据库保留天数 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// 两条 200 天前的行：一条无保护（可删），一条属在跑任务（受保护）。
+	if _, _, expired, protected := dbCat(); expired != 1 || protected != 1 {
+		t.Fatalf("应恰好 1 条可删、1 条受保护：expired=%d protected=%d", expired, protected)
+	}
+
+	if rec := e.request(http.MethodPost, "/api/storage/clean", `{"categories":["db_llm_usage"]}`); rec.Code != 200 {
+		t.Fatalf("数据库清理 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var left int
+	if err := e.m.pg.QueryRow(`SELECT count(*) FROM llm_usage WHERE model='acc-p28'`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 1 {
+		t.Fatalf("应只剩在跑任务那 1 条，实际 %d 条——保护没生效或没删干净", left)
 	}
 }
 

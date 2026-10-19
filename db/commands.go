@@ -325,9 +325,9 @@ WHERE COALESCE(task_id,'') <> '' GROUP BY task_id ORDER BY MAX(id) DESC`)
 // DeleteLLMRecords removes every LLM record for one exact task_id — the same
 // match the page's task picker/filter uses. Returns rows deleted.
 //
-// 空 task 返回 0 而不是删任何东西：旧写法 COALESCE(task_id,'')='' 会把**所有
-// task_id 为 NULL 的行**（即全部非任务 LLM 记录）一次删光，空入参在这里是危险输入，
-// 不是"匹配全部"。调用方本就挡了空值，这道守卫是防将来新增调用方踩坑。
+// 空 task 返回 0 而不是删任何东西：旧写法把 task_id 用 COALESCE 包起来再与空串比，
+// 会把**所有 task_id 为 NULL 的行**（即全部非任务 LLM 记录）一次删光，空入参在这里
+// 是危险输入，不是"匹配全部"。调用方本就挡了空值，这道守卫是防将来新增调用方踩坑。
 // 比较用裸列以命中 idx_llm_records_task。
 func (d *DB) DeleteLLMRecords(task string) (int64, error) {
 	if task == "" {

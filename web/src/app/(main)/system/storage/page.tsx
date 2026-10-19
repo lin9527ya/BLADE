@@ -34,6 +34,11 @@ type RetentionPatch = {
   storage_retention_drafts_days: number;
   storage_retention_transcripts_days: number;
   storage_retention_binary_days: number;
+  storage_retention_llm_usage_days: number;
+  storage_retention_activity_days: number;
+  storage_retention_server_logs_days: number;
+  storage_retention_llm_records_days: number;
+  storage_retention_llm_record_bodies_days: number;
 };
 
 const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
@@ -42,6 +47,11 @@ const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
   drafts: "storage_retention_drafts_days",
   transcripts: "storage_retention_transcripts_days",
   binary: "storage_retention_binary_days",
+  db_llm_usage: "storage_retention_llm_usage_days",
+  db_activity: "storage_retention_activity_days",
+  db_server_logs: "storage_retention_server_logs_days",
+  db_llm_record_bodies: "storage_retention_llm_record_bodies_days",
+  db_llm_records: "storage_retention_llm_records_days",
 };
 
 const ZERO_DAYS: RetentionPatch = {
@@ -50,6 +60,11 @@ const ZERO_DAYS: RetentionPatch = {
   storage_retention_drafts_days: 0,
   storage_retention_transcripts_days: 0,
   storage_retention_binary_days: 0,
+  storage_retention_llm_usage_days: 0,
+  storage_retention_activity_days: 0,
+  storage_retention_server_logs_days: 0,
+  storage_retention_llm_records_days: 0,
+  storage_retention_llm_record_bodies_days: 0,
 };
 
 function fmtBytes(n: number): string {
@@ -148,6 +163,11 @@ export default function StoragePage() {
         storage_retention_drafts_days: s.storage_retention_drafts_days ?? 0,
         storage_retention_transcripts_days: s.storage_retention_transcripts_days ?? 0,
         storage_retention_binary_days: s.storage_retention_binary_days ?? 0,
+        storage_retention_llm_usage_days: s.storage_retention_llm_usage_days ?? 0,
+        storage_retention_activity_days: s.storage_retention_activity_days ?? 0,
+        storage_retention_server_logs_days: s.storage_retention_server_logs_days ?? 0,
+        storage_retention_llm_records_days: s.storage_retention_llm_records_days ?? 0,
+        storage_retention_llm_record_bodies_days: s.storage_retention_llm_record_bodies_days ?? 0,
       });
     } catch (e) {
       toast.error("读取存储体检失败：" + String((e as Error)?.message ?? e));

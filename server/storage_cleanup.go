@@ -36,9 +36,15 @@ type storageCategorySpec struct {
 	SettingKey string // 保留天数设置键
 	// StatsOnly 非空 = 只统计不清理，值就是"为什么不动它"的理由（原样展示给人看）。
 	StatsOnly string
+	// DBTable 非空 = 这是**数据库**分类（不是文件分类）。判定与执行都走 db.Retention*
+	// 那套：同一个保留契约，只是对象从目录变成了表。
+	DBTable db.RetentionTable
+	// DBBodies = 这一档只清空 llm_records 的四个大 TEXT 载荷、保留元数据行
+	// （第一级回收）。与整行删的 DBTable 档位分开设置，因为两者保留期通常不同。
+	DBBodies bool
 }
 
-// storageCategories 是参与体检的分类。顺序即页面顺序。
+// storageCategories 是参与体检的分类。顺序即页面顺序：先文件、后数据库。
 var storageCategories = []storageCategorySpec{
 	{Key: "tasks", Label: "任务产物", SettingKey: settingStorageRetentionTasks},
 	{Key: "sessions", Label: "会话工作目录", SettingKey: settingStorageRetentionSessions},
@@ -46,6 +52,15 @@ var storageCategories = []storageCategorySpec{
 	{Key: "transcripts", Label: "会话转写", SettingKey: settingStorageRetentionTranscript},
 	{Key: "binary", Label: "更新残留（旧二进制）", SettingKey: settingStorageRetentionBinary},
 	{Key: "traffic", Label: "流量归档", StatsOnly: "blobs 与索引是一套，绕过 traffic 包删除会把索引打烂——先用流量页的归档/导出，或在 traffic 里补删除 API"},
+	// 数据库侧。前三个是 always-on 写的表（每次 LLM 调用一行 / 每个 agent 步骤一行 /
+	// 每条服务端日志一行），是无限增长的主力，也是这里最该配的。
+	{Key: "db_llm_usage", Label: "LLM 用量台账（数据库）", SettingKey: settingRetentionLLMUsage, DBTable: db.RetentionLLMUsage},
+	{Key: "db_activity", Label: "执行活动流（数据库）", SettingKey: settingRetentionActivity, DBTable: db.RetentionActivity},
+	{Key: "db_server_logs", Label: "后端日志（数据库）", SettingKey: settingRetentionServerLogs, DBTable: db.RetentionServerLogs},
+	// llm_records 默认不写（设置里的 llm_record 开关），所以排在后；它是两级回收：
+	// 先按载荷档清空四个大 TEXT（保留元数据行），更早的再由整行档删掉。
+	{Key: "db_llm_record_bodies", Label: "LLM 录制载荷（数据库）", SettingKey: settingRetentionLLMRecordBodys, DBTable: db.RetentionLLMRecords, DBBodies: true},
+	{Key: "db_llm_records", Label: "LLM 录制整行（数据库）", SettingKey: settingRetentionLLMRecords, DBTable: db.RetentionLLMRecords},
 }
 
 // storageUnit 是一个可删单元（任务目录 / 会话目录 / 单个转写文件…）。
@@ -109,6 +124,113 @@ func (s *Server) protectedTaskIDs() (map[string]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+// retentionProtection 返回受保护的任务 id 与其探索 id：**非终态任务**的记录一律不动。
+// 与 protectedTaskIDs 同源（都读 ListTasks 判终态），但这里额外要探索 id——
+// activity 是按 exploration_id 归属任务的，只拿任务 id 保护不了它。
+// 读库失败返回错误而不是空集合——空集合会让"在跑的任务"变成可删，方向反了。
+func (s *Server) retentionProtection() (tasks []string, explorations []int64, err error) {
+	all, err := s.m.pg.ListTasks()
+	if err != nil {
+		return nil, nil, err
+	}
+	tasks = []string{}
+	explorations = []int64{}
+	for _, t := range all {
+		if t == nil || db.IsTerminal(t.Status) {
+			continue
+		}
+		tasks = append(tasks, strconv.FormatInt(t.ID, 10))
+		if t.ExplorationID > 0 {
+			explorations = append(explorations, t.ExplorationID)
+		}
+	}
+	return tasks, explorations, nil
+}
+
+// scanRetentionCategory 是数据库分类的体检：只读统计，不动数据。
+//
+// 与文件分类同一套口径：保留天数 0 = **不标记任何可删项**（但表的总占用照常显示——
+// "这张表现在多大"是独立于保留策略的信息，也是发现无限增长的入口）。
+func (s *Server) scanRetentionCategory(ctx context.Context, spec storageCategorySpec, days int) (storageCategoryReport, error) {
+	rep := storageCategoryReport{Key: spec.Key, Label: spec.Label, RetentionDays: days}
+	tasks, explorations, err := s.retentionProtection()
+	if err != nil {
+		return rep, fmt.Errorf("读取任务状态失败（拿不到'哪些任务在跑'就不该开始清理）：%w", err)
+	}
+	now := time.Now()
+	if spec.DBBodies {
+		// 第一级回收自己的视图：还有载荷可清的行。两档保留期不同，所以分开统计。
+		all, err := s.m.pg.LLMRecordPayloadStats(ctx, now, tasks)
+		if err != nil {
+			return rep, err
+		}
+		rep.Units, rep.Bytes = int(all.Rows), all.Bytes
+		if days > 0 {
+			expired, err := s.m.pg.LLMRecordPayloadStats(ctx, now.AddDate(0, 0, -days), tasks)
+			if err != nil {
+				return rep, err
+			}
+			rep.ExpiredUnits, rep.ExpiredBytes = int(expired.ExpiredRows), expired.ExpiredBytes
+		}
+		return rep, nil
+	}
+	cutoff := now
+	if days > 0 {
+		cutoff = now.AddDate(0, 0, -days)
+	}
+	st, err := s.m.pg.RetentionStats(ctx, spec.DBTable, cutoff, tasks, explorations)
+	if err != nil {
+		return rep, err
+	}
+	rep.Units, rep.Bytes = int(st.Rows), st.Bytes
+	if days > 0 {
+		rep.ExpiredUnits = int(st.ExpiredRows)
+		rep.ExpiredBytes = st.ExpiredBytes
+		// 单看时间就过期、却被非终态任务挡下的行数——让人看得见"为什么删不掉"。
+		rep.Protected = int(st.ExpiredRowsAll - st.ExpiredRows)
+	}
+	return rep, nil
+}
+
+// storageCategorySpecByKey 按 key 找分类规格（执行阶段要用它区分文件/数据库）。
+func storageCategorySpecByKey(key string) (storageCategorySpec, bool) {
+	for _, spec := range storageCategories {
+		if spec.Key == key {
+			return spec, true
+		}
+	}
+	return storageCategorySpec{}, false
+}
+
+// purgeRetentionCategory 执行一个数据库分类的清理，返回删除（或清空载荷）的行数。
+// 保留天数为 0 = **不清理**——与文件分类同一条铁律，这里再挡一道，
+// 免得将来有人从别的路径调进来绕过了设置判定。
+func (s *Server) purgeRetentionCategory(ctx context.Context, spec storageCategorySpec, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	tasks, explorations, err := s.retentionProtection()
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().AddDate(0, 0, -days)
+	if spec.DBBodies {
+		return s.m.pg.StripLLMRecordBodiesBefore(ctx, cutoff, tasks, 0)
+	}
+	switch spec.DBTable {
+	case db.RetentionLLMUsage:
+		return s.m.pg.PurgeLLMUsageBefore(ctx, cutoff, tasks, 0)
+	case db.RetentionActivity:
+		// activity 按 exploration_id 归属任务，保护的是探索 id。
+		return s.m.pg.PurgeActivityBefore(ctx, cutoff, explorations, 0)
+	case db.RetentionServerLogs:
+		return s.m.pg.PurgeServerLogsBefore(ctx, cutoff, 0)
+	case db.RetentionLLMRecords:
+		return s.m.pg.PurgeLLMRecordsBefore(ctx, cutoff, tasks, 0)
+	}
+	return 0, fmt.Errorf("未知的数据库清理分类 %q", spec.Key)
 }
 
 // scanStorageUnit 递归统计一个单元的字节数与**最新写入时间**（不跟随符号链接：
@@ -241,7 +363,14 @@ func (s *Server) storageReport(ctx context.Context) (*storageReport, error) {
 	rep := &storageReport{Dir: s.m.dir, ScannedAt: time.Now()}
 	rep.DiskTotal, rep.DiskFree = diskUsage(s.m.dir)
 	for _, spec := range storageCategories {
-		cat, cerr := s.scanStorageCategory(spec, s.storageRetentionDays(spec.SettingKey), protected)
+		days := s.storageRetentionDays(spec.SettingKey)
+		var cat storageCategoryReport
+		var cerr error
+		if spec.DBTable != "" {
+			cat, cerr = s.scanRetentionCategory(ctx, spec, days)
+		} else {
+			cat, cerr = s.scanStorageCategory(spec, days, protected)
+		}
 		if cerr != nil {
 			return nil, fmt.Errorf("扫描 %s 失败：%w", spec.Label, cerr)
 		}
@@ -301,6 +430,26 @@ func (s *Server) cleanStorage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if len(want) > 0 && !want[cat.Key] {
+			continue
+		}
+		spec, ok := storageCategorySpecByKey(cat.Key)
+		if !ok {
+			continue
+		}
+		if spec.DBTable != "" {
+			n, derr := s.purgeRetentionCategory(r.Context(), spec, cat.RetentionDays)
+			if derr != nil {
+				failures = append(failures, fmt.Sprintf("%s：%v", cat.Label, derr))
+				continue
+			}
+			if n > 0 {
+				// bytes 是试算阶段估的行载荷（不含索引/TOAST），不是精确的释放量——
+				// PG 的索引空间要等 vacuum 才还回去，这里如实按估算记。
+				deleted = append(deleted, map[string]any{
+					"category": cat.Key, "name": cat.Label, "rows": n, "bytes": cat.ExpiredBytes,
+				})
+				deletedBytes += cat.ExpiredBytes
+			}
 			continue
 		}
 		root := s.storageCategoryRoot(cat.Key)
