@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -45,13 +46,17 @@ import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
-import { GraphTab } from "./_tabs/graph-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
 import { TimelineTab } from "./_tabs/timeline-tab";
+
+// GraphTab 经 exploration-graph.tsx 静态引入 @xyflow/react（实测 196KB 进首屏），
+// 但它只在点开「探索链路」页签时才渲染。懒加载让首屏不再背这个包；
+// 同页的 CoverageGraphTab 早已用 await import 动态加载 @antv/g6，这里保持一致。
+const GraphTab = dynamic(() => import("./_tabs/graph-tab").then((m) => m.GraphTab), { ssr: false });
 
 const TABS = [
   { value: "sessions", label: "会话" },

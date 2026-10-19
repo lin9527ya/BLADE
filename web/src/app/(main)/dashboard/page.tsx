@@ -3,13 +3,18 @@
 import * as React from "react";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 
 import { RowActivity } from "./_components/activityrow";
 import { RowAssetTraffic } from "./_components/assettrafficrow";
 import { RowStatCards } from "./_components/statcards";
 import { RowTaskTable } from "./_components/tasktable";
-import { RowTokenCard } from "./_components/tokencard";
 import { useDashboardState } from "./_components/use-dashboard-state";
+
+// RowTokenCard 是整站唯一用 recharts 的地方，而 recharts 会打进首屏 chunk
+// （实测 372KB）。图表在首屏下方、不是立刻可见，所以懒加载：首屏不再背这个包。
+// ssr:false 在静态导出下是安全的——本组件不在构建期渲染。
+const RowTokenCard = dynamic(() => import("./_components/tokencard").then((m) => m.RowTokenCard), { ssr: false });
 
 // ── chart constants ───────────────────────────────────────────────────────────
 
