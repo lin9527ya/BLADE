@@ -54,7 +54,11 @@ admin() {
 
 echo "==> 重建验收库 $DB_NAME"
 admin "DROP DATABASE IF EXISTS $DB_NAME"
-admin "CREATE DATABASE $DB_NAME"
+# TEMPLATE template0：template1 可能带着本机自己加的东西，也会在 PG 升级后与系统
+# collation 版本对不上（此时 `CREATE DATABASE` 直接失败，报
+# "template database template1 has a collation version mismatch"）。验收库是一次性
+# 的、不需要继承任何本地模板，用最干净的 template0 最稳。
+admin "CREATE DATABASE $DB_NAME TEMPLATE template0"
 export BLADE_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME?#")"
 
 echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28 + P29 + P30 + P31 + P32 + P33 + P34 + P35 + P36 + P37 + P38 + P39 + P40 + P41 + P42，逐机制 PASS/FAIL）"
