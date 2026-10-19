@@ -73,9 +73,9 @@ func TestResolveChatAgentHonoursConversationProfile(t *testing.T) {
 	// Force the global fallback to nil so a non-nil result can ONLY come from the
 	// conversation's own profile — this is exactly the situation the user hit
 	// (no usable global config) and isolates the fix from the test host's env.
-	s.cfgMu.Lock()
-	s.chatAgent = nil
-	s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	s.llm.chatAgent = nil
+	s.llm.mu.Unlock()
 
 	id, err := m.pg.SaveProfile(&db.LLMProfile{Name: "conv-pick", Format: "anthropic", Model: "claude-x", APIKey: "sk-test"})
 	if err != nil {

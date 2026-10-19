@@ -583,7 +583,7 @@ func TestTaskRuntimeAvailableUnboundRoleFollowsChainThenGlobal(t *testing.T) {
 	if s.taskRuntimeAvailable(task, "worker") {
 		t.Fatal("no binding, no chain and no global provider must not be runnable")
 	}
-	s.llmOn, s.llmProv = true, &scriptedLLMProvider{}
+	s.llm.on, s.llm.prov = true, &scriptedLLMProvider{}
 	if !s.taskRuntimeAvailable(task, "worker") {
 		t.Fatal("global provider must serve a role with no binding and no chain")
 	}
@@ -691,10 +691,9 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 		t.Fatal(err)
 	}
 	s := &Server{
-		m:             m,
-		llmOn:         true,
-		llmProv:       &scriptedLLMProvider{},
-		provByProfile: map[int64]*provEntry{},
+		m:         m,
+		llm:       llmState{on: true, prov: &scriptedLLMProvider{}},
+		providers: providerState{byProfile: map[int64]*provEntry{}},
 	}
 	s.restoreTasksAfterProfileDelete(m.pg)
 

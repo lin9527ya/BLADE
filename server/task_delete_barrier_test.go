@@ -244,9 +244,11 @@ func TestCancelChatThenWaitTaskQuiescent(t *testing.T) {
 	e := NewEngine(nil)
 	chatCtx, chatCancel := context.WithCancelCause(context.Background())
 	s := &Server{
-		engine:     e,
-		chatBusy:   map[string]bool{"7": true},
-		chatCancel: map[string]context.CancelCauseFunc{"7": chatCancel},
+		engine: e,
+		chatRuns: chatState{
+			busy:   map[string]bool{"7": true},
+			cancel: map[string]context.CancelCauseFunc{"7": chatCancel},
+		},
 	}
 	if !e.beginTaskOperation("7") {
 		t.Fatal("task operation should be admitted")
@@ -289,9 +291,8 @@ func TestCancelChatThenWaitTaskQuiescent(t *testing.T) {
 
 func TestWaitTaskQuiescentHonorsContext(t *testing.T) {
 	s := &Server{
-		engine:     NewEngine(nil),
-		chatBusy:   map[string]bool{"9": true},
-		chatCancel: map[string]context.CancelCauseFunc{},
+		engine:   NewEngine(nil),
+		chatRuns: chatState{busy: map[string]bool{"9": true}, cancel: map[string]context.CancelCauseFunc{}},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -303,9 +304,8 @@ func TestWaitTaskQuiescentHonorsContext(t *testing.T) {
 func TestTaskChatStatusUsesAuthoritativeBusyState(t *testing.T) {
 	m := &Manager{tasks: map[string]*Task{"7": {ID: "7"}}}
 	s := &Server{
-		m:          m,
-		chatBusy:   map[string]bool{"7": true},
-		chatCancel: map[string]context.CancelCauseFunc{},
+		m:        m,
+		chatRuns: chatState{busy: map[string]bool{"7": true}, cancel: map[string]context.CancelCauseFunc{}},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/7/chat/status", nil)
 	req.SetPathValue("id", "7")

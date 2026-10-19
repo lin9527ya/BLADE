@@ -60,9 +60,9 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	if cfg.APIKey == "" {
 		return cfg, false
 	}
-	s.cfgMu.Lock()
-	s.llmProf = p.Name
-	s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	s.llm.profile = p.Name
+	s.llm.mu.Unlock()
 	return cfg, true
 }
 
@@ -164,15 +164,15 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 			return err
 		}
 		// Non-persisted/env configs do not have a profile cache key.
-		s.cfgMu.Lock()
-		profName := s.llmProf
-		s.cfgMu.Unlock()
+		s.llm.mu.Lock()
+		profName := s.llm.profile
+		s.llm.mu.Unlock()
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, 0, profName)
 	}
-	s.cfgMu.Lock()
-	s.llmDirect = prov
-	s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	s.llm.direct = prov
+	s.llm.mu.Unlock()
 	// LLM 轮询(默认关):把激活配置包进故障转移链,当前配置不可用时自动切下一个。
 	// 只影响「走全局激活配置」的这条路径——agent 绑定 / 任务 pin 的走 providerForProfile,
 	// 默认仍然独占该配置(见 poolForBinding)。关闭或无备选时返回原 provider,行为不变。
@@ -181,7 +181,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	}
 	// No global planner/worker pair: every task runs on its own task-routed pair
 	// (agentsForTask), resolved through the engine's authoritative resolver. Global
-	// readiness (Ready()/llm_configured) is reported from s.llmOn, set below.
+	// readiness (Ready()/llm_configured) is reported from s.llm.on, set below.
 
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	win := cfg.CompactionWindow()
@@ -189,20 +189,20 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// per-agent binding is resolved at Chat time (runConversationSync →
 	// chatAgentForProfile). The main-agent has no global instance: each task builds its
 	// own via agentsForTask (task-routed), so nothing is constructed for it here.
-	s.cfgMu.Lock()
+	s.llm.mu.Lock()
 	// chat agent serves MANY custom agents by key → it holds the GLOBAL opts
 	// (backend/key) and gates Enabled per-conversation-agent at Chat time. 对话始终用激活配置。
-	s.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
-	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
-	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
-	s.chatAgent.SetGuard(s.chatGuard())
-	s.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
-	s.chatAgent.SetMaxTokens(maxTokensResolver(cfg))
-	s.chatAgent.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
-	s.llmProv = prov
-	s.llmCfg = cfg
-	s.llmOn = true
-	s.cfgMu.Unlock()
+	s.llm.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
+	s.llm.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	s.llm.chatAgent.SetWebSearch(s.m.WebSearchOpts())
+	s.llm.chatAgent.SetGuard(s.chatGuard())
+	s.llm.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
+	s.llm.chatAgent.SetMaxTokens(maxTokensResolver(cfg))
+	s.llm.chatAgent.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
+	s.llm.prov = prov
+	s.llm.cfg = cfg
+	s.llm.on = true
+	s.llm.mu.Unlock()
 	s.invalidateTaskAgents()
 
 	// wake the active task so a task created while idle starts exploring.
@@ -283,13 +283,13 @@ func (s *Server) chatUnavailableReason() string {
 // bound/pinned to the same profile shares one provider instance (one rate limiter).
 // ok=false when the profile is missing/invalid → caller falls back to the global pair.
 func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool) {
-	s.provCacheMu.Lock()
-	if e := s.provByProfile[id]; e != nil {
-		s.provCacheMu.Unlock()
+	s.providers.cacheMu.Lock()
+	if e := s.providers.byProfile[id]; e != nil {
+		s.providers.cacheMu.Unlock()
 		return e.prov, e.cfg, true
 	}
-	generation := s.provCacheGen
-	s.provCacheMu.Unlock()
+	generation := s.providers.cacheGen
+	s.providers.cacheMu.Unlock()
 	cfg, ok := s.loadProfileConfig(id)
 	if !ok {
 		return nil, agent.Config{}, false
@@ -304,27 +304,27 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
-	s.provCacheMu.Lock()
-	if generation != s.provCacheGen {
-		s.provCacheMu.Unlock()
+	s.providers.cacheMu.Lock()
+	if generation != s.providers.cacheGen {
+		s.providers.cacheMu.Unlock()
 		return s.providerForProfile(id)
 	}
-	if e := s.provByProfile[id]; e != nil { // lost the race → keep the winner
+	if e := s.providers.byProfile[id]; e != nil { // lost the race → keep the winner
 		prov, cfg = e.prov, e.cfg
 	} else {
-		s.provByProfile[id] = &provEntry{prov: prov, cfg: cfg}
+		s.providers.byProfile[id] = &provEntry{prov: prov, cfg: cfg}
 		log.Printf("[engine] built provider for LLM profile %d (%s / %s)", id, cfg.Provider(), cfg.Model)
 	}
-	s.provCacheMu.Unlock()
+	s.providers.cacheMu.Unlock()
 	return prov, cfg, true
 }
 
 // chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
 // per profile id. Returns nil if the profile is missing or has no API key.
 func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
-	s.profMu.Lock()
-	cached := s.profChatAgents[id]
-	s.profMu.Unlock()
+	s.providers.mu.Lock()
+	cached := s.providers.chatAgents[id]
+	s.providers.mu.Unlock()
 	if cached != nil {
 		return cached
 	}
@@ -340,13 +340,13 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	ca.SetNonStreaming(nonStreamingResolver(cfg))
 	ca.SetMaxTokens(maxTokensResolver(cfg))
 	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
-	s.profMu.Lock()
-	if ex := s.profChatAgents[id]; ex != nil { // lost the race → keep the winner
+	s.providers.mu.Lock()
+	if ex := s.providers.chatAgents[id]; ex != nil { // lost the race → keep the winner
 		ca = ex
 	} else {
-		s.profChatAgents[id] = ca
+		s.providers.chatAgents[id] = ca
 	}
-	s.profMu.Unlock()
+	s.providers.mu.Unlock()
 	return ca
 }
 
@@ -354,38 +354,38 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 // save/activate/delete — or an agent's binding change — rebuilds pinned tasks' agents
 // (and re-resolves each agent's bound model) on their next round.
 func (s *Server) invalidateProfileAgents() {
-	s.profMu.Lock()
-	s.profChatAgents = map[int64]*agent.ChatAgent{}
-	s.profMu.Unlock()
-	s.provCacheMu.Lock()
-	s.provCacheGen++
-	s.provByProfile = map[int64]*provEntry{}
-	s.provCacheMu.Unlock()
+	s.providers.mu.Lock()
+	s.providers.chatAgents = map[int64]*agent.ChatAgent{}
+	s.providers.mu.Unlock()
+	s.providers.cacheMu.Lock()
+	s.providers.cacheGen++
+	s.providers.byProfile = map[int64]*provEntry{}
+	s.providers.cacheMu.Unlock()
 	s.invalidateTaskAgents()
 }
 
 func (s *Server) chatAgentRef() *agent.ChatAgent {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	return s.chatAgent
+	s.llm.mu.Lock()
+	defer s.llm.mu.Unlock()
+	return s.llm.chatAgent
 }
 
 // getLLM returns the current LLM config (key never exposed).
 func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	defer s.llm.mu.Unlock()
 	writeJSON(w, 200, map[string]any{
-		"configured":       s.llmOn,
-		"provider":         s.llmCfg.Provider(),
-		"model":            s.llmCfg.Model,
-		"base_url":         s.llmCfg.BaseURL,
-		"proxy":            s.llmCfg.Proxy,
-		"key_set":          s.llmCfg.APIKey != "",
-		"rate_per_second":  s.llmCfg.RatePerSecond,
-		"rate_per_minute":  s.llmCfg.RatePerMinute,
-		"context_window_k": s.llmCfg.ContextWindowK,
-		"thinking_type":    s.llmCfg.ThinkingType,
-		"reasoning_effort": s.llmCfg.ReasoningEffort,
+		"configured":       s.llm.on,
+		"provider":         s.llm.cfg.Provider(),
+		"model":            s.llm.cfg.Model,
+		"base_url":         s.llm.cfg.BaseURL,
+		"proxy":            s.llm.cfg.Proxy,
+		"key_set":          s.llm.cfg.APIKey != "",
+		"rate_per_second":  s.llm.cfg.RatePerSecond,
+		"rate_per_minute":  s.llm.cfg.RatePerMinute,
+		"context_window_k": s.llm.cfg.ContextWindowK,
+		"thinking_type":    s.llm.cfg.ThinkingType,
+		"reasoning_effort": s.llm.cfg.ReasoningEffort,
 	})
 }
 
@@ -418,9 +418,9 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		cfg.ContextWindowK = k
 	}
 	if cfg.APIKey == "" {
-		s.cfgMu.Lock()
-		cfg.APIKey = s.llmCfg.APIKey // keep existing key if not re-entered
-		s.cfgMu.Unlock()
+		s.llm.mu.Lock()
+		cfg.APIKey = s.llm.cfg.APIKey // keep existing key if not re-entered
+		s.llm.mu.Unlock()
 	}
 	if cfg.APIKey == "" {
 		writeErr(w, 400, "api_key required")
@@ -495,9 +495,9 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if cfg.APIKey == "" {
-		s.cfgMu.Lock()
-		cfg.APIKey = s.llmCfg.APIKey
-		s.cfgMu.Unlock()
+		s.llm.mu.Lock()
+		cfg.APIKey = s.llm.cfg.APIKey
+		s.llm.mu.Unlock()
 	}
 	if cfg.APIKey == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})

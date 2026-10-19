@@ -348,9 +348,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		s.corsMu.Lock()
-		s.corsAt = time.Time{} // 立刻失效缓存，改完即时生效（与其它设置同一口径）
-		s.corsMu.Unlock()
+		s.cors.mu.Lock()
+		s.cors.at = time.Time{} // 立刻失效缓存，改完即时生效（与其它设置同一口径）
+		s.cors.mu.Unlock()
 	}
 	if req.SiteName != nil {
 		v := strings.TrimSpace(*req.SiteName)
@@ -596,9 +596,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if changed {
 		// rebuild agents so the new proxy/tools/prompt/web-search take hold (only if LLM configured).
-		s.cfgMu.Lock()
-		cfg, on := s.llmCfg, s.llmOn
-		s.cfgMu.Unlock()
+		s.llm.mu.Lock()
+		cfg, on := s.llm.cfg, s.llm.on
+		s.llm.mu.Unlock()
 		if on {
 			if err := s.applyLLM(cfg); err != nil {
 				writeErr(w, 500, err.Error())

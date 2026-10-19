@@ -507,12 +507,12 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 // environment config) — the last resort once a role has neither a binding nor a
 // task chain.
 func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	if !s.llmOn || s.llmProv == nil {
+	s.llm.mu.Lock()
+	defer s.llm.mu.Unlock()
+	if !s.llm.on || s.llm.prov == nil {
 		return nil, agent.Config{}, false
 	}
-	return s.llmProv, s.llmCfg, true
+	return s.llm.prov, s.llm.cfg, true
 }
 
 // taskRuntimeAvailable reports whether every listed role can resolve a provider
@@ -553,15 +553,15 @@ func tidOfTask(t *Task) int64 {
 }
 
 func (s *Server) invalidateTaskAgents() {
-	s.taskAgentMu.Lock()
-	s.taskAgents = map[string]*taskAgentBundle{}
-	s.taskAgentMu.Unlock()
+	s.agents.mu.Lock()
+	s.agents.bundles = map[string]*taskAgentBundle{}
+	s.agents.mu.Unlock()
 }
 
 func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
-	s.taskAgentMu.Lock()
-	defer s.taskAgentMu.Unlock()
-	if bundle := s.taskAgents[t.ID]; bundle != nil {
+	s.agents.mu.Lock()
+	defer s.agents.mu.Unlock()
+	if bundle := s.agents.bundles[t.ID]; bundle != nil {
 		return bundle
 	}
 	goalRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "goals"}
@@ -617,7 +617,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		runtime: goalRuntime, plannerRuntime: plannerRuntime, workerRuntime: workerRuntime,
 		mainRuntime: mainRuntime, pl: pl, wk: wk, main: main,
 	}
-	s.taskAgents[t.ID] = bundle
+	s.agents.bundles[t.ID] = bundle
 	return bundle
 }
 

@@ -573,9 +573,9 @@ func schemeForPort(p int) string {
 
 // llmHost returns the host of the configured LLM endpoint (to keep it out of scope).
 func (s *Server) llmHost() string {
-	s.cfgMu.Lock()
-	base := s.llmCfg.BaseURL
-	s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	base := s.llm.cfg.BaseURL
+	s.llm.mu.Unlock()
 	if base == "" {
 		return ""
 	}

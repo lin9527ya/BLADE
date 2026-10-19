@@ -26,9 +26,9 @@ func TestInterceptDetailHTTP(t *testing.T) {
 	// schedulers or mutating the process-global tool assembly used by other tests.
 	m := &Manager{pg: d, interceptor: intercept.New(d)}
 	s := &Server{m: m}
-	s.signKey.set([]byte("approval-http-test-signing-key"))
+	s.auth.signKey.set([]byte("approval-http-test-signing-key"))
 	h := s.Handler()
-	token, err := signJWT(s.signKey.get())
+	token, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		t.Fatal(err)
 	}

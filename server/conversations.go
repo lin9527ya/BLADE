@@ -62,11 +62,11 @@ func (s *Server) pgListConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]conversationListItem, 0, len(cs))
-	s.chatMu.Lock()
+	s.chatRuns.mu.Lock()
 	for _, c := range cs {
-		items = append(items, conversationListItem{Conversation: c, Running: s.chatBusy[s.convBusyKey(c.ID)]})
+		items = append(items, conversationListItem{Conversation: c, Running: s.chatRuns.busy[s.convBusyKey(c.ID)]})
 	}
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"conversations": items})
 }
 
@@ -234,9 +234,9 @@ type conversationDeleteItem struct {
 
 func (s *Server) cancelConversation(id int64) {
 	busyKey := s.convBusyKey(id)
-	s.chatMu.Lock()
-	cancel := s.chatCancel[busyKey]
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	cancel := s.chatRuns.cancel[busyKey]
+	s.chatRuns.mu.Unlock()
 	if cancel != nil {
 		cancel(agent.AbortChatStoppedByUser)
 	}
@@ -310,9 +310,9 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	}
 	q := r.URL.Query()
 	limit := atoiDefault(q.Get("limit"), 200)
-	s.chatMu.Lock()
-	running := s.chatBusy[s.convBusyKey(c.ID)]
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	running := s.chatRuns.busy[s.convBusyKey(c.ID)]
+	s.chatRuns.mu.Unlock()
 
 	// Incremental tail: ?since=N returns steps after id N (ASC) — used by the live
 	// poll and the post-send fetch. A generous cap so a burst is never dropped.
@@ -371,9 +371,9 @@ func (s *Server) pgStopConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	busyKey := s.convBusyKey(c.ID)
-	s.chatMu.Lock()
-	cancel := s.chatCancel[busyKey]
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	cancel := s.chatRuns.cancel[busyKey]
+	s.chatRuns.mu.Unlock()
 	if cancel == nil {
 		writeJSON(w, 200, map[string]any{"status": "idle"}) // nothing running
 		return
@@ -417,14 +417,14 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	busyKey := s.convBusyKey(c.ID)
-	s.chatMu.Lock()
-	if s.chatBusy[busyKey] {
-		s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	if s.chatRuns.busy[busyKey] {
+		s.chatRuns.mu.Unlock()
 		writeErr(w, 409, "该会话正在处理上一条消息，请稍候")
 		return
 	}
-	s.chatBusy[busyKey] = true
-	s.chatMu.Unlock()
+	s.chatRuns.busy[busyKey] = true
+	s.chatRuns.mu.Unlock()
 
 	// persist + float the human turn; auto-title the thread from the first message.
 	// Worker is the agent key (not "user") so the transcript stays a single lane
@@ -487,19 +487,19 @@ func (s *Server) conversationRunContext(id int64, busyKey string) (context.Conte
 	// Per-run cancellable context so a manual stop (pgStopConversation) can abort
 	// just this session. Registered under chatMu so the stop handler can find it.
 	ctx, cancel := context.WithCancelCause(intercept.WithConvID(s.ctx, id))
-	s.chatMu.Lock()
-	s.chatCancel[busyKey] = cancel
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	s.chatRuns.cancel[busyKey] = cancel
+	s.chatRuns.mu.Unlock()
 	return ctx, cancel
 }
 
 func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) {
 	defer func() {
 		cancel(agent.AbortChatTurnFinished)
-		s.chatMu.Lock()
-		delete(s.chatBusy, busyKey)
-		delete(s.chatCancel, busyKey)
-		s.chatMu.Unlock()
+		s.chatRuns.mu.Lock()
+		delete(s.chatRuns.busy, busyKey)
+		delete(s.chatRuns.cancel, busyKey)
+		s.chatRuns.mu.Unlock()
 	}()
 	// Only the first turn executes a historical retest. Follow-up conversation
 	// turns may explain the sealed result; the result tool refuses to overwrite it.
@@ -612,11 +612,11 @@ func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64
 		return
 	}
 	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
-	s.queueMu.Lock()
-	s.triggerCfg[agentKey] = cfg
-	s.triggerQ[agentKey] = append(s.triggerQ[agentKey], triggeredRun{agentKey: agentKey, title: title, message: message, taskID: taskID, taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable})
+	s.triggers.mu.Lock()
+	s.triggers.cfg[agentKey] = cfg
+	s.triggers.queue[agentKey] = append(s.triggers.queue[agentKey], triggeredRun{agentKey: agentKey, title: title, message: message, taskID: taskID, taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable})
 	s.pumpLocked(agentKey)
-	s.queueMu.Unlock()
+	s.triggers.mu.Unlock()
 }
 
 // pumpLocked launches queued fires for one agent up to its concurrency limit, then
@@ -627,7 +627,7 @@ func (s *Server) pumpLocked(agentKey string) {
 	if s.ctx.Err() != nil {
 		return
 	}
-	cfg := s.triggerCfg[agentKey]
+	cfg := s.triggers.cfg[agentKey]
 	limit := 1
 	if cfg.runMode == "parallel" {
 		if cfg.maxParallel <= 0 {
@@ -636,9 +636,9 @@ func (s *Server) pumpLocked(agentKey string) {
 			limit = cfg.maxParallel
 		}
 	}
-	for s.triggerActive[agentKey] < limit && len(s.triggerQ[agentKey]) > 0 {
+	for s.triggers.active[agentKey] < limit && len(s.triggers.queue[agentKey]) > 0 {
 		item := s.nextTriggerRun(agentKey, cfg)
-		s.triggerActive[agentKey]++
+		s.triggers.active[agentKey]++
 		goSafe("conversations/trigger-run", nil, func() { s.runAndPump(agentKey, item) })
 	}
 }
@@ -647,16 +647,16 @@ func (s *Server) pumpLocked(agentKey string) {
 // re-pumps to fill the freed slot (cleaning up the agent's maps when fully idle).
 func (s *Server) runAndPump(agentKey string, item triggeredRun) {
 	s.runTriggeredRun(item)
-	s.queueMu.Lock()
-	s.triggerActive[agentKey]--
-	if s.triggerActive[agentKey] <= 0 && len(s.triggerQ[agentKey]) == 0 {
-		delete(s.triggerActive, agentKey)
-		delete(s.triggerQ, agentKey)
-		delete(s.triggerCfg, agentKey)
+	s.triggers.mu.Lock()
+	s.triggers.active[agentKey]--
+	if s.triggers.active[agentKey] <= 0 && len(s.triggers.queue[agentKey]) == 0 {
+		delete(s.triggers.active, agentKey)
+		delete(s.triggers.queue, agentKey)
+		delete(s.triggers.cfg, agentKey)
 	} else {
 		s.pumpLocked(agentKey)
 	}
-	s.queueMu.Unlock()
+	s.triggers.mu.Unlock()
 }
 
 // nextTriggerRun pops the next run from the agent's queue per the merge mode:
@@ -667,19 +667,19 @@ func (s *Server) runAndPump(agentKey string, item triggeredRun) {
 //
 // Caller holds queueMu.
 func (s *Server) nextTriggerRun(agentKey string, cfg triggerBehavior) triggeredRun {
-	q := s.triggerQ[agentKey]
+	q := s.triggers.queue[agentKey]
 	if cfg.runMode == "parallel" || cfg.mergeMode == "none" {
-		s.triggerQ[agentKey] = q[1:]
+		s.triggers.queue[agentKey] = q[1:]
 		return q[0]
 	}
 	if cfg.mergeMode == "all" {
-		s.triggerQ[agentKey] = q[:0:0]
+		s.triggers.queue[agentKey] = q[:0:0]
 		return mergeAllRuns(q)
 	}
 	// by_task: head + same-task mergeable fires.
 	head := q[0]
 	if !head.mergeable || head.taskID == 0 {
-		s.triggerQ[agentKey] = q[1:]
+		s.triggers.queue[agentKey] = q[1:]
 		return head
 	}
 	group := []triggeredRun{head}
@@ -691,7 +691,7 @@ func (s *Server) nextTriggerRun(agentKey string, cfg triggerBehavior) triggeredR
 			rest = append(rest, it)
 		}
 	}
-	s.triggerQ[agentKey] = rest
+	s.triggers.queue[agentKey] = rest
 	return mergeTriggeredRuns(group)
 }
 
@@ -812,9 +812,9 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 		log.Printf("[trigger] append msg failed: %v", err)
 	}
 	busyKey := s.convBusyKey(c.ID)
-	s.chatMu.Lock()
-	s.chatBusy[busyKey] = true
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	s.chatRuns.busy[busyKey] = true
+	s.chatRuns.mu.Unlock()
 	s.runConversationSync(c, msg, busyKey)
 }
 

@@ -17,9 +17,9 @@ func TestConversationListRunningState(t *testing.T) {
 		ids = append(ids, c.ID)
 	}
 	t.Cleanup(func() {
-		s.chatMu.Lock()
-		clear(s.chatBusy)
-		s.chatMu.Unlock()
+		s.chatRuns.mu.Lock()
+		clear(s.chatRuns.busy)
+		s.chatRuns.mu.Unlock()
 		for _, id := range ids {
 			_, _ = s.m.pg.Exec(`DELETE FROM conversations WHERE id=$1`, id)
 		}
@@ -50,14 +50,14 @@ func TestConversationListRunningState(t *testing.T) {
 		}
 	}
 	check(map[int64]bool{ids[0]: false, ids[1]: false, ids[2]: false})
-	s.chatMu.Lock()
-	s.chatBusy[s.convBusyKey(ids[1])] = true
-	s.chatBusy[s.convBusyKey(ids[2])] = true
-	s.chatBusy["unrelated-task"] = true
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	s.chatRuns.busy[s.convBusyKey(ids[1])] = true
+	s.chatRuns.busy[s.convBusyKey(ids[2])] = true
+	s.chatRuns.busy["unrelated-task"] = true
+	s.chatRuns.mu.Unlock()
 	check(map[int64]bool{ids[0]: false, ids[1]: true, ids[2]: true})
-	s.chatMu.Lock()
-	clear(s.chatBusy)
-	s.chatMu.Unlock()
+	s.chatRuns.mu.Lock()
+	clear(s.chatRuns.busy)
+	s.chatRuns.mu.Unlock()
 	check(map[int64]bool{ids[0]: false, ids[1]: false, ids[2]: false})
 }

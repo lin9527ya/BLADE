@@ -85,9 +85,9 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 			return resolved, nil
 		}
 	}
-	s.cfgMu.Lock()
-	on, name, cfg := s.llmOn, s.llmProf, s.llmCfg
-	s.cfgMu.Unlock()
+	s.llm.mu.Lock()
+	on, name, cfg := s.llm.on, s.llm.profile, s.llm.cfg
+	s.llm.mu.Unlock()
 	if on {
 		if name == "" {
 			name = "全局配置"

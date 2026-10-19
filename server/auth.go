@@ -209,7 +209,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "未授权")
 			return
 		}
-		if !verifyJWT(tok, s.signKey.get()) {
+		if !verifyJWT(tok, s.auth.signKey.get()) {
 			writeErr(w, 401, "token 无效或已过期")
 			return
 		}
@@ -277,7 +277,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码已设置")
 		return
 	}
-	tok, err := signJWT(s.signKey.get())
+	tok, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -293,7 +293,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	if !verifyJWT(extractToken(r), s.signKey.get()) {
+	if !verifyJWT(extractToken(r), s.auth.signKey.get()) {
 		writeErr(w, 401, "未授权")
 		return
 	}
@@ -339,7 +339,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	// 7 天 token 会一直有效到自然过期——改密码就失去了「止损」的意义。（本系统单用户，
 	// 所以「所有 token」就是你自己那几个会话；轮换后本次请求所用的 token 也随失效，
 	// 前端会退回登录页重新登录，这是预期行为。）
-	newKey, rotErr := rotateJWTKey(s.jwtKeyPath)
+	newKey, rotErr := rotateJWTKey(s.auth.jwtKeyPath)
 	if rotErr != nil {
 		// 密码已经改成功了，但旧 token 没失效——如实说，别报个 ok 让人以为已经止损。
 		log.Printf("[auth] 改密码后轮换 JWT key 失败: %v", rotErr)
@@ -349,7 +349,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	s.signKey.set(newKey)
+	s.auth.signKey.set(newKey)
 	log.Printf("[auth] 密码已更新，JWT key 已轮换（既有 token 全部失效）")
 	writeJSON(w, 200, map[string]any{"ok": true, "tokens_revoked": true})
 }
@@ -362,7 +362,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// 节流先于一切：锁定期内连用户名/密码都不看，直接拒——否则爆破者仍能用每次
 	// 请求的时序/回包差异继续试探。
-	if left, locked := s.login.lockedFor(); locked {
+	if left, locked := s.auth.login.lockedFor(); locked {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
 		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，请 %s 后重试", left.Round(time.Second)))
 		return
@@ -376,7 +376,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Username != "BLADE" {
-		s.login.fail()
+		s.auth.login.fail()
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
@@ -390,15 +390,15 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
-		if lockFor := s.login.fail(); lockFor > 0 {
+		if lockFor := s.auth.login.fail(); lockFor > 0 {
 			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor))
 			return
 		}
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	s.login.succeed()
-	tok, err := signJWT(s.signKey.get())
+	s.auth.login.succeed()
+	tok, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
