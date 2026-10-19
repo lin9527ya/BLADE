@@ -44,7 +44,7 @@ type Server struct {
 	llm       llmState
 	providers providerState
 	chatRuns  chatState
-	triggers  triggerState
+	triggers  *triggerQueue
 	agents    agentState
 	archive   archiveState
 }
@@ -106,14 +106,6 @@ type chatState struct {
 	cancel map[string]context.CancelCauseFunc
 }
 
-// triggerState 是 P3 触发器队列：按 agent 分桶、计数在跑、缓存策略。
-type triggerState struct {
-	mu     sync.Mutex
-	queue  map[string][]triggeredRun
-	active map[string]int
-	cfg    map[string]triggerBehavior
-}
-
 // agentState 是显式任务链使用的任务级 agent 组合。
 type agentState struct {
 	mu      sync.Mutex
@@ -156,11 +148,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			busy:   map[string]bool{},
 			cancel: map[string]context.CancelCauseFunc{},
 		},
-		triggers: triggerState{
-			queue:  map[string][]triggeredRun{},
-			active: map[string]int{},
-			cfg:    map[string]triggerBehavior{},
-		},
+		triggers: newTriggerQueue(),
 		providers: providerState{
 			chatAgents: map[int64]*agent.ChatAgent{},
 			byProfile:  map[int64]*provEntry{},
