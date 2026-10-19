@@ -6,13 +6,17 @@
 //
 // 想换成别的名字：改这里的 name / meta.title / meta.description 后重新构建
 // （运行时还能用设置 site_name 单独覆盖 document.title）。
-import packageJson from "../../package.json";
+//
+// 版本号由 next.config.mjs 在构建期从 package.json 注入——**只注入这一个字段**。
+// 不要在这里 `import packageJson from "../../package.json"`：那会把整份依赖清单
+// （含各库版本号）打进浏览器 chunk，与上面「不写用途」的目标相反。
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? "dev";
 
 const currentYear = new Date().getFullYear();
 
 export const APP_CONFIG = {
   name: "BLADE",
-  version: packageJson.version,
+  version: APP_VERSION,
   copyright: `© ${currentYear}, BLADE.`,
   meta: {
     // 不带用途描述：扫描器抓到 <title> 时看不出这是什么。
