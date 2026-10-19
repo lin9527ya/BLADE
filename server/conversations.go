@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -612,87 +611,30 @@ func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64
 		return
 	}
 	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
-	s.triggers.mu.Lock()
-	s.triggers.cfg[agentKey] = cfg
-	s.triggers.queue[agentKey] = append(s.triggers.queue[agentKey], triggeredRun{agentKey: agentKey, title: title, message: message, taskID: taskID, taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable})
-	s.pumpLocked(agentKey)
-	s.triggers.mu.Unlock()
+	batch := s.triggers.Enqueue(agentKey, triggeredRun{
+		agentKey: agentKey, title: title, message: message, taskID: taskID,
+		taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable,
+	}, cfg, s.triggerPumpAllowed())
+	s.launchTriggered(agentKey, batch)
 }
 
-// pumpLocked launches queued fires for one agent up to its concurrency limit, then
-// returns. Serial → limit 1; parallel → limit = maxParallel (<=0 → unlimited). Each
-// launched run re-pumps on completion (runAndPump) to fill the freed slot. Caller
-// holds queueMu.
-func (s *Server) pumpLocked(agentKey string) {
-	if s.ctx.Err() != nil {
-		return
-	}
-	cfg := s.triggers.cfg[agentKey]
-	limit := 1
-	if cfg.runMode == "parallel" {
-		if cfg.maxParallel <= 0 {
-			limit = math.MaxInt
-		} else {
-			limit = cfg.maxParallel
-		}
-	}
-	for s.triggers.active[agentKey] < limit && len(s.triggers.queue[agentKey]) > 0 {
-		item := s.nextTriggerRun(agentKey, cfg)
-		s.triggers.active[agentKey]++
+// triggerPumpAllowed 是"现在还能不能起新 run"：调度器已取消就不再泵，
+// 但排队项保留在队列里（与改动前一致）。
+func (s *Server) triggerPumpAllowed() bool { return s.ctx.Err() == nil }
+
+// launchTriggered 在**锁外**启动队列交出来的一批 run；每个 run 结束时会回调 Done
+// 补位（runAndPump）。
+func (s *Server) launchTriggered(agentKey string, batch []triggeredRun) {
+	for _, item := range batch {
 		goSafe("conversations/trigger-run", nil, func() { s.runAndPump(agentKey, item) })
 	}
 }
 
-// runAndPump runs one fire to completion, then decrements the active counter and
-// re-pumps to fill the freed slot (cleaning up the agent's maps when fully idle).
+// runAndPump runs one fire to completion, then reports it done to the queue and
+// launches whatever the freed slot admits.
 func (s *Server) runAndPump(agentKey string, item triggeredRun) {
 	s.runTriggeredRun(item)
-	s.triggers.mu.Lock()
-	s.triggers.active[agentKey]--
-	if s.triggers.active[agentKey] <= 0 && len(s.triggers.queue[agentKey]) == 0 {
-		delete(s.triggers.active, agentKey)
-		delete(s.triggers.queue, agentKey)
-		delete(s.triggers.cfg, agentKey)
-	} else {
-		s.pumpLocked(agentKey)
-	}
-	s.triggers.mu.Unlock()
-}
-
-// nextTriggerRun pops the next run from the agent's queue per the merge mode:
-//
-//	parallel / none → one head item, no merge
-//	by_task         → head + all queued same-task mergeable fires merged into one
-//	all             → the ENTIRE queue merged into one run (regardless of task/type)
-//
-// Caller holds queueMu.
-func (s *Server) nextTriggerRun(agentKey string, cfg triggerBehavior) triggeredRun {
-	q := s.triggers.queue[agentKey]
-	if cfg.runMode == "parallel" || cfg.mergeMode == "none" {
-		s.triggers.queue[agentKey] = q[1:]
-		return q[0]
-	}
-	if cfg.mergeMode == "all" {
-		s.triggers.queue[agentKey] = q[:0:0]
-		return mergeAllRuns(q)
-	}
-	// by_task: head + same-task mergeable fires.
-	head := q[0]
-	if !head.mergeable || head.taskID == 0 {
-		s.triggers.queue[agentKey] = q[1:]
-		return head
-	}
-	group := []triggeredRun{head}
-	rest := q[:0:0] // keep non-matching items in order
-	for _, it := range q[1:] {
-		if it.mergeable && it.taskID == head.taskID {
-			group = append(group, it)
-		} else {
-			rest = append(rest, it)
-		}
-	}
-	s.triggers.queue[agentKey] = rest
-	return mergeTriggeredRuns(group)
+	s.launchTriggered(agentKey, s.triggers.Done(agentKey, s.triggerPumpAllowed()))
 }
 
 // taskContextHeader renders a task's description/goal once. Same-task fires share
