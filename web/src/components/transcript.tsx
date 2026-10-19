@@ -1,28 +1,15 @@
 "use client";
 
 import * as React from "react";
-import {
-  CheckIcon,
-  ChevronDown,
-  ChevronRight,
-  CrosshairIcon,
-  Flag,
-  MessageSquare,
-  PaperclipIcon,
-  ShieldAlertIcon,
-  Terminal,
-  UserIcon,
-  Wrench,
-  XIcon,
-} from "lucide-react";
+import { CheckIcon, ChevronDown, ChevronRight, CrosshairIcon, Flag, MessageSquare, PaperclipIcon, ShieldAlertIcon, Terminal, UserIcon, Wrench, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ApprovalDetail } from "@/components/approval-records";
-import type { Activity, InterceptPending } from "@/lib/types";
+import { ApprovalDetail } from "@/components/_parts/approval-detail";
+import { Activity, InterceptPending } from "@/lib/types";
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
 const workerColors = [
