@@ -10,10 +10,17 @@
 // 配套：globals.css 里 `html[data-font=…]` 的规则也只保留这三项。删掉规则本身就是优雅降级
 // ——一个指向已删字体的旧 cookie 不匹配任何规则，`--font-sans` 保持默认的 Geist。
 import localFont from "next/font/local";
+
 import { GeistPixelSquare } from "geist/font/pixel";
 
-const geist = localFont({ src: "../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2", variable: "--font-geist" });
-const geistMono = localFont({ src: "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2", variable: "--font-geist-mono" });
+const geist = localFont({
+  src: "../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2",
+  variable: "--font-geist",
+});
+const geistMono = localFont({
+  src: "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2",
+  variable: "--font-geist-mono",
+});
 
 export const fontRegistry = {
   geist: { label: "Geist", font: geist },
@@ -27,10 +34,10 @@ export const fontVars = (Object.values(fontRegistry) as Array<(typeof fontRegist
   .map((f) => f.font.variable)
   .join(" ");
 
-export const fontOptions = (Object.entries(fontRegistry) as [FontKey, { label: string; font: { variable: string } }][]).map(
-  ([key, f]) => ({
-    key,
-    label: f.label,
-    variable: f.font.variable,
-  }),
-);
+export const fontOptions = (
+  Object.entries(fontRegistry) as [FontKey, { label: string; font: { variable: string } }][]
+).map(([key, f]) => ({
+  key,
+  label: f.label,
+  variable: f.font.variable,
+}));

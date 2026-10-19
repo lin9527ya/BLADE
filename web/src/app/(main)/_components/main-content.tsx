@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { usePathname } from "next/navigation";
 
+import { SafetyBanner } from "@/components/safety-banner";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useCurrentUser } from "@/hooks/use-current-user";
@@ -11,12 +12,10 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { AccountSwitcher } from "./sidebar/account-switcher";
+import { LanguageSwitcher } from "./sidebar/language-switcher";
 import { LayoutControls } from "./sidebar/layout-controls";
 import { SearchDialog } from "./sidebar/search-dialog";
-import { LanguageSwitcher } from "./sidebar/language-switcher";
 import { ThemeSwitcher } from "./sidebar/theme-switcher";
-import { SafetyBanner } from "@/components/safety-banner";
-
 import { UpdateBadge } from "./update-badge";
 
 // 任务详情页保持原样：它自带头部/Tabs 与内边距，这里不再叠加全局头部和 padding。

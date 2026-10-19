@@ -1,6 +1,6 @@
+import { nextDelay, POLL_MAX_BACKOFF } from "./use-polling.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { POLL_MAX_BACKOFF, nextDelay } from "./use-polling.ts";
 
 test("成功后回到基础间隔", () => {
   assert.equal(nextDelay(5000, 5000, true), 5000);

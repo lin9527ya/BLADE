@@ -17,9 +17,9 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
+import { useI18n } from "@/lib/i18n";
 import type { NavMainItem } from "@/navigation/sidebar/sidebar-items";
 import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
-import { useI18n } from "@/lib/i18n";
 
 type SearchItem = {
   id: string;

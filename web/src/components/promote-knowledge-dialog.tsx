@@ -102,8 +102,8 @@ export function PromoteKnowledgeDialog({ finding }: { finding: Finding }) {
         <DialogHeader>
           <DialogTitle>沉淀为公司知识</DialogTitle>
           <DialogDescription>
-            只沉淀**已确认**的结论；同公司的其它任务会把它当只读先验读到（不代表它们已测过）。
-            只读背景：Agent 改不了，要撤下请到 资产页 → 企业 → 知识 里废弃。
+            只沉淀**已确认**的结论；同公司的其它任务会把它当只读先验读到（不代表它们已测过）。 只读背景：Agent
+            改不了，要撤下请到 资产页 → 企业 → 知识 里废弃。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -138,7 +138,13 @@ export function PromoteKnowledgeDialog({ finding }: { finding: Finding }) {
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="pk-detail">展开说明（可选：为什么成立、怎么验证、适用边界）</Label>
-                <Textarea id="pk-detail" rows={3} value={detail} onChange={(e) => setDetail(e.target.value)} disabled={busy} />
+                <Textarea
+                  id="pk-detail"
+                  rows={3}
+                  value={detail}
+                  onChange={(e) => setDetail(e.target.value)}
+                  disabled={busy}
+                />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="pk-conf">置信度（没把握就留空，平台不猜）</Label>

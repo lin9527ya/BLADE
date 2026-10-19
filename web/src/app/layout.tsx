@@ -40,18 +40,18 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <body className={`${fontVars} min-h-screen antialiased`}>
         {/* I18nProvider 在最外层：登录页与主界面都要能取到 t()（中文是源文，英文走词典）。 */}
         <I18nProvider>
-        <TooltipProvider>
-          <PreferencesStoreProvider
-            themeMode={theme_mode}
-            themePreset={theme_preset}
-            contentLayout={content_layout}
-            navbarStyle={navbar_style}
-            font={font}
-          >
-            {children}
-            <Toaster />
-          </PreferencesStoreProvider>
-        </TooltipProvider>
+          <TooltipProvider>
+            <PreferencesStoreProvider
+              themeMode={theme_mode}
+              themePreset={theme_preset}
+              contentLayout={content_layout}
+              navbarStyle={navbar_style}
+              font={font}
+            >
+              {children}
+              <Toaster />
+            </PreferencesStoreProvider>
+          </TooltipProvider>
         </I18nProvider>
       </body>
     </html>

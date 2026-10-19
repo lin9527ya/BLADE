@@ -1,8 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useOverviewState } from "./_components/use-overview-state";
-import { usePolling } from "@/hooks/use-polling";
 
 import {
   ActivityIcon,
@@ -32,13 +30,18 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type {
   AssetInterceptKind,
   AssetInterceptRule,
+  ConstraintCompilePreview,
   ConstraintCompileResult,
+  CustomRule,
+  ExplorationPolicyDefault,
   Finding,
   ModelTokenStat,
+  PolicyRuleDraft,
   Stats,
   Task,
   TaskConstraint,
@@ -46,11 +49,9 @@ import type {
   TaskNode,
   TaskPolicy,
   TaskScopeRow,
-  ExplorationPolicyDefault,
-  PolicyRuleDraft,
-  ConstraintCompilePreview,
-  CustomRule,
 } from "@/lib/types";
+
+import { useOverviewState } from "./_components/use-overview-state";
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
 // budgetBarTone：按预算用量占比取进度条颜色（与后端 70/85/95/100 档位一致）。
@@ -220,7 +221,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     goalsPct,
     tokenTotals,
     budgetUsed,
-    budgetPct
+    budgetPct,
   } = useOverviewState(taskId);
 
   return (
@@ -246,8 +247,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             )}
             {(stats?.artifacts_unknown ?? 0) > 0 && (
               <p className="text-muted-foreground">
-                另有 <span className="tabular-nums">{stats?.artifacts_unknown}</span> 件
-                <strong>未确认</strong>还在不在（不是「已清理」，只是没去核）。
+                另有 <span className="tabular-nums">{stats?.artifacts_unknown}</span> 件<strong>未确认</strong>
+                还在不在（不是「已清理」，只是没去核）。
               </p>
             )}
             <p className="text-muted-foreground text-xs">
@@ -1313,9 +1314,10 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
   const [maxTotal, setMaxTotal] = React.useState("0");
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState("");
-  const [preview, setPreview] = React.useState<{ rules: PolicyRuleDraft[]; preview: ConstraintCompilePreview[] } | null>(
-    null,
-  );
+  const [preview, setPreview] = React.useState<{
+    rules: PolicyRuleDraft[];
+    preview: ConstraintCompilePreview[];
+  } | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -1335,7 +1337,10 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
 
   React.useEffect(() => {
     void load();
-    void api.explorationPolicyDefault().then(setVocab).catch(() => {});
+    void api
+      .explorationPolicyDefault()
+      .then(setVocab)
+      .catch(() => {});
   }, [load]);
 
   function toggle(list: string[], set: (v: string[]) => void, id: string) {
@@ -1437,9 +1442,7 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
           <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
             <span
               className={`rounded px-1.5 py-0.5 ${
-                pol.custom
-                  ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
-                  : "bg-muted text-muted-foreground"
+                pol.custom ? "bg-sky-500/15 text-sky-600 dark:text-sky-400" : "bg-muted text-muted-foreground"
               }`}
               title={
                 pol.custom
@@ -1495,12 +1498,7 @@ function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
 
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">自定义禁止条目（词表覆盖不到时手写）</span>
-          <CustomRulesEditor
-            rules={custom}
-            onChange={setCustom}
-            disabled={busy}
-            limit={pol?.custom_limit ?? 16}
-          />
+          <CustomRulesEditor rules={custom} onChange={setCustom} disabled={busy} limit={pol?.custom_limit ?? 16} />
         </div>
 
         <div className="flex flex-col gap-1.5">

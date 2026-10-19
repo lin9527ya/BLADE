@@ -1,6 +1,8 @@
 "use client";
 
-import * as React from "react";
+import type * as React from "react";
+
+import { PlusIcon } from "lucide-react";
 
 import {
   AlertDialog,
@@ -14,22 +16,26 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MCP_CATALOG } from "@/lib/mcp-catalog";
 import type { Agent, MCPServer } from "@/lib/types";
-import { PlusIcon } from "lucide-react";
 
 // MCP 页尾部的三个弹窗：推荐目录（只预填不安装）、添加/编辑服务器、删除确认。
 // 抽出来是为了让页面本体只剩列表与明细两栏。
 
 export function MCPDialogs({
-  catalogOpen, setCatalogOpen, open, setOpen, editing, saving, pendingDelete, setPendingDelete, addFromCatalog, renderForm, saveForm, removeServer,
+  catalogOpen,
+  setCatalogOpen,
+  open,
+  setOpen,
+  editing,
+  saving,
+  pendingDelete,
+  setPendingDelete,
+  addFromCatalog,
+  renderForm,
+  saveForm,
+  removeServer,
 }: {
   catalogOpen: boolean;
   setCatalogOpen: React.Dispatch<React.SetStateAction<boolean>>;

@@ -2,10 +2,6 @@
 
 import * as React from "react";
 
-import { ApprovalTable } from "./_parts/approval-detail";
-import { Decide } from "./_parts/approval-parts";
-import { usePolling } from "@/hooks/use-polling";
-
 import { ClipboardListIcon, RefreshCwIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -13,15 +9,17 @@ import { TablePagination } from "@/components/table-pagination";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import { InterceptApprovalFilter, InterceptApprovalRow, InterceptPending } from "@/lib/types";
+import type { InterceptApprovalFilter, InterceptApprovalRow, InterceptPending } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import { ApprovalTable } from "./_parts/approval-detail";
+import type { Decide } from "./_parts/approval-parts";
 
 export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const [rows, setRows] = React.useState<InterceptApprovalRow[]>([]);
@@ -57,7 +55,9 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         // filter. Older requests must remain actionable even when newer decisions
         // fill the page or a filter would hide them.
         const [history, pending] = await Promise.allSettled([
-          taskId ? api.interceptTaskPage(taskId, page, pageSize, filter) : api.interceptHistoryPage(page, pageSize, filter),
+          taskId
+            ? api.interceptTaskPage(taskId, page, pageSize, filter)
+            : api.interceptHistoryPage(page, pageSize, filter),
           api.interceptPending(),
         ]);
         if (id !== request.current) return;
@@ -89,11 +89,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const latestLoad = React.useRef(load);
   latestLoad.current = load;
 
-  usePolling(
-    () => load(),
-    5000,
-    [load],
-  );
+  usePolling(() => load(), 5000, [load]);
   // 轮询停止（卸载或依赖变化）时让在途请求作废——与旧的 clearInterval 同一时机。
   React.useEffect(
     () => () => {

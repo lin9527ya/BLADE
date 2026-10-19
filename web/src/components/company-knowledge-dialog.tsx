@@ -98,8 +98,8 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
         <DialogHeader>
           <DialogTitle>{company.name} · 公司知识</DialogTitle>
           <DialogDescription>
-            跨任务沉淀的结论，同公司任务会在态势里当**只读先验**读到（不代表那些任务已测过）。
-            共 {rows.length} 条，生效中 {active} 条。Agent 只能沉淀；废弃与恢复在这里做。
+            跨任务沉淀的结论，同公司任务会在态势里当**只读先验**读到（不代表那些任务已测过）。 共 {rows.length}{" "}
+            条，生效中 {active} 条。Agent 只能沉淀；废弃与恢复在这里做。
           </DialogDescription>
         </DialogHeader>
         <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
@@ -114,18 +114,21 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
                 <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[11px]">
                   {KIND_LABELS[k.kind] ?? k.kind}
                 </span>
-                <span className={`min-w-0 flex-1 text-sm ${k.status === "deprecated" ? "text-muted-foreground line-through" : ""}`}>
+                <span
+                  className={`min-w-0 flex-1 text-sm ${k.status === "deprecated" ? "text-muted-foreground line-through" : ""}`}
+                >
                   {k.summary}
                 </span>
-                {k.confidence && (
-                  <span className="text-muted-foreground text-[11px]">置信度 {k.confidence}</span>
-                )}
+                {k.confidence && <span className="text-muted-foreground text-[11px]">置信度 {k.confidence}</span>}
                 {k.status === "deprecated" && <span className="text-[11px] text-amber-600">已废弃</span>}
               </div>
               {k.detail && <p className="text-muted-foreground text-xs whitespace-pre-wrap">{k.detail}</p>}
               <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 text-[11px]">
                 {k.source_task_id && (
-                  <a className="hover:underline" href={`/function/tasks/detail?id=${encodeURIComponent(k.source_task_id)}`}>
+                  <a
+                    className="hover:underline"
+                    href={`/function/tasks/detail?id=${encodeURIComponent(k.source_task_id)}`}
+                  >
                     来源任务 #{k.source_task_id}
                   </a>
                 )}
@@ -170,7 +173,13 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
                       <Trash2Icon className="size-3.5" /> 废弃
                     </Button>
                   ) : (
-                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-xs" disabled={busy} onClick={() => void restore(k.id)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-1.5 text-xs"
+                      disabled={busy}
+                      onClick={() => void restore(k.id)}
+                    >
                       <RotateCcwIcon className="size-3.5" /> 恢复
                     </Button>
                   )}

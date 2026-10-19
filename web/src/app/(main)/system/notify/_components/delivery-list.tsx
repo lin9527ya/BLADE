@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { TablePagination } from "@/components/table-pagination";
 
 import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { TablePagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";

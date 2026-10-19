@@ -6,9 +6,6 @@ import { CalendarClockIcon, PencilIcon, PlayIcon, PlusIcon, Trash2Icon } from "l
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
   Dialog,
   DialogContent,
@@ -18,6 +15,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
@@ -53,16 +53,16 @@ function fmtLocal(ts?: string): string {
   if (!ts) return "—";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+  return d.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
-export function ScheduleTasksDialog({
-  categories,
-  onCreated,
-}: {
-  categories: TaskCategory[];
-  onCreated?: () => void;
-}) {
+export function ScheduleTasksDialog({ categories, onCreated }: { categories: TaskCategory[]; onCreated?: () => void }) {
   const [open, setOpen] = React.useState(false);
   const [rows, setRows] = React.useState<TaskSchedule[]>([]);
   const [templates, setTemplates] = React.useState<TaskTemplate[]>([]);
@@ -174,7 +174,9 @@ export function ScheduleTasksDialog({
     try {
       const updated = await api.updateTaskSchedule(s.id, { enabled });
       setRows((prev) => prev.map((x) => (x.id === s.id ? updated : x)));
-      toast.success(enabled ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at)}）` : "已停用（排期已清空）");
+      toast.success(
+        enabled ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at)}）` : "已停用（排期已清空）",
+      );
     } catch (e) {
       toast.error("切换失败：" + (e as Error).message);
       await load();
@@ -284,7 +286,9 @@ export function ScheduleTasksDialog({
                   size="sm"
                   id="sched-cat"
                   value={form.categoryID == null ? "" : String(form.categoryID)}
-                  onChange={(e) => setForm({ ...form, categoryID: e.target.value ? Number(e.target.value) : undefined })}
+                  onChange={(e) =>
+                    setForm({ ...form, categoryID: e.target.value ? Number(e.target.value) : undefined })
+                  }
                 >
                   <NativeSelectOption value="">无分类</NativeSelectOption>
                   {categories.map((c) => (
@@ -361,7 +365,11 @@ export function ScheduleTasksDialog({
                 <Label htmlFor="sched-enabled" className="text-sm font-normal text-muted-foreground">
                   创建后立即启用{form.enabled ? "" : "（保持停用，之后再开）"}
                 </Label>
-                <Switch id="sched-enabled" checked={form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} />
+                <Switch
+                  id="sched-enabled"
+                  checked={form.enabled}
+                  onCheckedChange={(v) => setForm({ ...form, enabled: v })}
+                />
               </div>
               <div className="flex gap-2">
                 <Button size="sm" onClick={() => void save()} disabled={busy}>
@@ -405,13 +413,31 @@ export function ScheduleTasksDialog({
                     </div>
                     {s.last_error && <span className="text-xs text-red-500">上次失败：{s.last_error}</span>}
                     <div className="flex items-center gap-1.5">
-                      <Button size="sm" variant="ghost" className="h-6 px-1.5" disabled={busy} onClick={() => void runNow(s)}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-1.5"
+                        disabled={busy}
+                        onClick={() => void runNow(s)}
+                      >
                         <PlayIcon className="size-3.5" /> 立即运行
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-6 px-1.5" disabled={busy} onClick={() => startEdit(s)}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-1.5"
+                        disabled={busy}
+                        onClick={() => startEdit(s)}
+                      >
                         <PencilIcon className="size-3.5" />
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-6 px-1.5" disabled={busy} onClick={() => void remove(s)}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-1.5"
+                        disabled={busy}
+                        onClick={() => void remove(s)}
+                      >
                         <Trash2Icon className="size-3.5 text-red-500" />
                       </Button>
                     </div>

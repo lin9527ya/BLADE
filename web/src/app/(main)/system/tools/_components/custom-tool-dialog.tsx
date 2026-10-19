@@ -2,33 +2,22 @@
 
 import * as React from "react";
 
-import { ExecState } from "./tool-helpers";
+import { PlayIcon, SaveIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { Agent, Tool } from "@/lib/types";
-import { PlayIcon, SaveIcon, Trash2Icon } from "lucide-react";
-import { toast } from "sonner";
+import type { Agent, Tool } from "@/lib/types";
+
+import type { ExecState } from "./tool-helpers";
 
 // 自定义脚本工具的新建/编辑弹窗。
 
@@ -49,7 +38,15 @@ export function CustomToolDialog({
   const [description, setDescription] = React.useState("");
   const [kind, setKind] = React.useState<"shell" | "command" | "script" | "http">("shell");
   const [ex, setEx] = React.useState<ExecState>({
-    command: "", code: "", method: "GET", url: "", headers: "", body: "", timeout_ms: "", proxy: "", use_recording_proxy: false,
+    command: "",
+    code: "",
+    method: "GET",
+    url: "",
+    headers: "",
+    body: "",
+    timeout_ms: "",
+    proxy: "",
+    use_recording_proxy: false,
   });
   const [schemaText, setSchemaText] = React.useState("");
   const [bound, setBound] = React.useState<string[]>([]);
@@ -63,11 +60,27 @@ export function CustomToolDialog({
   // (re)load form state when opening.
   React.useEffect(() => {
     if (!edit) return;
-    setParamsText(""); setTestResult(null);
+    setParamsText("");
+    setTestResult(null);
     if (edit === "new") {
-      setKey(""); setDescription(""); setKind("shell");
-      setEx({ command: "", code: "", method: "GET", url: "", headers: "", body: "", timeout_ms: "", proxy: "", use_recording_proxy: false });
-      setSchemaText(""); setBound([]); setDeferred(false); setEnabled(true);
+      setKey("");
+      setDescription("");
+      setKind("shell");
+      setEx({
+        command: "",
+        code: "",
+        method: "GET",
+        url: "",
+        headers: "",
+        body: "",
+        timeout_ms: "",
+        proxy: "",
+        use_recording_proxy: false,
+      });
+      setSchemaText("");
+      setBound([]);
+      setDeferred(false);
+      setEnabled(true);
       return;
     }
     const t = edit;
@@ -101,9 +114,21 @@ export function CustomToolDialog({
     if (kind === "script") return { code: ex.code, timeout_ms: t };
     let headers: Record<string, string> = {};
     if (ex.headers.trim()) {
-      try { headers = JSON.parse(ex.headers); } catch { /* validated on save */ }
+      try {
+        headers = JSON.parse(ex.headers);
+      } catch {
+        /* validated on save */
+      }
     }
-    return { method: ex.method, url: ex.url, headers, body: ex.body, timeout_ms: t, proxy: ex.proxy, use_recording_proxy: ex.use_recording_proxy };
+    return {
+      method: ex.method,
+      url: ex.url,
+      headers,
+      body: ex.body,
+      timeout_ms: t,
+      proxy: ex.proxy,
+      use_recording_proxy: ex.use_recording_proxy,
+    };
   }
 
   async function save() {
@@ -113,10 +138,20 @@ export function CustomToolDialog({
     }
     let schema: Record<string, unknown> = {};
     if (schemaText.trim()) {
-      try { schema = JSON.parse(schemaText); } catch { toast.error("参数 JSON Schema 格式错误"); return; }
+      try {
+        schema = JSON.parse(schemaText);
+      } catch {
+        toast.error("参数 JSON Schema 格式错误");
+        return;
+      }
     }
     if (kind === "http" && ex.headers.trim()) {
-      try { JSON.parse(ex.headers); } catch { toast.error("headers JSON 格式错误"); return; }
+      try {
+        JSON.parse(ex.headers);
+      } catch {
+        toast.error("headers JSON 格式错误");
+        return;
+      }
     }
     if (kind === "http") {
       const props = (schema as { properties?: Record<string, unknown> }).properties;
@@ -126,7 +161,15 @@ export function CustomToolDialog({
       }
     }
     setSaving(true);
-    const payload = { description, schema: kind === "shell" ? {} : schema, agents: bound, enabled, kind, exec: buildExec(), deferred: kind === "shell" ? false : deferred };
+    const payload = {
+      description,
+      schema: kind === "shell" ? {} : schema,
+      agents: bound,
+      enabled,
+      kind,
+      exec: buildExec(),
+      deferred: kind === "shell" ? false : deferred,
+    };
     try {
       if (isNew) await api.createCustomTool({ key: key.trim(), ...payload });
       else await api.updateCustomTool(tool!.key, payload);
@@ -153,10 +196,20 @@ export function CustomToolDialog({
   async function runTest() {
     let params: Record<string, unknown> = {};
     if (paramsText.trim()) {
-      try { params = JSON.parse(paramsText); } catch { toast.error("测试参数 JSON 格式错误"); return; }
+      try {
+        params = JSON.parse(paramsText);
+      } catch {
+        toast.error("测试参数 JSON 格式错误");
+        return;
+      }
     }
     if (kind === "http" && ex.headers.trim()) {
-      try { JSON.parse(ex.headers); } catch { toast.error("headers JSON 格式错误"); return; }
+      try {
+        JSON.parse(ex.headers);
+      } catch {
+        toast.error("headers JSON 格式错误");
+        return;
+      }
     }
     setTesting(true);
     setTestResult(null);
@@ -175,14 +228,21 @@ export function CustomToolDialog({
       <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <DialogHeader className="border-b px-4 py-3">
           <DialogTitle>{isNew ? "新建自定义工具" : `编辑 ${tool?.key}`}</DialogTitle>
-          <DialogDescription>shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http 需写执行规格。</DialogDescription>
+          <DialogDescription>
+            shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http 需写执行规格。
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <div className="grid gap-1.5">
             <Label className="text-xs">Key</Label>
-            <Input className="font-mono" placeholder="如 nmap_scan" value={key} disabled={!isNew}
-              onChange={(e) => setKey(e.target.value)} />
+            <Input
+              className="font-mono"
+              placeholder="如 nmap_scan"
+              value={key}
+              disabled={!isNew}
+              onChange={(e) => setKey(e.target.value)}
+            />
           </div>
           <div className="grid gap-1.5">
             <Label className="text-xs">描述(发给模型)</Label>
@@ -192,7 +252,9 @@ export function CustomToolDialog({
           <div className="grid gap-1.5">
             <Label className="text-xs">类型</Label>
             <Select value={kind} onValueChange={(v) => setKind(v as "shell" | "command" | "script" | "http")}>
-              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-56">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="shell">shell（bash 环境声明）</SelectItem>
                 <SelectItem value="command">command（shell 命令模板）</SelectItem>
@@ -201,23 +263,36 @@ export function CustomToolDialog({
               </SelectContent>
             </Select>
             {kind === "shell" && (
-              <p className="text-muted-foreground text-xs">适合 nmap、sqlmap、ffuf 等出名工具——模型已知用法，只需声明"可在 bash 中调用"即可。名称+描述会追加到 Bash 工具描述里。</p>
+              <p className="text-muted-foreground text-xs">
+                适合 nmap、sqlmap、ffuf 等出名工具——模型已知用法，只需声明"可在 bash 中调用"即可。名称+描述会追加到 Bash
+                工具描述里。
+              </p>
             )}
           </div>
 
           {kind === "command" && (
             <div className="grid gap-1.5">
-              <Label className="text-xs">命令模板（占位符 {"{param}"}，如 nmap -p {"{ports}"} {"{target}"}）</Label>
-              <Textarea className="font-mono text-xs" rows={2} value={ex.command}
-                onChange={(e) => setEx({ ...ex, command: e.target.value })} />
+              <Label className="text-xs">
+                命令模板（占位符 {"{param}"}，如 nmap -p {"{ports}"} {"{target}"}）
+              </Label>
+              <Textarea
+                className="font-mono text-xs"
+                rows={2}
+                value={ex.command}
+                onChange={(e) => setEx({ ...ex, command: e.target.value })}
+              />
             </div>
           )}
           {kind === "script" && (
             <div className="grid gap-1.5">
               <Label className="text-xs">Python 正文（参数走 stdin JSON / os.environ["TOOL_X"]）</Label>
-              <Textarea className="font-mono text-xs" rows={10} value={ex.code}
-                placeholder={'import json,sys\nargs=json.load(sys.stdin)\nprint(...)'}
-                onChange={(e) => setEx({ ...ex, code: e.target.value })} />
+              <Textarea
+                className="font-mono text-xs"
+                rows={10}
+                value={ex.code}
+                placeholder={"import json,sys\nargs=json.load(sys.stdin)\nprint(...)"}
+                onChange={(e) => setEx({ ...ex, code: e.target.value })}
+              />
             </div>
           )}
           {kind === "http" && (
@@ -225,29 +300,54 @@ export function CustomToolDialog({
               <div className="flex gap-2">
                 <div className="grid gap-1.5">
                   <Label className="text-xs">Method</Label>
-                  <Input className="w-24" value={ex.method} onChange={(e) => setEx({ ...ex, method: e.target.value })} />
+                  <Input
+                    className="w-24"
+                    value={ex.method}
+                    onChange={(e) => setEx({ ...ex, method: e.target.value })}
+                  />
                 </div>
                 <div className="grid flex-1 gap-1.5">
                   <Label className="text-xs">URL（可含 {"{param}"}）</Label>
-                  <Input className="font-mono text-xs" value={ex.url} onChange={(e) => setEx({ ...ex, url: e.target.value })} />
+                  <Input
+                    className="font-mono text-xs"
+                    value={ex.url}
+                    onChange={(e) => setEx({ ...ex, url: e.target.value })}
+                  />
                 </div>
               </div>
               <div className="grid gap-1.5">
                 <Label className="text-xs">Headers（JSON，可含 {"{param}"}）</Label>
-                <Textarea className="font-mono text-xs" rows={2} value={ex.headers}
-                  placeholder={'{"Authorization": "Bearer {token}"}'} onChange={(e) => setEx({ ...ex, headers: e.target.value })} />
+                <Textarea
+                  className="font-mono text-xs"
+                  rows={2}
+                  value={ex.headers}
+                  placeholder={'{"Authorization": "Bearer {token}"}'}
+                  onChange={(e) => setEx({ ...ex, headers: e.target.value })}
+                />
               </div>
               <div className="grid gap-1.5">
                 <Label className="text-xs">Body（可含 {"{param}"}）</Label>
-                <Textarea className="font-mono text-xs" rows={2} value={ex.body} onChange={(e) => setEx({ ...ex, body: e.target.value })} />
+                <Textarea
+                  className="font-mono text-xs"
+                  rows={2}
+                  value={ex.body}
+                  onChange={(e) => setEx({ ...ex, body: e.target.value })}
+                />
               </div>
               <div className="flex items-center gap-4">
                 <div className="grid gap-1.5">
                   <Label className="text-xs">代理 URL（空=直连）</Label>
-                  <Input className="font-mono text-xs w-56" value={ex.proxy} onChange={(e) => setEx({ ...ex, proxy: e.target.value })} />
+                  <Input
+                    className="font-mono text-xs w-56"
+                    value={ex.proxy}
+                    onChange={(e) => setEx({ ...ex, proxy: e.target.value })}
+                  />
                 </div>
                 <label className="mt-4 flex items-center gap-2 text-sm">
-                  <Checkbox checked={ex.use_recording_proxy} onCheckedChange={(v) => setEx({ ...ex, use_recording_proxy: !!v })} />
+                  <Checkbox
+                    checked={ex.use_recording_proxy}
+                    onCheckedChange={(v) => setEx({ ...ex, use_recording_proxy: !!v })}
+                  />
                   走记录代理
                 </label>
               </div>
@@ -258,7 +358,12 @@ export function CustomToolDialog({
             <div className="flex items-center gap-3">
               <div className="grid gap-1.5">
                 <Label className="text-xs">超时(ms，空=默认)</Label>
-                <Input type="number" className="w-32" value={ex.timeout_ms} onChange={(e) => setEx({ ...ex, timeout_ms: e.target.value })} />
+                <Input
+                  type="number"
+                  className="w-32"
+                  value={ex.timeout_ms}
+                  onChange={(e) => setEx({ ...ex, timeout_ms: e.target.value })}
+                />
               </div>
             </div>
           )}
@@ -266,11 +371,16 @@ export function CustomToolDialog({
           {kind !== "shell" && (
             <div className="grid gap-1.5">
               <Label className="text-xs">
-                参数 JSON Schema{kind === "http" ? "（http 工具必填，需含 properties）" : "（留空 = 自动给 {args} 薄壳）"}
+                参数 JSON Schema
+                {kind === "http" ? "（http 工具必填，需含 properties）" : "（留空 = 自动给 {args} 薄壳）"}
               </Label>
-              <Textarea className="font-mono text-xs" rows={4} value={schemaText}
+              <Textarea
+                className="font-mono text-xs"
+                rows={4}
+                value={schemaText}
                 placeholder={'{"type":"object","properties":{"target":{"type":"string"}},"required":["target"]}'}
-                onChange={(e) => setSchemaText(e.target.value)} />
+                onChange={(e) => setSchemaText(e.target.value)}
+              />
             </div>
           )}
 
@@ -280,7 +390,8 @@ export function CustomToolDialog({
               {agents.map((a) => (
                 <label key={a.key} className="flex items-center gap-2 text-sm">
                   <Checkbox checked={bound.includes(a.key)} onCheckedChange={() => toggleAgent(a.key)} />
-                  {a.name}<span className="text-muted-foreground font-mono text-xs">{a.key}</span>
+                  {a.name}
+                  <span className="text-muted-foreground font-mono text-xs">{a.key}</span>
                 </label>
               ))}
             </div>
@@ -300,9 +411,13 @@ export function CustomToolDialog({
           {kind !== "shell" && (
             <div className="grid gap-1.5 rounded-md border p-3">
               <Label className="text-xs font-medium">测试运行（用当前表单，不会保存）</Label>
-              <Textarea className="font-mono text-xs" rows={2} value={paramsText}
+              <Textarea
+                className="font-mono text-xs"
+                rows={2}
+                value={paramsText}
                 placeholder={'示例参数 JSON，如 {"target":"example.com"}'}
-                onChange={(e) => setParamsText(e.target.value)} />
+                onChange={(e) => setParamsText(e.target.value)}
+              />
               <div>
                 <Button size="sm" variant="outline" onClick={runTest} disabled={testing}>
                   <PlayIcon /> {testing ? "运行中…" : "测试运行"}

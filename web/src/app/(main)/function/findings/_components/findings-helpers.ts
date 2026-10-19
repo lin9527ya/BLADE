@@ -2,8 +2,9 @@
 
 import * as React from "react";
 
+import type { Finding, FindingAssetNode, FindingGroup, FindingStats } from "@/lib/types";
+
 import { UNASSIGNED_TASK } from "./findings-table";
-import { Finding, FindingAssetNode, FindingGroup, FindingStats } from "@/lib/types";
 
 // 发现页的类型与常量：视图档位、平铺/分组/资产树三种状态、空值哨兵。
 

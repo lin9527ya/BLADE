@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { TablePagination } from "@/components/table-pagination";
 
 import { toast } from "sonner";
 
+import { TablePagination } from "@/components/table-pagination";
 import { CapturedTrafficViewer } from "@/components/traffic-evidence-viewer";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";

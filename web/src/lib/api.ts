@@ -7,11 +7,6 @@ import type { ChatMention } from "@/lib/chat-mentions";
 import { MOCK } from "@/lib/mock/enabled";
 import type {
   ActiveFindingRetest,
-  CredentialReveal,
-  KillSwitchReceipt,
-  ScopeEnforcement,
-  TimelineResponse,
-  OpsecKnowledgeResponse,
   Activity,
   ADImportFile,
   ADImportPreview,
@@ -23,14 +18,14 @@ import type {
   ArchiveBatchItem,
   Asset,
   AssetImportPreview,
-  Campaign,
-  CampaignSummary,
   AssetImportResult,
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
   BatchCategoryItem,
   BatchControlItem,
+  Campaign,
+  CampaignSummary,
   ChatAttachment,
   CommandRecord,
   Company,
@@ -39,10 +34,11 @@ import type {
   CompanyScopeRule,
   ConstraintCompilePreview,
   ConstraintCompileResult,
-  ConvTokenSummary,
   Conversation,
+  ConvTokenSummary,
   CoverageAssetRefs,
   CoverageGraphData,
+  CredentialReveal,
   DailyTokenBucket,
   DeleteTaskOptions,
   DeleteTaskResult,
@@ -61,9 +57,9 @@ import type {
   FindingRetest,
   FindingStats,
   FindingStatus,
+  FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
-  FindingsPage,
   IntelQueryList,
   IntelSearchResult,
   IntelTestResult,
@@ -76,6 +72,7 @@ import type {
   InterceptRuleTestResult,
   JudgeConfig,
   JudgeUsage,
+  KillSwitchReceipt,
   LLMPoolStatus,
   LLMProfile,
   LLMRecordDetail,
@@ -92,18 +89,20 @@ import type {
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
+  OpsecKnowledgeResponse,
   PolicyRuleDraft,
   PromptVar,
   PromptVersion,
-  SSProject,
-  SSTask,
   ScheduleFrequency,
   ScheduleTaskSpec,
+  ScopeEnforcement,
   SessionTokenUsage,
   Settings,
   Severity,
   SkillCall,
   SkillItem,
+  SSProject,
+  SSTask,
   Stats,
   StorageCleanResult,
   StorageReport,
@@ -122,6 +121,7 @@ import type {
   TaskScopeRow,
   TaskSrcBatchPlan,
   TaskTemplate,
+  TimelineResponse,
   TokenTotal,
   TokenUsage,
   Tool,
@@ -134,7 +134,7 @@ import type {
   UpdateCheck,
   UsageStats,
   WorkspaceFile,
-  WorkspaceListing
+  WorkspaceListing,
 } from "@/lib/types";
 
 function getToken(): string | null {
@@ -275,7 +275,10 @@ export const api = {
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean; tokens_revoked?: boolean; warning?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+    post<{ ok: boolean; tokens_revoked?: boolean; warning?: string }>("/auth/change-password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+    }),
 
   // ---- tasks ----
   tasks: () =>
@@ -486,8 +489,7 @@ export const api = {
       {},
     ).then((r) => ({ rules: arr(r.rules), preview: arr(r.preview) })),
   // 按当前策略清理"未领取"的意图（运行中的不动）。
-  pruneTaskPolicy: (id: string) =>
-    post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
+  pruneTaskPolicy: (id: string) => post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
   // ---- P23 公司级知识 ----
   companyKnowledge: (companyId: number) =>
     get<{ knowledge: CompanyKnowledge[] | null; active: number; total: number }>(
@@ -505,31 +507,31 @@ export const api = {
   ) => post<CompanyKnowledge>(`/findings/${findingId}/promote-knowledge`, input),
 
   // ---- P22 计划任务 ----
-  taskSchedules: () =>
-    get<{ schedules: TaskSchedule[] | null }>(`/task-schedules`).then((r) => arr(r.schedules)),
-  createTaskSchedule: (input: { name: string; enabled: boolean; task_spec: ScheduleTaskSpec; frequency: ScheduleFrequency }) =>
-    post<TaskSchedule>(`/task-schedules`, input),
+  taskSchedules: () => get<{ schedules: TaskSchedule[] | null }>(`/task-schedules`).then((r) => arr(r.schedules)),
+  createTaskSchedule: (input: {
+    name: string;
+    enabled: boolean;
+    task_spec: ScheduleTaskSpec;
+    frequency: ScheduleFrequency;
+  }) => post<TaskSchedule>(`/task-schedules`, input),
   updateTaskSchedule: (
     id: number,
     input: { name?: string; enabled?: boolean; task_spec?: ScheduleTaskSpec; frequency?: ScheduleFrequency },
   ) => patch<TaskSchedule>(`/task-schedules/${id}`, input),
   deleteTaskSchedule: (id: number) => del<{ deleted: boolean }>(`/task-schedules/${id}`),
   // 立即按规格建一个任务（额外一次运行，不改排期）。
-  runTaskScheduleNow: (id: number) =>
-    post<{ task_id: string; note: string }>(`/task-schedules/${id}/run`, {}),
+  runTaskScheduleNow: (id: number) => post<{ task_id: string; note: string }>(`/task-schedules/${id}/run`, {}),
 
   // ---- P21 情报源 ----
   // 测试连接：用当前设置打一次源的信息接口，回显账号与剩余额度（不回显 key）。
-  testIntelSource: (provider?: string) =>
-    post<IntelTestResult>(`/settings/intel/test`, { provider: provider ?? "" }),
+  testIntelSource: (provider?: string) => post<IntelTestResult>(`/settings/intel/test`, { provider: provider ?? "" }),
   // 查询台账 + 今日用量（设置页展示与排障）。
   intelQueries: () => get<IntelQueryList>(`/settings/intel/queries`),
   explorationPolicyDefault: () => get<ExplorationPolicyDefault>(`/settings/exploration-policy`),
   saveExplorationPolicyDefault: (override: ExplorationPolicyOverride) =>
-    put<{ effective: ExplorationPolicyEffective; version: number; note: string }>(
-      `/settings/exploration-policy`,
-      { override },
-    ),
+    put<{ effective: ExplorationPolicyEffective; version: number; note: string }>(`/settings/exploration-policy`, {
+      override,
+    }),
 
   // ---- 任务级资产拦截/允许规则（总览）----
   taskInterceptRules: (id: string) =>
@@ -690,7 +692,9 @@ export const api = {
   opsecKnowledge: () => get<OpsecKnowledgeResponse>("/opsec/knowledge"),
   // 作业时间线（P37）：页面读的与导出的走服务端同一份装配（客户拿到的那份不该与界面对不上）。
   taskTimeline: (taskId: string, kinds = "") =>
-    get<TimelineResponse>(`/tasks/${encodeURIComponent(taskId)}/timeline${kinds ? `?kinds=${encodeURIComponent(kinds)}` : ""}`),
+    get<TimelineResponse>(
+      `/tasks/${encodeURIComponent(taskId)}/timeline${kinds ? `?kinds=${encodeURIComponent(kinds)}` : ""}`,
+    ),
   downloadTaskTimeline: async (taskId: string, kinds = "") => {
     const token = getToken();
     const r = await fetch(
@@ -1072,8 +1076,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;

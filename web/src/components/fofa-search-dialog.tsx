@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { toast } from "sonner";
+
 import { CheckIcon, Loader2Icon, RadarIcon, SearchIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -105,7 +106,10 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
   }
 
   async function importPicked() {
-    const pickedRows = rows.filter((_, i) => picked.has(i)).map(assetRow).filter((r) => r.host || r.url);
+    const pickedRows = rows
+      .filter((_, i) => picked.has(i))
+      .map(assetRow)
+      .filter((r) => r.host || r.url);
     if (pickedRows.length === 0) {
       toast.error("没有可导入的行（勾选的行里没有 host/ip/domain）");
       return;
@@ -152,8 +156,8 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
             )}
           </DialogTitle>
           <DialogDescription className="text-xs">
-            表达式用 FOFA 原生语法；端点（官方 / 企业版 / <b>第三方中转站</b>）与 Key 在
-            「系统设置 → 情报源」里配。查询与 agent 的工具同一条路径：计入每日配额、进查询台账。
+            表达式用 FOFA 原生语法；端点（官方 / 企业版 / <b>第三方中转站</b>）与 Key 在 「系统设置 →
+            情报源」里配。查询与 agent 的工具同一条路径：计入每日配额、进查询台账。
           </DialogDescription>
         </DialogHeader>
 
@@ -200,9 +204,7 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
                   <TableHead className="w-8">
                     <Checkbox
                       checked={picked.size === rows.length}
-                      onCheckedChange={(v) =>
-                        setPicked(v === true ? new Set(rows.map((_, i) => i)) : new Set())
-                      }
+                      onCheckedChange={(v) => setPicked(v === true ? new Set(rows.map((_, i) => i)) : new Set())}
                     />
                   </TableHead>
                   <TableHead>host / IP</TableHead>

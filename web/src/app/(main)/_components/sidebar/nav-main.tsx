@@ -1,12 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { usePolling } from "@/hooks/use-polling";
+
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { ChevronRight, MailIcon, PlusCircleIcon } from "lucide-react";
-import { api } from "@/lib/api";
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -30,6 +29,8 @@ import {
   SidebarMenuSubItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { usePolling } from "@/hooks/use-polling";
+import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type {
@@ -192,17 +193,21 @@ function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItem
 // count badge when there are unresolved approval requests.
 function InterceptPendingBadge() {
   const [count, setCount] = React.useState(0);
-  usePolling(async (live) => {
-    async function poll() {
-      try {
-        const list = await api.interceptPending();
-        if (live()) setCount(list.length);
-      } catch {
-        /* ignore */
+  usePolling(
+    async (live) => {
+      async function poll() {
+        try {
+          const list = await api.interceptPending();
+          if (live()) setCount(list.length);
+        } catch {
+          /* ignore */
+        }
       }
-    }
-    poll();
-  }, 5000, []);
+      poll();
+    },
+    5000,
+    [],
+  );
   if (count === 0) return null;
   return (
     <SidebarMenuBadge className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold leading-none text-white shadow-sm ring-1 ring-amber-400/40">

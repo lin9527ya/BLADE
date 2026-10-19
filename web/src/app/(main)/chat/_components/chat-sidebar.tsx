@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import { Bot, ChevronRightIcon, MoreHorizontalIcon, PencilIcon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,18 +26,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { Agent, Conversation } from "@/lib/types";
+import type { Agent, Conversation } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  Bot,
-  ChevronRightIcon,
-  MoreHorizontalIcon,
-  PencilIcon,
-  PinIcon,
-  PinOffIcon,
-  Trash2Icon,
-} from "lucide-react";
-import { AgentGroup, conversationIsPinned, HISTORY_PAGE, fmtBytes, fmtTokens } from "./chat-helpers";
+
+import { type AgentGroup, conversationIsPinned, fmtBytes, fmtTokens, HISTORY_PAGE } from "./chat-helpers";
 import { ChatView, Composer, DraftChat, LLMProfileRow } from "./chat-messages";
 
 // 对话页左侧会话列表：会话条目（含置顶/重命名/删除）与按 agent 分组的分组头。

@@ -5,11 +5,7 @@
 // 这两个函数在正常构建里永远不会被调用——调用点都在 `if (MOCK)` 里，而 MOCK 是构建期
 // 常量 false。留着实现只是为了类型对得上。
 
-export async function mockHandle<T>(
-  _method: string,
-  _rawPath: string,
-  _body?: BodyInit | null,
-): Promise<T> {
+export async function mockHandle<T>(_method: string, _rawPath: string, _body?: BodyInit | null): Promise<T> {
   throw new Error("mock 层在本构建中不可用（NEXT_PUBLIC_MOCK != 1）");
 }
 

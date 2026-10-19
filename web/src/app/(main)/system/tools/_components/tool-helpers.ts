@@ -29,7 +29,8 @@ export function toRows(schema: Record<string, any>): ParamRow[] {
     const type = String(p?.type ?? "");
     const hasDefault = p != null && "default" in p && (p as Record<string, unknown>).default != null;
     rows.push({
-      name, type,
+      name,
+      type,
       required: required.has(name),
       description: String(p?.description ?? ""),
       defaultStr: hasDefault ? String((p as Record<string, unknown>).default) : "",
@@ -46,7 +47,8 @@ export function toRows(schema: Record<string, any>): ParamRow[] {
           const subType = String((subP as Record<string, unknown>)?.type ?? "");
           const subHasDefault = subP != null && "default" in subP && subP.default != null;
           rows.push({
-            name: subName, type: subType,
+            name: subName,
+            type: subType,
             required: itemRequired.has(subName),
             description: String(subP?.description ?? ""),
             defaultStr: subHasDefault ? String(subP.default) : "",

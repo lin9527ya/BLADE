@@ -1,30 +1,41 @@
 "use client";
 
 import * as React from "react";
-import { CreateTaskSheet } from "./_components/create-task-sheet";
-import { ConcurrencySettingsDialog, SortableTaskHead, TaskRow } from "./_components/task-row";
-import { BulkDeleteTasksDialog, MoveTasksCategoryDialog } from "./_components/task-dialogs";
-import { fmtBytes, POLL_MS, DeleteCounts, deleteDetails, deleteSummary, STATUS_OPTIONS, UNCATEGORIZED_VALUE, taskControlAction, TaskSortField, TASK_SORT_FIELDS, TASK_SORT_PREFERENCE_KEY, TASK_FILTER_PREFERENCE_KEY, taskIsPinned, compareTasks } from "./_components/task-helpers";
-import { CategoryManagementDialog } from "./_components/task-categories";
-import { ARCHIVABLE_STATUSES, ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
-import { usePolling } from "@/hooks/use-polling";
 
 import Link from "next/link";
 
 import { ArchiveIcon, PauseIcon, PlayIcon, SearchIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { TablePagination } from "@/components/table-pagination";
-
+import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { ScheduleTasksDialog } from "@/components/schedule-tasks-dialog";
-
+import { TablePagination } from "@/components/table-pagination";
 /* removed: @/components/ui/badge */
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Combobox, ComboboxChip, ComboboxChips, ComboboxChipsInput, ComboboxContent, ComboboxEmpty, ComboboxItem, ComboboxList, ComboboxValue } from "@/components/ui/combobox";
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Combobox,
+  ComboboxChip,
+  ComboboxChips,
+  ComboboxChipsInput,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxValue,
+} from "@/components/ui/combobox";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -38,13 +49,47 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { usePolling } from "@/hooks/use-polling";
 /* removed: @/components/ui/tooltip */
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
-import { CustomRulesEditor } from "@/components/custom-rules-editor";
-import { AssetInterceptRuleInput, ChatAttachment, CustomRule, ExplorationPolicyDefault, Company, DeleteTaskOptions, DeleteTaskResult, LLMProfile, Task, TaskCategory, TaskStatus } from "@/lib/types";
+import {
+  AssetInterceptRuleInput,
+  ChatAttachment,
+  Company,
+  CustomRule,
+  type DeleteTaskOptions,
+  DeleteTaskResult,
+  ExplorationPolicyDefault,
+  LLMProfile,
+  type Task,
+  type TaskCategory,
+  type TaskStatus,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import { CreateTaskSheet } from "./_components/create-task-sheet";
+import { ARCHIVABLE_STATUSES, ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
+import { CategoryManagementDialog } from "./_components/task-categories";
+import { BulkDeleteTasksDialog, MoveTasksCategoryDialog } from "./_components/task-dialogs";
+import {
+  compareTasks,
+  type DeleteCounts,
+  deleteDetails,
+  deleteSummary,
+  fmtBytes,
+  POLL_MS,
+  STATUS_OPTIONS,
+  TASK_FILTER_PREFERENCE_KEY,
+  TASK_SORT_FIELDS,
+  TASK_SORT_PREFERENCE_KEY,
+  type TaskSortField,
+  taskControlAction,
+  taskIsPinned,
+  UNCATEGORIZED_VALUE,
+} from "./_components/task-helpers";
+import { ConcurrencySettingsDialog, SortableTaskHead, TaskRow } from "./_components/task-row";
 
 // fmtBytes renders a human file size for the upload manifest.
 
@@ -542,242 +587,242 @@ export default function TasksPage() {
         <p className="text-muted-foreground text-sm">每个任务是一次独立的探索：一个目标、一棵探索图、一份交付物。</p>
       </div>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-      <TabsList>
-        <TabsTrigger value="current">当前任务</TabsTrigger>
-        <TabsTrigger value="archived">已归档</TabsTrigger>
-      </TabsList>
-      <TabsContent value="current">
-        <Card>
-          <CardContent className="flex flex-col gap-4 px-0 pt-6">
-            <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
-              <div className="relative w-full sm:max-w-xs">
-                <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
-                <Input
-                  placeholder="搜索描述 / 目标 / ID"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  className="pl-8"
-                />
-                {query && (
-                  <button
-                    type="button"
-                    onClick={() => setQuery("")}
-                    aria-label="清除搜索"
-                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
-                  >
-                    <XIcon className="size-4" />
-                  </button>
-                )}
-              </div>
-              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as TaskStatus | "all")}>
-                <SelectTrigger className="w-36">
-                  <SelectValue placeholder="状态" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部状态</SelectItem>
-                    {STATUS_OPTIONS.map((s) => (
-                      <SelectItem key={s.value} value={s.value}>
-                        {s.label}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder="任务分类" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部分类</SelectItem>
-                    <SelectItem value={UNCATEGORIZED_VALUE}>未分类</SelectItem>
-                    {categories.map((category) => (
-                      <SelectItem key={category.id} value={String(category.id)}>
-                        {category.name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <span className="text-muted-foreground text-xs tabular-nums">
-                {filtered.length}/{tasks.length} 条
-              </span>
-              {selectedIds.size > 0 && (
-                <>
-                  <span className="text-xs tabular-nums">已选 {selectedIds.size} 个</span>
-                  <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
-                    取消选择
-                  </Button>
-                  {pausableTaskIDs.length > 0 && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={batchControlling !== null}
-                      onClick={() => void controlSelectedTasks("pause", pausableTaskIDs)}
-                    >
-                      {batchControlling === "pause" ? (
-                        <Spinner data-icon="inline-start" />
-                      ) : (
-                        <PauseIcon data-icon="inline-start" />
-                      )}
-                      暂停 {pausableTaskIDs.length}
-                    </Button>
-                  )}
-                  {resumableTaskIDs.length > 0 && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={batchControlling !== null}
-                      onClick={() => void controlSelectedTasks("resume", resumableTaskIDs)}
-                    >
-                      {batchControlling === "resume" ? (
-                        <Spinner data-icon="inline-start" />
-                      ) : (
-                        <PlayIcon data-icon="inline-start" />
-                      )}
-                      继续 {resumableTaskIDs.length}
-                    </Button>
-                  )}
-                  {archivableTaskIDs.length > 0 && (
-                    <ArchiveConfirmDialog
-                      count={archivableTaskIDs.length}
-                      onConfirm={archiveSelectedTasks}
-                      trigger={
-                        <Button size="sm" variant="outline">
-                          <ArchiveIcon data-icon="inline-start" />
-                          归档 {archivableTaskIDs.length}
-                        </Button>
-                      }
-                    />
-                  )}
-                  <MoveTasksCategoryDialog
-                    categories={categories}
-                    count={selectedIds.size}
-                    moving={movingCategory}
-                    onMove={moveSelectedTasksCategory}
+        <TabsList>
+          <TabsTrigger value="current">当前任务</TabsTrigger>
+          <TabsTrigger value="archived">已归档</TabsTrigger>
+        </TabsList>
+        <TabsContent value="current">
+          <Card>
+            <CardContent className="flex flex-col gap-4 px-0 pt-6">
+              <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
+                <div className="relative w-full sm:max-w-xs">
+                  <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+                  <Input
+                    placeholder="搜索描述 / 目标 / ID"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    className="pl-8"
                   />
-                  <BulkDeleteTasksDialog ids={[...selectedIds]} onDelete={deleteTasks} />
-                </>
-              )}
-              <ConcurrencySettingsDialog />
-              <CategoryManagementDialog
-                categories={categories}
-                tasks={tasks}
-                onChanged={refreshCategoriesAndTasks}
-                onTaskMoved={applyTaskCategoryMove}
-              />
-              <ScheduleTasksDialog categories={categories} onCreated={refreshCategoriesAndTasks} />
-              <CreateTaskSheet
-                tasks={tasks}
-                categories={categories}
-                onCreated={refreshCategoriesAndTasks}
-                onCategoriesChanged={refreshCategoriesAndTasks}
-              />
-            </div>
-
-            {tasks.length === 0 ? (
-              <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
-                暂无任务，点击右上角「新建任务」开始。
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
-                没有匹配的任务。
-              </div>
-            ) : (
-              <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
-                <TableHeader className="[&_tr]:border-t">
-                  <TableRow>
-                    <TableHead className="w-10">
-                      <Checkbox
-                        checked={headerChecked}
-                        onCheckedChange={(checked) => toggleSelectedPage(checked === true)}
-                        aria-label="选择本页全部任务"
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      aria-label="清除搜索"
+                      className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+                    >
+                      <XIcon className="size-4" />
+                    </button>
+                  )}
+                </div>
+                <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as TaskStatus | "all")}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue placeholder="状态" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部状态</SelectItem>
+                      {STATUS_OPTIONS.map((s) => (
+                        <SelectItem key={s.value} value={s.value}>
+                          {s.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                  <SelectTrigger className="w-40">
+                    <SelectValue placeholder="任务分类" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部分类</SelectItem>
+                      <SelectItem value={UNCATEGORIZED_VALUE}>未分类</SelectItem>
+                      {categories.map((category) => (
+                        <SelectItem key={category.id} value={String(category.id)}>
+                          {category.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {filtered.length}/{tasks.length} 条
+                </span>
+                {selectedIds.size > 0 && (
+                  <>
+                    <span className="text-xs tabular-nums">已选 {selectedIds.size} 个</span>
+                    <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                      取消选择
+                    </Button>
+                    {pausableTaskIDs.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={batchControlling !== null}
+                        onClick={() => void controlSelectedTasks("pause", pausableTaskIDs)}
+                      >
+                        {batchControlling === "pause" ? (
+                          <Spinner data-icon="inline-start" />
+                        ) : (
+                          <PauseIcon data-icon="inline-start" />
+                        )}
+                        暂停 {pausableTaskIDs.length}
+                      </Button>
+                    )}
+                    {resumableTaskIDs.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={batchControlling !== null}
+                        onClick={() => void controlSelectedTasks("resume", resumableTaskIDs)}
+                      >
+                        {batchControlling === "resume" ? (
+                          <Spinner data-icon="inline-start" />
+                        ) : (
+                          <PlayIcon data-icon="inline-start" />
+                        )}
+                        继续 {resumableTaskIDs.length}
+                      </Button>
+                    )}
+                    {archivableTaskIDs.length > 0 && (
+                      <ArchiveConfirmDialog
+                        count={archivableTaskIDs.length}
+                        onConfirm={archiveSelectedTasks}
+                        trigger={
+                          <Button size="sm" variant="outline">
+                            <ArchiveIcon data-icon="inline-start" />
+                            归档 {archivableTaskIDs.length}
+                          </Button>
+                        }
                       />
-                    </TableHead>
-                    <SortableTaskHead
-                      field="id"
-                      label="ID"
-                      activeField={sortField}
-                      direction={sortDirection}
-                      className="font-mono"
-                      onSort={sortTasksBy}
+                    )}
+                    <MoveTasksCategoryDialog
+                      categories={categories}
+                      count={selectedIds.size}
+                      moving={movingCategory}
+                      onMove={moveSelectedTasksCategory}
                     />
-                    <TableHead>名称</TableHead>
-                    <TableHead>描述</TableHead>
-                    <TableHead>目标</TableHead>
-                    <SortableTaskHead
-                      field="status"
-                      label="状态"
-                      activeField={sortField}
-                      direction={sortDirection}
-                      onSort={sortTasksBy}
-                    />
-                    <TableHead className="text-center">目标进度</TableHead>
-                    <TableHead className="text-center" title="严重 / 高 / 中 / 低">
-                      漏洞 <span className="text-muted-foreground font-normal">严/高/中/低</span>
-                    </TableHead>
-                    <TableHead className="text-center">运行中 Worker</TableHead>
-                    <SortableTaskHead
-                      field="created"
-                      label="创建时间"
-                      activeField={sortField}
-                      direction={sortDirection}
-                      align="right"
-                      onSort={sortTasksBy}
-                    />
-                    <SortableTaskHead
-                      field="duration"
-                      label="运行时长"
-                      activeField={sortField}
-                      direction={sortDirection}
-                      align="right"
-                      onSort={sortTasksBy}
-                    />
-                    <TableHead className="text-right">Token</TableHead>
-                    <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
-                      操作
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {paginated.map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      // running 任务才吃 nowSec;其余行传 0 —— props 不变,memo 就能拦下每秒 tick
-                      // 带来的整表重渲染,只让在跑的那几行走时长。
-                      nowSec={task.status === "running" ? nowSec : 0}
-                      onDelete={deleteTask}
-                      onControl={controlTask}
-                      onRename={renameTask}
-                      onTogglePinned={toggleTaskPinned}
-                      onArchive={queueTaskArchive}
-                      selected={selectedIds.has(task.id)}
-                      onSelectedChange={toggleSelected}
-                      tokenBudget={tokenBudget}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-            <TablePagination
-              page={page}
-              pageSize={pageSize}
-              total={filtered.length}
-              onPageChange={setPage}
-              onPageSizeChange={(nextPageSize) => {
-                setPageSize(nextPageSize);
-                setPage(1);
-              }}
-            />
-          </CardContent>
-        </Card>
-      </TabsContent>
-      <TabsContent value="archived">
-        <TaskArchivesPanel onChanged={load} />
-      </TabsContent>
-    </Tabs>
+                    <BulkDeleteTasksDialog ids={[...selectedIds]} onDelete={deleteTasks} />
+                  </>
+                )}
+                <ConcurrencySettingsDialog />
+                <CategoryManagementDialog
+                  categories={categories}
+                  tasks={tasks}
+                  onChanged={refreshCategoriesAndTasks}
+                  onTaskMoved={applyTaskCategoryMove}
+                />
+                <ScheduleTasksDialog categories={categories} onCreated={refreshCategoriesAndTasks} />
+                <CreateTaskSheet
+                  tasks={tasks}
+                  categories={categories}
+                  onCreated={refreshCategoriesAndTasks}
+                  onCategoriesChanged={refreshCategoriesAndTasks}
+                />
+              </div>
+
+              {tasks.length === 0 ? (
+                <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
+                  暂无任务，点击右上角「新建任务」开始。
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
+                  没有匹配的任务。
+                </div>
+              ) : (
+                <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
+                  <TableHeader className="[&_tr]:border-t">
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={headerChecked}
+                          onCheckedChange={(checked) => toggleSelectedPage(checked === true)}
+                          aria-label="选择本页全部任务"
+                        />
+                      </TableHead>
+                      <SortableTaskHead
+                        field="id"
+                        label="ID"
+                        activeField={sortField}
+                        direction={sortDirection}
+                        className="font-mono"
+                        onSort={sortTasksBy}
+                      />
+                      <TableHead>名称</TableHead>
+                      <TableHead>描述</TableHead>
+                      <TableHead>目标</TableHead>
+                      <SortableTaskHead
+                        field="status"
+                        label="状态"
+                        activeField={sortField}
+                        direction={sortDirection}
+                        onSort={sortTasksBy}
+                      />
+                      <TableHead className="text-center">目标进度</TableHead>
+                      <TableHead className="text-center" title="严重 / 高 / 中 / 低">
+                        漏洞 <span className="text-muted-foreground font-normal">严/高/中/低</span>
+                      </TableHead>
+                      <TableHead className="text-center">运行中 Worker</TableHead>
+                      <SortableTaskHead
+                        field="created"
+                        label="创建时间"
+                        activeField={sortField}
+                        direction={sortDirection}
+                        align="right"
+                        onSort={sortTasksBy}
+                      />
+                      <SortableTaskHead
+                        field="duration"
+                        label="运行时长"
+                        activeField={sortField}
+                        direction={sortDirection}
+                        align="right"
+                        onSort={sortTasksBy}
+                      />
+                      <TableHead className="text-right">Token</TableHead>
+                      <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
+                        操作
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginated.map((task) => (
+                      <TaskRow
+                        key={task.id}
+                        task={task}
+                        // running 任务才吃 nowSec;其余行传 0 —— props 不变,memo 就能拦下每秒 tick
+                        // 带来的整表重渲染,只让在跑的那几行走时长。
+                        nowSec={task.status === "running" ? nowSec : 0}
+                        onDelete={deleteTask}
+                        onControl={controlTask}
+                        onRename={renameTask}
+                        onTogglePinned={toggleTaskPinned}
+                        onArchive={queueTaskArchive}
+                        selected={selectedIds.has(task.id)}
+                        onSelectedChange={toggleSelected}
+                        tokenBudget={tokenBudget}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              <TablePagination
+                page={page}
+                pageSize={pageSize}
+                total={filtered.length}
+                onPageChange={setPage}
+                onPageSizeChange={(nextPageSize) => {
+                  setPageSize(nextPageSize);
+                  setPage(1);
+                }}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="archived">
+          <TaskArchivesPanel onChanged={load} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

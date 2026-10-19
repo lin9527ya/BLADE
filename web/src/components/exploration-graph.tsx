@@ -2,33 +2,34 @@
 "use no memo";
 
 import * as React from "react";
-import { typeMeta, viewKind, prioTone, nodeSummary, collapseDigestGraph } from "./_parts/graph-helpers";
-import { NodeDetailDialog } from "./_parts/node-detail-dialog";
+
 import {
   Background,
   BackgroundVariant,
   Controls,
-  type Edge as RFEdge,
   Handle,
   MarkerType,
   MiniMap,
-  type Node as RFNode,
   type NodeProps,
   Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  type Edge as RFEdge,
+  type Node as RFNode,
   useEdgesState,
   useNodesState,
 } from "@xyflow/react";
+
+import { collapseDigestGraph, nodeSummary, prioTone, typeMeta, viewKind } from "./_parts/graph-helpers";
+import { NodeDetailDialog } from "./_parts/node-detail-dialog";
 import "@xyflow/react/dist/style.css";
 
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
-
+import { Badge } from "@/components/ui/badge";
 import { toneClasses } from "@/lib/status";
-import { Edge, ExploreKind, TaskNode } from "@/lib/types";
+import type { Edge, ExploreKind, TaskNode } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export const relLabel: Record<string, string> = {
   spawns: "派生",
@@ -70,10 +71,7 @@ function pushMap(m: Map<string, string[]>, k: string, v: string) {
 
 // computeLayout auto-layers nodes by longest path along edges (cycle-safe DFS
 // break + barycenter ordering), so origin → … → finding reads left-to-right.
-function computeLayout(
-  nodes: TaskNode[],
-  edges: Edge[],
-): Map<string, { x: number; y: number }> {
+function computeLayout(nodes: TaskNode[], edges: Edge[]): Map<string, { x: number; y: number }> {
   const order = nodes.map((n) => n.id);
   const idset = new Set(order);
   const valid = edges.filter((e) => idset.has(e.src) && idset.has(e.dst));
@@ -208,7 +206,12 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
             </span>
           )}
           {showPriority && (
-            <span className={cn("shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums", toneClasses[prioTone(n.priority)])}>
+            <span
+              className={cn(
+                "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                toneClasses[prioTone(n.priority)],
+              )}
+            >
               P{n.priority}
             </span>
           )}
@@ -222,7 +225,12 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
               来源 #{n.source_task_id}
             </Badge>
           ) : showState ? (
-            <StatusBadge domain={n.type === "goal" ? "goal" : "intent"} value={n.state} dot className="px-1.5 py-0 text-[10px]" />
+            <StatusBadge
+              domain={n.type === "goal" ? "goal" : "intent"}
+              value={n.state}
+              dot
+              className="px-1.5 py-0 text-[10px]"
+            />
           ) : (
             <span className="text-[10px] text-neutral-400 dark:text-neutral-500">{meta.label}</span>
           )}
@@ -320,8 +328,16 @@ function ExplorationGraphInner({
         minZoom={0.1}
         className="!bg-[#f0f2f7] dark:!bg-neutral-950"
       >
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} className="text-neutral-400/50 dark:text-neutral-700/60" />
-        <Controls showInteractive={false} className="!rounded-lg !border !shadow-sm [&>button]:!border-border [&>button]:!bg-card [&>button:hover]:!bg-accent [&_svg]:!fill-foreground" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={16}
+          size={1}
+          className="text-neutral-400/50 dark:text-neutral-700/60"
+        />
+        <Controls
+          showInteractive={false}
+          className="!rounded-lg !border !shadow-sm [&>button]:!border-border [&>button]:!bg-card [&>button:hover]:!bg-accent [&_svg]:!fill-foreground"
+        />
         {showMiniMap && (
           <MiniMap
             pannable

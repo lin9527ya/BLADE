@@ -1,9 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { resolutionLabel, fmtBytes, PAGE, SYSTEM_SCAN_PAGE, MAX_KEEP, STREAM_WINDOW_MS, MAX_WORKER_MESSAGE_CHARS, newWorkerMessageRequestID, workerMessageCharCount, SessionState, SessionStore, emptyState, sessionKeyOf, mergeBySeq, statusIcon, fmtTokens, TokenMetrics, fmtDuration, roleMeta, mainSessionId, mainSessionKey, mainSessionTitle, MAIN_ID, MAIN_SESSION, PLANNER_ID, PLANNER_SESSION, SYSTEM_ID, SYSTEM_SESSION, keyForSession, intentStatus, intentToSession } from "./_components/session-helpers";
-import { useSessionsState } from "./_components/use-sessions-state";
-import { usePolling } from "@/hooks/use-polling";
 
 import {
   ArrowUpIcon,
@@ -52,6 +49,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePolling } from "@/hooks/use-polling";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { api, sseUrl } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
@@ -72,6 +70,41 @@ import type {
   TokenTotal,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import {
+  emptyState,
+  fmtBytes,
+  fmtDuration,
+  fmtTokens,
+  intentStatus,
+  intentToSession,
+  keyForSession,
+  MAIN_ID,
+  MAIN_SESSION,
+  MAX_KEEP,
+  MAX_WORKER_MESSAGE_CHARS,
+  mainSessionId,
+  mainSessionKey,
+  mainSessionTitle,
+  mergeBySeq,
+  newWorkerMessageRequestID,
+  PAGE,
+  PLANNER_ID,
+  PLANNER_SESSION,
+  resolutionLabel,
+  roleMeta,
+  SessionState,
+  SessionStore,
+  STREAM_WINDOW_MS,
+  SYSTEM_ID,
+  SYSTEM_SCAN_PAGE,
+  SYSTEM_SESSION,
+  sessionKeyOf,
+  statusIcon,
+  TokenMetrics,
+  workerMessageCharCount,
+} from "./_components/session-helpers";
+import { useSessionsState } from "./_components/use-sessions-state";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
 // keeps the model id in its tooltip. Env-backed configs can arrive without a name,
@@ -355,7 +388,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     activeResolution,
     activeAssets,
     pickFiles,
-    createMainSession
+    createMainSession,
   } = useSessionsState(taskId);
 
   return (

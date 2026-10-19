@@ -2,6 +2,9 @@
 
 import * as React from "react";
 
+import { BuildingIcon } from "lucide-react";
+import { toast } from "sonner";
+
 import { ScopeTextEditor } from "@/components/scope-text-editor";
 import { TablePagination } from "@/components/table-pagination";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -20,20 +23,11 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
-import { Asset, Company, CompanyScopeRule } from "@/lib/types";
+import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { BuildingIcon } from "lucide-react";
-import { toast } from "sonner";
 
 // 资产页的展示与编辑组件：资产卡片、公司头像、公司/范围编辑弹窗，以及它们用的格式化函数。
 

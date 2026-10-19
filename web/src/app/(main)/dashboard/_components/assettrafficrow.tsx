@@ -3,20 +3,34 @@
 import * as React from "react";
 
 import Link from "next/link";
+
+import { ActivityIcon, ArrowUpRightIcon, NetworkIcon, ShieldCheckIcon } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ActivityIcon, ArrowUpRightIcon, NetworkIcon, ShieldCheckIcon } from "lucide-react";
 
+import { ASSET_COLORS, ASSET_TYPE_LABELS, SectionTitle, statusBg, statusColor } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
-import { ASSET_TYPE_LABELS, ASSET_COLORS, statusColor, statusBg, SectionTitle } from "./dashboard-helpers";
 
 export function RowAssetTraffic({ s }: { s: ReturnType<typeof useDashboardState> }) {
-  const { stats, settings, pending, traffic, totalAssets, assetByType, assetMax, trafficByCodes, trafficMax, recentTraffic, activeProfile, pendingCount } = s;
+  const {
+    stats,
+    settings,
+    pending,
+    traffic,
+    totalAssets,
+    assetByType,
+    assetMax,
+    trafficByCodes,
+    trafficMax,
+    recentTraffic,
+    activeProfile,
+    pendingCount,
+  } = s;
 
   return (
     <>
-
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {/* 资产分布 */}
         <Card className="p-4">

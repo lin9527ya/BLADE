@@ -3,20 +3,21 @@
 import * as React from "react";
 
 import Link from "next/link";
+
+import { ArrowUpRightIcon, ClockIcon } from "lucide-react";
+
 import { StatusBadge } from "@/components/status-badge";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { ArrowUpRightIcon, ClockIcon } from "lucide-react";
 
-import type { useDashboardState } from "./use-dashboard-state";
 import { fmtRel } from "./dashboard-helpers";
+import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowTaskTable({ s }: { s: ReturnType<typeof useDashboardState> }) {
   const { tasks, sortedTasks } = s;
 
   return (
     <>
-
       <Card className="overflow-hidden p-0">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <div className="flex items-center gap-1.5 text-xs font-semibold">

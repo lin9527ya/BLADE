@@ -1,16 +1,27 @@
 "use client";
 
 import * as React from "react";
-import { TypeMeta, typeMeta, viewKind, prioTone, summaryFields, nodeSummary, digestMemberIds, collapseDigestGraph } from "./graph-helpers";
+
+import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
-import { TaskNode } from "@/lib/types";
+import type { TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
+
+import {
+  collapseDigestGraph,
+  digestMemberIds,
+  nodeSummary,
+  prioTone,
+  summaryFields,
+  TypeMeta,
+  typeMeta,
+  viewKind,
+} from "./graph-helpers";
 
 // 节点详情弹窗：字段行、payload 的可展开/美化视图与「显示密钥」开关。
 
@@ -28,26 +39,79 @@ export function DetailRow({ label, children }: { label: string; children: React.
 // 这里按字段语义直接给出内容：严重度/置信度用徽标、id 数组用 chips、长文本用段落、
 // PoC/证据用等宽块、嵌套对象（evidence / closure / member_ids）递归展开。
 const payloadFieldLabels: Record<string, string> = {
-  summary: "摘要", detail: "详情", evidence: "证据", poc: "PoC", text: "目标文本",
-  goal: "目标", description: "描述", name: "名称", vulnclass: "漏洞类别",
-  severity: "严重度", confidence: "置信度", risk_area: "风险类", intent_id: "意图",
-  asset_ids: "关联资产", by: "记录者", reason: "原因", note: "备注",
-  closure: "闭合信息", outcome: "闭合结论", counterevidence: "反证", proof_gap: "待补证缺口",
-  member_ids: "折叠成员", member_count: "成员数", facts: "事实", intents: "意图",
-  source_intent: "来源意图", kind: "种类", value: "值", url: "URL", host: "主机",
+  summary: "摘要",
+  detail: "详情",
+  evidence: "证据",
+  poc: "PoC",
+  text: "目标文本",
+  goal: "目标",
+  description: "描述",
+  name: "名称",
+  vulnclass: "漏洞类别",
+  severity: "严重度",
+  confidence: "置信度",
+  risk_area: "风险类",
+  intent_id: "意图",
+  asset_ids: "关联资产",
+  by: "记录者",
+  reason: "原因",
+  note: "备注",
+  closure: "闭合信息",
+  outcome: "闭合结论",
+  counterevidence: "反证",
+  proof_gap: "待补证缺口",
+  member_ids: "折叠成员",
+  member_count: "成员数",
+  facts: "事实",
+  intents: "意图",
+  source_intent: "来源意图",
+  kind: "种类",
+  value: "值",
+  url: "URL",
+  host: "主机",
   // 战果与凭据（P27/P36）
-  access: "通路", privilege: "权限", username: "账号", secret: "凭据本体",
-  targets: "可登目标", verified: "已验证", service: "服务", port: "端口",
+  access: "通路",
+  privilege: "权限",
+  username: "账号",
+  secret: "凭据本体",
+  targets: "可登目标",
+  verified: "已验证",
+  service: "服务",
+  port: "端口",
 };
 
 // 字段展示顺序：语义在前（摘要/目标/结论/证据…），其余按原 JSON 顺序落尾。
 const payloadFieldOrder = [
-  "summary", "text", "goal", "name", "vulnclass", "severity", "confidence", "risk_area",
-  "detail", "evidence", "poc", "closure", "outcome", "counterevidence", "proof_gap",
-  "intent_id", "source_intent", "asset_ids", "member_ids", "member_count", "by", "reason", "note",
+  "summary",
+  "text",
+  "goal",
+  "name",
+  "vulnclass",
+  "severity",
+  "confidence",
+  "risk_area",
+  "detail",
+  "evidence",
+  "poc",
+  "closure",
+  "outcome",
+  "counterevidence",
+  "proof_gap",
+  "intent_id",
+  "source_intent",
+  "asset_ids",
+  "member_ids",
+  "member_count",
+  "by",
+  "reason",
+  "note",
 ];
 
-const confidenceLabel: Record<string, string> = { high: "高（可复现触发链）", medium: "中（强异常，未完整对照）", low: "低（据指纹/版本推断）" };
+const confidenceLabel: Record<string, string> = {
+  high: "高（可复现触发链）",
+  medium: "中（强异常，未完整对照）",
+  low: "低（据指纹/版本推断）",
+};
 
 export function PayloadValue({ k, v }: { k: string; v: unknown }) {
   if (v === null || v === undefined || v === "") {
@@ -254,7 +318,9 @@ export function NodeDetailDialog({
           <>
             <DialogHeader className="border-b p-4">
               <div className="flex items-center gap-2.5 pr-8">
-                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
+                <span
+                  className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}
+                >
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
@@ -276,7 +342,12 @@ export function NodeDetailDialog({
                   <DetailRow label="类型">{meta.label}</DetailRow>
                   <DetailRow label="状态">
                     {node.type === "goal" || node.type === "intent" ? (
-                      <StatusBadge domain={node.type === "goal" ? "goal" : "intent"} value={node.state} dot className="px-1.5 py-0 text-[10px]" />
+                      <StatusBadge
+                        domain={node.type === "goal" ? "goal" : "intent"}
+                        value={node.state}
+                        dot
+                        className="px-1.5 py-0 text-[10px]"
+                      />
                     ) : (
                       <span className="font-mono text-xs">{node.state}</span>
                     )}
@@ -349,7 +420,12 @@ export function NodeDetailDialog({
                               onClick={() => onSelect(m)}
                               className="hover:bg-accent flex items-start gap-2 rounded-md border p-2 text-left transition-colors"
                             >
-                              <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded", mMeta.iconBg)}>
+                              <span
+                                className={cn(
+                                  "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded",
+                                  mMeta.iconBg,
+                                )}
+                              >
                                 <MIcon className="size-3 text-white" />
                               </span>
                               <span className="min-w-0 flex-1">
@@ -381,7 +457,9 @@ export function NodeDetailDialog({
                         onClick={() => setRawNodeId(null)}
                         className={cn(
                           "rounded px-2.5 py-1 text-xs transition-colors",
-                          !showRaw ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                          !showRaw
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
                         )}
                       >
                         美化数据
@@ -391,14 +469,20 @@ export function NodeDetailDialog({
                         onClick={() => setRawNodeId(node.id)}
                         className={cn(
                           "rounded px-2.5 py-1 text-xs transition-colors",
-                          showRaw ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                          showRaw
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
                         )}
                       >
                         原始数据
                       </button>
                     </div>
                     {showRaw && (
-                      <button type="button" onClick={copy} className="text-muted-foreground hover:text-foreground text-xs transition-colors">
+                      <button
+                        type="button"
+                        onClick={copy}
+                        className="text-muted-foreground hover:text-foreground text-xs transition-colors"
+                      >
                         {copied ? "已复制" : "复制"}
                       </button>
                     )}

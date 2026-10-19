@@ -1,44 +1,28 @@
 "use client";
 
 import * as React from "react";
-import { ToolEditor, ToolGridCard } from "./_components/tool-editor";
-import { CustomToolDialog } from "./_components/custom-tool-dialog";
-import { ExecState, ParamRow, TRAFFIC_TOOL_KEYS, applyRows, coerceDefault, toRows } from "./_components/tool-helpers";
-import { toast } from "sonner";
+
 import { PlayIcon, PlusIcon, RotateCcwIcon, SaveIcon, SearchIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { Agent, Tool } from "@/lib/types";
+
+import { CustomToolDialog } from "./_components/custom-tool-dialog";
+import { ToolEditor, ToolGridCard } from "./_components/tool-editor";
+import { applyRows, coerceDefault, ExecState, ParamRow, TRAFFIC_TOOL_KEYS, toRows } from "./_components/tool-helpers";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep in sync with traffic.SeedToolMetas.
@@ -51,26 +35,38 @@ export default function ToolsPage() {
   const [customEdit, setCustomEdit] = React.useState<Tool | "new" | null>(null);
 
   const reload = React.useCallback(() => {
-    api.tools().then(setTools).catch(() => setTools([]));
+    api
+      .tools()
+      .then(setTools)
+      .catch(() => setTools([]));
   }, []);
   React.useEffect(() => {
     reload();
-    api.agents().then(setAgents).catch(() => {});
-    api.settings().then((s) => setCaptureOn(!!s.traffic_capture)).catch(() => {});
+    api
+      .agents()
+      .then(setAgents)
+      .catch(() => {});
+    api
+      .settings()
+      .then((s) => setCaptureOn(!!s.traffic_capture))
+      .catch(() => {});
   }, [reload]);
 
   const [query, setQuery] = React.useState("");
 
   const selected = tools.find((t) => t.key === selectedKey) ?? null;
-  const matchTool = React.useCallback((t: Tool) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      t.key.toLowerCase().includes(q) ||
-      t.description.toLowerCase().includes(q) ||
-      t.agents.some((a) => a.toLowerCase().includes(q))
-    );
-  }, [query]);
+  const matchTool = React.useCallback(
+    (t: Tool) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        t.key.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.agents.some((a) => a.toLowerCase().includes(q))
+      );
+    },
+    [query],
+  );
   const systemTools = tools.filter((t) => t.system && matchTool(t));
   const customTools = tools.filter((t) => !t.system && matchTool(t));
   const allSystemCount = tools.filter((t) => t.system).length;
@@ -197,5 +193,3 @@ export default function ToolsPage() {
 }
 
 // ---- 自定义工具编辑器 ----
-
-

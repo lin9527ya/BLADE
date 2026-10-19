@@ -1,15 +1,7 @@
 // BLADE domain model — types used across the UI.
 // Derived from the functional spec (section 7: 关键数据形状).
 
-export type TaskStatus =
-  | "created"
-  | "queued"
-  | "running"
-  | "paused"
-  | "done"
-  | "failed"
-  | "timeout"
-  | "policy_blocked"; // P20：探索策略内已无可行方向而收尾（不是超时——改策略/加目标即可复活）
+export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout" | "policy_blocked"; // P20：探索策略内已无可行方向而收尾（不是超时——改策略/加目标即可复活）
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
@@ -478,7 +470,16 @@ export type ExploreKind =
   // 靠 payload.category 分类——一种 kind 装六类对象，理由见 server/ad_import.go 的开头。
   | "ad_object";
 export type GoalState = "open" | "met" | "abandoned";
-export type IntentState = "open" | "running" | "paused" | "done" | "negative" | "out-of-scope" | "blocked" | "exhausted" | "stopped";
+export type IntentState =
+  | "open"
+  | "running"
+  | "paused"
+  | "done"
+  | "negative"
+  | "out-of-scope"
+  | "blocked"
+  | "exhausted"
+  | "stopped";
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
 export type ExploreRel =

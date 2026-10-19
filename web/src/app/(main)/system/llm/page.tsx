@@ -1,9 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { cooldownText } from "./_components/llm-helpers";
-import { PoolDialog } from "./_components/pool-dialog";
-import { ProfileDialog } from "./_components/profile-dialog";
 
 import { PlusIcon, StarIcon, Trash2Icon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -11,12 +8,14 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { LLMPoolMember, LLMPoolStatus, LLMProfile } from "@/lib/types";
+import type { LLMPoolMember, LLMPoolStatus, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { cooldownText } from "./_components/llm-helpers";
+import { PoolDialog } from "./_components/pool-dialog";
+import { ProfileDialog } from "./_components/profile-dialog";
 import { RetryPolicyPanel } from "./_components/retry";
 
 // 思考开关(thinking.type)与思考强度(reasoning_effort)是两个【互相独立】的字段，

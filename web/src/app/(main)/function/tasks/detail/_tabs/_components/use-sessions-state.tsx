@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { resolutionLabel, fmtBytes, PAGE, SYSTEM_SCAN_PAGE, MAX_KEEP, STREAM_WINDOW_MS, MAX_WORKER_MESSAGE_CHARS, newWorkerMessageRequestID, workerMessageCharCount, SessionState, SessionStore, emptyState, sessionKeyOf, mergeBySeq, statusIcon, fmtTokens, TokenMetrics, fmtDuration, roleMeta, mainSessionId, mainSessionKey, mainSessionTitle, MAIN_ID, MAIN_SESSION, PLANNER_ID, PLANNER_SESSION, SYSTEM_ID, SYSTEM_SESSION, keyForSession, intentStatus, intentToSession } from "./session-helpers";
+import { toast } from "sonner";
 
 import { useApprovalFocus, useApprovalHistory } from "@/components/approval-execution-focus";
 import { usePolling } from "@/hooks/use-polling";
@@ -10,7 +10,7 @@ import { useSideQuestions } from "@/hooks/use-side-questions";
 import { api, sseUrl } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import { MOCK } from "@/lib/mock/enabled";
-import {
+import type {
   Activity,
   ChatAttachment,
   IntentAsset,
@@ -22,7 +22,40 @@ import {
   TaskNode,
   TokenTotal,
 } from "@/lib/types";
-import { toast } from "sonner";
+
+import {
+  emptyState,
+  fmtBytes,
+  fmtDuration,
+  fmtTokens,
+  intentStatus,
+  intentToSession,
+  keyForSession,
+  MAIN_ID,
+  MAIN_SESSION,
+  MAX_KEEP,
+  MAX_WORKER_MESSAGE_CHARS,
+  mainSessionId,
+  mainSessionKey,
+  mainSessionTitle,
+  mergeBySeq,
+  newWorkerMessageRequestID,
+  PAGE,
+  PLANNER_ID,
+  PLANNER_SESSION,
+  resolutionLabel,
+  roleMeta,
+  type SessionState,
+  type SessionStore,
+  STREAM_WINDOW_MS,
+  SYSTEM_ID,
+  SYSTEM_SCAN_PAGE,
+  SYSTEM_SESSION,
+  sessionKeyOf,
+  statusIcon,
+  TokenMetrics,
+  workerMessageCharCount,
+} from "./session-helpers";
 
 // 会话页签的状态与取数：会话列表、分段消息、意图/资产、SSE、令牌与 LLM 解析。
 
@@ -328,63 +361,79 @@ export function useSessionsState(taskId: string) {
   );
 
   // ── task token total (whole task, all agents) ───────────────────────────────────
-  usePolling(async (alive) => {
-    const load = () =>
-      api
-        .tokenStats(taskId)
-        .then((r) => {
-          if (!alive()) return;
-          setTaskTokens(r.total);
-          setSessionTokens(Object.fromEntries(r.sessions.map((item) => [item.session, item])));
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-  }, 5000, [taskId]);
+  usePolling(
+    async (alive) => {
+      const load = () =>
+        api
+          .tokenStats(taskId)
+          .then((r) => {
+            if (!alive()) return;
+            setTaskTokens(r.total);
+            setSessionTokens(Object.fromEntries(r.sessions.map((item) => [item.session, item])));
+          })
+          .catch(() => {
+            // Polling is best-effort; the next interval retries automatically.
+          });
+      void load();
+    },
+    5000,
+    [taskId],
+  );
 
-  usePolling(async (alive) => {
-    setMainChatRunning(null);
-    const load = () => {
-      const request = ++chatStatusRequestRef.current;
-      return api
-        .chatStatus(taskId)
-        .then(({ running }) => {
-          if (alive() && chatStatusRequestRef.current === request) setMainChatRunning(running);
-        })
-        .catch(() => {
-          // Keep the last authoritative value. Before the first success, recent
-          // activity remains a conservative fallback.
-        });
-    };
-    void load();
-  }, 2000, [taskId]);
+  usePolling(
+    async (alive) => {
+      setMainChatRunning(null);
+      const load = () => {
+        const request = ++chatStatusRequestRef.current;
+        return api
+          .chatStatus(taskId)
+          .then(({ running }) => {
+            if (alive() && chatStatusRequestRef.current === request) setMainChatRunning(running);
+          })
+          .catch(() => {
+            // Keep the last authoritative value. Before the first success, recent
+            // activity remains a conservative fallback.
+          });
+      };
+      void load();
+    },
+    2000,
+    [taskId],
+  );
 
-  usePolling(async (alive) => {
-    const load = () =>
-      api
-        .taskLLMResolution(taskId)
-        .then((value) => {
-          if (alive()) setLLMResolutions(value);
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-  }, 10_000, [taskId]);
+  usePolling(
+    async (alive) => {
+      const load = () =>
+        api
+          .taskLLMResolution(taskId)
+          .then((value) => {
+            if (alive()) setLLMResolutions(value);
+          })
+          .catch(() => {
+            // Polling is best-effort; the next interval retries automatically.
+          });
+      void load();
+    },
+    10_000,
+    [taskId],
+  );
 
-  usePolling(async (alive) => {
-    const load = () =>
-      api
-        .interceptTask(taskId)
-        .then((rows) => {
-          if (alive()) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-  }, 5000, [taskId]);
+  usePolling(
+    async (alive) => {
+      const load = () =>
+        api
+          .interceptTask(taskId)
+          .then((rows) => {
+            if (alive()) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
+          })
+          .catch(() => {
+            // Polling is best-effort; the next interval retries automatically.
+          });
+      void load();
+    },
+    5000,
+    [taskId],
+  );
 
   // Re-render on a timer so "streaming" liveness recomputes as activity goes stale.
   const [, setTick] = React.useState(0);
@@ -569,52 +618,60 @@ export function useSessionsState(taskId: string) {
     };
   }, [taskId, patchStore]);
 
-  usePolling(async (active) => {
-    const load = () =>
-      api
-        .taskIntentAssets(taskId)
-        .then((assets) => {
-          if (active()) setIntentAssets(assets);
-        })
-        .catch(() => {
-          // The next poll retries; Worker controls and transcripts remain available.
-        });
-    void load();
-  }, 5000, [taskId]);
+  usePolling(
+    async (active) => {
+      const load = () =>
+        api
+          .taskIntentAssets(taskId)
+          .then((assets) => {
+            if (active()) setIntentAssets(assets);
+          })
+          .catch(() => {
+            // The next poll retries; Worker controls and transcripts remain available.
+          });
+      void load();
+    },
+    5000,
+    [taskId],
+  );
 
   // ── worker (intent) session list — paged, poll first page lightly ───────────────
-  usePolling(async (active) => {
-    firstIntentsRef.current = [];
-    setIntents([]);
-    setOlderIntents([]);
-    setFirstIntentsHasMore(false);
-    setOlderIntentsHasMore(false);
-    const load = () =>
-      api
-        .intentsPage(taskId, 0, 300)
-        .then((r) => {
-          if (!active()) return;
-          const freshIds = new Set(r.items.map((item) => item.id));
-          const oldestFreshId = r.items.reduce((minimum, item) => Math.min(minimum, Number(item.id)), Infinity);
-          const displaced = r.hasMore
-            ? firstIntentsRef.current.filter((item) => !freshIds.has(item.id) && Number(item.id) < oldestFreshId)
-            : [];
-          if (displaced.length > 0) {
-            setOlderIntents((previous) => {
-              const byId = new Map(previous.map((item) => [item.id, item]));
-              for (const item of displaced) byId.set(item.id, item);
-              return [...byId.values()];
-            });
-          }
-          firstIntentsRef.current = r.items;
-          setIntents(r.items);
-          setFirstIntentsHasMore(r.hasMore);
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-  }, 5000, [taskId]);
+  usePolling(
+    async (active) => {
+      firstIntentsRef.current = [];
+      setIntents([]);
+      setOlderIntents([]);
+      setFirstIntentsHasMore(false);
+      setOlderIntentsHasMore(false);
+      const load = () =>
+        api
+          .intentsPage(taskId, 0, 300)
+          .then((r) => {
+            if (!active()) return;
+            const freshIds = new Set(r.items.map((item) => item.id));
+            const oldestFreshId = r.items.reduce((minimum, item) => Math.min(minimum, Number(item.id)), Infinity);
+            const displaced = r.hasMore
+              ? firstIntentsRef.current.filter((item) => !freshIds.has(item.id) && Number(item.id) < oldestFreshId)
+              : [];
+            if (displaced.length > 0) {
+              setOlderIntents((previous) => {
+                const byId = new Map(previous.map((item) => [item.id, item]));
+                for (const item of displaced) byId.set(item.id, item);
+                return [...byId.values()];
+              });
+            }
+            firstIntentsRef.current = r.items;
+            setIntents(r.items);
+            setFirstIntentsHasMore(r.hasMore);
+          })
+          .catch(() => {
+            // Polling is best-effort; the next interval retries automatically.
+          });
+      void load();
+    },
+    5000,
+    [taskId],
+  );
 
   const loadOlderIntents = React.useCallback(() => {
     if (loadingOlderIntents) return;
@@ -1072,6 +1129,140 @@ export function useSessionsState(taskId: string) {
     active.role === "worker" && active.intent_id ? intentAssetsByID.get(active.intent_id) : undefined;
 
   return {
-    approvalFocus, selectedSessionId, setActiveId, focusSession, locatedSession, setLocatedSession, retainedSession, activeId, mainSegs, setMainSegs, currentSeg, setCurrentSeg, creatingMain, setCreatingMain, confirmNewMain, setConfirmNewMain, listOpen, setListOpen, store, setStore, intents, setIntents, intentAssets, setIntentAssets, olderIntents, setOlderIntents, firstIntentsHasMore, setFirstIntentsHasMore, olderIntentsHasMore, setOlderIntentsHasMore, hasLoadedOlderIntentsPage, setHasLoadedOlderIntentsPage, loadingOlderIntents, setLoadingOlderIntents, input, setInput, sending, setSending, stopping, setStopping, mainChatRunning, setMainChatRunning, controllingIntent, setControllingIntent, cancelIntent, setCancelIntent, cancelReason, setCancelReason, deleteMode, setDeleteMode, workerMessage, setWorkerMessage, workerMessageRequestId, setWorkerMessageRequestId, workerMessageSending, setWorkerMessageSending, attachments, setAttachments, uploading, setUploading, fileInputRef, patchIntentState, controlWorker, sseLive, setSseLive, taskTokens, setTaskTokens, sessionTokens, setSessionTokens, llmResolutions, setLLMResolutions, pendingIntercepts, setPendingIntercepts, snapshotRef, esRef, activeKeyRef, atBottomRef, llmToastSeqRef, chatStatusRequestRef, firstIntentsRef, reqTokenRef, loadingKeysRef, patchStore, loadSession, loadEarlier, loadOlderIntents, allIntents, intentAssetsByID, workerSessions, intentsHasMore, sessionMeta, hasPendingForSession, recentLive, currentMainKey, plannerLive, liveMainSeg, mainSessions, sessions, grouped, active, side, isMain, isPlanner, isSystem, activeKey, activeState, activeItems, activeLast, activeSettled, mainBusy, activeDisplayTitle, hiddenUnread, focusKey, loadFocusPage, mergeFocusPage, focusHistory, activity, latestTodoSeq, tokenForSession, activeTokens, tokenTotal, runDuration, contentRef, viewport, stop, send, sendWorkerChat, mainLoaded, sendMode, showLoader, resolutionForSession, activeResolution, activeAssets, pickFiles, createMainSession
+    approvalFocus,
+    selectedSessionId,
+    setActiveId,
+    focusSession,
+    locatedSession,
+    setLocatedSession,
+    retainedSession,
+    activeId,
+    mainSegs,
+    setMainSegs,
+    currentSeg,
+    setCurrentSeg,
+    creatingMain,
+    setCreatingMain,
+    confirmNewMain,
+    setConfirmNewMain,
+    listOpen,
+    setListOpen,
+    store,
+    setStore,
+    intents,
+    setIntents,
+    intentAssets,
+    setIntentAssets,
+    olderIntents,
+    setOlderIntents,
+    firstIntentsHasMore,
+    setFirstIntentsHasMore,
+    olderIntentsHasMore,
+    setOlderIntentsHasMore,
+    hasLoadedOlderIntentsPage,
+    setHasLoadedOlderIntentsPage,
+    loadingOlderIntents,
+    setLoadingOlderIntents,
+    input,
+    setInput,
+    sending,
+    setSending,
+    stopping,
+    setStopping,
+    mainChatRunning,
+    setMainChatRunning,
+    controllingIntent,
+    setControllingIntent,
+    cancelIntent,
+    setCancelIntent,
+    cancelReason,
+    setCancelReason,
+    deleteMode,
+    setDeleteMode,
+    workerMessage,
+    setWorkerMessage,
+    workerMessageRequestId,
+    setWorkerMessageRequestId,
+    workerMessageSending,
+    setWorkerMessageSending,
+    attachments,
+    setAttachments,
+    uploading,
+    setUploading,
+    fileInputRef,
+    patchIntentState,
+    controlWorker,
+    sseLive,
+    setSseLive,
+    taskTokens,
+    setTaskTokens,
+    sessionTokens,
+    setSessionTokens,
+    llmResolutions,
+    setLLMResolutions,
+    pendingIntercepts,
+    setPendingIntercepts,
+    snapshotRef,
+    esRef,
+    activeKeyRef,
+    atBottomRef,
+    llmToastSeqRef,
+    chatStatusRequestRef,
+    firstIntentsRef,
+    reqTokenRef,
+    loadingKeysRef,
+    patchStore,
+    loadSession,
+    loadEarlier,
+    loadOlderIntents,
+    allIntents,
+    intentAssetsByID,
+    workerSessions,
+    intentsHasMore,
+    sessionMeta,
+    hasPendingForSession,
+    recentLive,
+    currentMainKey,
+    plannerLive,
+    liveMainSeg,
+    mainSessions,
+    sessions,
+    grouped,
+    active,
+    side,
+    isMain,
+    isPlanner,
+    isSystem,
+    activeKey,
+    activeState,
+    activeItems,
+    activeLast,
+    activeSettled,
+    mainBusy,
+    activeDisplayTitle,
+    hiddenUnread,
+    focusKey,
+    loadFocusPage,
+    mergeFocusPage,
+    focusHistory,
+    activity,
+    latestTodoSeq,
+    tokenForSession,
+    activeTokens,
+    tokenTotal,
+    runDuration,
+    contentRef,
+    viewport,
+    stop,
+    send,
+    sendWorkerChat,
+    mainLoaded,
+    sendMode,
+    showLoader,
+    resolutionForSession,
+    activeResolution,
+    activeAssets,
+    pickFiles,
+    createMainSession,
   };
 }

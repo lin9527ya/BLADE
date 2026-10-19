@@ -2,15 +2,6 @@
 
 import * as React from "react";
 
-import { Badge } from "@/components/ui/badge";
-import {
-  Activity,
-  Session,
-  SessionStatus,
-  TaskLLMResolution,
-  TaskNode,
-} from "@/lib/types";
-import { cn } from "@/lib/utils";
 import {
   BrainIcon,
   CircleCheckIcon,
@@ -24,6 +15,10 @@ import {
   UserIcon,
   ZapOffIcon,
 } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import type { Activity, Session, SessionStatus, TaskLLMResolution, TaskNode } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 // 会话页签的类型、常量与纯函数：会话键、消息合并、状态图标与意图映射。
 

@@ -2,9 +2,11 @@
 
 import * as React from "react";
 
+import { toast } from "sonner";
+
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import {
+import type {
   ConstraintCompileResult,
   Finding,
   ModelTokenStat,
@@ -15,7 +17,6 @@ import {
   TaskNode,
   TaskScopeRow,
 } from "@/lib/types";
-import { toast } from "sonner";
 
 // 总览页签的状态与取数：任务/统计/意图/令牌/目标/约束/覆盖等。
 
@@ -334,59 +335,63 @@ export function useOverviewState(taskId: string) {
     }
   };
 
-  usePolling(async (alive) => {
-    let loading = false;
+  usePolling(
+    async (alive) => {
+      let loading = false;
 
-    const load = async () => {
-      if (loading) return;
-      loading = true;
-      try {
-        const [taskResp, statsResp, intentsResp, findingsResp] = await Promise.all([
-          api.task(taskId),
-          api.stats(taskId),
-          api.intents(taskId),
-          api.findings(taskId),
-        ]);
-        if (!alive()) return;
-        const activeTask = statsResp.active_task;
-        setTask(
-          activeTask
-            ? {
-                ...taskResp,
-                in_flight: activeTask.in_flight,
-                goals_total: activeTask.goals_total,
-                goals_met: activeTask.goals_met,
-                engine_mode: statsResp.engine_mode ?? activeTask.engine_mode,
-                paused: activeTask.paused,
-              }
-            : taskResp,
-        );
-        setStats(statsResp);
-        setIntents(intentsResp);
-        setFindings(findingsResp);
-        // coverage is independent + may 503 when no asset store — fetch separately so
-        // its failure never blocks the others.
-        api
-          .taskCoverage(taskId)
-          .then((c) => {
-            if (alive()) setCoverage(c);
-          })
-          .catch(() => {
-            // A transient coverage failure is retried by the next poll.
-          });
-      } catch {
-        // transient errors are ignored; the next poll will retry
-      } finally {
-        loading = false;
-      }
-    };
+      const load = async () => {
+        if (loading) return;
+        loading = true;
+        try {
+          const [taskResp, statsResp, intentsResp, findingsResp] = await Promise.all([
+            api.task(taskId),
+            api.stats(taskId),
+            api.intents(taskId),
+            api.findings(taskId),
+          ]);
+          if (!alive()) return;
+          const activeTask = statsResp.active_task;
+          setTask(
+            activeTask
+              ? {
+                  ...taskResp,
+                  in_flight: activeTask.in_flight,
+                  goals_total: activeTask.goals_total,
+                  goals_met: activeTask.goals_met,
+                  engine_mode: statsResp.engine_mode ?? activeTask.engine_mode,
+                  paused: activeTask.paused,
+                }
+              : taskResp,
+          );
+          setStats(statsResp);
+          setIntents(intentsResp);
+          setFindings(findingsResp);
+          // coverage is independent + may 503 when no asset store — fetch separately so
+          // its failure never blocks the others.
+          api
+            .taskCoverage(taskId)
+            .then((c) => {
+              if (alive()) setCoverage(c);
+            })
+            .catch(() => {
+              // A transient coverage failure is retried by the next poll.
+            });
+        } catch {
+          // transient errors are ignored; the next poll will retry
+        } finally {
+          loading = false;
+        }
+      };
 
-    void load();
-    void loadScope();
-    void loadTokens();
-    void loadGoals();
-    void loadConstraints();
-  }, 3000, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
+      void load();
+      void loadScope();
+      void loadTokens();
+      void loadGoals();
+      void loadConstraints();
+    },
+    3000,
+    [taskId, loadScope, loadTokens, loadGoals, loadConstraints],
+  );
 
   const running = intents.filter((i) => i.state === "running");
   const open = intents.filter((i) => i.state === "open");
@@ -411,6 +416,101 @@ export function useOverviewState(taskId: string) {
   const budgetPct = tokenBudget > 0 ? (budgetUsed / tokenBudget) * 100 : 0;
 
   return {
-    task, setTask, stats, setStats, intents, setIntents, findings, setFindings, coverage, setCoverage, rerunning, setRerunning, resuming, setResuming, scope, setScope, scopeKind, setScopeKind, scopeValueInput, setScopeValueInput, scopeBusy, setScopeBusy, scopeErr, setScopeErr, modelTokens, setModelTokens, tokenBudget, setTokenBudget, goals, setGoals, goalText, setGoalText, goalVuln, setGoalVuln, goalBusy, setGoalBusy, goalErr, setGoalErr, editingGoalId, setEditingGoalId, editText, setEditText, editVuln, setEditVuln, constraints, setConstraints, conText, setConText, conKind, setConKind, conBusy, setConBusy, conErr, setConErr, editingConId, setEditingConId, editConText, setEditConText, editConKind, setEditConKind, compileFor, setCompileFor, compileResult, setCompileResult, compileBusy, setCompileBusy, loadTokens, loadScope, loadGoals, addGoal, startEditGoal, cancelEditGoal, saveEditGoal, removeGoal, loadConstraints, addConstraint, startEditConstraint, cancelEditConstraint, saveEditConstraint, removeConstraint, openCompile, applyCompile, addScope, removeScope, markRerun, rerunOne, rerunAll, resumeTerminal, running, open, blocked, taskFindings, goalsPct, tokenTotals, budgetUsed, budgetPct
+    task,
+    setTask,
+    stats,
+    setStats,
+    intents,
+    setIntents,
+    findings,
+    setFindings,
+    coverage,
+    setCoverage,
+    rerunning,
+    setRerunning,
+    resuming,
+    setResuming,
+    scope,
+    setScope,
+    scopeKind,
+    setScopeKind,
+    scopeValueInput,
+    setScopeValueInput,
+    scopeBusy,
+    setScopeBusy,
+    scopeErr,
+    setScopeErr,
+    modelTokens,
+    setModelTokens,
+    tokenBudget,
+    setTokenBudget,
+    goals,
+    setGoals,
+    goalText,
+    setGoalText,
+    goalVuln,
+    setGoalVuln,
+    goalBusy,
+    setGoalBusy,
+    goalErr,
+    setGoalErr,
+    editingGoalId,
+    setEditingGoalId,
+    editText,
+    setEditText,
+    editVuln,
+    setEditVuln,
+    constraints,
+    setConstraints,
+    conText,
+    setConText,
+    conKind,
+    setConKind,
+    conBusy,
+    setConBusy,
+    conErr,
+    setConErr,
+    editingConId,
+    setEditingConId,
+    editConText,
+    setEditConText,
+    editConKind,
+    setEditConKind,
+    compileFor,
+    setCompileFor,
+    compileResult,
+    setCompileResult,
+    compileBusy,
+    setCompileBusy,
+    loadTokens,
+    loadScope,
+    loadGoals,
+    addGoal,
+    startEditGoal,
+    cancelEditGoal,
+    saveEditGoal,
+    removeGoal,
+    loadConstraints,
+    addConstraint,
+    startEditConstraint,
+    cancelEditConstraint,
+    saveEditConstraint,
+    removeConstraint,
+    openCompile,
+    applyCompile,
+    addScope,
+    removeScope,
+    markRerun,
+    rerunOne,
+    rerunAll,
+    resumeTerminal,
+    running,
+    open,
+    blocked,
+    taskFindings,
+    goalsPct,
+    tokenTotals,
+    budgetUsed,
+    budgetPct,
   };
 }

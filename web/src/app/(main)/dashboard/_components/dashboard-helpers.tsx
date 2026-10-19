@@ -1,9 +1,8 @@
 "use client";
 
-import * as React from "react";
+import type * as React from "react";
 
 import type { ChartConfig } from "@/components/ui/chart";
-
 import { cn } from "@/lib/utils";
 
 // 仪表盘的展示辅助：相对时间、token 数、状态配色与区块标题。

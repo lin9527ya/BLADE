@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import { FolderInputIcon, Trash2Icon } from "lucide-react";
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,17 +27,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { DeleteTaskOptions, Task, TaskCategory } from "@/lib/types";
-import { FolderInputIcon, Trash2Icon } from "lucide-react";
+import type { DeleteTaskOptions, Task, TaskCategory } from "@/lib/types";
+
 import { DeleteOptionFields, emptyDeleteOptions } from "./task-archives";
 import { UNCATEGORIZED_VALUE } from "./task-helpers";
 
