@@ -11,7 +11,7 @@ func TestSkillBindingsAlwaysTier(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	a, err := d.GetAgentByKey("planner")
 	if err != nil || a == nil {
 		t.Fatalf("planner agent: %+v err=%v", a, err)

@@ -18,9 +18,9 @@ func TestMCPToolSwitch(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
-	// 先清同名残留：复用库上上一次运行可能留下（t.Cleanup 里的删除在 defer d.Close() 之后
+	// 先清同名残留：复用库上上一次运行可能留下（t.Cleanup 里的删除在 t.Cleanup(func() { d.Close() }) 之后
 	// 才跑，未必生效）——这套 db 测试的既有惯例就是「先删再建」。
 	if _, err := d.Exec(`DELETE FROM mcp_servers WHERE name=$1`, "mcp-switch-test"); err != nil {
 		t.Fatalf("清残留: %v", err)

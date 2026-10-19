@@ -106,7 +106,7 @@ func TestParseAutoScopeLine(t *testing.T) {
 
 func TestExplicitCompanyAttributionSurvivesScopeRebuild(t *testing.T) {
 	d, as, cs := testSetup(t)
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	stamp := time.Now().UnixNano()
 	explicitCompany, _, err := cs.UpsertCompany(fmt.Sprintf("Explicit Attribution %d", stamp), "")
@@ -235,7 +235,7 @@ func TestCompanyICPAttribution(t *testing.T) {
 	}
 	// 关连接必须走 t.Cleanup 且**注册在清理之前**：t.Cleanup 是后进先出，
 	// 先注册关闭 → 关闭最后执行，下面的数据清理才连得上库。
-	// 原先这里是 `defer d.Close()`：defer 在函数返回时先跑，t.Cleanup 在那之后
+	// 原先这里是 `t.Cleanup(func() { d.Close() })`：defer 在函数返回时先跑，t.Cleanup 在那之后
 	// 才执行，于是清理语句全落在**已关闭的连接**上、错误又被 `_, _ =` 丢弃，
 	// 资产与公司就永久残留在库里。残留本身不会立刻报错，但本用例用
 	// `MAX(companies.id)+1` 当假 TaskID 给资产打标（见下方 suffix），

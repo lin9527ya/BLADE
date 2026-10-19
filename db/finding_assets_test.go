@@ -7,7 +7,7 @@ import (
 )
 
 // cleanupTreeFixtures 删除一个用例造出来的资产与发现。必须用 defer 注册(而不是
-// t.Cleanup):t.Cleanup 跑在测试函数返回之后,那时 defer d.Close() 已经把连接关了,
+// t.Cleanup):t.Cleanup 跑在测试函数返回之后,那时 t.Cleanup(func() { d.Close() }) 已经把连接关了,
 // 清理会静默失败并把脏数据留在共享开发库里。
 func cleanupTreeFixtures(d *DB, taskID int64, rootDomains ...string) {
 	d.Exec(`DELETE FROM assets WHERE root_domain = ANY($1::text[])`, rootDomains) //nolint:errcheck
@@ -53,7 +53,7 @@ func TestBuildFindingAssetTree(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	tk, err := d.CreateTask("资产树测试", "目标", nil, 0, 0)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestFindingAssetScopeFilter(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	tk, err := d.CreateTask("资产筛选测试", "目标", nil, 0, 0)
 	if err != nil {
