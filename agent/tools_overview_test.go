@@ -18,7 +18,7 @@ import (
 // regression without needing the old 1000-row cap to be exceeded.
 func TestGraphOverviewReportsTrueFindingTotal(t *testing.T) {
 	d := testDB(t)
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	task, err := d.CreateTaskWithOptions("overview totals", "count the findings", db.TaskCreateOptions{})
 	if err != nil {

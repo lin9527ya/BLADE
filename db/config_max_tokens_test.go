@@ -12,7 +12,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	// Close via Cleanup, registered FIRST so it runs LAST: cleanups are LIFO, and a
-	// plain `defer d.Close()` would fire before them — the row-deleting cleanups
+	// plain `t.Cleanup(func() { d.Close() })` would fire before them — the row-deleting cleanups
 	// would then run against a closed pool and silently leave test rows behind.
 	t.Cleanup(func() { d.Close() })
 
@@ -80,7 +80,7 @@ func TestProfileMaxTokensDefaults(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	// Close via Cleanup, registered FIRST so it runs LAST: cleanups are LIFO, and a
-	// plain `defer d.Close()` would fire before them — the row-deleting cleanups
+	// plain `t.Cleanup(func() { d.Close() })` would fire before them — the row-deleting cleanups
 	// would then run against a closed pool and silently leave test rows behind.
 	t.Cleanup(func() { d.Close() })
 

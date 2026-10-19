@@ -19,7 +19,7 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	// 先清掉可能残留的战果/检测行（上一轮失败留下的）。不清的话，「降级回旧约束」这一步会以
 	// check constraint is violated by some row 失败——那条信息离真正的原因很远，很容易

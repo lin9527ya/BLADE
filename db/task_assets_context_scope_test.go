@@ -19,7 +19,7 @@ func TestHostsByTaskWithSourcesScopeKinds(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 
 	tag := fmt.Sprintf("d7-%d", time.Now().UnixNano())
 	rd := tag + "-rd.example.com"
