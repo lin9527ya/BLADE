@@ -330,6 +330,12 @@ func (sc *Scheduler) runDueSchedules(ctx context.Context) {
 		return
 	}
 	for _, row := range due {
+		// 抢跑**之前**再复查一次停机/时间窗。放在这里的而不是抢跑之后，是因为抢跑会推进
+		// 水位：抢了却不建任务，这一次就永远丢了（停机期间本来就"不追补"，但那是用户
+		// 可见的语义，不该由竞态决定）。
+		if sc.s.safetyAdmissionBlocked() {
+			return
+		}
 		if row.NextRunAt == nil {
 			continue
 		}
