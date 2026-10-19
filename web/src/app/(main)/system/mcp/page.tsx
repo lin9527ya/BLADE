@@ -1,34 +1,17 @@
 "use client";
 
 import * as React from "react";
+import { MCPDialogs } from "./_components/mcp-dialogs";
+import { FormState, ToolParams, bareToolName, InfoRow, emptyForm } from "./_components/mcp-parts";
 import { toast } from "sonner";
-import {
-  ChevronRightIcon,
-  SparklesIcon,
-  PencilIcon,
-  PlusIcon,
-  RefreshCwIcon,
-  RotateCcwIcon,
-  SearchIcon,
-  ServerIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { ChevronRightIcon, SparklesIcon, PencilIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SearchIcon, ServerIcon, Trash2Icon } from "lucide-react";
 
 import { SubBlock } from "@/components/page-sections";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -37,124 +20,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { MCP_CATALOG } from "@/lib/mcp-catalog";
 import { cn } from "@/lib/utils";
-import type { MCPServer, MCPGuardStatus, MCPTool, MCPToolSchema, MCPToolSchemaProp, Agent } from "@/lib/types";
+import { MCPServer, MCPGuardStatus, MCPTool, Agent } from "@/lib/types";
 
-type Transport = "stdio" | "http" | "sse";
-type FormState = {
-  name: string;
-  transport: Transport;
-  command: string;
-  args: string;
-  url: string;
-  env: string;
-  insecure: boolean;
-};
-const emptyForm: FormState = {
-  name: "",
-  transport: "stdio",
-  command: "",
-  args: "",
-  url: "",
-  env: "",
-  insecure: false,
-};
-
-// 工具行展开的参数表：inputSchema 的 properties 平铺成行；array<object> 再把
-// items.properties 作为子行带进来（与工具页参数表同一读法，这里只读）。
-type SchemaRow = {
-  name: string;
-  type: string;
-  required: boolean;
-  desc: string;
-  enumText: string;
-  child: boolean;
-};
-
-function schemaRows(schema?: MCPToolSchema): SchemaRow[] {
-  const rows: SchemaRow[] = [];
-  const push = (name: string, p: MCPToolSchemaProp | undefined, required: boolean, child: boolean) => {
-    rows.push({
-      name,
-      type: p?.type ?? "",
-      required,
-      desc: p?.description ?? "",
-      enumText: p?.enum?.length ? ` · ${p.enum.map((v) => String(v)).join("|")}` : "",
-      child,
-    });
-  };
-  const required = new Set(schema?.required ?? []);
-  for (const [name, p] of Object.entries(schema?.properties ?? {})) {
-    push(name, p, required.has(name), false);
-    const sub = p?.items?.properties;
-    if (p?.type === "array" && sub && Object.keys(sub).length > 0) {
-      const subReq = new Set(p.items?.required ?? []);
-      for (const [sn, sp] of Object.entries(sub)) {
-        push(sn, sp, subReq.has(sn), true);
-      }
-    }
-  }
-  return rows;
-}
-
-// ToolParams：工具行展开后的只读参数表（inputSchema 子集）。
-function ToolParams({ schema }: { schema?: MCPToolSchema }) {
-  const rows = schemaRows(schema);
-  if (rows.length === 0) {
-    return (
-      <p className="text-muted-foreground mt-2 ml-5 text-xs">
-        该工具没有声明参数（或这次发现没取到 schema——点「刷新」重新发现）。
-      </p>
-    );
-  }
-  return (
-    <div className="bg-muted/30 mt-2 ml-5 overflow-x-auto rounded-md border p-2">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-muted-foreground text-left">
-            <th className="py-0.5 pr-3 font-normal">参数</th>
-            <th className="py-0.5 pr-3 font-normal">类型</th>
-            <th className="py-0.5 pr-3 font-normal">必填</th>
-            <th className="py-0.5 font-normal">说明</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={(r.child ? "·" : "") + r.name} className="align-top">
-              <td className="py-0.5 pr-3 font-mono">{r.child ? `↳ ${r.name}` : r.name}</td>
-              <td className="text-muted-foreground py-0.5 pr-3 font-mono">
-                {r.type || "?"}
-                {r.enumText}
-              </td>
-              <td className="text-muted-foreground py-0.5 pr-3">{r.required ? "是" : ""}</td>
-              <td className="text-muted-foreground py-0.5">{r.desc}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// bareToolName：缓存里的工具名是全名 mcp__<server>__<tool>（mcphttp.ToolName）。右栏里
-// server 已是页面主体，展示时去掉前缀；开关发的仍是全名（后端按缓存名匹配）。
-function bareToolName(server: string, full: string): string {
-  const prefix = `mcp__${server}__`;
-  return full.startsWith(prefix) ? full.slice(prefix.length) : full;
-}
-
-// InfoRow：明细行——左标签右值，值等宽可换行（URL/命令/错误都长）。
-function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid gap-1 sm:grid-cols-[8rem_1fr] sm:items-baseline sm:gap-3">
-      <span className="text-muted-foreground text-xs">{label}</span>
-      <div className="min-w-0 text-sm break-all">{children}</div>
-    </div>
-  );
-}
-
-// MCP 管理页照 CyberStrikeAI 的布局：满幅主从两栏——左栏服务器列表（只读行 + 选中态），
-// 右栏是选中 server 的完整明细（连接信息 / 熔断与并发 / 工具列表 / 可见性），动作都在右栏头部。
-// 添加与编辑仍走居中弹窗（7 个字段的表单，与工具页编辑器同一容器风格）。
 export default function MCPPage() {
   const [servers, setServers] = React.useState<MCPServer[]>([]);
   // P24 守卫快照（按 server 名）：熔断中/并发占用/最后错误，供列表与明细展示、手动重置。
@@ -859,96 +726,20 @@ export default function MCPPage() {
         </div>
       </div>
 
-      {/* 推荐目录：只预填、不安装。收录标准见 lib/mcp-catalog.ts 顶部注释 */}
-      <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
-          <DialogHeader className="border-b px-6 py-4">
-            <DialogTitle>推荐 MCP</DialogTitle>
-            <DialogDescription className="text-xs">
-              点「预填」只会把命令、参数与环境变量填进添加弹窗，**仍需你确认保存**；不会自动安装任何东西。
-              收录标准：与平台既有能力互补（不重复文件/知识/搜索类）。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-            <div className="flex flex-col divide-y">
-              {MCP_CATALOG.map((item) => (
-                <div key={item.name} className="flex items-start gap-3 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium">{item.title}</span>
-                      <Badge variant="outline" className="px-1.5 py-0 text-[10px] uppercase">
-                        {item.transport}
-                      </Badge>
-                      <code className="text-muted-foreground font-mono text-[11px]">{item.name}</code>
-                    </div>
-                    <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{item.desc}</p>
-                    {(item.needs || item.note) && (
-                      <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
-                        {item.needs && <>需要：{item.needs}　</>}
-                        {item.note}
-                      </p>
-                    )}
-                    <p className="text-muted-foreground mt-1 font-mono text-[11px]">
-                      {item.transport === "stdio" ? `${item.command} ${item.args ?? ""}` : (item.url ?? "")}
-                    </p>
-                  </div>
-                  <Button size="sm" variant="outline" onClick={() => addFromCatalog(item)}>
-                    预填
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* 添加 / 编辑：居中弹窗（7 个字段；工具列表已在右栏，弹窗只管配置） */}
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
-          <DialogHeader className="border-b px-4 py-3">
-            <DialogTitle>{editing ? editing.name : "添加 MCP 服务器"}</DialogTitle>
-            <DialogDescription>stdio（本地起进程）或 http（远程 Streamable HTTP）</DialogDescription>
-          </DialogHeader>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">{renderForm()}</div>
-          <div className="flex items-center gap-2 border-t px-4 py-3">
-            <Button onClick={saveForm} disabled={saving}>
-              {editing ? (
-                "保存"
-              ) : (
-                <>
-                  <PlusIcon /> 添加
-                </>
-              )}
-            </Button>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
-              取消
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog open={!!pendingDelete} onOpenChange={(o) => !o && setPendingDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>删除「{pendingDelete?.name}」？</AlertDialogTitle>
-            <AlertDialogDescription>
-              删除后该服务器的工具从所有 Agent 的工具面消失，按 Agent 的可见性授权也一并清除。此操作不可撤销。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const s = pendingDelete;
-                setPendingDelete(null);
-                if (s) void removeServer(s);
-              }}
-            >
-              删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <MCPDialogs
+        catalogOpen={catalogOpen}
+        setCatalogOpen={setCatalogOpen}
+        open={open}
+        setOpen={setOpen}
+        editing={editing}
+        saving={saving}
+        pendingDelete={pendingDelete}
+        setPendingDelete={setPendingDelete}
+        addFromCatalog={addFromCatalog}
+        renderForm={renderForm}
+        saveForm={saveForm}
+        removeServer={removeServer}
+      />
     </div>
   );
 }
