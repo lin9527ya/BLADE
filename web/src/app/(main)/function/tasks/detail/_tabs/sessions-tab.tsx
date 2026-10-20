@@ -1,47 +1,16 @@
 "use client";
 
 import * as React from "react";
+import { SessionItem, WorkerAssetBadge } from "./_components/session-items";
 
-import {
-  ArrowUpIcon,
-  BrainIcon,
-  ChevronDownIcon,
-  CircleCheckIcon,
-  CircleSlashIcon,
-  CircleXIcon,
-  ClockIcon,
-  HistoryIcon,
-  Loader2Icon,
-  PaperclipIcon,
-  PauseIcon,
-  PlusIcon,
-  RadioIcon,
-  RotateCwIcon,
-  ShieldAlertIcon,
-  SquareIcon,
-  Trash2Icon,
-  UserIcon,
-  WifiOffIcon,
-  XIcon,
-  ZapOffIcon,
-} from "lucide-react";
-import { toast } from "sonner";
+import { ArrowUpIcon, ChevronDownIcon, CircleXIcon, ClockIcon, Loader2Icon, PaperclipIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon, WifiOffIcon, XIcon } from "lucide-react";
 
-import { ApprovalExecutionFocus, useApprovalFocus, useApprovalHistory } from "@/components/approval-execution-focus";
+import { ApprovalExecutionFocus } from "@/components/approval-execution-focus";
 import { MentionTextarea } from "@/components/mention-textarea";
 import { SideQuestionButton, SideQuestionWorkspace } from "@/components/side-question-workspace";
 import { TodoPopover } from "@/components/todo-popover";
 import { Transcript } from "@/components/transcript";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
@@ -49,208 +18,20 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { usePolling } from "@/hooks/use-polling";
-import { useSideQuestions } from "@/hooks/use-side-questions";
-import { api, sseUrl } from "@/lib/api";
-import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
+
+import { api } from "@/lib/api";
+import { shouldSubmitOnKey } from "@/lib/chat-send-mode";
 import { MOCK } from "@/lib/mock/enabled";
 import { isBtwCommand } from "@/lib/side-questions";
-import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
-import type {
-  Activity,
-  ChatAttachment,
-  IntentAsset,
-  InterceptApprovalRow,
-  Session,
-  SessionStatus,
-  SessionTokenUsage,
-  TaskLLMResolution,
-  TaskLLMResolutions,
-  TaskNode,
-  TokenTotal,
-} from "@/lib/types";
+
 import { cn } from "@/lib/utils";
 
-import {
-  emptyState,
-  fmtBytes,
-  fmtDuration,
-  fmtTokens,
-  intentStatus,
-  intentToSession,
-  keyForSession,
-  MAIN_ID,
-  MAIN_SESSION,
-  MAX_KEEP,
-  MAX_WORKER_MESSAGE_CHARS,
-  mainSessionId,
-  mainSessionKey,
-  mainSessionTitle,
-  mergeBySeq,
-  newWorkerMessageRequestID,
-  PAGE,
-  PLANNER_ID,
-  PLANNER_SESSION,
-  resolutionLabel,
-  roleMeta,
-  SessionState,
-  SessionStore,
-  STREAM_WINDOW_MS,
-  SYSTEM_ID,
-  SYSTEM_SCAN_PAGE,
-  SYSTEM_SESSION,
-  sessionKeyOf,
-  statusIcon,
-  TokenMetrics,
-  workerMessageCharCount,
-} from "./_components/session-helpers";
+import { fmtBytes, fmtDuration, keyForSession, MAX_WORKER_MESSAGE_CHARS, resolutionLabel, roleMeta, TokenMetrics, workerMessageCharCount } from "./_components/session-helpers";
 import { useSessionsState } from "./_components/use-sessions-state";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
 // keeps the model id in its tooltip. Env-backed configs can arrive without a name,
 // so fall back to the model id rather than rendering an empty badge.
-
-function SessionItem({
-  s,
-  active,
-  displayTitle,
-  hasPending,
-  unread,
-  onClick,
-  onCancel,
-  controlling,
-  deleted,
-}: {
-  s: Session;
-  active: boolean;
-  displayTitle: string;
-  hasPending?: boolean;
-  unread?: number;
-  onClick: () => void;
-  onCancel?: () => void;
-  controlling?: boolean;
-  deleted?: boolean;
-}) {
-  const icon = deleted ? (
-    <Trash2Icon className="size-3.5 text-destructive" />
-  ) : s.role === "worker" ? (
-    statusIcon(s.status)
-  ) : s.live ? (
-    <Loader2Icon className="size-3.5 animate-spin text-blue-500" />
-  ) : null;
-
-  const cancellable =
-    s.role === "worker" &&
-    !s.inherited &&
-    !deleted &&
-    // pending = 待领(open)意图;连同运行中/已暂停都允许删除。
-    (s.status === "running" || s.status === "paused" || s.status === "pending");
-  return (
-    <div
-      className={cn(
-        "group/session flex w-full items-center rounded-md transition-colors",
-        active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-      )}
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-sm"
-      >
-        {icon ?? <span className="size-3.5 shrink-0" />}
-        {s.intent_id && (
-          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-            #{s.intent_id}
-          </span>
-        )}
-        {s.inherited && s.source_task_id && (
-          <Badge variant="outline" className="shrink-0">
-            来源 #{s.source_task_id}
-          </Badge>
-        )}
-        <span
-          className={cn("min-w-0 flex-1 truncate text-sm font-medium", deleted && "text-muted-foreground line-through")}
-        >
-          {displayTitle}
-        </span>
-        {deleted && (
-          <Badge variant="outline" className="shrink-0 border-destructive/40 text-destructive">
-            已删除
-          </Badge>
-        )}
-        {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
-        {!active && unread ? (
-          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
-            {unread > 99 ? "99+" : unread}
-          </span>
-        ) : null}
-        {s.live && (
-          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
-            <span className="size-1 animate-pulse rounded-full bg-blue-500" />
-            实时
-          </span>
-        )}
-      </button>
-      {cancellable && (
-        <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover/session:opacity-100 sm:group-focus-within/session:opacity-100">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            onClick={onCancel}
-            disabled={controlling}
-            title="删除该意图（需填写原因，可选假删除/真删除）"
-            aria-label="删除该意图（需填写原因，可选假删除/真删除）"
-            className="text-destructive hover:text-destructive"
-          >
-            <Trash2Icon />
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function truncateWorkerAssetLabel(value: string, maxChars = 30): string {
-  const chars = Array.from(value.trim());
-  if (chars.length <= maxChars) return chars.join("");
-  return `${chars.slice(0, Math.max(0, maxChars - 1)).join("")}…`;
-}
-
-function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
-  const displayAssets = assets.filter(
-    (asset) => asset.type === "root_domain" || asset.type === "subdomain" || asset.type === "ip",
-  );
-  if (displayAssets.length === 0) return null;
-
-  const first = displayAssets[0];
-  const firstRawLabel = first.label.trim() || `#${first.asset_id}`;
-  const firstLabel = truncateWorkerAssetLabel(firstRawLabel);
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Badge variant="outline" className="max-w-60 shrink-0 font-normal" title={firstRawLabel}>
-          <span className="truncate">当前资产：{firstLabel}</span>
-          {displayAssets.length > 1 && <span className="shrink-0 tabular-nums">+{displayAssets.length - 1}</span>}
-        </Badge>
-      </TooltipTrigger>
-      <TooltipContent side="right" align="start" className="max-w-sm">
-        <div className="flex flex-col gap-2">
-          {displayAssets.map((asset) => (
-            <div key={`${asset.intent_id}-${asset.asset_id}`} className="min-w-0">
-              <div className="break-all font-mono text-xs">{asset.label.trim() || `#${asset.asset_id}`}</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">
-                {taskAssetTypeLabel(asset.type)} · {taskAssetSourceLabel(asset.source)}
-                {asset.inherited ? ` · 来源任务 #${asset.source_task_id}` : ""}
-              </div>
-              <div className="mt-0.5 [overflow-wrap:anywhere] text-xs">{asset.source_summary}</div>
-            </div>
-          ))}
-        </div>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 export function SessionsTab({ taskId }: { taskId: string }) {
   const {
