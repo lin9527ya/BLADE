@@ -26,15 +26,20 @@ func validWorkerMessageRequestID(id string) bool {
 	return true
 }
 
-// sendWorkerMessage continues a paused Worker intent with a human-authored message.
-// The message is injected as the next turn's input through the same
-// resume-from-transcript path the worker uses on a normal resume (ExecuteWithMessage),
-// so this reuses the existing pause/resume machinery rather than a bespoke protocol.
-// The run happens in a dedicated goroutine outside the worker pool (runDetachedIntent),
-// so the message is picked up immediately even when every pool slot is busy — the same
-// way the main-agent chat handler starts its run directly. In-memory only: a process
-// restart re-runs the intent from its transcript without the message, which is
-// acceptable for this rare interrupt-then-continue action.
+// sendWorkerMessage 把一条人写的消息送进一条 Worker 意图，按意图状态分两条路：
+//
+//   - **运行中（running）**：实时注入（SteerWorkHuman）。消息在 worker 下一次工具调用
+//     之前送到，并拦掉那次调用、由模型据此改道——不打断、不丢已积累的上下文。代价是
+//     它只存在于内存队列里：这条 run 若在取出前就结束，消息不会送达（此时接口只在
+//     "压根没有在跑的 work" 上报 409，让用户重发，不做静默排队）。
+//   - **已暂停（paused）**：暂停续发。消息作为下一轮输入，走 worker 正常 resume 的
+//     resume-from-transcript 路径（ExecuteWithMessage），复用既有暂停/恢复机制而不是
+//     另造协议。这条 run 跑在 worker 池之外的独立 goroutine（runDetachedIntent），所以
+//     池子占满时也能立刻被接走。同样只在内存：进程重启后该意图会从 transcript 重跑，
+//     不带这条消息——对"偶尔打断再继续"这个动作可以接受。
+//
+// 两条路都会把"人发了什么"单独落成一条 worker="user" 的活动（见下），与"worker 何时
+// 真的被拦下"（PreToolUse 那条 Blocked by hook 记录）分开：前者证明人发了，后者证明送到了。
 func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
@@ -70,14 +75,8 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "消息不能超过 4000 个字符")
 		return
 	}
-	if !validWorkerMessageRequestID(requestID) {
-		writeErr(w, http.StatusBadRequest, "request_id 必须是 1-128 位字母、数字、-、_、. 或 :")
-		return
-	}
-
 	// Reject non-runnable task lifecycles up front so the caller gets a clear reason
-	// instead of a silent no-op. The intent itself must be paused: the UI flow is
-	// interrupt (pause) first, then send.
+	// instead of a silent no-op. 意图本身可运行（running/paused）由下面的 switch 判定。
 	if s.engine.IsDeleting(t.ID) {
 		writeErr(w, http.StatusConflict, "任务正在删除，无法向 Worker 发送消息")
 		return
@@ -115,12 +114,43 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "node is not an intent")
 		return
 	}
-	if node.State != "paused" {
-		writeErr(w, http.StatusConflict, "仅已暂停的 Worker 可以发送消息，请先暂停")
+	// 状态闸先判：@ 引用的展开错误不该盖过"这条意图现在根本不能发消息"这个更准确的拒绝。
+	if node.State != "running" && node.State != "paused" {
+		writeErr(w, http.StatusConflict, "仅运行中或已暂停的 Worker 可以发送消息（当前 "+node.State+"）")
 		return
 	}
 	agentMessage, ok := s.prepareChatMentionMessage(w, message)
 	if !ok {
+		return
+	}
+
+	switch node.State {
+	case "running":
+		// 实时注入：下一步动作前生效。没有在跑的 work（刚结束/被回收/租约易主）时
+		// 如实报错，让用户重发——不做静默排队，也不悄悄降级成"重启一条 run"。
+		if err := s.engine.SteerWorkHuman(iid, agentMessage); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		nid := iid
+		s.engine.emitActivity(t, db.Activity{
+			NodeID: &nid, Worker: "user", Kind: "user", Summary: message, Detail: message,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":         iid,
+			"state":      "running",
+			"accepted":   true,
+			"steered":    true,
+			"request_id": requestID,
+		})
+		return
+	case "paused":
+		// 继续往下走暂停续发路径。
+	}
+
+	// request_id 是续发路径的幂等键（runDetachedIntent 用它去重），注入路径不需要它。
+	if !validWorkerMessageRequestID(requestID) {
+		writeErr(w, http.StatusBadRequest, "request_id 必须是 1-128 位字母、数字、-、_、. 或 :")
 		return
 	}
 

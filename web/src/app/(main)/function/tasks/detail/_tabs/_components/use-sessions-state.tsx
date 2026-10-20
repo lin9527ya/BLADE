@@ -1097,7 +1097,10 @@ export function useSessionsState(taskId: string) {
     const intentId = active.intent_id;
     const message = workerMessage.trim();
     if (side.handleCommand(message, () => setWorkerMessage(""))) return;
-    if (!intentId || active.inherited || active.status !== "paused" || workerMessageSending || !message) return;
+    // 运行中 = 实时注入（下一步动作前生效，拦掉那一次工具调用让模型改道）；
+    // 已暂停 = 续发（消息作为下一轮输入）。其余状态不发。
+    const steer = active.status === "running";
+    if (!intentId || active.inherited || (!steer && active.status !== "paused") || workerMessageSending || !message) return;
     if (workerMessageCharCount(message) > MAX_WORKER_MESSAGE_CHARS) {
       toast.error(`消息不能超过 ${MAX_WORKER_MESSAGE_CHARS} 个字符`);
       return;
@@ -1113,7 +1116,11 @@ export function useSessionsState(taskId: string) {
         patchIntentState(intentId, result.state);
         setWorkerMessage("");
         setWorkerMessageRequestId("");
-        toast.success(`消息已发送给 Worker #${intentId}，已立即继续执行`);
+        toast.success(
+          result.steered
+            ? `提示已投递：Worker #${intentId} 下一次动作前生效（那一次动作会被拦下、据此改道）`
+            : `消息已发送给 Worker #${intentId}，已立即继续执行`,
+        );
       })
       .catch((error) => {
         toast.error(`发送失败：${(error as Error).message || "请稍后重试"}`);

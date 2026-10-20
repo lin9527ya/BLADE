@@ -133,11 +133,13 @@ type Engine struct {
 	workMu sync.Mutex
 	work   map[int64]*workExecution
 
-	// steerBox queues planner course-corrections for a running work (keyed by intent
-	// id). The worker's PreToolUse hook drains it before its next tool call and hands
-	// the message to the model (blocking that call) so it re-plans — no kill needed.
+	// steerBox queues mid-run instructions for a running work (keyed by intent id) —
+	// planner's steer_work and the operator's message from the sessions page.
+	// The worker's PreToolUse hook drains it before its next tool call and hands the
+	// message to the model (blocking that call) so it re-plans — no kill needed.
+	// 每条带来源，见 steerMsg：worker 看到的归属文案必须如实。
 	steerMu  sync.Mutex
-	steerBox map[int64][]string
+	steerBox map[int64][]steerMsg
 
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
@@ -414,7 +416,7 @@ func (e *Engine) touch(taskID string) { e.lastAct.Store(taskID, time.Now().Unix(
 func NewEngine(m *Manager) *Engine {
 	return &Engine{m: m, debounce: 800 * time.Millisecond, bc: NewBroadcaster(),
 		execCancel: map[string]context.CancelCauseFunc{}, execCtx: map[string]context.Context{},
-		work: map[int64]*workExecution{}, steerBox: map[int64][]string{},
+		work: map[int64]*workExecution{}, steerBox: map[int64][]steerMsg{},
 		runtimes: map[string]*taskRuntime{}}
 }
 
@@ -527,12 +529,48 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 	return nil
 }
 
+// steerSource 标明这条即时指令是谁下的——它决定 worker 看到的归属文案。两者都是
+// "冲突时以此为准"，但来源不同：把人工提示写成规划者发的，等于让 worker 误判上级。
+type steerSource int
+
+const (
+	steerFromPlanner steerSource = iota // planner / 主 Agent 的 steer_work 工具
+	steerFromHuman                      // 人在会话页直接对运行中的 Worker 发的提示
+)
+
+// steerMsg 是一条待投递的即时指令（FIFO 队列元素）。
+type steerMsg struct {
+	from steerSource
+	text string
+}
+
+// render 把指令渲染成模型看到的那段话。规划者那条的文案**保持原样**（既有提示词与
+// 测试都依赖它），人工那条另起一套归属。
+func (m steerMsg) render() string {
+	const tail = "；本次工具调用未执行，请据此调整下一步。若与你当前打算冲突，以此为准。）"
+	if m.from == steerFromHuman {
+		return "【人工实时提示】" + m.text + "\n（这是人（操作者）对本意图的即时指令" + tail
+	}
+	return "【规划者实时纠偏】" + m.text + "\n（这是规划者对本意图的即时指令" + tail
+}
+
 // SteerWork queues a mid-run course-correction for the work running intentID (the
 // planner's steer_work tool). The worker delivers it before its next tool call and
 // re-plans — no kill. Errors if no work is currently running that intent.
 func (e *Engine) SteerWork(intentID int64, msg string) error {
-	if strings.TrimSpace(msg) == "" {
-		return fmt.Errorf("纠偏消息不能为空")
+	return e.steer(intentID, steerMsg{from: steerFromPlanner, text: msg})
+}
+
+// SteerWorkHuman queues a mid-run hint authored by the operator (会话页对运行中的 Worker
+// 直接发的那条消息). 与 planner 的纠偏走同一条投递路径与同一个队列，只有归属文案不同。
+// 没有在跑的 work 时如实报错，不做静默排队——调用方据此让用户重发。
+func (e *Engine) SteerWorkHuman(intentID int64, msg string) error {
+	return e.steer(intentID, steerMsg{from: steerFromHuman, text: msg})
+}
+
+func (e *Engine) steer(intentID int64, msg steerMsg) error {
+	if strings.TrimSpace(msg.text) == "" {
+		return fmt.Errorf("提示消息不能为空")
 	}
 	e.workMu.Lock()
 	running := e.work[intentID] != nil
@@ -547,12 +585,12 @@ func (e *Engine) SteerWork(intentID int64, msg string) error {
 }
 
 // drainSteer pops the oldest queued steering message for intentID (FIFO), if any.
-func (e *Engine) drainSteer(intentID int64) (string, bool) {
+func (e *Engine) drainSteer(intentID int64) (steerMsg, bool) {
 	e.steerMu.Lock()
 	defer e.steerMu.Unlock()
 	q := e.steerBox[intentID]
 	if len(q) == 0 {
-		return "", false
+		return steerMsg{}, false
 	}
 	msg := q[0]
 	if len(q) == 1 {
@@ -570,7 +608,7 @@ func (e *Engine) drainSteer(intentID int64) (string, bool) {
 // 它同时负责「空转回合」的续跑，见 Stop。
 type steerHooks struct {
 	inner harness.HookRunner
-	drain func() (string, bool)
+	drain func() (steerMsg, bool)
 	// nudges 是本条意图已注入的空转续跑次数，上限 limit。指针:harness 持有的是
 	// steerHooks 的值拷贝，计数必须共享同一份。
 	nudges *atomic.Int64
@@ -617,8 +655,7 @@ func isThinkingOnlyTurn(messages []llm.Message) bool {
 
 func (h steerHooks) PreToolUse(ctx context.Context, name string, input []byte) (bool, string, []byte) {
 	if msg, ok := h.drain(); ok {
-		return true, "【规划者实时纠偏】" + msg +
-			"\n（这是规划者对本意图的即时指令；本次工具调用未执行，请据此调整下一步。若与你当前打算冲突，以此为准。）", nil
+		return true, msg.render(), nil
 	}
 	if h.inner != nil {
 		return h.inner.PreToolUse(ctx, name, input)
@@ -1063,7 +1100,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// 重跑一轮不该把额度清零重来。
 	hooks := steerHooks{
 		inner:  t.Guard.Hooks(),
-		drain:  func() (string, bool) { return e.drainSteer(iid) },
+		drain:  func() (steerMsg, bool) { return e.drainSteer(iid) },
 		nudges: &atomic.Int64{},
 		limit:  e.emptyTurnNudgeLimit(),
 		label:  label,

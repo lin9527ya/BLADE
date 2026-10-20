@@ -390,11 +390,14 @@ export const api = {
       state: "paused" | "open" | "deleted" | "";
       deleted?: { intents: number; facts: number; findings: number; activities: number };
     }>(`/tasks/${taskId}/intents/${intentId}/control`, { action, reason: reason ?? "", mode: mode ?? "soft" }),
+  // 运行中的 Worker → 实时注入（steered=true，下一步动作前生效）；
+  // 已暂停的 → 续发（steered 缺省，消息作为下一轮输入）。
   sendWorkerMessage: (taskId: string, intentId: string, message: string, requestId: string) =>
     post<{
       id: number;
       state: "running";
       accepted: true;
+      steered?: boolean;
       request_id: string;
     }>(`/tasks/${taskId}/intents/${intentId}/messages`, { message, request_id: requestId }),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
