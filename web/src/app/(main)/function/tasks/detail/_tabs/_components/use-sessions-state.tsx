@@ -382,7 +382,8 @@ export function useSessionsState(taskId: string) {
 
   usePolling(
     async (alive) => {
-      setMainChatRunning(null);
+      // 不在这里把 running 置回 null：每 2 秒置一次会让「运行中」徽标灭一下再亮，
+      // liveMainSeg / anyLive 也跟着抖。失败时保留上一次的权威值（见下方 catch）。
       const load = () => {
         const request = ++chatStatusRequestRef.current;
         return api
@@ -452,6 +453,7 @@ export function useSessionsState(taskId: string) {
     setOlderIntents([]);
     setFirstIntentsHasMore(false);
     setOlderIntentsHasMore(false);
+    firstIntentsRef.current = []; // 别拿上个任务的首页快照去算 displaced
     setHasLoadedOlderIntentsPage(false);
     setTaskTokens(null);
     setSessionTokens({});
@@ -637,11 +639,9 @@ export function useSessionsState(taskId: string) {
   // ── worker (intent) session list — paged, poll first page lightly ───────────────
   usePolling(
     async (active) => {
-      firstIntentsRef.current = [];
-      setIntents([]);
-      setOlderIntents([]);
-      setFirstIntentsHasMore(false);
-      setOlderIntentsHasMore(false);
+      // 只拉第一页，不动本地状态。清空会让 worker 列表在请求返回前空一帧（右侧面板
+      // 同时回落到主 Agent），还会把 displaced 保留逻辑和用户翻出来的 olderIntents
+      // 一起抹掉。切任务时的重置在下面的 taskId effect 里做。
       const load = () =>
         api
           .intentsPage(taskId, 0, 300)
