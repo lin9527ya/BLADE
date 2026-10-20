@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -111,6 +112,93 @@ func seedPassword(t *testing.T, m *Manager, pw string) (restore func()) {
 			return
 		}
 		_ = m.pg.SetSetting(authPassKey, "")
+	}
+}
+
+// TestJWTKeyFollowsTheDatabase 钉住这条：签名密钥跟**库**走，不跟可执行文件所在目录走。
+//
+// 密钥只落在 keyDir 时，同一份部署换个目录/换个 checkout 起来就会静默生成新 key，
+// 把所有人踢回登录页——两份 checkout 共用一个库的场景下，这等于「起了 B 就把 A 的
+// 登录态清了」，而日志上只有一行"新 JWT key 已写入"。
+func TestJWTKeyFollowsTheDatabase(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	defer clearJWTKeySetting(t, m)()
+
+	dirA, dirB := t.TempDir(), t.TempDir()
+	keyA, err := loadOrCreateJWTKey(m.pg, dirA, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := loadOrCreateJWTKey(m.pg, dirB, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keyA) != string(keyB) {
+		t.Fatal("换个目录起同一份部署拿到了不同的签名密钥——此前签发的 token 会被判无效，所有人被踢回登录页")
+	}
+	// 第二个目录也要留下本地镜像：回滚到只认文件的旧版本时仍沿用同一把。
+	mirrored, ok := readJWTKeyFile(filepath.Join(dirB, jwtKeyFilename))
+	if !ok || string(mirrored) != string(keyB) {
+		t.Fatalf("keyDir 里没有留下镜像: ok=%v got=%q", ok, mirrored)
+	}
+}
+
+// TestJWTKeyMigratesLegacyWorkspaceFile 老安装把密钥放在可浏览的 dataDir 里：首次启动
+// 要迁进库、并**从工作区删掉**（签名密钥不该能被文件管理器下走），同时既有 token 不能失效。
+func TestJWTKeyMigratesLegacyWorkspaceFile(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	defer clearJWTKeySetting(t, m)()
+
+	dataDir, keyDir := t.TempDir(), t.TempDir()
+	legacy, err := newJWTKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(dataDir, jwtKeyFilename)
+	if err := os.WriteFile(legacyPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadOrCreateJWTKey(m.pg, keyDir, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(legacy) {
+		t.Fatal("迁移没有保留原有密钥——老安装的 token 会全部失效")
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatal("老位置的 jwt.key 没有被删掉：它还躺在可浏览的工作区里")
+	}
+	if mirrored, ok := readJWTKeyFile(filepath.Join(keyDir, jwtKeyFilename)); !ok || string(mirrored) != string(legacy) {
+		t.Fatalf("迁移后没在 keyDir 留下镜像: ok=%v", ok)
+	}
+}
+
+// clearJWTKeySetting 清掉库里的签名密钥并返回还原函数。测试与真实部署可能共用同一个
+// 库（本地跑 `go test ./server/` 就是），别把别人的登录态带走。
+func clearJWTKeySetting(t *testing.T, m *Manager) (restore func()) {
+	t.Helper()
+	prev, had, err := m.pg.GetSetting(jwtKeySetting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.pg.Exec(`DELETE FROM settings WHERE key=$1`, jwtKeySetting); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if had {
+			_ = m.pg.SetSetting(jwtKeySetting, prev)
+			return
+		}
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, jwtKeySetting)
 	}
 }
 

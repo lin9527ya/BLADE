@@ -142,7 +142,7 @@ BLADE_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ## 更新升级
 
-> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`blade` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
+> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（工作区、流量、SQLite 等）、`./skills` 都会保留；登录态也不受影响——签名密钥存在库里（`server/auth.go` 的 `jwtKeySetting`），换二进制、换目录、双开都共用同一把。**数据库迁移无需手动执行**——`blade` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
 
 ### 方式一：页面一键更新（推荐）
 
