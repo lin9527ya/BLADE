@@ -4,32 +4,32 @@
 
 ## [Unreleased]
 
-### 改名为 BLADE（清除 ARTEX 特征）
+## [0.5.0] - 2026-10-20
+
+### 更名与对外标识去特征
 
 #### 变更
 
-- **项目全面改名：ARTEX → BLADE**。仓库、Go 模块路径、可执行文件名、环境变量前缀、界面显示名一次换完
+- **项目对外标识全面换新**：仓库名、Go 模块路径、可执行文件名、环境变量前缀、界面显示名一次换完
   （567 个文件），目的是**不留暴露用途与出处的特征**，同时满足"被扫到也认不出是什么"的那半边。
-  · 仓库：`lin9527ya/ARTEX` → `lin9527ya/BLADE`（GitHub 会重定向旧链接；**Releases 跟随仓库**，
-    所以一键更新仍然可用——已部署的旧版本走的旧路径会被 302 到新仓库）。
-    原作者的 `upstream` remote 一并移除（那个仓库早已不可达）。
-  · Go 模块：`github.com/lin9527ya/artex` → `github.com/lin9527ya/blade`（185 个文件）；`cmd/artex` → `cmd/blade`。
-  · 环境变量：**`ARTEX_*` → `BLADE_*`**（`BLADE_PG_DSN` / `BLADE_LLM_*` / `BLADE_SCOPE_ENFORCEMENT` /
+  · 仓库改名（GitHub 会重定向旧链接；**Releases 跟随仓库**，所以一键更新仍然可用——已部署的
+    旧版本走的旧路径会被 302 到新仓库）。原作者留下的 `upstream` remote 一并移除（那个仓库早已不可达）。
+  · Go 模块路径改为 `github.com/lin9527ya/blade`（185 个文件）；入口目录 `cmd/blade`。
+  · 环境变量前缀统一为 **`BLADE_*`**（`BLADE_PG_DSN` / `BLADE_LLM_*` / `BLADE_SCOPE_ENFORCEMENT` /
     `BLADE_KILL_SWITCH` / `BLADE_TAG` / `BLADE_CONFIG` / `BLADE_SKILL_DIR` / `BLADE_BTW_MAX_OUTPUT_TOKENS`；
-    前端的 `AUTOPENTEST_API` → `BLADE_API`）。**旧变量名不再兼容**——升级时要改自己的 `.env`
+    前端的 `AUTOPENTEST_API` → `BLADE_API`）。**旧前缀不再兼容**——升级时要改自己的 `.env`
     与 systemd unit（`deploy/blade.service` 已同步）。
-  · 可执行文件：`artex` → `blade`（`start.sh` 的 `BIN`、Dockerfile 的 `/app/blade`、
+  · 可执行文件改为 `blade`（`start.sh` 的 `BIN`、Dockerfile 的 `/app/blade`、
     `deploy/blade.service`、CI 的 dist 路径都同步）。
-  · 界面：默认标题改成**中性**的 `BLADE`（原来的"BLADE — 自主渗透测试控制台"会把用途写在
-    `<title>` 里，被扫到一次就等于告诉对方这台机器上有攻击平台）；图标与 logo 换成新的
-    `favicon1.ico`（16/32/48），旧的 `logo.svg` 删除。
-  · `docker-compose.yml` 的镜像不再指向**上游作者的** `autumn27/artex`，改成 `build: .`（本地构建）；
+  · 界面：默认标题改成**中性**的 `BLADE`（原来的标题会把用途写在 `<title>` 里，被扫到一次就等于
+    告诉对方这台机器上有攻击平台）；图标与 logo 换成新的 `favicon1.ico`（16/32/48），
+    旧的 `logo.svg` 删除。
+  · `docker-compose.yml` 的镜像不再指向**上游作者的**外部镜像，改成 `build: .`（本地构建）；
     同时修掉上一版 ports 段的 YAML 缩进错误（会让 `docker compose` 解析失败）。
 - **数据库**：新装默认用 `blade` 用户与库（`install.sh` / `docker-compose.yml` 的默认值）；
-  本机已存在的库已迁移（备份 → `CREATE DATABASE blade TEMPLATE artex` → 指向新库），
-  旧的 `artex` 库暂时保留以留回滚余地。
+  本机已存在的库已迁移（备份 → 以旧库为模板建 `blade` 库 → 指向新库），旧库暂时保留以留回滚余地。
 - **未改**（外部不可见，改它们只有迁移风险）：Go 包内的变量名与函数名里不含品牌；
-  运行期数据目录仍是 `data/`；PG 数据卷名仍是 `artex-pg`（只在 `docker volume ls` 可见）。
+  运行期数据目录仍是 `data/`；PG 数据卷名未变（只在 `docker volume ls` 可见）。
 
 ### 公网部署隐身与加固（默认不暴露 / 去指纹）
 
@@ -49,7 +49,7 @@
   loopback 之外就是个**无认证的开放代理**（任何人可借它上网，测绘引擎直接标 open proxy）。
   现在**默认拒绝启动**，要开放必须显式加 `-allow-open-proxy`；管理端绑非 loopback 时也会提示
   正确的暴露方式。判断放在 flag 解析之后、碰数据库之前。
-- **`/api/health` 不再自报家门**：从 `{"ok":true,"service":"artex","version":…}` 改成 `{"ok":true}`
+- **`/api/health` 不再自报家门**：从「自报服务名与版本号」改成只回 `{"ok":true}`
   ——它免认证，原样返回等于公网上任何人请求一次就知道这是什么、什么版本。版本移到需要登录的
   `GET /api/system/info`（前端顶栏改读它）。
 - **CORS 默认不发头**：此前无条件 `Access-Control-Allow-Origin: *`；单机自用平台的前端与 API 同源，
@@ -59,7 +59,7 @@
   名字是构建期常量（`web/src/config/app-config.ts`），要连它一起换掉得改那里重新构建。
 - **`deploy/` 部署包**：`README.md`（两套方案 + 部署后自检清单）、`cloudflared.yml`（Cloudflare
   Tunnel：源站零入站端口，最隐身）、`ufw-cloudflare.sh`（只放行 Cloudflare 段，段从官方端点拉）、
-  `nginx-cloudflare.conf`（CF 真实 IP + SSE 免缓冲 + 只接受 CF 来源）、`artex.service`（systemd 单元，
+  `nginx-cloudflare.conf`（CF 真实 IP + SSE 免缓冲 + 只接受 CF 来源）、`blade.service`（systemd 单元，
   与 start.sh 的 0/75 退出码约定配套）。README 的部署章一并改写（原来教人绑全接口）。
 - 验收 accP42 + `listenIsLoopback` 单测。
 
@@ -212,7 +212,7 @@
     暂停所有在跑任务、取消在跑的长任务，并在任务时间线留一句为什么停的。
   · **停机开关**：一条 API 立即全停（不等 5 秒 tick），带回执——谁、何时、为什么、停了几条，
     历史留 10 条。**解除不自动恢复任务**：恢复意味着平台重新对目标动手，那一下该由人按下
-    （页面上有「继续全部暂停任务」）。环境变量 `ARTEX_KILL_SWITCH` 可强制停机：出事的原因
+    （页面上有「继续全部暂停任务」）。环境变量 `BLADE_KILL_SWITCH` 可强制停机：出事的原因
     可能就是平台自己，那时"从界面上关掉它"这条路本身不可信。
   · **停止状态下不起任何新工作**：不补位、不触发 agent、不跑计划任务——否则一个 5 分钟一次的
     计划任务，在停机一小时里会堆出十二条跑不动的任务。排队任务保持排队（位置不丢）。
@@ -349,7 +349,7 @@
 #### 修复
 
 - **自更新补上 GitHub token 支持（发布源是私有仓库时必需）**：`selfupdate` 的发布源此前写死
-  `Autumn-27/artex`——那个仓库**已不存在**（GraphQL 查不到），而本仓 `lin9527ya/artex` 是私有仓库、
+  一个**已不存在**的仓库（GraphQL 查不到），而本仓当时还是私有仓库、
   updater 又不带凭据，所以更新链路必然 404。现在：发布源常量改为本仓（**仍是编译期常量、运行时不可配**
   ——"更新源可配 = RCE 通道"这条前提没动），凭据走新设置 `update_github_token`（只存不回显，
   设置页「更新」卡里有输入框，留空即不改，**现读现用、换令牌立即生效**）。
@@ -362,10 +362,9 @@
 
 #### 变更
 
-- **模块路径全部改到自己名下，不再出现原作者命名空间**：`github.com/Autumn-27/artex` →
-  `github.com/lin9527ya/artex`（本仓 192 个文件的自引用 + README/相关文档），
+- **模块路径全部改到自己名下，不再出现原作者命名空间**（本仓 192 个文件的自引用 + README/相关文档），
   norma SDK 的 fork 也把 module path 改成 `github.com/lin9527ya/Norma`（**v0.5.0**，
-  该仓 93 个文件的自引用一并改完并已打 tag），于是 ARTEX 侧**不再需要 `replace`**——
+  该仓 93 个文件的自引用一并改完并已打 tag），于是本仓侧**不再需要 `replace`**——
   `require github.com/lin9527ya/Norma v0.5.0` 直接引。
   · 动机：路径写着上游名字时，人和模型读 `go.mod` 都会得出"代码来自原作者"（实际从
     2026-10-13 起就是个人维护线），这次事故就是这么被误读出来的。
@@ -518,7 +517,7 @@
 #### 变更
 
 - **技能页补上「找得到」和「看得懂」两件事（骨架不动）**：与 CyberStrikeAI 的技能页逐项比过之后
-  的结论是**不换骨架**——ARTEX 是「技能库管理台」（调用排行/未使用/未命中缺口、按 Agent 可见性、
+  的结论是**不换骨架**——本系统是「技能库管理台」（调用排行/未使用/未命中缺口、按 Agent 可见性、
   常驻技能、包内增删文件、zip 上传），CS 是「技能文件浏览器」（卡片列表 + 弹窗里只能改正文）。
   只把 CS 确实更顺手的三处搬了过来：
   · **左栏搜索框**（本地过滤，零后端改动）：按技能名 / 描述 / 任意文件名命中，显示「N / M 个技能命中」，
@@ -529,7 +528,7 @@
   · **markdown 渲染预览**：`.md` 文件的编辑器头部多一个「预览渲染」（复用 `agent-editor` 的同款
     模式与共用 `<Markdown>`），渲染的是编辑器里的**当前内容**（含未保存改动），别的文件不显示该按钮。
   · 没搬的：服务端搜索/分页（一次全量拉取，量级不对）、卡片网格+弹窗编辑（会把包内编辑能力砍掉）、
-    CS 自己的 version/tags 字段（ARTEX 跟 agentskills.io 规范）、摘要优先加载（本地 API 一次读全）。
+    CS 自己的 version/tags 字段（本系统跟 agentskills.io 规范）、摘要优先加载（本地 API 一次读全）。
 
 #### 变更
 
@@ -638,7 +637,7 @@
   （P12 的失效安全在范围读不出来时取的就是「宁停勿越」）。现在越界先落到人手里：弹出审批，
   由你决定放行还是拦下。
   - **只影响「从未保存过 `intercept_scope_mode`」的实例**；显式保存过的值仍然优先。想让越界直接
-    被拦、不走人工，把该设置写成 `deny`，或用环境变量 `ARTEX_SCOPE_ENFORCEMENT=deny` 强制。
+    被拦、不走人工，把该设置写成 `deny`，或用环境变量 `BLADE_SCOPE_ENFORCEMENT=deny` 强制。
   - **越界审批不设超时**：它会一直等到你裁决、或该工作被取消。这是刻意的——授权边界上「等」比
     「替你决定」更安全。等待期间意图租约会持续续住，不会被看门狗判成僵尸回收。
   - 未声明可用范围行的任务、以及没有任务的上下文（对话页 / Auto agent）不受影响。
@@ -898,7 +897,7 @@
 
 - **修复掩码可被「改目标地址、保留凭据」绕过（严重）**：配置合并对「未提及的键」一律保留库中原值，于是只改地址、对凭据避而不谈，就能让服务端把库里的真凭据发到任意地址，且完全静默。现规定目标地址一旦变化，每个凭据字段都必须显式表态——给新值，或显式留空表示不再需要。
 - **修复 markdown 系渠道对不可信内容零转义**：漏洞标题与摘要来自模型输出、资产 URL 来自扫描结果，构造的标题会在钉钉 / 企业微信 / 飞书里渲染成可点击外链，图片语法则会在渲染时被客户端拉取并泄露阅读者 IP。现统一做单行化 + markdown 元字符转义，且转义发生在各渠道的渲染出口而非共用的标题函数。
-- **修复投递地址的 SSRF 面**：此前环回、内网与云元数据地址一律可投递，而失败响应体前 200 字节会进 `last_error` 并被投递历史回显，构成一条半盲读原语。现改在**拨号阶段**设防，覆盖 DNS 重绑定，并拒绝跨主机重定向；环回与链路本地地址需显式设置 `ARTEX_NOTIFY_ALLOW_LOCAL=1`，RFC1918 私网仍放行（内网自建 SMTP 中继很常见）。
+- **修复投递地址的 SSRF 面**：此前环回、内网与云元数据地址一律可投递，而失败响应体前 200 字节会进 `last_error` 并被投递历史回显，构成一条半盲读原语。现改在**拨号阶段**设防，覆盖 DNS 重绑定，并拒绝跨主机重定向；环回与链路本地地址需显式设置 `BLADE_NOTIFY_ALLOW_LOCAL=1`，RFC1918 私网仍放行（内网自建 SMTP 中继很常见）。
 - **修复推送凭据经错误信息外泄**：钉钉的 `access_token`、企业微信的 `key`、Telegram 的 bot token 都在 URL 里，而投递失败时完整 URL 会流入 `last_error`、投递历史、服务端日志与前端提示四处。现统一脱敏，只保留 `scheme://host` 与底层原因。
 - **修复汇总消息被截断后整批标记已送达导致的静默丢失**：被截掉的漏洞既不在消息里、也不在失败列表里，投递历史却显示成功。现改为按**整条**打包，只标记装进本条的那些，其余回队列等下一条续发且不消耗重试次数，消息头部也写明还有多少条将在下一条继续。
 - **修复最低级别门槛打错字会让过滤器静默失效**：`min_severity` 写成 `hgih` 这类笔误时未知级别序数为 0，判定退化成恒真，用户以为只收高危、实际全部漏洞都被灌进群里。现于写入路径校验取值并列出可选值。
@@ -1279,13 +1278,13 @@
 #### 新增的功能
 
 - 支持**页面一键更新**：系统配置页新增「版本与更新」卡片，顶栏在有新版时亮出提示。流程为下载发布包 → 校验 `SHA256SUMS` → 冒烟测试 → 暂存 → 退出由守护脚本重新拉起完成换装，页面自动刷新。
-- 新增守护启动脚本 `start.sh` / `start.bat` 作为正式启动入口（发布包与 Docker 镜像均已带上，`install.sh` 不变），按退出码决定是否重新拉起，并负责把 SIGTERM 转发给 artex。校验与换装逻辑都在 Go 里，脚本保持傻瓜化。
+- 新增守护启动脚本 `start.sh` / `start.bat` 作为正式启动入口（发布包与 Docker 镜像均已带上，`install.sh` 不变），按退出码决定是否重新拉起，并负责把 SIGTERM 转发给 blade 本体。校验与换装逻辑都在 Go 里，脚本保持傻瓜化。
 - 失败自动兜底：校验或冒烟不通过就丢弃、继续跑当前版本；新版连续 3 次启动失败则回滚上一版本。设置页另有手动回滚（注意数据库结构不会回退）。
 - 更新只认 GitHub 域名且强制 HTTPS，发布源不可配置；开发构建禁用一键更新。GitHub 查询结果缓存 30 分钟，避免顶栏提示耗尽 API 配额。
 
 #### 已知限制
 
-- Docker 下只换程序、不换镜像：工具链不会跟着升级，且重建容器会退回镜像自带版本，需要时仍用 `docker compose pull artex`。
+- Docker 下只换程序、不换镜像：工具链不会跟着升级，且重建容器会退回镜像自带版本，需要时仍用 `docker compose pull blade`。
 - 不同步发布包里的 `skills/`，新版新增的内置 skill 不会自动生效。
 - 更新即重启，会中断正在运行的任务。
 
@@ -1509,7 +1508,7 @@
 
 #### 新增的功能
 
-- 新增 `reset-password.sh` 重置管理员（用户名固定 `ARTEX`）密码：支持 local / docker 两种部署，连接信息可显式指定或自动从 `--dsn`/`$ARTEX_PG_DSN`/`config.json` 读取；在库内用 `pgcrypto` 生成与后端登录兼容的 bcrypt 哈希并写回 `settings.auth.password_hash`，重置后无需重启服务。密码经环境变量传入、不进入进程 argv，并做转义防注入。
+- 新增 `reset-password.sh` 重置管理员（用户名固定 `BLADE`）密码：支持 local / docker 两种部署，连接信息可显式指定或自动从 `--dsn`/`$BLADE_PG_DSN`/`config.json` 读取；在库内用 `pgcrypto` 生成与后端登录兼容的 bcrypt 哈希并写回 `settings.auth.password_hash`，重置后无需重启服务。密码经环境变量传入、不进入进程 argv，并做转义防注入。
 
 ### 贡献者
 
@@ -1604,7 +1603,7 @@
 - LLM 配置页改为配置卡片列表和右侧抽屉编辑，并提供 Pool 轮询顺序、优先级、排除项、健康状态和恢复操作。
 - 配置链耗尽信息支持窄屏换行；当前模型由会话列表图标改为当前会话标题旁的文字标签和完整 Tooltip。
 - 任务内各角色解析 LLM 的顺序调整为「Agent 绑定 → 任务配置链 → 全局」：显式绑定模型的角色始终跑在该模型上，未绑定角色才落到任务链，任务链为空时再落到全局。
-- 出站代理留空即直连，不再回退 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量（显式 `ARTEX_LLM_PROXY` 不受影响）；代理输入支持带账号密码的 `socks5://user:pass@host:port`。
+- 出站代理留空即直连，不再回退 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量（显式 `BLADE_LLM_PROXY` 不受影响）；代理输入支持带账号密码的 `socks5://user:pass@host:port`。
 
 #### 修复的问题
 
@@ -1755,15 +1754,7 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/ARTEX/compare/v0.4.2...HEAD
-[0.4.2]: https://github.com/lin9527ya/ARTEX/releases/tag/v0.4.2
-[0.4.0]: https://github.com/lin9527ya/ARTEX/releases/tag/v0.4.0
-[0.3.10]: https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10
-[0.3.9]: https://github.com/Autumn-27/ARTEX/compare/v0.3.8...v0.3.9
-[0.3.8]: https://github.com/Autumn-27/ARTEX/compare/v0.3.7...v0.3.8
-[0.3.7]: https://github.com/Autumn-27/ARTEX/compare/v0.3.6...v0.3.7
-[0.3.6]: https://github.com/Autumn-27/ARTEX/compare/v0.3.5...v0.3.6
-[0.3.5]: https://github.com/Autumn-27/ARTEX/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/Autumn-27/ARTEX/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/Autumn-27/ARTEX/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/Autumn-27/ARTEX/compare/v0.3.1...v0.3.2
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.0
+[0.4.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.4.2
+[0.4.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.4.0
