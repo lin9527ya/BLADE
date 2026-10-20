@@ -60,7 +60,9 @@ type corsState struct {
 type authState struct {
 	// signKey 是 HS256 签名密钥（见 auth.go 的 signingKey）：改密码会**轮换**它以立刻
 	// 吊销既有 token，而 requireAuth 每请求都要读，所以经方法访问、不直读字段。
-	// jwtKeyPath 是它的落盘位置（baseDir/jwt.key），轮换时覆写。
+	// jwtKeyPath 是本地镜像的落盘位置（baseDir/jwt.key）。权威副本在库里
+	// （见 auth.go 的 jwtKeySetting），轮换时两边一起写；这个文件只服务于
+	// 「回滚到只认文件的旧版本」和「库暂时读不到」。
 	signKey    signingKey
 	jwtKeyPath string
 	login      loginGuard // 登录失败节流（见 auth.go）
@@ -144,7 +146,7 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
-	key, err := loadOrCreateJWTKey(keyDir, dataDir)
+	key, err := loadOrCreateJWTKey(m.pg, keyDir, dataDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}

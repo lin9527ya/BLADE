@@ -15,14 +15,23 @@ import (
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/lin9527ya/blade/db"
 	"golang.org/x/crypto/bcrypt"
 )
 
 const (
 	jwtKeyFilename = "jwt.key"
 	authPassKey    = "auth.password_hash"
-	jwtTTL         = 7 * 24 * time.Hour
-	keyChars       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// jwtKeySetting 是签名密钥在库里的存放位置。和密码哈希（authPassKey）同库：
+	// **同一个库 = 同一个登录域**。
+	//
+	// 此前密钥只落在 keyDir（可执行文件所在目录），于是同一份部署换个目录、换个
+	// checkout 起来就会静默生成新 key——所有人被踢回登录页，而日志上看不出原因
+	// （两份 checkout 共用一个库时，"起了 B 就把 A 的登录态清了"）。放进库之后，
+	// 指向同一个库的实例（多开、双 checkout、搬目录）共用一把 key。
+	jwtKeySetting = "auth.jwt_key"
+	jwtTTL        = 7 * 24 * time.Hour
+	keyChars      = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	// 下限与 setup 页的前端校验一致——校验只放在前端等于没放，直接打 API 就能
 	// 绕过。上限是 bcrypt 的硬限制：超过 72 字节 GenerateFromPassword 会返回
@@ -60,52 +69,141 @@ func newJWTKey() ([]byte, error) {
 	return buf, nil
 }
 
-// rotateJWTKey 落盘一把新密钥并返回它，用于吊销既有 token（改密码时调用）。
+// rotateJWTKey 换一把新密钥并返回它，用于吊销既有 token（改密码时调用）。
 // 换密钥即等于吊销**全部**已签发 token——本系统单用户，所以"全部"就是你自己那几个
 // 会话。比引入 jti/黑名单简单，也不需要额外的存储。
-func rotateJWTKey(path string) ([]byte, error) {
+//
+// 库是权威存储：先写库、再刷新本地镜像。库写失败就当没轮换过（调用方会如实回
+// "没有吊销"）；镜像写失败不影响"轮换已生效"这一事实，只留痕。
+func rotateJWTKey(pg *db.DB, path string) ([]byte, error) {
 	key, err := newJWTKey()
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
-		return nil, fmt.Errorf("write jwt key: %w", err)
+	if err := pg.SetSetting(jwtKeySetting, string(key)); err != nil {
+		return nil, fmt.Errorf("write jwt key to db: %w", err)
+	}
+	writeJWTKeyFile(path, key)
+	return key, nil
+}
+
+// loadOrCreateJWTKey 取签名密钥，**以库为准**：同一个库 = 同一个登录域。
+//
+// keyDir 仍是可执行文件所在目录（**不是**可浏览的 dataDir——签名密钥不能被文件
+// 管理器列到/下走），但那里的 jwt.key 现在只是本地镜像，服务于两种场景：回滚到
+// 只认文件的旧版本、以及库暂时读不到。老安装把密钥放在 dataDir/jwt.key，首次启动
+// 会被迁进库并从工作区删除。
+func loadOrCreateJWTKey(pg *db.DB, keyDir, dataDir string) ([]byte, error) {
+	path := filepath.Join(keyDir, jwtKeyFilename)
+
+	// 1) 库里有 → 以库为准，顺手把本地镜像刷成同一把。
+	if key, ok, err := storedJWTKey(pg); err != nil {
+		return nil, err
+	} else if ok {
+		writeJWTKeyFile(path, key)
+		return key, nil
+	}
+
+	// 2) 库里还没有 → 把本地已有的 key 迁进库，既有 token 继续有效（不把人踢下线）。
+	//    keyDir 优先，其次是老安装的 dataDir 位置。
+	for _, candidate := range []string{path, filepath.Join(dataDir, jwtKeyFilename)} {
+		key, ok := readJWTKeyFile(candidate)
+		if !ok {
+			continue
+		}
+		winner, err := storeJWTKey(pg, key)
+		if err != nil {
+			return nil, err
+		}
+		if candidate != path {
+			// 老位置在可浏览的工作区里：迁完即删，并在新位置补一份镜像。
+			_ = os.Remove(candidate)
+			writeJWTKeyFile(path, winner)
+		}
+		log.Printf("[auth] JWT key 已从 %s 迁入库：此后指向同一个库的实例共用一把 key，换目录启动不会再把人踢下线", candidate)
+		return winner, nil
+	}
+
+	// 3) 都没有 → 新生成一把，写库 + 落盘镜像。
+	key, err := newJWTKey()
+	if err != nil {
+		return nil, err
+	}
+	winner, err := storeJWTKey(pg, key)
+	if err != nil {
+		return nil, err
+	}
+	writeJWTKeyFile(path, winner)
+	log.Printf("[auth] 新 JWT key 已写入库与 %s", path)
+	return winner, nil
+}
+
+// storedJWTKey 读库里的签名密钥。长度不足 32 一律当没有（半截值不该被当成密钥用）。
+func storedJWTKey(pg *db.DB) ([]byte, bool, error) {
+	if pg == nil {
+		return nil, false, nil
+	}
+	v, ok, err := pg.GetSetting(jwtKeySetting)
+	if err != nil {
+		return nil, false, fmt.Errorf("read jwt key from db: %w", err)
+	}
+	if !ok || len(strings.TrimSpace(v)) < 32 {
+		return nil, false, nil
+	}
+	return []byte(strings.TrimSpace(v)), true, nil
+}
+
+// storeJWTKey 只在库里还没有密钥时写入，并返回最终生效的那把：两个实例同时冷启动
+// 时，后到的那个用先到者写下的 key，而不是各拿各的——各拿各的等于又把登录域劈成两半。
+func storeJWTKey(pg *db.DB, key []byte) ([]byte, error) {
+	if pg == nil {
+		return key, nil
+	}
+	inserted, err := pg.InsertSettingIfAbsent(jwtKeySetting, string(key))
+	if err != nil {
+		return nil, fmt.Errorf("write jwt key to db: %w", err)
+	}
+	if inserted {
+		return key, nil
+	}
+	// 并发下别人先写了：以先到者那把为准。若那一行存在却读不出可用密钥（空串、半截
+	// 值），就用本次这把覆盖——一行脏数据不该让服务再也起不来。
+	existing, ok, err := storedJWTKey(pg)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return existing, nil
+	}
+	if err := pg.SetSetting(jwtKeySetting, string(key)); err != nil {
+		return nil, fmt.Errorf("write jwt key to db: %w", err)
 	}
 	return key, nil
 }
 
-// loadOrCreateJWTKey reads the 32-byte signing key from keyDir/jwt.key. keyDir is
-// the project base dir (next to the executable), NOT the browsable workspace root
-// (dataDir) — the signing key must never be listable/downloadable via the file
-// manager. Legacy installs kept it at dataDir/jwt.key; if present there and not yet
-// at the new location, it is migrated (key preserved, so sessions stay valid) and
-// the old file removed so it disappears from the workspace. On first run a random
-// key is generated and persisted.
-func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
-	path := filepath.Join(keyDir, jwtKeyFilename)
-	// one-time migration out of the old in-workspace location.
-	if legacy := filepath.Join(dataDir, jwtKeyFilename); legacy != path {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if data, rerr := os.ReadFile(legacy); rerr == nil {
-				if werr := os.WriteFile(path, data, 0o600); werr == nil {
-					_ = os.Remove(legacy)
-					log.Printf("[auth] JWT key 已从 %s 迁移到 %s（移出可浏览工作区）", legacy, path)
-				}
-			}
-		}
-	}
-	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
-		return []byte(strings.TrimSpace(string(data))), nil
-	}
-	buf, err := newJWTKey()
+// readJWTKeyFile 读本地密钥文件；读不到或长度不足 32 都返回 ok=false。
+func readJWTKeyFile(path string) ([]byte, bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
-	if err := os.WriteFile(path, buf, 0600); err != nil {
-		return nil, fmt.Errorf("write jwt key: %w", err)
+	key := strings.TrimSpace(string(data))
+	if len(key) < 32 {
+		return nil, false
 	}
-	log.Printf("[auth] 新 JWT key 已写入 %s", path)
-	return buf, nil
+	return []byte(key), true
+}
+
+// writeJWTKeyFile 刷新本地镜像。写不进去不该拦住启动——库里那把才是权威——但必须留痕，
+// 否则"回滚到旧版本仍能沿用登录态"这条会在无声中失效。内容已经一致时不写，省得每次
+// 启动都动 mtime。
+func writeJWTKeyFile(path string, key []byte) {
+	if cur, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(cur)) == string(key) {
+		return
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		log.Printf("[auth] 本地 jwt.key 镜像写入 %s 失败（不影响本次启动，但回滚到旧版本时会另生成新 key）: %v", path, err)
+	}
 }
 
 // signingKey 持有当前的 HS256 签名密钥。用 atomic 而不是裸 []byte 是因为改密码会**轮换**
@@ -339,7 +437,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	// 7 天 token 会一直有效到自然过期——改密码就失去了「止损」的意义。（本系统单用户，
 	// 所以「所有 token」就是你自己那几个会话；轮换后本次请求所用的 token 也随失效，
 	// 前端会退回登录页重新登录，这是预期行为。）
-	newKey, rotErr := rotateJWTKey(s.auth.jwtKeyPath)
+	newKey, rotErr := rotateJWTKey(pg, s.auth.jwtKeyPath)
 	if rotErr != nil {
 		// 密码已经改成功了，但旧 token 没失效——如实说，别报个 ok 让人以为已经止损。
 		log.Printf("[auth] 改密码后轮换 JWT key 失败: %v", rotErr)
