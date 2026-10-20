@@ -622,7 +622,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     inputGroup
                     rows={1}
                     aria-label={`给 Worker #${active.intent_id} 发消息`}
-                    placeholder={`给 Worker #${active.intent_id} 发消息，@ 引用记录，调整执行方向…`}
+                    placeholder={
+                      active.status === "running"
+                        ? `给运行中的 Worker #${active.intent_id} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`
+                        : `给已暂停的 Worker #${active.intent_id} 发消息，@ 引用记录，调整执行方向…`
+                    }
                     value={workerMessage}
                     onValueChange={(value) => {
                       setWorkerMessage(value);
@@ -652,21 +656,39 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                       </InputGroupButton>
                     )}
                     {active.status === "running" ? (
-                      <InputGroupButton
-                        className="ml-auto"
-                        size="icon-xs"
-                        variant="destructive"
-                        onClick={() => void controlWorker(active, "pause")}
-                        disabled={controllingIntent === active.intent_id}
-                        title="暂停当前 Worker"
-                        aria-label="暂停当前 Worker"
-                      >
-                        {controllingIntent === active.intent_id ? (
-                          <Loader2Icon className="animate-spin" />
-                        ) : (
-                          <SquareIcon />
+                      <>
+                        {!isBtwCommand(workerMessage) && (
+                          <InputGroupButton
+                            size="icon-xs"
+                            variant="default"
+                            onClick={sendWorkerChat}
+                            disabled={
+                              workerMessageSending ||
+                              !workerMessage.trim() ||
+                              workerMessageCharCount(workerMessage) > MAX_WORKER_MESSAGE_CHARS
+                            }
+                            title="给运行中的 Worker 发提示：下一步动作前生效，会拦掉它那一次动作并据此改道"
+                            aria-label="给运行中的 Worker 发提示"
+                          >
+                            {workerMessageSending ? <Spinner /> : <ArrowUpIcon />}
+                          </InputGroupButton>
                         )}
-                      </InputGroupButton>
+                        <InputGroupButton
+                          className="ml-auto"
+                          size="icon-xs"
+                          variant="destructive"
+                          onClick={() => void controlWorker(active, "pause")}
+                          disabled={controllingIntent === active.intent_id}
+                          title="暂停当前 Worker"
+                          aria-label="暂停当前 Worker"
+                        >
+                          {controllingIntent === active.intent_id ? (
+                            <Loader2Icon className="animate-spin" />
+                          ) : (
+                            <SquareIcon />
+                          )}
+                        </InputGroupButton>
+                      </>
                     ) : (
                       <>
                         <InputGroupButton
