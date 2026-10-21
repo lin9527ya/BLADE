@@ -13,7 +13,6 @@ import type {
   Settings,
   Stats,
   Task,
-  TokenTotal,
   TrafficExchange,
   UsageStats,
 } from "@/lib/types";
@@ -45,7 +44,6 @@ export function useDashboardState() {
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
   const [activity, setActivity] = React.useState<Activity[]>([]);
-  const [tokens, setTokens] = React.useState<TokenTotal | null>(null);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
@@ -76,13 +74,12 @@ export function useDashboardState() {
         if (loading) return;
         loading = true;
         try {
-          const [findings, stats, settings, pending, activity, tokens, conversationTokens] = await Promise.all([
+          const [findings, stats, settings, pending, activity, conversationTokens] = await Promise.all([
             api.findings(),
             api.stats(),
             api.settings(),
             api.interceptPending(),
             api.activity(undefined, { limit: 30 }),
-            api.tokenStats(),
             api.conversationTokens(),
           ]);
           if (!alive()) return;
@@ -91,7 +88,6 @@ export function useDashboardState() {
           setSettings(settings);
           setPending(pending);
           setActivity(activity.items);
-          setTokens(tokens.total ?? null);
           setConvTokens(conversationTokens);
         } catch {
           // Preserve stale data and retry on the next interval.
