@@ -200,6 +200,40 @@ func writeCommittedTaskDelete(w http.ResponseWriter, result DeleteTaskResult, er
 	writeJSON(w, http.StatusOK, result)
 }
 
+// WaitAllQuiescent 等所有在跑的 run（planner.Plan / worker.Execute / 主 Agent 对话）收尾，
+// 最多等到 ctx 到期；返回到期时仍在跑的数量（0 = 都收尾了）。
+//
+// 关停时用它把"进程退出"排到"run 把终态写进库"之后：worker 的收尾写入发生在收到取消
+// **之后**，而 main 的 defers 里 mgr.Close() 会关掉连接池——不等的后果就是那条写入变成
+// "sql: database is closed"，意图停在 running（只能等下次启动重置为 open）。
+func (s *Server) WaitAllQuiescent(ctx context.Context) int64 {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if n := s.busyRuns(); n == 0 {
+			return 0
+		}
+		select {
+		case <-ctx.Done():
+			return s.busyRuns()
+		case <-ticker.C:
+		}
+	}
+}
+
+// busyRuns 是在跑的 run 总数：engine 侧（worker/planner）+ 主 Agent 对话侧。
+func (s *Server) busyRuns() int64 {
+	s.chatRuns.mu.Lock()
+	var chat int64
+	for _, busy := range s.chatRuns.busy {
+		if busy {
+			chat++
+		}
+	}
+	s.chatRuns.mu.Unlock()
+	return s.engine.inflightTotal() + chat
+}
+
 func (s *Server) waitTaskQuiescent(ctx context.Context, taskID string) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
