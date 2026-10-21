@@ -49,6 +49,12 @@ export function useDashboardState() {
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
+  // 数据源开关：旧版 = activity（task.tokens + 会话），新版 = llm_usage 计量账本。
+  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
+  // selected profile tab: "all" = 全部; number = specific profile id
+  const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
+  // day range for the daily bar chart
+  const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
 
   // The task list is the most expensive dashboard source. Poll it independently
   // so a large history cannot hold back every other dashboard panel.
@@ -102,6 +108,11 @@ export function useDashboardState() {
   );
 
   // slow poll: traffic, assets, system-static (every 15s)
+  //
+  // `usageStats` 只服务「新版」token 视图：旧版（默认）读的是 activity 侧的 task.tokens 与
+  // 会话用量，这份数据在旧版下一个字段都没人读。而它的后端是 by_profile 全表 GROUP BY +
+  // 按日聚合，随表增长线性变贵——所以只在「新版」时才拉，天数按用户选的窗口收敛（不再固定
+  // 365）。切到新版 / 改天数会重建轮询、立即按新参数拉一次（deps 见下）。
   usePolling(
     async (alive) => {
       const load = async () => {
@@ -110,17 +121,18 @@ export function useDashboardState() {
           // skills / tools，但 dashboard 上没有任何面板读它们（唯一的 tools 下游
           // enabledTools 自己也是死的）——等于每 15 秒白发四个请求。要加相关面板时
           // 再把对应的源加回来。
+          const wantUsage = tokenVersion === "new";
           const [traf, counts, profileList, usage] = await Promise.all([
             api.traffic(0, 50),
             api.assetCounts(),
             api.llmProfiles(),
-            api.usageStats(365),
+            wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
           ]);
           if (!alive()) return;
           setTraffic(traf.exchanges ?? []);
           setAssetCounts(counts ?? {});
           setLLMProfiles(profileList);
-          setUsageStats(usage);
+          if (usage) setUsageStats(usage);
         } catch {
           /* transient errors */
         }
@@ -128,7 +140,7 @@ export function useDashboardState() {
       void load();
     },
     15000,
-    [],
+    [tokenVersion, tokenDays],
   );
 
   // ── derived ───────────────────────────────────────────────────────────────
@@ -208,13 +220,6 @@ export function useDashboardState() {
   // ── token stats per LLM profile ──────────────────────────────────────────
   // tasks whose llm_profile_id is null/undefined used the active default profile
   const defaultProfileId = activeProfile ? Number(activeProfile.id) : null;
-
-  // 数据源开关：旧版 = activity（task.tokens + 会话），新版 = llm_usage 计量账本。
-  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
-  // selected profile tab: "all" = 全部; number = specific profile id
-  const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
-  // day range for the daily bar chart
-  const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
 
   // profile 名 → id，用于把 llm_usage 的 profile_name 映射到现有 profile 分栏。
   const profileIdByName = React.useMemo(() => {
