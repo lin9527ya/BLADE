@@ -1225,6 +1225,21 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.touch(t.ID)
 		return true
 	}
+	// 进程关停（SIGTERM/SIGINT、一键更新重启）取消了本 run → 退回 open，**不标 blocked**。
+	// 关停不是"这条意图没探成"：agent.AbortShutdown 的说明就是"重启后残留的 running 意图会
+	// 重置为 open 并重新执行"。此前没有这条分支，靠"终态写入恰好撞上关池子而失败"才达成
+	// ——写入赶在关池子之前成功时，意图会被标成 blocked 这种假失败，而启动重置只认
+	// running、不修它（planner 会把它当外部故障重派，但图上留了个假终态）。
+	// 排在其它特判之后：超时收尾/任务终态/kill 都比"整个进程要关了"更具体。
+	if ectx.Err() != nil && shutdownAborted(context.Cause(ectx)) {
+		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
+			log.Printf("[worker %s] task %s 意图 #%d 关停回退失败: %v", name, t.ID, intent.ID, err)
+		} else {
+			log.Printf("[worker %s] task %s 意图 #%d 因进程关停结束，已退回 open 等待重启后重派", name, t.ID, intent.ID)
+		}
+		e.touch(t.ID)
+		return true
+	}
 	// killed by the planner: mark stopped (don't write back results, don't auto-reclaim).
 	if killed {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
@@ -1448,6 +1463,17 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 		e.runIntent(ctx, t, "chat", worker, node, requestID, agentMessage)
 	})
 	return nil
+}
+
+// shutdownAborted reports whether this run was cancelled by process shutdown
+// (SIGTERM/SIGINT 或一键更新重启). 与 taskExecutionPaused 同款：按登记过的 code 判，
+// 别去比字符串以外的什么东西。
+func shutdownAborted(cause error) bool {
+	var abort *agent.AbortCause
+	if !errors.As(cause, &abort) {
+		return false
+	}
+	return abort.Code == "shutdown"
 }
 
 func taskExecutionPaused(cause error) bool {

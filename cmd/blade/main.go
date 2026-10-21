@@ -44,6 +44,11 @@ func printBanner(addr string) {
 		version, runtime.GOOS, runtime.GOARCH, runtime.Version(), addr)
 }
 
+// shutdownDrainGrace 是关停时等 in-flight run 收尾的上限。它直接决定退出（以及一键更新
+// 换装）要等多久，所以必须有界：到点就走，残留的 running 意图由下次启动的
+// ResetRunningIntents 兜回 open 重新执行。
+const shutdownDrainGrace = 20 * time.Second
+
 // main only maps run's result onto the process exit code. The exit code is part
 // of the update protocol — the supervising start script reads it to decide
 // whether to relaunch us (see selfupdate.ExitRestart) — so the body has to live
@@ -204,9 +209,22 @@ func run() int {
 	}
 
 	log.Println("shutting down...")
+	// 先把取消投出去（幂等，首次 cause 生效），再等 run 收尾——否则 drain 可能看到
+	// inflight=0（run 还没收到取消）就立刻退出，等了个寂寞。
+	shutdown(agent.AbortShutdown)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
+
+	// 等正在跑的 run 把终态写进库，再让 defers 去关连接池（mgr.Close）：worker 的收尾写入
+	// 发生在收到取消**之后**，池子一关，那次写入就变成 "sql: database is closed"、意图停在
+	// running。有界——到点照常退出，残留状态由下次启动的 ResetRunningIntents 兜住。
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), shutdownDrainGrace)
+	defer cancelDrain()
+	if busy := srv.WaitAllQuiescent(drainCtx); busy > 0 {
+		log.Printf("[shutdown] 等满 %s 仍有 %d 处 run 未收尾：其意图终态未落库，下次启动会重置为 open",
+			shutdownDrainGrace, busy)
+	}
 	return code
 }
 

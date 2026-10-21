@@ -248,3 +248,53 @@ func TestRuntimeCtxFollowsTaskCancellation(t *testing.T) {
 		t.Fatal("sleepCtx did not observe the cancelled task context")
 	}
 }
+
+// TestShutdownCauseIsRecognisedAndDistinct 钉住关停这条的判定：进程关停（SIGTERM/SIGINT、
+// 一键更新重启）必须能被认出来，且不能把别的取消原因误判成它——它决定 run 是退回 open
+// （等重启重派）还是落进终态分流被标成 blocked（假失败：关停不是"这条意图没探成"）。
+func TestShutdownCauseIsRecognisedAndDistinct(t *testing.T) {
+	if !shutdownAborted(agent.AbortShutdown) {
+		t.Fatal("进程关停没被识别：run 会落进终态分流、被标成 blocked 这种假失败")
+	}
+	others := []*agent.AbortCause{
+		agent.AbortPausedByUser, agent.AbortGoalMet, agent.AbortSettleDrainTimeout,
+		agent.AbortTaskDeleted, agent.AbortKilledByPlanner, agent.AbortRunHardTimeout,
+	}
+	for _, other := range others {
+		if shutdownAborted(other) {
+			t.Fatalf("%s 被误判成进程关停：意图会被退回 open 而不是按它自己的语义收尾", other.Code)
+		}
+	}
+	if shutdownAborted(context.Canceled) || shutdownAborted(nil) {
+		t.Fatal("无名取消 / 空 cause 不该被当成进程关停")
+	}
+}
+
+// TestWaitAllQuiescentBoundsWaitAndReportsRemaining 钉住关停 drain 的两个性质：有在跑 run 时
+// 不谎报 0（否则 main 会立刻退出、池子随即被关掉），且**按 ctx 到期退出**（drain 有界——
+// 它直接决定退出与一键更新换装要等多久）。
+func TestWaitAllQuiescentBoundsWaitAndReportsRemaining(t *testing.T) {
+	e := NewEngine(nil)
+	if !e.beginTaskOperation("t1") {
+		t.Fatal("beginTaskOperation 被拒")
+	}
+	defer e.decInflight("t1")
+	s := &Server{engine: e, chatRuns: chatState{busy: map[string]bool{}}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if n := s.WaitAllQuiescent(ctx); n == 0 {
+		t.Fatal("还有在跑 run 时不该报 0：main 会立刻退出、连接池随即被关掉")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("没有按 ctx 到期退出，等了 %s", elapsed)
+	}
+
+	e.decInflight("t1")
+	idle, cancelIdle := context.WithTimeout(context.Background(), time.Second)
+	defer cancelIdle()
+	if n := s.WaitAllQuiescent(idle); n != 0 {
+		t.Fatalf("空闲时应报 0，得到 %d", n)
+	}
+}

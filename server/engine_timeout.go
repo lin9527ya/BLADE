@@ -63,6 +63,20 @@ func (e *Engine) beginTaskOperation(taskID string) bool {
 }
 
 func (e *Engine) decInflight(taskID string) { atomic.AddInt64(e.inflightCounter(taskID), -1) }
+
+// inflightTotal 是所有任务在跑 run 的总数（planner.Plan + worker.Execute）。关停 drain 用它
+// 判断"还有没有人在收尾"。
+func (e *Engine) inflightTotal() int64 {
+	var total int64
+	e.inflight.Range(func(_, v any) bool {
+		if n, ok := v.(*int64); ok && n != nil {
+			total += atomic.LoadInt64(n)
+		}
+		return true
+	})
+	return total
+}
+
 func (e *Engine) inflightCount(taskID string) int64 {
 	return atomic.LoadInt64(e.inflightCounter(taskID))
 }

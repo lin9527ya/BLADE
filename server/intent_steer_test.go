@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 )
 
@@ -127,5 +129,81 @@ func TestSendWorkerMessageSteersRunningWorker(t *testing.T) {
 	s.engine.workMu.Unlock()
 	if w := send("这条不该被接受", ""); w.Code != 409 {
 		t.Fatalf("没有在跑的 work 时应 409，得到 %d：%s", w.Code, w.Body)
+	}
+}
+
+// TestShutdownCancellationReopensRunningIntent 是关停时序那条修复的端到端钉子：一条正在跑的
+// 意图被进程关停取消后，状态必须是 open（等重启后重派），**不能**是 blocked。
+//
+// 此前 runIntent 在终态分流前没有 shutdown 特判，被关停的 run 会落到 `err != nil → blocked`。
+// 之所以长期没暴露，是因为 worker 那次终态写入恰好撞上 main 的 defers 关掉连接池而失败、意图
+// 留在 running，再由启动时的 ResetRunningIntents 兜回 open——**靠"写失败"碰巧达成预期语义**。
+// 写入赶在关池子之前成功时（worker 收笔很快），意图就被标成 blocked 这种假失败，而启动重置
+// 只认 running、不修它。
+func TestShutdownCancellationReopensRunningIntent(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer m.Close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	s := &Server{ctx: ctx, m: m, engine: NewEngine(m)}
+	task, err := m.CreateTask("Shutdown reopen", "被关停的 run 该退回 open", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel(agent.AbortShutdown)
+		drain, stop := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stop()
+		_ = s.waitTaskQuiescent(drain, task.ID)
+		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
+	}()
+
+	iid, err := task.Store.AddNode(db.KindIntent, map[string]any{"summary": "long run"}, 1, "paused", "human", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 一个一直挂着、只在 ctx 被取消时才返回的 provider：保证关停发生时这条 run 确实在跑。
+	started := make(chan struct{}, 1)
+	worker := agent.NewWorker(retestProvider{complete: func(c context.Context, _ llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-c.Done()
+		return llm.Message{}, "", llm.Usage{}, c.Err()
+	}}, "test", m.dir, nil, 10000, 1)
+	worker.SetNonStreaming(func() bool { return true })
+	s.engine.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return nil, worker })
+
+	body, _ := json.Marshal(map[string]string{"message": "开始", "request_id": "shutdown-reopen-test"})
+	r := httptest.NewRequest("POST", "/", strings.NewReader(string(body)))
+	r.SetPathValue("id", task.ID)
+	r.SetPathValue("iid", fmt.Sprint(iid))
+	w := httptest.NewRecorder()
+	s.sendWorkerMessage(w, r)
+	if w.Code != 200 {
+		t.Fatalf("起 run 失败：%d %s", w.Code, w.Body)
+	}
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("worker 没被拉起来，测试前提不成立")
+	}
+
+	cancel(agent.AbortShutdown) // 进程关停
+	drain, stop := context.WithTimeout(context.Background(), 15*time.Second)
+	defer stop()
+	if err := s.waitTaskQuiescent(drain, task.ID); err != nil {
+		t.Fatalf("关停后 run 没有收尾：%v", err)
+	}
+
+	node, err := task.Store.GetNode(iid)
+	if err != nil || node == nil {
+		t.Fatalf("读意图失败：%v", err)
+	}
+	if node.State != "open" {
+		t.Fatalf("关停取消后意图状态=%s，应为 open（标 blocked 是假失败：关停不是这条意图没探成，且启动重置只认 running 不修它）", node.State)
 	}
 }
