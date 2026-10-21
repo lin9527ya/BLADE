@@ -2253,9 +2253,10 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 // globalPromptVars are runtime variables available to EVERY agent (built-in and
 // custom) regardless of its per-agent catalog. Each agent's render path fills them
 // (see agent.nowStr, rendered fresh each turn), so a prompt may always reference
-// {{.Now}} — e.g. subtract it from a fixed start stamp to reason about elapsed time.
+// {{.Now}}. 它只到天：system prompt 在 prompt cache 的前缀里，带时分秒会让每次调用都
+// 全量 miss（详见 agent.nowStr 的注释）。
 var globalPromptVars = []db.PromptVar{
-	{Name: "Now", Description: "服务端当前时间（每次运行实时刷新；可与固定起始时间相减判断已用时长）", Example: "2026-08-11 14:30:00 CST", Source: "runtime"},
+	{Name: "Now", Description: "服务端当前日期（只到天；放进 system prompt 不会破坏 prompt cache——带时分秒会）", Example: "2026-08-11", Source: "runtime"},
 	{Name: "DataDir", Description: "服务端数据根目录（所有任务/会话产物的根；各 agent 实际写盘在其下的子目录，如 <DataDir>/<taskID>）", Example: "/app/data", Source: "runtime"},
 }
 

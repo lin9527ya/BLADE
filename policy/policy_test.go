@@ -241,13 +241,13 @@ func TestCompileRulesMatching(t *testing.T) {
 // 提示词段：边界、硬底线改写、被拒摘要三块都必须说人话且包含关键出口。
 func TestRenderBlockAndHardFloor(t *testing.T) {
 	eff := Default()
-	block := RenderBlock(eff, 12)
+	block := RenderBlock(eff)
 	for _, want := range []string{"任务探索策略", "禁用手段", "敏感写操作", "被策略排除的方向不是", "产出 0 条意图", "口令爆破", "脱库"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("策略段缺少 %q：\n%s", want, block)
 		}
 	}
-	if RenderBlock(Effective{}, 0) != "" {
+	if RenderBlock(Effective{}) != "" {
 		t.Fatal("零策略不该注入任何段")
 	}
 	if HardFloorText(Effective{}) == HardFloorText(eff) {
@@ -324,7 +324,7 @@ func TestCustomRules(t *testing.T) {
 	if cv := cmd.CheckIntent(IntentInput{Summary: "连一下 prod-db.internal 看版本"}); !cv.Allow {
 		t.Fatalf("command 层条目不该判意图: %+v", cv)
 	}
-	if !strings.Contains(RenderBlock(cmd, 0), "prod-db.internal") || !strings.Contains(RenderBlock(cmd, 0), "只判命令") {
+	if !strings.Contains(RenderBlock(cmd), "prod-db.internal") || !strings.Contains(RenderBlock(cmd), "只判命令") {
 		t.Fatal("提示词段必须写明 command 层条目的作用面")
 	}
 	hit := false

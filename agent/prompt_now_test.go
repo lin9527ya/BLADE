@@ -26,7 +26,12 @@ func TestChatNowVarRenders(t *testing.T) {
 	}
 	year := time.Now().Format("2006")
 	if !strings.Contains(out, year) {
-		t.Fatalf("{{.Now}} did not render the live time (want year %s): %q", year, out)
+		t.Fatalf("{{.Now}} did not render the live date (want year %s): %q", year, out)
+	}
+	// 只到天：带时分秒意味着 system prompt 每次调用都换前缀，工具 schema 与历史会一起
+	// 掉出 prompt cache（模板里用的是全角「：」，所以出现 ASCII 冒号即说明带了时钟）。
+	if strings.Contains(out, ":") {
+		t.Fatalf("{{.Now}} 不应带时分秒（会破坏 prompt cache）：%q", out)
 	}
 }
 

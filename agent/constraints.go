@@ -14,17 +14,12 @@ import (
 // boundary wins the tug-of-war against "chase another entry surface".
 // policyBlock 渲染任务级探索策略段（P20）。与 constraintBlock 并列注入，但**不设
 // 开关**：策略是操作者声明的硬边界，不能被任何设置悄悄关掉（code-owned 段的意义）。
-func policyBlock(p *policy.Effective, ts *db.ExplorationStore) string {
+func policyBlock(p *policy.Effective) string {
 	if p == nil || p.IsZero() {
 		return ""
 	}
-	used := 0
-	if ts != nil {
-		if n, err := ts.CountIntents(); err == nil {
-			used = n
-		}
-	}
-	return policy.RenderBlock(*p, used)
+	// 不再传"当前已用 N 条"：它每新增一条意图就变，而这段在 system prompt（缓存前缀）里。
+	return policy.RenderBlock(*p)
 }
 
 func constraintBlock(ts *db.ExplorationStore) string {
