@@ -11,7 +11,7 @@ import (
 // 不许换措辞绕过、以及**策略内确无可行方向时的合法出口**（产出 0 意图 + 写一条
 // fact 说明）——最后一条是反空转的关键：没有它，planner 的"必须派人"底线会把它
 // 逼成反复重试被拒方向。
-func RenderBlock(e Effective, intentsUsed int) string {
+func RenderBlock(e Effective) string {
 	if e.IsZero() {
 		return ""
 	}
@@ -51,7 +51,10 @@ func RenderBlock(e Effective, intentsUsed int) string {
 			parts = append(parts, fmt.Sprintf("同时在途（待领）意图不超过 %d 条", e.MaxOpenIntents))
 		}
 		if e.MaxIntentsTotal > 0 {
-			parts = append(parts, fmt.Sprintf("本任务累计意图上限 %d 条（当前已用 %d 条）", e.MaxIntentsTotal, intentsUsed))
+			// 只写上限，不写「当前已用 N 条」：N 每新增一条意图就变，而这一段在 system
+			// prompt 里（缓存前缀内）——写进去等于每加一条意图就让整段前缀失效。到顶时
+			// policy.Check 会把「已创建 N 条（上限 M）」写进拒绝理由，那一刻的数字更准。
+			parts = append(parts, fmt.Sprintf("本任务累计意图上限 %d 条", e.MaxIntentsTotal))
 		}
 		b.WriteString(strings.Join(parts, "；") + "。\n")
 	}

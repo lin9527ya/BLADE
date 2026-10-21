@@ -477,7 +477,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	}
 	// P20：探索策略段（不受开关控制）——worker 是"探测"的执行者，禁用手段与只读声明
 	// 在这里必须与 planner 看到的一致，否则它会照着被禁的方向硬干、直到命令层拦下。
-	sysBody += policyBlock(pol, ts)
+	sysBody += policyBlock(pol)
 	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
 	sysBody += renderIntentTask(intent)
 	if as != nil {

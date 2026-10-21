@@ -20,11 +20,13 @@ type WorkerVars struct{ ProxyAddr, WorkerName, DataDir, Now string }
 type MainVars struct{ Goal, AssetSummary, FindingsSummary, DataDir, Now string }
 type GoalsVars struct{ EngagementDescription, DataDir, Now string }
 
-// nowStr is the server-local wall-clock string exposed as the universal {{.Now}}
-// prompt variable. renderSystem runs on every agent turn/round, so this is fresh
-// each run — a prompt can subtract it from a fixed start stamp to reason about
-// elapsed time (e.g. a timed benchmark's "last N hours" window).
-func nowStr() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
+// nowStr 是 universal {{.Now}} 变量渲染出来的服务端**日期**（只到天）。
+//
+// 刻意不带时分秒：{{.Now}} 渲染进的是 system prompt，而 renderSystem 每轮/每次 run 都会
+// 重跑——带秒就等于每次调用都换一份前缀，system 后面的工具 schema 与全部历史会一起掉出
+// prompt cache（当前内置模板与库内模板都没用它，但它在变量目录里对用户可见，一旦有人写进
+// 提示词就会变成每次调用 100% miss）。确有需要精确时间的场景，不要放进 system prompt。
+func nowStr() string { return time.Now().Format("2006-01-02") }
 
 // renderSystem returns the rendered system-prompt BODY (段 [A]) for agentKey.
 // Precedence: the DB-stored template (if any) over the built-in default template
