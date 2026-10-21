@@ -5,6 +5,8 @@ import * as React from "react";
 import {
   BrainIcon,
   CircleCheckIcon,
+  CircleDashedIcon,
+  CircleMinusIcon,
   CircleSlashIcon,
   CircleXIcon,
   ClockIcon,
@@ -112,8 +114,9 @@ export function mergeBySeq(current: Activity[], incoming: Activity[]): Activity[
 }
 
 // statusIcon maps a session status to its icon. Worker terminal states are
-// distinct & color-coded: 完成(绿勾圈) / 取消停止(琥珀斜杠圈) / 出错(红叉圈) /
-// 步数耗尽(紫). running=蓝色转圈, pending(待领取)=灰时钟.
+// distinct & color-coded: 完成(绿勾圈) / 已测未发现(绿减号圈) / 范围外(灰虚线圈) /
+// 取消停止(琥珀斜杠圈) / 出错(红叉圈) / 步数耗尽(紫). running=蓝色转圈,
+// pending(待领取)=灰时钟.
 export function statusIcon(status: SessionStatus) {
   switch (status) {
     case "running": // 执行中
@@ -130,8 +133,18 @@ export function statusIcon(status: SessionStatus) {
       return <CircleXIcon className="size-3.5 text-red-500 dark:text-red-400" />;
     case "exhausted": // 步数耗尽(撞 max_turns)
       return <ZapOffIcon className="size-3.5 text-violet-500 dark:text-violet-400" />;
+    case "negative": // 已测(未发现)：正常成功收尾，只是回包明确否定
+      return <CircleMinusIcon className="size-3.5 text-emerald-500 dark:text-emerald-400" />;
+    case "out-of-scope": // 范围外：超出任务授权范围
+      return <CircleDashedIcon className="size-3.5 text-muted-foreground" />;
     case "deleted": // 用户假删除
       return <CircleSlashIcon className="size-3.5 text-muted-foreground" />;
+    default: {
+      // 给 SessionStatus 加成员却忘了在这里配图标时，这一行会让 tsc 直接报错，
+      // 而不是像以前那样静默落空（negative/out-of-scope 漏映射就是这么被放过去的）。
+      const exhaustive: never = status;
+      return exhaustive;
+    }
   }
 }
 
@@ -246,6 +259,11 @@ export function keyForSession(s: Session): string {
 }
 
 // Map an exploration intent (TaskNode) state → a session status the UI renders.
+//
+// **必须覆盖 exploration_nodes.state 的全部取值**（db/schema.sql 里 kind='intent' 的
+// CHECK：open/running/paused/done/negative/out-of-scope/blocked/exhausted/stopped/deleted）。
+// 漏一个就会落进 default 被当成 running——worker 明明已经收尾，会话页却永远转圈、
+// 底部一直显示「实时流式中…」（negative/out-of-scope 就是这样漏掉的）。
 export function intentStatus(state: string): SessionStatus {
   switch (state) {
     case "done":
@@ -262,6 +280,10 @@ export function intentStatus(state: string): SessionStatus {
       return "pending";
     case "deleted": // 用户假删除
       return "deleted";
+    case "negative": // 已测(未发现)
+      return "negative";
+    case "out-of-scope": // 范围外
+      return "out-of-scope";
     default: // running
       return "running";
   }

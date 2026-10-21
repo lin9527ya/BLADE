@@ -1269,7 +1269,17 @@ export interface LogLine {
 }
 
 export type SessionRole = "mainagent" | "planner" | "worker" | "system";
-export type SessionStatus = "running" | "paused" | "done" | "blocked" | "exhausted" | "pending" | "stopped" | "deleted";
+export type SessionStatus =
+  | "running"
+  | "paused"
+  | "done"
+  | "negative" // 已测(未发现)：探针发出且有回包、回包明确否定该假设
+  | "out-of-scope" // 范围外：超出任务授权范围
+  | "blocked"
+  | "exhausted"
+  | "pending"
+  | "stopped"
+  | "deleted";
 
 // Daily token aggregate bucket (GET /api/tokens/daily).
 export interface DailyTokenBucket {
