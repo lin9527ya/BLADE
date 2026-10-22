@@ -169,6 +169,12 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
+	// agent 降权（可选）：BLADE_AGENT_USER 设置后，Bash / 长任务 / 自定义工具以该用户
+	// 运行、文件工具被限制在 data+skill 目录内、子进程环境剔除疑似凭据。未设置时是
+	// no-op（保持 agent 与服务端同权的旧行为，见 deploy/README.md「信任模型」）。
+	if err := server.InstallAgentIsolation(*dataDir, config.BaseDir(), skillDir); err != nil {
+		log.Fatalf("[isolation] %v", err)
+	}
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
 	// 重启恢复：把 PG 里已准入的任务重新拉起（构造器只装配，不在这里恢复——
 	// 见 Server.RestoreTaskRuntimes 的注释）。

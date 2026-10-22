@@ -231,7 +231,7 @@ func EnsureRunDir(base, taskID string, intentID int64) string {
 	if intentID > 0 {
 		dir = filepath.Join(dir, "i"+strconv.FormatInt(intentID, 10))
 	}
-	_ = os.MkdirAll(dir, 0o755)
+	_ = os.MkdirAll(dir, 0o775)
 	return dir
 }
 
@@ -334,7 +334,9 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 	if intentID > 0 {
 		dir = filepath.Join(dir, "i"+strconv.FormatInt(intentID, 10))
 	}
-	_ = os.MkdirAll(dir, 0o755)
+	// 0775 而非 0755：agent 降权模式（server/agent_isolation.go）下命令以 worker 用户
+	// 运行，目录由服务端（root）创建，组可写才让 worker 写进自己的产物目录。
+	_ = os.MkdirAll(dir, 0o775)
 	return dir
 }
 

@@ -294,39 +294,77 @@ WireGuard 同理；不想依赖第三方协调服务器可以自建 Headscale。
 
 ---
 
-## 九、信任模型：agent 与服务端同权（现状）
+## 九、信任模型：默认同权，可选降权（`BLADE_AGENT_USER`）
 
-**现状（必须知道）**：agent 的 Bash 与文件工具都在服务进程内、以**同一个 OS 用户**执行。
-所以一条被提示注入的 worker 命令，能做管理员能做的任何事：
+**默认（不设置 `BLADE_AGENT_USER`）**：agent 的 Bash 与文件工具都在服务进程内、以**同一个
+OS 用户**执行。所以一条被提示注入的 worker 命令，能做管理员能做的任何事：
 
 - 读 `jwt.key`（HS256 签名密钥）→ 自签一个 admin token；
 - 读 `config.json`（数据库口令）→ 直连数据库读改数据；
 - 直接 `curl 127.0.0.1:8787/api/...` 调管理 API（配合上面两条即可拿到合法 token）。
 
 `intercept` / `guard` 是命令层的软约束（规则 + 模型判断），挡不住"读文件 + 本地 HTTP"
-这种由**两条正常命令**拼出来的链。平台目前没有任何 OS 级隔离。
+这种由**两条正常命令**拼出来的链。默认没有 OS 级隔离——部署时请把"提示注入 = 控制台全权"
+写进自己的风险评估。
 
-**文件权限 0600 只防同机的其它用户，不防 agent**：同 UID 下 `/proc/<pid>/environ`、
-ptrace 都在可达范围，改权限拦不住读取。启动时会把过宽的 `config.json` 收紧为 0600
-（`config/config.go` 的 `tightenConfigPerms`）——那是给"多人共用的机器"补的，
-**不是**对 agent 的隔离。
+### 9.1 开启降权
 
-真要隔离，三条路（按代价排）：
-
-1. **给 SDK 加降权钩子**：`Norma/tool` 里 Bash 与文件工具的执行加 `SysProcAttr.Credential`
-   （或把工具执行整体搬进独立进程）。服务端以 root 起，agent 跑在 `blade-worker`；密钥与
-   `config.json` 属主 `blade`、0600。当前 SDK（`NewBash()`）**没有这个钩子**，要改 Norma
-   这个 fork 并发版。
-2. **容器化执行**：把"agent 执行"整体放进独立容器（不挂 `/opt/blade`、不给 DB 凭据），
-   平台经受控接口下发命令。改动最大，边界最硬。
-3. **数据与密钥分家**：`data/` 与密钥/配置分属不同用户——**这条依赖 1 或 2**，单独做没有
-   意义（同 UID 挡不住）。
-
-**验收（做完隔离才可能过）**——在 agent 的 Bash 里：
+前提：Norma ≥ v0.5.3（`tool.SetExecHook` / `tool.SetPathGuard`），BLADE 以 **root** 启动，
+且 `-data` 目录**不包含**可执行文件目录（`jwt.key` / `config.json` 在那里，落在 data 里
+会直接拒绝启动——"看着隔离、实则没隔"比不隔离更危险）。
 
 ```bash
-cat /opt/blade/jwt.key        # 期望 Permission denied
-cat /opt/blade/config.json    # 期望 Permission denied
+# 1) 建一个没有任何附加组的服务账号（家目录放在 /var/lib/blade-worker）
+sudo useradd --system --create-home --home-dir /var/lib/blade-worker \
+     --shell /usr/sbin/nologin blade-worker
+
+# 2) systemd 里以 root 起服务，只加这一个环境变量
+#    /etc/systemd/system/blade.service
+[Service]
+User=root
+Environment=BLADE_AGENT_USER=blade-worker
+# 可选：额外允许文件工具访问的根（逗号/冒号分隔）
+# Environment=BLADE_AGENT_READ_ROOTS=/opt/wordlists:/srv/engagement
+
+# 3) 重启
+sudo systemctl daemon-reload && sudo systemctl restart blade
 ```
 
-现状下这两条都会成功。部署时请把"提示注入 = 控制台全权"写进自己的风险评估。
+启动日志会出现一行 `[isolation] agent 以 blade-worker (...)`，说明生效。
+
+**开启了什么**：
+
+| 面 | 行为 |
+|---|---|
+| Bash（含后台任务、交互式 shell）、长任务 `run_execution`、自定义工具 | 以 `blade-worker` 身份执行（`SysProcAttr.Credential`，只保留主组） |
+| 子进程环境 | 按"疑似凭据"黑名单清洗：`ANTHROPIC_*`/`OPENAI_*`/`BLADE_*`/`AWS_*`/`GH_*`… 以及名字含 `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD`/`CREDENTIAL` 的变量；`HOME`/`USER`/`SSH_AUTH_SOCK` 等改写或剔除 |
+| 文件工具（Read/Write/Edit/MultiEdit/LS/Glob/Grep） | 只允许 `data/`、skill 目录、`BLADE_AGENT_READ_ROOTS` 内的**真实路径**（软链解析后再比对；`Grep` 在隔离模式下不再走 rg 子进程，逐文件过守卫） |
+| `data/` 树 | 启动时属主交给 `blade-worker`，目录 `2775`（setgid + 组可写）；run 目录由服务端创建为 `0775`，agent 写得进自己的产物目录 |
+
+**仍然挡不住的（如实说明）**：
+
+- 服务端以 root 跑（降权本来就需要），主机上**同 root 域**的其它进程、内核漏洞不在模型内；
+- agent 依旧能访问网络、能读 `data/` 下的工作区与 `traffic/` 抓包记录（那是它自己的产物面）；
+- 没被模式覆盖的新凭据环境变量会漏——新增带凭据的变量时把前缀补进
+  `server/agent_isolation.go` 的 `agentEnvDenyPrefixes`；
+- 容器化（把执行面整体放进独立容器、不挂 `/opt/blade`、不给 DB 凭据）仍是边界更硬的方案；
+  数据与密钥分家（`data/` 与密钥/配置不同用户）已经由本机制自动完成。
+
+### 9.2 验收
+
+在任意 worker 的 Bash 里：
+
+```bash
+id -u                          # 期望 worker 的 uid（不是 0，也不是服务进程用户）
+cat /opt/blade/jwt.key         # 期望 Permission denied
+cat /opt/blade/config.json     # 期望 Permission denied
+env | grep -iE 'key|token|secret|password'   # 期望为空（或只剩无关项）
+cat /etc/passwd                # Bash 下仍可（shell 本来就是全盘读）；用文件工具 Read 才应被拒
+```
+
+文件工具 `Read /etc/passwd` 期望返回"拒绝访问…隔离模式下文件工具只允许访问…"；
+在 `data/` 与 skill 目录内的读写必须照常工作（包括相对路径与工作区里的软链）。
+
+**注意**：开启后不能再用 `sudo`/`apt` 等需要 root 的命令操作宿主机——agent 的扫描本身
+（nmap/nuclei/ffuf）不需要 root；确实需要高权限工具时，把那台机器作为独立执行节点，
+而不是放宽 worker 的权限。
