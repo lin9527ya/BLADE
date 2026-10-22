@@ -28,6 +28,10 @@ FOFA / Shodan / ZoomEye / Censys 都是全 IPv4 扫描 + 协议指纹。所以�
 | CF 代理 + 防火墙只放 CF 段 | 开 443，只对 CF 可见 | ★★★ |
 | 公网直连 + 改标题换端口 | 开 8787，全网可见 | ★（只是"不那么显眼"） |
 
+> **SSH 也是被测绘的目标。** Shodan 对 22 端口的 banner 收录得很勤，所以"SSH 隧道"这一档
+> 只解决"应用不可见"，**不解决"这台机器不可见"**。要把 SSH 也藏起来：让它只监听 tailnet
+> （`tailscale up --ssh --shields-up`）或只对 WireGuard 内网开放，公网 22 一律关闭。
+
 **BLADE 平台侧已经默认按最安全的一档做**（见下面第五节）：不显式写地址就只绑 loopback。
 
 ---
@@ -129,15 +133,200 @@ curl -s https://你的域名/api/health             # 期望：{"ok":true} —�
 
 # ⑤ 数据库不该对外
 nmap -Pn -p 5432 <你的VPS IP>
+
+# ⑥ 全端口：不只是 8787——任何一个监听都算分（-p- 扫 65535 个端口）
+nmap -Pn -p- --min-rate 2000 <你的VPS IP>
+
+# ⑦ IPv6（VPS 若带公网 v6，很多人只配了 v4 防火墙）
+ss -tlnp6                                     # 不该有非 loopback 监听
+nmap -6 -Pn -p- --min-rate 2000 <你的VPS IPv6>
+
+# ⑧ 反向解析与域名：PTR 不该是业务名；域名必须解析到 Cloudflare，不能落回源站
+host <你的VPS IP>
+dig +short console.example.com
+
+# ⑨ 证书透明日志：只该有 CF 的边缘证书，且没有多余的子域
+#    https://crt.sh/?q=example.com
+
+# ⑩ 测绘引擎按 IP 查：应该"查无此机"
+#    Shodan: ip:<IP>        Quake: ip:"<IP>"       Censys: ip=<IP>
+#    FOFA:   ip="<IP>"      ZoomEye: ip:<IP>
+#    没有开放端口就不会被收录；上线满 48 小时后再复查一次，确认"仍然查不到"。
 ```
 
-**过了 ①–⑤ 才算"默认不暴露"**；① 里若出现 `*:8787` 或 `0.0.0.0:8787`，就是没做对。
+**过了 ①–⑩ 才算"默认不暴露"**；① 里若出现 `*:8787` 或 `0.0.0.0:8787`，就是没做对。
 
 ---
 
 ## 七、还值得加（运维层，平台不管）
 
-- **fail2ban**：BLADE 自身有登录节流（5 次失败锁 5 分钟、全局计数、内存态），但公网形态下
+- **fail2ban**：BLADE 自身有登录节流（**按来源 IP** 指数退避：5 次失败起锁 1 分钟、每次翻倍
+  到 30 分钟；30 分钟无失败自动清零；另有全局失败预算 10 分钟 60 次兜住换 IP 的分布式爆破；
+  内存态、重启清零）。真实来源取自 `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For`，
+  **只在直连方是 loopback（即确有本机反代）时才信这些头**——直连暴露 8787 时按 TCP 来源计数。
+  公网形态下
   按 IP 封禁更有意义——反代日志 + fail2ban 是标准做法。
 - **Cloudflare Access**：Tunnel 或代理形态下都建议加，等于在登录页之前再放一道门。
 - **只跑需要的服务**：VPS 上别顺手装一堆东西；每一个开放端口都是给自己加的一分可见度。
+
+---
+
+## 八、从零到上线（VPS 版，按顺序做）
+
+> **目标形态先定：公网上一个入站端口都不开。** 浏览器访问走 Cloudflare Tunnel（+ Access），
+> SSH/运维走 Tailscale（`--ssh --shields-up`）或 WireGuard。这样这台机器对全网扫描来说就是
+> "什么都没开"——测绘引擎没有可收录的服务，后面那些"去指纹"才有意义。
+
+### 1. 系统层（新机器，十分钟）
+
+```bash
+# 非 root 运维用户 + 密钥登录。**先验证密钥能登，再关密码**——顺序反了就把自己锁在外面。
+adduser --disabled-password --gecos "" ops
+install -d -m 700 -o ops -g ops /home/ops/.ssh
+# 把本机公钥写进 /home/ops/.ssh/authorized_keys（600, ops:ops），另开一个终端验证 ssh ops@<ip>
+sudo tee /etc/ssh/sshd_config.d/99-hardening.conf >/dev/null <<'EOF'
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+sudo systemctl reload ssh
+```
+
+```bash
+sudo deploy/vps-hardening.sh --hostname srv-01
+# 做：ufw 默认拒绝入站（并放行 sshd 端口，避免把自己锁死）、fail2ban(sshd)、
+#     自动安全更新、时区 → UTC；最后打印监听与规则供核对。
+```
+
+- **云厂商的安全组 / 安全列表**：也要配（ufw 是机器内，云侧是网络层；两层都要）。
+- **IPv6**：多数 VPS 默认带公网 v6。脚本已让 ufw 管 v6；想更彻底就 `--disable-ipv6`。
+- **rDNS / PTR**：在 VPS 控制台设成中性值（或保持厂商默认）。**不要**设成 console 域名——那等于把两者绑在一起。
+- **主机名**：中性（`srv-01` 这类），别写 blade / pentest。
+- **SSH 端口**：改端口只减少噪音，全端口扫描一样能找到；真正的解法是第 3 步"22 也不开公网"。
+
+### 2. 装 BLADE（发布包 + 容器化 Postgres，VPS 上不需要 Go/Node）
+
+```bash
+# ① 发布包（Releases 里选 linux-amd64；下载是 HTTPS 出站，不暴露任何端口）
+#    资产名形如 blade-<ver>-linux-amd64.zip，<ver> 换成发布号（如 0.5.0）
+curl -fL -o /tmp/blade.zip \
+  https://github.com/lin9527ya/BLADE/releases/download/v<ver>/blade-<ver>-linux-amd64.zip
+sudo apt-get install -y unzip
+unzip -q /tmp/blade.zip -d /opt && sudo mv /opt/blade-<ver>-linux-amd64 /opt/blade
+sudo useradd --system --home /opt/blade --shell /usr/sbin/nologin blade || true
+sudo chown -R blade:blade /opt/blade
+
+# ② Postgres 只在 loopback（数据库端口是全网扫描前几名）
+sudo apt-get install -y docker.io     # 或跑仓库里的 install.sh 让它装
+PW="$(openssl rand -hex 24)"
+docker run -d --name blade-pg -p 127.0.0.1:5432:5432 \
+  -e POSTGRES_USER=blade -e POSTGRES_PASSWORD="$PW" -e POSTGRES_DB=blade \
+  -v blade-pg:/var/lib/postgresql/data --restart unless-stopped postgres:16-alpine
+
+# ③ config.json（600）——密码就是上面的 $PW，别写进 shell history 以外的任何公开处
+sudo tee /opt/blade/config.json >/dev/null <<JSON
+{ "database": { "host": "127.0.0.1", "port": 5432, "user": "blade", "password": "$PW", "dbname": "blade", "sslmode": "disable" } }
+JSON
+sudo chmod 600 /opt/blade/config.json && sudo chown blade:blade /opt/blade/config.json
+
+# ④ systemd（单元里 User=blade，与上面一致）
+#    发布包**不含 deploy/**，单元从仓库取：
+sudo curl -fsSL -o /etc/systemd/system/blade.service \
+  https://raw.githubusercontent.com/lin9527ya/BLADE/main/deploy/blade.service
+sudo systemctl daemon-reload && sudo systemctl enable --now blade
+journalctl -u blade -f
+```
+
+先别急着开隧道：在 VPS 上 `curl -s 127.0.0.1:8787/api/health` 应回 `{"ok":true}`。
+
+> **初始化必须发生在任何公网入口打开之前。** `POST /api/auth/init` 是免认证的（首次设置密码的
+> 设计如此），未初始化的实例被谁先摸到，谁就能把管理员密码设掉——这是个接管窗口，不是提权。
+> 顺序：起服务 → 在本机（或 SSH 端口转发）完成初始化 → 再开 Tunnel/Access。
+> 在 VPS 上直接初始化：
+> ```bash
+> curl -sS -X POST 127.0.0.1:8787/api/auth/init \
+>   -H 'Content-Type: application/json' -d '{"password":"<你的强密码>"}'
+> ```
+> （返回的 token 可以丢掉，浏览器里再登录一次即可。）
+> 至少要保证 **Access 策略先于第一次公网访问生效**。
+
+> 想跑自己编的版本：本机 `./build.sh`，把 `dist/blade-linux-amd64/blade`、`start.sh`、`skills/`、
+> `config.example.json` scp 到 `/opt/blade/`。小 VPS 上现编 Next 前端很慢，不推荐。
+
+### 3. 访问层：零入站
+
+**3a. Cloudflare Tunnel（浏览器访问，推荐）**
+
+```bash
+# cloudflared 按 Cloudflare 官方文档安装（apt 仓库或单二进制）
+cloudflared tunnel login
+cloudflared tunnel create console
+cloudflared tunnel route dns console <你的域名>
+sudo install -d /etc/cloudflared
+sudo cp deploy/cloudflared.yml /etc/cloudflared/config.yml   # 改 tunnel id / 凭据路径 / hostname
+cloudflared tunnel ingress validate
+sudo cloudflared service install
+```
+
+然后在 **Zero Trust → Access → Applications** 给这个 hostname 加策略（One-time PIN 到你的邮箱，
+或 Service Token）。**这一步别省**：域名会进证书透明日志（CF 边缘证书，改不掉），Access 才是
+"域名被知道了也进不来"的那道门。
+
+**3b. SSH/运维：Tailscale（公网 22 也不开）**
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --ssh --shields-up    # --shields-up：拒绝一切来自 tailnet 之外的入站
+sudo ufw delete allow 22/tcp && sudo ufw reload
+```
+
+之后 `ssh ops@srv-01`（MagicDNS）。浏览器也可以直接开 `http://<tailnet-ip>:8787`，连域名都不需要。
+WireGuard 同理；不想依赖第三方协调服务器可以自建 Headscale。
+
+### 4. 验收与日常
+
+- 从**另一台机器**按第六节 ①–⑩ 验一遍（全端口、IPv6、PTR、DNS、CT、测绘引擎）。
+- 域名/URL 不外发；Access 常开；这个域名不要复用到别的项目（`crt.sh` 会把子域全列出来）。
+- **出站提醒**：平台的扫描流量从这台机器的 IP 出去，目标侧看到的就是它。需要与 console 解耦时，
+  用平台的全局代理设置换出口，或把"扫描执行"与"console"分机器。
+- 更新：页面一键更新（`start.sh` 的 75 退出码），或 `systemctl restart blade`——重启后顺手看一眼
+  `ss -tlnp`，确认没有多出来的监听。
+
+---
+
+## 九、信任模型：agent 与服务端同权（现状）
+
+**现状（必须知道）**：agent 的 Bash 与文件工具都在服务进程内、以**同一个 OS 用户**执行。
+所以一条被提示注入的 worker 命令，能做管理员能做的任何事：
+
+- 读 `jwt.key`（HS256 签名密钥）→ 自签一个 admin token；
+- 读 `config.json`（数据库口令）→ 直连数据库读改数据；
+- 直接 `curl 127.0.0.1:8787/api/...` 调管理 API（配合上面两条即可拿到合法 token）。
+
+`intercept` / `guard` 是命令层的软约束（规则 + 模型判断），挡不住"读文件 + 本地 HTTP"
+这种由**两条正常命令**拼出来的链。平台目前没有任何 OS 级隔离。
+
+**文件权限 0600 只防同机的其它用户，不防 agent**：同 UID 下 `/proc/<pid>/environ`、
+ptrace 都在可达范围，改权限拦不住读取。启动时会把过宽的 `config.json` 收紧为 0600
+（`config/config.go` 的 `tightenConfigPerms`）——那是给"多人共用的机器"补的，
+**不是**对 agent 的隔离。
+
+真要隔离，三条路（按代价排）：
+
+1. **给 SDK 加降权钩子**：`Norma/tool` 里 Bash 与文件工具的执行加 `SysProcAttr.Credential`
+   （或把工具执行整体搬进独立进程）。服务端以 root 起，agent 跑在 `blade-worker`；密钥与
+   `config.json` 属主 `blade`、0600。当前 SDK（`NewBash()`）**没有这个钩子**，要改 Norma
+   这个 fork 并发版。
+2. **容器化执行**：把"agent 执行"整体放进独立容器（不挂 `/opt/blade`、不给 DB 凭据），
+   平台经受控接口下发命令。改动最大，边界最硬。
+3. **数据与密钥分家**：`data/` 与密钥/配置分属不同用户——**这条依赖 1 或 2**，单独做没有
+   意义（同 UID 挡不住）。
+
+**验收（做完隔离才可能过）**——在 agent 的 Bash 里：
+
+```bash
+cat /opt/blade/jwt.key        # 期望 Permission denied
+cat /opt/blade/config.json    # 期望 Permission denied
+```
+
+现状下这两条都会成功。部署时请把"提示注入 = 控制台全权"写进自己的风险评估。
