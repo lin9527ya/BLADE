@@ -405,6 +405,8 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	}
 	pj, _ := json.Marshal(params)
 	c.Stdin = bytes.NewReader(pj) // 参数 JSON 走 stdin
+	// 自定义工具是 agent 写的代码，与 Bash 同等对待：降权 + 环境清洗（未启用时 no-op）。
+	hardenAgentCmd(c)
 	out, err := c.CombinedOutput()
 	body := string(out)
 	if runCtx.Err() == context.DeadlineExceeded {

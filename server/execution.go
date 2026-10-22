@@ -147,6 +147,9 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 	if envFor != nil {
 		cmd.Env = append(os.Environ(), envFor()...)
 	}
+	// 与 agent Bash 同一套隔离：降权到 BLADE_AGENT_USER + 清洗疑似凭据的环境变量
+	// （未启用时 no-op）。放在 env 拼好之后，清洗看到的就是子进程最终会拿到的那份。
+	hardenAgentCmd(cmd)
 	run := &execRun{id: id, taskID: taskID, intentID: intentID, cmd: cmd, logFile: logFile,
 		tail: newTailRing(execTailBytes), done: make(chan struct{})}
 	w := io.MultiWriter(logFile, writerFunc(func(p []byte) (int, error) {

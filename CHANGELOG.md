@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### agent 执行面降权（可选：`BLADE_AGENT_USER`）
+
+#### 新增的功能
+
+- **agent 可以不再与服务端同权**：设置 `BLADE_AGENT_USER=blade-worker` 后，Bash（含后台任务、
+  交互式 shell）、长任务 `run_execution`、自定义工具都以该用户执行（`SysProcAttr.Credential`，
+  只保留主组）；`jwt.key` / `config.json` / 数据库口令因此不再被一条提示注入就全部拿走。
+- **子进程环境清洗**：`ANTHROPIC_*` / `OPENAI_*` / `BLADE_*` / `AWS_*` / `GH_*` 及名字含
+  `API_KEY`、`SECRET`、`TOKEN`、`PASSWORD`、`CREDENTIAL` 的变量不再继承；`HOME` / `USER` /
+  `SSH_AUTH_SOCK` 等指向服务端用户的条目改写或剔除。
+- **文件工具收口**：Read/Write/Edit/MultiEdit/LS/Glob/Grep 只允许 `data/`、skill 目录与
+  `BLADE_AGENT_READ_ROOTS` 内的真实路径（软链解析后再比对；隔离模式下 Grep 不走 rg 子进程）。
+- `data/` 树启动时交给 agent 用户（目录 setgid + 组可写），run 目录 `0775`，agent 写自己的产物
+  不受影响；`-data` 若包含密钥/配置目录则**拒绝启动**（否则降权是假的）。
+
+#### 说明
+
+- 未设置 `BLADE_AGENT_USER` 时行为与之前完全一致（agent 与服务端同权），启动日志会留一行提示。
+- 依赖 Norma 新增的 `tool.SetExecHook` / `tool.SetPathGuard`（v0.5.3）；Windows 不支持降权。
+
 ### 会话页：给运行中的 Worker 发提示（实时注入，不是暂停续发）
 
 #### 新增的功能
