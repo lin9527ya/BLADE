@@ -5601,7 +5601,8 @@ func accP44(t *testing.T, e *accEnv) {
 	// ① 记一件 webshell（未清理）
 	res, err := report.Call(context.Background(), json.RawMessage(
 		`{"summary":"在 web01 的 uploads 目录落了 webshell","kind":"web_shell","host":"10.0.0.9",`+
-			`"locator":"/var/www/html/uploads/x.php","cleanup":"rm -f /var/www/html/uploads/x.php",`+
+			`"locator":"/var/www/html/uploads/x.php","url":"http://10.0.0.9/uploads/x.php",`+
+			`"cleanup":"rm -f /var/www/html/uploads/x.php",`+
 			`"evidence":"echo '<?php ...' > x.php && curl -s http://10.0.0.9/uploads/x.php?c=id","confidence":"high","intent_id":`+intentArg+`}`), nil)
 	if err != nil || !strings.HasPrefix(res.Flatten(), "artifact recorded: ") {
 		t.Fatalf("report_artifact: %v %s", err, res.Flatten())
@@ -5620,6 +5621,9 @@ func accP44(t *testing.T, e *accEnv) {
 	}
 	if got := db.ParseArtifact(shellNode).Kind; got != db.ArtifactWebshell {
 		t.Errorf("分类没归一：web_shell → %q，want %q", got, db.ArtifactWebshell)
+	}
+	if got := db.ParseArtifact(shellNode).URL; got != "http://10.0.0.9/uploads/x.php" {
+		t.Errorf("访问入口没落库：url = %q（报告要同时给绝对路径与访问 URL）", got)
 	}
 	if shellNode.State != db.StateArtifactActive {
 		t.Errorf("默认状态该是 active，得到 %q", shellNode.State)

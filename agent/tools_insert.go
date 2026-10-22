@@ -681,6 +681,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(),
+		// 指纹打法库：动手前先查同类指纹的历史打法（lookup 会累加使用次数），
+		// 用后回报 worked/failed，卡片靠它越用越准。沉淀本身归 playbook agent。
+		t.lookupPlaybooks(), t.recordPlaybookFeedback(),
 		// conclude_intent：worker 对领到的意图声明语义终态（negative / out-of-scope）。
 		// 没测成（blocked/exhausted）由引擎判定，不归本工具。
 		t.concludeIntent(),
@@ -727,6 +730,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.verifyCredential(),
 		// promote_knowledge（P23）：人机对话里也可把结论沉淀给公司（只读背景，供别的任务用）。
 		t.promoteKnowledge(),
+		// lookup_playbooks：人机对话里按资产/指纹查历史打法（只读）。
+		t.lookupPlaybooks(),
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),

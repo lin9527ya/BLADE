@@ -784,6 +784,28 @@ ORDER BY r.id DESC`, taskID)
 	return out, rows.Err()
 }
 
+// FindingConfirmationByNodeID reports what is known about whether a finding was
+// actually confirmed to exist — three independent signals: the reporter's own
+// confidence calibration, the triage status, and the latest completed retest
+// verdict. The report gate (server.toolUpdateFindingReport) uses them so an
+// unconfirmed hypothesis never gets a "vulnerability report".
+//
+// found=false 表示这条 node 还没有独立漏洞行（极老的库/异常数据），交给上层按原逻辑报错。
+func (d *DB) FindingConfirmationByNodeID(nodeID int64) (confidence, status, retestVerdict string, found bool, err error) {
+	row := d.QueryRow(`SELECT COALESCE(f.confidence,''), COALESCE(f.status,''),
+		COALESCE((SELECT r.verdict FROM finding_retests r
+		          WHERE r.finding_id=f.id AND r.status='completed' AND r.verdict <> ''
+		          ORDER BY r.id DESC LIMIT 1),'')
+		FROM findings f WHERE f.node_id=$1 ORDER BY f.id DESC LIMIT 1`, nodeID)
+	switch err = row.Scan(&confidence, &status, &retestVerdict); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", "", "", false, nil
+	case err != nil:
+		return "", "", "", false, err
+	}
+	return confidence, status, retestVerdict, true, nil
+}
+
 // SetFindingRetractReason records why a finding was retracted. Call it BEFORE
 // flipping status to retracted（先因后果：状态翻转会触发推送，原因应已就位）。
 func (d *DB) SetFindingRetractReason(id int64, reason string) (int64, error) {

@@ -859,6 +859,45 @@ export interface CompanyKnowledge {
   deprecated_reason?: string;
 }
 
+// ---- 指纹打法库（全局）----
+
+/** 指纹：技术栈 / favicon / 服务端口 / 页面标题。匹配是启发式打分，不是精确相等。 */
+export interface PlaybookFingerprint {
+  technologies?: string[];
+  favicon_mmh3?: string;
+  service_name?: string;
+  port?: number;
+  page_title?: string;
+}
+
+/** 一张「目标指纹 → 攻击手法」卡片。 */
+export interface Playbook {
+  id: number;
+  fingerprint: PlaybookFingerprint;
+  fingerprint_key: string;
+  technique_key: string;
+  title: string;
+  summary: string;
+  steps: string;
+  evidence: string;
+  confidence: "high" | "medium" | "low" | "";
+  source_task_id?: string;
+  source_node_id?: number;
+  source_company?: string;
+  status: "active" | "deprecated";
+  deprecated_reason?: string;
+  revision: number;
+  uses: number;
+  successes: number;
+  failures: number;
+  last_outcome?: string;
+  last_note?: string;
+  last_used_at?: string;
+  last_verified_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- P22 计划任务 ----
 
 /** 结构化频率（刻意不是 cron 字符串：覆盖巡检需要，且没有方言/边界歧义）。 */

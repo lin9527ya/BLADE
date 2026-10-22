@@ -78,7 +78,11 @@ type Artifact struct {
 	// Host 是落在哪台目标上。
 	Host string `json:"host,omitempty"`
 	// Locator 是具体位置：文件路径、账号名、任务名、注册表键。**报告要靠它才找得到东西。**
+	// 文件类必须是**目标上的绝对路径**（清理靠它），而不是 URL。
 	Locator string `json:"locator,omitempty"`
+	// URL 是访问入口：webshell/上传文件的访问地址，或可执行方式。与 Locator 配套——
+	// 一个回答"在目标哪里"，一个回答"怎么用到它"，报告两样都要。
+	URL string `json:"url,omitempty"`
 	// Cleanup 是怎么清（命令或步骤）。写下来，清理的人不用重新推一遍。
 	Cleanup string `json:"cleanup,omitempty"`
 	// RemovedEvidence 是清理时的那一行输出——`removed` 状态必须有它。

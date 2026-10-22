@@ -1617,6 +1617,46 @@ CREATE TABLE IF NOT EXISTS company_knowledge (
 CREATE INDEX IF NOT EXISTS idx_company_knowledge_company
     ON company_knowledge(company_id, id DESC);
 
+-- 指纹打法库（全局）：某个目标被【打穿】（worker 记下据点）后，自动沉淀的
+-- 「目标指纹 → 攻击手法」卡片。与 company_knowledge 的区别：
+--   * 全局共享（跨客户），靠指纹匹配，不按公司隔离；
+--   * 记录的是打法步骤与证据，不只是一条结论；
+--   * 有使用/成功/失败计数，检索按"指纹匹配度 → 成功率 → 最近验证"排序，越用越准。
+CREATE TABLE IF NOT EXISTS attack_playbooks (
+    id              BIGSERIAL PRIMARY KEY,
+    -- 规范化后的指纹 JSON（technologies 小写排序 / favicon_mmh3 / service_name / port / page_title）
+    fingerprint     JSONB NOT NULL,
+    -- sha256(规范化指纹)：匹配与去重键
+    fingerprint_key TEXT NOT NULL,
+    -- 手法 slug（如 shiro-rememberme-deser）；同一指纹可以有多套打法
+    technique_key   TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    steps           TEXT NOT NULL DEFAULT '',
+    evidence        TEXT NOT NULL DEFAULT '',
+    confidence      TEXT NOT NULL DEFAULT 'high',
+    source_task_id  TEXT NOT NULL DEFAULT '',
+    source_node_id  BIGINT NOT NULL DEFAULT 0,
+    -- 来源客户（审计用；不参与匹配，也提示"这条知识来自哪次作业"）
+    source_company  TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'active',
+    deprecated_reason TEXT NOT NULL DEFAULT '',
+    revision        INT NOT NULL DEFAULT 1,
+    uses            INT NOT NULL DEFAULT 0,
+    successes       INT NOT NULL DEFAULT 0,
+    failures        INT NOT NULL DEFAULT 0,
+    last_outcome    TEXT NOT NULL DEFAULT '',
+    last_note       TEXT NOT NULL DEFAULT '',
+    last_used_at    TIMESTAMPTZ,
+    last_verified_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_attack_playbooks_key
+    ON attack_playbooks(fingerprint_key, technique_key);
+CREATE INDEX IF NOT EXISTS idx_attack_playbooks_status
+    ON attack_playbooks(status, successes DESC, updated_at DESC);
+
 -- P43 凭据尝试台账：对**哪个目标的哪个账号**试了几次凭据。
 --
 -- 为什么要有这张表（而不是从 tool_executions 里现算）：护栏要拦的是"对同一个账号试太多次"

@@ -109,6 +109,8 @@ GET /api/notify/channels	server.(*Server).notifyListChannels-fm
 GET /api/notify/deliveries	server.(*Server).notifyListDeliveries-fm
 GET /api/notify/meta	server.(*Server).notifyMeta-fm
 GET /api/opsec/knowledge	server.(*Server).opsecKnowledge-fm
+GET /api/playbooks	server.(*Server).listPlaybooks-fm
+GET /api/playbooks/{id}	server.(*Server).getPlaybook-fm
 GET /api/report	server.(*Server).getReport-fm
 GET /api/scope/enforcement	server.(*Server).scopeEnforcementStatus-fm
 GET /api/settings	server.(*Server).getSettings-fm
@@ -174,6 +176,7 @@ PATCH /api/conversations/{id}/profile	server.(*Server).pgUpdateConversation-fm
 PATCH /api/exploration/findings/{id}	server.(*Server).patchFinding-fm
 PATCH /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 PATCH /api/notify/channels/{id}	server.(*Server).notifyUpdateChannel-fm
+PATCH /api/playbooks/{id}	server.(*Server).patchPlaybook-fm
 PATCH /api/task-categories/{id}	server.(*Server).pgRenameTaskCategory-fm
 PATCH /api/task-schedules/{id}	server.(*Server).patchTaskSchedule-fm
 PATCH /api/task-templates/{id}	server.(*Server).pgUpdateTaskTemplate-fm

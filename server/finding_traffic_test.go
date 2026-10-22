@@ -57,7 +57,8 @@ func trafficEvidenceServer(t *testing.T) (*Server, *db.RecordedFinding, func(str
 		s.Handler().ServeHTTP(w, r)
 		return w
 	}
-	input := db.RecordFindingInput{TaskID: tid, ExplorationID: task.ExpID, Worker: "test", VulnClass: "TEST", Summary: "bound evidence", Name: "Evidence API", Severity: "low"}
+	// Confidence=high：报告门（findingConfirmed）只放行"已确认确实存在"的漏洞。
+	input := db.RecordFindingInput{TaskID: tid, ExplorationID: task.ExpID, Worker: "test", VulnClass: "TEST", Summary: "bound evidence", Name: "Evidence API", Severity: "low", Confidence: db.ConfidenceHigh}
 	f, err := s.evidenceStore().Record(context.Background(), input, nil)
 	if err != nil {
 		t.Fatal(err)
