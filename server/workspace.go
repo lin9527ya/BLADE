@@ -24,8 +24,16 @@ const (
 )
 
 // wsResolve maps a user-supplied relative path to an absolute path INSIDE the work
-// dir. It returns ok=false if the path would escape the root. filepath.Clean on a
-// rooted copy collapses any ".." so nothing can climb above the root.
+// dir. It returns ok=false if the path would escape the root — **including via a
+// symlink**. filepath.Clean on a rooted copy collapses any ".." so nothing can climb
+// above the root lexically; 但工作区里一个指向外部的软链（agent 随手就能建）同样能
+// 让 os.ReadFile 跟着走出去，所以词法收口之后还要把**最深的已存在祖先**真实解析
+// （EvalSymlinks）再复查一次前缀。
+//
+// 返回的是逻辑路径（调用方与界面看到的是工作区相对路径），安全判定用真实路径。
+// 校验与打开之间仍有 TOCTOU 窗口——同机的 agent 本来就有全盘权限，这个窗口不增加
+// 实际风险；要更强的保证得用 openat/O_NOFOLLOW 逐段打开（见 deploy/README.md
+// 的「信任模型」）。
 func (s *Server) wsResolve(rel string) (string, bool) {
 	base := filepath.Clean(s.m.dir)
 	rel = strings.TrimPrefix(strings.TrimSpace(rel), "/")
@@ -34,7 +42,44 @@ func (s *Server) wsResolve(rel string) (string, bool) {
 	if abs != base && !strings.HasPrefix(abs, base+string(os.PathSeparator)) {
 		return "", false
 	}
+	// 工作区根本身可能就是软链（例如部署时 data -> 另一块盘）：先解析真实根再比。
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", false // 根解析不了：fail closed
+	}
+	realAbs, ok := resolveExisting(abs)
+	if !ok {
+		return "", false
+	}
+	if realAbs != realBase && !strings.HasPrefix(realAbs, realBase+string(os.PathSeparator)) {
+		return "", false
+	}
 	return abs, true
+}
+
+// resolveExisting 把 path 解析成真实路径。目标可能还不存在（写新文件），所以从它自身
+// 往上找**最深的已存在祖先**做 EvalSymlinks，再把未存在的尾巴拼回去。只有"不存在"才
+// 继续往上找；其它解析错误一律 fail closed——不猜。
+func resolveExisting(path string) (string, bool) {
+	tail := ""
+	for cur := path; ; {
+		real, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			if tail == "" {
+				return real, true
+			}
+			return filepath.Join(real, tail), true
+		}
+		if !os.IsNotExist(err) {
+			return "", false
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur { // 走到根还解析不出来
+			return "", false
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+		cur = parent
+	}
 }
 
 // wsRel renders an absolute path back as a workspace-relative path (forward slashes).

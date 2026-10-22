@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -100,12 +101,37 @@ func Path() string {
 // Config (so callers fall back to defaults) rather than an error.
 func Load() Config {
 	var c Config
-	b, err := os.ReadFile(Path())
+	path := Path()
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return c
 	}
+	tightenConfigPerms(path)
 	_ = json.Unmarshal(b, &c)
 	return c
+}
+
+// tightenConfigPerms 把配置文件收成 0600：里面有数据库口令。早期 install.sh 用默认
+// umask 落盘（0644），同机其它用户能直接读走 DSN；每次启动顺手收紧，改不动就留一行日志。
+//
+// 注意这**挡不住 agent**：agent 的 Bash 与服务端同进程同用户，同 UID 下文件权限拦不住
+// 读取（/proc/<pid>/environ、ptrace 都在可达范围）。agent 的隔离是另一个问题，见
+// deploy/README.md 的「信任模型」。
+func tightenConfigPerms(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	perm := info.Mode().Perm()
+	if perm&0o077 == 0 {
+		return
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		log.Printf("[config] 配置文件权限过宽（%04o）且收紧失败：%v —— 同机其它用户可读到数据库口令，请手工 chmod 600 %s",
+			perm, err, path)
+		return
+	}
+	log.Printf("[config] 配置文件权限由 %04o 收紧为 0600（含数据库口令）", perm)
 }
 
 // SkillDir returns the skill root directory with precedence:
