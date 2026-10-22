@@ -477,6 +477,21 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		out["company_knowledge_note"] = "以上来自同公司【其它任务】的沉淀（只读）：当先验用，需要时自己复核；" +
 			"它们不代表本任务已测过——本任务的进度仍以本任务图为准。"
 	}
+	// 指纹打法库（全局）：本任务范围内出现的技术栈/favicon 命中过哪些"同类目标打穿"的打法。
+	// 与上面公司知识的分工：那个按客户、这个是跨客户的**指纹匹配**；同样只作先验——
+	// 历史命中不等于目标有洞，动手前仍要确认指纹一致并实际触发。
+	if t.as != nil && t.taskID > 0 {
+		if matches, err := t.as.MatchPlaybooksForTask(t.taskID, 3); err == nil && len(matches) > 0 {
+			lines := make([]string, 0, len(matches))
+			for _, m := range matches {
+				lines = append(lines, renderPlaybookLine(m))
+			}
+			out["matching_playbooks"] = lines
+			out["matching_playbooks_note"] = "以上是历史【已打穿】目标沉淀的同类打法（全局指纹库，只读）。" +
+				"先确认目标指纹与卡片一致，再用 lookup_playbooks 取完整步骤快速验证；" +
+				"历史命中不代表目标一定有洞，仍要实际触发。用完用 record_playbook_feedback 回报 worked/failed。"
+		}
+	}
 	// lineage from the exploration edges: an intent's parents (what it
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
@@ -2254,12 +2269,14 @@ func (t *ToolSet) reportArtifact() actool.CoreTool {
 		"记一件【你留在目标上】的东西：webshell、上传的工具/脚本、建的账号、计划任务、改过的配置。"+
 			"**没清掉的 webshell 是留在客户系统上的后门**，而且交付时说不清我们动过什么——所以落了东西就记一条。"+
 			"必须给 evidence（落地/创建的那一行输出）与 confidence（战果同一条证据门）。"+
-			"清掉之后用 mark_artifact_cleared 销账，不要重复 report。",
+			"**文件类 locator 必须写目标上的绝对路径**（如 /var/www/html/upload/x.php），url 写访问入口"+
+			"（如 http://host/upload/x.php）：绝对路径给清理，URL 给复现。清掉之后用 mark_artifact_cleared 销账，不要重复 report。",
 		obj(map[string]any{
 			"summary":    str("一句话：在【哪台主机】的【哪里】放了/建了【什么】"),
 			"kind":       str("分类：webshell / upload（上传的文件）/ account（账号）/ scheduled_task / config_change / service / other"),
 			"host":       str("落在哪台目标上（域名或 IP）"),
-			"locator":    str("具体位置：文件路径 / 账号名 / 任务名 / 注册表键——**报告要靠它才找得到东西**"),
+			"locator":    str("具体位置：**文件写目标上的绝对路径**（如 /var/www/html/upload/x.php）/ 账号名 / 任务名 / 注册表键——报告与清理都靠它"),
+			"url":        str("访问入口：webshell/上传文件的 URL 或可执行方式（如 http://host/upload/x.php）；文件类尽量填，报告要同时给出绝对路径与访问入口"),
 			"cleanup":    str("怎么清（命令或步骤）；写下来，清理的人不用重新推一遍"),
 			"state":      str("active（确认还在，默认）| unknown（落了但没确认还在不在）——**别把 unknown 写成 active**"),
 			"detail":     str("细节：为什么放它、有没有用上、注意什么"),
@@ -2274,6 +2291,7 @@ func (t *ToolSet) reportArtifact() actool.CoreTool {
 				Kind    string `json:"kind"`
 				Host    string `json:"host"`
 				Locator string `json:"locator"`
+				URL     string `json:"url"`
 				Cleanup string `json:"cleanup"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
@@ -2287,6 +2305,7 @@ func (t *ToolSet) reportArtifact() actool.CoreTool {
 				"kind":    db.NormalizeArtifactKind(a.Kind),
 				"host":    a.Host,
 				"locator": a.Locator,
+				"url":     a.URL,
 				"cleanup": a.Cleanup,
 			})
 			if err != nil {
@@ -3079,5 +3098,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.adPaths(),
 		// opsec_notes（P38）：派意图前查这一手预计会留下什么（事前知识库，与 P31 的实测分开）。
 		t.opsecNotes(),
+		// 指纹打法库：规划时按资产/指纹查"同类目标以前怎么打穿的"，并把规划层确认的打法
+		// 手动沉淀/回填反馈（自动沉淀由 playbook agent 在 report_foothold 时完成）。
+		t.lookupPlaybooks(), t.recordPlaybook(), t.recordPlaybookFeedback(),
 	}
 }

@@ -30,6 +30,7 @@ import type {
   CommandRecord,
   Company,
   CompanyKnowledge,
+  Playbook,
   CompanyScopeMutation,
   CompanyScopeRule,
   ConstraintCompilePreview,
@@ -499,6 +500,23 @@ export const api = {
       `/companies/${companyId}/knowledge`,
     ).then((r) => ({ knowledge: arr(r.knowledge), active: r.active ?? 0, total: r.total ?? 0 })),
   // 废弃必须给理由（后来人最需要的就是这句）；恢复清空理由。
+  // 指纹打法库（全局）
+  playbooks: (params?: { q?: string; status?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return get<{ playbooks: Playbook[] | null; total: number }>(`/playbooks${suffix}`).then((r) => ({
+      playbooks: arr(r.playbooks),
+      total: r.total ?? 0,
+    }));
+  },
+  playbook: (id: number) => get<Playbook>(`/playbooks/${id}`),
+  setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>
+    patch<Playbook>(`/playbooks/${id}`, { status, reason }),
+
   deprecateCompanyKnowledge: (companyId: number, id: number, reason: string) =>
     patch<CompanyKnowledge>(`/companies/${companyId}/knowledge/${id}`, { status: "deprecated", reason }),
   restoreCompanyKnowledge: (companyId: number, id: number) =>

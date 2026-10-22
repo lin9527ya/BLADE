@@ -427,7 +427,7 @@ func (s *Server) toolGetTaskNodeDetail() actool.CoreTool {
 // task-agnostic, so this host tool needs no task_id / exploration store.
 func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 	return wrTool("update_finding_report",
-		"为已登记的漏洞写入/更新【详细报告】(Markdown 全文,整段覆盖旧内容)。finding_id 传 report_finding 返回的那个 id(\"finding recorded: <id>\" 里的数字)。报告建议包含:漏洞概述、影响与危害、复现步骤、证据/PoC、修复建议。",
+		"为【已确认确实存在】的漏洞写入/更新【详细报告】(Markdown 全文,整段覆盖旧内容)。先确认漏洞真实存在——confidence=high、处置状态为「已确认」、或复测结论为 reproduced/fixed，三者满足其一才允许保存；未确认的候选会被拒收（请用 close_candidate 记录缺口，不要写报告）。finding_id 传 report_finding 返回的那个 id(\"finding recorded: <id>\" 里的数字)。报告必须包含:漏洞概述、影响与危害、**详细利用过程(按时间顺序,每步 动作→请求/命令→回显→结论)**、**关键位置与产物表(主机/绝对路径/访问入口/写入方式/权限/状态/清理方式)**、执行过的命令与回显、复现步骤、证据/PoC、根因、修复与清理建议。",
 		objSchema(map[string]any{
 			"finding_id":       map[string]any{"type": "integer", "description": "目标漏洞 id(report_finding 返回的 id)"},
 			"report":           strParam("详细报告全文,Markdown 格式"),
@@ -444,6 +444,18 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			if nodeID <= 0 {
 				return actool.Errorf("finding_id 无效"), nil
 			}
+			// 报告只写给【确认确实存在】的漏洞。没有这道门，reporter 会给"据版本推断"
+			// 的候选也写一份像模像样的报告，交付物里就混进了未验证的结论——那比不写更糟。
+			confidence, status, verdict, found, err := s.m.pg.FindingConfirmationByNodeID(nodeID)
+			if err != nil {
+				return actool.Errorf("读取漏洞确认状态失败：" + err.Error()), nil
+			}
+			if found && !findingConfirmed(confidence, status, verdict) {
+				return actool.Errorf(fmt.Sprintf("拒绝写入报告：该漏洞尚未确认确实存在（confidence=%q，处置状态=%q，复测结论=%q）。"+
+					"报告只写给真实复现/确认过的漏洞：补可复现证据并以 confidence=high 重新上报，或把处置状态标为「已确认」，"+
+					"或完成复测得到 reproduced/fixed 结论；未确认的候选请用 close_candidate(outcome=open_proof_gap) 记录缺口，不要写成报告。",
+					confidence, status, verdict)), nil
+			}
 			n, err := s.m.pg.SetFindingReportVersionByNodeID(ctx, nodeID, a.Report, a.EvidenceVersion)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
@@ -453,6 +465,26 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			}
 			return actool.Text(fmt.Sprintf("finding %d report updated (%d chars)", nodeID, len(a.Report))), nil
 		})
+}
+
+// findingConfirmed 决定"能不能给它写报告"。只认三类硬证据：
+//   - confidence=high：上报者本次真实触发、拿到可复现的触发链；
+//   - 处置状态=已确认：人工/流程确认真实漏洞；
+//   - 最近一次复测=reproduced 或 fixed：独立复测确认它存在（fixed 的前提是确认过原触发条件）。
+//
+// 已撤回/误报/已排除/重复**一律不写**，哪怕置信度标了 high——处置结论优先于自评。
+func findingConfirmed(confidence, status, retestVerdict string) bool {
+	switch status {
+	case db.FindingRetracted, db.FindingFalsePositive, db.FindingRuledOut, db.FindingDuplicate:
+		return false
+	case db.FindingConfirmed:
+		return true
+	}
+	switch retestVerdict {
+	case "reproduced", "fixed":
+		return true
+	}
+	return confidence == db.ConfidenceHigh
 }
 
 // deriveTaskStatus mirrors listTasks' status derivation for the list_tasks tool.
@@ -515,6 +547,9 @@ func (s *Server) seedOrchestrationTools() {
 	s.reseedPlannerPrompt()           // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
 	s.reseedWorkerPrompt()            // worker 提示词:加否定结论证据门槛(一次性)
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
+	s.reseedReporterPrompt()          // 报告模板:补详细利用过程/绝对路径/命令回显(一次性)
+	s.seedPlaybookAgent()             // 预置「打法沉淀」agent + report_foothold 触发器(一次性)
+	s.reseedPentestPrompt()           // pentest 提示词:加 lookup_playbooks 打法复用(一次性)
 	s.upgradeReporterTriggerMessage() // 老库补迁移:让 reporter 回传 evidence_version(一次性)
 	s.seedFindingTrafficTools()       // 增加可选证据参数及只读证据工具，保留用户配置
 	s.seedFindingWorkflowTools()
@@ -529,7 +564,7 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v9_graph_ingest"
+	const flag = "tool_schema_refresh_v10_report_artifact_url"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -549,7 +584,10 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	//     SeedTool 首插入only，旧库已 seed 的 schema 否则收不到这个新参数。
 	//   - list_facts：改为分页，新增 limit/before/q 入参；旧库已 seed 的空 schema 否则
 	//     在工具管理页显示「无参数」，模型也拿不到这几个参数说明。
-	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true}
+	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true,
+		// report_artifact 新增 url（访问入口）：旧库的 schema 里没有这个参数，模型也就不会填；
+		// 报告因此只有绝对路径、没有访问 URL。只刷新 description/schema，绑定与开关保持不变。
+		"report_artifact": true}
 	for _, sd := range agent.BuiltinToolSeeds() {
 		if !refreshBuiltin[sd.Key] {
 			continue
@@ -642,12 +680,12 @@ func (s *Server) reseedMainAgentPrompt() {
 
 // reseedPlannerPrompt 把 planner 提示词刷成【当前代码默认】——默认正文做了精简重构,并把「克制」降级为
 // 仅去重、新增「深度优先于覆盖度」「硬底线:目标未达成且无在跑意图必须产出」、给否定结论复核加上界。
-// 每次默认有实质变更就 bump 下面的 flag(当前 v2)让存量旧库再刷一次。SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理
+// 每次默认有实质变更就 bump 下面的 flag(当前 v3)让存量旧库再刷一次。SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理
 // 【追加一个新版本】并切过去(ResetPromptToDefault),旧版本仍保留在历史里,用户若自定义过可从版本记录
 // 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
 // reseedGoalsPrompt 完全同构。
 func (s *Server) reseedPlannerPrompt() {
-	const flag = "planner_prompt_compact_realistic_v2"
+	const flag = "planner_prompt_playbooks_v3"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -668,7 +706,7 @@ func (s *Server) reseedPlannerPrompt() {
 		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] planner 提示词已追加新默认版本(精简重构+克制降级去重+深度优先+否定复核上界,一次性)")
+	log.Printf("[prompts] planner 提示词已追加新默认版本(加入 matching_playbooks 历史打法引导,一次性)")
 }
 
 // reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论
@@ -677,7 +715,7 @@ func (s *Server) reseedPlannerPrompt() {
 // SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理【追加一个新版本】并切过去,旧版本仍保留在历史里可找回。
 // settings flag 守卫 → 只做一次。全新库无需处理。与 reseedGoalsPrompt 完全同构。
 func (s *Server) reseedWorkerPrompt() {
-	const flag = "worker_prompt_compact_v4"
+	const flag = "worker_prompt_playbooks_v5"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -698,7 +736,7 @@ func (s *Server) reseedWorkerPrompt() {
 		log.Printf("[prompts] worker 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] worker 提示词已追加新默认版本(查上下文段收敛为 list_assets/list_findings,去掉 list_facts/node_detail/asset_neighbors,一次性)")
+	log.Printf("[prompts] worker 提示词已追加新默认版本(加入 lookup_playbooks 打法复用,一次性)")
 }
 
 // reporterToolCallMessage 必须无条件要求先读一次 get_finding_traffic 再写报告。
@@ -716,6 +754,36 @@ const reporterToolCallMessage = "上面刚有一个漏洞被 report_finding 登�
 const reporterToolCallMessageV1 = "上面刚有一个漏洞被 report_finding 登记。请从触发上下文里取出 finding_id" +
 	"（工具返回 \"finding recorded: <id>\" 里的数字）与任务 id，按你的职责撰写该漏洞的详细报告，" +
 	"最后调用 update_finding_report(finding_id, report) 保存。"
+
+// reseedReporterPrompt 把 reporter 的提示词刷成【当前代码默认】——默认正文新增了
+// 「详细利用过程」「关键位置与产物（绝对路径 + 访问入口）」「执行过的命令与回显」
+// 等报告要求，而 SeedPromptIfEmpty 首插入 only，旧库已有版本收不到。用版本管理
+// 【追加一个新版本】并切过去（ResetPromptToDefault），旧版本仍保留在历史里，用户若
+// 自定义过可从版本记录找回。settings flag 守卫 → 只做一次。全新库无需处理
+// （SeedPromptIfEmpty 已 seed 最新默认）。与 reseedWorkerPrompt 完全同构。
+func (s *Server) reseedReporterPrompt() {
+	const flag = "reporter_prompt_detailed_exploitation_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+	a, err := s.m.pg.GetAgentByKey("reporter")
+	if err != nil || a == nil {
+		return // 全新库尚未建 agent 行时，seedReporterAgent 会直接 seed 最新默认
+	}
+	tmpl := agent.ReporterDefaultPrompt
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] reporter 提示词重刷为新默认失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] reporter 提示词已追加新默认版本(详细利用过程/绝对路径/命令回显,一次性)")
+}
 
 // upgradeReporterTriggerMessage 把老库里仍是默认文案的 reporter 触发消息刷成新版本。
 // seedReporterAgent 受 reporter_agent_seed_v1 守卫且只在新建 agent 时写触发器，所以
@@ -794,6 +862,86 @@ func (s *Server) seedReporterAgent() {
 		log.Printf("[reporter] 创建触发器失败: %v", err)
 	}
 	log.Printf("[reporter] 已预置「报告撰写」agent + finding 触发器")
+}
+
+// playbookToolCallMessage 是「打法沉淀」agent 的触发文案：report_foothold 一响就唤起。
+const playbookToolCallMessage = "上面刚有一个据点在 report_foothold 里登记（= 打穿信号）。请沉淀打法：" +
+	"先用 get_task_node_detail 读据点节点、用 get_task_worker_trace 读该意图的完整执行过程，" +
+	"确认 confidence=high 且证据里确有可复现通路；从 list_assets 取目标真实指纹；" +
+	"先 lookup_playbooks 查同指纹是否已有卡片；最后用 record_playbook 写入或更新一张可跨目标复用的打法卡。" +
+	"未确认（medium/low）不要沉淀，说明原因即可；卡片必须脱敏（不写凭据/客户域名/IP）。"
+
+// seedPlaybookAgent 预置一个「打法沉淀」自定义 agent（builtin=false，可在 UI 编辑/删除）：
+// 挂 report_foothold 的 on_tool_call 触发器 —— 每拿到一个据点就唤起它提炼打法。
+// 一次性(settings flag 守卫)：用户删掉后不再重建。
+func (s *Server) seedPlaybookAgent() {
+	const flag = "playbook_agent_seed_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
+
+	if exist, _ := s.m.pg.GetAgentByKey("playbook"); exist != nil {
+		return // key 已被占用(用户手建过)——不覆盖
+	}
+	a, err := s.m.pg.CreateAgent("playbook", "打法沉淀",
+		"打穿目标（report_foothold）时自动触发：还原执行过程与目标指纹，沉淀成可跨目标复用的打法卡片。")
+	if err != nil {
+		log.Printf("[playbook] 创建 agent 失败: %v", err)
+		return
+	}
+	if err := s.m.pg.SeedPromptIfEmpty(a.ID, agent.PlaybookDefaultPrompt); err != nil {
+		log.Printf("[playbook] seed prompt 失败: %v", err)
+	}
+	// 一据点一卡片、并发各写各的；merge 必须 none，否则一波据点会被合并成一次运行。
+	if err := s.m.pg.SetAgentTriggerBehavior("playbook", "parallel", "none", 3); err != nil {
+		log.Printf("[playbook] 设置触发运行策略失败: %v", err)
+	}
+	if err := s.m.pg.AddAgentToToolBinding("playbook", []string{
+		"record_playbook", "lookup_playbooks", "get_task_node_detail",
+		"get_task_worker_trace", "list_task_worker_traces", "search_task_worker_traces",
+		"list_assets", "list_task_findings", "get_task_graph",
+	}); err != nil {
+		log.Printf("[playbook] 绑定工具失败: %v", err)
+	}
+	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
+		AgentKey:        "playbook",
+		Enabled:         true,
+		OnToolCall:      true,
+		ToolNames:       []string{"report_foothold"},
+		ToolCallMessage: playbookToolCallMessage,
+	}); err != nil {
+		log.Printf("[playbook] 创建触发器失败: %v", err)
+		return
+	}
+	log.Printf("[playbook] 已预置「打法沉淀」agent + report_foothold 触发器")
+}
+
+// reseedPentestPrompt 把 pentest（独立渗透 agent）的提示词刷成当前代码默认——
+// 默认正文新增了 lookup_playbooks 打法复用引导，SeedPromptIfEmpty 首插入 only，
+// 旧库已有版本收不到。与 reseedWorkerPrompt 同构。
+func (s *Server) reseedPentestPrompt() {
+	const flag = "pentest_prompt_playbooks_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }()
+	a, err := s.m.pg.GetAgentByKey("pentest")
+	if err != nil || a == nil {
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["pentest"]
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] pentest 提示词重刷为新默认失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] pentest 提示词已追加新默认版本(加入 lookup_playbooks 打法复用,一次性)")
 }
 
 // seedAutoReportFindingBinding adds "auto" to report_finding's binding ONCE so

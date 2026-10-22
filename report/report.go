@@ -844,6 +844,7 @@ func writeArtifacts(b *strings.Builder, nodes []*db.Node) {
 			PrefixIf("分类", db.ArtifactKindLabel(a.Kind)),
 			PrefixIf("主机", a.Host),
 			PrefixIf("位置", a.Locator),
+			PrefixIf("访问入口", a.URL),
 			db.ArtifactStateLabel(r.n.State),
 		})
 		if a.Cleanup != "" {
