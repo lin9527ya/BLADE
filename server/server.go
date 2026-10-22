@@ -364,7 +364,31 @@ func (s *Server) Handler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
-	return root
+	return securityHeaders(root)
+}
+
+// securityHeaders 给整站（页面与 API）加一组保守的安全响应头。
+//
+// 页面是静态导出：壳 HTML 公开、鉴权在 API 侧，所以登录页原本可以被任意站点 iframe
+// （点击劫持）。X-Frame-Options + frame-ancestors 把这条路封死。
+//
+// CSP 主要给 XSS 兜底：token 存在 localStorage 里，一旦有脚本注入就等于丢 7 天凭证。
+// 这里只允许同源脚本/样式/连接；`script-src` 的 'unsafe-inline' 是 Next 静态导出必须的
+// （页面里有内联 bootstrap 脚本），要换成 nonce 得改成服务端渲染。
+// `img-src` 不含外部 https：markdown 里的外链图片会被挡掉——这是有意的（防信标/外泄），
+// 确有需要时再放开。
+func securityHeaders(next http.Handler) http.Handler {
+	const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self' data:; connect-src 'self'; " +
+		"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // routeRegistrar 是路由注册面的最小接口：Handler() 传 *http.ServeMux，测试传

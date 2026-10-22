@@ -2,9 +2,11 @@ package server
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +46,25 @@ const (
 // 把"读不到"当成"没有设置"：authInit 曾因此在数据库报错时放行，让未认证请求覆盖
 // 掉已有的管理员密码。
 const errDataSourceUnavailable = "数据源暂时不可用，请稍后重试"
+
+// maxAuthBodyBytes 是认证接口的请求体上限：它们是免认证入口，不设限等于任人打大包。
+// 正常的登录/初始化/改密码请求都不到 1KB，4KB 足够。
+const maxAuthBodyBytes = 4 << 10
+
+// decodeAuthBody 解析认证接口的小 JSON 体；超过上限回 413，格式错误回 400。
+func decodeAuthBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodyBytes)
+	if err := decode(r, v); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大")
+		} else {
+			writeErr(w, http.StatusBadRequest, "请求格式错误")
+		}
+		return false
+	}
+	return true
+}
 
 // validatePassword 返回空串表示通过，否则返回可直接展示给用户的中文原因。
 func validatePassword(pw string) string {
@@ -218,47 +239,170 @@ func (k *signingKey) get() []byte {
 
 func (k *signingKey) set(b []byte) { k.v.Store(b) }
 
-// loginGuard 是登录失败节流。本系统用户名固定、密码是唯一的门，而 bcrypt 只让每次尝试变慢、
-// 不限制次数——没有节流就等于把门敞着让在线爆破随便试。失败累计到阈值后锁一段时间，成功后清零。
-// 状态在内存、重启归零：目的是抬高在线爆破成本，不是持久化封禁（单机自用也不需要后者）。
-type loginGuard struct {
-	mu          sync.Mutex
-	failures    int
-	lockedUntil time.Time
+// loginGuardConfig 是节流参数。零值（threshold==0）= 用内置默认；测试可注入小值。
+type loginGuardConfig struct {
+	threshold    int           // 同一来源连续失败几次开始锁
+	baseLock     time.Duration // 第一次锁多久（之后每次失败翻倍）
+	maxLock      time.Duration // 单次锁的上限
+	decay        time.Duration // 这么久没失败，把该来源的计数清零（否则会永久停在"一次尝试/锁期"）
+	globalWindow time.Duration // 全局失败预算的滑动窗口
+	globalBudget int           // 窗口内全局失败上限（分布式换 IP 的兜底；<=0 = 关闭）
+	maxEntries   int           // 跟踪的来源上限（换 IP 打爆内存时的止损）
 }
 
-const (
-	loginMaxFailures = 5
-	loginLockoutFor  = 5 * time.Minute
-)
+func (c loginGuardConfig) withDefaults() loginGuardConfig {
+	if c.threshold > 0 {
+		return c
+	}
+	return loginGuardConfig{
+		threshold:    5,
+		baseLock:     time.Minute,
+		maxLock:      30 * time.Minute,
+		decay:        30 * time.Minute,
+		globalWindow: 10 * time.Minute,
+		globalBudget: 60,
+		maxEntries:   4096,
+	}
+}
 
-// lockedFor 在锁定期内返回剩余时长与 true。
-func (g *loginGuard) lockedFor() (time.Duration, bool) {
+type loginEntry struct {
+	failures    int
+	lockedUntil time.Time
+	lastFail    time.Time
+}
+
+// loginGuard 是登录失败节流。本系统用户名固定、密码是唯一的门，而 bcrypt 只让每次尝试变慢、
+// 不限制次数——没有节流就等于把门敞着让在线爆破随便试。状态在内存、重启归零：目的是抬高
+// 在线爆破成本，不是持久化封禁（单机自用也不需要后者）。
+//
+// **按来源 IP 分开计数**——此前只有一个全局计数器：
+// 任何人（甚至一次手滑）失败 5 次就把所有人锁 5 分钟，锁定期满后计数还不衰减，
+// 于是"每 4 分钟发一次错误登录"就能把人永久锁在门外。
+//
+// 现在：同一来源指数退避、久不失败自动衰减；另有一层**全局失败预算**兜住"换着 IP
+// 猜"的分布式爆破（超出预算时短暂 429，不是长期锁）。内存态、进程重启即清零。
+type loginGuard struct {
+	mu          sync.Mutex
+	cfg         loginGuardConfig
+	perIP       map[string]*loginEntry
+	globalFails []time.Time // 滑动窗口内的失败时刻
+}
+
+func (g *loginGuard) config() loginGuardConfig { return g.cfg.withDefaults() }
+
+// lockedFor 返回该来源剩余锁定时长。
+func (g *loginGuard) lockedFor(ip string) (time.Duration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if left := time.Until(g.lockedUntil); left > 0 {
+	e := g.perIP[ip]
+	if e == nil {
+		return 0, false
+	}
+	if left := time.Until(e.lockedUntil); left > 0 {
 		return left, true
 	}
 	return 0, false
 }
 
-// fail 记一次失败；达到阈值就开启（或延长）锁定期并返回它。
-func (g *loginGuard) fail() time.Duration {
+// globalThrottledFor 报告全局失败预算是否已用尽，并给出还要等多久（最早那次失败滑出窗口）。
+func (g *loginGuard) globalThrottledFor() (time.Duration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.failures++
-	if g.failures >= loginMaxFailures {
-		g.lockedUntil = time.Now().Add(loginLockoutFor)
-		return loginLockoutFor
+	cfg := g.config()
+	if cfg.globalBudget <= 0 {
+		return 0, false
 	}
-	return 0
+	g.pruneGlobalLocked(cfg, time.Now())
+	if len(g.globalFails) < cfg.globalBudget {
+		return 0, false
+	}
+	return cfg.globalWindow - time.Since(g.globalFails[0]), true
 }
 
-func (g *loginGuard) succeed() {
+// fail 记一次失败：先做衰减，再按阈值指数退避，返回锁定时长（0 = 不锁）。
+func (g *loginGuard) fail(ip string) time.Duration {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.failures = 0
-	g.lockedUntil = time.Time{}
+	cfg := g.config()
+	now := time.Now()
+	g.pruneGlobalLocked(cfg, now)
+	g.globalFails = append(g.globalFails, now)
+
+	if g.perIP == nil { // 零值可用：Server 不显式构造这个 guard
+		g.perIP = make(map[string]*loginEntry)
+	}
+	e := g.perIP[ip]
+	if e == nil {
+		// 来源上限：满了就不再跟踪新来源（否则换 IP 能把内存打爆）。此时仍受全局预算约束。
+		if len(g.perIP) >= cfg.maxEntries {
+			return 0
+		}
+		e = &loginEntry{}
+		g.perIP[ip] = e
+	}
+	// 衰减：很久没失败就从零开始，避免永久停在"一次尝试/锁期"。
+	if cfg.decay > 0 && !e.lastFail.IsZero() && now.Sub(e.lastFail) > cfg.decay {
+		e.failures = 0
+	}
+	e.failures++
+	e.lastFail = now
+	if e.failures < cfg.threshold {
+		return 0
+	}
+	lock := cfg.baseLock
+	// failures = threshold + k → 翻倍 k 次（threshold 那一次是 baseLock）。
+	for i := cfg.threshold; i < e.failures && lock < cfg.maxLock; i++ {
+		lock *= 2
+	}
+	if lock > cfg.maxLock {
+		lock = cfg.maxLock
+	}
+	e.lockedUntil = now.Add(lock)
+	return lock
+}
+
+func (g *loginGuard) succeed(ip string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.perIP, ip)
+}
+
+func (g *loginGuard) pruneGlobalLocked(cfg loginGuardConfig, now time.Time) {
+	if cfg.globalWindow <= 0 || len(g.globalFails) == 0 {
+		return
+	}
+	cut := now.Add(-cfg.globalWindow)
+	keep := g.globalFails[:0]
+	for _, t := range g.globalFails {
+		if t.After(cut) {
+			keep = append(keep, t)
+		}
+	}
+	g.globalFails = keep
+}
+
+// loginClientIP 取登录请求的真实来源。
+//
+// 反代形态（cloudflared / nginx 在本机）下 Go 看到的都是 127.0.0.1，真实来源在
+// CF-Connecting-IP / X-Real-IP / X-Forwarded-For 里；**但只有直连方是 loopback 时才信这些头**
+// ——否则把 8787 直接暴露到公网时，任何人伪造一个头就能绕过按来源的节流。
+func loginClientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		for _, h := range []string{"CF-Connecting-IP", "X-Real-IP", "X-Forwarded-For"} {
+			v := strings.TrimSpace(r.Header.Get(h))
+			if i := strings.IndexByte(v, ','); i >= 0 { // XFF: 取最左（客户端）
+				v = strings.TrimSpace(v[:i])
+			}
+			if net.ParseIP(v) != nil {
+				return v
+			}
+		}
+	}
+	return host
 }
 
 // signJWT issues a 7-day HS256 token for user BLADE.
@@ -350,7 +494,10 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil || req.Password == "" {
+	if !decodeAuthBody(w, r, &req) {
+		return
+	}
+	if req.Password == "" {
 		writeErr(w, 400, "密码不能为空")
 		return
 	}
@@ -399,8 +546,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !decodeAuthBody(w, r, &req) {
 		return
 	}
 	if req.NewPassword == "" {
@@ -459,22 +605,32 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 节流先于一切：锁定期内连用户名/密码都不看，直接拒——否则爆破者仍能用每次
-	// 请求的时序/回包差异继续试探。
-	if left, locked := s.auth.login.lockedFor(); locked {
+	// 请求的时序/回包差异继续试探。计数按来源 IP 分开（见 loginGuard）。
+	ip := loginClientIP(r)
+	if left, locked := s.auth.login.lockedFor(ip); locked {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
 		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，请 %s 后重试", left.Round(time.Second)))
+		return
+	}
+	// 全局预算：防"换着 IP 猜"。这不是长期锁，窗口滑过就恢复。
+	if left, throttled := s.auth.login.globalThrottledFor(); throttled {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
+		writeErr(w, 429, "登录尝试过于频繁，请稍后重试")
 		return
 	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !decodeAuthBody(w, r, &req) {
 		return
 	}
 	if req.Username != "BLADE" {
-		s.auth.login.fail()
+		if lockFor := s.auth.login.fail(ip); lockFor > 0 {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(lockFor.Seconds())+1))
+			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor.Round(time.Second)))
+			return
+		}
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
@@ -488,14 +644,15 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
-		if lockFor := s.auth.login.fail(); lockFor > 0 {
-			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor))
+		if lockFor := s.auth.login.fail(ip); lockFor > 0 {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(lockFor.Seconds())+1))
+			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor.Round(time.Second)))
 			return
 		}
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	s.auth.login.succeed()
+	s.auth.login.succeed(ip)
 	tok, err := signJWT(s.auth.signKey.get())
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")

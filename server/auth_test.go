@@ -277,7 +277,8 @@ func TestLoginThrottleLocksAfterRepeatedFailures(t *testing.T) {
 		return w.Code
 	}
 
-	for i := 1; i <= loginMaxFailures; i++ {
+	threshold := loginGuardConfig{}.withDefaults().threshold
+	for i := 1; i <= threshold; i++ {
 		if code := login("wrong-password"); code != 401 && code != 429 {
 			t.Fatalf("第 %d 次失败应 401（达阈值那次为 429），得到 %d", i, code)
 		}
@@ -286,7 +287,7 @@ func TestLoginThrottleLocksAfterRepeatedFailures(t *testing.T) {
 		t.Fatalf("锁定期内**即使密码正确**也应 429（节流先于校验），得到 %d", code)
 	}
 
-	s.auth.login.succeed() // 等价于锁定期结束/成功登录后的复位
+	s.auth.login.succeed("192.0.2.1") // httptest 的默认 RemoteAddr；等价于成功登录后的复位
 	if code := login("right-password"); code != 200 {
 		t.Fatalf("复位后正确密码应 200，得到 %d", code)
 	}
