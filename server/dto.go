@@ -205,6 +205,9 @@ type TaskNodeDTO struct {
 	DeleteReason string `json:"delete_reason,omitempty"` // 意图假删除(state='deleted')时的删除原因
 	// Fingerprint 只在凭据节点上非空（P36）：明文不进界面与报告，指认一条凭据靠它。
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// WorkerSeq 是意图在本任务内的创建序号（1-based）；界面显示 "Worker #N" 用它，
+	// 避免把全局意图 id（任务 2 会从 21 继续）当成 worker 编号。
+	WorkerSeq int64 `json:"worker_seq,omitempty"`
 }
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {
@@ -217,6 +220,7 @@ func taskNodeDTO(n *db.Node) TaskNodeDTO {
 		State:        n.State,
 		Origin:       n.Origin,
 		TS:           rfc3339(n.CreatedAt),
+		WorkerSeq:    n.WorkerSeq,
 	}
 	if n.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(n.SourceTaskID)

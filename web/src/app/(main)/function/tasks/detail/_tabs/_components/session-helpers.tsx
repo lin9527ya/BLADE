@@ -302,6 +302,7 @@ export function intentToSession(n: TaskNode): Session {
     live: !n.inherited && state === "running",
     last_activity: n.ts,
     intent_id: n.id,
+    worker_no: n.worker_seq,
     source_task_id: n.source_task_id,
     inherited: n.inherited,
   };
