@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-22
+
 ### agent 执行面降权（可选：`BLADE_AGENT_USER`）
 
 #### 新增的功能
@@ -1798,7 +1800,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.0
 [0.4.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.4.2
 [0.4.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.4.0
