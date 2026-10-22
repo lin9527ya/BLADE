@@ -75,8 +75,8 @@ install_local(){
       DB_SSL="$(ask 'sslmode (disable/require)' disable)" ;;
   esac
 
-  # 生成 config.json
-  cat > config.json <<JSON
+  # 生成 config.json（**0600**：里面有数据库口令，别让同机其它用户读到）
+  ( umask 077; cat > config.json <<JSON
 {
   "database": {
     "host": "${DB_HOST}",
@@ -88,6 +88,7 @@ install_local(){
   }
 }
 JSON
+  )
   ok "已生成 config.json"
 
   # go 环境检查
