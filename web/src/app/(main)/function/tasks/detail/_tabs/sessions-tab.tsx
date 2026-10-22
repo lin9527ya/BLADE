@@ -344,7 +344,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         {/* Right: transcript */}
         <SideQuestionWorkspace
           side={side}
-          label={active.role === "worker" ? `Worker #${active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
+          label={active.role === "worker" ? `Worker #${active.worker_no ?? active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
         >
           <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">
@@ -621,11 +621,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   <MentionTextarea
                     inputGroup
                     rows={1}
-                    aria-label={`给 Worker #${active.intent_id} 发消息`}
+                    aria-label={`给 Worker #${active.worker_no ?? active.intent_id} 发消息`}
                     placeholder={
                       active.status === "running"
-                        ? `给运行中的 Worker #${active.intent_id} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`
-                        : `给已暂停的 Worker #${active.intent_id} 发消息，@ 引用记录，调整执行方向…`
+                        ? `给运行中的 Worker #${active.worker_no ?? active.intent_id} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`
+                        : `给已暂停的 Worker #${active.worker_no ?? active.intent_id} 发消息，@ 引用记录，调整执行方向…`
                     }
                     value={workerMessage}
                     onValueChange={(value) => {
@@ -747,7 +747,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         >
           <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
             <AlertDialogHeader>
-              <AlertDialogTitle>删除 Worker #{cancelIntent?.intent_id}？</AlertDialogTitle>
+              <AlertDialogTitle>删除 Worker #{cancelIntent?.worker_no ?? cancelIntent?.intent_id}？</AlertDialogTitle>
               <AlertDialogDescription className="break-words whitespace-normal">
                 {deleteMode === "hard" ? (
                   <>

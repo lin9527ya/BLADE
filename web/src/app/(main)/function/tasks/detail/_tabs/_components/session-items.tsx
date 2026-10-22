@@ -63,7 +63,7 @@ export function SessionItem({
         {icon ?? <span className="size-3.5 shrink-0" />}
         {s.intent_id && (
           <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-            #{s.intent_id}
+            #{s.worker_no ?? s.intent_id}
           </span>
         )}
         {s.inherited && s.source_task_id && (

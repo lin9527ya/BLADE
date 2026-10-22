@@ -185,21 +185,21 @@ export function useSessionsState(taskId: string) {
         const res = await api.controlIntent(taskId, session.intent_id, action, reason, mode);
         if (action === "pause") {
           patchIntentState(session.intent_id, "paused");
-          toast.success(`Worker #${session.intent_id} 已暂停`);
+          toast.success(`Worker #${session.worker_no ?? session.intent_id} 已暂停`);
         } else if (action === "resume") {
           patchIntentState(session.intent_id, "open");
-          toast.success(`Worker #${session.intent_id} 已恢复，等待重新领取`);
+          toast.success(`Worker #${session.worker_no ?? session.intent_id} 已恢复，等待重新领取`);
         } else if (mode === "hard") {
           // 真删除:意图及独占下游已物理移除,从列表剔除该行。
           patchIntentState(session.intent_id);
           const d = res.deleted;
           const extra = d ? `（含 ${d.intents} 意图 / ${d.facts} 事实 / ${d.findings} 漏洞）` : "";
-          toast.success(`Worker #${session.intent_id} 及其独占下游已彻底删除${extra}`);
+          toast.success(`Worker #${session.worker_no ?? session.intent_id} 及其独占下游已彻底删除${extra}`);
           setCancelReason("");
         } else {
           // 假删除:意图置 deleted、记录删除原因,保留节点与产出。
           patchIntentState(session.intent_id, "deleted");
-          toast.success(`Worker #${session.intent_id} 已删除（原因已记录，规划者将据此重新规划）`);
+          toast.success(`Worker #${session.worker_no ?? session.intent_id} 已删除（原因已记录，规划者将据此重新规划）`);
           setCancelReason("");
         }
       } catch (error) {
@@ -1118,8 +1118,8 @@ export function useSessionsState(taskId: string) {
         setWorkerMessageRequestId("");
         toast.success(
           result.steered
-            ? `提示已投递：Worker #${intentId} 下一次动作前生效（那一次动作会被拦下、据此改道）`
-            : `消息已发送给 Worker #${intentId}，已立即继续执行`,
+            ? `提示已投递：Worker #${active.worker_no ?? intentId} 下一次动作前生效（那一次动作会被拦下、据此改道）`
+            : `消息已发送给 Worker #${active.worker_no ?? intentId}，已立即继续执行`,
         );
       })
       .catch((error) => {

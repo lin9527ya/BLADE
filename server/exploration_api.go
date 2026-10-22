@@ -29,6 +29,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+		assignIntentOrdinals(t.Store, in)
 		writeJSON(w, 200, taskNodeDTOs(in))
 		return
 	}
@@ -43,6 +44,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	assignIntentOrdinals(t.Store, in)
 	sources, err := t.Store.DirectSourceStores()
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -54,6 +56,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, sourceErr.Error())
 			return
 		}
+		assignIntentOrdinals(source.Store, items)
 		in = append(in, items...)
 		hasMore = hasMore || sourceMore
 	}
@@ -63,6 +66,29 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 		hasMore = true
 	}
 	writeJSON(w, 200, map[string]any{"items": taskNodeDTOs(in), "has_more": hasMore})
+}
+
+// assignIntentOrdinals 给页面上的意图补 WorkerSeq（任务内序号）。失败就留空——序号
+// 只是展示优化，不能因为一次统计查询让整个意图列表 500。
+func assignIntentOrdinals(store *db.ExplorationStore, nodes []*db.Node) {
+	maxID := int64(0)
+	for _, n := range nodes {
+		if n != nil && n.ID > maxID {
+			maxID = n.ID
+		}
+	}
+	if maxID == 0 {
+		return
+	}
+	seq, err := store.IntentOrdinals(maxID)
+	if err != nil {
+		return
+	}
+	for _, n := range nodes {
+		if n != nil {
+			n.WorkerSeq = seq[n.ID]
+		}
+	}
 }
 
 func inheritedIntentResult(state string) bool {

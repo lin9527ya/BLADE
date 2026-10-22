@@ -75,12 +75,16 @@ type Node struct {
 	State         string          `json:"state"`
 	Origin        string          `json:"origin,omitempty"`
 	Owner         string          `json:"owner,omitempty"`
-	BlockedReason string          `json:"blocked_reason,omitempty"`
-	DeleteReason  string          `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
-	Anchors       []int64         `json:"anchors,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	SourceTaskID  int64           `json:"source_task_id,omitempty"`
-	Inherited     bool            `json:"inherited,omitempty"`
+	// WorkerSeq 是 intent 在【本任务内】的创建序号（1-based，按 id 升序）。意图 id 是全局
+	// 序列，任务 2 的 worker 会从 #21 继续；界面要显示"任务内第几个 worker"就用这个字段。
+	// 只为展示而填（intents 接口），不参与任何业务判定。
+	WorkerSeq     int64     `json:"worker_seq,omitempty"`
+	BlockedReason string    `json:"blocked_reason,omitempty"`
+	DeleteReason  string    `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
+	Anchors       []int64   `json:"anchors,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	SourceTaskID  int64     `json:"source_task_id,omitempty"`
+	Inherited     bool      `json:"inherited,omitempty"`
 }
 
 // Activity is one worker execution step (= old task_activity).
@@ -871,6 +875,28 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 	}
 	defer rows.Close()
 	return scanNodes(rows)
+}
+
+// IntentOrdinals returns id → per-task ordinal (1-based, by creation order) for this
+// exploration's intents with id <= maxID (maxID<=0 = all). The intents endpoint uses
+// it so the UI shows "Worker #N" within a task instead of the global node id.
+func (s *ExplorationStore) IntentOrdinals(maxID int64) (map[int64]int64, error) {
+	rows, err := s.db.Query(`SELECT id, row_number() OVER (ORDER BY id)
+FROM exploration_nodes WHERE exploration_id=$1 AND kind=$2 AND ($3 <= 0 OR id <= $3)`,
+		s.expID, KindIntent, maxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var id, seq int64
+		if err := rows.Scan(&id, &seq); err != nil {
+			return nil, err
+		}
+		out[id] = seq
+	}
+	return out, rows.Err()
 }
 
 // ListByKindPage returns one newest-first page of nodes of a kind for reverse
