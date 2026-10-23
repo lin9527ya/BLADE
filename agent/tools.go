@@ -276,6 +276,10 @@ type intentQuota struct {
 	open  int
 	total int
 	round int
+	// pool 是防打转判定的对比池（见 intent_dedup.go）：同一批里的重复也要当场拦住，
+	// 所以整批共享一份，每建一条就追加进去。
+	pool       []intentFP
+	poolLoaded bool
 }
 
 // reportPolicyReject 把一次拒绝写进时间线：模型想做什么、被哪条策略拦、命中什么。
@@ -1491,6 +1495,12 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		}
 	}
 	riskArea := db.NormalizeRiskArea(it.RiskArea)
+	// 防打转：同资产 + 同风险类 + 同义描述，要么已有在跑的、要么已经结束过 3 次。
+	// 判定放在策略/资产/血缘/战果校验之后、建节点之前：前面的校验说的是"能不能做"，
+	// 这一条说的是"这件事是不是已经有人在做/已经做过了"。
+	if rej := t.checkIntentSpin(q, it.Summary, riskArea, anchors, strings.TrimSpace(it.RiskArea) != ""); rej != "" {
+		return 0, "", fmt.Errorf("%s", rej)
+	}
 	payload := map[string]any{"summary": it.Summary, "risk_area": riskArea}
 	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
 	// 不在这里返错。它是给交付物用的分类，不是约束。
@@ -1506,6 +1516,13 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	}
 	q.round++
 	t.intentsRound++
+	// 同一批里刚建的方向也要参与后续判定：否则一次 add_intent 带 4 条同义意图时，
+	// 它们互相都看不见，等于没拦。
+	newAssets := make(map[int64]bool, len(anchors))
+	for _, a := range anchors {
+		newAssets[a] = true
+	}
+	q.rememberIntent(intentFP{id: id, summary: it.Summary, riskArea: riskArea, state: "open", assets: newAssets})
 	// 目标轴：没显式指名时，恰有一个 open 目标就自动挂；多个不猜（回执提示）。
 	note := ""
 	if goalID == 0 {
