@@ -492,6 +492,31 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 				"历史命中不代表目标一定有洞，仍要实际触发。用完用 record_playbook_feedback 回报 worked/failed。"
 		}
 	}
+	// 覆盖矩阵摘要：只给「未覆盖格」的规模与几个例子。完整矩阵走 coverage_matrix
+	// 按需取——每轮把全量矩阵塞进态势会把上下文撑爆。
+	if t.ts != nil && t.taskID > 0 {
+		if cov, err := t.ts.CoverageMatrix(t.taskID); err == nil && len(cov) > 0 {
+			uncovered := 0
+			samples := make([]string, 0, 5)
+			for _, a := range cov {
+				miss := len(db.RiskAreas) - len(a.Cells)
+				if miss <= 0 {
+					continue
+				}
+				uncovered += miss
+				if len(samples) < 5 {
+					samples = append(samples, fmt.Sprintf("%s(%s) 未触及 %d 类", a.Label, a.Type, miss))
+				}
+			}
+			out["coverage_gap"] = map[string]any{
+				"assets_in_scope": len(cov),
+				"uncovered_cells": uncovered,
+				"samples":         samples,
+				"note": "完整矩阵用 coverage_matrix。覆盖度是**验收下限**，不是探索目标本身——" +
+					"别为拉平覆盖去逐个资产浅测；发现高价值入口后优先往深打穿。",
+			}
+		}
+	}
 	// lineage from the exploration edges: an intent's parents (what it
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
@@ -1454,7 +1479,8 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			return 0, "", fmt.Errorf("%s", b.String())
 		}
 	}
-	payload := map[string]any{"summary": it.Summary, "risk_area": db.NormalizeRiskArea(it.RiskArea)}
+	riskArea := db.NormalizeRiskArea(it.RiskArea)
+	payload := map[string]any{"summary": it.Summary, "risk_area": riskArea}
 	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
 	// 不在这里返错。它是给交付物用的分类，不是约束。
 	if techs := db.NormalizeTechniques(it.Techniques); len(techs) > 0 {
@@ -1511,6 +1537,16 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			_ = t.ts.Link(origin, db.RelDerivedFrom, id)
 		}
 	}
+	if riskArea == "other" && strings.TrimSpace(it.RiskArea) == "" {
+		// 不硬性拒绝（拒绝会浪费整整一轮），但把后果说清楚——覆盖矩阵是按
+		// 「资产 × 风险类」统计的，漏填一条就少一格依据。
+		warn := "本条意图未填 risk_area，已归入 other：覆盖矩阵与交付报告会因此失真，后续意图请务必填上（sqli/xss/rce/...）。"
+		if note == "" {
+			note = warn
+		} else {
+			note += " " + warn
+		}
+	}
 	return id, note, nil
 }
 
@@ -1525,7 +1561,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"goal_id":       idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
 			"uses_loot_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":      intp("优先级 0-10，默认5"),
-			"risk_area":     str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**尽量填写**——报告与覆盖度按「范围内资产 × 风险类」统计已测/未测成/未触及。"),
+			"risk_area":     str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
 			"techniques":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -3082,6 +3118,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
+		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
+		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
+		t.coverageMatrix(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.cancelExecution(),
