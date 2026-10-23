@@ -21,6 +21,9 @@ func TestPlaybooksAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 本测试最后会把这张卡片**废弃**掉；不清理的话下一轮 UpsertPlaybook 复用它时
+	// 状态仍是 deprecated，于是 status=active 的列表过滤为空——测试第二次必挂。
+	t.Cleanup(func() { _, _ = s.m.pg.Exec(`DELETE FROM attack_playbooks WHERE id=$1`, p.ID) })
 
 	w := request("GET", "/api/playbooks?q=test-playbook&status=active", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "API 卡片") {
