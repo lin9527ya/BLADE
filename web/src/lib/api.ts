@@ -164,7 +164,8 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     if (typeof window !== "undefined") {
       localStorage.removeItem("blade_token");
       document.cookie = "blade_token=; path=/; max-age=0";
-      window.location.href = "/login";
+      // 登录页自己就在 /login：再跳一次会整页重载，把刚算出来的错误提示冲掉。
+      if (window.location.pathname !== "/login") window.location.href = "/login";
     }
     throw new Error("未授权");
   }
