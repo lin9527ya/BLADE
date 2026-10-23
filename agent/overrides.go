@@ -35,6 +35,9 @@ type Overrides struct {
 	ToolAugment func(ctx context.Context, agentKey string) (extra []actool.CoreTool, def DeferredInfo, cleanup func())
 	// FindingTrafficBindingEnabled 是流量宿主工具能否绑定到 agent 的全局开关。
 	FindingTrafficBindingEnabled func() bool
+	// LootExecEnabled 是 loot_exec 的总开关（默认关）：它把库里的凭据直接变成对目标的
+	// 动作，是 agent 能力里风险最高的一项。
+	LootExecEnabled func() bool
 }
 
 // SetOverrides 用 o **整体替换**当前这套 hook；nil 字段表示把那一项关掉。
@@ -54,6 +57,7 @@ func SetOverrides(o Overrides) {
 	ToolResolve = o.ToolResolve
 	ToolAugment = o.ToolAugment
 	FindingTrafficBindingEnabled = o.FindingTrafficBindingEnabled
+	LootExecEnabled = o.LootExecEnabled
 }
 
 // CurrentOverrides 返回当前生效的一整套 hook（读取 / 保存 / 恢复用）。
@@ -70,6 +74,7 @@ func CurrentOverrides() Overrides {
 		ToolResolve:                    ToolResolve,
 		ToolAugment:                    ToolAugment,
 		FindingTrafficBindingEnabled:   FindingTrafficBindingEnabled,
+		LootExecEnabled:                LootExecEnabled,
 	}
 }
 

@@ -260,6 +260,7 @@ type Manager struct {
 const (
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
+	settingLootExec            = "agent_loot_exec" // loot_exec 总开关（默认关：凭据直接变动作，风险最高）
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
 	settingWebSearchOn         = "web_search_enabled"

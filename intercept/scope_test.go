@@ -69,6 +69,14 @@ func TestShellCommandOfExtractsNetworkTargets(t *testing.T) {
 		{"Bash still works", "Bash", `{"command":"curl https://evil.example.com/x"}`, "evil.example.com"},
 		{"shell_open still works", "shell_open", `{"command":"nmap 8.8.8.8"}`, "8.8.8.8"},
 		{"shell_send still works", "shell_send", `{"text":"curl http://8.8.8.8/x"}`, "8.8.8.8"},
+		{
+			// loot_exec 的命令本身通常不含目标地址（"id; uname -a"），目标在 host 字段里。
+			// 只看 command 就会让这条工具绕过 RoE——所以必须把 host 一起交给判定。
+			"loot_exec carries the host, not just the command",
+			"loot_exec",
+			`{"loot_id":3,"host":"evil.example.com","command":"id; uname -a"}`,
+			"evil.example.com",
+		},
 		{"non-network tool yields nothing", "insert_assets", `{"host":"evil.example.com"}`, ""},
 	}
 	for _, tc := range cases {
@@ -151,6 +159,16 @@ func TestDefaultEnabledToolsCoverRunExecution(t *testing.T) {
 			t.Fatalf("%q missing from defaultEnabledTools — it would skip the rule and judge surface", want)
 		}
 	}
+}
+
+// loot_exec 会直接连目标，漏登记等于让拦截规则与裁判都看不清它。
+func TestDefaultEnabledToolsCoverLootExec(t *testing.T) {
+	for _, n := range defaultEnabledTools {
+		if n == "loot_exec" {
+			return
+		}
+	}
+	t.Fatal("loot_exec missing from defaultEnabledTools — 拦截规则/裁判会跳过它")
 }
 
 func TestTargetInScope(t *testing.T) {
