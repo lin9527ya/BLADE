@@ -43,8 +43,6 @@ export default function SystemSettingsPage() {
     setProxyInput,
     savingProxy,
     setSavingProxy,
-    globalProxyInput,
-    setGlobalProxyInput,
     savingGlobalProxy,
     setSavingGlobalProxy,
     testing,

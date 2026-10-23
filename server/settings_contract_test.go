@@ -220,4 +220,7 @@ var settingsReadOnly = map[string]string{
 	"update_token_set":         "由 update_github_token 是否为空算出",
 	"intel_used_today":         "今日情报用量，运行时统计",
 	"intercept_scope_mode_env": "环境变量覆盖值，只读",
+	"proxy_active":             "运行时状态：当前生效出口，只读",
+	"proxy_blocked":            "运行时状态：全部代理不可用（出口已阻断，不会直连），只读",
+	"proxy_status":             "运行时状态：每个候选的最近探测结果，只读",
 }

@@ -74,22 +74,35 @@ func (s *Server) settingsPayload() map[string]any {
 	if concLimit == 0 {
 		concLimit = defaultConcurrencyLimit // 关闭时也回显一个合理默认值给 UI
 	}
+	proxyCfg := s.m.ProxyPoolConfig()
+	proxyStatus := s.m.ProxyStatus()
 	return map[string]any{
-		"traffic_capture":          s.m.TrafficEnabled(),
-		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
-		"agent_auto_retest":        s.m.pg.GetBool(settingAutoRetest, false),
-		"task_token_budget":        s.taskTokenBudget(),
-		"llm_record":               s.m.LLMRecordEnabled(),
-		"web_search_enabled":       on,
-		"web_search_backend":       backend,
-		"brave_key_set":            strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":           strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":         proxy,                       // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":             s.m.GlobalProxy(),           // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
-		"python_interpreter":       strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":                  s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"task_concurrency_enabled": concOn,                      // 任务并发上限开关(默认关)
-		"task_concurrency_limit":   concLimit,                   // 同时运行任务上限(开启后默认5)
+		"traffic_capture":       s.m.TrafficEnabled(),
+		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
+		"task_token_budget":     s.taskTokenBudget(),
+		"llm_record":            s.m.LLMRecordEnabled(),
+		"web_search_enabled":    on,
+		"web_search_backend":    backend,
+		"brave_key_set":         strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":        strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":      proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":          s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
+		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
+		// 全部候选都不可用、出口已阻断（**不会直连**）。
+		"global_proxy_pool":             strings.Join(proxyCfg.Candidates, "\n"),
+		"proxy_health_url":              proxyCfg.HealthURL,
+		"proxy_health_timeout_seconds":  int(proxyCfg.Timeout.Seconds()),
+		"proxy_health_interval_seconds": int(proxyCfg.Interval.Seconds()),
+		"proxy_fail_threshold":          proxyCfg.FailThreshold,
+		"proxy_switch_cooldown_seconds": int(proxyCfg.Cooldown.Seconds()),
+		"proxy_active":                  proxyStatus.Active,
+		"proxy_blocked":                 proxyStatus.Blocked,
+		"proxy_status":                  proxyStatus.Candidates,
+		"python_interpreter":            strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"workers":                       s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"task_concurrency_enabled":      concOn,                      // 任务并发上限开关(默认关)
+		"task_concurrency_limit":        concLimit,                   // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -196,14 +209,20 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		LLMRecord           *bool  `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
-		WebSearchEnabled *bool   `json:"web_search_enabled"`
-		WebSearchBackend *string `json:"web_search_backend"`
-		BraveKey         *string `json:"brave_search_api_key"`
-		TavilyKey        *string `json:"tavily_search_api_key"`
-		WebSearchProxy   *string `json:"web_search_proxy"`   // 独立出口代理(http/https/socks5)；null=不改，""=清空
-		GlobalProxy      *string `json:"global_proxy"`       // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
-		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
-		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+		WebSearchEnabled    *bool   `json:"web_search_enabled"`
+		WebSearchBackend    *string `json:"web_search_backend"`
+		BraveKey            *string `json:"brave_search_api_key"`
+		TavilyKey           *string `json:"tavily_search_api_key"`
+		WebSearchProxy      *string `json:"web_search_proxy"`  // 独立出口代理(http/https/socks5)；null=不改，""=清空
+		GlobalProxy         *string `json:"global_proxy"`      // 兼容旧字段：单代理；null=不改，""=清空(直连)
+		GlobalProxyPool     *string `json:"global_proxy_pool"` // 代理池（每行一个）；null=不改，""=清空
+		ProxyHealthURL      *string `json:"proxy_health_url"`
+		ProxyHealthTimeout  *int    `json:"proxy_health_timeout_seconds"`
+		ProxyHealthInterval *int    `json:"proxy_health_interval_seconds"`
+		ProxyFailThreshold  *int    `json:"proxy_fail_threshold"`
+		ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
+		PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
+		Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 		// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
 		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
@@ -571,13 +590,39 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		changed = true
 	}
-	if req.GlobalProxy != nil {
-		// Validation failure (bad scheme/host) is a client error, not a 500.
-		if err := s.m.SetGlobalProxy(*req.GlobalProxy); err != nil {
+	if req.GlobalProxy != nil || req.GlobalProxyPool != nil || req.ProxyHealthURL != nil ||
+		req.ProxyHealthTimeout != nil || req.ProxyHealthInterval != nil ||
+		req.ProxyFailThreshold != nil || req.ProxySwitchCooldown != nil {
+		// Fill unspecified fields from current state so a partial PUT (e.g. only
+		// changing the health timeout) does not wipe the candidate list.
+		cfg := s.m.ProxyPoolConfig()
+		switch {
+		case req.GlobalProxyPool != nil:
+			cfg.Candidates = splitProxyCandidates(*req.GlobalProxyPool)
+		case req.GlobalProxy != nil:
+			cfg.Candidates = splitProxyCandidates(*req.GlobalProxy)
+		}
+		if req.ProxyHealthURL != nil {
+			cfg.HealthURL = strings.TrimSpace(*req.ProxyHealthURL)
+		}
+		if req.ProxyHealthTimeout != nil {
+			cfg.Timeout = time.Duration(*req.ProxyHealthTimeout) * time.Second
+		}
+		if req.ProxyHealthInterval != nil {
+			cfg.Interval = time.Duration(*req.ProxyHealthInterval) * time.Second
+		}
+		if req.ProxyFailThreshold != nil {
+			cfg.FailThreshold = *req.ProxyFailThreshold
+		}
+		if req.ProxySwitchCooldown != nil {
+			cfg.Cooldown = time.Duration(*req.ProxySwitchCooldown) * time.Second
+		}
+		// Validation failure (bad scheme/host/health URL) is a client error, not a 500.
+		if err := s.m.SetProxyPool(cfg); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		changed = true // capture-off egress is baked into agents at build time → rebuild
+		changed = true
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.

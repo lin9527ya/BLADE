@@ -55,8 +55,8 @@ import (
 //	go test -count=1 -run TestAcceptance -v ./server/   # 逐机制 PASS/FAIL
 //	./acceptance.sh                                     # 一键：一次性隔离库 + 清单
 //
-// 需要 Postgres（无则整体 skip）。已知边界：P4 的"100% 后落终态"一环需要 LLM 就绪
-// 才能跑完终局规划轮，这里断言到"进入收尾时序"为止（终态落库由单测与真实任务覆盖）。
+// 需要 Postgres（无则整体 skip）。P4 断言"预算耗尽 → 暂停任务（不终止、不出终局报告）"，
+// 以及"用户继续后同一档预算不再重复打断"；不再依赖 LLM 就绪跑终局规划轮。
 func TestAcceptance(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
@@ -82,7 +82,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P1 语义终态与发现撤回入报告", func(t *testing.T) { accP1(t, env.forTest(t)) })
 	t.Run("P2 覆盖矩阵（资产×风险类）入报告", func(t *testing.T) { accP2(t, env.forTest(t)) })
 	t.Run("P3 复测结论入报告复核段", func(t *testing.T) { accP3(t, env.forTest(t)) })
-	t.Run("P4 预算 70/85% 提示与 100% 收尾时序", func(t *testing.T) { accP4(t, env.forTest(t)) })
+	t.Run("P4 预算 70/85% 提示与 100% 暂停任务（不终止）", func(t *testing.T) { accP4(t, env.forTest(t)) })
 	t.Run("P5 租约看门狗回收僵死意图", func(t *testing.T) { accP5(t, env.forTest(t)) })
 	t.Run("P6 候选三态闭合入报告", func(t *testing.T) { accP6(t, env.forTest(t)) })
 	t.Run("P7 常驻技能注入 system 稳定段", func(t *testing.T) { accP7(t, env.forTest(t)) })
@@ -370,8 +370,26 @@ func accP4(t *testing.T, e *accEnv) {
 	waitFor("时间线 85% 档位", func() bool { return strings.Contains(timeline(), "Token 预算 85%") })
 
 	use(150, 0) // 1000/1000 → exhausted
-	waitFor("进入收尾时序(settling)", func() bool { return e.s.engine.isSettling(task.ID) })
+	// 新行为：预算耗尽只暂停任务，不终止、不出终局报告。
+	waitFor("任务被预算暂停", func() bool {
+		return e.s.engine.IsPaused(task.ID) || task.lifecycleSnapshot().Paused
+	})
+	if e.s.engine.isSettling(task.ID) {
+		t.Fatal("预算耗尽不应进入收尾时序：那会终止任务并生成终局报告")
+	}
+	if isTerminalStatus(task.lifecycleSnapshot().Status) {
+		t.Fatal("预算耗尽不应把任务置为终态")
+	}
 	e.mustContain(timeline(), "Token 预算耗尽", "时间线耗尽记录")
+	e.mustContain(timeline(), "任务已暂停", "时间线暂停记录")
+
+	// 用户确认继续后，同一档预算不再重复打断。
+	e.s.engine.AckExhaustedBudget(task)
+	e.s.engine.Resume(task)
+	time.Sleep(500 * time.Millisecond)
+	if e.s.engine.IsPaused(task.ID) {
+		t.Fatal("继续后同一档预算不应再次暂停任务")
+	}
 }
 
 func accP5(t *testing.T, e *accEnv) {

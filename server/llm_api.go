@@ -193,7 +193,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// chat agent serves MANY custom agents by key → it holds the GLOBAL opts
 	// (backend/key) and gates Enabled per-conversation-agent at Chat time. 对话始终用激活配置。
 	s.llm.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
-	s.llm.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	s.llm.chatAgent.SetProxyFunc(func() (string, string) { return s.m.ProxyAddr(), s.m.ProxyCACert() })
 	s.llm.chatAgent.SetWebSearch(s.m.WebSearchOpts())
 	s.llm.chatAgent.SetGuard(s.chatGuard())
 	s.llm.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
@@ -334,7 +334,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
-	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	ca.SetProxyFunc(func() (string, string) { return s.m.ProxyAddr(), s.m.ProxyCACert() })
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())
 	ca.SetNonStreaming(nonStreamingResolver(cfg))

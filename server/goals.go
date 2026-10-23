@@ -237,6 +237,9 @@ func (s *Server) hasReadyQueuedTask(excludeID string) bool {
 }
 
 func (s *Server) startAdmittedTask(t *Task, mode string) {
+	// 预算耗尽暂停后，用户点「继续」= 已确认超支：同一档预算不再重复打断。
+	// 放在 Run/Resume 之前，避免协调器在恢复的第一轮又把它暂停。
+	s.engine.AckExhaustedBudget(t)
 	if mode == "bootstrap" {
 		if !s.engine.beginTaskOperation(t.ID) {
 			return

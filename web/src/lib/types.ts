@@ -1472,6 +1472,14 @@ export interface TrafficHost {
 }
 
 // ---- App settings (runtime toggles) ----
+export interface ProxyPoolHealth {
+  proxy: string;
+  ok: boolean;
+  latency_ms?: number;
+  checked_at?: string;
+  error?: string;
+}
+
 export interface Settings {
   traffic_capture: boolean;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
@@ -1487,9 +1495,20 @@ export interface Settings {
   tavily_search_api_key?: string;
   // 独立出口代理(http/https/socks5)，用于访问搜索端点；与记录流量的 MITM 代理无关。空=直连。
   web_search_proxy?: string;
-  // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
-  // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
+  // 全局出口代理（兼容旧字段：代理池第一项）。空=未配置。
   global_proxy?: string;
+  // 代理池：每行一个 http/https/socks5 URL（Clash 混合端口即可）。配了候选时若全部不可用，
+  // 出口会被阻断而不是直连（不泄漏真实 IP）。
+  global_proxy_pool?: string;
+  proxy_health_url?: string;
+  proxy_health_timeout_seconds?: number;
+  proxy_health_interval_seconds?: number;
+  proxy_fail_threshold?: number;
+  proxy_switch_cooldown_seconds?: number;
+  // 运行时状态（只读）。
+  proxy_active?: string;
+  proxy_blocked?: boolean;
+  proxy_status?: ProxyPoolHealth[];
   // ---- P21 情报源（先接 FOFA）----
   // key 与 web search 同款：只写不读，读侧只给 fofa_key_set 布尔。
   fofa_key_set?: boolean;

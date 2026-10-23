@@ -150,7 +150,11 @@ type Engine struct {
 	inflight     sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
 	coordStarted sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
 	budgetStage  sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
+	budgetAck    sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
 	execWatch    sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
+	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
+	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
+	budgetPause func(*Task) error
 
 	// resolve returns a task's dedicated planner/worker (wired by the server as the
 	// authoritative task-router). nil,nil means this task is deliberately unavailable
@@ -306,6 +310,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.llmCalls.Delete(taskID)
 	e.paused.Delete(taskID)
 	e.dropCnt.Delete(taskID)
+	e.budgetAck.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.settling.Delete(taskID)
 	e.deadline.Delete(taskID)
