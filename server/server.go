@@ -203,6 +203,19 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 				}
 				return t, true
 			},
+			// 追加段：渲染在正文之后、代码尾段之前。外部场景（benchmark）只写这一段，
+			// 内置提示词改了它会自动跟随，不会漂移成旧分支。
+			PromptAppend: func(key string) (string, bool) {
+				a, err := m.pg.GetAgentByKey(key)
+				if err != nil || a == nil {
+					return "", false
+				}
+				t, err := m.pg.CurrentPromptAppend(a.ID)
+				if err != nil || t == "" {
+					return "", false
+				}
+				return t, true
+			},
 			// P14：领域化压缩模板（settings.compaction_prompt）。空/缺失 → 内置 7 段模板。
 			CompactionPromptOverride: func() (string, bool) {
 				v, ok, err := m.pg.GetSetting(settingCompactionPrompt)

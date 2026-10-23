@@ -927,6 +927,11 @@ CREATE TABLE IF NOT EXISTS agent_prompts (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (agent_id, version)
 );
+-- append_text：渲染在**正文之后、代码尾段之前**的追加段。与 template_text 分开存，
+-- 是为了让外部场景（如 benchmark）只追加「本场景特有的几句话」，而不必复制整份内置
+-- 提示词——内置提示词改了，追加段自动跟随，不会悄悄漂移成旧分支。
+ALTER TABLE agent_prompts ADD COLUMN IF NOT EXISTS append_text TEXT;
+
 -- 循环外键：agents.current_prompt_id → agent_prompts.id（需在两表创建后加）
 DO $$ BEGIN
     ALTER TABLE agents ADD CONSTRAINT fk_agents_curprompt

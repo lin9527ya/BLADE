@@ -15,6 +15,8 @@ import (
 type Overrides struct {
 	// PromptOverride 返回某个 agent 的 system prompt 模板（DB 覆盖优先于内置默认）。
 	PromptOverride func(agentKey string) (string, bool)
+	// PromptAppend 返回渲染在正文之后、代码尾段之前的追加段（可为空）。
+	PromptAppend func(agentKey string) (string, bool)
 	// CompactionPromptOverride 返回领域化压缩模板（P14）。
 	CompactionPromptOverride func() (string, bool)
 	// ArtifactLanguage 返回出站产物语言（P41）。agent 每 run 现读，改完即时生效。
@@ -42,6 +44,7 @@ type Overrides struct {
 // 否则会把先接上的清掉。
 func SetOverrides(o Overrides) {
 	PromptOverride = o.PromptOverride
+	PromptAppend = o.PromptAppend
 	CompactionPromptOverride = o.CompactionPromptOverride
 	ArtifactLanguage = o.ArtifactLanguage
 	WrapupOverride = o.WrapupOverride
@@ -57,6 +60,7 @@ func SetOverrides(o Overrides) {
 func CurrentOverrides() Overrides {
 	return Overrides{
 		PromptOverride:                 PromptOverride,
+		PromptAppend:                   PromptAppend,
 		CompactionPromptOverride:       CompactionPromptOverride,
 		ArtifactLanguage:               ArtifactLanguage,
 		WrapupOverride:                 WrapupOverride,
