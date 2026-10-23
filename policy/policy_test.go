@@ -88,6 +88,18 @@ func TestCheckIntentPace(t *testing.T) {
 	}
 }
 
+// restrictivePolicy 是**旧的出厂默认**，只给测试用：默认放开后，规则编译/匹配/
+// 提示词段仍需一组有内容的策略来验证机制本身。
+func restrictivePolicy() Effective {
+	return Effective{
+		Version:            1,
+		Source:             "global_default",
+		Techniques:         []string{"bruteforce", "dos", "social_engineering", "webshell", "reverse_shell", "persistence"},
+		ForbiddenWrites:    []string{"http_delete", "http_write_method", "mutation_endpoint", "db_write", "db_dump"},
+		MaxIntentsPerRound: 4,
+	}
+}
+
 // Merge：nil=继承、[]=显式清空、数值=覆盖（0=不限）。
 func TestMergeSemantics(t *testing.T) {
 	base := Default()
@@ -154,7 +166,7 @@ func TestDocRoundTrip(t *testing.T) {
 
 // CompileRules：每条 pattern 必须能编译、长度合规、条数有上限。
 func TestCompileRulesValid(t *testing.T) {
-	rules := Default().CompileRules()
+	rules := restrictivePolicy().CompileRules()
 	if len(rules) == 0 || len(rules) > MaxPolicyRules {
 		t.Fatalf("规则条数异常: %d", len(rules))
 	}
@@ -187,7 +199,7 @@ func TestCompileRulesValid(t *testing.T) {
 // 规则行为表：真写要拦、读代码/搜关键字/域名不能误拦——这是整条命令门的成败所在。
 func TestCompileRulesMatching(t *testing.T) {
 	byItem := map[string]string{}
-	for _, r := range Default().CompileRules() {
+	for _, r := range restrictivePolicy().CompileRules() {
 		byItem[r.ItemID] = r.Pattern
 	}
 	match := func(item, subject string) bool {
@@ -240,7 +252,7 @@ func TestCompileRulesMatching(t *testing.T) {
 
 // 提示词段：边界、硬底线改写、被拒摘要三块都必须说人话且包含关键出口。
 func TestRenderBlockAndHardFloor(t *testing.T) {
-	eff := Default()
+	eff := restrictivePolicy()
 	block := RenderBlock(eff)
 	for _, want := range []string{"任务探索策略", "禁用手段", "敏感写操作", "被策略排除的方向不是", "产出 0 条意图", "口令爆破", "脱库"} {
 		if !strings.Contains(block, want) {
@@ -390,5 +402,22 @@ func TestCustomRulesDocRoundTrip(t *testing.T) {
 	}
 	if doc.Override.IsZero() {
 		t.Fatal("有自定义条目时 override 不该算'空'（否则 UI 会显示成继承）")
+	}
+}
+
+// TestFactoryDefaultIsPermissive 钉住产品决策：出厂默认不再限制任何手段。
+// 需要只读验证的场景（SRC 等）应显式收紧，而不是让所有人先去掉限制。
+func TestFactoryDefaultIsPermissive(t *testing.T) {
+	eff := Default()
+	if len(eff.Techniques) != 0 || len(eff.ForbiddenWrites) != 0 || len(eff.Custom) != 0 {
+		t.Fatalf("出厂默认不应禁用任何手段: %+v", eff)
+	}
+	if rules := eff.CompileRules(); len(rules) != 0 {
+		t.Fatalf("出厂默认不应编译出任何 deny 规则，实际 %d 条", len(rules))
+	}
+	for _, summary := range []string{"上传 webshell 并反弹 shell", "用 sqlmap 跑注入并脱库", "对登录口做口令爆破"} {
+		if v := eff.CheckIntent(IntentInput{Summary: summary}); !v.Allow {
+			t.Fatalf("出厂默认下意图应放行（%q），实际被拒: %+v", summary, v)
+		}
 	}
 }
