@@ -72,6 +72,9 @@ func TestNotificationAssetNamesResolvesAndPreservesOrder(t *testing.T) {
 		}
 		return id
 	}
+	// 这里用的是写死的固定资产；先清掉上一轮的残留，否则 INSERT 会撞唯一索引，
+	// 而 insertAsset 用的是 t.Fatal——一旦撞了就来不及注册清理，污染会永久化。
+	_, _ = d.Exec(`DELETE FROM assets WHERE domain='a.example.com' OR ip='10.1.2.3' OR url='https://a.example.com/admin'`)
 	domID := insertAsset(`INSERT INTO assets(type, domain) VALUES('subdomain',$1) RETURNING id`, "a.example.com")
 	ipID := insertAsset(`INSERT INTO assets(type, ip) VALUES('ip',$1) RETURNING id`, "10.1.2.3")
 	svcID := insertAsset(`INSERT INTO assets(type, url) VALUES('service',$1) RETURNING id`, "https://a.example.com/admin")

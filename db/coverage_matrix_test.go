@@ -21,11 +21,19 @@ func coverageMatrixFixture(t *testing.T) (*DB, int64, int64) {
 	if err := d.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, task.ID).Scan(&expID); err != nil {
 		t.Fatalf("exploration for task: %v", err)
 	}
+	// 这些资产用的是**固定域名**（matrix-test.example），残留会让下一轮的计数断言偏大；
+	// 而删 exploration/task 不会带走 assets。所以清理里要显式删资产，入口处也要先清一次
+	// ——只加清理无法自愈已经存在的污染。
+	clearMatrixAssets := func() {
+		_, _ = d.Exec(`DELETE FROM assets WHERE domain LIKE '%matrix-test.example%' OR url LIKE '%matrix-test.example%'`)
+	}
 	t.Cleanup(func() {
+		clearMatrixAssets()
 		_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
 		_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
 		d.Close()
 	})
+	clearMatrixAssets()
 	if _, err := d.Assets().AddAgentScope(task.ID, "root_domain", "matrix-test.example", "test scope", "agent"); err != nil {
 		t.Fatal(err)
 	}
