@@ -30,6 +30,11 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     proxyBlocked,
     proxyStatus,
     proxySaveError,
+    proxyEgressIPURL,
+    setProxyEgressIPURL,
+    proxyEgress,
+    checkingProxyEgress,
+    checkProxyEgress,
     refreshProxyStatus,
     savingGlobalProxy,
     loaded,
@@ -91,6 +96,9 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 Clash 直接用混合端口，例如 <code>http://127.0.0.1:7890</code>。
                 <br />
                 服务端按健康检查自动切换；<b>全部不可用时出口会被阻断（不会直连）</b>，避免泄漏真实 IP。
+                <br />
+                代理池只切换你填的多个地址；<b>只填一个 Clash 端口时，Clash 内部节点由 Clash 的代理组
+                （select / url-test / fallback）决定，BLADE 不会替你切换 Clash 节点</b>。
                 LLM 的代理在各自 profile 里配置，不在此池内。
               </>
             }
@@ -141,6 +149,29 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 />
               </div>
             </div>
+            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">出口 IP 查询 URL</span>
+                <Input
+                  id="proxy-egress-ip-url"
+                  autoComplete="off"
+                  placeholder="https://api.ipify.org"
+                  value={proxyEgressIPURL}
+                  disabled={!loaded || savingGlobalProxy}
+                  onChange={(e) => setProxyEgressIPURL(e.target.value)}
+                />
+              </div>
+              <div className="flex items-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={checkProxyEgress}
+                  disabled={!loaded || checkingProxyEgress}
+                >
+                  {checkingProxyEgress ? "检测中…" : "检测出口 IP"}
+                </Button>
+              </div>
+            </div>
             <div className="flex items-center gap-2">
               <Button type="button" onClick={saveGlobalProxy} disabled={!loaded || savingGlobalProxy}>
                 保存
@@ -163,6 +194,21 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
               </span>
             </div>
             {proxySaveError && <p className="text-destructive text-xs">保存失败：{proxySaveError}</p>}
+            {proxyEgress.length > 0 && (
+              <ul className="space-y-0.5 text-xs">
+                {proxyEgress.map((r) => (
+                  <li key={r.proxy} className={r.error || r.leaked ? "text-destructive" : "text-muted-foreground"}>
+                    {r.leaked ? "⚠" : r.error ? "✗" : "✓"} {r.proxy}
+                    {r.ip ? ` · 出口 IP ${r.ip}` : ""}
+                    {r.leaked ? " · 与本机网卡地址相同（疑似未走代理）" : ""}
+                    {r.error ? ` · ${r.error}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-muted-foreground text-xs">
+              出口 IP 检测只经候选代理发起，不会直连；若结果与你的真实出口不一致，请检查 Clash 规则/节点。
+            </p>
             {proxyStatus.length > 0 && (
               <ul className="space-y-0.5 text-xs">
                 {proxyStatus.map((h) => (

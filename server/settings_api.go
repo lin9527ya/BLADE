@@ -20,6 +20,41 @@ import (
 	"github.com/lin9527ya/blade/intercept"
 )
 
+// proxyEgressIPs 经每个候选代理查询出口 IP（按需触发，不参与周期探测）。它**只走
+// 候选代理**，不会为了对比而直连——直连查询本身就会把本机 IP 暴露给查询服务。
+// leaked 只由"出口 IP == 本机网卡地址"判定（用于发现 Clash 规则把流量直连的情况）。
+func (s *Server) proxyEgressIPs(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var req struct {
+		Proxies []string `json:"proxies"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req) // 空 body = 用已保存的候选
+	cfg, err := NormalizeProxyPoolConfig(ProxyPoolConfig{Candidates: req.Proxies})
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	proxies := cfg.Candidates
+	if len(proxies) == 0 {
+		proxies = s.m.ProxyPoolConfig().Candidates
+	}
+	if len(proxies) == 0 {
+		writeErr(w, 400, "没有可检测的代理：先填写代理池")
+		return
+	}
+	if len(proxies) > maxEgressIPChecks {
+		proxies = proxies[:maxEgressIPChecks]
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	results := checkProxyEgressIPs(ctx, proxies, s.m.EgressIPURL(), 5*time.Second)
+	writeJSON(w, 200, map[string]any{
+		"results":       results,
+		"egress_ip_url": s.m.EgressIPURL(),
+		"note":          "仅经候选代理查询出口 IP，不会发起直连检测；出口 IP 与本机网卡地址相同时会标记 leaked",
+	})
+}
+
 // getSettings returns the runtime app settings the UI toggles. The Brave API key
 // is returned as a boolean presence flag (brave_key_set), never the value itself,
 // so the UI can show "configured" without echoing the secret back.
@@ -99,6 +134,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"proxy_active":                  proxyStatus.Active,
 		"proxy_blocked":                 proxyStatus.Blocked,
 		"proxy_status":                  proxyStatus.Candidates,
+		"proxy_egress_ip_url":           s.m.EgressIPURL(),
 		"python_interpreter":            strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"workers":                       s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
 		"task_concurrency_enabled":      concOn,                      // 任务并发上限开关(默认关)
@@ -221,6 +257,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ProxyHealthInterval *int    `json:"proxy_health_interval_seconds"`
 		ProxyFailThreshold  *int    `json:"proxy_fail_threshold"`
 		ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
+		ProxyEgressIPURL    *string `json:"proxy_egress_ip_url"`
 		PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 		Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 		// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
@@ -623,6 +660,17 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true
+	}
+	if req.ProxyEgressIPURL != nil {
+		u, err := normalizeEgressIPURL(*req.ProxyEgressIPURL)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if err := s.m.pg.SetSetting(settingProxyEgressIPURL, u); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.

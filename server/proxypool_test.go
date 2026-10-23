@@ -176,3 +176,66 @@ func TestProbeHTTPProxyGoesThroughProxy(t *testing.T) {
 		t.Fatal("请求没有经过代理")
 	}
 }
+
+func TestParseEgressIP(t *testing.T) {
+	cases := map[string]string{
+		"1.2.3.4\n":            "1.2.3.4",
+		"ip=5.6.7.8\nloc=CN\n": "5.6.7.8",
+		`{"ip":"9.10.11.12"}`:  "9.10.11.12",
+		"  2001:db8::1  ":      "2001:db8::1",
+	}
+	for in, want := range cases {
+		got, err := parseEgressIP([]byte(in))
+		if err != nil || got != want {
+			t.Errorf("parseEgressIP(%q)=%q,%v want %q", in, got, err, want)
+		}
+	}
+	if _, err := parseEgressIP([]byte("not an ip")); err == nil {
+		t.Fatal("非 IP 响应应报错")
+	}
+}
+
+// TestCheckProxyEgressIPsUsesProxyAndFlagsLocalLeak：出口 IP 查询必须经代理；如果返回的
+// 是代理自己返回的"本机网卡地址"，要标 leaked（说明流量可能没真的出代理）。
+func TestCheckProxyEgressIPsUsesProxyAndFlagsLocalLeak(t *testing.T) {
+	var hits atomic.Int32
+	body := "1.2.3.4"
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.IsAbs() {
+			hits.Add(1)
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer proxy.Close()
+
+	res := checkProxyEgressIPs(context.Background(), []string{proxy.URL}, "http://ip.example/", time.Second)
+	if len(res) != 1 || res[0].IP != "1.2.3.4" || res[0].Leaked || res[0].Error != "" {
+		t.Fatalf("出口 IP 结果不对：%+v", res)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("出口 IP 查询没有经过代理")
+	}
+
+	// 代理返回本机地址（127.0.0.1 在 lo 上）→ 标记泄漏。
+	body = "127.0.0.1"
+	res = checkProxyEgressIPs(context.Background(), []string{proxy.URL}, "http://ip.example/", time.Second)
+	if len(res) != 1 || !res[0].Leaked {
+		t.Fatalf("本机地址应标记 leaked：%+v", res)
+	}
+}
+
+// TestProbeEgressIPNoDirectFallback：代理不可达时不能直连查询服务。
+func TestProbeEgressIPNoDirectFallback(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("1.2.3.4"))
+	}))
+	defer target.Close()
+	if _, err := probeEgressIP(context.Background(), "http://127.0.0.1:1", target.URL, 150*time.Millisecond); err == nil {
+		t.Fatal("代理不可达时出口 IP 查询应失败")
+	}
+	if hits.Load() != 0 {
+		t.Fatal("出口 IP 查询绕过了代理，直连了查询服务")
+	}
+}

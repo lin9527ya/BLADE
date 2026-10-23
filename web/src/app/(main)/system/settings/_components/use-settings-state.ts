@@ -11,6 +11,7 @@ import type {
   ExplorationPolicyDefault,
   IntelQueryRow,
   OpsecKnowledgeResponse,
+  ProxyEgressResult,
   ProxyPoolHealth,
   ScopeEnforcement,
   Settings,
@@ -67,6 +68,9 @@ export function useSettingsState() {
   const [proxyActive, setProxyActive] = React.useState("");
   const [proxyBlocked, setProxyBlocked] = React.useState(false);
   const [proxyStatus, setProxyStatus] = React.useState<ProxyPoolHealth[]>([]);
+  const [proxyEgressIPURL, setProxyEgressIPURL] = React.useState("https://api.ipify.org");
+  const [proxyEgress, setProxyEgress] = React.useState<ProxyEgressResult[]>([]);
+  const [checkingProxyEgress, setCheckingProxyEgress] = React.useState(false);
   const [proxySaveError, setProxySaveError] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
@@ -155,6 +159,7 @@ export function useSettingsState() {
     setProxyHealthURL(s.proxy_health_url || "https://www.gstatic.com/generate_204");
     setProxyHealthTimeout(String(s.proxy_health_timeout_seconds ?? 5));
     setProxyFailThreshold(String(s.proxy_fail_threshold ?? 2));
+    setProxyEgressIPURL(s.proxy_egress_ip_url || "https://api.ipify.org");
     setProxyActive(s.proxy_active ?? "");
     setProxyBlocked(!!s.proxy_blocked);
     setProxyStatus(s.proxy_status ?? []);
@@ -645,6 +650,33 @@ export function useSettingsState() {
     }, 2000);
   };
 
+  // 检测出口 IP：只经候选代理查询（后端不发起直连对比），结果显示每个候选的出口 IP；
+  // 出口 IP 与本机网卡地址相同时后端标记 leaked。
+  const checkProxyEgress = () => {
+    const proxies = globalProxyPoolInput
+      .split(/[\n,]/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+    if (proxies.length === 0) {
+      toast.error("先填写代理池（每行一个代理地址）");
+      return;
+    }
+    setCheckingProxyEgress(true);
+    api
+      .proxyEgressIPs(proxies)
+      .then((r) => {
+        setProxyEgress(r.results ?? []);
+        const leak = (r.results ?? []).filter((x) => x.leaked).length;
+        if (leak > 0) {
+          toast.error(`检测到 ${leak} 个代理的出口 IP 与本机地址相同，请检查 Clash 规则`);
+        } else {
+          toast.success("出口 IP 检测完成");
+        }
+      })
+      .catch((e) => toast.error("检测失败：" + (e as Error).message))
+      .finally(() => setCheckingProxyEgress(false));
+  };
+
   const refreshProxyStatus = () => {
     api
       .settings()
@@ -671,6 +703,7 @@ export function useSettingsState() {
         proxy_health_url: proxyHealthURL.trim(),
         proxy_health_timeout_seconds: timeout,
         proxy_fail_threshold: threshold,
+        proxy_egress_ip_url: proxyEgressIPURL.trim(),
       })
       .then((s) => {
         apply(s);
@@ -743,6 +776,11 @@ export function useSettingsState() {
     proxyBlocked,
     proxyStatus,
     proxySaveError,
+    proxyEgressIPURL,
+    setProxyEgressIPURL,
+    proxyEgress,
+    checkingProxyEgress,
+    checkProxyEgress,
     refreshProxyStatus,
     savingGlobalProxy,
     setSavingGlobalProxy,
