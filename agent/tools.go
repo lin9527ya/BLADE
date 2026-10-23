@@ -1710,11 +1710,22 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 
 // --- worker write tools ---
 
+// severityNeedsEvidence 判断这一档严重度是否必须随发现提交证据。
+// 只有 critical/high 要求：这两档会进报告头条、也最容易被误报，而 medium/low
+// 强行要证据只会把模型推向编造。大小写与空格不敏感——模型常写 "High"。
+func severityNeedsEvidence(sev string) bool {
+	switch strings.ToLower(strings.TrimSpace(sev)) {
+	case "critical", "high":
+		return true
+	}
+	return false
+}
+
 func (t *ToolSet) addFinding() actool.CoreTool {
 	return writeTool("report_finding", "记录确认的漏洞，用 evidence 提供命令输出、日志等可验证证据。任务上下文传当前 intent_id。返回的 finding_id 是独立漏洞记录 ID，finding_node_id 是探索节点 ID（第一行保留该节点编号）。", obj(map[string]any{
 		"vulnclass": str("漏洞类别"), "name": str("漏洞名称"), "severity": str("critical|high|medium|low"), "summary": str("发现摘要"),
 		"intent_id": idp("当前任务的意图 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id"},
-		"evidence":         str("证据/PoC 文本"),
+		"evidence":         str("证据/PoC 文本。**severity 为 critical/high 时必填**（触发命令/请求 + 关键输出，最好带正常对照）；medium/low 可省略或在其中写清推断依据"),
 		"confidence":       map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}, "description": "置信度诚实标定（必填）：high=可复现的触发链（有对照请求、可重放）；medium=直接观察到强异常但未构造完整对照/未确证可利用；low=据指纹/版本/现象推断、未直接触发。不要虚标——标不高就用 close_candidate 记存疑。"},
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。高危/严重漏洞尽量给出【成对证据】：proof（触发漏洞的请求）+ baseline（同接口的正常对照请求）——没有对照时在 note 里说明原因；证据不足的漏洞会在报告里单独列为「待核对」。",
@@ -1735,6 +1746,14 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		if !db.ValidConfidence(a.Confidence) {
 			return actool.Errorf("confidence 取值必须是 high|medium|low（诚实标定；缺省=未标定，报告会点名）"), nil
+		}
+		// 证据分级：critical/high 必须有 evidence。这两档会排在报告最前、也最先被客户
+		// 拿去复验——一条"看着像"的高危没有证据，整份报告的可信度都会被拖下水。
+		// medium/low 保持可选：逼着给证据只会换来一句编出来的话，比空着更糟。
+		if severityNeedsEvidence(a.Severity) && strings.TrimSpace(a.Evidence) == "" {
+			return actool.Errorf(fmt.Sprintf("severity=%s 的漏洞必须给 evidence（触发命令/请求与关键输出；有正常对照更好）。"+
+				"若目前只有推断、还拿不出可复现的证据，把 severity 降到 medium/low 并在 evidence 里写清依据，"+
+				"或先用 close_candidate 记存疑——不要用高危 + 空证据去占报告的头条", a.Severity)), nil
 		}
 		// Auto-binding off: ignore the evidence params instead of rejecting the call.
 		// stripTrafficParameters already removes them from the advertised schema, but
