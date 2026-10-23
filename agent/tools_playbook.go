@@ -45,6 +45,23 @@ func fingerprintFromAssets(base db.PlaybookFingerprint, assets []*db.Asset) db.P
 	return fp.Normalize()
 }
 
+// playbookLines 给常驻索引用的一行式（≤2 行；空 = 不注入）。与 graph_overview 的
+// matching_playbooks 同一份匹配，只是窗口更小——索引每次请求都可能重算（3 秒 TTL）。
+func (t *ToolSet) playbookLines() []string {
+	if t.as == nil || t.taskID <= 0 {
+		return nil
+	}
+	matches, err := t.as.MatchPlaybooksForTask(t.taskID, 2)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, renderPlaybookLine(m))
+	}
+	return out
+}
+
 // renderPlaybookLine 把一张卡片压成态势里的一行（与 company_knowledge 同一条纪律：
 // 它是"别忘了历史打法"的提示，不是完整步骤——完整内容用 lookup_playbooks 取）。
 func renderPlaybookLine(m db.PlaybookMatch) string {
