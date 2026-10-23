@@ -437,6 +437,10 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 		})
 }
 
+// recentFactsCap 是态势里 recent_facts 的窗口。它只是「最新一窗」，不是全部——
+// 超过窗口时概览会给出 recent_facts_next_before，让 planner 用 list_facts 接着翻。
+const recentFactsCap = 20
+
 // graphOverviewData computes the distilled situational snapshot shared by the
 // graph_overview tool and the planner's wake-up prompt (which pre-injects it so
 // the model needn't spend a turn calling the tool — every plan round starts with
@@ -597,11 +601,11 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	} else {
 		out["findings_total"] = len(vulnNodes)
 	}
+	factsTotal := len(factNodes)
 	if total, err := t.ts.CountByKind(db.KindFact); err == nil {
-		out["facts"] = total // 探索事实/结论数（含否定结论）
-	} else {
-		out["facts"] = len(factNodes)
+		factsTotal = total
 	}
+	out["facts"] = factsTotal // 探索事实/结论数（含否定结论）——真 COUNT，不是窗口长度
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
@@ -623,7 +627,6 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// recent_facts：非折叠事实里最新的一窗（≤N，factNodes 按 id 降序即最新在前）。已折进
 	// digest 且仍冷的（hidden）走 cold_digests，不在此重复。每条 {id, summary, from_intent?,
 	// confidence?}；evidence 等详情用 node_detail(id)。更早的用 list_facts 翻。
-	const recentFactsCap = 20
 	recentFacts := make([]map[string]any, 0, recentFactsCap)
 	for _, n := range factNodes {
 		if len(recentFacts) >= recentFactsCap {
@@ -647,6 +650,14 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		recentFacts = append(recentFacts, m)
 	}
 	out["recent_facts"] = recentFacts
+	// 续翻游标：recent_facts 只是最新一窗（还会跳过已折叠的），planner 此前看不出
+	// "这是全部还是窗口"，也不知道该从哪里接着翻——只能自己猜 id。直接给下一页的
+	// before，够不着时不给这个键（空键会让模型以为"有更多"却翻不动）。
+	if len(recentFacts) > 0 && factsTotal > len(recentFacts) {
+		out["recent_facts_next_before"] = recentFacts[len(recentFacts)-1]["id"]
+		out["recent_facts_note"] = "recent_facts 是最新一窗（已折叠进 digest 的不在此重复，见 cold_digests）。" +
+			"更旧的 facts 用 list_facts 翻页：传 before=recent_facts_next_before；全文用 node_detail(id)。"
+	}
 	// recent_done_intents：非折叠的已结束意图里最新的一窗（≤N，recentDone 已按 id 降序）。
 	// 更早的看 done_intents_total 计数 + node_detail(id)。
 	const recentDoneCap = 12
@@ -2820,7 +2831,7 @@ func (t *ToolSet) steerWorkTool() actool.CoreTool {
 
 // getWorkerOutput returns a work's final (or截至中止时的) conclusion text by intent id.
 func (t *ToolSet) getWorkerOutput() actool.CoreTool {
-	return t.readExpTool("get_worker_output", "取本任务或直接关联任务某条意图(work)的最终输出结论。关联任务结果带 source_task_id/inherited=true 且只读。正常结束返回其总结；被终止(stopped)/异常的 work 返回其截至中止时的最后输出。",
+	return t.readExpTool("get_worker_output", "取本任务或直接关联任务某条意图(work)的最终输出结论。关联任务结果带 source_task_id/inherited=true 且只读。正常结束返回其总结；被终止(stopped)/异常的 work 返回其截至中止时的最后输出。另附 recent_steps（最后 3 步动作与 step_id）与 executions（该意图的后台执行台账：命令/终态/退出码/输出文件路径）——判断「它到底做到哪、是不是真跑过」用这两项，别只看最终那句总结；要看台账里的具体输出行用 grep_execution。",
 		obj(map[string]any{"intent_id": idp("意图 id（= work 句柄）")}, "intent_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2871,6 +2882,37 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			result := map[string]any{
 				"intent_id": id, "final_text": detail,
 				"summary": pick.Summary, "is_error": pick.IsError,
+			}
+			// 光看最终结论看不出"它到底做到哪、是不是真跑了"：被预算掐断或被 blocked
+			// 的意图，最终输出常常只是半句话。补两样实测记录——
+			//   · recent_steps：最后 3 步（动作轮廓，含 step_id，可接着用 get_worker_trace 取全文）；
+			//   · executions：该意图的后台执行台账（命令/终态/退出码/输出文件），
+			//     要具体行用 grep_execution(execution_id, pattern)，不必重跑。
+			if steps := traceSteps(acts); len(steps) > 0 {
+				if len(steps) > 3 {
+					steps = steps[len(steps)-3:]
+				}
+				result["recent_steps"] = steps
+			}
+			if t.execService != nil {
+				if rows, err := t.execService.ListForIntent(id); err == nil && len(rows) > 0 {
+					execs := make([]map[string]any, 0, 5)
+					for _, r := range rows {
+						if len(execs) >= 5 {
+							break
+						}
+						exitCode := -1
+						if r.ExitCode != nil {
+							exitCode = *r.ExitCode
+						}
+						execs = append(execs, map[string]any{
+							"execution_id": r.ID, "status": r.Status, "command": firstLine(r.Command, 160),
+							"exit_code": exitCode, "output_bytes": r.OutputBytes,
+							"output_path": r.OutputPath, "error": r.Error,
+						})
+					}
+					result["executions"] = execs
+				}
 			}
 			if intentNode.Inherited {
 				inheritedMap(result, intentNode.SourceTaskID)

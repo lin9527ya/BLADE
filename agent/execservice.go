@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"time"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 // P13 执行服务接口：长任务（扫描/爆破/批量枚举）交给 host 侧托管——进程独立存活、
@@ -48,4 +50,7 @@ type ExecService interface {
 	// CountRanForIntent 数本意图名下"真跑过"的执行记录数（终态行；queued/running 不算）：
 	// negative 证据门用它判定"这个方向到底有没有真实探针证据"。
 	CountRanForIntent(intentID int64) (int64, error)
+	// ListForIntent 返回本意图名下的执行台账（最新在前）：get_worker_output 用它回答
+	// "这条 work 到底跑过什么、退出码多少、输出落在哪个文件"，不必重跑。
+	ListForIntent(intentID int64) ([]*db.ToolExecution, error)
 }

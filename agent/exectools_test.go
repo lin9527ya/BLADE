@@ -8,6 +8,7 @@ import (
 	"time"
 
 	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/blade/db"
 )
 
 // fakeExecService records what the tools asked for and replays canned snapshots.
@@ -17,6 +18,7 @@ type fakeExecService struct {
 	cancels  []string
 	status   ExecStatus
 	submitID int64
+	ledger   []*db.ToolExecution
 }
 
 type fakeSubmit struct {
@@ -53,6 +55,8 @@ func (f *fakeExecService) Cancel(_ context.Context, id int64, reason string) (bo
 }
 
 func (f *fakeExecService) CountRanForIntent(int64) (int64, error) { return 0, nil }
+
+func (f *fakeExecService) ListForIntent(int64) ([]*db.ToolExecution, error) { return f.ledger, nil }
 
 func execTool(t *testing.T, tools []actool.CoreTool, name string) actool.CoreTool {
 	t.Helper()
