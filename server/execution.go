@@ -26,6 +26,7 @@ import (
 
 const (
 	execTailBytes      = 8 * 1024 // 内存里保留的输出尾巴
+	execHeadBytes      = 8 * 1024 // 快照里回给模型的输出头部（扫描类命令的关键信息常在最前）
 	execWaitTick       = 200 * time.Millisecond
 	execCancelGrace    = 3 * time.Second // SIGTERM → SIGKILL 的宽限
 	execReconcileGap   = 45 * time.Second
@@ -436,6 +437,21 @@ func (s *ExecutionService) StartOrphanReconciler(ctx context.Context) {
 	})
 }
 
+// readOutputHead 读文件头部 n 字节；读不到就返回空串（快照不该因此失败）。
+func readOutputHead(path string, n int) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, n)
+	m, _ := io.ReadFull(f, buf)
+	return string(buf[:m])
+}
+
 // toExecStatus 转换台账行到跨层快照；live 非空时以内存尾巴/字节数为准。
 func toExecStatus(row *db.ToolExecution, run *execRun) agent.ExecStatus {
 	st := agent.ExecStatus{
@@ -447,6 +463,8 @@ func toExecStatus(row *db.ToolExecution, run *execRun) agent.ExecStatus {
 	if row.ExitCode != nil {
 		st.ExitCode = *row.ExitCode
 	}
+	// 头部与尾部都给：只看尾部会漏掉扫描输出最前面的命中行。
+	st.Head = readOutputHead(row.OutputPath, execHeadBytes)
 	if run != nil {
 		st.Tail = run.tail.String()
 		st.OutputBytes = run.bytes.Load()

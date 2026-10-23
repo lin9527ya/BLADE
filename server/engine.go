@@ -1405,8 +1405,14 @@ func executionDigest(rows []*db.ToolExecution) string {
 		if r.ExitCode != nil {
 			exit = strconv.Itoa(*r.ExitCode)
 		}
-		b.WriteString(fmt.Sprintf("#%d [%s] %s exit=%s bytes=%d\n  命令: %s\n  输出: %s\n",
+		b.WriteString(fmt.Sprintf("#%d [%s] %s exit=%s bytes=%d\n  命令: %s\n  输出文件: %s\n",
 			r.ID, r.Status, r.Error, exit, r.OutputBytes, preview(r.Command, 160), r.OutputPath))
+		// 头部与尾部都给：扫描类命令（nmap/ffuf/nuclei）的命中行往往在最前面，
+		// 只给尾部的话续跑的 worker 会漏掉它们。输出文件本身也给了路径，
+		// 需要更多时可以直接 grep。
+		if head := strings.TrimSpace(readOutputHead(r.OutputPath, 1024)); head != "" {
+			b.WriteString("  开头输出: " + preview(head, 1000) + "\n")
+		}
 		if tail := strings.TrimSpace(r.PartialTail); tail != "" {
 			b.WriteString("  末尾输出: " + preview(tail, 400) + "\n")
 		}
