@@ -113,6 +113,9 @@ type ContextIndexVars struct {
 	// CompanyLines 是"同公司其它任务沉淀"的一行式（P23，可空）。由调用方从 ToolSet 现读
 	// （agent 包不持有 DB 句柄）；注入面刻意收紧到 ≤5 行——它每个请求都发一次。
 	CompanyLines []string
+	// PlaybookLines 是"本任务指纹命中的历史打法"一行式（可空）。同样由调用方现读：
+	// 指纹匹配要扫资产表，不该让索引构造去碰；注入 ≤2 行。
+	PlaybookLines []string
 }
 
 // renderCompanySection 渲染常驻索引里的"本公司已知"段（P23）。≤5 行 + 截断提示 +
@@ -133,7 +136,8 @@ func renderCompanySection(lines []string) string {
 	return b.String()
 }
 
-// BuildContextIndex 构造常驻索引正文：目标原文、约束原文、活跃方向、发现一行式与计数。
+// BuildContextIndex 构造常驻索引正文：目标原文、约束原文、活跃方向、发现一行式、手上战果
+// （据点/凭据，含「未动用」标记）、同类指纹打法与计数。
 // 上限刻意收紧（每类 ≤8 行、单行截断）——它每个请求都发一次，是"防丢"的保险，
 // 不是态势全量（全量走 graph_overview / node_detail）。
 func BuildContextIndex(v ContextIndexVars) string {
@@ -192,6 +196,156 @@ func BuildContextIndex(v ContextIndexVars) string {
 	if st, err := ts.Stats(); err == nil {
 		b.WriteString(fmt.Sprintf("\n计数：意图 %d（含已结束）、事实 %d、发现 %d",
 			st[db.KindIntent], st[db.KindFact], st[db.KindFinding]))
+	}
+	b.WriteString(renderLootSection(ts))
+	b.WriteString(renderPlaybookSection(v.PlaybookLines))
+	return b.String()
+}
+
+// 战果在索引里的注入面：每类最多 3 行、扫描上限只用于算「未动用」总数。
+const (
+	ctxLootScanCap = 500
+	ctxLootLines   = 3
+)
+
+// renderLootSection 渲染「手上还有什么」：据点与凭据一行式，并标出哪条**还没被任何意图动用**。
+//
+// 为什么放进常驻索引：压缩之后 planner 会暂时"忘记"手上还有没用过的能力，转头去重复拿
+// 已经拿到的东西。这一行解决的是「记不住存在」，不是「该怎么用」——细节仍走 graph_overview
+// 的 footholds/credentials 与 node_detail。
+//
+// 凭据只给指纹（db.CredentialView.Fingerprint）：索引会进每一轮提示词与日志，明文不进来。
+// 已失效的战果不列——不能用就不是机会，占行只会挤掉还有用的。
+func renderLootSection(ts *db.ExplorationStore) string {
+	footholds, _ := ts.ListByKind(db.KindFoothold, ctxLootScanCap)
+	creds, _ := ts.ListByKind(db.KindCredential, ctxLootScanCap)
+	if len(footholds) == 0 && len(creds) == 0 {
+		return ""
+	}
+	used := usedLootSet(ts, footholds, creds)
+	var b strings.Builder
+	renderLootKind(&b, "据点", db.KindFoothold, footholds, used, func(n *db.Node) string {
+		var p map[string]any
+		_ = json.Unmarshal(n.Payload, &p)
+		return clipLine(asText(p["summary"]), 90)
+	})
+	renderLootKind(&b, "凭据", db.KindCredential, creds, used, func(n *db.Node) string {
+		v := db.ParseCredential(n)
+		if fp := v.Fingerprint(); fp != "" {
+			return fp
+		}
+		var p map[string]any
+		_ = json.Unmarshal(n.Payload, &p)
+		return clipLine(asText(p["summary"]), 90)
+	})
+	return b.String()
+}
+
+// renderLootKind 渲染一类战果，**未动用的排在前面**——它们是这条索引存在的理由，
+// 不能因为前面几条已经用掉就挤出行外。
+func renderLootKind(b *strings.Builder, title, kind string, nodes []*db.Node, used map[int64]bool, line func(*db.Node) string) {
+	active := make([]*db.Node, 0, len(nodes))
+	outstanding := make([]*db.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n.State != db.StateLootActive {
+			continue
+		}
+		if lootOutstanding(n, used) {
+			outstanding = append(outstanding, n)
+		} else {
+			active = append(active, n)
+		}
+	}
+	if len(outstanding)+len(active) == 0 {
+		return
+	}
+	ordered := append(append(make([]*db.Node, 0, len(outstanding)+len(active)), outstanding...), active...)
+	b.WriteString("\n" + title + "（" + fmt.Sprint(len(outstanding)) + " 条未动用）：")
+	shown := ordered
+	if len(shown) > ctxLootLines {
+		shown = shown[:ctxLootLines]
+	}
+	for _, n := range shown {
+		mark := "已动用"
+		if lootOutstanding(n, used) {
+			mark = "未动用"
+		}
+		desc := line(n)
+		if desc == "" {
+			b.WriteString(fmt.Sprintf("\n  · %s-%d [%s]", kind, n.ID, mark))
+			continue
+		}
+		b.WriteString(fmt.Sprintf("\n  · %s-%d [%s] %s", kind, n.ID, mark, desc))
+	}
+	if rest := len(ordered) - len(shown); rest > 0 {
+		b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（要全量调 graph_overview）", rest))
+	}
+}
+
+// usedLootSet 算出哪些战果已经被**真正动用**。口径与 graph_overview 一致：一条 uses 边
+// 只说明有意图指向它，算不算数还要看那个意图的收场状态（db.LootConsumingIntentState）。
+//
+// 成本受控：只查触及这些战果的边 + 这些意图的状态，不扫全图；索引另有 3 秒 TTL。
+func usedLootSet(ts *db.ExplorationStore, groups ...[]*db.Node) map[int64]bool {
+	lootSet := map[int64]bool{}
+	ids := make([]int64, 0, 16)
+	for _, g := range groups {
+		for _, n := range g {
+			lootSet[n.ID] = true
+			ids = append(ids, n.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	edges, err := ts.EdgesTouching(ids)
+	if err != nil {
+		return nil
+	}
+	users := map[int64][]int64{}
+	fromIDs := make([]int64, 0, 8)
+	seen := map[int64]bool{}
+	for _, e := range edges {
+		if e.Rel != db.RelUses || !lootSet[e.To] {
+			continue
+		}
+		users[e.To] = append(users[e.To], e.From)
+		if !seen[e.From] {
+			seen[e.From] = true
+			fromIDs = append(fromIDs, e.From)
+		}
+	}
+	if len(fromIDs) == 0 {
+		return nil
+	}
+	state := map[int64]string{}
+	if nodes, nerr := ts.NodesByIDs(fromIDs); nerr == nil {
+		for _, n := range nodes {
+			state[n.ID] = n.State
+		}
+	}
+	used := map[int64]bool{}
+	for lootID, us := range users {
+		for _, uid := range us {
+			if db.LootConsumingIntentState(state[uid]) {
+				used[lootID] = true
+				break
+			}
+		}
+	}
+	return used
+}
+
+// renderPlaybookSection 渲染"本任务指纹命中的历史打法"（≤2 行）。与 graph_overview 的
+// matching_playbooks 同一份数据、更小的窗口——索引每个请求都发一次。
+func renderPlaybookSection(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n同类指纹的历史打法（全局只读先验·先确认指纹一致再 lookup_playbooks）：")
+	for _, l := range lines {
+		b.WriteString("\n  · " + clipLine(l, 150))
 	}
 	return b.String()
 }
