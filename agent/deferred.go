@@ -22,6 +22,8 @@ func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary
 	// mainagent/chat）都从这里出 system 段，一处覆盖全部。与常驻技能同层：会话固定、随整段缓存。
 	// zh（默认）时它返回空串，一个字符都不加。
 	sysText += artifactLanguageBlock()
+	// 目标侧痕迹中性化：同样是 code-owned 常驻规约，四个 agent 的统一入口在这里。
+	sysText += traceNeutralityBlock()
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
 	always := strings.TrimSpace(def.AlwaysSkills)
 	if always == "" && block == "" {

@@ -40,11 +40,14 @@ func TestDeferredSystemCarriesArtifactLanguage(t *testing.T) {
 	old := ArtifactLanguage
 	t.Cleanup(func() { ArtifactLanguage = old })
 
-	// zh：系统提示词与"没有这个功能"完全一致（一个字符都不多）。
+	// zh：不追加语言规约（只保留始终下发的痕迹中性化块）。
 	ArtifactLanguage = func() string { return ArtifactLangZh }
 	zh, _ := deferredSystem("BASE", DeferredInfo{})
-	if len(zh) != 1 || zh[0] != "BASE" {
-		t.Fatalf("zh 档不该改动系统提示词：%#v", zh)
+	if len(zh) != 1 || !strings.HasPrefix(zh[0], "BASE") {
+		t.Fatalf("zh 档不该替换系统提示词：%#v", zh)
+	}
+	if strings.Contains(zh[0], "面向目标的产物语言") {
+		t.Fatalf("zh 档不该追加产物语言规约：%#v", zh)
 	}
 
 	// en：规约段随稳定段一起下发（四个 agent——planner/worker/mainagent/chat——都从

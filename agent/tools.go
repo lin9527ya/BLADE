@@ -2270,7 +2270,8 @@ func (t *ToolSet) reportArtifact() actool.CoreTool {
 			"**没清掉的 webshell 是留在客户系统上的后门**，而且交付时说不清我们动过什么——所以落了东西就记一条。"+
 			"必须给 evidence（落地/创建的那一行输出）与 confidence（战果同一条证据门）。"+
 			"**文件类 locator 必须写目标上的绝对路径**（如 /var/www/html/upload/x.php），url 写访问入口"+
-			"（如 http://host/upload/x.php）：绝对路径给清理，URL 给复现。清掉之后用 mark_artifact_cleared 销账，不要重复 report。",
+			"（如 http://host/upload/x.php）：绝对路径给清理，URL 给复现。**目标侧标识符（账号/文件名/任务名/服务名）"+
+			"必须中性，不得带平台名（BLADE）或项目特征**——客户也会看到这些名字。清掉之后用 mark_artifact_cleared 销账，不要重复 report。",
 		obj(map[string]any{
 			"summary":    str("一句话：在【哪台主机】的【哪里】放了/建了【什么】"),
 			"kind":       str("分类：webshell / upload（上传的文件）/ account（账号）/ scheduled_task / config_change / service / other"),
