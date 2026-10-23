@@ -59,12 +59,15 @@ export function useSettingsState() {
   const [savingProxy, setSavingProxy] = React.useState(false);
   // 代理池：每行一个候选（Clash 混合端口即可）；健康检查/切换在服务端运行。
   const [globalProxyPoolInput, setGlobalProxyPoolInput] = React.useState("");
+  // 已保存的代理池（用于区分"输入了但还没保存"与"正在检测已保存的配置"）。
+  const [proxySavedPool, setProxySavedPool] = React.useState("");
   const [proxyHealthURL, setProxyHealthURL] = React.useState("");
   const [proxyHealthTimeout, setProxyHealthTimeout] = React.useState("5");
   const [proxyFailThreshold, setProxyFailThreshold] = React.useState("2");
   const [proxyActive, setProxyActive] = React.useState("");
   const [proxyBlocked, setProxyBlocked] = React.useState(false);
   const [proxyStatus, setProxyStatus] = React.useState<ProxyPoolHealth[]>([]);
+  const [proxySaveError, setProxySaveError] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
@@ -146,8 +149,10 @@ export function useSettingsState() {
     setBraveKeySet(!!s.brave_key_set);
     setTavilyKeySet(!!s.tavily_key_set);
     setProxyInput(s.web_search_proxy ?? "");
-    setGlobalProxyPoolInput(s.global_proxy_pool || s.global_proxy || "");
-    setProxyHealthURL(s.proxy_health_url ?? "");
+    const savedPool = s.global_proxy_pool || s.global_proxy || "";
+    setGlobalProxyPoolInput(savedPool);
+    setProxySavedPool(savedPool);
+    setProxyHealthURL(s.proxy_health_url || "https://www.gstatic.com/generate_204");
     setProxyHealthTimeout(String(s.proxy_health_timeout_seconds ?? 5));
     setProxyFailThreshold(String(s.proxy_fail_threshold ?? 2));
     setProxyActive(s.proxy_active ?? "");
@@ -615,6 +620,38 @@ export function useSettingsState() {
       .finally(() => setSavingProxy(false));
   };
 
+  // 只更新运行时状态，不回写输入框——手动刷新/轮询不能把用户正在编辑、尚未保存的
+  // 代理池文本冲掉。
+  const applyProxyStatus = (s: Settings) => {
+    setProxyActive(s.proxy_active ?? "");
+    setProxyBlocked(!!s.proxy_blocked);
+    setProxyStatus(s.proxy_status ?? []);
+  };
+
+  // 代理健康探测是异步的。保存后轮询几次状态，让"正在检测代理…"能自然收敛；
+  // 探测较慢（多个候选 × 超时）时也不会让页面一直停在检测中而不给操作入口。
+  const pollProxyStatus = (remaining: number) => {
+    if (remaining <= 0) return;
+    window.setTimeout(() => {
+      api
+        .settings()
+        .then((s) => {
+          applyProxyStatus(s);
+          if ((s.proxy_status ?? []).length === 0 && remaining > 1) pollProxyStatus(remaining - 1);
+        })
+        .catch(() => {
+          // 下一次进入设置页会重新拉取；手动刷新按钮也可重试。
+        });
+    }, 2000);
+  };
+
+  const refreshProxyStatus = () => {
+    api
+      .settings()
+      .then(applyProxyStatus)
+      .catch((e) => toast.error("刷新代理状态失败：" + (e as Error).message));
+  };
+
   const saveGlobalProxy = () => {
     const timeout = Number.parseInt(proxyHealthTimeout, 10);
     const threshold = Number.parseInt(proxyFailThreshold, 10);
@@ -626,6 +663,7 @@ export function useSettingsState() {
       toast.error("失败阈值必须大于 0");
       return;
     }
+    setProxySaveError("");
     setSavingGlobalProxy(true);
     api
       .setSettings({
@@ -637,18 +675,13 @@ export function useSettingsState() {
       .then((s) => {
         apply(s);
         toast.success(globalProxyPoolInput.trim() ? "已保存代理池" : "已清空代理池（改为直连）");
-        // 健康探测是异步的：2 秒后再拉一次，让"当前出口/已阻断"尽快反映真实结果
-        // （探测慢时页面会先显示"正在检测代理…"）。
-        window.setTimeout(() => {
-          api
-            .settings()
-            .then(apply)
-            .catch(() => {
-              // 下一次进入设置页会重新拉取。
-            });
-        }, 2000);
+        pollProxyStatus(6);
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => {
+        const msg = (e as Error).message || "未知错误";
+        setProxySaveError(msg);
+        toast.error("保存失败：" + msg);
+      })
       .finally(() => setSavingGlobalProxy(false));
   };
 
@@ -699,6 +732,7 @@ export function useSettingsState() {
     setSavingProxy,
     globalProxyPoolInput,
     setGlobalProxyPoolInput,
+    proxySavedPool,
     proxyHealthURL,
     setProxyHealthURL,
     proxyHealthTimeout,
@@ -708,6 +742,8 @@ export function useSettingsState() {
     proxyActive,
     proxyBlocked,
     proxyStatus,
+    proxySaveError,
+    refreshProxyStatus,
     savingGlobalProxy,
     setSavingGlobalProxy,
     testing,

@@ -338,10 +338,14 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 	}
 	switch u.Scheme {
 	case "http", "https", "socks5":
+	case "socks5h":
+		// Clash/curl 常用 socks5h 表示"域名交给代理解析"。Go 的 socks5 拨号器本来就
+		// 发送域名、由代理远端解析，所以等价映射成 socks5（保留远端 DNS，不泄漏）。
+		u.Scheme = "socks5"
 	case "":
-		return nil, fmt.Errorf("代理 %q 缺少协议(用 http://、https:// 或 socks5://)", raw)
+		return nil, fmt.Errorf("代理 %q 缺少协议(用 http://、https://、socks5:// 或 socks5h://)", raw)
 	default:
-		return nil, fmt.Errorf("不支持的代理协议 %q(用 http、https 或 socks5)", u.Scheme)
+		return nil, fmt.Errorf("不支持的代理协议 %q(用 http、https、socks5 或 socks5h)", u.Scheme)
 	}
 	if u.Host == "" {
 		return nil, fmt.Errorf("代理 %q 缺少主机地址", raw)

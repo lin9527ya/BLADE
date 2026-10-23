@@ -1020,6 +1020,8 @@ func (m *Manager) SetProxyPool(cfg ProxyPoolConfig) error {
 	m.mu.Lock()
 	m.globalProxy = primary
 	m.mu.Unlock()
+	log.Printf("[proxy] 保存代理池：%d 个候选（健康检查 %s，超时 %s，失败阈值 %d）",
+		len(norm.Candidates), norm.HealthURL, norm.Timeout, norm.FailThreshold)
 	m.startProxyPool()
 	return nil
 }
