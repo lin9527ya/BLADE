@@ -25,19 +25,57 @@ export function ChangePasswordDialog({
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }) {
+  const [currentUsername, setCurrentUsername] = React.useState("");
+  const [newUsername, setNewUsername] = React.useState("");
   const [oldPassword, setOldPassword] = React.useState("");
   const [newPassword, setNewPassword] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [savingUsername, setSavingUsername] = React.useState(false);
+  const busy = saving || savingUsername;
 
-  // reset fields whenever the dialog closes
+  // reset fields whenever the dialog closes; load the configured username on open
   React.useEffect(() => {
     if (!open) {
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      setNewUsername("");
+      return;
     }
+    api
+      .authAccount()
+      .then(({ username }) => {
+        setCurrentUsername(username);
+        setNewUsername(username);
+      })
+      .catch(() => {
+        // 读取失败不影响改密码；用户名那一栏留空，用户可手动输入。
+      });
   }, [open]);
+
+  function saveUsername() {
+    if (!oldPassword) {
+      toast.error("请先输入当前密码");
+      return;
+    }
+    if (!newUsername.trim()) {
+      toast.error("请输入用户名");
+      return;
+    }
+    setSavingUsername(true);
+    api
+      .changeUsername(oldPassword, newUsername.trim())
+      .then((res) => {
+        // 服务端会换发一个 sub=新用户名 的 token；写入后刷新，让侧栏名称立即更新。
+        if (res.token) auth.setToken(res.token);
+        setCurrentUsername(res.username);
+        toast.success("用户名已修改");
+        window.location.reload();
+      })
+      .catch((err) => toast.error(`修改用户名失败：${(err as Error).message}`))
+      .finally(() => setSavingUsername(false));
+  }
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -73,13 +111,29 @@ export function ChangePasswordDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>修改密码</DialogTitle>
+            <DialogTitle>账户设置</DialogTitle>
             <DialogDescription>
-              用户名固定为 <b>BLADE</b>。需先输入当前密码验证；修改后<b>已签发的登录 token 会立即失效</b>
-              （服务端轮换签名密钥），需要重新登录。
+              当前用户名：<b>{currentUsername || "…"}</b>。修改用户名或密码都需要当前密码；
+              修改密码后<b>已签发的登录 token 会立即失效</b>，需要重新登录。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 py-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="cu-name">用户名</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="cu-name"
+                  autoComplete="username"
+                  value={newUsername}
+                  disabled={busy}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                />
+                <Button type="button" variant="outline" onClick={saveUsername} disabled={busy}>
+                  {savingUsername ? "保存中…" : "保存用户名"}
+                </Button>
+              </div>
+            </div>
+            <div className="border-t pt-3 font-medium text-sm">修改密码</div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="cp-old">当前密码</Label>
               <Input
@@ -87,7 +141,7 @@ export function ChangePasswordDialog({
                 type="password"
                 autoComplete="current-password"
                 value={oldPassword}
-                disabled={saving}
+                disabled={busy}
                 onChange={(e) => setOldPassword(e.target.value)}
               />
             </div>
@@ -98,7 +152,7 @@ export function ChangePasswordDialog({
                 type="password"
                 autoComplete="new-password"
                 value={newPassword}
-                disabled={saving}
+                disabled={busy}
                 onChange={(e) => setNewPassword(e.target.value)}
               />
             </div>
@@ -109,17 +163,17 @@ export function ChangePasswordDialog({
                 type="password"
                 autoComplete="new-password"
                 value={confirmPassword}
-                disabled={saving}
+                disabled={busy}
                 onChange={(e) => setConfirmPassword(e.target.value)}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               取消
             </Button>
-            <Button type="submit" disabled={saving}>
-              {saving ? "修改中…" : "确认修改"}
+            <Button type="submit" disabled={busy}>
+              {saving ? "修改中…" : "修改密码"}
             </Button>
           </DialogFooter>
         </form>

@@ -110,6 +110,10 @@ func TestRouteInventoryContract(t *testing.T) {
 		"POST /api/auth/init":            true,
 		"POST /api/auth/login":           true,
 		"POST /api/auth/change-password": true,
+		// 这两个在 handler 内部自己校验 token（/api/auth/* 由 requireAuth 整体豁免），
+		// 不是真正公开——登记在这里是让"豁免面"保持逐条可审。
+		"GET /api/auth/account":          true,
+		"POST /api/auth/change-username": true,
 		"GET /api/health":                true,
 	}
 	for _, r := range muxRoutes {

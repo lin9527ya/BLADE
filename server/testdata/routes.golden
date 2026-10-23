@@ -43,6 +43,7 @@ GET /api/asset-intercept/rules	server.(*Server).assetInterceptListRules-fm
 GET /api/assets	server.(*Server).listAssets-fm
 GET /api/assets/counts	server.(*Server).assetCounts-fm
 GET /api/audit	server.(*Server).getAudit-fm
+GET /api/auth/account	server.(*Server).authAccount-fm
 GET /api/auth/status	server.(*Server).authStatus-fm
 GET /api/campaigns	server.(*Server).listCampaigns-fm
 GET /api/campaigns/{id}	server.(*Server).getCampaign-fm
@@ -201,6 +202,7 @@ POST /api/assets	server.(*Server).insertAssets-fm
 POST /api/assets/import	server.(*Server).assetImportApply-fm
 POST /api/assets/import/preview	server.(*Server).assetImportPreview-fm
 POST /api/auth/change-password	server.(*Server).authChangePassword-fm
+POST /api/auth/change-username	server.(*Server).authChangeUsername-fm
 POST /api/auth/init	server.(*Server).authInit-fm
 POST /api/auth/login	server.(*Server).authLogin-fm
 POST /api/campaigns	server.(*Server).createCampaign-fm

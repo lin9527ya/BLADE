@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 管理员用户名可配置
+
+- 管理员用户名存入 `settings.auth.username`（缺省/空 = 出厂的 `BLADE`，老库无需迁移）；
+  登录按**配置的用户名 + 密码**一起校验，用户名错也照常做一次 bcrypt，避免时序探测。
+- 首次初始化可指定用户名；新增 `GET /api/auth/account` 与
+  `POST /api/auth/change-username`（需当前密码，返回 sub=新用户名的新 token）。
+- 侧栏「账户设置」可修改用户名；登录页/设置页不再把 `BLADE` 写死。
+
 ### 目标侧痕迹中性化（提示词硬约束）
 
 - 所有 agent 的 system 提示词新增一条 code-owned 规约：在目标上创建/发送的**用户名、密码、

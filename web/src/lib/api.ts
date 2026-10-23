@@ -274,7 +274,14 @@ export const api = {
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
-  initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
+  authAccount: () => get<{ username: string }>("/auth/account"),
+  initPassword: (password: string, username?: string) =>
+    post<{ token: string; username?: string }>("/auth/init", username ? { password, username } : { password }),
+  changeUsername: (password: string, newUsername: string) =>
+    post<{ ok: boolean; username: string; token: string }>("/auth/change-username", {
+      password,
+      new_username: newUsername,
+    }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean; tokens_revoked?: boolean; warning?: string }>("/auth/change-password", {
       old_password: oldPassword,

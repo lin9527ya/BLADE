@@ -1058,6 +1058,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/auth/status") return { initialized: true };
   if (path === "/auth/login" || path === "/auth/init") return { token: "mock-demo" };
   if (path === "/auth/change-password") return { ok: true };
+  if (path === "/auth/account") return { username: "BLADE" };
+  if (path === "/auth/change-username") return { ok: true, username: "BLADE", token: "mock-demo" };
 
   // ── task cold archives ──
   if (path === "/task-archives" && m === "GET") {
