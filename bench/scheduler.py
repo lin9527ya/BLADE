@@ -62,18 +62,36 @@ B_CAP_MULT       = 2.0    # b 族单题窗封顶 = B_CAP_MULT × floor
 GAMBLE_HARD_CAP  = 130.0  # 单道赌注题累计封顶（防病态占用）
 PROGRESS_SIGNAL_BONUS = 1.6  # 冒出 foothold/半flag 信号的赌注题权重加成
 
+# 挑战集配置从 challenges.json 读（可用 BENCH_CHALLENGES 覆盖路径）。抽出去的目的是
+# 换题不必改调度代码，而且分数能对应到一个明确的 set_id——跨版本对比的前提。
+CHALLENGES_PATH = os.environ.get(
+    "BENCH_CHALLENGES", os.path.join(os.path.dirname(os.path.abspath(__file__)), "challenges.json"))
+
+
+def _load_challenge_set(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        print(f"[challenges] 读取 {path} 失败，用内置默认: {exc}", file=sys.stderr)
+        return {}
+
+
+_CS = _load_challenge_set(CHALLENGES_PATH)
+
 # 9 硬题（用户指定）。b 族按历史耗时+margin 定制 floor；6 赌注题等额起步。
-B_FLOOR = {"b-01": 75.0, "b-02": 110.0, "b-03": 88.0}
+B_FLOOR = {k: float(v) for k, v in (_CS.get("b_floor") or {}).items()} or {"b-01": 75.0, "b-02": 110.0, "b-03": 88.0}
 # hardQ 顺序 = 波1 b族 → 波2 最需长窗的赌注题 → 波3 其余（历史碎片较短的）
-HARD_ORDER = ["b-01", "b-02", "b-03",      # 波1：高确定性、早解早释放余量
-              "f2-05", "e3-04", "a-18",    # 波2：最需要长连续窗，早起才拿得到
-              "a-03", "a-13", "a-16"]      # 波3：历史碎片较短、需求相对短
+HARD_ORDER = _CS.get("hard_order") or [
+    "b-01", "b-02", "b-03",      # 波1：高确定性、早解早释放余量
+    "f2-05", "e3-04", "a-18",    # 波2：最需要长连续窗，早起才拿得到
+    "a-03", "a-13", "a-16"]      # 波3：历史碎片较短、需求相对短
 B_FAMILY  = set(B_FLOOR)
 GAMBLES   = set(HARD_ORDER) - B_FAMILY
 HARD_SET  = set(HARD_ORDER)
 
 # 家族取题优先级（易题阶段选题用；同族无技术关联，仅作性价比排序）
-FAMILY_PRIORITY = ["c", "d", "e1", "a", "e2", "b", "e3", "f1", "f2"]
+FAMILY_PRIORITY = _CS.get("family_priority") or ["c", "d", "e1", "a", "e2", "b", "e3", "f1", "f2"]
 
 # ARTEX / 平台接入
 ARTEX_API      = os.environ.get("ARTEX_API", "http://127.0.0.1:8787")
@@ -90,7 +108,7 @@ RUN_ID         = os.environ.get("BENCH_RUN_ID") or datetime.now().strftime("%Y%m
 # 提示词变体标记：builtin = 走内置；其他值由调用方自定（如 append-bench）。
 PROMPT_VARIANT = os.environ.get("PROMPT_VARIANT", "builtin")
 # 挑战集标识：分数必须能对应到「跑的是哪一套题」，否则跨版本对比没有意义。
-CHALLENGE_SET_ID = os.environ.get("BENCH_CHALLENGE_SET", "default")
+CHALLENGE_SET_ID = os.environ.get("BENCH_CHALLENGE_SET") or _CS.get("set_id") or "default"
 
 # ============================ 日志 ============================
 class EventLog:
@@ -299,6 +317,21 @@ class ArtexClient:
             return int(t.get("input_tokens") or 0), int(t.get("output_tokens") or 0)
         return 0, 0
 
+    def policy_summary(self):
+        """当前全局探索策略的紧凑描述，写进 summary.json 用于归因。
+
+        策略直接决定「能不能打穿」——不记录它，分数变化就分不清是 agent 变强了
+        还是策略放松了。
+        """
+        st, body = self._call("GET", "/api/settings/exploration-policy")
+        if not (st and 200 <= st < 300 and isinstance(body, dict)):
+            return ""
+        eff = body.get("effective") or {}
+        tech = eff.get("techniques") or []
+        writes = eff.get("forbidden_writes") or []
+        custom = eff.get("custom") or []
+        return f"techniques={len(tech)} forbidden_writes={len(writes)} custom={len(custom)}"
+
     def prompt_sha(self, key):
         """当前生效提示词（最新版本）的 sha256 前 16 位，用于把分数与提示词绑定。"""
         st, body = self._call("GET", f"/api/agents/{key}/prompts")
@@ -420,6 +453,12 @@ class RunMetrics:
 
         head, dirty = self._git()
         prompt_sha = {}
+        policy = ""
+        if not self.simulate:
+            try:
+                policy = sched.a.policy_summary()
+            except Exception:
+                pass
         if not self.simulate:
             try:
                 prompt_sha = {k: sched.a.prompt_sha(k) for k in ("planner", "worker")}
@@ -444,7 +483,7 @@ class RunMetrics:
                 "git_head": head, "git_dirty": dirty,
                 "prompt_variant": PROMPT_VARIANT, "prompt_sha": prompt_sha,
                 "challenge_set": CHALLENGE_SET_ID,
-                "policy": os.environ.get("BENCH_POLICY", "default"),
+                "policy": policy if policy is not None else os.environ.get("BENCH_POLICY", ""),
                 "model": os.environ.get("LLM_MODEL", ""),
             },
             "totals": totals,
@@ -456,14 +495,14 @@ class RunMetrics:
 
 # ============================ 调度器核心 ============================
 class Scheduler:
-    def __init__(self, bench, artex, clock, simulate=False, sim=None):
+    def __init__(self, bench, artex, clock, simulate=False, sim=None, run_id=None):
         self.b = bench
         self.a = artex
         self.clock = clock
         self.simulate = simulate
         self.sim = sim
         self.log = EventLog(EVENTS_CSV, clock)
-        self.metrics = RunMetrics(RUN_ID, clock, simulate, RUNS_DIR)
+        self.metrics = RunMetrics(run_id or RUN_ID, clock, simulate, RUNS_DIR)
         self.slots = [Slot(i) for i in range(SLOTS)]
         self.easyQ = []       # 待跑易题 code
         self.deferQ = []      # 被 park 的易题
@@ -1078,6 +1117,34 @@ class Simulator:
 
 
 # ============================ main ============================
+def _aggregate_runs(run_ids):
+    """多轮汇总：给中位数与极差。
+
+    单轮分数噪声大，「改了之后到底有没有用」往往被噪声盖过；中位数（3 轮起）
+    才看得出真实差异。结果写 runs/aggregate.json 并打到 stderr。
+    """
+    import statistics
+    vals = {}
+    for rid in run_ids:
+        path = os.path.join(RUNS_DIR, rid, "summary.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                totals = json.load(fh).get("totals") or {}
+        except Exception:
+            continue
+        for k in ("score", "solved", "tokens_in", "tokens_out"):
+            vals.setdefault(k, []).append(totals.get(k, 0))
+    out = {k: {"median": statistics.median(v), "min": min(v), "max": max(v), "runs": v}
+           for k, v in vals.items()}
+    print("[metrics] 多轮汇总: " + json.dumps(out, ensure_ascii=False), file=sys.stderr)
+    try:
+        with open(os.path.join(RUNS_DIR, "aggregate.json"), "w", encoding="utf-8") as fh:
+            json.dump({"run_ids": run_ids, "metrics": out}, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[metrics] 写 aggregate.json 失败: {exc}", file=sys.stderr)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="CWF-DR benchmark 调度器")
     ap.add_argument("--simulate", action="store_true", help="本地模拟，不碰靶场/平台/ARTEX")
@@ -1086,13 +1153,23 @@ def main():
     ap.add_argument("--poll-min", type=float, default=1.0, help="模拟虚拟步进(分钟)")
     ap.add_argument("--faults", action="store_true",
                     help="模拟故障注入：建任务失败/关容器失败/VPN 中断，验证容错路径")
+    ap.add_argument("--runs", type=int, default=1,
+                    help="重复跑 N 轮，结束时给中位数/极差（写 runs/aggregate.json）。"
+                         "注意：靶场与 BLADE 库需在轮次之间**外部重置**，否则上一轮已解出的题"
+                         "不会重新计分，中位数会虚高。")
     args = ap.parse_args()
+    runs = max(1, args.runs)
 
     if args.simulate:
-        clock = VirtualClock(step_min=args.poll_min)
-        sim = Simulator(scenario=args.scenario, clock=clock, faults=args.faults)
-        sched = Scheduler(bench=None, artex=None, clock=clock, simulate=True, sim=sim)
-        sched.run()
+        run_ids = []
+        for i in range(runs):
+            rid = RUN_ID if runs == 1 else f"{RUN_ID}-r{i + 1}"
+            clock = VirtualClock(step_min=args.poll_min)
+            sim = Simulator(scenario=args.scenario, clock=clock, faults=args.faults)
+            Scheduler(bench=None, artex=None, clock=clock, simulate=True, sim=sim, run_id=rid).run()
+            run_ids.append(rid)
+        if runs > 1:
+            _aggregate_runs(run_ids)
         return
 
     # 真实模式前置校验
@@ -1103,9 +1180,18 @@ def main():
     if not artex.login():
         print("ARTEX 登录失败，检查 ADMIN_PASSWORD / ARTEX_API。", file=sys.stderr)
         sys.exit(1)
-    clock = RealClock()
-    sched = Scheduler(bench=BenchClient(), artex=artex, clock=clock, simulate=False)
-    sched.run()
+    bench = BenchClient()
+    run_ids = []
+    for i in range(runs):
+        rid = RUN_ID if runs == 1 else f"{RUN_ID}-r{i + 1}"
+        # 每轮新时钟与新调度器：槽位/队列/预算都要从零开始，否则第二轮直接「全解出」。
+        Scheduler(bench=bench, artex=artex, clock=RealClock(), simulate=False, run_id=rid).run()
+        run_ids.append(rid)
+        if i + 1 < runs:
+            print(f"[runs] 第 {i + 1}/{runs} 轮结束。请在下一轮开始前重置靶场与 BLADE 库。",
+                  file=sys.stderr)
+    if runs > 1:
+        _aggregate_runs(run_ids)
 
 
 if __name__ == "__main__":
