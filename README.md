@@ -242,6 +242,8 @@ CGO_ENABLED=0 go build -tags embedui -o blade ./cmd/blade
 ### 公网部署（隐身与加固）
 
 **先读 [`deploy/README.md`](deploy/README.md)**——里面有完整的两套方案（Cloudflare Tunnel 零入站端口 / CF 代理 + 防火墙白名单）、systemd 单元、以及一份部署后自检清单。
+>
+> VPS 上从零部署的规格、依赖、必配项与验收，见 **[`deploy/VPS-CHECKLIST.md`](deploy/VPS-CHECKLIST.md)**（一页勾选表）。
 
 三条最要紧的：
 1. **别把管理端暴露到公网**：默认已绑 loopback，对外走 Cloudflare Tunnel 或 SSH 隧道；
