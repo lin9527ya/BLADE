@@ -56,7 +56,9 @@ Thumbs.db
 # 调度器运行/模拟产生的事件日志（测试产物，不提交）
 *-events.csv
 
-# bench 基准测试相关（本地产物，不提交）
-/bench/
+# bench 基准测试：脚本、提示词与挑战集**入库**——分数必须能回溯到具体提交，
+# 否则「改动有没有效」无法归因（这正是此前最大的盲区）。只忽略运行产物与本机密钥。
+/bench/runs/
+/bench/.env
 /Dockerfile.bench
 /Dockerfile.bench.v2
