@@ -33,6 +33,7 @@ type Planner struct {
 	steerWork         func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
 	proxyAddr         string                                 // recording proxy for WebFetch (empty = direct)
 	proxyCACert       string                                 // recording proxy's CA cert path (HTTPS verify)
+	proxyFn           func() (string, string)                // dynamic resolver (proxy-pool failover); nil = static
 	webSearch         WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir           string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
@@ -116,7 +117,19 @@ func (p *Planner) compactionWindow() int {
 
 // SetProxy points the planner's WebFetch at the recording proxy plus the CA cert
 // it trusts to verify HTTPS through it (empty addr = direct).
-func (p *Planner) SetProxy(addr, caCert string) { p.proxyAddr, p.proxyCACert = addr, caCert }
+func (p *Planner) SetProxy(addr, caCert string) {
+	p.proxyAddr, p.proxyCACert, p.proxyFn = addr, caCert, nil
+}
+
+// SetProxyFunc resolves egress per run (proxy-pool failover without a rebuild).
+func (p *Planner) SetProxyFunc(fn func() (string, string)) { p.proxyFn = fn }
+
+func (p *Planner) proxySnapshot() (string, string) {
+	if p.proxyFn != nil {
+		return p.proxyFn()
+	}
+	return p.proxyAddr, p.proxyCACert
+}
 
 // SetWebSearch selects the web_search backend for the planner (off by default).
 func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
@@ -422,6 +435,7 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
+	proxyAddr, proxyCA := p.proxySnapshot()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -486,8 +500,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   p.proxyAddr,
-		WebFetchCACert:  p.proxyCACert,
+		WebFetchProxy:   proxyAddr,
+		WebFetchCACert:  proxyCA,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       p.webSearch.Enabled,
@@ -498,8 +512,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeepSeekSearchAPIKey: p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:  p.webSearch.DeepSeekModel,
 		WebSearchProxy:       p.webSearch.Proxy,
-		BashEnv:              proxyEnv(p.proxyAddr, p.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:           taskDir,                              // 本任务工作目录 <workDir>/tasks/<taskID>
+		BashEnv:              proxyEnv(proxyAddr, proxyCA), // Bash 子命令默认走代理+信任 CA
+		WorkingDir:           taskDir,                      // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir:        cmdOutDir(taskDir),
 		TaskOutputDir:        taskOutDir(taskDir),
 		MaxTurns:             p.maxTurns, // 0 = unlimited (configurable in agent management)

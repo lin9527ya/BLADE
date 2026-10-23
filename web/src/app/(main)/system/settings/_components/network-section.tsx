@@ -7,6 +7,7 @@ import { RadioTowerIcon } from "lucide-react";
 import { Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 import type { useSettingsState } from "./use-settings-state";
 
@@ -16,8 +17,17 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
   const {
     trafficCapture,
     agentTrafficBinding,
-    globalProxyInput,
-    setGlobalProxyInput,
+    globalProxyPoolInput,
+    setGlobalProxyPoolInput,
+    proxyHealthURL,
+    setProxyHealthURL,
+    proxyHealthTimeout,
+    setProxyHealthTimeout,
+    proxyFailThreshold,
+    setProxyFailThreshold,
+    proxyActive,
+    proxyBlocked,
+    proxyStatus,
     savingGlobalProxy,
     loaded,
     savingTraffic,
@@ -68,37 +78,93 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
           />
         </SubBlock>
 
-        <SubBlock title="全局代理" icon={<RadioTowerIcon className="text-muted-foreground size-4" />}>
+        <SubBlock title="全局代理池" icon={<RadioTowerIcon className="text-muted-foreground size-4" />}>
           <Field
-            label="代理地址"
-            htmlFor="global-proxy"
+            label="代理池（每行一个）"
+            htmlFor="global-proxy-pool"
             hint={
               <>
-                开启<b>流量捕获</b>时，它作为记录代理的<b>上游</b>（流量仍全量落库，再经此代理出网）；关闭捕获时，
-                直接注入 Agent 的 bash / WebFetch 出网。与网络搜索代理、LLM 代理相互独立。
+                支持 <code>http://</code> / <code>https://</code> / <code>socks5://</code>（可带 user:pass）。
+                Clash 直接用混合端口，例如 <code>http://127.0.0.1:7890</code>。
                 <br />
-                <b>提示</b>：socks5 在<b>关闭捕获</b>时依赖各命令行工具对 <code>ALL_PROXY</code> 的支持（curl
-                可用，部分工具可能忽略）；若主要用 socks5，建议开启流量捕获——此路径由 MITM
-                亲自拨号，工具无感知、稳定生效。
+                服务端按健康检查自动切换；<b>全部不可用时出口会被阻断（不会直连）</b>，避免泄漏真实 IP。
+                LLM 的代理在各自 profile 里配置，不在此池内。
               </>
             }
           >
+            <Textarea
+              id="global-proxy-pool"
+              rows={4}
+              autoComplete="off"
+              placeholder={"http://127.0.0.1:7890\nsocks5://127.0.0.1:7891"}
+              value={globalProxyPoolInput}
+              disabled={!loaded || savingGlobalProxy}
+              onChange={(e) => setGlobalProxyPoolInput(e.target.value)}
+            />
+            <div className="grid gap-3 md:grid-cols-[1fr_110px_110px]">
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">健康检查 URL</span>
+                <Input
+                  id="proxy-health-url"
+                  autoComplete="off"
+                  placeholder="https://www.gstatic.com/generate_204"
+                  value={proxyHealthURL}
+                  disabled={!loaded || savingGlobalProxy}
+                  onChange={(e) => setProxyHealthURL(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">超时（秒）</span>
+                <Input
+                  id="proxy-health-timeout"
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={proxyHealthTimeout}
+                  disabled={!loaded || savingGlobalProxy}
+                  onChange={(e) => setProxyHealthTimeout(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">失败阈值</span>
+                <Input
+                  id="proxy-fail-threshold"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={proxyFailThreshold}
+                  disabled={!loaded || savingGlobalProxy}
+                  onChange={(e) => setProxyFailThreshold(e.target.value)}
+                />
+              </div>
+            </div>
             <div className="flex items-center gap-2">
-              <Input
-                id="global-proxy"
-                autoComplete="off"
-                placeholder="socks5://user:pass@host:1080 或 http://host:port（留空=直连）"
-                value={globalProxyInput}
-                disabled={!loaded || savingGlobalProxy}
-                onChange={(e) => setGlobalProxyInput(e.target.value)}
-              />
               <Button type="button" onClick={saveGlobalProxy} disabled={!loaded || savingGlobalProxy}>
                 保存
               </Button>
+              <span className={proxyBlocked ? "text-destructive text-xs" : "text-muted-foreground text-xs"}>
+                {globalProxyPoolInput.trim() && proxyStatus.length === 0
+                  ? "正在检测代理…"
+                  : proxyBlocked
+                    ? "全部代理不可用：出口已阻断（不会直连）"
+                    : proxyActive
+                      ? `当前出口：${proxyActive}`
+                      : globalProxyPoolInput.trim()
+                        ? "正在检测代理…"
+                        : "未配置 · 目标流量直连"}
+              </span>
             </div>
-            <p className="text-muted-foreground text-xs">
-              {globalProxyInput.trim() ? "已配置 · 所有目标流量经此代理出网" : "未配置 · 目标流量直连出网"}
-            </p>
+            {proxyStatus.length > 0 && (
+              <ul className="space-y-0.5 text-xs">
+                {proxyStatus.map((h) => (
+                  <li key={h.proxy} className={h.ok ? "text-muted-foreground" : "text-destructive"}>
+                    {h.ok ? "✓" : "✗"} {h.proxy}
+                    {h.ok && h.latency_ms ? ` · ${h.latency_ms}ms` : ""}
+                    {!h.ok && h.error ? ` · ${h.error}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
           </Field>
         </SubBlock>
       </Section>

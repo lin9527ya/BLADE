@@ -37,6 +37,8 @@ var (
 		"后端启动时根据数据库中持久化的状态恢复了任务暂停。本次运行被取消；正常情况下恢复阶段没有正在运行的 Agent")
 	AbortGoalMet = cause("goal_met", "规划者判定任务目标已达成",
 		"规划者判定任务目标已达成并将任务置为 done，随后取消仍在运行的 Worker；这些意图会标记为 stopped，而不是失败")
+	AbortBudgetExhausted = cause("budget_exhausted", "Token 预算耗尽，任务已暂停",
+		"任务达到 token 预算上限：平台停止派发新意图、暂停任务并取消在跑的 Planner/Worker（运行中的意图退回 open）。这不是任务结束，也不会生成终局报告；调整预算或确认后可在任务页手动继续。继续后同一档预算不再重复打断（改预算会重新生效）")
 	AbortSettleDrainTimeout = cause("settle_drain_timeout", "任务超时收尾的等待时间已用尽",
 		"任务到达 timeout 后等待正在运行的 Worker 优雅收尾，但 90 秒 drain 宽限仍不足，因此执行硬取消；意图会标记为 exhausted，收尾阶段已经写入的事实和资产会保留")
 

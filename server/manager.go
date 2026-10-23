@@ -244,11 +244,16 @@ type Manager struct {
 	braveKey         string
 	tavilyKey        string
 	webSearchProxy   string
-	// globalProxy is the egress proxy all target traffic routes through
-	// (http/https/socks5, optional user:pass). Empty = direct. When traffic
-	// capture is on it becomes the MITM's upstream; when capture is off it is
-	// injected into agent bash env / WebFetch directly. See ProxyAddr.
+	// globalProxy is the **configured** egress proxy (first pool entry; legacy
+	// single value). Empty = user explicitly chose direct. Runtime egress goes
+	// through the proxy pool (egressProxy / proxyPool below).
 	globalProxy string
+	// egressProxy is the proxy currently used for egress: the pool's active
+	// candidate, or blockedProxyURL when every candidate is down. It is never an
+	// empty string while candidates are configured — clearing it would mean a
+	// direct connection and leak the real source IP.
+	egressProxy string
+	proxyPool   *ProxyPool
 }
 
 // Settings keys the UI toggles at runtime.
@@ -262,12 +267,18 @@ const (
 	settingBraveKey            = "brave_search_api_key"
 	settingTavilyKey           = "tavily_search_api_key"
 	settingWebSearchProxy      = "web_search_proxy"
-	// settingGlobalProxy is the global egress proxy for all target traffic
-	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
-	// only routes the search backend) and the per-profile LLM proxy.
-	settingGlobalProxy = "global_proxy"
-	settingWorkers     = "workers"
-	settingLLMRecord   = "llm_record"
+	// settingGlobalProxy is the legacy single global egress proxy (first pool
+	// entry). settingGlobalProxyPool is the real config: newline-separated list.
+	// Distinct from web_search_proxy (search backend only) and per-profile LLM proxy.
+	settingGlobalProxy         = "global_proxy"
+	settingGlobalProxyPool     = "global_proxy_pool"
+	settingProxyHealthURL      = "proxy_health_url"
+	settingProxyHealthTimeout  = "proxy_health_timeout_seconds"
+	settingProxyHealthInterval = "proxy_health_interval_seconds"
+	settingProxyFailThreshold  = "proxy_fail_threshold"
+	settingProxySwitchCooldown = "proxy_switch_cooldown_seconds"
+	settingWorkers             = "workers"
+	settingLLMRecord           = "llm_record"
 	// settingCompactionPrompt（P14）是领域化压缩模板（7 段）。空 = 用内置模板。
 	// 刻意放 settings 而不是 agent_prompts：它不是某个 agent 的提示词，没有对应
 	// agent 行；塞进 agent_prompts 需要在 Agent 管理里凭空多出一个假 agent。
@@ -526,15 +537,18 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
-	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
-			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
-		}
+	// Fail-closed until the pool finishes its first probe: if anything is
+	// configured, egress starts blocked rather than direct.
+	if m.globalProxy != "" {
+		m.egressProxy = blockedProxyURL
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
 	// restart with capture already on keeps Playwright routed through the proxy.
 	m.syncBrowserMCPProxy()
+	// Proxy pool: probes candidates and applies the active egress (blocked until
+	// the first healthy candidate is found). Must run after traffic is open.
+	m.startProxyPool()
 	return m, nil
 }
 
@@ -917,9 +931,7 @@ func (m *Manager) ProxyAddr() string {
 	if m.traffic != nil && m.TrafficEnabled() {
 		return m.traffic.ProxyAddr()
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.globalProxy
+	return m.EgressProxy()
 }
 
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
@@ -934,45 +946,176 @@ func (m *Manager) ProxyCACert() string {
 	return m.traffic.CACertPath()
 }
 
-// GlobalProxy returns the configured global egress proxy URL (empty = direct).
+// GlobalProxy returns the **configured** egress proxy (first pool entry; empty =
+// no proxy configured). Runtime egress uses EgressProxy.
 func (m *Manager) GlobalProxy() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.globalProxy
 }
 
-// SetGlobalProxy validates, persists and applies the global egress proxy
-// (http/https/socks5, optional user:pass; empty = direct). It updates the MITM's
-// upstream immediately; callers must rebuild agents (applyLLM) afterwards so the
-// capture-off path (bash env / WebFetch) picks up the change too.
-func (m *Manager) SetGlobalProxy(raw string) error {
-	raw = strings.TrimSpace(raw)
-	if raw != "" {
-		if _, err := traffic.ValidateProxyURL(raw); err != nil {
-			return err
-		}
+// EgressProxy returns the proxy every target request must use right now.
+//   - candidates configured: the pool's active proxy, or blockedProxyURL when all
+//     are down — never empty (empty would mean a direct dial / real-IP leak);
+//   - nothing configured: empty (the user explicitly chose direct).
+func (m *Manager) EgressProxy() string {
+	m.mu.RLock()
+	pool, fallback := m.proxyPool, m.egressProxy
+	m.mu.RUnlock()
+	if pool != nil {
+		return pool.Active()
 	}
-	if err := m.pg.SetSetting(settingGlobalProxy, raw); err != nil {
+	return fallback
+}
+
+// ProxyPoolConfig returns the normalized current pool config (settings UI echo).
+func (m *Manager) ProxyPoolConfig() ProxyPoolConfig { return m.loadProxyPoolConfig() }
+
+// ProxyStatus returns the runtime pool state for the settings page.
+func (m *Manager) ProxyStatus() ProxyPoolStatus {
+	m.mu.RLock()
+	pool := m.proxyPool
+	m.mu.RUnlock()
+	if pool == nil {
+		return ProxyPoolStatus{}
+	}
+	return pool.Status()
+}
+
+// SetGlobalProxy is the legacy single-proxy setter (compatibility). It is
+// equivalent to a one-entry pool; an empty value clears the pool (= direct).
+func (m *Manager) SetGlobalProxy(raw string) error {
+	cfg := m.loadProxyPoolConfig()
+	cfg.Candidates = splitProxyCandidates(raw)
+	return m.SetProxyPool(cfg)
+}
+
+// SetProxyPool validates, persists and applies a proxy pool. Candidates are
+// http/https/socks5 URLs (Clash's mixed port works as http://127.0.0.1:7890).
+// An empty candidate list is an explicit direct mode; while candidates exist the
+// egress is fail-closed (blocked, never direct) if all of them are down.
+func (m *Manager) SetProxyPool(cfg ProxyPoolConfig) error {
+	norm, err := NormalizeProxyPoolConfig(cfg)
+	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.globalProxy = raw
-	m.mu.Unlock()
-	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(raw); err != nil {
+	poolRaw := strings.Join(norm.Candidates, "\n")
+	primary := ""
+	if len(norm.Candidates) > 0 {
+		primary = norm.Candidates[0]
+	}
+	for key, val := range map[string]string{
+		settingGlobalProxyPool:     poolRaw,
+		settingGlobalProxy:         primary,
+		settingProxyHealthURL:      norm.HealthURL,
+		settingProxyHealthTimeout:  strconv.Itoa(int(norm.Timeout.Seconds())),
+		settingProxyHealthInterval: strconv.Itoa(int(norm.Interval.Seconds())),
+		settingProxyFailThreshold:  strconv.Itoa(norm.FailThreshold),
+		settingProxySwitchCooldown: strconv.Itoa(int(norm.Cooldown.Seconds())),
+	} {
+		if err := m.pg.SetSetting(key, val); err != nil {
 			return err
 		}
 	}
-	// Keep the browser MCP's egress in sync with the new global proxy too.
-	m.syncBrowserMCPProxy()
+	m.mu.Lock()
+	m.globalProxy = primary
+	m.mu.Unlock()
+	m.startProxyPool()
 	return nil
+}
+
+// loadProxyPoolConfig reads the persisted pool + health settings. A stored
+// candidate that fails validation is skipped; if the user did configure a proxy
+// but none is valid, the config stays "configured" so Start() fails closed
+// instead of silently going direct.
+func (m *Manager) loadProxyPoolConfig() ProxyPoolConfig {
+	get := func(key, def string) string {
+		if v, ok, _ := m.pg.GetSetting(key); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+		return def
+	}
+	getInt := func(key string, def int) int {
+		n, err := strconv.Atoi(get(key, ""))
+		if err != nil || n < 0 {
+			return def
+		}
+		return n
+	}
+	rawPool := get(settingGlobalProxyPool, "")
+	primary := strings.TrimSpace(m.GlobalProxy())
+	candidates := splitProxyCandidates(rawPool)
+	if len(candidates) == 0 && primary != "" {
+		candidates = []string{primary}
+	}
+	configured := strings.TrimSpace(rawPool) != "" || primary != ""
+	cfg, err := NormalizeProxyPoolConfig(ProxyPoolConfig{
+		Candidates:    candidates,
+		HealthURL:     get(settingProxyHealthURL, defaultProxyHealthURL),
+		Timeout:       time.Duration(getInt(settingProxyHealthTimeout, int(defaultProxyHealthTimeout.Seconds()))) * time.Second,
+		Interval:      time.Duration(getInt(settingProxyHealthInterval, int(defaultProxyHealthInterval.Seconds()))) * time.Second,
+		Cooldown:      time.Duration(getInt(settingProxySwitchCooldown, int(defaultProxySwitchCooldown.Seconds()))) * time.Second,
+		FailThreshold: getInt(settingProxyFailThreshold, defaultProxyFailThreshold),
+	})
+	if err != nil {
+		log.Printf("[proxy] 代理池配置无效（%v）：保持原配置，出口按 fail-closed 处理", err)
+		return ProxyPoolConfig{configured: configured}
+	}
+	cfg.configured = configured
+	return cfg
+}
+
+// startProxyPool (re)starts the health-check loop. The old pool is stopped only
+// after egressProxy is switched to a blocked fallback, so a settings change can
+// never open a direct-egress window.
+func (m *Manager) startProxyPool() {
+	cfg := m.loadProxyPoolConfig()
+	m.mu.Lock()
+	old := m.proxyPool
+	m.proxyPool = nil
+	if len(cfg.Candidates) > 0 || cfg.configured {
+		m.egressProxy = blockedProxyURL
+	} else {
+		m.egressProxy = ""
+	}
+	m.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	pool := newProxyPool(cfg, probeHTTPProxy, m.applyEgressProxy)
+	m.mu.Lock()
+	m.proxyPool = pool
+	m.mu.Unlock()
+	pool.Start()
+}
+
+// applyEgressProxy is the pool's switch callback: update the MITM upstream and
+// the browser MCP's proxy. Agent runtimes resolve ProxyAddr per run, so they pick
+// up the new value without a rebuild; bash processes already running keep their
+// old env and fail closed if that proxy died.
+func (m *Manager) applyEgressProxy(active string) {
+	m.mu.Lock()
+	m.egressProxy = active
+	m.mu.Unlock()
+	if m.traffic != nil {
+		if err := m.traffic.SetUpstreamProxy(active); err != nil {
+			log.Printf("[proxy] 应用出口代理 %q 失败: %v", active, err)
+		}
+	}
+	m.syncBrowserMCPProxy()
 }
 
 func (m *Manager) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.traffic != nil {
-		m.traffic.Close()
+	pool := m.proxyPool
+	m.proxyPool = nil
+	trafficProxy := m.traffic
+	m.mu.Unlock()
+	if pool != nil {
+		pool.Close() // stop health probes before closing the MITM
+	}
+	if trafficProxy != nil {
+		trafficProxy.Close()
 	}
 	return m.pg.Close()
 }

@@ -169,6 +169,12 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		agents:  agentState{bundles: map[string]*taskAgentBundle{}},
 		archive: archiveState{wake: make(chan struct{}, 1)},
 	}
+	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。
+	// 用户继续后同一档预算不再打断；具体见 server/budget.go 的 pauseForBudget。
+	s.engine.SetBudgetPauseHandler(func(t *Task) error {
+		_, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBudgetExhausted)
+		return err
+	})
 	s.auth.signKey.set(key)
 	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)
 	s.initSideQuestions()

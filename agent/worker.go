@@ -66,12 +66,13 @@ type Worker struct {
 	model           string
 	workDir         string
 	proxyAddr       string
-	proxyCACert     string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
-	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
-	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
-	window          int               // context window in tokens (for compaction)
-	windowFn        func() int        // optional dynamic task-chain minimum
-	maxTurns        int               // max agent turns per run (0 = unlimited)
+	proxyCACert     string                  // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	proxyFn         func() (string, string) // dynamic proxy resolver (proxy-pool failover); nil = static
+	webSearch       WebSearchOpts           // web_search tool backend selection (off by default)
+	tx              *transcript.Store       // raw LLM conversation persistence (nil = off)
+	window          int                     // context window in tokens (for compaction)
+	windowFn        func() int              // optional dynamic task-chain minimum
+	maxTurns        int                     // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
@@ -212,7 +213,21 @@ func (w *Worker) compactionWindow() int {
 // SetProxy configures the recording proxy address that workers route target
 // traffic through, plus the CA cert path WebFetch trusts to verify HTTPS through
 // that MITM proxy. Empty addr disables the hint.
-func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = addr, caCert }
+func (w *Worker) SetProxy(addr, caCert string) {
+	w.proxyAddr, w.proxyCACert, w.proxyFn = addr, caCert, nil
+}
+
+// SetProxyFunc makes the worker resolve its egress proxy at each run start, so a
+// proxy-pool failover takes effect without rebuilding the agent. The fallback is
+// the static SetProxy value when fn is nil.
+func (w *Worker) SetProxyFunc(fn func() (string, string)) { w.proxyFn = fn }
+
+func (w *Worker) proxySnapshot() (string, string) {
+	if w.proxyFn != nil {
+		return w.proxyFn()
+	}
+	return w.proxyAddr, w.proxyCACert
+}
 
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
@@ -437,6 +452,10 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 }
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+	// Resolve egress per run: with capture off this follows the proxy pool's
+	// active candidate; with capture on it is the local MITM (upstream switches
+	// inside the MITM). Never read the static fields directly below.
+	proxyAddr, proxyCA := w.proxySnapshot()
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -474,7 +493,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody := workerSystem(proxyAddr, proxyCA, w.workDir, runDir)
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
@@ -523,8 +542,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
 		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
 		EnableWebFetch: true,
-		WebFetchProxy:  w.proxyAddr,
-		WebFetchCACert: w.proxyCACert,
+		WebFetchProxy:  proxyAddr,
+		WebFetchCACert: proxyCA,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       w.webSearch.Enabled,
@@ -536,7 +555,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		DeepSeekSearchModel:  w.webSearch.DeepSeekModel,
 		WebSearchProxy:       w.webSearch.Proxy,
 		// Bash 子命令的 HTTP 默认走记录代理 + 信任其 CA（工具无需 -x/-k）。
-		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
+		BashEnv:    proxyEnv(proxyAddr, proxyCA),
 		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// 墙钟预算,轮边界判,不打断半路;0 = 不限。有任务级 deadline 时夹逼到 min(自身预算,

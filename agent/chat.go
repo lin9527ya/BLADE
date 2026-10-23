@@ -30,6 +30,7 @@ type ChatAgent struct {
 	window         int
 	proxyAddr      string
 	proxyCACert    string
+	proxyFn        func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
 	webSearch      WebSearchOpts
 	guard          *guard.Guard // optional; nil disables intercept hooks for chat
 	nonStreamingFn func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
@@ -65,7 +66,19 @@ func (c *ChatAgent) maxTokens() int {
 
 // SetProxy points the chat agent's WebFetch/Bash at the recording proxy plus the
 // CA cert it trusts (empty addr = direct). Kept for parity with the other agents.
-func (c *ChatAgent) SetProxy(addr, caCert string) { c.proxyAddr, c.proxyCACert = addr, caCert }
+func (c *ChatAgent) SetProxy(addr, caCert string) {
+	c.proxyAddr, c.proxyCACert, c.proxyFn = addr, caCert, nil
+}
+
+// SetProxyFunc resolves egress per run (proxy-pool failover without a rebuild).
+func (c *ChatAgent) SetProxyFunc(fn func() (string, string)) { c.proxyFn = fn }
+
+func (c *ChatAgent) proxySnapshot() (string, string) {
+	if c.proxyFn != nil {
+		return c.proxyFn()
+	}
+	return c.proxyAddr, c.proxyCACert
+}
 
 // SetWebSearch selects the web_search backend for the chat agent (off by default).
 func (c *ChatAgent) SetWebSearch(o WebSearchOpts) { c.webSearch = o }
@@ -103,6 +116,7 @@ type chatVars struct{ DataDir, Now string }
 // tool_use / tool_result / text / result), tagged with the agent key as the
 // worker lane.
 func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message string, maxTurns int, maxDuration time.Duration, webSearch bool, emit func(db.Activity)) (string, error) {
+	proxyAddr, proxyCA := c.proxySnapshot()
 	// gate the global web-search opts by this agent's own flag.
 	ws := c.webSearch
 	if !webSearch {
@@ -133,8 +147,8 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		UnlockSet:       def.Unlock,
 		PermissionMode:  permission.ModeBypass,
 		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   c.proxyAddr,
-		WebFetchCACert:  c.proxyCACert,
+		WebFetchProxy:   proxyAddr,
+		WebFetchCACert:  proxyCA,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       ws.Enabled,
@@ -145,7 +159,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeepSeekSearchAPIKey: ws.DeepSeekAPIKey,
 		DeepSeekSearchModel:  ws.DeepSeekModel,
 		WebSearchProxy:       ws.Proxy,
-		BashEnv:              proxyEnv(c.proxyAddr, c.proxyCACert), // Bash 子命令默认走代理+信任 CA
+		BashEnv:              proxyEnv(proxyAddr, proxyCA), // Bash 子命令默认走代理+信任 CA
 		WorkingDir:           sessionWorkDir,
 		MaxTurns:             maxTurns,
 		MaxDuration:          maxDuration,

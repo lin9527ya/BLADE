@@ -46,7 +46,7 @@ func (s *Server) intelConfig() intel.Config {
 	if proxy == "" {
 		// 没配独立出口就跟随全局出口代理（与 LLM 之外的出站调用同一条纪律：
 		// 全局代理是"这台机器的出口"，每个子系统想覆盖才单独配）。
-		proxy = s.m.GlobalProxy()
+		proxy = s.m.EgressProxy()
 	}
 	return intel.Config{
 		Key:     get(settingIntelKey),

@@ -11,6 +11,7 @@ import type {
   ExplorationPolicyDefault,
   IntelQueryRow,
   OpsecKnowledgeResponse,
+  ProxyPoolHealth,
   ScopeEnforcement,
   Settings,
 } from "@/lib/types";
@@ -56,7 +57,14 @@ export function useSettingsState() {
   const [savingTavilyKey, setSavingTavilyKey] = React.useState(false);
   const [proxyInput, setProxyInput] = React.useState("");
   const [savingProxy, setSavingProxy] = React.useState(false);
-  const [globalProxyInput, setGlobalProxyInput] = React.useState("");
+  // 代理池：每行一个候选（Clash 混合端口即可）；健康检查/切换在服务端运行。
+  const [globalProxyPoolInput, setGlobalProxyPoolInput] = React.useState("");
+  const [proxyHealthURL, setProxyHealthURL] = React.useState("");
+  const [proxyHealthTimeout, setProxyHealthTimeout] = React.useState("5");
+  const [proxyFailThreshold, setProxyFailThreshold] = React.useState("2");
+  const [proxyActive, setProxyActive] = React.useState("");
+  const [proxyBlocked, setProxyBlocked] = React.useState(false);
+  const [proxyStatus, setProxyStatus] = React.useState<ProxyPoolHealth[]>([]);
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
@@ -138,7 +146,13 @@ export function useSettingsState() {
     setBraveKeySet(!!s.brave_key_set);
     setTavilyKeySet(!!s.tavily_key_set);
     setProxyInput(s.web_search_proxy ?? "");
-    setGlobalProxyInput(s.global_proxy ?? "");
+    setGlobalProxyPoolInput(s.global_proxy_pool || s.global_proxy || "");
+    setProxyHealthURL(s.proxy_health_url ?? "");
+    setProxyHealthTimeout(String(s.proxy_health_timeout_seconds ?? 5));
+    setProxyFailThreshold(String(s.proxy_fail_threshold ?? 2));
+    setProxyActive(s.proxy_active ?? "");
+    setProxyBlocked(!!s.proxy_blocked);
+    setProxyStatus(s.proxy_status ?? []);
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setTokenBudget(String(s.task_token_budget ?? 0));
@@ -602,12 +616,37 @@ export function useSettingsState() {
   };
 
   const saveGlobalProxy = () => {
+    const timeout = Number.parseInt(proxyHealthTimeout, 10);
+    const threshold = Number.parseInt(proxyFailThreshold, 10);
+    if (!Number.isFinite(timeout) || timeout <= 0) {
+      toast.error("健康检查超时必须大于 0 秒");
+      return;
+    }
+    if (!Number.isFinite(threshold) || threshold <= 0) {
+      toast.error("失败阈值必须大于 0");
+      return;
+    }
     setSavingGlobalProxy(true);
     api
-      .setSettings({ global_proxy: globalProxyInput.trim() })
+      .setSettings({
+        global_proxy_pool: globalProxyPoolInput.trim(),
+        proxy_health_url: proxyHealthURL.trim(),
+        proxy_health_timeout_seconds: timeout,
+        proxy_fail_threshold: threshold,
+      })
       .then((s) => {
         apply(s);
-        toast.success(globalProxyInput.trim() ? "已保存全局代理" : "已清除全局代理（改为直连）");
+        toast.success(globalProxyPoolInput.trim() ? "已保存代理池" : "已清空代理池（改为直连）");
+        // 健康探测是异步的：2 秒后再拉一次，让"当前出口/已阻断"尽快反映真实结果
+        // （探测慢时页面会先显示"正在检测代理…"）。
+        window.setTimeout(() => {
+          api
+            .settings()
+            .then(apply)
+            .catch(() => {
+              // 下一次进入设置页会重新拉取。
+            });
+        }, 2000);
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingGlobalProxy(false));
@@ -658,8 +697,17 @@ export function useSettingsState() {
     setProxyInput,
     savingProxy,
     setSavingProxy,
-    globalProxyInput,
-    setGlobalProxyInput,
+    globalProxyPoolInput,
+    setGlobalProxyPoolInput,
+    proxyHealthURL,
+    setProxyHealthURL,
+    proxyHealthTimeout,
+    setProxyHealthTimeout,
+    proxyFailThreshold,
+    setProxyFailThreshold,
+    proxyActive,
+    proxyBlocked,
+    proxyStatus,
     savingGlobalProxy,
     setSavingGlobalProxy,
     testing,

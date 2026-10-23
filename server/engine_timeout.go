@@ -188,18 +188,22 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 			lastLeaseSweep = time.Now()
 			e.sweepExpiredLeases(t)
 		}
-		// token 预算护栏：70/85/95% 各投递一次收敛提示；达到 100% 复用超时收尾时序
-		// （停派/领新意图 → drain → 终局 planner 轮 → 定终态）。
+		// token 预算护栏：70/85/95% 各投递一次收敛提示；达到 100% **暂停任务**，
+		// 不终止、不出终局报告——由人决定是否继续。用户继续后同一档预算不再重复打断；
+		// 预算值被改过则重新生效（budgetAck 存的是当时的预算值）。
 		if budget := e.tokenBudget(); budget > 0 {
-			if used, err := e.m.pg.TokenUsedByTask(t.ID); err == nil {
-				stage := BudgetStage(used, budget)
-				e.budgetNotice(t, stage, used, budget)
-				if stage == "exhausted" {
-					log.Printf("[budget] task %s token 预算耗尽 (%d/%d)，进入收尾时序", t.ID, used, budget)
-					e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
-						Summary: fmt.Sprintf("Token 预算耗尽（%d/%d），进入收尾时序", used, budget)})
-					e.settleTask(ctx, t, "Token 预算耗尽", "timeout")
-					return
+			if acked, ok := e.budgetAck.Load(t.ID); !ok || acked.(int64) != budget {
+				if used, err := e.m.pg.TokenUsedByTask(t.ID); err == nil {
+					stage := BudgetStage(used, budget)
+					e.budgetNotice(t, stage, used, budget)
+					if stage == "exhausted" {
+						e.budgetAck.Store(t.ID, budget)
+						// 已经暂停（用户手动暂停/其它策略）就不重复打扰；恢复时
+						// startAdmittedTask → AckExhaustedBudget 会接住这次确认。
+						if !t.lifecycleSnapshot().Paused && !e.IsPaused(t.ID) {
+							e.pauseForBudget(t, used, budget)
+						}
+					}
 				}
 			}
 		}
