@@ -173,6 +173,8 @@ dig +short console.example.com
 
 ## 八、从零到上线（VPS 版，按顺序做）
 
+> 只要一份可勾选的规格/依赖/必配项/验收表：见 **[VPS-CHECKLIST.md](VPS-CHECKLIST.md)**。
+>
 > **目标形态先定：公网上一个入站端口都不开。** 浏览器访问走 Cloudflare Tunnel（+ Access），
 > SSH/运维走 Tailscale（`--ssh --shields-up`）或 WireGuard。这样这台机器对全网扫描来说就是
 > "什么都没开"——测绘引擎没有可收录的服务，后面那些"去指纹"才有意义。
