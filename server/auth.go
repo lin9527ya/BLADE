@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -24,6 +26,9 @@ import (
 const (
 	jwtKeyFilename = "jwt.key"
 	authPassKey    = "auth.password_hash"
+	// authUserKey 是管理员用户名。缺省/空 = 出厂默认 defaultAdminUsername（兼容老库）。
+	authUserKey          = "auth.username"
+	defaultAdminUsername = "BLADE"
 	// jwtKeySetting 是签名密钥在库里的存放位置。和密码哈希（authPassKey）同库：
 	// **同一个库 = 同一个登录域**。
 	//
@@ -405,13 +410,49 @@ func loginClientIP(r *http.Request) string {
 	return host
 }
 
-// signJWT issues a 7-day HS256 token for user BLADE.
-func signJWT(key []byte) (string, error) {
+// signJWT issues a 7-day HS256 token for the default admin account. Kept for
+// tests; the login/init paths use signJWTFor with the configured username.
+func signJWT(key []byte) (string, error) { return signJWTFor(key, defaultAdminUsername) }
+
+// signJWTFor issues a token whose subject is the configured admin username.
+func signJWTFor(key []byte, username string) (string, error) {
+	if strings.TrimSpace(username) == "" {
+		username = defaultAdminUsername
+	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Subject:   "BLADE",
+		Subject:   username,
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}).SignedString(key)
+}
+
+// adminUsername returns the configured admin username, falling back to the
+// factory default for installs created before the setting existed.
+func adminUsername(pg *db.DB) string {
+	v, ok, err := pg.GetSetting(authUserKey)
+	if err != nil || !ok {
+		return defaultAdminUsername
+	}
+	if v = strings.TrimSpace(v); v == "" {
+		return defaultAdminUsername
+	}
+	return v
+}
+
+// normalizeAdminUsername validates a user-supplied admin username. No spaces or
+// control characters: it is a login principal, not a display name.
+func normalizeAdminUsername(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", errors.New("用户名不能为空")
+	}
+	if utf8.RuneCountInString(u) > 64 {
+		return "", errors.New("用户名最多 64 个字符")
+	}
+	if strings.IndexFunc(u, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return "", errors.New("用户名不能包含空白或控制字符")
+	}
+	return u, nil
 }
 
 // verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
@@ -492,6 +533,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if !decodeAuthBody(w, r, &req) {
@@ -504,6 +546,15 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	if msg := validatePassword(req.Password); msg != "" {
 		writeErr(w, 400, msg)
 		return
+	}
+	username := defaultAdminUsername
+	if strings.TrimSpace(req.Username) != "" {
+		u, uerr := normalizeAdminUsername(req.Username)
+		if uerr != nil {
+			writeErr(w, 400, uerr.Error())
+			return
+		}
+		username = u
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -522,12 +573,80 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码已设置")
 		return
 	}
-	tok, err := signJWT(s.auth.signKey.get())
+	// 只有赢得密码插入的请求才能写用户名，避免并发初始化时后来者覆盖。
+	if err := pg.SetSetting(authUserKey, username); err != nil {
+		log.Printf("[auth] 保存管理员用户名失败（将使用默认 %s）: %v", defaultAdminUsername, err)
+		username = adminUsername(pg)
+	}
+	tok, err := signJWTFor(s.auth.signKey.get(), username)
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"token": tok})
+	writeJSON(w, 200, map[string]any{"token": tok, "username": username})
+}
+
+// GET /api/auth/account — returns the configured admin username (auth required).
+func (s *Server) authAccount(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	if !verifyJWT(extractToken(r), s.auth.signKey.get()) {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"username": adminUsername(pg)})
+}
+
+// POST /api/auth/change-username — changes the admin username. Requires a valid
+// token and the current password. Returns a fresh token whose subject is the new
+// username so the UI/sidebar can update without a logout.
+func (s *Server) authChangeUsername(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	if !verifyJWT(extractToken(r), s.auth.signKey.get()) {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	var req struct {
+		Password    string `json:"password"`
+		NewUsername string `json:"new_username"`
+	}
+	if !decodeAuthBody(w, r, &req) {
+		return
+	}
+	newName, err := normalizeAdminUsername(req.NewUsername)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	hash, ok, err := pg.GetSetting(authPassKey)
+	if err != nil {
+		writeErr(w, 503, errDataSourceUnavailable)
+		return
+	}
+	if !ok || hash == "" {
+		writeErr(w, 403, "密码未初始化，请先设置密码")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		writeErr(w, 401, "当前密码错误")
+		return
+	}
+	if err := pg.SetSetting(authUserKey, newName); err != nil {
+		writeErr(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	tok, err := signJWTFor(s.auth.signKey.get(), newName)
+	if err != nil {
+		writeErr(w, 500, "token 生成失败")
+		return
+	}
+	log.Printf("[auth] 管理员用户名已更新")
+	writeJSON(w, 200, map[string]any{"ok": true, "username": newName, "token": tok})
 }
 
 // POST /api/auth/change-password — changes the admin password. Requires a valid
@@ -625,15 +744,6 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	if !decodeAuthBody(w, r, &req) {
 		return
 	}
-	if req.Username != "BLADE" {
-		if lockFor := s.auth.login.fail(ip); lockFor > 0 {
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(lockFor.Seconds())+1))
-			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor.Round(time.Second)))
-			return
-		}
-		writeErr(w, 401, "用户名或密码错误")
-		return
-	}
 	hash, ok, err := pg.GetSetting(authPassKey)
 	if err != nil {
 		writeErr(w, 503, errDataSourceUnavailable)
@@ -643,7 +753,12 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码未初始化，请先设置密码")
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+	// 用户名与密码一起校验；即使用户名错也照常做一次 bcrypt，避免用响应时间
+	// 探测"用户名是否存在/是否正确"。
+	username := adminUsername(pg)
+	userOK := subtle.ConstantTimeCompare([]byte(strings.TrimSpace(req.Username)), []byte(username)) == 1
+	passErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password))
+	if !userOK || passErr != nil {
 		if lockFor := s.auth.login.fail(ip); lockFor > 0 {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(lockFor.Seconds())+1))
 			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor.Round(time.Second)))
@@ -653,7 +768,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auth.login.succeed(ip)
-	tok, err := signJWT(s.auth.signKey.get())
+	tok, err := signJWTFor(s.auth.signKey.get(), username)
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return

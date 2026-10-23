@@ -12,6 +12,7 @@ import { auth } from "@/lib/auth";
 
 export default function SetupPage() {
   const router = useRouter();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
@@ -47,7 +48,7 @@ export default function SetupPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.initPassword(password);
+      const { token } = await api.initPassword(password, username.trim() || undefined);
       auth.setToken(token);
       router.replace("/function/tasks");
     } catch (err) {
@@ -80,7 +81,7 @@ export default function SetupPage() {
             <p className="mx-auto max-w-xl text-muted-foreground">
               {unavailable
                 ? "后端或数据库暂时不可用。为避免覆盖实例上已有的密码，初始化入口已临时关闭——请恢复服务后重试。"
-                : "首次使用 BLADE，请为账户设置一个登录密码（至少 8 位）"}
+                : "首次使用 BLADE，请设置管理员用户名（可选）与登录密码（至少 8 位）"}
             </p>
           </div>
           {unavailable ? (
@@ -93,6 +94,17 @@ export default function SetupPage() {
           ) : (
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <div className="space-y-1.5">
+                <Label htmlFor="username">管理员用户名</Label>
+                <Input
+                  id="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="留空则使用默认用户名 BLADE"
+                  autoFocus
+                  autoComplete="username"
+                />
+              </div>
+              <div className="space-y-1.5">
                 <Label htmlFor="password">新密码</Label>
                 <Input
                   id="password"
@@ -100,7 +112,6 @@ export default function SetupPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="至少 8 位"
-                  autoFocus
                   autoComplete="new-password"
                 />
               </div>

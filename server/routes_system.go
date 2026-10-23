@@ -11,6 +11,8 @@ func (s *Server) registerSystemRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("GET /api/auth/account", s.authAccount)
+	mux.HandleFunc("POST /api/auth/change-username", s.authChangeUsername)
 
 	mux.HandleFunc("GET /api/health", s.health)
 	// 版本信息（需登录）：从 /api/health 搬过来，免得免认证端点自报家门。
