@@ -16,6 +16,7 @@ import { auth } from "@/lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -61,6 +62,10 @@ export default function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!username.trim() || !password) {
+      setError("请输入用户名和密码");
+      return;
+    }
     if (!agreed) {
       setError("请先阅读并同意《使用须知》");
       return;
@@ -68,7 +73,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("BLADE", password);
+      const { token } = await api.login(username.trim(), password);
       auth.setToken(token);
       window.location.replace("/function/tasks");
     } catch {
@@ -104,9 +109,20 @@ export default function LoginPage() {
         <div className="w-full max-w-md space-y-10 py-24 lg:py-32">
           <div className="space-y-4 text-center">
             <h2 className="text-2xl font-medium tracking-tight">登录</h2>
-            <p className="mx-auto max-w-xl text-muted-foreground">欢迎回来，请输入管理员密码以继续使用 BLADE</p>
+            <p className="mx-auto max-w-xl text-muted-foreground">欢迎回来，请输入用户名和密码以继续使用 BLADE</p>
           </div>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="username">用户名</Label>
+              <Input
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="请输入用户名"
+                autoFocus
+                autoComplete="username"
+              />
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="password">密码</Label>
               <Input
@@ -115,7 +131,6 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="请输入密码"
-                autoFocus
                 autoComplete="current-password"
               />
             </div>
