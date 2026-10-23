@@ -80,3 +80,32 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
 	}
 }
+
+// TestPromptAppendAppliesOnBuiltinAndOverride 钉住追加段的两条语义：
+//   - 正文为空（走内置默认）时追加段**仍然生效**——benchmark 依赖这一点，
+//     它只写场景说明，不复制整份内置提示词；
+//   - 追加段落在正文之后。
+func TestPromptAppendAppliesOnBuiltinAndOverride(t *testing.T) {
+	t.Cleanup(func() { PromptOverride = nil; PromptAppend = nil })
+
+	PromptOverride = nil
+	PromptAppend = func(k string) (string, bool) {
+		if k == "worker" {
+			return "SCENE", true
+		}
+		return "", false
+	}
+	if got := renderSystem("worker", "BUILTIN", WorkerVars{}); got != "BUILTIN\n\nSCENE" {
+		t.Fatalf("追加段应作用在内置正文上，实际 %q", got)
+	}
+
+	PromptOverride = func(k string) (string, bool) { return "CUSTOM", true }
+	if got := renderSystem("worker", "BUILTIN", WorkerVars{}); got != "CUSTOM\n\nSCENE" {
+		t.Fatalf("追加段应作用在自定义正文上，实际 %q", got)
+	}
+
+	PromptAppend = nil
+	if got := renderSystem("worker", "BUILTIN", WorkerVars{}); got != "CUSTOM" {
+		t.Fatalf("没有追加段时不该多出内容，实际 %q", got)
+	}
+}

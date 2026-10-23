@@ -799,7 +799,22 @@ func (d *DB) ResetPromptToDefault(agentID int64, tmpl string) (int, error) {
 }
 
 // SavePrompt appends a new version and points current_prompt_id at it.
+// CurrentPromptAppend 返回当前版本的追加段（没有则空串）。
+func (d *DB) CurrentPromptAppend(agentID int64) (string, error) {
+	var txt sql.NullString
+	err := d.QueryRow(`SELECT p.append_text FROM agents a JOIN agent_prompts p ON p.id=a.current_prompt_id WHERE a.id=$1`, agentID).Scan(&txt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return txt.String, err
+}
+
+// SavePrompt 保存一版提示词（无追加段），等价于 SavePromptWithAppend(..., "", ...)。
 func (d *DB) SavePrompt(agentID int64, template, note, by string) (int, error) {
+	return d.SavePromptWithAppend(agentID, template, "", note, by)
+}
+
+func (d *DB) SavePromptWithAppend(agentID int64, template, appendText, note, by string) (int, error) {
 	tx, err := d.Begin()
 	if err != nil {
 		return 0, err
@@ -810,8 +825,8 @@ func (d *DB) SavePrompt(agentID int64, template, note, by string) (int, error) {
 		return 0, err
 	}
 	var pid int64
-	if err := tx.QueryRow(`INSERT INTO agent_prompts(agent_id,version,template_text,note,updated_by) VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,'')) RETURNING id`,
-		agentID, ver, template, note, by).Scan(&pid); err != nil {
+	if err := tx.QueryRow(`INSERT INTO agent_prompts(agent_id,version,template_text,append_text,note,updated_by) VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,'')) RETURNING id`,
+		agentID, ver, template, appendText, note, by).Scan(&pid); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(`UPDATE agents SET current_prompt_id=$1 WHERE id=$2`, pid, agentID); err != nil {

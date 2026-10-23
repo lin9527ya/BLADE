@@ -50,11 +50,17 @@ echo '{"key":"challenge_review","name":"题目REVIEW","description":"重复题�
 
 # ---------- 2) 提示词覆盖（planner / worker / challenge_review；无 tec_benchmark） ----------
 log "覆盖提示词 ..."
-put_prompt() { # $1=agent-key  $2=file
+# 内置 agent（planner/worker）只写**追加段**：template 留空 = 用内置正文，
+# append 渲染在正文之后、代码尾段之前。这样内置提示词改了，bench 自动跟随，
+# 不会像以前那样漂移成一份过时的副本（旧 worker.md 还在教已删除的 upsert_asset）。
+put_append() { # $1=agent-key  $2=file
+  jq -Rs '{template:"", append:., note:"bench append v2"}' "$2" | post "/api/agents/$1/prompt" "append $1" PUT
+}
+put_prompt() { # $1=agent-key  $2=file（自定义 agent 没有内置正文，必须整份写）
   jq -Rs '{template:., note:"bench seed v2"}' "$2" | post "/api/agents/$1/prompt" "prompt $1" PUT
 }
-put_prompt planner          "$PROMPTS/planner.md"
-put_prompt worker           "$PROMPTS/worker.md"
+put_append planner "$PROMPTS/planner.md"
+put_append worker  "$PROMPTS/worker.md"
 put_prompt challenge_review "$PROMPTS/challenge_review.md"
 
 # planner / worker 开交互式 shell（pwn/逆向常需持久 shell 会话）

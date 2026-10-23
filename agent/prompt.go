@@ -12,6 +12,11 @@ import (
 // behavior is identical until a user edits a prompt in the UI.
 var PromptOverride func(agentKey string) (string, bool)
 
+// PromptAppend 返回某个 agent 的**追加段**：渲染在正文之后、代码尾段之前。
+// 与 PromptOverride 分开的理由：外部场景（benchmark 等）往往只需要加几句场景说明，
+// 不该为此复制整份提示词——复制出去的副本会随内置提示词演进而悄悄过时。
+var PromptAppend func(agentKey string) (string, bool)
+
 // Prompt-variable structs — fields mirror each agent's catalog (docs §5a) so a
 // user template referencing a catalog variable renders; referencing anything else
 // fails template execution and falls back to the built-in default.
@@ -42,6 +47,13 @@ func renderSystem(agentKey, def string, vars any) string {
 	if PromptOverride != nil {
 		if t, ok := PromptOverride(agentKey); ok && t != "" {
 			tmpl = t
+		}
+	}
+	// 追加段拼在正文之后、调用方的代码尾段之前；对「DB 正文」与「内置默认」一视同仁，
+	// 所以只加一段场景说明也能作用在内置提示词上。
+	if PromptAppend != nil {
+		if extra, ok := PromptAppend(agentKey); ok && extra != "" {
+			tmpl = tmpl + "\n\n" + extra
 		}
 	}
 	if out, err := renderTmpl(tmpl, vars); err == nil {

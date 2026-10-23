@@ -556,7 +556,14 @@ func (s *Server) pgSavePrompt(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body struct{ Template, Note string }
+	var body struct {
+		Template string `json:"template"`
+		// Append：渲染在正文之后、代码尾段之前的追加段。**template 为空 + append 非空**
+		// 表示「用内置正文，只加这一段」——benchmark 用的就是这个形态，它因此不必
+		// 复制整份内置提示词。
+		Append string `json:"append"`
+		Note   string `json:"note"`
+	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -566,7 +573,7 @@ func (s *Server) pgSavePrompt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, bad)
 		return
 	}
-	ver, err := pg.SavePrompt(a.ID, body.Template, body.Note, "ui")
+	ver, err := pg.SavePromptWithAppend(a.ID, body.Template, body.Append, body.Note, "ui")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
