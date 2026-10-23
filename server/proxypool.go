@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,11 +28,14 @@ const (
 	blockedProxyURL = "http://127.0.0.1:9"
 
 	defaultProxyHealthURL      = "https://www.gstatic.com/generate_204"
+	defaultProxyEgressIPURL    = "https://api.ipify.org"
 	defaultProxyHealthTimeout  = 5 * time.Second
 	defaultProxyHealthInterval = 30 * time.Second
 	defaultProxyFailThreshold  = 2
 	defaultProxySwitchCooldown = 30 * time.Second
 	maxProxyCandidates         = 20
+	maxEgressIPChecks          = 20
+	egressIPCheckConcurrency   = 4
 )
 
 // ProxyPoolConfig 是代理池的完整配置（设置页保存 / Manager 加载）。
@@ -382,6 +387,138 @@ func (p *ProxyPool) Close() {
 		close(stop)
 		p.wg.Wait()
 	}
+}
+
+// normalizeEgressIPURL 校验并补默认的出口 IP 查询地址。
+func normalizeEgressIPURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultProxyEgressIPURL, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("出口 IP 查询 URL 必须是 http(s) 绝对地址：%q", raw)
+	}
+	return raw, nil
+}
+
+// ProxyEgress 是一次"经代理查出口 IP"的结果。
+type ProxyEgress struct {
+	Proxy  string `json:"proxy"`
+	IP     string `json:"ip,omitempty"`
+	Leaked bool   `json:"leaked,omitempty"` // 出口 IP 与本机网卡地址相同（可能没走代理）
+	Error  string `json:"error,omitempty"`
+}
+
+// localInterfaceIPs 返回本机所有网卡地址（用于识别"出口 IP 其实就是本机"）。
+func localInterfaceIPs() []net.IP {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	out := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP != nil {
+			out = append(out, ipnet.IP)
+		}
+	}
+	return out
+}
+
+// checkProxyEgressIPs 并行地经每个候选代理查询出口 IP。它**只走代理**，没有直连
+// 分支；leaked 只在本机网卡地址与出口 IP 相同时置位（用来发现"代理规则其实直连"）。
+func checkProxyEgressIPs(ctx context.Context, proxies []string, ipURL string, timeout time.Duration) []ProxyEgress {
+	if timeout <= 0 {
+		timeout = defaultProxyHealthTimeout
+	}
+	results := make([]ProxyEgress, len(proxies))
+	sem := make(chan struct{}, egressIPCheckConcurrency)
+	var wg sync.WaitGroup
+	local := localInterfaceIPs()
+	for i, proxy := range proxies {
+		wg.Add(1)
+		go func(i int, proxy string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ip, err := probeEgressIP(ctx, proxy, ipURL, timeout)
+			res := ProxyEgress{Proxy: proxy, IP: ip}
+			if err != nil {
+				res.Error = clipProxyError(err)
+				results[i] = res
+				return
+			}
+			parsed := net.ParseIP(ip)
+			for _, lip := range local {
+				if parsed != nil && lip.Equal(parsed) {
+					res.Leaked = true
+					break
+				}
+			}
+			results[i] = res
+		}(i, proxy)
+	}
+	wg.Wait()
+	return results
+}
+
+// probeEgressIP 经代理 GET 一个返回出口 IP 的服务。Transport.Proxy 显式设置，
+// 代理失败即失败，**没有直连回退**。
+func probeEgressIP(ctx context.Context, proxyURL, ipURL string, timeout time.Duration) (string, error) {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", err
+	}
+	tr := &http.Transport{
+		Proxy:                 http.ProxyURL(u),
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		DisableKeepAlives:     true,
+	}
+	client := &http.Client{Transport: tr, Timeout: timeout}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("出口 IP 查询服务返回 HTTP %d", resp.StatusCode)
+	}
+	return parseEgressIP(body)
+}
+
+// parseEgressIP 兼容三种常见返回：纯 IP（ipify）、cloudflare trace 的 ip= 行、
+// {"ip":"..."} JSON。
+func parseEgressIP(body []byte) (string, error) {
+	text := strings.TrimSpace(string(body))
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ip=") {
+			text = strings.TrimSpace(strings.TrimPrefix(line, "ip="))
+			break
+		}
+	}
+	if ip := net.ParseIP(text); ip != nil {
+		return ip.String(), nil
+	}
+	var m struct {
+		IP string `json:"ip"`
+	}
+	if json.Unmarshal([]byte(text), &m) == nil {
+		if ip := net.ParseIP(strings.TrimSpace(m.IP)); ip != nil {
+			return ip.String(), nil
+		}
+	}
+	clipped := text
+	if len([]rune(clipped)) > 120 {
+		clipped = string([]rune(clipped)[:120]) + "…"
+	}
+	return "", fmt.Errorf("无法从响应解析出口 IP：%q", clipped)
 }
 
 // probeHTTPProxy 经候选代理访问健康检查 URL。Transport.Proxy 显式指向该代理：

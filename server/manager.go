@@ -277,6 +277,7 @@ const (
 	settingProxyHealthInterval = "proxy_health_interval_seconds"
 	settingProxyFailThreshold  = "proxy_fail_threshold"
 	settingProxySwitchCooldown = "proxy_switch_cooldown_seconds"
+	settingProxyEgressIPURL    = "proxy_egress_ip_url"
 	settingWorkers             = "workers"
 	settingLLMRecord           = "llm_record"
 	// settingCompactionPrompt（P14）是领域化压缩模板（7 段）。空 = 用内置模板。
@@ -966,6 +967,18 @@ func (m *Manager) EgressProxy() string {
 		return pool.Active()
 	}
 	return fallback
+}
+
+// EgressIPURL is the service used by the on-demand "check exit IP" action. It is
+// fetched **through** each candidate proxy; no direct request is made by that
+// action (a direct request would itself leak the host IP to the echo service).
+func (m *Manager) EgressIPURL() string {
+	if v, ok, _ := m.pg.GetSetting(settingProxyEgressIPURL); ok {
+		if u, err := normalizeEgressIPURL(v); err == nil {
+			return u
+		}
+	}
+	return defaultProxyEgressIPURL
 }
 
 // ProxyPoolConfig returns the normalized current pool config (settings UI echo).

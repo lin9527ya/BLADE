@@ -1085,6 +1085,12 @@ export const api = {
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
+  // 经指定代理查询出口 IP（只走代理，不直连）；leaked=出口 IP 与本机网卡地址相同。
+  proxyEgressIPs: (proxies: string[]) =>
+    post<{ results: { proxy: string; ip?: string; leaked?: boolean; error?: string }[] }>(
+      `/settings/proxy/egress-ip`,
+      { proxies },
+    ),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;

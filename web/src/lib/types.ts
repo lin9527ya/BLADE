@@ -1472,6 +1472,13 @@ export interface TrafficHost {
 }
 
 // ---- App settings (runtime toggles) ----
+export interface ProxyEgressResult {
+  proxy: string;
+  ip?: string;
+  leaked?: boolean;
+  error?: string;
+}
+
 export interface ProxyPoolHealth {
   proxy: string;
   ok: boolean;
@@ -1509,6 +1516,7 @@ export interface Settings {
   proxy_active?: string;
   proxy_blocked?: boolean;
   proxy_status?: ProxyPoolHealth[];
+  proxy_egress_ip_url?: string;
   // ---- P21 情报源（先接 FOFA）----
   // key 与 web search 同款：只写不读，读侧只给 fofa_key_set 布尔。
   fofa_key_set?: boolean;
