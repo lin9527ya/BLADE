@@ -10,10 +10,14 @@ import (
 )
 
 func TestDeferredSystem_NoGlobal(t *testing.T) {
-	// No global MCP names → plain single-segment system, no cache boundary.
+	// No global MCP names → single segment (base + the always-on trace-neutrality
+	// block), no cache boundary.
 	sys, boundary := deferredSystem("SYS", DeferredInfo{})
-	if len(sys) != 1 || sys[0] != "SYS" || boundary != 0 {
-		t.Fatalf("expected [SYS],0 — got %v,%d", sys, boundary)
+	if len(sys) != 1 || !strings.HasPrefix(sys[0], "SYS") || boundary != 0 {
+		t.Fatalf("expected [SYS+block],0 — got %v,%d", sys, boundary)
+	}
+	if !strings.Contains(sys[0], "目标侧痕迹必须中性") {
+		t.Fatal("always-on trace-neutrality block missing")
 	}
 }
 
@@ -23,8 +27,8 @@ func TestDeferredSystem_WithGlobal(t *testing.T) {
 		GlobalNames: []string{"mcp__browser__navigate", "mcp__browser__click"},
 	}
 	sys, boundary := deferredSystem("SYS", def)
-	if len(sys) != 2 || sys[0] != "SYS" {
-		t.Fatalf("expected [SYS, block], got %v", sys)
+	if len(sys) != 2 || !strings.HasPrefix(sys[0], "SYS") {
+		t.Fatalf("expected [SYS+neutrality, block], got %v", sys)
 	}
 	if !strings.Contains(sys[1], "<available-deferred-tools>") ||
 		!strings.Contains(sys[1], "mcp__browser__navigate") {
@@ -58,7 +62,7 @@ func TestDeferredSystem_AlwaysSkillsLayer(t *testing.T) {
 	}
 	sys, boundary := deferredSystem("SYS", def)
 	if len(sys) != 3 {
-		t.Fatalf("want [SYS, always, deferred], got %v", sys)
+		t.Fatalf("want [SYS+neutrality, always, deferred], got %v", sys)
 	}
 	if sys[1] != def.AlwaysSkills || !strings.Contains(sys[2], "<available-deferred-tools>") {
 		t.Fatalf("layer order wrong:\n%s\n%s", sys[1], sys[2])
@@ -75,7 +79,7 @@ func TestDeferredSystem_AlwaysSkillsLayer(t *testing.T) {
 
 	// 空白常驻等效于没有：行为与旧版完全一致。
 	sys, boundary = deferredSystem("SYS", DeferredInfo{AlwaysSkills: "   \n"})
-	if len(sys) != 1 || sys[0] != "SYS" || boundary != 0 {
+	if len(sys) != 1 || !strings.HasPrefix(sys[0], "SYS") || boundary != 0 {
 		t.Fatalf("blank always must be inert: %v,%d", sys, boundary)
 	}
 }
