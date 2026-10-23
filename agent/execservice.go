@@ -20,9 +20,12 @@ type ExecStatus struct {
 	ExitCode    int    `json:"exit_code"` // -1 = 未记录
 	OutputPath  string `json:"output_path"`
 	OutputBytes int64  `json:"output_bytes"`
-	Tail        string `json:"partial_tail,omitempty"`
-	CancelNote  string `json:"cancel_note,omitempty"`
-	Error       string `json:"error,omitempty"`
+	// Head 是输出文件的**头部**（前 8KB）。扫描类命令（nmap/ffuf/nuclei）的关键
+	// 信息往往在最前面，而 Tail 只给得到末尾——续跑时只看尾巴会漏掉命中行。
+	Head       string `json:"output_head,omitempty"`
+	Tail       string `json:"partial_tail,omitempty"`
+	CancelNote string `json:"cancel_note,omitempty"`
+	Error      string `json:"error,omitempty"`
 	// Limits 是本次执行的资源限额快照（P24）：请求了什么、哪些真的生效。空 = 没设限额。
 	Limits string `json:"limits,omitempty"`
 }
