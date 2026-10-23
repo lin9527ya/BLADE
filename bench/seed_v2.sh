@@ -44,6 +44,13 @@ del_all_intercept_rules() {
 }
 del_all_intercept_rules
 
+# ---------- 0.5) 放开探索策略 ----------
+# 拦截规则删掉不等于没有命令门：探索策略会被编译成**任务级 deny 规则**，默认若还是
+# 「只读验证」就会拦住 webshell / 反弹 shell / 写方法——benchmark 结构上就打不穿。
+# 出厂默认已改为全授权；这里再显式 reset 一次，清掉环境里可能残留的旧默认。
+log "放开探索策略（reset 到出厂默认 = 全授权）..."
+echo '{"reset":true}' | post /api/settings/exploration-policy "policy reset" PUT
+
 # ---------- 1) 自定义 agent（仅 challenge_review；编排交给 scheduler.py） ----------
 log "创建自定义 agent（仅 challenge_review）..."
 echo '{"key":"challenge_review","name":"题目REVIEW","description":"重复题目经验总结：查历史、复用经验、注入 hint"}' | post /api/agents "agent challenge_review"
