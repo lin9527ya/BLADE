@@ -358,6 +358,14 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				}
 			}
 		}
+		// 失败提示：包在最后，覆盖上面所有 DecorateTool 的结果。模型此前只看到
+		// `[exit code N]`，没有「下一步该换什么」的线索。
+		for i, t := range out {
+			if t.Name() == "Bash" {
+				out[i] = agent.WithFailureHint(t)
+				break
+			}
+		}
 		return out
 	}
 	o := agent.CurrentOverrides()
