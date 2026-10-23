@@ -81,6 +81,15 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return in.Text
+	case "loot_exec":
+		// host 是**必填**的（工具侧强制），因为命令本身是"在目标上执行的命令"，
+		// 里面通常不含目标地址——只看 command 等于让这条工具绕过 RoE。
+		var in struct {
+			Host    string `json:"host"`
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return strings.TrimSpace(in.Host + " " + in.Command)
 	case "WebFetch":
 		var in struct {
 			URL string `json:"url"`

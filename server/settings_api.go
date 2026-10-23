@@ -114,6 +114,7 @@ func (s *Server) settingsPayload() map[string]any {
 	return map[string]any{
 		"traffic_capture":       s.m.TrafficEnabled(),
 		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"agent_loot_exec":       s.m.pg.GetBool(settingLootExec, false),
 		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":     s.taskTokenBudget(),
 		"llm_record":            s.m.LLMRecordEnabled(),
@@ -240,6 +241,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TrafficCapture      *bool  `json:"traffic_capture"`
 		AgentTrafficBinding *bool  `json:"agent_traffic_binding"`
+		LootExec            *bool  `json:"agent_loot_exec"`
 		AgentAutoRetest     *bool  `json:"agent_auto_retest"`
 		TaskTokenBudget     *int64 `json:"task_token_budget"`
 		LLMRecord           *bool  `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
@@ -616,6 +618,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AgentTrafficBinding != nil {
 		if err := s.m.pg.SetBool(settingAgentTrafficBinding, *req.AgentTrafficBinding); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.LootExec != nil {
+		if err := s.m.pg.SetBool(settingLootExec, *req.LootExec); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
