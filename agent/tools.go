@@ -3084,7 +3084,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
-		t.runExecution(), t.waitExecution(), t.getExecution(), t.cancelExecution(),
+		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.cancelExecution(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
 		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。

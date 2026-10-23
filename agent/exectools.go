@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -92,6 +95,113 @@ func (t *ToolSet) waitExecution() actool.CoreTool {
 			}
 			return execSnapshotResult("wait", st), nil
 		})
+}
+
+func (t *ToolSet) grepExecution() actool.CoreTool {
+	return readTool("grep_execution",
+		"在后台执行的**完整输出文件**里按正则逐行检索，返回命中行（带行号）。\n"+
+			"★ 扫描类命令（nmap / ffuf / nuclei）的命中行常淹在几千行里；get_execution 只回头部与尾部，"+
+			"要在中间找命中就用本工具，比让模型自己拼 grep 更省事、也不会漏。\n"+
+			"★ 输出文件很大时只扫描前 64MB；需要更多请缩小 pattern 或直接用输出文件路径自己处理。",
+		obj(map[string]any{
+			"execution_id": idp("run_execution 返回的 execution_id"),
+			"pattern":      str("正则（Go/RE2 语法，区分大小写）"),
+			"limit":        intp("最多返回多少条命中行（默认 50，上限 200）"),
+		}, "execution_id", "pattern"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if !t.execToolsReady() {
+				return actool.Errorf("grep_execution: 执行服务未接线"), nil
+			}
+			var a struct {
+				ID      json.RawMessage `json:"execution_id"`
+				Pattern string          `json:"pattern"`
+				Limit   int             `json:"limit"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id := pid(a.ID)
+			if id <= 0 {
+				return actool.Errorf("grep_execution: execution_id 必填"), nil
+			}
+			pat := strings.TrimSpace(a.Pattern)
+			if pat == "" {
+				return actool.Errorf("grep_execution: pattern 必填"), nil
+			}
+			re, err := regexp.Compile(pat)
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("grep_execution: 正则不合法: %v", err)), nil
+			}
+			limit := a.Limit
+			if limit <= 0 {
+				limit = 50
+			}
+			if limit > 200 {
+				limit = 200
+			}
+			st, err := t.execService.Get(ctx, id)
+			if err != nil {
+				return actool.Errorf("grep_execution: " + err.Error()), nil
+			}
+			if st.OutputPath == "" {
+				return actool.Errorf(fmt.Sprintf("grep_execution: 执行 %d 还没有输出文件（可能尚未开始）", id)), nil
+			}
+			hits, scanned, err := grepFile(st.OutputPath, re, limit, execGrepMaxBytes)
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("grep_execution: 读输出文件失败: %v", err)), nil
+			}
+			if len(hits) == 0 {
+				return actool.Text(fmt.Sprintf("（在 %s 扫描的 %d 行里没有命中 %q）", st.OutputPath, scanned, pat)), nil
+			}
+			var b strings.Builder
+			fmt.Fprintf(&b, "在 %s 扫描 %d 行，命中 %d 条（最多显示 %d）：\n", st.OutputPath, scanned, len(hits), limit)
+			for _, h := range hits {
+				fmt.Fprintf(&b, "%d:%s\n", h.line, h.text)
+			}
+			return actool.Text(b.String()), nil
+		})
+}
+
+// execGrepMaxBytes 是 grep_execution 单次最多扫描的字节数——输出文件可能上 GB，
+// 全量扫会拖住工具调用；64MB 足够覆盖常规扫描结果的前部命中。
+const execGrepMaxBytes = 64 << 20
+
+type grepHit struct {
+	line int
+	text string
+}
+
+// grepFile 逐行匹配，命中即收集（最多 limit 条）。返回命中、扫描行数与错误。
+func grepFile(path string, re *regexp.Regexp, limit int, maxBytes int64) ([]grepHit, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+
+	var (
+		hits    []grepHit
+		scanned int
+		read    int64
+	)
+	r := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, err := r.ReadString('\n')
+		if line != "" {
+			read += int64(len(line))
+			scanned++
+			if re.MatchString(strings.TrimRight(line, "\n")) {
+				hits = append(hits, grepHit{line: scanned, text: strings.TrimRight(line, "\n")})
+				if len(hits) >= limit {
+					return hits, scanned, nil
+				}
+			}
+		}
+		if err != nil || (maxBytes > 0 && read >= maxBytes) {
+			break
+		}
+	}
+	return hits, scanned, nil
 }
 
 func (t *ToolSet) getExecution() actool.CoreTool {
