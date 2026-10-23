@@ -17,13 +17,72 @@
 
 ## 2. 软件依赖
 
+> Release 是静态二进制：VPS 上**不需要 Go / Node 构建链**（浏览器自动化除外）。
+
+### 2.1 BLADE 运行必需
+
 | 组件 | 要求 |
 |---|---|
-| BLADE | Release 里的 `blade-<ver>-linux-amd64.zip`（静态二进制，VPS 不需要 Go/Node） |
+| BLADE | Release 里的 `blade-<ver>-linux-amd64.zip`（静态二进制） |
 | PostgreSQL | 16（Docker `postgres:16-alpine` 即可），**只绑 `127.0.0.1:5432`** |
-| 渗透工具 | 平台不打包：nmap / nuclei（含 templates）/ ffuf / gobuster / sqlmap / curl 等按需安装 |
+| Docker + compose | 可选：用来跑 PG（`install.sh` 可自动安装）；用系统 PG 则不需要 |
+| 基础命令 | `curl`（健康检查/初始化）、`unzip`（解包）、`openssl`（生成密码/证书排查）、`ca-certificates`、`tzdata` |
 | 访问层 | cloudflared（推荐）或 Tailscale / SSH 隧道 |
-| 可选 | Docker（跑 PG）、ufw/fail2ban（加固脚本会装） |
+| 系统 | systemd、bash/coreutils（系统自带，agent 的 Bash 依赖 `/bin/sh`） |
+
+### 2.2 Agent 工具链（按打法安装）
+
+平台不打包渗透工具：agent 通过 Bash 调用，**缺什么只会在运行时失败**。
+
+**基础件**（几乎每个任务都会用到）：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y wget git python3 python3-pip python3-venv \
+  ripgrep file tar dnsutils iputils-ping netcat-openbsd whois vim
+```
+
+**浏览器自动化**（browser MCP / `playwright-cli` 技能）：
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+sudo apt-get install -y nodejs
+sudo npm install -g @playwright/mcp @playwright/cli playwright
+sudo env PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright playwright install --with-deps chromium
+sudo chmod -R a+rX /opt/ms-playwright
+```
+
+systemd unit 增加 `Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`。启用可选降权
+（`BLADE_AGENT_USER`）后 HOME 会改写成 worker 家目录，装在某个用户 `~/.cache` 下的浏览器会找不到。
+
+**扫描/利用工具**（按需选装，不要一次全塞）：
+
+- 侦察：`nmap`、`subfinder`、`dnsx`、`httpx`、`naabu` 或 `masscan`、`tlsx`
+- Web：`nuclei`（务必带 `nuclei-templates`）、`ffuf`、`gobuster` / `dirsearch`、`whatweb`、`nikto`、`katana`
+- 利用/口令：`sqlmap`、`hydra`、`impacket`（pip）
+- 字典：SecLists 放 `/opt/wordlists`，agent 可直接引用
+- 代理：不认 `http_proxy` 的工具（如 nmap）配 `proxychains4`
+
+安装位置统一放 `/usr/local/bin`，确保 `blade` 用户与可选的 `blade-worker` 都能在 PATH 里执行。
+尽量用不需要 root 的用法（nmap 用 `-sT`）；masscan/SYN 扫描需要 `CAP_NET_RAW`，建议放到独立
+执行节点，不要给主服务提权。
+
+### 2.3 主机加固与运维
+
+| 组件 | 用途 |
+|---|---|
+| ufw / fail2ban / unattended-upgrades | `deploy/vps-hardening.sh` 自动安装并配置 |
+| jq / rsync / lsof / htop | API/JSON 排查、备份、连接与资源查看 |
+
+### 2.4 不需要安装
+
+- Go、Node/npm 构建链（浏览器自动化除外）
+- nginx（Cloudflare Tunnel 可直接指向 `127.0.0.1:8787`）
+- mitmproxy / tshark（流量捕获与 MITM 是内置的：`-proxy 127.0.0.1:8788`）
+- PostgreSQL 客户端（备份用 `docker exec blade-pg pg_dump ...`）
+
+**最小可用**：PostgreSQL + curl + unzip + ca-certificates + cloudflared/Tailscale + ufw/fail2ban。
+能登录、能跑纯 HTTP/逻辑类任务；没有浏览器和扫描器时，浏览器技能与外部扫描会失败。
 
 ## 3. 目录与账号
 
@@ -53,7 +112,7 @@ sudo chown -R blade:blade /opt/blade
 | 6 | 防火墙 | `sudo deploy/vps-hardening.sh --hostname srv-01` + 云厂商安全组 | ufw 管 v4/v6；两层都要配 |
 | 7 | 访问层 | Cloudflare Tunnel + Zero Trust Access（邮箱 OTP / Service Token），或 Tailscale `--ssh --shields-up` | 域名会进 CT 日志，Access 才是那道门 |
 | 8 | LLM | 登录后在 UI 配 LLM Profile（Anthropic / OpenAI-compatible） | key 存库，不落环境变量；确认能出站访问 |
-| 9 | 工具 | 安装实际要用的扫描器与字典/templates | agent 通过 Bash 调用，缺工具只会在运行时失败 |
+| 9 | 工具 | 按 §2.2 安装实际要用的扫描器、浏览器与字典/templates | agent 通过 Bash 调用，缺工具只会在运行时失败 |
 | 10 | 授权边界 | 设置 `intercept_scope_mode`（建议 `ask`/`deny`）；按需配拦截规则、凭据预算 | 默认 `ask` 才会真正拦范围外目标 |
 | 11 | 可选降权 | `useradd --system --create-home --home-dir /var/lib/blade-worker blade-worker`；unit 改 `User=root` + `Environment=BLADE_AGENT_USER=blade-worker` | 降权要求 root 启动，与默认 unit 的 `User=blade` 冲突；`data/` 属主启动时自动交给 worker |
 | 12 | 主机标识 | 中性主机名；PTR 用厂商默认/中性值，**不要**写成 console 域名 | 别把 IP 和业务域名绑在一起 |
