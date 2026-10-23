@@ -85,6 +85,16 @@ function Row({
               )}
             </div>
             <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
+                    {(f.status === "ruled_out" || f.status === "open_proof_gap") && (f.counterevidence || f.proof_gap) && (
+                      <span
+                        className="line-clamp-2 text-xs text-amber-600 dark:text-amber-400"
+                        title={f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
+                      >
+                        {f.status === "ruled_out" ? "排除原因：" : "待补证："}
+                        {f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
+                      </span>
+                    )}
+
           </div>
         </button>
         <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>

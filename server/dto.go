@@ -376,7 +376,10 @@ type FindingDTO struct {
 	Status    string `json:"status"`         // pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
 	Summary   string `json:"summary"`
 	Evidence  string `json:"evidence"`
-	Report    string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
+	// 已排除/存疑的"为什么"：列表页也要直接看得到，不必点进详情。
+	Counterevidence string `json:"counterevidence,omitempty"`
+	ProofGap        string `json:"proof_gap,omitempty"`
+	Report          string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`
@@ -476,6 +479,8 @@ func findingDTOsForOwner(taskID, description string, in []*db.Node, meta map[int
 			d.FindingID = i64s(m.ID)
 			d.Status = m.Status
 			d.TrafficCount = m.TrafficCount
+			d.Counterevidence = m.Counterevidence
+			d.ProofGap = m.ProofGap
 			d.Assets = findingAssetDTOs(m.AssetIDs, assets)
 		}
 		out = append(out, d)
@@ -507,14 +512,16 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		FindingID:    i64s(f.ID),
 		TrafficCount: f.TrafficCount, EvidenceVersion: f.EvidenceVersion, ReportEvidenceVersion: f.ReportEvidenceVersion,
 		ReportStale: f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion, TrafficBindings: f.TrafficBindings,
-		VulnClass: f.VulnClass,
-		Name:      f.Name,
-		Severity:  f.Severity,
-		Status:    status,
-		Summary:   f.Summary,
-		Evidence:  f.Evidence,
-		Report:    f.Report,
-		TS:        rfc3339(f.CreatedAt),
+		VulnClass:       f.VulnClass,
+		Name:            f.Name,
+		Severity:        f.Severity,
+		Status:          status,
+		Summary:         f.Summary,
+		Evidence:        f.Evidence,
+		Counterevidence: f.Counterevidence,
+		ProofGap:        f.ProofGap,
+		Report:          f.Report,
+		TS:              rfc3339(f.CreatedAt),
 	}
 	d.Assets = findingAssetDTOs(f.AssetIDs, assets)
 	if f.TaskID != nil {
