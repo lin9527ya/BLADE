@@ -8,10 +8,16 @@ func TestValidateProxyURL(t *testing.T) {
 		"https://proxy.example.com:3128",
 		"socks5://10.0.0.1:1080",
 		"socks5://user:pass@10.0.0.1:1080",
+		"socks5h://127.0.0.1:7891", // Clash 常见写法：域名叫代理解析
 	}
 	for _, raw := range ok {
-		if _, err := ValidateProxyURL(raw); err != nil {
+		u, err := ValidateProxyURL(raw)
+		if err != nil {
 			t.Errorf("ValidateProxyURL(%q) unexpected error: %v", raw, err)
+			continue
+		}
+		if u.Scheme == "socks5h" {
+			t.Errorf("ValidateProxyURL(%q) 应把 socks5h 归一为 socks5", raw)
 		}
 	}
 	bad := []string{

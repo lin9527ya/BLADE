@@ -19,6 +19,7 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     agentTrafficBinding,
     globalProxyPoolInput,
     setGlobalProxyPoolInput,
+    proxySavedPool,
     proxyHealthURL,
     setProxyHealthURL,
     proxyHealthTimeout,
@@ -28,6 +29,8 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     proxyActive,
     proxyBlocked,
     proxyStatus,
+    proxySaveError,
+    refreshProxyStatus,
     savingGlobalProxy,
     loaded,
     savingTraffic,
@@ -84,7 +87,7 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             htmlFor="global-proxy-pool"
             hint={
               <>
-                支持 <code>http://</code> / <code>https://</code> / <code>socks5://</code>（可带 user:pass）。
+                支持 <code>http://</code> / <code>https://</code> / <code>socks5://</code> / <code>socks5h://</code>（可带 user:pass）。
                 Clash 直接用混合端口，例如 <code>http://127.0.0.1:7890</code>。
                 <br />
                 服务端按健康检查自动切换；<b>全部不可用时出口会被阻断（不会直连）</b>，避免泄漏真实 IP。
@@ -142,18 +145,24 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
               <Button type="button" onClick={saveGlobalProxy} disabled={!loaded || savingGlobalProxy}>
                 保存
               </Button>
+              <Button type="button" variant="outline" onClick={refreshProxyStatus} disabled={!loaded}>
+                刷新状态
+              </Button>
               <span className={proxyBlocked ? "text-destructive text-xs" : "text-muted-foreground text-xs"}>
-                {globalProxyPoolInput.trim() && proxyStatus.length === 0
-                  ? "正在检测代理…"
-                  : proxyBlocked
-                    ? "全部代理不可用：出口已阻断（不会直连）"
-                    : proxyActive
-                      ? `当前出口：${proxyActive}`
-                      : globalProxyPoolInput.trim()
-                        ? "正在检测代理…"
-                        : "未配置 · 目标流量直连"}
+                {globalProxyPoolInput.trim() !== proxySavedPool.trim()
+                  ? "有未保存的修改 · 点「保存」生效"
+                  : globalProxyPoolInput.trim() && proxyStatus.length === 0
+                    ? "正在检测代理…"
+                    : proxyBlocked
+                      ? "全部代理不可用：出口已阻断（不会直连）"
+                      : proxyActive
+                        ? `当前出口：${proxyActive}`
+                        : globalProxyPoolInput.trim()
+                          ? "正在检测代理…"
+                          : "未配置 · 目标流量直连"}
               </span>
             </div>
+            {proxySaveError && <p className="text-destructive text-xs">保存失败：{proxySaveError}</p>}
             {proxyStatus.length > 0 && (
               <ul className="space-y-0.5 text-xs">
                 {proxyStatus.map((h) => (
