@@ -253,6 +253,10 @@ type loginGuardConfig struct {
 	globalWindow time.Duration // 全局失败预算的滑动窗口
 	globalBudget int           // 窗口内全局失败上限（分布式换 IP 的兜底；<=0 = 关闭）
 	maxEntries   int           // 跟踪的来源上限（换 IP 打爆内存时的止损）
+	// 账户级连续失败锁：跨 IP 生效（同一管理员账户，换 IP 也绕不过）。<=0 = 关闭
+	// （只保留按来源的节流；自定义配置的测试不受影响）。
+	accountThreshold int
+	accountLock      time.Duration
 }
 
 func (c loginGuardConfig) withDefaults() loginGuardConfig {
@@ -260,13 +264,15 @@ func (c loginGuardConfig) withDefaults() loginGuardConfig {
 		return c
 	}
 	return loginGuardConfig{
-		threshold:    5,
-		baseLock:     time.Minute,
-		maxLock:      30 * time.Minute,
-		decay:        30 * time.Minute,
-		globalWindow: 10 * time.Minute,
-		globalBudget: 60,
-		maxEntries:   4096,
+		threshold:        5,
+		baseLock:         10 * time.Minute,
+		maxLock:          10 * time.Minute,
+		decay:            30 * time.Minute,
+		globalWindow:     10 * time.Minute,
+		globalBudget:     60,
+		maxEntries:       4096,
+		accountThreshold: 5,
+		accountLock:      10 * time.Minute,
 	}
 }
 
@@ -291,6 +297,10 @@ type loginGuard struct {
 	cfg         loginGuardConfig
 	perIP       map[string]*loginEntry
 	globalFails []time.Time // 滑动窗口内的失败时刻
+	// 账户级连续失败（跨 IP）：成功后清零；达到阈值锁 accountLock（默认 10 分钟）。
+	// 锁期结束后需要重新累计，不会"一次失败就续锁"。
+	accountFails       int
+	accountLockedUntil time.Time
 }
 
 func (g *loginGuard) config() loginGuardConfig { return g.cfg.withDefaults() }
@@ -304,6 +314,20 @@ func (g *loginGuard) lockedFor(ip string) (time.Duration, bool) {
 		return 0, false
 	}
 	if left := time.Until(e.lockedUntil); left > 0 {
+		return left, true
+	}
+	return 0, false
+}
+
+// accountLockedFor 返回账户级剩余锁定时长（跨 IP）。未启用时恒为 false。
+func (g *loginGuard) accountLockedFor() (time.Duration, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cfg := g.config()
+	if cfg.accountThreshold <= 0 || cfg.accountLock <= 0 {
+		return 0, false
+	}
+	if left := time.Until(g.accountLockedUntil); left > 0 {
 		return left, true
 	}
 	return 0, false
@@ -333,6 +357,21 @@ func (g *loginGuard) fail(ip string) time.Duration {
 	g.pruneGlobalLocked(cfg, now)
 	g.globalFails = append(g.globalFails, now)
 
+	// 账户级连续失败：跨 IP 计数；达到阈值锁 10 分钟（默认），并清零——
+	// 锁期过后需要重新累计 5 次，不会因为"再错一次"立刻续锁。
+	accountLock := time.Duration(0)
+	if cfg.accountThreshold > 0 && cfg.accountLock > 0 {
+		g.accountFails++
+		if g.accountFails >= cfg.accountThreshold {
+			g.accountLockedUntil = now.Add(cfg.accountLock)
+			g.accountFails = 0
+		}
+		accountLock = time.Until(g.accountLockedUntil)
+		if accountLock < 0 {
+			accountLock = 0
+		}
+	}
+
 	if g.perIP == nil { // 零值可用：Server 不显式构造这个 guard
 		g.perIP = make(map[string]*loginEntry)
 	}
@@ -340,7 +379,7 @@ func (g *loginGuard) fail(ip string) time.Duration {
 	if e == nil {
 		// 来源上限：满了就不再跟踪新来源（否则换 IP 能把内存打爆）。此时仍受全局预算约束。
 		if len(g.perIP) >= cfg.maxEntries {
-			return 0
+			return accountLock // 账户锁仍然要如实回给调用方
 		}
 		e = &loginEntry{}
 		g.perIP[ip] = e
@@ -352,7 +391,7 @@ func (g *loginGuard) fail(ip string) time.Duration {
 	e.failures++
 	e.lastFail = now
 	if e.failures < cfg.threshold {
-		return 0
+		return accountLock
 	}
 	lock := cfg.baseLock
 	// failures = threshold + k → 翻倍 k 次（threshold 那一次是 baseLock）。
@@ -363,6 +402,9 @@ func (g *loginGuard) fail(ip string) time.Duration {
 		lock = cfg.maxLock
 	}
 	e.lockedUntil = now.Add(lock)
+	if left := time.Until(g.accountLockedUntil); left > lock {
+		lock = left // 账户锁优先：跨 IP 的锁期要如实回给调用方
+	}
 	return lock
 }
 
@@ -370,6 +412,8 @@ func (g *loginGuard) succeed(ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.perIP, ip)
+	g.accountFails = 0
+	g.accountLockedUntil = time.Time{}
 }
 
 func (g *loginGuard) pruneGlobalLocked(cfg loginGuardConfig, now time.Time) {
@@ -456,18 +500,24 @@ func normalizeAdminUsername(raw string) (string, error) {
 }
 
 // verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
+// 只认 HS256 本身：接受任意 HMAC 变体会让同一把密钥下的算法选择权落在攻击者手里
+// （alg 由 token 头决定），历史上这是 JWT 库的经典坑。签发端也只用 HS256。
 func verifyJWT(tokenStr string, key []byte) bool {
 	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
+		if t.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method %q", t.Method.Alg())
 		}
 		return key, nil
-	})
+	}, jwt.WithExpirationRequired())
 	return err == nil && t.Valid
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
-// blade_token cookie, or ?token= query param (for SSE connections).
+// blade_token cookie, or ?token= query param (SSE only).
+//
+// 查询串凭据只对 EventSource 生效：浏览器会自动给它带 Accept:
+// text/event-stream。普通请求/页面导航拿不到这条通道，于是 ?token= 不会变成
+// 通用认证方式，也不会因为用户把地址贴进聊天框/浏览器历史而多一份凭据副本。
 func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
@@ -475,7 +525,10 @@ func extractToken(r *http.Request) string {
 	if c, err := r.Cookie("blade_token"); err == nil && c.Value != "" {
 		return c.Value
 	}
-	return r.URL.Query().Get("token")
+	if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		return r.URL.Query().Get("token")
+	}
+	return ""
 }
 
 // requireAuth wraps h with JWT validation.
@@ -611,6 +664,12 @@ func (s *Server) authChangeUsername(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "未授权")
 		return
 	}
+	ip := loginClientIP(r)
+	if left, locked := s.auth.login.accountLockedFor(); locked {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
+		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，账户已锁定，请 %s 后重试", left.Round(time.Second)))
+		return
+	}
 	var req struct {
 		Password    string `json:"password"`
 		NewUsername string `json:"new_username"`
@@ -633,9 +692,15 @@ func (s *Server) authChangeUsername(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		if lockFor := s.auth.login.fail(ip); lockFor > 0 {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(lockFor.Seconds())+1))
+			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor.Round(time.Second)))
+			return
+		}
 		writeErr(w, 401, "当前密码错误")
 		return
 	}
+	s.auth.login.succeed(ip)
 	if err := pg.SetSetting(authUserKey, newName); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
@@ -659,6 +724,12 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if !verifyJWT(extractToken(r), s.auth.signKey.get()) {
 		writeErr(w, 401, "未授权")
+		return
+	}
+	ip := loginClientIP(r)
+	if left, locked := s.auth.login.accountLockedFor(); locked {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
+		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，账户已锁定，请 %s 后重试", left.Round(time.Second)))
 		return
 	}
 	var req struct {
@@ -686,9 +757,16 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.OldPassword)); err != nil {
+		// 持有效 token 也可能被拿来在线猜当前密码；与登录共用同一套失败计数与锁。
+		if lockFor := s.auth.login.fail(ip); lockFor > 0 {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(lockFor.Seconds())+1))
+			writeErr(w, 429, fmt.Sprintf("登录失败次数过多，已锁定 %s", lockFor.Round(time.Second)))
+			return
+		}
 		writeErr(w, 401, "当前密码错误")
 		return
 	}
+	s.auth.login.succeed(ip)
 	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
 		writeErr(w, 500, "密码加密失败")
@@ -726,6 +804,14 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	// 节流先于一切：锁定期内连用户名/密码都不看，直接拒——否则爆破者仍能用每次
 	// 请求的时序/回包差异继续试探。计数按来源 IP 分开（见 loginGuard）。
 	ip := loginClientIP(r)
+	// 账户级锁优先：跨 IP 连续失败 5 次后，同一管理员账户 10 分钟内一律拒绝——
+	// 换 IP 也不能继续猜。（代价是知道用户名的人可以故意锁住管理员；这是
+	// "5 次即锁"的固有取舍，见 deploy/README 的信任模型/安全说明。）
+	if left, locked := s.auth.login.accountLockedFor(); locked {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
+		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，账户已锁定，请 %s 后重试", left.Round(time.Second)))
+		return
+	}
 	if left, locked := s.auth.login.lockedFor(ip); locked {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(left.Seconds())+1))
 		writeErr(w, 429, fmt.Sprintf("登录失败次数过多，请 %s 后重试", left.Round(time.Second)))

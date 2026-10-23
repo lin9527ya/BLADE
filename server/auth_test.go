@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -271,8 +272,10 @@ func TestLoginThrottleLocksAfterRepeatedFailures(t *testing.T) {
 
 	login := func(pw string) int {
 		w := httptest.NewRecorder()
+		// 用户名现在可配置：按库里当前值登录，别假设出厂名（共享测试库可能已被
+		// 其它用例改过）。
 		req := httptest.NewRequest("POST", "/api/auth/login",
-			strings.NewReader(`{"username":"BLADE","password":"`+pw+`"}`))
+			strings.NewReader(fmt.Sprintf(`{"username":%q,"password":%q}`, adminUsername(m.pg), pw)))
 		s.authLogin(w, req)
 		return w.Code
 	}

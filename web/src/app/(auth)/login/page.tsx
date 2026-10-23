@@ -76,8 +76,10 @@ export default function LoginPage() {
       const { token } = await api.login(username.trim(), password);
       auth.setToken(token);
       window.location.replace("/function/tasks");
-    } catch {
-      setError("用户名或密码错误");
+    } catch (err) {
+      // 后端对锁定/节流返回 429 + 具体剩余时间，别把它统一盖成"用户名或密码错误"。
+      const msg = err instanceof Error ? err.message.trim() : "";
+      setError(msg && msg !== "未授权" ? msg : "用户名或密码错误");
     } finally {
       setLoading(false);
     }

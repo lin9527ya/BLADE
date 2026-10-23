@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-23
+
+### 登录安全加固（5 次失败锁 10 分钟 + 认证面审计）
+
+- **账户级锁定**：同一管理员账户在任意来源累计 **连续 5 次** 登录失败后锁定 **10 分钟**，
+  换 IP 也不能继续猜；锁定期间即使密码正确也返回 429 + `Retry-After`。成功登录清零。
+- 原有 per-IP 节流（5 次 / 10 分钟）与全局失败预算（10 分钟 60 次）保留，三层同时生效。
+- `change-password` / `change-username` 的「当前密码」校验接入同一套失败计数：持有效 token
+  也不能无限次在线猜当前密码，第 5 次同样触发账户锁。
+- JWT 校验只接受 **HS256**，并要求 token 必须带 `exp`（此前接受任意 HMAC 变体）。
+- `?token=` 查询串凭据仅对 **EventSource**（`Accept: text/event-stream`）生效；普通请求只认
+  `Authorization: Bearer` 或 `blade_token` cookie，避免 token 因复制 URL 多一份泄漏面。
+- 审计确认已具备：全部 SQL 参数化、登录/改密请求体 4KB 上限、用户名常量时间比较、失败回包
+  统一、bcrypt 固定执行（抗时序枚举）、CSP/X-Frame-Options/nosniff/Referrer-Policy、
+  CORS 默认不发头（需显式白名单）、工作区路径穿越（词法 + 真实路径双重校验）、Markdown
+  不渲染原始 HTML。
+- 残余风险（部署侧）：知道用户名的人可故意触发账户锁（“5 次即锁”的固有取舍）；全新实例
+  在完成初始化前不要暴露到公网；token 存于 localStorage 且 cookie 非 HttpOnly（XSS 即失窃），
+  CSP 的 `unsafe-inline` 为 Next 静态导出所需；7 天 token 仅在改密码时轮换吊销。
+
 ### 管理员用户名可配置
 
 - 管理员用户名存入 `settings.auth.username`（缺省/空 = 出厂的 `BLADE`，老库无需迁移）；
@@ -1907,7 +1927,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.2
 [0.5.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.0
 [0.4.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.4.2
