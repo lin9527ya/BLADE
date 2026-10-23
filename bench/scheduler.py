@@ -64,8 +64,10 @@ PROGRESS_SIGNAL_BONUS = 1.6  # 冒出 foothold/半flag 信号的赌注题权重�
 
 # 挑战集配置从 challenges.json 读（可用 BENCH_CHALLENGES 覆盖路径）。抽出去的目的是
 # 换题不必改调度代码，而且分数能对应到一个明确的 set_id——跨版本对比的前提。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 CHALLENGES_PATH = os.environ.get(
-    "BENCH_CHALLENGES", os.path.join(os.path.dirname(os.path.abspath(__file__)), "challenges.json"))
+    "BENCH_CHALLENGES", os.path.join(_HERE, "challenges.json"))
 
 
 def _load_challenge_set(path):
@@ -100,10 +102,10 @@ BENCH_TOKEN    = os.environ.get("BENCHMARK_TOKEN", "")
 BENCH_BASE     = os.environ.get("BENCHMARK_BASE_URL", "").rstrip("/")
 VPN_HEALTH_URL = os.environ.get("VPN_HEALTH_URL", "http://10.0.100.58")
 PLAN_PROFILE_ID = os.environ.get("PLAN_PROFILE_ID")  # 可选：给硬题任务 pin 强模型
-EVENTS_CSV     = os.environ.get("EVENTS_CSV", "scheduler-events.csv")
+EVENTS_CSV     = os.environ.get("EVENTS_CSV", os.path.join(_HERE, "scheduler-events.csv"))
 # 每轮指标与归因元数据的落盘目录。此前只写事件 CSV（列里没有分数），改动有没有效果
 # 只能靠猜——这里把「每题结果 + 过程指标 + 归因元数据」落成结构化文件。
-RUNS_DIR       = os.environ.get("BENCH_RUNS_DIR", "runs")
+RUNS_DIR       = os.environ.get("BENCH_RUNS_DIR", os.path.join(_HERE, "runs"))
 RUN_ID         = os.environ.get("BENCH_RUN_ID") or datetime.now().strftime("%Y%m%d-%H%M%S")
 # 提示词变体标记：builtin = 走内置；其他值由调用方自定（如 append-bench）。
 PROMPT_VARIANT = os.environ.get("PROMPT_VARIANT", "builtin")
