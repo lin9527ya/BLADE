@@ -104,14 +104,15 @@ type Doc struct {
 // DocVersion 是当前文档结构版本。
 const DocVersion = 1
 
-// Default 是随平台出厂的全局默认策略：SRC 常态是"只读验证 + 不碰高危手段"。
+// Default 是随平台出厂的全局默认策略：**默认全授权**。
+//
+// 本平台的目标就是渗透测试，出厂即预设「只读验证」会让 agent 结构上打不穿——
+// 需要只读的场景（如 SRC 挖掘）应当显式收紧，而不是让所有人先去掉限制。
 // 用户可在设置页改；**已存在的任务不回溯**（它们各自的 effective 已快照）。
 func Default() Effective {
 	return Effective{
 		Version:            1,
 		Source:             "global_default",
-		Techniques:         []string{"bruteforce", "dos", "social_engineering", "webshell", "reverse_shell", "persistence"},
-		ForbiddenWrites:    []string{"http_delete", "http_write_method", "mutation_endpoint", "db_write", "db_dump"},
 		MaxIntentsPerRound: 4, // 与 planner 提示词"最多 4 个"同一口径
 	}
 }
