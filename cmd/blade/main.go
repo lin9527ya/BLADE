@@ -54,6 +54,13 @@ const shutdownDrainGrace = 20 * time.Second
 // whether to relaunch us (see selfupdate.ExitRestart) — so the body has to live
 // in a function that can *return* rather than os.Exit past its own defers.
 func main() {
+	// 关掉 SDK 的 Bash 后台任务（AGENT_CORE_DISABLE_BACKGROUND_TASKS）：这类任务不进
+	// 执行台账、run 一结束就被杀，而收尾门只看台账——一条"超时被自动转后台"的扫描会在
+	// 意图收笔后静默消失，谁也说不清它到底跑没跑完。长任务一律走 run_execution
+	// （独立进程组、输出落盘、进台账、可 grep）。确有需要时用 BLADE_ALLOW_BACKGROUND_BASH=1 放行。
+	if strings.TrimSpace(os.Getenv("BLADE_ALLOW_BACKGROUND_BASH")) == "" {
+		_ = os.Setenv("AGENT_CORE_DISABLE_BACKGROUND_TASKS", "1")
+	}
 	os.Exit(run())
 }
 

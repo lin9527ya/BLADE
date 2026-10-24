@@ -1755,18 +1755,44 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 }
 
 func (t *ToolSet) goalMet() actool.CoreTool {
-	return writeTool("goal_met", "【立即结束整个任务】——仅当你确认任务的【全部目标都已真正达成、整体收官】时才调（注意是任务【整体】完成；仅仅达成了其中某一个目标/某一个 flag/某一个漏洞【不算】——那种情况用 prove_goal 标记该目标即可）。⚠️它不是用来“结束本轮规划”的：本轮没有新意图要派、或在等 worker 产出，都【直接结束本轮即可，不要调本工具】（0 个意图是完全正常的）。正常判定优先用 prove_goal 逐个证明目标；goal_met 只是绕过逐个证明、直接从全局收官的手段。",
-		obj(map[string]any{"reason": str("达成理由（必须是目标真正达成的证据，不能是“本轮无新方向”这类结束本轮的理由）")}, "reason"),
+	return writeTool("goal_met", "【立即结束整个任务】——**仅用于没有显式目标(goals)的任务**：有目标时请用 prove_goal 逐个证明（系统会在最后一个目标达成时自动收官）。它必须带上证明任务已达成的【证据节点】(evidence_id)，空口无凭的「完成了」会被拒收。⚠️它不是用来“结束本轮规划”的：本轮没有新意图要派、或在等 worker 产出，都【直接结束本轮即可，不要调本工具】（0 个意图是完全正常的）。",
+		obj(map[string]any{
+			"reason":      str("达成理由：这个证据为什么说明任务已经完成"),
+			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；没有就先用 record_fact 把结论写下来）"),
+		}, "reason", "evidence_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			var a struct{ Reason string }
+			if t.ts == nil {
+				return actool.Errorf("goal_met 需要任务上下文"), nil
+			}
+			var a struct {
+				Reason     string          `json:"reason"`
+				EvidenceID json.RawMessage `json:"evidence_id"`
+			}
 			_ = json.Unmarshal(in, &a)
+			if strings.TrimSpace(a.Reason) == "" {
+				return actool.Errorf("goal_met: reason 必填——写清这个证据为什么说明任务已达成"), nil
+			}
+			// 有目标的任务只能用 prove_goal：那里有「证据→目标」的边，goal_met 没有。
+			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil && len(goals) > 0 {
+				return actool.Errorf(fmt.Sprintf("本任务有 %d 个目标：请用 prove_goal 逐个证明（最后一个达成时系统会自动收官）。"+
+					"goal_met 只用于没有显式目标的任务——它会跳过「证据→目标」的关联", len(goals))), nil
+			}
+			ev := pid(a.EvidenceID)
+			if ev <= 0 {
+				return actool.Errorf("goal_met: evidence_id 必填——没有证据的「任务完成」是一句口号。" +
+					"请指向证明任务已达成的【事实/漏洞】节点（没有的话先用 record_fact 把它写下来）"), nil
+			}
+			node, err := t.ts.GetNodeWithSources(ev)
+			if err != nil || node == nil || (node.Kind != db.KindFact && node.Kind != db.KindFinding) {
+				return actool.Errorf("goal_met: evidence_id 必须是本任务（或直接关联任务）的事实/漏洞节点"), nil
+			}
 			// goal_met 直接结束整个任务，同样要过清理门。
 			if msg := t.cleanupGate(); msg != "" {
 				return actool.Errorf(msg), nil
 			}
 			t.GoalMet = true
 			t.Reason = a.Reason
-			return actool.Text("acknowledged: goal marked met"), nil
+			return actool.Text(fmt.Sprintf("acknowledged: goal marked met (evidence #%d)", ev)), nil
 		})
 }
 
