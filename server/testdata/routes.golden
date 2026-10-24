@@ -57,6 +57,16 @@ GET /api/conversations	server.(*Server).pgListConversations-fm
 GET /api/conversations/{id}/messages	server.(*Server).pgConversationMessages-fm
 GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDetail-fm
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+GET /api/debug/pprof/allocs	net/http.Handler.ServeHTTP-fm
+GET /api/debug/pprof/block	net/http.Handler.ServeHTTP-fm
+GET /api/debug/pprof/cmdline	net/http/pprof.Cmdline
+GET /api/debug/pprof/goroutine	net/http.Handler.ServeHTTP-fm
+GET /api/debug/pprof/heap	net/http.Handler.ServeHTTP-fm
+GET /api/debug/pprof/mutex	net/http.Handler.ServeHTTP-fm
+GET /api/debug/pprof/profile	net/http/pprof.Profile
+GET /api/debug/pprof/symbol	net/http/pprof.Symbol
+GET /api/debug/pprof/threadcreate	net/http.Handler.ServeHTTP-fm
+GET /api/debug/pprof/trace	net/http/pprof.Trace
 GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
 GET /api/exploration/activity/stream	server.(*Server).streamActivity-fm
@@ -106,6 +116,7 @@ GET /api/logs/history	server.(*Server).getLogsHistory-fm
 GET /api/logs/stream	server.(*Server).streamLogs-fm
 GET /api/mcp	server.(*Server).pgListMCP-fm
 GET /api/mcp/{id}/tools	server.(*Server).pgMCPTools-fm
+GET /api/metrics	server.(*Server).metrics-fm
 GET /api/notify/channels	server.(*Server).notifyListChannels-fm
 GET /api/notify/deliveries	server.(*Server).notifyListDeliveries-fm
 GET /api/notify/meta	server.(*Server).notifyMeta-fm
@@ -219,6 +230,7 @@ POST /api/conversations/{id}/messages	server.(*Server).pgSendConversationMessage
 POST /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/conversations/{id}/stop	server.(*Server).pgStopConversation-fm
 POST /api/credentials/{id}/reveal	server.(*Server).revealCredential-fm
+POST /api/debug/pprof/symbol	net/http/pprof.Symbol
 POST /api/exploration/findings/{id}/deepen	server.(*Server).deepenFinding-fm
 POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-fm
 POST /api/exploration/findings/{id}/traffic	server.(*Server).bindFindingTraffic-fm

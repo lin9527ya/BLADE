@@ -9,6 +9,7 @@ import (
 	"iter"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lin9527ya/Norma/llm"
@@ -19,6 +20,13 @@ import (
 type taskIDContextKey struct{}
 type workerContextKey struct{}
 type explorationIDContextKey struct{}
+
+// inFlight 是进程内正在进行的 LLM 调用数（所有 Recorder 共享）。/api/metrics 用它
+// 回答「现在有多少模型调用在等」，与 engine 的 ActiveLLMCalls（planner/worker 口径）互补。
+var inFlight atomic.Int64
+
+// InFlightCalls 返回当前在飞的 LLM 调用数。
+func InFlightCalls() int64 { return inFlight.Load() }
 
 // WithTaskID attaches the owning task registry id to an LLM call. Session ids
 // are based on exploration ids, which are not interchangeable with task ids.
@@ -171,6 +179,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	}
 
 	return func(yield func(llm.StreamEvent, error) bool) {
+		inFlight.Add(1)
+		defer inFlight.Add(-1)
 		var (
 			textBuf     strings.Builder
 			thinkingBuf strings.Builder
@@ -243,6 +253,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 // Complete implements the atomic completion path while preserving the same
 // usage metering, normalized body recording and raw wire capture as Stream.
 func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	inFlight.Add(1)
+	defer inFlight.Add(-1)
 	recordBodies := r.enabled == nil || r.enabled()
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
