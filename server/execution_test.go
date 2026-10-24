@@ -193,6 +193,10 @@ func TestExecutionServiceOrphanReconcile(t *testing.T) {
 	if err := pg.MarkExecutionRunning(left); err != nil {
 		t.Fatal(err)
 	}
+	// 对账有 2 分钟宽限（覆盖 Submit→Start 与刚重启的窗口）：把「上一进程遗留」设老。
+	if _, err := pg.Exec(`UPDATE tool_executions SET created_at=now()-interval '5 minutes' WHERE id=$1`, left); err != nil {
+		t.Fatal(err)
+	}
 	live, err := svc.Submit(ctx, task, 0, "work#1", "sleep 4", "仍在跑", 0)
 	if err != nil {
 		t.Fatalf("submit: %v", err)

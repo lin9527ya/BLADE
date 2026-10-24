@@ -159,7 +159,15 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 		return len(p), nil
 	}))
 	cmd.Stdout, cmd.Stderr = w, w
+	// 先登记 live 再 Start：对账器以 live 为「本进程拥有」的依据，若在 Start 之后才登记，
+	// 45 秒对账可能把这个刚启动的执行误标 orphaned。Start 失败时再从 live 摘掉。
+	s.mu.Lock()
+	s.live[id] = run
+	s.mu.Unlock()
 	if err := cmd.Start(); err != nil {
+		s.mu.Lock()
+		delete(s.live, id)
+		s.mu.Unlock()
 		logFile.Close()
 		_ = s.pg.FinishExecution(id, db.ExecFailed, -1, 0, "", "启动失败："+err.Error())
 		return agent.ExecStatus{}, err
@@ -179,11 +187,7 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 			time.AfterFunc(execCancelGrace, func() { hardKillGroup(cmd) })
 		})
 	}
-	s.mu.Lock()
-	s.live[id] = run
-	s.mu.Unlock()
 	goSafe("execution/reap", nil, func() { s.reap(run) })
-
 	row, _ := s.pg.GetExecution(id)
 	if row == nil {
 		row = &db.ToolExecution{ID: id, TaskID: taskID, IntentID: intentID, Worker: worker,
