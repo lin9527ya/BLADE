@@ -261,8 +261,18 @@ class ArtexClient:
 
     def delete_assets_by_host(self, host):
         """按 host 精确删除资产（级联删 service/endpoint），与 LLM 工具 delete_assets_by_host 同义。
-        起新题前清掉复用 IP 上的旧题残留资产，避免跨题污染。返回删除条数（失败返回 None，不阻塞起题）。"""
-        st, body = self._call("DELETE", "/api/assets/by-host", {"host": host})
+        起新题前清掉复用 IP 上的旧题残留资产，避免跨题污染。返回删除条数（失败返回 None，不阻塞起题）。
+
+        平台没有按 host 直删的 HTTP 路由（DELETE /api/assets 只收 ids）：
+        先按 ip 精确查一遍拿 id，再按 id 删。"""
+        from urllib.parse import quote
+        st, body = self._call("GET", f"/api/assets?dsl={quote('ip==' + host)}&limit=500")
+        if not (st and 200 <= st < 300 and isinstance(body, dict)):
+            return None
+        ids = [a.get("id") for a in (body.get("assets") or []) if a.get("id")]
+        if not ids:
+            return 0
+        st, body = self._call("DELETE", "/api/assets", {"ids": ids})
         if st and 200 <= st < 300 and isinstance(body, dict):
             return body.get("deleted", 0)
         return None
@@ -289,7 +299,7 @@ class ArtexClient:
         out = {}
         if isinstance(body, dict):
             for t in body.get("tasks", []):
-                la = t.get("last_activity") or t.get("lastActivity") or 0
+                la = t.get("last_activity_unix") or 0
                 out[t.get("id")] = _to_epoch(la)
         return out
 
