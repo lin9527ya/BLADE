@@ -81,6 +81,14 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return in.Text
+	case "foothold_exec":
+		// 与 loot_exec 同理：命令本身不含目标地址，目标在 host 里。host 是工具侧强制必填的。
+		var in struct {
+			Host    string `json:"host"`
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return strings.TrimSpace(in.Host + " " + in.Command)
 	case "loot_exec":
 		// host 是**必填**的（工具侧强制），因为命令本身是"在目标上执行的命令"，
 		// 里面通常不含目标地址——只看 command 等于让这条工具绕过 RoE。

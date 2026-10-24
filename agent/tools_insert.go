@@ -705,7 +705,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.opsecNotes(),
 		// P13 长任务执行：进程活过本次 run、输出落盘、状态进台账。未接线（nil 服务）
 		// 时工具返回可读拒绝，绑定可见性与目录 seed 不受影响。
-		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.cancelExecution(),
+		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.footholdExec(), t.cancelExecution(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
 		// worker 只做单条意图的执行与写回）：list_facts / list_companies / list_worker_traces。
 	}
