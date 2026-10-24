@@ -1707,7 +1707,8 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// （它们此刻进不了 frontier）；而带已满足前置的意图立即可领，照样受上限约束。
 	if t.workerCap > 0 && depsSatisfied && priority < intentQueueUrgentPriority && q.claimable >= intentQueueFactor*t.workerCap {
 		return 0, "", fmt.Errorf("队列里已有 %d 条可领方向（worker %d 个，上限 %d）：本轮先让 worker 消化，不再接常规新方向。"+
-			"确有材料性新发现驱动的跟进，把 priority 提到 %d 以上再提交；已过时的排队方向用 drop_intent 清掉",
+			"确有材料性新发现驱动的跟进，把 priority 提到 %d 以上再提交；已过时的排队方向用 drop_intent 清掉。"+
+			"**这个方向本身不必丢**：把它写进 TodoWrite（注明为什么先不派），等 worker 消化后再派——别直接忘掉",
 			q.claimable, t.workerCap, intentQueueFactor*t.workerCap, intentQueueUrgentPriority)
 	}
 	anchors := pidList(it.AssetIDs)
