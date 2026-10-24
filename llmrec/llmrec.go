@@ -18,6 +18,7 @@ import (
 
 type taskIDContextKey struct{}
 type workerContextKey struct{}
+type explorationIDContextKey struct{}
 
 // WithTaskID attaches the owning task registry id to an LLM call. Session ids
 // are based on exploration ids, which are not interchangeable with task ids.
@@ -49,6 +50,25 @@ func WithWorker(ctx context.Context, worker string) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, workerContextKey{}, worker)
+}
+
+// WithExplorationID attaches the exploration id for callers whose transcript
+// session is not `exp<N>-…` (triggered agent runs use `conv-<id>`). Without it
+// the usage ledger row has no exploration_id, so per-task token views miss it.
+func WithExplorationID(ctx context.Context, expID int64) context.Context {
+	if expID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, explorationIDContextKey{}, expID)
+}
+
+// ExplorationIDFrom returns the explicit exploration id attached by the caller.
+func ExplorationIDFrom(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	expID, _ := ctx.Value(explorationIDContextKey{}).(int64)
+	return expID
 }
 
 // workerFrom returns the explicit lane override, or "" when none is set.
@@ -128,6 +148,9 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 		worker = ov
 	}
 	expID := db.ParseExpID(parsedID)
+	if id := ExplorationIDFrom(ctx); id > 0 {
+		expID = id
+	}
 	taskID := TaskIDFrom(ctx)
 	if taskID == "" {
 		// Backward compatibility for non-task callers. For task calls, the task
@@ -228,6 +251,9 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 		worker = ov
 	}
 	expID := db.ParseExpID(parsedID)
+	if id := ExplorationIDFrom(ctx); id > 0 {
+		expID = id
+	}
 	taskID := TaskIDFrom(ctx)
 	if taskID == "" {
 		taskID = parsedID

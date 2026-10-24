@@ -15,6 +15,7 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/llmrec"
 	"github.com/lin9527ya/blade/sidequestion"
 )
 
@@ -475,8 +476,18 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 // run ends (clearing busyKey). runConversation wraps it in a goroutine for the
 // fire-and-forget chat path; the P3 trigger queue calls it directly so it can wait
 // for completion before starting the next queued fire for the same agent.
-func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string) {
+func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, taskID int64) {
 	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
+	// 触发式运行（reporter/retester/playbook…）的会话名是 conv-<id>，台账解析不出
+	// task/worker；把任务上下文显式带上，否则这部分花费在 Token 视图里是「无归属」。
+	if taskID > 0 {
+		ctx = llmrec.WithTaskID(ctx, strconv.FormatInt(taskID, 10))
+		ctx = llmrec.WithWorker(ctx, c.AgentKey)
+		var expID int64
+		if err := s.m.pg.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, taskID).Scan(&expID); err == nil && expID > 0 {
+			ctx = llmrec.WithExplorationID(ctx, expID)
+		}
+	}
 	s.runConversationTurn(ctx, cancel, c, msg, busyKey)
 }
 
@@ -757,7 +768,7 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 	s.chatRuns.mu.Lock()
 	s.chatRuns.busy[busyKey] = true
 	s.chatRuns.mu.Unlock()
-	s.runConversationSync(c, msg, busyKey)
+	s.runConversationSync(c, msg, busyKey, item.taskID)
 }
 
 // firstLine returns a single-line, length-capped preview (shared with summaries).
