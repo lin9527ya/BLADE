@@ -370,6 +370,16 @@ SELECT t.id, t.type, t.label FROM target t ORDER BY t.type, t.label`, taskID, s.
 		return nil, err
 	}
 
+	// 覆盖矩阵里的意图引用也用任务内序号（另注全局 id）：报告与 Agent 叙事一致，
+	// 但工具/API 仍按全局 id 寻址。
+	intentOrd, _ := s.IntentOrdinals(0)
+	intentRef := func(id int64) string {
+		if seq := intentOrd[id]; seq > 0 {
+			return fmt.Sprintf("#%d（id %d）", seq, id)
+		}
+		return fmt.Sprintf("#%d", id)
+	}
+
 	type cellKey struct {
 		asset int64
 		area  string
@@ -419,7 +429,7 @@ ORDER BY ea.asset_id, area, en.id`, taskID, s.expID)
 		default:
 			cell.InFlight++
 		}
-		cell.Intents = append(cell.Intents, fmt.Sprintf("#%d %s", nodeID, state))
+		cell.Intents = append(cell.Intents, intentRef(nodeID)+" "+state)
 	}
 	prows.Close()
 	if err := prows.Err(); err != nil {
