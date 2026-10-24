@@ -1895,6 +1895,80 @@ FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, 
 	return out, cursor, rows.Err()
 }
 
+// ActivityListTail 取某节点（nil = 全任务）**最近**的 limit 条活动，按 id 升序返回。
+//
+// 刻意新增而不是改 ActivityList：后者是 UI 的增量游标（id > sinceID 升序），语义不能动。
+// 但「这条 work 做到哪了」要的是尾部——超过一千步的意图，用升序前 N 条看到的永远是开头
+// 那几步，恰恰错过「卡在哪」和最终结论（get_worker_output 正是这么用的）。
+func (s *ExplorationStore) ActivityListTail(nodeID *int64, limit int) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 300
+	}
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	var rows *sql.Rows
+	var err error
+	if nodeID != nil {
+		rows, err = s.db.Query(`SELECT `+cols+`
+FROM activity WHERE exploration_id=$1 AND node_id=$2 ORDER BY id DESC LIMIT $3`, s.expID, *nodeID, limit)
+	} else {
+		rows, err = s.db.Query(`SELECT `+cols+`
+FROM activity WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	reverseActivities(out)
+	return out, rows.Err()
+}
+
+// ActivityListTailForTerminalIntent 是继承任务用的尾部读取：同样受源意图终态门约束，
+// 且不继承模型思考与计费行。
+func (s *ExplorationStore) ActivityListTailForTerminalIntent(nodeID int64, limit int) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 300
+	}
+	rows, err := s.db.Query(`SELECT a.id, a.node_id, COALESCE(a.worker,''), COALESCE(a.kind,''),
+		COALESCE(a.tool,''), COALESCE(a.tool_use_id,''), a.is_error, COALESCE(a.summary,''),
+		a.created_at, a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cache_write_tokens
+	FROM activity a
+	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
+	WHERE a.exploration_id=$1 AND a.node_id=$2
+	  AND n.kind='intent' AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped','no_output')
+	  AND a.kind NOT IN ('thinking','usage')
+	ORDER BY a.id DESC LIMIT $3`, s.expID, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	reverseActivities(out)
+	return out, rows.Err()
+}
+
+func reverseActivities(a []Activity) {
+	for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
+		a[i], a[j] = a[j], a[i]
+	}
+}
+
 // ActivityListForTerminalIntent is the inherited, incremental-read boundary.
 // The intent state check and activity read happen in one statement so a source
 // intent reopened between API-level checks cannot expose its new in-flight trace.
@@ -2188,6 +2262,50 @@ func (s *ExplorationStore) ActivityTraceForTerminalIntent(nodeID int64, limit in
 	}
 	defer rows.Close()
 	return scanTrace(rows)
+}
+
+// ActivityTraceTail 取一条 work **最近**的 limit 步（升序返回），语义同 ActivityTrace。
+func (s *ExplorationStore) ActivityTraceTail(nodeID int64, limit int) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(`SELECT `+traceCols+`
+FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind NOT IN ('thinking','usage')
+ORDER BY id DESC LIMIT $3`, s.expID, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out, err := scanTrace(rows)
+	if err != nil {
+		return nil, err
+	}
+	reverseActivities(out)
+	return out, nil
+}
+
+// ActivityTraceTailForTerminalIntent 是继承任务的尾部 trace（终态门同 ActivityTraceForTerminalIntent）。
+func (s *ExplorationStore) ActivityTraceTailForTerminalIntent(nodeID int64, limit int) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(`SELECT a.id, a.node_id, COALESCE(a.worker,''), COALESCE(a.kind,''), COALESCE(a.tool,''), a.is_error, COALESCE(a.summary,'')
+	FROM activity a
+	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
+	WHERE a.exploration_id=$1 AND a.node_id=$2 AND n.kind='intent'
+	  AND n.state IN ('done','negative','out-of-scope','blocked','exhausted','stopped','no_output')
+	  AND a.kind NOT IN ('thinking','usage')
+	ORDER BY a.id DESC LIMIT $3`, s.expID, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out, err := scanTrace(rows)
+	if err != nil {
+		return nil, err
+	}
+	reverseActivities(out)
+	return out, nil
 }
 
 // ActivityTraceSearch finds steps whose summary OR detail matches q

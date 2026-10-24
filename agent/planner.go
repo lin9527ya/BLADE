@@ -286,7 +286,7 @@ func intentSummary(ts *db.ExplorationStore, id int64) string {
 // workerOutput returns the finished worker's conclusion for an intent — the last
 // 'result' (else 'text') activity's full detail, truncated. Same source get_worker_output uses.
 func workerOutput(ts *db.ExplorationStore, id int64) string {
-	acts, _, err := ts.ActivityList(&id, 0, 1000)
+	acts, err := ts.ActivityListTail(&id, 1000) // 尾部：结论在最新那一窗，不在开头 1000 步里
 	if err != nil {
 		return "(取输出失败)"
 	}
