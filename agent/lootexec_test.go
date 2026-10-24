@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -138,15 +139,109 @@ func TestLootExecRejectsUnusableLoot(t *testing.T) {
 		t.Fatalf("失效凭据应被拒：%s", out)
 	}
 
-	// hash 型不支持自动连接。
-	hashID, err := ts.AddNode(db.KindCredential, map[string]any{
-		"summary": "web01 的 NTLM", "kind": "hash", "username": "app", "secret": "aad3b435",
-		"targets": []any{map[string]any{"host": "web01", "port": 445, "service": "smb"}},
+	// token 型没有通用的自动连接方式（怎么用取决于服务）——当场说清，别派一条注定跑空的活。
+	// （hash 型现在由 nxc 类的服务支持，见 TestLootExecNXCProtocols。）
+	tokenID, err := ts.AddNode(db.KindCredential, map[string]any{
+		"summary": "web01 的会话令牌", "kind": "token", "username": "app", "secret": "eyJhbGciOi...",
+		"targets": []any{map[string]any{"host": "web01", "port": 443, "service": "http"}},
 	}, 0, db.StateLootActive, "worker", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out := call(hashID, "web01"); !strings.Contains(out, "不支持自动连接") {
-		t.Fatalf("hash 型应说明不支持：%s", out)
+	if out := call(tokenID, "web01"); !strings.Contains(out, "不支持自动连接") {
+		t.Fatalf("token 型应说明不支持：%s", out)
+	}
+}
+
+// Windows/AD：smb 走 nxc，口令与哈希都支持。明文不进命令串/台账，但会落在 0600 脚本里
+// （nxc 没有"从文件读凭据"的选项，这是它固有的形态）。
+func TestLootExecNXCProtocols(t *testing.T) {
+	withLootExec(t, true)
+	tools, _, _ := newToolWorker(t)
+	const secret = "P@ssw0rd!"
+	pwID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_credential",
+		`{"summary":"web01 的域账号口令","kind":"password","username":"CORP\\app","secret":"`+secret+`",`+
+			`"evidence":"secretsdump","confidence":"high",`+
+			`"targets":[{"host":"web01","port":445,"service":"smb"}]}`))
+	hashID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_credential",
+		`{"summary":"web01 的 NT 哈希","kind":"hash","username":"CORP\\app","secret":"aad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",`+
+			`"evidence":"secretsdump","confidence":"high",`+
+			`"targets":[{"host":"web01","port":445,"service":"smb"}]}`))
+	fake := &fakeExecService{submitID: 31}
+	tools.SetExecService(fake)
+	run := func(id int64) string {
+		raw, _ := json.Marshal(id)
+		return callTool(t, tools.PlannerTools(), "loot_exec",
+			`{"loot_id":`+string(raw)+`,"host":"web01","command":"whoami"}`)
+	}
+	scriptOf := func(cmd string) string {
+		m := regexp.MustCompile(`'(/[^']*blade-loot-[^']*/run\.sh)'`).FindStringSubmatch(cmd)
+		if m == nil {
+			t.Fatalf("命令里应有脚本路径：%s", cmd)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(m[1])) })
+		return m[1]
+	}
+
+	out := run(pwID)
+	if !strings.Contains(out, "execution started:") {
+		t.Fatalf("smb 口令应可执行：%s", out)
+	}
+	cmd := fake.submits[len(fake.submits)-1].command
+	if strings.Contains(cmd, secret) {
+		t.Fatalf("明文漏进了命令串：%s", cmd)
+	}
+	script := scriptOf(cmd)
+	body, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("读脚本：%v", err)
+	}
+	for _, want := range []string{"nxc smb", "-u 'CORP\\app'", "-p '" + secret + "'", "-x 'whoami'", "--port 445"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("脚本缺少 %q：%s", want, body)
+		}
+	}
+	if fi, err := os.Stat(script); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("脚本应为 0600：%v %v", fi, err)
+	}
+
+	if out := run(hashID); !strings.Contains(out, "execution started:") {
+		t.Fatalf("smb 哈希应可执行：%s", out)
+	}
+	hashCmd := fake.submits[len(fake.submits)-1].command
+	hashBody, err := os.ReadFile(scriptOf(hashCmd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hashBody), "-H 'aad3b435b51404ee:") {
+		t.Fatalf("哈希应走 -H：%s", hashBody)
+	}
+	if strings.Contains(hashCmd, "31d6cfe0d16ae931b73c59d7e0c089c0") {
+		t.Fatalf("哈希漏进了命令串：%s", hashCmd)
+	}
+}
+
+// 凭据类型与服务必须匹配：私钥只能 ssh，哈希只能 nxc 类。
+func TestLootExecRejectsMismatchedKindAndService(t *testing.T) {
+	withLootExec(t, true)
+	tools, _, _ := newToolWorker(t)
+	tools.SetExecService(&fakeExecService{submitID: 32})
+	keyID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_credential",
+		`{"summary":"web01 的私钥","kind":"key","username":"app","secret":"-----BEGIN KEY-----",`+
+			`"evidence":"cat id_rsa","confidence":"high",`+
+			`"targets":[{"host":"web01","port":445,"service":"smb"}]}`))
+	sshHashID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_credential",
+		`{"summary":"web01 的哈希","kind":"hash","username":"app","secret":"deadbeef",`+
+			`"evidence":"dump","confidence":"high",`+
+			`"targets":[{"host":"web01","port":22,"service":"ssh"}]}`))
+	call := func(id int64) string {
+		raw, _ := json.Marshal(id)
+		return callTool(t, tools.PlannerTools(), "loot_exec", `{"loot_id":`+string(raw)+`,"host":"web01","command":"id"}`)
+	}
+	if out := call(keyID); !strings.Contains(out, "不支持 key 型凭据") {
+		t.Fatalf("smb + 私钥应被拒：%s", out)
+	}
+	if out := call(sshHashID); !strings.Contains(out, "ssh 不支持 hash") {
+		t.Fatalf("ssh + 哈希应被拒：%s", out)
 	}
 }

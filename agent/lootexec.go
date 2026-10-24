@@ -32,10 +32,11 @@ func lootExecOn() bool { return LootExecEnabled != nil && LootExecEnabled() }
 // 同理：怎么用取决于算法与目标，交给模型自己构造，别给一个假装通用的入口。
 func (t *ToolSet) lootExec() actool.CoreTool {
 	return writeTool("loot_exec",
-		"用一条**已登记的凭据**在目标上执行命令（ssh / mysql）。凭据明文不会出现在命令、工具输入或台账里——"+
-			"平台按 loot_id 取出凭据，经 0600 临时文件交给 sshpass/ssh/mysql，进程读完即删。\n"+
-			"★ 只支持 credential 节点，且只支持 password（sshpass）/key（ssh -i）与 mysql；"+
-			"hash/token 型与据点(foothold)请自己用 Bash 构造。\n"+
+		"用一条**已登记的凭据**在目标上执行命令（ssh / mysql / Windows·AD）。凭据明文不会出现在命令、工具输入或台账里——"+
+			"平台按 loot_id 取出凭据，经 0600 临时文件交给 sshpass/ssh/mysql（Windows/AD 走 nxc：命令写进 0600 脚本、跑完即删）。\n"+
+			"★ 只支持 credential 节点。协议：ssh（password→sshpass / key→ssh -i）、mysql（password）、"+
+			"以及 Windows/AD 的 smb / winrm / mssql / ldap（password 或 **hash**，走 nxc；镜像里需装有 nxc）。"+
+			"token 型与据点(foothold)请用专门入口或自己构造。\n"+
 			"★ host 必填且必须能在凭据的 targets 里找到（平台据此做授权范围校验，不猜目标）。\n"+
 			"★ 命令在后台执行：返回 execution_id，用 get_execution / wait_execution 取输出，"+
 			"要具体行用 grep_execution。",
@@ -90,9 +91,9 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 			}
 			v := db.ParseCredential(node)
 			kind := strings.ToLower(strings.TrimSpace(v.Kind))
-			if kind != "password" && kind != "key" {
-				return actool.Errorf(fmt.Sprintf("loot_exec: 凭据类型 %q 不支持自动连接（只支持 password / key）。"+
-					"hash 需要先破解或做传递哈希、token 走对应服务的认证方式——这些请用 Bash 自己构造", v.Kind)), nil
+			if kind != "password" && kind != "key" && kind != "hash" {
+				return actool.Errorf(fmt.Sprintf("loot_exec: 凭据类型 %q 不支持自动连接（支持 password / key / hash）。"+
+					"token 走对应服务的认证方式，请用 Bash 自己构造", v.Kind)), nil
 			}
 			target, err := pickCredentialTarget(v, host)
 			if err != nil {
@@ -100,30 +101,43 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 			}
 			service := strings.ToLower(strings.TrimSpace(target.Service))
 			if service == "" {
-				switch target.Port {
-				case 3306:
-					service = "mysql"
-				default:
-					service = "ssh"
-				}
+				service = defaultServiceForPort(target.Port)
 			}
-			if service != "ssh" && service != "mysql" {
-				return actool.Errorf(fmt.Sprintf("loot_exec: 目标服务是 %q，本工具只支持 ssh / mysql；其它服务请用 Bash 自己构造连接", target.Service)), nil
+			action, nxc := nxcServices[service]
+			if service != "ssh" && service != "mysql" && !nxc {
+				return actool.Errorf(fmt.Sprintf("loot_exec: 目标服务是 %q，本工具支持 ssh / mysql / %s；其它服务请用 Bash 自己构造连接",
+					target.Service, strings.Join(nxcServiceNames(), " / "))), nil
 			}
-			if kind == "key" && service == "mysql" {
-				return actool.Errorf("loot_exec: mysql 不支持 key 型凭据（需要口令）；私钥可用于 ssh -i"), nil
+			// 每种服务能接哪种凭据：ssh 认口令与私钥，mysql 只认口令，nxc 类认口令与哈希
+			// （传递哈希是 Windows/AD 的常态——把它挡在门外等于让一半战果用不上）。
+			switch {
+			case service == "ssh" && kind == "hash":
+				return actool.Errorf("loot_exec: ssh 不支持 hash 型凭据（需要口令或私钥）；哈希可用于 smb / winrm / mssql / ldap"), nil
+			case service == "mysql" && kind != "password":
+				return actool.Errorf(fmt.Sprintf("loot_exec: mysql 只支持 password 型凭据（收到 %q）", kind)), nil
+			case nxc && kind == "key":
+				return actool.Errorf(fmt.Sprintf("loot_exec: %s 不支持 key 型凭据；私钥只能用于 ssh", service)), nil
 			}
 			user := strings.TrimSpace(v.Username)
 			if user == "" {
 				return actool.Errorf(fmt.Sprintf("loot_exec: 这条凭据没有登记 username，无法登录；请用 node_detail(%d) 核对，必要时重新 report_credential", id)), nil
 			}
 
-			secretPath, err := writeLootSecret(v.Secret)
-			if err != nil {
-				return actool.Errorf("loot_exec: 无法暂存凭据明文：" + err.Error()), nil
+			var command string
+			var cleanup func()
+			if nxc {
+				command, cleanup, err = buildNXCCommand(service, action, user, host, target.Port, kind, v.Secret, a.Command)
+				if err != nil {
+					return actool.Errorf("loot_exec: 无法构造连接：" + err.Error()), nil
+				}
+			} else {
+				secretPath, serr := writeLootSecret(v.Secret)
+				if serr != nil {
+					return actool.Errorf("loot_exec: 无法暂存凭据明文：" + serr.Error()), nil
+				}
+				cleanup = func() { _ = removeLootSecret(secretPath) }
+				command = buildLootCommand(kind, service, user, host, target.Port, secretPath, a.Command)
 			}
-			cleanup := func() { _ = removeLootSecret(secretPath) }
-			command := buildLootCommand(kind, service, user, host, target.Port, secretPath, a.Command)
 			var timeout time.Duration
 			if a.TimeoutMs > 0 {
 				timeout = time.Duration(a.TimeoutMs) * time.Millisecond
@@ -189,7 +203,14 @@ func portOf(service string, port int) int {
 
 // writeLootSecret 把明文写进一个 0700 目录下的 0600 文件，返回文件路径。
 // 目录单独建：连接端读完就删文件，万一删失败也只是留下一个不可读的残骸。
-func writeLootSecret(secret string) (string, error) {
+func writeLootSecret(secret string) (string, error) { return writeLootFile("secret", secret) }
+
+// writeLootScript 把一段脚本写成 0600 文件。Windows/AD 工具（nxc）只接受命令行上的
+// 口令/哈希，没有"从文件读"，所以把整条命令放进脚本、由 `sh 脚本` 调用——命令串与台账
+// 里因此没有明文，脚本执行完立即删除。
+func writeLootScript(content string) (string, error) { return writeLootFile("run.sh", content) }
+
+func writeLootFile(name, content string) (string, error) {
 	dir, err := os.MkdirTemp("", "blade-loot-")
 	if err != nil {
 		return "", err
@@ -198,13 +219,13 @@ func writeLootSecret(secret string) (string, error) {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
-	path := filepath.Join(dir, "secret")
+	path := filepath.Join(dir, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
-	if _, err := f.WriteString(secret); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		f.Close()
 		_ = os.RemoveAll(dir)
 		return "", err
@@ -269,4 +290,57 @@ func (t *ToolSet) auditLootExec(kind, summary, detail string) {
 		act.NodeID = &owner
 	}
 	_, _ = t.ts.AppendActivity(act)
+}
+
+// nxcServices 是走 nxc（netexec）的协议闭集，值是把"动作"传进去的参数。
+// smb / winrm 是执行命令（-x），mssql 是 SQL（-q），ldap 是查询（--query）。
+var nxcServices = map[string]string{
+	"smb":   "-x",
+	"winrm": "-x",
+	"mssql": "-q",
+	"ldap":  "--query",
+}
+
+func nxcServiceNames() []string { return []string{"smb", "winrm", "mssql", "ldap"} }
+
+// defaultServiceForPort 在凭据没写 service 时按端口猜——只认明确的服务端口，
+// 其余一律当 ssh（历史行为，也是 Linux 目标的常态）。
+func defaultServiceForPort(port int) string {
+	switch port {
+	case 3306:
+		return "mysql"
+	case 445:
+		return "smb"
+	case 5985, 5986:
+		return "winrm"
+	case 1433:
+		return "mssql"
+	case 389, 636:
+		return "ldap"
+	}
+	return "ssh"
+}
+
+// buildNXCCommand 构造 Windows/AD 的认证执行命令。
+//
+// 明文处理：nxc 没有"从文件读凭据"的选项，所以整条命令写进 0600 脚本、用 `sh 脚本`
+// 调用——**命令串、台账、模型上下文里都没有明文**，脚本执行完立刻删除。代价是执行期间
+// 本机 `ps` 能看到子进程参数，这是这类工具的固有形态（sshpass/ssh 那条路径没有这个问题）。
+func buildNXCCommand(service, action, user, host string, port int, kind, secret, command string) (string, func(), error) {
+	secretFlag := "-p"
+	if kind == "hash" {
+		secretFlag = "-H"
+	}
+	proto := "nxc " + service + " " + shQuote(host)
+	if port > 0 {
+		proto += fmt.Sprintf(" --port %d", port)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nexec %s -u %s %s %s %s %s\n",
+		proto, shQuote(user), secretFlag, shQuote(secret), action, shQuote(command))
+	path, err := writeLootScript(script)
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = removeLootSecret(path) }
+	return fmt.Sprintf("sh %s; rc=$?; rm -rf %s; exit $rc", shQuote(path), shQuote(filepath.Dir(path))), cleanup, nil
 }
