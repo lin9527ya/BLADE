@@ -533,7 +533,9 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	// 覆盖矩阵摘要：只给「未覆盖格」的规模与几个例子。完整矩阵走 coverage_matrix
 	// 按需取——每轮把全量矩阵塞进态势会把上下文撑爆。
-	if t.ts != nil && t.taskID > 0 {
+	// 任务关了覆盖度功能时 coverage_matrix 已被摘除：此时再给 coverage_gap 只会让模型
+	// 反复去找一个不存在的工具，所以整段跳过。
+	if !t.coverageDisabled && t.ts != nil && t.taskID > 0 {
 		if cov, err := t.ts.CoverageMatrix(t.taskID); err == nil && len(cov) > 0 {
 			uncovered := 0
 			samples := make([]string, 0, 5)
@@ -625,6 +627,17 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["running_intents"] = withSeq(compactIntents(running, parentsOf, yieldsOf), intentSeq)
+	// paused 既不是"待领"也不是"已结束"：此前三个桶都不收它，planner 在态势里完全看不到，
+	// 容易把一条被人为暂缓的方向当成从未派过而重派。
+	var pausedIntents []*db.Node
+	for _, n := range all {
+		if n.State == "paused" && !hidden(n.ID) {
+			pausedIntents = append(pausedIntents, n)
+		}
+	}
+	if len(pausedIntents) > 0 {
+		out["paused_intents"] = withSeq(compactIntents(pausedIntents, parentsOf, yieldsOf), intentSeq)
+	}
 	// 串行链：前置未满足的意图**不会**被 worker 领走（Frontier/ClaimIntent 都有闸门）。
 	// 必须把这件事摆到规划层面前——否则它会以为"我派了、怎么没人跑"，或者反复重派。
 	if deps, derr := t.ts.IntentDependencies(); derr == nil && len(deps) > 0 {
@@ -981,7 +994,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// 只给摘要不给全量：路径可能几十条，全塞进每一轮提示词是纯浪费；要看全部用 ad_paths 工具。
 	// 域内数据为空时这一段不出现（没导过采集结果的任务，提示词里不该多出无关内容）。
 	if t.ts != nil {
-		if adNodes, err := t.ts.ListByKind(db.KindADObject, 20000); err == nil && len(adNodes) > 0 {
+		if adNodes, err := loadTopologyNodes(t.ts); err == nil && len(adNodes) > 0 {
 			if adEdges, err := t.ts.Edges(20000); err == nil {
 				res := db.ADPaths(adNodes, adEdges, 0)
 				ad := map[string]any{
@@ -3492,7 +3505,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 	return t.readExpTool("list_worker_traces",
 		"【通常不推荐使用，因为系统中已经给了大部分信息了】列出本任务里【已跑过的 work（意图）】索引：intent_id + 一句话方向(summary) + 状态。"+
 			"你(worker)看不到探索图，用它来发现有哪些 work 值得翻看——再用 get_worker_trace(intent_id) 看其步骤、get_worker_trace(intent_id, step_ids=[...]) 取详情。"+
-			"只列已执行的(running/done/exhausted/blocked/stopped)，不含还没跑的 open。注意：你的任务边界仍是你领到的那条意图，看别的 work 只为复用观察/避免重复劳动。",
+			"只列已执行过的（running/done/negative/out-of-scope/exhausted/blocked/no_output/stopped），不含还没跑的 open。注意：你的任务边界仍是你领到的那条意图，看别的 work 只为复用观察/避免重复劳动。",
 		obj(map[string]any{
 			"q":     str("按 summary 关键字过滤（可选）"),
 			"limit": intp("返回上限，默认 50（可选）"),
@@ -3518,7 +3531,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 					continue
 				}
 				switch n.State {
-				case "running", "done", "exhausted", "blocked", "stopped": // has run → has a process
+				case "running", "done", "negative", "out-of-scope", "exhausted", "blocked", "no_output", "stopped": // has run → has a process
 				default:
 					continue
 				}

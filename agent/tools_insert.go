@@ -726,7 +726,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// set_constraints：人可在运行时给本任务补/改操作约束（allow/deny），约束 planner/worker 的探索边界。
 		t.setConstraints(),
 		// asset management (handlers guard nil store internally)
-		t.insertAssets(), t.addCompanyScope(), t.listAssets(), t.assetNeighbors(),
+		t.insertAssets(), t.addCompanyScope(), t.listAssets(), t.listCompanies(), t.assetNeighbors(),
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
 		// 战果：人机对话里也能补记——人在跑任务时拿到的据点/凭据同样要进图，才算数。
 		// 遗留物同理：人在现场手动落的东西，也该有人能替它销账。

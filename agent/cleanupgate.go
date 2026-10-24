@@ -41,7 +41,7 @@ func (t *ToolSet) cleanupGate() string {
 	fmt.Fprintf(&b, "任务即将收官，但目标上还留着 %d 件**没销账的遗留物**：", len(active))
 	for i, n := range active {
 		if i >= 5 {
-			fmt.Fprintf(&b, "\n  · …还有 %d 件（见 graph_overview 的 artifacts）", len(active)-5)
+			fmt.Fprintf(&b, "\n  · …还有 %d 件（用 node_detail 逐条查完整信息）", len(active)-5)
 			break
 		}
 		var p map[string]any
