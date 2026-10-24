@@ -1723,6 +1723,10 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
 				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞节点"), nil
 			}
+			// 清理门：这次 prove 会让所有目标都达成时，检查有没有没销账的遗留物。
+			if msg := t.cleanupGateForCompletion(goal); msg != "" {
+				return actool.Errorf(msg), nil
+			}
 			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
 				log.Printf("[goal] 关联证据失败 goal=%d evidence=%d: %v", goal, ev, err)
 			}
@@ -1756,6 +1760,10 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct{ Reason string }
 			_ = json.Unmarshal(in, &a)
+			// goal_met 直接结束整个任务，同样要过清理门。
+			if msg := t.cleanupGate(); msg != "" {
+				return actool.Errorf(msg), nil
+			}
 			t.GoalMet = true
 			t.Reason = a.Reason
 			return actool.Text("acknowledged: goal marked met"), nil
@@ -3267,6 +3275,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
+		t.acceptArtifactRisk(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
 		t.coverageMatrix(),
