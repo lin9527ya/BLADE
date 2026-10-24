@@ -85,8 +85,9 @@ export function useDashboardState() {
         if (loading) return;
         loading = true;
         try {
-          const [findings, stats, settings, pending, activity, conversationTokens, findingTotals] = await Promise.all([
-            api.findings(),
+          const [recentPage, stats, settings, pending, activity, conversationTokens, findingTotals] = await Promise.all([
+            // 仪表盘只渲染最近 8 条；此前拉 500 条再截断，等于每 5 秒搬一整页。
+            api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
             api.stats(),
             api.settings(),
             api.interceptPending(),
@@ -95,7 +96,7 @@ export function useDashboardState() {
             api.findingStats(),
           ]);
           if (!alive()) return;
-          setFindings(findings);
+          setFindings(recentPage.items);
           setFindingStats(findingTotals);
           setStats(stats);
           setSettings(settings);
