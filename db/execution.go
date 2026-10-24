@@ -266,7 +266,10 @@ WHERE task_id=$1 AND status IN ($2,$3) ORDER BY id`, taskID, ExecQueued, ExecRun
 // server instance (or a lost goroutine). Deliberately not "failed": nothing was
 // observed about their outcome.
 func (d *DB) ReconcileOrphanedExecutions(live map[int64]bool, msg string) (int64, error) {
-	rows, err := d.Query(`SELECT id FROM tool_executions WHERE status IN ($1,$2)`, ExecQueued, ExecRunning)
+	// 宽限 2 分钟：Submit 到 cmd.Start 之间、以及服务刚重启时，行可能还没来得及登记进
+	// live。把「刚开始的执行」误标 orphaned 会让意图被提前恢复、同一活干两遍。
+	rows, err := d.Query(`SELECT id FROM tool_executions
+WHERE status IN ($1,$2) AND created_at < now() - interval '2 minutes'`, ExecQueued, ExecRunning)
 	if err != nil {
 		return 0, err
 	}

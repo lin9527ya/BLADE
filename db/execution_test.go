@@ -99,6 +99,18 @@ func TestReconcileOrphanedExecutionsIsNotFailed(t *testing.T) {
 	if err := d.MarkExecutionRunning(alive); err != nil {
 		t.Fatal(err)
 	}
+	// 宽限期内的行不参与对账：Start 到登记 live 之间有窗口，服务重启也可能把行
+	// 留在 running 状态几秒——误标 orphaned 会让意图被提前恢复。
+	young, err := d.CreateExecution(&ToolExecution{TaskID: task, Worker: "work#1", Tool: "run_execution", Command: "sleep 1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkExecutionRunning(young); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE tool_executions SET created_at=now()-interval '5 minutes' WHERE id IN ($1,$2)`, dead, alive); err != nil {
+		t.Fatal(err)
+	}
 	done, err := d.CreateExecution(&ToolExecution{TaskID: task, Worker: "work#1", Tool: "run_execution", Command: "true"})
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +132,9 @@ func TestReconcileOrphanedExecutionsIsNotFailed(t *testing.T) {
 	}
 	if got, _ := d.GetExecution(alive); got == nil || got.Status != ExecRunning {
 		t.Fatalf("live row must stay running: %+v", got)
+	}
+	if got, _ := d.GetExecution(young); got == nil || got.Status != ExecRunning {
+		t.Fatalf("young row must survive the grace window: %+v", got)
 	}
 	if got, _ := d.GetExecution(done); got == nil || got.Status != ExecCompleted {
 		t.Fatalf("terminal row must stay untouched: %+v", got)
