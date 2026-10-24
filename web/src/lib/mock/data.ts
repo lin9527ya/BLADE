@@ -3345,6 +3345,7 @@ export const settings: Settings = {
   oast_enabled: false,
   oast_token_set: false,
   oast_domain: "requestrepo.com",
+  opsec_noise_level: "normal",
   llm_record: false,
   web_search_enabled: true,
   web_search_backend: "ddgs",

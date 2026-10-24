@@ -1498,6 +1498,7 @@ export interface Settings {
   oast_token_set: boolean; // OAST 服务 token 是否已配置（值不回显）
   oast_token?: string; // 只写：仅在 PUT 时用于保存/清除 token
   oast_domain: string; // OAST 服务域名（默认 requestrepo.com）
+  opsec_noise_level: string; // 噪声档位：normal（默认）| quiet（追加潜行纪律）
   llm_record: boolean; // LLM 录制开关（默认关）；关闭时不记录任何 LLM 调用
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.
