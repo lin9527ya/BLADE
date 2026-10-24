@@ -81,6 +81,14 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return in.Text
+	case "loot_upload", "loot_download":
+		// 文件传输的目标同样在 host 里；远端路径一并带上（路径里可能出现内网域名/IP）。
+		var in struct {
+			Host       string `json:"host"`
+			RemotePath string `json:"remote_path"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return strings.TrimSpace(in.Host + " " + in.RemotePath)
 	case "tunnel_open":
 		// 隧道只认跳板机（host）——命令由平台生成，输入里没有 command 字段。
 		var in struct {
