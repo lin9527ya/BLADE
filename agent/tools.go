@@ -729,6 +729,31 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["outstanding_loot_total"] = outstanding
+	// AD 已控对象：路径重建的起点依据。报告与管理页都按 owned 选起点，概览让规划层
+	// 也能看到——"我们拿下了域里的哪几台"是决定下一步往哪打的关键输入。
+	if ads, err := t.ts.ListByKind(db.KindADObject, 500); err == nil && len(ads) > 0 {
+		owned := 0
+		names := make([]string, 0, 5)
+		for _, n := range ads {
+			var p map[string]any
+			if json.Unmarshal(n.Payload, &p) != nil {
+				continue
+			}
+			if o, _ := p["owned"].(bool); !o {
+				continue
+			}
+			owned++
+			if len(names) < 5 {
+				if name := payloadString(p, "name"); name != "" {
+					names = append(names, name)
+				}
+			}
+		}
+		if owned > 0 {
+			out["ad_owned_total"] = owned
+			out["ad_owned"] = names
+		}
+	}
 	// 隧道：跨 worker 共享的能力——A 开的隧道 B 也能用，看不见就没人用得上。
 	// 从**在跑的执行**里挑出带登记标记的（隧道本身就是一条 ssh -D 长任务）。
 	if t.execService != nil && t.taskID > 0 {
@@ -2245,7 +2270,15 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			t.writes.Footholds++
-			return actool.Text(fmt.Sprintf("foothold recorded: %d", id)), nil
+			// 拿到了机器，域内图也要知道：把对应的 AD 计算机对象标成 owned，
+			// 否则攻击路径的起点永远停在"用户手标的"而不是"我们打下来的"。
+			note := ""
+			if host, _ := conn["host"].(string); host != "" {
+				if n := t.markADOwned(host); n > 0 {
+					note = fmt.Sprintf("\n已把 %d 个 AD 计算机对象标为 owned（攻击路径可从它们出发）", n)
+				}
+			}
+			return actool.Text(fmt.Sprintf("foothold recorded: %d%s", id, note)), nil
 		})
 }
 
