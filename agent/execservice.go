@@ -53,4 +53,7 @@ type ExecService interface {
 	// ListForIntent 返回本意图名下的执行台账（最新在前）：get_worker_output 用它回答
 	// "这条 work 到底跑过什么、退出码多少、输出落在哪个文件"，不必重跑。
 	ListForIntent(intentID int64) ([]*db.ToolExecution, error)
+	// ActiveForTask 列出本任务**在跑**的执行台账：概览据此告诉规划层"现在有哪些隧道
+	// 是通的、SOCKS 地址是多少"——隧道是跨 worker 共享的能力，看不见就没人用得上。
+	ActiveForTask(taskID string) []*db.ToolExecution
 }

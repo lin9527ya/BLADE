@@ -19,6 +19,7 @@ type fakeExecService struct {
 	status   ExecStatus
 	submitID int64
 	ledger   []*db.ToolExecution
+	active   []*db.ToolExecution
 }
 
 type fakeSubmit struct {
@@ -57,6 +58,8 @@ func (f *fakeExecService) Cancel(_ context.Context, id int64, reason string) (bo
 func (f *fakeExecService) CountRanForIntent(int64) (int64, error) { return 0, nil }
 
 func (f *fakeExecService) ListForIntent(int64) ([]*db.ToolExecution, error) { return f.ledger, nil }
+
+func (f *fakeExecService) ActiveForTask(string) []*db.ToolExecution { return f.active }
 
 func execTool(t *testing.T, tools []actool.CoreTool, name string) actool.CoreTool {
 	t.Helper()

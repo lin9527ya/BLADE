@@ -729,6 +729,24 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["outstanding_loot_total"] = outstanding
+	// 隧道：跨 worker 共享的能力——A 开的隧道 B 也能用，看不见就没人用得上。
+	// 从**在跑的执行**里挑出带登记标记的（隧道本身就是一条 ssh -D 长任务）。
+	if t.execService != nil && t.taskID > 0 {
+		if rows := t.execService.ActiveForTask(t.taskIDStr()); len(rows) > 0 {
+			var tunnels []map[string]any
+			for _, r := range rows {
+				if !strings.HasPrefix(r.Description, tunnelDescPrefix) {
+					continue
+				}
+				tunnels = append(tunnels, map[string]any{
+					"execution_id": r.ID, "description": r.Description, "status": r.Status,
+				})
+			}
+			if len(tunnels) > 0 {
+				out["tunnels"] = tunnels
+			}
+		}
+	}
 	// 战果不会被折进 digest（coldgraph.foldableKind 只认 intent/fact），所以这里不需要
 	// 像 recent_facts 那样给 hidden() 留出口。
 	footholdWindow, credWindow := allFootholds, allCreds
@@ -3221,7 +3239,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.coverageMatrix(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
-		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.footholdExec(), t.cancelExecution(),
+		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.footholdExec(), t.tunnelOpen(), t.cancelExecution(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
 		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。

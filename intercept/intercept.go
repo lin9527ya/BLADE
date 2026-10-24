@@ -157,7 +157,7 @@ func (i *Interceptor) SetReviewer(r Reviewer) {
 // 导流到它）——漏登记意味着规则与裁判对它不生效。RoE 范围门不受本列表约束
 // （见 guard.applyIntercept 的排序），但这条仍必须在此，否则破坏性/外泄规则看不住它。
 var defaultEnabledTools = []string{
-	"Bash", "run_execution", "loot_exec", "foothold_exec", "WebFetch", "web_search",
+	"Bash", "run_execution", "loot_exec", "foothold_exec", "tunnel_open", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",
 }

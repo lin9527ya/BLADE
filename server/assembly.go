@@ -362,7 +362,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// loot_exec 默认关：未启用时**从工具面移除**，而不是让模型看见一个永远拒绝的工具——
 		// 那样每轮都会浪费一次调用去确认它能不能用。操作者打开设置后，下一次装配即出现。
 		if !lootExecEnabled() {
-			out = dropToolByName(out, "loot_exec", "foothold_exec")
+			out = dropToolByName(out, "loot_exec", "foothold_exec", "tunnel_open")
 		}
 		// 失败提示：包在最后，覆盖上面所有 DecorateTool 的结果。模型此前只看到
 		// `[exit code N]`，没有「下一步该换什么」的线索。
