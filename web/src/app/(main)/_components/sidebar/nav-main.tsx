@@ -197,8 +197,8 @@ function InterceptPendingBadge() {
     async (live) => {
       async function poll() {
         try {
-          const list = await api.interceptPending();
-          if (live()) setCount(list.length);
+          const count = await api.interceptPendingCount();
+          if (live()) setCount(count);
         } catch {
           /* ignore */
         }

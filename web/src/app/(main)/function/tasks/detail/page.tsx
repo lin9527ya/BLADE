@@ -236,9 +236,9 @@ function TaskDetailInner() {
     async (alive) => {
       const load = () =>
         api
-          .interceptTask(id)
-          .then((rows) => {
-            if (alive()) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+          .interceptTaskCount(id)
+          .then((n) => {
+            if (alive()) setInterceptPendingCount(n);
           })
           .catch(() => {
             // Polling is best-effort; the next interval retries automatically.

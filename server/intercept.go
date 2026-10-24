@@ -220,6 +220,34 @@ func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
+	q := r.URL.Query()
+	// 徽章只要计数；仪表盘只要前几条 + 总数。无参数时保持旧形状（全量列表）。
+	if q.Get("count") == "1" {
+		n, err := pg.CountPendingIntercepts()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"pending_count": n})
+		return
+	}
+	if limit, _ := strconv.Atoi(q.Get("limit")); limit > 0 {
+		pending, err := pg.ListPendingInterceptsLimit(limit)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		n, err := pg.CountPendingIntercepts()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if pending == nil {
+			pending = []db.InterceptPending{}
+		}
+		writeJSON(w, 200, map[string]any{"pending": pending, "pending_count": n})
+		return
+	}
 	pending, err := pg.ListPendingIntercepts()
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -264,6 +292,15 @@ func (s *Server) interceptListTaskItems(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	q := r.URL.Query()
+	if q.Get("count") == "1" {
+		n, err := pg.CountTaskPendingIntercepts(taskID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"pending_count": n})
+		return
+	}
 	filter, err := interceptFilterParams(q)
 	if err != nil {
 		writeErr(w, 400, err.Error())

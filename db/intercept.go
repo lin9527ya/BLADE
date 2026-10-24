@@ -320,6 +320,43 @@ func scanInterceptPending(s interface{ Scan(...any) error }, p *InterceptPending
 		&p.ToolName, &p.ToolInput, &p.Status, &p.Reason, &p.DecidedAt, &p.CreatedAt, &p.DecisionSource)
 }
 
+// CountPendingIntercepts returns the number of unresolved approval requests.
+// 徽章只要这个数，不该为此拉回每一行的完整 tool_input。
+func (d *DB) CountPendingIntercepts() (int, error) {
+	var n int
+	err := d.QueryRow(`SELECT COUNT(*) FROM intercept_pending WHERE status='pending'`).Scan(&n)
+	return n, err
+}
+
+// ListPendingInterceptsLimit returns at most limit unresolved requests, newest first.
+func (d *DB) ListPendingInterceptsLimit(limit int) ([]InterceptPending, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.Query(`SELECT `+interceptPendingCols+` FROM intercept_pending
+WHERE status='pending' ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InterceptPending
+	for rows.Next() {
+		var p InterceptPending
+		if err := scanInterceptPending(rows, &p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// CountTaskPendingIntercepts returns the pending count for one task (detail tab badge).
+func (d *DB) CountTaskPendingIntercepts(taskID string) (int, error) {
+	var n int
+	err := d.QueryRow(`SELECT COUNT(*) FROM intercept_pending WHERE task_id=$1 AND status='pending'`, taskID).Scan(&n)
+	return n, err
+}
+
 // ListPendingIntercepts returns all unresolved approval requests, newest first.
 func (d *DB) ListPendingIntercepts() ([]InterceptPending, error) {
 	rows, err := d.Query(`SELECT ` + interceptPendingCols + ` FROM intercept_pending WHERE status='pending' ORDER BY created_at DESC`)

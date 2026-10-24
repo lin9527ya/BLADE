@@ -46,6 +46,8 @@ export function useDashboardState() {
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
+  // 待审批总数与「前 3 条」分开：列表只取 3 条用于展示，徽章数字必须是精确总数。
+  const [pendingTotal, setPendingTotal] = React.useState(0);
   const [activity, setActivity] = React.useState<Activity[]>([]);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
@@ -85,12 +87,12 @@ export function useDashboardState() {
         if (loading) return;
         loading = true;
         try {
-          const [recentPage, stats, settings, pending, activity, conversationTokens, findingTotals] = await Promise.all([
+          const [recentPage, stats, settings, pendingRecent, activity, conversationTokens, findingTotals] = await Promise.all([
             // 仪表盘只渲染最近 8 条；此前拉 500 条再截断，等于每 5 秒搬一整页。
             api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
             api.stats(),
             api.settings(),
-            api.interceptPending(),
+            api.interceptPendingRecent(3),
             api.activity(undefined, { limit: 30 }),
             api.conversationTokens(),
             api.findingStats(),
@@ -100,7 +102,8 @@ export function useDashboardState() {
           setFindingStats(findingTotals);
           setStats(stats);
           setSettings(settings);
-          setPending(pending);
+          setPending(pendingRecent.pending);
+          setPendingTotal(pendingRecent.total);
           setActivity(activity.items);
           setConvTokens(conversationTokens);
         } catch {
@@ -224,7 +227,7 @@ export function useDashboardState() {
 
   // system
   const activeProfile = React.useMemo(() => llmProfiles.find((p) => p.is_default), [llmProfiles]);
-  const pendingCount = pending.length;
+  const pendingCount = pendingTotal;
 
   // ── token stats per LLM profile ──────────────────────────────────────────
   // tasks whose llm_profile_id is null/undefined used the active default profile
@@ -446,6 +449,7 @@ export function useDashboardState() {
       recentTraffic,
       activeProfile,
       pendingCount,
+      pendingTotal,
     }),
     [
       stats,
@@ -460,6 +464,7 @@ export function useDashboardState() {
       recentTraffic,
       activeProfile,
       pendingCount,
+      pendingTotal,
     ],
   );
 
