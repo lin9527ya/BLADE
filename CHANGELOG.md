@@ -4,6 +4,54 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-24
+
+本版是「成为渗透测试 agent」这条线上的集中升级：先让结论可信、评测可归因，再补打穿与自主性。
+
+### 评测与策略
+- **出厂默认全授权**：`policy.Default()` 不再预设「只读验证」——那会让 agent 结构上打不穿；
+  策略机制、设置页与任务级快照都保留，需要收紧时按需勾选。
+- **bench 入库并可归因**：挑战集外置（`challenges.json`）、每题指标落盘、`--runs N` 取中位数；
+  产物按脚本位置落盘；提示词改为「追加段」，内置提示词改了 bench 自动跟随。
+- planner 提示词强化「发散优先于收敛」，并落了契约测试与 A/B 基线（`bench/prompts/AB.md`）。
+
+### 打穿深度
+- **据点结构化 + `foothold_exec`**：据点记 protocol/host/port/credential_id 后可执行（ssh / webshell）。
+- **`tunnel_open`**：经 ssh 据点开 SOCKS，隧道进概览、跨 worker 共享。
+- **`loot_exec`**：用登记凭据直连 ssh/mysql 与 Windows/AD 的 smb/winrm/mssql/ldap（支持传递哈希）；
+  明文经 0600 临时文件，不进命令与台账；**默认关闭**，设置页可开。
+- **文件传输**：`loot_upload` / `loot_download`（scp / smbclient），本地路径限定在意图工作目录内。
+- **OAST 带外确认**：接入 requestrepo，`oast_mint` / `oast_poll` 确认盲打类漏洞，命中自动记事实。
+- **串行链落进图**：`depends_on` 前置依赖 + 认领闸门（前置无结论前下游不进 frontier）+ `unblock_intent`。
+- **战果与 AD**：拿下机器即标 `owned`；战果→AD 机器连 `reaches` 边，概览给 `ad_owned` / `ad_reachable`。
+- **`asset_neighbors`**：资产的直接邻域（父域/子资产/同根/同 IP/同 C 段），按任务范围过滤。
+- **收官清理门**：未销账的遗留物挡住 `prove_goal` / `goal_met`，清不掉须 `accept_artifact_risk`。
+
+### 自主性与稳定性
+- 工具失败回一行「下一步怎么改」；执行快照补开头 8KB；新增 `grep_execution`。
+- `get_worker_output` / trace 改读**尾部**（长任务此前只看得到开头）；planner 轮次续跑对话。
+- **空跑 `no_output`**：跑完什么都没写回不再算 `done`，覆盖矩阵记「未测成」。
+- 执行生命周期：默认存活上限（`exec_max_age_minutes`）、完成唤醒 planner、规划轮预算与重试、
+  触发事件失败放回、`goal_met` 需证据、关闭 SDK 的 Bash 后台任务。
+- **意图队列背压**：可领意图 ≥ 2×workers 时拒收常规新方向（priority ≥8 可绕过），
+  新增 `drop_intent`；被拒方向记进 TodoWrite，避免延后变丢失。
+
+### 交付质量
+- 误报/重复/忽略/已修复不再算「确认发现」；报告资产计数按任务；`severity` 改为枚举校验。
+- 报告 Agent 的详细分析（利用过程/影响/根因/修复建议）进入总报告；新增「范围与覆盖」段
+  （分母、已测比例、未测清单、作业窗口）；截断会在摘要里声明。
+- 交付包状态白名单 + 同指纹去重（只交代表项）；总报告点名重复登记、不再重复计数。
+
+### 安全与设置
+- 新增设置：`agent_loot_exec`（战果直接执行）、`agent_auto_retest`（自动复测）、
+  `oast_*`（带外确认）、`opsec_noise_level`（静默模式）、`exec_max_age_minutes`。
+- **静默模式**：planner/worker 提示词追加代码持有的操作纪律（先小后大、放慢、被检出就换、
+  WAF 拦截做最小验证）；`detection_hotspots` 把真正响过的技术反馈给规划层。
+
+### 其它
+- 修好测试清理从不执行的根因（`defer Close` 早于 `t.Cleanup`）、共享固定值导致的幂等性问题，
+  以及余下的 DB 写入静默吞错。
+
 ## [0.5.2] - 2026-10-23
 
 ### 登录安全加固（5 次失败锁 10 分钟 + 认证面审计）
