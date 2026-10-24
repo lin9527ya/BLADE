@@ -527,10 +527,10 @@ type IntentCleanup struct {
 // 删除原因记入 delete_reason 字段,保留意图节点及其全部产出/血缘(不再像旧实现那样在图上
 // 另挂一条 fact)。返回删除前意图的 summary,供 planner 通知使用。副会话随删除态一并清理。
 // 调用方须先停掉运行中的 worker,避免其后续写入。
-func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, error) {
+func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, []int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer tx.Rollback()
 
@@ -539,22 +539,43 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, er
 	if err := tx.QueryRow(`SELECT state, payload FROM exploration_nodes
 		WHERE id=$1 AND exploration_id=$2 AND kind='intent' FOR UPDATE`, id, s.expID).Scan(&state, &rawPayload); err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("intent not found")
+			return "", nil, fmt.Errorf("intent not found")
 		}
-		return "", err
+		return "", nil, err
 	}
 	if state != "running" && state != "paused" && state != "open" {
-		return "", fmt.Errorf("%w: intent state %s cannot be deleted", ErrIntentStateConflict, state)
+		return "", nil, fmt.Errorf("%w: intent state %s cannot be deleted", ErrIntentStateConflict, state)
 	}
 	if _, err := tx.Exec(`UPDATE exploration_nodes
 		SET state='deleted', delete_reason=$3, blocked_reason=NULL,
 		    content_version=content_version+1, completed_at=now()
 		WHERE id=$1 AND exploration_id=$2`, id, s.expID, reason); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	// 主意图审计轨迹保留,但副问答会话随删除态原子清理(延迟快照会拒绝它)。
 	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE intent_id=$1`, id); err != nil {
-		return "", err
+		return "", nil, err
+	}
+	// 前置被删掉后，下游永远等不到"前置有结论"（Frontier 只认 done/negative）——同一事务里
+	// 拆掉依赖入边，并把受影响的下游返回给调用方重新规划。这是 UI 取消路径一直存在的暗坑：
+	// 删掉一条排队中的前置，会让依赖它的步骤永久卡在 frontier 之外。
+	drows, derr := tx.Query(`DELETE FROM exploration_edges
+WHERE exploration_id=$1 AND dst_id=$2 AND rel=$3 RETURNING src_id`, s.expID, id, RelDependsOn)
+	if derr != nil {
+		return "", nil, derr
+	}
+	var dependents []int64
+	for drows.Next() {
+		var src int64
+		if err := drows.Scan(&src); err != nil {
+			drows.Close()
+			return "", nil, err
+		}
+		dependents = append(dependents, src)
+	}
+	drows.Close()
+	if err := drows.Err(); err != nil {
+		return "", nil, err
 	}
 	var summary string
 	var p map[string]any
@@ -563,7 +584,10 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, er
 			summary = sm
 		}
 	}
-	return summary, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", nil, err
+	}
+	return summary, dependents, nil
 }
 
 // CancelIntent 物理删除一个意图,以及"仅由该意图支撑"的全部独占子孙节点——从该意图沿
@@ -978,6 +1002,23 @@ func (s *ExplorationStore) CountOpenIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
 WHERE exploration_id=$1 AND kind='intent' AND state='open'`, s.expID).Scan(&n)
+	return n, err
+}
+
+// CountClaimableIntents 数"现在就能被 worker 领走"的意图：与 Frontier 同一套条件
+// （open，且 depends_on 的前置都以 done/negative 收场）。
+//
+// 与 CountOpenIntents 的区别是队列背压要用的：被前置挡住的步骤不消耗 worker，
+// 拿它们占额度会在 worker 全空闲时反而拒新活。
+func (s *ExplorationStore) CountClaimableIntents() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
+      AND d.state NOT IN ('done','negative'))`, s.expID).Scan(&n)
 	return n, err
 }
 

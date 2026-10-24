@@ -170,6 +170,9 @@ type taskRuntime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// workers 是本任务**启动时**的 worker 池大小（队列背压用）。改设置只影响之后启动的
+	// 任务，所以不能让 planner 去读实时设置——那会按错误容量排队。
+	workers int
 }
 
 type workExecution struct {
@@ -249,6 +252,26 @@ func (e *Engine) registerTaskRoutines(parent context.Context, taskID string, cou
 
 func runTaskRoutine(rt *taskRuntime, fn func(context.Context)) {
 	goSafe("engine/task-routine", &rt.wg, func() { fn(rt.ctx) })
+}
+
+// setTaskWorkers 记录本任务的 worker 池大小（池在 Run 时定死）。
+func (e *Engine) setTaskWorkers(taskID string, n int) {
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
+	if rt := e.runtimes[taskID]; rt != nil {
+		rt.workers = n
+	}
+}
+
+// TaskWorkers 返回本任务启动时的 worker 池大小（0 = 未知：任务没启动或已拆除）。
+// planner 用它做队列背压；0 表示不启用上限。
+func (e *Engine) TaskWorkers(taskID string) int {
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
+	if rt := e.runtimes[taskID]; rt != nil {
+		return rt.workers
+	}
+	return 0
 }
 
 // runtimeCtx returns the task's runtime context, or context.Background() when the
@@ -846,6 +869,7 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		return
 	}
 	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
+	e.setTaskWorkers(t.ID, workers)
 	e.deleteMu.RUnlock()
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })

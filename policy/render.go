@@ -78,7 +78,7 @@ func RenderBlock(e Effective) string {
 // 「被策略排除的方向不算可行方向、策略内确无可行方向时允许 0 意图并说明」。
 // 不改这句会让提示词自相矛盾：一边要求必须派人，一边把提出来的人全拒掉。
 func HardFloorText(e Effective) string {
-	const base = "**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**"
+	const base = "**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（claimable_intents=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**"
 	if e.IsZero() {
 		return base
 	}
