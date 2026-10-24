@@ -3282,6 +3282,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.killWorkTool(), t.steerWorkTool(),
 		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.footholdExec(), t.tunnelOpen(), t.cancelExecution(),
+		// OAST（带外回调）：盲打类漏洞的唯一确认手段；未配置时由 server 从工具面移除。
+		t.oastMint(), t.oastPoll(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
 		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。

@@ -250,6 +250,21 @@ func seedPrompts(pg *db.DB) {
 func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	bindingEnabled := func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
 	lootExecEnabled := func() bool { return pg.GetBool(settingLootExec, false) }
+	// OAST：总开关 + token 都在设置里；token 为空等于没配。
+	oastConfig := func() (string, string, bool) {
+		if !pg.GetBool(settingOASTEnabled, false) {
+			return "", "", false
+		}
+		token, ok, _ := pg.GetSetting(settingOASTToken)
+		if !ok || strings.TrimSpace(token) == "" {
+			return "", "", false
+		}
+		domain, ok, _ := pg.GetSetting(settingOASTDomain)
+		if !ok || strings.TrimSpace(domain) == "" {
+			domain = "requestrepo.com"
+		}
+		return strings.TrimSpace(token), strings.TrimSpace(domain), true
+	}
 	// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
 	// No startup prune: rows we didn't seed are left alone so future user-defined
 	// custom tools (system=false, added via the UI) survive restarts.
@@ -364,6 +379,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		if !lootExecEnabled() {
 			out = dropToolByName(out, "loot_exec", "foothold_exec", "tunnel_open")
 		}
+		// OAST 未配置时同样从工具面移除：让模型看见一个永远拒绝的工具只会浪费调用。
+		if _, _, on := oastConfig(); !on {
+			out = dropToolByName(out, "oast_mint", "oast_poll")
+		}
 		// 失败提示：包在最后，覆盖上面所有 DecorateTool 的结果。模型此前只看到
 		// `[exit code N]`，没有「下一步该换什么」的线索。
 		for i, t := range out {
@@ -377,6 +396,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	o := agent.CurrentOverrides()
 	o.FindingTrafficBindingEnabled = bindingEnabled
 	o.LootExecEnabled = lootExecEnabled
+	o.OASTConfig = oastConfig
 	o.ToolResolve = resolveTools
 	agent.SetOverrides(o)
 }

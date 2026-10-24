@@ -261,6 +261,9 @@ const (
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
 	settingLootExec            = "agent_loot_exec" // loot_exec 总开关（默认关：凭据直接变动作，风险最高）
+	settingOASTEnabled         = "oast_enabled"    // OAST 回调总开关（默认关）
+	settingOASTToken           = "oast_token"      // requestrepo 会话 token（只写，GET 回 *_set）
+	settingOASTDomain          = "oast_domain"     // OAST 服务域名（默认 requestrepo.com）
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
 	settingWebSearchOn         = "web_search_enabled"

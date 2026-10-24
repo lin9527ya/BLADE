@@ -1494,6 +1494,10 @@ export interface Settings {
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
   agent_loot_exec: boolean; // 战果直接执行（loot_exec）：用登记过的凭据连目标，默认关闭
   agent_auto_retest: boolean; // 自动复测：每条新漏洞启动一次独立复测会话，默认关闭（有 LLM 开销）
+  oast_enabled: boolean; // 带外确认（OAST）总开关，默认关闭
+  oast_token_set: boolean; // OAST 服务 token 是否已配置（值不回显）
+  oast_token?: string; // 只写：仅在 PUT 时用于保存/清除 token
+  oast_domain: string; // OAST 服务域名（默认 requestrepo.com）
   llm_record: boolean; // LLM 录制开关（默认关）；关闭时不记录任何 LLM 调用
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.

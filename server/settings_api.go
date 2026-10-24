@@ -100,6 +100,8 @@ func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
 	intelKey, _, _ := s.m.pg.GetSetting(settingIntelKey)
+	oastToken, _, _ := s.m.pg.GetSetting(settingOASTToken)
+	oastDomain, _, _ := s.m.pg.GetSetting(settingOASTDomain)
 	updateToken, _, _ := s.m.pg.GetSetting(settingUpdateToken)
 	intelEmail, _, _ := s.m.pg.GetSetting(settingIntelEmail)
 	intelBaseURL, _, _ := s.m.pg.GetSetting(settingIntelBaseURL)
@@ -115,6 +117,9 @@ func (s *Server) settingsPayload() map[string]any {
 		"traffic_capture":       s.m.TrafficEnabled(),
 		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"agent_loot_exec":       s.m.pg.GetBool(settingLootExec, false),
+		"oast_enabled":          s.m.pg.GetBool(settingOASTEnabled, false),
+		"oast_token_set":        strings.TrimSpace(oastToken) != "", // 只回"是否已配"，绝不回显 token
+		"oast_domain":           oastDomain,
 		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":     s.taskTokenBudget(),
 		"llm_record":            s.m.LLMRecordEnabled(),
@@ -239,12 +244,15 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // off, agents get no proxy config, no traffic tools, and no proxy prompt content.
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TrafficCapture      *bool  `json:"traffic_capture"`
-		AgentTrafficBinding *bool  `json:"agent_traffic_binding"`
-		LootExec            *bool  `json:"agent_loot_exec"`
-		AgentAutoRetest     *bool  `json:"agent_auto_retest"`
-		TaskTokenBudget     *int64 `json:"task_token_budget"`
-		LLMRecord           *bool  `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+		TrafficCapture      *bool   `json:"traffic_capture"`
+		AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
+		LootExec            *bool   `json:"agent_loot_exec"`
+		OastEnabled         *bool   `json:"oast_enabled"`
+		OastToken           *string `json:"oast_token"` // 只写：空串 = 清除
+		OastDomain          *string `json:"oast_domain"`
+		AgentAutoRetest     *bool   `json:"agent_auto_retest"`
+		TaskTokenBudget     *int64  `json:"task_token_budget"`
+		LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 		WebSearchEnabled    *bool   `json:"web_search_enabled"`
@@ -624,6 +632,25 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LootExec != nil {
 		if err := s.m.pg.SetBool(settingLootExec, *req.LootExec); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.OastEnabled != nil {
+		if err := s.m.pg.SetBool(settingOASTEnabled, *req.OastEnabled); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.OastToken != nil {
+		// 空串 = 清除 token（与其它只写密钥同一口径）。
+		if err := s.m.pg.SetSetting(settingOASTToken, strings.TrimSpace(*req.OastToken)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.OastDomain != nil {
+		if err := s.m.pg.SetSetting(settingOASTDomain, strings.TrimSpace(*req.OastDomain)); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
