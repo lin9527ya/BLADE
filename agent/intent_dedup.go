@@ -107,17 +107,28 @@ func (t *ToolSet) checkIntentSpin(q *intentQuota, summary, riskArea string, asse
 			attempts = append(attempts, *fp)
 		}
 	}
+	// 叙事里的 intent-N 用**任务内序号**（全局 id 跨任务连续，读起来像漏了几百条）；
+	// 但要调工具的那处必须给出可寻址的全局 id。
+	seqOf := func(id int64) int64 { return id }
+	if seq, err := t.ts.IntentOrdinals(0); err == nil && len(seq) > 0 {
+		seqOf = func(id int64) int64 {
+			if v := seq[id]; v > 0 {
+				return v
+			}
+			return id
+		}
+	}
 	if active != nil {
 		return fmt.Sprintf("未创建：与仍在进行的 intent-%d「%s」几乎是同一条方向（同一批资产、同一风险类，描述高度重合）。"+
 			"这不是策略拒绝、也不是目标侧防御——只是避免两条 worker 干同一件事。"+
 			"若这确实是**不同的打法**，请在 summary 里写清与它的机理差异（打哪个参数、用什么载荷、验证哪个假设）后重提；"+
-			"若是同一件事，去看 intent-%d 的进度（get_worker_output / get_worker_trace），别重复派。",
-			active.id, clipLine(active.summary, 60), active.id)
+			"若是同一件事，去看它（get_worker_output / get_worker_trace，intent_id=%d）的进度，别重复派。",
+			seqOf(active.id), clipLine(active.summary, 60), active.id)
 	}
 	if len(attempts) >= intentDupAttemptCap {
 		ids := make([]string, 0, len(attempts))
 		for _, a := range attempts {
-			ids = append(ids, fmt.Sprintf("intent-%d(%s)", a.id, a.state))
+			ids = append(ids, fmt.Sprintf("intent-%d(%s)", seqOf(a.id), a.state))
 		}
 		return fmt.Sprintf("未创建：这个方向已经按几乎相同的描述尝试过 %d 次（%s）。"+
 			"同一打法重复第四次不会得到不同结果——换机理、换入口或换资产。"+

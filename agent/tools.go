@@ -470,13 +470,27 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
+	// 意图/目标在叙事里用**任务内序号**（seq），机器寻址仍用 id。两个字段都给：
+	// 模型用 id 调工具，用 seq 在话里指代"第几个"。
+	goalSeq, _ := t.ts.NodeOrdinals(db.KindGoal, 0)
+	intentSeq, _ := t.ts.IntentOrdinals(0)
+	withSeq := func(items []map[string]any, seq map[int64]int64) []map[string]any {
+		for _, it := range items {
+			if id, ok := it["id"].(int64); ok {
+				if v := seq[id]; v > 0 {
+					it["seq"] = v
+				}
+			}
+		}
+		return items
+	}
 	gsum := make([]map[string]any, 0, len(goals))
 	for _, g := range goals {
 		var p map[string]any
 		_ = json.Unmarshal(g.Payload, &p)
 		gsum = append(gsum, map[string]any{"id": g.ID, "state": g.State, "text": p["text"]})
 	}
-	out["goals"] = gsum
+	out["goals"] = withSeq(gsum, goalSeq)
 	// hints: 人类/主 agent 通过 add_hint 挂上图的战略提示；folded in so the
 	// planner reads them every round when generating intents (否则只写不读).
 	hints, _ := t.ts.ListByKind(db.KindHint, 50)
@@ -597,7 +611,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if len(openIntents) > openIntentsCap {
 		openIntents = openIntents[:openIntentsCap]
 	}
-	out["open_intents"] = compactIntents(openIntents, parentsOf, yieldsOf)
+	out["open_intents"] = withSeq(compactIntents(openIntents, parentsOf, yieldsOf), intentSeq)
 	var running, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
@@ -610,7 +624,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			recentDone = append(recentDone, n) // 最新在前（all 按 id 降序）；折叠的已剔除，输出时截最新 N
 		}
 	}
-	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	out["running_intents"] = withSeq(compactIntents(running, parentsOf, yieldsOf), intentSeq)
 	// 串行链：前置未满足的意图**不会**被 worker 领走（Frontier/ClaimIntent 都有闸门）。
 	// 必须把这件事摆到规划层面前——否则它会以为"我派了、怎么没人跑"，或者反复重派。
 	if deps, derr := t.ts.IntentDependencies(); derr == nil && len(deps) > 0 {
@@ -757,7 +771,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if len(recentDone) > recentDoneCap {
 		recentDone = recentDone[:recentDoneCap]
 	}
-	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf)
+	out["recent_done_intents"] = withSeq(compactIntents(recentDone, parentsOf, yieldsOf), intentSeq)
 	// 战果是否算「已被动用」，取决于用过它的那些意图是怎么收场的——只在 edges 里看到一条
 	// uses 是不够的（见 lootConsumingState）。intentState 复用上面已加载的 all。
 	intentState := make(map[int64]string, len(all))

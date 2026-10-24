@@ -145,16 +145,27 @@ func BuildContextIndex(v ContextIndexVars) string {
 	if ts == nil {
 		return ""
 	}
+	// 意图/目标的编号用**任务内序号**：全局 id 跨任务连续（新任务第一条可能就是
+	// intent-659），读起来像漏了六百多条。序号只用于叙事；调工具时用工具返回的 id。
+	intentSeq, _ := ts.IntentOrdinals(0)
+	goalSeq, _ := ts.NodeOrdinals(db.KindGoal, 0)
+	seqOf := func(m map[int64]int64, id int64) int64 {
+		if v := m[id]; v > 0 {
+			return v
+		}
+		return id
+	}
 	var b strings.Builder
 	b.WriteString("【常驻上下文 · 平台注入，非用户发言（每次请求附带，压缩不掉）】\n")
-	b.WriteString("（这是给你兜底的实时索引；要细节调 graph_overview / node_detail / list_facts / list_findings）")
+	b.WriteString("（这是给你兜底的实时索引；要细节调 graph_overview / node_detail / list_facts / list_findings）\n")
+	b.WriteString("（intent-N / goal-N 里的 N 是**本任务内**的序号；调用工具时用工具返回的 id 字段）")
 
 	if goals, err := ts.ListByKind(db.KindGoal, 20); err == nil && len(goals) > 0 {
 		b.WriteString("\n目标：")
 		for _, g := range goals {
 			var p map[string]any
 			_ = json.Unmarshal(g.Payload, &p)
-			b.WriteString(fmt.Sprintf("\n  · goal-%d [%s] %s", g.ID, g.State, clipLine(asText(p["text"]), 160)))
+			b.WriteString(fmt.Sprintf("\n  · goal-%d [%s] %s", seqOf(goalSeq, g.ID), g.State, clipLine(asText(p["text"]), 160)))
 		}
 	}
 	if cb := strings.TrimSpace(constraintBlock(ts)); cb != "" {
@@ -164,12 +175,12 @@ func BuildContextIndex(v ContextIndexVars) string {
 	b.WriteString(renderCompanySection(v.CompanyLines))
 	if v.Intent != nil {
 		sum := digestSummary(v.Intent)
-		b.WriteString(fmt.Sprintf("\n本工作意图：intent-%d %s（写回事实/发现时用它）", v.Intent.ID, clipLine(sum, 160)))
+		b.WriteString(fmt.Sprintf("\n本工作意图：intent-%d %s（写回事实/发现时用它；工具里用 id %d）", seqOf(intentSeq, v.Intent.ID), clipLine(sum, 160), v.Intent.ID))
 	}
 	if intents, err := ts.ListNodeDigests(db.KindIntent, []string{"open", "running"}, 8); err == nil && len(intents) > 0 {
 		open, running := []string{}, []string{}
 		for _, n := range intents {
-			line := fmt.Sprintf("intent-%d「%s」", n.ID, clipLine(n.Summary, 90))
+			line := fmt.Sprintf("intent-%d「%s」", seqOf(intentSeq, n.ID), clipLine(n.Summary, 90))
 			if n.State == "running" {
 				running = append(running, line)
 			} else {
