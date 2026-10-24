@@ -45,7 +45,7 @@ import { AgentTriggersTab, DiffView } from "./_parts/agent-triggers-tab";
 // 常驻技能上限（与后端 db.MaxAlwaysSkills 一致）：常驻正文整段注入 system 稳定段。
 const MAX_ALWAYS_SKILLS = 5;
 
-const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
+const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get", "traffic_blob"]);
 
 // AgentEditor is the tabbed editor for one agent, used inside the agents-page
 // drawer (and reused full-page for deep links). Tabs: 配置与提示词 / MCP / Skill /

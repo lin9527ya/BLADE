@@ -39,6 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { taskIsTerminal } from "@/lib/status";
 import type { LLMProfile, Task } from "@/lib/types";
 
 import { ADPathsTab } from "./_tabs/ad-paths-tab";
@@ -93,7 +94,7 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
   const exhausted = task.llm_failover_state === "chain_exhausted";
   // 任何状态都可以改链,终态也不例外:任务结束后主 Agent 对话仍走这条链,
   // 链上模型出问题时必须能换掉,否则已完成任务就没法继续交互。
-  const terminal = ["done", "failed", "timeout"].includes(task.status);
+  const terminal = taskIsTerminal(task.status);
   // A null active profile on an exhausted, non-empty chain is a persisted end
   // cursor. Keep the status display honest; choosing the first profile is only
   // the editor's reset draft and does not mean it is currently active.
@@ -281,9 +282,9 @@ function TaskDetailInner() {
 
   async function togglePause() {
     if (!task) return;
-    // 终态任务（done/failed/timeout）→「继续运行」：若 frontier 里还有从未执行的
+    // 终态任务（done/failed/timeout/policy_blocked）→「继续运行」：若 frontier 里还有从未执行的
     // 意图，后端会复活任务让 worker 重新领取；没有遗留时后端拒绝并给出提示。
-    const terminal = ["done", "failed", "timeout"].includes(task.status);
+    const terminal = taskIsTerminal(task.status);
     let action: "pause" | "resume" = "pause";
     if (terminal || paused) action = "resume";
     try {
@@ -325,7 +326,7 @@ function TaskDetailInner() {
     );
   }
 
-  const terminal = ["done", "failed", "timeout"].includes(task.status);
+  const terminal = taskIsTerminal(task.status);
   const archiveLifecycleEligible = terminal || paused || task.status === "paused";
   const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
   let archiveDisabledReason = task.queued ? "排队中的任务必须先暂停" : "运行中的任务必须先暂停";

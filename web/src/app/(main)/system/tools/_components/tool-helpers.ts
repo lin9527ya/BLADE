@@ -4,7 +4,7 @@ import * as React from "react";
 
 // 工具参数行的解析/回写与相关常量（编辑表单和页面共用）。
 
-export const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
+export const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get", "traffic_blob"]);
 
 // paramRows flattens schema.properties into an ordered row list for editing.
 // name/type/required are read-only (welded to the Go handler); description/default

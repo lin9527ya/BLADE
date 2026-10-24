@@ -9,6 +9,7 @@ import {
   ArrowUpToLineIcon,
   BugIcon,
   ChevronRightIcon,
+  CloudIcon,
   CompassIcon,
   FlagIcon,
   FlaskConicalIcon,
@@ -16,10 +17,12 @@ import {
   LayersIcon,
   LightbulbIcon,
   type LucideIcon,
+  NetworkIcon,
   PackageOpenIcon,
   PauseIcon,
   PlayIcon,
   SearchIcon,
+  ShieldCheckIcon,
   TargetIcon,
 } from "lucide-react";
 
@@ -116,6 +119,26 @@ const KIND_META: Record<string, KindMeta> = {
     dot: "bg-violet-500",
     chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
   },
+  // 检测验证：一次进攻动作有没有被检出。它既不是战果也不是漏洞，单列。
+  detection: {
+    label: "检测",
+    icon: ShieldCheckIcon,
+    dot: "bg-emerald-500",
+    chip: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  },
+  // 域内/云上对象：枚举结果的沉淀，与图视图里的类型元信息保持一致。
+  ad_object: {
+    label: "AD 对象",
+    icon: NetworkIcon,
+    dot: "bg-purple-500",
+    chip: "bg-purple-500/15 text-purple-600 dark:text-purple-400",
+  },
+  cloud_object: {
+    label: "云对象",
+    icon: CloudIcon,
+    dot: "bg-sky-500",
+    chip: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  },
 };
 
 // 可筛选的类型。起点(fact/state=origin)不单独列,它跟着「事实」一起过滤。
@@ -129,6 +152,9 @@ const FILTER_KINDS: ExploreKind[] = [
   "foothold",
   "credential",
   "artifact",
+  "detection",
+  "ad_object",
+  "cloud_object",
 ];
 
 const REL_LABEL: Record<string, string> = {
@@ -138,6 +164,8 @@ const REL_LABEL: Record<string, string> = {
   proves: "证明",
   covers: "压缩",
   uses: "动用",
+  depends_on: "依赖",
+  reaches: "可达",
 };
 
 // goal / intent 的状态语义由全局 status 表提供(StatusBadge);其余类型的状态只在
@@ -176,6 +204,12 @@ const SUMMARY_FIELDS: Record<string, string[]> = {
   finding: ["name", "summary"],
   hint: ["text", "summary"],
   digest: ["body", "summary"],
+  foothold: ["summary"],
+  credential: ["summary"],
+  artifact: ["summary"],
+  detection: ["summary"],
+  ad_object: ["name", "sam"],
+  cloud_object: ["name"],
 };
 
 function summaryOf(n: TaskNode): string {

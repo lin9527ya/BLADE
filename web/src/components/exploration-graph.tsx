@@ -37,6 +37,9 @@ export const relLabel: Record<string, string> = {
   yields: "产出",
   proves: "证明",
   uses: "动用",
+  covers: "压缩",
+  depends_on: "依赖",
+  reaches: "可达",
   // AD 域内拓扑（P32）：四条边各有各的走法，报告与页面必须是同一套词（report.ADRelLabel）。
   member_of: "成员",
   admin_to: "本机管理员",
@@ -50,6 +53,9 @@ export const relColor: Record<string, string> = {
   yields: "#f59e0b",
   proves: "#ef4444",
   uses: "#f97316", // 与据点同色：这条边指向的是战果
+  covers: "#14b8a6",
+  depends_on: "#64748b",
+  reaches: "#06b6d4",
   // AD 四边同色系（紫）：它们是一套东西——域内拓扑，与作业边（上面那些）区分开。
   member_of: "#8b5cf6",
   admin_to: "#a855f7",
