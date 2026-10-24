@@ -571,7 +571,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		renderPlannerTodos(opts.Todos.List())
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
-	_, _, err = captureRun(ctx, opts, input,
+	s := agentcore.NewSession(opts)
+	defer s.Close()
+	// 续跑上一轮的规划会话：每轮重建对话时，上一轮读过的 node_detail 证据、coverage_matrix、
+	// trace 片段都随之丢失，只能重新取或干脆不再看——worker 早就在做这件事（worker.go 的
+	// Resume），planner 一直漏了。transcript 的 SessionID 是按任务固定的，续跑安全。
+	//
+	// 前提是**有 transcript**（p.tx != nil）：没有持久化时 SessionID 没有意义，行为保持不变。
+	if p.tx != nil {
+		_ = s.Resume(opts.SessionID)
+		// 续跑之后历史里的旧态势块会"粘住"。明说本轮快照是权威，避免拿旧图做判断。
+		input = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + input
+	}
+	_, _, err = captureRunSession(ctx, s, input,
 		func(r db.Activity) {
 			if emit != nil {
 				r.Worker = "planner" // planner activity has no intent_id (it generates them)
