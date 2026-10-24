@@ -54,7 +54,9 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	out["exploration"] = st
 	// 意图分状态计数与「可领」数：列表接口有行数上限，页面上的待领/执行中/被拦
 	// 必须用这里的精确值，否则任务一长就把窗口长度当总数。
+	intentStates := map[string]int{}
 	if states, err := t.Store.CountIntentStates(); err == nil {
+		intentStates = states
 		out["intent_states"] = states
 	}
 	if n, err := t.Store.CountClaimableIntents(); err == nil {
@@ -66,34 +68,23 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	//
 	// active 与 unknown **分开给**：unknown 是"没去确认还在不在"，把它并进未清理会
 	// 把"我们不知道"说成"我们确认它还留着"（同检测三态的纪律）。
-	if arts, err := t.Store.ListByKind(db.KindArtifact, 1000); err == nil {
-		uncleaned, unknown := 0, 0
-		for _, a := range arts {
-			switch a.State {
-			case db.StateArtifactActive:
-				uncleaned++
-			case db.StateArtifactUnknown:
-				unknown++
-			}
+	if states, err := t.Store.CountKindStates(db.KindArtifact); err == nil {
+		total := 0
+		for _, n := range states {
+			total += n
 		}
-		out["artifacts_total"] = len(arts)
-		out["artifacts_uncleaned"] = uncleaned
-		out["artifacts_unknown"] = unknown
+		out["artifacts_total"] = total
+		out["artifacts_uncleaned"] = states[db.StateArtifactActive]
+		out["artifacts_unknown"] = states[db.StateArtifactUnknown]
 	}
 
 	// per-task running state + heartbeat (distinct from "LLM configured").
-	intents, _ := t.Store.ListByKind(db.KindIntent, 100000)
-	inFlight := 0
-	for _, in := range intents {
-		if in.State == "running" {
-			inFlight++
-		}
-	}
-	goals, _ := t.Store.ListByKind(db.KindGoal, 10000)
-	goalsMet := 0
-	for _, g := range goals {
-		if g.State == "met" {
-			goalsMet++
+	inFlight := intentStates["running"]
+	goalsMet, goalsTotal := 0, 0
+	if states, err := t.Store.CountKindStates(db.KindGoal); err == nil {
+		goalsMet = states["met"]
+		for _, n := range states {
+			goalsTotal += n
 		}
 	}
 	last := s.engine.LastActivity(t.ID)
@@ -125,7 +116,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"llm_in_flight": activeCalls,
 		"last_activity": last,
 		"stalled":       stalled,
-		"goals_total":   len(goals),
+		"goals_total":   goalsTotal,
 		"goals_met":     goalsMet,
 	}
 	writeJSON(w, 200, out)

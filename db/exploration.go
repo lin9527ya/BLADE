@@ -1590,8 +1590,14 @@ func (s *ExplorationStore) CountIntents() (int, error) {
 // CountIntentStates 按 state 统计本探索的意图数。页面上的「待领/执行中/被拦」用它的
 // 精确值——意图列表接口有 300 行上限，用 len(列表筛选) 会把窗口长度当总数。
 func (s *ExplorationStore) CountIntentStates() (map[string]int, error) {
+	return s.CountKindStates(KindIntent)
+}
+
+// CountKindStates 按 state 统计某一类节点的数量（COUNT + GROUP BY，只读索引/窄行，
+// 不读 payload）。任务页/指标页的精确计数都走它，避免为了数几个状态把全表 JSONB 拉出来。
+func (s *ExplorationStore) CountKindStates(kind string) (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT state, COUNT(*) FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' GROUP BY state`, s.expID)
+WHERE exploration_id=$1 AND kind=$2 GROUP BY state`, s.expID, kind)
 	if err != nil {
 		return nil, err
 	}
