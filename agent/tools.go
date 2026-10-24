@@ -2892,7 +2892,8 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			if intentNode == nil || intentNode.Kind != db.KindIntent {
 				return actool.Errorf("intent_id 不属于本任务或其直接关联任务"), nil
 			}
-			acts, _, err := t.ts.ActivityListWithSources(id, 0, 1000)
+			// 取**尾部**：长任务的「卡在哪 / 最后一句结论」在最新那一窗里，升序前 1000 条只给开头。
+			acts, err := t.ts.ActivityListTailWithSources(id, 1000)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -3078,7 +3079,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			if strings.TrimSpace(a.Q) != "" {
 				acts, err = t.ts.ActivityTraceSearchWithSources(id, a.Q, a.Limit)
 			} else {
-				acts, err = t.ts.ActivityTraceWithSources(id, a.Limit)
+				acts, err = t.ts.ActivityTraceTailWithSources(id, a.Limit)
 			}
 			if err != nil {
 				return actool.Errorf(err.Error()), nil

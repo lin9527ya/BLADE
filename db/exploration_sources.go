@@ -267,6 +267,66 @@ func (s *ExplorationStore) ActivityListWithSources(nodeID, sinceID int64, limit 
 	return []Activity{}, sinceID, nil
 }
 
+// ActivityListTailWithSources 是 get_worker_output 用的**尾部**读取：跨直接源任务，
+// 只取最近 limit 条（升序返回）。长任务的「卡在哪 / 最后一句结论」只有尾部才有。
+func (s *ExplorationStore) ActivityListTailWithSources(nodeID int64, limit int) ([]Activity, error) {
+	node, err := s.GetNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node != nil {
+		return s.ActivityListTail(&nodeID, limit)
+	}
+	sources, err := s.DirectSourceStores()
+	if err != nil {
+		return nil, err
+	}
+	for _, source := range sources {
+		node, err = source.Store.GetNode(nodeID)
+		if err != nil {
+			return nil, err
+		}
+		if node == nil || node.Kind != KindIntent {
+			continue
+		}
+		acts, err := source.Store.ActivityListTailForTerminalIntent(nodeID, limit)
+		if err != nil {
+			return nil, err
+		}
+		return markInheritedActivities(acts, source.Task.TaskID), nil
+	}
+	return []Activity{}, nil
+}
+
+// ActivityTraceTailWithSources 是 trace 版的尾部读取，边界与 ActivityTraceWithSources 一致。
+func (s *ExplorationStore) ActivityTraceTailWithSources(nodeID int64, limit int) ([]Activity, error) {
+	acts, err := s.ActivityTraceTail(nodeID, limit)
+	if err != nil || len(acts) > 0 {
+		return acts, err
+	}
+	sources, err := s.DirectSourceStores()
+	if err != nil {
+		return nil, err
+	}
+	for _, source := range sources {
+		node, nodeErr := source.Store.GetNode(nodeID)
+		if nodeErr != nil {
+			return nil, nodeErr
+		}
+		if node == nil || node.Kind != KindIntent {
+			continue
+		}
+		acts, err = source.Store.ActivityTraceTailForTerminalIntent(nodeID, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(acts) > 0 {
+			return markInheritedActivities(acts, source.Task.TaskID), nil
+		}
+	}
+	return []Activity{}, nil
+}
+
 // ActivityDetailWithSources keeps the legacy local-task lookup (including local
 // thinking rows), while inherited details are restricted to terminal worker
 // intents. Source planner/main rows have no node id and must never become part of

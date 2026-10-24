@@ -137,3 +137,40 @@ func TestGetWorkerOutputOmitsExecutionsWithoutService(t *testing.T) {
 		t.Fatalf("未接线时不该给 executions：%#v", res["executions"])
 	}
 }
+
+// 长任务的尾部：超过一千步时，结论与「卡在哪」都在最新那一窗里。
+// 此前 get_worker_output 读的是升序前 1000 条——永远看到开头，看不到结论。
+func TestGetWorkerOutputSeesTailOfLongIntent(t *testing.T) {
+	tools, ts, intentID := newToolWorker(t)
+	node := intentID
+	for i := 0; i < 1005; i++ {
+		if _, err := ts.AppendActivity(db.Activity{
+			NodeID: &node, Worker: "work#1", Kind: "text", Tool: "Bash",
+			Summary: fmt.Sprintf("step %04d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ts.AppendActivity(db.Activity{
+		NodeID: &node, Kind: "result", Summary: "跑完了", Detail: "结论：上传点可用，能落地 webshell",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw := callTool(t, tools.PlannerTools(), "get_worker_output", fmt.Sprintf(`{"intent_id":%d}`, intentID))
+	var res map[string]any
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatalf("返回不是 JSON：%v\n%s", err, raw)
+	}
+	if got, _ := res["final_text"].(string); got != "结论：上传点可用，能落地 webshell" {
+		t.Fatalf("长任务的最终结论必须取得到（拿到 %q）", got)
+	}
+	steps, _ := res["recent_steps"].([]any)
+	if len(steps) != 3 {
+		t.Fatalf("recent_steps 应为最后 3 步：%d", len(steps))
+	}
+	last, _ := steps[len(steps)-1].(map[string]any)
+	if last["kind"] != "result" {
+		t.Fatalf("最后一步应是结论而不是开头某步：%#v", last)
+	}
+}
