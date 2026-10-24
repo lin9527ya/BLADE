@@ -1671,3 +1671,163 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 	}
 	return out, rows.Err()
 }
+
+// AssetNeighbor 是一个与目标资产直接相关的资产（横向/扩面时关心的"还连着谁"）。
+type AssetNeighbor struct {
+	ID       int64  `json:"id"`
+	Type     string `json:"type"`
+	Relation string `json:"relation"` // parent / child / sibling / same_ip / same_csegment
+	Label    string `json:"label"`
+	IP       string `json:"ip,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Port     int    `json:"port,omitempty"`
+}
+
+// AssetNeighbors 返回一个资产的**直接邻域**：父域、子资产（服务/端点/子域）、同根兄弟子域、
+// 同 IP 的 vhost、同 C 段的其它 IP。
+//
+// 为什么不是"再查一次资产库"：横向移动时真正要回答的是「这台机器还连着谁」，而 list_assets
+// 只会按字段筛。邻域是**关系**，得按域/IP/C 段聚。每类各自封顶、按 id 去重（先出现的类目优先）。
+func (s *AssetStore) AssetNeighbors(taskID, assetID int64, perBucket int) ([]AssetNeighbor, error) {
+	if perBucket <= 0 {
+		perBucket = 8
+	}
+	if perBucket > 50 {
+		perBucket = 50
+	}
+	rows, err := s.GetByIDsInScope(taskID, []int64{assetID})
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		if taskID > 0 {
+			return nil, fmt.Errorf("资产 %d 不在本任务的测试范围内（或不存在）", assetID)
+		}
+		return nil, fmt.Errorf("资产 %d 不存在", assetID)
+	}
+	self := rows[0]
+	out := make([]AssetNeighbor, 0, perBucket*3)
+	seen := map[int64]bool{assetID: true}
+	add := func(relation, query string, args []any) error {
+		qrows, err := s.db.Query(query, args...)
+		if err != nil {
+			return err
+		}
+		defer qrows.Close()
+		n := 0
+		for qrows.Next() && n < perBucket {
+			var typ, domain, ip, url, service string
+			var id int64
+			var port int
+			if err := qrows.Scan(&id, &typ, &domain, &ip, &url, &service, &port); err != nil {
+				return err
+			}
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, AssetNeighbor{
+				ID: id, Type: typ, Relation: relation,
+				Label: neighborLabel(id, typ, domain, ip, url, service, port),
+				IP:    ip, URL: url, Port: port,
+			})
+			n++
+		}
+		return qrows.Err()
+	}
+	const sel = `SELECT id, type, COALESCE(domain,''), COALESCE(ip,''), COALESCE(url,''), COALESCE(service_name,''), COALESCE(port,0) FROM assets WHERE `
+	// 父域
+	if self.Type != "root_domain" && self.RootDomain != "" {
+		if err := add("parent", sel+`type='root_domain' AND domain=$1 LIMIT $2`,
+			[]any{self.RootDomain, perBucket}); err != nil {
+			return nil, err
+		}
+	}
+	// 子资产
+	switch self.Type {
+	case "root_domain":
+		if self.Domain != "" {
+			if err := add("child", sel+`type='subdomain' AND root_domain=$1 AND id<>$2 LIMIT $3`,
+				[]any{self.Domain, assetID, perBucket}); err != nil {
+				return nil, err
+			}
+		}
+	case "subdomain":
+		if self.Domain != "" {
+			if err := add("child", sel+`type IN ('app','service','endpoint') AND domain=$1 AND id<>$2 LIMIT $3`,
+				[]any{self.Domain, assetID, perBucket}); err != nil {
+				return nil, err
+			}
+		}
+	case "ip":
+		if self.IP != "" {
+			if err := add("child", sel+`type IN ('subdomain','app','service','endpoint') AND ip=$1 AND id<>$2 LIMIT $3`,
+				[]any{self.IP, assetID, perBucket}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// 同根兄弟子域
+	if self.Type == "subdomain" && self.RootDomain != "" {
+		if err := add("sibling", sel+`type='subdomain' AND root_domain=$1 AND id<>$2 LIMIT $3`,
+			[]any{self.RootDomain, assetID, perBucket}); err != nil {
+			return nil, err
+		}
+	}
+	// 同 IP 的 vhost / 主机
+	if self.IP != "" {
+		if err := add("same_ip", sel+`ip=$1 AND id<>$2 AND type IN ('ip','subdomain','app','service','endpoint') LIMIT $3`,
+			[]any{self.IP, assetID, perBucket}); err != nil {
+			return nil, err
+		}
+	}
+	// 同 C 段的其它 IP
+	if self.CSegment != "" {
+		if err := add("same_csegment", sel+`type='ip' AND c_segment=$1 AND id<>$2 LIMIT $3`,
+			[]any{self.CSegment, assetID, perBucket}); err != nil {
+			return nil, err
+		}
+	}
+	// 与 list_assets 同一条纪律：只露出本任务范围内的资产。邻域天生会带出范围外的节点
+	// （同 C 段的其它 IP 常常不在授权里），把它们摆在模型面前只会诱导它去打不该打的目标。
+	if taskID > 0 && len(out) > 0 {
+		ids := make([]int64, len(out))
+		for i, n := range out {
+			ids[i] = n.ID
+		}
+		scoped, serr := s.GetByIDsInScope(taskID, ids)
+		if serr != nil {
+			return nil, serr
+		}
+		keep := make(map[int64]bool, len(scoped))
+		for _, a := range scoped {
+			keep[a.ID] = true
+		}
+		filtered := out[:0]
+		for _, n := range out {
+			if keep[n.ID] {
+				filtered = append(filtered, n)
+			}
+		}
+		out = filtered
+	}
+	return out, nil
+}
+
+func neighborLabel(id int64, typ, domain, ip, url, service string, port int) string {
+	switch {
+	case url != "":
+		return url
+	case domain != "" && port > 0:
+		return fmt.Sprintf("%s:%d", domain, port)
+	case domain != "":
+		return domain
+	case service != "" && port > 0:
+		return fmt.Sprintf("%s:%d", service, port)
+	case service != "":
+		return service
+	case ip != "":
+		return ip
+	}
+	return fmt.Sprintf("#%d", id)
+}
