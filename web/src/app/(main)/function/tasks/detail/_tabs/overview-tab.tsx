@@ -348,7 +348,15 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                       variant="ghost"
                       className="h-6 shrink-0 px-1.5"
                       disabled={goalBusy}
-                      onClick={() => void removeGoal(g)}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `删除目标「${g.text}」？删除后规划者不再向它派发意图，也不会再判定它达成；此操作不可撤销。`,
+                          )
+                        ) {
+                          void removeGoal(g);
+                        }
+                      }}
                     >
                       <Trash2Icon className="size-3.5 text-red-500" />
                     </Button>

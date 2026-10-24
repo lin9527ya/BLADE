@@ -111,6 +111,8 @@ interface FindingsTableProps {
   onDelete: (finding: Finding) => void;
   /** 全选框的无障碍标签,平铺视图与分组视图措辞不同。 */
   selectAllLabel?: string;
+  /** 空表提示；加载失败时由调用方传入错误文案，避免把失败显示成「没有」。 */
+  emptyMessage?: string;
 }
 
 // FindingsTable 是发现列表的表格主体,平铺视图与按任务分组视图共用同一份行渲染
@@ -133,6 +135,7 @@ export function FindingsTable({
   onDeepen,
   onDelete,
   selectAllLabel = "选择当前页全部",
+  emptyMessage = "没有匹配的发现。",
 }: FindingsTableProps) {
   const selectableIds = items.map((finding) => finding.finding_id).filter((id): id is string => Boolean(id));
   const selectedCount = selectableIds.filter((id) => selectedIds.has(id)).length;
@@ -456,7 +459,7 @@ export function FindingsTable({
         {items.length === 0 && (
           <TableRow>
             <TableCell colSpan={COLUMN_COUNT} className="py-12 text-center text-sm text-muted-foreground">
-              没有匹配的发现。
+              {emptyMessage}
             </TableCell>
           </TableRow>
         )}

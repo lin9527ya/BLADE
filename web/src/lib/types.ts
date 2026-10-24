@@ -965,6 +965,8 @@ export interface TaskSrcBatchEntry {
   fingerprint?: string;
   duplicate_group?: number;
   included: boolean;
+  /** 未进包的原因（状态不符 / 同指纹只交代表项）；进包的条目为空。 */
+  skip_reason?: string;
 }
 
 export interface TaskSrcBatchPlan {

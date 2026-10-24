@@ -423,7 +423,10 @@ export function useSettingsState() {
     api
       .setSettings({ traffic_capture: v })
       .then(apply)
-      .catch(() => setTrafficCapture(!v)) // revert on failure
+      .catch((e) => {
+        setTrafficCapture(!v); // revert on failure
+        toast.error("保存失败：" + (e as Error).message);
+      })
       .finally(() => setSavingTraffic(false));
   };
 
@@ -432,7 +435,10 @@ export function useSettingsState() {
     api
       .setSettings({ constraints_inject_planner: v })
       .then(apply)
-      .catch(() => setInjectPlanner(!v)); // revert on failure
+      .catch((e) => {
+        setInjectPlanner(!v); // revert on failure
+        toast.error("保存失败：" + (e as Error).message);
+      });
   };
 
   // 授权范围两个设置一起保存：它们是同一条边界的两维（能打哪些目标 + 什么时候能打），
@@ -678,7 +684,10 @@ export function useSettingsState() {
     api
       .setSettings({ constraints_inject_worker: v })
       .then(apply)
-      .catch(() => setInjectWorker(!v)); // revert on failure
+      .catch((e) => {
+        setInjectWorker(!v); // revert on failure
+        toast.error("保存失败：" + (e as Error).message);
+      });
   };
 
   const toggleNoaCompaction = (v: boolean) => {
