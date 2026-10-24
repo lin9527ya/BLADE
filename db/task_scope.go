@@ -391,6 +391,11 @@ ORDER BY ea.asset_id, area, en.id`, taskID, s.expID)
 			prows.Close()
 			return nil, err
 		}
+		// 已删除（drop_intent/UI 取消）与已停止（kill/stop）的意图既不是"进行中"、也不是"测过"：
+		// 落进 default 会让那一格永远显示"在跑"，既误导人也不反映真实覆盖。直接不参与矩阵。
+		if state == "deleted" || state == "stopped" {
+			continue
+		}
 		ai, ok := index[assetID]
 		if !ok {
 			continue
