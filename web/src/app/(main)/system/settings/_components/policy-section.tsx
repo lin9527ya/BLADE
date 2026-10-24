@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { EyeOffIcon, LanguagesIcon, OctagonXIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
+import { EyeOffIcon, LanguagesIcon, OctagonXIcon, RadarIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
 
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { Advanced, Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
@@ -51,6 +51,16 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     agentAutoRetest,
     savingAutoRetest,
     toggleAgentAutoRetest,
+    oastEnabled,
+    oastTokenSet,
+    oastTokenInput,
+    setOastTokenInput,
+    oastDomain,
+    setOastDomain,
+    savingOast,
+    toggleOast,
+    saveOast,
+    clearOastToken,
     enforce,
     killReason,
     setKillReason,
@@ -408,6 +418,74 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               </>
             }
           />
+        </SubBlock>
+
+        <SubBlock title="带外确认（OAST）" icon={<RadarIcon className="size-4 text-muted-foreground" />}>
+          <SwitchRow
+            id="oast-enabled"
+            label={
+              oastEnabled
+                ? oastTokenSet
+                  ? "已开启 · Agent 可生成回调地址并轮询命中"
+                  : "已开启但未配置 token · 工具仍不可用"
+                : "已关闭（默认）· 盲打类漏洞只能靠盲猜"
+            }
+            checked={oastEnabled}
+            disabled={!loaded || savingOast}
+            onChange={toggleOast}
+            hint={
+              <>
+                盲打类漏洞（SSRF / 命令注入 / 盲 XSS / 反序列化）在目标侧没有回显，唯一可靠的确认是
+                <strong>让它回连一个我们能看到的地址</strong>。开启后 Agent 会得到 oast_mint / oast_poll：
+                生成带任务标记的回调地址、轮询命中并自动记成事实（带来源 IP 与时间）。
+                <br />
+                用外部托管服务（requestrepo），<strong>BLADE 不开任何入站端口</strong>；token 只存不回显。
+                回调只能证明「目标访问了该地址」，不能证明是哪段代码执行的——结论里要如实写。
+              </>
+            }
+          />
+          <div className="grid gap-3 md:grid-cols-[1fr_200px_auto_auto]">
+            <Field
+              label="服务 token"
+              htmlFor="oast-token"
+              hint={oastTokenSet ? "已配置；输入新值可覆盖。" : "从 requestrepo 复制的会话 token（只存不回显）。"}
+            >
+              <Input
+                id="oast-token"
+                type="password"
+                autoComplete="off"
+                placeholder={oastTokenSet ? "已配置（输入新值可覆盖）" : "粘贴会话 token"}
+                value={oastTokenInput}
+                disabled={!loaded || savingOast}
+                onChange={(e) => setOastTokenInput(e.target.value)}
+              />
+            </Field>
+            <Field label="服务域名" htmlFor="oast-domain" hint="默认 requestrepo.com。">
+              <Input
+                id="oast-domain"
+                autoComplete="off"
+                placeholder="requestrepo.com"
+                value={oastDomain}
+                disabled={!loaded || savingOast}
+                onChange={(e) => setOastDomain(e.target.value)}
+              />
+            </Field>
+            <div className="flex items-end">
+              <Button type="button" onClick={saveOast} disabled={!loaded || savingOast}>
+                保存
+              </Button>
+            </div>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={clearOastToken}
+                disabled={!loaded || savingOast || !oastTokenSet}
+              >
+                清除 token
+              </Button>
+            </div>
+          </div>
         </SubBlock>
 
         <SubBlock title="可检出性知识库（事前）" icon={<ScanSearchIcon className="text-muted-foreground size-4" />}>

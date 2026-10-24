@@ -51,6 +51,10 @@ export function useSettingsState() {
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [agentLootExec, setAgentLootExec] = React.useState(false);
   const [agentAutoRetest, setAgentAutoRetest] = React.useState(false);
+  const [oastEnabled, setOastEnabled] = React.useState(false);
+  const [oastTokenSet, setOastTokenSet] = React.useState(false);
+  const [oastTokenInput, setOastTokenInput] = React.useState("");
+  const [oastDomain, setOastDomain] = React.useState("requestrepo.com");
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
@@ -83,6 +87,7 @@ export function useSettingsState() {
   const [savingTraffic, setSavingTraffic] = React.useState(false);
   const [savingLootExec, setSavingLootExec] = React.useState(false);
   const [savingAutoRetest, setSavingAutoRetest] = React.useState(false);
+  const [savingOast, setSavingOast] = React.useState(false);
   const [savingWebSearch, setSavingWebSearch] = React.useState(false);
   const [savingPython, setSavingPython] = React.useState(false);
   const [savingKey, setSavingKey] = React.useState(false);
@@ -154,6 +159,9 @@ export function useSettingsState() {
     setAgentTrafficBinding(!!s.agent_traffic_binding);
     setAgentLootExec(!!s.agent_loot_exec);
     setAgentAutoRetest(!!s.agent_auto_retest);
+    setOastEnabled(!!s.oast_enabled);
+    setOastTokenSet(!!s.oast_token_set);
+    setOastDomain(s.oast_domain || "requestrepo.com");
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
@@ -584,6 +592,49 @@ export function useSettingsState() {
       .finally(() => setSavingAutoRetest(false));
   };
 
+  const toggleOast = (v: boolean) => {
+    setOastEnabled(v); // optimistic
+    setSavingOast(true);
+    api
+      .setSettings({ oast_enabled: v })
+      .then(apply)
+      .catch((e) => {
+        setOastEnabled(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingOast(false));
+  };
+
+  const saveOast = () => {
+    setSavingOast(true);
+    const payload: { oast_domain: string; oast_token?: string } = {
+      oast_domain: oastDomain.trim() || "requestrepo.com",
+    };
+    // token 只写：输入为空时不动已存的值（想清除用 clearOastToken）。
+    if (oastTokenInput.trim()) payload.oast_token = oastTokenInput.trim();
+    api
+      .setSettings(payload)
+      .then((s) => {
+        apply(s);
+        setOastTokenInput("");
+        toast.success("已保存 OAST 配置");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingOast(false));
+  };
+
+  const clearOastToken = () => {
+    setSavingOast(true);
+    api
+      .setSettings({ oast_token: "" })
+      .then((s) => {
+        apply(s);
+        toast.success("已清除 OAST token");
+      })
+      .catch((e) => toast.error(`清除失败：${(e as Error).message}`))
+      .finally(() => setSavingOast(false));
+  };
+
   const toggleInjectWorker = (v: boolean) => {
     setInjectWorker(v); // optimistic
     api
@@ -838,6 +889,16 @@ export function useSettingsState() {
     setAgentAutoRetest,
     savingAutoRetest,
     toggleAgentAutoRetest,
+    oastEnabled,
+    oastTokenSet,
+    oastTokenInput,
+    setOastTokenInput,
+    oastDomain,
+    setOastDomain,
+    savingOast,
+    toggleOast,
+    saveOast,
+    clearOastToken,
     savingWebSearch,
     setSavingWebSearch,
     savingPython,
