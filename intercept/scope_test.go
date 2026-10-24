@@ -83,6 +83,12 @@ func TestShellCommandOfExtractsNetworkTargets(t *testing.T) {
 			`{"foothold_id":4,"host":"evil.example.com","command":"id"}`,
 			"evil.example.com",
 		},
+		{
+			"tunnel_open carries the jump host",
+			"tunnel_open",
+			`{"foothold_id":5,"host":"evil.example.com"}`,
+			"evil.example.com",
+		},
 		{"non-network tool yields nothing", "insert_assets", `{"host":"evil.example.com"}`, ""},
 	}
 	for _, tc := range cases {
@@ -169,7 +175,7 @@ func TestDefaultEnabledToolsCoverRunExecution(t *testing.T) {
 
 // loot_exec / foothold_exec 会直接连目标，漏登记等于让拦截规则与裁判都看不清它们。
 func TestDefaultEnabledToolsCoverLootExec(t *testing.T) {
-	for _, want := range []string{"loot_exec", "foothold_exec"} {
+	for _, want := range []string{"loot_exec", "foothold_exec", "tunnel_open"} {
 		found := false
 		for _, n := range defaultEnabledTools {
 			if n == want {

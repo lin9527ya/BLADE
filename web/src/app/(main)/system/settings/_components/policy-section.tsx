@@ -363,14 +363,15 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
           <SwitchRow
             id="agent-loot-exec"
             describedBy="agent-loot-exec-description"
-            label={agentLootExec ? "已开启 · Agent 可用登记过的凭据 / 据点直连目标" : "已关闭（默认）· 模型需自己用 Bash 构造连接"}
+            label={agentLootExec ? "已开启 · Agent 可用凭据 / 据点 / 隧道直连目标" : "已关闭（默认）· 模型需自己用 Bash 构造连接"}
             checked={agentLootExec}
             disabled={!loaded || savingLootExec}
             onChange={toggleAgentLootExec}
             hint={
               <>
                 默认关闭。开启后，Agent 可以用一条<strong>已登记的凭据</strong>（口令 / 私钥）直接对目标执行命令（ssh
-                / mysql），或经<strong>已登记结构化连法的据点</strong>执行（ssh / webshell），不必再把明文贴进命令行：
+                / mysql），或经<strong>已登记结构化连法的据点</strong>执行（ssh / webshell），或经 ssh 据点开 SOCKS
+                隧道访问内网，不必再把明文贴进命令行：
                 明文经 <code>0600</code> 临时文件交给客户端，命令、执行台账与时间线里都不含明文，只记指纹。
                 <br />
                 它<strong>不改变授权边界</strong>——授权范围（RoE）、作业时间窗与停机开关照常生效，host 必须是凭据

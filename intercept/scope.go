@@ -81,6 +81,13 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return in.Text
+	case "tunnel_open":
+		// 隧道只认跳板机（host）——命令由平台生成，输入里没有 command 字段。
+		var in struct {
+			Host string `json:"host"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return in.Host
 	case "foothold_exec":
 		// 与 loot_exec 同理：命令本身不含目标地址，目标在 host 里。host 是工具侧强制必填的。
 		var in struct {
