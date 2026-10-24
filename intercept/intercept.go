@@ -141,6 +141,12 @@ type Interceptor struct {
 	// RoE scope gate (see scope.go): per-task scope rows with a small TTL cache.
 	scopeMu    sync.Mutex
 	scopeCache map[int64]scopeCacheEntry
+
+	// actionCache 把自定义工具 key 映射到「是否动作类 + 执行规格里的目标面」。
+	// 读类工具不能被停机开关误伤，而自定义工具的输入形状不由平台定义——只能回查
+	// tools 表（kind=command/script/http 才算动作类），这里缓存 60 秒。
+	actionMu    sync.Mutex
+	actionCache map[string]actionCacheEntry
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.
@@ -176,6 +182,9 @@ func (i *Interceptor) Invalidate() {
 	i.cached = nil
 	i.enabledTools = nil
 	i.mu.Unlock()
+	i.actionMu.Lock()
+	i.actionCache = nil
+	i.actionMu.Unlock()
 }
 
 func (i *Interceptor) loadLocked() error {
