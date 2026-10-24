@@ -8,6 +8,7 @@ import type {
   Activity,
   ConvTokenSummary,
   Finding,
+  FindingStats,
   InterceptPending,
   LLMProfile,
   Settings,
@@ -40,6 +41,8 @@ export function useDashboardState() {
   // data state
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
+  // 发现总数与严重度分布走 findingStats 的 COUNT(*)；findings 只是最近窗口（500）。
+  const [findingStats, setFindingStats] = React.useState<FindingStats | null>(null);
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
@@ -48,6 +51,8 @@ export function useDashboardState() {
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
+  // 流量总条数（服务端 count 是 COUNT(*)，不是当前 50 行窗口）。
+  const [trafficTotal, setTrafficTotal] = React.useState(0);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
   // 数据源开关：旧版 = activity（task.tokens + 会话），新版 = llm_usage 计量账本。
   const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
@@ -80,16 +85,18 @@ export function useDashboardState() {
         if (loading) return;
         loading = true;
         try {
-          const [findings, stats, settings, pending, activity, conversationTokens] = await Promise.all([
+          const [findings, stats, settings, pending, activity, conversationTokens, findingTotals] = await Promise.all([
             api.findings(),
             api.stats(),
             api.settings(),
             api.interceptPending(),
             api.activity(undefined, { limit: 30 }),
             api.conversationTokens(),
+            api.findingStats(),
           ]);
           if (!alive()) return;
           setFindings(findings);
+          setFindingStats(findingTotals);
           setStats(stats);
           setSettings(settings);
           setPending(pending);
@@ -130,6 +137,7 @@ export function useDashboardState() {
           ]);
           if (!alive()) return;
           setTraffic(traf.exchanges ?? []);
+          setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
           setAssetCounts(counts ?? {});
           setLLMProfiles(profileList);
           if (usage) setUsageStats(usage);
@@ -362,8 +370,30 @@ export function useDashboardState() {
   // 按面板的稳定对象后，只有真正用到变化字段的那个面板会重渲染。
   // 纯拆分：数据获取与派生逻辑一行没动。
   const statCards = React.useMemo(
-    () => ({ tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens }),
-    [tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens],
+    () => ({
+      tasks,
+      findings,
+      findingStats,
+      settings,
+      traffic,
+      trafficTotal,
+      tasksByStatus,
+      findingsBySev,
+      totalAssets,
+      displayedTokens,
+    }),
+    [
+      tasks,
+      findings,
+      findingStats,
+      settings,
+      traffic,
+      trafficTotal,
+      tasksByStatus,
+      findingsBySev,
+      totalAssets,
+      displayedTokens,
+    ],
   );
   const tokenCard = React.useMemo(
     () => ({

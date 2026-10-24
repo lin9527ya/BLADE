@@ -1587,6 +1587,27 @@ func (s *ExplorationStore) CountIntents() (int, error) {
 	return n, err
 }
 
+// CountIntentStates 按 state 统计本探索的意图数。页面上的「待领/执行中/被拦」用它的
+// 精确值——意图列表接口有 300 行上限，用 len(列表筛选) 会把窗口长度当总数。
+func (s *ExplorationStore) CountIntentStates() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT state, COUNT(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' GROUP BY state`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var state string
+		var n int
+		if err := rows.Scan(&state, &n); err != nil {
+			return nil, err
+		}
+		out[state] = n
+	}
+	return out, rows.Err()
+}
+
 // ToolUseSample is one recorded tool call (name + raw input) from the activity log.
 type ToolUseSample struct {
 	Tool  string `json:"tool"`
@@ -2027,6 +2048,31 @@ FROM activity WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit
 	}
 	reverseActivities(out)
 	return out, rows.Err()
+}
+
+// CountActivity 统计本探索的全部 activity 行（时间线报「步骤总数」用：
+// activity 的取数有 limit，把窗口长度当总数会少报）。
+func (s *ExplorationStore) CountActivity() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=$1`, s.expID).Scan(&n)
+	return n, err
+}
+
+// CountActivityKinds 统计指定 kind 的 activity 行数。
+func (s *ExplorationStore) CountActivityKinds(kinds []string) (int, error) {
+	if len(kinds) == 0 {
+		return 0, nil
+	}
+	args := make([]any, 0, len(kinds)+1)
+	args = append(args, s.expID)
+	ph := make([]string, 0, len(kinds))
+	for i, k := range kinds {
+		ph = append(ph, fmt.Sprintf("$%d", i+2))
+		args = append(args, k)
+	}
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=$1 AND kind IN (`+strings.Join(ph, ",")+`)`, args...).Scan(&n)
+	return n, err
 }
 
 // ActivityListTailForTerminalIntent 是继承任务用的尾部读取：同样受源意图终态门约束，

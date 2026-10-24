@@ -29,7 +29,7 @@ export function RowActivity({ s }: { s: ReturnType<typeof useDashboardState>["ac
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-muted-foreground">
-                {activity.filter((a) => a.kind !== "usage").length} 条事件
+                {activity.filter((a) => a.kind !== "usage").length} 条事件（最近窗口）
               </span>
               <Link
                 href="/function/tasks"

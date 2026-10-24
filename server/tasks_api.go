@@ -52,6 +52,14 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 
 	st, _ := t.Store.Stats()
 	out["exploration"] = st
+	// 意图分状态计数与「可领」数：列表接口有行数上限，页面上的待领/执行中/被拦
+	// 必须用这里的精确值，否则任务一长就把窗口长度当总数。
+	if states, err := t.Store.CountIntentStates(); err == nil {
+		out["intent_states"] = states
+	}
+	if n, err := t.Store.CountClaimableIntents(); err == nil {
+		out["claimable_intents"] = n
+	}
 
 	// 遗留物（P43）：我们留在目标上、还没清理的东西。任务页据此给一条内联提示——
 	// 这是任务收尾前最该被看见的一个数（没清掉的 webshell 就是留在客户系统上的后门）。
