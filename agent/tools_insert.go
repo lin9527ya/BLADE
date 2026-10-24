@@ -685,7 +685,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.verifyCredential(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
-		t.insertAssets(), t.listAssets(),
+		t.insertAssets(), t.listAssets(), t.assetNeighbors(),
 		// 指纹打法库：动手前先查同类指纹的历史打法（lookup 会累加使用次数），
 		// 用后回报 worked/failed，卡片靠它越用越准。沉淀本身归 playbook agent。
 		t.lookupPlaybooks(), t.recordPlaybookFeedback(),
@@ -726,7 +726,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// set_constraints：人可在运行时给本任务补/改操作约束（allow/deny），约束 planner/worker 的探索边界。
 		t.setConstraints(),
 		// asset management (handlers guard nil store internally)
-		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
+		t.insertAssets(), t.addCompanyScope(), t.listAssets(), t.assetNeighbors(),
 		t.addFinding(), t.closeCandidate(), t.recordFact(),
 		// 战果：人机对话里也能补记——人在跑任务时拿到的据点/凭据同样要进图，才算数。
 		// 遗留物同理：人在现场手动落的东西，也该有人能替它销账。
