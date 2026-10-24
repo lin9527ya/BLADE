@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 
+import { taskIsTerminal } from "@/lib/status";
 import { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
 import { useOverviewState } from "./_components/use-overview-state";
@@ -958,7 +959,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
       {/* 终态但仍有未执行意图：任务因目标达成/收束而结束，frontier 里却留着从未跑过的
           方向（规划者已停跑，没人再领）。明确解释状态 + 一键继续运行。 */}
-      {["done", "failed", "timeout"].includes(task?.status ?? "") && open.length > 0 && (
+      {taskIsTerminal(task?.status ?? "") && open.length > 0 && (
         <Card className="border-amber-500/40">
           <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
             <CardTitle className="flex items-center gap-2 text-sm">

@@ -5,6 +5,7 @@ import * as React from "react";
 import {
   Anchor,
   Bug,
+  Cloud,
   Compass,
   Flag,
   FlaskConical,
@@ -128,6 +129,14 @@ export const typeMeta: Record<ExploreKind, TypeMeta> = {
     chip: "bg-purple-500/15 text-purple-600 dark:text-purple-400",
     hex: "#a855f7",
   },
+  // 云对象：AWS IAM / K8s RBAC 枚举结果，与 AD 对象并列（算法共用，着色区分）。
+  cloud_object: {
+    label: "云对象",
+    icon: Cloud,
+    iconBg: "bg-sky-500",
+    chip: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+    hex: "#0ea5e9",
+  },
 };
 
 // The task root is an origin fact (kind='fact', state='origin'); render it as "起点".
@@ -155,6 +164,8 @@ export const summaryFields: Record<ExploreKind, string[]> = {
   artifact: ["summary"],
   // AD 对象没有 summary：它的"名字"就是它的身份（JDOE@CORP.LOCAL / DC.CORP.LOCAL）。
   ad_object: ["name", "sam"],
+  // 云对象同理：name 是 ARN / kind:ns:name 的可读形式。
+  cloud_object: ["name"],
 };
 
 export function nodeSummary(n: TaskNode): string {

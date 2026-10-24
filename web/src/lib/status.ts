@@ -139,3 +139,11 @@ export type StatusDomain = keyof typeof maps;
 export function statusMeta(domain: StatusDomain, key: string): StatusMeta {
   return maps[domain][key] ?? { label: key, tone: "neutral" };
 }
+
+// 任务终态：后端对这四个状态不再接受「暂停」，只接受「继续运行」（有未执行意图时）。
+// 详情页、列表页的暂停按钮与归档资格都从这里取，避免各处硬编码漏掉 policy_blocked。
+export const TASK_TERMINAL_STATUSES = new Set<string>(["done", "failed", "timeout", "policy_blocked"]);
+
+export function taskIsTerminal(status: string): boolean {
+  return TASK_TERMINAL_STATUSES.has(status);
+}

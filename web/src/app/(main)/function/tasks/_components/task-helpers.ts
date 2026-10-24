@@ -122,7 +122,7 @@ export const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
 export const UNCATEGORIZED_VALUE = "uncategorized";
 
 // 可暂停 = 非终态且未暂停,与后端 applyTaskControlWithCause 的门控一致
-// (done/failed/timeout 为终态);paused 才可继续。行内按钮与批量控制共用此判断,
+// (done/failed/timeout/policy_blocked 为终态);paused 才可继续。行内按钮与批量控制共用此判断,
 // 两边不会出现一个可点、另一个不可点的分歧。
 export const PAUSABLE_STATUSES = new Set<TaskStatus>(["created", "queued", "running"]);
 

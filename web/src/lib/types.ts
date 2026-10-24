@@ -468,7 +468,10 @@ export type ExploreKind =
   | "artifact"
   // AD 对象：BloodHound/SharpHound 采集回来的域内对象（用户/组/机器/域/OU/GPO），
   // 靠 payload.category 分类——一种 kind 装六类对象，理由见 server/ad_import.go 的开头。
-  | "ad_object";
+  | "ad_object"
+  // 云对象：AWS IAM / K8s RBAC 枚举结果（账号/用户/角色/策略/服务账号…），
+  // 同样靠 payload.category 分类；与 AD 共用攻击路径算法。
+  | "cloud_object";
 export type GoalState = "open" | "met" | "abandoned";
 export type IntentState =
   | "open"
@@ -480,7 +483,8 @@ export type IntentState =
   | "blocked"
   | "exhausted"
   | "no_output"
-  | "stopped";
+  | "stopped"
+  | "deleted";
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
 export type ExploreRel =
@@ -494,7 +498,11 @@ export type ExploreRel =
   | "member_of"
   | "admin_to"
   | "session_on"
-  | "can";
+  | "can"
+  // 串行链：后一条意图要等前一条完成/否定后才能领。
+  | "depends_on"
+  // 凭据/据点能到达的主机（report_credential 建立）。
+  | "reaches";
 
 // ---- AD 攻击路径导入（P32） ----
 
