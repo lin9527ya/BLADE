@@ -32,7 +32,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	intents, _ := t.Store.ListByKind(db.KindIntent, 1000)
 	var notProbed []report.NotProbed
 	for _, n := range intents {
-		if n.State == "blocked" || n.State == "exhausted" {
+		if n.State == "blocked" || n.State == "exhausted" || n.State == "no_output" {
 			notProbed = append(notProbed, report.NotProbed{Node: n})
 		}
 	}

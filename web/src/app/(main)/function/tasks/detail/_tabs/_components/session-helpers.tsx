@@ -133,6 +133,8 @@ export function statusIcon(status: SessionStatus) {
       return <CircleXIcon className="size-3.5 text-red-500 dark:text-red-400" />;
     case "exhausted": // 步数耗尽(撞 max_turns)
       return <ZapOffIcon className="size-3.5 text-violet-500 dark:text-violet-400" />;
+    case "no_output": // 跑完了但什么都没写回（可重派）
+      return <CircleDashedIcon className="size-3.5 text-amber-500 dark:text-amber-400" />;
     case "negative": // 已测(未发现)：正常成功收尾，只是回包明确否定
       return <CircleMinusIcon className="size-3.5 text-emerald-500 dark:text-emerald-400" />;
     case "out-of-scope": // 范围外：超出任务授权范围
@@ -261,7 +263,7 @@ export function keyForSession(s: Session): string {
 // Map an exploration intent (TaskNode) state → a session status the UI renders.
 //
 // **必须覆盖 exploration_nodes.state 的全部取值**（db/schema.sql 里 kind='intent' 的
-// CHECK：open/running/paused/done/negative/out-of-scope/blocked/exhausted/stopped/deleted）。
+// CHECK：open/running/paused/done/negative/out-of-scope/blocked/exhausted/no_output/stopped/deleted）。
 // 漏一个就会落进 default 被当成 running——worker 明明已经收尾，会话页却永远转圈、
 // 底部一直显示「实时流式中…」（negative/out-of-scope 就是这样漏掉的）。
 export function intentStatus(state: string): SessionStatus {
@@ -272,6 +274,8 @@ export function intentStatus(state: string): SessionStatus {
       return "blocked";
     case "exhausted":
       return "exhausted";
+    case "no_output": // 空跑：什么都没写回，按未覆盖处理
+      return "no_output";
     case "stopped":
       return "stopped";
     case "paused":

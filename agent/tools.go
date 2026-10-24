@@ -569,7 +569,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		switch n.State {
 		case "running":
 			running = append(running, n)
-		case "done", "negative", "out-of-scope", "blocked", "exhausted":
+		case "done", "negative", "out-of-scope", "blocked", "exhausted", "no_output":
 			if hidden(n.ID) {
 				continue // in a cold_digest and still cold — shown via cold_digests (§6.2)
 			}
@@ -923,8 +923,7 @@ func recentTerminalIntents(store *db.ExplorationStore, limit int) []*db.Node {
 			break
 		}
 		for _, intent := range page {
-			switch intent.State {
-			case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
+			if db.IntentStateTerminal(intent.State) {
 				out = append(out, intent)
 			}
 			if len(out) >= limit {
@@ -1144,14 +1143,7 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 	return out
 }
 
-func inheritedIntentSummaryState(state string) bool {
-	switch state {
-	case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
-		return true
-	default:
-		return false
-	}
-}
+func inheritedIntentSummaryState(state string) bool { return db.IntentStateTerminal(state) }
 
 // compactNode distills any exploration node to id + summary + state, dropping the
 // big detail/evidence (fetch that on demand via node_detail).

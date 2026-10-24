@@ -268,7 +268,7 @@ func (s *Server) controlIntent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, result)
 }
 
-// rerunIntent 重跑一条没跑成功的意图(blocked/exhausted/stopped):把它置回 open,worker
+// rerunIntent 重跑一条没跑成功的意图(blocked/exhausted/stopped/no_output):把它置回 open,worker
 // 会重新认领、从头再跑(已写回图谱的 fact/finding/asset 保留);若任务已终态/暂停则顺带复活。
 // 用于「出错的 work 点击继续运行」——网络/LLM 抖动导致 blocked 后可一键重试。
 func restoreRerunIntent(t *Task, before *db.Node) error {
@@ -308,7 +308,7 @@ func (s *Server) rerunIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !reopened {
-		writeErr(w, 409, "该意图不是可重跑状态(仅 blocked/exhausted/stopped 可重跑)")
+		writeErr(w, 409, "该意图不是可重跑状态(仅 blocked/exhausted/stopped/no_output 可重跑)")
 		return
 	}
 	queued, err := s.admitTask(t, "resume")

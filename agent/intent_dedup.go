@@ -103,7 +103,7 @@ func (t *ToolSet) checkIntentSpin(q *intentQuota, summary, riskArea string, asse
 			if active == nil {
 				active = fp
 			}
-		case "done", "negative", "exhausted", "blocked":
+		case "done", "negative", "exhausted", "blocked", "no_output":
 			attempts = append(attempts, *fp)
 		}
 	}

@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object','cloud_object')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
-        (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
+        (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','no_output','deleted')) OR
         (kind='goal'    AND state IN ('open','met','abandoned')) OR
         (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
         (kind='finding' AND state IN ('confirmed','dismissed','ruled_out','open_proof_gap')) OR
@@ -247,7 +247,8 @@ END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
 -- 'deleted' (intent soft-delete rev), 'negative' (intent semantic-outcome rev),
 -- 'ruled_out' (finding candidate-closure rev), 'foothold' (战果 rev), 'not_triggered' (检测 rev),
--- 'ad_object' (AD rev), 'removed' (遗留物 rev), or 'cloud_object' (云对象 rev) branches.
+-- 'ad_object' (AD rev), 'removed' (遗留物 rev), 'cloud_object' (云对象 rev) branches,
+-- or 'no_output' (跑完但什么都没写回的意图 rev).
 DO $$
 BEGIN
     IF EXISTS (
@@ -263,12 +264,13 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%not_triggered%'
                OR pg_get_constraintdef(oid) NOT LIKE '%removed%'
                OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%no_output%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
             (kind='begin'   AND state IN ('open')) OR
-            (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','deleted')) OR
+            (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','no_output','deleted')) OR
             (kind='goal'    AND state IN ('open','met','abandoned')) OR
             (kind='fact'    AND state IN ('confirmed','dismissed','origin')) OR
             (kind='finding' AND state IN ('confirmed','dismissed','ruled_out','open_proof_gap')) OR

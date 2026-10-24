@@ -1267,25 +1267,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// terminal分流：撞步数上限 ≠ 完成。max_turns→exhausted（规划者据此知道这个方向
 	// 试过但没真正做完、需换角度，而非当成已覆盖永久跳过）；出错→blocked；正常→done。
-	state := "done"
-	switch {
-	case err != nil:
-		state = "blocked"
-	case reason == harness.ReasonMaxTurns:
-		state = "exhausted"
-		log.Printf("[worker %s] intent %d 撞步数上限(exhausted)，本次写回 %s", name, intent.ID, wrote)
-	case reason == harness.ReasonTimeout:
-		state = "exhausted"
-		log.Printf("[worker %s] intent %d 运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
+	outcome := ""
+	if o, outcomeErr := t.Store.GetIntentSemanticOutcome(intent.ID); outcomeErr == nil {
+		outcome = o
 	}
-	// 语义终态提升：worker 经 conclude_intent 声明 negative / out-of-scope 时，正常完成的
-	// 意图以语义为准；blocked / exhausted 压过它——没测成不是结论（与上面的分流注释同一条纪律）。
-	if state == "done" {
-		if outcome, outcomeErr := t.Store.GetIntentSemanticOutcome(intent.ID); outcomeErr == nil {
-			if outcome == "negative" || outcome == "out-of-scope" {
-				state = outcome
-			}
-		}
+	state := settleIntentState(err, reason, wrote, outcome)
+	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
+		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
+	}
+	if state == "no_output" {
+		log.Printf("[worker %s] intent %d 正常结束但什么都没写回 → no_output（planner 可重派）", name, intent.ID)
 	}
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
 		if rerr := t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota); rerr != nil {
@@ -1300,6 +1291,36 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	e.touch(t.ID)
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
+}
+
+// settleIntentState 决定一条意图本次 run 结束后落哪个终态。抽成纯函数是因为三条规则
+// 互相压制，埋在 settler 里只能靠读代码猜：
+//
+//  1. 运行结果：出错 → blocked；撞步数上限 / 超时 → exhausted（"试过但没做完"，
+//     planner 据此换角度，而不是当成已覆盖永久跳过）；
+//  2. 语义终态：worker 经 conclude_intent 声明 negative / out-of-scope 时以语义为准；
+//     blocked / exhausted 压过它——没测成不是结论；
+//  3. **空跑**：正常结束、什么都没写回、也没有语义结论 → no_output。
+//     此前这种 run 落 done：planner 当成"已覆盖"不再派、覆盖度当成"已测"，
+//     整条方向就这样静默消失——而它可能连一次探针都没发出去。
+func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome string) string {
+	state := "done"
+	switch {
+	case err != nil:
+		state = "blocked"
+	case reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout:
+		state = "exhausted"
+	}
+	if state != "done" {
+		return state
+	}
+	if semanticOutcome == "negative" || semanticOutcome == "out-of-scope" {
+		return semanticOutcome
+	}
+	if wrote.Total() == 0 {
+		return "no_output"
+	}
+	return "done"
 }
 
 // execGate is the P13 finalization gate. A run that finishes normally while ITS OWN

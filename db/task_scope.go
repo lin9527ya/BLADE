@@ -406,7 +406,8 @@ ORDER BY ea.asset_id, area, en.id`, taskID, s.expID)
 		switch state {
 		case "done", "negative":
 			cell.Tested++
-		case "blocked", "exhausted":
+		case "blocked", "exhausted", "no_output":
+			// no_output = 跑完了却什么都没写回：按"未测成"计，绝不进 Tested。
 			cell.Failed++
 		case "out-of-scope":
 			cell.OutOfScope++
