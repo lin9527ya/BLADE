@@ -29,6 +29,8 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     setExecProcs,
     execMaxActive,
     setExecMaxActive,
+    execMaxAge,
+    setExecMaxAge,
     mcpConcurrent,
     setMcpConcurrent,
     mcpBreakerFails,
@@ -154,6 +156,15 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 inputMode="numeric"
                 value={execMaxActive}
                 onChange={(e) => setExecMaxActive(e.target.value.replace(/[^0-9]/g, ""))}
+                disabled={!loaded || savingLimits}
+              />
+            </Field>
+            <Field label="单条执行最大存活（分钟，0 = 不限）" htmlFor="exec-max-age">
+              <Input
+                id="exec-max-age"
+                inputMode="numeric"
+                value={execMaxAge}
+                onChange={(e) => setExecMaxAge(e.target.value.replace(/[^0-9]/g, ""))}
                 disabled={!loaded || savingLimits}
               />
             </Field>

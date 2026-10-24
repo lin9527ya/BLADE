@@ -1555,6 +1555,8 @@ export interface Settings {
   exec_memory_mb?: number;
   exec_max_procs?: number;
   exec_max_active?: number;
+  /** 单条托管执行的最大存活分钟数（默认 120，0 = 不限）。超龄执行会被回收。 */
+  exec_max_age_minutes?: number;
   mcp_max_concurrent_per_server?: number;
   mcp_breaker_threshold?: number;
   mcp_breaker_cooldown_sec?: number;
@@ -1598,6 +1600,10 @@ export interface Settings {
   credential_attempt_budget_action?: "allow" | "ask" | "deny";
   /** 界面显示名（P42）：空 = 内置 "BLADE"。只覆盖运行时标题；静态 HTML 的 title 是构建期常量。 */
   site_name?: string;
+  /** 允许跨源访问 API 的来源白名单（P42，逗号分隔；空 = 不发 CORS 头）。"*" 才是全开放。 */
+  cors_allowed_origins?: string;
+  /** P14 领域压缩模板的 DB 覆盖（只读回显；设置页不暴露，写入走 API/DB）。空 = 用内置 7 段模板。 */
+  compaction_prompt?: string;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链

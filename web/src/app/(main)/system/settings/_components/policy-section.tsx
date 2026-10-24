@@ -45,6 +45,10 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     siteName,
     setSiteName,
     savingSiteName,
+    corsOrigins,
+    setCorsOrigins,
+    savingCors,
+    saveCors,
     agentLootExec,
     savingLootExec,
     toggleAgentLootExec,
@@ -276,6 +280,37 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
             <code className="text-[11px]">web/src/config/app-config.ts</code>），
             要连它一起换掉得改那里重新构建——部署文档里有写。
           </p>
+        </SubBlock>
+
+        <SubBlock
+          title="跨源访问白名单"
+          icon={<RadarIcon className="text-muted-foreground size-4" />}
+          actions={
+            <Button type="button" size="sm" onClick={saveCors} disabled={!loaded || savingCors}>
+              保存
+            </Button>
+          }
+        >
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            默认不返回 CORS 头：只有本站在浏览器里访问 API。需要从别的来源（内部面板、独立脚本页）直接调
+            API 时，把来源列在这里（逗号分隔，例如{" "}
+            <code className="text-[11px]">https://ops.example.com,http://127.0.0.1:3000</code>）。
+            <br />
+            <b>填 * 等于对任何网站开放</b>——浏览器里的任意页面都能带着你的登录态调接口，
+            除非确实必要，不要这么填。配置有 60 秒缓存，保存后不一定立刻生效。
+          </p>
+          <div className="max-w-xl">
+            <Field label="来源白名单（逗号分隔，空 = 不开放）" htmlFor="cors-origins">
+              <Input
+                id="cors-origins"
+                autoComplete="off"
+                placeholder="https://ops.example.com"
+                value={corsOrigins}
+                onChange={(e) => setCorsOrigins(e.target.value)}
+                disabled={!loaded || savingCors}
+              />
+            </Field>
+          </div>
         </SubBlock>
 
         <SubBlock title="产物语言（面向目标）" icon={<LanguagesIcon className="text-muted-foreground size-4" />}>
