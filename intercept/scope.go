@@ -123,6 +123,109 @@ func shellCommandOf(toolName string, input []byte) string {
 	return ""
 }
 
+// builtinActionTools 是**会对外动手**的内置工具：停机开关与作业时间窗管的是动手，
+// 不是看图/记事实。新增动作类工具必须登记在这里，否则它只受规则/裁判约束，不受停机
+// 与时间窗约束。读类内置工具刻意不在表里。
+var builtinActionTools = map[string]bool{
+	"Bash": true, "shell_open": true, "shell_send": true, "run_execution": true,
+	"WebFetch":  true,
+	"loot_exec": true, "loot_upload": true, "loot_download": true,
+	"foothold_exec": true, "tunnel_open": true,
+	"Write": true, "Edit": true, "MultiEdit": true,
+}
+
+// actionCacheEntry 缓存一次 tools 表查询：是否为动作类，以及执行规格里可能携带的
+// 目标面（自定义 HTTP/命令工具的 URL/命令模板不在调用入参里，只在 exec 里）。
+type actionCacheEntry struct {
+	action  bool
+	surface string
+	at      time.Time
+}
+
+const actionCacheTTL = 60 * time.Second
+
+// actionSurface 判断一次调用是否属于「动手」，并返回可做 RoE 目标提取的文本。
+//
+// 分类规则：
+//   - 内置动作工具 → 按 shellCommandOf 抽目标；
+//   - MCP 工具 → 一律算动作（平台无法证明它是只读的），扫描全部字符串入参；
+//   - 自定义工具 → 回查 tools.kind，command/script/http 算动作，附带 exec 规格文本。
+//
+// 读类内置工具返回 false，因此不会被停机开关或范围门误伤。
+func (i *Interceptor) actionSurface(toolName string, input []byte) (string, bool) {
+	if builtinActionTools[toolName] {
+		return shellCommandOf(toolName, input), true
+	}
+	if strings.HasPrefix(toolName, "mcp__") {
+		return rawInputText(input), true
+	}
+	action, surface := i.customToolAction(toolName)
+	if !action {
+		return "", false
+	}
+	return strings.TrimSpace(rawInputText(input) + " " + surface), true
+}
+
+// customToolAction 回查 tools 表并缓存结果。DB 抖动时返回 false（不阻断工具），
+// 与 enabled-tools 的失效语义一致：读不出来就退回原有行为。
+func (i *Interceptor) customToolAction(toolName string) (bool, string) {
+	if i.db == nil || strings.TrimSpace(toolName) == "" {
+		return false, ""
+	}
+	i.actionMu.Lock()
+	if e, ok := i.actionCache[toolName]; ok && time.Since(e.at) < actionCacheTTL {
+		i.actionMu.Unlock()
+		return e.action, e.surface
+	}
+	i.actionMu.Unlock()
+
+	t, err := i.db.GetTool(toolName)
+	if err != nil || t == nil {
+		return false, ""
+	}
+	// builtin 工具的 kind 为空；只有自定义执行类（command/script/http）算动作。
+	action := t.Kind == "command" || t.Kind == "script" || t.Kind == "http"
+	surface := ""
+	if action {
+		surface = string(t.Exec)
+	}
+	i.actionMu.Lock()
+	if i.actionCache == nil {
+		i.actionCache = map[string]actionCacheEntry{}
+	}
+	i.actionCache[toolName] = actionCacheEntry{action: action, surface: surface, at: time.Now()}
+	i.actionMu.Unlock()
+	return action, surface
+}
+
+// rawInputText 把任意 JSON 入参里的所有字符串值拼成一段文本，供自定义/MCP 工具做
+// 目标提取。它们的 schema 是用户或外部 server 定义的，平台没有字段可依赖。
+func rawInputText(input []byte) string {
+	var v any
+	if json.Unmarshal(input, &v) != nil {
+		return string(input)
+	}
+	var b strings.Builder
+	var walk func(any)
+	walk = func(x any) {
+		switch t := x.(type) {
+		case string:
+			b.WriteString(t)
+			b.WriteByte(' ')
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return b.String()
+}
+
 var (
 	scopeURLRe    = regexp.MustCompile(`(?i)https?://([^\s/?#"'\x60]+)`)
 	scopeIPRe     = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b`)
@@ -366,18 +469,21 @@ func (i *Interceptor) scopeRows(taskID int64) ([]db.TaskScope, error) {
 
 // CheckScope gates one tool call on the task's authorization scope. It returns
 // (decision, true) only when the call must be gated (ask/deny); in-scope calls,
-// tasks without usable scope rows, unsupported tools, mode=off, and DB errors
-// all return (zero, false) — enforcement fails open, matching the judge's
-// failure behavior.
+// tasks without usable scope rows, **read-only tools**, mode=off, and DB errors
+// all return (zero, false) — enforcement fails open for reads, matching the
+// judge's failure behavior. Action-class tools (builtin action set, custom
+// command/script/http, and MCP) never bypass the kill switch or work-hours gate
+// just because no target could be extracted.
 func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName string, input json.RawMessage) (Decision, bool) {
 	// 只判**动作类**工具（能对目标动手的那些）。停机期间读图、记事实这类仍然可用：
 	// 停的是"动手"，不是"看"——把人锁在平台外面没有任何安全收益。
-	cmd := shellCommandOf(toolName, input)
-	if cmd == "" {
+	// 分类必须覆盖自定义/MCP 工具：否则一个平台不认识的工具名会连停机开关一起跳过。
+	surface, action := i.actionSurface(toolName, input)
+	if !action {
 		return Decision{}, false
 	}
-	// ① 停机开关（P35）：刻意排在模式判定**之前**。它不是"授权范围的一档"，而是"现在就停"——
-	// scope_mode=off 只意味着不做空间判定，不该顺手把紧急停机也关掉（那是最不该有的耦合）。
+	// ① 停机开关（P35）：排在目标提取与模式判定**之前**。它不是"授权范围的一档"，
+	// 而是"现在就停"——即使这条动作抽不出目标，也必须拦住。
 	if on, reason := i.KillSwitchOn(); on {
 		return Decision{
 			Action:   "deny",
@@ -421,7 +527,11 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 	if taskID == 0 {
 		return Decision{}, false
 	}
-	hits := ExtractTargetsDetailed(cmd)
+	// 动作类工具但抽不出目标：停机与时间窗已经生效，空间门无从判起。
+	if surface == "" {
+		return Decision{}, false
+	}
+	hits := ExtractTargetsDetailed(surface)
 	if len(hits) == 0 {
 		return Decision{}, false
 	}
