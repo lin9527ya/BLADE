@@ -264,6 +264,10 @@ const (
 	// 收成一条 rel 而不是每种权限一条，是因为权限名是**开放集合**（BloodHound 每版都在加），
 	// 每加一个就改一次列级 CHECK 是不能接受的；attrs 就是留给它的扩展点。
 	RelCan = "can"
+	// RelDependsOn 是**意图之间**的前置依赖：src --depends_on--> dst 表示"src 要等 dst
+	// 有结论（done/negative）才该被派给 worker"。串行利用链靠它落进图里，而不是靠
+	// planner 的 TodoWrite 临时记忆——后者重启就没、worker 也看不见。
+	RelDependsOn = "depends_on"
 	// 云上的关系**不新造边**：它们本来就能被这四条表达——
 	//   IAM 用户 → 组：member_of
 	//   主体 → 策略（附加/内联）：can，rights 写 attached / inline

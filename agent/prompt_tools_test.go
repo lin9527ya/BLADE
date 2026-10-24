@@ -15,7 +15,7 @@ func TestPlannerPromptToolReferencesExist(t *testing.T) {
 	for _, name := range []string{
 		"list_facts", "list_findings", "node_detail", "list_assets", "asset_neighbors",
 		"get_worker_output", "get_worker_trace", "lookup_playbooks", "record_playbook_feedback",
-		"add_intent", "prove_goal", "goal_met", "coverage_matrix",
+		"add_intent", "unblock_intent", "prove_goal", "goal_met", "coverage_matrix",
 		"run_execution", "wait_execution", "get_execution", "grep_execution", "cancel_execution",
 		"kill_work", "steer_work", "accept_artifact_risk", "tunnel_open",
 	} {

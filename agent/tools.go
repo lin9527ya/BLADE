@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -561,9 +562,26 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	hidden := func(id int64) bool { _, c := covered[id]; return c && !hotAtRender[id] }
 	const openIntentsCap = 30
-	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
-	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
+	fr, _ := t.ts.Frontier(openIntentsCap) // 可领的（前置已满足）；真实总数见 frontier_open
 	all, _ := t.ts.ListByKind(db.KindIntent, 300)
+	// 展示用「全部 open」而不是 frontier：被前置挡住的意图**也是 planner 要看见的**
+	// ——它得知道"我派了、但它在等谁"，否则只会反复重派或以为系统没跑。
+	var openIntents []*db.Node
+	for _, n := range all {
+		if n.State == "open" {
+			openIntents = append(openIntents, n)
+		}
+	}
+	sort.SliceStable(openIntents, func(i, j int) bool {
+		if openIntents[i].Priority != openIntents[j].Priority {
+			return openIntents[i].Priority > openIntents[j].Priority
+		}
+		return openIntents[i].ID < openIntents[j].ID
+	})
+	if len(openIntents) > openIntentsCap {
+		openIntents = openIntents[:openIntentsCap]
+	}
+	out["open_intents"] = compactIntents(openIntents, parentsOf, yieldsOf)
 	var running, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
@@ -577,6 +595,40 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	// 串行链：前置未满足的意图**不会**被 worker 领走（Frontier/ClaimIntent 都有闸门）。
+	// 必须把这件事摆到规划层面前——否则它会以为"我派了、怎么没人跑"，或者反复重派。
+	if deps, derr := t.ts.IntentDependencies(); derr == nil && len(deps) > 0 {
+		stateByID := make(map[int64]string, len(all))
+		summaryByID := make(map[int64]string, len(all))
+		for _, n := range all {
+			stateByID[n.ID] = n.State
+			var p map[string]any
+			if json.Unmarshal(n.Payload, &p) == nil {
+				summaryByID[n.ID] = asText(p["summary"])
+			}
+		}
+		blocked := 0
+		if items, ok := out["open_intents"].([]map[string]any); ok {
+			for _, it := range items {
+				id, _ := it["id"].(int64)
+				depIDs := deps[id]
+				if len(depIDs) == 0 {
+					continue
+				}
+				blocked++
+				by := make([]map[string]any, 0, len(depIDs))
+				for _, d := range depIDs {
+					by = append(by, map[string]any{
+						"id": d, "state": stateByID[d], "summary": clipLine(summaryByID[d], 60),
+					})
+				}
+				it["blocked_by"] = by
+			}
+		}
+		if blocked > 0 {
+			out["blocked_intents_total"] = blocked
+		}
+	}
 	// done_intents_total：已结束意图（done/blocked/exhausted）总数，与 recent_done_intents
 	// 平行命名——后者只是它的最新窗口截断视图。两键并排即自描述："看到的是 N/总数"，
 	// 让 planner 去重时别把"没显示"当成"没派过"，无需在提示词里另行解释。
@@ -1438,10 +1490,12 @@ type intentItem struct {
 	AssetIDs    []json.RawMessage `json:"asset_ids"`
 	ParentIDs   []json.RawMessage `json:"parent_ids"`
 	UsesLootIDs []json.RawMessage `json:"uses_loot_ids"`
-	GoalID      json.RawMessage   `json:"goal_id"`
-	Priority    int               `json:"priority"`
-	RiskArea    string            `json:"risk_area"`
-	Techniques  []string          `json:"techniques"`
+	// DependsOn 是串行链的前置意图：它们有结论（done/negative）之前，本条不会被派给 worker。
+	DependsOn  []json.RawMessage `json:"depends_on"`
+	GoalID     json.RawMessage   `json:"goal_id"`
+	Priority   int               `json:"priority"`
+	RiskArea   string            `json:"risk_area"`
+	Techniques []string          `json:"techniques"`
 }
 
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
@@ -1509,6 +1563,18 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		}
 		if n.State != db.StateLootActive {
 			return 0, "", fmt.Errorf("战果节点 %d 当前状态是 %q（已失效）：不能按它派意图，请先确认它是否还能用", lid, n.State)
+		}
+	}
+	// 串行链：前置必须是本任务的意图。**不必查环**——新意图此刻还没有任何出边，
+	// 环只能由"先建 A 再给 B 加边指向 A"之外的路径形成，而本入口只在新节点上建边。
+	deps := pidList(it.DependsOn)
+	for _, dep := range deps {
+		n, err := t.ts.GetNode(dep)
+		if err != nil || n == nil {
+			return 0, "", fmt.Errorf("depends_on 里的 %d 不存在于本任务：前置只能是本任务的意图 id", dep)
+		}
+		if n.Kind != db.KindIntent {
+			return 0, "", fmt.Errorf("depends_on 里的 %d 是 %q 节点，不是意图：串行链的前置只能是意图", dep, n.Kind)
 		}
 	}
 	priority := it.Priority
@@ -1593,6 +1659,10 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	for _, lid := range lootIDs {
 		_ = t.ts.Link(id, db.RelUses, lid)
 	}
+	// 串行链：意图 --depends_on--> 前置。Frontier/ClaimIntent 都按这条边拦"前置还没有结论"。
+	for _, dep := range deps {
+		_ = t.ts.Link(id, db.RelDependsOn, dep)
+	}
 	// a top-level intent with NO goal edge connects to the origin fact, so every
 	// intent still traces back to a fact node — at task start the only fact is the
 	// origin, and the first intents derive from it. (With a goal edge the intent
@@ -1600,6 +1670,19 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if len(parents) == 0 && goalID == 0 {
 		if origin, _ := t.ts.OriginFactID(); origin > 0 {
 			_ = t.ts.Link(origin, db.RelDerivedFrom, id)
+		}
+	}
+	if len(deps) > 0 {
+		parts := make([]string, 0, len(deps))
+		for _, d := range deps {
+			parts = append(parts, fmt.Sprintf("#%d", d))
+		}
+		warn := fmt.Sprintf("本条在等前置 %s 有结论（done/negative）之前不会被派给 worker；前置卡住时可用 unblock_intent 拆链。",
+			strings.Join(parts, "、"))
+		if note == "" {
+			note = warn
+		} else {
+			note += " " + warn
 		}
 	}
 	if riskArea == "other" && strings.TrimSpace(it.RiskArea) == "" {
@@ -1624,6 +1707,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"asset_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
 			"goal_id":       idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
+			"depends_on":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
 			"uses_loot_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":      intp("优先级 0-10，默认5"),
 			"risk_area":     str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
@@ -3300,7 +3384,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
-		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
+		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.unblockIntent(), t.proveGoal(), t.goalMet(),
 		t.acceptArtifactRisk(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
