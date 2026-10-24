@@ -45,6 +45,9 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     siteName,
     setSiteName,
     savingSiteName,
+    agentLootExec,
+    savingLootExec,
+    toggleAgentLootExec,
     enforce,
     killReason,
     setKillReason,
@@ -351,6 +354,29 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
             ——那是客户复盘时要核对的东西。它保护的是目标的可用性，与内置规则拒 <code>rm -rf /</code>、
             <code>DROP TABLE</code> 是同一类。
           </p>
+        </SubBlock>
+
+        <SubBlock title="战果直接执行（loot_exec）" icon={<ShieldAlertIcon className="size-4 text-muted-foreground" />}>
+          <SwitchRow
+            id="agent-loot-exec"
+            describedBy="agent-loot-exec-description"
+            label={agentLootExec ? "已开启 · Agent 可用登记过的凭据直连目标" : "已关闭（默认）· 模型需自己用 Bash 构造连接"}
+            checked={agentLootExec}
+            disabled={!loaded || savingLootExec}
+            onChange={toggleAgentLootExec}
+            hint={
+              <>
+                默认关闭。开启后，Agent 可以用一条<strong>已登记的凭据</strong>（口令 / 私钥）直接对目标执行命令（ssh
+                / mysql），不必再把明文贴进命令行：明文经 <code>0600</code> 临时文件交给客户端，命令、执行台账与时间线里
+                都不含明文，只记指纹。
+                <br />
+                它<strong>不改变授权边界</strong>——授权范围（RoE）、作业时间窗与停机开关照常生效，host 必须是凭据
+                targets 里登记过的目标。关闭时该工具不出现在 Agent 的工具面里。
+                <br />
+                对下一轮装配生效；已经发起的后台执行不受影响。
+              </>
+            }
+          />
         </SubBlock>
 
         <SubBlock title="可检出性知识库（事前）" icon={<ScanSearchIcon className="text-muted-foreground size-4" />}>

@@ -49,6 +49,7 @@ export function exposureWeight(exposure: string): number {
 export function useSettingsState() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
+  const [agentLootExec, setAgentLootExec] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
@@ -79,6 +80,7 @@ export function useSettingsState() {
   const [section, setSection] = React.useState<SectionId>("basic");
   // 曾经的共享 `saving` 会让流量捕获 / 网络搜索 / Python 三处互相禁用控件——按用途拆开。
   const [savingTraffic, setSavingTraffic] = React.useState(false);
+  const [savingLootExec, setSavingLootExec] = React.useState(false);
   const [savingWebSearch, setSavingWebSearch] = React.useState(false);
   const [savingPython, setSavingPython] = React.useState(false);
   const [savingKey, setSavingKey] = React.useState(false);
@@ -148,6 +150,7 @@ export function useSettingsState() {
   const apply = React.useCallback((s: Settings) => {
     setTrafficCapture(!!s.traffic_capture);
     setAgentTrafficBinding(!!s.agent_traffic_binding);
+    setAgentLootExec(!!s.agent_loot_exec);
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
@@ -546,6 +549,22 @@ export function useSettingsState() {
       .finally(() => setSavingTraffic(false));
   };
 
+  const toggleAgentLootExec = (v: boolean) => {
+    setAgentLootExec(v); // optimistic
+    setSavingLootExec(true);
+    api
+      .setSettings({ agent_loot_exec: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启战果直接执行" : "已关闭战果直接执行");
+      })
+      .catch((e) => {
+        setAgentLootExec(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingLootExec(false));
+  };
+
   const toggleInjectWorker = (v: boolean) => {
     setInjectWorker(v); // optimistic
     api
@@ -792,6 +811,10 @@ export function useSettingsState() {
     setSection,
     savingTraffic,
     setSavingTraffic,
+    agentLootExec,
+    setAgentLootExec,
+    savingLootExec,
+    toggleAgentLootExec,
     savingWebSearch,
     setSavingWebSearch,
     savingPython,
