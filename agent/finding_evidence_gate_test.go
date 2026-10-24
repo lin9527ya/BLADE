@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 // 证据分级：critical/high 没有 evidence 一律拒收，medium/low 保持可选。
@@ -55,5 +57,44 @@ func TestReportFindingRequiresEvidenceForHighSeverity(t *testing.T) {
 		`"evidence":"curl 'http://t/?id=1%20AND%20sleep(5)' → 响应延迟 5s；同接口 id=1 无延迟"}`)
 	if !strings.HasPrefix(out, "finding recorded: ") {
 		t.Fatalf("有证据的高危应可登记：%s", out)
+	}
+}
+
+// 严重度是报告排序与统计的键，不是自由文本：别名/中文一律拒收，大小写与空格归一化。
+func TestReportFindingValidatesSeverity(t *testing.T) {
+	d := testDB(t)
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTask("severity gate", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	ts := NewToolSet(nil, "")
+	ts.ts, ts.taskID = d.Exploration(task.ExplorationID), task.ID
+	tool := ts.addFinding()
+
+	for _, sev := range []string{"info", "高", "严重", "P1"} {
+		res, err := tool.Call(context.Background(), json.RawMessage(
+			`{"vulnclass":"x","severity":"`+sev+`","summary":"x","evidence":"e","confidence":"medium"}`), nil)
+		if err != nil || !res.IsError || !strings.Contains(res.Flatten(), "取值必须是 critical|high|medium|low") {
+			t.Fatalf("severity=%q 应被拒收：err=%v out=%s", sev, err, res.Flatten())
+		}
+	}
+
+	res, err := tool.Call(context.Background(), json.RawMessage(
+		`{"vulnclass":"xss","severity":" HIGH ","summary":"大小写应归一化","evidence":"<script> 回显","confidence":"high"}`), nil)
+	if err != nil || !strings.HasPrefix(res.Flatten(), "finding recorded: ") {
+		t.Fatalf("大小写/空格应被归一化后接受：err=%v out=%s", err, res.Flatten())
+	}
+	var out db.RecordedFinding
+	if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &out); err != nil {
+		t.Fatal(err)
+	}
+	f, err := d.GetFinding(out.FindingID)
+	if err != nil || f == nil {
+		t.Fatalf("读取发现：%v", err)
+	}
+	if f.Severity != "high" {
+		t.Fatalf("落库的严重度应归一化为 high，实际 %q", f.Severity)
 	}
 }

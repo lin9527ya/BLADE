@@ -19,7 +19,7 @@ import (
 // sortFindingsForExport 按严重等级降序、再按时间倒序排,与汇总报告的分组一致。
 func sortFindingsForExport(fs []*db.DBFinding) {
 	sort.SliceStable(fs, func(i, j int) bool {
-		ri, rj := sevRank[fs[i].Severity], sevRank[fs[j].Severity]
+		ri, rj := sevOrder(fs[i].Severity), sevOrder(fs[j].Severity)
 		if ri != rj {
 			return ri < rj // sevRank 越小越严重
 		}
@@ -45,8 +45,14 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 
 	// 摘要:各严重等级计数。
 	counts := map[string]int{}
+	unknown := 0
 	for _, f := range items {
-		counts[f.Severity]++
+		sev := strings.ToLower(strings.TrimSpace(f.Severity))
+		if !db.ValidSeverity(sev) {
+			unknown++
+			continue
+		}
+		counts[sev]++
 	}
 	b.WriteString("## 摘要\n\n")
 	b.WriteString("| 严重等级 | 数量 |\n| --- | --- |\n")
@@ -54,6 +60,11 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 		{"critical", "严重"}, {"high", "高危"}, {"medium", "中危"}, {"low", "低危"},
 	} {
 		fmt.Fprintf(&b, "| %s | %d |\n", s.label, counts[s.key])
+	}
+	// 未标定的严重度必须显式计数：静默不计会让表里的数字加起来小于发现总数，
+	// 而读者无从知道少掉的那些去哪了。
+	if unknown > 0 {
+		fmt.Fprintf(&b, "| 未标定 | %d |\n", unknown)
 	}
 	b.WriteString("\n")
 

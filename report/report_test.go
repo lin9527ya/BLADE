@@ -349,3 +349,33 @@ func TestMarkdownDetectionSection(t *testing.T) {
 		t.Errorf("没有检测记录时不该出现这一节：\n%s", empty)
 	}
 }
+
+// 严重度排序：未知值必须排到最后，而不是因为查表返回零值被当成最高危。
+func TestSevOrderPutsUnknownLast(t *testing.T) {
+	if sevOrder("critical") >= sevOrder("high") || sevOrder("high") >= sevOrder("medium") || sevOrder("medium") >= sevOrder("low") {
+		t.Fatal("已知严重度的先后顺序不对")
+	}
+	for _, unknown := range []string{"", "严重", "info", "P1"} {
+		if got := sevOrder(unknown); got != 4 {
+			t.Fatalf("未知严重度 %q 应排到最后（4），实际 %d", unknown, got)
+		}
+	}
+	// 大小写/空格归一化后仍是已知档，不该被当成未知排到最后。
+	if sevOrder(" HIGH ") != 1 || sevOrder("Critical") != 0 {
+		t.Fatalf("大小写/空格应归一化：HIGH=%d Critical=%d", sevOrder(" HIGH "), sevOrder("Critical"))
+	}
+}
+
+// 统计表必须能加得起来：未标定的严重度单列一行，而不是被静默丢弃。
+func TestSeveritySummaryCountsUnknown(t *testing.T) {
+	md := FindingsMarkdown([]*db.DBFinding{
+		{ID: 1, Severity: "high"},
+		{ID: 2, Severity: "High"},
+		{ID: 3, Severity: "非常严重"},
+	}, time.Now())
+	for _, want := range []string{"| 高危 | 2 |", "| 未标定 | 1 |"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("统计表缺少 %q：\n%s", want, md)
+		}
+	}
+}

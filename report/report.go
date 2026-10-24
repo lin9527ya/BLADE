@@ -273,7 +273,23 @@ func parseFinding(n *db.Node) findingView {
 	return findingView{p.VulnClass, p.Name, p.Severity, p.Summary, p.Evidence.PoC}
 }
 
-var sevRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "": 4}
+// sevOrder 给严重度排序：越小越严重。未知值一律排到最后。
+//
+// 此前用 `sevRank[sev]` 直接查表：查不到的键返回零值 0，于是 "High"、"严重"、拼错的
+// 词都被排成比 critical 还靠前——报告的头条会是一条根本不知道严重度是什么的发现。
+func sevOrder(sev string) int {
+	switch strings.ToLower(strings.TrimSpace(sev)) {
+	case "critical":
+		return 0
+	case "high":
+		return 1
+	case "medium":
+		return 2
+	case "low":
+		return 3
+	}
+	return 4
+}
 
 // lootView 是战果节点渲染所需的最小字段集。Secret 只用于判断"这条凭据有没有本体"
 // ——**它不参与渲染**，见 Input.Footholds 处的说明。
@@ -615,7 +631,7 @@ func Markdown(in Input) string {
 		for _, n := range in.Findings {
 			rows = append(rows, findingRow{n, parseFinding(n)})
 		}
-		sort.SliceStable(rows, func(i, j int) bool { return sevRank[rows[i].view.Severity] < sevRank[rows[j].view.Severity] })
+		sort.SliceStable(rows, func(i, j int) bool { return sevOrder(rows[i].view.Severity) < sevOrder(rows[j].view.Severity) })
 		for i, r := range rows {
 			f := r.view
 			fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
