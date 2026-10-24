@@ -50,6 +50,7 @@ export function useSettingsState() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [agentLootExec, setAgentLootExec] = React.useState(false);
+  const [agentAutoRetest, setAgentAutoRetest] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
@@ -81,6 +82,7 @@ export function useSettingsState() {
   // 曾经的共享 `saving` 会让流量捕获 / 网络搜索 / Python 三处互相禁用控件——按用途拆开。
   const [savingTraffic, setSavingTraffic] = React.useState(false);
   const [savingLootExec, setSavingLootExec] = React.useState(false);
+  const [savingAutoRetest, setSavingAutoRetest] = React.useState(false);
   const [savingWebSearch, setSavingWebSearch] = React.useState(false);
   const [savingPython, setSavingPython] = React.useState(false);
   const [savingKey, setSavingKey] = React.useState(false);
@@ -151,6 +153,7 @@ export function useSettingsState() {
     setTrafficCapture(!!s.traffic_capture);
     setAgentTrafficBinding(!!s.agent_traffic_binding);
     setAgentLootExec(!!s.agent_loot_exec);
+    setAgentAutoRetest(!!s.agent_auto_retest);
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
@@ -565,6 +568,22 @@ export function useSettingsState() {
       .finally(() => setSavingLootExec(false));
   };
 
+  const toggleAgentAutoRetest = (v: boolean) => {
+    setAgentAutoRetest(v); // optimistic
+    setSavingAutoRetest(true);
+    api
+      .setSettings({ agent_auto_retest: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启自动复测" : "已关闭自动复测");
+      })
+      .catch((e) => {
+        setAgentAutoRetest(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingAutoRetest(false));
+  };
+
   const toggleInjectWorker = (v: boolean) => {
     setInjectWorker(v); // optimistic
     api
@@ -815,6 +834,10 @@ export function useSettingsState() {
     setAgentLootExec,
     savingLootExec,
     toggleAgentLootExec,
+    agentAutoRetest,
+    setAgentAutoRetest,
+    savingAutoRetest,
+    toggleAgentAutoRetest,
     savingWebSearch,
     setSavingWebSearch,
     savingPython,
