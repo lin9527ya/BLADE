@@ -103,6 +103,8 @@ export function useSettingsState() {
   const [execMem, setExecMem] = React.useState("0");
   const [execProcs, setExecProcs] = React.useState("0");
   const [execMaxActive, setExecMaxActive] = React.useState("8");
+  // 单条托管执行的最大存活分钟数（默认 120，0 = 不限）。
+  const [execMaxAge, setExecMaxAge] = React.useState("120");
   const [mcpConcurrent, setMcpConcurrent] = React.useState("2");
   const [mcpBreakerFails, setMcpBreakerFails] = React.useState("5");
   const [mcpBreakerCooldown, setMcpBreakerCooldown] = React.useState("60");
@@ -142,9 +144,11 @@ export function useSettingsState() {
   const [credBudget, setCredBudget] = React.useState("3");
   const [credBudgetAction, setCredBudgetAction] = React.useState<"allow" | "ask" | "deny">("ask");
   const [savingCredBudget, setSavingCredBudget] = React.useState(false);
-  // P42 显示名（空 = 内置 BLADE）。
+  // P42 显示名（空 = 内置 BLADE）与 CORS 来源白名单（空 = 不发 CORS 头）。
   const [siteName, setSiteName] = React.useState("");
   const [savingSiteName, setSavingSiteName] = React.useState(false);
+  const [corsOrigins, setCorsOrigins] = React.useState("");
+  const [savingCors, setSavingCors] = React.useState(false);
   // P35 停机开关与作业时间窗的**执行状态**（不是设置）：到点/停机时平台停到哪一步了。
   const [enforce, setEnforce] = React.useState<ScopeEnforcement | null>(null);
   const [killReason, setKillReason] = React.useState("");
@@ -192,6 +196,7 @@ export function useSettingsState() {
     setCredBudget(String(s.credential_attempt_budget ?? 3));
     setCredBudgetAction(s.credential_attempt_budget_action ?? "ask");
     setSiteName(s.site_name ?? "");
+    setCorsOrigins(s.cors_allowed_origins ?? "");
     setIntelKeySet(!!s.fofa_key_set);
     setIntelEmail(s.fofa_email ?? "");
     setIntelBaseURL(s.fofa_base_url ?? "");
@@ -202,6 +207,7 @@ export function useSettingsState() {
     setExecMem(String(s.exec_memory_mb ?? 0));
     setExecProcs(String(s.exec_max_procs ?? 0));
     setExecMaxActive(String(s.exec_max_active ?? 8));
+    setExecMaxAge(String(s.exec_max_age_minutes ?? 120));
     setMcpConcurrent(String(s.mcp_max_concurrent_per_server ?? 2));
     setMcpBreakerFails(String(s.mcp_breaker_threshold ?? 5));
     setMcpBreakerCooldown(String(s.mcp_breaker_cooldown_sec ?? 60));
@@ -335,6 +341,7 @@ export function useSettingsState() {
         exec_memory_mb: Math.max(0, Number(execMem) || 0),
         exec_max_procs: Math.max(0, Number(execProcs) || 0),
         exec_max_active: Math.max(0, Number(execMaxActive) || 0),
+        exec_max_age_minutes: Math.max(0, Number(execMaxAge) || 0),
         mcp_max_concurrent_per_server: Math.max(0, Number(mcpConcurrent) || 0),
         mcp_breaker_threshold: Math.max(0, Number(mcpBreakerFails) || 0),
         mcp_breaker_cooldown_sec: Math.max(0, Number(mcpBreakerCooldown) || 0),
@@ -494,6 +501,18 @@ export function useSettingsState() {
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingSiteName(false));
+  };
+
+  const saveCors = () => {
+    setSavingCors(true);
+    api
+      .setSettings({ cors_allowed_origins: corsOrigins.trim() })
+      .then((next) => {
+        apply(next);
+        toast.success(corsOrigins.trim() ? "已保存跨源白名单（60 秒内生效）" : "已清空跨源白名单（不再返回 CORS 头）");
+      })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .finally(() => setSavingCors(false));
   };
 
   const loadEnforcement = React.useCallback(() => {
@@ -944,6 +963,8 @@ export function useSettingsState() {
     setExecProcs,
     execMaxActive,
     setExecMaxActive,
+    execMaxAge,
+    setExecMaxAge,
     mcpConcurrent,
     setMcpConcurrent,
     mcpBreakerFails,
@@ -1012,6 +1033,10 @@ export function useSettingsState() {
     setSiteName,
     savingSiteName,
     setSavingSiteName,
+    corsOrigins,
+    setCorsOrigins,
+    savingCors,
+    saveCors,
     enforce,
     setEnforce,
     killReason,

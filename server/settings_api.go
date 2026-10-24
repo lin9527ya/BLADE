@@ -73,6 +73,15 @@ func corsAllowedOriginsSetting(pg *db.DB) string {
 	return strings.TrimSpace(v)
 }
 
+// compactionPromptSetting 读领域压缩模板的 DB 覆盖（空 = 用内置 7 段模板）。只读回显。
+func compactionPromptSetting(pg *db.DB) string {
+	v, ok, err := pg.GetSetting(settingCompactionPrompt)
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
 // siteNameSetting 读界面显示名（空 = 内置 BLADE）。
 func siteNameSetting(pg *db.DB) string {
 	v, ok, err := pg.GetSetting(settingSiteName)
@@ -169,6 +178,9 @@ func (s *Server) settingsPayload() map[string]any {
 		"credential_attempt_budget_action": s.m.interceptor.CredentialBudgetAction(),
 		"site_name":                        siteNameSetting(s.m.pg),
 		"cors_allowed_origins":             corsAllowedOriginsSetting(s.m.pg),
+		// P14 领域压缩模板：只读回显 DB 覆盖（空 = 内置模板）。设置页不暴露编辑框，
+		// 写入走 API/DB；在 settings_contract_test.go 的 settingsReadOnly 里登记了理由。
+		"compaction_prompt": compactionPromptSetting(s.m.pg),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		// P21 情报源：key 与 web search 同款——只回"是否已配"，绝不回显明文。
