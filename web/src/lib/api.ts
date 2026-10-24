@@ -1539,6 +1539,20 @@ export const api = {
 
   // ---- intercept pending (ask) ----
   interceptPending: () => get<{ pending: InterceptPending[] }>("/intercept/pending").then((r) => arr(r.pending)),
+  /** 只要计数：徽章轮询不该把每一行的完整 tool_input 都拉回来。 */
+  interceptPendingCount: () =>
+    get<{ pending_count: number }>("/intercept/pending?count=1").then((r) => r.pending_count ?? 0),
+  /** 仪表盘只要前几条 + 总数；不传参数时仍是全量列表。 */
+  interceptPendingRecent: (limit = 3) =>
+    get<{ pending: InterceptPending[]; pending_count?: number }>(`/intercept/pending?limit=${limit}`).then((r) => ({
+      pending: arr(r.pending),
+      total: r.pending_count ?? arr(r.pending).length,
+    })),
+  /** 任务页签徽章：只要本任务的待审批数。 */
+  interceptTaskCount: (taskId: string) =>
+    get<{ pending_count: number }>(`/intercept/task/${encodeURIComponent(taskId)}?count=1`).then(
+      (r) => r.pending_count ?? 0,
+    ),
   interceptGetOne: (id: number) => get<InterceptPending>(`/intercept/pending/${id}`),
   // editedInput（P15）：改参放行。只允许"比原参数更保守"的修改，服务端用
   // intercept.Narrow 复核，不合规返回 400 并把越界原因写在 message 里。
