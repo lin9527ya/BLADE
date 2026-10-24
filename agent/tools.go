@@ -72,6 +72,9 @@ type ToolSet struct {
 	// pol（P20）是本任务的探索策略：意图层硬门（add_intent）按它判定。
 	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
 	pol *policy.Effective
+	// workerCap 是本任务的 worker 池大小（0 = 未知/不启用）。用途只有一个：
+	// 队列背压——待领意图超过 intentQueueFactor×workerCap 时拒收低优先级新意图。
+	workerCap int
 	// intentsRound 计本 ToolSet 生命周期内成功创建的意图数 —— planner 每轮新建一个
 	// ToolSet，所以它天然是"本轮已用额度"。
 	intentsRound int
@@ -254,6 +257,10 @@ func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 // SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
 func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
 
+// SetWorkerCap 注入本任务的 worker 池大小，用于队列背压（0 = 不启用）。
+// 由 planner 按**任务运行时的池快照**注入——实时读设置会让改过 workers 的任务按错误容量排队。
+func (t *ToolSet) SetWorkerCap(n int) { t.workerCap = n }
+
 // SetPolicyAudit 注入"意图被策略拒绝"的留痕通道（引擎活动流）。
 func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 
@@ -261,12 +268,18 @@ func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 // 本轮用量从 ToolSet 计数起算并在批量循环里累加（一批 4 条不该打 8 次库）。
 func (t *ToolSet) beginIntentQuota() *intentQuota {
 	q := &intentQuota{round: t.intentsRound}
-	if t.pol != nil && !t.pol.IsZero() && t.ts != nil {
+	if t.ts != nil && (t.workerCap > 0 || (t.pol != nil && !t.pol.IsZero())) {
 		if n, err := t.ts.CountOpenIntents(); err == nil {
 			q.open = n
 		}
 		if n, err := t.ts.CountIntents(); err == nil {
 			q.total = n
+		}
+	}
+	// 队列背压只看可领数（被前置挡住的步骤不消耗 worker）。
+	if t.ts != nil && t.workerCap > 0 {
+		if n, err := t.ts.CountClaimableIntents(); err == nil {
+			q.claimable = n
 		}
 	}
 	return q
@@ -277,6 +290,9 @@ type intentQuota struct {
 	open  int
 	total int
 	round int
+	// claimable 是"现在就能被 worker 领走"的条数（不含 depends_on 未满足的）。队列背压按它算：
+	// 被前置挡住的步骤不消耗 worker，拿它们占额度会在 worker 全空闲时反而拒新活。
+	claimable int
 	// pool 是防打转判定的对比池（见 intent_dedup.go）：同一批里的重复也要当场拦住，
 	// 所以整批共享一份，每建一条就追加进去。
 	pool       []intentFP
@@ -628,6 +644,27 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		if blocked > 0 {
 			out["blocked_intents_total"] = blocked
 		}
+	}
+	// 队列深度与容量：planner 判断"还能不能再派"唯一该看的数。
+	// frontier_open 仍保留（含被前置挡住的），但判定请用 claimable_intents。
+	if claimable, err := t.ts.CountClaimableIntents(); err == nil {
+		out["claimable_intents"] = claimable
+	}
+	if t.workerCap > 0 {
+		q := map[string]any{
+			"workers": t.workerCap, "soft_limit": intentQueueFactor * t.workerCap,
+			"running": len(running),
+		}
+		if v, ok := out["claimable_intents"].(int); ok {
+			q["claimable"] = v
+			if v >= intentQueueFactor*t.workerCap {
+				q["saturated"] = true
+			}
+		}
+		if v, ok := out["blocked_intents_total"].(int); ok {
+			q["blocked"] = v
+		}
+		out["intent_queue"] = q
 	}
 	// done_intents_total：已结束意图（done/blocked/exhausted）总数，与 recent_done_intents
 	// 平行命名——后者只是它的最新窗口截断视图。两键并排即自描述："看到的是 N/总数"，
@@ -1570,6 +1607,13 @@ type intentItem struct {
 	Techniques []string          `json:"techniques"`
 }
 
+// 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
+// urgent 及以上是逃生口——材料性新发现（新战果、新漏洞链）驱动的跟进不该被队列挡住。
+const (
+	intentQueueFactor         = 2
+	intentQueueUrgentPriority = 8
+)
+
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
 // 血缘有三条正交的轴：
 //   - 知识轴：parent_ids → derived_from（只能锚已确认的 fact/finding），顶层留空时兜底连 origin fact；
@@ -1640,6 +1684,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 串行链：前置必须是本任务的意图。**不必查环**——新意图此刻还没有任何出边，
 	// 环只能由"先建 A 再给 B 加边指向 A"之外的路径形成，而本入口只在新节点上建边。
 	deps := pidList(it.DependsOn)
+	depsSatisfied := true
 	for _, dep := range deps {
 		n, err := t.ts.GetNode(dep)
 		if err != nil || n == nil {
@@ -1648,10 +1693,22 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		if n.Kind != db.KindIntent {
 			return 0, "", fmt.Errorf("depends_on 里的 %d 是 %q 节点，不是意图：串行链的前置只能是意图", dep, n.Kind)
 		}
+		if n.State != "done" && n.State != "negative" {
+			depsSatisfied = false
+		}
 	}
 	priority := it.Priority
 	if priority == 0 {
 		priority = 5
+	}
+	// ── 队列背压（软上限）──
+	// 生产端每次唤醒最多 4 条，消化端只有 workers 个 worker、每条跑几分钟——不设上限时
+	// 待领意图会一路涨。按**可领**计数：被前置挡住的链路步骤不消耗 worker，也不占额度
+	// （它们此刻进不了 frontier）；而带已满足前置的意图立即可领，照样受上限约束。
+	if t.workerCap > 0 && depsSatisfied && priority < intentQueueUrgentPriority && q.claimable >= intentQueueFactor*t.workerCap {
+		return 0, "", fmt.Errorf("队列里已有 %d 条可领方向（worker %d 个，上限 %d）：本轮先让 worker 消化，不再接常规新方向。"+
+			"确有材料性新发现驱动的跟进，把 priority 提到 %d 以上再提交；已过时的排队方向用 drop_intent 清掉",
+			q.claimable, t.workerCap, intentQueueFactor*t.workerCap, intentQueueUrgentPriority)
 	}
 	anchors := pidList(it.AssetIDs)
 	// 资产拦截：意图绑定的资产若命中系统资产拦截规则，则禁止下发该意图。
@@ -1690,6 +1747,11 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		return 0, "", err
 	}
 	q.round++
+	q.open++
+	q.total++
+	if depsSatisfied {
+		q.claimable++
+	}
 	t.intentsRound++
 	// 同一批里刚建的方向也要参与后续判定：否则一次 add_intent 带 4 条同义意图时，
 	// 它们互相都看不见，等于没拦。
@@ -3470,7 +3532,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
-		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.unblockIntent(), t.proveGoal(), t.goalMet(),
+		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		t.acceptArtifactRisk(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。

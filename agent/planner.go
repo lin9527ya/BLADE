@@ -45,6 +45,7 @@ type Planner struct {
 	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
 	// 改策略下一轮生效，无需重建 agent。
 	policyFn     func() *policy.Effective
+	workersFn    func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn  func() int  // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor    *Compactor  // cold-node compaction (§7); nil = disabled
@@ -81,6 +82,17 @@ func (p *Planner) SetExecService(svc ExecService) { p.execService = svc }
 
 // SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
 func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = fn }
+
+// SetWorkersResolver 注入本任务**运行时**的 worker 池大小（队列背压用；nil/0 = 不启用上限）。
+// 用池快照而不是实时设置：改 workers 只影响之后启动的任务，按实时值排队会算错容量。
+func (p *Planner) SetWorkersResolver(fn func() int) { p.workersFn = fn }
+
+func (p *Planner) workers() int {
+	if p.workersFn == nil {
+		return 0
+	}
+	return p.workersFn()
+}
 
 // policy 取本轮的策略快照（解析器未接线 → nil = 不判定）。
 func (p *Planner) policy() *policy.Effective {
@@ -382,13 +394,13 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 任务目标：{{.Goal}}
 
 **本轮该产出几个意图（先想清楚这条）**：
-- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 open 或 running 意图】（frontier_open=0 且 running_intents 为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。**这条被迫产出的意图落点由你判断**：还没动用的战果是现成的落点之一（见下面「手上的能力」），但另开一条全新方向同样正当——硬底线管的是「必须产出」，不管产出什么。
+- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何**可领**或 running 意图】（claimable_intents=0 且 running_intents 为空——被前置挡住的意图不算"有活可干"），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。**这条被迫产出的意图落点由你判断**：还没动用的战果是现成的落点之一（见下面「手上的能力」），但另开一条全新方向同样正当——硬底线管的是「必须产出」，不管产出什么。
 - 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
 - 反过来：确有【未覆盖、且不依赖在跑 work】的新方向，或目标未达成且范围内仍有未测面，就该派——别把 0 意图当偷懒的默认。
 
 **每次唤醒的决策流程**：
 
-1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态、open/running/recent_done 意图、sites_without_endpoints（无端点的站点，提示可能待探的方向）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）。
+1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态、open/running/recent_done 意图、sites_without_endpoints（无端点的站点，提示可能待探的方向）、claimable_intents / intent_queue（队列深度与容量：派新方向前先看它）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）。
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
@@ -428,6 +440,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    **串行利用链：用 depends_on 把依赖写进图，别靠记忆。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：把下游的 add_intent 带上 depends_on=[上游意图 id]，系统会在上游以 done/negative 收场前**不把下游派给 worker**（下游拿不到前置只会空转）；态势里这些意图会带 blocked_by。上游卡住（blocked/exhausted/no_output）时下游会一直停着：重派上游，或判定不等它了就调 unblock_intent 拆链（并把它缺的结论先用 record_fact 写下来）。TodoWrite 只用来记"这条链整体还剩几步"给下一轮的自己看，不再承担依赖判断。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才用多意图并行。
 
 5. **提交**：用【一次】add_intent 批量提交筛出的新方向（intents 数组，最多 4 个最高价值的，不要逐条多次调）：
+   - **队列有上限（背压）**：态势里 intent_queue.claimable ≥ soft_limit（默认 2×worker 数）时，本轮默认**不新增**——先让 worker 消化；确有【材料性新发现驱动的跟进】（刚确认的漏洞链、新战果、新入口）才加，且一次最多 1 条，并把 priority 提到 8 以上绕过上限。判定看 claimable_intents，不要看 frontier_open（后者含被前置挡住的）。
    - **summary**：一句话自然语言描述该方向（测试目标完整地址 + 做什么 + 为什么），不套固定分类；去重主要靠它与已有意图比对。
    - **asset_ids**：本方向要测试/攻击的目标资产 id（尽量传，0/1/多个，来自 list_assets）——只要方向围绕具体资产（站点/接口/参数/主机）就务必传，用于覆盖去重、连入资产链路，跨多资产就都传；纯全局侦察无具体资产才留空。
    - **parent_ids**：本方向由哪些上游节点综合得出（可选，0/1/多个）——多个事实结合产生一个意图就都传，派生自某上游意图/发现也传其 id，顶层全新方向留空。
@@ -456,6 +469,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
 	tsx.SetExecService(p.execService)
+	tsx.SetWorkerCap(p.workers()) // 队列背压：待领超过 2×workers 时拒收常规新意图
 	pol := p.policy()
 	tsx.SetPolicy(pol)       // 意图层硬门（add_intent）
 	tsx.SetPolicyAudit(emit) // 被拒留痕进时间线

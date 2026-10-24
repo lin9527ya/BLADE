@@ -508,7 +508,7 @@ func (s *Server) pruneTaskPolicy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		reason := fmt.Sprintf("新探索策略禁止：%s（%s）", v.ItemLabel, v.ItemID)
-		if _, err := t.Store.SoftDeleteIntent(n.ID, reason); err != nil {
+		if _, _, err := t.Store.SoftDeleteIntent(n.ID, reason); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

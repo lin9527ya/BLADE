@@ -267,7 +267,7 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 			out.Deleted = &cleanup
 			out.State = "" // 节点已删除,前端据 Deleted 从列表移除
 		} else {
-			if _, err := t.Store.SoftDeleteIntent(iid, reason); err != nil {
+			if _, _, err := t.Store.SoftDeleteIntent(iid, reason); err != nil {
 				return out, err
 			}
 			s.cancelWorkerSide(t.ID, t.ExpID, iid)

@@ -91,3 +91,61 @@ func TestIntentDependenciesGateFrontier(t *testing.T) {
 		t.Fatalf("拆链后应可派发：%+v", fr)
 	}
 }
+
+// 队列背压按"可领"计数：被前置挡住的步骤不算；删除前置要一并解锁下游。
+func TestCountClaimableIntentsAndDependentsOnDrop(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTask("claimable-intents", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	exp := d.Exploration(task.ExplorationID)
+
+	a, _ := exp.AddIntent(map[string]any{"summary": "前置"}, 5, nil, "planner")
+	b, _ := exp.AddIntent(map[string]any{"summary": "依赖前置"}, 5, nil, "planner")
+	_, _ = exp.AddIntent(map[string]any{"summary": "独立方向"}, 5, nil, "planner")
+	if err := exp.Link(b, RelDependsOn, a); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := exp.CountOpenIntents(); err != nil || n != 3 {
+		t.Fatalf("open 应计 3：n=%d err=%v", n, err)
+	}
+	if n, err := exp.CountClaimableIntents(); err != nil || n != 2 {
+		t.Fatalf("可领应计 2（b 被挡）：n=%d err=%v", n, err)
+	}
+	if err := exp.SetIntentState(a, "negative"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := exp.CountClaimableIntents(); n != 2 {
+		t.Fatalf("前置有结论后 a 已结束、b 转为可领，可领仍为 2：n=%d", n)
+	}
+
+	// 删除一条被依赖的排队意图：同事务解锁下游，并返回下游 id。
+	c, _ := exp.AddIntent(map[string]any{"summary": "待删除的前置"}, 5, nil, "planner")
+	e, _ := exp.AddIntent(map[string]any{"summary": "依赖待删前置"}, 5, nil, "planner")
+	if err := exp.Link(e, RelDependsOn, c); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := exp.CountClaimableIntents(); n != 3 {
+		t.Fatalf("删除前可领应为 3（b/独立/c，e 被挡）：n=%d", n)
+	}
+	summary, dependents, err := exp.SoftDeleteIntent(c, "被新事实覆盖")
+	if err != nil {
+		t.Fatalf("删除失败：%v", err)
+	}
+	if summary != "待删除的前置" {
+		t.Fatalf("应返回被删意图摘要：%q", summary)
+	}
+	if len(dependents) != 1 || dependents[0] != e {
+		t.Fatalf("应返回被解锁的下游：%+v", dependents)
+	}
+	if n, _ := exp.CountClaimableIntents(); n != 3 {
+		t.Fatalf("删除后下游补位、c 消失，可领仍为 3：n=%d", n)
+	}
+}
