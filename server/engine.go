@@ -416,6 +416,12 @@ func (e *Engine) ActiveLLMCalls(taskID string) int64 {
 	return 0
 }
 
+// 单轮规划的重试策略：两次尝试、间隔 3 秒。再多会拖长这一轮，而下一轮心跳本来就会重来。
+const (
+	plannerAttempts     = 2
+	plannerRetryBackoff = 3 * time.Second
+)
+
 func (e *Engine) touch(taskID string) { e.lastAct.Store(taskID, time.Now().Unix()) }
 
 func NewEngine(m *Manager) *Engine {
@@ -958,12 +964,29 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// coalesces a burst; empty for time/heartbeat wakes).
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
-		e.BeginLLMCall(t.ID)
-		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
-		e.EndLLMCall(t.ID)
+		var met bool
+		var reason string
+		var err error
+		// 规划失败重试：一次瞬时的模型/网络错误此前会让任务空转十分钟（等心跳），
+		// 而这一轮的触发事件已经被 drain 掉了——"哪个 work 完成了"的信息随之丢失。
+		for attempt := 1; attempt <= plannerAttempts; attempt++ {
+			e.BeginLLMCall(t.ID)
+			met, reason, err = planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+			e.EndLLMCall(t.ID)
+			if err == nil || ectx.Err() != nil || attempt == plannerAttempts {
+				break
+			}
+			log.Printf("[planner] task %s 规划出错（第 %d/%d 次）: %v", t.ID, attempt, plannerAttempts, err)
+			if sleepCtx(ectx, plannerRetryBackoff) {
+				break
+			}
+		}
+		if err != nil && ectx.Err() == nil {
+			t.restoreTriggers(triggers)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
-			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
+			log.Printf("[planner] task %s 规划出错（触发事件已放回队列，下一轮重试）: %v", t.ID, err)
 		case met:
 			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
 			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。

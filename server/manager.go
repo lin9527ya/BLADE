@@ -321,6 +321,10 @@ const (
 	// 互补：那三条限的是「每一条执行能吃多少」（ulimit 前导），这条限的是「同时有几条」——
 	// 单条被 CPU 限额兜住，但 agent 若起了一百条，机器照样被打满。
 	settingExecMaxActive = "exec_max_active"
+	// settingExecMaxAge 是**单条**托管执行的最大存活分钟数（默认 120，0 = 不限）。
+	// 没有它，一条忘了设 timeout 的僵尸扫描会一直挂到进程被杀，而收尾门只认"还有执行
+	// 在跑"——意图就被钉在那里，看门狗要 24 小时才放弃。
+	settingExecMaxAge = "exec_max_age_minutes"
 	// P24 外部 MCP 的并发上限与熔断（每 server；0 = 不限/用默认）。
 	settingMCPMaxConcurrent   = "mcp_max_concurrent_per_server"
 	settingMCPBreakerFails    = "mcp_breaker_threshold"
@@ -482,6 +486,16 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	m.execs = NewExecutionService(pg, dir)
 	// 托管执行与 agent Bash 同环境（记录代理 + CA 信任），按次求值以跟随开关变化。
 	m.execs.SetEnvResolver(func() []string { return agent.ProxyEnv(m.ProxyAddr(), m.ProxyCACert()) })
+	// 执行落终态就叫醒任务：planner 自己起的执行（run_execution 也在它的工具面里）
+	// 此前无人观察，扫完只能等下一次事件/心跳——最长十分钟，期间很可能重复派活。
+	m.execs.SetOnDone(func(row *pgdb.ToolExecution) {
+		if row == nil {
+			return
+		}
+		if t, ok := m.Task(row.TaskID); ok && t != nil {
+			t.Notify()
+		}
+	})
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -2182,6 +2196,17 @@ func (t *Task) NotifyCancelled(intentID int64, summary, reason string) {
 }
 
 // drainTriggers returns and clears the trigger events accumulated since the last round.
+// restoreTriggers 把没消费掉的触发事件放回队列（规划失败时用）：它们是"哪个 work
+// 完成了、找到了什么"的唯一线索；丢了的话下一轮 planner 只看到图变了，不知道是什么变了。
+func (t *Task) restoreTriggers(ev []agent.TriggerEvent) {
+	if len(ev) == 0 {
+		return
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(ev, t.pendingTriggers...)
+	t.trigMu.Unlock()
+}
+
 func (t *Task) drainTriggers() []agent.TriggerEvent {
 	t.trigMu.Lock()
 	defer t.trigMu.Unlock()

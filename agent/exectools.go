@@ -29,7 +29,7 @@ func (t *ToolSet) runExecution() actool.CoreTool {
 			"★ 只要还有执行在跑，你就**不能**声称这条意图探完了——先等它收尾。",
 		obj(map[string]any{
 			"command":     str("要执行的 shell 命令（完整、非交互；长脚本请先 write_file 落盘再执行短命令）"),
-			"timeout_ms":  intp("可选硬超时毫秒（到点杀进程并记 hard_timeout）；省略=不限，由你/任务收尾控制"),
+			"timeout_ms":  intp("可选硬超时毫秒（到点杀进程并记 hard_timeout）；省略=按平台默认最大存活时长（默认 120 分钟，可在设置里调；不要用它当脚本超时）"),
 			"description": str("一句话说明这条命令在做什么（进台账，便于事后复盘）"),
 		}, "command"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {

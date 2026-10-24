@@ -167,6 +167,9 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 	if err := s.pg.MarkExecutionRunning(id); err != nil {
 		log.Printf("[exec] %d 状态落 running 失败: %v", id, err)
 	}
+	if timeout <= 0 {
+		timeout = execMaxAgeFromSettings(s.pg)
+	}
 	if timeout > 0 {
 		run.hardTimer = time.AfterFunc(timeout, func() {
 			run.hardKilled.Store(true)
@@ -503,6 +506,34 @@ func (r *tailRing) String() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return string(r.data)
+}
+
+const defaultExecMaxAgeMin = 120 // 2 小时；想不限就显式把设置写成 0
+
+// execMaxAgeMinutes 是 execMaxAgeFromSettings 的分钟视图（设置页回显用）。
+func execMaxAgeMinutes(pg *db.DB) int {
+	d := execMaxAgeFromSettings(pg)
+	if d <= 0 {
+		return 0
+	}
+	return int(d.Minutes())
+}
+
+// execMaxAgeFromSettings 读单条托管执行的最大存活时长（0 = 不限）。
+func execMaxAgeFromSettings(pg *db.DB) time.Duration {
+	fallback := time.Duration(defaultExecMaxAgeMin) * time.Minute
+	if pg == nil {
+		return fallback
+	}
+	v, ok, _ := pg.GetSetting(settingExecMaxAge)
+	if !ok || strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return time.Duration(n) * time.Minute
 }
 
 // execMaxActiveFromSettings 读「本任务同时可有多少条后台执行」的上限（0 = 不限）。

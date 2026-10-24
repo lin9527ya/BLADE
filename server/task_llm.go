@@ -587,7 +587,8 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
-	pl.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
+	pl.SetRoundSeconds(int64(s.agentRunSeconds("planner"))) // 单轮墙钟预算（到点进收尾，不是硬杀）
+	pl.SetNoaEnabled(s.m.NoaCompactionEnabled)              // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
 	pl.SetProxyFunc(func() (string, string) { return s.m.ProxyAddr(), s.m.ProxyCACert() })
