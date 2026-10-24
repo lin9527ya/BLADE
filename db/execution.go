@@ -204,6 +204,13 @@ WHERE intent_id=$1 AND status NOT IN ($2,$3)`, intentID, ExecQueued, ExecRunning
 	return n, err
 }
 
+// CountExecutionsByTask returns the total execution count of one task (time line totals).
+func (d *DB) CountExecutionsByTask(taskID string) (int, error) {
+	var n int
+	err := d.QueryRow(`SELECT COUNT(*) FROM tool_executions WHERE task_id=$1`, taskID).Scan(&n)
+	return n, err
+}
+
 // ListExecutionsByTask returns recent executions of one task, newest first.
 func (d *DB) ListExecutionsByTask(taskID string, limit int) ([]*ToolExecution, error) {
 	if limit <= 0 {

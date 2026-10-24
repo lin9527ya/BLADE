@@ -2017,6 +2017,12 @@ export interface Stats {
   roe_enabled: boolean;
   findings_confirmed: number;
   active_task?: Partial<Task>;
+  /** 带 task 时的探索节点计数（按 kind），来自 COUNT(*)，不是列表窗口长度。 */
+  exploration?: Record<string, number>;
+  /** 带 task 时的意图分状态精确计数。 */
+  intent_states?: Record<string, number>;
+  /** 当前可被 worker 领取（前置已满足）的意图数。 */
+  claimable_intents?: number;
   /**
    * 遗留物（P43）：我们留在目标上的东西。`uncleaned` 与 `unknown` **分开给**——
    * unknown 是"没去确认还在不在"，并进未清理会把"我们不知道"说成"我们确认它还留着"。

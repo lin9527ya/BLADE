@@ -188,6 +188,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     budgetPct,
   } = useOverviewState(taskId);
 
+  // 精确计数：列表接口有行数上限（意图 300 / 发现 200），len(列表) 是窗口长度不是总数。
+  const totalFindings = stats?.exploration?.finding ?? taskFindings.length;
+  const totalIntents = stats?.exploration?.intent ?? intents.length;
+  const totalOpen = stats?.claimable_intents ?? open.length;
+  const totalRunning = stats?.intent_states?.running ?? running.length;
+  const totalBlocked = stats?.intent_states?.blocked ?? blocked.length;
+
   return (
     <div className="flex flex-col gap-4">
       {/* 遗留物（P43）：我们留在目标上的东西。放在最前面——任务收尾前最该被看见的一条，
@@ -889,19 +896,19 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3 text-sm">
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">{taskFindings.length}</div>
+              <div className="text-2xl font-semibold tabular-nums text-red-600">{totalFindings}</div>
               <div className="text-xs text-muted-foreground">确认漏洞</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-blue-600">{running.length}</div>
+              <div className="text-2xl font-semibold tabular-nums text-blue-600">{totalRunning}</div>
               <div className="text-xs text-muted-foreground">执行中</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums">{open.length}</div>
+              <div className="text-2xl font-semibold tabular-nums">{totalOpen}</div>
               <div className="text-xs text-muted-foreground">frontier 待领</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">{blocked.length}</div>
+              <div className="text-2xl font-semibold tabular-nums text-red-600">{totalBlocked}</div>
               <div className="text-xs text-muted-foreground">被拦意图</div>
             </div>
           </CardContent>
@@ -920,7 +927,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 <span className="min-w-0 flex-1 truncate">{f.summary}</span>
               </div>
             ))}
-            {taskFindings.length === 0 && <p className="text-sm text-muted-foreground">暂无发现</p>}
+            {totalFindings === 0 && <p className="text-sm text-muted-foreground">暂无发现</p>}
           </CardContent>
         </Card>
       </div>
@@ -990,9 +997,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-        <StatCard label="待领意图" value={open.length} icon={ShieldCheckIcon} sub="frontier 开放" />
-        <StatCard label="确认发现" value={taskFindings.length} icon={BugIcon} sub="本任务" />
-        <StatCard label="意图总数" value={intents.length} icon={AlertTriangleIcon} sub="本任务全部意图" />
+        <StatCard label="待领意图" value={totalOpen} icon={ShieldCheckIcon} sub="可领（前置已满足）" />
+        <StatCard label="确认发现" value={totalFindings} icon={BugIcon} sub="本任务" />
+        <StatCard label="意图总数" value={totalIntents} icon={AlertTriangleIcon} sub="本任务全部意图" />
       </div>
     </div>
   );

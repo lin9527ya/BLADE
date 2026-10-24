@@ -10,7 +10,7 @@ import { fmtTokens, LiveDot } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["statCards"] }) {
-  const { tasks, findings, settings, traffic, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
+  const { tasks, findings, findingStats, settings, traffic, trafficTotal, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
 
   return (
     <>
@@ -40,13 +40,13 @@ export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["s
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <BugIcon className="size-3" /> 确认发现
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{findings.length}</div>
+            <div className="text-2xl font-semibold tabular-nums">{findingStats?.total ?? findings.length}</div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2.5 text-[10px]">
-            <span className="text-rose-500">严重 {findingsBySev.critical}</span>
-            <span className="text-red-400">高危 {findingsBySev.high}</span>
-            <span className="text-amber-400">中危 {findingsBySev.medium}</span>
-            <span className="text-slate-400">低危 {findingsBySev.low}</span>
+            <span className="text-rose-500">严重 {findingStats?.critical ?? findingsBySev.critical}</span>
+            <span className="text-red-400">高危 {findingStats?.high ?? findingsBySev.high}</span>
+            <span className="text-amber-400">中危 {findingStats?.medium ?? findingsBySev.medium}</span>
+            <span className="text-slate-400">低危 {findingStats?.low ?? findingsBySev.low}</span>
           </CardContent>
         </Card>
 
@@ -67,7 +67,7 @@ export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["s
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <ActivityIcon className="size-3" /> 流量交互
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{traffic.length}</div>
+            <div className="text-2xl font-semibold tabular-nums">{trafficTotal}</div>
           </CardHeader>
           <CardContent className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             {settings?.traffic_capture ? (

@@ -376,7 +376,7 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 	// ⑥ 系统留言与原始步骤：都来自 activity。留言（策略拒绝/目标变更/停机…）默认要，
 	//    原始步骤（tool_use/round/result…）只在 kinds=all 时要。
 	if want[tlKindNote] || withSteps {
-		acts, _, err := t.Store.ActivityList(nil, 0, limit)
+		acts, err := t.Store.ActivityListTail(nil, limit)
 		if err != nil {
 			return timelineResponse{}, err
 		}
@@ -410,9 +410,69 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 	for _, e := range events {
 		counts[e.Kind]++
 	}
+	// 每个源取数都有上限（activity/执行/审批取 limit，节点类取 1000）：只数取回的事件，
+	// 报出去的就是**窗口长度**而不是总数。里程碑各档逐项用 COUNT(*) 覆盖。
+	if want[tlKindExecution] {
+		if n, err := s.m.pg.CountExecutionsByTask(t.ID); err == nil {
+			counts[tlKindExecution] = n
+		}
+	}
+	if want[tlKindApproval] {
+		var n int
+		if err := s.m.pg.QueryRow(`SELECT COUNT(*) FROM intercept_pending WHERE task_id=$1`, t.ID).Scan(&n); err == nil {
+			counts[tlKindApproval] = n
+		}
+	}
+	if want[tlKindFinding] {
+		if n, err := t.Store.CountByKind(db.KindFinding); err == nil {
+			counts[tlKindFinding] = n
+		}
+	}
+	if want[tlKindLoot] {
+		fh, e1 := t.Store.CountByKind(db.KindFoothold)
+		cr, e2 := t.Store.CountByKind(db.KindCredential)
+		if e1 == nil && e2 == nil {
+			counts[tlKindLoot] = fh + cr
+		}
+	}
+	if want[tlKindArtifact] {
+		if n, err := t.Store.CountByKind(db.KindArtifact); err == nil {
+			counts[tlKindArtifact] = n
+		}
+	}
+	if want[tlKindDetection] {
+		if n, err := t.Store.CountByKind(db.KindDetection); err == nil {
+			counts[tlKindDetection] = n
+		}
+	}
+	if want[tlKindNote] || withSteps {
+		if notes, err := t.Store.CountActivityKinds(timelineNoteKinds); err == nil {
+			if want[tlKindNote] {
+				counts[tlKindNote] = notes
+			}
+			if withSteps {
+				// step = activity 总数 − 留言数；两者都来自 COUNT(*)，不是窗口长度。
+				if total, err := t.Store.CountActivity(); err == nil && total >= notes {
+					counts[tlKindStep] = total - notes
+				}
+			}
+		}
+	}
 	resp := timelineResponse{TaskID: t.ID, Kinds: kinds, Counts: counts}
+	// 截断数也按**总数**算：之前用取回的事件数减 limit，源上限把更早的事件提前丢掉时
+	// 就会少报"另有 N 条未列入"。
+	totalEvents := 0
+	for _, k := range kinds {
+		totalEvents += counts[k]
+	}
+	listed := len(events)
+	if listed > limit {
+		listed = limit
+	}
+	if totalEvents > listed {
+		resp.Truncated = totalEvents - listed
+	}
 	if len(events) > limit {
-		resp.Truncated = len(events) - limit
 		events = events[:limit]
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].At < events[j].At })
@@ -423,6 +483,13 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 	return resp, nil
 }
 
+// timelineNoteKinds 是「系统留言」认的 activity kind 白名单。它同时用于逐条判定与
+// COUNT(*) 汇总——两处共用一份清单，就不会出现「数出来 3 条、列出来 5 条」。
+var timelineNoteKinds = []string{
+	"text", "system", "hint", "policy_reject", "goal", "goal_edited", "goal_deleted",
+	"llm_switch", "intel_query", "keyword",
+}
+
 // timelineNoteActivity 判一条 activity 该不该进"系统留言"这一档。
 //
 // 取的是**人话性质的记录**（系统说明、策略拒绝、目标变更、模型切换、情报查询…），
@@ -430,10 +497,10 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 // 要看就显式 kinds=all。判断按 kind 白名单而不是黑名单：将来新增的 activity kind
 // 默认不进时间线（时间线是交付物，多一格都要有理由）。
 func timelineNoteActivity(kind string) bool {
-	switch kind {
-	case "text", "system", "hint", "policy_reject", "goal", "goal_edited", "goal_deleted",
-		"llm_switch", "intel_query", "keyword":
-		return true
+	for _, k := range timelineNoteKinds {
+		if k == kind {
+			return true
+		}
 	}
 	return false
 }
