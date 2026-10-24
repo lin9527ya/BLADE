@@ -249,7 +249,8 @@ func accP1(t *testing.T, e *accEnv) {
 	if closedAt < 0 {
 		t.Fatal("缺少「已关闭」段")
 	}
-	fpLine := fmt.Sprintf("#%d [MEDIUM] sqli", fpNode)
+	// 报告里现在是「#<任务内序号>（id <全局 id>）」；断言用 id 部分，不依赖序号。
+	fpLine := fmt.Sprintf("id %d） [MEDIUM] sqli", fpNode)
 	if strings.Contains(md[:closedAt], fpLine) {
 		t.Fatalf("误报进了正文：%s", fpLine)
 	}
@@ -3894,8 +3895,8 @@ func accP30(t *testing.T, e *accEnv) {
 	md := e.report(task)
 	e.mustContain(md, "## 攻击路径（从已得的访问展开）", "攻击路径段")
 	e.mustContain(md, "起点 据点「在 web01 上拿到 root 的反弹 shell」", "路径起点")
-	e.mustContain(md, fmt.Sprintf("intent-%d「读 wp-config 找数据库口令」 [T1552.001] → 得到：凭据「wp_user 口令」", i1), "第一跳（含技术标注）")
-	e.mustContain(md, fmt.Sprintf("intent-%d「用 wp_user 横向到 db01」 [T1021.004] → 得到：据点「在 db01 上拿到 root 的 shell」", i2), "第二跳（含技术标注）")
+	e.mustContain(md, fmt.Sprintf("id %d）「读 wp-config 找数据库口令」 [T1552.001] → 得到：凭据「wp_user 口令」", i1), "第一跳（含技术标注）")
+	e.mustContain(md, fmt.Sprintf("id %d）「用 wp_user 横向到 db01」 [T1021.004] → 得到：据点「在 db01 上拿到 root 的 shell」", i2), "第二跳（含技术标注）")
 
 	// ATT&CK：交付物按技术组织，客户要的是「你打了哪些 TTP」。
 	e.mustContain(md, "## 技术覆盖（ATT&CK）", "技术覆盖段")
