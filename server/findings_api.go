@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lin9527ya/blade/db"
@@ -153,12 +154,32 @@ func (s *Server) resolveAssetIDs(ids []int64) map[int64]*db.Asset {
 
 // findingStats serves the whole-table aggregates (stat cards + vuln-class filter)
 // for the paginated 发现 page.
+// findingStatsCache 是发现统计的进程内缓存。仪表盘每 5 秒轮询一次，而 FindingStats
+// 会全表扫 + 解析所有归档；20 秒缓存足以服务多个页面/标签页，又不会让新发现长时间不可见。
+var findingStatsCache struct {
+	mu sync.Mutex
+	at time.Time
+	st *db.FindingStats
+}
+
 func (s *Server) findingStats(w http.ResponseWriter, r *http.Request) {
+	findingStatsCache.mu.Lock()
+	if findingStatsCache.st != nil && time.Since(findingStatsCache.at) < 20*time.Second {
+		st := findingStatsCache.st
+		findingStatsCache.mu.Unlock()
+		writeJSON(w, 200, st)
+		return
+	}
+	findingStatsCache.mu.Unlock()
 	st, err := s.m.pg.FindingStats()
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	findingStatsCache.mu.Lock()
+	findingStatsCache.st = st
+	findingStatsCache.at = time.Now()
+	findingStatsCache.mu.Unlock()
 	writeJSON(w, 200, st)
 }
 
