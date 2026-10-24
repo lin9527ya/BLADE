@@ -83,6 +83,42 @@ func (meteredStreamProvider) Stream(context.Context, llm.CompletionRequest) iter
 	}
 }
 
+// 触发式运行（reporter/retester）的会话名是 conv-<id>，parseSession 解析不出
+// task/worker/exploration；显式上下文必须覆盖它，否则这部分花费在台账里无归属。
+func TestExplicitAttributionOverridesConvSession(t *testing.T) {
+	dsn := os.Getenv("BLADE_PG_DSN")
+	if dsn == "" {
+		t.Skip("requires isolated BLADE_PG_DSN")
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	profile := "btw-attribution-" + uuid.NewString()
+	ctx := transcript.WithSessionID(t.Context(), "conv-123")
+	ctx = WithTaskID(ctx, "42")
+	ctx = WithWorker(ctx, "reporter")
+	ctx = WithExplorationID(ctx, 99)
+	recorder := Wrap(meteredStreamProvider{}, pg, "fixture", profile, "", "", func() bool { return false })
+	for _, err := range recorder.Stream(ctx, llm.CompletionRequest{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var taskID, worker string
+	var expID int64
+	err = pg.QueryRow(`SELECT COALESCE(task_id,''), COALESCE(worker,''), COALESCE(exploration_id,0)
+FROM llm_usage WHERE profile_name=$1`, profile).Scan(&taskID, &worker, &expID)
+	_, _ = pg.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskID != "42" || worker != "reporter" || expID != 99 {
+		t.Fatalf("attribution=(task=%q worker=%q exp=%d), want (42, reporter, 99)", taskID, worker, expID)
+	}
+}
+
 func TestSideUsageRecordedOnceOnConsumerCancellation(t *testing.T) {
 	dsn := os.Getenv("BLADE_PG_DSN")
 	if dsn == "" {
