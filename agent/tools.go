@@ -1764,10 +1764,17 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if !db.ValidConfidence(a.Confidence) {
 			return actool.Errorf("confidence 取值必须是 high|medium|low（诚实标定；缺省=未标定，报告会点名）"), nil
 		}
+		// 严重度是报告里排序与统计用的键，不是自由文本：写 "High" / "高" / "严重" 时
+		// 统计表里没有这一行、排序又会因为查不到而把它当最严重——两头都是错的数据。
+		severity := strings.ToLower(strings.TrimSpace(a.Severity))
+		if !db.ValidSeverity(severity) {
+			return actool.Errorf(fmt.Sprintf("severity 取值必须是 critical|high|medium|low（收到 %q）。"+
+				"它决定报告里的排序与统计，不接受别名或中文", a.Severity)), nil
+		}
 		// 证据分级：critical/high 必须有 evidence。这两档会排在报告最前、也最先被客户
 		// 拿去复验——一条"看着像"的高危没有证据，整份报告的可信度都会被拖下水。
 		// medium/low 保持可选：逼着给证据只会换来一句编出来的话，比空着更糟。
-		if severityNeedsEvidence(a.Severity) && strings.TrimSpace(a.Evidence) == "" {
+		if severityNeedsEvidence(severity) && strings.TrimSpace(a.Evidence) == "" {
 			return actool.Errorf(fmt.Sprintf("severity=%s 的漏洞必须给 evidence（触发命令/请求与关键输出；有正常对照更好）。"+
 				"若目前只有推断、还拿不出可复现的证据，把 severity 降到 medium/low 并在 evidence 里写清依据，"+
 				"或先用 close_candidate 记存疑——不要用高危 + 空证据去占报告的头条", a.Severity)), nil
@@ -1787,7 +1794,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: pidList(a.AssetIDs)}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: pidList(a.AssetIDs)}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
