@@ -786,24 +786,59 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if ads, err := t.ts.ListByKind(db.KindADObject, 500); err == nil && len(ads) > 0 {
 		owned := 0
 		names := make([]string, 0, 5)
+		adNames := make(map[int64]string, len(ads))
 		for _, n := range ads {
 			var p map[string]any
 			if json.Unmarshal(n.Payload, &p) != nil {
 				continue
 			}
+			name := payloadString(p, "name")
+			if name != "" {
+				adNames[n.ID] = name
+			}
 			if o, _ := p["owned"].(bool); !o {
 				continue
 			}
 			owned++
-			if len(names) < 5 {
-				if name := payloadString(p, "name"); name != "" {
-					names = append(names, name)
-				}
+			if len(names) < 5 && name != "" {
+				names = append(names, name)
 			}
 		}
 		if owned > 0 {
 			out["ad_owned_total"] = owned
 			out["ad_owned"] = names
+		}
+		// 「可达」：哪条战果通到域里的哪台机器（reaches 边）。与 owned 分开——
+		// 凭据能登某台机器不等于那台机器已经在手，但规划层要同时看到这两件事：
+		// 一条是"我能进去"，一条是"我已经在里面"。
+		kindOfLoot := make(map[int64]string, len(allFootholds)+len(allCreds))
+		for _, n := range allFootholds {
+			kindOfLoot[n.ID] = db.KindFoothold
+		}
+		for _, n := range allCreds {
+			kindOfLoot[n.ID] = db.KindCredential
+		}
+		var reach []map[string]any
+		seen := map[int64]bool{}
+		for _, e := range edges {
+			if e.Rel != db.RelReaches {
+				continue
+			}
+			kind := kindOfLoot[e.From]
+			name := adNames[e.To]
+			if kind == "" || name == "" || seen[e.To] {
+				continue
+			}
+			seen[e.To] = true
+			reach = append(reach, map[string]any{
+				"object": name, "via": fmt.Sprintf("%s-%d", kind, e.From), "ad_object_id": e.To,
+			})
+			if len(reach) >= 10 {
+				break
+			}
+		}
+		if len(reach) > 0 {
+			out["ad_reachable"] = reach
 		}
 	}
 	// 隧道：跨 worker 共享的能力——A 开的隧道 B 也能用，看不见就没人用得上。
@@ -2392,8 +2427,12 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 			// 否则攻击路径的起点永远停在"用户手标的"而不是"我们打下来的"。
 			note := ""
 			if host, _ := conn["host"].(string); host != "" {
-				if n := t.markADOwned(host); n > 0 {
-					note = fmt.Sprintf("\n已把 %d 个 AD 计算机对象标为 owned（攻击路径可从它们出发）", n)
+				ids := t.markADOwned(host)
+				for _, aid := range ids {
+					_ = t.ts.Link(id, db.RelReaches, aid)
+				}
+				if len(ids) > 0 {
+					note = fmt.Sprintf("\n已把 %d 个 AD 计算机对象标为 owned 并连上「可达」边（攻击路径可从它们出发）", len(ids))
 				}
 			}
 			return actool.Text(fmt.Sprintf("foothold recorded: %d%s", id, note)), nil
@@ -2517,6 +2556,16 @@ func (t *ToolSet) reportCredential() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			t.writes.Credentials++
+			// 能登哪 → 图上连一条 reaches（但**不**标 owned：能认证不等于机器已经在手）。
+			if len(targets) > 0 {
+				hosts := make([]string, 0, len(targets))
+				for _, tg := range targets {
+					if strings.TrimSpace(tg.Host) != "" {
+						hosts = append(hosts, tg.Host)
+					}
+				}
+				t.linkReaches(id, hosts...)
+			}
 			return actool.Text(fmt.Sprintf("credential recorded: %d", id)), nil
 		})
 }
