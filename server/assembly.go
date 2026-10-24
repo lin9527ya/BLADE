@@ -377,7 +377,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// loot_exec 默认关：未启用时**从工具面移除**，而不是让模型看见一个永远拒绝的工具——
 		// 那样每轮都会浪费一次调用去确认它能不能用。操作者打开设置后，下一次装配即出现。
 		if !lootExecEnabled() {
-			out = dropToolByName(out, "loot_exec", "foothold_exec", "tunnel_open")
+			out = dropToolByName(out, "loot_exec", "loot_upload", "loot_download", "foothold_exec", "tunnel_open")
 		}
 		// OAST 未配置时同样从工具面移除：让模型看见一个永远拒绝的工具只会浪费调用。
 		if _, _, on := oastConfig(); !on {
