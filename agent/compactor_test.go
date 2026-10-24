@@ -260,7 +260,7 @@ func TestBuildContextIndexCarriesGoalScopeAndGraph(t *testing.T) {
 	}
 	idx := BuildContextIndex(ContextIndexVars{Store: st, Intent: &db.Node{ID: it, Payload: []byte(`{"summary":"枚举登录口端点"}`)}})
 	for _, want := range []string{
-		"打穿 example.com 的登录口", "禁止对生产库做写操作", "intent-" + itoa(it), "在跑方向", "计数：意图",
+		"打穿 example.com 的登录口", "禁止对生产库做写操作", "intent-1", "在跑方向", "计数：意图",
 	} {
 		if !strings.Contains(idx, want) {
 			t.Fatalf("常驻索引缺少 %q:\n%s", want, idx)

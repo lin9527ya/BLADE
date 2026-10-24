@@ -905,9 +905,19 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 // exploration's intents with id <= maxID (maxID<=0 = all). The intents endpoint uses
 // it so the UI shows "Worker #N" within a task instead of the global node id.
 func (s *ExplorationStore) IntentOrdinals(maxID int64) (map[int64]int64, error) {
+	return s.NodeOrdinals(KindIntent, maxID)
+}
+
+// NodeOrdinals 是 IntentOrdinals 的通用版：某一类节点在**本任务内**的创建序号
+// （1-based，按 id 升序）。意图与目标在 Agent 叙事里用它编号——全局 id 跨任务连续，
+// 任务 2 的第一条意图会是 intent-659，读起来像"漏了六百多条"。
+//
+// 只为展示：工具与 API 仍用全局 id 寻址（同一个数字在两种编号下含义不同，
+// 混用会叫错节点）。
+func (s *ExplorationStore) NodeOrdinals(kind string, maxID int64) (map[int64]int64, error) {
 	rows, err := s.db.Query(`SELECT id, row_number() OVER (ORDER BY id)
 FROM exploration_nodes WHERE exploration_id=$1 AND kind=$2 AND ($3 <= 0 OR id <= $3)`,
-		s.expID, KindIntent, maxID)
+		s.expID, kind, maxID)
 	if err != nil {
 		return nil, err
 	}

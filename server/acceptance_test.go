@@ -1062,10 +1062,10 @@ func accP14(t *testing.T, e *accEnv) {
 	}
 	idx := out[len(out)-1].Text()
 	for _, want := range []string{
-		"拿 example.com 后台管理权限",     // 目标原文
-		"禁止对生产数据库做任何写操作",           // 约束原文
-		"intent-" + itoa64(intent), // 活跃方向
-		"后台登录口 SQL 注入（已复现）",        // 发现一行式
+		"拿 example.com 后台管理权限", // 目标原文
+		"禁止对生产数据库做任何写操作",       // 约束原文
+		"intent-1", // 活跃方向（叙事用任务内序号，不是全局 id）
+		"后台登录口 SQL 注入（已复现）", // 发现一行式
 	} {
 		if !strings.Contains(idx, want) {
 			t.Fatalf("常驻索引缺少 %q:\n%s", want, idx)
