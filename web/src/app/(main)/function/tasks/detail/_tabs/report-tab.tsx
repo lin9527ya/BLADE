@@ -14,26 +14,38 @@ import { copyText } from "@/lib/utils";
 export function ReportTab({ taskId }: { taskId: string }) {
   const [report, setReport] = React.useState<string>("");
   const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
   const [copied, setCopied] = React.useState(false);
+
+  const load = React.useCallback(
+    (active: () => boolean = () => true) => {
+      setLoading(true);
+      setError("");
+      api
+        .report(taskId)
+        .then((text) => {
+          if (active()) setReport(text);
+        })
+        .catch((e) => {
+          if (active()) {
+            setReport("");
+            setError(e instanceof Error ? e.message : "报告生成失败");
+          }
+        })
+        .finally(() => {
+          if (active()) setLoading(false);
+        });
+    },
+    [taskId],
+  );
 
   React.useEffect(() => {
     let active = true;
-    setLoading(true);
-    api
-      .report(taskId)
-      .then((text) => {
-        if (active) setReport(text);
-      })
-      .catch(() => {
-        if (active) setReport("");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    load(() => active);
     return () => {
       active = false;
     };
-  }, [taskId]);
+  }, [load]);
 
   async function copy() {
     if (!report) return;
@@ -59,6 +71,16 @@ export function ReportTab({ taskId }: { taskId: string }) {
     content = (
       <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/20 p-4">
         <Markdown text={report} />
+      </div>
+    );
+  } else if (error) {
+    content = (
+      <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-dashed border-red-500/40 py-16 text-sm">
+        <FileTextIcon className="size-8 opacity-40" />
+        <span className="text-muted-foreground">报告加载失败：{error}</span>
+        <Button size="sm" variant="outline" onClick={() => load()}>
+          重试
+        </Button>
       </div>
     );
   } else {

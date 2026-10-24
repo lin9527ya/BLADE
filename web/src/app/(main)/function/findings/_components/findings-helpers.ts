@@ -52,9 +52,11 @@ export interface FlatFindingsState {
   total: number;
   loaded: boolean;
   loading: boolean;
+  /** 最近一次拉取失败的原因；成功后清空。用于把「加载失败」与「确实没有」分开。 */
+  error?: string;
 }
 
-export const EMPTY_FLAT_STATE: FlatFindingsState = { items: [], total: 0, loaded: false, loading: false };
+export const EMPTY_FLAT_STATE: FlatFindingsState = { items: [], total: 0, loaded: false, loading: false, error: "" };
 
 export function findingGroupKey(group: FindingGroup) {
   return group.task_id === null ? UNASSIGNED_TASK : String(group.task_id);

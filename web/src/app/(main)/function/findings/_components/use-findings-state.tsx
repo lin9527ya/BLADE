@@ -245,11 +245,16 @@ export function useFindingsState() {
         assetScope: activeAssetScope ?? undefined,
       });
       if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      setFlat({ items: result.items, total: result.total, loaded: true, loading: false });
-    } catch {
+      setFlat({ items: result.items, total: result.total, loaded: true, loading: false, error: "" });
+    } catch (e) {
       if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      // Polling keeps the last successful snapshot visible.
-      setFlat((current) => ({ ...current, loading: false }));
+      // Polling keeps the last successful snapshot visible, but the failure must be
+      // distinguishable from "really no findings".
+      setFlat((current) => ({
+        ...current,
+        loading: false,
+        error: e instanceof Error ? e.message : "加载失败",
+      }));
     }
   }, [activeAssetScope, filterFingerprint, flatPage, flatPageSize, severity, status, vulnclass, task, query, sort]);
 
@@ -705,7 +710,12 @@ export function useFindingsState() {
           </div>
         ) : (
           <>
-            <FindingsTable items={flat.items} selectAllLabel="选择当前页全部" {...rowProps} />
+            <FindingsTable
+              items={flat.items}
+              selectAllLabel="选择当前页全部"
+              emptyMessage={flat.error ? `发现列表加载失败：${flat.error}（每 5 秒自动重试）` : undefined}
+              {...rowProps}
+            />
             <TablePagination
               page={flatPage}
               pageSize={flatPageSize}

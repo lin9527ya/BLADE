@@ -162,6 +162,7 @@ function Row({
 
 export function FindingsTab({ taskId }: { taskId: string }) {
   const [findings, setFindings] = React.useState<Finding[]>([]);
+  const [loadError, setLoadError] = React.useState("");
   // P19 批量交付：交付计划（清单 + 证据门 + 疑似重复）与打包下载。
   const [batch, setBatch] = React.useState<TaskSrcBatchPlan | null>(null);
   const [batchBusy, setBatchBusy] = React.useState(false);
@@ -178,10 +179,14 @@ export function FindingsTab({ taskId }: { taskId: string }) {
         api
           .findings(taskId)
           .then((fs) => {
-            if (active()) setFindings(fs);
+            if (active()) {
+              setFindings(fs);
+              setLoadError("");
+            }
           })
-          .catch(() => {
-            // Keep the last successful snapshot during transient refresh failures.
+          .catch((e) => {
+            // 刷新失败保留上一次快照，但必须让人知道"这不是没有发现"。
+            if (active()) setLoadError(e instanceof Error ? e.message : "加载失败");
           });
       };
       load();
@@ -259,7 +264,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
             </Button>
             {batch ? (
               <span className="text-muted-foreground text-xs">
-                进包 {batch.included} 条{batch.skipped > 0 ? `，跳过 ${batch.skipped} 条（已撤回）` : ""}
+                进包 {batch.included} 条{batch.skipped > 0 ? `，跳过 ${batch.skipped} 条` : ""}
               </span>
             ) : null}
           </div>
@@ -271,6 +276,18 @@ export function FindingsTab({ taskId }: { taskId: string }) {
                   ⚠ {w}
                 </span>
               ))}
+            </div>
+          ) : null}
+          {batch?.entries?.some((e) => !e.included) ? (
+            <div className="flex flex-col gap-1 rounded-md border bg-muted/40 p-2 text-xs">
+              <span className="font-medium">未进包的发现（按原因）：</span>
+              {batch.entries
+                .filter((e) => !e.included)
+                .map((e) => (
+                  <span key={e.id} className="break-all">
+                    #{e.id}「{e.title}」：{e.skip_reason ?? "状态不符，不进交付包"}
+                  </span>
+                ))}
             </div>
           ) : null}
           {batch?.duplicate_groups?.length ? (
@@ -311,9 +328,13 @@ export function FindingsTab({ taskId }: { taskId: string }) {
           {items.map((f) => (
             <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
           ))}
-          {items.length === 0 && (
+          {items.length === 0 && loadError ? (
+            <p className="px-4 py-8 text-center text-sm text-red-600 dark:text-red-400">
+              发现列表加载失败：{loadError}（每 3 秒自动重试）
+            </p>
+          ) : items.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-muted-foreground">本任务及直接关联任务暂无确认发现。</p>
-          )}
+          ) : null}
         </CardContent>
       </Card>
     </div>

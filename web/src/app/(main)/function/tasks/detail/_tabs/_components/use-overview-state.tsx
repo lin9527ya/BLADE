@@ -152,8 +152,9 @@ export function useOverviewState(taskId: string) {
     setGoals((prev) => prev.filter((x) => x.id !== g.id));
     try {
       await api.deleteGoal(taskId, g.id);
-    } catch {
+    } catch (e) {
       await loadGoals(); // 删除失败：重新拉取还原
+      toast.error(`删除目标失败：${e instanceof Error ? e.message : "未知错误"}`);
     }
   };
 
@@ -217,8 +218,9 @@ export function useOverviewState(taskId: string) {
     setConstraints((prev) => prev.filter((x) => x.id !== c.id));
     try {
       await api.deleteConstraint(taskId, c.id);
-    } catch {
+    } catch (e) {
       await loadConstraints(); // 删除失败：重新拉取还原
+      toast.error(`删除约束失败：${e instanceof Error ? e.message : "未知错误"}`);
     }
   };
 
@@ -280,8 +282,9 @@ export function useOverviewState(taskId: string) {
     setScope((prev) => prev.filter((s) => s.id !== row.id));
     try {
       await api.deleteTaskScope(taskId, row.id);
-    } catch {
+    } catch (e) {
       await loadScope(); // 删除失败：重新拉取还原
+      toast.error(`删除范围失败：${e instanceof Error ? e.message : "未知错误"}`);
     }
   };
 
@@ -299,8 +302,9 @@ export function useOverviewState(taskId: string) {
     try {
       await api.rerunIntent(taskId, id);
       setIntents((prev) => prev.map((i) => (i.id === id ? { ...i, state: "open" } : i)));
-    } catch {
-      // 失败忽略：下次轮询仍显示 blocked，用户可再点
+    } catch (e) {
+      // 失败时提示：下次轮询仍显示 blocked，用户可再点——但静默失败会让人以为已经重跑了。
+      toast.error(`重跑失败：${e instanceof Error ? e.message : "未知错误"}`);
     } finally {
       markRerun(id, false);
     }
@@ -312,8 +316,8 @@ export function useOverviewState(taskId: string) {
     try {
       await api.rerunBlocked(taskId);
       setIntents((prev) => prev.map((i) => (i.state === "blocked" ? { ...i, state: "open" } : i)));
-    } catch {
-      // ignore
+    } catch (e) {
+      toast.error(`批量重跑失败：${e instanceof Error ? e.message : "未知错误"}`);
     } finally {
       markRerun("__all__", false);
     }

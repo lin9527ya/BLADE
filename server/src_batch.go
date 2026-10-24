@@ -349,7 +349,7 @@ func srcBatchReadme(t *Task, plan *srcBatchPlan) string {
 	fmt.Fprintf(&b, "- 生成时间：%s\n", plan.GeneratedAt)
 	fmt.Fprintf(&b, "- 发现：共 %d 条，进包 %d 条", len(plan.Entries), plan.Included)
 	if plan.Skipped > 0 {
-		fmt.Fprintf(&b, "，未进包 %d 条（已撤回，见下）", plan.Skipped)
+		fmt.Fprintf(&b, "，未进包 %d 条（原因见下）", plan.Skipped)
 	}
 	b.WriteString("\n\n")
 
@@ -416,7 +416,11 @@ func srcBatchReadme(t *Task, plan *srcBatchPlan) string {
 			if e.Included {
 				continue
 			}
-			fmt.Fprintf(&b, "- #%d「%s」：状态 %s，不进包（撤回的发现不要提交）\n", e.ID, e.Title, e.Status)
+			reason := e.SkipReason
+			if reason == "" {
+				reason = "状态不符，不进交付包"
+			}
+			fmt.Fprintf(&b, "- #%d「%s」：%s\n", e.ID, e.Title, reason)
 		}
 	}
 	return b.String()
