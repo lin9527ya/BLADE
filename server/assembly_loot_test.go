@@ -3,8 +3,8 @@ package server
 import (
 	"testing"
 
-	"github.com/lin9527ya/blade/agent"
 	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/blade/agent"
 )
 
 func toolNamed(tools []actool.CoreTool, name string) bool {

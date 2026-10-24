@@ -42,6 +42,9 @@ type Input struct {
 	RuledOut []CandidateNote
 	// ProofGaps lists candidates closed as open_proof_gap: 存疑待补证，不得视为安全。
 	ProofGaps []CandidateNote
+	// Closed lists findings triaged as false_positive / duplicate / ignored / fixed /
+	// resolved: 不再作为当前风险，不进正文与「确认发现」计数，但留档备查。
+	Closed []ClosedNote
 	// Footholds / Credentials 是战果层（利用成功之后的产物）：据点是已攻陷且当前可用的
 	// 通路，凭据是真实读到的口令/哈希/密钥/令牌。
 	//
@@ -161,6 +164,32 @@ type CandidateNote struct {
 	Counterevidence string
 	ProofGap        string
 	Confidence      string
+}
+
+// ClosedNote 是一条已被 triage 关闭的发现（误报 / 重复 / 已忽略 / 已修复 / 已处理）。
+// 它不进正文与「确认发现」计数——已经不是当前风险；但也不能静默删掉：交付物要能回答
+// "这条后来怎么了"，否则客户在页面上见过的编号会在报告里凭空消失。
+type ClosedNote struct {
+	Node       *db.Node
+	Status     string // db.FindingFalsePositive / Duplicate / Ignored / Fixed / Resolved
+	Confidence string
+}
+
+// closedStatusLabel 把 triage 状态翻成报告里的中文标签。未知状态原样显示（向前兼容）。
+func closedStatusLabel(status string) string {
+	switch status {
+	case db.FindingFalsePositive:
+		return "误报"
+	case db.FindingDuplicate:
+		return "重复"
+	case db.FindingIgnored:
+		return "已忽略"
+	case db.FindingFixed:
+		return "已修复"
+	case db.FindingResolved:
+		return "已处理"
+	}
+	return status
 }
 
 // confidenceLabel renders the honest-calibration label; "" is named explicitly
@@ -355,6 +384,7 @@ func Markdown(in Input) string {
 	fmt.Fprintf(&b, "- 确认发现：**%d** 个\n", len(in.Findings))
 	fmt.Fprintf(&b, "- 已排除候选：**%d** 个（有反证，不进正文）\n", len(in.RuledOut))
 	fmt.Fprintf(&b, "- 存疑待补证：**%d** 个（不得视为安全）\n", len(in.ProofGaps))
+	fmt.Fprintf(&b, "- 已关闭（误报/重复/已忽略/已修复）：**%d** 个（不进正文）\n", len(in.Closed))
 	fmt.Fprintf(&b, "- 战果：据点 **%d** 个、凭据 **%d** 条\n", len(in.Footholds), len(in.Credentials))
 	if len(in.Artifacts) > 0 {
 		uncleaned := 0
@@ -629,6 +659,19 @@ func Markdown(in Input) string {
 		for _, c := range in.ProofGaps {
 			f := parseFinding(c.Node)
 			fmt.Fprintf(&b, "- #%d [%s] %s — 缺口：%s（置信度：%s）\n", c.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.ProofGap, "（未记录）"), confidenceLabel(c.Confidence))
+		}
+		b.WriteString("\n")
+	}
+
+	// 已关闭（误报/重复/已忽略/已修复）：不再作为当前风险，但保留在案——静默删掉会让
+	// 「报告里少了三条」变成一个没人能回答的问题。
+	fmt.Fprintf(&b, "## 已关闭（误报/重复/已忽略/已修复；不进正文）\n\n")
+	if len(in.Closed) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, c := range in.Closed {
+			f := parseFinding(c.Node)
+			fmt.Fprintf(&b, "- #%d [%s] %s — 状态：%s（置信度：%s）\n", c.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), closedStatusLabel(c.Status), confidenceLabel(c.Confidence))
 		}
 		b.WriteString("\n")
 	}

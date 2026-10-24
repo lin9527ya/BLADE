@@ -214,6 +214,12 @@ func accP1(t *testing.T, e *accEnv) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("撤回 status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	// 误报：不再作为当前风险进正文，但必须在「已关闭」里留档——静默删掉会让客户在
+	// 页面上见过的编号在报告里凭空消失。
+	fpID, fpNode := e.newFinding(task, tid, `{"vulnclass":"sqli","severity":"medium","summary":"疑似注入（人工判为误报）","evidence":"单引号报错","confidence":"medium"}`)
+	if _, err := e.m.pg.SetFindingStatus(fpID, db.FindingFalsePositive); err != nil {
+		t.Fatal(err)
+	}
 
 	st := task.Store
 	sem, err := st.AddIntent(map[string]any{"summary": "语义终态：探针回包否定该假设"}, 5, nil, "planner")
@@ -238,6 +244,16 @@ func accP1(t *testing.T, e *accEnv) {
 	}
 
 	md := e.report(task)
+	e.mustContain(md, "- 确认发现：**0** 个", "误报不能算确认发现")
+	closedAt := strings.Index(md, "## 已关闭（误报/重复/已忽略/已修复；不进正文）")
+	if closedAt < 0 {
+		t.Fatal("缺少「已关闭」段")
+	}
+	fpLine := fmt.Sprintf("#%d [MEDIUM] sqli", fpNode)
+	if strings.Contains(md[:closedAt], fpLine) {
+		t.Fatalf("误报进了正文：%s", fpLine)
+	}
+	e.mustContain(md[closedAt:], fpLine+" — 状态：误报", "误报进关闭段并写明状态")
 	e.mustContain(md, "## 已撤回（复测推翻；不进正文，保留在案）", "撤回段")
 	e.mustContain(md, "复测推翻：输出被 HTML 编码", "撤回原因")
 	e.mustContain(md, "## 未测成（blocked/exhausted，不得当作已测干净）", "未测成段")
@@ -277,6 +293,32 @@ func accP2(t *testing.T, e *accEnv) {
 	e.mustContain(md, "sqli：已测", "已测单元格")
 	e.mustContain(md, "ssrf：未测成", "未测成单元格")
 	e.mustContain(md, "api.acc-matrix.example", "范围内资产")
+
+	// 资产计数只数本任务：此前是全局 QueryByType，报告里会把别的作战的资产也数进来
+	// （既是跨任务泄漏，也让「范围内资产数」失去意义）。
+	lineA := reportAssetLine(md)
+	e.mustContain(lineA, "subdomain 1", "本任务范围内的子域计数")
+	_, otherTID := e.newTask("acceptance-p2-other", "另一个作战")
+	for i := 0; i < 3; i++ {
+		a, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: fmt.Sprintf("x%d.acc-other.example", i), TaskID: otherTID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = as.DeleteByIDs([]int64{a}) })
+	}
+	if got := reportAssetLine(e.report(task)); got != lineA {
+		t.Fatalf("另一个任务的资产混进了本任务报告：before=%q after=%q", lineA, got)
+	}
+}
+
+// reportAssetLine 取报告里「- 资产：」那一行（计数断言只需比这一行）。
+func reportAssetLine(md string) string {
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "- 资产：") {
+			return line
+		}
+	}
+	return ""
 }
 
 func accP3(t *testing.T, e *accEnv) {

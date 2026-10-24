@@ -24,26 +24,11 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// 撤回(retracted)的漏洞出正文、进「已撤回」段；blocked/exhausted 的意图单列「未测成」。
 	tid, _ := strconv.ParseInt(t.ID, 10, 64)
 	meta, _ := s.m.pg.FindingMetaByNodeID(tid)
-	live := make([]*db.Node, 0, len(findings))
-	var retracted []report.Retracted
-	var ruledOut, proofGaps []report.CandidateNote
-	confidenceByNode := map[int64]string{}
-	for _, n := range findings {
-		m, ok := meta[n.ID]
-		if ok && m.Confidence != "" {
-			confidenceByNode[n.ID] = m.Confidence
-		}
-		switch {
-		case ok && m.Status == db.FindingRetracted:
-			retracted = append(retracted, report.Retracted{Node: n, Reason: m.RetractReason})
-		case n.State == db.FindingRuledOut || (ok && m.Status == db.FindingRuledOut):
-			ruledOut = append(ruledOut, report.CandidateNote{Node: n, Counterevidence: m.Counterevidence, ProofGap: m.ProofGap, Confidence: m.Confidence})
-		case n.State == db.FindingOpenProofGap || (ok && m.Status == db.FindingOpenProofGap):
-			proofGaps = append(proofGaps, report.CandidateNote{Node: n, Counterevidence: m.Counterevidence, ProofGap: m.ProofGap, Confidence: m.Confidence})
-		default:
-			live = append(live, n)
-		}
-	}
+	buckets := partitionReportFindings(findings, meta)
+	live := buckets.live
+	retracted := buckets.retracted
+	ruledOut, proofGaps, closed := buckets.ruledOut, buckets.proofGaps, buckets.closed
+	confidenceByNode := buckets.confidenceByNode
 	intents, _ := t.Store.ListByKind(db.KindIntent, 1000)
 	var notProbed []report.NotProbed
 	for _, n := range intents {
@@ -59,26 +44,40 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	coverage, _ := t.Store.CoverageMatrix(tid)
 	// 复核结论：最新复测非"复现"的发现一并点名（存疑的会被 planner/人工再次审视）。
+	// 复核结论用**全部**发现来找节点：`fixed` 的发现现在进了「已关闭」桶、不在 live 里，
+	// 但它恰恰是复测结论最该点名的一条（「已修复（复测确认）」）。用 liveByID 会把它丢掉。
 	verdicts, _ := s.m.pg.LatestRetestVerdicts(tid)
-	liveByID := map[int64]*db.Node{}
-	for _, n := range live {
-		liveByID[n.ID] = n
+	allByID := map[int64]*db.Node{}
+	for _, n := range findings {
+		allByID[n.ID] = n
 	}
 	var retestNotes []report.RetestNote
 	for nodeID, verdict := range verdicts {
 		if verdict == "reproduced" {
 			continue
 		}
-		if n, ok := liveByID[nodeID]; ok {
+		if n, ok := allByID[nodeID]; ok {
 			retestNotes = append(retestNotes, report.RetestNote{Node: n, Verdict: verdict})
 		}
 	}
 	sort.Slice(retestNotes, func(i, j int) bool { return retestNotes[i].Node.ID < retestNotes[j].Node.ID })
 	counts := map[string]int{}
-	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
-		if len(ns) > 0 {
-			counts[ty] = len(ns)
+	// 资产计数必须**只数本任务范围内**的。此前用全局 QueryByType：报告里的「资产」是整个库里
+	// 所有作战的资产——既是跨任务泄漏，也让「范围内资产数」这个验收项失去意义。
+	// 口径与覆盖卡片（tasks_api.go）、planner 概览（agent/tools.go）统一到 TaskCoverageWithSources，
+	// 三处不再各报一个数。老任务没有 task_scope 时回退到 assets.task_ids 关联计数（同样不跨任务）。
+	if cov, cerr := s.m.Assets().TaskCoverageWithSources(tid); cerr == nil && cov.Denominator > 0 {
+		for _, bt := range cov.ByType {
+			counts[bt.Type] = bt.Total
+		}
+	} else {
+		if cerr != nil {
+			log.Printf("[report] 任务 %s 覆盖口径资产计数失败，回退到 task_ids 关联计数：%v", t.ID, cerr)
+		}
+		if m, ferr := s.m.Assets().CountsByTypeForTask(tid); ferr == nil {
+			counts = m
+		} else {
+			log.Printf("[report] 任务 %s 资产计数回退也失败，报告将不列资产数：%v", t.ID, ferr)
 		}
 	}
 	// 战果：据点与凭据各取全量（同 findings 的取法）。它们不进 digest（coldgraph 只折
@@ -137,7 +136,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: live, Retracted: retracted, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
+		AssetCounts: counts, Findings: live, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
@@ -163,3 +162,53 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- utils ---
+
+// reportBuckets 是报告分区结果：正文（live）与四类不进正文但必须在案的桶。
+type reportBuckets struct {
+	live             []*db.Node
+	retracted        []report.Retracted
+	ruledOut         []report.CandidateNote
+	proofGaps        []report.CandidateNote
+	closed           []report.ClosedNote
+	confidenceByNode map[int64]string
+}
+
+// partitionReportFindings 按 triage 状态把发现分桶。
+//
+// 正文只放**当前仍然成立**的发现。误报 / 重复 / 已忽略 / 已修复 / 已解决此前落进 default
+// 分支，被当作「确认发现」印进正文与计数——一份把已推翻的结论算成确认漏洞的报告，
+// 交付即失信。关闭的发现**不静默丢弃**：进「已关闭」段，交付物要能回答"这条后来怎么了"。
+//
+// 注意与 db.FindingPromotableForKnowledge 的取舍不同：那个问"能不能沉淀成知识"，
+// 这个问"还进不进正文"，两件事不该共用一张状态表。
+func partitionReportFindings(findings []*db.Node, meta map[int64]db.FindingMeta) reportBuckets {
+	b := reportBuckets{live: make([]*db.Node, 0, len(findings)), confidenceByNode: map[int64]string{}}
+	for _, n := range findings {
+		m, ok := meta[n.ID]
+		if ok && m.Confidence != "" {
+			b.confidenceByNode[n.ID] = m.Confidence
+		}
+		switch {
+		case ok && m.Status == db.FindingRetracted:
+			b.retracted = append(b.retracted, report.Retracted{Node: n, Reason: m.RetractReason})
+		case n.State == db.FindingRuledOut || (ok && m.Status == db.FindingRuledOut):
+			b.ruledOut = append(b.ruledOut, report.CandidateNote{Node: n, Counterevidence: m.Counterevidence, ProofGap: m.ProofGap, Confidence: m.Confidence})
+		case n.State == db.FindingOpenProofGap || (ok && m.Status == db.FindingOpenProofGap):
+			b.proofGaps = append(b.proofGaps, report.CandidateNote{Node: n, Counterevidence: m.Counterevidence, ProofGap: m.ProofGap, Confidence: m.Confidence})
+		case ok && findingClosedStatus(m.Status):
+			b.closed = append(b.closed, report.ClosedNote{Node: n, Status: m.Status, Confidence: m.Confidence})
+		default:
+			b.live = append(b.live, n)
+		}
+	}
+	return b
+}
+
+// findingClosedStatus 报告分区用：这些状态说明「这条结论已不再作为当前风险成立」。
+func findingClosedStatus(status string) bool {
+	switch status {
+	case db.FindingFalsePositive, db.FindingDuplicate, db.FindingIgnored, db.FindingFixed, db.FindingResolved:
+		return true
+	}
+	return false
+}
