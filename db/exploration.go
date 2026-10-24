@@ -1330,14 +1330,56 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state='open'
-ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
+	// 前置未满足的意图不进 frontier：串行链的下一步在前一步有结论前不该被派给 worker
+	// （下游拿不到前置只会空转/重复）。满足 = 前置以 done/negative 收场。
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
+      AND d.state NOT IN ('done','negative'))
+ORDER BY n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanNodes(rows)
+}
+
+// IntentDependencies 返回本任务里**未满足的前置**：intentID → 还没结论的依赖 id。
+//
+// 「满足」= 依赖意图以 done/negative 收场（真的有了结论）。blocked/exhausted/no_output
+// 意味着那一步没跑成——下游继续停着，等 planner 决定是重派前置还是拆链。
+func (s *ExplorationStore) IntentDependencies() (map[int64][]int64, error) {
+	rows, err := s.db.Query(`SELECT e.src_id, e.dst_id
+FROM exploration_edges e
+JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.rel='depends_on' AND d.state NOT IN ('done','negative')`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]int64{}
+	for rows.Next() {
+		var src, dst int64
+		if err := rows.Scan(&src, &dst); err != nil {
+			return nil, err
+		}
+		out[src] = append(out[src], dst)
+	}
+	return out, rows.Err()
+}
+
+// ClearIntentDependencies 拆掉一条意图的全部前置（planner 判定"不再等它"时用）。
+func (s *ExplorationStore) ClearIntentDependencies(id int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM exploration_edges
+WHERE exploration_id=$1 AND src_id=$2 AND rel=$3`, s.expID, id, RelDependsOn)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // HasActiveIntent reports whether this exploration has any intent still in play
@@ -1374,7 +1416,12 @@ const IntentLeaseTTL = 15 * time.Minute
 func (s *ExplorationStore) ClaimIntent(id int64, owner string, ttl time.Duration) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
 heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id, s.expID, int64(ttl/time.Second))
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=$3 AND e.src_id=exploration_nodes.id AND e.rel='depends_on'
+      AND d.state NOT IN ('done','negative'))`, owner, id, s.expID, int64(ttl/time.Second))
 	if err != nil {
 		return false, err
 	}
