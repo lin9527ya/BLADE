@@ -119,6 +119,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P43 凭据尝试预算（按目标+账号计数/成批尝试一次即越界/排在启用集之前）", func(t *testing.T) { accP43(t, env.forTest(t)) })
 	t.Run("P44 遗留物台账（落在目标上的东西/状态不归一/销账要清理证据）", func(t *testing.T) { accP44(t, env.forTest(t)) })
 	t.Run("P45 预期与实测对账（打了多少 vs 核了多少/没核要如实说/三态不相除）", func(t *testing.T) { accP45(t, env.forTest(t)) })
+	t.Run("P46 运行指标（任务队列/在飞调用/LLM 延迟分位数/执行计数）", func(t *testing.T) { accP46(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -5795,6 +5796,59 @@ func accP44(t *testing.T, e *accEnv) {
 	}
 	e.mustContain(rec.Body.String(), "遗留物", "时间线上的遗留物事件")
 	e.mustContain(rec.Body.String(), "未清理", "时间线上的遗留物状态词")
+}
+
+// accP46 运行指标：操作者要能回答「为什么慢/为什么停/钱花在哪」，而不是翻日志。
+func accP46(t *testing.T, e *accEnv) {
+	task, _ := e.newTask("accP46", "运行指标")
+	if err := e.m.pg.InsertLLMUsage(&db.LLMUsage{
+		TaskID: task.ID, Worker: "worker", InputTokens: 10, OutputTokens: 5, LatencyMs: 42, Status: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	e.s.metrics(rec, httptest.NewRequest("GET", "/api/metrics", nil))
+	if rec.Code != 200 {
+		t.Fatalf("metrics status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"now", "runtime", "tasks", "llm", "executions", "db"} {
+		if _, ok := body[key]; !ok {
+			t.Errorf("metrics 缺少 %q", key)
+		}
+	}
+	tasks, _ := body["tasks"].([]any)
+	found := false
+	for _, item := range tasks {
+		m, _ := item.(map[string]any)
+		if m != nil && m["id"] == task.ID {
+			found = true
+			if _, ok := m["claimable_intents"]; !ok {
+				t.Error("任务项缺少 claimable_intents")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("metrics 未包含任务 %s", task.ID)
+	}
+	llm, _ := body["llm"].(map[string]any)
+	byWorker, _ := llm["by_worker"].([]any)
+	found = false
+	for _, item := range byWorker {
+		m, _ := item.(map[string]any)
+		if m != nil && m["key"] == "worker" {
+			found = true
+			if p95, _ := m["p95_ms"].(float64); p95 < 42 {
+				t.Errorf("worker p95=%v，应 >= 42", p95)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("llm.by_worker 缺少 worker 归因行")
+	}
 }
 
 // accP45 预期与实测对账：报告要回答「打了多少手 vs 核了多少手」。
