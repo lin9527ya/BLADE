@@ -224,7 +224,6 @@ POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-
 POST /api/exploration/findings/{id}/traffic	server.(*Server).bindFindingTraffic-fm
 POST /api/exploration/main-session/new	server.(*Server).newMainSession-fm
 POST /api/findings/{id}/promote-knowledge	server.(*Server).promoteFindingKnowledge-fm
-POST /api/gc	server.(*Server).gc-fm
 POST /api/intel/search	server.(*Server).searchIntelAssets-fm
 POST /api/intercept/pending/{id}/decide	server.(*Server).interceptDecide-fm
 POST /api/intercept/rules	server.(*Server).interceptCreateRule-fm

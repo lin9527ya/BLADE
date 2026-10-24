@@ -200,11 +200,6 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"entries": t.Guard.Audit(), "attributions": t.Guard.Attributions()})
 }
 
-// gc is a no-op stub (GC not yet implemented in the new asset store).
-func (s *Server) gc(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"removed": 0})
-}
-
 // --- utils ---
 
 // reportBuckets 是报告分区结果：正文（live）与四类不进正文但必须在案的桶。
