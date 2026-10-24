@@ -891,6 +891,10 @@ func accP13(t *testing.T, e *accEnv) {
 	if err := e.m.pg.MarkExecutionRunning(left); err != nil {
 		t.Fatal(err)
 	}
+	// 对账有 2 分钟宽限（覆盖 Submit→Start 与刚重启的窗口）：把遗留行设老。
+	if _, err := e.m.pg.Exec(`UPDATE tool_executions SET created_at=now()-interval '5 minutes' WHERE id=$1`, left); err != nil {
+		t.Fatal(err)
+	}
 	if n := svc.ReconcileOrphaned(); n < 1 {
 		t.Fatalf("对账应至少标 1 条，实际 %d", n)
 	}
