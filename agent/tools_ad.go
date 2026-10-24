@@ -9,6 +9,21 @@ import (
 	"github.com/lin9527ya/blade/db"
 )
 
+// loadTopologyNodes 读 AD 与云上对象。两者共用同一条路径算法（db.ADPaths），
+// 必须一起加载：只读 AD 会让导过云上枚举的任务在 ad_paths / ad_graph 里看不到云侧对象，
+// 而页面（server/ad_paths.go）是两种都读的。上限沿用导入侧的 20000。
+func loadTopologyNodes(ts *db.ExplorationStore) ([]*db.Node, error) {
+	ad, err := ts.ListByKind(db.KindADObject, 20000)
+	if err != nil {
+		return nil, err
+	}
+	cloud, err := ts.ListByKind(db.KindCloudObject, 20000)
+	if err != nil {
+		return nil, err
+	}
+	return append(ad, cloud...), nil
+}
+
 // ad_paths（P32）：读域内攻击路径。
 //
 // 数据来自导入的 BloodHound/SharpHound 采集结果（server 侧的 AD 导入），路径重建在
@@ -44,14 +59,14 @@ func (t *ToolSet) adPaths() actool.CoreTool {
 			if a.Limit <= 0 {
 				a.Limit = 10
 			}
-			nodes, err := t.ts.ListByKind(db.KindADObject, 20000)
+			nodes, err := loadTopologyNodes(t.ts)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			if len(nodes) == 0 {
 				return jsonResult(map[string]any{
 					"paths": []any{}, "objects": map[string]int{},
-					"note": "本任务图上还没有域内数据：需要先导入 BloodHound/SharpHound 的采集结果（任务页「AD 攻击路径」标签）。",
+					"note": "本任务图上还没有域内/云上数据：需要先导入 BloodHound/SharpHound 采集结果或 AWS/K8s 授权枚举（任务页「AD 攻击路径」标签）。",
 				})
 			}
 			edges, err := t.ts.Edges(20000)

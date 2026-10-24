@@ -38,7 +38,7 @@ func TestBuildContextIndexCompanyLines(t *testing.T) {
 	}
 	// 用真 store 的路径在验收里覆盖；这里只钉住"给了行就渲染、超 5 行给提示"的渲染规则。
 	lines := []string{"[结论] a", "[结论] b", "[结论] c", "[结论] d", "[结论] e", "[结论] f", "[结论] g"}
-	rendered := renderCompanySection(lines)
+	rendered := renderCompanySection(lines, true)
 	for _, want := range []string{"本公司已知", "只读先验", "[结论] a", "[结论] e", "还有 2 条"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("缺少 %q:\n%s", want, rendered)

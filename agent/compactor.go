@@ -116,11 +116,15 @@ type ContextIndexVars struct {
 	// PlaybookLines 是"本任务指纹命中的历史打法"一行式（可空）。同样由调用方现读：
 	// 指纹匹配要扫资产表，不该让索引构造去碰；注入 ≤2 行。
 	PlaybookLines []string
+	// HasOverview 表示当前 agent 的工具面里有 graph_overview / list_facts（mainagent/planner）。
+	// worker 没有这两个工具——索引里的"要细节调 …"必须按它分支，否则会把 worker 教去调
+	// 一个不存在的工具。
+	HasOverview bool
 }
 
 // renderCompanySection 渲染常驻索引里的"本公司已知"段（P23）。≤5 行 + 截断提示 +
 // 只读先验的定性说明——索引每个请求都发一次，注入面必须收紧。
-func renderCompanySection(lines []string) string {
+func renderCompanySection(lines []string, hasOverview bool) string {
 	if len(lines) == 0 {
 		return ""
 	}
@@ -128,7 +132,11 @@ func renderCompanySection(lines []string) string {
 	b.WriteString("\n本公司已知（同公司其它任务的沉淀·只读先验·不代表本任务已测）：")
 	for i, line := range lines {
 		if i >= 5 {
-			b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（要全量调 graph_overview 的 company_knowledge）", len(lines)-5))
+			if hasOverview {
+				b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（要全量调 graph_overview 的 company_knowledge）", len(lines)-5))
+			} else {
+				b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（索引只给前 5 条）", len(lines)-5))
+			}
 			break
 		}
 		b.WriteString("\n  · " + line)
@@ -157,7 +165,11 @@ func BuildContextIndex(v ContextIndexVars) string {
 	}
 	var b strings.Builder
 	b.WriteString("【常驻上下文 · 平台注入，非用户发言（每次请求附带，压缩不掉）】\n")
-	b.WriteString("（这是给你兜底的实时索引；要细节调 graph_overview / node_detail / list_facts / list_findings）\n")
+	if v.HasOverview {
+		b.WriteString("（这是给你兜底的实时索引；要细节调 graph_overview / node_detail / list_facts / list_findings）\n")
+	} else {
+		b.WriteString("（这是给你兜底的实时索引；要细节调 node_detail / list_findings / list_worker_traces）\n")
+	}
 	b.WriteString("（intent-N / goal-N 里的 N 是**本任务内**的序号；调用工具时用工具返回的 id 字段）")
 
 	if goals, err := ts.ListByKind(db.KindGoal, 20); err == nil && len(goals) > 0 {
@@ -172,7 +184,7 @@ func BuildContextIndex(v ContextIndexVars) string {
 		b.WriteString("\n操作约束（原文，最高优先级）：")
 		b.WriteString(cb)
 	}
-	b.WriteString(renderCompanySection(v.CompanyLines))
+	b.WriteString(renderCompanySection(v.CompanyLines, v.HasOverview))
 	if v.Intent != nil {
 		sum := digestSummary(v.Intent)
 		b.WriteString(fmt.Sprintf("\n本工作意图：intent-%d %s（写回事实/发现时用它；工具里用 id %d）", seqOf(intentSeq, v.Intent.ID), clipLine(sum, 160), v.Intent.ID))
@@ -208,7 +220,7 @@ func BuildContextIndex(v ContextIndexVars) string {
 		b.WriteString(fmt.Sprintf("\n计数：意图 %d（含已结束）、事实 %d、发现 %d",
 			st[db.KindIntent], st[db.KindFact], st[db.KindFinding]))
 	}
-	b.WriteString(renderLootSection(ts))
+	b.WriteString(renderLootSection(ts, v.HasOverview))
 	b.WriteString(renderPlaybookSection(v.PlaybookLines))
 	return b.String()
 }
@@ -227,7 +239,7 @@ const (
 //
 // 凭据只给指纹（db.CredentialView.Fingerprint）：索引会进每一轮提示词与日志，明文不进来。
 // 已失效的战果不列——不能用就不是机会，占行只会挤掉还有用的。
-func renderLootSection(ts *db.ExplorationStore) string {
+func renderLootSection(ts *db.ExplorationStore, hasOverview bool) string {
 	footholds, _ := ts.ListByKind(db.KindFoothold, ctxLootScanCap)
 	creds, _ := ts.ListByKind(db.KindCredential, ctxLootScanCap)
 	if len(footholds) == 0 && len(creds) == 0 {
@@ -235,12 +247,12 @@ func renderLootSection(ts *db.ExplorationStore) string {
 	}
 	used := usedLootSet(ts, footholds, creds)
 	var b strings.Builder
-	renderLootKind(&b, "据点", db.KindFoothold, footholds, used, func(n *db.Node) string {
+	renderLootKind(&b, "据点", db.KindFoothold, footholds, used, hasOverview, func(n *db.Node) string {
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
 		return clipLine(asText(p["summary"]), 90)
 	})
-	renderLootKind(&b, "凭据", db.KindCredential, creds, used, func(n *db.Node) string {
+	renderLootKind(&b, "凭据", db.KindCredential, creds, used, hasOverview, func(n *db.Node) string {
 		v := db.ParseCredential(n)
 		if fp := v.Fingerprint(); fp != "" {
 			return fp
@@ -254,7 +266,7 @@ func renderLootSection(ts *db.ExplorationStore) string {
 
 // renderLootKind 渲染一类战果，**未动用的排在前面**——它们是这条索引存在的理由，
 // 不能因为前面几条已经用掉就挤出行外。
-func renderLootKind(b *strings.Builder, title, kind string, nodes []*db.Node, used map[int64]bool, line func(*db.Node) string) {
+func renderLootKind(b *strings.Builder, title, kind string, nodes []*db.Node, used map[int64]bool, hasOverview bool, line func(*db.Node) string) {
 	active := make([]*db.Node, 0, len(nodes))
 	outstanding := make([]*db.Node, 0, len(nodes))
 	for _, n := range nodes {
@@ -289,7 +301,11 @@ func renderLootKind(b *strings.Builder, title, kind string, nodes []*db.Node, us
 		b.WriteString(fmt.Sprintf("\n  · %s-%d [%s] %s", kind, n.ID, mark, desc))
 	}
 	if rest := len(ordered) - len(shown); rest > 0 {
-		b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（要全量调 graph_overview）", rest))
+		if hasOverview {
+			b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（要全量调 graph_overview）", rest))
+		} else {
+			b.WriteString(fmt.Sprintf("\n  · …还有 %d 条（索引只给前 %d 条）", rest, ctxLootLines))
+		}
 	}
 }
 

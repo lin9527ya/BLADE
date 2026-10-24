@@ -11,12 +11,35 @@ import (
 // ad_paths 工具：域内采集数据导进来之后，规划/执行侧要**看得见**这条路。
 // 只有人能在页面上看，规划层就还是每轮从外面重新打一遍——那正是战果层要解决的问题。
 
+// 云上枚举结果也要被 ad_paths 看见：路径算法与 AD 共用，只读 AD 会让云侧对象
+// 在 agent 视角里消失（页面却能看到）。
+func TestADPathsToolIncludesCloudObjects(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	user, err := ts.AddNode(db.KindCloudObject, map[string]any{"category": "user", "name": "alice"}, 0, db.StateADActive, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := ts.AddNode(db.KindCloudObject, map[string]any{"category": "role", "name": "admin-role", "highvalue": true}, 0, db.StateADActive, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Link(user, db.RelCan, role); err != nil {
+		t.Fatal(err)
+	}
+	out := callTool(t, tools.WorkerTools(), "ad_paths", `{}`)
+	for _, want := range []string{"alice", "admin-role"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("云上对象 %q 应出现在路径里：%s", want, out)
+		}
+	}
+}
+
 func TestADPathsToolReadsImportedGraph(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 
 	// 空图：给一句能照着做的说明，而不是一个空对象。
 	out := callTool(t, tools.WorkerTools(), "ad_paths", `{}`)
-	if !strings.Contains(out, "还没有域内数据") {
+	if !strings.Contains(out, "还没有域内/云上数据") {
 		t.Errorf("空图该说明原因与下一步：%s", out)
 	}
 
