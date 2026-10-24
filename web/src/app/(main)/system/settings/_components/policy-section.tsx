@@ -53,6 +53,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     toggleAgentAutoRetest,
     oastEnabled,
     oastTokenSet,
+    noiseLevel,
+    saveNoiseLevel,
     oastTokenInput,
     setOastTokenInput,
     oastDomain,
@@ -486,6 +488,35 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               </Button>
             </div>
           </div>
+        </SubBlock>
+
+        <SubBlock title="潜行模式（噪声档位）" icon={<EyeOffIcon className="size-4 text-muted-foreground" />}>
+          <div className="flex flex-wrap items-center gap-3">
+            <Select
+              value={noiseLevel}
+              onValueChange={(v) => {
+                if (!loaded || savingOast) return;
+                if (v !== noiseLevel) saveNoiseLevel(v);
+              }}
+              disabled={!loaded || savingOast}
+            >
+              <SelectTrigger id="opsec-noise" className="w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="normal">常规（默认）</SelectItem>
+                <SelectItem value="quiet">静默 · 尽量不被发现</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            静默模式下，planner 与 worker 的提示词会追加一段<strong>平台持有</strong>的操作纪律（改 DB
+            提示词也删不掉它）：先最小验证再扩面、同类请求拉开间隔、被检出就换技术而不是加大力度、
+            WAF/403 时做最小验证而不是重放、留痕最小化并销账。
+            <br />
+            它改变的是<strong>怎么打</strong>，不改变<strong>能打哪</strong>：授权范围、作业时间窗与停机开关照常生效。
+            另外态势里的「检出热点」会把真正响过的技术列给规划层，避免在同一目标上重复同一手。
+          </p>
         </SubBlock>
 
         <SubBlock title="可检出性知识库（事前）" icon={<ScanSearchIcon className="text-muted-foreground size-4" />}>

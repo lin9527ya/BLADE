@@ -55,6 +55,7 @@ export function useSettingsState() {
   const [oastTokenSet, setOastTokenSet] = React.useState(false);
   const [oastTokenInput, setOastTokenInput] = React.useState("");
   const [oastDomain, setOastDomain] = React.useState("requestrepo.com");
+  const [noiseLevel, setNoiseLevel] = React.useState("normal");
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
@@ -162,6 +163,7 @@ export function useSettingsState() {
     setOastEnabled(!!s.oast_enabled);
     setOastTokenSet(!!s.oast_token_set);
     setOastDomain(s.oast_domain || "requestrepo.com");
+    setNoiseLevel(s.opsec_noise_level === "quiet" ? "quiet" : "normal");
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
@@ -592,6 +594,23 @@ export function useSettingsState() {
       .finally(() => setSavingAutoRetest(false));
   };
 
+  const saveNoiseLevel = (v: string) => {
+    const prev = noiseLevel;
+    setNoiseLevel(v);
+    setSavingOast(true);
+    api
+      .setSettings({ opsec_noise_level: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v === "quiet" ? "已切到静默模式（下一轮生效）" : "已切回常规模式");
+      })
+      .catch((e) => {
+        setNoiseLevel(prev);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingOast(false));
+  };
+
   const toggleOast = (v: boolean) => {
     setOastEnabled(v); // optimistic
     setSavingOast(true);
@@ -891,6 +910,8 @@ export function useSettingsState() {
     toggleAgentAutoRetest,
     oastEnabled,
     oastTokenSet,
+    noiseLevel,
+    saveNoiseLevel,
     oastTokenInput,
     setOastTokenInput,
     oastDomain,

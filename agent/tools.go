@@ -890,6 +890,32 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	// 复用 compactLoot：检测的状态永远不是 active，所以「outstanding」那套对它天然不生效。
 	out["detections"] = compactLoot(detectionWindow, factFrom, nil, "technique")
+	// 检出热点：**真的响了**的技术（triggered），连同命中的资产。被检出过的组合不要原样
+	// 重复——静默模式下这是硬要求，常规模式下也能省下一次白挨的尝试。
+	if triggered := triggeredDetections(allDetections); len(triggered) > 0 {
+		ids := make([]int64, 0, len(triggered))
+		for _, n := range triggered {
+			ids = append(ids, n.ID)
+		}
+		assetOf, _ := t.ts.NodeAssets(ids)
+		hotspots := make([]map[string]any, 0, 5)
+		for _, n := range triggered {
+			var p map[string]any
+			_ = json.Unmarshal(n.Payload, &p)
+			item := map[string]any{
+				"id": n.ID, "technique": payloadString(p, "technique"),
+				"summary": clipLine(payloadString(p, "summary"), 80),
+			}
+			if as := assetOf[n.ID]; len(as) > 0 {
+				item["asset_ids"] = as
+			}
+			hotspots = append(hotspots, item)
+			if len(hotspots) >= 5 {
+				break
+			}
+		}
+		out["detection_hotspots"] = hotspots
+	}
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
 	// 只给裸 id（仍可 expand_digest 展开），避免冷区唯一出口被无限拉长。
 	const coldDigestsCap = 15
@@ -1291,6 +1317,17 @@ func compactNode(n *db.Node) map[string]any {
 
 // detectionResults 统计检测验证的三态各有多少条。三态**分别计数、不合成"检出率"**：
 // 把 unknown 混进分母就是把「测不到」读成「没响」。
+// triggeredDetections 只取"确实响了"的那一档（unknown 不算——测不到 ≠ 没响，更 ≠ 响了）。
+func triggeredDetections(nodes []*db.Node) []*db.Node {
+	out := make([]*db.Node, 0, 4)
+	for _, n := range nodes {
+		if n.State == db.StateDetectionTriggered {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func detectionResults(nodes []*db.Node) map[string]int {
 	out := map[string]int{}
 	for _, n := range nodes {

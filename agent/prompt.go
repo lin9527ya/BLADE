@@ -56,6 +56,10 @@ func renderSystem(agentKey, def string, vars any) string {
 			tmpl = tmpl + "\n\n" + extra
 		}
 	}
+	// 静默模式的操作纪律是**代码持有**的：与追加段同一位置、但用户改 DB 正文也删不掉。
+	if block := stealthBlock(agentKey); block != "" {
+		tmpl = tmpl + "\n\n" + block
+	}
 	if out, err := renderTmpl(tmpl, vars); err == nil {
 		return out
 	}

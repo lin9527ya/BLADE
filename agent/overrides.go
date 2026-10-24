@@ -41,6 +41,9 @@ type Overrides struct {
 	// OASTConfig 返回 OAST 回调服务的配置（token、域名、是否启用）。nil/未启用时
 	// oast_mint / oast_poll 从工具面移除。
 	OASTConfig func() (token, domain string, enabled bool)
+	// NoiseLevel 返回本次作业的噪声档位（"quiet" / "normal"）。quiet 时 planner/worker
+	// 的提示词会追加一段代码持有的潜行纪律。
+	NoiseLevel func() string
 }
 
 // SetOverrides 用 o **整体替换**当前这套 hook；nil 字段表示把那一项关掉。
@@ -62,6 +65,7 @@ func SetOverrides(o Overrides) {
 	FindingTrafficBindingEnabled = o.FindingTrafficBindingEnabled
 	LootExecEnabled = o.LootExecEnabled
 	OASTConfig = o.OASTConfig
+	NoiseLevel = o.NoiseLevel
 }
 
 // CurrentOverrides 返回当前生效的一整套 hook（读取 / 保存 / 恢复用）。
@@ -80,6 +84,7 @@ func CurrentOverrides() Overrides {
 		FindingTrafficBindingEnabled:   FindingTrafficBindingEnabled,
 		LootExecEnabled:                LootExecEnabled,
 		OASTConfig:                     OASTConfig,
+		NoiseLevel:                     NoiseLevel,
 	}
 }
 

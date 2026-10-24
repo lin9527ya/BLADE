@@ -397,6 +397,14 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	o.FindingTrafficBindingEnabled = bindingEnabled
 	o.LootExecEnabled = lootExecEnabled
 	o.OASTConfig = oastConfig
+	// 噪声档位：每轮现读，改完下一轮生效。只认 normal|quiet，其它值按 normal。
+	o.NoiseLevel = func() string {
+		v, ok, _ := pg.GetSetting(settingOpsecNoise)
+		if ok && strings.EqualFold(strings.TrimSpace(v), "quiet") {
+			return "quiet"
+		}
+		return "normal"
+	}
 	o.ToolResolve = resolveTools
 	agent.SetOverrides(o)
 }
