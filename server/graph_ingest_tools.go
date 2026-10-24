@@ -112,9 +112,9 @@ func (s *Server) toolIngestADData() actool.CoreTool {
 	return wrTool("ingest_ad_data",
 		"把**域内枚举结果**落进本任务的图：吃 SharpHound / BloodHound 导出的 JSON（users.json / groups.json / computers.json / domains.json…）。"+
 			"用在：你在域内机器上跑出了采集结果（或拿到别人跑的结果）——**记进图里，规划层才看得到「从这点能走到哪」**，"+
-			"否则它只是一段文本。落进去之后用 ad_paths 读攻击路径。\\n"+
+			"否则它只是一段文本。落进去之后用 ad_paths 读攻击路径。\n"+
 			"输入：paths（文件绝对路径，或一个目录——目录里所有 .json 都会被读）与/或 json（内联文本）。"+
-			"重导只合并（节点身份是 SID），所以同一份结果导两次不会重复。\\n"+
+			"重导只合并（节点身份是 SID），所以同一份结果导两次不会重复。\n"+
 			"它不产生对目标的动作（读的是已经拿到的数据），因此不过 RoE/命令门；拿结果去打仍走既有的门。",
 		objSchema(map[string]any{
 			"paths": map[string]any{
@@ -150,10 +150,10 @@ func (s *Server) toolIngestCloudData() actool.CoreTool {
 	return wrTool("ingest_cloud_data",
 		"把**云上枚举结果**落进本任务的图：吃两种离线输出——"+
 			"① AWS `aws iam get-account-authorization-details` 的 JSON（授权明细：用户/组/角色/策略/信任）；"+
-			"② K8s `kubectl get clusterroles,clusterrolebindings,roles,rolebindings,serviceaccounts -A -o json` 的输出。\\n"+
+			"② K8s `kubectl get clusterroles,clusterrolebindings,roles,rolebindings,serviceaccounts -A -o json` 的输出。\n"+
 			"用在：你拿到了云凭据或已经在云里（例如从被控主机上读到 access key）——把授权枚举结果记进图，"+
 			"规划层才看得到「谁能拿到 admin 策略 / 集群管理员」。落进去之后用 ad_paths 读攻击路径"+
-			"（域内与云上共用同一条算法，两者还能连成一条链）。\\n"+
+			"（域内与云上共用同一条算法，两者还能连成一条链）。\n"+
 			"**平台不自己去调云 API**：枚举在有凭据的那台机器上用 aws-cli / kubectl 做，这里只读结果。"+
 			"输入 paths（文件或目录）与/或 json；重导只合并（身份键是 ARN / k8s 的 kind:ns:name）。",
 		objSchema(map[string]any{
