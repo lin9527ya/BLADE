@@ -268,6 +268,10 @@ const (
 	// 有结论（done/negative）才该被派给 worker"。串行利用链靠它落进图里，而不是靠
 	// planner 的 TodoWrite 临时记忆——后者重启就没、worker 也看不见。
 	RelDependsOn = "depends_on"
+	// RelReaches 是「这条战果能通到哪」：loot --reaches--> ad_object。据点/凭据与**资产**
+	// 的关系走 anchor（两套 id 空间），而 AD 对象是探索节点，用这条边，
+	// 图上就能读出"我手上的能力覆盖了域里的哪些机器"。
+	RelReaches = "reaches"
 	// 云上的关系**不新造边**：它们本来就能被这四条表达——
 	//   IAM 用户 → 组：member_of
 	//   主体 → 策略（附加/内联）：can，rights 写 attached / inline

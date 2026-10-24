@@ -18,17 +18,50 @@ import (
 // 匹配口径：类别必须是 computer；host 等于对象名，或等于对象名的主机名段
 // （web01 ↔ WEB01.CORP.LOCAL）；大小写不敏感，末尾 '$' 去掉。**宁可不匹配，也不要
 // 张冠李戴**——错标 owned 会让攻击路径从一个其实没拿下的节点出发。
-func (t *ToolSet) markADOwned(host string) int {
+// markADOwned 标 owned 并返回**匹配到的全部**对象 id（含本来就已经 owned 的）——
+// 调用方还要用这些 id 建 reaches 边：谁通到谁，和"在不在手"是两件事。
+func (t *ToolSet) markADOwned(host string) []int64 {
+	if t.ts == nil || strings.TrimSpace(host) == "" {
+		return nil
+	}
+	ids := t.adObjectsForHost(host)
+	for _, id := range ids {
+		n, err := t.ts.GetNode(id)
+		if err != nil || n == nil {
+			continue
+		}
+		var p map[string]any
+		if json.Unmarshal(n.Payload, &p) != nil {
+			continue
+		}
+		if owned, _ := p["owned"].(bool); owned {
+			continue // 已经是 owned，不用重写
+		}
+		p["owned"] = true
+		_ = t.ts.SetNodePayload(id, db.KindADObject, p)
+	}
+	return ids
+}
+
+// adObjectsForHost 找出 host 对应的 AD 计算机对象（只读，不做任何写入）。
+//
+// 匹配口径：类别必须是 computer；host 等于对象名，或等于对象名的主机名段
+// （web01 ↔ WEB01.CORP.LOCAL）；大小写不敏感，末尾 '$' 去掉。**宁可不匹配，也不要
+// 张冠李戴**——错配会让攻击路径从一台其实没拿下的机器出发。
+func (t *ToolSet) adObjectsForHost(host string) []int64 {
+	if t.ts == nil {
+		return nil
+	}
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "$"))
 	if host == "" {
-		return 0
+		return nil
 	}
 	short := firstLabel(host)
 	nodes, err := t.ts.ListByKind(db.KindADObject, 1000)
 	if err != nil {
-		return 0
+		return nil
 	}
-	marked := 0
+	var ids []int64
 	for _, n := range nodes {
 		var p map[string]any
 		if json.Unmarshal(n.Payload, &p) != nil {
@@ -37,23 +70,37 @@ func (t *ToolSet) markADOwned(host string) int {
 		if strings.ToLower(strings.TrimSpace(payloadString(p, "category"))) != "computer" {
 			continue
 		}
-		if owned, _ := p["owned"].(bool); owned {
-			continue // 已经是 owned，不用重写
-		}
 		name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(payloadString(p, "name")), "$"))
 		if name == "" {
 			continue
 		}
-		if name != host && firstLabel(name) != short {
-			continue
+		if name == host || firstLabel(name) == short {
+			ids = append(ids, n.ID)
 		}
-		p["owned"] = true
-		if err := t.ts.SetNodePayload(n.ID, db.KindADObject, p); err != nil {
-			continue
-		}
-		marked++
 	}
-	return marked
+	return ids
+}
+
+// linkReaches 建「这条战果能通到这些 AD 机器」的边。与 owned 分开：一条凭据能登某台机器
+// 不等于那台机器已经在手（可能只是能认证），但"通到哪"对规划同样关键。
+func (t *ToolSet) linkReaches(lootID int64, hosts ...string) int {
+	if t.ts == nil || lootID <= 0 {
+		return 0
+	}
+	linked := 0
+	seen := map[int64]bool{}
+	for _, host := range hosts {
+		for _, aid := range t.adObjectsForHost(host) {
+			if seen[aid] {
+				continue
+			}
+			seen[aid] = true
+			if err := t.ts.Link(lootID, db.RelReaches, aid); err == nil {
+				linked++
+			}
+		}
+	}
+	return linked
 }
 
 // firstLabel 取 FQDN 的主机名段（web01.corp.local → web01）。

@@ -339,7 +339,7 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
     PRIMARY KEY (exploration_id, src_id, rel, dst_id),
     CONSTRAINT ck_edge_noself CHECK (src_id <> dst_id),
     CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses',
-                                          'member_of','admin_to','session_on','can','depends_on'))
+                                          'member_of','admin_to','session_on','can','depends_on','reaches'))
 );
 ALTER TABLE exploration_edges ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
@@ -356,12 +356,13 @@ BEGIN
        AND (pg_get_constraintdef(oid) NOT LIKE '%covers%'
             OR pg_get_constraintdef(oid) NOT LIKE '%uses%'
             OR pg_get_constraintdef(oid) NOT LIKE '%member_of%'
-            OR pg_get_constraintdef(oid) NOT LIKE '%depends_on%');
+            OR pg_get_constraintdef(oid) NOT LIKE '%depends_on%'
+            OR pg_get_constraintdef(oid) NOT LIKE '%reaches%');
     IF cname IS NOT NULL THEN
         EXECUTE 'ALTER TABLE exploration_edges DROP CONSTRAINT '||quote_ident(cname);
         ALTER TABLE exploration_edges ADD CONSTRAINT ck_edge_rel
             CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses',
-                           'member_of','admin_to','session_on','can','depends_on'));
+                           'member_of','admin_to','session_on','can','depends_on','reaches'));
     END IF;
 END $$;
 
