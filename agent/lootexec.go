@@ -122,7 +122,7 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("loot_exec: 无法暂存凭据明文：" + err.Error()), nil
 			}
-			cleanup := func() { _ = os.RemoveAll(filepath.Dir(secretPath)) }
+			cleanup := func() { _ = removeLootSecret(secretPath) }
 			command := buildLootCommand(kind, service, user, host, target.Port, secretPath, a.Command)
 			var timeout time.Duration
 			if a.TimeoutMs > 0 {
@@ -135,19 +135,8 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 				return actool.Errorf("loot_exec: " + err.Error()), nil
 			}
 			// 留痕：谁在什么时候动用了哪条凭据（只记指纹，不记明文）。
-			if t.ts != nil {
-				act := db.Activity{
-					Worker:  t.worker,
-					Kind:    "loot_exec",
-					Summary: fmt.Sprintf("动用凭据 %s 在 %s 上执行命令", v.Fingerprint(), host),
-					Detail:  fmt.Sprintf("凭据节点 #%d → %s@%s:%d\n命令：%s", id, user, host, portOf(service, target.Port), a.Command),
-				}
-				if t.ownerNode > 0 {
-					owner := t.ownerNode
-					act.NodeID = &owner
-				}
-				_, _ = t.ts.AppendActivity(act)
-			}
+			t.auditLootExec("loot_exec", fmt.Sprintf("动用凭据 %s 在 %s 上执行命令", v.Fingerprint(), host),
+				fmt.Sprintf("凭据节点 #%d → %s@%s:%d\n命令：%s", id, user, host, portOf(service, target.Port), a.Command))
 			raw, _ := json.Marshal(st)
 			return actool.Text(fmt.Sprintf("execution started: %d\n%s\n凭据 %s 已用于连接 %s（明文未进入命令/台账）；用 get_execution(%d) 取输出。",
 				st.ID, raw, v.Fingerprint(), host, st.ID)), nil
@@ -259,3 +248,25 @@ func buildLootCommand(kind, service, user, host string, port int, secretPath, re
 
 // shQuote 用单引号包住一段文本（供 /bin/sh）。
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// removeLootSecret 删掉一次性明文目录（0600 文件 + 0700 目录一起清掉）。
+func removeLootSecret(path string) error {
+	if path == "" {
+		return nil
+	}
+	return os.RemoveAll(filepath.Dir(path))
+}
+
+// auditLootExec 给「动用了战果」留一条时间线。调用方负责只写指纹/节点 id 与命令，
+// **绝不写明文**——时间线会进 UI、导出与日志。
+func (t *ToolSet) auditLootExec(kind, summary, detail string) {
+	if t.ts == nil {
+		return
+	}
+	act := db.Activity{Worker: t.worker, Kind: kind, Summary: summary, Detail: detail}
+	if t.ownerNode > 0 {
+		owner := t.ownerNode
+		act.NodeID = &owner
+	}
+	_, _ = t.ts.AppendActivity(act)
+}

@@ -77,6 +77,12 @@ func TestShellCommandOfExtractsNetworkTargets(t *testing.T) {
 			`{"loot_id":3,"host":"evil.example.com","command":"id; uname -a"}`,
 			"evil.example.com",
 		},
+		{
+			"foothold_exec carries the host too",
+			"foothold_exec",
+			`{"foothold_id":4,"host":"evil.example.com","command":"id"}`,
+			"evil.example.com",
+		},
 		{"non-network tool yields nothing", "insert_assets", `{"host":"evil.example.com"}`, ""},
 	}
 	for _, tc := range cases {
@@ -161,14 +167,20 @@ func TestDefaultEnabledToolsCoverRunExecution(t *testing.T) {
 	}
 }
 
-// loot_exec 会直接连目标，漏登记等于让拦截规则与裁判都看不清它。
+// loot_exec / foothold_exec 会直接连目标，漏登记等于让拦截规则与裁判都看不清它们。
 func TestDefaultEnabledToolsCoverLootExec(t *testing.T) {
-	for _, n := range defaultEnabledTools {
-		if n == "loot_exec" {
-			return
+	for _, want := range []string{"loot_exec", "foothold_exec"} {
+		found := false
+		for _, n := range defaultEnabledTools {
+			if n == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s missing from defaultEnabledTools — 拦截规则/裁判会跳过它", want)
 		}
 	}
-	t.Fatal("loot_exec missing from defaultEnabledTools — 拦截规则/裁判会跳过它")
 }
 
 func TestTargetInScope(t *testing.T) {

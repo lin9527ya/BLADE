@@ -153,3 +153,55 @@ func SortCredentialTargets(list []CredentialTarget) {
 		return list[i].Port < list[j].Port
 	})
 }
+
+// FootholdView 是据点 payload 的读模型。
+//
+// 据点此前只有 access/privilege/detail 三段自由文本：平台知道"你在 web01 上拿到了 root"，
+// 但不知道**怎么再进去**——于是任何后续动作都只能让模型自己重连，平台既帮不上忙，
+// 也无法对"连到哪"做授权范围校验。结构化连法把这件事变成可执行、可审计的：
+//
+//	protocol      ssh | webshell（闭集，见 ValidFootholdProtocol）
+//	host/port     连哪（host 必填，也是 RoE 校验的对象）
+//	credential_id ssh 用哪条凭据节点的口令/私钥
+//	url/param     webshell 打哪个入口、命令放在哪个参数（默认 cmd）
+//
+// 明文永远不在这里：ssh 的凭据由 credential_id 指向凭据节点，执行时临时落盘、读完即删。
+type FootholdView struct {
+	Summary    string `json:"summary"`
+	Detail     string `json:"detail"`
+	Evidence   string `json:"evidence"`
+	Confidence string `json:"confidence"`
+	Access     string `json:"access"`
+	Privilege  string `json:"privilege"`
+
+	Protocol     string `json:"protocol,omitempty"`
+	Host         string `json:"host,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	URL          string `json:"url,omitempty"`
+	Param        string `json:"param,omitempty"`
+	CredentialID int64  `json:"credential_id,omitempty"`
+}
+
+// ParseFoothold 解析据点节点的 payload（畸形一律当空字段，同 ParseCredential）。
+func ParseFoothold(n *Node) FootholdView {
+	var v FootholdView
+	if n == nil || len(n.Payload) == 0 {
+		return v
+	}
+	_ = json.Unmarshal(n.Payload, &v)
+	return v
+}
+
+// FootholdProtocols 是**平台能代为执行**的协议闭集。写别的值不算错，但不能执行——
+// 所以 report_foothold 会当场拒收并列出可用值，而不是留一个只能看不能用的字段。
+var FootholdProtocols = []string{"ssh", "webshell"}
+
+// ValidFootholdProtocol 报告协议是否可执行。
+func ValidFootholdProtocol(p string) bool {
+	for _, v := range FootholdProtocols {
+		if p == v {
+			return true
+		}
+	}
+	return false
+}

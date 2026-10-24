@@ -738,7 +738,9 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if len(credWindow) > lootListCap {
 		credWindow = credWindow[:lootListCap]
 	}
-	out["footholds"] = compactLoot(footholdWindow, factFrom, usedLoot, "access", "privilege")
+	// 白名单带上结构化连法：规划层要能一眼看出"这条据点能怎么用"（ssh 走哪条凭据 /
+	// webshell 打哪个 URL），否则它还是只能从 summary 猜。
+	out["footholds"] = compactLoot(footholdWindow, factFrom, usedLoot, "access", "privilege", "protocol", "host", "port", "url")
 	out["credentials"] = compactCredentials(credWindow, factFrom, usedLoot)
 	// 检测验证：这一手做完之后，防御侧有没有响。三态分别计数而不是合成一个"检出率"——
 	// **把 unknown 混进分母就是把「测不到」读成「没响」**，那会给出一个比不给更危险的结论。
@@ -2075,6 +2077,14 @@ type footholdItem struct {
 	lootBase
 	Access    string `json:"access"`    // 怎么进去的：反弹 shell / SSH / RDP / webshell
 	Privilege string `json:"privilege"` // 进去时的权限：user / root / SYSTEM
+	// 结构化连法（可选）：有它，平台才能再进去（foothold_exec），也才能对"连到哪"
+	// 做授权范围校验。没有它，据点就只是一段自由文本。
+	Protocol     string          `json:"protocol"`
+	Host         string          `json:"host"`
+	Port         int             `json:"port"`
+	URL          string          `json:"url"`
+	Param        string          `json:"param"`
+	CredentialID json.RawMessage `json:"credential_id"`
 }
 
 type credentialItem struct {
@@ -2186,23 +2196,33 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 			"必须给 evidence（命令 + 能证明这条通路真的存在的输出）与 confidence；拿不出可核对的输出就不算数（工具会拒收）。"+
 			"据点已失效时不要新记一条，改为用 record_fact 说明它掉了。",
 		obj(map[string]any{
-			"summary":    str("一句话：【哪台主机】上拿到了【什么权限】的【什么通路】"),
-			"access":     str("怎么进去的：反弹 shell / SSH / RDP / webshell / 其他（如实写）"),
-			"privilege":  str("进去时的权限：user / root / SYSTEM / 其他（如实标，别拔高）"),
-			"detail":     str("细节：连法、端口、会话标识、后续可用的命令等"),
-			"evidence":   str("【一行】关键证据：命令 + 能证明这条通路真的存在的输出（必填）"),
-			"confidence": str("high（亲手敲过、当场有效）| medium（成功但未复验）| low（据现象推断、尚未确认）"),
-			"intent_id":  idp("当前任务的意图 id（你领到的意图）"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "被攻陷的资产 id"},
+			"summary":       str("一句话：【哪台主机】上拿到了【什么权限】的【什么通路】"),
+			"access":        str("怎么进去的：反弹 shell / SSH / RDP / webshell / 其他（如实写）"),
+			"privilege":     str("进去时的权限：user / root / SYSTEM / 其他（如实标，别拔高）"),
+			"detail":        str("细节：连法、端口、会话标识、后续可用的命令等"),
+			"protocol":      str("**结构化连法**（可选，但能填就填）：ssh | webshell。填了它平台才能用 foothold_exec 再进去，也才能做授权范围校验；不填就只是自由文本，后续只能由 worker 自己重连。"),
+			"host":          str("连哪：目标主机（域名或 IP）。protocol 非空时必填（webshell 可从 url 推导）"),
+			"port":          intp("端口（ssh 默认 22）"),
+			"url":           str("webshell 的入口 URL（protocol=webshell 时必填）"),
+			"param":         str("webshell 的命令参数名（默认 cmd）"),
+			"credential_id": idp("ssh 用哪条凭据节点（report_credential 返回的 id）：口令/私钥由它提供，平台执行时临时落盘、读完即删，明文不进命令与台账"),
+			"evidence":      str("【一行】关键证据：命令 + 能证明这条通路真的存在的输出（必填）"),
+			"confidence":    str("high（亲手敲过、当场有效）| medium（成功但未复验）| low（据现象推断、尚未确认）"),
+			"intent_id":     idp("当前任务的意图 id（你领到的意图）"),
+			"asset_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "被攻陷的资产 id"},
 		}, "summary", "evidence", "confidence"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a footholdItem
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			id, err := t.recordLoot(db.KindFoothold, a.lootBase, map[string]any{
-				"access": a.Access, "privilege": a.Privilege,
-			})
+			conn, err := t.normalizeFootholdAccess(a)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			conn["access"] = a.Access
+			conn["privilege"] = a.Privilege
+			id, err := t.recordLoot(db.KindFoothold, a.lootBase, conn)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -3201,7 +3221,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.coverageMatrix(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
-		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.cancelExecution(),
+		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.footholdExec(), t.cancelExecution(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
 		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。
