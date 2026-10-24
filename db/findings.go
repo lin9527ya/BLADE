@@ -922,3 +922,27 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 	}
 	return out, rows.Err()
 }
+
+// FindingReportsByNode 返回一个任务里「报告 Agent 写的详细报告」——node_id → Markdown。
+//
+// 这份内容是报告 Agent 用 update_finding_report 写的：利用过程、影响、关键位置、
+// 根因与修复建议。它此前只存在详情页里，总报告完全没用上——交付物最值钱的一段被丢了。
+// 只取非空行；调用方按 node id 合并进正文。
+func (d *DB) FindingReportsByNode(taskID int64) (map[int64]string, error) {
+	rows, err := d.Query(`SELECT node_id, report FROM findings
+WHERE task_id=$1 AND node_id IS NOT NULL AND COALESCE(report,'') <> ''`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var nodeID int64
+		var text string
+		if err := rows.Scan(&nodeID, &text); err != nil {
+			return nil, err
+		}
+		out[nodeID] = text
+	}
+	return out, rows.Err()
+}

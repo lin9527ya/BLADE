@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -20,7 +21,15 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	const reportListLimit = 1000
+	var truncated []string
+	findings, ferr := t.Store.ListByKind(db.KindFinding, reportListLimit) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	if ferr != nil {
+		log.Printf("[report] 任务 %s 发现列表读取失败，报告将按空处理：%v", t.ID, ferr)
+	}
+	if len(findings) >= reportListLimit {
+		truncated = append(truncated, fmt.Sprintf("发现列表达到 %d 条上限：正文可能不完整，更新的一批未列出", reportListLimit))
+	}
 	// 撤回(retracted)的漏洞出正文、进「已撤回」段；blocked/exhausted 的意图单列「未测成」。
 	tid, _ := strconv.ParseInt(t.ID, 10, 64)
 	meta, _ := s.m.pg.FindingMetaByNodeID(tid)
@@ -29,13 +38,22 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	retracted := buckets.retracted
 	ruledOut, proofGaps, closed := buckets.ruledOut, buckets.proofGaps, buckets.closed
 	confidenceByNode := buckets.confidenceByNode
-	intents, _ := t.Store.ListByKind(db.KindIntent, 1000)
+	intents, ierr := t.Store.ListByKind(db.KindIntent, reportListLimit)
+	if ierr != nil {
+		log.Printf("[report] 任务 %s 意图列表读取失败：%v", t.ID, ierr)
+	}
+	if len(intents) >= reportListLimit {
+		truncated = append(truncated, fmt.Sprintf("意图列表达到 %d 条上限：未测成/攻击链可能不完整", reportListLimit))
+	}
 	var notProbed []report.NotProbed
 	for _, n := range intents {
 		if n.State == "blocked" || n.State == "exhausted" || n.State == "no_output" {
 			notProbed = append(notProbed, report.NotProbed{Node: n})
 		}
 	}
+	// 同指纹的重复登记只在正文出现一次：同一件事数两遍会让客户以为洞很多，
+	// 也让严重度合计虚高。重复项挂在代表项下面点名。
+	live, duplicates := s.mergeDuplicateFindings(tid, live, meta)
 	var noEvidence []*db.Node
 	for _, n := range live {
 		if m, ok := meta[n.ID]; !ok || m.TrafficCount == 0 {
@@ -66,9 +84,28 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// 所有作战的资产——既是跨任务泄漏，也让「范围内资产数」这个验收项失去意义。
 	// 口径与覆盖卡片（tasks_api.go）、planner 概览（agent/tools.go）统一到 TaskCoverageWithSources，
 	// 三处不再各报一个数。老任务没有 task_scope 时回退到 assets.task_ids 关联计数（同样不跨任务）。
+	var scope *report.ScopeSummary
 	if cov, cerr := s.m.Assets().TaskCoverageWithSources(tid); cerr == nil && cov.Denominator > 0 {
 		for _, bt := range cov.ByType {
 			counts[bt.Type] = bt.Total
+		}
+		scope = &report.ScopeSummary{
+			ScopeRows: cov.ScopeRows, Denominator: cov.Denominator, Tested: cov.Tested, Pct: cov.Pct,
+		}
+		if t.CreatedAt > 0 {
+			scope.WindowFrom = time.Unix(t.CreatedAt, 0).Format("2006-01-02 15:04")
+		}
+		if t.CompletedAt > 0 {
+			scope.WindowTo = time.Unix(t.CompletedAt, 0).Format("2006-01-02 15:04")
+		}
+		// 未测资产清单：交付物必须能回答"什么没测"，否则"没发现漏洞"和"没测"被读成一回事。
+		if untested, total, uerr := s.m.Assets().ListUntestedAssetsWithSources(tid, "", 20, 0); uerr == nil {
+			scope.UntestedTotal = total
+			for _, a := range untested {
+				scope.Untested = append(scope.Untested, fmt.Sprintf("[%s] %s", a.Type, a.Label))
+			}
+		} else {
+			log.Printf("[report] 任务 %s 未测资产清单读取失败，报告将只给总数：%v", t.ID, uerr)
 		}
 	} else {
 		if cerr != nil {
@@ -79,6 +116,12 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("[report] 任务 %s 资产计数回退也失败，报告将不列资产数：%v", t.ID, ferr)
 		}
+	}
+	// 报告 Agent 为每条发现写的详细分析：链路里最值钱的一段，此前完全没进总报告。
+	findingReports, ferr := s.m.pg.FindingReportsByNode(tid)
+	if ferr != nil {
+		log.Printf("[report] 任务 %s 详细报告读取失败，正文将不含「详细分析」段：%v", t.ID, ferr)
+		findingReports = nil
 	}
 	// 战果：据点与凭据各取全量（同 findings 的取法）。它们不进 digest（coldgraph 只折
 	// intent/fact），所以不会被折叠吞掉，按 kind 直取即可。
@@ -137,6 +180,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
+		FindingReports: findingReports, Scope: scope, Duplicates: duplicates, Truncated: truncated,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
@@ -211,4 +255,58 @@ func findingClosedStatus(status string) bool {
 		return true
 	}
 	return false
+}
+
+// mergeDuplicateFindings 按「漏洞类型 + 端点集合」的指纹把重复登记合并到代表项。
+// 没有绑定流量的发现没有指纹（无法判断是不是同一个洞），原样保留、不参与合并。
+func (s *Server) mergeDuplicateFindings(tid int64, live []*db.Node, meta map[int64]db.FindingMeta) ([]*db.Node, map[int64][]int64) {
+	if len(live) < 2 {
+		return live, nil
+	}
+	ids := make([]int64, 0, len(live))
+	for _, n := range live {
+		if m, ok := meta[n.ID]; ok && m.ID > 0 {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return live, nil
+	}
+	endpoints, err := s.m.pg.FindingEndpoints(ids)
+	if err != nil {
+		// 读不出来就不合并：宁可多列一条，也不要因为一次 DB 抖动把两条不同的洞并掉。
+		log.Printf("[report] 任务 %d 端点读取失败，本次跳过重复合并：%v", tid, err)
+		return live, nil
+	}
+	byFP := map[string]int64{}
+	dups := map[int64][]int64{}
+	kept := make([]*db.Node, 0, len(live))
+	for _, n := range live {
+		m := meta[n.ID]
+		refs := make([]report.EndpointRef, 0, len(endpoints[m.ID]))
+		for _, e := range endpoints[m.ID] {
+			refs = append(refs, report.EndpointRef{Method: e.Method, URL: e.URL})
+		}
+		fp := report.Fingerprint(nodeVulnClass(n), refs)
+		if fp != "" {
+			if rep, ok := byFP[fp]; ok {
+				dups[rep] = append(dups[rep], n.ID)
+				continue
+			}
+			byFP[fp] = n.ID
+		}
+		kept = append(kept, n)
+	}
+	if len(dups) == 0 {
+		return live, nil
+	}
+	return kept, dups
+}
+
+func nodeVulnClass(n *db.Node) string {
+	var p struct {
+		VulnClass string `json:"vulnclass"`
+	}
+	_ = json.Unmarshal(n.Payload, &p)
+	return p.VulnClass
 }

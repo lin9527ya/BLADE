@@ -45,6 +45,19 @@ type Input struct {
 	// Closed lists findings triaged as false_positive / duplicate / ignored / fixed /
 	// resolved: 不再作为当前风险，不进正文与「确认发现」计数，但留档备查。
 	Closed []ClosedNote
+	// FindingReports 是「报告 Agent」为每条发现写的详细分析（Markdown），按 finding 节点 id。
+	// 那是整条链路里最值钱的一段（利用过程/影响/根因/修复建议），此前只存在详情页里，
+	// 总报告完全没用上。空 = 该发现还没有详细报告。
+	FindingReports map[int64]string
+	// Scope 是「测了什么 / 没测什么」的账目；nil = 没有可核对的范围信息。
+	Scope *ScopeSummary
+	// Truncated 列出「本次报告因上限被截断」的清单。截断必须被声明——让读者以为
+	// 看到的是全部，是比少列几条更严重的问题。
+	Truncated []string
+	// Duplicates 把「同一漏洞的多次登记」挂到代表项上（节点 id → 重复项 id）。
+	// 指纹 = 漏洞类型 + 端点集合；重复项不进正文、也不计入确认发现数——同一件事数两遍
+	// 会让客户以为洞很多，也让严重度合计虚高。
+	Duplicates map[int64][]int64
 	// Footholds / Credentials 是战果层（利用成功之后的产物）：据点是已攻陷且当前可用的
 	// 通路，凭据是真实读到的口令/哈希/密钥/令牌。
 	//
@@ -164,6 +177,21 @@ type CandidateNote struct {
 	Counterevidence string
 	ProofGap        string
 	Confidence      string
+}
+
+// ScopeSummary 是「这次到底测了多少、哪些没测」的账目。
+//
+// 覆盖矩阵回答"资产 × 风险类到了哪一格"，这一节回答"范围内的资产里还有多少一次都没碰过"——
+// 交付物必须能诚实回答"什么没测"，否则"没发现漏洞"和"没测"会被读成一回事。
+type ScopeSummary struct {
+	ScopeRows     int      // 授权范围条目数
+	Denominator   int      // 范围内资产数
+	Tested        int      // 至少被一条意图/事实碰过的资产数
+	Pct           *float64 // Tested/Denominator
+	Untested      []string // 未测资产（最多展示 20 条）
+	UntestedTotal int      // 未测资产总数（可能大于上面展示的条数）
+	WindowFrom    string   // 作业开始
+	WindowTo      string   // 作业结束/截止
 }
 
 // ClosedNote 是一条已被 triage 关闭的发现（误报 / 重复 / 已忽略 / 已修复 / 已处理）。
@@ -401,6 +429,9 @@ func Markdown(in Input) string {
 	fmt.Fprintf(&b, "- 已排除候选：**%d** 个（有反证，不进正文）\n", len(in.RuledOut))
 	fmt.Fprintf(&b, "- 存疑待补证：**%d** 个（不得视为安全）\n", len(in.ProofGaps))
 	fmt.Fprintf(&b, "- 已关闭（误报/重复/已忽略/已修复）：**%d** 个（不进正文）\n", len(in.Closed))
+	for _, t := range in.Truncated {
+		fmt.Fprintf(&b, "- ⚠ %s\n", t)
+	}
 	fmt.Fprintf(&b, "- 战果：据点 **%d** 个、凭据 **%d** 条\n", len(in.Footholds), len(in.Credentials))
 	if len(in.Artifacts) > 0 {
 		uncleaned := 0
@@ -640,6 +671,18 @@ func Markdown(in Input) string {
 			if f.PoC != "" {
 				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
 			}
+			if dups := in.Duplicates[r.node.ID]; len(dups) > 0 {
+				ids := make([]string, 0, len(dups))
+				for _, id := range dups {
+					ids = append(ids, fmt.Sprintf("#%d", id))
+				}
+				fmt.Fprintf(&b, "**同指纹的重复登记**：%s（同一漏洞的多次登记，只在此计一次）\n\n", strings.Join(ids, "、"))
+			}
+			// 报告 Agent 的详细分析（利用过程/影响/根因/修复建议）。原样嵌入：它本身就是
+			// Markdown，摘抄只会让"关键位置表/修复建议"这些结构化内容散架。
+			if txt := strings.TrimSpace(in.FindingReports[r.node.ID]); txt != "" {
+				fmt.Fprintf(&b, "**详细分析（报告 Agent）：**\n\n%s\n\n", txt)
+			}
 		}
 	}
 
@@ -688,6 +731,38 @@ func Markdown(in Input) string {
 		for _, c := range in.Closed {
 			f := parseFinding(c.Node)
 			fmt.Fprintf(&b, "- #%d [%s] %s — 状态：%s（置信度：%s）\n", c.Node.ID, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), closedStatusLabel(c.Status), confidenceLabel(c.Confidence))
+		}
+		b.WriteString("\n")
+	}
+
+	// 范围与覆盖：先回答"测了多少、什么没测"，再往下才是逐格矩阵。
+	// "没发现漏洞"和"没测"必须能被读者分开——这是报告诚实性的底线。
+	fmt.Fprintf(&b, "## 范围与覆盖（测了什么 / 没测什么）\n\n")
+	if in.Scope == nil {
+		b.WriteString("_（无范围账目）_\n\n")
+	} else {
+		sc := in.Scope
+		fmt.Fprintf(&b, "- 授权范围条目：%d 条\n", sc.ScopeRows)
+		if sc.Denominator == 0 {
+			b.WriteString("- 范围内资产：**0 个**（授权范围为空）——本次结论只覆盖实际测试到的目标，不能据此推断范围外安全。\n")
+		} else {
+			pct := ""
+			if sc.Pct != nil {
+				pct = fmt.Sprintf("（**%.0f%%**）", *sc.Pct*100)
+			}
+			fmt.Fprintf(&b, "- 范围内资产：**%d** 个，其中已测 **%d** 个%s\n", sc.Denominator, sc.Tested, pct)
+			if sc.UntestedTotal > 0 {
+				fmt.Fprintf(&b, "- **未测资产：%d 个**（不等于安全，只说明没碰过）：\n", sc.UntestedTotal)
+				for _, u := range sc.Untested {
+					fmt.Fprintf(&b, "  - %s\n", u)
+				}
+				if sc.UntestedTotal > len(sc.Untested) {
+					fmt.Fprintf(&b, "  - …还有 %d 个（完整清单见任务页的未测资产列表）\n", sc.UntestedTotal-len(sc.Untested))
+				}
+			}
+		}
+		if sc.WindowFrom != "" {
+			fmt.Fprintf(&b, "- 作业窗口：%s → %s\n", sc.WindowFrom, nz(sc.WindowTo, "（未设截止）"))
 		}
 		b.WriteString("\n")
 	}
