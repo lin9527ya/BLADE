@@ -48,6 +48,9 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     agentLootExec,
     savingLootExec,
     toggleAgentLootExec,
+    agentAutoRetest,
+    savingAutoRetest,
+    toggleAgentAutoRetest,
     enforce,
     killReason,
     setKillReason,
@@ -374,6 +377,33 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
                 targets 里登记过的目标。关闭时该工具不出现在 Agent 的工具面里。
                 <br />
                 对下一轮装配生效；已经发起的后台执行不受影响。
+              </>
+            }
+          />
+        </SubBlock>
+
+        <SubBlock title="自动复测（结果质量）" icon={<ScanSearchIcon className="size-4 text-muted-foreground" />}>
+          <SwitchRow
+            id="agent-auto-retest"
+            describedBy="agent-auto-retest-description"
+            label={agentAutoRetest ? "已开启 · 每条新漏洞都会起一次独立复测" : "已关闭（默认）· 漏洞只在人工点「复测」时复核"}
+            checked={agentAutoRetest}
+            disabled={!loaded || savingAutoRetest}
+            onChange={toggleAgentAutoRetest}
+            hint={
+              <>
+                默认关闭。开启后，每收到一条新漏洞，平台会启动一个<strong>独立的复测会话</strong>（retester
+                agent）去复核：用原 PoC 的关键条件做一次最小验证，把结论记成
+                <strong>仍可复现 / 已修复 / 无法确认</strong>，并附本次的证据。
+                <br />
+                注意「已修复」是<strong>有副作用的结论</strong>：会话正常结束且结论为 fixed 时，平台会把该漏洞的处置状态
+                自动改成「已修复」。
+                <br />
+                它能让报告里的漏洞多一道独立判断，但<strong>每条漏洞都会产生一次完整的 LLM 会话开销</strong>
+                ——finding 多的任务成本会成倍上升。
+                <br />
+                前提是 <code>retester</code> agent 处于启用状态（系统 → Agent）；它被停用时本开关不起作用。
+                对之后新收到的漏洞生效，已收到的不会补跑。
               </>
             }
           />

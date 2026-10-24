@@ -3341,6 +3341,7 @@ export const settings: Settings = {
   traffic_capture: true,
   agent_traffic_binding: false,
   agent_loot_exec: false,
+  agent_auto_retest: false,
   llm_record: false,
   web_search_enabled: true,
   web_search_backend: "ddgs",
