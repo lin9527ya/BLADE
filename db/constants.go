@@ -171,6 +171,35 @@ func NodeTechniques(n *Node) []string {
 	return p.Techniques
 }
 
+// IntentTerminalStates 是「意图已经结束」的全部状态，**只在这一处维护**。
+//
+// 此前这套清单被抄成十来条 SQL 字面量和若干 Go 切片：每加一个终态都要逐个改，
+// 漏掉的那条会让意图在某个查询里继续显示为"进行中"——收尾门、继承读、重派判断
+// 各说各话，而且没有任何测试会红。no_output（跑完了却什么都没写回）就是这次新加的
+// 一个，正好用来把清单收敛掉。
+var IntentTerminalStates = []string{
+	"done", "negative", "out-of-scope", "blocked", "exhausted", "stopped", "no_output",
+}
+
+// IntentTerminalStatesSQL 是上面那份清单的 SQL IN 字面量，如 ('done','negative',…)。
+var IntentTerminalStatesSQL = func() string {
+	q := make([]string, len(IntentTerminalStates))
+	for i, st := range IntentTerminalStates {
+		q[i] = "'" + st + "'"
+	}
+	return "(" + strings.Join(q, ",") + ")"
+}()
+
+// IntentStateTerminal 报告一个意图状态是否属于「已结束」。
+func IntentStateTerminal(state string) bool {
+	for _, st := range IntentTerminalStates {
+		if state == st {
+			return true
+		}
+	}
+	return false
+}
+
 // LootConsumingIntentState 报告「以这个意图状态收场的意图，算不算真的动用了它声明的那条战果」。
 //
 // 中途没善终的（blocked 模型/网络失败、exhausted 预算耗尽被掐断、stopped 被打断）**不算**：
@@ -183,7 +212,9 @@ func NodeTechniques(n *Node) []string {
 // 同一条判定分两处写，迟早会漂移成两套口径。
 func LootConsumingIntentState(state string) bool {
 	switch state {
-	case "blocked", "exhausted", "stopped", StateIntentDeleted:
+	case "blocked", "exhausted", "no_output", "stopped", StateIntentDeleted:
+		// no_output = 跑完了却什么都没写回：它声明过要动用这条战果，但没有任何产出证明
+		// 真的用上了——按"没动用"算，否则到手的凭据会被一条空跑悄悄标成已接手。
 		return false
 	}
 	return true

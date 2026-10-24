@@ -91,14 +91,7 @@ func assignIntentOrdinals(store *db.ExplorationStore, nodes []*db.Node) {
 	}
 }
 
-func inheritedIntentResult(state string) bool {
-	switch state {
-	case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped":
-		return true
-	default:
-		return false
-	}
-}
+func inheritedIntentResult(state string) bool { return db.IntentStateTerminal(state) }
 
 // inheritedGraphSnapshot exposes immutable source-task history without leaking
 // work that is still open or running. Edges are filtered with the nodes so the

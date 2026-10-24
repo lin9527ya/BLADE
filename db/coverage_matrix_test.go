@@ -29,8 +29,12 @@ func coverageMatrixFixture(t *testing.T) (*DB, int64, int64) {
 	}
 	t.Cleanup(func() {
 		clearMatrixAssets()
-		_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+		// **先删任务、再删 exploration**：tasks.exploration_id 是 ON DELETE RESTRICT，
+		// 反过来会被外键拦下，而这里的错误一直是 `_` 忽略的——于是 exploration 从来没被删掉，
+		// 节点（含 intent 状态）一直残留，污染后续用例（no_output 残留就是这么把迁移用例
+		// 的老约束降级撞死的）。
 		_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
 		d.Close()
 	})
 	clearMatrixAssets()
@@ -120,5 +124,42 @@ func TestCoverageMatrixOutcomesAndEvidence(t *testing.T) {
 	}
 	if www.Facts != 0 {
 		t.Fatalf("www facts = %d, want 0", www.Facts)
+	}
+}
+
+// no_output（跑完了却什么都没写回）必须记「未测成」，绝不能进「已测」——
+// 它恰恰是"看起来跑过了、其实什么都没测到"的那一类。
+func TestCoverageMatrixCountsNoOutputAsFailed(t *testing.T) {
+	d, taskID, expID := coverageMatrixFixture(t)
+	as := d.Assets()
+	a1, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "api.matrix-test.example", TaskID: taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := d.Exploration(expID)
+	id, err := st.AddIntent(map[string]any{"summary": "sqli on api（空跑）", "risk_area": "sqli"}, 5, []int64{a1}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIntentState(id, "no_output"); err != nil {
+		t.Fatal(err)
+	}
+	assets, err := st.CoverageMatrix(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cell *CoverageMatrixCell
+	for i := range assets {
+		for j := range assets[i].Cells {
+			if assets[i].Cells[j].RiskArea == "sqli" {
+				cell = &assets[i].Cells[j]
+			}
+		}
+	}
+	if cell == nil {
+		t.Fatalf("找不到 sqli 单元格：%+v", assets)
+	}
+	if cell.Failed != 1 || cell.Tested != 0 || cell.InFlight != 0 {
+		t.Fatalf("no_output 应记未测成，实际 %+v", *cell)
 	}
 }

@@ -44,6 +44,8 @@ const intent: Record<string, StatusMeta> = {
   blocked: { label: "执行出错", tone: "red" },
   // exhausted = 达到步数/时间预算被中途掐断、只写回部分结果（非方向已探尽）。
   exhausted: { label: "预算耗尽", tone: "violet" },
+  // no_output = 正常结束但一条事实/发现/战果都没写回：什么都没测到，可重派（不是已覆盖）。
+  no_output: { label: "无产出", tone: "amber" },
   // stopped = 历史软删除状态（保留,历史数据）。
   stopped: { label: "已停止", tone: "slate" },
   // deleted = 用户假删除了该意图（保留节点与血缘，删除原因见 delete_reason 字段）。

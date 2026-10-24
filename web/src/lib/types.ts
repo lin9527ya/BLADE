@@ -479,6 +479,7 @@ export type IntentState =
   | "out-of-scope"
   | "blocked"
   | "exhausted"
+  | "no_output"
   | "stopped";
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
@@ -1319,6 +1320,7 @@ export type SessionStatus =
   | "out-of-scope" // 范围外：超出任务授权范围
   | "blocked"
   | "exhausted"
+  | "no_output" // 跑完了却什么都没写回：按未覆盖处理，可重派
   | "pending"
   | "stopped"
   | "deleted";
