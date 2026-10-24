@@ -30,7 +30,7 @@ su postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='artex'\"" | gr
 su postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='artex'\"" | grep -q 1 \
   || su postgres -c "createdb -O artex artex"
 
-export ARTEX_PG_DSN="postgres://artex:artex@127.0.0.1:5432/artex?sslmode=disable"
+export BLADE_PG_DSN="postgres://artex:artex@127.0.0.1:5432/artex?sslmode=disable"
 
 # ---------- 2) 启动 artex（后台） ----------
 log "启动 artex ..."
