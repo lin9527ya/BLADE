@@ -379,3 +379,67 @@ func TestSeveritySummaryCountsUnknown(t *testing.T) {
 		}
 	}
 }
+
+// 报告的诚实性底线：读者必须能把「没发现漏洞」和「没测」分开。
+func TestMarkdownScopeSection(t *testing.T) {
+	pct := 0.33
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Now(),
+		Scope: &ScopeSummary{
+			ScopeRows: 2, Denominator: 3, Tested: 1, Pct: &pct,
+			UntestedTotal: 2,
+			Untested:      []string{"[subdomain] a.example", "[service] b:443"},
+			WindowFrom:    "2026-10-24 09:00", WindowTo: "2026-10-24 18:00",
+		},
+	})
+	for _, want := range []string{
+		"## 范围与覆盖（测了什么 / 没测什么）",
+		"授权范围条目：2 条",
+		"范围内资产：**3** 个，其中已测 **1** 个（**33%**）",
+		"**未测资产：2 个**",
+		"[subdomain] a.example",
+		"作业窗口：2026-10-24 09:00 → 2026-10-24 18:00",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("缺少 %q：\n%s", want, md)
+		}
+	}
+	// 没有范围账目时如实说明，而不是假装覆盖完整。
+	if bare := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Now()}); !strings.Contains(bare, "_（无范围账目）_") {
+		t.Fatalf("无范围信息时应如实标注：\n%s", bare)
+	}
+	// 范围为空：要明说"结论只覆盖实际测到的目标"。
+	empty := Markdown(Input{Title: "t", GeneratedAt: time.Now(), Scope: &ScopeSummary{}})
+	if !strings.Contains(empty, "授权范围为空") {
+		t.Fatalf("空范围应说明结论边界：\n%s", empty)
+	}
+}
+
+// 报告 Agent 写的详细分析（利用过程/影响/根因/修复建议）必须进总报告正文。
+func TestMarkdownIncludesFindingReports(t *testing.T) {
+	node := findingNode(7, "confirmed", "sqli", "SQL 注入", "high")
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Now(),
+		Findings:       []*db.Node{node},
+		FindingReports: map[int64]string{7: "### 利用过程\n\npayload 回显数据库名。\n\n**修复建议**：参数化查询。"},
+	})
+	for _, want := range []string{"**详细分析（报告 Agent）：**", "payload 回显数据库名", "**修复建议**：参数化查询"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("缺少 %q：\n%s", want, md)
+		}
+	}
+	// 没有详细报告的发现不该出现这个标题。
+	bare := Markdown(Input{Title: "t", GeneratedAt: time.Now(), Findings: []*db.Node{node}})
+	if strings.Contains(bare, "详细分析（报告 Agent）") {
+		t.Fatalf("没有详细报告时不该出现该段：\n%s", bare)
+	}
+}
+
+// 截断必须被声明：让读者以为看到的是全部，比少列几条更严重。
+func TestMarkdownDeclaresTruncation(t *testing.T) {
+	md := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Now(),
+		Truncated: []string{"发现列表达到 1000 条上限：正文可能不完整"}})
+	if !strings.Contains(md, "- ⚠ 发现列表达到 1000 条上限") {
+		t.Fatalf("截断声明没有出现在摘要里：\n%s", md)
+	}
+}

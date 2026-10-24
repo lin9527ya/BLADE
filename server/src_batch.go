@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,8 +23,9 @@ import (
 //	GET /api/tasks/{id}/src-report.zip  打包下载（提交说明 + 每条发现的 md/docx）
 //
 // 两条路径共用同一份计划，所以"预览里说缺证据/疑似重复"与"包里写的"永远一致。
-// 已撤回的发现不进包（在提交说明里列出并说明为什么不交），其余一律进包——证据门只
-// 提示、不阻断（交不交是人决定的，平台负责把缺什么说清楚）。
+// 进包按**状态白名单**：被推翻（撤回/误报/忽略/已排除/重复）的不进包，并在清单里写明
+// 为什么；同指纹的一组只交一条代表。证据门（缺 proof 流量等）只提示、不阻断——交不交
+// 是人决定的，平台负责把缺什么说清楚。
 
 type srcBatchEntry struct {
 	ID          int64    `json:"id"`
@@ -39,6 +42,8 @@ type srcBatchEntry struct {
 	// DuplicateGroup >0 表示这条与同组其它发现疑似同一个洞（组号从 1 起）。
 	DuplicateGroup int  `json:"duplicate_group,omitempty"`
 	Included       bool `json:"included"`
+	// SkipReason 说明这条为什么没进包（状态不符 / 与另一条同指纹）。
+	SkipReason string `json:"skip_reason,omitempty"`
 }
 
 type srcBatchPlan struct {
@@ -66,6 +71,12 @@ func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, err
 	endpoints, err := s.m.pg.FindingEndpoints(ids)
 	if err != nil {
 		return nil, err
+	}
+	// 详细报告（按节点 id）：用来判断导出稿的两个必填段是否齐全。
+	tid, _ := strconv.ParseInt(t.ID, 10, 64)
+	reports, rerr := s.m.pg.FindingReportsByNode(tid)
+	if rerr != nil {
+		log.Printf("[src-batch] 任务 %s 详细报告读取失败，完整性检查将按缺失处理：%v", t.ID, rerr)
 	}
 	assets := s.resolveAssetIDsForFindings(rows)
 
@@ -99,11 +110,17 @@ func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, err
 			Warnings:    s.srcWarnings(f, roles),
 			Fingerprint: report.Fingerprint(f.VulnClass, refs),
 			Target:      srcTargetLabel(f, assets[f.ID], eps),
-			Included:    f.Status != db.FindingRetracted,
 		}
-		if entry.Included {
+		if f.NodeID != nil {
+			entry.Warnings = append(entry.Warnings, srcCompletenessWarnings(reports[*f.NodeID])...)
+		}
+		// 状态白名单：被推翻/证伪/重复/忽略的发现不进包。此前只挡了已撤回——于是
+		// 一份交付物里可能带着人工判过的误报，"确认"二字就此贬值。
+		if srcIncludedStatus(f.Status) {
+			entry.Included = true
 			plan.Included++
 		} else {
+			entry.SkipReason = srcSkipReason(f.Status)
 			plan.Skipped++
 		}
 		if entry.Fingerprint != "" {
@@ -136,6 +153,23 @@ func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, err
 	}
 	for i := range plan.Entries {
 		plan.Entries[i].DuplicateGroup = groupOf[plan.Entries[i].ID]
+	}
+	// 同指纹只交一条代表：重复交付会让客户以为洞很多、严重度合计虚高。
+	// 代表取组内第一条**状态允许进包**的；其余标成跳过并指认它重复于哪一条。
+	repOf := map[int]int64{}
+	for i := range plan.Entries {
+		e := &plan.Entries[i]
+		if e.DuplicateGroup == 0 || !e.Included {
+			continue
+		}
+		if rep, ok := repOf[e.DuplicateGroup]; ok {
+			e.Included = false
+			e.SkipReason = fmt.Sprintf("与 #%d 同指纹（疑似同一个洞），只交代表项", rep)
+			plan.Included--
+			plan.Skipped++
+			continue
+		}
+		repOf[e.DuplicateGroup] = e.ID
 	}
 	// 证据门只覆盖【进包】的发现：不进包的（已撤回）在"未进包的发现"一节交代，
 	// 把它们的缺项也塞进证据门会让"每条进包发现证据都完整"这句话自相矛盾。
@@ -399,4 +433,31 @@ func firstNonEmpty(vals ...string) string {
 
 func oneLine(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+}
+
+// srcIncludedStatus 决定一条发现能不能进交付包。口径与总报告的「确认发现」一致：
+// 被推翻/证伪/重复/忽略的不进——交一份带着已知误报的包，比少交一条更糟。
+// open_proof_gap（存疑待补证）仍进包，但 srcWarnings 会点名缺什么。
+func srcIncludedStatus(status string) bool {
+	switch status {
+	case db.FindingRetracted, db.FindingFalsePositive, db.FindingDuplicate, db.FindingIgnored, db.FindingRuledOut:
+		return false
+	}
+	return true
+}
+
+func srcSkipReason(status string) string {
+	switch status {
+	case db.FindingRetracted:
+		return "已撤回（复测推翻），不进交付包"
+	case db.FindingFalsePositive:
+		return "已判定为误报，不进交付包"
+	case db.FindingDuplicate:
+		return "已标记为重复，不进交付包"
+	case db.FindingIgnored:
+		return "已忽略，不进交付包"
+	case db.FindingRuledOut:
+		return "已排除（有反证），不进交付包"
+	}
+	return "状态不符，不进交付包"
 }

@@ -130,3 +130,31 @@ func SrcFilename(title, ext string) string {
 	}
 	return name + ext
 }
+
+// Section 从报告 Markdown 里取一个「小节」的正文：标题行包含 keyword 的那段，直到下一个
+// 标题（# 开头）或文末。用于把报告 Agent 写的「影响 / 修复建议」摘出来填进 SRC 提交稿——
+// 这两个字段此前从来没被赋值，导出稿永远带着「（待补：…）」占位。
+func Section(md, keyword string) string {
+	if strings.TrimSpace(md) == "" || strings.TrimSpace(keyword) == "" {
+		return ""
+	}
+	lines := strings.Split(md, "\n")
+	start := -1
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.Contains(t, keyword) {
+			start = i + 1
+			continue
+		}
+		if start >= 0 { // 下一个标题 → 小节结束
+			return strings.TrimSpace(strings.Join(lines[start:i], "\n"))
+		}
+	}
+	if start >= 0 {
+		return strings.TrimSpace(strings.Join(lines[start:], "\n"))
+	}
+	return ""
+}

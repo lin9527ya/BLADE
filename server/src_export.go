@@ -59,13 +59,20 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) (report.Src
 		Severity:  f.Severity,
 		VulnClass: f.VulnClass,
 	}
+	// 报告 Agent 写的详细报告：描述正文之外，「漏洞危害 / 修复建议」两个字段从此摘出来——
+	// 它们此前**从来没被赋值**，于是每一份导出稿都带着「（待补：…）」占位发出去。
+	rep := strings.TrimSpace(f.Report)
 	if d := strings.TrimSpace(f.Summary); d != "" {
 		in.Description = d
-		if rep := strings.TrimSpace(f.Report); rep != "" {
+		if rep != "" {
 			in.Description = d + "\n\n" + rep
 		}
-	} else if rep := strings.TrimSpace(f.Report); rep != "" {
+	} else if rep != "" {
 		in.Description = rep
+	}
+	if rep != "" {
+		in.Impact = report.Section(rep, "影响")
+		in.Fix = report.Section(rep, "修复建议")
 	}
 
 	// 目标 URL：优先锚定资产的展示标签，其次绑定流量里的 URL。
@@ -91,6 +98,8 @@ func (s *Server) buildSrcInput(ctx context.Context, f *db.DBFinding) (report.Src
 		}
 	}
 	warnings := s.srcWarnings(f, roles)
+	// 完整性检查刻意**不**并进 warnings：那个列表决定 ready（能否提交），而"报告还没写"
+	// 是质量提示、不是阻断项——单条导出照旧可用。批量交付包里会逐条列出（见 buildSrcBatch）。
 	store := s.evidenceStore()
 	if traffic != nil {
 		seen := map[string]bool{}
@@ -289,4 +298,17 @@ func (s *Server) getFindingSrcReportCheck(w http.ResponseWriter, r *http.Request
 		"steps":     len(in.Steps),
 		"endpoints": len(in.Endpoints),
 	})
+}
+
+// srcCompletenessWarnings 是「导出稿还缺什么」的完整性检查：两个 SRC 必填字段
+// （漏洞危害 / 修复建议）来自报告 Agent 的详细报告，缺了就会以（待补）占位发出。
+func srcCompletenessWarnings(rep string) []string {
+	var out []string
+	if report.Section(rep, "影响") == "" {
+		out = append(out, "缺少「漏洞危害」：导出稿会带（待补）占位，请让报告 Agent 补全后再提交。")
+	}
+	if report.Section(rep, "修复建议") == "" {
+		out = append(out, "缺少「修复建议」：导出稿会带（待补）占位，请让报告 Agent 补全后再提交。")
+	}
+	return out
 }

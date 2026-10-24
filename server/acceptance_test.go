@@ -289,6 +289,10 @@ func accP2(t *testing.T, e *accEnv) {
 	}
 
 	md := e.report(task)
+	// 报告要先回答"测了多少、什么没测"，再往下才是逐格矩阵。
+	e.mustContain(md, "## 范围与覆盖（测了什么 / 没测什么）", "范围与覆盖段")
+	e.mustContain(md, "授权范围条目：1 条", "授权范围条目数")
+	e.mustContain(md, "范围内资产：**", "范围内资产分母")
 	e.mustContain(md, "## 覆盖矩阵（范围内资产 × 风险类）", "覆盖矩阵段")
 	e.mustContain(md, "sqli：已测", "已测单元格")
 	e.mustContain(md, "ssrf：未测成", "未测成单元格")
@@ -1558,15 +1562,36 @@ func accP19(t *testing.T, e *accEnv) {
 			DuplicateGroup int      `json:"duplicate_group"`
 			Warnings       []string `json:"warnings"`
 			Included       bool     `json:"included"`
+			SkipReason     string   `json:"skip_reason"`
 		} `json:"entries"`
 		Groups [][]int64 `json:"duplicate_groups"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &plan); err != nil {
 		t.Fatalf("%v body=%s", err, rec.Body.String())
 	}
-	if plan.Included != 3 || plan.Skipped != 1 {
+	// A/B 同指纹 → 只交代表项（A），B 标成跳过并指认它重复于 A；C 不同指纹；D 已撤回。
+	if plan.Included != 2 || plan.Skipped != 2 {
 		t.Fatalf("进包/跳过数不对: %+v", plan)
 	}
+	// 代表取组内第一条允许进包的（与创建顺序无关）：恰好一条进包，另一条指认它。
+	var repID, dupID int64
+	var dupReason string
+	for _, en := range plan.Entries {
+		if en.ID != fA && en.ID != fB {
+			continue
+		}
+		if en.Included {
+			repID = en.ID
+		} else {
+			dupID = en.ID
+			dupReason = en.SkipReason
+		}
+	}
+	if repID == 0 || dupID == 0 {
+		t.Fatalf("同指纹组应恰好一条进包、一条跳过：rep=%d dup=%d", repID, dupID)
+	}
+	e.mustContain(dupReason, "同指纹", "重复项的跳过理由")
+	e.mustContain(dupReason, "#"+strconv.FormatInt(repID, 10), "重复项应指认代表项")
 	groupOf := map[int64]int{}
 	for i, g := range plan.Groups {
 		for _, id := range g {
@@ -1634,8 +1659,8 @@ func accP19(t *testing.T, e *accEnv) {
 			t.Fatalf("已撤回的发现不该进包: %s", name)
 		}
 	}
-	if mdCount != 3 || docxCount != 3 {
-		t.Fatalf("进包附件数不对: md=%d docx=%d（files=%v）", mdCount, docxCount, files)
+	if mdCount != 2 || docxCount != 2 {
+		t.Fatalf("进包附件数不对（A 为代表、B 重复、C 独立）: md=%d docx=%d（files=%v）", mdCount, docxCount, files)
 	}
 	// 提交说明：清单条目、疑似重复分组、撤回说明。
 	e.mustContain(readme, "## 三、疑似重复（同一漏洞被多次登记）", "提交说明的重复分组段")
@@ -1643,8 +1668,14 @@ func accP19(t *testing.T, e *accEnv) {
 	e.mustContain(readme, "第一份", "清单里的发现标题")
 	e.mustContain(readme, "未进包的发现", "撤回发现的交代")
 	e.mustContain(readme, "## 二、导出前的证据门", "证据门段")
-	// 证据门要指出"没人绑流量"这件事：三条进包的都绑了 proof，所以此处应为"无"。
-	e.mustContain(readme, "无：每条进包发现的证据都完整", "证据门结论")
+	// 进包的两条都绑了 proof，但都没有详细报告 → 证据门应点名"危害/修复建议"缺失，
+	// 而不是一句"都完整"把（待补）占位放过去。
+	e.mustContain(readme, "缺少「漏洞危害」", "完整性提示：漏洞危害")
+	// ③ 总报告同样只算一次：同指纹的 A/B 合并到代表项，确认发现数不重复计。
+	md := e.report(task)
+	e.mustContain(md, "- 确认发现：**2** 个", "重复登记不该重复计数")
+	e.mustContain(md, "**同指纹的重复登记**：#", "正文点明重复登记")
+
 	// 单条导出与批量包口吻一致：该发现自己的 src-report 里也是同一份警告清单（这里为空）。
 	rec = e.request(http.MethodGet, "/api/findings/"+strconv.FormatInt(fA, 10)+"/src-report/check", "")
 	var gate struct {
