@@ -307,27 +307,49 @@ class ArtexClient:
         st, body = self._call("GET", f"/api/exploration/findings?task={task_id}")
         return len(body) if isinstance(body, list) else 0
 
-    def graph_counts(self, task_id):
-        """按节点类型计数（finding/fact/foothold/credential/artifact/detection/intent…）。
+    def graph_stats(self, task_id):
+        """按节点类型计数 + 意图终态分布 + 首次据点时间（epoch 秒，0=无）。
 
         这些计数是「过程质量」的代理指标：只看得分（flag）会漏掉误伤、无据结论、
         没沉淀战果等差异，而它们恰恰决定同类目标下次还能不能打穿。
         """
         st, body = self._call("GET", f"/api/exploration/graph?task={task_id}")
-        out = {}
-        if st and 200 <= st < 300 and isinstance(body, dict):
-            for n in body.get("nodes") or []:
-                k = n.get("type") or n.get("kind") or "?"
-                out[k] = out.get(k, 0) + 1
+        out = {"counts": {}, "intent_states": {}, "first_foothold_at": 0}
+        if not (st and 200 <= st < 300 and isinstance(body, dict)):
+            return None
+        for n in body.get("nodes") or []:
+            k = n.get("type") or n.get("kind") or "?"
+            out["counts"][k] = out["counts"].get(k, 0) + 1
+            if k == "intent":
+                state = n.get("state") or "?"
+                out["intent_states"][state] = out["intent_states"].get(state, 0) + 1
+            if k == "foothold":
+                at = _to_epoch(n.get("ts"))
+                if at and (not out["first_foothold_at"] or at < out["first_foothold_at"]):
+                    out["first_foothold_at"] = at
         return out
 
+    def task_created_unix(self, task_id):
+        """任务创建时间（epoch 秒）；取不到返回 0。"""
+        st, body = self._call("GET", "/api/tasks")
+        if not (st and 200 <= st < 300 and isinstance(body, dict)):
+            return 0
+        for t in body.get("tasks") or []:
+            if str(t.get("id")) == str(task_id):
+                return _to_epoch(t.get("created_unix") or t.get("created_at"))
+        return 0
+
     def token_totals(self, task_id):
-        """返回 (input, output) token 总量；取不到就 (0, 0)。"""
+        """返回 (input, output) token 总量；取不到返回 (None, None)。
+
+        不能把「取不到」写成 0：那会让失败看起来像「这次几乎没花 token」，
+        多轮汇总也会被 0 拉低。未知就是未知，由上层显式标记。
+        """
         st, body = self._call("GET", f"/api/exploration/tokens?task={task_id}")
         if st and 200 <= st < 300 and isinstance(body, dict):
             t = body.get("total") or {}
             return int(t.get("input_tokens") or 0), int(t.get("output_tokens") or 0)
-        return 0, 0
+        return None, None
 
     def policy_summary(self):
         """当前全局探索策略的紧凑描述，写进 summary.json 用于归因。
@@ -410,8 +432,12 @@ class RunMetrics:
     """
 
     NODE_KINDS = ("finding", "fact", "foothold", "credential", "artifact", "detection", "intent")
+    INTENT_STATES = ("open", "running", "paused", "done", "negative", "out-of-scope",
+                     "blocked", "exhausted", "no_output", "stopped", "deleted")
     COLS = ["code", "task_id", "kind", "reason", "solved", "flags", "flag_total",
-            "banked_flags", "wall_min", "tokens_in", "tokens_out"] + ["n_" + k for k in NODE_KINDS]
+            "banked_flags", "wall_min", "tokens_in", "tokens_out",
+            "first_foothold_min", "findings_per_1k_tokens", "metrics_missing"] + \
+           ["n_" + k for k in NODE_KINDS] + ["n_intent_" + s for s in INTENT_STATES]
 
     def __init__(self, run_id, clock, simulate, out_dir):
         self.run_id = run_id
@@ -438,22 +464,42 @@ class RunMetrics:
         code, task_id = slot.code, slot.task_id
         if not code:
             return
-        graph, tin, tout = {}, 0, 0
+        graph, states, tin, tout = {}, {}, None, None
+        first_foothold_min = ""
+        missing = self.simulate
         if not self.simulate and task_id:
             try:
-                graph = sched.a.graph_counts(task_id)
+                stats = sched.a.graph_stats(task_id)
+                if stats is None:
+                    missing = True
+                else:
+                    graph = stats["counts"]
+                    states = stats["intent_states"]
+                    created = sched.a.task_created_unix(task_id)
+                    if stats["first_foothold_at"] and created:
+                        first_foothold_min = round(max(0.0, stats["first_foothold_at"] - created) / 60.0, 1)
                 tin, tout = sched.a.token_totals(task_id)
+                if tin is None or tout is None:
+                    missing = True
             except Exception as exc:      # 指标采集失败不该影响跑分本身
+                missing = True
                 print(f"[metrics] {code} 采集失败: {exc}", file=sys.stderr)
+        total_tok = (tin or 0) + (tout or 0)
+        per_1k = round(graph.get("finding", 0) * 1000.0 / total_tok, 3) if total_tok > 0 else ""
         row = {
             "code": code, "task_id": task_id or "", "kind": slot.kind or "",
             "reason": reason, "solved": code in sched.solved,
             "flags": sched.flags.get(code, 0), "flag_total": sched.flag_total.get(code, 0),
             "banked_flags": slot.banked_flags, "wall_min": round(slot.elapsed(now), 1),
             "tokens_in": tin, "tokens_out": tout,
+            "first_foothold_min": first_foothold_min,
+            "findings_per_1k_tokens": per_1k,
+            "metrics_missing": missing,
         }
         for k in self.NODE_KINDS:
             row["n_" + k] = graph.get(k, 0)
+        for s in self.INTENT_STATES:
+            row["n_intent_" + s] = states.get(s, 0)
         self.rows.append(row)
 
     def write(self, sched):
@@ -476,21 +522,37 @@ class RunMetrics:
                 prompt_sha = {k: sched.a.prompt_sha(k) for k in ("planner", "worker")}
             except Exception:
                 pass
+        known = [r for r in self.rows if not r.get("metrics_missing")]
         totals = {
             "challenges": len(self.rows),
             "solved": sum(1 for r in self.rows if r["solved"]),
             "score": sum(r["flags"] for r in self.rows),
-            "tokens_in": sum(r["tokens_in"] for r in self.rows),
-            "tokens_out": sum(r["tokens_out"] for r in self.rows),
+            # 只汇总已知值；未知单独计数，绝不当成 0 参与中位数。
+            "tokens_in": (sum(r["tokens_in"] for r in known if r["tokens_in"] is not None)
+                          if known else None),
+            "tokens_out": (sum(r["tokens_out"] for r in known if r["tokens_out"] is not None)
+                           if known else None),
+            "tokens_known_challenges": len(known),
             "wall_min": round(sum(r["wall_min"] for r in self.rows), 1),
+            "metrics_missing_challenges": sum(1 for r in self.rows if r.get("metrics_missing")),
         }
+        token_total = (totals["tokens_in"] or 0) + (totals["tokens_out"] or 0)
+        if token_total > 0:
+            totals["findings_per_1k_tokens"] = round(
+                sum(r.get("n_finding", 0) for r in known) * 1000.0 / token_total, 3)
         for k in self.NODE_KINDS:
             totals["n_" + k] = sum(r.get("n_" + k, 0) for r in self.rows)
+        for s in self.INTENT_STATES:
+            totals["n_intent_" + s] = sum(r.get("n_intent_" + s, 0) for r in self.rows)
         summary = {
             "run_id": self.run_id,
             "started_wall": self.started_wall,
             "finished_wall": self.clock.wallclock_str(),
             "simulate": self.simulate,
+            "simulated": self.simulate,
+            "aggregatable": not self.simulate,
+            "warning": ("SIMULATED RUN — 不是能力测量，不得用于聚合或版本对比"
+                        if self.simulate else ""),
             "attribution": {
                 "git_head": head, "git_dirty": dirty,
                 "prompt_variant": PROMPT_VARIANT, "prompt_sha": prompt_sha,
@@ -1137,21 +1199,36 @@ def _aggregate_runs(run_ids):
     """
     import statistics
     vals = {}
+    used, excluded = [], []
     for rid in run_ids:
         path = os.path.join(RUNS_DIR, rid, "summary.json")
         try:
             with open(path, encoding="utf-8") as fh:
-                totals = json.load(fh).get("totals") or {}
+                data = json.load(fh)
         except Exception:
             continue
+        # 模拟运行不进聚合：它的 token/发现全是 0，混进中位数会把真实基线拉低，
+        # 也会让「79 分」看起来像一次真实能力测量。
+        if data.get("simulate") or data.get("aggregatable") is False:
+            excluded.append(rid)
+            continue
+        used.append(rid)
+        totals = data.get("totals") or {}
         for k in ("score", "solved", "tokens_in", "tokens_out"):
-            vals.setdefault(k, []).append(totals.get(k, 0))
+            v = totals.get(k)
+            if v is not None:
+                vals.setdefault(k, []).append(v)
     out = {k: {"median": statistics.median(v), "min": min(v), "max": max(v), "runs": v}
            for k, v in vals.items()}
+    payload = {"run_ids": used, "excluded_simulated": excluded, "metrics": out}
+    if excluded:
+        print(f"[metrics] 已排除模拟运行（不参与聚合）：{', '.join(excluded)}", file=sys.stderr)
+    if not used:
+        payload["warning"] = "没有可聚合的真实运行；本次不产生能力基线"
     print("[metrics] 多轮汇总: " + json.dumps(out, ensure_ascii=False), file=sys.stderr)
     try:
         with open(os.path.join(RUNS_DIR, "aggregate.json"), "w", encoding="utf-8") as fh:
-            json.dump({"run_ids": run_ids, "metrics": out}, fh, ensure_ascii=False, indent=2)
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
     except Exception as exc:
         print(f"[metrics] 写 aggregate.json 失败: {exc}", file=sys.stderr)
     return out
@@ -1175,7 +1252,7 @@ def main():
     if args.simulate:
         run_ids = []
         for i in range(runs):
-            rid = RUN_ID if runs == 1 else f"{RUN_ID}-r{i + 1}"
+            rid = (RUN_ID if runs == 1 else f"{RUN_ID}-r{i + 1}") + "-sim"
             clock = VirtualClock(step_min=args.poll_min)
             sim = Simulator(scenario=args.scenario, clock=clock, faults=args.faults)
             Scheduler(bench=None, artex=None, clock=clock, simulate=True, sim=sim, run_id=rid).run()
