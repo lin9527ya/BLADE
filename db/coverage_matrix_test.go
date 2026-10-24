@@ -163,3 +163,56 @@ func TestCoverageMatrixCountsNoOutputAsFailed(t *testing.T) {
 		t.Fatalf("no_output 应记未测成，实际 %+v", *cell)
 	}
 }
+
+// 丢弃/叫停的意图既不是"进行中"也不是"测过"：它们不该在覆盖矩阵里留下永远"在跑"的格子。
+func TestCoverageMatrixIgnoresDroppedAndStopped(t *testing.T) {
+	d, taskID, expID := coverageMatrixFixture(t)
+	as := d.Assets()
+	a1, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "api.matrix-test.example", TaskID: taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := d.Exploration(expID)
+	mk := func(summary, state string) {
+		id, err := st.AddIntent(map[string]any{"summary": summary, "risk_area": "sqli"}, 5, []int64{a1}, "planner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetIntentState(id, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("被丢弃的方向", "deleted")
+	mk("被叫停的方向", "stopped")
+
+	sqliCell := func() *CoverageMatrixCell {
+		assets, err := st.CoverageMatrix(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range assets {
+			if assets[i].Label != "api.matrix-test.example" {
+				continue
+			}
+			for j := range assets[i].Cells {
+				if assets[i].Cells[j].RiskArea == "sqli" {
+					return &assets[i].Cells[j]
+				}
+			}
+		}
+		return nil
+	}
+	if cell := sqliCell(); cell != nil {
+		t.Fatalf("只有被丢弃/叫停的意图时，不该留下格子（会被读成进行中）：%+v", *cell)
+	}
+
+	// 再加一条真有结论的：格子只应计"已测"，前两条不能算进行中。
+	mk("测过的方向", "negative")
+	cell := sqliCell()
+	if cell == nil {
+		t.Fatal("有结论的意图应生成格子")
+	}
+	if cell.Tested != 1 || cell.InFlight != 0 || cell.Failed != 0 {
+		t.Fatalf("覆盖计数不对：%+v", *cell)
+	}
+}
