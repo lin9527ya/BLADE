@@ -694,12 +694,20 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                   <span className="font-semibold">{fmtTokens(tokenTotals.cacheRead)}</span>
                 </span>
                 <span className="tabular-nums">
+                  <span className="text-muted-foreground">未命中输入 </span>
+                  <span className="font-semibold">{fmtTokens(Math.max(0, tokenTotals.input - tokenTotals.cacheRead))}</span>
+                </span>
+                <span className="tabular-nums">
                   <span className="text-muted-foreground">缓存命中率 </span>
                   <span className="font-semibold text-emerald-500">
                     {cacheHitRate(tokenTotals.cacheRead, tokenTotals.input)}
                   </span>
                 </span>
               </div>
+              <p className="text-muted-foreground text-[10px]">
+                「输入」已包含缓存读；DeepSeek 为自动前缀缓存，没有缓存写入计费（cache write 恒为 0）。命中率 =
+                缓存读 / 输入。
+              </p>
               {/* 按模型明细表 */}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -710,6 +718,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                       <th className="py-1.5 pr-3 text-right font-medium">输入</th>
                       <th className="py-1.5 pr-3 text-right font-medium">输出</th>
                       <th className="py-1.5 pr-3 text-right font-medium">缓存读</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">未命中</th>
                       <th className="py-1.5 text-right font-medium">命中率</th>
                     </tr>
                   </thead>
@@ -723,6 +732,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.input_tokens)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.output_tokens)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.cache_read_tokens)}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums">
+                          {fmtTokens(Math.max(0, m.input_tokens - m.cache_read_tokens))}
+                        </td>
                         <td className="py-1.5 text-right tabular-nums text-emerald-500">
                           {cacheHitRate(m.cache_read_tokens, m.input_tokens)}
                         </td>

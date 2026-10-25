@@ -325,11 +325,16 @@ export function useDashboardState() {
     const now = new Date();
     now.setDate(now.getDate() - tokenDays);
     const cutoff = now.toISOString().slice(0, 10);
-    const m = new Map<string, { input: number; output: number; cacheRead: number }>();
+    const m = new Map<string, { input: number; miss: number; output: number; cacheRead: number }>();
     const fold = (date: string, inp: number, out: number, cr: number) => {
       if (date < cutoff) return;
-      const prev = m.get(date) ?? { input: 0, output: 0, cacheRead: 0 };
-      m.set(date, { input: prev.input + inp, output: prev.output + out, cacheRead: prev.cacheRead + cr });
+      const prev = m.get(date) ?? { input: 0, miss: 0, output: 0, cacheRead: 0 };
+      m.set(date, {
+        input: prev.input + inp,
+        miss: prev.miss + Math.max(0, inp - cr),
+        output: prev.output + out,
+        cacheRead: prev.cacheRead + cr,
+      });
     };
     for (const t of tasks) {
       if (tokenTab !== "all" && (t.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
@@ -352,13 +357,14 @@ export function useDashboardState() {
     const now = new Date();
     now.setDate(now.getDate() - tokenDays);
     const cutoff = now.toISOString().slice(0, 10);
-    const m = new Map<string, { input: number; output: number; cacheRead: number }>();
+    const m = new Map<string, { input: number; miss: number; output: number; cacheRead: number }>();
     for (const d of usageStats?.daily ?? []) {
       if (d.date < cutoff) continue;
       if (tokenTab !== "all" && (profileIdByName.get(d.profile_name) ?? defaultProfileId) !== tokenTab) continue;
-      const prev = m.get(d.date) ?? { input: 0, output: 0, cacheRead: 0 };
+      const prev = m.get(d.date) ?? { input: 0, miss: 0, output: 0, cacheRead: 0 };
       m.set(d.date, {
         input: prev.input + d.input_tokens,
+        miss: prev.miss + Math.max(0, d.input_tokens - d.cache_read_tokens),
         output: prev.output + d.output_tokens,
         cacheRead: prev.cacheRead + d.cache_read_tokens,
       });

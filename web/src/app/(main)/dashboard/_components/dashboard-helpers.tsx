@@ -86,6 +86,8 @@ export function SectionTitle({
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export const dailyTrendConfig = {
+  // 堆叠图的 input 段必须是「未命中输入」：总输入已含缓存，再叠 cacheRead 会重复计数。
+  miss: { label: "输入(未命中)", color: "hsl(217 91% 60%)" },
   input: { label: "输入", color: "hsl(217 91% 60%)" },
   output: { label: "输出", color: "hsl(263 70% 60%)" },
   cacheRead: { label: "缓存读", color: "hsl(160 60% 45%)" },

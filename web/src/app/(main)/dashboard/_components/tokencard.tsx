@@ -182,7 +182,7 @@ export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState>["t
               const hitPct = denominator > 0 ? Math.round((displayedTokens.cacheRead / denominator) * 100) : 0;
               return (
                 <div className="flex items-center justify-between rounded-lg border bg-muted/20 px-3 py-2 text-[10px]">
-                  <span className="text-muted-foreground">缓存命中率</span>
+                  <span className="text-muted-foreground">缓存命中率（命中 / 总输入）</span>
                   <span
                     className={cn("font-semibold tabular-nums", hitPct > 50 ? "text-emerald-400" : "text-amber-400")}
                   >
@@ -197,7 +197,7 @@ export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState>["t
           <div className="flex min-h-0 flex-col">
             <div className="mb-2 flex items-center justify-between">
               <div className="flex gap-3 text-[9px] text-muted-foreground">
-                {(["input", "output", "cacheRead"] as const).map((k) => (
+                {(["miss", "output", "cacheRead"] as const).map((k) => (
                   <span key={k} className="flex items-center gap-1">
                     <span
                       className="inline-block size-2 rounded-sm"
@@ -277,7 +277,7 @@ export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState>["t
                       />
                     }
                   />
-                  <Bar dataKey="input" stackId="1" fill="var(--color-input)" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="miss" stackId="1" fill="var(--color-miss)" radius={[0, 0, 0, 0]} />
                   <Bar dataKey="output" stackId="1" fill="var(--color-output)" radius={[0, 0, 0, 0]} />
                   <Bar dataKey="cacheRead" stackId="1" fill="var(--color-cacheRead)" radius={[4, 4, 0, 0]} />
                 </BarChart>

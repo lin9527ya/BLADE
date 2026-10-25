@@ -56,6 +56,8 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 <b>100%</b> 时任务进入收尾——停派新意图、收在跑方向、出终局报告，不再无限消耗。 留空或填 <b>0</b> =
                 关闭护栏。
                 <br />
+                这是<b>体量护栏</b>：缓存命中的 token 也按全量计入，不代表实际费用。
+                <br />
                 {Number(tokenBudget) > 0 ? "已配置 · 到量提示并自动收尾" : "未配置 · 任务不设 token 上限"}
               </>
             }
