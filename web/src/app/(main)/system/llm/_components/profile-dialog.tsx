@@ -238,6 +238,38 @@ export function ProfileDialog({
                   <SelectItem value="openai-responses">OpenAI (Responses API)</SelectItem>
                 </SelectContent>
               </Select>
+              {(() => {
+                // commandcode 的协议/模型是绑定的（项目实测口径，见 server/manager.go
+                // searchBackendForSDK 的注释）：/v1/messages 只服务 Claude 系；DeepSeek
+                // 只在 /v1/responses 上。选错协议时网关会回「不支持」，而不是 BLADE 拦的。
+                const isCommandCode = /commandcode\.ai/i.test(baseUrl);
+                const isDeepSeek = /^deepseek/i.test(model.trim());
+                if (!isCommandCode) return null;
+                if (isDeepSeek && format === "anthropic") {
+                  return (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      commandcode 的 Anthropic <code>/v1/messages</code> 只服务 Claude 系；DeepSeek 模型请选择
+                      「OpenAI (Responses API)」，否则连接测试会提示不支持。
+                    </p>
+                  );
+                }
+                if (isDeepSeek && format === "openai") {
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      若连接测试失败，改用「OpenAI (Responses API)」：commandcode 的 DeepSeek 走
+                      <code> /v1/responses</code>。
+                    </p>
+                  );
+                }
+                if (!isDeepSeek && format === "openai-responses") {
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      commandcode 上的 Claude 系模型应选「Anthropic」；Responses API 用于 DeepSeek 等模型。
+                    </p>
+                  );
+                }
+                return null;
+              })()}
             </div>
           </div>
 
