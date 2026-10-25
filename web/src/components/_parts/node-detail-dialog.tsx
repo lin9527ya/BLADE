@@ -78,6 +78,9 @@ const payloadFieldLabels: Record<string, string> = {
   verified: "已验证",
   service: "服务",
   port: "端口",
+  locator: "位置",
+  cleanup: "清理方式",
+  removed_evidence: "清理证据",
 };
 
 // 字段展示顺序：语义在前（摘要/目标/结论/证据…），其余按原 JSON 顺序落尾。
@@ -93,6 +96,22 @@ const payloadFieldOrder = [
   "detail",
   "evidence",
   "poc",
+  // 战果/凭据/遗留物的结构化字段：先身份与位置，再清理与验证信息。
+  "kind",
+  "host",
+  "locator",
+  "url",
+  "access",
+  "privilege",
+  "username",
+  "secret",
+  "targets",
+  "value",
+  "cleanup",
+  "removed_evidence",
+  "verified",
+  "service",
+  "port",
   "closure",
   "outcome",
   "counterevidence",
@@ -113,9 +132,30 @@ const confidenceLabel: Record<string, string> = {
   low: "低（据指纹/版本推断）",
 };
 
+// 凭据/遗留物的 kind 是封闭词表，直接显示英文枚举对人不友好。
+const lootKindLabel: Record<string, string> = {
+  password: "口令",
+  hash: "哈希",
+  key: "私钥/密钥",
+  token: "令牌",
+  webshell: "Webshell",
+  upload: "上传文件",
+  account: "账号",
+  scheduled_task: "计划任务",
+  config_change: "配置变更",
+  service: "服务",
+  other: "其它",
+};
+
 export function PayloadValue({ k, v }: { k: string; v: unknown }) {
   if (v === null || v === undefined || v === "") {
     return <span className="text-muted-foreground text-xs">—</span>;
+  }
+  if (k === "kind" && typeof v === "string" && lootKindLabel[v]) {
+    return <span className="text-xs">{lootKindLabel[v]}</span>;
+  }
+  if (k === "verified" && typeof v === "boolean") {
+    return <span className="text-xs">{v ? "是（实测登入成功）" : "否"}</span>;
   }
   if (k === "severity" && typeof v === "string") {
     return <StatusBadge domain="severity" value={v} dot className="px-1.5 py-0 text-[10px]" />;
@@ -252,6 +292,9 @@ export function PayloadBeautified({ node }: { node: TaskNode }) {
           <PayloadValue k={k} v={data[k]} />
         </div>
       ))}
+      {data.secret_redacted === true && (
+        <p className="text-muted-foreground text-[11px]">凭据本体已脱敏；在节点详情里可点「显示明文」查看。</p>
+      )}
     </div>
   );
 }

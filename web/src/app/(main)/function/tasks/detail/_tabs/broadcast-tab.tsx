@@ -28,6 +28,7 @@ import {
 
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
+import { PayloadBeautified } from "@/components/_parts/node-detail-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -238,6 +239,51 @@ function prettyPayload(raw?: string): string {
   }
 }
 
+// PayloadPanel：默认按字段美化（凭据/遗留物直接看到账号、目标、位置、清理方式等），
+// 需要核对原样时切到原始 JSON。凭据明文由服务端脱敏，这里只提示去节点详情查看。
+function PayloadPanel({ node, maxClass = "max-h-64" }: { node: TaskNode; maxClass?: string }) {
+  const [raw, setRaw] = React.useState(false);
+  const redacted = React.useMemo(() => {
+    try {
+      const d: unknown = JSON.parse(node.payload ?? "");
+      return !!d && typeof d === "object" && (d as Record<string, unknown>).secret_redacted === true;
+    } catch {
+      return false;
+    }
+  }, [node.payload]);
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">payload</span>
+        <div className="flex items-center gap-2">
+          {redacted && <span className="text-[10px] text-muted-foreground">凭据本体已脱敏</span>}
+          <button
+            type="button"
+            onClick={() => setRaw((v) => !v)}
+            className="text-muted-foreground hover:text-foreground text-[11px] underline underline-offset-2"
+          >
+            {raw ? "美化" : "原始 JSON"}
+          </button>
+        </div>
+      </div>
+      {raw ? (
+        <pre
+          className={cn(
+            maxClass,
+            "overflow-auto rounded-md border bg-background p-3 font-mono text-[11px] whitespace-pre-wrap",
+          )}
+        >
+          {prettyPayload(node.payload)}
+        </pre>
+      ) : (
+        <div className={cn(maxClass, "overflow-auto rounded-md border bg-background p-3")}>
+          <PayloadBeautified node={node} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function relTime(ts: number, now: number): string {
   if (!now || !ts) return "";
   const sec = Math.max(0, (now - ts) / 1000);
@@ -335,9 +381,7 @@ function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsse
       </div>
       <p className="line-clamp-4 text-xs break-words">{summary || "（无摘要）"}</p>
       <AssetList assets={assets} dense />
-      <pre className="max-h-40 overflow-auto rounded border bg-muted/40 p-2 font-mono text-[11px] whitespace-pre-wrap">
-        {prettyPayload(node.payload)}
-      </pre>
+      <PayloadPanel node={node} maxClass="max-h-40" />
     </div>
   );
 }
@@ -490,10 +534,7 @@ function BroadcastRow({
               </div>
             )}
             <div>
-              <div className="mb-1.5 text-xs font-medium text-muted-foreground">payload</div>
-              <pre className="max-h-64 overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
-                {prettyPayload(node.payload)}
-              </pre>
+              <PayloadPanel node={node} maxClass="max-h-64" />
             </div>
           </div>
         )}
