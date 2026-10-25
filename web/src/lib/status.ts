@@ -101,6 +101,12 @@ const goal: Record<string, StatusMeta> = {
   abandoned: { label: "已放弃", tone: "slate" },
 };
 
+// 战略提示：active=待规划者采纳，consumed=已采纳（规划者领用后失效）。
+const hint: Record<string, StatusMeta> = {
+  active: { label: "待采纳", tone: "amber" },
+  consumed: { label: "已采纳", tone: "green" },
+};
+
 const audit: Record<string, StatusMeta> = {
   allow: { label: "放行", tone: "green" },
   block: { label: "拦截", tone: "red" },
@@ -129,6 +135,7 @@ const maps = {
   finding,
   engine,
   goal,
+  hint,
   audit,
   node,
   delivery,

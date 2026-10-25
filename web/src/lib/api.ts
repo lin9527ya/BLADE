@@ -115,6 +115,7 @@ import type {
   TaskCategory,
   TaskConstraint,
   TaskGoal,
+  TaskHint,
   TaskLLMResolutions,
   TaskNode,
   TaskPolicy,
@@ -444,6 +445,15 @@ export const api = {
     patch<TaskGoal>(`/tasks/${id}/goals/${goalId}`, { text, vulnclass: vulnclass ?? "" }),
   // 人工删除目标（硬删除）：通知 planner，删除不复活任务。
   deleteGoal: (id: string, goalId: string) => del<{ ok: boolean }>(`/tasks/${id}/goals/${goalId}`),
+
+  // ---- 战略提示（总览）----
+  // 本任务的提示：active 全量 + 最近一窗 consumed。
+  taskHints: (id: string) =>
+    get<{ hints: TaskHint[] | null }>(`/tasks/${id}/hints`).then((response) => ({ hints: arr(response.hints) })),
+  // 人工新增提示：写入图谱并立即唤醒 planner（不复活任务）。
+  addTaskHint: (id: string, text: string) => post<TaskHint>(`/tasks/${id}/hints`, { text }),
+  // 人工删除提示（active/consumed 都可删）。
+  deleteTaskHint: (id: string, hintId: string) => del<{ ok: boolean }>(`/tasks/${id}/hints/${hintId}`),
 
   // ---- 操作约束管理（总览）----
   // 本任务全部操作约束（allow/deny）。

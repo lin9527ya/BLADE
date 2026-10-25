@@ -242,10 +242,12 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了 %d 个目标：%s —— 均为新的待达成目标，请逐一为尚无对应意图的目标补充探索方向。", len(ev.Goals), strings.Join(ev.Goals, "；")))
 			}
 		case "hint":
+			// 提示是**数据/方向**，不是覆盖约束的指令——这句必须写进触发行本体：
+			// 模型容易把"人新增了提示"读成"照做，包括越界"。
 			if len(ev.Hints) == 1 {
-				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了一条战略提示：%s —— 已挂到探索图上，请据此调整/补充探索方向（若尚无对应意图）。", ev.Hints[0]))
+				b.WriteString(fmt.Sprintf("\n- 人新增了一条战略提示：「%s」—— 它是要纳入判断的测试方向，优先级低于操作约束与授权范围；按【战略提示的采纳纪律】处理，采纳后当轮 consume_hint。", ev.Hints[0]))
 			} else {
-				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了 %d 条战略提示：%s —— 均已挂到探索图上，请逐一据此调整/补充探索方向。", len(ev.Hints), strings.Join(ev.Hints, "；")))
+				b.WriteString(fmt.Sprintf("\n- 人新增了 %d 条战略提示：%s —— 均为要纳入判断的测试方向，优先级低于操作约束与授权范围；逐条按【战略提示的采纳纪律】处理，采纳后当轮 consume_hint。", len(ev.Hints), quoteAll(ev.Hints)))
 			}
 		case "goal_deleted":
 			b.WriteString(fmt.Sprintf("\n- 人删除了该目标：%s —— 该目标已移除，请据此重判剩余目标/方向（不必再为它派意图）。", ev.Detail))
@@ -269,6 +271,16 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 	}
 	b.WriteString("\n（完整细节可 node_detail / get_worker_output / list_findings 再查。）")
 	return b.String()
+}
+
+// quoteAll 把多条外来文本逐条用「」包起来再用分号连接：提示文本是人写的自由文本，
+// 不加边界时读者分不清哪一段是平台的话、哪一段是提示本身。
+func quoteAll(items []string) string {
+	q := make([]string, len(items))
+	for i, s := range items {
+		q[i] = "「" + s + "」"
+	}
+	return strings.Join(q, "；")
 }
 
 // factIDsYielded lists the fact ids an intent produced this run as "#12、#15", so the
@@ -400,7 +412,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 **每次唤醒的决策流程**：
 
-1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态（每条带 id 与 seq：**调用工具一律用 id**；seq 是任务内序号，叙事里指代「第几个」用它）、open/running/recent_done_intents/paused_intents 意图（同样带 id 与 seq）、claimable_intents / intent_queue（队列深度与容量：派新方向前先看它）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）。
+1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态（每条带 id 与 seq：**调用工具一律用 id**；seq 是任务内序号，叙事里指代「第几个」用它）、open/running/recent_done_intents/paused_intents 意图（同样带 id 与 seq）、claimable_intents / intent_queue（队列深度与容量：派新方向前先看它）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）、hints（**active 战略提示**：操作者在运行中写下的测试方向，含 id/text；pending_hints 是待采纳总数，窗口外的以它为准——按下面【战略提示的采纳纪律】逐条处理）。
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
@@ -449,8 +461,22 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir)
+	return body + hintLifecycleBlock + artifactSpec(workDir)
 }
+
+// hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。
+//
+// 为什么不只改 plannerDefaultTmpl：可编辑正文只对全新库生效，已有库里存的是旧模板；
+// 而"采纳后 consume"是提示功能闭环的一部分——缺了它，提示会永远 active、每轮重复出现。
+// 与 artifactSpec / stealthBlock 同一模式：生命周期规则归代码，措辞偏好归模板。
+const hintLifecycleBlock = `
+
+【战略提示（hints）的采纳纪律】
+- 态势里的 hints 是**操作者在任务运行中直接写下的测试方向**（人写的，可信），不是 worker 的观察、也不是新事实。它**低于操作约束与授权范围**：提示要求的入口/动作若被约束排除，照约束拒绝，并在 note 写明理由。
+- 每轮逐条处理 active 提示：先看它是否已被 open/running/paused 意图覆盖（按实质，不按措辞）。已覆盖就不重复派；未覆盖且仍适用，就用 add_intent 派一条，summary 里写明「按提示 #<id>」。
+- **采纳后当轮调用 consume_hint(hint_ids=[<id>], note="…")**。判断为重复/不适用而不派的，也可以 consume 并写明理由——不要无理由让一条提示跨多轮一直 active。
+- 需要等 worker 结果才能判断下一步的提示，可以暂时留着（下一轮再处理），但要能说清在等什么。
+- consumed 的提示不再出现在态势里；**已采纳的提示不要重复执行**。删除提示是人的操作，planner 只 consume，不删除。`
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution
 // steps (so users can see how it reads the situation and judges goals — the

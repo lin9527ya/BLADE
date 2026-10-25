@@ -416,6 +416,37 @@ func (s *ExplorationStore) DeleteGoal(id int64) error {
 	return nil
 }
 
+// ConsumeHint marks one ACTIVE hint as consumed, optionally recording why it was
+// adopted (note → payload.consume_note). Scoped to kind/state in SQL so a stale or
+// cross-kind id can never flip an intent/fact; returns changed=false (no error) when
+// there was nothing to consume — callers treat that as an idempotent skip.
+func (s *ExplorationStore) ConsumeHint(id int64, note string) (bool, error) {
+	note = utf8Clean(strings.TrimSpace(note))
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state=$1, content_version=content_version+1,
+    payload = CASE WHEN $4 = '' THEN payload
+                   ELSE payload || jsonb_build_object('consume_note', $4::text) END
+WHERE id=$2 AND exploration_id=$3 AND kind='hint' AND state=$5`, StateHintConsumed, id, s.expID, note, StateHintActive)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteHint hard-deletes a hint node; scoped to kind='hint' so an id collision can
+// never drop an intent/fact. Edges/anchors cascade as with goals.
+func (s *ExplorationStore) DeleteHint(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='hint'`, id, s.expID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("提示不存在")
+	}
+	return nil
+}
+
 // SetIntentState updates an intent node's state.
 // ResetRunningIntents returns any intent left in 'running' back to 'open' so it
 // is re-claimed. Called on startup: a 'running' intent with no live worker (a
@@ -899,6 +930,33 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 	}
 	defer rows.Close()
 	return scanNodes(rows)
+}
+
+// ListByKindState lists nodes of a kind in one state (newest first).
+//
+// 先按状态过滤再截窗口：hint 里 consumed 的历史会越积越多，若先取最新 N 条再在内存里
+// 过滤 active，更老的 active 提示会被永远挤出窗口——planner 看不到它，也就永远无法采纳。
+func (s *ExplorationStore) ListByKindState(kind, state string, limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 AND state=$3 ORDER BY id DESC LIMIT $4`, s.expID, kind, state, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// CountByKindState counts nodes of a kind in one state. Unlike len(ListByKindState(...))
+// it stays exact when the list window is capped — pending_hints must not under-report
+// just because the overview only shows the newest 50.
+func (s *ExplorationStore) CountByKindState(kind, state string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 AND state=$3`, s.expID, kind, state).Scan(&n)
+	return n, err
 }
 
 // IntentOrdinals returns id → per-task ordinal (1-based, by creation order) for this

@@ -120,6 +120,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P44 遗留物台账（落在目标上的东西/状态不归一/销账要清理证据）", func(t *testing.T) { accP44(t, env.forTest(t)) })
 	t.Run("P45 预期与实测对账（打了多少 vs 核了多少/没核要如实说/三态不相除）", func(t *testing.T) { accP45(t, env.forTest(t)) })
 	t.Run("P46 运行指标（任务队列/在飞调用/LLM 延迟分位数/执行计数）", func(t *testing.T) { accP46(t, env.forTest(t)) })
+	t.Run("P47 战略提示（新增即唤醒/规划层可采纳/采纳后消失/重复与上限拦截）", func(t *testing.T) { accP47(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -5916,6 +5917,115 @@ func accP46(t *testing.T, e *accEnv) {
 	}
 	if !found {
 		t.Fatal("llm.by_worker 缺少 worker 归因行")
+	}
+}
+
+// accP47 战略提示：操作者在任务运行中输入的测试方向，必须能直达规划层、
+// 被采纳后退出视野，而不是永久 active 每轮重复出现。
+func accP47(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("accP47", "战略提示闭环")
+	base := "/api/tasks/" + task.ID + "/hints"
+
+	postHint := func(text string) *httptest.ResponseRecorder {
+		return e.request(http.MethodPost, base, `{"text":`+strconv.Quote(text)+`}`)
+	}
+
+	// ① 新增：落成 active，GET 能看到。
+	rec := postHint("重点看认证后的越权接口")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("新增提示 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Text  string `json:"text"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.State != db.StateHintActive || created.Text != "重点看认证后的越权接口" {
+		t.Fatalf("新增返回不对: %+v", created)
+	}
+	rec = e.request(http.MethodGet, base, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "重点看认证后的越权接口") {
+		t.Fatalf("GET hints status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// ② 规划层态势能看到全文与待采纳计数。
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	overview := workflowTool(t, tsx.PlannerTools(), "graph_overview")
+	ores, err := overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("graph_overview: %v", err)
+	}
+	flat := ores.Flatten()
+	e.mustContain(flat, "重点看认证后的越权接口", "概览里的提示全文")
+	e.mustContain(flat, `"pending_hints":1`, "概览里的待采纳计数")
+
+	// ③ 采纳：active → consumed，此后不再出现在概览；重复标记幂等。
+	consume := workflowTool(t, tsx.PlannerTools(), "consume_hint")
+	cres, err := consume.Call(context.Background(), json.RawMessage(`{"hint_ids":[`+created.ID+`],"note":"已派意图 #1 覆盖"}`), nil)
+	if err != nil {
+		t.Fatalf("consume_hint: %v", err)
+	}
+	var consumed struct {
+		Consumed []int64             `json:"consumed"`
+		Skipped  []map[string]string `json:"skipped"`
+	}
+	if err := json.Unmarshal([]byte(cres.Flatten()), &consumed); err != nil {
+		t.Fatal(err)
+	}
+	if len(consumed.Consumed) != 1 || strconv.FormatInt(consumed.Consumed[0], 10) != created.ID {
+		t.Fatalf("consume 应标记这条提示: %s", cres.Flatten())
+	}
+	ores, _ = overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	flat = ores.Flatten()
+	if strings.Contains(flat, "重点看认证后的越权接口") {
+		t.Fatalf("已采纳的提示不应再出现在概览: %s", flat)
+	}
+	e.mustContain(flat, `"pending_hints":0`, "采纳后的待采纳计数")
+
+	cres, _ = consume.Call(context.Background(), json.RawMessage(`{"hint_ids":[`+created.ID+`]}`), nil)
+	if err := json.Unmarshal([]byte(cres.Flatten()), &consumed); err != nil {
+		t.Fatal(err)
+	}
+	if len(consumed.Consumed) != 0 || len(consumed.Skipped) != 1 {
+		t.Fatalf("重复标记应幂等跳过: %s", cres.Flatten())
+	}
+
+	// ④ 删除：active/consumed 都可删，删完 GET 不再返回。
+	rec = postHint("再验证一次上传链")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("再次新增 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.request(http.MethodDelete, base+"/"+created.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("删除提示 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, base, "")
+	if strings.Contains(rec.Body.String(), "再验证一次上传链") {
+		t.Fatalf("删除后 GET 不应再返回: %s", rec.Body.String())
+	}
+
+	// ⑤ 重复（大小写不敏感）与 active 上限。
+	if rec = postHint("Check the admin API"); rec.Code != http.StatusOK {
+		t.Fatalf("大小写去重前置新增失败: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = postHint("check the ADMIN api"); rec.Code != http.StatusConflict {
+		t.Fatalf("大小写不同的重复提示应 409，得到 %d %s", rec.Code, rec.Body.String())
+	}
+	// 直接补到上限（HTTP 之外）后，再 POST 必须被挡。
+	for i := 0; i < db.MaxActiveHints; i++ {
+		if _, err := task.Store.AddNode(db.KindHint, map[string]any{"text": fmt.Sprintf("填充提示 %d", i)}, 0, db.StateHintActive, "human", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rec = postHint("上限之外的新方向"); rec.Code != http.StatusConflict {
+		t.Fatalf("超过 active 上限应 409，得到 %d %s", rec.Code, rec.Body.String())
 	}
 }
 

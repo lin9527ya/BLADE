@@ -3,7 +3,7 @@
 import * as React from "react";
 import { TaskInterceptRulesCard, TaskExplorationPolicyCard } from "./_components/task-policy-cards";
 
-import { ActivityIcon, AlertTriangleIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ActivityIcon, AlertTriangleIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -135,6 +135,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setEditText,
     editVuln,
     setEditVuln,
+    hints,
+    hintText,
+    setHintText,
+    hintBusy,
+    hintErr,
     constraints,
     setConstraints,
     conText,
@@ -165,6 +170,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     cancelEditGoal,
     saveEditGoal,
     removeGoal,
+    addHint,
+    removeHint,
     loadConstraints,
     addConstraint,
     startEditConstraint,
@@ -375,6 +382,84 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           ) : (
             <p className="text-muted-foreground text-sm">暂无目标，添加后规划者会据此派发探索意图并判定达成。</p>
           )}
+        </CardContent>
+      </Card>
+      {/* 战略提示：操作者在任务运行中直接给规划者一句话方向。新增立即唤醒 planner，
+          采纳后由它 consume（状态变「已采纳」），不再每轮反复出现。不自动复活任务。 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <LightbulbIcon className="size-4 text-amber-500" /> 战略提示 / 测试方向
+            <span className="text-muted-foreground text-xs font-normal">
+              （给规划者一句话方向；采纳后标记「已采纳」，不再反复出现）
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="h-7 min-w-56 flex-1 text-sm"
+              placeholder="如『重点看认证后的越权接口』"
+              value={hintText}
+              onChange={(e) => setHintText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void addHint();
+              }}
+              disabled={hintBusy}
+            />
+            <Button size="sm" variant="outline" disabled={hintBusy || !hintText.trim()} onClick={() => void addHint()}>
+              <PlusIcon className="size-3.5" /> 发送
+            </Button>
+            {hintErr && <span className="text-xs text-red-500">{hintErr}</span>}
+          </div>
+          {task && task.status !== "running" && (
+            <p className="text-muted-foreground text-xs">
+              任务当前未运行，提示会在下次规划时生效（不会自动恢复任务）。
+            </p>
+          )}
+          {hints.length > 0 ? (
+            <div className="flex flex-col gap-1.5">
+              {[...hints]
+                .sort((a, b) => (a.state === b.state ? 0 : a.state === "active" ? -1 : 1))
+                .map((h) => (
+                  <div
+                    key={h.id}
+                    className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm ${
+                      h.state === "consumed" ? "opacity-60" : ""
+                    }`}
+                  >
+                    <StatusBadge domain="hint" value={h.state} />
+                    <span className="min-w-0 flex-1 break-words">{h.text}</span>
+                    <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums" title={h.ts}>
+                      {new Date(h.ts).toLocaleString("zh-CN", { hour12: false })}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `删除提示「${h.text}」？删除后规划者下一轮不再看到它；已进入本轮触发的仍可能被看到一次。`,
+                          )
+                        ) {
+                          void removeHint(h);
+                        }
+                      }}
+                    >
+                      <Trash2Icon className="size-3.5 text-red-500" />
+                    </Button>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-sm">暂无提示</p>
+          )}
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            {task && task.status === "running" ? "发送后立即唤醒规划者。" : "任务运行后，规划者下一轮会读到。"}
+            它把方向派成意图（或判断与现状重复/不适用）后会标记「已采纳」；
+            未被采纳的提示会一直留在待采纳列表，可随时删除。提示只是测试方向，优先级低于操作约束与授权范围。
+          </p>
         </CardContent>
       </Card>
       {/* 操作约束管理：allow=允许 / deny=禁止。约束会在下一轮规划时注入 planner/worker 的系统

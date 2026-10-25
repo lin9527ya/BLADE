@@ -492,8 +492,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	out["goals"] = withSeq(gsum, goalSeq)
 	// hints: 人类/主 agent 通过 add_hint 挂上图的战略提示；folded in so the
-	// planner reads them every round when generating intents (否则只写不读).
-	hints, _ := t.ts.ListByKind(db.KindHint, 50)
+	// planner reads them every round when generating intents (否则只写不读)。
+	// 只取 active：consumed 是已采纳的历史，再放进态势会让 planner 据旧提示重复派意图。
+	// 先按状态过滤再截窗口，避免 consumed 越积越多把更老的 active 挤出 50 条窗口。
+	hints, _ := t.ts.ListByKindState(db.KindHint, db.StateHintActive, db.MaxActiveHints)
 	hsum := make([]map[string]any, 0, len(hints))
 	for _, h := range hints {
 		var p map[string]any
@@ -505,6 +507,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		hsum = append(hsum, hint)
 	}
 	out["hints"] = hsum
+	// 精确的待采纳数（不受窗口截断影响）：planner 据此判断"是否还有提示没处理"。
+	if n, err := t.ts.CountByKindState(db.KindHint, db.StateHintActive); err == nil {
+		out["pending_hints"] = n
+	}
 	// P23 公司级知识：同公司其它任务沉淀的已确认结论（只读背景）。**刻意不与本任务图混同**：
 	// "别的任务测过 X"不等于"本任务测过 X"，所以单独一段 + 一句说明，不参与本任务去重。
 	if ks := t.companyKnowledgeRows(); len(ks) > 0 {
@@ -1215,7 +1221,7 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		}
 		item["goals"] = goalSummary
 
-		hints, _ := ts.ListByKind(db.KindHint, relatedOverviewMaxHintsPerSource)
+		hints, _ := ts.ListByKindState(db.KindHint, db.StateHintActive, relatedOverviewMaxHintsPerSource)
 		hintSummary := make([]map[string]any, 0, len(hints))
 		for _, hint := range hints {
 			var payload map[string]any
@@ -1238,7 +1244,10 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		if statsErr == nil {
 			item["facts"] = stats[db.KindFact]
 			item["findings"] = stats[db.KindFinding]
-			if stats[db.KindGoal] > len(goals) || stats[db.KindHint] > len(hints) ||
+			// hints 窗口只取 active：拿 active 总数比窗口长度，避免"有 consumed 历史"
+			// 被误判成这个来源被截断。
+			activeHints, _ := ts.CountByKindState(db.KindHint, db.StateHintActive)
+			if stats[db.KindGoal] > len(goals) || activeHints > len(hints) ||
 				stats[db.KindFact] > len(facts) || stats[db.KindFinding] > len(findings) {
 				budget.truncated = true
 			}
@@ -2931,6 +2940,66 @@ func (t *ToolSet) addOneHint(it hintItem) (int64, error) {
 	return t.ts.AddNode(db.KindHint, payload, 0, "active", "human", anchors)
 }
 
+// consumeHint marks adopted hints as consumed. It exists so a hint can leave the
+// planner's active window after being acted on: without this, every hint stays
+// active forever and is re-read each round. Consumption is idempotent — an already
+// consumed id is reported as skipped, not an error, so a retried batch still succeeds.
+func (t *ToolSet) consumeHint() actool.CoreTool {
+	return t.writeExpTool("consume_hint",
+		"把已采纳的**战略提示**标记为已采纳（consumed），此后它不再出现在态势的 hints 里。\n"+
+			"★ 采纳=你已经据它派了意图，或已判断它与现状重复/不适用并在 note 写明理由。\n"+
+			"★ 同一轮里派完意图就调用本工具；幂等——已采纳的 id 会列入 skipped，不报错。\n"+
+			"★ 只能处理本任务的提示；不要用它删除提示（删除是人的操作）。",
+		obj(map[string]any{
+			"hint_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "要标记已采纳的提示 id 数组（graph_overview 的 hints）"},
+			"note":     str("可选：采纳理由/对应意图 id；不采纳时写清为什么不适用"),
+		}, "hint_ids"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return actool.Errorf("consume_hint 需要任务上下文"), nil
+			}
+			var a struct {
+				HintIDs []json.RawMessage `json:"hint_ids"`
+				Note    string            `json:"note"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if len(a.HintIDs) == 0 {
+				return actool.Errorf("consume_hint: hint_ids 不能为空"), nil
+			}
+			consumed := make([]int64, 0, len(a.HintIDs))
+			skipped := make([]map[string]string, 0)
+			for _, raw := range a.HintIDs {
+				id := pid(raw)
+				if id <= 0 {
+					skipped = append(skipped, map[string]string{"id": "0", "reason": "不是有效的提示 id"})
+					continue
+				}
+				n, err := t.ts.GetNode(id)
+				if err != nil {
+					skipped = append(skipped, map[string]string{"id": strconv.FormatInt(id, 10), "reason": err.Error()})
+					continue
+				}
+				if n == nil || n.Kind != db.KindHint {
+					skipped = append(skipped, map[string]string{"id": strconv.FormatInt(id, 10), "reason": "不存在于本任务或不是提示"})
+					continue
+				}
+				ok, err := t.ts.ConsumeHint(id, a.Note)
+				if err != nil {
+					skipped = append(skipped, map[string]string{"id": strconv.FormatInt(id, 10), "reason": err.Error()})
+					continue
+				}
+				if !ok {
+					skipped = append(skipped, map[string]string{"id": strconv.FormatInt(id, 10), "reason": "已采纳，无需重复标记"})
+					continue
+				}
+				consumed = append(consumed, id)
+			}
+			return jsonResult(map[string]any{"consumed": consumed, "skipped": skipped})
+		})
+}
+
 type goalItem struct {
 	Text      string `json:"text"`
 	VulnClass string `json:"vulnclass"`
@@ -3561,6 +3630,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
+		t.consumeHint(),
 		t.acceptArtifactRisk(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。

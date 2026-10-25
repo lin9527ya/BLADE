@@ -23,6 +23,7 @@ DELETE /api/tasks/{id}/assets/{assetID}	server.(*Server).detachTaskAsset-fm
 DELETE /api/tasks/{id}/chat/side-questions	server.(*Server).registerSideRoutes.func1
 DELETE /api/tasks/{id}/constraints/{cid}	server.(*Server).deleteConstraint-fm
 DELETE /api/tasks/{id}/goals/{gid}	server.(*Server).deleteGoal-fm
+DELETE /api/tasks/{id}/hints/{hid}	server.(*Server).deleteHint-fm
 DELETE /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 DELETE /api/tasks/{id}/intercept-rules/{rid}	server.(*Server).taskInterceptDeleteRule-fm
 DELETE /api/tasks/{id}/policy	server.(*Server).patchTaskPolicy-fm
@@ -155,6 +156,7 @@ GET /api/tasks/{id}/constraints	server.(*Server).listConstraints-fm
 GET /api/tasks/{id}/coverage	server.(*Server).taskCoverage-fm
 GET /api/tasks/{id}/coverage-graph	server.(*Server).taskCoverageGraph-fm
 GET /api/tasks/{id}/goals	server.(*Server).listGoals-fm
+GET /api/tasks/{id}/hints	server.(*Server).listHints-fm
 GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
 GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
@@ -288,6 +290,7 @@ POST /api/tasks/{id}/constraints/{cid}/apply	server.(*Server).applyConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/compile	server.(*Server).compileConstraint-fm
 POST /api/tasks/{id}/control	server.(*Server).control-fm
 POST /api/tasks/{id}/goals	server.(*Server).addGoal-fm
+POST /api/tasks/{id}/hints	server.(*Server).addHint-fm
 POST /api/tasks/{id}/intents/rerun-blocked	server.(*Server).rerunBlocked-fm
 POST /api/tasks/{id}/intents/{iid}/control	server.(*Server).controlIntent-fm
 POST /api/tasks/{id}/intents/{iid}/messages	server.(*Server).sendWorkerMessage-fm

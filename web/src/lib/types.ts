@@ -720,6 +720,15 @@ export interface TaskGoal {
   ts: string;
 }
 
+// 战略提示卡片用的一条提示。active=待采纳，consumed=规划者已采纳。
+export interface TaskHint {
+  id: string;
+  text: string;
+  state: "active" | "consumed" | string;
+  origin?: string;
+  ts: string;
+}
+
 // 约束管理卡片用的操作约束(allow=允许 / deny=禁止)。
 export type ConstraintKind = "allow" | "deny";
 export interface TaskConstraint {

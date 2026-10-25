@@ -230,6 +230,8 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 		if _, err := t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil); err != nil {
 			return "记录提示失败（没有写入任何东西）：" + err.Error()
 		}
+		// 规则模式没有 planner 可唤醒：不投 trigger（否则 pendingTriggers 只进不出），
+		// 提示仍在图里，等 LLM 就绪后的下一轮规划会从 graph_overview 读到。
 		return "已记录提示，规划者下次会读到：" + text
 	default:
 		assetCounts, _ := s.m.Assets().CountsByType()

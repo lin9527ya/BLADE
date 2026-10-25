@@ -14,6 +14,7 @@ import type {
   Task,
   TaskConstraint,
   TaskGoal,
+  TaskHint,
   TaskNode,
   TaskScopeRow,
 } from "@/lib/types";
@@ -62,6 +63,11 @@ export function useOverviewState(taskId: string) {
   const [editingGoalId, setEditingGoalId] = React.useState<string | null>(null);
   const [editText, setEditText] = React.useState("");
   const [editVuln, setEditVuln] = React.useState("");
+  // 战略提示：active（待采纳）+ consumed（已采纳，最近一窗）。新增会立即唤醒 planner。
+  const [hints, setHints] = React.useState<TaskHint[]>([]);
+  const [hintText, setHintText] = React.useState("");
+  const [hintBusy, setHintBusy] = React.useState(false);
+  const [hintErr, setHintErr] = React.useState("");
   // 约束管理：约束列表 + 新增表单 + 行内编辑状态。
   const [constraints, setConstraints] = React.useState<TaskConstraint[]>([]);
   const [conText, setConText] = React.useState("");
@@ -155,6 +161,42 @@ export function useOverviewState(taskId: string) {
     } catch (e) {
       await loadGoals(); // 删除失败：重新拉取还原
       toast.error(`删除目标失败：${e instanceof Error ? e.message : "未知错误"}`);
+    }
+  };
+
+  const loadHints = React.useCallback(async () => {
+    try {
+      const resp = await api.taskHints(taskId);
+      setHints(resp.hints);
+    } catch {
+      // 忽略：瞬时错误，下次轮询重试
+    }
+  }, [taskId]);
+
+  const addHint = async () => {
+    const text = hintText.trim();
+    if (!text) return;
+    setHintBusy(true);
+    setHintErr("");
+    try {
+      await api.addTaskHint(taskId, text);
+      setHintText("");
+      await loadHints();
+    } catch (e) {
+      // 保留输入：校验失败（过长/重复/上限）时人改一下就能重发。
+      setHintErr(e instanceof Error ? e.message : "发送失败");
+    } finally {
+      setHintBusy(false);
+    }
+  };
+
+  const removeHint = async (h: TaskHint) => {
+    setHints((prev) => prev.filter((x) => x.id !== h.id));
+    try {
+      await api.deleteTaskHint(taskId, h.id);
+    } catch (e) {
+      await loadHints(); // 删除失败：重新拉取还原
+      toast.error(`删除提示失败：${e instanceof Error ? e.message : "未知错误"}`);
     }
   };
 
@@ -391,10 +433,11 @@ export function useOverviewState(taskId: string) {
       void loadScope();
       void loadTokens();
       void loadGoals();
+      void loadHints();
       void loadConstraints();
     },
     3000,
-    [taskId, loadScope, loadTokens, loadGoals, loadConstraints],
+    [taskId, loadScope, loadTokens, loadGoals, loadHints, loadConstraints],
   );
 
   const running = intents.filter((i) => i.state === "running");
@@ -464,6 +507,14 @@ export function useOverviewState(taskId: string) {
     setEditText,
     editVuln,
     setEditVuln,
+    hints,
+    setHints,
+    hintText,
+    setHintText,
+    hintBusy,
+    setHintBusy,
+    hintErr,
+    setHintErr,
     constraints,
     setConstraints,
     conText,
@@ -494,6 +545,9 @@ export function useOverviewState(taskId: string) {
     cancelEditGoal,
     saveEditGoal,
     removeGoal,
+    loadHints,
+    addHint,
+    removeHint,
     loadConstraints,
     addConstraint,
     startEditConstraint,

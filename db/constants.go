@@ -138,6 +138,23 @@ const (
 	StateArtifactUnknown = "unknown" // 没去确认还在不在——不是"已清理"
 )
 
+// 提示节点（kind='hint'）的状态：待采纳 / 已采纳。
+//
+// 「已采纳」由 planner 调用 consume_hint 显式标记，不是系统猜的：自动判断"哪条意图对应
+// 哪条提示"并不可靠，贸然置 consumed 会让操作者以为方向已被处理。未被采纳的提示保持
+// active（每轮仍出现在态势里），操作者可以随时删除。
+const (
+	StateHintActive   = "active"
+	StateHintConsumed = "consumed"
+)
+
+// MaxActiveHints 是单任务允许同时处于 active 的提示上限。
+//
+// 上限与 graph_overview 的 hints 窗口同值：超过这个数，多出来的提示就挤不进 planner
+// 每轮看到的态势里——留着也无法被采纳，只会让操作者误以为"已经交代过了"。HTTP 入口
+// 与概览共用这一个常量，免得两边窗口各改各的。
+const MaxActiveHints = 50
+
 // TechniqueTally 统计一组意图节点用到的 ATT&CK 技术（技术 ID → 意图数）。
 //
 // **软删除的意图不计**：用户主动把它拿掉了，不该还留在覆盖率里。其余都计——被 blocked 的
