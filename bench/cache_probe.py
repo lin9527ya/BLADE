@@ -85,8 +85,15 @@ def endpoint(base_url: str, url: str, fmt: str) -> str:
     return b + "/v1" + suffix
 
 
-def call(url: str, key: str, body: dict, fmt: str, auth: str, extra_headers: dict, timeout: float) -> dict:
-    headers = {"content-type": "application/json"}
+def call(url: str, key: str, body: dict, fmt: str, auth: str, extra_headers: dict,
+         timeout: float, user_agent: str) -> dict:
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json",
+        # 与 Norma/Go 客户端一致：某些网关（Cloudflare 前置）会按 UA 拦截
+        # Python-urllib，返回 403 / error code 1010。
+        "user-agent": user_agent,
+    }
     use_bearer = auth == "bearer" or (auth == "auto" and fmt != "anthropic")
     if use_bearer:
         headers["authorization"] = "Bearer " + key
@@ -155,6 +162,7 @@ def main() -> int:
     ap.add_argument("--runs", type=int, default=2)
     ap.add_argument("--delay", type=float, default=1.0)
     ap.add_argument("--timeout", type=float, default=60.0)
+    ap.add_argument("--user-agent", default=os.environ.get("BLADE_PROBE_UA", "Go-http-client/1.1"))
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--raw", action="store_true")
     args = ap.parse_args()
@@ -176,7 +184,7 @@ def main() -> int:
     body = build_body(args.format, args.model)
     runs = []
     for i in range(max(1, args.runs)):
-        resp = call(url, args.key, body, args.format, args.auth, extra, args.timeout)
+        resp = call(url, args.key, body, args.format, args.auth, extra, args.timeout, args.user_agent)
         u = usage_of(args.format, resp)
         u["run"] = i + 1
         u["raw_usage"] = resp.get("usage") or {}
