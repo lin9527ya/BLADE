@@ -107,6 +107,24 @@ const hint: Record<string, StatusMeta> = {
   consumed: { label: "已采纳", tone: "green" },
 };
 
+// 遗留物：active=仍在目标上，removed=已清理，unknown=没去确认（不是"已清理"）。
+const artifact: Record<string, StatusMeta> = {
+  active: { label: "未清理", tone: "amber" },
+  removed: { label: "已清理", tone: "green" },
+  unknown: { label: "未确认", tone: "slate" },
+};
+
+// 长任务执行台账状态（时间线 execution 详情用）。
+const execution: Record<string, StatusMeta> = {
+  queued: { label: "排队中", tone: "neutral" },
+  running: { label: "进行中", tone: "blue" },
+  completed: { label: "完成", tone: "green" },
+  failed: { label: "失败", tone: "red" },
+  cancelled: { label: "已取消", tone: "slate" },
+  hard_timeout: { label: "硬超时", tone: "red" },
+  orphaned: { label: "无人接管", tone: "amber" },
+};
+
 const audit: Record<string, StatusMeta> = {
   allow: { label: "放行", tone: "green" },
   block: { label: "拦截", tone: "red" },
@@ -136,6 +154,8 @@ const maps = {
   engine,
   goal,
   hint,
+  artifact,
+  execution,
   audit,
   node,
   delivery,

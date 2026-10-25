@@ -70,6 +70,37 @@ func TestHintLifecycle(t *testing.T) {
 		t.Fatalf("payload lost text or note: %+v", payload)
 	}
 
+	// 已采纳的提示不能直接改文本：它是"当时采纳了什么"的记录。
+	if ok, err := es.UpdateHintText(older, "偷改已采纳的提示"); err != nil || ok {
+		t.Fatalf("consumed hint must not be editable: ok=%v err=%v", ok, err)
+	}
+	// 待采纳的提示可以改，且其他 payload 字段保留。
+	if ok, err := es.UpdateHintText(newer, "改过的方向"); err != nil || !ok {
+		t.Fatalf("update active hint: ok=%v err=%v", ok, err)
+	}
+	node, _ = es.GetNode(newer)
+	var activePayload map[string]any
+	_ = json.Unmarshal(node.Payload, &activePayload)
+	if activePayload["text"] != "改过的方向" {
+		t.Fatalf("text not updated: %+v", activePayload)
+	}
+	// 撤销采纳：回到 active，采纳理由被清掉，文本保持。
+	if ok, err := es.RestoreHint(older); err != nil || !ok {
+		t.Fatalf("restore consumed hint: ok=%v err=%v", ok, err)
+	}
+	node, _ = es.GetNode(older)
+	payload = map[string]any{}
+	_ = json.Unmarshal(node.Payload, &payload)
+	if node.State != StateHintActive || payload["text"] != "重点看认证后接口" {
+		t.Fatalf("restore should keep text and return to active: %+v state=%s", payload, node.State)
+	}
+	if _, ok := payload["consume_note"]; ok {
+		t.Fatalf("restore should clear consume_note: %+v", payload)
+	}
+	if ok, err := es.RestoreHint(older); err != nil || ok {
+		t.Fatalf("restore must refuse an already-active hint: ok=%v err=%v", ok, err)
+	}
+
 	if err := es.DeleteHint(intent); err == nil {
 		t.Fatal("DeleteHint must refuse a non-hint")
 	}

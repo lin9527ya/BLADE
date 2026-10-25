@@ -447,6 +447,58 @@ func (s *ExplorationStore) DeleteHint(id int64) error {
 	return nil
 }
 
+// UpdateHintText rewrites an ACTIVE hint's text while keeping its other payload
+// fields (asset anchors / traffic refs) intact. A consumed hint must be restored
+// first: its text is the record of what was adopted.
+func (s *ExplorationStore) UpdateHintText(id int64, text string) (bool, error) {
+	text = utf8Clean(strings.TrimSpace(text))
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET payload = payload || jsonb_build_object('text', $4::text),
+    content_version = content_version + 1
+WHERE id=$1 AND exploration_id=$2 AND kind='hint' AND state=$3`, id, s.expID, StateHintActive, text)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// RestoreHint puts a consumed hint back into the active window (undo adoption) and
+// drops its consume note: the note described an adoption that no longer holds.
+func (s *ExplorationStore) RestoreHint(id int64) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state=$1, payload = payload - 'consume_note', content_version = content_version + 1
+WHERE id=$2 AND exploration_id=$3 AND kind='hint' AND state=$4`, StateHintActive, id, s.expID, StateHintConsumed)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// MarkArtifactCleared records that an artifact was really removed: state → removed,
+// cleanup evidence lands in the payload (the same rule as mark_artifact_cleared —
+// no evidence, no claim). active and unknown are both eligible: unknown means
+// "we never checked", and clearing it later is exactly how that gets resolved.
+func (s *ExplorationStore) MarkArtifactCleared(id int64, evidence, note string) (bool, error) {
+	evidence = utf8Clean(strings.TrimSpace(evidence))
+	note = utf8Clean(strings.TrimSpace(note))
+	if evidence == "" {
+		return false, fmt.Errorf("清理证据不能为空")
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state=$1, content_version=content_version+1,
+    payload = (payload || jsonb_build_object('removed_evidence', $4::text))
+              || CASE WHEN $5 = '' THEN '{}'::jsonb ELSE jsonb_build_object('removed_note', $5::text) END
+WHERE id=$2 AND exploration_id=$3 AND kind='artifact' AND state IN ($6,$7)`,
+		StateArtifactRemoved, id, s.expID, evidence, note, StateArtifactActive, StateArtifactUnknown)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // SetIntentState updates an intent node's state.
 // ResetRunningIntents returns any intent left in 'running' back to 'open' so it
 // is re-claimed. Called on startup: a 'running' intent with no live worker (a

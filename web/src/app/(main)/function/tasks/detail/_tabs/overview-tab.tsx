@@ -3,7 +3,7 @@
 import * as React from "react";
 import { TaskInterceptRulesCard, TaskExplorationPolicyCard } from "./_components/task-policy-cards";
 
-import { ActivityIcon, AlertTriangleIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ActivityIcon, AlertTriangleIcon, BellRingIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import { Progress } from "@/components/ui/progress";
 import { taskIsTerminal } from "@/lib/status";
 import { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
+import { ArtifactPanel } from "./_components/artifact-panel";
 import { useOverviewState } from "./_components/use-overview-state";
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
@@ -64,6 +65,14 @@ const SCOPE_SOURCE_LABELS: Record<TaskScopeRow["source"], string> = {
   agent: "Agent",
   manual: "手动",
 };
+
+// 提示超过这个时长仍未采纳，就在卡片里标出来：planner 可能漏看了，而不是"它还在考虑"。
+const HINT_STALE_MS = 24 * 60 * 60 * 1000;
+function hintIsStale(h: { state: string; ts: string }): boolean {
+  if (h.state !== "active") return false;
+  const ts = new Date(h.ts).getTime();
+  return Number.isFinite(ts) && Date.now() - ts > HINT_STALE_MS;
+}
 
 function StatCard({
   label,
@@ -140,6 +149,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setHintText,
     hintBusy,
     hintErr,
+    editingHintId,
+    editHintText,
+    setEditHintText,
+    artifacts,
+    artifactRiskAccepted,
+    clearArtifact,
+    acceptArtifactRisk,
     constraints,
     setConstraints,
     conText,
@@ -172,6 +188,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     removeGoal,
     addHint,
     removeHint,
+    startEditHint,
+    cancelEditHint,
+    saveEditHint,
+    restoreHint,
+    remindHint,
     loadConstraints,
     addConstraint,
     startEditConstraint,
@@ -233,6 +254,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             <p className="text-muted-foreground text-xs">
               清单与清理方式见导出的报告「遗留物与清理」一节，或在播报板/图里按「遗留物」筛选。
             </p>
+            <div className="border-t pt-2">
+              <ArtifactPanel
+                artifacts={artifacts}
+                riskAccepted={artifactRiskAccepted}
+                onClear={clearArtifact}
+                onAcceptRisk={acceptArtifactRisk}
+              />
+            </div>
           </CardContent>
         </Card>
       )}
@@ -424,31 +453,125 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 .map((h) => (
                   <div
                     key={h.id}
-                    className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm ${
+                    className={`rounded-md border px-2.5 py-1.5 text-sm ${
                       h.state === "consumed" ? "opacity-60" : ""
-                    }`}
+                    } ${hintIsStale(h) ? "border-amber-500/50 bg-amber-500/5" : ""}`}
                   >
-                    <StatusBadge domain="hint" value={h.state} />
-                    <span className="min-w-0 flex-1 break-words">{h.text}</span>
-                    <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums" title={h.ts}>
-                      {new Date(h.ts).toLocaleString("zh-CN", { hour12: false })}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `删除提示「${h.text}」？删除后规划者下一轮不再看到它；已进入本轮触发的仍可能被看到一次。`,
-                          )
-                        ) {
-                          void removeHint(h);
-                        }
-                      }}
-                    >
-                      <Trash2Icon className="size-3.5 text-red-500" />
-                    </Button>
+                    {editingHintId === h.id && h.state === "active" ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge domain="hint" value={h.state} />
+                        <Input
+                          className="h-7 min-w-56 flex-1 text-sm"
+                          value={editHintText}
+                          onChange={(e) => setEditHintText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void saveEditHint(h);
+                            if (e.key === "Escape") cancelEditHint();
+                          }}
+                          disabled={hintBusy}
+                          autoFocus
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          disabled={hintBusy || !editHintText.trim()}
+                          onClick={() => void saveEditHint(h)}
+                        >
+                          <CheckIcon className="size-3.5 text-emerald-500" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          disabled={hintBusy}
+                          onClick={cancelEditHint}
+                        >
+                          <XIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-2">
+                        <StatusBadge domain="hint" value={h.state} />
+                        <div className="min-w-0 flex-1">
+                          <span className="block break-words">{h.text}</span>
+                          {h.note && (
+                            <span className="text-muted-foreground mt-0.5 block text-xs break-words">
+                              采纳说明：{h.note}
+                            </span>
+                          )}
+                          <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+                            <span className="tabular-nums" title={h.ts}>
+                              {new Date(h.ts).toLocaleString("zh-CN", { hour12: false })}
+                            </span>
+                            {(h.asset_ids ?? []).map((id) => (
+                              <span key={id} className="bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                                资产 #{id}
+                              </span>
+                            ))}
+                            {hintIsStale(h) && (
+                              <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                                <ClockIcon className="size-3" />
+                                超过 24 小时未采纳，规划者可能漏看
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {h.state === "active" ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 shrink-0 px-1.5"
+                                title="编辑提示（会重新唤醒规划者）"
+                                disabled={hintBusy}
+                                onClick={() => startEditHint(h)}
+                              >
+                                <PencilIcon className="size-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 shrink-0 px-1.5"
+                                title="再次提醒规划者"
+                                disabled={hintBusy}
+                                onClick={() => void remindHint(h)}
+                              >
+                                <BellRingIcon className="size-3.5" />
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 shrink-0 px-1.5"
+                              title="撤销采纳（回到待采纳，规划者下一轮重新看到）"
+                              disabled={hintBusy}
+                              onClick={() => void restoreHint(h)}
+                            >
+                              <RotateCcwIcon className="size-3.5" />
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 shrink-0 px-1.5"
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `删除提示「${h.text}」？删除后规划者下一轮不再看到它；已进入本轮触发的仍可能被看到一次。`,
+                                )
+                              ) {
+                                void removeHint(h);
+                              }
+                            }}
+                          >
+                            <Trash2Icon className="size-3.5 text-red-500" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
             </div>

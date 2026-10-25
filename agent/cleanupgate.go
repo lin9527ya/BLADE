@@ -10,8 +10,8 @@ import (
 	"github.com/lin9527ya/blade/db"
 )
 
-// artifactRiskAcceptedKey 是"接受遗留物风险"这条结论在 fact payload 里的标记。
-const artifactRiskAcceptedKey = "artifact_risk_accepted"
+// ArtifactRiskAcceptedKey 是"接受遗留物风险"这条结论在 fact payload 里的标记。
+const ArtifactRiskAcceptedKey = "artifact_risk_accepted"
 
 // cleanupGate 在任务即将收官时检查「我们留在目标上的东西」有没有销账。
 //
@@ -66,7 +66,7 @@ func (t *ToolSet) artifactRiskAccepted() bool {
 		if json.Unmarshal(n.Payload, &p) != nil {
 			continue
 		}
-		if accepted, _ := p[artifactRiskAcceptedKey].(bool); accepted {
+		if accepted, _ := p[ArtifactRiskAcceptedKey].(bool); accepted {
 			return true
 		}
 	}
@@ -119,7 +119,7 @@ func (t *ToolSet) acceptArtifactRisk() actool.CoreTool {
 			}
 			id, err := t.ts.AddNode(db.KindFact, map[string]any{
 				"summary":               "接受遗留物风险：" + reason,
-				artifactRiskAcceptedKey: true,
+				ArtifactRiskAcceptedKey: true,
 				"confidence":            "observed",
 			}, 0, "confirmed", "planner", nil)
 			if err != nil {

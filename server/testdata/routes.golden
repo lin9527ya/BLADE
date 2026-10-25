@@ -68,6 +68,7 @@ GET /api/debug/pprof/profile	net/http/pprof.Profile
 GET /api/debug/pprof/symbol	net/http/pprof.Symbol
 GET /api/debug/pprof/threadcreate	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/trace	net/http/pprof.Trace
+GET /api/executions/{eid}	server.(*Server).getExecution-fm
 GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
 GET /api/exploration/activity/stream	server.(*Server).streamActivity-fm
@@ -95,6 +96,7 @@ GET /api/findings/{id}/src-report.docx	server.(*Server).getFindingSrcReportDocx-
 GET /api/findings/{id}/src-report/check	server.(*Server).getFindingSrcReportCheck-fm
 GET /api/health	server.(*Server).health-fm
 GET /api/intercept/history	server.(*Server).interceptHistory-fm
+GET /api/intercept/history.csv	server.(*Server).interceptHistoryCSV-fm
 GET /api/intercept/history/{id}	server.(*Server).interceptDetail-fm
 GET /api/intercept/history/{id}/execution	server.(*Server).interceptExecution-fm
 GET /api/intercept/judge	server.(*Server).interceptGetJudgeConfig-fm
@@ -147,8 +149,10 @@ GET /api/task-categories	server.(*Server).pgListTaskCategories-fm
 GET /api/task-schedules	server.(*Server).listTaskSchedules-fm
 GET /api/task-templates	server.(*Server).pgListTaskTemplates-fm
 GET /api/tasks	server.(*Server).listTasks-fm
+GET /api/tasks/export.csv	server.(*Server).exportTasksCSV-fm
 GET /api/tasks/{id}	server.(*Server).getTask-fm
 GET /api/tasks/{id}/ad-paths	server.(*Server).taskADPaths-fm
+GET /api/tasks/{id}/artifacts	server.(*Server).listArtifacts-fm
 GET /api/tasks/{id}/asset-refs	server.(*Server).taskAssetRefs-fm
 GET /api/tasks/{id}/chat/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/tasks/{id}/chat/status	server.(*Server).taskChatStatus-fm
@@ -198,6 +202,7 @@ PATCH /api/tasks/{id}	server.(*Server).updateTaskMetadata-fm
 PATCH /api/tasks/{id}/category	server.(*Server).updateTaskCategory-fm
 PATCH /api/tasks/{id}/constraints/{cid}	server.(*Server).editConstraint-fm
 PATCH /api/tasks/{id}/goals/{gid}	server.(*Server).editGoal-fm
+PATCH /api/tasks/{id}/hints/{hid}	server.(*Server).updateHint-fm
 PATCH /api/tasks/{id}/policy	server.(*Server).patchTaskPolicy-fm
 PATCH /api/triggers/{id}	server.(*Server).pgUpdateTrigger-fm
 POST /api/active	server.(*Server).setActive-fm
@@ -282,6 +287,8 @@ POST /api/tasks/archive/batch	server.(*Server).queueTaskArchivesBatch-fm
 POST /api/tasks/category/batch	server.(*Server).updateTasksCategoryBatch-fm
 POST /api/tasks/control/batch	server.(*Server).controlTasksBatch-fm
 POST /api/tasks/{id}/archive	server.(*Server).queueTaskArchive-fm
+POST /api/tasks/{id}/artifacts/accept-risk	server.(*Server).acceptArtifactRisk-fm
+POST /api/tasks/{id}/artifacts/{aid}/cleared	server.(*Server).clearArtifact-fm
 POST /api/tasks/{id}/assets	server.(*Server).attachTaskAssets-fm
 POST /api/tasks/{id}/chat/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/tasks/{id}/chat/stop	server.(*Server).stopChat-fm
@@ -291,6 +298,7 @@ POST /api/tasks/{id}/constraints/{cid}/compile	server.(*Server).compileConstrain
 POST /api/tasks/{id}/control	server.(*Server).control-fm
 POST /api/tasks/{id}/goals	server.(*Server).addGoal-fm
 POST /api/tasks/{id}/hints	server.(*Server).addHint-fm
+POST /api/tasks/{id}/hints/{hid}/remind	server.(*Server).remindHint-fm
 POST /api/tasks/{id}/intents/rerun-blocked	server.(*Server).rerunBlocked-fm
 POST /api/tasks/{id}/intents/{iid}/control	server.(*Server).controlIntent-fm
 POST /api/tasks/{id}/intents/{iid}/messages	server.(*Server).sendWorkerMessage-fm

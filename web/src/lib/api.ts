@@ -114,6 +114,7 @@ import type {
   TaskAssetScopeMutation,
   TaskCategory,
   TaskConstraint,
+  TaskArtifact,
   TaskGoal,
   TaskHint,
   TaskLLMResolutions,
@@ -127,6 +128,7 @@ import type {
   TokenTotal,
   TokenUsage,
   Tool,
+  ToolExecution,
   ToolStat,
   TrafficDetail,
   TrafficEvidenceRef,
@@ -450,10 +452,29 @@ export const api = {
   // 本任务的提示：active 全量 + 最近一窗 consumed。
   taskHints: (id: string) =>
     get<{ hints: TaskHint[] | null }>(`/tasks/${id}/hints`).then((response) => ({ hints: arr(response.hints) })),
-  // 人工新增提示：写入图谱并立即唤醒 planner（不复活任务）。
-  addTaskHint: (id: string, text: string) => post<TaskHint>(`/tasks/${id}/hints`, { text }),
+  // 人工新增提示：写入图谱并立即唤醒 planner（不复活任务）；可锚定资产。
+  addTaskHint: (id: string, text: string, assetIds?: number[]) =>
+    post<TaskHint>(`/tasks/${id}/hints`, { text, asset_ids: assetIds ?? [] }),
+  // 修改待采纳提示文本，或 {state:"active"} 撤销采纳。
+  updateTaskHint: (id: string, hintId: string, body: { text?: string; state?: "active" }) =>
+    patch<TaskHint>(`/tasks/${id}/hints/${hintId}`, body),
+  // 再次提醒 planner（不改内容/状态）。
+  remindTaskHint: (id: string, hintId: string) => post<{ ok: boolean }>(`/tasks/${id}/hints/${hintId}/remind`, {}),
   // 人工删除提示（active/consumed 都可删）。
   deleteTaskHint: (id: string, hintId: string) => del<{ ok: boolean }>(`/tasks/${id}/hints/${hintId}`),
+
+  // ---- 遗留物台账（总览）----
+  taskArtifacts: (id: string) =>
+    get<{ artifacts: TaskArtifact[] | null; risk_accepted?: boolean }>(`/tasks/${id}/artifacts`).then((r) => ({
+      artifacts: arr(r.artifacts),
+      riskAccepted: !!r.risk_accepted,
+    })),
+  // 人工销账：必须给清理证据（与 agent 的 mark_artifact_cleared 同一条门）。
+  clearTaskArtifact: (id: string, artifactId: string, evidence: string, note?: string) =>
+    post<TaskArtifact>(`/tasks/${id}/artifacts/${artifactId}/cleared`, { evidence, note: note ?? "" }),
+  // 接受「带着遗留物交付」的风险：理由必填，落成一条进报告语境的 fact。
+  acceptTaskArtifactRisk: (id: string, reason: string) =>
+    post<{ ok: boolean; fact_id: string; risk_accepted: boolean }>(`/tasks/${id}/artifacts/accept-risk`, { reason }),
 
   // ---- 操作约束管理（总览）----
   // 本任务全部操作约束（allow/deny）。
@@ -760,7 +781,45 @@ export const api = {
     a.remove();
     URL.revokeObjectURL(objUrl);
   },
-  // 凭据明文的受控入口（P36）：POST 而不是 GET——它有副作用（服务端写一条"谁看了明文"的留痕）。
+  // 任务列表 CSV（服务端与列表同一份 DTO，打开就是完整列表而不是当前页）。
+  downloadTasksCSV: async () => {
+    const token = getToken();
+    const r = await fetch("/api/tasks/export.csv", {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = "blade-tasks.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
+  // 审批记录 CSV：跟随当前任务/状态/判定来源筛选。
+  downloadInterceptHistoryCSV: async (opts: { task?: string; filter?: InterceptApprovalFilter } = {}) => {
+    const sp = new URLSearchParams();
+    if (opts.task) sp.set("task", opts.task);
+    if (opts.filter?.status) sp.set("status", opts.filter.status);
+    if (opts.filter?.decision_source) sp.set("decision_source", opts.filter.decision_source);
+    const qs = sp.toString();
+    const token = getToken();
+    const r = await fetch(`/api/intercept/history.csv${qs ? `?${qs}` : ""}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = "blade-approvals.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
   revealCredential: (nodeId: string, taskId: string) =>
     post<CredentialReveal>(`/credentials/${encodeURIComponent(nodeId)}/reveal?task=${encodeURIComponent(taskId)}`, {}),
   scopeEnforcement: () => get<ScopeEnforcement>("/scope/enforcement"),
@@ -1648,13 +1707,24 @@ export const api = {
     if (params?.q) sp.set("q", params.q);
     return get<{ stats: ToolStat[] }>(`/commands/stats?${sp}`);
   },
+  // 长任务执行台账详情（时间线 execution 事件点开）。
+  execution: (id: number, task?: string) =>
+    get<{ execution: ToolExecution }>(`/executions/${id}${task ? `?task=${encodeURIComponent(task)}` : ""}`),
 
   // ---- LLM records ----
-  llmRecords: (params?: { model?: string; session?: string; task?: string; page?: number; size?: number }) => {
+  llmRecords: (params?: {
+    model?: string;
+    session?: string;
+    task?: string;
+    cache?: "zero" | "low";
+    page?: number;
+    size?: number;
+  }) => {
     const sp = new URLSearchParams();
     if (params?.model) sp.set("model", params.model);
     if (params?.session) sp.set("session", params.session);
     if (params?.task) sp.set("task", params.task);
+    if (params?.cache) sp.set("cache", params.cache);
     if (params?.page !== undefined) sp.set("page", String(params.page));
     sp.set("size", String(params?.size ?? 50));
     return get<{ records: LLMRecordItem[]; total: number }>(`/llm/records?${sp}`);

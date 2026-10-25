@@ -121,6 +121,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P45 预期与实测对账（打了多少 vs 核了多少/没核要如实说/三态不相除）", func(t *testing.T) { accP45(t, env.forTest(t)) })
 	t.Run("P46 运行指标（任务队列/在飞调用/LLM 延迟分位数/执行计数）", func(t *testing.T) { accP46(t, env.forTest(t)) })
 	t.Run("P47 战略提示（新增即唤醒/规划层可采纳/采纳后消失/重复与上限拦截）", func(t *testing.T) { accP47(t, env.forTest(t)) })
+	t.Run("P48 人工销账与导出（遗留物证据门/风险结论/任务与审批 CSV/缓存筛选）", func(t *testing.T) { accP48(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -882,6 +883,14 @@ func accP13(t *testing.T, e *accEnv) {
 	}
 	if crow == nil || crow.Status != db.ExecCancelled || crow.CancelNote != "方向错误，改打别的接口" {
 		t.Fatalf("取消必须落库并保真理由: %+v", crow)
+	}
+	// 时间线的 execution 事件点开走这个接口：带 task 时必须同属该任务。
+	erec := e.request(http.MethodGet, "/api/executions/"+itoa64(crow.ID)+"?task="+task.ID, "")
+	if erec.Code != http.StatusOK || !strings.Contains(erec.Body.String(), "方向错误，改打别的接口") {
+		t.Fatalf("执行详情应返回台账与取消理由: %d %s", erec.Code, erec.Body.String())
+	}
+	if erec = e.request(http.MethodGet, "/api/executions/"+itoa64(crow.ID)+"?task=not-this-task", ""); erec.Code != http.StatusNotFound {
+		t.Fatalf("跨任务执行详情应 404，得到 %d %s", erec.Code, erec.Body.String())
 	}
 
 	// ⑦ 重启遗留行对账：orphaned（不是 failed）。
@@ -5926,32 +5935,52 @@ func accP47(t *testing.T, e *accEnv) {
 	task, tid := e.newTask("accP47", "战略提示闭环")
 	base := "/api/tasks/" + task.ID + "/hints"
 
-	postHint := func(text string) *httptest.ResponseRecorder {
-		return e.request(http.MethodPost, base, `{"text":`+strconv.Quote(text)+`}`)
+	// 一条真实资产：覆盖缺口一键补测会把提示锚到它上面（FK 也要求资产存在）。
+	domain := fmt.Sprintf("hint-%s.example", task.ID)
+	assetID, err := e.m.Assets().UpsertRootDomain(db.UpsertRootDomainReq{Domain: domain, TaskID: tid})
+	if err != nil {
+		t.Fatalf("建测试资产: %v", err)
+	}
+	t.Cleanup(func() { _, _ = e.m.Assets().DeleteByHost(domain) })
+
+	postHint := func(text string, assetIDs ...int64) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"text": text, "asset_ids": assetIDs})
+		return e.request(http.MethodPost, base, string(body))
+	}
+	type hintResp struct {
+		ID       string  `json:"id"`
+		Text     string  `json:"text"`
+		State    string  `json:"state"`
+		Note     string  `json:"note"`
+		AssetIDs []int64 `json:"asset_ids"`
+	}
+	decode := func(rec *httptest.ResponseRecorder) hintResp {
+		t.Helper()
+		var h hintResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil {
+			t.Fatalf("解析提示响应: %v body=%s", err, rec.Body.String())
+		}
+		return h
 	}
 
-	// ① 新增：落成 active，GET 能看到。
-	rec := postHint("重点看认证后的越权接口")
+	// ① 新增：落成 active、带资产锚点，GET 能看到。
+	rec := postHint("重点看认证后的越权接口", assetID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("新增提示 status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var created struct {
-		ID    string `json:"id"`
-		Text  string `json:"text"`
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
-	}
+	created := decode(rec)
 	if created.ID == "" || created.State != db.StateHintActive || created.Text != "重点看认证后的越权接口" {
 		t.Fatalf("新增返回不对: %+v", created)
+	}
+	if len(created.AssetIDs) != 1 || created.AssetIDs[0] != assetID {
+		t.Fatalf("新增提示应带资产锚点 %d: %+v", assetID, created)
 	}
 	rec = e.request(http.MethodGet, base, "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "重点看认证后的越权接口") {
 		t.Fatalf("GET hints status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	// ② 规划层态势能看到全文与待采纳计数。
+	// ② 规划层态势能看到全文、资产锚点与待采纳计数。
 	tsx := agent.NewToolSet(task.Store, "work#1")
 	tsx.SetTaskID(tid)
 	overview := workflowTool(t, tsx.PlannerTools(), "graph_overview")
@@ -5962,8 +5991,24 @@ func accP47(t *testing.T, e *accEnv) {
 	flat := ores.Flatten()
 	e.mustContain(flat, "重点看认证后的越权接口", "概览里的提示全文")
 	e.mustContain(flat, `"pending_hints":1`, "概览里的待采纳计数")
+	e.mustContain(flat, fmt.Sprintf(`"asset_ids":[%d]`, assetID), "概览里的提示资产锚点")
 
-	// ③ 采纳：active → consumed，此后不再出现在概览；重复标记幂等。
+	// ③ 编辑：active 提示可改文本，规划层下一轮看到的是新文本。
+	rec = e.request(http.MethodPatch, base+"/"+created.ID, `{"text":"改为重点看上传统的路径穿越"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("编辑提示 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if edited := decode(rec); edited.Text != "改为重点看上传统的路径穿越" || edited.State != db.StateHintActive {
+		t.Fatalf("编辑返回不对: %+v", edited)
+	}
+	ores, _ = overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	flat = ores.Flatten()
+	e.mustContain(flat, "改为重点看上传统的路径穿越", "编辑后的提示文本")
+	if strings.Contains(flat, "重点看认证后的越权接口") {
+		t.Fatalf("旧文本不应再出现在概览: %s", flat)
+	}
+
+	// ④ 采纳：active → consumed，理由随 GET 返回，此后不再出现在概览；重复标记幂等。
 	consume := workflowTool(t, tsx.PlannerTools(), "consume_hint")
 	cres, err := consume.Call(context.Background(), json.RawMessage(`{"hint_ids":[`+created.ID+`],"note":"已派意图 #1 覆盖"}`), nil)
 	if err != nil {
@@ -5979,9 +6024,13 @@ func accP47(t *testing.T, e *accEnv) {
 	if len(consumed.Consumed) != 1 || strconv.FormatInt(consumed.Consumed[0], 10) != created.ID {
 		t.Fatalf("consume 应标记这条提示: %s", cres.Flatten())
 	}
+	rec = e.request(http.MethodGet, base, "")
+	if !strings.Contains(rec.Body.String(), "已派意图 #1 覆盖") {
+		t.Fatalf("GET 应带出采纳理由: %s", rec.Body.String())
+	}
 	ores, _ = overview.Call(context.Background(), json.RawMessage(`{}`), nil)
 	flat = ores.Flatten()
-	if strings.Contains(flat, "重点看认证后的越权接口") {
+	if strings.Contains(flat, "改为重点看上传统的路径穿越") {
 		t.Fatalf("已采纳的提示不应再出现在概览: %s", flat)
 	}
 	e.mustContain(flat, `"pending_hints":0`, "采纳后的待采纳计数")
@@ -5994,38 +6043,173 @@ func accP47(t *testing.T, e *accEnv) {
 		t.Fatalf("重复标记应幂等跳过: %s", cres.Flatten())
 	}
 
-	// ④ 删除：active/consumed 都可删，删完 GET 不再返回。
-	rec = postHint("再验证一次上传链")
+	// ⑤ 已采纳的提示不能直接改文本；撤销采纳后回到 active，采纳理由被清掉。
+	if rec = e.request(http.MethodPatch, base+"/"+created.ID, `{"text":"偷改已采纳的"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("编辑已采纳提示应 409，得到 %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodPatch, base+"/"+created.ID, `{"state":"active"}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("再次新增 status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("撤销采纳 status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
+	restored := decode(rec)
+	if restored.State != db.StateHintActive || restored.Note != "" {
+		t.Fatalf("撤销后应回到 active 且清空采纳理由: %+v", restored)
 	}
+	if strings.Contains(rec.Body.String(), "已派意图 #1 覆盖") {
+		t.Fatalf("撤销后不应再带旧采纳理由: %s", rec.Body.String())
+	}
+	ores, _ = overview.Call(context.Background(), json.RawMessage(`{}`), nil)
+	e.mustContain(ores.Flatten(), "改为重点看上传统的路径穿越", "撤销后规划层重新看到提示")
+
+	// ⑥ 再次提醒：不改状态与内容。
+	if rec = e.request(http.MethodPost, base+"/"+created.ID+"/remind", ""); rec.Code != http.StatusOK {
+		t.Fatalf("再次提醒 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// ⑦ 删除：active/consumed 都可删，删完 GET 不再返回。
 	rec = e.request(http.MethodDelete, base+"/"+created.ID, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("删除提示 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	rec = e.request(http.MethodGet, base, "")
-	if strings.Contains(rec.Body.String(), "再验证一次上传链") {
+	if strings.Contains(rec.Body.String(), "改为重点看上传统的路径穿越") {
 		t.Fatalf("删除后 GET 不应再返回: %s", rec.Body.String())
 	}
 
-	// ⑤ 重复（大小写不敏感）与 active 上限。
-	if rec = postHint("Check the admin API"); rec.Code != http.StatusOK {
+	// ⑧ 重复（大小写不敏感，新增与编辑两条路径）与 active 上限。
+	rec = postHint("Check the admin API")
+	if rec.Code != http.StatusOK {
 		t.Fatalf("大小写去重前置新增失败: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec = postHint("check the ADMIN api"); rec.Code != http.StatusConflict {
 		t.Fatalf("大小写不同的重复提示应 409，得到 %d %s", rec.Code, rec.Body.String())
 	}
-	// 直接补到上限（HTTP 之外）后，再 POST 必须被挡。
-	for i := 0; i < db.MaxActiveHints; i++ {
+	rec = postHint("待改提示")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("编辑去重前置新增失败: %d %s", rec.Code, rec.Body.String())
+	}
+	second := decode(rec)
+	if rec = e.request(http.MethodPatch, base+"/"+second.ID, `{"text":"check the ADMIN api"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("编辑成重复文本应 409，得到 %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 直接补到上限（HTTP 之外）后，再 POST / 撤销采纳都必须被挡。
+	for i := 0; ; i++ {
+		n, err := task.Store.CountByKindState(db.KindHint, db.StateHintActive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n >= db.MaxActiveHints {
+			break
+		}
 		if _, err := task.Store.AddNode(db.KindHint, map[string]any{"text": fmt.Sprintf("填充提示 %d", i)}, 0, db.StateHintActive, "human", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if rec = postHint("上限之外的新方向"); rec.Code != http.StatusConflict {
 		t.Fatalf("超过 active 上限应 409，得到 %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// accP48 人工收尾与导出：遗留物销账必须有证据；风险接受要留结论；
+// 任务/审批能导成底表；LLM 记录能按缓存 miss 归因筛选。
+func accP48(t *testing.T, e *accEnv) {
+	task, _ := e.newTask("accP48", "人工销账与导出")
+	base := "/api/tasks/" + task.ID
+
+	// ① 遗留物：列表可见；无证据不能销账；有证据才置 removed。
+	artID, err := task.Store.AddNode(db.KindArtifact, map[string]any{
+		"summary": "在 web01 留了一个 webshell", "kind": "webshell",
+		"locator": "/var/www/html/x.php", "host": "web01", "cleanup": "rm -f /var/www/html/x.php",
+	}, 0, db.StateArtifactActive, "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := e.request(http.MethodGet, base+"/artifacts", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/var/www/html/x.php") {
+		t.Fatalf("遗留物列表: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = e.request(http.MethodPost, base+"/artifacts/"+itoa64(artID)+"/cleared", `{"evidence":""}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("无证据销账应 400，得到 %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodPost, base+"/artifacts/"+itoa64(artID)+"/cleared",
+		`{"evidence":"rm -f /var/www/html/x.php && echo removed","note":"已确认"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"state":"removed"`) ||
+		!strings.Contains(rec.Body.String(), "echo removed") {
+		t.Fatalf("销账应落证据并置 removed: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = e.request(http.MethodPost, base+"/artifacts/"+itoa64(artID)+"/cleared", `{"evidence":"again"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("重复销账应 409，得到 %d %s", rec.Code, rec.Body.String())
+	}
+
+	// ② 接受风险：理由必填；结论落图并让 GET 看到 risk_accepted。
+	if rec = e.request(http.MethodPost, base+"/artifacts/accept-risk", `{"reason":"  "}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("无理由接受风险应 400，得到 %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodPost, base+"/artifacts/accept-risk", `{"reason":"客户要求保留 webshell 做后续排查"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"risk_accepted":true`) {
+		t.Fatalf("接受风险: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, base+"/artifacts", "")
+	if !strings.Contains(rec.Body.String(), `"risk_accepted":true`) {
+		t.Fatalf("接受风险后 GET 应报告 risk_accepted: %s", rec.Body.String())
+	}
+
+	// ③ LLM 记录缓存筛选：zero=完全没命中，low=命中率不足一半。
+	for _, row := range []db.LLMRecord{
+		{TaskID: task.ID, Model: "m", Worker: "worker", InputTokens: 100, OutputTokens: 5, CacheRead: 0, Status: "ok"},
+		{TaskID: task.ID, Model: "m", Worker: "worker", InputTokens: 100, OutputTokens: 5, CacheRead: 10, Status: "ok"},
+		{TaskID: task.ID, Model: "m", Worker: "worker", InputTokens: 100, OutputTokens: 5, CacheRead: 80, Status: "ok"},
+	} {
+		r := row
+		if err := e.m.pg.InsertLLMRecord(&r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM llm_records WHERE task_id=$1`, task.ID) })
+	type recordResp struct {
+		Records []db.LLMRecord `json:"records"`
+		Total   int            `json:"total"`
+	}
+	getRecords := func(cache string) recordResp {
+		t.Helper()
+		rec := e.request(http.MethodGet, "/api/llm/records?task="+task.ID+"&cache="+cache, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("llm records (%s): %d %s", cache, rec.Code, rec.Body.String())
+		}
+		var body recordResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if got := getRecords("zero"); len(got.Records) != 1 || got.Records[0].CacheRead != 0 {
+		t.Fatalf("zero 应只留零缓存调用: %+v", got)
+	}
+	if got := getRecords("low"); len(got.Records) != 2 {
+		t.Fatalf("low 应留命中率 <50%% 的两条: %+v", got)
+	}
+	if rec = e.request(http.MethodGet, "/api/llm/records?cache=bogus", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法 cache 参数应 400，得到 %d", rec.Code)
+	}
+
+	// ④ 任务列表 CSV：与列表同一份 DTO，含表头与本任务。
+	rec = e.request(http.MethodGet, "/api/tasks/export.csv", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "任务ID") ||
+		!strings.Contains(rec.Body.String(), task.ID) {
+		t.Fatalf("任务 CSV: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// ⑤ 审批记录 CSV：跟随任务筛选，包含已判定记录。
+	apID, err := e.m.pg.CreateDecidedIntercept(0, 0, task.ID, "Work", "Bash", []byte(`{"command":"id"}`), "denied", "rule hit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM intercept_pending WHERE id=$1`, apID) })
+	rec = e.request(http.MethodGet, "/api/intercept/history.csv?task="+task.ID, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "审批ID") ||
+		!strings.Contains(rec.Body.String(), "denied") || !strings.Contains(rec.Body.String(), "rule hit") {
+		t.Fatalf("审批 CSV: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

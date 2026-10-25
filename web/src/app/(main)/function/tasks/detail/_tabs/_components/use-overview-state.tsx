@@ -15,6 +15,7 @@ import type {
   TaskConstraint,
   TaskGoal,
   TaskHint,
+  TaskArtifact,
   TaskNode,
   TaskScopeRow,
 } from "@/lib/types";
@@ -68,6 +69,11 @@ export function useOverviewState(taskId: string) {
   const [hintText, setHintText] = React.useState("");
   const [hintBusy, setHintBusy] = React.useState(false);
   const [hintErr, setHintErr] = React.useState("");
+  const [editingHintId, setEditingHintId] = React.useState<string | null>(null);
+  const [editHintText, setEditHintText] = React.useState("");
+  // 遗留物台账：agent 忘了收尾时，操作者可以直接销账/接受风险。
+  const [artifacts, setArtifacts] = React.useState<TaskArtifact[]>([]);
+  const [artifactRiskAccepted, setArtifactRiskAccepted] = React.useState(false);
   // 约束管理：约束列表 + 新增表单 + 行内编辑状态。
   const [constraints, setConstraints] = React.useState<TaskConstraint[]>([]);
   const [conText, setConText] = React.useState("");
@@ -198,6 +204,85 @@ export function useOverviewState(taskId: string) {
       await loadHints(); // 删除失败：重新拉取还原
       toast.error(`删除提示失败：${e instanceof Error ? e.message : "未知错误"}`);
     }
+  };
+
+  const startEditHint = (h: TaskHint) => {
+    setEditingHintId(h.id);
+    setEditHintText(h.text);
+  };
+
+  const cancelEditHint = () => {
+    setEditingHintId(null);
+    setEditHintText("");
+  };
+
+  const saveEditHint = async (h: TaskHint) => {
+    const text = editHintText.trim();
+    if (!text || text === h.text) {
+      cancelEditHint();
+      return;
+    }
+    setHintBusy(true);
+    setHintErr("");
+    try {
+      await api.updateTaskHint(taskId, h.id, { text });
+      cancelEditHint();
+      await loadHints();
+    } catch (e) {
+      setHintErr(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setHintBusy(false);
+    }
+  };
+
+  // 撤销采纳：误采纳的提示回到待采纳列表，规划者下一轮会重新看到它。
+  const restoreHint = async (h: TaskHint) => {
+    setHintBusy(true);
+    try {
+      await api.updateTaskHint(taskId, h.id, { state: "active" });
+      toast.success("已撤销采纳，提示回到待采纳列表");
+      await loadHints();
+    } catch (e) {
+      toast.error(`撤销采纳失败：${e instanceof Error ? e.message : "未知错误"}`);
+    } finally {
+      setHintBusy(false);
+    }
+  };
+
+  const remindHint = async (h: TaskHint) => {
+    setHintBusy(true);
+    try {
+      await api.remindTaskHint(taskId, h.id);
+      toast.success("已再次提醒规划者");
+    } catch (e) {
+      toast.error(`提醒失败：${e instanceof Error ? e.message : "未知错误"}`);
+    } finally {
+      setHintBusy(false);
+    }
+  };
+
+  const loadArtifacts = React.useCallback(async () => {
+    try {
+      const resp = await api.taskArtifacts(taskId);
+      setArtifacts(resp.artifacts);
+      setArtifactRiskAccepted(resp.riskAccepted);
+    } catch {
+      // 忽略：瞬时错误，下次轮询重试
+    }
+  }, [taskId]);
+
+  // 销账/接受风险由调用方 catch 并显示错误；成功在这里刷新台账。
+  const clearArtifact = async (a: TaskArtifact, evidence: string, note?: string) => {
+    await api.clearTaskArtifact(taskId, a.id, evidence, note);
+    toast.success("已标记为已清理");
+    await loadArtifacts();
+  };
+
+  const acceptArtifactRisk = async (reason: string) => {
+    await api.acceptTaskArtifactRisk(taskId, reason);
+    setArtifactRiskAccepted(true);
+    toast.success("已接受遗留物风险，结论会进报告语境");
+    await loadArtifacts();
   };
 
   const loadConstraints = React.useCallback(async () => {
@@ -434,10 +519,11 @@ export function useOverviewState(taskId: string) {
       void loadTokens();
       void loadGoals();
       void loadHints();
+      void loadArtifacts();
       void loadConstraints();
     },
     3000,
-    [taskId, loadScope, loadTokens, loadGoals, loadHints, loadConstraints],
+    [taskId, loadScope, loadTokens, loadGoals, loadHints, loadArtifacts, loadConstraints],
   );
 
   const running = intents.filter((i) => i.state === "running");
@@ -515,6 +601,14 @@ export function useOverviewState(taskId: string) {
     setHintBusy,
     hintErr,
     setHintErr,
+    editingHintId,
+    setEditingHintId,
+    editHintText,
+    setEditHintText,
+    artifacts,
+    setArtifacts,
+    artifactRiskAccepted,
+    setArtifactRiskAccepted,
     constraints,
     setConstraints,
     conText,
@@ -548,6 +642,14 @@ export function useOverviewState(taskId: string) {
     loadHints,
     addHint,
     removeHint,
+    startEditHint,
+    cancelEditHint,
+    saveEditHint,
+    restoreHint,
+    remindHint,
+    loadArtifacts,
+    clearArtifact,
+    acceptArtifactRisk,
     loadConstraints,
     addConstraint,
     startEditConstraint,

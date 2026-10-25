@@ -4,7 +4,7 @@ import * as React from "react";
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -215,15 +215,34 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
 
 function TaskDetailInner() {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const id = searchParams.get("id") ?? "";
+  const tabParam = searchParams.get("tab") ?? "";
   const [task, setTask] = React.useState<Task | null>(null);
   const [paused, setPaused] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
-  const [tab, setTab] = React.useState("sessions");
+  // 页签写进 URL（?tab=timeline），播报板/通知/文档可以直接跳到具体页签。
+  const [tab, setTab] = React.useState(TABS.some((t) => t.value === tabParam) ? tabParam : "sessions");
   const [interceptPendingCount, setInterceptPendingCount] = React.useState(0);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
+
+  // 外部改 URL（前进/后退、从别处深链）时同步当前页签。只认 URL 真正变化的那一次：
+  // changeTab 自己也会写 URL，若拿 tab 当依赖会在 replace 落地前把选择弹回去。
+  const lastTabParam = React.useRef(tabParam);
+  React.useEffect(() => {
+    if (tabParam === lastTabParam.current) return;
+    lastTabParam.current = tabParam;
+    if (TABS.some((t) => t.value === tabParam)) setTab(tabParam);
+  }, [tabParam]);
+
+  const changeTab = (value: string) => {
+    setTab(value);
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("tab", value);
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  };
 
   React.useEffect(() => {
     api
@@ -360,7 +379,7 @@ function TaskDetailInner() {
   );
 
   return (
-    <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
+    <Tabs value={tab} onValueChange={changeTab} className="flex flex-1 flex-col gap-0">
       {/* Top fixed area */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
         <div className="flex items-center gap-2">

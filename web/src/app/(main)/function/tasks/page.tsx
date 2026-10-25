@@ -4,7 +4,7 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { ArchiveIcon, PauseIcon, PlayIcon, SearchIcon, XIcon } from "lucide-react";
+import { ArchiveIcon, DownloadIcon, PauseIcon, PlayIcon, SearchIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
@@ -705,6 +705,19 @@ export default function TasksPage() {
                     <BulkDeleteTasksDialog ids={[...selectedIds]} onDelete={deleteTasks} />
                   </>
                 )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    void api
+                      .downloadTasksCSV()
+                      .then(() => toast.success("已导出任务列表 CSV"))
+                      .catch((e: unknown) => toast.error(`导出失败：${e instanceof Error ? e.message : "未知错误"}`))
+                  }
+                >
+                  <DownloadIcon data-icon="inline-start" />
+                  导出全部 CSV
+                </Button>
                 <ConcurrencySettingsDialog />
                 <CategoryManagementDialog
                   categories={categories}

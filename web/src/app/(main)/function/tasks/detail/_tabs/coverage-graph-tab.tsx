@@ -3,7 +3,8 @@
 import * as React from "react";
 
 import type { Graph as G6Graph } from "@antv/g6";
-import { AppWindow, Building2, Globe, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
+import { AppWindow, Building2, Globe, LightbulbIcon, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -326,16 +327,33 @@ function RefList({ title, items }: { title: string; items: CoverageAssetRef[] })
 function AssetSheet({
   node,
   taskId,
+  coverageEnabled,
   onOpenChange,
 }: {
   node: CoverageGraphNode | null;
   taskId: string;
+  coverageEnabled: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const meta = node ? kindMeta[node.kind] : null;
   const Icon = meta?.icon;
   const raw = node ? JSON.stringify(node, null, 2) : "";
   const [refs, setRefs] = React.useState<CoverageAssetRefs | null>(null);
+  const [hintBusy, setHintBusy] = React.useState(false);
+
+  const sendGapHint = async () => {
+    if (!node?.asset_id || !meta) return;
+    setHintBusy(true);
+    try {
+      const what = node.url || node.label;
+      await api.addTaskHint(taskId, `重点补测 ${what}（${meta.label}，覆盖图中尚未测试）`, [node.asset_id]);
+      toast.success("已加入待采纳提示，可在总览的「战略提示」查看");
+    } catch (e) {
+      toast.error(`添加提示失败：${e instanceof Error ? e.message : "未知错误"}`);
+    } finally {
+      setHintBusy(false);
+    }
+  };
 
   React.useEffect(() => {
     setRefs(null);
@@ -375,6 +393,26 @@ function AssetSheet({
             </DialogHeader>
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex w-full min-w-0 flex-col gap-4 p-4">
+                {coverageEnabled && node.in_scope && !node.tested && node.asset_id && (
+                  <section className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+                    <h4 className="flex items-center gap-1.5 text-xs font-medium">
+                      <LightbulbIcon className="size-3.5 text-amber-600 dark:text-amber-400" />
+                      覆盖缺口
+                    </h4>
+                    <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+                      这件资产还没有被测过。可以让规划者补一条测试方向（会加入「战略提示」，并锚定这台资产）。
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      disabled={hintBusy}
+                      onClick={() => void sendGapHint()}
+                    >
+                      <LightbulbIcon className="size-3.5" /> 交给规划者补测
+                    </Button>
+                  </section>
+                )}
                 <section>
                   <h4 className="text-muted-foreground mb-1 text-xs font-medium">属性</h4>
                   <DetailRow label="类型">{meta.label}</DetailRow>
@@ -499,6 +537,12 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
   const [selectedAsset, setSelectedAsset] = React.useState<CoverageGraphNode | null>(null);
   const [selectedFoldId, setSelectedFoldId] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+
+  // 切换任务时关掉上一任务选中的资产抽屉，避免把补测提示写到新任务里。
+  React.useEffect(() => {
+    setSelectedAsset(null);
+    setSelectedFoldId(null);
+  }, [taskId]);
 
   const containerRef = React.useRef<HTMLDivElement>(null);
   const graphRef = React.useRef<G6Graph | null>(null);
@@ -731,7 +775,12 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
         </p>
       </div>
 
-      <AssetSheet node={selectedAsset} taskId={taskId} onOpenChange={(o) => !o && setSelectedAsset(null)} />
+      <AssetSheet
+        node={selectedAsset}
+        taskId={taskId}
+        coverageEnabled={coverageEnabled}
+        onOpenChange={(o) => !o && setSelectedAsset(null)}
+      />
       <FoldSheet
         fold={selectedFold}
         onOpenChange={(o) => !o && setSelectedFoldId(null)}

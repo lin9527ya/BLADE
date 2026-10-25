@@ -657,6 +657,8 @@ func timelineKindLabel(kind string) string {
 		return "发现"
 	case tlKindLoot:
 		return "战果"
+	case tlKindArtifact:
+		return "遗留物"
 	case tlKindDetection:
 		return "检测验证"
 	case tlKindNote:

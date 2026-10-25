@@ -46,6 +46,13 @@ function fmtTokens(n: number) {
   return String(n);
 }
 
+// 缓存命中率 = 缓存读 / 总输入（input 已含 cache_read）。
+function cacheRate(rec: LLMRecordItem): { text: string; pct: number | null } {
+  if (rec.input_tokens <= 0) return { text: "—", pct: null };
+  const pct = (rec.cache_read / rec.input_tokens) * 100;
+  return { text: pct.toFixed(1) + "%", pct };
+}
+
 function tryFormatJSON(s: string): string {
   try {
     return JSON.stringify(JSON.parse(s), null, 2);
@@ -112,6 +119,7 @@ export default function LLMRecordsPage() {
   const [session, setSession] = React.useState("");
   const [sessionQ, setSessionQ] = React.useState("");
   const [model, setModel] = React.useState("");
+  const [cacheFilter, setCacheFilter] = React.useState<"" | "zero" | "low">("");
 
   const [records, setRecords] = React.useState<LLMRecordItem[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -184,7 +192,7 @@ export default function LLMRecordsPage() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: 这组依赖是「筛选条件变化」的触发信号，effect 体内只重置页码、不读取它们。
   React.useEffect(() => {
     setPage(0);
-  }, [sessionQ, model, size, pickedTask]);
+  }, [sessionQ, model, cacheFilter, size, pickedTask]);
 
   // Load list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 是手动刷新触发器，仅在 effect 外被读取；放进依赖是为了强制重跑。
@@ -196,6 +204,7 @@ export default function LLMRecordsPage() {
         model: model || undefined,
         session: sessionQ || undefined,
         task: pickedTask || undefined,
+        cache: cacheFilter || undefined,
         page,
         size,
       })
@@ -215,7 +224,7 @@ export default function LLMRecordsPage() {
     return () => {
       alive = false;
     };
-  }, [page, size, sessionQ, model, pickedTask, reloadTick]);
+  }, [page, size, sessionQ, model, cacheFilter, pickedTask, reloadTick]);
 
   // Delete every LLM record for the picked task, then refetch.
   const confirmDelete = () => {
@@ -280,6 +289,19 @@ export default function LLMRecordsPage() {
           />
         </div>
         <Input placeholder="Model" className="h-8 w-48" value={model} onChange={(e) => setModel(e.target.value)} />
+        <Select
+          value={cacheFilter || "all"}
+          onValueChange={(v) => setCacheFilter(v === "all" ? "" : (v as "zero" | "low"))}
+        >
+          <SelectTrigger size="sm" className="w-44">
+            <SelectValue placeholder="缓存" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">缓存：全部</SelectItem>
+            <SelectItem value="zero">只看零缓存</SelectItem>
+            <SelectItem value="low">命中率 &lt; 50%</SelectItem>
+          </SelectContent>
+        </Select>
         <Select value={pickedTask} onValueChange={setPickedTask}>
           <SelectTrigger size="sm" className="w-56">
             <SelectValue placeholder="选择任务…" />
@@ -366,19 +388,20 @@ export default function LLMRecordsPage() {
                   <TableHead className="w-[140px]">Model</TableHead>
                   <TableHead className="w-[70px]">延迟</TableHead>
                   <TableHead className="w-[90px]">Tokens</TableHead>
+                  <TableHead className="w-[80px]">缓存</TableHead>
                   <TableHead className="w-[60px]">状态</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading && records.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center">
+                    <TableCell colSpan={9} className="py-12 text-center">
                       <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ) : records.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
                       暂无 LLM 调用记录
                     </TableCell>
                   </TableRow>
@@ -413,6 +436,23 @@ export default function LLMRecordsPage() {
                         <span className="text-xs">
                           {fmtTokens(rec.input_tokens)} / {fmtTokens(rec.output_tokens)}
                         </span>
+                      </TableCell>
+                      <TableCell>
+                        {(() => {
+                          const rate = cacheRate(rec);
+                          return (
+                            <span
+                              className={cn(
+                                "text-xs tabular-nums",
+                                rate.pct === 0 && "text-red-500",
+                                rate.pct !== null && rate.pct > 0 && rate.pct < 50 && "text-amber-500",
+                              )}
+                              title={`缓存读 ${rec.cache_read.toLocaleString()} / 输入 ${rec.input_tokens.toLocaleString()}`}
+                            >
+                              {rate.text}
+                            </span>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         {rec.status === "ok" ? (

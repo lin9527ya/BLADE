@@ -501,6 +501,11 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		var p map[string]any
 		_ = json.Unmarshal(h.Payload, &p)
 		hint := map[string]any{"id": h.ID, "state": h.State, "text": p["text"]}
+		// 覆盖缺口一键补测会带上锚定资产：planner 需要知道这条提示针对哪台资产，
+		// 否则只能从文字里猜（list_assets 可按 id 取详情）。
+		if p["asset_ids"] != nil {
+			hint["asset_ids"] = p["asset_ids"]
+		}
 		if findingTrafficBindingEnabled() && p["traffic_refs"] != nil {
 			hint["traffic_refs"] = p["traffic_refs"]
 		}
@@ -1226,9 +1231,13 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		for _, hint := range hints {
 			var payload map[string]any
 			_ = json.Unmarshal(hint.Payload, &payload)
-			hintSummary = append(hintSummary, inheritedMap(map[string]any{
+			m := inheritedMap(map[string]any{
 				"id": hint.ID, "state": hint.State, "text": budget.take(payload["text"], 400),
-			}, source.Task.TaskID))
+			}, source.Task.TaskID)
+			if payload["asset_ids"] != nil {
+				m["asset_ids"] = payload["asset_ids"]
+			}
+			hintSummary = append(hintSummary, m)
 		}
 		item["hints"] = hintSummary
 

@@ -3,7 +3,8 @@
 import * as React from "react";
 import { SessionItem, WorkerAssetBadge } from "./_components/session-items";
 
-import { ArrowUpIcon, ChevronDownIcon, CircleXIcon, ClockIcon, Loader2Icon, PaperclipIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon, WifiOffIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronDownIcon, CircleXIcon, ClockIcon, FileJsonIcon, FileTextIcon, Loader2Icon, PaperclipIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon, WifiOffIcon, XIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { ApprovalExecutionFocus } from "@/components/approval-execution-focus";
 import { MentionTextarea } from "@/components/mention-textarea";
@@ -171,6 +172,58 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     pickFiles,
     createMainSession,
   } = useSessionsState(taskId);
+
+  // 会话导出：把当前已加载的会话（Markdown 可读版 / JSON 原样）落盘。
+  // 用当前页的 activity，而不是再向后端要一份——所见即所得，也不会把未加载的更早历史
+  // 悄悄漏掉而不自知（页面上本来就有"更早历史"提示）。
+  const exportSession = (format: "md" | "json") => {
+    const rows = activity ?? [];
+    if (rows.length === 0) {
+      toast.info("当前会话还没有可导出的活动");
+      return;
+    }
+    const title = activeDisplayTitle || active.title || `session-${active.id}`;
+    const safe = title.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 60) || "session";
+    let content = "";
+    let mime = "";
+    if (format === "json") {
+      content = JSON.stringify(
+        { task_id: taskId, session: title, state: activeState?.hasMore ? "partial" : "full", exported_at: new Date().toISOString(), items: rows },
+        null,
+        2,
+      );
+      mime = "application/json";
+    } else {
+      const lines: string[] = [
+        `# ${title}`,
+        "",
+        `- 任务：${taskId}`,
+        `- 导出时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+        activeState?.hasMore ? "- 注意：只导出了当前已加载的一段，更早历史未包含" : "- 范围：当前会话已加载的全部活动",
+        "",
+      ];
+      for (const a of rows) {
+        lines.push(`## [${a.ts}] ${a.kind}${a.tool ? ` · ${a.tool}` : ""}`);
+        lines.push("");
+        if (a.summary) lines.push(a.summary);
+        if (a.detail) {
+          lines.push("", "```text", a.detail, "```");
+        }
+        lines.push("");
+      }
+      content = lines.join("\n");
+      mime = "text/markdown; charset=utf-8";
+    }
+    const url = URL.createObjectURL(new Blob([content], { type: mime }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safe}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success(format === "json" ? "已导出会话 JSON" : "已导出会话 Markdown");
+  };
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -367,6 +420,24 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 );
               })()}
               <SideQuestionButton side={side} />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 px-1.5"
+                title="导出当前会话为 Markdown"
+                onClick={() => exportSession("md")}
+              >
+                <FileTextIcon className="size-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 px-1.5"
+                title="导出当前会话为 JSON"
+                onClick={() => exportSession("json")}
+              >
+                <FileJsonIcon className="size-3.5" />
+              </Button>
               {activeResolution && (
                 <Tooltip>
                   <TooltipTrigger asChild>

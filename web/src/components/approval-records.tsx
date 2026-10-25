@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { ClipboardListIcon, RefreshCwIcon, ShieldAlertIcon } from "lucide-react";
+import { ClipboardListIcon, DownloadIcon, RefreshCwIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { TablePagination } from "@/components/table-pagination";
@@ -163,10 +163,25 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
           <h1 className="font-semibold text-xl">{title}</h1>
           {pending.length ? <Badge variant="secondary">{pending.length} 待审批</Badge> : null}
         </div>
-        <Button variant="outline" size="sm" onClick={() => void load(true)} disabled={loading || refreshing}>
-          <RefreshCwIcon data-icon="inline-start" className={cn(refreshing && "animate-spin")} />
-          刷新
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              void api
+                .downloadInterceptHistoryCSV({ task: taskId, filter })
+                .then(() => toast.success("已导出审批记录 CSV"))
+                .catch((e: unknown) => toast.error(`导出失败：${e instanceof Error ? e.message : "未知错误"}`))
+            }
+          >
+            <DownloadIcon data-icon="inline-start" />
+            导出 CSV
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void load(true)} disabled={loading || refreshing}>
+            <RefreshCwIcon data-icon="inline-start" className={cn(refreshing && "animate-spin")} />
+            刷新
+          </Button>
+        </div>
       </div>
       <p className="text-muted-foreground text-sm">展开记录查看工具请求和审批裁决，以及当时的上下文与执行结果。</p>
       <FieldGroup className="flex-row flex-wrap items-end gap-3" aria-label="审批记录筛选">

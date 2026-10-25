@@ -87,6 +87,8 @@ type Artifact struct {
 	Cleanup string `json:"cleanup,omitempty"`
 	// RemovedEvidence 是清理时的那一行输出——`removed` 状态必须有它。
 	RemovedEvidence string `json:"removed_evidence,omitempty"`
+	// RemovedNote 是清理备注（残留、需人工确认的部分等）。
+	RemovedNote string `json:"removed_note,omitempty"`
 }
 
 // ParseArtifact 解析一条遗留物节点的 payload。畸形 payload 一律当空字段，不报错

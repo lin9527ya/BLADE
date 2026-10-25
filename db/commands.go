@@ -224,7 +224,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 }
 
 // ListLLMRecords returns paginated LLM records with optional filters.
-func (d *DB) ListLLMRecords(model, session, task string, page, size int) ([]LLMRecord, int, error) {
+func (d *DB) ListLLMRecords(model, session, task, cache string, page, size int) ([]LLMRecord, int, error) {
 	if size <= 0 {
 		size = 50
 	}
@@ -253,6 +253,13 @@ func (d *DB) ListLLMRecords(model, session, task string, page, size int) ([]LLMR
 		where += fmt.Sprintf(` AND task_id = $%d`, argN)
 		args = append(args, task)
 		argN++
+	}
+	// 缓存归因筛选：zero=完全没命中；low=命中率不足一半（input 已含 cache_read）。
+	switch cache {
+	case "zero":
+		where += ` AND COALESCE(cache_read,0) = 0`
+	case "low":
+		where += ` AND COALESCE(input_tokens,0) > 0 AND COALESCE(cache_read,0) * 2 < input_tokens`
 	}
 
 	var total int

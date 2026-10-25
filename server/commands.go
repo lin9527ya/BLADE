@@ -62,8 +62,13 @@ func (s *Server) pgListLLMRecords(w http.ResponseWriter, r *http.Request) {
 	model := q.Get("model")
 	session := q.Get("session")
 	task := q.Get("task")
+	cache := strings.TrimSpace(q.Get("cache"))
+	if cache != "" && cache != "zero" && cache != "low" {
+		writeErr(w, 400, "cache 只支持 zero 或 low")
+		return
+	}
 
-	records, total, err := s.m.PG().ListLLMRecords(model, session, task, page, size)
+	records, total, err := s.m.PG().ListLLMRecords(model, session, task, cache, page, size)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

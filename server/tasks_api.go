@@ -3,6 +3,7 @@
 package server
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,10 +124,13 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	active := ""
-	if t := s.m.ActiveTask(); t != nil {
-		active = t.ID
-	}
+	writeJSON(w, 200, map[string]any{"tasks": s.taskListDTOs(), "active": s.activeTaskID()})
+}
+
+// taskListDTOs builds the list-page view (live status, metrics, goal/finding counts).
+// Shared by the JSON list and the CSV export so the two can never report different
+// numbers for the same task.
+func (s *Server) taskListDTOs() []TaskDTO {
 	list := s.m.List()
 	metrics, _ := s.m.PG().TaskListMetricsAll()
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
@@ -153,7 +157,52 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		dtos = append(dtos, dto)
 	}
-	writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active})
+	return dtos
+}
+
+func (s *Server) activeTaskID() string {
+	if t := s.m.ActiveTask(); t != nil {
+		return t.ID
+	}
+	return ""
+}
+
+// exportTasksCSV 把任务列表导成 CSV（Excel 直接可开：带 UTF-8 BOM）。
+func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="blade-tasks.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // BOM：否则 Excel 会把中文读成乱码
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	_ = cw.Write([]string{
+		"任务ID", "名称", "状态", "分类", "公司ID", "目标", "描述", "创建时间", "完成时间", "最后活动",
+		"目标达成", "目标总数", "运行中Worker", "严重", "高危", "中危", "低危",
+		"输入token", "输出token", "缓存读", "缓存写", "缓存命中率",
+	})
+	for _, d := range s.taskListDTOs() {
+		last := ""
+		if d.LastActivity > 0 {
+			last = time.Unix(d.LastActivity, 0).Format(time.RFC3339)
+		}
+		cache := "—"
+		if d.Tokens.InputTokens > 0 {
+			cache = fmt.Sprintf("%.1f%%", float64(d.Tokens.CacheReadTokens)*100/float64(d.Tokens.InputTokens))
+		}
+		companyIDs := make([]string, 0, len(d.CompanyIDs))
+		for _, id := range d.CompanyIDs {
+			companyIDs = append(companyIDs, strconv.FormatInt(id, 10))
+		}
+		_ = cw.Write([]string{
+			d.ID, d.Name, d.Status, d.CategoryName, strings.Join(companyIDs, ";"), d.Goal, d.Description,
+			d.CreatedAt, d.CompletedAt, last,
+			strconv.Itoa(d.GoalsMet), strconv.Itoa(d.GoalsTotal), strconv.Itoa(d.InFlight),
+			strconv.Itoa(d.Findings.Critical), strconv.Itoa(d.Findings.High),
+			strconv.Itoa(d.Findings.Medium), strconv.Itoa(d.Findings.Low),
+			strconv.Itoa(d.Tokens.InputTokens), strconv.Itoa(d.Tokens.OutputTokens),
+			strconv.Itoa(d.Tokens.CacheReadTokens), strconv.Itoa(d.Tokens.CacheWriteTokens), cache,
+		})
+	}
 }
 
 func (s *Server) resolvedTaskStatus(t *Task) string {

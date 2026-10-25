@@ -7,6 +7,7 @@ package server
 // 拆分的回归网是 server/routes_snapshot_test.go：路由集合必须逐条不变。
 func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
+	mux.HandleFunc("GET /api/tasks/export.csv", s.exportTasksCSV) // 任务列表 CSV（与列表同一份 DTO）
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	// 战役：任务之上的一层（归属 + 聚合）。归属走声明式的 PUT —— 一次给出应当包含的全部任务。
 	mux.HandleFunc("GET /api/campaigns", s.listCampaigns)

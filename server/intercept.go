@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -363,6 +364,54 @@ func (s *Server) interceptHistory(w http.ResponseWriter, r *http.Request) {
 		items = []db.InterceptApprovalRow{}
 	}
 	writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size})
+}
+
+// interceptHistoryCSV 把当前筛选（任务 / 状态 / 判定来源）下的审批记录导成 CSV。
+// 交付与复盘常常要一份"哪些调用被拦过、谁放的"的底表，而不是让人一页页抄。
+func (s *Server) interceptHistoryCSV(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	q := r.URL.Query()
+	filter, err := interceptFilterParams(q)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	taskID := strings.TrimSpace(q.Get("task"))
+	var rows []db.InterceptApprovalRow
+	if taskID != "" {
+		rows, _, err = pg.ListTaskInterceptsPage(taskID, 1, 10000, filter)
+	} else {
+		rows, _, err = pg.ListAllInterceptsPage(1, 10000, filter)
+	}
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="blade-approvals.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // Excel 读中文需要 BOM
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	_ = cw.Write([]string{"审批ID", "任务ID", "Agent", "工具", "状态", "判定来源", "规则", "理由", "创建时间", "决定时间", "调用参数"})
+	for _, row := range rows {
+		task := ""
+		if row.TaskID != nil {
+			task = *row.TaskID
+		}
+		decided := ""
+		if row.DecidedAt != nil {
+			decided = rfc3339(*row.DecidedAt)
+		}
+		_ = cw.Write([]string{
+			strconv.FormatInt(row.ID, 10), task, row.AgentName, row.ToolName, row.Status,
+			row.DecisionSource, row.RuleName, row.Reason, rfc3339(row.CreatedAt), decided,
+			string(row.ToolInput),
+		})
+	}
 }
 
 func interceptFilterParams(q url.Values) (db.InterceptApprovalFilter, error) {

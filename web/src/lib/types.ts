@@ -600,7 +600,7 @@ export interface OpsecKnowledgeResponse {
 
 // ---- 作业时间线（P37） ----
 
-export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "detection" | "note" | "step";
+export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "artifact" | "detection" | "note" | "step";
 
 export interface TimelineEvent {
   at: string;
@@ -726,6 +726,30 @@ export interface TaskHint {
   text: string;
   state: "active" | "consumed" | string;
   origin?: string;
+  ts: string;
+  /** planner 采纳/判断不适用时写下的理由（consume_note），仅 consumed 时有。 */
+  note?: string;
+  /** 这条提示锚定的资产（覆盖缺口一键补测会带上）。 */
+  asset_ids?: number[];
+}
+
+/** 任务总览「遗留物」卡片用的一条台账（我们留在目标上的东西）。 */
+export interface TaskArtifact {
+  id: string;
+  state: string;
+  state_label: string;
+  kind?: string;
+  kind_label?: string;
+  summary: string;
+  detail?: string;
+  host?: string;
+  locator?: string;
+  url?: string;
+  cleanup?: string;
+  evidence?: string;
+  confidence?: string;
+  removed_evidence?: string;
+  removed_note?: string;
   ts: string;
 }
 
@@ -2209,6 +2233,28 @@ export interface CommandRecord {
   output: string;
   is_error: boolean;
   created_at: string;
+}
+
+/** 长任务执行台账（tool_executions）— 时间线 execution 事件的详情。 */
+export interface ToolExecution {
+  id: number;
+  task_id: string;
+  intent_id?: number;
+  worker: string;
+  tool: string;
+  command: string;
+  description?: string;
+  status: string;
+  exit_code?: number;
+  output_path?: string;
+  output_bytes?: number;
+  partial_tail?: string;
+  cancel_note?: string;
+  error?: string;
+  started_at?: string;
+  ended_at?: string;
+  created_at: string;
+  limits?: unknown;
 }
 
 // 单个工具的调用统计（/commands/stats）；errors 为其中失败的次数。
