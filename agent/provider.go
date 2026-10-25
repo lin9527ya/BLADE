@@ -126,13 +126,15 @@ func (c Config) CompactionWindow() int {
 }
 
 // compactionConfig builds the agent-core compaction config for a context window
-// in tokens. agentcore.NewSession wires the summarizer (same provider) when this
-// is set on Options.Compaction.
-func compactionConfig(windowTokens int) *compaction.Config {
+// in tokens. maxTokens 是 profile 的实际输出上限：SDK 会把它作为「摘要预留」
+// （min(maxTokens, 20k)）。此前恒传 0 → 预留 20k；对 64K 窗口意味着 auto 阈值只有
+// ~31K、micro ~26K，长会话会被过早压缩，每次压缩都重建前缀并多一次大摘要调用。
+// 传真实输出上限（如 8K）可把窗口还给上下文。
+func compactionConfig(windowTokens, maxTokens int) *compaction.Config {
 	if windowTokens <= 0 {
 		windowTokens = defaultWindowK * 1000
 	}
-	return &compaction.Config{ContextWindow: windowTokens}
+	return &compaction.Config{ContextWindow: windowTokens, MaxOutputTokens: maxTokens}
 }
 
 // FromEnv resolves the LLM provider config:

@@ -16,14 +16,17 @@ type LLMUsage struct {
 	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
 	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
 	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
-	Model         string `json:"model"`
-	ProfileName   string `json:"profile_name"`
-	LatencyMs     int    `json:"latency_ms"`
-	InputTokens   int    `json:"input_tokens"`
-	OutputTokens  int    `json:"output_tokens"`
-	CacheRead     int    `json:"cache_read"`
-	CacheWrite    int    `json:"cache_write"`
-	Status        string `json:"status"` // ok | error
+	// SessionID 是这次调用所属的会话（transcript session id）。用于把「首调零命中」
+	// 与「会话中途掉命中」分开——只看 worker 聚合会把两种完全不同的原因混在一起。
+	SessionID    string `json:"session_id"`
+	Model        string `json:"model"`
+	ProfileName  string `json:"profile_name"`
+	LatencyMs    int    `json:"latency_ms"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	CacheRead    int    `json:"cache_read"`
+	CacheWrite   int    `json:"cache_write"`
+	Status       string `json:"status"` // ok | error
 }
 
 const llmUsageSchema = `
@@ -33,6 +36,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     task_id        TEXT,
     exploration_id BIGINT,
     worker         TEXT,
+    session_id     TEXT,
     model          TEXT,
     profile_name   TEXT,
     latency_ms     INTEGER,
@@ -42,9 +46,12 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cache_write    INTEGER NOT NULL DEFAULT 0,
     status         TEXT
 );
+-- 旧库补列：EnsureLLMUsageTable 在每次启动时执行，ALTER 必须是幂等的。
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(worker, session_id);
 -- 数据保留按 ts 清理。上面三个索引前导列都不是时间，全表扫；本表是 always-on
 -- 写的（每次 LLM 调用一行），是无限增长的主力，必须能按时间走索引。
 CREATE INDEX IF NOT EXISTS idx_llm_usage_ts    ON llm_usage(ts);
@@ -90,9 +97,9 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
-		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
+INSERT INTO llm_usage(task_id, exploration_id, worker, session_id, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,$11,$12)`,
+		u.TaskID, expID, u.Worker, u.SessionID, u.Model, u.ProfileName,
 		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
 	return err
 }

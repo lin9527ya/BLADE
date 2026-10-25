@@ -95,6 +95,9 @@ func TestExplicitAttributionOverridesConvSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pg.Close()
+	if err := pg.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
 	profile := "btw-attribution-" + uuid.NewString()
 	ctx := transcript.WithSessionID(t.Context(), "conv-123")
 	ctx = WithTaskID(ctx, "42")
@@ -106,16 +109,17 @@ func TestExplicitAttributionOverridesConvSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var taskID, worker string
+	var taskID, worker, sessionID string
 	var expID int64
-	err = pg.QueryRow(`SELECT COALESCE(task_id,''), COALESCE(worker,''), COALESCE(exploration_id,0)
-FROM llm_usage WHERE profile_name=$1`, profile).Scan(&taskID, &worker, &expID)
+	err = pg.QueryRow(`SELECT COALESCE(task_id,''), COALESCE(worker,''), COALESCE(exploration_id,0), COALESCE(session_id,'')
+FROM llm_usage WHERE profile_name=$1`, profile).Scan(&taskID, &worker, &expID, &sessionID)
 	_, _ = pg.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if taskID != "42" || worker != "reporter" || expID != 99 {
-		t.Fatalf("attribution=(task=%q worker=%q exp=%d), want (42, reporter, 99)", taskID, worker, expID)
+	if taskID != "42" || worker != "reporter" || expID != 99 || sessionID != "conv-123" {
+		t.Fatalf("attribution=(task=%q worker=%q exp=%d session=%q), want (42, reporter, 99, conv-123)",
+			taskID, worker, expID, sessionID)
 	}
 }
 

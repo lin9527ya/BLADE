@@ -24,6 +24,9 @@ type metricsLLMRow struct {
 	Calls        int64  `json:"calls"`
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
+	CacheRead    int64  `json:"cache_read"`
+	MissTokens   int64  `json:"miss_tokens"`
+	ZeroCache    int64  `json:"zero_cache_calls"`
 	P50Ms        int64  `json:"p50_ms"`
 	P95Ms        int64  `json:"p95_ms"`
 }
@@ -81,6 +84,9 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 			"window_hours": 24,
 			"by_profile":   s.metricsLLMBy("profile_name"),
 			"by_worker":    s.metricsLLMBy("worker"),
+			// 每个 worker 的「冷启动会话数」：按 session_id 取第一条调用，命中=0 即冷启动。
+			// 与 zero_cache_calls 的区别：后者包含中途掉命中的调用，前者只看会话首调。
+			"cold_start_sessions": s.metricsColdStartSessions(),
 		}
 		execs := map[string]int{}
 		if rows, err := pg.Query(`SELECT status, count(*) FROM tool_executions GROUP BY 1`); err == nil {
@@ -108,6 +114,8 @@ func (s *Server) metricsLLMBy(column string) []metricsLLMRow {
 	}
 	q := fmt.Sprintf(`SELECT COALESCE(%s,'(unattributed)'), count(*),
        COALESCE(sum(input_tokens),0), COALESCE(sum(output_tokens),0),
+       COALESCE(sum(cache_read),0), COALESCE(sum(input_tokens-cache_read),0),
+       count(*) FILTER (WHERE cache_read=0),
        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms),0)::bigint,
        COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),0)::bigint
 FROM llm_usage
@@ -121,10 +129,44 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 30`, column)
 	out := make([]metricsLLMRow, 0, 8)
 	for rows.Next() {
 		var row metricsLLMRow
-		if err := rows.Scan(&row.Key, &row.Calls, &row.InputTokens, &row.OutputTokens, &row.P50Ms, &row.P95Ms); err != nil {
+		if err := rows.Scan(&row.Key, &row.Calls, &row.InputTokens, &row.OutputTokens,
+			&row.CacheRead, &row.MissTokens, &row.ZeroCache, &row.P50Ms, &row.P95Ms); err != nil {
 			return out
 		}
 		out = append(out, row)
+	}
+	return out
+}
+
+// metricsColdStartSessions 统计近 24h 每个 worker 的「首调零命中」会话数。
+// session_id 为空的历史行无法分组，跳过——它们只影响旧数据，不影响新运行。
+func (s *Server) metricsColdStartSessions() map[string]int {
+	pg := s.m.PG()
+	if pg == nil {
+		return map[string]int{}
+	}
+	rows, err := pg.Query(`
+WITH firsts AS (
+  SELECT DISTINCT ON (COALESCE(worker,'(unattributed)'), session_id)
+         COALESCE(worker,'(unattributed)') AS worker, session_id, cache_read
+  FROM llm_usage
+  WHERE ts >= now() - interval '24 hours'
+    AND session_id IS NOT NULL AND session_id <> ''
+  ORDER BY COALESCE(worker,'(unattributed)'), session_id, ts
+)
+SELECT worker, count(*) FILTER (WHERE cache_read = 0)
+FROM firsts GROUP BY worker`)
+	if err != nil {
+		return map[string]int{}
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var worker string
+		var cold int
+		if rows.Scan(&worker, &cold) == nil {
+			out[worker] = cold
+		}
 	}
 	return out
 }

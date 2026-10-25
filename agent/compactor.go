@@ -658,14 +658,14 @@ var _ iter.Seq2[llm.StreamEvent, error]
 
 // InstallContextManager 在 opts 上装 P14 领域上下文管理器。调用点必须在 enableNoa 之后：
 // noa 与它抢同一个 Options.Compactor 槽位，noa 已占用时本函数不动它（互斥而非静默覆盖）。
-func InstallContextManager(opts *agentcore.Options, windowTokens int, dumpDir string, index func() string) {
+func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func() string) {
 	if opts == nil {
 		return
 	}
 	if opts.Compactor != nil {
 		return // noa 已接管
 	}
-	cfg := compactionConfig(windowTokens)
+	cfg := compactionConfig(windowTokens, maxTokens)
 	if cfg == nil {
 		cfg = &compaction.Config{}
 	}

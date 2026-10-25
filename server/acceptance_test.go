@@ -1035,7 +1035,7 @@ func accP14(t *testing.T, e *accEnv) {
 
 	dumpDir := t.TempDir()
 	opts := &agentcore.Options{Provider: prov, NonStreaming: true}
-	agent.InstallContextManager(opts, 200000, dumpDir, func() string {
+	agent.InstallContextManager(opts, 200000, 0, dumpDir, func() string {
 		return agent.BuildContextIndex(agent.ContextIndexVars{
 			Store:  st,
 			Intent: &db.Node{ID: intent, Payload: []byte(`{"summary":"枚举后台登录口的弱口令"}`)},
@@ -1049,7 +1049,7 @@ func accP14(t *testing.T, e *accEnv) {
 	}
 	// noa 已占槽位时不得被覆盖（互斥而非静默覆盖）。
 	noaOwned := &agentcore.Options{Provider: prov, Compactor: opts.Compactor}
-	agent.InstallContextManager(noaOwned, 200000, dumpDir, nil)
+	agent.InstallContextManager(noaOwned, 200000, 0, dumpDir, nil)
 	if noaOwned.Compactor != harness.Compactor(opts.Compactor) {
 		t.Fatal("已占用的 Compactor 槽位被静默覆盖")
 	}
@@ -5847,6 +5847,12 @@ func accP46(t *testing.T, e *accEnv) {
 			found = true
 			if p95, _ := m["p95_ms"].(float64); p95 < 42 {
 				t.Errorf("worker p95=%v，应 >= 42", p95)
+			}
+			if miss, _ := m["miss_tokens"].(float64); miss < 10 {
+				t.Errorf("worker miss_tokens=%v，应 >= 10（没有缓存命中）", miss)
+			}
+			if cold, _ := m["zero_cache_calls"].(float64); cold < 1 {
+				t.Errorf("worker zero_cache_calls=%v，应 >= 1", cold)
 			}
 		}
 	}

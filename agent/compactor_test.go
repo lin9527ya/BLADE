@@ -223,14 +223,26 @@ func TestBladeSummarizerStripsAnalysis(t *testing.T) {
 func TestInstallContextManagerYieldsToNoa(t *testing.T) {
 	noa := &DomainCompactor{}
 	opts := &agentcore.Options{Compactor: noa}
-	InstallContextManager(opts, 200000, t.TempDir(), nil)
+	InstallContextManager(opts, 200000, 0, t.TempDir(), nil)
 	if opts.Compactor != harness.Compactor(noa) {
 		t.Fatal("noa 已占用 Compactor 槽位时不得被覆盖")
 	}
 	opts2 := &agentcore.Options{}
-	InstallContextManager(opts2, 200000, t.TempDir(), func() string { return "x" })
+	InstallContextManager(opts2, 200000, 0, t.TempDir(), func() string { return "x" })
 	if opts2.Compactor == nil || opts2.Compaction != nil {
 		t.Fatalf("未装 noa 时应装上 DomainCompactor 且清空 Compaction: %+v", opts2)
+	}
+}
+
+// profile 的输出上限要进压缩配置：SDK 用它算摘要预留，0 会按 20K 预留，
+// 对 64K 窗口意味着提前压缩。
+func TestCompactionConfigCarriesOutputReserve(t *testing.T) {
+	cfg := compactionConfig(64000, 8000)
+	if cfg.ContextWindow != 64000 || cfg.MaxOutputTokens != 8000 {
+		t.Fatalf("compaction config = %+v，want window=64000 max_out=8000", cfg)
+	}
+	if cfg := compactionConfig(0, 0); cfg.ContextWindow != defaultWindowK*1000 || cfg.MaxOutputTokens != 0 {
+		t.Fatalf("empty config should keep defaults: %+v", cfg)
 	}
 }
 

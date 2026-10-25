@@ -603,7 +603,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
 	// P14 领域上下文：领域化摘要（7 段 + 原文落盘回读）+ 每请求附常驻索引（目标/约束/
 	// 活跃方向/发现一行式）。noa 开启时它已占 Compactor 槽位，这里自动让位（互斥）。
-	InstallContextManager(&opts, w.compactionWindow(), runDir, func() string {
+	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), runDir, func() string {
 		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines()})
 	})
 	ctx = attachSideCapture(ctx, &opts)

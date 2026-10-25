@@ -564,7 +564,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
 	// P14 领域上下文（详见 agent/compactor.go）：规划者被压缩吃掉态势后，常驻索引仍带着
 	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。
-	InstallContextManager(&opts, p.compactionWindow(), taskDir, func() string {
+	InstallContextManager(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func() string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
 		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines()})
 	})

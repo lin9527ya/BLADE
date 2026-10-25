@@ -185,7 +185,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
 	// P14 领域上下文：独立会话没有探索图（index 传 nil），收益在摘要侧——领域模板强制
 	// 逐字保留"所有用户消息"，原文落盘可回读。
-	InstallContextManager(&opts, c.window, sessionWorkDir, nil)
+	InstallContextManager(&opts, c.window, c.maxTokens(), sessionWorkDir, nil)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()
