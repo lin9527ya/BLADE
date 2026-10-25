@@ -536,6 +536,7 @@ func (s *Server) seedOrchestrationTools() {
 	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
+	s.seedBuiltinBindingBackfill()
 	s.seedPlannerDefaultBindings()
 	s.seedPlannerListAssetsBinding()
 	s.seedGraphToolBindings()
@@ -1123,6 +1124,33 @@ func (s *Server) seedWorkerReadbackRebind() {
 	}); err != nil {
 		log.Printf("[worker] 回看/详情工具补绑失败: %v", err)
 		return // 出错则不落 flag，下次启动重试
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
+}
+
+// seedBuiltinBindingBackfill 补齐存量库漏绑的工具。
+//
+// tools.agents 是**首次 seed 时**写入的；之后代码把某个工具加进 agent 的默认工具集，
+// 不会自动改已有行。而运行期 ToolResolve 会按 DB 行过滤——于是出现「代码里有、提示词
+// 也让人调、运行期却被丢掉」的漂移。这里只补代码明确要求的两个：
+//   - planner: coverage_matrix（规划补测前要看资产×风险类矩阵）
+//   - mainagent: list_companies（promote_knowledge 的提示要它拿 company_id）
+//
+// 新库由 BuiltinToolSeeds 直接 seed 正确；本迁移只对存量库生效，一次性。
+func (s *Server) seedBuiltinBindingBackfill() {
+	const flag = "builtin_binding_backfill_20261025"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"coverage_matrix"}); err != nil {
+		log.Printf("[migrate] planner 补绑 coverage_matrix 失败: %v", err)
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("mainagent", []string{"list_companies"}); err != nil {
+		log.Printf("[migrate] mainagent 补绑 list_companies 失败: %v", err)
+		return
 	}
 	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
 		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
