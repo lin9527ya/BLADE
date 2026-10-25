@@ -160,6 +160,11 @@ export function ProfileDialog({
       return;
     }
     if (saving) return;
+    const cwK = Number(cw) || 0;
+    if (cwK > 1000) {
+      toast.error("上下文窗口的单位是 K（千 token）：384K 窗口填 384，不是 384000；上限 1000（1M）。");
+      return;
+    }
     setSaving(true);
     try {
       const { id } = await api.saveLLMProfile({
@@ -172,7 +177,7 @@ export function ProfileDialog({
         api_key: apiKey,
         rate_per_second: Number(rps) || 0,
         rate_per_minute: Number(rpm) || 0,
-        context_window_k: Number(cw) || 0,
+        context_window_k: cwK,
         thinking_type: toStore(thinkingType),
         reasoning_effort: toStore(effort),
         priority: Number(priority) || 0,
@@ -387,7 +392,7 @@ export function ProfileDialog({
               <Input id="p-rpm" type="number" min={0} value={rpm} onChange={(e) => setRpm(e.target.value)} />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="p-cw">上下文窗口(K)</Label>
+              <Label htmlFor="p-cw">上下文窗口（K，千 token）</Label>
               <Input
                 id="p-cw"
                 type="number"
@@ -395,13 +400,13 @@ export function ProfileDialog({
                 max={1000}
                 value={cw}
                 onChange={(e) => setCw(e.target.value)}
-                placeholder="200"
+                placeholder="384"
               />
             </div>
           </div>
           <p className="-mt-2 text-muted-foreground text-xs">
-            限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即
-            1M）；设太高会导致压缩不触发。
+            限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token）：模型是 <b>384K</b> 就填{" "}
+            <b>384</b>，不是 384000；0 = 默认 200K，上限 1000（即 1M）。设太高会导致压缩不触发。
           </p>
 
           <div className="grid gap-3 rounded-lg border p-3">
@@ -452,7 +457,8 @@ export function ProfileDialog({
                   输出上限 · max tokens
                 </Label>
                 <p className="text-muted-foreground text-xs">
-                  单次回复最多生成多少 token，随每次请求发出。0（默认）= 不发送该字段，由服务端默认值决定。
+                  单次回复最多生成多少 token，随每次请求发出（单位 token，常见 8192）。0（默认）= 不发送该字段，由服务端默认值决定。
+                  <b>这不是上下文窗口</b>：上下文窗口在上面按 K 填；把 120000 填到这里不会扩大上下文，只会要求模型一次输出 12 万 token。
                   这与上面的「上下文窗口」是两回事：那是模型总容量，只在本地用来算压缩阈值。
                   设太小会让推理模型在思考阶段就被截断，一个字答案都出不来。
                 </p>
