@@ -720,10 +720,19 @@ export const api = {
   // 可检出性知识库一览（P38，只读）：让团队看得见这份清单覆盖到哪、边界在哪。
   opsecKnowledge: () => get<OpsecKnowledgeResponse>("/opsec/knowledge"),
   // 作业时间线（P37）：页面读的与导出的走服务端同一份装配（客户拿到的那份不该与界面对不上）。
-  taskTimeline: (taskId: string, kinds = "") =>
-    get<TimelineResponse>(
-      `/tasks/${encodeURIComponent(taskId)}/timeline${kinds ? `?kinds=${encodeURIComponent(kinds)}` : ""}`,
-    ),
+  taskTimeline: (
+    taskId: string,
+    kinds = "",
+    opts: { page?: number; size?: number; order?: "asc" | "desc" } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (kinds) q.set("kinds", kinds);
+    if (opts.page) q.set("page", String(opts.page));
+    if (opts.size) q.set("size", String(opts.size));
+    if (opts.order) q.set("order", opts.order);
+    const qs = q.toString();
+    return get<TimelineResponse>(`/tasks/${encodeURIComponent(taskId)}/timeline${qs ? `?${qs}` : ""}`);
+  },
   downloadTaskTimeline: async (taskId: string, kinds = "") => {
     const token = getToken();
     const r = await fetch(

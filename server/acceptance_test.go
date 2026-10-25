@@ -4716,16 +4716,21 @@ VALUES($1,'work#1','Bash','{"command":"nmap acc-p37.example"}','denied',
 		`{"result":"not_triggered","summary":"读 /etc/shadow 无任何告警","technique":"T1003.008",`+
 			`"evidence":"查询 EDR 控制台该时段无记录","confidence":"high"}`)
 
-	// ② 页面读的那条接口：五类里程碑各在，且**按时间正序**。
+	// ② 页面读的那条接口：五类里程碑各在，且**默认最新在前**。
 	rec := e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("时间线 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var tl struct {
-		Events []TimelineEvent `json:"events"`
-		Counts map[string]int  `json:"counts"`
-		From   string          `json:"from"`
-		To     string          `json:"to"`
+		Events  []TimelineEvent `json:"events"`
+		Counts  map[string]int  `json:"counts"`
+		From    string          `json:"from"`
+		To      string          `json:"to"`
+		Page    int             `json:"page"`
+		Size    int             `json:"size"`
+		Total   int             `json:"total"`
+		Order   string          `json:"order"`
+		HasMore bool            `json:"has_more"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &tl); err != nil {
 		t.Fatalf("解码失败：%v raw=%s", err, rec.Body.String())
@@ -4740,15 +4745,68 @@ VALUES($1,'work#1','Bash','{"command":"nmap acc-p37.example"}','denied',
 	}
 	ordered := true
 	for i := 1; i < len(tl.Events); i++ {
-		if tl.Events[i-1].At > tl.Events[i].At {
+		if tl.Events[i-1].At < tl.Events[i].At {
 			ordered = false
 		}
 	}
 	if !ordered {
-		t.Errorf("时间线该按时间正序：%+v", tl.Events)
+		t.Errorf("时间线默认应最新在前：%+v", tl.Events)
+	}
+	if tl.Page != 1 || tl.Size != 50 || tl.Order != "desc" {
+		t.Errorf("默认分页应为 page=1 size=50 order=desc，得到 %+v", tl)
+	}
+	if tl.Total < len(tl.Events) {
+		t.Errorf("total 不能小于当前页条数：total=%d events=%d", tl.Total, len(tl.Events))
 	}
 	if tl.From == "" || tl.To == "" {
 		t.Errorf("时间范围该报出来：from=%q to=%q", tl.From, tl.To)
+	}
+	// 分页与「最早在前」：size=2 时第一页两条，第二页应更旧且不重叠。
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline?size=2&page=1&order=desc", "")
+	var p1 struct {
+		Events  []TimelineEvent `json:"events"`
+		Page    int             `json:"page"`
+		Size    int             `json:"size"`
+		Order   string          `json:"order"`
+		Total   int             `json:"total"`
+		HasMore bool            `json:"has_more"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &p1); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("时间线分页解码失败：%v %s", err, rec.Body.String())
+	}
+	if len(p1.Events) > 2 || p1.Page != 1 || p1.Size != 2 || p1.Order != "desc" {
+		t.Errorf("时间线第一页不符合 size=2：%+v", p1)
+	}
+	if p1.Total > 2 && !p1.HasMore {
+		t.Errorf("还有更早事件时 has_more 应为 true：%+v", p1)
+	}
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline?size=2&page=2&order=desc", "")
+	var p2 struct {
+		Events []TimelineEvent `json:"events"`
+		Page   int             `json:"page"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &p2); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("时间线第二页解码失败：%v %s", err, rec.Body.String())
+	}
+	if len(p1.Events) > 0 && len(p2.Events) > 0 && p1.Events[len(p1.Events)-1].At < p2.Events[0].At {
+		t.Errorf("第二页应比第一页更旧：p1=%+v p2=%+v", p1.Events, p2.Events)
+	}
+	rec = e.request(http.MethodGet, "/api/tasks/"+task.ID+"/timeline?order=asc", "")
+	var asc struct {
+		Events []TimelineEvent `json:"events"`
+		Order  string          `json:"order"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &asc); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("时间线 asc 解码失败：%v %s", err, rec.Body.String())
+	}
+	if asc.Order != "asc" {
+		t.Errorf("order=asc 未生效：%+v", asc)
+	}
+	for i := 1; i < len(asc.Events); i++ {
+		if asc.Events[i-1].At > asc.Events[i].At {
+			t.Errorf("order=asc 应按时间正序：%+v", asc.Events)
+			break
+		}
 	}
 	// 执行那一格要带出**为什么收场**（cancel_note）——复盘时这正是要看的东西。
 	foundCancel := false

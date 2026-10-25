@@ -148,6 +148,12 @@ type timelineResponse struct {
 	// Truncated 如实报出被截断的条数——"只显示了一部分"必须让人看得见（同报告里的窗口计数）。
 	Truncated int            `json:"truncated,omitempty"`
 	Counts    map[string]int `json:"counts"`
+	// 分页（界面用；导出仍取完整时间线）。
+	Page    int    `json:"page,omitempty"`
+	Size    int    `json:"size,omitempty"`
+	Total   int    `json:"total,omitempty"`
+	Order   string `json:"order,omitempty"`
+	HasMore bool   `json:"has_more,omitempty"`
 }
 
 // parseTimelineKinds 解析 kinds 参数：空 = 里程碑；all = 里程碑 + 原始步骤。
@@ -524,11 +530,73 @@ func (s *Server) taskTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kinds, withSteps := parseTimelineKinds(r.URL.Query().Get("kinds"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	resp, err := s.buildTaskTimeline(t, kinds, withSteps, limit)
+	q := r.URL.Query()
+	page := atoiDefault(q.Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	size := atoiDefault(q.Get("size"), 50)
+	if q.Get("size") == "" {
+		// 兼容旧调用：以前只认 limit。
+		if n := atoiDefault(q.Get("limit"), 0); n > 0 {
+			size = n
+		}
+	}
+	if size <= 0 {
+		size = 50
+	}
+	if size > 200 {
+		size = 200
+	}
+	order := strings.ToLower(strings.TrimSpace(q.Get("order")))
+	if order != "asc" {
+		order = "desc" // 默认最新在前
+	}
+	// 各源取数上限 = 目标页之前的所有事件。page 越深取越多，封顶避免一次拉爆。
+	fetchLimit := page * size
+	if fetchLimit > 5000 {
+		fetchLimit = 5000
+	}
+	resp, err := s.buildTaskTimeline(t, kinds, withSteps, fetchLimit)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	// buildTaskTimeline 返回的是“最新 fetchLimit 条、按时间正序”。这里按请求的
+	// order 排好，再切出当前页；counts/total 来自 COUNT(*)，不是窗口长度。
+	total := 0
+	for _, k := range kinds {
+		total += resp.Counts[k]
+	}
+	events := resp.Events
+	if order == "desc" {
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
+	}
+	start := (page - 1) * size
+	if start > len(events) {
+		start = len(events)
+	}
+	end := start + size
+	if end > len(events) {
+		end = len(events)
+	}
+	pageEvents := events[start:end]
+	resp.Events = pageEvents
+	resp.Page, resp.Size, resp.Total, resp.Order = page, size, total, order
+	resp.HasMore = end < total
+	if len(pageEvents) == 0 {
+		resp.From, resp.To = "", ""
+	} else if order == "desc" {
+		resp.From, resp.To = pageEvents[len(pageEvents)-1].At, pageEvents[0].At
+	} else {
+		resp.From, resp.To = pageEvents[0].At, pageEvents[len(pageEvents)-1].At
+	}
+	if total > end {
+		resp.Truncated = total - end
+	} else {
+		resp.Truncated = 0
 	}
 	writeJSON(w, 200, resp)
 }

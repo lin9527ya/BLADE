@@ -623,6 +623,12 @@ export interface TimelineResponse {
   /** 被截掉的更早事件数（如实报出："只显示了一部分"要让人看得见）。 */
   truncated?: number;
   counts: Record<string, number>;
+  /** 分页与排序（界面用；导出仍取完整时间线）。 */
+  page?: number;
+  size?: number;
+  total?: number;
+  order?: "asc" | "desc";
+  has_more?: boolean;
 }
 
 /** 凭据明文的受控入口返回（P36）：明文只在人主动点开时出，且服务端会为此留痕。 */

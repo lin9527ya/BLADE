@@ -2,9 +2,10 @@
 
 import * as React from "react";
 
-import { DownloadIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, DownloadIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { TablePagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -38,6 +39,7 @@ const KIND_TONE: Record<TimelineKind, string> = {
 };
 
 const MILESTONE_KINDS: TimelineKind[] = ["execution", "approval", "finding", "loot", "detection", "note"];
+const PAGE_SIZES = [20, 50, 100];
 
 function fmt(ts: string): string {
   const d = new Date(ts);
@@ -67,6 +69,9 @@ function EventRow({ e }: { e: TimelineEvent }) {
 export function TimelineTab({ taskId }: { taskId: string }) {
   const [data, setData] = React.useState<TimelineResponse | null>(null);
   const [withSteps, setWithSteps] = React.useState(false);
+  const [order, setOrder] = React.useState<"asc" | "desc">("desc");
+  const [page, setPage] = React.useState(1);
+  const [size, setSize] = React.useState(50);
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState("");
   const [exporting, setExporting] = React.useState(false);
@@ -77,7 +82,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
     (steps: boolean) => {
       setLoading(true);
       api
-        .taskTimeline(taskId, steps ? "all" : "")
+        .taskTimeline(taskId, steps ? "all" : "", { page, size, order })
         .then((d) => {
           setData(d);
           setFailed("");
@@ -85,12 +90,12 @@ export function TimelineTab({ taskId }: { taskId: string }) {
         .catch((e: unknown) => setFailed(String((e as Error)?.message ?? e)))
         .finally(() => setLoading(false));
     },
-    [taskId],
+    [taskId, page, size, order],
   );
 
   React.useEffect(() => {
-    load(false);
-  }, [load]);
+    load(withSteps);
+  }, [load, withSteps]);
 
   const doExport = () => {
     setExporting(true);
@@ -125,6 +130,18 @@ export function TimelineTab({ taskId }: { taskId: string }) {
               )}
               刷新
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setOrder((o) => (o === "desc" ? "asc" : "desc"));
+                setPage(1);
+              }}
+              aria-label={order === "desc" ? "当前最新在前，点击改为最早在前" : "当前最早在前，点击改为最新在前"}
+            >
+              {order === "desc" ? <ArrowDownIcon data-icon="inline-start" /> : <ArrowUpIcon data-icon="inline-start" />}
+              {order === "desc" ? "最新在前" : "最早在前"}
+            </Button>
             <label className="ml-auto flex items-center gap-2 text-xs">
               <input
                 type="checkbox"
@@ -132,7 +149,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
                 checked={withSteps}
                 onChange={(ev) => {
                   setWithSteps(ev.target.checked);
-                  load(ev.target.checked);
+                  setPage(1);
                 }}
               />
               包含全部步骤（原始工具调用流水）
@@ -148,7 +165,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
                 {fmt(data.from)} → {data.to ? fmt(data.to) : "—"}
               </span>
             )}
-            {data?.truncated ? <span>另有 {data.truncated} 条更早的事件未列出</span> : null}
+            {data?.has_more ? <span>还有更早的事件 · 可翻页查看</span> : null}
           </div>
 
           <p className="text-muted-foreground text-xs leading-relaxed">
@@ -166,11 +183,28 @@ export function TimelineTab({ taskId }: { taskId: string }) {
           {(data?.events.length ?? 0) === 0 ? (
             <p className="text-muted-foreground text-sm">这条任务还没有可列入时间线的事件。</p>
           ) : (
-            <ul className="flex flex-col">
-              {(data?.events ?? []).map((e, i) => (
-                <EventRow key={`${e.at}-${e.kind}-${e.ref_id ?? "x"}-${i}`} e={e} />
-              ))}
-            </ul>
+            <>
+              <ul className="flex flex-col">
+                {[...(data?.events ?? [])]
+                  .sort((a, b) => (order === "desc" ? b.at.localeCompare(a.at) : a.at.localeCompare(b.at)))
+                  .map((e, i) => (
+                    <EventRow key={`${e.at}-${e.kind}-${e.ref_id ?? "x"}-${i}`} e={e} />
+                  ))}
+              </ul>
+              <div className="mt-3 border-t pt-3">
+                <TablePagination
+                  page={page}
+                  pageSize={size}
+                  total={data?.total ?? 0}
+                  onPageChange={setPage}
+                  onPageSizeChange={(n) => {
+                    setSize(n);
+                    setPage(1);
+                  }}
+                  pageSizeOptions={PAGE_SIZES}
+                />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
