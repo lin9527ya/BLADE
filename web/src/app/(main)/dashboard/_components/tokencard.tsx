@@ -179,14 +179,14 @@ export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState>["t
             {(() => {
               // input 已含缓存 → 命中率 = 缓存命中 / 总输入。
               const denominator = displayedTokens.input;
-              const hitPct = denominator > 0 ? Math.round((displayedTokens.cacheRead / denominator) * 100) : 0;
+              const hitPct = denominator > 0 ? (displayedTokens.cacheRead / denominator) * 100 : 0;
               return (
                 <div className="flex items-center justify-between rounded-lg border bg-muted/20 px-3 py-2 text-[10px]">
                   <span className="text-muted-foreground">缓存命中率（命中 / 总输入）</span>
                   <span
                     className={cn("font-semibold tabular-nums", hitPct > 50 ? "text-emerald-400" : "text-amber-400")}
                   >
-                    {hitPct}%
+                    {hitPct.toFixed(1)}%
                   </span>
                 </div>
               );
