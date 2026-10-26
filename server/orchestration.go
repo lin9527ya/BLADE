@@ -553,6 +553,8 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.reseedReporterPrompt()          // 报告模板:补详细利用过程/绝对路径/命令回显(一次性)
 	s.seedPlaybookAgent()             // 预置「打法沉淀」agent + report_foothold 触发器(一次性)
+	s.seedPlaybookGoalTrigger()       // 存量库补「目标达成」触发器(一次性)
+	s.reseedPlaybookPrompt()          // 打法沉淀提示词兼容目标达成触发(一次性)
 	s.reseedPentestPrompt()           // pentest 提示词:加 lookup_playbooks 打法复用(一次性)
 	s.upgradeReporterTriggerMessage() // 老库补迁移:让 reporter 回传 evidence_version(一次性)
 	s.seedFindingTrafficTools()       // 增加可选证据参数及只读证据工具，保留用户配置
@@ -903,8 +905,22 @@ const playbookToolCallMessage = "上面刚有一个据点在 report_foothold 里
 	"先 lookup_playbooks 查同指纹是否已有卡片；最后用 record_playbook 写入或更新一张可跨目标复用的打法卡。" +
 	"未确认（medium/low）不要沉淀，说明原因即可；卡片必须脱敏（不写凭据/客户域名/IP）。"
 
+// playbookDistillBody 是「沉淀一次」的共用指令尾部：目标达成与手动复盘都按它判断。
+const playbookDistillBody = "请判断这次是否留下一条可跨目标复用的方法：读任务图 / 已确认发现 / 意图与 worker trace，还原真正走通的链路（入口→验证→利用→结果/权限），只写有证据的部分。" +
+	"只要方法可复现（high 置信度、有请求/命令/回显；不要求拿到 shell），就用 record_playbook 沉淀；覆盖率/侦察类目标没有完整方法时不要硬写，直接说明“无新打法”并结束。" +
+	"先 lookup_playbooks 查同指纹/同手法是否已有卡片：有则用相同 technique_key 更新，不要重复建卡；指纹优先用 asset_ids 从资产库取；" +
+	"source_node_id 传对应的据点/发现节点 id（没有可省略）；证据必须脱敏（不写凭据/客户域名/IP）。"
+
+// playbookGoalMessage 是「目标达成」触发：即使没有 report_foothold（例如靠一个高置信度
+// 漏洞证明目标），也要把真正走通的方法沉淀下来；覆盖率/侦察类目标允许明确说“无新打法”。
+const playbookGoalMessage = "本任务刚达成一个目标（触发上下文里有目标文本）。这是「目标达成」触发，不是 report_foothold；没有据点也可以沉淀。" + playbookDistillBody
+
+// playbookManualMessage 是操作者在任务详情手动点「沉淀本任务打法」时的触发文案。
+const playbookManualMessage = "操作者手动要求复盘本任务并沉淀打法（不要求本任务刚达成目标）。" + playbookDistillBody
+
 // seedPlaybookAgent 预置一个「打法沉淀」自定义 agent（builtin=false，可在 UI 编辑/删除）：
-// 挂 report_foothold 的 on_tool_call 触发器 —— 每拿到一个据点就唤起它提炼打法。
+// 挂 report_foothold 的 on_tool_call 触发器，以及目标达成的 on_goal_met 触发器——
+// 前者覆盖“拿到据点”，后者覆盖“靠确认漏洞/完整链路完成目标但没有据点”的情况。
 // 一次性(settings flag 守卫)：用户删掉后不再重建。
 func (s *Server) seedPlaybookAgent() {
 	const flag = "playbook_agent_seed_v1"
@@ -917,7 +933,7 @@ func (s *Server) seedPlaybookAgent() {
 		return // key 已被占用(用户手建过)——不覆盖
 	}
 	a, err := s.m.pg.CreateAgent("playbook", "打法沉淀",
-		"打穿目标（report_foothold）时自动触发：还原执行过程与目标指纹，沉淀成可跨目标复用的打法卡片。")
+		"打穿目标（report_foothold）或达成目标时自动触发：还原执行过程与目标指纹，沉淀成可跨目标复用的打法卡片。")
 	if err != nil {
 		log.Printf("[playbook] 创建 agent 失败: %v", err)
 		return
@@ -946,7 +962,81 @@ func (s *Server) seedPlaybookAgent() {
 		log.Printf("[playbook] 创建触发器失败: %v", err)
 		return
 	}
-	log.Printf("[playbook] 已预置「打法沉淀」agent + report_foothold 触发器")
+	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
+		AgentKey:    "playbook",
+		Enabled:     true,
+		OnGoalMet:   true,
+		GoalMessage: playbookGoalMessage,
+	}); err != nil {
+		log.Printf("[playbook] 创建目标达成触发器失败: %v", err)
+		return
+	}
+	log.Printf("[playbook] 已预置「打法沉淀」agent + 据点/目标达成触发器")
+}
+
+// seedPlaybookGoalTrigger 给存量库补上「目标达成」触发器（一次性）。
+// 老库的 playbook agent 只有 report_foothold 触发——靠确认漏洞完成目标的任务因此
+// 从不沉淀。保留用户已有的任何 on_goal_met 配置，只在缺失时补一条。
+func (s *Server) seedPlaybookGoalTrigger() {
+	const flag = "playbook_goal_trigger_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}()
+	a, err := s.m.pg.GetAgentByKey("playbook")
+	if err != nil || a == nil {
+		return // 用户删掉了 playbook agent：尊重删除，不重建
+	}
+	trs, err := s.m.pg.ListTriggersFor("playbook")
+	if err != nil {
+		return
+	}
+	for _, tr := range trs {
+		if tr.OnGoalMet {
+			return // 用户已自行配置过目标达成触发
+		}
+	}
+	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
+		AgentKey:    "playbook",
+		Enabled:     true,
+		OnGoalMet:   true,
+		GoalMessage: playbookGoalMessage,
+	}); err != nil {
+		log.Printf("[playbook] 补目标达成触发器失败: %v", err)
+		return
+	}
+	log.Printf("[playbook] 已为存量库补上目标达成触发器")
+}
+
+// reseedPlaybookPrompt 只替换**仍带旧据点触发开头**的打法沉淀提示词；用户改掉该
+// 开头的保留原样（尊重自定义）。旧版本留在版本历史里可回滚。
+func (s *Server) reseedPlaybookPrompt() {
+	const flag = "playbook_prompt_goal_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}()
+	a, err := s.m.pg.GetAgentByKey("playbook")
+	if err != nil || a == nil {
+		return
+	}
+	cur, err := s.m.pg.CurrentPrompt(a.ID)
+	if err != nil || !strings.Contains(cur, "刚刚有 worker 拿到了据点（report_foothold）") {
+		return // 用户改过开头：不覆盖
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, agent.PlaybookDefaultPrompt); err != nil {
+		log.Printf("[playbook] 刷新提示词失败: %v", err)
+		return
+	}
+	log.Printf("[playbook] 提示词已支持目标达成触发（一次性）")
 }
 
 // reseedPentestPrompt 把 pentest（独立渗透 agent）的提示词刷成当前代码默认——

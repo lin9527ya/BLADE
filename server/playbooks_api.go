@@ -15,6 +15,7 @@ func (s *Server) registerPlaybookRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/playbooks", s.listPlaybooks)
 	mux.HandleFunc("GET /api/playbooks/{id}", s.getPlaybook)
 	mux.HandleFunc("PATCH /api/playbooks/{id}", s.patchPlaybook)
+	mux.HandleFunc("POST /api/tasks/{id}/distill-playbook", s.distillTaskPlaybook) // 手动让打法沉淀 agent 复盘本任务
 }
 
 func (s *Server) listPlaybooks(w http.ResponseWriter, r *http.Request) {
@@ -84,4 +85,37 @@ func (s *Server) patchPlaybook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, p)
+}
+
+// distillTaskPlaybook 手动触发一次「打法沉淀」agent 复盘本任务。
+//
+// 自动触发依赖 scheduler 的 goal/tool-call 水位：迁移前已达成的目标不会补发。
+// 这个入口让操作者对已完成的任务补沉淀，也让“沉淀失败/漏了”有可重试的出口。
+func (s *Server) distillTaskPlaybook(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	if s.engine.IsDeleting(t.ID) {
+		writeErr(w, 409, "任务正在删除，无法沉淀打法")
+		return
+	}
+	a, err := s.m.pg.GetAgentByKey("playbook")
+	if err != nil || a == nil {
+		writeErr(w, 409, "打法沉淀 agent 不存在（可能已被删除）")
+		return
+	}
+	if !a.Enabled {
+		writeErr(w, 409, "打法沉淀 agent 已停用，请在 Agent 管理里启用后再试")
+		return
+	}
+	taskID, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		writeErr(w, 400, "bad task id")
+		return
+	}
+	msg := playbookManualMessage + "\n\n（手动触发：即使目标尚未全部达成，也按已完成的部分判断；没有可复用的完整方法就说明“无新打法”。）"
+	s.StartTriggeredRun("playbook", "手动沉淀 · task#"+t.ID, msg, taskID, true, t.Description, t.Goal)
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "status": "queued"})
 }

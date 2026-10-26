@@ -77,14 +77,20 @@ func TestSeedPlaybookAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	footholdTrigger, goalTrigger := false, false
 	for _, tr := range triggers {
 		if tr.OnToolCall && len(tr.ToolNames) == 1 && tr.ToolNames[0] == "report_foothold" {
-			found = true
+			footholdTrigger = true
+		}
+		if tr.OnGoalMet && strings.Contains(tr.GoalMessage, "无新打法") {
+			goalTrigger = true
 		}
 	}
-	if !found {
+	if !footholdTrigger {
 		t.Fatalf("没有 report_foothold 触发器：%+v", triggers)
+	}
+	if !goalTrigger {
+		t.Fatalf("没有目标达成触发器（打法库会漏掉靠确认漏洞完成的目标）：%+v", triggers)
 	}
 	tool, err := pg.GetTool("record_playbook")
 	if err != nil || tool == nil || !contains(tool.Agents, "playbook") {
@@ -93,5 +99,80 @@ func TestSeedPlaybookAgent(t *testing.T) {
 	lookup, _ := pg.GetTool("lookup_playbooks")
 	if lookup == nil || !contains(lookup.Agents, "worker") || !contains(lookup.Agents, "planner") {
 		t.Fatalf("lookup_playbooks 默认绑定不对：%+v", lookup)
+	}
+}
+
+// TestSeedPlaybookGoalTriggerBackfill：存量库只有 report_foothold 触发时，
+// 一次性迁移必须补上目标达成触发；已有 on_goal_met 配置则保持不动。
+func TestSeedPlaybookGoalTriggerBackfill(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	// 模拟老库：删掉目标达成触发与迁移标记。
+	if _, err := pg.Exec(`DELETE FROM agent_triggers WHERE agent_key='playbook' AND on_goal_met`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.Exec(`DELETE FROM settings WHERE key='playbook_goal_trigger_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	s.seedPlaybookGoalTrigger()
+	triggers, err := pg.ListTriggersFor("playbook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tr := range triggers {
+		if tr.OnGoalMet && tr.GoalMessage != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("存量库回填后仍没有目标达成触发器：%+v", triggers)
+	}
+	// 再跑一次不应重复创建。
+	before := len(triggers)
+	if _, err := pg.Exec(`DELETE FROM settings WHERE key='playbook_goal_trigger_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	s.seedPlaybookGoalTrigger()
+	after, _ := pg.ListTriggersFor("playbook")
+	if len(after) != before {
+		t.Fatalf("回填应幂等，触发数 %d → %d", before, len(after))
+	}
+}
+
+// TestReseedPlaybookPromptForGoalTrigger：旧默认提示词（只讲 report_foothold）
+// 要升级成兼容目标达成的版本；用户改过的正文不能被覆盖。
+func TestReseedPlaybookPromptForGoalTrigger(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	a, err := pg.GetAgentByKey("playbook")
+	if err != nil || a == nil {
+		t.Fatalf("playbook agent 未预置：%v", err)
+	}
+	// 模拟仍带旧开头的默认提示词。
+	if _, err := pg.SavePrompt(a.ID, "你是一个授权渗透测试系统里的「打法沉淀 agent」。刚刚有 worker 拿到了据点（report_foothold）。旧正文。", "test", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.Exec(`DELETE FROM settings WHERE key='playbook_prompt_goal_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	s.reseedPlaybookPrompt()
+	cur, _ := pg.CurrentPrompt(a.ID)
+	if !strings.Contains(cur, "目标达成") || !strings.Contains(cur, "on_goal_met") {
+		t.Fatalf("旧提示词应升级为兼容目标达成：%s", cur)
+	}
+
+	// 用户改掉旧开头后，迁移不得覆盖。
+	const custom = "这是用户自定义的打法沉淀提示词，不包含旧开头。"
+	if _, err := pg.SavePrompt(a.ID, custom, "user", "user"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.Exec(`DELETE FROM settings WHERE key='playbook_prompt_goal_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	s.reseedPlaybookPrompt()
+	cur, _ = pg.CurrentPrompt(a.ID)
+	if cur != custom {
+		t.Fatalf("用户自定义提示词被覆盖：%s", cur)
 	}
 }

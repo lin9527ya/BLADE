@@ -553,6 +553,9 @@ export const api = {
     }));
   },
   playbook: (id: number) => get<Playbook>(`/playbooks/${id}`),
+  // 手动让「打法沉淀」agent 复盘本任务（历史任务不会因触发水位补发）。
+  distillTaskPlaybook: (id: string) =>
+    post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
   setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>
     patch<Playbook>(`/playbooks/${id}`, { status, reason }),
 

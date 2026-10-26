@@ -122,6 +122,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P46 运行指标（任务队列/在飞调用/LLM 延迟分位数/执行计数）", func(t *testing.T) { accP46(t, env.forTest(t)) })
 	t.Run("P47 战略提示（新增即唤醒/规划层可采纳/采纳后消失/重复与上限拦截）", func(t *testing.T) { accP47(t, env.forTest(t)) })
 	t.Run("P48 人工销账与导出（遗留物证据门/风险结论/任务与审批 CSV/缓存筛选）", func(t *testing.T) { accP48(t, env.forTest(t)) })
+	t.Run("P49 测试范围网段（192.168.1.1/24 归一为网络地址，不再只能加 /32）", func(t *testing.T) { accP49(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -6210,6 +6211,34 @@ func accP48(t *testing.T, e *accEnv) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "审批ID") ||
 		!strings.Contains(rec.Body.String(), "denied") || !strings.Contains(rec.Body.String(), "rule hit") {
 		t.Fatalf("审批 CSV: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// accP49 任务测试范围的 IP/网段：用户把 C 段写成 192.168.1.1/24 时，
+// 必须归一成 PostgreSQL cidr 能接受的 192.168.1.0/24，而不是报错"只能加 /32"。
+func accP49(t *testing.T, e *accEnv) {
+	task, _ := e.newTask("accP49", "测试范围网段")
+	base := "/api/tasks/" + task.ID + "/scope"
+
+	rec := e.request(http.MethodPost, base, `{"kind":"cidr","value":"192.168.1.1/24"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"kind":"cidr"`) ||
+		!strings.Contains(rec.Body.String(), `"net":"192.168.1.0/24"`) {
+		t.Fatalf("C 段归一失败: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodPost, base, `{"kind":"ip","value":"10.0.0.1"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"kind":"ip"`) ||
+		!strings.Contains(rec.Body.String(), `"net":"10.0.0.1/32"`) {
+		t.Fatalf("单 IP 应保存为 /32: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = e.request(http.MethodGet, base, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "192.168.1.0/24") ||
+		!strings.Contains(rec.Body.String(), "10.0.0.1/32") {
+		t.Fatalf("范围列表应包含两条规范化后的网络: %d %s", rec.Code, rec.Body.String())
+	}
+	// 选「网段」但不给掩码：要明确报错要求 /24，而不是静默存成 /32。
+	rec = e.request(http.MethodPost, base, `{"kind":"cidr","value":"192.168.1.0"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "/24") {
+		t.Fatalf("网段缺掩码应 400 并提示 /24: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

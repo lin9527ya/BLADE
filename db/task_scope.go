@@ -193,6 +193,11 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 	case "ip", "cidr":
 		v := value
 		if !strings.Contains(v, "/") {
+			// 明确选了「网段」却不给掩码时，不能静默当成 /32——那正是
+			// "选了网段也只能加 192.168.1.1/32" 的来源。让调用方写清 /24。
+			if kind == "cidr" {
+				return ts, fmt.Errorf("网段需要掩码长度，如 192.168.1.0/24（单个 IP 请选 ip）")
+			}
 			v = ipToHostCIDR(stripHostPort(v))
 			ts.Kind = "ip"
 		} else {
@@ -201,10 +206,14 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 		if v == "" {
 			return ts, fmt.Errorf("无效 ip/cidr: %s", value)
 		}
-		if _, _, err := net.ParseCIDR(v); err != nil {
+		_, ipnet, err := net.ParseCIDR(v)
+		if err != nil {
 			return ts, fmt.Errorf("无效 ip/cidr: %s", value)
 		}
-		ts.Net = v
+		// 必须存**规范化后的网络地址**：PostgreSQL 的 cidr 类型拒绝带主机位的值，
+		// 而用户常把 C 段写成 192.168.1.1/24。原样保存会被 PG 拒绝（表现为
+		// "网段加不进去，只能加 /32"）；ipnet.String() 会归一到 192.168.1.0/24。
+		ts.Net = ipnet.String()
 	case "icp", "keyword":
 		parsed, err := ParseScopeInput(ScopeInput{Kind: kind, Value: value})
 		if err != nil {

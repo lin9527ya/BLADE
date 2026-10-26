@@ -3,17 +3,20 @@
 import * as React from "react";
 import { TaskInterceptRulesCard, TaskExplorationPolicyCard } from "./_components/task-policy-cards";
 
-import { ActivityIcon, AlertTriangleIcon, BellRingIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ActivityIcon, AlertTriangleIcon, BellRingIcon, BookOpenIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 
 import { taskIsTerminal } from "@/lib/status";
 import { TaskConstraint, TaskScopeRow } from "@/lib/types";
+
+import { api } from "@/lib/api";
 
 import { ArtifactPanel } from "./_components/artifact-panel";
 import { useOverviewState } from "./_components/use-overview-state";
@@ -217,6 +220,20 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     budgetPct,
   } = useOverviewState(taskId);
 
+  // 手动沉淀：自动触发依赖调度水位，历史任务/漏触发时用它补一次。
+  const [distilling, setDistilling] = React.useState(false);
+  const distillPlaybook = async () => {
+    setDistilling(true);
+    try {
+      await api.distillTaskPlaybook(taskId);
+      toast.success("已提交打法沉淀，稍后到「打法库」查看结果");
+    } catch (e) {
+      toast.error(`提交失败：${e instanceof Error ? e.message : "未知错误"}`);
+    } finally {
+      setDistilling(false);
+    }
+  };
+
   // 精确计数：列表接口有行数上限（意图 300 / 发现 200），len(列表) 是窗口长度不是总数。
   const totalFindings = stats?.exploration?.finding ?? taskFindings.length;
   const totalIntents = stats?.exploration?.intent ?? intents.length;
@@ -271,6 +288,22 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardTitle className="flex items-center gap-2 text-base">
             <TargetIcon className="size-4 text-primary" /> 任务描述与目标
           </CardTitle>
+          <CardAction>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={distilling}
+              title="让「打法沉淀」agent 复盘本任务并写入打法库（自动触发漏掉时用）"
+              onClick={() => {
+                if (window.confirm("将用 LLM 复盘本任务并把可复用的方法写入打法库，继续？")) {
+                  void distillPlaybook();
+                }
+              }}
+            >
+              <BookOpenIcon data-icon="inline-start" />
+              {distilling ? "提交中…" : "沉淀本任务打法"}
+            </Button>
+          </CardAction>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
@@ -990,7 +1023,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 scopeKind === "company"
                   ? "公司名或 id"
                   : scopeKind === "ip" || scopeKind === "cidr"
-                    ? "如 10.0.0.1 或 10.0.0.0/24"
+                    ? "IP：10.0.0.1；网段：10.0.0.0/24"
                     : scopeKind === "icp"
                       ? "如 京ICP备12345678号-1"
                       : scopeKind === "keyword"
@@ -1014,6 +1047,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </Button>
             {scopeErr && <span className="text-xs text-red-500">{scopeErr}</span>}
           </div>
+          {(scopeKind === "ip" || scopeKind === "cidr") && (
+            <p className="text-muted-foreground text-xs">
+              IP 保存为单主机 /32；网段按网络地址保存（192.168.1.1/24 → 192.168.1.0/24）。
+            </p>
+          )}
           {/* 范围列表 */}
           {scope.length > 0 ? (
             <div className="flex flex-col gap-1.5">

@@ -296,6 +296,7 @@ POST /api/tasks/{id}/constraints	server.(*Server).addConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/apply	server.(*Server).applyConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/compile	server.(*Server).compileConstraint-fm
 POST /api/tasks/{id}/control	server.(*Server).control-fm
+POST /api/tasks/{id}/distill-playbook	server.(*Server).distillTaskPlaybook-fm
 POST /api/tasks/{id}/goals	server.(*Server).addGoal-fm
 POST /api/tasks/{id}/hints	server.(*Server).addHint-fm
 POST /api/tasks/{id}/hints/{hid}/remind	server.(*Server).remindHint-fm
