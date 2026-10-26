@@ -421,3 +421,19 @@ func TestFactoryDefaultIsPermissive(t *testing.T) {
 		}
 	}
 }
+
+// 只禁一项写操作时，提示词不能自称"只读验证/不得发起写操作"：那会让 worker 把
+// 文件上传、表单提交等验证性写操作也当成禁区（实测需要人工提示才肯继续）。
+func TestRenderForbiddenWritesIsScopedToItems(t *testing.T) {
+	block := RenderBlock(Effective{ForbiddenWrites: []string{"http_delete"}})
+	for _, banned := range []string{"本任务声明为只读验证", "不得对目标发起写操作"} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("策略只禁 http_delete，却渲染出全局只读表述 %q：\n%s", banned, block)
+		}
+	}
+	for _, want := range []string{"HTTP 删除请求", "文件上传"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("策略段缺少 %q：\n%s", want, block)
+		}
+	}
+}

@@ -68,7 +68,7 @@ func (e Effective) CompileRules() []RuleDraft {
 			continue
 		}
 		appendRule(id, w.Label, alternation(w.Words, w.Patterns),
-			fmt.Sprintf("任务探索策略禁止「%s」（%s）：本任务声明为只读验证，不对目标发起写操作。请改用只读方式取证（是否被拒/是否可读/有无差异）。", w.Label, w.ID))
+			fmt.Sprintf("任务探索策略禁止「%s」（%s）。请改用只读方式取证（是否被拒/是否可读/有无差异），不要换载荷重试。", w.Label, w.ID))
 	}
 	// 自定义条目（操作者手写）：关键词走与词表同款的词边界/子串形状，正则原样并入。
 	// 排在词表之后，便于阅读时"先看标准项、再看自定义项"。

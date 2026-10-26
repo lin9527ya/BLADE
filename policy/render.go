@@ -59,7 +59,10 @@ func RenderBlock(e Effective) string {
 		b.WriteString(strings.Join(parts, "；") + "。\n")
 	}
 	if len(e.ForbiddenWrites) > 0 {
-		b.WriteString("\n三、敏感写操作（本任务声明为只读验证）：不得对目标发起写操作——")
+		// 只描述**被列出的**几类写操作。此前这里写成「本任务声明为只读验证：不得对
+		// 目标发起写操作」，哪怕策略只禁了 HTTP DELETE，也会让 worker 把文件上传、
+		// 表单提交等验证性写操作一并当成禁区（实测需要人工提示才肯继续）。
+		b.WriteString("\n三、敏感写操作：本任务只禁止下列写操作，其余写操作（如文件上传、表单提交、创建测试数据）不受本节限制——")
 		b.WriteString(strings.Join(WriteLabels(e.ForbiddenWrites), "、"))
 		b.WriteString("。\n")
 		for _, id := range e.ForbiddenWrites {
