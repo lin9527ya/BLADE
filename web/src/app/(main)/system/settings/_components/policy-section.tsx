@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import Link from "next/link";
+
 import { EyeOffIcon, LanguagesIcon, OctagonXIcon, RadarIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
 
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
@@ -10,6 +12,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { api } from "@/lib/api";
+import type { InterceptRule } from "@/lib/types";
 
 import type { useSettingsState } from "./use-settings-state";
 import { exposureWeight } from "./use-settings-state";
@@ -91,6 +95,7 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
         title="安全与策略"
         hint="授权范围改完即时生效；探索策略只影响之后新建的任务（创建时抄一份快照）；操作约束注入下一轮读取即生效。"
       >
+        <SafetyBoundarySummary s={s} />
         <SubBlock
           title="授权范围（RoE）"
           icon={<ShieldAlertIcon className="text-muted-foreground size-4" />}
@@ -708,5 +713,142 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
         </SubBlock>
       </Section>
     </>
+  );
+}
+
+
+// SafetyBoundarySummary 把"默认能用/禁用哪些行为"收成一张表：内置拦截规则（拒绝/审批/
+// 已关闭）+ 探索策略额外禁止项 + 凭据预算。此前这些散落在拦截规则页和策略区，操作者
+// 只能靠碰壁来猜边界；这里只做只读汇总，调整仍走各自原有入口。
+function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }) {
+  const [rules, setRules] = React.useState<InterceptRule[] | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    api
+      .interceptRules()
+      .then((rs) => {
+        if (alive) setRules(rs.filter((r) => r.name.startsWith("[内置]")));
+      })
+      .catch(() => {
+        if (alive) setRules([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const label = (name: string) => name.replace(/^\[内置\]\s*/, "");
+  const denied = (rules ?? []).filter((r) => r.enabled && r.action === "deny");
+  const asked = (rules ?? []).filter((r) => r.enabled && r.action === "ask");
+  const off = (rules ?? []).filter((r) => !r.enabled);
+
+  const techLabels = s.polTech.map(
+    (id) => s.polDefault?.techniques.find((t) => t.id === id)?.label ?? id,
+  );
+  const writeLabels = s.polWrites.map(
+    (id) => s.polDefault?.writes.find((w) => w.id === id)?.label ?? id,
+  );
+  const policyBlocked = [...techLabels, ...writeLabels];
+
+  const credAction =
+    s.credBudgetAction === "allow" ? "放行（只记账）" : s.credBudgetAction === "deny" ? "直接拒绝" : "转人工审批";
+  const scopeLabel = s.scopeMode === "off" ? "不检查" : s.scopeMode === "deny" ? "越界直接拒绝" : "越界转人工审批";
+
+  return (
+    <SubBlock title="默认安全边界（一览）" icon={<ShieldAlertIcon className="text-muted-foreground size-4" />}>
+      <p className="text-muted-foreground text-xs leading-relaxed">
+        <b>未列出的行为默认允许。</b>默认只拦「明显危害目标」的动作（DoS、删库、破坏系统）；其余如文件上传、
+        表单提交、注入验证、越权测试都可直接运行。下面是全局默认实际生效的限制（单个任务可能有自己的策略覆盖，以任务页为准），均可人工调整。
+      </p>
+      {rules === null ? (
+        <p className="text-muted-foreground text-xs">正在读取拦截规则…</p>
+      ) : (
+        <div className="flex flex-col gap-2 text-xs">
+          <BoundaryRow
+            tone="deny"
+            title="默认拒绝（高危害）"
+            items={denied.map((r) => label(r.name))}
+            empty="无"
+            hint="内置规则；在「拦截与审批」页可逐条关闭或改为审批。"
+          />
+          <BoundaryRow
+            tone="ask"
+            title="默认转人工审批"
+            items={asked.map((r) => label(r.name))}
+            empty="无"
+            hint="命中后动作暂停，等你在审批页放行；也可改成允许/拒绝。"
+          />
+          <BoundaryRow
+            tone="off"
+            title="内置规则已关闭（可随时启用）"
+            items={off.map((r) => label(r.name))}
+            empty="无"
+            hint="规则仍在，只是不生效；按授权边界需要时可重新打开。"
+          />
+          <BoundaryRow
+            tone="policy"
+            title="探索策略额外禁止"
+            items={policyBlocked}
+            empty="无（探索方向全授权）"
+            hint="只影响本页下方「探索策略（全局默认）」，改完只对新建任务生效。"
+          />
+        </div>
+      )}
+      <p className="text-muted-foreground text-xs leading-relaxed">
+        凭据尝试预算：
+        {s.credBudget && s.credBudget !== "0" ? (
+          <>
+            30 分钟内每「目标 + 账号」<b>{s.credBudget}</b> 次，超预算后<b>{credAction}</b>
+          </>
+        ) : (
+          <b>不限</b>
+        )}
+        （本页可改）。授权范围：<b>{scopeLabel}</b>。
+      </p>
+      <p className="text-muted-foreground text-xs leading-relaxed">
+        调整入口：<Link className="underline underline-offset-2" href="/system/intercept">拦截与审批</Link>
+        （内置规则的开关/动作）、下方「探索策略（全局默认）」（方向与写操作）、本页「凭据尝试预算」。
+      </p>
+    </SubBlock>
+  );
+}
+
+function BoundaryRow({
+  tone,
+  title,
+  items,
+  empty,
+  hint,
+}: {
+  tone: "deny" | "ask" | "off" | "policy";
+  title: string;
+  items: string[];
+  empty: string;
+  hint: string;
+}) {
+  const toneClass =
+    tone === "deny"
+      ? "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400"
+      : tone === "ask"
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+        : tone === "policy"
+          ? "border-border bg-muted text-foreground"
+          : "border-border text-muted-foreground";
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-sm font-medium">{title}</span>
+      <div className="flex flex-wrap gap-1">
+        {items.length === 0 ? (
+          <span className="text-muted-foreground text-xs">{empty}</span>
+        ) : (
+          items.map((item) => (
+            <span key={item} className={`rounded-full border px-2 py-0.5 text-[11px] ${toneClass}`}>
+              {item}
+            </span>
+          ))
+        )}
+      </div>
+      <span className="text-muted-foreground text-[11px]">{hint}</span>
+    </div>
   );
 }

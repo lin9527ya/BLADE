@@ -143,6 +143,72 @@ func (s *Server) putExplorationPolicyDefault(w http.ResponseWriter, r *http.Requ
 		"note": "全局默认已更新：只影响之后新建的任务；已存在的任务各自持有快照，不会被回溯。"})
 }
 
+// rewriteLegacyReadOnlyPolicy 把"旧出厂/旧默认"的全局探索策略迁移成红队默认：
+// 仅当文档精确匹配 {techniques: [], custom: [], forbidden_writes: ["http_delete"]}
+// 时移除 http_delete（显式空数组 = 全部放开），其它任何自定义策略原样不动。
+//
+// 背景：内置 HTTP DELETE 规则已改为默认关闭，但如果全局策略仍硬拒 http_delete，
+// DELETE 会在策略层先被拒——同一个行为两套开关不一致，用户会以为"规则关了却还不行"。
+// 返回 (新 JSON, true) 表示发生了迁移；false = 不匹配，不写库。
+func rewriteLegacyReadOnlyPolicy(raw string) (string, bool) {
+	// 全局设置的落库形状用 "version"（不是 Doc.GlobalVersion 的 "global_version"），
+	// 与 putExplorationPolicyDefault 保持一致；这里按真实形状解析。
+	var stored struct {
+		Version   int              `json:"version"`
+		Override  policy.Override  `json:"override"`
+		Effective policy.Effective `json:"effective"`
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return "", false
+	}
+	eff := policy.Normalize(stored.Effective)
+	if eff.Source != "global_default" {
+		return "", false
+	}
+	if len(eff.Techniques) != 0 || len(eff.Custom) != 0 {
+		return "", false
+	}
+	if len(eff.ForbiddenWrites) != 1 || eff.ForbiddenWrites[0] != "http_delete" {
+		return "", false
+	}
+	empty := []string{}
+	ov := stored.Override
+	ov.Techniques = &empty
+	ov.ForbiddenWrites = &empty
+	eff.Techniques = nil
+	eff.ForbiddenWrites = nil
+	eff.Version = stored.Version + 1
+	out, err := json.Marshal(map[string]any{"version": eff.Version, "override": ov, "effective": eff})
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// seedRedTeamPolicyDefault 是一次性迁移入口。旧值备份到 exploration_policy_prev，
+// 便于操作者回滚；迁移失败只留日志，不阻断启动。
+func (s *Server) seedRedTeamPolicyDefault() {
+	const flag = "exploration_policy_redteam_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "done" {
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "done") // 结论一次性：不管匹配与否都不再重试
+	raw, ok, err := s.m.pg.GetSetting(settingExplorationPolicy)
+	if err != nil || !ok || strings.TrimSpace(raw) == "" {
+		return
+	}
+	rewritten, changed := rewriteLegacyReadOnlyPolicy(raw)
+	if !changed {
+		return
+	}
+	_ = s.m.pg.SetSetting(settingExplorationPolicy+"_prev", raw)
+	if err := s.m.pg.SetSetting(settingExplorationPolicy, rewritten); err != nil {
+		log.Printf("[policy] 红队默认迁移写库失败: %v", err)
+		return
+	}
+	log.Printf("[policy] 红队默认：已从全局策略移除 http_delete（内置删除请求规则默认关闭，可在拦截规则页启用）；上一版已备份")
+}
+
 // policyResolver 给 agent 用的解析器（每个 run 现读 → 改策略下一轮生效）。
 func (s *Server) policyResolver(taskID int64) func() *policy.Effective {
 	return func() *policy.Effective { return s.taskPolicyByID(taskID) }

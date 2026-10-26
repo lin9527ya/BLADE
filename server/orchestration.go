@@ -541,6 +541,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedPlannerListAssetsBinding()
 	s.seedGraphToolBindings()
 	s.seedCompanyScopeRebind()
+	s.seedRedTeamPolicyDefault()  // 旧全局策略若仍是"只读验证"默认，迁到红队默认(一次性)
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
 	s.seedAutoReportFindingBinding()

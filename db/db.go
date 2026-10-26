@@ -326,10 +326,57 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultInterceptRulesV3(); err != nil {
 		return fmt.Errorf("seed intercept rules v3: %w", err)
 	}
+	if err := d.seedDefaultInterceptRulesV4(); err != nil {
+		return fmt.Errorf("seed intercept rules v4: %w", err)
+	}
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
 	return nil
+}
+
+// dosCommandPattern 匹配明确的拒绝服务/压力测试工具与命令形状。
+// 不收录裸 "ddos"/"flood" 词：它们会误伤域名、路径与文章内容；工具名与带参数的
+// 施压命令已经足以覆盖实际动作。
+const dosCommandPattern = `(?i)(\bhping3\b|\bslowloris(?:\.py)?\s+\S|\bslowhttptest\b|\b(?:t50|ufonet|mhddos)\b|\bab\s+-n\b|\bhey\s+-n\b|\bwrk\s+-|\bsiege\s+-c\b|\bvegeta\s+attack\b|\bjmeter\s+-|\blocust\s+-|压测|压力测试|拒绝服务|洪水攻击|打瘫)`
+
+// seedDefaultInterceptRulesV4 是「红队默认」的另一半：
+//
+//   - 新增 DoS/压测的内置拒绝规则——这是产品明确认定的高危害行为；
+//   - 把 v1/v3 里默认开启的 HTTP DELETE / 删除类接口规则**关闭**（不删除）。删除类请求
+//     是红队验证授权与业务逻辑的常规动作，默认硬拒会把大量正常测试挡在门外；规则仍在
+//     拦截规则页，操作者可按授权边界随时启用。
+//
+// 只改「仍是出厂状态」的规则（name 匹配 + 未改过 action），用户在页面上改过的规则不动。
+func (d *DB) seedDefaultInterceptRulesV4() error {
+	if v, _, _ := d.GetSetting("intercept_default_rules_v4"); v == "done" {
+		return nil
+	}
+	const dosName = "[内置] 拒绝服务 / 压力测试工具"
+	if _, err := d.Exec(`
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+SELECT $1, true, 95, 'tool_input', 'regex', $2, 'deny', $3, false, 60, 'deny'
+WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`,
+		dosName, dosCommandPattern,
+		"禁止发起拒绝服务/压力测试（hping3、slowloris、ab -n、jmeter 等），会打瘫目标业务；如确需压测请在拦截规则页显式调整",
+	); err != nil {
+		return fmt.Errorf("rule %q: %w", dosName, err)
+	}
+	relax := []string{
+		"[内置] curl / wget 发送 DELETE 请求",
+		"[内置] Python HTTP 客户端 DELETE（requests/httpx/aiohttp）",
+		"[内置] 脚本中声明 HTTP DELETE 方法（JS/通用）",
+		"[内置] 批量清空 / 清除接口路径",
+		"[内置] 删除类接口路径",
+	}
+	for _, name := range relax {
+		if _, err := d.Exec(`
+UPDATE intercept_rules SET enabled=false, updated_at=NOW()
+WHERE name=$1 AND task_id='' AND action='deny' AND enabled=true`, name); err != nil {
+			return fmt.Errorf("relax rule %q: %w", name, err)
+		}
+	}
+	return d.SetSetting("intercept_default_rules_v4", "done")
 }
 
 // seedDefaultAssetInterceptRules inserts the built-in asset blocklist (fuzzy
@@ -404,6 +451,10 @@ func (d *DB) seedDefaultInterceptRules() error {
 		action   string
 		message  string
 		priority int
+		// disabled=true 表示仍然种下这条规则（用户可在拦截规则页启用），但默认不生效。
+		// HTTP DELETE / 删除类接口属于"合法红队测试也需要"的动作：默认放行，交给操作者
+		// 按授权和作业习惯自行开启，而不是一上来就硬拒。
+		disabled bool
 	}
 	rules := []rule{
 		// ── 系统破坏性命令 (priority 100) ──────────────────────────────────
@@ -532,6 +583,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		//   3. JS/通用脚本里的 method: 'DELETE' / method="DELETE"
 		{
 			name:     "[内置] curl / wget 发送 DELETE 请求",
+			disabled: true,
 			target:   "tool_input",
 			typ:      "regex",
 			pattern:  `(?i)\bcurl\b[^|\n&;"]{0,300}(?:-X\s*DELETE|--request\s+DELETE|-XDELETE)|\bwget\b[^|\n&;"]{0,300}--method[=\s]+DELETE`,
@@ -541,6 +593,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[内置] Python HTTP 客户端 DELETE（requests/httpx/aiohttp）",
+			disabled: true,
 			target:   "tool_input",
 			typ:      "regex",
 			pattern:  `(?i)\b(?:requests|httpx|aiohttp|urllib\.request)\.delete\s*\(|session\.delete\s*\(|client\.delete\s*\(`,
@@ -550,6 +603,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[内置] 脚本中声明 HTTP DELETE 方法（JS/通用）",
+			disabled: true,
 			target:   "tool_input",
 			typ:      "regex",
 			pattern:  `(?i)axios\.delete\s*\(|method\s*[:=]\s*['"]DELETE['"]`,
@@ -559,6 +613,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[内置] 批量清空 / 清除接口路径",
+			disabled: true,
 			target:   "tool_input",
 			typ:      "regex",
 			pattern:  `(?i)/(?:clear|wipe|flush|purge|truncate|drop|destroy|factory[-_]reset|reset[-_]all)(?:[/?#"'\s]|$)`,
@@ -570,9 +625,9 @@ func (d *DB) seedDefaultInterceptRules() error {
 	for _, r := range rules {
 		if _, err := d.Exec(`
 INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-VALUES ($1, true, $2, $3, $4, $5, $6, $7, false, 60, 'deny')
+VALUES ($1, $8, $2, $3, $4, $5, $6, $7, false, 60, 'deny')
 ON CONFLICT DO NOTHING`,
-			r.name, r.priority, r.target, r.typ, r.pattern, r.action, r.message,
+			r.name, r.priority, r.target, r.typ, r.pattern, r.action, r.message, !r.disabled,
 		); err != nil {
 			return fmt.Errorf("rule %q: %w", r.name, err)
 		}
@@ -652,7 +707,7 @@ func (d *DB) seedDefaultInterceptRulesV3() error {
 	const name = "[内置] 删除类接口路径"
 	if _, err := d.Exec(`
 INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-SELECT $1, true, 80, 'tool_input', 'regex', $2, 'deny', $3, false, 60, 'deny'
+SELECT $1, false, 80, 'tool_input', 'regex', $2, 'deny', $3, false, 60, 'deny'
 WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`,
 		name,
 		deleteEndpointPathPattern,
