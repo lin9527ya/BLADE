@@ -40,6 +40,8 @@ import type {
   CoverageAssetRefs,
   CoverageGraphData,
   CredentialReveal,
+  CVE,
+  CVEInput,
   DailyTokenBucket,
   DeleteTaskOptions,
   DeleteTaskResult,
@@ -558,6 +560,52 @@ export const api = {
     post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
   setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>
     patch<Playbook>(`/playbooks/${id}`, { status, reason }),
+
+  // ---- CVE 库（全局）----
+  cves: (params?: {
+    q?: string;
+    status?: string;
+    severity?: string;
+    language?: string;
+    has_exploit?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.status) qs.set("status", params.status);
+    if (params?.severity) qs.set("severity", params.severity);
+    if (params?.language) qs.set("language", params.language);
+    if (params?.has_exploit !== undefined) qs.set("has_exploit", String(params.has_exploit));
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return get<{ cves: CVE[] | null; total: number }>(`/cves${suffix}`).then((r) => ({
+      cves: arr(r.cves),
+      total: r.total ?? 0,
+    }));
+  },
+  cve: (id: number) => get<CVE>(`/cves/${id}`),
+  createCVE: (input: CVEInput) => post<CVE>("/cves", input),
+  updateCVE: (id: number, input: CVEInput) => put<CVE>(`/cves/${id}`, input),
+  setCVEStatus: (id: number, status: "active" | "deprecated", reason = "") =>
+    patch<CVE>(`/cves/${id}`, { status, reason }),
+  deleteCVE: (id: number) => del<{ ok: boolean }>(`/cves/${id}`),
+  uploadCVEScript: async (id: number, file: File, language?: string): Promise<CVE> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (language) fd.append("language", language);
+    const token = getToken();
+    const r = await fetch(`/api/cves/${id}/script`, {
+      method: "POST",
+      body: fd,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body?.error || `上传失败(${r.status})`);
+    return body as CVE;
+  },
+  clearCVEScript: (id: number) => del<CVE>(`/cves/${id}/script`),
 
   deprecateCompanyKnowledge: (companyId: number, id: number, reason: string) =>
     patch<CompanyKnowledge>(`/companies/${companyId}/knowledge/${id}`, { status: "deprecated", reason }),

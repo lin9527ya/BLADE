@@ -5,6 +5,8 @@ DELETE /api/campaigns/{id}	server.(*Server).deleteCampaign-fm
 DELETE /api/companies/{id}	server.(*Server).deleteCompany-fm
 DELETE /api/conversations/{id}	server.(*Server).pgDeleteConversation-fm
 DELETE /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+DELETE /api/cves/{id}	server.(*Server).deleteCVE-fm
+DELETE /api/cves/{id}/script	server.(*Server).clearCVEScript-fm
 DELETE /api/exploration/findings/{id}	server.(*Server).deleteFinding-fm
 DELETE /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 DELETE /api/intercept/rules/{id}	server.(*Server).interceptDeleteRule-fm
@@ -58,6 +60,8 @@ GET /api/conversations	server.(*Server).pgListConversations-fm
 GET /api/conversations/{id}/messages	server.(*Server).pgConversationMessages-fm
 GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDetail-fm
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+GET /api/cves	server.(*Server).listCVEs-fm
+GET /api/cves/{id}	server.(*Server).getCVE-fm
 GET /api/debug/pprof/allocs	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/block	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/cmdline	net/http/pprof.Cmdline
@@ -191,6 +195,7 @@ PATCH /api/campaigns/{id}	server.(*Server).patchCampaign-fm
 PATCH /api/companies/{id}/knowledge/{kid}	server.(*Server).patchCompanyKnowledge-fm
 PATCH /api/conversations/{id}	server.(*Server).pgRenameConversation-fm
 PATCH /api/conversations/{id}/profile	server.(*Server).pgUpdateConversation-fm
+PATCH /api/cves/{id}	server.(*Server).patchCVE-fm
 PATCH /api/exploration/findings/{id}	server.(*Server).patchFinding-fm
 PATCH /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 PATCH /api/notify/channels/{id}	server.(*Server).notifyUpdateChannel-fm
@@ -237,6 +242,8 @@ POST /api/conversations/{id}/messages	server.(*Server).pgSendConversationMessage
 POST /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/conversations/{id}/stop	server.(*Server).pgStopConversation-fm
 POST /api/credentials/{id}/reveal	server.(*Server).revealCredential-fm
+POST /api/cves	server.(*Server).createCVE-fm
+POST /api/cves/{id}/script	server.(*Server).uploadCVEScript-fm
 POST /api/debug/pprof/symbol	net/http/pprof.Symbol
 POST /api/exploration/findings/{id}/deepen	server.(*Server).deepenFinding-fm
 POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-fm
@@ -327,6 +334,7 @@ PUT /api/agents/{key}/wrapup	server.(*Server).pgSaveWrapup-fm
 PUT /api/agents/{key}/wrapup/task-timeout	server.(*Server).pgSaveTaskTimeoutWrapup-fm
 PUT /api/asset-intercept/rules/{id}	server.(*Server).assetInterceptUpdateRule-fm
 PUT /api/campaigns/{id}/tasks	server.(*Server).putCampaignTasks-fm
+PUT /api/cves/{id}	server.(*Server).updateCVE-fm
 PUT /api/exploration/findings/{id}/traffic/order	server.(*Server).editFindingTraffic-fm
 PUT /api/intercept/judge	server.(*Server).interceptSetJudgeConfig-fm
 PUT /api/intercept/rules/{id}	server.(*Server).interceptUpdateRule-fm

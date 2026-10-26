@@ -57,3 +57,13 @@ type ExecService interface {
 	// 是通的、SOCKS 地址是多少"——隧道是跨 worker 共享的能力，看不见就没人用得上。
 	ActiveForTask(taskID string) []*db.ToolExecution
 }
+
+// CVEScriptService 是 host 执行服务对 CVE 脚本的扩展能力（可选实现）。
+// 单独一个窄接口，避免给所有 fake/调用方增加负担；未实现时 cve_exploit 返回可读拒绝。
+type CVEScriptService interface {
+	// StageScript 由服务端生成任务内路径并落盘（0600；隔离模式下交给 agent 用户），
+	// 绝不接受模型给出的绝对路径。
+	StageScript(ctx context.Context, taskID string, intentID int64, name string, content []byte) (string, error)
+	// SubmitTool 与 Submit 相同，但台账 Tool 标签显式指定（cve_exploit）。
+	SubmitTool(ctx context.Context, taskID string, intentID int64, worker, tool, command, desc string, timeout time.Duration) (ExecStatus, error)
+}

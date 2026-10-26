@@ -113,6 +113,15 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return strings.TrimSpace(in.Host + " " + in.Command)
+	case "cve_exploit":
+		// 脚本正文不在模型入参里（只给 CVE 编号/资产/目标），所以必须显式提取
+		// target + args 交给 RoE；否则范围门会因取不到目标而 fail-open。
+		var in struct {
+			Target string   `json:"target"`
+			Args   []string `json:"args"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return strings.TrimSpace(in.Target + " " + strings.Join(in.Args, " "))
 	case "WebFetch":
 		var in struct {
 			URL string `json:"url"`
@@ -131,7 +140,8 @@ var builtinActionTools = map[string]bool{
 	"WebFetch":  true,
 	"loot_exec": true, "loot_upload": true, "loot_download": true,
 	"foothold_exec": true, "tunnel_open": true,
-	"Write": true, "Edit": true, "MultiEdit": true,
+	"cve_exploit": true,
+	"Write":       true, "Edit": true, "MultiEdit": true,
 }
 
 // actionCacheEntry 缓存一次 tools 表查询：是否为动作类，以及执行规格里可能携带的

@@ -424,6 +424,7 @@ func (s *Server) registerRoutes(mux routeRegistrar) {
 	s.registerChatRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerPlaybookRoutes(mux)
+	s.registerCVERoutes(mux)
 }
 
 // --- handlers ---

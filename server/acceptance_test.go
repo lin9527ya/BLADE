@@ -123,6 +123,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P47 战略提示（新增即唤醒/规划层可采纳/采纳后消失/重复与上限拦截）", func(t *testing.T) { accP47(t, env.forTest(t)) })
 	t.Run("P48 人工销账与导出（遗留物证据门/风险结论/任务与审批 CSV/缓存筛选）", func(t *testing.T) { accP48(t, env.forTest(t)) })
 	t.Run("P49 测试范围网段（192.168.1.1/24 归一为网络地址，不再只能加 /32）", func(t *testing.T) { accP49(t, env.forTest(t)) })
+	t.Run("P50 CVE 库（录入/指纹匹配/脚本执行台账且不自动报漏洞）", func(t *testing.T) { accP50(t, env.forTest(t)) })
 }
 
 type accEnv struct {
@@ -6239,6 +6240,79 @@ func accP49(t *testing.T, e *accEnv) {
 	rec = e.request(http.MethodPost, base, `{"kind":"cidr","value":"192.168.1.0"}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "/24") {
 		t.Fatalf("网段缺掩码应 400 并提示 /24: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// accP50 CVE 库：人工录入 + 指纹/产品/版本匹配 + 库内脚本执行。
+// 脚本执行必须落台账且不自动产生 finding；CVE 命中只是线索。
+func accP50(t *testing.T, e *accEnv) {
+	task, tid := e.newTask("accP50", "CVE 库与脚本执行")
+	as := e.m.Assets()
+	if _, err := as.AddAgentScope(tid, "root_domain", "cve-acc.example", "验收范围", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	assetID, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{
+		URL: "https://cve-acc.example/", Technologies: []string{"Apache Log4j 2.14.1"}, TaskID: tid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.m.pg.Exec(`DELETE FROM assets WHERE domain LIKE '%cve-acc.example%'`)
+		_, _ = e.m.pg.Exec(`DELETE FROM cve_library WHERE cve_id LIKE 'CVE-2097-%'`)
+	})
+
+	body, _ := json.Marshal(db.CVE{
+		CVEID: "CVE-2097-0001", Title: "验收 Log4j CVE", Severity: db.SeverityCritical, CVSSScore: 10,
+		Description: "## 验收\n详细描述", AffectedProducts: []string{"log4j"},
+		VersionConstraint: ">= 2.0.0, < 2.15.0",
+		Fingerprint:       db.PlaybookFingerprint{Technologies: []string{"log4j"}},
+		ProbeGuide:        "用回调确认", ExploitScript: "#!/bin/sh\necho \"target=$BLADE_TARGET\"\n",
+		ExploitLanguage: "bash", ExploitFilename: "cve.sh", ExploitUsage: "目标在 BLADE_TARGET",
+	})
+	rec := e.request(http.MethodPost, "/api/cves", string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create CVE: %d %s", rec.Code, rec.Body.String())
+	}
+
+	tsx := agent.NewToolSet(task.Store, "work#1")
+	tsx.SetTaskID(tid)
+	tsx.SetAssetStore(as, as.Companies())
+	tsx.SetExecService(e.m.Executions())
+	lookup := workflowTool(t, tsx.WorkerTools(), "lookup_cves")
+	lres, err := lookup.Call(context.Background(), json.RawMessage(`{"asset_id":`+itoa64(assetID)+`}`), nil)
+	if err != nil || !strings.Contains(lres.Flatten(), "CVE-2097-0001") || strings.Contains(lres.Flatten(), "target=$BLADE_TARGET") {
+		t.Fatalf("lookup_cves: %v %s", err, lres.Flatten())
+	}
+
+	exploit := workflowTool(t, tsx.WorkerTools(), "cve_exploit")
+	eres, err := exploit.Call(context.Background(), json.RawMessage(
+		`{"cve_id":"CVE-2097-0001","asset_id":`+itoa64(assetID)+`,"target":"https://cve-acc.example/"}`), nil)
+	if err != nil {
+		t.Fatalf("cve_exploit: %v", err)
+	}
+	var result struct {
+		ExecutionID int64  `json:"execution_id"`
+		Status      string `json:"status"`
+		Tail        string `json:"partial_tail"`
+	}
+	if err := json.Unmarshal([]byte(eres.Flatten()), &result); err != nil {
+		t.Fatalf("decode exploit result: %v raw=%s", err, eres.Flatten())
+	}
+	if result.ExecutionID <= 0 || result.Status != db.ExecCompleted || !strings.Contains(result.Tail, "cve-acc.example") {
+		t.Fatalf("exploit result: %+v raw=%s", result, eres.Flatten())
+	}
+	row, err := e.m.pg.GetExecution(result.ExecutionID)
+	if err != nil || row == nil || row.Tool != "cve_exploit" {
+		t.Fatalf("execution ledger: %+v %v", row, err)
+	}
+	findings, _ := task.Store.ListByKind(db.KindFinding, 10)
+	if len(findings) != 0 {
+		t.Fatalf("cve_exploit must not auto-create findings: %+v", findings)
+	}
+	cve, _ := as.GetCVEByCVEID("CVE-2097-0001")
+	if cve == nil || cve.Executions != 1 {
+		t.Fatalf("CVE execution counter: %+v", cve)
 	}
 }
 

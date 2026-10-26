@@ -542,6 +542,20 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 				"历史命中不代表目标一定有洞，仍要实际触发。用完用 record_playbook_feedback 回报 worked/failed。"
 		}
 	}
+	// CVE 库：按本任务范围内资产的指纹/产品/版本匹配。与打法库一样是**线索**，
+	// 不是漏洞证据；有脚本时可用 cve_exploit 实际触发（仍走 guard）。
+	if t.as != nil && t.taskID > 0 {
+		if matches, err := t.as.MatchCVEsForTask(t.taskID, 3); err == nil && len(matches) > 0 {
+			lines := make([]string, 0, len(matches))
+			for _, m := range matches {
+				lines = append(lines, renderCVEMatchLine(m))
+			}
+			out["matching_cves"] = lines
+			out["matching_cves_note"] = "以上是按本任务范围内资产指纹/产品/版本匹配到的 CVE 库条目（全局只读线索）。" +
+				"**CVE/版本匹配不是证据**：具体到某台资产时用 lookup_cves(asset_id=...) 取详情与 probe_guide；" +
+				"有脚本且目标明确时才用 cve_exploit 实际触发。cve_exploit 只返回输出/execution_id，不会自动产生 finding/foothold。"
+		}
+	}
 	// 覆盖矩阵摘要：只给「未覆盖格」的规模与几个例子。完整矩阵走 coverage_matrix
 	// 按需取——每轮把全量矩阵塞进态势会把上下文撑爆。
 	// 任务关了覆盖度功能时 coverage_matrix 已被摘除：此时再给 coverage_gap 只会让模型
@@ -3672,5 +3686,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// 指纹打法库：规划时按资产/指纹查"同类目标以前怎么打穿的"，并把规划层确认的打法
 		// 手动沉淀/回填反馈（自动沉淀由 playbook agent 在 report_foothold 时完成）。
 		t.lookupPlaybooks(), t.recordPlaybook(), t.recordPlaybookFeedback(),
+		// CVE 库：规划时按资产/指纹查已录入 CVE；有脚本时可显式触发，匹配只是线索。
+		t.lookupCVEs(), t.cveExploit(),
 	}
 }

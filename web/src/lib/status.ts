@@ -107,6 +107,12 @@ const hint: Record<string, StatusMeta> = {
   consumed: { label: "已采纳", tone: "green" },
 };
 
+// CVE 库条目状态。
+const cve: Record<string, StatusMeta> = {
+  active: { label: "启用", tone: "green" },
+  deprecated: { label: "已废弃", tone: "slate" },
+};
+
 // 遗留物：active=仍在目标上，removed=已清理，unknown=没去确认（不是"已清理"）。
 const artifact: Record<string, StatusMeta> = {
   active: { label: "未清理", tone: "amber" },
@@ -154,6 +160,7 @@ const maps = {
   engine,
   goal,
   hint,
+  cve,
   artifact,
   execution,
   audit,

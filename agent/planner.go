@@ -461,7 +461,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + hintLifecycleBlock + artifactSpec(workDir)
+	return body + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir)
 }
 
 // hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。
@@ -592,7 +592,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。
 	InstallContextManager(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func() string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
-		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines()})
+		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
 	})
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。

@@ -77,6 +77,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "campaigns", title: "战役", url: "/function/campaigns", icon: FolderKanban },
       { id: "findings", title: "发现", url: "/function/findings", icon: Bug },
       { id: "playbooks", title: "打法库", url: "/function/playbooks", icon: BookOpen },
+      { id: "cves", title: "CVE库", url: "/function/cve", icon: ShieldAlert },
       { id: "traffic", title: "流量", url: "/function/traffic", icon: Activity },
       { id: "commands", title: "工具执行", url: "/function/commands", icon: Terminal },
       { id: "llm-records", title: "LLM 录制", url: "/function/llm-records", icon: Radio },

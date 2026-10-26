@@ -83,6 +83,25 @@ func (s *ExecutionService) SetEnvResolver(fn func() []string) {
 
 // Submit starts one detached execution and returns its initial snapshot.
 func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID int64, worker, command, desc string, timeout time.Duration) (agent.ExecStatus, error) {
+	return s.SubmitTool(ctx, taskID, intentID, worker, "run_execution", command, desc, timeout)
+}
+
+// SubmitTool is Submit with an explicit ledger tool label. The label is what the
+// execution UI/audit shows; callers that are not run_execution (cve_exploit) use it
+// so a script run is distinguishable from a generic shell command.
+func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intentID int64, worker, tool, command, desc string, timeout time.Duration) (agent.ExecStatus, error) {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		tool = "run_execution"
+	}
+	if len(tool) > 40 {
+		return agent.ExecStatus{}, errors.New("执行工具标签过长")
+	}
+	for _, r := range tool {
+		if (r < 'a' || r > 'z') && r != '_' {
+			return agent.ExecStatus{}, errors.New("执行工具标签只能包含 a-z 与 _")
+		}
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return agent.ExecStatus{}, errors.New("命令为空")
@@ -107,7 +126,7 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 		return agent.ExecStatus{}, err
 	}
 	id, err := s.pg.CreateExecution(&db.ToolExecution{
-		TaskID: taskID, IntentID: intentID, Worker: worker, Tool: "run_execution",
+		TaskID: taskID, IntentID: intentID, Worker: worker, Tool: tool,
 		Command: command, Description: strings.TrimSpace(desc),
 	})
 	if err != nil {
@@ -191,7 +210,7 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 	row, _ := s.pg.GetExecution(id)
 	if row == nil {
 		row = &db.ToolExecution{ID: id, TaskID: taskID, IntentID: intentID, Worker: worker,
-			Tool: "run_execution", Command: command, Description: strings.TrimSpace(desc),
+			Tool: tool, Command: command, Description: strings.TrimSpace(desc),
 			Status: db.ExecRunning, OutputPath: path}
 	}
 	st := toExecStatus(row, run)
@@ -201,6 +220,76 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 		}
 	}
 	return st, nil
+}
+
+// StageScript writes a server-generated, task-scoped script file for CVEScriptService.
+// The path is never model-supplied. When agent isolation is on, the file and its
+// parent directory are handed to the agent user so the dropped-privilege child can
+// read the script (the execution log is inherited through an fd, so it can stay 0600).
+func (s *ExecutionService) StageScript(_ context.Context, taskID string, _ int64, name string, content []byte) (string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" || strings.ContainsAny(taskID, `/\`) || taskID == "." || taskID == ".." {
+		return "", errors.New("无效的任务 id")
+	}
+	if len(content) == 0 {
+		return "", errors.New("脚本为空")
+	}
+	if len(content) > 1<<20 {
+		return "", errors.New("脚本不能超过 1 MiB")
+	}
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "" || name == "." || name == ".." {
+		name = "script"
+	}
+	name = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, name)
+	dir := filepath.Join(s.dir, "tasks", taskID, "cve")
+	if err := os.MkdirAll(dir, 0o710); err != nil {
+		return "", err
+	}
+	// 脚本目录由服务端持有（agent 只读）：避免降权后的 agent 在目录里放 symlink，
+	// 让 root 的 StageScript 顺着链接写到目录外。组给 agent 只留 x（可进入、不可列目录），
+	// 文件 0640；随机文件名由 os.CreateTemp 生成，agent 无法预放同名 symlink。
+	if agentIso.enabled {
+		if err := os.Chown(dir, os.Geteuid(), int(agentIso.gid)); err != nil {
+			return "", fmt.Errorf("把脚本目录交给 agent 组：%w", err)
+		}
+		_ = os.Chmod(dir, 0o710|os.ModeSetgid)
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	if base == "" {
+		base = "script"
+	}
+	f, err := os.CreateTemp(dir, base+"-*"+ext)
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if agentIso.enabled {
+		if err := os.Lchown(path, os.Geteuid(), int(agentIso.gid)); err != nil {
+			_ = os.Remove(path)
+			return "", fmt.Errorf("把脚本文件交给 agent 组：%w", err)
+		}
+	}
+	return path, nil
 }
 
 // reap waits for the process, lands the terminal state in the ledger, and fires onDone.

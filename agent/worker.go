@@ -371,7 +371,7 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerExecSpec()
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerExecSpec() + cveToolBlock
 }
 
 // workerExecSpec is 段 [D]: the code-owned long-task contract (P13). Appended the
@@ -604,7 +604,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// P14 领域上下文：领域化摘要（7 段 + 原文落盘回读）+ 每请求附常驻索引（目标/约束/
 	// 活跃方向/发现一行式）。noa 开启时它已占 Compactor 槽位，这里自动让位（互斥）。
 	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), runDir, func() string {
-		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines()})
+		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
 	})
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

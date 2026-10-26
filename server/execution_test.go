@@ -249,3 +249,48 @@ func TestExecutionServiceCancelAllStopsEverything(t *testing.T) {
 		t.Fatalf("still active after CancelAll: %d (err=%v)", len(rows), err)
 	}
 }
+
+// TestExecutionServiceSubmitToolLabel：cve_exploit 的台账标签必须与 run_execution
+// 区分，审计/界面才能看出这是一次库内脚本执行。
+func TestExecutionServiceSubmitToolLabel(t *testing.T) {
+	svc, pg, _, task := newExecFixture(t)
+	ctx := context.Background()
+	st, err := svc.SubmitTool(ctx, task, 0, "work#1", "cve_exploit", "printf 'cve-ok\\n'", "CVE 测试", 0)
+	if err != nil {
+		t.Fatalf("submit tool: %v", err)
+	}
+	final := waitTerminal(t, svc, st.ID, 10*time.Second)
+	if final.Status != db.ExecCompleted || !strings.Contains(final.Tail, "cve-ok") {
+		t.Fatalf("final: %+v", final)
+	}
+	row, err := pg.GetExecution(st.ID)
+	if err != nil || row == nil || row.Tool != "cve_exploit" {
+		t.Fatalf("ledger tool label: %+v %v", row, err)
+	}
+	if _, err := svc.SubmitTool(ctx, task, 0, "work#1", "Bad-Label", "true", "", 0); err == nil {
+		t.Fatal("invalid tool label must be rejected")
+	}
+}
+
+// TestExecutionServiceStageScript：脚本落在任务 cve 子目录，服务端生成随机文件名，
+// 0640 可读；内容原样落盘。
+func TestExecutionServiceStageScript(t *testing.T) {
+	svc, _, _, task := newExecFixture(t)
+	ctx := context.Background()
+	content := []byte("#!/bin/sh\necho staged\n")
+	path, err := svc.StageScript(ctx, task, 0, "cve-2098-0001-abcdef.sh", content)
+	if err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if !filepath.IsAbs(path) || !strings.Contains(path, filepath.Join("tasks", task, "cve")) {
+		t.Fatalf("bad staged path: %q", path)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(content) {
+		t.Fatalf("staged content: %q %v", got, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Mode().Perm() != 0o640 {
+		t.Fatalf("staged mode: %v %v", fi, err)
+	}
+}

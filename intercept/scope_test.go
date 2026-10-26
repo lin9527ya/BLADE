@@ -89,6 +89,12 @@ func TestShellCommandOfExtractsNetworkTargets(t *testing.T) {
 			`{"foothold_id":5,"host":"evil.example.com"}`,
 			"evil.example.com",
 		},
+		{
+			"cve_exploit carries target + args",
+			"cve_exploit",
+			`{"cve_id":"CVE-2021-44228","asset_id":3,"target":"https://evil.example.com/","args":["--x","1.2.3.4"]}`,
+			"evil.example.com",
+		},
 		{"non-network tool yields nothing", "insert_assets", `{"host":"evil.example.com"}`, ""},
 	}
 	for _, tc := range cases {
@@ -109,6 +115,24 @@ func TestShellCommandOfExtractsNetworkTargets(t *testing.T) {
 			t.Fatalf("%s: target %q not extracted from surface %q (got %v) — RoE gate would pass this call",
 				tc.tool, tc.wantHost, surface, hits)
 		})
+	}
+}
+
+// TestCVEToolIsActionRegistered：cve_exploit 会执行库内脚本，必须同时进入
+// builtinActionTools（停机/时间窗/RoE）与 defaultEnabledTools（规则/裁判）。
+func TestCVEToolIsActionRegistered(t *testing.T) {
+	if !builtinActionTools["cve_exploit"] {
+		t.Fatal("cve_exploit 未注册为动作类：可绕过停机开关/时间窗/RoE")
+	}
+	found := false
+	for _, n := range defaultEnabledTools {
+		if n == "cve_exploit" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("cve_exploit 未进入 defaultEnabledTools：破坏性/外泄规则与裁判看不到它")
 	}
 }
 

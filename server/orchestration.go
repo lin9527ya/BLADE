@@ -559,6 +559,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.upgradeReporterTriggerMessage() // 老库补迁移:让 reporter 回传 evidence_version(一次性)
 	s.seedFindingTrafficTools()       // 增加可选证据参数及只读证据工具，保留用户配置
 	s.seedFindingWorkflowTools()
+	s.seedCVEInterceptTool() // 老库已保存 intercept_enabled_tools 时补 cve_exploit(一次性)
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
 	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
@@ -1037,6 +1038,45 @@ func (s *Server) reseedPlaybookPrompt() {
 		return
 	}
 	log.Printf("[playbook] 提示词已支持目标达成触发（一次性）")
+}
+
+// seedCVEInterceptTool 给存量库补上 cve_exploit 的规则面覆盖。
+//
+// defaultEnabledTools 只在 intercept_enabled_tools 从未保存时生效；老库保存过这个
+// 设置时，新工具不会自动进入规则/裁判面。保留用户已有选择，只追加 cve_exploit。
+// 用户把所有工具都关掉（空列表）时不擅自改回，记录日志并跳过。
+func (s *Server) seedCVEInterceptTool() {
+	const flag = "intercept_cve_tool_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[intercept] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+		}
+	}()
+	if _, ok, _ := s.m.pg.GetSetting("intercept_enabled_tools"); !ok {
+		return // 从未保存：defaultEnabledTools 已包含 cve_exploit
+	}
+	names, err := s.m.interceptor.GetEnabledTools()
+	if err != nil {
+		log.Printf("[intercept] 读取已启用工具失败，暂不追加 cve_exploit: %v", err)
+		return
+	}
+	if len(names) == 0 {
+		log.Printf("[intercept] intercept_enabled_tools 为空（用户关闭了全部工具），不擅自追加 cve_exploit")
+		return
+	}
+	for _, n := range names {
+		if n == "cve_exploit" {
+			return
+		}
+	}
+	if err := s.m.interceptor.SetEnabledTools(append(names, "cve_exploit")); err != nil {
+		log.Printf("[intercept] 追加 cve_exploit 失败: %v", err)
+		return
+	}
+	log.Printf("[intercept] 已把 cve_exploit 追加到已启用工具列表")
 }
 
 // reseedPentestPrompt 把 pentest（独立渗透 agent）的提示词刷成当前代码默认——

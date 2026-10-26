@@ -949,6 +949,62 @@ export interface Playbook {
   updated_at: string;
 }
 
+/** 全局 CVE 库条目：人工录入的漏洞详情 + 指纹/产品/版本 + 可选利用脚本。 */
+export interface CVE {
+  id: number;
+  cve_id: string;
+  title: string;
+  severity: Severity | "";
+  cvss_score: number;
+  vendor?: string;
+  description?: string;
+  affected_products: string[];
+  version_constraint: string;
+  fingerprint: PlaybookFingerprint;
+  probe_guide?: string;
+  refs?: string[];
+  exploit_script?: string;
+  exploit_language?: string;
+  exploit_filename?: string;
+  exploit_usage?: string;
+  exploit_sha256?: string;
+  exploit_bytes: number;
+  has_exploit: boolean;
+  status: "active" | "deprecated";
+  deprecated_reason?: string;
+  revision: number;
+  uses: number;
+  executions: number;
+  last_used_at?: string;
+  last_executed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 新建/编辑 CVE 时提交的字段。 */
+export interface CVEInput {
+  cve_id: string;
+  title: string;
+  severity: Severity | "";
+  cvss_score: number;
+  vendor?: string;
+  description?: string;
+  affected_products: string[];
+  version_constraint: string;
+  fingerprint: PlaybookFingerprint;
+  probe_guide?: string;
+  refs?: string[];
+  exploit_script?: string;
+  exploit_language?: string;
+  exploit_filename?: string;
+  exploit_usage?: string;
+}
+
+export interface CVEListResponse {
+  cves: CVE[];
+  total: number;
+}
+
 // ---- P22 计划任务 ----
 
 /** 结构化频率（刻意不是 cron 字符串：覆盖巡检需要，且没有方言/边界歧义）。 */

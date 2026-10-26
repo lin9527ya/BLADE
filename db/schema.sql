@@ -1666,6 +1666,50 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_attack_playbooks_key
 CREATE INDEX IF NOT EXISTS idx_attack_playbooks_status
     ON attack_playbooks(status, successes DESC, updated_at DESC);
 
+-- CVE 库（全局）：人工维护的 CVE 详情、受影响产品/版本、指纹与利用脚本。
+--
+-- 与 attack_playbooks 的分工：打法库是"打穿后沉淀"的实战卡片；CVE 库是人工录入的
+-- 漏洞知识，匹配只是**线索**（不是漏洞证据），脚本执行也必须走现有授权/审批门。
+CREATE TABLE IF NOT EXISTS cve_library (
+    id                  BIGSERIAL PRIMARY KEY,
+    cve_id              TEXT NOT NULL,              -- 规范化大写 CVE-YYYY-NNNN
+    title               TEXT NOT NULL,
+    severity            TEXT NOT NULL DEFAULT 'medium', -- critical|high|medium|low
+    cvss_score          NUMERIC(3,1) NOT NULL DEFAULT 0,
+    vendor              TEXT NOT NULL DEFAULT '',
+    description         TEXT NOT NULL DEFAULT '',   -- Markdown 详细介绍
+    affected_products   JSONB NOT NULL DEFAULT '[]'::jsonb, -- 一组受影响产品（共用同一版本约束）
+    version_constraint  TEXT NOT NULL DEFAULT '',   -- 如 ">= 1.2.0, < 1.3.0"
+    fingerprint         JSONB NOT NULL DEFAULT '{}'::jsonb, -- PlaybookFingerprint 同构
+    probe_guide         TEXT NOT NULL DEFAULT '',   -- 脚本不可用时的检测/手工验证指引
+    refs                JSONB NOT NULL DEFAULT '[]'::jsonb,
+    exploit_script      TEXT NOT NULL DEFAULT '',
+    exploit_language    TEXT NOT NULL DEFAULT '',   -- python3|bash|sh|ruby|perl|php|node|pwsh
+    exploit_filename    TEXT NOT NULL DEFAULT '',   -- 仅展示；落盘名由服务端生成
+    exploit_usage       TEXT NOT NULL DEFAULT '',   -- 参数/环境变量说明
+    exploit_sha256      TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'active',
+    deprecated_reason   TEXT NOT NULL DEFAULT '',
+    revision            INT NOT NULL DEFAULT 1,
+    uses                INT NOT NULL DEFAULT 0,     -- lookup 命中次数
+    executions          INT NOT NULL DEFAULT 0,     -- cve_exploit 提交次数（不是成功数）
+    last_used_at        TIMESTAMPTZ,
+    last_executed_at    TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cve_library_cve_id ON cve_library(cve_id);
+CREATE INDEX IF NOT EXISTS idx_cve_library_status
+    ON cve_library(status, executions DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cve_library_language
+    ON cve_library(exploit_language) WHERE exploit_script <> '';
+CREATE INDEX IF NOT EXISTS idx_cve_library_products
+    ON cve_library USING GIN(affected_products);
+
+DROP TRIGGER IF EXISTS trg_cve_library_updated_at ON cve_library;
+CREATE TRIGGER trg_cve_library_updated_at BEFORE UPDATE ON cve_library
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 -- P43 凭据尝试台账：对**哪个目标的哪个账号**试了几次凭据。
 --
 -- 为什么要有这张表（而不是从 tool_executions 里现算）：护栏要拦的是"对同一个账号试太多次"

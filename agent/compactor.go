@@ -116,6 +116,9 @@ type ContextIndexVars struct {
 	// PlaybookLines 是"本任务指纹命中的历史打法"一行式（可空）。同样由调用方现读：
 	// 指纹匹配要扫资产表，不该让索引构造去碰；注入 ≤2 行。
 	PlaybookLines []string
+	// CVELines 是"本任务指纹/产品命中的 CVE 线索"一行式（可空）。CVE 命中不是证据，
+	// 索引里只提示去 lookup_cves / cve_exploit；注入 ≤2 行。
+	CVELines []string
 	// HasOverview 表示当前 agent 的工具面里有 graph_overview / list_facts（mainagent/planner）。
 	// worker 没有这两个工具——索引里的"要细节调 …"必须按它分支，否则会把 worker 教去调
 	// 一个不存在的工具。
@@ -222,6 +225,7 @@ func BuildContextIndex(v ContextIndexVars) string {
 	}
 	b.WriteString(renderLootSection(ts, v.HasOverview))
 	b.WriteString(renderPlaybookSection(v.PlaybookLines))
+	b.WriteString(renderCVESection(v.CVELines))
 	return b.String()
 }
 
@@ -373,6 +377,20 @@ func renderPlaybookSection(lines []string) string {
 	b.WriteString("\n同类指纹的历史打法（全局只读先验·先确认指纹一致再 lookup_playbooks）：")
 	for _, l := range lines {
 		b.WriteString("\n  · " + clipLine(l, 150))
+	}
+	return b.String()
+}
+
+// renderCVESection 渲染本任务命中的 CVE 线索（≤2 行）。CVE 命中不是证据；具体到
+// 某台资产时用 lookup_cves(asset_id=...) 精确查。
+func renderCVESection(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n同类 CVE 线索（全局 CVE 库·只读线索·匹配不是证据；具体资产用 lookup_cves(asset_id=...)，有脚本时可用 cve_exploit）：")
+	for _, l := range lines {
+		b.WriteString("\n  · " + clipLine(l, 180))
 	}
 	return b.String()
 }
