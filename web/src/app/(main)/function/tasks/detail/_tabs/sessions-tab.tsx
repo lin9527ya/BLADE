@@ -27,7 +27,7 @@ import { isBtwCommand } from "@/lib/side-questions";
 
 import { cn } from "@/lib/utils";
 
-import { fmtBytes, fmtDuration, keyForSession, MAX_WORKER_MESSAGE_CHARS, resolutionLabel, roleMeta, TokenMetrics, workerMessageCharCount } from "./_components/session-helpers";
+import { fmtBytes, fmtDuration, isResumableWorkerStatus, keyForSession, MAX_WORKER_MESSAGE_CHARS, resolutionLabel, roleMeta, TokenMetrics, workerMessageCharCount } from "./_components/session-helpers";
 import { useSessionsState } from "./_components/use-sessions-state";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
@@ -686,7 +686,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               </div>
             ) : active.role === "worker" &&
               !active.inherited &&
-              (active.status === "running" || active.status === "paused") ? (
+              (active.status === "running" || active.status === "paused" || isResumableWorkerStatus(active.status)) ? (
               <div className="border-t p-3">
                 <InputGroup className="min-h-9 has-disabled:opacity-100">
                   <MentionTextarea
@@ -696,7 +696,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     placeholder={
                       active.status === "running"
                         ? `给运行中的 Worker #${active.worker_no ?? active.intent_id} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`
-                        : `给已暂停的 Worker #${active.worker_no ?? active.intent_id} 发消息，@ 引用记录，调整执行方向…`
+                        : active.status === "paused"
+                          ? `给已暂停的 Worker #${active.worker_no ?? active.intent_id} 发消息，@ 引用记录，调整执行方向…`
+                          : `给已中断的 Worker #${active.worker_no ?? active.intent_id} 发消息，从原会话继续执行；@ 引用记录…`
                     }
                     value={workerMessage}
                     onValueChange={(value) => {
@@ -762,22 +764,25 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                       </>
                     ) : (
                       <>
+                        {active.status === "paused" && (
+                          <InputGroupButton
+                            className="ml-auto"
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => void controlWorker(active, "resume")}
+                            disabled={controllingIntent === active.intent_id || workerMessageSending}
+                            title="不发消息，直接继续执行"
+                            aria-label="直接继续执行"
+                          >
+                            {controllingIntent === active.intent_id ? (
+                              <Loader2Icon className="animate-spin" />
+                            ) : (
+                              "直接继续"
+                            )}
+                          </InputGroupButton>
+                        )}
                         <InputGroupButton
-                          className="ml-auto"
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => void controlWorker(active, "resume")}
-                          disabled={controllingIntent === active.intent_id || workerMessageSending}
-                          title="不发消息，直接继续执行"
-                          aria-label="直接继续执行"
-                        >
-                          {controllingIntent === active.intent_id ? (
-                            <Loader2Icon className="animate-spin" />
-                          ) : (
-                            "直接继续"
-                          )}
-                        </InputGroupButton>
-                        <InputGroupButton
+                          className={active.status === "paused" ? undefined : "ml-auto"}
                           size="icon-xs"
                           variant="default"
                           onClick={sendWorkerChat}
@@ -786,8 +791,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                             !workerMessage.trim() ||
                             workerMessageCharCount(workerMessage) > MAX_WORKER_MESSAGE_CHARS
                           }
-                          title="发送消息"
-                          aria-label="发送消息"
+                          title={active.status === "paused" ? "发送消息" : "发送并从原会话继续执行"}
+                          aria-label={active.status === "paused" ? "发送消息" : "发送并从原会话继续执行"}
                         >
                           {workerMessageSending ? <Spinner /> : <ArrowUpIcon />}
                         </InputGroupButton>

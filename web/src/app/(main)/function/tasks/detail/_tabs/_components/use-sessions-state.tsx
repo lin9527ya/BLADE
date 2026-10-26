@@ -30,6 +30,7 @@ import {
   fmtTokens,
   intentStatus,
   intentToSession,
+  isResumableWorkerStatus,
   keyForSession,
   MAIN_ID,
   MAIN_SESSION,
@@ -1098,9 +1099,11 @@ export function useSessionsState(taskId: string) {
     const message = workerMessage.trim();
     if (side.handleCommand(message, () => setWorkerMessage(""))) return;
     // 运行中 = 实时注入（下一步动作前生效，拦掉那一次工具调用让模型改道）；
-    // 已暂停 = 续发（消息作为下一轮输入）。其余状态不发。
+    // 已暂停 / 已中断（blocked/exhausted/stopped/no_output）= 从原会话续发。
+    // 其余状态（done/negative/out-of-scope 等）是有结论的收场，不发。
     const steer = active.status === "running";
-    if (!intentId || active.inherited || (!steer && active.status !== "paused") || workerMessageSending || !message) return;
+    const canResume = active.status === "paused" || isResumableWorkerStatus(active.status);
+    if (!intentId || active.inherited || (!steer && !canResume) || workerMessageSending || !message) return;
     if (workerMessageCharCount(message) > MAX_WORKER_MESSAGE_CHARS) {
       toast.error(`消息不能超过 ${MAX_WORKER_MESSAGE_CHARS} 个字符`);
       return;
@@ -1119,7 +1122,9 @@ export function useSessionsState(taskId: string) {
         toast.success(
           result.steered
             ? `提示已投递：Worker #${active.worker_no ?? intentId} 下一次动作前生效（那一次动作会被拦下、据此改道）`
-            : `消息已发送给 Worker #${active.worker_no ?? intentId}，已立即继续执行`,
+            : active.status === "paused"
+              ? `消息已发送给 Worker #${active.worker_no ?? intentId}，已立即继续执行`
+              : `消息已发送给 Worker #${active.worker_no ?? intentId}，已从原会话继续执行`,
         );
       })
       .catch((error) => {

@@ -1488,11 +1488,13 @@ func executionDigest(rows []*db.ToolExecution) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// runDetachedIntent runs one paused intent OUTSIDE the worker pool in its own
-// goroutine — the human-message path. It transitions the intent paused->running
-// itself (never through 'open'), so the pool, which only claims 'open', can never
-// race it; the "at most one run per intent" invariant still holds because winning
-// the CAS is the sole entry and work[intentID] was cleared when the pause settled.
+// runDetachedIntent runs one paused/interrupted intent OUTSIDE the worker pool in
+// its own goroutine — the human-message path. It transitions the intent
+// fromState->running itself (never through 'open'), so the pool, which only claims
+// 'open', can never race it; the "at most one run per intent" invariant still holds
+// because winning the CAS is the sole entry and work[intentID] was cleared when the
+// previous run settled. fromState is paused, or a recoverable terminal state
+// (blocked/exhausted/stopped/no_output) when a human revives an interrupted run.
 // Because it does not compete for a frontier slot, a user message continues the
 // worker immediately even when all pool slots are busy (mirroring how the
 // main-agent chat handler starts its run directly). The spawned goroutine owns one
@@ -1500,7 +1502,7 @@ func executionDigest(rows []*db.ToolExecution) string {
 // server root, never the HTTP request, so a disconnect cannot strand the run while
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
-func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, requestID, message, agentMessage string) error {
+func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, fromState, requestID, message, agentMessage string) error {
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}
@@ -1521,12 +1523,12 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	if node == nil || node.Kind != db.KindIntent {
 		return fmt.Errorf("intent not found")
 	}
-	changed, err := t.Store.CompareAndSetIntentState(intentID, "paused", "running")
+	changed, err := t.Store.CompareAndSetIntentState(intentID, fromState, "running")
 	if err != nil {
 		return err
 	}
 	if !changed {
-		return fmt.Errorf("%w: 意图不再是 paused 状态", db.ErrIntentStateConflict)
+		return fmt.Errorf("%w: 意图不再是 %s 状态", db.ErrIntentStateConflict, fromState)
 	}
 	node.State, node.Owner = "running", "chat"
 	if _, err := t.Store.TouchIntentLease(intentID, "chat", db.IntentLeaseTTL); err != nil {

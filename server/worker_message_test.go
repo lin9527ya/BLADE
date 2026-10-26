@@ -52,3 +52,28 @@ func containsUnsupported(err error) bool {
 	return err != nil && !errors.Is(err, errWorkControlConflict) &&
 		strings.Contains(err.Error(), "unsupported work action")
 }
+
+// 人工消息的送达路由：运行中实时注入；暂停与四种中断终态从 transcript 续跑；
+// 有结论的收场（done/negative/out-of-scope）与待领取/已删除不放行。
+func TestWorkerMessageRoute(t *testing.T) {
+	cases := map[string]struct{ steer, resume bool }{
+		"running":      {true, false},
+		"paused":       {false, true},
+		"blocked":      {false, true},
+		"exhausted":    {false, true},
+		"stopped":      {false, true},
+		"no_output":    {false, true},
+		"done":         {},
+		"negative":     {},
+		"out-of-scope": {},
+		"open":         {},
+		"deleted":      {},
+	}
+	for state, want := range cases {
+		steer, resume := workerMessageRoute(state)
+		if steer != want.steer || resume != want.resume {
+			t.Errorf("workerMessageRoute(%q) = steer:%v resume:%v, want steer:%v resume:%v",
+				state, steer, resume, want.steer, want.resume)
+		}
+	}
+}

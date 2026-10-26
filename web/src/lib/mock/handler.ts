@@ -898,8 +898,11 @@ function sendMockWorkerMessage(
   }
   const intent = mockIntents.find((item) => item.id === id);
   if (!intent) return { ok: false, error: "意图不存在" };
-  if (intent.inherited || intent.state !== "paused") {
-    return { ok: false, state: intent.state, error: "仅已暂停的 Worker 可以发送消息，请先暂停" };
+  if (
+    intent.inherited ||
+    !["paused", "blocked", "exhausted", "stopped", "no_output"].includes(intent.state)
+  ) {
+    return { ok: false, state: intent.state, error: "仅已暂停或已中断的 Worker 可以发送消息" };
   }
   if (!normalizedMessage) return { ok: false, state: intent.state, error: "消息不能为空" };
   if (Array.from(normalizedMessage).length > 4000) {

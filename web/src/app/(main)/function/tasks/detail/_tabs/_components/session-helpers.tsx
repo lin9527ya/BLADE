@@ -293,6 +293,15 @@ export function intentStatus(state: string): SessionStatus {
   }
 }
 
+// 中断终态：没有结论、可以从原 transcript 带人工消息续跑。与后端
+// db.IntentRecoverableStates 保持一致（done/negative/out-of-scope 不在此列——
+// 那是有结论的收场，换方向应新建意图）。
+export const RESUMABLE_WORKER_STATUSES: readonly SessionStatus[] = ["blocked", "exhausted", "stopped", "no_output"];
+
+export function isResumableWorkerStatus(status: SessionStatus): boolean {
+  return (RESUMABLE_WORKER_STATUSES as readonly string[]).includes(status);
+}
+
 // Derive worker sessions from running/open intents — there is no backend
 // sessions endpoint, so intents (≈ worker units) are the closest real source.
 export function intentToSession(n: TaskNode): Session {

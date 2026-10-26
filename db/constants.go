@@ -217,6 +217,22 @@ func IntentStateTerminal(state string) bool {
 	return false
 }
 
+// IntentRecoverableStates 是「没善终、可以带人工消息从 transcript 续跑」的终态。
+// 与 ReopenIntent 的集合一致：拦住 blocked（模型/网络失败）、exhausted（预算耗尽）、
+// stopped（被规划者/人工终止）、no_output（空跑）。done/negative/out-of-scope 是
+// 有结论的收场，不能靠一条消息"接着聊"；换方向应当新建意图。
+var IntentRecoverableStates = []string{"blocked", "exhausted", "stopped", "no_output"}
+
+// IntentStateRecoverable 报告这个终态是否允许人工带消息续跑。
+func IntentStateRecoverable(state string) bool {
+	for _, st := range IntentRecoverableStates {
+		if state == st {
+			return true
+		}
+	}
+	return false
+}
+
 // LootConsumingIntentState 报告「以这个意图状态收场的意图，算不算真的动用了它声明的那条战果」。
 //
 // 中途没善终的（blocked 模型/网络失败、exhausted 预算耗尽被掐断、stopped 被打断）**不算**：

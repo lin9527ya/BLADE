@@ -207,3 +207,78 @@ func TestShutdownCancellationReopensRunningIntent(t *testing.T) {
 		t.Fatalf("关停取消后意图状态=%s，应为 open（标 blocked 是假失败：关停不是这条意图没探成，且启动重置只认 running 不修它）", node.State)
 	}
 }
+
+// TestSendWorkerMessageResumesBlockedIntent 钉住中断续跑：blocked 不再是死状态，
+// 人工一条消息就能把同一条意图从原 transcript 拉起来（状态 blocked→running，
+// 并留下 worker="user" 的可见留痕）。
+func TestSendWorkerMessageResumesBlockedIntent(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer m.Close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	s := &Server{ctx: ctx, m: m, engine: NewEngine(m)}
+	task, err := m.CreateTask("Resume blocked worker", "blocked 意图可以带消息续跑", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel(agent.AbortShutdown)
+		drain, stop := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stop()
+		_ = s.waitTaskQuiescent(drain, task.ID)
+		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
+	}()
+
+	iid, err := task.Store.AddNode(db.KindIntent, map[string]any{"summary": "模型故障中断的上传验证"}, 1, "blocked", "human", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	worker := agent.NewWorker(retestProvider{complete: func(c context.Context, _ llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-c.Done()
+		return llm.Message{}, "", llm.Usage{}, c.Err()
+	}}, "test", m.dir, nil, 10000, 1)
+	worker.SetNonStreaming(func() bool { return true })
+	s.engine.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return nil, worker })
+
+	body, _ := json.Marshal(map[string]string{"message": "接着上次的位置，把上传链验证完", "request_id": "resume-blocked-test"})
+	r := httptest.NewRequest("POST", "/", strings.NewReader(string(body)))
+	r.SetPathValue("id", task.ID)
+	r.SetPathValue("iid", fmt.Sprint(iid))
+	w := httptest.NewRecorder()
+	s.sendWorkerMessage(w, r)
+	if w.Code != 200 {
+		t.Fatalf("blocked 意图发送消息应 200，得到 %d：%s", w.Code, w.Body)
+	}
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("blocked 意图没有被拉起来续跑")
+	}
+	node, err := task.Store.GetNode(iid)
+	if err != nil || node == nil {
+		t.Fatalf("读意图失败：%v", err)
+	}
+	if node.State != "running" {
+		t.Fatalf("续跑后意图状态=%s，应为 running", node.State)
+	}
+	items, _, err := task.Store.ActivityList(&iid, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turns int
+	for _, it := range items {
+		if it.Worker == "user" && it.Kind == "user" {
+			turns++
+		}
+	}
+	if turns != 1 {
+		t.Fatalf("应有一条 worker=user 的人工留痕，得到 %d 条", turns)
+	}
+}
