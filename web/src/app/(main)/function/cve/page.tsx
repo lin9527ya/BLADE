@@ -530,7 +530,7 @@ export default function CVEPage() {
 
       {/* 详情 */}
       <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="max-h-[88vh] max-w-4xl overflow-hidden">
+        <DialogContent className="max-h-[88vh] max-w-4xl overflow-hidden sm:max-w-6xl">
           <DialogHeader>
             <DialogTitle className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-sm">{selected?.cve_id}</span>
@@ -680,7 +680,7 @@ export default function CVEPage() {
 
       {/* 新建 / 编辑 */}
       <Dialog open={editorOpen} onOpenChange={(open) => !open && closeEditor()}>
-        <DialogContent className="max-h-[92vh] max-w-5xl overflow-hidden">
+        <DialogContent className="max-h-[92vh] max-w-5xl overflow-hidden sm:max-w-[min(1440px,96vw)]">
           <DialogHeader>
             <DialogTitle>{editing ? `编辑 ${editing.cve_id}` : "新建 CVE"}</DialogTitle>
             <DialogDescription>
