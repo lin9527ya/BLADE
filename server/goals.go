@@ -417,11 +417,8 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 		// only path that writes here — decomposed goals are already persisted by the tool.
 		if g := strings.TrimSpace(t.Goal); g != "" {
 			log.Printf("[goals] task %s: LLM 目标拆解无产出，回退为「原始目标作为单目标」", t.ID)
-			origin, _ := t.Store.OriginFactID()
-			id, _ := t.Store.AddNode(db.KindGoal, map[string]any{"text": g}, 0, "open", "system", nil)
-			if origin > 0 && id > 0 {
-				_ = t.Store.Link(origin, db.RelSpawns, id) // goal descends from the task root (origin fact)
-			}
+			// 目标初始不连任务根：只有 prove_goal 拿到事实/漏洞证据时才写入 evidence→goal。
+			_, _ = t.Store.AddGoal(map[string]any{"text": g}, "system")
 			specs = []goalSpec{{Text: g}}
 		}
 	}

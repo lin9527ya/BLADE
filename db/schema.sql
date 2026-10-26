@@ -344,6 +344,16 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
 ALTER TABLE exploration_edges ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
+-- 目标初始态不再连任务根。旧版本创建 goal 时会写 origin fact --spawns--> goal，
+-- 图上看起来像「起点直接连目标」，把未完成的进度画成了已完成。新代码不再写这条边；
+-- 这里清理旧库已有的初始边（幂等；之后每次启动匹配 0 行）。达成目标时仍由
+-- prove_goal 写 evidence --proves--> goal。
+DELETE FROM exploration_edges e
+USING exploration_nodes s, exploration_nodes d
+WHERE e.src_id = s.id AND e.dst_id = d.id
+  AND e.rel = 'spawns'
+  AND s.kind = 'fact' AND s.state = 'origin'
+  AND d.kind = 'goal';
 -- cold-digest (§1): the 'covers' relation (digest→member) postdates shipped installs,
 -- whose rel CHECK is an inline auto-named constraint. Find and recreate it as ck_edge_rel.
 -- 战果层（P27）又加了 'uses'、AD 层（P32）加了 member_of/admin_to/session_on/can，探针同样要能识别出来。

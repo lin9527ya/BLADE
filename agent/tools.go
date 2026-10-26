@@ -594,7 +594,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	lootUsers := map[int64][]int64{} // 战果 → 用过它的意图（算不算「真动用」还取决于那些意图的收场状态，见 lootConsumingState）
 	for _, e := range edges {
 		switch e.Rel {
-		case db.RelDerivedFrom, db.RelSpawns: // upstream: derived_from (fact/finding/intent→intent) or spawns (origin fact→goal, legacy begin→intent)
+		case db.RelDerivedFrom, db.RelSpawns: // upstream: derived_from (fact/finding/intent→intent) or spawns (goal→intent, legacy begin→intent)
 			parentsOf[e.To] = append(parentsOf[e.To], e.From)
 		case db.RelYields: // intent --yields--> fact/finding
 			yieldsOf[e.From] = append(yieldsOf[e.From], e.To)
@@ -1857,10 +1857,10 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	for _, dep := range deps {
 		_ = t.ts.Link(id, db.RelDependsOn, dep)
 	}
-	// a top-level intent with NO goal edge connects to the origin fact, so every
+	// A top-level intent with NO goal edge connects to the origin fact, so every
 	// intent still traces back to a fact node — at task start the only fact is the
-	// origin, and the first intents derive from it. (With a goal edge the intent
-	// already reaches the origin through the goal.)
+	// origin, and the first intents derive from it. A goal is intentionally not a
+	// root: it stays unconnected until prove_goal supplies evidence.
 	if len(parents) == 0 && goalID == 0 {
 		if origin, _ := t.ts.OriginFactID(); origin > 0 {
 			_ = t.ts.Link(origin, db.RelDerivedFrom, id)
@@ -3028,9 +3028,10 @@ type goalItem struct {
 	VulnClass string `json:"vulnclass"`
 }
 
-// addOneGoal 挂一条 goal 节点(open)到探索图:连到任务根(origin fact,rel spawns)。
-// origin 取 t.worker(缺省 system):goals 拆解器写入的记 "goals"、主 agent 运行时记
-// "human"。唤醒 planner 由 setGoals 在整批写完后统一做(见下),这里只负责落库。
+// addOneGoal 新增一条 goal 节点(open)。目标初始**不**连任务根：起点与目标之间
+// 不该有一条"看起来进度已连上"的边；只有真正被事实/漏洞证明时，prove_goal 才会写
+// evidence --proves--> goal。origin 取 t.worker(缺省 system):goals 拆解器写入的记
+// "goals"、主 agent 运行时记 "human"。唤醒 planner 由 setGoals 在整批写完后统一做。
 func (t *ToolSet) addOneGoal(it goalItem) (int64, error) {
 	text := strings.TrimSpace(it.Text)
 	if text == "" {
@@ -3044,14 +3045,7 @@ func (t *ToolSet) addOneGoal(it goalItem) (int64, error) {
 	if origin == "" {
 		origin = "system"
 	}
-	id, err := t.ts.AddNode(db.KindGoal, payload, 0, "open", origin, nil)
-	if err != nil {
-		return 0, err
-	}
-	if of, _ := t.ts.OriginFactID(); of > 0 && id > 0 {
-		_ = t.ts.Link(of, db.RelSpawns, id) // goals descend from the task root (origin fact)
-	}
-	return id, nil
+	return t.ts.AddNode(db.KindGoal, payload, 0, "open", origin, nil)
 }
 
 // setGoals 给【本任务】新增探索目标(goal 节点)。既是目标拆解器的提交工具,也是主

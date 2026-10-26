@@ -29,7 +29,7 @@ func (s *Server) listGoals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"goals": goalDTOs(goals)})
 }
 
-// addGoal 人工新增一个目标:落库(挂到任务根 spawns 下)→ 记一条「新增了目标」触发唤醒
+// addGoal 人工新增一个目标:落库(初始不连任务根)→ 记一条「新增了目标」触发唤醒
 // planner → 复活任务,让规划者据新目标重判是否达成。
 func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
@@ -64,9 +64,6 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
-	}
-	if of, _ := t.Store.OriginFactID(); of > 0 && id > 0 {
-		_ = t.Store.Link(of, db.RelSpawns, id) // goal descends from the task root (origin fact)
 	}
 	t.NotifyGoal([]string{text}) // 记「人新增了目标:…」触发并唤醒 planner
 	s.reviveTask(t)              // 把已完成/暂停的任务拉回运行态继续跑

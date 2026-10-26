@@ -349,8 +349,9 @@ WHERE exploration_id=$1 AND kind='goal' AND state='open' ORDER BY id LIMIT 2`, s
 
 // LinkIntentToGoal writes goal --spawns--> intent — the 目标分解 axis of the
 // lineage (which goal this direction serves). It is deliberately separate from
-// the knowledge axis (fact/finding --derived_from--> intent): both coexist, and
-// the goal edge still lets the intent trace back to the task root through it.
+// the knowledge axis (fact/finding --derived_from--> intent): both coexist.
+// Goals are not rooted at the origin fact; they stay isolated until prove_goal
+// writes evidence --proves--> goal.
 // Validates that the goal is this task's open goal. Returns false (no error) when
 // either id is 0 — callers treat that as "nothing to link".
 func (s *ExplorationStore) LinkIntentToGoal(goalID, intentID int64) (bool, error) {
