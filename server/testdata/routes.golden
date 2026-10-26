@@ -243,6 +243,7 @@ POST /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.
 POST /api/conversations/{id}/stop	server.(*Server).pgStopConversation-fm
 POST /api/credentials/{id}/reveal	server.(*Server).revealCredential-fm
 POST /api/cves	server.(*Server).createCVE-fm
+POST /api/cves/import/preview	server.(*Server).previewCVEImport-fm
 POST /api/cves/{id}/script	server.(*Server).uploadCVEScript-fm
 POST /api/debug/pprof/symbol	net/http/pprof.Symbol
 POST /api/exploration/findings/{id}/deepen	server.(*Server).deepenFinding-fm

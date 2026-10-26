@@ -41,6 +41,7 @@ import type {
   CoverageGraphData,
   CredentialReveal,
   CVE,
+  CVEImportPreview,
   CVEInput,
   DailyTokenBucket,
   DeleteTaskOptions,
@@ -606,6 +607,9 @@ export const api = {
     return body as CVE;
   },
   clearCVEScript: (id: number) => del<CVE>(`/cves/${id}/script`),
+  // 审计报告导入：只抽取预览，保存仍走 createCVE，保证与手工录入同一套校验/去重。
+  previewCVEImport: (text: string, filename = "") =>
+    post<CVEImportPreview>("/cves/import/preview", { text, filename }),
 
   deprecateCompanyKnowledge: (companyId: number, id: number, reason: string) =>
     patch<CompanyKnowledge>(`/companies/${companyId}/knowledge/${id}`, { status: "deprecated", reason }),

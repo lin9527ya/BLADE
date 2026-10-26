@@ -22,6 +22,7 @@ const (
 func (s *Server) registerCVERoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/cves", s.listCVEs)
 	mux.HandleFunc("POST /api/cves", s.createCVE)
+	mux.HandleFunc("POST /api/cves/import/preview", s.previewCVEImport)
 	mux.HandleFunc("GET /api/cves/{id}", s.getCVE)
 	mux.HandleFunc("PUT /api/cves/{id}", s.updateCVE)
 	mux.HandleFunc("PATCH /api/cves/{id}", s.patchCVE)

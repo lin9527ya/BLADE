@@ -77,11 +77,20 @@ func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, inp
 // low temperature, bounded output) and returns the concatenated text. The
 // budget includes the explanation and complete closing JSON delimiters.
 func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
+	return streamCollectTextLimit(ctx, prov, system, user, 1024)
+}
+
+// streamCollectTextLimit is the same bounded text collector with an explicit
+// output cap (CVE report extraction needs room for several records).
+func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user string, maxTokens int) (string, error) {
+	if maxTokens <= 0 {
+		maxTokens = 1024
+	}
 	temp := 0.0
 	req := llm.CompletionRequest{
 		System:      []string{system},
 		Messages:    []llm.Message{llm.UserText(user)},
-		MaxTokens:   1024,
+		MaxTokens:   maxTokens,
 		Temperature: &temp,
 		Thinking:    "disabled",
 	}

@@ -1005,6 +1005,21 @@ export interface CVEListResponse {
   total: number;
 }
 
+/** 报告导入预览：draft 与手工录入同一形状，保存时仍走 CVEInput。 */
+export interface CVEImportSkipped {
+  cve_id?: string;
+  title?: string;
+  reason: string;
+}
+
+export interface CVEImportPreview {
+  drafts: CVEInput[];
+  skipped: CVEImportSkipped[];
+  warnings: string[];
+  count: number;
+  note?: string;
+}
+
 // ---- P22 计划任务 ----
 
 /** 结构化频率（刻意不是 cron 字符串：覆盖巡检需要，且没有方言/边界歧义）。 */

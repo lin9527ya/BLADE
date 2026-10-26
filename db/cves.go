@@ -279,6 +279,14 @@ func validateCVE(c *CVE) error {
 	return nil
 }
 
+// NormalizeCVE validates and normalizes an import draft without writing it.
+func NormalizeCVE(c CVE) (CVE, error) {
+	if err := validateCVE(&c); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
 const cveFullCols = `id, cve_id, title, COALESCE(severity,''), COALESCE(vendor,''), COALESCE(description,''),
 affected_products, COALESCE(version_constraint,''), fingerprint, COALESCE(probe_guide,''), refs,
 exploit_script, COALESCE(exploit_language,''), COALESCE(exploit_filename,''), COALESCE(exploit_usage,''),

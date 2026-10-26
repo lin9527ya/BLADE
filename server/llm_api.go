@@ -370,6 +370,26 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 	return s.llm.chatAgent
 }
 
+// globalLLMProvider returns the configured global provider for one-shot utility
+// calls (e.g. CVE report extraction). It never builds a new provider: if no LLM
+// is configured it returns false so callers can report "先配置 LLM".
+func (s *Server) globalLLMProvider() (llm.Provider, bool) {
+	s.llm.mu.Lock()
+	if s.llm.direct != nil {
+		p := s.llm.direct
+		s.llm.mu.Unlock()
+		return p, true
+	}
+	s.llm.mu.Unlock()
+	// 启动早期 direct 可能尚未赋值；退回当前激活 profile 的缓存 provider。
+	active, err := s.m.pg.ActiveProfile()
+	if err != nil || active == nil {
+		return nil, false
+	}
+	prov, _, ok := s.providerForProfile(active.ID)
+	return prov, ok
+}
+
 // getLLM returns the current LLM config (key never exposed).
 func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 	s.llm.mu.Lock()

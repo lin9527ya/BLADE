@@ -6,6 +6,7 @@ import { BookOpenIcon, Loader2Icon, PlusIcon, SearchIcon, ShieldAlertIcon, Trash
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
+import { CVEImportDialog } from "@/components/cve-import-dialog";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
@@ -425,6 +426,7 @@ export default function CVEPage() {
               <SelectItem value="no">无脚本</SelectItem>
             </SelectContent>
           </Select>
+          <CVEImportDialog onImported={load} />
           <Button size="sm" onClick={openCreate}>
             <PlusIcon data-icon="inline-start" />
             新建 CVE
