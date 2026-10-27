@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-10-27
+
 ### CVE 库：0day 导入、测绘语法与列表排序
 
 - 审计报告导入不再要求 CVE 编号：有编号按原编号导入（大写 `CVE-YYYY-NNNN`）；
@@ -2108,7 +2110,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.8
 [0.5.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.2
 [0.5.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.0
