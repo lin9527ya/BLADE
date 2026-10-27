@@ -797,8 +797,15 @@ func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model s
 	// 配置里点名了 session_header_key 的端点（如 opencode zen 的 x-opencode-session）
 	// 要求每个请求带路由头，缺了直接 400。值用**稳定**串（按配置名派生）：它只影响
 	// 路由/缓存亲和，不需要每次变化；稳定反而对端点的缓存更友好。
+	headers = make(map[string]string, len(p.CustomHeaders)+1)
+	for k, v := range p.CustomHeaders {
+		headers[k] = v
+	}
 	if k := strings.TrimSpace(p.SessionHeaderKey); k != "" {
-		headers = map[string]string{k: "blade-" + name}
+		headers[k] = "blade-" + name
+	}
+	if len(headers) == 0 {
+		headers = nil
 	}
 	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel, headers
 }

@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { LLMProfile, LLMRetryOverride } from "@/lib/types";
 
@@ -28,6 +29,28 @@ import {
 import { ProfileRetryFields, ZERO_OVERRIDE } from "./retry";
 
 // LLM 配置档（provider / 模型 / 代理 / 参数）的编辑弹窗。
+
+// 自定义请求头用「每行 Name: Value」的一行式编辑。注释行与空行忽略；
+// 值里允许出现冒号（只按第一个冒号切），便于填 URL 等。
+function headersToText(h?: Record<string, string>): string {
+  return Object.entries(h ?? {})
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+}
+
+function textToHeaders(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const i = line.indexOf(":");
+    if (i <= 0 || !line.slice(0, i).trim()) {
+      throw new Error(`自定义请求头格式错误：${line}（应为 Name: Value）`);
+    }
+    out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
 
 export function ProfileDialog({
   profile,
@@ -59,6 +82,7 @@ export function ProfileDialog({
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
+  const [customHeaders, setCustomHeaders] = React.useState(""); // 固定请求头（每行 Name: Value）
 
   // opencode zen 网关强制要求 x-opencode-session（缺了 400 MissingSessionID）：
   // 地址是 opencode.ai 且输入框留空时，测试/保存都自动按该头名走（后端也有同款兜底）。
@@ -94,6 +118,7 @@ export function ProfileDialog({
     setMaxTokens(String(profile?.max_tokens ?? 0));
     setMaxTokensField(fromStore(profile?.max_tokens_field));
     setSessionHeaderKey(profile?.session_header_key ?? "");
+    setCustomHeaders(headersToText(profile?.custom_headers));
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
     setApiKey("");
     setKeyHint(profile?.api_key_hint ?? "");
@@ -108,7 +133,7 @@ export function ProfileDialog({
     setLoadingModels(true);
     setModels([]);
     try {
-      const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId);
+      const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId, textToHeaders(customHeaders));
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models);
         setModelsOpen(true);
@@ -140,6 +165,7 @@ export function ProfileDialog({
         profileId,
         streaming,
         effectiveSessionHeader(baseUrl, sessionHeaderKey),
+        textToHeaders(customHeaders),
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
@@ -167,6 +193,7 @@ export function ProfileDialog({
     }
     setSaving(true);
     try {
+      const parsedHeaders = textToHeaders(customHeaders);
       const { id } = await api.saveLLMProfile({
         ...(profile ? { id: Number(profile.id) } : {}),
         name: name.trim(),
@@ -188,6 +215,7 @@ export function ProfileDialog({
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
         session_header_key: effectiveSessionHeader(baseUrl, sessionHeaderKey),
+        custom_headers: parsedHeaders,
         retry,
       });
       if (isNew) toast.success(`已新建：${name.trim()}（在卡片上「设为激活」以启用）`);
@@ -367,6 +395,24 @@ export function ProfileDialog({
               粘性路由的网关；同一会话多轮稳定、不同会话互不相同。留空则不发送（
               <b>opencode.ai 端点例外</b>：会自动按 x-opencode-session 发送，否则网关直接 400）。
               浏览器若把用户名等自动填充进来（此前把「admin」填进过本框），请清空。
+            </p>
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="p-custom-headers">自定义请求头（可选）</Label>
+            <Textarea
+              id="p-custom-headers"
+              className="min-h-20 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={"User-Agent: claude-cli/2.1.0 (external, cli)\nX-Custom-Header: value"}
+              value={customHeaders}
+              onChange={(e) => setCustomHeaders(e.target.value)}
+            />
+            <p className="text-muted-foreground text-xs">
+              每行一个 <code>Name: Value</code>，附加到该配置的每个 LLM 请求（连接测试、模型列表、实际任务一致）。
+              部分中转站会按 <code>User-Agent</code> 做客户端白名单，可在这里填写其要求的 UA；
+              连接/分帧类头（Host、Content-Length、Content-Type 等）由客户端管理，不允许覆盖。
             </p>
           </div>
 

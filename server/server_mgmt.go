@@ -1953,6 +1953,18 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	// An absent custom_headers field (older client) must preserve the saved map;
+	// an explicit {} clears it. Validate here so a bad header name is a 400, not a
+	// generic 500 from SaveProfile.
+	if p.CustomHeaders == nil && p.ID > 0 {
+		if old, err := pg.ProfileByID(p.ID); err == nil && old != nil {
+			p.CustomHeaders = old.CustomHeaders
+		}
+	}
+	if _, err := db.NormalizeCustomHeaders(p.CustomHeaders); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
 	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
 	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。
@@ -2122,11 +2134,12 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 // the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider  string `json:"provider"` // "openai" | "anthropic"
-		BaseURL   string `json:"base_url"`
-		APIKey    string `json:"api_key"`
-		Proxy     string `json:"proxy"`
-		ProfileID *int64 `json:"profile_id"` // fallback: use stored key from this profile
+		Provider      string            `json:"provider"` // "openai" | "anthropic"
+		BaseURL       string            `json:"base_url"`
+		APIKey        string            `json:"api_key"`
+		Proxy         string            `json:"proxy"`
+		ProfileID     *int64            `json:"profile_id"` // fallback: use stored key from this profile
+		CustomHeaders map[string]string `json:"custom_headers"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -2134,9 +2147,19 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolve API key: form input > profile stored key.
 	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" && req.ProfileID != nil {
+	headers, err := db.NormalizeCustomHeaders(req.CustomHeaders)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			apiKey = p.APIKey
+			if apiKey == "" {
+				apiKey = p.APIKey
+			}
+			if req.CustomHeaders == nil {
+				headers = p.CustomHeaders
+			}
 		}
 	}
 	if apiKey == "" {
@@ -2210,6 +2233,9 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			lastErr = "构建请求失败: " + err.Error()
 			continue
+		}
+		for k, v := range headers {
+			httpReq.Header.Set(k, v)
 		}
 		httpReq.Header = c.hdr
 		resp, err := client.Do(httpReq)

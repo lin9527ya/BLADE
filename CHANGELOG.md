@@ -2,6 +2,15 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.1] - 2026-10-27
+
+### LLM 配置：自定义请求头
+
+- LLM 配置新增「自定义请求头」（每行 `Name: Value`，如 `User-Agent`），保存后附加到该配置的
+  每个请求：实际任务、连接测试、模型列表一致；用于按 UA/自定义头做白名单或路由的中转站。
+- 每次请求固定附加，会话级 `x-*` 会话头仍优先；拒绝覆盖 Host / Content-Length /
+  Content-Type 等由 HTTP 客户端管理的分帧头，并拒绝头名/值中的换行注入。
+
 ## [0.6.0] - 2026-10-27
 
 ### 固定 Worker 槽位与会话复用
@@ -2128,7 +2137,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.1
 [0.6.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.0
 [0.5.8]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.8
 [0.5.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.2
