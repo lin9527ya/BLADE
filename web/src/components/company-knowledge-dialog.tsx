@@ -94,7 +94,7 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
           知识
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>{company.name} · 公司知识</DialogTitle>
           <DialogDescription>

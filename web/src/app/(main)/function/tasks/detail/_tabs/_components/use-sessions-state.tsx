@@ -22,6 +22,7 @@ import type {
   TaskNode,
   TokenTotal,
 } from "@/lib/types";
+import { rememberInputHistory } from "@/lib/input-history";
 
 import {
   emptyState,
@@ -1072,6 +1073,7 @@ export function useSessionsState(taskId: string) {
     const atts = attachments;
     if (side.handleCommand(text, () => setInput(""))) return;
     if ((!text && atts.length === 0) || sending || mainBusy) return;
+    if (text) rememberInputHistory(`task:${taskId}:${active.id}`, text);
     // No optimistic echo: the backend persists+broadcasts the human turn before it
     // returns, so it streams back over SSE (worker="mainagent") with its real DB
     // seq — the transcript renders it from server data like every other step. Clear
@@ -1108,6 +1110,7 @@ export function useSessionsState(taskId: string) {
       toast.error(`消息不能超过 ${MAX_WORKER_MESSAGE_CHARS} 个字符`);
       return;
     }
+    rememberInputHistory(`task:${taskId}:${active.id}`, message);
     const requestId = workerMessageRequestId || newWorkerMessageRequestID();
     if (!workerMessageRequestId) setWorkerMessageRequestId(requestId);
     setWorkerMessageSending(true);

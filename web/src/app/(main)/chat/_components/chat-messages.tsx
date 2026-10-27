@@ -19,6 +19,7 @@ import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
 import { api } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
+import { rememberInputHistory } from "@/lib/input-history";
 import { isBtwCommand } from "@/lib/side-questions";
 import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -53,6 +54,7 @@ export function Composer({
   onRemoveAttachment,
   uploading,
   allowBtw,
+  historyKey,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -69,15 +71,21 @@ export function Composer({
   onRemoveAttachment?: (path: string) => void;
   uploading?: boolean;
   allowBtw?: boolean;
+  /** 输入框历史 scope（↑/↓ 翻阅已发送消息）；不同会话用不同 key。 */
+  historyKey?: string;
 }) {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const atts = attachments ?? [];
   // 发送键位由系统设置决定（localStorage），默认 Enter 发送。
   const sendMode = useChatSendMode();
+  function submit() {
+    if (historyKey) rememberInputHistory(historyKey, value);
+    onSend();
+  }
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (!shouldSubmitOnKey(e, sendMode)) return;
     e.preventDefault();
-    onSend();
+    submit();
   }
   return (
     <div className="border-t p-3">
@@ -138,13 +146,15 @@ export function Composer({
           className="max-h-40 min-h-10 min-w-0 flex-1 resize-none"
           rows={1}
           placeholder={placeholder}
+          title="↑/↓ 翻阅已发送消息"
           value={value}
           disabled={disabled && !(running && allowBtw)}
+          historyKey={historyKey}
           onValueChange={onChange}
           onKeyDown={onKeyDown}
         />
         {running && allowBtw && isBtwCommand(value) && (
-          <Button size="icon" onClick={onSend} aria-label="发送旁路问题" title="发送旁路问题">
+          <Button size="icon" onClick={submit} aria-label="发送旁路问题" title="发送旁路问题">
             <ArrowUpIcon />
           </Button>
         )}
@@ -157,7 +167,7 @@ export function Composer({
         ) : (
           <Button
             size="icon"
-            onClick={onSend}
+            onClick={submit}
             disabled={disabled || (!value.trim() && atts.length === 0)}
             title="发送消息"
             aria-label="发送消息"
@@ -352,6 +362,7 @@ export function DraftChat({
         value={input}
         onChange={setInput}
         onSend={send}
+        historyKey="chat:draft"
         disabled={sending || uploading || !agentKey}
         placeholder="输入消息，@ 引用记录，Enter 发送"
         leftSlot={agentPicker}
@@ -723,6 +734,7 @@ export function ChatView({
         value={input}
         onChange={setInput}
         onSend={send}
+        historyKey={`chat:${conv.id}`}
         disabled={running || sending}
         allowBtw
         placeholder={running ? "Agent 正在回复，可输入 /btw 提问…" : "输入消息，@ 引用记录，Enter 发送"}

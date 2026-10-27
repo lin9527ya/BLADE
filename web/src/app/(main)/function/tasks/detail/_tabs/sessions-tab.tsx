@@ -627,6 +627,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     inputGroup
                     rows={1}
                     aria-label="给主 Agent 发消息"
+                    title="↑/↓ 翻阅已发送消息"
+                    historyKey={`task:${taskId}:${active.id}`}
                     placeholder={
                       mainBusy ? "主 Agent 正在运行，可输入 /btw 提问…" : "给主 Agent 发消息，@ 引用漏洞、资产等…"
                     }
@@ -693,6 +695,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     inputGroup
                     rows={1}
                     aria-label={`给 Worker #${active.worker_no ?? active.intent_id} 发消息`}
+                    title="↑/↓ 翻阅已发送消息"
+                    historyKey={`task:${taskId}:${active.id}`}
                     placeholder={
                       active.status === "running"
                         ? `给运行中的 Worker #${active.worker_no ?? active.intent_id} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`

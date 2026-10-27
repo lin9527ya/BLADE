@@ -246,7 +246,7 @@ export default function PlaybooksPage() {
       </Card>
 
       <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
+        <DialogContent className="max-h-[85vh] sm:max-w-5xl overflow-hidden">
           <DialogHeader>
             <DialogTitle>{selected?.title}</DialogTitle>
             <DialogDescription>

@@ -17,18 +17,33 @@ import {
   mentionToken,
   selectedMentions,
 } from "@/lib/chat-mentions";
+import { loadInputHistory } from "@/lib/input-history";
 import { cn } from "@/lib/utils";
 
 type Props = Omit<React.ComponentProps<"textarea">, "value" | "onChange" | "ref"> & {
   value: string;
   onValueChange: (value: string) => void;
   inputGroup?: boolean;
+  /** 传了就启用 ↑/↓ 翻历史；不同 composer 用不同 scope。 */
+  historyKey?: string;
 };
 
-export function MentionTextarea({ value, onValueChange, onKeyDown, className, inputGroup, disabled, ...props }: Props) {
+export function MentionTextarea({
+  value,
+  onValueChange,
+  onKeyDown,
+  className,
+  inputGroup,
+  disabled,
+  historyKey,
+  ...props
+}: Props) {
   const textarea = React.useRef<HTMLTextAreaElement>(null);
   const composing = React.useRef(false);
   const pendingKeyboardIndex = React.useRef<number | null>(null);
+  // 历史浏览位置：null = 不在浏览（编辑当前草稿）；historyDraft 保存开始翻历史前的草稿。
+  const historyIndex = React.useRef<number | null>(null);
+  const historyDraft = React.useRef("");
   const [cursor, setCursor] = React.useState<number | null>(null);
   const [dismissed, setDismissed] = React.useState(false);
   const [activeIndex, setActiveIndex] = React.useState(0);
@@ -149,6 +164,64 @@ export function MentionTextarea({ value, onValueChange, onKeyDown, className, in
     else if (items[index]) replaceActive(`${mentionToken(items[index])} `, true);
   }
 
+  React.useEffect(() => {
+    if (value === "") {
+      historyIndex.current = null;
+      historyDraft.current = "";
+    }
+  }, [value]);
+
+  function recallHistory(event: React.KeyboardEvent<HTMLTextAreaElement>): boolean {
+    if (!historyKey) return false;
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
+    // 组合键留给光标/选区操作；历史只吃裸 ↑/↓。
+    if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
+    const el = event.currentTarget;
+    if (el.selectionStart !== el.selectionEnd) return false;
+    // 多行输入只在首行按 ↑、末行按 ↓ 时翻历史，行内移动光标不受影响。
+    const start = el.selectionStart;
+    const atFirstLine = !value.slice(0, start).includes("\n");
+    const atLastLine = !value.slice(el.selectionEnd).includes("\n");
+    if (event.key === "ArrowUp" && !atFirstLine) return false;
+    if (event.key === "ArrowDown" && !atLastLine) return false;
+
+    const entries = loadInputHistory(historyKey);
+    if (entries.length === 0) return false;
+
+    let next = historyIndex.current;
+    if (event.key === "ArrowUp") {
+      if (next === null) {
+        historyDraft.current = value;
+        next = entries.length - 1;
+      } else if (next > 0) {
+        next--;
+      } else {
+        event.preventDefault(); // 已在最旧一条，别让光标乱跑
+        return true;
+      }
+    } else {
+      if (next === null) return false; // 没在浏览历史：↓ 仍是正常光标移动
+      if (next < entries.length - 1) {
+        next++;
+      } else {
+        next = null; // 越过最新一条 → 回到翻历史前的草稿
+      }
+    }
+
+    const nextValue = next === null ? historyDraft.current : entries[next];
+    historyIndex.current = next;
+    event.preventDefault();
+    setDismissed(true); // 历史内容里可能带 @，别顺手弹出引用面板
+    onValueChange(nextValue);
+    const caret = nextValue.length;
+    setCursor(caret);
+    requestAnimationFrame(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(caret, caret);
+    });
+    return true;
+  }
+
   function keyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (open) {
@@ -178,6 +251,7 @@ export function MentionTextarea({ value, onValueChange, onKeyDown, className, in
         return;
       }
     }
+    if (recallHistory(event)) return;
     onKeyDown?.(event);
   }
 
@@ -205,6 +279,8 @@ export function MentionTextarea({ value, onValueChange, onKeyDown, className, in
               aria-activedescendant={open && count ? `${listId}-${Math.min(activeIndex, count - 1)}` : undefined}
               onChange={(event) => {
                 pendingKeyboardIndex.current = null;
+                historyIndex.current = null; // 一旦手动编辑，就退出历史浏览
+                historyDraft.current = "";
                 onValueChange(event.target.value);
                 setCursor(event.target.selectionStart);
                 setDismissed(false);
