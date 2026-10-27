@@ -32,7 +32,8 @@ func TestWorkerSessionIDForSlotIsStableAcrossIntents(t *testing.T) {
 		t.Fatalf("slot session id = %q, want exp12-worker-slot3", got)
 	}
 	// The id must not depend on the intent: that is the whole point of a slot.
-	if WorkerSessionIDForSlot(12, 3) != WorkerSessionIDForSlot(12, 3) {
+	a, b := WorkerSessionIDForSlot(12, 3), WorkerSessionIDForSlot(12, 3)
+	if a != b {
 		t.Fatal("slot session id must be deterministic")
 	}
 	if WorkerSessionIDForSlot(12, 3) == WorkerSessionID(12, 34) {

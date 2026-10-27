@@ -468,10 +468,6 @@ func workerExecSpec() string {
 		"- 要收掉一条执行用 cancel_execution 并写明理由（理由记进台账，会回传给模型和审计）；不要用 kill/pkill 直接杀进程——那会绕过台账。"
 }
 
-// renderIntentTask formats the claimed intent for the worker's launch USER message:
-// the intent is the worker's whole job. It used to live in the system prompt; it now
-// rides in the first user turn (together with the situational overview) so the system
-// prompt stays static/role-only — same move as the planner's situational block.
 // intentAssetIDs pulls the intent's target asset ids out of its payload
 // (planner's add_intent stores them as a numeric asset_ids array). nil on absence
 // or malformed payload.
@@ -486,10 +482,6 @@ func intentAssetIDs(intent *db.Node) []int64 {
 		return nil
 	}
 	return p.AssetIDs
-}
-
-func renderIntentTask(intent *db.Node) string {
-	return fmt.Sprintf("\n\n【你领到的意图（本次唯一任务：只做这一条、只产生事实、做完即停）】：\n%s\n意图 id: %d（写回 record_fact / report_finding 时传它）", string(intent.Payload), intent.ID)
 }
 
 // renderWorkerGraphOverview folds the global situational snapshot into the worker's

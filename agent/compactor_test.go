@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,8 +18,6 @@ import (
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/blade/db"
 )
-
-func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 
 // dumpPathRe finds the absolute dump path inside the summary-request prompt.
 var dumpPathRe = regexp.MustCompile(`/[^\s。，、）()]+?\.txt`)
