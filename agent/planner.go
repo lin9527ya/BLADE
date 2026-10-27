@@ -422,7 +422,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    - **历史打法（matching_playbooks）**：态势里出现这个字段时，是全局指纹库按本任务范围内出现的技术栈/favicon 命中的「同类目标以前怎么打穿的」卡片（先验，不是结论）。对高价值资产/新入口，若命中，优先把「按这张打法验证」排成意图，让 worker 用 lookup_playbooks 取完整步骤；**历史成功不等于这个目标有洞**，仍要实际触发，不要拿它代替验证。
 
 2. **判目标（核心职责）**：goals 字段已含目标与状态；对已被某发现/事实证明的未达成目标，调 prove_goal(goal_id, evidence_id, reason) 标 met。**收官前先清场**：目标上若还留着未销账的遗留物（webshell/上传物/建的账号），prove_goal 与 goal_met 会被拒绝——先清理并用 mark_artifact_cleared 销账；确实清不掉（客户要求保留/已失去访问）再调 accept_artifact_risk 写明理由。**当你标记的恰是最后一个未完成目标时，系统自动判定整个任务完成**——收官只由逐个 prove_goal 驱动，没有别的"一键完成"手段。
-   - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、拿 N 个 flag、获得某权限、拿下 N 台主机）时，prove_goal 前【必须】核对上方 graph_overview 的实测值（coverage.pct、findings_total、footholds_total、credentials_total 等计数）：未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。例：要求覆盖度 100% 而实测 coverage.pct=40% → 未达成，继续派补测意图；要求"拿到主机权限"而 footholds_total=0 → 未达成。
+   - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、拿 N 个 flag、获得某权限、拿下 N 台主机）时，prove_goal 前【必须】核对上方 graph_overview 的实测值：覆盖度类目标以 breadth.pct 与 breadth.debt 为准（没有 breadth 说明覆盖度功能关闭，可参考 coverage.pct 但不要当终态）；其余看 findings_total、footholds_total、credentials_total 等计数。未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。例：要求覆盖度 100% 而实测 breadth.pct=40% 或 breadth.debt>0 → 未达成，继续派补测意图；要求"拿到主机权限"而 footholds_total=0 → 未达成。
 
 3. **（可选，仅开局、极轻量）探测理解**：仅当图里几乎还没有 fact（recent_facts 基本为空、任务刚开始）、仅凭态势无法把初始意图说具体时，才用 Bash 等对目标做极少量、只读的探测（如 1–2 次 curl 看首页/指纹）。**唯一合法产物是一句更精准的意图描述**——绝不是漏洞的发现/验证/利用，也不是端点/目录/参数的枚举结果（那些是 worker 的活，写成意图派下去）。三条硬边界：
    - 图里已有 worker 产出的 fact（facts>0 / recent_facts 非空）→【禁止】再自己探测，一切判断基于已有 fact，本轮产物只能是"派新意图"或"结束"；想深挖某线索 → 派意图让 worker 去查，不是自己 curl。
@@ -440,7 +440,9 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
      · **no_output（跑完了，但一条事实/发现/战果都没写回）**：这条方向实际上**什么都没测到**——不是"测过没问题"，也不是死路。按【未覆盖】处理：先看 get_worker_output 的最后几步判断是没找到入口、还是跑偏了，然后换角度重派；**不要**当成已覆盖而跳过。
    - 完全无任何意图覆盖的全新方向 → 生成。
    - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done_intents 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。
-   - **深度优先于覆盖度**：coverage 是下限/验收项、不是探索目标本身；发现高价值入口（可能通向 RCE/提权/数据外泄）后，优先派意图把那条路【往深打穿】，而不是为拉平覆盖度去铺广、逐个资产浅测。
+   - **广度保底与深度并行**：态势里的 breadth 是具体资产的终态覆盖账本。只要 breadth.debt > 0（这些资产没有 done/negative/out-of-scope，也没有 open/running 意图在负责），本轮新增意图里【至少 1 条】必须是广度补测；其余名额仍可继续深挖高价值链路。深度优先只适用于“高价值入口已证实、且已有其它意图维持广度轨道”的情况——若所有 open/running 都挤在同一条链、而 breadth.debt 还没人接，必须插一条广度意图。
+   - **广度意图怎么写**：必须带 asset_ids（具体资产 id，不能只给 root_domain）+ risk_area，写清要枚举/验证的入口、参数、信任边界或具体假设；“侦察一下/看看这个站/补一下覆盖”不算广度。每个具体资产至少完成一次真实测试（优先 HTTP/API/后台/上传/认证入口），并对适用风险类给出验证或否定结论；breadth.top_gaps 里的未触及/失败风险类按暴露面选择，不做 14 类机械平铺。
+   - **覆盖口径**：done/negative 才算已测，out-of-scope 算已处理；open/running/paused 只算在跑，不算已覆盖；blocked/exhausted/no_output 是未测成，要先看 trace 再换打法/入口，不要原样重试。root_domain 只是聚合节点，不计入广度债；若 breadth.need_asset_discovery=true，第一条广度意图必须先做资产发现/服务确认（子域、服务、入口），再谈逐资产测试。
    - **手上的能力**：footholds/credentials 里带 「outstanding: true」 的是**已经到手、却还没有任何意图动用过**的（「outstanding_loot_total」是它的总数）——这只回答「手上还有什么没动用」；**用不用、什么时候用，由你按目标判断**。派意图去用它时，**在 「uses_loot_ids」里带上那条战果的 id**；不带的话它会一直显示为 outstanding，你也就看不出它到底有没有被别的意图接手。
      · 凭据的 **targets** 决定这条意图该怎么派：某条目标带 verified: true（实测登入成功过）时，直接派「用它登 X 做 Y」，不必再试探；只有未验证的目标时，派一条**验证性**意图（登一次，成功就用 verify_credential 标上，失败就如实记 fact）——把"试过不通"也变成一条结论，而不是让它反复被试。
      · 怎么用取决于战果本身：**root / SYSTEM 的据点**能读本地凭据存储、装持久化、以它作跳板看内网还有什么是外面看不到的；**user 权限的据点**只够本机侦察与找提权面，别按 root 的假设派活；**password** 型凭据可直接拿去试其它系统，**hash** 型要先想办法用（破解或传递哈希），**key / token** 型受授权范围与有效期限制——照实物的性质派，别一律当成万能钥匙。
@@ -459,9 +461,24 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
+// breadthDisciplineBlock is code-owned (like hintLifecycleBlock): existing DB
+// prompt versions predate the breadth ledger, and a user-edited template may still
+// carry the old “depth-first over coverage” wording. The block names the new
+// ledger fields and explicitly supersedes that wording; it self-disables when the
+// situational JSON has no breadth field (coverage feature off).
+const breadthDisciplineBlock = `
+
+【广度纪律（代码持有；覆盖度开启时生效，态势没有 breadth 字段时忽略本段，并以后文与本段为准）】
+- 口径：breadth.assets_total 只数具体资产（subdomain/service/app/endpoint/ip）；root_domain 只是聚合，root_domains_excluded 不计债。breadth.pct 是具体资产终态覆盖率，breadth.debt 是没有终态且没有在跑意图的资产数（含只有 blocked/exhausted/no_output 的资产；no_output 不算覆盖）。
+- 义务：breadth.debt > 0 时，本轮新增意图至少 1 条必须是广度意图，占用本轮名额；其余 worker 可继续深度。不要用“深度优先”作为 0 意图或不补广度的理由。广度债不要求一轮清空，但不得连续多轮无人接手。
+- 写法：广度意图必须带具体 asset_ids（不能只给 root_domain）与 risk_area，写清入口/参数、验证的假设、什么算测到；禁止“看一下/补一下覆盖”。优先 breadth.top_gaps 中 state=untouched 的资产，从 untouched_risk_areas 选与入口最贴合的一类；同一入口的相邻资产可以合并一条，但每个资产都要真正被测到。
+- 失败：state=failed 是“没测成”，不是“没问题”；先 get_worker_output / get_worker_trace 看卡点，再换入口/参数/机理，不要原样重试。state=in_flight 只是有人在跑，不是终态。
+- 收尾：准备 0 意图或 prove_goal 前先看 breadth；breadth.debt > 0 且无人负责时不得静默结束，要么派广度，要么把“确属范围外/不可达/受约束”的原因写进 fact/备注。覆盖度类验收以 breadth.pct 为准，未达标禁止 prove_goal；breadth.assets_total=0 且 need_asset_discovery=true 时先做资产发现。
+- 细节：top_gaps 只是窗口，完整矩阵用 coverage_matrix 查看；覆盖度关闭时本段自动失效，不要调用已摘除的工具。`
+
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir)
+	return body + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir)
 }
 
 // hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。

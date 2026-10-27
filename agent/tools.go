@@ -66,6 +66,15 @@ type ToolSet struct {
 	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
 	// are filtered out of the agent's tool list. The scope field stays regardless.
 	coverageDisabled bool
+	// breadthCached is the per-ToolSet snapshot of the concrete-asset breadth
+	// ledger. Planner ToolSets live one round, so this is a round snapshot; sharing
+	// it between graphOverviewData and add_intent avoids a second matrix query.
+	breadthLoaded bool
+	breadthCached *db.BreadthSummary
+	// breadthNewDebt tracks debt assets already targeted by intents created in this
+	// ToolSet, so a second add_intent call in the same round does not re-warn for
+	// the same asset.
+	breadthNewDebt map[int64]bool
 	// execService（P13）由 host 注入：长任务执行的托管后端。nil = 未接线，
 	// 四个执行工具会返回可读拒绝而不是静默消失。
 	execService ExecService
@@ -496,11 +505,38 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // 超过窗口时概览会给出 recent_facts_next_before，让 planner 用 list_facts 接着翻。
 const recentFactsCap = 20
 
+// breadthSummary returns this round's concrete-asset breadth ledger. It is
+// cached per ToolSet so graphOverviewData and add_intent share one matrix query.
+func (t *ToolSet) breadthSummary() *db.BreadthSummary {
+	if t.coverageDisabled || t.ts == nil || t.taskID <= 0 {
+		return nil
+	}
+	if t.breadthLoaded {
+		return t.breadthCached
+	}
+	t.breadthLoaded = true
+	if b, err := t.ts.BreadthSummary(t.taskID); err == nil {
+		t.breadthCached = b
+	}
+	return t.breadthCached
+}
+
 // graphOverviewData computes the distilled situational snapshot shared by the
 // graph_overview tool and the planner's wake-up prompt (which pre-injects it so
 // the model needn't spend a turn calling the tool — every plan round starts with
 // an empty context and always needs this first).
 func (t *ToolSet) graphOverviewData() map[string]any {
+	return t.graphOverviewDataInternal(true)
+}
+
+// graphOverviewDataForWorker omits the breadth ledger: a worker acts on one
+// intent and must not try to widen its job. Skipping it also avoids a needless
+// coverage-matrix query for every worker run.
+func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
+	return t.graphOverviewDataInternal(false)
+}
+
+func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any {
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
@@ -590,31 +626,13 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 				"有脚本且目标明确时才用 cve_exploit 实际触发。cve_exploit 只返回输出/execution_id，不会自动产生 finding/foothold。"
 		}
 	}
-	// 覆盖矩阵摘要：只给「未覆盖格」的规模与几个例子。完整矩阵走 coverage_matrix
-	// 按需取——每轮把全量矩阵塞进态势会把上下文撑爆。
-	// 任务关了覆盖度功能时 coverage_matrix 已被摘除：此时再给 coverage_gap 只会让模型
-	// 反复去找一个不存在的工具，所以整段跳过。
-	if !t.coverageDisabled && t.ts != nil && t.taskID > 0 {
-		if cov, err := t.ts.CoverageMatrix(t.taskID); err == nil && len(cov) > 0 {
-			uncovered := 0
-			samples := make([]string, 0, 5)
-			for _, a := range cov {
-				miss := len(db.RiskAreas) - len(a.Cells)
-				if miss <= 0 {
-					continue
-				}
-				uncovered += miss
-				if len(samples) < 5 {
-					samples = append(samples, fmt.Sprintf("%s(%s) 未触及 %d 类", a.Label, a.Type, miss))
-				}
-			}
-			out["coverage_gap"] = map[string]any{
-				"assets_in_scope": len(cov),
-				"uncovered_cells": uncovered,
-				"samples":         samples,
-				"note": "完整矩阵用 coverage_matrix。覆盖度是**验收下限**，不是探索目标本身——" +
-					"别为拉平覆盖去逐个资产浅测；发现高价值入口后优先往深打穿。",
-			}
+	// 广度账本：具体资产（root_domain 除外）的终态覆盖与债务。完整矩阵走
+	// coverage_matrix 按需取；这里只给规模 + 最多 8 个缺口，避免撑爆上下文。
+	// 覆盖度关闭时 coverage_matrix 已被摘除、也不注入 breadth——否则模型会去找不存在
+	// 的工具/字段。
+	if includeBreadth && !t.coverageDisabled {
+		if b := t.breadthSummary(); b != nil {
+			out["breadth"] = b
 		}
 	}
 	// lineage from the exploration edges: an intent's parents (what it
@@ -1094,7 +1112,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 					m["denominator"] = cov.Denominator
 					m["tested"] = cov.Tested
 					m["by_type"] = cov.ByType
-					m["note"] = "coverage资产测试覆盖度（包括接口等各种相关资产），粗略估计、仅供参考：包含当前任务与直接关联任务的 scope、事实锚点；关联 scope 只读。容器型资产/大量枚举会让它偏低，勿据此认为已测完；可用 add_task_scope 增补本任务范围、list_untested_assets 看未测资产【通常不调用list_untested_assets，按照任务推进即可】；"
+					m["note"] = "coverage 是事实锚点口径的粗略参考（含直接关联任务），不是终态验收；具体资产的广度缺口看 breadth。list_untested_assets 只是 fact 级 backlog，按需参考，不要拿它代替 breadth。"
 					if cov.Denominator == 0 {
 						m["pct"] = nil
 						m["status"] = "范围未锚定"
@@ -1926,9 +1944,45 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	return id, note, nil
 }
 
+// breadthWarning is the soft breadth-floor nudge returned after an add_intent
+// batch that only targeted already-covered (or in-flight) assets while concrete
+// assets still have no terminal intent. It never rejects the batch.
+func breadthWarning(b *db.BreadthSummary, covered map[int64]bool) string {
+	if b == nil {
+		return ""
+	}
+	remaining := 0
+	var samples []string
+	for _, g := range b.TopGaps {
+		if !b.DebtIDs[g.AssetID] || covered[g.AssetID] {
+			continue
+		}
+		remaining++
+		if len(samples) < 3 {
+			samples = append(samples, fmt.Sprintf("%s(%s,%s)", g.Label, g.Type, g.State))
+		}
+	}
+	if remaining == 0 {
+		return ""
+	}
+	// TopGaps is capped, so debt may exceed the sampled window.
+	if b.Debt-len(covered) > remaining {
+		remaining = b.Debt - len(covered)
+	}
+	pct := "null"
+	if b.Pct != nil {
+		pct = fmt.Sprintf("%.1f%%", *b.Pct*100)
+	}
+	return fmt.Sprintf("本轮新增意图没有绑定仍有广度缺口的具体资产（debt=%d，coverage=%s；样本：%s）。"+
+		"下一轮请至少派 1 条广度意图：带 asset_ids + risk_area，写清入口/参数与要验证的假设，"+
+		"不要只写“看一下/补一下覆盖”；完整缺口用 coverage_matrix 查看。",
+		remaining, pct, strings.Join(samples, "、"))
+}
+
 func (t *ToolSet) addIntent() actool.CoreTool {
 	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么。\n"+
-		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。",
+		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
+		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
 		obj(map[string]any{
 			"intents":       map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
 			"summary":       str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
@@ -1955,6 +2009,17 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 
 			// 一次调用共享一份额度快照（库存量各查一次库，本轮用量在循环里累加）。
 			quota := t.beginIntentQuota()
+			// 广度快照：通常已由本轮 graphOverviewData 填充；同一 ToolSet 不重复查矩阵。
+			var breadth *db.BreadthSummary
+			debtIDs := map[int64]bool{}
+			if b := t.breadthSummary(); b != nil && b.Debt > 0 {
+				breadth = b
+				debtIDs = b.DebtIDs
+			}
+			if t.breadthNewDebt == nil {
+				t.breadthNewDebt = map[int64]bool{}
+			}
+			breadthTouched := false
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			createdAny := false
@@ -1967,9 +2032,19 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				}
 				ids[i] = id
 				createdAny = true
+				for _, assetID := range pidList(it.AssetIDs) {
+					if debtIDs[assetID] {
+						breadthTouched = true
+						t.breadthNewDebt[assetID] = true
+					}
+				}
 				if note != "" {
 					goalNote = note
 				}
+			}
+			breadthWarn := ""
+			if createdAny && breadth != nil && !breadthTouched {
+				breadthWarn = breadthWarning(breadth, t.breadthNewDebt)
 			}
 
 			// 人经主 agent 直投意图 → 若任务已 done（无 open 目标的 goalless 分支），把它
@@ -1984,10 +2059,14 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
+				body := fmt.Sprintf("intent created: %d", ids[0])
 				if goalNote != "" {
-					return actool.Text(fmt.Sprintf("intent created: %d\n%s", ids[0], goalNote)), nil
+					body += "\n" + goalNote
 				}
-				return actool.Text(fmt.Sprintf("intent created: %d", ids[0])), nil
+				if breadthWarn != "" {
+					body += "\nbreadth_warning: " + breadthWarn
+				}
+				return actool.Text(body), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
@@ -1995,6 +2074,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			}
 			if goalNote != "" {
 				out["goal_note"] = goalNote
+			}
+			if breadthWarn != "" {
+				out["breadth_warning"] = breadthWarn
 			}
 			return jsonResult(out)
 		})

@@ -490,10 +490,11 @@ func intentAssetIDs(intent *db.Node) []int64 {
 // purpose is letting the worker read context (existing facts/assets/hints)
 // so it avoids redundant work and doesn't re-derive what others already found.
 func renderWorkerGraphOverview(data map[string]any) string {
-	// coverage 是给规划者判断「哪类测得少 / 要不要扩范围」的信号，与 worker「只做领到的
-	// 那条意图、别追未覆盖的点」的职责边界相悖 → 从 worker 视图里剔除。data 是本次 worker
-	// 专属的新 map，删键不影响 planner。
+	// coverage/breadth 是给规划者判断「哪类测得少 / 要不要扩范围」的信号，与 worker
+	// 「只做领到的那条意图、别追未覆盖的点」的职责边界相悖 → 从 worker 视图里剔除。
+	// data 是本次 worker 专属的新 map，删键不影响 planner。
 	delete(data, "coverage")
+	delete(data, "breadth")
 	b, err := json.Marshal(data)
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context
@@ -575,7 +576,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
-	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
+	overview := renderWorkerGraphOverview(tsx.graphOverviewDataForWorker())
 	// system 只放跨意图不变的内容；意图/资产/runDir 放进本次启动的 user turn，
 	// 否则同一槽位每条意图都会改写 system 前缀，provider 的前缀缓存直接失效。
 	sysBody := workerSystem(proxyAddr, proxyCA, w.workDir)

@@ -704,7 +704,7 @@ func (s *Server) reseedMainAgentPrompt() {
 // 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
 // reseedGoalsPrompt 完全同构。
 func (s *Server) reseedPlannerPrompt() {
-	const flag = "planner_prompt_playbooks_v3"
+	const flag = "planner_prompt_breadth_v4"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -722,14 +722,21 @@ func (s *Server) reseedPlannerPrompt() {
 		return
 	}
 	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+	cur, curErr := s.m.pg.CurrentPrompt(a.ID)
+	if curErr == nil && cur == tmpl {
+		return
+	}
+	// 只刷新仍带旧默认特征句的正文；已自定义且不含旧句的模板保留（广度纪律由
+	// plannerSystem 的代码持有块兜底，不依赖这次迁移）。
+	if curErr == nil && cur != "" && !strings.Contains(cur, "深度优先于覆盖度") && !strings.Contains(cur, "广度保底与深度并行") {
+		log.Printf("[prompts] planner 提示词已是自定义版本，保留正文；广度纪律运行时注入")
 		return
 	}
 	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
 		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] planner 提示词已追加新默认版本(加入 matching_playbooks 历史打法引导,一次性)")
+	log.Printf("[prompts] planner 提示词已追加新默认版本(加入广度保底与深度双轨,一次性)")
 }
 
 // reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论

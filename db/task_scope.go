@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -786,4 +787,166 @@ ORDER BY t.id LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
 		out = append(out, a)
 	}
 	return out, total, rows.Err()
+}
+
+// --- 广度账本（asset-level breadth）---
+
+// BreadthAssetGap is one concrete in-scope asset that still needs breadth work.
+// State is derived from the coverage matrix: untouched (no intent at all),
+// failed (blocked/exhausted/no_output only), in_flight (open/running/paused),
+// tested (at least one done/negative), or out_of_scope (explicitly ruled out).
+type BreadthAssetGap struct {
+	AssetID        int64    `json:"asset_id"`
+	Type           string   `json:"type"`
+	Label          string   `json:"label"`
+	State          string   `json:"state"`
+	Facts          int      `json:"facts"`
+	Partial        bool     `json:"partial,omitempty"` // tested, but some risk areas untouched
+	UntouchedAreas []string `json:"untouched_risk_areas,omitempty"`
+	FailedAreas    []string `json:"failed_risk_areas,omitempty"`
+	InFlightAreas  []string `json:"in_flight_risk_areas,omitempty"`
+}
+
+// BreadthSummary is the concrete-asset terminal coverage ledger injected into the
+// planner's situational view. It deliberately excludes root_domain (an aggregate,
+// not a testable point). Debt = assets with no terminal intent and no in-flight
+// intent; those are the assets a breadth intent must pick up.
+type BreadthSummary struct {
+	AssetsTotal         int               `json:"assets_total"`
+	AssetsTested        int               `json:"assets_tested"`
+	AssetsUntouched     int               `json:"assets_untouched"`
+	AssetsFailed        int               `json:"assets_failed"`
+	AssetsInFlight      int               `json:"assets_in_flight"`
+	AssetsOutOfScope    int               `json:"assets_out_of_scope"`
+	AssetsTerminal      int               `json:"assets_terminal"`
+	AssetsPartial       int               `json:"assets_partial"`
+	RootDomainsExcluded int               `json:"root_domains_excluded"`
+	Debt                int               `json:"debt"`
+	ScopeRows           int               `json:"scope_rows"`
+	NeedAssetDiscovery  bool              `json:"need_asset_discovery"`
+	Pct                 *float64          `json:"pct"`
+	RiskAreas           []string          `json:"risk_areas"`
+	TopGaps             []BreadthAssetGap `json:"top_gaps"`
+	DebtIDs             map[int64]bool    `json:"-"`
+}
+
+const breadthTopGapLimit = 8
+
+var breadthStateRank = map[string]int{
+	"untouched": 0, "failed": 1, "in_flight": 2, "tested": 3, "out_of_scope": 4,
+}
+
+var breadthTypeRank = map[string]int{
+	"endpoint": 0, "service": 1, "app": 2, "subdomain": 3, "ip": 4,
+}
+
+// BreadthSummary builds the ledger for this task from the existing coverage
+// matrix. It does not change the matrix's Tested/Failed/InFlight semantics; it
+// only groups cells per concrete asset and separates terminal coverage from debt.
+func (s *ExplorationStore) BreadthSummary(taskID int64) (*BreadthSummary, error) {
+	cov, err := s.CoverageMatrix(taskID)
+	if err != nil {
+		return nil, err
+	}
+	var scopeRows int
+	_ = s.db.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=$1`, taskID).Scan(&scopeRows)
+	return BuildBreadthSummary(cov, scopeRows), nil
+}
+
+// BuildBreadthSummary is the pure aggregation used by BreadthSummary and tests.
+func BuildBreadthSummary(cov []CoverageMatrixAsset, scopeRows int) *BreadthSummary {
+	out := &BreadthSummary{
+		ScopeRows: scopeRows,
+		RiskAreas: append([]string(nil), RiskAreas...),
+		TopGaps:   []BreadthAssetGap{},
+		DebtIDs:   map[int64]bool{},
+	}
+	for _, a := range cov {
+		if a.Type == "root_domain" {
+			out.RootDomainsExcluded++
+			continue
+		}
+		out.AssetsTotal++
+		seen := make(map[string]bool, len(a.Cells))
+		var testedArea, failedArea, inFlightArea bool
+		var outOfScopeArea bool
+		gap := BreadthAssetGap{AssetID: a.ID, Type: a.Type, Label: a.Label, Facts: a.Facts}
+		for _, c := range a.Cells {
+			seen[c.RiskArea] = true
+			if c.Tested > 0 {
+				testedArea = true
+			}
+			if c.OutOfScope > 0 {
+				outOfScopeArea = true
+			}
+			if c.InFlight > 0 {
+				inFlightArea = true
+				gap.InFlightAreas = append(gap.InFlightAreas, c.RiskArea)
+			}
+			if c.Failed > 0 && c.Tested == 0 {
+				failedArea = true
+				gap.FailedAreas = append(gap.FailedAreas, c.RiskArea)
+			}
+		}
+		for _, area := range RiskAreas {
+			if !seen[area] {
+				gap.UntouchedAreas = append(gap.UntouchedAreas, area)
+			}
+		}
+		switch {
+		case testedArea:
+			gap.State = "tested"
+			out.AssetsTested++
+			out.AssetsTerminal++
+			if len(gap.UntouchedAreas) > 0 {
+				gap.Partial = true
+				out.AssetsPartial++
+			}
+		case outOfScopeArea:
+			gap.State = "out_of_scope"
+			out.AssetsOutOfScope++
+			out.AssetsTerminal++
+		case inFlightArea:
+			gap.State = "in_flight"
+			out.AssetsInFlight++
+		case failedArea:
+			gap.State = "failed"
+			out.AssetsFailed++
+			out.Debt++
+			out.DebtIDs[a.ID] = true
+		default:
+			gap.State = "untouched"
+			out.AssetsUntouched++
+			out.Debt++
+			out.DebtIDs[a.ID] = true
+		}
+		if gap.State != "out_of_scope" && (gap.State != "tested" || gap.Partial) {
+			out.TopGaps = append(out.TopGaps, gap)
+		}
+	}
+	denom := out.AssetsTotal - out.AssetsOutOfScope
+	if denom > 0 {
+		p := float64(out.AssetsTested) / float64(denom)
+		out.Pct = &p
+	}
+	sort.SliceStable(out.TopGaps, func(i, j int) bool {
+		gi, gj := out.TopGaps[i], out.TopGaps[j]
+		if ri, rj := breadthStateRank[gi.State], breadthStateRank[gj.State]; ri != rj {
+			return ri < rj
+		}
+		if ti, tj := breadthTypeRank[gi.Type], breadthTypeRank[gj.Type]; ti != tj {
+			return ti < tj
+		}
+		mi := len(gi.UntouchedAreas) + len(gi.FailedAreas)
+		mj := len(gj.UntouchedAreas) + len(gj.FailedAreas)
+		if mi != mj {
+			return mi > mj
+		}
+		return gi.AssetID < gj.AssetID
+	})
+	if len(out.TopGaps) > breadthTopGapLimit {
+		out.TopGaps = out.TopGaps[:breadthTopGapLimit]
+	}
+	out.NeedAssetDiscovery = scopeRows > 0 && out.AssetsTotal == 0
+	return out
 }

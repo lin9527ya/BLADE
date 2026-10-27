@@ -2,7 +2,19 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.6.1] - 2026-10-27
+
+### 探索策略：深度 + 广度双轨
+
+- planner 态势新增具体资产级 `breadth` 账本：排除 root_domain 聚合节点，统计
+  tested/untouched/failed/in_flight/out_of_scope、广度债 `debt`、终态覆盖率 `pct`，
+  并给 top_gaps（含未触及/失败风险类、endpoint 资产）。
+- 提示词从“深度优先于覆盖度”改为双轨：`breadth.debt > 0` 且无人负责时，本轮至少派
+  1 条广度意图，其余名额继续深挖；广度意图必须带 asset_ids + risk_area，写清入口/参数/
+  验证假设；done/negative 才算覆盖，no_output/blocked 不算。
+- `add_intent` 在纯深度批次且仍有广度债时返回 `breadth_warning`（不拒收），下一轮提示补广度。
+- planner 默认提示词重刷为 v4（旧版本保留在提示词历史）；另有代码持有的广度纪律块，
+  旧库/自定义模板也能收到规则。
 
 ### LLM 配置：自定义请求头
 
@@ -2137,7 +2149,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.1
 [0.6.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.0
 [0.5.8]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.8
 [0.5.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.2
