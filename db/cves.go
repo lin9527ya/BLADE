@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,6 +32,7 @@ type CVE struct {
 	AffectedProducts  []string            `json:"affected_products"`
 	VersionConstraint string              `json:"version_constraint"`
 	Fingerprint       PlaybookFingerprint `json:"fingerprint"`
+	ReconSyntax       string              `json:"recon_syntax,omitempty"` // FOFA/Hunter/Shodan 等测绘语法，一行一条
 	ProbeGuide        string              `json:"probe_guide,omitempty"`
 	Refs              []string            `json:"refs,omitempty"`
 	ExploitScript     string              `json:"exploit_script,omitempty"`
@@ -91,7 +93,7 @@ const (
 )
 
 var (
-	cveIDRe     = regexp.MustCompile(`^CVE-\d{4}-\d{4,7}$`)
+	cveIDRe     = regexp.MustCompile(`^(?:CVE-\d{4}-\d{4,7}|(?i:blade-\d{4}-\d{4,7}))$`)
 	cpeRe       = regexp.MustCompile(`(?i)cpe:2\.3:[aho]:([^:]+):([^:]+):([^:]+)`)
 	techVerRe   = regexp.MustCompile(`^(.*?)[\s:/_@-]+v?([0-9][0-9A-Za-z.*+_-]*)$`)
 	cvePerms    = map[string]bool{"python3": true, "python": true, "bash": true, "sh": true, "ruby": true, "perl": true, "php": true, "node": true, "nodejs": true, "pwsh": true, "powershell": true}
@@ -99,8 +101,16 @@ var (
 	cveVersionR = map[string]int{"compatible": 4, "unconstrained": 3, "version_unknown": 2, "product_unknown": 1}
 )
 
-// NormalizeCVEID canonicalizes a CVE identifier (uppercase; whitespace trimmed).
-func NormalizeCVEID(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
+// NormalizeCVEID canonicalizes an identifier: real CVE IDs uppercase, our own
+// blade-YYYY-NNNN internal IDs lowercase (matches what the importer displays).
+// Whitespace is always trimmed.
+func NormalizeCVEID(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(strings.ToLower(s), "blade-") {
+		return strings.ToLower(s)
+	}
+	return strings.ToUpper(s)
+}
 
 func normalizeCVEStatus(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -191,7 +201,7 @@ func sha256Hex(s string) string {
 func validateCVE(c *CVE) error {
 	c.CVEID = NormalizeCVEID(c.CVEID)
 	if !cveIDRe.MatchString(c.CVEID) {
-		return fmt.Errorf("CVE 编号格式应为 CVE-YYYY-NNNN")
+		return fmt.Errorf("编号格式应为 CVE-YYYY-NNNN 或 blade-YYYY-NNNN")
 	}
 	c.Title = strings.TrimSpace(c.Title)
 	if c.Title == "" || len([]rune(c.Title)) > 300 {
@@ -210,8 +220,12 @@ func validateCVE(c *CVE) error {
 	c.Vendor = strings.TrimSpace(c.Vendor)
 	c.Description = strings.TrimSpace(c.Description)
 	c.ProbeGuide = strings.TrimSpace(c.ProbeGuide)
+	c.ReconSyntax = strings.TrimSpace(c.ReconSyntax)
 	if len([]rune(c.Description)) > 64*1024 || len([]rune(c.ProbeGuide)) > 64*1024 {
 		return fmt.Errorf("描述/探测指引不能超过 64K 字符")
+	}
+	if len([]rune(c.ReconSyntax)) > 16*1024 {
+		return fmt.Errorf("测绘语法不能超过 16K 字符")
 	}
 	c.AffectedProducts = normalizeCVEProducts(c.AffectedProducts)
 	if len(c.AffectedProducts) > 20 {
@@ -291,14 +305,16 @@ const cveFullCols = `id, cve_id, title, COALESCE(severity,''), COALESCE(vendor,'
 affected_products, COALESCE(version_constraint,''), fingerprint, COALESCE(probe_guide,''), refs,
 exploit_script, COALESCE(exploit_language,''), COALESCE(exploit_filename,''), COALESCE(exploit_usage,''),
 COALESCE(exploit_sha256,''), octet_length(exploit_script), status, COALESCE(deprecated_reason,''),
-revision, uses, executions, last_used_at, last_executed_at, created_at, updated_at, COALESCE(cvss_score,0)`
+revision, uses, executions, last_used_at, last_executed_at, created_at, updated_at, COALESCE(cvss_score,0),
+COALESCE(recon_syntax,'')`
 
 // 列表不把脚本正文读回来：1 MiB/条的脚本 × 50 条会把列表页拖垮。
 const cveListCols = `id, cve_id, title, COALESCE(severity,''), COALESCE(vendor,''), left(COALESCE(description,''),300),
 affected_products, COALESCE(version_constraint,''), fingerprint, ''::text AS probe_guide, '[]'::jsonb AS refs,
 ''::text AS exploit_script, COALESCE(exploit_language,''), COALESCE(exploit_filename,''), COALESCE(exploit_usage,''),
 COALESCE(exploit_sha256,''), octet_length(exploit_script), status, COALESCE(deprecated_reason,''),
-revision, uses, executions, last_used_at, last_executed_at, created_at, updated_at, COALESCE(cvss_score,0)`
+revision, uses, executions, last_used_at, last_executed_at, created_at, updated_at, COALESCE(cvss_score,0),
+COALESCE(recon_syntax,'')`
 
 func scanCVE(sc interface{ Scan(...any) error }) (*CVE, error) {
 	var c CVE
@@ -308,7 +324,7 @@ func scanCVE(sc interface{ Scan(...any) error }) (*CVE, error) {
 		&productsRaw, &c.VersionConstraint, &fpRaw, &c.ProbeGuide, &refsRaw,
 		&c.ExploitScript, &c.ExploitLanguage, &c.ExploitFilename, &c.ExploitUsage,
 		&c.ExploitSHA256, &c.ExploitBytes, &c.Status, &c.DeprecatedReason,
-		&c.Revision, &c.Uses, &c.Executions, &lastUsed, &lastExec, &c.CreatedAt, &c.UpdatedAt, &c.CVSSScore); err != nil {
+		&c.Revision, &c.Uses, &c.Executions, &lastUsed, &lastExec, &c.CreatedAt, &c.UpdatedAt, &c.CVSSScore, &c.ReconSyntax); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal(productsRaw, &c.AffectedProducts)
@@ -348,12 +364,12 @@ func (s *AssetStore) CreateCVE(c CVE) (*CVE, error) {
 	row := s.db.QueryRow(`INSERT INTO cve_library
 (cve_id, title, severity, vendor, description, affected_products, version_constraint, fingerprint,
  probe_guide, refs, exploit_script, exploit_language, exploit_filename, exploit_usage, exploit_sha256,
- status, deprecated_reason, revision, uses, executions, cvss_score)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,0,0,$19)
+ status, deprecated_reason, revision, uses, executions, cvss_score, recon_syntax)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,0,0,$19,$20)
 RETURNING `+cveFullCols,
 		c.CVEID, c.Title, c.Severity, c.Vendor, c.Description, products, c.VersionConstraint, fp,
 		c.ProbeGuide, refs, c.ExploitScript, c.ExploitLanguage, c.ExploitFilename, c.ExploitUsage, c.ExploitSHA256,
-		c.Status, c.DeprecatedReason, c.Revision, c.CVSSScore)
+		c.Status, c.DeprecatedReason, c.Revision, c.CVSSScore, c.ReconSyntax)
 	out, err := scanCVE(row)
 	if err != nil {
 		return nil, err
@@ -370,11 +386,11 @@ func (s *AssetStore) UpdateCVE(id int64, c CVE) (*CVE, error) {
  cve_id=$2, title=$3, severity=$4, vendor=$5, description=$6, affected_products=$7,
  version_constraint=$8, fingerprint=$9, probe_guide=$10, refs=$11, exploit_script=$12,
  exploit_language=$13, exploit_filename=$14, exploit_usage=$15, exploit_sha256=$16,
- revision=revision+1, cvss_score=$17
+ revision=revision+1, cvss_score=$17, recon_syntax=$18
 WHERE id=$1 RETURNING `+cveFullCols,
 		id, c.CVEID, c.Title, c.Severity, c.Vendor, c.Description, products,
 		c.VersionConstraint, fp, c.ProbeGuide, refs, c.ExploitScript,
-		c.ExploitLanguage, c.ExploitFilename, c.ExploitUsage, c.ExploitSHA256, c.CVSSScore)
+		c.ExploitLanguage, c.ExploitFilename, c.ExploitUsage, c.ExploitSHA256, c.CVSSScore, c.ReconSyntax)
 	out, err := scanCVE(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -398,6 +414,31 @@ func (s *AssetStore) GetCVEByCVEID(cveID string) (*CVE, error) {
 		return nil, nil
 	}
 	return c, err
+}
+
+// NextInternalCVESeq 返回 blade-<year>-NNNN 的下一个可用序号。
+// 只按同年前缀取最大数字后缀，不依赖数据库序列：内部编号要和人工录入/导入的
+// 既有编号共存，且 cve_id 的唯一约束仍由数据库兜底（并发预览撞号时创建会 409）。
+func (s *AssetStore) NextInternalCVESeq(year int) (int, error) {
+	prefix := fmt.Sprintf("blade-%d-", year)
+	rows, err := s.db.Query(`SELECT cve_id FROM cve_library WHERE lower(cve_id) LIKE $1`, prefix+"%")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	next := 1
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		suffix := strings.TrimPrefix(strings.ToLower(id), prefix)
+		n, err := strconv.Atoi(suffix)
+		if err == nil && n >= next {
+			next = n + 1
+		}
+	}
+	return next, rows.Err()
 }
 
 func (s *AssetStore) ListCVEs(f CVEFilter) ([]*CVE, int, error) {
@@ -455,8 +496,17 @@ func (s *AssetStore) ListCVEs(f CVEFilter) ([]*CVE, int, error) {
 		return nil, 0, err
 	}
 	args = append(args, limit, offset)
+	// 默认按编号从大到小：自研 blade-YYYY-NNNN 在前，真实 CVE 在后；两类各自按
+	// 年份、序号数值降序（不按字符串比较，避免 CVE-2025-9999 > CVE-2025-10000
+	// 这种位数不同的字典序错误）。启用中的记录仍排在已废弃之前。
 	rows, err := s.db.Query(`SELECT `+cveListCols+` FROM cve_library WHERE `+whereSQL+
-		fmt.Sprintf(" ORDER BY (status='active') DESC, executions DESC, updated_at DESC, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+		fmt.Sprintf(` ORDER BY
+  CASE WHEN status='active' THEN 0 ELSE 1 END,
+  CASE WHEN lower(cve_id) LIKE 'blade-%%' THEN 0 ELSE 1 END,
+  COALESCE(NULLIF(substring(lower(cve_id) from '^(?:blade|cve)-([0-9]{4})-'), '')::int, 0) DESC,
+  COALESCE(NULLIF(substring(lower(cve_id) from '^(?:blade|cve)-[0-9]{4}-([0-9]+)$'), '')::bigint, 0) DESC,
+  lower(cve_id) DESC, id DESC
+ LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

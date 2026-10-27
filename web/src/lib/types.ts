@@ -961,6 +961,8 @@ export interface CVE {
   affected_products: string[];
   version_constraint: string;
   fingerprint: PlaybookFingerprint;
+  /** FOFA / Hunter / Shodan 等测绘语法，一行一条。 */
+  recon_syntax?: string;
   probe_guide?: string;
   refs?: string[];
   exploit_script?: string;
@@ -992,6 +994,8 @@ export interface CVEInput {
   affected_products: string[];
   version_constraint: string;
   fingerprint: PlaybookFingerprint;
+  /** FOFA / Hunter / Shodan 等测绘语法，一行一条。 */
+  recon_syntax?: string;
   probe_guide?: string;
   refs?: string[];
   exploit_script?: string;

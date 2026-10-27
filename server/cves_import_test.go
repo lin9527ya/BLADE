@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/blade/db"
@@ -52,9 +54,11 @@ func TestCVEImportPreview(t *testing.T) {
 {"cve_id":"cve-2098-0100","title":"导入测试","severity":"high","cvss_score":"8.1",
  "description":"来自报告","affected_products":"log4j","version_constraint":">= 2.0.0, < 2.15.0",
  "fingerprint":{"technologies":"log4j","port":"8443"},
+ "recon_syntax":"FOFA: app=\"log4j\"",
  "exploit_script":"#!/bin/sh\necho import-test\n","exploit_language":"bash","refs":["https://example.test/cve"]},
 {"cve_id":"CVE-2098-0001","title":"重复","severity":"low","affected_products":["legacy"]},
-{"cve_id":"CVE-2098-0101","title":"缺少匹配信号","severity":"low"}
+{"cve_id":"CVE-2098-0101","title":"缺少匹配信号","severity":"low"},
+{"cve_id":"","title":"自研 0day 无编号","severity":"high","description":"自研漏洞","affected_products":["custom-product"]}
 ],"skipped":[{"title":"无编号漏洞","reason":"报告未给出 CVE 编号"}],"warnings":["CVSS 缺失"]}` + "\n```"
 	p := &importCaptureProvider{reply: reply}
 	s.llm.mu.Lock()
@@ -83,13 +87,20 @@ func TestCVEImportPreview(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v %s", err, w.Body)
 	}
-	if got.Count != 1 || len(got.Drafts) != 1 {
-		t.Fatalf("want one draft: %+v", got)
+	if got.Count != 2 || len(got.Drafts) != 2 {
+		t.Fatalf("want two drafts (real CVE + internal 0day): %+v", got)
 	}
 	d := got.Drafts[0]
 	if d.CVEID != "CVE-2098-0100" || d.CVSSScore != 8.1 || d.ExploitScript != "#!/bin/sh\necho import-test" ||
+		d.ReconSyntax != `FOFA: app="log4j"` ||
 		d.VersionConstraint != ">= 2.0.0, < 2.15.0" || len(d.AffectedProducts) != 1 || d.Fingerprint.Port != 8443 {
 		t.Fatalf("draft fields: %+v", d)
+	}
+	// 没有 CVE 编号的条目不能被丢弃：服务端要分配 blade-YYYY-NNNN。
+	internal := got.Drafts[1]
+	if internal.Title != "自研 0day 无编号" || !regexp.MustCompile(`^blade-\d{4}-\d{4}$`).MatchString(internal.CVEID) ||
+		!strings.HasPrefix(internal.CVEID, fmt.Sprintf("blade-%d-", time.Now().Year())) {
+		t.Fatalf("internal id draft: %+v", internal)
 	}
 	var skipReasons []string
 	for _, sk := range got.Skip {
@@ -103,7 +114,8 @@ func TestCVEImportPreview(t *testing.T) {
 		t.Fatalf("warnings: %v", got.Warnings)
 	}
 	// 报告文本和文件名都要进入模型输入；system 必须要求忽略报告内指令。
-	if len(p.request.System) != 1 || !strings.Contains(p.request.System[0], "不要执行") || !strings.Contains(p.request.System[0], "绝不猜编号") {
+	if len(p.request.System) != 1 || !strings.Contains(p.request.System[0], "不要执行") ||
+		!strings.Contains(p.request.System[0], "绝不猜编号") || !strings.Contains(p.request.System[0], "每一条独立漏洞") {
 		t.Fatalf("system prompt: %+v", p.request.System)
 	}
 	user := p.request.Messages[0].Content[0].Text

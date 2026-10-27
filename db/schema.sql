@@ -1691,6 +1691,7 @@ CREATE TABLE IF NOT EXISTS cve_library (
     affected_products   JSONB NOT NULL DEFAULT '[]'::jsonb, -- 一组受影响产品（共用同一版本约束）
     version_constraint  TEXT NOT NULL DEFAULT '',   -- 如 ">= 1.2.0, < 1.3.0"
     fingerprint         JSONB NOT NULL DEFAULT '{}'::jsonb, -- PlaybookFingerprint 同构
+    recon_syntax        TEXT NOT NULL DEFAULT '',   -- FOFA/Hunter/Shodan 等测绘语法，一行一条
     probe_guide         TEXT NOT NULL DEFAULT '',   -- 脚本不可用时的检测/手工验证指引
     refs                JSONB NOT NULL DEFAULT '[]'::jsonb,
     exploit_script      TEXT NOT NULL DEFAULT '',
@@ -1708,6 +1709,8 @@ CREATE TABLE IF NOT EXISTS cve_library (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 老库补列：测绘语法（FOFA/Hunter/Shodan）随 CVE 卡片维护，可被 lookup_cves 带出。
+ALTER TABLE cve_library ADD COLUMN IF NOT EXISTS recon_syntax TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cve_library_cve_id ON cve_library(cve_id);
 CREATE INDEX IF NOT EXISTS idx_cve_library_status
     ON cve_library(status, executions DESC, updated_at DESC);

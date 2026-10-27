@@ -100,16 +100,17 @@ func TestCVECreateListUpdate(t *testing.T) {
 		Description: "## 影响\n远程代码执行", AffectedProducts: []string{"Log4j"}, VersionConstraint: ">= 2.0.0, < 2.15.0",
 		Fingerprint: PlaybookFingerprint{Technologies: []string{"Log4j"}},
 		ProbeGuide:  "访问 ${jndi:ldap://...}", Refs: []string{"https://example.com/cve"},
+		ReconSyntax:   "FOFA: app=\"log4j\"\nHunter: web.body=\"jndi\"",
 		ExploitScript: "#!/bin/sh\necho pwn\n", ExploitLanguage: "bash", ExploitFilename: "cve.sh",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.CVEID != "CVE-2099-0001" || c.Revision != 1 || !c.HasExploit || c.ExploitSHA256 == "" {
+	if c.CVEID != "CVE-2099-0001" || c.Revision != 1 || !c.HasExploit || c.ExploitSHA256 == "" || !strings.Contains(c.ReconSyntax, "FOFA") {
 		t.Fatalf("create: %+v", c)
 	}
 	got, err := as.GetCVEByCVEID("CVE-2099-0001")
-	if err != nil || got == nil || got.Description == "" || got.ExploitScript == "" {
+	if err != nil || got == nil || got.Description == "" || got.ExploitScript == "" || !strings.Contains(got.ReconSyntax, "Hunter") {
 		t.Fatalf("get by cve id: %+v %v", got, err)
 	}
 	list, total, err := as.ListCVEs(CVEFilter{Q: "log4j", Status: "active"})
@@ -236,5 +237,53 @@ func TestCVEValidationAndCounters(t *testing.T) {
 	got, _ := as.GetCVE(c.ID)
 	if got.Uses != 1 || got.Executions != 1 || got.LastUsedAt == nil || got.LastExecutedAt == nil {
 		t.Fatalf("counters: %+v", got)
+	}
+}
+
+// 自研 0day 没有 CVE 编号时使用内部编号 blade-YYYY-NNNN；真实 CVE 仍大写。
+func TestInternalCVEIDNormalization(t *testing.T) {
+	if got := NormalizeCVEID(" BLADE-2026-0001 "); got != "blade-2026-0001" {
+		t.Fatalf("internal id should be lowercase: %q", got)
+	}
+	if got := NormalizeCVEID("cve-2099-0001"); got != "CVE-2099-0001" {
+		t.Fatalf("real CVE should be uppercase: %q", got)
+	}
+	norm, err := NormalizeCVE(CVE{
+		CVEID: "blade-2026-0007", Title: "自研 0day", Severity: "high",
+		AffectedProducts: []string{"custom-product"},
+	})
+	if err != nil {
+		t.Fatalf("internal id should validate: %v", err)
+	}
+	if norm.CVEID != "blade-2026-0007" {
+		t.Fatalf("normalized id: %q", norm.CVEID)
+	}
+	for _, bad := range []string{"blade-2026-1", "BLADE-X-0001", "CVE-2026-1"} {
+		if _, err := NormalizeCVE(CVE{CVEID: bad, Title: "x", Severity: "low", AffectedProducts: []string{"x"}}); err == nil {
+			t.Errorf("invalid id %q should be rejected", bad)
+		}
+	}
+}
+
+// 默认列表按编号降序：blade 内部编号在前、真实 CVE 在后；同组按年份/序号数值降序。
+func TestListCVEsByIDDescending(t *testing.T) {
+	_, as, _ := cveFixture(t)
+	t.Cleanup(func() { _, _ = as.db.Exec(`DELETE FROM cve_library WHERE cve_id LIKE '%2097%'`) })
+	for _, id := range []string{"CVE-2097-0001", "CVE-2097-0010", "blade-2097-0001", "blade-2097-0002"} {
+		if _, err := as.CreateCVE(CVE{
+			CVEID: id, Title: "order-" + id, Severity: "low", AffectedProducts: []string{"order-test"},
+		}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	rows, total, err := as.ListCVEs(CVEFilter{Q: "2097", Status: "active", Limit: 10})
+	if err != nil || total != 4 || len(rows) != 4 {
+		t.Fatalf("list: total=%d len=%d err=%v", total, len(rows), err)
+	}
+	want := []string{"blade-2097-0002", "blade-2097-0001", "CVE-2097-0010", "CVE-2097-0001"}
+	for i, id := range want {
+		if rows[i].CVEID != id {
+			t.Fatalf("order[%d]=%s, want %s (all=%v)", i, rows[i].CVEID, id, []string{rows[0].CVEID, rows[1].CVEID, rows[2].CVEID, rows[3].CVEID})
+		}
 	}
 }

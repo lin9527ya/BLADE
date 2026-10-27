@@ -60,6 +60,7 @@ type FormState = {
   service_name: string;
   port: string;
   page_title: string;
+  recon_syntax: string;
   probe_guide: string;
   refsText: string;
   exploit_language: string;
@@ -82,6 +83,7 @@ const EMPTY_FORM: FormState = {
   service_name: "",
   port: "",
   page_title: "",
+  recon_syntax: "",
   probe_guide: "",
   refsText: "",
   exploit_language: "python3",
@@ -105,6 +107,7 @@ function formFromCVE(c: CVE): FormState {
     service_name: c.fingerprint?.service_name ?? "",
     port: c.fingerprint?.port ? String(c.fingerprint.port) : "",
     page_title: c.fingerprint?.page_title ?? "",
+    recon_syntax: c.recon_syntax ?? "",
     probe_guide: c.probe_guide ?? "",
     refsText: (c.refs ?? []).join("\n"),
     exploit_language: c.exploit_language || "python3",
@@ -146,6 +149,7 @@ function toInput(f: FormState): CVEInput {
       port: Number.isFinite(port) && port > 0 ? port : undefined,
       page_title: f.page_title.trim() || undefined,
     },
+    recon_syntax: f.recon_syntax.trim(),
     probe_guide: f.probe_guide,
     refs: splitLines(f.refsText),
     exploit_script: f.exploit_script,
@@ -153,6 +157,16 @@ function toInput(f: FormState): CVEInput {
     exploit_filename: f.exploit_filename.trim() || undefined,
     exploit_usage: f.exploit_usage.trim() || undefined,
   };
+}
+
+function fmtShortTime(s?: string) {
+  if (!s) return "—";
+  return new Date(s).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function productsLabel(c: CVE): string {
@@ -435,18 +449,18 @@ export default function CVEPage() {
       </div>
 
       <Card className="overflow-hidden">
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="min-w-[280px]">CVE</TableHead>
-              <TableHead className="w-24">等级</TableHead>
-              <TableHead className="min-w-[220px]">受影响产品 / 版本</TableHead>
-              <TableHead className="min-w-[220px]">指纹</TableHead>
-              <TableHead className="w-32">利用脚本</TableHead>
-              <TableHead className="w-28">使用 / 执行</TableHead>
-              <TableHead className="w-36">最近更新</TableHead>
-              <TableHead className="w-24">状态</TableHead>
-              <TableHead className="w-24">操作</TableHead>
+              <TableHead className="w-[45%]">CVE</TableHead>
+              <TableHead className="w-[4%] px-1">等级</TableHead>
+              <TableHead className="w-[14%]">受影响产品 / 版本</TableHead>
+              <TableHead className="w-[14%]">指纹</TableHead>
+              <TableHead className="w-[5%] px-1">利用脚本</TableHead>
+              <TableHead className="w-[5%] px-1">使用 / 执行</TableHead>
+              <TableHead className="w-[5%] px-1">最近更新</TableHead>
+              <TableHead className="w-[4%] px-1">状态</TableHead>
+              <TableHead className="w-[4%] px-1">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -465,50 +479,67 @@ export default function CVEPage() {
             ) : (
               rows.map((c) => {
                 const fp = fingerprintParts(c.fingerprint);
+                const products = productsLabel(c);
                 return (
                   <TableRow key={c.id}>
-                    <TableCell>
-                      <button type="button" className="text-left font-medium hover:underline" onClick={() => void openDetail(c)}>
-                        <span className="font-mono text-xs">{c.cve_id}</span>
-                        <span className="ml-2">{c.title}</span>
+                    <TableCell className="min-w-0">
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-baseline gap-2 text-left font-medium hover:underline"
+                        title={[c.cve_id, c.title, c.description].filter(Boolean).join("\n")}
+                        onClick={() => void openDetail(c)}
+                      >
+                        <span className="shrink-0 font-mono text-xs">{c.cve_id}</span>
+                        <span className="min-w-0 truncate">{c.title}</span>
                       </button>
                       {c.description && (
-                        <div className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">{c.description}</div>
+                        <div
+                          className="mt-0.5 line-clamp-2 break-words text-muted-foreground text-xs"
+                          title={c.description}
+                        >
+                          {c.description}
+                        </div>
                       )}
                     </TableCell>
-                    <TableCell>
-                      {c.severity ? <StatusBadge domain="severity" value={c.severity} /> : <span className="text-muted-foreground">—</span>}
+                    <TableCell className="px-1">
+                      {c.severity ? <StatusBadge domain="severity" value={c.severity} className="px-1.5" /> : <span className="text-muted-foreground">—</span>}
                     </TableCell>
-                    <TableCell className="text-xs">{productsLabel(c)}</TableCell>
+                    <TableCell className="text-xs">
+                      <span className="block truncate" title={products}>
+                        {products}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       {fp.length === 0 ? (
                         <span className="text-muted-foreground text-xs">—</span>
                       ) : (
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap gap-1" title={fp.join(" · ")}>
                           {fp.map((part) => (
-                            <Badge key={part} variant="outline" className="max-w-[200px] truncate">
+                            <Badge key={part} variant="outline" className="max-w-full truncate" title={part}>
                               {part}
                             </Badge>
                           ))}
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs">
+                    <TableCell className="px-1 text-xs whitespace-nowrap">
                       {c.has_exploit ? (
                         <Badge variant="secondary">{c.exploit_language || "有"}</Badge>
                       ) : (
                         <span className="text-muted-foreground">无</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs tabular-nums">
+                    <TableCell className="px-1 text-xs tabular-nums whitespace-nowrap">
                       {c.uses} / {c.executions}
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{fmtTime(c.updated_at)}</TableCell>
-                    <TableCell>
-                      <StatusBadge domain="cve" value={c.status} />
+                    <TableCell className="px-1 text-[11px] text-muted-foreground whitespace-nowrap" title={fmtTime(c.updated_at)}>
+                      {fmtShortTime(c.updated_at)}
                     </TableCell>
-                    <TableCell>
-                      <Button size="sm" variant="ghost" onClick={() => void openDetail(c)}>
+                    <TableCell className="px-1 whitespace-nowrap">
+                      <StatusBadge domain="cve" value={c.status} className="px-1.5" />
+                    </TableCell>
+                    <TableCell className="px-1">
+                      <Button size="sm" variant="ghost" className="px-1.5" onClick={() => void openDetail(c)}>
                         详情
                       </Button>
                     </TableCell>
@@ -580,6 +611,15 @@ export default function CVEPage() {
                   ))}
                 </div>
               )}
+              {selected.recon_syntax ? (
+                <section>
+                  <div className="mb-1 flex items-center justify-between">
+                    <h3 className="font-medium text-sm">测绘语法（FOFA / Hunter / Shodan）</h3>
+                    <CopyButton text={selected.recon_syntax} successMessage="已复制测绘语法" />
+                  </div>
+                  <pre className="overflow-auto whitespace-pre-wrap rounded-md border bg-muted/20 p-3 text-xs">{selected.recon_syntax}</pre>
+                </section>
+              ) : null}
               <section>
                 <h3 className="mb-1 font-medium text-sm">详细描述</h3>
                 <div className="rounded-md border bg-muted/20 p-3">
@@ -684,16 +724,21 @@ export default function CVEPage() {
       <Dialog open={editorOpen} onOpenChange={(open) => !open && closeEditor()}>
         <DialogContent className="max-h-[92vh] max-w-5xl overflow-hidden sm:max-w-[min(1440px,96vw)]">
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑 ${editing.cve_id}` : "新建 CVE"}</DialogTitle>
+            <DialogTitle>{editing ? `编辑 ${editing.cve_id}` : "新建漏洞"}</DialogTitle>
             <DialogDescription>
+              有 CVE 编号填 CVE-YYYY-NNNN；自研 0day 可自行使用 blade-YYYY-NNNN 形式。
               至少提供一组产品，或 favicon/技术栈/服务之一作为匹配信号。脚本只从本机上传/粘贴，平台不会自动下载。
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[72vh] space-y-5 overflow-auto pr-1">
             <section className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <label className="flex flex-col gap-1 text-xs">
-                <span className="text-muted-foreground">CVE 编号 *</span>
-                <Input value={form.cve_id} onChange={(e) => set("cve_id", e.target.value)} placeholder="CVE-2021-44228" />
+                <span className="text-muted-foreground">编号 *</span>
+                <Input
+                  value={form.cve_id}
+                  onChange={(e) => set("cve_id", e.target.value)}
+                  placeholder="CVE-2021-44228 / blade-2026-0001"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">标题 *</span>
@@ -749,6 +794,15 @@ export default function CVEPage() {
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">页面标题（弱信号）</span>
                 <Input value={form.page_title} onChange={(e) => set("page_title", e.target.value)} placeholder="Example Admin" />
+              </label>
+              <label className="flex flex-col gap-1 text-xs md:col-span-2">
+                <span className="text-muted-foreground">测绘语法（FOFA / Hunter / Shodan，一行一条）</span>
+                <Textarea
+                  rows={3}
+                  value={form.recon_syntax}
+                  onChange={(e) => set("recon_syntax", e.target.value)}
+                  placeholder={'FOFA: app="Example" && country="CN"\nHunter: web.title="Example Admin"\nShodan: http.title:"Example Admin"'}
+                />
               </label>
             </section>
 

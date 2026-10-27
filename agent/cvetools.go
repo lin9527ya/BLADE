@@ -80,12 +80,12 @@ func cveMatchView(m db.CVEMatch) map[string]any {
 // lookupCVEs 查 CVE 库：按编号取详情，或按资产/指纹找候选。
 func (t *ToolSet) lookupCVEs() actool.CoreTool {
 	return readTool("lookup_cves",
-		"查【CVE 库】：按 cve_id 取详情（描述/探测指引/是否有脚本），或按 asset_id/指纹/产品+版本找匹配的 CVE。\n"+
+		"查【CVE 库】：按 cve_id 取详情（描述/探测指引/测绘语法/是否有脚本），或按 asset_id/指纹/产品+版本找匹配的 CVE。\n"+
 			"★ CVE 命中只是线索，不是漏洞证据；先按 probe_guide 实际验证。\n"+
 			"★ 返回 exploit 元数据（语言/用法/SHA），**不返回脚本正文**；要执行用 cve_exploit。\n"+
 			"★ 具体到某台资产时优先传 asset_id，平台会按任务范围与真实指纹匹配。",
 		obj(map[string]any{
-			"cve_id":       str("CVE 编号，如 CVE-2021-44228（优先精确取详情）"),
+			"cve_id":       str("编号：CVE（如 CVE-2021-44228）或自研漏洞的内部编号（如 blade-2026-0001）；优先精确取详情"),
 			"asset_id":     idp("资产 id（优先；平台按任务范围与真实指纹匹配）"),
 			"technologies": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "技术栈（可选，如 [\"log4j 2.14.1\"]）"},
 			"favicon_mmh3": str("favicon MMH3（可选，强信号）"),
