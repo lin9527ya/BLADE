@@ -2,7 +2,7 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [0.6.1] - 2026-10-27
+## [Unreleased]
 
 ### LLM 配置：自定义请求头
 
@@ -2137,8 +2137,7 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.1...HEAD
-[0.6.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.1
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.0
 [0.5.8]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.8
 [0.5.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.2
