@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import type { Activity, Session, SessionStatus, TaskLLMResolution, TaskNode } from "@/lib/types";
+import type { Activity, Session, SessionStatus, TaskLLMResolution, TaskNode, WorkerSlot } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // 会话页签的类型、常量与纯函数：会话键、消息合并、状态图标与意图映射。
@@ -98,6 +98,8 @@ export function sessionKeyOf(a: Activity): string {
   if (a.worker === "system" || a.kind === "llm_switch" || a.kind === "llm_failover") return "system";
   if (a.worker === "mainagent") return `main:${a.main_seg ?? 0}`; // one key per conversation segment
   if (a.worker === "planner") return "plan";
+  // Fixed worker slots are the primary key; pre-upgrade rows fall back to intent.
+  if (a.slot_no) return `slot:${a.slot_no}`;
   if (a.intent_id) return `intent:${a.intent_id}`;
   return "unknown";
 }
@@ -141,6 +143,8 @@ export function statusIcon(status: SessionStatus) {
       return <CircleDashedIcon className="size-3.5 text-muted-foreground" />;
     case "deleted": // 用户假删除
       return <CircleSlashIcon className="size-3.5 text-muted-foreground" />;
+    case "idle": // 固定槽位空闲
+      return <CircleDashedIcon className="size-3.5 text-muted-foreground/60" />;
     default: {
       // 给 SessionStatus 加成员却忘了在这里配图标时，这一行会让 tsc 直接报错，
       // 而不是像以前那样静默落空（negative/out-of-scope 漏映射就是这么被放过去的）。
@@ -252,12 +256,33 @@ export const SYSTEM_SESSION: Session = {
   last_activity: "",
 };
 
-// keyForSession maps a UI Session → its stable store key (main:<seg> | plan | intent:<id>).
+// keyForSession maps a UI Session → its stable store key
+// (main:<seg> | plan | slot:<n> | intent:<id> for legacy focused views).
 export function keyForSession(s: Session): string {
   if (s.role === "mainagent") return `main:${s.seg ?? 0}`;
   if (s.role === "planner") return "plan";
   if (s.role === "system") return "system";
+  if (s.slot) return `slot:${s.slot}`;
   return `intent:${s.intent_id}`;
+}
+
+export const workerSlotSessionId = (slot: number) => `s-slot-${slot}`;
+
+// Slot-derived sessions: exactly N, stable ids, and the current intent (if any)
+// supplies the status/title. An idle slot stays visible between intents.
+export function workerSlotToSession(w: WorkerSlot): Session {
+  const current = !!w.intent_id;
+  return {
+    id: workerSlotSessionId(w.slot),
+    role: "worker",
+    title: current ? w.summary || `Intent ${w.intent_id}` : `Worker #${w.slot} · 等待下一个意图`,
+    status: current ? intentStatus(w.state) : "idle",
+    live: current && w.state === "running",
+    last_activity: w.last_activity || w.started_at || "",
+    intent_id: w.intent_id,
+    worker_no: w.slot,
+    slot: w.slot,
+  };
 }
 
 // Map an exploration intent (TaskNode) state → a session status the UI renders.

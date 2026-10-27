@@ -140,6 +140,7 @@ import type {
   TrafficResp,
   UpdateCheck,
   UsageStats,
+  WorkerSlot,
   WorkspaceFile,
   WorkspaceListing,
 } from "@/lib/types";
@@ -1161,6 +1162,12 @@ export const api = {
       hasMore: !!r.has_more,
     }));
   },
+  // Fixed N worker slots: sessions are reused across intents (no per-intent session).
+  workerSlots: (task: string) =>
+    get<{ slots: WorkerSlot[]; count: number }>(`/tasks/${encodeURIComponent(task)}/worker-slots`).then((r) => ({
+      slots: arr(r.slots),
+      count: r.count ?? 0,
+    })),
   // Paged worker (intent) session list — reaches past the legacy fixed 300 cap.
   // before=0 → newest page; before=<id> → older page. has_more = older intents exist.
   intentsPage: (task: string, before = 0, limit = 300) => {

@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 func TestRenderSystemOverrideAndFallback(t *testing.T) {
@@ -50,7 +53,7 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	PromptOverride = func(k string) (string, bool) {
 		return "{{if .ProxyAddr}}走代理 {{.ProxyAddr}}{{else}}手动{{end}}", true
 	}
-	recording := workerSystem("127.0.0.1:8080", "/ca.pem", "/data", "/data")
+	recording := workerSystem("127.0.0.1:8080", "/ca.pem", "/data")
 	if !strings.HasPrefix(recording, "走代理 127.0.0.1:8080") {
 		t.Fatalf("worker proxy branch body: %q", recording)
 	}
@@ -60,24 +63,38 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	if strings.Contains(recording, "traffic_refs") {
 		t.Fatalf("worker bypassed shared optional evidence policy: %q", recording)
 	}
-	if !strings.Contains(recording, "中间产物输出规约") {
-		t.Fatalf("worker missing artifact tail: %q", recording)
+	// Per-intent runDir/artifact contract must NOT be in the reused system prompt;
+	// it belongs to the per-run user turn so the cached prefix stays stable.
+	if strings.Contains(recording, "中间产物输出规约") || strings.Contains(recording, "BLADE_WORKER_INTENT") {
+		t.Fatalf("worker system must stay intent-free: %q", recording)
 	}
 	// Egress proxy set but capture OFF (no CA): the ProxyAddr template branch still
 	// renders, but the trafficTool block must NOT — those tools are not registered.
-	egressOnly := workerSystem("127.0.0.1:8080", "", "/data", "/data")
+	egressOnly := workerSystem("127.0.0.1:8080", "", "/data")
 	if !strings.HasPrefix(egressOnly, "走代理 127.0.0.1:8080") {
 		t.Fatalf("worker egress-only branch body: %q", egressOnly)
 	}
 	if strings.Contains(egressOnly, "traffic_search") {
 		t.Fatalf("worker without recording must NOT inject trafficTool: %q", egressOnly)
 	}
-	noProxy := workerSystem("", "", "/data", "/data")
+	noProxy := workerSystem("", "", "/data")
 	if !strings.HasPrefix(noProxy, "手动") {
 		t.Fatalf("worker no-proxy branch body: %q", noProxy)
 	}
 	if strings.Contains(noProxy, "traffic_search") {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
+	}
+
+	// The intent turn carries the per-run anchors: marker, payload/id, assets,
+	// runDir/artifact spec and slot — and nothing per-intent leaks into system.
+	turn := renderWorkerIntentTurn(&db.Node{ID: 9, Payload: json.RawMessage(`{"task":"probe-api"}`)}, `[{"id":1,"url":"http://t.example"}]`, "/data/tasks/1/i9", 2)
+	for _, want := range []string{workerIntentMarker(9), "probe-api", "意图 id: 9", "http://t.example", "/data/tasks/1/i9", "中间产物输出规约", "Worker #2", "仅作背景参考"} {
+		if !strings.Contains(turn, want) {
+			t.Fatalf("intent turn missing %q: %s", want, turn)
+		}
+	}
+	if strings.Contains(recording, "/data/tasks/1/i9") {
+		t.Fatalf("system leaked runDir: %q", recording)
 	}
 }
 

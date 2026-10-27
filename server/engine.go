@@ -80,6 +80,7 @@ const (
 )
 
 var errWorkControlConflict = errors.New("work control conflict")
+var errSlotBusy = errors.New("worker slot busy")
 
 // retryableWorkerModelError excludes errors already handled by the task router.
 // In particular, a quota error after partial streaming advances the task cursor
@@ -118,6 +119,11 @@ type Engine struct {
 	// waits for all goroutines, then releases every task-level Engine reference.
 	runtimeMu sync.Mutex
 	runtimes  map[string]*taskRuntime
+	// fallbackSlotLocks serializes detached runs for a task that has no live runtime
+	// (not started yet, or already torn down). Without it, a human resume on such a
+	// task would report every slot busy because slotLock returns nil.
+	fallbackSlotMu    sync.Mutex
+	fallbackSlotLocks map[string]*sync.Mutex
 
 	// per-task execution context: each planner.Plan / worker.Execute runs under it,
 	// so pausing can CANCEL an in-flight run (not just skip the next one). Recreated
@@ -173,6 +179,11 @@ type taskRuntime struct {
 	// workers 是本任务**启动时**的 worker 池大小（队列背压用）。改设置只影响之后启动的
 	// 任务，所以不能让 planner 去读实时设置——那会按错误容量排队。
 	workers int
+	// slotLocks serializes one worker slot's runs. The N worker loops are already
+	// serial per slot; this additionally keeps a detached human-resume run from
+	// sharing the slot transcript concurrently with the pool.
+	slotMu    sync.Mutex
+	slotLocks map[string]*sync.Mutex
 }
 
 type workExecution struct {
@@ -243,7 +254,7 @@ func (e *Engine) registerTaskRoutines(parent context.Context, taskID string, cou
 	rt := e.runtimes[taskID]
 	if rt == nil {
 		ctx, cancel := context.WithCancel(parent)
-		rt = &taskRuntime{ctx: ctx, cancel: cancel}
+		rt = &taskRuntime{ctx: ctx, cancel: cancel, slotLocks: map[string]*sync.Mutex{}}
 		e.runtimes[taskID] = rt
 	}
 	rt.wg.Add(count)
@@ -272,6 +283,67 @@ func (e *Engine) TaskWorkers(taskID string) int {
 		return rt.workers
 	}
 	return 0
+}
+
+// slotLock returns the per-task mutex for one worker slot. nil when the task runtime
+// is already torn down (the caller should stop).
+func (e *Engine) slotLock(taskID, name string) *sync.Mutex {
+	e.runtimeMu.Lock()
+	rt := e.runtimes[taskID]
+	if rt == nil {
+		e.runtimeMu.Unlock()
+		// no pool is running, but detached human runs still share the transcript:
+		// serialize them per task+slot too.
+		e.fallbackSlotMu.Lock()
+		defer e.fallbackSlotMu.Unlock()
+		if e.fallbackSlotLocks == nil {
+			e.fallbackSlotLocks = map[string]*sync.Mutex{}
+		}
+		key := taskID + "|" + name
+		mu := e.fallbackSlotLocks[key]
+		if mu == nil {
+			mu = &sync.Mutex{}
+			e.fallbackSlotLocks[key] = mu
+		}
+		return mu
+	}
+	defer e.runtimeMu.Unlock()
+	rt.slotMu.Lock()
+	defer rt.slotMu.Unlock()
+	if rt.slotLocks == nil {
+		rt.slotLocks = map[string]*sync.Mutex{}
+	}
+	mu := rt.slotLocks[name]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		rt.slotLocks[name] = mu
+	}
+	return mu
+}
+
+// slotNumber parses work#N; 0 when the name is not a slot (e.g. legacy "chat").
+func slotNumber(name string) int {
+	if !strings.HasPrefix(name, "work#") {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(name, "work#"))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func slotName(n int) string { return fmt.Sprintf("work#%d", n) }
+
+func slotPool(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, slotName(i))
+	}
+	return out
 }
 
 // runtimeCtx returns the task's runtime context, or context.Background() when the
@@ -749,6 +821,11 @@ func (e *Engine) Broadcaster() *Broadcaster { return e.bc }
 // emitActivity persists one captured step AND fans it out to live subscribers,
 // from a single point so storage and the SSE stream never diverge.
 func (e *Engine) emitActivity(t *Task, r db.Activity) db.Activity {
+	if r.SlotNo == nil {
+		if n := slotNumber(r.Worker); n > 0 {
+			r.SlotNo = &n
+		}
+	}
 	id, err := e.appendActivity(t, r)
 	if err != nil {
 		// NO LONGER SILENT: dropping a record breaks command↔result pairing in the
@@ -857,7 +934,7 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
-	workers := e.m.Workers()
+	workers := e.m.EnsureTaskWorkerSlots(t.ID, e.m.Workers())
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
@@ -1077,11 +1154,24 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 			}
 			continue // 任务已终态(done/failed/timeout):停止领取遗留意图,别在完成后空跑 frontier
 		}
+		lock := e.slotLock(t.ID, name)
+		if lock == nil {
+			return
+		}
+		// 先占槽位锁再 claim：人工续跑可能正持有同一槽位的 transcript。
+		if !lock.TryLock() {
+			if sleepCtx(ctx, 200*time.Millisecond) {
+				return
+			}
+			continue
+		}
 		if !e.beginTaskOperation(t.ID) {
+			lock.Unlock()
 			return
 		}
 		claimed := e.runWorkerStep(ctx, t, name, worker)
 		e.decInflight(t.ID)
+		lock.Unlock()
 		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
 			return
 		}
@@ -1092,7 +1182,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 // runIntent. Returns false when nothing was claimable. The pool worker loop is its
 // only caller.
 func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
-	intent := e.claimNext(t, name)
+	intent := e.claimNextForSlot(t, name)
 	if intent == nil {
 		return false
 	}
@@ -1112,7 +1202,14 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	hasChatMessage := message != ""
 	e.stampFirstRun(t) // 首次真正执行 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 	e.touch(t.ID)
-	emit := func(r db.Activity) { e.emitActivity(t, r) }
+	slotNo := slotNumber(name)
+	emit := func(r db.Activity) {
+		if r.SlotNo == nil && slotNo > 0 {
+			n := slotNo
+			r.SlotNo = &n
+		}
+		e.emitActivity(t, r)
+	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
@@ -1144,6 +1241,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	taskEmit := func(a db.Activity) {
 		nid := iid
 		a.NodeID, a.Worker = &nid, name
+		if a.SlotNo == nil && slotNo > 0 {
+			n := slotNo
+			a.SlotNo = &n
+		}
 		emitRenew(a)
 	}
 	label := fmt.Sprintf("%s · #%d", name, iid)
@@ -1156,6 +1257,20 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		nudges: &atomic.Int64{},
 		limit:  e.emptyTurnNudgeLimit(),
 		label:  label,
+	}
+	// UI 的槽位会话需要一条意图边界气泡；同一 intent 被暂停/续跑时只写一次。
+	if slotNo > 0 {
+		if started, _ := t.Store.HasIntentStartActivity(iid); !started {
+			boundary := db.Activity{
+				NodeID: &iid, Worker: name, Kind: "intent",
+				Summary: intentSummaryOf(intent), Detail: string(intent.Payload),
+			}
+			if slotNo > 0 {
+				n := slotNo
+				boundary.SlotNo = &n
+			}
+			e.emitActivity(t, boundary)
+		}
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	e.BeginLLMCall(t.ID)
@@ -1503,19 +1618,6 @@ func executionDigest(rows []*db.ToolExecution) string {
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
 func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, fromState, requestID, message, agentMessage string) error {
-	if !e.beginTaskOperation(t.ID) {
-		return fmt.Errorf("task is being deleted")
-	}
-	release := true
-	defer func() {
-		if release {
-			e.decInflight(t.ID)
-		}
-	}()
-	_, worker := e.snapshotFor(t)
-	if worker == nil {
-		return fmt.Errorf("worker 尚未就绪")
-	}
 	node, err := t.Store.GetNode(intentID)
 	if err != nil {
 		return err
@@ -1523,27 +1625,81 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	if node == nil || node.Kind != db.KindIntent {
 		return fmt.Errorf("intent not found")
 	}
-	changed, err := t.Store.CompareAndSetIntentState(intentID, fromState, "running")
+	workers := e.TaskWorkers(t.ID)
+	if workers <= 0 {
+		workers = e.m.TaskWorkerSlots(t.ID)
+	}
+	if workers <= 0 {
+		workers = 1
+	}
+	// Prefer the slot that last ran this intent so the slot transcript (and its
+	// cache) is resumed. If that slot is busy, fail fast instead of racing it.
+	slot := ""
+	preferred := slotNumber(node.Owner)
+	if preferred > 0 && preferred <= workers {
+		slot = slotName(preferred)
+	}
+	var lock *sync.Mutex
+	if slot != "" {
+		lock = e.slotLock(t.ID, slot)
+		if lock == nil {
+			return fmt.Errorf("task is being deleted")
+		}
+		if !lock.TryLock() {
+			return fmt.Errorf("%w: Worker #%d 正有意图在运行，请等它完成后再继续", errSlotBusy, preferred)
+		}
+	} else {
+		for i := 1; i <= workers; i++ {
+			l := e.slotLock(t.ID, slotName(i))
+			if l != nil && l.TryLock() {
+				slot, lock = slotName(i), l
+				break
+			}
+		}
+		if lock == nil {
+			return fmt.Errorf("%w: 所有 Worker 槽位都在运行，请稍后再继续", errSlotBusy)
+		}
+	}
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			lock.Unlock()
+		}
+	}()
+	if !e.beginTaskOperation(t.ID) {
+		return fmt.Errorf("task is being deleted")
+	}
+	releaseAdmission := true
+	defer func() {
+		if releaseAdmission {
+			e.decInflight(t.ID)
+		}
+	}()
+	_, worker := e.snapshotFor(t)
+	if worker == nil {
+		return fmt.Errorf("worker 尚未就绪")
+	}
+	changed, err := t.Store.ClaimPausedIntent(intentID, fromState, slot, db.IntentLeaseTTL)
 	if err != nil {
 		return err
 	}
 	if !changed {
 		return fmt.Errorf("%w: 意图不再是 %s 状态", db.ErrIntentStateConflict, fromState)
 	}
-	node.State, node.Owner = "running", "chat"
-	if _, err := t.Store.TouchIntentLease(intentID, "chat", db.IntentLeaseTTL); err != nil {
-		log.Printf("[chat] 意图 #%d 租约盖章失败: %v", intentID, err)
-	}
+	node.State, node.Owner = "running", slot
 	// Record the human turn as a visible activity BEFORE the run starts, so it is
 	// ordered ahead of any worker step and never appears without the run happening.
 	// Keep the UI copy concise; ExecuteWithMessage writes the server-resolved
 	// reference snapshot into the intent transcript as the LLM input.
 	uid := intentID
-	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message})
-	release = false // ownership of the admission passes to the goroutine
-	goSafe("engine/run-intent-chat", nil, func() {
+	sn := slotNumber(slot)
+	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message, SlotNo: &sn})
+	releaseAdmission = false // ownership of the admission passes to the goroutine
+	lockHeld = false         // ownership of the slot lock passes to the goroutine
+	goSafe("engine/run-intent-slot", nil, func() {
+		defer lock.Unlock()
 		defer e.decInflight(t.ID)
-		e.runIntent(ctx, t, "chat", worker, node, requestID, agentMessage)
+		e.runIntent(ctx, t, slot, worker, node, requestID, agentMessage)
 	})
 	return nil
 }
@@ -1582,10 +1738,11 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 	}
 }
 
-func (e *Engine) claimNext(t *Task, name string) *db.Node {
-	fr, _ := t.Store.Frontier(20)
+func (e *Engine) claimNextForSlot(t *Task, name string) *db.Node {
+	pool := slotPool(e.TaskWorkers(t.ID))
+	fr, _ := t.Store.FrontierForSlot(name, pool, 20)
 	for _, in := range fr {
-		if ok, _ := t.Store.ClaimIntent(in.ID, name, db.IntentLeaseTTL); ok {
+		if ok, _ := t.Store.ClaimIntentForSlot(in.ID, name, db.IntentLeaseTTL, pool); ok {
 			return in
 		}
 	}

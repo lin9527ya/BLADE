@@ -48,9 +48,8 @@ func workerMessageRoute(state string) (steer, resume bool) {
 //     "压根没有在跑的 work" 上报 409，让用户重发，不做静默排队）。
 //   - **已暂停（paused）**：暂停续发。消息作为下一轮输入，走 worker 正常 resume 的
 //     resume-from-transcript 路径（ExecuteWithMessage），复用既有暂停/恢复机制而不是
-//     另造协议。这条 run 跑在 worker 池之外的独立 goroutine（runDetachedIntent），所以
-//     池子占满时也能立刻被接走。同样只在内存：进程重启后该意图会从 transcript 重跑，
-//     不带这条消息——对"偶尔打断再继续"这个动作可以接受。
+//     另造协议。这条 run 仍绑定到该意图的 worker 槽位（runDetachedIntent），与池内 run
+//     互斥；槽位忙时返回 409 让用户稍后重试，避免同一 transcript 并发写。
 //   - **中断终态（blocked / exhausted / stopped / no_output）**：与 paused 同一条
 //     resume-from-transcript 路径，只是起始状态不同。人工消息本就是"接着这条会话
 //     继续干"，不该要求先重开意图、再由 planner 重新派一条新意图（那会丢掉现场）。
@@ -151,9 +150,11 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		nid := iid
-		s.engine.emitActivity(t, db.Activity{
-			NodeID: &nid, Worker: "user", Kind: "user", Summary: message, Detail: message,
-		})
+		act := db.Activity{NodeID: &nid, Worker: "user", Kind: "user", Summary: message, Detail: message}
+		if sn := slotNumber(node.Owner); sn > 0 {
+			act.SlotNo = &sn
+		}
+		s.engine.emitActivity(t, act)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":         iid,
 			"state":      "running",
@@ -175,7 +176,7 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	// while task pause/delete/shutdown still stop it.
 	if err := s.engine.runDetachedIntent(s.ctx, t, iid, node.State, requestID, message, agentMessage); err != nil {
 		switch {
-		case errors.Is(err, db.ErrIntentStateConflict):
+		case errors.Is(err, db.ErrIntentStateConflict), errors.Is(err, errSlotBusy):
 			writeErr(w, http.StatusConflict, err.Error())
 		default:
 			writeErr(w, http.StatusInternalServerError, err.Error())

@@ -47,9 +47,10 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor})
 }
 
-// parseActivitySession maps a stable session key (main | plan | intent:<ID>) to a
-// DB session filter. Goal Agent + Planner both live under worker="planner" (the
-// single Plan session); a Worker session is one intent, keyed by its node id.
+// parseActivitySession maps a stable session key (main | plan | slot:<N> | intent:<ID>)
+// to a DB session filter. Goal Agent + Planner both live under worker="planner" (the
+// single Plan session); a Worker session is a fixed slot, while intent:<ID> remains
+// for per-intent history (legacy transcripts / node drill-down).
 func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 	switch {
 	case sess == "" || sess == "main":
@@ -63,6 +64,12 @@ func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 		return db.ActivitySessionFilter{Main: true, MainSeg: &seg}, true
 	case sess == "plan":
 		return db.ActivitySessionFilter{Worker: "planner"}, true
+	case strings.HasPrefix(sess, "slot:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(sess, "slot:"))
+		if err != nil || n <= 0 {
+			return db.ActivitySessionFilter{}, false
+		}
+		return db.ActivitySessionFilter{Slot: &n}, true
 	case strings.HasPrefix(sess, "intent:"):
 		id, err := strconv.ParseInt(strings.TrimPrefix(sess, "intent:"), 10, 64)
 		if err != nil {

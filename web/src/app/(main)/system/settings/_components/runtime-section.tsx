@@ -84,7 +84,7 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
           <Field
             label="并发工作 agent 数"
             htmlFor="workers"
-            hint="每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后对之后启动的任务生效，正在运行的任务不受影响。"
+            hint="每个任务的固定 Worker 槽位数（默认 3）。任务首次启动时固化，后续所有意图都在这 N 个槽位内复用同一会话执行（不再每个意图新建 worker，缓存命中更高）；数值越大并发探测越多、消耗也越高。修改后对之后首次启动的任务生效，正在运行的任务不受影响。"
           >
             <div className="flex items-center gap-2">
               <Input

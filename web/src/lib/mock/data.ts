@@ -2801,11 +2801,18 @@ export const tokenWorkers: TokenUsage[] = [
 // (main | plan | intent:<id>) instead of the reusable work#N executor name.
 export const tokenSessions: SessionTokenUsage[] = (() => {
   const totals = new Map<string, SessionTokenUsage>();
+  // Demo: current intents occupy fixed slots 1..N; tokens are bucketed by slot.
+  const slotByIntent = new Map<string, number>();
+  intents
+    .filter((n) => n.state === "running" || n.state === "open" || n.state === "paused")
+    .slice(0, 3)
+    .forEach((n, i) => slotByIntent.set(n.id, i + 1));
   for (const item of activity) {
     if (item.kind !== "result") continue;
     let session = "";
     if (item.worker === "mainagent") session = "main";
     else if (item.worker === "planner") session = "plan";
+    else if (item.intent_id && slotByIntent.has(item.intent_id)) session = `slot:${slotByIntent.get(item.intent_id)}`;
     else if (item.intent_id) session = `intent:${item.intent_id}`;
     if (!session) continue;
     const current = totals.get(session) ?? {

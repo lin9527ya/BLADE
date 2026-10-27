@@ -422,6 +422,12 @@ ALTER TABLE activity ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{
 -- task's graph/assets/goal are untouched. NULL == legacy rows == segment 0 (the
 -- original session). Only worker='mainagent' rows carry it.
 ALTER TABLE activity ADD COLUMN IF NOT EXISTS main_seg INTEGER;
+-- worker 槽位号（1..N）。NULL = 升级前旧行；新行必须显式写入。
+-- 人工消息/续跑的 activity.worker 是 user/chat，无法从 worker 名推断槽位，
+-- 所以必须单独落列，供槽位会话历史/SSE 分桶。
+ALTER TABLE activity ADD COLUMN IF NOT EXISTS slot_no INTEGER;
+CREATE INDEX IF NOT EXISTS idx_act_slot ON activity(exploration_id, slot_no, id)
+    WHERE slot_no IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_act_node  ON activity(exploration_id, node_id, id);
 CREATE INDEX IF NOT EXISTS idx_act_since ON activity(exploration_id, id);
 CREATE INDEX IF NOT EXISTS idx_act_tool_call ON activity(exploration_id, tool_use_id, id)
@@ -661,6 +667,13 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
+-- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。
+-- 独立小表避免改 tasks 宽表的扫描；任务删除级联。
+CREATE TABLE IF NOT EXISTS task_worker_slots (
+    task_id    BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    slots      INT NOT NULL CHECK (slots > 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 -- 任务所属战役（0/1，可为空）。删战役只解绑任务、不删任务——任务是被归档与交付的单位，
 -- 不该因为"把作业归错了组"而消失。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS campaign_id BIGINT REFERENCES campaigns(id) ON DELETE SET NULL;

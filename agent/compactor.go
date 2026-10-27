@@ -123,6 +123,12 @@ type ContextIndexVars struct {
 	// worker 没有这两个工具——索引里的"要细节调 …"必须按它分支，否则会把 worker 教去调
 	// 一个不存在的工具。
 	HasOverview bool
+	// IntentAssets / RunDir / Slot 是 worker 当前意图的执行锚点（可空）。槽位会话会把
+	// 多条意图压进同一份 transcript，压缩后当前意图必须仍然完整可见，否则 worker 会
+	// 接着旧意图干。IntentAssets 是已序列化的资产 JSON，RunDir 是本意图工作目录。
+	IntentAssets string
+	RunDir       string
+	Slot         int
 }
 
 // renderCompanySection 渲染常驻索引里的"本公司已知"段（P23）。≤5 行 + 截断提示 +
@@ -191,6 +197,18 @@ func BuildContextIndex(v ContextIndexVars) string {
 	if v.Intent != nil {
 		sum := digestSummary(v.Intent)
 		b.WriteString(fmt.Sprintf("\n本工作意图：intent-%d %s（写回事实/发现时用它；工具里用 id %d）", seqOf(intentSeq, v.Intent.ID), clipLine(sum, 160), v.Intent.ID))
+		if v.Slot > 0 {
+			b.WriteString(fmt.Sprintf("\n  执行槽位：Worker #%d（历史里其它意图仅作参考，只做当前意图）", v.Slot))
+		}
+		if p := clipBlock(string(v.Intent.Payload), 1600); p != "" {
+			b.WriteString("\n  意图原文：\n" + p)
+		}
+		if a := clipBlock(v.IntentAssets, 2400); a != "" {
+			b.WriteString("\n  意图目标资产：\n" + a)
+		}
+		if v.RunDir != "" {
+			b.WriteString("\n  本次工作目录：" + v.RunDir)
+		}
 	}
 	if intents, err := ts.ListNodeDigests(db.KindIntent, []string{"open", "running"}, 8); err == nil && len(intents) > 0 {
 		open, running := []string{}, []string{}
@@ -424,6 +442,15 @@ func asText(v any) string {
 		}
 		return string(b)
 	}
+}
+
+// clipBlock 多行截断：保留换行（意图原文/资产 JSON 分行更易读），只按 rune 截断。
+func clipBlock(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len([]rune(s)) <= max {
+		return s
+	}
+	return string([]rune(s)[:max]) + "\n…（已截断）"
 }
 
 // clipLine 单行截断（按 rune，避免切出半个多字节字符）。

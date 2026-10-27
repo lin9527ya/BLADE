@@ -144,7 +144,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
 					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
 				}
-				u := ev.Terminal.Usage // cumulative token usage for this session
+				u := ev.Terminal.Usage // this run only (harness usage starts at zero per Prompt)
 				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
 					Summary: firstLine(sum, 400), Detail: detail,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
@@ -201,6 +201,10 @@ func firstLine(s string, max int) string {
 // This is audit context; the judge receives only bounded, paired execution
 // evidence selected from it, never assistant prose or thinking blocks.
 func approvalHistory(messages []llm.Message) []db.InterceptContextEntry {
+	// A slot transcript is reused across intents. Review/audit context must start
+	// at the current intent marker; otherwise the judge sees old intents' actions
+	// and may approve/deny today's action against stale evidence.
+	messages = messagesSinceWorkerIntent(messages)
 	var entries []db.InterceptContextEntry
 	for _, message := range messages {
 		for _, block := range message.Content {
@@ -219,4 +223,17 @@ func approvalHistory(messages []llm.Message) []db.InterceptContextEntry {
 		}
 	}
 	return entries
+}
+
+// messagesSinceWorkerIntent drops history before the latest worker intent marker.
+// Non-worker sessions have no marker and are returned unchanged.
+func messagesSinceWorkerIntent(messages []llm.Message) []llm.Message {
+	for i := len(messages) - 1; i >= 0; i-- {
+		for _, b := range messages[i].Content {
+			if b.Type == llm.BlockText && strings.HasPrefix(strings.TrimSpace(b.Text), workerIntentMarkerPrefix) {
+				return messages[i:]
+			}
+		}
+	}
+	return messages
 }

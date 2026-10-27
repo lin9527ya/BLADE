@@ -34,7 +34,7 @@ func (d *DB) GetInterceptExecution(id int64) (*InterceptExecution, error) {
 	var scope any
 	if approval.ConversationID != nil {
 		scope = *approval.ConversationID
-		query = `SELECT id, NULL::bigint, COALESCE(worker,''), kind, COALESCE(tool,''), tool_use_id, is_error, COALESCE(summary,''), created_at, NULL::integer FROM conversation_activities WHERE conversation_id=$1`
+		query = `SELECT id, NULL::bigint, COALESCE(worker,''), kind, COALESCE(tool,''), tool_use_id, is_error, COALESCE(summary,''), created_at, NULL::integer, NULL::integer FROM conversation_activities WHERE conversation_id=$1`
 	} else if approval.TaskID != nil {
 		taskID, parseErr := strconv.ParseInt(*approval.TaskID, 10, 64)
 		if parseErr != nil || taskID <= 0 {
@@ -48,7 +48,7 @@ func (d *DB) GetInterceptExecution(id int64) (*InterceptExecution, error) {
 			return nil, ErrInterceptTaskDeleted
 		}
 		scope = taskID
-		query = `SELECT id, node_id, COALESCE(worker,''), kind, COALESCE(tool,''), tool_use_id, is_error, COALESCE(summary,''), created_at, main_seg FROM activity WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1 AND archived_at IS NULL AND deleted_at IS NULL)`
+		query = `SELECT id, node_id, COALESCE(worker,''), kind, COALESCE(tool,''), tool_use_id, is_error, COALESCE(summary,''), created_at, main_seg, slot_no FROM activity WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1 AND archived_at IS NULL AND deleted_at IS NULL)`
 	} else {
 		return nil, ErrInterceptExecutionUnavailable
 	}
@@ -61,7 +61,7 @@ func (d *DB) GetInterceptExecution(id int64) (*InterceptExecution, error) {
 	out := &InterceptExecution{ConversationID: approval.ConversationID, TaskID: approval.TaskID}
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt, &a.MainSeg); err != nil {
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt, &a.MainSeg, &a.SlotNo); err != nil {
 			return nil, err
 		}
 		out.Items = append(out.Items, a)
@@ -96,6 +96,9 @@ func (d *DB) GetInterceptExecution(id int64) (*InterceptExecution, error) {
 			out.Session = fmt.Sprintf("main:%d", seg)
 		case call.Worker == "planner":
 			out.Session = "plan"
+		case call.SlotNo != nil:
+			// Fixed worker slot: the UI maps this directly to the reusable session.
+			out.Session = fmt.Sprintf("slot:%d", *call.SlotNo)
 		case call.NodeID != nil:
 			out.Session = fmt.Sprintf("intent:%d", *call.NodeID)
 		default:

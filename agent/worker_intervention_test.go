@@ -26,3 +26,32 @@ func TestWorkerChatMarkerOnlyMatchesItsNormalUserTurn(t *testing.T) {
 		t.Fatal("unrelated request id matched a Worker user turn")
 	}
 }
+
+func TestWorkerSessionIDForSlotIsStableAcrossIntents(t *testing.T) {
+	if got := WorkerSessionIDForSlot(12, 3); got != "exp12-worker-slot3" {
+		t.Fatalf("slot session id = %q, want exp12-worker-slot3", got)
+	}
+	// The id must not depend on the intent: that is the whole point of a slot.
+	if WorkerSessionIDForSlot(12, 3) != WorkerSessionIDForSlot(12, 3) {
+		t.Fatal("slot session id must be deterministic")
+	}
+	if WorkerSessionIDForSlot(12, 3) == WorkerSessionID(12, 34) {
+		t.Fatal("slot session must not collide with a legacy per-intent session")
+	}
+	if workerSlotNumber("work#3") != 3 || workerSlotNumber("work#x") != 0 || workerSlotNumber("chat") != 0 {
+		t.Fatal("slot number parsing drifted")
+	}
+}
+
+func TestWorkerIntentMarkerDedup(t *testing.T) {
+	msgs := []llm.Message{
+		llm.UserText(workerIntentMarker(7) + "\nold"),
+		llm.UserText(workerIntentMarker(8) + "\ncurrent"),
+	}
+	if hasWorkerIntentMessage(msgs, 7) != true || hasWorkerIntentMessage(msgs, 9) {
+		t.Fatal("intent marker detection drifted")
+	}
+	if got := lastWorkerIntentMessageIndex(msgs); got != 1 {
+		t.Fatalf("last marker index = %d, want 1", got)
+	}
+}

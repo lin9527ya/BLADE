@@ -21,6 +21,7 @@ import type {
   TaskLLMResolutions,
   TaskNode,
   TokenTotal,
+  WorkerSlot,
 } from "@/lib/types";
 import { rememberInputHistory } from "@/lib/input-history";
 
@@ -29,8 +30,6 @@ import {
   fmtBytes,
   fmtDuration,
   fmtTokens,
-  intentStatus,
-  intentToSession,
   isResumableWorkerStatus,
   keyForSession,
   MAIN_ID,
@@ -57,6 +56,8 @@ import {
   statusIcon,
   TokenMetrics,
   workerMessageCharCount,
+  workerSlotSessionId,
+  workerSlotToSession,
 } from "./session-helpers";
 
 // 会话页签的状态与取数：会话列表、分段消息、意图/资产、SSE、令牌与 LLM 解析。
@@ -72,6 +73,21 @@ export function useSessionsState(taskId: string) {
       return { ...MAIN_SESSION, id: mainSessionId(seg), seg, title: mainSessionTitle(seg), live: false };
     }
     if (source.session === "plan") return { ...PLANNER_SESSION, live: false };
+    if (source.session.startsWith("slot:")) {
+      const slot = Number(source.session.slice(5));
+      if (Number.isFinite(slot) && slot > 0) {
+        return {
+          id: workerSlotSessionId(slot),
+          role: "worker",
+          slot,
+          worker_no: slot,
+          title: `Worker #${slot}`,
+          status: "done",
+          live: false,
+          last_activity: source.items[0]?.ts ?? "",
+        };
+      }
+    }
     if (source.session.startsWith("intent:")) {
       const id = source.session.slice(7);
       return {
@@ -104,7 +120,9 @@ export function useSessionsState(taskId: string) {
   const [listOpen, setListOpen] = React.useState(false);
   // Per-session lazily-loaded caches, keyed by session_key (main | plan | intent:<id>).
   const [store, setStore] = React.useState<SessionStore>({});
-  // Worker sessions derived from exploration intents (paged past the old 300 cap).
+  // Fixed worker slots (exactly N sessions; reused across intents).
+  const [workerSlots, setWorkerSlots] = React.useState<WorkerSlot[]>([]);
+  // Worker sessions derived from exploration intents (kept for intent metadata/history).
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [intentAssets, setIntentAssets] = React.useState<IntentAsset[]>([]);
   const [olderIntents, setOlderIntents] = React.useState<TaskNode[]>([]);
@@ -450,6 +468,7 @@ export function useSessionsState(taskId: string) {
   // ID) resumes from the DB, so a dropped realtime link self-heals; seq-merge dedups.
   React.useEffect(() => {
     setStore({});
+    setWorkerSlots([]);
     setIntents([]);
     setIntentAssets([]);
     setOlderIntents([]);
@@ -674,6 +693,21 @@ export function useSessionsState(taskId: string) {
     [taskId],
   );
 
+  usePolling(
+    (alive) => {
+      api
+        .workerSlots(taskId)
+        .then((r) => {
+          if (alive()) setWorkerSlots(r.slots);
+        })
+        .catch(() => {
+          // best-effort; next poll retries
+        });
+    },
+    5000,
+    [taskId],
+  );
+
   const loadOlderIntents = React.useCallback(() => {
     if (loadingOlderIntents) return;
     const all = [...intents, ...olderIntents];
@@ -714,8 +748,9 @@ export function useSessionsState(taskId: string) {
     return grouped;
   }, [intentAssets]);
 
-  const workerSessions = React.useMemo(() => allIntents.map(intentToSession), [allIntents]);
-  const intentsHasMore = hasLoadedOlderIntentsPage ? olderIntentsHasMore : firstIntentsHasMore;
+  // Exactly the task's fixed N slots — never one session per intent.
+  const workerSessions = React.useMemo(() => workerSlots.map(workerSlotToSession), [workerSlots]);
+  const intentsHasMore = false; // legacy: the session list no longer pages per-intent
 
   // For each worker session (intent), derive the display title from the intent
   // payload summary. Also store the full TaskNode for the hover-JSON tooltip.
@@ -859,7 +894,8 @@ export function useSessionsState(taskId: string) {
   const mainBusy = isMain && (sending || (!activeSettled && (mainChatRunning ?? recentLive(activeKey))));
   // 折叠态（手机端）标题栏要替代整张列表：显示当前会话名 + 其它会话的未读合计，
   // 否则收起后既不知道自己在看哪个会话，也看不到别处有新消息。
-  const activeDisplayTitle = (active.role === "worker" ? sessionMeta.get(active.id)?.title : "") || active.title;
+  const activeDisplayTitle =
+    (active.role === "worker" ? sessionMeta.get(active.intent_id ?? "")?.title : "") || active.title;
   const hiddenUnread = React.useMemo(
     () => Object.entries(store).reduce((sum, [key, s]) => (key === activeKey ? sum : sum + s.unread), 0),
     [store, activeKey],
@@ -915,9 +951,11 @@ export function useSessionsState(taskId: string) {
     // optimistic echo, hence no fabricated seq that could collide with real DB ids.
     if (isMain) return items;
     if (isPlanner || isSystem) return items;
-    // Worker session: the intent leads the transcript as a right-aligned "user"-style
-    // message (the task handed to this worker), followed by its execution steps.
-    const intentTitle = sessionMeta.get(active.id)?.title ?? active.title;
+    // Slot sessions get a backend "intent" boundary row on each new intent, so the
+    // transcript already leads with the real objective. Only legacy intent-focused
+    // sessions still need the client-side synthetic bubble.
+    if (active.slot) return items;
+    const intentTitle = sessionMeta.get(active.intent_id ?? "")?.title ?? active.title;
     const intentMsg: Activity = {
       seq: -1, // sorts/leads before any real step (real seq ≥ 0)
       worker: items[0]?.worker ?? active.id, // reuse the lane so no worker chips appear

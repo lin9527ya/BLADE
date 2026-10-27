@@ -85,9 +85,15 @@ type ToolSet struct {
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
 	ownerNode int64
-	GoalMet   bool
-	Reason    string
-	writes    WriteCounts
+	// ownerIsIntent marks ownerNode as the intent this run currently owns (worker).
+	// Only then do write-back tools enforce an explicit intent_id: a reused worker
+	// slot keeps other intents' history, and a stale id must not re-attach today's
+	// facts/findings to a finished intent. Planner's owner is the origin fact, so it
+	// must stay exempt.
+	ownerIsIntent bool
+	GoalMet       bool
+	Reason        string
+	writes        WriteCounts
 	// killWork, if set, terminates a running work by intent id (engine callback,
 	// wired by the planner). nil = the kill_work tool reports unavailable.
 	killWork func(intentID int64) error
@@ -250,6 +256,34 @@ func (t *ToolSet) SetEnrich(e EnrichTrigger) { t.enrich = e }
 // intent node; planner/main: the begin root). Assets created/referenced while
 // ownerNode is set are anchored to it as lineage (not visibility).
 func (t *ToolSet) SetOwnerNode(id int64) { t.ownerNode = id }
+
+// SetOwnerIntent marks the owner as the worker's current intent, enabling the
+// stale-intent write-back guard (worker slot transcripts span multiple intents).
+func (t *ToolSet) SetOwnerIntent(id int64) {
+	t.ownerNode = id
+	t.ownerIsIntent = id > 0
+}
+
+// writeIntent resolves an explicit intent_id for a write-back tool. In a worker
+// run, an empty id falls back to the current intent, and a different id is
+// rejected: the slot's history still shows old intents, and silently attaching
+// new results to them would corrupt the graph's yields edges.
+func (t *ToolSet) writeIntent(raw json.RawMessage) (int64, error) {
+	return t.writeIntentID(pid(raw))
+}
+
+func (t *ToolSet) writeIntentID(id int64) (int64, error) {
+	if !t.ownerIsIntent || t.ownerNode <= 0 {
+		return id, nil
+	}
+	if id <= 0 {
+		return t.ownerNode, nil
+	}
+	if id != t.ownerNode {
+		return 0, fmt.Errorf("intent_id=%d 不是当前运行的意图 #%d：槽位历史里的旧意图只作参考，写回只能挂当前意图", id, t.ownerNode)
+	}
+	return id, nil
+}
 
 // SetExecService 注入长任务执行服务（P13）；nil 表示本运行环境不支持后台执行。
 func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
@@ -2143,7 +2177,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: pidList(a.AssetIDs)}
+		intentID, err := t.writeIntent(a.IntentID)
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: intentID, VulnClass: a.VulnClass, Name: a.Name, Severity: severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: pidList(a.AssetIDs)}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -2224,9 +2262,9 @@ func (t *ToolSet) closeCandidate() actool.CoreTool {
 		if strings.TrimSpace(a.Candidate) == "" {
 			return actool.Errorf("candidate 不能为空：一句话写清被闭合的候选是什么"), nil
 		}
-		intentID := pid(a.IntentID)
-		if intentID <= 0 {
-			intentID = t.ownerNode
+		intentID, err := t.writeIntent(a.IntentID)
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
 		}
 		rec, err := t.ts.RecordCandidateClosure(ctx, db.CandidateClosureInput{
 			TaskID: t.taskID, IntentID: intentID,
@@ -2282,6 +2320,10 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	intent := pid(it.IntentID)
 	if intent <= 0 {
 		intent = defaultIntent
+	}
+	intent, err := t.writeIntentID(intent)
+	if err != nil {
+		return 0, err
 	}
 	if intent > 0 {
 		node, err := t.ts.GetNode(intent)
@@ -2497,7 +2539,10 @@ func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (
 	if !db.ValidConfidence(base.Confidence) {
 		return 0, fmt.Errorf("confidence 取值必须是 high|medium|low（诚实标定）")
 	}
-	intent := pid(base.IntentID)
+	intent, err := t.writeIntent(base.IntentID)
+	if err != nil {
+		return 0, err
+	}
 	if intent > 0 {
 		node, err := t.ts.GetNode(intent)
 		if err != nil || node == nil || node.Kind != db.KindIntent {
@@ -2902,7 +2947,10 @@ func (t *ToolSet) reportDetection() actool.CoreTool {
 			if !db.ValidConfidence(a.Confidence) {
 				return actool.Errorf("confidence 取值必须是 high|medium|low"), nil
 			}
-			intent := pid(a.IntentID)
+			intent, err := t.writeIntent(a.IntentID)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
 			if intent > 0 {
 				node, err := t.ts.GetNode(intent)
 				if err != nil || node == nil || node.Kind != db.KindIntent {

@@ -2142,6 +2142,29 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       page_size: pageSize,
     };
   }
+  if (seg[0] === "tasks" && seg[2] === "worker-slots" && m === "GET") {
+    const active = mockIntents.filter((n) => n.state === "running" || n.state === "open" || n.state === "paused");
+    const slots = [1, 2, 3].map((slot) => {
+      const n = active[slot - 1];
+      let summary = n?.payload ?? "";
+      try {
+        summary = n ? String(JSON.parse(n.payload ?? "{}")?.summary ?? summary) : "";
+      } catch {
+        // keep the raw payload as the title
+      }
+      return {
+        slot,
+        name: `work#${slot}`,
+        session: `slot:${slot}`,
+        state: n ? n.state : "idle",
+        intent_id: n?.id,
+        summary,
+        started_at: n?.ts,
+        last_activity: n?.ts,
+      };
+    });
+    return { slots, count: slots.length };
+  }
   if (path === "/exploration/intents") {
     if (q.has("page")) {
       const before = Number(q.get("before") ?? 0);
@@ -2206,7 +2229,17 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/exploration/activity" && seg.length === 2) {
     const since = Number(q.get("since") ?? 0);
     const limit = Math.max(1, Number(q.get("limit") ?? 300));
-    const items = mockActivity.filter((item) => item.seq > since).slice(0, limit);
+    // Demo mirrors the fixed-slot model: current intents occupy slot 1..N and the
+    // activity is bucketed by slot_no instead of intent id.
+    const slotOf = new Map<string, number>();
+    mockIntents
+      .filter((n) => n.state === "running" || n.state === "open" || n.state === "paused")
+      .slice(0, 3)
+      .forEach((n, i) => slotOf.set(n.id, i + 1));
+    const items = mockActivity
+      .filter((item) => item.seq > since)
+      .slice(0, limit)
+      .map((item) => (item.slot_no ? item : { ...item, slot_no: item.intent_id ? slotOf.get(item.intent_id) : undefined }));
     return { items, cursor: items.length ? items[items.length - 1].seq : since };
   }
   if (seg[0] === "exploration" && seg[1] === "activity" && seg.length === 3) {

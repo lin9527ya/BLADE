@@ -53,7 +53,8 @@ func TestLeaseWatchdogReclaimsStalledIntent(t *testing.T) {
 	if err != nil || node == nil {
 		t.Fatalf("stalled node: %+v err=%v", node, err)
 	}
-	if node.State != "open" || node.Owner != "" {
+	// Owner stays on the slot that held the transcript so it re-claims with cache.
+	if node.State != "open" || node.Owner != "work#1" {
 		t.Fatalf("stalled intent must be reclaimed: state=%s owner=%q", node.State, node.Owner)
 	}
 	keep, err := st.GetNode(healthy)

@@ -14,8 +14,10 @@ import (
 // placed as the LAST system-prompt segment, with DynamicBoundary set so the whole
 // (session-fixed) system prompt — including the block — is cached (design doc
 // §2.1 / C1). Skill-gated MCP names are NOT in this block; they surface when their
-// skill loads. Returns a single plain segment + boundary 0 when there is no global
-// block to add.
+// skill loads. When there is no global block to add, the single plain segment is
+// still entirely static (callers must keep per-run data out of sysText), so the
+// boundary covers it — otherwise the provider gets no cache breakpoint at all and
+// a reused session re-pays the full prefix every intent.
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
 	sysText += def.FindingGuidance
 	// 出站产物语言（P41）：放在这里而不是各 agent 的拼装点——四个 agent（planner/worker/
@@ -27,7 +29,7 @@ func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
 	always := strings.TrimSpace(def.AlwaysSkills)
 	if always == "" && block == "" {
-		return []string{sysText}, 0
+		return []string{sysText}, 1
 	}
 	// 分层注入：常量层（常驻技能正文）在前、deferred 工具块在后，二者都是会话固定的
 	// 稳定段，随整段 system 一起被缓存（boundary 覆盖全部）。

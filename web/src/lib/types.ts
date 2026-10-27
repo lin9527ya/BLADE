@@ -484,7 +484,8 @@ export type IntentState =
   | "exhausted"
   | "no_output"
   | "stopped"
-  | "deleted";
+  | "deleted"
+  | "idle"; // 固定槽位空闲：等待下一个意图
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
 export type ExploreRel =
@@ -686,6 +687,21 @@ export interface TaskNode {
   // 意图在本任务内的创建序号（1-based）。意图 id 是全局序列（任务 2 会从 21 继续），
   // 界面上的 "Worker #N" 用这个序号，而不是 id。
   worker_seq?: number;
+  // 当前绑定的固定执行槽位（owner=work#N）；0/缺省=未绑定。
+  slot_no?: number;
+}
+
+// GET /api/tasks/{id}/worker-slots — fixed N execution slots (sessions reused
+// across intents). state is running|paused|open when an intent is bound, idle otherwise.
+export interface WorkerSlot {
+  slot: number;
+  name: string;
+  session: string; // "slot:<n>"
+  state: string;
+  intent_id?: string;
+  summary?: string;
+  started_at?: string;
+  last_activity?: string;
 }
 
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
@@ -1332,6 +1348,7 @@ export interface Activity {
   source_task_id?: string;
   inherited?: boolean;
   main_seg?: number; // main-agent conversation segment (present only on worker="mainagent" rows)
+  slot_no?: number; // fixed worker slot (absent on pre-upgrade rows / main / planner)
   // token usage (present only on kind='result')
   input_tokens?: number;
   output_tokens?: number;
@@ -1447,7 +1464,8 @@ export type SessionStatus =
   | "no_output" // 跑完了却什么都没写回：按未覆盖处理，可重派
   | "pending"
   | "stopped"
-  | "deleted";
+  | "deleted"
+  | "idle"; // 固定槽位空闲：等待下一个意图
 
 // Daily token aggregate bucket (GET /api/tokens/daily).
 export interface DailyTokenBucket {
@@ -1547,6 +1565,7 @@ export interface Session {
   source_task_id?: string;
   inherited?: boolean;
   seg?: number; // main-agent session: which conversation segment (0 = original)
+  slot?: number; // fixed worker slot (worker sessions only)
 }
 
 // ---- Security ----

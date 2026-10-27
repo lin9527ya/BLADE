@@ -229,7 +229,7 @@ func TestCVEContextAndPromptDiscipline(t *testing.T) {
 		t.Fatalf("graph overview missing matching_cves: %+v", overview)
 	}
 	for name, body := range map[string]string{
-		"worker":  workerSystem("", "", "", ""),
+		"worker":  workerSystem("", "", ""),
 		"planner": plannerSystem("goal", "/data", "/data"),
 		"main":    mainAgentSystem("goal", "/data", "/data"),
 	} {

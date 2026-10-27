@@ -102,12 +102,59 @@ type Worker struct {
 	maxTokensFn func() int
 }
 
-// WorkerSessionID returns the stable transcript key used by a worker intent.
-// Worker slots are reusable, so the intent id (rather than work#N) is the
-// session identity. Keep this helper public so the Worker message API and UI
-// can refer to exactly the conversation that will be resumed.
+// WorkerSessionID is the legacy per-intent transcript key. New runs use
+// WorkerSessionIDForSlot so one slot transcript spans intents; this helper stays
+// for reading/settling transcripts created before the slot migration.
 func WorkerSessionID(explorationID, intentID int64) string {
 	return fmt.Sprintf("exp%d-worker-i%d", explorationID, intentID)
+}
+
+// WorkerSessionIDForSlot is the persistent transcript key for a worker slot. The
+// slot is reused across intents so the transcript (and provider prefix cache) can
+// accumulate instead of starting cold for every intent. Keep the exp<exp>- prefix
+// (task archive/delete scans it) and the "worker" lane (llmrec.parseSession).
+func WorkerSessionIDForSlot(explorationID int64, slot int) string {
+	return fmt.Sprintf("exp%d-worker-slot%d", explorationID, slot)
+}
+
+func workerSlotNumber(name string) int {
+	if !strings.HasPrefix(name, "work#") {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(name, "work#"))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+const workerIntentMarkerPrefix = "<!-- BLADE_WORKER_INTENT:"
+
+func workerIntentMarker(intentID int64) string {
+	return workerIntentMarkerPrefix + strconv.FormatInt(intentID, 10) + " -->"
+}
+
+func hasWorkerIntentMessage(messages []llm.Message, intentID int64) bool {
+	marker := workerIntentMarker(intentID)
+	for _, message := range messages {
+		if message.Role == llm.RoleUser && strings.Contains(message.Text(), marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// lastWorkerIntentMessageIndex returns the index of the latest current-intent
+// marker, or -1. Used to bound approval/audit context to the current intent when
+// a slot transcript contains older intents.
+func lastWorkerIntentMessageIndex(messages []llm.Message) int {
+	last := -1
+	for i, message := range messages {
+		if message.Role == llm.RoleUser && strings.Contains(message.Text(), workerIntentMarkerPrefix) {
+			last = i
+		}
+	}
+	return last
 }
 
 const workerChatMarkerPrefix = "<!-- BLADE_WORKER_CHAT:"
@@ -366,12 +413,46 @@ func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 // 宿主生命周期、也可能挂在 tmpfs 上（重启即失）。
 func taskOutDir(dir string) string { return filepath.Join(dir, "task-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
+func workerSystem(proxyAddr, caCert, dataDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerExecSpec() + cveToolBlock
+	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
+	// outside this stable string so a reused slot can keep the same cached prefix.
+	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock
+}
+
+// renderWorkerIntentTurn is the per-run user message for the claimed intent. It is
+// deliberately NOT in the system prompt: a slot transcript is resumed across
+// intents, and a changing system prompt would invalidate the provider's prefix
+// cache before the first message. The marker lets a retried/resumed run avoid
+// appending the same intent twice.
+func renderWorkerIntentTurn(intent *db.Node, assetsJSON, runDir string, slot int) string {
+	var b strings.Builder
+	b.WriteString(workerIntentMarker(intent.ID))
+	b.WriteString("\n【当前意图（本次唯一任务：只做这一条、只产生事实、做完即停）】\n")
+	b.WriteString("以下历史对话属于此前已经结束的意图，仅作背景参考；不要继续旧目标，也不要把旧 intent id/旧工作目录用于本条写回。\n")
+	b.WriteString(string(intent.Payload))
+	b.WriteString(fmt.Sprintf("\n意图 id: %d（record_fact / report_finding 等写回时传它）", intent.ID))
+	if slot > 0 {
+		b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本槽位会话跨意图复用）", slot))
+	}
+	if strings.TrimSpace(assetsJSON) != "" {
+		b.WriteString("\n本意图 asset_ids 对应的目标资产：\n" + assetsJSON)
+	}
+	b.WriteString(workerArtifactSpec(runDir))
+	b.WriteString("\n\n开始执行当前意图：只做它、只产生事实、assets、finding、做完即停。")
+	return b.String()
+}
+
+// ensureSlotDir is the stable per-slot directory for compaction/noa artifacts. It
+// is intentionally separate from the per-intent runDir: the transcript and its
+// summaries outlive one intent, so their archives should too.
+func ensureSlotDir(base string, taskID int64, slot int) string {
+	dir := filepath.Join(base, "tasks", strconv.FormatInt(taskID, 10), "worker-slot"+strconv.Itoa(slot))
+	_ = os.MkdirAll(dir, 0o775)
+	return dir
 }
 
 // workerExecSpec is 段 [D]: the code-owned long-task contract (P13). Appended the
@@ -465,7 +546,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
-	tsx.SetOwnerNode(intent.ID)       // assets this worker discovers anchor to its intent → visible to the task
+	tsx.SetOwnerIntent(intent.ID)     // writes anchor to this intent and reject stale intent_id
 	tsx.SetExecService(w.execService) // P13：长任务执行（进程活过本次 run）
 	pol := w.policy()
 	tsx.SetPolicy(pol)                  // P20：worker 本身不派意图，但策略段要进它的 system（见下）
@@ -490,24 +571,34 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// worker 有。仅【全局态势 overview】留在启动 user 消息里——它可降级、容忍 stale，压掉无碍。
 	// 本次意图的专属工作目录 <workDir>/tasks/<taskID>/i<intentID>，引擎侧先建好。
 	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
+	// 槽位会话：worker 名字即 work#N。任务内的所有意图都在同一槽位会话里顺序执行，
+	// transcript/system 前缀因此可以跨意图复用（缓存命中的前提）。
+	slot := workerSlotNumber(name)
+	sessionID := WorkerSessionID(ts.ID(), intent.ID)
+	ctxDir := runDir
+	if slot > 0 {
+		sessionID = WorkerSessionIDForSlot(ts.ID(), slot)
+		ctxDir = ensureSlotDir(w.workDir, taskID, slot)
+	}
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	sysBody := workerSystem(proxyAddr, proxyCA, w.workDir, runDir)
+	// system 只放跨意图不变的内容；意图/资产/runDir 放进本次启动的 user turn，
+	// 否则同一槽位每条意图都会改写 system 前缀，provider 的前缀缓存直接失效。
+	sysBody := workerSystem(proxyAddr, proxyCA, w.workDir)
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
 	// P20：探索策略段（不受开关控制）——worker 是"探测"的执行者，禁用手段与只读声明
 	// 在这里必须与 planner 看到的一致，否则它会照着被禁的方向硬干、直到命令层拦下。
 	sysBody += policyBlock(pol)
-	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
-	sysBody += renderIntentTask(intent)
+	assetsJSON := ""
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
 				if b, err := json.Marshal(assets); err == nil {
-					sysBody += "\n\n本意图 asset_ids 对应的目标资产：\n" + string(b)
+					assetsJSON = string(b)
 				}
 				// 意图明确针对的这些资产 → 自动纳入任务测试范围（与 insertAssets 同一套
 				// 保守粒度）。upsertTaskScope 的 ON CONFLICT DO NOTHING + uq_task_scope
@@ -523,7 +614,6 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			}
 		}
 	}
-	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"
 	system, boundary := deferredSystem(sysBody, def)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
@@ -579,9 +669,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
 	}
-	if w.tx != nil { // persist raw LLM conversation; one file per worked intent
+	if w.tx != nil { // persist raw LLM conversation; one file per worker slot (reused across intents)
 		opts.Transcript = w.tx
-		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)
+		opts.SessionID = sessionID
 	}
 	intentID := intent.ID
 	emitWrap := func(r db.Activity) {
@@ -590,21 +680,21 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			emit(r)
 		}
 	}
-	// 意图 / 启动指令 / 意图锚定资产已随 system prompt 下发（见上方 sysBody 组装）。
-	// 这条启动 user 消息只承载【全局态势 overview】——可降级的了解大局信息，压掉无碍。
-	// overview 罕见地 marshal 失败为空时，回退一句启动词，避免首轮出现空 user 消息。
+	// 启动 user 消息 = 可降级的全局态势 overview + 当前意图块（带 marker）。
+	// 同一槽位会话会跨意图复用；marker 让重跑/续跑不会重复追加同一条意图。
+	intentTurn := renderWorkerIntentTurn(intent, assetsJSON, runDir, slot)
 	input := overview
 	if strings.TrimSpace(input) == "" {
-		input = "开始执行 system 里领到的意图：只做它、只产生事实、assets、finding、做完即停。"
+		input = "开始执行下面这条意图：只做它、只产生事实、assets、finding、做完即停。"
 	}
+	input += "\n\n" + intentTurn
 
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	noaSession := WorkerSessionID(ts.ID(), intent.ID)
-	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
+	enableNoa(&opts, w.noaEnabledFn, w.workDir, sessionID, noaWarn(sessionID))
 	// P14 领域上下文：领域化摘要（7 段 + 原文落盘回读）+ 每请求附常驻索引（目标/约束/
 	// 活跃方向/发现一行式）。noa 开启时它已占 Compactor 槽位，这里自动让位（互斥）。
-	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), runDir, func() string {
-		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
+	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), ctxDir, func() string {
+		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: slot, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
 	})
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
@@ -615,25 +705,27 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// session exists the worker continues from where it left off instead of
 	// restarting from scratch.
 	alreadyRecorded := false
+	hasIntentTurn := false
 	if w.tx != nil {
-		_ = s.Resume(opts.SessionID)
+		_ = s.Resume(sessionID)
 		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
-		if len(s.Messages()) > 0 && message == "" {
+		hasIntentTurn = hasWorkerIntentMessage(s.Messages(), intent.ID)
+		if len(s.Messages()) > 0 {
 			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
-			input = "继续执行。"
-		} else if len(s.Messages()) > 0 {
-			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
+		}
+		if hasIntentTurn && message == "" {
+			// 同一意图重跑：transcript 里已经有这条意图（含其卡点与工具历史），
+			// 不再重复追加整块意图，给一句继续执行即可。
+			input = fmt.Sprintf("继续执行当前意图 #%d。只做它、只产生事实、assets、finding、做完即停。", intent.ID)
 		}
 	}
 	if message != "" {
 		if alreadyRecorded {
-			input = "继续执行上一次人工对话输入的新意图。不要重复已经完成的动作。"
-		} else if len(s.Messages()) > 0 {
-			input = workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
-				"\n\n请立即按这条人工输入执行，完成后再根据上下文决定原任务是否需要继续。"
+			input = fmt.Sprintf("继续执行当前意图 #%d；上一次人工对话输入已记录，不要重复已经完成的动作。", intent.ID)
 		} else {
+			// 槽位里可能已有旧意图的历史：intentTurn 已带“历史仅参考”的边界句。
 			input += "\n\n" + workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
-				"\n\n请优先执行这条人工输入。"
+				"\n\n请立即按这条人工输入执行，完成后再根据上下文决定原任务是否需要继续。"
 		}
 	}
 

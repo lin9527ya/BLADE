@@ -71,7 +71,9 @@ func TestIntentLeaseClaimRenewReap(t *testing.T) {
 	if err != nil || node == nil {
 		t.Fatalf("node: %+v err=%v", node, err)
 	}
-	if node.State != "open" || node.Owner != "" {
+	// Owner is kept on reap: the slot that had the transcript should re-claim it,
+	// preserving the reusable session/cache (affinity), not drift to another slot.
+	if node.State != "open" || node.Owner != "work#1" {
 		t.Fatalf("reclaimed intent: state=%s owner=%q", node.State, node.Owner)
 	}
 	if ok, err := st.ReopenExpiredIntent(id, "work#1"); err != nil || ok {

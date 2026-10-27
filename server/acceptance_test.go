@@ -459,8 +459,8 @@ func accP5(t *testing.T, e *accEnv) {
 	}
 	e.s.engine.sweepExpiredLeases(task)
 	node, err := st.GetNode(intent)
-	if err != nil || node == nil || node.State != "open" || node.Owner != "" {
-		t.Fatalf("回收后状态不对: %+v err=%v", node, err)
+	if err != nil || node == nil || node.State != "open" || node.Owner != "work#1" {
+		t.Fatalf("回收后状态不对（owner 应保留在原槽）: %+v err=%v", node, err)
 	}
 	acts, _, err := st.ActivityList(nil, 0, 50)
 	if err != nil {

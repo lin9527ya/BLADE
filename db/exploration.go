@@ -110,6 +110,10 @@ type Activity struct {
 	// MainSeg is the main-agent conversation segment (nil for non-mainagent rows;
 	// nil/0 == the original session). Lets the UI route a mainagent row to its segment.
 	MainSeg *int `json:"main_seg,omitempty"`
+	// SlotNo is the worker slot (work#N) that produced this row. nil = legacy row
+	// before slot attribution existed. Set for user/chat rows too, which is why it
+	// cannot be derived from Worker alone.
+	SlotNo *int `json:"slot_no,omitempty"`
 }
 
 // TokenUsage is a per-worker token aggregate (TokenStatsByWorker).
@@ -1509,6 +1513,137 @@ ORDER BY n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
 	return scanNodes(rows)
 }
 
+// FrontierForSlot is Frontier with worker-slot affinity: an intent already owned by
+// a live slot is only visible to that slot; unowned intents and intents owned by a
+// slot outside the current pool (worker count shrank / upgrade) are fair game.
+// Owned-by-this-slot rows sort first so a resumed intent is picked before new work.
+func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []any{s.expID, slot}
+	exclude := "owner !~ '^work#[0-9]+$'"
+	if len(pool) > 0 {
+		ph := make([]string, len(pool))
+		for i, name := range pool {
+			ph[i] = fmt.Sprintf("$%d", len(args)+1)
+			args = append(args, name)
+		}
+		exclude = fmt.Sprintf("(owner !~ '^work#[0-9]+$' OR owner NOT IN (%s))", strings.Join(ph, ","))
+	}
+	args = append(args, limit)
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND (COALESCE(owner,'')='' OR owner=$2 OR `+exclude+`)
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
+      AND d.state NOT IN ('done','negative'))
+ORDER BY (owner=$2) DESC, n.priority DESC, n.id ASC LIMIT $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// ActiveSlotIntents returns the newest non-terminal intent per slot owner in pool
+// (running first within a slot). Used by the task's fixed worker-slot list.
+func (s *ExplorationStore) ActiveSlotIntents(pool []string) ([]*Node, error) {
+	if len(pool) == 0 {
+		return nil, nil
+	}
+	args := []any{s.expID}
+	ph := make([]string, len(pool))
+	for i, name := range pool {
+		ph[i] = fmt.Sprintf("$%d", len(args)+1)
+		args = append(args, name)
+	}
+	rows, err := s.db.Query(`SELECT DISTINCT ON (owner) `+nodeCols+`
+FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND owner IN (`+strings.Join(ph, ",")+`)
+  AND state IN ('running','paused','open')
+ORDER BY owner, (state='running') DESC, id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// LastActivityBySlot returns the newest activity timestamp per fixed slot.
+func (s *ExplorationStore) LastActivityBySlot(slots []int) (map[int]time.Time, error) {
+	out := map[int]time.Time{}
+	if len(slots) == 0 {
+		return out, nil
+	}
+	args := []any{s.expID}
+	ph := make([]string, len(slots))
+	for i, n := range slots {
+		ph[i] = fmt.Sprintf("$%d", len(args)+1)
+		args = append(args, n)
+	}
+	rows, err := s.db.Query(`SELECT slot_no, max(created_at) FROM activity
+WHERE exploration_id=$1 AND slot_no IN (`+strings.Join(ph, ",")+`) GROUP BY slot_no`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slot int
+		var ts time.Time
+		if err := rows.Scan(&slot, &ts); err != nil {
+			return nil, err
+		}
+		out[slot] = ts
+	}
+	return out, rows.Err()
+}
+
+// ClaimIntentForSlot claims an open intent only if it is unowned, owned by this
+// slot, or owned by a slot outside the current pool; writes this slot as owner.
+func (s *ExplorationStore) ClaimIntentForSlot(id int64, slot string, ttl time.Duration, pool []string) (bool, error) {
+	args := []any{slot, id, s.expID, int64(ttl / time.Second), slot}
+	exclude := "owner !~ '^work#[0-9]+$'"
+	if len(pool) > 0 {
+		ph := make([]string, len(pool))
+		for i, name := range pool {
+			ph[i] = fmt.Sprintf("$%d", len(args)+1)
+			args = append(args, name)
+		}
+		exclude = fmt.Sprintf("(owner !~ '^work#[0-9]+$' OR owner NOT IN (%s))", strings.Join(ph, ","))
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
+heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
+  AND (COALESCE(owner,'')='' OR owner=$5 OR `+exclude+`)
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=$3 AND e.src_id=exploration_nodes.id AND e.rel='depends_on'
+      AND d.state NOT IN ('done','negative'))`, args...)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ClaimPausedIntent atomically resumes a paused/interrupted intent into a slot:
+// state + owner + lease move together, so the pool can never see it as open.
+func (s *ExplorationStore) ClaimPausedIntent(id int64, fromState, slot string, ttl time.Duration) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
+heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
+blocked_reason=NULL, completed_at=NULL
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$5`, slot, id, s.expID, int64(ttl/time.Second), fromState)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // IntentDependencies 返回本任务里**未满足的前置**：intentID → 还没结论的依赖 id。
 //
 // 「满足」= 依赖意图以 done/negative 收场（真的有了结论）。blocked/exhausted/no_output
@@ -1641,7 +1776,7 @@ ORDER BY lease_expires_at`, s.expID)
 // settled between the watchdog's scan and its reap wins the race harmlessly (false).
 func (s *ExplorationStore) ReopenExpiredIntent(id int64, owner string) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state='open', owner='', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL
+SET state='open', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL
 WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
   AND COALESCE(owner,'')=$3 AND lease_expires_at IS NOT NULL AND lease_expires_at < now()`, id, s.expID, owner)
 	if err != nil {
@@ -1660,7 +1795,7 @@ func (s *ExplorationStore) RecentPolicyRejects(limit int) ([]Activity, error) {
 	}
 	rows, err := s.db.Query(`SELECT id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''),
 COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), COALESCE(detail,''), metadata, created_at,
-input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg
+input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no
 FROM activity WHERE exploration_id=$1 AND kind='policy_reject' ORDER BY id DESC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
@@ -1671,7 +1806,7 @@ FROM activity WHERE exploration_id=$1 AND kind='policy_reject' ORDER BY id DESC 
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError,
 			&a.Summary, &a.Detail, &a.Metadata, &a.CreatedAt, &a.InputTokens, &a.OutputTokens,
-			&a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			&a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -1830,10 +1965,10 @@ func (s *ExplorationStore) AppendActivity(a Activity) (int64, error) {
 	}
 	var id int64
 	err := s.db.QueryRow(`
-INSERT INTO activity(exploration_id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, metadata, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg)
-VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15)
+INSERT INTO activity(exploration_id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, metadata, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no)
+VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16)
 RETURNING id`, s.expID, a.NodeID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool), utf8Clean(a.ToolUseID), a.IsError, utf8Clean(a.Summary), utf8Clean(a.Detail),
-		metadata, a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.MainSeg).Scan(&id)
+		metadata, a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.MainSeg, a.SlotNo).Scan(&id)
 	return id, err
 }
 
@@ -2068,6 +2203,7 @@ func (s *ExplorationStore) TokenStatsBySession() ([]SessionTokenUsage, error) {
 		CASE
 			WHEN COALESCE(a.worker,'')='mainagent' THEN 'main:' || COALESCE(a.main_seg,0)::text
 			WHEN COALESCE(a.worker,'')='planner' THEN 'plan'
+			WHEN a.slot_no IS NOT NULL THEN 'slot:' || a.slot_no::text
 			WHEN n.id IS NOT NULL THEN 'intent:' || n.id::text
 			ELSE ''
 		END AS session_key,
@@ -2077,7 +2213,7 @@ func (s *ExplorationStore) TokenStatsBySession() ([]SessionTokenUsage, error) {
 	LEFT JOIN exploration_nodes n
 	  ON n.id=a.node_id AND n.exploration_id=a.exploration_id AND n.kind='intent'
 	WHERE a.exploration_id=$1 AND a.kind='result'
-	  AND (COALESCE(a.worker,'') IN ('mainagent','planner') OR n.id IS NOT NULL)
+	  AND (COALESCE(a.worker,'') IN ('mainagent','planner') OR a.slot_no IS NOT NULL OR n.id IS NOT NULL)
 	GROUP BY session_key
 	ORDER BY session_key`, s.expID)
 	if err != nil {
@@ -2103,7 +2239,7 @@ func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int)
 	}
 	var rows *sql.Rows
 	var err error
-	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no`
 	if nodeID != nil {
 		rows, err = s.db.Query(`SELECT `+cols+`
 FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
@@ -2120,7 +2256,7 @@ FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, 
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
 			return nil, sinceID, err
 		}
 		if a.ID > cursor {
@@ -2140,7 +2276,7 @@ func (s *ExplorationStore) ActivityListTail(nodeID *int64, limit int) ([]Activit
 	if limit <= 0 {
 		limit = 300
 	}
-	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no`
 	var rows *sql.Rows
 	var err error
 	if nodeID != nil {
@@ -2158,7 +2294,7 @@ FROM activity WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -2279,12 +2415,15 @@ func (s *ExplorationStore) ActivityListForTerminalIntent(nodeID, sinceID int64, 
 type ActivitySessionFilter struct {
 	Worker  string
 	NodeID  *int64
+	Slot    *int // worker slot (work#N) — slot session
 	Main    bool // main-agent session
 	MainSeg *int // segment for the main session (nil == current, resolved by caller; 0 == original)
 }
 
 func (f ActivitySessionFilter) cond(argStart int) (string, []any) {
 	switch {
+	case f.Slot != nil:
+		return fmt.Sprintf(" AND slot_no=$%d", argStart), []any{*f.Slot}
 	case f.NodeID != nil:
 		return fmt.Sprintf(" AND node_id=$%d", argStart), []any{*f.NodeID}
 	case f.Main:
@@ -2312,7 +2451,7 @@ func (s *ExplorationStore) ActivityPage(f ActivitySessionFilter, before int64, l
 	if limit <= 0 {
 		limit = 200
 	}
-	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no`
 	args := []any{s.expID}
 	cond, cargs := f.cond(len(args) + 1)
 	args = append(args, cargs...)
@@ -2332,7 +2471,7 @@ ORDER BY id DESC LIMIT $%d`, cond, beforeArg, beforeArg, limitArg)
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
 			return nil, false, err
 		}
 		desc = append(desc, a)
@@ -2394,6 +2533,17 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 		out[len(desc)-1-i] = a
 	}
 	return out, hasMore, nil
+}
+
+// HasIntentStartActivity reports whether the UI boundary row for this intent has
+// already been written. Slot sessions can resume an intent, so the engine must not
+// append a second boundary bubble on every run.
+func (s *ExplorationStore) HasIntentStartActivity(nodeID int64) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(
+SELECT 1 FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind='intent' LIMIT 1)`,
+		s.expID, nodeID).Scan(&exists)
+	return exists, err
 }
 
 // ActivityMaxID returns the task's current maximum activity id (0 when empty). It is

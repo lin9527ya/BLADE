@@ -332,6 +332,10 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
+	// 升级前 activity 没有槽位列：一次性按 worker/owner 回填；失败不阻断启动。
+	if err := d.backfillActivitySlots(); err != nil {
+		log.Printf("[migrate] 回填 activity.slot_no 失败（下次启动重试）: %v", err)
+	}
 	return nil
 }
 

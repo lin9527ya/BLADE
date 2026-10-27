@@ -208,6 +208,8 @@ type TaskNodeDTO struct {
 	// WorkerSeq 是意图在本任务内的创建序号（1-based）；界面显示 "Worker #N" 用它，
 	// 避免把全局意图 id（任务 2 会从 21 继续）当成 worker 编号。
 	WorkerSeq int64 `json:"worker_seq,omitempty"`
+	// SlotNo 是该意图当前绑定的固定执行槽位（owner=work#N）；0=未绑定。
+	SlotNo int `json:"slot_no,omitempty"`
 }
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {
@@ -221,6 +223,7 @@ func taskNodeDTO(n *db.Node) TaskNodeDTO {
 		Origin:       n.Origin,
 		TS:           rfc3339(n.CreatedAt),
 		WorkerSeq:    n.WorkerSeq,
+		SlotNo:       slotNumber(n.Owner),
 	}
 	if n.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(n.SourceTaskID)
@@ -551,6 +554,7 @@ type ActivityDTO struct {
 	SourceTaskID string          `json:"source_task_id,omitempty"`
 	Inherited    bool            `json:"inherited,omitempty"`
 	MainSeg      *int            `json:"main_seg,omitempty"` // main-agent conversation segment (nil for non-mainagent rows)
+	SlotNo       *int            `json:"slot_no,omitempty"`  // fixed worker slot (nil for pre-upgrade rows / main / planner)
 	// token usage (set only on kind='result'); used for per-session token totals.
 	InputTokens      *int `json:"input_tokens,omitempty"`
 	OutputTokens     *int `json:"output_tokens,omitempty"`
@@ -580,6 +584,7 @@ func activityDTO(a db.Activity) ActivityDTO {
 		CacheReadTokens:  a.CacheReadTokens,
 		CacheWriteTokens: a.CacheWriteTokens,
 		MainSeg:          a.MainSeg,
+		SlotNo:           a.SlotNo,
 	}
 	if a.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(a.SourceTaskID)

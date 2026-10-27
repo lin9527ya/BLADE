@@ -422,8 +422,36 @@ func (m *Manager) SetConcurrency(enabled bool, limit int) error {
 	return m.pg.SetSetting(settingConcurrencyOn, strconv.FormatBool(enabled))
 }
 
-// Workers returns the configured concurrent work-agent count (default 3). Read
-// per-task at engine.Run, so a change applies to tasks started afterwards.
+// TaskWorkerSlots returns the task's persisted worker-slot count (first Run
+// snapshot), falling back to the global workers setting for tasks that have not
+// started yet.
+func (m *Manager) TaskWorkerSlots(taskID string) int {
+	if m.pg != nil {
+		if n, err := m.pg.TaskWorkerSlots(taskID); err == nil && n > 0 {
+			return n
+		}
+	}
+	return m.Workers()
+}
+
+// EnsureTaskWorkerSlots persists the first-run slot count and returns the value
+// actually stored. DB errors fall back to the requested count so a transient
+// outage does not prevent the task from running.
+func (m *Manager) EnsureTaskWorkerSlots(taskID string, fallback int) int {
+	if m.pg != nil {
+		if n, err := m.pg.EnsureTaskWorkerSlots(taskID, fallback); err == nil && n > 0 {
+			return n
+		}
+	}
+	if fallback <= 0 {
+		return defaultWorkers
+	}
+	return fallback
+}
+
+// Workers returns the configured fixed worker-slot count (default 3). Snapshot
+// into task_worker_slots at engine.Run; changing it only affects tasks started
+// afterwards.
 func (m *Manager) Workers() int {
 	v, ok, err := m.pg.GetSetting(settingWorkers)
 	if err != nil || !ok {

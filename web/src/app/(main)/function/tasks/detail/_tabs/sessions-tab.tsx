@@ -345,7 +345,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                       )}
                     </div>
                     {items.map((s) => {
-                      const meta = s.role === "worker" ? sessionMeta.get(s.id) : undefined;
+                      const meta = s.role === "worker" ? sessionMeta.get(s.intent_id ?? "") : undefined;
                       return (
                         <SessionItem
                           key={s.id}
@@ -403,7 +403,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">
               {(() => {
                 const isWorker = active.role === "worker";
-                const meta = isWorker ? sessionMeta.get(active.id) : undefined;
+                const meta = isWorker ? sessionMeta.get(active.intent_id ?? "") : undefined;
                 // Worker: the intent moved into the transcript as a message, so the
                 // header shows a stable generic label (intent JSON stays on hover).
                 const title = isWorker ? "Worker 执行会话" : active.title;
@@ -515,7 +515,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               </div>
             </div>
             {(() => {
-              const dm = active.role === "worker" ? sessionMeta.get(active.id) : undefined;
+              const dm = active.role === "worker" ? sessionMeta.get(active.intent_id ?? "") : undefined;
               if (!dm?.deleted) return null;
               return (
                 <div className="flex items-start gap-2 border-b border-destructive/30 bg-destructive/5 px-4 py-2.5 text-xs">
@@ -804,6 +804,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     )}
                   </InputGroupAddon>
                 </InputGroup>
+              </div>
+            ) : active.role === "worker" && active.status === "idle" ? (
+              <div className="flex items-center gap-1.5 border-t px-4 py-2 text-xs text-muted-foreground">
+                <ClockIcon className="size-3.5" />
+                等待下一个意图——planner 派发后本槽位复用同一会话继续执行
               </div>
             ) : (
               <div className="flex items-center border-t px-4 py-2">

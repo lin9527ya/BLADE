@@ -2,7 +2,25 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.6.0] - 2026-10-27
+
+### 固定 Worker 槽位与会话复用
+
+- 任务首次启动时把 worker 数固化到 `task_worker_slots`；之后的意图全部在这 N 个
+  `work#1..N` 槽位内执行，不再为每条意图新建 worker 会话。
+- 槽位会话 id 改为 `exp<exp>-worker-slot<n>`，transcript、system 提示词与压缩归档跨意图
+  复用；意图内容从 system 移到本次启动的 user turn（带 `BLADE_WORKER_INTENT` 标记），
+  静态 system 不再被每条意图改写，恢复 provider 前缀缓存。
+- 无 deferred 工具时仍为 system 设置缓存断点；常驻上下文索引补全当前意图原文、目标资产、
+  工作目录与槽位，压缩后仍能看到当前要做什么。
+- 新增 `activity.slot_no`：SSE/历史按槽位分桶，人工消息与续跑活动也归槽；启动时一次性
+  回填旧活动。审批执行来源改为 `slot:<n>`（旧数据回落 `intent:<id>`）。
+- 槽位亲和与互斥：租约回收/重启保留原 owner；人工续跑优先回到原槽位，槽位忙返回 409，
+  不再与池内 run 并发写同一 transcript。
+- 写回工具拒绝历史里的旧 intent id（只写当前意图）；result/usage 记录本次 run 的 token，
+  槽位复用不会重复计量历史消耗。
+- 任务详情页只显示固定 N 个 Worker 会话（含当前意图与空闲状态），新增
+  `GET /api/tasks/{id}/worker-slots`；设置页文案改为“固定槽位数”。
 
 ## [0.5.8] - 2026-10-27
 
@@ -2110,7 +2128,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.5.8...HEAD
+[Unreleased]: https://github.com/lin9527ya/BLADE/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/lin9527ya/BLADE/releases/tag/v0.6.0
 [0.5.8]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.8
 [0.5.2]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.2
 [0.5.1]: https://github.com/lin9527ya/BLADE/releases/tag/v0.5.1

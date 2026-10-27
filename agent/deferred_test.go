@@ -11,10 +11,10 @@ import (
 
 func TestDeferredSystem_NoGlobal(t *testing.T) {
 	// No global MCP names → single segment (base + the always-on trace-neutrality
-	// block), no cache boundary.
+	// block) — the single segment is still static and must be cached.
 	sys, boundary := deferredSystem("SYS", DeferredInfo{})
-	if len(sys) != 1 || !strings.HasPrefix(sys[0], "SYS") || boundary != 0 {
-		t.Fatalf("expected [SYS+block],0 — got %v,%d", sys, boundary)
+	if len(sys) != 1 || !strings.HasPrefix(sys[0], "SYS") || boundary != 1 {
+		t.Fatalf("expected [SYS+block],1 — got %v,%d", sys, boundary)
 	}
 	if !strings.Contains(sys[0], "目标侧痕迹必须中性") {
 		t.Fatal("always-on trace-neutrality block missing")
@@ -79,7 +79,7 @@ func TestDeferredSystem_AlwaysSkillsLayer(t *testing.T) {
 
 	// 空白常驻等效于没有：行为与旧版完全一致。
 	sys, boundary = deferredSystem("SYS", DeferredInfo{AlwaysSkills: "   \n"})
-	if len(sys) != 1 || !strings.HasPrefix(sys[0], "SYS") || boundary != 0 {
+	if len(sys) != 1 || !strings.HasPrefix(sys[0], "SYS") || boundary != 1 {
 		t.Fatalf("blank always must be inert: %v,%d", sys, boundary)
 	}
 }
