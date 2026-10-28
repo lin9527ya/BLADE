@@ -182,6 +182,38 @@ type WriteCounts struct {
 	Credentials int
 	Detections  int
 	Artifacts   int
+	// ValidationAssets 是本轮"验证产出"锚定到的资产 id 集合（事实/发现/战果/
+	// 检测/遗留物）。verify 意图绑定了多个资产时，引擎据此记录它实际验证了哪些，
+	// 覆盖矩阵不再把没验证过的资产算成已测。
+	ValidationAssets map[int64]bool
+}
+
+// noteValidationAssets 记录验证产出锚定的资产。
+func (w *WriteCounts) noteValidationAssets(ids []int64) {
+	if len(ids) == 0 {
+		return
+	}
+	if w.ValidationAssets == nil {
+		w.ValidationAssets = make(map[int64]bool, len(ids))
+	}
+	for _, id := range ids {
+		if id > 0 {
+			w.ValidationAssets[id] = true
+		}
+	}
+}
+
+// ValidationAssetIDs 返回排序后的验证锚定资产 id（稳定输出，便于落库与测试）。
+func (w WriteCounts) ValidationAssetIDs() []int64 {
+	if len(w.ValidationAssets) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(w.ValidationAssets))
+	for id := range w.ValidationAssets {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // ValidationTotal is the "verification result" subset: facts, findings, loot,
@@ -2321,6 +2353,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			t.notify()
 		}
 		t.writes.Findings++
+		t.writes.noteValidationAssets(input.AssetIDs)
 		// Keep the first line's node-ID contract for existing reporter triggers.
 		for i := range recorded.Traffic.Bindings {
 			recorded.Traffic.Bindings[i].Snapshot.ReqHead = ""
@@ -2399,6 +2432,7 @@ func (t *ToolSet) closeCandidate() actool.CoreTool {
 			t.notify()
 		}
 		t.writes.Findings++
+		t.writes.noteValidationAssets(pidList(a.AssetIDs))
 		raw, _ := json.Marshal(rec)
 		return actool.Text(fmt.Sprintf("candidate closed: %s\n%s", a.Outcome, raw)), nil
 	})
@@ -2458,6 +2492,7 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> fact
 	}
 	t.writes.Facts++
+	t.writes.noteValidationAssets(pidList(it.AssetIDs))
 	return id, nil
 }
 
@@ -2745,6 +2780,7 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			t.writes.Footholds++
+			t.writes.noteValidationAssets(pidList(a.AssetIDs))
 			// 拿到了机器，域内图也要知道：把对应的 AD 计算机对象标成 owned，
 			// 否则攻击路径的起点永远停在"用户手标的"而不是"我们打下来的"。
 			note := ""
@@ -2878,6 +2914,7 @@ func (t *ToolSet) reportCredential() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			t.writes.Credentials++
+			t.writes.noteValidationAssets(pidList(a.AssetIDs))
 			// 能登哪 → 图上连一条 reaches（但**不**标 owned：能认证不等于机器已经在手）。
 			if len(targets) > 0 {
 				hosts := make([]string, 0, len(targets))
@@ -2960,6 +2997,7 @@ func (t *ToolSet) reportArtifact() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			t.writes.Artifacts++
+			t.writes.noteValidationAssets(pidList(a.AssetIDs))
 			return actool.Text(fmt.Sprintf("artifact recorded: %d", id)), nil
 		})
 }
@@ -3092,6 +3130,7 @@ func (t *ToolSet) reportDetection() actool.CoreTool {
 				_ = t.ts.Link(intent, db.RelYields, id) // 与 fact/finding/战果同一条链
 			}
 			t.writes.Detections++
+			t.writes.noteValidationAssets(pidList(a.AssetIDs))
 			return actool.Text(fmt.Sprintf("detection check recorded: %d", id)), nil
 		})
 }

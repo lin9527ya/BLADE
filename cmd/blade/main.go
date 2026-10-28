@@ -165,12 +165,6 @@ func run() int {
 	}
 	defer mgr.Close()
 
-	// Surviving this long means a freshly swapped-in build actually works, so drop
-	// the upgrade marker and stop counting attempts. Until it fires, every boot
-	// increments the count and a build that keeps dying gets rolled back.
-	settle := time.AfterFunc(selfupdate.SettleDelay, selfupdate.Settle)
-	defer settle.Stop()
-
 	skillDir := config.SkillDir()
 	if abs, err := filepath.Abs(skillDir); err == nil {
 		skillDir = abs
@@ -203,8 +197,13 @@ func run() int {
 		// http.ResponseController 按需设 deadline，而不是在这里一刀切。
 	}
 
+	// 升级稳定确认必须从「监听 + 任务恢复都完成」之后才开始计时：此前计时从
+	// Bootstrap 后就启动，大库恢复/迁移超过 SettleDelay 时会在还没开始服务前就
+	// 认定新版本稳定，失败的升级被误确认。恢复已在上面的 RestoreTaskRuntimes 完成。
 	go func() {
 		log.Printf("BLADE %s backend listening on %s (data=%s, workers=%d)", version, *addr, *dataDir, mgr.Workers())
+		settle := time.AfterFunc(selfupdate.SettleDelay, selfupdate.Settle)
+		defer settle.Stop()
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}

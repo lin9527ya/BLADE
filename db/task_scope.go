@@ -396,7 +396,13 @@ SELECT t.id, t.type, t.label FROM target t ORDER BY t.type, t.label`, taskID, s.
 	}
 	cellIdx := map[cellKey]int{}
 	prows, err := s.db.Query(`WITH `+covTargetCTE+`
-SELECT ea.asset_id, COALESCE(NULLIF(en.payload->>'risk_area',''),'other') AS area, en.state, en.id
+SELECT ea.asset_id, COALESCE(NULLIF(en.payload->>'risk_area',''),'other') AS area, en.state, en.id,
+       -- verify 意图写了 validated_asset_ids 时，只给它真正验证过的资产记覆盖；
+       -- 没写（旧意图/未收尾）则沿用原口径。只在终态生效：进行中的意图本来就还没结论。
+       COALESCE(en.state IN ('done','negative')
+        AND en.payload->>'intent_kind' = 'verify'
+        AND jsonb_typeof(en.payload->'validated_asset_ids') = 'array'
+        AND NOT (en.payload->'validated_asset_ids' @> to_jsonb(ea.asset_id)), false) AS validates_other_asset
 FROM target t
 JOIN exploration_anchors ea ON ea.asset_id = t.id
 JOIN exploration_nodes en ON en.id = ea.node_id AND en.exploration_id = $2 AND en.kind = 'intent'
@@ -407,9 +413,15 @@ ORDER BY ea.asset_id, area, en.id`, taskID, s.expID)
 	for prows.Next() {
 		var assetID, nodeID int64
 		var area, state string
-		if err := prows.Scan(&assetID, &area, &state, &nodeID); err != nil {
+		var validatesOther bool
+		if err := prows.Scan(&assetID, &area, &state, &nodeID, &validatesOther); err != nil {
 			prows.Close()
 			return nil, err
+		}
+		// verify 意图终态但没验证这个资产：这条意图对该资产不算已测。
+		// 跳过整行（而不是记 failed）——「没验证」不等于「测失败」，该格应显示未触及。
+		if validatesOther {
+			continue
 		}
 		// 已删除（drop_intent/UI 取消）与已停止（kill/stop）的意图既不是"进行中"、也不是"测过"：
 		// 落进 default 会让那一格永远显示"在跑"，既误导人也不反映真实覆盖。直接不参与矩阵。

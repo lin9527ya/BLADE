@@ -216,3 +216,77 @@ func TestCoverageMatrixIgnoresDroppedAndStopped(t *testing.T) {
 		t.Fatalf("覆盖计数不对：%+v", *cell)
 	}
 }
+
+// verify 意图绑定多资产、只验证其中一个时，矩阵只能给验证过的资产记「已测」；
+// 没验证的资产应显示为未触及（无该 risk_area 的 cell），而不是被整排算成已覆盖。
+func TestCoverageMatrixVerifyValidatedAssets(t *testing.T) {
+	d, taskID, expID := coverageMatrixFixture(t)
+	as := d.Assets()
+	a1, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "one.matrix-test.example", TaskID: taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "two.matrix-test.example", TaskID: taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := d.Exploration(expID)
+
+	verify, err := st.AddIntent(map[string]any{
+		"summary": "verify auth on one and two", "risk_area": "auth", "intent_kind": "verify",
+	}, 5, []int64{a1, a2}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIntentState(verify, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIntentValidatedAssets(verify, []int64{a1}); err != nil {
+		t.Fatal(err)
+	}
+
+	assets, err := st.CoverageMatrix(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byLabel := map[string]CoverageMatrixAsset{}
+	for _, a := range assets {
+		byLabel[a.Label] = a
+	}
+	one, two := byLabel["one.matrix-test.example"], byLabel["two.matrix-test.example"]
+	if len(one.Cells) != 1 || one.Cells[0].RiskArea != "auth" || one.Cells[0].Tested != 1 {
+		t.Fatalf("validated asset cells = %+v, want auth tested", one.Cells)
+	}
+	for _, c := range two.Cells {
+		if c.RiskArea == "auth" {
+			t.Fatalf("unvalidated asset must not be counted as tested: %+v", c)
+		}
+	}
+
+	// 旧意图（无 validated_asset_ids / 非 verify）沿用原口径：绑定即覆盖。
+	legacy, err := st.AddIntent(map[string]any{"summary": "legacy verify", "risk_area": "xss", "intent_kind": "verify"}, 5, []int64{a2}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIntentState(legacy, "done"); err != nil {
+		t.Fatal(err)
+	}
+	assets, err = st.CoverageMatrix(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range assets {
+		if a.ID != a2 {
+			continue
+		}
+		found := false
+		for _, c := range a.Cells {
+			if c.RiskArea == "xss" && c.Tested == 1 {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("legacy verify intent must keep intent-level coverage: %+v", a.Cells)
+		}
+	}
+}

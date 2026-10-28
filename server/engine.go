@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1436,6 +1437,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	intentKind := intentKindOf(intent)
 	state := settleIntentState(err, reason, wrote, outcome, intentKind)
+	recordValidatedAssets(t, intent, intentKind, state, wrote)
 	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
 	}
@@ -1472,6 +1474,64 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 //     此前这种 run 落 done：planner 当成"已覆盖"不再派、覆盖度当成"已测"，
 //     整条方向就这样静默消失——而它可能连一次探针都没发出去。
 //
+// recordValidatedAssets 把 verify 意图真实验证过的资产落库，供覆盖矩阵按资产计。
+//
+// 一条 verify 意图可以绑多个资产、只测其中一个：不记录的话矩阵会把整排资产都算成
+// 该风险类已测。这里只对终态（done/negative）且确有验证产出的意图记录；没有产出
+// 的意图不写字段，矩阵沿用原口径（其状态本身已是 no_output/failed，不会被算已测）。
+func recordValidatedAssets(t *Task, intent *db.Node, kind, state string, wrote agent.WriteCounts) {
+	if t == nil || intent == nil || kind != "verify" {
+		return
+	}
+	if state != "done" && state != "negative" {
+		return
+	}
+	validated := wrote.ValidationAssetIDs()
+	if len(validated) == 0 {
+		return
+	}
+	if err := t.Store.SetIntentValidatedAssets(intent.ID, validated); err != nil {
+		log.Printf("[worker] task %s 意图 #%d 验证资产记录失败: %v", t.ID, intent.ID, err)
+		return
+	}
+	bound := intentAssetIDsOf(intent)
+	if len(bound) <= 1 {
+		return
+	}
+	covered := make(map[int64]bool, len(validated))
+	for _, id := range validated {
+		covered[id] = true
+	}
+	var missing []int64
+	for _, id := range bound {
+		if !covered[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	// 只记日志与活动流，不改终态：意图确实做完了已验证的那部分，覆盖矩阵会如实
+	// 显示其余资产仍未触及，planner 下一轮可据此补派。
+	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
+	log.Printf("[worker] task %s 意图 #%d 绑定了 %d 个资产，但只验证了 %d 个；未验证资产: %v",
+		t.ID, intent.ID, len(bound), len(validated), missing)
+}
+
+// intentAssetIDsOf 读意图 payload 的 asset_ids（覆盖矩阵与收尾提示共用）。
+func intentAssetIDsOf(n *db.Node) []int64 {
+	if n == nil || len(n.Payload) == 0 {
+		return nil
+	}
+	var p struct {
+		AssetIDs []int64 `json:"asset_ids"`
+	}
+	if err := json.Unmarshal(n.Payload, &p); err != nil {
+		return nil
+	}
+	return p.AssetIDs
+}
+
 // intentKindOf 读意图的完成口径（payload.intent_kind）。空 = 旧意图，
 // 沿用历史判定（任何写回都算产出），不能因为字段缺失改变既有任务的行为。
 func intentKindOf(n *db.Node) string {

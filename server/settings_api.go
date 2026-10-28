@@ -362,6 +362,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// 纯 DB 键先收集，最后一次性事务提交；运行态应用（带内存字段的 setter 与
+	// applyLLM）在提交之后执行——提交失败则一条都不写，应用失败则明确告知
+	// 「设置已保存，运行态未生效」。
+	pending := map[string]string{}
+	applyErr := func(err error) {
+		writeErr(w, 500, "设置已保存，但运行态应用失败（部分新配置尚未生效）："+err.Error())
+	}
+	var runtimeApplies []func() error
+	corsDirty := false
 	// 授权范围（RoE）：空间门（目标在不在 task_scope 内，模式 off|ask|deny）与时间门
 	// （作业时间窗）。两个都由拦截层**每调用现读 setting**，所以改完即时生效，不需要重建 agent
 	// ——因此刻意不进下面的 changed 分支。
@@ -371,10 +380,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "授权范围模式必须是 off / ask / deny")
 			return
 		}
-		if err := s.m.pg.SetSetting(intercept.SettingScopeMode, v); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[intercept.SettingScopeMode] = v
 	}
 	if req.ScopeHours != nil {
 		// 落库前挡住格式错误：存进去一条解析不了的窗口，之后**每一次**工具调用都会落到人工确认上
@@ -384,10 +390,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		if err := s.m.pg.SetSetting(intercept.SettingScopeHours, v); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[intercept.SettingScopeHours] = v
 	}
 	if req.ArtifactLanguage != nil {
 		// 取值当场校验：写进一个不认识的档，agent 侧会当成"不约束"静默放行——那正是
@@ -400,10 +403,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "产物语言必须是 zh / en（zh = 不约束，en = 面向目标的产物一律英文）")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingArtifactLanguage, v); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingArtifactLanguage] = v
 	}
 	if req.CredentialBudget != nil {
 		// 负数没有意义：0 已经是"不限"了，-1 只会让判定侧多一种要解释的状态。
@@ -412,10 +412,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "凭据尝试预算必须是 0–1000（0 = 不限）")
 			return
 		}
-		if err := s.m.pg.SetSetting(intercept.SettingCredentialBudget, strconv.Itoa(v)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[intercept.SettingCredentialBudget] = strconv.Itoa(v)
 	}
 	if req.CredentialBudgetAction != nil {
 		// 同产物语言：写进一个不认识的档，判定侧会退回默认（ask）——那是静默降级，当场拒掉。
@@ -426,10 +423,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "超预算处置必须是 allow / ask / deny")
 			return
 		}
-		if err := s.m.pg.SetSetting(intercept.SettingCredentialBudgetAction, v); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[intercept.SettingCredentialBudgetAction] = v
 	}
 	if req.CORSAllowedOrigins != nil {
 		v := strings.TrimSpace(*req.CORSAllowedOrigins)
@@ -437,13 +431,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "CORS 来源列表过长（最多 500 字）")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingCORSAllowedOrigins, v); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		s.cors.mu.Lock()
-		s.cors.at = time.Time{} // 立刻失效缓存，改完即时生效（与其它设置同一口径）
-		s.cors.mu.Unlock()
+		pending[settingCORSAllowedOrigins] = v
+		corsDirty = true // 提交后失效缓存，改完即时生效
 	}
 	if req.SiteName != nil {
 		v := strings.TrimSpace(*req.SiteName)
@@ -451,36 +440,21 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "显示名过长（最多 60 字）")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingSiteName, v); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingSiteName] = v
 	}
 	if req.ConstraintsInjectPlanner != nil {
-		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingConstraintsInjectPlanner] = strconv.FormatBool(*req.ConstraintsInjectPlanner)
 	}
 	if req.ConstraintsInjectWorker != nil {
-		if err := s.m.pg.SetBool(settingConstraintsInjectWorker, *req.ConstraintsInjectWorker); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingConstraintsInjectWorker] = strconv.FormatBool(*req.ConstraintsInjectWorker)
 	}
 	if req.NoaCompaction != nil {
-		// 每 run 读的解析器,切换即时对之后启动的 run 生效,无需 applyLLM 重建。
-		if err := s.m.SetNoaCompaction(*req.NoaCompaction); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		// 每 run 读的解析器,切换对之后启动的 run 生效,无需 applyLLM 重建。
+		pending[settingNoaCompaction] = strconv.FormatBool(*req.NoaCompaction)
 	}
 	// 推送全局项:投递引擎每轮重新读取,所以即时生效、无需重启。
 	if req.NotifyEnabled != nil {
-		if err := s.m.pg.SetBool(settingNotifyEnabled, *req.NotifyEnabled); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingNotifyEnabled] = strconv.FormatBool(*req.NotifyEnabled)
 	}
 	if req.NotifyBaseURL != nil {
 		// 统一裁掉尾部斜杠:回链拼接用的是 fmt.Sprintf("%s/function/..."),
@@ -490,10 +464,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "回链地址需以 http:// 或 https:// 开头")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingNotifyPublicBaseURL, base); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingNotifyPublicBaseURL] = base
 	}
 	if req.NotifyDigestMins != nil {
 		// 下限 1 分钟:更短的周期等于实时推送,那样应该直接把渠道改成 realtime 模式。
@@ -501,10 +472,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "汇总周期需在 1 到 1440 分钟之间")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingNotifyDigestMinutes, strconv.Itoa(*req.NotifyDigestMins)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingNotifyDigestMinutes] = strconv.Itoa(*req.NotifyDigestMins)
 	}
 	// P21 情报源：都是"每调用现读"的键，保存即生效，无需重建 agent。
 	// key/email/base_url/proxy：null=不改、""=清空；quota：0=不限。
@@ -521,20 +489,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if f.val == nil {
 			continue
 		}
-		if err := s.m.pg.SetSetting(f.key, strings.TrimSpace(*f.val)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[f.key] = strings.TrimSpace(*f.val)
 	}
 	if req.IntelDailyQuota != nil {
 		if *req.IntelDailyQuota < 0 || *req.IntelDailyQuota > 100000 {
 			writeErr(w, 400, "情报每日上限需在 0（不限）到 100000 之间")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingIntelDailyQuota, strconv.Itoa(*req.IntelDailyQuota)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingIntelDailyQuota] = strconv.Itoa(*req.IntelDailyQuota)
 	}
 	// P24 资源限额与 MCP 守卫：都是"每调用现读"的键，保存即对之后提交的执行/调用生效。
 	for _, f := range []struct {
@@ -572,16 +534,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, fmt.Sprintf("%s 需在 0（不限）到 %d 之间", f.name, f.max))
 			return
 		}
-		if err := s.m.pg.SetSetting(f.key, strconv.Itoa(*f.val)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[f.key] = strconv.Itoa(*f.val)
 	}
 	if req.Workers != nil {
-		if err := s.m.SetWorkers(*req.Workers); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
+		pending[settingWorkers] = strconv.Itoa(*req.Workers)
 	}
 	if req.ConcurrencyEnabled != nil || req.ConcurrencyLimit != nil {
 		// 部分 PUT:未给的字段用当前值兜底,避免只改一个把另一个重置。
@@ -596,86 +552,63 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.ConcurrencyLimit != nil {
 			limit = *req.ConcurrencyLimit
 		}
-		if err := s.m.SetConcurrency(on, limit); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
-		// 立即协调一次:关闭时放行全部排队,调高上限时补位启动,不必等下一个 tick。
-		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
+		pending[settingConcurrencyLimit] = strconv.Itoa(limit)
+		pending[settingConcurrencyOn] = strconv.FormatBool(on)
+		// 提交后立即协调一次:关闭时放行全部排队,调高上限时补位启动,不必等下一个 tick。
+		runtimeApplies = append(runtimeApplies, func() error {
+			goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
+			return nil
+		})
 	}
 	if req.PythonInterp != nil {
-		if err := s.m.pg.SetSetting(settingPythonInterp, strings.TrimSpace(*req.PythonInterp)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingPythonInterp] = strings.TrimSpace(*req.PythonInterp)
 	}
 	if req.LLMRecord != nil {
 		// 录制器每次调用读取该标志，切换即时生效，无需 applyLLM 重建。
-		if err := s.m.SetLLMRecordEnabled(*req.LLMRecord); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		on := *req.LLMRecord
+		pending[settingLLMRecord] = strconv.FormatBool(on)
+		runtimeApplies = append(runtimeApplies, func() error { return s.m.SetLLMRecordEnabled(on) })
 	}
 	changed := false
 	if req.LLMPoolEnabled != nil {
-		if err := s.m.SetLLMPoolEnabled(*req.LLMPoolEnabled); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingLLMPoolOn] = strconv.FormatBool(*req.LLMPoolEnabled)
 		changed = true // the provider chain itself changes shape → rebuild
 	}
 	if req.LLMPoolBindFallback != nil {
-		if err := s.m.SetLLMPoolBindFallback(*req.LLMPoolBindFallback); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingLLMPoolBindFallback] = strconv.FormatBool(*req.LLMPoolBindFallback)
 		changed = true
 	}
 	if req.LLMPoolEnabled != nil || req.LLMPoolBindFallback != nil {
 		// Pinned tasks' planner/worker and per-profile chat agents hold providers
 		// built under the OLD switch state — drop them so they pick up the new one.
-		s.invalidateProfileAgents()
+		// 提交后再清：提交失败时不该先让运行中的 agent 失去旧配置。
+		runtimeApplies = append(runtimeApplies, func() error {
+			s.invalidateProfileAgents()
+			return nil
+		})
 	}
 	if req.AgentAutoRetest != nil {
-		if err := s.m.pg.SetBool(settingAutoRetest, *req.AgentAutoRetest); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingAutoRetest] = strconv.FormatBool(*req.AgentAutoRetest)
 	}
 	if req.TaskTokenBudget != nil {
 		v := *req.TaskTokenBudget
 		if v < 0 {
 			v = 0
 		}
-		if err := s.m.pg.SetSetting(settingTokenBudget, strconv.FormatInt(v, 10)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingTokenBudget] = strconv.FormatInt(v, 10)
 	}
 	if req.AgentTrafficBinding != nil {
-		if err := s.m.pg.SetBool(settingAgentTrafficBinding, *req.AgentTrafficBinding); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingAgentTrafficBinding] = strconv.FormatBool(*req.AgentTrafficBinding)
 	}
 	if req.LootExec != nil {
-		if err := s.m.pg.SetBool(settingLootExec, *req.LootExec); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingLootExec] = strconv.FormatBool(*req.LootExec)
 	}
 	if req.OastEnabled != nil {
-		if err := s.m.pg.SetBool(settingOASTEnabled, *req.OastEnabled); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingOASTEnabled] = strconv.FormatBool(*req.OastEnabled)
 	}
 	if req.OastToken != nil {
 		// 空串 = 清除 token（与其它只写密钥同一口径）。
-		if err := s.m.pg.SetSetting(settingOASTToken, strings.TrimSpace(*req.OastToken)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingOASTToken] = strings.TrimSpace(*req.OastToken)
 	}
 	if req.OpsecNoise != nil {
 		mode := strings.ToLower(strings.TrimSpace(*req.OpsecNoise))
@@ -683,22 +616,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "opsec_noise_level 只能是 normal 或 quiet")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingOpsecNoise, mode); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingOpsecNoise] = mode
 	}
 	if req.OastDomain != nil {
-		if err := s.m.pg.SetSetting(settingOASTDomain, strings.TrimSpace(*req.OastDomain)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingOASTDomain] = strings.TrimSpace(*req.OastDomain)
 	}
 	if req.TrafficCapture != nil {
-		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		on := *req.TrafficCapture
+		pending[settingTrafficCapture] = strconv.FormatBool(on)
+		runtimeApplies = append(runtimeApplies, func() error { return s.m.SetTrafficEnabled(on) })
 		changed = true
 	}
 	if req.GlobalProxy != nil || req.GlobalProxyPool != nil || req.ProxyHealthURL != nil ||
@@ -729,10 +655,23 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			cfg.Cooldown = time.Duration(*req.ProxySwitchCooldown) * time.Second
 		}
 		// Validation failure (bad scheme/host/health URL) is a client error, not a 500.
-		if err := s.m.SetProxyPool(cfg); err != nil {
+		norm, err := NormalizeProxyPoolConfig(cfg)
+		if err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
+		primary := ""
+		if len(norm.Candidates) > 0 {
+			primary = norm.Candidates[0]
+		}
+		pending[settingGlobalProxyPool] = strings.Join(norm.Candidates, "\n")
+		pending[settingGlobalProxy] = primary
+		pending[settingProxyHealthURL] = norm.HealthURL
+		pending[settingProxyHealthTimeout] = strconv.Itoa(int(norm.Timeout.Seconds()))
+		pending[settingProxyHealthInterval] = strconv.Itoa(int(norm.Interval.Seconds()))
+		pending[settingProxyFailThreshold] = strconv.Itoa(norm.FailThreshold)
+		pending[settingProxySwitchCooldown] = strconv.Itoa(int(norm.Cooldown.Seconds()))
+		runtimeApplies = append(runtimeApplies, func() error { return s.m.SetProxyPool(cfg) })
 		changed = true
 	}
 	if req.ProxyEgressIPURL != nil {
@@ -741,10 +680,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		if err := s.m.pg.SetSetting(settingProxyEgressIPURL, u); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		pending[settingProxyEgressIPURL] = u
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.
@@ -755,11 +691,40 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.WebSearchBackend != nil {
 			backend = *req.WebSearchBackend
 		}
-		if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy); err != nil {
-			writeErr(w, 500, err.Error())
+		if strings.TrimSpace(backend) == "" {
+			backend = defaultWebSearchBackend
+		}
+		pending[settingWebSearchOn] = strconv.FormatBool(on)
+		pending[settingWebSearchBackend] = backend
+		if req.BraveKey != nil {
+			pending[settingBraveKey] = *req.BraveKey
+		}
+		if req.TavilyKey != nil {
+			pending[settingTavilyKey] = *req.TavilyKey
+		}
+		if req.WebSearchProxy != nil {
+			pending[settingWebSearchProxy] = strings.TrimSpace(*req.WebSearchProxy)
+		}
+		runtimeApplies = append(runtimeApplies, func() error {
+			return s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy)
+		})
+		changed = true
+	}
+	// 先原子提交全部纯 DB 键；提交失败则本次改动一条都不写。
+	if err := s.m.pg.SetSettings(pending); err != nil {
+		writeErr(w, 500, "设置保存失败（本次改动未写入）："+err.Error())
+		return
+	}
+	if corsDirty {
+		s.cors.mu.Lock()
+		s.cors.at = time.Time{} // 立刻失效缓存，改完即时生效（与其它设置同一口径）
+		s.cors.mu.Unlock()
+	}
+	for _, apply := range runtimeApplies {
+		if err := apply(); err != nil {
+			applyErr(err)
 			return
 		}
-		changed = true
 	}
 	if changed {
 		// rebuild agents so the new proxy/tools/prompt/web-search take hold (only if LLM configured).

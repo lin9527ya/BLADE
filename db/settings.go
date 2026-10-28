@@ -1,6 +1,9 @@
 package db
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Settings is a tiny key-value store for global app config the UI toggles at
 // runtime (e.g. traffic_capture). Missing keys fall back to caller defaults.
@@ -23,6 +26,29 @@ func (d *DB) SetSetting(key, value string) error {
 INSERT INTO settings(key, value) VALUES ($1, $2)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key, value)
 	return err
+}
+
+// SetSettings 在一个事务里写入一组设置：要么全部生效，要么一条都不写。
+//
+// 设置保存涉及几十个键，逐个 SetSetting 时中途一个数据库错误会留下"改了一半"的
+// 配置——用户看到 500，实际部分设置已经变了。批量入口把这一步变成原子的。
+func (d *DB) SetSettings(kv map[string]string) error {
+	if len(kv) == 0 {
+		return nil
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	for key, value := range kv {
+		if _, err := tx.Exec(`
+INSERT INTO settings(key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key, value); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("write setting %s: %w", key, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // InsertSettingIfAbsent 只在 key 尚未存在时写入，已存在则原样保留并返回 inserted=false。

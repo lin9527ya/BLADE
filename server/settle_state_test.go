@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/lin9527ya/Norma/harness"
@@ -64,5 +66,67 @@ func TestIntentKindOf(t *testing.T) {
 		if got := intentKindOf(n); got != tc.want {
 			t.Fatalf("intentKindOf(%q) = %q, want %q", tc.payload, got, tc.want)
 		}
+	}
+}
+
+// verify 意图收尾时把真实验证过的资产写进 payload；非终态或非 verify 不写。
+func TestRecordValidatedAssets(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	task, err := s.m.CreateTask("validated-assets", "g", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expID int64
+	if err := s.m.pg.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, task.ID).Scan(&expID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.m.pg.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
+		_, _ = s.m.pg.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	})
+	pgTask, ok := s.m.Task(task.ID)
+	if !ok {
+		t.Fatal("task handle missing")
+	}
+	st := pgTask.Store
+	tid, _ := strconv.ParseInt(task.ID, 10, 64)
+	a1, err := s.m.Assets().UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://one.validated-test.example", TaskID: tid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := s.m.Assets().UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://two.validated-test.example", TaskID: tid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.m.pg.Exec(`DELETE FROM assets WHERE url LIKE '%validated-test.example%' OR domain LIKE '%validated-test.example%'`)
+	})
+	intentID, err := st.AddIntent(map[string]any{"summary": "v", "risk_area": "auth", "intent_kind": "verify", "asset_ids": []int64{a1, a2}}, 5, []int64{a1, a2}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := st.GetNode(intentID)
+	if err != nil || intent == nil {
+		t.Fatal(err)
+	}
+	wrote := agent.WriteCounts{Facts: 1, ValidationAssets: map[int64]bool{a1: true}}
+	recordValidatedAssets(pgTask, intent, "verify", "done", wrote)
+	reloaded, err := st.GetNode(intentID)
+	if err != nil || reloaded == nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Validated []int64 `json:"validated_asset_ids"`
+	}
+	if err := json.Unmarshal(reloaded.Payload, &p); err != nil || len(p.Validated) != 1 || p.Validated[0] != a1 {
+		t.Fatalf("validated_asset_ids = %v (err %v), payload=%s", p.Validated, err, reloaded.Payload)
+	}
+
+	// 非终态不写。
+	recordValidatedAssets(pgTask, intent, "verify", "blocked", agent.WriteCounts{ValidationAssets: map[int64]bool{a2: true}})
+	reloaded, _ = st.GetNode(intentID)
+	_ = json.Unmarshal(reloaded.Payload, &p)
+	if len(p.Validated) != 1 {
+		t.Fatalf("blocked intent must not record validated assets: %v", p.Validated)
 	}
 }

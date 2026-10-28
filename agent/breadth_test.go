@@ -206,3 +206,20 @@ func TestAddIntentKindPersists(t *testing.T) {
 		t.Fatalf("invalid kind accepted: err=%v result=%s", err, res.Flatten())
 	}
 }
+
+// 验证产出只记录实际锚定的资产：verify 意图绑多资产时，收尾据此决定覆盖范围。
+func TestWriteCountsValidationAssets(t *testing.T) {
+	var w WriteCounts
+	w.noteValidationAssets([]int64{3, 1, 0, -2, 3})
+	got := w.ValidationAssetIDs()
+	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+		t.Fatalf("ValidationAssetIDs = %v, want [1 3]", got)
+	}
+	if w.ValidationTotal() != 0 {
+		t.Fatalf("noteValidationAssets must not inflate write counts: %+v", w)
+	}
+	var empty WriteCounts
+	if empty.ValidationAssetIDs() != nil {
+		t.Fatal("empty counts must return nil")
+	}
+}

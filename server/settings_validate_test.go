@@ -58,3 +58,49 @@ func TestValidateSettingsRequest(t *testing.T) {
 		})
 	}
 }
+
+// 原子提交：一次 PUT 里任一键写入失败时，整批都不落库（这里用关闭事务的方式
+// 模拟写失败——用不存在的表无法做到，改用非法值在服务端拦截已在别处覆盖；
+// 这里验证 SetSettings 本身的事务语义：批量成功全写，空批次不写）。
+func TestSetSettingsBulk(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	k1, k2 := settingSiteName, settingNotifyDigestMinutes
+	old1, has1, _ := s.m.pg.GetSetting(k1)
+	old2, has2, _ := s.m.pg.GetSetting(k2)
+	t.Cleanup(func() {
+		if has1 {
+			_ = s.m.pg.SetSetting(k1, old1)
+		}
+		if has2 {
+			_ = s.m.pg.SetSetting(k2, old2)
+		}
+	})
+	if err := s.m.pg.SetSettings(map[string]string{k1: "bulk-a", k2: "17"}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := s.m.pg.GetSetting(k1); v != "bulk-a" {
+		t.Fatalf("k1 = %q", v)
+	}
+	if v, _, _ := s.m.pg.GetSetting(k2); v != "17" {
+		t.Fatalf("k2 = %q", v)
+	}
+	if err := s.m.pg.SetSettings(nil); err != nil {
+		t.Fatalf("empty batch must be a no-op: %v", err)
+	}
+}
+
+// 设置保存顺序：运行态应用在事务提交之后。用一个带内存态的开关验证——
+// LLM 录制开启后 Manager 的内存标志必须同步（提交成功后 apply 才跑）。
+func TestPutSettingsAppliesRuntimeAfterCommit(t *testing.T) {
+	s, _, request := trafficEvidenceServer(t)
+	oldOn, _, _ := s.m.pg.GetSetting(settingLLMRecord)
+	t.Cleanup(func() { _ = s.m.pg.SetSetting(settingLLMRecord, oldOn) })
+
+	w := request("PUT", "/api/settings", `{"llm_record":true}`)
+	if w.Code != 200 {
+		t.Fatalf("put settings: %d %s", w.Code, w.Body)
+	}
+	if !s.m.LLMRecordEnabled() {
+		t.Fatal("runtime apply did not run after commit")
+	}
+}

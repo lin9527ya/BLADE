@@ -384,6 +384,30 @@ func (s *ExplorationStore) SetNodePayload(id int64, kind string, payload map[str
 	return err
 }
 
+// SetIntentValidatedAssets 记录一条 verify 意图实际验证过哪些资产。
+//
+// verify 意图可以绑定多个资产，但一次运行往往只验证了其中一部分：收尾时把真实
+// 验证过的资产集合写进 payload，覆盖矩阵据此只给这些资产记「已测」——
+// 否则一条意图绑 5 个资产、只测了 1 个，矩阵会把 5 个都算成该风险类已覆盖。
+func (s *ExplorationStore) SetIntentValidatedAssets(id int64, assets []int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid intent id")
+	}
+	var raw []byte
+	if err := s.db.QueryRow(`SELECT payload FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 AND kind='intent'`, id, s.expID).Scan(&raw); err != nil {
+		return err
+	}
+	payload := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode intent payload: %w", err)
+		}
+	}
+	payload["validated_asset_ids"] = assets
+	return s.SetNodePayload(id, KindIntent, payload)
+}
+
 // SingleOpenGoal returns the task's only open goal id, or 0 when there are zero
 // or several. Callers use it to auto-attach a new intent to the obvious goal, and
 // to stay silent (no guessing) when the choice is ambiguous.
