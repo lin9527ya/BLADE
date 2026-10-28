@@ -8,6 +8,17 @@ ok(){   printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn(){ printf '\033[33m[!]\033[0m %s\n' "$*"; }
 die(){  printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 ask(){  local p="$1" d="${2:-}" a; read -rp "$p${d:+ [$d]}: " a; echo "${a:-$d}"; }
+# 本地编译使用的版本号：优先 BLADE_BUILD_VERSION，否则取最近的 git tag。
+# 不用 git describe 的提交后缀，避免未打 tag 的本地构建显示成 dev/长哈希。
+build_version(){
+  if [ -n "${BLADE_BUILD_VERSION:-}" ]; then printf '%s' "${BLADE_BUILD_VERSION#v}"; return; fi
+  if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local v
+    v="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+    if [ -n "$v" ]; then printf '%s' "${v#v}"; return; fi
+  fi
+  printf 'dev'
+}
 rand(){ head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24; }
 
 # ── docker 环境检测 / 自动安装 ───────────────────
@@ -102,6 +113,9 @@ JSON
   # go 环境检查
   command -v go >/dev/null 2>&1 || die "未检测到 Go，请先安装 Go（>=1.26）：https://go.dev/dl/"
   ok "Go: $(go version)"
+  local version
+  version="$(build_version)"
+  ok "本地版本: ${version}"
 
   # 内嵌前端需要 node 出静态产物
   if command -v npm >/dev/null 2>&1; then
@@ -109,12 +123,12 @@ JSON
     ( cd web && npm ci && npm run build:static )
     rm -rf server/webui/dist && cp -r web/out server/webui/dist
     info "编译内嵌单二进制…"
-    CGO_ENABLED=0 go build -tags embedui -trimpath -o blade ./cmd/blade
+    CGO_ENABLED=0 go build -tags embedui -trimpath -ldflags "-s -w -X main.version=${version}" -o blade ./cmd/blade
   else
     warn "未检测到 npm：将编译**不内嵌前端**的后端（前端需另跑 npm run dev）"
-    CGO_ENABLED=0 go build -o blade ./cmd/blade
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${version}" -o blade ./cmd/blade
   fi
-  ok "编译完成 → ./blade"
+  ok "编译完成 → ./blade（${version}）"
 
   info "启动…（Ctrl-C 退出）"
   ./blade
