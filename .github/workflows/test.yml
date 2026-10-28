@@ -51,6 +51,13 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
           "$(go env GOPATH)/bin/staticcheck" ./...
+      # Known reachable vulnerabilities in the Go toolchain/dependencies are a
+      # release blocker. The version is pinned so a new tool release cannot turn
+      # CI red without a code change.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
       # -race 抓并发缺陷：本仓的 agent 包有 9 个包级可变函数变量（由 server 启动时赋值、
       # 无锁无 Once），测试里也有手工改它们再回滚的写法——只要将来某个测试同时用上
       # t.Parallel()，就会变成偶发红而无人知晓。实测当前全量在 -race 下 0 告警（agent 包也
@@ -61,7 +68,9 @@ jobs:
       - name: go test（串行，count=1 防缓存；-race 抓并发缺陷）
         env:
           CGO_ENABLED: "1"
-        run: go test -race -count=1 -p 1 ./...
+        run: go test -race -count=1 -p 1 -coverprofile=/tmp/coverage.out ./...
+      - name: Go 覆盖率（报告，不设阈值）
+        run: go tool cover -func=/tmp/coverage.out | tail -1
       # 跨平台编译：此前**只有 release 工作流**跨平台构建，而它只在打 tag 时跑——于是平台相关的
       # 构建断裂能藏一整个功能周期。2026-10-14 的 v0.4.1 就是这么翻车的：P24 把限额实现放进
       # 带 `//go:build !windows` 的文件、别处却无条件引用，Windows 编译失败 → matrix fail-fast
@@ -107,3 +116,7 @@ jobs:
           mkdir -p server/webui/dist
           rsync -a --delete web/out/ server/webui/dist/
           CGO_ENABLED=0 go build -tags embedui -trimpath -o /tmp/blade ./cmd/blade
+      - name: Docker Compose 配置校验
+        env:
+          POSTGRES_PASSWORD: ci
+        run: docker compose config >/dev/null

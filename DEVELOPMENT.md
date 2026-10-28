@@ -21,6 +21,7 @@
 ## 二、构建入口
 
 - **一键**：`./build.sh`（前端静态导出 + Go 单二进制，带 `embedui` 标签）。
+- **Docker 镜像输入**：`./build.sh --docker` 产出 `dist/<arch>/blade`，再 `docker compose up -d --build`。
 - **手动**：
   ```bash
   cd web && npm run build:static && cd ..
@@ -43,6 +44,10 @@
 - 全量质量门禁：`go test -race -count=1 -p 1 ./...`、`go vet ./...`、
   `staticcheck ./...`、`gofmt -l .`；前端 `npx tsc --noEmit`、`npm test`、
   `npm run build:static`。CI 的 `quality` job 覆盖这些项。
+- 依赖漏洞：`govulncheck ./...`（CI 已设为门禁）；前端 `npm audit --omit=dev`
+  （当前仅剩低危传递依赖）。`npm run check` 仍有较大的既有格式基线，暂不作为门禁。
+- Docker 交付：`./build.sh --docker` 产出 `dist/<arch>/blade`；
+  `POSTGRES_PASSWORD=ci docker compose config` 校验 compose。
 - 个别用例会写共享测试库（如 playbook 提示词），已加 `t.Cleanup` 恢复；新增用例
   请沿用「自建数据 + 清理」模式，别依赖执行顺序。
 

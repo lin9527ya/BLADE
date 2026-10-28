@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BLADE 更新脚本：① Docker 更新（拉新镜像重建）  ② 本地编译更新（重建二进制）
+# BLADE 更新脚本：① Docker 更新（重建本地镜像）  ② 本地编译更新（重建二进制）
 # 与 install.sh 对应：install 负责首次落地，update 负责升级到新版本。
 # DB 迁移无需手动执行——blade 每次启动都会幂等重跑 schema.sql（含 ADD COLUMN/CREATE
 # INDEX IF NOT EXISTS），所以“重启即迁移”。数据（pgdata 卷、./data、./skills）不受影响。
@@ -27,8 +27,8 @@ update_docker(){
     || die "未检测到 docker / docker compose，请先用 ./install.sh 安装部署"
   [ -f .env ] || die "未找到 .env，请先运行 ./install.sh 完成首次部署"
 
-  # 可选：升级到指定版本 tag（不填则沿用 .env 中的 BLADE_TAG，缺省为 latest）
-  local tag; tag="$(ask '目标镜像 tag（回车沿用 .env / latest）' '')"
+  # 可选：本地镜像 tag（不填沿用 .env 的 BLADE_TAG；compose 默认 local）
+  local tag; tag="$(ask '本地镜像 tag（回车沿用 .env / local）' '')"
   if [ -n "$tag" ]; then
     if grep -q '^BLADE_TAG=' .env; then
       sed -i.bak "s|^BLADE_TAG=.*|BLADE_TAG=${tag}|" .env && rm -f .env.bak
@@ -38,13 +38,19 @@ update_docker(){
     ok "已将 BLADE_TAG 设为 ${tag}"
   fi
 
-  # 只动 blade：postgres 是固定的 16-alpine，不需要跟着升级（拉它纯属浪费带宽，
-  # 且大版本变动还会有兼容风险）。blade 声明了 depends_on postgres，所以带服务名
-  # up 时若 pg 没起会自动拉起，已在跑的则原样保留、不重建。
-  info "拉取新镜像（仅 blade）…"
-  docker compose pull blade
+  # 本仓 compose 使用本地 build，不再 pull 外部镜像。二进制由 build.sh --docker
+  # 按 Dockerfile 期望的 dist/<arch>/blade 产出。
+  if command -v go >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    info "重建本地镜像二进制（前端 + Go）…"
+    ./build.sh --docker
+  else
+    arch="$(go env GOARCH 2>/dev/null || uname -m)"
+    case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
+    [ -f "dist/${arch}/blade" ] || die "本机没有 Go/npm，且未找到 dist/${arch}/blade；请先安装工具链或准备预编译二进制"
+    info "复用已存在的 dist/${arch}/blade"
+  fi
   info "重建并启动（blade 重启时自动迁移 schema）…"
-  docker compose up -d blade
+  docker compose up -d --build blade
   ok "更新完成 → http://localhost:8787"
   info "查看日志：docker compose logs -f blade"
   info "清理旧镜像（可选）：docker image prune -f"

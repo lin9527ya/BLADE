@@ -32,11 +32,13 @@ usage() {
 用法：
   ./build.sh                         编译当前系统当前架构
   ./build.sh --target linux/amd64   编译一个指定目标
+  ./build.sh --docker                产出 Dockerfile 需要的 dist/<arch>/blade
   ./build.sh --release               编译并打包全部支持的目标
 
 选项：
   --release              构建 Linux、macOS、Windows 的 amd64/arm64 目标并生成 zip
   --target OS/ARCH       设置单个目标，例如 windows/amd64
+  --docker               只构建 Linux 单目标，输出 dist/<arch>/blade 供本仓 Dockerfile 使用
   --upx                  强制使用 UPX 压缩二进制（可能影响部分 Linux 环境兼容性）
   --no-compress          不使用 UPX，仅使用 Go linker 裁剪并压缩 zip
   --help                 显示帮助
@@ -48,6 +50,7 @@ EOF
 
 RELEASE_TARGETS_DEFAULT="linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64"
 BLADE_RELEASE="${BLADE_RELEASE:-0}"
+BLADE_DOCKER="${BLADE_DOCKER:-0}"
 BLADE_COMPRESS="${BLADE_COMPRESS:-off}"
 BLADE_PACKAGE="${BLADE_PACKAGE:-0}"
 
@@ -56,6 +59,10 @@ while [ "$#" -gt 0 ]; do
     --release)
       BLADE_RELEASE=1
       BLADE_PACKAGE=1
+      shift
+      ;;
+    --docker)
+      BLADE_DOCKER=1
       shift
       ;;
     --target)
@@ -104,11 +111,16 @@ BLADE_PACKAGE_DIR="${BLADE_PACKAGE_DIR:-$BLADE_OUTPUT_DIR}"
 BLADE_UPX_ARGS="${BLADE_UPX_ARGS:---best --lzma}"
 
 if [ "${BLADE_RELEASE}" = "1" ]; then
+  [ "${BLADE_DOCKER}" = "1" ] && die "--docker 与 --release 不能同时使用"
   BLADE_TARGETS="${BLADE_TARGETS:-$RELEASE_TARGETS_DEFAULT}"
 else
   BLADE_TARGET_OS="${BLADE_TARGET_OS:-$(GOSUMDB="$BLADE_GOSUMDB" go env GOOS)}"
   BLADE_TARGET_ARCH="${BLADE_TARGET_ARCH:-$(GOSUMDB="$BLADE_GOSUMDB" go env GOARCH)}"
   BLADE_TARGETS="${BLADE_TARGETS:-${BLADE_TARGET_OS}/${BLADE_TARGET_ARCH}}"
+fi
+if [ "${BLADE_DOCKER}" = "1" ]; then
+  BLADE_TARGET_OS=linux
+  BLADE_TARGETS="linux/${BLADE_TARGET_ARCH}"
 fi
 
 if [ "${BLADE_SKIP_FRONTEND:-0}" = "1" ]; then
@@ -204,7 +216,10 @@ build_target() {
 
   binary_name="blade"
   [ "$goos" = "windows" ] && binary_name="blade.exe"
-  if [ -n "${BLADE_OUTPUT:-}" ] && [ "$BLADE_RELEASE" != "1" ]; then
+  if [ "${BLADE_DOCKER}" = "1" ]; then
+    [ "$goos" = "linux" ] || die "--docker 只支持 Linux 目标"
+    output="${BLADE_OUTPUT_DIR}/${goarch}/blade"
+  elif [ -n "${BLADE_OUTPUT:-}" ] && [ "$BLADE_RELEASE" != "1" ]; then
     output="$BLADE_OUTPUT"
   else
     output="${BLADE_OUTPUT_DIR}/blade-${goos}-${goarch}/${binary_name}"
@@ -260,4 +275,8 @@ done
 if [ "$BLADE_PACKAGE" = "1" ]; then
   write_checksums
   info "Release 包已生成于：$BLADE_PACKAGE_DIR"
+fi
+if [ "${BLADE_DOCKER}" = "1" ]; then
+  info "Docker 构建布局已就绪：${BLADE_OUTPUT_DIR}/${BLADE_TARGET_ARCH}/blade"
+  info "构建并启动镜像：docker compose up -d --build"
 fi

@@ -257,7 +257,7 @@ journalctl -u blade -f
 > （返回的 token 可以丢掉，浏览器里再登录一次即可。）
 > 至少要保证 **Access 策略先于第一次公网访问生效**。
 
-> 想跑自己编的版本：本机 `./build.sh`，把 `dist/blade-linux-amd64/blade`、`start.sh`、`skills/`、
+> 想跑自己编的版本：本机运行 `./build.sh --docker`，把 `dist/<arch>/blade`、`start.sh`、`skills/`、
 > `config.example.json` scp 到 `/opt/blade/`。小 VPS 上现编 Next 前端很慢，不推荐。
 
 ### 3. 访问层：零入站

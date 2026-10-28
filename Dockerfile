@@ -10,8 +10,15 @@
 #   cp -r web/out server/webui/dist
 #   CGO_ENABLED=0 GOARCH=amd64 go build -tags embedui -o dist/amd64/blade ./cmd/blade
 #   docker build -t blade:local .
-FROM python:3.12-slim-bookworm
+# Pin the multi-arch base image digest so a rebuild cannot silently pick a new
+# OS layer. Update this digest deliberately when refreshing the toolchain.
+FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 ARG TARGETARCH
+# Pin the browser toolchain: :latest made image contents non-reproducible and a
+# routine rebuild could silently change the agent's browser/MCP behavior.
+ARG PLAYWRIGHT_VERSION=1.64.1
+ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+ARG PLAYWRIGHT_CLI_VERSION=0.1.22
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
 # Node 从 NodeSource 装 20.x：bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20。
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # @playwright/cli：提供 playwright-cli，装完顺带 --help 验证可执行。
 # 再装 playwright（提供浏览器管理），装完用 --with-deps 预置 chromium 及其系统依赖，
 # 这样容器内 MCP/CLI 首次启动即可用，不再联网下载浏览器。
-RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
+RUN npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} @playwright/cli@${PLAYWRIGHT_CLI_VERSION} playwright@${PLAYWRIGHT_VERSION} \
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*

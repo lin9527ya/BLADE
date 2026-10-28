@@ -45,9 +45,17 @@ install_docker(){
   else
     info "沿用已存在的 .env"
   fi
-  info "拉取镜像并启动…"
-  docker compose pull || true
-  docker compose up -d
+  if command -v go >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    info "构建本地 Docker 镜像（前端 + Go 单二进制）…"
+    ./build.sh --docker
+  else
+    arch="$(go env GOARCH 2>/dev/null || uname -m)"
+    case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
+    [ -f "dist/${arch}/blade" ] || die "本机没有 Go/npm，且未找到 dist/${arch}/blade；请先运行 ./build.sh --docker 或安装 Go/npm"
+    info "复用已存在的 dist/${arch}/blade"
+  fi
+  info "构建并启动容器…"
+  docker compose up -d --build
   ok "启动完成 → http://localhost:8787"
   info "查看日志：docker compose logs -f blade"
 }
