@@ -23,6 +23,11 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
+	// 共享测试库里若残留 is_default profile（前面的用例建过、清理失败），建任务的
+	// 后台目标拆解会真发网络 LLM 调用，慢到越过本用例的轮询窗口——本用例只验证
+	// 「目标节点最终存在」，不需要外部 LLM。与 TestMain 同一处置：开跑前清空，
+	// 让拆解走「无 provider → 原始目标作为单目标」的确定性快路径。
+	_, _ = m.pg.Exec(`DELETE FROM llm_profiles`)
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()

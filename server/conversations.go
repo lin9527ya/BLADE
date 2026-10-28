@@ -51,23 +51,97 @@ type conversationListItem struct {
 	Running bool `json:"running"`
 }
 
+// pgListConversations 列出对话。带 offset/limit 时走服务端分页（侧栏只取需要的
+// 一段，不再每次轮询拉全量）；不带时保持原全量行为（其它内部调用/兼容）。
 func (s *Server) pgListConversations(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
 		return
 	}
-	cs, err := pg.ListConversations()
+	q := r.URL.Query()
+	paginated := q.Has("offset") || q.Has("limit")
+	var cs []*db.Conversation
+	var err error
+	if paginated {
+		offset := atoiDefault(q.Get("offset"), 0)
+		if offset < 0 {
+			offset = 0
+		}
+		limit := atoiDefault(q.Get("limit"), 100)
+		if limit < 1 {
+			limit = 100
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		cs, err = pg.ListConversationsPage(strings.TrimSpace(q.Get("agent")), offset, limit)
+	} else {
+		cs, err = pg.ListConversations()
+	}
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	items := s.conversationItems(cs)
+	if !paginated {
+		writeJSON(w, 200, map[string]any{"conversations": items})
+		return
+	}
+	agent := strings.TrimSpace(q.Get("agent"))
+	total, terr := pg.CountConversations(agent)
+	if terr != nil {
+		log.Printf("[conversations] 总数读取失败：%v", terr)
+		total = len(items)
+	}
+	// 每个 agent 的对话数供侧栏筛选项显示；读取失败只影响标签上的计数。
+	counts, cerr := pg.CountConversationsByAgent()
+	if cerr != nil {
+		log.Printf("[conversations] 分 agent 计数读取失败：%v", cerr)
+		counts = map[string]int{}
+	}
+	writeJSON(w, 200, map[string]any{
+		"conversations": items,
+		"total":         total,
+		"agent_counts":  counts,
+	})
+}
+
+// conversationItems adds the live "running" flag to each row.
+func (s *Server) conversationItems(cs []*db.Conversation) []conversationListItem {
 	items := make([]conversationListItem, 0, len(cs))
 	s.chatRuns.mu.Lock()
 	for _, c := range cs {
 		items = append(items, conversationListItem{Conversation: c, Running: s.chatRuns.busy[s.convBusyKey(c.ID)]})
 	}
 	s.chatRuns.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"conversations": items})
+	return items
+}
+
+// pgGetConversation 返回单个对话。侧栏分页后，深链接 ?c=<id> 指向的对话可能不在
+// 已加载的窗口里，前端用它单独取一次，避免打开空白会话。
+func (s *Server) pgGetConversation(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, 400, "invalid conversation id")
+		return
+	}
+	c, err := pg.GetConversation(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if c == nil {
+		writeErr(w, 404, "conversation not found")
+		return
+	}
+	s.chatRuns.mu.Lock()
+	running := s.chatRuns.busy[s.convBusyKey(c.ID)]
+	s.chatRuns.mu.Unlock()
+	writeJSON(w, 200, conversationListItem{Conversation: c, Running: running})
 }
 
 func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {

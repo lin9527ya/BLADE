@@ -1180,13 +1180,19 @@ export const api = {
     const q = new URLSearchParams({ session, limit: String(limit) });
     if (task) q.set("task", task);
     if (before > 0) q.set("before", String(before));
-    return get<{ items: Activity[]; snapshot_cursor: number; earliest_cursor: number; has_more: boolean }>(
-      `/exploration/activity/history?${q.toString()}`,
-    ).then((r) => ({
+    return get<{
+      items: Activity[];
+      snapshot_cursor: number;
+      earliest_cursor: number;
+      has_more: boolean;
+      // 整个会话的首步时间（与本次分页窗口无关）；缺省表示服务端没有可见行。
+      first_activity?: string;
+    }>(`/exploration/activity/history?${q.toString()}`).then((r) => ({
       items: arr(r.items),
       snapshotCursor: r.snapshot_cursor ?? 0,
       earliestCursor: r.earliest_cursor ?? 0,
       hasMore: !!r.has_more,
+      firstActivity: r.first_activity ?? "",
     }));
   },
   // Fixed N worker slots: sessions are reused across intents (no per-intent session).
@@ -1469,7 +1475,25 @@ export const api = {
   deleteAgent: (key: string) => del<{ deleted: string }>(`/agents/${key}`),
 
   // ---- conversations (chat page) ----
+  // 全量列表：仅用于需要完整清单的旧调用方；侧栏用 conversationPage 分页取。
   conversations: () => get<{ conversations: Conversation[] }>("/conversations").then((r) => arr(r.conversations)),
+  // 服务端分页：offset/limit，可选按 agent 过滤；返回总数与分 agent 计数（侧栏筛选标签）。
+  conversationPage: (params: { offset?: number; limit?: number; agent?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.agent) qs.set("agent", params.agent);
+    return get<{
+      conversations: Conversation[];
+      total?: number;
+      agent_counts?: Record<string, number>;
+    }>(`/conversations?${qs.toString()}`).then((r) => ({
+      items: arr(r.conversations),
+      total: r.total ?? arr(r.conversations).length,
+      agentCounts: r.agent_counts ?? {},
+    }));
+  },
+  conversation: (id: number) => get<Conversation>(`/conversations/${id}`),
   createConversation: (agent_key: string, title = "", llm_profile_id?: number | null) =>
     post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null }),
   updateConversation: (id: number, input: { title?: string; pinned?: boolean }) =>

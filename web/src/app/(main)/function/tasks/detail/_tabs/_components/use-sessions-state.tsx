@@ -335,6 +335,7 @@ export function useSessionsState(taskId: string) {
               loading: false,
               hasMore: r.hasMore,
               earliestSeq: items.length ? items[0].seq : 0,
+              firstTs: r.firstActivity || s.firstTs,
               unread: 0,
               error: undefined,
             };
@@ -382,6 +383,7 @@ export function useSessionsState(taskId: string) {
               loadingMore: false,
               hasMore: r.hasMore,
               earliestSeq: items.length ? items[0].seq : s.earliestSeq,
+              firstTs: r.firstActivity || s.firstTs,
             };
           });
           requestAnimationFrame(() => {
@@ -591,6 +593,7 @@ export function useSessionsState(taskId: string) {
               loading: false,
               hasMore: r.hasMore,
               earliestSeq: items.length ? items[0].seq : 0,
+              firstTs: r.firstActivity || s.firstTs,
               unread: 0,
             };
           });
@@ -1085,9 +1088,12 @@ export function useSessionsState(taskId: string) {
 
   // Run duration = span from this session's first step to its last (for a live
   // session, "now" so it ticks up — the 1.5s setTick above re-renders it).
+  // 运行时长 = 首步 → 末步。首步优先用服务端给的**整个会话**首步时间：
+  // 历史是倒序分页的，只加载最近 N 步时，用窗口内最早一条会把时长算短。
+  // 末步取已加载窗口的最大时间（较新的页总在窗口里，不会失真）。
   const runDuration = React.useMemo(() => {
-    let min = Infinity,
-      max = 0;
+    let min = activeState?.firstTs ? Date.parse(activeState.firstTs) : Infinity;
+    let max = 0;
     for (const a of activity) {
       const t = Date.parse(a.ts);
       if (!Number.isFinite(t)) continue;
@@ -1097,7 +1103,7 @@ export function useSessionsState(taskId: string) {
     if (!Number.isFinite(min) || max === 0) return null;
     const end = active.live ? Date.now() : max;
     return Math.max(0, end - min);
-  }, [activity, active.live]);
+  }, [activity, active.live, activeState?.firstTs]);
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);

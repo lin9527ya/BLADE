@@ -57,6 +57,7 @@ GET /api/companies	server.(*Server).listCompanies-fm
 GET /api/companies/{id}	server.(*Server).getCompany-fm
 GET /api/companies/{id}/knowledge	server.(*Server).listCompanyKnowledge-fm
 GET /api/conversations	server.(*Server).pgListConversations-fm
+GET /api/conversations/{id}	server.(*Server).pgGetConversation-fm
 GET /api/conversations/{id}/messages	server.(*Server).pgConversationMessages-fm
 GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDetail-fm
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1

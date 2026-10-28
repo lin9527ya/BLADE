@@ -2706,6 +2706,40 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 	return out, hasMore, nil
 }
 
+// ActivityFirstAt returns the timestamp of the session's earliest visible row.
+//
+// 会话页的「运行时长（首步 → 末步）」按已加载窗口算会在历史分页后失真：
+// 只加载了最近 N 步时，min(ts) 是窗口的首步而不是会话首步。这里按与
+// ActivityPage 相同的过滤规则取真正最早的一行，前端用它的时间戳作为下界。
+// 无可见行时返回零值。
+func (s *ExplorationStore) ActivityFirstAt(f ActivitySessionFilter) (time.Time, error) {
+	cond, cargs := f.cond(2)
+	args := append([]any{s.expID}, cargs...)
+	var ts time.Time
+	err := s.db.QueryRow(fmt.Sprintf(`SELECT created_at FROM activity
+WHERE exploration_id=$1%s ORDER BY id ASC LIMIT 1`, cond), args...).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	return ts, err
+}
+
+// ActivityFirstAtForTerminalIntent is ActivityFirstAt for inherited (source-task)
+// sessions: same visibility rules as ActivityPageForTerminalIntent.
+func (s *ExplorationStore) ActivityFirstAtForTerminalIntent(nodeID int64) (time.Time, error) {
+	var ts time.Time
+	err := s.db.QueryRow(`SELECT a.created_at FROM activity a
+JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
+WHERE a.exploration_id=$1 AND a.node_id=$2
+  AND n.kind='intent' AND n.state IN `+IntentTerminalStatesSQL+`
+  AND a.kind NOT IN ('thinking','usage')
+ORDER BY a.id ASC LIMIT 1`, s.expID, nodeID).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	return ts, err
+}
+
 // HasIntentStartActivity reports whether the UI boundary row for this intent has
 // already been written. Slot sessions can resume an intent, so the engine must not
 // append a second boundary bubble on every run.

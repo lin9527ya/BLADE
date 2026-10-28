@@ -181,12 +181,28 @@ func (s *Server) activityHistory(w http.ResponseWriter, r *http.Request) {
 	if len(items) > 0 {
 		earliest = items[0].ID
 	}
-	writeJSON(w, 200, map[string]any{
+	// 会话首步时间（与分页窗口无关）：前端「运行时长（首步 → 末步）」用它作下界，
+	// 否则只加载了最近 N 步时会把窗口首步当成会话首步，时长偏短。
+	var firstAt time.Time
+	if sourceTaskID > 0 {
+		firstAt, err = store.ActivityFirstAtForTerminalIntent(*filter.NodeID)
+	} else {
+		firstAt, err = store.ActivityFirstAt(filter)
+	}
+	if err != nil {
+		log.Printf("[activity/history] task=%s session=%s first-at: %v", t.ID, sess, err)
+		firstAt = time.Time{}
+	}
+	out := map[string]any{
 		"items":           activityDTOs(items),
 		"snapshot_cursor": snapshot,
 		"earliest_cursor": earliest,
 		"has_more":        hasMore,
-	})
+	}
+	if !firstAt.IsZero() {
+		out["first_activity"] = firstAt.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, 200, out)
 }
 
 // tokenStats returns per-worker token usage (input/output/cache read/write) for a

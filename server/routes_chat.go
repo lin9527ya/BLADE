@@ -31,6 +31,7 @@ func (s *Server) registerChatRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/conversations", s.pgListConversations)
 	mux.HandleFunc("POST /api/conversations", s.pgCreateConversation)
 	mux.HandleFunc("POST /api/conversations/delete/batch", s.pgDeleteConversationsBatch)
+	mux.HandleFunc("GET /api/conversations/{id}", s.pgGetConversation)
 	mux.HandleFunc("PATCH /api/conversations/{id}", s.pgRenameConversation)
 	mux.HandleFunc("PATCH /api/conversations/{id}/profile", s.pgUpdateConversation)
 	mux.HandleFunc("DELETE /api/conversations/{id}", s.pgDeleteConversation)

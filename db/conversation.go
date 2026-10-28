@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -153,6 +154,72 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, updated_at DES
 			return nil, err
 		}
 		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
+// ListConversationsPage returns one page of threads in the same order as
+// ListConversations (pinned first, then most-recently-updated). agentKey
+// restricts to one agent ("" = all).
+func (d *DB) ListConversationsPage(agentKey string, offset, limit int) ([]*Conversation, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `SELECT ` + convCols + ` FROM conversations`
+	args := []any{}
+	if agentKey != "" {
+		query += ` WHERE agent_key=$1`
+		args = append(args, agentKey)
+	}
+	query += fmt.Sprintf(` ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, updated_at DESC, id DESC
+LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	args = append(args, limit, offset)
+	rows, err := d.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Conversation{}
+	for rows.Next() {
+		c, err := scanConv(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
+// CountConversations counts threads, optionally restricted to one agent.
+func (d *DB) CountConversations(agentKey string) (int, error) {
+	var n int
+	if agentKey == "" {
+		err := d.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&n)
+		return n, err
+	}
+	err := d.QueryRow(`SELECT COUNT(*) FROM conversations WHERE agent_key=$1`, agentKey).Scan(&n)
+	return n, err
+}
+
+// CountConversationsByAgent returns per-agent thread counts (sidebar filter
+// labels). Historical agents whose definition was deleted still appear here.
+func (d *DB) CountConversationsByAgent() (map[string]int, error) {
+	rows, err := d.Query(`SELECT agent_key, COUNT(*) FROM conversations GROUP BY agent_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var key string
+		var n int
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, err
+		}
+		out[key] = n
 	}
 	return out, rows.Err()
 }

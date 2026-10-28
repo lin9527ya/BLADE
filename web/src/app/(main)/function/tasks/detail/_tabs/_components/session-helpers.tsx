@@ -73,6 +73,7 @@ export type SessionState = {
   loadingMore: boolean;
   hasMore: boolean; // older history remains above the loaded window
   earliestSeq: number; // earliest loaded id — reverse-pagination anchor
+  firstTs: string; // server-reported first activity of the WHOLE session (not just the window)
   unread: number;
   lastTs: string; // most-recent activity time (drives live badge; updated even when unloaded)
   error?: string;
@@ -87,6 +88,7 @@ export function emptyState(): SessionState {
     loadingMore: false,
     hasMore: false,
     earliestSeq: 0,
+    firstTs: "",
     unread: 0,
     lastTs: "",
   };

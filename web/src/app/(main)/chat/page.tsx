@@ -65,7 +65,13 @@ export default function ChatPage() {
   const [selectionMode, setSelectionMode] = React.useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [bulkDeleting, setBulkDeleting] = React.useState(false);
-  const [visibleConversationCount, setVisibleConversationCount] = React.useState(CONVERSATION_LIST_PAGE);
+  // 服务端分页：convs 是已加载的窗口（首屏 CONVERSATION_LIST_PAGE，按「加载更多」向后扩），
+  // convTotal 是当前 agent 过滤下的总条数，agentCounts 是全量分 agent 计数。
+  const [convTotal, setConvTotal] = React.useState(0);
+  const [agentCounts, setAgentCounts] = React.useState<Record<string, number>>({});
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  // 深链接 ?c=<id> 指向的对话可能不在已加载窗口里：单独取一次，保证能打开。
+  const [selectionFallback, setSelectionFallback] = React.useState<Conversation | null>(null);
   // Collapsed agent groups. Hydrated from localStorage after mount (not a lazy
   // useState init) so the server and client render the same first pass.
   const [collapsedAgents, setCollapsedAgents] = React.useState<Set<string>>(() => new Set());
@@ -77,18 +83,39 @@ export default function ChatPage() {
   >({});
 
   const conversationListSeq = React.useRef(0);
+  // 已加载窗口大小：轮询只刷新 [0, convWindow) 这一段（顺序由服务端定），
+  // 不做「拉全量再截断」。「加载更多」扩大窗口后由同一个回调重取。
+  //
+  // 上限 500：再加就退化成"全量轮询"，而侧栏抽屉本就不适合无限加载。
+  const CONVERSATION_WINDOW_MAX = 500;
+  const [convWindow, setConvWindow] = React.useState(CONVERSATION_LIST_PAGE);
   const reloadConvs = React.useCallback(async () => {
     const seq = ++conversationListSeq.current;
     try {
-      const items = await api.conversations();
-      if (seq === conversationListSeq.current) {
-        setConvs(items);
-        setConvsLoaded(true);
-      }
+      const page = await api.conversationPage({
+        offset: 0,
+        limit: convWindow,
+        agent: agentFilter ?? undefined,
+      });
+      if (seq !== conversationListSeq.current) return;
+      setConvs(page.items);
+      setConvTotal(page.total);
+      setAgentCounts(page.agentCounts);
+      setConvsLoaded(true);
     } catch {
       // Preserve the selected transcript and list on a transient poll failure.
+    } finally {
+      if (seq === conversationListSeq.current) setLoadingMore(false);
     }
-  }, []);
+  }, [agentFilter, convWindow]);
+
+  // 「加载更多」只扩大窗口；reloadConvs 因 convWindow 变化由轮询钩子立即重取，
+  // 拿到的是服务端排好序的完整前缀，不需要在客户端拼接两段。
+  const loadMoreConversations = React.useCallback(() => {
+    if (loadingMore || convWindow >= CONVERSATION_WINDOW_MAX) return;
+    setLoadingMore(true);
+    setConvWindow((current) => Math.min(current + CONVERSATION_LIST_PAGE, CONVERSATION_WINDOW_MAX));
+  }, [convWindow, loadingMore]);
   React.useEffect(() => {
     api
       .agents()
@@ -165,16 +192,34 @@ export default function ChatPage() {
     window.history.replaceState(null, "", url);
   }, [selectedId]);
 
-  const selected = React.useMemo(() => convs.find((c) => c.id === selectedId) ?? null, [convs, selectedId]);
+  const selected = React.useMemo(
+    () => convs.find((c) => c.id === selectedId) ?? (selectionFallback?.id === selectedId ? selectionFallback : null),
+    [convs, selectedId, selectionFallback],
+  );
+  // 每次轮询都会换一个 convs 数组；已尝试过的 id 记下来，避免深链接在窗口外时
+  // 每 2 秒重复请求同一个对话。
+  const fallbackFetchedRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (selectedId == null || convs.some((c) => c.id === selectedId)) return;
+    if (fallbackFetchedRef.current === selectedId) return;
+    fallbackFetchedRef.current = selectedId;
+    let alive = true;
+    api
+      .conversation(selectedId)
+      .then((c) => {
+        if (alive) setSelectionFallback(c);
+      })
+      .catch(() => {
+        // 已删除或无权访问：保持草稿视图，与旧行为一致。
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selectedId, convs]);
   const agentByKey = React.useMemo(() => new Map(agents.map((agent) => [agent.key, agent])), [agents]);
-  const filteredConversations = React.useMemo(
-    () => (agentFilter === null ? convs : convs.filter((conversation) => conversation.agent_key === agentFilter)),
-    [convs, agentFilter],
-  );
-  const visibleConversations = React.useMemo(
-    () => filteredConversations.slice(0, visibleConversationCount),
-    [filteredConversations, visibleConversationCount],
-  );
+  // 服务端已按 agent 过滤，这里就是已加载的窗口。
+  const filteredConversations = convs;
+  const visibleConversations = convs;
   // Pinned rows stay a flat block above the groups (server order = pinned_at DESC);
   // everything else is bucketed per agent, most-recently-active agent first.
   const pinnedConversations = React.useMemo(
@@ -194,23 +239,26 @@ export default function ChatPage() {
   // are task-specific and stay hidden from the chat page.
   const chatAgents = React.useMemo(() => agents.filter((a) => !a.builtin || a.role === "assistant"), [agents]);
   const agentFilterOptions = React.useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const conversation of convs) {
-      counts.set(conversation.agent_key, (counts.get(conversation.agent_key) ?? 0) + 1);
-    }
-    // Include historical sources even if their Agent has since been disabled or deleted.
-    const keys = new Set([...chatAgents.map((agent) => agent.key), ...counts.keys()]);
+    // 计数来自服务端全量 GROUP BY，不随已加载窗口变化（否则筛选标签会随着翻页变小）。
+    const keys = new Set([...chatAgents.map((agent) => agent.key), ...Object.keys(agentCounts)]);
     if (agentFilter !== null) keys.add(agentFilter);
     return [...keys]
-      .map((key) => ({ key, name: agentByKey.get(key)?.name || key, count: counts.get(key) ?? 0 }))
+      .map((key) => ({ key, name: agentByKey.get(key)?.name || key, count: agentCounts[key] ?? 0 }))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-  }, [convs, chatAgents, agentByKey, agentFilter]);
+  }, [agentCounts, chatAgents, agentByKey, agentFilter]);
+  const globalConversationCount = React.useMemo(
+    () => Object.values(agentCounts).reduce((sum, n) => sum + n, 0),
+    [agentCounts],
+  );
   const conversationCountLabel =
-    agentFilter === null ? `共 ${convs.length} 个` : `${filteredConversations.length} / ${convs.length} 个`;
+    agentFilter === null
+      ? `共 ${convTotal} 个`
+      : `${convTotal} / ${globalConversationCount || convTotal} 个`;
 
   function changeAgentFilter(key: string | null) {
     setAgentFilter(key);
-    setVisibleConversationCount(CONVERSATION_LIST_PAGE);
+    setConvWindow(CONVERSATION_LIST_PAGE);
+    setConvs([]);
     setSelectedConversationIds(new Set());
     setBulkDeleteOpen(false);
     setRenamingId(null);
@@ -480,15 +528,16 @@ export default function ChatPage() {
                   </React.Fragment>
                 );
               })}
-              {visibleConversationCount < filteredConversations.length && (
+              {convs.length < convTotal && convWindow < CONVERSATION_WINDOW_MAX && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="mt-1 w-full"
-                  onClick={() => setVisibleConversationCount((count) => count + CONVERSATION_LIST_PAGE)}
+                  disabled={loadingMore}
+                  onClick={loadMoreConversations}
                 >
-                  加载更多
+                  {loadingMore ? "加载中…" : `加载更多（已载 ${convs.length} / ${convTotal}）`}
                 </Button>
               )}
             </div>
