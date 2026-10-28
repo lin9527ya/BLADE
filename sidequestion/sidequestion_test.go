@@ -265,3 +265,67 @@ func TestMainSideConcurrencyAndIndependentCancellation(t *testing.T) {
 		})
 	}
 }
+
+// 深拷贝隔离：改原请求的任意可变结构都不能影响克隆结果（旁路快照必须冻结）。
+// 同时钉住字符串/数字等不可变值原样保留。
+func TestCloneRequestIsolatesMutableState(t *testing.T) {
+	before := fixture()
+	clone, err := CloneRequest(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, clone) {
+		t.Fatal("clone must initially equal the source")
+	}
+
+	// 改原请求的消息、工具参数、工具 schema。
+	before.Messages[1].Content[0].Text = "MUTATED"
+	before.Messages[2].Content[1].Input[0] = 'X'
+	before.Messages[3].Content[0].Content[0].Text = "MUTATED-RESULT"
+	before.Tools[0].InputSchema["properties"].(map[string]any)["url"].(map[string]any)["type"] = "number"
+	before.System[0] = "MUTATED-SYSTEM"
+	*before.Temperature = 9.9
+	before.Stop[0] = "MUTATED-STOP"
+
+	if clone.Messages[1].Content[0].Text != "read asset" {
+		t.Fatal("message text leaked into the snapshot")
+	}
+	if string(clone.Messages[2].Content[1].Input) != `{"url":"fixture"}` {
+		t.Fatalf("tool input leaked: %s", clone.Messages[2].Content[1].Input)
+	}
+	if clone.Messages[3].Content[0].Content[0].Text != "verified asset" {
+		t.Fatal("nested tool result leaked into the snapshot")
+	}
+	if clone.Tools[0].InputSchema["properties"].(map[string]any)["url"].(map[string]any)["type"] != "string" {
+		t.Fatal("tool schema map leaked into the snapshot")
+	}
+	if clone.System[0] != "system" || clone.Stop[0] != "END" || *clone.Temperature != 0.3 {
+		t.Fatal("scalar request fields leaked into the snapshot")
+	}
+
+	// 反向：改克隆也不影响原请求。
+	clone.Messages[0].Content[0].Text = "CLONE-MUTATED"
+	if before.Messages[0].Content[0].Text != "<system-reminder>date</system-reminder>" {
+		t.Fatal("clone mutation leaked back into the source")
+	}
+}
+
+// 结构化克隆必须与 JSON 往返语义一致（同一请求两种方式得到等价结果）。
+func TestCloneRequestMatchesJSONRoundTrip(t *testing.T) {
+	before := fixture()
+	clone, err := CloneRequest(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want llm.CompletionRequest
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(want, clone) {
+		t.Fatalf("structured clone differs from JSON round-trip:\nwant %#v\ngot  %#v", want, clone)
+	}
+}

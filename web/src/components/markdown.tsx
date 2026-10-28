@@ -8,10 +8,14 @@ import remarkGfm from "remark-gfm";
 // Tailwind-styled element overrides (no typography plugin in this project, so we
 // style each element). `node` is stripped — it's not a valid DOM attribute.
 const components: Components = {
-  h1: ({ node, ...p }) => <div className="mt-2.5 text-base font-semibold" {...p} />,
-  h2: ({ node, ...p }) => <div className="mt-2 text-sm font-semibold" {...p} />,
-  h3: ({ node, ...p }) => <div className="mt-1.5 text-sm font-medium text-foreground/90" {...p} />,
-  h4: ({ node, ...p }) => <div className="mt-1.5 text-sm font-medium text-foreground/90" {...p} />,
+  // 标题保留原生 h1–h4 语义（读屏与文档大纲按标题导航）：此前渲染成 div，
+  // 视觉没问题但层级在无障碍树里完全丢失。行高/间距与旧样式对齐。
+  h1: ({ node, ...p }) => <h1 className="mt-2.5 text-base font-semibold" {...p} />,
+  h2: ({ node, ...p }) => <h2 className="mt-2 text-sm font-semibold" {...p} />,
+  h3: ({ node, ...p }) => <h3 className="mt-1.5 text-sm font-medium text-foreground/90" {...p} />,
+  h4: ({ node, ...p }) => <h4 className="mt-1.5 text-sm font-medium text-foreground/90" {...p} />,
+  h5: ({ node, ...p }) => <h5 className="mt-1.5 text-sm font-medium text-foreground/90" {...p} />,
+  h6: ({ node, ...p }) => <h6 className="mt-1.5 text-sm font-medium text-foreground/90" {...p} />,
   p: ({ node, ...p }) => <p className="leading-relaxed" {...p} />,
   ul: ({ node, ...p }) => <ul className="my-1 list-disc space-y-0.5 pl-5" {...p} />,
   ol: ({ node, ...p }) => <ol className="my-1 list-decimal space-y-0.5 pl-5" {...p} />,

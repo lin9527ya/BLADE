@@ -107,7 +107,7 @@ sudo chown -R blade:blade /opt/blade
 | 1 | `config.json` | `{"database":{"host":"127.0.0.1","port":5432,"user":"blade","password":"…","dbname":"blade","sslmode":"disable"}}`，`chmod 600`，属主 `blade` | 密码用 `openssl rand -hex 24` 生成 |
 | 2 | PostgreSQL | `docker run -d --name blade-pg -p 127.0.0.1:5432:5432 -e POSTGRES_USER=blade -e POSTGRES_PASSWORD="$PW" -e POSTGRES_DB=blade -v blade-pg:/var/lib/postgresql/data --restart unless-stopped postgres:16-alpine` | 端口绝不能公网可达 |
 | 3 | systemd | `deploy/blade.service` → `/etc/systemd/system/`，`systemctl enable --now blade` | `User=blade`、`RestartForceExitStatus=75`、`BLADE_CONFIG=/opt/blade/config.json` |
-| 4 | 监听面 | `-addr` 保持 `127.0.0.1:8787`；`-proxy` 保持 `127.0.0.1:8788` | 默认即如此，**不要**改成 `:8787` |
+| 4 | 监听面 | 裸机：`-addr` 保持 `127.0.0.1:8787`；`-proxy` 保持 `127.0.0.1:8788`。Docker：容器内是 `-addr :8787`（端口映射要求），宿主侧只发布 `127.0.0.1:8787` | 裸机**不要**改成 `:8787`；Docker 不要把容器内改成 loopback（会不可达） |
 | 5 | 初始化 | **开公网入口之前**：`curl -X POST 127.0.0.1:8787/api/auth/init -H 'Content-Type: application/json' -d '{"password":"<强密码>"}'` | `/api/auth/init` 免认证，暴露后再初始化 = 接管窗口 |
 | 6 | 防火墙 | `sudo deploy/vps-hardening.sh --hostname srv-01` + 云厂商安全组 | ufw 管 v4/v6；两层都要配 |
 | 7 | 访问层 | Cloudflare Tunnel + Zero Trust Access（邮箱 OTP / Service Token），或 Tailscale `--ssh --shields-up` | 域名会进 CT 日志，Access 才是那道门 |

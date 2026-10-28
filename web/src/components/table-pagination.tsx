@@ -151,7 +151,7 @@ export function TablePagination({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                disabled={safePage === 1}
+                disabled={!canPrev}
                 onClick={() => onPageChange(safePage - 1)}
                 aria-label="上一页"
               >
@@ -168,6 +168,7 @@ export function TablePagination({
                   <Button
                     variant={p === safePage ? "outline" : "ghost"}
                     size="icon-sm"
+                    disabled={busy}
                     onClick={() => onPageChange(p)}
                     aria-current={p === safePage ? "page" : undefined}
                   >
@@ -180,7 +181,7 @@ export function TablePagination({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                disabled={safePage === totalPages}
+                disabled={!canNext}
                 onClick={() => onPageChange(safePage + 1)}
                 aria-label="下一页"
               >

@@ -297,6 +297,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
                   page={page}
                   pageSize={size}
                   total={data?.total ?? 0}
+                  busy={loading}
                   onPageChange={setPage}
                   onPageSizeChange={(n) => {
                     setSize(n);
