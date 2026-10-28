@@ -30,6 +30,7 @@ func TestFindingConfirmedRules(t *testing.T) {
 		{"false-positive-overrides-high", db.ConfidenceHigh, db.FindingFalsePositive, "", false},
 		{"ruled-out-overrides-high", db.ConfidenceHigh, db.FindingRuledOut, "reproduced", false},
 		{"duplicate-overrides-high", db.ConfidenceHigh, db.FindingDuplicate, "", false},
+		{"open-proof-gap-overrides-high", db.ConfidenceHigh, db.FindingOpenProofGap, "", false},
 	} {
 		if got := findingConfirmed(tc.confidence, tc.status, tc.verdict); got != tc.want {
 			t.Errorf("%s: findingConfirmed(%q,%q,%q)=%v, want %v", tc.name, tc.confidence, tc.status, tc.verdict, got, tc.want)

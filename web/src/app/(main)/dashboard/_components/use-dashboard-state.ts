@@ -106,8 +106,9 @@ export function useDashboardState() {
           setPendingTotal(pendingRecent.total);
           setActivity(activity.items);
           setConvTokens(conversationTokens);
-        } catch {
-          // Preserve stale data and retry on the next interval.
+        } catch (e) {
+          // Preserve stale data, but let usePolling see the failure and back off.
+          throw e;
         } finally {
           loading = false;
         }
@@ -145,8 +146,8 @@ export function useDashboardState() {
           setAssetCounts(counts ?? {});
           setLLMProfiles(profileList);
           if (usage) setUsageStats(usage);
-        } catch {
-          /* transient errors */
+        } catch (e) {
+          throw e; // preserve stale data; usePolling owns the backoff
         }
       };
       await load();

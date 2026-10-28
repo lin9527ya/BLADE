@@ -13,15 +13,23 @@ import (
 type Broadcaster struct {
 	mu   sync.Mutex
 	subs map[string]map[chan db.Activity]struct{} // task id -> set of subscriber channels
+	// overflow marks a subscriber whose buffer filled. The event itself is lost by
+	// design (liveness must never block the engine), but the stream handler sees
+	// this and force-closes the connection so EventSource reconnects with its
+	// Last-Event-ID and replays the gap from the DB.
+	overflow map[string]map[chan db.Activity]bool
 }
 
 func NewBroadcaster() *Broadcaster {
-	return &Broadcaster{subs: map[string]map[chan db.Activity]struct{}{}}
+	return &Broadcaster{
+		subs:     map[string]map[chan db.Activity]struct{}{},
+		overflow: map[string]map[chan db.Activity]bool{},
+	}
 }
 
 // Subscribe returns a buffered channel of activities for a task plus an
 // unsubscribe func the caller must invoke (defer) to release it.
-func (b *Broadcaster) Subscribe(task string) (<-chan db.Activity, func()) {
+func (b *Broadcaster) Subscribe(task string) (chan db.Activity, func()) {
 	ch := make(chan db.Activity, 256)
 	b.mu.Lock()
 	if b.subs[task] == nil {
@@ -40,8 +48,16 @@ func (b *Broadcaster) Subscribe(task string) (<-chan db.Activity, func()) {
 					delete(b.subs, task)
 				}
 			}
+			if m := b.overflow[task]; m != nil {
+				delete(m, ch)
+				if len(m) == 0 {
+					delete(b.overflow, task)
+				}
+			}
 			b.mu.Unlock()
-			close(ch)
+			// Do NOT close(ch): Publish snapshots channels under the lock and sends
+			// after unlocking. A concurrent send/close is a panic; dropping the
+			// channel from the maps is enough, and the handler exits on ctx.Done.
 		})
 	}
 }
@@ -57,6 +73,18 @@ func (b *Broadcaster) Publish(task string, a db.Activity) {
 		select {
 		case ch <- a:
 		default:
+			if b.overflow[task] == nil {
+				b.overflow[task] = map[chan db.Activity]bool{}
+			}
+			b.overflow[task][ch] = true
 		}
 	}
+}
+
+// Overflowed reports whether this subscriber lost at least one event. The stream
+// handler polls it and closes the connection, forcing a DB-backed resync.
+func (b *Broadcaster) Overflowed(task string, ch chan db.Activity) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.overflow[task][ch]
 }

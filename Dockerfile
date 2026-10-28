@@ -42,6 +42,7 @@ COPY skills/ /app/skills/
 VOLUME ["/app/data"]
 EXPOSE 8787 8788
 ENTRYPOINT ["/app/start.sh"]
-# 默认只绑 loopback（P42）：容器内监听 127.0.0.1，对外暴露交给宿主端口映射或隧道。
-# 要监听容器全网卡请显式写 "-addr", ":8787"（并确认宿主侧只映射到 127.0.0.1）。
-CMD ["-addr", "127.0.0.1:8787", "-proxy", "127.0.0.1:8788"]
+# 容器内必须监听容器网卡，否则 docker-compose 的 127.0.0.1:8787:8787 根本到不了
+# （端口映射转发到容器 IP，不是容器 loopback）。公网暴露面由宿主侧映射控制：
+# docker-compose.yml 仍只发布到 127.0.0.1。
+CMD ["-addr", ":8787", "-proxy", "127.0.0.1:8788"]

@@ -170,21 +170,32 @@ type TrafficExchangeDTO struct {
 	URL         string `json:"url"`
 	Status      int    `json:"status"`
 	ContentType string `json:"content_type"`
+	ReqLen      int    `json:"req_len"`
 	RespLen     int    `json:"resp_len"`
+	// complete | partial | legacy；partial 表示大正文落盘失败，只剩预览。
+	ReqState      string `json:"req_state,omitempty"`
+	RespState     string `json:"resp_state,omitempty"`
+	ReqStoredLen  int    `json:"req_stored_len,omitempty"`
+	RespStoredLen int    `json:"resp_stored_len,omitempty"`
 }
 
 func trafficDTOs(ex []traffic.ExchangeMeta) []TrafficExchangeDTO {
 	out := make([]TrafficExchangeDTO, 0, len(ex))
 	for _, e := range ex {
 		out = append(out, TrafficExchangeDTO{
-			ID:          e.ID,
-			TS:          rfc3339(time.Unix(e.TS, 0)),
-			Host:        e.Host,
-			Method:      e.Method,
-			URL:         e.URL,
-			Status:      e.Status,
-			ContentType: e.ContentType,
-			RespLen:     e.RespLen,
+			ID:            e.ID,
+			TS:            rfc3339(time.Unix(e.TS, 0)),
+			Host:          e.Host,
+			Method:        e.Method,
+			URL:           e.URL,
+			Status:        e.Status,
+			ContentType:   e.ContentType,
+			ReqLen:        e.ReqLen,
+			RespLen:       e.RespLen,
+			ReqState:      e.ReqState,
+			RespState:     e.RespState,
+			ReqStoredLen:  e.ReqStoredLen,
+			RespStoredLen: e.RespStoredLen,
 		})
 	}
 	return out

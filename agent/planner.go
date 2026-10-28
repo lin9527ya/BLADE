@@ -14,6 +14,7 @@ import (
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/Norma/transcript"
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/guard"
 	"github.com/lin9527ya/blade/intercept"
 	"github.com/lin9527ya/blade/policy"
 )
@@ -49,6 +50,10 @@ type Planner struct {
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn  func() int  // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor    *Compactor  // cold-node compaction (§7); nil = disabled
+	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
+	// RoE scope gate). Planner can call Bash/default tools during its light opening
+	// probe; without this it bypassed every command-level boundary.
+	guard *guard.Guard
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -72,6 +77,10 @@ func (p *Planner) SetRoundSeconds(n int64) { p.roundDur = time.Duration(n) * tim
 // planner wake-up to advance the round counter, maintain cold stamps, and
 // (off the hot path) fold cold nodes into digests. nil = feature disabled.
 func (p *Planner) SetCompactor(c *Compactor) { p.compactor = c }
+
+// SetGuard attaches the task Guard. nil keeps the historical no-guard behavior
+// (tests / hosts without an interceptor).
+func (p *Planner) SetGuard(g *guard.Guard) { p.guard = g }
 
 // SetNonStreaming wires a resolver deciding whether runs use the non-streaming
 // model path (true = non-streaming). nil/unset = streaming (default).
@@ -596,6 +605,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		Settlement:   settle,
 		NonStreaming: p.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
+	}
+	if p.guard != nil { // 与 worker/mainagent 同一把任务 Guard（拦截规则 + RoE 范围门 + 审批）
+		opts.Hooks = p.guard.Hooks()
 	}
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx

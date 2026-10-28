@@ -507,8 +507,9 @@ export function useOverviewState(taskId: string) {
             .catch(() => {
               // A transient coverage failure is retried by the next poll.
             });
-        } catch {
-          // transient errors are ignored; the next poll will retry
+        } catch (e) {
+          // Preserve the previous snapshot; rethrow so usePolling backs off.
+          throw e;
         } finally {
           loading = false;
         }

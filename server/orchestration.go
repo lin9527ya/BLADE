@@ -477,7 +477,7 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 // 已撤回/误报/已排除/重复**一律不写**，哪怕置信度标了 high——处置结论优先于自评。
 func findingConfirmed(confidence, status, retestVerdict string) bool {
 	switch status {
-	case db.FindingRetracted, db.FindingFalsePositive, db.FindingRuledOut, db.FindingDuplicate:
+	case db.FindingRetracted, db.FindingFalsePositive, db.FindingRuledOut, db.FindingDuplicate, db.FindingOpenProofGap:
 		return false
 	case db.FindingConfirmed:
 		return true

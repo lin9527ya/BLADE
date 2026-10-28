@@ -407,8 +407,8 @@ export function useSessionsState(taskId: string) {
             setTaskTokens(r.total);
             setSessionTokens(Object.fromEntries(r.sessions.map((item) => [item.session, item])));
           })
-          .catch(() => {
-            // Polling is best-effort; the next interval retries automatically.
+          .catch((e) => {
+            if (alive()) throw e;
           });
       await load();
     },
@@ -427,9 +427,10 @@ export function useSessionsState(taskId: string) {
           .then(({ running }) => {
             if (alive() && chatStatusRequestRef.current === request) setMainChatRunning(running);
           })
-          .catch(() => {
+          .catch((e) => {
             // Keep the last authoritative value. Before the first success, recent
-            // activity remains a conservative fallback.
+            // activity remains a conservative fallback; let the hook back off.
+            if (alive()) throw e;
           });
       };
       await load();
@@ -446,8 +447,8 @@ export function useSessionsState(taskId: string) {
           .then((value) => {
             if (alive()) setLLMResolutions(value);
           })
-          .catch(() => {
-            // Polling is best-effort; the next interval retries automatically.
+          .catch((e) => {
+            if (alive()) throw e;
           });
       await load();
     },
@@ -463,8 +464,8 @@ export function useSessionsState(taskId: string) {
           .then((rows) => {
             if (alive()) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
           })
-          .catch(() => {
-            // Polling is best-effort; the next interval retries automatically.
+          .catch((e) => {
+            if (alive()) throw e;
           });
       await load();
     },
@@ -701,8 +702,9 @@ export function useSessionsState(taskId: string) {
           .then((assets) => {
             if (active()) setIntentAssets(assets);
           })
-          .catch(() => {
-            // The next poll retries; Worker controls and transcripts remain available.
+          .catch((e) => {
+            // Worker controls and transcripts remain available; let the hook back off.
+            if (active()) throw e;
           });
       await load();
     },
@@ -737,8 +739,8 @@ export function useSessionsState(taskId: string) {
             setIntents(r.items);
             setFirstIntentsHasMore(r.hasMore);
           })
-          .catch(() => {
-            // Polling is best-effort; the next interval retries automatically.
+          .catch((e) => {
+            if (active()) throw e;
           });
       await load();
     },
@@ -753,8 +755,8 @@ export function useSessionsState(taskId: string) {
         .then((r) => {
           if (alive()) setWorkerSlots(r.slots);
         })
-        .catch(() => {
-          // best-effort; next poll retries
+        .catch((e) => {
+          if (alive()) throw e;
         }),
     5000,
     [taskId],

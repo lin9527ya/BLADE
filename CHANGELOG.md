@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### 可靠性与正确性（第一批）
+
+- **测试隔离**：测试二进制拒绝连接应用数据库；测试 DSN 必须是 test/acceptance 库
+  （或显式 `BLADE_TEST_PG_DSN`/`BLADE_TEST_ALLOW_UNSAFE=1`）。配置了数据库却连不上时
+  server 测试与验收失败而不是整体 Skip；`TestMain` 的 `llm_profiles` 清理只对测试库执行。
+- **执行边界**：Planner 接入与 Worker 相同的任务 Guard；策略否定语境只跳过当前项，
+  不再短路后续禁止项；停机开关先关闭新执行准入，再暂停现有任务。
+- **意图原子性**：`AddIntentGraph` 在同一事务里写节点、资产锚点和 goal/parent/loot/depends_on
+  边，失败整体回滚；`add_intent` 支持显式 `idempotency_key`。
+- **流量录制**：交换 ID 改为纳秒时间戳，避免同秒重启覆盖旧记录（`INSERT` 不再 REPLACE）；
+  大正文落盘走临时文件+原子 rename，失败标记 `partial` 并保留预览；残缺正文不能绑定为完整证据；
+  流量列表显示「残缺」标记。
+- **报告确认门**：正文只收 high / 人工确认 / 复测 reproduced|fixed；medium 等候选进独立
+  「待确认候选」段，不再计入确认发现；`open_proof_gap` 即使 high 也不能绕过确认门。
+- **实时流与轮询**：广播缓冲溢出标记订阅者，SSE 主动断开让客户端按 Last-Event-ID 重放；
+  SSE 写帧加超时并检查写失败；日志订阅取消不再 close channel（消除 send/close 竞争）；
+  graph 签名只在切任务时清空；前端轮询失败会真正退避。
+- **部署**：容器内监听容器网卡（宿主仍只发布 127.0.0.1），compose 增加 30s 停止宽限；
+  MCP SSE 握手/关闭有界，调用方取消不再计入熔断失败。
+- 说明：按意图类型区分「资产发现/验证完成依据」仍待后续批次。
+
 ### 轮询防重叠与会话实时流恢复
 
 - 修复多处 `usePolling` 回调只 `void load()`、hook 误判本轮结束导致的请求重叠：

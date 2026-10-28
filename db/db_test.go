@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -57,6 +58,9 @@ func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn, _, err := DSN()
 	if err != nil {
+		if os.Getenv("BLADE_PG_DSN") != "" || os.Getenv("BLADE_REQUIRE_TESTS") == "1" {
+			t.Fatalf("测试要求真实数据库，但配置不可用：%v", err)
+		}
 		t.Skipf("no database config (%v) — skipping", err)
 	}
 	return dsn

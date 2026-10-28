@@ -306,6 +306,19 @@ func (s *Server) getLogsHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items, "has_more": len(rows) == limit})
 }
 
+// sseWrite writes one SSE frame with a bounded write deadline and reports
+// whether the connection is still usable. A slow/stuck client must not hold a
+// goroutine forever now that the server intentionally has no WriteTimeout (SSE).
+func sseWrite(w http.ResponseWriter, flusher http.Flusher, body string) bool {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if _, err := fmt.Fprint(w, body); err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
+}
+
 // streamLogs is the live SSE tail of the backend log: replays history after
 // ?since=<seq>, then pushes each new line.
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
@@ -322,19 +335,22 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 
 	ch, unsub := logSink.subscribe()
 	defer unsub()
-	send := func(l LogLine) {
+	send := func(l LogLine) bool {
 		b, _ := json.Marshal(l)
-		fmt.Fprintf(w, "data: %s\n\n", b)
-		flusher.Flush()
+		return sseWrite(w, flusher, fmt.Sprintf("data: %s\n\n", b))
 	}
 	lines, cursor := logSink.recent(since, 1000)
 	for _, l := range lines {
-		send(l)
+		if !send(l) {
+			return
+		}
 	}
 	if cursor > since {
 		since = cursor
 	}
-	flusher.Flush()
+	if !sseWrite(w, flusher, "") {
+		return
+	}
 
 	ctx := r.Context()
 	ping := time.NewTicker(20 * time.Second)
@@ -351,10 +367,13 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			since = l.Seq
-			send(l)
+			if !send(l) {
+				return
+			}
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
+			if !sseWrite(w, flusher, ": ping\n\n") {
+				return
+			}
 		}
 	}
 }
@@ -399,10 +418,9 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 
 	// Emit a standard SSE id: line so the browser echoes it as Last-Event-ID on
 	// auto-reconnect (see cursor precedence above).
-	sendSSE := func(a db.Activity) {
+	sendSSE := func(a db.Activity) bool {
 		b, _ := json.Marshal(activityDTO(a))
-		fmt.Fprintf(w, "id: %d\ndata: %s\n\n", a.ID, b)
-		flusher.Flush()
+		return sseWrite(w, flusher, fmt.Sprintf("id: %d\ndata: %s\n\n", a.ID, b))
 	}
 
 	// Compensate the DB backlog after `since` in batches until caught up. This is the
@@ -420,7 +438,9 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, a := range items {
-			sendSSE(a)
+			if !sendSSE(a) {
+				return
+			}
 		}
 		if cursor > since {
 			since = cursor
@@ -429,15 +449,27 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	flusher.Flush()
+	if !sseWrite(w, flusher, "") {
+		return
+	}
 
 	ctx := r.Context()
 	ping := time.NewTicker(20 * time.Second)
 	defer ping.Stop()
+	resync := time.NewTicker(1 * time.Second)
+	defer resync.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-resync.C:
+			if s.engine.Broadcaster().Overflowed(t.ID, ch) {
+				// We lost live frames. Tell the client to reconnect; its
+				// Last-Event-ID makes the DB replay the gap. Do not try to queue
+				// a notification on the already-full channel.
+				_ = sseWrite(w, flusher, "event: resync\ndata: {}\n\n")
+				return
+			}
 		case a, ok := <-ch:
 			if !ok {
 				return
@@ -449,10 +481,13 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 				continue // scoped session: only this intent's steps
 			}
 			since = a.ID
-			sendSSE(a)
+			if !sendSSE(a) {
+				return
+			}
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
+			if !sseWrite(w, flusher, ": ping\n\n") {
+				return
+			}
 		}
 	}
 }

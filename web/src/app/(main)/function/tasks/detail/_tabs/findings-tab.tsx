@@ -185,7 +185,10 @@ export function FindingsTab({ taskId }: { taskId: string }) {
         })
         .catch((e) => {
           // 刷新失败保留上一次快照，但必须让人知道"这不是没有发现"。
-          if (active()) setLoadError(e instanceof Error ? e.message : "加载失败");
+          if (active()) {
+            setLoadError(e instanceof Error ? e.message : "加载失败");
+            throw e; // 让 usePolling 退避，而不是把失败当成功
+          }
         }),
     3000,
     [taskId],

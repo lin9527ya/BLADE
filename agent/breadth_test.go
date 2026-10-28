@@ -139,3 +139,35 @@ func TestPlannerPromptBreadthContract(t *testing.T) {
 		t.Fatal("default prompt still declares depth-first over coverage")
 	}
 }
+
+func TestAddIntentIdempotencyKey(t *testing.T) {
+	ts, _, _, _, debt := breadthToolSet(t)
+	payload := map[string]any{"intents": []map[string]any{{
+		"summary": "幂等方向", "asset_ids": []int64{debt}, "risk_area": "auth",
+		"idempotency_key": "batch-42-intent-1",
+	}}}
+	raw, _ := json.Marshal(payload)
+	res, err := ts.addIntent().Call(t.Context(), raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.Unmarshal([]byte(res.Flatten()), &first); err != nil || len(first.IDs) != 1 {
+		t.Fatalf("first: %s err=%v", res.Flatten(), err)
+	}
+	res, err = ts.addIntent().Call(t.Context(), raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.Unmarshal([]byte(res.Flatten()), &second); err != nil || len(second.IDs) != 1 {
+		t.Fatalf("second: %s err=%v", res.Flatten(), err)
+	}
+	if first.IDs[0] != second.IDs[0] {
+		t.Fatalf("idempotency key created two intents: %d vs %d", first.IDs[0], second.IDs[0])
+	}
+}

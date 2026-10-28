@@ -241,6 +241,11 @@ func Negated(text string, at int) bool {
 		start = 0
 	}
 	head := text[start:at]
+	// 否定只在同一分句内生效："检查是否有爆破防护，然后删除接口" 的后半句
+	// 不能被前一句的"是否有"豁免。
+	if i := strings.LastIndexAny(head, "，。；！？,.;!?\n"); i >= 0 {
+		head = head[i+1:]
+	}
 	for _, p := range negationPrefixes {
 		if strings.Contains(head, p) {
 			return true

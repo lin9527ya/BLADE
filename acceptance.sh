@@ -9,6 +9,8 @@
 #
 # 连接信息：BLADE_PG_DSN 优先，否则取 config.json 的 database 段。
 # 建库/删库：本机 psql 可用就用它，否则回退 docker exec blade-pg。
+# 注意：本脚本会设置 BLADE_REQUIRE_ACCEPTANCE=1——连不上库时 TestAcceptance 必须失败，
+# 不能以整体 Skip 的退出码 0 伪装成"全部通过"。
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -60,6 +62,8 @@ admin "DROP DATABASE IF EXISTS $DB_NAME"
 # 的、不需要继承任何本地模板，用最干净的 template0 最稳。
 admin "CREATE DATABASE $DB_NAME TEMPLATE template0"
 export BLADE_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME?#")"
+# 显式要求验收：TestAcceptance 连不上库时失败而不是 Skip（Skip 的退出码是 0）。
+export BLADE_REQUIRE_ACCEPTANCE=1
 
 echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28 + P29 + P30 + P31 + P32 + P33 + P34 + P35 + P36 + P37 + P38 + P39 + P40 + P41 + P42，逐机制 PASS/FAIL）"
 rc=0

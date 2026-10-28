@@ -232,6 +232,66 @@ func (s *ExplorationStore) AddIntent(payload map[string]any, priority int, ancho
 	return s.AddNode("intent", payload, priority, "open", origin, anchors)
 }
 
+// IntentEdge is one lineage edge written atomically with a new intent. A zero
+// From or To refers to the intent being created (the id does not exist yet).
+// `from=0` means "new intent -> To" (e.g. uses/depends_on); `to=0` means
+// "From -> new intent" (e.g. derived_from/spawns).
+type IntentEdge struct {
+	From int64
+	Rel  string
+	To   int64
+}
+
+// AddIntentGraph creates an intent node, its asset anchors and every lineage edge
+// in one transaction. Creating the node first and then best-effort linking left a
+// window where a worker could claim an open intent before its goal/parent/dependency
+// edges existed — the frontier then saw an unblocked intent that was supposed to
+// wait, and the graph silently missed lineage when a later Link failed.
+func (s *ExplorationStore) AddIntentGraph(payload map[string]any, priority int, anchors []int64, origin string, edges []IntentEdge) (int64, error) {
+	if origin == "" {
+		origin = "planner"
+	}
+	raw, _ := json.Marshal(payload)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err := tx.QueryRow(`
+INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
+VALUES ($1,'intent',$2,$3,'open',$4) RETURNING id`,
+		s.expID, string(raw), priority, origin).Scan(&id); err != nil {
+		return 0, err
+	}
+	for _, a := range anchors {
+		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, a); err != nil {
+			return 0, err
+		}
+	}
+	for _, e := range edges {
+		from, to := e.From, e.To
+		if from == 0 {
+			from = id
+		}
+		if to == 0 {
+			to = id
+		}
+		if from <= 0 || to <= 0 || strings.TrimSpace(e.Rel) == "" {
+			return 0, fmt.Errorf("invalid intent edge %+v", e)
+		}
+		if _, err := tx.Exec(`INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id)
+VALUES ($1,$2,$3,$4) ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`,
+			s.expID, from, e.Rel, to); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // AddGoal writes a goal node (state open).
 func (s *ExplorationStore) AddGoal(payload map[string]any, origin string) (int64, error) {
 	return s.AddNode("goal", payload, 0, "open", origin, nil)

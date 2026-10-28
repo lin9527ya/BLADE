@@ -31,6 +31,7 @@ type Verdict struct {
 // CheckIntent 是意图层策略门（纯函数）。判定顺序：节奏面 → 内容面——
 // 额度用尽时不该再为一条注定被拒的意图去扫词表，模型也该先听到"别再派了"。
 func (e Effective) CheckIntent(in IntentInput) Verdict {
+	var benign Verdict // first negated hit: allow only if nothing else rejects
 	if e.MaxIntentsPerRound > 0 && in.RoundUsed >= e.MaxIntentsPerRound {
 		return Verdict{ItemID: "pace:round", ItemLabel: "本轮意图配额", Where: "pace_round",
 			Hint: fmt.Sprintf("本轮已提出 %d 条意图（上限 %d）：把本轮剩下的判断留到下一轮，或先让在跑的方向出结果", in.RoundUsed, e.MaxIntentsPerRound)}
@@ -50,7 +51,12 @@ func (e Effective) CheckIntent(in IntentInput) Verdict {
 		}
 		if hit, ok := MatchWords(in.Summary, t.Words); ok {
 			if Negated(in.Summary, hit.Where) {
-				return Verdict{Allow: true, ItemID: t.ID, ItemLabel: t.Label, Where: "summary", Matched: hit.Matched, Benign: true}
+				// 否定语境跳过这一项，继续检查其它手段/禁止写入。此前直接 Allow，
+				// "检查爆破防护，然后删除订单"会因为第一个词否定而整条放行。
+				if benign.ItemID == "" {
+					benign = Verdict{Allow: true, ItemID: t.ID, ItemLabel: t.Label, Where: "summary", Matched: hit.Matched, Benign: true}
+				}
+				continue
 			}
 			return Verdict{ItemID: t.ID, ItemLabel: t.Label, Where: "summary", Matched: hit.Matched, Hint: t.Hint}
 		}
@@ -62,7 +68,10 @@ func (e Effective) CheckIntent(in IntentInput) Verdict {
 		}
 		if hit, ok := MatchWords(in.Summary, w.Words); ok {
 			if Negated(in.Summary, hit.Where) {
-				return Verdict{Allow: true, ItemID: w.ID, ItemLabel: w.Label, Where: "summary", Matched: hit.Matched, Benign: true}
+				if benign.ItemID == "" {
+					benign = Verdict{Allow: true, ItemID: w.ID, ItemLabel: w.Label, Where: "summary", Matched: hit.Matched, Benign: true}
+				}
+				continue
 			}
 			return Verdict{ItemID: w.ID, ItemLabel: w.Label, Where: "summary", Matched: hit.Matched, Hint: w.Hint}
 		}
@@ -87,10 +96,16 @@ func (e Effective) CheckIntent(in IntentInput) Verdict {
 		}
 		if hit, ok := MatchWords(in.Summary, []string{r.Pattern}); ok {
 			if Negated(in.Summary, hit.Where) {
-				return Verdict{Allow: true, ItemID: "custom", ItemLabel: label, Where: "summary", Matched: hit.Matched, Benign: true}
+				if benign.ItemID == "" {
+					benign = Verdict{Allow: true, ItemID: "custom", ItemLabel: label, Where: "summary", Matched: hit.Matched, Benign: true}
+				}
+				continue
 			}
 			return Verdict{ItemID: "custom", ItemLabel: label, Where: "summary", Matched: hit.Matched, Hint: hint}
 		}
+	}
+	if benign.ItemID != "" {
+		return benign
 	}
 	return Verdict{Allow: true}
 }

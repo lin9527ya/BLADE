@@ -1591,7 +1591,13 @@ export interface TrafficExchange {
   url: string;
   status: number;
   content_type: string;
+  req_len?: number;
   resp_len: number;
+  /** complete | partial | legacy；partial = 大正文落盘失败，只剩预览。 */
+  req_state?: string;
+  resp_state?: string;
+  req_stored_len?: number;
+  resp_stored_len?: number;
 }
 
 export interface TrafficResp {

@@ -1716,6 +1716,9 @@ type intentItem struct {
 	Priority   int               `json:"priority"`
 	RiskArea   string            `json:"risk_area"`
 	Techniques []string          `json:"techniques"`
+	// IdempotencyKey 让重试/重复提交落到同一条意图，而不是靠摘要相似度猜重。
+	// 非空时写进 payload；同键已存在则直接返回已有 id。
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 // 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
@@ -1752,6 +1755,14 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			// 命中词表但处于否定语境（"检查是否有爆破防护"）：放行，但留痕——
 			// 事后能看出策略是不是太糙、误放了多少。
 			t.reportPolicyReject(it, v)
+		}
+	}
+	// 显式幂等键：重试/重复提交不该造第二条意图。只有非空键才生效——不能用
+	// summary 相似度冒充幂等（换措辞的同一方向由防打转逻辑处理）。
+	idempotencyKey := strings.TrimSpace(it.IdempotencyKey)
+	if idempotencyKey != "" {
+		if existing, err := t.ts.FindNodeByPayload(db.KindIntent, "idempotency_key", idempotencyKey); err == nil && existing > 0 {
+			return existing, fmt.Sprintf("幂等键 %q 已对应意图 #%d，未重复创建", idempotencyKey, existing), nil
 		}
 	}
 	// 先校验锚点（建节点前，避免坏锚点留下孤儿意图）。
@@ -1846,6 +1857,9 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		return 0, "", fmt.Errorf("%s", rej)
 	}
 	payload := map[string]any{"summary": it.Summary, "risk_area": riskArea}
+	if idempotencyKey != "" {
+		payload["idempotency_key"] = idempotencyKey
+	}
 	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
 	// 不在这里返错。它是给交付物用的分类，不是约束。
 	if techs := db.NormalizeTechniques(it.Techniques); len(techs) > 0 {
@@ -1854,7 +1868,35 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
-	id, err := t.ts.AddIntent(payload, priority, anchors, "planner")
+	// 目标轴：没显式指名时，恰有一个 open 目标就自动挂；多个不猜（回执提示）。
+	// 必须在建边前确定，否则原子提交时还不知道要写哪条 goal 边。
+	if goalID == 0 {
+		if only, err := t.ts.SingleOpenGoal(); err == nil && only > 0 {
+			goalID = only
+		}
+	}
+	// 节点、锚点与全部血缘边一次提交：任何一条边写失败都会回滚整条意图，
+	// 不会出现"意图已 open、worker 已能领取、但 depends_on/goal 边还没写"的窗口。
+	// 0 端点表示"正在创建的这条意图"（见 db.IntentEdge）。
+	edges := make([]db.IntentEdge, 0, len(parents)+len(lootIDs)+len(deps)+2)
+	if goalID > 0 {
+		edges = append(edges, db.IntentEdge{From: goalID, Rel: db.RelSpawns, To: 0})
+	}
+	for _, parent := range parents {
+		edges = append(edges, db.IntentEdge{From: parent, Rel: db.RelDerivedFrom, To: 0})
+	}
+	for _, lid := range lootIDs {
+		edges = append(edges, db.IntentEdge{From: 0, Rel: db.RelUses, To: lid})
+	}
+	for _, dep := range deps {
+		edges = append(edges, db.IntentEdge{From: 0, Rel: db.RelDependsOn, To: dep})
+	}
+	if len(parents) == 0 && goalID == 0 {
+		if origin, _ := t.ts.OriginFactID(); origin > 0 {
+			edges = append(edges, db.IntentEdge{From: origin, Rel: db.RelDerivedFrom, To: 0})
+		}
+	}
+	id, err := t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
 	if err != nil {
 		return 0, "", err
 	}
@@ -1872,52 +1914,23 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		newAssets[a] = true
 	}
 	q.rememberIntent(intentFP{id: id, summary: it.Summary, riskArea: riskArea, state: "open", assets: newAssets})
-	// 目标轴：没显式指名时，恰有一个 open 目标就自动挂；多个不猜（回执提示）。
+	// 目标轴：显式 goal_id 已在上面校验；自动挂载已在建边前完成。这里只补
+	// "有多个 open 目标却没指名"的回执提示（不猜，也不阻止创建）。
 	note := ""
 	if goalID == 0 {
-		if only, err := t.ts.SingleOpenGoal(); err == nil && only > 0 {
-			goalID = only
-		} else if err == nil {
-			if goals, gErr := t.ts.ListByKind(db.KindGoal, 1000); gErr == nil {
-				open := 0
-				for _, g := range goals {
-					if g.State == "open" {
-						open++
-					}
+		if goals, gErr := t.ts.ListByKind(db.KindGoal, 1000); gErr == nil {
+			open := 0
+			for _, g := range goals {
+				if g.State == "open" {
+					open++
 				}
-				if open > 1 {
-					note = "本任务有多个未达成目标，本条意图未挂目标：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals），链路图才能显示「目标→意图」。"
-				}
+			}
+			if open > 1 {
+				note = "本任务有多个未达成目标，本条意图未挂目标：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals），链路图才能显示「目标→意图」。"
 			}
 		}
 	}
-	if goalID > 0 {
-		_, _ = t.ts.LinkIntentToGoal(goalID, id) // 校验已在前置完成；此处 best-effort
-	}
-	// upstream lineage: link each (validated) fact/finding parent → this intent, so
-	// "multiple facts combine into one new intent" is expressible.
-	for _, parent := range parents {
-		_ = t.ts.Link(parent, db.RelDerivedFrom, id)
-	}
-	// 战果轴：本意图在动用哪次已得的访问（意图 --uses--> 据点/凭据）。这条边是
-	// graph_overview 算出「哪些战果还没被推进过」的唯一依据——那是 planner 自己拿不到的信息：
-	// 它看得到战果**是什么**，但看不出哪一条**已经被别的意图接手了**。
-	for _, lid := range lootIDs {
-		_ = t.ts.Link(id, db.RelUses, lid)
-	}
-	// 串行链：意图 --depends_on--> 前置。Frontier/ClaimIntent 都按这条边拦"前置还没有结论"。
-	for _, dep := range deps {
-		_ = t.ts.Link(id, db.RelDependsOn, dep)
-	}
-	// A top-level intent with NO goal edge connects to the origin fact, so every
-	// intent still traces back to a fact node — at task start the only fact is the
-	// origin, and the first intents derive from it. A goal is intentionally not a
-	// root: it stays unconnected until prove_goal supplies evidence.
-	if len(parents) == 0 && goalID == 0 {
-		if origin, _ := t.ts.OriginFactID(); origin > 0 {
-			_ = t.ts.Link(origin, db.RelDerivedFrom, id)
-		}
-	}
+	// 血缘边已随节点在同一事务里提交（见上面的 edges / AddIntentGraph）。
 	if len(deps) > 0 {
 		parts := make([]string, 0, len(deps))
 		for _, d := range deps {
@@ -1984,16 +1997,17 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
 		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
 		obj(map[string]any{
-			"intents":       map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":       str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
-			"asset_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
-			"parent_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
-			"goal_id":       idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
-			"depends_on":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
-			"uses_loot_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
-			"priority":      intp("优先级 0-10，默认5"),
-			"risk_area":     str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
-			"techniques":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
+			"intents":         map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"summary":         str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
+			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
+			"parent_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
+			"goal_id":         idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
+			"depends_on":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
+			"uses_loot_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
+			"priority":        intp("优先级 0-10，默认5"),
+			"risk_area":       str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
+			"idempotency_key": str("可选幂等键：重试或重复提交同一条方向时带上同一个键，平台直接返回已有意图，不重复创建。"),
+			"techniques":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {

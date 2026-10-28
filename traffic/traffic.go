@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS exchanges (
   content_type TEXT,
   req_len      INTEGER,
   resp_len     INTEGER,
+  req_state    TEXT NOT NULL DEFAULT 'legacy',
+  resp_state   TEXT NOT NULL DEFAULT 'legacy',
+  req_stored_len  INTEGER NOT NULL DEFAULT -1,
+  resp_stored_len INTEGER NOT NULL DEFAULT -1,
   path         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ex_host ON exchanges(host);
@@ -283,11 +287,57 @@ func (t *Traffic) initIndex() error {
 	if _, err := conn.ExecContext(ctx, indexSchema); err != nil {
 		return err
 	}
+	if err := ensureExchangeStateColumns(ctx, conn); err != nil {
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, ftsSchema); err != nil {
 		log.Printf("[traffic] 全文索引不可用，正文搜索将被禁用（元数据搜索不受影响）：%v", err)
 		return nil
 	}
 	t.fts = true
+	return nil
+}
+
+// ensureExchangeStateColumns adds the body completeness columns to legacy
+// indexes. SQLite has no ADD COLUMN IF NOT EXISTS, so inspect PRAGMA first.
+// Existing rows are marked 'legacy' with unknown stored length: their bodies were
+// written before this bookkeeping existed, and evidence binding still verifies
+// length/hash independently.
+func ensureExchangeStateColumns(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `PRAGMA table_info(exchanges)`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	cols := []struct{ name, decl string }{
+		{"req_state", "TEXT NOT NULL DEFAULT 'legacy'"},
+		{"resp_state", "TEXT NOT NULL DEFAULT 'legacy'"},
+		{"req_stored_len", "INTEGER NOT NULL DEFAULT -1"},
+		{"resp_stored_len", "INTEGER NOT NULL DEFAULT -1"},
+	}
+	for _, col := range cols {
+		if have[col.name] {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE exchanges ADD COLUMN `+col.name+` `+col.decl); err != nil {
+			return fmt.Errorf("add exchanges.%s: %w", col.name, err)
+		}
+	}
 	return nil
 }
 
@@ -447,7 +497,7 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
 	n := t.seq.Add(1)
 	now := time.Now()
-	id := fmt.Sprintf("%d-%04d", now.Unix(), n%10000)
+	id := newExchangeID(now, n)
 
 	ct := f.Response.Header.Get("Content-Type")
 	url := f.Request.URL.String()
@@ -467,10 +517,10 @@ func (t *Traffic) record(f *mproxy.Flow) {
 
 	// path stays empty for db-resident exchanges; a non-empty path marks a legacy
 	// row whose bodies still live in the old on-disk tree (see Get).
-	res, err := tx.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,'')`,
+	res, err := tx.Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')`,
 		id, now.Unix(), host, method, tmpl, url, f.Response.StatusCode, ct,
-		len(f.Request.Body), len(f.Response.Body))
+		len(f.Request.Body), len(f.Response.Body), reqB.state, respB.state, reqB.storedLen, respB.storedLen)
 	if err != nil {
 		log.Printf("[traffic] 记录 %s 失败（写索引）：%v", url, err)
 		return
@@ -481,7 +531,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,'')`,
 		return
 	}
 
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
+	if _, err := tx.Exec(`INSERT INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
 VALUES(?,?,?,?,?,?,?)`,
 		id, reqHead, reqB.inline, nullIfEmpty(reqB.hash), respHead, respB.inline, nullIfEmpty(respB.hash)); err != nil {
 		log.Printf("[traffic] 记录 %s 失败（写正文）：%v", url, err)
@@ -513,13 +563,23 @@ VALUES(?,?,?,?,?,?,?)`,
 	}
 }
 
+// newExchangeID keeps the human-readable "capture time - sequence" shape but
+// uses nanoseconds. The old "<unix-second>-<seq%10000>" scheme collided when a
+// process restarted within the same second (seq reset to 1), and INSERT OR
+// REPLACE then silently overwrote the previous exchange.
+func newExchangeID(now time.Time, seq int64) string {
+	return fmt.Sprintf("%d-%06d", now.UnixNano(), seq%1_000_000)
+}
+
 // storedBody is one body after the inline/spill decision: inline is what goes in
 // the SQLite column (the whole body, or a preview when spilled), hash names the
 // blob when it spilled, and index is the text handed to FTS (empty for binary).
 type storedBody struct {
-	inline []byte
-	hash   string
-	index  string
+	inline    []byte
+	hash      string
+	index     string
+	state     string // complete | partial
+	storedLen int    // bytes actually retained (inline preview when partial)
 }
 
 // spill decides where one body lives. Small bodies stay inline. Large ones are
@@ -529,7 +589,7 @@ type storedBody struct {
 // independent of where the bytes end up.
 func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	if len(body) == 0 {
-		return storedBody{}
+		return storedBody{state: "complete", storedLen: 0}
 	}
 	text := !isBinaryBody(contentType, body)
 	indexText := func() string {
@@ -539,7 +599,14 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 		return string(clipBytes(body, maxIndexBody))
 	}
 	if len(body) <= maxInlineBody {
-		return storedBody{inline: body, index: indexText()}
+		return storedBody{inline: body, index: indexText(), state: "complete", storedLen: len(body)}
+	}
+	partial := func(err error) storedBody {
+		log.Printf("[traffic] 正文落盘失败（%v）：只保留 %d 字节预览，本条标记为残缺", err, blobPreview)
+		return storedBody{
+			inline: clipBytes(body, blobPreview), index: indexText(),
+			state: "partial", storedLen: min(len(body), blobPreview),
+		}
 	}
 
 	sum := sha256.Sum256(body)
@@ -548,17 +615,51 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	// the store only ever holds bodies above maxInlineBody, deduplicated by hash.
 	blobDir := filepath.Join(t.dir, "_blobs", "sha256", h[:2])
 	if err := os.MkdirAll(blobDir, 0o755); err != nil {
-		log.Printf("[traffic] 创建 blob 目录失败：%v", err)
-		return storedBody{inline: clipBytes(body, blobPreview), index: indexText()}
+		return partial(err)
 	}
 	blobPath := filepath.Join(blobDir, h+".bin")
-	if _, err := os.Stat(blobPath); os.IsNotExist(err) {
-		if err := os.WriteFile(blobPath, body, 0o644); err != nil {
-			log.Printf("[traffic] 写 blob %s 失败：%v", h, err)
-			return storedBody{inline: clipBytes(body, blobPreview), index: indexText()}
-		}
+	// Write through a staging file so a crash/failed write cannot leave a
+	// truncated blob under the content-addressed name. If the final file already
+	// exists with the right size, skip; a mismatched/partial file is replaced.
+	tmp, err := os.CreateTemp(blobDir, ".stage-"+h+"-")
+	if err != nil {
+		return partial(err)
 	}
-	sb := storedBody{hash: h, index: indexText()}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return partial(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return partial(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return partial(err)
+	}
+	if fi, err := os.Stat(blobPath); err == nil {
+		if fi.Size() == int64(len(body)) {
+			return storedBody{hash: h, index: indexText(), state: "complete", storedLen: len(body)}
+		}
+		// A damaged/partial blob with the right name must be replaced. Windows
+		// rename does not overwrite an existing target, so remove it first.
+		if err := os.Remove(blobPath); err != nil {
+			return partial(err)
+		}
+	} else if !os.IsNotExist(err) {
+		return partial(err)
+	}
+	if err := os.Rename(tmpName, blobPath); err != nil {
+		return partial(err)
+	}
+	cleanup = false
+	sb := storedBody{hash: h, index: indexText(), state: "complete", storedLen: len(body)}
 	if text {
 		sb.inline = []byte(truncateUTF8(body, blobPreview))
 	} else {
@@ -762,8 +863,16 @@ type ExchangeMeta struct {
 	URL         string `json:"url"`
 	Status      int    `json:"status"`
 	ContentType string `json:"content_type"`
+	ReqLen      int    `json:"req_len"`
 	RespLen     int    `json:"resp_len"`
-	Path        string `json:"path"`
+	// ReqState/RespState: complete | partial | legacy. partial means the body was
+	// larger than the inline limit and spilling it to the blob store failed; the
+	// inline preview is stored but the original bytes are gone.
+	ReqState      string `json:"req_state,omitempty"`
+	RespState     string `json:"resp_state,omitempty"`
+	ReqStoredLen  int    `json:"req_stored_len,omitempty"`
+	RespStoredLen int    `json:"resp_stored_len,omitempty"`
+	Path          string `json:"path"`
 }
 
 // Search returns paged exchange metadata (never bodies).
@@ -771,7 +880,7 @@ func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
 	if size <= 0 || size > 500 {
 		size = 100
 	}
-	q := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges`
+	q := `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path FROM exchanges`
 	args := []any{}
 	if host != "" {
 		q += ` WHERE host=?`
@@ -787,7 +896,8 @@ func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
 	var out []ExchangeMeta
 	for rows.Next() {
 		var m ExchangeMeta
-		if err := rows.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
+		if err := rows.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType,
+			&m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Path); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -929,7 +1039,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	}
 	// id embeds capture timestamp + sequence, so a trailing id DESC makes the order
 	// total and pagination stable even when the sort column has many ties.
-	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
+	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path FROM exchanges` +
 		where + ` ORDER BY ` + col + ` ` + dir + `, id DESC LIMIT ? OFFSET ?`
 	qargs := append(append([]any{}, args...), size, page*size)
 	rs, err := t.db.Query(sel, qargs...)
@@ -939,7 +1049,8 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	defer rs.Close()
 	for rs.Next() {
 		var m ExchangeMeta
-		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
+		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType,
+			&m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Path); err != nil {
 			return nil, 0, err
 		}
 		rows = append(rows, m)

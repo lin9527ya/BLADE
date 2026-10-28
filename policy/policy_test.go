@@ -437,3 +437,17 @@ func TestRenderForbiddenWritesIsScopedToItems(t *testing.T) {
 		}
 	}
 }
+
+// 否定语境只跳过当前项，不能结束整条策略检查：混合语句里后出现的禁止项仍须硬拒。
+func TestCheckIntentMixedNegationDoesNotShortCircuit(t *testing.T) {
+	eff := Effective{Techniques: []string{"bruteforce"}, ForbiddenWrites: []string{"http_delete"}}
+	v := eff.CheckIntent(IntentInput{Summary: "检查登录是否有爆破防护，然后删除接口数据"})
+	if v.Allow || v.ItemID != "http_delete" {
+		t.Fatalf("后置禁止项应被拒，实际 %+v", v)
+	}
+	// 只有否定项时仍放行并留痕。
+	v = eff.CheckIntent(IntentInput{Summary: "检查登录是否有爆破防护"})
+	if !v.Allow || !v.Benign || v.ItemID != "bruteforce" {
+		t.Fatalf("纯否定应放行留痕，实际 %+v", v)
+	}
+}

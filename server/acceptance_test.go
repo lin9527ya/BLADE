@@ -60,6 +60,11 @@ import (
 func TestAcceptance(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
+		// 显式要求验收（acceptance.sh / CI 配了 BLADE_PG_DSN）时，连不上库必须失败：
+		// 整体 Skip 的退出码是 0，会把"验收没跑"伪装成"全部通过"。
+		if os.Getenv("BLADE_REQUIRE_ACCEPTANCE") == "1" || os.Getenv("BLADE_PG_DSN") != "" {
+			t.Fatalf("postgres unavailable，但本次验收要求真实数据库：%v", err)
+		}
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1690,8 +1695,10 @@ func accP19(t *testing.T, e *accEnv) {
 	// 而不是一句"都完整"把（待补）占位放过去。
 	e.mustContain(readme, "缺少「漏洞危害」", "完整性提示：漏洞危害")
 	// ③ 总报告同样只算一次：同指纹的 A/B 合并到代表项，确认发现数不重复计。
+	// C 是 medium 候选，只能进「待确认候选」，不能算确认发现。
 	md := e.report(task)
-	e.mustContain(md, "- 确认发现：**2** 个", "重复登记不该重复计数")
+	e.mustContain(md, "- 确认发现：**1** 个", "重复登记不该重复计数且 medium 候选不算确认")
+	e.mustContain(md, "- 待确认候选：**1** 个", "medium 候选应在待确认段")
 	e.mustContain(md, "**同指纹的重复登记**：#", "正文点明重复登记")
 
 	// 单条导出与批量包口吻一致：该发现自己的 src-report 里也是同一份警告清单（这里为空）。

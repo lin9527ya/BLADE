@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 )
 
@@ -68,6 +69,11 @@ func TestSeedPlaybookAgent(t *testing.T) {
 	a, err := pg.GetAgentByKey("playbook")
 	if err != nil || a == nil {
 		t.Fatalf("playbook agent 未预置：%v", err)
+	}
+	// 同一测试库可能被 TestReseedPlaybookPromptForGoalTrigger 留成用户自定义正文；
+	// 本条用例验证的是"默认正文被 seed"，先恢复默认，避免依赖测试执行顺序。
+	if _, err := pg.SavePrompt(a.ID, agent.PlaybookDefaultPrompt, "restore test fixture", "test"); err != nil {
+		t.Fatal(err)
 	}
 	tmpl, err := pg.CurrentPrompt(a.ID)
 	if err != nil || !strings.Contains(tmpl, "打法沉淀") || !strings.Contains(tmpl, "record_playbook") {
@@ -149,6 +155,11 @@ func TestReseedPlaybookPromptForGoalTrigger(t *testing.T) {
 	if err != nil || a == nil {
 		t.Fatalf("playbook agent 未预置：%v", err)
 	}
+	// 这个用例会把提示词改成用户自定义版本；同一包后续用例（TestSeedPlaybookAgent）
+	// 依赖默认正文，必须恢复，否则单独/全量跑的先后顺序会改变结果。
+	t.Cleanup(func() {
+		_, _ = pg.SavePrompt(a.ID, agent.PlaybookDefaultPrompt, "restore test fixture", "test")
+	})
 	// 模拟仍带旧开头的默认提示词。
 	if _, err := pg.SavePrompt(a.ID, "你是一个授权渗透测试系统里的「打法沉淀 agent」。刚刚有 worker 拿到了据点（report_foothold）。旧正文。", "test", "test"); err != nil {
 		t.Fatal(err)

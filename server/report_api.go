@@ -38,6 +38,27 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	retracted := buckets.retracted
 	ruledOut, proofGaps, closed := buckets.ruledOut, buckets.proofGaps, buckets.closed
 	confidenceByNode := buckets.confidenceByNode
+	// 复核结论先读：正文的「确认」判定需要最近一次复测结论（reproduced/fixed 可以越过
+	// confidence 门槛），不能再等到写完 noEvidence 才加载。
+	verdicts, verr := s.m.pg.LatestRetestVerdicts(tid)
+	if verr != nil {
+		log.Printf("[report] 任务 %s 复测结论读取失败，正文按 confidence/status 判定：%v", t.ID, verr)
+		verdicts = map[int64]string{}
+	}
+	// 正文只放通过确认门的发现：high confidence / 人工确认 / 复测 reproduced|fixed。
+	// 其余（medium/low 的 pending、进行中、存疑等）进「待确认候选」——它们不是漏洞证据，
+	// 但也绝不能静默消失：交付物必须区分「没发现」「没测成」「待补证」「已确认」。
+	var unconfirmed []*db.Node
+	confirmedLive := make([]*db.Node, 0, len(live))
+	for _, n := range live {
+		m := meta[n.ID]
+		if findingConfirmed(m.Confidence, m.Status, verdicts[n.ID]) {
+			confirmedLive = append(confirmedLive, n)
+		} else {
+			unconfirmed = append(unconfirmed, n)
+		}
+	}
+	live = confirmedLive
 	intents, ierr := t.Store.ListByKind(db.KindIntent, reportListLimit)
 	if ierr != nil {
 		log.Printf("[report] 任务 %s 意图列表读取失败：%v", t.ID, ierr)
@@ -64,7 +85,6 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// 复核结论：最新复测非"复现"的发现一并点名（存疑的会被 planner/人工再次审视）。
 	// 复核结论用**全部**发现来找节点：`fixed` 的发现现在进了「已关闭」桶、不在 live 里，
 	// 但它恰恰是复测结论最该点名的一条（「已修复（复测确认）」）。用 liveByID 会把它丢掉。
-	verdicts, _ := s.m.pg.LatestRetestVerdicts(tid)
 	allByID := map[int64]*db.Node{}
 	for _, n := range findings {
 		allByID[n.ID] = n
@@ -183,7 +203,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	intentOrd, _ := t.Store.IntentOrdinals(0)
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: live, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
+		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		FindingReports: findingReports, Scope: scope, Duplicates: duplicates, Truncated: truncated,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		NodeOrdinal: nodeOrd, IntentOrdinal: intentOrd,

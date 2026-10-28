@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -131,8 +133,89 @@ func coordinateWithSchemaMigration(tx *sql.Tx) error {
 // DSN resolves the PostgreSQL connection string and reports where it came from.
 // Precedence: env BLADE_PG_DSN > config file (config.json). There is no
 // built-in default — it errors if neither source is configured.
+//
+// Inside a test binary it additionally refuses the application database: tests
+// create and delete tasks/findings, and TestMain historically issued
+// `DELETE FROM llm_profiles`. Without this guard, running `go test` on a machine
+// whose config.json points at the live database would mutate production data.
+// Test databases must be isolated by name (contains "test"/"acceptance") or be
+// named explicitly through BLADE_TEST_PG_DSN; BLADE_TEST_ALLOW_UNSAFE=1 is the
+// deliberate escape hatch for unusual local setups.
 func DSN() (dsn, source string, err error) {
-	return config.PostgresDSN()
+	if !testing.Testing() {
+		return config.PostgresDSN()
+	}
+	if v := strings.TrimSpace(os.Getenv("BLADE_TEST_PG_DSN")); v != "" {
+		dsn, source = v, "环境变量 BLADE_TEST_PG_DSN"
+	} else if dsn, source, err = config.PostgresDSN(); err != nil {
+		return "", source, err
+	}
+	if err := guardTestDSN(dsn); err != nil {
+		return "", source, err
+	}
+	return dsn, source, nil
+}
+
+// guardTestDSN rejects DSNs that would let a test mutate the configured
+// application database or an unambiguously non-test database.
+func guardTestDSN(dsn string) error {
+	unsafe := strings.ToLower(strings.TrimSpace(os.Getenv("BLADE_TEST_ALLOW_UNSAFE")))
+	if appDSN, ok := config.ConfigPostgresDSN(); ok && sameDatabase(dsn, appDSN) {
+		return fmt.Errorf("拒绝在测试中连接应用数据库（%s）：测试会创建/删除数据。请设置 BLADE_TEST_PG_DSN 指向隔离测试库（如 blade_test）", databaseName(dsn))
+	}
+	if unsafe == "1" || unsafe == "true" || unsafe == "yes" {
+		return nil
+	}
+	name := databaseName(dsn)
+	if name == "" {
+		return fmt.Errorf("测试 DSN 缺少数据库名：请设置 BLADE_TEST_PG_DSN 指向隔离测试库")
+	}
+	lower := strings.ToLower(name)
+	if !strings.Contains(lower, "test") && !strings.Contains(lower, "acceptance") {
+		return fmt.Errorf("拒绝在测试中使用非测试库 %q：请设置 BLADE_TEST_PG_DSN 指向名字含 test/acceptance 的隔离库（确需例外时显式设置 BLADE_TEST_ALLOW_UNSAFE=1）", name)
+	}
+	return nil
+}
+
+// IsTestDatabase reports whether dsn names an isolated test/acceptance database.
+func IsTestDatabase(dsn string) bool {
+	name := strings.ToLower(databaseName(dsn))
+	return strings.Contains(name, "test") || strings.Contains(name, "acceptance")
+}
+
+// DatabaseNameForLog exposes only the database name (never the DSN/password) for
+// diagnostic messages that must not leak credentials.
+func DatabaseNameForLog(dsn string) string {
+	name := databaseName(dsn)
+	if name == "" {
+		return "(unknown)"
+	}
+	return name
+}
+
+func databaseName(dsn string) string {
+	u, err := url.Parse(strings.TrimSpace(dsn))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(u.Path, "/")
+}
+
+func sameDatabase(a, b string) bool {
+	ua, errA := url.Parse(strings.TrimSpace(a))
+	ub, errB := url.Parse(strings.TrimSpace(b))
+	if errA != nil || errB != nil || ua.Path == "" || ub.Path == "" {
+		return false
+	}
+	hostA, hostB := ua.Hostname(), ub.Hostname()
+	portA, portB := ua.Port(), ub.Port()
+	if portA == "" {
+		portA = "5432"
+	}
+	if portB == "" {
+		portB = "5432"
+	}
+	return strings.EqualFold(hostA, hostB) && portA == portB && strings.TrimPrefix(ua.Path, "/") == strings.TrimPrefix(ub.Path, "/")
 }
 
 // DB wraps the shared *sql.DB. PG handles its own connection pool + concurrency

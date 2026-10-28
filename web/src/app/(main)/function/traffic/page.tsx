@@ -215,16 +215,18 @@ export default function TrafficPage() {
           .then((r) => {
             if (alive()) setTraffic(r);
           })
-          .catch(() => {
-            // Keep the last successful snapshot during transient refresh failures.
+          .catch((e) => {
+            // Keep the last successful snapshot, but let usePolling back off.
+            if (alive()) throw e;
           }),
         api
           .trafficHosts()
           .then((r) => {
             if (alive()) setHosts(r.hosts ?? []);
           })
-          .catch(() => {
-            // Keep the last successful host list during transient refresh failures.
+          .catch((e) => {
+            // Keep the last successful host list, but let usePolling back off.
+            if (alive()) throw e;
           }),
       ]);
     },
@@ -677,7 +679,14 @@ export default function TrafficPage() {
                       </span>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{e.content_type}</TableCell>
-                    <TableCell className="text-right text-xs tabular-nums">{fmtBytes(e.resp_len)}</TableCell>
+                    <TableCell className="text-right text-xs tabular-nums">
+                      {fmtBytes(e.resp_len)}
+                      {(e.req_state === "partial" || e.resp_state === "partial") && (
+                        <Badge variant="outline" className="ml-1 border-amber-500/40 text-amber-600 dark:text-amber-400" title="正文落盘失败，仅保留预览；不能作为完整证据绑定">
+                          残缺
+                        </Badge>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
                 {exchanges.length === 0 && (

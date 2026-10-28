@@ -271,19 +271,36 @@ func (s *Server) setKillSwitch(w http.ResponseWriter, r *http.Request) {
 	paused := 0
 	var errs []string
 	if req.On {
+		// 先关准入、再取消现存工作：工具调用每次都现读开关，写库成功后新的执行
+		// 立刻被拒；然后才暂停任务。顺序反过来会留出一个"任务已被暂停、但开关
+		// 尚未落库"的窗口，这期间新执行仍可能进来。
+		ev := intercept.NewKillSwitchEvent(true, by, reason, 0)
+		cur.On = true
+		cur.At, cur.By, cur.Reason, cur.TasksPaused = ev.At, by, reason, 0
+		cur.History = intercept.AppendKillSwitchHistory(cur.History, ev)
+		if err := intercept.WriteKillSwitch(s.m.pg, cur); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 		paused, errs = s.pauseRunningForSafety(agent.AbortKillSwitch, "停机开关已启用："+reasonOr(reason, "未填写理由"))
-	}
-	ev := intercept.NewKillSwitchEvent(req.On, by, reason, paused)
-	cur.On = req.On
-	cur.At, cur.By, cur.Reason, cur.TasksPaused = ev.At, by, reason, paused
-	cur.History = intercept.AppendKillSwitchHistory(cur.History, ev)
-	if err := intercept.WriteKillSwitch(s.m.pg, cur); err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	if req.On {
+		// 回写实际暂停数；失败只影响回执展示，开关已经生效。
+		cur.TasksPaused = paused
+		if len(cur.History) > 0 {
+			cur.History[0].TasksPaused = paused
+		}
+		if err := intercept.WriteKillSwitch(s.m.pg, cur); err != nil {
+			log.Printf("[scope] 停机开关已生效，但回写暂停任务数失败: %v", err)
+		}
 		log.Printf("[scope] 停机开关已启用（%s，理由：%s）：暂停 %d 个在跑任务", by, reasonOr(reason, "未填写"), paused)
 	} else {
+		ev := intercept.NewKillSwitchEvent(false, by, reason, 0)
+		cur.On = false
+		cur.At, cur.By, cur.Reason, cur.TasksPaused = ev.At, by, reason, 0
+		cur.History = intercept.AppendKillSwitchHistory(cur.History, ev)
+		if err := intercept.WriteKillSwitch(s.m.pg, cur); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 		log.Printf("[scope] 停机开关已解除（%s）", by)
 		// 入口层立刻放行（不必等下一个 tick）；**不**顺手恢复任务。
 		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })

@@ -584,6 +584,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetPolicyResolver(s.policyResolver(tidOfTask(t))) // P20 探索策略(每 run 现读;改策略下一轮生效)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
 	pl.SetFindingRecorder(s.evidenceStore())
+	pl.SetGuard(t.Guard) // 与 worker 同一把任务 Guard：Planner 开局探测不得绕过命令边界
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)

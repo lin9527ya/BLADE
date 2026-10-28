@@ -33,7 +33,11 @@ services:
       # 只映射到宿主 loopback（P42）：公网访问请走 Cloudflare Tunnel 或 SSH 隧道（见 deploy/）。
       # 真要直连公网，也请配合防火墙只放行 Cloudflare 来源段，别裸奔。
       - "127.0.0.1:8787:8787"
-      - "127.0.0.1:8788:8788"
+      # 8788 是容器内 agent 用的录制代理，只绑容器 loopback；不发布到宿主。
+      # 需要在宿主机手工抓包时，走 docker exec 或在容器内显式改 -proxy 监听地址。
+    # 应用关闭有 5s HTTP shutdown + 20s drain；30s 给收尾留余量，避免 docker
+    # 默认 10s 后 SIGKILL 把正在写的意图终态打断。
+    stop_grace_period: 30s
     volumes:
       # 把数据目录（含 jwt.key、SQLite 等）绑定到项目根目录的 data/，
       # 方便在宿主机直接查看/备份，容器重建也不丢。

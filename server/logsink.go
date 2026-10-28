@@ -198,7 +198,9 @@ func (s *logSinkT) subscribe() (<-chan LogLine, func()) {
 			s.mu.Lock()
 			delete(s.subs, ch)
 			s.mu.Unlock()
-			close(ch)
+			// Do NOT close(ch): add() snapshots subscribers under the lock, then
+			// sends after unlocking. A concurrent send/close is a panic. Removing
+			// the channel from the map is enough; the handler exits on ctx.Done.
 		})
 	}
 }

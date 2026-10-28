@@ -42,3 +42,18 @@ func TestApprovalHistoryStartsAtCurrentIntent(t *testing.T) {
 		t.Fatalf("non-worker history must be untouched: %+v", plain)
 	}
 }
+
+// The launch turn is overview + intent block, so the marker is NOT at the start.
+// Prefix matching here silently kept the whole slot history in approval context.
+func TestApprovalHistoryMarkerAfterOverview(t *testing.T) {
+	msgs := []llm.Message{
+		llm.UserText(workerIntentMarker(1) + "\nold intent"),
+		llm.UserText("old action"),
+		llm.UserText("【全局态势】…\n\n" + workerIntentMarker(2) + "\ncurrent intent"),
+		llm.UserText("current action"),
+	}
+	entries := approvalHistory(msgs)
+	if len(entries) != 2 || !strings.Contains(entries[0].Text, "current intent") || entries[1].Text != "current action" {
+		t.Fatalf("approval history = %+v", entries)
+	}
+}

@@ -174,6 +174,20 @@ func PostgresDSN() (dsn, source string, err error) {
 	return "", "", fmt.Errorf("未找到数据库配置：环境变量 BLADE_PG_DSN 未设置，且配置文件 %s 未提供 database（dsn 或 host/user/dbname）。请创建该配置文件或设置环境变量后重试", Path())
 }
 
+// ConfigPostgresDSN returns the DSN from config.json only (ignoring
+// BLADE_PG_DSN). Tests use it to refuse the application database even when the
+// environment happens to point at the same one.
+func ConfigPostgresDSN() (string, bool) {
+	db := Load().Database
+	if d := strings.TrimSpace(db.DSN); d != "" {
+		return d, true
+	}
+	if db.Host != "" || db.DBName != "" || db.User != "" {
+		return db.buildDSN(), true
+	}
+	return "", false
+}
+
 func (d Database) buildDSN() string {
 	host := d.Host
 	if host == "" {

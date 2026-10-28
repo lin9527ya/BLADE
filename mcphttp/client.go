@@ -126,10 +126,14 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{} // the SSE stream is intentionally long-lived.
+	// The SSE stream is intentionally long-lived, so no Client.Timeout. Bound only
+	// the handshake (connection + response headers) and the endpoint event read
+	// below; a server that accepts TCP and then stalls must not pin a goroutine.
+	tr := &http.Transport{ResponseHeaderTimeout: 30 * time.Second}
 	if insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+	hc := &http.Client{Transport: tr}
 	streamCtx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {
@@ -151,11 +155,28 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		return nil, fmt.Errorf("mcp sse http %d: %s", resp.StatusCode, readSnippet(resp.Body))
 	}
 	reader := bufio.NewReader(resp.Body)
-	endpoint, err := readSSEEndpoint(reader, sseURL)
-	if err != nil {
-		resp.Body.Close()
+	type endpointResult struct {
+		endpoint string
+		err      error
+	}
+	done := make(chan endpointResult, 1)
+	go func() {
+		ep, err := readSSEEndpoint(reader, sseURL)
+		done <- endpointResult{endpoint: ep, err: err}
+	}()
+	var endpoint string
+	select {
+	case r := <-done:
+		if r.err != nil {
+			resp.Body.Close()
+			cancel()
+			return nil, r.err
+		}
+		endpoint = r.endpoint
+	case <-time.After(30 * time.Second):
+		resp.Body.Close() // unblocks the reader goroutine
 		cancel()
-		return nil, err
+		return nil, fmt.Errorf("mcp sse 握手超时：30s 内未收到 endpoint 事件")
 	}
 	c := &Client{
 		server:       server,
@@ -374,7 +395,9 @@ func (c *Client) Close() error {
 	if sid == "" {
 		return nil
 	}
-	req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url, nil)
 	if err != nil {
 		return nil
 	}
@@ -407,7 +430,11 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	c.mu.Unlock()
 	resp, err := c.roundTrip(ctx, rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}, true)
 	if err != nil {
-		g.failure(err, cfg)
+		// 调用方主动取消（停止 Agent/请求超时）不是 server 不健康，不能计入熔断；
+		// 否则一次用户取消就会让该 server 被冷却，后续正常调用被快速失败。
+		if ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			g.failure(err, cfg)
+		}
 		return nil, err
 	}
 	if resp == nil {

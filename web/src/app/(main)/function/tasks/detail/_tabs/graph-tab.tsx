@@ -15,9 +15,14 @@ export function GraphTab({ taskId }: { taskId: string }) {
   // 才不会被 20s 轮询打断而顿挫)。只取影响渲染的字段。
   const sigRef = React.useRef("");
 
+  // 只在换任务时清空签名；此前写在轮询回调里，每轮都清空 → 相同数据也重新 setState，
+  // 图在 20s 轮询时被无谓重建（拖动中的顿挫就是这么来的）。
+  React.useEffect(() => {
+    sigRef.current = "";
+  }, [taskId]);
+
   usePolling(
     (alive) => {
-      sigRef.current = ""; // 换任务:强制下一次刷新
       return api
           .explorationGraph(taskId)
           .then((g) => {

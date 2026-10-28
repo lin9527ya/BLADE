@@ -226,11 +226,13 @@ func approvalHistory(messages []llm.Message) []db.InterceptContextEntry {
 }
 
 // messagesSinceWorkerIntent drops history before the latest worker intent marker.
+// The marker is appended AFTER the situational overview in the launch turn, so it
+// is not at the beginning of the text — match it anywhere in a text block.
 // Non-worker sessions have no marker and are returned unchanged.
 func messagesSinceWorkerIntent(messages []llm.Message) []llm.Message {
 	for i := len(messages) - 1; i >= 0; i-- {
 		for _, b := range messages[i].Content {
-			if b.Type == llm.BlockText && strings.HasPrefix(strings.TrimSpace(b.Text), workerIntentMarkerPrefix) {
+			if b.Type == llm.BlockText && strings.Contains(b.Text, workerIntentMarkerPrefix) {
 				return messages[i:]
 			}
 		}

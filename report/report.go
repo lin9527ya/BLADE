@@ -20,6 +20,11 @@ type Input struct {
 	GeneratedAt time.Time
 	AssetCounts map[string]int
 	Findings    []*db.Node
+	// Unconfirmed lists findings that did not pass the confirmation gate
+	// (high confidence / triage-confirmed / retest reproduced|fixed). They stay
+	// out of the findings body and the "confirmed" count, but the report must
+	// still say they exist: 「没发现」「没测成」「待补证」「已确认」是四件事。
+	Unconfirmed []*db.Node
 	// Retracted lists findings retracted after retesting disproved them; they
 	// stay on file (墓碑) but leave the findings body.
 	Retracted []Retracted
@@ -447,6 +452,7 @@ func Markdown(in Input) string {
 	// summary
 	fmt.Fprintf(&b, "## 摘要\n\n")
 	fmt.Fprintf(&b, "- 确认发现：**%d** 个\n", len(in.Findings))
+	fmt.Fprintf(&b, "- 待确认候选：**%d** 个（未通过确认门，不进正文）\n", len(in.Unconfirmed))
 	fmt.Fprintf(&b, "- 已排除候选：**%d** 个（有反证，不进正文）\n", len(in.RuledOut))
 	fmt.Fprintf(&b, "- 存疑待补证：**%d** 个（不得视为安全）\n", len(in.ProofGaps))
 	fmt.Fprintf(&b, "- 已关闭（误报/重复/已忽略/已修复）：**%d** 个（不进正文）\n", len(in.Closed))
@@ -705,6 +711,18 @@ func Markdown(in Input) string {
 				fmt.Fprintf(&b, "**详细分析（报告 Agent）：**\n\n%s\n\n", txt)
 			}
 		}
+	}
+
+	// 未通过确认门的发现：不进正文，但必须让交付物看得见"还有候选待补证"。
+	fmt.Fprintf(&b, "## 待确认候选（未通过确认门，不进正文）\n\n")
+	if len(in.Unconfirmed) == 0 {
+		b.WriteString("_无。_\n\n")
+	} else {
+		for _, n := range in.Unconfirmed {
+			f := parseFinding(n)
+			fmt.Fprintf(&b, "- %s [%s] %s（置信度：%s）\n", nodeRef(in.NodeOrdinal, n.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), confidenceLabel(in.ConfidenceByNode[n.ID]))
+		}
+		b.WriteString("\n_这些条目尚未达到确认门（high 置信 / 处置确认 / 复测 reproduced|fixed）；不得当作已确认漏洞，也不得当作安全。_\n\n")
 	}
 
 	// 无流量证据的发现：HTTP 类漏洞缺绑定流量时单独列出，供人工核对。

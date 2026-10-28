@@ -26,32 +26,43 @@ func degrade(step string, err error) {
 // server test suite so cross-package DELETE cleanup races with db/agent
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	requireDB := os.Getenv("BLADE_PG_DSN") != "" || os.Getenv("BLADE_REQUIRE_TESTS") == "1"
+	fail := func(step string, err error) {
+		if requireDB {
+			fmt.Fprintf(os.Stderr, "!!! server 测试要求真实数据库（%s）：%v\n", step, err)
+			os.Exit(1)
+		}
+		degrade(step, err)
+		os.Exit(m.Run())
+	}
 	dsn, _, err := db.DSN()
 	if err != nil {
-		degrade("读取数据库配置", err)
-		os.Exit(m.Run())
+		fail("读取数据库配置", err)
 	}
 	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
-		degrade("打开数据库连接", err)
-		os.Exit(m.Run())
+		fail("打开数据库连接", err)
 	}
 	if err := conn.Ping(); err != nil {
-		degrade("连接数据库", err)
-		os.Exit(m.Run())
+		fail("连接数据库", err)
 	}
 	defer conn.Close()
 	if _, err := conn.Exec(`SELECT pg_advisory_lock(7337741002)`); err != nil {
-		degrade("获取跨包测试锁", err)
-		os.Exit(m.Run())
+		fail("获取跨包测试锁", err)
 	}
 	defer conn.Exec(`SELECT pg_advisory_unlock(7337741002)`) //nolint:errcheck
-	// 清掉上轮测试泄漏的 LLM profile：库里只要有 active(is_default) profile，建任务的
-	// 后台目标拆解就会真发网络 LLM 调用——慢到越过用例的轮询窗口（本地偶发
-	// TestCoreTaskLifecyclePG 红，CI 全新库所以稳定），还可能打到真实端点。测试都必须
-	// 各自按需建 profile（CI 空库全绿即是证明），这里统一清残留，让拆解走
-	// 「无 provider → 原始目标作为单目标」的确定性快路径。
-	// （tasks 的 profile 外键是 ON DELETE SET NULL，清残留不会牵连任务行。）
-	_, _ = conn.Exec(`DELETE FROM llm_profiles`)
+	// 只对确认是测试库的连接做破坏性清理。db.DSN 已在测试二进制里拒绝了应用库，
+	// 这里再按库名兜一道：将来有人为了排障临时放开 DSN 护栏，也不会顺手清空生产配置。
+	if !db.IsTestDatabase(dsn) {
+		fmt.Fprintf(os.Stderr, "\n!!! server 测试跳过 llm_profiles 清理：DSN 不是测试库（%s）\n\n", db.DatabaseNameForLog(dsn))
+	} else {
+		// 清掉上轮测试泄漏的 LLM profile：库里只要有 active(is_default) profile，建任务的
+		// 后台目标拆解就会真发网络 LLM 调用——慢到越过用例的轮询窗口（本地偶发
+		// TestCoreTaskLifecyclePG 红，CI 全新库所以稳定），还可能打到真实端点。测试都必须
+		// 各自按需建 profile（CI 空库全绿即是证明），这里统一清残留，让拆解走
+		// 「无 provider → 原始目标作为单目标」的确定性快路径。
+		// （tasks 的 profile 外键是 ON DELETE SET NULL，清残留不会牵连任务行。）
+		_, _ = conn.Exec(`DELETE FROM llm_profiles`)
+	}
 	os.Exit(m.Run())
 }

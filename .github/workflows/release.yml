@@ -19,6 +19,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
+      - name: 前端单测
+        run: npm test
+        working-directory: web
       - run: npm run build:static
         working-directory: web
       - uses: actions/upload-artifact@v4
@@ -26,9 +29,53 @@ jobs:
           name: web-dist
           path: web/out
 
-  # ② 五平台交叉编译（内嵌前端）+ 打 zip
+  # ② 同一提交的质量门（与 test.yml 同口径）：tag 可能打在 test 未覆盖的提交上，
+  #    所以 release 自己不重复跑一遍就不算"发布通过了质量检查"。
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: blade
+          POSTGRES_PASSWORD: blade
+          POSTGRES_DB: blade_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U blade -d blade_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      BLADE_PG_DSN: postgres://blade:blade@127.0.0.1:5432/blade_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted="$(git ls-files '*.go' | xargs gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未按 gofmt 对齐："
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          "$(go env GOPATH)/bin/staticcheck" ./...
+      - name: go test（串行，-race）
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -p 1 ./...
+
+  # ③ 五平台交叉编译（内嵌前端）+ 打 zip
   binaries:
-    needs: frontend
+    needs: [frontend, quality]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -76,7 +123,7 @@ jobs:
           name: bin-linux-${{ matrix.goarch }}
           path: dist/blade-linux-${{ matrix.goarch }}/blade
 
-  # ③ 汇总所有 zip → 创建 GitHub Release
+  # ④ 汇总所有 zip → 创建 GitHub Release
   release:
     needs: binaries
     runs-on: ubuntu-latest
