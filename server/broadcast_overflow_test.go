@@ -18,6 +18,9 @@ func TestBroadcasterOverflowMarksSubscriber(t *testing.T) {
 	if !b.Overflowed("task-1", ch) {
 		t.Fatal("a full subscriber buffer must be marked overflowed")
 	}
+	if b.OverflowCount() == 0 {
+		t.Fatal("overflow counter must be observable in metrics")
+	}
 	got := 0
 	for {
 		select {

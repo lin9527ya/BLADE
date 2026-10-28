@@ -1284,12 +1284,19 @@ func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.Task
 	if err != nil {
 		return nil, err
 	}
+	return m.RegisterCreatedTask(pt), nil
+}
+
+// RegisterCreatedTask adds an already-committed task row to the live manager.
+// Scheduled creation commits its task and schedule ledger in one transaction,
+// then registers the returned row here.
+func (m *Manager) RegisterCreatedTask(pt *pgdb.Task) *Task {
 	t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
 	m.mu.Lock()
 	m.tasks[t.ID] = t
 	m.active = t.ID
 	m.mu.Unlock()
-	return t, nil
+	return t
 }
 
 // RenameTaskCategory persists a category name and refreshes every live task DTO

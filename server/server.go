@@ -48,6 +48,8 @@ type Server struct {
 	agents    agentState
 	archive   archiveState
 	boot      restoreState
+
+	queryCache queryCacheState
 }
 
 // restoreState 记录启动恢复是否成功。恢复失败时 readiness 必须如实失败：

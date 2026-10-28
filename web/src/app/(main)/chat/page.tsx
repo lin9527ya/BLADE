@@ -22,6 +22,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
+import { retryRequest } from "@/lib/request-lifecycle";
 import type { Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
 
 import {
@@ -72,6 +73,8 @@ export default function ChatPage() {
   const [loadingMore, setLoadingMore] = React.useState(false);
   // 深链接 ?c=<id> 指向的对话可能不在已加载窗口里：单独取一次，保证能打开。
   const [selectionFallback, setSelectionFallback] = React.useState<Conversation | null>(null);
+  const [fallbackError, setFallbackError] = React.useState<string | null>(null);
+  const [fallbackRetry, setFallbackRetry] = React.useState(0);
   // Collapsed agent groups. Hydrated from localStorage after mount (not a lazy
   // useState init) so the server and client render the same first pass.
   const [collapsedAgents, setCollapsedAgents] = React.useState<Set<string>>(() => new Set());
@@ -89,7 +92,7 @@ export default function ChatPage() {
   // 上限 500：再加就退化成"全量轮询"，而侧栏抽屉本就不适合无限加载。
   const CONVERSATION_WINDOW_MAX = 500;
   const [convWindow, setConvWindow] = React.useState(CONVERSATION_LIST_PAGE);
-  const reloadConvs = React.useCallback(async () => {
+  const reloadConvs = React.useCallback(async (rethrow = false) => {
     const seq = ++conversationListSeq.current;
     try {
       const page = await api.conversationPage({
@@ -102,8 +105,10 @@ export default function ChatPage() {
       setConvTotal(page.total);
       setAgentCounts(page.agentCounts);
       setConvsLoaded(true);
-    } catch {
+    } catch (error) {
       // Preserve the selected transcript and list on a transient poll failure.
+      // The polling caller rethrows so usePolling backs off; UI callers stay quiet.
+      if (rethrow) throw error;
     } finally {
       if (seq === conversationListSeq.current) setLoadingMore(false);
     }
@@ -133,7 +138,7 @@ export default function ChatPage() {
 
   // One list poll supplies runtime state for all sidebar rows, including the
   // unselected ones. usePolling 保证慢请求不叠加，并在后台标签页暂停。
-  usePolling(reloadConvs, 2000, [reloadConvs]);
+  usePolling(() => reloadConvs(true), 2000, [reloadConvs]);
   React.useEffect(
     () => () => {
       conversationListSeq.current++;
@@ -196,26 +201,28 @@ export default function ChatPage() {
     () => convs.find((c) => c.id === selectedId) ?? (selectionFallback?.id === selectedId ? selectionFallback : null),
     [convs, selectedId, selectionFallback],
   );
-  // 每次轮询都会换一个 convs 数组；已尝试过的 id 记下来，避免深链接在窗口外时
-  // 每 2 秒重复请求同一个对话。
-  const fallbackFetchedRef = React.useRef<number | null>(null);
+  // Depend on membership, not the polling array: a refresh must not cancel an
+  // in-flight request for the same out-of-window conversation.
+  const selectedInWindow = convs.some((c) => c.id === selectedId);
+  const fallbackReady = selectionFallback?.id === selectedId;
+  const fallbackPending = selectedId != null && !selected && !fallbackReady;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fallbackRetry is an explicit manual retry trigger; the effect reads only the stable request identity.
   React.useEffect(() => {
-    if (selectedId == null || convs.some((c) => c.id === selectedId)) return;
-    if (fallbackFetchedRef.current === selectedId) return;
-    fallbackFetchedRef.current = selectedId;
-    let alive = true;
-    api
-      .conversation(selectedId)
+    if (selectedId == null || selectedInWindow || fallbackReady) {
+      setFallbackError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setFallbackError(null);
+    void retryRequest((signal) => api.conversation(selectedId, signal), controller.signal)
       .then((c) => {
-        if (alive) setSelectionFallback(c);
+        if (!controller.signal.aborted) setSelectionFallback(c);
       })
-      .catch(() => {
-        // 已删除或无权访问：保持草稿视图，与旧行为一致。
+      .catch((error) => {
+        if (!controller.signal.aborted) setFallbackError(error instanceof Error ? error.message : "加载对话失败");
       });
-    return () => {
-      alive = false;
-    };
-  }, [selectedId, convs]);
+    return () => controller.abort();
+  }, [selectedId, selectedInWindow, fallbackReady, fallbackRetry]);
   const agentByKey = React.useMemo(() => new Map(agents.map((agent) => [agent.key, agent])), [agents]);
   // 服务端已按 agent 过滤，这里就是已加载的窗口。
   const filteredConversations = convs;
@@ -546,7 +553,24 @@ export default function ChatPage() {
 
         {/* right: chat view */}
         <div className="bg-card flex min-w-0 flex-col overflow-hidden rounded-lg border">
-          {selected ? (
+          {fallbackPending || fallbackError ? (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center">
+              <p role={fallbackError ? "alert" : "status"} className="text-sm text-muted-foreground">
+                {fallbackError ?? "正在加载对话…"}
+              </p>
+              {fallbackError && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setFallbackError(null);
+                    setFallbackRetry((n) => n + 1);
+                  }}
+                >
+                  重试
+                </Button>
+              )}
+            </div>
+          ) : selected ? (
             <ChatView
               key={selected.id}
               conv={selected}

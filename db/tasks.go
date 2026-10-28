@@ -179,6 +179,27 @@ type TaskCreateOptions struct {
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
 // and the ordered task LLM chain in one transaction.
 func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOptions) (*Task, error) {
+	// Keep pure validation before Begin: an oversized request must not consume a
+	// pool connection or open a transaction.
+	if len(opts.SourceTaskIDs) > MaxTaskSourceCount {
+		return nil, fmt.Errorf("too many source tasks: got %d, maximum is %d", len(opts.SourceTaskIDs), MaxTaskSourceCount)
+	}
+	if _, err := NormalizeTaskCompanyIDs(opts.CompanyIDs); err != nil {
+		return nil, err
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	t, err := createTaskWithOptionsTx(tx, description, goal, opts)
+	if err != nil {
+		return nil, err
+	}
+	return t, tx.Commit()
+}
+
+func createTaskWithOptionsTx(tx *sql.Tx, description, goal string, opts TaskCreateOptions) (*Task, error) {
 	if len(opts.SourceTaskIDs) > MaxTaskSourceCount {
 		return nil, fmt.Errorf("too many source tasks: got %d, maximum is %d", len(opts.SourceTaskIDs), MaxTaskSourceCount)
 	}
@@ -187,11 +208,6 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 		return nil, err
 	}
 	opts.CompanyIDs = companyIDs
-	tx, err := d.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 	var expID int64
 	if err := tx.QueryRow(`INSERT INTO explorations(description, goal) VALUES ($1,$2) RETURNING id`, description, goal).Scan(&expID); err != nil {
 		return nil, err
@@ -275,7 +291,7 @@ RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, descripti
 	} else {
 		t.LLMFailoverState = "ready"
 	}
-	return t, tx.Commit()
+	return t, nil
 }
 
 func insertTaskCompanies(tx *sql.Tx, taskID int64, companyIDs []int64) error {

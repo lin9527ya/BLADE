@@ -208,7 +208,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
 		"exec_memory_mb":                execLimitsFromSettings(s.m.pg).MemoryMB,
 		"exec_max_procs":                execLimitsFromSettings(s.m.pg).MaxProcs,
-		"exec_max_active":               execMaxActiveFromSettings(s.m.pg),
+		"exec_max_active":               execMaxActiveSetting(s.m.pg),
 		"exec_max_age_minutes":          execMaxAgeMinutes(s.m.pg),
 		"mcp_max_concurrent_per_server": s.mcpGuardSetting(settingMCPMaxConcurrent, defaultMCPMaxConcurrent),
 		"mcp_breaker_threshold":         s.mcpGuardSetting(settingMCPBreakerFails, defaultMCPBreakerFails),

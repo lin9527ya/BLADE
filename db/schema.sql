@@ -1627,6 +1627,22 @@ CREATE TABLE IF NOT EXISTS task_schedules (
 );
 CREATE INDEX IF NOT EXISTS idx_task_schedules_due ON task_schedules(next_run_at) WHERE enabled;
 
+-- 每次到点触发一份账本：唯一键 (schedule_id, scheduled_at) 让重复 tick/多实例
+-- 无法建出同一个 occurrence；状态只由创建任务所在事务写入，崩溃不会留下"排期已推进、
+-- 任务却没建成"的静默空洞。
+CREATE TABLE IF NOT EXISTS schedule_runs (
+    id           BIGSERIAL PRIMARY KEY,
+    schedule_id  BIGINT NOT NULL REFERENCES task_schedules(id) ON DELETE CASCADE,
+    scheduled_at TIMESTAMPTZ NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'claimed',
+    task_id      TEXT NOT NULL DEFAULT '',
+    error        TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (schedule_id, scheduled_at)
+);
+CREATE INDEX IF NOT EXISTS idx_schedule_runs_recent ON schedule_runs(schedule_id, scheduled_at DESC);
+
 -- P23 公司级知识层：跨任务、跨人的"这家公司已知什么"。
 -- 与探索图的分工：探索图是**一个任务**的推理过程（goal/intent/fact/finding 及其血缘），
 -- 公司知识是**沉淀下来、已被复核过**的结论（"WAF 是 X""登录口在 Y""上次测过 Z 已修"），

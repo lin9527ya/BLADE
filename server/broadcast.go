@@ -2,6 +2,7 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/lin9527ya/blade/db"
 )
@@ -17,7 +18,8 @@ type Broadcaster struct {
 	// design (liveness must never block the engine), but the stream handler sees
 	// this and force-closes the connection so EventSource reconnects with its
 	// Last-Event-ID and replays the gap from the DB.
-	overflow map[string]map[chan db.Activity]bool
+	overflow      map[string]map[chan db.Activity]bool
+	overflowCount atomic.Int64
 }
 
 func NewBroadcaster() *Broadcaster {
@@ -73,6 +75,7 @@ func (b *Broadcaster) Publish(task string, a db.Activity) {
 		select {
 		case ch <- a:
 		default:
+			b.overflowCount.Add(1)
 			if b.overflow[task] == nil {
 				b.overflow[task] = map[chan db.Activity]bool{}
 			}
@@ -80,6 +83,11 @@ func (b *Broadcaster) Publish(task string, a db.Activity) {
 		}
 	}
 }
+
+// OverflowCount is a process-lifetime count of dropped live frames. A nonzero
+// value is not data loss (the DB cursor replays it) but indicates clients are
+// reconnecting under pressure.
+func (b *Broadcaster) OverflowCount() int64 { return b.overflowCount.Load() }
 
 // Overflowed reports whether this subscriber lost at least one event. The stream
 // handler polls it and closes the connection, forcing a DB-backed resync.

@@ -375,3 +375,34 @@ cat /etc/passwd                # Bash 下仍可（shell 本来就是全盘读）
 **注意**：开启后不能再用 `sudo`/`apt` 等需要 root 的命令操作宿主机——agent 的扫描本身
 （nmap/nuclei/ffuf）不需要 root；确实需要高权限工具时，把那台机器作为独立执行节点，
 而不是放宽 worker 的权限。
+
+---
+
+## 十、一致备份与恢复
+
+`deploy/backup.sh` / `deploy/restore.sh` 覆盖 PostgreSQL、`data/`（流量 SQLite 与
+evidence/正文）、`config.json` 和 `skills/`，并在备份目录生成 `SHA256SUMS`。两个脚本
+都拒绝在未确认停机的情况下运行；**先停止 blade**，再执行：
+
+```bash
+sudo systemctl stop blade
+BLADE_PG_DSN='postgres://...' \
+BLADE_BACKUP_DIR=/var/backups/blade \
+BLADE_BACKUP_QUIESCED=1 \
+  ./deploy/backup.sh
+```
+
+恢复是破坏性操作，必须显式指定快照并确认停机：
+
+```bash
+sudo systemctl stop blade
+BLADE_PG_DSN='postgres://...' \
+BLADE_BACKUP_SNAPSHOT=/var/backups/blade/blade-backup-<时间戳> \
+BLADE_RESTORE_QUIESCED=1 \
+  ./deploy/restore.sh --yes
+sudo systemctl start blade
+```
+
+恢复后检查 `/api/health`、任务列表、证据引用与最近日志；脚本会把恢复前的
+`data/`、`skills/`、`config.json` 留在 `.pre-restore-<时间戳>/`，不要立即删除。
+备份目录包含密钥与业务数据，必须限制访问权限并纳入异地保留策略。

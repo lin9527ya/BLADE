@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1219,6 +1220,75 @@ WHERE exploration_id=$1 AND kind='intent' AND state='open'`, s.expID).Scan(&n)
 //
 // 与 CountOpenIntents 的区别是队列背压要用的：被前置挡住的步骤不消耗 worker，
 // 拿它们占额度会在 worker 全空闲时反而拒新活。
+// IntentStateCountsFor batches CountIntentStates for many explorations (the
+// metrics page lists every task). One GROUP BY replaces one query per task.
+func (d *DB) IntentStateCountsFor(explorationIDs []int64) (map[int64]map[string]int, error) {
+	return d.IntentStateCountsForContext(context.Background(), explorationIDs)
+}
+
+func (d *DB) IntentStateCountsForContext(ctx context.Context, explorationIDs []int64) (map[int64]map[string]int, error) {
+	out := map[int64]map[string]int{}
+	if len(explorationIDs) == 0 {
+		return out, nil
+	}
+	rows, err := d.QueryContext(ctx, `SELECT exploration_id, state, COUNT(*)
+FROM exploration_nodes
+WHERE kind='intent' AND exploration_id = ANY($1)
+GROUP BY exploration_id, state`, explorationIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var explorationID int64
+		var state string
+		var n int
+		if err := rows.Scan(&explorationID, &state, &n); err != nil {
+			return nil, err
+		}
+		if out[explorationID] == nil {
+			out[explorationID] = map[string]int{}
+		}
+		out[explorationID][state] = n
+	}
+	return out, rows.Err()
+}
+
+// ClaimableIntentCountsFor batches the claimable-intent count with the same
+// dependency predicate as CountClaimableIntents.
+func (d *DB) ClaimableIntentCountsFor(explorationIDs []int64) (map[int64]int, error) {
+	return d.ClaimableIntentCountsForContext(context.Background(), explorationIDs)
+}
+
+func (d *DB) ClaimableIntentCountsForContext(ctx context.Context, explorationIDs []int64) (map[int64]int, error) {
+	out := map[int64]int{}
+	if len(explorationIDs) == 0 {
+		return out, nil
+	}
+	rows, err := d.QueryContext(ctx, `SELECT n.exploration_id, COUNT(*)
+FROM exploration_nodes n
+WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open'
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes dep ON dep.id=e.dst_id AND dep.exploration_id=e.exploration_id
+    WHERE e.exploration_id=n.exploration_id AND e.rel='depends_on' AND e.src_id=n.id
+      AND dep.state NOT IN ('done','negative'))
+GROUP BY n.exploration_id`, explorationIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var explorationID int64
+		var n int
+		if err := rows.Scan(&explorationID, &n); err != nil {
+			return nil, err
+		}
+		out[explorationID] = n
+	}
+	return out, rows.Err()
+}
+
 func (s *ExplorationStore) CountClaimableIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
@@ -2114,7 +2184,11 @@ func (d *DB) TokenTotalsAll() (map[int64]TokenUsage, error) {
 // Persisted (unlike Engine.LastActivity's in-memory map), so it survives restarts
 // and gives终态任务 a stable "ran until" time for computing run duration.
 func (d *DB) LastActivityAll() (map[int64]int64, error) {
-	rows, err := d.Query(`SELECT exploration_id, EXTRACT(EPOCH FROM MAX(created_at))::bigint FROM activity GROUP BY exploration_id`)
+	return d.LastActivityAllContext(context.Background())
+}
+
+func (d *DB) LastActivityAllContext(ctx context.Context) (map[int64]int64, error) {
+	rows, err := d.QueryContext(ctx, `SELECT exploration_id, EXTRACT(EPOCH FROM MAX(created_at))::bigint FROM activity GROUP BY exploration_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2234,11 +2308,15 @@ func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
 // 任务列表改为服务端分页后，每页只需要当页任务的指标；全量 LATERAL 聚合在任务
 // 多时是列表轮询里最贵的查询。
 func (d *DB) TaskListMetricsFor(explorationIDs []int64) (map[int64]TaskListMetrics, error) {
+	return d.TaskListMetricsForContext(context.Background(), explorationIDs)
+}
+
+func (d *DB) TaskListMetricsForContext(ctx context.Context, explorationIDs []int64) (map[int64]TaskListMetrics, error) {
 	out := map[int64]TaskListMetrics{}
 	if len(explorationIDs) == 0 {
 		return out, nil
 	}
-	rows, err := d.Query(`
+	rows, err := d.QueryContext(ctx, `
 		SELECT task.exploration_id,
 		       COALESCE(token_metrics.input_tokens,0),
 		       COALESCE(token_metrics.output_tokens,0),

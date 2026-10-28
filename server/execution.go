@@ -109,26 +109,20 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 	if len([]rune(command)) > execMaxCommandRune {
 		return agent.ExecStatus{}, fmt.Errorf("命令过长（>%d 字符）：长脚本请先落盘再执行短命令", execMaxCommandRune)
 	}
-	// 同时执行数上限：与 P24 的资源限额互补——那三条限的是「每一条能吃多少」（ulimit 前导），
-	// 这条限的是「同时有几条」。单条被 CPU 限额兜住，但 agent 若起了一百条，机器照样被打满。
-	// 0 = 不限。读不到计数就放行（与资产闸门同一条纪律：一次 DB 抖动不该挡死 agent 的正常工具
-	// 调用），但必须留日志——不静默。
-	if maxActive := execMaxActiveFromSettings(s.pg); maxActive > 0 {
-		if n, err := s.pg.CountActiveExecutions(taskID); err != nil {
-			log.Printf("[exec] 活跃执行数读取失败，本次不拦: %v", err)
-		} else if n >= maxActive {
-			return agent.ExecStatus{}, fmt.Errorf(
-				"本任务同时运行的后台执行已达上限（%d/%d）：先 wait_execution 等已有的收尾，或用 cancel_execution 取消一条，再起新的", n, maxActive)
-		}
+	// 配额在 DB 事务内检查并占位，不能 COUNT 后另起 INSERT。读不到设置或
+	// 计数时拒绝本次提交，避免数据库故障把配置的硬上限变成不限。
+	maxActive, err := execMaxActiveFromSettings(s.pg)
+	if err != nil {
+		return agent.ExecStatus{}, fmt.Errorf("读取执行并发上限失败: %w", err)
 	}
 	logDir := filepath.Join(s.dir, "tasks", taskID, "executions")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return agent.ExecStatus{}, err
 	}
-	id, err := s.pg.CreateExecution(&db.ToolExecution{
+	id, err := s.pg.CreateExecutionWithinLimit(ctx, &db.ToolExecution{
 		TaskID: taskID, IntentID: intentID, Worker: worker, Tool: tool,
 		Command: command, Description: strings.TrimSpace(desc),
-	})
+	}, maxActive)
 	if err != nil {
 		return agent.ExecStatus{}, err
 	}
@@ -137,6 +131,7 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 		path = filepath.Join(logDir, fmt.Sprintf("%d.log", id))
 	}
 	if err := s.pg.SetExecutionOutputPath(id, path); err != nil {
+		_ = s.pg.FinishExecution(id, db.ExecFailed, -1, 0, "", "无法记录输出路径："+err.Error())
 		return agent.ExecStatus{}, err
 	}
 	logFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -630,17 +625,30 @@ func execMaxAgeFromSettings(pg *db.DB) time.Duration {
 }
 
 // execMaxActiveFromSettings 读「本任务同时可有多少条后台执行」的上限（0 = 不限）。
-func execMaxActiveFromSettings(pg *db.DB) int {
-	if pg == nil {
-		return defaultExecMaxActive
-	}
-	v, ok, _ := pg.GetSetting(settingExecMaxActive)
-	if !ok || strings.TrimSpace(v) == "" {
-		return defaultExecMaxActive
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 0 {
+// execMaxActiveSetting is for read-only configuration snapshots: a transient
+// read failure falls back to the default. Submit uses the strict variant below.
+func execMaxActiveSetting(pg *db.DB) int {
+	n, err := execMaxActiveFromSettings(pg)
+	if err != nil {
 		return defaultExecMaxActive
 	}
 	return n
+}
+
+func execMaxActiveFromSettings(pg *db.DB) (int, error) {
+	if pg == nil {
+		return 0, errors.New("执行数据库不可用")
+	}
+	v, ok, err := pg.GetSetting(settingExecMaxActive)
+	if err != nil {
+		return 0, err
+	}
+	if !ok || strings.TrimSpace(v) == "" {
+		return defaultExecMaxActive, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return defaultExecMaxActive, nil
+	}
+	return n, nil
 }

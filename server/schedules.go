@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,8 +20,9 @@ import (
 // 语义（写进 UI 与 docs/情报与计划任务.md，避免"为什么没跑/为什么跑了两次"的歧义）：
 //   - 一份计划任务 = 一份**确定的可重放规格**（task_spec，与创建任务 API 同形状的子集）
 //     + 一个结构化频率。到点就按规格原样建一个普通任务，之后的推送/交付全走既有链路。
-//   - **不重复触发**靠 CAS：先把 next_run_at 推到下一次（原子），推成功的那次才建任务；
-//     多 tick、重启、同实例并发都不会建出两个任务。
+//   - **不重复触发**靠两层凭据：schedule_runs(schedule_id, scheduled_at) 唯一键认领，
+//     再把 next_run_at 推到下一次（CAS）。认领、推进、建任务、记账在同一事务里，
+//     多 tick/多实例不会建出两个任务，崩溃也不会留下"排期已推进、任务却没建成"的空洞。
 //   - **不追补**：进程停机期间错过的次数只跑一次（开机时那一次），不会连建三个任务；
 //     要补就人工点「立即运行」。
 //   - 「立即运行」是**额外**一次运行，不改排期（下次仍按原计划）。
@@ -115,23 +117,33 @@ func (s *Server) validateScheduleSpec(spec scheduleSpec) error {
 	return nil
 }
 
-// createTaskFromSpec 按规格建一个任务并启动（与 HTTP 建任务同一条路径）。
-func (s *Server) createTaskFromSpec(spec scheduleSpec) (*Task, error) {
+// scheduleTaskOptions resolves the parts of the spec that need DB/policy
+// lookups. Both the manual and scheduled paths use the same options.
+func (s *Server) scheduleTaskOptions(spec scheduleSpec) (db.TaskCreateOptions, error) {
 	interceptRules, err := buildTaskInterceptRules(spec.InterceptRules)
 	if err != nil {
-		return nil, fmt.Errorf("任务级拦截规则无效：%w", err)
+		return db.TaskCreateOptions{}, fmt.Errorf("任务级拦截规则无效：%w", err)
 	}
 	policyDoc, err := s.newTaskPolicy(spec.ExplorationPolicy)
 	if err != nil {
-		return nil, err
+		return db.TaskCreateOptions{}, err
 	}
-	t, err := s.m.CreateTaskWithOptions(spec.Description, spec.Goal, db.TaskCreateOptions{
+	return db.TaskCreateOptions{
 		Name: strings.TrimSpace(spec.Name), CategoryID: spec.CategoryID,
 		CompanyIDs: spec.CompanyIDs, LLMProfileIDs: spec.LLMProfileIDs,
 		TimeoutSeconds: spec.TimeoutSeconds, PlanHeartbeatSeconds: spec.PlanHeartbeatSeconds,
 		CoverageEnabled: spec.CoverageEnabled, InterceptRules: interceptRules,
 		ExplorationPolicy: policyDoc,
-	})
+	}, nil
+}
+
+// createTaskFromSpec is the manual "run now" path (no schedule advancement).
+func (s *Server) createTaskFromSpec(spec scheduleSpec) (*Task, error) {
+	opts, err := s.scheduleTaskOptions(spec)
+	if err != nil {
+		return nil, err
+	}
+	t, err := s.m.CreateTaskWithOptions(spec.Description, spec.Goal, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +305,7 @@ func (s *Server) runTaskScheduleNow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "计划任务不存在")
 		return
 	}
-	t, err := s.fireSchedule(row, false)
+	t, err := s.fireSchedule(row)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -301,8 +313,9 @@ func (s *Server) runTaskScheduleNow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"task_id": t.ID, "note": "已按规格建任务（不影响下次排期）"})
 }
 
-// fireSchedule 执行一次触发：建任务 + 记账。advance=false 表示"立即运行"（不动排期）。
-func (s *Server) fireSchedule(row *db.TaskSchedule, advance bool) (*Task, error) {
+// fireSchedule is the manual "run now" path: it creates a task without touching
+// the occurrence schedule or the scheduled-run ledger.
+func (s *Server) fireSchedule(row *db.TaskSchedule) (*Task, error) {
 	var spec scheduleSpec
 	if err := json.Unmarshal(row.TaskSpec, &spec); err != nil {
 		return nil, fmt.Errorf("规格不是合法 JSON：%w", err)
@@ -314,7 +327,7 @@ func (s *Server) fireSchedule(row *db.TaskSchedule, advance bool) (*Task, error)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[schedule] 计划任务 #%d「%s」触发，建任务 #%s（%s）", row.ID, row.Name, t.ID, t.Description)
+	log.Printf("[schedule] 计划任务 #%d「%s」立即运行，建任务 #%s（%s）", row.ID, row.Name, t.ID, t.Description)
 	_ = s.m.pg.FinishScheduleRun(row.ID, time.Now(), t.ID, "")
 	return t, nil
 }
@@ -350,13 +363,42 @@ func (sc *Scheduler) runDueSchedules(ctx context.Context) {
 			_ = sc.pg.FinishScheduleRun(row.ID, time.Now(), "", "频率不合法："+err.Error())
 			continue
 		}
-		won, err := sc.pg.AdvanceTaskSchedule(row.ID, *row.NextRunAt, next)
-		if err != nil || !won {
-			continue // 别的 tick 已经抢到了这一次
+		var spec scheduleSpec
+		if err := json.Unmarshal(row.TaskSpec, &spec); err != nil {
+			sc.failDueSchedule(ctx, row, next, fmt.Errorf("规格不是合法 JSON：%w", err))
+			continue
 		}
-		if _, err := sc.s.fireSchedule(row, true); err != nil {
+		if err := sc.s.validateScheduleSpec(spec); err != nil {
+			sc.failDueSchedule(ctx, row, next, err)
+			continue
+		}
+		opts, err := sc.s.scheduleTaskOptions(spec)
+		if err != nil {
+			sc.failDueSchedule(ctx, row, next, err)
+			continue
+		}
+		// The claim, next_run_at CAS, task creation and ledger write share one
+		// transaction. A task-creation error is recorded as a failed occurrence
+		// and still advances the schedule, so a broken spec cannot hot-loop.
+		pt, err := sc.pg.FireTaskScheduleRun(ctx, row.ID, *row.NextRunAt, next, spec.Description, spec.Goal, opts)
+		if err != nil {
+			if errors.Is(err, db.ErrScheduleRunDuplicate) || errors.Is(err, db.ErrScheduleRunAdvanced) {
+				continue // another tick/instance owns this occurrence
+			}
 			log.Printf("[schedule] 计划任务 #%d「%s」触发失败：%v", row.ID, row.Name, err)
-			_ = sc.pg.FinishScheduleRun(row.ID, time.Now(), "", err.Error())
+			continue
 		}
+		t := sc.s.m.RegisterCreatedTask(pt)
+		sc.s.launchTask(t, spec.Description+" "+spec.Goal, spec.SeedFirstIntent != nil && *spec.SeedFirstIntent)
+		log.Printf("[schedule] 计划任务 #%d「%s」到点触发，建任务 #%s（%s）", row.ID, row.Name, t.ID, t.Description)
+	}
+}
+
+func (sc *Scheduler) failDueSchedule(ctx context.Context, row *db.TaskSchedule, next time.Time, cause error) {
+	if err := sc.pg.FailTaskScheduleRun(ctx, row.ID, *row.NextRunAt, next, cause.Error()); err != nil {
+		if errors.Is(err, db.ErrScheduleRunDuplicate) || errors.Is(err, db.ErrScheduleRunAdvanced) {
+			return
+		}
+		log.Printf("[schedule] 计划任务 #%d「%s」记录失败运行出错：%v（原因：%v）", row.ID, row.Name, err, cause)
 	}
 }

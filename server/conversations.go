@@ -74,7 +74,7 @@ func (s *Server) pgListConversations(w http.ResponseWriter, r *http.Request) {
 		if limit > 500 {
 			limit = 500
 		}
-		cs, err = pg.ListConversationsPage(strings.TrimSpace(q.Get("agent")), offset, limit)
+		cs, err = pg.ListConversationsPageContext(r.Context(), strings.TrimSpace(q.Get("agent")), offset, limit)
 	} else {
 		cs, err = pg.ListConversations()
 	}
@@ -389,15 +389,16 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	s.chatRuns.mu.Unlock()
 
 	// Incremental tail: ?since=N returns steps after id N (ASC) — used by the live
-	// poll and the post-send fetch. A generous cap so a burst is never dropped.
+	// poll and the post-send fetch. hasMore keeps the tail alive until it is drained.
 	if sv := q.Get("since"); sv != "" {
 		since, _ := strconv.ParseInt(sv, 10, 64)
-		items, cursor, err := pg.ConvActivityList(c.ID, since, max(limit, 1000))
+		tailLimit := atoiDefault(q.Get("limit"), 1000)
+		items, cursor, hasMore, err := pg.ConvActivityTailPageContext(r.Context(), c.ID, since, tailLimit)
 		if err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "hasMore": false})
+		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "hasMore": hasMore})
 		return
 	}
 
@@ -405,7 +406,7 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	// the page of older steps ending before id N. hasMore lets the client stop
 	// loading earlier history once the top of the thread is reached.
 	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
-	items, hasMore, err := pg.ConvActivityPage(c.ID, before, limit)
+	items, hasMore, err := pg.ConvActivityPageContext(r.Context(), c.ID, before, limit)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

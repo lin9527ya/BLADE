@@ -52,7 +52,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePolling } from "@/hooks/use-polling";
 /* removed: @/components/ui/tooltip */
 import { api } from "@/lib/api";
+import { remainingSelection } from "@/lib/batch-selection";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
+import { createLatestRequest, runLatestRequest } from "@/lib/request-lifecycle";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
 import {
   AssetInterceptRuleInput,
@@ -70,7 +72,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { CreateTaskSheet } from "./_components/create-task-sheet";
-import { ARCHIVABLE_STATUSES, ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
+import { ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
 import { CategoryManagementDialog } from "./_components/task-categories";
 import { BulkDeleteTasksDialog, MoveTasksCategoryDialog } from "./_components/task-dialogs";
 import {
@@ -84,7 +86,6 @@ import {
   TASK_SORT_FIELDS,
   TASK_SORT_PREFERENCE_KEY,
   type TaskSortField,
-  taskControlAction,
   taskIsPinned,
   UNCATEGORIZED_VALUE,
 } from "./_components/task-helpers";
@@ -122,6 +123,7 @@ export default function TasksPage() {
   const [totalTasks, setTotalTasks] = React.useState(0);
   const [filteredTasks, setFilteredTasks] = React.useState(0);
   const [listLoading, setListLoading] = React.useState(false);
+  const [listError, setListError] = React.useState<string | null>(null);
   const [nowSec, setNowSec] = React.useState(() => Math.floor(Date.now() / 1000));
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
@@ -224,34 +226,72 @@ export default function TasksPage() {
   // re-render the whole page for nothing. Bail out when it matches.
   const lastRef = React.useRef<string>("");
 
-  const load = React.useCallback(() => {
+  const [requestOwner] = React.useState(() => createLatestRequest());
+  const queryKey = JSON.stringify([
+    page,
+    pageSize,
+    debouncedQuery,
+    statusFilter,
+    categoryFilter,
+    sortField,
+    sortDirection,
+  ]);
+  const queryKeyRef = React.useRef(queryKey);
+  queryKeyRef.current = queryKey;
+  React.useEffect(() => () => requestOwner.cancel(), [requestOwner]);
+
+  const fetchTasks = React.useCallback(() => {
+    const requestedKey = queryKeyRef.current;
     setListLoading(true);
-    return api
-      .tasks({
-        page,
-        size: pageSize,
-        q: debouncedQuery.trim(),
-        status: statusFilter === "all" ? "" : statusFilter,
-        category: categoryFilter === "all" ? "" : categoryFilter === UNCATEGORIZED_VALUE ? "uncategorized" : categoryFilter,
-        sort: sortField,
-        dir: sortDirection,
-      })
-      .then((r) => {
-        const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
-        const total = r.total ?? next.length;
-        const filtered = r.filtered ?? next.length;
-        const sig = JSON.stringify([next, total, filtered]);
-        if (sig === lastRef.current) return;
-        lastRef.current = sig;
-        setTasks(next);
-        setTotalTasks(total);
-        setFilteredTasks(filtered);
-      })
-      .catch(() => {
-        // Polling is best-effort; the next interval retries automatically.
-      })
-      .finally(() => setListLoading(false));
-  }, [page, pageSize, debouncedQuery, statusFilter, categoryFilter, sortField, sortDirection]);
+    return runLatestRequest(
+      requestOwner,
+      (signal) =>
+        api.tasks(
+          {
+            page,
+            size: pageSize,
+            q: debouncedQuery.trim(),
+            status: statusFilter === "all" ? "" : statusFilter,
+            category:
+              categoryFilter === "all"
+                ? ""
+                : categoryFilter === UNCATEGORIZED_VALUE
+                  ? "uncategorized"
+                  : categoryFilter,
+            sort: sortField,
+            dir: sortDirection,
+          },
+          signal,
+        ),
+      {
+        success: (r) => {
+          if (queryKeyRef.current !== requestedKey) return;
+          setListError(null);
+          const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
+          const total = r.total ?? next.length;
+          const filtered = r.filtered ?? next.length;
+          const sig = JSON.stringify([next, total, filtered]);
+          if (sig === lastRef.current) return;
+          lastRef.current = sig;
+          setTasks(next);
+          setTotalTasks(total);
+          setFilteredTasks(filtered);
+        },
+        error: (error) => {
+          if (queryKeyRef.current === requestedKey) {
+            setListError(error instanceof Error ? error.message : "加载任务失败");
+          }
+        },
+        settled: () => {
+          if (queryKeyRef.current === requestedKey) setListLoading(false);
+        },
+      },
+    );
+  }, [requestOwner, page, pageSize, debouncedQuery, statusFilter, categoryFilter, sortField, sortDirection]);
+
+  // Polls see rejections for backoff; fire-and-forget action refreshes do not leak
+  // unhandled promises. Both use the same request owner and error UI.
+  const load = React.useCallback(() => fetchTasks().catch(() => undefined), [fetchTasks]);
 
   const loadCategories = React.useCallback(
     () =>
@@ -269,10 +309,10 @@ export default function TasksPage() {
 
   usePolling(
     async () => {
-      await Promise.all([load(), loadCategories()]);
+      await Promise.all([fetchTasks(), loadCategories()]);
     },
     POLL_MS,
-    [load, loadCategories],
+    [fetchTasks, loadCategories],
   );
 
   const refreshCategoriesAndTasks = React.useCallback(() => {
@@ -460,39 +500,37 @@ export default function TasksPage() {
     [load],
   );
 
-  const selectedTasks = React.useMemo(() => tasks.filter((task) => selectedIds.has(task.id)), [tasks, selectedIds]);
-  const pausableTaskIDs = React.useMemo(
-    () => selectedTasks.filter((task) => taskControlAction(task.status) === "pause").map((task) => task.id),
-    [selectedTasks],
-  );
-  const resumableTaskIDs = React.useMemo(
-    () => selectedTasks.filter((task) => taskControlAction(task.status) === "resume").map((task) => task.id),
-    [selectedTasks],
-  );
-  const archivableTaskIDs = React.useMemo(
-    () => selectedTasks.filter((task) => ARCHIVABLE_STATUSES.has(task.status) && !task.queued).map((task) => task.id),
-    [selectedTasks],
-  );
+  // Selection spans pages; actions submit every selected ID and let the server
+  // re-check current state per item. Never derive the candidate set from the page.
+  const selectedTaskIDs = React.useMemo(() => [...selectedIds], [selectedIds]);
 
   const archiveSelectedTasks = React.useCallback(async () => {
-    if (archivableTaskIDs.length === 0) return;
-    const result = await api.archiveTasks(archivableTaskIDs);
-    const succeeded = result.items.filter((item) => item.ok);
-    const failed = result.items.filter((item) => !item.ok);
-    if (succeeded.length > 0) toast.success(`已将 ${succeeded.length} 个任务加入归档队列`);
-    if (failed.length > 0) {
-      toast.error(
-        `${failed.length} 个任务无法归档：${failed
-          .slice(0, 3)
-          .map((item) => `#${item.id}（${item.error || "状态已变化"}）`)
-          .join("；")}`,
-      );
+    if (selectedTaskIDs.length === 0) return;
+    if (selectedTaskIDs.length > 100) {
+      toast.error("一次最多归档 100 个任务");
+      return;
     }
-    setSelectedIds(new Set());
-    setActiveTab("archived");
-    lastRef.current = "";
-    load();
-  }, [archivableTaskIDs, load]);
+    try {
+      const result = await api.archiveTasks(selectedTaskIDs);
+      const succeeded = result.items.filter((item) => item.ok);
+      const failed = result.items.filter((item) => !item.ok);
+      if (succeeded.length > 0) toast.success(`已将 ${succeeded.length} 个任务加入归档队列`);
+      if (failed.length > 0) {
+        toast.error(
+          `${failed.length} 个任务未能归档：${failed
+            .slice(0, 3)
+            .map((item) => `#${item.id}（${item.error || "状态已变化"}）`)
+            .join("；")}`,
+        );
+      }
+      setSelectedIds((current) => remainingSelection(current, result.items));
+      if (failed.length === 0) setActiveTab("archived");
+      lastRef.current = "";
+      load();
+    } catch (error) {
+      toast.error(`批量归档失败：${(error as Error).message}`);
+    }
+  }, [selectedTaskIDs, load]);
 
   const controlSelectedTasks = React.useCallback(
     async (action: "pause" | "resume", ids: string[]) => {
@@ -520,6 +558,7 @@ export default function TasksPage() {
             .join("；");
           toast.error(`${failed.length} 个任务操作失败：${details}${failed.length > 3 ? " 等" : ""}`);
         }
+        setSelectedIds((current) => remainingSelection(current, result.items));
         lastRef.current = "";
         load();
       } catch (error) {
@@ -548,7 +587,7 @@ export default function TasksPage() {
         const target = result.category?.name ?? "未分类";
         if (succeeded.length > 0) {
           toast.success(`已将 ${succeeded.length} 个任务移动到「${target}」`);
-          setSelectedIds(new Set());
+          setSelectedIds((current) => remainingSelection(current, result.items));
         }
         if (failed.length > 0) {
           const details = failed
@@ -635,54 +674,56 @@ export default function TasksPage() {
                 <span className="text-muted-foreground text-xs tabular-nums">
                   {filteredTasks}/{totalTasks} 条
                 </span>
+                {listError && (
+                  <span role="alert" className="text-xs text-destructive">
+                    刷新失败，显示上次数据：{listError}
+                    <Button size="sm" variant="ghost" onClick={() => void load()}>
+                      重试
+                    </Button>
+                  </span>
+                )}
                 {selectedIds.size > 0 && (
                   <>
-                    <span className="text-xs tabular-nums">已选 {selectedIds.size} 个</span>
+                    <span className="text-xs tabular-nums">已选 {selectedIds.size} 个（服务端逐项校验状态）</span>
                     <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
                       取消选择
                     </Button>
-                    {pausableTaskIDs.length > 0 && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={batchControlling !== null}
-                        onClick={() => void controlSelectedTasks("pause", pausableTaskIDs)}
-                      >
-                        {batchControlling === "pause" ? (
-                          <Spinner data-icon="inline-start" />
-                        ) : (
-                          <PauseIcon data-icon="inline-start" />
-                        )}
-                        暂停 {pausableTaskIDs.length}
-                      </Button>
-                    )}
-                    {resumableTaskIDs.length > 0 && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={batchControlling !== null}
-                        onClick={() => void controlSelectedTasks("resume", resumableTaskIDs)}
-                      >
-                        {batchControlling === "resume" ? (
-                          <Spinner data-icon="inline-start" />
-                        ) : (
-                          <PlayIcon data-icon="inline-start" />
-                        )}
-                        继续 {resumableTaskIDs.length}
-                      </Button>
-                    )}
-                    {archivableTaskIDs.length > 0 && (
-                      <ArchiveConfirmDialog
-                        count={archivableTaskIDs.length}
-                        onConfirm={archiveSelectedTasks}
-                        trigger={
-                          <Button size="sm" variant="outline">
-                            <ArchiveIcon data-icon="inline-start" />
-                            归档 {archivableTaskIDs.length}
-                          </Button>
-                        }
-                      />
-                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={batchControlling !== null}
+                      onClick={() => void controlSelectedTasks("pause", selectedTaskIDs)}
+                    >
+                      {batchControlling === "pause" ? (
+                        <Spinner data-icon="inline-start" />
+                      ) : (
+                        <PauseIcon data-icon="inline-start" />
+                      )}
+                      暂停 {selectedTaskIDs.length}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={batchControlling !== null}
+                      onClick={() => void controlSelectedTasks("resume", selectedTaskIDs)}
+                    >
+                      {batchControlling === "resume" ? (
+                        <Spinner data-icon="inline-start" />
+                      ) : (
+                        <PlayIcon data-icon="inline-start" />
+                      )}
+                      继续 {selectedTaskIDs.length}
+                    </Button>
+                    <ArchiveConfirmDialog
+                      count={selectedTaskIDs.length}
+                      onConfirm={archiveSelectedTasks}
+                      trigger={
+                        <Button size="sm" variant="outline">
+                          <ArchiveIcon data-icon="inline-start" />
+                          归档 {selectedTaskIDs.length}
+                        </Button>
+                      }
+                    />
                     <MoveTasksCategoryDialog
                       categories={categories}
                       count={selectedIds.size}

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -162,6 +163,10 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, updated_at DES
 // ListConversations (pinned first, then most-recently-updated). agentKey
 // restricts to one agent ("" = all).
 func (d *DB) ListConversationsPage(agentKey string, offset, limit int) ([]*Conversation, error) {
+	return d.ListConversationsPageContext(context.Background(), agentKey, offset, limit)
+}
+
+func (d *DB) ListConversationsPageContext(ctx context.Context, agentKey string, offset, limit int) ([]*Conversation, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -177,7 +182,7 @@ func (d *DB) ListConversationsPage(agentKey string, offset, limit int) ([]*Conve
 	query += fmt.Sprintf(` ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, updated_at DESC, id DESC
 LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
 	args = append(args, limit, offset)
-	rows, err := d.Query(query, args...)
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -314,11 +319,15 @@ RETURNING id`, convID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool)
 // ConvActivityList returns a conversation's steps after sinceID (exclusive) with
 // the summary-only column set (detail is lazy-loaded via ConvActivityDetail).
 func (d *DB) ConvActivityList(convID, sinceID int64, limit int) ([]Activity, int64, error) {
+	return d.convActivityListContext(context.Background(), convID, sinceID, limit)
+}
+
+func (d *DB) convActivityListContext(ctx context.Context, convID, sinceID int64, limit int) ([]Activity, int64, error) {
 	if limit <= 0 {
 		limit = 500
 	}
 	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
-	rows, err := d.Query(`SELECT `+cols+`
+	rows, err := d.QueryContext(ctx, `SELECT `+cols+`
 FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMIT $3`, convID, sinceID, limit)
 	if err != nil {
 		return nil, sinceID, err
@@ -340,18 +349,45 @@ FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMI
 	return out, cursor, rows.Err()
 }
 
+// ConvActivityTailPage reads one extra row to distinguish an ended run from a
+// drained cursor. The lookahead row must not advance the returned cursor.
+func (d *DB) ConvActivityTailPage(convID, sinceID int64, limit int) ([]Activity, int64, bool, error) {
+	return d.ConvActivityTailPageContext(context.Background(), convID, sinceID, limit)
+}
+
+func (d *DB) ConvActivityTailPageContext(ctx context.Context, convID, sinceID int64, limit int) ([]Activity, int64, bool, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	limit = min(limit, 1000)
+	items, cursor, err := d.convActivityListContext(ctx, convID, sinceID, limit+1)
+	if err != nil {
+		return nil, sinceID, false, err
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+		cursor = items[len(items)-1].ID
+	}
+	return items, cursor, hasMore, nil
+}
+
 // ConvActivityPage returns one page for reverse (newest-first) pagination: up to
 // `limit` steps ending before id `before` (exclusive; before<=0 = the latest
 // page), returned in ASCENDING id order. hasMore reports whether still-older steps
 // exist before the returned window, so the client can stop loading earlier history
 // on scroll-up. Summary-only columns (detail is lazy-loaded via ConvActivityDetail).
 func (d *DB) ConvActivityPage(convID, before int64, limit int) ([]Activity, bool, error) {
+	return d.ConvActivityPageContext(context.Background(), convID, before, limit)
+}
+
+func (d *DB) ConvActivityPageContext(ctx context.Context, convID, before int64, limit int) ([]Activity, bool, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
 	// fetch one extra row to detect whether older history remains before this window.
-	rows, err := d.Query(`SELECT `+cols+`
+	rows, err := d.QueryContext(ctx, `SELECT `+cols+`
 FROM conversation_activities
 WHERE conversation_id=$1 AND ($2 <= 0 OR id < $2)
 ORDER BY id DESC LIMIT $3`, convID, before, limit+1)

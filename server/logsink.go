@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lin9527ya/blade/db"
@@ -41,6 +42,9 @@ type logSinkT struct {
 
 	dbOnce sync.Once
 	dbCh   chan dbWriteReq // buffered async channel; nil until SetDB is called
+
+	dbDropped     atomic.Int64
+	dbWriteFailed atomic.Int64
 }
 
 var logSink = &logSinkT{cap: 3000, subs: map[chan LogLine]struct{}{}, out: os.Stderr}
@@ -157,6 +161,7 @@ func (s *logSinkT) add(l LogLine) {
 		select {
 		case ch <- dbWriteReq{seq: l.Seq, ll: l}:
 		default:
+			s.dbDropped.Add(1)
 		}
 	}
 
@@ -165,6 +170,15 @@ func (s *logSinkT) add(l LogLine) {
 		case sub <- l:
 		default:
 		}
+	}
+}
+
+// DBStats reports persistence loss: a full queue drops a line by design, and a
+// write failure is retried only by the caller's next line. Both must be visible.
+func (s *logSinkT) DBStats() map[string]int64 {
+	return map[string]int64{
+		"db_queue_dropped": s.dbDropped.Load(),
+		"db_write_failed":  s.dbWriteFailed.Load(),
 	}
 }
 

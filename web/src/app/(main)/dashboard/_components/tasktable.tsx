@@ -14,7 +14,7 @@ import { fmtRel } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowTaskTable({ s }: { s: ReturnType<typeof useDashboardState>["taskTable"] }) {
-  const { tasks, sortedTasks } = s;
+  const { taskTotal, sortedTasks } = s;
 
   return (
     <>
@@ -25,7 +25,7 @@ export function RowTaskTable({ s }: { s: ReturnType<typeof useDashboardState>["t
             任务
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-muted-foreground">{tasks.length} 个任务</span>
+            <span className="text-[10px] text-muted-foreground">{taskTotal} 个任务</span>
             <Link
               href="/function/tasks"
               className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"

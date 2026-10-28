@@ -15,7 +15,7 @@ import { fmtRel } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowActivity({ s }: { s: ReturnType<typeof useDashboardState>["activityRow"] }) {
-  const { tasks, findings, activity, recentFindings, recentActivity, kindLabel, workerBg } = s;
+  const { findings, activity, recentFindings, recentActivity, kindLabel, workerBg } = s;
 
   return (
     <>

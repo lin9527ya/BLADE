@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -81,12 +83,47 @@ func scanExecution(sc interface{ Scan(...any) error }) (*ToolExecution, error) {
 
 // CreateExecution inserts a queued row and returns its id.
 func (d *DB) CreateExecution(e *ToolExecution) (int64, error) {
+	return insertExecution(context.Background(), d, e)
+}
+
+// CreateExecutionWithinLimit atomically reserves a queued slot. A task-scoped
+// transaction lock also works for executions without a task row (including chat).
+func (d *DB) CreateExecutionWithinLimit(ctx context.Context, e *ToolExecution, limit int) (int64, error) {
+	if limit <= 0 {
+		return insertExecution(ctx, d, e)
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "blade:execution-limit:"+e.TaskID); err != nil {
+		return 0, err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_executions
+WHERE task_id=$1 AND status IN ($2,$3)`, e.TaskID, ExecQueued, ExecRunning).Scan(&n); err != nil {
+		return 0, err
+	}
+	if n >= limit {
+		return 0, fmt.Errorf("本任务同时运行的后台执行已达上限（%d/%d）：先 wait_execution 等已有的收尾，或用 cancel_execution 取消一条，再起新的", n, limit)
+	}
+	id, err := insertExecution(ctx, tx, e)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+func insertExecution(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, e *ToolExecution) (int64, error) {
 	var intentID any
 	if e.IntentID > 0 {
 		intentID = e.IntentID
 	}
 	var id int64
-	err := d.QueryRow(`INSERT INTO tool_executions(task_id, intent_id, worker, tool, command, description, status, output_path)
+	err := q.QueryRowContext(ctx, `INSERT INTO tool_executions(task_id, intent_id, worker, tool, command, description, status, output_path)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
 		e.TaskID, intentID, e.Worker, e.Tool, e.Command, e.Description, ExecQueued, e.OutputPath).Scan(&id)
 	return id, err

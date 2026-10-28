@@ -52,3 +52,25 @@ test("merging does not mutate either response and keeps distinct IDs", () => {
   assert.equal(first.length, 1);
   assert.equal(second.length, 2);
 });
+
+test("newer pages append without changing either input array", () => {
+  const current = [activity(1), activity(2)];
+  const incoming = [activity(3), activity(4)];
+  const currentSnapshot = [...current];
+  const incomingSnapshot = [...incoming];
+  const merged = mergeActivities(current, incoming);
+  assert.deepEqual(merged.map((item) => item.seq), [1, 2, 3, 4]);
+  assert.deepEqual(current, currentSnapshot);
+  assert.deepEqual(incoming, incomingSnapshot);
+});
+
+test("older pages prepend and single live frames append", () => {
+  assert.deepEqual(
+    mergeActivities([activity(5)], [activity(3), activity(4)]).map((item) => item.seq),
+    [3, 4, 5],
+  );
+  assert.deepEqual(
+    mergeActivities([activity(5)], [activity(6)]).map((item) => item.seq),
+    [5, 6],
+  );
+});

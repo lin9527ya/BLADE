@@ -2150,6 +2150,31 @@ export interface Tool {
   calls?: number; // persistent runtime invocation count (older APIs may omit it)
 }
 
+// ---- Dashboard ----
+export interface DashboardTaskTokenProfile {
+  profile_id: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  task_count: number;
+}
+export interface DashboardTaskTokenDay {
+  date: string;
+  profile_id: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+export interface DashboardSummary {
+  task_total: number;
+  tasks_by_status: Record<string, number>;
+  recent_tasks: Task[];
+  token_by_profile: DashboardTaskTokenProfile[];
+  daily_tokens: DashboardTaskTokenDay[];
+}
+
 // ---- Stats ----
 export interface Stats {
   assets: number;

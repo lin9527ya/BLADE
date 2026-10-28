@@ -111,6 +111,15 @@ export function sessionKeyOf(a: Activity): string {
 // this, so history responses can never clobber live records received meanwhile.
 export function mergeBySeq(current: Activity[], incoming: Activity[]): Activity[] {
   if (!incoming.length) return current;
+  const first = incoming[0];
+  const last = incoming[incoming.length - 1];
+  // SSE frames are almost always a single newer seq; history pages are entirely
+  // newer or older than the loaded window. Keep the Map path for overlaps.
+  if (first.seq <= last.seq) {
+    if (!current.length) return [...incoming];
+    if (first.seq > current[current.length - 1].seq) return [...current, ...incoming];
+    if (last.seq < current[0].seq) return [...incoming, ...current];
+  }
   const bySeq = new Map<number, Activity>();
   for (const a of current) bySeq.set(a.seq, a);
   for (const a of incoming) bySeq.set(a.seq, a);

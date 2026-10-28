@@ -10,7 +10,7 @@ import { fmtTokens, LiveDot } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["statCards"] }) {
-  const { tasks, findings, findingStats, settings, traffic, trafficTotal, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
+  const { taskTotal, findings, findingStats, settings, traffic, trafficTotal, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
 
   return (
     <>
@@ -23,14 +23,14 @@ export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["s
             </div>
             <div className="flex items-baseline gap-1.5">
               <span className="text-2xl font-semibold tabular-nums">{tasksByStatus.running ?? 0}</span>
-              <span className="text-xs text-muted-foreground">/ {tasks.length}</span>
+              <span className="text-xs text-muted-foreground">/ {taskTotal}</span>
             </div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px]">
             {(tasksByStatus.running ?? 0) > 0 && <span className="text-blue-400">探索 {tasksByStatus.running}</span>}
             {(tasksByStatus.paused ?? 0) > 0 && <span className="text-amber-400">暂停 {tasksByStatus.paused}</span>}
             {(tasksByStatus.done ?? 0) > 0 && <span className="text-emerald-400">完成 {tasksByStatus.done}</span>}
-            {tasks.length === 0 && <span className="text-muted-foreground">暂无任务</span>}
+            {taskTotal === 0 && <span className="text-muted-foreground">暂无任务</span>}
           </CardContent>
         </Card>
 

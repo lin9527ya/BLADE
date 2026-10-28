@@ -23,6 +23,7 @@ import type {
   TokenTotal,
   WorkerSlot,
 } from "@/lib/types";
+import { capSessionStore } from "@/lib/session-cache";
 import { rememberInputHistory } from "@/lib/input-history";
 
 import {
@@ -970,6 +971,17 @@ export function useSessionsState(taskId: string) {
       patchStore(activeKey, (s) => ({ ...s, unread: 0 }));
     }
   }, [activeKey]);
+
+  // MAX_KEEP bounds one session; this bounds the whole open-session set.
+  // Check at most every two seconds: summing every session on every SSE frame
+  // would make the memory guard itself a source of render work.
+  const capCheckedAtRef = React.useRef(0);
+  React.useEffect(() => {
+    const now = Date.now();
+    if (now - capCheckedAtRef.current < 2000) return;
+    capCheckedAtRef.current = now;
+    setStore((prev) => capSessionStore(prev, activeKeyRef.current));
+  }, [store, activeKey]);
 
   const focusKey = approvalFocus.state?.source?.session;
   const loadFocusPage = React.useCallback(

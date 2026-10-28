@@ -5,6 +5,7 @@
 
 import type { ChatMention } from "@/lib/chat-mentions";
 import { MOCK } from "@/lib/mock/enabled";
+import { HttpError } from "@/lib/request-lifecycle";
 import type {
   ActiveFindingRetest,
   Activity,
@@ -37,6 +38,7 @@ import type {
   ConstraintCompileResult,
   Conversation,
   ConvTokenSummary,
+  DashboardSummary,
   CoverageAssetRefs,
   CoverageGraphData,
   CredentialReveal,
@@ -174,7 +176,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       // 登录页自己就在 /login：再跳一次会整页重载，把刚算出来的错误提示冲掉。
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
-    throw new Error("未授权");
+    throw new HttpError("未授权", 401);
   }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
@@ -187,7 +189,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Keep the status-based fallback for empty or non-JSON error responses.
     }
-    throw new Error(message);
+    throw new HttpError(message, r.status);
   }
   if (r.status === 204) return undefined as T;
   return r.json();
@@ -238,7 +240,7 @@ export function sseUrl(path: string): string {
   return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
 }
 
-const get = <T>(p: string) => http<T>(p);
+const get = <T>(p: string, init?: RequestInit) => http<T>(p, init);
 const post = <T>(p: string, body?: unknown) =>
   http<T>(p, { method: "POST", body: body ? JSON.stringify(body) : undefined });
 const put = <T>(p: string, body?: unknown) =>
@@ -276,8 +278,9 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
 export const api = {
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
   // health 只回 ok（P42 去指纹：免认证端点不自报家门）；版本走需登录的 /system/info。
-  health: () => get<{ ok: boolean }>("/health"),
-  systemInfo: () => get<{ ok: boolean; service: string; version: string }>("/system/info"),
+  health: (init?: RequestInit) => get<{ ok: boolean }>("/health", init),
+  systemInfo: (init?: RequestInit) =>
+    get<{ ok: boolean; service: string; version: string }>("/system/info", init),
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
@@ -307,7 +310,7 @@ export const api = {
     category?: string;
     sort?: string;
     dir?: "asc" | "desc";
-  }) => {
+  }, signal?: AbortSignal) => {
     const qs = new URLSearchParams();
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -317,6 +320,7 @@ export const api = {
     const suffix = qs.toString();
     return get<{ tasks: Task[]; active: string; total?: number; filtered?: number; page?: number; size?: number }>(
       `/tasks${suffix ? `?${suffix}` : ""}`,
+      { signal },
     ).then((r) => ({
       tasks: arr(r.tasks),
       active: r.active ?? "",
@@ -452,6 +456,14 @@ export const api = {
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
+  dashboardSummary: (signal?: AbortSignal) =>
+    get<DashboardSummary>("/dashboard", { signal }).then((r) => ({
+      ...r,
+      tasks_by_status: r.tasks_by_status ?? {},
+      recent_tasks: arr(r.recent_tasks),
+      token_by_profile: arr(r.token_by_profile),
+      daily_tokens: arr(r.daily_tokens),
+    })),
   // 资产测试覆盖度(粗估，供参考)：范围内资产被 fact 碰过的占比 + 按类型的 总数/已测。
   taskCoverage: (id: string) =>
     get<{
@@ -1493,7 +1505,8 @@ export const api = {
       agentCounts: r.agent_counts ?? {},
     }));
   },
-  conversation: (id: number) => get<Conversation>(`/conversations/${id}`),
+  conversation: (id: number, signal?: AbortSignal) =>
+    get<Conversation>(`/conversations/${id}`, { signal }),
   createConversation: (agent_key: string, title = "", llm_profile_id?: number | null) =>
     post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null }),
   updateConversation: (id: number, input: { title?: string; pinned?: boolean }) =>
@@ -1506,10 +1519,16 @@ export const api = {
   deleteConversations: (ids: number[]) =>
     post<{ items: { id: number; ok: boolean; error?: string }[] }>("/conversations/delete/batch", { ids }),
   // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
-  conversationMessages: (id: number, since = 0) =>
-    get<{ items: Activity[]; cursor: number; running: boolean }>(`/conversations/${id}/messages?since=${since}`).then(
-      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running }),
-    ),
+  conversationMessages: (id: number, since = 0, signal?: AbortSignal) =>
+    get<{ items: Activity[]; cursor: number; running: boolean; hasMore: boolean }>(
+      `/conversations/${id}/messages?since=${since}`,
+      { signal },
+    ).then((r) => ({
+      items: arr(r.items),
+      cursor: r.cursor ?? 0,
+      running: !!r.running,
+      hasMore: !!r.hasMore,
+    })),
   // Reverse pagination: the latest `limit` steps (before=0) or the page of older
   // steps ending before id `before`. hasMore = still-older steps exist.
   conversationHistory: (id: number, before = 0, limit = 200) => {

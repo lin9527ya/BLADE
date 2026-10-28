@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 )
 
@@ -110,5 +111,36 @@ func TestTaskListPagination(t *testing.T) {
 	}
 	if sorted.Tasks[0].ID != idC {
 		t.Fatalf("id desc first = %s, want %s", sorted.Tasks[0].ID, idC)
+	}
+
+	// An extreme but syntactically valid page must be an empty page, not a panic
+	// from overflowing (page-1)*size before slicing.
+	maxInt := strconv.Itoa(int(^uint(0) >> 1))
+	_, huge := get("?page=" + maxInt + "&size=200&q=paginate-")
+	if len(huge.Tasks) != 0 || huge.Filtered != 3 {
+		t.Fatalf("max page = %+v, want empty page with filtered=3", huge)
+	}
+}
+
+func TestTaskPageBounds(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name              string
+		total, page, size int
+		start, end        int
+	}{
+		{"empty", 0, 1, 20, 0, 0},
+		{"first", 3, 1, 2, 0, 2},
+		{"second", 3, 2, 2, 2, 3},
+		{"past end", 3, 3, 2, 3, 3},
+		{"size past end", 3, 1, 200, 0, 3},
+		{"max int", 3, maxInt, 200, 3, 3},
+		{"invalid", 3, -1, 20, 0, 0},
+	}
+	for _, tc := range tests {
+		start, end := taskPageBounds(tc.total, tc.page, tc.size)
+		if start != tc.start || end != tc.end {
+			t.Errorf("%s: got %d/%d, want %d/%d", tc.name, start, end, tc.start, tc.end)
+		}
 	}
 }

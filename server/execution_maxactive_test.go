@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -52,4 +53,62 @@ func TestSubmitRefusesWhenMaxActiveReached(t *testing.T) {
 		t.Fatalf("上限设为 0（不限）时应当放行: %v", err)
 	}
 	t.Cleanup(func() { _, _ = svc.Cancel(context.Background(), second.ID, "用例清理") })
+}
+
+// Admission must be atomic: COUNT followed by a separate INSERT lets concurrent
+// workers overshoot the configured limit.
+func TestSubmitConcurrentAdmissionRespectsLimit(t *testing.T) {
+	svc, pg, _, task := newExecFixture(t)
+	prev, had, err := pg.GetSetting(settingExecMaxActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = pg.SetSetting(settingExecMaxActive, prev)
+			return
+		}
+		_, _ = pg.Exec(`DELETE FROM settings WHERE key=$1`, settingExecMaxActive)
+	})
+	if err := pg.SetSetting(settingExecMaxActive, "2"); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var ids []int64
+	var failures []string
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			st, err := svc.Submit(context.Background(), task, 0, "test-worker", "sleep 30", "并发准入", 0)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failures = append(failures, err.Error())
+				return
+			}
+			ids = append(ids, st.ID)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	t.Cleanup(func() {
+		for _, id := range ids {
+			_, _ = svc.Cancel(context.Background(), id, "用例清理")
+		}
+	})
+
+	if len(ids) != 2 || len(failures) != workers-2 {
+		t.Fatalf("admitted=%d rejected=%d, want 2/%d", len(ids), len(failures), workers-2)
+	}
+	for _, message := range failures {
+		if !strings.Contains(message, "上限") {
+			t.Fatalf("rejection should name the limit, got %q", message)
+		}
+	}
 }

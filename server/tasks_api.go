@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -180,13 +181,13 @@ func parseTaskListQuery(r *http.Request) taskListQuery {
 }
 
 // filterAndSortTasks 按前端同一套规则过滤排序：置顶优先 → 排序字段 → id 兜底。
-func (s *Server) filterAndSortTasks(list []*Task, q taskListQuery, now int64) []*Task {
+func (s *Server) filterAndSortTasks(ctx context.Context, list []*Task, q taskListQuery, now int64) []*Task {
 	statuses := make(map[string]string, len(list))
 	// duration 排序要"最后活动"兜底（未完成且非运行中的任务）。只在需要时查一次，
 	// 避免每轮列表都做这张表的额外聚合。
 	var lastActivity map[int64]int64
 	if q.Sort == "duration" {
-		lastActivity, _ = s.m.PG().LastActivityAll()
+		lastActivity = s.cachedLastActivity(ctx)
 	}
 	filtered := make([]*Task, 0, len(list))
 	for _, t := range list {
@@ -275,26 +276,32 @@ func taskDurationSec(t *Task, status string, now, lastActivity int64) int64 {
 	return end - start
 }
 
+// taskPageBounds checks the last page before multiplying, so even MaxInt input
+// cannot overflow the slice bounds. The parser supplies positive page and size.
+func taskPageBounds(total, page, size int) (int, int) {
+	if total <= 0 || page < 1 || size < 1 {
+		return 0, 0
+	}
+	if page-1 > (total-1)/size {
+		return total, total
+	}
+	start := (page - 1) * size
+	return start, start + min(size, total-start)
+}
+
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	q := parseTaskListQuery(r)
 	all := s.m.List()
 	if q.Page == 0 {
 		// 旧行为：全量（CSV 导出与内部调用依赖它）。
-		writeJSON(w, 200, map[string]any{"tasks": s.taskDTOsFor(all), "active": s.activeTaskID()})
+		writeJSON(w, 200, map[string]any{"tasks": s.taskDTOsFor(r.Context(), all), "active": s.activeTaskID()})
 		return
 	}
-	filtered := s.filterAndSortTasks(all, q, time.Now().Unix())
+	filtered := s.filterAndSortTasks(r.Context(), all, q, time.Now().Unix())
 	total := len(filtered)
-	start := (q.Page - 1) * q.Size
-	if start > total {
-		start = total
-	}
-	end := start + q.Size
-	if end > total {
-		end = total
-	}
+	start, end := taskPageBounds(total, q.Page, q.Size)
 	pageRows := filtered[start:end]
-	dtos := s.taskDTOsFor(pageRows)
+	dtos := s.taskDTOsFor(r.Context(), pageRows)
 	writeJSON(w, 200, map[string]any{
 		"tasks":    dtos,
 		"active":   s.activeTaskID(),
@@ -308,13 +315,17 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 // taskDTOsFor builds DTOs (with per-task metrics) for just these tasks.
 // Shared by the paginated JSON list and the CSV export so the two can never
 // report different numbers for the same task.
-func (s *Server) taskDTOsFor(list []*Task) []TaskDTO {
+func (s *Server) taskDTOsFor(ctx context.Context, list []*Task) []TaskDTO {
 	expIDs := make([]int64, 0, len(list))
+	taskIDs := make([]int64, 0, len(list))
 	for _, t := range list {
 		expIDs = append(expIDs, t.ExpID)
+		if id, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
+			taskIDs = append(taskIDs, id)
+		}
 	}
-	metrics, _ := s.m.PG().TaskListMetricsFor(expIDs)
-	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
+	metrics, _ := s.m.PG().TaskListMetricsForContext(ctx, expIDs)
+	archiveBlockers, _ := s.m.PG().TaskArchiveBlockersForContext(ctx, taskIDs)
 	dtos := make([]TaskDTO, 0, len(list))
 	for _, t := range list {
 		dto := taskDTO(t, s.resolvedTaskStatus(t))
@@ -361,7 +372,7 @@ func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 		"目标达成", "目标总数", "运行中Worker", "严重", "高危", "中危", "低危",
 		"输入token", "输出token", "缓存读", "缓存写", "缓存命中率",
 	})
-	for _, d := range s.taskDTOsFor(s.m.List()) {
+	for _, d := range s.taskDTOsFor(r.Context(), s.m.List()) {
 		last := ""
 		if d.LastActivity > 0 {
 			last = time.Unix(d.LastActivity, 0).Format(time.RFC3339)
@@ -402,7 +413,7 @@ func (s *Server) resolvedTaskStatus(t *Task) string {
 		// LLM readiness is an execution dependency, not lifecycle state. Keeping
 		// an exhausted task running lets the user edit/reset its chain directly.
 		return "running"
-	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
+	case s.engine.Started(t.ID) && s.engine.ReadyFor(t):
 		return "running"
 	default:
 		return "created"
@@ -894,8 +905,10 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dto := taskDTO(t, s.resolvedTaskStatus(t))
-	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
-	applyTaskArchiveBlocker(&dto, archiveBlockers)
+	if id, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
+		archiveBlockers, _ := s.m.PG().TaskArchiveBlockersForContext(r.Context(), []int64{id})
+		applyTaskArchiveBlocker(&dto, archiveBlockers)
+	}
 	writeJSON(w, 200, dto)
 }
 

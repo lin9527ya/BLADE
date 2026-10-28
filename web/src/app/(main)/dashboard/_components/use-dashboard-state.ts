@@ -7,6 +7,8 @@ import { api } from "@/lib/api";
 import type {
   Activity,
   ConvTokenSummary,
+  DashboardTaskTokenDay,
+  DashboardTaskTokenProfile,
   Finding,
   FindingStats,
   InterceptPending,
@@ -39,7 +41,13 @@ function workerBg(w: string): string {
 
 export function useDashboardState() {
   // data state
-  const [tasks, setTasks] = React.useState<Task[]>([]);
+  // Only the recent window is needed for the table; counts and token aggregates
+  // come from the server summary instead of downloading every task DTO.
+  const [recentTasks, setRecentTasks] = React.useState<Task[]>([]);
+  const [taskTotal, setTaskTotal] = React.useState(0);
+  const [tasksByStatus, setTasksByStatus] = React.useState<Record<string, number>>({});
+  const [taskTokenProfiles, setTaskTokenProfiles] = React.useState<DashboardTaskTokenProfile[]>([]);
+  const [taskTokenDaily, setTaskTokenDaily] = React.useState<DashboardTaskTokenDay[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
   // 发现总数与严重度分布走 findingStats 的 COUNT(*)；findings 只是最近窗口（500）。
   const [findingStats, setFindingStats] = React.useState<FindingStats | null>(null);
@@ -69,14 +77,23 @@ export function useDashboardState() {
   // `let signature` 会随渲染重置，去重就失效了（每次轮询都重新 setTasks）。
   const taskSignatureRef = React.useRef("");
   usePolling(async (alive) => {
-    // 失败由 hook 接住并退避重试（原先的 try/catch 只吞掉、不退避）。
-    const tr = await api.tasks();
+    // 失败由 hook 接住并退避重试。
+    const summary = await api.dashboardSummary();
     if (!alive()) return;
-    const nextSignature = JSON.stringify(tr.tasks);
-    if (nextSignature !== taskSignatureRef.current) {
-      taskSignatureRef.current = nextSignature;
-      setTasks(tr.tasks);
-    }
+    const nextSignature = JSON.stringify([
+      summary.task_total,
+      summary.tasks_by_status,
+      summary.recent_tasks,
+      summary.token_by_profile,
+      summary.daily_tokens,
+    ]);
+    if (nextSignature === taskSignatureRef.current) return;
+    taskSignatureRef.current = nextSignature;
+    setRecentTasks(summary.recent_tasks);
+    setTaskTotal(summary.task_total);
+    setTasksByStatus(summary.tasks_by_status);
+    setTaskTokenProfiles(summary.token_by_profile);
+    setTaskTokenDaily(summary.daily_tokens);
   }, 5000);
 
   // The remaining fast sources stay batched so one poll causes a single render.
@@ -158,12 +175,6 @@ export function useDashboardState() {
 
   // ── derived ───────────────────────────────────────────────────────────────
 
-  const tasksByStatus = React.useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const t of tasks) m[t.status] = (m[t.status] ?? 0) + 1;
-    return m;
-  }, [tasks]);
-
   const findingsBySev = React.useMemo(() => {
     const m = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const f of findings) {
@@ -174,10 +185,10 @@ export function useDashboardState() {
 
   const sortedTasks = React.useMemo(
     () =>
-      [...tasks]
+      [...recentTasks]
         .sort((a, b) => (b.last_activity_unix ?? b.created_unix ?? 0) - (a.last_activity_unix ?? a.created_unix ?? 0))
         .slice(0, 5),
-    [tasks],
+    [recentTasks],
   );
 
   const recentFindings = React.useMemo(
@@ -246,24 +257,24 @@ export function useDashboardState() {
   // 旧版：按 profile 归桶（来自 activity 的 task.tokens + 会话用量）。
   const tokenByProfileOld = React.useMemo<Map<number | null, Bucket>>(() => {
     const m = new Map<number | null, Bucket>();
-    const fold = (key: number | null, inp: number, out: number, cr: number, cw: number, addTask: boolean) => {
+    const fold = (key: number | null, inp: number, out: number, cr: number, cw: number, tasks: number) => {
       const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
       m.set(key, {
         input: prev.input + inp,
         output: prev.output + out,
         cacheRead: prev.cacheRead + cr,
         cacheWrite: prev.cacheWrite + cw,
-        taskCount: prev.taskCount + (addTask ? 1 : 0),
+        taskCount: prev.taskCount + tasks,
       });
     };
-    for (const t of tasks) {
+    for (const p of taskTokenProfiles) {
       fold(
-        t.llm_profile_id ?? defaultProfileId,
-        t.tokens?.input_tokens ?? 0,
-        t.tokens?.output_tokens ?? 0,
-        t.tokens?.cache_read_tokens ?? 0,
-        t.tokens?.cache_write_tokens ?? 0,
-        true,
+        p.profile_id ?? defaultProfileId,
+        p.input_tokens,
+        p.output_tokens,
+        p.cache_read_tokens,
+        p.cache_write_tokens,
+        p.task_count,
       );
     }
     for (const c of convTokens) {
@@ -273,11 +284,11 @@ export function useDashboardState() {
         c.output_tokens,
         c.cache_read_tokens,
         c.cache_write_tokens,
-        false,
+        0,
       );
     }
     return m;
-  }, [tasks, convTokens, defaultProfileId]);
+  }, [taskTokenProfiles, convTokens, defaultProfileId]);
 
   // 新版：按 profile 归桶（来自 llm_usage 全局聚合，逐次调用精确）。
   const tokenByProfileNew = React.useMemo<Map<number | null, Bucket>>(() => {
@@ -337,21 +348,16 @@ export function useDashboardState() {
         cacheRead: prev.cacheRead + cr,
       });
     };
-    for (const t of tasks) {
-      if (tokenTab !== "all" && (t.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
-      fold(
-        t.created_at.slice(0, 10),
-        t.tokens?.input_tokens ?? 0,
-        t.tokens?.output_tokens ?? 0,
-        t.tokens?.cache_read_tokens ?? 0,
-      );
+    for (const row of taskTokenDaily) {
+      if (tokenTab !== "all" && (row.profile_id ?? defaultProfileId) !== tokenTab) continue;
+      fold(row.date, row.input_tokens, row.output_tokens, row.cache_read_tokens);
     }
     for (const c of convTokens) {
       if (tokenTab !== "all" && (c.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
       fold(c.created_at.slice(0, 10), c.input_tokens, c.output_tokens, c.cache_read_tokens);
     }
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
-  }, [tasks, convTokens, tokenDays, tokenTab, defaultProfileId]);
+  }, [taskTokenDaily, convTokens, tokenDays, tokenTab, defaultProfileId]);
 
   // 新版每日：来自 llm_usage 的真实每日消耗（ts 是实际调用时刻）。
   const dailyTokenDataNew = React.useMemo(() => {
@@ -382,7 +388,7 @@ export function useDashboardState() {
   // 纯拆分：数据获取与派生逻辑一行没动。
   const statCards = React.useMemo(
     () => ({
-      tasks,
+      taskTotal,
       findings,
       findingStats,
       settings,
@@ -394,7 +400,7 @@ export function useDashboardState() {
       displayedTokens,
     }),
     [
-      tasks,
+      taskTotal,
       findings,
       findingStats,
       settings,
@@ -438,10 +444,13 @@ export function useDashboardState() {
   );
   // kindLabel / workerBg 现在是模块级纯函数，身份恒定，放进切片不会导致失效。
   const activityRow = React.useMemo(
-    () => ({ tasks, findings, activity, recentFindings, recentActivity, kindLabel, workerBg }),
-    [tasks, findings, activity, recentFindings, recentActivity],
+    () => ({ findings, activity, recentFindings, recentActivity, kindLabel, workerBg }),
+    [findings, activity, recentFindings, recentActivity],
   );
-  const taskTable = React.useMemo(() => ({ tasks, sortedTasks }), [tasks, sortedTasks]);
+  const taskTable = React.useMemo(
+    () => ({ tasks: recentTasks, taskTotal, sortedTasks }),
+    [recentTasks, taskTotal, sortedTasks],
+  );
   const assetTraffic = React.useMemo(
     () => ({
       stats,

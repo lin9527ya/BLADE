@@ -83,12 +83,36 @@ type TaskArchive struct {
 // that cannot currently be archived. Dependents already queued for archiving do
 // not block their source because the FIFO worker will compact them first.
 func (d *DB) TaskArchiveBlockers() (map[int64]int64, error) {
-	rows, err := d.Query(`SELECT relation.source_task_id, MIN(child.id)
+	return d.taskArchiveBlockers(context.Background(), nil)
+}
+
+// TaskArchiveBlockersFor restricts the dependent lookup to the page's task ids.
+// A paginated list must not aggregate every task's dependent relation.
+func (d *DB) TaskArchiveBlockersFor(taskIDs []int64) (map[int64]int64, error) {
+	return d.TaskArchiveBlockersForContext(context.Background(), taskIDs)
+}
+
+func (d *DB) TaskArchiveBlockersForContext(ctx context.Context, taskIDs []int64) (map[int64]int64, error) {
+	blockers := map[int64]int64{}
+	if len(taskIDs) == 0 {
+		return blockers, nil
+	}
+	return d.taskArchiveBlockers(ctx, taskIDs)
+}
+
+func (d *DB) taskArchiveBlockers(ctx context.Context, taskIDs []int64) (map[int64]int64, error) {
+	const base = `SELECT relation.source_task_id, MIN(child.id)
 FROM task_relations relation
 JOIN tasks child ON child.id=relation.task_id AND child.deleted_at IS NULL
 LEFT JOIN task_archives pending ON pending.task_id=child.id
-WHERE pending.id IS NULL OR pending.state NOT IN ('archive_queued','archiving')
-GROUP BY relation.source_task_id`)
+WHERE (pending.id IS NULL OR pending.state NOT IN ('archive_queued','archiving'))`
+	query, args := base+`
+GROUP BY relation.source_task_id`, []any{}
+	if len(taskIDs) > 0 {
+		query, args = base+` AND relation.source_task_id = ANY($1)
+GROUP BY relation.source_task_id`, []any{taskIDs}
+	}
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

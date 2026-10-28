@@ -17,6 +17,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
+import { pollConversationTail } from "@/lib/conversation-tail";
 import { api } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { rememberInputHistory } from "@/lib/input-history";
@@ -402,6 +403,9 @@ export function ChatView({
   const approvalFocus = useApprovalFocus({ conversationId: conv.id });
   const [messages, setMessages] = React.useState<Activity[]>([]);
   const [running, setRunning] = React.useState(false);
+  const [tailing, setTailing] = React.useState(false);
+  const titleChangedRef = React.useRef(onTitleMaybeChanged);
+  titleChangedRef.current = onTitleMaybeChanged;
   const [input, setInput] = React.useState(initial?.input ?? "");
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
@@ -452,6 +456,7 @@ export function ChatView({
     setMessages([]);
     setHistoryLoaded(false);
     setRunning(false);
+    setTailing(false);
     let live = true;
     api
       .conversationHistory(conv.id, 0, HISTORY_PAGE)
@@ -481,36 +486,32 @@ export function ChatView({
     if (conv.running) setRunning(true);
   }, [conv.running]);
 
-  // poll while a turn is running: pull new steps after the cursor.
   React.useEffect(() => {
-    if (!running) return;
-    let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const tick = async () => {
-      let keepPolling = true;
-      try {
-        const r = await api.conversationMessages(conv.id, cursorRef.current);
-        if (!live) return;
-        if (r.items.length) {
-          setMessages((prev) => mergeActivities(prev, r.items));
-        }
+    if (running) setTailing(true);
+  }, [running]);
+
+  // The transport stays alive after running=false until every cursor page is
+  // drained; a completed turn can still have a batch of results behind it.
+  React.useEffect(() => {
+    if (!tailing) return;
+    return pollConversationTail({
+      cursor: () => cursorRef.current,
+      fetchPage: (cursor, signal) => api.conversationMessages(conv.id, cursor, signal),
+      receive: (r) => {
+        if (r.items.length) setMessages((prev) => mergeActivities(prev, r.items));
         cursorRef.current = Math.max(cursorRef.current, r.cursor);
-        keepPolling = r.running;
         setRunning(r.running);
-        if (!r.running) onTitleMaybeChanged(); // first-turn auto-title landed
-      } catch {
-        /* transient — keep polling */
-      } finally {
-        // Slow responses must not overlap another poll with the same cursor.
-        if (live && keepPolling) timer = setTimeout(() => void tick(), 1000);
-      }
-    };
-    void tick();
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [running, conv.id, onTitleMaybeChanged]);
+      },
+      drained: () => {
+        setTailing(false);
+        titleChangedRef.current(); // first-turn auto-title landed
+      },
+      failed: () => {
+        setTailing(false);
+        toast.error("实时消息加载中断，请刷新页面后重试");
+      },
+    });
+  }, [tailing, conv.id]);
 
   const loadFocusPage = React.useCallback(
     (before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE),

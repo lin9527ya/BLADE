@@ -58,8 +58,24 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tasks := make([]map[string]any, 0, 8)
-	for _, t := range s.m.List() {
+	all := s.m.List()
+	expIDs := make([]int64, 0, len(all))
+	for _, t := range all {
+		expIDs = append(expIDs, t.ExpID)
+	}
+	// One GROUP BY per metric instead of two queries per task; the metrics page
+	// must not become the load it is trying to measure.
+	var statesByExp map[int64]map[string]int
+	var claimableByExp map[int64]int
+	var statesErr, claimableErr error
+	hasDB := false
+	if pg := s.m.PG(); pg != nil {
+		hasDB = true
+		statesByExp, statesErr = pg.IntentStateCountsForContext(r.Context(), expIDs)
+		claimableByExp, claimableErr = pg.ClaimableIntentCountsForContext(r.Context(), expIDs)
+	}
+	tasks := make([]map[string]any, 0, len(all))
+	for _, t := range all {
 		item := map[string]any{
 			"id":               t.ID,
 			"status":           s.resolvedTaskStatus(t),
@@ -67,17 +83,25 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 			"inflight":         s.engine.inflightCount(t.ID),
 			"active_llm_calls": s.engine.ActiveLLMCalls(t.ID),
 		}
-		if t.Store != nil {
-			if states, err := t.Store.CountIntentStates(); err == nil {
-				item["intent_states"] = states
+		if hasDB && statesErr == nil {
+			states := statesByExp[t.ExpID]
+			if states == nil {
+				states = map[string]int{}
 			}
-			if n, err := t.Store.CountClaimableIntents(); err == nil {
-				item["claimable_intents"] = n
-			}
+			item["intent_states"] = states
+		}
+		if hasDB && claimableErr == nil {
+			item["claimable_intents"] = claimableByExp[t.ExpID]
 		}
 		tasks = append(tasks, item)
 	}
 	out["tasks"] = tasks
+	out["logs"] = logSink.DBStats()
+	if s.engine != nil {
+		if bc := s.engine.Broadcaster(); bc != nil {
+			out["sse"] = map[string]int64{"overflow_events": bc.OverflowCount()}
+		}
+	}
 
 	if pg := s.m.PG(); pg != nil {
 		out["llm"] = map[string]any{

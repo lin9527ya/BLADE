@@ -63,6 +63,7 @@ GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDet
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/cves	server.(*Server).listCVEs-fm
 GET /api/cves/{id}	server.(*Server).getCVE-fm
+GET /api/dashboard	server.(*Server).dashboardSummary-fm
 GET /api/debug/pprof/allocs	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/block	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/cmdline	net/http/pprof.Cmdline

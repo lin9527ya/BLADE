@@ -19,7 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { api, sseUrl } from "@/lib/api";
+import { abortableDelay, HttpError } from "@/lib/request-lifecycle";
 import type { UpdateCheck, UpdateProgress } from "@/lib/types";
+import { waitForVersion } from "@/lib/update-recovery";
 
 /** 等待新版本上线的最长时间。一次升级要经过三次进程启动（暂存 → 换装 → 新版），
  *  每次都是秒级，三分钟足够覆盖慢磁盘和 Docker 容器重建。 */
@@ -42,8 +44,6 @@ function humanSize(n?: number): string {
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 export function UpdateCard() {
   const [info, setInfo] = React.useState<UpdateCheck | null>(null);
   const [checking, setChecking] = React.useState(true);
@@ -51,6 +51,15 @@ export function UpdateCard() {
   // 与 progress 分开：暂存完成后进程就没了，SSE 会断，此时要切到轮询 /api/health。
   const [restarting, setRestarting] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const streamRef = React.useRef<EventSource | null>(null);
+  const restartRef = React.useRef<AbortController | null>(null);
+  React.useEffect(
+    () => () => {
+      streamRef.current?.close();
+      restartRef.current?.abort();
+    },
+    [],
+  );
   // 释放源是私有仓库：release 接口要 GitHub token。**只存不回显**——这里只显示是否已配，
   // 输入框留空 = 不改；点保存才提交（值不回填，所以"已配置"不等于能把旧值读出来）。
   const [tokenSet, setTokenSet] = React.useState(false);
@@ -104,38 +113,47 @@ export function UpdateCard() {
     check(true);
   }, [check]);
 
-  // 轮询 /api/health 直到版本号变化。
-  //
-  // 判据必须是"版本变了"而不是"能连上了"：换装过程中旧版本会短暂地重新起来一次
-  // （那一次只负责把 blade.new 换上去然后立刻退出），只看连通性会误判成功。
-  const waitForNewVersion = React.useCallback(async (fromVersion: string) => {
+  // health 只报告就绪；版本身份必须来自需认证的 system/info。
+  // 换装期间旧进程会短暂重新起来一次，连得上不等于升级成功。
+  const waitForNewVersion = React.useCallback(async (fromVersion: string, target?: string) => {
+    restartRef.current?.abort();
+    const controller = new AbortController();
+    restartRef.current = controller;
     setRestarting(true);
-    const deadline = Date.now() + RESTART_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      await sleep(2000);
-      try {
-        const r = await fetch("/api/health", { cache: "no-store" });
-        if (r.ok) {
-          const j = (await r.json()) as { version?: string };
-          if (j.version && j.version !== fromVersion) {
-            toast.success(`已更新到 ${j.version}，正在重新加载页面`);
-            await sleep(800);
-            window.location.reload();
-            return;
-          }
-        }
-      } catch {
-        // 重启窗口内连不上是预期的，继续轮询。
+    try {
+      const version = await waitForVersion({
+        from: fromVersion,
+        target,
+        signal: controller.signal,
+        timeoutMs: RESTART_TIMEOUT_MS,
+        wait: abortableDelay,
+        terminalError: (error) => error instanceof HttpError && (error.status === 401 || error.status === 403),
+        probe: async (signal) => {
+          const init = { cache: "no-store" as const, signal };
+          if (!(await api.health(init)).ok) return null;
+          return (await api.systemInfo(init)).version;
+        },
+      });
+      if (controller.signal.aborted) return;
+      toast.success(`已切换到 ${version}，正在重新加载页面`);
+      await abortableDelay(800, controller.signal);
+      window.location.reload();
+    } catch (error) {
+      if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : "等待服务重启失败");
+    } finally {
+      if (!controller.signal.aborted) {
+        setRestarting(false);
+        setBusy(false);
       }
     }
-    setRestarting(false);
-    toast.error("等待服务重启超时。请检查后端日志，或确认 blade 是通过 start.sh / start.bat 启动的。");
   }, []);
 
   // 订阅更新进度。SSE 不走 Next 的 /api 重写（那层会缓冲，事件推不出来）。
   const openStream = React.useCallback(
-    (fromVersion: string) => {
+    (fromVersion: string, target?: string) => {
+      streamRef.current?.close();
       const es = new EventSource(sseUrl("/api/update/stream"));
+      streamRef.current = es;
       es.onmessage = (ev) => {
         let p: UpdateProgress;
         try {
@@ -152,12 +170,12 @@ export function UpdateCard() {
         }
         if (p.phase === "staged") {
           es.close();
-          void waitForNewVersion(fromVersion);
+          void waitForNewVersion(fromVersion, target);
         }
       };
       es.onerror = () => {
         // 进程退出时 SSE 必然断开。如果已经进入等待重启，这属于正常现象，
-        // 交给 /api/health 轮询继续判定即可。
+        // 交给 readiness + system/info 轮询继续判定即可。
         es.close();
       };
       return es;
@@ -180,7 +198,7 @@ export function UpdateCard() {
 
     setBusy(true);
     setProgress({ phase: "downloading", percent: 0, message: "准备中…" });
-    const es = openStream(from);
+    const es = openStream(from, info.latest);
     api.applyUpdate().catch((e) => {
       es.close();
       setBusy(false);
