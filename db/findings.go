@@ -923,26 +923,36 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 	return out, rows.Err()
 }
 
-// FindingReportsByNode 返回一个任务里「报告 Agent 写的详细报告」——node_id → Markdown。
+// FindingReportDetail 是报告 Agent 写的详细分析及其证据版本快照。
+// ReportEvidenceVersion 是撰写时读取（并回传）的证据版本；与 findings 当前的
+// EvidenceVersion 不一致，说明写完之后证据又被补充/替换，这段分析可能已过期。
+// -1 表示撰写时已有证据但未声明所读版本（见 update_finding_report 的落库规则）。
+type FindingReportDetail struct {
+	Report                string
+	EvidenceVersion       int64
+	ReportEvidenceVersion int64
+}
+
+// FindingReportsByNode 返回一个任务里「报告 Agent 写的详细报告」——node_id → 详情。
 //
 // 这份内容是报告 Agent 用 update_finding_report 写的：利用过程、影响、关键位置、
 // 根因与修复建议。它此前只存在详情页里，总报告完全没用上——交付物最值钱的一段被丢了。
-// 只取非空行；调用方按 node id 合并进正文。
-func (d *DB) FindingReportsByNode(taskID int64) (map[int64]string, error) {
-	rows, err := d.Query(`SELECT node_id, report FROM findings
+// 只取非空行；调用方按 node id 合并进正文。同时带上证据版本，供调用方判断分析是否过期。
+func (d *DB) FindingReportsByNode(taskID int64) (map[int64]FindingReportDetail, error) {
+	rows, err := d.Query(`SELECT node_id, report, evidence_version, report_evidence_version FROM findings
 WHERE task_id=$1 AND node_id IS NOT NULL AND COALESCE(report,'') <> ''`, taskID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]string{}
+	out := map[int64]FindingReportDetail{}
 	for rows.Next() {
 		var nodeID int64
-		var text string
-		if err := rows.Scan(&nodeID, &text); err != nil {
+		var detail FindingReportDetail
+		if err := rows.Scan(&nodeID, &detail.Report, &detail.EvidenceVersion, &detail.ReportEvidenceVersion); err != nil {
 			return nil, err
 		}
-		out[nodeID] = text
+		out[nodeID] = detail
 	}
 	return out, rows.Err()
 }

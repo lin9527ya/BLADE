@@ -112,7 +112,7 @@ func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, err
 			Target:      srcTargetLabel(f, assets[f.ID], eps),
 		}
 		if f.NodeID != nil {
-			entry.Warnings = append(entry.Warnings, srcCompletenessWarnings(reports[*f.NodeID])...)
+			entry.Warnings = append(entry.Warnings, srcCompletenessWarnings(reports[*f.NodeID].Report)...)
 		}
 		// 状态白名单：被推翻/证伪/重复/忽略的发现不进包。此前只挡了已撤回——于是
 		// 一份交付物里可能带着人工判过的误报，"确认"二字就此贬值。

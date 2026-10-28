@@ -171,3 +171,38 @@ func TestAddIntentIdempotencyKey(t *testing.T) {
 		t.Fatalf("idempotency key created two intents: %d vs %d", first.IDs[0], second.IDs[0])
 	}
 }
+
+// 完成口径随意图落库：verify 意图只登记资产不算完成（见 settleIntentState），
+// 拼错的 kind 必须当场报错，不能静默退回旧口径。
+func TestAddIntentKindPersists(t *testing.T) {
+	ts, _, _, _, debt := breadthToolSet(t)
+	raw, _ := json.Marshal(map[string]any{"intents": []map[string]any{{
+		"summary": "验证登录接口", "asset_ids": []int64{debt}, "risk_area": "auth", "kind": "verify",
+	}}})
+	res, err := ts.addIntent().Call(t.Context(), raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.Unmarshal([]byte(res.Flatten()), &out); err != nil || len(out.IDs) != 1 {
+		t.Fatalf("result: %s err=%v", res.Flatten(), err)
+	}
+	n, err := ts.ts.GetNode(out.IDs[0])
+	if err != nil || n == nil {
+		t.Fatalf("get node: %v", err)
+	}
+	var p struct {
+		Kind string `json:"intent_kind"`
+	}
+	if err := json.Unmarshal(n.Payload, &p); err != nil || p.Kind != "verify" {
+		t.Fatalf("intent_kind = %q (err %v), want verify; payload=%s", p.Kind, err, n.Payload)
+	}
+
+	bad, _ := json.Marshal(map[string]any{"summary": "拼错口径", "kind": "verfiy"})
+	res, err = ts.addIntent().Call(t.Context(), bad, nil)
+	if err != nil || !res.IsError || !strings.Contains(res.Flatten(), "kind 只能是") {
+		t.Fatalf("invalid kind accepted: err=%v result=%s", err, res.Flatten())
+	}
+}

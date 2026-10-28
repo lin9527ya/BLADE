@@ -108,7 +108,7 @@ func TestDomainCompactorDelegatesThresholds(t *testing.T) {
 // mutated (View must be pure — the host keeps l.messages untouched).
 func TestDomainCompactorViewAppendsIndexAndIsPure(t *testing.T) {
 	d := NewDomainCompactor(compaction.Config{}, nil, 0, true, t.TempDir(), func() string { return "【常驻上下文】index-body" })
-	d.ttl = 0 // 测试里不节流
+	d.index.ttl = 0 // 测试里不节流
 	msgs := []llm.Message{llm.UserText("human turn"), assistantMsg("assistant answer")}
 	before := len(msgs)
 
@@ -215,14 +215,16 @@ func TestBladeSummarizerStripsAnalysis(t *testing.T) {
 	}
 }
 
-// TestInstallContextManagerYieldsToNoa pins the mutual exclusion: noa owns the same
-// Options.Compactor slot, and our installer must never silently overwrite it.
-func TestInstallContextManagerYieldsToNoa(t *testing.T) {
+// TestInstallContextManagerWrapsNoa pins the split introduced for G: noa owns
+// compaction (the inner compactor is never replaced), while the request projection
+// is wrapped around it so the current-intent index still goes out after compaction.
+func TestInstallContextManagerWrapsNoa(t *testing.T) {
 	noa := &DomainCompactor{}
 	opts := &agentcore.Options{Compactor: noa}
 	InstallContextManager(opts, 200000, 0, t.TempDir(), nil)
-	if opts.Compactor != harness.Compactor(noa) {
-		t.Fatal("noa 已占用 Compactor 槽位时不得被覆盖")
+	iv, ok := opts.Compactor.(*indexView)
+	if !ok || iv.inner != harness.Compactor(noa) {
+		t.Fatalf("noa 必须作为 inner 保留，只在其外包装投影（got %T）", opts.Compactor)
 	}
 	opts2 := &agentcore.Options{}
 	InstallContextManager(opts2, 200000, 0, t.TempDir(), func() string { return "x" })
@@ -286,8 +288,8 @@ func TestBuildContextIndexCarriesGoalScopeAndGraph(t *testing.T) {
 	if idxCalls != 1 {
 		t.Fatalf("TTL 内应复用索引（查库次数=%d）", idxCalls)
 	}
-	dc.ttl = 0
-	dc.at = time.Now()
+	dc.index.ttl = 0
+	dc.index.at = time.Now()
 	dc.View(context.Background(), nil)
 	if idxCalls != 2 {
 		t.Fatalf("TTL=0 时应每次重算（查库次数=%d）", idxCalls)
@@ -311,5 +313,43 @@ func TestSessionIDRulesAreSharedBetweenStores(t *testing.T) {
 	}
 	if got := WorkerSessionID(7, 9); got != "exp7-worker-i9" {
 		t.Fatalf("worker 会话 id 不对: %q", got)
+	}
+}
+
+// plainCompactor is a host Compactor without ContextView (noa's shape).
+type plainCompactor struct{}
+
+func (plainCompactor) Pre(_ context.Context, msgs []llm.Message, _ int) []llm.Message {
+	return msgs
+}
+func (plainCompactor) Reactive(_ context.Context, msgs []llm.Message) ([]llm.Message, bool) {
+	return msgs, false
+}
+func (plainCompactor) IsOverflow(error) bool { return false }
+
+// noa 接管压缩时，当前意图/目标/约束的请求投影不能跟着一起消失：压缩策略与
+// 投影是两件事，否则压缩吃掉启动轮后槽位会话就失去职责锚点。
+func TestInstallContextManagerKeepsIndexOverExistingCompactor(t *testing.T) {
+	inner := plainCompactor{}
+	opts := &agentcore.Options{Compactor: inner}
+	InstallContextManager(opts, 200000, 0, t.TempDir(), func() string { return "【常驻索引】当前意图 #7" })
+
+	iv, ok := opts.Compactor.(*indexView)
+	if !ok {
+		t.Fatalf("compactor = %T, want wrapped indexView", opts.Compactor)
+	}
+	if iv.inner != inner {
+		t.Fatal("host compactor must be delegated to, not replaced")
+	}
+	msgs := []llm.Message{llm.UserText("hi")}
+	out := iv.View(context.Background(), msgs)
+	if len(out) != len(msgs)+1 || !strings.Contains(out[len(out)-1].Text(), "当前意图 #7") {
+		t.Fatalf("index not appended over host compactor: %+v", out)
+	}
+	if len(msgs) != 1 {
+		t.Fatal("View must not mutate the real history")
+	}
+	if got := iv.Pre(context.Background(), msgs, 0); len(got) != len(msgs) {
+		t.Fatalf("Pre must delegate to the host compactor: %+v", got)
 	}
 }

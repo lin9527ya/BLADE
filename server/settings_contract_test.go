@@ -51,31 +51,31 @@ func parsePackage(t *testing.T) []*ast.File {
 // 为什么抽源码而不是跑起来比：跑起来只能看到"当前值"，看不到"这个键根本没被处理"
 // ——而后者恰恰是要防的。
 
-// putSettingsFields 抽出 putSettings 里匿名 struct 的 json 标签。
+// putSettingsFields 抽出设置保存请求 settingsRequest 的 json 标签。
+//
+// 请求体已从 putSettings 的匿名 struct 提为具名类型（两阶段校验与写库共用同一份
+// 字段定义），所以这里直接找 settingsRequest 类型；不再依赖函数内的匿名 struct。
 func putSettingsFields(t *testing.T) []string {
 	t.Helper()
 	var out []string
 	for _, f := range parsePackage(t) {
 		ast.Inspect(f, func(n ast.Node) bool {
-			fn, ok := n.(*ast.FuncDecl)
-			if !ok || fn.Name.Name != "putSettings" {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != "settingsRequest" {
 				return true
 			}
-			ast.Inspect(fn, func(m ast.Node) bool {
-				st, ok := m.(*ast.StructType)
-				if !ok {
-					return true
-				}
-				for _, fld := range st.Fields.List {
-					if fld.Tag == nil {
-						continue
-					}
-					if name := jsonTagName(fld.Tag.Value); name != "" {
-						out = append(out, name)
-					}
-				}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
 				return true
-			})
+			}
+			for _, fld := range st.Fields.List {
+				if fld.Tag == nil {
+					continue
+				}
+				if name := jsonTagName(fld.Tag.Value); name != "" {
+					out = append(out, name)
+				}
+			}
 			return false
 		})
 	}

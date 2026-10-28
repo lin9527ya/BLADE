@@ -134,10 +134,33 @@ func workerIntentMarker(intentID int64) string {
 	return workerIntentMarkerPrefix + strconv.FormatInt(intentID, 10) + " -->"
 }
 
+// workerIntentIDIn 从文本里解析当前意图 marker 的 id。
+//
+// marker 可能位于消息任意位置（启动轮是「态势 + 意图块」，见 messagesSinceWorkerIntent），
+// 所以不能用前缀匹配；也不能只比前缀——两条不同意图的 marker 前缀相同，必须解析出完整 id。
+func workerIntentIDIn(text string) (int64, bool) {
+	start := strings.Index(text, workerIntentMarkerPrefix)
+	if start < 0 {
+		return 0, false
+	}
+	rest := text[start+len(workerIntentMarkerPrefix):]
+	end := strings.Index(rest, " -->")
+	if end < 0 {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(rest[:end]), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
 func hasWorkerIntentMessage(messages []llm.Message, intentID int64) bool {
-	marker := workerIntentMarker(intentID)
 	for _, message := range messages {
-		if message.Role == llm.RoleUser && strings.Contains(message.Text(), marker) {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		if id, ok := workerIntentIDIn(message.Text()); ok && id == intentID {
 			return true
 		}
 	}
@@ -150,7 +173,10 @@ func hasWorkerIntentMessage(messages []llm.Message, intentID int64) bool {
 func lastWorkerIntentMessageIndex(messages []llm.Message) int {
 	last := -1
 	for i, message := range messages {
-		if message.Role == llm.RoleUser && strings.Contains(message.Text(), workerIntentMarkerPrefix) {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		if _, ok := workerIntentIDIn(message.Text()); ok {
 			last = i
 		}
 	}

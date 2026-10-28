@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lin9527ya/blade/db"
@@ -23,16 +24,26 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	const reportListLimit = 1000
 	var truncated []string
+	var dataGaps []string
 	findings, ferr := t.Store.ListByKind(db.KindFinding, reportListLimit) // 纯漏洞（事实是独立的 KindFact，不进报告）
 	if ferr != nil {
-		log.Printf("[report] 任务 %s 发现列表读取失败，报告将按空处理：%v", t.ID, ferr)
+		// 发现列表是报告正文的主体：读失败时输出一份「没有发现」的报告，比报错危险得多。
+		log.Printf("[report] 任务 %s 发现列表读取失败，拒绝生成貌似完整的报告：%v", t.ID, ferr)
+		writeErr(w, 503, "发现列表读取失败，无法生成完整报告，请稍后重试")
+		return
 	}
 	if len(findings) >= reportListLimit {
 		truncated = append(truncated, fmt.Sprintf("发现列表达到 %d 条上限：正文可能不完整，更新的一批未列出", reportListLimit))
 	}
 	// 撤回(retracted)的漏洞出正文、进「已撤回」段；blocked/exhausted 的意图单列「未测成」。
 	tid, _ := strconv.ParseInt(t.ID, 10, 64)
-	meta, _ := s.m.pg.FindingMetaByNodeID(tid)
+	meta, merr := s.m.pg.FindingMetaByNodeID(tid)
+	if merr != nil {
+		// 处置状态/置信度是确认门的输入；降级会把已确认漏洞误打成待确认候选。
+		log.Printf("[report] 任务 %s 发现处置状态读取失败，无法判定确认门：%v", t.ID, merr)
+		writeErr(w, 503, "发现处置状态读取失败，无法判定确认门，请稍后重试")
+		return
+	}
 	buckets := partitionReportFindings(findings, meta)
 	live := buckets.live
 	retracted := buckets.retracted
@@ -44,6 +55,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	if verr != nil {
 		log.Printf("[report] 任务 %s 复测结论读取失败，正文按 confidence/status 判定：%v", t.ID, verr)
 		verdicts = map[int64]string{}
+		dataGaps = append(dataGaps, "复测结论读取失败：复测 reproduced|fixed 的发现可能被归入待确认候选")
 	}
 	// 正文只放通过确认门的发现：high confidence / 人工确认 / 复测 reproduced|fixed。
 	// 其余（medium/low 的 pending、进行中、存疑等）进「待确认候选」——它们不是漏洞证据，
@@ -61,7 +73,10 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	live = confirmedLive
 	intents, ierr := t.Store.ListByKind(db.KindIntent, reportListLimit)
 	if ierr != nil {
-		log.Printf("[report] 任务 %s 意图列表读取失败：%v", t.ID, ierr)
+		// 意图列表驱动「未测成」、攻击链与技术统计：缺了它报告会假装所有方向都测完了。
+		log.Printf("[report] 任务 %s 意图列表读取失败，拒绝生成貌似完整的报告：%v", t.ID, ierr)
+		writeErr(w, 503, "意图列表读取失败，无法生成完整报告，请稍后重试")
+		return
 	}
 	if len(intents) >= reportListLimit {
 		truncated = append(truncated, fmt.Sprintf("意图列表达到 %d 条上限：未测成/攻击链可能不完整", reportListLimit))
@@ -81,7 +96,11 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			noEvidence = append(noEvidence, n)
 		}
 	}
-	coverage, _ := t.Store.CoverageMatrix(tid)
+	coverage, covErr := t.Store.CoverageMatrix(tid)
+	if covErr != nil {
+		log.Printf("[report] 任务 %s 覆盖矩阵读取失败，报告将不含覆盖明细：%v", t.ID, covErr)
+		dataGaps = append(dataGaps, "覆盖矩阵读取失败：报告不含资产×风险类覆盖明细")
+	}
 	// 复核结论：最新复测非"复现"的发现一并点名（存疑的会被 planner/人工再次审视）。
 	// 复核结论用**全部**发现来找节点：`fixed` 的发现现在进了「已关闭」桶、不在 live 里，
 	// 但它恰恰是复测结论最该点名的一条（「已修复（复测确认）」）。用 liveByID 会把它丢掉。
@@ -126,31 +145,54 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			log.Printf("[report] 任务 %s 未测资产清单读取失败，报告将只给总数：%v", t.ID, uerr)
+			dataGaps = append(dataGaps, "未测资产清单读取失败：报告只给未测总数，不含清单")
 		}
 	} else {
 		if cerr != nil {
 			log.Printf("[report] 任务 %s 覆盖口径资产计数失败，回退到 task_ids 关联计数：%v", t.ID, cerr)
+			dataGaps = append(dataGaps, "范围口径资产计数失败，资产数退回按任务关联统计")
 		}
 		if m, ferr := s.m.Assets().CountsByTypeForTask(tid); ferr == nil {
 			counts = m
 		} else {
 			log.Printf("[report] 任务 %s 资产计数回退也失败，报告将不列资产数：%v", t.ID, ferr)
+			dataGaps = append(dataGaps, "资产计数读取失败：报告不含资产统计")
 		}
 	}
 	// 报告 Agent 为每条发现写的详细分析：链路里最值钱的一段，此前完全没进总报告。
-	findingReports, ferr := s.m.pg.FindingReportsByNode(tid)
-	if ferr != nil {
-		log.Printf("[report] 任务 %s 详细报告读取失败，正文将不含「详细分析」段：%v", t.ID, ferr)
-		findingReports = nil
+	// 同时核对证据版本：写完之后又补了证据的分析要显式标「可能已过期」，不能拿旧结论当现状。
+	reportDetails, rerr := s.m.pg.FindingReportsByNode(tid)
+	findingReports := make(map[int64]string, len(reportDetails))
+	findingReportStale := map[int64]string{}
+	if rerr != nil {
+		log.Printf("[report] 任务 %s 详细报告读取失败，正文将不含「详细分析」段：%v", t.ID, rerr)
+		dataGaps = append(dataGaps, "详细分析读取失败：报告正文不含报告 Agent 的逐条分析")
+	} else {
+		for nodeID, detail := range reportDetails {
+			if strings.TrimSpace(detail.Report) == "" {
+				continue
+			}
+			findingReports[nodeID] = detail.Report
+			switch {
+			case detail.ReportEvidenceVersion < 0:
+				findingReportStale[nodeID] = fmt.Sprintf("该详细分析撰写时未声明所读证据版本，当前证据版本为 v%d，可能已过期，请重新核对后再引用。", detail.EvidenceVersion)
+			case detail.ReportEvidenceVersion != detail.EvidenceVersion:
+				findingReportStale[nodeID] = fmt.Sprintf("该详细分析基于证据 v%d 撰写，当前证据为 v%d，可能已过期，请重新核对后再引用。", detail.ReportEvidenceVersion, detail.EvidenceVersion)
+			}
+		}
 	}
 	// 战果：据点与凭据各取全量（同 findings 的取法）。它们不进 digest（coldgraph 只折
 	// intent/fact），所以不会被折叠吞掉，按 kind 直取即可。
-	footholds, _ := t.Store.ListByKind(db.KindFoothold, 1000)
-	credentials, _ := t.Store.ListByKind(db.KindCredential, 1000)
+	footholds, fhErr := t.Store.ListByKind(db.KindFoothold, 1000)
+	credentials, crErr := t.Store.ListByKind(db.KindCredential, 1000)
 	// 遗留物（P43）：我们留在目标上的东西。同样按 kind 直取全量。
-	artifacts, _ := t.Store.ListByKind(db.KindArtifact, 1000)
+	artifacts, arErr := t.Store.ListByKind(db.KindArtifact, 1000)
 	// 检测验证：同样按 kind 直取全量（也不进 digest）。
-	detections, _ := t.Store.ListByKind(db.KindDetection, 1000)
+	detections, dtErr := t.Store.ListByKind(db.KindDetection, 1000)
+	if fhErr != nil || crErr != nil || arErr != nil || dtErr != nil {
+		log.Printf("[report] 任务 %s 战果/遗留物/检测读取失败：据点=%v 凭据=%v 遗留物=%v 检测=%v", t.ID, fhErr, crErr, arErr, dtErr)
+		dataGaps = append(dataGaps, "战果/遗留物/检测读取失败：对应段落可能不完整")
+	}
 
 	// 战果动用关系（intent --uses--> 战果）：交付物里最接近「攻击链」的东西——只写「拿到了
 	// 什么」是资产清单，写清「拿它走到了哪一步」才是作业叙述。
@@ -174,7 +216,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	techniqueTally := db.TechniqueTally(intents)
 	lootUsedBy := map[int64][]report.LootUse{}
 	var chains []report.AttackChain
-	if edges, err := t.Store.Edges(5000); err == nil {
+	if edges, edgeErr := t.Store.Edges(5000); edgeErr == nil {
 		for _, e := range edges {
 			if e.Rel != db.RelUses || !db.LootConsumingIntentState(intentState[e.From]) {
 				continue
@@ -186,6 +228,9 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		}
 		// 攻击路径：把 uses/yields 两种边接起来读（见 server/attack_chains.go）。不引入新模型。
 		chains = buildAttackChains(edges, lootLabels(footholds, credentials, artifacts), intentSummary, intentState, intentTech)
+	} else {
+		log.Printf("[report] 任务 %s 图边读取失败，报告不含攻击链与战果动用关系：%v", t.ID, edgeErr)
+		dataGaps = append(dataGaps, "图边读取失败：攻击链与战果动用关系可能缺失")
 	}
 	// 域内路径（P32）：与任务页的「AD 攻击路径」同一份实现——报告里写的和页面看到的不该是两个答案。
 	adPaths := adPathsForReport(t.Store)
@@ -195,6 +240,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	credAttempts, err := s.m.pg.ListCredentialAttempts(tid)
 	if err != nil {
 		log.Printf("[report] 任务 %s 凭据尝试台账读取失败：%v", t.ID, err)
+		dataGaps = append(dataGaps, "凭据尝试台账读取失败：报告不含对账号的尝试记录")
 	}
 
 	// 展示编号：任务内序号 + 全局 id。正文/附录写成「#3（id 659）」，
@@ -204,7 +250,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
-		FindingReports: findingReports, Scope: scope, Duplicates: duplicates, Truncated: truncated,
+		FindingReports: findingReports, FindingReportStale: findingReportStale, Scope: scope, Duplicates: duplicates, Truncated: truncated,
+		DataGaps:         dataGaps,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		NodeOrdinal: nodeOrd, IntentOrdinal: intentOrd,
 		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,

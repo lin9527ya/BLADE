@@ -59,11 +59,17 @@ type Input struct {
 	// 那是整条链路里最值钱的一段（利用过程/影响/根因/修复建议），此前只存在详情页里，
 	// 总报告完全没用上。空 = 该发现还没有详细报告。
 	FindingReports map[int64]string
+	// FindingReportStale 按 finding 节点 id 标注「详细分析撰写后证据又变了」：
+	// 证据版本不一致时提示读者该段可能已过期，需重新核对——不静默把旧分析当现状。
+	FindingReportStale map[int64]string
 	// Scope 是「测了什么 / 没测什么」的账目；nil = 没有可核对的范围信息。
 	Scope *ScopeSummary
 	// Truncated 列出「本次报告因上限被截断」的清单。截断必须被声明——让读者以为
 	// 看到的是全部，是比少列几条更严重的问题。
 	Truncated []string
+	// DataGaps 列出「本次报告因读取失败而缺失的段落/数据」。与 Truncated 同一条纪律：
+	// 缺了什么必须自己说出来，不能输出一份看起来完整的交付物。
+	DataGaps []string
 	// Duplicates 把「同一漏洞的多次登记」挂到代表项上（节点 id → 重复项 id）。
 	// 指纹 = 漏洞类型 + 端点集合；重复项不进正文、也不计入确认发现数——同一件事数两遍
 	// 会让客户以为洞很多，也让严重度合计虚高。
@@ -459,6 +465,9 @@ func Markdown(in Input) string {
 	for _, t := range in.Truncated {
 		fmt.Fprintf(&b, "- ⚠ %s\n", t)
 	}
+	for _, g := range in.DataGaps {
+		fmt.Fprintf(&b, "- ⚠ 数据缺项：%s\n", g)
+	}
 	fmt.Fprintf(&b, "- 战果：据点 **%d** 个、凭据 **%d** 条\n", len(in.Footholds), len(in.Credentials))
 	if len(in.Artifacts) > 0 {
 		uncleaned := 0
@@ -708,6 +717,9 @@ func Markdown(in Input) string {
 			// 报告 Agent 的详细分析（利用过程/影响/根因/修复建议）。原样嵌入：它本身就是
 			// Markdown，摘抄只会让"关键位置表/修复建议"这些结构化内容散架。
 			if txt := strings.TrimSpace(in.FindingReports[r.node.ID]); txt != "" {
+				if note := strings.TrimSpace(in.FindingReportStale[r.node.ID]); note != "" {
+					fmt.Fprintf(&b, "> ⚠ %s\n\n", note)
+				}
 				fmt.Fprintf(&b, "**详细分析（报告 Agent）：**\n\n%s\n\n", txt)
 			}
 		}

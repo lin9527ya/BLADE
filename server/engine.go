@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -1433,12 +1434,17 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	if o, outcomeErr := t.Store.GetIntentSemanticOutcome(intent.ID); outcomeErr == nil {
 		outcome = o
 	}
-	state := settleIntentState(err, reason, wrote, outcome)
+	intentKind := intentKindOf(intent)
+	state := settleIntentState(err, reason, wrote, outcome, intentKind)
 	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
 	}
 	if state == "no_output" {
-		log.Printf("[worker %s] intent %d 正常结束但什么都没写回 → no_output（planner 可重派）", name, intent.ID)
+		if intentKind == "verify" && wrote.Total() > 0 {
+			log.Printf("[worker %s] intent %d 是验证意图但只登记了资产、没有验证结论 → no_output（planner 可重派）", name, intent.ID)
+		} else {
+			log.Printf("[worker %s] intent %d 正常结束但什么都没写回 → no_output（planner 可重派）", name, intent.ID)
+		}
 	}
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
 		if rerr := t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota); rerr != nil {
@@ -1465,7 +1471,21 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 //  3. **空跑**：正常结束、什么都没写回、也没有语义结论 → no_output。
 //     此前这种 run 落 done：planner 当成"已覆盖"不再派、覆盖度当成"已测"，
 //     整条方向就这样静默消失——而它可能连一次探针都没发出去。
-func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome string) string {
+//
+// intentKindOf 读意图的完成口径（payload.intent_kind）。空 = 旧意图，
+// 沿用历史判定（任何写回都算产出），不能因为字段缺失改变既有任务的行为。
+func intentKindOf(n *db.Node) string {
+	if n == nil || len(n.Payload) == 0 {
+		return ""
+	}
+	var p struct {
+		Kind string `json:"intent_kind"`
+	}
+	_ = json.Unmarshal(n.Payload, &p)
+	return strings.TrimSpace(p.Kind)
+}
+
+func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string) string {
 	state := "done"
 	switch {
 	case err != nil:
@@ -1480,6 +1500,12 @@ func settleIntentState(err error, reason harness.TerminalReason, wrote agent.Wri
 		return semanticOutcome
 	}
 	if wrote.Total() == 0 {
+		return "no_output"
+	}
+	// 验证意图的完成依据是「验证结果」，不是「登记了几个资产」：只 insert_assets
+	// 的 verify 意图没有证明任何东西，落 no_output 让 planner 换打法重派，而不是
+	// 当成已覆盖——覆盖矩阵与报告都按终态算，一处放宽就会把"没测"记成"测过"。
+	if intentKind == "verify" && wrote.ValidationTotal() == 0 {
 		return "no_output"
 	}
 	return "done"

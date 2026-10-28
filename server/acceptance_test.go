@@ -1064,11 +1064,15 @@ func accP14(t *testing.T, e *accEnv) {
 	if opts.Compaction != nil {
 		t.Fatal("Compactor 与 Compaction 必须互斥（Compaction 须被清空）")
 	}
-	// noa 已占槽位时不得被覆盖（互斥而非静默覆盖）。
+	// noa 已占槽位时压缩器不被替换，但请求投影必须包在外层（压缩不能带走当前意图）。
+	// 内层原值保留由 agent 包的单测断言；这里只验跨包可见的契约：包后仍实现 ContextView。
 	noaOwned := &agentcore.Options{Provider: prov, Compactor: opts.Compactor}
 	agent.InstallContextManager(noaOwned, 200000, 0, dumpDir, nil)
-	if noaOwned.Compactor != harness.Compactor(opts.Compactor) {
-		t.Fatal("已占用的 Compactor 槽位被静默覆盖")
+	if noaOwned.Compactor == harness.Compactor(opts.Compactor) {
+		t.Fatal("宿主压缩器必须被包装：noa 接管时请求投影不能一起让位")
+	}
+	if _, ok := noaOwned.Compactor.(harness.ContextView); !ok {
+		t.Fatal("包装后的压缩器必须实现 ContextView（否则索引仍进不了请求）")
 	}
 
 	view, ok := opts.Compactor.(harness.ContextView)

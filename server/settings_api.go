@@ -256,98 +256,109 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // putSettings applies a settings change. Toggling traffic_capture rebuilds the
 // agents (applyLLM) so the new proxy/traffic-tools/prompt state takes hold — when
 // off, agents get no proxy config, no traffic tools, and no proxy prompt content.
+
+// settingsRequest 是设置保存请求体。提取为具名类型，让「先全量校验、再写库/应用」
+// 两阶段处理能共用同一份字段定义（见 settings_validate.go）。
+type settingsRequest struct {
+	TrafficCapture      *bool   `json:"traffic_capture"`
+	AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
+	LootExec            *bool   `json:"agent_loot_exec"`
+	OastEnabled         *bool   `json:"oast_enabled"`
+	OastToken           *string `json:"oast_token"` // 只写：空串 = 清除
+	OastDomain          *string `json:"oast_domain"`
+	OpsecNoise          *string `json:"opsec_noise_level"`
+	AgentAutoRetest     *bool   `json:"agent_auto_retest"`
+	TaskTokenBudget     *int64  `json:"task_token_budget"`
+	LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
+	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
+	WebSearchEnabled    *bool   `json:"web_search_enabled"`
+	WebSearchBackend    *string `json:"web_search_backend"`
+	BraveKey            *string `json:"brave_search_api_key"`
+	TavilyKey           *string `json:"tavily_search_api_key"`
+	WebSearchProxy      *string `json:"web_search_proxy"`  // 独立出口代理(http/https/socks5)；null=不改，""=清空
+	GlobalProxy         *string `json:"global_proxy"`      // 兼容旧字段：单代理；null=不改，""=清空(直连)
+	GlobalProxyPool     *string `json:"global_proxy_pool"` // 代理池（每行一个）；null=不改，""=清空
+	ProxyHealthURL      *string `json:"proxy_health_url"`
+	ProxyHealthTimeout  *int    `json:"proxy_health_timeout_seconds"`
+	ProxyHealthInterval *int    `json:"proxy_health_interval_seconds"`
+	ProxyFailThreshold  *int    `json:"proxy_fail_threshold"`
+	ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
+	ProxyEgressIPURL    *string `json:"proxy_egress_ip_url"`
+	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
+	Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+	// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
+	ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
+	ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
+	// LLM 轮询(故障转移)开关 + 「绑定配置失败也兜底回轮询链」开关。两者都需要
+	// 重建 provider 链才生效，走下面的 changed → applyLLM 路径。
+	LLMPoolEnabled      *bool `json:"llm_pool_enabled"`
+	LLMPoolBindFallback *bool `json:"llm_pool_bind_fallback"`
+	// 操作约束注入范围开关(默认都开);即时生效(planner/worker 每轮读),无需重建 agent。
+	ConstraintsInjectPlanner *bool `json:"constraints_inject_planner"`
+	ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
+	// 授权范围（RoE）两个设置：空间门模式 + 作业时间窗。空串 hours = 不限时。
+	// 拦截层每调用现读，即时生效。
+	ScopeMode  *string `json:"intercept_scope_mode"`
+	ScopeHours *string `json:"intercept_scope_hours"`
+	// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
+	// agent 侧每 run 现读，改完即时生效。与界面语言无关。
+	ArtifactLanguage *string `json:"artifact_language"`
+	// P43 凭据尝试预算：窗口内对同一 (目标, 账号) 允许的尝试次数（0 = 不限），
+	// 以及超预算后的裁决（allow|ask|deny）。拦截层每调用现读，即时生效。
+	CredentialBudget       *int    `json:"credential_attempt_budget"`
+	CredentialBudgetAction *string `json:"credential_attempt_budget_action"`
+	// P42 界面显示名（空 = 内置 BLADE）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
+	SiteName *string `json:"site_name"`
+	// P42 允许跨源访问 API 的来源白名单（逗号分隔；空 = 不发 CORS 头）。
+	CORSAllowedOrigins *string `json:"cors_allowed_origins"`
+	// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
+	NoaCompaction *bool `json:"noa_compaction"`
+	// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
+	// 不需要重建 agent 或重启。
+	NotifyEnabled    *bool   `json:"notify_enabled"`
+	NotifyBaseURL    *string `json:"notify_public_base_url"`
+	NotifyDigestMins *int    `json:"notify_digest_interval_min"`
+	// P21 情报源。key：null=不改、""=清空；base_url/proxy 同理；quota：0=不限。
+	FOFAKey         *string `json:"fofa_key"`
+	UpdateToken     *string `json:"update_github_token"` // 自更新 token（只存不回显）
+	FOFAEmail       *string `json:"fofa_email"`
+	FOFABaseURL     *string `json:"fofa_base_url"`
+	FOFAProxy       *string `json:"fofa_proxy"`
+	IntelDailyQuota *int    `json:"intel_daily_quota"`
+	// P24：执行资源限额（0 = 该轴不限）与外部 MCP 守卫（并发上限/熔断阈值/冷却秒）。
+	ExecCPUSeconds *int `json:"exec_cpu_seconds"`
+	// P28 存储清理保留天数（0 = 不清理）。
+	StorageRetentionTasks      *int `json:"storage_retention_tasks_days"`
+	StorageRetentionSessions   *int `json:"storage_retention_sessions_days"`
+	StorageRetentionDrafts     *int `json:"storage_retention_drafts_days"`
+	StorageRetentionTranscript *int `json:"storage_retention_transcripts_days"`
+	StorageRetentionBinary     *int `json:"storage_retention_binary_days"`
+	// 数据库侧保留天数（同一套 0 = 不清理）。改完由后台清理器按日生效。
+	RetentionLLMUsage       *int `json:"storage_retention_llm_usage_days"`
+	RetentionActivity       *int `json:"storage_retention_activity_days"`
+	RetentionServerLogs     *int `json:"storage_retention_server_logs_days"`
+	RetentionLLMRecordBodys *int `json:"storage_retention_llm_record_bodies_days"`
+	RetentionLLMRecords     *int `json:"storage_retention_llm_records_days"`
+	RetentionTraffic        *int `json:"storage_retention_traffic_days"`
+	ExecMemoryMB            *int `json:"exec_memory_mb"`
+	ExecMaxProcs            *int `json:"exec_max_procs"`
+	ExecMaxActive           *int `json:"exec_max_active"`
+	ExecMaxAge              *int `json:"exec_max_age_minutes"`
+	MCPMaxConcurrent        *int `json:"mcp_max_concurrent_per_server"`
+	MCPBreakerFails         *int `json:"mcp_breaker_threshold"`
+	MCPBreakerCooldown      *int `json:"mcp_breaker_cooldown_sec"`
+}
+
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TrafficCapture      *bool   `json:"traffic_capture"`
-		AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
-		LootExec            *bool   `json:"agent_loot_exec"`
-		OastEnabled         *bool   `json:"oast_enabled"`
-		OastToken           *string `json:"oast_token"` // 只写：空串 = 清除
-		OastDomain          *string `json:"oast_domain"`
-		OpsecNoise          *string `json:"opsec_noise_level"`
-		AgentAutoRetest     *bool   `json:"agent_auto_retest"`
-		TaskTokenBudget     *int64  `json:"task_token_budget"`
-		LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
-		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
-		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
-		WebSearchEnabled    *bool   `json:"web_search_enabled"`
-		WebSearchBackend    *string `json:"web_search_backend"`
-		BraveKey            *string `json:"brave_search_api_key"`
-		TavilyKey           *string `json:"tavily_search_api_key"`
-		WebSearchProxy      *string `json:"web_search_proxy"`  // 独立出口代理(http/https/socks5)；null=不改，""=清空
-		GlobalProxy         *string `json:"global_proxy"`      // 兼容旧字段：单代理；null=不改，""=清空(直连)
-		GlobalProxyPool     *string `json:"global_proxy_pool"` // 代理池（每行一个）；null=不改，""=清空
-		ProxyHealthURL      *string `json:"proxy_health_url"`
-		ProxyHealthTimeout  *int    `json:"proxy_health_timeout_seconds"`
-		ProxyHealthInterval *int    `json:"proxy_health_interval_seconds"`
-		ProxyFailThreshold  *int    `json:"proxy_fail_threshold"`
-		ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
-		ProxyEgressIPURL    *string `json:"proxy_egress_ip_url"`
-		PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
-		Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
-		// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
-		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
-		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
-		// LLM 轮询(故障转移)开关 + 「绑定配置失败也兜底回轮询链」开关。两者都需要
-		// 重建 provider 链才生效，走下面的 changed → applyLLM 路径。
-		LLMPoolEnabled      *bool `json:"llm_pool_enabled"`
-		LLMPoolBindFallback *bool `json:"llm_pool_bind_fallback"`
-		// 操作约束注入范围开关(默认都开);即时生效(planner/worker 每轮读),无需重建 agent。
-		ConstraintsInjectPlanner *bool `json:"constraints_inject_planner"`
-		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
-		// 授权范围（RoE）两个设置：空间门模式 + 作业时间窗。空串 hours = 不限时。
-		// 拦截层每调用现读，即时生效。
-		ScopeMode  *string `json:"intercept_scope_mode"`
-		ScopeHours *string `json:"intercept_scope_hours"`
-		// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
-		// agent 侧每 run 现读，改完即时生效。与界面语言无关。
-		ArtifactLanguage *string `json:"artifact_language"`
-		// P43 凭据尝试预算：窗口内对同一 (目标, 账号) 允许的尝试次数（0 = 不限），
-		// 以及超预算后的裁决（allow|ask|deny）。拦截层每调用现读，即时生效。
-		CredentialBudget       *int    `json:"credential_attempt_budget"`
-		CredentialBudgetAction *string `json:"credential_attempt_budget_action"`
-		// P42 界面显示名（空 = 内置 BLADE）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
-		SiteName *string `json:"site_name"`
-		// P42 允许跨源访问 API 的来源白名单（逗号分隔；空 = 不发 CORS 头）。
-		CORSAllowedOrigins *string `json:"cors_allowed_origins"`
-		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
-		NoaCompaction *bool `json:"noa_compaction"`
-		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
-		// 不需要重建 agent 或重启。
-		NotifyEnabled    *bool   `json:"notify_enabled"`
-		NotifyBaseURL    *string `json:"notify_public_base_url"`
-		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
-		// P21 情报源。key：null=不改、""=清空；base_url/proxy 同理；quota：0=不限。
-		FOFAKey         *string `json:"fofa_key"`
-		UpdateToken     *string `json:"update_github_token"` // 自更新 token（只存不回显）
-		FOFAEmail       *string `json:"fofa_email"`
-		FOFABaseURL     *string `json:"fofa_base_url"`
-		FOFAProxy       *string `json:"fofa_proxy"`
-		IntelDailyQuota *int    `json:"intel_daily_quota"`
-		// P24：执行资源限额（0 = 该轴不限）与外部 MCP 守卫（并发上限/熔断阈值/冷却秒）。
-		ExecCPUSeconds *int `json:"exec_cpu_seconds"`
-		// P28 存储清理保留天数（0 = 不清理）。
-		StorageRetentionTasks      *int `json:"storage_retention_tasks_days"`
-		StorageRetentionSessions   *int `json:"storage_retention_sessions_days"`
-		StorageRetentionDrafts     *int `json:"storage_retention_drafts_days"`
-		StorageRetentionTranscript *int `json:"storage_retention_transcripts_days"`
-		StorageRetentionBinary     *int `json:"storage_retention_binary_days"`
-		// 数据库侧保留天数（同一套 0 = 不清理）。改完由后台清理器按日生效。
-		RetentionLLMUsage       *int `json:"storage_retention_llm_usage_days"`
-		RetentionActivity       *int `json:"storage_retention_activity_days"`
-		RetentionServerLogs     *int `json:"storage_retention_server_logs_days"`
-		RetentionLLMRecordBodys *int `json:"storage_retention_llm_record_bodies_days"`
-		RetentionLLMRecords     *int `json:"storage_retention_llm_records_days"`
-		RetentionTraffic        *int `json:"storage_retention_traffic_days"`
-		ExecMemoryMB            *int `json:"exec_memory_mb"`
-		ExecMaxProcs            *int `json:"exec_max_procs"`
-		ExecMaxActive           *int `json:"exec_max_active"`
-		ExecMaxAge              *int `json:"exec_max_age_minutes"`
-		MCPMaxConcurrent        *int `json:"mcp_max_concurrent_per_server"`
-		MCPBreakerFails         *int `json:"mcp_breaker_threshold"`
-		MCPBreakerCooldown      *int `json:"mcp_breaker_cooldown_sec"`
-	}
+	var req settingsRequest
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	// 全量校验必须在任何写库/运行态动作之前：后字段非法不能留下"改了一半"的状态。
+	if err := s.validateSettingsRequest(req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -757,7 +768,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.llm.mu.Unlock()
 		if on {
 			if err := s.applyLLM(cfg); err != nil {
-				writeErr(w, 500, err.Error())
+				// 设置已经落库，只是运行态没重建成功：不能再用一个 500 让用户以为"全都没变"。
+				writeErr(w, 500, "设置已保存，但运行态重建失败（新配置尚未生效）："+err.Error())
 				return
 			}
 		}

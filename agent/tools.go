@@ -184,6 +184,13 @@ type WriteCounts struct {
 	Artifacts   int
 }
 
+// ValidationTotal is the "verification result" subset: facts, findings, loot,
+// detections and artifacts — everything except merely registered assets. A verify
+// intent that only ran insert_assets proved nothing (see settleIntentState).
+func (w WriteCounts) ValidationTotal() int {
+	return w.Facts + w.Findings + w.Footholds + w.Credentials + w.Detections + w.Artifacts
+}
+
 // Total is every node persisted this run, regardless of kind — the
 // "explored but persisted nothing" signal (Total == 0).
 func (w WriteCounts) Total() int {
@@ -1711,11 +1718,14 @@ type intentItem struct {
 	ParentIDs   []json.RawMessage `json:"parent_ids"`
 	UsesLootIDs []json.RawMessage `json:"uses_loot_ids"`
 	// DependsOn 是串行链的前置意图：它们有结论（done/negative）之前，本条不会被派给 worker。
-	DependsOn  []json.RawMessage `json:"depends_on"`
-	GoalID     json.RawMessage   `json:"goal_id"`
-	Priority   int               `json:"priority"`
-	RiskArea   string            `json:"risk_area"`
-	Techniques []string          `json:"techniques"`
+	DependsOn []json.RawMessage `json:"depends_on"`
+	GoalID    json.RawMessage   `json:"goal_id"`
+	Priority  int               `json:"priority"`
+	RiskArea  string            `json:"risk_area"`
+	// Kind 是完成口径：discovery（资产发现/侦察，允许只登记资产）| verify（验证/利用，
+	// 必须写回事实或发现才算做完）。空 = 旧意图，沿用历史判定（任何写回都算产出）。
+	Kind       string   `json:"kind"`
+	Techniques []string `json:"techniques"`
 	// IdempotencyKey 让重试/重复提交落到同一条意图，而不是靠摘要相似度猜重。
 	// 非空时写进 payload；同键已存在则直接返回已有 id。
 	IdempotencyKey string `json:"idempotency_key"`
@@ -1740,6 +1750,12 @@ const (
 func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, "", fmt.Errorf("summary 不能为空")
+	}
+	intentKind := strings.TrimSpace(it.Kind)
+	switch intentKind {
+	case "", "discovery", "verify":
+	default:
+		return 0, "", fmt.Errorf("kind 只能是 discovery（资产发现/侦察，可只登记资产）或 verify（验证/利用，必须写回事实或发现），收到 %q", it.Kind)
 	}
 	// ── P20 探索策略门（意图层，硬拒）──
 	// 放在所有 DB 结构校验之前：额度用尽/方向被禁时，不该再为一条注定被拒的意图
@@ -1857,6 +1873,11 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		return 0, "", fmt.Errorf("%s", rej)
 	}
 	payload := map[string]any{"summary": it.Summary, "risk_area": riskArea}
+	if intentKind != "" {
+		// 完成口径随意图落库：收尾判定按它区分「资产发现」与「验证」——
+		// verify 意图只登记资产不算测过（见 server.settleIntentState）。
+		payload["intent_kind"] = intentKind
+	}
 	if idempotencyKey != "" {
 		payload["idempotency_key"] = idempotencyKey
 	}
@@ -2006,6 +2027,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"uses_loot_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":        intp("优先级 0-10，默认5"),
 			"risk_area":       str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
+			"kind":            str("【完成口径】discovery：资产发现/侦察，允许只登记资产就结束；verify：验证/利用，必须写回事实(record_fact)、发现(report_finding)或战果才算做完——只登记资产会被判为 no_output。省略 = 历史判定（任何写回都算产出）。"),
 			"idempotency_key": str("可选幂等键：重试或重复提交同一条方向时带上同一个键，平台直接返回已有意图，不重复创建。"),
 			"techniques":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
 		}),

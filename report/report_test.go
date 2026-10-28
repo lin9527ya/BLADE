@@ -443,3 +443,36 @@ func TestMarkdownDeclaresTruncation(t *testing.T) {
 		t.Fatalf("截断声明没有出现在摘要里：\n%s", md)
 	}
 }
+
+// 报告必须自己声明"缺了什么"：读取失败降级出的缺项与「分析写在旧证据上」都不能静默。
+func TestMarkdownDataGapsAndStaleFindingReports(t *testing.T) {
+	node := findingNode(7, "confirmed", "sqli", "SQL 注入", "high")
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Findings:       []*db.Node{node},
+		FindingReports: map[int64]string{7: "### 利用过程\n\npayload 回显数据库名。"},
+		FindingReportStale: map[int64]string{
+			7: "该详细分析基于证据 v1 撰写，当前证据为 v2，可能已过期，请重新核对后再引用。",
+		},
+		DataGaps: []string{"复测结论读取失败：复测 reproduced|fixed 的发现可能被归入待确认候选"},
+	})
+	for _, want := range []string{
+		"- ⚠ 数据缺项：复测结论读取失败",
+		"> ⚠ 该详细分析基于证据 v1 撰写，当前证据为 v2，可能已过期",
+		"**详细分析（报告 Agent）：**",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("缺少 %q：\n%s", want, md)
+		}
+	}
+
+	// 证据版本一致时不出现过期警告，避免把正常报告吓成"全都过期"。
+	clean := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Findings:       []*db.Node{node},
+		FindingReports: map[int64]string{7: "### 利用过程"},
+	})
+	if strings.Contains(clean, "可能已过期") {
+		t.Fatalf("无过期映射时不该出现过期警告：\n%s", clean)
+	}
+}

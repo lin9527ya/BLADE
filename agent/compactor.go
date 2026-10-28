@@ -37,16 +37,82 @@ import (
 // 3 秒内的重复请求复用同一份，避免密集工具循环里反复查库。
 const contextIndexTTL = 3 * time.Second
 
-// DomainCompactor 实现 harness.Compactor + harness.ContextView。
-type DomainCompactor struct {
-	inner *compaction.Compactor
-	// index 每请求求值一次（有 TTL 节流）：返回空串表示本次不附索引。
-	index func() string
-
+// indexProjector 是「每请求常驻索引」的构造与节流。View 每个模型请求都会调，
+// 索引取的是库里的实时状态；TTL 内复用同一份，避免密集工具循环里反复查库。
+// index 返回空串表示本次不附索引。
+type indexProjector struct {
+	index  func() string
 	mu     sync.Mutex
 	cached string
 	at     time.Time
 	ttl    time.Duration
+}
+
+func (p *indexProjector) block() string {
+	if p.index == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ttl > 0 && p.cached != "" && time.Since(p.at) < p.ttl {
+		return p.cached
+	}
+	p.cached = strings.TrimSpace(p.index())
+	p.at = time.Now()
+	return p.cached
+}
+
+// appendTo 在请求投影尾部追加索引。总是复制到新切片：调用方（或内层压缩器）
+// 返回的切片可能共享历史数组，直接 append 会改写真实历史。
+func (p *indexProjector) appendTo(base []llm.Message) []llm.Message {
+	block := p.block()
+	if block == "" {
+		return base
+	}
+	out := make([]llm.Message, 0, len(base)+1)
+	out = append(out, base...)
+	out = append(out, llm.UserText(block))
+	return out
+}
+
+// DomainCompactor 实现 harness.Compactor + harness.ContextView。
+type DomainCompactor struct {
+	inner *compaction.Compactor
+	index indexProjector
+}
+
+// indexView 把「每请求常驻索引」包在任意宿主压缩器外层。
+//
+// noa 接管压缩时（opts.Compactor 非空），InstallContextManager 此前直接让位：
+// 当前意图锚点/目标/约束的索引完全不发，压缩一旦吃掉启动轮，槽位会话就丢了职责。
+// 压缩策略（怎么压）与请求投影（必须始终可见的职责）是两件事：这里只加投影，
+// Pre/Reactive/IsOverflow 原样委托；内层若自己也实现 ContextView，先取它的投影再接索引。
+type indexView struct {
+	inner harness.Compactor
+	index indexProjector
+}
+
+var (
+	_ harness.Compactor   = (*indexView)(nil)
+	_ harness.ContextView = (*indexView)(nil)
+)
+
+func (v *indexView) Pre(ctx context.Context, msgs []llm.Message, lastInputTokens int) []llm.Message {
+	return v.inner.Pre(ctx, msgs, lastInputTokens)
+}
+
+func (v *indexView) Reactive(ctx context.Context, msgs []llm.Message) ([]llm.Message, bool) {
+	return v.inner.Reactive(ctx, msgs)
+}
+
+func (v *indexView) IsOverflow(err error) bool { return v.inner.IsOverflow(err) }
+
+func (v *indexView) View(ctx context.Context, msgs []llm.Message) []llm.Message {
+	base := llm.MessagesForAPI(msgs)
+	if cv, ok := v.inner.(harness.ContextView); ok {
+		base = cv.View(ctx, msgs)
+	}
+	return v.index.appendTo(base)
 }
 
 var (
@@ -60,8 +126,7 @@ var (
 func NewDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string, index func() string) *DomainCompactor {
 	return &DomainCompactor{
 		inner: compaction.New(cfg, bladeSummarizer(prov, maxTokens, nonStreaming, dumpDir)),
-		index: index,
-		ttl:   contextIndexTTL,
+		index: indexProjector{index: index, ttl: contextIndexTTL},
 	}
 }
 
@@ -80,29 +145,7 @@ func (d *DomainCompactor) IsOverflow(err error) bool { return d.inner.IsOverflow
 // View 是纯投影（绝不改历史）：在默认投影之后附一条平台注入的常驻索引。
 // 返回的切片只用于本次请求，宿主的 l.messages 原样不动。
 func (d *DomainCompactor) View(_ context.Context, msgs []llm.Message) []llm.Message {
-	base := llm.MessagesForAPI(msgs)
-	block := d.indexBlock()
-	if block == "" {
-		return base
-	}
-	out := make([]llm.Message, 0, len(base)+1)
-	out = append(out, base...)
-	out = append(out, llm.UserText(block))
-	return out
-}
-
-func (d *DomainCompactor) indexBlock() string {
-	if d.index == nil {
-		return ""
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.ttl > 0 && d.cached != "" && time.Since(d.at) < d.ttl {
-		return d.cached
-	}
-	d.cached = strings.TrimSpace(d.index())
-	d.at = time.Now()
-	return d.cached
+	return d.index.appendTo(llm.MessagesForAPI(msgs))
 }
 
 // ContextIndexVars 是常驻索引的构造输入。ts 为 nil（无探索图的自定义 agent）
@@ -701,14 +744,18 @@ var _ iter.Seq2[llm.StreamEvent, error]
 
 // --- 装配 ---
 
-// InstallContextManager 在 opts 上装 P14 领域上下文管理器。调用点必须在 enableNoa 之后：
-// noa 与它抢同一个 Options.Compactor 槽位，noa 已占用时本函数不动它（互斥而非静默覆盖）。
+// InstallContextManager 在 opts 上装 P14 领域上下文管理器。调用点必须在 enableNoa 之后。
+//
+// 压缩策略与请求投影分开处理：noa 已占用 Options.Compactor 时，不再整个让位
+// （那样常驻索引——含当前意图/目标/约束——就不发了，压缩后槽位会话会丢职责），而是把
+// 已有压缩器包一层 indexView：怎么压仍由 noa 决定，每请求的职责投影始终在。
 func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func() string) {
 	if opts == nil {
 		return
 	}
 	if opts.Compactor != nil {
-		return // noa 已接管
+		opts.Compactor = &indexView{inner: opts.Compactor, index: indexProjector{index: index, ttl: contextIndexTTL}}
+		return
 	}
 	cfg := compactionConfig(windowTokens, maxTokens)
 	if cfg == nil {
