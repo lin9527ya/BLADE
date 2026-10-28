@@ -372,7 +372,12 @@ func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb
 func (s *Server) loadRestoredTask(taskID int64) {
 	id := strconv.FormatInt(taskID, 10)
 	var restored *Task
-	for _, task := range s.m.LoadExisting() {
+	tasks, err := s.m.LoadExisting()
+	if err != nil {
+		log.Printf("[archive] 恢复任务 %s 失败：读取任务列表：%v", id, err)
+		return
+	}
+	for _, task := range tasks {
 		if task.ID == id {
 			restored = task
 			break

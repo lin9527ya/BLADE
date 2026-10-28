@@ -51,6 +51,7 @@ type GuardStatus struct {
 	Inflight            int    `json:"inflight"`
 	ConsecutiveFailures int    `json:"consecutive_failures"`
 	Open                bool   `json:"open"`
+	HalfOpen            bool   `json:"half_open,omitempty"` // 冷却已过，正在放行单个探测调用
 	OpenRemainingSec    int    `json:"open_remaining_sec,omitempty"`
 	LastError           string `json:"last_error,omitempty"`
 }
@@ -63,6 +64,9 @@ type guard struct {
 	fails    int
 	openAt   time.Time
 	openTill time.Time
+	// halfOpen 表示冷却已过、唯一一个探测调用正在跑：其余调用快速失败，
+	// 避免冷却一到所有等待者同时涌向可能仍然不健康的 server（探针风暴）。
+	halfOpen bool
 	lastErr  string
 }
 
@@ -73,16 +77,28 @@ func (g *guard) acquire(ctx context.Context, server string, cfg GuardConfig) err
 	cfg = cfg.withDefaults()
 	for {
 		g.mu.Lock()
-		if now := time.Now(); now.Before(g.openTill) {
-			remain := g.openTill.Sub(now)
-			last := g.lastErr
-			g.mu.Unlock()
-			msg := fmt.Sprintf("MCP server %q 处于熔断冷却（还剩 %s）：最近连续失败已开闸停止调用", server, remain.Round(time.Second))
-			if last != "" {
-				msg += "；最后一次错误：" + last
+		if now := time.Now(); !g.openTill.IsZero() {
+			if now.Before(g.openTill) {
+				remain := g.openTill.Sub(now)
+				last := g.lastErr
+				g.mu.Unlock()
+				msg := fmt.Sprintf("MCP server %q 处于熔断冷却（还剩 %s）：最近连续失败已开闸停止调用", server, remain.Round(time.Second))
+				if last != "" {
+					msg += "；最后一次错误：" + last
+				}
+				msg += "。可在 系统设置 → MCP 页手动重置，或稍后自动恢复。"
+				return fmt.Errorf("%s", msg)
 			}
-			msg += "。可在 系统设置 → MCP 页手动重置，或稍后自动恢复。"
-			return fmt.Errorf("%s", msg)
+			// 冷却结束：只放行一个探针。成功则由 success() 关闭熔断；
+			// 失败则由 failure() 重新整段冷却；调用方取消时由 release() 交还探针资格。
+			if g.halfOpen {
+				g.mu.Unlock()
+				return fmt.Errorf("MCP server %q 熔断冷却已结束，正在单探针探测恢复：本次调用暂不发送，请稍后重试", server)
+			}
+			g.halfOpen = true
+			g.inflight++
+			g.mu.Unlock()
+			return nil
 		}
 		if cfg.MaxConcurrent <= 0 || g.inflight < cfg.MaxConcurrent {
 			g.inflight++
@@ -106,6 +122,11 @@ func (g *guard) release() {
 	if g.inflight > 0 {
 		g.inflight--
 	}
+	// 探针没有回报成败（调用方取消等）：交还资格，让下一个调用重新探测，
+	// 而不是把半开状态永久占住、所有调用都被拒。
+	if g.halfOpen && !g.openTill.IsZero() && !time.Now().Before(g.openTill) {
+		g.halfOpen = false
+	}
 	close(g.waitCh)
 	g.waitCh = make(chan struct{})
 	g.mu.Unlock()
@@ -117,6 +138,7 @@ func (g *guard) success() {
 	g.fails = 0
 	g.openTill = time.Time{}
 	g.openAt = time.Time{}
+	g.halfOpen = false
 	g.lastErr = ""
 	g.mu.Unlock()
 }
@@ -126,15 +148,17 @@ func (g *guard) failure(err error, cfg GuardConfig) {
 	cfg = cfg.withDefaults()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// 半开探针失败：直接重新整段冷却，不等连续失败再累计一次阈值——
+	// 探针本来就代表"冷却后第一次尝试"，它失败就是恢复失败。
+	wasProbe := g.halfOpen && !g.openTill.IsZero()
 	g.fails++
 	if err != nil {
 		g.lastErr = err.Error()
 	}
-	if g.fails >= cfg.BreakerThreshold {
+	if g.fails >= cfg.BreakerThreshold || wasProbe {
 		g.openTill = time.Now().Add(cfg.BreakerCooldown)
-		if g.openAt.IsZero() {
-			g.openAt = time.Now()
-		}
+		g.openAt = time.Now()
+		g.halfOpen = false
 		g.fails = 0 // 开闸后重新计数：冷却结束再失败一轮才重新开闸
 	}
 }
@@ -145,7 +169,7 @@ func (g *guard) status(server string, cfg GuardConfig) GuardStatus {
 	defer g.mu.Unlock()
 	st := GuardStatus{
 		Server: server, MaxConcurrent: cfg.MaxConcurrent, Inflight: g.inflight,
-		ConsecutiveFailures: g.fails, LastError: g.lastErr,
+		HalfOpen: g.halfOpen, ConsecutiveFailures: g.fails, LastError: g.lastErr,
 	}
 	if remain := time.Until(g.openTill); remain > 0 {
 		st.Open = true

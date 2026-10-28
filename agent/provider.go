@@ -362,8 +362,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// raw wire bodies can be persisted. This is the only layer that still sees
 	// them: norma builds the request body internally and decodes the SSE response
 	// before either reaches the recorder.
+	//
+	// 录制关闭时不要复制请求正文：一次模型请求的正文可能有数百 KB，热路径上
+	// 只为写进一个 nil Capture 而整份读一遍是纯浪费。capt 为 nil 即未录制。
 	capt := llmrec.CaptureFrom(req.Context())
-	capt.SetRequest(requestBodySnapshot(req))
+	if capt != nil {
+		capt.SetRequest(requestBodySnapshot(req))
+	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {

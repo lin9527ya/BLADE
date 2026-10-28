@@ -443,6 +443,8 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 		return nil, empty
 	}
 	if resp.Error != nil {
+		// server 回答了（只是这次请求不对）：传输层健康，半开探测应据此关闭熔断。
+		g.success()
 		return nil, resp.Error
 	}
 	g.success()

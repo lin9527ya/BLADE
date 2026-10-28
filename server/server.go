@@ -47,6 +47,26 @@ type Server struct {
 	triggers  *triggerQueue
 	agents    agentState
 	archive   archiveState
+	boot      restoreState
+}
+
+// restoreState 记录启动恢复是否成功。恢复失败时 readiness 必须如实失败：
+// 任务表读不出来却报健康，会让升级/编排层以为实例可用。
+type restoreState struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (b *restoreState) set(err error) {
+	b.mu.Lock()
+	b.err = err
+	b.mu.Unlock()
+}
+
+func (b *restoreState) get() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err
 }
 
 // corsState 是 CORS 白名单缓存（P42）：中间件在每个 API 请求上跑，设置不能每请求读一次。
@@ -329,9 +349,19 @@ func (s *Server) RestoreTaskRuntimes() {
 	if x := m.Executions(); x != nil {
 		x.StartOrphanReconciler(s.ctx)
 	}
+	// 上次进程若在普通删除中途退出，先把暂存目录按 journal 收尾（回滚或完成删除），
+	// 再重建任务句柄——否则残留文件既回不去也没人清。
+	m.RecoverDeleteStaging()
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).
-	for _, t := range m.LoadExisting() {
+	existing, err := m.LoadExisting()
+	if err != nil {
+		// 恢复失败不做半套：不启动任何任务循环，health 报 503，日志留可读原因。
+		s.boot.set(err)
+		log.Printf("[engine] 启动恢复失败，任务循环未启动：%v", err)
+		return
+	}
+	for _, t := range existing {
 		lifecycle := t.lifecycleSnapshot()
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
@@ -437,12 +467,21 @@ func (s *Server) registerRoutes(mux routeRegistrar) {
 //
 // 保留它免认证是必须的：反向代理/隧道/监控的健康检查都靠它，而它们通常没有 token。
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	if err := s.boot.get(); err != nil {
+		// 不把原始错误（可能含数据库地址）回给免认证端点；细节在服务端日志。
+		writeJSON(w, 503, map[string]any{"ok": false, "error": "启动恢复未完成：任务状态不可用，请查看服务端日志"})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // systemInfo 是需要登录的版本/构建信息（P42 从 /api/health 搬过来）。
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true, "service": "blade", "version": BuildVersion})
+	out := map[string]any{"ok": true, "service": "blade", "version": BuildVersion}
+	if e := s.m.Enrich(); e != nil {
+		out["enrich"] = e.Stats()
+	}
+	writeJSON(w, 200, out)
 }
 
 // cors 只对**显式配置**的来源发 CORS 头（P42）。此前无条件发

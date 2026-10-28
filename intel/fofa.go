@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,11 +27,33 @@ var fofaDefaultFields = []string{"host", "ip", "port", "protocol", "domain", "ti
 
 func init() { register("fofa", func(cfg Config) Provider { return &fofa{cfg: cfg} }) }
 
-type fofa struct{ cfg Config }
+type fofa struct {
+	cfg Config
+
+	// client 每次查询只建一次：一次查询会连发多个请求（账号信息/翻页），
+	// 每个请求都 clone 一份 DefaultTransport 会反复丢连接池与 TLS 会话，
+	// 也把空闲连接泄漏到 transport 的 GC 之前。cfg 在 Provider 实例生命周期内不变。
+	mu     sync.Mutex
+	cached *http.Client
+}
 
 func (f *fofa) Name() string { return "fofa" }
 
 func (f *fofa) client() (*http.Client, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cached != nil {
+		return f.cached, nil
+	}
+	cl, err := f.newClient()
+	if err != nil {
+		return nil, err
+	}
+	f.cached = cl
+	return cl, nil
+}
+
+func (f *fofa) newClient() (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil // 默认直连：FOFA 是国内站点，回退环境变量只会带来意外
 	if p := strings.TrimSpace(f.cfg.Proxy); p != "" {

@@ -1179,12 +1179,18 @@ func (m *Manager) Close() error {
 	pool := m.proxyPool
 	m.proxyPool = nil
 	trafficProxy := m.traffic
+	enrichEngine := m.enrich
 	m.mu.Unlock()
 	if pool != nil {
 		pool.Close() // stop health probes before closing the MITM
 	}
 	if trafficProxy != nil {
 		trafficProxy.Close()
+	}
+	// 资产补全引擎此前不随 Manager 关闭：进程退出后它自然消失，但任何测试/热重启
+	// 路径都会留下仍在探测的 goroutine 与未关闭的 HTTP transport。
+	if enrichEngine != nil {
+		enrichEngine.Close()
 	}
 	return m.pg.Close()
 }
@@ -1463,11 +1469,14 @@ func (m *Manager) ReplaceTaskLLMProfiles(id string, profileIDs []int64, activePr
 }
 
 // LoadExisting rebuilds in-memory task handles from the PG task registry.
-func (m *Manager) LoadExisting() []*Task {
+//
+// 读取失败必须向上报告：此前只打日志并返回空列表，启动流程照常"成功"，但所有
+// 已落库任务都不会被恢复——界面看起来像任务全没了，readiness 却仍是健康。
+func (m *Manager) LoadExisting() ([]*Task, error) {
 	pts, err := m.pg.ListTasks()
 	if err != nil {
 		log.Printf("[manager] reload: %v", err)
-		return nil
+		return nil, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1495,7 +1504,7 @@ func (m *Manager) LoadExisting() []*Task {
 	if len(loaded) > 0 {
 		log.Printf("[manager] reloaded %d task(s) from PG", len(loaded))
 	}
-	return loaded
+	return loaded, nil
 }
 
 // SetTaskPaused persists a task's paused state.
@@ -1945,15 +1954,25 @@ func (m *Manager) forgetTask(id string, numericID int64) {
 }
 
 type stagedTaskPath struct {
-	source string
-	staged string
+	Source string `json:"source"`
+	Staged string `json:"staged"`
 }
 
 type taskFileDeleteStage struct {
 	stageDir string
+	journal  string // 先记录、后移动：崩溃后靠它判断该回滚还是该清掉
 	moves    []stagedTaskPath
 	deleted  bool
 	done     bool
+}
+
+// taskDeleteJournal 是普通删除的移动清单。冷归档早就有持久 journal，普通删除
+// 此前只把清单放在内存里：进程在 rename 循环中途退出，重启后既不会回滚也不会
+// 续删，文件永远留在 .delete-staging 里。
+type taskDeleteJournal struct {
+	TaskID        string           `json:"task_id"`
+	ExplorationID int64            `json:"exploration_id"`
+	Moves         []stagedTaskPath `json:"moves"`
 }
 
 // stageTaskFiles atomically renames the task workspace and owned transcripts to
@@ -1998,19 +2017,112 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 	if err != nil {
 		return nil, err
 	}
-	for _, source := range targets {
-		staged := filepath.Join(stage.stageDir, fmt.Sprintf("%d-%s", len(stage.moves), filepath.Base(source)))
-		if err := os.Rename(source, staged); err != nil {
-			cause := fmt.Errorf("stage task file %s: %w", source, err)
+	// 先把完整的移动清单落盘（fsync），再逐个 rename：中途崩溃时重启能按清单
+	// 判断"文件清单仍在 → 回滚；任务已从库里删掉 → 清掉暂存"。
+	for i, source := range targets {
+		staged := filepath.Join(stage.stageDir, fmt.Sprintf("%d-%s", i, filepath.Base(source)))
+		stage.moves = append(stage.moves, stagedTaskPath{Source: source, Staged: staged})
+	}
+	stage.journal = filepath.Join(stage.stageDir, "journal.json")
+	if err := writeArchiveJournal(stage.journal, taskDeleteJournal{
+		TaskID: taskID, ExplorationID: explorationID, Moves: stage.moves,
+	}); err != nil {
+		_ = os.RemoveAll(stage.stageDir)
+		return nil, fmt.Errorf("write task delete journal: %w", err)
+	}
+	for _, move := range stage.moves {
+		if err := os.Rename(move.Source, move.Staged); err != nil {
+			cause := fmt.Errorf("stage task file %s: %w", move.Source, err)
 			if restoreErr := stage.rollback(); restoreErr != nil {
 				return nil, errors.Join(cause, fmt.Errorf("restore partially staged task files: %w", restoreErr))
 			}
 			return nil, cause
 		}
-		stage.moves = append(stage.moves, stagedTaskPath{source: source, staged: staged})
 	}
 	stage.deleted = true
 	return stage, nil
+}
+
+// RecoverDeleteStaging 在启动时处理上次进程留下的普通删除暂存：
+//   - 任务仍在库里 → 回滚（把已移动的文件放回原处）；
+//   - 任务已不在库 → 完成删除（移除暂存目录）。
+//
+// 没有 journal 的目录不动：它可能属于别的流程，盲目清理等于替人决定。
+func (m *Manager) RecoverDeleteStaging() {
+	parent := filepath.Join(m.dir, ".delete-staging")
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[manager] 删除暂存恢复：读取 %s 失败：%v", parent, err)
+		}
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(parent, entry.Name())
+		raw, err := os.ReadFile(filepath.Join(dir, "journal.json"))
+		if err != nil {
+			continue
+		}
+		var journal taskDeleteJournal
+		if err := json.Unmarshal(raw, &journal); err != nil {
+			log.Printf("[manager] 删除暂存恢复：%s 的 journal 无法解析，保持原样：%v", dir, err)
+			continue
+		}
+		taskID, err := strconv.ParseInt(journal.TaskID, 10, 64)
+		if err != nil {
+			continue
+		}
+		task, err := m.pg.GetTask(taskID)
+		if err != nil {
+			log.Printf("[manager] 删除暂存恢复：查询任务 %d 失败，保持 %s 原样：%v", taskID, dir, err)
+			continue
+		}
+		if task != nil {
+			if err := restoreStagedTaskFiles(journal.Moves); err != nil {
+				log.Printf("[manager] 删除暂存恢复：任务 %d 仍在，回滚失败（%s）：%v", taskID, dir, err)
+				continue
+			}
+			log.Printf("[manager] 删除暂存恢复：任务 %d 仍在库中，已回滚 %d 个文件", taskID, len(journal.Moves))
+		} else {
+			log.Printf("[manager] 删除暂存恢复：任务 %d 已删除，清理暂存 %s", taskID, dir)
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("[manager] 删除暂存恢复：移除 %s 失败：%v", dir, err)
+		}
+	}
+}
+
+// restoreStagedTaskFiles 把暂存文件放回原处；已放回/从未移动过的条目跳过，
+// 目标已存在时如实报错而不是覆盖。
+func restoreStagedTaskFiles(moves []stagedTaskPath) error {
+	var errs []error
+	for i := len(moves) - 1; i >= 0; i-- {
+		move := moves[i]
+		if _, err := os.Lstat(move.Staged); os.IsNotExist(err) {
+			continue // 尚未移动
+		} else if err != nil {
+			errs = append(errs, fmt.Errorf("inspect staged %s: %w", move.Staged, err))
+			continue
+		}
+		if _, err := os.Lstat(move.Source); err == nil {
+			errs = append(errs, fmt.Errorf("restore destination already exists: %s", move.Source))
+			continue
+		} else if !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("inspect restore destination %s: %w", move.Source, err))
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(move.Source), 0o755); err != nil {
+			errs = append(errs, fmt.Errorf("create restore parent for %s: %w", move.Source, err))
+			continue
+		}
+		if err := os.Rename(move.Staged, move.Source); err != nil {
+			errs = append(errs, fmt.Errorf("restore %s: %w", move.Source, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *taskFileDeleteStage) commit() error {
@@ -2027,24 +2139,9 @@ func (s *taskFileDeleteStage) rollback() error {
 		return nil
 	}
 	var errs []error
-	for i := len(s.moves) - 1; i >= 0; i-- {
-		move := s.moves[i]
-		if _, err := os.Lstat(move.source); err == nil {
-			errs = append(errs, fmt.Errorf("restore destination already exists: %s", move.source))
-			continue
-		} else if !os.IsNotExist(err) {
-			errs = append(errs, fmt.Errorf("inspect restore destination %s: %w", move.source, err))
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(move.source), 0o755); err != nil {
-			errs = append(errs, fmt.Errorf("create restore parent for %s: %w", move.source, err))
-			continue
-		}
-		if err := os.Rename(move.staged, move.source); err != nil {
-			errs = append(errs, fmt.Errorf("restore %s: %w", move.source, err))
-		}
-	}
-	if len(errs) == 0 && s.stageDir != "" {
+	if err := restoreStagedTaskFiles(s.moves); err != nil {
+		errs = append(errs, err)
+	} else if s.stageDir != "" {
 		if err := os.RemoveAll(s.stageDir); err != nil {
 			errs = append(errs, fmt.Errorf("remove task file stage: %w", err))
 		}
