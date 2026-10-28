@@ -252,37 +252,40 @@ export default function TasksPage() {
   // re-render the whole page for nothing. Bail out when it matches.
   const lastRef = React.useRef<string>("");
 
-  const load = React.useCallback(() => {
-    api
-      .tasks()
-      .then((r) => {
-        const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
-        const sig = JSON.stringify(next);
-        if (sig === lastRef.current) return;
-        lastRef.current = sig;
-        setTasks(next);
-      })
-      .catch(() => {
-        // Polling is best-effort; the next interval retries automatically.
-      });
-  }, []);
+  const load = React.useCallback(
+    () =>
+      api
+        .tasks()
+        .then((r) => {
+          const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
+          const sig = JSON.stringify(next);
+          if (sig === lastRef.current) return;
+          lastRef.current = sig;
+          setTasks(next);
+        })
+        .catch(() => {
+          // Polling is best-effort; the next interval retries automatically.
+        }),
+    [],
+  );
 
-  const loadCategories = React.useCallback(() => {
-    api
-      .taskCategories()
-      .then((next) => {
-        setCategories(next);
-        setCategoriesLoaded(true);
-      })
-      .catch(() => {
-        // Category management remains retryable without blocking the task list.
-      });
-  }, []);
+  const loadCategories = React.useCallback(
+    () =>
+      api
+        .taskCategories()
+        .then((next) => {
+          setCategories(next);
+          setCategoriesLoaded(true);
+        })
+        .catch(() => {
+          // Category management remains retryable without blocking the task list.
+        }),
+    [],
+  );
 
   usePolling(
-    () => {
-      load();
-      loadCategories();
+    async () => {
+      await Promise.all([load(), loadCategories()]);
     },
     POLL_MS,
     [load, loadCategories],

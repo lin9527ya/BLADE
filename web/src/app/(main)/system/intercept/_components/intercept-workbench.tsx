@@ -41,17 +41,13 @@ export function InterceptWorkbench({ initialSection }: { initialSection?: Sectio
   const [pending, setPending] = React.useState(0);
 
   usePolling(
-    async (live) => {
-      const poll = () => {
-        void api
-          .interceptPending()
-          .then((list) => {
-            if (live()) setPending(list.length);
-          })
-          .catch(() => {});
-      };
-      poll();
-    },
+    (live) =>
+      api
+        .interceptPending()
+        .then((list) => {
+          if (live()) setPending(list.length);
+        })
+        .catch(() => {}),
     10000,
     [],
   );

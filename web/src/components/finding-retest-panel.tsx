@@ -15,6 +15,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { FindingRetest } from "@/lib/types";
 
@@ -65,18 +66,18 @@ export function FindingRetestPanel({
     }
   }, [findingId, onCompleted]);
 
-  React.useEffect(() => {
-    void load();
-    return () => {
-      requestSeq.current++;
-    };
-  }, [load]);
+  // 进入/切换漏洞时先拉一次；只有存在 pending/running 复测时才继续每 3 秒轮询。
+  // 统一走 usePolling：慢接口时不会叠请求，失败自动退避，后台标签页暂停。
+  const hasActive = !!items?.some(active);
+  usePolling(load, hasActive ? 3000 : 0, [load, hasActive]);
 
-  React.useEffect(() => {
-    if (error || !items?.some(active)) return;
-    const timer = setTimeout(() => void load(), 3000);
-    return () => clearTimeout(timer);
-  }, [error, items, load]);
+  // 依赖变化或卸载时让在途请求作废（usePolling 只负责不重入，不管旧响应）。
+  React.useEffect(
+    () => () => {
+      requestSeq.current++;
+    },
+    [findingId],
+  );
 
   const running = items?.find(active);
 

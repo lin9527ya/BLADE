@@ -174,23 +174,19 @@ export function FindingsTab({ taskId }: { taskId: string }) {
   );
 
   usePolling(
-    async (active) => {
-      const load = () => {
-        api
-          .findings(taskId)
-          .then((fs) => {
-            if (active()) {
-              setFindings(fs);
-              setLoadError("");
-            }
-          })
-          .catch((e) => {
-            // 刷新失败保留上一次快照，但必须让人知道"这不是没有发现"。
-            if (active()) setLoadError(e instanceof Error ? e.message : "加载失败");
-          });
-      };
-      load();
-    },
+    (active) =>
+      api
+        .findings(taskId)
+        .then((fs) => {
+          if (active()) {
+            setFindings(fs);
+            setLoadError("");
+          }
+        })
+        .catch((e) => {
+          // 刷新失败保留上一次快照，但必须让人知道"这不是没有发现"。
+          if (active()) setLoadError(e instanceof Error ? e.message : "加载失败");
+        }),
     3000,
     [taskId],
   );

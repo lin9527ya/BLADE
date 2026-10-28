@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import type { Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
@@ -104,21 +105,14 @@ export default function ChatPage() {
   }, []);
 
   // One list poll supplies runtime state for all sidebar rows, including the
-  // unselected ones. Await completion so slow requests do not overlap.
-  React.useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
-      await reloadConvs();
-      if (!disposed) timer = setTimeout(() => void poll(), 2000);
-    }
-    void poll();
-    return () => {
-      disposed = true;
+  // unselected ones. usePolling 保证慢请求不叠加，并在后台标签页暂停。
+  usePolling(reloadConvs, 2000, [reloadConvs]);
+  React.useEffect(
+    () => () => {
       conversationListSeq.current++;
-      clearTimeout(timer);
-    };
-  }, [reloadConvs]);
+    },
+    [reloadConvs],
+  );
 
   React.useEffect(() => {
     setSelectedConversationIds((current) => {

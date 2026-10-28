@@ -120,6 +120,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     loadingKeysRef,
     patchStore,
     loadSession,
+    retrySession,
     loadEarlier,
     loadOlderIntents,
     allIntents,
@@ -570,7 +571,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                       size="sm"
                       variant="ghost"
                       className="h-6 px-2 text-xs"
-                      onClick={() => loadSession(activeKey)}
+                      onClick={() => retrySession(activeKey)}
                     >
                       重试
                     </Button>

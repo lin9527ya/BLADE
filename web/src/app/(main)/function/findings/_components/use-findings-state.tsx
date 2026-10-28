@@ -78,31 +78,27 @@ export function useFindingsState() {
   const activeFilterFingerprint = React.useRef(filterFingerprint);
   activeFilterFingerprint.current = filterFingerprint;
 
-  // 一个轻量请求覆盖所有行/视图，避免逐行拉取完整复测历史；等待上一轮完成再轮询。
-  React.useEffect(() => {
-    let disposed = false;
-    let failed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function refreshRetests() {
+  // 一个轻量请求覆盖所有行/视图，避免逐行拉取完整复测历史。
+  // usePolling：慢请求不叠加、失败退避、后台标签页暂停；连续失败只提示一次。
+  const retestErrorShown = React.useRef(false);
+  usePolling(
+    async (alive) => {
       const version = retestRefreshVersion.current;
       try {
         const rows = await api.activeFindingRetests();
-        if (disposed || version !== retestRefreshVersion.current) return;
+        if (!alive() || version !== retestRefreshVersion.current) return;
         setActiveRetests(Object.fromEntries(rows.map((item) => [item.finding_id, item])));
-        failed = false;
+        retestErrorShown.current = false;
       } catch (error) {
-        if (!disposed && !failed) toast.error(`加载复测状态失败：${(error as Error).message}`);
-        failed = true;
-      } finally {
-        if (!disposed) timer = setTimeout(() => void refreshRetests(), 3000);
+        if (alive() && !retestErrorShown.current) {
+          toast.error(`加载复测状态失败：${(error as Error).message}`);
+          retestErrorShown.current = true;
+        }
       }
-    }
-    void refreshRetests();
-    return () => {
-      disposed = true;
-      clearTimeout(timer);
-    };
-  }, []);
+    },
+    3000,
+    [],
+  );
 
   React.useEffect(() => {
     const raw = getLocalStorageValue(FINDING_LIST_PREFERENCE_KEY);
@@ -449,19 +445,21 @@ export function useFindingsState() {
   // 等偏好水合后再发首个请求,否则会先按默认视图/筛选白拉一次。
   // 只轮询非资产视图：资产视图的左树是导航结构，没必要每 5 秒重算（intervalMs=0 → 只跑一次）。
   usePolling(
-    (alive) => {
+    async () => {
       if (!preferencesHydrated) return;
       void activeRetestFingerprint; // 包括不定时轮询的资产视图，也在复测结束后刷新处置状态。
       if (view === "flat" || view === "asset") {
-        if (!flatStateRef.current.loading) void loadFlat();
+        if (!flatStateRef.current.loading) await loadFlat();
         return;
       }
-      void refreshGroups();
-      for (const key of expandedGroupsRef.current) {
-        if (!visibleGroupKeysRef.current.has(key)) continue;
-        const state = groupFindingsRef.current[key];
-        if (state?.loaded && !state.loading) void loadGroup(key, state.page, state.pageSize);
-      }
+      await refreshGroups();
+      await Promise.all(
+        [...expandedGroupsRef.current].flatMap((key) => {
+          if (!visibleGroupKeysRef.current.has(key)) return [];
+          const state = groupFindingsRef.current[key];
+          return state?.loaded && !state.loading ? [loadGroup(key, state.page, state.pageSize)] : [];
+        }),
+      );
     },
     view === "asset" ? 0 : 5000,
     [activeRetestFingerprint, loadFlat, loadGroup, preferencesHydrated, refreshGroups, view],
@@ -481,22 +479,18 @@ export function useFindingsState() {
   // Whole-table aggregates (stat cards + vuln-class options) — independent of the
   // current page, so they stay exact.
   usePolling(
-    async (alive) => {
-      const load = () => {
-        api
-          .findingStats()
-          .then((s) => {
-            if (alive()) {
-              setStats(s);
-              setStatsLoaded(true);
-            }
-          })
-          .catch(() => {
-            // Keep the previous aggregate snapshot until the next poll.
-          });
-      };
-      load();
-    },
+    (alive) =>
+      api
+        .findingStats()
+        .then((s) => {
+          if (alive()) {
+            setStats(s);
+            setStatsLoaded(true);
+          }
+        })
+        .catch(() => {
+          // Keep the previous aggregate snapshot until the next poll.
+        }),
     5000,
     [],
   );

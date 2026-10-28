@@ -15,6 +15,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { Finding, FindingsPage } from "@/lib/types";
 
@@ -33,14 +34,13 @@ export function RetestsTab({ taskId }: { taskId: string }) {
   const refresh = React.useCallback(() => setRefreshVersion((version) => version + 1), []);
 
   // Only this task's own findings, including those without graph nodes.
-  // Fetch history only for the selection, and wait for each poll to finish.
-  React.useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function load() {
+  // Fetch history only for the selection; usePolling 保证慢接口不叠请求。
+  // refreshVersion 变化（复测完成）会重建轮询并立即拉一次。
+  usePolling(
+    async (alive) => {
       try {
         const result = await api.findingsPage({ task: taskId, page, pageSize: PAGE_SIZE, sort: "time" });
-        if (disposed) return;
+        if (!alive()) return;
         const lastPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE));
         if (page > lastPage) {
           setPage(lastPage);
@@ -52,18 +52,12 @@ export function RetestsTab({ taskId }: { taskId: string }) {
         );
         setError("");
       } catch (e) {
-        if (!disposed) setError((e as Error).message);
-      } finally {
-        if (!disposed) timer = setTimeout(() => void load(), 3000);
+        if (alive()) setError((e as Error).message);
       }
-    }
-    void refreshVersion; // Refresh triage immediately after a retest completes.
-    void load();
-    return () => {
-      disposed = true;
-      clearTimeout(timer);
-    };
-  }, [taskId, page, refreshVersion]);
+    },
+    3000,
+    [taskId, page, refreshVersion],
+  );
 
   const loaded = data?.page === page;
   const findings = loaded ? data.items : [];

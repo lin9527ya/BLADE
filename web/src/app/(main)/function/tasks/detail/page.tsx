@@ -252,27 +252,24 @@ function TaskDetailInner() {
   }, []);
 
   usePolling(
-    async (alive) => {
-      const load = () =>
-        api
-          .interceptTaskCount(id)
-          .then((n) => {
-            if (alive()) setInterceptPendingCount(n);
-          })
-          .catch(() => {
-            // Polling is best-effort; the next interval retries automatically.
-          });
-      void load();
-    },
+    (alive) =>
+      api
+        .interceptTaskCount(id)
+        .then((n) => {
+          if (alive()) setInterceptPendingCount(n);
+        })
+        .catch(() => {
+          // Polling is best-effort; the next interval retries automatically.
+        }),
     5000,
     [id],
   );
 
   const taskLoadInFlight = React.useRef<string | null>(null);
   const load = React.useCallback(() => {
-    if (taskLoadInFlight.current === id) return;
+    if (taskLoadInFlight.current === id) return Promise.resolve();
     taskLoadInFlight.current = id;
-    Promise.all([api.task(id), api.stats(id).catch(() => null)])
+    return Promise.all([api.task(id), api.stats(id).catch(() => null)])
       .then(([task, s]) => {
         if (taskLoadInFlight.current !== id) return;
         const base = { ...task };
@@ -297,7 +294,7 @@ function TaskDetailInner() {
         }
       });
   }, [id]);
-  usePolling(() => load(), 5000, [load]);
+  usePolling(load, 5000, [load]);
 
   async function togglePause() {
     if (!task) return;

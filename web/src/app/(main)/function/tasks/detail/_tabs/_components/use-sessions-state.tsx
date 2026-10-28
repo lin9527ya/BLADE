@@ -258,6 +258,9 @@ export function useSessionsState(taskId: string) {
   // first-load effect and the active-session effect both want "main" on mount (the
   // former also opens the SSE, so it must not be pre-empted).
   const loadingKeysRef = React.useRef<Set<string>>(new Set());
+  // 手动“重试”入口：SSE 尚未建立时重新跑一次首屏加载（含建流），而不是只补历史。
+  // boot 定义在 taskId effect 内，生命周期与该任务绑定。
+  const bootRef = React.useRef<(() => void) | null>(null);
 
   // ── store helpers ──────────────────────────────────────────────────────────────
   const patchStore = React.useCallback((key: string, fn: (s: SessionState) => SessionState) => {
@@ -346,6 +349,19 @@ export function useSessionsState(taskId: string) {
     [taskId, patchStore],
   );
 
+  // 会话面板的“重试”：实时流不存在时说明首屏加载（含建流）曾失败，重跑整条
+  // boot 流程；流已存在时只需补这个会话的历史。
+  const retrySession = React.useCallback(
+    (key: string) => {
+      if (!esRef.current) {
+        bootRef.current?.();
+        return;
+      }
+      loadSession(key);
+    },
+    [loadSession],
+  );
+
   // Load one older page (scroll-up) for a session, preserving scroll position.
   const loadEarlier = React.useCallback(
     (key: string, viewport: () => HTMLElement | null) => {
@@ -394,7 +410,7 @@ export function useSessionsState(taskId: string) {
           .catch(() => {
             // Polling is best-effort; the next interval retries automatically.
           });
-      void load();
+      await load();
     },
     5000,
     [taskId],
@@ -416,7 +432,7 @@ export function useSessionsState(taskId: string) {
             // activity remains a conservative fallback.
           });
       };
-      void load();
+      await load();
     },
     2000,
     [taskId],
@@ -433,7 +449,7 @@ export function useSessionsState(taskId: string) {
           .catch(() => {
             // Polling is best-effort; the next interval retries automatically.
           });
-      void load();
+      await load();
     },
     10_000,
     [taskId],
@@ -450,7 +466,7 @@ export function useSessionsState(taskId: string) {
           .catch(() => {
             // Polling is best-effort; the next interval retries automatically.
           });
-      void load();
+      await load();
     },
     5000,
     [taskId],
@@ -529,112 +545,149 @@ export function useSessionsState(taskId: string) {
     const token = (reqTokenRef.current.mainboot ?? 0) + 1;
     reqTokenRef.current.mainboot = token;
     let bootKey = mainSessionKey(0);
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let bootInFlight = false;
     // Resolve the main-agent segments first, then load the CURRENT segment's history and
     // open the SSE from its snapshot cursor. The SSE tails all segments and routes each
     // frame by session_key (main:<seg>), so switching segments needs no new stream.
-    api
-      .mainSessions(taskId)
-      .then((ms) => {
-        if (!alive || reqTokenRef.current.mainboot !== token) throw new Error("superseded");
-        const segs = ms.sessions.length ? ms.sessions : [{ seq: 0, created_at: "" }];
-        setMainSegs(segs);
-        setCurrentSeg(ms.current);
-        bootKey = mainSessionKey(ms.current);
-        if (bootKey !== mainSessionKey(0)) loadingKeysRef.current.delete(mainSessionKey(0));
-        loadingKeysRef.current.add(bootKey);
-        setActiveId(mainSessionId(ms.current));
-        patchStore(bootKey, (s) => ({ ...s, loading: true }));
-        return api.activityHistory(taskId, bootKey, 0, PAGE);
-      })
-      .then((r) => {
-        if (!alive || reqTokenRef.current.mainboot !== token) return;
-        snapshotRef.current = r.snapshotCursor;
-        patchStore(bootKey, (s) => {
-          const items = mergeBySeq(r.items, s.items);
-          return {
-            ...s,
-            items,
-            loaded: true,
-            loading: false,
-            hasMore: r.hasMore,
-            earliestSeq: items.length ? items[0].seq : 0,
-            unread: 0,
-          };
-        });
-        // Open the single task SSE from the snapshot cursor.
-        const es = new EventSource(
-          sseUrl(`/api/exploration/activity/stream?task=${encodeURIComponent(taskId)}&since=${snapshotRef.current}`),
-        );
-        esRef.current = es;
-        es.onopen = () => setSseLive(true);
-        es.onerror = () => setSseLive(false); // EventSource auto-reconnects; DB compensates the gap
-        es.onmessage = (e) => {
-          let a: Activity;
-          try {
-            a = JSON.parse(e.data) as Activity;
-          } catch {
-            return; // ignore malformed frame
-          }
-          if ((a.kind === "llm_switch" || a.kind === "llm_failover") && !llmToastSeqRef.current.has(a.seq)) {
-            llmToastSeqRef.current.add(a.seq);
-            const transition = a.metadata?.llm_transition;
-            if (transition?.mode === "exhausted" || a.is_error) {
-              toast.error(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
-            } else if (transition?.mode === "automatic") {
-              toast.success(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
-            } else {
-              toast.info(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
-            }
-            void api
-              .taskLLMResolution(taskId)
-              .then((value) => {
-                if (alive) setLLMResolutions(value);
-              })
-              .catch(() => {
-                // The periodic resolver poll will retry if this event-triggered refresh fails.
-              });
-          }
-          const k = sessionKeyOf(a);
-          setStore((prev) => {
-            const cur = prev[k] ?? emptyState();
-            const activeK = activeKeyRef.current;
-            // Merge into sessions that are loaded, actively loading, or the current
-            // view (so returning is instant + a frame that lands mid-load isn't lost).
-            // A cold, inactive session also keeps a tiny accounting tail so the
-            // sidebar can add the latest unfinished usage without loading history.
-            if (!cur.loaded && !cur.loading && k !== activeK) {
-              const accountingItems =
-                a.kind === "usage" || a.kind === "result" ? mergeBySeq(cur.items, [a]).slice(-4) : cur.items;
-              return {
-                ...prev,
-                [k]: { ...cur, items: accountingItems, lastTs: a.ts, unread: cur.unread + 1 },
-              };
-            }
-            let items = mergeBySeq(cur.items, [a]);
-            // Memory bound: trim oldest when over cap (older re-fetched on scroll-up),
-            // but never while the user is reading this session's history (scrolled up).
-            let hasMore = cur.hasMore;
-            let earliestSeq = cur.earliestSeq;
-            const trimmable = k !== activeK || atBottomRef.current;
-            if (trimmable && items.length > MAX_KEEP) {
-              items = items.slice(items.length - MAX_KEEP);
-              hasMore = true;
-              earliestSeq = items[0].seq;
-            }
-            const unread = k === activeK ? 0 : cur.unread + 1;
-            return { ...prev, [k]: { ...cur, items, lastTs: a.ts, unread, hasMore, earliestSeq } };
+    //
+    // 首次加载失败必须重试并最终重新建立 SSE：此前 catch 只把错误留在 store 里，
+    // 既不重试也不再打开实时流，页面会永远停在快照 + 错误上。重试用指数退避，
+    // 成功后才打开 EventSource（失败时没有可用的 snapshot cursor）。
+    const boot = (attempt: number) => {
+      if (bootInFlight) return;
+      bootInFlight = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      bootKey = mainSessionKey(0);
+      loadingKeysRef.current.add(bootKey);
+      patchStore(bootKey, (s) => ({ ...s, loading: true, error: undefined }));
+      api
+        .mainSessions(taskId)
+        .then((ms) => {
+          if (!alive || reqTokenRef.current.mainboot !== token) throw new Error("superseded");
+          const segs = ms.sessions.length ? ms.sessions : [{ seq: 0, created_at: "" }];
+          setMainSegs(segs);
+          setCurrentSeg(ms.current);
+          bootKey = mainSessionKey(ms.current);
+          if (bootKey !== mainSessionKey(0)) loadingKeysRef.current.delete(mainSessionKey(0));
+          loadingKeysRef.current.add(bootKey);
+          setActiveId(mainSessionId(ms.current));
+          patchStore(bootKey, (s) => ({ ...s, loading: true }));
+          return api.activityHistory(taskId, bootKey, 0, PAGE);
+        })
+        .then((r) => {
+          if (!alive || reqTokenRef.current.mainboot !== token) return;
+          snapshotRef.current = r.snapshotCursor;
+          patchStore(bootKey, (s) => {
+            const items = mergeBySeq(r.items, s.items);
+            return {
+              ...s,
+              items,
+              loaded: true,
+              loading: false,
+              hasMore: r.hasMore,
+              earliestSeq: items.length ? items[0].seq : 0,
+              unread: 0,
+            };
           });
-        };
-      })
-      .catch((err) => {
-        if (!alive || reqTokenRef.current.mainboot !== token) return;
-        if ((err as Error).message === "superseded") return;
-        patchStore(bootKey, (s) => ({ ...s, loading: false, error: (err as Error).message || "加载失败" }));
-      })
-      .finally(() => loadingKeysRef.current.delete(bootKey));
+          bootInFlight = false;
+          loadingKeysRef.current.delete(bootKey);
+          // Open the single task SSE from the snapshot cursor. Close a stale one first:
+          // a retry must not leave two streams writing into the same store.
+          esRef.current?.close();
+          const es = new EventSource(
+            sseUrl(`/api/exploration/activity/stream?task=${encodeURIComponent(taskId)}&since=${snapshotRef.current}`),
+          );
+          esRef.current = es;
+          es.onopen = () => setSseLive(true);
+          es.onerror = () => setSseLive(false); // EventSource auto-reconnects; DB compensates the gap
+          es.onmessage = (e) => {
+            let a: Activity;
+            try {
+              a = JSON.parse(e.data) as Activity;
+            } catch {
+              return; // ignore malformed frame
+            }
+            if ((a.kind === "llm_switch" || a.kind === "llm_failover") && !llmToastSeqRef.current.has(a.seq)) {
+              llmToastSeqRef.current.add(a.seq);
+              const transition = a.metadata?.llm_transition;
+              if (transition?.mode === "exhausted" || a.is_error) {
+                toast.error(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
+              } else if (transition?.mode === "automatic") {
+                toast.success(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
+              } else {
+                toast.info(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
+              }
+              void api
+                .taskLLMResolution(taskId)
+                .then((value) => {
+                  if (alive) setLLMResolutions(value);
+                })
+                .catch(() => {
+                  // The periodic resolver poll will retry if this event-triggered refresh fails.
+                });
+            }
+            const k = sessionKeyOf(a);
+            setStore((prev) => {
+              const cur = prev[k] ?? emptyState();
+              const activeK = activeKeyRef.current;
+              // Merge into sessions that are loaded, actively loading, or the current
+              // view (so returning is instant + a frame that lands mid-load isn't lost).
+              // A cold, inactive session also keeps a tiny accounting tail so the
+              // sidebar can add the latest unfinished usage without loading history.
+              if (!cur.loaded && !cur.loading && k !== activeK) {
+                const accountingItems =
+                  a.kind === "usage" || a.kind === "result" ? mergeBySeq(cur.items, [a]).slice(-4) : cur.items;
+                return {
+                  ...prev,
+                  [k]: { ...cur, items: accountingItems, lastTs: a.ts, unread: cur.unread + 1 },
+                };
+              }
+              let items = mergeBySeq(cur.items, [a]);
+              // Memory bound: trim oldest when over cap (older re-fetched on scroll-up),
+              // but never while the user is reading this session's history (scrolled up).
+              let hasMore = cur.hasMore;
+              let earliestSeq = cur.earliestSeq;
+              const trimmable = k !== activeK || atBottomRef.current;
+              if (trimmable && items.length > MAX_KEEP) {
+                items = items.slice(items.length - MAX_KEEP);
+                hasMore = true;
+                earliestSeq = items[0].seq;
+              }
+              const unread = k === activeK ? 0 : cur.unread + 1;
+              return { ...prev, [k]: { ...cur, items, lastTs: a.ts, unread, hasMore, earliestSeq } };
+            });
+          };
+        })
+        .catch((err) => {
+          if (!alive || reqTokenRef.current.mainboot !== token) return;
+          if ((err as Error).message === "superseded") return;
+          bootInFlight = false;
+          loadingKeysRef.current.delete(bootKey);
+          patchStore(bootKey, (s) => ({
+            ...s,
+            loading: false,
+            error: (err as Error).message || "加载失败",
+          }));
+          if (!alive) return;
+          const delay = Math.min(2000 * 2 ** Math.min(attempt, 3), 15_000);
+          retryTimer = setTimeout(() => {
+            if (alive) boot(attempt + 1);
+          }, delay);
+        });
+    };
+    bootRef.current = () => {
+      if (alive) boot(0);
+    };
+    boot(0);
 
     return () => {
       alive = false;
+      bootRef.current = null;
+      if (retryTimer) clearTimeout(retryTimer);
       esRef.current?.close();
       esRef.current = null;
     };
@@ -651,7 +704,7 @@ export function useSessionsState(taskId: string) {
           .catch(() => {
             // The next poll retries; Worker controls and transcripts remain available.
           });
-      void load();
+      await load();
     },
     5000,
     [taskId],
@@ -687,14 +740,14 @@ export function useSessionsState(taskId: string) {
           .catch(() => {
             // Polling is best-effort; the next interval retries automatically.
           });
-      void load();
+      await load();
     },
     5000,
     [taskId],
   );
 
   usePolling(
-    (alive) => {
+    (alive) =>
       api
         .workerSlots(taskId)
         .then((r) => {
@@ -702,8 +755,7 @@ export function useSessionsState(taskId: string) {
         })
         .catch(() => {
           // best-effort; next poll retries
-        });
-    },
+        }),
     5000,
     [taskId],
   );
@@ -1274,6 +1326,7 @@ export function useSessionsState(taskId: string) {
     loadingKeysRef,
     patchStore,
     loadSession,
+    retrySession,
     loadEarlier,
     loadOlderIntents,
     allIntents,

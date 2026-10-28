@@ -37,6 +37,10 @@ function hidden(): boolean {
  *
  * intervalMs <= 0 = **只跑一次不重复**（参数变化时拉一次的场景，如"非实时模式"）。
  *
+ * **回调必须把异步工作 return/await 出来**：`void load()` 会让 hook 以为这一轮已经
+ * 结束、立刻放行下一轮，慢接口下仍会重叠。正确写法是 `return api.x()` 或
+ * `await load()`（多个请求用 `await Promise.all([...])`）。
+ *
  * 注意：回调是**每次渲染新建**的（hook 内部用 ref 取最新），所以跨轮询要留存的状态
  * 不能写成回调里的 `let x`——那会随渲染重置。这类状态请放组件级 useRef。
  */

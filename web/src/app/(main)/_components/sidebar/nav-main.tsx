@@ -195,15 +195,12 @@ function InterceptPendingBadge() {
   const [count, setCount] = React.useState(0);
   usePolling(
     async (live) => {
-      async function poll() {
-        try {
-          const count = await api.interceptPendingCount();
-          if (live()) setCount(count);
-        } catch {
-          /* ignore */
-        }
+      try {
+        const count = await api.interceptPendingCount();
+        if (live()) setCount(count);
+      } catch {
+        /* ignore */
       }
-      void poll();
     },
     5000,
     [],

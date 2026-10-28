@@ -16,10 +16,9 @@ export function GraphTab({ taskId }: { taskId: string }) {
   const sigRef = React.useRef("");
 
   usePolling(
-    async (alive) => {
+    (alive) => {
       sigRef.current = ""; // 换任务:强制下一次刷新
-      const load = () => {
-        api
+      return api
           .explorationGraph(taskId)
           .then((g) => {
             if (!alive()) return;
@@ -37,8 +36,6 @@ export function GraphTab({ taskId }: { taskId: string }) {
           .catch(() => {
             /* keep last good data */
           });
-      };
-      load();
     },
     20000,
     [taskId],

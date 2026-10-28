@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { InterceptApprovalRow, InterceptDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -52,29 +53,28 @@ export function ApprovalDetail({
   const [retry, setRetry] = React.useState(0);
   const [more, setMore] = React.useState(defaultExpanded);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Status, refresh and retry invalidate details without closing the panel.
-  React.useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function load() {
+  // 只在审批仍未落地时轮询；status/revision/重试按钮都会重建轮询并立即拉一次。
+  // 走 usePolling 才能复用不可见暂停、失败退避与「上一发未回不发下一发」。
+  // 切换行时 detail 可能还留着上一行的状态：只有 id 对得上才采信它的状态。
+  const currentDetail = detail?.id === row.id ? detail : null;
+  const shouldPoll =
+    (currentDetail?.status ?? row.status) === "pending" ||
+    currentDetail?.audit?.execution_status === "awaiting_result";
+  usePolling(
+    async (alive) => {
       try {
         const next = await api.interceptDetail(row.id);
-        if (cancelled) return;
+        if (!alive()) return;
         setDetail(next);
         setError("");
         if (next.status !== "pending") onResolved?.(next.status);
-        if (next.status === "pending" || next.audit?.execution_status === "awaiting_result")
-          timer = setTimeout(() => void load(), 5000);
       } catch (e) {
-        if (!cancelled) setError((e as Error).message || "详情加载失败");
+        if (alive()) setError((e as Error).message || "详情加载失败");
       }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [row.id, row.status, revision, retry, onResolved]);
+    },
+    shouldPoll ? 5000 : 0,
+    [row.id, row.status, revision, retry, onResolved, shouldPoll],
+  );
 
   // Row updates are authoritative until the lazy detail has caught up.
   const current = detail?.status === row.status ? detail : row;

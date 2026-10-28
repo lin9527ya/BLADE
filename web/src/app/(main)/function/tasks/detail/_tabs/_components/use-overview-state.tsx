@@ -514,13 +514,15 @@ export function useOverviewState(taskId: string) {
         }
       };
 
-      void load();
-      void loadScope();
-      void loadTokens();
-      void loadGoals();
-      void loadHints();
-      void loadArtifacts();
-      void loadConstraints();
+      await Promise.all([
+        load(),
+        loadScope(),
+        loadTokens(),
+        loadGoals(),
+        loadHints(),
+        loadArtifacts(),
+        loadConstraints(),
+      ]);
     },
     3000,
     [taskId, loadScope, loadTokens, loadGoals, loadHints, loadArtifacts, loadConstraints],

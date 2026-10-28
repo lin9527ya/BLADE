@@ -112,7 +112,7 @@ export function useDashboardState() {
           loading = false;
         }
       };
-      void load();
+      await load();
     },
     5000,
     [],
@@ -149,7 +149,7 @@ export function useDashboardState() {
           /* transient errors */
         }
       };
-      void load();
+      await load();
     },
     15000,
     [tokenVersion, tokenDays],

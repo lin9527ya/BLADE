@@ -200,31 +200,33 @@ export default function TrafficPage() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
   usePolling(
-    (alive) => {
-      api
-        .traffic(page, size, hostQ, method, queryQ, {
-          body: bodyQ,
-          path: pathQ,
-          status: statusFilter,
-          respMin: respMinQ,
-          respMax: respMaxQ,
-          sort: sort.field,
-          order: sort.direction,
-        })
-        .then((r) => {
-          if (alive()) setTraffic(r);
-        })
-        .catch(() => {
-          // Keep the last successful snapshot during transient refresh failures.
-        });
-      api
-        .trafficHosts()
-        .then((r) => {
-          if (alive()) setHosts(r.hosts ?? []);
-        })
-        .catch(() => {
-          // Keep the last successful host list during transient refresh failures.
-        });
+    async (alive) => {
+      await Promise.all([
+        api
+          .traffic(page, size, hostQ, method, queryQ, {
+            body: bodyQ,
+            path: pathQ,
+            status: statusFilter,
+            respMin: respMinQ,
+            respMax: respMaxQ,
+            sort: sort.field,
+            order: sort.direction,
+          })
+          .then((r) => {
+            if (alive()) setTraffic(r);
+          })
+          .catch(() => {
+            // Keep the last successful snapshot during transient refresh failures.
+          }),
+        api
+          .trafficHosts()
+          .then((r) => {
+            if (alive()) setHosts(r.hosts ?? []);
+          })
+          .catch(() => {
+            // Keep the last successful host list during transient refresh failures.
+          }),
+      ]);
     },
     // 只在最新页自动刷新；往回翻历史不该被脚下抽走。
     page === 0 ? 5000 : 0,

@@ -23,19 +23,15 @@ export function SafetyBanner() {
   const [st, setSt] = React.useState<ScopeEnforcement | null>(null);
 
   usePolling(
-    async (alive) => {
-      const load = () => {
-        api
-          .scopeEnforcement()
-          .then((d) => {
-            if (alive()) setSt(d);
-          })
-          .catch(() => {
-            /* 读不到就不显示：这条是提示，不该自己变成错误源 */
-          });
-      };
-      load();
-    },
+    (alive) =>
+      api
+        .scopeEnforcement()
+        .then((d) => {
+          if (alive()) setSt(d);
+        })
+        .catch(() => {
+          /* 读不到就不显示：这条是提示，不该自己变成错误源 */
+        }),
     POLL_MS,
     [],
   );
