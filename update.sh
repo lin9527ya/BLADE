@@ -11,13 +11,13 @@ ok(){   printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn(){ printf '\033[33m[!]\033[0m %s\n' "$*"; }
 die(){  printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 ask(){  local p="$1" d="${2:-}" a; read -rp "$p${d:+ [$d]}: " a; echo "${a:-$d}"; }
-# 本地编译使用的版本号：优先 BLADE_BUILD_VERSION，否则取最近的 git tag。
-# 不用 git describe 的提交后缀，避免未打 tag 的本地构建显示成 dev/长哈希。
+# 本地编译使用的版本号：优先 BLADE_BUILD_VERSION，否则使用完整 git describe。
+# tag 提交显示 0.7.1；tag 之后的提交显示 0.7.1-<提交数>-g<hash>。
 build_version(){
   if [ -n "${BLADE_BUILD_VERSION:-}" ]; then printf '%s' "${BLADE_BUILD_VERSION#v}"; return; fi
   if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     local v
-    v="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+    v="$(git describe --tags --always --dirty 2>/dev/null || true)"
     if [ -n "$v" ]; then printf '%s' "${v#v}"; return; fi
   fi
   printf 'dev'
