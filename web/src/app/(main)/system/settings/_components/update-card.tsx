@@ -25,6 +25,11 @@ import type { UpdateCheck, UpdateProgress } from "@/lib/types";
  *  每次都是秒级，三分钟足够覆盖慢磁盘和 Docker 容器重建。 */
 const RESTART_TIMEOUT_MS = 180_000;
 
+// 更新日志入口默认隐藏：把项目交给他人使用时，避免 release 链接暴露项目地址。
+// 后端 server/update.go 的 exposeUpdateSource 同步关闭时会连 API 字段一起省略；
+// 需要恢复时两处一起打开。
+const SHOW_UPDATE_CHANGELOG = false;
+
 function humanSize(n?: number): string {
   if (!n || n <= 0) return "";
   const units = ["B", "KB", "MB", "GB"];
@@ -245,7 +250,7 @@ export function UpdateCard() {
               </Badge>
             </>
           )}
-          {info?.html_url && (
+          {SHOW_UPDATE_CHANGELOG && info?.html_url && (
             <a
               href={info.html_url}
               target="_blank"

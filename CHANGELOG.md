@@ -2,6 +2,15 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 基本设置隐藏更新日志入口
+
+- 「版本与更新」卡片不再显示「更新日志」链接；`/api/update/check` 也不再返回
+  `repo` / `html_url` / `notes`，更新/下载/回滚错误中的发布源地址统一替换为「发布源」。
+- 前后端各有一个开关（`SHOW_UPDATE_CHANGELOG` / `exposeUpdateSource`），需要恢复时两处一起打开。
+- 该改动未并入 `v0.6.1`，版本按 `git describe` 标为 0.6.1 之后的开发提交。
+
 ## [0.6.1] - 2026-10-27
 
 ### 探索策略：深度 + 广度双轨

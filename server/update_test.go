@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -151,5 +152,54 @@ func TestReleaseCacheDoesNotPoisonOnCallerCancel(t *testing.T) {
 	}
 	if rel == nil || rel.TagName != "v0.3.8" {
 		t.Fatalf("应拿到正常结果，得到 %+v", rel)
+	}
+}
+
+// 发布给他人使用时，更新接口不能把发布源地址带出去：错误里常常包着
+// *url.Error 的完整请求地址，仅隐藏按钮不够。
+func TestRedactUpdateSource(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"访问 GitHub 失败: Get \"https://api.github.com/repos/lin9527ya/blade/releases/latest\": EOF",
+			"访问 GitHub 失败: Get \"https://api.github.com/repos/发布源/releases/latest\": EOF"},
+		{"仓库 lin9527ya/blade 尚未发布任何正式版本", "仓库 发布源 尚未发布任何正式版本"},
+		{"下载失败: https://github.com/lin9527ya/blade/releases/download/v1/x.zip", "下载失败: https://github.com/发布源/releases/download/v1/x.zip"},
+	} {
+		if got := redactUpdateSource(tc.in); got != tc.want {
+			t.Errorf("redactUpdateSource(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if exposeUpdateSource {
+		t.Fatal("exposeUpdateSource 默认必须关闭，否则更新日志/发布源会重新暴露")
+	}
+}
+
+// 交付给他人时，/api/update/check 不能把发布源地址（repo / release 链接 / notes）
+// 带出去；前端隐藏按钮只是第一层，接口本身也要干净。
+func TestUpdateCheckHidesReleaseSource(t *testing.T) {
+	_, _, request := trafficEvidenceServer(t)
+	prev := relCache
+	relCache = &releaseCache{fetch: func(context.Context, *http.Client) (*selfupdate.Release, error) {
+		return &selfupdate.Release{
+			TagName: "v9.9.9",
+			HTMLURL: "https://github.com/lin9527ya/blade/releases/tag/v9.9.9",
+			Body:    "release notes for lin9527ya/blade",
+		}, nil
+	}}
+	t.Cleanup(func() { relCache = prev })
+
+	w := request("GET", "/api/update/check?force=1", "")
+	if w.Code != 200 {
+		t.Fatalf("update check: %d %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+	for _, forbidden := range []string{"lin9527ya", "html_url", "notes", `"repo"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("update check leaked %q: %s", forbidden, body)
+		}
+	}
+	if !strings.Contains(body, `"latest":"v9.9.9"`) {
+		t.Fatalf("update check missing latest: %s", body)
 	}
 }

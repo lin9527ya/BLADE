@@ -32,6 +32,24 @@ func RestartRequested() <-chan struct{} { return restartCh }
 
 func requestRestart() { restartOnce.Do(func() { close(restartCh) }) }
 
+// exposeUpdateSource controls whether the update API tells clients where the
+// release source lives (repo slug / release HTML URL / release notes). Keep it
+// false when the build is handed to someone who should not learn the project
+// address; the update check itself still works. Flip both this constant and
+// SHOW_UPDATE_CHANGELOG in web/src/app/(main)/system/settings/_components/update-card.tsx
+// to re-enable the "更新日志" link.
+const exposeUpdateSource = false
+
+// redactUpdateSource removes the release repository coordinates from text that
+// is returned to the browser. Fetch/download errors wrap *url.Error, whose text
+// contains the full API or download URL (and therefore the repo slug).
+func redactUpdateSource(s string) string {
+	if exposeUpdateSource || s == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, selfupdate.Repo, "发布源")
+}
+
 // updateToken 现读自更新用的 GitHub token（私有发布源的 release 接口需要它）。
 // 每次取用都读库：换 token 立即生效，不需要重启；**只存不回显**（设置页只显示是否已配）。
 func (s *Server) updateToken() string {
@@ -165,7 +183,7 @@ func (h *updateHub) finish(err error) {
 	defer h.mu.Unlock()
 	h.running = false
 	if err != nil {
-		h.cur = updateProgress{Phase: selfupdate.PhaseFailed, Percent: -1, Message: "更新失败", Error: err.Error(), Version: h.cur.Version}
+		h.cur = updateProgress{Phase: selfupdate.PhaseFailed, Percent: -1, Message: "更新失败", Error: redactUpdateSource(err.Error()), Version: h.cur.Version}
 	} else {
 		h.cur = updateProgress{Phase: selfupdate.PhaseStaged, Percent: 100, Message: "新版本已就绪，正在重启…", Version: h.cur.Version}
 	}
@@ -231,9 +249,11 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 		"os":          runtime.GOOS,
 		"arch":        runtime.GOARCH,
 		"has_backup":  selfupdate.HasBackup(),
-		"repo":        selfupdate.Repo,
 		"boot_notice": boot.Detail,
 		"rolled_back": boot.RolledBack,
+	}
+	if exposeUpdateSource {
+		out["repo"] = selfupdate.Repo
 	}
 
 	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
@@ -241,15 +261,17 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	client := selfupdate.NewClient(s.m.EgressProxy(), s.updateToken())
 	rel, err := relCache.get(r.Context(), client, force)
 	if err != nil {
-		out["error"] = err.Error()
+		out["error"] = redactUpdateSource(err.Error())
 		writeJSON(w, 200, out)
 		return
 	}
 
 	latest := rel.TagName
 	out["latest"] = latest
-	out["notes"] = rel.Body
-	out["html_url"] = rel.HTMLURL
+	if exposeUpdateSource {
+		out["notes"] = rel.Body
+		out["html_url"] = rel.HTMLURL
+	}
 	if !rel.PublishedAt.IsZero() {
 		out["published_at"] = rel.PublishedAt.Format(time.RFC3339)
 	}
@@ -285,7 +307,7 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 	client := selfupdate.NewClient(s.m.EgressProxy(), s.updateToken())
 	rel, err := relCache.get(r.Context(), client, false)
 	if err != nil {
-		writeErr(w, 502, err.Error())
+		writeErr(w, 502, redactUpdateSource(err.Error()))
 		return
 	}
 	cmp, comparable := selfupdate.CompareVersions(current, rel.TagName)
@@ -310,7 +332,7 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 		})
 		updHub.finish(err)
 		if err != nil {
-			log.Printf("[update] 更新失败：%v", err)
+			log.Printf("[update] 更新失败：%s", redactUpdateSource(err.Error()))
 			return
 		}
 		log.Printf("[update] %s → %s 已暂存，即将退出以完成换装", current, rel.TagName)
@@ -329,7 +351,7 @@ func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := selfupdate.Rollback(); err != nil {
-		writeErr(w, 400, err.Error())
+		writeErr(w, 400, redactUpdateSource(err.Error()))
 		return
 	}
 	log.Printf("[update] 已手动回滚到上一版本，即将退出以完成切换")

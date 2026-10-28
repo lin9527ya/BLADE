@@ -2538,7 +2538,8 @@ export interface UpdateCheck {
   mode: "docker" | "binary";
   os: string;
   arch: string;
-  repo: string;
+  /** 发布源标识；为避免暴露项目地址，服务端默认不返回。 */
+  repo?: string;
   /** 是否存在可回滚的上一版本（blade.old）。 */
   has_backup: boolean;
   /** 本次启动时自更新自举的结论（换装失败 / 已回滚等），无事发生时为空。 */
@@ -2547,6 +2548,7 @@ export interface UpdateCheck {
   /** 查询 GitHub 失败时给出原因，此时下面的字段都不会有。 */
   error?: string;
   latest?: string;
+  /** Release 说明与页面地址；同样默认不返回（更新日志入口隐藏时）。 */
   notes?: string;
   html_url?: string;
   published_at?: string;
