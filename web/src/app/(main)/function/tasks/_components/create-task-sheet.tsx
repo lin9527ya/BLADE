@@ -130,17 +130,33 @@ function SourceTaskPicker({
 // 全局资源，这里即时创建与「分类管理」里手动新建等价。只允许一个分类。
 
 export function CreateTaskSheet({
-  tasks,
   categories,
   onCreated,
   onCategoriesChanged,
 }: {
-  tasks: Task[];
   categories: TaskCategory[];
   onCreated: () => void;
   onCategoriesChanged: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
+  // 关联任务选择器需要**全量**任务，而列表页现在是服务端分页、只持有当页数据。
+  // 打开表单时单独拉一次全量（不带 page/size），只用于这个选择器。
+  const [tasks, setTasks] = React.useState<Task[]>([]);
+  React.useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    api
+      .tasks()
+      .then((r) => {
+        if (alive) setTasks(r.tasks);
+      })
+      .catch(() => {
+        // 选择器不可用不影响新建任务本身。
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
   const [name, setName] = React.useState("");
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
   const [description, setDescription] = React.useState("");

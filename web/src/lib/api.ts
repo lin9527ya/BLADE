@@ -297,8 +297,35 @@ export const api = {
     }),
 
   // ---- tasks ----
-  tasks: () =>
-    get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
+  // 不带参数 = 全量（仪表盘/编排等需要完整列表的调用方）；带 page/size 走服务端
+  // 过滤、排序与分页，任务列表页只用当页数据。
+  tasks: (params?: {
+    page?: number;
+    size?: number;
+    q?: string;
+    status?: string;
+    category?: string;
+    sort?: string;
+    dir?: "asc" | "desc";
+  }) => {
+    const qs = new URLSearchParams();
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== "") qs.set(key, String(value));
+      }
+    }
+    const suffix = qs.toString();
+    return get<{ tasks: Task[]; active: string; total?: number; filtered?: number; page?: number; size?: number }>(
+      `/tasks${suffix ? `?${suffix}` : ""}`,
+    ).then((r) => ({
+      tasks: arr(r.tasks),
+      active: r.active ?? "",
+      total: r.total,
+      filtered: r.filtered,
+      page: r.page,
+      size: r.size,
+    }));
+  },
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
   createTask: (input: {
     name?: string;

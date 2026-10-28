@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -123,16 +124,196 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"tasks": s.taskListDTOs(), "active": s.activeTaskID()})
+// taskListQuery 是任务列表的服务端过滤/排序/分页参数。
+//
+// 与前端原来的客户端过滤排序保持一致（字段、状态优先级、置顶规则），
+// 区别只是在这里一次算完，只回当页任务与其指标。
+type taskListQuery struct {
+	Page     int // 1-based；0 = 不分页（CSV 导出等内部调用）
+	Size     int
+	Text     string // 小写包含匹配 name/category/description/goal/id
+	Status   string // "" / "all" = 全部
+	Category string // "" / "all" / "uncategorized" / 数字 id
+	Sort     string // id|created|duration|status
+	Dir      string // asc|desc
 }
 
-// taskListDTOs builds the list-page view (live status, metrics, goal/finding counts).
-// Shared by the JSON list and the CSV export so the two can never report different
-// numbers for the same task.
-func (s *Server) taskListDTOs() []TaskDTO {
-	list := s.m.List()
-	metrics, _ := s.m.PG().TaskListMetricsAll()
+// taskStatusRank 必须与前端 STATUS_OPTIONS 的顺序一致：筛选项与排序都按这张表。
+var taskStatusRank = map[string]int{
+	"created": 0, "queued": 1, "running": 2, "paused": 3,
+	"done": 4, "failed": 5, "timeout": 6, "policy_blocked": 7,
+}
+
+func parseTaskListQuery(r *http.Request) taskListQuery {
+	q := r.URL.Query()
+	out := taskListQuery{
+		Text:     strings.ToLower(strings.TrimSpace(q.Get("q"))),
+		Status:   strings.TrimSpace(q.Get("status")),
+		Category: strings.TrimSpace(q.Get("category")),
+		Sort:     strings.TrimSpace(q.Get("sort")),
+		Dir:      strings.ToLower(strings.TrimSpace(q.Get("dir"))),
+	}
+	// page/size 都不给 = 旧的全量行为（CSV 导出、内部调用）。
+	if !q.Has("page") && !q.Has("size") {
+		return out
+	}
+	out.Page = atoiDefault(q.Get("page"), 1)
+	out.Size = atoiDefault(q.Get("size"), 20)
+	if out.Page < 1 {
+		out.Page = 1
+	}
+	if out.Size < 1 {
+		out.Size = 20
+	}
+	if out.Size > 200 {
+		out.Size = 200
+	}
+	switch out.Sort {
+	case "id", "created", "duration", "status":
+	default:
+		out.Sort = "id"
+	}
+	if out.Dir != "asc" {
+		out.Dir = "desc"
+	}
+	return out
+}
+
+// filterAndSortTasks 按前端同一套规则过滤排序：置顶优先 → 排序字段 → id 兜底。
+func (s *Server) filterAndSortTasks(list []*Task, q taskListQuery, now int64) []*Task {
+	statuses := make(map[string]string, len(list))
+	// duration 排序要"最后活动"兜底（未完成且非运行中的任务）。只在需要时查一次，
+	// 避免每轮列表都做这张表的额外聚合。
+	var lastActivity map[int64]int64
+	if q.Sort == "duration" {
+		lastActivity, _ = s.m.PG().LastActivityAll()
+	}
+	filtered := make([]*Task, 0, len(list))
+	for _, t := range list {
+		status := s.resolvedTaskStatus(t)
+		statuses[t.ID] = status
+		if q.Status != "" && q.Status != "all" && status != q.Status {
+			continue
+		}
+		switch q.Category {
+		case "", "all":
+		case "uncategorized":
+			if t.CategoryID != nil {
+				continue
+			}
+		default:
+			if t.CategoryID == nil || strconv.FormatInt(*t.CategoryID, 10) != q.Category {
+				continue
+			}
+		}
+		if q.Text != "" {
+			haystack := strings.ToLower(t.Name + "\x00" + t.CategoryName + "\x00" + t.Description + "\x00" + t.Goal + "\x00" + t.ID)
+			if !strings.Contains(haystack, q.Text) {
+				continue
+			}
+		}
+		filtered = append(filtered, t)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		a, b := filtered[i], filtered[j]
+		aPinned, bPinned := a.PinnedAt > 0, b.PinnedAt > 0
+		if aPinned != bPinned {
+			return aPinned
+		}
+		if aPinned && a.PinnedAt != b.PinnedAt {
+			return a.PinnedAt > b.PinnedAt
+		}
+		var compared int
+		switch q.Sort {
+		case "created":
+			compared = cmpInt64(a.CreatedAt, b.CreatedAt)
+		case "duration":
+			compared = cmpInt64(taskDurationSec(a, statuses[a.ID], now, lastActivity[a.ExpID]), taskDurationSec(b, statuses[b.ID], now, lastActivity[b.ExpID]))
+		case "status":
+			compared = taskStatusRank[statuses[a.ID]] - taskStatusRank[statuses[b.ID]]
+		default:
+			compared = strings.Compare(a.ID, b.ID)
+		}
+		if compared != 0 {
+			if q.Dir == "asc" {
+				return compared < 0
+			}
+			return compared > 0
+		}
+		return strings.Compare(b.ID, a.ID) > 0
+	})
+	return filtered
+}
+
+func cmpInt64(a, b int64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+// taskDurationSec 与前端 taskDuration 同口径：运行中算到 now，终态算到完成时间，
+// 未完成且非运行中算到最后活动。
+func taskDurationSec(t *Task, status string, now, lastActivity int64) int64 {
+	start := t.CreatedAt
+	if start <= 0 {
+		return 0
+	}
+	end := t.CompletedAt
+	switch {
+	case status == "running":
+		end = now
+	case end <= 0:
+		end = lastActivity
+	}
+	if end <= start {
+		return 0
+	}
+	return end - start
+}
+
+func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
+	q := parseTaskListQuery(r)
+	all := s.m.List()
+	if q.Page == 0 {
+		// 旧行为：全量（CSV 导出与内部调用依赖它）。
+		writeJSON(w, 200, map[string]any{"tasks": s.taskDTOsFor(all), "active": s.activeTaskID()})
+		return
+	}
+	filtered := s.filterAndSortTasks(all, q, time.Now().Unix())
+	total := len(filtered)
+	start := (q.Page - 1) * q.Size
+	if start > total {
+		start = total
+	}
+	end := start + q.Size
+	if end > total {
+		end = total
+	}
+	pageRows := filtered[start:end]
+	dtos := s.taskDTOsFor(pageRows)
+	writeJSON(w, 200, map[string]any{
+		"tasks":    dtos,
+		"active":   s.activeTaskID(),
+		"total":    len(all),
+		"filtered": total,
+		"page":     q.Page,
+		"size":     q.Size,
+	})
+}
+
+// taskDTOsFor builds DTOs (with per-task metrics) for just these tasks.
+// Shared by the paginated JSON list and the CSV export so the two can never
+// report different numbers for the same task.
+func (s *Server) taskDTOsFor(list []*Task) []TaskDTO {
+	expIDs := make([]int64, 0, len(list))
+	for _, t := range list {
+		expIDs = append(expIDs, t.ExpID)
+	}
+	metrics, _ := s.m.PG().TaskListMetricsFor(expIDs)
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	dtos := make([]TaskDTO, 0, len(list))
 	for _, t := range list {
@@ -180,7 +361,7 @@ func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 		"目标达成", "目标总数", "运行中Worker", "严重", "高危", "中危", "低危",
 		"输入token", "输出token", "缓存读", "缓存写", "缓存命中率",
 	})
-	for _, d := range s.taskListDTOs() {
+	for _, d := range s.taskDTOsFor(s.m.List()) {
 		last := ""
 		if d.LastActivity > 0 {
 			last = time.Unix(d.LastActivity, 0).Format(time.RFC3339)

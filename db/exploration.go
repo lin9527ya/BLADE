@@ -2230,6 +2230,93 @@ func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
 	return out, rows.Err()
 }
 
+// TaskListMetricsFor is TaskListMetricsAll restricted to a set of explorations.
+// 任务列表改为服务端分页后，每页只需要当页任务的指标；全量 LATERAL 聚合在任务
+// 多时是列表轮询里最贵的查询。
+func (d *DB) TaskListMetricsFor(explorationIDs []int64) (map[int64]TaskListMetrics, error) {
+	out := map[int64]TaskListMetrics{}
+	if len(explorationIDs) == 0 {
+		return out, nil
+	}
+	rows, err := d.Query(`
+		SELECT task.exploration_id,
+		       COALESCE(token_metrics.input_tokens,0),
+		       COALESCE(token_metrics.output_tokens,0),
+		       COALESCE(token_metrics.cache_read_tokens,0),
+		       COALESCE(token_metrics.cache_write_tokens,0),
+		       COALESCE(latest_activity.created_at,0),
+		       COALESCE(goal_metrics.total,0),
+		       COALESCE(goal_metrics.met,0),
+		       COALESCE(intent_metrics.running,0),
+		       COALESCE(finding_metrics.critical,0),
+		       COALESCE(finding_metrics.high,0),
+		       COALESCE(finding_metrics.medium,0),
+		       COALESCE(finding_metrics.low,0)
+		FROM tasks task
+		LEFT JOIN LATERAL (
+			SELECT SUM(input_tokens) AS input_tokens,
+			       SUM(output_tokens) AS output_tokens,
+			       SUM(cache_read_tokens) AS cache_read_tokens,
+			       SUM(cache_write_tokens) AS cache_write_tokens
+			FROM activity
+			WHERE exploration_id=task.exploration_id AND kind='result'
+		) token_metrics ON true
+		LEFT JOIN LATERAL (
+			SELECT EXTRACT(EPOCH FROM created_at)::bigint AS created_at
+			FROM activity
+			WHERE exploration_id=task.exploration_id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) latest_activity ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS total,
+			       COUNT(*) FILTER (WHERE state='met') AS met
+			FROM exploration_nodes
+			WHERE exploration_id=task.exploration_id AND kind='goal'
+		) goal_metrics ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) AS running
+			FROM exploration_nodes
+			WHERE exploration_id=task.exploration_id AND kind='intent' AND state='running'
+		) intent_metrics ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*) FILTER (WHERE severity='critical') AS critical,
+			       COUNT(*) FILTER (WHERE severity='high')     AS high,
+			       COUNT(*) FILTER (WHERE severity='medium')   AS medium,
+			       COUNT(*) FILTER (WHERE severity='low')      AS low
+			FROM findings
+			WHERE task_id=task.id
+		) finding_metrics ON true
+		WHERE task.deleted_at IS NULL AND task.exploration_id = ANY($1)`, explorationIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var explorationID int64
+		var metrics TaskListMetrics
+		if err := rows.Scan(
+			&explorationID,
+			&metrics.Tokens.InputTokens,
+			&metrics.Tokens.OutputTokens,
+			&metrics.Tokens.CacheReadTokens,
+			&metrics.Tokens.CacheWriteTokens,
+			&metrics.LastActivity,
+			&metrics.Goals.Total,
+			&metrics.Goals.Met,
+			&metrics.RunningIntents,
+			&metrics.Findings.Critical,
+			&metrics.Findings.High,
+			&metrics.Findings.Medium,
+			&metrics.Findings.Low,
+		); err != nil {
+			return nil, err
+		}
+		out[explorationID] = metrics
+	}
+	return out, rows.Err()
+}
+
 // GoalCountsAll returns goal totals (total / met) per exploration id, one query
 // for all tasks — used by listTasks so the task list shows progress for every task.
 func (d *DB) GoalCountsAll() (map[int64]GoalCounts, error) {

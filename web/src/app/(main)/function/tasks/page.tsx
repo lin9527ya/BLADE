@@ -74,7 +74,6 @@ import { ARCHIVABLE_STATUSES, ArchiveConfirmDialog, TaskArchivesPanel } from "./
 import { CategoryManagementDialog } from "./_components/task-categories";
 import { BulkDeleteTasksDialog, MoveTasksCategoryDialog } from "./_components/task-dialogs";
 import {
-  compareTasks,
   type DeleteCounts,
   deleteDetails,
   deleteSummary,
@@ -119,6 +118,10 @@ export default function TasksPage() {
   const { field: sortField, direction: sortDirection } = sortPreference;
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
+  // 服务端分页返回的总数：total = 全部任务，filtered = 当前过滤后总数。
+  const [totalTasks, setTotalTasks] = React.useState(0);
+  const [filteredTasks, setFilteredTasks] = React.useState(0);
+  const [listLoading, setListLoading] = React.useState(false);
   const [nowSec, setNowSec] = React.useState(() => Math.floor(Date.now() / 1000));
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
@@ -152,33 +155,21 @@ export default function TasksPage() {
     );
   }, [categoryFilter, filtersHydrated, statusFilter]);
 
-  const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return tasks.filter((t) => {
-      if (statusFilter !== "all" && t.status !== statusFilter) return false;
-      if (categoryFilter === UNCATEGORIZED_VALUE && t.category_id != null) return false;
-      if (
-        categoryFilter !== "all" &&
-        categoryFilter !== UNCATEGORIZED_VALUE &&
-        String(t.category_id) !== categoryFilter
-      )
-        return false;
-      if (!q) return true;
-      return (
-        (t.name ?? "").toLowerCase().includes(q) ||
-        (t.category_name ?? "").toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.goal.toLowerCase().includes(q) ||
-        t.id.toLowerCase().includes(q)
-      );
-    });
-  }, [tasks, query, statusFilter, categoryFilter]);
+  // 搜索输入防抖：服务端分页后每次按键都会打一次接口，250ms 合并连续输入。
+  const [debouncedQuery, setDebouncedQuery] = React.useState("");
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 250);
+    return () => clearTimeout(timer);
+  }, [query]);
 
-  const sortNowSec = sortField === "duration" ? nowSec : 0;
-  const ordered = React.useMemo(() => {
-    return [...filtered].sort((left, right) => compareTasks(left, right, sortField, sortDirection, sortNowSec));
-  }, [filtered, sortDirection, sortField, sortNowSec]);
+  // reset to page 1 whenever filters or ordering change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: both filters intentionally reset pagination.
+  React.useEffect(() => {
+    setPage(1);
+  }, [debouncedQuery, statusFilter, categoryFilter, sortField, sortDirection]);
 
+  // 服务端分页：当前页就是 tasks。多选跨页保留，选择集不随翻页重置。
+  const paginated = tasks;
   const sortTasksBy = React.useCallback(
     (field: TaskSortField) => {
       setSortPreference((current) => {
@@ -189,28 +180,9 @@ export default function TasksPage() {
     [setSortPreference],
   );
 
-  // reset to page 1 whenever filters or ordering change
-  // biome-ignore lint/correctness/useExhaustiveDependencies: both filters intentionally reset pagination.
-  React.useEffect(() => {
-    setPage(1);
-  }, [query, statusFilter, categoryFilter, sortField, sortDirection]);
-
-  const paginated = React.useMemo(
-    () => ordered.slice((page - 1) * pageSize, page * pageSize),
-    [ordered, page, pageSize],
-  );
-
-  // 多选删除:选择跨翻页/筛选保留,只在任务真的消失(被删或后端不再返回)时收敛。
+  // 多选删除:选择跨翻页/筛选保留。服务端分页下不能拿当页 tasks 收敛选择集
+  // （会把其它页的勾选静默清空）；删除成功时由 deleteTasks 显式移除。
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
-
-  React.useEffect(() => {
-    setSelectedIds((prev) => {
-      if (prev.size === 0) return prev;
-      const live = new Set(tasks.map((t) => t.id));
-      const next = new Set([...prev].filter((id) => live.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [tasks]);
 
   const toggleSelected = React.useCallback((id: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -252,22 +224,34 @@ export default function TasksPage() {
   // re-render the whole page for nothing. Bail out when it matches.
   const lastRef = React.useRef<string>("");
 
-  const load = React.useCallback(
-    () =>
-      api
-        .tasks()
-        .then((r) => {
-          const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
-          const sig = JSON.stringify(next);
-          if (sig === lastRef.current) return;
-          lastRef.current = sig;
-          setTasks(next);
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        }),
-    [],
-  );
+  const load = React.useCallback(() => {
+    setListLoading(true);
+    return api
+      .tasks({
+        page,
+        size: pageSize,
+        q: debouncedQuery.trim(),
+        status: statusFilter === "all" ? "" : statusFilter,
+        category: categoryFilter === "all" ? "" : categoryFilter === UNCATEGORIZED_VALUE ? "uncategorized" : categoryFilter,
+        sort: sortField,
+        dir: sortDirection,
+      })
+      .then((r) => {
+        const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
+        const total = r.total ?? next.length;
+        const filtered = r.filtered ?? next.length;
+        const sig = JSON.stringify([next, total, filtered]);
+        if (sig === lastRef.current) return;
+        lastRef.current = sig;
+        setTasks(next);
+        setTotalTasks(total);
+        setFilteredTasks(filtered);
+      })
+      .catch(() => {
+        // Polling is best-effort; the next interval retries automatically.
+      })
+      .finally(() => setListLoading(false));
+  }, [page, pageSize, debouncedQuery, statusFilter, categoryFilter, sortField, sortDirection]);
 
   const loadCategories = React.useCallback(
     () =>
@@ -649,7 +633,7 @@ export default function TasksPage() {
                   </SelectContent>
                 </Select>
                 <span className="text-muted-foreground text-xs tabular-nums">
-                  {filtered.length}/{tasks.length} 条
+                  {filteredTasks}/{totalTasks} 条
                 </span>
                 {selectedIds.size > 0 && (
                   <>
@@ -730,18 +714,17 @@ export default function TasksPage() {
                 />
                 <ScheduleTasksDialog categories={categories} onCreated={refreshCategoriesAndTasks} />
                 <CreateTaskSheet
-                  tasks={tasks}
                   categories={categories}
                   onCreated={refreshCategoriesAndTasks}
                   onCategoriesChanged={refreshCategoriesAndTasks}
                 />
               </div>
 
-              {tasks.length === 0 ? (
+              {totalTasks === 0 ? (
                 <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
                   暂无任务，点击右上角「新建任务」开始。
                 </div>
-              ) : filtered.length === 0 ? (
+              ) : filteredTasks === 0 ? (
                 <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
                   没有匹配的任务。
                 </div>
@@ -825,7 +808,8 @@ export default function TasksPage() {
               <TablePagination
                 page={page}
                 pageSize={pageSize}
-                total={filtered.length}
+                total={filteredTasks}
+                busy={listLoading}
                 onPageChange={setPage}
                 onPageSizeChange={(nextPageSize) => {
                   setPageSize(nextPageSize);

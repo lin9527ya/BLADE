@@ -301,7 +301,8 @@ server {
 
 - 后端：`go run ./cmd/blade`（不带 `-tags embedui` 则不内嵌前端）
 - 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
-- 测试：`go test ./...`
+- 测试：`go test ./...`（需要独立测试库，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)）
+- 架构、构建入口、测试隔离与常见故障：见 [`DEVELOPMENT.md`](DEVELOPMENT.md)
 - Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
 
 ---
