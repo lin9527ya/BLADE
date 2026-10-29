@@ -632,6 +632,8 @@ export const api = {
   setCVEStatus: (id: number, status: "active" | "deprecated", reason = "") =>
     patch<CVE>(`/cves/${id}`, { status, reason }),
   deleteCVE: (id: number) => del<{ ok: boolean }>(`/cves/${id}`),
+  deleteCVEs: (ids: number[]) =>
+    post<{ items: { id: number; ok: boolean; error?: string }[] }>("/cves/delete/batch", { ids }),
   uploadCVEScript: async (id: number, file: File, language?: string): Promise<CVE> => {
     const fd = new FormData();
     fd.append("file", file);

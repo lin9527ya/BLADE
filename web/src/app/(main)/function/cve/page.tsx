@@ -14,6 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -193,6 +194,10 @@ export default function CVEPage() {
   const [deprecating, setDeprecating] = React.useState<CVE | null>(null);
   const [reason, setReason] = React.useState("");
   const [deleting, setDeleting] = React.useState<CVE | null>(null);
+  // 多选跨翻页保留；批量删除只提交勾选的 id。单条删除时同步从集合里移除。
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(() => new Set());
+  const [batchOpen, setBatchOpen] = React.useState(false);
+  const [batchDeleting, setBatchDeleting] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const detailFileRef = React.useRef<HTMLInputElement>(null);
@@ -373,6 +378,12 @@ export default function CVEPage() {
     try {
       await api.deleteCVE(deleting.id);
       toast.success("CVE 已删除");
+      setSelectedIds((prev) => {
+        if (!prev.has(deleting.id)) return prev;
+        const next = new Set(prev);
+        next.delete(deleting.id);
+        return next;
+      });
       setDeleting(null);
       setSelected(null);
       load();
@@ -380,6 +391,64 @@ export default function CVEPage() {
       toast.error(`删除失败：${(e as Error).message}`);
     }
   }
+
+  // 批量硬删除：逐条返回结果，失败项保留在选中集里便于重试；成功的立即移出。
+  async function removeSelected() {
+    if (selectedIds.size === 0 || batchDeleting) return;
+    setBatchDeleting(true);
+    try {
+      const result = await api.deleteCVEs([...selectedIds]);
+      const done = result.items.filter((item) => item.ok);
+      const failed = result.items.filter((item) => !item.ok);
+      if (done.length > 0) {
+        const doneIDs = new Set(done.map((item) => item.id));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of doneIDs) next.delete(id);
+          return next;
+        });
+        if (selected && doneIDs.has(selected.id)) setSelected(null);
+        toast.success(`已删除 ${done.length} 条 CVE`);
+        load();
+      }
+      if (failed.length > 0) {
+        const detail = failed
+          .slice(0, 3)
+          .map((item) => `#${item.id}（${item.error || "删除失败"}）`)
+          .join("；");
+        toast.error(`${failed.length} 条未能删除：${detail}${failed.length > 3 ? " 等" : ""}`);
+      } else {
+        setBatchOpen(false);
+      }
+    } catch (e) {
+      toast.error(`批量删除失败：${(e as Error).message}`);
+    } finally {
+      setBatchDeleting(false);
+    }
+  }
+
+  const pageIds = rows.map((c) => c.id);
+  const selectedOnPage = pageIds.filter((id) => selectedIds.has(id)).length;
+  const headerChecked: boolean | "indeterminate" =
+    rows.length > 0 && selectedOnPage === rows.length ? true : selectedOnPage > 0 ? "indeterminate" : false;
+  const togglePageSelected = (checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of pageIds) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  };
+  const toggleSelected = (id: number, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
 
   const editorOpen = creating || editing !== null;
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -441,6 +510,18 @@ export default function CVEPage() {
             </SelectContent>
           </Select>
           <CVEImportDialog onImported={load} />
+          {selectedIds.size > 0 && (
+            <>
+              <span className="text-xs tabular-nums">已选 {selectedIds.size} 项</span>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                取消选择
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => setBatchOpen(true)}>
+                <Trash2Icon data-icon="inline-start" />
+                批量删除
+              </Button>
+            </>
+          )}
           <Button size="sm" onClick={openCreate}>
             <PlusIcon data-icon="inline-start" />
             新建 CVE
@@ -452,6 +533,13 @@ export default function CVEPage() {
         <Table className="table-fixed">
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={headerChecked}
+                  onCheckedChange={(checked) => togglePageSelected(checked === true)}
+                  aria-label="选择本页全部 CVE"
+                />
+              </TableHead>
               <TableHead className="w-[45%]">CVE</TableHead>
               <TableHead className="w-[4%] px-1">等级</TableHead>
               <TableHead className="w-[14%]">受影响产品 / 版本</TableHead>
@@ -466,13 +554,13 @@ export default function CVEPage() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="py-12 text-center text-muted-foreground">
                   加载中…
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="py-12 text-center text-muted-foreground">
                   还没有 CVE 记录。点击右上角「新建 CVE」，录入描述、受影响产品和可选利用脚本。
                 </TableCell>
               </TableRow>
@@ -481,7 +569,14 @@ export default function CVEPage() {
                 const fp = fingerprintParts(c.fingerprint);
                 const products = productsLabel(c);
                 return (
-                  <TableRow key={c.id}>
+                  <TableRow key={c.id} data-state={selectedIds.has(c.id) ? "selected" : undefined}>
+                    <TableCell className="w-10">
+                      <Checkbox
+                        checked={selectedIds.has(c.id)}
+                        onCheckedChange={(checked) => toggleSelected(c.id, checked === true)}
+                        aria-label={`选择 ${c.cve_id}`}
+                      />
+                    </TableCell>
                     <TableCell className="min-w-0">
                       <button
                         type="button"
@@ -908,6 +1003,30 @@ export default function CVEPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 批量删除 */}
+      <AlertDialog open={batchOpen} onOpenChange={setBatchOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除选中的 {selectedIds.size} 条 CVE？</AlertDialogTitle>
+            <AlertDialogDescription>
+              硬删除库里的条目（含利用脚本），不可撤销。通常优先使用「废弃」保留记录；删除后任务不再匹配到这些条目。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={batchDeleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={batchDeleting}
+              onClick={(event) => {
+                event.preventDefault(); // 等结果返回再决定关闭，失败项留在选中集里
+                void removeSelected();
+              }}
+            >
+              {batchDeleting ? "删除中…" : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 删除 */}
       <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>

@@ -201,3 +201,65 @@ func TestCVEToolsSeededAndBound(t *testing.T) {
 		t.Fatalf("cve_exploit must not bind mainagent (no ExecService): %+v", exploit.Agents)
 	}
 }
+
+// 批量删除：返回逐条结果；不存在/重复 id 不拖垮整批。
+func TestCVEsBatchDelete(t *testing.T) {
+	s, _, request := trafficEvidenceServer(t)
+	t.Cleanup(func() { _, _ = s.m.pg.Exec(`DELETE FROM cve_library WHERE cve_id LIKE 'CVE-2098-%'`) })
+
+	mk := func(id string) int64 {
+		input := db.CVE{CVEID: id, Title: "batch delete " + id, Severity: db.SeverityMedium, AffectedProducts: []string{"batch-test-product"}}
+		body, _ := json.Marshal(input)
+		w := request("POST", "/api/cves", string(body))
+		if w.Code != 200 {
+			t.Fatalf("create %s: %d %s", id, w.Code, w.Body)
+		}
+		var created db.CVE
+		if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.ID == 0 {
+			t.Fatalf("create body %s: %v %s", id, err, w.Body)
+		}
+		return created.ID
+	}
+	a := mk("CVE-2098-1001")
+	b := mk("CVE-2098-1002")
+
+	payload, _ := json.Marshal(map[string]any{"ids": []int64{a, b, b, 999999999}})
+	w := request("POST", "/api/cves/delete/batch", string(payload))
+	if w.Code != 200 {
+		t.Fatalf("batch delete: %d %s", w.Code, w.Body)
+	}
+	var out struct {
+		Items []struct {
+			ID    int64  `json:"id"`
+			OK    bool   `json:"ok"`
+			Error string `json:"error,omitempty"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Items) != 3 { // 重复 id 被去重，不存在的那条保留失败结果
+		t.Fatalf("items = %+v", out.Items)
+	}
+	for _, item := range out.Items {
+		if item.ID == a || item.ID == b {
+			if !item.OK {
+				t.Fatalf("id %d should be deleted: %+v", item.ID, item)
+			}
+		} else if item.OK || item.Error == "" {
+			t.Fatalf("missing id should fail with a reason: %+v", item)
+		}
+	}
+	var left int
+	if err := s.m.pg.QueryRow(`SELECT count(*) FROM cve_library WHERE id = ANY($1)`, []int64{a, b}).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("%d CVE rows left after batch delete", left)
+	}
+
+	// 空集与超限都拒绝。
+	if w := request("POST", "/api/cves/delete/batch", `{"ids":[]}`); w.Code != 400 {
+		t.Fatalf("empty ids = %d, want 400", w.Code)
+	}
+}

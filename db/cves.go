@@ -549,6 +549,29 @@ func (s *AssetStore) DeleteCVE(id int64) (int64, error) {
 	return res.RowsAffected()
 }
 
+// DeleteCVEs hard-deletes several CVEs in one statement and returns the ids that
+// actually existed. Missing ids are simply absent from the result (the API turns
+// that into per-item "not found" so a batch never fails as a whole).
+func (s *AssetStore) DeleteCVEs(ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`DELETE FROM cve_library WHERE id = ANY($1) RETURNING id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]int64, 0, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *AssetStore) UpdateCVEScript(id int64, script []byte, language, filename string) (*CVE, error) {
 	c, err := s.GetCVE(id)
 	if err != nil || c == nil {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -26,6 +27,7 @@ func (s *Server) registerCVERoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/cves/{id}", s.getCVE)
 	mux.HandleFunc("PUT /api/cves/{id}", s.updateCVE)
 	mux.HandleFunc("PATCH /api/cves/{id}", s.patchCVE)
+	mux.HandleFunc("POST /api/cves/delete/batch", s.deleteCVEsBatch)
 	mux.HandleFunc("DELETE /api/cves/{id}", s.deleteCVE)
 	mux.HandleFunc("POST /api/cves/{id}/script", s.uploadCVEScript)
 	mux.HandleFunc("DELETE /api/cves/{id}/script", s.clearCVEScript)
@@ -227,6 +229,66 @@ func (s *Server) deleteCVE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// maxCVEDeleteBatch 是单次批量删除上限：防止一次误提交把整库带走。
+const maxCVEDeleteBatch = 200
+
+// deleteCVEsBatch 批量硬删除 CVE，返回逐条结果：单条不存在不会拖垮整批。
+func (s *Server) deleteCVEsBatch(w http.ResponseWriter, r *http.Request) {
+	as := s.cveStore(w)
+	if as == nil {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+	ids := make([]int64, 0, len(req.IDs))
+	seen := make(map[int64]struct{}, len(req.IDs))
+	for _, id := range req.IDs {
+		if id <= 0 {
+			writeErr(w, 400, "CVE id 无效")
+			return
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 || len(ids) > maxCVEDeleteBatch {
+		writeErr(w, 400, fmt.Sprintf("ids 数量必须为 1-%d", maxCVEDeleteBatch))
+		return
+	}
+	deleted, err := as.DeleteCVEs(ids)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	deletedSet := make(map[int64]struct{}, len(deleted))
+	for _, id := range deleted {
+		deletedSet[id] = struct{}{}
+	}
+	type item struct {
+		ID    int64  `json:"id"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	items := make([]item, 0, len(ids))
+	for _, id := range ids {
+		_, ok := deletedSet[id]
+		it := item{ID: id, OK: ok}
+		if !ok {
+			it.Error = "CVE 不存在"
+		}
+		items = append(items, it)
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
 }
 
 // uploadCVEScript 接收 multipart 的 file 字段（也兼容纯文本 body 的 script 字段）。
