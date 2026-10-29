@@ -64,7 +64,14 @@ func restoreFindingTrafficTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
 		if _, err = tx.Exec(`INSERT INTO finding_traffic_bindings SELECT * FROM json_populate_recordset(NULL::finding_traffic_bindings,$1::json)`, string(raw)); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE traffic_evidence_snapshots s SET unreferenced_at=NULL WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`)
+		// Scope the un-reference clear to THIS task's findings: another task may
+		// still reference the same content-addressed snapshot, and clearing it
+		// globally would make cleanup treat it as live or delete it prematurely.
+		_, err = tx.Exec(`UPDATE traffic_evidence_snapshots s SET unreferenced_at=NULL
+WHERE EXISTS (
+ SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id
+ WHERE b.snapshot_id=s.id AND f.task_id=$1
+)`, snapshot.TaskID)
 	}
 	return err
 }
