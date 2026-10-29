@@ -131,3 +131,28 @@ func TestPlannerSystemExtrasApplyToEveryBodySource(t *testing.T) {
 		}
 	}
 }
+
+// 模板库里没有默认模板时（全新库 / 用户把默认让给别的之前），planner 必须落到内置正文。
+// 这是「不选模板 = 用系统自带 planner」的代码保证：③ 返回 ok=false 就该直接到 ④，
+// 而不是留下空正文。
+func TestPlannerSystemWithoutDefaultTemplateUsesBuiltin(t *testing.T) {
+	oldDefault := PlannerTemplateDefault
+	oldOverride := PromptOverride
+	t.Cleanup(func() { PlannerTemplateDefault = oldDefault; PromptOverride = oldOverride })
+
+	PromptOverride = nil
+	PlannerTemplateDefault = func() (string, bool) { return "", false }
+
+	got := plannerSystem("目标X", "/d", "/w", "")
+	if !strings.Contains(got, "你是一个网络安全平台授权渗透测试系统的") {
+		t.Fatalf("无默认模板时应落到内置正文：%q", got[:min(80, len(got))])
+	}
+	if !strings.Contains(got, "任务目标：目标X") {
+		t.Fatal("内置正文没有渲染 {{.Goal}}")
+	}
+	for _, want := range []string{"广度纪律", "战略提示（hints）的采纳纪律", "中间产物输出规约"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("缺少代码持有段 %q", want)
+		}
+	}
+}
