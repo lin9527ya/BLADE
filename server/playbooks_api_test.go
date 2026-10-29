@@ -187,3 +187,103 @@ func TestReseedPlaybookPromptForGoalTrigger(t *testing.T) {
 		t.Fatalf("用户自定义提示词被覆盖：%s", cur)
 	}
 }
+
+// 人工编辑：内容/指纹/手法键可改，revision 递增；统计与「最近验证」不变；
+// 改成另一张卡已有的（指纹+手法键）必须 409。
+func TestUpdatePlaybookAPI(t *testing.T) {
+	s, _, request := trafficEvidenceServer(t)
+	as := s.m.Assets()
+	p, _, err := as.UpsertPlaybook(db.Playbook{
+		Fingerprint:  db.PlaybookFingerprint{Technologies: []string{"WordPress", "PHP"}},
+		TechniqueKey: "edit-test", Title: "old title", Summary: "old summary",
+		Steps: "old steps", Evidence: "old evidence", Confidence: db.ConfidenceHigh,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = s.m.pg.Exec(`DELETE FROM attack_playbooks WHERE id=$1`, p.ID) })
+	other, _, err := as.UpsertPlaybook(db.Playbook{
+		Fingerprint:  db.PlaybookFingerprint{Technologies: []string{"nginx"}},
+		TechniqueKey: "other-key", Title: "other", Steps: "other steps",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = s.m.pg.Exec(`DELETE FROM attack_playbooks WHERE id=$1`, other.ID) })
+
+	// 制造统计数据，确认编辑不会清掉它们。
+	if _, err := as.RecordPlaybookFeedback(p.ID, "worked", "verified once"); err != nil {
+		t.Fatal(err)
+	}
+	// uses 由 lookup 单独累加；这里直接落一个非零值，验证编辑不会清统计。
+	if _, err := s.m.pg.Exec(`UPDATE attack_playbooks SET uses=5 WHERE id=$1`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := as.GetPlaybook(p.ID)
+	if err != nil || before == nil {
+		t.Fatal(err)
+	}
+	if before.Uses == 0 || before.Successes == 0 || before.LastVerifiedAt == nil {
+		t.Fatalf("fixture stats missing: %+v", before)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"fingerprint": map[string]any{
+			"technologies": []string{"php", "wordpress", "mysql"},
+			"favicon_mmh3": "-777", "service_name": "HTTPS", "port": 443, "page_title": "Admin",
+		},
+		"technique_key": "edit-test-v2",
+		"title":         "edited title",
+		"summary":       "edited summary",
+		"steps":         "## edited\nnew steps",
+		"evidence":      "new evidence",
+		"confidence":    "medium",
+	})
+	w := request("PUT", fmt.Sprintf("/api/playbooks/%d", p.ID), string(body))
+	if w.Code != 200 {
+		t.Fatalf("update: %d %s", w.Code, w.Body)
+	}
+	var updated db.Playbook
+	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != "edited title" || updated.TechniqueKey != "edit-test-v2" ||
+		updated.Confidence != db.ConfidenceMedium || updated.Evidence != "new evidence" {
+		t.Fatalf("fields not updated: %+v", updated)
+	}
+	if got := updated.Fingerprint.Technologies; len(got) != 3 || got[0] != "mysql" || got[1] != "php" || got[2] != "wordpress" {
+		t.Fatalf("fingerprint not normalized: %v", got)
+	}
+	if updated.Fingerprint.ServiceName != "https" || updated.Fingerprint.Port != 443 {
+		t.Fatalf("fingerprint service/port: %+v", updated.Fingerprint)
+	}
+	if updated.Revision != before.Revision+1 {
+		t.Fatalf("revision = %d, want %d", updated.Revision, before.Revision+1)
+	}
+	if updated.Uses != before.Uses || updated.Successes != before.Successes || updated.Failures != before.Failures {
+		t.Fatalf("stats changed by edit: before=%+v after=%+v", before, updated)
+	}
+	if updated.LastVerifiedAt == nil || !updated.LastVerifiedAt.Equal(*before.LastVerifiedAt) {
+		t.Fatalf("last_verified_at must not change on manual edit: before=%v after=%v", before.LastVerifiedAt, updated.LastVerifiedAt)
+	}
+
+	// 撞另一张卡（指纹+手法键）→ 409。
+	conflict, _ := json.Marshal(map[string]any{
+		"fingerprint":   other.Fingerprint,
+		"technique_key": other.TechniqueKey,
+		"title":         "collision",
+		"steps":         "collision steps",
+	})
+	if w := request("PUT", fmt.Sprintf("/api/playbooks/%d", p.ID), string(conflict)); w.Code != 409 {
+		t.Fatalf("conflict = %d %s, want 409", w.Code, w.Body)
+	}
+
+	// 必填校验与不存在。
+	empty, _ := json.Marshal(map[string]any{"title": "no steps", "steps": ""})
+	if w := request("PUT", fmt.Sprintf("/api/playbooks/%d", p.ID), string(empty)); w.Code != 400 {
+		t.Fatalf("empty steps = %d, want 400", w.Code)
+	}
+	if w := request("PUT", "/api/playbooks/999999999", string(body)); w.Code != 404 {
+		t.Fatalf("missing = %d, want 404", w.Code)
+	}
+}

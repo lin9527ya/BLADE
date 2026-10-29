@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ func (s *Server) registerPlaybookRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/playbooks", s.listPlaybooks)
 	mux.HandleFunc("GET /api/playbooks/{id}", s.getPlaybook)
 	mux.HandleFunc("PATCH /api/playbooks/{id}", s.patchPlaybook)
+	mux.HandleFunc("PUT /api/playbooks/{id}", s.updatePlaybook)
 	mux.HandleFunc("POST /api/tasks/{id}/distill-playbook", s.distillTaskPlaybook) // 手动让打法沉淀 agent 复盘本任务
 }
 
@@ -82,6 +84,51 @@ func (s *Server) patchPlaybook(w http.ResponseWriter, r *http.Request) {
 	p, err := s.m.Assets().GetPlaybook(id)
 	if err != nil || p == nil {
 		writeErr(w, 500, "读取更新后的打法失败")
+		return
+	}
+	writeJSON(w, 200, p)
+}
+
+// maxPlaybookBodyBytes 是人工编辑打法卡的上限：steps/evidence 可能较长，但不能无界。
+const maxPlaybookBodyBytes = 2 << 20
+
+// updatePlaybook 人工编辑卡片内容。状态仍走 PATCH（废弃/恢复）；这里不改统计与
+// 「最近验证」时间——编辑文字不等于重新验证过。
+func (s *Server) updatePlaybook(w http.ResponseWriter, r *http.Request) {
+	id := parseIntDefault(r.PathValue("id"))
+	if id <= 0 {
+		writeErr(w, 400, "bad id")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxPlaybookBodyBytes)
+	var req struct {
+		Fingerprint  db.PlaybookFingerprint `json:"fingerprint"`
+		TechniqueKey string                 `json:"technique_key"`
+		Title        string                 `json:"title"`
+		Summary      string                 `json:"summary"`
+		Steps        string                 `json:"steps"`
+		Evidence     string                 `json:"evidence"`
+		Confidence   string                 `json:"confidence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	p, err := s.m.Assets().UpdatePlaybook(id, db.Playbook{
+		Fingerprint: req.Fingerprint, TechniqueKey: req.TechniqueKey,
+		Title: req.Title, Summary: req.Summary, Steps: req.Steps,
+		Evidence: req.Evidence, Confidence: req.Confidence,
+	})
+	if errors.Is(err, db.ErrPlaybookConflict) {
+		writeErr(w, 409, "同指纹+手法的打法卡已存在：请调整指纹或 technique_key")
+		return
+	}
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if p == nil {
+		writeErr(w, 404, "打法不存在")
 		return
 	}
 	writeJSON(w, 200, p)

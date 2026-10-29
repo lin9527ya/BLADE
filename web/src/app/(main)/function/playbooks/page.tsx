@@ -28,6 +28,50 @@ import type { Playbook } from "@/lib/types";
 
 const PAGE_SIZE = 20;
 
+// 人工编辑表单：除状态/统计外，卡片内容与匹配指纹都可改。
+type EditForm = {
+  title: string;
+  summary: string;
+  technique_key: string;
+  confidence: string;
+  technologies: string;
+  favicon_mmh3: string;
+  service_name: string;
+  port: string;
+  page_title: string;
+  steps: string;
+  evidence: string;
+};
+
+const EMPTY_EDIT: EditForm = {
+  title: "", summary: "", technique_key: "", confidence: "high",
+  technologies: "", favicon_mmh3: "", service_name: "", port: "", page_title: "",
+  steps: "", evidence: "",
+};
+
+function editFormFrom(p: Playbook): EditForm {
+  return {
+    title: p.title,
+    summary: p.summary,
+    technique_key: p.technique_key,
+    confidence: p.confidence || "high",
+    technologies: (p.fingerprint.technologies ?? []).join(", "),
+    favicon_mmh3: p.fingerprint.favicon_mmh3 ?? "",
+    service_name: p.fingerprint.service_name ?? "",
+    port: p.fingerprint.port ? String(p.fingerprint.port) : "",
+    page_title: p.fingerprint.page_title ?? "",
+    steps: p.steps,
+    evidence: p.evidence,
+  };
+}
+
+function splitTechnologies(raw: string): string[] {
+  return raw
+    .split(/[,，\n]/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
 function fmtTime(s?: string) {
   if (!s) return "—";
   return new Date(s).toLocaleString("zh-CN", {
@@ -77,6 +121,9 @@ export default function PlaybooksPage() {
   const [selected, setSelected] = React.useState<Playbook | null>(null);
   const [deprecating, setDeprecating] = React.useState<Playbook | null>(null);
   const [reason, setReason] = React.useState("");
+  const [editing, setEditing] = React.useState<Playbook | null>(null);
+  const [editForm, setEditForm] = React.useState<EditForm>(EMPTY_EDIT);
+  const [savingEdit, setSavingEdit] = React.useState(false);
 
   React.useEffect(() => {
     const t = setTimeout(() => setQueryQ(query.trim()), 300);
@@ -115,6 +162,56 @@ export default function PlaybooksPage() {
       toast.error(`恢复失败：${(e as Error).message}`);
     }
   }
+
+  function openEditor(p: Playbook) {
+    setEditForm(editFormFrom(p));
+    setEditing(p);
+    setSelected(null);
+  }
+
+  async function saveEdit() {
+    if (!editing || savingEdit) return;
+    const title = editForm.title.trim();
+    const steps = editForm.steps.trim();
+    if (!title || !steps) {
+      toast.error("标题与打法步骤必填：卡片要能被人照着打");
+      return;
+    }
+    const port = editForm.port.trim() === "" ? 0 : Number(editForm.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      toast.error("端口必须是 0–65535 的整数");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const updated = await api.updatePlaybook(editing.id, {
+        fingerprint: {
+          technologies: splitTechnologies(editForm.technologies),
+          favicon_mmh3: editForm.favicon_mmh3.trim(),
+          service_name: editForm.service_name.trim(),
+          port,
+          page_title: editForm.page_title.trim(),
+        },
+        technique_key: editForm.technique_key.trim(),
+        title,
+        summary: editForm.summary.trim(),
+        steps,
+        evidence: editForm.evidence.trim(),
+        confidence: editForm.confidence,
+      });
+      toast.success("打法已更新");
+      setEditing(null);
+      setSelected(updated);
+      load();
+    } catch (e) {
+      toast.error(`保存失败：${(e as Error).message}`);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  const setEditField = <K extends keyof EditForm>(key: K, value: EditForm[K]) =>
+    setEditForm((f) => ({ ...f, [key]: value }));
 
   async function deprecate() {
     if (!deprecating) return;
@@ -356,6 +453,11 @@ export default function PlaybooksPage() {
             </div>
           )}
           <DialogFooter>
+            {selected && (
+              <Button variant="outline" onClick={() => openEditor(selected)}>
+                编辑
+              </Button>
+            )}
             {selected?.status === "active" ? (
               <Button
                 variant="destructive"
@@ -371,6 +473,143 @@ export default function PlaybooksPage() {
             )}
             <Button variant="outline" onClick={() => setSelected(null)}>
               关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open && !savingEdit) setEditing(null);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] sm:max-w-3xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>编辑打法卡片</DialogTitle>
+            <DialogDescription>
+              修改标题、步骤、证据与匹配指纹。统计（检索/成功/失败）和「最近验证」时间不会变；
+              改指纹或 technique_key 会改变这张卡的匹配范围与去重键。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[62vh] space-y-3 overflow-auto pr-1">
+            <div className="grid gap-1.5">
+              <label className="text-sm font-medium" htmlFor="pb-title">标题</label>
+              <Input
+                id="pb-title"
+                value={editForm.title}
+                onChange={(e) => setEditField("title", e.target.value)}
+                placeholder="例如：Magento 2.4 未授权 RCE → proc_open 绕过 disable_functions"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-sm font-medium" htmlFor="pb-summary">摘要</label>
+              <Textarea
+                id="pb-summary"
+                rows={2}
+                value={editForm.summary}
+                onChange={(e) => setEditField("summary", e.target.value)}
+                placeholder="一两句话说明适用场景与结果"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor="pb-tech">技术栈指纹</label>
+                <Input
+                  id="pb-tech"
+                  value={editForm.technologies}
+                  onChange={(e) => setEditField("technologies", e.target.value)}
+                  placeholder="逗号分隔，如 magento, php, apache"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor="pb-techkey">technique_key</label>
+                <Input
+                  id="pb-techkey"
+                  value={editForm.technique_key}
+                  onChange={(e) => setEditField("technique_key", e.target.value)}
+                  placeholder="留空则由标题生成；同指纹下用于去重"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor="pb-favicon">favicon MMH3</label>
+                <Input
+                  id="pb-favicon"
+                  value={editForm.favicon_mmh3}
+                  onChange={(e) => setEditField("favicon_mmh3", e.target.value)}
+                  placeholder="如 -123456789（最强指纹信号）"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor="pb-service">服务 / 端口</label>
+                <div className="flex gap-2">
+                  <Input
+                    id="pb-service"
+                    value={editForm.service_name}
+                    onChange={(e) => setEditField("service_name", e.target.value)}
+                    placeholder="http / https / ssh"
+                  />
+                  <Input
+                    value={editForm.port}
+                    onChange={(e) => setEditField("port", e.target.value)}
+                    placeholder="443"
+                    inputMode="numeric"
+                    className="w-24"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor="pb-title-fp">页面标题</label>
+                <Input
+                  id="pb-title-fp"
+                  value={editForm.page_title}
+                  onChange={(e) => setEditField("page_title", e.target.value)}
+                  placeholder="弱信号，只做指纹加分"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor="pb-confidence">置信度</label>
+                <Select value={editForm.confidence} onValueChange={(v) => setEditField("confidence", v)}>
+                  <SelectTrigger id="pb-confidence">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="high">high</SelectItem>
+                    <SelectItem value="medium">medium</SelectItem>
+                    <SelectItem value="low">low</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-sm font-medium" htmlFor="pb-steps">打法步骤（Markdown，必填）</label>
+              <Textarea
+                id="pb-steps"
+                rows={12}
+                value={editForm.steps}
+                onChange={(e) => setEditField("steps", e.target.value)}
+                className="font-mono text-xs"
+                placeholder="入口 → 验证 → 利用 → 结果/权限；写清可复现的请求与判定"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-sm font-medium" htmlFor="pb-evidence">原始证据（脱敏后）</label>
+              <Textarea
+                id="pb-evidence"
+                rows={5}
+                value={editForm.evidence}
+                onChange={(e) => setEditField("evidence", e.target.value)}
+                className="font-mono text-xs"
+                placeholder="命令/请求/关键回显"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingEdit} onClick={() => setEditing(null)}>
+              取消
+            </Button>
+            <Button disabled={savingEdit} onClick={() => void saveEdit()}>
+              {savingEdit ? "保存中…" : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>

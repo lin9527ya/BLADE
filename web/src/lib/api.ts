@@ -32,6 +32,7 @@ import type {
   Company,
   CompanyKnowledge,
   Playbook,
+  PlaybookFingerprint,
   CompanyScopeMutation,
   CompanyScopeRule,
   ConstraintCompilePreview,
@@ -601,6 +602,19 @@ export const api = {
     post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
   setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>
     patch<Playbook>(`/playbooks/${id}`, { status, reason }),
+  // 人工编辑内容/指纹/手法键；统计与最近验证时间不受影响。
+  updatePlaybook: (
+    id: number,
+    input: {
+      fingerprint: PlaybookFingerprint;
+      technique_key: string;
+      title: string;
+      summary: string;
+      steps: string;
+      evidence: string;
+      confidence: string;
+    },
+  ) => put<Playbook>(`/playbooks/${id}`, input),
 
   // ---- CVE 库（全局）----
   cves: (params?: {

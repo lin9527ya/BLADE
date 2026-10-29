@@ -344,6 +344,7 @@ PUT /api/exploration/findings/{id}/traffic/order	server.(*Server).editFindingTra
 PUT /api/intercept/judge	server.(*Server).interceptSetJudgeConfig-fm
 PUT /api/intercept/rules/{id}	server.(*Server).interceptUpdateRule-fm
 PUT /api/intercept/tool-config	server.(*Server).interceptSetToolConfig-fm
+PUT /api/playbooks/{id}	server.(*Server).updatePlaybook-fm
 PUT /api/settings	server.(*Server).putSettings-fm
 PUT /api/settings/exploration-policy	server.(*Server).putExplorationPolicyDefault-fm
 PUT /api/skills/{name}/files/{file...}	server.(*Server).fsWriteFile-fm

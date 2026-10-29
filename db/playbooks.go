@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // 指纹打法库（attack_playbooks）：跨任务、跨客户复用的「目标指纹 → 攻击手法」卡片。
@@ -237,6 +240,56 @@ RETURNING `+playbookCols+`, (xmax = 0) AS inserted`,
 		p2.LastVerifiedAt = &lastVerified.Time
 	}
 	return &p2, inserted, nil
+}
+
+// ErrPlaybookConflict 表示编辑后的 (fingerprint_key, technique_key) 已被另一张卡占用。
+var ErrPlaybookConflict = errors.New("同指纹+手法的打法卡已存在")
+
+// UpdatePlaybook 人工编辑一张卡的内容（标题/摘要/步骤/证据/置信度/指纹/手法键）。
+//
+// 与 UpsertPlaybook 的区别：按 id 精确更新，**不改** status/uses/successes/failures/
+// last_verified_at——人工改文字不等于重新验证过；统计也不能因编辑丢失。revision+1
+// 留下"被改过"的痕迹。改指纹或手法键撞上另一张卡时返回 ErrPlaybookConflict。
+func (s *AssetStore) UpdatePlaybook(id int64, p Playbook) (*Playbook, error) {
+	fp := p.Fingerprint.Normalize()
+	key := fp.Key()
+	tech := NormalizeTechniqueKey(p.TechniqueKey)
+	if tech == "" {
+		tech = NormalizeTechniqueKey(p.Title)
+	}
+	if tech == "" {
+		return nil, fmt.Errorf("technique_key 或 title 至少给一个（用于去重）")
+	}
+	title := strings.TrimSpace(p.Title)
+	summary := strings.TrimSpace(p.Summary)
+	steps := strings.TrimSpace(p.Steps)
+	if title == "" || steps == "" {
+		return nil, fmt.Errorf("title 与 steps 必填：卡片要能被人照着打")
+	}
+	confidence := NormalizeConfidence(p.Confidence)
+	if confidence == "" {
+		confidence = "high"
+	}
+	raw, _ := json.Marshal(fp)
+	row := s.db.QueryRow(`
+UPDATE attack_playbooks SET
+  fingerprint=$2, fingerprint_key=$3, technique_key=$4, title=$5, summary=$6,
+  steps=$7, evidence=$8, confidence=$9, revision=revision+1, updated_at=now()
+WHERE id=$1
+RETURNING `+playbookCols,
+		id, string(raw), key, tech, title, summary, steps, strings.TrimSpace(p.Evidence), confidence)
+	out, err := scanPlaybook(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrPlaybookConflict
+		}
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetPlaybook 按 id 取一条。
