@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/Norma/transcript"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/guard"
 	"github.com/lin9527ya/blade/intercept"
@@ -83,6 +84,13 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 // streamCollectTextLimit is the same bounded text collector with an explicit
 // output cap (CVE report extraction needs room for several records).
 func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user string, maxTokens int) (string, error) {
+	// 单发调用不经过 agent 会话循环，没有任何人往 context 挂 session id；对配置了
+	// SessionHeaderKey 的端点（opencode zen 强制 x-opencode-session，缺了直接 400
+	// MissingSessionID），这会造成「对话正常、导入报告却报缺头」。与连接测试同口径：
+	// 缺省时补一个一次性随机 id；已有会话 id（如从任务上下文进来）保持不动。
+	if transcript.SessionIDFrom(ctx) == "" {
+		ctx = transcript.WithSessionID(ctx, "oneshot-"+transcript.NewSessionID())
+	}
 	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
