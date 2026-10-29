@@ -562,6 +562,10 @@ func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, ta
 		if err := s.m.pg.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, taskID).Scan(&expID); err == nil && expID > 0 {
 			ctx = llmrec.WithExplorationID(ctx, expID)
 		}
+		// Domain tools (record_fact / report_finding / …) resolve their exploration
+		// store from RunInfo. Without it a triggered reporter/retester run gets the
+		// server-level nil-store copy and answers "需要任务上下文".
+		ctx = agent.WithRunInfo(ctx, agent.RunInfo{TaskID: taskID, ExplorationID: expID})
 	}
 	s.runConversationTurn(ctx, cancel, c, msg, busyKey)
 }

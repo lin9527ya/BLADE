@@ -609,6 +609,15 @@ export function useSessionsState(taskId: string) {
           esRef.current = es;
           es.onopen = () => setSseLive(true);
           es.onerror = () => setSseLive(false); // EventSource auto-reconnects; DB compensates the gap
+          // The server emits this when a subscriber buffer overflowed and closes
+          // the stream right after. Reconnecting replays from Last-Event-ID, but
+          // also refresh the visible session so a gap outside the replay window
+          // (or a retention trim) is filled immediately.
+          es.addEventListener("resync", () => {
+            setSseLive(false);
+            const key = activeKeyRef.current;
+            if (key) loadSession(key);
+          });
           es.onmessage = (e) => {
             let a: Activity;
             try {
@@ -696,7 +705,7 @@ export function useSessionsState(taskId: string) {
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [taskId, patchStore]);
+  }, [taskId, patchStore, loadSession]);
 
   usePolling(
     async (active) => {

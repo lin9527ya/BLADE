@@ -417,6 +417,10 @@ func requestBodySnapshot(req *http.Request) string {
 
 func quotaAwareHTTPClient(proxy, sessionHeaderKey string, customHeaders map[string]string) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Disable automatic gzip: an SSE response compressed here can be buffered by
+	// an intermediary (Clash and similar) and never flushed, leaving the client
+	// blocked inside flate. The SDK's default client does the same.
+	transport.DisableCompression = true
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
 		transport.Proxy = nil // 留空=直连,不回退 HTTP_PROXY/HTTPS_PROXY 环境变量

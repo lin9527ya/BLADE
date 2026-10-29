@@ -325,6 +325,14 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// and therefore never includes ToolSet-backed domain tools. Per-task instances
 		// in the base always win: inList is built from the original incoming list so a
 		// worker's own upsert_asset is never shadowed by the server-level registry copy.
+		// Prefer a per-task registry when the run carries a task: the server-level
+		// copy has a nil exploration store, so record_fact/report_finding would
+		// answer "需要任务上下文" for triggered reporter/retester runs.
+		if ri := agent.RunInfoFrom(ctx); ri.TaskID > 0 && ri.ExplorationID > 0 {
+			if taskReg := buildTaskDomainReg(pg, ri.ExplorationID, ri.TaskID); len(taskReg) > 0 {
+				domainReg = taskReg
+			}
+		}
 		if len(domainReg) > 0 {
 			inList := make(map[string]bool, len(tools))
 			for _, t := range tools {
@@ -444,6 +452,19 @@ func contains(ss []string, v string) bool {
 // (they only need the AssetStore); the exploration-graph tools refuse with a
 // clear message via ToolSet.needExploration. Binding one of them to a task-less
 // agent in the tools table is therefore a useless tool, not a crash.
+// buildTaskDomainReg builds the domain registry bound to one task's exploration
+// store, so triggered agent runs write back into that task's graph.
+func buildTaskDomainReg(pg *db.DB, explorationID, taskID int64) map[string]actool.CoreTool {
+	ts := agent.NewToolSet(pg.Exploration(explorationID), "")
+	ts.SetTaskID(taskID)
+	ts.SetAssetStore(pg.Assets(), pg.Assets().Companies())
+	reg := make(map[string]actool.CoreTool)
+	for _, t := range ts.AllDomainTools() {
+		reg[t.Name()] = t
+	}
+	return reg
+}
+
 func buildDomainReg(as *db.AssetStore) map[string]actool.CoreTool {
 	if as == nil {
 		return nil
