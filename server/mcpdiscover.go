@@ -79,7 +79,7 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 // yet (notably the seeded browser MCP on first run). Runs sequentially in one
 // goroutine so we never spawn many stdio servers (npx) at once, and never blocks
 // startup. Best-effort: a failure leaves the cache empty to retry next start.
-func (s *Server) discoverEmptyMCPsOnStartup() {
+func (s *Server) discoverEmptyMCPsOnStartup(ctx context.Context) {
 	servers, err := s.m.pg.ListMCP()
 	if err != nil {
 		log.Printf("[mcp] 启动自动发现: 读取列表失败: %v", err)
@@ -89,7 +89,7 @@ func (s *Server) discoverEmptyMCPsOnStartup() {
 		if !m.Enabled || len(m.Tools) > 0 {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		if err := s.discoverAndCacheMCP(ctx, m); err != nil {
 			log.Printf("[mcp] 启动自动发现 %s 失败: %v", m.Name, err)
 		}

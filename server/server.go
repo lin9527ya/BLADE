@@ -302,21 +302,25 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
-		goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(s.ctx) })
+		// 启动期 goroutine 一律**捕获当时的 ctx**，不在 goroutine 里再读 s.ctx。
+		// s.ctx 是可变字段（测试夹具在构造后用可用 ctx 覆盖它，见 finding_traffic_test），
+		// 边读边写就是数据竞争——-race 会在 CI 上抓出来。启动期捕获一次，语义不变。
+		svcCtx := s.ctx
+		goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(svcCtx) })
 		// 数据库侧的保留清理（llm_usage / activity / server_logs / llm_records）。
 		// 默认全 0 = 不清理，所以这里起 goroutine 不会删任何东西。
-		s.startRetentionSweeper(s.ctx)
+		s.startRetentionSweeper(svcCtx)
 		s.seedPythonInterpreter() // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		s.installMCPGuard()       // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
 		// P35：把 Scheduler 存下来，让"停机时这一 tick 做了什么"可被断言（tickOnce）。
 		s.sched = newScheduler(s)
-		goSafe("server/scheduler", nil, func() { s.sched.Run(s.ctx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+		goSafe("server/scheduler", nil, func() { s.sched.Run(svcCtx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
-		goSafe("server/notifier", nil, func() { newNotifier(s).Run(s.ctx) })
+		goSafe("server/notifier", nil, func() { newNotifier(s).Run(svcCtx) })
 		// Fill the tool cache for any enabled MCP that has none yet (notably the
 		// seeded browser MCP on first run). Async so it never blocks startup.
-		goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup() })
+		goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup(svcCtx) })
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
