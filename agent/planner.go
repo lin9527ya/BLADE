@@ -505,15 +505,17 @@ var PlannerTemplateDefault func() (string, bool)
 
 // plannerSystem resolves the planner body in four levels:
 //  1. task-level snapshot (tasks.planner_prompt_override)
-//  2. DB agent_prompts override (renderSystem)
+//  2. DB agent_prompts override — 但内容仍等于出厂正文时视同未覆盖
 //  3. planner_templates default template
 //  4. built-in plannerDefaultTmpl
 //
 // A failed render falls through to the next level. The code-owned blocks below
-// are appended after rendering, so no level can edit them away.
+// are appended after rendering, so no level can edit them away; the DB 追加段与
+// 潜行纪律（promptExtras）同样对每一级生效。
 func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	body := ""
+	// ① 任务级快照（tasks.planner_prompt_override）
 	if strings.TrimSpace(taskOverride) != "" {
 		if out, err := renderTmpl(taskOverride, vars); err == nil {
 			body = out
@@ -521,21 +523,40 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 			log.Printf("[planner] 任务级 planner 提示词渲染失败，回退全局链: %v", err)
 		}
 	}
-	if body == "" {
-		if PlannerTemplateDefault != nil {
-			if tpl, ok := PlannerTemplateDefault(); ok {
-				if out, err := renderTmpl(tpl, vars); err == nil {
-					body = out
-				} else {
-					log.Printf("[planner] 默认模板渲染失败，回退内置: %v", err)
-				}
+	// ② 全局覆盖（agent_prompts 当前版本）。**内容仍等于出厂正文时视同未覆盖**：
+	// agent_prompts 在首次启动时就被 seed 成内置正文，若照字面当覆盖，③ 永远轮不到，
+	// 模板库的「默认模板」就成了摆设。因此「系统 → Agent → planner」里改过正文才压过
+	// 模板库；点「恢复为内置默认」后正文回到出厂内容，模板库默认重新接手——这正是
+	// 「恢复默认」该有的含义：回到平台当前认定的默认，而不是钉死在某一版代码文本上。
+	if body == "" && PromptOverride != nil {
+		if t, ok := PromptOverride("planner"); ok && t != "" && strings.TrimSpace(t) != strings.TrimSpace(plannerDefaultTmpl) {
+			if out, err := renderTmpl(t, vars); err == nil {
+				body = out
+			} else {
+				log.Printf("[planner] 全局 planner 提示词渲染失败，回退模板库默认: %v", err)
 			}
 		}
 	}
-	if body == "" {
-		body = renderSystem("planner", plannerDefaultTmpl, vars)
+	// ③ planner_templates 的默认模板
+	if body == "" && PlannerTemplateDefault != nil {
+		if tpl, ok := PlannerTemplateDefault(); ok {
+			if out, err := renderTmpl(tpl, vars); err == nil {
+				body = out
+			} else {
+				log.Printf("[planner] 默认模板渲染失败，回退内置: %v", err)
+			}
+		}
 	}
-	return body + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
+	// ④ 内置正文。这里直接渲染，不走 renderSystem——否则会二次套用 ② 与 extras。
+	if body == "" {
+		if out, err := renderTmpl(plannerDefaultTmpl, vars); err == nil {
+			body = out
+		} else {
+			body = plannerDefaultTmpl
+		}
+	}
+	// 追加段与潜行纪律不属于任何一级正文：静默模式下任务快照/模板库正文同样要带上。
+	return body + promptExtras("planner") + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
 }
 
 // hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。

@@ -181,3 +181,38 @@ func TestSetTasksCategoryRejectsBadInputAtomically(t *testing.T) {
 		t.Fatalf("rejected batch mutated task: %+v", loaded)
 	}
 }
+
+// 内置场景分类的播种：首插入返回 true；已存在（含用户改过预设）返回 false 且不动。
+func TestSeedTaskCategoryWithPresetIfEmpty(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	name := fmt.Sprintf("seedcat-%d", time.Now().UnixNano())
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM task_categories WHERE nkey=$1`, strings.ToLower(name)) })
+
+	preset := TaskCategoryPreset{DefaultCoverageEnabled: true, DefaultPlannerTemplateID: 42}
+	if inserted, err := d.SeedTaskCategoryWithPresetIfEmpty(name, preset); err != nil || !inserted {
+		t.Fatalf("首插应成功: inserted=%v err=%v", inserted, err)
+	}
+	// 用户把预设改空后再次播种不应被覆盖。
+	got, err := d.GetTaskCategoryByNKey(strings.ToLower(name))
+	if err != nil || got == nil {
+		t.Fatalf("查不回: %v %+v", err, got)
+	}
+	if _, err := d.UpdateTaskCategoryPreset(got.ID, TaskCategoryPreset{DefaultCoverageEnabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if inserted, err := d.SeedTaskCategoryWithPresetIfEmpty(name, preset); err != nil || inserted {
+		t.Fatalf("重复播种应 no-op: inserted=%v err=%v", inserted, err)
+	}
+	again, err := d.GetTaskCategory(got.ID)
+	if err != nil || again == nil {
+		t.Fatal(err)
+	}
+	if again.DefaultCoverageEnabled || again.DefaultPlannerTemplateID != 0 {
+		t.Fatalf("用户预设被覆盖: %+v", again)
+	}
+}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -49,25 +50,37 @@ func renderSystem(agentKey, def string, vars any) string {
 			tmpl = t
 		}
 	}
-	// 追加段拼在正文之后、调用方的代码尾段之前；对「DB 正文」与「内置默认」一视同仁，
-	// 所以只加一段场景说明也能作用在内置提示词上。
-	if PromptAppend != nil {
-		if extra, ok := PromptAppend(agentKey); ok && extra != "" {
-			tmpl = tmpl + "\n\n" + extra
-		}
-	}
-	// 静默模式的操作纪律是**代码持有**的：与追加段同一位置、但用户改 DB 正文也删不掉。
-	if block := stealthBlock(agentKey); block != "" {
-		tmpl = tmpl + "\n\n" + block
-	}
-	if out, err := renderTmpl(tmpl, vars); err == nil {
+	extras := promptExtras(agentKey)
+	if out, err := renderTmpl(tmpl+extras, vars); err == nil {
 		return out
 	}
 	// DB template broke (e.g. references an out-of-catalog var) → code default.
-	if out, err := renderTmpl(def, vars); err == nil {
+	if out, err := renderTmpl(def+extras, vars); err == nil {
 		return out
 	}
-	return def
+	return def + extras
+}
+
+// promptExtras 返回拼在正文之后、调用方代码尾段之前的**平台持有**片段：DB 追加段
+// （PromptAppend）与静默模式的潜行纪律（stealthBlock）。
+//
+// 收成一处是因为 planner 的正文有四级来源（任务快照 / 全局覆盖 / 模板库默认 / 内置），
+// 而这两段不属于任何一级：正文无论来自哪里都必须带上。此前只有 renderSystem 会拼，
+// 于是任务快照与模板库正文的 planner 在静默模式下会**丢掉潜行纪律**——那是代码持有的
+// 操作约束，不该因为换了正文来源就消失。
+func promptExtras(agentKey string) string {
+	var b strings.Builder
+	if PromptAppend != nil {
+		if extra, ok := PromptAppend(agentKey); ok && extra != "" {
+			b.WriteString("\n\n")
+			b.WriteString(extra)
+		}
+	}
+	if block := stealthBlock(agentKey); block != "" {
+		b.WriteString("\n\n")
+		b.WriteString(block)
+	}
+	return b.String()
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {

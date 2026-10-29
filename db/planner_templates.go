@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // MaxPlannerTemplateBodyBytes caps one template body (32 KiB).
@@ -42,13 +44,58 @@ func scanPlannerTemplate(sc interface{ Scan(...any) error }) (*PlannerTemplate, 
 	return &t, nil
 }
 
+// MaxPlannerTemplateNameRunes caps the display name. Chinese names are allowed —
+// 内置场景模板（内网渗透/权限提升/…）就是这么命名的，nkey 对它们做恒等映射。
+const MaxPlannerTemplateNameRunes = 120
+
+// plannerTemplateKeyPattern 是纯 ASCII 名的 nkey 字符集。
 var plannerTemplateKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
+// plannerTemplateNKey 把显示名映射成唯一键：
+//   - 纯 ASCII 名 → 小写、空格转连字符，必须是 [a-z0-9][a-z0-9_-]*；
+//   - 含非 ASCII 字符（内置场景模板「内网渗透」等）→ 小写、空格转连字符后原样作键，
+//     字符集放开到「任意文字的字母/数字 + - _」。
+//
+// 两种口径都拒绝标点与控制字符；空白在更早的 normalize 里已被折叠成单个空格、
+// 再转成连字符。nkey 只用于唯一性，不拼路径、不拼 SQL，所以放开中文不引入注入面。
+func plannerTemplateNKey(name string) (string, error) {
+	key := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	if plannerTemplateKeyPattern.MatchString(key) {
+		return key, nil
+	}
+	if hasNonASCII(key) && validWideTemplateKey(key) {
+		return key, nil
+	}
+	return "", fmt.Errorf("%w: 名称只能包含字母、数字、下划线、连字符，或中文等非 ASCII 字符", ErrPlannerTemplateInvalid)
+}
+
+func hasNonASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
+}
+
+func validWideTemplateKey(key string) bool {
+	for _, r := range key {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return key != ""
+}
+
 func normalizePlannerTemplate(name, body string) (string, string, error) {
-	name = strings.TrimSpace(name)
+	name = strings.Join(strings.Fields(name), " ")
 	body = strings.TrimSpace(body)
 	if name == "" {
 		return "", "", fmt.Errorf("%w: 名称不能为空", ErrPlannerTemplateInvalid)
+	}
+	if utf8.RuneCountInString(name) > MaxPlannerTemplateNameRunes {
+		return "", "", fmt.Errorf("%w: 名称最多 %d 个字符", ErrPlannerTemplateInvalid, MaxPlannerTemplateNameRunes)
 	}
 	if len(body) == 0 {
 		return "", "", fmt.Errorf("%w: 正文不能为空", ErrPlannerTemplateInvalid)
@@ -56,9 +103,9 @@ func normalizePlannerTemplate(name, body string) (string, string, error) {
 	if len(body) > MaxPlannerTemplateBodyBytes {
 		return "", "", fmt.Errorf("%w: 正文最多 %d 字节，当前 %d", ErrPlannerTemplateInvalid, MaxPlannerTemplateBodyBytes, len(body))
 	}
-	nkey := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-	if !plannerTemplateKeyPattern.MatchString(nkey) {
-		return "", "", fmt.Errorf("%w: 名称只能包含字母、数字、下划线与连字符", ErrPlannerTemplateInvalid)
+	nkey, err := plannerTemplateNKey(name)
+	if err != nil {
+		return "", "", err
 	}
 	return name, nkey, nil
 }
@@ -170,6 +217,32 @@ RETURNING `+plannerTemplateCols, id))
 		return nil, err
 	}
 	return t, tx.Commit()
+}
+
+// SeedPlannerTemplateIfEmpty inserts a built-in template once (nkey 已存在即 no-op)，
+// 与 SeedPromptIfEmpty 同模式：用户改过或删掉都不会被重启塞回来。
+func (d *DB) SeedPlannerTemplateIfEmpty(name, body string, isDefault bool) (bool, error) {
+	name, nkey, err := normalizePlannerTemplate(name, body)
+	if err != nil {
+		return false, err
+	}
+	res, err := d.Exec(`INSERT INTO planner_templates(name, nkey, body, builtin, is_default)
+VALUES ($1,$2,$3,true,$4)
+ON CONFLICT (nkey) DO NOTHING`, name, nkey, body, isDefault)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// GetPlannerTemplateByNKey 按 nkey 查（场景分类按模板名解析 id 用）。
+func (d *DB) GetPlannerTemplateByNKey(nkey string) (*PlannerTemplate, error) {
+	t, err := scanPlannerTemplate(d.QueryRow(`SELECT `+plannerTemplateCols+` FROM planner_templates WHERE nkey=$1`, nkey))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return t, err
 }
 
 // DefaultPlannerTemplateBody returns the default template's body ("" if none).

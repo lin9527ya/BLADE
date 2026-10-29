@@ -240,6 +240,35 @@ func seedPrompts(pg *db.DB) {
 			log.Printf("[prompts] seed %s 失败: %v", key, err)
 		}
 	}
+	seedPlannerDomainTemplates(pg)
+}
+
+// seedPlannerDomainTemplates 播种内置 planner 领域模板，并把同名场景分类的默认模板
+// 指过去。两步都幂等：模板按 nkey 首插入（改过/删掉不复活），分类按 nkey 首插入
+// （已存在则保持用户设置）。
+//
+// 分类预设只在**分类是本次新建**时写 default_planner_template_id——已存在的分类
+// 哪怕默认模板是 0（用户清空过）也不覆盖。
+func seedPlannerDomainTemplates(pg *db.DB) {
+	for name, body := range agent.PlannerDomainSeeds() {
+		if inserted, err := pg.SeedPlannerTemplateIfEmpty(name, body, false); err != nil {
+			log.Printf("[prompts] seed planner 领域模板 %s 失败: %v", name, err)
+			continue
+		} else if !inserted {
+			continue // 已存在（内置或用户自建同名）→ 不动分类
+		}
+		tpl, err := pg.GetPlannerTemplateByNKey(name)
+		if err != nil || tpl == nil {
+			log.Printf("[prompts] seed planner 领域模板 %s 已插入但读不回 id: %v", name, err)
+			continue
+		}
+		if _, err := pg.SeedTaskCategoryWithPresetIfEmpty(name, db.TaskCategoryPreset{
+			DefaultCoverageEnabled:   true,
+			DefaultPlannerTemplateID: tpl.ID,
+		}); err != nil {
+			log.Printf("[prompts] seed 场景分类 %s 失败: %v", name, err)
+		}
+	}
 }
 
 // wireTools seeds the built-in tool catalog (idempotent, first-insert only so page

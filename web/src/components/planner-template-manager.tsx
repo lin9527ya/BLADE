@@ -171,7 +171,7 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
                   id="planner-template-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  maxLength={80}
+                  maxLength={120}
                   disabled={selected?.builtin}
                 />
               </Field>
@@ -185,7 +185,7 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
                   disabled={selected?.builtin}
                 />
                 <FieldDescription>
-                  上限 32KB；保存前会做试渲染，引用目录外变量会被拒绝。内置模板只读，可另存为新模板后修改。
+                  名称支持中文；正文上限 32KB。保存前会做试渲染，引用目录外变量会被拒绝。内置模板只读，可另存为新模板后修改。
                 </FieldDescription>
               </Field>
             </div>

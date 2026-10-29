@@ -178,6 +178,9 @@ export function CreateTaskSheet({
   const [presetAppliedFor, setPresetAppliedFor] = React.useState<number | undefined>(undefined);
   const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
   const [plannerTemplateID, setPlannerTemplateID] = React.useState<number>(0);
+  // 用户是否手动选过模板。没选过时，切换分类会跟着分类默认走（含归零）；
+  // 选过就保留用户的选择，不被分类预设覆盖。选「跟随全局 / 分类默认」视为没选过。
+  const plannerTemplateTouched = React.useRef(false);
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
   // P20 探索策略:默认继承当时的全局默认(服务端解析成快照);勾选"自定义"才发覆盖层。
   const [policyCustom, setPolicyCustom] = React.useState(false);
@@ -239,7 +242,11 @@ export function CreateTaskSheet({
     setPresetAppliedFor(categoryID);
     setSeedFirstIntent(category.seed_first_intent);
     setCoverageEnabled(category.default_coverage_enabled);
-    if (category.default_planner_template_id > 0) setPlannerTemplateID(category.default_planner_template_id);
+    // 分类没配默认模板时归零，而不是留着上一个分类带出的模板（否则「先选内网渗透、
+    // 再切到无模板分类」会静默沿用上一个分类的模板）。用户手选过则不覆盖。
+    if (!plannerTemplateTouched.current) {
+      setPlannerTemplateID(category.default_planner_template_id ?? 0);
+    }
   }, [open, categoryID, categories, presetAppliedFor]);
 
   React.useEffect(() => {
@@ -312,6 +319,9 @@ export function CreateTaskSheet({
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
       setCoverageEnabled(true);
+      setPlannerTemplateID(0);
+      plannerTemplateTouched.current = false;
+      setPresetAppliedFor(undefined);
       setInterceptRules([]);
       setPolicyCustom(false);
       setUploadCount(0);
@@ -386,7 +396,12 @@ export function CreateTaskSheet({
               <FieldLabel htmlFor="planner-template">planner 模板</FieldLabel>
               <Select
                 value={String(plannerTemplateID)}
-                onValueChange={(v) => setPlannerTemplateID(Number(v))}
+                onValueChange={(v) => {
+                  const id = Number(v);
+                  // 选「跟随全局 / 分类默认」= 交还给分类预设，不算手选。
+                  plannerTemplateTouched.current = id > 0;
+                  setPlannerTemplateID(id);
+                }}
               >
                 <SelectTrigger id="planner-template" className="w-full">
                   <SelectValue placeholder="跟随全局 / 分类默认" />
