@@ -6,6 +6,7 @@ import { BookOpenIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Markdown } from "@/components/markdown";
+import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -161,16 +162,18 @@ export default function PlaybooksPage() {
       </div>
 
       <Card className="overflow-hidden">
-        <Table>
+        {/* 与 CVE 库列表同款：固定表格布局 + 百分比列宽，内容只在列内截断，
+            不再让长标题/长技术栈把「检索次数」「状态」挤成换行。 */}
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="min-w-[260px]">打法</TableHead>
-              <TableHead className="min-w-[220px]">指纹</TableHead>
-              <TableHead className="w-40">实战战绩</TableHead>
-              <TableHead className="w-24">检索次数</TableHead>
-              <TableHead className="w-40">最近验证</TableHead>
-              <TableHead className="w-24">状态</TableHead>
-              <TableHead className="w-28">操作</TableHead>
+              <TableHead className="w-[42%]">打法</TableHead>
+              <TableHead className="w-[20%]">指纹</TableHead>
+              <TableHead className="w-[10%] px-1">实战战绩</TableHead>
+              <TableHead className="w-[7%] px-1">检索</TableHead>
+              <TableHead className="w-[10%] px-1">最近验证</TableHead>
+              <TableHead className="w-[6%] px-1">状态</TableHead>
+              <TableHead className="w-[5%] px-1">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -191,39 +194,58 @@ export default function PlaybooksPage() {
                 const parts = fingerprintParts(p.fingerprint);
                 return (
                   <TableRow key={p.id}>
-                    <TableCell>
-                      <button type="button" className="text-left font-medium hover:underline" onClick={() => setSelected(p)}>
-                        {p.title}
-                      </button>
-                      {p.summary && <div className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">{p.summary}</div>}
+                    <TableCell className="min-w-0">
+                      <div className="flex min-w-0 items-baseline gap-2">
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 truncate text-left font-medium hover:underline"
+                          title={p.title}
+                          onClick={() => setSelected(p)}
+                        >
+                          {p.title}
+                        </button>
+                        {p.confidence && (
+                          <Badge variant="outline" className="shrink-0 px-1.5 text-[10px]">
+                            {p.confidence}
+                          </Badge>
+                        )}
+                      </div>
+                      {p.summary && (
+                        <div className="mt-0.5 line-clamp-2 break-words text-muted-foreground text-xs" title={p.summary}>
+                          {p.summary}
+                        </div>
+                      )}
+                      {p.technique_key && (
+                        <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground/70" title={p.technique_key}>
+                          {p.technique_key}
+                        </div>
+                      )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-0">
                       {parts.length === 0 ? (
                         <span className="text-muted-foreground text-xs">—</span>
                       ) : (
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap gap-1" title={parts.join(" · ")}>
                           {parts.map((part) => (
-                            <Badge key={part} variant="outline" className="max-w-[220px] truncate">
+                            <Badge key={part} variant="outline" className="max-w-full truncate" title={part}>
                               {part}
                             </Badge>
                           ))}
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="text-sm">{winRate(p)}</TableCell>
-                    <TableCell className="text-sm">{p.uses}</TableCell>
-                    <TableCell className="text-muted-foreground text-xs">
+                    <TableCell className="px-1 text-xs whitespace-nowrap tabular-nums" title={`成功 ${p.successes} / 失败 ${p.failures}`}>
+                      {winRate(p)}
+                    </TableCell>
+                    <TableCell className="px-1 text-xs whitespace-nowrap tabular-nums">{p.uses}</TableCell>
+                    <TableCell className="px-1 text-[11px] text-muted-foreground whitespace-nowrap" title={fmtTime(p.last_verified_at ?? p.updated_at)}>
                       {fmtTime(p.last_verified_at ?? p.updated_at)}
                     </TableCell>
-                    <TableCell>
-                      {p.status === "active" ? (
-                        <Badge>启用</Badge>
-                      ) : (
-                        <Badge variant="secondary">已废弃</Badge>
-                      )}
+                    <TableCell className="px-1 whitespace-nowrap">
+                      <StatusBadge domain="playbook" value={p.status} className="px-1.5" />
                     </TableCell>
-                    <TableCell>
-                      <Button size="sm" variant="ghost" onClick={() => setSelected(p)}>
+                    <TableCell className="px-1">
+                      <Button size="sm" variant="ghost" className="px-1.5" onClick={() => setSelected(p)}>
                         详情
                       </Button>
                     </TableCell>

@@ -113,6 +113,12 @@ const cve: Record<string, StatusMeta> = {
   deprecated: { label: "已废弃", tone: "slate" },
 };
 
+// 打法库卡片状态：与 CVE 同语义（active 参与指纹匹配，deprecated 不再匹配）。
+const playbook: Record<string, StatusMeta> = {
+  active: { label: "启用", tone: "green" },
+  deprecated: { label: "已废弃", tone: "slate" },
+};
+
 // 遗留物：active=仍在目标上，removed=已清理，unknown=没去确认（不是"已清理"）。
 const artifact: Record<string, StatusMeta> = {
   active: { label: "未清理", tone: "amber" },
@@ -161,6 +167,7 @@ const maps = {
   goal,
   hint,
   cve,
+  playbook,
   artifact,
   execution,
   audit,
