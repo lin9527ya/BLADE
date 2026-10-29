@@ -64,12 +64,12 @@ func main() {
 	os.Exit(run())
 }
 
-// listenIsLoopback 判一个监听地址是不是只绑本机。空 host（如 ":8787"、"0.0.0.0:8787"）
+// listenIsLoopback 判一个监听地址是不是只绑本机。空 host（如 ":9898"、"0.0.0.0:9898"）
 // 表示绑全部网卡 → **不是** loopback。只认 127.0.0.0/8、::1、localhost。
 func listenIsLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		// 没有端口部分的写法（如裸 "8787"）交给 net.Listen 判，这里保守地当成"非 loopback"，
+		// 没有端口部分的写法（如裸 "9898"）交给 net.Listen 判，这里保守地当成"非 loopback"，
 		// 宁可多喊一句告警，也不要漏报一次暴露。
 		host = addr
 	}
@@ -87,11 +87,11 @@ func listenIsLoopback(addr string) bool {
 func run() int {
 	var (
 		// 默认**只绑 loopback**（P42）：测绘引擎与个人扫描收录的前提是"扫到你的端口"，
-		// 所以默认不暴露是唯一有效的手段——要对外必须先显式写出来（`-addr :8787`）。
+		// 所以默认不暴露是唯一有效的手段——要对外必须先显式写出来（`-addr :9898`）。
 		// 公网部署的两条正路（Cloudflare Tunnel / SSH 隧道）都不需要它监听公网，见 deploy/。
-		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default: loopback only)")
+		addr    = flag.String("addr", "127.0.0.1:9898", "HTTP listen address (default: loopback only)")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
-		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
+		proxy   = flag.String("proxy", "127.0.0.1:9899", "traffic recording proxy address (empty to disable)")
 		// 只在明确知道自己在做什么时才允许把流量代理开成对外——见下面 run() 里的护栏。
 		allowOpenProxy = flag.Bool("allow-open-proxy", false, "allow binding the traffic proxy to a non-loopback address (turns this host into an unauthenticated open proxy)")
 	)
@@ -109,7 +109,7 @@ func run() int {
 	if *proxy != "" && !listenIsLoopback(*proxy) && !*allowOpenProxy {
 		log.Printf("[安全] 拒绝启动：流量代理绑在 %s（非 loopback）。go-mitmproxy 不校验任何来源，"+
 			"这会让本机成为**无认证的开放代理**——任何人可借它上网，测绘引擎会直接标记 open proxy。\n"+
-			"  改回 127.0.0.1:8788（默认），或确需如此时显式加 -allow-open-proxy。", *proxy)
+			"  改回 127.0.0.1:9899（默认），或确需如此时显式加 -allow-open-proxy。", *proxy)
 		return 1
 	}
 	if *proxy != "" && !listenIsLoopback(*proxy) {

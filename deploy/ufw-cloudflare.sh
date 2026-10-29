@@ -3,7 +3,7 @@
 #
 # 为什么必须这么做：用了 Cloudflare 代理后，攻击者/扫描器**仍然可以直接扫你 VPS 的真实 IP**——
 # CF 只挡了"从域名进来的人"。所以源站必须只对 Cloudflare 开放，否则一台上着 CF 的机器
-# 照样会因为"8787 端口开着"被测绘引擎收录（而且它比普通机器更"值得"收录：CF 后面常常有真东西）。
+# 照样会因为"9898 端口开着"被测绘引擎收录（而且它比普通机器更"值得"收录：CF 后面常常有真东西）。
 #
 # 用途：在新装的 VPS 上跑一次（需要 root）。
 #   sudo ./ufw-cloudflare.sh
@@ -51,5 +51,5 @@ cat <<'NOTE'
   1. 源站证书用 **Cloudflare Origin Certificate**（15 年、不进 CT 日志），别用 Let's Encrypt
      —— 后者的证书会进证书透明日志，域名与 IP 就被 Censys 这类引擎收录了。
   2. 反代按 deploy/nginx-cloudflare.conf 配（含 set_real_ip_from 与 SSE 免缓冲）。
-  3. BLADE 自己保持默认 loopback 监听（`-addr 127.0.0.1:8787`），反代再用 proxy_pass 接。
+  3. BLADE 自己保持默认 loopback 监听（`-addr 127.0.0.1:9898`），反代再用 proxy_pass 接。
 NOTE

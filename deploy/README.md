@@ -26,7 +26,7 @@ FOFA / Shodan / ZoomEye / Censys 都是全 IPv4 扫描 + 协议指纹。所以�
 | **Cloudflare Tunnel** | **一个都不开**（cloudflared 主动外连） | ★★★★★ |
 | SSH 隧道 / WireGuard / Tailscale | 只开 SSH（或 UDP） | ★★★★ |
 | CF 代理 + 防火墙只放 CF 段 | 开 443，只对 CF 可见 | ★★★ |
-| 公网直连 + 改标题换端口 | 开 8787，全网可见 | ★（只是"不那么显眼"） |
+| 公网直连 + 改标题换端口 | 开 9898，全网可见 | ★（只是"不那么显眼"） |
 
 > **SSH 也是被测绘的目标。** Shodan 对 22 端口的 banner 收录得很勤，所以"SSH 隧道"这一档
 > 只解决"应用不可见"，**不解决"这台机器不可见"**。要把 SSH 也藏起来：让它只监听 tailnet
@@ -57,8 +57,8 @@ hostname 加一条 **Access 策略**（邮箱 OTP 或 Service Token）——域�
 
 ```bash
 # 本机
-ssh -N -L 8787:127.0.0.1:8787 you@your-vps
-# 浏览器打开 http://127.0.0.1:8787
+ssh -N -L 9898:127.0.0.1:9898 you@your-vps
+# 浏览器打开 http://127.0.0.1:9898
 ```
 
 VPS 上什么都不用改（BLADE 默认就绑 loopback）。想更省心就用 Tailscale/WireGuard，把它当内网机器用。
@@ -101,8 +101,8 @@ journalctl -u blade -f
 
 | 项 | 行为 | 怎么改 |
 |---|---|---|
-| **默认只绑 loopback** | 裸机 `-addr` 默认 `127.0.0.1:8787`；compose 只把宿主 `127.0.0.1:8787` 映射进容器 | 要暴露必须显式改宿主侧映射，日志会提醒你 |
-| **容器内监听容器网卡** | Dockerfile 的默认命令是 `-addr :8787`：端口映射转发到容器 IP，容器内若仍绑 `127.0.0.1` 会**完全不可达** | 对照 `docker-compose.yml`：公网暴露面由**宿主侧** `127.0.0.1:8787:8787` 控制，不要改容器内监听 |
+| **默认只绑 loopback** | 裸机 `-addr` 默认 `127.0.0.1:9898`；compose 只把宿主 `127.0.0.1:9898` 映射进容器 | 要暴露必须显式改宿主侧映射，日志会提醒你 |
+| **容器内监听容器网卡** | Dockerfile 的默认命令是 `-addr :9898`：端口映射转发到容器 IP，容器内若仍绑 `127.0.0.1` 会**完全不可达** | 对照 `docker-compose.yml`：公网暴露面由**宿主侧** `127.0.0.1:9898:9898` 控制，不要改容器内监听 |
 | **开放代理护栏** | 流量代理（`-proxy`）绑到非 loopback 时**拒绝启动**（go-mitmproxy 不校验任何来源，绑出去就是无认证开放代理） | 确需如此时显式加 `-allow-open-proxy` |
 | **`/api/health` 不自报家门** | 只回 `{"ok":true}`（原来自报 service/version，一请求就是明牌指纹） | 版本走需登录的 `GET /api/system/info` |
 | **CORS 默认不发头** | 同源前端不需要；只对设置 `cors_allowed_origins` 里显式列出的来源发 | 填 `*` 才是真全开放，得自己写出来 |
@@ -124,10 +124,10 @@ journalctl -u blade -f
 sudo ss -tlnp
 
 # ② 从**另一台机器**扫一下你的 VPS 公网 IP（不是域名——域名走 CF 看不出问题）
-nmap -Pn -p 8787,8788,5432 <你的VPS IP>       # 三个都应该是 filtered/closed
+nmap -Pn -p 9898,9899,5432 <你的VPS IP>       # 三个都应该是 filtered/closed
 
 # ③ 直接访问源站 IP 的 API：应该连不上（而不是返回 {"ok":true}）
-curl -m 5 http://<你的VPS IP>:8787/api/health
+curl -m 5 http://<你的VPS IP>:9898/api/health
 
 # ④ 免认证端点不该说出自己是谁
 curl -s https://你的域名/api/health             # 期望：{"ok":true} —— 没有 service/version
@@ -135,7 +135,7 @@ curl -s https://你的域名/api/health             # 期望：{"ok":true} —�
 # ⑤ 数据库不该对外
 nmap -Pn -p 5432 <你的VPS IP>
 
-# ⑥ 全端口：不只是 8787——任何一个监听都算分（-p- 扫 65535 个端口）
+# ⑥ 全端口：不只是 9898——任何一个监听都算分（-p- 扫 65535 个端口）
 nmap -Pn -p- --min-rate 2000 <你的VPS IP>
 
 # ⑦ IPv6（VPS 若带公网 v6，很多人只配了 v4 防火墙）
@@ -155,7 +155,7 @@ dig +short console.example.com
 #    没有开放端口就不会被收录；上线满 48 小时后再复查一次，确认"仍然查不到"。
 ```
 
-**过了 ①–⑩ 才算"默认不暴露"**；① 里若出现 `*:8787` 或 `0.0.0.0:8787`，就是没做对。
+**过了 ①–⑩ 才算"默认不暴露"**；① 里若出现 `*:9898` 或 `0.0.0.0:9898`，就是没做对。
 
 ---
 
@@ -168,7 +168,7 @@ dig +short console.example.com
   共用同一套计数。代价是知道用户名的人可以故意触发锁定（5 次即锁的固有取舍）；公网形态下
   用 Cloudflare Access 把登录页挡在身份验证之后，可显著缩小这个面。真实来源取自
   `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For`，
-  **只在直连方是 loopback（即确有本机反代）时才信这些头**——直连暴露 8787 时按 TCP 来源计数。
+  **只在直连方是 loopback（即确有本机反代）时才信这些头**——直连暴露 9898 时按 TCP 来源计数。
   公网形态下
   按 IP 封禁更有意义——反代日志 + fail2ban 是标准做法。
 - **Cloudflare Access**：Tunnel 或代理形态下都建议加，等于在登录页之前再放一道门。
@@ -244,14 +244,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now blade
 journalctl -u blade -f
 ```
 
-先别急着开隧道：在 VPS 上 `curl -s 127.0.0.1:8787/api/health` 应回 `{"ok":true}`。
+先别急着开隧道：在 VPS 上 `curl -s 127.0.0.1:9898/api/health` 应回 `{"ok":true}`。
 
 > **初始化必须发生在任何公网入口打开之前。** `POST /api/auth/init` 是免认证的（首次设置密码的
 > 设计如此），未初始化的实例被谁先摸到，谁就能把管理员密码设掉——这是个接管窗口，不是提权。
 > 顺序：起服务 → 在本机（或 SSH 端口转发）完成初始化 → 再开 Tunnel/Access。
 > 在 VPS 上直接初始化：
 > ```bash
-> curl -sS -X POST 127.0.0.1:8787/api/auth/init \
+> curl -sS -X POST 127.0.0.1:9898/api/auth/init \
 >   -H 'Content-Type: application/json' -d '{"password":"<你的强密码>"}'
 > ```
 > （返回的 token 可以丢掉，浏览器里再登录一次即可。）
@@ -287,7 +287,7 @@ sudo tailscale up --ssh --shields-up    # --shields-up：拒绝一切来自 tail
 sudo ufw delete allow 22/tcp && sudo ufw reload
 ```
 
-之后 `ssh ops@srv-01`（MagicDNS）。浏览器也可以直接开 `http://<tailnet-ip>:8787`，连域名都不需要。
+之后 `ssh ops@srv-01`（MagicDNS）。浏览器也可以直接开 `http://<tailnet-ip>:9898`，连域名都不需要。
 WireGuard 同理；不想依赖第三方协调服务器可以自建 Headscale。
 
 ### 4. 验收与日常
@@ -308,7 +308,7 @@ OS 用户**执行。所以一条被提示注入的 worker 命令，能做管理�
 
 - 读 `jwt.key`（HS256 签名密钥）→ 自签一个 admin token；
 - 读 `config.json`（数据库口令）→ 直连数据库读改数据；
-- 直接 `curl 127.0.0.1:8787/api/...` 调管理 API（配合上面两条即可拿到合法 token）。
+- 直接 `curl 127.0.0.1:9898/api/...` 调管理 API（配合上面两条即可拿到合法 token）。
 
 `intercept` / `guard` 是命令层的软约束（规则 + 模型判断），挡不住"读文件 + 本地 HTTP"
 这种由**两条正常命令**拼出来的链。默认没有 OS 级隔离——部署时请把"提示注入 = 控制台全权"

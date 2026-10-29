@@ -74,7 +74,7 @@ cd BLADE
 - **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `./build.sh --docker` → `docker compose up -d --build`。
 - **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
 
-装好后打开 **http://localhost:8787**（首次进入 `/setup` 设置管理员密码）。
+装好后打开 **http://localhost:9898**（首次进入 `/setup` 设置管理员密码）。
 
 ### 方式二：Docker Compose（手动）
 
@@ -84,7 +84,7 @@ cd BLADE
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
 ./build.sh --docker           # 产出 dist/<arch>/blade（前端已内嵌）
 docker compose up -d --build  # 本地构建镜像 + postgres
-# → http://localhost:8787
+# → http://localhost:9898
 ```
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
@@ -101,7 +101,7 @@ Compose 使用本仓 `build: .`，不会再拉取上游镜像；Playwright/MCP �
 
 ```bash
 cp config.example.json config.json   # 填好 database 连接
-./start.sh                           # → http://localhost:8787
+./start.sh                           # → http://localhost:9898
 ```
 
 > 请用 `start.sh` / `start.bat` 启动，而不是直接跑 `./blade`。它是个守护脚本：程序退出后按退出码决定是否重新拉起，**页面上的[一键更新](#方式一页面一键更新推荐)靠它完成换装**。直接运行 `./blade` 时更新完就不会被拉起了。
@@ -228,10 +228,10 @@ CGO_ENABLED=0 go build -tags embedui -o blade ./cmd/blade
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
-**常用参数**：`./start.sh -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `blade`。
+**常用参数**：`./start.sh -addr 127.0.0.1:9898 -proxy 127.0.0.1:9899`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `blade`。
 
-> **默认只绑 loopback**：不写 `-addr` 就是 `127.0.0.1:8787`（前端+API 都只在本机可达）。
-> 公网部署**不要**图省事改成 `:8787`——那等于把管理端交出去，测绘引擎一次全网扫描就会收录它。
+> **默认只绑 loopback**：不写 `-addr` 就是 `127.0.0.1:9898`（前端+API 都只在本机可达）。
+> 公网部署**不要**图省事改成 `:9898`——那等于把管理端交出去，测绘引擎一次全网扫描就会收录它。
 > 正确的两条路（Cloudflare Tunnel / SSH 隧道）见 [`deploy/README.md`](deploy/README.md)。
 > 另外：流量代理绑到非 loopback 时程序会**拒绝启动**（它没有任何来源校验，绑出去就是无认证的开放代理）。
 
@@ -246,7 +246,7 @@ CGO_ENABLED=0 go build -tags embedui -o blade ./cmd/blade
 2. **用 Cloudflare Origin Certificate**（不进 CT 日志）；Let's Encrypt 的证书会进 CT 日志，域名与 IP 就被测绘引擎收录了；
 3. **直连公网时，防火墙只放 Cloudflare 的来源段**（`deploy/ufw-cloudflare.sh`），否则扫描器直连你的真实 IP，CF 白搭。
 
-前端和 API/SSE 都由同一个后端端口（默认 `127.0.0.1:8787`）提供，活动流默认走**同源**，因此无需配置 `NEXT_PUBLIC_SSE_BASE`。
+前端和 API/SSE 都由同一个后端端口（默认 `127.0.0.1:9898`）提供，活动流默认走**同源**，因此无需配置 `NEXT_PUBLIC_SSE_BASE`。
 
 SSE 是长连接 + 持续推送，反代**必须关闭缓冲**，否则浏览器能连上却收不到事件（表现为活动流一直转圈）。完整的 Nginx 示例（含 Cloudflare 真实 IP 与只接受 CF 来源）见 [`deploy/nginx-cloudflare.conf`](deploy/nginx-cloudflare.conf)。最小形态：
 
@@ -257,7 +257,7 @@ server {
     # ssl_certificate / ssl_certificate_key ...
 
     location / {
-        proxy_pass http://127.0.0.1:8787;
+        proxy_pass http://127.0.0.1:9898;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
 
@@ -292,7 +292,7 @@ server {
 ### 本地运行与测试
 
 ```bash
-./dev.sh    # 后端(:8787) + 流量代理(:8788) + 前端 next dev(:5173) → http://localhost:5173
+./dev.sh    # 后端(:9898) + 流量代理(:9899) + 前端 next dev(:5173) → http://localhost:5173
 ```
 
 - 后端：`go run ./cmd/blade`（不带 `-tags embedui` 则不内嵌前端）

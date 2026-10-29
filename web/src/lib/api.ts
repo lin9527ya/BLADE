@@ -201,13 +201,13 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // SSE streams on the same port, so we default to a same-origin (relative) URL.
 // This is what makes reverse-proxy deploys work: a page loaded from
 // https://<domain>/ connects to https://<domain>/api/..., which the proxy forwards
-// to the backend — no need to expose :8787 publicly. Hardcoding :8787 here used to
-// break exactly that (https://<domain>:8787/... is unreachable when only 443 is open).
+// to the backend — no need to expose :9898 publicly. Hardcoding :9898 here used to
+// break exactly that (https://<domain>:9898/... is unreachable when only 443 is open).
 //
 // Dev (next dev): SSE must NOT go through the Next.js `/api` rewrite — that proxy
 // buffers the streamed response, so event frames never reach the browser (the
 // EventSource opens but receives 0 messages). So in dev only we connect straight
-// to the Go backend on :8787, whose CORS is open.
+// to the Go backend on :9898, whose CORS is open.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
 
@@ -228,12 +228,12 @@ function baseIsCrossOrigin(base: string): boolean {
 //
 // 同源（生产默认 base 为空）时**不带**：让浏览器用 blade_token cookie 认证，URL 里就不出现
 // 凭据——否则它会进浏览器历史，以及反向代理的 access log（README 的 nginx 示例默认记录
-// $request，其中含查询串）。开发态前端在 :5173、后端在 :8787，属跨源，仍走 ?token=。
+// $request，其中含查询串）。开发态前端在 :5173、后端在 :9898，属跨源，仍走 ?token=。
 export function sseUrl(path: string): string {
   const base =
     process.env.NEXT_PUBLIC_SSE_BASE ??
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
-      ? `${window.location.protocol}//${window.location.hostname}:8787`
+      ? `${window.location.protocol}//${window.location.hostname}:9898`
       : "");
   const token = baseIsCrossOrigin(base) ? getToken() : null;
   const sep = path.includes("?") ? "&" : "?";

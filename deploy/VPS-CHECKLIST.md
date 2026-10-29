@@ -77,8 +77,8 @@ systemd unit 增加 `Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`。
 ### 2.4 不需要安装
 
 - Go、Node/npm 构建链（浏览器自动化除外）
-- nginx（Cloudflare Tunnel 可直接指向 `127.0.0.1:8787`）
-- mitmproxy / tshark（流量捕获与 MITM 是内置的：`-proxy 127.0.0.1:8788`）
+- nginx（Cloudflare Tunnel 可直接指向 `127.0.0.1:9898`）
+- mitmproxy / tshark（流量捕获与 MITM 是内置的：`-proxy 127.0.0.1:9899`）
 - PostgreSQL 客户端（备份用 `docker exec blade-pg pg_dump ...`）
 
 **最小可用**：PostgreSQL + curl + unzip + ca-certificates + cloudflared/Tailscale + ufw/fail2ban。
@@ -107,8 +107,8 @@ sudo chown -R blade:blade /opt/blade
 | 1 | `config.json` | `{"database":{"host":"127.0.0.1","port":5432,"user":"blade","password":"…","dbname":"blade","sslmode":"disable"}}`，`chmod 600`，属主 `blade` | 密码用 `openssl rand -hex 24` 生成 |
 | 2 | PostgreSQL | `docker run -d --name blade-pg -p 127.0.0.1:5432:5432 -e POSTGRES_USER=blade -e POSTGRES_PASSWORD="$PW" -e POSTGRES_DB=blade -v blade-pg:/var/lib/postgresql/data --restart unless-stopped postgres:16-alpine` | 端口绝不能公网可达 |
 | 3 | systemd | `deploy/blade.service` → `/etc/systemd/system/`，`systemctl enable --now blade` | `User=blade`、`RestartForceExitStatus=75`、`BLADE_CONFIG=/opt/blade/config.json` |
-| 4 | 监听面 | 裸机：`-addr` 保持 `127.0.0.1:8787`；`-proxy` 保持 `127.0.0.1:8788`。Docker：容器内是 `-addr :8787`（端口映射要求），宿主侧只发布 `127.0.0.1:8787` | 裸机**不要**改成 `:8787`；Docker 不要把容器内改成 loopback（会不可达） |
-| 5 | 初始化 | **开公网入口之前**：`curl -X POST 127.0.0.1:8787/api/auth/init -H 'Content-Type: application/json' -d '{"password":"<强密码>"}'` | `/api/auth/init` 免认证，暴露后再初始化 = 接管窗口 |
+| 4 | 监听面 | 裸机：`-addr` 保持 `127.0.0.1:9898`；`-proxy` 保持 `127.0.0.1:9899`。Docker：容器内是 `-addr :9898`（端口映射要求），宿主侧只发布 `127.0.0.1:9898` | 裸机**不要**改成 `:9898`；Docker 不要把容器内改成 loopback（会不可达） |
+| 5 | 初始化 | **开公网入口之前**：`curl -X POST 127.0.0.1:9898/api/auth/init -H 'Content-Type: application/json' -d '{"password":"<强密码>"}'` | `/api/auth/init` 免认证，暴露后再初始化 = 接管窗口 |
 | 6 | 防火墙 | `sudo deploy/vps-hardening.sh --hostname srv-01` + 云厂商安全组 | ufw 管 v4/v6；两层都要配 |
 | 7 | 访问层 | Cloudflare Tunnel + Zero Trust Access（邮箱 OTP / Service Token），或 Tailscale `--ssh --shields-up` | 域名会进 CT 日志，Access 才是那道门 |
 | 8 | LLM | 登录后在 UI 配 LLM Profile（Anthropic / OpenAI-compatible） | key 存库，不落环境变量；确认能出站访问 |
@@ -130,9 +130,9 @@ sudo chown -R blade:blade /opt/blade
 
 ## 7. 上线验收（过了才算完成）
 
-- [ ] `ss -tlnp`：没有 `0.0.0.0:8787` / `*:8787` / 公网 5432
+- [ ] `ss -tlnp`：没有 `0.0.0.0:9898` / `*:9898` / 公网 5432
 - [ ] 另一台机器 `nmap -Pn -p- <VPS IP>`：无开放端口（计划内的除外）
-- [ ] `curl -m 5 http://<VPS IP>:8787/api/health`：连不上
+- [ ] `curl -m 5 http://<VPS IP>:9898/api/health`：连不上
 - [ ] `curl https://<域名>/api/health`：只回 `{"ok":true}`，无 service/version
 - [ ] IPv6：`ss -tlnp6` 无非 loopback 监听；`nmap -6 -p-` 同样无开放端口
 - [ ] PTR 中性；域名只解析到 Cloudflare；`crt.sh` 无多余子域

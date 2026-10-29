@@ -29,7 +29,7 @@ Restart=on-failure
 RestartSec=5
 
 # 监听面默认就是 loopback（P42：默认不暴露）。对外访问走 Cloudflare Tunnel 或 SSH 隧道，
-# 见 deploy/README.md。**不要**为了图省事加 `-addr :8787`——那会让扫描器直接看到它。
+# 见 deploy/README.md。**不要**为了图省事加 `-addr :9898`——那会让扫描器直接看到它。
 Environment=BLADE_CONFIG=/opt/blade/config.json
 
 # 日志进 journal（服务自己的 /logs 页另有一份内存环形缓冲与 server_logs 表）。

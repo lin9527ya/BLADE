@@ -20,7 +20,7 @@ credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_ID.json
 
 ingress:
   - hostname: console.example.com
-    service: http://127.0.0.1:8787
+    service: http://127.0.0.1:9898
     originRequest:
       # BLADE 的活动流/日志流是 SSE 长连接：别让 CF 缓冲或提前掐断。
       disableChunkedEncoding: false

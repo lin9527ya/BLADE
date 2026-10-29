@@ -67,7 +67,7 @@ install_docker(){
   fi
   info "构建并启动容器…"
   docker compose up -d --build
-  ok "启动完成 → http://localhost:8787"
+  ok "启动完成 → http://localhost:9898"
   info "查看日志：docker compose logs -f blade"
 }
 

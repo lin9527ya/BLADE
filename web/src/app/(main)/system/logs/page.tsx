@@ -16,7 +16,7 @@ const MOCK_LOGS: LogLine[] = [
     ts: "2026-07-26T03:55:00Z",
     level: "info",
     tag: "engine",
-    text: "BLADE v0.1.0 backend listening on :8787 (workers=3)",
+    text: "BLADE v0.1.0 backend listening on :9898 (workers=3)",
   },
   {
     seq: 2,

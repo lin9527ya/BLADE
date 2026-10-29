@@ -434,7 +434,7 @@ func (g *loginGuard) pruneGlobalLocked(cfg loginGuardConfig, now time.Time) {
 //
 // 反代形态（cloudflared / nginx 在本机）下 Go 看到的都是 127.0.0.1，真实来源在
 // CF-Connecting-IP / X-Real-IP / X-Forwarded-For 里；**但只有直连方是 loopback 时才信这些头**
-// ——否则把 8787 直接暴露到公网时，任何人伪造一个头就能绕过按来源的节流。
+// ——否则把 9898 直接暴露到公网时，任何人伪造一个头就能绕过按来源的节流。
 func loginClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

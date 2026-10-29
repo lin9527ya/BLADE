@@ -47,9 +47,9 @@ RUN chmod +x /app/blade /app/start.sh
 COPY skills/ /app/skills/
 # data/（SQLite + jwt.key）持久化点
 VOLUME ["/app/data"]
-EXPOSE 8787 8788
+EXPOSE 9898 9899
 ENTRYPOINT ["/app/start.sh"]
-# 容器内必须监听容器网卡，否则 docker-compose 的 127.0.0.1:8787:8787 根本到不了
+# 容器内必须监听容器网卡，否则 docker-compose 的 127.0.0.1:9898:9898 根本到不了
 # （端口映射转发到容器 IP，不是容器 loopback）。公网暴露面由宿主侧映射控制：
 # docker-compose.yml 仍只发布到 127.0.0.1。
-CMD ["-addr", ":8787", "-proxy", "127.0.0.1:8788"]
+CMD ["-addr", ":9898", "-proxy", "127.0.0.1:9899"]

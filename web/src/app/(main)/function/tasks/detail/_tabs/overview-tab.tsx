@@ -14,6 +14,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Progress } from "@/components/ui/progress";
 
 import { taskIsTerminal } from "@/lib/status";
+import { cacheHitRate } from "@/lib/token-stats";
 import { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
 import { api } from "@/lib/api";
@@ -35,13 +36,6 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
   return String(n);
-}
-
-// 缓存命中率 = 缓存读 / 输入（InputTokens 已含 cache_read 子集，故比值在 0–100%）。
-function cacheHitRate(cacheRead: number, input: number): string {
-  if (input <= 0) return "—";
-  // 一位小数：整数会把 93.7% 和 94.4% 都显示成 94%，看不出优化前后的差距。
-  return ((cacheRead / input) * 100).toFixed(1) + "%";
 }
 
 // 测试范围一条的显示值：域名 / 网段 / 公司。

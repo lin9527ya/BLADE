@@ -62,7 +62,7 @@ update_docker(){
   fi
   info "重建并启动（blade 重启时自动迁移 schema）…"
   docker compose up -d --build blade
-  ok "更新完成 → http://localhost:8787"
+  ok "更新完成 → http://localhost:9898"
   info "查看日志：docker compose logs -f blade"
   info "清理旧镜像（可选）：docker image prune -f"
 }
