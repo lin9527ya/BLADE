@@ -58,7 +58,7 @@ func TestPlannerDomainTemplatesRender(t *testing.T) {
 // 每套领域模板都必须带上它自己的五块领域差异，且不能把 BLADE 的机制口径丢掉。
 func TestPlannerDomainSections(t *testing.T) {
 	seeds := PlannerDomainSeeds()
-	wantDomains := []string{"内网渗透", "权限提升", "漏洞利用", "漏洞挖掘", "代码审计"}
+	wantDomains := []string{"内网渗透", "权限提升", "漏洞利用", "漏洞挖掘", "代码审计", "云上渗透"}
 	if len(seeds) != len(wantDomains) {
 		t.Fatalf("领域模板数量 = %d，期望 %d", len(seeds), len(wantDomains))
 	}
@@ -67,6 +67,15 @@ func TestPlannerDomainSections(t *testing.T) {
 		"intent_queue", "depends_on", "breadth.debt", "kind（完成口径）",
 		"matching_playbooks", "detection_hotspots", "tunnels", "loot_upload",
 		"outstanding", "no_output",
+		// 云上模板特有：云侧数据必须 ingest 进图才对规划层可见
+	}
+	// 云上渗透额外钉住：它依赖的是 BLADE 真实的云能力（ingest_cloud_data 落图 +
+	// ad_paths 读域内/云上共用的路径），而不是凭空写的云名词。
+	cloud := seeds["云上渗透"]
+	for _, want := range []string{"ingest_cloud_data", "ad_paths", "cloud_object", "can", "member_of", "detection_hotspots"} {
+		if !strings.Contains(cloud, want) {
+			t.Fatalf("「云上渗透」缺少 %q", want)
+		}
 	}
 	// 审核流与 executor_key 不在 BLADE，模板里不能出现它们的工具名。
 	banned := []string{"add_review_intent", "update_intent", "cancel_intent", "executor_key"}
