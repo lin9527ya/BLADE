@@ -20,6 +20,15 @@ func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)
 	mux.HandleFunc("DELETE /api/task-categories/{id}", s.pgDeleteTaskCategory)
+	mux.HandleFunc("PATCH /api/task-categories/{id}/preset", s.pgUpdateTaskCategoryPreset)
+
+	// planner 模板库：任务创建时按 id 取正文并快照。
+	mux.HandleFunc("GET /api/planner-templates", s.pgListPlannerTemplates)
+	mux.HandleFunc("POST /api/planner-templates", s.pgCreatePlannerTemplate)
+	mux.HandleFunc("POST /api/planner-templates/validate", s.pgValidatePlannerTemplate)
+	mux.HandleFunc("PATCH /api/planner-templates/{id}", s.pgUpdatePlannerTemplate)
+	mux.HandleFunc("DELETE /api/planner-templates/{id}", s.pgDeletePlannerTemplate)
+	mux.HandleFunc("POST /api/planner-templates/{id}/default", s.pgSetDefaultPlannerTemplate)
 	mux.HandleFunc("POST /api/tasks/category/batch", s.updateTasksCategoryBatch)
 	mux.HandleFunc("GET /api/task-templates", s.pgListTaskTemplates)
 	mux.HandleFunc("POST /api/task-templates", s.pgCreateTaskTemplate)

@@ -26,21 +26,29 @@ var (
 
 // TaskCategory is a globally reusable task grouping label.
 type TaskCategory struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	NKey      string    `json:"-"`
-	TaskCount int       `json:"task_count"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	NKey      string `json:"-"`
+	TaskCount int    `json:"task_count"`
+	// 场景预设：建任务时未显式指定则按分类带出（显式值优先）。
+	SeedFirstIntent          bool      `json:"seed_first_intent"`
+	DefaultCoverageEnabled   bool      `json:"default_coverage_enabled"`
+	DefaultPlannerTemplateID int64     `json:"default_planner_template_id"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 const taskCategoryCols = `category.id, category.name, category.nkey,
        count(task.id) FILTER (WHERE task.deleted_at IS NULL),
+       category.seed_first_intent, category.default_coverage_enabled,
+       category.default_planner_template_id,
        category.created_at, category.updated_at`
 
 func scanTaskCategory(row interface{ Scan(...any) error }) (TaskCategory, error) {
 	var category TaskCategory
-	err := row.Scan(&category.ID, &category.Name, &category.NKey, &category.TaskCount, &category.CreatedAt, &category.UpdatedAt)
+	err := row.Scan(&category.ID, &category.Name, &category.NKey, &category.TaskCount,
+		&category.SeedFirstIntent, &category.DefaultCoverageEnabled,
+		&category.DefaultPlannerTemplateID, &category.CreatedAt, &category.UpdatedAt)
 	return category, err
 }
 
@@ -60,20 +68,34 @@ func taskCategoryUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// TaskCategoryPreset carries the scenario defaults a category can seed into new
+// tasks. Zero values mean "no opinion" (task creation keeps its own defaults).
+type TaskCategoryPreset struct {
+	SeedFirstIntent          bool
+	DefaultCoverageEnabled   bool
+	DefaultPlannerTemplateID int64
+}
+
 func (d *DB) CreateTaskCategory(name string) (*TaskCategory, error) {
+	return d.CreateTaskCategoryWithPreset(name, TaskCategoryPreset{DefaultCoverageEnabled: true})
+}
+
+func (d *DB) CreateTaskCategoryWithPreset(name string, preset TaskCategoryPreset) (*TaskCategory, error) {
 	name, nkey, err := normalizeTaskCategoryName(name)
 	if err != nil {
 		return nil, err
 	}
 	category, err := scanTaskCategory(d.QueryRow(`
 WITH inserted AS (
-    INSERT INTO task_categories(name, nkey)
-    VALUES ($1,$2)
+    INSERT INTO task_categories(name, nkey, seed_first_intent, default_coverage_enabled, default_planner_template_id)
+    VALUES ($1,$2,$3,$4,$5)
     ON CONFLICT (nkey) DO NOTHING
     RETURNING *
 )
-SELECT inserted.id, inserted.name, inserted.nkey, 0, inserted.created_at, inserted.updated_at
-FROM inserted`, name, nkey))
+SELECT inserted.id, inserted.name, inserted.nkey, 0,
+       inserted.seed_first_intent, inserted.default_coverage_enabled, inserted.default_planner_template_id,
+       inserted.created_at, inserted.updated_at
+FROM inserted`, name, nkey, preset.SeedFirstIntent, preset.DefaultCoverageEnabled, preset.DefaultPlannerTemplateID))
 	if err == sql.ErrNoRows {
 		return nil, ErrTaskCategoryNameConflict
 	}
@@ -132,6 +154,7 @@ WITH updated AS (
 )
 SELECT updated.id, updated.name, updated.nkey,
        (SELECT count(*) FROM tasks WHERE category_id=updated.id AND deleted_at IS NULL),
+       updated.seed_first_intent, updated.default_coverage_enabled, updated.default_planner_template_id,
        updated.created_at, updated.updated_at
 FROM updated`, id, name, nkey))
 	if err == sql.ErrNoRows {
@@ -148,6 +171,25 @@ FROM updated`, id, name, nkey))
 
 // DeleteTaskCategory moves affected tasks to the uncategorized bucket through
 // the tasks.category_id ON DELETE SET NULL foreign key.
+// UpdateTaskCategoryPreset rewrites the scenario defaults of one category.
+func (d *DB) UpdateTaskCategoryPreset(id int64, preset TaskCategoryPreset) (*TaskCategory, error) {
+	if id <= 0 {
+		return nil, ErrTaskCategoryNotFound
+	}
+	category, err := scanTaskCategory(d.QueryRow(`
+UPDATE task_categories
+SET seed_first_intent=$2, default_coverage_enabled=$3, default_planner_template_id=$4, updated_at=now()
+WHERE id=$1
+RETURNING id, name, nkey,
+          (SELECT count(*) FROM tasks WHERE category_id=$1 AND deleted_at IS NULL),
+          seed_first_intent, default_coverage_enabled, default_planner_template_id,
+          created_at, updated_at`, id, preset.SeedFirstIntent, preset.DefaultCoverageEnabled, preset.DefaultPlannerTemplateID))
+	if err == sql.ErrNoRows {
+		return nil, ErrTaskCategoryNotFound
+	}
+	return &category, err
+}
+
 func (d *DB) DeleteTaskCategory(id int64) (bool, error) {
 	result, err := d.Exec(`DELETE FROM task_categories WHERE id=$1`, id)
 	if err != nil {
@@ -186,6 +228,7 @@ WITH selected AS (
 )
 SELECT selected.id, selected.name, selected.nkey,
        (SELECT count(*) FROM tasks WHERE category_id=selected.id AND deleted_at IS NULL),
+       selected.seed_first_intent, selected.default_coverage_enabled, selected.default_planner_template_id,
        selected.created_at, selected.updated_at
 FROM selected, updated`, taskID, *categoryID))
 	if err == sql.ErrNoRows {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -48,8 +49,10 @@ type Planner struct {
 	policyFn     func() *policy.Effective
 	workersFn    func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn  func() int  // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor    *Compactor  // cold-node compaction (§7); nil = disabled
+	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
+	plannerPromptFn func() string
+	maxTokensFn     func() int // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor       *Compactor // cold-node compaction (§7); nil = disabled
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
@@ -168,6 +171,16 @@ func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
+
+// SetPlannerPromptResolver wires the task-level planner prompt snapshot.
+func (p *Planner) SetPlannerPromptResolver(fn func() string) { p.plannerPromptFn = fn }
+
+func (p *Planner) plannerPromptOverride() string {
+	if p.plannerPromptFn == nil {
+		return ""
+	}
+	return p.plannerPromptFn()
+}
 
 // todoFor returns the task's persistent planning todo store, creating it on first
 // use. Shared across all of this task's planner wake-ups.
@@ -486,8 +499,42 @@ const breadthDisciplineBlock = `
 - 收尾：准备 0 意图或 prove_goal 前先看 breadth；breadth.debt > 0 且无人负责时不得静默结束，要么派广度，要么把“确属范围外/不可达/受约束”的原因写进 fact/备注。覆盖度类验收以 breadth.pct 为准，未达标禁止 prove_goal；breadth.assets_total=0 且 need_asset_discovery=true 时先做资产发现。
 - 细节：top_gaps 只是窗口，完整矩阵用 coverage_matrix 查看；覆盖度关闭时本段自动失效，不要调用已摘除的工具。`
 
-func plannerSystem(goal, dataDir, workDir string) string {
-	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+// PlannerTemplateDefault returns the DB default template body ("" when none).
+// Wired at startup so the agent package stays free of DB imports.
+var PlannerTemplateDefault func() (string, bool)
+
+// plannerSystem resolves the planner body in four levels:
+//  1. task-level snapshot (tasks.planner_prompt_override)
+//  2. DB agent_prompts override (renderSystem)
+//  3. planner_templates default template
+//  4. built-in plannerDefaultTmpl
+//
+// A failed render falls through to the next level. The code-owned blocks below
+// are appended after rendering, so no level can edit them away.
+func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
+	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
+	body := ""
+	if strings.TrimSpace(taskOverride) != "" {
+		if out, err := renderTmpl(taskOverride, vars); err == nil {
+			body = out
+		} else {
+			log.Printf("[planner] 任务级 planner 提示词渲染失败，回退全局链: %v", err)
+		}
+	}
+	if body == "" {
+		if PlannerTemplateDefault != nil {
+			if tpl, ok := PlannerTemplateDefault(); ok {
+				if out, err := renderTmpl(tpl, vars); err == nil {
+					body = out
+				} else {
+					log.Printf("[planner] 默认模板渲染失败，回退内置: %v", err)
+				}
+			}
+		}
+	}
+	if body == "" {
+		body = renderSystem("planner", plannerDefaultTmpl, vars)
+	}
 	return body + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
 }
 
@@ -557,7 +604,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir)
+	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}

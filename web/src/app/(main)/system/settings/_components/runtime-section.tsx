@@ -7,6 +7,8 @@ import { CpuIcon, GaugeIcon } from "lucide-react";
 import { Field, Section, SubBlock } from "@/components/page-sections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 
 import type { useSettingsState } from "./use-settings-state";
 
@@ -41,11 +43,42 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     saveLimits,
     saveWorkers,
     saveTokenBudget,
+    logLevel,
+    setLogLevel,
+    savingLogLevel,
+    saveLogLevel,
   } = s;
 
   return (
     <>
       <Section title="执行与并发" hint="改完对之后启动的任务与之后提交的长任务执行生效（运行中的任务不受影响）。">
+        <SubBlock title="日志级别" icon={<CpuIcon className="text-muted-foreground size-4" />}>
+          <Field
+            label="最低级别"
+            htmlFor="log-level"
+            hint="低于该级别的日志仍写终端，但不进日志页、不落库、不推 SSE。debug 用于排障，会产生较多日志。"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={logLevel} onValueChange={(v) => setLogLevel(v as typeof logLevel)}>
+                <SelectTrigger id="log-level" className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="debug">debug</SelectItem>
+                    <SelectItem value="info">info（默认）</SelectItem>
+                    <SelectItem value="warn">warn</SelectItem>
+                    <SelectItem value="error">error</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Button size="sm" onClick={() => void saveLogLevel()} disabled={savingLogLevel || !loaded}>
+                {savingLogLevel ? <Spinner data-icon="inline-start" /> : null}
+                保存
+              </Button>
+            </div>
+          </Field>
+        </SubBlock>
         <SubBlock title="任务 Token 预算" icon={<GaugeIcon className="text-muted-foreground size-4" />}>
           <Field
             label="预算（token 数）"

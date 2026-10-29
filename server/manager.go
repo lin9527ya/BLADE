@@ -60,14 +60,16 @@ type Task struct {
 	CoverageEnabled      bool `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
 	// ExplorationPolicy 是任务级探索策略文档（P20，JSONB 快照）。nil/空 = 无策略。
 	// 由 /policy 接口写入并同步到这里，供 DTO 与 UI 展示；执行点走 DB 现读（policyResolver）。
-	ExplorationPolicy json.RawMessage        `json:"exploration_policy,omitempty"`
-	FirstRunAt        int64                  `json:"first_run_at,omitempty"`
-	DeadlineAt        int64                  `json:"deadline_at,omitempty"`
-	Store             *pgdb.ExplorationStore `json:"-"`
-	Guard             *guard.Guard           `json:"-"`
-	notify            chan struct{}
-	lifecycleMu       sync.RWMutex
-	llmMu             sync.RWMutex
+	ExplorationPolicy json.RawMessage `json:"exploration_policy,omitempty"`
+	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
+	PlannerPromptOverride string                 `json:"planner_prompt_override,omitempty"`
+	FirstRunAt            int64                  `json:"first_run_at,omitempty"`
+	DeadlineAt            int64                  `json:"deadline_at,omitempty"`
+	Store                 *pgdb.ExplorationStore `json:"-"`
+	Guard                 *guard.Guard           `json:"-"`
+	notify                chan struct{}
+	lifecycleMu           sync.RWMutex
+	llmMu                 sync.RWMutex
 
 	// pendingTriggers accumulates the concrete changes (worker done / finding) that
 	// fired planning rounds since the last one consumed them. The debounce coalesces
@@ -315,6 +317,9 @@ const (
 	settingNoaCompaction = "noa_compaction"
 	// P24 长任务执行的资源限额（ulimit 前导；0 = 该轴不限）。默认只开 CPU 一个上限
 	// （1800s 兜住跑飞的扫描），内存/进程数默认不限——它们更容易误伤正常工具。
+	// settingLogLevel 是日志页/DB 持久化/SSE 的最低级别（debug|info|warn|error）。
+	// 默认 info；低于阈值的行仍写 stderr，但不进环形缓冲、DB 与 SSE。
+	settingLogLevel       = "log_level"
 	settingExecCPUSeconds = "exec_cpu_seconds"
 	settingExecMemoryMB   = "exec_memory_mb"
 	settingExecMaxProcs   = "exec_max_procs"
@@ -1230,9 +1235,10 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		SourceTaskIDs:  append([]int64(nil), pt.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
-		CoverageEnabled:   pt.CoverageEnabled,
-		ExplorationPolicy: append(json.RawMessage(nil), pt.ExplorationPolicy...),
-		FirstRunAt:        unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
+		CoverageEnabled:       pt.CoverageEnabled,
+		ExplorationPolicy:     append(json.RawMessage(nil), pt.ExplorationPolicy...),
+		PlannerPromptOverride: pt.PlannerPromptOverride,
+		FirstRunAt:            unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1),
 	}
 }

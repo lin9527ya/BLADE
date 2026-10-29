@@ -23,6 +23,57 @@ type LogLine struct {
 	Text  string `json:"text"`
 }
 
+// Log levels, ordered by severity. A line below the current threshold is
+// dropped before it reaches the ring, the DB queue or SSE subscribers; stderr
+// still receives everything.
+const (
+	logLevelDebug = iota
+	logLevelInfo
+	logLevelWarn
+	logLevelError
+)
+
+var logLevelNames = []string{"debug", "info", "warn", "error"}
+
+// logThreshold is the active minimum level (atomic for hot switching).
+var logThreshold atomic.Int32
+
+func init() { logThreshold.Store(int32(logLevelInfo)) }
+
+func parseLogLevel(name string) (int32, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "debug":
+		return int32(logLevelDebug), true
+	case "info", "":
+		return int32(logLevelInfo), true
+	case "warn", "warning":
+		return int32(logLevelWarn), true
+	case "error":
+		return int32(logLevelError), true
+	}
+	return 0, false
+}
+
+func logLevelValue(level string) int32 {
+	if v, ok := parseLogLevel(level); ok {
+		return v
+	}
+	return int32(logLevelInfo)
+}
+
+// LogLevelName returns the active threshold for the settings payload.
+func LogLevelName() string { return logLevelNames[logThreshold.Load()] }
+
+// SetLogLevel applies a threshold immediately. Returns false for unknown names.
+func SetLogLevel(name string) bool {
+	v, ok := parseLogLevel(name)
+	if !ok {
+		return false
+	}
+	logThreshold.Store(v)
+	return true
+}
+
 // dbWriteReq carries a log line to the async DB writer.
 type dbWriteReq struct {
 	seq int64
@@ -48,6 +99,31 @@ type logSinkT struct {
 }
 
 var logSink = &logSinkT{cap: 3000, subs: map[chan LogLine]struct{}{}, out: os.Stderr}
+
+// InitLogLevel applies the startup threshold: BLADE_LOG_LEVEL env first, then
+// the stored setting (set after the DB is open). Unknown values keep the default.
+func InitLogLevel(env, stored string) {
+	envOK := env != "" && SetLogLevel(env)
+	if envOK {
+		return
+	}
+	if stored != "" {
+		SetLogLevel(stored)
+	}
+}
+
+// ApplyStoredLogLevel is called once the DB is available.
+func ApplyStoredLogLevel(pg *db.DB) {
+	if pg == nil {
+		return
+	}
+	if v, ok, err := pg.GetSetting(settingLogLevel); err == nil && ok {
+		if env := strings.TrimSpace(os.Getenv("BLADE_LOG_LEVEL")); env != "" {
+			return // explicit env wins over the stored value
+		}
+		SetLogLevel(v)
+	}
+}
 
 // StartLogCapture redirects the standard log package through the in-memory sink
 // (still writing to stderr). Call once at startup, as early as possible.
@@ -142,6 +218,11 @@ func (s *logSinkT) Write(p []byte) (int, error) {
 }
 
 func (s *logSinkT) add(l LogLine) {
+	// Filter before the ring so debug output cannot grow memory, the DB queue or
+	// an SSE subscriber's backlog. stderr already got the line in Write/emit.
+	if logLevelValue(l.Level) < logThreshold.Load() {
+		return
+	}
 	s.mu.Lock()
 	s.seq++
 	l.Seq = s.seq
@@ -227,13 +308,28 @@ func parseLog(line string) LogLine {
 	if len(msg) >= 20 && msg[4] == '/' && msg[7] == '/' && msg[10] == ' ' {
 		msg = strings.TrimSpace(msg[19:])
 	}
+	// Explicit level prefixes (written by slog and by call sites that need a
+	// debug line) win over keyword guessing; the prefix is stripped from Text.
+	level := ""
+	for _, p := range []struct{ prefix, lvl string }{
+		{"[ERROR]", "error"}, {"[WARN]", "warn"}, {"[INFO]", "info"}, {"[DEBUG]", "debug"},
+	} {
+		if strings.HasPrefix(msg, p.prefix) {
+			level = p.lvl
+			msg = strings.TrimSpace(strings.TrimPrefix(msg, p.prefix))
+			break
+		}
+	}
 	tag := ""
 	if strings.HasPrefix(msg, "[") {
 		if i := strings.IndexByte(msg, ']'); i > 1 {
 			tag = msg[1:i]
 		}
 	}
-	return LogLine{TS: time.Now().Format(time.RFC3339), Level: levelOf(msg), Tag: tag, Text: msg}
+	if level == "" {
+		level = levelOf(msg)
+	}
+	return LogLine{TS: time.Now().Format(time.RFC3339), Level: level, Tag: tag, Text: msg}
 }
 
 func levelOf(msg string) string {

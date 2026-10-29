@@ -25,6 +25,18 @@ type agentIsoState struct {
 
 var agentIso agentIsoState
 
+// fileGuard holds the file-tool allow roots. It is installed regardless of
+// BLADE_AGENT_USER: dropping privileges is optional, but a prompt-injected
+// Read/Write must not reach ~/.ssh or the JWT key on a default deployment.
+type fileGuardState struct {
+	installed bool
+	roots     []string // real paths (EvalSymlinks)
+}
+
+var fileGuard fileGuardState
+
+const settingFileRootsOpenEnv = "BLADE_AGENT_FILE_ROOTS_OPEN"
+
 // agentEnvDenyPrefixes / agentEnvDenyFragments 是子进程环境的"疑似凭据"判定。
 //
 // 刻意用**黑名单**而不是白名单：白名单会悄悄弄坏 agent 依赖的一堆工具变量
@@ -81,6 +93,11 @@ func InstallAgentIsolation(dataDir, keyDir, skillDir string) error {
 		return err
 	}
 	agentIso = agentIsoState{enabled: true, user: spec, uid: uid, gid: gid, home: home, roots: roots}
+	// Keep the file guard's roots identical to the isolation roots; the guard is
+	// installed by InstallFileRootGuard either before or after this call.
+	if fileGuard.installed {
+		fileGuard.roots = roots
+	}
 
 	if err := prepareAgentStateDirs(dataDir); err != nil {
 		return fmt.Errorf("把 data 目录交给 agent 用户：%w", err)
@@ -182,16 +199,41 @@ func agentEnvDenied(key string) bool {
 // agentPathGuard 是隔离模式下文件工具的允许面：只放行配置的根（含其子路径）。
 // 它收到的是 Norma 解析过软链的真实路径，所以软链绕不过去。
 func agentPathGuard(abs string) error {
-	if !agentIso.enabled {
+	if !fileGuard.installed {
 		return nil
 	}
-	for _, root := range agentIso.roots {
+	for _, root := range fileGuard.roots {
 		if abs == root || strings.HasPrefix(abs, root+string(os.PathSeparator)) {
 			return nil
 		}
 	}
 	return fmt.Errorf("拒绝访问 %s：隔离模式下文件工具只允许访问 %s；其它路径请用 Bash 在任务目录内处理",
 		abs, strings.Join(agentIso.roots, "、"))
+}
+
+// InstallFileRootGuard confines the agent's file tools to dataDir, skillDir and
+// BLADE_AGENT_READ_ROOTS. It is independent of BLADE_AGENT_USER: without the
+// guard, a prompt-injected Read/Write can reach ~/.ssh/authorized_keys or the
+// JWT key even when the process runs unprivileged.
+//
+// BLADE_AGENT_FILE_ROOTS_OPEN=1 disables the guard for troubleshooting only; the
+// startup log says so explicitly.
+func InstallFileRootGuard(dataDir, skillDir string) error {
+	fileGuard = fileGuardState{}
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv(settingFileRootsOpenEnv))); v == "1" || v == "true" || v == "yes" {
+		actool.SetPathGuard(nil)
+		log.Printf("[file-guard] 已按 %s 关闭文件工具边界：agent 可读写任意路径（仅用于排障）", settingFileRootsOpenEnv)
+		return nil
+	}
+	roots, err := agentAllowedRoots(dataDir, skillDir, os.Getenv("BLADE_AGENT_READ_ROOTS"))
+	if err != nil {
+		return err
+	}
+	fileGuard = fileGuardState{installed: true, roots: roots}
+	actool.SetPathGuard(agentPathGuard)
+	log.Printf("[file-guard] 文件工具限制在：%s（Bash 仍可读全盘；这是工具层边界，不是沙箱）",
+		strings.Join(roots, "、"))
+	return nil
 }
 
 // agentAllowedRoots 解析允许根为真实路径。dataDir / skillDir 必须存在；额外根来自

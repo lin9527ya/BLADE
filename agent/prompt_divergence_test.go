@@ -41,7 +41,7 @@ func TestPlannerPromptDivergenceContract(t *testing.T) {
 // 必须对**旧库里的可编辑模板**也生效。缺了「采纳后 consume」，提示会永远 active、
 // 每轮重复出现；缺了「低于操作约束」，模型可能把提示读成可以越界。
 func TestPlannerPromptHintLifecycleContract(t *testing.T) {
-	p := plannerSystem("g", "/d", "/w")
+	p := plannerSystem("g", "/d", "/w", "")
 	for _, want := range []struct{ needle, why string }{
 		{"战略提示（hints）的采纳纪律", "生命周期规则必须是代码持有块"},
 		{"consume_hint", "采纳后必须当轮标记已采纳"},

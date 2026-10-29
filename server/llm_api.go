@@ -581,4 +581,9 @@ type createTaskReq struct {
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 	// ExplorationPolicy(P20) 任务级探索策略覆盖层;省略/null=完全继承当时的全局默认。
 	ExplorationPolicy *policy.Override `json:"exploration_policy,omitempty"`
+	// PlannerPrompt 任务级 planner 提示词全文（创建时快照，上限 32KB）。
+	// 与 PlannerTemplateID 同传时本字段优先。
+	PlannerPrompt string `json:"planner_prompt,omitempty"`
+	// PlannerTemplateID 从模板库按 id 取正文并快照；省略/0 = 不覆盖。
+	PlannerTemplateID int64 `json:"planner_template_id,omitempty"`
 }

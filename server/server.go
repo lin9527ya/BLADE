@@ -238,6 +238,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 				}
 				return t, true
 			},
+			// planner_templates 的默认模板（四级链第 3 级；任务快照与 agent_prompts 优先）。
+			PlannerTemplateDefault: func() (string, bool) {
+				body, err := m.pg.DefaultPlannerTemplateBody()
+				if err != nil || strings.TrimSpace(body) == "" {
+					return "", false
+				}
+				return body, true
+			},
 			// P14：领域化压缩模板（settings.compaction_prompt）。空/缺失 → 内置 7 段模板。
 			CompactionPromptOverride: func() (string, bool) {
 				v, ok, err := m.pg.GetSetting(settingCompactionPrompt)

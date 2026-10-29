@@ -131,6 +131,9 @@ func run() int {
 	// capture backend logs into the in-memory sink (still to stderr) so the /logs
 	// page can show a live log stream. Do this first, to catch startup logs too.
 	server.StartLogCapture()
+	// Startup threshold: env applies before the DB exists; the stored setting is
+	// applied once the server is constructed (see below).
+	server.InitLogLevel(os.Getenv("BLADE_LOG_LEVEL"), "")
 
 	// Self-update bootstrap: swap in a staged binary, or count a post-swap boot
 	// attempt and roll back if the new build keeps dying. Must run before we open
@@ -173,10 +176,16 @@ func run() int {
 	// agent 降权（可选）：BLADE_AGENT_USER 设置后，Bash / 长任务 / 自定义工具以该用户
 	// 运行、文件工具被限制在 data+skill 目录内、子进程环境剔除疑似凭据。未设置时是
 	// no-op（保持 agent 与服务端同权的旧行为，见 deploy/README.md「信任模型」）。
+	// File-tool root confinement is independent of privilege dropping: install it
+	// even when BLADE_AGENT_USER is unset.
+	if err := server.InstallFileRootGuard(*dataDir, skillDir); err != nil {
+		log.Fatalf("[file-guard] 安装文件工具边界失败：%v", err)
+	}
 	if err := server.InstallAgentIsolation(*dataDir, config.BaseDir(), skillDir); err != nil {
 		log.Fatalf("[isolation] %v", err)
 	}
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	server.ApplyStoredLogLevel(mgr.PG())
 	// 重启恢复：把 PG 里已准入的任务重新拉起（构造器只装配，不在这里恢复——
 	// 见 Server.RestoreTaskRuntimes 的注释）。
 	srv.RestoreTaskRuntimes()

@@ -14,6 +14,7 @@ DELETE /api/llm/profiles/{id}	server.(*Server).pgDeleteProfile-fm
 DELETE /api/llm/records	server.(*Server).pgDeleteLLMRecords-fm
 DELETE /api/mcp/{id}	server.(*Server).pgDeleteMCP-fm
 DELETE /api/notify/channels/{id}	server.(*Server).notifyDeleteChannel-fm
+DELETE /api/planner-templates/{id}	server.(*Server).pgDeletePlannerTemplate-fm
 DELETE /api/skills/{name}	server.(*Server).fsDeleteSkill-fm
 DELETE /api/skills/{name}/files/{file...}	server.(*Server).fsDeletePath-fm
 DELETE /api/task-archives/{id}	server.(*Server).queueTaskArchiveDelete-fm
@@ -130,6 +131,7 @@ GET /api/notify/channels	server.(*Server).notifyListChannels-fm
 GET /api/notify/deliveries	server.(*Server).notifyListDeliveries-fm
 GET /api/notify/meta	server.(*Server).notifyMeta-fm
 GET /api/opsec/knowledge	server.(*Server).opsecKnowledge-fm
+GET /api/planner-templates	server.(*Server).pgListPlannerTemplates-fm
 GET /api/playbooks	server.(*Server).listPlaybooks-fm
 GET /api/playbooks/{id}	server.(*Server).getPlaybook-fm
 GET /api/report	server.(*Server).getReport-fm
@@ -203,8 +205,10 @@ PATCH /api/cves/{id}	server.(*Server).patchCVE-fm
 PATCH /api/exploration/findings/{id}	server.(*Server).patchFinding-fm
 PATCH /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 PATCH /api/notify/channels/{id}	server.(*Server).notifyUpdateChannel-fm
+PATCH /api/planner-templates/{id}	server.(*Server).pgUpdatePlannerTemplate-fm
 PATCH /api/playbooks/{id}	server.(*Server).patchPlaybook-fm
 PATCH /api/task-categories/{id}	server.(*Server).pgRenameTaskCategory-fm
+PATCH /api/task-categories/{id}/preset	server.(*Server).pgUpdateTaskCategoryPreset-fm
 PATCH /api/task-schedules/{id}	server.(*Server).patchTaskSchedule-fm
 PATCH /api/task-templates/{id}	server.(*Server).pgUpdateTaskTemplate-fm
 PATCH /api/tasks/{id}	server.(*Server).updateTaskMetadata-fm
@@ -275,6 +279,9 @@ POST /api/mcp/{id}/tools/toggle	server.(*Server).pgToggleMCPTool-fm
 POST /api/notify/channels	server.(*Server).notifyCreateChannel-fm
 POST /api/notify/channels/{id}/test	server.(*Server).notifyTestChannel-fm
 POST /api/notify/deliveries/{id}/retry	server.(*Server).notifyRetryDelivery-fm
+POST /api/planner-templates	server.(*Server).pgCreatePlannerTemplate-fm
+POST /api/planner-templates/validate	server.(*Server).pgValidatePlannerTemplate-fm
+POST /api/planner-templates/{id}/default	server.(*Server).pgSetDefaultPlannerTemplate-fm
 POST /api/scope/kill-switch	server.(*Server).setKillSwitch-fm
 POST /api/scope/resume-all	server.(*Server).resumeAllTasks-fm
 POST /api/settings/intel/test	server.(*Server).testIntelSource-fm

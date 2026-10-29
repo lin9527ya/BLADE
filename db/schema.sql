@@ -622,6 +622,25 @@ CREATE TABLE IF NOT EXISTS task_categories (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_task_categories_name ON task_categories(name, id);
+
+-- planner 模板库：任务创建时把正文快照进 tasks.planner_prompt_override，
+-- 之后编辑模板不影响已在跑的任务。is_default 用部分唯一索引保证至多一行。
+CREATE TABLE IF NOT EXISTS planner_templates (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_planner_templates_default ON planner_templates(is_default) WHERE is_default;
+CREATE INDEX IF NOT EXISTS idx_planner_templates_updated ON planner_templates(updated_at DESC, id DESC);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_planner_template_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS seed_first_intent BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_coverage_enabled BOOLEAN NOT NULL DEFAULT true;
 DROP TRIGGER IF EXISTS trg_task_categories_upd ON task_categories;
 CREATE TRIGGER trg_task_categories_upd BEFORE UPDATE ON task_categories
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

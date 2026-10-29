@@ -105,6 +105,8 @@ export function useSettingsState() {
   const [execMaxActive, setExecMaxActive] = React.useState("8");
   // 单条托管执行的最大存活分钟数（默认 120，0 = 不限）。
   const [execMaxAge, setExecMaxAge] = React.useState("120");
+  const [logLevel, setLogLevel] = React.useState<Settings["log_level"]>("info");
+  const [savingLogLevel, setSavingLogLevel] = React.useState(false);
   const [mcpConcurrent, setMcpConcurrent] = React.useState("2");
   const [mcpBreakerFails, setMcpBreakerFails] = React.useState("5");
   const [mcpBreakerCooldown, setMcpBreakerCooldown] = React.useState("60");
@@ -208,6 +210,7 @@ export function useSettingsState() {
     setExecProcs(String(s.exec_max_procs ?? 0));
     setExecMaxActive(String(s.exec_max_active ?? 8));
     setExecMaxAge(String(s.exec_max_age_minutes ?? 120));
+    setLogLevel(s.log_level ?? "info");
     setMcpConcurrent(String(s.mcp_max_concurrent_per_server ?? 2));
     setMcpBreakerFails(String(s.mcp_breaker_threshold ?? 5));
     setMcpBreakerCooldown(String(s.mcp_breaker_cooldown_sec ?? 60));
@@ -352,6 +355,19 @@ export function useSettingsState() {
       toast.error("保存失败：" + (e as Error).message);
     } finally {
       setSavingLimits(false);
+    }
+  };
+
+  const saveLogLevel = async () => {
+    setSavingLogLevel(true);
+    try {
+      const s2 = await api.setSettings({ log_level: logLevel });
+      apply(s2);
+      toast.success("日志级别已切换（立即生效）");
+    } catch (e) {
+      toast.error("保存失败：" + (e as Error).message);
+    } finally {
+      setSavingLogLevel(false);
     }
   };
 
@@ -973,6 +989,10 @@ export function useSettingsState() {
     execMaxActive,
     setExecMaxActive,
     execMaxAge,
+    logLevel,
+    setLogLevel,
+    savingLogLevel,
+    saveLogLevel,
     setExecMaxAge,
     mcpConcurrent,
     setMcpConcurrent,

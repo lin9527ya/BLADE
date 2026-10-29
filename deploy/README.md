@@ -357,6 +357,17 @@ sudo systemctl daemon-reload && sudo systemctl restart blade
 - 容器化（把执行面整体放进独立容器、不挂 `/opt/blade`、不给 DB 凭据）仍是边界更硬的方案；
   数据与密钥分家（`data/` 与密钥/配置不同用户）已经由本机制自动完成。
 
+### 9.1.1 文件工具边界（默认生效，不需要 root）
+
+从 v0.7.3 起，即使**没有**设置 `BLADE_AGENT_USER`，文件工具（Read/Write/Edit/
+MultiEdit/LS/Glob/Grep）也被限制在 `-data` 目录、skill 目录与
+`BLADE_AGENT_READ_ROOTS` 之内。提示注入诱导的 `/etc/passwd`、`~/.ssh/authorized_keys`、
+`jwt.key` 绝对路径会在工具解析层被拒。
+
+- 这是**文件工具层**边界，不是沙箱：`Bash` 仍可读全盘、仍能访问网络。
+- 安装边界后 `Grep` 不再走 ripgrep 子进程（逐个文件过守卫），大目录检索会变慢。
+- 仅排障时可设 `BLADE_AGENT_FILE_ROOTS_OPEN=1` 关闭；启动日志会明确告警。
+
 ### 9.2 验收
 
 在任意 worker 的 Bash 里：

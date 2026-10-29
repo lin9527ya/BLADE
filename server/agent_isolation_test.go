@@ -83,9 +83,10 @@ func TestAgentEnvDenied(t *testing.T) {
 }
 
 func TestAgentPathGuardAllowsRootsOnly(t *testing.T) {
-	snapshotIso(t)
+	oldGuard := fileGuard
+	t.Cleanup(func() { fileGuard = oldGuard })
 	root := t.TempDir()
-	agentIso = agentIsoState{enabled: true, roots: []string{root}}
+	fileGuard = fileGuardState{installed: true, roots: []string{root}}
 
 	if err := agentPathGuard(root); err != nil {
 		t.Fatalf("根目录本身被拒：%v", err)
@@ -102,10 +103,10 @@ func TestAgentPathGuardAllowsRootsOnly(t *testing.T) {
 		t.Fatal("/etc/passwd 应被拒")
 	}
 
-	// 未启用隔离 = 不设限（保持旧行为）。
-	agentIso = agentIsoState{}
+	// 未安装边界（显式排障开关）= 不设限。
+	fileGuard = fileGuardState{}
 	if err := agentPathGuard("/etc/passwd"); err != nil {
-		t.Fatalf("未启用时不该拦截：%v", err)
+		t.Fatalf("未安装边界时不该拦截：%v", err)
 	}
 }
 

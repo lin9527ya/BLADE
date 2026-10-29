@@ -192,11 +192,46 @@ func detectPython() string {
 	return ""
 }
 
+// validatePythonInterp restricts a configured interpreter to an absolute,
+// executable Python binary. Without this, PUT {"python_interpreter":"/bin/sh"}
+// turns every script-type custom tool into a shell runner.
+func validatePythonInterp(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return nil // empty = fall back to auto-detection
+	}
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("必须是绝对路径")
+	}
+	rawBase := strings.ToLower(filepath.Base(p))
+	base := strings.TrimSuffix(rawBase, ".exe")
+	ok := base == "python" || base == "pypy" || base == "pypy3" || strings.HasPrefix(base, "python3")
+	if !ok {
+		return fmt.Errorf("解释器必须是 python（basename 形如 python / python3 / python3.11），当前: %s", base)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		return fmt.Errorf("路径不存在或不可读: %w", err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("路径是目录")
+	}
+	if fi.Mode()&0o111 == 0 && !strings.HasSuffix(rawBase, ".exe") {
+		return fmt.Errorf("文件不可执行")
+	}
+	return nil
+}
+
 // pythonInterpreter resolves the interpreter: user-set > stored auto-detect > live
 // detect. "" only when truly none found.
 func (s *Server) pythonInterpreter() string {
 	if v, ok, _ := s.m.pg.GetSetting(settingPythonInterp); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
+		v = strings.TrimSpace(v)
+		// A stored value may predate validation (or the binary may have moved).
+		// Fall back to detection instead of executing an arbitrary binary.
+		if validatePythonInterp(v) == nil {
+			return v
+		}
+		log.Printf("[custom-tool] 已存 python_interpreter 不合法，改用自动检测: %q", v)
 	}
 	return detectPython()
 }
@@ -205,6 +240,9 @@ func (s *Server) pythonInterpreter() string {
 // (never clobbers a user-set value).
 func (s *Server) seedPythonInterpreter() {
 	if v, ok, _ := s.m.pg.GetSetting(settingPythonInterp); ok && strings.TrimSpace(v) != "" {
+		if err := validatePythonInterp(strings.TrimSpace(v)); err != nil {
+			log.Printf("[custom-tool] 已存 python_interpreter 不合法，启动时忽略: %q（%v）", strings.TrimSpace(v), err)
+		}
 		return
 	}
 	if p := detectPython(); p != "" {

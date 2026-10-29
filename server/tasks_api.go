@@ -679,13 +679,36 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// 场景预设：分类未显式指定的项按分类默认值带出；显式值优先。
+	seedFirstIntent := req.SeedFirstIntent
+	coverageEnabled := req.CoverageEnabled
+	plannerTemplateID := req.PlannerTemplateID
+	if req.CategoryID != nil {
+		if category, cerr := s.m.pg.GetTaskCategory(*req.CategoryID); cerr == nil && category != nil {
+			if seedFirstIntent == nil {
+				seedFirstIntent = &category.SeedFirstIntent
+			}
+			if coverageEnabled == nil {
+				coverageEnabled = &category.DefaultCoverageEnabled
+			}
+			if plannerTemplateID <= 0 {
+				plannerTemplateID = category.DefaultPlannerTemplateID
+			}
+		}
+	}
+	plannerPrompt, err := s.snapshotPlannerPrompt(req.PlannerPrompt, plannerTemplateID)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
-		CoverageEnabled:   req.CoverageEnabled,
+		CoverageEnabled:   coverageEnabled,
 		InterceptRules:    interceptRules,
 		ExplorationPolicy: policyDoc,
+		PlannerPrompt:     plannerPrompt,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
@@ -702,7 +725,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
 	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。
 	// launchTask 内部异步,不阻塞 UI —— 目标分解在后台可见地进行。
-	s.launchTask(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent)
+	s.launchTask(t, req.Description+" "+req.Goal, seedFirstIntent != nil && *seedFirstIntent)
 	writeJSON(w, 201, taskDTO(t, s.resolvedTaskStatus(t)))
 }
 

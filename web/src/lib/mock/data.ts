@@ -162,6 +162,9 @@ export const taskCategories: TaskCategory[] = [
     id: 1,
     name: "外部评估",
     task_count: 2,
+    seed_first_intent: false,
+    default_coverage_enabled: true,
+    default_planner_template_id: 0,
     created_at: T("2026-07-18T08:00:00Z"),
     updated_at: T("2026-07-25T08:00:00Z"),
   },
@@ -169,6 +172,9 @@ export const taskCategories: TaskCategory[] = [
     id: 2,
     name: "API 专项",
     task_count: 2,
+    seed_first_intent: false,
+    default_coverage_enabled: true,
+    default_planner_template_id: 0,
     created_at: T("2026-07-19T08:00:00Z"),
     updated_at: T("2026-07-24T08:00:00Z"),
   },
@@ -3345,6 +3351,7 @@ export const tools: Tool[] = [
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 export const settings: Settings = {
+  log_level: "info",
   traffic_capture: true,
   agent_traffic_binding: false,
   agent_loot_exec: false,

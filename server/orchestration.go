@@ -252,6 +252,8 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"timeout_seconds":        map[string]any{"type": "integer", "description": "可选：任务级超时(秒)。到点后触发优雅收尾并进入 timeout 终态；留空或 0 = 不限时"},
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
+			"planner_template_id":    map[string]any{"type": "integer", "description": "可选：从 planner 模板库按 id 选模板，正文在创建时快照进子任务；与 planner_prompt 同传时 planner_prompt 优先"},
+			"planner_prompt":         strParam("可选：子任务 planner 提示词全文覆盖（上限 32KB），创建时快照，运行中不可改"),
 		}, "description", "goal"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -263,6 +265,8 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				TimeoutSeconds       int             `json:"timeout_seconds"`
 				PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`
 				SeedFirstIntent      bool            `json:"seed_first_intent"`
+				PlannerTemplateID    int64           `json:"planner_template_id"`
+				PlannerPrompt        string          `json:"planner_prompt"`
 			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Description) == "" {
@@ -307,11 +311,16 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			if pin != nil {
 				llmIDs = []int64{*pin}
 			}
+			plannerPrompt, perr := s.snapshotPlannerPrompt(a.PlannerPrompt, a.PlannerTemplateID)
+			if perr != nil {
+				return actool.Errorf("planner 提示词无效：" + perr.Error()), nil
+			}
 			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
 				SourceTaskIDs:        sourceIDs,
 				LLMProfileIDs:        llmIDs,
 				TimeoutSeconds:       a.TimeoutSeconds,
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
+				PlannerPrompt:        plannerPrompt,
 			})
 			if err != nil {
 				return actool.Errorf(err.Error()), nil

@@ -230,7 +230,7 @@ func TestCVEContextAndPromptDiscipline(t *testing.T) {
 	}
 	for name, body := range map[string]string{
 		"worker":  workerSystem("", "", ""),
-		"planner": plannerSystem("goal", "/data", "/data"),
+		"planner": plannerSystem("goal", "/data", "/data", ""),
 		"main":    mainAgentSystem("goal", "/data", "/data"),
 	} {
 		if !strings.Contains(body, "CVE") || !strings.Contains(body, "不是证据") {

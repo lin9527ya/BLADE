@@ -39,6 +39,7 @@ import type {
   ConstraintCompileResult,
   Conversation,
   ConvTokenSummary,
+  PlannerTemplate,
   DashboardSummary,
   CoverageAssetRefs,
   CoverageGraphData,
@@ -348,6 +349,9 @@ export const api = {
     interceptRules?: AssetInterceptRuleInput[];
     // P20：任务级探索策略覆盖层；省略 = 完全继承当时的全局默认（服务端解析成快照落库）。
     explorationPolicy?: ExplorationPolicyOverride;
+    // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
+    plannerPrompt?: string;
+    plannerTemplateId?: number;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -363,12 +367,26 @@ export const api = {
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       exploration_policy: input.explorationPolicy ?? null, // P20 探索策略覆盖层(null=继承全局默认)
+      planner_prompt: input.plannerPrompt ?? "",
+      planner_template_id: input.plannerTemplateId ?? 0,
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
+  updateTaskCategoryPreset: (
+    id: number,
+    preset: { seed_first_intent?: boolean; default_coverage_enabled?: boolean; default_planner_template_id?: number },
+  ) => patch<TaskCategory>(`/task-categories/${id}/preset`, preset),
+  plannerTemplates: () =>
+    get<{ templates: PlannerTemplate[] }>("/planner-templates").then((r) => arr(r.templates)),
+  createPlannerTemplate: (name: string, body: string) => post<PlannerTemplate>("/planner-templates", { name, body }),
+  updatePlannerTemplate: (id: number, name: string, body: string) =>
+    patch<PlannerTemplate>(`/planner-templates/${id}`, { name, body }),
+  deletePlannerTemplate: (id: number) => del<{ deleted: boolean }>(`/planner-templates/${id}`),
+  setDefaultPlannerTemplate: (id: number) => post<PlannerTemplate>(`/planner-templates/${id}/default`, {}),
+  validatePlannerTemplate: (body: string) => post<{ ok: boolean }>("/planner-templates/validate", { body }),
   renameTaskCategory: (id: number, name: string) => patch<TaskCategory>(`/task-categories/${id}`, { name }),
   deleteTaskCategory: (id: number) => del<{ deleted: number }>(`/task-categories/${id}`),
   updateTaskCategory: (taskId: string, categoryId?: number) =>

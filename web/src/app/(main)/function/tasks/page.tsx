@@ -8,6 +8,7 @@ import { ArchiveIcon, DownloadIcon, PauseIcon, PlayIcon, SearchIcon, XIcon } fro
 import { toast } from "sonner";
 
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
+import { PlannerTemplateManager } from "@/components/planner-template-manager";
 import { ScheduleTasksDialog } from "@/components/schedule-tasks-dialog";
 import { TablePagination } from "@/components/table-pagination";
 /* removed: @/components/ui/badge */
@@ -753,6 +754,7 @@ export default function TasksPage() {
                   onChanged={refreshCategoriesAndTasks}
                   onTaskMoved={applyTaskCategoryMove}
                 />
+                <PlannerTemplateManager />
                 <ScheduleTasksDialog categories={categories} onCreated={refreshCategoriesAndTasks} />
                 <CreateTaskSheet
                   categories={categories}

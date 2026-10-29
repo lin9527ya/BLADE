@@ -52,13 +52,15 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
-import type { Company, Task, TaskCategory } from "@/lib/types";
+import type { Company, PlannerTemplate, Task, TaskCategory } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // 任务分类：分类选择器、公司选择器、拖拽落点与分类管理弹窗。
@@ -383,6 +385,8 @@ export function CategoryManagementDialog({
   const [selectedView, setSelectedView] = React.useState<CategoryManagementView>("new");
   const [draftName, setDraftName] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [presetSaving, setPresetSaving] = React.useState(false);
+  const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [movingTaskID, setMovingTaskID] = React.useState<string | null>(null);
@@ -392,6 +396,14 @@ export function CategoryManagementDialog({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor),
   );
+
+  React.useEffect(() => {
+    if (!open) return;
+    void api
+      .plannerTemplates()
+      .then(setPlannerTemplates)
+      .catch(() => setPlannerTemplates([]));
+  }, [open]);
 
   React.useEffect(() => {
     if (open && !wasOpen.current) {
@@ -461,6 +473,24 @@ export function CategoryManagementDialog({
       toast.error(`${selectedView === "new" ? "创建" : "更新"}分类失败：${(error as Error).message}`);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // 场景预设：选中已有分类时，三个开关即时保存（不依赖"保存名称"按钮）。
+  async function savePreset(patch: {
+    seed_first_intent?: boolean;
+    default_coverage_enabled?: boolean;
+    default_planner_template_id?: number;
+  }) {
+    if (!selectedCategory || presetSaving) return;
+    setPresetSaving(true);
+    try {
+      await api.updateTaskCategoryPreset(selectedCategory.id, patch);
+      onChanged();
+    } catch (error) {
+      toast.error(`保存场景预设失败：${(error as Error).message}`);
+    } finally {
+      setPresetSaving(false);
     }
   }
 
@@ -596,6 +626,58 @@ export function CategoryManagementDialog({
                           ? `当前有 ${selectedCategory.task_count} 个任务使用该分类。重命名后会同步更新任务列表。`
                           : "创建后可在新建任务和任务列表筛选中使用。"}
                       </FieldDescription>
+                    </Field>
+                  )}
+                  {selectedCategory && (
+                    <Field>
+                      <FieldLabel>场景预设</FieldLabel>
+                      <FieldDescription>
+                        新建任务选中该分类时带出以下默认值；任务表单里仍可逐项覆盖。
+                      </FieldDescription>
+                      <div className="mt-2 flex flex-col gap-2">
+                        <label className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={selectedCategory.seed_first_intent}
+                            disabled={presetSaving}
+                            onCheckedChange={(checked) => void savePreset({ seed_first_intent: checked === true })}
+                          />
+                          默认下发种子意图
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={selectedCategory.default_coverage_enabled}
+                            disabled={presetSaving}
+                            onCheckedChange={(checked) =>
+                              void savePreset({ default_coverage_enabled: checked === true })
+                            }
+                          />
+                          默认启用资产覆盖度
+                        </label>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-xs text-muted-foreground">默认 planner 模板</span>
+                          <Select
+                            value={String(selectedCategory.default_planner_template_id ?? 0)}
+                            onValueChange={(value) =>
+                              void savePreset({ default_planner_template_id: Number(value) })
+                            }
+                            disabled={presetSaving}
+                          >
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder="跟随全局" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                <SelectItem value="0">跟随全局</SelectItem>
+                                {plannerTemplates.map((tpl) => (
+                                  <SelectItem key={tpl.id} value={String(tpl.id)}>
+                                    {tpl.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
                     </Field>
                   )}
                   {selectedView !== "new" && (

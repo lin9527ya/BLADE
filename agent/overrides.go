@@ -17,6 +17,8 @@ type Overrides struct {
 	PromptOverride func(agentKey string) (string, bool)
 	// PromptAppend 返回渲染在正文之后、代码尾段之前的追加段（可为空）。
 	PromptAppend func(agentKey string) (string, bool)
+	// PlannerTemplateDefault 返回 planner_templates 的默认模板正文（四级链第 3 级）。
+	PlannerTemplateDefault func() (string, bool)
 	// CompactionPromptOverride 返回领域化压缩模板（P14）。
 	CompactionPromptOverride func() (string, bool)
 	// ArtifactLanguage 返回出站产物语言（P41）。agent 每 run 现读，改完即时生效。
@@ -54,6 +56,7 @@ type Overrides struct {
 func SetOverrides(o Overrides) {
 	PromptOverride = o.PromptOverride
 	PromptAppend = o.PromptAppend
+	PlannerTemplateDefault = o.PlannerTemplateDefault
 	CompactionPromptOverride = o.CompactionPromptOverride
 	ArtifactLanguage = o.ArtifactLanguage
 	WrapupOverride = o.WrapupOverride

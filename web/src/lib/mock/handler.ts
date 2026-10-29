@@ -1240,6 +1240,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       id: mockTaskCategories.reduce((maximum, item) => Math.max(maximum, item.id), 0) + 1,
       name,
       task_count: 0,
+      seed_first_intent: false,
+      default_coverage_enabled: true,
+      default_planner_template_id: 0,
       created_at: now,
       updated_at: now,
     };

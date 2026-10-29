@@ -104,3 +104,27 @@ func TestPutSettingsAppliesRuntimeAfterCommit(t *testing.T) {
 		t.Fatal("runtime apply did not run after commit")
 	}
 }
+
+// A configured interpreter must not be able to redirect script tools to an
+// arbitrary binary. The write path is the only place this can be enforced
+// before execution.
+func TestSettingsRejectsNonPythonInterpreter(t *testing.T) {
+	s, _, request := trafficEvidenceServer(t)
+	before, had, _ := s.m.pg.GetSetting(settingPythonInterp)
+	t.Cleanup(func() {
+		if had {
+			_ = s.m.pg.SetSetting(settingPythonInterp, before)
+			return
+		}
+		_, _ = s.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPythonInterp)
+	})
+
+	w := request("PUT", "/api/settings", `{"python_interpreter":"/bin/sh"}`)
+	if w.Code != 400 {
+		t.Fatalf("non-python interpreter should be rejected, got %d %s", w.Code, w.Body)
+	}
+	after, _, _ := s.m.pg.GetSetting(settingPythonInterp)
+	if after != before {
+		t.Fatalf("rejected value was persisted: %q → %q", before, after)
+	}
+}

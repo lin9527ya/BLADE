@@ -38,6 +38,7 @@ import {
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
@@ -45,6 +46,7 @@ import type {
   AssetInterceptRuleInput,
   Company,
   CustomRule,
+  PlannerTemplate,
   ExplorationPolicyDefault,
   LLMProfile,
   Task,
@@ -172,6 +174,10 @@ export function CreateTaskSheet({
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
+  // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
+  const [presetAppliedFor, setPresetAppliedFor] = React.useState<number | undefined>(undefined);
+  const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
+  const [plannerTemplateID, setPlannerTemplateID] = React.useState<number>(0);
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
   // P20 探索策略:默认继承当时的全局默认(服务端解析成快照);勾选"自定义"才发覆盖层。
   const [policyCustom, setPolicyCustom] = React.useState(false);
@@ -192,6 +198,10 @@ export function CreateTaskSheet({
       .llmProfiles()
       .then(setProfiles)
       .catch(() => setProfiles([]));
+    api
+      .plannerTemplates()
+      .then(setPlannerTemplates)
+      .catch(() => setPlannerTemplates([]));
     api
       .companies()
       .then(setCompanies)
@@ -221,6 +231,17 @@ export function CreateTaskSheet({
   }
 
   // 全局默认策略：建任务时展示"将继承什么"，勾了自定义就用它当编辑起点。
+  // 选中分类时套用其场景预设；同一个分类只自动套用一次，之后用户手改不被覆盖。
+  React.useEffect(() => {
+    if (!open || categoryID == null || presetAppliedFor === categoryID) return;
+    const category = categories.find((c) => c.id === categoryID);
+    if (!category) return;
+    setPresetAppliedFor(categoryID);
+    setSeedFirstIntent(category.seed_first_intent);
+    setCoverageEnabled(category.default_coverage_enabled);
+    if (category.default_planner_template_id > 0) setPlannerTemplateID(category.default_planner_template_id);
+  }, [open, categoryID, categories, presetAppliedFor]);
+
   React.useEffect(() => {
     if (!open) return;
     let alive = true;
@@ -264,6 +285,7 @@ export function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        plannerTemplateId: plannerTemplateID > 0 ? plannerTemplateID : undefined,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -356,7 +378,32 @@ export function CreateTaskSheet({
                 onCategoryCreated={onCategoriesChanged}
                 portalContainer={sheetContentRef}
               />
-              <FieldDescription>可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。</FieldDescription>
+              <FieldDescription>
+                可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。分类配置了场景预设时会带出种子意图 / 覆盖度 / planner 模板。
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="planner-template">planner 模板</FieldLabel>
+              <Select
+                value={String(plannerTemplateID)}
+                onValueChange={(v) => setPlannerTemplateID(Number(v))}
+              >
+                <SelectTrigger id="planner-template" className="w-full">
+                  <SelectValue placeholder="跟随全局 / 分类默认" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="0">跟随全局 / 分类默认</SelectItem>
+                    {plannerTemplates.map((tpl) => (
+                      <SelectItem key={tpl.id} value={String(tpl.id)}>
+                        {tpl.name}
+                        {tpl.is_default ? "（默认）" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FieldDescription>创建时把模板正文快照进任务；之后修改模板不影响已建任务。</FieldDescription>
             </Field>
             <div className="grid gap-2">
               <Label htmlFor="description">描述</Label>

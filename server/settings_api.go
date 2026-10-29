@@ -152,9 +152,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"proxy_status":                  proxyStatus.Candidates,
 		"proxy_egress_ip_url":           s.m.EgressIPURL(),
 		"python_interpreter":            strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":                       s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"task_concurrency_enabled":      concOn,                      // 任务并发上限开关(默认关)
-		"task_concurrency_limit":        concLimit,                   // 同时运行任务上限(开启后默认5)
+		"log_level":                     LogLevelName(),
+		"workers":                       s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"task_concurrency_enabled":      concOn,        // 任务并发上限开关(默认关)
+		"task_concurrency_limit":        concLimit,     // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -286,6 +287,7 @@ type settingsRequest struct {
 	ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
 	ProxyEgressIPURL    *string `json:"proxy_egress_ip_url"`
 	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
+	LogLevel            *string `json:"log_level"`          // debug|info|warn|error；热切换
 	Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 	// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
 	ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
@@ -561,7 +563,24 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if req.PythonInterp != nil {
-		pending[settingPythonInterp] = strings.TrimSpace(*req.PythonInterp)
+		p := strings.TrimSpace(*req.PythonInterp)
+		if err := validatePythonInterp(p); err != nil {
+			writeErr(w, 400, "python_interpreter 不合法："+err.Error())
+			return
+		}
+		pending[settingPythonInterp] = p
+	}
+	if req.LogLevel != nil {
+		level := strings.ToLower(strings.TrimSpace(*req.LogLevel))
+		if _, ok := parseLogLevel(level); !ok {
+			writeErr(w, 400, "log_level 必须是 debug/info/warn/error 之一")
+			return
+		}
+		pending[settingLogLevel] = level
+		runtimeApplies = append(runtimeApplies, func() error {
+			SetLogLevel(level)
+			return nil
+		})
 	}
 	if req.LLMRecord != nil {
 		// 录制器每次调用读取该标志，切换即时生效，无需 applyLLM 重建。

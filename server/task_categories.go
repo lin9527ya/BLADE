@@ -102,6 +102,68 @@ func (s *Server) pgRenameTaskCategory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, category)
 }
 
+// taskCategoryPresetRequest carries the scenario defaults. Pointers distinguish
+// "leave unchanged" from an explicit false/0.
+type taskCategoryPresetRequest struct {
+	SeedFirstIntent          *bool  `json:"seed_first_intent"`
+	DefaultCoverageEnabled   *bool  `json:"default_coverage_enabled"`
+	DefaultPlannerTemplateID *int64 `json:"default_planner_template_id"`
+}
+
+func (s *Server) pgUpdateTaskCategoryPreset(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "bad task category id")
+		return
+	}
+	current, err := pg.GetTaskCategory(id)
+	if err != nil {
+		writeTaskCategoryError(w, err)
+		return
+	}
+	if current == nil {
+		writeErr(w, http.StatusNotFound, "task category not found")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTaskCategoryRequestBytes)
+	var req taskCategoryPresetRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	preset := db.TaskCategoryPreset{
+		SeedFirstIntent:          current.SeedFirstIntent,
+		DefaultCoverageEnabled:   current.DefaultCoverageEnabled,
+		DefaultPlannerTemplateID: current.DefaultPlannerTemplateID,
+	}
+	if req.SeedFirstIntent != nil {
+		preset.SeedFirstIntent = *req.SeedFirstIntent
+	}
+	if req.DefaultCoverageEnabled != nil {
+		preset.DefaultCoverageEnabled = *req.DefaultCoverageEnabled
+	}
+	if req.DefaultPlannerTemplateID != nil {
+		if *req.DefaultPlannerTemplateID > 0 {
+			tpl, err := pg.GetPlannerTemplate(*req.DefaultPlannerTemplateID)
+			if err != nil || tpl == nil {
+				writeErr(w, http.StatusBadRequest, "planner 模板不存在")
+				return
+			}
+		}
+		preset.DefaultPlannerTemplateID = *req.DefaultPlannerTemplateID
+	}
+	category, err := pg.UpdateTaskCategoryPreset(id, preset)
+	if err != nil {
+		writeTaskCategoryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, category)
+}
+
 func (s *Server) pgDeleteTaskCategory(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathInt(r, "id")
 	if !ok {

@@ -43,7 +43,23 @@ type logSinkHandler struct {
 	attrs []slog.Attr
 }
 
-func (h *logSinkHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.min }
+func (h *logSinkHandler) Enabled(_ context.Context, l slog.Level) bool {
+	threshold := logThreshold.Load()
+	// Map the record level onto the same scale as the ring threshold so the
+	// settings hot switch applies to both paths.
+	var mapped int32
+	switch {
+	case l >= slog.LevelError:
+		mapped = int32(logLevelError)
+	case l >= slog.LevelWarn:
+		mapped = int32(logLevelWarn)
+	case l >= slog.LevelInfo:
+		mapped = int32(logLevelInfo)
+	default:
+		mapped = int32(logLevelDebug)
+	}
+	return mapped >= threshold
+}
 
 func (h *logSinkHandler) Handle(_ context.Context, r slog.Record) error {
 	tag := "app"
