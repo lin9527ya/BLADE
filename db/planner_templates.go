@@ -226,14 +226,24 @@ func (d *DB) SeedPlannerTemplateIfEmpty(name, body string, isDefault bool) (bool
 	if err != nil {
 		return false, err
 	}
-	res, err := d.Exec(`INSERT INTO planner_templates(name, nkey, body, builtin, is_default)
+	// 冲突时只刷新**内置行**的正文：builtin 行在 API 层是只读的（不能改名/改正文/删除），
+	// 所以它没有"用户改动"要保护，跟着代码走才是对的——否则改了模板正文的旧库永远不会更新。
+	// 用户自建的同名模板（builtin=false）保持原样，不会被覆盖。
+	// xmax = 0 表示这一行是本次 INSERT 的（而不是 UPDATE 命中的），用它区分
+	// "首次播种"与"刷新内置正文"——调用方只在首次播种时补建同名场景分类。
+	var inserted bool
+	err = d.QueryRow(`INSERT INTO planner_templates(name, nkey, body, builtin, is_default)
 VALUES ($1,$2,$3,true,$4)
-ON CONFLICT (nkey) DO NOTHING`, name, nkey, body, isDefault)
+ON CONFLICT (nkey) DO UPDATE SET body=EXCLUDED.body, updated_at=now()
+WHERE planner_templates.builtin
+RETURNING (xmax = 0)`, name, nkey, body, isDefault).Scan(&inserted)
+	if err == sql.ErrNoRows {
+		return false, nil // nkey 撞上用户自建模板（builtin=false）：不动它
+	}
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	return inserted, nil
 }
 
 // GetPlannerTemplateByNKey 按 nkey 查（场景分类按模板名解析 id 用）。

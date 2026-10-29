@@ -87,7 +87,8 @@ docker compose up -d --build  # 本地构建镜像 + postgres
 # → http://localhost:9898
 ```
 
-镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
+镜像已含常用工具（ripgrep/curl/vim/npm/nmap…，以及移动端用的 adb/jadx/apktool —— 版本与校验值在 Dockerfile 固定）；
+`./skills` 与 `./data` 以绑定挂载持久化。本地编译部署不带这些系统工具，需要时自行安装。
 Compose 使用本仓 `build: .`，不会再拉取上游镜像；Playwright/MCP 版本在 Dockerfile 中固定。
 
 远程 MCP 可在系统设置中选择 `http`（Streamable HTTP）或 `sse`（旧版 SSE）。

@@ -112,16 +112,18 @@ func TestSeedPlannerTemplateIfEmpty(t *testing.T) {
 	if err != nil || !inserted {
 		t.Fatalf("首插应成功: inserted=%v err=%v", inserted, err)
 	}
+	// 重复播种：内置行的正文**跟着代码走**。builtin 行在 API 层只读，没有用户改动要保护，
+	// 否则改了模板正文的旧库永远更新不到。
 	inserted, err = d.SeedPlannerTemplateIfEmpty(name, "改过的正文", false)
 	if err != nil || inserted {
-		t.Fatalf("重复播种应 no-op: inserted=%v err=%v", inserted, err)
+		t.Fatalf("重复播种不应算首插: inserted=%v err=%v", inserted, err)
 	}
 	got, err := d.GetPlannerTemplateByNKey(strings.ToLower(name))
 	if err != nil || got == nil {
 		t.Fatal(err)
 	}
-	if got.Body != "首版 {{.Goal}}" || !got.Builtin {
-		t.Fatalf("播种不应覆盖已有正文: %+v", got)
+	if got.Body != "改过的正文" || !got.Builtin {
+		t.Fatalf("内置行正文应刷新: %+v", got)
 	}
 
 	// 用户自建同名（builtin=false）也不该被改写成内置。

@@ -85,8 +85,15 @@ func TestPlannerDomainSections(t *testing.T) {
 			t.Fatalf("「移动端」缺少 %q", want)
 		}
 	}
-	if !strings.Contains(mobile, "不假设工具链可用") {
-		t.Fatal("「移动端」必须写明工具链不一定可用（镜像未预装 adb/jadx/apktool/frida）")
+	// 镜像已预装 adb / jadx / apktool（Dockerfile 固定版本），但 frida、模拟器、
+	// 越狱/root 设备不保证有——模板必须同时说清「有什么」和「先验证再依赖」。
+	for _, want := range []string{"Docker 镜像自带 adb / jadx / apktool", "先跑一次版本命令确认"} {
+		if !strings.Contains(mobile, want) {
+			t.Fatalf("「移动端」缺少工具链措辞 %q", want)
+		}
+	}
+	if strings.Contains(mobile, "`") {
+		t.Fatal("模板正文不能出现反引号（Go 原始字符串字面量会截断）")
 	}
 	// 审核流与 executor_key 不在 BLADE，模板里不能出现它们的工具名。
 	banned := []string{"add_review_intent", "update_intent", "cancel_intent", "executor_key"}

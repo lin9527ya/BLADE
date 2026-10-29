@@ -47,6 +47,17 @@ func TestSeedPlannerDomainTemplates(t *testing.T) {
 		}
 	}
 
+	// 再次播种：内置模板正文跟着代码走，分类预设不被改写。
+	if _, err := pg.Exec(`UPDATE planner_templates SET body='旧正文' WHERE nkey='内网渗透'`); err != nil {
+		t.Fatal(err)
+	}
+	seedPlannerDomainTemplates(pg)
+	if tpl, err := pg.GetPlannerTemplateByNKey("内网渗透"); err != nil || tpl == nil {
+		t.Fatal(err)
+	} else if tpl.Body != agent.PlannerDomainSeeds()["内网渗透"] {
+		t.Fatal("内置模板正文应随代码刷新")
+	}
+
 	// 用户把分类预设清空后再次播种：不覆盖。
 	first, err := pg.GetTaskCategoryByNKey("内网渗透")
 	if err != nil || first == nil {

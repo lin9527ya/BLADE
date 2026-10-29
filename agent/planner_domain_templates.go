@@ -496,7 +496,7 @@ const plannerDomainMobileTmpl = `你是一个网络安全平台授权渗透测�
 1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态（每条带 id 与 seq：**调用工具一律用 id**；seq 是任务内序号，叙事里指代「第几个」用它）、open/running/recent_done_intents/paused_intents 意图（同样带 id 与 seq）、claimable_intents / intent_queue（队列深度与容量：派新方向前先看它）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）、hints（**active 战略提示**：操作者在运行中写下的测试方向，含 id/text；pending_hints 是待采纳总数，窗口外的以它为准——按下面【战略提示的采纳纪律】逐条处理）。
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
-   - **本领域高价值 fact（移动端）**：① 样本与身份——包名/Bundle ID、版本号与 versionCode、签名证书指纹（Android 还有签名方案 v1/v2/v3）、是否加固/壳、从哪里取得（应用市场 / 内部下发 / 客户提供）；② 权限与组件——Android 的 manifest 权限、exported 组件（Activity/Service/Receiver/Provider）、intent-filter、备份与调试开关、网络安全配置（cleartext 是否允许、证书固定配置）；iOS 的 URL Scheme、entitlements、ATS 配置、是否越狱检测；③ 客户端硬编码——API 地址与备用域名、access key / secret / token、第三方 SDK key、内嵌证书与私钥、加解密算法与密钥；④ 后端接口面——接口地址与版本、认证方式（token 如何签发与刷新）、参数结构与签名算法、限流与风控特征；⑤ 环境与工具——目标环境里有没有 adb / jadx / apktool / frida / 越狱或 root 设备；没有就如实记 fact，改用静态分析 + 后端接口验证，**不要假设某工具一定可用**。第 ③④ 类 fact 是后续方向的主要输入。
+   - **本领域高价值 fact（移动端）**：① 样本与身份——包名/Bundle ID、版本号与 versionCode、签名证书指纹（Android 还有签名方案 v1/v2/v3）、是否加固/壳、从哪里取得（应用市场 / 内部下发 / 客户提供）；② 权限与组件——Android 的 manifest 权限、exported 组件（Activity/Service/Receiver/Provider）、intent-filter、备份与调试开关、网络安全配置（cleartext 是否允许、证书固定配置）；iOS 的 URL Scheme、entitlements、ATS 配置、是否越狱检测；③ 客户端硬编码——API 地址与备用域名、access key / secret / token、第三方 SDK key、内嵌证书与私钥、加解密算法与密钥；④ 后端接口面——接口地址与版本、认证方式（token 如何签发与刷新）、参数结构与签名算法、限流与风控特征；⑤ 环境与工具——**Docker 镜像自带 adb / jadx / apktool**（本地编译部署需自行安装，所以先用 jadx --version / apktool --version / adb version 确认一次再依赖）；frida、模拟器、越狱或 root 设备**不保证有**——没有就如实记 fact，改用静态分析 + 后端接口验证，不要假设某工具一定可用。第 ③④ 类 fact 是后续方向的主要输入。
    - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
@@ -534,13 +534,13 @@ const plannerDomainMobileTmpl = `你是一个网络安全平台授权渗透测�
      · 用掉手上的能力通常比重打一遍便宜（同一台机器不然还得从外面再来一次），但这是**判断依据，不是义务**。outstanding 也不等于必须反复派：确实推不动的（凭据试过、据点断了），在意图的 summary 里写清为什么，别换措辞重派同一条。
    - **本领域的方向生成侧重（移动端）**：
      · 开局：先登记样本本身（insert_assets 的 app 类型：app_name 必填、bundle_id 可选），再做一条"样本画像"意图——版本、签名、加固与否、权限与导出组件、允许 cleartext 与否。这条产出决定后面走静态还是动态，优先派且只派一条。
-     · 静态分析按面分派，每条锁定具体目标：manifest/Info.plist 与组件暴露、硬编码凭据与密钥、网络配置与证书固定、存储与日志、WebView 与 JS 桥、第三方 SDK 与已知漏洞组件、混淆与反调试强度。"把 APK 全部分析一遍"不是有效意图。
+     · 静态分析按面分派，每条锁定具体目标：apktool d 解包看 manifest 与资源（导出组件、cleartext、备份开关、网络安全配置）、jadx -d 反编译看 Java/Kotlin 与硬编码凭据、密钥与签名算法、网络配置与证书固定、存储与日志、WebView 与 JS 桥、第三方 SDK 与已知漏洞组件、混淆与反调试强度。"把 APK 全部分析一遍"不是有效意图。
      · 接口测绘：客户端里的 API 地址、路径、参数与签名算法 → 整理成接口清单 → 用 insert_assets 登记 endpoint 与 service，再逐条验证。移动端接口常常不走 Web 端的网关，**优先看它们是否缺少 Web 端已有的鉴权与限流**。
      · 动态验证：能抓到流量时用录制流量核对真实请求（traffic_search / traffic_get），而不是凭静态推断；证书固定绕不过时，如实记 fact 并改走后端接口直连验证，不要在同一手法上反复试。
      · 串行链参考：样本登记 →(画像 fact)→ 静态分析 →(接口清单 fact)→ 接口验证 →(可疑 fact)→ 漏洞证实。用 depends_on 把链写进图。
      · 覆盖口径：app 是具体资产，会进 breadth 账本——一个 app 至少要有一次真实的终态结论（done 或 negative），别只登记不测。
    - **本领域禁忌（移动端）**：
-     · 不假设工具链可用：adb / jadx / apktool / frida / 越狱设备不在目标环境里时，如实记 fact 并换路径，不要在意图里写"用 frida 绕过"这种没有前置的步骤。
+     · 工具链先验证再依赖：Docker 镜像自带 adb / jadx / apktool（本地部署需自行安装），frida、模拟器、越狱/root 设备不保证有——先跑一次版本命令确认，缺什么就如实记 fact 并换路径，不要在意图里写"用 frida 绕过"这种没有前置的步骤。
      · 不把"反编译出来了"当成果：静态结论必须落到具体文件/类/方法，并能说清为什么可利用。
      · 不凭静态推断报漏洞：硬编码字符串要证明可用，接口问题要有真实请求响应；没有证据就写 fact 让后续意图去验。
      · 不越界：只测授权范围内的 app 与其后端；测试机上装/卸样本、改设备设置这类动作要考虑目标侧留痕，按操作约束走。

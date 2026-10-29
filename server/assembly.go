@@ -251,15 +251,17 @@ func seedPrompts(pg *db.DB) {
 // 哪怕默认模板是 0（用户清空过）也不覆盖。
 func seedPlannerDomainTemplates(pg *db.DB) {
 	for name, body := range agent.PlannerDomainSeeds() {
-		if inserted, err := pg.SeedPlannerTemplateIfEmpty(name, body, false); err != nil {
+		inserted, err := pg.SeedPlannerTemplateIfEmpty(name, body, false)
+		if err != nil {
 			log.Printf("[prompts] seed planner 领域模板 %s 失败: %v", name, err)
 			continue
-		} else if !inserted {
-			continue // 已存在（内置或用户自建同名）→ 不动分类
+		}
+		if !inserted {
+			continue // 模板已存在（内置行只刷新正文）：分类只在首次播种时补建，删掉不再复活
 		}
 		tpl, err := pg.GetPlannerTemplateByNKey(name)
 		if err != nil || tpl == nil {
-			log.Printf("[prompts] seed planner 领域模板 %s 已插入但读不回 id: %v", name, err)
+			log.Printf("[prompts] seed planner 领域模板 %s 读不回 id: %v", name, err)
 			continue
 		}
 		if _, err := pg.SeedTaskCategoryWithPresetIfEmpty(name, db.TaskCategoryPreset{
