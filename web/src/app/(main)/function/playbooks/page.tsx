@@ -39,13 +39,13 @@ function fmtTime(s?: string) {
   });
 }
 
-/** 窄列用：显示到「时」（年-月-日 时），完整时间放 title。 */
-function fmtHourTime(s?: string) {
+/** 窄列用：显示到分钟（年-月-日 时:分），完整秒级时间放 title。 */
+function fmtMinuteTime(s?: string) {
   if (!s) return "—";
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
   const p2 = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}时`;
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
 }
 
 /** 指纹摘要：技术栈 + favicon + 服务端口，卡片列表里一行看全。 */
@@ -265,7 +265,7 @@ export default function PlaybooksPage() {
                       className="px-1 text-[11px] whitespace-nowrap text-muted-foreground tabular-nums"
                       title={fmtTime(p.last_verified_at ?? p.updated_at)}
                     >
-                      {fmtHourTime(p.last_verified_at ?? p.updated_at)}
+                      {fmtMinuteTime(p.last_verified_at ?? p.updated_at)}
                     </TableCell>
                     <TableCell className="px-1">
                       <StatusBadge domain="playbook" value={p.status} className="px-1 text-[10px]" />
