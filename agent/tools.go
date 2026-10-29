@@ -182,6 +182,7 @@ type WriteCounts struct {
 	Credentials int
 	Detections  int
 	Artifacts   int
+	Footprints  int
 	// ValidationAssets 是本轮"验证产出"锚定到的资产 id 集合（事实/发现/战果/
 	// 检测/遗留物）。verify 意图绑定了多个资产时，引擎据此记录它实际验证了哪些，
 	// 覆盖矩阵不再把没验证过的资产算成已测。
@@ -220,19 +221,20 @@ func (w WriteCounts) ValidationAssetIDs() []int64 {
 // detections and artifacts — everything except merely registered assets. A verify
 // intent that only ran insert_assets proved nothing (see settleIntentState).
 func (w WriteCounts) ValidationTotal() int {
+	// 痕迹的登记/清理不是“验证了目标”，不计入验证产出。
 	return w.Facts + w.Findings + w.Footholds + w.Credentials + w.Detections + w.Artifacts
 }
 
 // Total is every node persisted this run, regardless of kind — the
 // "explored but persisted nothing" signal (Total == 0).
 func (w WriteCounts) Total() int {
-	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials + w.Detections + w.Artifacts
+	return w.Facts + w.Assets + w.Findings + w.Footholds + w.Credentials + w.Detections + w.Artifacts + w.Footprints
 }
 
 // String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0 据点1 凭据2".
 func (w WriteCounts) String() string {
-	return fmt.Sprintf("事实%d 资产%d 漏洞%d 据点%d 凭据%d 检测%d",
-		w.Facts, w.Assets, w.Findings, w.Footholds, w.Credentials, w.Detections)
+	return fmt.Sprintf("事实%d 资产%d 漏洞%d 据点%d 凭据%d 检测%d 遗留物%d 痕迹%d",
+		w.Facts, w.Assets, w.Findings, w.Footholds, w.Credentials, w.Detections, w.Artifacts, w.Footprints)
 }
 
 // Writes reports what this run wrote back, split by node kind (so the engine can
@@ -3476,6 +3478,9 @@ func (t *ToolSet) killWorkTool() actool.CoreTool {
 			if err != nil || node == nil || node.Kind != db.KindIntent {
 				return actool.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）"), nil
 			}
+			if isCleanupIntentPayload(node) {
+				return actool.Errorf(fmt.Sprintf("kill_work: 意图 %d 是操作者提交的痕迹清理意图，不能由规划者终止；请在任务详情「痕迹」页签人工处理", id)), nil
+			}
 			if err := t.killWork(id); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -3855,6 +3860,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),
+		// 目标侧痕迹：planner 收官前查看并决定接受风险；清理意图由 worker 执行。
+		t.listFootprints(), t.acceptFootprintRisk(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
 		t.coverageMatrix(),

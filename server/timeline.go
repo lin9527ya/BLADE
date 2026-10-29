@@ -30,6 +30,7 @@ const (
 	tlKindFinding   = "finding"   // 确认漏洞（含已撤回）
 	tlKindLoot      = "loot"      // 据点 / 凭据
 	tlKindArtifact  = "artifact"  // 遗留物（我们留在目标上的东西）
+	tlKindFootprint = "footprint" // 测试痕迹（目标可能记下的可检出信号）
 	tlKindDetection = "detection" // 检测验证（三态）
 	tlKindNote      = "note"      // 系统留在时间线上的话（策略拒绝、停机、目标变更…）
 	tlKindStep      = "step"      // 原始步骤流水（activity 的 tool_use/round…），只随 kinds=all 出
@@ -37,7 +38,8 @@ const (
 
 // timelineMilestoneKinds 是默认集合。顺序即文档顺序（导出时按时间重排，与这里无关）。
 var timelineMilestoneKinds = []string{
-	tlKindExecution, tlKindApproval, tlKindFinding, tlKindLoot, tlKindArtifact, tlKindDetection, tlKindNote,
+	tlKindExecution, tlKindApproval, tlKindFinding, tlKindLoot, tlKindArtifact, tlKindFootprint,
+	tlKindDetection, tlKindNote,
 }
 
 // TimelineEvent 是时间线上的一格。
@@ -125,6 +127,21 @@ func timelineStateLabel(kind, state string) string {
 			return "已清理"
 		case db.StateArtifactUnknown:
 			return "未确认"
+		}
+	case tlKindFootprint:
+		// 五态各自成词：unknown（存在性不确定）不能并进 open（确定未处置）；
+		// not_found（核实不存在）不能并进 cleaned（清了但确实留过痕）。
+		switch state {
+		case db.StateFootprintOpen:
+			return "未处置"
+		case db.StateFootprintUnknown:
+			return "未确认"
+		case db.StateFootprintAccepted:
+			return "接受风险"
+		case db.StateFootprintCleaned:
+			return "已清理"
+		case db.StateFootprintNotFound:
+			return "未发现"
 		}
 	case tlKindDetection:
 		switch state {
@@ -303,13 +320,17 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 			})
 		}
 	}
-	if want[tlKindLoot] || want[tlKindArtifact] {
-		// 遗留物与战果同属"图上的产物"，但**各自的 kind 分开发**：它们的收场词表不一样
-		// （在手/已失效 vs 未清理/已清理/未确认），混在一格会逼出一套含糊的通用词。
-		for _, kind := range []string{db.KindFoothold, db.KindCredential, db.KindArtifact} {
+	if want[tlKindLoot] || want[tlKindArtifact] || want[tlKindFootprint] {
+		// 遗留物/痕迹与战果同属"图上的产物"，但**各自的 kind 分开发**：它们的收场词表不一样
+		// （在手/已失效 vs 未清理/已清理/未确认 vs 未处置/未确认/接受风险/已清理/未发现），
+		// 混在一格会逼出一套含糊的通用词。
+		for _, kind := range []string{db.KindFoothold, db.KindCredential, db.KindArtifact, db.KindFootprint} {
 			tlKind := tlKindLoot
-			if kind == db.KindArtifact {
+			switch kind {
+			case db.KindArtifact:
 				tlKind = tlKindArtifact
+			case db.KindFootprint:
+				tlKind = tlKindFootprint
 			}
 			if !want[tlKind] {
 				continue
@@ -342,6 +363,14 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 						report.PrefixIf("分类", db.ArtifactKindLabel(av.Kind)),
 						report.PrefixIf("位置", av.Locator),
 						report.PrefixIf("主机", av.Host)), " · "))
+				case db.KindFootprint:
+					label = "痕迹"
+					fv := db.ParseFootprint(n)
+					detail = strings.TrimSpace(strings.Join(nonEmpty(
+						report.PrefixIf("分类", db.FootprintCategoryLabel(fv.Category)),
+						report.PrefixIf("主机", fv.Host),
+						report.PrefixIf("位置", fv.Locator),
+						report.PrefixIf("暴露度", db.FootprintExposureLabel(fv.Exposure))), " · "))
 				default:
 					detail = strings.TrimSpace(strings.Join(nonEmpty(
 						report.PrefixIf("通路", p.Access), report.PrefixIf("权限", p.Privilege)), " · "))
@@ -444,6 +473,11 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 	if want[tlKindArtifact] {
 		if n, err := t.Store.CountByKind(db.KindArtifact); err == nil {
 			counts[tlKindArtifact] = n
+		}
+	}
+	if want[tlKindFootprint] {
+		if n, err := t.Store.CountByKind(db.KindFootprint); err == nil {
+			counts[tlKindFootprint] = n
 		}
 	}
 	if want[tlKindDetection] {
@@ -659,6 +693,8 @@ func timelineKindLabel(kind string) string {
 		return "战果"
 	case tlKindArtifact:
 		return "遗留物"
+	case tlKindFootprint:
+		return "痕迹"
 	case tlKindDetection:
 		return "检测验证"
 	case tlKindNote:

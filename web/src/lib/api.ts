@@ -121,6 +121,7 @@ import type {
   TaskCategory,
   TaskConstraint,
   TaskArtifact,
+  TaskFootprint,
   TaskGoal,
   TaskHint,
   TaskLLMResolutions,
@@ -519,6 +520,34 @@ export const api = {
   // 接受「带着遗留物交付」的风险：理由必填，落成一条进报告语境的 fact。
   acceptTaskArtifactRisk: (id: string, reason: string) =>
     post<{ ok: boolean; fact_id: string; risk_accepted: boolean }>(`/tasks/${id}/artifacts/accept-risk`, { reason }),
+
+  // ---- 目标侧痕迹台账 ----
+  taskFootprints: (id: string) =>
+    get<{ footprints: TaskFootprint[] | null; counts?: Record<string, number>; total?: number }>(
+      `/tasks/${id}/footprints`,
+    ).then((r) => ({ footprints: arr(r.footprints), counts: r.counts ?? {}, total: r.total ?? 0 })),
+  scanTaskFootprints: (id: string) =>
+    post<{
+      commands_scanned: number;
+      created: number;
+      updated: number;
+      reopened: number;
+      uncovered: number;
+      skipped_blocked: number;
+      commands_without_result: number;
+      uncovered_samples?: string[];
+    }>(`/tasks/${id}/footprints/scan`, {}),
+  clearTaskFootprint: (id: string, fid: string, evidence: string, note?: string) =>
+    post<TaskFootprint>(`/tasks/${id}/footprints/${fid}/cleared`, { evidence, note: note ?? "" }),
+  acceptTaskFootprintRisk: (id: string, fid: string, reason: string) =>
+    post<TaskFootprint>(`/tasks/${id}/footprints/${fid}/accept-risk`, { reason }),
+  markTaskFootprintNotFound: (id: string, fid: string, evidence: string, note?: string) =>
+    post<TaskFootprint>(`/tasks/${id}/footprints/${fid}/not-found`, { evidence, note: note ?? "" }),
+  cleanupTaskFootprints: (id: string, ids: string[]) =>
+    post<{ ok: boolean; intents: number[]; footprints: number; skipped?: number; paused: boolean }>(
+      `/tasks/${id}/footprints/cleanup`,
+      { ids: ids.map(Number) },
+    ),
 
   // ---- 操作约束管理（总览）----
   // 本任务全部操作约束（allow/deny）。

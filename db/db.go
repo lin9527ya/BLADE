@@ -412,6 +412,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultInterceptRulesV4(); err != nil {
 		return fmt.Errorf("seed intercept rules v4: %w", err)
 	}
+	if err := d.seedDefaultInterceptRulesV5(); err != nil {
+		return fmt.Errorf("seed intercept rules v5: %w", err)
+	}
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
@@ -464,6 +467,32 @@ WHERE name=$1 AND task_id='' AND action='deny' AND enabled=true`, name); err != 
 		}
 	}
 	return d.SetSetting("intercept_default_rules_v4", "done")
+}
+
+// logTamperPattern 匹配对目标日志/审计记录的定向修改。痕迹清理功能允许操作者
+// 逐条选择、审批后做定点清理，因此这里是 ask 而不是 deny：每次执行都要人确认，
+// 但不会把“按选择清理单条记录”本身判成违规。批量清空整份日志仍会被更严格的
+// 破坏性规则或人工审批拦住。
+const logTamperPattern = `(?i)(?:\bwevtutil\s+(?:cl|clear-log)\b|\bClear-EventLog\b|\bRemove-EventLog\b|\bauditpol\s+/clear\b|\bauditctl\s+(?:-D\b|-e\s*0\b)|\b(?:systemctl|service)\s+(?:stop|disable|mask)\s+(?:auditd|rsyslog|syslog-ng|systemd-journald)\b|\bjournalctl\s+--vacuum\w*|\btruncate\b[^\n]{0,160}(?:/var/log|\.log\b|\.evtx\b|_history\b)|\b(?:rm|del|Remove-Item)\b[^\n]{0,160}(?:/var/log|winevt|\.evtx\b|\.bash_history\b|\.zsh_history\b)|(?:>|>>|:>)\s*[^\n]{0,160}(?:/var/log|\.log\b|\.evtx\b|\.bash_history\b|\.zsh_history\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bHISTFILE\s*=\s*/dev/null\b|\bHISTFILESIZE\s*=\s*0\b|\blogrotate\s+-f\b|\b(?:touch|Set-ItemProperty)\b[^\n]{0,160}(?:/var/log|\.log\b|\.evtx\b|LastWriteTime|CreationTime)|\btimestomp\b|\b(?:shred|wipe)\b[^\n]{0,160}(?:/var/log|\.log\b|_history\b))`
+
+// seedDefaultInterceptRulesV5 seeds the log/audit tampering approval rule. It is
+// ask (not deny): footprint cleanup is an operator decision, but every execution
+// must pass a human approval and stay in the audit trail.
+func (d *DB) seedDefaultInterceptRulesV5() error {
+	if v, _, _ := d.GetSetting("intercept_default_rules_v5"); v == "done" {
+		return nil
+	}
+	const name = "[内置] 日志/审计记录修改（痕迹清理）"
+	if _, err := d.Exec(`
+INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
+SELECT $1, true, 96, 'tool_input', 'regex', $2, 'ask', $3, false, 60, 'deny'
+WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`,
+		name, logTamperPattern,
+		"即将修改目标日志/审计/命令历史（可能是痕迹清理）：审批前核对——是否对应操作者选定的单条痕迹、是否只动精确记录/时间窗、是否保留操作证据；禁止清空整份日志或关停审计/监控",
+	); err != nil {
+		return fmt.Errorf("rule %q: %w", name, err)
+	}
+	return d.SetSetting("intercept_default_rules_v5", "done")
 }
 
 // seedDefaultAssetInterceptRules inserts the built-in asset blocklist (fuzzy

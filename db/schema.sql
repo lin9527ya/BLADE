@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     completed_at   TIMESTAMPTZ,
     heartbeat_at     TIMESTAMPTZ,
     lease_expires_at TIMESTAMPTZ,
-    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','ad_object','cloud_object')),
+    CONSTRAINT ck_node_kind CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','artifact','footprint','ad_object','cloud_object')),
     CONSTRAINT ck_node_state CHECK (
         (kind='begin'   AND state IN ('open')) OR
         (kind='intent'  AND state IN ('open','running','paused','done','negative','out-of-scope','blocked','exhausted','stopped','no_output','deleted')) OR
@@ -199,6 +199,10 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
         -- 检测验证：一次进攻动作做完了，这一手有没有被检出。三态里 **unknown 必须独立存在**
         -- ——「测不到」和「没响」是两件事，合成一个会把"日志没留"读成"防御没拦"。
         (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
+        -- 遗留物：我们留在目标上的具体对象（文件/账号/任务）。
+        (kind='artifact'   AND state IN ('active','removed','unknown')) OR
+        -- 目标侧痕迹（footprint）：可能留在目标上的可检出信号。
+        (kind='footprint'  AND state IN ('open','unknown','accepted','cleaned','not_found')) OR
         -- AD 对象（P32）：采集回来的域内对象只有「在」这一态。不做 stale——采集是分文件的，
         -- 按缺席判过期会把整片未导的类别误标成没了（见 db/constants.go StateADActive）。
         (kind='ad_object'  AND state IN ('active')) OR
@@ -237,11 +241,12 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%detection%'
                OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
                OR pg_get_constraintdef(oid) NOT LIKE '%artifact%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%footprint%'
                OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_kind;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_kind
-            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','artifact','ad_object','cloud_object'));
+            CHECK (kind IN ('begin','goal','intent','fact','finding','hint','digest','foothold','credential','detection','artifact','footprint','ad_object','cloud_object'));
     END IF;
 END $$;
 -- ck_node_state: recreate when it lacks the 'paused' (older), 'superseded' (digest rev),
@@ -265,7 +270,8 @@ BEGIN
                OR pg_get_constraintdef(oid) NOT LIKE '%removed%'
                OR pg_get_constraintdef(oid) NOT LIKE '%ad_object%'
                OR pg_get_constraintdef(oid) NOT LIKE '%cloud_object%'
-               OR pg_get_constraintdef(oid) NOT LIKE '%no_output%')
+               OR pg_get_constraintdef(oid) NOT LIKE '%no_output%'
+               OR pg_get_constraintdef(oid) NOT LIKE '%footprint%')
     ) THEN
         ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
         ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
@@ -280,6 +286,7 @@ BEGIN
             (kind='credential' AND state IN ('active','lost')) OR
             (kind='detection'  AND state IN ('triggered','not_triggered','unknown')) OR
             (kind='artifact'   AND state IN ('active','removed','unknown')) OR
+            (kind='footprint'  AND state IN ('open','unknown','accepted','cleaned','not_found')) OR
             (kind='ad_object'  AND state IN ('active')) OR
             (kind='cloud_object' AND state IN ('active'))
         );

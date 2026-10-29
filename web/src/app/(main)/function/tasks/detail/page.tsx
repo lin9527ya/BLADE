@@ -47,6 +47,7 @@ import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
+import { FootprintsTab } from "./_tabs/footprints-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
@@ -71,6 +72,7 @@ const TABS = [
   { value: "coverage", label: "资产覆盖图" },
   { value: "ad", label: "攻击路径（域内/云上）" },
   { value: "intercept", label: "拦截审批" },
+  { value: "footprints", label: "痕迹" },
   { value: "report", label: "报告" },
 ];
 
@@ -477,6 +479,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="intercept" className="mt-0">
           <InterceptTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="footprints" className="mt-0">
+          <FootprintsTab taskId={id} />
         </TabsContent>
         <TabsContent value="report" className="mt-0">
           <ReportTab taskId={id} />

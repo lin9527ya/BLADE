@@ -27,6 +27,7 @@ const KIND_LABEL: Record<TimelineKind, string> = {
   finding: "发现",
   loot: "战果",
   artifact: "遗留物",
+  footprint: "痕迹",
   detection: "检测验证",
   note: "系统",
   step: "步骤",
@@ -38,12 +39,22 @@ const KIND_TONE: Record<TimelineKind, string> = {
   finding: "border-rose-500/40 text-rose-700 dark:text-rose-400",
   loot: "border-orange-500/40 text-orange-700 dark:text-orange-400",
   artifact: "border-amber-600/40 text-amber-700 dark:text-amber-400",
+  footprint: "border-rose-500/40 text-rose-700 dark:text-rose-400",
   detection: "border-violet-500/40 text-violet-700 dark:text-violet-400",
   note: "border-slate-400/40 text-slate-600 dark:text-slate-300",
   step: "border-muted text-muted-foreground",
 };
 
-const MILESTONE_KINDS: TimelineKind[] = ["execution", "approval", "finding", "loot", "artifact", "detection", "note"];
+const MILESTONE_KINDS: TimelineKind[] = [
+  "execution",
+  "approval",
+  "finding",
+  "loot",
+  "artifact",
+  "footprint",
+  "detection",
+  "note",
+];
 const PAGE_SIZES = [20, 50, 100];
 
 function fmt(ts: string): string {

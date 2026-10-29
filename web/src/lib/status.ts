@@ -119,6 +119,15 @@ const playbook: Record<string, StatusMeta> = {
   deprecated: { label: "已废弃", tone: "slate" },
 };
 
+// 目标侧痕迹：cleaned 与 accepted 必须分开（清掉了 / 决定不清理）。
+const footprint: Record<string, StatusMeta> = {
+  open: { label: "未处置", tone: "amber" },
+  unknown: { label: "未确认", tone: "slate" },
+  accepted: { label: "接受风险", tone: "violet" },
+  cleaned: { label: "已清理", tone: "green" },
+  not_found: { label: "未发现", tone: "neutral" },
+};
+
 // 遗留物：active=仍在目标上，removed=已清理，unknown=没去确认（不是"已清理"）。
 const artifact: Record<string, StatusMeta> = {
   active: { label: "未清理", tone: "amber" },
@@ -168,6 +177,7 @@ const maps = {
   hint,
   cve,
   playbook,
+  footprint,
   artifact,
   execution,
   audit,

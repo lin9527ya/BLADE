@@ -88,6 +88,9 @@ type Input struct {
 	// 这个记"我们给客户留下了什么"。没清掉的 webshell 就是留在客户系统上的后门，
 	// 交付时也必须能说清我们动过什么。
 	Artifacts []*db.Node
+	// Footprints 是目标侧痕迹（可能被目标/防守方看见的日志、EDR、网络与应用记录）。
+	// 与 Artifacts 分开：那是具体物件，这是可检出信号。
+	Footprints []*db.Node
 	// LootUsedBy 记录每条战果被哪些意图动用过（战果节点 id → 用它的意图）。
 	//
 	// 这是交付物里最接近「攻击链」的东西：只写「拿到了这个据点」是资产清单，写清「拿它走到了
@@ -478,6 +481,11 @@ func Markdown(in Input) string {
 		}
 		fmt.Fprintf(&b, "- 遗留物：**%d** 件（其中**未清理 %d 件**）\n", len(in.Artifacts), uncleaned)
 	}
+	if len(in.Footprints) > 0 {
+		open, unknown, accepted, cleaned, notFound := footprintCounts(in.Footprints)
+		fmt.Fprintf(&b, "- 测试痕迹：**%d** 条（未处置 %d、未确认 %d、接受风险 %d、已清理 %d、未发现 %d）\n",
+			len(in.Footprints), open, unknown, accepted, cleaned, notFound)
+	}
 	fmt.Fprintf(&b, "- 资产：")
 	var types []string
 	for t := range in.AssetCounts {
@@ -563,6 +571,9 @@ func Markdown(in Input) string {
 	// （拿到了什么 / 留下了什么），分太远会让人忘了还有这一节。
 	if len(in.Artifacts) > 0 {
 		writeArtifacts(&b, in.Artifacts)
+	}
+	if len(in.Footprints) > 0 {
+		writeFootprints(&b, in.Footprints)
 	}
 
 	// 凭据尝试台账（P43）：与「战果」是两个方向——战果说"拿到了什么"，这里说"动过谁"。
@@ -1043,6 +1054,113 @@ func writeArtifacts(b *strings.Builder, nodes []*db.Node) {
 		}
 		if a.Evidence != "" {
 			fmt.Fprintf(b, "- 落地证据：`%s`\n", a.Evidence)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// footprintCounts 按状态汇总痕迹。顺序与状态机一致。
+func footprintCounts(nodes []*db.Node) (open, unknown, accepted, cleaned, notFound int) {
+	for _, n := range nodes {
+		switch n.State {
+		case db.StateFootprintOpen:
+			open++
+		case db.StateFootprintUnknown:
+			unknown++
+		case db.StateFootprintAccepted:
+			accepted++
+		case db.StateFootprintCleaned:
+			cleaned++
+		case db.StateFootprintNotFound:
+			notFound++
+		}
+	}
+	return
+}
+
+func footprintExposureRank(e string) int {
+	switch db.NormalizeFootprintExposure(e) {
+	case db.FootprintExposureHigh:
+		return 3
+	case db.FootprintExposureMedium:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// writeFootprints 渲染「测试痕迹与清理」。自动归纳是**预期**不是实测，报告必须
+// 写明来源；cleaned/not_found/accepted 三态分别成词，不能合并成“已处理”。
+func writeFootprints(b *strings.Builder, nodes []*db.Node) {
+	type row struct {
+		n *db.Node
+		f db.Footprint
+	}
+	rows := make([]row, 0, len(nodes))
+	for _, n := range nodes {
+		rows = append(rows, row{n, db.ParseFootprint(n)})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		ri, rj := db.FootprintStateRank(rows[i].n.State), db.FootprintStateRank(rows[j].n.State)
+		if ri != rj {
+			return ri < rj
+		}
+		ei, ej := footprintExposureRank(rows[i].f.Exposure), footprintExposureRank(rows[j].f.Exposure)
+		if ei != ej {
+			return ei > ej
+		}
+		if rows[i].f.Host != rows[j].f.Host {
+			return rows[i].f.Host < rows[j].f.Host
+		}
+		return rows[i].n.ID < rows[j].n.ID
+	})
+	open, unknown, accepted, cleaned, notFound := footprintCounts(nodes)
+	fmt.Fprintf(b, "## 测试痕迹与清理（可能留在目标上的可检出信号）\n\n")
+	if open+unknown > 0 {
+		fmt.Fprintf(b, "> **注意：有 %d 条痕迹尚未处置/未确认。**\n\n", open+unknown)
+	}
+	fmt.Fprintf(b, "合计 **%d** 条——未处置 **%d**、未确认 **%d**、接受风险 **%d**、已清理 **%d**、未发现 **%d**。\n\n",
+		len(rows), open, unknown, accepted, cleaned, notFound)
+	fmt.Fprintf(b, "> 自动归纳来自实际执行过的命令 + 可检出性知识库，是**预期**不是实测；被平台拦截的命令不计入，知识库未收录不代表没有留痕。\n\n")
+	for i, r := range rows {
+		f := r.f
+		fmt.Fprintf(b, "**%d. %s**\n\n", i+1, nz(f.Summary, "（未填摘要）"))
+		source := db.FootprintSourceLabel(f.Source)
+		if f.OpsecNoteID != "" {
+			source += "（知识库：" + f.OpsecNoteID + "）"
+		}
+		writeLootMeta(b, []string{
+			PrefixIf("来源", source), PrefixIf("分类", db.FootprintCategoryLabel(f.Category)),
+			PrefixIf("主机", f.Host), PrefixIf("位置", f.Locator),
+			PrefixIf("暴露度", db.FootprintExposureLabel(f.Exposure)),
+			db.FootprintStateLabel(r.n.State),
+		})
+		if len(f.Where) > 0 {
+			fmt.Fprintf(b, "- 留痕位置：%s\n", strings.Join(f.Where, "、"))
+		}
+		if len(f.Signals) > 0 {
+			fmt.Fprintf(b, "- 具体信号：%s\n", strings.Join(f.Signals, "；"))
+		}
+		if f.Occurrences > 1 {
+			fmt.Fprintf(b, "- 出现次数：%d\n", f.Occurrences)
+		}
+		if f.Cleanup != "" {
+			fmt.Fprintf(b, "- 怎么清：%s\n", f.Cleanup)
+		}
+		if r.n.State == db.StateFootprintCleaned && f.RemovedEvidence != "" {
+			fmt.Fprintf(b, "- 清理证据：`%s`\n", f.RemovedEvidence)
+		}
+		if r.n.State == db.StateFootprintNotFound && f.NotFoundEvidence != "" {
+			fmt.Fprintf(b, "- 核实证据：`%s`\n", f.NotFoundEvidence)
+		}
+		if f.AcceptedReason != "" {
+			fmt.Fprintf(b, "- 接受风险理由：%s\n", f.AcceptedReason)
+		}
+		if f.Detail != "" {
+			fmt.Fprintf(b, "- 细节：%s\n", f.Detail)
+		}
+		if f.Evidence != "" {
+			fmt.Fprintf(b, "- 观察证据：`%s`\n", f.Evidence)
 		}
 		b.WriteString("\n")
 	}

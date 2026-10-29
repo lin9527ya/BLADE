@@ -466,6 +466,8 @@ export type ExploreKind =
   // 遗留物（P43）：我们**留在目标上**的东西——webshell、上传的文件、建的账号、计划任务。
   // 它跟其它战果是反的：那些记"我们拿到了什么"，它记"我们给客户留下了什么"。
   | "artifact"
+  // 目标侧痕迹：测试动作可能在目标上留下的可检出信号（日志/EDR/网络/应用/本机记录）。
+  | "footprint"
   // AD 对象：BloodHound/SharpHound 采集回来的域内对象（用户/组/机器/域/OU/GPO），
   // 靠 payload.category 分类——一种 kind 装六类对象，理由见 server/ad_import.go 的开头。
   | "ad_object"
@@ -601,7 +603,7 @@ export interface OpsecKnowledgeResponse {
 
 // ---- 作业时间线（P37） ----
 
-export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "artifact" | "detection" | "note" | "step";
+export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "artifact" | "footprint" | "detection" | "note" | "step";
 
 export interface TimelineEvent {
   at: string;
@@ -766,6 +768,37 @@ export interface TaskArtifact {
   confidence?: string;
   removed_evidence?: string;
   removed_note?: string;
+  ts: string;
+}
+
+/** 目标侧痕迹：可能在目标上留下的可检出信号（日志/EDR/网络/应用/本机记录）。 */
+export interface TaskFootprint {
+  id: string;
+  state: "open" | "unknown" | "accepted" | "cleaned" | "not_found";
+  state_label: string;
+  source?: "predicted" | "observed";
+  source_label?: string;
+  category?: string;
+  category_label?: string;
+  summary: string;
+  detail?: string;
+  where?: string[];
+  signals?: string[];
+  exposure?: "low" | "medium" | "high";
+  exposure_label?: string;
+  host?: string;
+  locator?: string;
+  cleanup?: string;
+  evidence?: string;
+  confidence?: string;
+  opsec_note_id?: string;
+  occurrences?: number;
+  cleanup_intent_id?: number;
+  removed_evidence?: string;
+  removed_note?: string;
+  accepted_reason?: string;
+  not_found_evidence?: string;
+  not_found_note?: string;
   ts: string;
 }
 

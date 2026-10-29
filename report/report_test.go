@@ -476,3 +476,48 @@ func TestMarkdownDataGapsAndStaleFindingReports(t *testing.T) {
 		t.Fatalf("无过期映射时不该出现过期警告：\n%s", clean)
 	}
 }
+
+func TestMarkdownFootprintsSection(t *testing.T) {
+	mk := func(id int64, state string, payload map[string]any) *db.Node {
+		b, _ := json.Marshal(payload)
+		return &db.Node{ID: id, Kind: db.KindFootprint, State: state, Payload: b}
+	}
+	open := mk(1, db.StateFootprintOpen, map[string]any{
+		"summary": "认证日志留下失败登录", "source": "predicted", "category": "log",
+		"host": "10.0.0.5", "locator": "/var/log/auth.log", "exposure": "high",
+		"where": []string{"目标系统日志"}, "signals": []string{"sshd Failed password"},
+		"cleanup": "按来源 IP 与时间窗删除对应记录", "opsec_note_id": "auth-log",
+	})
+	cleaned := mk(2, db.StateFootprintCleaned, map[string]any{
+		"summary": "Web 访问日志留下扫描记录", "source": "observed", "category": "app",
+		"host": "10.0.0.6", "exposure": "medium", "removed_evidence": "sed -i 定向删除 → 复查无记录",
+	})
+	accepted := mk(3, db.StateFootprintAccepted, map[string]any{
+		"summary": "WAF 告警无法清除", "category": "network", "exposure": "low",
+		"accepted_reason": "客户确认接受，清理会破坏证据链",
+	})
+	md := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Footprints: []*db.Node{open, cleaned, accepted}})
+	for _, want := range []string{
+		"## 测试痕迹与清理（可能留在目标上的可检出信号）",
+		"有 1 条痕迹尚未处置/未确认",
+		"未处置 **1**、未确认 **0**、接受风险 **1**、已清理 **1**、未发现 **0**",
+		"是**预期**不是实测",
+		"来源：自动归纳（知识库：auth-log）",
+		"暴露度：高",
+		"具体信号：sshd Failed password",
+		"怎么清：按来源 IP 与时间窗删除对应记录",
+		"清理证据：`sed -i 定向删除 → 复查无记录`",
+		"接受风险理由：客户确认接受，清理会破坏证据链",
+		"已清理",
+		"接受风险",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("报告缺 %q:\n%s", want, md)
+		}
+	}
+	// 未处置排在接受风险/已清理之前。
+	if strings.Index(md, "认证日志留下失败登录") > strings.Index(md, "Web 访问日志留下扫描记录") {
+		t.Fatal("未处置痕迹应排在已清理之前")
+	}
+}

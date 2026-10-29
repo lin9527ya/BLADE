@@ -97,6 +97,9 @@ func (t *ToolSet) dropIntent() actool.CoreTool {
 			if err != nil || n == nil || n.Kind != db.KindIntent {
 				return actool.Errorf(fmt.Sprintf("drop_intent: %d 不是本任务的意图", id)), nil
 			}
+			if isCleanupIntentPayload(n) {
+				return actool.Errorf(fmt.Sprintf("drop_intent: 意图 %d 是操作者提交的痕迹清理意图，不能由规划者丢弃；请在任务详情「痕迹」页签人工处理（标记已清理/接受风险）", id)), nil
+			}
 			if n.State == "running" {
 				return actool.Errorf(fmt.Sprintf("drop_intent: 意图 %d 正在跑——先 kill_work 停掉再删", id)), nil
 			}

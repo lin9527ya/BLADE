@@ -1091,6 +1091,15 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 规划出错（触发事件已放回队列，下一轮重试）: %v", t.ID, err)
 		case met:
+			// 人工发起的痕迹清理意图可能让已完成任务重新 running；此时所有 goal 仍是 met，
+			// 若直接收官并 cancelExec，会把正在清理的 worker 立刻杀掉。等清理意图收束后
+			// 再走这里（worker done 会再次唤醒 planner）。
+			if active, cerr := t.Store.HasActiveCleanupIntent(); cerr == nil && active {
+				log.Printf("[planner] task %s 目标已达成，但仍有痕迹清理意图在跑，暂缓收官", t.ID)
+				e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+					Summary: "目标已达成，但仍有痕迹清理意图在执行，任务暂不收官"})
+				break
+			}
 			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
 			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
 			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {

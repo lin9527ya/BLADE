@@ -680,6 +680,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// 这个记"给客户留下了什么"。没清掉的 webshell 是留在客户系统上的后门，
 		// 而交付时也要能说清我们动过什么。
 		t.reportArtifact(), t.markArtifactCleared(),
+		// 目标侧痕迹：自动归纳在 server 侧完成；worker 补录观察到的痕迹并销账。
+		// 接受风险不给 worker——那是规划者/操作者的决定。
+		t.reportFootprint(), t.listFootprints(), t.markFootprintCleaned(), t.markFootprintNotFound(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),
@@ -735,6 +738,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// 遗留物同理：人在现场手动落的东西，也该有人能替它销账。
 		t.reportFoothold(), t.reportCredential(), t.reportDetection(),
 		t.reportArtifact(), t.markArtifactCleared(),
+		// 目标侧痕迹：人机对话里也可补录/销账/接受风险。
+		t.reportFootprint(), t.listFootprints(), t.markFootprintCleaned(), t.markFootprintNotFound(), t.acceptFootprintRisk(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),

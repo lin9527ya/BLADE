@@ -29,10 +29,17 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts", s.listArtifacts)                   // 遗留物:列出本任务台账
 	mux.HandleFunc("POST /api/tasks/{id}/artifacts/{aid}/cleared", s.clearArtifact)    // 遗留物:人工销账(必填清理证据)
 	mux.HandleFunc("POST /api/tasks/{id}/artifacts/accept-risk", s.acceptArtifactRisk) // 遗留物:接受风险(必填理由,任务级)
-	mux.HandleFunc("GET /api/tasks/{id}/constraints", s.listConstraints)               // 约束管理:列出本任务操作约束
-	mux.HandleFunc("POST /api/tasks/{id}/constraints", s.addConstraint)                // 约束管理:新增约束(不通知 planner)
-	mux.HandleFunc("PATCH /api/tasks/{id}/constraints/{cid}", s.editConstraint)        // 约束管理:修改约束
-	mux.HandleFunc("DELETE /api/tasks/{id}/constraints/{cid}", s.deleteConstraint)     // 约束管理:删除约束
+	// 目标侧痕迹：自动归纳 + 人工销账/接受风险 + 交给 Agent 清理。
+	mux.HandleFunc("GET /api/tasks/{id}/footprints", s.listFootprints)
+	mux.HandleFunc("POST /api/tasks/{id}/footprints/scan", s.scanFootprints)
+	mux.HandleFunc("POST /api/tasks/{id}/footprints/cleanup", s.cleanupFootprints)
+	mux.HandleFunc("POST /api/tasks/{id}/footprints/{fid}/cleared", s.clearFootprint)
+	mux.HandleFunc("POST /api/tasks/{id}/footprints/{fid}/accept-risk", s.acceptFootprintRisk)
+	mux.HandleFunc("POST /api/tasks/{id}/footprints/{fid}/not-found", s.markFootprintNotFound)
+	mux.HandleFunc("GET /api/tasks/{id}/constraints", s.listConstraints)           // 约束管理:列出本任务操作约束
+	mux.HandleFunc("POST /api/tasks/{id}/constraints", s.addConstraint)            // 约束管理:新增约束(不通知 planner)
+	mux.HandleFunc("PATCH /api/tasks/{id}/constraints/{cid}", s.editConstraint)    // 约束管理:修改约束
+	mux.HandleFunc("DELETE /api/tasks/{id}/constraints/{cid}", s.deleteConstraint) // 约束管理:删除约束
 	// P18 约束可执行化：把约束编译成任务级拦截规则 / 授权范围（compile 只读预览，apply 落库）。
 	mux.HandleFunc("GET /api/tasks/{id}/policy", s.getTaskPolicy)              // P20 探索策略:读生效策略+覆盖层+额度+近期被拒
 	mux.HandleFunc("PATCH /api/tasks/{id}/policy", s.patchTaskPolicy)          // P20 探索策略:保存(下一轮规划生效,不回溯已有意图)

@@ -2818,6 +2818,161 @@ ORDER BY a.id ASC LIMIT 1`, s.expID, nodeID).Scan(&ts)
 	return ts, err
 }
 
+// CommandActivity 是一条执行类工具的调用记录（用于自动归纳目标侧痕迹）。
+type CommandActivity struct {
+	ID      int64
+	NodeID  *int64
+	Tool    string
+	Detail  string
+	Result  string
+	IsError bool
+}
+
+// ListCommandActivities 返回本探索最近 limit 条 tool_use 活动（含完整输入）。
+// 调用方按工具名与 input.command 过滤；这里不做工具白名单，避免把策略散到 SQL。
+func (s *ExplorationStore) ListCommandActivities(limit int) ([]CommandActivity, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 2000
+	}
+	rows, err := s.db.Query(`SELECT u.id, u.node_id, COALESCE(u.tool,''), COALESCE(u.detail,''),
+       COALESCE(r.detail,''), COALESCE(r.is_error,false)
+FROM activity u
+LEFT JOIN activity r ON r.exploration_id=u.exploration_id AND r.tool_use_id=u.tool_use_id AND r.kind='tool_result'
+WHERE u.exploration_id=$1 AND u.kind='tool_use'
+ORDER BY u.id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CommandActivity, 0, limit)
+	for rows.Next() {
+		var a CommandActivity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Tool, &a.Detail, &a.Result, &a.IsError); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AssetIDsForNode 返回节点在本探索内的资产锚点（自动痕迹记到 payload.asset_ids，
+// 清理意图才能挂到具体资产）。节点不存在/无锚点时返回空。
+func (s *ExplorationStore) AssetIDsForNode(nodeID int64) ([]int64, error) {
+	if nodeID <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT ea.asset_id FROM exploration_anchors ea
+JOIN exploration_nodes n ON n.id=ea.node_id AND n.exploration_id=$2
+WHERE ea.node_id=$1`, nodeID, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// MarkFootprintCleaned 把一条痕迹标成已清理（证据必填）。只允许 open/unknown → cleaned；
+// 重复清理返回 0，由调用方转成 409。与 HTTP/Agent 两个入口共用同一条状态门。
+func (s *ExplorationStore) MarkFootprintCleaned(id int64, evidence, note string) (int64, error) {
+	evidence = strings.TrimSpace(evidence)
+	if evidence == "" {
+		return 0, fmt.Errorf("清理证据必填：清理命令 + 关键输出——没有它，「清掉了」只是个说法")
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET
+  state='cleaned', content_version=content_version+1,
+  payload = payload || jsonb_build_object('removed_evidence',$2::text)
+    || CASE WHEN $3::text <> '' THEN jsonb_build_object('removed_note',$3::text) ELSE '{}'::jsonb END,
+  updated_at=now()
+WHERE id=$1 AND exploration_id=$4 AND kind='footprint' AND state IN ('open','unknown','accepted')`,
+		id, evidence, strings.TrimSpace(note), s.expID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// AcceptFootprintRisk 把一条痕迹标成接受风险（理由必填）。只允许 open/unknown。
+func (s *ExplorationStore) AcceptFootprintRisk(id int64, reason string) (int64, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return 0, fmt.Errorf("接受风险必须写理由：为什么这条痕迹不清理")
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET
+  state='accepted', content_version=content_version+1,
+  payload = payload || jsonb_build_object('accepted_reason',$2::text),
+  updated_at=now()
+WHERE id=$1 AND exploration_id=$3 AND kind='footprint' AND state IN ('open','unknown')`,
+		id, reason, s.expID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// MarkFootprintNotFound 把一条痕迹标成“核实后不存在”（证据必填）。预测项经现场核实
+// 不存在时用它闭环，避免被迫写成 cleaned（过度宣称）或永久 unknown。
+func (s *ExplorationStore) MarkFootprintNotFound(id int64, evidence, note string) (int64, error) {
+	evidence = strings.TrimSpace(evidence)
+	if evidence == "" {
+		return 0, fmt.Errorf("核实证据必填：在哪查了、看到了什么")
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET
+  state='not_found', content_version=content_version+1,
+  payload = payload || jsonb_build_object('not_found_evidence',$2::text)
+    || CASE WHEN $3::text <> '' THEN jsonb_build_object('not_found_note',$3::text) ELSE '{}'::jsonb END,
+  updated_at=now()
+WHERE id=$1 AND exploration_id=$4 AND kind='footprint' AND state IN ('open','unknown','accepted')`,
+		id, evidence, strings.TrimSpace(note), s.expID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// HasActiveCleanupIntent 报告任务是否还有未收束的人工清理意图（open/running/paused）。
+// 任务已完成时 revive 的清理意图会让所有 goal 保持 met；planner 必须据此暂缓再次收官，
+// 否则 worker 会在清理跑完前被 cancelExec 杀掉。
+func (s *ExplorationStore) HasActiveCleanupIntent() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(
+SELECT 1 FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running','paused')
+  AND payload->>'cleanup' = 'true')`, s.expID).Scan(&exists)
+	return exists, err
+}
+
+// FindActiveFootprintByNote 找本任务里某个 opsec note 仍在 open/unknown 的痕迹。
+func (s *ExplorationStore) FindActiveFootprintByNote(noteID string) (*Node, error) {
+	return s.findFootprintByNote(noteID, "AND state IN ('open','unknown')")
+}
+
+// FindLatestFootprintByNote 找本任务里某个 opsec note 最近的一条痕迹（任意状态）。
+func (s *ExplorationStore) FindLatestFootprintByNote(noteID string) (*Node, error) {
+	return s.findFootprintByNote(noteID, "")
+}
+
+func (s *ExplorationStore) findFootprintByNote(noteID, stateCond string) (*Node, error) {
+	if strings.TrimSpace(noteID) == "" {
+		return nil, nil
+	}
+	row := s.db.QueryRow(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='footprint' AND payload->>'opsec_note_id'=$2 `+stateCond+`
+ORDER BY id DESC LIMIT 1`, s.expID, noteID)
+	n, err := scanNode(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return n, err
+}
+
 // HasIntentStartActivity reports whether the UI boundary row for this intent has
 // already been written. Slot sessions can resume an intent, so the engine must not
 // append a second boundary bubble on every run.

@@ -13,6 +13,7 @@ import {
   CompassIcon,
   FlagIcon,
   FlaskConicalIcon,
+  FootprintsIcon,
   KeyIcon,
   LayersIcon,
   LightbulbIcon,
@@ -140,6 +141,13 @@ const KIND_META: Record<string, KindMeta> = {
     dot: "bg-sky-500",
     chip: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
   },
+  // 目标侧痕迹：预期/观察到的可检出信号；与遗留物分开，清理状态在「痕迹」页签管理。
+  footprint: {
+    label: "痕迹",
+    icon: FootprintsIcon,
+    dot: "bg-rose-500",
+    chip: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+  },
 };
 
 // 可筛选的类型。起点(fact/state=origin)不单独列,它跟着「事实」一起过滤。
@@ -153,6 +161,7 @@ const FILTER_KINDS: ExploreKind[] = [
   "foothold",
   "credential",
   "artifact",
+  "footprint",
   "detection",
   "ad_object",
   "cloud_object",
@@ -189,6 +198,13 @@ const STATE_META: Record<string, Record<string, { label: string; tone: Tone }>> 
     active: { label: "生效中", tone: "green" },
     superseded: { label: "已替代", tone: "slate" },
   },
+  footprint: {
+    open: { label: "未处置", tone: "amber" },
+    unknown: { label: "未确认", tone: "slate" },
+    accepted: { label: "接受风险", tone: "violet" },
+    cleaned: { label: "已清理", tone: "green" },
+    not_found: { label: "未发现", tone: "slate" },
+  },
 };
 
 // 任务根是 state=origin 的 fact,播报里读作「起点」。
@@ -208,6 +224,7 @@ const SUMMARY_FIELDS: Record<string, string[]> = {
   foothold: ["summary"],
   credential: ["summary"],
   artifact: ["summary"],
+  footprint: ["summary"],
   detection: ["summary"],
   ad_object: ["name", "sam"],
   cloud_object: ["name"],

@@ -9,6 +9,7 @@ import {
   Compass,
   Flag,
   FlaskConical,
+  Footprints,
   Key,
   Layers,
   Lightbulb,
@@ -121,6 +122,15 @@ export const typeMeta: Record<ExploreKind, TypeMeta> = {
     chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
     hex: "#8b5cf6",
   },
+  // 目标侧痕迹：预期/观察到的可检出信号（日志、EDR、访问记录…）。与遗留物相反：
+  // 遗留物是我们放上去的对象，痕迹是目标自己可能记下的"我们来过"。
+  footprint: {
+    label: "痕迹",
+    icon: Footprints,
+    iconBg: "bg-rose-500",
+    chip: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+    hex: "#f43f5e",
+  },
   // AD 对象：域内采集来的对象（用户/组/机器/域…），具体是哪一类写在 payload.category 上。
   ad_object: {
     label: "AD 对象",
@@ -162,6 +172,7 @@ export const summaryFields: Record<ExploreKind, string[]> = {
   credential: ["summary"],
   detection: ["summary"],
   artifact: ["summary"],
+  footprint: ["summary"],
   // AD 对象没有 summary：它的"名字"就是它的身份（JDOE@CORP.LOCAL / DC.CORP.LOCAL）。
   ad_object: ["name", "sam"],
   // 云对象同理：name 是 ARN / kind:ns:name 的可读形式。

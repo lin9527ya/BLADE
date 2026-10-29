@@ -165,6 +165,7 @@ GET /api/tasks/{id}/chat/status	server.(*Server).taskChatStatus-fm
 GET /api/tasks/{id}/constraints	server.(*Server).listConstraints-fm
 GET /api/tasks/{id}/coverage	server.(*Server).taskCoverage-fm
 GET /api/tasks/{id}/coverage-graph	server.(*Server).taskCoverageGraph-fm
+GET /api/tasks/{id}/footprints	server.(*Server).listFootprints-fm
 GET /api/tasks/{id}/goals	server.(*Server).listGoals-fm
 GET /api/tasks/{id}/hints	server.(*Server).listHints-fm
 GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
@@ -309,6 +310,11 @@ POST /api/tasks/{id}/constraints/{cid}/apply	server.(*Server).applyConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/compile	server.(*Server).compileConstraint-fm
 POST /api/tasks/{id}/control	server.(*Server).control-fm
 POST /api/tasks/{id}/distill-playbook	server.(*Server).distillTaskPlaybook-fm
+POST /api/tasks/{id}/footprints/cleanup	server.(*Server).cleanupFootprints-fm
+POST /api/tasks/{id}/footprints/scan	server.(*Server).scanFootprints-fm
+POST /api/tasks/{id}/footprints/{fid}/accept-risk	server.(*Server).acceptFootprintRisk-fm
+POST /api/tasks/{id}/footprints/{fid}/cleared	server.(*Server).clearFootprint-fm
+POST /api/tasks/{id}/footprints/{fid}/not-found	server.(*Server).markFootprintNotFound-fm
 POST /api/tasks/{id}/goals	server.(*Server).addGoal-fm
 POST /api/tasks/{id}/hints	server.(*Server).addHint-fm
 POST /api/tasks/{id}/hints/{hid}/remind	server.(*Server).remindHint-fm

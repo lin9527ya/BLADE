@@ -488,7 +488,7 @@ const breadthDisciplineBlock = `
 
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir)
+	return body + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
 }
 
 // hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。

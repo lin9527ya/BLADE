@@ -77,6 +77,11 @@ const (
 	// 没清掉的 webshell 就是留在客户系统上的后门，而在此之前平台没有任何地方记过这件事，
 	// 交付时也说不清动过什么。这个 kind 就是那本台账。
 	KindArtifact = "artifact"
+	// 目标侧痕迹（footprint）：测试动作可能在目标上留下的可检出信号（日志/EDR/网络/应用/
+	// 本机痕迹）。与遗留物的区别：遗留物是**确实留在目标上的具体对象**，痕迹是**可能被
+	// 看见的信号**（包括已经清理、仍留在日志里的记录）。由命令历史 + opsec 知识库自动归纳，
+	// 也可由 worker 实测补录；状态含“接受风险”，因为有些痕迹无法/不应清理。
+	KindFootprint = "footprint"
 	// 检测验证（purple team）：一次进攻动作做完之后，这一手**有没有被检出**。
 	//
 	// 它是「平台」与「扫描器」的分水岭：只会打的是扫描器，能回答「这套防御拦不拦得住」的才是平台。
@@ -136,6 +141,18 @@ const (
 	StateArtifactActive  = "active"  // 还留在目标上（未清理）
 	StateArtifactRemoved = "removed" // 已清理（清理时的那行输出为证）
 	StateArtifactUnknown = "unknown" // 没去确认还在不在——不是"已清理"
+)
+
+// 目标侧痕迹（kind='footprint'）的状态。
+//
+// cleaned 与 accepted 必须分开：前者是“已经清理并留下证据”，后者是“决定不清理/无法清理，
+// 接受风险并写明理由”。把两者合成一个“已处理”会让报告读不出实际暴露面。
+const (
+	StateFootprintOpen     = "open"      // 未处置：可能还留着
+	StateFootprintUnknown  = "unknown"   // 未确认是否存在
+	StateFootprintAccepted = "accepted"  // 接受风险（理由必填）
+	StateFootprintCleaned  = "cleaned"   // 已清理（清理证据必填）
+	StateFootprintNotFound = "not_found" // 核实后确认不存在（核实证据必填）
 )
 
 // 提示节点（kind='hint'）的状态：待采纳 / 已采纳。

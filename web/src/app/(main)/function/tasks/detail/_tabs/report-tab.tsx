@@ -21,8 +21,11 @@ export function ReportTab({ taskId }: { taskId: string }) {
     (active: () => boolean = () => true) => {
       setLoading(true);
       setError("");
+      // 报告前先归纳一次痕迹，保证自动扫描结果已落库；归纳失败不阻断报告。
       api
-        .report(taskId)
+        .scanTaskFootprints(taskId)
+        .catch(() => null)
+        .then(() => api.report(taskId))
         .then((text) => {
           if (active()) setReport(text);
         })
