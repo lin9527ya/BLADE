@@ -39,12 +39,13 @@ function fmtTime(s?: string) {
   });
 }
 
-/** 窄列（5%）用：只显示月-日，完整时间放 title。 */
-function fmtShortTime(s?: string) {
+/** 窄列用：显示到「时」（年-月-日 时），完整时间放 title。 */
+function fmtHourTime(s?: string) {
   if (!s) return "—";
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}时`;
 }
 
 /** 指纹摘要：技术栈 + favicon + 服务端口，卡片列表里一行看全。 */
@@ -175,11 +176,11 @@ export default function PlaybooksPage() {
         <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[62%]">打法</TableHead>
+              <TableHead className="w-[57%]">打法</TableHead>
               <TableHead className="w-[15%]">指纹</TableHead>
               <TableHead className="w-[6%] px-1">实战战绩</TableHead>
               <TableHead className="w-[4%] px-1">检索</TableHead>
-              <TableHead className="w-[5%] px-1">最近验证</TableHead>
+              <TableHead className="w-[10%] px-1">最近验证</TableHead>
               <TableHead className="w-[4%] px-1">状态</TableHead>
               <TableHead className="w-[4%] px-1">操作</TableHead>
             </TableRow>
@@ -260,8 +261,11 @@ export default function PlaybooksPage() {
                       )}
                     </TableCell>
                     <TableCell className="px-1 text-xs tabular-nums">{p.uses}</TableCell>
-                    <TableCell className="px-1 text-[11px] text-muted-foreground" title={fmtTime(p.last_verified_at ?? p.updated_at)}>
-                      {fmtShortTime(p.last_verified_at ?? p.updated_at)}
+                    <TableCell
+                      className="px-1 text-[11px] whitespace-nowrap text-muted-foreground tabular-nums"
+                      title={fmtTime(p.last_verified_at ?? p.updated_at)}
+                    >
+                      {fmtHourTime(p.last_verified_at ?? p.updated_at)}
                     </TableCell>
                     <TableCell className="px-1">
                       <StatusBadge domain="playbook" value={p.status} className="px-1 text-[10px]" />
