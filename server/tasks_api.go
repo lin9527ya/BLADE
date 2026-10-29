@@ -233,7 +233,7 @@ func (s *Server) filterAndSortTasks(ctx context.Context, list []*Task, q taskLis
 		case "status":
 			compared = taskStatusRank[statuses[a.ID]] - taskStatusRank[statuses[b.ID]]
 		default:
-			compared = strings.Compare(a.ID, b.ID)
+			compared = compareTaskIDs(a.ID, b.ID)
 		}
 		if compared != 0 {
 			if q.Dir == "asc" {
@@ -241,7 +241,7 @@ func (s *Server) filterAndSortTasks(ctx context.Context, list []*Task, q taskLis
 			}
 			return compared > 0
 		}
-		return strings.Compare(b.ID, a.ID) > 0
+		return compareTaskIDs(b.ID, a.ID) > 0
 	})
 	return filtered
 }
@@ -254,6 +254,17 @@ func cmpInt64(a, b int64) int {
 		return 1
 	}
 	return 0
+}
+
+// compareTaskIDs 按数值比较任务 id（"10" > "9"）。任务 id 是数字串，直接按字符串
+// 比较会得到 1,10,11,2 这种字典序；非数字脏数据回退到字符串比较，避免 panic。
+func compareTaskIDs(a, b string) int {
+	ai, aerr := strconv.ParseInt(a, 10, 64)
+	bi, berr := strconv.ParseInt(b, 10, 64)
+	if aerr == nil && berr == nil {
+		return cmpInt64(ai, bi)
+	}
+	return strings.Compare(a, b)
 }
 
 // taskDurationSec 与前端 taskDuration 同口径：运行中算到 now，终态算到完成时间，

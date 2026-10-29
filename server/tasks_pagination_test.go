@@ -144,3 +144,25 @@ func TestTaskPageBounds(t *testing.T) {
 		}
 	}
 }
+
+// 任务 id 是数字串：按字符串排会得到 1,10,11,2；必须按数值比较。
+func TestCompareTaskIDsNumeric(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1", "2", -1},
+		{"2", "10", -1},
+		{"9", "10", -1},
+		{"10", "9", 1},
+		{"11", "10", 1},
+		{"100", "99", 1},
+		{"7", "7", 0},
+		{"task-b", "task-a", 1}, // 非数字回退字符串比较
+	}
+	for _, tc := range cases {
+		if got := compareTaskIDs(tc.a, tc.b); got != tc.want {
+			t.Fatalf("compareTaskIDs(%q,%q)=%d want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
