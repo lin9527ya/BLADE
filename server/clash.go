@@ -243,6 +243,17 @@ func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
 			lastErr = fmt.Errorf("节点 %q 已选中但出口 IP 检测失败：%w", node, err)
 			continue
 		}
+		// Clash 切换节点后已有连接/新连接可能短暂走旧节点；稍等再查一次，用稳定后的
+		// 出口 IP 作为结果（第一次查询只用来确认链路通）。
+		select {
+		case <-time.After(400 * time.Millisecond):
+		case <-ctx.Done():
+			lastErr = ctx.Err()
+			continue
+		}
+		if ip2, err2 := clashProbeEgressIP(ctx, active, m.EgressIPURL(), 8*time.Second); err2 == nil {
+			ip = ip2
+		}
 		if isLocalEgressIP(ip) {
 			lastErr = fmt.Errorf("节点 %q 的出口 IP %s 与本机网卡地址相同（疑似未走代理），拒绝采用", node, ip)
 			continue
