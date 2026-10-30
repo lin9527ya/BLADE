@@ -294,3 +294,107 @@ func TestExecutionServiceStageScript(t *testing.T) {
 		t.Fatalf("staged mode: %v %v", fi, err)
 	}
 }
+
+// countProcs 数 /proc 里 cmdline 含 needle 的进程（用于断言孤儿是否真被杀掉）。
+func countProcs(t *testing.T, needle string) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Skipf("no /proc: %v", err)
+	}
+	n := 0
+	for _, e := range entries {
+		b, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		if strings.Contains(strings.ReplaceAll(string(b), "\x00", " "), needle) {
+			n++
+		}
+	}
+	return n
+}
+
+// run_execution 正常退出时也必须清场进程组：`sh -c 'scanner &'` 会让 shell 先退出、
+// 后台子进程留在同一进程组里。只 Wait 不收尾的话它们就是孤儿——没有 TTL、没人引用，
+// 一直跑下去，累积起来能把机器 CPU 吃满。
+func TestExecutionServiceNormalExitKillsLeftoverGroup(t *testing.T) {
+	svc, _, _, task := newExecFixture(t)
+	tag := "blade-orphan-a-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	// 子进程重定向了输出 → 不占管道，shell 立刻退出，只剩它留在进程组里。
+	cmd := "sh -c 'sleep 120' " + tag + " >/dev/null 2>&1 & echo shell-done"
+	st, err := svc.Submit(context.Background(), task, 0, "work#1", cmd, "孤儿清理", 0)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	fin := waitTerminal(t, svc, st.ID, 15*time.Second)
+	if fin.Status != db.ExecCompleted {
+		t.Fatalf("status=%s want completed", fin.Status)
+	}
+	// 允许一点调度延迟，然后断言后台子进程已被整组杀掉。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if countProcs(t, tag) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("正常退出后进程组未清理，仍有 %d 个后台子进程存活", countProcs(t, tag))
+}
+
+// 后台子进程继承了 stdout（未重定向）时，它会一直握着写端：没有 WaitDelay 的话
+// cmd.Wait 永远不返回，台账卡在 running、收尾门永远悬着——而 shell 早就退出了。
+// 这里钉住「不卡死 + 子进程被清理 + 状态是 completed 而不是 failed」。
+func TestExecutionServiceChildHoldingStdoutDoesNotWedge(t *testing.T) {
+	svc, _, _, task := newExecFixture(t)
+	tag := "blade-orphan-b-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	cmd := "sh -c 'sleep 120' " + tag + " & echo shell-done"
+	st, err := svc.Submit(context.Background(), task, 0, "work#1", cmd, "占管道", 0)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	fin := waitTerminal(t, svc, st.ID, 20*time.Second)
+	if fin.Status != db.ExecCompleted {
+		t.Fatalf("status=%s want completed（WaitDelay 到点收尾，不应误报 failed）", fin.Status)
+	}
+	if !strings.Contains(fin.Tail, "shell-done") {
+		t.Fatalf("输出丢失: %q", fin.Tail)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if countProcs(t, tag) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("占管道的后台子进程未被清理，仍有 %d 个存活", countProcs(t, tag))
+}
+
+// 停机必须整组杀掉在跑的长任务并落 cancelled：托管进程是 Setsid 出来的，不随服务退出
+// 而死；不杀的话每次重启都会留下一批还在烧 CPU 的扫描器。
+func TestExecutionServiceShutdownKillsLiveGroup(t *testing.T) {
+	svc, pg, _, task := newExecFixture(t)
+	tag := "blade-orphan-c-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	st, err := svc.Submit(context.Background(), task, 0, "work#1",
+		"sh -c 'sleep 120' "+tag+" >/dev/null 2>&1 & sleep 120", "停机清理", 0)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if countProcs(t, tag) == 0 {
+		t.Fatal("前置条件不成立：后台子进程没起来")
+	}
+	if n := svc.Shutdown(agent.AbortShutdown.Text, 2*time.Second); n != 1 {
+		t.Fatalf("shutdown 应报告 1 条在跑执行，得到 %d", n)
+	}
+	row, err := pg.GetExecution(st.ID)
+	if err != nil || row == nil {
+		t.Fatal(err)
+	}
+	if row.Status != db.ExecCancelled {
+		t.Fatalf("status=%s want cancelled（停机是明确停止，不是 orphaned）", row.Status)
+	}
+	if countProcs(t, tag) != 0 {
+		t.Fatalf("停机后仍有 %d 个后台子进程存活", countProcs(t, tag))
+	}
+}

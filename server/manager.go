@@ -1188,7 +1188,16 @@ func (m *Manager) Close() error {
 	m.proxyPool = nil
 	trafficProxy := m.traffic
 	enrichEngine := m.enrich
+	execs := m.execs
 	m.mu.Unlock()
+	// 托管的长任务进程是 Setsid 出来的，**不会随本进程退出而死**：不在这里整组杀，
+	// 每次重启/更新都会留下还在跑的 nmap/nuclei。必须在关连接池之前杀——reaper 要把
+	// 终态与取消理由写进 tool_executions，池子一关那些写入就变成 "database is closed"。
+	if execs != nil {
+		if n := execs.Shutdown(agent.AbortShutdown.Text, 5*time.Second); n > 0 {
+			log.Printf("[exec] 停机时终止了 %d 条后台执行", n)
+		}
+	}
 	if pool != nil {
 		pool.Close() // stop health probes before closing the MITM
 	}

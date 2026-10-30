@@ -31,6 +31,14 @@ const (
 	execCancelGrace    = 3 * time.Second // SIGTERM → SIGKILL 的宽限
 	execReconcileGap   = 45 * time.Second
 	execMaxCommandRune = 8192
+
+	// execWaitDelay 是「直接子进程已退出、但输出管道还没关」时的强制收尾时限。
+	//
+	// 必须设：cmd.Stdout 是 io.Writer 而不是 *os.File，Go 会建一条管道并起 goroutine
+	// 拷数据；命令用 `scanner &` 起的后台子进程如果继承了 stdout，就**一直**握着写端，
+	// Wait 会卡到它退出为止——表现为台账永远 running、收尾门永远悬着，而 shell 早就退了。
+	// 到点后 Wait 关闭管道并返回 exec.ErrWaitDelay（命令本身的状态仍看 ProcessState）。
+	execWaitDelay = 2 * time.Second
 )
 
 // ExecutionService 托管全部在跑的长任务。
@@ -58,6 +66,9 @@ type execRun struct {
 	hardKilled atomic.Bool
 	done       chan struct{}
 	hardTimer  *time.Timer
+	// graceTimer 是硬超时后的 SIGKILL 宽限定时器。必须在 reap 里停掉：进程若在宽限期
+	// 内退出，pid 可能被复用，到点再对 -pid 发 SIGKILL 就会误伤无关进程组。
+	graceTimer *time.Timer
 }
 
 // NewExecutionService builds the service over the PG ledger and the data dir.
@@ -152,6 +163,7 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 	argv := shellCommandArgs(runCommand)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	startDetached(cmd)
+	cmd.WaitDelay = execWaitDelay // 见常量注释：后台子进程握着 stdout 时不要卡死 Wait
 	// 与 agent Bash 同环境同目录：走记录代理、信任 CA、相对产物落在本意图目录。
 	if taskID != "" {
 		cmd.Dir = agent.EnsureRunDir(s.dir, taskID, intentID)
@@ -198,7 +210,13 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 			killGroup(cmd)
 			// SIGTERM 不是每个进程都听：宽限后强杀整组，兑现"硬超时上限"的承诺
 			// （否则僵住的进程会让台账一直挂在 running，收尾门也跟着悬着）。
-			time.AfterFunc(execCancelGrace, func() { hardKillGroup(cmd) })
+			run.graceTimer = time.AfterFunc(execCancelGrace, func() {
+				select {
+				case <-run.done: // 已在宽限期内退出：别对可能被复用的 pid 再发信号
+				default:
+					hardKillGroup(cmd)
+				}
+			})
 		})
 	}
 	goSafe("execution/reap", nil, func() { s.reap(run) })
@@ -290,8 +308,24 @@ func (s *ExecutionService) StageScript(_ context.Context, taskID string, _ int64
 // reap waits for the process, lands the terminal state in the ledger, and fires onDone.
 func (s *ExecutionService) reap(run *execRun) {
 	err := run.cmd.Wait()
+	// WaitDelay 到点关管道时，若命令本身**成功退出**，Wait 返回 ErrWaitDelay 而不是 nil。
+	// 那是"后台子进程还占着输出"，不是命令失败——按退出码判定，别误报 failed。
+	if errors.Is(err, exec.ErrWaitDelay) && run.cmd.ProcessState != nil && run.cmd.ProcessState.Success() {
+		err = nil
+	}
+	// 清场整组：`sh -c 'scanner &'` 这种写法会让 shell 先退出、后台子进程留在同一进程组里。
+	// 只 Wait 不收尾的话它们就成了孤儿：没有 TTL（定时器随本进程内存一起消失）、没人再
+	// 引用，一直跑下去，累积起来能把机器 CPU 吃满。直接子进程已退出，这里只可能杀到
+	// 它留下的后台后代——正是要清的。
+	//
+	// 注：pid 已被 Wait 回收，理论上存在 PID 复用误伤的可能；窗口是 Wait 返回到 kill
+	// 之间的几微秒，且 Setsid 让该 pid 同时是会话首进程，实际风险可忽略。
+	hardKillGroup(run.cmd)
 	if run.hardTimer != nil {
 		run.hardTimer.Stop()
+	}
+	if run.graceTimer != nil {
+		run.graceTimer.Stop()
 	}
 	_ = run.logFile.Close()
 	exitCode := 0
@@ -445,6 +479,66 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 		return true, nil
 	}
 	return false, nil
+}
+
+// Shutdown kills every live execution's process group and waits (bounded) for the
+// reapers to write terminal rows.
+//
+// 为什么必须在停机时杀掉：托管进程是 Setsid 出来的（活过 agent run 是本功能的目的），
+// 所以**服务退出不会顺带结束它们**。不杀的话，每次重启/更新都会留下一批还在跑的
+// nmap/nuclei，且它们的台账行下次启动只会被标 orphaned——进程还在烧 CPU，输出也没人取。
+// 关停是一次明确的停止：记 cancelled 并写清原因，而不是让它们变成没有归属的孤儿。
+func (s *ExecutionService) Shutdown(reason string, wait time.Duration) int {
+	if strings.TrimSpace(reason) == "" {
+		reason = agent.AbortExecutionCancelledByUser.Text
+	}
+	s.mu.Lock()
+	runs := make([]*execRun, 0, len(s.live))
+	for _, run := range s.live {
+		runs = append(runs, run)
+	}
+	s.mu.Unlock()
+	if len(runs) == 0 {
+		return 0
+	}
+	for _, run := range runs {
+		run.cancelled.Store(true)
+		_ = s.pg.SetExecutionCancelNote(run.id, reason)
+		killGroup(run.cmd)
+	}
+	// SIGTERM 之后给一个**共用**的宽限，到点整组硬杀；期间等 reaper 把终态写进库。
+	timeout := time.NewTimer(wait)
+	defer timeout.Stop()
+	for _, run := range runs {
+		select {
+		case <-run.done:
+			continue
+		case <-timeout.C:
+		}
+		break
+	}
+	// 到点仍未收尾的，整组 SIGKILL，再等一小段让 reaper 落库（进程已死，Wait 立刻返回）。
+	remaining := 0
+	grace := time.NewTimer(execCancelGrace)
+	defer grace.Stop()
+	for _, run := range runs {
+		select {
+		case <-run.done:
+		default:
+			remaining++
+			hardKillGroup(run.cmd)
+		}
+	}
+	for _, run := range runs {
+		select {
+		case <-run.done:
+		case <-grace.C:
+		}
+	}
+	if remaining > 0 {
+		log.Printf("[exec] 停机：%d/%d 条执行未在 %s 内退出，已整组 SIGKILL", remaining, len(runs), wait)
+	}
+	return len(runs)
 }
 
 // CancelAll cancels every in-flight execution of one task (task stop/delete).
