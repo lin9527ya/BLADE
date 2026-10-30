@@ -510,6 +510,9 @@ export const api = {
     patch<TaskGoal>(`/tasks/${id}/goals/${goalId}`, { text, vulnclass: vulnclass ?? "" }),
   // 人工删除目标（硬删除）：通知 planner，删除不复活任务。
   deleteGoal: (id: string, goalId: string) => del<{ ok: boolean }>(`/tasks/${id}/goals/${goalId}`),
+  // 人工放弃目标（open→abandoned，理由必填）：目标保留在图上，只是不再阻断收官；不复活任务。
+  abandonGoal: (id: string, goalId: string, reason: string) =>
+    post<TaskGoal>(`/tasks/${id}/goals/${goalId}/abandon`, { reason }),
 
   // ---- 战略提示（总览）----
   // 本任务的提示：active 全量 + 最近一窗 consumed。

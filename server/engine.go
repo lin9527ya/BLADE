@@ -163,6 +163,9 @@ type Engine struct {
 	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
 	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
 	budgetPause func(*Task) error
+	// pauseWithReason 由 server 注入：规划层判定"策略穷尽/停滞"时走完整暂停路径
+	// （落库 paused、取消主 Agent、reconcile）。nil 时引擎只做内存暂停。
+	pauseWithReason func(*Task, string) error
 
 	// resolve returns a task's dedicated planner/worker (wired by the server as the
 	// authoritative task-router). nil,nil means this task is deliberately unavailable
@@ -932,6 +935,25 @@ func (e *Engine) ReadyFor(t *Task) bool {
 	return p != nil && w != nil
 }
 
+// SetPauseWithReasonHandler wires the server's full pause path for planner-driven
+// stops (策略穷尽 / 停滞保护). Without it the engine pauses in memory only.
+func (e *Engine) SetPauseWithReasonHandler(fn func(*Task, string) error) { e.pauseWithReason = fn }
+
+// pauseTaskWithReason 走 server 注入的完整暂停路径（落库 + 取消在跑 LLM + 系统活动）；
+// 未注入时退回引擎内 Pause，仍然保证不空转。
+func (e *Engine) pauseTaskWithReason(t *Task, reason string) {
+	if t == nil {
+		return
+	}
+	if e.pauseWithReason != nil {
+		if err := e.pauseWithReason(t, reason); err != nil {
+			log.Printf("[engine] task %s 暂停失败: %v", t.ID, err)
+		}
+		return
+	}
+	e.Pause(t.ID, agent.AbortStrategyExhausted)
+}
+
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
@@ -996,6 +1018,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	heartbeat := time.NewTimer(interval)
 	defer heartbeat.Stop()
 
+	// 槽位利用率与停滞保护（每任务 planner loop 内计数，重启即清零足够）。
+	//   zeroRoundStreak：连续「本轮 0 意图 + 没有 running/可领意图」的轮数。
+	//   capacityRefills：连续因空闲槽位而补派的次数（每轮最多 1 次，最多 2 次）。
+	zeroRoundStreak := 0
+	capacityRefills := 0
+
 	// runRound 跑一轮规划(含 debounce 合并 + 各 guard)。src 仅用于日志区分触发来源。
 	runRound := func(src string) {
 		// debounce: coalesce a burst of changes into one planning round
@@ -1041,8 +1069,23 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
 					log.Printf("[goalless] task %s 收尾落 done 失败: %v", t.ID, err)
 				} else if won {
-					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
-						Summary: "目标已全部达成，直投意图已执行完毕，任务结束"})
+					// 文案区分「全部达成」与「了结（含放弃）」：放弃不是达成，报告与时间线不能混为一谈。
+					met, abandoned := 0, 0
+					if goals, gerr := t.Store.ListByKind(db.KindGoal, 10000); gerr == nil {
+						for _, g := range goals {
+							switch g.State {
+							case "met":
+								met++
+							case "abandoned":
+								abandoned++
+							}
+						}
+					}
+					summary := "目标已全部达成，直投意图已执行完毕，任务结束"
+					if abandoned > 0 {
+						summary = fmt.Sprintf("目标已全部了结（达成 %d / 放弃 %d），直投意图已执行完毕，任务结束", met, abandoned)
+					}
+					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: summary})
 				}
 			}
 			return // goalless 分支永不进入 planner.Plan
@@ -1086,6 +1129,37 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		if err != nil && ectx.Err() == nil {
 			t.restoreTriggers(triggers)
+		}
+		// 策略穷尽：planner 已用 mark_strategy_exhausted 写下结论事实。暂停任务等人工，
+		// 不在工具调用中途取消自己的 ctx——这里是本轮结束后的后处理。
+		if exhausted := planner.TakeStrategyExhaustedReason(); exhausted != "" && !met && ectx.Err() == nil {
+			log.Printf("[planner] task %s 策略内已无可行方向: %s", t.ID, clipRunes(exhausted, 120))
+			e.pauseTaskWithReason(t, "策略内已无可行方向，任务已暂停等待人工："+clipRunes(exhausted, 300))
+			return
+		}
+		// 槽位利用率 / 停滞保护：一轮结束后看「空闲槽位」和「是否连续空转」。
+		// 此前一轮结束就不会再因空闲槽位自我唤醒，只能等 worker 完成或 10 分钟心跳，
+		// 于是 4 个 worker 长期只跑 1~2 条（任务 14 实测 31 轮中 17 轮 0 意图）。
+		if !met && err == nil && ectx.Err() == nil {
+			states, _ := t.Store.CountIntentStates()
+			running := states["running"]
+			claimable, _ := t.Store.CountClaimableIntents()
+			workers := e.TaskWorkers(t.ID)
+			idle := workers - running
+			hasOpenGoal, _ := t.Store.HasOpenGoal()
+			made := planner.LastRoundIntents()
+			var refill, stall bool
+			zeroRoundStreak, capacityRefills, refill, stall = plannerRoundSignals(
+				made, running, claimable, idle, hasOpenGoal, zeroRoundStreak, capacityRefills)
+			if refill {
+				log.Printf("[planner] task %s 本轮 0 意图且有 %d 个空闲槽位，4s 后补派一轮", t.ID, idle)
+				time.AfterFunc(4*time.Second, func() { t.Notify() })
+			}
+			if stall {
+				zeroRoundStreak = 0
+				e.pauseTaskWithReason(t, "连续 3 轮规划未产出意图，且没有在跑/可领意图；任务已暂停等待人工检查（目标仍未达成）")
+				return
+			}
 		}
 		switch {
 		case err != nil && ectx.Err() == nil:
@@ -1176,13 +1250,22 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 			}
 			continue
 		}
-		if !e.beginTaskOperation(t.ID) {
-			lock.Unlock()
+		claimed := false
+		stop := false
+		func() {
+			// defer 兜底：runWorkerStep 内部 panic 会被最外层 goSafe 捕获，没有 defer 时
+			// 槽位锁与 inflight 永久泄漏，该槽位从此不再领活。
+			defer lock.Unlock()
+			if !e.beginTaskOperation(t.ID) {
+				stop = true
+				return
+			}
+			defer e.decInflight(t.ID)
+			claimed = e.runWorkerStep(ctx, t, name, worker)
+		}()
+		if stop {
 			return
 		}
-		claimed := e.runWorkerStep(ctx, t, name, worker)
-		e.decInflight(t.ID)
-		lock.Unlock()
 		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
 			return
 		}
@@ -1728,32 +1811,32 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 		workers = 1
 	}
 	// Prefer the slot that last ran this intent so the slot transcript (and its
-	// cache) is resumed. If that slot is busy, fail fast instead of racing it.
+	// cache) is resumed. If that slot is busy, fall back to any idle slot instead
+	// of failing: slot affinity is an optimization, not a correctness rule (the DB
+	// claim path now applies the same rule — an owner slot with no running intent
+	// no longer blocks other slots).
 	slot := ""
+	var lock *sync.Mutex
 	preferred := slotNumber(node.Owner)
 	if preferred > 0 && preferred <= workers {
-		slot = slotName(preferred)
+		if l := e.slotLock(t.ID, slotName(preferred)); l != nil && l.TryLock() {
+			slot, lock = slotName(preferred), l
+		}
 	}
-	var lock *sync.Mutex
-	if slot != "" {
-		lock = e.slotLock(t.ID, slot)
-		if lock == nil {
-			return fmt.Errorf("task is being deleted")
-		}
-		if !lock.TryLock() {
-			return fmt.Errorf("%w: Worker #%d 正有意图在运行，请等它完成后再继续", errSlotBusy, preferred)
-		}
-	} else {
+	if lock == nil {
 		for i := 1; i <= workers; i++ {
+			if i == preferred {
+				continue // 已尝试过首选槽位（被占）
+			}
 			l := e.slotLock(t.ID, slotName(i))
 			if l != nil && l.TryLock() {
 				slot, lock = slotName(i), l
 				break
 			}
 		}
-		if lock == nil {
-			return fmt.Errorf("%w: 所有 Worker 槽位都在运行，请稍后再继续", errSlotBusy)
-		}
+	}
+	if lock == nil {
+		return fmt.Errorf("%w: 所有 Worker 槽位都在运行，请稍后再继续", errSlotBusy)
 	}
 	lockHeld := true
 	defer func() {
@@ -1817,11 +1900,38 @@ func taskExecutionPaused(cause error) bool {
 	}
 	switch abort.Code {
 	case "paused_by_user", "paused_by_orchestrator", "paused_on_reload", "paused_race_guard",
-		"queued_for_admission", "llm_unavailable_queued", "task_deleted":
+		"queued_for_admission", "llm_unavailable_queued", "task_deleted",
+		// 这三类不是"意图没探成"，而是平台主动踩了刹车：预算耗尽、停机开关、离开
+		// 作业时间窗；以及 planner 判定策略内无方向。被它们取消的意图必须退回 open，
+		// 否则恢复后会以 blocked 终态留在图上，planner 会当"没测成"重派，白烧预算。
+		"budget_exhausted", "kill_switch", "scope_window_closed", "strategy_exhausted":
 		return true
 	default:
 		return false
 	}
+}
+
+// plannerRoundSignals 是一轮规划结束后的纯判定：是否需要因空闲槽位补派一次，
+// 以及是否已连续空转到需要暂停。抽成纯函数是为了让「不计代价派活」与「空转停机」
+// 这两条纪律能被单测钉住（实测任务 14：31 轮里 17 轮 0 意图，4 槽长期只跑 1~2 条）。
+//
+//	refill：本轮 0 意图、至少 2 个空闲槽位、没有可领意图、目标未达成，且补派次数未用尽；
+//	stall ：连续 3 轮「0 意图 + 没有 running/可领意图」——planner 已无产出，任务不能再空转。
+func plannerRoundSignals(made, running, claimable, idle int, hasOpenGoal bool, streak, refills int) (newStreak, newRefills int, refill, stall bool) {
+	newRefills = refills
+	if made > 0 {
+		newStreak, newRefills = 0, 0
+	} else if running == 0 && claimable == 0 && hasOpenGoal {
+		newStreak = streak + 1
+	} else {
+		newStreak = 0
+	}
+	refill = made == 0 && idle >= 2 && claimable == 0 && hasOpenGoal && refills < 2
+	if refill {
+		newRefills++
+	}
+	stall = newStreak >= 3
+	return
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) (done bool) {

@@ -323,6 +323,7 @@ POST /api/tasks/{id}/footprints/{fid}/accept-risk	server.(*Server).acceptFootpri
 POST /api/tasks/{id}/footprints/{fid}/cleared	server.(*Server).clearFootprint-fm
 POST /api/tasks/{id}/footprints/{fid}/not-found	server.(*Server).markFootprintNotFound-fm
 POST /api/tasks/{id}/goals	server.(*Server).addGoal-fm
+POST /api/tasks/{id}/goals/{gid}/abandon	server.(*Server).abandonGoal-fm
 POST /api/tasks/{id}/hints	server.(*Server).addHint-fm
 POST /api/tasks/{id}/hints/{hid}/remind	server.(*Server).remindHint-fm
 POST /api/tasks/{id}/intents/rerun-blocked	server.(*Server).rerunBlocked-fm

@@ -1744,7 +1744,14 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 	args = append(args, limit)
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
 WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
-  AND (COALESCE(owner,'')='' OR owner=$2 OR `+exclude+`)
+  AND (
+    COALESCE(owner,'')='' OR owner=$2 OR `+exclude+`
+    -- 槽位亲和不是硬绑定：owner 槽位当前没有在跑任何意图时，其它空闲槽位可以接手。
+    -- 否则重启/租约回收/暂停恢复留下的 open 意图会被原槽位"占着"，其它槽位空转。
+    OR NOT EXISTS (
+      SELECT 1 FROM exploration_nodes o
+      WHERE o.exploration_id=$1 AND o.kind='intent' AND o.state='running' AND o.owner=n.owner)
+  )
   AND NOT EXISTS (
     SELECT 1 FROM exploration_edges e
     JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
@@ -1827,7 +1834,13 @@ func (s *ExplorationStore) ClaimIntentForSlot(id int64, slot string, ttl time.Du
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
 heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
-  AND (COALESCE(owner,'')='' OR owner=$5 OR `+exclude+`)
+  AND (
+    COALESCE(owner,'')='' OR owner=$5 OR `+exclude+`
+    -- 与 FrontierForSlot 同一条规则：owner 槽位空闲时允许跨槽接手（CAS 决定谁赢）。
+    OR NOT EXISTS (
+      SELECT 1 FROM exploration_nodes o
+      WHERE o.exploration_id=$3 AND o.kind='intent' AND o.state='running' AND o.owner=exploration_nodes.owner)
+  )
   AND NOT EXISTS (
     SELECT 1 FROM exploration_edges e
     JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
@@ -3558,4 +3571,29 @@ WHERE exploration_id=$1 AND (
   (kind=$2 AND state <> $3) OR kind=$4
 ))`, s.expID, KindFact, StateOrigin, KindFinding).Scan(&ok)
 	return ok, err
+}
+
+// AbandonGoal marks an open goal as abandoned with a mandatory reason.
+//
+// 为什么需要它：目标只有 open/met 两种可写状态（prove_goal 写 met），没有"放弃"的
+// 出口。一个不可达的目标会让任务永远无法收官——planner 只能反复派边缘意图，任务
+// 一直跑下去。abandoned 早已在 schema/前端类型里定义，但从来没有写入点；这里补上。
+//
+// 只允许 open→abandoned：已经 met 的目标不能被"放弃"回头覆盖；理由必填，因为它会
+// 进入交付语境（报告/链路图），后来人要能看出"为什么这条路不成立"。
+func (s *ExplorationStore) AbandonGoal(id int64, reason string) (int64, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return 0, fmt.Errorf("放弃目标必须写理由：为什么这个目标不可达/不再适用")
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET
+  state='abandoned', content_version=content_version+1,
+  payload = payload || jsonb_build_object('abandoned_reason',$2::text, 'abandoned_at', to_jsonb(now())),
+  updated_at=now()
+WHERE id=$1 AND exploration_id=$3 AND kind='goal' AND state='open'`,
+		id, reason, s.expID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

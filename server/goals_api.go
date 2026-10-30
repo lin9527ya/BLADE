@@ -167,3 +167,63 @@ func (s *Server) deleteGoal(w http.ResponseWriter, r *http.Request) {
 	t.NotifyGoalDeleted(text) // 记「人删除了该目标:…」触发并唤醒 planner(不复活任务)
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+// abandonGoal 人工放弃一个目标：open → abandoned，理由必填并落 payload。
+// 与删除不同，目标仍在图上（报告/目标管理能看到「已放弃」及其理由），只是不再阻断收官；
+// 已达成(met)或已放弃的目标不能重复放弃。放弃不复活任务——它不产生新的工作。
+func (s *Server) abandonGoal(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	if !s.engine.beginTaskOperation(t.ID) {
+		writeErr(w, 409, "任务正在删除,无法放弃目标")
+		return
+	}
+	defer s.engine.decInflight(t.ID)
+
+	gid, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil || gid <= 0 {
+		writeErr(w, 400, "bad goal id")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid JSON")
+		return
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if reason == "" {
+		writeErr(w, 400, "放弃目标必须写理由：为什么这个目标不可达/不再适用")
+		return
+	}
+	node, err := t.Store.GetNode(gid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if node == nil || node.Kind != db.KindGoal {
+		writeErr(w, 404, "目标不存在")
+		return
+	}
+	text := goalDTO(node).Text
+	changed, err := t.Store.AbandonGoal(gid, reason)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if changed == 0 {
+		writeErr(w, 409, "只有未达成(open)的目标可以放弃")
+		return
+	}
+	t.NotifyGoalAbandoned(text, reason) // 通知规划者重判剩余目标(与删除一致,不复活任务)
+	updated, _ := t.Store.GetNode(gid)
+	if updated == nil {
+		writeErr(w, 500, "目标更新后读取失败")
+		return
+	}
+	writeJSON(w, 200, goalDTO(updated))
+}

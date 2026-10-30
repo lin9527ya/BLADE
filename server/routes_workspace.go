@@ -21,6 +21,7 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/goals", s.addGoal)                            // 目标管理:人工新增目标(复活任务)
 	mux.HandleFunc("PATCH /api/tasks/{id}/goals/{gid}", s.editGoal)                    // 目标管理:修改目标(复活任务)
 	mux.HandleFunc("DELETE /api/tasks/{id}/goals/{gid}", s.deleteGoal)                 // 目标管理:硬删除目标(不复活)
+	mux.HandleFunc("POST /api/tasks/{id}/goals/{gid}/abandon", s.abandonGoal)          // 目标管理:放弃目标(open→abandoned,理由必填;不复活)
 	mux.HandleFunc("GET /api/tasks/{id}/hints", s.listHints)                           // 战略提示:列出待采纳/已采纳
 	mux.HandleFunc("POST /api/tasks/{id}/hints", s.addHint)                            // 战略提示:人工新增(唤醒 planner,不复活任务)
 	mux.HandleFunc("PATCH /api/tasks/{id}/hints/{hid}", s.updateHint)                  // 战略提示:改文本 / 撤销采纳

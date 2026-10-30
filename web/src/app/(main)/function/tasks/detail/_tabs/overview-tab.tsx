@@ -3,7 +3,7 @@
 import * as React from "react";
 import { TaskInterceptRulesCard, TaskExplorationPolicyCard } from "./_components/task-policy-cards";
 
-import { ActivityIcon, AlertTriangleIcon, BellRingIcon, BookOpenIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ActivityIcon, AlertTriangleIcon, BanIcon, BellRingIcon, BookOpenIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -183,6 +183,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     cancelEditGoal,
     saveEditGoal,
     removeGoal,
+    abandonGoal,
     addHint,
     removeHint,
     startEditHint,
@@ -414,6 +415,23 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     >
                       <PencilIcon className="size-3.5" />
                     </Button>
+                    {g.state === "open" && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0 px-1.5"
+                        disabled={goalBusy}
+                        title="放弃目标（不可达/已下线/客户取消），需要写明理由"
+                        onClick={() => {
+                          const reason = window.prompt(
+                            `放弃目标「${g.text}」的理由（必填）：不可达 / 已下线 / 客户取消 / 超出授权范围…\n放弃后目标保留在图上，但不再阻断收官，报告会区分「已放弃」与「已达成」。`,
+                          );
+                          if (reason && reason.trim()) void abandonGoal(g, reason.trim());
+                        }}
+                      >
+                        <BanIcon className="size-3.5 text-amber-500" />
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"

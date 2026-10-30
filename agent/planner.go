@@ -25,23 +25,28 @@ import (
 // assets, judges whether the task goal is met, and emits 0..N exploration intents
 // into the frontier. It is the sole intent generator.
 type Planner struct {
-	findingRecorder   FindingRecorder
-	prov              llm.Provider
-	model             string
-	tx                *transcript.Store                      // raw LLM conversation persistence (nil = off)
-	window            int                                    // context window in tokens (for compaction)
-	windowFn          func() int                             // optional dynamic task-chain minimum
-	maxTurns          int                                    // max agent turns per run (0 = unlimited)
-	roundDur          time.Duration                          // 单轮墙钟预算（0 = 不限），由 server 按 agent 配置注入
-	killWork          func(intentID int64) error             // engine callback to terminate a running work (nil = off)
-	steerWork         func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
-	proxyAddr         string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert       string                                 // recording proxy's CA cert path (HTTPS verify)
-	proxyFn           func() (string, string)                // dynamic resolver (proxy-pool failover); nil = static
-	webSearch         WebSearchOpts                          // web_search tool backend selection (off by default)
-	workDir           string                                 // shared work dir (surfaced in prompt as artifact-output target)
-	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
-	nonStreamingFn    func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
+	findingRecorder FindingRecorder
+	prov            llm.Provider
+	model           string
+	tx              *transcript.Store                      // raw LLM conversation persistence (nil = off)
+	window          int                                    // context window in tokens (for compaction)
+	windowFn        func() int                             // optional dynamic task-chain minimum
+	maxTurns        int                                    // max agent turns per run (0 = unlimited)
+	roundDur        time.Duration                          // 单轮墙钟预算（0 = 不限），由 server 按 agent 配置注入
+	killWork        func(intentID int64) error             // engine callback to terminate a running work (nil = off)
+	steerWork       func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
+	// exhaustedReason 是本轮 mark_strategy_exhausted 写下的原因。引擎在 Plan 返回后
+	// 取走它并暂停任务——不在工具调用中途取消自己的上下文。
+	exhaustedReason string
+	// lastRoundIntents 是本轮成功创建的意图数（引擎用它做槽位利用率/停滞判定）。
+	lastRoundIntents  int
+	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
+	proxyCACert       string                  // recording proxy's CA cert path (HTTPS verify)
+	proxyFn           func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
+	webSearch         WebSearchOpts           // web_search tool backend selection (off by default)
+	workDir           string                  // shared work dir (surfaced in prompt as artifact-output target)
+	injectConstraints func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
+	nonStreamingFn    func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
 	execService ExecService
 	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
@@ -232,6 +237,7 @@ func renderPlannerTodos(items []actool.Todo) string {
 //	            single call (Goals = 本次新增的目标文本，1+ 条；set_goals 支持批量).
 //	"goal_deleted" — the human deleted a goal from 总览的目标管理 (Detail = 被删目标文本).
 //	"goal_edited"  — the human edited a goal from 总览的目标管理 (OldGoal→NewGoal 文本).
+//	"goal_abandoned" — the human abandoned a goal (Summary=目标文本, Detail=放弃理由).
 //	"cancelled" — the human deleted intent IntentID (Detail = 删除原因). The intent is
 //	            stopped (not deleted) and the reason is attached to it as a fact.
 type TriggerEvent struct {
@@ -275,6 +281,8 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			b.WriteString(fmt.Sprintf("\n- 人删除了该目标：%s —— 该目标已移除，请据此重判剩余目标/方向（不必再为它派意图）。", ev.Detail))
 		case "goal_edited":
 			b.WriteString(fmt.Sprintf("\n- 人修改了目标，由「%s」变为「%s」—— 请据新目标调整探索方向（原方向若已不适用请停派）。", ev.OldGoal, ev.NewGoal))
+		case "goal_abandoned":
+			b.WriteString(fmt.Sprintf("\n- 人放弃了该目标：%s（理由：%s）—— 它不再阻断收官，也不必再为它派意图；请据此重判剩余目标/方向。", ev.Summary, ev.Detail))
 		case "finding":
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 报告了一个 finding：%s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
 		case "cancelled":
@@ -428,7 +436,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 任务目标：{{.Goal}}
 
 **本轮该产出几个意图（先想清楚这条）**：
-- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何**可领**或 running 意图】（claimable_intents=0 且 running_intents 为空——被前置挡住的意图不算"有活可干"），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done_intents 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。**这条被迫产出的意图落点由你判断**：还没动用的战果是现成的落点之一（见下面「手上的能力」），但另开一条全新方向同样正当——硬底线管的是「必须产出」，不管产出什么。
+- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何**可领**或 running 意图】（claimable_intents=0 且 running_intents 为空——被前置挡住的意图不算"有活可干"），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done_intents 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。**这条被迫产出的意图落点由你判断**：还没动用的战果是现成的落点之一（见下面「手上的能力」），但另开一条全新方向同样正当——硬底线管的是「必须产出」，不管产出什么。**但确认在【授权范围/操作约束内】已无可行方向时（不是「暂时想不出」，也不是「在等 worker」），不要用边缘意图凑数：调用 mark_strategy_exhausted（reason 写清穷尽了什么、各被什么挡住，evidence_ids 至少 1 个事实/漏洞/意图）；某个目标不可达/不再适用时用 abandon_goal（理由必填）。**
 - **槽位利用率（与硬底线并列）**：intent_queue.idle_slots ≥ 2 且未饱和时，本轮新增意图数应 **≥ min(idle_slots, 4)**——有 worker 闲着就是浪费并行度（详见文末【槽位利用率】代码持有段）。
 - 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。**但 ② 只在没有其它独立方向时才成立**：还有空闲槽位、又有互不依赖的未测面时，应当派那些，而不是整体等待。
 - 反过来：确有【未覆盖、且不依赖在跑 work】的新方向，或目标未达成且范围内仍有未测面，就该派——别把 0 意图当偷懒的默认。
@@ -474,7 +482,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
      · 用掉手上的能力通常比重打一遍便宜（同一台机器不然还得从外面再来一次），但这是**判断依据，不是义务**。outstanding 也不等于必须反复派：确实推不动的（凭据试过、据点断了），在意图的 summary 里写清为什么，别换措辞重派同一条。
    - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
 
-   **串行利用链：用 depends_on 把依赖写进图，别靠记忆。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：把下游的 add_intent 带上 depends_on=[上游意图 id]，系统会在上游以 done/negative 收场前**不把下游派给 worker**（下游拿不到前置只会空转）；态势里这些意图会带 blocked_by。上游卡住（blocked/exhausted/no_output）时下游会一直停着：重派上游，或判定不等它了就调 unblock_intent 拆链（并把它缺的结论先用 record_fact 写下来）。TodoWrite 只用来记"这条链整体还剩几步"给下一轮的自己看，不再承担依赖判断。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才用多意图并行。
+   **串行利用链：用 depends_on 把依赖写进图，别靠记忆。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：把下游的 add_intent 带上 depends_on=[上游意图 id]，系统会在上游以 done/negative 收场前**不把下游派给 worker**（下游拿不到前置只会空转）；态势里这些意图会带 blocked_by。上游卡住（blocked/exhausted/no_output）时下游会一直停着：重派上游，或判定不等它了就调 unblock_intent 拆链（planner 没有 record_fact：缺的结论要重派上游 worker 补写，别自己臆造事实）。TodoWrite 只用来记"这条链整体还剩几步"给下一轮的自己看，不再承担依赖判断。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才用多意图并行。
 
 5. **提交**：用【一次】add_intent 批量提交筛出的新方向（intents 数组，最多 4 个最高价值的，不要逐条多次调）：
    - **队列有上限（背压）**：态势里 intent_queue.claimable ≥ soft_limit（默认 2×worker 数）时，本轮默认**不新增**——先让 worker 消化；确有【材料性新发现驱动的跟进】（刚确认的漏洞链、新战果、新入口）才加，且一次最多 1 条，并把 priority 提到 8 以上绕过上限。判定看 claimable_intents，不要看 frontier_open（后者含被前置挡住的）。**被队列上限拒收的方向不等于丢弃**：把它的 summary 写进 TodoWrite 并注明"等队列消化后再派"，worker 腾出手时再提交；确实值得立刻做的用 priority ≥8。已过时的排队方向用 drop_intent 清掉；**删掉一条前置时，回执会列出被解锁的下游——本轮必须处理它们**（补前置、改写方向或一并丢掉），不要放着让它们没拿到前置就空跑。
@@ -622,6 +630,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
+	tsx.exhaustedFn = p.recordStrategyExhausted
 	if origin, _ := ts.OriginFactID(); origin > 0 {
 		tsx.SetOwnerNode(origin) // planner-side anchors default to the task root (origin fact)
 	}
@@ -758,6 +767,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 				emit(r)
 			}
 		})
+	p.lastRoundIntents = tsx.intentsRound
 	// 槽位空转可见化：本轮派的意图数没跟上空闲槽位，就在时间线上留一行，写清空了几个槽、
 	// 本轮派了几条、按纪律应该派几条。纪律（slotUtilizationBlock）只要求"能说清已被覆盖"
 	// 才允许少派；把它记下来，操作者能直接看出是哪一轮空转，而不是只在 worker 列表里看到
@@ -778,3 +788,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	return tsx.GoalMet, tsx.Reason, err
 }
+
+// recordStrategyExhausted 由 mark_strategy_exhausted 工具调用：只记录原因，
+// 真正的暂停由引擎在 Plan 返回后执行（避免在工具调用中途取消自己的 ctx）。
+func (p *Planner) recordStrategyExhausted(reason string) {
+	p.exhaustedReason = strings.TrimSpace(reason)
+}
+
+// TakeStrategyExhaustedReason 取走并清空本轮记录的策略穷尽原因。
+func (p *Planner) TakeStrategyExhaustedReason() string {
+	r := p.exhaustedReason
+	p.exhaustedReason = ""
+	return r
+}
+
+// LastRoundIntents 返回最近一轮成功创建的意图数（引擎的槽位利用率/停滞判定用）。
+func (p *Planner) LastRoundIntents() int { return p.lastRoundIntents }

@@ -720,7 +720,9 @@ func (s *Server) reseedPlannerPrompt() {
 	// lineageDisciplineBlock / slotUtilizationBlock，这里只是把可编辑正文同步到新口径。
 	// v8 起用修正后的 plannerPromptIsCustom 判据；v7 那次因为 && / || 优先级写错，
 	// 把"刚刷成 v5 的正文"误判成自定义并置位了标记，所以换一个新 flag 重跑一次。
-	const flag = "planner_prompt_slots_v8"
+	// v9：硬底线补上「无方向时调用 mark_strategy_exhausted / abandon_goal」出口，
+	// 并把「用 record_fact 写结论」的旧说法改成这两个 planner 真正拥有的工具。
+	const flag = "planner_prompt_slots_v9"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}

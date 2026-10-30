@@ -742,6 +742,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.reportFootprint(), t.listFootprints(), t.markFootprintCleaned(), t.markFootprintNotFound(), t.acceptFootprintRisk(),
 		// 补血缘：人在对话里发现某条意图挂错了来源，也能直接修。
 		t.linkIntentSource(),
+		// 人也可以放弃不可达目标（planner 同样有该工具）。
+		t.abandonGoal(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),

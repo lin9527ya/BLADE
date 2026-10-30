@@ -170,6 +170,20 @@ export function useOverviewState(taskId: string) {
     }
   };
 
+  const abandonGoal = async (g: TaskGoal, reason: string) => {
+    setGoalBusy(true);
+    setGoalErr("");
+    try {
+      await api.abandonGoal(taskId, g.id, reason);
+      await loadGoals();
+    } catch (e) {
+      setGoalErr(e instanceof Error ? e.message : "放弃失败");
+      await loadGoals();
+    } finally {
+      setGoalBusy(false);
+    }
+  };
+
   const loadHints = React.useCallback(async () => {
     try {
       const resp = await api.taskHints(taskId);
@@ -642,6 +656,7 @@ export function useOverviewState(taskId: string) {
     cancelEditGoal,
     saveEditGoal,
     removeGoal,
+    abandonGoal,
     loadHints,
     addHint,
     removeHint,

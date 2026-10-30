@@ -39,6 +39,8 @@ var (
 		"规划者判定任务目标已达成并将任务置为 done，随后取消仍在运行的 Worker；这些意图会标记为 stopped，而不是失败")
 	AbortBudgetExhausted = cause("budget_exhausted", "Token 预算耗尽，任务已暂停",
 		"任务达到 token 预算上限：平台停止派发新意图、暂停任务并取消在跑的 Planner/Worker（运行中的意图退回 open）。这不是任务结束，也不会生成终局报告；调整预算或确认后可在任务页手动继续。继续后同一档预算不再重复打断（改预算会重新生效）")
+	AbortStrategyExhausted = cause("strategy_exhausted", "策略内已无可行方向，任务已暂停",
+		"规划者用 mark_strategy_exhausted 判定：在授权范围与操作约束内已无可行方向。平台暂停任务、停止派发新意图并取消在跑的 Planner/Worker（运行中的意图退回 open）。这不是任务结束，也不会生成终局报告；人工确认后可在任务页继续，planner 会重新评估策略穷尽结论")
 	AbortSettleDrainTimeout = cause("settle_drain_timeout", "任务超时收尾的等待时间已用尽",
 		"任务到达 timeout 后等待正在运行的 Worker 优雅收尾，但 90 秒 drain 宽限仍不足，因此执行硬取消；意图会标记为 exhausted，收尾阶段已经写入的事实和资产会保留")
 

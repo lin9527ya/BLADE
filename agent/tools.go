@@ -110,6 +110,10 @@ type ToolSet struct {
 	// intent id (engine callback, wired by the planner): the worker injects it before
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.
 	steerWork func(intentID int64, msg string) error
+	// exhaustedFn 是 planner 的「策略穷尽」信号：mark_strategy_exhausted 写完结论
+	// 事实后把原因交给 Planner；引擎在本轮**结束之后**再暂停任务。不在工具调用中途
+	// 取消自己的 ctx——那会让本轮的结论与回执一起丢掉。
+	exhaustedFn func(reason string)
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
 	// domain, HTTP probe for a site). nil = no engine enrichment.
 	enrich EnrichTrigger
@@ -161,6 +165,10 @@ func (t *ToolSet) SetNotify(fn func()) { t.notify = fn }
 
 // SetNotifyFinding wires the finding-wake callback (see ToolSet.notifyFinding).
 func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = fn }
+
+// SetStrategyExhaustedHandler wires the planner's "no viable direction" signal
+// (see ToolSet.exhaustedFn). Set only on the planner's ToolSet.
+func (t *ToolSet) SetStrategyExhaustedHandler(fn func(string)) { t.exhaustedFn = fn }
 
 // EnrichTrigger is the enrichment engine seen from the tool layer (see package
 // enrich). Kept as an interface here to avoid coupling agent → enrich.
@@ -2256,7 +2264,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 	return writeTool("goal_met", "【立即结束整个任务】——**仅用于没有显式目标(goals)的任务**：有目标时请用 prove_goal 逐个证明（系统会在最后一个目标达成时自动收官）。它必须带上证明任务已达成的【证据节点】(evidence_id)，空口无凭的「完成了」会被拒收。⚠️它不是用来“结束本轮规划”的：本轮没有新意图要派、或在等 worker 产出，都【直接结束本轮即可，不要调本工具】（0 个意图是完全正常的）。",
 		obj(map[string]any{
 			"reason":      str("达成理由：这个证据为什么说明任务已经完成"),
-			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；没有就先用 record_fact 把结论写下来）"),
+			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；必须是前面 work 或主 Agent 已写下的结论，planner 自己没有 record_fact）"),
 		}, "reason", "evidence_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
@@ -2278,7 +2286,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 			ev := pid(a.EvidenceID)
 			if ev <= 0 {
 				return actool.Errorf("goal_met: evidence_id 必填——没有证据的「任务完成」是一句口号。" +
-					"请指向证明任务已达成的【事实/漏洞】节点（没有的话先用 record_fact 把它写下来）"), nil
+					"请指向证明任务已达成的【事实/漏洞】节点（planner 没有 record_fact：先让 worker 把结论写成事实，再来证明）"), nil
 			}
 			node, err := t.ts.GetNodeWithSources(ev)
 			if err != nil || node == nil || (node.Kind != db.KindFact && node.Kind != db.KindFinding) {
@@ -3904,6 +3912,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listFootprints(), t.acceptFootprintRisk(),
 		// 补血缘：add_intent 漏传 parent_ids 时，把已建意图接回真实来源（不动节点、不丢产出）。
 		t.linkIntentSource(),
+		// 收口：策略内已无可行方向 → 写结论 + 暂停等人工；不可达目标 → 放弃（理由必填）。
+		t.markStrategyExhausted(), t.abandonGoal(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
 		t.coverageMatrix(),

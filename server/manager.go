@@ -2313,6 +2313,20 @@ func (t *Task) NotifyGoalDeleted(text string) {
 	t.Notify()
 }
 
+// NotifyGoalAbandoned records that the human abandoned a goal (via 总览的目标管理),
+// then wakes the planner so the next round knows the goal no longer blocks completion
+// and stops sending intents for it. Abandoning does NOT revive a finished task.
+func (t *Task) NotifyGoalAbandoned(text, reason string) {
+	text, reason = strings.TrimSpace(text), strings.TrimSpace(reason)
+	if text == "" {
+		return
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "goal_abandoned", Detail: reason, Summary: text})
+	t.trigMu.Unlock()
+	t.Notify()
+}
+
 // NotifyGoalEdited records that the human edited a goal (via 总览的目标管理), then wakes
 // the planner so the next round spells out the old→new change. The event survives an
 // early-returning terminal round (drain happens after the gate).
