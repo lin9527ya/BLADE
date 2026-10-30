@@ -713,11 +713,14 @@ func (s *Server) reseedMainAgentPrompt() {
 // 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
 // reseedGoalsPrompt 完全同构。
 func (s *Server) reseedPlannerPrompt() {
+	// v7：槽位利用率收紧为「按空闲数补齐」（≥ min(idle_slots,4)），并允许派补证缺口/换机理。
 	// v6：加入「槽位利用率」——空闲 worker ≥2 时本轮必须补至少 1 条独立方向。
 	// v5：parent_ids 从"可选"改成"几乎总是要填"——漏填会让意图全部兜底连到任务起点，
 	// 图上读起来像"只能从起点发散"。代码持有的纪律见 plannerSystem 的
 	// lineageDisciplineBlock / slotUtilizationBlock，这里只是把可编辑正文同步到新口径。
-	const flag = "planner_prompt_slots_v6"
+	// v8 起用修正后的 plannerPromptIsCustom 判据；v7 那次因为 && / || 优先级写错，
+	// 把"刚刷成 v5 的正文"误判成自定义并置位了标记，所以换一个新 flag 重跑一次。
+	const flag = "planner_prompt_slots_v8"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -741,9 +744,7 @@ func (s *Server) reseedPlannerPrompt() {
 	}
 	// 只刷新仍带旧默认特征句的正文；已自定义且不含旧句的模板保留（广度纪律由
 	// plannerSystem 的代码持有块兜底，不依赖这次迁移）。
-	if curErr == nil && cur != "" && !strings.Contains(cur, "深度优先于覆盖度") &&
-		!strings.Contains(cur, "广度保底与深度并行") && !strings.Contains(cur, "本方向由哪些上游节点综合得出（可选") &&
-		!strings.Contains(cur, "槽位利用率") {
+	if curErr == nil && cur != "" && plannerPromptIsCustom(cur) {
 		log.Printf("[prompts] planner 提示词已是自定义版本，保留正文；广度纪律运行时注入")
 		return
 	}
@@ -1333,4 +1334,29 @@ func (s *Server) seedAutoDefaultBindings() {
 	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
 		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
 	}
+}
+
+// plannerPromptIsCustom 判断库里的 planner 正文是否已被用户改成自定义版本。
+//
+// 判据是"不含任何出厂旧版特征句、也不含当前默认的特征句"。旧版本用一串否定条件
+// 平铺表达，后来加条件时 `&&` 与 `||` 混写让优先级出错（`a && b && !c || !d` 等价于
+// `(a && b && !c) || !d`），结果一份刚被刷成新默认的正文被判成"自定义"，此后再也
+// 刷不动。收成一个显式循环，加特征句时只改这个切片。
+func plannerPromptIsCustom(cur string) bool {
+	if strings.TrimSpace(cur) == "" {
+		return false
+	}
+	// 出厂正文的特征句（任一命中 = 仍是平台默认，可以整份刷新）。
+	stale := []string{
+		"深度优先于覆盖度",
+		"广度保底与深度并行",
+		"本方向由哪些上游节点综合得出（可选",
+		"槽位利用率",
+	}
+	for _, marker := range stale {
+		if strings.Contains(cur, marker) {
+			return false
+		}
+	}
+	return true
 }
