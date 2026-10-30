@@ -16,13 +16,30 @@ func TestPlannerPromptToolReferencesExist(t *testing.T) {
 		"list_facts", "list_findings", "node_detail", "list_assets", "asset_neighbors",
 		"get_worker_output", "get_worker_trace", "lookup_playbooks", "record_playbook_feedback",
 		"add_intent", "unblock_intent", "drop_intent", "prove_goal", "goal_met", "coverage_matrix",
-		"run_execution", "wait_execution", "get_execution", "grep_execution", "cancel_execution",
-		"kill_work", "steer_work", "accept_artifact_risk", "tunnel_open", "loot_upload", "loot_download",
+		"kill_work", "steer_work", "accept_artifact_risk",
 		"list_footprints", "accept_footprint_risk", "link_intent_source",
-		"mark_strategy_exhausted", "abandon_goal",
+		"mark_strategy_exhausted", "abandon_goal", "merge_findings",
 	} {
 		if !have[name] {
 			t.Fatalf("提示词让模型调 %s，但它不在 PlannerTools 里——模型会拿到「未知工具」并浪费一轮", name)
+		}
+	}
+}
+
+// planner 是意图生成者，不亲自执行/写漏洞/扩面：执行类、report_finding、scope 工具
+// 必须留在 worker / 主 Agent 面，规划层只描述「让 worker 做什么」。
+func TestPlannerToolsExcludeExecutionAndWriteSurface(t *testing.T) {
+	have := map[string]bool{}
+	for _, tl := range NewToolSet(nil, "").PlannerTools() {
+		have[tl.Name()] = true
+	}
+	for _, name := range []string{
+		"report_finding", "run_execution", "wait_execution", "get_execution", "grep_execution",
+		"cancel_execution", "loot_exec", "loot_upload", "loot_download", "foothold_exec",
+		"tunnel_open", "oast_mint", "oast_poll", "add_task_scope", "add_company_scope", "cve_exploit",
+	} {
+		if have[name] {
+			t.Fatalf("%s 不应出现在 PlannerTools：规划层只产意图，执行/写漏洞/扩面交给 worker 或主 Agent", name)
 		}
 	}
 }

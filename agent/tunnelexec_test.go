@@ -27,7 +27,7 @@ func TestTunnelOpenStartsSocksForward(t *testing.T) {
 	fake := &fakeExecService{submitID: 21}
 	tools.SetExecService(fake)
 	fidJSON, _ := json.Marshal(fid)
-	out := callTool(t, tools.PlannerTools(), "tunnel_open", `{"foothold_id":`+string(fidJSON)+`,"host":"web01"}`)
+	out := callTool(t, tools.WorkerTools(), "tunnel_open", `{"foothold_id":`+string(fidJSON)+`,"host":"web01"}`)
 	if !strings.Contains(out, "tunnel started:") {
 		t.Fatalf("应起一条隧道：%s", out)
 	}
@@ -61,12 +61,12 @@ func TestTunnelOpenRefusals(t *testing.T) {
 	ws := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
 		`{"summary":"webshell","evidence":"curl","confidence":"high","protocol":"webshell","url":"http://web01/x.php"}`))
 	wsJSON, _ := json.Marshal(ws)
-	out := callTool(t, tools.PlannerTools(), "tunnel_open", `{"foothold_id":`+string(wsJSON)+`,"host":"web01"}`)
+	out := callTool(t, tools.WorkerTools(), "tunnel_open", `{"foothold_id":`+string(wsJSON)+`,"host":"web01"}`)
 	if !strings.Contains(out, "隧道需要 protocol=ssh") {
 		t.Fatalf("webshell 据点应被拒：%s", out)
 	}
 	withLootExec(t, false)
-	out = callTool(t, tools.PlannerTools(), "tunnel_open", `{"foothold_id":`+string(wsJSON)+`,"host":"web01"}`)
+	out = callTool(t, tools.WorkerTools(), "tunnel_open", `{"foothold_id":`+string(wsJSON)+`,"host":"web01"}`)
 	if !strings.Contains(out, "默认关闭") {
 		t.Fatalf("开关关闭时应明确拒绝：%s", out)
 	}

@@ -439,6 +439,32 @@ func nodeSummary(n *db.Node) string {
 	return ""
 }
 
+// nodeEvidenceExcerpt 取事实/漏洞的关键证据（evidence 优先，其次 detail），压成
+// 一行并截断。压缩时只看 summary 会丢掉"凭什么得出这个结论"——摘要一旦丢了证据，
+// 后来人无法判断它是否还成立。
+func nodeEvidenceExcerpt(n *db.Node, max int) string {
+	if n == nil {
+		return ""
+	}
+	var p map[string]any
+	if json.Unmarshal(n.Payload, &p) != nil {
+		return ""
+	}
+	text, _ := p["evidence"].(string)
+	if strings.TrimSpace(text) == "" {
+		text, _ = p["detail"].(string)
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	r := []rune(text)
+	if len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return text
+}
+
 func nodeConfidence(n *db.Node) string {
 	if n == nil {
 		return ""
@@ -476,6 +502,9 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		line := fmt.Sprintf("- #%d [%s/%s] %s", m, kind, state, nodeSummary(n))
 		if conf := nodeConfidence(n); conf != "" {
 			line += fmt.Sprintf(" (confidence=%s)", conf)
+		}
+		if ev := nodeEvidenceExcerpt(n, 200); ev != "" {
+			line += " | 证据：" + ev
 		}
 		sb.WriteString(line)
 		sb.WriteByte('\n')

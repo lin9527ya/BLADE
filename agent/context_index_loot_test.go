@@ -12,14 +12,14 @@ func TestContextIndexShowsLootAndOutstanding(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 
 	usedID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"web01 上的 root 反弹 shell","access":"反弹 shell","privilege":"root",`+
+		`{"risk_area":"other","summary":"web01 上的 root 反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444","confidence":"high"}`))
 	freeID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"db02 的 ssh 登录","access":"ssh","privilege":"app",`+
+		`{"risk_area":"other","summary":"db02 的 ssh 登录","access":"ssh","privilege":"app",`+
 			`"evidence":"ssh db02","confidence":"high"}`))
 
 	if out := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"拿 web01 当跳板","uses_loot_ids":[`+strconv.FormatInt(usedID, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
+		`{"risk_area":"other","summary":"拿 web01 当跳板","uses_loot_ids":[`+strconv.FormatInt(usedID, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("意图没建上：%s", out)
 	}
 
@@ -45,7 +45,7 @@ func TestContextIndexCredentialNeverLeaksSecret(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	const secret = "Sup3rS3cretPassw0rd"
 	if out := callTool(t, tools.WorkerTools(), "report_credential",
-		`{"summary":"db02 上的 app 账号","kind":"password","username":"app","secret":"`+secret+`",`+
+		`{"risk_area":"other","summary":"db02 上的 app 账号","kind":"password","username":"app","secret":"`+secret+`",`+
 			`"evidence":"cat /etc/app.cnf → password=x","confidence":"high",`+
 			`"targets":[{"host":"db02","port":22,"service":"ssh","verified":true,"evidence":"ssh app@db02 → ok"}]}`); !strings.HasPrefix(out, "credential recorded: ") {
 		t.Fatalf("凭据没记上：%s", out)

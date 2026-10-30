@@ -19,9 +19,9 @@ func toolNamed(tools []actool.CoreTool, name string) bool {
 // loot_exec 未启用时要从工具面移除，而不是留一个永远拒绝的工具让模型反复去试。
 func TestDropToolByNameRemovesOnlyThatTool(t *testing.T) {
 	ts := agent.NewToolSet(nil, "")
-	tools := ts.PlannerTools()
+	tools := ts.WorkerTools()
 	if !toolNamed(tools, "loot_exec") {
-		t.Fatal("前置：PlannerTools 应包含 loot_exec")
+		t.Fatal("前置：WorkerTools 应包含 loot_exec")
 	}
 	before := len(tools)
 
@@ -42,9 +42,9 @@ func TestDropToolByNameRemovesOnlyThatTool(t *testing.T) {
 	}
 
 	// 可变参数：同一个开关控制的工具要一起消失。
-	fresh := agent.NewToolSet(nil, "").PlannerTools()
+	fresh := agent.NewToolSet(nil, "").WorkerTools()
 	if !toolNamed(fresh, "loot_exec") || !toolNamed(fresh, "foothold_exec") {
-		t.Fatal("前置：PlannerTools 应同时包含 loot_exec 与 foothold_exec")
+		t.Fatal("前置：WorkerTools 应同时包含 loot_exec 与 foothold_exec")
 	}
 	both := dropToolByName(fresh, "loot_exec", "foothold_exec")
 	if toolNamed(both, "loot_exec") || toolNamed(both, "foothold_exec") {

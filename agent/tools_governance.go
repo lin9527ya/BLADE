@@ -122,3 +122,53 @@ func (t *ToolSet) abandonGoal() actool.CoreTool {
 			return actool.Text(fmt.Sprintf("goal abandoned: %d（%s）", id, reason)), nil
 		})
 }
+
+func (t *ToolSet) mergeFindings() actool.CoreTool {
+	return t.writeExpTool("merge_findings",
+		"把重复登记的漏洞合并到一条保留项：重复项的处置状态置为 duplicate（墓碑保留，报告会列在「已关闭/重复」）、资产锚点并入保留项。\n"+
+			"只在确认是同一条漏洞时使用；理由必填。合并后 findings_total / list_findings 只保留有效项，不再重复计数。",
+		obj(map[string]any{
+			"canonical_id": idp("保留项的漏洞节点 id（list_findings / graph_overview 里的 finding id）"),
+			"duplicate_ids": map[string]any{
+				"type": "array", "items": map[string]any{"type": "integer"},
+				"description": "【必填】要并入保留项的重复漏洞节点 id 列表",
+			},
+			"reason": str("【必填】为什么这些是同一条漏洞（同资产/同入口/同根因），写清依据"),
+		}, "canonical_id", "duplicate_ids", "reason"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				CanonicalID  json.RawMessage   `json:"canonical_id"`
+				DuplicateIDs []json.RawMessage `json:"duplicate_ids"`
+				Reason       string            `json:"reason"`
+			}
+			_ = json.Unmarshal(in, &a)
+			canonical := pid(a.CanonicalID)
+			if canonical <= 0 {
+				return actool.Errorf("canonical_id 必填：给保留项的漏洞节点 id"), nil
+			}
+			dups := pidList(a.DuplicateIDs)
+			if len(dups) == 0 {
+				return actool.Errorf("duplicate_ids 必填：至少给一条要合并的重复漏洞 id"), nil
+			}
+			reason := strings.TrimSpace(a.Reason)
+			if reason == "" {
+				return actool.Errorf("reason 必填：说明为什么这些是同一条漏洞（同资产/同入口/同根因）"), nil
+			}
+			// 两个 id 都必须是本任务的 finding 节点。
+			for _, id := range append([]int64{canonical}, dups...) {
+				n, err := t.ts.GetNode(id)
+				if err != nil || n == nil || n.Kind != db.KindFinding {
+					return actool.Errorf(fmt.Sprintf("%d 不是本任务的漏洞节点", id)), nil
+				}
+			}
+			merged, err := t.ts.MergeFindings(canonical, dups, reason)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			t.auditLootExec("merge_findings", fmt.Sprintf("合并漏洞 #%d", canonical), "重复项："+fmt.Sprint(dups)+"\n理由："+reason)
+			if t.notify != nil {
+				t.notify()
+			}
+			return actool.Text(fmt.Sprintf("findings merged: %d 条并入 #%d（重复项已标记 duplicate，资产锚点已合并）", merged, canonical)), nil
+		})
+}

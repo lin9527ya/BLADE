@@ -37,7 +37,7 @@ func workflowTool(t *testing.T, tools []actool.CoreTool, name string) actool.Cor
 	return nil
 }
 
-func TestFindingWorkflowAutoHintToPlannerAndSetting(t *testing.T) {
+func TestFindingWorkflowAutoHintToMainAgentAndSetting(t *testing.T) {
 	s, initial, request := trafficEvidenceServer(t)
 	pg := s.m.pg
 	ctx := context.Background()
@@ -86,15 +86,15 @@ func TestFindingWorkflowAutoHintToPlannerAndSetting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ts := agent.NewToolSet(task.Store, "planner")
+	ts := agent.NewToolSet(task.Store, "mainagent")
 	ts.SetTaskID(*f.TaskID)
 	ts.SetFindingRecorder(s.evidenceStore())
 	notices := 0
 	ts.SetNotifyFinding(func(int64, string) { notices++ })
-	tools, def, cleanup := agent.AugmentTools(ctx, "planner", ts.PlannerTools())
+	tools, def, cleanup := agent.AugmentTools(ctx, "mainagent", ts.MainAgentTools())
 	defer cleanup()
-	if !strings.Contains(def.FindingGuidance, "evidence_hint_id") || !strings.Contains(def.FindingGuidance, "取消 Worker") {
-		t.Fatal("Planner missed runtime guidance")
+	if !strings.Contains(def.FindingGuidance, "evidence_hint_id") {
+		t.Fatal("MainAgent missed runtime guidance")
 	}
 	report := workflowTool(t, tools, "report_finding")
 	result := workflowCall(t, ctx, report, map[string]any{"vulnclass": "TEST", "severity": "low", "summary": "Planner handoff fixture", "evidence_hint_id": hints.IDs[0]}, false)

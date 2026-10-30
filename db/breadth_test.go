@@ -52,28 +52,37 @@ func TestBreadthSummaryAssetStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// root_domain is auto-created by the scope upserts but is an aggregate, not a point.
-	// root_domain is excluded; endpoint upsert also creates its service parent, so
-	// the five concrete inputs become six concrete assets (api/svc/open/oos + service+endpoint).
-	if summary.AssetsTotal != 6 {
-		t.Fatalf("assets_total = %d, want 6 (root excluded): %+v", summary.AssetsTotal, summary.TopGaps)
+	// root_domain is an aggregate, not a point; service is a host:port attribute, not a
+	// test surface (its coverage is carried by the endpoint/subdomain below it).
+	// Concrete assets: api/svc/open/oos subdomains + endpoint = 5.
+	if summary.AssetsTotal != 5 {
+		t.Fatalf("assets_total = %d, want 5 (root/service excluded): %+v", summary.AssetsTotal, summary.TopGaps)
+	}
+	if summary.ServicesExcluded != 1 || summary.RootDomainsExcluded != 1 {
+		t.Fatalf("excluded counts = root:%d service:%d, want 1/1", summary.RootDomainsExcluded, summary.ServicesExcluded)
 	}
 	if summary.AssetsTested != 1 || summary.AssetsFailed != 1 || summary.AssetsInFlight != 1 ||
-		summary.AssetsUntouched != 2 || summary.AssetsOutOfScope != 1 {
+		summary.AssetsUntouched != 1 || summary.AssetsOutOfScope != 1 {
 		t.Fatalf("states = %+v", summary)
 	}
-	if summary.Debt != 3 || summary.AssetsTerminal != 2 || summary.NeedAssetDiscovery {
+	if summary.Debt != 2 || summary.AssetsTerminal != 2 || summary.NeedAssetDiscovery {
 		t.Fatalf("debt/terminal = %+v", summary)
 	}
-	if summary.Pct == nil || *summary.Pct != 0.2 { // 1 tested / (6-1 oos)
-		t.Fatalf("pct = %v, want 0.2", summary.Pct)
+	if summary.Pct == nil || *summary.Pct != 0.25 { // 1 tested / (5-1 oos)
+		t.Fatalf("pct = %v, want 0.25", summary.Pct)
 	}
 	if len(summary.TopGaps) == 0 || summary.TopGaps[0].State != "untouched" ||
 		summary.TopGaps[0].AssetID != ep {
 		t.Fatalf("endpoint should be the first untouched gap: %+v", summary.TopGaps)
 	}
-	if !summary.DebtIDs[svc] || !summary.DebtIDs[ep] || summary.DebtIDs[api] || summary.DebtIDs[oosAsset] {
-		t.Fatalf("debt ids = %+v", summary.DebtIDs)
+	// service 的覆盖并入同 host 的 subdomain，债务也记在宿主资产上（不是 service id）。
+	var svcHostID int64
+	if err := d.QueryRow(`SELECT id FROM assets WHERE type='subdomain' AND domain='svc.matrix-test.example'`).Scan(&svcHostID); err != nil {
+		t.Fatal(err)
+	}
+	_ = svc
+	if !summary.DebtIDs[svcHostID] || !summary.DebtIDs[ep] || summary.DebtIDs[api] || summary.DebtIDs[oosAsset] {
+		t.Fatalf("debt ids = %+v (svcHost=%d)", summary.DebtIDs, svcHostID)
 	}
 	// The endpoint is a concrete point; it must carry the URL label and params-level identity.
 	if summary.TopGaps[0].Type != "endpoint" || summary.TopGaps[0].Label == "" || summary.TopGaps[0].Facts != 0 {

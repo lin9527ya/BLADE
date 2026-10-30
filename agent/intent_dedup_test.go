@@ -87,8 +87,8 @@ func TestAddIntentBlocksNearDuplicateOfActiveIntent(t *testing.T) {
 	if _, err := mk("对 /admin 后台做撞库，用常见口令字典验证锁定策略", "auth", assetID); err != nil {
 		t.Fatalf("机理不同的方向必须放行：%v", err)
 	}
-	// ⑤ 没有 asset 也没有 risk_area（纯想法）：不参与判定。
-	if _, err := mk(base, "", 0); err != nil {
+	// ⑤ 没有 asset、风险类为 other（纯想法）：与其它风险类不构成重复。
+	if _, err := mk(base, "other", 0); err != nil {
 		t.Fatalf("没有结构性锚点的方向不该被拦：%v", err)
 	}
 }

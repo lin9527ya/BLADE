@@ -17,7 +17,7 @@ func TestIntentQueueBackpressure(t *testing.T) {
 	tools.SetWorkerCap(1)            // 上限 = 2×1 = 2
 	add := func(summary string, priority int, extra string) string {
 		return callTool(t, tools.PlannerTools(), "add_intent",
-			fmt.Sprintf(`{"summary":%q,"priority":%d%s}`, summary, priority, extra))
+			fmt.Sprintf(`{"risk_area":"other","summary":%q,"priority":%d%s}`, summary, priority, extra))
 	}
 	if out := add("第二条常规方向", 5, ""); !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("到上限前应放行：%s", out)
@@ -68,7 +68,7 @@ func TestIntentBatchRespectsOpenCap(t *testing.T) {
 	// 现有 4 条 open；上限 5 → 本批只应再建 1 条。
 	tools.SetPolicy(&policy.Effective{Version: 1, MaxIntentsPerRound: 4, MaxOpenIntents: 5})
 	out := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"intents":[{"summary":"批次一"},{"summary":"批次二"},{"summary":"批次三"},{"summary":"批次四"}]}`)
+		`{"intents":[{"risk_area":"other","summary":"批次一"},{"risk_area":"other","summary":"批次二"},{"risk_area":"other","summary":"批次三"},{"risk_area":"other","summary":"批次四"}]}`)
 	var res struct {
 		IDs    []int64           `json:"ids"`
 		Errors map[string]string `json:"errors"`
@@ -93,9 +93,9 @@ func TestIntentBatchRespectsOpenCap(t *testing.T) {
 // drop_intent：清掉排队意图，并**解锁依赖它的下游**（否则下游永远等不到前置）。
 func TestDropIntentUnblocksDependents(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
-	pre := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"前置：拿到入口"}`))
+	pre := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"前置：拿到入口"}`))
 	down := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		fmt.Sprintf(`{"summary":"下游：用入口的产出","depends_on":[%d]}`, pre)))
+		fmt.Sprintf(`{"risk_area":"other","summary":"下游：用入口的产出","depends_on":[%d]}`, pre)))
 
 	out := callTool(t, tools.PlannerTools(), "drop_intent",
 		fmt.Sprintf(`{"intent_id":%d,"reason":"被新事实覆盖，不再需要"}`, pre))

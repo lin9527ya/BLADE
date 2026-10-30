@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +40,10 @@ type Planner struct {
 	// 取走它并暂停任务——不在工具调用中途取消自己的上下文。
 	exhaustedReason string
 	// lastRoundIntents 是本轮成功创建的意图数（引擎用它做槽位利用率/停滞判定）。
-	lastRoundIntents  int
+	lastRoundIntents int
+	// lastRoundNote 是上一轮的结论摘要。默认每轮开新会话（不 resume 全量 transcript），
+	// 用它承接「上一轮想清楚了什么、派了哪些意图、产出了哪些事实」，避免上下文膨胀。
+	lastRoundNote     string
 	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
 	proxyCACert       string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn           func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
@@ -524,8 +528,8 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    - **手上的能力**：footholds/credentials 里带 「outstanding: true」 的是**已经到手、却还没有任何意图动用过**的（「outstanding_loot_total」是它的总数）——这只回答「手上还有什么没动用」；**用不用、什么时候用，由你按目标判断**。派意图去用它时，**在 「uses_loot_ids」里带上那条战果的 id**；不带的话它会一直显示为 outstanding，你也就看不出它到底有没有被别的意图接手。
      · 凭据的 **targets** 决定这条意图该怎么派：某条目标带 verified: true（实测登入成功过）时，直接派「用它登 X 做 Y」，不必再试探；只有未验证的目标时，派一条**验证性**意图（登一次，成功就用 verify_credential 标上，失败就如实记 fact）——把"试过不通"也变成一条结论，而不是让它反复被试。
      · 怎么用取决于战果本身：**root / SYSTEM 的据点**能读本地凭据存储、装持久化、以它作跳板看内网还有什么是外面看不到的；**user 权限的据点**只够本机侦察与找提权面，别按 root 的假设派活；**password** 型凭据可直接拿去试其它系统，**hash** 型要先想办法用（破解或传递哈希），**key / token** 型受授权范围与有效期限制——照实物的性质派，别一律当成万能钥匙。
-     · **文件传输**：要给目标上传载荷/脚本，或把战利品（配置、凭据文件、数据库导出）取回来，用 loot_upload / loot_download（ssh→scp、smb→smbclient）。本地路径必须是**相对本意图工作目录**的相对路径——平台不会把宿主机任意文件送出去。
-     · **内网可达性**：态势里的 tunnels 是当前通着的 SOCKS 隧道（经 ssh 据点开，跨 worker 共享）。要打只有从跳板才能到达的内网目标时，先用 tunnel_open 开一条，并在意图 summary 里写明「走 socks5h://…」——否则 worker 不知道这条通路存在，会从外面重新打一遍（打不到）。隧道有存活上限，用完关掉。
+     · **文件传输**：要给目标上传载荷/脚本，或把战利品（配置、凭据文件、数据库导出）取回来，**写进意图 summary 交给 worker** 用 loot_upload / loot_download 执行（ssh→scp、smb→smbclient）；planner 自己不执行。
+     · **内网可达性**：态势里的 tunnels 是当前通着的 SOCKS 隧道（经 ssh 据点开，跨 worker 共享）。要打只有从跳板才能到达的内网目标时，在意图 summary 里写明让 worker 先 tunnel_open 开一条、并标注「走 socks5h://…」——planner 自己不执行；否则 worker 不知道这条通路存在，会从外面重新打一遍（打不到）。隧道有存活上限，用完关掉。
      · 用掉手上的能力通常比重打一遍便宜（同一台机器不然还得从外面再来一次），但这是**判断依据，不是义务**。outstanding 也不等于必须反复派：确实推不动的（凭据试过、据点断了），在意图的 summary 里写清为什么，别换措辞重派同一条。
    - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
 
@@ -567,7 +571,7 @@ const slotUtilizationBlock = `
 const breadthDisciplineBlock = `
 
 【广度纪律（代码持有；覆盖度开启时生效，态势没有 breadth 字段时忽略本段，并以后文与本段为准）】
-- 口径：breadth.assets_total 只数具体资产（subdomain/service/app/endpoint/ip）；root_domain 只是聚合，root_domains_excluded 不计债。breadth.pct 是具体资产终态覆盖率，breadth.debt 是没有终态且没有在跑意图的资产数（含只有 blocked/exhausted/no_output 的资产；no_output 不算覆盖）。
+- 口径：breadth.assets_total 只数具体资产（subdomain/app/endpoint/ip）；service 是 host:port 属性（services_excluded），不单独计债——它的覆盖由挂在其下的 endpoint/subdomain 承担；root_domain 只是聚合，root_domains_excluded 不计债。breadth.pct 是具体资产终态覆盖率，breadth.debt 是没有终态且没有在跑意图的资产数（含只有 blocked/exhausted/no_output 的资产；no_output 不算覆盖）。
 - 义务：breadth.debt > 0 时，本轮新增意图至少 1 条必须是广度意图，占用本轮名额；其余 worker 可继续深度。不要用“深度优先”作为 0 意图或不补广度的理由。广度债不要求一轮清空，但不得连续多轮无人接手。
 - 写法：广度意图必须带具体 asset_ids（不能只给 root_domain）与 risk_area，写清入口/参数、验证的假设、什么算测到；禁止“看一下/补一下覆盖”。优先 breadth.top_gaps 中 state=untouched 的资产，从 untouched_risk_areas 选与入口最贴合的一类；同一入口的相邻资产可以合并一条，但每个资产都要真正被测到。
 - 失败：state=failed 是“没测成”，不是“没问题”；先 get_worker_output / get_worker_trace 看卡点，再换入口/参数/机理，不要原样重试。state=in_flight 只是有人在跑，不是终态。
@@ -631,8 +635,19 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 		}
 	}
 	// 追加段与潜行纪律不属于任何一级正文：静默模式下任务快照/模板库正文同样要带上。
-	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
+	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
 }
+
+// coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
+// 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经
+// 试过的方向当新方向重派。折叠只省上下文，不是删除——这句必须每轮都在。
+const coldArchiveBlock = `
+
+【冷区与 digest（折叠 ≠ 删除）】
+- graph_overview.cold_digests 是较早节点折成的摘要（id + body + member_count）；成员仍然存在，node_detail(id) 可查全文。
+- list_facts 的条目若带 folded_into_digest，说明它已折进该 digest；摘要没出现在 recent_facts，不代表这件事没发生过。
+- 更老的 digest 只给裸 id（cold_digests_more），用 expand_digest(id) 展开。
+- 判定「已覆盖/已经试过」时必须把冷区算上：折叠是上下文压缩，不是删除，也不是「没做过」。`
 
 // hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。
 //
@@ -780,7 +795,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if active, err := ts.HasActiveIntent(); err == nil && !active {
 			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
 			if pol != nil && !pol.IsZero() {
-				lead += "\n（若【策略允许的范围内】确已无可行方向：本轮产出 0 条意图，并把「策略内已无可行方向」写成一条 fact——这不叫停摆，系统会据此收尾。）"
+				lead += "\n（若【策略允许的范围内】确已无可行方向：本轮产出 0 条意图并调用 mark_strategy_exhausted（附证据 id）——这不叫停摆，系统会暂停任务等人工。）"
 			}
 		}
 	}
@@ -797,24 +812,36 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
 	s := agentcore.NewSession(opts)
 	defer s.Close()
-	// 续跑上一轮的规划会话：每轮重建对话时，上一轮读过的 node_detail 证据、coverage_matrix、
-	// trace 片段都随之丢失，只能重新取或干脆不再看——worker 早就在做这件事（worker.go 的
-	// Resume），planner 一直漏了。transcript 的 SessionID 是按任务固定的，续跑安全。
-	//
-	// 前提是**有 transcript**（p.tx != nil）：没有持久化时 SessionID 没有意义，行为保持不变。
-	if p.tx != nil {
-		_ = s.Resume(opts.SessionID)
-		// 续跑之后历史里的旧态势块会"粘住"。明说本轮快照是权威，避免拿旧图做判断。
-		input = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + input
+	// 规划会话形态：
+	//   默认 —— 每轮**新会话**，只承接「上一轮结论摘要」（结论/新增意图/产出事实 id）。
+	//           任务 14 实测跨轮 resume 的 transcript 已到 576KB / 26 万 token，旧态势块
+	//           还会粘住历史、越滚越大，换来的主要是噪声。
+	//   开关 —— BLADE_PLANNER_RESUME_SESSION=1 恢复旧的跨轮 resume（需要回滚时用）。
+	if resumePlannerSession() {
+		if p.tx != nil {
+			_ = s.Resume(opts.SessionID)
+			// 续跑之后历史里的旧态势块会"粘住"。明说本轮快照是权威，避免拿旧图做判断。
+			input = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + input
+		}
+	} else if note := strings.TrimSpace(p.lastRoundNote); note != "" {
+		input = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n" + input
 	}
+	prevMaxIntentID := latestIntentID(ts)
+	lastText := ""
 	_, _, err = captureRunSession(ctx, s, input,
 		func(r db.Activity) {
+			if r.Kind == "text" && strings.TrimSpace(r.Summary) != "" {
+				lastText = r.Summary
+			}
 			if emit != nil {
 				r.Worker = "planner" // planner activity has no intent_id (it generates them)
 				emit(r)
 			}
 		})
 	p.lastRoundIntents = tsx.intentsRound
+	if err == nil {
+		p.rememberRound(ts, prevMaxIntentID, lastText)
+	}
 	// 槽位空转可见化：本轮派的意图数没跟上空闲槽位，就在时间线上留一行，写清空了几个槽、
 	// 本轮派了几条、按纪律应该派几条。纪律（slotUtilizationBlock）只要求"能说清已被覆盖"
 	// 才允许少派；把它记下来，操作者能直接看出是哪一轮空转，而不是只在 worker 列表里看到
@@ -851,3 +878,54 @@ func (p *Planner) TakeStrategyExhaustedReason() string {
 
 // LastRoundIntents 返回最近一轮成功创建的意图数（引擎的槽位利用率/停滞判定用）。
 func (p *Planner) LastRoundIntents() int { return p.lastRoundIntents }
+
+// resumePlannerSession 是回滚开关：默认 false（每轮新会话 + 结论摘要），
+// BLADE_PLANNER_RESUME_SESSION=1/true 恢复旧的跨轮 transcript resume。
+func resumePlannerSession() bool {
+	v := strings.TrimSpace(os.Getenv("BLADE_PLANNER_RESUME_SESSION"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// latestIntentID 返回任务里最新的意图 id（0 = 还没有意图），用于识别本轮新增。
+func latestIntentID(ts *db.ExplorationStore) int64 {
+	nodes, err := ts.ListByKind(db.KindIntent, 1)
+	if err != nil || len(nodes) == 0 {
+		return 0
+	}
+	return nodes[0].ID
+}
+
+// rememberRound 生成下一轮的新会话摘要：上一轮最后结论 + 本轮新增意图 + 它们产出的事实 id。
+// 只保留结论级信息，不复制工具输出/旧态势——这是把跨轮上下文从"全量 transcript"
+// 换成"可续接的结论"的关键。
+func (p *Planner) rememberRound(ts *db.ExplorationStore, prevMaxID int64, lastText string) {
+	nodes, _ := ts.ListByKind(db.KindIntent, 30)
+	var intentions []string
+	factIDs := make([]string, 0, 6)
+	for _, n := range nodes {
+		if n.ID <= prevMaxID || len(intentions) >= 8 {
+			continue
+		}
+		var payload map[string]any
+		_ = json.Unmarshal(n.Payload, &payload)
+		summary, _ := payload["summary"].(string)
+		intentions = append(intentions, fmt.Sprintf("#%d %s", n.ID, clipLine(summary, 90)))
+		if fids := factIDsYielded(ts, n.ID); fids != "" {
+			factIDs = append(factIDs, fids)
+		}
+	}
+	var b strings.Builder
+	if t := clipLine(strings.TrimSpace(lastText), 500); t != "" {
+		b.WriteString("- 上一轮结论：" + t + "\n")
+	}
+	if len(intentions) > 0 {
+		b.WriteString("- 上一轮新增意图：" + strings.Join(intentions, "；") + "\n")
+	}
+	if len(factIDs) > 0 {
+		b.WriteString("- 上一轮产出的事实 id：" + strings.Join(factIDs, "、") + "\n")
+	}
+	if b.Len() == 0 {
+		b.WriteString("- 上一轮没有新增意图/结论。\n")
+	}
+	p.lastRoundNote = b.String()
+}

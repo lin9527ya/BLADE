@@ -34,3 +34,16 @@ func stealthBlock(agentKey string) string {
 - **留痕最小化**：能只读就只读；落到目标上的文件/账号用完清理，并用 mark_artifact_cleared 销账。
 - 潜行不改变边界：授权范围（RoE）、作业时间窗与停机开关照常生效。`
 }
+
+// backoffDisciplineBlock 是「被拦截后怎么退避」的**代码持有**纪律，所有模式生效
+// （quiet 的 stealthBlock 只有静默模式才有，normal 模式下 worker 照样会撞 WAF/403）。
+// 实测任务 14：worker 连续请求导致 IP 被封，planner 只能紧急 steer；这条纪律要
+// 在动手前就写进 worker 的常驻上下文，而不是等人工介入。
+const backoffDisciplineBlock = `
+
+【被拦截时的退避纪律（代码持有，所有模式生效）】
+- 先判类型：403/429/挑战页（Cloudflare/Akamai/Imperva 等）先看 Retry-After 与响应特征——是**速率型**（请求太快）还是**规则/签名型**（payload/指纹被识破）。
+- 速率型：按 Retry-After 或指数退避（30s → 1m → 2m）等待后再试，同一路径最多 2 次；仍被拦就停这条方向，换资产/换入口，并在 fact 里写清现象（状态码、拦截页特征、已退避多久）。
+- 规则/签名型：**不要原样重放同一 payload**；换构造（编码、参数位置、HTTP 方法）做一次最小验证，判断拦截发生在哪一层后换方向。
+- 同一目标连续两次同类拦截 → 停手换方向；禁止连续重放同一 payload、禁止自动扫全字典碰运气。
+- 被拦不是“没测成”的借口，也不是“继续硬撞”的理由：把“被什么挡住”写成结论事实，让规划层换路线。`

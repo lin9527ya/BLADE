@@ -13,7 +13,7 @@ func TestAgentLabelsUseTaskLocalOrdinals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"第二条方向"}`))
+	secondID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"第二条方向"}`))
 
 	block := BuildContextIndex(ContextIndexVars{Store: ts})
 	if !strings.Contains(block, "goal-1 [") {
@@ -57,9 +57,9 @@ func TestAgentLabelsUseTaskLocalOrdinals(t *testing.T) {
 func TestDedupMessageUsesOrdinalPlusMachineID(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	first := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"探测 /admin 后台登录口的 SQL 注入","risk_area":"sqli"}`))
+		`{"risk_area":"other","summary":"探测 /admin 后台登录口的 SQL 注入","risk_area":"sqli"}`))
 	out := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"探测 admin 后台登录口的 SQL 注入","risk_area":"sqli"}`)
+		`{"risk_area":"other","summary":"探测 admin 后台登录口的 SQL 注入","risk_area":"sqli"}`)
 	if !strings.Contains(out, "intent-2") {
 		t.Fatalf("拒绝文案应用任务内序号：%s", out)
 	}

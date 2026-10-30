@@ -168,3 +168,54 @@ func TestHardDeletePreservesSharedAndGoal(t *testing.T) {
 		}
 	}
 }
+
+// 战果与证据永不随意图删除：删掉一条意图不该把已经拿到的据点/凭据、
+// 留在目标上的痕迹台账一起抹掉——它们是交付物与清理依据。
+func TestHardDeletePreservesLootAndEvidence(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	expID, err := d.CreateExploration("hard preserve loot", "战果保护")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	es := d.Exploration(expID)
+
+	intent := mustIntent(t, es, "打下据点后清理战场")
+	mk := func(kind, state, summary string) int64 {
+		id, err := es.AddNode(kind, map[string]any{"summary": summary}, 1, state, "worker", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	foothold := mk(KindFoothold, "active", "web01 反弹 shell")
+	credential := mk(KindCredential, "active", "wp_user 口令")
+	detection := mk(KindDetection, "unknown", "目标侧命中告警")
+	artifact := mk(KindArtifact, "active", "上传的 webshell")
+	footprint := mk(KindFootprint, "open", "auth.log 失败登录")
+	for _, id := range []int64{foothold, credential, detection, artifact} {
+		mustLink(t, es, intent, RelYields, id)
+	}
+	mustLink(t, es, intent, RelLeaves, footprint)
+
+	cleanup, err := es.CancelIntent(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup.Intents != 1 || cleanup.Footholds != 0 || cleanup.Credentials != 0 ||
+		cleanup.Detections != 0 || cleanup.Artifacts != 0 || cleanup.Footprints != 0 {
+		t.Fatalf("cleanup=%+v, want only the intent removed", cleanup)
+	}
+	if !gone(t, es, intent) {
+		t.Fatal("intent should be removed")
+	}
+	for _, id := range []int64{foothold, credential, detection, artifact, footprint} {
+		if gone(t, es, id) {
+			t.Fatalf("loot/evidence node %d must survive intent deletion", id)
+		}
+	}
+}

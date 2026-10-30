@@ -28,7 +28,7 @@ func withOAST(t *testing.T, token, domain string, on bool) {
 func TestOASTMintBuildsMarkedURL(t *testing.T) {
 	withOAST(t, fakeOASTToken("ok9iwmcq"), "requestrepo.com", true)
 	tools, _, _ := newToolWorker(t)
-	out := callTool(t, tools.PlannerTools(), "oast_mint", `{"label":"ssrf_admin"}`)
+	out := callTool(t, tools.WorkerTools(), "oast_mint", `{"label":"ssrf_admin"}`)
 	want := fmt.Sprintf("http://ok9iwmcq.requestrepo.com/blade%d-ssrf-admin", tools.taskID)
 	if !strings.Contains(out, want) {
 		t.Fatalf("回调地址应带任务标记与归一化后的 label：want %q got %s", want, out)
@@ -36,7 +36,7 @@ func TestOASTMintBuildsMarkedURL(t *testing.T) {
 	if !strings.Contains(out, "oast_poll") {
 		t.Fatalf("回执应告诉模型命中后怎么取：%s", out)
 	}
-	if out := callTool(t, tools.PlannerTools(), "oast_mint", `{}`); !strings.Contains(out, fmt.Sprintf("/blade%d", tools.taskID)) {
+	if out := callTool(t, tools.WorkerTools(), "oast_mint", `{}`); !strings.Contains(out, fmt.Sprintf("/blade%d", tools.taskID)) {
 		t.Fatalf("不带 label 时也要带任务标记：%s", out)
 	}
 }
@@ -61,7 +61,7 @@ func TestOASTPollRecordsNewHitsOnce(t *testing.T) {
 	t.Cleanup(func() { OASTBaseURL = oldBase })
 	withOAST(t, fakeOASTToken("ok9iwmcq"), "requestrepo.com", true)
 
-	out := callTool(t, tools.PlannerTools(), "oast_poll", `{}`)
+	out := callTool(t, tools.WorkerTools(), "oast_poll", `{}`)
 	if !strings.Contains(out, "callbacks: 2") {
 		t.Fatalf("应记录 2 条本任务命中（HTTP+DNS），别的任务不算：%s", out)
 	}
@@ -87,7 +87,7 @@ func TestOASTPollRecordsNewHitsOnce(t *testing.T) {
 		t.Fatalf("事实应带 observed 置信度：%+v", got[0])
 	}
 	// 再轮询一次：同样的记录不该重复登记。
-	if again := callTool(t, tools.PlannerTools(), "oast_poll", `{}`); !strings.Contains(again, "no new callbacks") {
+	if again := callTool(t, tools.WorkerTools(), "oast_poll", `{}`); !strings.Contains(again, "no new callbacks") {
 		t.Fatalf("重复轮询应提示无新命中：%s", again)
 	}
 	if again := oastFacts(); len(again) != 2 {
@@ -99,10 +99,10 @@ func TestOASTPollRecordsNewHitsOnce(t *testing.T) {
 func TestOASTToolsRequireConfig(t *testing.T) {
 	withOAST(t, "", "", false)
 	tools, _, _ := newToolWorker(t)
-	if out := callTool(t, tools.PlannerTools(), "oast_mint", `{}`); !strings.Contains(out, "未配置 OAST") {
+	if out := callTool(t, tools.WorkerTools(), "oast_mint", `{}`); !strings.Contains(out, "未配置 OAST") {
 		t.Fatalf("mint 应拒绝：%s", out)
 	}
-	if out := callTool(t, tools.PlannerTools(), "oast_poll", `{}`); !strings.Contains(out, "未配置 OAST") {
+	if out := callTool(t, tools.WorkerTools(), "oast_poll", `{}`); !strings.Contains(out, "未配置 OAST") {
 		t.Fatalf("poll 应拒绝：%s", out)
 	}
 }
@@ -121,7 +121,7 @@ func TestOASTDoesNotLeakToken(t *testing.T) {
 	t.Cleanup(func() { OASTBaseURL = oldBase })
 	tools, _, _ := newToolWorker(t)
 	for _, tool := range []string{"oast_mint", "oast_poll"} {
-		out := callTool(t, tools.PlannerTools(), tool, `{}`)
+		out := callTool(t, tools.WorkerTools(), tool, `{}`)
 		if strings.Contains(out, token) {
 			t.Fatalf("%s 的回执泄露了 token：%s", tool, out)
 		}

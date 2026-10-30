@@ -550,6 +550,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedPlannerListAssetsBinding()
 	s.seedGraphToolBindings()
 	s.seedCompanyScopeRebind()
+	s.seedPlannerToolsConverge()  // planner 只产意图：执行/写漏洞/扩面工具从默认绑定移除(一次性)
 	s.seedRedTeamPolicyDefault()  // 旧全局策略若仍是"只读验证"默认，迁到红队默认(一次性)
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
@@ -1232,6 +1233,38 @@ func (s *Server) seedCompanyScopeRebind() {
 	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
 		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
 	}
+}
+
+// seedPlannerToolsConverge removes execution / write / scope-expansion tools from
+// planner's default binding ONCE on existing DBs (guarded by a settings flag).
+//
+// 规划层的职责是「决定下一步做什么」，不是亲自去做：此前 PlannerTools 里混着
+// run_execution/oast_*/loot_*/report_finding/add_task_scope 等 16 个工具，planner
+// 可以绕过 worker 自己发起攻击、写漏洞、扩授权范围。新库由 ToolSeed 按
+// PlannerTools() 生成默认绑定，本迁移只回填老库；用户手工重新绑定不受影响
+// （每次 RemoveAgentFromTool 都是 per-tool + membership 判断）。
+func (s *Server) seedPlannerToolsConverge() {
+	const flag = "planner_tools_converge_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	for _, k := range []string{
+		"report_finding",
+		"run_execution", "wait_execution", "get_execution", "grep_execution", "cancel_execution",
+		"loot_exec", "loot_upload", "loot_download", "foothold_exec", "tunnel_open",
+		"oast_mint", "oast_poll",
+		"add_task_scope", "add_company_scope",
+		"cve_exploit",
+	} {
+		if err := s.m.pg.RemoveAgentFromTool("planner", k); err != nil {
+			log.Printf("[planner] %s 从 planner 解绑失败: %v", k, err)
+			return // 出错不落 flag，下次启动重试
+		}
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
+	}
+	log.Printf("[planner] 执行/写漏洞/扩面工具已从规划层解绑(一次性)")
 }
 
 // seedWorkerReadToolsUnbind strips the read-context tools off worker's default

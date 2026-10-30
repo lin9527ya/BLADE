@@ -263,7 +263,8 @@ func TestCoverageMatrixVerifyValidatedAssets(t *testing.T) {
 		}
 	}
 
-	// 旧意图（无 validated_asset_ids / 非 verify）沿用原口径：绑定即覆盖。
+	// 旧 verify 意图（无 validated_asset_ids）不再退化为“锚定即覆盖”：覆盖不可证，
+	// 该格保持未触及。discovery 意图才按锚定计覆盖。
 	legacy, err := st.AddIntent(map[string]any{"summary": "legacy verify", "risk_area": "xss", "intent_kind": "verify"}, 5, []int64{a2}, "planner")
 	if err != nil {
 		t.Fatal(err)
@@ -279,14 +280,10 @@ func TestCoverageMatrixVerifyValidatedAssets(t *testing.T) {
 		if a.ID != a2 {
 			continue
 		}
-		found := false
 		for _, c := range a.Cells {
-			if c.RiskArea == "xss" && c.Tested == 1 {
-				found = true
+			if c.RiskArea == "xss" && c.Tested > 0 {
+				t.Fatalf("verify without validated_asset_ids must not count as tested: %+v", c)
 			}
-		}
-		if !found {
-			t.Fatalf("legacy verify intent must keep intent-level coverage: %+v", a.Cells)
 		}
 	}
 }

@@ -59,7 +59,7 @@ func callTool(t *testing.T, tools []actool.CoreTool, name, input string) string 
 func TestReportFootholdRecordsNodeAndLineage(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
 	out := callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"在 web01 上拿到 www-data 的反弹 shell","access":"反弹 shell","privilege":"user",`+
+		`{"risk_area":"other","summary":"在 web01 上拿到 www-data 的反弹 shell","access":"反弹 shell","privilege":"user",`+
 			`"detail":"nc -lvnp 4444 接回 10.0.0.9:47112","evidence":"nc -lvnp 4444 → connect to 10.0.0.9:47112",`+
 			`"confidence":"high","intent_id":`+strconv.FormatInt(intent, 10)+`}`)
 	if !strings.HasPrefix(out, "foothold recorded: ") {
@@ -109,12 +109,12 @@ func TestReportLootRejectsEvidenceFreeClaims(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
 	id := strconv.FormatInt(intent, 10)
 	cases := []struct{ name, tool, in, want string }{
-		{"据点缺 evidence", "report_foothold", `{"summary":"拿到 shell","confidence":"high","intent_id":` + id + `}`, "evidence"},
-		{"据点缺 confidence", "report_foothold", `{"summary":"拿到 shell","evidence":"nc 回连成功","intent_id":` + id + `}`, "confidence"},
-		{"据点 confidence 非法", "report_foothold", `{"summary":"拿到 shell","evidence":"nc 回连成功","confidence":"maybe","intent_id":` + id + `}`, "confidence"},
-		{"据点缺 summary", "report_foothold", `{"summary":"  ","evidence":"nc 回连成功","confidence":"high","intent_id":` + id + `}`, "summary"},
-		{"凭据缺 evidence", "report_credential", `{"summary":"读到 root 口令","kind":"password","secret":"x","confidence":"high","intent_id":` + id + `}`, "evidence"},
-		{"凭据缺 confidence", "report_credential", `{"summary":"读到 root 口令","kind":"password","secret":"x","evidence":"cat /etc/shadow","intent_id":` + id + `}`, "confidence"},
+		{"据点缺 evidence", "report_foothold", `{"risk_area":"other","summary":"拿到 shell","confidence":"high","intent_id":` + id + `}`, "evidence"},
+		{"据点缺 confidence", "report_foothold", `{"risk_area":"other","summary":"拿到 shell","evidence":"nc 回连成功","intent_id":` + id + `}`, "confidence"},
+		{"据点 confidence 非法", "report_foothold", `{"risk_area":"other","summary":"拿到 shell","evidence":"nc 回连成功","confidence":"maybe","intent_id":` + id + `}`, "confidence"},
+		{"据点缺 summary", "report_foothold", `{"risk_area":"other","summary":"  ","evidence":"nc 回连成功","confidence":"high","intent_id":` + id + `}`, "summary"},
+		{"凭据缺 evidence", "report_credential", `{"risk_area":"other","summary":"读到 root 口令","kind":"password","secret":"x","confidence":"high","intent_id":` + id + `}`, "evidence"},
+		{"凭据缺 confidence", "report_credential", `{"risk_area":"other","summary":"读到 root 口令","kind":"password","secret":"x","evidence":"cat /etc/shadow","intent_id":` + id + `}`, "confidence"},
 	}
 	for _, c := range cases {
 		out := callTool(t, tools.WorkerTools(), c.tool, c.in)
@@ -139,7 +139,7 @@ func TestReportLootRejectsEvidenceFreeClaims(t *testing.T) {
 func TestReportCredentialRecords(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
 	out := callTool(t, tools.WorkerTools(), "report_credential",
-		`{"summary":"在 web01 的 wp-config.php 里读到数据库口令","kind":"password","username":"wp_user",`+
+		`{"risk_area":"other","summary":"在 web01 的 wp-config.php 里读到数据库口令","kind":"password","username":"wp_user",`+
 			`"secret":"db-pass-123","detail":"./wp-config.php: define('DB_PASSWORD', ...)","evidence":"grep DB_PASSWORD wp-config.php",`+
 			`"confidence":"high","intent_id":`+strconv.FormatInt(intent, 10)+`}`)
 	if !strings.HasPrefix(out, "credential recorded: ") {
@@ -167,7 +167,7 @@ func TestGraphOverviewNeverLeaksCredentialSecret(t *testing.T) {
 	tools, _, intent := newToolWorker(t)
 	const secret = "Sup3rS3cret-db-passw0rd"
 	out := callTool(t, tools.WorkerTools(), "report_credential",
-		`{"summary":"读到数据库口令","kind":"password","username":"wp_user","secret":"`+secret+`",`+
+		`{"risk_area":"other","summary":"读到数据库口令","kind":"password","username":"wp_user","secret":"`+secret+`",`+
 			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+strconv.FormatInt(intent, 10)+`}`)
 	if !strings.HasPrefix(out, "credential recorded: ") {
 		t.Fatalf("凭据没记上：%s", out)
@@ -240,7 +240,7 @@ func TestLootToolsAreOnBothToolFaces(t *testing.T) {
 func TestIntentUsesLootClearsOutstanding(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
+		`{"risk_area":"other","summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
 
 	out := tools.graphOverviewData()
@@ -249,7 +249,7 @@ func TestIntentUsesLootClearsOutstanding(t *testing.T) {
 	}
 
 	intentOut := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
+		`{"risk_area":"other","summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
 	if !strings.HasPrefix(intentOut, "intent created: ") {
 		t.Fatalf("带 uses_loot_ids 的意图没建上：%s", intentOut)
 	}
@@ -289,11 +289,11 @@ func TestIntentUsesLootClearsOutstanding(t *testing.T) {
 func TestDeletingUsingIntentKeepsLoot(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
+		`{"risk_area":"other","summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
 
 	intentOut := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
+		`{"risk_area":"other","summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
 	if !strings.HasPrefix(intentOut, "intent created: ") {
 		t.Fatalf("意图没建上：%s", intentOut)
 	}
@@ -322,7 +322,7 @@ func TestIntentUsesLootValidation(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
 	// 一个非战果节点（就用 newToolWorker 建的那条意图）与一个已失效的战果。
 	live := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"在手据点","access":"SSH","privilege":"user","evidence":"ssh 登录成功","confidence":"high"}`))
+		`{"risk_area":"other","summary":"在手据点","access":"SSH","privilege":"user","evidence":"ssh 登录成功","confidence":"high"}`))
 	lost, err := ts.AddNode(db.KindFoothold, map[string]any{"summary": "掉了的据点"}, 8, db.StateLootLost, "work#1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +338,7 @@ func TestIntentUsesLootValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		out := callTool(t, tools.PlannerTools(), "add_intent",
-			`{"summary":"x","uses_loot_ids":[`+c.ids+`]}`)
+			`{"risk_area":"other","summary":"x","uses_loot_ids":[`+c.ids+`]}`)
 		if strings.HasPrefix(out, "intent created: ") {
 			t.Fatalf("%s：本该被拒，却建成了：%s", c.name, out)
 		}
@@ -349,7 +349,7 @@ func TestIntentUsesLootValidation(t *testing.T) {
 
 	// 在手的战果则放行（对照组，证明上面的拒绝不是因为参数本身没通）。
 	if out := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"用它在手的据点","uses_loot_ids":[`+strconv.FormatInt(live, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
+		`{"risk_area":"other","summary":"用它在手的据点","uses_loot_ids":[`+strconv.FormatInt(live, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("在手的战果该被接受：%s", out)
 	}
 }
@@ -377,10 +377,10 @@ func lootNodeID(t *testing.T, out string) int64 {
 func TestLootStaysOutstandingWhenUsingIntentDiedMidway(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
+		`{"risk_area":"other","summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
 	intentID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`))
+		`{"risk_area":"other","summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`))
 
 	outstanding := func() int {
 		t.Helper()
@@ -416,7 +416,7 @@ func TestCredentialTargetsAndVerify(t *testing.T) {
 
 	// ① 声称验证过却没有证据 → 拒收（verified 会被拿去规划"直接用这条凭据横向"）。
 	out := callTool(t, worker, "report_credential",
-		`{"summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"s3cret",`+
+		`{"risk_area":"other","summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"s3cret",`+
 			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high",`+
 			`"targets":[{"host":"db01","port":3306,"service":"mysql","verified":true}]}`)
 	if !strings.Contains(out, "没有 evidence") {
@@ -425,7 +425,7 @@ func TestCredentialTargetsAndVerify(t *testing.T) {
 
 	// ② 正常记一条：一条已验证、一条待验证。
 	out = callTool(t, worker, "report_credential",
-		`{"summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"s3cret",`+
+		`{"risk_area":"other","summary":"读到 db 口令","kind":"password","username":"wp_user","secret":"s3cret",`+
 			`"evidence":"grep DB_PASSWORD wp-config.php","confidence":"high","intent_id":`+fmt.Sprint(intent)+`,`+
 			`"targets":[{"host":"db01","port":3306,"service":"mysql","verified":true,`+
 			`"evidence":"mysql -h db01 -u wp_user → 登录成功"},{"host":"db02","service":"mysql"}]}`)
@@ -458,7 +458,7 @@ func TestCredentialTargetsAndVerify(t *testing.T) {
 	// 一条"只登记了目标、还没验证过"的凭据：概览要显式标 unverified，而不是让它看起来跟
 	// 已验证的一样——缺省不写会被读成"能登"。
 	if out := callTool(t, worker, "report_credential",
-		`{"summary":"另一条待验证口令","kind":"password","username":"svc","secret":"s3cret2",`+
+		`{"risk_area":"other","summary":"另一条待验证口令","kind":"password","username":"svc","secret":"s3cret2",`+
 			`"evidence":"cat /etc/app.conf","confidence":"medium","intent_id":`+fmt.Sprint(intent)+`,`+
 			`"targets":[{"host":"app01","service":"ssh"}]}`); !strings.HasPrefix(out, "credential recorded: ") {
 		t.Fatalf("第二条凭据没记上：%s", out)

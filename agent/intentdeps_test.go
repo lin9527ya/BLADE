@@ -14,10 +14,10 @@ import (
 func TestAddIntentDependsOnAndUnblock(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	first := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		`{"summary":"第一步：拿到 /admin 的登录态"}`))
+		`{"risk_area":"other","summary":"第一步：拿到 /admin 的登录态"}`))
 
 	out := callTool(t, tools.PlannerTools(), "add_intent",
-		fmt.Sprintf(`{"summary":"第二步：用登录态打后台功能级越权","depends_on":[%d]}`, first))
+		fmt.Sprintf(`{"risk_area":"other","summary":"第二步：用登录态打后台功能级越权","depends_on":[%d]}`, first))
 	if !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("带前置的意图应可创建：%s", out)
 	}
@@ -72,7 +72,7 @@ func TestAddIntentDependsOnAndUnblock(t *testing.T) {
 	}
 
 	third := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		fmt.Sprintf(`{"summary":"第三步：不等前置了","depends_on":[%d]}`, first)))
+		fmt.Sprintf(`{"risk_area":"other","summary":"第三步：不等前置了","depends_on":[%d]}`, first)))
 	got := callTool(t, tools.PlannerTools(), "unblock_intent",
 		fmt.Sprintf(`{"intent_id":%d,"reason":"前置跑不通，改从另一个入口进"}`, third))
 	if !strings.Contains(got, "unblocked") {
@@ -91,11 +91,11 @@ func TestAddIntentDependsOnRejectsNonIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := callTool(t, tools.PlannerTools(), "add_intent",
-		fmt.Sprintf(`{"summary":"误把事实当前置","depends_on":[%d]}`, factID))
+		fmt.Sprintf(`{"risk_area":"other","summary":"误把事实当前置","depends_on":[%d]}`, factID))
 	if !strings.Contains(out, "不是意图") {
 		t.Fatalf("非意图前置应被拒：%s", out)
 	}
-	if out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"不存在的前置","depends_on":[999999]}`); !strings.Contains(out, "不存在") {
+	if out := callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"不存在的前置","depends_on":[999999]}`); !strings.Contains(out, "不存在") {
 		t.Fatalf("不存在的前置应被拒：%s", out)
 	}
 }

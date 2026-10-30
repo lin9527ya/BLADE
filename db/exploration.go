@@ -746,10 +746,15 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent'`, id, s.expID).Scan(&outcome
 // one worker intent. Global assets and traffic are deliberately not part of this
 // operation; exploration anchors disappear only because their owning nodes do.
 type IntentCleanup struct {
-	Intents    int64 `json:"intents"`
-	Facts      int64 `json:"facts"`
-	Findings   int64 `json:"findings"`
-	Activities int64 `json:"activities"`
+	Intents     int64 `json:"intents"`
+	Facts       int64 `json:"facts"`
+	Findings    int64 `json:"findings"`
+	Footholds   int64 `json:"footholds"`
+	Credentials int64 `json:"credentials"`
+	Detections  int64 `json:"detections"`
+	Artifacts   int64 `json:"artifacts"`
+	Footprints  int64 `json:"footprints"`
+	Activities  int64 `json:"activities"`
 }
 
 // SoftDeleteIntent 假删除一个待领/运行中/已暂停的意图:置 state='deleted' 并把用户填写的
@@ -861,6 +866,13 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 		if k == KindGoal || (k == KindFact && st == StateOrigin) {
 			protected[nid] = true // 目标与任务根事实永不随意图删除
 		}
+		// 战果与证据永不随意图删除：删掉一条意图不该把「已经拿到的据点/凭据」
+		// 或「留在目标上的痕迹台账」一起抹掉——那是交付物与清理依据，不是这条
+		// 意图的私有产出。宁可留一条失去直接来路的战果，也不能丢战果本身。
+		switch k {
+		case KindFoothold, KindCredential, KindDetection, KindArtifact, KindFootprint:
+			protected[nid] = true
+		}
 	}
 	nrows.Close()
 	if err := nrows.Err(); err != nil {
@@ -928,6 +940,16 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 		case KindFinding:
 			findingIDs = append(findingIDs, nid)
 			out.Findings++
+		case KindFoothold:
+			out.Footholds++
+		case KindCredential:
+			out.Credentials++
+		case KindDetection:
+			out.Detections++
+		case KindArtifact:
+			out.Artifacts++
+		case KindFootprint:
+			out.Footprints++
 		}
 	}
 
@@ -3624,4 +3646,32 @@ WHERE id=$1 AND exploration_id=$3 AND kind='goal' AND state='open'`,
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// FoldedDigestByNode maps node id → the live digest that currently covers it
+// (kind='digest' --covers--> member). 折叠 ≠ 删除：list_facts 用它给折叠事实打标，
+// 让模型知道"摘要没出现在 recent_facts"不等于这件事没发生过。
+func (s *ExplorationStore) FoldedDigestByNode(ids []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`
+SELECT e.dst_id, e.src_id
+FROM exploration_edges e
+JOIN exploration_nodes d ON d.id=e.src_id AND d.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.rel='covers' AND d.kind='digest'
+  AND e.dst_id = ANY($2::bigint[])`, s.expID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var member, digest int64
+		if err := rows.Scan(&member, &digest); err != nil {
+			return nil, err
+		}
+		out[member] = digest
+	}
+	return out, rows.Err()
 }

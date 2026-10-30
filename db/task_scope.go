@@ -216,6 +216,12 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 		// "网段加不进去，只能加 /32"）；ipnet.String() 会归一到 192.168.1.0/24。
 		ts.Net = ipnet.String()
 	case "icp", "keyword":
+		// keyword 范围目前没有对应的资产匹配谓词（covTargetCTE 只认 company/root_domain/
+		// subdomain/ip/cidr/icp）：接受它会让一条永远匹配不到资产的 scope 混进范围账，
+		// 看起来"已纳入"，实际覆盖度里一条都不算。宁可当场拒绝并给出替代做法。
+		if kind == "keyword" {
+			return ts, fmt.Errorf("keyword 范围暂不支持覆盖度匹配：请改用 company（整个公司）/root_domain（整域）/subdomain 或 ip/cidr；关键词检索请用 list_assets 的 DSL")
+		}
 		parsed, err := ParseScopeInput(ScopeInput{Kind: kind, Value: value})
 		if err != nil {
 			return ts, err
@@ -397,12 +403,14 @@ SELECT t.id, t.type, t.label FROM target t ORDER BY t.type, t.label`, taskID, s.
 	cellIdx := map[cellKey]int{}
 	prows, err := s.db.Query(`WITH `+covTargetCTE+`
 SELECT ea.asset_id, COALESCE(NULLIF(en.payload->>'risk_area',''),'other') AS area, en.state, en.id,
-       -- verify 意图写了 validated_asset_ids 时，只给它真正验证过的资产记覆盖；
-       -- 没写（旧意图/未收尾）则沿用原口径。只在终态生效：进行中的意图本来就还没结论。
+       -- verify 意图只给它**实际验证过**的资产记覆盖：validated_asset_ids 缺失时
+       -- 不再退化为“锚定的都算测过”——只挂了资产、没记录验证结论的意图，覆盖不可证，
+       -- 该格保持未触及（债），而不是凭一个锚点就变绿。discovery 意图不受此限。
        COALESCE(en.state IN ('done','negative')
         AND en.payload->>'intent_kind' = 'verify'
-        AND jsonb_typeof(en.payload->'validated_asset_ids') = 'array'
-        AND NOT (en.payload->'validated_asset_ids' @> to_jsonb(ea.asset_id)), false) AS validates_other_asset
+        AND NOT COALESCE(
+              jsonb_typeof(en.payload->'validated_asset_ids') = 'array'
+              AND (en.payload->'validated_asset_ids') @> to_jsonb(ea.asset_id), false), false) AS validates_other_asset
 FROM target t
 JOIN exploration_anchors ea ON ea.asset_id = t.id
 JOIN exploration_nodes en ON en.id = ea.node_id AND en.exploration_id = $2 AND en.kind = 'intent'
@@ -833,6 +841,7 @@ type BreadthSummary struct {
 	AssetsTerminal      int               `json:"assets_terminal"`
 	AssetsPartial       int               `json:"assets_partial"`
 	RootDomainsExcluded int               `json:"root_domains_excluded"`
+	ServicesExcluded    int               `json:"services_excluded"` // service 是属性(host:port)，不单独计债
 	Debt                int               `json:"debt"`
 	ScopeRows           int               `json:"scope_rows"`
 	NeedAssetDiscovery  bool              `json:"need_asset_discovery"`
@@ -865,6 +874,21 @@ func (s *ExplorationStore) BreadthSummary(taskID int64) (*BreadthSummary, error)
 	return BuildBreadthSummary(cov, scopeRows), nil
 }
 
+// serviceHostLabel 从 service 的 label 里取 host（label 可能是 URL、host:port 或裸 IP）。
+func serviceHostLabel(label string) string {
+	s := strings.TrimSpace(label)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		s = h
+	}
+	return strings.ToLower(strings.TrimSuffix(s, "."))
+}
+
 // BuildBreadthSummary is the pure aggregation used by BreadthSummary and tests.
 func BuildBreadthSummary(cov []CoverageMatrixAsset, scopeRows int) *BreadthSummary {
 	out := &BreadthSummary{
@@ -873,10 +897,43 @@ func BuildBreadthSummary(cov []CoverageMatrixAsset, scopeRows int) *BreadthSumma
 		TopGaps:   []BreadthAssetGap{},
 		DebtIDs:   map[int64]bool{},
 	}
+	// service 是「host:port」属性，不是独立的测试面：同一个站点会同时出现 service
+	// 和它的多个 endpoint，分别计债会让分母翻倍、覆盖率被稀释。把它合并到同 host 的
+	// 具体资产（subdomain/ip）上；找不到宿主时才退回“service 自己算一个资产”——
+	// 否则只有 service 的任务会因为分母为空而永远无法推进覆盖度。
+	byLabel := map[string]int{}
+	for i, a := range cov {
+		if a.Type == "subdomain" || a.Type == "ip" {
+			byLabel[strings.ToLower(strings.TrimSuffix(a.Label, "."))] = i
+		}
+	}
+	mergeCells := map[int][]CoverageMatrixCell{}
+	mergeFacts := map[int]int{}
+	skipAsset := map[int64]bool{}
 	for _, a := range cov {
-		if a.Type == "root_domain" {
+		if a.Type != "service" {
+			continue
+		}
+		host := serviceHostLabel(a.Label)
+		if j, ok := byLabel[host]; ok && host != "" {
+			mergeCells[j] = append(mergeCells[j], a.Cells...)
+			mergeFacts[j] += a.Facts
+			skipAsset[a.ID] = true
+			out.ServicesExcluded++
+		}
+	}
+	for i, a := range cov {
+		switch a.Type {
+		case "root_domain":
 			out.RootDomainsExcluded++
 			continue
+		}
+		if skipAsset[a.ID] {
+			continue
+		}
+		a.Facts += mergeFacts[i]
+		if extra := mergeCells[i]; len(extra) > 0 {
+			a.Cells = append(append([]CoverageMatrixCell{}, a.Cells...), extra...)
 		}
 		out.AssetsTotal++
 		seen := make(map[string]bool, len(a.Cells))

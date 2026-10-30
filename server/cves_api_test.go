@@ -194,8 +194,11 @@ func TestCVEToolsSeededAndBound(t *testing.T) {
 		t.Fatalf("lookup_cves seeded/bound wrong: %+v %v", lookup, err)
 	}
 	exploit, err := s.m.pg.GetTool("cve_exploit")
-	if err != nil || exploit == nil || !contains(exploit.Agents, "worker") || !contains(exploit.Agents, "planner") {
+	if err != nil || exploit == nil || !contains(exploit.Agents, "worker") {
 		t.Fatalf("cve_exploit seeded/bound wrong: %+v %v", exploit, err)
+	}
+	if contains(exploit.Agents, "planner") {
+		t.Fatalf("cve_exploit is execution surface and must not bind planner: %+v", exploit.Agents)
 	}
 	if contains(exploit.Agents, "mainagent") {
 		t.Fatalf("cve_exploit must not bind mainagent (no ExecService): %+v", exploit.Agents)

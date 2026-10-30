@@ -1785,7 +1785,7 @@ func accP20(t *testing.T, e *accEnv) {
 		t.Fatal(err)
 	}
 	res, err := intentTool.Call(context.Background(),
-		json.RawMessage(`{"summary":"用 hydra 对登录口做爆破，找出弱口令账号"}`), nil)
+		json.RawMessage(`{"risk_area":"auth","summary":"用 hydra 对登录口做爆破，找出弱口令账号"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1808,7 +1808,7 @@ func accP20(t *testing.T, e *accEnv) {
 
 	// ③ 定向而非全拒：策略内的正常方向照常进图（否则这道门会把探索一起打死）。
 	res, err = intentTool.Call(context.Background(),
-		json.RawMessage(`{"summary":"枚举 /api/v1/users 的对象级越权，比较两个账号的返回差异"}`), nil)
+		json.RawMessage(`{"risk_area":"idor","summary":"枚举 /api/v1/users 的对象级越权，比较两个账号的返回差异"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1853,11 +1853,11 @@ func accP20(t *testing.T, e *accEnv) {
 		t.Fatalf("改额度 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	reload()
-	res, err = intentTool.Call(context.Background(), json.RawMessage(`{"summary":"检查订单接口的越权读取"}`), nil)
+	res, err = intentTool.Call(context.Background(), json.RawMessage(`{"risk_area":"authz","summary":"检查订单接口的越权读取"}`), nil)
 	if err != nil || !strings.Contains(res.Flatten(), "intent created: ") {
 		t.Fatalf("额度内的意图应放行: %v %s", err, res.Flatten())
 	}
-	res, err = intentTool.Call(context.Background(), json.RawMessage(`{"summary":"再看一眼导出接口的越权"}`), nil)
+	res, err = intentTool.Call(context.Background(), json.RawMessage(`{"risk_area":"authz","summary":"再看一眼导出接口的越权"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1898,7 +1898,7 @@ func accP20(t *testing.T, e *accEnv) {
 	}
 	reload()
 	res, err = intentTool.Call(context.Background(),
-		json.RawMessage(`{"summary":"扫一下 /wp-admin/ 下面的插件漏洞"}`), nil)
+		json.RawMessage(`{"risk_area":"other","summary":"扫一下 /wp-admin/ 下面的插件漏洞"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1906,7 +1906,7 @@ func accP20(t *testing.T, e *accEnv) {
 		t.Fatalf("自定义关键词没拦住意图或理由不完整: %s", flat)
 	}
 	res, err = intentTool.Call(context.Background(),
-		json.RawMessage(`{"summary":"看一眼 /internal/debug 的角色配置"}`), nil)
+		json.RawMessage(`{"risk_area":"other","summary":"看一眼 /internal/debug 的角色配置"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1915,7 +1915,7 @@ func accP20(t *testing.T, e *accEnv) {
 	}
 	// command 层：意图措辞不判（"说说没关系"），但命令门照样拦。
 	res, err = intentTool.Call(context.Background(),
-		json.RawMessage(`{"summary":"连 prod-db.internal 看下版本，只读"}`), nil)
+		json.RawMessage(`{"risk_area":"other","summary":"连 prod-db.internal 看下版本，只读"}`), nil)
 	if err != nil || !strings.Contains(res.Flatten(), "intent created: ") {
 		t.Fatalf("command 层条目不该判意图措辞: %v %s", err, res.Flatten())
 	}
@@ -2013,7 +2013,7 @@ func accP20(t *testing.T, e *accEnv) {
 	// （⑤c 建的那条 command 层意图已在上面被置 done，不会挡住停摆判定。）
 	for i := 0; i < policyStallMinRejects; i++ {
 		if _, err := intentTool.Call(context.Background(),
-			json.RawMessage(`{"summary":"继续用 hydra 爆破这个登录口"}`), nil); err != nil {
+			json.RawMessage(`{"risk_area":"auth","summary":"继续用 hydra 爆破这个登录口"}`), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2314,7 +2314,7 @@ func accP21(t *testing.T, e *accEnv) {
 	intentTool := workflowTool(t, tsx.PlannerTools(), "add_intent")
 	tsx.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
 	pres, err := intentTool.Call(ctx, json.RawMessage(
-		`{"summary":"对情报查到的 a.example.com 做未授权访问测试","asset_ids":[`+strconv.FormatInt(assetID, 10)+`]}`), nil)
+		`{"risk_area":"authz","summary":"对情报查到的 a.example.com 做未授权访问测试","asset_ids":[`+strconv.FormatInt(assetID, 10)+`]}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3825,7 +3825,7 @@ func accP29(t *testing.T, e *accEnv) {
 
 	// ② 派一条意图动用它
 	res, err = workflowTool(t, tsx.PlannerTools(), "add_intent").Call(context.Background(), json.RawMessage(
-		`{"summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`), nil)
+		`{"risk_area":"other","summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`), nil)
 	if err != nil || !strings.HasPrefix(res.Flatten(), "intent created: ") {
 		t.Fatalf("add_intent（带 uses_loot_ids）: %v %s", err, res.Flatten())
 	}
@@ -3892,7 +3892,7 @@ func accP30(t *testing.T, e *accEnv) {
 		`{"summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
 			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
 	i1Out := callOn(planner, "add_intent",
-		`{"summary":"读 wp-config 找数据库口令","uses_loot_ids":[`+strconv.FormatInt(fhA, 10)+`],`+
+		`{"risk_area":"disclosure","summary":"读 wp-config 找数据库口令","uses_loot_ids":[`+strconv.FormatInt(fhA, 10)+`],`+
 			`"techniques":["T1552.001"]}`)
 	if !strings.HasPrefix(i1Out, "intent created: ") {
 		t.Fatalf("第一步意图没建上：%s", i1Out)
@@ -3910,7 +3910,7 @@ func accP30(t *testing.T, e *accEnv) {
 	}
 	credID := creds[0].ID
 	i2Out := callOn(planner, "add_intent",
-		`{"summary":"用 wp_user 横向到 db01","uses_loot_ids":[`+strconv.FormatInt(credID, 10)+`],`+
+		`{"risk_area":"auth","summary":"用 wp_user 横向到 db01","uses_loot_ids":[`+strconv.FormatInt(credID, 10)+`],`+
 			`"techniques":["T1021.004","t1021.004"]}`)
 	if !strings.HasPrefix(i2Out, "intent created: ") {
 		t.Fatalf("第二步意图没建上：%s", i2Out)
@@ -4575,7 +4575,7 @@ func accP36(t *testing.T, e *accEnv) {
 		return res.Flatten()
 	}
 
-	intentOut := callOn(planner, "add_intent", `{"summary":"读 wp-config 找数据库口令"}`)
+	intentOut := callOn(planner, "add_intent", `{"risk_area":"disclosure","summary":"读 wp-config 找数据库口令"}`)
 	if !strings.HasPrefix(intentOut, "intent created: ") {
 		t.Fatalf("意图没建上：%s", intentOut)
 	}
@@ -4691,7 +4691,7 @@ func accP37(t *testing.T, e *accEnv) {
 		return res.Flatten()
 	}
 
-	intentOut := callOn(planner, "add_intent", `{"summary":"读配置找凭据","techniques":["T1552.001"]}`)
+	intentOut := callOn(planner, "add_intent", `{"risk_area":"disclosure","summary":"读配置找凭据","techniques":["T1552.001"]}`)
 	if !strings.HasPrefix(intentOut, "intent created: ") {
 		t.Fatalf("意图没建上：%s", intentOut)
 	}

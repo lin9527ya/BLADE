@@ -67,7 +67,7 @@ func TestAddIntentGoalAxis(t *testing.T) {
 	}
 
 	// 1) 无目标（goalless）：顶层意图回退 origin，不挂目标。
-	out := call("add_intent", `{"summary":"开局侦察"}`)
+	out := call("add_intent", `{"risk_area":"other","summary":"开局侦察"}`)
 	lone := intentID(out)
 	if len(spawnsFrom(lone)) != 0 || !derivedFrom(lone) {
 		t.Fatalf("goalless top-level intent must fall back to origin: spawns=%v origin=%v", spawnsFrom(lone), derivedFrom(lone))
@@ -83,7 +83,7 @@ func TestAddIntentGoalAxis(t *testing.T) {
 	if err != nil || len(goals) != 1 {
 		t.Fatalf("goals: %+v err=%v", goals, err)
 	}
-	auto := intentID(call("add_intent", `{"summary":"挂单目标"}`))
+	auto := intentID(call("add_intent", `{"risk_area":"other","summary":"挂单目标"}`))
 	if from := spawnsFrom(auto); len(from) != 1 || from[0] != goals[0].ID {
 		t.Fatalf("single open goal must auto-attach: %v want %d", from, goals[0].ID)
 	}
@@ -95,7 +95,7 @@ func TestAddIntentGoalAxis(t *testing.T) {
 	if err := ts.ts.SetNodeState(goals[0].ID, "met"); err != nil {
 		t.Fatal(err)
 	}
-	if out := call("add_intent", `{"summary":"挂已达成目标","goal_id":`+strconv.FormatInt(goals[0].ID, 10)+`}`); !strings.Contains(out, "open") {
+	if out := call("add_intent", `{"risk_area":"other","summary":"挂已达成目标","goal_id":`+strconv.FormatInt(goals[0].ID, 10)+`}`); !strings.Contains(out, "open") {
 		t.Fatalf("settled goal must be refused: %s", out)
 	}
 
@@ -108,12 +108,11 @@ func TestAddIntentGoalAxis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out = call("add_intent", `{"summary":"多目标未指名"}`)
-	ambiguous := intentID(out)
-	if len(spawnsFrom(ambiguous)) != 0 || !strings.Contains(out, "goal_id") {
-		t.Fatalf("ambiguous goals must not be guessed: spawns=%v out=%s", spawnsFrom(ambiguous), out)
+	out = call("add_intent", `{"risk_area":"other","summary":"多目标未指名"}`)
+	if !strings.Contains(out, "goal_id 必填") {
+		t.Fatalf("多目标未指名应被拒并说明原因：%s", out)
 	}
-	named := intentID(call("add_intent", `{"summary":"指名目标二","goal_id":`+strconv.FormatInt(g2, 10)+`}`))
+	named := intentID(call("add_intent", `{"risk_area":"other","summary":"指名目标二","goal_id":`+strconv.FormatInt(g2, 10)+`}`))
 	if from := spawnsFrom(named); len(from) != 1 || from[0] != g2 {
 		t.Fatalf("explicit goal_id must win: %v want %d (g1=%d)", from, g2, g1)
 	}

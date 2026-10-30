@@ -25,7 +25,7 @@ func TestLootExecOffByDefault(t *testing.T) {
 	t.Cleanup(func() { LootExecEnabled = old })
 
 	tools, _, _ := newToolWorker(t)
-	out := callTool(t, tools.PlannerTools(), "loot_exec", `{"loot_id":1,"host":"h","command":"id"}`)
+	out := callTool(t, tools.WorkerTools(), "loot_exec", `{"loot_id":1,"host":"h","command":"id"}`)
 	if !strings.Contains(out, "默认关闭") {
 		t.Fatalf("未启用时应明确说明：%s", out)
 	}
@@ -48,7 +48,7 @@ func TestLootExecBuildsConnectionWithoutSecret(t *testing.T) {
 	tools.SetExecService(fake)
 
 	raw, _ := json.Marshal(credID)
-	out := callTool(t, tools.PlannerTools(), "loot_exec",
+	out := callTool(t, tools.WorkerTools(), "loot_exec",
 		`{"loot_id":`+string(raw)+`,"host":"web01","command":"id; uname -a"}`)
 	if !strings.Contains(out, "execution started:") {
 		t.Fatalf("应起一条后台执行：%s", out)
@@ -106,7 +106,7 @@ func TestLootExecRejectsUnusableLoot(t *testing.T) {
 	tools.SetExecService(&fakeExecService{submitID: 9})
 	call := func(id int64, host string) string {
 		raw, _ := json.Marshal(id)
-		return callTool(t, tools.PlannerTools(), "loot_exec",
+		return callTool(t, tools.WorkerTools(), "loot_exec",
 			`{"loot_id":`+string(raw)+`,"host":"`+host+`","command":"id"}`)
 	}
 
@@ -171,7 +171,7 @@ func TestLootExecNXCProtocols(t *testing.T) {
 	tools.SetExecService(fake)
 	run := func(id int64) string {
 		raw, _ := json.Marshal(id)
-		return callTool(t, tools.PlannerTools(), "loot_exec",
+		return callTool(t, tools.WorkerTools(), "loot_exec",
 			`{"loot_id":`+string(raw)+`,"host":"web01","command":"whoami"}`)
 	}
 	scriptOf := func(cmd string) string {
@@ -236,7 +236,7 @@ func TestLootExecRejectsMismatchedKindAndService(t *testing.T) {
 			`"targets":[{"host":"web01","port":22,"service":"ssh"}]}`))
 	call := func(id int64) string {
 		raw, _ := json.Marshal(id)
-		return callTool(t, tools.PlannerTools(), "loot_exec", `{"loot_id":`+string(raw)+`,"host":"web01","command":"id"}`)
+		return callTool(t, tools.WorkerTools(), "loot_exec", `{"loot_id":`+string(raw)+`,"host":"web01","command":"id"}`)
 	}
 	if out := call(keyID); !strings.Contains(out, "不支持 key 型凭据") {
 		t.Fatalf("smb + 私钥应被拒：%s", out)

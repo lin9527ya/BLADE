@@ -12,7 +12,7 @@ func TestReportFootprintRequiresEvidenceAndObservedState(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
 
 	out := callTool(t, tools.WorkerTools(), "report_footprint",
-		fmt.Sprintf(`{"summary":"auth.log 留下失败登录","category":"audit","where":["目标系统日志"],`+
+		fmt.Sprintf(`{"risk_area":"other","summary":"auth.log 留下失败登录","category":"audit","where":["目标系统日志"],`+
 			`"signals":["4625"],"exposure":"高","host":"10.0.0.5","locator":"/var/log/auth.log",`+
 			`"cleanup":"只删除对应时间窗的失败记录","state":"unknown",`+
 			`"evidence":"hydra 尝试后 grep 到 10.0.0.9 的失败记录","confidence":"high","intent_id":%d}`, intent))
@@ -40,12 +40,12 @@ func TestReportFootprintRequiresEvidenceAndObservedState(t *testing.T) {
 
 	// 不能绕过证据门直接创建 cleaned/accepted。
 	out = callTool(t, tools.WorkerTools(), "report_footprint",
-		fmt.Sprintf(`{"summary":"x","state":"cleaned","evidence":"e","confidence":"high","intent_id":%d}`, intent))
+		fmt.Sprintf(`{"risk_area":"other","summary":"x","state":"cleaned","evidence":"e","confidence":"high","intent_id":%d}`, intent))
 	if !strings.Contains(out, "state 只能是 open | unknown") {
 		t.Fatalf("应拒绝创建 cleaned：%s", out)
 	}
 	out = callTool(t, tools.WorkerTools(), "report_footprint",
-		fmt.Sprintf(`{"summary":"x","evidence":"","confidence":"high","intent_id":%d}`, intent))
+		fmt.Sprintf(`{"risk_area":"other","summary":"x","evidence":"","confidence":"high","intent_id":%d}`, intent))
 	if !strings.Contains(out, "evidence 不能为空") {
 		t.Fatalf("应拒绝空证据：%s", out)
 	}
@@ -55,7 +55,7 @@ func TestFootprintAgentTransitions(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
 	report := func(summary string) string {
 		return callTool(t, tools.WorkerTools(), "report_footprint",
-			fmt.Sprintf(`{"summary":%q,"category":"log","evidence":"cmd → out","confidence":"medium","intent_id":%d}`,
+			fmt.Sprintf(`{"risk_area":"other","summary":%q,"category":"log","evidence":"cmd → out","confidence":"medium","intent_id":%d}`,
 				summary, intent))
 	}
 	report("a")
@@ -160,7 +160,7 @@ func TestReportFootprintLinksSourceNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := callTool(t, tools.WorkerTools(), "report_footprint",
-		fmt.Sprintf(`{"summary":"上传点访问日志留下记录","evidence":"curl 上传 → access.log 200","confidence":"high",`+
+		fmt.Sprintf(`{"risk_area":"other","summary":"上传点访问日志留下记录","evidence":"curl 上传 → access.log 200","confidence":"high",`+
 			`"intent_id":%d,"source_ids":[%d]}`, intent, fact))
 	if !strings.Contains(out, "footprint recorded") {
 		t.Fatalf("痕迹没记上：%s", out)
@@ -193,7 +193,7 @@ func TestReportFootprintLinksSourceNodes(t *testing.T) {
 func TestLinkIntentSourceRepairsFallbackEdge(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	// 开局（图里还没有事实）漏填 parent_ids：兜底连 origin。
-	out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"开局侦察"}`)
+	out := callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"开局侦察"}`)
 	if !strings.Contains(out, "兜底连到任务起点") {
 		t.Fatalf("开局漏填 parent_ids 时应给出兜底提示：%s", out)
 	}
@@ -250,7 +250,7 @@ func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"从上传点继续推进"}`)
+	out := callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"从上传点继续推进"}`)
 	if !strings.Contains(out, "link_intent_source") || !strings.Contains(out, "来源缺失") {
 		t.Fatalf("已有事实时漏填 parent_ids 应要求补血缘：%s", out)
 	}

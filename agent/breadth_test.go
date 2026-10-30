@@ -29,12 +29,19 @@ func breadthToolSet(t *testing.T) (*ToolSet, *db.AssetStore, int64, int64, int64
 	if _, err := as.AddAgentScope(task.ID, "root_domain", "breadth-test.example", "test", "agent"); err != nil {
 		t.Fatal(err)
 	}
-	covered, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://covered.breadth-test.example", TaskID: task.ID})
-	if err != nil {
+	if _, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://covered.breadth-test.example", TaskID: task.ID}); err != nil {
 		t.Fatal(err)
 	}
-	debt, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://debt.breadth-test.example", TaskID: task.ID})
-	if err != nil {
+	if _, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://debt.breadth-test.example", TaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// service 的覆盖并入同 host 的 subdomain：测试里用宿主 subdomain 的资产 id，
+	// 与广度账本（债务记在具体资产上）保持同一口径。
+	var covered, debt int64
+	if err := d.QueryRow(`SELECT id FROM assets WHERE type='subdomain' AND domain='covered.breadth-test.example'`).Scan(&covered); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT id FROM assets WHERE type='subdomain' AND domain='debt.breadth-test.example'`).Scan(&debt); err != nil {
 		t.Fatal(err)
 	}
 	st := d.Exploration(expID)
@@ -58,8 +65,8 @@ func TestGraphOverviewBreadthAndWorkerIsolation(t *testing.T) {
 	if !ok || b == nil {
 		t.Fatalf("breadth missing: %#v", overview["breadth"])
 	}
-	// Each service URL also creates a subdomain asset; both are concrete points.
-	if b.Debt != 3 || len(b.DebtIDs) != 3 || !b.DebtIDs[debt] {
+	// service 合并到同 host 的 subdomain：两个 host 两个具体资产，覆盖一个 → 债 1。
+	if b.Debt != 1 || len(b.DebtIDs) != 1 || !b.DebtIDs[debt] {
 		t.Fatalf("breadth debt = %+v", b)
 	}
 	if _, old := overview["coverage_gap"]; old {
@@ -93,7 +100,7 @@ func TestAddIntentBreadthWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := res.Flatten()
-	if !strings.Contains(out, "breadth_warning") || !strings.Contains(out, "debt=3") {
+	if !strings.Contains(out, "breadth_warning") || !strings.Contains(out, "debt=1") {
 		t.Fatalf("expected breadth warning, got: %s", out)
 	}
 
@@ -200,7 +207,7 @@ func TestAddIntentKindPersists(t *testing.T) {
 		t.Fatalf("intent_kind = %q (err %v), want verify; payload=%s", p.Kind, err, n.Payload)
 	}
 
-	bad, _ := json.Marshal(map[string]any{"summary": "拼错口径", "kind": "verfiy"})
+	bad, _ := json.Marshal(map[string]any{"risk_area": "other", "summary": "拼错口径", "kind": "verfiy"})
 	res, err = ts.addIntent().Call(t.Context(), bad, nil)
 	if err != nil || !res.IsError || !strings.Contains(res.Flatten(), "kind 只能是") {
 		t.Fatalf("invalid kind accepted: err=%v result=%s", err, res.Flatten())

@@ -67,7 +67,7 @@ func TestFootholdExecSSHUsesCredential(t *testing.T) {
 	fake := &fakeExecService{submitID: 11}
 	tools.SetExecService(fake)
 	fidJSON, _ := json.Marshal(fid)
-	out := callTool(t, tools.PlannerTools(), "foothold_exec",
+	out := callTool(t, tools.WorkerTools(), "foothold_exec",
 		`{"foothold_id":`+string(fidJSON)+`,"host":"web01","command":"id; uname -a"}`)
 	if !strings.Contains(out, "execution started:") {
 		t.Fatalf("应起一条后台执行：%s", out)
@@ -100,7 +100,7 @@ func TestFootholdExecWebshellQuotesCommand(t *testing.T) {
 	fake := &fakeExecService{submitID: 12}
 	tools.SetExecService(fake)
 	fidJSON, _ := json.Marshal(fid)
-	out := callTool(t, tools.PlannerTools(), "foothold_exec",
+	out := callTool(t, tools.WorkerTools(), "foothold_exec",
 		`{"foothold_id":`+string(fidJSON)+`,"host":"web01","command":"id; cat /etc/passwd"}`)
 	if !strings.Contains(out, "execution started:") {
 		t.Fatalf("应起一条后台执行：%s", out)
@@ -125,7 +125,7 @@ func TestFootholdExecRefusals(t *testing.T) {
 		`{"summary":"webshell","evidence":"curl","confidence":"high","protocol":"webshell","url":"http://web01/x.php"}`))
 	call := func(id int64, host string) string {
 		raw, _ := json.Marshal(id)
-		return callTool(t, tools.PlannerTools(), "foothold_exec", `{"foothold_id":`+string(raw)+`,"host":"`+host+`","command":"id"}`)
+		return callTool(t, tools.WorkerTools(), "foothold_exec", `{"foothold_id":`+string(raw)+`,"host":"`+host+`","command":"id"}`)
 	}
 	if out := call(free, "web01"); !strings.Contains(out, "没有结构化连法") {
 		t.Fatalf("自由文本据点应说明无法代为执行：%s", out)

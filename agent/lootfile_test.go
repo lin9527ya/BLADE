@@ -25,7 +25,7 @@ func TestLootUploadSSH(t *testing.T) {
 	fake := &fakeExecService{submitID: 41}
 	tools.SetExecService(fake)
 	raw, _ := json.Marshal(credID)
-	out := callTool(t, tools.PlannerTools(), "loot_upload",
+	out := callTool(t, tools.WorkerTools(), "loot_upload",
 		`{"loot_id":`+string(raw)+`,"host":"web01","local_path":"payloads/x.sh","remote_path":"/tmp/x.sh"}`)
 	if !strings.Contains(out, "execution started:") {
 		t.Fatalf("应起一条后台传输：%s", out)
@@ -57,7 +57,7 @@ func TestLootTransferRejectsEscapingPaths(t *testing.T) {
 	tools.SetExecService(&fakeExecService{submitID: 42})
 	raw, _ := json.Marshal(credID)
 	call := func(local string) string {
-		return callTool(t, tools.PlannerTools(), "loot_download",
+		return callTool(t, tools.WorkerTools(), "loot_download",
 			`{"loot_id":`+string(raw)+`,"host":"web01","remote_path":"/etc/passwd","local_path":"`+local+`"}`)
 	}
 	for _, bad := range []string{"/etc/passwd", "~/x", "../etc/passwd", "a/../../b"} {
@@ -82,7 +82,7 @@ func TestLootDownloadSMB(t *testing.T) {
 	fake := &fakeExecService{submitID: 43}
 	tools.SetExecService(fake)
 	raw, _ := json.Marshal(credID)
-	out := callTool(t, tools.PlannerTools(), "loot_download",
+	out := callTool(t, tools.WorkerTools(), "loot_download",
 		`{"loot_id":`+string(raw)+`,"host":"web01","share":"C$","remote_path":"Windows\\win.ini","local_path":"loot/win.ini"}`)
 	if !strings.Contains(out, "execution started:") {
 		t.Fatalf("smb 下载应可执行：%s", out)
@@ -123,7 +123,7 @@ func TestLootTransferRejectsHashForSMB(t *testing.T) {
 			`"evidence":"dump","confidence":"high","targets":[{"host":"web01","port":445,"service":"smb"}]}`))
 	tools.SetExecService(&fakeExecService{submitID: 44})
 	raw, _ := json.Marshal(credID)
-	out := callTool(t, tools.PlannerTools(), "loot_upload",
+	out := callTool(t, tools.WorkerTools(), "loot_upload",
 		`{"loot_id":`+string(raw)+`,"host":"web01","share":"C$","local_path":"x.sh","remote_path":"x.sh"}`)
 	if !strings.Contains(out, "只支持 password") {
 		t.Fatalf("哈希传输应被拒并说明：%s", out)

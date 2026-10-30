@@ -31,8 +31,9 @@ func TestReportFindingOptionalTrafficWithoutCapture(t *testing.T) {
 	ts.SetFindingRecorder(evidence.New(d, nil, t.TempDir()))
 	notices := 0
 	ts.notifyFinding = func(int64, string) { notices++ }
-	for _, refs := range []string{"", `,"traffic_refs":[]`, `,"traffic_refs":null`} {
-		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(`{"vulnclass":"TCP","severity":"low","summary":"verified TCP fixture","evidence":"command output proves the finding"`+refs+`}`), nil)
+	for i, refs := range []string{"", `,"traffic_refs":[]`, `,"traffic_refs":null`} {
+		// 每次用不同摘要：本用例验证的是 traffic_refs 的三种写法，不是重复登记语义。
+		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(fmt.Sprintf(`{"vulnclass":"TCP","severity":"low","summary":"verified TCP fixture %d","evidence":"command output proves the finding"%s}`, i, refs)), nil)
 		if err != nil || !strings.HasPrefix(res.Flatten(), "finding recorded: ") {
 			t.Fatalf("optional traffic rejected: %v %s", err, res.Flatten())
 		}

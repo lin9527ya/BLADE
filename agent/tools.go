@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	acperm "github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
@@ -847,10 +848,12 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	// 截断窗口的大小而不是总数——findings_total 是目标判定的依据，不能骗人。findings 列表
 	// 只取要展示的那一窗（findingListCap），也不必为此多拉行。
 	const findingListCap = 10
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, findingListCap) // newest first
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000)              // newest first；recent_facts 的候选窗
-	if total, err := t.ts.CountByKind(db.KindFinding); err == nil {
-		out["findings_total"] = total // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
+	// 只数仍然有效的漏洞（撤回/误报/重复/排除已关闭）：findings_total 是目标判定的
+	// 依据，把被推翻的结论算进去会让 planner 误以为目标已达成。
+	vulnNodes, _ := t.ts.ListActiveFindings(findingListCap) // newest first
+	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000)      // newest first；recent_facts 的候选窗
+	if total, err := t.ts.CountActiveFindings(); err == nil {
+		out["findings_total"] = total // 有效确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
 	} else {
 		out["findings_total"] = len(vulnNodes)
 	}
@@ -1646,6 +1649,20 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 		obj(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
 			f, _ := t.ts.ListByKindWithSources(db.KindFinding, 500)
+			// 已撤回/误报/重复/排除的漏洞不再作为“确认漏洞”出现；墓碑仍可 node_detail 查看。
+			ids := make([]int64, 0, len(f))
+			for _, n := range f {
+				ids = append(ids, n.ID)
+			}
+			if closed, cerr := t.ts.ClosedFindingNodeIDs(ids); cerr == nil {
+				active := f[:0]
+				for _, n := range f {
+					if !closed[n.ID] {
+						active = append(active, n)
+					}
+				}
+				f = active
+			}
 			if err := t.ts.PopulateFindingTrafficIDs(f); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -1680,17 +1697,19 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 const factsPageSize = 20
 
 func (t *ToolSet) listFacts() actool.CoreTool {
-	return t.readExpTool("list_facts", "分页列本任务及直接关联任务的【探索事实/结论】，最新在前(紧凑：id+摘要+状态，摘要过长会截断，全文用 node_detail(id))。参数均可选：limit(默认 20，上限 100)、before(游标，传上一页返回的 next_before 取更旧的一页；省略/0=最新一页)、q(按摘要关键词过滤)。返回 {facts, total, has_more, next_before}：total 是过滤后的总数，has_more=true 时用 next_before 继续翻页。关联任务条目带 source_task_id/inherited=true 且只读。漏洞看 list_findings。",
+	return t.readExpTool("list_facts", "分页列本任务及直接关联任务的【探索事实/结论】，最新在前(紧凑：id+摘要+状态，摘要过长会截断，全文用 node_detail(id))。参数均可选：limit(默认 20，上限 100)、before(游标，传上一页返回的 next_before 取更旧的一页；省略/0=最新一页)、q(按摘要关键词过滤)、include_folded(默认 true；已折进冷 digest 的事实仍返回，并带 folded_into_digest 标注——折叠 ≠ 删除)。返回 {facts, total, has_more, next_before}：total 是过滤后的总数，has_more=true 时用 next_before 继续翻页。关联任务条目带 source_task_id/inherited=true 且只读。漏洞看 list_findings。",
 		obj(map[string]any{
-			"limit":  intp("返回条数，默认 20，上限 100"),
-			"before": intp("分页游标：只返回 id 小于该值的更旧事实；省略或 0 = 最新一页"),
-			"q":      str("按事实摘要关键词过滤（不区分大小写）；省略 = 不过滤"),
+			"limit":          intp("返回条数，默认 20，上限 100"),
+			"before":         intp("分页游标：只返回 id 小于该值的更旧事实；省略或 0 = 最新一页"),
+			"q":              str("按事实摘要关键词过滤（不区分大小写）；省略 = 不过滤"),
+			"include_folded": map[string]any{"type": "boolean", "description": "是否包含已折叠进冷 digest 的事实，默认 true；false 只过滤当前页（分页计数不变）"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				Limit  int    `json:"limit"`
-				Before int64  `json:"before"`
-				Q      string `json:"q"`
+				Limit         int    `json:"limit"`
+				Before        int64  `json:"before"`
+				Q             string `json:"q"`
+				IncludeFolded *bool  `json:"include_folded"`
 			}
 			_ = json.Unmarshal(in, &a)
 			limit := a.Limit
@@ -1704,11 +1723,29 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 			if err != nil {
 				return actool.Result{}, err
 			}
+			ids := make([]int64, 0, len(f))
+			for _, n := range f {
+				ids = append(ids, n.ID)
+			}
+			folded, _ := t.ts.FoldedDigestByNode(ids)
+			includeFolded := a.IncludeFolded == nil || *a.IncludeFolded
 			out := make([]map[string]any, 0, len(f))
 			for _, n := range f {
+				if digest, ok := folded[n.ID]; ok {
+					if !includeFolded {
+						continue
+					}
+					item := compactFact(n)
+					item["folded_into_digest"] = digest
+					out = append(out, item)
+					continue
+				}
 				out = append(out, compactFact(n))
 			}
 			res := map[string]any{"facts": out, "total": total, "has_more": hasMore}
+			if !includeFolded {
+				res["filtered_note"] = "已按 include_folded=false 过滤当前页；total 未调整，完整历史仍以 include_folded=true 为准"
+			}
 			if hasMore && len(f) > 0 {
 				res["next_before"] = f[len(f)-1].ID // 传回它取下一页(更旧的)
 			}
@@ -1805,6 +1842,16 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, "", fmt.Errorf("summary 不能为空")
 	}
+	// risk_area 是覆盖矩阵的键：空值/未知词会让这条方向落进 other，报告与覆盖度
+	// 从此失真（任务 14 实测 537/580 条意图是 other）。这里硬拒，并在错误里给枚举。
+	rawRisk := strings.TrimSpace(it.RiskArea)
+	if rawRisk == "" {
+		return 0, "", fmt.Errorf("risk_area 必填：%s（覆盖矩阵与报告按它统计，留空会归入 other 使数据失真）", riskAreaEnum())
+	}
+	riskArea := db.NormalizeRiskArea(rawRisk)
+	if riskArea == "other" && !strings.EqualFold(rawRisk, "other") {
+		return 0, "", fmt.Errorf("risk_area=%q 不在词表内：%s", rawRisk, riskAreaEnum())
+	}
 	intentKind := strings.TrimSpace(it.Kind)
 	switch intentKind {
 	case "", "discovery", "verify":
@@ -1855,6 +1902,20 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		}
 		if g.State != "open" {
 			return 0, "", fmt.Errorf("goal_id %d 已是 %s 状态：意图只能挂到未达成(open)的目标上", goalID, g.State)
+		}
+	}
+	// 多目标时不许留空：没有归属的意图不会推进任何目标，图上也看不出它服务于哪条线。
+	if goalID == 0 {
+		if goals, gerr := t.ts.ListByKind(db.KindGoal, 1000); gerr == nil {
+			var openIDs []int64
+			for _, g := range goals {
+				if g.State == "open" {
+					openIDs = append(openIDs, g.ID)
+				}
+			}
+			if len(openIDs) > 1 {
+				return 0, "", fmt.Errorf("本任务有 %d 个未达成目标（%v）：goal_id 必填，指明这条方向服务哪个目标；只有确实不属于任何目标时才可留空", len(openIDs), openIDs)
+			}
 		}
 	}
 	// 战果轴校验（同样在建节点前）：uses_loot_ids 必须是本任务里真实存在、且仍在手的战果。
@@ -1919,7 +1980,6 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			return 0, "", fmt.Errorf("%s", b.String())
 		}
 	}
-	riskArea := db.NormalizeRiskArea(it.RiskArea)
 	// 防打转：同资产 + 同风险类 + 同义描述，要么已有在跑的、要么已经结束过 3 次。
 	// 判定放在策略/资产/血缘/战果校验之后、建节点之前：前面的校验说的是"能不能做"，
 	// 这一条说的是"这件事是不是已经有人在做/已经做过了"。
@@ -2046,16 +2106,6 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			note += " " + warn
 		}
 	}
-	if riskArea == "other" && strings.TrimSpace(it.RiskArea) == "" {
-		// 不硬性拒绝（拒绝会浪费整整一轮），但把后果说清楚——覆盖矩阵是按
-		// 「资产 × 风险类」统计的，漏填一条就少一格依据。
-		warn := "本条意图未填 risk_area，已归入 other：覆盖矩阵与交付报告会因此失真，后续意图请务必填上（sqli/xss/rce/...）。"
-		if note == "" {
-			note = warn
-		} else {
-			note += " " + warn
-		}
-	}
 	return id, note, nil
 }
 
@@ -2103,7 +2153,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"summary":         str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
 			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
-			"goal_id":         idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals；可选）：挂上后链路图显示「目标→意图」，push 目标进度。省略时若本任务恰有一个未达成(open)目标会自动挂；有多个目标时请指名（不猜）。"),
+			"goal_id":         idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：挂上后链路图显示「目标→意图」，push 目标进度。恰有一个未达成(open)目标时省略会自动挂；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
 			"depends_on":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
 			"uses_loot_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":        intp("优先级 0-10，默认5"),
@@ -2380,7 +2430,19 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: intentID, VulnClass: a.VulnClass, Name: a.Name, Severity: severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: pidList(a.AssetIDs)}
+		assetIDs := pidList(a.AssetIDs)
+		// 重复登记检查：同任务、同 vulnclass、资产有交集、摘要高度相似 → 拒收并指回
+		// 已有条目。重复 finding 会让报告里同一条漏洞出现两次、findings_total 虚高，
+		// planner 误判目标达成。确实不同请把差异写进 summary。
+		if t.ts != nil {
+			if prior, perr := t.ts.ActiveFindingsByClass(a.VulnClass, 50); perr == nil {
+				if dupID, dupSummary := similarFinding(a.Summary, assetIDs, prior); dupID > 0 {
+					return actool.Errorf(fmt.Sprintf("已存在高度相似的漏洞 #%d（%s）：同类别、同资产、摘要相似，判定为重复登记。"+
+						"不要重复创建：确有实质差异请把差异写进 summary 再报；确属同一漏洞但描述不同，请让规划者/主 Agent 用 merge_findings 合并。", dupID, firstLine(dupSummary, 80))), nil
+				}
+			}
+		}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: intentID, VulnClass: a.VulnClass, Name: a.Name, Severity: severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: assetIDs}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -3919,16 +3981,17 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.linkIntentSource(),
 		// 收口：策略内已无可行方向 → 写结论 + 暂停等人工；不可达目标 → 放弃（理由必填）。
 		t.markStrategyExhausted(), t.abandonGoal(),
+		// 去重：planner 自己报的重复漏洞要能合并，而不是留着两条污染计数。
+		t.mergeFindings(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
 		t.coverageMatrix(),
 		t.killWorkTool(), t.steerWorkTool(),
-		// P13 长任务执行：planner 可发起长扫描并复查在跑的执行（未接线时返回可读拒绝）。
-		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.lootUpload(), t.lootDownload(), t.footholdExec(), t.tunnelOpen(), t.cancelExecution(),
-		// OAST（带外回调）：盲打类漏洞的唯一确认手段；未配置时由 server 从工具面移除。
-		t.oastMint(), t.oastPoll(),
-		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
-		t.addFinding(),
+		// 执行类工具（run/wait/get/grep/cancel_execution、loot_*、foothold_exec、
+		// tunnel_open、oast_*、cve_exploit）与 report_finding 已从规划层移除：
+		// planner 只产意图、不亲自打；执行与写漏洞由 worker 做。规划层需要这些动作时
+		// 写进意图 summary，交给 worker 执行（见提示词）。
+		//
 		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。
 		t.promoteKnowledge(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。
@@ -3936,10 +3999,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，
 		// 补上"按域名/指纹/端口/状态码等条件在整库里查"的能力）。
 		t.listAssets(), t.assetNeighbors(),
-		// add_company_scope：规划时可把域名/IP/CIDR/ICP/关键词纳入某公司的资产范围（自动认领命中资产）。
-		t.addCompanyScope(),
-		// add_task_scope：主动把整根域/整公司/某子域/IP 纳入本任务测试范围(覆盖度分母)。
-		t.addTaskScope(),
+		// add_task_scope / add_company_scope 已从规划层移除：扩面是人的决策（主 Agent /
+		// UI）。planner 只在本任务既有范围内补方向，避免自行把授权范围越拉越大。
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),
 		// ad_paths（P32）：读导入的域内采集结果推出的攻击路径（非特权账号 → 高价值目标）。
@@ -3950,6 +4011,73 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// 手动沉淀/回填反馈（自动沉淀由 playbook agent 在 report_foothold 时完成）。
 		t.lookupPlaybooks(), t.recordPlaybook(), t.recordPlaybookFeedback(),
 		// CVE 库：规划时按资产/指纹查已录入 CVE；有脚本时可显式触发，匹配只是线索。
-		t.lookupCVEs(), t.cveExploit(),
+		t.lookupCVEs(),
 	}
+}
+
+// normalizeFindingText 把摘要归一成只含字母/数字（含中文）的串，用于重复判断：
+// 空格、标点、大小写差异不应让同一条漏洞绕过检查。
+func normalizeFindingText(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// similarFinding 判断新发现与已有发现是否「同类 + 同资产 + 摘要相似」。
+// 返回命中的已有节点 id 与摘要（0 = 不重复）。
+func similarFinding(summary string, assets []int64, prior []db.SimilarFinding) (int64, string) {
+	norm := normalizeFindingText(summary)
+	if len([]rune(norm)) < 8 {
+		return 0, "" // 太短的摘要没有判别力，宁可放过
+	}
+	for _, p := range prior {
+		pn := normalizeFindingText(p.Summary)
+		if !findingSummarySimilar(norm, pn) || !findingAssetsOverlap(assets, p.AssetIDs) {
+			continue
+		}
+		return p.NodeID, p.Summary
+	}
+	return 0, ""
+}
+
+func findingSummarySimilar(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	short, long := a, b
+	if len([]rune(short)) > len([]rune(long)) {
+		short, long = long, short
+	}
+	if len([]rune(short)) < 8 || !strings.Contains(long, short) {
+		return false
+	}
+	return float64(len([]rune(short)))/float64(len([]rune(long))) >= 0.6
+}
+
+func findingAssetsOverlap(a, b []int64) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true // 两边都没标资产：同类别 + 摘要相似已经足够可疑
+	}
+	set := make(map[int64]bool, len(a))
+	for _, id := range a {
+		set[id] = true
+	}
+	for _, id := range b {
+		if set[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// riskAreaEnum 返回 risk_area 的合法取值说明（错误信息与提示词共用）。
+func riskAreaEnum() string {
+	return strings.Join(db.RiskAreas, " | ")
 }

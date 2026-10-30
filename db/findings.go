@@ -956,3 +956,184 @@ WHERE task_id=$1 AND node_id IS NOT NULL AND COALESCE(report,'') <> ''`, taskID)
 	}
 	return out, rows.Err()
 }
+
+// FindingClosedForRisk 判断一个 triage 状态是否意味着「这条结论不再是当前风险」。
+// 只用于**计数口径**（findings_total / finding_list / 相似度去重）：撤回、误报、
+// 重复、已排除都不算确认发现；ignored/fixed/resolved 仍算「发现过的漏洞」，由报告
+// 自己的 Closed 段处理，不在这里抹掉。
+func FindingClosedForRisk(status string) bool {
+	switch status {
+	case FindingRetracted, FindingFalsePositive, FindingDuplicate, FindingRuledOut:
+		return true
+	}
+	return false
+}
+
+// CountActiveFindings 数本任务里仍然有效的漏洞节点（findings.status 未被撤回/误报/
+// 重复/排除；没有独立 findings 行的遗留节点按有效计）。
+func (s *ExplorationStore) CountActiveFindings() (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+SELECT COUNT(*) FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='finding'
+  AND COALESCE((SELECT f.status FROM findings f WHERE f.node_id=n.id ORDER BY f.id DESC LIMIT 1),'') NOT IN
+      ('retracted','false_positive','duplicate','ruled_out')`, s.expID).Scan(&n)
+	return n, err
+}
+
+// ListActiveFindings 返回本任务仍然有效的漏洞节点（最新在前，limit<=0 = 50）。
+func (s *ExplorationStore) ListActiveFindings(limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='finding'
+  AND COALESCE((SELECT f.status FROM findings f WHERE f.node_id=n.id ORDER BY f.id DESC LIMIT 1),'') NOT IN
+      ('retracted','false_positive','duplicate','ruled_out')
+ORDER BY n.id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// ClosedFindingNodeIDs 返回给定节点里已被 triage 关闭（撤回/误报/重复/排除）的集合。
+// list_findings 要跨「本任务 + 直接关联任务」，所以按节点 id 批量查，不按 exploration 过滤。
+func (s *ExplorationStore) ClosedFindingNodeIDs(nodeIDs []int64) (map[int64]bool, error) {
+	out := make(map[int64]bool)
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`
+SELECT DISTINCT node_id FROM findings
+WHERE node_id = ANY($1::bigint[])
+  AND status IN ('retracted','false_positive','duplicate','ruled_out')`, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// SimilarFinding 是相似度检查用的一条已有发现（只取判断所需的字段）。
+type SimilarFinding struct {
+	NodeID    int64
+	Summary   string
+	VulnClass string
+	AssetIDs  []int64
+	Status    string
+}
+
+// ActiveFindingsByClass 取本任务里同 vulnclass 且仍然有效的发现，供 report_finding
+// 做「同资产 + 同类 + 摘要相似」的重复检查。比较放在调用方做（归一化规则属于
+// agent 的语义层，DB 只负责取数）。
+func (s *ExplorationStore) ActiveFindingsByClass(vulnClass string, limit int) ([]SimilarFinding, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+SELECT f.node_id, COALESCE(f.summary,''), COALESCE(f.vulnclass,''), COALESCE(f.asset_ids,'[]'::jsonb), COALESCE(f.status,'')
+FROM findings f
+JOIN exploration_nodes n ON n.id=f.node_id AND n.exploration_id=$1
+WHERE lower(trim(COALESCE(f.vulnclass,''))) = lower(trim($2))
+  AND COALESCE(f.status,'') NOT IN ('retracted','false_positive','duplicate','ruled_out')
+ORDER BY f.id DESC LIMIT $3`, s.expID, vulnClass, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SimilarFinding
+	for rows.Next() {
+		var f SimilarFinding
+		var assets []byte
+		if err := rows.Scan(&f.NodeID, &f.Summary, &f.VulnClass, &assets, &f.Status); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(assets, &f.AssetIDs)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// MergeFindings 把一条或多条重复登记的漏洞并入保留项（canonical）：
+//   - 重复项的 findings.status 置为 duplicate，retract_reason 记录合并理由；
+//   - 重复项的资产锚点并入保留项（证据不因合并丢失）；
+//   - 图节点保留（墓碑），报告会把它列在「已关闭/重复」里，不会凭空消失。
+//
+// 只允许并入仍然有效的保留项；重复项本身必须存在于本任务。返回实际合并的条数。
+func (s *ExplorationStore) MergeFindings(canonicalNodeID int64, duplicateNodeIDs []int64, reason string) (int64, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return 0, errors.New("合并漏洞必须写理由：为什么这些是同一个漏洞")
+	}
+	if canonicalNodeID <= 0 {
+		return 0, errors.New("canonical_id 必填")
+	}
+	if len(duplicateNodeIDs) == 0 {
+		return 0, errors.New("duplicate_ids 至少给一条")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var canonFindingID int64
+	var canonStatus string
+	err = tx.QueryRow(`SELECT f.id, COALESCE(f.status,'') FROM findings f
+JOIN exploration_nodes n ON n.id=f.node_id AND n.exploration_id=$2
+WHERE f.node_id=$1 ORDER BY f.id DESC LIMIT 1`, canonicalNodeID, s.expID).Scan(&canonFindingID, &canonStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("保留项 #%d 不是本任务的有效漏洞记录（找不到独立 findings 行）", canonicalNodeID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if FindingClosedForRisk(canonStatus) {
+		return 0, fmt.Errorf("保留项 #%d 当前状态是 %s：不能作为合并目标（先把保留项恢复为有效状态）", canonicalNodeID, canonStatus)
+	}
+
+	var merged int64
+	seen := map[int64]bool{}
+	for _, dupNodeID := range duplicateNodeIDs {
+		if dupNodeID <= 0 || dupNodeID == canonicalNodeID || seen[dupNodeID] {
+			continue
+		}
+		seen[dupNodeID] = true
+		var dupFindingID int64
+		err := tx.QueryRow(`SELECT f.id FROM findings f
+JOIN exploration_nodes n ON n.id=f.node_id AND n.exploration_id=$2
+WHERE f.node_id=$1 ORDER BY f.id DESC LIMIT 1`, dupNodeID, s.expID).Scan(&dupFindingID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return merged, fmt.Errorf("重复项 #%d 不是本任务的有效漏洞记录", dupNodeID)
+		}
+		if err != nil {
+			return merged, err
+		}
+		if _, err := tx.Exec(`UPDATE findings SET status=$1, retract_reason=$2 WHERE id=$3`,
+			FindingDuplicate, reason, dupFindingID); err != nil {
+			return merged, err
+		}
+		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id)
+SELECT $1, asset_id FROM exploration_anchors WHERE node_id=$2
+ON CONFLICT DO NOTHING`, canonicalNodeID, dupNodeID); err != nil {
+			return merged, err
+		}
+		merged++
+	}
+	if merged == 0 {
+		return 0, errors.New("没有可合并的重复项（duplicate_ids 为空、等于保留项或重复）")
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return merged, nil
+}
