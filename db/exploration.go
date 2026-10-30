@@ -3042,6 +3042,34 @@ ORDER BY id DESC LIMIT 1`, s.expID, noteID)
 	return n, err
 }
 
+// IntentPriorOutput reports whether an intent already produced output in an
+// earlier run (before this one was interrupted / requeued / paused-resumed).
+//
+// Why: the settler only sees WriteCounts of the CURRENT run. A resumed run that
+// has nothing new to register (everything was already written by the prior run)
+// used to settle as no_output, which makes the planner think the direction was
+// never explored. Assets anchored to the intent count as "any output"; only
+// graph yields of validation-grade kinds count as "validation output".
+func (s *ExplorationStore) IntentPriorOutput(id int64) (anyOut, validation bool, err error) {
+	if id <= 0 {
+		return false, false, nil
+	}
+	err = s.db.QueryRow(`
+SELECT
+  EXISTS(
+    SELECT 1 FROM exploration_edges e
+    WHERE e.exploration_id=$1 AND e.src_id=$2 AND e.rel IN ('yields','leaves'))
+  OR EXISTS(
+    SELECT 1 FROM exploration_anchors a WHERE a.node_id=$2),
+  EXISTS(
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=$1 AND e.src_id=$2 AND e.rel='yields'
+      AND d.kind IN ('fact','finding','foothold','credential','detection','artifact'))`,
+		s.expID, id).Scan(&anyOut, &validation)
+	return anyOut, validation, err
+}
+
 // HasIntentStartActivity reports whether the UI boundary row for this intent has
 // already been written. Slot sessions can resume an intent, so the engine must not
 // append a second boundary bubble on every run.

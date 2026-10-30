@@ -1797,6 +1797,11 @@ const (
 //
 // 挂上目标后不再写 origin 兜底边——意图经目标仍可回溯任务起点（README/链路图的形状）。
 func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
+	// 本轮已判定全部目标达成（prove_goal/goal_met）后不得再派意图：否则同一轮里
+	// 先收官、后面又冒出几条永远没人领的 open 意图，任务结束时 frontier 留下假待办。
+	if t.GoalMet {
+		return 0, "", fmt.Errorf("本轮已判定目标全部达成（prove_goal/goal_met），不能再新增意图；确有新方向，请先把目标重新打开/登记为新目标（set_goals）再派")
+	}
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, "", fmt.Errorf("summary 不能为空")
 	}

@@ -94,6 +94,18 @@ func (t *ToolSet) cleanupGateForCompletion(goalID int64) string {
 	return t.cleanupGate()
 }
 
+// ArtifactCleanupBlocked 是给引擎侧收官路径用的导出入口（goalless 收尾不经过
+// planner 的 prove_goal，拿不到 ToolSet）。返回 true 时 msg 是可以直接展示给操作者
+// 的说明；读库失败不阻断（与 cleanupGate 同一条纪律）。
+func ArtifactCleanupBlocked(ts *db.ExplorationStore) (bool, string) {
+	if ts == nil {
+		return false, ""
+	}
+	g := &ToolSet{ts: ts}
+	msg := g.cleanupGate()
+	return msg != "", msg
+}
+
 // acceptArtifactRisk 显式接受"带着遗留物交付"的风险：写一条可核对、出现在图里的结论。
 //
 // 它不是橡皮图章：理由必填，且这条 fact 会进报告语境——客户复盘时能看到"我们知道自己

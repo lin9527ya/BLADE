@@ -240,10 +240,13 @@ func renderPlannerTodos(items []actool.Todo) string {
 //	"goal_abandoned" — the human abandoned a goal (Summary=目标文本, Detail=放弃理由).
 //	"cancelled" — the human deleted intent IntentID (Detail = 删除原因). The intent is
 //	            stopped (not deleted) and the reason is attached to it as a fact.
+//	"requeued" — intent IntentID went back to open for resumption (long-running
+//	            executions settled, lease expired, pause/resume). Detail = why.
 type TriggerEvent struct {
 	Kind     string
 	IntentID int64
 	Detail   string
+	State    string   // Kind=="done" 专用：本次结算终态（done/negative/no_output/blocked/…）
 	Summary  string   // Kind=="cancelled" 专用：删除前捕获的意图摘要（真删除后节点已不存在，无法再查）
 	Goals    []string // Kind=="goal" 专用：本次 set_goals 新增的目标文本（1 条或多条）
 	OldGoal  string   // Kind=="goal_edited" 专用：修改前的目标文本
@@ -292,8 +295,27 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 				sm = intentSummary(ts, ev.IntentID)
 			}
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d 由用户删除，意图内容是：%s、删除原因是：%s。该意图已删除（不再执行）；请据此重新规划。", ev.IntentID, sm, ev.Detail))
+		case "requeued":
+			// 退回 open ≠ 完成：它仍会被 worker 领取续跑。旧版在这里也发 "done"，
+			// planner 会去取一个并不存在的输出结论，误以为这条已经做完。
+			detail := strings.TrimSpace(ev.Detail)
+			if detail == "" {
+				detail = "等待重新领取"
+			}
+			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）已退回 open 等待 worker 续跑：%s —— 它的产出尚未结算，不要当成已完成，也不要重复派同一方向。", ev.IntentID, intentSummary(ts, ev.IntentID), detail))
 		default: // "done"
-			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 结束，输出结论：%s", ev.IntentID, intentSummary(ts, ev.IntentID), workerOutput(ts, ev.IntentID)))
+			head := fmt.Sprintf("\n- 意图 #%d（%s）的 worker 结束", ev.IntentID, intentSummary(ts, ev.IntentID))
+			if ev.State != "" {
+				head += fmt.Sprintf("，终态 %s（%s）", ev.State, intentStateLabel(ev.State))
+			}
+			switch ev.State {
+			case "no_output":
+				b.WriteString(head + "：本次运行没有写回任何产出——不要当成已覆盖，需要换打法重派或另开方向。")
+			case "blocked", "exhausted", "stopped":
+				b.WriteString(head + "：" + workerOutput(ts, ev.IntentID))
+			default:
+				b.WriteString(head + "，输出结论：" + workerOutput(ts, ev.IntentID))
+			}
 			if fids := factIDsYielded(ts, ev.IntentID); fids != "" {
 				b.WriteString(fmt.Sprintf("；本意图新产生的事实 id：%s ", fids))
 			}
@@ -301,6 +323,31 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 	}
 	b.WriteString("\n（完整细节可 node_detail / get_worker_output / list_findings 再查。）")
 	return b.String()
+}
+
+// intentStateLabel 把意图终态翻成 planner 能直接读的中文标签。终态语义是
+// 「这轮到底做成了什么」的关键：done 与 no_output 在后续规划里完全相反。
+func intentStateLabel(state string) string {
+	switch state {
+	case "done":
+		return "完成"
+	case "negative":
+		return "否定结论"
+	case "out-of-scope":
+		return "超出授权范围"
+	case "no_output":
+		return "无产出"
+	case "blocked":
+		return "阻塞"
+	case "exhausted":
+		return "未做完"
+	case "stopped":
+		return "被终止"
+	case "paused":
+		return "已暂停"
+	default:
+		return state
+	}
 }
 
 // quoteAll 把多条外来文本逐条用「」包起来再用分号连接：提示文本是人写的自由文本，

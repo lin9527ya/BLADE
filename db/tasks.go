@@ -81,6 +81,10 @@ type TaskDeletePreparation struct {
 // 单一真源，替换散落各处的 done/failed 硬编码判定。
 // TerminalStatuses 是任务的全部终态。policy_blocked = 探索策略内已无可行方向、
 // 平台主动收尾（P20）——它不是超时，也不等于失败：改策略或加目标即可复活。
+//
+// failed 目前**没有自动写入点**，是保留态：平台把"没做成"分别归到 timeout /
+// policy_blocked / paused+人工决定，而不是笼统地判失败；保留它是为了外部 API 与
+// 历史数据能表达"任务运行失败"，以及给未来真正的不可恢复故障留出口。
 var TerminalStatuses = []string{"done", "failed", "timeout", "policy_blocked"}
 
 func IsTerminal(status string) bool {
@@ -541,7 +545,7 @@ func (d *DB) SetStatus(id int64, status string) error {
 	_, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
-       completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END
+       completed_at = CASE WHEN $1 IN ('done','failed','timeout','policy_blocked') THEN COALESCE(completed_at, now()) ELSE NULL END
  WHERE id = $2`, status, id)
 	return err
 }

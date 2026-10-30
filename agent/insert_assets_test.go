@@ -455,3 +455,32 @@ func TestInsertAssetsRejectsHostnameIPPerItem(t *testing.T) {
 		t.Fatalf("rejected hostname still stored in assets.ip (%d rows)", stored)
 	}
 }
+
+// 重复登记旧资产不计入 writes.Assets：否则一条什么都没做、只是把已有资产重报一遍
+// 的意图会被结算成 done，而不是 no_output。
+func TestInsertAssetsCountsOnlyNew(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+
+	ts := NewToolSet(nil, "")
+	ts.SetAssetStore(d.Assets(), d.Companies())
+	defer d.Exec(`DELETE FROM assets WHERE domain='count-new.counttest.net' OR domain='counttest.net' OR ip='198.51.100.77'`)
+
+	root := map[string]any{"assets": []any{
+		map[string]any{"type": "root_domain", "domain": "counttest.net"},
+	}}
+	callInsertAssets(t, ts, root)
+	if got := ts.Writes().Assets; got != 1 {
+		t.Fatalf("首次登记应计 1，got %d", got)
+	}
+	callInsertAssets(t, ts, root) // 幂等合并，不算新增
+	if got := ts.Writes().Assets; got != 1 {
+		t.Fatalf("重复登记旧资产不应再计，got %d", got)
+	}
+	callInsertAssets(t, ts, map[string]any{"assets": []any{
+		map[string]any{"type": "ip", "ip": "198.51.100.77"},
+	}})
+	if got := ts.Writes().Assets; got != 2 {
+		t.Fatalf("新 IP 应再计 1，got %d", got)
+	}
+}

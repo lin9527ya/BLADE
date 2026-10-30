@@ -110,6 +110,9 @@ type Engine struct {
 	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
 	deleting sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
 	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	// completionWarn 记录「收官被遗留物门拦下」已留痕的任务，避免 goalless 分支每次
+	// 心跳都重复写同一条活动。
+	completionWarn sync.Map
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
@@ -1023,15 +1026,40 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	//   capacityRefills：连续因空闲槽位而补派的次数（每轮最多 1 次，最多 2 次）。
 	zeroRoundStreak := 0
 	capacityRefills := 0
+	// plannerFailRetries：连续规划失败时的自动重试预算。只在失败后 2s 重试一次，
+	// 避免 provider 抖动时整轮规划白等下一次心跳；连续失败就回到心跳节奏，不刷屏。
+	plannerFailRetries := 0
 
 	// runRound 跑一轮规划(含 debounce 合并 + 各 guard)。src 仅用于日志区分触发来源。
 	runRound := func(src string) {
-		// debounce: coalesce a burst of changes into one planning round
+		// 尾沿去抖：每来一个通知就重置计时，把一串「worker 完成 / finding / kill」
+		// 合并成一轮；但最多等 plannerDebounceMax，避免持续的小事件流把规划无限
+		// 后推（旧实现是固定 800ms 窗口，落在窗口边缘的触发会被拖到下一轮）。
+		const plannerDebounceMax = 3 * time.Second
 		timer := time.NewTimer(e.debounce)
+		deadline := time.Now().Add(plannerDebounceMax)
 	drain:
 		for {
 			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
 			case <-t.notify:
+				remain := time.Until(deadline)
+				if remain <= 0 {
+					break drain
+				}
+				wait := e.debounce
+				if wait > remain {
+					wait = remain
+				}
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(wait)
 			case <-timer.C:
 				break drain
 			}
@@ -1064,6 +1092,18 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
 			t.drainTriggers() // 丢弃累积的 done/finding 触发，避免 goalless 长会话里无界增长
 			if active, err := t.Store.HasActiveIntent(); err == nil && !active {
+				// goalless 收尾不经过 planner 的 prove_goal，遗留物门必须在这里补：
+				// 目标上还有没销账的 webshell/账号，不能因为「目标都了结了」就静默收官。
+				if blocked, msg := agent.ArtifactCleanupBlocked(t.Store); blocked {
+					if _, warned := e.completionWarn.LoadOrStore(t.ID, true); !warned {
+						e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+							Summary: "目标已了结，但目标上还有未销账的遗留物，暂不收尾",
+							Detail:  msg})
+						log.Printf("[goalless] task %s 有未销账遗留物，暂不收尾", t.ID)
+					}
+					return
+				}
+				e.completionWarn.Delete(t.ID)
 				// frontier 抽干且无在跑意图 → 收尾。用 Guarded 版做 CAS，避免踩到并发的
 				// pause/delete/超时收尾的状态转换。
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
@@ -1130,6 +1170,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if err != nil && ectx.Err() == nil {
 			t.restoreTriggers(triggers)
 		}
+		if err == nil {
+			plannerFailRetries = 0
+		}
 		// 策略穷尽：planner 已用 mark_strategy_exhausted 写下结论事实。暂停任务等人工，
 		// 不在工具调用中途取消自己的 ctx——这里是本轮结束后的后处理。
 		if exhausted := planner.TakeStrategyExhaustedReason(); exhausted != "" && !met && ectx.Err() == nil {
@@ -1163,7 +1206,13 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		switch {
 		case err != nil && ectx.Err() == nil:
-			log.Printf("[planner] task %s 规划出错（触发事件已放回队列，下一轮重试）: %v", t.ID, err)
+			if plannerFailRetries < 1 {
+				plannerFailRetries++
+				log.Printf("[planner] task %s 规划出错（触发事件已放回队列，2s 后自动重试一次）: %v", t.ID, err)
+				time.AfterFunc(2*time.Second, func() { t.Notify() })
+			} else {
+				log.Printf("[planner] task %s 规划连续出错（触发事件已放回队列，回到心跳重试）: %v", t.ID, err)
+			}
 		case met:
 			// 人工发起的痕迹清理意图可能让已完成任务重新 running；此时所有 goal 仍是 met，
 			// 若直接收官并 cancelExec，会把正在清理的 worker 立刻杀掉。等清理意图收束后
@@ -1174,15 +1223,27 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 					Summary: "目标已达成，但仍有痕迹清理意图在执行，任务暂不收官"})
 				break
 			}
-			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
-			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
-			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
-				log.Printf("[planner] task %s 标记完成落库失败: %v", t.ID, err)
+			// met 是 planner 基于本轮开局快照做的判断；收官前复核一次目标状态：
+			// 并发新增/修改目标后不能沿用旧结论把任务关掉。
+			if open, gerr := t.Store.HasOpenGoal(); gerr == nil && open {
+				log.Printf("[planner] task %s 目标状态在收官前发生变化（出现未达成目标），本轮不收官", t.ID)
+				e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+					Summary: "目标状态已变化（出现新的未达成目标），本轮暂不收官"})
+				break
 			}
-			// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
-			// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
-			// 归为 stopped(而非 blocked)。
-			e.cancelExec(t.ID, agent.AbortGoalMet)
+			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
+			// 用 Guarded 版 CAS 落终态：与超时收尾/删除/暂停竞态时保留先到的终态语义。
+			if won, serr := e.m.SetTaskStatusGuarded(t.ID, "done"); serr != nil {
+				log.Printf("[planner] task %s 标记完成落库失败: %v", t.ID, serr)
+			} else if !won {
+				log.Printf("[planner] task %s 收官时已是终态，保留原状态", t.ID)
+			} else {
+				e.completionWarn.Delete(t.ID)
+				// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
+				// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
+				// 归为 stopped(而非 blocked)。
+				e.cancelExec(t.ID, agent.AbortGoalMet)
+			}
 		default:
 			log.Printf("[planner] task %s 规划完成", t.ID)
 		}
@@ -1455,6 +1516,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			log.Printf("[worker %s] task %s 意图 #%d 因租约到期结束，已退回 open 等待重派", name, t.ID, intent.ID)
 		}
 		e.touch(t.ID)
+		t.NotifyRequeued(intent.ID, "租约到期（心跳停止），意图退回 open 等待重派")
 		return true
 	}
 	// if a pause cancelled this run mid-flight, return the intent to the frontier
@@ -1508,7 +1570,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		log.Printf("[worker %s] task %s 意图 #%d 被终止(stopped)", name, t.ID, intent.ID)
 		e.touch(t.ID)
-		t.Notify()
+		t.NotifyDone(intent.ID, "stopped")
 		return true
 	}
 	if err != nil {
@@ -1528,7 +1590,18 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		outcome = o
 	}
 	intentKind := intentKindOf(intent)
-	state := settleIntentState(err, reason, wrote, outcome, intentKind)
+	// 历史产出：重试/续跑只看见本次 run 的写回。若这条意图在前几轮已经产出过，
+	// 本次没有新产出不等于“从没产出”——否则续跑会被误判 no_output，规划者据此
+	// 把一条已经探出东西的方向当成没做。只在确实需要判定时查一次库。
+	var prior intentPriorOutput
+	if wrote.Total() == 0 || (intentKind == "verify" && wrote.ValidationTotal() == 0) {
+		if anyOut, validation, herr := t.Store.IntentPriorOutput(intent.ID); herr == nil {
+			prior = intentPriorOutput{Any: anyOut, Validation: validation}
+		} else {
+			log.Printf("[worker %s] task %s 意图 #%d 历史产出查询失败（按本次口径结算）: %v", name, t.ID, intent.ID, herr)
+		}
+	}
+	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior)
 	recordValidatedAssets(t, intent, intentKind, state, wrote)
 	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
@@ -1551,7 +1624,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	log.Printf("[worker %s] task %s 意图 #%d 结束: %s (写回 %s)", name, t.ID, intent.ID, state, wrote)
 	e.touch(t.ID)
-	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
+	t.NotifyDone(intent.ID, state) // results changed the graph -> wake the planner with the real terminal state
 	return true
 }
 
@@ -1637,7 +1710,15 @@ func intentKindOf(n *db.Node) string {
 	return strings.TrimSpace(p.Kind)
 }
 
-func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string) string {
+// intentPriorOutput 是这条意图在本次 run 之前已经留下的产出（见
+// ExplorationStore.IntentPriorOutput）。Any 覆盖资产锚定与图产出；Validation
+// 只覆盖验证级产出（事实/漏洞/战果/检测/遗留物），供 verify 口径使用。
+type intentPriorOutput struct {
+	Any        bool
+	Validation bool
+}
+
+func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string, prior intentPriorOutput) string {
 	state := "done"
 	switch {
 	case err != nil:
@@ -1651,13 +1732,15 @@ func settleIntentState(err error, reason harness.TerminalReason, wrote agent.Wri
 	if semanticOutcome == "negative" || semanticOutcome == "out-of-scope" {
 		return semanticOutcome
 	}
-	if wrote.Total() == 0 {
+	// 本次没写回，但这条意图前几轮已经产出过 → 仍是 done（续跑不能抹掉前段成果）。
+	if wrote.Total() == 0 && !prior.Any {
 		return "no_output"
 	}
 	// 验证意图的完成依据是「验证结果」，不是「登记了几个资产」：只 insert_assets
 	// 的 verify 意图没有证明任何东西，落 no_output 让 planner 换打法重派，而不是
 	// 当成已覆盖——覆盖矩阵与报告都按终态算，一处放宽就会把"没测"记成"测过"。
-	if intentKind == "verify" && wrote.ValidationTotal() == 0 {
+	// 历史验证产出同样算数：续跑重复登记旧资产不代表这条验证没做过。
+	if intentKind == "verify" && wrote.ValidationTotal() == 0 && !prior.Validation {
 		return "no_output"
 	}
 	return "done"
@@ -1746,7 +1829,7 @@ func (e *Engine) watchExecutions(t *Task, intentID int64) {
 			Summary: "长任务执行收束，意图退回待领续跑", Detail: executionDigest(rows)})
 		log.Printf("[exec] task %s 意图 #%d 执行收束，已退回 open", t.ID, intentID)
 		e.touch(t.ID)
-		t.NotifyDone(intentID)
+		t.NotifyRequeued(intentID, "托管长任务执行收束")
 	})
 }
 

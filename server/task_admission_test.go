@@ -820,3 +820,73 @@ func TestPauseTaskToolUsesOrchestratorCancellationCause(t *testing.T) {
 		t.Fatalf("pause_task cancellation code=%q ok=%v, want paused_by_orchestrator", code, ok)
 	}
 }
+
+// 首次准入应把 created→running 落库：以前 DB 永远停在 created，只有内存派生状态是
+// running，外部 API/报表看到的是「从未开始」。
+func TestAdmissionPersistsRunningStatus(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+	defer restoreConcurrencySetting(t, m)()
+	if err := m.SetConcurrency(false, defaultConcurrencyLimit); err != nil {
+		t.Fatal(err)
+	}
+	task, err := m.CreateTask("status persistence", "running must land in DB", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.DeleteTask(task.ID, DeleteTaskOptions{})
+	s := newAdmissionTestServer(m, nil)
+	if queued, err := s.admitTask(task, "bootstrap"); err != nil || queued {
+		t.Fatalf("admit: queued=%v err=%v", queued, err)
+	}
+	var status string
+	if err := m.pg.QueryRow(`SELECT status FROM tasks WHERE id=$1`, mustInt64(t, task.ID)).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" {
+		t.Fatalf("DB status=%q, want running", status)
+	}
+	if got := task.lifecycleSnapshot().Status; got != "running" {
+		t.Fatalf("in-memory status=%q, want running", got)
+	}
+}
+
+func mustInt64(t *testing.T, s string) int64 {
+	t.Helper()
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// policy_blocked 是终态：不能再被「暂停」覆盖成 paused（暂停守卫曾漏掉它）。
+func TestApplyTaskPauseRejectsPolicyBlocked(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+	task, err := m.CreateTask("policy blocked pause", "terminal must stay terminal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.DeleteTask(task.ID, DeleteTaskOptions{})
+	if err := m.pg.SetStatus(mustInt64(t, task.ID), "policy_blocked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyTaskPause(task.ID); err == nil {
+		t.Fatal("policy_blocked 任务不应允许暂停")
+	}
+	var status string
+	var completed bool
+	if err := m.pg.QueryRow(`SELECT status, completed_at IS NOT NULL FROM tasks WHERE id=$1`, mustInt64(t, task.ID)).Scan(&status, &completed); err != nil {
+		t.Fatal(err)
+	}
+	if status != "policy_blocked" || !completed {
+		t.Fatalf("status=%q completed=%v, want policy_blocked with completed_at", status, completed)
+	}
+}

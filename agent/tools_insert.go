@@ -228,6 +228,44 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			var results []result
 			var errs []errEntry
 
+			// 「新增」口径：writes.Assets 只统计本次**真正新建**的资产，重复登记旧资产
+			// 不再把一条空转意图从 no_output 抬成 done。存在性在写入前按自然键批量查
+			// （Upsert* 全是幂等合并，写后无法区分新建与合并）；查不到就退回旧行为。
+			var pDomains, pIPs, pURLs []string
+			for _, item := range a.Assets {
+				switch strings.TrimSpace(item.Type) {
+				case "root_domain", "subdomain":
+					if item.Domain != "" {
+						pDomains = append(pDomains, item.Domain)
+					}
+				case "ip":
+					if item.IP != "" {
+						pIPs = append(pIPs, item.IP)
+					}
+				case "service":
+					if item.URL != "" {
+						pURLs = append(pURLs, item.URL)
+					}
+				}
+			}
+			presence, perr := t.as.ExistingAssetKeys(pDomains, pIPs, pURLs)
+			if perr != nil {
+				log.Printf("[tools] insert_assets 存在性预查失败，本轮按新增计: %v", perr)
+			}
+			counted := map[string]bool{}
+			countAsset := func(item assetInputItem) {
+				key := assetPresenceKey(item)
+				if key != "" {
+					if counted[key] {
+						return // 同一批里重复出现只算一条
+					}
+					counted[key] = true
+				}
+				if assetItemIsNew(item, presence) {
+					t.writes.Assets++
+				}
+			}
+
 			// 资产闸门规则一次性载入；读取失败则跳过判定（不阻断插入）。
 			// 拦截规则 = 全局 ∪ 任务级 block；允许规则 = 任务级 allow。
 			blockRules, _ := t.as.ListAssetInterceptRules()
@@ -339,7 +377,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					continue
 				}
 				results = append(results, result{Index: i, ID: id, Type: typ})
-				t.writes.Assets++
+				countAsset(item)
 				t.anchorOwner(id)
 				if taskID > 0 {
 					var sourceNodeID *int64
@@ -782,4 +820,45 @@ func (t *ToolSet) AllDomainTools() []actool.CoreTool {
 		}
 	}
 	return out
+}
+
+// assetPresenceKey 是同一批次内判重的键；与资产自然键同源（类型 + 原始键值）。
+func assetPresenceKey(item assetInputItem) string {
+	switch strings.TrimSpace(item.Type) {
+	case "root_domain", "subdomain":
+		if item.Domain != "" {
+			return item.Type + "\x00" + strings.ToLower(strings.TrimSpace(item.Domain))
+		}
+	case "ip":
+		if item.IP != "" {
+			return item.Type + "\x00" + strings.TrimSpace(item.IP)
+		}
+	case "service":
+		if item.URL != "" {
+			return item.Type + "\x00" + item.URL
+		}
+	}
+	return "" // app / endpoint / 非 HTTP 服务没有自然键预查，按旧行为计新增
+}
+
+// assetItemIsNew 判断一条资产在写入前是否已存在。查不到口径的类型（app/endpoint/
+// 非 HTTP 服务、带 record_type 的子域）返回 true，保持旧行为——宁可多算产出，也
+// 不能把真的新资产当成旧资产漏计。
+func assetItemIsNew(item assetInputItem, p db.AssetKeyPresence) bool {
+	switch strings.TrimSpace(item.Type) {
+	case "root_domain":
+		return item.Domain == "" || !p.Domains[item.Domain]
+	case "subdomain":
+		if item.RecordType != "" {
+			return true
+		}
+		return item.Domain == "" || !p.Domains[item.Domain]
+	case "ip":
+		return item.IP == "" || !p.IPs[item.IP]
+	case "service":
+		if item.URL != "" {
+			return !p.URLs[item.URL]
+		}
+	}
+	return true
 }

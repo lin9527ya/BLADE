@@ -197,6 +197,12 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	if wasTerminal {
 		status = "running"
 	}
+	// 首次准入把 created→running 落库：以前 DB 一直停在 created，只有内存里的
+	// 派生状态是 running，外部 API/报表看到的是「从未开始」。排队阶段保持 created，
+	// 真正出队开始跑时再落 running（reconcile 会再次走本函数）。
+	if status == "created" && !shouldQueue {
+		status = "running"
+	}
 	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued); err != nil {
 		if !engineWasPaused && !wasPaused && !wasQueued {
 			s.engine.Resume(t)

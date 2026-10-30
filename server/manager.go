@@ -1646,7 +1646,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	err = m.pg.QueryRow(`UPDATE tasks
 		SET paused=true, queued=false, queued_at=NULL
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
-		  AND status NOT IN ('done','failed','timeout')
+		  AND status NOT IN ('done','failed','timeout','policy_blocked')
 		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s is unavailable for pause", id)
@@ -2246,14 +2246,28 @@ func (t *Task) Notify() {
 	}
 }
 
-// NotifyDone is Notify plus a hint: a worker just finished intentID and that is
-// what triggered this wake-up. The planner reads the accumulated triggers next
-// round so it can spell out which intent finished (+ its output). Events pile up
-// (debounce) until the round drains them via drainTriggers.
-func (t *Task) NotifyDone(intentID int64) {
+// NotifyDone is Notify plus a hint: a worker just settled intentID and that is
+// what triggered this wake-up. state is the settled terminal state (done /
+// negative / no_output / blocked / exhausted / stopped) — without it the planner
+// cannot tell "done" from "nothing was written", which are opposite signals for
+// the next round. Events pile up (debounce) until drainTriggers.
+func (t *Task) NotifyDone(intentID int64, state string) {
 	if intentID > 0 {
 		t.trigMu.Lock()
-		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "done", IntentID: intentID})
+		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "done", IntentID: intentID, State: state})
+		t.trigMu.Unlock()
+	}
+	t.Notify()
+}
+
+// NotifyRequeued records that intentID went back to open and will be claimed and
+// resumed (execution watcher finished, lease expired, …). It is deliberately NOT
+// "done": the intent has not settled, so the planner must not treat it as covered
+// or fetch a non-existent output conclusion.
+func (t *Task) NotifyRequeued(intentID int64, reason string) {
+	if intentID > 0 {
+		t.trigMu.Lock()
+		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "requeued", IntentID: intentID, Detail: reason})
 		t.trigMu.Unlock()
 	}
 	t.Notify()

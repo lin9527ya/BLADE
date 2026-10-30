@@ -85,3 +85,15 @@ func TestAbandonGoalTool(t *testing.T) {
 		t.Fatalf("重复放弃应被拒：%s", out)
 	}
 }
+
+// 目标已在同一轮被判达成后，不能再派新意图：否则任务收官时 frontier 留下永远
+// 没人领取的 open 意图（任务结束后它们不会被 worker 领）。
+func TestAddIntentRejectedAfterGoalMet(t *testing.T) {
+	tools, _, _ := newToolWorker(t)
+	tools.GoalMet = true
+	out := callTool(t, tools.PlannerTools(), "add_intent",
+		`{"intents":[{"summary":"再补一条边缘方向"}]}`)
+	if !strings.Contains(out, "不能再新增意图") {
+		t.Fatalf("GoalMet 后 add_intent 应被拒：%s", out)
+	}
+}
