@@ -97,3 +97,23 @@ func TestAddIntentRejectedAfterGoalMet(t *testing.T) {
 		t.Fatalf("GoalMet 后 add_intent 应被拒：%s", out)
 	}
 }
+
+// rotate_egress：理由必填；未配置宿主回调时给出可操作提示；配置后回执切换结果。
+func TestRotateEgressTool(t *testing.T) {
+	tools, _, _ := newToolWorker(t)
+	out := callTool(t, tools.WorkerTools(), "rotate_egress", `{"reason":"  "}`)
+	if !strings.Contains(out, "reason 必填") {
+		t.Fatalf("空理由应被拒：%s", out)
+	}
+	out = callTool(t, tools.WorkerTools(), "rotate_egress", `{"reason":"目标 403 挑战页"}`)
+	if !strings.Contains(out, "出口切换未配置") {
+		t.Fatalf("未配置时应给出配置指引：%s", out)
+	}
+	tools.SetRotateEgressHandler(func(reason string) (string, error) {
+		return "Clash 出口已切换：A → B；原因：" + reason, nil
+	})
+	out = callTool(t, tools.WorkerTools(), "rotate_egress", `{"reason":"目标 403 挑战页"}`)
+	if !strings.HasPrefix(out, "egress rotated: ") || !strings.Contains(out, "A → B") {
+		t.Fatalf("应返回切换回执：%s", out)
+	}
+}

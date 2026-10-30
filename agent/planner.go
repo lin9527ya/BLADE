@@ -35,6 +35,7 @@ type Planner struct {
 	maxTurns        int                                    // max agent turns per run (0 = unlimited)
 	roundDur        time.Duration                          // 单轮墙钟预算（0 = 不限），由 server 按 agent 配置注入
 	killWork        func(intentID int64) error             // engine callback to terminate a running work (nil = off)
+	rotateEgress    func(reason string) (string, error)    // host callback: switch Clash egress node
 	steerWork       func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
 	// exhaustedReason 是本轮 mark_strategy_exhausted 写下的原因。引擎在 Plan 返回后
 	// 取走它并暂停任务——不在工具调用中途取消自己的上下文。
@@ -100,6 +101,9 @@ func (p *Planner) SetNonStreaming(fn func() bool) { p.nonStreamingFn = fn }
 
 // SetExecService 注入长任务执行服务（P13）；nil = 未接线（工具返回可读拒绝）。
 func (p *Planner) SetExecService(svc ExecService) { p.execService = svc }
+
+// SetRotateEgressHandler wires the Clash egress rotation callback.
+func (p *Planner) SetRotateEgressHandler(fn func(reason string) (string, error)) { p.rotateEgress = fn }
 
 // SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
 func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = fn }
@@ -680,6 +684,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
 	tsx.SetExecService(p.execService)
+	tsx.SetRotateEgressHandler(p.rotateEgress)
 	tsx.SetWorkerCap(p.workers()) // 队列背压：待领超过 2×workers 时拒收常规新意图
 	pol := p.policy()
 	tsx.SetPolicy(pol)       // 意图层硬门（add_intent）

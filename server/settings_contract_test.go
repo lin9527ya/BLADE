@@ -211,6 +211,7 @@ var settingsWriteOnly = map[string]string{
 	"fofa_key":              "情报源密钥：只存不回显",
 	"update_github_token":   "自更新 token：只存不回显",
 	"oast_token":            "OAST 服务会话 token：只存不回显，界面只看 oast_token_set",
+	"clash_api_secret":      "Clash 控制器 secret：只存不回显，界面只看 clash_api_secret_set",
 }
 
 // settingsReadOnly：**只读不写**的键——由后端算出，不接受写入。
@@ -220,6 +221,8 @@ var settingsReadOnly = map[string]string{
 	"fofa_key_set":             "由 fofa_key 是否为空算出",
 	"update_token_set":         "由 update_github_token 是否为空算出",
 	"oast_token_set":           "由 oast_token 是否为空算出",
+	"clash_api_secret_set":     "由 clash_api_secret 是否为空算出",
+	"clash_status":             "Clash 出口切换的最近状态（节点/出口 IP/错误），只读",
 	"intel_used_today":         "今日情报用量，运行时统计",
 	"intercept_scope_mode_env": "环境变量覆盖值，只读",
 	"proxy_active":             "运行时状态：当前生效出口，只读",

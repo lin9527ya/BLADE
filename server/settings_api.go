@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -122,6 +123,7 @@ func (s *Server) settingsPayload() map[string]any {
 	}
 	proxyCfg := s.m.ProxyPoolConfig()
 	proxyStatus := s.m.ProxyStatus()
+	clashCfg := s.m.ClashEgressConfig()
 	return map[string]any{
 		"traffic_capture":       s.m.TrafficEnabled(),
 		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
@@ -151,6 +153,13 @@ func (s *Server) settingsPayload() map[string]any {
 		"proxy_blocked":                 proxyStatus.Blocked,
 		"proxy_status":                  proxyStatus.Candidates,
 		"proxy_egress_ip_url":           s.m.EgressIPURL(),
+		// Clash 出口切换：secret 只回 *_set 布尔，绝不回显。
+		"clash_api_url":                 clashCfg.APIURL,
+		"clash_api_secret_set":          clashCfg.Secret != "",
+		"clash_proxy_group":             clashCfg.Group,
+		"clash_auto_rotate":             clashCfg.Auto,
+		"clash_rotate_cooldown_seconds": int(clashCfg.Cooldown.Seconds()),
+		"clash_status":                  s.m.ClashEgressStatus(),
 		"python_interpreter":            strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"log_level":                     LogLevelName(),
 		"workers":                       s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
@@ -286,6 +295,12 @@ type settingsRequest struct {
 	ProxyFailThreshold  *int    `json:"proxy_fail_threshold"`
 	ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
 	ProxyEgressIPURL    *string `json:"proxy_egress_ip_url"`
+	// Clash 出口切换：URL/组/自动/冷却；secret 只写不回显（null=不改，""=清空）。
+	ClashAPIURL         *string `json:"clash_api_url"`
+	ClashAPISecret      *string `json:"clash_api_secret"`
+	ClashProxyGroup     *string `json:"clash_proxy_group"`
+	ClashAutoRotate     *bool   `json:"clash_auto_rotate"`
+	ClashRotateCooldown *int    `json:"clash_rotate_cooldown_seconds"`
 	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 	LogLevel            *string `json:"log_level"`          // debug|info|warn|error；热切换
 	Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
@@ -701,6 +716,45 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		pending[settingProxyEgressIPURL] = u
 	}
+	if req.ClashAPIURL != nil || req.ClashAPISecret != nil || req.ClashProxyGroup != nil ||
+		req.ClashAutoRotate != nil || req.ClashRotateCooldown != nil {
+		cfg := s.m.ClashEgressConfig()
+		if req.ClashAPIURL != nil {
+			u := strings.TrimRight(strings.TrimSpace(*req.ClashAPIURL), "/")
+			if u != "" {
+				pu, err := url.Parse(u)
+				if err != nil || pu.Host == "" || (pu.Scheme != "http" && pu.Scheme != "https") {
+					writeErr(w, 400, "Clash 控制器地址必须是 http(s) 绝对地址，例如 http://192.168.10.137:9090")
+					return
+				}
+			}
+			cfg.APIURL = u
+			pending[settingClashAPIURL] = u
+		}
+		if req.ClashAPISecret != nil {
+			cfg.Secret = strings.TrimSpace(*req.ClashAPISecret) // "" = 清空
+			pending[settingClashAPISecret] = cfg.Secret
+		}
+		if req.ClashProxyGroup != nil {
+			cfg.Group = strings.TrimSpace(*req.ClashProxyGroup)
+			pending[settingClashProxyGroup] = cfg.Group
+		}
+		if req.ClashAutoRotate != nil {
+			cfg.Auto = *req.ClashAutoRotate
+			pending[settingClashAutoRotate] = strconv.FormatBool(cfg.Auto)
+		}
+		if req.ClashRotateCooldown != nil {
+			secs := *req.ClashRotateCooldown
+			if secs < 0 {
+				secs = 0
+			}
+			if secs > 600 {
+				secs = 600
+			}
+			cfg.Cooldown = time.Duration(secs) * time.Second
+			pending[settingClashRotateCooldown] = strconv.Itoa(secs)
+		}
+	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.
 		on, backend, _, _, _ := s.m.WebSearch()
@@ -833,4 +887,24 @@ func noiseLevel(pg *db.DB) string {
 		return "quiet"
 	}
 	return "normal"
+}
+
+// proxyRotateEgress switches the Clash Selector to another safe node (manual
+// button / external caller). The same safety rules as the agent tool apply:
+// non-DIRECT nodes only, egress IP must actually change, never direct.
+func (s *Server) proxyRotateEgress(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "手动切换出口"
+	}
+	res, err := s.m.RotateEgress(reason)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "rotation": res, "status": s.m.ClashEgressStatus()})
 }

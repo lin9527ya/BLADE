@@ -111,6 +111,8 @@ type ToolSet struct {
 	// intent id (engine callback, wired by the planner): the worker injects it before
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.
 	steerWork func(intentID int64, msg string) error
+	// rotateEgressFn 是「切换 Clash 出口」的宿主回调；nil = 未配置（工具返回可读拒绝）。
+	rotateEgressFn func(reason string) (string, error)
 	// exhaustedFn 是 planner 的「策略穷尽」信号：mark_strategy_exhausted 写完结论
 	// 事实后把原因交给 Planner；引擎在本轮**结束之后**再暂停任务。不在工具调用中途
 	// 取消自己的 ctx——那会让本轮的结论与回执一起丢掉。
@@ -166,6 +168,11 @@ func (t *ToolSet) SetNotify(fn func()) { t.notify = fn }
 
 // SetNotifyFinding wires the finding-wake callback (see ToolSet.notifyFinding).
 func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = fn }
+
+// SetRotateEgressHandler wires the host's Clash egress rotation callback.
+func (t *ToolSet) SetRotateEgressHandler(fn func(reason string) (string, error)) {
+	t.rotateEgressFn = fn
+}
 
 // SetStrategyExhaustedHandler wires the planner's "no viable direction" signal
 // (see ToolSet.exhaustedFn). Set only on the planner's ToolSet.
@@ -3981,6 +3988,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.linkIntentSource(),
 		// 收口：策略内已无可行方向 → 写结论 + 暂停等人工；不可达目标 → 放弃（理由必填）。
 		t.markStrategyExhausted(), t.abandonGoal(),
+		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
+		t.rotateEgressTool(),
 		// 去重：planner 自己报的重复漏洞要能合并，而不是留着两条污染计数。
 		t.mergeFindings(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。

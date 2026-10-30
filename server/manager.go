@@ -256,6 +256,9 @@ type Manager struct {
 	// direct connection and leak the real source IP.
 	egressProxy string
 	proxyPool   *ProxyPool
+	// clash 是 Clash 出口切换的最近状态（切换节点/出口 IP/冷却）。设置页只读它，
+	// 不在 GET 时实时请求 Clash 控制器。
+	clash *clashEgressState
 }
 
 // Settings keys the UI toggles at runtime.

@@ -752,6 +752,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.lootUpload(), t.lootDownload(), t.footholdExec(), t.tunnelOpen(), t.cancelExecution(),
 		// OAST（带外回调）：盲打类漏洞的唯一确认手段；未配置时由 server 从工具面移除。
 		t.oastMint(), t.oastPoll(),
+		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
+		t.rotateEgressTool(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
 		// worker 只做单条意图的执行与写回）：list_facts / list_companies / list_worker_traces。
 	}
@@ -784,6 +786,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.abandonGoal(),
 		// 重复漏洞合并（人在对话里发现两条重复时也能修）。
 		t.mergeFindings(),
+		// 出口被 WAF 封禁时切换 Clash 节点。
+		t.rotateEgressTool(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),

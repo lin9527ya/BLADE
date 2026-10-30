@@ -62,6 +62,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/proxy/egress-ip", s.proxyEgressIPs)
+	mux.HandleFunc("POST /api/settings/proxy/egress/rotate", s.proxyRotateEgress)
 	mux.HandleFunc("GET /api/settings/exploration-policy", s.getExplorationPolicyDefault) // P20 全局默认探索策略(新任务继承)
 	mux.HandleFunc("PUT /api/settings/exploration-policy", s.putExplorationPolicyDefault)
 	mux.HandleFunc("POST /api/settings/intel/test", s.testIntelSource)    // P21 情报源:测试连接(回显账号/剩余额度,不回显 key)

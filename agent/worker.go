@@ -90,6 +90,9 @@ type Worker struct {
 	// the agent. nil = streaming (default).
 	nonStreamingFn func() bool
 	// execService（P13）由 host 注入：长任务执行的托管后端（进程活过本次 run）。
+	// rotateEgress 由 host 注入：WAF 封禁出口时切换 Clash 节点。
+	rotateEgress func(reason string) (string, error)
+
 	execService ExecService
 	// policyFn（P20）解析本任务的探索策略；nil = 无策略。每个 run 现读。
 	policyFn func() *policy.Effective
@@ -206,6 +209,9 @@ func (w *Worker) SetNonStreaming(fn func() bool) { w.nonStreamingFn = fn }
 
 // SetExecService 注入长任务执行服务（P13）；nil = 未接线（工具返回可读拒绝）。
 func (w *Worker) SetExecService(svc ExecService) { w.execService = svc }
+
+// SetRotateEgressHandler wires the Clash egress rotation callback.
+func (w *Worker) SetRotateEgressHandler(fn func(reason string) (string, error)) { w.rotateEgress = fn }
 
 // SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
 func (w *Worker) SetPolicyResolver(fn func() *policy.Effective) { w.policyFn = fn }
@@ -565,8 +571,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
-	tsx.SetOwnerIntent(intent.ID)     // writes anchor to this intent and reject stale intent_id
-	tsx.SetExecService(w.execService) // P13：长任务执行（进程活过本次 run）
+	tsx.SetOwnerIntent(intent.ID)              // writes anchor to this intent and reject stale intent_id
+	tsx.SetExecService(w.execService)          // P13：长任务执行（进程活过本次 run）
+	tsx.SetRotateEgressHandler(w.rotateEgress) // WAF 封禁出口时切换 Clash 节点
 	pol := w.policy()
 	tsx.SetPolicy(pol)                  // P20：worker 本身不派意图，但策略段要进它的 system（见下）
 	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes

@@ -5,6 +5,7 @@
 
 import type { ChatMention } from "@/lib/chat-mentions";
 import { MOCK } from "@/lib/mock/enabled";
+import type { ClashEgressStatus, ClashRotation } from "@/lib/types";
 import { HttpError } from "@/lib/request-lifecycle";
 import type {
   ActiveFindingRetest,
@@ -1344,6 +1345,12 @@ export const api = {
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
+  // 切换 Clash 出口节点（服务端只选非 DIRECT 节点、验证出口 IP 变化，绝不直连）。
+  rotateEgress: (reason?: string) =>
+    post<{ ok: boolean; rotation: ClashRotation; status: ClashEgressStatus }>(
+      `/settings/proxy/egress/rotate`,
+      { reason: reason ?? "" },
+    ),
   // 经指定代理查询出口 IP（只走代理，不直连）；leaked=出口 IP 与本机网卡地址相同。
   proxyEgressIPs: (proxies: string[]) =>
     post<{ results: { proxy: string; ip?: string; leaked?: boolean; error?: string }[] }>(

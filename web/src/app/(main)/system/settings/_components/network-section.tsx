@@ -37,6 +37,22 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     checkProxyEgress,
     refreshProxyStatus,
     savingGlobalProxy,
+    clashApiURL,
+    setClashApiURL,
+    clashSecretInput,
+    setClashSecretInput,
+    clashSecretSet,
+    clashGroup,
+    setClashGroup,
+    clashAuto,
+    setClashAuto,
+    clashCooldown,
+    setClashCooldown,
+    clashStatus,
+    savingClash,
+    rotatingClash,
+    saveClash,
+    rotateClash,
     loaded,
     savingTraffic,
     toggleTraffic,
@@ -219,6 +235,101 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                   </li>
                 ))}
               </ul>
+            )}
+          </Field>
+        </SubBlock>
+
+        <SubBlock title="Clash 出口切换" icon={<RadioTowerIcon className="text-muted-foreground size-4" />}>
+          <Field
+            label="Clash 外部控制器"
+            htmlFor="clash-api-url"
+            hint={
+              <>
+                目标 WAF 封的是**出口 IP**，代理端口本身仍然健康，代理池不会因此切换。开启 Clash 的
+                <code> external-controller</code> 后，BLADE 可在 Selector 组里换节点并验证出口 IP 已变化。
+                <br />
+                安全约束：只选非 <code>DIRECT/REJECT</code> 节点；切换后经当前代理查出口 IP，必须变化且不是本机地址；失败不直连。
+                <br />
+                强烈建议给 BLADE 单独建一个 <code>type: mixed</code> 的 listener，并用 <code>proxy: 组名</code> 强制走该 Selector 组——否则 Clash 规则仍可能把目标判成 DIRECT，换节点也救不了真实 IP。
+              </>
+            }
+          >
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">控制器地址</span>
+                <Input
+                  id="clash-api-url"
+                  autoComplete="off"
+                  placeholder="http://192.168.10.137:9090"
+                  value={clashApiURL}
+                  disabled={!loaded || savingClash}
+                  onChange={(e) => setClashApiURL(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">secret（只写不回显）</span>
+                <Input
+                  autoComplete="off"
+                  type="password"
+                  placeholder={clashSecretSet ? "已配置 · 留空保持不变" : "未配置（控制器无 secret 可留空）"}
+                  value={clashSecretInput}
+                  disabled={!loaded || savingClash}
+                  onChange={(e) => setClashSecretInput(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-[1fr_130px]">
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">Selector 组名（留空 = 自动选第一个）</span>
+                <Input
+                  autoComplete="off"
+                  placeholder="BLADE"
+                  value={clashGroup}
+                  disabled={!loaded || savingClash}
+                  onChange={(e) => setClashGroup(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <span className="text-muted-foreground text-xs">切换冷却（秒）</span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={clashCooldown}
+                  disabled={!loaded || savingClash}
+                  onChange={(e) => setClashCooldown(e.target.value)}
+                />
+              </div>
+            </div>
+            <SwitchRow
+              id="clash-auto-rotate"
+              label={clashAuto ? "自动：检测到强 WAF 特征后自动切换" : "自动切换已关闭（仍可用工具/按钮手动切）"}
+              checked={clashAuto}
+              disabled={!loaded || savingClash}
+              onChange={() => setClashAuto((v) => !v)}
+              hint="只认 Cloudflare / Incapsula / Akamai / Sucuri / AWS WAF / ModSecurity 等强指纹 + 403/429；普通登录 403 不触发。连续 2 次命中且过了冷却才切一次。"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" onClick={saveClash} disabled={!loaded || savingClash}>
+                保存 Clash 配置
+              </Button>
+              <Button type="button" variant="outline" onClick={rotateClash} disabled={!loaded || rotatingClash}>
+                {rotatingClash ? "切换中…" : "立即切换出口"}
+              </Button>
+              {clashStatus?.node && (
+                <span className="text-muted-foreground text-xs">
+                  当前节点：{clashStatus.node}
+                  {clashStatus.egress_ip ? ` · 出口 IP ${clashStatus.egress_ip}` : ""}
+                  {clashStatus.group ? ` · 组 ${clashStatus.group}` : ""}
+                </span>
+              )}
+            </div>
+            {clashStatus?.last_error && <p className="text-destructive text-xs">最近错误：{clashStatus.last_error}</p>}
+            {clashStatus?.rotated_at && (
+              <p className="text-muted-foreground text-xs">
+                最近切换：{new Date(clashStatus.rotated_at).toLocaleString()}
+                {clashStatus.last_reason ? ` · ${clashStatus.last_reason}` : ""}
+              </p>
             )}
           </Field>
         </SubBlock>

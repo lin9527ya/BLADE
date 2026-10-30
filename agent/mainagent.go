@@ -34,6 +34,7 @@ type MainAgent struct {
 	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
+	rotateEgress    func(reason string) (string, error)    // host callback: switch Clash egress node
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
@@ -132,6 +133,11 @@ func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
 
+// SetRotateEgressHandler wires the Clash egress rotation callback.
+func (m *MainAgent) SetRotateEgressHandler(fn func(reason string) (string, error)) {
+	m.rotateEgress = fn
+}
+
 // SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
 func (m *MainAgent) SetPolicyResolver(fn func() *policy.Effective) { m.policyFn = fn }
 
@@ -186,11 +192,12 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	}
 	tsx.SetTaskID(taskID)
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
-	tsx.SetNotify(notify)         // 通用唤醒（无专用回调的写操作走它，debounced）
-	tsx.SetResumeTask(resume)     // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
-	tsx.SetNotifyGoal(notifyGoal) // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
-	tsx.SetNotifyHint(notifyHint) // add_hint 新增提示 → 给 planner 记一条「人新增了 N 条战略提示：…」触发
-	tsx.steerWork = m.steerWork   // enable steer_work tool (nil = unavailable)
+	tsx.SetNotify(notify)                      // 通用唤醒（无专用回调的写操作走它，debounced）
+	tsx.SetResumeTask(resume)                  // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
+	tsx.SetNotifyGoal(notifyGoal)              // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
+	tsx.SetNotifyHint(notifyHint)              // add_hint 新增提示 → 给 planner 记一条「人新增了 N 条战略提示：…」触发
+	tsx.steerWork = m.steerWork                // enable steer_work tool (nil = unavailable)
+	tsx.SetRotateEgressHandler(m.rotateEgress) // WAF 封禁出口时切换 Clash 节点
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), actool.DefaultTools()...)

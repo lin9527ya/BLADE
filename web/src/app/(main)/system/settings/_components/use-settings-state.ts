@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import type {
+  ClashEgressStatus,
   CustomRule,
   ExplorationPolicyDefault,
   IntelQueryRow,
@@ -80,6 +81,16 @@ export function useSettingsState() {
   const [checkingProxyEgress, setCheckingProxyEgress] = React.useState(false);
   const [proxySaveError, setProxySaveError] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
+  // Clash 出口切换（WAF 封禁出口时换节点；服务端验证新出口 IP，绝不直连）。
+  const [clashApiURL, setClashApiURL] = React.useState("");
+  const [clashSecretInput, setClashSecretInput] = React.useState("");
+  const [clashSecretSet, setClashSecretSet] = React.useState(false);
+  const [clashGroup, setClashGroup] = React.useState("");
+  const [clashAuto, setClashAuto] = React.useState(true);
+  const [clashCooldown, setClashCooldown] = React.useState("120");
+  const [clashStatus, setClashStatus] = React.useState<ClashEgressStatus | null>(null);
+  const [savingClash, setSavingClash] = React.useState(false);
+  const [rotatingClash, setRotatingClash] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
   // 分区导航：一次只渲染一个分区（照 CyberStrikeAI 的设置页骨架）。
@@ -182,6 +193,12 @@ export function useSettingsState() {
     setProxyHealthTimeout(String(s.proxy_health_timeout_seconds ?? 5));
     setProxyFailThreshold(String(s.proxy_fail_threshold ?? 2));
     setProxyEgressIPURL(s.proxy_egress_ip_url || "https://api.ipify.org");
+    setClashApiURL(s.clash_api_url ?? "");
+    setClashSecretSet(!!s.clash_api_secret_set);
+    setClashGroup(s.clash_proxy_group ?? "");
+    setClashAuto(s.clash_auto_rotate !== false);
+    setClashCooldown(String(s.clash_rotate_cooldown_seconds ?? 120));
+    setClashStatus(s.clash_status ?? null);
     setProxyActive(s.proxy_active ?? "");
     setProxyBlocked(!!s.proxy_blocked);
     setProxyStatus(s.proxy_status ?? []);
@@ -783,6 +800,7 @@ export function useSettingsState() {
     setProxyActive(s.proxy_active ?? "");
     setProxyBlocked(!!s.proxy_blocked);
     setProxyStatus(s.proxy_status ?? []);
+    setClashStatus(s.clash_status ?? null);
   };
 
   // 代理健康探测是异步的。保存后轮询几次状态，让"正在检测代理…"能自然收敛；
@@ -870,6 +888,42 @@ export function useSettingsState() {
       .finally(() => setSavingGlobalProxy(false));
   };
 
+  const saveClash = () => {
+    const cooldown = Number.parseInt(clashCooldown, 10);
+    if (!Number.isFinite(cooldown) || cooldown < 0 || cooldown > 600) {
+      toast.error("切换冷却需在 0–600 秒之间");
+      return;
+    }
+    setSavingClash(true);
+    api
+      .setSettings({
+        clash_api_url: clashApiURL.trim(),
+        clash_proxy_group: clashGroup.trim(),
+        clash_auto_rotate: clashAuto,
+        clash_rotate_cooldown_seconds: cooldown,
+        ...(clashSecretInput.trim() ? { clash_api_secret: clashSecretInput.trim() } : {}),
+      })
+      .then((s) => {
+        apply(s);
+        setClashSecretInput("");
+        toast.success("已保存 Clash 出口切换配置");
+      })
+      .catch((e) => toast.error("保存失败：" + ((e as Error).message || "未知错误")))
+      .finally(() => setSavingClash(false));
+  };
+
+  const rotateClash = () => {
+    setRotatingClash(true);
+    api
+      .rotateEgress("设置页手动切换")
+      .then((r) => {
+        setClashStatus(r.status);
+        toast.success(r.rotation ? `${r.rotation.from} → ${r.rotation.to}（出口 IP ${r.rotation.egress_ip}）` : "已切换");
+      })
+      .catch((e) => toast.error("切换失败：" + ((e as Error).message || "未知错误")))
+      .finally(() => setRotatingClash(false));
+  };
+
   // Run a real "test" search ("test") against the CURRENT form values (backend +
   // proxy + entered key), falling back to saved values server-side. Toasts result.
   const runTest = () => {
@@ -936,6 +990,22 @@ export function useSettingsState() {
     refreshProxyStatus,
     savingGlobalProxy,
     setSavingGlobalProxy,
+    clashApiURL,
+    setClashApiURL,
+    clashSecretInput,
+    setClashSecretInput,
+    clashSecretSet,
+    clashGroup,
+    setClashGroup,
+    clashAuto,
+    setClashAuto,
+    clashCooldown,
+    setClashCooldown,
+    clashStatus,
+    savingClash,
+    rotatingClash,
+    saveClash,
+    rotateClash,
     testing,
     setTesting,
     loaded,

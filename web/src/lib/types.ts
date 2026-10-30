@@ -1699,6 +1699,25 @@ export interface ProxyPoolHealth {
   error?: string;
 }
 
+export interface ClashEgressStatus {
+  configured: boolean;
+  auto: boolean;
+  group?: string;
+  node?: string;
+  egress_ip?: string;
+  rotated_at?: string;
+  last_error?: string;
+  last_reason?: string;
+  cooldown_seconds: number;
+}
+
+export interface ClashRotation {
+  group: string;
+  from: string;
+  to: string;
+  egress_ip: string;
+}
+
 export interface Settings {
   traffic_capture: boolean;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
@@ -1736,6 +1755,14 @@ export interface Settings {
   proxy_blocked?: boolean;
   proxy_status?: ProxyPoolHealth[];
   proxy_egress_ip_url?: string;
+  // Clash 出口切换：secret 只写不回显（clash_api_secret_set 表示是否已配置）。
+  clash_api_url?: string;
+  clash_api_secret_set?: boolean;
+  clash_api_secret?: string;
+  clash_proxy_group?: string;
+  clash_auto_rotate?: boolean;
+  clash_rotate_cooldown_seconds?: number;
+  clash_status?: ClashEgressStatus;
   // ---- P21 情报源（先接 FOFA）----
   // key 与 web search 同款：只写不读，读侧只给 fofa_key_set 布尔。
   fofa_key_set?: boolean;

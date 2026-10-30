@@ -286,6 +286,7 @@ POST /api/scope/kill-switch	server.(*Server).setKillSwitch-fm
 POST /api/scope/resume-all	server.(*Server).resumeAllTasks-fm
 POST /api/settings/intel/test	server.(*Server).testIntelSource-fm
 POST /api/settings/proxy/egress-ip	server.(*Server).proxyEgressIPs-fm
+POST /api/settings/proxy/egress/rotate	server.(*Server).proxyRotateEgress-fm
 POST /api/settings/python/detect	server.(*Server).pgDetectPython-fm
 POST /api/settings/web-search/test	server.(*Server).testWebSearch-fm
 POST /api/side-questions/{requestID}/cancel	server.(*Server).cancelSideRequest-fm

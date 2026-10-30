@@ -617,6 +617,18 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork)                  // steer_work：人对运行中 work 实时纠偏
 	main.SetPolicyResolver(s.policyResolver(tidOfTask(t))) // P20：主 agent 直投意图也过策略门
+	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。
+	// 真正的安全校验（只选非 DIRECT 节点、验证出口 IP 变化、失败不直连）在 Manager.RotateEgress。
+	rotateEgress := func(reason string) (string, error) {
+		res, err := s.m.RotateEgress(reason)
+		if err != nil {
+			return "", err
+		}
+		return res.Summary(), nil
+	}
+	wk.SetRotateEgressHandler(rotateEgress)
+	pl.SetRotateEgressHandler(rotateEgress)
+	main.SetRotateEgressHandler(rotateEgress)
 	bundle := &taskAgentBundle{
 		runtime: goalRuntime, plannerRuntime: plannerRuntime, workerRuntime: workerRuntime,
 		mainRuntime: mainRuntime, pl: pl, wk: wk, main: main,
