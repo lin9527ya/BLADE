@@ -24,7 +24,15 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 	// 先清掉可能残留的战果/检测行（上一轮失败留下的）。不清的话，「降级回旧约束」这一步会以
 	// check constraint is violated by some row 失败——那条信息离真正的原因很远，很容易
 	// 被误读成"迁移块没生效"。本用例要能重复跑，这一步是前提。
+	// 同理：新加的 footprint kind 与 leaves 边也会让「降级回旧约束」这一步失败，
+	// 两个用例都要能重复跑。
 	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2, $3)`, KindFoothold, KindCredential, KindDetection); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM exploration_edges WHERE rel=$1`, RelLeaves); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind=$1`, KindFootprint); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -52,7 +60,9 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 		{"exploration_nodes", "ck_node_state", oldState},
 		{"exploration_edges", "ck_edge_rel", oldEdgeRel},
 	} {
-		if _, err := d.Exec(`ALTER TABLE ` + c.table + ` DROP CONSTRAINT ` + c.name); err != nil {
+		// IF EXISTS：上一次失败的运行可能已经把约束删掉、又没加上（ADD 被残留行拦下），
+		// 用例必须能在这种半成品状态上重跑。
+		if _, err := d.Exec(`ALTER TABLE ` + c.table + ` DROP CONSTRAINT IF EXISTS ` + c.name); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := d.Exec(`ALTER TABLE ` + c.table + ` ADD CONSTRAINT ` + c.name + " " + c.def); err != nil {
@@ -113,5 +123,63 @@ WHERE conrelid='exploration_edges'::regclass AND conname='ck_edge_rel'`).Scan(&e
 	}
 	if err := ts.Link(intent, RelUses, lootIDs[0]); err != nil {
 		t.Fatalf("升级后的库仍写不进 uses 边：%v", err)
+	}
+}
+
+// TestLeavesRelReachesPreExistingInstall 钉住 leaves（痕迹来源）这条边在老库上的迁移。
+//
+// 与上一条同一个坑：ck_edge_rel 是内联 CHECK，老库里没有 leaves，重放启动迁移必须把
+// 它重建出来，否则 report_footprint 的「来源 → 痕迹」边会写入失败——而痕迹本身仍然
+// 写进去了，表现成图上痕迹全是孤立节点，很难看出是约束问题。
+func TestLeavesRelReachesPreExistingInstall(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	// 库里若还有 leaves 边，降级回旧约束会直接失败——先清掉（本用例可重复跑）。
+	if _, err := d.Exec(`DELETE FROM exploration_edges WHERE rel=$1`, RelLeaves); err != nil {
+		t.Fatal(err)
+	}
+	const preLeaves = `CHECK (rel IN ('spawns','derived_from','yields','proves','covers','uses',
+                                   'member_of','admin_to','session_on','can','depends_on','reaches'))`
+	if _, err := d.Exec(`ALTER TABLE exploration_edges DROP CONSTRAINT IF EXISTS ck_edge_rel`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`ALTER TABLE exploration_edges ADD CONSTRAINT ck_edge_rel ` + preLeaves); err != nil {
+		t.Fatal(err)
+	}
+
+	d2, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatalf("重放迁移失败: %v", err)
+	}
+	defer d2.Close()
+	var def string
+	if err := d2.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+WHERE conrelid='exploration_edges'::regclass AND conname='ck_edge_rel'`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(def, "leaves") {
+		t.Fatalf("老库的 ck_edge_rel 没被重建出 leaves：%s", def)
+	}
+
+	task, err := d2.CreateTaskWithOptions("leaves migration", "老库升级", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d2.DeleteTask(task.ID) })
+	ts := d2.Exploration(task.ExplorationID)
+	intent, err := ts.AddIntent(map[string]any{"summary": "留痕动作"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, err := ts.AddNode(KindFootprint, map[string]any{"summary": "痕迹"}, 5, StateFootprintOpen, "system", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.LinkFootprintSource(intent, fp); err != nil {
+		t.Fatalf("升级后的库仍写不进 leaves 边：%v", err)
 	}
 }

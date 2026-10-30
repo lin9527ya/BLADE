@@ -45,6 +45,9 @@ export const relLabel: Record<string, string> = {
   admin_to: "本机管理员",
   session_on: "有会话",
   can: "权限",
+  // 痕迹来源：故意与其它作业边都不同色——它指向的是「我们可能被记下什么」，
+  // 与「我们拿到了什么」不是一回事。
+  leaves: "留下痕迹",
 };
 
 export const relColor: Record<string, string> = {
@@ -61,6 +64,8 @@ export const relColor: Record<string, string> = {
   admin_to: "#a855f7",
   session_on: "#c084fc",
   can: "#7c3aed",
+  // 痕迹来源线用玫红 + 虚线：与实线的因果边区分，一眼看出"这条线连的是痕迹"。
+  leaves: "#e11d48",
 };
 
 const COL_W = 360;
@@ -187,7 +192,8 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
   const kind = viewKind(n);
   const meta = typeMeta[kind] ?? typeMeta.intent;
   const Icon = meta.icon;
-  const showState = n.type === "goal" || n.type === "intent";
+  // 痕迹的状态（未处置/已清理/接受风险…）在图上也要看得见：它决定这张卡要不要人去处理。
+  const showState = n.type === "goal" || n.type === "intent" || n.type === "footprint";
   const showPriority = (n.type === "goal" || n.type === "intent") && n.priority > 0;
   const isLive = !n.inherited && n.type === "intent" && n.state === "running";
 
@@ -238,7 +244,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
             </Badge>
           ) : showState ? (
             <StatusBadge
-              domain={n.type === "goal" ? "goal" : "intent"}
+              domain={n.type === "goal" ? "goal" : n.type === "footprint" ? "footprint" : "intent"}
               value={n.state}
               dot
               className="px-1.5 py-0 text-[10px]"
@@ -308,6 +314,9 @@ function ExplorationGraphInner({
       viewEdges.map((e, i) => {
         const color = relColor[e.rel] ?? "#94a3b8";
         const animated = liveTargets.has(e.dst);
+        // 痕迹来源线用虚线：同一条图上既有「因果」（实线）也有「留下痕迹」（虚线），
+        // 光靠颜色在深色主题/色弱下不够，线型是第二条冗余线索。
+        const dashed = e.rel === "leaves";
         return {
           id: `e${i}-${e.src}-${e.dst}`,
           source: e.src,
@@ -317,7 +326,12 @@ function ExplorationGraphInner({
           animated,
           labelShowBg: false,
           labelStyle: { fontSize: 10, fontWeight: 600, fill: color },
-          style: { stroke: color, strokeWidth: 2, strokeOpacity: animated ? 0.9 : 0.55 },
+          style: {
+            stroke: color,
+            strokeWidth: dashed ? 1.8 : 2,
+            strokeOpacity: animated ? 0.9 : dashed ? 0.75 : 0.55,
+            strokeDasharray: dashed ? "6 4" : undefined,
+          },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies RFEdge;
       }),
@@ -369,7 +383,7 @@ function ExplorationGraphInner({
           <div className="bg-card/95 flex flex-col gap-2.5 rounded-lg border p-3 text-xs shadow-sm backdrop-blur">
             {isEmpty && <span className="text-muted-foreground">{emptyHint}</span>}
             <div className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest"] as ExploreKind[]).map((k) => {
+              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest", "footprint"] as ExploreKind[]).map((k) => {
                 const m = typeMeta[k];
                 const Icon = m.icon;
                 return (

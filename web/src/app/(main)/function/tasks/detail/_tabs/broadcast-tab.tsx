@@ -176,6 +176,7 @@ const REL_LABEL: Record<string, string> = {
   uses: "动用",
   depends_on: "依赖",
   reaches: "可达",
+  leaves: "留下痕迹",
 };
 
 // goal / intent 的状态语义由全局 status 表提供(StatusBadge);其余类型的状态只在

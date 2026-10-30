@@ -189,8 +189,10 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	artifacts, arErr := t.Store.ListByKind(db.KindArtifact, 1000)
 	// 检测验证：同样按 kind 直取全量（也不进 digest）。
 	detections, dtErr := t.Store.ListByKind(db.KindDetection, 1000)
-	// 目标侧痕迹：自动归纳与 Agent 补录共用同一节点 kind。
+	// 目标侧痕迹：自动归纳与 Agent 补录共用同一节点 kind。来源（leaves 边）一并读，
+	// 报告要能回答"哪一步动作留下了这条痕迹"。
 	footprints, fpErr := t.Store.ListByKind(db.KindFootprint, 1000)
+	footprintSources, _ := t.Store.FootprintSourceNodes()
 	if fhErr != nil || crErr != nil || arErr != nil || dtErr != nil || fpErr != nil {
 		log.Printf("[report] 任务 %s 战果/遗留物/检测/痕迹读取失败：据点=%v 凭据=%v 遗留物=%v 检测=%v 痕迹=%v", t.ID, fhErr, crErr, arErr, dtErr, fpErr)
 		dataGaps = append(dataGaps, "战果/遗留物/检测/痕迹读取失败：对应段落可能不完整")
@@ -259,7 +261,9 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		DataGaps:         dataGaps,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		NodeOrdinal: nodeOrd, IntentOrdinal: intentOrd,
-		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, Footprints: footprints, LootUsedBy: lootUsedBy, Chains: chains, ADPaths: adPaths,
+		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, Footprints: footprints,
+		FootprintSources: footprintSources,
+		LootUsedBy:       lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
 		CredentialAttempts: credAttempts,
 	})

@@ -108,7 +108,10 @@ type Footprint struct {
 	CleanupIntentID int64 `json:"cleanup_intent_id,omitempty"`
 	// AssetIDs 是自动归纳写入的资产锚点副本；清理意图把它带进 payload，
 	// 让 worker 知道该去哪台目标，而不必在探索图上重新检索。
-	AssetIDs         []int64 `json:"asset_ids,omitempty"`
+	AssetIDs []int64 `json:"asset_ids,omitempty"`
+	// ActivityIDs 是自动归纳时命中这条痕迹的命令活动 id（只存 id，不存命令原文）。
+	// 图上「痕迹来自哪些意图」靠它回溯——痕迹节点本身不复制命令内容。
+	ActivityIDs      []int64 `json:"activity_ids,omitempty"`
 	RemovedEvidence  string  `json:"removed_evidence,omitempty"`
 	RemovedNote      string  `json:"removed_note,omitempty"`
 	AcceptedReason   string  `json:"accepted_reason,omitempty"`

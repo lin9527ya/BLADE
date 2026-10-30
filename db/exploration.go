@@ -3371,3 +3371,119 @@ func (s *ExplorationStore) ActivityByIDsForTerminalIntents(ids []int64) ([]Activ
 func (s *ExplorationStore) AddStandaloneFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (int64, error) {
 	return s.db.AddFinding(taskID, nodeID, vulnclass, name, severity, summary, evidence, worker, assetIDs)
 }
+
+// IntentIDsForActivityIDs 把一批 activity id 映射回它们所属的意图节点。
+// 自动归纳痕迹时用它把「哪条命令」还原成「哪条意图」——痕迹的连线来源就靠这个。
+// 无意图归属（主 Agent 的本机命令）的 activity 不出现在结果里。
+func (s *ExplorationStore) IntentIDsForActivityIDs(ids []int64) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, s.expID)
+	marks := make([]string, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+		marks = append(marks, "$"+fmt.Sprint(len(args)))
+	}
+	rows, err := s.db.Query(`SELECT a.id, a.node_id FROM activity a
+JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
+WHERE a.exploration_id=$1 AND a.id IN (`+strings.Join(marks, ",")+`) AND n.kind='intent'`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var activityID, intentID int64
+		if err := rows.Scan(&activityID, &intentID); err != nil {
+			return nil, err
+		}
+		out[activityID] = intentID
+	}
+	return out, rows.Err()
+}
+
+// FootprintSources 返回每条痕迹「由谁留下」：痕迹 id → 来源节点 id 列表。
+// 只读 leaves 边；老数据没有这条边时返回空（前端就不画线，不做猜测）。
+func (s *ExplorationStore) FootprintSources() (map[int64][]int64, error) {
+	rows, err := s.db.Query(`SELECT dst_id, src_id FROM exploration_edges
+WHERE exploration_id=$1 AND rel=$2 ORDER BY dst_id, src_id`, s.expID, RelLeaves)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]int64{}
+	for rows.Next() {
+		var dst, src int64
+		if err := rows.Scan(&dst, &src); err != nil {
+			return nil, err
+		}
+		out[dst] = append(out[dst], src)
+	}
+	return out, rows.Err()
+}
+
+// LinkFootprintSource 记一条「来源 → 痕迹」边（幂等）。source 必须存在且属于本探索；
+// 痕迹必须存在且 kind=footprint。返回是否新写入。
+func (s *ExplorationStore) LinkFootprintSource(sourceID, footprintID int64) (bool, error) {
+	if sourceID <= 0 || footprintID <= 0 {
+		return false, nil
+	}
+	var ok bool
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 AND kind='footprint')`, footprintID, s.expID).Scan(&ok); err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("痕迹 %d 不存在于本任务", footprintID)
+	}
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2)`, sourceID, s.expID).Scan(&ok); err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("来源节点 %d 不存在于本任务", sourceID)
+	}
+	res, err := s.db.Exec(`INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id)
+VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, sourceID, RelLeaves, footprintID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// CommandActivitySources 返回「某条痕迹 id 可能来自哪些意图」所需的原始映射：
+// activity id → 意图 id。它把活动归属与痕迹 payload 的 activity_ids 分开读，
+// 这样痕迹里不必再存一份意图 id（意图可能被删除，痕迹要留）。
+func (s *ExplorationStore) CommandActivitySources(activityIDs []int64) (map[int64]int64, error) {
+	return s.IntentIDsForActivityIDs(activityIDs)
+}
+
+// FootprintSourceNodes 返回每条痕迹的来源节点本身（id/kind/state/summary），
+// 供「痕迹」页签直接展示「这条痕迹来自哪条意图/事实/漏洞」而不必再拉全图。
+// 来源节点可能已被删除（痕迹要留得住），所以缺失的 id 直接跳过，不做占位。
+func (s *ExplorationStore) FootprintSourceNodes() (map[int64][]*Node, error) {
+	rows, err := s.db.Query(`SELECT e.dst_id, n.id, n.kind, n.state, n.payload
+FROM exploration_edges e
+JOIN exploration_nodes n ON n.id=e.src_id AND n.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.rel=$2
+ORDER BY e.dst_id, e.src_id`, s.expID, RelLeaves)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]*Node{}
+	for rows.Next() {
+		var dst int64
+		var n Node
+		var payload []byte
+		if err := rows.Scan(&dst, &n.ID, &n.Kind, &n.State, &payload); err != nil {
+			return nil, err
+		}
+		n.Payload = payload
+		out[dst] = append(out[dst], &n)
+	}
+	return out, rows.Err()
+}

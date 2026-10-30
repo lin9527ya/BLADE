@@ -38,6 +38,26 @@ import type { TaskFootprint } from "@/lib/types";
 // 清理按用户决策支持日志/审计类修改，但必须逐条选择、二次确认、证据与审批留痕。
 
 const CLEANABLE = new Set(["open", "unknown", "accepted"]);
+
+// 来源节点的类型词与探索链路图保持一致（那边是图例里的 label）。
+const SOURCE_KIND_LABEL: Record<string, string> = {
+  intent: "意图",
+  fact: "事实",
+  finding: "漏洞",
+  foothold: "据点",
+  credential: "凭据",
+  artifact: "遗留物",
+  detection: "检测",
+  goal: "目标",
+};
+
+function sourceKindLabel(kind: string): string {
+  return SOURCE_KIND_LABEL[kind] ?? kind;
+}
+
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
 const STATE_OPTIONS = [
 	{ value: "all", label: "全部状态" },
 	{ value: "open", label: "未处置" },
@@ -402,6 +422,20 @@ export function FootprintsTab({ taskId }: { taskId: string }) {
 												{f.signals?.length ? (
 													<div className="text-muted-foreground mt-0.5 text-xs">
 														信号：{f.signals.join("；")}
+													</div>
+												) : null}
+												{f.sources?.length ? (
+													<div className="text-muted-foreground mt-0.5 text-xs">
+														来自：
+														{f.sources.map((src, i) => (
+															<span key={src.id}>
+																{i > 0 && "、"}
+																<span className="text-foreground/80">
+																	{sourceKindLabel(src.kind)} #{src.id}
+																</span>
+																{src.summary ? ` ${clip(src.summary, 40)}` : ""}
+															</span>
+														))}
 													</div>
 												) : null}
 												{f.cleanup && (

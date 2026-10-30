@@ -36,17 +36,19 @@ func (t *ToolSet) reportFootprint() actool.CoreTool {
 			"confidence": str("high（亲手看到）| medium（间接观察）| low（推断）"),
 			"intent_id":  idp("当前意图 id（你领到的意图）"),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id"},
+			"source_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：这条痕迹由哪些事实/漏洞/战果/意图留下（节点 id）。留空就自动连到当前意图；跨步骤的痕迹（例如某条 fact 的结论直接导致的日志记录）在这里点名"},
 		}, "summary", "evidence", "confidence"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				lootBase
-				Category string   `json:"category"`
-				Where    []string `json:"where"`
-				Signals  []string `json:"signals"`
-				Exposure string   `json:"exposure"`
-				Host     string   `json:"host"`
-				Locator  string   `json:"locator"`
-				Cleanup  string   `json:"cleanup"`
+				Category  string            `json:"category"`
+				Where     []string          `json:"where"`
+				Signals   []string          `json:"signals"`
+				Exposure  string            `json:"exposure"`
+				Host      string            `json:"host"`
+				Locator   string            `json:"locator"`
+				Cleanup   string            `json:"cleanup"`
+				SourceIDs []json.RawMessage `json:"source_ids"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf(err.Error()), nil
@@ -75,6 +77,16 @@ func (t *ToolSet) reportFootprint() actool.CoreTool {
 			id, err := t.recordLoot(db.KindFootprint, a.lootBase, extra)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
+			}
+			// recordLoot 已经把当前意图连成 leaves；这里再补显式点名的来源节点，
+			// 让「痕迹来自哪条事实/漏洞」在图上读得出来。
+			for _, src := range pidList(a.SourceIDs) {
+				if src == id {
+					continue
+				}
+				if _, lerr := t.ts.LinkFootprintSource(src, id); lerr != nil {
+					return actool.Errorf(fmt.Sprintf("痕迹已记录（#%d），但来源连线失败：%v", id, lerr)), nil
+				}
 			}
 			t.writes.Footprints++
 			return actool.Text(fmt.Sprintf("footprint recorded: %d", id)), nil

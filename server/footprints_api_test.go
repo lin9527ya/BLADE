@@ -92,6 +92,16 @@ func TestFootprintAPIScanAndManualActions(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"created":0`) {
 		t.Fatalf("重复扫描不该重复建：%d %s", w.Code, w.Body)
 	}
+	// 自动归纳必须把「痕迹来自哪条意图」连成 leaves 边，否则探索链路上痕迹是孤立节点。
+	var sources int
+	if err := s.m.pg.QueryRow(`SELECT COUNT(*) FROM exploration_edges
+WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND rel='leaves'`, taskID).Scan(&sources); err != nil {
+		t.Fatal(err)
+	}
+	if sources == 0 {
+		t.Fatal("扫描后应写出 来源→痕迹 的 leaves 边")
+	}
+
 	w = request("GET", "/api/tasks/"+taskID+"/footprints", "")
 	if w.Code != 200 {
 		t.Fatalf("list: %d %s", w.Code, w.Body)

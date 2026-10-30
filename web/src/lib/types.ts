@@ -520,7 +520,10 @@ export type ExploreRel =
   // 串行链：后一条意图要等前一条完成/否定后才能领。
   | "depends_on"
   // 凭据/据点能到达的主机（report_credential 建立）。
-  | "reaches";
+  | "reaches"
+  // 目标侧痕迹的来源：意图/事实/漏洞/战果 --leaves--> 痕迹。
+  // 与 yields 分开：痕迹不是"产出物"，删掉意图也不该连带删掉它。
+  | "leaves";
 
 // ---- AD 攻击路径导入（P32） ----
 
@@ -814,7 +817,17 @@ export interface TaskFootprint {
   accepted_reason?: string;
   not_found_evidence?: string;
   not_found_note?: string;
+  /** 这条痕迹由谁留下（探索图 leaves 边的来源节点：意图/事实/漏洞/…）。 */
+  sources?: FootprintSource[];
   ts: string;
+}
+
+/** 痕迹来源节点（图上同一条 leaves 边直接连过去）。 */
+export interface FootprintSource {
+  id: string;
+  kind: ExploreKind;
+  state: string;
+  summary: string;
 }
 
 // 约束管理卡片用的操作约束(allow=允许 / deny=禁止)。

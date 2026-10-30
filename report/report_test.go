@@ -521,3 +521,34 @@ func TestMarkdownFootprintsSection(t *testing.T) {
 		t.Fatal("未处置痕迹应排在已清理之前")
 	}
 }
+
+func TestMarkdownFootprintSources(t *testing.T) {
+	fpPayload, _ := json.Marshal(map[string]any{"summary": "认证日志留下失败登录", "category": "log"})
+	fp := &db.Node{ID: 10, Kind: db.KindFootprint, State: db.StateFootprintOpen, Payload: fpPayload}
+	intentPayload, _ := json.Marshal(map[string]any{"summary": "对 /login 做口令喷洒"})
+	intent := &db.Node{ID: 7, Kind: db.KindIntent, State: "done", Payload: intentPayload}
+	factPayload, _ := json.Marshal(map[string]any{"summary": "确认认证失败会计入审计日志"})
+	fact := &db.Node{ID: 8, Kind: db.KindFact, State: "confirmed", Payload: factPayload}
+
+	md := Markdown(Input{
+		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
+		Footprints:       []*db.Node{fp},
+		FootprintSources: map[int64][]*db.Node{fp.ID: {intent, fact}},
+		IntentOrdinal:    map[int64]int64{intent.ID: 3},
+	})
+	for _, want := range []string{
+		"- 来自：",
+		"intent-3（id 7） 对 /login 做口令喷洒",
+		"事实 #8 确认认证失败会计入审计日志",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("报告缺来源 %q：\n%s", want, md)
+		}
+	}
+
+	// 没有来源（老数据）时不能凭空写一行空的“来自”。
+	md2 := Markdown(Input{Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0), Footprints: []*db.Node{fp}})
+	if strings.Contains(md2, "- 来自：") {
+		t.Fatalf("无来源时不该输出“来自”：\n%s", md2)
+	}
+}

@@ -2738,7 +2738,13 @@ func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (
 		return 0, err
 	}
 	if intent > 0 {
-		_ = t.ts.Link(intent, db.RelYields, id)
+		// 痕迹记的是「这条意图在目标上留下了什么」：用 leaves 而不是 yields。
+		// yields 是产出物，会被意图删除的独占级联带走；痕迹是交付证据，必须留得住。
+		rel := db.RelYields
+		if kind == db.KindFootprint {
+			rel = db.RelLeaves
+		}
+		_ = t.ts.Link(intent, rel, id)
 	}
 	return id, nil
 }

@@ -25,6 +25,9 @@ const (
 	footprintReasonMaxRunes   = 2000
 	footprintCleanupMaxIDs    = 100
 	footprintCleanupChunk     = 20
+	// footprintActivityIDCap 限制单条痕迹记住多少条来源命令：够回溯到相关意图即可，
+	// 无上限会让高频痕迹的 payload 膨胀成一份活动流水。
+	footprintActivityIDCap = 200
 )
 
 // footprintScanMu 串行化扫描：痕迹页签与报告页可能同时触发，不去重就会重复建节点。
@@ -57,7 +60,37 @@ type FootprintDTO struct {
 	AcceptedReason   string   `json:"accepted_reason,omitempty"`
 	NotFoundEvidence string   `json:"not_found_evidence,omitempty"`
 	NotFoundNote     string   `json:"not_found_note,omitempty"`
-	TS               string   `json:"ts"`
+	// Sources 是「这条痕迹由谁留下」：来自探索图 leaves 边的来源节点（意图/事实/漏洞/…）。
+	// 页签据此显示来路；图上则由同一条边直接连过去。
+	Sources []FootprintSourceDTO `json:"sources,omitempty"`
+	TS      string               `json:"ts"`
+}
+
+// FootprintSourceDTO 是痕迹来源节点的最小展示信息。
+type FootprintSourceDTO struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	State   string `json:"state"`
+	Summary string `json:"summary"`
+}
+
+func footprintSourceDTO(n *db.Node) FootprintSourceDTO {
+	return FootprintSourceDTO{ID: i64s(n.ID), Kind: n.Kind, State: n.State, Summary: nodeSummaryText(n)}
+}
+
+// nodeSummaryText 取节点的一句话摘要（各 kind 的摘要字段不同，统一兜底）。
+func nodeSummaryText(n *db.Node) string {
+	if n == nil {
+		return ""
+	}
+	var p map[string]any
+	_ = json.Unmarshal(n.Payload, &p)
+	for _, k := range []string{"summary", "name", "text", "body"} {
+		if s, ok := p[k].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }
 
 func footprintDTO(n *db.Node) FootprintDTO {
@@ -88,9 +121,14 @@ func (s *Server) listFootprints(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	sources, _ := t.Store.FootprintSourceNodes()
 	out := make([]FootprintDTO, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, footprintDTO(n))
+		dto := footprintDTO(n)
+		for _, src := range sources[n.ID] {
+			dto.Sources = append(dto.Sources, footprintSourceDTO(src))
+		}
+		out = append(out, dto)
 	}
 	counts, _ := t.Store.CountKindStates(db.KindFootprint)
 	writeJSON(w, 200, map[string]any{"footprints": out, "counts": counts, "total": len(out)})
@@ -126,13 +164,15 @@ func (s *Server) scanFootprints(w http.ResponseWriter, r *http.Request) {
 }
 
 type footprintScanResult struct {
-	CommandsScanned  int      `json:"commands_scanned"`
-	Created          int      `json:"created"`
-	Updated          int      `json:"updated"`
-	Reopened         int      `json:"reopened"`
-	Uncovered        int      `json:"uncovered"`
-	SkippedBlocked   int      `json:"skipped_blocked"`
-	WithoutResult    int      `json:"commands_without_result"`
+	CommandsScanned int `json:"commands_scanned"`
+	Created         int `json:"created"`
+	Updated         int `json:"updated"`
+	Reopened        int `json:"reopened"`
+	Uncovered       int `json:"uncovered"`
+	SkippedBlocked  int `json:"skipped_blocked"`
+	WithoutResult   int `json:"commands_without_result"`
+	// SourcesLinked 是本次新写出的「来源 → 痕迹」边数，用来确认图上连线确实补上了。
+	SourcesLinked    int      `json:"sources_linked"`
 	UncoveredSamples []string `json:"uncovered_samples,omitempty"`
 }
 
@@ -307,12 +347,18 @@ func (s *Server) scanTaskFootprints(t *Task) (footprintScanResult, error) {
 			assetSet = append(assetSet, id)
 		}
 		sort.Slice(assetSet, func(i, j int) bool { return assetSet[i] < assetSet[j] })
+		// 只保留最近一批活动 id：来源连线要能追溯，但 payload 不该无限长。
+		activityIDs := a.activityIDs
+		if len(activityIDs) > footprintActivityIDCap {
+			activityIDs = activityIDs[len(activityIDs)-footprintActivityIDCap:]
+		}
 		base := map[string]any{
 			"summary": a.note.Title, "detail": a.note.Note,
 			"source": db.FootprintSourcePredicted, "category": footprintCategoryFromWhere(a.note.Where),
 			"where": a.note.Where, "signals": footprintNoteSignals(a.note),
 			"exposure":      db.NormalizeFootprintExposure(a.note.Exposure),
 			"opsec_note_id": a.note.ID, "last_activity_id": last,
+			"activity_ids": activityIDs,
 		}
 		active, err := t.Store.FindActiveFootprintByNote(a.note.ID)
 		if err != nil {
@@ -327,6 +373,13 @@ func (s *Server) scanTaskFootprints(t *Task) (footprintScanResult, error) {
 				}
 			}
 			if newCount == 0 {
+				// 没有新命令也要补一次来源连线：早于 leaves 关系创建的痕迹，
+				// 要等下一次扫描才能把线接上（幂等，不产生重复边）。
+				linked, lerr := s.linkFootprintSources(t, active.ID, a.activityIDs)
+				if lerr != nil {
+					return res, lerr
+				}
+				res.SourcesLinked += linked
 				continue
 			}
 			p := mergePayload(active.Payload, base)
@@ -336,6 +389,11 @@ func (s *Server) scanTaskFootprints(t *Task) (footprintScanResult, error) {
 			if err := t.Store.SetNodePayload(active.ID, db.KindFootprint, p); err != nil {
 				return res, err
 			}
+			linked, lerr := s.linkFootprintSources(t, active.ID, a.activityIDs)
+			if lerr != nil {
+				return res, lerr
+			}
+			res.SourcesLinked += linked
 			res.Updated++
 			continue
 		}
@@ -353,6 +411,11 @@ func (s *Server) scanTaskFootprints(t *Task) (footprintScanResult, error) {
 				}
 			}
 			if newCount == 0 {
+				linked, lerr := s.linkFootprintSources(t, latest.ID, a.activityIDs)
+				if lerr != nil {
+					return res, lerr
+				}
+				res.SourcesLinked += linked
 				continue
 			}
 			p := mergePayload(latest.Payload, base)
@@ -362,13 +425,25 @@ func (s *Server) scanTaskFootprints(t *Task) (footprintScanResult, error) {
 			if err := t.Store.SetNodePayload(latest.ID, db.KindFootprint, p); err != nil {
 				return res, err
 			}
+			linked, lerr := s.linkFootprintSources(t, latest.ID, a.activityIDs)
+			if lerr != nil {
+				return res, lerr
+			}
+			res.SourcesLinked += linked
 			res.Updated++
 			continue
 		}
 		if latest != nil {
 			f := db.ParseFootprint(latest)
 			if last <= f.LastActivityID {
-				continue // 已清理/未发现后重扫旧记录，不重新打开
+				// 已清理/未发现后重扫旧记录，不重新打开；来源边仍然补上，
+				// 否则清理过的痕迹在图上会变成没有来路的孤立节点。
+				linked, lerr := s.linkFootprintSources(t, latest.ID, a.activityIDs)
+				if lerr != nil {
+					return res, lerr
+				}
+				res.SourcesLinked += linked
+				continue
 			}
 			base["reopened_from"] = latest.ID
 			res.Reopened++
@@ -377,11 +452,54 @@ func (s *Server) scanTaskFootprints(t *Task) (footprintScanResult, error) {
 		}
 		base["occurrences"] = occ
 		base["asset_ids"] = assetSet
-		if _, err := t.Store.AddNode(db.KindFootprint, base, 5, db.StateFootprintOpen, "system", assetSet); err != nil {
+		newID, err := t.Store.AddNode(db.KindFootprint, base, 5, db.StateFootprintOpen, "system", assetSet)
+		if err != nil {
 			return res, err
 		}
+		linked, lerr := s.linkFootprintSources(t, newID, a.activityIDs)
+		if lerr != nil {
+			return res, lerr
+		}
+		res.SourcesLinked += linked
 	}
 	return res, nil
+}
+
+// linkFootprintSources 把「哪些意图留下了这条痕迹」写成 leaves 边，并回填到
+// payload.activity_ids 之外不需要额外存的东西：边本身就是来源。
+//
+// 返回新增的边数。没有任何意图归属的活动（主 Agent 本机命令）不产生边——
+// 图上没有来源可连时就不画线，不猜。
+func (s *Server) linkFootprintSources(t *Task, footprintID int64, activityIDs []int64) (int, error) {
+	if footprintID <= 0 || len(activityIDs) == 0 {
+		return 0, nil
+	}
+	// 单条痕迹可能命中成百上千条命令；连线的目的只是找回来源意图，取最近一段足够，
+	// 也避免把一次查询撑到参数上限。
+	const linkCap = 500
+	if len(activityIDs) > linkCap {
+		activityIDs = activityIDs[len(activityIDs)-linkCap:]
+	}
+	owners, err := t.Store.IntentIDsForActivityIDs(activityIDs)
+	if err != nil {
+		return 0, err
+	}
+	seen := map[int64]bool{}
+	linked := 0
+	for _, intentID := range owners {
+		if intentID <= 0 || seen[intentID] {
+			continue
+		}
+		seen[intentID] = true
+		added, lerr := t.Store.LinkFootprintSource(intentID, footprintID)
+		if lerr != nil {
+			return linked, lerr
+		}
+		if added {
+			linked++
+		}
+	}
+	return linked, nil
 }
 
 func mergePayload(raw []byte, patch map[string]any) map[string]any {

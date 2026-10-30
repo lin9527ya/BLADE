@@ -91,6 +91,11 @@ type Input struct {
 	// Footprints 是目标侧痕迹（可能被目标/防守方看见的日志、EDR、网络与应用记录）。
 	// 与 Artifacts 分开：那是具体物件，这是可检出信号。
 	Footprints []*db.Node
+	// FootprintSources 是每条痕迹的来源节点（痕迹 id → 留下它的意图/事实/漏洞）。
+	//
+	// 交付物里"哪一步动作留下了这条痕迹"比"有哪些痕迹"有用得多：客户复盘时问的
+	// 就是这句。空 = 老数据没有 leaves 边，报告照常输出，只是不写"来自"。
+	FootprintSources map[int64][]*db.Node
 	// LootUsedBy 记录每条战果被哪些意图动用过（战果节点 id → 用它的意图）。
 	//
 	// 这是交付物里最接近「攻击链」的东西：只写「拿到了这个据点」是资产清单，写清「拿它走到了
@@ -573,7 +578,7 @@ func Markdown(in Input) string {
 		writeArtifacts(&b, in.Artifacts)
 	}
 	if len(in.Footprints) > 0 {
-		writeFootprints(&b, in.Footprints)
+		writeFootprints(&b, in.Footprints, in.FootprintSources, in.IntentOrdinal)
 	}
 
 	// 凭据尝试台账（P43）：与「战果」是两个方向——战果说"拿到了什么"，这里说"动过谁"。
@@ -1091,7 +1096,7 @@ func footprintExposureRank(e string) int {
 
 // writeFootprints 渲染「测试痕迹与清理」。自动归纳是**预期**不是实测，报告必须
 // 写明来源；cleaned/not_found/accepted 三态分别成词，不能合并成“已处理”。
-func writeFootprints(b *strings.Builder, nodes []*db.Node) {
+func writeFootprints(b *strings.Builder, nodes []*db.Node, sources map[int64][]*db.Node, intentOrd map[int64]int64) {
 	type row struct {
 		n *db.Node
 		f db.Footprint
@@ -1141,6 +1146,9 @@ func writeFootprints(b *strings.Builder, nodes []*db.Node) {
 		if len(f.Signals) > 0 {
 			fmt.Fprintf(b, "- 具体信号：%s\n", strings.Join(f.Signals, "；"))
 		}
+		if srcs := sources[r.n.ID]; len(srcs) > 0 {
+			fmt.Fprintf(b, "- 来自：%s\n", footprintSourceText(srcs, intentOrd))
+		}
 		if f.Occurrences > 1 {
 			fmt.Fprintf(b, "- 出现次数：%d\n", f.Occurrences)
 		}
@@ -1164,4 +1172,45 @@ func writeFootprints(b *strings.Builder, nodes []*db.Node) {
 		}
 		b.WriteString("\n")
 	}
+}
+
+// footprintSourceText 把一条痕迹的来源节点写成一句话：意图按任务内序号指认
+// （与正文其它地方一致），事实/漏洞/战果用类型 + 编号 + 摘要，读的人能回图里找到。
+func footprintSourceText(sources []*db.Node, intentOrd map[int64]int64) string {
+	parts := make([]string, 0, len(sources))
+	for _, n := range sources {
+		if n == nil {
+			continue
+		}
+		switch n.Kind {
+		case db.KindIntent:
+			parts = append(parts, intentRef(intentOrd, n.ID)+" "+clipRunes(nodeSummary(n), 60))
+		case db.KindFact:
+			parts = append(parts, "事实 #"+fmt.Sprint(n.ID)+" "+clipRunes(nodeSummary(n), 60))
+		case db.KindFinding:
+			parts = append(parts, "漏洞 #"+fmt.Sprint(n.ID)+" "+clipRunes(nodeSummary(n), 60))
+		case db.KindFoothold, db.KindCredential, db.KindArtifact:
+			parts = append(parts, "战果 #"+fmt.Sprint(n.ID)+" "+clipRunes(nodeSummary(n), 60))
+		default:
+			parts = append(parts, n.Kind+" #"+fmt.Sprint(n.ID))
+		}
+	}
+	return strings.Join(parts, "；")
+}
+
+// nodeSummary 读节点 payload 的一句话摘要（各 kind 的字段名不同）。
+func nodeSummary(n *db.Node) string {
+	if n == nil || len(n.Payload) == 0 {
+		return ""
+	}
+	var p map[string]any
+	if err := json.Unmarshal(n.Payload, &p); err != nil {
+		return ""
+	}
+	for _, k := range []string{"summary", "name", "text", "body"} {
+		if v, ok := p[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

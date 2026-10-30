@@ -152,3 +152,38 @@ func TestFootprintToolRegistered(t *testing.T) {
 		t.Errorf("mainagent 工具面应含痕迹工具：%v", main)
 	}
 }
+
+func TestReportFootprintLinksSourceNodes(t *testing.T) {
+	tools, ts, intent := newToolWorker(t)
+	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "确认上传点可写"}, 5, "confirmed", "work#1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callTool(t, tools.WorkerTools(), "report_footprint",
+		fmt.Sprintf(`{"summary":"上传点访问日志留下记录","evidence":"curl 上传 → access.log 200","confidence":"high",`+
+			`"intent_id":%d,"source_ids":[%d]}`, intent, fact))
+	if !strings.Contains(out, "footprint recorded") {
+		t.Fatalf("痕迹没记上：%s", out)
+	}
+	edges, err := ts.Edges(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fromIntent, fromFact bool
+	var fpID int64
+	for _, e := range edges {
+		if e.Rel == db.RelLeaves && e.From == intent {
+			fromIntent = true
+			fpID = e.To
+		}
+		if e.Rel == db.RelLeaves && e.From == fact {
+			fromFact = true
+		}
+		if e.Rel == db.RelYields && e.From == intent {
+			t.Fatalf("痕迹不应走 yields（会被意图删除级联带走）：%+v", e)
+		}
+	}
+	if !fromIntent || !fromFact || fpID == 0 {
+		t.Fatalf("来源连线不完整：intent=%v fact=%v fp=%d edges=%+v", fromIntent, fromFact, fpID, edges)
+	}
+}
