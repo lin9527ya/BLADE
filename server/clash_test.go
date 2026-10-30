@@ -70,8 +70,9 @@ func TestClashCandidateSafety(t *testing.T) {
 			t.Fatalf("DIRECT/嵌套组进入了候选：%v", names)
 		}
 	}
-	if len(names) != 2 || names[0] != "B" {
-		t.Fatalf("候选应按延迟排序且排除不安全节点：%v", names)
+	// 当前节点会保留在列表里用于定位轮转起点，随后由调用方剔除。
+	if len(names) != 3 || names[0] != "B" || names[1] != "A" || names[2] != "C" {
+		t.Fatalf("候选应按延迟排序、排除不安全节点并保留当前节点：%v", names)
 	}
 	if clashNodeSafe("NESTED", proxies, 0) {
 		t.Fatal("嵌套组最终解析到 DIRECT 应判不安全")
@@ -105,15 +106,16 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.From != "A" || res.To != "B" || res.EgressIP != ip {
-		t.Fatalf("rotation=%+v, want A→B ip=%s", res, ip)
+	// 延迟排序为 [B(30ms), A(120ms), C]；从当前 A 之后轮转 → C。
+	if res.From != "A" || res.To != "C" || res.EgressIP != ip {
+		t.Fatalf("rotation=%+v, want A→C ip=%s", res, ip)
 	}
-	if now["BLADE"] != "B" {
-		t.Fatalf("clash group now=%q, want B", now["BLADE"])
+	if now["BLADE"] != "C" {
+		t.Fatalf("clash group now=%q, want C", now["BLADE"])
 	}
-	// 第二次：即使 Clash 侧节点被别人改成 C（与缓存节点不同），出口 IP 没变化
+	// 第二次：即使 Clash 侧节点被别人改成 A（与缓存节点不同），出口 IP 没变化
 	// 也必须失败——“切成功但 IP 没变”是假切换。
-	now["BLADE"] = "C"
+	now["BLADE"] = "A"
 	ip = "203.0.113.9"
 	if _, err := m.RotateEgress("same ip"); err == nil || !strings.Contains(err.Error(), "未变化") {
 		t.Fatalf("出口 IP 未变化时必须报错，got %v", err)
@@ -161,6 +163,78 @@ func TestDetectWAFBlock(t *testing.T) {
 	for _, s := range miss {
 		if _, ok := detectWAFBlock(s); ok {
 			t.Fatalf("不应识别为 WAF 拦截：%q", s)
+		}
+	}
+}
+
+// 每次切换必须沿组内顺序推进，而不是从头重选导致在两个节点之间来回跳。
+func TestRotateEgressAdvancesThroughCandidates(t *testing.T) {
+	var mu sync.Mutex
+	now := map[string]string{"G": "A"}
+	proxies := map[string]any{
+		"G": map[string]any{"type": "Selector", "now": "A", "all": []string{"A", "B", "C", "D"}},
+		"A": map[string]any{"type": "Vmess"}, "B": map[string]any{"type": "Vmess"},
+		"C": map[string]any{"type": "Vmess"}, "D": map[string]any{"type": "Vmess"},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/proxies" {
+			// 每次返回当前 now，模拟 Clash 的实际状态
+			_ = now
+			proxies["G"] = map[string]any{"type": "Selector", "now": now["G"], "all": []string{"A", "B", "C", "D"}}
+			_ = json.NewEncoder(w).Encode(map[string]any{"proxies": proxies})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/proxies/") {
+			var body struct {
+				Name string `json:"name"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			now["G"] = body.Name
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer m.Close()
+	_ = m.pg.SetSetting(settingClashAPIURL, srv.URL)
+	_ = m.pg.SetSetting(settingClashProxyGroup, "G")
+	_ = m.pg.SetSetting(settingClashRotateCooldown, "0")
+	t.Cleanup(func() {
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2,$3)`, settingClashAPIURL, settingClashProxyGroup, settingClashRotateCooldown)
+	})
+	m.mu.Lock()
+	m.proxyPool = nil
+	m.egressProxy = "http://127.0.0.1:7898"
+	m.mu.Unlock()
+	oldProbe := clashProbeEgressIP
+	t.Cleanup(func() { clashProbeEgressIP = oldProbe })
+	ipOf := map[string]string{"A": "198.51.100.1", "B": "198.51.100.2", "C": "198.51.100.3", "D": "198.51.100.4"}
+	clashProbeEgressIP = func(context.Context, string, string, time.Duration) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return ipOf[now["G"]], nil
+	}
+
+	var got []string
+	for i := 0; i < 3; i++ {
+		res, err := m.RotateEgress("advance")
+		if err != nil {
+			t.Fatalf("第 %d 次切换: %v", i+1, err)
+		}
+		got = append(got, res.To)
+	}
+	want := []string{"B", "C", "D"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("切换序列=%v, want %v（不应在两个节点间来回跳）", got, want)
 		}
 	}
 }

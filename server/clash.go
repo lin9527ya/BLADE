@@ -221,8 +221,19 @@ func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
 		s.setErr(err)
 		return out, err
 	}
-	if len(candidates) > 5 {
-		candidates = candidates[:5]
+	// 从当前节点之后开始轮转：每次都从头选会把候选永远钉在前几个节点上，
+	// 表现为「只在那两个 IP 之间来回切」。按组内顺序向后推进，才能吃到整组节点。
+	candidates = rotateCandidatesAfter(candidates, group.Now)
+	// rotate 会包含当前节点（用于定位起点），把它剔除；否则会选回自己。
+	filtered := candidates[:0]
+	for _, name := range candidates {
+		if name != group.Now {
+			filtered = append(filtered, name)
+		}
+	}
+	candidates = filtered
+	if len(candidates) > 12 {
+		candidates = candidates[:12]
 	}
 	var lastErr error
 	for _, node := range candidates {
@@ -435,7 +446,7 @@ func clashCandidateNodes(group clashProxyEntry, proxies map[string]clashProxyEnt
 	}
 	var out []cand
 	for _, name := range group.All {
-		if name == group.Now || !clashNodeSafe(name, proxies, 0) {
+		if !clashNodeSafe(name, proxies, 0) {
 			continue
 		}
 		if p, ok := proxies[name]; ok && clashGroupType(p.Type) {
@@ -474,6 +485,27 @@ func clashNodeSafe(name string, proxies map[string]clashProxyEntry, depth int) b
 		return p.Now != "" && clashNodeSafe(p.Now, proxies, depth+1)
 	}
 	return true
+}
+
+// rotateCandidatesAfter 把候选列表旋转到 after 之后（after 不在列表里则原样返回）。
+func rotateCandidatesAfter(candidates []string, after string) []string {
+	if len(candidates) < 2 {
+		return candidates
+	}
+	idx := -1
+	for i, name := range candidates {
+		if name == after {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return candidates
+	}
+	out := make([]string, 0, len(candidates))
+	out = append(out, candidates[idx+1:]...)
+	out = append(out, candidates[:idx+1]...)
+	return out
 }
 
 func clashGroupType(t string) bool {
