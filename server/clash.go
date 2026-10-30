@@ -175,7 +175,7 @@ func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
 		}
 	}
 	s.rotating = true
-	cachedGroup, cachedNode, cachedIP := s.group, s.node, s.egressIP
+	cachedGroup, cachedIP := s.group, s.egressIP
 	s.mu.Unlock()
 	success := false
 	defer func() {
@@ -190,7 +190,7 @@ func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
 		s.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	client := clashClient{apiURL: cfg.APIURL, secret: cfg.Secret}
 	proxies, err := client.proxies(ctx)
@@ -205,8 +205,10 @@ func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
 	}
 	out.Group, out.From = groupName, group.Now
 	lastIP := ""
-	if cachedGroup == groupName && cachedNode == group.Now {
-		lastIP = cachedIP // 只有同一组、同一节点时的旧 IP 才有可比性
+	if cachedGroup == groupName {
+		// 同一组内比较旧出口 IP：即使 Clash 侧节点被别人改过，也要保证这次切换
+		// 真的换了出口——否则“切成功但 IP 没变”就是假切换。
+		lastIP = cachedIP
 	}
 	if !clashNodeSafe(group.Now, proxies, 0) {
 		// 当前节点是 DIRECT/REJECT：先不要探测（那会把真实 IP 发给出口检测服务），
@@ -328,7 +330,7 @@ func (c clashClient) do(ctx context.Context, method, path string, body any, out 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	tr := &http.Transport{Proxy: nil, DisableKeepAlives: true} // 控制器通常在本机/局域网，绝不走目标代理
-	cl := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+	cl := &http.Client{Transport: tr, Timeout: 15 * time.Second}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接 Clash 控制器失败：%w", err)
@@ -407,7 +409,10 @@ func clashSelectorNames(proxies map[string]clashProxyEntry) string {
 	return strings.Join(names, ", ")
 }
 
-// clashCandidateNodes returns safe, non-current nodes ordered by observed delay.
+// clashCandidateNodes returns safe, non-current **leaf** nodes ordered by observed
+// delay. Nested groups are skipped: selecting a group name hands control back to
+// Clash (url-test/fallback inside it), and the egress IP may not change at all —
+// the caller must be able to name and verify the exact exit node.
 func clashCandidateNodes(group clashProxyEntry, proxies map[string]clashProxyEntry) []string {
 	delay := map[string]int{}
 	if p, ok := proxies[group.Now]; ok && len(p.History) > 0 {
@@ -421,6 +426,9 @@ func clashCandidateNodes(group clashProxyEntry, proxies map[string]clashProxyEnt
 	for _, name := range group.All {
 		if name == group.Now || !clashNodeSafe(name, proxies, 0) {
 			continue
+		}
+		if p, ok := proxies[name]; ok && clashGroupType(p.Type) {
+			continue // 嵌套组不作为切换目标：出口由组内策略决定，无法保证换 IP
 		}
 		d := 1 << 30
 		if p, ok := proxies[name]; ok && len(p.History) > 0 && p.History[len(p.History)-1].Delay > 0 {

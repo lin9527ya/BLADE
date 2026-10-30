@@ -58,14 +58,16 @@ func TestClashCandidateSafety(t *testing.T) {
 		"B": {Type: "Vmess", History: []struct {
 			Delay int `json:"delay"`
 		}{{Delay: 20}}},
-		"C":      {Type: "Trojan"},
-		"DIRECT": {Type: "Direct"},
-		"NESTED": {Type: "Selector", Now: "DIRECT", All: []string{"DIRECT"}},
+		"C":        {Type: "Trojan"},
+		"DIRECT":   {Type: "Direct"},
+		"NESTED":   {Type: "Selector", Now: "DIRECT", All: []string{"DIRECT"}},
+		"NESTEDOK": {Type: "Selector", Now: "B", All: []string{"B"}},
 	}
+	proxies["BLADE"] = clashProxyEntry{Type: "Selector", Now: "A", All: []string{"A", "B", "DIRECT", "C", "NESTED", "NESTEDOK"}}
 	names := clashCandidateNodes(proxies["BLADE"], proxies)
 	for _, n := range names {
-		if n == "DIRECT" || n == "NESTED" {
-			t.Fatalf("不安全节点进入了候选：%v", names)
+		if n == "DIRECT" || n == "NESTED" || n == "NESTEDOK" {
+			t.Fatalf("DIRECT/嵌套组进入了候选：%v", names)
 		}
 	}
 	if len(names) != 2 || names[0] != "B" {
@@ -109,10 +111,12 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	if now["BLADE"] != "B" {
 		t.Fatalf("clash group now=%q, want B", now["BLADE"])
 	}
-	// 第二次：出口 IP 没变化 → 必须失败（并尝试其它节点），不能假装成功。
+	// 第二次：即使 Clash 侧节点被别人改成 C（与缓存节点不同），出口 IP 没变化
+	// 也必须失败——“切成功但 IP 没变”是假切换。
+	now["BLADE"] = "C"
 	ip = "203.0.113.9"
-	if _, err := m.RotateEgress("same ip"); err == nil {
-		t.Fatal("出口 IP 未变化时必须报错")
+	if _, err := m.RotateEgress("same ip"); err == nil || !strings.Contains(err.Error(), "未变化") {
+		t.Fatalf("出口 IP 未变化时必须报错，got %v", err)
 	}
 }
 

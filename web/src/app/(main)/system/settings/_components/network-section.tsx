@@ -251,6 +251,8 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 安全约束：只选非 <code>DIRECT/REJECT</code> 节点；切换后经当前代理查出口 IP，必须变化且不是本机地址；失败不直连。
                 <br />
                 强烈建议给 BLADE 单独建一个 <code>type: mixed</code> 的 listener，并用 <code>proxy: 组名</code> 强制走该 Selector 组——否则 Clash 规则仍可能把目标判成 DIRECT，换节点也救不了真实 IP。
+                <br />
+                Clash 当前是 <code>global</code> 模式时，真正决定所有出口的是 <b>GLOBAL</b> 组：组名必须填 <code>GLOBAL</code>（或改用规则模式/专用 listener）；填其它组名只会改那个组，不会改变实际流量。
               </>
             }
           >
@@ -283,7 +285,7 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 <span className="text-muted-foreground text-xs">Selector 组名（留空 = 自动选第一个）</span>
                 <Input
                   autoComplete="off"
-                  placeholder="BLADE"
+                  placeholder="BLADE（global 模式填 GLOBAL）"
                   value={clashGroup}
                   disabled={!loaded || savingClash}
                   onChange={(e) => setClashGroup(e.target.value)}
