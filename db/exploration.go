@@ -332,6 +332,62 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 	return err
 }
 
+// Unlink 删除一条边（不存在时不算错误）。
+func (s *ExplorationStore) Unlink(from int64, rel string, to int64) error {
+	_, err := s.db.Exec(`DELETE FROM exploration_edges
+WHERE exploration_id=$1 AND src_id=$2 AND rel=$3 AND dst_id=$4`, s.expID, from, rel, to)
+	return err
+}
+
+// LinkIntentSource 给一条**已存在**的意图补「派生自哪条事实/漏洞」的血缘边。
+//
+// 为什么需要它：add_intent 的 parent_ids 是可选参数，模型漏传时意图会落到「兜底连任务
+// 起点」的分支——图上看起来连着，实际丢掉了真实因果链，后续 planner 读到的 parents 只有
+// origin，就以为这条方向是从起点凭空派生的。这个入口让漏传的血缘可以补回来，而不是只能
+// 重派一条意图（重派会丢掉已经跑出来的产出）。
+//
+// 补上真实来源后会删掉 origin 兜底边：同时连起点和真实来源，图上反而更乱，也让
+// 「这条方向从哪来」重新变得不可读。
+func (s *ExplorationStore) LinkIntentSource(intentID, sourceID int64) (bool, error) {
+	if intentID <= 0 || sourceID <= 0 {
+		return false, nil
+	}
+	var kind string
+	if err := s.db.QueryRow(`SELECT kind FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2`, intentID, s.expID).Scan(&kind); err != nil {
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("意图 %d 不存在于本任务", intentID)
+		}
+		return false, err
+	}
+	if kind != KindIntent {
+		return false, fmt.Errorf("节点 %d 是 %q，不是意图", intentID, kind)
+	}
+	if err := s.db.QueryRow(`SELECT kind FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2`, sourceID, s.expID).Scan(&kind); err != nil {
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("来源 %d 不存在于本任务", sourceID)
+		}
+		return false, err
+	}
+	if kind != KindFact && kind != KindFinding {
+		return false, fmt.Errorf("来源 %d 是 %q 节点：意图只能锚在事实(fact)/漏洞(finding)上", sourceID, kind)
+	}
+	res, err := s.db.Exec(`INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id)
+VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, sourceID, RelDerivedFrom, intentID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if origin, oerr := s.OriginFactID(); oerr == nil && origin > 0 && origin != sourceID {
+		_ = s.Unlink(origin, RelDerivedFrom, intentID)
+	}
+	return n > 0, nil
+}
+
 // LinkAttrs 与 Link 是同一条幂等边，额外带 attrs（目前只有 AD 的 can 边用：{"rights":[…]}"）。
 //
 // 已存在则**覆盖** attrs：多条权限合并成一条边时的并集在 Go 侧算好（见 server/ad_import.go），
@@ -3486,4 +3542,20 @@ ORDER BY e.dst_id, e.src_id`, s.expID, RelLeaves)
 		out[dst] = append(out[dst], &n)
 	}
 	return out, rows.Err()
+}
+
+// HasDerivableKnowledge 报告本探索是否已经有「可作为意图来源」的结论：非 origin 的
+// 事实，或任意漏洞。
+//
+// add_intent 用它决定漏填 parent_ids 时该怎么办：图上一条结论都没有（真正的开局）才
+// 兜底连任务起点；已经有一堆事实时再连起点，就是把"这条方向从哪来"这条信息抹掉——
+// 图上看起来所有意图都从起点长出来，后续轮次读 parents 也读不出因果。
+func (s *ExplorationStore) HasDerivableKnowledge() (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(`SELECT EXISTS(
+SELECT 1 FROM exploration_nodes
+WHERE exploration_id=$1 AND (
+  (kind=$2 AND state <> $3) OR kind=$4
+))`, s.expID, KindFact, StateOrigin, KindFinding).Scan(&ok)
+	return ok, err
 }

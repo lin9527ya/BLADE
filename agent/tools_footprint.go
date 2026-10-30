@@ -277,3 +277,44 @@ func isCleanupIntentPayload(n *db.Node) bool {
 	}
 	return json.Unmarshal(n.Payload, &p) == nil && p.Cleanup
 }
+
+// linkIntentSource 让规划者把一条**已经建好**的意图补上真实血缘。
+//
+// 存在的理由：add_intent 的 parent_ids 是可选的，模型漏传时意图会被兜底连到任务起点，
+// 图上就变成「从起点发散」，后续轮次读 parents 也只看得到 origin。重派一条意图可以修
+// 血缘，但会丢掉已经跑出来的产出；这个工具只补边、不动节点。
+func (t *ToolSet) linkIntentSource() actool.CoreTool {
+	return t.writeExpTool("link_intent_source",
+		"给一条已存在的意图补上「派生自哪条事实/漏洞」的血缘边（parent_ids 漏传时用）。"+
+			"补上真实来源后会自动去掉指向任务起点的兜底边，链路图才读得出真实因果。",
+		obj(map[string]any{
+			"intent_id":  idp("要补血缘的意图 id"),
+			"source_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "来源节点 id（事实/漏洞，0/1/多个）：这条意图是由哪些已确认结论综合出来的"},
+		}, "intent_id", "source_ids"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				IntentID  json.RawMessage   `json:"intent_id"`
+				SourceIDs []json.RawMessage `json:"source_ids"`
+			}
+			_ = json.Unmarshal(in, &a)
+			id := pid(a.IntentID)
+			if id <= 0 {
+				return actool.Errorf("intent_id 必填"), nil
+			}
+			sources := pidList(a.SourceIDs)
+			if len(sources) == 0 {
+				return actool.Errorf("source_ids 必填：要给这条意图补的来源事实/漏洞 id"), nil
+			}
+			linked := 0
+			for _, src := range sources {
+				added, err := t.ts.LinkIntentSource(id, src)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				if added {
+					linked++
+				}
+			}
+			return actool.Text(fmt.Sprintf("intent %d: 已补 %d 条血缘边（来源 %v）", id, linked, sources)), nil
+		})
+}

@@ -1946,9 +1946,20 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	for _, dep := range deps {
 		edges = append(edges, db.IntentEdge{From: 0, Rel: db.RelDependsOn, To: dep})
 	}
+	// 兜底血缘：既没给 parent_ids、也没挂到目标时怎么连。
+	//
+	// 图里一条结论都还没有（真正的开局）→ 连任务起点，避免出现无来路的意图。
+	// 图里**已经有事实/漏洞**却还漏填 → 不再连起点：那会让图上所有意图都从起点长出来，
+	// 后续轮次读 parents 也读不出因果（这正是"只能从起点发散"的观感来源）。改为不写
+	// 血缘边，并在回执里点名要求用 parent_ids 或 link_intent_source 补上。
+	fellBackToOrigin := false
+	missingParents := false
 	if len(parents) == 0 && goalID == 0 {
-		if origin, _ := t.ts.OriginFactID(); origin > 0 {
+		if has, err := t.ts.HasDerivableKnowledge(); err == nil && has {
+			missingParents = true
+		} else if origin, _ := t.ts.OriginFactID(); origin > 0 {
 			edges = append(edges, db.IntentEdge{From: origin, Rel: db.RelDerivedFrom, To: 0})
+			fellBackToOrigin = true
 		}
 	}
 	id, err := t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
@@ -1983,6 +1994,22 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			if open > 1 {
 				note = "本任务有多个未达成目标，本条意图未挂目标：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals），链路图才能显示「目标→意图」。"
 			}
+		}
+	}
+	if fellBackToOrigin || missingParents {
+		var hint string
+		if missingParents {
+			hint = "本条意图没有给 parent_ids，而图里已经有事实/漏洞：**已按「来源缺失」建好，没有连任务起点**。" +
+				"请立刻用 link_intent_source(intent_id, source_ids=[...]) 把它接回真正的事实/漏洞；" +
+				"不补的话，链路图与后续规划都读不到这条方向从哪来（看起来像凭空出现）。"
+		} else {
+			hint = "本条意图没有给 parent_ids，图里还没有任何事实/漏洞，已兜底连到任务起点（开局正常）。" +
+				"后续一旦有结论支撑，请用 parent_ids 指明来源，或用 link_intent_source 补回来。"
+		}
+		if note != "" {
+			note += "\n" + hint
+		} else {
+			note = hint
 		}
 	}
 	// 血缘边已随节点在同一事务里提交（见上面的 edges / AddIntentGraph）。
@@ -3868,6 +3895,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.acceptArtifactRisk(),
 		// 目标侧痕迹：planner 收官前查看并决定接受风险；清理意图由 worker 执行。
 		t.listFootprints(), t.acceptFootprintRisk(),
+		// 补血缘：add_intent 漏传 parent_ids 时，把已建意图接回真实来源（不动节点、不丢产出）。
+		t.linkIntentSource(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
 		t.coverageMatrix(),

@@ -187,3 +187,87 @@ func TestReportFootprintLinksSourceNodes(t *testing.T) {
 		t.Fatalf("来源连线不完整：intent=%v fact=%v fp=%d edges=%+v", fromIntent, fromFact, fpID, edges)
 	}
 }
+
+// 意图漏填 parent_ids 时会被兜底连到任务起点；link_intent_source 必须能把它接回真实来源，
+// 并去掉那条兜底边——否则图上永远是「从起点发散」。
+func TestLinkIntentSourceRepairsFallbackEdge(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	// 开局（图里还没有事实）漏填 parent_ids：兜底连 origin。
+	out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"开局侦察"}`)
+	if !strings.Contains(out, "兜底连到任务起点") {
+		t.Fatalf("开局漏填 parent_ids 时应给出兜底提示：%s", out)
+	}
+	intentID := lootNodeID(t, out)
+	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "确认上传点可写"}, 5, "confirmed", "work#1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	edgesOf := func() map[string]bool {
+		edges, err := ts.Edges(200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, e := range edges {
+			got[fmt.Sprintf("%d-%s-%d", e.From, e.Rel, e.To)] = true
+		}
+		return got
+	}
+	origin, err := ts.OriginFactID()
+	if err != nil || origin == 0 {
+		t.Fatalf("origin fact: %d err=%v", origin, err)
+	}
+	before := edgesOf()
+	if !before[fmt.Sprintf("%d-derived_from-%d", origin, intentID)] {
+		t.Fatalf("兜底边应存在：%v", before)
+	}
+
+	if out := callTool(t, tools.PlannerTools(), "link_intent_source",
+		fmt.Sprintf(`{"intent_id":%d,"source_ids":[%d]}`, intentID, fact)); !strings.Contains(out, "已补") {
+		t.Fatalf("补血缘失败：%s", out)
+	}
+	after := edgesOf()
+	if !after[fmt.Sprintf("%d-derived_from-%d", fact, intentID)] {
+		t.Fatalf("应补上真实来源边：%v", after)
+	}
+	if after[fmt.Sprintf("%d-derived_from-%d", origin, intentID)] {
+		t.Fatalf("补上真实来源后应去掉起点兜底边：%v", after)
+	}
+
+	// 来源必须是 fact/finding：拿意图当来源要被拒。
+	if out := callTool(t, tools.PlannerTools(), "link_intent_source",
+		fmt.Sprintf(`{"intent_id":%d,"source_ids":[%d]}`, intentID, intentID)); !strings.Contains(out, "不是意图") && !strings.Contains(out, "意图只能锚在") {
+		t.Fatalf("非法来源应被拒绝：%s", out)
+	}
+}
+
+// 图里已有事实时漏填 parent_ids：不能连任务起点（那会让所有意图看起来都从起点长出来），
+// 回执必须点名要求补血缘。
+func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "确认上传点可写"}, 5, "confirmed", "work#1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"从上传点继续推进"}`)
+	if !strings.Contains(out, "link_intent_source") || !strings.Contains(out, "来源缺失") {
+		t.Fatalf("已有事实时漏填 parent_ids 应要求补血缘：%s", out)
+	}
+	intentID := lootNodeID(t, out)
+	origin, _ := ts.OriginFactID()
+	edges, err := ts.Edges(200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range edges {
+		if e.Rel == db.RelDerivedFrom && e.From == origin && e.To == intentID {
+			t.Fatalf("已有事实时不应再兜底连起点：%+v", e)
+		}
+	}
+	// 补上之后就有了真实来源。
+	if out := callTool(t, tools.PlannerTools(), "link_intent_source",
+		fmt.Sprintf(`{"intent_id":%d,"source_ids":[%d]}`, intentID, fact)); !strings.Contains(out, "已补") {
+		t.Fatalf("补血缘失败：%s", out)
+	}
+}
