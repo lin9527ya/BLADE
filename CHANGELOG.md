@@ -17,6 +17,20 @@
 - 依赖 **Norma v0.5.5**：后台任务、同步 Bash、交互式 shell 三处同一纪律
   （SDK 侧此前只 `Wait` 不杀组）
 
+### 测试：后台循环不再跨用例运行
+
+包级跑测试时，`server.New` 起的通知投递 / 触发器调度 / 证据 GC / 保留清理会一直活到
+测试进程退出。任何用 `context.Background()` 建过 Server 的用例都留下一个还在 tick 的
+notifier——它在**后面的**用例运行时继续领取同一个测试库里**所有**渠道的投递行。
+`TestNotifyDigestSegmentsAndDefersRemainder` 的偶发失败（「第 N 轮没有任何进展」，或
+消息里只有 1 条、没有「其余」）就是这么来的：用例自己的 `stepDigest` 被 `SKIP LOCKED`
+挡在另一个 dispatcher 锁住的行外面。
+
+- `server.New` 在 `go test` 下不再启动这四个周期性后台循环（用例都直接调用
+  `stepDigest` / `stepRealtime` / `tickOnce` / `runRetentionSweep`）；Scheduler 照常装配
+- `TestMgmtAPI`、`TestAgentPayloadCarriesSkillAlways` 补上 `m.Close()`：此前它们的
+  连接池与后台 goroutine 会泄漏到整轮测试结束
+
 ### 打法库手工编辑
 
 - 打法详情新增「编辑」：可改标题/摘要/技术栈指纹/favicon/service+端口/页面标题/

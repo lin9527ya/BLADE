@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/lin9527ya/Norma/llm"
@@ -323,18 +324,32 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// s.ctx 是可变字段（测试夹具在构造后用可用 ctx 覆盖它，见 finding_traffic_test），
 		// 边读边写就是数据竞争——-race 会在 CI 上抓出来。启动期捕获一次，语义不变。
 		svcCtx := s.ctx
-		goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(svcCtx) })
-		// 数据库侧的保留清理（llm_usage / activity / server_logs / llm_records）。
-		// 默认全 0 = 不清理，所以这里起 goroutine 不会删任何东西。
-		s.startRetentionSweeper(svcCtx)
+		// 后台循环（证据 GC / 保留清理 / 触发器调度 / 推送投递）**不在测试里跑**。
+		//
+		// 它们连的是同一个测试库，且一直跑到测试进程退出：一个用 context.Background()
+		// 建 Server 的用例（它自己早就结束了）就足以让它的 notifier 在**后面的**用例
+		// 运行时继续按 3 秒 tick 遍历库里所有启用渠道、领取别人的投递行。这不是假想：
+		// TestNotifyDigestSegmentsAndDefersRemainder 的偶发红就是这么来的——用例自己的
+		// stepDigest 因为 SKIP LOCKED 领不到另一个 dispatcher 正锁着的行，于是「这一轮
+		// 没有任何进展」，或者只领到 1 条、消息里没有「其余」。
+		//
+		// 用例都直接调用引擎的单步入口（stepDigest / stepRealtime / tickOnce /
+		// runRetentionSweep），不依赖后台循环。sched 仍然要装配：停机一 tick 的行为
+		// 就是通过 s.sched.tickOnce 断言的。
 		s.seedPythonInterpreter() // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		s.installMCPGuard()       // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
 		// P35：把 Scheduler 存下来，让"停机时这一 tick 做了什么"可被断言（tickOnce）。
 		s.sched = newScheduler(s)
-		goSafe("server/scheduler", nil, func() { s.sched.Run(svcCtx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
-		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
-		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
-		goSafe("server/notifier", nil, func() { newNotifier(s).Run(svcCtx) })
+		if !testing.Testing() {
+			goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(svcCtx) })
+			// 数据库侧的保留清理（llm_usage / activity / server_logs / llm_records）。
+			// 默认全 0 = 不清理，所以这里起 goroutine 不会删任何东西。
+			s.startRetentionSweeper(svcCtx)
+			goSafe("server/scheduler", nil, func() { s.sched.Run(svcCtx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+			// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
+			// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
+			goSafe("server/notifier", nil, func() { newNotifier(s).Run(svcCtx) })
+		}
 		// Fill the tool cache for any enabled MCP that has none yet (notably the
 		// seeded browser MCP on first run). Async so it never blocks startup.
 		goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup(svcCtx) })

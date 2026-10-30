@@ -20,6 +20,9 @@ func TestMgmtAPI(t *testing.T) {
 	if m.pg == nil {
 		t.Skip("postgres unavailable — skipping management API test")
 	}
+	// 必须在用例结束时关掉 Manager：不关的话它的连接池和 New 起的后台 goroutine
+	// 会一直活到测试进程退出，后面的用例（尤其是通知投递）会与它共享同一个测试库。
+	t.Cleanup(func() { _ = m.Close() })
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
@@ -126,6 +129,9 @@ func TestAgentPayloadCarriesSkillAlways(t *testing.T) {
 	if m.pg == nil {
 		t.Skip("postgres unavailable — skipping")
 	}
+	// 见 TestMgmtAPI：Manager 不关就是池子 + 后台 goroutine 泄漏。这里先注册，
+	// LIFO 保证它晚于下面那些还要用 m.pg 的清理函数执行。
+	t.Cleanup(func() { _ = m.Close() })
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
