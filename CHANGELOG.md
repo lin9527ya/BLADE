@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 后台命令不再留下孤儿进程
+
+`sh -c 'scanner &'` 这类写法会让 shell 先退出、后台子进程留在同一进程组里。
+此前只有「超时」和「取消」两条路径会整组杀，其余路径只 `Wait` 不收尾——
+剩下的进程没有 TTL、没人引用，一直跑下去，累积起来能把机器 CPU 吃满。
+
+- `run_execution`：正常退出后对整组补 `SIGKILL`；`cmd.WaitDelay` 让「后台子进程
+  占着 stdout」不再把执行卡在 `running`；新增 `ExecutionService.Shutdown`，停机时
+  整组终止并记 `cancelled`（此前托管进程是 `Setsid` 出来的，重启后仍在跑）
+- 自定义脚本工具：超时 → 整组 `SIGTERM` → `SIGKILL`，退出后清场
+- 依赖 **Norma v0.5.5**：后台任务、同步 Bash、交互式 shell 三处同一纪律
+  （SDK 侧此前只 `Wait` 不杀组）
+
 ### 打法库手工编辑
 
 - 打法详情新增「编辑」：可改标题/摘要/技术栈指纹/favicon/service+端口/页面标题/
