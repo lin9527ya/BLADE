@@ -68,7 +68,10 @@ type execRun struct {
 	hardTimer  *time.Timer
 	// graceTimer 是硬超时后的 SIGKILL 宽限定时器。必须在 reap 里停掉：进程若在宽限期
 	// 内退出，pid 可能被复用，到点再对 -pid 发 SIGKILL 就会误伤无关进程组。
-	graceTimer *time.Timer
+	//
+	// 用 atomic 而不是裸字段：它由硬超时回调写、reap 读，两者在不同 goroutine
+	// （-race 会抓个正着）。
+	graceTimer atomic.Pointer[time.Timer]
 }
 
 // NewExecutionService builds the service over the PG ledger and the data dir.
@@ -210,13 +213,13 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 			killGroup(cmd)
 			// SIGTERM 不是每个进程都听：宽限后强杀整组，兑现"硬超时上限"的承诺
 			// （否则僵住的进程会让台账一直挂在 running，收尾门也跟着悬着）。
-			run.graceTimer = time.AfterFunc(execCancelGrace, func() {
+			run.graceTimer.Store(time.AfterFunc(execCancelGrace, func() {
 				select {
 				case <-run.done: // 已在宽限期内退出：别对可能被复用的 pid 再发信号
 				default:
 					hardKillGroup(cmd)
 				}
-			})
+			}))
 		})
 	}
 	goSafe("execution/reap", nil, func() { s.reap(run) })
@@ -324,8 +327,8 @@ func (s *ExecutionService) reap(run *execRun) {
 	if run.hardTimer != nil {
 		run.hardTimer.Stop()
 	}
-	if run.graceTimer != nil {
-		run.graceTimer.Stop()
+	if t := run.graceTimer.Load(); t != nil {
+		t.Stop()
 	}
 	_ = run.logFile.Close()
 	exitCode := 0
