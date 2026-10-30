@@ -713,10 +713,11 @@ func (s *Server) reseedMainAgentPrompt() {
 // 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
 // reseedGoalsPrompt 完全同构。
 func (s *Server) reseedPlannerPrompt() {
+	// v6：加入「槽位利用率」——空闲 worker ≥2 时本轮必须补至少 1 条独立方向。
 	// v5：parent_ids 从"可选"改成"几乎总是要填"——漏填会让意图全部兜底连到任务起点，
-	// 图上读起来像"只能从起点发散"。代码持有的血缘纪律另见 plannerSystem 的
-	// lineageDisciplineBlock，这里只是把可编辑正文同步到新口径。
-	const flag = "planner_prompt_lineage_v5"
+	// 图上读起来像"只能从起点发散"。代码持有的纪律见 plannerSystem 的
+	// lineageDisciplineBlock / slotUtilizationBlock，这里只是把可编辑正文同步到新口径。
+	const flag = "planner_prompt_slots_v6"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -741,7 +742,8 @@ func (s *Server) reseedPlannerPrompt() {
 	// 只刷新仍带旧默认特征句的正文；已自定义且不含旧句的模板保留（广度纪律由
 	// plannerSystem 的代码持有块兜底，不依赖这次迁移）。
 	if curErr == nil && cur != "" && !strings.Contains(cur, "深度优先于覆盖度") &&
-		!strings.Contains(cur, "广度保底与深度并行") && !strings.Contains(cur, "本方向由哪些上游节点综合得出（可选") {
+		!strings.Contains(cur, "广度保底与深度并行") && !strings.Contains(cur, "本方向由哪些上游节点综合得出（可选") &&
+		!strings.Contains(cur, "槽位利用率") {
 		log.Printf("[prompts] planner 提示词已是自定义版本，保留正文；广度纪律运行时注入")
 		return
 	}
@@ -749,7 +751,7 @@ func (s *Server) reseedPlannerPrompt() {
 		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] planner 提示词已追加新默认版本(意图必须锚在已有结论上,一次性)")
+	log.Printf("[prompts] planner 提示词已追加新默认版本(血缘必填 + 槽位利用率,一次性)")
 }
 
 // reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论

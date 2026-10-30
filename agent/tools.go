@@ -796,9 +796,16 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		out["claimable_intents"] = claimable
 	}
 	if t.workerCap > 0 {
+		// idle_slots 直接给出「还有几个 worker 闲着」。此前只给 workers/running 两个数，
+		// 要模型自己做减法：结果是"有 1 条在跑"就当成"已经有人在干活"，空转的槽位
+		// 没人认领（任务 14 实测：4 个 worker 只跑 1 条，planner 连续几轮不派活）。
+		idle := t.workerCap - len(running)
+		if idle < 0 {
+			idle = 0
+		}
 		q := map[string]any{
 			"workers": t.workerCap, "soft_limit": intentQueueFactor * t.workerCap,
-			"running": len(running),
+			"running": len(running), "idle_slots": idle,
 		}
 		if v, ok := out["claimable_intents"].(int); ok {
 			q["claimable"] = v
