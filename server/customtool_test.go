@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,4 +187,62 @@ func TestHTTPToolTruncatesLargeBody(t *testing.T) {
 	if len(out) >= 40000 {
 		t.Fatalf("oversized http body was not truncated: len=%d", len(out))
 	}
+}
+
+// 自定义脚本工具超时后必须整组清场：脚本里 subprocess.Popen 起的后台进程会留在
+// 同一进程组里，只 Kill 直接子进程（CommandContext 的默认行为）会留下孤儿。
+func TestScriptToolKillsProcessGroupOnTimeout(t *testing.T) {
+	tag := "blade-pytool-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	marker := filepath.Join(t.TempDir(), "ran")
+	code := "open(" + strconv.Quote(marker) + ",'w').write('ran')\n" +
+		"import subprocess, time\n" +
+		"subprocess.Popen(['sh','-c','sleep 120; : " + tag + "'], stdout=open('/dev/null','w'), stderr=subprocess.STDOUT)\n" +
+		"time.sleep(60)\n"
+	body, err := execPython(context.Background(), pythonForTest(t), "probe", code, nil, t.TempDir(), nil, 1500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("execPython: %v", err)
+	}
+	if !strings.Contains(body, "超时终止") {
+		t.Fatalf("应报告超时: %q", body)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Skipf("脚本未真正执行（解释器不可用）：%v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !procWithTag(tag) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("脚本工具超时后仍有后台子进程存活（进程组未清场）")
+}
+
+// pythonForTest 返回本机 python 绝对路径；没有就跳过（该用例依赖真实解释器）。
+func pythonForTest(t *testing.T) string {
+	t.Helper()
+	for _, p := range []string{"/usr/bin/python3", "/usr/local/bin/python3"} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	t.Skip("本机没有 python3，跳过")
+	return ""
+}
+
+func procWithTag(tag string) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		if strings.Contains(strings.ReplaceAll(string(b), "\x00", " "), tag) {
+			return true
+		}
+	}
+	return false
 }

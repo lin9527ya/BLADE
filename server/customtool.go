@@ -436,6 +436,14 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	c := exec.CommandContext(runCtx, interp, tmp)
+	// 与 run_execution 同一套进程组纪律：独立会话 + 超时杀整组 + 退出后清场。
+	// 默认的 CommandContext 取消只 Kill 直接子进程，脚本再起的扫描器全成孤儿。
+	startDetached(c)
+	c.Cancel = func() error {
+		killGroup(c) // SIGTERM 整组；WaitDelay 兜底后由下面补 SIGKILL
+		return nil
+	}
+	c.WaitDelay = execWaitDelay
 	c.Dir = workDir
 	c.Env = append(os.Environ(), sessionEnv...) // 会话代理 env
 	for k, v := range params {                  // 标量参数镜像成 TOOL_<NAME>
@@ -448,6 +456,10 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	// 自定义工具是 agent 写的代码，与 Bash 同等对待：降权 + 环境清洗（未启用时 no-op）。
 	hardenAgentCmd(c)
 	out, err := c.CombinedOutput()
+	// 脚本退出后整组补一刀：脚本用 subprocess.Popen 起的后台进程会留在组里，
+	// 不杀就是孤儿（没有 TTL、没人引用，一直烧 CPU）。直接子进程已退出，这里只可能
+	// 杀到它留下的后代。SIGTERM 收到宽限后仍未退的由 hardKillGroup 收尾。
+	hardKillGroup(c)
 	body := string(out)
 	if runCtx.Err() == context.DeadlineExceeded {
 		body += "\n... [超时终止] ..."
