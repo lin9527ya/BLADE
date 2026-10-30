@@ -429,7 +429,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 **本轮该产出几个意图（先想清楚这条）**：
 - **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何**可领**或 running 意图】（claimable_intents=0 且 running_intents 为空——被前置挡住的意图不算"有活可干"），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done_intents 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。**这条被迫产出的意图落点由你判断**：还没动用的战果是现成的落点之一（见下面「手上的能力」），但另开一条全新方向同样正当——硬底线管的是「必须产出」，不管产出什么。
-- **槽位利用率（与硬底线并列）**：intent_queue.idle_slots ≥ 2 且未饱和时，本轮**必须至少补 1 条**独立方向——有 worker 闲着就是浪费并行度（详见文末【槽位利用率】代码持有段）。
+- **槽位利用率（与硬底线并列）**：intent_queue.idle_slots ≥ 2 且未饱和时，本轮新增意图数应 **≥ min(idle_slots, 4)**——有 worker 闲着就是浪费并行度（详见文末【槽位利用率】代码持有段）。
 - 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。**但 ② 只在没有其它独立方向时才成立**：还有空闲槽位、又有互不依赖的未测面时，应当派那些，而不是整体等待。
 - 反过来：确有【未覆盖、且不依赖在跑 work】的新方向，或目标未达成且范围内仍有未测面，就该派——别把 0 意图当偷懒的默认。
 
@@ -500,8 +500,8 @@ const slotUtilizationBlock = `
 
 【槽位利用率（代码持有）】
 - 态势里的 intent_queue 给出 workers（槽位总数）、running（在跑意图数）、idle_slots（空闲槽位数）、claimable（可领意图数）。**空闲槽位就是浪费掉的并行度**。
-- **idle_slots ≥ 2 且本轮没有因为队列饱和（saturated=true）而受限时，本轮必须至少新增 1 条意图**，除非能逐条说清"我想到的方向都已被 open/running 意图覆盖"——这是唯一允许在有空闲槽位时产出 0 意图的理由；「在等某条 work 的产出」「硬底线没触发」「已有 1 条在跑」都**不是**理由（并行本来就是为了同时推进多条互不依赖的方向）。
-- 派什么：优先【不依赖在跑 work 的独立方向】——不同入口面、不同资产、不同风险类、另一条利用链；已经在跑的意图的后续步骤要等产出，不要为了凑数把它拆成下游意图（那会空转）。
+- **idle_slots ≥ 2 且本轮没有因为队列饱和（saturated=true）而受限时，本轮新增意图数应 ≥ min(idle_slots, 4)**（4 是本轮名额上限）。唯一例外：能逐条说清"我想到的独立方向都已被 open/running 意图覆盖"。「在等某条 work 的产出」「硬底线没触发」「已经有 1 条在跑」都**不是**理由——并行本来就是为同时推进多条互不依赖的方向，留 3 个槽位闲着却只派 1 条，等于把 4 路并行降成 1 路。
+- 派什么：优先【不依赖在跑 work 的独立方向】——不同入口面、不同资产、不同风险类、另一条利用链；已经在跑的意图的后续步骤要等产出，不要为了凑数把它拆成下游意图（那会空转）。独立方向不够时，宁可派"补证缺口 / 复核否定结论 / 换机理重打同一入口"，也不要空着槽位。
 - 空闲槽位不是"派得越多越好"的许可：队列仍受 saturated 约束；同一条方向换措辞重复派仍是严重错误。补的是**并行的广度**，不是重复。`
 
 // breadthDisciplineBlock is code-owned (like hintLifecycleBlock): existing DB
@@ -758,15 +758,21 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 				emit(r)
 			}
 		})
-	// 槽位空转可见化：本轮一条意图都没派、收尾时仍有 ≥2 个空闲槽位，就在时间线上留一行。
-	// 纪律（slotUtilizationBlock）要求这种情况必须给出理由；把它记下来，操作者能直接看出
-	// 是哪一轮空转、空了几个槽，而不是只在 worker 列表里看到几个 idle 却不知道为什么。
-	// 只观察、不阻断——确实已覆盖时 0 意图是正确的，硬拦会制造垃圾方向。
-	if emit != nil && err == nil && !tsx.GoalMet && tsx.intentsRound == 0 {
+	// 槽位空转可见化：本轮派的意图数没跟上空闲槽位，就在时间线上留一行，写清空了几个槽、
+	// 本轮派了几条、按纪律应该派几条。纪律（slotUtilizationBlock）只要求"能说清已被覆盖"
+	// 才允许少派；把它记下来，操作者能直接看出是哪一轮空转，而不是只在 worker 列表里看到
+	// 几个 idle 却不知道为什么。只观察、不阻断——确实已覆盖时少派是正确的，硬拦会制造垃圾。
+	if emit != nil && err == nil && !tsx.GoalMet {
 		if states, serr := ts.CountIntentStates(); serr == nil {
-			if idle := p.workers() - states["running"]; idle >= 2 {
+			idle := p.workers() - states["running"]
+			want := idle
+			if want > 4 {
+				want = 4 // 与"本轮最多 4 条"的名额上限一致
+			}
+			if idle >= 2 && tsx.intentsRound < want {
 				emit(db.Activity{Worker: "planner", Kind: "text",
-					Summary: fmt.Sprintf("本轮未派新意图，收尾时仍有 %d 个 worker 空闲（在跑 %d / 共 %d）：按槽位利用率纪律应至少补 1 条独立方向", idle, states["running"], p.workers())})
+					Summary: fmt.Sprintf("本轮派了 %d 条意图，收尾时仍有 %d 个 worker 空闲（在跑 %d / 共 %d）：按槽位利用率纪律应派 %d 条，未补齐时请说明哪条方向覆盖了它们",
+						tsx.intentsRound, idle, states["running"], p.workers(), want)})
 			}
 		}
 	}
