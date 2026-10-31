@@ -68,6 +68,10 @@ var storageCategories = []storageCategorySpec{
 	// 先按载荷档清空四个大 TEXT（保留元数据行），更早的再由整行档删掉。
 	{Key: "db_llm_record_bodies", Label: "LLM 录制载荷（数据库）", SettingKey: settingRetentionLLMRecordBodys, DBTable: db.RetentionLLMRecords, DBBodies: true},
 	{Key: "db_llm_records", Label: "LLM 录制整行（数据库）", SettingKey: settingRetentionLLMRecords, DBTable: db.RetentionLLMRecords},
+	// 长任务台账与凭据尝试：此前**完全没有回收路径**，随使用线性增长（台账刻意跨任务
+	// 保留作为审计，但没有上限就只是无限增长）。默认 0 = 不清理，与其它分类一致。
+	{Key: "db_tool_executions", Label: "长任务台账（数据库）", SettingKey: settingRetentionToolExecutions, DBTable: db.RetentionToolExecutions},
+	{Key: "db_credential_attempts", Label: "凭据尝试记录（数据库）", SettingKey: settingRetentionCredentialAttempts, DBTable: db.RetentionCredentialAttempts},
 }
 
 // storageUnit 是一个可删单元（任务目录 / 会话目录 / 单个转写文件…）。

@@ -40,6 +40,8 @@ type RetentionPatch = {
   storage_retention_llm_records_days: number;
   storage_retention_llm_record_bodies_days: number;
   storage_retention_traffic_days: number;
+  storage_retention_tool_executions_days: number;
+  storage_retention_credential_attempts_days: number;
 };
 
 const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
@@ -54,6 +56,8 @@ const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
   db_llm_record_bodies: "storage_retention_llm_record_bodies_days",
   db_llm_records: "storage_retention_llm_records_days",
   traffic: "storage_retention_traffic_days",
+  db_tool_executions: "storage_retention_tool_executions_days",
+  db_credential_attempts: "storage_retention_credential_attempts_days",
 };
 
 const ZERO_DAYS: RetentionPatch = {
@@ -68,6 +72,8 @@ const ZERO_DAYS: RetentionPatch = {
   storage_retention_llm_records_days: 0,
   storage_retention_llm_record_bodies_days: 0,
   storage_retention_traffic_days: 0,
+  storage_retention_tool_executions_days: 0,
+  storage_retention_credential_attempts_days: 0,
 };
 
 function fmtBytes(n: number): string {
@@ -172,6 +178,8 @@ export default function StoragePage() {
         storage_retention_llm_records_days: s.storage_retention_llm_records_days ?? 0,
         storage_retention_llm_record_bodies_days: s.storage_retention_llm_record_bodies_days ?? 0,
         storage_retention_traffic_days: s.storage_retention_traffic_days ?? 0,
+        storage_retention_tool_executions_days: s.storage_retention_tool_executions_days ?? 0,
+        storage_retention_credential_attempts_days: s.storage_retention_credential_attempts_days ?? 0,
       });
     } catch (e) {
       toast.error("读取存储体检失败：" + String((e as Error)?.message ?? e));

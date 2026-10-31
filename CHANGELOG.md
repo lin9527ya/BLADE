@@ -19,8 +19,9 @@ MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合�
 1. **状态机仍有四套表示**："任务"有 `db.Task` / `server.Task` / `TaskDTO` / `resolvedTaskStatus`
    四种表示与推导，库里 `status` 存不下 `queued`（靠 `queued` 布尔列表达）；意图状态 29 个
    写入点只有 11 个走 CAS。终态集合本身已收敛到 `TerminalStatusSQL()`（见上节）。
-2. **保留策略默认永不清理且只覆盖 4 张表**：`tool_executions`、`credential_attempts`、
-   `notification_*`、`conversation_activities` 都没有回收路径；文件侧只能手工清。
+2. **保留策略默认永不清理**（0 = 不清理，新装不会自动删任何东西），且仍有几张表没有
+   回收路径：`notification_*`、`conversation_activities`、`intercept_pending`；文件侧的
+   任务产物/转写只能手工清。
 3. **文档债**：`docs/` 在 `.gitignore` 里，代码引用的 12 份设计文档从不存在（历史里也没有）；
    CHANGELOG 的 0.7.x 段落缺失（本文件此前停在 0.6.1）。
 4. **前端工程门禁**：CI 不跑 lint/tsc（`DEVELOPMENT.md` 声称跑了），无 e2e，前端测试约 0.9%
@@ -79,6 +80,20 @@ worker 抓到的目标页面内容里只要有一句提示注入，就等价于�
 
 `reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
 跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 数据：长任务台账与凭据尝试有了回收路径
+
+这两张表此前**完全没有回收路径**，随使用线性增长且页面上没有开关：
+
+- `tool_executions`：每起一条 `run_execution` 一行，刻意在任务删除后保留作为审计
+  （但"保留"没有上限就只是无限增长）。只清**已落终态**的行——`queued`/`running` 还在被
+  reaper 与收尾门引用
+- `credential_attempts`：每尝试一次凭据一行
+
+新增两个保留天数设置（`storage_retention_tool_executions_days` /
+`storage_retention_credential_attempts_days`，默认 0 = 不清理，与其它分类一致）、
+对应的存储页输入框，以及按时间列扫过期行的索引（`idx_tool_exec_created` /
+`idx_cred_attempts_at`）。按任务保护：非终态任务的行不会被删。
 
 ### 一致性：终态集合在 SQL 里不再被手抄
 

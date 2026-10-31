@@ -328,6 +328,8 @@ ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS description TEXT NOT NULL D
 -- 如实记 applied=false，不静默当成"已限住"）。人/模型据此判断"命令失败是不是撞了限额"。
 ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS limits JSONB NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_tool_exec_intent  ON tool_executions(intent_id, status);
+-- 保留清理按 created_at 扫过期行（台账刻意跨任务保留，但没有回收路径会无限增长）。
+CREATE INDEX IF NOT EXISTS idx_tool_exec_created ON tool_executions(created_at);
 CREATE INDEX IF NOT EXISTS idx_tool_exec_task    ON tool_executions(task_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_exec_active  ON tool_executions(status) WHERE status IN ('queued','running');
 DROP TRIGGER IF EXISTS trg_tool_exec_upd ON tool_executions;
@@ -1821,3 +1823,6 @@ CREATE INDEX IF NOT EXISTS idx_cred_attempts_budget
     ON credential_attempts (task_id, host, account, at DESC);
 CREATE INDEX IF NOT EXISTS idx_cred_attempts_task
     ON credential_attempts (task_id, id);
+-- 保留清理按 at 扫过期行（此前这张表没有任何回收路径，随使用线性增长）。
+CREATE INDEX IF NOT EXISTS idx_cred_attempts_at
+    ON credential_attempts (at);

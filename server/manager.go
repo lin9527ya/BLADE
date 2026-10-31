@@ -375,6 +375,9 @@ const (
 	settingRetentionServerLogs     = "storage_retention_server_logs_days"
 	settingRetentionLLMRecords     = "storage_retention_llm_records_days"
 	settingRetentionLLMRecordBodys = "storage_retention_llm_record_bodies_days"
+	// 长任务台账与凭据尝试：两者都随使用线性增长且此前没有回收路径。
+	settingRetentionToolExecutions     = "storage_retention_tool_executions_days"
+	settingRetentionCredentialAttempts = "storage_retention_credential_attempts_days"
 	// 流量归档的保留天数。它不在数据库里而在流量记录器自己的 SQLite + blob 目录里，
 	// 删除必须走 traffic 包的 API（见 traffic.DeleteOlderThan）。
 	settingRetentionTraffic = "storage_retention_traffic_days"

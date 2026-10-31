@@ -32,6 +32,12 @@ const (
 	RetentionLLMUsage   RetentionTable = "llm_usage"
 	RetentionServerLogs RetentionTable = "server_logs"
 	RetentionLLMRecords RetentionTable = "llm_records"
+	// 以下两张此前**没有任何回收路径**：tool_executions 是长任务台账（每起一条
+	// run_execution 一行，刻意在任务删除后保留作为审计），credential_attempts 每
+	// 尝试一次凭据一行。两者都随使用线性增长，且页面上没有开关。
+	// 归属任务的行按任务保护（非终态任务的执行/尝试不能删——它们还在被引用）。
+	RetentionToolExecutions     RetentionTable = "tool_executions"
+	RetentionCredentialAttempts RetentionTable = "credential_attempts"
 )
 
 // RetentionStat 是一张表在一次体检里的计数与体积（试算：只读）。
@@ -80,6 +86,18 @@ func retentionFilter(
 	case RetentionServerLogs:
 		// 服务端日志不归属任务，没有需要保护的集合。
 		return "created_at", "created_at < $1", []any{cutoff}, nil
+	case RetentionToolExecutions:
+		// task_id 是 TEXT NOT NULL DEFAULT ''（不是 NULL），所以 `NOT (...)` 足够；
+		// 不属于任何任务的行 task_id=''，空保护集里不含它，照常可清。
+		// 只清**已落终态**的行：queued/running 的台账还在被 reaper 与收尾门引用。
+		return "created_at",
+			"created_at < $1 AND status NOT IN ('queued','running') AND NOT (task_id = ANY($2::text[]))",
+			[]any{cutoff, protectedTasks}, nil
+	case RetentionCredentialAttempts:
+		// task_id 是 BIGINT NOT NULL；同样按任务保护（用任务 id 集合，不是探索 id）。
+		return "at",
+			"at < $1 AND NOT (task_id::text = ANY($2::text[]))",
+			[]any{cutoff, protectedTasks}, nil
 	}
 	return "", "", nil, fmt.Errorf("未知的清理目标表 %q", table)
 }

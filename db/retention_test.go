@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,5 +142,30 @@ VALUES ($1,$2,'m','ok','REQ','RESP','RAWQ','RAWS'),
 	}
 	if withBodies != 0 {
 		t.Fatalf("rows still carrying request_body = %d, want 0", withBodies)
+	}
+}
+
+// TestRetentionCoversLedgerTables 钉住两张"此前完全没有回收路径"的表也进了清理集合：
+// 长任务台账（tool_executions）与凭据尝试（credential_attempts）。
+//
+// 判据是 retentionFilter 能给出可执行的时间列与条件——没有这一支，页面上的开关
+// 就算存了值也不会删任何东西（switch 落到 default 报"未知的清理目标表"）。
+func TestRetentionCoversLedgerTables(t *testing.T) {
+	cutoff := time.Now().AddDate(0, 0, -30)
+	protected := []string{"42"}
+	expls := []int64{7}
+	for _, table := range []RetentionTable{RetentionToolExecutions, RetentionCredentialAttempts} {
+		col, where, args, err := retentionFilter(table, cutoff, protected, expls)
+		if err != nil {
+			t.Fatalf("%s 没有清理条件：%v", table, err)
+		}
+		if col == "" || where == "" || len(args) == 0 {
+			t.Fatalf("%s 的清理条件不完整：col=%q where=%q", table, col, where)
+		}
+	}
+	// 长任务台账只清已落终态的行：queued/running 还在被 reaper 与收尾门引用。
+	_, where, _, _ := retentionFilter(RetentionToolExecutions, cutoff, protected, expls)
+	if !strings.Contains(where, "'queued'") || !strings.Contains(where, "'running'") {
+		t.Fatalf("长任务台账的清理条件没有排除在跑的行：%s", where)
 	}
 }
