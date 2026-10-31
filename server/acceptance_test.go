@@ -5900,10 +5900,23 @@ func accP46(t *testing.T, e *accEnv) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"now", "runtime", "tasks", "llm", "executions", "db"} {
+	for _, key := range []string{
+		"now", "runtime", "tasks", "llm", "executions", "db",
+		// 新增的三块：HTTP 请求（QPS/错误率）、被丢弃的活动行（不可恢复的审计丢失）、
+		// 归档队列深度与任务结局分布。
+		"http", "dropped_activity", "archives", "task_status_counts",
+	} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("metrics 缺少 %q", key)
 		}
+	}
+	if counts, ok := body["task_status_counts"].(map[string]any); !ok || len(counts) == 0 {
+		t.Errorf("task_status_counts 应有至少一个任务状态：%v", body["task_status_counts"])
+	}
+	if dropped, ok := body["dropped_activity"].(map[string]any); !ok {
+		t.Error("dropped_activity 应是一个对象")
+	} else if _, ok := dropped["total"]; !ok {
+		t.Error("dropped_activity 缺少 total")
 	}
 	tasks, _ := body["tasks"].([]any)
 	found := false

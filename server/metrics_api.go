@@ -97,6 +97,13 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		tasks = append(tasks, item)
 	}
 	out["tasks"] = tasks
+	// 任务结局分布：多少任务以 done / timeout / policy_blocked / failed 收场。
+	// 这是"平台到底在把活儿做成还是耗死"的第一个数字，此前只存在于表里。
+	byStatus := map[string]int{}
+	for _, t := range all {
+		byStatus[s.resolvedTaskStatus(t)]++
+	}
+	out["task_status_counts"] = byStatus
 	// 被丢弃的活动行：不可恢复的审计丢失，此前只存在于一行日志里（重启即失）。
 	// 既有进程级总数，也有按任务的明细（谁在丢）。
 	dropped := make(map[string]int64, len(all))
