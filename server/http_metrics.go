@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,7 +54,9 @@ func (h *latencyHist) quantile(q float64) float64 {
 	if h.samples == 0 {
 		return 0
 	}
-	target := int64(float64(h.samples) * q)
+	// 必须向上取整：4 个样本的 p95 是"第 4 个"，用截断会得到第 3 个（中位数），
+	// 在样本很少时把 p95 报成 p50——这是测试抓到的真实缺陷，不是测试过严。
+	target := int64(math.Ceil(float64(h.samples) * q))
 	if target < 1 {
 		target = 1
 	}

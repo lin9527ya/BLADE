@@ -46,7 +46,9 @@
   `npm run build:static`。CI 的 `go` job 覆盖 Go 侧，`web` job 覆盖前端
   （`tsc --noEmit`、`npm test`、`build:static`）；biome lint 仍不进门禁。
 - 依赖漏洞：`govulncheck ./...`（CI 已设为门禁）；前端 `npm audit --omit=dev`
-  （当前仅剩低危传递依赖）。`npm run check` 仍有较大的既有格式基线，暂不作为门禁。
+  （当前仅剩低危传递依赖）。`npm run check` 仍有很大的既有基线（correctness 一类
+  就有 9.6 万条），暂不作为门禁——把它设成门禁等于要求先做一次全仓格式化，
+  与功能改动混在一起反而更难审。CI 已覆盖 `tsc --noEmit`。
 - Docker 交付：`./build.sh --docker` 产出 `dist/<arch>/blade`；
   `POSTGRES_PASSWORD=ci docker compose config` 校验 compose。
 - 个别用例会写共享测试库（如 playbook 提示词），已加 `t.Cleanup` 恢复；新增用例
