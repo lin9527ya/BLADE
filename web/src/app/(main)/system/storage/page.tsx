@@ -281,6 +281,12 @@ export default function StoragePage() {
         </Card>
       )}
 
+      {cleanable.length > 0 && cleanable.every((c) => (days[RETENTION_KEYS[c.key]] ?? 0) === 0) && (
+        <p className="text-muted-foreground text-xs">
+          当前所有保留天数都是 0（<strong>永不清理</strong>）：库与磁盘会随使用持续增长。
+          生产环境建议至少给「执行活动流」「LLM 用量」「后端日志」设一个天数。
+        </p>
+      )}
       <div className="flex flex-wrap items-end gap-3">
         {cleanable.map((c) => (
           <div key={c.key} className="grid gap-1.5">
