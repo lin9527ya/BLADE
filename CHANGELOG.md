@@ -31,7 +31,9 @@ MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合�
    **请求到 run 的关联**（HTTP `requestID` 没有写进 `activity`/`llm_usage`/`tool_executions`）。
 6. **备份/恢复（已修）**：`jwt.key`/`.env` 已进备份集，`pg_restore` 失败会连库带文件
    一起回滚，版本不匹配会在动手前拒绝。见下节。
-7. **容器以 root 运行**，无 `cap_drop`/`read_only`；CI actions 按 tag 而非 commit SHA 固定。
+7. **容器仍以 root 启动**（`BLADE_AGENT_USER` 降权的前提），但已 `cap_drop: ALL` +
+   `no-new-privileges`，只加回必要的 6 个 capability；未做 `read_only`（agent 需要写
+   `/tmp` 与 `data/`）。CI actions 已按 commit SHA 固定。
 
 ### 后台命令不再留下孤儿进程
 
@@ -81,6 +83,19 @@ worker 抓到的目标页面内容里只要有一句提示注入，就等价于�
 
 `reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
 跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 供应链与容器加固
+
+- **CI 的 action 全部按 commit SHA 固定**（附 `# v4` 注释便于升级）。按 tag 固定时，
+  上游可以随时把 tag 指向别的提交，而 `release` job 带着 `contents: write`——
+  那等于把发布权交给一个能被移动的引用
+- `release.yml` 的 Go 版本改为从 `go.mod` 读（此前写死 `"1.26"`，发布件用浮动 patch
+  编译而测试跑在 `1.26.10` 上）
+- **Node 改用官方二进制 + 写死的 sha256**，不再 `curl … | bash` 执行 NodeSource 的
+  安装脚本——那条路每次构建都会跑上游的最新脚本，与前面对 jadx/apktool 的纪律不一致
+- **容器收窄特权面**：`no-new-privileges` + `cap_drop: ALL`，只加回降权与文件属主
+  需要的 `CHOWN/DAC_OVERRIDE/FOWNER/SETGID/SETUID/KILL`。容器内仍以 root 启动是**有意的**
+  （`BLADE_AGENT_USER` 要先 root 再 setuid），但不再持有其余能力
 
 ### 运维：备份覆盖 `jwt.key` / `.env`，恢复失败会回滚
 

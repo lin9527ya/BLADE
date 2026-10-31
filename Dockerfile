@@ -27,7 +27,12 @@ ARG APKTOOL_VERSION=2.11.1
 ARG JADX_SHA256=545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974
 ARG APKTOOL_SHA256=56d59c524fc764263ba8d345754d8daf55b1887818b15cd3b594f555d249e2db
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
-# Node 从 NodeSource 装 20.x：bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20。
+# Node 用**官方二进制 + 写死的 sha256**，不用 `curl … | bash` 的 NodeSource 脚本：
+# 那条路每次构建都会执行上游的最新安装脚本（可被随时替换），与前面对 jadx/apktool
+# 的纪律不一致。bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20，所以自己装。
+ARG NODE_VERSION=22.14.0
+ARG NODE_SHA256_AMD64=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec
+ARG NODE_SHA256_ARM64=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050
 # 移动端三件套：
 #   adb            —— Debian bookworm 的 android-sdk-platform-tools（连真机/模拟器）
 #   jadx / apktool —— 都跑在 JRE 上，装 openjdk-17-jre-headless；apktool 用上游 jar
@@ -35,12 +40,22 @@ ARG APKTOOL_SHA256=56d59c524fc764263ba8d345754d8daf55b1887818b15cd3b594f555d249e
 # 注意：**不装 Android SDK 本体**（几十 GB），adb 只需要 platform-tools 客户端；
 # 模拟器与真机在容器外，adb 通过 TCP（adb connect）连过去。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates ripgrep curl wget vim git jq unzip \
+      ca-certificates ripgrep curl wget vim git jq unzip xz-utils \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
       adb openjdk-17-jre-headless \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+# Node（官方二进制，按目标架构校验 sha256）。
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) node_arch=x64;   node_sha="${NODE_SHA256_AMD64}" ;; \
+      arm64) node_arch=arm64; node_sha="${NODE_SHA256_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
+    echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner; \
+    rm -f /tmp/node.tar.xz; \
+    node --version; npm --version
 # jadx（反编译）与 apktool（解包/重打包）。
 #
 # 两者都从上游按**固定版本 URL** 取，并校验**写死的 sha256**：镜像内容必须可复现，
