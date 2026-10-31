@@ -35,6 +35,25 @@
 > 测试加 `-p 1`；前端构建设 `NODE_OPTIONS=--max-old-space-size=2048`，且不要与
 > 全量 Go 测试同时跑。
 
+## 二·五、发版
+
+发布正文取自 `CHANGELOG.md` 里该版本的段落，**不是** GitHub 自动生成的提交列表：
+
+```bash
+# 1) 先在 CHANGELOG.md 的 [Unreleased] 之上补一段
+#    ## [0.7.7] - 2026-11-01
+#    - ……（一两句，写给人看：改了什么、要注意什么）
+# 2) 打 tag 并推送，release workflow 会用 scripts/changelog-section.sh 抽这一段作为正文
+git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
+```
+
+漏写段落时发布 **会失败**（脚本返回非零），这是有意的：宁可卡住一次，也不要悄悄
+退回一份没人读过的提交列表。本地可以先验：
+
+```bash
+./scripts/changelog-section.sh v0.7.7   # 打印正文；找不到时退出码 3
+```
+
 ## 三、测试隔离
 
 - 测试库必须独立：`BLADE_TEST_PG_DSN` 指向名字含 `test`/`acceptance` 的库。

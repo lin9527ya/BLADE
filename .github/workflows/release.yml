@@ -135,6 +135,7 @@ jobs:
     needs: binaries
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 # 取 CHANGELOG 与抽段脚本
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: pkg-*
@@ -143,12 +144,17 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum *.zip > SHA256SUMS
+      # 发布正文 = CHANGELOG 里该版本的段落。此前用 generate_release_notes，
+      # 正文是 GitHub 按提交自动生成的列表，与仓库维护的 CHANGELOG 是两套东西。
+      # 找不到对应段落时脚本返回非零 → 发布失败，逼着补 changelog（不静默退回提交列表）。
+      - name: Extract release notes from CHANGELOG
+        run: ./scripts/changelog-section.sh "${GITHUB_REF_NAME}" > release-notes.md
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             dist/*.zip
             dist/SHA256SUMS
-          generate_release_notes: true
+          body_path: release-notes.md
 
   # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
   #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）

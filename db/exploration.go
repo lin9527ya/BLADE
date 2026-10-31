@@ -689,6 +689,15 @@ WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
 	return n, nil
 }
 
+// SetIntentState 无条件设置一条意图的状态。
+//
+// **生产路径不要用它**——它是唯一一个不带状态谓词的意图写入点。并发下它会覆盖掉
+// worker 的收尾结论（"重跑回滚把刚跑完的意图改回 blocked"这类问题不报错，只让状态
+// 看起来莫名其妙）。生产代码一律用 CompareAndSetIntentState。
+//
+// 保留它是因为测试与播种需要"直接摆一个状态"的捷径：那些调用点没有并发，也都在
+// 断言自己刚构造的场景。db 包里有一条断言盯着它只在测试里出现（见
+// intent_state_guard_test.go）。
 func (s *ExplorationStore) SetIntentState(id int64, state string) error {
 	// terminal states stamp completed_at; reopening (back to open/running) clears it.
 	terminal := IntentStateTerminal(state)

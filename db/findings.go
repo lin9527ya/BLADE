@@ -377,11 +377,14 @@ func (d *DB) ListFindingGroups(f FindingFilter, page, pageSize int) ([]FindingGr
 		order = `MAX(CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST`
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
+	// 这里的 CASE 是 DeriveTaskStatus 的**SQL 近似**：它看不到引擎内存态（Started /
+	// Ready / 引擎暂停），只能按库里的列推。因此它只用于分组展示，不用于任何判定。
+	// 终态集合与派生状态名都从 task_status.go 取，避免再次各抄一份。
 	query := fmt.Sprintf(`SELECT t.id, COALESCE(t.name,''), COALESCE(t.description,''), COALESCE(
 		CASE
 			WHEN t.status IN `+TerminalStatusSQL()+` THEN t.status
-			WHEN t.queued THEN 'queued'
-			WHEN t.paused THEN 'paused'
+			WHEN t.queued THEN '`+TaskStatusQueued+`'
+			WHEN t.paused THEN '`+TaskStatusPaused+`'
 			ELSE t.status
 		END, ''),
 		COUNT(*),

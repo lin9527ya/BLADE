@@ -408,27 +408,31 @@ func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resolvedTaskStatus 把"库里的 status + 引擎内存态"折成 API 展示用的单一状态。
+//
+// 推导本身在 db.DeriveTaskStatus（纯函数、可穷举测试）；这里只负责把运行时的
+// 输入收集起来。此前推导逻辑长在这个函数里、而 db 侧的 SQL 另写了一份近似的，
+// 两份迟早漂移——现在只有一处。
 func (s *Server) resolvedTaskStatus(t *Task) string {
 	if t == nil {
-		return "created"
+		return db.TaskStatusCreated
 	}
 	lifecycle := t.lifecycleSnapshot()
-	switch {
-	case isTerminalStatus(lifecycle.Status):
-		return lifecycle.Status
-	case lifecycle.Queued:
-		return "queued"
-	case lifecycle.Paused || s.engine.IsPaused(t.ID):
-		return "paused"
-	case t.llmStateSnapshot().FailoverState == "chain_exhausted" && s.engine.Started(t.ID):
-		// LLM readiness is an execution dependency, not lifecycle state. Keeping
-		// an exhausted task running lets the user edit/reset its chain directly.
-		return "running"
-	case s.engine.Started(t.ID) && s.engine.ReadyFor(t):
-		return "running"
-	default:
-		return "created"
+	started := s.engine.Started(t.ID)
+	// ReadyFor 会去解析 LLM provider（有成本、且对未启动的任务没有意义）。只有
+	// 已经启动的任务才需要它——见 TestResolvedTaskStatusSkipsProviderForUnstartedTask。
+	ready := false
+	if started {
+		ready = s.engine.ReadyFor(t)
 	}
+	return db.DeriveTaskStatus(db.TaskStatusInput{
+		Persisted:            lifecycle.Status,
+		Queued:               lifecycle.Queued,
+		Paused:               lifecycle.Paused || s.engine.IsPaused(t.ID),
+		Started:              started,
+		Ready:                ready,
+		LLMFailoverExhausted: started && t.llmStateSnapshot().FailoverState == "chain_exhausted",
+	})
 }
 
 func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
@@ -529,7 +533,16 @@ func restoreRerunIntent(t *Task, before *db.Node) error {
 	if before.State == "blocked" && before.BlockedReason != "" {
 		return t.Store.SetIntentBlockedReason(before.ID, before.BlockedReason)
 	}
-	return t.Store.SetIntentState(before.ID, before.State)
+	// 重跑把它从 before.State 置成了 open，回滚就只在这个前提成立时生效（CAS）：
+	// 并发下如果是 worker 抢先领取/收尾（已经不是 open），保留它的结论而不是覆盖回旧状态。
+	restored, err := t.Store.CompareAndSetIntentState(before.ID, "open", before.State)
+	if err != nil {
+		return err
+	}
+	if !restored {
+		return fmt.Errorf("意图已不在 open（可能已被重新领取或收尾），未回滚到 %s", before.State)
+	}
+	return nil
 }
 
 func (s *Server) rerunIntent(w http.ResponseWriter, r *http.Request) {

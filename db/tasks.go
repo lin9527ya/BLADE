@@ -85,7 +85,7 @@ type TaskDeletePreparation struct {
 // failed 目前**没有自动写入点**，是保留态：平台把"没做成"分别归到 timeout /
 // policy_blocked / paused+人工决定，而不是笼统地判失败；保留它是为了外部 API 与
 // 历史数据能表达"任务运行失败"，以及给未来真正的不可恢复故障留出口。
-var TerminalStatuses = []string{"done", "failed", "timeout", "policy_blocked"}
+var TerminalStatuses = []string{TaskStatusDone, TaskStatusFailed, TaskStatusTimeout, TaskStatusPolicyBlocked}
 
 func IsTerminal(status string) bool {
 	for _, t := range TerminalStatuses {

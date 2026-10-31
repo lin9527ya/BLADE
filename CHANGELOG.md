@@ -4,6 +4,38 @@
 
 ## [Unreleased]
 
+### 一致性：任务状态与意图状态收敛
+
+两处"同一个概念有多份实现"的债务：
+
+**任务状态**（此前四套表示、四种推导、六处 SQL 字面量）
+
+- 新增 `db/task_status.go`：`PersistedTaskStatuses`（库里能存的 7 个值）与
+  `DerivedTaskStatuses`（+ 派生的 `queued`）成为唯一定义，`TerminalStatuses` 也改为引用常量
+- 推导收敛成纯函数 `db.DeriveTaskStatus(TaskStatusInput)`；`server.resolvedTaskStatus`
+  只负责收集运行时输入
+- `db/findings.go` 的 SQL 近似推导改用同一组常量，并在注释里写明"看不到引擎内存态、
+  只用于分组展示"
+- 三条断言：推导优先级矩阵穷举、派生集合覆盖全部持久化状态、**schema 的 CHECK 与
+  Go 集合一致**、**前端 `TaskStatus` 联合类型与后端集合一致**（读源码做文本断言）
+
+**意图状态**（此前 29 个写入点、只有 11 个带状态谓词）
+
+- `SetIntentState` 加注释明确它**只供测试/播种**使用（无状态谓词，并发下会覆盖
+  worker 的收尾结论）；生产路径的重跑回滚改用 `CompareAndSetIntentState`
+- 新增静态断言：生产代码里再出现 `.SetIntentState(` 就失败
+- 新增语义用例：CAS 命中/落空、租约回收的 owner 谓词、删除的状态白名单
+
+### 发布：正文取自 CHANGELOG
+
+`release.yml` 此前用 `generate_release_notes: true`，发布正文是 GitHub 按提交自动生成的
+列表——与仓库里维护的 CHANGELOG 是两套东西，用户拿到的版本说明没人写过。
+
+- 新增 `scripts/changelog-section.sh`：按 tag 抽出 `## [x.y.z]` 段作为发布正文
+- 找不到对应段落时脚本返回非零 → **发布失败**，逼着补 changelog（不静默退回提交列表）
+- `DEVELOPMENT.md` 补「发版」一节，写清"先写 changelog 再打 tag"
+
+
 ### 评估结论（2026-10-31，v0.7.6 基线）
 
 一次多维度只读评估（安全 / 性能 / 功能 / 架构 / 流程）的结论与已修项。**已修**的见下面各节；
@@ -16,15 +48,13 @@ MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合�
 
 **未修，按风险排序**：
 
-1. **状态机仍有四套表示**："任务"有 `db.Task` / `server.Task` / `TaskDTO` / `resolvedTaskStatus`
-   四种表示与推导，库里 `status` 存不下 `queued`（靠 `queued` 布尔列表达）；意图状态 29 个
-   写入点只有 11 个走 CAS。终态集合本身已收敛到 `TerminalStatusSQL()`（见上节）。
+1. ~~状态机四套表示~~ **已收敛**（见上「任务状态与意图状态收敛」）：状态**值**与
+   **推导**各只有一份，SQL 与前端联合类型都有断言盯着。剩下的 `db.Task` / `server.Task` /
+   `TaskDTO` 三套结构体是"库行 / 运行句柄 / JSON 投影"的正常分层，不再各自维护状态集合。
 2. **保留策略默认永不清理**（0 = 不清理，新装不会自动删任何东西；存储页在"全 0"时
    给出提示）。数据库侧的长任务台账、凭据尝试、通知事件、对话活动流、审批记录都已接入；
    **文件侧**的任务产物/转写仍只能手工清。
-3. **release notes 仍是 GitHub 自动生成的提交列表**：0.7.x 的段落已经补上（见文末），
-   但 `.github/workflows/release.yml` 用的还是 `generate_release_notes: true`。
-   要改成用本文件对应版本段作为正文，需要一个小脚本把 `## [x.y.z]` 段抽出来。
+3. ~~release notes 由 GitHub 自动生成~~ **已改为取自本文件**（见上「发布」一节）。
 4. **前端工程门禁**：CI 不跑 lint/tsc（`DEVELOPMENT.md` 声称跑了），无 e2e，前端测试约 0.9%
    行覆盖；6.8k 行的 mock server 是 API 的第二份实现，无一致性校验。
 5. **可观测性（部分）**：HTTP 指标、被丢弃的活动行、归档队列深度已补；仍缺
