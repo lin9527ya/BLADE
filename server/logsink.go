@@ -91,8 +91,12 @@ type logSinkT struct {
 	subs map[chan LogLine]struct{}
 	out  io.Writer // passthrough (stderr)
 
-	dbOnce sync.Once
-	dbCh   chan dbWriteReq // buffered async channel; nil until SetDB is called
+	// dbMu 保护 dbCh / dbWG。SetDB 可重入：每个 Server 把自己的池接进来，
+	// 关掉时 CloseDB 排空自己的队列。此前是 sync.Once，第一个 Server 的 ctx 与池
+	// 会绑定整个进程——第二个 Server 的日志写进第一个的池，那个池一关就永远写不进去。
+	dbMu sync.RWMutex
+	dbCh chan dbWriteReq // buffered async channel; nil when no DB is wired
+	dbWG sync.WaitGroup
 
 	dbDropped     atomic.Int64
 	dbWriteFailed atomic.Int64
@@ -139,72 +143,88 @@ func (s *logSinkT) emit(level, tag, text string) {
 	s.add(LogLine{TS: time.Now().Format(time.RFC3339), Level: level, Tag: tag, Text: text})
 }
 
-// SetDB wires a postgres DB into the sink once (idempotent). It:
+// SetDB wires a postgres DB into the sink. It:
 //  1. Restores the last 100 log rows from DB into the ring so the /logs page
 //     shows history immediately after restart.
 //  2. Starts an async goroutine that persists every subsequent log line to DB.
+//
+// 可重入：重复调用会先把上一条写入队列排空并停掉旧 writer，再接管新池。
+// 这样测试里第二个 Server 不会把日志写进第一个 Server 已经关掉的池，生产侧热重启
+// 也不会留下一个绑在旧 ctx 上的 writer。
+//
+// ctx 只用于「恢复历史」这一步；writer 的退出条件是显式 CloseDB 关掉 channel，
+// 而不是 ctx.Done——否则一个用例取消自己的 ctx 就会让整轮测试的日志持久化永久停摆。
 func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
 	if pg == nil {
 		return
 	}
-	s.dbOnce.Do(func() {
-		ch := make(chan dbWriteReq, 2000)
-		s.mu.Lock()
-		s.dbCh = ch
-		s.mu.Unlock()
+	s.CloseDB()
+	ch := make(chan dbWriteReq, 2000)
+	s.dbMu.Lock()
+	s.dbCh = ch
+	s.dbMu.Unlock()
 
-		// Restore last 100 rows from DB → prepend to ring as history context.
-		if logs, err := pg.RecentLogs(100); err == nil && len(logs) > 0 {
-			s.mu.Lock()
-			restored := make([]LogLine, 0, len(logs))
-			for _, l := range logs {
-				s.seq++
-				restored = append(restored, LogLine{
-					Seq:   s.seq,
-					DBID:  l.ID,
-					TS:    l.CreatedAt.Format(time.RFC3339),
-					Level: l.Level,
-					Tag:   l.Tag,
-					Text:  l.Text,
-				})
+	// Restore last 100 rows from DB → prepend to ring as history context.
+	if logs, err := pg.RecentLogs(100); err == nil && len(logs) > 0 {
+		s.mu.Lock()
+		restored := make([]LogLine, 0, len(logs))
+		for _, l := range logs {
+			s.seq++
+			restored = append(restored, LogLine{
+				Seq:   s.seq,
+				DBID:  l.ID,
+				TS:    l.CreatedAt.Format(time.RFC3339),
+				Level: l.Level,
+				Tag:   l.Tag,
+				Text:  l.Text,
+			})
+		}
+		// Prepend history before any in-memory startup logs already in ring.
+		s.ring = append(restored, s.ring...)
+		if len(s.ring) > s.cap {
+			s.ring = s.ring[len(s.ring)-s.cap:]
+		}
+		s.mu.Unlock()
+	}
+
+	// Async writer: picks from channel and inserts into server_logs.
+	// Uses os.Stderr directly to report errors and avoids recursive log calls.
+	s.dbWG.Add(1)
+	goSafe("logsink/writer", nil, func() {
+		defer s.dbWG.Done()
+		for req := range ch {
+			id, err := pg.InsertLog(req.ll.Level, req.ll.Tag, req.ll.Text)
+			if err != nil {
+				_, _ = os.Stderr.Write([]byte("[logsink] db write: " + err.Error() + "\n"))
+				continue
 			}
-			// Prepend history before any in-memory startup logs already in ring.
-			s.ring = append(restored, s.ring...)
-			if len(s.ring) > s.cap {
-				s.ring = s.ring[len(s.ring)-s.cap:]
+			// Stamp DBID back into the ring entry so history pagination works.
+			s.mu.Lock()
+			for i := range s.ring {
+				if s.ring[i].Seq == req.seq {
+					s.ring[i].DBID = id
+					break
+				}
 			}
 			s.mu.Unlock()
 		}
-
-		// Async writer: picks from channel and inserts into server_logs.
-		// Uses os.Stderr directly to report errors and avoids recursive log calls.
-		goSafe("logsink/writer", nil, func() {
-			for {
-				select {
-				case req, ok := <-ch:
-					if !ok {
-						return
-					}
-					id, err := pg.InsertLog(req.ll.Level, req.ll.Tag, req.ll.Text)
-					if err != nil {
-						_, _ = os.Stderr.Write([]byte("[logsink] db write: " + err.Error() + "\n"))
-						continue
-					}
-					// Stamp DBID back into the ring entry so history pagination works.
-					s.mu.Lock()
-					for i := range s.ring {
-						if s.ring[i].Seq == req.seq {
-							s.ring[i].DBID = id
-							break
-						}
-					}
-					s.mu.Unlock()
-				case <-ctx.Done():
-					return
-				}
-			}
-		})
 	})
+}
+
+// CloseDB 停掉 DB 写入并等它排空。必须在关闭连接池**之前**调用：队列里剩下的行
+// 是关机前最后一段日志，丢在这里就再也找不回来。幂等，可再次 SetDB。
+func (s *logSinkT) CloseDB() {
+	s.dbMu.Lock()
+	ch := s.dbCh
+	s.dbCh = nil
+	if ch != nil {
+		close(ch) // 持写锁关闭：此刻不可能有 add 正在发送
+	}
+	s.dbMu.Unlock()
+	if ch == nil {
+		return
+	}
+	s.dbWG.Wait()
 }
 
 // Write implements io.Writer for the log package: one call per log.Printf line.
@@ -230,7 +250,6 @@ func (s *logSinkT) add(l LogLine) {
 	if len(s.ring) > s.cap {
 		s.ring = s.ring[len(s.ring)-s.cap:]
 	}
-	ch := s.dbCh
 	subs := make([]chan LogLine, 0, len(s.subs))
 	for sub := range s.subs {
 		subs = append(subs, sub)
@@ -238,6 +257,9 @@ func (s *logSinkT) add(l LogLine) {
 	s.mu.Unlock()
 
 	// Async DB write (non-blocking; drops if channel is full under extreme load).
+	// 读锁与 CloseDB 的写锁互斥：CloseDB 不会在有人正往 channel 里发的瞬间关掉它。
+	s.dbMu.RLock()
+	ch := s.dbCh
 	if ch != nil {
 		select {
 		case ch <- dbWriteReq{seq: l.Seq, ll: l}:
@@ -245,6 +267,7 @@ func (s *logSinkT) add(l LogLine) {
 			s.dbDropped.Add(1)
 		}
 	}
+	s.dbMu.RUnlock()
 
 	for _, sub := range subs {
 		select {

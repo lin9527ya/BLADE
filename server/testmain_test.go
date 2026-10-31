@@ -8,6 +8,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lin9527ya/blade/db"
+	"go.uber.org/goleak"
 )
 
 // degrade 报告"库不可用"时的降级。测试仍然照跑（守住本地无库也能 `go test` 的能力），
@@ -64,5 +65,39 @@ func TestMain(m *testing.M) {
 		// （tasks 的 profile 外键是 ON DELETE SET NULL，清残留不会牵连任务行。）
 		_, _ = conn.Exec(`DELETE FROM llm_profiles`)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	// 关掉 TestMain 自己那条连接：os.Exit 不会跑 defer，不显式关的话
+	// database/sql 的 connectionOpener 会一直活着，goleak 门禁会把它报成泄漏。
+	_ = conn.Close()
+	// 停掉进程级日志持久化。logSink 是单例、writer 活到显式 CloseDB：最后一个
+	// 用例的 Manager 关了之后它仍会持有一条 goroutine 与一个已关闭的池。
+	logSink.CloseDB()
+	if code == 0 {
+		// goroutine 泄漏门禁：本包起的后台工作必须随用例结束。曾有一个用例留下
+		// 仍在 tick 的 notifier，在后面的用例运行时领取别人的投递行，把
+		// TestNotifyDigestSegmentsAndDefersRemainder 偶发弄红。校验放在这里而不是
+		// 每个用例里，是为了让「泄漏」以一条明确的报告收场，而不是随机的功能失败。
+		if err := goleak.Find(goleakOptions()...); err != nil {
+			fmt.Fprintf(os.Stderr, "!!! server 测试结束仍有 goroutine 存活（泄漏）：\n%v\n", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+// goleakOptions 只忽略**必然活到进程退出**的项，每条都写明理由。
+//
+// 刻意不用 goleak.IgnoreTopFunction("github.com/lin9527ya/blade/server.*") 这种宽泛
+// 白名单：那等于把整个包豁免，门禁也就失去了意义。新增忽略项之前先问一句
+// 「它为什么不能在本用例结束时退出」。
+func goleakOptions() []goleak.Option {
+	return []goleak.Option{
+		// pgx 的连接池在 Close 后仍会短暂跑清理 goroutine（health check / conn
+		// 回收），它们由驱动持有、不属于本包，且不碰我们的状态。
+		goleak.IgnoreTopFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
+		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
+		// database/sql 在连接池 Close 之后仍可能留一个 connectionOpener 在 select 上
+		// 等连接归还（驱动内部，直到 GC 回收 *DB 才退出）。同样不碰本包状态。
+		goleak.IgnoreTopFunction("database/sql.(*DB).connectionOpener"),
+	}
 }

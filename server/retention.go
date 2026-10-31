@@ -16,7 +16,7 @@ const retentionSweepInterval = 24 * time.Hour
 // 默认全 0，所以装上平台不会自己删东西——只有显式配了保留期的表才会动，
 // 且每张表各自判定（配了 0 的那张完全不参与）。
 func (s *Server) startRetentionSweeper(ctx context.Context) {
-	goSafe("server/retention-sweeper", nil, func() {
+	s.loops.start(func() {
 		// 启动后先跑一轮：进程可能已经停了很久，旧数据不该等到 24 小时后才清。
 		s.runRetentionSweep(ctx)
 		t := time.NewTicker(retentionSweepInterval)

@@ -147,7 +147,7 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, chatRuns: chatState{busy: map[string]bool{}}}
 	s.auth.signKey.set([]byte("btw-test-signing-key-only"))
-	s.initSideQuestions()
+	s.ctx = s.initSideQuestions(s.ctx, true)
 	p := &sideHTTPProvider{started: make(chan llm.CompletionRequest, 16), release: make(chan struct{})}
 	cfg := agent.Config{Format: llm.FormatOpenAI, BaseURL: "http://fixture.invalid", Model: "fixture", Stream: true}
 	s.llm.mu.Lock()
@@ -392,7 +392,7 @@ func TestSideCheckpointPersistsBeforeAdmissionAndRestart(t *testing.T) {
 	ctx2, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	restarted := &Server{m: f.m, ctx: ctx2, llm: llmState{cfg: f.s.llm.cfg, direct: bound, on: true}}
-	restarted.initSideQuestions()
+	restarted.ctx = restarted.initSideQuestions(restarted.ctx, true)
 	if got := waitSide(t, f.m.pg, orphan.ID, "interrupted"); got.Answer != "saved before crash" {
 		t.Fatal("restart discarded partial answer")
 	}

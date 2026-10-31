@@ -50,6 +50,10 @@ type Server struct {
 	agents    agentState
 	archive   archiveState
 	boot      restoreState
+	// loops 登记启动期起的周期循环，供 Shutdown 等待（见 backgroundLoops）。
+	loops backgroundLoops
+	// cancel 由 New 在传入 ctx 上派生，Shutdown 用它通知后台循环退出。
+	cancel context.CancelFunc
 
 	queryCache queryCacheState
 }
@@ -142,6 +146,37 @@ type archiveState struct {
 	wg   sync.WaitGroup
 }
 
+// backgroundLoops 登记 New 起的、**会一直活到 ctx 取消**的后台循环。
+//
+// 存在的理由：这些循环连的是同一个库，而生产关停时「取消 ctx」之后没有任何地方
+// 等它们收尾，于是 defer 的 mgr.Close() 关池时它们可能正在查库（每次关停都刷
+// `sql: database is closed`，在途的归档/检查点写入被静默丢掉）。Server.Shutdown
+// 在这里等一个统一的 WaitGroup，把「关池」排到「后台工作收尾」之后。
+type backgroundLoops struct {
+	wg sync.WaitGroup
+}
+
+// start 启动一个受 shutdown 等待的循环。fn 必须在 ctx 取消后返回。
+func (b *backgroundLoops) start(fn func()) {
+	b.wg.Add(1)
+	goSafe("server/background", &b.wg, fn)
+}
+
+// wait 等所有登记的循环退出，最多等到 ctx 到期；返回到期时仍在跑的数量。
+func (b *backgroundLoops) wait(ctx context.Context) int64 {
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return 0
+	case <-ctx.Done():
+		return 1
+	}
+}
+
 // provEntry is a cached provider + its config for one LLM profile id.
 type provEntry struct {
 	prov llm.Provider
@@ -162,12 +197,15 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
+	// 在调用方的 ctx 上派生一层可取消的 ctx：Server.Shutdown 靠它让后台循环退出，
+	// 同时仍然继承调用方（进程级 shutdown ctx）的取消。
+	ctx, cancel := context.WithCancel(ctx)
 	key, err := loadOrCreateJWTKey(m.pg, keyDir, dataDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
 	s := &Server{
-		m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir,
+		m: m, engine: NewEngine(m), ctx: ctx, cancel: cancel, skillDir: skillDir,
 		chatRuns: chatState{
 			busy:   map[string]bool{},
 			cancel: map[string]context.CancelCauseFunc{},
@@ -176,13 +214,27 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		providers: providerState{
 			chatAgents: map[int64]*agent.ChatAgent{},
 			byProfile:  map[int64]*provEntry{},
-			health:     newLLMHealthRegistry(m.pg),
+			health:     newLLMHealthRegistry(m.pg, &m.bgWG),
 		},
 		agents:  agentState{bundles: map[string]*taskAgentBundle{}},
 		archive: archiveState{wake: make(chan struct{}, 1)},
 	}
 	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。
 	// 用户继续后同一档预算不再打断；具体见 server/budget.go 的 pauseForBudget。
+	// 引擎级兜底 ctx：任务没有运行时条目时（还没启动/已拆掉），长生命周期助手
+	// 用它而不是 context.Background()——关停时能一起停下。
+	s.engine.SetBaseContext(s.ctx)
+	// 任务停止/删除时等它的后台冷节点压缩收尾：压缩刻意活过一轮 planner
+	// （context.WithoutCancel），不在这里等就会在任务拆掉之后继续写探索图。
+	s.engine.onStop = func(taskID string) {
+		if t := s.m.TaskByID(taskID); t != nil {
+			wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if !s.agentsForTask(t).pl.WaitCompaction(wctx) {
+				log.Printf("[compact] task %s 停止时后台压缩仍未结束（已放弃等待）", taskID)
+			}
+		}
+	}
 	s.engine.SetBudgetPauseHandler(func(t *Task) error {
 		_, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBudgetExhausted)
 		return err
@@ -205,7 +257,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	})
 	s.auth.signKey.set(key)
 	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)
-	s.initSideQuestions()
+	// 旁路提问的 checkpoint 发布器挂在 ctx 上；返回值一次性写回 s.ctx。
+	// 这是 s.ctx 在构造期**唯一**的赋值点（此前这里写第二次，与后台 goroutine 读 s.ctx 竞态）。
+	s.ctx = s.initSideQuestions(s.ctx, !testing.Testing())
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
 	s.applyRetryPolicy()
@@ -340,19 +394,28 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		s.installMCPGuard()       // P24 外部 MCP 的并发上限 + 熔断（每调用现读设置）
 		// P35：把 Scheduler 存下来，让"停机时这一 tick 做了什么"可被断言（tickOnce）。
 		s.sched = newScheduler(s)
+		// 启动期后台工作一律在这个块里。测试进程里一个都不起——它们连的是同一个
+		// 测试库，并且活到进程退出：某个用例建过 Server（它自己早就结束了）之后，
+		// 它留下的循环仍会在**后面的**用例运行时按自己的节奏读写别人的行。
+		//
+		// 用例不依赖这些循环：需要时直接调单步入口（stepDigest / stepRealtime /
+		// tickOnce / runRetentionSweep / runOneTaskArchiveJob / flushSideSnapshots）。
+		// 只有「装配」留在块外（s.sched、s.side、Python 解释器探测、MCP 守卫）。
 		if !testing.Testing() {
-			goSafe("server/evidence-gc", nil, func() { s.evidenceStore().RunGC(svcCtx) })
+			// 这四个是「活到 ctx 取消」的周期循环：登记到 loops，Shutdown 会等它们
+			// 退出后才让 main 关连接池。
+			s.loops.start(func() { s.evidenceStore().RunGC(svcCtx) })
 			// 数据库侧的保留清理（llm_usage / activity / server_logs / llm_records）。
 			// 默认全 0 = 不清理，所以这里起 goroutine 不会删任何东西。
 			s.startRetentionSweeper(svcCtx)
-			goSafe("server/scheduler", nil, func() { s.sched.Run(svcCtx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+			s.loops.start(func() { s.sched.Run(svcCtx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
 			// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 			// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
-			goSafe("server/notifier", nil, func() { newNotifier(s).Run(svcCtx) })
+			s.loops.start(func() { newNotifier(s).Run(svcCtx) })
+			// Fill the tool cache for any enabled MCP that has none yet (notably the
+			// seeded browser MCP on first run). Async so it never blocks startup.
+			goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup(svcCtx) })
 		}
-		// Fill the tool cache for any enabled MCP that has none yet (notably the
-		// seeded browser MCP on first run). Async so it never blocks startup.
-		goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup(svcCtx) })
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
@@ -375,8 +438,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 生产路径由 main 显式调用（重启后恢复任务）；测试构造服务器时因此不会被库里
 	// 遗留的未终态任务"劫持"：那些任务会真跑起来、把文件写进测试的临时工作目录，
 	// 与 t.TempDir() 的清理竞态（偶发 "directory not empty"）。
-	goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
-	s.startTaskArchiveWorker()
+	// 补位对账与归档 worker 也是启动期后台工作：前者会 Pause/EnqueueTask/emitActivity
+	// （作用于当时库里的任务，可能发生在用例返回之后），后者启动时先
+	// RecoverTaskArchiveJobs()——那是**整张 task_archives 表**的 UPDATE。测试里都不跑。
+	if !testing.Testing() {
+		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
+		s.startTaskArchiveWorker()
+	}
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
 }

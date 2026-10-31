@@ -200,6 +200,41 @@ func writeCommittedTaskDelete(w http.ResponseWriter, result DeleteTaskResult, er
 	writeJSON(w, http.StatusOK, result)
 }
 
+// Shutdown 停掉 New 起的后台工作，并等到它们收尾（有界）。
+//
+// 与 WaitAllQuiescent 的分工：那个等的是**在跑的 run**（planner/worker/主 Agent），
+// 这个等的是**周期循环与 worker**（证据 GC / 保留清理 / 调度器 / 推送 / 归档 worker /
+// 旁路提问落库 / 日志持久化）。两者都必须在 mgr.Close() 关连接池**之前**完成——
+// 否则关停时这些循环还在查库，日志里全是 `sql: database is closed`，在途的归档、
+// 检查点与日志行被静默丢掉。
+//
+// 顺序：① 取消 Server 自己的 ctx（循环据此退出）→ ② 等循环与归档 worker
+// → ③ 停日志持久化并排空（最后一段日志不丢）→ ④ 返回到期时仍未退出的数量。
+func (s *Server) Shutdown(ctx context.Context) int64 {
+	if s == nil {
+		return 0
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	left := s.loops.wait(ctx)
+	// 归档 worker 是 WaitGroup 而不是 ctx 循环的登记项：它跑在 archive.wg 上，
+	// 测试也用它等收尾，这里一并等。
+	archiveDone := make(chan struct{})
+	go func() {
+		s.archive.wg.Wait()
+		close(archiveDone)
+	}()
+	select {
+	case <-archiveDone:
+	case <-ctx.Done():
+		left++
+	}
+	// 日志持久化最后停：上面每一步的收尾日志都还有机会落库。
+	logSink.CloseDB()
+	return left
+}
+
 // WaitAllQuiescent 等所有在跑的 run（planner.Plan / worker.Execute / 主 Agent 对话）收尾，
 // 最多等到 ctx 到期；返回到期时仍在跑的数量（0 = 都收尾了）。
 //

@@ -50,19 +50,27 @@ func bindSideProvider(p llm.Provider, cfg agent.Config, id int64, name string) l
 	return sidequestion.Bind(p, sideModel(cfg, id, name))
 }
 
-func (s *Server) initSideQuestions() {
+// initSideQuestions 装配旁路提问状态，并把 checkpoint 发布器挂到 ctx 上后**返回**它。
+//
+// 它不写 s.ctx：ctx 是 Server 上唯一会被后台 goroutine 读取的可变字段，
+// 在 New 里写第二次就等于与那些 goroutine 并发读写（-race 会抓）。调用方拿到返回值
+// 后一次性赋给 s.ctx，之后整个生命周期只读。
+//
+// startLoop 为 false 时不周期落库（测试进程用）：周期循环会一直活到 ctx 取消，
+// 而多数用例根本不取消自己传给 New 的 ctx。此时 done 立即关闭，等它的用例照常返回。
+func (s *Server) initSideQuestions(ctx context.Context, startLoop bool) context.Context {
 	s.side = &sideQuestionState{pending: map[string]sidequestion.Snapshot{}, latest: map[string]sidequestion.Snapshot{}, seen: map[string][2]int64{}, runs: map[string]sideRun{}, done: make(chan struct{})}
 	if n, err := strconv.Atoi(os.Getenv("BLADE_BTW_MAX_OUTPUT_TOKENS")); err == nil && n >= 256 && n <= 32768 {
 		s.side.outputTokens = n
 	}
 	if s.m.pg == nil {
 		close(s.side.done)
-		return
+		return ctx
 	}
-	if err := s.m.pg.InterruptSideRequests(s.ctx); err != nil {
+	if err := s.m.pg.InterruptSideRequests(ctx); err != nil {
 		log.Printf("[btw] recover: %v", err)
 	}
-	s.ctx = sidequestion.WithPublisher(s.ctx, func(snap sidequestion.Snapshot) {
+	ctx = sidequestion.WithPublisher(ctx, func(snap sidequestion.Snapshot) {
 		s.side.mu.Lock()
 		defer s.side.mu.Unlock()
 		key := snap.Parent.Key()
@@ -74,7 +82,18 @@ func (s *Server) initSideQuestions() {
 		s.side.seen[key] = [2]int64{snap.RunID, snap.Version}
 		s.side.pending[key] = snap
 	})
-	goSafe("side-questions/flush", nil, func() {
+	if startLoop {
+		s.startSideFlushLoop(ctx)
+	} else {
+		close(s.side.done)
+	}
+	return ctx
+}
+
+// startSideFlushLoop 起 checkpoint 的周期落库。与 initSideQuestions 分开是为了让
+// 「装配状态」与「起后台循环」各自可被单独调用：测试可以只装配、手动 flush。
+func (s *Server) startSideFlushLoop(ctx context.Context) {
+	s.loops.start(func() {
 		defer close(s.side.done)
 		tick := time.NewTicker(250 * time.Millisecond)
 		defer tick.Stop()
@@ -82,7 +101,7 @@ func (s *Server) initSideQuestions() {
 			select {
 			case <-tick.C:
 				s.flushSideSnapshots()
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				s.flushSideSnapshots()
 				return
 			}
