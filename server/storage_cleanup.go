@@ -72,6 +72,9 @@ var storageCategories = []storageCategorySpec{
 	// 保留作为审计，但没有上限就只是无限增长）。默认 0 = 不清理，与其它分类一致。
 	{Key: "db_tool_executions", Label: "长任务台账（数据库）", SettingKey: settingRetentionToolExecutions, DBTable: db.RetentionToolExecutions},
 	{Key: "db_credential_attempts", Label: "凭据尝试记录（数据库）", SettingKey: settingRetentionCredentialAttempts, DBTable: db.RetentionCredentialAttempts},
+	{Key: "db_notify_events", Label: "通知事件（数据库）", SettingKey: settingRetentionNotifyEvents, DBTable: db.RetentionNotificationEvents},
+	{Key: "db_conversation_activity", Label: "对话活动流（数据库）", SettingKey: settingRetentionConvActivity, DBTable: db.RetentionConversationActivity},
+	{Key: "db_intercept_pending", Label: "审批记录（数据库）", SettingKey: settingRetentionInterceptPending, DBTable: db.RetentionInterceptPending},
 }
 
 // storageUnit 是一个可删单元（任务目录 / 会话目录 / 单个转写文件…）。
@@ -294,6 +297,11 @@ func (s *Server) purgeRetentionCategory(ctx context.Context, spec storageCategor
 		return s.m.pg.PurgeServerLogsBefore(ctx, cutoff, 0)
 	case db.RetentionLLMRecords:
 		return s.m.pg.PurgeLLMRecordsBefore(ctx, cutoff, tasks, 0)
+	case db.RetentionToolExecutions, db.RetentionCredentialAttempts,
+		db.RetentionNotificationEvents, db.RetentionConversationActivity, db.RetentionInterceptPending:
+		// 这几个走统一入口：条件由 db.retentionFilter 的一支给出（含按任务保护、
+		// 台账排除在跑的行、审批只清已判定）。新增分类时只需要实现 filter 那支。
+		return s.m.pg.PurgeTableBefore(ctx, spec.DBTable, cutoff, tasks, explorations, 0)
 	}
 	return 0, fmt.Errorf("未知的数据库清理分类 %q", spec.Key)
 }

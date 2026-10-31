@@ -42,6 +42,9 @@ type RetentionPatch = {
   storage_retention_traffic_days: number;
   storage_retention_tool_executions_days: number;
   storage_retention_credential_attempts_days: number;
+  storage_retention_notify_events_days: number;
+  storage_retention_conversation_activity_days: number;
+  storage_retention_intercept_pending_days: number;
 };
 
 const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
@@ -58,6 +61,9 @@ const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
   traffic: "storage_retention_traffic_days",
   db_tool_executions: "storage_retention_tool_executions_days",
   db_credential_attempts: "storage_retention_credential_attempts_days",
+  db_notify_events: "storage_retention_notify_events_days",
+  db_conversation_activity: "storage_retention_conversation_activity_days",
+  db_intercept_pending: "storage_retention_intercept_pending_days",
 };
 
 const ZERO_DAYS: RetentionPatch = {
@@ -74,6 +80,9 @@ const ZERO_DAYS: RetentionPatch = {
   storage_retention_traffic_days: 0,
   storage_retention_tool_executions_days: 0,
   storage_retention_credential_attempts_days: 0,
+  storage_retention_notify_events_days: 0,
+  storage_retention_conversation_activity_days: 0,
+  storage_retention_intercept_pending_days: 0,
 };
 
 function fmtBytes(n: number): string {
@@ -180,6 +189,9 @@ export default function StoragePage() {
         storage_retention_traffic_days: s.storage_retention_traffic_days ?? 0,
         storage_retention_tool_executions_days: s.storage_retention_tool_executions_days ?? 0,
         storage_retention_credential_attempts_days: s.storage_retention_credential_attempts_days ?? 0,
+        storage_retention_notify_events_days: s.storage_retention_notify_events_days ?? 0,
+        storage_retention_conversation_activity_days: s.storage_retention_conversation_activity_days ?? 0,
+        storage_retention_intercept_pending_days: s.storage_retention_intercept_pending_days ?? 0,
       });
     } catch (e) {
       toast.error("读取存储体检失败：" + String((e as Error)?.message ?? e));

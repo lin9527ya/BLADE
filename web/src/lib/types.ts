@@ -1788,6 +1788,9 @@ export interface Settings {
   storage_retention_traffic_days?: number;
   storage_retention_tool_executions_days?: number;
   storage_retention_credential_attempts_days?: number;
+  storage_retention_notify_events_days?: number;
+  storage_retention_conversation_activity_days?: number;
+  storage_retention_intercept_pending_days?: number;
   // 自更新用的 GitHub token（私有发布源）：只回布尔"是否已配"，值不回显。
   update_token_set?: boolean;
   update_github_token?: string;

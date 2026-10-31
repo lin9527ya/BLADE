@@ -208,14 +208,17 @@ func (s *Server) settingsPayload() map[string]any {
 		"storage_retention_transcripts_days": s.storageRetentionDays(settingStorageRetentionTranscript),
 		"storage_retention_binary_days":      s.storageRetentionDays(settingStorageRetentionBinary),
 		// 数据库侧同一套保留契约。前三个是 always-on 写的表（无限增长主力）。
-		"storage_retention_llm_usage_days":           s.storageRetentionDays(settingRetentionLLMUsage),
-		"storage_retention_activity_days":            s.storageRetentionDays(settingRetentionActivity),
-		"storage_retention_server_logs_days":         s.storageRetentionDays(settingRetentionServerLogs),
-		"storage_retention_llm_record_bodies_days":   s.storageRetentionDays(settingRetentionLLMRecordBodys),
-		"storage_retention_llm_records_days":         s.storageRetentionDays(settingRetentionLLMRecords),
-		"storage_retention_tool_executions_days":     s.storageRetentionDays(settingRetentionToolExecutions),
-		"storage_retention_credential_attempts_days": s.storageRetentionDays(settingRetentionCredentialAttempts),
-		"storage_retention_traffic_days":             s.storageRetentionDays(settingRetentionTraffic),
+		"storage_retention_llm_usage_days":             s.storageRetentionDays(settingRetentionLLMUsage),
+		"storage_retention_activity_days":              s.storageRetentionDays(settingRetentionActivity),
+		"storage_retention_server_logs_days":           s.storageRetentionDays(settingRetentionServerLogs),
+		"storage_retention_llm_record_bodies_days":     s.storageRetentionDays(settingRetentionLLMRecordBodys),
+		"storage_retention_llm_records_days":           s.storageRetentionDays(settingRetentionLLMRecords),
+		"storage_retention_tool_executions_days":       s.storageRetentionDays(settingRetentionToolExecutions),
+		"storage_retention_credential_attempts_days":   s.storageRetentionDays(settingRetentionCredentialAttempts),
+		"storage_retention_notify_events_days":         s.storageRetentionDays(settingRetentionNotifyEvents),
+		"storage_retention_conversation_activity_days": s.storageRetentionDays(settingRetentionConvActivity),
+		"storage_retention_intercept_pending_days":     s.storageRetentionDays(settingRetentionInterceptPending),
+		"storage_retention_traffic_days":               s.storageRetentionDays(settingRetentionTraffic),
 		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
 		"exec_memory_mb":                execLimitsFromSettings(s.m.pg).MemoryMB,
@@ -362,6 +365,9 @@ type settingsRequest struct {
 	RetentionTraffic        *int `json:"storage_retention_traffic_days"`
 	RetentionToolExecs      *int `json:"storage_retention_tool_executions_days"`
 	RetentionCredAttempts   *int `json:"storage_retention_credential_attempts_days"`
+	RetentionNotifyEvents   *int `json:"storage_retention_notify_events_days"`
+	RetentionConvActivity   *int `json:"storage_retention_conversation_activity_days"`
+	RetentionInterceptPend  *int `json:"storage_retention_intercept_pending_days"`
 	ExecMemoryMB            *int `json:"exec_memory_mb"`
 	ExecMaxProcs            *int `json:"exec_max_procs"`
 	ExecMaxActive           *int `json:"exec_max_active"`
@@ -549,6 +555,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingRetentionTraffic, req.RetentionTraffic, 3650, "流量归档保留天数"},
 		{settingRetentionToolExecutions, req.RetentionToolExecs, 3650, "长任务台账保留天数"},
 		{settingRetentionCredentialAttempts, req.RetentionCredAttempts, 3650, "凭据尝试记录保留天数"},
+		{settingRetentionNotifyEvents, req.RetentionNotifyEvents, 3650, "通知事件保留天数"},
+		{settingRetentionConvActivity, req.RetentionConvActivity, 3650, "对话活动流保留天数"},
+		{settingRetentionInterceptPending, req.RetentionInterceptPend, 3650, "审批记录保留天数"},
 	} {
 		if f.val == nil {
 			continue

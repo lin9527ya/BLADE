@@ -38,6 +38,11 @@ const (
 	// 归属任务的行按任务保护（非终态任务的执行/尝试不能删——它们还在被引用）。
 	RetentionToolExecutions     RetentionTable = "tool_executions"
 	RetentionCredentialAttempts RetentionTable = "credential_attempts"
+	// 通知事件（投递行随事件级联删除）与对话活动流：同样是每发现/每步一行，
+	// 此前没有回收路径。intercept_pending 也在列——审批记录同样只增不减。
+	RetentionNotificationEvents   RetentionTable = "notification_events"
+	RetentionConversationActivity RetentionTable = "conversation_activities"
+	RetentionInterceptPending     RetentionTable = "intercept_pending"
 )
 
 // RetentionStat 是一张表在一次体检里的计数与体积（试算：只读）。
@@ -93,6 +98,16 @@ func retentionFilter(
 		return "created_at",
 			"created_at < $1 AND status NOT IN ('queued','running') AND NOT (task_id = ANY($2::text[]))",
 			[]any{cutoff, protectedTasks}, nil
+	case RetentionNotificationEvents:
+		// 事件不直接归属任务（finding_id → findings，由 finding 的任务决定）。
+		// 按时间清即可：投递历史随事件级联删除，符合"通知只是投递记录、不是审计"的定位。
+		return "created_at", "created_at < $1", []any{cutoff}, nil
+	case RetentionConversationActivity:
+		// 对话活动流不归属任务（会话是独立的），按时间清。
+		return "created_at", "created_at < $1", []any{cutoff}, nil
+	case RetentionInterceptPending:
+		// 审批记录：只清**已判定**的（pending 还在等人/等模型，删了就成悬案）。
+		return "created_at", "created_at < $1 AND status <> 'pending'", []any{cutoff}, nil
 	case RetentionCredentialAttempts:
 		// task_id 是 BIGINT NOT NULL；同样按任务保护（用任务 id 集合，不是探索 id）。
 		return "at",
@@ -190,6 +205,24 @@ func (d *DB) purgeBatched(ctx context.Context, table, timeCol, where string, arg
 }
 
 // PurgeActivityBefore 删除早于 cutoff、且不属于受保护探索的 activity 行。
+// PurgeTableBefore 清理任意已登记分类的过期行（条件来自 retentionFilter，
+// 表名与列名都只来自本文件的常量）。
+//
+// 为什么需要这一支：分类表在增长（长任务台账、凭据尝试、通知事件、对话活动流、
+// 审批记录），每加一张就在 server 侧补一个 switch 分支既啰嗦又容易漏——漏了的表现
+// 是"页面上有开关、点了报未知分类"。收敛成一个通用入口，新增分类只需实现
+// retentionFilter 的那一支。
+func (d *DB) PurgeTableBefore(
+	ctx context.Context, table RetentionTable, cutoff time.Time,
+	protectedTasks []string, protectedExplorations []int64, batch int,
+) (int64, error) {
+	timeCol, where, args, err := retentionFilter(table, cutoff, protectedTasks, protectedExplorations)
+	if err != nil {
+		return 0, err
+	}
+	return d.purgeBatched(ctx, string(table), timeCol, where, args, batch)
+}
+
 func (d *DB) PurgeActivityBefore(
 	ctx context.Context, cutoff time.Time, protectedExplorations []int64, batch int,
 ) (int64, error) {

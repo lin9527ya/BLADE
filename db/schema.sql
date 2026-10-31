@@ -1187,6 +1187,8 @@ CREATE TABLE IF NOT EXISTS conversation_activities (
 CREATE INDEX IF NOT EXISTS idx_conv_act ON conversation_activities(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_conv_act_tool_call ON conversation_activities(conversation_id, tool_use_id, id)
   WHERE kind IN ('tool_use', 'tool_result');
+-- 保留清理按 created_at 扫过期行。
+CREATE INDEX IF NOT EXISTS idx_conv_act_created ON conversation_activities(created_at);
 
 -- =====================================================================
 -- J. Agent 触发器
@@ -1591,6 +1593,8 @@ CREATE TABLE IF NOT EXISTS notification_events (
 );
 CREATE INDEX IF NOT EXISTS idx_notification_events_pending
     ON notification_events(id) WHERE NOT fanned_out;
+-- 保留清理按 created_at 扫过期行（事件此前只增不减；投递行随事件级联删除）。
+CREATE INDEX IF NOT EXISTS idx_notification_events_created ON notification_events(created_at);
 
 -- 投递任务：一条事件 × 一个启用渠道 = 一行。fan-out 在事务外做，所以渠道
 -- 后开不会补历史(与 agent_triggers 的「迟开 trigger 不补历史」语义一致，

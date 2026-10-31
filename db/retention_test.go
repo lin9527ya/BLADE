@@ -154,7 +154,10 @@ func TestRetentionCoversLedgerTables(t *testing.T) {
 	cutoff := time.Now().AddDate(0, 0, -30)
 	protected := []string{"42"}
 	expls := []int64{7}
-	for _, table := range []RetentionTable{RetentionToolExecutions, RetentionCredentialAttempts} {
+	for _, table := range []RetentionTable{
+		RetentionToolExecutions, RetentionCredentialAttempts,
+		RetentionNotificationEvents, RetentionConversationActivity, RetentionInterceptPending,
+	} {
 		col, where, args, err := retentionFilter(table, cutoff, protected, expls)
 		if err != nil {
 			t.Fatalf("%s 没有清理条件：%v", table, err)
@@ -167,5 +170,89 @@ func TestRetentionCoversLedgerTables(t *testing.T) {
 	_, where, _, _ := retentionFilter(RetentionToolExecutions, cutoff, protected, expls)
 	if !strings.Contains(where, "'queued'") || !strings.Contains(where, "'running'") {
 		t.Fatalf("长任务台账的清理条件没有排除在跑的行：%s", where)
+	}
+}
+
+// TestPurgeTableBeforeDeletesExpired 端到端钉住新分类**真的会删**：
+// 只有筛选条件、没有执行分支时，页面开关点了会报「未知的数据库清理分类」。
+func TestPurgeTableBeforeDeletesExpired(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+
+	// tool_executions：过期且已终态的删掉；在跑的、属于非终态任务的留下。
+	mk := func(taskID, status string, age time.Duration) int64 {
+		var id int64
+		err := d.QueryRow(`INSERT INTO tool_executions(task_id, command, status, created_at)
+VALUES ($1, 'echo x', $2, now() - make_interval(secs => $3)) RETURNING id`,
+			taskID, status, int64(age.Seconds())).Scan(&id)
+		if err != nil {
+			t.Fatalf("insert execution: %v", err)
+		}
+		return id
+	}
+	oldDone := mk("9001", "completed", 90*24*time.Hour)
+	oldRunning := mk("9001", "running", 90*24*time.Hour)
+	protectedOld := mk("9002", "completed", 90*24*time.Hour)
+	fresh := mk("9001", "completed", time.Hour)
+	t.Cleanup(func() {
+		d.Exec(`DELETE FROM tool_executions WHERE task_id IN ('9001','9002')`)
+	})
+
+	n, err := d.PurgeTableBefore(ctx, RetentionToolExecutions, time.Now().AddDate(0, 0, -30),
+		[]string{"9002"}, nil, 100)
+	if err != nil {
+		t.Fatalf("purge tool_executions: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("应只删 1 行（过期、已终态、非受保护任务），实际 %d", n)
+	}
+	exists := func(id int64) bool {
+		var got int64
+		if err := d.QueryRow(`SELECT count(*) FROM tool_executions WHERE id=$1`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got > 0
+	}
+	if exists(oldDone) {
+		t.Fatal("过期且已终态的台账行应被删除")
+	}
+	for _, id := range []int64{oldRunning, protectedOld, fresh} {
+		if !exists(id) {
+			t.Fatalf("行 %d 不该被删除（在跑 / 任务受保护 / 未过期）", id)
+		}
+	}
+
+	// intercept_pending：只清已判定的，pending 留着。
+	var pendingID, decidedID int64
+	if err := d.QueryRow(`INSERT INTO intercept_pending(tool_name, status, created_at)
+VALUES ('Bash','pending', now() - interval '90 days') RETURNING id`).Scan(&pendingID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`INSERT INTO intercept_pending(tool_name, status, created_at)
+VALUES ('Bash','allowed', now() - interval '90 days') RETURNING id`).Scan(&decidedID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		d.Exec(`DELETE FROM intercept_pending WHERE id IN ($1,$2)`, pendingID, decidedID)
+	})
+	if _, err := d.PurgeTableBefore(ctx, RetentionInterceptPending, time.Now().AddDate(0, 0, -30), nil, nil, 100); err != nil {
+		t.Fatalf("purge intercept_pending: %v", err)
+	}
+	var pendingLeft, decidedLeft int64
+	if err := d.QueryRow(`SELECT count(*) FROM intercept_pending WHERE id=$1`, pendingID).Scan(&pendingLeft); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM intercept_pending WHERE id=$1`, decidedID).Scan(&decidedLeft); err != nil {
+		t.Fatal(err)
+	}
+	if pendingLeft != 1 {
+		t.Fatal("pending 的审批记录不能被清掉（还在等人/等模型）")
+	}
+	if decidedLeft != 0 {
+		t.Fatal("已判定的过期审批记录应被清掉")
 	}
 }
