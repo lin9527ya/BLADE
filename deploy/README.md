@@ -415,8 +415,10 @@ cat /etc/passwd                # Bash 下仍可（shell 本来就是全盘读）
 ## 十、一致备份与恢复
 
 `deploy/backup.sh` / `deploy/restore.sh` 覆盖 PostgreSQL、`data/`（流量 SQLite 与
-evidence/正文）、`config.json` 和 `skills/`，并在备份目录生成 `SHA256SUMS`。两个脚本
-都拒绝在未确认停机的情况下运行；**先停止 blade**，再执行：
+evidence/正文）、`config.json`、`skills/`、`jwt.key` 与 `.env`，并在备份目录生成
+`SHA256SUMS` 与 `manifest.json`（记录每一项是否真的存在——它们缺一个都不算失败，但
+恢复时要能看出"这份备份里有没有它"）。两个脚本都拒绝在未确认停机的情况下运行；
+**先停止 blade**，再执行：
 
 ```bash
 sudo systemctl stop blade
@@ -438,5 +440,16 @@ sudo systemctl start blade
 ```
 
 恢复后检查 `/api/health`、任务列表、证据引用与最近日志；脚本会把恢复前的
-`data/`、`skills/`、`config.json` 留在 `.pre-restore-<时间戳>/`，不要立即删除。
+`data/`、`skills/`、`config.json`、`jwt.key`、`.env` 留在 `.pre-restore-<时间戳>/`，
+不要立即删除。
+
+**失败会回滚**：`pg_restore --clean` 是先删后建，中途失败等于把库删了一半。脚本在动手
+之前会先导一份"恢复前"快照（`<stage>/pre-restore.dump`），`pg_restore` 失败时用它把
+数据库与数据文件一起退回原状；回滚本身失败时会打印手工处理路径。
+
+**版本必须匹配**：`pg_restore` 比服务端**新**时，dump 里含有旧服务端不认识的语句
+（典型：pg_dump 17+ 的 `SET transaction_timeout = 0`，PG16 会报 unrecognized
+configuration parameter），恢复会在 `--clean` 之后中途失败。脚本会在动手前比较版本并
+直接拒绝，按提示装与服务端同版本的 `postgresql-client-<major>`。
+
 备份目录包含密钥与业务数据，必须限制访问权限并纳入异地保留策略。

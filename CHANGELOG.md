@@ -29,8 +29,8 @@ MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合�
 5. **可观测性（部分）**：HTTP 指标、被丢弃的活动行、归档队列深度已补；仍缺
    **任务级失败计数**（多少任务以 timeout / policy_blocked / done 收场）与
    **请求到 run 的关联**（HTTP `requestID` 没有写进 `activity`/`llm_usage`/`tool_executions`）。
-6. **备份/恢复**：`backup.sh` 不含 `jwt.key`（现在库是权威，可接受但未说明）与 `.env`；
-   `restore.sh` 的 `pg_restore --clean` 中途失败时不回滚数据库。
+6. **备份/恢复（已修）**：`jwt.key`/`.env` 已进备份集，`pg_restore` 失败会连库带文件
+   一起回滚，版本不匹配会在动手前拒绝。见下节。
 7. **容器以 root 运行**，无 `cap_drop`/`read_only`；CI actions 按 tag 而非 commit SHA 固定。
 
 ### 后台命令不再留下孤儿进程
@@ -81,6 +81,22 @@ worker 抓到的目标页面内容里只要有一句提示注入，就等价于�
 
 `reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
 跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 运维：备份覆盖 `jwt.key` / `.env`，恢复失败会回滚
+
+三个缺陷，都是在临时环境里真跑一遍 `backup.sh` + `restore.sh` 才暴露的：
+
+- **备份缺项**：`jwt.key`（回滚到旧版本二进制时的兼容镜像）与 `.env`（compose 的
+  `POSTGRES_PASSWORD`）不在备份集里。现在都备份，`manifest.json` 记录每一项是否真的存在
+- **恢复失败不回滚数据库**：`pg_restore --clean` 是先删后建，中途失败等于把库删了一半，
+  而脚本此前只回滚文件。现在动手前先导"恢复前"快照，失败时用它把**库与文件一起**退回原状
+- **版本不匹配会中途炸**：`pg_restore` 比服务端新时，dump 里有旧服务端不认识的语句
+  （pg_dump 17+ 的 `SET transaction_timeout = 0` 在 PG16 上直接报错）。现在动手前比较
+  版本并明确拒绝，给出装 `postgresql-client-<major>` 的指引
+
+顺带修掉回滚自身的两个 bug（同样由实测暴露）：`rollback_files` 不幂等（ERR trap 与
+失败分支各跑一次会把刚恢复的文件删掉）、末条 `[ -e ] && mv` 返回 1 会再触发一次 ERR；
+以及 `.env` 点文件在暂存/回滚时被当成 `env`，导致原文件既没进暂存区也没被回滚。
 
 ### 可观测性：HTTP 指标、被丢弃的活动行、归档队列深度
 
