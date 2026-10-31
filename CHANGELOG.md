@@ -466,6 +466,70 @@ notifier——它在**后面的**用例运行时继续领取同一个测试库�
 - 前后端各有一个开关（`SHOW_UPDATE_CHANGELOG` / `exposeUpdateSource`），需要恢复时两处一起打开。
 - 该改动未并入 `v0.6.1`，版本按 `git describe` 标为 0.6.1 之后的开发提交。
 
+## [0.7.7] - 2026-10-31
+
+安全、性能与一致性的一轮收口，绝大部分来自一次多维度评估（安全 / 性能 / 功能 / 架构 /
+流程）。**本段是发布说明**；同批改动的完整细节与逐条原因记录在 `[Unreleased]` 段里
+（那一节是滚动日志，下一次发版前会并入新的版本段）。
+
+### 行为变更（请留意）
+
+- **同一个数据库只允许一个实例**：`NewManager` 启动时非阻塞抢占实例锁，第二个实例直接
+  失败并说明原因（双跑会让两边互相抢意图、第二个实例静默丢失流量录制）。确需双跑时设
+  `BLADE_ALLOW_MULTI_INSTANCE=1`
+- **发布正文改为取自本文件**：漏写 `## [x.y.z]` 段落会让发布失败（有意为之）
+- **MCP stdio 子进程现在走宿主执行钩子**：启用了 `BLADE_AGENT_USER` 时，MCP server
+  与 Bash 一样以该用户运行
+
+### 安全
+
+- **MCP stdio 不再绕过隔离**（配合 Norma v0.5.6）：`create_mcp` 指定的一条 stdio 命令此前
+  以**服务端身份**执行——降权、环境清洗、文件边界都不覆盖它。现在 stdio 子进程与
+  Bash/后台任务走同一套执行钩子；`create_mcp`/`update_mcp`/`create_custom_tool`/
+  `update_custom_tool` 登记为动作类工具（受停机开关与 RoE 范围门约束），stdio 传输
+  默认不启用
+- **MCP http/sse 出站加 SSRF 守卫**：默认拒绝环回/链路本地（含云元数据），SSE 下发的
+  message endpoint 必须与 `sseURL` 同源；确需连本机 MCP 时设 `BLADE_MCP_ALLOW_LOCAL=1`
+- **存储清理不再可能删掉密钥与数据**：「更新残留」分类此前会删掉可执行文件目录里的
+  **每一项**（含 `jwt.key` / `config.json` / `data/`）；改成按名白名单
+- **凭据不再明文回显**：`GET /api/mcp` 的 env 与 `GET /api/tools` 的 HTTP headers 中疑似
+  凭据的值改为掩码；保存时「掩码 = 没改」
+- **重置密码同时吊销会话**：`reset-password.sh` 现在一并轮换 `auth.jwt_key`
+- `klauspost/compress` v1.18.6 → v1.18.7（GO-2026-5841）；`govulncheck` 复查 0 个可达漏洞
+
+### 一致性
+
+- **任务状态收敛**：状态值与推导各只有一份（`db.DeriveTaskStatus`）；schema 的 CHECK、
+  前端 `TaskStatus` 联合类型、筛选排序表都有断言与它对齐
+- **终态集合不再手抄**：SQL 由 `TerminalStatusSQL()` 生成，修掉三处漏 `policy_blocked`
+- **意图状态**：生产路径不再使用无状态谓词的 `SetIntentState`（静态断言盯着），重跑回滚
+  改用 CAS
+
+### 性能与可观测性
+
+- 活动查询 `limit` 夹到 500；SSE 积压重放超过 5000 帧以 `resync` 结束（不再无限重放）
+- 连接池补 60s `statement_timeout`（走 DSN，每条新连接生效）
+- agent 行加 5s 缓存（worker 循环此前每 0.8s 查两次库）；`conversations` 补
+  `agent_key` / `updated_at` 索引
+- `/api/metrics` 新增：HTTP 请求计数与延迟分位（有界分桶）、被丢弃的活动行、归档队列
+  深度、任务结局分布
+
+### 运维
+
+- **备份**补 `jwt.key` 与 `.env`，`manifest.json` 记录每项是否真的存在
+- **恢复失败会连库带文件一起回滚**（`pg_restore --clean` 是先删后建）；`pg_restore`
+  版本比服务端新时在动手前拒绝
+- **保留清理**新增五张表（长任务台账、凭据尝试、通知事件、对话活动流、审批记录），并
+  统一成一个执行入口
+- 容器：`no-new-privileges` + `cap_drop: ALL`（只加回降权需要的 6 个 capability）；
+  Node 改用官方二进制 + 写死的 sha256；CI 的 action 全部按 commit SHA 固定
+
+### 文档
+
+- `docs/` 重新纳入版本控制，新增 `docs/README.md` 索引；代码里 18 处悬空引用改为指向它
+- 本文件补 0.7.0–0.7.6 各版本段落（此前停在 0.6.1）
+- 发布正文取自本文件（`scripts/changelog-section.sh`）
+
 ## [0.7.6] - 2026-10-31
 
 - 关停时等待后台工作（`Server.Shutdown`），不再先关连接池
