@@ -166,6 +166,9 @@ var defaultEnabledTools = []string{
 	"Bash", "run_execution", "loot_exec", "loot_upload", "loot_download", "foothold_exec", "tunnel_open", "cve_exploit", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",
+	// MCP / 自定义工具的配置写入：它们能把"一条任意命令"变成平台的常驻能力
+	// （stdio 传输会 spawn 子进程，自定义工具每次调用都会执行），必须走规则与裁判。
+	"create_mcp", "update_mcp", "create_custom_tool", "update_custom_tool",
 }
 
 // New creates an Interceptor backed by d. The rule cache is lazy-loaded on

@@ -277,7 +277,10 @@ func mcpSchema(withID bool) map[string]any {
 }
 
 func (a mcpToolInput) toDB() *db.MCPServer {
-	enabled := true
+	// 默认 **不启用**：新建一条 stdio MCP 等于让平台以服务端身份启动一个进程。
+	// 由模型发起的 create_mcp 不该顺手把它跑起来——先落配置，等人（或一个明确
+	// 传 enabled=true 的调用）再启用。HTTP/SSE 传输默认仍按调用方的意愿。
+	enabled := a.Transport != "stdio"
 	if a.Enabled != nil {
 		enabled = *a.Enabled
 	}
@@ -292,7 +295,8 @@ func (a mcpToolInput) toDB() *db.MCPServer {
 }
 
 func (s *Server) toolCreateMCP() actool.CoreTool {
-	return wrTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。创建后其工具需按 agent 可见性授权。",
+	return wrTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。创建后其工具需按 agent 可见性授权。"+
+		"stdio 传输默认不启用：它会以服务端身份启动你指定的命令，启用前需人确认。",
 		mcpSchema(false),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a mcpToolInput

@@ -855,6 +855,11 @@ func (s *Server) pgListTools(w http.ResponseWriter, r *http.Request) {
 	if ts == nil {
 		ts = []*db.Tool{}
 	}
+	// 自定义 HTTP 工具的 headers 可能含 Bearer/API key：回显前掩码（命令/脚本的
+	// exec 是工具逻辑本身，原样返回，UI 需要它才能编辑）。
+	for _, tool := range ts {
+		tool.Exec = maskToolExecForUI(tool.Kind, tool.Exec)
+	}
 	// Usage is best-effort decoration. Runtime tool resolution keeps using the plain
 	// catalog query, so agent assembly never pays for this aggregate.
 	counts, countErr := pg.ToolUsageCounts()
@@ -959,6 +964,12 @@ func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	if ms == nil {
 		ms = []*db.MCPServer{}
 	}
+	// env 里是 Authorization / X-API-Key 这类真凭据，回显前必须掩码（与通知渠道
+	// 的 notify.MaskConfig 同一纪律）。前端把掩码值原样提交回来时，SaveMCP 侧
+	// 认得出"没改"，保持库中原值。
+	for i, m := range ms {
+		ms[i] = maskMCPForUI(m)
+	}
 	// P24：附上每个 server 的并发/熔断快照（UI 显示"熔断中（剩余 Ns）"+ 手动重置）。
 	guards := map[string]mcphttp.GuardStatus{}
 	for _, st := range mcphttp.GuardStatuses() {
@@ -1006,6 +1017,18 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isNew := m.ID == 0
+	// 掩码值 = "没改"。读取接口回显的是掩码，前端原样提交回来时必须换回库中原值，
+	// 否则一次「只改描述」的保存会把真凭据覆盖成字面量 __masked__:…。
+	if !isNew {
+		prev, perr := pg.MCPByID(m.ID)
+		if perr != nil {
+			writeErr(w, 500, perr.Error())
+			return
+		}
+		if prev != nil {
+			m.Env = mergeMaskedEnv(prev.Env, m.Env)
+		}
+	}
 	id, err := pg.SaveMCP(&m)
 	if err != nil {
 		writeErr(w, 500, err.Error())

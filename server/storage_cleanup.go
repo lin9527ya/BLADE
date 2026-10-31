@@ -80,6 +80,33 @@ type storageUnit struct {
 	Protected string `json:"protected,omitempty"`
 }
 
+// binaryResidueNames 是「更新残留」分类**唯一**允许删除的条目名。
+//
+// 为什么必须按名白名单：这个分类的根目录是**可执行文件所在目录**，也就是
+// jwt.key / config.json / data / skills / start.sh / 正在运行的 blade 都住在这里。
+// 此前它扫描整目录并 os.RemoveAll 命中的每一项，于是操作者一旦给这个分类设了保留
+// 天数，被删掉的不是"旧二进制"，而是签名密钥、数据库连接串和全部任务产物。
+// 目录级白名单（只看名字、不看内容）是这里唯一安全的形态：任何"先列全部再排除"
+// 的写法都会在下次新增一个文件时重新变成漏洞。
+var binaryResidueNames = map[string]bool{
+	"blade.old":          true, // 自更新换装留下的上一版
+	"blade.failed":       true, // 启动冒烟失败的那一版
+	"blade.new":          true, // 下载完成、尚未换装的暂存件
+	"blade.upgrade.json": true, // 升级意图文件
+}
+
+// isBinaryResidue 判断更新残留分类里的一个条目是否允许被清理。
+func isBinaryResidue(name string) bool {
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+		return false
+	}
+	if binaryResidueNames[name] {
+		return true
+	}
+	// Windows 上可执行文件带 .exe 后缀，对应的残留也叫 blade.old.exe 等。
+	return strings.HasSuffix(name, ".exe") && binaryResidueNames[strings.TrimSuffix(name, ".exe")]
+}
+
 type storageCategoryReport struct {
 	Key           string        `json:"key"`
 	Label         string        `json:"label"`
@@ -349,6 +376,11 @@ func (s *Server) scanStorageCategory(spec storageCategorySpec, days int, protect
 		u := storageUnit{Name: e.Name(), Path: p, Bytes: bytes, ModTime: mod}
 		if spec.Key == "tasks" && protected[e.Name()] {
 			u.Protected = "任务未到终态（在跑/排队/暂停）"
+		}
+		// 更新残留分类只认白名单里的条目：同目录还住着 jwt.key / config.json /
+		// data / skills / 正在运行的二进制，它们**永远**不该出现在可清理列表里。
+		if spec.Key == "binary" && !isBinaryResidue(e.Name()) {
+			u.Protected = "不是更新残留（同目录的密钥/配置/数据一律不清理）"
 		}
 		units = append(units, u)
 	}

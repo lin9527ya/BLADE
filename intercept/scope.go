@@ -142,7 +142,18 @@ var builtinActionTools = map[string]bool{
 	"foothold_exec": true, "tunnel_open": true,
 	"cve_exploit": true,
 	"Write":       true, "Edit": true, "MultiEdit": true,
+	// MCP 配置类工具：它们能让平台**以服务端身份启动一个新进程**（stdio 传输的
+	// command/args 就是一条任意命令），或让平台向任意 URL 发请求。这比 Bash 更靠前——
+	// Bash 至少还过拦截规则与 RoE 门，而 create_mcp 只写一行配置，真正执行发生在
+	// 之后的连接阶段。登记为动作类，停机开关与作业时间窗才管得住它。
+	"create_mcp": true, "update_mcp": true,
+	// 自定义工具同样能落地一条命令/HTTP 模板，后续每次调用都会执行。
+	"create_custom_tool": true, "update_custom_tool": true,
 }
+
+// BuiltinActionTool 报告某个内置工具是否登记为动作类（受停机开关 / 作业时间窗约束）。
+// 导出给测试与审计使用：这条登记漏了不会报错，只会静默失去约束。
+func BuiltinActionTool(name string) bool { return builtinActionTools[name] }
 
 // actionCacheEntry 缓存一次 tools 表查询：是否为动作类，以及执行规格里可能携带的
 // 目标面（自定义 HTTP/命令工具的 URL/命令模板不在调用入参里，只在 exec 里）。

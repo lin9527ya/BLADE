@@ -6,6 +6,9 @@
 # auth.password_hash 键。本脚本连上数据库后，用 pgcrypto 在库内生成 bcrypt 哈希
 # 并写回该键——与后端登录校验（golang.org/x/crypto/bcrypt）完全兼容。
 #
+# 同时轮换 auth.jwt_key（签名密钥）：重置密码必须让此前签发的 token 一起失效，
+# 否则应急流程跑完，入侵者手里的 7 天 token 仍然有效。
+#
 # 两种部署：
 #   local （默认）—— 宿主机直接用 psql 连数据库。连接信息按以下优先级获取：
 #                    命令行参数 > --dsn/$BLADE_PG_DSN > config.json 的 database.*
@@ -26,6 +29,7 @@
 set -euo pipefail
 
 PASS_KEY="auth.password_hash"
+JWT_KEY="auth.jwt_key"   # 与应用内改密码同一处；轮换它 = 吊销此前签发的全部 token
 BCRYPT_COST=10
 
 MODE=""            # local | docker（空=自动判定）
@@ -136,12 +140,19 @@ export BLADE_RESET_NEWPASS="$NEWPASS"
 
 # 库内生成 bcrypt 并 upsert；密码用 :'newpw' 自动转义。CREATE EXTENSION 幂等，
 # 若数据库角色无建扩展权限会在此报错（提示见下方 run 的失败分支）。
+# 同时轮换签名密钥：应用内改密码会轮换它（server/auth.go 的 authChangePassword），
+# 而本脚本此前只改密码哈希——应急流程用它重置之后，此前签发的 7 天 token 全部继续
+# 有效，等于"改了密码但没把入侵者踢下线"。这里用 pgcrypto 生成 32 字节随机密钥，
+# 与应用内轮换的产物形态一致（服务端读到的就是一段随机字节）。
 SQL=$(cat <<SQL
 \\set ON_ERROR_STOP on
 \\getenv newpw BLADE_RESET_NEWPASS
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 INSERT INTO settings(key, value)
 VALUES ('$PASS_KEY', crypt(:'newpw', gen_salt('bf', $BCRYPT_COST)))
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+INSERT INTO settings(key, value)
+VALUES ('$JWT_KEY', encode(gen_random_bytes(32), 'hex'))
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 SQL
 )
@@ -232,4 +243,5 @@ else
 fi
 
 unset BLADE_RESET_NEWPASS
-echo "✓ 已重置 BLADE 管理员密码。请用用户名 BLADE + 新密码登录（无需重启服务）。"
+echo "✓ 已重置 BLADE 管理员密码，并轮换了签名密钥：此前签发的 token 全部失效，需重新登录。"
+echo "  （无需重启服务；其他已登录的浏览器会被踢回登录页，这是预期行为。）"

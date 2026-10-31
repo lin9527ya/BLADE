@@ -127,6 +127,9 @@ export default function MCPPage() {
     }
     return out;
   }
+  // 服务端回显的凭据是掩码（__masked__:…尾号）。原样填进编辑框，保存时服务端认得出
+  // 「没改」并换回库中原值；这里不要自作主张清空——那会让"只改个名字"的保存把
+  // token 抹掉。掩码带尾号提示，人也能认出是哪一个。
   function envToText(env: Record<string, string> | undefined): string {
     return Object.entries(env ?? {})
       .map(([k, v]) => `${k}=${v}`)

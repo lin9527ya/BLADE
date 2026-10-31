@@ -17,6 +17,48 @@
 - 依赖 **Norma v0.5.5**：后台任务、同步 Bash、交互式 shell 三处同一纪律
   （SDK 侧此前只 `Wait` 不杀组）
 
+### 安全：MCP 不再能绕过隔离执行任意命令
+
+一次全面安全评估发现的最严重一条：**`create_mcp` 让模型可以指定一条
+stdio 命令，平台随后以服务端身份把它跑起来**——降权（`BLADE_AGENT_USER`）、子进程环境
+凭据清洗、文件工具边界**全都不覆盖**这条路，停机开关与 RoE 范围门也不拦它。
+worker 抓到的目标页面内容里只要有一句提示注入，就等价于在服务端执行任意命令。
+
+- **Norma v0.5.6**：`mcp.NewStdioClient` 在 `Start` 之前调用宿主的执行钩子，
+  stdio 子进程与 Bash/后台任务/交互 shell 走同一套降权与清洗
+  （`tool.ApplyExecHook` 导出给同进程内其它 spawn 子进程的包复用）
+- `create_mcp` / `update_mcp` / `create_custom_tool` / `update_custom_tool` 登记为
+  **动作类工具**：受停机开关、作业时间窗与拦截规则约束
+- `create_mcp` 的 **stdio 传输默认不启用**：先落配置，显式 `enabled=true` 才启动
+
+### 安全：存储清理不再可能删掉密钥与数据
+
+「更新残留（旧二进制）」分类的根目录是**可执行文件所在目录**——`jwt.key`、`config.json`、
+`data/`、`skills/`、`start.sh` 和正在运行的二进制都住在这里，而它此前会删掉目录里的
+**每一项**。操作者一旦给这个分类设了保留天数，被删的就是签名密钥与全部任务产物。
+
+- 改成按名白名单：只清理 `blade.old` / `blade.failed` / `blade.new` / `blade.upgrade.json`
+  （含 Windows 的 `.exe` 变体）；其余条目一律标为受保护并给出理由
+
+### 安全：凭据不再明文回显
+
+- `GET /api/mcp` 的 `env`（同时是 http/sse 的请求头）里，疑似凭据的值改为掩码
+  （沿用通知渠道的 `notify.MaskedValue` 语义，带末 6 位辨识提示）；非凭据键原样保留
+- `GET /api/tools` 的自定义 **HTTP** 工具 `headers` 同样掩码（命令/脚本的 exec 是工具
+  逻辑本身，保持原样）
+- 保存时「掩码值 = 没改」：服务端换回库中原值，一次只改名字的保存不会把 token 覆盖成掩码
+
+### 安全：重置密码同时吊销会话
+
+`reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
+跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 依赖
+
+- **Norma v0.5.6**（MCP stdio 执行钩子）
+- `klauspost/compress` v1.18.6 → **v1.18.7**（GO-2026-5841）。`govulncheck` 复查：
+  **0 个可达漏洞**，仅剩一条不可达的模块级公告（`golang.org/x/crypto` 的 openpgp，本项目未 import）
+
 ### 后台工作的生命周期与测试隔离
 
 同一个形状（工作活得比所有者久）在别处还有一批，这次一并收口：

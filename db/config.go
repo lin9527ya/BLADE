@@ -963,6 +963,25 @@ func (d *DB) ListMCP() ([]*MCPServer, error) {
 	return out, nil
 }
 
+// MCPByID returns one MCP server row (nil when absent). Used by the save path to
+// restore masked secrets: the UI echoes a mask, and the mask must resolve back to
+// the stored value rather than overwrite it.
+func (d *DB) MCPByID(id int64) (*MCPServer, error) {
+	var m MCPServer
+	var args, env []byte
+	err := d.QueryRow(`SELECT id,name,transport,COALESCE(command,''),args,env,COALESCE(url,''),enabled,insecure
+FROM mcp_servers WHERE id=$1`, id).
+		Scan(&m.ID, &m.Name, &m.Transport, &m.Command, &args, &env, &m.URL, &m.Enabled, &m.Insecure)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.Args, m.Env = json.RawMessage(args), json.RawMessage(env)
+	return &m, nil
+}
+
 // MCPToolSummary returns the cached tool names for a server (empty until discovered)
 // plus how many of them are switched off (工具级开关；关掉的仍留在缓存里，只是不注入)。
 func (d *DB) MCPToolSummary(serverID int64) (names []string, disabled int, err error) {
