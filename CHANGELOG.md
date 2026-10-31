@@ -12,13 +12,13 @@
 **已修（本次）**：MCP stdio 绕过隔离（C1）、存储清理删密钥（H1）、凭据明文回显（H2）、
 重置密码不吊销会话（H6）、`klauspost/compress` 公告（M5）、活动查询与 SSE 重放无上限（P3/P4）、
 无语句超时（P5）、agent 行每 0.8s 查库（P6）、`conversations` 缺索引（P10）、
-MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台（见下两节）。
+MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合在 SQL 里漏 policy_blocked。
 
 **未修，按风险排序**：
 
-1. **状态机与终态集合分散**："任务"有四套表示/四种状态推导，库里 `status` 存不下 `queued`；
-   终态集合在 6 处被重抄成 SQL 字面量，其中 3 处漏了 `policy_blocked`；意图状态 29 个写入点
-   只有 11 个走 CAS。
+1. **状态机仍有四套表示**："任务"有 `db.Task` / `server.Task` / `TaskDTO` / `resolvedTaskStatus`
+   四种表示与推导，库里 `status` 存不下 `queued`（靠 `queued` 布尔列表达）；意图状态 29 个
+   写入点只有 11 个走 CAS。终态集合本身已收敛到 `TerminalStatusSQL()`（见上节）。
 2. **保留策略默认永不清理且只覆盖 4 张表**：`tool_executions`、`credential_attempts`、
    `notification_*`、`conversation_activities` 都没有回收路径；文件侧只能手工清。
 3. **文档债**：`docs/` 在 `.gitignore` 里，代码引用的 12 份设计文档从不存在（历史里也没有）；
@@ -79,6 +79,17 @@ worker 抓到的目标页面内容里只要有一句提示注入，就等价于�
 
 `reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
 跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 一致性：终态集合在 SQL 里不再被手抄
+
+`TerminalStatuses` 是 Go 侧的单一真源，但它在 SQL 里被重抄了多次，而且抄错的方式很隐蔽：
+有的地方只写三个、漏掉 `policy_blocked`。漏掉的后果不是报错，而是"策略封死的任务被当成
+未终态"——`completed_at` 被清空、`first_run_at` 被重置、统计口径与任务列表不一致。
+
+- 新增 `db.TerminalStatusSQL()`：从 `TerminalStatuses` 生成 `('done','failed','timeout','policy_blocked')`
+- `db.SetStatus` / `SetTerminalStatusGuarded` / 归档准入 SQL / 暂停 SQL / findings 分组
+  的 `CASE` 全部改用它；修掉了三处漏 `policy_blocked` 的写法
+- 回归：`db/status_sql_test.go` 断言生成结果覆盖每个终态，并拦下再次出现的手写三元素字面量
 
 ### 安全：同一数据库只允许一个实例
 
