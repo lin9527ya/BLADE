@@ -229,9 +229,27 @@ func TestBootstrapAdmissionClearsQueuedPauseBarrier(t *testing.T) {
 func TestRuntimeCtxFollowsTaskCancellation(t *testing.T) {
 	e := NewEngine(nil)
 
-	// No runtime registered → Background, which is exactly the uncancellable case.
-	if ctx := e.runtimeCtx("t1"); ctx.Done() != nil {
-		t.Fatal("unregistered task should fall back to context.Background()")
+	// No runtime registered → fall back to the engine's base context. It must be
+	// cancellable (Background's nil Done() is exactly the uncancellable case the
+	// watcher used to hang on), but NOT already cancelled: a task that has simply
+	// not started yet must not make its watcher quit on the first tick.
+	base, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+	e.SetBaseContext(base)
+	ctx0 := e.runtimeCtx("t1")
+	if ctx0.Done() == nil {
+		t.Fatal("unregistered task should fall back to a cancellable context, not Background")
+	}
+	select {
+	case <-ctx0.Done():
+		t.Fatal("fallback context should follow the engine base ctx, not be pre-cancelled")
+	default:
+	}
+	cancelBase()
+	select {
+	case <-ctx0.Done():
+	case <-time.After(time.Second):
+		t.Fatal("fallback context must be cancelled together with the engine base ctx (shutdown)")
 	}
 
 	rt := e.registerTaskRoutines(context.Background(), "t1", 0)

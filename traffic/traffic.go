@@ -421,6 +421,16 @@ func (t *Traffic) Close() error {
 	if t.closed != nil {
 		t.closeOnce.Do(func() { close(t.closed) })
 	}
+	// 先关监听再关索引：代理的 addon 会往 SQLite 里写，监听还开着就关库等于让
+	// 正在处理的请求写进一个已关闭的连接（此前这里只关库，MITM 的 http.Server
+	// 与它的 goroutine 一直活到进程退出）。
+	if t.proxy != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := t.proxy.Shutdown(ctx); err != nil {
+			log.Printf("[traffic] 关闭录制代理: %v", err)
+		}
+		cancel()
+	}
 	t.reaping.Wait()
 	return t.db.Close()
 }

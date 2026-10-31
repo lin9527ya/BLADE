@@ -43,6 +43,9 @@ type Compactor struct {
 	mu      sync.Mutex
 	running map[int64]bool
 	lastRun map[int64]time.Time
+	// wg 跟踪在跑的压缩 goroutine，供 Wait 等待。压缩刻意不挂在单轮 ctx 上
+	// （context.WithoutCancel），所以没有任何东西能替调用方判断「它还在写图」。
+	wg sync.WaitGroup
 }
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
@@ -82,7 +85,9 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 	if !c.tryStart(ts.ID()) {
 		return // already running, or within cooldown —派生态最终一致，下轮再压
 	}
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		defer c.finish(ts.ID())
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
 		defer cancel()
@@ -319,6 +324,25 @@ func (c *Compactor) tryStart(expID int64) bool {
 	}
 	c.running[expID] = true
 	return true
+}
+
+// Wait 等所有在跑的压缩结束，最多等到 ctx 到期。任务停止/删除时用它：
+// 压缩会写探索图，让「删任务」与「压缩写节点」并发是自找的竞态。
+func (c *Compactor) Wait(ctx context.Context) bool {
+	if c == nil {
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (c *Compactor) finish(expID int64) {

@@ -901,7 +901,7 @@ func (s *Server) proxyRotateEgress(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "手动切换出口"
 	}
-	res, err := s.m.RotateEgress(reason)
+	res, err := s.m.RotateEgress(r.Context(), reason)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

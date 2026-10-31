@@ -91,6 +91,15 @@ func (p *Planner) SetRoundSeconds(n int64) { p.roundDur = time.Duration(n) * tim
 // (off the hot path) fold cold nodes into digests. nil = feature disabled.
 func (p *Planner) SetCompactor(c *Compactor) { p.compactor = c }
 
+// WaitCompaction 等这个 planner 名下的后台压缩收尾（任务停止/删除时调用）。
+// 压缩不受单轮 ctx 约束，没有这一步它会在任务拆掉之后继续写探索图。
+func (p *Planner) WaitCompaction(ctx context.Context) bool {
+	if p == nil {
+		return true
+	}
+	return p.compactor.Wait(ctx)
+}
+
 // SetGuard attaches the task Guard. nil keeps the historical no-guard behavior
 // (tests / hosts without an interceptor).
 func (p *Planner) SetGuard(g *guard.Guard) { p.guard = g }

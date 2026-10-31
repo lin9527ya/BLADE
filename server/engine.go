@@ -102,6 +102,14 @@ type Engine struct {
 	m        *Manager
 	debounce time.Duration
 
+	// onStop 是 StopTask 在拆掉任务运行时之后调用的钩子（Server 用它等任务名下的
+	// 后台压缩收尾）。Engine 本身看不到 Planner，钩子把依赖方向留在 Server 侧。
+	onStop func(taskID string)
+
+	// baseMu 保护 baseCtx：任务没有运行时条目时的兜底 ctx（见 runtimeCtx）。
+	baseMu  sync.RWMutex
+	baseCtx context.Context
+
 	bc *Broadcaster // live activity pub/sub (SSE)
 
 	started  sync.Map // taskID -> bool, so Run is idempotent per task
@@ -359,19 +367,39 @@ func slotPool(n int) []string {
 	return out
 }
 
-// runtimeCtx returns the task's runtime context, or context.Background() when the
-// task has no registered runtime (never started, or already torn down).
+// runtimeCtx returns the task's runtime context; when the task has no registered
+// runtime (never started, or already torn down) it falls back to the engine's
+// base context (the Server ctx).
 //
 // 长生命周期助手必须用它，而不是 context.Background()：Background 的 Done() 是 nil
 // channel，select 里那个分支永远等不到，等于这个 goroutine 无法被取消——StopTask
 // 调 rt.cancel() 也打断不了它。
+//
+// 兜底用 baseCtx（进程/Server 级）而不是 Background：没有运行时条目时任务可能只是
+// 还没启动，不该让观察者立刻退出；但关停时必须能一起停下——此前返回 Background
+// 让执行观察者变成不可取消的，每 5s 查库、最长 24 小时，跨过关停与关池。
 func (e *Engine) runtimeCtx(taskID string) context.Context {
 	e.runtimeMu.Lock()
-	defer e.runtimeMu.Unlock()
-	if rt := e.runtimes[taskID]; rt != nil {
+	rt := e.runtimes[taskID]
+	e.runtimeMu.Unlock()
+	if rt != nil {
 		return rt.ctx
 	}
+	e.baseMu.RLock()
+	base := e.baseCtx
+	e.baseMu.RUnlock()
+	if base != nil {
+		return base
+	}
 	return context.Background()
+}
+
+// SetBaseContext 登记 Engine 级兜底 ctx（Server.New 用 Server 的 ctx 调用）。
+// 它只影响「任务没有运行时条目」时的兜底，任务自己的运行时段仍优先。
+func (e *Engine) SetBaseContext(ctx context.Context) {
+	e.baseMu.Lock()
+	e.baseCtx = ctx
+	e.baseMu.Unlock()
 }
 
 // StopTask permanently stops every long-lived goroutine and removes all Engine
@@ -397,6 +425,11 @@ func (e *Engine) StopTask(taskID string) {
 	e.runtimeMu.Unlock()
 	if rt != nil {
 		rt.wg.Wait()
+	}
+	// 后台冷节点压缩不挂在 run 的 ctx 上（它刻意活过一轮 planner），所以 rt.wg 等不到
+	// 它。任务拆掉之后它仍会写探索图，必须在这里有界地等它收尾。
+	if e.onStop != nil {
+		e.onStop(taskID)
 	}
 
 	e.execMu.Lock()

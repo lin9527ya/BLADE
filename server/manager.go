@@ -259,6 +259,16 @@ type Manager struct {
 	// clash 是 Clash 出口切换的最近状态（切换节点/出口 IP/冷却）。设置页只读它，
 	// 不在 GET 时实时请求 Clash 控制器。
 	clash *clashEgressState
+
+	// bgWG 登记 Manager 自己起的短命后台写入（LLM 健康状态落库等）。Close 在关池
+	// 之前等它：这些写入此前是 fire-and-forget，关停时可能在池关闭之后才执行。
+	bgWG sync.WaitGroup
+
+	// closed 在 Close 时关闭。挂在 Manager 上的长生命周期循环（任务级 deadline
+	// 协调器）据此判断「所有者已经没了」——它们拿到的 ctx 可能是 Server 级的，
+	// 不会随单个任务停止而取消。
+	closed     chan struct{}
+	closedOnce sync.Once
 }
 
 // Settings keys the UI toggles at runtime.
@@ -517,7 +527,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), closed: make(chan struct{})}
 	// P13：执行服务在建 Manager 时就位（不启后台协程——巡检由 RestoreTaskRuntimes 拉起，
 	// 与"构造器不做后台工作"的既有纪律一致）。
 	m.execs = NewExecutionService(pg, dir)
@@ -557,7 +567,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			}
 		}
 		if tr != nil {
+			m.mu.Lock()
 			m.traffic = tr
+			m.mu.Unlock()
 			goSafe("manager/traffic-proxy", nil, func() {
 				log.Printf("[traffic] recording proxy on %s (set HTTP_PROXY=%s + trust _ca CA)", proxyAddr, tr.ProxyAddr())
 				if err := tr.Start(); err != nil {
@@ -972,15 +984,28 @@ func encodeJSON(v any) json.RawMessage {
 // traffic tools, gated by the global capture switch: empty when capture is off, so
 // no agent gets traffic_search/traffic_get regardless of binding.
 func (m *Manager) HostTools() []actool.CoreTool {
-	if m.traffic == nil || !m.TrafficEnabled() {
+	tr := m.Traffic()
+	if tr == nil || !m.TrafficEnabled() {
 		return nil
 	}
-	return m.traffic.Tools()
+	return tr.Tools()
 }
 
-func (m *Manager) Assets() *pgdb.AssetStore  { return m.assets }
-func (m *Manager) PG() *pgdb.DB              { return m.pg }
-func (m *Manager) Traffic() *traffic.Traffic { return m.traffic }
+func (m *Manager) Assets() *pgdb.AssetStore { return m.assets }
+func (m *Manager) PG() *pgdb.DB             { return m.pg }
+
+// Traffic 返回录制代理（未启用/未装配时为 nil）。
+//
+// 读走访问器而不是直接读字段：字段在 NewManager 里装配、测试夹具在构造后替换，
+// 直接读是「可变字段无锁访问」——与 s.ctx 同一类问题。
+func (m *Manager) Traffic() *traffic.Traffic {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.traffic
+}
 
 // ProxyAddr returns the egress proxy address agents route target traffic through:
 //   - capture ON  → the recording MITM proxy (which itself exits via the global
@@ -991,8 +1016,8 @@ func (m *Manager) Traffic() *traffic.Traffic { return m.traffic }
 // So the global proxy takes effect in both modes: at the MITM's upstream when
 // capturing, in the agent's own bash env / WebFetch when not.
 func (m *Manager) ProxyAddr() string {
-	if m.traffic != nil && m.TrafficEnabled() {
-		return m.traffic.ProxyAddr()
+	if tr := m.Traffic(); tr != nil && m.TrafficEnabled() {
+		return tr.ProxyAddr()
 	}
 	return m.EgressProxy()
 }
@@ -1003,10 +1028,11 @@ func (m *Manager) ProxyAddr() string {
 // preserves real target certs, so no custom CA is needed there. Its emptiness is
 // also the worker's "recording off" signal (see workerSystem).
 func (m *Manager) ProxyCACert() string {
-	if m.traffic == nil || !m.TrafficEnabled() {
+	tr := m.Traffic()
+	if tr == nil || !m.TrafficEnabled() {
 		return ""
 	}
-	return m.traffic.CACertPath()
+	return tr.CACertPath()
 }
 
 // GlobalProxy returns the **configured** egress proxy (first pool entry; empty =
@@ -1174,8 +1200,8 @@ func (m *Manager) applyEgressProxy(active string) {
 	m.mu.Lock()
 	m.egressProxy = active
 	m.mu.Unlock()
-	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(active); err != nil {
+	if tr := m.Traffic(); tr != nil {
+		if err := tr.SetUpstreamProxy(active); err != nil {
 			log.Printf("[proxy] 应用出口代理 %q 失败: %v", active, err)
 		}
 	}
@@ -1183,6 +1209,9 @@ func (m *Manager) applyEgressProxy(active string) {
 }
 
 func (m *Manager) Close() error {
+	if m.closed != nil {
+		m.closedOnce.Do(func() { close(m.closed) })
+	}
 	m.mu.Lock()
 	pool := m.proxyPool
 	m.proxyPool = nil
@@ -1197,6 +1226,18 @@ func (m *Manager) Close() error {
 		if n := execs.Shutdown(agent.AbortShutdown.Text, 5*time.Second); n > 0 {
 			log.Printf("[exec] 停机时终止了 %d 条后台执行", n)
 		}
+	}
+	// 等 Manager 自己起的短命后台写入（LLM 熔断状态落库）。必须在关池之前：
+	// 那些写入没有自己的 ctx，关池后再跑只会拿到 `sql: database is closed`。
+	bgDone := make(chan struct{})
+	go func() {
+		m.bgWG.Wait()
+		close(bgDone)
+	}()
+	select {
+	case <-bgDone:
+	case <-time.After(5 * time.Second):
+		log.Printf("[pg] 关停时仍有 LLM 健康状态写入未完成（已放弃等待）")
 	}
 	if pool != nil {
 		pool.Close() // stop health probes before closing the MITM
@@ -1880,12 +1921,12 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 
 	var trafficStage *traffic.HostDeleteStage
 	var prepare func(pgdb.TaskDeletePreparation) error
-	if opts.DeleteTraffic && m.traffic != nil {
+	if opts.DeleteTraffic && m.Traffic() != nil {
 		prepare = func(p pgdb.TaskDeletePreparation) error {
 			if len(p.TrafficHosts) == 0 {
 				return nil
 			}
-			trafficStage, err = m.traffic.StageDeleteHostsExact(p.TrafficHosts)
+			trafficStage, err = m.Traffic().StageDeleteHostsExact(p.TrafficHosts)
 			if err != nil {
 				return err
 			}
@@ -2222,6 +2263,21 @@ func (m *Manager) ResolveTask(id string) *Task {
 	}
 	t, _ := m.Task(id)
 	return t
+}
+
+// Closed 返回一个在 Manager.Close 时关闭的 channel（裸字面量构造时为 nil，
+// 调用方按「永不关闭」处理即可）。
+func (m *Manager) Closed() <-chan struct{} { return m.closed }
+
+// TaskByID 返回已发布的任务句柄；不存在时 nil。调用方持有句柄即可，
+// 生命周期由 Manager 管理（删除后该 id 不再出现）。
+func (m *Manager) TaskByID(id string) *Task {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tasks[id]
 }
 
 func (m *Manager) List() []*Task {

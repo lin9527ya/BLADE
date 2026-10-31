@@ -85,7 +85,10 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 	_ = m.pg.SetSetting(settingClashAPIURL, s.URL)
 	_ = m.pg.SetSetting(settingClashProxyGroup, "BLADE")
 	_ = m.pg.SetSetting(settingClashRotateCooldown, "0")
@@ -102,7 +105,7 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	ip := "203.0.113.9"
 	clashProbeEgressIP = func(context.Context, string, string, time.Duration) (string, error) { return ip, nil }
 
-	res, err := m.RotateEgress("test")
+	res, err := m.RotateEgress(context.Background(), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +120,7 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	// 也必须失败——“切成功但 IP 没变”是假切换。
 	now["BLADE"] = "A"
 	ip = "203.0.113.9"
-	if _, err := m.RotateEgress("same ip"); err == nil || !strings.Contains(err.Error(), "未变化") {
+	if _, err := m.RotateEgress(context.Background(), "same ip"); err == nil || !strings.Contains(err.Error(), "未变化") {
 		t.Fatalf("出口 IP 未变化时必须报错，got %v", err)
 	}
 }
@@ -128,7 +131,10 @@ func TestRotateEgressRefusesWithoutProxy(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 	_ = m.pg.SetSetting(settingClashAPIURL, s.URL)
 	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingClashAPIURL) })
 	m.mu.Lock()
@@ -136,7 +142,7 @@ func TestRotateEgressRefusesWithoutProxy(t *testing.T) {
 	m.proxyPool = nil
 	m.globalProxy = ""
 	m.mu.Unlock()
-	if _, err := m.RotateEgress("test"); err == nil || !strings.Contains(err.Error(), "拒绝切换") {
+	if _, err := m.RotateEgress(context.Background(), "test"); err == nil || !strings.Contains(err.Error(), "拒绝切换") {
 		t.Fatalf("没有可用代理时必须拒绝切换，got %v", err)
 	}
 }
@@ -203,7 +209,10 @@ func TestRotateEgressAdvancesThroughCandidates(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 	_ = m.pg.SetSetting(settingClashAPIURL, srv.URL)
 	_ = m.pg.SetSetting(settingClashProxyGroup, "G")
 	_ = m.pg.SetSetting(settingClashRotateCooldown, "0")
@@ -225,7 +234,7 @@ func TestRotateEgressAdvancesThroughCandidates(t *testing.T) {
 
 	var got []string
 	for i := 0; i < 3; i++ {
-		res, err := m.RotateEgress("advance")
+		res, err := m.RotateEgress(context.Background(), "advance")
 		if err != nil {
 			t.Fatalf("第 %d 次切换: %v", i+1, err)
 		}

@@ -182,6 +182,22 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
 			return // already finished (goals met / failed) — nothing to time out
 		}
+		// 任务已经从 Manager 摘掉（删除完成）：这条协调器已没有所有者。
+		//
+		// 为什么必须显式判断而不是只靠 ctx：StartDeadlineCoordinator 在**多个**路径上
+		// 被调用（Run / 重启恢复 / 归档恢复 / 预算验收），其中有的传的是 Server 级
+		// ctx，不会随任务停止而取消。此前这类协调器会一直轮询到进程退出——测试里
+		// 就是「用例结束、任务早已删除，goroutine 还活着每 30 秒查一次库」。
+		if e.m.TaskByID(t.ID) == nil {
+			return
+		}
+		// 所有者（Manager）已经关闭：同上，这条协调器不该继续查库。
+		select {
+		case <-e.m.Closed():
+			return
+		default:
+		}
+
 		// 意图租约看门狗：独立节流(30s)，与 timeout/budget 的检查节奏解耦；收尾期间不扫
 		// (drain 正在等 Worker 优雅收尾，别用回收打断它)。
 		if time.Since(lastLeaseSweep) >= leaseSweepInterval && !e.isSettling(t.ID) {

@@ -152,7 +152,7 @@ func (m *Manager) clashState() *clashEgressState {
 // RotateEgress switches the configured Clash Selector group to the next safe node
 // and verifies the egress IP actually changed. It never falls back to a direct
 // connection: without a usable proxy to probe through, it refuses to rotate.
-func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
+func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotation, error) {
 	var out ClashRotation
 	cfg := m.ClashEgressConfig()
 	if cfg.APIURL == "" {
@@ -190,7 +190,12 @@ func (m *Manager) RotateEgress(reason string) (ClashRotation, error) {
 		s.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	// 上限 45 秒，但派生自调用方的 ctx：进程/任务停掉时不该再继续切出口。
+	// 此前是 context.Background()，关停之后最多还会跑 45 秒并改写设置与出口。
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	client := clashClient{apiURL: cfg.APIURL, secret: cfg.Secret}
 	proxies, err := client.proxies(ctx)

@@ -175,9 +175,9 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if snapshot.ExplorationID != task.ExplorationID {
 		return errors.New("任务探索记录在归档快照期间发生变化")
 	}
-	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
+	if tr := s.m.Traffic(); tr != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
-		trafficCount, err := s.m.traffic.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
+		trafficCount, err := tr.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
 		if err != nil {
 			return err
 		}
@@ -203,9 +203,9 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		}
 	}()
 	var trafficStage *traffic.HostDeleteStage
-	if s.m.traffic != nil && len(snapshot.ExclusiveHosts) > 0 {
+	if tr := s.m.Traffic(); tr != nil && len(snapshot.ExclusiveHosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "compact_traffic", 68)
-		trafficStage, err = s.m.traffic.StageDeleteHostsExactForArchive(snapshot.ExclusiveHosts, job.ID, job.TaskID)
+		trafficStage, err = tr.StageDeleteHostsExactForArchive(snapshot.ExclusiveHosts, job.ID, job.TaskID)
 		if err != nil {
 			return err
 		}
@@ -312,9 +312,9 @@ func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb
 			}
 		}()
 	}
-	if s.m.traffic != nil {
+	if tr := s.m.Traffic(); tr != nil {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "restore_traffic", 35)
-		if _, err := s.m.traffic.ImportArchive(filepath.Join(extracted, "traffic")); err != nil {
+		if _, err := tr.ImportArchive(filepath.Join(extracted, "traffic")); err != nil {
 			return err
 		}
 	}

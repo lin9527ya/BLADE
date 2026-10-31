@@ -20,7 +20,7 @@ import (
 )
 
 func (s *Server) evidenceStore() *evidence.Store {
-	return evidence.New(s.m.pg, s.m.traffic, filepath.Join(s.m.dir, "evidence"))
+	return evidence.New(s.m.pg, s.m.Traffic(), filepath.Join(s.m.dir, "evidence"))
 }
 
 // Add only new optional properties; preserve edited descriptions, existing

@@ -620,7 +620,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。
 	// 真正的安全校验（只选非 DIRECT 节点、验证出口 IP 变化、失败不直连）在 Manager.RotateEgress。
 	rotateEgress := func(reason string) (string, error) {
-		res, err := s.m.RotateEgress(reason)
+		res, err := s.m.RotateEgress(s.ctx, reason)
 		if err != nil {
 			return "", err
 		}

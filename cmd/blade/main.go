@@ -246,6 +246,15 @@ func run() int {
 		log.Printf("[shutdown] 等满 %s 仍有 %d 处 run 未收尾：其意图终态未落库，下次启动会重置为 open",
 			shutdownDrainGrace, busy)
 	}
+	// run 收完之后再停后台循环（证据 GC / 保留清理 / 调度器 / 推送 / 归档 worker /
+	// 旁路提问落库 / 日志持久化），并等它们退出。必须在 return 之前：defer 的
+	// mgr.Close() 会关连接池，循环若还在查库就变成 `sql: database is closed`，
+	// 在途的归档与检查点写入被静默丢掉。
+	bgCtx, cancelBg := context.WithTimeout(context.Background(), shutdownDrainGrace)
+	defer cancelBg()
+	if left := srv.Shutdown(bgCtx); left > 0 {
+		log.Printf("[shutdown] 等满 %s 仍有 %d 个后台循环未退出（其写入可能未落库）", shutdownDrainGrace, left)
+	}
 	return code
 }
 

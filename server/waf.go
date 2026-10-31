@@ -117,6 +117,9 @@ func (e *Engine) observeWAF(t *Task, r db.Activity) {
 	e.wafRotating = true
 	e.wafMu.Unlock()
 
+	// 用任务的运行时 ctx：任务停掉/进程关停时不该再继续切出口（此前传
+	// context.Background()，关停后最多还会跑 45 秒并改写设置与出口）。
+	rotateCtx := e.runtimeCtx(t.ID)
 	goSafe("engine/waf-rotate", nil, func() {
 		defer func() {
 			e.wafMu.Lock()
@@ -124,7 +127,7 @@ func (e *Engine) observeWAF(t *Task, r db.Activity) {
 			e.wafMu.Unlock()
 		}()
 		reason := fmt.Sprintf("WAF 拦截（%s）", host)
-		res, err := e.m.RotateEgress(reason)
+		res, err := e.m.RotateEgress(rotateCtx, reason)
 		if err != nil {
 			log.Printf("[waf] task %s 自动切换出口失败（%s）：%v", t.ID, host, err)
 			return
