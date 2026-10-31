@@ -55,8 +55,9 @@ MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合�
    给出提示）。数据库侧的长任务台账、凭据尝试、通知事件、对话活动流、审批记录都已接入；
    **文件侧**的任务产物/转写仍只能手工清。
 3. ~~release notes 由 GitHub 自动生成~~ **已改为取自本文件**（见上「发布」一节）。
-4. **前端工程门禁**：CI 不跑 lint/tsc（`DEVELOPMENT.md` 声称跑了），无 e2e，前端测试约 0.9%
-   行覆盖；6.8k 行的 mock server 是 API 的第二份实现，无一致性校验。
+4. **前端工程门禁**：CI 已补 `tsc --noEmit`（见「文档与工程门禁」）；仍无 e2e，前端测试约
+   0.9% 行覆盖，biome 基线 9.6 万条暂不能做门禁；6.8k 行的 mock server 是 API 的第二份
+   实现，无一致性校验。
 5. **可观测性（部分）**：HTTP 指标、被丢弃的活动行、归档队列深度已补；仍缺
    **任务级失败计数**（多少任务以 timeout / policy_blocked / done 收场）与
    **请求到 run 的关联**（HTTP `requestID` 没有写进 `activity`/`llm_usage`/`tool_executions`）。
