@@ -11,30 +11,28 @@
 
 **已修（本次）**：MCP stdio 绕过隔离（C1）、存储清理删密钥（H1）、凭据明文回显（H2）、
 重置密码不吊销会话（H6）、`klauspost/compress` 公告（M5）、活动查询与 SSE 重放无上限（P3/P4）、
-无语句超时（P5）、agent 行每 0.8s 查库（P6）、`conversations` 缺索引（P10）。
+无语句超时（P5）、agent 行每 0.8s 查库（P6）、`conversations` 缺索引（P10）、
+MCP http/SSE 无出站守卫（M1/M2，见下节）。
 
 **未修，按风险排序**：
 
-1. **MCP http/SSE 没有 SSRF 守卫**（`mcphttp/client.go`）：与通知渠道不同，它不在拨号期拦截
-   环回/链路本地，且 `insecure` 可关 TLS 校验（agent 也能设）。SSE 还会跟随服务端给的绝对
-   URL 并把配置的 headers 发过去。
-2. **多实例未支持也未拒绝**：启动时 `ResetRunningIntents` 会把另一个实例正在跑的意图抢回来，
+1. **多实例未支持也未拒绝**：启动时 `ResetRunningIntents` 会把另一个实例正在跑的意图抢回来，
    `reconcileConcurrency` 只看本进程的任务，流量代理绑定固定端口。目前没有任何机制拒绝
    第二个实例。
-3. **状态机与终态集合分散**："任务"有四套表示/四种状态推导，库里 `status` 存不下 `queued`；
+2. **状态机与终态集合分散**："任务"有四套表示/四种状态推导，库里 `status` 存不下 `queued`；
    终态集合在 6 处被重抄成 SQL 字面量，其中 3 处漏了 `policy_blocked`；意图状态 29 个写入点
    只有 11 个走 CAS。
-4. **保留策略默认永不清理且只覆盖 4 张表**：`tool_executions`、`credential_attempts`、
+3. **保留策略默认永不清理且只覆盖 4 张表**：`tool_executions`、`credential_attempts`、
    `notification_*`、`conversation_activities` 都没有回收路径；文件侧只能手工清。
-5. **文档债**：`docs/` 在 `.gitignore` 里，代码引用的 12 份设计文档从不存在（历史里也没有）；
+4. **文档债**：`docs/` 在 `.gitignore` 里，代码引用的 12 份设计文档从不存在（历史里也没有）；
    CHANGELOG 的 0.7.x 段落缺失（本文件此前停在 0.6.1）。
-6. **前端工程门禁**：CI 不跑 lint/tsc（`DEVELOPMENT.md` 声称跑了），无 e2e，前端测试约 0.9%
+5. **前端工程门禁**：CI 不跑 lint/tsc（`DEVELOPMENT.md` 声称跑了），无 e2e，前端测试约 0.9%
    行覆盖；6.8k 行的 mock server 是 API 的第二份实现，无一致性校验。
-7. **可观测性**：无 HTTP 指标、无任务级失败计数、被丢弃的活动行（`Engine.dropCnt`）从不暴露；
+6. **可观测性**：无 HTTP 指标、无任务级失败计数、被丢弃的活动行（`Engine.dropCnt`）从不暴露；
    HTTP `requestID` 没有写进 `activity`/`llm_usage`/`tool_executions`，无法从请求追到 run。
-8. **备份/恢复**：`backup.sh` 不含 `jwt.key`（现在库是权威，可接受但未说明）与 `.env`；
+7. **备份/恢复**：`backup.sh` 不含 `jwt.key`（现在库是权威，可接受但未说明）与 `.env`；
    `restore.sh` 的 `pg_restore --clean` 中途失败时不回滚数据库。
-9. **容器以 root 运行**，无 `cap_drop`/`read_only`；CI actions 按 tag 而非 commit SHA 固定。
+8. **容器以 root 运行**，无 `cap_drop`/`read_only`；CI actions 按 tag 而非 commit SHA 固定。
 
 ### 后台命令不再留下孤儿进程
 
@@ -84,6 +82,26 @@ worker 抓到的目标页面内容里只要有一句提示注入，就等价于�
 
 `reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
 跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 安全：MCP 出站目标守卫（SSRF / 凭据外泄）
+
+外部 MCP server 的地址由配置**或模型**给出，但 http/sse 传输此前没有任何出站约束——
+与通知渠道形成鲜明对比（那边拨号期就拦环回/链路本地）。两条具体路径：
+
+- `create_mcp` / `update_mcp` 能把平台指向 `http://169.254.169.254/...` 等内部地址，
+  响应再经工具输出读回
+- legacy SSE 的 POST 地址是**服务器下发**的（`data: <url>`）：一个被攻陷或恶意指向的
+  MCP server 只要回一个别的 URL，BLADE 就会带着配置的 `Authorization` 头去请求它
+
+现在：
+
+- 握手前做静态检查（scheme 只允许 http/https、字面量本机/链路本地直接拒），
+  并在**拨号阶段**再判一次（覆盖 DNS 重绑定）
+- 默认拒绝环回、链路本地（含云元数据）、未指定与组播；私网（RFC1918）放行——
+  内网自建 MCP 是常见部署
+- SSE 下发的 `message` endpoint 必须与配置的 `sseURL` **同源**，跨主机一律拒绝
+- 需要连本机 MCP 时显式设 `BLADE_MCP_ALLOW_LOCAL=1`（与 `BLADE_NOTIFY_ALLOW_LOCAL`
+  同一语义），已写进 `deploy/README.md` §9.0
 
 ### 文档与工程门禁
 

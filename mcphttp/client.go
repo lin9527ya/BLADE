@@ -12,7 +12,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,10 +100,12 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
-	if insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	// 出站目标守卫：MCP 地址由配置/模型给出，与通知渠道同一口径——默认拒绝环回、
+	// 链路本地（云元数据）与未指定地址；真正的强制点在拨号钩子上（覆盖 DNS 结果）。
+	if err := checkEndpointURL(url); err != nil {
+		return nil, err
 	}
+	hc := &http.Client{Timeout: 120 * time.Second, Transport: guardedTransport(insecure)}
 	c := &Client{
 		server:   server,
 		url:      url,
@@ -129,10 +130,14 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	// The SSE stream is intentionally long-lived, so no Client.Timeout. Bound only
 	// the handshake (connection + response headers) and the endpoint event read
 	// below; a server that accepts TCP and then stalls must not pin a goroutine.
-	tr := &http.Transport{ResponseHeaderTimeout: 30 * time.Second}
-	if insecure {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	if err := checkEndpointURL(sseURL); err != nil {
+		return nil, err
 	}
+	policy, err := newEndpointPolicy(sseURL)
+	if err != nil {
+		return nil, err
+	}
+	tr := sseTransport(insecure)
 	hc := &http.Client{Transport: tr}
 	streamCtx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
@@ -178,13 +183,21 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		cancel()
 		return nil, fmt.Errorf("mcp sse 握手超时：30s 内未收到 endpoint 事件")
 	}
+	// 服务器下发的 endpoint 也要过同一套出站策略（目标地址 + 同源）：配置的
+	// Authorization 头会跟着这个 POST 过去，跨主机跳转等于把凭据交给对方。
+	safeEndpoint, perr := policy.check(endpoint)
+	if perr != nil {
+		resp.Body.Close()
+		cancel()
+		return nil, perr
+	}
 	c := &Client{
 		server:       server,
 		url:          sseURL,
 		headers:      cleanHeaders,
 		http:         hc,
 		legacySSE:    true,
-		messageURL:   endpoint,
+		messageURL:   safeEndpoint,
 		streamBody:   resp.Body,
 		streamCancel: cancel,
 		streamDone:   make(chan struct{}),

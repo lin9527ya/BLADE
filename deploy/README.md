@@ -314,6 +314,20 @@ OS 用户**执行。所以一条被提示注入的 worker 命令，能做管理�
 这种由**两条正常命令**拼出来的链。默认没有 OS 级隔离——部署时请把"提示注入 = 控制台全权"
 写进自己的风险评估。
 
+### 9.0 出站目标守卫（MCP）
+
+外部 MCP server 的地址由配置或模型给出，所以出站与通知渠道用同一套口径：**默认拒绝**
+环回、链路本地（含云元数据 `169.254.169.254`）、未指定与组播地址，私网（RFC1918）放行
+（内网自建 MCP 是常见部署）。legacy SSE 还额外要求服务器下发的 `message` endpoint
+与配置的 `sseURL` **同源**——配置的 `Authorization` 头会跟着那个 POST 过去，跨主机跳转
+等于把凭据交给对方。
+
+需要连本机 MCP（本地起的 http server）时显式打开：
+
+```bash
+Environment=BLADE_MCP_ALLOW_LOCAL=1
+```
+
 ### 9.1 开启降权
 
 前提：Norma ≥ v0.5.3（`tool.SetExecHook` / `tool.SetPathGuard`），BLADE 以 **root** 启动，

@@ -50,6 +50,10 @@ import (
 // 需要 Postgres（无则整体 skip）。P4 断言"预算耗尽 → 暂停任务（不终止、不出终局报告）"，
 // 以及"用户继续后同一档预算不再重复打断"；不再依赖 LLM 就绪跑终局规划轮。
 func TestAcceptance(t *testing.T) {
+	// 验收里有多处 127.0.0.1 上的假 MCP server，而 MCP 出站守卫默认拒绝环回
+	// （与通知渠道同一口径，防 SSRF 打到同机服务与云元数据）。这里显式放行；
+	// 守卫"默认拒绝"的行为由 mcphttp/ssrf_test.go 覆盖。
+	t.Setenv(mcphttp.AllowLocalEnv, "1")
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
 		// 显式要求验收（acceptance.sh / CI 配了 BLADE_PG_DSN）时，连不上库必须失败：
