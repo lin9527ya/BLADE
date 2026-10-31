@@ -1158,6 +1158,10 @@ CREATE TABLE IF NOT EXISTS conversations (
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_conversations_llm_profile ON conversations(llm_profile_id) WHERE llm_profile_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(pinned_at DESC) WHERE pinned_at IS NOT NULL;
+-- 会话列表按 agent 过滤 + 分页计数，且排序尾部是 updated_at：此前这两列都没有索引，
+-- 每次 2s 轮询都要全表排序。都是普通 B-tree（过滤/排序都用得上，无需 partial）。
+CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_key);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
 DROP TRIGGER IF EXISTS trg_conversations_upd ON conversations;
 CREATE TRIGGER trg_conversations_upd BEFORE UPDATE ON conversations
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

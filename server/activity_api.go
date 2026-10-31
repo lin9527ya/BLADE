@@ -22,7 +22,13 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
+	// 上限刻意与同文件其它端点一致（history 500 / exploration 500 / timeline 200）：
+	// 此前这里不夹，`?limit=1000000` 会把整个任务的活动表（含 metadata JSONB）拉进
+	// 内存并塞进一个响应。DB 层只在 limit<=0 时给默认值，不设上限。
 	limit := atoiDefault(r.URL.Query().Get("limit"), 300)
+	if limit > 500 {
+		limit = 500
+	}
 	var intentPtr *int64
 	if iv := r.URL.Query().Get("intent"); iv != "" {
 		if n, err := strconv.ParseInt(iv, 10, 64); err == nil {
@@ -447,6 +453,12 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// DB is the source of truth). The Broadcaster keeps buffering live events meanwhile;
 	// the id<=since skip below drops any that this replay already covered.
 	const replayBatch = 500
+	// 重放总量上限：游标丢失（新标签页、清过缓存、保留期刚裁掉一截）时 since=0，
+	// 没有上限就是把整个任务的活动史按 500 条一批全部吐给这个连接——十万步的任务
+	// 就是 200 次查询 + 十万帧，订阅通道同时溢出并触发另一次全量重放。
+	// 超出上限直接结束流，让客户端带着新游标重连（而不是无限重放）。
+	const replayMaxFrames = 5000
+	replayed := 0
 	for {
 		items, cursor, err := t.Store.ActivityList(intentPtr, since, replayBatch)
 		if err != nil {
@@ -458,11 +470,19 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		replayed += len(items)
 		if cursor > since {
 			since = cursor
 		}
 		if len(items) < replayBatch {
 			break
+		}
+		if replayed >= replayMaxFrames {
+			// 让客户端从当前游标重连：不丢数据，只是把一次长重放拆成多次短重放。
+			log.Printf("[activity/stream] task=%s 重放超过 %d 帧，结束本次流由客户端续传（since=%d）",
+				t.ID, replayMaxFrames, since)
+			_ = sseWrite(w, flusher, "event: resync\ndata: {}\n\n")
+			return
 		}
 	}
 	if !sseWrite(w, flusher, "") {

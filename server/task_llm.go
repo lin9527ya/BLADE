@@ -556,6 +556,9 @@ func (s *Server) invalidateTaskAgents() {
 	s.agents.mu.Lock()
 	s.agents.bundles = map[string]*taskAgentBundle{}
 	s.agents.mu.Unlock()
+	// agent 行缓存也一起失效：任务包的构造读的就是这些行，只清包不清行等于
+	// 「下次重建时又拿回旧配置」。
+	s.invalidateAgentRows()
 }
 
 func (s *Server) agentsForTask(t *Task) *taskAgentBundle {

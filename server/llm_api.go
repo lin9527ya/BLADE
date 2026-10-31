@@ -23,7 +23,7 @@ func (s *Server) agentMaxTurns(key string) int {
 	if s.m.pg == nil {
 		return 0
 	}
-	a, err := s.m.pg.GetAgentByKey(key)
+	a, err := s.agentRow(key)
 	if err != nil || a == nil {
 		return 0
 	}
@@ -36,7 +36,7 @@ func (s *Server) agentRunSeconds(key string) int {
 	if s.m.pg == nil {
 		return 1200
 	}
-	a, err := s.m.pg.GetAgentByKey(key)
+	a, err := s.agentRow(key)
 	if err != nil || a == nil {
 		return 1200
 	}
@@ -130,7 +130,7 @@ func (s *Server) reapplyActiveProfile() {
 // web_search flag: the backend/key come from the global config, each agent decides on/off.
 func (s *Server) webSearchFor(key string) agent.WebSearchOpts {
 	o := s.m.WebSearchOpts()
-	if a, err := s.m.pg.GetAgentByKey(key); err != nil || a == nil || !a.WebSearch {
+	if a, err := s.agentRow(key); err != nil || a == nil || !a.WebSearch {
 		o.Enabled = false
 	}
 	return o
@@ -246,7 +246,8 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 // by loadProfileConfig, letting the caller fall back.
 func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 {
 	if s.m.pg != nil && agentKey != "" {
-		if a, _ := s.m.pg.GetAgentByKey(agentKey); a != nil && a.LLMProfileID != nil {
+		// 走缓存：这条路径在 worker 循环里每 0.8s 被调用一次（见 agent_cache.go）。
+		if a, _ := s.agentRow(agentKey); a != nil && a.LLMProfileID != nil {
 			return a.LLMProfileID
 		}
 	}

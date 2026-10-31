@@ -50,6 +50,8 @@ type Server struct {
 	agents    agentState
 	archive   archiveState
 	boot      restoreState
+	// agentCache 缓存 agent 行（worker 循环每 0.8s 就要读一次，见 agent_cache.go）。
+	agentCache *agentRowCache
 	// loops 登记启动期起的周期循环，供 Shutdown 等待（见 backgroundLoops）。
 	loops backgroundLoops
 	// cancel 由 New 在传入 ctx 上派生，Shutdown 用它通知后台循环退出。
@@ -216,8 +218,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			byProfile:  map[int64]*provEntry{},
 			health:     newLLMHealthRegistry(m.pg, &m.bgWG),
 		},
-		agents:  agentState{bundles: map[string]*taskAgentBundle{}},
-		archive: archiveState{wake: make(chan struct{}, 1)},
+		agents:     agentState{bundles: map[string]*taskAgentBundle{}},
+		agentCache: newAgentRowCache(),
+		archive:    archiveState{wake: make(chan struct{}, 1)},
 	}
 	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。
 	// 用户继续后同一档预算不再打断；具体见 server/budget.go 的 pauseForBudget。
@@ -287,7 +290,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 			// override row, agents keep their built-in defaults — behavior is unchanged.
 			PromptOverride: func(key string) (string, bool) {
-				a, err := m.pg.GetAgentByKey(key)
+				a, err := s.agentRow(key)
 				if err != nil || a == nil {
 					return "", false
 				}

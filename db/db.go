@@ -259,6 +259,14 @@ func Open(dsn string) (*DB, error) {
 	if err := ensureDatabase(dsn); err != nil {
 		return nil, err
 	}
+	// 语句级超时兜底：全仓此前**没有任何** statement_timeout，一条卡住的查询会一直
+	// 占着连接池里的一个连接，其余请求排队等待——现象是"所有接口一起变慢"，而且没有
+	// 错误能把"慢"和"卡死"区分开。取 60s：最慢的常规路径（归档打包、存储体检的批量
+	// 统计）都在秒级到十几秒，60s 只杀真正卡死的语句。
+	//
+	// 用 DSN 的 options 而不是启动时 SET 一次：后者只作用于当时那条连接，池里后来
+	// 新建的连接不受影响，等于没有兜底。DSN 自己写了 statement_timeout 时以 DSN 为准。
+	dsn = withStatementTimeout(dsn, defaultStatementTimeout)
 	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, err
@@ -859,4 +867,38 @@ WHERE NOT EXISTS (SELECT 1 FROM intercept_rules WHERE name = $1)`,
 		return fmt.Errorf("rule %q: %w", name, err)
 	}
 	return d.SetSetting("intercept_default_rules_v3", "done")
+}
+
+// defaultStatementTimeout 是连接池的语句级兜底上限（见 Open 的说明）。
+const defaultStatementTimeout = "60s"
+
+// withStatementTimeout 在 DSN 上注入 `options=-c statement_timeout=<v>`。
+//
+// 幂等且尊重调用方：DSN 里已经出现 statement_timeout（无论来自 options 还是
+// `statement_timeout=` 参数）时原样返回。解析不了也原样返回——宁可没有兜底，
+// 也不要因为拼串把一条合法的 DSN 弄坏。
+func withStatementTimeout(dsn, timeout string) string {
+	if timeout == "" || strings.Contains(dsn, "statement_timeout") {
+		return dsn
+	}
+	opt := "-c statement_timeout=" + timeout
+	if i := strings.Index(dsn, "options="); i >= 0 {
+		// 已有 options：把新参数并进去（值需要 URL 编码，空格编码成 %20）。
+		rest := dsn[i+len("options="):]
+		end := len(rest)
+		if j := strings.IndexByte(rest, '&'); j >= 0 {
+			end = j
+		}
+		existing, err := url.QueryUnescape(rest[:end])
+		if err != nil {
+			return dsn
+		}
+		merged := url.QueryEscape(existing + " " + opt)
+		return dsn[:i] + "options=" + merged + rest[end:]
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "options=" + url.QueryEscape(opt)
 }
