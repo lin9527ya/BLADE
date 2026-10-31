@@ -643,7 +643,10 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 
 	profileID, err := m.pg.SaveProfile(&db.LLMProfile{
 		Name:   fmt.Sprintf("delete-quota-fallback-%d", time.Now().UnixNano()),

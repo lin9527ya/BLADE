@@ -90,7 +90,9 @@ func newNotifyFixture(t *testing.T) *notifyFixture {
 			t.Logf("清理通知事件失败: %v", err)
 		}
 	})
-	// 总开关必须是开的（其它用例可能关过它）。
+	// 总开关必须是开的（其它用例可能关过它）。它是全局设置，跑完要恢复原值：
+	// 否则本文件任何一条用例都会把整轮测试的总开关钉成 true。
+	restoreSetting(t, pg, settingNotifyEnabled)
 	if err := pg.SetBool(settingNotifyEnabled, true); err != nil {
 		t.Fatal(err)
 	}

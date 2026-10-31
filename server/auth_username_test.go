@@ -78,7 +78,10 @@ func TestLoginUsesConfiguredAdminUsername(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 	defer seedPassword(t, m, "right-password-123")()
 	defer seedAdminUsername(t, m, "ops_admin")()
 
@@ -105,7 +108,10 @@ func TestChangeUsernameRequiresPasswordAndUpdatesLogin(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 	defer seedPassword(t, m, "right-password-123")()
 	defer seedAdminUsername(t, m, "ops_admin")()
 
@@ -152,7 +158,10 @@ func TestAuthInitAcceptsUsername(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
-	defer m.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行（Go 的测试清理顺序），所以关库
+	// 只能注册成 Cleanup——写 defer 会让它先于下面的数据清理跑，清理语句全部落到
+	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = m.Close() })
 
 	prevPass, hadPass, _ := m.pg.GetSetting(authPassKey)
 	prevUser, hadUser, _ := m.pg.GetSetting(authUserKey)

@@ -7,7 +7,9 @@ func TestLLMProfileCustomHeadersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行，所以关库必须注册成 Cleanup——
+	// 否则下面的数据清理跑在已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = d.Close() })
 	_, _ = d.Exec(`DELETE FROM llm_profiles WHERE name IN ('custom-headers-test','custom-headers-bad')`)
 	id, err := d.SaveProfile(&LLMProfile{
 		Name: "custom-headers-test", Format: "openai-responses", Model: "gpt-test", APIKey: "sk-test",

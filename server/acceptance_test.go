@@ -68,15 +68,19 @@ func TestAcceptance(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	td := t.TempDir()
 	s := New(ctx, m, td, td, td)
-	// LIFO：先停全部任务、关库，再轮到 TempDir 清理（避免后台写与 RemoveAll 竞态）。
+	// 清理顺序按 LIFO 反推注册：
+	//   ① 先注册关库（最后执行）——必须晚于所有后台循环退出；
+	//   ② 再注册「停任务 + 取消 ctx」。
+	// 曾经把 m.Close() 与 StopTask 放在同一个 Cleanup、cancel 单独注册在前，
+	// 结果是关池先于取消：仍在 tick 的循环拿着已关闭的连接池查库。
+	t.Cleanup(func() { _ = m.Close() })
 	t.Cleanup(func() {
 		for _, tk := range m.List() {
 			s.engine.StopTask(tk.ID)
 		}
-		_ = m.Close()
+		cancel()
 	})
 	token, err := signJWT(s.auth.signKey.get())
 	if err != nil {

@@ -69,7 +69,9 @@ func TestConversationBatchDeleteReportsMissing(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// 关库注册成 Cleanup：本函数的数据清理也在 Cleanup 里，defer 会先跑（关池），
+	// 清理语句就落到已关闭的连接池上。
+	t.Cleanup(func() { _ = m.Close() })
 	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
 	first, err := m.pg.CreateConversation("mainagent", "batch-http-first", nil)
 	if err != nil {

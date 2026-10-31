@@ -149,7 +149,8 @@ func TestAbortTaskDeleteUsesPersistedPauseAndQueueState(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer m.Close()
+	// 关库注册成 Cleanup：下面的清理是 Cleanup 里的删任务，defer 会先跑（关池）。
+	t.Cleanup(func() { _ = m.Close() })
 	task, err := m.CreateTask("delete abort state", "restore persisted barrier", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)

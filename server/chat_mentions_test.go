@@ -121,7 +121,9 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// 关库注册成 Cleanup：下面的清理要 cancel + 等任务收尾 + 删任务，都在 Cleanup 里，
+	// defer 会先跑（关池）。
+	t.Cleanup(func() { _ = m.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{ctx: ctx, m: m, engine: NewEngine(m)}
 	task, err := m.CreateTask("Worker mention test", "Read referenced records", nil, 0, 0)

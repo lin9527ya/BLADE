@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +15,22 @@ func TestPlannerTemplateStorage(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
 	t.Cleanup(func() { d.Close() })
+
+	// 默认模板全库唯一，且 server.New 的 PlannerTemplateDefault 钩子对每个后续
+	// 用例都读它。用例结束要还原原来的默认（没有就恢复成没有），否则整轮测试里
+	// planner 的正文来源取决于本用例有没有跑过。
+	prevDefaultID := int64(0)
+	if err := d.QueryRow(`SELECT id FROM planner_templates WHERE is_default LIMIT 1`).Scan(&prevDefaultID); err != nil && err != sql.ErrNoRows {
+		t.Fatalf("读取原默认模板: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`UPDATE planner_templates SET is_default=false WHERE is_default`)
+		if prevDefaultID != 0 {
+			if _, err := d.SetDefaultPlannerTemplate(prevDefaultID); err != nil {
+				t.Logf("还原默认模板 %d 失败: %v", prevDefaultID, err)
+			}
+		}
+	})
 
 	stamp := time.Now().UnixNano()
 	name := fmt.Sprintf("tpl-%d", stamp)

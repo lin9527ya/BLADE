@@ -28,7 +28,9 @@ func TestHandleAskKeepAliveWhileWaitingNoTimeout(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行，所以关库必须注册成 Cleanup——
+	// 否则下面的数据清理跑在已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = d.Close() })
 
 	// TTL/4 是 3m45s，用例等不起：把节拍调小，测的还是同一段逻辑。
 	oldInterval := askKeepAliveInterval

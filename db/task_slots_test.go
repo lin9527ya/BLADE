@@ -10,7 +10,9 @@ func TestTaskWorkerSlotsPersist(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行，所以关库必须注册成 Cleanup——
+	// 否则下面的数据清理跑在已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = d.Close() })
 	task, err := d.CreateTask("task-slots-test", "slots", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +40,9 @@ func TestActivitySlotFilterAndTokenBuckets(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行，所以关库必须注册成 Cleanup——
+	// 否则下面的数据清理跑在已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = d.Close() })
 	expID, err := d.CreateExploration("test", "slot activity")
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +107,9 @@ func TestActiveSlotIntentsAndResetKeepsOwner(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行，所以关库必须注册成 Cleanup——
+	// 否则下面的数据清理跑在已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = d.Close() })
 	expID, err := d.CreateExploration("test", "slot intents")
 	if err != nil {
 		t.Fatal(err)

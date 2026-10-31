@@ -104,6 +104,9 @@ func TestFindingTrafficToolUpgradePreservesCustomization(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 一次性迁移标记是全局的：不恢复的话后续每个 server.New 都会重跑迁移，
+	// 把别的用例刻意解绑的工具重新绑上。
+	restoreSetting(t, pg, "finding_traffic_tools_v1")
 	if err := pg.SetSetting("finding_traffic_tools_v1", "false"); err != nil {
 		t.Fatal(err)
 	}

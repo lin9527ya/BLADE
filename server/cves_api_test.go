@@ -143,6 +143,11 @@ func TestCVEsAPIRequiresAuth(t *testing.T) {
 func TestSeedCVEInterceptToolMigration(t *testing.T) {
 	s, _, _ := trafficEvidenceServer(t)
 	pg := s.m.pg
+	// 这两项是**全局**设置：不恢复的话，本用例跑完后整轮测试的拦截规则面只剩
+	// Bash/run_execution（Write/Edit/WebFetch 静默掉出规则面），迁移标记也会被
+	// 后续每个 New 反复重跑。
+	restoreSetting(t, pg, "intercept_enabled_tools")
+	restoreSetting(t, pg, "intercept_cve_tool_v1")
 	if err := pg.SetSetting("intercept_enabled_tools", `["Bash","run_execution"]`); err != nil {
 		t.Fatal(err)
 	}

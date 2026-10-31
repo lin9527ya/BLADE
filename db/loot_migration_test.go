@@ -136,7 +136,9 @@ func TestLeavesRelReachesPreExistingInstall(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	// LIFO：t.Cleanup 在本函数的 defer **之后**执行，所以关库必须注册成 Cleanup——
+	// 否则下面的数据清理跑在已关闭的连接池上、静默失败，残留行污染共享测试库。
+	t.Cleanup(func() { _ = d.Close() })
 
 	// 库里若还有 leaves 边，降级回旧约束会直接失败——先清掉（本用例可重复跑）。
 	if _, err := d.Exec(`DELETE FROM exploration_edges WHERE rel=$1`, RelLeaves); err != nil {

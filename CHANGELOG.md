@@ -17,6 +17,33 @@
 - 依赖 **Norma v0.5.5**：后台任务、同步 Bash、交互式 shell 三处同一纪律
   （SDK 侧此前只 `Wait` 不杀组）
 
+### 后台工作的生命周期与测试隔离
+
+同一个形状（工作活得比所有者久）在别处还有一批，这次一并收口：
+
+- **测试进程不再启动任何启动期后台工作**：MCP 工具发现、并发补位对账、归档 worker
+  （它启动时会 `RecoverTaskArchiveJobs()` **整表 UPDATE**）、旁路提问落库循环，此前都在
+  `go test` 下照跑，作用于共享测试库。现在与已有的四个周期循环统一进一个
+  `if !testing.Testing()` 块；用例改为直接调用单步入口。
+- **`s.ctx` 只写一次**：`initSideQuestions` 不再回写字段（改为返回值），消除了启动期
+  goroutine 与构造期写入的竞态。
+- **测试清理顺序**：17 处用例写的是 `defer m.Close()` 却用 `t.Cleanup` 清数据——
+  Cleanup 在 defer **之后**执行，关池先于清理，清理语句静默失败、残留行污染共享库。
+  统一改成 `t.Cleanup` 关池。全局设置（`intercept_enabled_tools`、`notify_enabled`、
+  一次性迁移标记、默认 planner 模板）改为跑完恢复原值。
+- **goleak 门禁**：`server` 包测试结束时不再允许有本包起的 goroutine 残留。
+- **`Server.Shutdown`**：关停时取消并**等待**证据 GC / 保留清理 / 调度器 / 推送 /
+  归档 worker / 旁路提问落库 / 日志持久化收尾，然后才关连接池。此前 `mgr.Close()`
+  先关池，循环还在查库——每次关停都刷 `sql: database is closed`，在途的归档与检查点
+  写入被静默丢弃。
+- **录制代理的 MITM 监听**：`Traffic.Close` 此前只关 SQLite 索引，`go-mitmproxy` 的
+  `http.Server` 与监听一直活到进程退出；现在先 `Shutdown` 监听再关索引。
+- **不可取消的后台工作**：`runtimeCtx` 对没有运行时条目的任务返回
+  `context.Background()`（`Done()` 是 nil），执行观察者因此每 5 秒查库最长 24 小时、
+  跨过关停——改为兜底到 Engine 的 base ctx；`RotateEgress` 改用调用方 ctx（不再在关停
+  后继续切出口 45 秒）；冷节点压缩登记到 WaitGroup，任务停止时等它收尾。
+- **`m.traffic`** 的赋值与读取统一走锁/访问器（与 `s.ctx` 同一类可变字段竞态）。
+
 ### 测试：后台循环不再跨用例运行
 
 包级跑测试时，`server.New` 起的通知投递 / 触发器调度 / 证据 GC / 保留清理会一直活到
