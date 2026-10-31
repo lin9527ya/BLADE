@@ -180,7 +180,10 @@ func TestPurgeTableBeforeDeletesExpired(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer d.Close()
+	// 关库必须注册成 Cleanup（而不是 defer）：下面的数据清理也在 Cleanup 里，
+	// defer 会先跑（关池），清理语句落到已关闭的连接池上、静默失败——残留行会
+	// 污染后面的用例（本用例第一版就是这么让 TestReconcileOrphanedExecutions 红的）。
+	t.Cleanup(func() { _ = d.Close() })
 	ctx := context.Background()
 
 	// tool_executions：过期且已终态的删掉；在跑的、属于非终态任务的留下。
@@ -207,8 +210,10 @@ VALUES ($1, 'echo x', $2, now() - make_interval(secs => $3)) RETURNING id`,
 	if err != nil {
 		t.Fatalf("purge tool_executions: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("应只删 1 行（过期、已终态、非受保护任务），实际 %d", n)
+	// 不断言全局行数：共享测试库里可能有别的用例留下的过期行，顺带被清掉是正常的。
+	// 断言的是"本用例关心的那几行"的归属。
+	if n < 1 {
+		t.Fatalf("purge 应至少删掉本用例那条过期终态行，实际删了 %d 行", n)
 	}
 	exists := func(id int64) bool {
 		var got int64
