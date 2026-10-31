@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -515,6 +516,16 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	log.Printf("[pg] 数据库配置来源: %s", source)
 	pg, err := pgdb.Open(dsn)
 	if err != nil {
+		return nil, err
+	}
+	// 实例独占：引擎/调度器/启动恢复都假设独占，第二个实例会把第一个正在跑的意图
+	// 抢回来、在固定端口上抢不到流量代理。与其让它静默互相拆台，不如在这里失败。
+	if err := pg.AcquireInstanceLock(context.Background()); err != nil {
+		pg.Close()
+		if errors.Is(err, pgdb.ErrInstanceLocked) {
+			return nil, fmt.Errorf("%w：请先停掉另一个实例；确需同时运行（只读排障/数据比对）"+
+				"可设置 BLADE_ALLOW_MULTI_INSTANCE=1，并自行承担两个实例互相拆台的风险", err)
+		}
 		return nil, err
 	}
 	if err := pg.RecoverFindingRetests(); err != nil {
@@ -1211,6 +1222,11 @@ func (m *Manager) applyEgressProxy(active string) {
 func (m *Manager) Close() error {
 	if m.closed != nil {
 		m.closedOnce.Do(func() { close(m.closed) })
+	}
+	// 释放实例锁：先解 advisory lock 再关池，让"同进程重建 Manager"（测试/热重启）
+	// 能立刻重新拿到它。
+	if m.pg != nil {
+		m.pg.ReleaseInstanceLock()
 	}
 	m.mu.Lock()
 	pool := m.proxyPool
