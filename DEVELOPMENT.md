@@ -43,7 +43,8 @@
   `BLADE_PG_DSN`）；验收用 `acceptance.sh`（自带 `BLADE_REQUIRE_ACCEPTANCE=1`）。
 - 全量质量门禁：`go test -race -count=1 -p 1 ./...`、`go vet ./...`、
   `staticcheck ./...`、`gofmt -l .`；前端 `npx tsc --noEmit`、`npm test`、
-  `npm run build:static`。CI 的 `quality` job 覆盖这些项。
+  `npm run build:static`。CI 的 `go` job 覆盖 Go 侧，`web` job 覆盖前端
+  （`tsc --noEmit`、`npm test`、`build:static`）；biome lint 仍不进门禁。
 - 依赖漏洞：`govulncheck ./...`（CI 已设为门禁）；前端 `npm audit --omit=dev`
   （当前仅剩低危传递依赖）。`npm run check` 仍有较大的既有格式基线，暂不作为门禁。
 - Docker 交付：`./build.sh --docker` 产出 `dist/<arch>/blade`；

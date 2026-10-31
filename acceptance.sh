@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# P1–P7 机制 + P11 交付导出 + P12 拦截可信化 + P13 执行台账与收尾门 + P14 领域化压缩 + P18 约束可执行化 + P19 批量交付
-# + P15 结构化裁决与改参放行 + P20 探索策略门 + P21 情报/测绘工具面 + P22 计划任务 + P23 公司知识
-# + P24 执行限额与 MCP 熔断 + P25 MCP 工具级开关 + P26 CSV 资产导入 + P27 战果层 + P29 战果动用 + P30 攻击路径 + P31 检测验证 + P32 授权范围设置 + P33 战役层的端到端验收清单 + P34 AD 攻击路径导入：在一次性隔离库(blade_acceptance)上跑 server.TestAcceptance，
-# 逐机制输出 PASS/FAIL——每次大改后重跑它即可，无需真实 LLM 与外部目标。
+# 验收清单：P1–P7、P11–P15、P18–P50（共 45 个阶段；P8–P10、P16–P17 从未实现，编号留空）。
+# 权威清单以 server/acceptance_test.go 里的 t.Run("P…") 为准——本注释只写范围，
+# 不再逐条枚举（此前枚举到 P42 就停更，落后了两个版本）。
+#
+# 在一次性隔离库(blade_acceptance)上跑 server.TestAcceptance，逐机制输出 PASS/FAIL——
+# 每次大改后重跑它即可，无需真实 LLM 与外部目标。
 #
 #   ./acceptance.sh           # 建库 → 跑清单 → 删库
 #   ./acceptance.sh --keep    # 保留库（排障用）
@@ -65,7 +67,7 @@ export BLADE_PG_DSN="$(printf '%s' "$PG_ADMIN_DSN" | sed "s#/postgres?#/$DB_NAME
 # 显式要求验收：TestAcceptance 连不上库时失败而不是 Skip（Skip 的退出码是 0）。
 export BLADE_REQUIRE_ACCEPTANCE=1
 
-echo "==> 运行验收清单（P1–P7 + P11 + P12 + P13 + P14 + P15 + P18 + P19 + P20 + P21 + P22 + P23 + P24 + P25 + P26 + P27 + P28 + P29 + P30 + P31 + P32 + P33 + P34 + P35 + P36 + P37 + P38 + P39 + P40 + P41 + P42，逐机制 PASS/FAIL）"
+echo "==> 运行验收清单（P1–P7、P11–P15、P18–P50，逐机制 PASS/FAIL；权威清单见 server/acceptance_test.go）"
 rc=0
 go test -count=1 -run TestAcceptance -v ./server/ || rc=1
 

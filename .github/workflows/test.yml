@@ -98,6 +98,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
+      # 类型检查单独跑一次（next build 也会做，但失败时它混在打包输出里不好读）。
+      # DEVELOPMENT.md 此前声称 CI 覆盖了 tsc/lint——实际只有 build 顺带做类型检查，
+      # lint 从未作为门禁。这里补上 tsc；biome 仍不进门禁（既有格式基线较大）。
+      - name: 前端类型检查
+        run: npx tsc --noEmit
+        working-directory: web
       # 纯逻辑单测（node:test，跑在 src/lib/*.test.mjs 上）。此前这两个文件从未被
       # 任何流程执行过——写了等于没写。放在 build 之前，让失败早暴露。
       - name: 前端单测
