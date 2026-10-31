@@ -9,7 +9,8 @@
 ## 任务级超时与收尾
 
 - 判定与状态机：`server/engine_timeout.go`（deadline 协调器、`settleTask`）
-- 生命周期列与终态集合：`db/tasks.go`（`TerminalStatuses` / `TerminalStatusSQL`）
+- 生命周期列与状态集合：`db/tasks.go`（`TerminalStatuses` / `TerminalStatusSQL`）、
+  `db/task_status.go`（`PersistedTaskStatuses` / `DerivedTaskStatuses` / `DeriveTaskStatus`）
 - 收尾词与轮数：`agent/wrapup.go`、`server/llm_api.go`（`WrapupTaskTimeout*`）
 - 用户可见的语义：CHANGELOG「任务级超时」相关条目
 
