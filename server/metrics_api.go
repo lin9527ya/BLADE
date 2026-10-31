@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/pprof"
@@ -96,6 +97,21 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		tasks = append(tasks, item)
 	}
 	out["tasks"] = tasks
+	// 被丢弃的活动行：不可恢复的审计丢失，此前只存在于一行日志里（重启即失）。
+	// 既有进程级总数，也有按任务的明细（谁在丢）。
+	dropped := make(map[string]int64, len(all))
+	for _, t := range all {
+		if n := s.engine.DroppedActivity(t.ID); n > 0 {
+			dropped[t.ID] = n
+		}
+	}
+	out["dropped_activity"] = map[string]any{
+		"total":   s.engine.DroppedActivityTotal(),
+		"by_task": dropped,
+		"meaning": "写不进库的活动行（不可恢复）；持续增长说明库/连接池有问题",
+	}
+	// HTTP 请求：QPS 与错误率此前完全不可见（只有慢请求写日志）。
+	out["http"] = httpStats.snapshot()
 	out["logs"] = logSink.DBStats()
 	if s.engine != nil {
 		if bc := s.engine.Broadcaster(); bc != nil {
@@ -124,6 +140,8 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 			rows.Close()
 		}
 		out["executions"] = execs
+		// 归档队列深度：归档 worker 是单线程 FIFO，积压意味着"点了归档但很久没动静"。
+		out["archives"] = s.metricsArchiveQueue(r.Context())
 	}
 
 	writeJSON(w, 200, out)
@@ -207,4 +225,29 @@ func (s *Server) registerMetricsRoutes(mux routeRegistrar) {
 		h := pprof.Handler(name)
 		mux.HandleFunc("GET /api/debug/pprof/"+name, h.ServeHTTP)
 	}
+}
+
+// metricsArchiveQueue 返回归档队列的按状态计数（积压深度）。
+//
+// 归档 worker 是单线程 FIFO：一次打包可能几十秒到几分钟，积压时"点了归档但很久
+// 没动静"是运维最常问的问题，而这个数此前只能去表里查。
+func (s *Server) metricsArchiveQueue(ctx context.Context) map[string]int {
+	out := map[string]int{}
+	pg := s.m.PG()
+	if pg == nil {
+		return out
+	}
+	rows, err := pg.QueryContext(ctx, `SELECT state, count(*) FROM task_archives GROUP BY 1`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state string
+		var n int
+		if rows.Scan(&state, &n) == nil {
+			out[state] = n
+		}
+	}
+	return out
 }

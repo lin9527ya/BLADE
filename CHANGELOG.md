@@ -26,8 +26,9 @@ MCP http/SSE 无出站守卫（M1/M2）、多实例静默拆台、终态集合�
    `docs/` 与悬空引用已修，见下节。
 4. **前端工程门禁**：CI 不跑 lint/tsc（`DEVELOPMENT.md` 声称跑了），无 e2e，前端测试约 0.9%
    行覆盖；6.8k 行的 mock server 是 API 的第二份实现，无一致性校验。
-5. **可观测性**：无 HTTP 指标、无任务级失败计数、被丢弃的活动行（`Engine.dropCnt`）从不暴露；
-   HTTP `requestID` 没有写进 `activity`/`llm_usage`/`tool_executions`，无法从请求追到 run。
+5. **可观测性（部分）**：HTTP 指标、被丢弃的活动行、归档队列深度已补；仍缺
+   **任务级失败计数**（多少任务以 timeout / policy_blocked / done 收场）与
+   **请求到 run 的关联**（HTTP `requestID` 没有写进 `activity`/`llm_usage`/`tool_executions`）。
 6. **备份/恢复**：`backup.sh` 不含 `jwt.key`（现在库是权威，可接受但未说明）与 `.env`；
    `restore.sh` 的 `pg_restore --clean` 中途失败时不回滚数据库。
 7. **容器以 root 运行**，无 `cap_drop`/`read_only`；CI actions 按 tag 而非 commit SHA 固定。
@@ -80,6 +81,18 @@ worker 抓到的目标页面内容里只要有一句提示注入，就等价于�
 
 `reset-password.sh` 此前只改密码哈希，此前签发的 7 天 token 全部继续有效——应急流程
 跑完入侵者仍在登录态。现在与应用内改密码一致，同时轮换 `auth.jwt_key`。
+
+### 可观测性：HTTP 指标、被丢弃的活动行、归档队列深度
+
+此前 `/api/metrics` 能回答"为什么慢/钱花在哪"，但三件事只能翻日志估：
+
+- **HTTP 请求本身没有计数**：只有慢请求/错误请求写一行日志，QPS 与错误率不可见。
+  新增按路径前两段分桶的计数与延迟直方图（有界基数——带 id 的路径收敛到资源桶，
+  否则指标自己会变成内存问题）
+- **被丢弃的活动行只存在于一行日志里**：`Engine.dropCnt` 是"写不进库的审计记录"，
+  重启即失。现在暴露进程级总数与按任务明细（持续增长说明库/连接池有问题）
+- **归档队列深度**：归档 worker 是单线程 FIFO，积压时"点了归档但很久没动静"是最常
+  问的问题，此前只能去表里查
 
 ### 文档：`docs/` 重新纳入版本控制
 

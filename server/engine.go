@@ -54,6 +54,34 @@ func (e *Engine) bumpDrop(taskID string) int64 {
 	return atomic.AddInt64(v.(*int64), 1)
 }
 
+// DroppedActivity 返回该任务累计被丢弃（写不进库）的活动行数。
+//
+// 为什么必须暴露：被丢弃的行是不可恢复的——工具结果、发现、审批都可能丢在这里，
+// 而此前它只出现在一行日志里，重启后连日志都没了。运维要能回答"这台机器到底丢了
+// 多少审计记录"，而不是去 grep。
+func (e *Engine) DroppedActivity(taskID string) int64 {
+	if e == nil {
+		return 0
+	}
+	if v, ok := e.dropCnt.Load(taskID); ok {
+		return atomic.LoadInt64(v.(*int64))
+	}
+	return 0
+}
+
+// DroppedActivityTotal 是所有任务累计丢弃行数（进程级）。
+func (e *Engine) DroppedActivityTotal() int64 {
+	if e == nil {
+		return 0
+	}
+	var total int64
+	e.dropCnt.Range(func(_, v any) bool {
+		total += atomic.LoadInt64(v.(*int64))
+		return true
+	})
+	return total
+}
+
 // preview collapses newlines and trims s to a short rune-safe snippet for one-line
 // log output (avoids dumping a multi-KB summary/detail into the log).
 func preview(s string, n int) string {

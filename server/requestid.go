@@ -115,6 +115,13 @@ func withRequestID(next http.Handler) http.Handler {
 		if strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") {
 			return
 		}
+		// HTTP 指标（有界分桶，见 http_metrics.go）：即便不打印日志也要计数，
+		// 否则 /api/metrics 只能看到"慢请求的日志行"，看不到 QPS 与错误率。
+		if status := rec.status; status != 0 {
+			observeRequest(r.URL.Path, status, time.Since(start))
+		} else {
+			observeRequest(r.URL.Path, http.StatusOK, time.Since(start))
+		}
 		status := rec.status
 		if status == 0 {
 			status = http.StatusOK
