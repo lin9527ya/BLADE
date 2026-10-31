@@ -235,7 +235,7 @@ func TestCompileRulesMatching(t *testing.T) {
 		{"bruteforce", `curl http://hydra.example.com/`, false},
 		// 注：否定豁免只作用于**语义层**（意图门），命令层按形状硬拦——所以
 		// "检查是否有爆破防护"这句若出现在命令里会被拦（一次工具调用 + 明确理由），
-		// 这条取舍在 policy/vocab.go 的注释与 docs/探索策略.md 里写明。
+		// 这条取舍在 policy/vocab.go 的注释与 docs/README.md「探索策略」里写明。
 		{"mutation_endpoint", `curl http://t/api/users/newest`, false},
 		{"mutation_endpoint", `curl http://t/api/user/list`, false},
 	}

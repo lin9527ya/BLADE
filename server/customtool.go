@@ -22,7 +22,7 @@ import (
 	"github.com/lin9527ya/blade/db"
 )
 
-// 本文件实现自定义工具执行器(docs/自定义工具设计.md)。system=false 的 tools 行按
+// 本文件实现自定义工具执行器(docs/README.md「自定义工具」)。system=false 的 tools 行按
 // kind 分派:command(渲染命令→复用 Bash 底层 run)、script(仅 Python;写临时文件、
 // stdin=参数 JSON + env TOOL_*、用配置的解释器)、http(原生请求+可设代理)。这些工具
 // 像流量/编排工具一样 seed 不需要(它们本就在 tools 表),经 hostTools 注入、按绑定过滤。

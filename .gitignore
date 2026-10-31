@@ -24,8 +24,8 @@ web/next-env.d.ts
 *.swp
 *.swo
 
-# docs
-/docs/
+# docs/：设计文档索引随仓库维护（见 docs/README.md）。
+# 早期曾整体忽略，导致十余份被代码引用的设计文档从未入库——不要再加回来。
 
 # os
 .DS_Store

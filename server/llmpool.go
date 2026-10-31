@@ -11,7 +11,7 @@ import (
 	"github.com/lin9527ya/blade/llmpool"
 )
 
-// LLM 轮询(故障转移)的服务端接线。设计见 docs/LLM轮询设计.md：
+// LLM 轮询(故障转移)的服务端接线。设计见 docs/README.md「LLM 轮询」：
 //   - 全局激活配置这条路径(agent 未绑定、任务未 pin)才轮询;
 //   - 绑定/pin 的路径默认独占该配置,失败即失败(可由 llm_pool_bind_fallback 打开兜底);
 //   - 链序 = 激活配置 → 其余按 priority DESC,排除 pool_exclude 的;

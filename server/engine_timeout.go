@@ -13,7 +13,7 @@ import (
 	"github.com/lin9527ya/blade/policy"
 )
 
-// 任务级超时协调器(见 docs/任务级超时与收尾设计.md §4/§8.5)。
+// 任务级超时协调器(见 docs/README.md「任务级超时与收尾」)。
 // 绝对墙钟:每个带 timeout 的任务一个定时 goroutine,到点驱动有序收尾时序:
 //   ① settling → ② worker 停领新意图 / ③ planner 丢弃普通 notify
 //   ④ 等在跑 worker drain(受 grace) → ⑤ 终局一轮 planner 判定 → ⑥ 定终态(带守卫)

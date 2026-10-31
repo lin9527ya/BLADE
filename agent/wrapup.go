@@ -99,7 +99,7 @@ func wrapupSettlement(agentKey string, disabledTools []string) *harness.Settleme
 	}
 }
 
-// ---------- 任务级超时收尾词（见 docs/任务级超时与收尾设计.md）----------
+// ---------- 任务级超时收尾词（设计与时序见 docs/README.md「任务级超时与收尾」）----------
 //
 // 与 per-run 收尾词是【两套】：per-run 是"你这一次 run 的预算用完了"；任务超时是
 // "整个任务到点、即将结束"。语义常相反（尤其 planner：per-run 说"别停继续规划"，

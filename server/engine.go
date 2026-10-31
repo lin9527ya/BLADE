@@ -167,7 +167,7 @@ type Engine struct {
 
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
-	// 任务级超时(见 docs/任务级超时与收尾设计.md):
+	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
 	settling     sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
 	deadline     sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
 	stamped      sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
