@@ -312,6 +312,13 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 				sm = intentSummary(ts, ev.IntentID)
 			}
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d 由用户删除，意图内容是：%s、删除原因是：%s。该意图已删除（不再执行）；请据此重新规划。", ev.IntentID, sm, ev.Detail))
+		case "reconcile":
+			// 平台生成的收尾对账清单（只含计数与动作提示），不是目标内容。
+			detail := strings.TrimSpace(ev.Detail)
+			if detail == "" {
+				detail = "进入收官期：停止扩面，转入对账。"
+			}
+			b.WriteString("\n- " + detail)
 		case "requeued":
 			// 退回 open ≠ 完成：它仍会被 worker 领取续跑。旧版在这里也发 "done"，
 			// planner 会去取一个并不存在的输出结论，误以为这条已经做完。
@@ -485,7 +492,7 @@ func stallNoticeFromStore(ts *db.ExplorationStore, eff policy.Effective) string 
 // the exact same JSON graph_overview would return; deeper detail is still one
 // tool call away (node_detail / list_facts / …).
 func renderGraphOverview(data map[string]any) string {
-	b, err := json.Marshal(data)
+	b, err := json.Marshal(SanitizeJSONStrings(data))
 	if err != nil {
 		return "" // fall back to the model calling graph_overview itself
 	}
@@ -604,6 +611,29 @@ var PlannerTemplateDefault func() (string, bool)
 // A failed render falls through to the next level. The code-owned blocks below
 // are appended after rendering, so no level can edit them away; the DB 追加段与
 // 潜行纪律（promptExtras）同样对每一级生效。
+// escalationLadderBlock 是**代码持有**的升级阶梯：sapper 的战役复盘里"卡 20 分钟派将军"
+// 之所以可靠，是因为它是一张固定表而不是临场判断。BLADE 的对应物是意图的领取次数——
+// 平台在 claim 的原子 UPDATE 里加一，索引与态势里带出来，规划者据此换角度/停放。
+const escalationLadderBlock = `
+
+【升级阶梯（代码持有）】
+每条意图被领取过几次由平台记录（graph_overview 的 attempts / 常驻索引里的「第 N 次尝试」）。按这张表处理，不要临场发明：
+- **第 1 次**：常规执行；如果 trace 显示它已经卡在同一处（同样的报错/同样的 404/同样的过滤），进入下一档。
+- **第 2 次**：必须**明确不同角度**——换入口、换技术、换资产面或换利用链，并在 summary 里写清与前一次的区别。原样重派（换个措辞）是最贵的浪费。
+- **第 3 次**：停止原样重派：要么落一条否定/局限结论（record_fact + close_candidate 说明阻断点），要么换一个机理完全不同的方向。
+- 被领取 ≥3 次且仍无新产出：默认把它视为穷尽，把时间让给其它未测面。
+判定依据始终是 trace 里的真实进度（get_worker_trace），不是 state 本身；收官期以【收官期】为准。`
+
+// endgameDoctrineBlock 是收官期的**代码持有**纪律。旧库里存的可编辑正文写于这个阶段
+// 存在之前，只改默认模板覆盖不到它们；而"最后一小时停止扩面、转入对账"是交付质量的一部分。
+const endgameDoctrineBlock = `
+
+【收官期（代码持有）】
+平台在任务最后一段时间会把常驻索引切到「【收官期 · 剩余约 N 分钟】」。出现它之后：
+- **不再新开探索面**：不要再为"还没试过的新方向"派意图（add_intent 会返回 endgame_warning 提醒）。
+- 只做三类事：①把在跑/待领方向推到结论；②清理目标上的遗留物并用 mark_artifact_cleared 销账；③补齐报告缺项（open_proof_gap 的候选要么给出结论、要么 close_candidate 成 ruled_out；覆盖空白写清为什么没测）。
+- 收官期与任何"继续深挖"的建议冲突时，**以收官期为准**；剩余时间不足以完成的事，写进结论交给报告，而不是硬开。`
+
 func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	body := ""
@@ -648,7 +678,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 		}
 	}
 	// 追加段与潜行纪律不属于任何一级正文：静默模式下任务快照/模板库正文同样要带上。
-	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock()
+	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
 }
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
@@ -703,6 +733,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetTaskID(taskID)
+	tsx.SetTaskClock(taskClockFrom(ctx))
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
@@ -793,9 +824,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
 	// P14 领域上下文（详见 agent/compactor.go）：规划者被压缩吃掉态势后，常驻索引仍带着
 	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。
+	installClock := taskClockFrom(ctx)
 	InstallContextManager(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func() string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
-		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
+		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
 	})
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。

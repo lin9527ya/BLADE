@@ -719,7 +719,10 @@ func (s *ExplorationStore) CompareAndSetIntentState(id int64, expected, state st
 SET state=$1, blocked_reason=NULL, content_version=content_version+1, lease_expires_at=NULL,
     semantic_outcome = CASE WHEN $5 THEN semantic_outcome ELSE '' END,
     semantic_note    = CASE WHEN $5 THEN semantic_note    ELSE '' END,
-    completed_at = CASE WHEN $5 THEN now() ELSE NULL END
+    completed_at = CASE WHEN $5 THEN now() ELSE NULL END,
+    payload = CASE WHEN $5
+        THEN jsonb_set(payload, '{last_outcome}', to_jsonb($1::text), true)
+        ELSE payload END
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.expID, expected, terminal)
 	if err != nil {
 		return false, err
@@ -1863,7 +1866,10 @@ func (s *ExplorationStore) ClaimIntentForSlot(id int64, slot string, ttl time.Du
 		exclude = fmt.Sprintf("(owner !~ '^work#[0-9]+$' OR owner NOT IN (%s))", strings.Join(ph, ","))
 	}
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
-heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
+heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
+payload = jsonb_set(payload, '{attempts}',
+    to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
+                  THEN (payload->>'attempts')::int ELSE 0 END + 1), true)
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
   AND (
     COALESCE(owner,'')='' OR owner=$5 OR `+exclude+`
@@ -1889,7 +1895,10 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
 func (s *ExplorationStore) ClaimPausedIntent(id int64, fromState, slot string, ttl time.Duration) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
 heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
-blocked_reason=NULL, completed_at=NULL
+blocked_reason=NULL, completed_at=NULL,
+payload = jsonb_set(payload, '{attempts}',
+    to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
+                  THEN (payload->>'attempts')::int ELSE 0 END + 1), true)
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$5`, slot, id, s.expID, int64(ttl/time.Second), fromState)
 	if err != nil {
 		return false, err
@@ -1966,7 +1975,10 @@ const IntentLeaseTTL = 15 * time.Minute
 // heartbeat and a fresh lease expiry. Returns true if claimed.
 func (s *ExplorationStore) ClaimIntent(id int64, owner string, ttl time.Duration) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
-heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second')
+heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
+payload = jsonb_set(payload, '{attempts}',
+    to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
+                  THEN (payload->>'attempts')::int ELSE 0 END + 1), true)
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
   AND NOT EXISTS (
     SELECT 1 FROM exploration_edges e
@@ -2161,6 +2173,8 @@ type NodeDigest struct {
 	ID      int64
 	State   string
 	Summary string
+	// Attempts 是这条意图被领取过几次（payload.attempts）；其它 kind 恒为 0。
+	Attempts int
 }
 
 // ListNodeDigests returns nodes of one kind, newest first, capped — optionally
@@ -2171,7 +2185,9 @@ func (s *ExplorationStore) ListNodeDigests(kind string, states []string, limit i
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`SELECT id, COALESCE(state,''), COALESCE(payload->>'summary','')
+	rows, err := s.db.Query(`SELECT id, COALESCE(state,''), COALESCE(payload->>'summary',''),
+       CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
+            THEN (payload->>'attempts')::int ELSE 0 END
 FROM exploration_nodes
 WHERE exploration_id=$1 AND kind=$2 AND (COALESCE(array_length($3::text[],1),0)=0 OR state = ANY($3::text[]))
 ORDER BY id DESC LIMIT $4`, s.expID, kind, states, limit)
@@ -2182,7 +2198,7 @@ ORDER BY id DESC LIMIT $4`, s.expID, kind, states, limit)
 	out := []NodeDigest{}
 	for rows.Next() {
 		var d NodeDigest
-		if err := rows.Scan(&d.ID, &d.State, &d.Summary); err != nil {
+		if err := rows.Scan(&d.ID, &d.State, &d.Summary, &d.Attempts); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

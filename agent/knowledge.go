@@ -82,7 +82,7 @@ func renderKnowledgeLine(k db.CompanyKnowledge) string {
 }
 
 func clipKnowledge(s string, max int) string {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	s = strings.TrimSpace(strings.ReplaceAll(SanitizeUntrusted(s), "\n", " "))
 	r := []rune(s)
 	if len(r) <= max {
 		return s

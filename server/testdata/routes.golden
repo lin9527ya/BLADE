@@ -95,6 +95,7 @@ GET /api/exploration/findings/{id}/traffic/{binding_id}/body	server.(*Server).ge
 GET /api/exploration/frontier	server.(*Server).frontier-fm
 GET /api/exploration/graph	server.(*Server).explorationGraph-fm
 GET /api/exploration/intents	server.(*Server).intents-fm
+GET /api/exploration/invariants	server.(*Server).explorationInvariants-fm
 GET /api/exploration/main-sessions	server.(*Server).mainSessions-fm
 GET /api/exploration/nodes	server.(*Server).explorationNodes-fm
 GET /api/exploration/tokens	server.(*Server).tokenStats-fm

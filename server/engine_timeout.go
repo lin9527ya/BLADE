@@ -109,6 +109,7 @@ func (e *Engine) resetTimeoutRevival(taskID string) {
 	e.stamped.Delete(taskID)
 	e.coordStarted.Delete(taskID)
 	e.budgetStage.Delete(taskID)
+	e.endgameNotified.Delete(taskID) // 复活的任务会重新盖章 deadline，收官期要能再进一次
 }
 
 // stampFirstRun records first_run_at + deadline_at on the FIRST real run (LLM ready)
@@ -140,7 +141,43 @@ func (e *Engine) clockCtx(base context.Context, t *Task, final bool) context.Con
 	if dl <= 0 && !final {
 		return base // no timeout → unchanged behavior
 	}
-	return agent.WithTaskClock(base, agent.TaskClock{DeadlineUnix: dl, Final: final})
+	return agent.WithTaskClock(base, agent.TaskClock{DeadlineUnix: dl, EndgameUnix: endgameStartUnix(dl, int64(t.TimeoutSeconds)), Final: final})
+}
+
+// 收官期（endgame）是任务的最后一段：不再新开探索面，只把在跑方向推到结论并做对账
+// （未闭合候选、未销账遗留物、覆盖空白）。sapper 的战役复盘里，"最后 1/4 时间停止开新题 +
+// 收尾对账"是四个阶段的最后一击（收官清账比赶工值钱）。
+//
+// 阈值取"总时长的 15%，夹在 15–60 分钟之间"；总时长不足 30 分钟的任务不切收官期——
+// 短任务切出来的"收官期"会占掉大半时间，反而变成"一开工就收尾"。
+const (
+	endgameRatio     = 0.15
+	endgameMinWindow = 15 * time.Minute
+	endgameMaxWindow = 60 * time.Minute
+	endgameMinTotal  = 30 * time.Minute
+)
+
+// endgameStartUnix 算收官期起点（deadline 与总时长都未知时返回 0 = 无收官期）。
+// timeoutSec 是任务配置的超时秒数（任务总预算）。
+func endgameStartUnix(deadlineUnix, timeoutSec int64) int64 {
+	if deadlineUnix <= 0 || timeoutSec <= 0 {
+		return 0
+	}
+	total := time.Duration(timeoutSec) * time.Second
+	if total < endgameMinTotal {
+		return 0
+	}
+	w := time.Duration(float64(total) * endgameRatio)
+	if w < endgameMinWindow {
+		w = endgameMinWindow
+	}
+	if w > endgameMaxWindow {
+		w = endgameMaxWindow
+	}
+	if w > total/2 {
+		w = total / 2
+	}
+	return deadlineUnix - int64(w.Seconds())
 }
 
 // ---------- 协调器 ----------
@@ -242,6 +279,15 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 			continue
 		}
 		if remaining := time.Until(time.Unix(dl, 0)); remaining > 0 {
+			// 收官期入口：每任务只提醒一次，把对账清单推进下一轮规划。核心作用是让
+			// "最后一小时"切到收尾节奏（停止扩面 + 对账），而不是等超时那一刻才想。
+			if eg := endgameStartUnix(dl, int64(t.TimeoutSeconds)); eg > 0 && time.Now().Unix() >= eg {
+				if _, loaded := e.endgameNotified.LoadOrStore(t.ID, true); !loaded {
+					e.emitActivity(t, db.Activity{Worker: "planner", Kind: "system",
+						Summary: "进入收官期：停止新开探索面，转入收尾与对账"})
+					t.NotifyReconcile(e.reconcileChecklist(t))
+				}
+			}
 			nap := remaining
 			if nap > deadlineMaxSleep {
 				nap = deadlineMaxSleep
@@ -394,7 +440,9 @@ func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback s
 		}
 	}
 
-	// ⑤ 终局一轮 planner(任务超时词,最后目标判定,不产新意图)。
+	// ⑤ 终局一轮 planner(任务超时词,最后目标判定,不产新意图)。先推进对账清单：
+	// 终局轮是模型最后一次能"把已做的事说清楚"的机会。
+	t.NotifyReconcile(e.reconcileChecklist(t))
 	met := e.runFinalPlannerRound(ctx, t)
 	if !e.beginTaskOperation(t.ID) {
 		return

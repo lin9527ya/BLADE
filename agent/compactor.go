@@ -172,6 +172,26 @@ type ContextIndexVars struct {
 	IntentAssets string
 	RunDir       string
 	Slot         int
+	// Clock 是任务的截止/收官信息（可空）。倒计时放在索引里而不是系统提示：索引每个
+	// 请求现算，系统提示是稳定前缀——逐轮变化的数字会打掉 provider 的 prefix cache。
+	Clock TaskClock
+}
+
+// renderClockLine 渲染任务时限。收官期要明说"不再新开探索面"——只给一个剩余分钟数，
+// 模型仍会按开局的节奏继续发散；这一步是把"最后一小时"从模型自觉变成平台政策。
+func renderClockLine(tc TaskClock, now time.Time) string {
+	rem, ok := tc.Remaining(now)
+	if !ok {
+		return ""
+	}
+	mins := int(rem.Seconds()) / 60
+	if mins < 0 {
+		mins = 0
+	}
+	if tc.Endgame(now) {
+		return fmt.Sprintf("\n【收官期 · 剩余约 %d 分钟】不再新开探索面：把在跑方向推到结论，做收尾对账（未闭合候选 / 未销账遗留物 / 覆盖空白），再收笔。", mins)
+	}
+	return fmt.Sprintf("\n任务时限：剩余约 %d 分钟。", mins)
 }
 
 // renderCompanySection 渲染常驻索引里的"本公司已知"段（P23）。≤5 行 + 截断提示 +
@@ -236,6 +256,13 @@ func BuildContextIndex(v ContextIndexVars) string {
 		b.WriteString("\n操作约束（原文，最高优先级）：")
 		b.WriteString(cb)
 	}
+	if line := renderClockLine(v.Clock, time.Now()); line != "" {
+		b.WriteString(line)
+	}
+	// 从这里开始都是**观测数据**：目标/历史/模型产出（公司沉淀、意图原文、发现、战果、
+	// 打法与 CVE 卡片）。目标/约束是操作者写的，留在围栏外；这一段统一包进围栏，模型
+	// 才不会把目标页面上写着的"忽略以上指令"当成平台指令。
+	obsAt := b.Len()
 	b.WriteString(renderCompanySection(v.CompanyLines, v.HasOverview))
 	if v.Intent != nil {
 		sum := digestSummary(v.Intent)
@@ -257,6 +284,9 @@ func BuildContextIndex(v ContextIndexVars) string {
 		open, running := []string{}, []string{}
 		for _, n := range intents {
 			line := fmt.Sprintf("intent-%d「%s」", seqOf(intentSeq, n.ID), clipLine(n.Summary, 90))
+			if n.Attempts >= 2 {
+				line += fmt.Sprintf("（第 %d 次尝试）", n.Attempts)
+			}
 			if n.State == "running" {
 				running = append(running, line)
 			} else {
@@ -287,7 +317,8 @@ func BuildContextIndex(v ContextIndexVars) string {
 	b.WriteString(renderLootSection(ts, v.HasOverview))
 	b.WriteString(renderPlaybookSection(v.PlaybookLines))
 	b.WriteString(renderCVESection(v.CVELines))
-	return b.String()
+	full := b.String()
+	return full[:obsAt] + FenceUntrusted("本任务探索图与历史产出", full[obsAt:])
 }
 
 // 战果在索引里的注入面：每类最多 3 行、扫描上限只用于算「未动用」总数。
@@ -489,7 +520,7 @@ func asText(v any) string {
 
 // clipBlock 多行截断：保留换行（意图原文/资产 JSON 分行更易读），只按 rune 截断。
 func clipBlock(s string, max int) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(SanitizeUntrusted(s))
 	if max <= 0 || len([]rune(s)) <= max {
 		return s
 	}
@@ -498,7 +529,7 @@ func clipBlock(s string, max int) string {
 
 // clipLine 单行截断（按 rune，避免切出半个多字节字符）。
 func clipLine(s string, max int) string {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	s = strings.TrimSpace(strings.ReplaceAll(SanitizeUntrusted(s), "\n", " "))
 	if max <= 0 || len([]rune(s)) <= max {
 		return s
 	}

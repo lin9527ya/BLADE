@@ -488,6 +488,15 @@ func (s *Server) RestoreTaskRuntimes() {
 		if lifecycle.Paused {
 			s.engine.Pause(t.ID, agent.AbortPausedOnReload)
 		}
+		// 图体检：只读、只记日志。依赖指向软删除意图、成环这类坏状态没有任何运行期信号
+		// （现象只是"规划者不再派活"），重启是唯一能稳定打扰人的时机。绝不阻断启动。
+		if !isTerminalStatus(lifecycle.Status) {
+			if rep, aerr := t.Store.AuditGraph(); aerr != nil {
+				log.Printf("[restore] task %s 图体检失败: %v", t.ID, aerr)
+			} else if !rep.Clean() {
+				log.Printf("[restore] task %s 图体检发现问题：%s", t.ID, rep.Summary())
+			}
+		}
 		// 任务级协调器:为每个未终态任务起 deadline 协调器(超时到点收尾 + token 预算 +
 		// 意图租约看门狗),独立于 planner/worker loop——非活跃任务重启后也能在到点后被
 		// 收尾(deadline 已过则立即走收尾时序),僵死的 running 意图也会被看门狗回收。

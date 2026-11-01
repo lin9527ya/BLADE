@@ -353,6 +353,8 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
 ALTER TABLE exploration_edges ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
+-- 图体检与依赖解析都按 (exploration_id, rel) 过滤；没有它时每条检查都要走全表。
+CREATE INDEX IF NOT EXISTS idx_expedges_exp_rel ON exploration_edges(exploration_id, rel);
 -- 目标初始态不再连任务根。旧版本创建 goal 时会写 origin fact --spawns--> goal，
 -- 图上看起来像「起点直接连目标」，把未完成的进度画成了已完成。新代码不再写这条边；
 -- 这里清理旧库已有的初始边（幂等；之后每次启动匹配 0 行）。达成目标时仍由

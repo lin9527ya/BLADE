@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	acperm "github.com/lin9527ya/Norma/permission"
@@ -21,6 +22,23 @@ import (
 // upstream nodes it derived from: facts/intents/findings) and yields (the facts/
 // findings it produced) — without pulling full payloads. parentsOf/yieldsOf are
 // built from the exploration edges in graph_overview.
+// payloadAttempts 读意图 payload 里的领取次数（写入方是 claim 的原子 UPDATE）。
+// 兼容 JSON 数字与历史脏值：解析不出就当 0，绝不让展示层报错。
+func payloadAttempts(p map[string]any) int {
+	switch v := p["attempts"].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
 func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[string]any {
 	out := make([]map[string]any, 0, len(ns))
 	for _, n := range ns {
@@ -47,6 +65,13 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 		if ys := yieldsOf[n.ID]; len(ys) > 0 {
 			m["yields"] = ys // 下游：本意图产生了哪些事实/发现
 		}
+		// 领取次数：升级阶梯的判据（第 2 次必须换角度，第 3 次不再原样重派）。
+		if att := payloadAttempts(p); att > 0 {
+			m["attempts"] = att
+			if lo, _ := p["last_outcome"].(string); lo != "" {
+				m["last_outcome"] = lo
+			}
+		}
 		out = append(out, m)
 	}
 	return out
@@ -61,6 +86,9 @@ type ToolSet struct {
 	ts              *db.ExplorationStore
 	worker          string
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	// clock 是本轮的任务截止信息（可空）。只用来给 add_intent 加收官期软信号——
+	// 策略判定仍走 pol；时间到了不该拒收意图（收官期还可能要清理/补齐），只提醒。
+	clock TaskClock
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops the coverage block, the
@@ -265,6 +293,18 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
+
+// SetTaskClock 注入本轮的任务截止信息（nil/零值 = 没有期限，行为不变）。
+func (t *ToolSet) SetTaskClock(tc TaskClock) { t.clock = tc }
+
+// endgameWarning 是收官期的**软信号**（不拒收）。硬拒有风险：收官期仍可能需要清理/
+// 补齐意图，按 kind 区分又不足以说明"这条是不是新探索面"。与 breadth_warning 同形态。
+func (t *ToolSet) endgameWarning() string {
+	if !t.clock.Endgame(time.Now()) {
+		return ""
+	}
+	return "任务已进入收官期：不再新开探索面。除非这条意图是把在跑方向推到结论、清理遗留物或补齐报告缺项，否则本轮应当收笔而不是继续扩面。"
+}
 
 // SetCoverageEnabled records whether this task has the asset-coverage feature on
 // (default enabled). Passing false makes graphOverviewData omit the coverage block
@@ -2240,6 +2280,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				if breadthWarn != "" {
 					body += "\nbreadth_warning: " + breadthWarn
 				}
+				if ew := t.endgameWarning(); ew != "" {
+					body += "\nendgame_warning: " + ew
+				}
 				return actool.Text(body), nil
 			}
 			out := map[string]any{"ids": ids}
@@ -2251,6 +2294,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			}
 			if breadthWarn != "" {
 				out["breadth_warning"] = breadthWarn
+			}
+			if ew := t.endgameWarning(); ew != "" {
+				out["endgame_warning"] = ew
 			}
 			return jsonResult(out)
 		})

@@ -452,7 +452,7 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 	// Optional finding guidance is added for every role after tool resolution.
 	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
 	// outside this stable string so a reused slot can keep the same cached prefix.
-	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock
+	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + untrustedDataBlock()
 }
 
 // renderWorkerIntentTurn is the per-run user message for the claimed intent. It is
@@ -465,13 +465,13 @@ func renderWorkerIntentTurn(intent *db.Node, assetsJSON, runDir string, slot int
 	b.WriteString(workerIntentMarker(intent.ID))
 	b.WriteString("\n【当前意图（本次唯一任务：只做这一条、只产生事实、做完即停）】\n")
 	b.WriteString("以下历史对话属于此前已经结束的意图，仅作背景参考；不要继续旧目标，也不要把旧 intent id/旧工作目录用于本条写回。\n")
-	b.WriteString(string(intent.Payload))
+	b.WriteString(SanitizeUntrusted(string(intent.Payload)))
 	b.WriteString(fmt.Sprintf("\n意图 id: %d（record_fact / report_finding 等写回时传它）", intent.ID))
 	if slot > 0 {
 		b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本槽位会话跨意图复用）", slot))
 	}
 	if strings.TrimSpace(assetsJSON) != "" {
-		b.WriteString("\n本意图 asset_ids 对应的目标资产：\n" + assetsJSON)
+		b.WriteString("\n本意图 asset_ids 对应的目标资产：\n" + SanitizeUntrusted(assetsJSON))
 	}
 	b.WriteString(workerArtifactSpec(runDir))
 	b.WriteString("\n\n开始执行当前意图：只做它、只产生事实、assets、finding、做完即停。")
@@ -527,7 +527,7 @@ func renderWorkerGraphOverview(data map[string]any) string {
 	// data 是本次 worker 专属的新 map，删键不影响 planner。
 	delete(data, "coverage")
 	delete(data, "breadth")
-	b, err := json.Marshal(data)
+	b, err := json.Marshal(SanitizeJSONStrings(data))
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context
 	}
@@ -709,6 +709,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 启动 user 消息 = 可降级的全局态势 overview + 当前意图块（带 marker）。
 	// 同一槽位会话会跨意图复用；marker 让重跑/续跑不会重复追加同一条意图。
 	intentTurn := renderWorkerIntentTurn(intent, assetsJSON, runDir, slot)
+	if brief := tsx.playbookBriefForIntent(intent); brief != "" {
+		intentTurn += brief
+	}
 	input := overview
 	if strings.TrimSpace(input) == "" {
 		input = "开始执行下面这条意图：只做它、只产生事实、assets、finding、做完即停。"
@@ -719,8 +722,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	enableNoa(&opts, w.noaEnabledFn, w.workDir, sessionID, noaWarn(sessionID))
 	// P14 领域上下文：领域化摘要（7 段 + 原文落盘回读）+ 每请求附常驻索引（目标/约束/
 	// 活跃方向/发现一行式）。noa 开启时它已占 Compactor 槽位，这里自动让位（互斥）。
+	installClock := taskClockFrom(ctx)
 	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), ctxDir, func() string {
-		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: slot, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
+		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: slot, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
 	})
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

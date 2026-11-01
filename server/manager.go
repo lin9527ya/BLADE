@@ -2350,6 +2350,18 @@ func (t *Task) NotifyDone(intentID int64, state string) {
 	t.Notify()
 }
 
+// NotifyReconcile queues the endgame reconciliation checklist as a trigger for the
+// next planner round. Platform-generated text (counts only), so it is not user data.
+func (t *Task) NotifyReconcile(detail string) {
+	if strings.TrimSpace(detail) == "" {
+		return
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "reconcile", Detail: detail})
+	t.trigMu.Unlock()
+	t.Notify()
+}
+
 // NotifyRequeued records that intentID went back to open and will be claimed and
 // resumed (execution watcher finished, lease expired, …). It is deliberately NOT
 // "done": the intent has not settled, so the planner must not treat it as covered

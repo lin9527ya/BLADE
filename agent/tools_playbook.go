@@ -96,6 +96,45 @@ func renderPlaybookLine(m db.PlaybookMatch) string {
 	return line
 }
 
+// playbookBriefForIntent 在领取意图时**主动推送**命中的同族打法完整步骤。
+//
+// 索引里只给 ≤2 行一句话（"别忘了历史打法"）；完整步骤要 worker 自己调 lookup_playbooks。
+// sapper 的战役复盘里，真正拉开差距的是"一道题验证出打法后主动广播给同族"——新 worker
+// 带着成熟打法进场，而不是从零摸索。推送点放在本次 run 的 user turn（不进系统提示），
+// 同一槽位跨意图复用时不会破坏前缀缓存。
+//
+// 卡片是**模型据别的目标写出来的**（可能夹带目标页面文字），因此整体进围栏；
+// "先确认同族"的守则是代码持有的，编辑默认正文删不掉。
+func (t *ToolSet) playbookBriefForIntent(intent *db.Node) string {
+	if t.as == nil || intent == nil {
+		return ""
+	}
+	ids := intentAssetIDs(intent)
+	if len(ids) == 0 {
+		return ""
+	}
+	assets, err := t.as.GetByIDs(ids)
+	if err != nil || len(assets) == 0 {
+		return ""
+	}
+	fp := fingerprintFromAssets(db.PlaybookFingerprint{}, assets)
+	if fp.Key() == (db.PlaybookFingerprint{}).Key() {
+		return "" // 资产上没有任何指纹可用：不推送，避免把无关卡片塞进每条意图
+	}
+	matches, err := t.as.MatchPlaybooks(fp, 1)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	m := matches[0]
+	total := m.Successes + m.Failures
+	body := fmt.Sprintf("[打法 #%d] %s（技术 %s · 成功 %d/%d）\n%s",
+		m.ID, clipKnowledge(m.Title, 80), m.TechniqueKey, m.Successes, total, clipBlock(m.Steps, 1800))
+	return "\n\n【同族打法（代码持有守则）】\n" +
+		"下面这张卡片是同类指纹目标上验证过的打法。**先确认确实是同一族**（同产品/同版本/同入口形态）再套用；不是同一族就当新目标，不要硬套——套错比不套更贵。\n" +
+		FenceUntrusted("打法卡片", body) +
+		"\n用完后用 record_playbook_feedback 回报 worked/failed/inconclusive（带 playbook_id），卡片靠成功率排序。"
+}
+
 // lookupPlaybooks 按资产 id 或指纹检索匹配的历史打法。
 func (t *ToolSet) lookupPlaybooks() actool.CoreTool {
 	return readTool("lookup_playbooks",
@@ -313,10 +352,19 @@ func (t *ToolSet) recordPlaybookFeedback() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return jsonResult(map[string]any{
+			out := map[string]any{
 				"playbook_id": saved.ID, "outcome": saved.LastOutcome,
 				"successes": saved.Successes, "failures": saved.Failures,
 				"last_verified_at": saved.LastVerifiedAt,
-			})
+			}
+			// 族内统计：同一 technique_key 的其他目标上的成败，比单卡成功率更能说明
+			// "这道打法真能用"。只有族内多于一张卡时才播报，避免把单卡说成"族"。
+			if cards, wins, losses, ferr := t.as.PlaybookFamilyStats(saved.TechniqueKey); ferr == nil && cards > 1 {
+				out["family"] = map[string]any{
+					"technique_key": saved.TechniqueKey, "cards": cards,
+					"successes": wins, "failures": losses,
+				}
+			}
+			return jsonResult(out)
 		})
 }

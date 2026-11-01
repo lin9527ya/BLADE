@@ -696,6 +696,19 @@ func (s *AssetStore) MatchPlaybooks(fp PlaybookFingerprint, limit int) ([]Playbo
 	return out, nil
 }
 
+// PlaybookFamilyStats 按 technique_key 聚合活跃卡片：同一"族"里其他目标上的成败，
+// 是"这道打法真能用"的更强证据（单卡可能只是运气）。调用方只在族内 >1 张时展示。
+func (s *AssetStore) PlaybookFamilyStats(techniqueKey string) (cards, successes, failures int, err error) {
+	techniqueKey = strings.TrimSpace(techniqueKey)
+	if techniqueKey == "" {
+		return 0, 0, 0, nil
+	}
+	err = s.db.QueryRow(`SELECT count(*), COALESCE(sum(successes),0), COALESCE(sum(failures),0)
+FROM attack_playbooks WHERE technique_key=$1 AND status=$2`, techniqueKey, PlaybookStatusActive).
+		Scan(&cards, &successes, &failures)
+	return
+}
+
 // MatchPlaybooksForTask 用本任务范围内的指纹信号匹配（态势注入用）。
 func (s *AssetStore) MatchPlaybooksForTask(taskID int64, limit int) ([]PlaybookMatch, error) {
 	tf := s.TaskFingerprint(taskID)

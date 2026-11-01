@@ -196,14 +196,15 @@ type Engine struct {
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
-	settling     sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
-	deadline     sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
-	stamped      sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
-	inflight     sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
-	coordStarted sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
-	budgetStage  sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
-	budgetAck    sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
-	execWatch    sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
+	settling        sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
+	deadline        sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
+	stamped         sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
+	inflight        sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
+	coordStarted    sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
+	budgetStage     sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
+	budgetAck       sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
+	endgameNotified sync.Map // taskID -> bool, 收官期入口已提醒过(每任务一次)
+	execWatch       sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
 	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
 	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
 	budgetPause func(*Task) error
@@ -480,6 +481,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.paused.Delete(taskID)
 	e.dropCnt.Delete(taskID)
 	e.budgetAck.Delete(taskID)
+	e.endgameNotified.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.settling.Delete(taskID)
 	e.deadline.Delete(taskID)
@@ -1249,7 +1251,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 槽位利用率 / 停滞保护：一轮结束后看「空闲槽位」和「是否连续空转」。
 		// 此前一轮结束就不会再因空闲槽位自我唤醒，只能等 worker 完成或 10 分钟心跳，
 		// 于是 4 个 worker 长期只跑 1~2 条（任务 14 实测 31 轮中 17 轮 0 意图）。
-		if !met && err == nil && ectx.Err() == nil {
+		// 收官期这两个信号都不适用：它们的前提是"还有空闲槽位就该继续派"，
+		// 而收官期明确要求不再扩面——0 意图是预期结果，补派与停滞暂停都会跟政策打架。
+		eg := endgameStartUnix(e.taskDeadline(t), int64(t.TimeoutSeconds))
+		inEndgame := eg > 0 && time.Now().Unix() >= eg
+		if !met && err == nil && ectx.Err() == nil && !inEndgame {
 			states, _ := t.Store.CountIntentStates()
 			running := states["running"]
 			claimable, _ := t.Store.CountClaimableIntents()

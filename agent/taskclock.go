@@ -11,7 +11,23 @@ import (
 // engine. Zero value = no task-level timeout (behaves exactly as before).
 type TaskClock struct {
 	DeadlineUnix int64 // absolute deadline (unix seconds); 0 = no task timeout
-	Final        bool  // coordinator-driven FINAL planner round (task ending now)
+	// EndgameUnix 是"收官期"的起点（unix 秒；0 = 没有收官期）。阈值由引擎按任务总时长
+	// 算好再传进来：它属于调度策略，不该散落在提示词渲染代码里，也不该让每次渲染再读库。
+	EndgameUnix int64
+	Final       bool // coordinator-driven FINAL planner round (task ending now)
+}
+
+// Remaining 返回距任务截止还有多久；无截止时 ok=false（不把"没有期限"伪装成 0）。
+func (tc TaskClock) Remaining(now time.Time) (time.Duration, bool) {
+	if tc.DeadlineUnix <= 0 {
+		return 0, false
+	}
+	return time.Unix(tc.DeadlineUnix, 0).Sub(now), true
+}
+
+// Endgame 报告是否已进入收官期（没有收官期时恒 false）。
+func (tc TaskClock) Endgame(now time.Time) bool {
+	return tc.EndgameUnix > 0 && !now.Before(time.Unix(tc.EndgameUnix, 0))
 }
 
 type taskClockKey struct{}
