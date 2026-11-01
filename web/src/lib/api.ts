@@ -69,6 +69,7 @@ import type {
   FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
+  GraphAuditReport,
   IntelQueryList,
   IntelSearchResult,
   IntelTestResult,
@@ -1058,6 +1059,9 @@ export const api = {
 
   // ---- exploration (per task) ----
   frontier: (task?: string) => get<TaskNode[]>(`/exploration/frontier${tq(task)}`).then(arr),
+  // 图完整性体检：只读、按任务。未知任务是 404（调用方按"没有可体检的图"静默处理）。
+  explorationInvariants: (task?: string) =>
+    get<GraphAuditReport>(`/exploration/invariants${tq(task)}`),
   findings: (task?: string) => get<Finding[]>(`/exploration/findings${tq(task)}`).then(arr),
   findingsPage: (q: FindingQuery) => {
     const p = findingFilterParams(q);

@@ -216,6 +216,26 @@ export interface Edge {
   rel: AssetRel | ExploreRel;
 }
 
+// GET /api/exploration/invariants —— 图完整性体检报告（只读，见 db/graph_audit.go）。
+// issues 每类最多 50 条；counts 是如实总数，truncated 标出被截断的码。
+export interface GraphAuditIssue {
+  code: string;
+  severity: "error" | "warn";
+  node_ids?: number[];
+  from?: number;
+  rel?: string;
+  to?: number;
+  detail?: string;
+}
+
+export interface GraphAuditReport {
+  exploration_id: number;
+  checked_at: string;
+  counts: Record<string, number>;
+  issues: GraphAuditIssue[];
+  truncated?: Record<string, boolean>;
+}
+
 // Task asset view — server-side enriched, paginated.
 export interface TaskAssetRef {
   id: string;

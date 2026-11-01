@@ -2187,6 +2187,17 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
   }
   if (path === "/exploration/graph") return D.explorationGraph;
+  // 图体检：默认返回干净报告（演示页不渲染横幅）。想看横幅效果时把 issues/counts
+  // 换成一条示例即可，例如：
+  //   { code: "dependency_cycle", severity: "error", node_ids: [1, 2], detail: "depends_on 成环" }
+  if (path === "/exploration/invariants") {
+    return {
+      exploration_id: 1,
+      checked_at: new Date().toISOString(),
+      counts: {},
+      issues: [],
+    };
+  }
   // 播报板:和后端 /exploration/nodes 同语义 —— 按创建顺序(mock 里用 ts + id)分页,
   // 并带上这一页涉及的边与边另一端的节点。
   if (path === "/exploration/nodes") {
