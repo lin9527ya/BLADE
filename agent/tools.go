@@ -419,7 +419,8 @@ func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 //   - breadthCached / breadthNewDebt 是上一轮的快照 → 广度提示与实际不符；
 //   - writes 会跨轮累加，收尾统计失真。
 //
-// 每轮由 Planner.Plan 在调用模型之前调一次。新 ToolSet 上调它是无害的空操作。
+// 每轮由 Planner.Plan 在调用模型之前调一次；热会话复用时调的是**会话工具闭包绑定的
+// 那个** ToolSet（首轮创建的那个），而不是当轮新建的实例——见 planner.go 的 wireToolSet。
 func (t *ToolSet) BeginRound(pol *policy.Effective, workerCap int, clock TaskClock, ownerNode int64) {
 	t.intentsRound = 0
 	t.GoalMet = false

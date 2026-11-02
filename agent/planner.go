@@ -49,8 +49,12 @@ type Planner struct {
 	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
 	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
 	// 不用时（resume 模式 / 失败轮）为 nil。
-	hotMu             sync.Mutex
-	hot               *agentcore.Session
+	hotMu sync.Mutex
+	hot   *agentcore.Session
+	// hotTools 是热会话首轮创建、其工具闭包所绑定的那个 ToolSet。Session 的 registry
+	// 在 NewSession 时固定，所以后续轮次必须**在这个对象上**重置轮级状态；对每轮新建的
+	// ToolSet 调用 BeginRound 不会影响模型实际调用的工具。
+	hotTools          *ToolSet
 	hotRounds         int
 	hotLastUsed       time.Time
 	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
@@ -730,28 +734,35 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
-	// 热会话复用会沿用第 1 轮的 ToolSet 闭包（Session 的 registry 固定），所以每轮都要
-	// 显式重置轮级状态——否则 intentsRound 停在上一轮，pace:round 会把本轮所有意图拒掉。
-	originNode := int64(0)
-	if origin, _ := ts.OriginFactID(); origin > 0 {
-		originNode = origin
+	// wireToolSet 把「本轮」依赖与轮级状态装到**本轮实际被调用的**那个 ToolSet 上。
+	//
+	// 热会话复用时，模型调用的工具闭包绑定的是热会话首轮的 ToolSet（agentcore.Session
+	// 的 registry 在 NewSession 时固定），而不是这里新建的 tsx。所以两处都要走同一套
+	// 重装：否则 intentsRound 停在首轮的值，pace:round 会把后续每一轮的意图都拒掉
+	// （任务 18/19 实测），GoalMet 与广度快照也会跨轮残留。
+	wireToolSet := func(t *ToolSet) {
+		t.ts = ts // 任务存储指针跨轮不变；重装一遍以防替换
+		originNode := int64(0)
+		if origin, _ := ts.OriginFactID(); origin > 0 {
+			originNode = origin
+		}
+		t.BeginRound(p.policy(), p.workers(), taskClockFrom(ctx), originNode)
+		t.SetExecService(p.execService)
+		t.SetRotateEgressHandler(p.rotateEgress)
+		t.SetPolicyAudit(emit) // 被拒留痕进时间线
+		t.SetFindingRecorder(p.findingRecorder)
+		if as != nil {
+			t.SetAssetStore(as, as.Companies())
+		}
+		t.SetTaskID(taskID)
+		t.SetTaskClock(taskClockFrom(ctx))
+		t.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
+		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
+		t.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
+		t.exhaustedFn = p.recordStrategyExhausted
 	}
-	tsx.BeginRound(p.policy(), p.workers(), taskClockFrom(ctx), originNode)
-	tsx.SetExecService(p.execService)
-	tsx.SetRotateEgressHandler(p.rotateEgress)
-	// pol / workerCap / clock / ownerNode 已由 BeginRound 设好（见上）。
+	wireToolSet(tsx)
 	pol := p.policy()
-	tsx.SetPolicyAudit(emit) // 被拒留痕进时间线
-	tsx.SetFindingRecorder(p.findingRecorder)
-	if as != nil {
-		tsx.SetAssetStore(as, as.Companies())
-	}
-	tsx.SetTaskID(taskID)
-	tsx.SetTaskClock(taskClockFrom(ctx))
-	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
-	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
-	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
-	tsx.exhaustedFn = p.recordStrategyExhausted
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
@@ -893,8 +904,12 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			_ = s.Resume(opts.SessionID)
 			volatile = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + volatile
 		}
-	} else if hs := p.takeHotSession(); hs != nil {
+	} else if hs, hts := p.takeHotSession(); hs != nil && hts != nil {
 		s = hs
+		// 复用会话的工具闭包绑定的是热会话首轮的 ToolSet：本轮在那个对象上重装依赖并
+		// 重置轮级状态，后续的 quota / GoalMet / 写回统计才属于「本轮」。
+		tsx = hts
+		wireToolSet(tsx)
 		keepSession = true
 		// 热会话里已经有「上一轮问过什么 + 结论」，本轮输入只需带态势与待办。
 	} else {
@@ -924,7 +939,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		p.rememberRound(ts, prevMaxIntentID, lastText)
 		// 热会话的前缀用**本轮结论文本**（runText），不是逐段 emit 的片段：折叠后的
 		// 两条消息必须能让下一轮读懂"上一轮想清楚了什么"。
-		p.parkHotSession(s, input, runText)
+		p.parkHotSession(s, tsx, input, runText)
 		keepSession = true
 	case err == nil:
 		p.rememberRound(ts, prevMaxIntentID, lastText)
@@ -995,18 +1010,24 @@ const (
 )
 
 // takeHotSession 取出可复用的热会话；没有 / 超轮数 / 超空闲 / 任务已暂停或删除时返回 nil。
-func (p *Planner) takeHotSession() *agentcore.Session {
+func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet) {
 	p.hotMu.Lock()
 	defer p.hotMu.Unlock()
-	if p.hot == nil {
-		return nil
+	// 没有配套 ToolSet 的热会话不可复用：它的工具闭包绑定在哪个对象上无从得知，
+	// 无法重置本轮额度（见 Plan 里 wireToolSet 的说明）。直接丢弃、走冷路径。
+	if p.hot == nil || p.hotTools == nil {
+		if p.hot != nil {
+			p.hot.Close()
+		}
+		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
+		return nil, nil
 	}
 	if p.hotRounds >= plannerHotMaxRounds || time.Since(p.hotLastUsed) > plannerHotIdleTTL {
 		p.hot.Close()
-		p.hot, p.hotRounds = nil, 0
-		return nil
+		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
+		return nil, nil
 	}
-	return p.hot
+	return p.hot, p.hotTools
 }
 
 // parkHotSession 把本轮会话留作下一轮的前缀，并把历史折叠成「本轮输入 + 结论」两条。
@@ -1014,8 +1035,8 @@ func (p *Planner) takeHotSession() *agentcore.Session {
 // 折叠是热会话成立的前提：不折叠的话它就是一个不断变大的 transcript（等价于 resume
 // 全量），上下文成本会压过缓存收益。裁到两条消息后，下一轮请求 = system + 工具 schema +
 // 这两条 + 新输入，前缀稳定、体积有界。
-func (p *Planner) parkHotSession(s *agentcore.Session, roundInput, lastText string) {
-	if s == nil {
+func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string) {
+	if s == nil || tools == nil {
 		return
 	}
 	s.Reset()
@@ -1023,6 +1044,9 @@ func (p *Planner) parkHotSession(s *agentcore.Session, roundInput, lastText stri
 	p.hotMu.Lock()
 	defer p.hotMu.Unlock()
 	p.hot = s
+	// 连同工具绑定一起留存：下一轮必须在这个 ToolSet 上重置轮级状态，
+	// 新建的 ToolSet 并不会被复用会话里的工具闭包引用。
+	p.hotTools = tools
 	p.hotRounds++
 	p.hotLastUsed = time.Now()
 }
@@ -1050,7 +1074,7 @@ func (p *Planner) dropHotSession() {
 	if p.hot != nil {
 		p.hot.Close()
 	}
-	p.hot, p.hotRounds = nil, 0
+	p.hot, p.hotTools, p.hotRounds = nil, nil, 0
 }
 
 // CloseHotSession 供任务停止/删除时释放（引擎侧调用，幂等）。
