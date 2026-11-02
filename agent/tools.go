@@ -598,6 +598,13 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 		})
 }
 
+// recentDoneCap 是态势里 recent_done_intents 的窗口。
+//
+// 12 太小：上百意图的任务里已结束意图有 50~80 条，12 条窗口之外的既不在折叠摘要里、
+// 也不在常规视野里，planner 会把试过的方向当新方向重派（实测任务 5：86 条已结束，
+// 62% 不在任何可见窗口）。30 条覆盖绝大多数任务；更旧的用 list_worker_traces 翻页。
+const recentDoneCap = 30
+
 // recentFactsCap 是态势里 recent_facts 的窗口。它只是「最新一窗」，不是全部——
 // 超过窗口时概览会给出 recent_facts_next_before，让 planner 用 list_facts 接着翻。
 const recentFactsCap = 20
@@ -963,7 +970,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	}
 	// recent_done_intents：非折叠的已结束意图里最新的一窗（≤N，recentDone 已按 id 降序）。
 	// 更早的看 done_intents_total 计数 + node_detail(id)。
-	const recentDoneCap = 12
+	// 窗口大小见包级常量 recentDoneCap。
 	if len(recentDone) > recentDoneCap {
 		recentDone = recentDone[:recentDoneCap]
 	}
@@ -3967,22 +3974,29 @@ func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 // no process to inspect).
 func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 	return t.readExpTool("list_worker_traces",
-		"【通常不推荐使用，因为系统中已经给了大部分信息了】列出本任务里【已跑过的 work（意图）】索引：intent_id + 一句话方向(summary) + 状态。"+
-			"你(worker)看不到探索图，用它来发现有哪些 work 值得翻看——再用 get_worker_trace(intent_id) 看其步骤、get_worker_trace(intent_id, step_ids=[...]) 取详情。"+
-			"只列已执行过的（running/done/negative/out-of-scope/exhausted/blocked/no_output/stopped），不含还没跑的 open。注意：你的任务边界仍是你领到的那条意图，看别的 work 只为复用观察/避免重复劳动。",
+		"列出本任务里【已跑过的意图】索引：intent_id + 一句话方向(summary) + 状态，最新在前。"+
+			"态势里的 recent_done_intents 只是一窗；要确认「这个方向以前是不是试过」，用它翻全量。"+
+			"分页：limit（默认 50，上限 200）+ before（游标，传上一页返回的 next_before 取更旧的一页）。"+
+			"只列已执行过的（running/done/negative/out-of-scope/exhausted/blocked/no_output/stopped），不含还没跑的 open。"+
+			"要看某条的具体过程用 get_worker_trace(intent_id) / get_worker_output(intent_id)。",
 		obj(map[string]any{
-			"q":     str("按 summary 关键字过滤（可选）"),
-			"limit": intp("返回上限，默认 50（可选）"),
+			"q":      str("按 summary 关键字过滤（可选）"),
+			"limit":  intp("返回上限，默认 50，上限 200（可选）"),
+			"before": intp("分页游标：只返回 intent_id 小于该值的更旧意图；省略或 0 = 最新一页"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				Q     string `json:"q"`
-				Limit int    `json:"limit"`
+				Q      string `json:"q"`
+				Limit  int    `json:"limit"`
+				Before int64  `json:"before"`
 			}
 			_ = json.Unmarshal(in, &a)
 			limit := a.Limit
 			if limit <= 0 {
 				limit = 50
+			}
+			if limit > 200 {
+				limit = 200
 			}
 			all, err := t.ts.ListByKindWithSources(db.KindIntent, 500)
 			if err != nil {
@@ -3990,6 +4004,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 			}
 			q := strings.ToLower(strings.TrimSpace(a.Q))
 			out := make([]map[string]any, 0, limit)
+			total := 0
 			for _, n := range all {
 				if n.Inherited && n.State == "running" {
 					continue
@@ -4005,16 +4020,24 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 				if q != "" && !strings.Contains(strings.ToLower(summary), q) {
 					continue
 				}
+				total++
+				if a.Before > 0 && n.ID >= a.Before {
+					continue
+				}
+				if len(out) >= limit {
+					continue // 继续数 total，才知道后面还有多少
+				}
 				item := map[string]any{"intent_id": n.ID, "summary": summary, "state": n.State}
 				if n.Inherited {
 					inheritedMap(item, n.SourceTaskID)
 				}
 				out = append(out, item)
-				if len(out) >= limit {
-					break
-				}
 			}
-			return jsonResult(map[string]any{"works": out})
+			res := map[string]any{"works": out, "total": total}
+			if len(out) >= limit && len(out) > 0 {
+				res["next_before"] = out[len(out)-1]["intent_id"]
+			}
+			return jsonResult(res)
 		})
 }
 
@@ -4024,7 +4047,11 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
-		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(),
+		// list_worker_traces：态势里的 recent_done_intents 只是一窗（12 条），上百意图的任务里
+		// 大部分已结束意图不在视野中。这个工具让 planner 能翻全量已跑意图，确认某方向是否试过。
+		t.listWorkerTraces(),
+		t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),

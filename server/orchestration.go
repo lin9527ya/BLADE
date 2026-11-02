@@ -723,7 +723,8 @@ func (s *Server) reseedPlannerPrompt() {
 	// 把"刚刷成 v5 的正文"误判成自定义并置位了标记，所以换一个新 flag 重跑一次。
 	// v9：硬底线补上「无方向时调用 mark_strategy_exhausted / abandon_goal」出口，
 	// 并把「用 record_fact 写结论」的旧说法改成这两个 planner 真正拥有的工具。
-	const flag = "planner_prompt_slots_v9"
+	// v10：说明 recent_done_intents 只是一窗（≤30），翻全量用 list_worker_traces。
+	const flag = "planner_prompt_slots_v10"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
