@@ -155,6 +155,8 @@ type Engine struct {
 	egressMu       sync.Mutex
 	egressHits     map[string][]time.Time
 	egressRotating bool
+	// rotateEgressHook 仅测试注入：默认走 e.m.RotateEgress（真实 Clash 控制器）。
+	rotateEgressHook func(context.Context, string) (ClashRotation, error)
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected

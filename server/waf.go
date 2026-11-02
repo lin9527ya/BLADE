@@ -203,7 +203,11 @@ func (e *Engine) observeEgress(t *Task, r db.Activity) {
 			e.egressMu.Unlock()
 		}()
 		reason := fmt.Sprintf("%s（%s）", sig.label(), host)
-		res, err := e.m.RotateEgress(rotateCtx, reason)
+		rotate := e.m.RotateEgress
+		if e.rotateEgressHook != nil {
+			rotate = e.rotateEgressHook
+		}
+		res, err := rotate(rotateCtx, reason)
 		if err != nil {
 			log.Printf("[egress] task %s 自动切换出口失败（%s %s）：%v", t.ID, sig.label(), host, err)
 			return
