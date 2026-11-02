@@ -605,6 +605,20 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // 62% 不在任何可见窗口）。30 条覆盖绝大多数任务；更旧的用 list_worker_traces 翻页。
 const recentDoneCap = 30
 
+// 折叠区意图索引的体积上限：摘要截 60 字、最多 100 条。超出只给计数——上百条意图的
+// 任务里，全量索引会挤占真正有用的态势内容，更旧的走 list_worker_traces。
+//
+// 60 字的依据（实测任务 6 的 45 条折叠意图）：
+//
+//	摘要 40 字 → 3.7k 字符；60 字 → 4.6k；80 字 → 5.5k；100 字 → 6.4k
+//
+// 60 字已能写清「对哪个入口、做什么测试」；再长主要是结论细节，那些看 expand_digest
+// 更合适。按 100 条上限估算，最坏约 1 万字符（≈3–4k token）/轮。
+const (
+	foldedIntentSummaryMax = 60
+	foldedIntentsCap       = 100
+)
+
 // recentFactsCap 是态势里 recent_facts 的窗口。它只是「最新一窗」，不是全部——
 // 超过窗口时概览会给出 recent_facts_next_before，让 planner 用 list_facts 接着翻。
 const recentFactsCap = 20
@@ -968,6 +982,41 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		out["recent_facts_note"] = "recent_facts 是最新一窗（已折叠进 digest 的不在此重复，见 cold_digests）。" +
 			"更旧的 facts 用 list_facts 翻页：传 before=recent_facts_next_before；全文用 node_detail(id)。"
 	}
+	// folded_intents：折叠进冷摘要、且仍然冷的已结束意图索引（id + 截断摘要 + 状态）。
+	//
+	// 为什么需要：recent_done_intents 会剔除折叠成员，而 cold_digests 只展开前 15 个摘要
+	// 的正文、其余只给裸 id。实测任务 6：82 条已结束意图里 31 条只剩一个 digest id——
+	// planner 要判断"这个方向是不是试过"，得逐个 expand_digest，27 个摘要就是 27 次往返。
+	// 这段索引让它一眼扫到方向名与终态（done / no_output / blocked 的区别决定要不要重派）。
+	//
+	// 体积控制：摘要截 80 字、硬上限 100 条；超出只给计数，更旧的用 list_worker_traces 翻页。
+	folded := make([]map[string]any, 0, 32)
+	for _, n := range all {
+		switch n.State {
+		case "done", "negative", "out-of-scope", "blocked", "exhausted", "no_output":
+		default:
+			continue
+		}
+		if !hidden(n.ID) {
+			continue // 未折叠：已由 recent_done_intents 覆盖
+		}
+		var p map[string]any
+		_ = json.Unmarshal(n.Payload, &p)
+		summary, _ := p["summary"].(string)
+		folded = append(folded, map[string]any{
+			"id": n.ID, "s": clipLine(summary, foldedIntentSummaryMax), "state": n.State,
+		})
+	}
+	if total := len(folded); total > 0 {
+		if total > foldedIntentsCap {
+			folded = folded[:foldedIntentsCap]
+		}
+		out["folded_intents"] = folded
+		out["folded_intents_total"] = total // 真实总数，folded_intents 可能被截断
+		out["folded_intents_note"] = "折叠区已结束意图索引（摘要截断）：这些方向已经试过，state 决定要不要换打法重派。" +
+			"更旧的用 list_worker_traces 翻页；要看某个摘要的完整叙述用 expand_digest(digest_id)。"
+	}
+
 	// recent_done_intents：非折叠的已结束意图里最新的一窗（≤N，recentDone 已按 id 降序）。
 	// 更早的看 done_intents_total 计数 + node_detail(id)。
 	// 窗口大小见包级常量 recentDoneCap。

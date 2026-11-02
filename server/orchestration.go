@@ -724,7 +724,8 @@ func (s *Server) reseedPlannerPrompt() {
 	// v9：硬底线补上「无方向时调用 mark_strategy_exhausted / abandon_goal」出口，
 	// 并把「用 record_fact 写结论」的旧说法改成这两个 planner 真正拥有的工具。
 	// v10：说明 recent_done_intents 只是一窗（≤30），翻全量用 list_worker_traces。
-	const flag = "planner_prompt_slots_v10"
+	// v11：新增 folded_intents（折叠区已结束意图索引），提示词说明它的字段与用法。
+	const flag = "planner_prompt_slots_v11"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}

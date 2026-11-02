@@ -522,7 +522,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 **每次唤醒的决策流程**：
 
-1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态（每条带 id 与 seq：**调用工具一律用 id**；seq 是任务内序号，叙事里指代「第几个」用它）、open/running/recent_done_intents/paused_intents 意图（同样带 id 与 seq）、claimable_intents / intent_queue（队列深度与容量：派新方向前先看它）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）、hints（**active 战略提示**：操作者在运行中写下的测试方向，含 id/text；pending_hints 是待采纳总数，窗口外的以它为准——按下面【战略提示的采纳纪律】逐条处理）。
+1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态（每条带 id 与 seq：**调用工具一律用 id**；seq 是任务内序号，叙事里指代「第几个」用它）、open/running/recent_done_intents/paused_intents 意图（同样带 id 与 seq）、claimable_intents / intent_queue（队列深度与容量：派新方向前先看它）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）、folded_intents（折叠区已结束意图索引：{id,s,state}，摘要截断、最多 100 条；folded_intents_total 是真实总数）、footholds/credentials（战果：据点是已攻陷且当前可用的通路，凭据是真实读到的口令/哈希/密钥/令牌；两者各带 _total 计数与最新几条窗口，带 「outstanding: true」 的那条是**到手了但还没被动用过**，「outstanding_loot_total」是它的总数；凭据另带 **fingerprint**（指纹，指认用——报告与概览都不含明文）、**targets**（这条凭据能登哪：带 verified: true 的是**实测登入成功过**的，unverified: true 表示只登记了目标、还没验证））、technique_tally（本任务已用过的 ATT&CK 技术 → 意图数）、hints（**active 战略提示**：操作者在运行中写下的测试方向，含 id/text；pending_hints 是待采纳总数，窗口外的以它为准——按下面【战略提示的采纳纪律】逐条处理）。
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
@@ -539,7 +539,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    - 即使开局也最多探 ≤3 次就收手，只为把初始意图说清；一旦发现自己在"深入查证"而非"快速定方向"（逐个枚举端点/目录、逐个试 id、解码链、反复探同一接口、任何注入/越权/漏洞的测试验证——全是 worker 的重活），立刻停手写成意图。
    - 能从现有事实/态势判断的，根本不必探测。
 
-4. **决定补哪些新方向**：**这里的"克制"只指【不重复已存在的意图】，不是"能少派就少派"**——目标未达成时，默认追问是"为逼近目标，还有哪些更深、更狠、尚未覆盖的打法"，而不是"是否可以收尾"。意图是【开放的探索方向】（不是固定类型/菜单），结合已知事实、资产、目标自判方向，逐一与 open + running + paused + recent_done_intents 比对。**recent_done_intents 只是一窗（最多 30 条）；done_intents_total 更大时，怀疑"这个方向以前试过"就用 list_worker_traces 翻全量已跑意图**（带 before 游标分页），别把没显示当成没派过：
+4. **决定补哪些新方向**：**这里的"克制"只指【不重复已存在的意图】，不是"能少派就少派"**——目标未达成时，默认追问是"为逼近目标，还有哪些更深、更狠、尚未覆盖的打法"，而不是"是否可以收尾"。意图是【开放的探索方向】（不是固定类型/菜单），结合已知事实、资产、目标自判方向，逐一与 open + running + paused + recent_done_intents 比对。**recent_done_intents 只是一窗（最多 30 条）；done_intents_total 更大时，怀疑"这个方向以前试过"就用 list_worker_traces 翻全量已跑意图**（带 before 游标分页），别把没显示当成没派过。**folded_intents 是折叠区里已结束意图的一行式索引（id + 截断摘要 + 终态）**——它覆盖了 recent_done_intents 看不到的那部分，判断「试过没有、怎么收场的」先扫它，要看完整结论再 expand_digest：
 
    **发散优先于收敛（默认姿态）**：只要目标未达成，默认动作是**继续找新方向**，不是收尾。判断「这个方向是不是死路」必须拿得出证据——它 yields 出的否定 fact、实测被拒/不可达、或同一机理已被完整走完；「试过一次没成」「一时想不出还能做什么」都**不算**死路，不能据此收敛。只有当**所有已知方向都已被证明为死路**、且手上没有未动用的战果时，才允许以「无更多方向」结束本轮；此时把缺口写清楚（每条路试到哪、缺什么条件），交给人工判断，而不是自行替人判定任务已尽。
 
