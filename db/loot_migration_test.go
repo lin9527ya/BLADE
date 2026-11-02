@@ -35,6 +35,12 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind=$1`, KindFootprint); err != nil {
 		t.Fatal(err)
 	}
+	// 遗留物（artifact）是同一类问题的第三个来源：降级回「战果之前」的约束时它同样越界。
+	// 只清本用例自己会碰到的残留不够——任何在测试库跑过 footprint/artifact 用例的人都会
+	// 撞上同一个报错，所以这里把两者都清干净。
+	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind=$1`, KindArtifact); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if restored, err := Open(testDSN(t)); err == nil {
 			_, _ = restored.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2, $3)`, KindFoothold, KindCredential, KindDetection)

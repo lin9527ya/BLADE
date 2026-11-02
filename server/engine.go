@@ -1064,7 +1064,7 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 // (低于 600 一律抬到 600);这里再兜一次底,防内存态异常值。
 func plannerHeartbeatInterval(t *Task) time.Duration {
 	sec := t.PlanHeartbeatSeconds
-	if sec < db.MinPlanHeartbeatSeconds { // 下限=默认=600(10min)
+	if sec < db.MinPlanHeartbeatSeconds { // 下限=默认=300(5min，与提示缓存窗口对齐)
 		sec = db.MinPlanHeartbeatSeconds
 	}
 	return time.Duration(sec) * time.Second

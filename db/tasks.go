@@ -99,9 +99,13 @@ func IsTerminal(status string) bool {
 // CreateTask creates an exploration + task in one transaction and returns the task.
 // timeoutSeconds is the task-level wall-clock budget (0 = 不限时); deadline_at is
 // stamped later at first real run (see engine), not here.
-// MinPlanHeartbeatSeconds 是 planner 心跳间隔的下限 = 默认 = 10min。
-// 低于它(含缺省 0 / 负值 / 误配的小值)一律抬到 10min，防止把 planner 打爆。
-const MinPlanHeartbeatSeconds = 600
+// MinPlanHeartbeatSeconds 是 planner 心跳间隔的下限 = 默认 = 5min。
+//
+// 为什么是 5 分钟而不是 10 分钟：心跳是「没有任何事件时的兜底巡检」，而 provider 的
+// 提示缓存约 5 分钟过期。心跳间隔等于 10 分钟时，纯心跳唤醒的规划轮必然从冷缓存开始
+// （实测 planner 轮首命中率只有 40%，其中一大半是这类冷启动）。5 分钟正好落在缓存
+// 窗口内，既不打爆 planner（默认值本身就是兜底频率），也让兜底轮能吃上前缀缓存。
+const MinPlanHeartbeatSeconds = 300
 
 // MaxTaskSourceCount bounds the amount of live inherited context one task can
 // pull into every planner/main-agent prompt. Inheritance is intentionally direct

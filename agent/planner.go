@@ -849,11 +849,14 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if pol != nil && !pol.IsZero() {
 		situational += stallNoticeFromStore(ts, *pol)
 	}
+	// 本轮输入的**分段顺序**是「稳定 → 易变」，见 composePlannerInput 的说明：
+	// 缓存按 token 前缀匹配，每轮都变的态势放在最前面会让整段前缀失效。
+	// 上一轮结论摘要与态势同属易变段，统一放进 volatile。
 	// P20：硬底线在有策略时改写成"只在策略内成立"——否则提示词自相矛盾：
 	// 一边要求必须派人，一边把提出来的人全拒掉。
-	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。" +
-		policy.HardFloorText(derefPolicy(pol)) +
-		renderPlannerTodos(opts.Todos.List())
+	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。" +
+		policy.HardFloorText(derefPolicy(pol))
+	volatile := situational
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
 	s := agentcore.NewSession(opts)
@@ -867,11 +870,12 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if p.tx != nil {
 			_ = s.Resume(opts.SessionID)
 			// 续跑之后历史里的旧态势块会"粘住"。明说本轮快照是权威，避免拿旧图做判断。
-			input = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + input
+			volatile = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + volatile
 		}
 	} else if note := strings.TrimSpace(p.lastRoundNote); note != "" {
-		input = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n" + input
+		volatile = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n" + volatile
 	}
+	input := composePlannerInput(staticRules, lead, volatile, renderPlannerTodos(opts.Todos.List()))
 	prevMaxIntentID := latestIntentID(ts)
 	lastText := ""
 	_, _, err = captureRunSession(ctx, s, input,
@@ -924,6 +928,20 @@ func (p *Planner) TakeStrategyExhaustedReason() string {
 
 // LastRoundIntents 返回最近一轮成功创建的意图数（引擎的槽位利用率/停滞判定用）。
 func (p *Planner) LastRoundIntents() int { return p.lastRoundIntents }
+
+// composePlannerInput 按「稳定 → 易变」拼接本轮规划输入：
+//
+//	① 静态规则（判定口径 + 硬底线，只随策略变化）
+//	② 开场白（按触发类型三选一，同类唤醒之间是同一段文本）
+//	③ 本轮态势（每轮都变，且是最大的一块）
+//	④ 本轮待办（模型自己的便签）
+//
+// 顺序不能随意调换：provider 的提示缓存按 **token 前缀** 匹配，把每轮都变的态势放在
+// 最前面，第一条消息从开头就分叉，整段前缀都吃不到缓存（实测 planner 轮首命中率 40%，
+// worker 89%）。按上面的顺序，前两段在同类唤醒之间完全一致，能跨轮命中。
+func composePlannerInput(staticRules, lead, volatile, todos string) string {
+	return staticRules + "\n\n" + lead + "\n\n" + volatile + "\n" + todos
+}
 
 // resumePlannerSession 是回滚开关：默认 false（每轮新会话 + 结论摘要），
 // BLADE_PLANNER_RESUME_SESSION=1/true 恢复旧的跨轮 transcript resume。
