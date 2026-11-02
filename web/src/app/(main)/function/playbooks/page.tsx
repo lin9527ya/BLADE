@@ -44,9 +44,17 @@ type EditForm = {
 };
 
 const EMPTY_EDIT: EditForm = {
-  title: "", summary: "", technique_key: "", confidence: "high",
-  technologies: "", favicon_mmh3: "", service_name: "", port: "", page_title: "",
-  steps: "", evidence: "",
+  title: "",
+  summary: "",
+  technique_key: "",
+  confidence: "high",
+  technologies: "",
+  favicon_mmh3: "",
+  service_name: "",
+  port: "",
+  page_title: "",
+  steps: "",
+  evidence: "",
 };
 
 function editFormFrom(p: Playbook): EditForm {
@@ -317,12 +325,18 @@ export default function PlaybooksPage() {
                         )}
                       </div>
                       {p.summary && (
-                        <div className="mt-0.5 line-clamp-2 break-words text-muted-foreground text-xs" title={p.summary}>
+                        <div
+                          className="mt-0.5 line-clamp-2 break-words text-muted-foreground text-xs"
+                          title={p.summary}
+                        >
                           {p.summary}
                         </div>
                       )}
                       {p.technique_key && (
-                        <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground/70" title={p.technique_key}>
+                        <div
+                          className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground/70"
+                          title={p.technique_key}
+                        >
                           {p.technique_key}
                         </div>
                       )}
@@ -394,9 +408,7 @@ export default function PlaybooksPage() {
         <DialogContent className="max-h-[85vh] sm:max-w-5xl overflow-hidden">
           <DialogHeader>
             <DialogTitle>{selected?.title}</DialogTitle>
-            <DialogDescription>
-              {selected?.summary || "无摘要"}
-            </DialogDescription>
+            <DialogDescription>{selected?.summary || "无摘要"}</DialogDescription>
           </DialogHeader>
           {selected && (
             <div className="max-h-[60vh] space-y-4 overflow-auto pr-1">
@@ -442,7 +454,9 @@ export default function PlaybooksPage() {
               {selected.evidence && (
                 <div>
                   <div className="mb-1 font-medium text-sm">原始证据（脱敏后）</div>
-                  <pre className="max-h-60 overflow-auto rounded-md border bg-muted/20 p-3 text-xs">{selected.evidence}</pre>
+                  <pre className="max-h-60 overflow-auto rounded-md border bg-muted/20 p-3 text-xs">
+                    {selected.evidence}
+                  </pre>
                 </div>
               )}
               {selected.last_note && (
@@ -488,13 +502,15 @@ export default function PlaybooksPage() {
           <DialogHeader>
             <DialogTitle>编辑打法卡片</DialogTitle>
             <DialogDescription>
-              修改标题、步骤、证据与匹配指纹。统计（检索/成功/失败）和「最近验证」时间不会变；
-              改指纹或 technique_key 会改变这张卡的匹配范围与去重键。
+              修改标题、步骤、证据与匹配指纹。统计（检索/成功/失败）和「最近验证」时间不会变； 改指纹或 technique_key
+              会改变这张卡的匹配范围与去重键。
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[62vh] space-y-3 overflow-auto pr-1">
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-title">标题</label>
+              <label className="text-sm font-medium" htmlFor="pb-title">
+                标题
+              </label>
               <Input
                 id="pb-title"
                 value={editForm.title}
@@ -503,7 +519,9 @@ export default function PlaybooksPage() {
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-summary">摘要</label>
+              <label className="text-sm font-medium" htmlFor="pb-summary">
+                摘要
+              </label>
               <Textarea
                 id="pb-summary"
                 rows={2}
@@ -514,7 +532,9 @@ export default function PlaybooksPage() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-tech">技术栈指纹</label>
+                <label className="text-sm font-medium" htmlFor="pb-tech">
+                  技术栈指纹
+                </label>
                 <Input
                   id="pb-tech"
                   value={editForm.technologies}
@@ -523,7 +543,9 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-techkey">technique_key</label>
+                <label className="text-sm font-medium" htmlFor="pb-techkey">
+                  technique_key
+                </label>
                 <Input
                   id="pb-techkey"
                   value={editForm.technique_key}
@@ -532,7 +554,9 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-favicon">favicon MMH3</label>
+                <label className="text-sm font-medium" htmlFor="pb-favicon">
+                  favicon MMH3
+                </label>
                 <Input
                   id="pb-favicon"
                   value={editForm.favicon_mmh3}
@@ -541,7 +565,9 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-service">服务 / 端口</label>
+                <label className="text-sm font-medium" htmlFor="pb-service">
+                  服务 / 端口
+                </label>
                 <div className="flex gap-2">
                   <Input
                     id="pb-service"
@@ -559,7 +585,9 @@ export default function PlaybooksPage() {
                 </div>
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-title-fp">页面标题</label>
+                <label className="text-sm font-medium" htmlFor="pb-title-fp">
+                  页面标题
+                </label>
                 <Input
                   id="pb-title-fp"
                   value={editForm.page_title}
@@ -568,7 +596,9 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-confidence">置信度</label>
+                <label className="text-sm font-medium" htmlFor="pb-confidence">
+                  置信度
+                </label>
                 <Select value={editForm.confidence} onValueChange={(v) => setEditField("confidence", v)}>
                   <SelectTrigger id="pb-confidence">
                     <SelectValue />
@@ -582,7 +612,9 @@ export default function PlaybooksPage() {
               </div>
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-steps">打法步骤（Markdown，必填）</label>
+              <label className="text-sm font-medium" htmlFor="pb-steps">
+                打法步骤（Markdown，必填）
+              </label>
               <Textarea
                 id="pb-steps"
                 rows={12}
@@ -593,7 +625,9 @@ export default function PlaybooksPage() {
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-evidence">原始证据（脱敏后）</label>
+              <label className="text-sm font-medium" htmlFor="pb-evidence">
+                原始证据（脱敏后）
+              </label>
               <Textarea
                 id="pb-evidence"
                 rows={5}
@@ -619,9 +653,7 @@ export default function PlaybooksPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>废弃这张打法卡</DialogTitle>
-            <DialogDescription>
-              废弃后不再参与指纹匹配；理由会留在卡片上，供后来人判断。
-            </DialogDescription>
+            <DialogDescription>废弃后不再参与指纹匹配；理由会留在卡片上，供后来人判断。</DialogDescription>
           </DialogHeader>
           <Textarea
             value={reason}

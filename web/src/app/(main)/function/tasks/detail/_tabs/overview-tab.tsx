@@ -3,7 +3,29 @@
 import * as React from "react";
 import { TaskInterceptRulesCard, TaskExplorationPolicyCard } from "./_components/task-policy-cards";
 
-import { ActivityIcon, AlertTriangleIcon, BanIcon, BellRingIcon, BookOpenIcon, BugIcon, CheckIcon, ClockIcon, CoinsIcon, LightbulbIcon, ListChecksIcon, PencilIcon, PlayIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, ShieldAlertIcon, ShieldCheckIcon, TargetIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  AlertTriangleIcon,
+  BanIcon,
+  BellRingIcon,
+  BookOpenIcon,
+  BugIcon,
+  CheckIcon,
+  ClockIcon,
+  CoinsIcon,
+  LightbulbIcon,
+  ListChecksIcon,
+  PencilIcon,
+  PlayIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  TargetIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -949,7 +971,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 </span>
                 <span className="tabular-nums">
                   <span className="text-muted-foreground">未命中输入 </span>
-                  <span className="font-semibold">{fmtTokens(Math.max(0, tokenTotals.input - tokenTotals.cacheRead))}</span>
+                  <span className="font-semibold">
+                    {fmtTokens(Math.max(0, tokenTotals.input - tokenTotals.cacheRead))}
+                  </span>
                 </span>
                 <span className="tabular-nums">
                   <span className="text-muted-foreground">缓存命中率 </span>
@@ -959,8 +983,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 </span>
               </div>
               <p className="text-muted-foreground text-[10px]">
-                「输入」已包含缓存读；DeepSeek 为自动前缀缓存，没有缓存写入计费（cache write 恒为 0）。命中率 =
-                缓存读 / 输入。
+                「输入」已包含缓存读；DeepSeek 为自动前缀缓存，没有缓存写入计费（cache write 恒为 0）。命中率 = 缓存读 /
+                输入。
               </p>
               {/* 按模型明细表 */}
               <div className="overflow-x-auto">
@@ -1275,4 +1299,3 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     </div>
   );
 }
-

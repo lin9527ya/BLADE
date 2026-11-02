@@ -297,8 +297,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
           }
         >
           <p className="text-muted-foreground text-xs leading-relaxed">
-            默认不返回 CORS 头：只有本站在浏览器里访问 API。需要从别的来源（内部面板、独立脚本页）直接调
-            API 时，把来源列在这里（逗号分隔，例如{" "}
+            默认不返回 CORS 头：只有本站在浏览器里访问 API。需要从别的来源（内部面板、独立脚本页）直接调 API
+            时，把来源列在这里（逗号分隔，例如{" "}
             <code className="text-[11px]">https://ops.example.com,http://127.0.0.1:3000</code>）。
             <br />
             <b>填 * 等于对任何网站开放</b>——浏览器里的任意页面都能带着你的登录态调接口，
@@ -415,18 +415,21 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
           <SwitchRow
             id="agent-loot-exec"
             describedBy="agent-loot-exec-description"
-            label={agentLootExec ? "已开启 · Agent 可用凭据 / 据点 / 隧道直连目标" : "已关闭（默认）· 模型需自己用 Bash 构造连接"}
+            label={
+              agentLootExec
+                ? "已开启 · Agent 可用凭据 / 据点 / 隧道直连目标"
+                : "已关闭（默认）· 模型需自己用 Bash 构造连接"
+            }
             checked={agentLootExec}
             disabled={!loaded || savingLootExec}
             onChange={toggleAgentLootExec}
             hint={
               <>
-                默认关闭。开启后，Agent 可以用一条<strong>已登记的凭据</strong>（口令 / 私钥）直接对目标执行命令（ssh
-                / mysql），或经<strong>已登记结构化连法的据点</strong>执行（ssh / webshell），或经 ssh 据点开 SOCKS
-                隧道访问内网，不必再把明文贴进命令行：
-                明文经 <code>0600</code> 临时文件交给客户端，命令、执行台账与时间线里都不含明文，只记指纹。
-                <br />
-                它<strong>不改变授权边界</strong>——授权范围（RoE）、作业时间窗与停机开关照常生效，host 必须是凭据
+                默认关闭。开启后，Agent 可以用一条<strong>已登记的凭据</strong>（口令 / 私钥）直接对目标执行命令（ssh /
+                mysql），或经<strong>已登记结构化连法的据点</strong>执行（ssh / webshell），或经 ssh 据点开 SOCKS
+                隧道访问内网，不必再把明文贴进命令行： 明文经 <code>0600</code>{" "}
+                临时文件交给客户端，命令、执行台账与时间线里都不含明文，只记指纹。
+                <br />它<strong>不改变授权边界</strong>——授权范围（RoE）、作业时间窗与停机开关照常生效，host 必须是凭据
                 targets 里登记过的目标。关闭时该工具不出现在 Agent 的工具面里。
                 <br />
                 对下一轮装配生效；已经发起的后台执行不受影响。
@@ -439,7 +442,9 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
           <SwitchRow
             id="agent-auto-retest"
             describedBy="agent-auto-retest-description"
-            label={agentAutoRetest ? "已开启 · 每条新漏洞都会起一次独立复测" : "已关闭（默认）· 漏洞只在人工点「复测」时复核"}
+            label={
+              agentAutoRetest ? "已开启 · 每条新漏洞都会起一次独立复测" : "已关闭（默认）· 漏洞只在人工点「复测」时复核"
+            }
             checked={agentAutoRetest}
             disabled={!loaded || savingAutoRetest}
             onChange={toggleAgentAutoRetest}
@@ -551,8 +556,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
           </div>
           <p className="text-muted-foreground text-xs leading-relaxed">
             静默模式下，planner 与 worker 的提示词会追加一段<strong>平台持有</strong>的操作纪律（改 DB
-            提示词也删不掉它）：先最小验证再扩面、同类请求拉开间隔、被检出就换技术而不是加大力度、
-            WAF/403 时做最小验证而不是重放、留痕最小化并销账。
+            提示词也删不掉它）：先最小验证再扩面、同类请求拉开间隔、被检出就换技术而不是加大力度、 WAF/403
+            时做最小验证而不是重放、留痕最小化并销账。
             <br />
             它改变的是<strong>怎么打</strong>，不改变<strong>能打哪</strong>：授权范围、作业时间窗与停机开关照常生效。
             另外态势里的「检出热点」会把真正响过的技术列给规划层，避免在同一目标上重复同一手。
@@ -716,7 +721,6 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
   );
 }
 
-
 // SafetyBoundarySummary 把"默认能用/禁用哪些行为"收成一张表：内置拦截规则（拒绝/审批/
 // 已关闭）+ 探索策略额外禁止项 + 凭据预算。此前这些散落在拦截规则页和策略区，操作者
 // 只能靠碰壁来猜边界；这里只做只读汇总，调整仍走各自原有入口。
@@ -742,12 +746,8 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
   const asked = (rules ?? []).filter((r) => r.enabled && r.action === "ask");
   const off = (rules ?? []).filter((r) => !r.enabled);
 
-  const techLabels = s.polTech.map(
-    (id) => s.polDefault?.techniques.find((t) => t.id === id)?.label ?? id,
-  );
-  const writeLabels = s.polWrites.map(
-    (id) => s.polDefault?.writes.find((w) => w.id === id)?.label ?? id,
-  );
+  const techLabels = s.polTech.map((id) => s.polDefault?.techniques.find((t) => t.id === id)?.label ?? id);
+  const writeLabels = s.polWrites.map((id) => s.polDefault?.writes.find((w) => w.id === id)?.label ?? id);
   const policyBlocked = [...techLabels, ...writeLabels];
 
   const credAction =
@@ -806,7 +806,10 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
         （本页可改）。授权范围：<b>{scopeLabel}</b>。
       </p>
       <p className="text-muted-foreground text-xs leading-relaxed">
-        调整入口：<Link className="underline underline-offset-2" href="/system/intercept">拦截与审批</Link>
+        调整入口：
+        <Link className="underline underline-offset-2" href="/system/intercept">
+          拦截与审批
+        </Link>
         （内置规则的开关/动作）、下方「探索策略（全局默认）」（方向与写操作）、本页「凭据尝试预算」。
       </p>
     </SubBlock>

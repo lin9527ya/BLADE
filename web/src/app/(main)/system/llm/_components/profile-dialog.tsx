@@ -281,8 +281,8 @@ export function ProfileDialog({
                 if (isDeepSeek && format === "anthropic") {
                   return (
                     <p className="text-xs text-amber-600 dark:text-amber-400">
-                      commandcode 的 Anthropic <code>/v1/messages</code> 只服务 Claude 系；DeepSeek 模型请选择
-                      「OpenAI (Responses API)」，否则连接测试会提示不支持。
+                      commandcode 的 Anthropic <code>/v1/messages</code> 只服务 Claude 系；DeepSeek 模型请选择 「OpenAI
+                      (Responses API)」，否则连接测试会提示不支持。
                     </p>
                   );
                 }
@@ -451,8 +451,8 @@ export function ProfileDialog({
             </div>
           </div>
           <p className="-mt-2 text-muted-foreground text-xs">
-            限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token）：上下文 1M 填 <b>1000</b>，
-            384K 填 <b>384</b>。0 = 默认 200K，上限 1000（即 1M）。按模型文档填，别填 token 原值。
+            限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token）：上下文 1M 填 <b>1000</b>， 384K 填 <b>384</b>。0
+            = 默认 200K，上限 1000（即 1M）。按模型文档填，别填 token 原值。
           </p>
 
           <div className="grid gap-3 rounded-lg border p-3">
@@ -503,11 +503,11 @@ export function ProfileDialog({
                   输出上限 · max tokens
                 </Label>
                 <p className="text-muted-foreground text-xs">
-                  单次回复最多生成多少 token，随每次请求发出（单位 token）。DeepSeek 当前文档：
-                  上下文 1M、最大输出 384K，所以填 120000 是合法的。
-                  <b>它和上面的上下文窗口是两个参数</b>：上下文决定能装多少输入+历史，输出上限只决定一次能写多少。
-                  BLADE 的压缩摘要预留取 <code>min(max_tokens, 20K)</code>，因此超过 20K 对压缩阈值没有额外影响。
-                  0（默认）= 不发送该字段，由服务端默认值决定。
+                  单次回复最多生成多少 token，随每次请求发出（单位 token）。DeepSeek 当前文档： 上下文 1M、最大输出
+                  384K，所以填 120000 是合法的。
+                  <b>它和上面的上下文窗口是两个参数</b>：上下文决定能装多少输入+历史，输出上限只决定一次能写多少。 BLADE
+                  的压缩摘要预留取 <code>min(max_tokens, 20K)</code>，因此超过 20K 对压缩阈值没有额外影响。 0（默认）=
+                  不发送该字段，由服务端默认值决定。
                 </p>
               </div>
               <Input

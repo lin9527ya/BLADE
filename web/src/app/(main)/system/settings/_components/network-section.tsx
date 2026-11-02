@@ -108,14 +108,17 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             htmlFor="global-proxy-pool"
             hint={
               <>
-                支持 <code>http://</code> / <code>https://</code> / <code>socks5://</code> / <code>socks5h://</code>（可带 user:pass）。
-                Clash 直接用混合端口，例如 <code>http://127.0.0.1:7890</code>。
+                支持 <code>http://</code> / <code>https://</code> / <code>socks5://</code> / <code>socks5h://</code>
+                （可带 user:pass）。 Clash 直接用混合端口，例如 <code>http://127.0.0.1:7890</code>。
                 <br />
                 服务端按健康检查自动切换；<b>全部不可用时出口会被阻断（不会直连）</b>，避免泄漏真实 IP。
                 <br />
-                代理池只切换你填的多个地址；<b>只填一个 Clash 端口时，Clash 内部节点由 Clash 的代理组
-                （select / url-test / fallback）决定，BLADE 不会替你切换 Clash 节点</b>。
-                LLM 的代理在各自 profile 里配置，不在此池内。
+                代理池只切换你填的多个地址；
+                <b>
+                  只填一个 Clash 端口时，Clash 内部节点由 Clash 的代理组 （select / url-test / fallback）决定，BLADE
+                  不会替你切换 Clash 节点
+                </b>
+                。 LLM 的代理在各自 profile 里配置，不在此池内。
               </>
             }
           >
@@ -248,11 +251,14 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 目标 WAF 封的是**出口 IP**，代理端口本身仍然健康，代理池不会因此切换。开启 Clash 的
                 <code> external-controller</code> 后，BLADE 可在 Selector 组里换节点并验证出口 IP 已变化。
                 <br />
-                安全约束：只选非 <code>DIRECT/REJECT</code> 节点；切换后经当前代理查出口 IP，必须变化且不是本机地址；失败不直连。
+                安全约束：只选非 <code>DIRECT/REJECT</code> 节点；切换后经当前代理查出口
+                IP，必须变化且不是本机地址；失败不直连。
                 <br />
-                强烈建议给 BLADE 单独建一个 <code>type: mixed</code> 的 listener，并用 <code>proxy: 组名</code> 强制走该 Selector 组——否则 Clash 规则仍可能把目标判成 DIRECT，换节点也救不了真实 IP。
+                强烈建议给 BLADE 单独建一个 <code>type: mixed</code> 的 listener，并用 <code>proxy: 组名</code> 强制走该
+                Selector 组——否则 Clash 规则仍可能把目标判成 DIRECT，换节点也救不了真实 IP。
                 <br />
-                Clash 当前是 <code>global</code> 模式时，真正决定所有出口的是 <b>GLOBAL</b> 组：组名必须填 <code>GLOBAL</code>（或改用规则模式/专用 listener）；填其它组名只会改那个组，不会改变实际流量。
+                Clash 当前是 <code>global</code> 模式时，真正决定所有出口的是 <b>GLOBAL</b> 组：组名必须填{" "}
+                <code>GLOBAL</code>（或改用规则模式/专用 listener）；填其它组名只会改那个组，不会改变实际流量。
               </>
             }
           >

@@ -33,10 +33,7 @@ test("headline uses counts (totals) and sorts by count then code", () => {
   );
   assert.equal(headline, "3 个问题：依赖成环 ×2 · 意图租约已过期 ×1");
   // 超过上限时用省略号，而不是把整张表铺在标题上。
-  const many = graphAuditHeadline(
-    report([], { a_special: 1, b: 1, c: 1, d: 1 }),
-    2,
-  );
+  const many = graphAuditHeadline(report([], { a_special: 1, b: 1, c: 1, d: 1 }), 2);
   assert.ok(many.endsWith(" …"));
   assert.equal(graphAuditHeadline(report([], {})), "");
 });

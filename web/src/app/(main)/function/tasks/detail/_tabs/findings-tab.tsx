@@ -88,16 +88,15 @@ function Row({
               )}
             </div>
             <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
-                    {(f.status === "ruled_out" || f.status === "open_proof_gap") && (f.counterevidence || f.proof_gap) && (
-                      <span
-                        className="line-clamp-2 text-xs text-amber-600 dark:text-amber-400"
-                        title={f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
-                      >
-                        {f.status === "ruled_out" ? "排除原因：" : "待补证："}
-                        {f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
-                      </span>
-                    )}
-
+            {(f.status === "ruled_out" || f.status === "open_proof_gap") && (f.counterevidence || f.proof_gap) && (
+              <span
+                className="line-clamp-2 text-xs text-amber-600 dark:text-amber-400"
+                title={f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
+              >
+                {f.status === "ruled_out" ? "排除原因：" : "待补证："}
+                {f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
+              </span>
+            )}
           </div>
         </button>
         <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
@@ -324,7 +323,9 @@ export function FindingsTab({ taskId }: { taskId: string }) {
           <div className="flex items-center border-b px-4 py-2 text-xs text-muted-foreground">
             <span className="min-w-0 flex-1">
               漏洞
-              {items.length > 0 && <span className="ml-1.5 tabular-nums text-muted-foreground">（{items.length} 条）</span>}
+              {items.length > 0 && (
+                <span className="ml-1.5 tabular-nums text-muted-foreground">（{items.length} 条）</span>
+              )}
             </span>
             <button
               type="button"

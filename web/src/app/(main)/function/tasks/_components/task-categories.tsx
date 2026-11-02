@@ -631,9 +631,7 @@ export function CategoryManagementDialog({
                   {selectedCategory && (
                     <Field>
                       <FieldLabel>场景预设</FieldLabel>
-                      <FieldDescription>
-                        新建任务选中该分类时带出以下默认值；任务表单里仍可逐项覆盖。
-                      </FieldDescription>
+                      <FieldDescription>新建任务选中该分类时带出以下默认值；任务表单里仍可逐项覆盖。</FieldDescription>
                       <div className="mt-2 flex flex-col gap-2">
                         <label className="flex items-center gap-2 text-sm">
                           <Checkbox
@@ -657,9 +655,7 @@ export function CategoryManagementDialog({
                           <span className="text-xs text-muted-foreground">默认 planner 模板</span>
                           <Select
                             value={String(selectedCategory.default_planner_template_id ?? 0)}
-                            onValueChange={(value) =>
-                              void savePreset({ default_planner_template_id: Number(value) })
-                            }
+                            onValueChange={(value) => void savePreset({ default_planner_template_id: Number(value) })}
                             disabled={presetSaving}
                           >
                             <SelectTrigger className="w-full">

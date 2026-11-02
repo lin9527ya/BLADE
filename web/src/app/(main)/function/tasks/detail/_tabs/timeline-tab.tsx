@@ -75,7 +75,9 @@ function EventRow({ e, onOpen }: { e: TimelineEvent; onOpen: (e: TimelineEvent) 
         }`}
         title={clickable ? "查看对应详情" : undefined}
       >
-        <span className="text-muted-foreground w-36 shrink-0 pt-0.5 font-mono text-[11px] tabular-nums">{fmt(e.at)}</span>
+        <span className="text-muted-foreground w-36 shrink-0 pt-0.5 font-mono text-[11px] tabular-nums">
+          {fmt(e.at)}
+        </span>
         <Badge variant="outline" className={`shrink-0 ${KIND_TONE[e.kind] ?? ""}`}>
           {KIND_LABEL[e.kind] ?? e.kind}
         </Badge>
@@ -196,9 +198,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
 
   const counts = data?.counts ?? {};
   const activeKinds = data?.kinds ?? kinds;
-  const total = activeKinds
-    .filter((k) => k !== "step")
-    .reduce((n, k) => n + (counts[k] ?? 0), 0);
+  const total = activeKinds.filter((k) => k !== "step").reduce((n, k) => n + (counts[k] ?? 0), 0);
 
   return (
     <div className="space-y-4">
@@ -262,7 +262,9 @@ export function TimelineTab({ taskId }: { taskId: string }) {
                   aria-pressed={on}
                 >
                   {KIND_LABEL[k]}
-                  {(counts[k] ?? 0) > 0 ? <span className="text-muted-foreground ml-1 tabular-nums">{counts[k]}</span> : null}
+                  {(counts[k] ?? 0) > 0 ? (
+                    <span className="text-muted-foreground ml-1 tabular-nums">{counts[k]}</span>
+                  ) : null}
                 </Button>
               );
             })}
@@ -329,11 +331,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
         onOpenChange={(open) => !open && setSelectedNode(null)}
         taskId={taskId}
       />
-      <ExecutionDialog
-        id={executionId}
-        taskId={taskId}
-        onOpenChange={(open) => !open && setExecutionId(null)}
-      />
+      <ExecutionDialog id={executionId} taskId={taskId} onOpenChange={(open) => !open && setExecutionId(null)} />
       <ApprovalDialog id={approvalId} onOpenChange={(open) => !open && setApprovalId(null)} />
     </div>
   );

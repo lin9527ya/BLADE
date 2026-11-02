@@ -918,7 +918,9 @@ export function useSettingsState() {
       .rotateEgress("设置页手动切换")
       .then((r) => {
         setClashStatus(r.status);
-        toast.success(r.rotation ? `${r.rotation.from} → ${r.rotation.to}（出口 IP ${r.rotation.egress_ip}）` : "已切换");
+        toast.success(
+          r.rotation ? `${r.rotation.from} → ${r.rotation.to}（出口 IP ${r.rotation.egress_ip}）` : "已切换",
+        );
       })
       .catch((e) => toast.error("切换失败：" + ((e as Error).message || "未知错误")))
       .finally(() => setRotatingClash(false));

@@ -254,11 +254,7 @@ export default function TasksPage() {
             q: debouncedQuery.trim(),
             status: statusFilter === "all" ? "" : statusFilter,
             category:
-              categoryFilter === "all"
-                ? ""
-                : categoryFilter === UNCATEGORIZED_VALUE
-                  ? "uncategorized"
-                  : categoryFilter,
+              categoryFilter === "all" ? "" : categoryFilter === UNCATEGORIZED_VALUE ? "uncategorized" : categoryFilter,
             sort: sortField,
             dir: sortDirection,
           },

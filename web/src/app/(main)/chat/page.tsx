@@ -92,27 +92,30 @@ export default function ChatPage() {
   // 上限 500：再加就退化成"全量轮询"，而侧栏抽屉本就不适合无限加载。
   const CONVERSATION_WINDOW_MAX = 500;
   const [convWindow, setConvWindow] = React.useState(CONVERSATION_LIST_PAGE);
-  const reloadConvs = React.useCallback(async (rethrow = false) => {
-    const seq = ++conversationListSeq.current;
-    try {
-      const page = await api.conversationPage({
-        offset: 0,
-        limit: convWindow,
-        agent: agentFilter ?? undefined,
-      });
-      if (seq !== conversationListSeq.current) return;
-      setConvs(page.items);
-      setConvTotal(page.total);
-      setAgentCounts(page.agentCounts);
-      setConvsLoaded(true);
-    } catch (error) {
-      // Preserve the selected transcript and list on a transient poll failure.
-      // The polling caller rethrows so usePolling backs off; UI callers stay quiet.
-      if (rethrow) throw error;
-    } finally {
-      if (seq === conversationListSeq.current) setLoadingMore(false);
-    }
-  }, [agentFilter, convWindow]);
+  const reloadConvs = React.useCallback(
+    async (rethrow = false) => {
+      const seq = ++conversationListSeq.current;
+      try {
+        const page = await api.conversationPage({
+          offset: 0,
+          limit: convWindow,
+          agent: agentFilter ?? undefined,
+        });
+        if (seq !== conversationListSeq.current) return;
+        setConvs(page.items);
+        setConvTotal(page.total);
+        setAgentCounts(page.agentCounts);
+        setConvsLoaded(true);
+      } catch (error) {
+        // Preserve the selected transcript and list on a transient poll failure.
+        // The polling caller rethrows so usePolling backs off; UI callers stay quiet.
+        if (rethrow) throw error;
+      } finally {
+        if (seq === conversationListSeq.current) setLoadingMore(false);
+      }
+    },
+    [agentFilter, convWindow],
+  );
 
   // 「加载更多」只扩大窗口；reloadConvs 因 convWindow 变化由轮询钩子立即重取，
   // 拿到的是服务端排好序的完整前缀，不需要在客户端拼接两段。
@@ -258,9 +261,7 @@ export default function ChatPage() {
     [agentCounts],
   );
   const conversationCountLabel =
-    agentFilter === null
-      ? `共 ${convTotal} 个`
-      : `${convTotal} / ${globalConversationCount || convTotal} 个`;
+    agentFilter === null ? `共 ${convTotal} 个` : `${convTotal} / ${globalConversationCount || convTotal} 个`;
 
   function changeAgentFilter(key: string | null) {
     setAgentFilter(key);

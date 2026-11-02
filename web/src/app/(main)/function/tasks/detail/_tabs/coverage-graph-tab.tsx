@@ -3,7 +3,18 @@
 import * as React from "react";
 
 import type { Graph as G6Graph } from "@antv/g6";
-import { AppWindow, Building2, Globe, LightbulbIcon, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
+import {
+  AppWindow,
+  Building2,
+  Globe,
+  LightbulbIcon,
+  Link2,
+  type LucideIcon,
+  Radio,
+  RefreshCw,
+  Server,
+  Waypoints,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";

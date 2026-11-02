@@ -383,18 +383,20 @@ function ExplorationGraphInner({
           <div className="bg-card/95 flex flex-col gap-2.5 rounded-lg border p-3 text-xs shadow-sm backdrop-blur">
             {isEmpty && <span className="text-muted-foreground">{emptyHint}</span>}
             <div className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest", "footprint"] as ExploreKind[]).map((k) => {
-                const m = typeMeta[k];
-                const Icon = m.icon;
-                return (
-                  <span key={k} className="text-foreground inline-flex items-center gap-1.5">
-                    <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
-                      <Icon className="size-2.5 text-white" />
+              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest", "footprint"] as ExploreKind[]).map(
+                (k) => {
+                  const m = typeMeta[k];
+                  const Icon = m.icon;
+                  return (
+                    <span key={k} className="text-foreground inline-flex items-center gap-1.5">
+                      <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
+                        <Icon className="size-2.5 text-white" />
+                      </span>
+                      {m.label}
                     </span>
-                    {m.label}
-                  </span>
-                );
-              })}
+                  );
+                },
+              )}
             </div>
             <div className="border-border/60 text-muted-foreground flex flex-wrap gap-x-3 gap-y-1.5 border-t pt-2">
               {Object.entries(relLabel).map(([k, v]) => (

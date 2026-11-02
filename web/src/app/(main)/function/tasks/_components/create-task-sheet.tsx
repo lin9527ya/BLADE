@@ -389,7 +389,8 @@ export function CreateTaskSheet({
                 portalContainer={sheetContentRef}
               />
               <FieldDescription>
-                可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。分类配置了场景预设时会带出种子意图 / 覆盖度 / planner 模板。
+                可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。分类配置了场景预设时会带出种子意图 / 覆盖度 /
+                planner 模板。
               </FieldDescription>
             </Field>
             <Field>

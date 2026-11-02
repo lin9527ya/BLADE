@@ -113,8 +113,8 @@ export function ChangePasswordDialog({
           <DialogHeader>
             <DialogTitle>账户设置</DialogTitle>
             <DialogDescription>
-              当前用户名：<b>{currentUsername || "…"}</b>。修改用户名或密码都需要当前密码；
-              修改密码后<b>已签发的登录 token 会立即失效</b>，需要重新登录。
+              当前用户名：<b>{currentUsername || "…"}</b>。修改用户名或密码都需要当前密码； 修改密码后
+              <b>已签发的登录 token 会立即失效</b>，需要重新登录。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 py-4">

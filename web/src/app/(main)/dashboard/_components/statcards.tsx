@@ -10,7 +10,18 @@ import { fmtTokens, LiveDot } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
 export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["statCards"] }) {
-  const { taskTotal, findings, findingStats, settings, traffic, trafficTotal, tasksByStatus, findingsBySev, totalAssets, displayedTokens } = s;
+  const {
+    taskTotal,
+    findings,
+    findingStats,
+    settings,
+    traffic,
+    trafficTotal,
+    tasksByStatus,
+    findingsBySev,
+    totalAssets,
+    displayedTokens,
+  } = s;
 
   return (
     <>

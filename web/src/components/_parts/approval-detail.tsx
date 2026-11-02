@@ -58,8 +58,7 @@ export function ApprovalDetail({
   // 切换行时 detail 可能还留着上一行的状态：只有 id 对得上才采信它的状态。
   const currentDetail = detail?.id === row.id ? detail : null;
   const shouldPoll =
-    (currentDetail?.status ?? row.status) === "pending" ||
-    currentDetail?.audit?.execution_status === "awaiting_result";
+    (currentDetail?.status ?? row.status) === "pending" || currentDetail?.audit?.execution_status === "awaiting_result";
   usePolling(
     async (alive) => {
       try {

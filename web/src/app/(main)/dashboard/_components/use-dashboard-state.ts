@@ -104,16 +104,17 @@ export function useDashboardState() {
         if (loading) return;
         loading = true;
         try {
-          const [recentPage, stats, settings, pendingRecent, activity, conversationTokens, findingTotals] = await Promise.all([
-            // 仪表盘只渲染最近 8 条；此前拉 500 条再截断，等于每 5 秒搬一整页。
-            api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
-            api.stats(),
-            api.settings(),
-            api.interceptPendingRecent(3),
-            api.activity(undefined, { limit: 30 }),
-            api.conversationTokens(),
-            api.findingStats(),
-          ]);
+          const [recentPage, stats, settings, pendingRecent, activity, conversationTokens, findingTotals] =
+            await Promise.all([
+              // 仪表盘只渲染最近 8 条；此前拉 500 条再截断，等于每 5 秒搬一整页。
+              api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
+              api.stats(),
+              api.settings(),
+              api.interceptPendingRecent(3),
+              api.activity(undefined, { limit: 30 }),
+              api.conversationTokens(),
+              api.findingStats(),
+            ]);
           if (!alive()) return;
           setFindings(recentPage.items);
           setFindingStats(findingTotals);

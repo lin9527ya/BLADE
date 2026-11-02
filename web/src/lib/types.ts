@@ -641,7 +641,16 @@ export interface OpsecKnowledgeResponse {
 
 // ---- 作业时间线（P37） ----
 
-export type TimelineKind = "execution" | "approval" | "finding" | "loot" | "artifact" | "footprint" | "detection" | "note" | "step";
+export type TimelineKind =
+  | "execution"
+  | "approval"
+  | "finding"
+  | "loot"
+  | "artifact"
+  | "footprint"
+  | "detection"
+  | "note"
+  | "step";
 
 export interface TimelineEvent {
   at: string;

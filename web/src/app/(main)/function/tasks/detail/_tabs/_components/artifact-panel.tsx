@@ -98,9 +98,7 @@ export function ArtifactPanel({
           {ordered.map((a) => (
             <div
               key={a.id}
-              className={`rounded-md border px-2.5 py-1.5 text-sm ${
-                a.state === "removed" ? "opacity-60" : ""
-              }`}
+              className={`rounded-md border px-2.5 py-1.5 text-sm ${a.state === "removed" ? "opacity-60" : ""}`}
             >
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge domain="artifact" value={a.state} />
@@ -151,7 +149,9 @@ export function ArtifactPanel({
       )}
 
       {riskAccepted && (
-        <p className="text-muted-foreground text-xs">已接受遗留物风险：报告里会写明「我们知道留了什么、为什么没清」。</p>
+        <p className="text-muted-foreground text-xs">
+          已接受遗留物风险：报告里会写明「我们知道留了什么、为什么没清」。
+        </p>
       )}
       {!riskAccepted && openCount > 0 && (
         <div className="flex flex-wrap items-center gap-2">

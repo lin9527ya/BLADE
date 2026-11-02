@@ -898,10 +898,7 @@ function sendMockWorkerMessage(
   }
   const intent = mockIntents.find((item) => item.id === id);
   if (!intent) return { ok: false, error: "意图不存在" };
-  if (
-    intent.inherited ||
-    !["paused", "blocked", "exhausted", "stopped", "no_output"].includes(intent.state)
-  ) {
+  if (intent.inherited || !["paused", "blocked", "exhausted", "stopped", "no_output"].includes(intent.state)) {
     return { ok: false, state: intent.state, error: "仅已暂停或已中断的 Worker 可以发送消息" };
   }
   if (!normalizedMessage) return { ok: false, state: intent.state, error: "消息不能为空" };
@@ -2253,7 +2250,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const items = mockActivity
       .filter((item) => item.seq > since)
       .slice(0, limit)
-      .map((item) => (item.slot_no ? item : { ...item, slot_no: item.intent_id ? slotOf.get(item.intent_id) : undefined }));
+      .map((item) =>
+        item.slot_no ? item : { ...item, slot_no: item.intent_id ? slotOf.get(item.intent_id) : undefined },
+      );
     return { items, cursor: items.length ? items[items.length - 1].seq : since };
   }
   if (seg[0] === "exploration" && seg[1] === "activity" && seg.length === 3) {

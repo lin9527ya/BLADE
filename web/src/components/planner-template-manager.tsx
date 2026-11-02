@@ -5,7 +5,14 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -185,7 +192,8 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
                   disabled={selected?.builtin}
                 />
                 <FieldDescription>
-                  名称支持中文；正文上限 32KB。保存前会做试渲染，引用目录外变量会被拒绝。内置模板只读，可另存为新模板后修改。
+                  名称支持中文；正文上限
+                  32KB。保存前会做试渲染，引用目录外变量会被拒绝。内置模板只读，可另存为新模板后修改。
                 </FieldDescription>
               </Field>
             </div>

@@ -94,11 +94,7 @@ export function GraphTab({ taskId }: { taskId: string }) {
           <CardHeader className="py-3">
             <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
               <AlertTriangleIcon
-                className={
-                  summary.errors > 0
-                    ? "size-4 text-destructive"
-                    : "size-4 text-amber-600 dark:text-amber-400"
-                }
+                className={summary.errors > 0 ? "size-4 text-destructive" : "size-4 text-amber-600 dark:text-amber-400"}
               />
               图体检发现问题
               <span className="font-normal text-muted-foreground">{graphAuditHeadline(audit)}</span>
@@ -126,18 +122,14 @@ export function GraphTab({ taskId }: { taskId: string }) {
                       <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>
                         {graphAuditIssueLabel(issue.code)}
                       </Badge>
-                      {refs.length > 0 && (
-                        <span className="font-mono text-muted-foreground">{refs.join(" ")}</span>
-                      )}
+                      {refs.length > 0 && <span className="font-mono text-muted-foreground">{refs.join(" ")}</span>}
                     </div>
                     {issue.detail && <p className="mt-1 text-muted-foreground">{issue.detail}</p>}
                   </div>
                 );
               })}
               {audit?.truncated && Object.keys(audit.truncated).length > 0 && (
-                <p className="text-muted-foreground">
-                  同类问题过多，列表只显示前 50 条；总数以上方统计为准。
-                </p>
+                <p className="text-muted-foreground">同类问题过多，列表只显示前 50 条；总数以上方统计为准。</p>
               )}
             </CardContent>
           )}

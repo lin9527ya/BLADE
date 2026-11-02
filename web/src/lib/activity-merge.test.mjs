@@ -59,7 +59,10 @@ test("newer pages append without changing either input array", () => {
   const currentSnapshot = [...current];
   const incomingSnapshot = [...incoming];
   const merged = mergeActivities(current, incoming);
-  assert.deepEqual(merged.map((item) => item.seq), [1, 2, 3, 4]);
+  assert.deepEqual(
+    merged.map((item) => item.seq),
+    [1, 2, 3, 4],
+  );
   assert.deepEqual(current, currentSnapshot);
   assert.deepEqual(incoming, incomingSnapshot);
 });

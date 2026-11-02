@@ -200,11 +200,7 @@ export const TokenMetrics = React.forwardRef<
       ))}
       {/* 缓存命中率紧跟在 output 右侧（= 缓存读 / 输入，与概览页同一口径）。 */}
       <span>{labels === "short" ? "命中" : "命中率"}</span>
-      <Badge
-        variant="secondary"
-        className="h-5 px-1.5 font-mono tabular-nums"
-        title="缓存命中率 = 缓存读 / 输入"
-      >
+      <Badge variant="secondary" className="h-5 px-1.5 font-mono tabular-nums" title="缓存命中率 = 缓存读 / 输入">
         {cacheHitRate(cache, input)}
       </Badge>
     </span>

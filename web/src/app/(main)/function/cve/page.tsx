@@ -10,12 +10,28 @@ import { CVEImportDialog } from "@/components/cve-import-dialog";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -463,7 +479,8 @@ export default function CVEPage() {
           </h1>
           <p className="mt-1 text-muted-foreground text-sm">
             人工维护的 CVE 知识：详细描述、受影响产品/版本、指纹与探测指引。任务运行时按资产指纹匹配；
-            有条目保存了利用脚本时，worker/planner 可在通过授权/审批门后用 cve_exploit 直接触发。匹配只是线索，不是漏洞证据。
+            有条目保存了利用脚本时，worker/planner 可在通过授权/审批门后用 cve_exploit
+            直接触发。匹配只是线索，不是漏洞证据。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -597,7 +614,11 @@ export default function CVEPage() {
                       )}
                     </TableCell>
                     <TableCell className="px-1">
-                      {c.severity ? <StatusBadge domain="severity" value={c.severity} className="px-1.5" /> : <span className="text-muted-foreground">—</span>}
+                      {c.severity ? (
+                        <StatusBadge domain="severity" value={c.severity} className="px-1.5" />
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs">
                       <span className="block truncate" title={products}>
@@ -627,7 +648,10 @@ export default function CVEPage() {
                     <TableCell className="px-1 text-xs tabular-nums whitespace-nowrap">
                       {c.uses} / {c.executions}
                     </TableCell>
-                    <TableCell className="px-1 text-[11px] text-muted-foreground whitespace-nowrap" title={fmtTime(c.updated_at)}>
+                    <TableCell
+                      className="px-1 text-[11px] text-muted-foreground whitespace-nowrap"
+                      title={fmtTime(c.updated_at)}
+                    >
                       {fmtShortTime(c.updated_at)}
                     </TableCell>
                     <TableCell className="px-1 whitespace-nowrap">
@@ -712,7 +736,9 @@ export default function CVEPage() {
                     <h3 className="font-medium text-sm">测绘语法（FOFA / Hunter / Shodan）</h3>
                     <CopyButton text={selected.recon_syntax} successMessage="已复制测绘语法" />
                   </div>
-                  <pre className="overflow-auto whitespace-pre-wrap rounded-md border bg-muted/20 p-3 text-xs">{selected.recon_syntax}</pre>
+                  <pre className="overflow-auto whitespace-pre-wrap rounded-md border bg-muted/20 p-3 text-xs">
+                    {selected.recon_syntax}
+                  </pre>
                 </section>
               ) : null}
               <section>
@@ -734,7 +760,12 @@ export default function CVEPage() {
                     {selected.refs.map((ref) => (
                       <li key={ref} className="break-all">
                         {/^https?:\/\//i.test(ref) ? (
-                          <a className="text-primary underline underline-offset-2" href={ref} target="_blank" rel="noreferrer">
+                          <a
+                            className="text-primary underline underline-offset-2"
+                            href={ref}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
                             {ref}
                           </a>
                         ) : (
@@ -748,15 +779,19 @@ export default function CVEPage() {
               <section>
                 <div className="mb-1 flex items-center justify-between">
                   <h3 className="font-medium text-sm">利用脚本</h3>
-                  {selected.has_exploit && <CopyButton text={selected.exploit_script ?? ""} successMessage="已复制脚本" />}
+                  {selected.has_exploit && (
+                    <CopyButton text={selected.exploit_script ?? ""} successMessage="已复制脚本" />
+                  )}
                 </div>
                 {selected.has_exploit ? (
                   <div className="space-y-1">
                     <div className="text-muted-foreground text-xs">
-                      {selected.exploit_language} · {selected.exploit_filename || "—"} · {selected.exploit_bytes} bytes · SHA256{" "}
-                      <span className="font-mono">{selected.exploit_sha256?.slice(0, 16)}…</span>
+                      {selected.exploit_language} · {selected.exploit_filename || "—"} · {selected.exploit_bytes} bytes
+                      · SHA256 <span className="font-mono">{selected.exploit_sha256?.slice(0, 16)}…</span>
                     </div>
-                    {selected.exploit_usage && <div className="text-muted-foreground text-xs">用法：{selected.exploit_usage}</div>}
+                    {selected.exploit_usage && (
+                      <div className="text-muted-foreground text-xs">用法：{selected.exploit_usage}</div>
+                    )}
                     <pre className="max-h-72 overflow-auto rounded-md border bg-muted/20 p-3 font-mono text-xs whitespace-pre-wrap">
                       {selected.exploit_script}
                     </pre>
@@ -781,7 +816,11 @@ export default function CVEPage() {
                   编辑
                 </Button>
                 <Button variant="outline" disabled={uploading} onClick={() => detailFileRef.current?.click()}>
-                  {uploading ? <Loader2Icon className="animate-spin" data-icon="inline-start" /> : <UploadIcon data-icon="inline-start" />}
+                  {uploading ? (
+                    <Loader2Icon className="animate-spin" data-icon="inline-start" />
+                  ) : (
+                    <UploadIcon data-icon="inline-start" />
+                  )}
                   上传脚本
                 </Button>
                 {selected.has_exploit && (
@@ -821,8 +860,8 @@ export default function CVEPage() {
           <DialogHeader>
             <DialogTitle>{editing ? `编辑 ${editing.cve_id}` : "新建漏洞"}</DialogTitle>
             <DialogDescription>
-              有 CVE 编号填 CVE-YYYY-NNNN；自研 0day 可自行使用 blade-YYYY-NNNN 形式。
-              至少提供一组产品，或 favicon/技术栈/服务之一作为匹配信号。脚本只从本机上传/粘贴，平台不会自动下载。
+              有 CVE 编号填 CVE-YYYY-NNNN；自研 0day 可自行使用 blade-YYYY-NNNN 形式。 至少提供一组产品，或
+              favicon/技术栈/服务之一作为匹配信号。脚本只从本机上传/粘贴，平台不会自动下载。
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[72vh] space-y-5 overflow-auto pr-1">
@@ -837,7 +876,11 @@ export default function CVEPage() {
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">标题 *</span>
-                <Input value={form.title} onChange={(e) => set("title", e.target.value)} placeholder="Log4j2 JNDI 远程代码执行" />
+                <Input
+                  value={form.title}
+                  onChange={(e) => set("title", e.target.value)}
+                  placeholder="Log4j2 JNDI 远程代码执行"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">厂商</span>
@@ -860,35 +903,74 @@ export default function CVEPage() {
               </label>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">CVSS</span>
-                <Input type="number" min={0} max={10} step={0.1} value={form.cvss_score} onChange={(e) => set("cvss_score", e.target.value)} placeholder="10.0" />
+                <Input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={form.cvss_score}
+                  onChange={(e) => set("cvss_score", e.target.value)}
+                  placeholder="10.0"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">受影响产品（逗号分隔，与资产 technologies 匹配）</span>
-                <Input value={form.productsText} onChange={(e) => set("productsText", e.target.value)} placeholder="log4j, log4j-core" />
+                <Input
+                  value={form.productsText}
+                  onChange={(e) => set("productsText", e.target.value)}
+                  placeholder="log4j, log4j-core"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">版本约束（单组 AND；如 &gt;= 2.0.0, &lt; 2.15.0）</span>
-                <Input value={form.version_constraint} onChange={(e) => set("version_constraint", e.target.value)} placeholder=">= 2.0.0, < 2.15.0" />
+                <Input
+                  value={form.version_constraint}
+                  onChange={(e) => set("version_constraint", e.target.value)}
+                  placeholder=">= 2.0.0, < 2.15.0"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">指纹技术栈（逗号分隔）</span>
-                <Input value={form.technologiesText} onChange={(e) => set("technologiesText", e.target.value)} placeholder="log4j, java" />
+                <Input
+                  value={form.technologiesText}
+                  onChange={(e) => set("technologiesText", e.target.value)}
+                  placeholder="log4j, java"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">favicon MMH3</span>
-                <Input value={form.favicon_mmh3} onChange={(e) => set("favicon_mmh3", e.target.value)} placeholder="-123456" />
+                <Input
+                  value={form.favicon_mmh3}
+                  onChange={(e) => set("favicon_mmh3", e.target.value)}
+                  placeholder="-123456"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">服务名</span>
-                <Input value={form.service_name} onChange={(e) => set("service_name", e.target.value)} placeholder="http" />
+                <Input
+                  value={form.service_name}
+                  onChange={(e) => set("service_name", e.target.value)}
+                  placeholder="http"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">端口</span>
-                <Input type="number" min={1} max={65535} value={form.port} onChange={(e) => set("port", e.target.value)} placeholder="8080" />
+                <Input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={form.port}
+                  onChange={(e) => set("port", e.target.value)}
+                  placeholder="8080"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">页面标题（弱信号）</span>
-                <Input value={form.page_title} onChange={(e) => set("page_title", e.target.value)} placeholder="Example Admin" />
+                <Input
+                  value={form.page_title}
+                  onChange={(e) => set("page_title", e.target.value)}
+                  placeholder="Example Admin"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">测绘语法（FOFA / Hunter / Shodan，一行一条）</span>
@@ -896,7 +978,9 @@ export default function CVEPage() {
                   rows={3}
                   value={form.recon_syntax}
                   onChange={(e) => set("recon_syntax", e.target.value)}
-                  placeholder={'FOFA: app="Example" && country="CN"\nHunter: web.title="Example Admin"\nShodan: http.title:"Example Admin"'}
+                  placeholder={
+                    'FOFA: app="Example" && country="CN"\nHunter: web.title="Example Admin"\nShodan: http.title:"Example Admin"'
+                  }
                 />
               </label>
             </section>
@@ -904,15 +988,30 @@ export default function CVEPage() {
             <section className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">详细描述（Markdown）</span>
-                <Textarea rows={6} value={form.description} onChange={(e) => set("description", e.target.value)} placeholder="影响、触发条件、危害…" />
+                <Textarea
+                  rows={6}
+                  value={form.description}
+                  onChange={(e) => set("description", e.target.value)}
+                  placeholder="影响、触发条件、危害…"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">快速探测 / 手工验证（Markdown）</span>
-                <Textarea rows={6} value={form.probe_guide} onChange={(e) => set("probe_guide", e.target.value)} placeholder="没有脚本或版本不匹配时，Agent 按这里继续验证" />
+                <Textarea
+                  rows={6}
+                  value={form.probe_guide}
+                  onChange={(e) => set("probe_guide", e.target.value)}
+                  placeholder="没有脚本或版本不匹配时，Agent 按这里继续验证"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">参考链接（一行一个）</span>
-                <Textarea rows={2} value={form.refsText} onChange={(e) => set("refsText", e.target.value)} placeholder="https://..." />
+                <Textarea
+                  rows={2}
+                  value={form.refsText}
+                  onChange={(e) => set("refsText", e.target.value)}
+                  placeholder="https://..."
+                />
               </label>
             </section>
 
@@ -957,11 +1056,19 @@ export default function CVEPage() {
                 </label>
                 <label className="flex flex-col gap-1 text-xs">
                   <span className="text-muted-foreground">文件名（仅展示）</span>
-                  <Input value={form.exploit_filename} onChange={(e) => set("exploit_filename", e.target.value)} placeholder="exploit.py" />
+                  <Input
+                    value={form.exploit_filename}
+                    onChange={(e) => set("exploit_filename", e.target.value)}
+                    placeholder="exploit.py"
+                  />
                 </label>
                 <label className="flex flex-col gap-1 text-xs">
                   <span className="text-muted-foreground">用法 / 参数说明</span>
-                  <Input value={form.exploit_usage} onChange={(e) => set("exploit_usage", e.target.value)} placeholder="目标在 BLADE_TARGET；args 追加为 argv" />
+                  <Input
+                    value={form.exploit_usage}
+                    onChange={(e) => set("exploit_usage", e.target.value)}
+                    placeholder="目标在 BLADE_TARGET；args 追加为 argv"
+                  />
                 </label>
               </div>
               <Textarea
@@ -992,7 +1099,12 @@ export default function CVEPage() {
             <DialogTitle>废弃这条 CVE</DialogTitle>
             <DialogDescription>废弃后不再参与匹配，也不能用 cve_exploit 执行；理由会留在库里。</DialogDescription>
           </DialogHeader>
-          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} placeholder="例如：版本已普遍修复 / 指纹太泛，误配严重" />
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            placeholder="例如：版本已普遍修复 / 指纹太泛，误配严重"
+          />
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeprecating(null)}>
               取消

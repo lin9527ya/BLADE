@@ -284,8 +284,7 @@ export const api = {
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
   // health 只回 ok（P42 去指纹：免认证端点不自报家门）；版本走需登录的 /system/info。
   health: (init?: RequestInit) => get<{ ok: boolean }>("/health", init),
-  systemInfo: (init?: RequestInit) =>
-    get<{ ok: boolean; service: string; version: string }>("/system/info", init),
+  systemInfo: (init?: RequestInit) => get<{ ok: boolean; service: string; version: string }>("/system/info", init),
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
@@ -307,15 +306,18 @@ export const api = {
   // ---- tasks ----
   // 不带参数 = 全量（仪表盘/编排等需要完整列表的调用方）；带 page/size 走服务端
   // 过滤、排序与分页，任务列表页只用当页数据。
-  tasks: (params?: {
-    page?: number;
-    size?: number;
-    q?: string;
-    status?: string;
-    category?: string;
-    sort?: string;
-    dir?: "asc" | "desc";
-  }, signal?: AbortSignal) => {
+  tasks: (
+    params?: {
+      page?: number;
+      size?: number;
+      q?: string;
+      status?: string;
+      category?: string;
+      sort?: string;
+      dir?: "asc" | "desc";
+    },
+    signal?: AbortSignal,
+  ) => {
     const qs = new URLSearchParams();
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -381,8 +383,7 @@ export const api = {
     id: number,
     preset: { seed_first_intent?: boolean; default_coverage_enabled?: boolean; default_planner_template_id?: number },
   ) => patch<TaskCategory>(`/task-categories/${id}/preset`, preset),
-  plannerTemplates: () =>
-    get<{ templates: PlannerTemplate[] }>("/planner-templates").then((r) => arr(r.templates)),
+  plannerTemplates: () => get<{ templates: PlannerTemplate[] }>("/planner-templates").then((r) => arr(r.templates)),
   createPlannerTemplate: (name: string, body: string) => post<PlannerTemplate>("/planner-templates", { name, body }),
   updatePlannerTemplate: (id: number, name: string, body: string) =>
     patch<PlannerTemplate>(`/planner-templates/${id}`, { name, body }),
@@ -650,8 +651,7 @@ export const api = {
   },
   playbook: (id: number) => get<Playbook>(`/playbooks/${id}`),
   // 手动让「打法沉淀」agent 复盘本任务（历史任务不会因触发水位补发）。
-  distillTaskPlaybook: (id: string) =>
-    post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
+  distillTaskPlaybook: (id: string) => post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
   setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>
     patch<Playbook>(`/playbooks/${id}`, { status, reason }),
   // 人工编辑内容/指纹/手法键；统计与最近验证时间不受影响。
@@ -716,8 +716,7 @@ export const api = {
   },
   clearCVEScript: (id: number) => del<CVE>(`/cves/${id}/script`),
   // 审计报告导入：只抽取预览，保存仍走 createCVE，保证与手工录入同一套校验/去重。
-  previewCVEImport: (text: string, filename = "") =>
-    post<CVEImportPreview>("/cves/import/preview", { text, filename }),
+  previewCVEImport: (text: string, filename = "") => post<CVEImportPreview>("/cves/import/preview", { text, filename }),
 
   deprecateCompanyKnowledge: (companyId: number, id: number, reason: string) =>
     patch<CompanyKnowledge>(`/companies/${companyId}/knowledge/${id}`, { status: "deprecated", reason }),
@@ -914,11 +913,7 @@ export const api = {
   // 可检出性知识库一览（P38，只读）：让团队看得见这份清单覆盖到哪、边界在哪。
   opsecKnowledge: () => get<OpsecKnowledgeResponse>("/opsec/knowledge"),
   // 作业时间线（P37）：页面读的与导出的走服务端同一份装配（客户拿到的那份不该与界面对不上）。
-  taskTimeline: (
-    taskId: string,
-    kinds = "",
-    opts: { page?: number; size?: number; order?: "asc" | "desc" } = {},
-  ) => {
+  taskTimeline: (taskId: string, kinds = "", opts: { page?: number; size?: number; order?: "asc" | "desc" } = {}) => {
     const q = new URLSearchParams();
     if (kinds) q.set("kinds", kinds);
     if (opts.page) q.set("page", String(opts.page));
@@ -1060,8 +1055,7 @@ export const api = {
   // ---- exploration (per task) ----
   frontier: (task?: string) => get<TaskNode[]>(`/exploration/frontier${tq(task)}`).then(arr),
   // 图完整性体检：只读、按任务。未知任务是 404（调用方按"没有可体检的图"静默处理）。
-  explorationInvariants: (task?: string) =>
-    get<GraphAuditReport>(`/exploration/invariants${tq(task)}`),
+  explorationInvariants: (task?: string) => get<GraphAuditReport>(`/exploration/invariants${tq(task)}`),
   findings: (task?: string) => get<Finding[]>(`/exploration/findings${tq(task)}`).then(arr),
   findingsPage: (q: FindingQuery) => {
     const p = findingFilterParams(q);
@@ -1351,16 +1345,14 @@ export const api = {
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // 切换 Clash 出口节点（服务端只选非 DIRECT 节点、验证出口 IP 变化，绝不直连）。
   rotateEgress: (reason?: string) =>
-    post<{ ok: boolean; rotation: ClashRotation; status: ClashEgressStatus }>(
-      `/settings/proxy/egress/rotate`,
-      { reason: reason ?? "" },
-    ),
+    post<{ ok: boolean; rotation: ClashRotation; status: ClashEgressStatus }>(`/settings/proxy/egress/rotate`, {
+      reason: reason ?? "",
+    }),
   // 经指定代理查询出口 IP（只走代理，不直连）；leaked=出口 IP 与本机网卡地址相同。
   proxyEgressIPs: (proxies: string[]) =>
-    post<{ results: { proxy: string; ip?: string; leaked?: boolean; error?: string }[] }>(
-      `/settings/proxy/egress-ip`,
-      { proxies },
-    ),
+    post<{ results: { proxy: string; ip?: string; leaked?: boolean; error?: string }[] }>(`/settings/proxy/egress-ip`, {
+      proxies,
+    }),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;
@@ -1582,8 +1574,7 @@ export const api = {
       agentCounts: r.agent_counts ?? {},
     }));
   },
-  conversation: (id: number, signal?: AbortSignal) =>
-    get<Conversation>(`/conversations/${id}`, { signal }),
+  conversation: (id: number, signal?: AbortSignal) => get<Conversation>(`/conversations/${id}`, { signal }),
   createConversation: (agent_key: string, title = "", llm_profile_id?: number | null) =>
     post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null }),
   updateConversation: (id: number, input: { title?: string; pinned?: boolean }) =>

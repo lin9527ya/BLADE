@@ -114,13 +114,7 @@ export function ExecutionDialog({
 // 只读审批详情：ReadOnly 模式不会渲染决策按钮，decide 不会被调用。
 const noopDecide: Decide = async () => undefined;
 
-export function ApprovalDialog({
-  id,
-  onOpenChange,
-}: {
-  id: number | null;
-  onOpenChange: (open: boolean) => void;
-}) {
+export function ApprovalDialog({ id, onOpenChange }: { id: number | null; onOpenChange: (open: boolean) => void }) {
   const [row, setRow] = React.useState<InterceptDetail | null>(null);
   const [error, setError] = React.useState("");
 

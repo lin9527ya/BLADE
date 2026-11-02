@@ -682,7 +682,11 @@ export default function TrafficPage() {
                     <TableCell className="text-right text-xs tabular-nums">
                       {fmtBytes(e.resp_len)}
                       {(e.req_state === "partial" || e.resp_state === "partial") && (
-                        <Badge variant="outline" className="ml-1 border-amber-500/40 text-amber-600 dark:text-amber-400" title="正文落盘失败，仅保留预览；不能作为完整证据绑定">
+                        <Badge
+                          variant="outline"
+                          className="ml-1 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                          title="正文落盘失败，仅保留预览；不能作为完整证据绑定"
+                        >
                           残缺
                         </Badge>
                       )}

@@ -3,7 +3,22 @@
 import * as React from "react";
 import { SessionItem, WorkerAssetBadge } from "./_components/session-items";
 
-import { ArrowUpIcon, ChevronDownIcon, CircleXIcon, ClockIcon, FileJsonIcon, FileTextIcon, Loader2Icon, PaperclipIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon, WifiOffIcon, XIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  ChevronDownIcon,
+  CircleXIcon,
+  ClockIcon,
+  FileJsonIcon,
+  FileTextIcon,
+  Loader2Icon,
+  PaperclipIcon,
+  PlusIcon,
+  RotateCwIcon,
+  SquareIcon,
+  Trash2Icon,
+  WifiOffIcon,
+  XIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { ApprovalExecutionFocus } from "@/components/approval-execution-focus";
@@ -11,7 +26,16 @@ import { MentionTextarea } from "@/components/mention-textarea";
 import { SideQuestionButton, SideQuestionWorkspace } from "@/components/side-question-workspace";
 import { TodoPopover } from "@/components/todo-popover";
 import { Transcript } from "@/components/transcript";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
@@ -27,7 +51,17 @@ import { isBtwCommand } from "@/lib/side-questions";
 
 import { cn } from "@/lib/utils";
 
-import { fmtBytes, fmtDuration, isResumableWorkerStatus, keyForSession, MAX_WORKER_MESSAGE_CHARS, resolutionLabel, roleMeta, TokenMetrics, workerMessageCharCount } from "./_components/session-helpers";
+import {
+  fmtBytes,
+  fmtDuration,
+  isResumableWorkerStatus,
+  keyForSession,
+  MAX_WORKER_MESSAGE_CHARS,
+  resolutionLabel,
+  roleMeta,
+  TokenMetrics,
+  workerMessageCharCount,
+} from "./_components/session-helpers";
 import { useSessionsState } from "./_components/use-sessions-state";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
@@ -189,7 +223,13 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     let mime = "";
     if (format === "json") {
       content = JSON.stringify(
-        { task_id: taskId, session: title, state: activeState?.hasMore ? "partial" : "full", exported_at: new Date().toISOString(), items: rows },
+        {
+          task_id: taskId,
+          session: title,
+          state: activeState?.hasMore ? "partial" : "full",
+          exported_at: new Date().toISOString(),
+          items: rows,
+        },
         null,
         2,
       );
@@ -398,7 +438,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         {/* Right: transcript */}
         <SideQuestionWorkspace
           side={side}
-          label={active.role === "worker" ? `Worker #${active.worker_no ?? active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
+          label={
+            active.role === "worker"
+              ? `Worker #${active.worker_no ?? active.intent_id} · ${activeDisplayTitle}`
+              : activeDisplayTitle
+          }
         >
           <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">

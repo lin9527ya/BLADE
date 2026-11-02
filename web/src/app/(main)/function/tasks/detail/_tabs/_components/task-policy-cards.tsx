@@ -18,15 +18,7 @@ import {
   PolicyRuleDraft,
   TaskPolicy,
 } from "@/lib/types";
-import {
-  CheckIcon,
-  PencilIcon,
-  PlusIcon,
-  ShieldAlertIcon,
-  ShieldCheckIcon,
-  Trash2Icon,
-  XIcon,
-} from "lucide-react";
+import { CheckIcon, PencilIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
 // 任务级资产拦截规则与探索策略两张卡片（各带自己的编辑表单与保存逻辑）。
