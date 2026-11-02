@@ -79,6 +79,22 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
 	}
+	// 直连防护（先于规则/范围判定）：显式绕过出口代理的命令会把本机真实 IP 暴露给
+	// 目标，并让流量绕开留痕。这里不硬拒，转人工审批——确有直连必要（内网目标/本地
+	// 调试）时由人放行；没有审批通道（无 interceptor 的宿主）时按拦截处理。
+	if reason, hit := detectProxyBypass(cmd); hit {
+		if g.interceptor != nil {
+			return g.settle(ctx, ev, intercept.Decision{
+				Action:         "ask",
+				RuleName:       "[内置] 直连代理绕过",
+				Message:        reason,
+				TimeoutEnabled: true,
+				TimeoutSeconds: 120,
+				TimeoutAction:  "deny",
+			})
+		}
+		return g.block(ev.ToolName, systemBlockMessage(reason), cmd)
+	}
 	// Audit only after the verdict: recording "allow" up front produced a second
 	// (wrong) audit entry for every blocked call.
 	result := g.applyIntercept(ctx, ev)

@@ -452,7 +452,7 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 	// Optional finding guidance is added for every role after tool resolution.
 	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
 	// outside this stable string so a reused slot can keep the same cached prefix.
-	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + untrustedDataBlock()
+	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock + untrustedDataBlock()
 }
 
 // renderWorkerIntentTurn is the per-run user message for the claimed intent. It is

@@ -151,9 +151,9 @@ type Engine struct {
 	completionWarn sync.Map
 	// WAF 自动切换出口的窗口计数（task|host -> 最近命中时间）。切一次清一次，
 	// 避免连续 403 把节点切来切去。
-	wafMu       sync.Mutex
-	wafHits     map[string][]time.Time
-	wafRotating bool
+	egressMu       sync.Mutex
+	egressHits     map[string][]time.Time
+	egressRotating bool
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
@@ -1435,7 +1435,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			n := slotNo
 			r.SlotNo = &n
 		}
-		e.observeWAF(t, r)
+		e.observeEgress(t, r)
 		e.emitActivity(t, r)
 	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
