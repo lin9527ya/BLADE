@@ -16,9 +16,10 @@ import {
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
+import { TablePagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
@@ -30,6 +31,9 @@ import { cn } from "@/lib/utils";
 type FindingSortField = "time";
 
 const FINDING_SORT_FIELDS: readonly FindingSortField[] = ["time"];
+// 发现列表按页展示（与播报板一致）：长任务几百条发现时，全量渲染既卡又找不到东西。
+const PAGE_SIZES = [20, 50, 100];
+const DEFAULT_PAGE_SIZE = 20;
 const FINDING_SORT_PREFERENCE_KEY = "blade_task_findings_sort";
 
 function findingLabel(finding: Finding): string {
@@ -163,6 +167,9 @@ function Row({
 export function FindingsTab({ taskId }: { taskId: string }) {
   const [findings, setFindings] = React.useState<Finding[]>([]);
   const [loadError, setLoadError] = React.useState("");
+  // 分页：接口一次返回全量（含直接关联任务），在客户端切片。page 为 1-based。
+  const [page, setPage] = React.useState(1);
+  const [size, setSize] = React.useState(DEFAULT_PAGE_SIZE);
   // P19 批量交付：交付计划（清单 + 证据门 + 疑似重复）与打包下载。
   const [batch, setBatch] = React.useState<TaskSrcBatchPlan | null>(null);
   const [batchBusy, setBatchBusy] = React.useState(false);
@@ -214,6 +221,18 @@ export function FindingsTab({ taskId }: { taskId: string }) {
       if (compared !== 0) return sortPreference.direction === "asc" ? compared : -compared;
       return b.id.localeCompare(a.id, undefined, { numeric: true });
     });
+
+  const pageCount = Math.max(1, Math.ceil(items.length / size));
+  // 条数变少（撤回/换筛选/换任务）时把越界页码收回来，否则会停在空白页。
+  React.useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+  // 换排序方向 = 换了一屏内容，回到第一页。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只关心排序方向变化，重置页码时不该重跑。
+  React.useEffect(() => {
+    setPage(1);
+  }, [sortPreference.direction]);
+  const pageItems = items.slice((page - 1) * size, page * size);
 
   const loadBatch = async () => {
     setBatchBusy(true);
@@ -304,7 +323,10 @@ export function FindingsTab({ taskId }: { taskId: string }) {
       <Card className="overflow-hidden py-0">
         <CardContent className="px-0">
           <div className="flex items-center border-b px-4 py-2 text-xs text-muted-foreground">
-            <span className="min-w-0 flex-1">漏洞</span>
+            <span className="min-w-0 flex-1">
+              漏洞
+              {items.length > 0 && <span className="ml-1.5 tabular-nums text-muted-foreground">（{items.length} 条）</span>}
+            </span>
             <button
               type="button"
               className="inline-flex items-center gap-1 outline-none focus-visible:underline"
@@ -324,7 +346,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
               )}
             </button>
           </div>
-          {items.map((f) => (
+          {pageItems.map((f) => (
             <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
           ))}
           {items.length === 0 && loadError ? (
@@ -335,6 +357,22 @@ export function FindingsTab({ taskId }: { taskId: string }) {
             <p className="px-4 py-8 text-center text-sm text-muted-foreground">本任务及直接关联任务暂无确认发现。</p>
           ) : null}
         </CardContent>
+        {items.length > 0 && (
+          <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground">
+            <TablePagination
+              variant="compact"
+              page={page}
+              pageSize={size}
+              total={items.length}
+              onPageChange={setPage}
+              onPageSizeChange={(s) => {
+                setSize(s);
+                setPage(1);
+              }}
+              pageSizeOptions={PAGE_SIZES}
+            />
+          </CardFooter>
+        )}
       </Card>
     </div>
   );
