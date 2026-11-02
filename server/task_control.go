@@ -136,17 +136,22 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		out.Paused, out.Status = true, "paused"
 		goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
 	case "resume":
-		// 终态任务的「继续运行」：任务因目标达成/收束而结束时，frontier 里可能还留着
-		// 从未执行(open)的意图——规划者已停跑，没人会再领它们。仅当确有这类遗留工作
-		// 才复活（worker 重新领取，frontier 抽干后任务再次收束）；没有遗留就明确拒绝，
-		// 复活一个没有可跑工作的任务只会空转一轮再结束。
+		// 终态任务的「继续运行」：任务结束时，frontier 里可能还留着从未执行(open)的
+		// 意图——规划者已停跑，没人会再领它们；也可能还留着未达成的目标（policy_blocked
+		// 尤其如此：停摆收尾并不代表目标作废，只是上一轮规划走不下去了），此时 planner
+		// 需要重新开一轮把方向派出来。两类遗留工作都算"还有可做的活"，才允许复活。
+		// 都没有时明确拒绝：复活一个没有可跑工作的任务只会空转一轮再结束。
 		if isTerminalStatus(t.lifecycleSnapshot().Status) {
 			pending, err := s.pendingOpenIntents(t)
 			if err != nil {
 				return out, err
 			}
-			if pending == 0 {
-				return out, fmt.Errorf("任务已结束且没有未执行的意图(open)：如需继续，请在主 Agent 会话里补充目标(set_goals，会自动复活任务)或新意图")
+			goals, err := s.pendingOpenGoals(t)
+			if err != nil {
+				return out, err
+			}
+			if pending == 0 && goals == 0 {
+				return out, fmt.Errorf("任务已结束且没有未执行的意图(open)或未达成的目标：如需继续，请在主 Agent 会话里补充目标(set_goals，会自动复活任务)或新意图")
 			}
 			queued, err := s.admitTask(t, "resume")
 			if err != nil {
@@ -154,7 +159,7 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 			}
 			out.Queued = queued
 			out.Status = map[bool]string{true: "queued", false: "running"}[queued]
-			log.Printf("[task] #%s 终态继续运行（遗留 %d 条未执行意图）", t.ID, pending)
+			log.Printf("[task] #%s 终态继续运行（遗留 %d 条未执行意图、%d 个未达成目标）", t.ID, pending, goals)
 			return out, nil
 		}
 		queued, err := s.admitPausedTask(t)
@@ -168,6 +173,22 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 	}
 	log.Printf("[task] #%s %s", t.ID, map[string]string{"pause": "已暂停", "resume": "已继续"}[action])
 	return out, nil
+}
+
+// pendingOpenGoals counts goals still in state open — a finished task with
+// unmet goals still has work for the planner, even when no intent is queued.
+func (s *Server) pendingOpenGoals(t *Task) (int, error) {
+	goals, err := t.Store.ListByKind(db.KindGoal, 1000000)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, g := range goals {
+		if g.State == "open" {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // pendingOpenIntents counts intents never executed (state open) — the leftover

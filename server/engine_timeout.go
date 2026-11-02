@@ -361,6 +361,13 @@ func (e *Engine) policyStall(t *Task) bool {
 	if doc == nil || doc.Effective.IsZero() {
 		return false // 无策略的任务永不受此影响
 	}
+	// 暂停的任务不判停摆：暂停是「等人决定」的稳定态，此刻没有 planner 在跑、也不烧
+	// token，不满足"再唤醒只会烧 token"这条前提。更关键的是停摆收尾写的是终态，
+	// 一旦在这里落下去，人工暂停就被系统抢先收尾，用户连「继续运行」都按不动
+	// （任务 18：05:17 因连续空轮被停滞保护暂停，05:20 又被这里判成 policy_blocked）。
+	if e.IsPaused(t.ID) || t.lifecycleSnapshot().Paused {
+		return false
+	}
 	if active, err := t.Store.HasActiveIntent(); err != nil || active {
 		return false
 	}
