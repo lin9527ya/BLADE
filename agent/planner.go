@@ -44,7 +44,15 @@ type Planner struct {
 	lastRoundIntents int
 	// lastRoundNote 是上一轮的结论摘要。默认每轮开新会话（不 resume 全量 transcript），
 	// 用它承接「上一轮想清楚了什么、派了哪些意图、产出了哪些事实」，避免上下文膨胀。
-	lastRoundNote     string
+	lastRoundNote string
+	// hot 是跨轮复用的规划会话。每轮结束后把历史折叠成「本轮输入 + 结论」两条消息
+	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
+	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
+	// 不用时（resume 模式 / 失败轮）为 nil。
+	hotMu             sync.Mutex
+	hot               *agentcore.Session
+	hotRounds         int
+	hotLastUsed       time.Time
 	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
 	proxyCACert       string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn           func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
@@ -866,26 +874,37 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	volatile := situational
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
-	s := agentcore.NewSession(opts)
-	defer s.Close()
-	// 规划会话形态：
-	//   默认 —— 每轮**新会话**，只承接「上一轮结论摘要」（结论/新增意图/产出事实 id）。
-	//           任务 14 实测跨轮 resume 的 transcript 已到 576KB / 26 万 token，旧态势块
-	//           还会粘住历史、越滚越大，换来的主要是噪声。
-	//   开关 —— BLADE_PLANNER_RESUME_SESSION=1 恢复旧的跨轮 resume（需要回滚时用）。
+	// 规划会话形态（三选一）：
+	//   ① resume 模式（BLADE_PLANNER_RESUME_SESSION=1）——每轮从 transcript 全量恢复。
+	//      回滚开关；上下文会持续膨胀（任务 14 实测 26 万 token/轮）。
+	//   ② 热会话（默认）——复用同一个 Session，每轮结束后把历史折叠成两条消息。
+	//      system prompt + 工具 schema 的缓存前缀跨轮保持，上下文体积不随轮数增长。
+	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
+	// 会话所有权：本轮成功且非 resume 模式时交给热会话（跨轮持有），否则本轮结束时关闭。
+	// 不能在这里 defer Close —— 成功路径会把同一个 Session 留在 p.hot 里继续用。
+	var s *agentcore.Session
+	keepSession := false
 	if resumePlannerSession() {
+		s = agentcore.NewSession(opts)
 		if p.tx != nil {
 			_ = s.Resume(opts.SessionID)
-			// 续跑之后历史里的旧态势块会"粘住"。明说本轮快照是权威，避免拿旧图做判断。
 			volatile = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + volatile
 		}
-	} else if note := strings.TrimSpace(p.lastRoundNote); note != "" {
-		volatile = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n" + volatile
+	} else if hs := p.takeHotSession(); hs != nil {
+		s = hs
+		keepSession = true
+		// 热会话里已经有「上一轮问过什么 + 结论」，本轮输入只需带态势与待办。
+	} else {
+		s = agentcore.NewSession(opts)
+		if note := strings.TrimSpace(p.lastRoundNote); note != "" {
+			volatile = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n" + volatile
+		}
 	}
 	input := composePlannerInput(staticRules, lead, volatile, renderPlannerTodos(opts.Todos.List()))
 	prevMaxIntentID := latestIntentID(ts)
 	lastText := ""
-	_, _, err = captureRunSession(ctx, s, input,
+	var runText string
+	runText, _, err = captureRunSession(ctx, s, input,
 		func(r db.Activity) {
 			if r.Kind == "text" && strings.TrimSpace(r.Summary) != "" {
 				lastText = r.Summary
@@ -896,8 +915,23 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			}
 		})
 	p.lastRoundIntents = tsx.intentsRound
-	if err == nil {
+	switch {
+	case err == nil && !resumePlannerSession():
+		// 成功：把历史折叠成「本轮输入 + 结论」，留作下一轮的前缀。
 		p.rememberRound(ts, prevMaxIntentID, lastText)
+		// 热会话的前缀用**本轮结论文本**（runText），不是逐段 emit 的片段：折叠后的
+		// 两条消息必须能让下一轮读懂"上一轮想清楚了什么"。
+		p.parkHotSession(s, input, runText)
+		keepSession = true
+	case err == nil:
+		p.rememberRound(ts, prevMaxIntentID, lastText)
+	case keepSession:
+		// 热会话上失败：半截历史不适合当前缀，丢弃，下一轮重新建。
+		p.dropHotSession()
+		keepSession = false
+	}
+	if !keepSession {
+		_ = s.Close()
 	}
 	// 槽位空转可见化：本轮派的意图数没跟上空闲槽位，就在时间线上留一行，写清空了几个槽、
 	// 本轮派了几条、按纪律应该派几条。纪律（slotUtilizationBlock）只要求"能说清已被覆盖"
@@ -949,6 +983,75 @@ func (p *Planner) LastRoundIntents() int { return p.lastRoundIntents }
 func composePlannerInput(staticRules, lead, volatile, todos string) string {
 	return staticRules + "\n\n" + lead + "\n\n" + volatile + "\n" + todos
 }
+
+// 规划热会话的保留策略。缓存前缀（system + 工具 schema）不随轮数变化，所以复用同一个
+// Session 的收益是**每轮固定**的；限制轮数与空闲时长是为了不让摘要层数与陈旧会话无限累积。
+const (
+	plannerHotMaxRounds = 8
+	plannerHotIdleTTL   = 10 * time.Minute
+)
+
+// takeHotSession 取出可复用的热会话；没有 / 超轮数 / 超空闲 / 任务已暂停或删除时返回 nil。
+func (p *Planner) takeHotSession() *agentcore.Session {
+	p.hotMu.Lock()
+	defer p.hotMu.Unlock()
+	if p.hot == nil {
+		return nil
+	}
+	if p.hotRounds >= plannerHotMaxRounds || time.Since(p.hotLastUsed) > plannerHotIdleTTL {
+		p.hot.Close()
+		p.hot, p.hotRounds = nil, 0
+		return nil
+	}
+	return p.hot
+}
+
+// parkHotSession 把本轮会话留作下一轮的前缀，并把历史折叠成「本轮输入 + 结论」两条。
+//
+// 折叠是热会话成立的前提：不折叠的话它就是一个不断变大的 transcript（等价于 resume
+// 全量），上下文成本会压过缓存收益。裁到两条消息后，下一轮请求 = system + 工具 schema +
+// 这两条 + 新输入，前缀稳定、体积有界。
+func (p *Planner) parkHotSession(s *agentcore.Session, roundInput, lastText string) {
+	if s == nil {
+		return
+	}
+	s.Reset()
+	s.AppendMessages(hotPrefixMessages(roundInput, lastText)...)
+	p.hotMu.Lock()
+	defer p.hotMu.Unlock()
+	p.hot = s
+	p.hotRounds++
+	p.hotLastUsed = time.Now()
+}
+
+// hotPrefixMessages 是热会话在轮间保留的最小前缀：上一轮问了什么、最后结论是什么。
+// 只留结论而不是完整工具历史，是为了让下一轮的前缀短、稳定、可缓存。
+func hotPrefixMessages(roundInput, lastText string) []llm.Message {
+	out := make([]llm.Message, 0, 2)
+	if in := strings.TrimSpace(roundInput); in != "" {
+		out = append(out, llm.UserText(clipLine(in, 3000)))
+	}
+	if t := strings.TrimSpace(lastText); t != "" {
+		out = append(out, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentBlock{llm.TextBlock(clipLine(t, 1200))},
+		})
+	}
+	return out
+}
+
+// dropHotSession 丢弃热会话（本轮失败/被取消时用：半截历史不适合当前缀）。
+func (p *Planner) dropHotSession() {
+	p.hotMu.Lock()
+	defer p.hotMu.Unlock()
+	if p.hot != nil {
+		p.hot.Close()
+	}
+	p.hot, p.hotRounds = nil, 0
+}
+
+// CloseHotSession 供任务停止/删除时释放（引擎侧调用，幂等）。
+func (p *Planner) CloseHotSession() { p.dropHotSession() }
 
 // resumePlannerSession 是回滚开关：默认 false（每轮新会话 + 结论摘要），
 // BLADE_PLANNER_RESUME_SESSION=1/true 恢复旧的跨轮 transcript resume。

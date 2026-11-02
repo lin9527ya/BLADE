@@ -233,8 +233,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		if t := s.m.TaskByID(taskID); t != nil {
 			wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if !s.agentsForTask(t).pl.WaitCompaction(wctx) {
-				log.Printf("[compact] task %s 停止时后台压缩仍未结束（已放弃等待）", taskID)
+			if pl := s.agentsForTask(t).pl; pl != nil {
+				if !pl.WaitCompaction(wctx) {
+					log.Printf("[compact] task %s 停止时后台压缩仍未结束（已放弃等待）", taskID)
+				}
+				// 规划热会话跨轮持有同一个 Session（含后台任务管理器），任务停止时
+				// 必须显式释放，否则它的临时目录与进程会跟着进程活到重启。
+				pl.CloseHotSession()
 			}
 		}
 	}
