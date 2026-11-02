@@ -125,6 +125,13 @@ func RejectText(v Verdict, summary string) string {
 	if v.Hint != "" {
 		b.WriteString("合规改写建议：" + v.Hint + "\n")
 	}
-	b.WriteString("不要用近义措辞重提同一方向：策略按语义面判定，重试只会再次被拒；策略内确无可行方向时，请把该结论写成一条 fact。")
+	if strings.HasPrefix(v.ItemID, "pace:") {
+		// 节奏类拒绝说的是"本轮额度用完"，不是"这个方向被禁"。套用下面那句
+		// "策略内确无可行方向就写成 fact" 会把模型推向 mark_strategy_exhausted——
+		// 一次配额问题因此被误报成策略穷尽（任务 19 实测）。
+		b.WriteString("这是**节奏**限制，不是方向被禁：把剩下的方向留到下一轮再提，不要因此宣告策略穷尽，也不要改写措辞重试本轮。")
+	} else {
+		b.WriteString("不要用近义措辞重提同一方向：策略按语义面判定，重试只会再次被拒；策略内确无可行方向时，请把该结论写成一条 fact。")
+	}
 	return b.String()
 }
