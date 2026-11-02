@@ -308,11 +308,11 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
           </div>
           <SwitchRow
             id="clash-auto-rotate"
-            label={clashAuto ? "自动：检测到强 WAF 特征后自动切换" : "自动切换已关闭（仍可用工具/按钮手动切）"}
+            label={clashAuto ? "自动：WAF 拦截或目标持续不可达时切换" : "自动切换已关闭（仍可用工具/按钮手动切）"}
             checked={clashAuto}
             disabled={!loaded || savingClash}
             onChange={() => setClashAuto((v) => !v)}
-            hint="只认 Cloudflare / Incapsula / Akamai / Sucuri / AWS WAF / ModSecurity 等强指纹 + 403/429；普通登录 403 不触发。连续 2 次命中且过了冷却才切一次。"
+            hint="两类触发：① 强 WAF 指纹（Cloudflare / Incapsula / Akamai / Sucuri / AWS WAF / ModSecurity + 403/429，普通登录 403 不触发）；② 目标连接持续不可达（超时 / DNS 失败 / 代理网关 502、504 / code=000，connection refused 不算）。连续 2 次命中且过了冷却才切一次。"
           />
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" onClick={saveClash} disabled={!loaded || savingClash}>
