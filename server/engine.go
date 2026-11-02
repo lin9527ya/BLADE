@@ -140,12 +140,13 @@ type Engine struct {
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
-	started  sync.Map // taskID -> bool, so Run is idempotent per task
-	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
-	llmCalls sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
-	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
-	deleting sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
-	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	started    sync.Map // taskID -> bool, so Run is idempotent per task
+	egressWarn sync.Map // taskID -> bool, 「未配置代理、流量将直连」提醒只发一次
+	lastAct    sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
+	llmCalls   sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
+	paused     sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
+	deleting   sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
+	dropCnt    sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 	// completionWarn 记录「收官被遗留物门拦下」已留痕的任务，避免 goalless 分支每次
 	// 心跳都重复写同一条活动。
 	completionWarn sync.Map
@@ -1203,6 +1204,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		defer e.decInflight(t.ID)
 		e.stampFirstRun(t) // 首次真正规划 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
+		e.warnIfDirectEgress(t)
 		e.touch(t.ID)
 		emit := func(r db.Activity) { e.emitActivity(t, r) }
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
@@ -1428,6 +1430,7 @@ func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker
 func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *agent.Worker, intent *db.Node, requestID, message string) bool {
 	hasChatMessage := message != ""
 	e.stampFirstRun(t) // 首次真正执行 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
+	e.warnIfDirectEgress(t)
 	e.touch(t.ID)
 	slotNo := slotNumber(name)
 	emit := func(r db.Activity) {
@@ -2108,4 +2111,22 @@ func (e *Engine) claimNextForSlot(t *Task, name string) *db.Node {
 		}
 	}
 	return nil
+}
+
+// warnIfDirectEgress 在任务首次真正运行时提醒：没有配置任何出口代理时，目标流量会
+// 直连。平台的既定语义是「显式不配置 = 用户选择直连」，但测试流量直连会把本机真实
+// IP 暴露给目标，至少要在任务时间线上说清楚一次。每任务一次，不阻塞。
+func (e *Engine) warnIfDirectEgress(t *Task) {
+	if e == nil || e.m == nil || t == nil {
+		return
+	}
+	if _, seen := e.egressWarn.LoadOrStore(t.ID, true); seen {
+		return
+	}
+	if strings.TrimSpace(e.m.ProxyAddr()) != "" {
+		return
+	}
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+		Summary: "未配置出口代理：本任务的目标流量将直连",
+		Detail:  "测试流量直连会把本机真实 IP 暴露给目标，也无法留下流量证据。目标在公网时请在「设置 → 网络与代理」配置代理池（或 Clash 出口）；确需直连时本提示可忽略。"})
 }
