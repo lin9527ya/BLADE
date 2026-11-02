@@ -113,8 +113,13 @@ type ToolSet struct {
 	// workerCap 是本任务的 worker 池大小（0 = 未知/不启用）。用途只有一个：
 	// 队列背压——待领意图超过 intentQueueFactor×workerCap 时拒收低优先级新意图。
 	workerCap int
-	// intentsRound 计本 ToolSet 生命周期内成功创建的意图数 —— planner 每轮新建一个
-	// ToolSet，所以它天然是"本轮已用额度"。
+	// intentsRound 计**本轮**成功创建的意图数（pace:round 额度）。
+	//
+	// 它曾经等于「本 ToolSet 生命周期内创建的意图数」，因为 planner 每轮新建一个
+	// ToolSet。热会话复用打破了这个前提：agentcore.Session 的工具注册表在 NewSession
+	// 时固定，复用时第 2 轮起调用的仍是第 1 轮那个 ToolSet 的闭包，计数永远停在上一轮
+	// 的值——于是每一轮都被 pace:round 硬拒，最终被判「策略封死」（任务 18 实测）。
+	// 现在由 BeginRound 在每轮开头显式清零，与 ToolSet 是否复用无关。
 	intentsRound int
 	// emitPolicy 是"意图被策略拒绝"的留痕通道（引擎的 emitActivity）。
 	// nil 时退回直接写库 + 日志，保证不静默丢。
@@ -403,6 +408,32 @@ func (t *ToolSet) SetWorkerCap(n int) { t.workerCap = n }
 
 // SetPolicyAudit 注入"意图被策略拒绝"的留痕通道（引擎活动流）。
 func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
+
+// BeginRound 把 ToolSet 上所有「轮级」状态重置为本轮初值。
+//
+// 为什么需要它：planner 正常路径每轮新建 ToolSet，这些字段天然是新的；但**热会话复用**
+// 时 Session 的工具注册表固定在第 1 轮那个 ToolSet 上（SDK 的 NewSession 之后无法替换
+// registry），于是第 2 轮起仍调用同一个闭包。不重置的话：
+//   - intentsRound 停在上一轮的值 → 每轮都被 pace:round 拒（任务 18 被判策略封死）；
+//   - GoalMet 残留 → 上一轮判定达成后，本轮所有 add_intent 被拒；
+//   - breadthCached / breadthNewDebt 是上一轮的快照 → 广度提示与实际不符；
+//   - writes 会跨轮累加，收尾统计失真。
+//
+// 每轮由 Planner.Plan 在调用模型之前调一次。新 ToolSet 上调它是无害的空操作。
+func (t *ToolSet) BeginRound(pol *policy.Effective, workerCap int, clock TaskClock, ownerNode int64) {
+	t.intentsRound = 0
+	t.GoalMet = false
+	t.Reason = ""
+	t.writes = WriteCounts{}
+	t.pol = pol
+	t.workerCap = workerCap
+	t.clock = clock
+	t.ownerNode = ownerNode
+	// 广度快照按轮重取：资产/意图在上一轮结束后可能已经变了。
+	t.breadthLoaded = false
+	t.breadthCached = nil
+	t.breadthNewDebt = map[int64]bool{}
+}
 
 // beginIntentQuota 在一次 add_intent 调用开始时取额度快照：库存量各查一次库，
 // 本轮用量从 ToolSet 计数起算并在批量循环里累加（一批 4 条不该打 8 次库）。

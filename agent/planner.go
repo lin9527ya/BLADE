@@ -730,11 +730,17 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
+	// 热会话复用会沿用第 1 轮的 ToolSet 闭包（Session 的 registry 固定），所以每轮都要
+	// 显式重置轮级状态——否则 intentsRound 停在上一轮，pace:round 会把本轮所有意图拒掉。
+	originNode := int64(0)
+	if origin, _ := ts.OriginFactID(); origin > 0 {
+		originNode = origin
+	}
+	tsx.BeginRound(p.policy(), p.workers(), taskClockFrom(ctx), originNode)
 	tsx.SetExecService(p.execService)
 	tsx.SetRotateEgressHandler(p.rotateEgress)
-	tsx.SetWorkerCap(p.workers()) // 队列背压：待领超过 2×workers 时拒收常规新意图
+	// pol / workerCap / clock / ownerNode 已由 BeginRound 设好（见上）。
 	pol := p.policy()
-	tsx.SetPolicy(pol)       // 意图层硬门（add_intent）
 	tsx.SetPolicyAudit(emit) // 被拒留痕进时间线
 	tsx.SetFindingRecorder(p.findingRecorder)
 	if as != nil {
@@ -746,9 +752,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
 	tsx.exhaustedFn = p.recordStrategyExhausted
-	if origin, _ := ts.OriginFactID(); origin > 0 {
-		tsx.SetOwnerNode(origin) // planner-side anchors default to the task root (origin fact)
-	}
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
