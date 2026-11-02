@@ -18,6 +18,41 @@ import (
 // still entirely static (callers must keep per-run data out of sysText), so the
 // boundary covers it — otherwise the provider gets no cache breakpoint at all and
 // a reused session re-pays the full prefix every intent.
+// plannerDeferredTools 是**规划层**按需才用的内置工具：它们的 schema 不进每轮工具列表，
+// 只在系统提示里列名字，需要时由模型用 SearchExtraTools 取 schema、ExecuteExtraTool 调用。
+//
+// 为什么挑这几个：planner 37 个工具的 schema 合计约 3.3 万字符（≈1.1 万 token），每轮都
+// 随缓存前缀发送；而这几项在绝大多数轮次里根本不会被调用（沉淀知识、合并重复、打标签法、
+// 扩测范围、给公司范围补域名）。把它们降为 deferred，每轮固定省下约 6k 字符，且不改变
+// 任何工具的实际能力——只是多一次「先查 schema」的往返。
+var plannerDeferredTools = []string{
+	"record_playbook",          // 2612 字符：只在规划层确认了一条可复用打法时用
+	"record_playbook_feedback", // 727
+	"promote_knowledge",        // 1542
+	"merge_findings",           // 817
+	"add_task_scope",           // 范围扩张是低频决策（当前已不在 planner 面上，留作兜底）
+	"add_company_scope",
+	"list_untested_assets", // 691：广度债优先看 breadth.top_gaps，逐条翻页是低频动作
+	"list_companies",       // 443
+}
+
+// deferPlannerTools 返回 plannerDeferredTools 里**实际存在**于 base 的工具名。
+// 工具本身仍留在工具面（SDK 负责隐藏 schema、经 SearchExtraTools/ExecuteExtraTool 调用）；
+// 只标记确实存在的名字，避免把不存在的工具写进提示词（模型会去查一个查不到的名字）。
+func deferPlannerTools(base []actool.CoreTool) []string {
+	have := make(map[string]bool, len(base))
+	for _, tl := range base {
+		have[tl.Name()] = true
+	}
+	deferred := make([]string, 0, len(plannerDeferredTools))
+	for _, name := range plannerDeferredTools {
+		if have[name] {
+			deferred = append(deferred, name)
+		}
+	}
+	return deferred
+}
+
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
 	sysText += def.FindingGuidance
 	// 出站产物语言（P41）：放在这里而不是各 agent 的拼装点——四个 agent（planner/worker/
