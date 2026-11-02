@@ -1,9 +1,5 @@
 "use client";
 
-import * as React from "react";
-
-import Link from "next/link";
-
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -13,6 +9,9 @@ import {
   DownloadIcon,
   PackageIcon,
 } from "lucide-react";
+
+import Link from "next/link";
+import * as React from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -210,7 +209,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
       toast.success(`已标记为「${statusMeta("finding", next).label}」`);
     } catch (e) {
       setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: prev } : x)));
-      toast.error("更新失败：" + (e as Error).message);
+      toast.error(`更新失败：${(e as Error).message}`);
     }
   }, []);
 
