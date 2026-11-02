@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -340,6 +342,29 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 	}
 }
 
+// directionReject 判断一条 policy_reject 是否真的表示"这个方向被策略禁掉"。
+//
+// 配额/节奏类（pace:round / pace:open / pace:total）与否定语境放行（benign）都不是
+// 方向问题：前者是"本轮额度用完、下一轮再来"，后者压根没被拦。把它们计入停摆，会让
+// 一次调度节奏问题被写成"策略内已无可行方向"的终态——任务 19 就是这样被判封死的
+// （08:45 后热会话额度卡死，连续 pace:round 拒绝触发 policy_blocked）。
+func directionReject(a db.Activity) bool {
+	if len(a.Metadata) == 0 {
+		return true // 旧记录没有元数据，按方向拒绝计
+	}
+	var meta struct {
+		Item   string `json:"policy_item"`
+		Benign bool   `json:"benign"`
+	}
+	if err := json.Unmarshal(a.Metadata, &meta); err != nil {
+		return true
+	}
+	if meta.Benign {
+		return false
+	}
+	return !strings.HasPrefix(meta.Item, "pace:")
+}
+
 // settlePolicyStall 是"策略停摆"的收尾动作：先留痕再走与超时/预算共用的收尾时序，
 // 只是终态记 policy_blocked（"策略封死"与"超时"是两回事，改策略/加目标即可复活）。
 func (e *Engine) settlePolicyStall(ctx context.Context, t *Task) {
@@ -368,6 +393,14 @@ func (e *Engine) policyStall(t *Task) bool {
 	if e.IsPaused(t.ID) || t.lifecycleSnapshot().Paused {
 		return false
 	}
+	// 进程正在关闭 / 任务正要随重载暂停时不再判停摆：这个 tick 恰好落在"planner 已被
+	// 中断、重载暂停还没落库"的缝隙里时，会把一个马上要暂停的任务直接写成终态
+	// （任务 19：重启时刻 09:03:55 被判 policy_blocked）。
+	select {
+	case <-e.m.Closed():
+		return false
+	default:
+	}
 	if active, err := t.Store.HasActiveIntent(); err != nil || active {
 		return false
 	}
@@ -386,6 +419,9 @@ func (e *Engine) policyStall(t *Task) bool {
 	oldest := time.Time{}
 	for _, r := range rejects {
 		if r.CreatedAt.Before(cutoff) {
+			continue
+		}
+		if !directionReject(r) {
 			continue
 		}
 		recent++
