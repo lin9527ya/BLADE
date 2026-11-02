@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { BotIcon, ListFilterIcon, PencilIcon, PlusIcon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
+import { ListFilterIcon, PencilIcon, PlusIcon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -22,19 +22,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type {
-  InterceptAction,
-  InterceptRule,
-  InterceptRuleTestResult,
-  JudgeConfig,
-  JudgeDayUsage,
-  JudgeUsage,
-  LLMProfile,
-  Tool,
-} from "@/lib/types";
+import type { InterceptAction, InterceptRule, InterceptRuleTestResult, Tool } from "@/lib/types";
 
 // fmtTokens 把 token 数压成紧凑写法(1.2k / 3.4M),用于审批用量统计。
 
@@ -309,7 +299,7 @@ export function RulesSection() {
       setAllTools(tools);
       setEnabledTools(new Set(cfg.enabled_tools));
     } catch (e) {
-      toast.error("加载失败: " + (e as Error).message);
+      toast.error(`加载失败: ${(e as Error).message}`);
     } finally {
       setScopeLoading(false);
     }
@@ -332,7 +322,7 @@ export function RulesSection() {
       setScopeTools([...enabledTools]);
       setScopeOpen(false);
     } catch (e) {
-      toast.error("保存失败: " + (e as Error).message);
+      toast.error(`保存失败: ${(e as Error).message}`);
     } finally {
       setScopeSaving(false);
     }
@@ -378,7 +368,7 @@ export function RulesSection() {
       </div>
 
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">按优先级（数字越大越先）逐条匹配，首条命中的规则生效</p>
+        <p className="text-muted-foreground text-xs">按优先级（数字越大越先）逐条匹配，首条命中的规则生效</p>
         <Button onClick={openNew} size="sm" className="shrink-0">
           <PlusIcon className="h-4 w-4" />
           新建规则
@@ -388,11 +378,11 @@ export function RulesSection() {
       <Card>
         <CardContent className="p-0">
           {loading ? (
-            <p className="p-6 text-sm text-muted-foreground">加载中…</p>
+            <p className="p-6 text-muted-foreground text-sm">加载中…</p>
           ) : rules.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <ShieldAlertIcon className="h-8 w-8 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground">暂无规则</p>
+              <p className="text-muted-foreground text-sm">暂无规则</p>
               <Button size="sm" variant="outline" onClick={openNew}>
                 <PlusIcon className="h-4 w-4" />
                 新建第一条规则
@@ -420,17 +410,17 @@ export function RulesSection() {
                     </TableCell>
                     <TableCell className="font-medium text-sm">{rule.name}</TableCell>
                     <TableCell>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-muted-foreground text-xs">
                         {rule.match_target === "tool_name" ? "工具名" : "输入内容"}
                       </span>
                     </TableCell>
                     <TableCell>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-muted-foreground text-xs">
                         {rule.match_type === "regex" ? "正则" : "字符串"}
                       </span>
                     </TableCell>
                     <TableCell className="max-w-[220px]">
-                      <code className="block truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                      <code className="block truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                         {rule.pattern}
                       </code>
                     </TableCell>
@@ -466,7 +456,7 @@ export function RulesSection() {
       {/* ---- editor dialog ---- */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="sm:max-w-2xl flex flex-col overflow-hidden p-0 gap-0"
+          className="flex flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
           style={{ maxHeight: "min(85vh, 720px)" }}
         >
           <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -474,7 +464,7 @@ export function RulesSection() {
             <DialogDescription className="text-xs">优先级越大越先匹配；首条命中规则生效，后续跳过</DialogDescription>
           </DialogHeader>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
             <Field label="名称">
               <Input placeholder="给规则起个名字" value={form.name} onChange={(e) => set({ name: e.target.value })} />
             </Field>
@@ -483,7 +473,7 @@ export function RulesSection() {
               <Input
                 type="number"
                 value={form.priority}
-                onChange={(e) => set({ priority: parseInt(e.target.value) || 0 })}
+                onChange={(e) => set({ priority: parseInt(e.target.value, 10) || 0 })}
               />
             </Field>
 
@@ -523,9 +513,9 @@ export function RulesSection() {
                 onChange={(e) => set({ pattern: e.target.value })}
                 className={regexErr ? "border-destructive focus-visible:ring-destructive" : ""}
               />
-              {regexErr && <p className="text-xs text-destructive mt-1">{regexErr}</p>}
+              {regexErr && <p className="mt-1 text-destructive text-xs">{regexErr}</p>}
               {regexWarn && (
-                <p className="text-xs text-amber-600 mt-1">
+                <p className="mt-1 text-amber-600 text-xs">
                   包含 Go RE2 扩展语法（如 <code className="font-mono">(?i)</code>），浏览器无法预览，提交后由服务端验证
                 </p>
               )}
@@ -536,7 +526,7 @@ export function RulesSection() {
             {/* 规则 dry-run（P12）：样例工具调用 → 命中面/渲染文案/展开的候选文本 */}
             <div className="rounded-md border p-3">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-medium">测试这条规则（不落库）</span>
+                <span className="font-medium text-sm">测试这条规则（不落库）</span>
                 <Button
                   type="button"
                   size="sm"
@@ -580,24 +570,24 @@ export function RulesSection() {
                     )}
                   </div>
                   {testResult.matched_text && (
-                    <div className="text-muted-foreground break-all">
+                    <div className="break-all text-muted-foreground">
                       命中文本：<code className="font-mono">{testResult.matched_text}</code>
                     </div>
                   )}
                   {testResult.rendered_message && (
-                    <div className="text-muted-foreground break-all">
+                    <div className="break-all text-muted-foreground">
                       返回给模型：<code className="font-mono">{testResult.rendered_message}</code>
                     </div>
                   )}
                   {testResult.candidates && testResult.candidates.length > 0 && (
                     <details>
-                      <summary className="text-muted-foreground cursor-pointer">
+                      <summary className="cursor-pointer text-muted-foreground">
                         展开候选面（规则逐条看过的文本）
                       </summary>
                       <ul className="mt-1 flex flex-col gap-0.5">
                         {testResult.candidates.map((c) => (
                           <li key={`${c.surface}\u0000${c.text}`} className="flex items-start gap-1.5">
-                            <code className="text-muted-foreground shrink-0 text-[10px]">{c.surface}</code>
+                            <code className="shrink-0 text-[10px] text-muted-foreground">{c.surface}</code>
                             <code className="min-w-0 break-all font-mono">{c.text}</code>
                           </li>
                         ))}
@@ -640,8 +630,8 @@ export function RulesSection() {
                 <Separator />
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium">启用审批超时</p>
-                    <p className="text-xs text-muted-foreground">超时后自动处置，不再等待</p>
+                    <p className="font-medium text-sm">启用审批超时</p>
+                    <p className="text-muted-foreground text-xs">超时后自动处置，不再等待</p>
                   </div>
                   <Switch checked={form.timeout_enabled} onCheckedChange={(v) => set({ timeout_enabled: v })} />
                 </div>
@@ -688,7 +678,7 @@ export function RulesSection() {
             </div>
           </div>
 
-          <DialogFooter className="shrink-0 border-t px-6 py-4 flex-row justify-end gap-2">
+          <DialogFooter className="shrink-0 flex-row justify-end gap-2 border-t px-6 py-4">
             <Button variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
@@ -702,7 +692,7 @@ export function RulesSection() {
       {/* ---- scope dialog ---- */}
       <Dialog open={scopeOpen} onOpenChange={setScopeOpen}>
         <DialogContent
-          className="sm:max-w-2xl flex flex-col overflow-hidden p-0 gap-0"
+          className="flex flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
           style={{ maxHeight: "min(80vh, 560px)" }}
         >
           <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -715,14 +705,14 @@ export function RulesSection() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-5">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
             {scopeLoading ? (
-              <p className="text-sm text-muted-foreground py-4">加载中…</p>
+              <p className="py-4 text-muted-foreground text-sm">加载中…</p>
             ) : (
               toolGroups.map((group, gi) => (
                 <div key={group.label}>
                   {gi > 0 && <Separator className="mb-5" />}
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  <p className="mb-2 font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">
                     {group.label}
                   </p>
                   <div className="space-y-0.5">
@@ -733,7 +723,7 @@ export function RulesSection() {
                           checked={enabledTools.has(t.key)}
                           onCheckedChange={(v) => toggleTool(t.key, v)}
                         />
-                        <label htmlFor={`scope-${t.key}`} className="flex-1 min-w-0 cursor-pointer">
+                        <label htmlFor={`scope-${t.key}`} className="min-w-0 flex-1 cursor-pointer">
                           <div className="flex items-center gap-1.5">
                             <span className="font-mono text-sm">{t.key}</span>
                             {t.kind && t.kind !== "builtin" && (
@@ -743,7 +733,7 @@ export function RulesSection() {
                             )}
                           </div>
                           {t.description && (
-                            <p className="text-[11px] text-muted-foreground line-clamp-1">{t.description}</p>
+                            <p className="line-clamp-1 text-[11px] text-muted-foreground">{t.description}</p>
                           )}
                         </label>
                       </div>
@@ -754,7 +744,7 @@ export function RulesSection() {
             )}
           </div>
 
-          <div className="shrink-0 border-t px-6 py-3 flex justify-end gap-2">
+          <div className="flex shrink-0 justify-end gap-2 border-t px-6 py-3">
             <Button variant="outline" size="sm" onClick={() => setScopeOpen(false)}>
               取消
             </Button>

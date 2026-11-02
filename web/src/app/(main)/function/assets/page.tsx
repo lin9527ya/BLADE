@@ -65,12 +65,12 @@ const METHOD_COLOR: Record<string, string> = {
   OPTIONS: "bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400",
 };
 
-function MethodBadge({ method }: { method: string }) {
+function _MethodBadge({ method }: { method: string }) {
   const m = method.toUpperCase();
   return (
     <span
       className={cn(
-        "inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none",
+        "inline-block rounded px-1.5 py-0.5 font-mono font-semibold text-[10px] leading-none",
         METHOD_COLOR[m] ?? "bg-muted text-muted-foreground",
       )}
     >
@@ -79,7 +79,7 @@ function MethodBadge({ method }: { method: string }) {
   );
 }
 
-function statusTone(code: number) {
+function _statusTone(code: number) {
   if (code >= 500) return "text-red-500 dark:text-red-400";
   if (code >= 400) return "text-amber-500 dark:text-amber-400";
   if (code >= 300) return "text-blue-500 dark:text-blue-400";
@@ -189,7 +189,7 @@ export default function AssetsPage() {
       setSelected(new Set());
       refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setDeleting(false);
       setDeleteOpen(false);
@@ -208,7 +208,7 @@ export default function AssetsPage() {
       toast.success(msg);
       refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setCompanyDeleting(false);
       setCompanyDeleteTarget(null);
@@ -343,7 +343,7 @@ export default function AssetsPage() {
         if (r.assets.length === 0 || offset >= r.total || out.length - 1 >= cap) break;
       }
       const truncated = total > out.length - 1;
-      const blob = new Blob(["\ufeff" + out.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+      const blob = new Blob([`\ufeff${out.join("\n")}\n`], { type: "text/csv;charset=utf-8" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = `blade-assets-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -355,7 +355,7 @@ export default function AssetsPage() {
           : `已导出 ${out.length - 1} 行`,
       );
     } catch (e) {
-      toast.error("导出失败：" + String((e as Error)?.message ?? e));
+      toast.error(`导出失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setExporting(false);
     }
@@ -365,10 +365,10 @@ export default function AssetsPage() {
     <div className="flex h-[calc(100vh-6rem)] min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">资产</h1>
+          <h1 className="font-semibold text-xl tracking-tight">资产</h1>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground">
+          <span className="text-muted-foreground text-sm">
             共 <span className="tabular-nums">{totalAssets}</span> 项资产
           </span>
           {selected.size > 0 && (
@@ -396,7 +396,7 @@ export default function AssetsPage() {
               <TabsTrigger key={t.key} value={t.key}>
                 <t.icon className="size-3.5" />
                 {t.label}
-                <span className="ml-1 tabular-nums text-muted-foreground">{tabCounts[t.key]}</span>
+                <span className="ml-1 text-muted-foreground tabular-nums">{tabCounts[t.key]}</span>
               </TabsTrigger>
             ))}
           </TabsList>
@@ -424,7 +424,7 @@ export default function AssetsPage() {
                           <span className="font-medium">{c.name}</span>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-sm">{c.asset_count}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">{c.asset_count}</TableCell>
                       <TableCell>
                         {c.scope?.length ? (
                           <div className="flex flex-wrap gap-1">
@@ -435,7 +435,7 @@ export default function AssetsPage() {
                             ))}
                           </div>
                         ) : (
-                          <span className="text-xs text-muted-foreground">未设置范围</span>
+                          <span className="text-muted-foreground text-xs">未设置范围</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
@@ -461,7 +461,7 @@ export default function AssetsPage() {
                   ))}
                   {companies.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                      <TableCell colSpan={4} className="py-10 text-center text-muted-foreground text-sm">
                         还没有企业。点击右上角「新增企业」并填写资产范围，系统会自动认领命中的资产。
                       </TableCell>
                     </TableRow>
@@ -506,15 +506,15 @@ export default function AssetsPage() {
                       </Badge>
                     </TableCell>
                   )}
-                  <TableCell className="font-mono text-xs font-medium">{assetTarget(a)}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{assetPortStatus(a)}</TableCell>
-                  <TableCell className="max-w-[22rem] truncate text-xs text-muted-foreground" title={assetExtras(a)}>
+                  <TableCell className="font-medium font-mono text-xs">{assetTarget(a)}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{assetPortStatus(a)}</TableCell>
+                  <TableCell className="max-w-[22rem] truncate text-muted-foreground text-xs" title={assetExtras(a)}>
                     {assetExtras(a)}
                   </TableCell>
                   <TableCell className="text-xs">
                     {companyName(a.company_id) || <span className="text-muted-foreground">未归属</span>}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{fmtSeen(a.last_seen)}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{fmtSeen(a.last_seen)}</TableCell>
                   <TableCell className="w-8 pl-0">
                     <Button
                       variant="ghost"
@@ -584,7 +584,7 @@ export default function AssetsPage() {
                   />
                   <span className="text-sm leading-snug">
                     同时删除该企业下的所有资产
-                    <span className="block text-xs text-muted-foreground">不勾选则保留资产，仅取消归属关系</span>
+                    <span className="block text-muted-foreground text-xs">不勾选则保留资产，仅取消归属关系</span>
                   </span>
                 </label>
               </div>

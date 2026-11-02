@@ -53,13 +53,13 @@ function PathCard({ path }: { path: ADPath }) {
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="font-mono">{path.start}</span>
         <MoveRightIcon className="h-4 w-4 text-muted-foreground" />
-        <span className="font-mono font-medium">{path.target}</span>
+        <span className="font-medium font-mono">{path.target}</span>
         {(path.target_tags ?? []).map((t) => (
           <Badge key={t} variant="secondary">
             {t}
           </Badge>
         ))}
-        <span className="ml-auto text-xs text-muted-foreground">{path.steps.length} 跳</span>
+        <span className="ml-auto text-muted-foreground text-xs">{path.steps.length} 跳</span>
       </div>
       <ol className="mt-3 space-y-2">
         {path.steps.map((s, i) => (
@@ -70,12 +70,12 @@ function PathCard({ path }: { path: ADPath }) {
                 {REL_LABEL[s.rel] ?? s.rel}
               </Badge>
               {(s.rights ?? []).length > 0 && (
-                <span className="font-mono text-xs text-muted-foreground">{(s.rights ?? []).join(" ")}</span>
+                <span className="font-mono text-muted-foreground text-xs">{(s.rights ?? []).join(" ")}</span>
               )}
               <MoveRightIcon className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono">{s.to}</span>
             </div>
-            {s.note && <p className="mt-0.5 text-xs text-muted-foreground">{s.note}</p>}
+            {s.note && <p className="mt-0.5 text-muted-foreground text-xs">{s.note}</p>}
           </li>
         ))}
       </ol>
@@ -130,7 +130,7 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
             </Button>
             {(data?.starts.length ?? 0) > 0 && (
               <div className="ml-auto flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">起点</span>
+                <span className="text-muted-foreground text-xs">起点</span>
                 <Select
                   value={start}
                   onValueChange={(v) => {
@@ -156,7 +156,7 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
           </div>
 
           {hasGraph ? (
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
               <Badge variant="secondary">域内对象 {data?.stats.nodes ?? 0}</Badge>
               {Object.entries(objects).map(([k, v]) => (
                 <span key={k}>
@@ -173,20 +173,20 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
               <span>高价值目标 {data?.stats.highvalue ?? 0}</span>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-muted-foreground text-sm">
               还没有域内/云上数据：导入一次 SharpHound / BloodHound 采集结果（域内），或 aws-cli / kubectl
               的枚举输出（云上），就能看到从手头账号到 Domain Admins、域控、 admin
               策略、集群管理员这些目标的最短利用链。
             </p>
           )}
 
-          {failed && <p className="text-sm text-destructive">读取失败：{failed}</p>}
+          {failed && <p className="text-destructive text-sm">读取失败：{failed}</p>}
         </CardContent>
       </Card>
 
       {hasGraph && (data?.paths.length ?? 0) === 0 && (
         <Card>
-          <CardContent className="p-4 text-sm text-muted-foreground">
+          <CardContent className="p-4 text-muted-foreground text-sm">
             当前起点的账号走不到任何高价值目标（也可能图里还没有标记为高价值的对象）。
           </CardContent>
         </Card>
@@ -197,7 +197,7 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
       ))}
 
       {(data?.paths.length ?? 0) > 0 && (
-        <p className="px-1 text-xs text-muted-foreground">
+        <p className="px-1 text-muted-foreground text-xs">
           这些路径由目录采集结果推导，表示**存在**这条利用链，不代表已实施；动手仍走意图与命令门。
         </p>
       )}

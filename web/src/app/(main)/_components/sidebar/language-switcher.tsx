@@ -23,7 +23,7 @@ export function LanguageSwitcher() {
     >
       <span className="flex items-center gap-1">
         <Languages className="size-4" />
-        <span className="text-[10px] font-medium leading-none">{lang === "zh" ? "中" : "EN"}</span>
+        <span className="font-medium text-[10px] leading-none">{lang === "zh" ? "中" : "EN"}</span>
       </span>
     </Button>
   );

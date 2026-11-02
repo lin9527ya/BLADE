@@ -12,24 +12,15 @@ import { api } from "@/lib/api";
 import type { TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import {
-  collapseDigestGraph,
-  digestMemberIds,
-  nodeSummary,
-  prioTone,
-  summaryFields,
-  TypeMeta,
-  typeMeta,
-  viewKind,
-} from "./graph-helpers";
+import { digestMemberIds, nodeSummary, typeMeta, viewKind } from "./graph-helpers";
 
 // 节点详情弹窗：字段行、payload 的可展开/美化视图与「显示密钥」开关。
 
 export function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-1.5 text-sm">
-      <span className="text-muted-foreground w-14 shrink-0">{label}</span>
-      <span className="text-foreground min-w-0 flex-1 break-words">{children}</span>
+      <span className="w-14 shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 flex-1 break-words text-foreground">{children}</span>
     </div>
   );
 }
@@ -164,7 +155,7 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
     return <span className="text-xs">{confidenceLabel[v] ?? v}</span>;
   }
   if (k === "risk_area" && typeof v === "string") {
-    return <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-xs">{v}</code>;
+    return <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{v}</code>;
   }
   // 凭据的可登目标（P36）：逐条列 主机:端口（服务），并**分开标已验证/待验证**——
   // 列在一起会让人以为"列出来的都能登"。
@@ -180,12 +171,12 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
           const verified = t.verified === true;
           return (
             <span key={`${host}${port}${i}`} className="flex flex-wrap items-center gap-2 text-xs">
-              <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-[10px]">{`${host}${port}${svc}`}</code>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{`${host}${port}${svc}`}</code>
               <span className={verified ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>
                 {verified ? "已验证可登" : "待验证"}
               </span>
               {typeof t.evidence === "string" && t.evidence !== "" && (
-                <span className="text-muted-foreground truncate">{t.evidence}</span>
+                <span className="truncate text-muted-foreground">{t.evidence}</span>
               )}
             </span>
           );
@@ -199,7 +190,7 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
       return (
         <span className="flex flex-wrap gap-1">
           {v.map((x) => (
-            <code key={String(x)} className="bg-muted rounded px-1.5 py-0.5 font-mono text-[10px]">
+            <code key={String(x)} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
               #{String(x)}
             </code>
           ))}
@@ -207,7 +198,7 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
       );
     }
     return (
-      <span className="text-xs break-words whitespace-pre-wrap">
+      <span className="whitespace-pre-wrap break-words text-xs">
         {v.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join("、")}
       </span>
     );
@@ -217,7 +208,7 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
       <div className="flex flex-col gap-1.5 border-l pl-2.5">
         {Object.entries(v as Record<string, unknown>).map(([kk, vv]) => (
           <div key={kk} className="flex items-start gap-2">
-            <span className="text-muted-foreground w-16 shrink-0 pt-0.5 text-[11px]">
+            <span className="w-16 shrink-0 pt-0.5 text-[11px] text-muted-foreground">
               {payloadFieldLabels[kk] ?? kk}
             </span>
             <span className="min-w-0 flex-1">
@@ -231,12 +222,12 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
   const text = String(v);
   if (k === "poc" || k === "evidence" || text.includes("\n") || text.length > 120) {
     return (
-      <pre className="bg-muted/40 max-h-72 overflow-auto rounded-md border p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap">
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
         {text}
       </pre>
     );
   }
-  return <span className="text-xs break-words whitespace-pre-wrap">{text}</span>;
+  return <span className="whitespace-pre-wrap break-words text-xs">{text}</span>;
 }
 
 // withRevealedSecret 把"这次点开看到的明文"注进待展示的节点（P36）。
@@ -245,7 +236,7 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
 // 只有点过「显示明文」之后才由受控入口取回、并只对当前这条节点生效——所以换节点自动回到脱敏，
 // 不需要额外的清理逻辑。明文入口那一次服务端会写留痕（谁、什么时候看了哪条凭据的明文）。
 export function withRevealedSecret(n: TaskNode | null, revealed: string | null): TaskNode | null {
-  if (!n || n.type !== "credential" || revealed === null) return n;
+  if (n?.type !== "credential" || revealed === null) return n;
   let data: Record<string, unknown> | null = null;
   try {
     const parsed: unknown = JSON.parse(n.payload ?? "");
@@ -272,7 +263,7 @@ export function PayloadBeautified({ node }: { node: TaskNode }) {
   }
   if (!data) {
     return (
-      <p className="text-muted-foreground text-xs break-words whitespace-pre-wrap">
+      <p className="whitespace-pre-wrap break-words text-muted-foreground text-xs">
         {node.payload?.trim() || "（无 payload）"}
       </p>
     );
@@ -288,12 +279,12 @@ export function PayloadBeautified({ node }: { node: TaskNode }) {
     <div className="flex flex-col gap-2.5">
       {ordered.map((k) => (
         <div key={k} className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-[11px] font-medium">{payloadFieldLabels[k] ?? k}</span>
+          <span className="font-medium text-[11px] text-muted-foreground">{payloadFieldLabels[k] ?? k}</span>
           <PayloadValue k={k} v={data[k]} />
         </div>
       ))}
       {data.secret_redacted === true && (
-        <p className="text-muted-foreground text-[11px]">凭据本体已脱敏；在节点详情里可点「显示明文」查看。</p>
+        <p className="text-[11px] text-muted-foreground">凭据本体已脱敏；在节点详情里可点「显示明文」查看。</p>
       )}
     </div>
   );
@@ -334,7 +325,7 @@ export function NodeDetailDialog({
         setReveal({ id: node.id, secret: r.secret });
         toast.success("已显示明文；本次查看已记入任务时间线");
       })
-      .catch((e: unknown) => toast.error("读取明文失败：" + String((e as Error)?.message ?? e)))
+      .catch((e: unknown) => toast.error(`读取明文失败：${String((e as Error)?.message ?? e)}`))
       .finally(() => setRevealing(false));
   };
   // 数据展示默认「美化」，手动切到「原始」。用「记住哪个节点切到了原始」这个派生
@@ -368,7 +359,7 @@ export function NodeDetailDialog({
                 </span>
                 <div className="min-w-0">
                   <DialogTitle className="leading-tight">{meta.label}</DialogTitle>
-                  <span className="text-muted-foreground font-mono text-xs">{node.id}</span>
+                  <span className="font-mono text-muted-foreground text-xs">{node.id}</span>
                 </div>
                 {node.inherited && node.source_task_id && (
                   <Badge variant="outline" className="ml-auto shrink-0">
@@ -381,7 +372,7 @@ export function NodeDetailDialog({
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex w-full min-w-0 flex-col gap-4 p-4">
                 <section>
-                  <h4 className="text-muted-foreground mb-1 text-xs font-medium">属性</h4>
+                  <h4 className="mb-1 font-medium text-muted-foreground text-xs">属性</h4>
                   <DetailRow label="类型">{meta.label}</DetailRow>
                   <DetailRow label="状态">
                     {node.type === "goal" || node.type === "intent" ? (
@@ -417,7 +408,7 @@ export function NodeDetailDialog({
                           <button
                             type="button"
                             onClick={() => setReveal(null)}
-                            className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-2"
+                            className="text-muted-foreground text-xs underline underline-offset-2 hover:text-foreground"
                           >
                             已显示 · 收起
                           </button>
@@ -442,14 +433,14 @@ export function NodeDetailDialog({
                   <>
                     {nodeSummary(node) && (
                       <section className="border-t pt-3">
-                        <h4 className="text-muted-foreground mb-1.5 text-xs font-medium">压缩结论</h4>
-                        <p className="text-foreground text-sm leading-relaxed break-words whitespace-pre-wrap">
+                        <h4 className="mb-1.5 font-medium text-muted-foreground text-xs">压缩结论</h4>
+                        <p className="whitespace-pre-wrap break-words text-foreground text-sm leading-relaxed">
                           {nodeSummary(node)}
                         </p>
                       </section>
                     )}
                     <section className="border-t pt-3">
-                      <h4 className="text-muted-foreground mb-1.5 text-xs font-medium">
+                      <h4 className="mb-1.5 font-medium text-muted-foreground text-xs">
                         压缩的节点（{memberIds.length}）
                       </h4>
                       <div className="flex flex-col gap-1.5">
@@ -461,7 +452,7 @@ export function NodeDetailDialog({
                               key={m.id}
                               type="button"
                               onClick={() => onSelect(m)}
-                              className="hover:bg-accent flex items-start gap-2 rounded-md border p-2 text-left transition-colors"
+                              className="flex items-start gap-2 rounded-md border p-2 text-left transition-colors hover:bg-accent"
                             >
                               <span
                                 className={cn(
@@ -472,10 +463,10 @@ export function NodeDetailDialog({
                                 <MIcon className="size-3 text-white" />
                               </span>
                               <span className="min-w-0 flex-1">
-                                <span className="text-foreground line-clamp-2 text-xs leading-snug">
+                                <span className="line-clamp-2 text-foreground text-xs leading-snug">
                                   {nodeSummary(m) || mMeta.label}
                                 </span>
-                                <span className="text-muted-foreground block font-mono text-[10px]">
+                                <span className="block font-mono text-[10px] text-muted-foreground">
                                   {mMeta.label} · #{m.id}
                                 </span>
                               </span>
@@ -483,7 +474,7 @@ export function NodeDetailDialog({
                           );
                         })}
                         {members.length < memberIds.length && (
-                          <span className="text-muted-foreground text-[10px]">
+                          <span className="text-[10px] text-muted-foreground">
                             另有 {memberIds.length - members.length} 个成员节点未随当前图加载
                           </span>
                         )}
@@ -494,7 +485,7 @@ export function NodeDetailDialog({
 
                 <section className="border-t pt-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="bg-muted inline-flex rounded-md p-0.5">
+                    <div className="inline-flex rounded-md bg-muted p-0.5">
                       <button
                         type="button"
                         onClick={() => setRawNodeId(null)}
@@ -524,14 +515,14 @@ export function NodeDetailDialog({
                       <button
                         type="button"
                         onClick={copy}
-                        className="text-muted-foreground hover:text-foreground text-xs transition-colors"
+                        className="text-muted-foreground text-xs transition-colors hover:text-foreground"
                       >
                         {copied ? "已复制" : "复制"}
                       </button>
                     )}
                   </div>
                   {showRaw ? (
-                    <pre className="bg-muted/50 text-foreground max-h-[60vh] max-w-full overflow-auto rounded-md border p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
+                    <pre className="max-h-[60vh] max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/50 p-3 font-mono text-foreground text-xs leading-relaxed">
                       {raw}
                     </pre>
                   ) : (

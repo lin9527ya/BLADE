@@ -2,40 +2,26 @@
 
 import * as React from "react";
 
-import { BotIcon, ListFilterIcon, PencilIcon, PlusIcon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
+import { BotIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type {
-  InterceptAction,
-  InterceptRule,
-  InterceptRuleTestResult,
-  JudgeConfig,
-  JudgeDayUsage,
-  JudgeUsage,
-  LLMProfile,
-  Tool,
-} from "@/lib/types";
+import type { JudgeConfig, JudgeDayUsage, JudgeUsage, LLMProfile } from "@/lib/types";
 
 import { Field } from "./fields";
 
 // fmtTokens 把 token 数压成紧凑写法(1.2k / 3.4M),用于审批用量统计。
 
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
 
@@ -44,7 +30,7 @@ function JudgeStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border bg-muted/20 px-3 py-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{value}</div>
+      <div className="mt-0.5 font-semibold text-lg tabular-nums">{value}</div>
     </div>
   );
 }
@@ -114,7 +100,7 @@ export function JudgeSection() {
       setCfg(j);
       setProfiles(ps);
     } catch (e) {
-      toast.error("加载模型兜底配置失败: " + (e as Error).message);
+      toast.error(`加载模型兜底配置失败: ${(e as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -140,7 +126,7 @@ export function JudgeSection() {
       toast.success("模型兜底配置已保存");
       await load(); // 回读:提示词若清空则回填内置模板
     } catch (e) {
-      toast.error("保存失败: " + (e as Error).message);
+      toast.error(`保存失败: ${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -155,7 +141,7 @@ export function JudgeSection() {
       setCfg(j);
       toast.success("已恢复内置默认模板");
     } catch (e) {
-      toast.error("恢复失败: " + (e as Error).message);
+      toast.error(`恢复失败: ${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -172,8 +158,8 @@ export function JudgeSection() {
         <div className="flex items-center gap-2.5">
           <BotIcon className={`h-5 w-5 shrink-0 ${cfg.enabled ? "text-violet-600" : "text-muted-foreground"}`} />
           <div>
-            <p className="text-sm font-semibold leading-tight">模型兜底审批</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="font-semibold text-sm leading-tight">模型兜底审批</p>
+            <p className="mt-0.5 text-muted-foreground text-xs">
               在<span className="font-medium text-foreground">拦截范围</span>内、且
               <span className="font-medium text-foreground">没有任何拦截规则命中</span>的命令，才由模型做语义判断（放行
               / 转人工 / 拦截）
@@ -181,7 +167,7 @@ export function JudgeSection() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span className="text-xs text-muted-foreground">{cfg.enabled ? "已启用" : "未启用"}</span>
+          <span className="text-muted-foreground text-xs">{cfg.enabled ? "已启用" : "未启用"}</span>
           <Switch checked={cfg.enabled} disabled={loading} onCheckedChange={(v) => patch({ enabled: v })} />
         </div>
       </div>
@@ -192,8 +178,8 @@ export function JudgeSection() {
           <CardContent className="p-4">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium">审批 Token 消耗</p>
-                <p className="text-xs text-muted-foreground">
+                <p className="font-medium text-sm">审批 Token 消耗</p>
+                <p className="text-muted-foreground text-xs">
                   模型兜底审批累计用量,单独计量(worker=judge),不与各模型配置的统计混在一起
                 </p>
               </div>
@@ -210,7 +196,7 @@ export function JudgeSection() {
             </div>
             {usage.daily.length > 0 && (
               <div className="mt-4">
-                <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <p className="mb-2 text-[10px] text-muted-foreground uppercase tracking-wider">
                   近 30 天每日消耗(输入 + 输出)
                 </p>
                 <JudgeSparkbars daily={usage.daily} />
@@ -227,8 +213,8 @@ export function JudgeSection() {
             <CardContent className="flex h-full flex-col gap-2 p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium">审批提示词</p>
-                  <p className="text-xs text-muted-foreground">模型据此判定 ALLOW / ASK / DENY，可直接编辑</p>
+                  <p className="font-medium text-sm">审批提示词</p>
+                  <p className="text-muted-foreground text-xs">模型据此判定 ALLOW / ASK / DENY，可直接编辑</p>
                 </div>
                 <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={restorePrompt} disabled={saving}>
                   恢复默认模板
@@ -249,7 +235,7 @@ export function JudgeSection() {
           <Card className="lg:col-span-2">
             <CardContent className="space-y-5 p-4">
               <div className="space-y-4">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">
                   判定模型与策略
                 </p>
                 <Field label="审批模型">
@@ -316,7 +302,7 @@ export function JudgeSection() {
               <Separator />
 
               <div className="space-y-4">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">
                   人工审批（模型判为「转人工」时）
                 </p>
                 <Field label="审批等待超时（秒）">

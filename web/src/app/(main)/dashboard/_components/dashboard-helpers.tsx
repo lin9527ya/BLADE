@@ -20,8 +20,8 @@ export function fmtRel(ts?: string | number): string {
 }
 
 export function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
 
@@ -74,7 +74,7 @@ export function SectionTitle({
 }) {
   return (
     <div className="mb-3 flex items-center justify-between">
-      <div className="flex items-center gap-1.5 text-xs font-semibold">
+      <div className="flex items-center gap-1.5 font-semibold text-xs">
         <Icon className="size-3.5 text-muted-foreground" />
         {children}
       </div>

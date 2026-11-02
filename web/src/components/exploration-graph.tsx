@@ -208,13 +208,13 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
         <Handle
           type="target"
           position={Position.Left}
-          className="!size-2 !border-2 !border-neutral-300 !bg-white opacity-0 transition-opacity group-hover:opacity-100 dark:!border-neutral-600 dark:!bg-neutral-800"
+          className="!size-2 !border-2 !border-neutral-300 !bg-white dark:!border-neutral-600 dark:!bg-neutral-800 opacity-0 transition-opacity group-hover:opacity-100"
         />
         <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
           <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
             <Icon className="size-3.5 text-white" />
           </span>
-          <span className="grow truncate text-[13px] font-semibold text-neutral-700 dark:text-neutral-100">
+          <span className="grow truncate font-semibold text-[13px] text-neutral-700 dark:text-neutral-100">
             {meta.label}
           </span>
           {isLive && (
@@ -226,7 +226,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
           {showPriority && (
             <span
               className={cn(
-                "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                "shrink-0 rounded-md px-1.5 py-0.5 font-semibold text-[10px] tabular-nums",
                 toneClasses[prioTone(n.priority)],
               )}
             >
@@ -234,7 +234,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
             </span>
           )}
         </div>
-        <div className="line-clamp-3 px-3 pb-2 text-[13px] leading-snug text-neutral-500 dark:text-neutral-400">
+        <div className="line-clamp-3 px-3 pb-2 text-[13px] text-neutral-500 leading-snug dark:text-neutral-400">
           {nodeSummary(n) || meta.label}
         </div>
         <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
@@ -257,7 +257,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
         <Handle
           type="source"
           position={Position.Right}
-          className="!size-2 !border-2 !border-neutral-300 !bg-white opacity-0 transition-opacity group-hover:opacity-100 dark:!border-neutral-600 dark:!bg-neutral-800"
+          className="!size-2 !border-2 !border-neutral-300 !bg-white dark:!border-neutral-600 dark:!bg-neutral-800 opacity-0 transition-opacity group-hover:opacity-100"
         />
       </div>
     </div>
@@ -380,7 +380,7 @@ function ExplorationGraphInner({
           />
         )}
         <Panel position="top-left">
-          <div className="bg-card/95 flex flex-col gap-2.5 rounded-lg border p-3 text-xs shadow-sm backdrop-blur">
+          <div className="flex flex-col gap-2.5 rounded-lg border bg-card/95 p-3 text-xs shadow-sm backdrop-blur">
             {isEmpty && <span className="text-muted-foreground">{emptyHint}</span>}
             <div className="flex flex-wrap gap-x-3 gap-y-1.5">
               {(["begin", "goal", "intent", "fact", "finding", "hint", "digest", "footprint"] as ExploreKind[]).map(
@@ -388,7 +388,7 @@ function ExplorationGraphInner({
                   const m = typeMeta[k];
                   const Icon = m.icon;
                   return (
-                    <span key={k} className="text-foreground inline-flex items-center gap-1.5">
+                    <span key={k} className="inline-flex items-center gap-1.5 text-foreground">
                       <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
                         <Icon className="size-2.5 text-white" />
                       </span>
@@ -398,7 +398,7 @@ function ExplorationGraphInner({
                 },
               )}
             </div>
-            <div className="border-border/60 text-muted-foreground flex flex-wrap gap-x-3 gap-y-1.5 border-t pt-2">
+            <div className="flex flex-wrap gap-x-3 gap-y-1.5 border-border/60 border-t pt-2 text-muted-foreground">
               {Object.entries(relLabel).map(([k, v]) => (
                 <span key={k} className="inline-flex items-center gap-1.5">
                   <span className="h-0.5 w-4 rounded-full" style={{ backgroundColor: relColor[k] }} />
@@ -409,7 +409,7 @@ function ExplorationGraphInner({
             <button
               type="button"
               onClick={() => setShowMiniMap((v) => !v)}
-              className="text-muted-foreground hover:text-foreground self-start underline-offset-2 hover:underline"
+              className="self-start text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
             >
               {showMiniMap ? "隐藏缩略图" : "显示缩略图"}
             </button>

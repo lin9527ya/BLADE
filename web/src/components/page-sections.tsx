@@ -40,7 +40,7 @@ export function SectionNav({
   return (
     <nav
       aria-label={ariaLabel}
-      className="bg-background/95 sticky top-0 z-10 -mx-4 flex gap-1 overflow-x-auto px-4 py-2 backdrop-blur md:-mx-6 md:px-6 lg:mx-0 lg:w-44 lg:shrink-0 lg:flex-col lg:gap-0.5 lg:self-start lg:overflow-visible lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none"
+      className="sticky top-0 z-10 -mx-4 flex gap-1 overflow-x-auto bg-background/95 px-4 py-2 backdrop-blur md:-mx-6 md:px-6 lg:mx-0 lg:w-44 lg:shrink-0 lg:flex-col lg:gap-0.5 lg:self-start lg:overflow-visible lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none"
     >
       {sections.map((sec) => (
         <button
@@ -49,16 +49,16 @@ export function SectionNav({
           aria-current={active === sec.id ? "true" : undefined}
           onClick={() => onChange(sec.id)}
           className={cn(
-            "shrink-0 rounded-md px-3 py-1.5 text-left text-sm whitespace-nowrap transition-colors",
+            "shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-left text-sm transition-colors",
             "lg:w-full lg:rounded-l-none lg:border-l-2 lg:py-2",
             active === sec.id
-              ? "bg-muted text-foreground font-medium lg:border-primary"
+              ? "bg-muted font-medium text-foreground lg:border-primary"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground lg:border-transparent",
           )}
         >
           {sec.label}
           {sec.badge ? (
-            <span className="bg-amber-500 text-white ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums">
+            <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 font-semibold text-[10px] text-white tabular-nums">
               {sec.badge > 99 ? "99+" : sec.badge}
             </span>
           ) : null}
@@ -83,7 +83,7 @@ export function Section({ title, hint, children }: { title: string; hint?: strin
   return (
     <section className="flex flex-col gap-8">
       <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        <h2 className="font-semibold text-xl tracking-tight">{title}</h2>
         {hint && <p className="text-muted-foreground text-sm leading-relaxed">{hint}</p>}
       </div>
       {children}
@@ -107,7 +107,7 @@ export function SubBlock({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2 border-b pb-2">
         {icon}
-        <h3 className="text-base font-medium">{title}</h3>
+        <h3 className="font-medium text-base">{title}</h3>
         {actions && <div className="ml-auto flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
       {children}
@@ -129,7 +129,7 @@ export function Field({
 }) {
   return (
     <div className="grid gap-2">
-      <Label htmlFor={htmlFor} className="text-sm font-normal text-muted-foreground">
+      <Label htmlFor={htmlFor} className="font-normal text-muted-foreground text-sm">
         {label}
       </Label>
       {children}
@@ -159,7 +159,7 @@ export function SwitchRow({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-4">
-        <Label htmlFor={id} className="text-sm font-normal text-muted-foreground">
+        <Label htmlFor={id} className="font-normal text-muted-foreground text-sm">
           {label}
         </Label>
         <Switch
@@ -183,7 +183,7 @@ export function SwitchRow({
 export function Advanced({ title = "高级设置", children }: { title?: string; children: React.ReactNode }) {
   return (
     <Collapsible>
-      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-xs font-medium">
+      <CollapsibleTrigger className="group flex items-center gap-1.5 font-medium text-muted-foreground text-xs hover:text-foreground">
         <ChevronRightIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
         {title}
       </CollapsibleTrigger>

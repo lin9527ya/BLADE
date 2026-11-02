@@ -2,27 +2,18 @@
 
 import * as React from "react";
 
-import { PlayIcon, PlusIcon, RotateCcwIcon, SaveIcon, SearchIcon, Trash2Icon } from "lucide-react";
-import { toast } from "sonner";
+import { PlusIcon, SearchIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { Agent, Tool } from "@/lib/types";
 
 import { CustomToolDialog } from "./_components/custom-tool-dialog";
 import { ToolEditor, ToolGridCard } from "./_components/tool-editor";
-import { applyRows, coerceDefault, ExecState, ParamRow, TRAFFIC_TOOL_KEYS, toRows } from "./_components/tool-helpers";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep in sync with traffic.SeedToolMetas.
@@ -78,11 +69,11 @@ export default function ToolsPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">工具</h1>
+          <h1 className="font-semibold text-xl tracking-tight">工具</h1>
           <p className="text-muted-foreground text-sm">系统工具的描述/绑定，以及自定义工具(command/script/http)</p>
         </div>
         <div className="relative w-64">
-          <SearchIcon className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+          <SearchIcon className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="h-8 pl-8 text-sm"
             placeholder="搜索工具名、描述、Agent…"
@@ -110,7 +101,7 @@ export default function ToolsPage() {
             </CardHeader>
             <CardContent>
               {systemTools.length === 0 ? (
-                <p className="text-muted-foreground py-6 text-center text-sm">
+                <p className="py-6 text-center text-muted-foreground text-sm">
                   {query.trim() ? "没有匹配的系统工具" : "（暂无系统工具，等待后端 seed）"}
                 </p>
               ) : (
@@ -143,7 +134,7 @@ export default function ToolsPage() {
             </CardHeader>
             <CardContent>
               {customTools.length === 0 ? (
-                <p className="text-muted-foreground py-6 text-center text-sm">
+                <p className="py-6 text-center text-muted-foreground text-sm">
                   {query.trim() ? "没有匹配的自定义工具" : "（暂无自定义工具，点击右上角「新建自定义工具」）"}
                 </p>
               ) : (

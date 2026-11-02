@@ -58,7 +58,7 @@ export function ToolEditor({
       onSaved();
       onClose();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -70,7 +70,7 @@ export function ToolEditor({
       onSaved();
       onClose();
     } catch (e) {
-      toast.error("恢复失败：" + (e as Error).message);
+      toast.error(`恢复失败：${(e as Error).message}`);
     }
   }
 
@@ -78,7 +78,7 @@ export function ToolEditor({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4">
         {trafficGated && (
-          <div className="border-amber-500/40 bg-amber-500/10 text-muted-foreground rounded-md border px-3 py-2 text-xs">
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-muted-foreground text-xs">
             该工具依赖<b>流量捕获</b>。请先在「系统配置」开启流量捕获，才能绑定给 Agent 并启用。
           </div>
         )}
@@ -95,7 +95,7 @@ export function ToolEditor({
                     onCheckedChange={() => toggleAgent(ag.key)}
                   />
                   {ag.name}
-                  <span className="text-muted-foreground font-mono text-xs">{ag.key}</span>
+                  <span className="font-mono text-muted-foreground text-xs">{ag.key}</span>
                 </label>
               ))}
               {agents.length === 0 && <span className="text-muted-foreground text-xs">（无 Agent）</span>}
@@ -126,13 +126,13 @@ export function ToolEditor({
           {rows.length === 0 && <span className="text-muted-foreground text-xs">（无参数）</span>}
           {rows.map((r, i) => (
             <div
-              key={(r.parentKey ?? "") + "." + r.name}
+              key={`${r.parentKey ?? ""}.${r.name}`}
               className={
-                r.parentKey ? "border-l-2 border-muted ml-3 pl-3 grid gap-2 py-2" : "grid gap-2 rounded-md border p-3"
+                r.parentKey ? "ml-3 grid gap-2 border-muted border-l-2 py-2 pl-3" : "grid gap-2 rounded-md border p-3"
               }
             >
               <div className="flex flex-wrap items-center gap-2">
-                {r.parentKey && <span className="text-muted-foreground font-mono text-[10px]">↳</span>}
+                {r.parentKey && <span className="font-mono text-[10px] text-muted-foreground">↳</span>}
                 <span className="font-mono text-sm">{r.name}</span>
                 <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
                   {r.type || "?"}
@@ -142,11 +142,11 @@ export function ToolEditor({
                     必填
                   </Badge>
                 )}
-                {r.parentKey && <span className="text-muted-foreground text-[10px]">items 子字段</span>}
+                {r.parentKey && <span className="text-[10px] text-muted-foreground">items 子字段</span>}
               </div>
               <div className="grid gap-2">
                 <div className="grid gap-1">
-                  <Label className="text-muted-foreground text-[11px]">描述</Label>
+                  <Label className="text-[11px] text-muted-foreground">描述</Label>
                   <Input
                     className="text-xs"
                     value={r.description}
@@ -154,7 +154,7 @@ export function ToolEditor({
                   />
                 </div>
                 <div className="grid gap-1">
-                  <Label className="text-muted-foreground text-[11px]">默认值</Label>
+                  <Label className="text-[11px] text-muted-foreground">默认值</Label>
                   <Input
                     className="text-xs"
                     placeholder={r.scalar ? "（空=无默认）" : "仅标量支持"}
@@ -188,10 +188,10 @@ export function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => voi
     <button
       type="button"
       onClick={onClick}
-      className="hover:border-primary/50 hover:bg-muted/40 focus-visible:ring-ring flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      className="flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors hover:border-primary/50 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm font-medium">{tool.key}</span>
+        <span className="font-medium font-mono text-sm">{tool.key}</span>
         {tool.system ? (
           <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
             系统
@@ -207,7 +207,7 @@ export function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => voi
           </Badge>
         )}
         {!tool.enabled && (
-          <Badge variant="outline" className="text-destructive px-1.5 py-0 text-[10px]">
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-destructive">
             已停用
           </Badge>
         )}
@@ -219,9 +219,9 @@ export function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => voi
           调用 {tool.calls ?? 0}
         </Badge>
       </div>
-      <p className="text-muted-foreground line-clamp-1 h-4 text-xs">{tool.description || "（无描述）"}</p>
+      <p className="line-clamp-1 h-4 text-muted-foreground text-xs">{tool.description || "（无描述）"}</p>
       <div className="mt-auto flex flex-wrap gap-1 pt-1">
-        {tool.agents.length === 0 && <span className="text-muted-foreground text-[10px]">（未绑定 Agent）</span>}
+        {tool.agents.length === 0 && <span className="text-[10px] text-muted-foreground">（未绑定 Agent）</span>}
         {tool.agents.map((a) => (
           <Badge key={a} variant="outline" className="px-1.5 py-0 text-[10px]">
             {a}

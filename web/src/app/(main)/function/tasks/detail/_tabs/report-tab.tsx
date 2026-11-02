@@ -78,7 +78,7 @@ export function ReportTab({ taskId }: { taskId: string }) {
     );
   } else if (error) {
     content = (
-      <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-dashed border-red-500/40 py-16 text-sm">
+      <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-red-500/40 border-dashed py-16 text-sm">
         <FileTextIcon className="size-8 opacity-40" />
         <span className="text-muted-foreground">报告加载失败：{error}</span>
         <Button size="sm" variant="outline" onClick={() => load()}>

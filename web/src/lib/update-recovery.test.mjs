@@ -1,7 +1,7 @@
-import assert from "node:assert/strict";
-import test from "node:test";
 import { abortableDelay, HttpError } from "./request-lifecycle.ts";
 import { waitForVersion } from "./update-recovery.ts";
+import assert from "node:assert/strict";
+import test from "node:test";
 
 const signal = () => new AbortController().signal;
 const noWait = async () => {};

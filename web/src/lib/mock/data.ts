@@ -2812,7 +2812,9 @@ export const tokenSessions: SessionTokenUsage[] = (() => {
   intents
     .filter((n) => n.state === "running" || n.state === "open" || n.state === "paused")
     .slice(0, 3)
-    .forEach((n, i) => slotByIntent.set(n.id, i + 1));
+    .forEach((n, i) => {
+      slotByIntent.set(n.id, i + 1);
+    });
   for (const item of activity) {
     if (item.kind !== "result") continue;
     let session = "";

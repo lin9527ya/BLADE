@@ -280,7 +280,7 @@ export function ProfileDialog({
                 if (!isCommandCode) return null;
                 if (isDeepSeek && format === "anthropic") {
                   return (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                    <p className="text-amber-600 text-xs dark:text-amber-400">
                       commandcode 的 Anthropic <code>/v1/messages</code> 只服务 Claude 系；DeepSeek 模型请选择 「OpenAI
                       (Responses API)」，否则连接测试会提示不支持。
                     </p>
@@ -288,7 +288,7 @@ export function ProfileDialog({
                 }
                 if (isDeepSeek && format === "openai") {
                   return (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-muted-foreground text-xs">
                       若连接测试失败，改用「OpenAI (Responses API)」：commandcode 的 DeepSeek 走
                       <code> /v1/responses</code>。
                     </p>
@@ -296,7 +296,7 @@ export function ProfileDialog({
                 }
                 if (!isDeepSeek && format === "openai-responses") {
                   return (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-muted-foreground text-xs">
                       commandcode 上的 Claude 系模型应选「Anthropic」；Responses API 用于 DeepSeek 等模型。
                     </p>
                   );

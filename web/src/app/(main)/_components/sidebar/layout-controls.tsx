@@ -134,7 +134,7 @@ export function LayoutControls() {
                   {t("prefs.language.en", "English")}
                 </ToggleGroupItem>
               </ToggleGroup>
-              <p className="text-muted-foreground text-[11px] leading-relaxed">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
                 {t("prefs.language.note", "英文覆盖尚未逐页补齐：没翻到的地方显示中文原文（不会露出内部键名）。")}
               </p>
             </div>

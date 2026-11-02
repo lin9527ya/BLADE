@@ -149,7 +149,7 @@ export function ApprovalDetail({
               刻意标成**预计**——实测结论走检测验证（P31），两者混起来就是把预期读成实测。 */}
           {(audit?.opsec_notes?.length ?? 0) > 0 ? (
             <div className="rounded-md border p-3">
-              <p className="text-muted-foreground mb-2 text-xs font-medium">可检出性（预计 · 来自知识库，不是实测）</p>
+              <p className="mb-2 font-medium text-muted-foreground text-xs">可检出性（预计 · 来自知识库，不是实测）</p>
               <ul className="flex flex-col gap-2">
                 {(audit?.opsec_notes ?? []).map((n) => (
                   <li key={n.id} className="text-xs">
@@ -159,7 +159,7 @@ export function ApprovalDetail({
                       </Badge>
                       <span className="font-medium">{n.title}</span>
                     </div>
-                    <p className="text-muted-foreground mt-0.5">
+                    <p className="mt-0.5 text-muted-foreground">
                       留在哪：{n.where.join(" / ")}
                       {(n.signals?.length ?? 0) > 0 ? ` · 信号：${(n.signals ?? []).join("；")}` : ""}
                     </p>
@@ -169,7 +169,7 @@ export function ApprovalDetail({
               </ul>
             </div>
           ) : audit?.opsec_uncovered ? (
-            <p className="text-muted-foreground rounded-md border p-3 text-xs">
+            <p className="rounded-md border p-3 text-muted-foreground text-xs">
               可检出性：知识库没有收录这条命令——**这不代表没有日志**，只是本库没有依据。必要时用检测验证记录实测结果。
             </p>
           ) : null}

@@ -9,7 +9,9 @@ import { usePolling } from "@/hooks/use-polling";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { api, sseUrl } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
+import { rememberInputHistory } from "@/lib/input-history";
 import { MOCK } from "@/lib/mock/enabled";
+import { capSessionStore } from "@/lib/session-cache";
 import type {
   Activity,
   ChatAttachment,
@@ -23,14 +25,9 @@ import type {
   TokenTotal,
   WorkerSlot,
 } from "@/lib/types";
-import { capSessionStore } from "@/lib/session-cache";
-import { rememberInputHistory } from "@/lib/input-history";
 
 import {
   emptyState,
-  fmtBytes,
-  fmtDuration,
-  fmtTokens,
   isResumableWorkerStatus,
   keyForSession,
   MAIN_ID,
@@ -43,19 +40,13 @@ import {
   mergeBySeq,
   newWorkerMessageRequestID,
   PAGE,
-  PLANNER_ID,
   PLANNER_SESSION,
-  resolutionLabel,
-  roleMeta,
   type SessionState,
   type SessionStore,
   STREAM_WINDOW_MS,
-  SYSTEM_ID,
   SYSTEM_SCAN_PAGE,
   SYSTEM_SESSION,
   sessionKeyOf,
-  statusIcon,
-  TokenMetrics,
   workerMessageCharCount,
   workerSlotSessionId,
   workerSlotToSession,
@@ -990,7 +981,7 @@ export function useSessionsState(taskId: string) {
     if (now - capCheckedAtRef.current < 2000) return;
     capCheckedAtRef.current = now;
     setStore((prev) => capSessionStore(prev, activeKeyRef.current));
-  }, [store, activeKey]);
+  }, []);
 
   const focusKey = approvalFocus.state?.source?.session;
   const loadFocusPage = React.useCallback(
@@ -1055,6 +1046,8 @@ export function useSessionsState(taskId: string) {
     active.source_task_id,
     active.inherited,
     sessionMeta,
+    active.slot,
+    active.intent_id,
   ]);
 
   // seq of this session's most-recent TodoWrite call — for the Todo popover.

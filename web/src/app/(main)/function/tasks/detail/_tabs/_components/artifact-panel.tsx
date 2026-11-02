@@ -102,7 +102,7 @@ export function ArtifactPanel({
             >
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge domain="artifact" value={a.state} />
-                {a.kind_label && <span className="text-xs font-medium">{a.kind_label}</span>}
+                {a.kind_label && <span className="font-medium text-xs">{a.kind_label}</span>}
                 <span className="min-w-0 flex-1 break-words">{a.summary || a.locator || `#${a.id}`}</span>
                 {a.state !== "removed" && (
                   <Button
@@ -118,7 +118,7 @@ export function ArtifactPanel({
                   </Button>
                 )}
               </div>
-              <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+              <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
                 {a.locator && <span title="目标上的位置">位置：{a.locator}</span>}
                 {a.host && <span>主机：{a.host}</span>}
                 {a.url && (
@@ -133,13 +133,13 @@ export function ArtifactPanel({
                 )}
               </div>
               {a.removed_evidence && (
-                <p className="mt-1 text-[11px] break-words">
+                <p className="mt-1 break-words text-[11px]">
                   <span className="text-muted-foreground">清理证据：</span>
                   {a.removed_evidence}
                 </p>
               )}
               {a.removed_note && (
-                <p className="text-muted-foreground text-[11px] break-words">清理备注：{a.removed_note}</p>
+                <p className="break-words text-[11px] text-muted-foreground">清理备注：{a.removed_note}</p>
               )}
             </div>
           ))}
@@ -171,7 +171,7 @@ export function ArtifactPanel({
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 text-sm">
-            <p className="rounded-md bg-muted/50 p-2 text-xs break-words">
+            <p className="break-words rounded-md bg-muted/50 p-2 text-xs">
               {clearing?.summary || clearing?.locator || `#${clearing?.id}`}
             </p>
             <Textarea

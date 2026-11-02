@@ -19,15 +19,7 @@ import { api } from "@/lib/api";
 import type { Agent, MCPServer, MissingSkill, SkillCall, SkillItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import {
-  buildTree,
-  type Creating,
-  fmtTime,
-  type PendingDelete,
-  type Selected,
-  sortNodes,
-  type TreeNode,
-} from "./skills-helpers";
+import type { Creating, PendingDelete, Selected, TreeNode } from "./skills-helpers";
 
 // 技能页的状态与取数：技能树、选中节点、新建/编辑/删除、可见性与调用统计。
 
@@ -140,7 +132,7 @@ export function useSkillsState() {
           return;
         }
       } else {
-        toast.error("上传失败：" + msg);
+        toast.error(`上传失败：${msg}`);
       }
     } finally {
       setUploading(false);
@@ -266,7 +258,7 @@ export function useSkillsState() {
       }
       load();
     } catch (e) {
-      toast.error("创建失败：" + (e as Error).message);
+      toast.error(`创建失败：${(e as Error).message}`);
     }
   }
 
@@ -283,7 +275,7 @@ export function useSkillsState() {
       if (selected?.skill === skill && selected.path === path) setSelected(null);
       load();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -294,7 +286,7 @@ export function useSkillsState() {
       if (selected?.skill === name) setSelected(null);
       load();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -319,7 +311,7 @@ export function useSkillsState() {
       toast.success("已保存");
       setDirty(false);
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -335,7 +327,7 @@ export function useSkillsState() {
     } catch (e) {
       // roll back on error
       setDetailMcps(detailMcps);
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -347,7 +339,7 @@ export function useSkillsState() {
       const ids = await api.skillVisibility(skillName);
       setVisibility((v) => ({ ...v, [skillName]: ids }));
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -384,7 +376,7 @@ export function useSkillsState() {
       setNewVisibility([]);
       load();
     } catch (e) {
-      toast.error("创建失败：" + (e as Error).message);
+      toast.error(`创建失败：${(e as Error).message}`);
     } finally {
       setCreatingSkill(false);
     }

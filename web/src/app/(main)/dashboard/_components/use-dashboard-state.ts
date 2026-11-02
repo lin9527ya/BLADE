@@ -124,9 +124,6 @@ export function useDashboardState() {
           setPendingTotal(pendingRecent.total);
           setActivity(activity.items);
           setConvTokens(conversationTokens);
-        } catch (e) {
-          // Preserve stale data, but let usePolling see the failure and back off.
-          throw e;
         } finally {
           loading = false;
         }
@@ -146,27 +143,23 @@ export function useDashboardState() {
   usePolling(
     async (alive) => {
       const load = async () => {
-        try {
-          // 只取**真正会被渲染**的东西。此前这里还拉了 agents / mcpServers /
-          // skills / tools，但 dashboard 上没有任何面板读它们（唯一的 tools 下游
-          // enabledTools 自己也是死的）——等于每 15 秒白发四个请求。要加相关面板时
-          // 再把对应的源加回来。
-          const wantUsage = tokenVersion === "new";
-          const [traf, counts, profileList, usage] = await Promise.all([
-            api.traffic(0, 50),
-            api.assetCounts(),
-            api.llmProfiles(),
-            wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
-          ]);
-          if (!alive()) return;
-          setTraffic(traf.exchanges ?? []);
-          setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
-          setAssetCounts(counts ?? {});
-          setLLMProfiles(profileList);
-          if (usage) setUsageStats(usage);
-        } catch (e) {
-          throw e; // preserve stale data; usePolling owns the backoff
-        }
+        // 只取**真正会被渲染**的东西。此前这里还拉了 agents / mcpServers /
+        // skills / tools，但 dashboard 上没有任何面板读它们（唯一的 tools 下游
+        // enabledTools 自己也是死的）——等于每 15 秒白发四个请求。要加相关面板时
+        // 再把对应的源加回来。
+        const wantUsage = tokenVersion === "new";
+        const [traf, counts, profileList, usage] = await Promise.all([
+          api.traffic(0, 50),
+          api.assetCounts(),
+          api.llmProfiles(),
+          wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
+        ]);
+        if (!alive()) return;
+        setTraffic(traf.exchanges ?? []);
+        setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
+        setAssetCounts(counts ?? {});
+        setLLMProfiles(profileList);
+        if (usage) setUsageStats(usage);
       };
       await load();
     },
@@ -433,11 +426,8 @@ export function useDashboardState() {
       llmProfiles,
       defaultProfileId,
       tokenVersion,
-      setTokenVersion,
       tokenTab,
-      setTokenTab,
       tokenDays,
-      setTokenDays,
       tokenByProfile,
       displayedTokens,
       dailyTokenData,

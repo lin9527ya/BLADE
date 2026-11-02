@@ -2,6 +2,9 @@
 
 import * as React from "react";
 
+import { CheckIcon, PencilIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, Trash2Icon, XIcon } from "lucide-react";
+import { toast } from "sonner";
+
 import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import {
+import type {
   AssetInterceptKind,
   AssetInterceptRule,
   ConstraintCompilePreview,
@@ -18,8 +21,6 @@ import {
   PolicyRuleDraft,
   TaskPolicy,
 } from "@/lib/types";
-import { CheckIcon, PencilIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, Trash2Icon, XIcon } from "lucide-react";
-import { toast } from "sonner";
 
 // 任务级资产拦截规则与探索策略两张卡片（各带自己的编辑表单与保存逻辑）。
 
@@ -142,7 +143,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheckIcon className="size-4 text-sky-500" /> 任务级资产拦截 / 允许
-          <span className="text-muted-foreground text-xs font-normal">
+          <span className="font-normal text-muted-foreground text-xs">
             （仅本任务生效，不进全局；先拦截后允许，共 {rules.length} 条）
           </span>
         </CardTitle>
@@ -181,7 +182,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
           <Button size="sm" variant="outline" disabled={busy || !newPattern.trim()} onClick={() => void add()}>
             <PlusIcon className="size-3.5" /> 添加
           </Button>
-          {err && <span className="text-xs text-red-500">{err}</span>}
+          {err && <span className="text-red-500 text-xs">{err}</span>}
         </div>
         {/* 规则列表 */}
         {rules.length > 0 ? (
@@ -256,10 +257,10 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
                   >
                     {r.action === "allow" ? "允许" : "拦截"}
                   </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">{TASK_RULE_KIND_LABEL[r.kind]}</span>
-                  <code className="bg-muted min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-xs">{r.pattern}</code>
+                  <span className="shrink-0 text-muted-foreground text-xs">{TASK_RULE_KIND_LABEL[r.kind]}</span>
+                  <code className="min-w-0 flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs">{r.pattern}</code>
                   {r.note && (
-                    <span className="text-muted-foreground max-w-[120px] shrink-0 truncate text-xs">{r.note}</span>
+                    <span className="max-w-[120px] shrink-0 truncate text-muted-foreground text-xs">{r.note}</span>
                   )}
                   <Switch checked={r.enabled} onCheckedChange={() => void toggle(r)} />
                   <Button
@@ -427,7 +428,7 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
           <ShieldAlertIcon className="size-4 text-red-500" /> 探索策略
-          <span className="text-muted-foreground text-xs font-normal">
+          <span className="font-normal text-muted-foreground text-xs">
             （意图层：不符合策略的方向直接不进探索图并说明理由；命令层：编译成任务级拦截规则，只对本任务
             生效、换措辞也绕不过。词表覆盖不到时可手写自定义条目（关键词或正则，「仅命令」层只拦工具调用）。
             改动下一轮规划生效，不回溯已有意图。「禁止」是平台的边界，不会解除系统内置的破坏性拦截）
@@ -436,7 +437,7 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {pol && (
-          <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
             <span
               className={`rounded px-1.5 py-0.5 ${
                 pol.custom ? "bg-sky-500/15 text-sky-600 dark:text-sky-400" : "bg-muted text-muted-foreground"
@@ -458,7 +459,7 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
         )}
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">手段面（这些技术方向不派、也不执行）</span>
+          <span className="font-medium text-sm">手段面（这些技术方向不派、也不执行）</span>
           <div className="flex flex-wrap gap-1.5">
             {(vocab?.techniques ?? []).map((t) => (
               <button
@@ -476,7 +477,7 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">敏感写（SRC 常态是只读验证）</span>
+          <span className="font-medium text-sm">敏感写（SRC 常态是只读验证）</span>
           <div className="flex flex-wrap gap-1.5">
             {(vocab?.writes ?? []).map((w) => (
               <button
@@ -494,12 +495,12 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">自定义禁止条目（词表覆盖不到时手写）</span>
+          <span className="font-medium text-sm">自定义禁止条目（词表覆盖不到时手写）</span>
           <CustomRulesEditor rules={custom} onChange={setCustom} disabled={busy} limit={pol?.custom_limit ?? 16} />
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">节奏面（0 = 不限）</span>
+          <span className="font-medium text-sm">节奏面（0 = 不限）</span>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-1.5">
               每轮意图上限
@@ -546,7 +547,7 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
               <XIcon className="size-3.5" /> 清空（回无策略）
             </Button>
           )}
-          {err && <span className="text-xs text-red-500">{err}</span>}
+          {err && <span className="text-red-500 text-xs">{err}</span>}
         </div>
 
         {preview && (
@@ -581,7 +582,7 @@ export function TaskExplorationPolicyCard({ taskId }: { taskId: string }) {
 
         {rejects.length > 0 && (
           <div className="flex flex-col gap-1">
-            <span className="text-sm font-medium">近期被策略拒绝的意图（未进探索图）</span>
+            <span className="font-medium text-sm">近期被策略拒绝的意图（未进探索图）</span>
             {rejects.slice(0, 5).map((r, i) => (
               <span key={`${r.item_id}-${i}`} className="text-muted-foreground text-xs">
                 「{r.summary}」—— 命中 {r.item_label}

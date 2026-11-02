@@ -30,7 +30,7 @@ export function GraphTab({ taskId }: { taskId: string }) {
     sigRef.current = "";
     setAudit(null);
     setAuditOpen(false);
-  }, [taskId]);
+  }, []);
 
   const refreshAudit = React.useCallback(() => {
     setAuditBusy(true);

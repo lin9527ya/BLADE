@@ -68,7 +68,7 @@ function extraColumns(rows: IntelAsset[]): string[] {
   return seen;
 }
 
-function csvCell(v: string): string {
+function _csvCell(v: string): string {
   return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
@@ -127,7 +127,7 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
       onImported();
       setOpen(false);
     } catch (e) {
-      toast.error("导入失败：" + String((e as Error)?.message ?? e));
+      toast.error(`导入失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setImporting(false);
     }
@@ -150,7 +150,7 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
               </Badge>
             )}
             {res && (
-              <span className="text-muted-foreground text-xs font-normal">
+              <span className="font-normal text-muted-foreground text-xs">
                 今日配额 {res.used_today}/{res.daily_quota || "不限"}
               </span>
             )}
@@ -183,7 +183,7 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
                 key={ex}
                 type="button"
                 onClick={() => setExpr(ex)}
-                className="bg-muted hover:bg-muted/70 rounded px-1.5 py-0.5 font-mono text-[11px]"
+                className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] hover:bg-muted/70"
               >
                 {ex}
               </button>
@@ -194,7 +194,7 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
 
         <div className="min-h-0 flex-1 overflow-auto px-6 py-3">
           {rows.length === 0 ? (
-            <p className="text-muted-foreground py-6 text-center text-sm">
+            <p className="py-6 text-center text-muted-foreground text-sm">
               {searching ? "查询中…" : "还没有结果。填表达式后回车或点「搜索」。"}
             </p>
           ) : (
@@ -243,9 +243,9 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
                     <TableCell className="max-w-[16rem] truncate text-xs" title={a.title}>
                       {a.title || "—"}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{a.server || "—"}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{a.server || "—"}</TableCell>
                     {cols.map((c) => (
-                      <TableCell key={c} className="max-w-[14rem] truncate text-xs text-muted-foreground">
+                      <TableCell key={c} className="max-w-[14rem] truncate text-muted-foreground text-xs">
                         {a.extra?.[c] ?? "—"}
                       </TableCell>
                     ))}
@@ -261,7 +261,7 @@ export function FofaSearchDialog({ onImported }: { onImported: () => void }) {
             已选 {picked.size} 条 · 导入走与 CSV 导入同一套口径（按形状分类、<b>已存在只合并</b>）
           </span>
           {res?.spool && (
-            <span className="text-muted-foreground font-mono text-[11px]" title={res.spool}>
+            <span className="font-mono text-[11px] text-muted-foreground" title={res.spool}>
               结果已落盘
             </span>
           )}

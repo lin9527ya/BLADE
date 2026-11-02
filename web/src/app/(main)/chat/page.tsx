@@ -146,7 +146,7 @@ export default function ChatPage() {
     () => () => {
       conversationListSeq.current++;
     },
-    [reloadConvs],
+    [],
   );
 
   React.useEffect(() => {
@@ -313,7 +313,7 @@ export default function ChatPage() {
         });
         void reloadConvs();
       } catch (e) {
-        toast.error("删除失败：" + (e as Error).message);
+        toast.error(`删除失败：${(e as Error).message}`);
       }
     },
     [reloadConvs],
@@ -386,7 +386,7 @@ export default function ChatPage() {
         await api.renameConversation(id, title);
         void reloadConvs();
       } catch (e) {
-        toast.error("重命名失败：" + (e as Error).message);
+        toast.error(`重命名失败：${(e as Error).message}`);
       }
     },
     [reloadConvs],
@@ -400,7 +400,7 @@ export default function ChatPage() {
     >
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(10rem,15rem)_minmax(0,1fr)] gap-3 md:grid-cols-[18rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)] md:gap-4">
         {/* left: conversation list */}
-        <div className="bg-card flex flex-col overflow-hidden rounded-lg border">
+        <div className="flex flex-col overflow-hidden rounded-lg border bg-card">
           <div className="flex flex-col gap-2 border-b p-2">
             <Button size="sm" className="w-full" onClick={() => selectConversation(null)}>
               <PlusIcon /> 新建对话
@@ -434,7 +434,7 @@ export default function ChatPage() {
                     aria-label="选择当前筛选的全部对话"
                     disabled={filteredConversations.length === 0 || bulkDeleting}
                   />
-                  <span className="text-muted-foreground min-w-0 flex-1 text-xs tabular-nums">
+                  <span className="min-w-0 flex-1 text-muted-foreground text-xs tabular-nums">
                     {selectedConversationCount > 0 ? `已选 ${selectedConversationCount} 个` : conversationCountLabel}
                   </span>
                   {selectedConversationCount > 0 && (
@@ -454,7 +454,7 @@ export default function ChatPage() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2 px-1">
-                  <span className="text-muted-foreground min-w-0 flex-1 text-xs tabular-nums">
+                  <span className="min-w-0 flex-1 text-muted-foreground text-xs tabular-nums">
                     {conversationCountLabel}
                   </span>
                   <Button
@@ -473,11 +473,11 @@ export default function ChatPage() {
           <ScrollArea
             key={agentFilter === null ? "all" : `agent:${agentFilter}`}
             type="auto"
-            className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!"
+            className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1"
           >
             <div className="flex min-w-0 flex-col gap-0.5 p-2">
               {filteredConversations.length === 0 && (
-                <p className="text-muted-foreground px-2 py-6 text-center text-xs">
+                <p className="px-2 py-6 text-center text-muted-foreground text-xs">
                   {agentFilter === null ? "暂无对话" : "该 Agent 暂无对话"}
                 </p>
               )}
@@ -553,10 +553,10 @@ export default function ChatPage() {
         </div>
 
         {/* right: chat view */}
-        <div className="bg-card flex min-w-0 flex-col overflow-hidden rounded-lg border">
+        <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
           {fallbackPending || fallbackError ? (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center">
-              <p role={fallbackError ? "alert" : "status"} className="text-sm text-muted-foreground">
+              <p role={fallbackError ? "alert" : "status"} className="text-muted-foreground text-sm">
                 {fallbackError ?? "正在加载对话…"}
               </p>
               {fallbackError && (
@@ -582,7 +582,7 @@ export default function ChatPage() {
               onConvUpdated={reloadConvs}
             />
           ) : sourceRequested ? (
-            <div role="status" className="p-6 text-sm text-muted-foreground">
+            <div role="status" className="p-6 text-muted-foreground text-sm">
               {convsLoaded ? "对话已被删除" : "正在加载对应对话…"}
             </div>
           ) : (

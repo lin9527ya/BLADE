@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 // 技能页的类型与纯函数：技能树构建/排序、选中/新建/待删三态。
 
 export function fmtTime(ts?: string) {
@@ -27,7 +25,7 @@ export function buildTree(entries: string[]): TreeNode[] {
   const root: TreeNode[] = [];
   const dirMap = new Map<string, TreeNode>();
 
-  function ensureDir(dirPath: string, parentNodes: TreeNode[]): TreeNode[] {
+  function ensureDir(dirPath: string, _parentNodes: TreeNode[]): TreeNode[] {
     if (dirMap.has(dirPath)) return dirMap.get(dirPath)!.children;
     const parts = dirPath.split("/");
     let nodes = root;

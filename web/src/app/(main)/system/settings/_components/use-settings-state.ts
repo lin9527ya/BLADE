@@ -309,7 +309,7 @@ export function useSettingsState() {
       toast.success("情报源设置已保存");
       loadIntelQueries();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setIntelBusy(false);
     }
@@ -323,7 +323,7 @@ export function useSettingsState() {
       setIntelKeyInput("");
       toast.success("已清除情报源 API Key（情报查询工具会提示未配置）");
     } catch (e) {
-      toast.error("清除失败：" + (e as Error).message);
+      toast.error(`清除失败：${(e as Error).message}`);
     } finally {
       setIntelBusy(false);
     }
@@ -335,7 +335,7 @@ export function useSettingsState() {
     try {
       const r = await api.testIntelSource("fofa");
       if (!r.ok) {
-        setIntelTestMsg("连接失败：" + (r.error ?? "未知错误"));
+        setIntelTestMsg(`连接失败：${r.error ?? "未知错误"}`);
       } else {
         const info = r.info ?? {};
         const parts = ["连接成功"];
@@ -347,7 +347,7 @@ export function useSettingsState() {
       }
       loadIntelQueries();
     } catch (e) {
-      setIntelTestMsg("连接失败：" + (e as Error).message);
+      setIntelTestMsg(`连接失败：${(e as Error).message}`);
     } finally {
       setIntelTesting(false);
     }
@@ -369,7 +369,7 @@ export function useSettingsState() {
       apply(s2);
       toast.success("已保存：对之后提交的长任务执行与 MCP 调用生效");
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSavingLimits(false);
     }
@@ -382,7 +382,7 @@ export function useSettingsState() {
       apply(s2);
       toast.success("日志级别已切换（立即生效）");
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSavingLogLevel(false);
     }
@@ -401,7 +401,7 @@ export function useSettingsState() {
         apply(s);
         toast.success("已保存并发工作 agent 数（对之后启动的任务生效）");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingWorkers(false));
   };
 
@@ -418,7 +418,7 @@ export function useSettingsState() {
         apply(s);
         toast.success(n > 0 ? `已保存任务 token 预算（${n}）` : "已关闭任务 token 预算护栏");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingBudget(false));
   };
 
@@ -430,7 +430,7 @@ export function useSettingsState() {
         apply(s);
         toast.success("已保存 Python 解释器配置");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingPython(false));
   };
   const detectPython = () => {
@@ -458,7 +458,7 @@ export function useSettingsState() {
       .then(apply)
       .catch((e) => {
         setTrafficCapture(!v); // revert on failure
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
       })
       .finally(() => setSavingTraffic(false));
   };
@@ -470,7 +470,7 @@ export function useSettingsState() {
       .then(apply)
       .catch((e) => {
         setInjectPlanner(!v); // revert on failure
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
       });
   };
 
@@ -484,7 +484,7 @@ export function useSettingsState() {
         apply(next);
         toast.success("已保存授权范围设置");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingScope(false));
   };
 
@@ -500,7 +500,7 @@ export function useSettingsState() {
       })
       .catch((e) => {
         setArtifactLang(prev);
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
       })
       .finally(() => setSavingArtifactLang(false));
   };
@@ -536,9 +536,9 @@ export function useSettingsState() {
         apply(next);
         const name = siteName.trim();
         if (name) document.title = name;
-        toast.success("已保存显示名" + (name ? "" : "（回到内置名）"));
+        toast.success(`已保存显示名${name ? "" : "（回到内置名）"}`);
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingSiteName(false));
   };
 
@@ -550,7 +550,7 @@ export function useSettingsState() {
         apply(next);
         toast.success(corsOrigins.trim() ? "已保存跨源白名单（60 秒内生效）" : "已清空跨源白名单（不再返回 CORS 头）");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingCors(false));
   };
 
@@ -588,7 +588,7 @@ export function useSettingsState() {
         if (!on) setKillReason("");
         loadEnforcement();
       })
-      .catch((e) => toast.error("操作失败：" + (e as Error).message))
+      .catch((e) => toast.error(`操作失败：${(e as Error).message}`))
       .finally(() => setKillBusy(false));
   };
 
@@ -597,10 +597,10 @@ export function useSettingsState() {
     api
       .resumeAllTasks()
       .then((r) => {
-        toast.success(`已继续 ${r.resumed} 个任务` + (r.errors?.length ? `；${r.errors.length} 项失败` : ""));
+        toast.success(`已继续 ${r.resumed} 个任务${r.errors?.length ? `；${r.errors.length} 项失败` : ""}`);
         loadEnforcement();
       })
-      .catch((e) => toast.error("继续失败：" + (e as Error).message))
+      .catch((e) => toast.error(`继续失败：${(e as Error).message}`))
       .finally(() => setResumeBusy(false));
   };
 
@@ -719,7 +719,7 @@ export function useSettingsState() {
       .then(apply)
       .catch((e) => {
         setInjectWorker(!v); // revert on failure
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
       });
   };
 
@@ -747,7 +747,7 @@ export function useSettingsState() {
         toast.success("已保存网络搜索配置");
       })
       .catch((e) => {
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
         api
           .settings()
           .then(apply)
@@ -765,7 +765,7 @@ export function useSettingsState() {
         setBraveKeyInput("");
         toast.success("已保存 Brave API Key");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingKey(false));
   };
 
@@ -778,7 +778,7 @@ export function useSettingsState() {
         setTavilyKeyInput("");
         toast.success("已保存 Tavily API Key");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingTavilyKey(false));
   };
 
@@ -790,7 +790,7 @@ export function useSettingsState() {
         apply(s);
         toast.success(proxyInput.trim() ? "已保存出口代理" : "已清除出口代理（改为直连）");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingProxy(false));
   };
 
@@ -843,7 +843,7 @@ export function useSettingsState() {
           toast.success("出口 IP 检测完成");
         }
       })
-      .catch((e) => toast.error("检测失败：" + (e as Error).message))
+      .catch((e) => toast.error(`检测失败：${(e as Error).message}`))
       .finally(() => setCheckingProxyEgress(false));
   };
 
@@ -851,7 +851,7 @@ export function useSettingsState() {
     api
       .settings()
       .then(applyProxyStatus)
-      .catch((e) => toast.error("刷新代理状态失败：" + (e as Error).message));
+      .catch((e) => toast.error(`刷新代理状态失败：${(e as Error).message}`));
   };
 
   const saveGlobalProxy = () => {
@@ -883,7 +883,7 @@ export function useSettingsState() {
       .catch((e) => {
         const msg = (e as Error).message || "未知错误";
         setProxySaveError(msg);
-        toast.error("保存失败：" + msg);
+        toast.error(`保存失败：${msg}`);
       })
       .finally(() => setSavingGlobalProxy(false));
   };
@@ -908,7 +908,7 @@ export function useSettingsState() {
         setClashSecretInput("");
         toast.success("已保存 Clash 出口切换配置");
       })
-      .catch((e) => toast.error("保存失败：" + ((e as Error).message || "未知错误")))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message || "未知错误"}`))
       .finally(() => setSavingClash(false));
   };
 
@@ -922,7 +922,7 @@ export function useSettingsState() {
           r.rotation ? `${r.rotation.from} → ${r.rotation.to}（出口 IP ${r.rotation.egress_ip}）` : "已切换",
         );
       })
-      .catch((e) => toast.error("切换失败：" + ((e as Error).message || "未知错误")))
+      .catch((e) => toast.error(`切换失败：${(e as Error).message || "未知错误"}`))
       .finally(() => setRotatingClash(false));
   };
 
@@ -939,9 +939,9 @@ export function useSettingsState() {
       })
       .then((r) => {
         if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果`);
-        else toast.error("搜索测试失败：" + (r.error || "未知错误"));
+        else toast.error(`搜索测试失败：${r.error || "未知错误"}`);
       })
-      .catch((e) => toast.error("搜索测试失败：" + (e as Error).message))
+      .catch((e) => toast.error(`搜索测试失败：${(e as Error).message}`))
       .finally(() => setTesting(false));
   };
 

@@ -234,9 +234,9 @@ export function BulkDeleteTasksDialog({
             这些任务的执行记录与探索链路将被永久删除，下方清理选项对所选任务统一生效。
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="text-muted-foreground flex flex-wrap gap-1 text-xs">
+        <div className="flex flex-wrap gap-1 text-muted-foreground text-xs">
           {ids.slice(0, 30).map((id) => (
-            <code key={id} className="bg-muted rounded px-1.5 py-0.5 font-mono">
+            <code key={id} className="rounded bg-muted px-1.5 py-0.5 font-mono">
               #{id}
             </code>
           ))}

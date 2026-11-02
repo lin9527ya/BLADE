@@ -355,7 +355,7 @@ export default function PlaybooksPage() {
                       )}
                     </TableCell>
                     <TableCell
-                      className="px-1 text-[11px] leading-tight tabular-nums"
+                      className="px-1 text-[11px] tabular-nums leading-tight"
                       title={`成功 ${p.successes} / 失败 ${p.failures}`}
                     >
                       {p.successes + p.failures === 0 ? (
@@ -373,7 +373,7 @@ export default function PlaybooksPage() {
                     </TableCell>
                     <TableCell className="px-1 text-xs tabular-nums">{p.uses}</TableCell>
                     <TableCell
-                      className="px-1 text-[11px] whitespace-nowrap text-muted-foreground tabular-nums"
+                      className="whitespace-nowrap px-1 text-[11px] text-muted-foreground tabular-nums"
                       title={fmtTime(p.last_verified_at ?? p.updated_at)}
                     >
                       {fmtMinuteTime(p.last_verified_at ?? p.updated_at)}
@@ -405,7 +405,7 @@ export default function PlaybooksPage() {
       </Card>
 
       <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="max-h-[85vh] sm:max-w-5xl overflow-hidden">
+        <DialogContent className="max-h-[85vh] overflow-hidden sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{selected?.title}</DialogTitle>
             <DialogDescription>{selected?.summary || "无摘要"}</DialogDescription>
@@ -498,7 +498,7 @@ export default function PlaybooksPage() {
           if (!open && !savingEdit) setEditing(null);
         }}
       >
-        <DialogContent className="max-h-[85vh] sm:max-w-3xl overflow-hidden">
+        <DialogContent className="max-h-[85vh] overflow-hidden sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>编辑打法卡片</DialogTitle>
             <DialogDescription>
@@ -508,7 +508,7 @@ export default function PlaybooksPage() {
           </DialogHeader>
           <div className="max-h-[62vh] space-y-3 overflow-auto pr-1">
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-title">
+              <label className="font-medium text-sm" htmlFor="pb-title">
                 标题
               </label>
               <Input
@@ -519,7 +519,7 @@ export default function PlaybooksPage() {
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-summary">
+              <label className="font-medium text-sm" htmlFor="pb-summary">
                 摘要
               </label>
               <Textarea
@@ -532,7 +532,7 @@ export default function PlaybooksPage() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-tech">
+                <label className="font-medium text-sm" htmlFor="pb-tech">
                   技术栈指纹
                 </label>
                 <Input
@@ -543,7 +543,7 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-techkey">
+                <label className="font-medium text-sm" htmlFor="pb-techkey">
                   technique_key
                 </label>
                 <Input
@@ -554,7 +554,7 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-favicon">
+                <label className="font-medium text-sm" htmlFor="pb-favicon">
                   favicon MMH3
                 </label>
                 <Input
@@ -565,7 +565,7 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-service">
+                <label className="font-medium text-sm" htmlFor="pb-service">
                   服务 / 端口
                 </label>
                 <div className="flex gap-2">
@@ -585,7 +585,7 @@ export default function PlaybooksPage() {
                 </div>
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-title-fp">
+                <label className="font-medium text-sm" htmlFor="pb-title-fp">
                   页面标题
                 </label>
                 <Input
@@ -596,7 +596,7 @@ export default function PlaybooksPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor="pb-confidence">
+                <label className="font-medium text-sm" htmlFor="pb-confidence">
                   置信度
                 </label>
                 <Select value={editForm.confidence} onValueChange={(v) => setEditField("confidence", v)}>
@@ -612,7 +612,7 @@ export default function PlaybooksPage() {
               </div>
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-steps">
+              <label className="font-medium text-sm" htmlFor="pb-steps">
                 打法步骤（Markdown，必填）
               </label>
               <Textarea
@@ -625,7 +625,7 @@ export default function PlaybooksPage() {
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm font-medium" htmlFor="pb-evidence">
+              <label className="font-medium text-sm" htmlFor="pb-evidence">
                 原始证据（脱敏后）
               </label>
               <Textarea

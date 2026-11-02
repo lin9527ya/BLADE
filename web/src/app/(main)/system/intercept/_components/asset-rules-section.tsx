@@ -176,7 +176,7 @@ export function AssetRulesSection() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           支持全等与模糊匹配的域名 / IP / URL，以及 CIDR 网段；默认内置模糊拦截政府（.gov / .gov.cn）与教育（.edu /
           .edu.cn）网站
         </p>
@@ -189,11 +189,11 @@ export function AssetRulesSection() {
       <Card>
         <CardContent className="p-0">
           {loading ? (
-            <p className="p-6 text-sm text-muted-foreground">加载中…</p>
+            <p className="p-6 text-muted-foreground text-sm">加载中…</p>
           ) : rules.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <BanIcon className="h-8 w-8 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground">暂无资产拦截规则</p>
+              <p className="text-muted-foreground text-sm">暂无资产拦截规则</p>
               <Button size="sm" variant="outline" onClick={openNew}>
                 <PlusIcon className="h-4 w-4" />
                 新建第一条规则
@@ -217,11 +217,11 @@ export function AssetRulesSection() {
                       <KindBadge kind={rule.kind} />
                     </TableCell>
                     <TableCell className="max-w-[280px]">
-                      <code className="block truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                      <code className="block truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                         {rule.pattern}
                       </code>
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-sm">
                       <div className="flex items-center gap-1.5">
                         {rule.builtin && (
                           <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[10px]">
@@ -260,7 +260,7 @@ export function AssetRulesSection() {
       {/* editor dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="sm:max-w-2xl flex flex-col overflow-hidden p-0 gap-0"
+          className="flex flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
           style={{ maxHeight: "min(85vh, 720px)" }}
         >
           <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -268,7 +268,7 @@ export function AssetRulesSection() {
             <DialogDescription className="text-xs">命中此规则的目标资产会被全局拦截</DialogDescription>
           </DialogHeader>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-5">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
             <Field label="匹配类型">
               <Select value={form.kind} onValueChange={(v) => set({ kind: v as AssetInterceptKind })}>
                 <SelectTrigger>
@@ -277,7 +277,7 @@ export function AssetRulesSection() {
                 <SelectContent>
                   {KIND_GROUPS.map((g) => (
                     <React.Fragment key={g}>
-                      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <div className="px-2 py-1 font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">
                         {g}
                       </div>
                       {KIND_OPTIONS.filter((o) => o.group === g).map((o) => (
@@ -328,7 +328,7 @@ export function AssetRulesSection() {
             </div>
           </div>
 
-          <DialogFooter className="shrink-0 border-t px-6 py-4 flex-row justify-end gap-2">
+          <DialogFooter className="shrink-0 flex-row justify-end gap-2 border-t px-6 py-4">
             <Button variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>

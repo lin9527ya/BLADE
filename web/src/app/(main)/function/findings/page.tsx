@@ -4,18 +4,7 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import {
-  ArrowUpRightIcon,
-  BugIcon,
-  ChevronRightIcon,
-  ClockIcon,
-  DownloadIcon,
-  InfoIcon,
-  SearchIcon,
-  ShieldAlertIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
-import { toast } from "sonner";
+import { ArrowUpRightIcon, BugIcon, ChevronRightIcon, DownloadIcon, SearchIcon } from "lucide-react";
 
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
 import { StatusBadge } from "@/components/status-badge";
@@ -38,45 +27,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { usePolling } from "@/hooks/use-polling";
-import { api } from "@/lib/api";
-import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { statusMeta } from "@/lib/status";
-import type {
-  ActiveFindingRetest,
-  Finding,
-  FindingAssetNode,
-  FindingGroup,
-  FindingStats,
-  FindingStatus,
-  Severity,
-} from "@/lib/types";
+import type { ActiveFindingRetest, FindingStatus, Severity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { AssetTree, assetPathOf } from "./_components/asset-tree";
-import {
-  AssetTreeState,
-  EMPTY_ASSET_TREE,
-  EMPTY_FLAT_STATE,
-  EMPTY_STATS,
-  FINDING_LIST_PREFERENCE_KEY,
-  FINDING_VIEWS,
-  type FindingView,
-  FlatFindingsState,
-  findingGroupKey,
-  GroupFindingsState,
-} from "./_components/findings-helpers";
-import {
-  FINDING_STATUSES,
-  type FindingEdit,
-  type FindingReport,
-  FindingsTable,
-  findingRowKey,
-  fmtTime,
-  isSameFinding,
-  SEVERITIES,
-  UNASSIGNED_TASK,
-} from "./_components/findings-table";
+import { AssetTree } from "./_components/asset-tree";
+import { type FindingView, findingGroupKey } from "./_components/findings-helpers";
+import { FINDING_STATUSES, FindingsTable, fmtTime, SEVERITIES, UNASSIGNED_TASK } from "./_components/findings-table";
 import { useFindingsState } from "./_components/use-findings-state";
 
 export default function FindingsPage() {
@@ -95,36 +52,17 @@ export default function FindingsPage() {
     setSort,
     search,
     setSearch,
-    query,
-    setQuery,
     expanded,
-    setExpanded,
     flat,
-    setFlat,
-    flatPage,
-    setFlatPage,
-    flatPageSize,
-    setFlatPageSize,
     assetTree,
-    setAssetTree,
     assetScope,
     setAssetScope,
     groups,
-    setGroups,
     groupTotal,
-    setGroupTotal,
     expandedGroups,
-    setExpandedGroups,
     groupFindings,
-    setGroupFindings,
     total,
-    setTotal,
     stats,
-    setStats,
-    statsLoaded,
-    setStatsLoaded,
-    preferencesHydrated,
-    setPreferencesHydrated,
     page,
     setPage,
     pageSize,
@@ -133,19 +71,12 @@ export default function FindingsPage() {
     setDeepenFinding,
     retestFinding,
     setRetestFinding,
-    activeRetests,
     setActiveRetests,
-    activeRetestFingerprint,
     retestRefreshVersion,
     deepenDescription,
     setDeepenDescription,
     deepening,
-    setDeepening,
-    filterFingerprint,
-    activeFilterFingerprint,
-    setFindings,
     selectedIds,
-    setSelectedIds,
     exportOpen,
     setExportOpen,
     exportScope,
@@ -153,50 +84,24 @@ export default function FindingsPage() {
     exportFormat,
     setExportFormat,
     exporting,
-    setExporting,
-    toggleSelected,
-    toggleSelectedPage,
     openExport,
-    flatRequest,
-    assetTreeRequest,
-    groupRequests,
-    groupsRequest,
-    flatStateRef,
-    expandedGroupsRef,
-    groupFindingsRef,
-    visibleGroupKeysRef,
-    activeAssetScope,
-    loadFlat,
     loadAssetTree,
-    refreshGroups,
     loadGroup,
     toggleGroup,
-    refreshAfterMutation,
-    updateStatus,
-    reports,
-    setReports,
-    edit,
-    setEdit,
-    saving,
-    setSaving,
-    toggleRow,
-    saveEdit,
-    deleteFinding,
-    openDeepen,
     statCards,
     filteredTotal,
     assetPath,
-    rowProps,
     flatListCard,
     doExport,
     submitDeepen,
+    rowProps,
   } = useFindingsState();
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">发现</h1>
+          <h1 className="font-semibold text-xl tracking-tight">发现</h1>
           <p className="text-muted-foreground text-sm">跨任务漏洞汇总</p>
         </div>
         <Tabs value={view} onValueChange={(v) => setView(v as FindingView)}>
@@ -329,7 +234,7 @@ export default function FindingsPage() {
 
           <div className="ml-auto flex items-center gap-3">
             {selectedIds.size > 0 && (
-              <span className="text-xs text-muted-foreground tabular-nums">已选 {selectedIds.size} 条</span>
+              <span className="text-muted-foreground text-xs tabular-nums">已选 {selectedIds.size} 条</span>
             )}
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> 导出
@@ -362,7 +267,7 @@ export default function FindingsPage() {
               </CardContent>
             </Card>
             <div className="flex min-w-0 flex-col gap-2">
-              <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm text-muted-foreground">
+              <div className="flex min-w-0 flex-wrap items-center gap-1 text-muted-foreground text-sm">
                 <button
                   type="button"
                   className={cn("hover:text-foreground", assetScope === null && "font-medium text-foreground")}
@@ -443,11 +348,11 @@ export default function FindingsPage() {
                           return (
                             <span key={level} className="inline-flex items-center gap-1">
                               <StatusBadge domain="severity" value={level} dot />
-                              <span className="text-xs tabular-nums text-muted-foreground">{count}</span>
+                              <span className="text-muted-foreground text-xs tabular-nums">{count}</span>
                             </span>
                           );
                         })}
-                        <span className="text-xs tabular-nums text-muted-foreground">
+                        <span className="text-muted-foreground text-xs tabular-nums">
                           {fmtTime(group.last_found_at)}
                         </span>
                         {group.task_id !== null && (
@@ -488,7 +393,7 @@ export default function FindingsPage() {
             })}
             {groups.length === 0 && (
               <Card>
-                <CardContent className="py-12 text-center text-sm text-muted-foreground">没有匹配的发现。</CardContent>
+                <CardContent className="py-12 text-center text-muted-foreground text-sm">没有匹配的发现。</CardContent>
               </Card>
             )}
             <TablePagination
@@ -588,7 +493,7 @@ export default function FindingsPage() {
 
           <div className="flex flex-col gap-5 py-1">
             <div className="flex flex-col gap-2">
-              <span className="text-xs text-muted-foreground">导出范围</span>
+              <span className="text-muted-foreground text-xs">导出范围</span>
               <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as typeof exportScope)}>
                 <label htmlFor="export-scope-filtered" className="flex items-center gap-2 text-sm">
                   <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {filteredTotal}{" "}
@@ -608,7 +513,7 @@ export default function FindingsPage() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-xs text-muted-foreground">导出格式</span>
+              <span className="text-muted-foreground text-xs">导出格式</span>
               <RadioGroup value={exportFormat} onValueChange={(v) => setExportFormat(v as typeof exportFormat)}>
                 <label htmlFor="export-format-md-single" className="flex items-center gap-2 text-sm">
                   <RadioGroupItem id="export-format-md-single" value="md-single" /> Markdown 汇总报告（单个 .md 文件）

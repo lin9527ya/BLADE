@@ -5,9 +5,8 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { ChevronRight, MailIcon, PlusCircleIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   DropdownMenu,
@@ -128,7 +127,7 @@ export function NavMain({ items }: NavMainProps) {
 
     // 精确匹配 + 前缀匹配：详情页/别名页（如 /function/tasks/detail、/system/intercept/assets）
     // 也该把它的所属入口点亮；没有任何条目 URL 是另一条的前缀，不会双重高亮。
-    return path === item.url || path.startsWith(item.url + "/");
+    return path === item.url || path.startsWith(`${item.url}/`);
   };
 
   const isSubItemActive = (url: string) => {
@@ -207,7 +206,7 @@ function InterceptPendingBadge() {
   );
   if (count === 0) return null;
   return (
-    <SidebarMenuBadge className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold leading-none text-white shadow-sm ring-1 ring-amber-400/40">
+    <SidebarMenuBadge className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1 font-semibold text-[10px] text-white leading-none shadow-sm ring-1 ring-amber-400/40">
       {count > 99 ? "99+" : count}
     </SidebarMenuBadge>
   );
@@ -344,7 +343,7 @@ function NavItemBadge({ badge }: { badge?: NavBadge }) {
       className={cn(
         "rounded-sm border capitalize",
         badge === "new" &&
-          "border-green-600 text-green-600 dark:border-green-500 dark:text-green-400 peer-hover/menu-button:text-green-600 peer-data-active/menu-button:text-green-600",
+          "border-green-600 text-green-600 peer-hover/menu-button:text-green-600 peer-data-active/menu-button:text-green-600 dark:border-green-500 dark:text-green-400",
         badge === "soon" && "border-muted-foreground text-muted-foreground",
       )}
     >

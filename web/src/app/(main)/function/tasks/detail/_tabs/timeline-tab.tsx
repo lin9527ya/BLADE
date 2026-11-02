@@ -71,26 +71,26 @@ function EventRow({ e, onOpen }: { e: TimelineEvent; onOpen: (e: TimelineEvent) 
         disabled={!clickable}
         onClick={() => onOpen(e)}
         className={`flex w-full items-start gap-3 py-2 text-left ${
-          clickable ? "hover:bg-muted/40 cursor-pointer" : "cursor-default"
+          clickable ? "cursor-pointer hover:bg-muted/40" : "cursor-default"
         }`}
         title={clickable ? "查看对应详情" : undefined}
       >
-        <span className="text-muted-foreground w-36 shrink-0 pt-0.5 font-mono text-[11px] tabular-nums">
+        <span className="w-36 shrink-0 pt-0.5 font-mono text-[11px] text-muted-foreground tabular-nums">
           {fmt(e.at)}
         </span>
         <Badge variant="outline" className={`shrink-0 ${KIND_TONE[e.kind] ?? ""}`}>
           {KIND_LABEL[e.kind] ?? e.kind}
         </Badge>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm break-words">{e.title}</span>
-          {e.detail && <span className="text-muted-foreground mt-0.5 block text-xs break-words">{e.detail}</span>}
+          <span className="block break-words text-sm">{e.title}</span>
+          {e.detail && <span className="mt-0.5 block break-words text-muted-foreground text-xs">{e.detail}</span>}
         </span>
         {e.state && (
-          <span className="text-muted-foreground shrink-0 text-[11px]" title={e.state}>
+          <span className="shrink-0 text-[11px] text-muted-foreground" title={e.state}>
             {e.state_label ?? e.state}
           </span>
         )}
-        {clickable && <ChevronRightIcon className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />}
+        {clickable && <ChevronRightIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
       </button>
     </li>
   );
@@ -140,7 +140,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
     setSelectedNode(null);
     setExecutionId(null);
     setApprovalId(null);
-  }, [taskId]);
+  }, []);
 
   const toggleKind = (kind: TimelineKind) => {
     if (kinds.includes(kind)) {
@@ -160,7 +160,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
     api
       .downloadTaskTimeline(taskId, kindsParam)
       .then(() => toast.success("已导出作业时间线（.md）"))
-      .catch((e: unknown) => toast.error("导出失败：" + String((e as Error)?.message ?? e)))
+      .catch((e: unknown) => toast.error(`导出失败：${String((e as Error)?.message ?? e)}`))
       .finally(() => setExporting(false));
   };
 
@@ -249,7 +249,7 @@ export function TimelineTab({ taskId }: { taskId: string }) {
 
           {/* 类别过滤：API 一直支持 kinds，这里把选择权交给操作者（交付时经常只看发现/战果）。 */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-muted-foreground mr-1 text-xs">事件类别</span>
+            <span className="mr-1 text-muted-foreground text-xs">事件类别</span>
             {MILESTONE_KINDS.map((k) => {
               const on = kinds.includes(k);
               return (
@@ -263,14 +263,14 @@ export function TimelineTab({ taskId }: { taskId: string }) {
                 >
                   {KIND_LABEL[k]}
                   {(counts[k] ?? 0) > 0 ? (
-                    <span className="text-muted-foreground ml-1 tabular-nums">{counts[k]}</span>
+                    <span className="ml-1 text-muted-foreground tabular-nums">{counts[k]}</span>
                   ) : null}
                 </Button>
               );
             })}
           </div>
 
-          <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
             <span>
               里程碑 {total} 条{withSteps && (counts.step ?? 0) > 0 ? ` · 步骤 ${counts.step} 条` : ""}
             </span>

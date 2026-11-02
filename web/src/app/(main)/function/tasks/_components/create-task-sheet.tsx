@@ -10,7 +10,6 @@ import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { TaskTemplateControls } from "@/components/task-template-controls";
-import { AlertDialog } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -46,9 +45,9 @@ import type {
   AssetInterceptRuleInput,
   Company,
   CustomRule,
-  PlannerTemplate,
   ExplorationPolicyDefault,
   LLMProfile,
+  PlannerTemplate,
   Task,
   TaskCategory,
 } from "@/lib/types";
@@ -111,10 +110,10 @@ function SourceTaskPicker({
               <ComboboxItem key={taskID} value={taskID} disabled={atLimit && !value.includes(taskID)}>
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
+                    <p className="truncate font-medium text-sm">
                       #{taskID} · {task?.description ?? "未知任务"}
                     </p>
-                    {task?.goal && <p className="text-muted-foreground truncate text-xs">{task.goal}</p>}
+                    {task?.goal && <p className="truncate text-muted-foreground text-xs">{task.goal}</p>}
                   </div>
                   {task && <StatusBadge domain="task" value={task.status} />}
                 </div>
@@ -226,7 +225,7 @@ export function CreateTaskSheet({
       setDescription((prev) => appendUploads(prev, r.attachments));
       setUploadCount((n) => n + r.attachments.length);
     } catch (e) {
-      toast.error("上传失败：" + (e as Error).message);
+      toast.error(`上传失败：${(e as Error).message}`);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-picking the same file
@@ -329,7 +328,7 @@ export function CreateTaskSheet({
       setOpen(false);
       onCreated();
     } catch (e) {
-      toast.error("创建失败：" + (e as Error).message);
+      toast.error(`创建失败：${(e as Error).message}`);
     } finally {
       setCreating(false);
     }
@@ -513,10 +512,10 @@ export function CreateTaskSheet({
 
             {/* 高级参数默认折叠:超时/心跳/首个意图,展开才占空间,常用路径保持清爽。 */}
             <Collapsible>
-              <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
-                <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
+              <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 font-medium text-sm">
+                <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
                 高级设置
-                <span className="text-muted-foreground ml-auto text-xs font-normal">超时 · 心跳 · 首个意图</span>
+                <span className="ml-auto font-normal text-muted-foreground text-xs">超时 · 心跳 · 首个意图</span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">
@@ -597,7 +596,7 @@ export function CreateTaskSheet({
                     </p>
                   ) : (
                     <div className="flex flex-col gap-2 rounded-md border border-dashed p-2.5">
-                      <span className="text-xs font-medium">禁用的手段（点选切换；未选 = 本任务不禁）</span>
+                      <span className="font-medium text-xs">禁用的手段（点选切换；未选 = 本任务不禁）</span>
                       <div className="flex flex-wrap gap-1.5">
                         {(policyVocab?.techniques ?? []).map((t) => {
                           const on = policyTech.includes(t.id);
@@ -621,7 +620,7 @@ export function CreateTaskSheet({
                           );
                         })}
                       </div>
-                      <span className="text-xs font-medium">禁止的敏感写</span>
+                      <span className="font-medium text-xs">禁止的敏感写</span>
                       <div className="flex flex-wrap gap-1.5">
                         {(policyVocab?.writes ?? []).map((w) => {
                           const on = policyWrites.includes(w.id);
@@ -645,7 +644,7 @@ export function CreateTaskSheet({
                           );
                         })}
                       </div>
-                      <span className="text-xs font-medium">自定义禁止条目（词表覆盖不到时手写）</span>
+                      <span className="font-medium text-xs">自定义禁止条目（词表覆盖不到时手写）</span>
                       <CustomRulesEditor
                         rules={policyRules}
                         onChange={setPolicyRules}

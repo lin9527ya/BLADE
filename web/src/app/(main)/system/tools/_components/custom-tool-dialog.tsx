@@ -176,7 +176,7 @@ export function CustomToolDialog({
       toast.success(isNew ? "已创建自定义工具" : "已保存");
       onSaved();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -188,7 +188,7 @@ export function CustomToolDialog({
       toast.success("已删除");
       onSaved();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
   // runTest dry-runs the CURRENT form (unsaved) with the sample params, so a
@@ -338,7 +338,7 @@ export function CustomToolDialog({
                 <div className="grid gap-1.5">
                   <Label className="text-xs">代理 URL（空=直连）</Label>
                   <Input
-                    className="font-mono text-xs w-56"
+                    className="w-56 font-mono text-xs"
                     value={ex.proxy}
                     onChange={(e) => setEx({ ...ex, proxy: e.target.value })}
                   />
@@ -391,7 +391,7 @@ export function CustomToolDialog({
                 <label key={a.key} className="flex items-center gap-2 text-sm">
                   <Checkbox checked={bound.includes(a.key)} onCheckedChange={() => toggleAgent(a.key)} />
                   {a.name}
-                  <span className="text-muted-foreground font-mono text-xs">{a.key}</span>
+                  <span className="font-mono text-muted-foreground text-xs">{a.key}</span>
                 </label>
               ))}
             </div>
@@ -410,7 +410,7 @@ export function CustomToolDialog({
 
           {kind !== "shell" && (
             <div className="grid gap-1.5 rounded-md border p-3">
-              <Label className="text-xs font-medium">测试运行（用当前表单，不会保存）</Label>
+              <Label className="font-medium text-xs">测试运行（用当前表单，不会保存）</Label>
               <Textarea
                 className="font-mono text-xs"
                 rows={2}
@@ -426,7 +426,7 @@ export function CustomToolDialog({
               {testResult && (
                 <pre
                   className={
-                    "max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-xs " +
+                    "max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-xs" +
                     (testResult.is_error ? "text-destructive" : "")
                   }
                 >

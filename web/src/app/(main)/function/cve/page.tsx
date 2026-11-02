@@ -638,23 +638,23 @@ export default function CVEPage() {
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="px-1 text-xs whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap px-1 text-xs">
                       {c.has_exploit ? (
                         <Badge variant="secondary">{c.exploit_language || "有"}</Badge>
                       ) : (
                         <span className="text-muted-foreground">无</span>
                       )}
                     </TableCell>
-                    <TableCell className="px-1 text-xs tabular-nums whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap px-1 text-xs tabular-nums">
                       {c.uses} / {c.executions}
                     </TableCell>
                     <TableCell
-                      className="px-1 text-[11px] text-muted-foreground whitespace-nowrap"
+                      className="whitespace-nowrap px-1 text-[11px] text-muted-foreground"
                       title={fmtTime(c.updated_at)}
                     >
                       {fmtShortTime(c.updated_at)}
                     </TableCell>
-                    <TableCell className="px-1 whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap px-1">
                       <StatusBadge domain="cve" value={c.status} className="px-1.5" />
                     </TableCell>
                     <TableCell className="px-1">
@@ -792,7 +792,7 @@ export default function CVEPage() {
                     {selected.exploit_usage && (
                       <div className="text-muted-foreground text-xs">用法：{selected.exploit_usage}</div>
                     )}
-                    <pre className="max-h-72 overflow-auto rounded-md border bg-muted/20 p-3 font-mono text-xs whitespace-pre-wrap">
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/20 p-3 font-mono text-xs">
                       {selected.exploit_script}
                     </pre>
                   </div>
@@ -886,7 +886,7 @@ export default function CVEPage() {
                 <span className="text-muted-foreground">厂商</span>
                 <Input value={form.vendor} onChange={(e) => set("vendor", e.target.value)} placeholder="Apache" />
               </label>
-              <label className="flex flex-col gap-1 text-xs">
+              <div className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">严重度</span>
                 <Select value={form.severity} onValueChange={(v) => set("severity", v as Severity)}>
                   <SelectTrigger className="w-full">
@@ -900,7 +900,7 @@ export default function CVEPage() {
                     ))}
                   </SelectContent>
                 </Select>
-              </label>
+              </div>
               <label className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">CVSS</span>
                 <Input
@@ -972,7 +972,7 @@ export default function CVEPage() {
                   placeholder="Example Admin"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-xs md:col-span-2">
+              <div className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">测绘语法（FOFA / Hunter / Shodan，一行一条）</span>
                 <Textarea
                   rows={3}
@@ -982,11 +982,11 @@ export default function CVEPage() {
                     'FOFA: app="Example" && country="CN"\nHunter: web.title="Example Admin"\nShodan: http.title:"Example Admin"'
                   }
                 />
-              </label>
+              </div>
             </section>
 
             <section className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <label className="flex flex-col gap-1 text-xs">
+              <div className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">详细描述（Markdown）</span>
                 <Textarea
                   rows={6}
@@ -994,8 +994,8 @@ export default function CVEPage() {
                   onChange={(e) => set("description", e.target.value)}
                   placeholder="影响、触发条件、危害…"
                 />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
+              </div>
+              <div className="flex flex-col gap-1 text-xs">
                 <span className="text-muted-foreground">快速探测 / 手工验证（Markdown）</span>
                 <Textarea
                   rows={6}
@@ -1003,8 +1003,8 @@ export default function CVEPage() {
                   onChange={(e) => set("probe_guide", e.target.value)}
                   placeholder="没有脚本或版本不匹配时，Agent 按这里继续验证"
                 />
-              </label>
-              <label className="flex flex-col gap-1 text-xs md:col-span-2">
+              </div>
+              <div className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-muted-foreground">参考链接（一行一个）</span>
                 <Textarea
                   rows={2}
@@ -1012,7 +1012,7 @@ export default function CVEPage() {
                   onChange={(e) => set("refsText", e.target.value)}
                   placeholder="https://..."
                 />
-              </label>
+              </div>
             </section>
 
             <section className="space-y-3 rounded-lg border p-3">
@@ -1039,7 +1039,7 @@ export default function CVEPage() {
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <label className="flex flex-col gap-1 text-xs">
+                <div className="flex flex-col gap-1 text-xs">
                   <span className="text-muted-foreground">语言</span>
                   <Select value={form.exploit_language} onValueChange={(v) => set("exploit_language", v)}>
                     <SelectTrigger className="w-full">
@@ -1053,7 +1053,7 @@ export default function CVEPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                </label>
+                </div>
                 <label className="flex flex-col gap-1 text-xs">
                   <span className="text-muted-foreground">文件名（仅展示）</span>
                   <Input

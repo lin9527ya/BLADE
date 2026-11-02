@@ -1,15 +1,15 @@
 "use client";
 
-import * as React from "react";
+import { Loader2Icon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
 
-import { statusIcon } from "./session-helpers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
-import { IntentAsset, Session } from "@/lib/types";
+import type { IntentAsset, Session } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Loader2Icon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
+
+import { statusIcon } from "./session-helpers";
 
 // 会话列表的条目与 worker 资产徽标。
 
@@ -62,7 +62,7 @@ export function SessionItem({
       >
         {icon ?? <span className="size-3.5 shrink-0" />}
         {s.intent_id && (
-          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
             #{s.worker_no ?? s.intent_id}
           </span>
         )}
@@ -72,7 +72,7 @@ export function SessionItem({
           </Badge>
         )}
         <span
-          className={cn("min-w-0 flex-1 truncate text-sm font-medium", deleted && "text-muted-foreground line-through")}
+          className={cn("min-w-0 flex-1 truncate font-medium text-sm", deleted && "text-muted-foreground line-through")}
         >
           {displayTitle}
         </span>
@@ -83,12 +83,12 @@ export function SessionItem({
         )}
         {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
         {!active && unread ? (
-          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
+          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 font-medium text-[10px] text-blue-600 tabular-nums dark:text-blue-400">
             {unread > 99 ? "99+" : unread}
           </span>
         ) : null}
         {s.live && (
-          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 font-medium text-[10px] text-blue-600 dark:text-blue-400">
             <span className="size-1 animate-pulse rounded-full bg-blue-500" />
             实时
           </span>
@@ -142,11 +142,11 @@ export function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
           {displayAssets.map((asset) => (
             <div key={`${asset.intent_id}-${asset.asset_id}`} className="min-w-0">
               <div className="break-all font-mono text-xs">{asset.label.trim() || `#${asset.asset_id}`}</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">
+              <div className="mt-0.5 text-muted-foreground text-xs">
                 {taskAssetTypeLabel(asset.type)} · {taskAssetSourceLabel(asset.source)}
                 {asset.inherited ? ` · 来源任务 #${asset.source_task_id}` : ""}
               </div>
-              <div className="mt-0.5 [overflow-wrap:anywhere] text-xs">{asset.source_summary}</div>
+              <div className="mt-0.5 text-xs [overflow-wrap:anywhere]">{asset.source_summary}</div>
             </div>
           ))}
         </div>

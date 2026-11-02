@@ -495,7 +495,7 @@ export function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                         <span className="truncate font-medium">
                           {archive.task_name || archive.task_description || `任务 #${archive.task_id}`}
                         </span>
-                        <span className="text-muted-foreground truncate text-xs">
+                        <span className="truncate text-muted-foreground text-xs">
                           #{archive.task_id} · {archive.task_description}
                         </span>
                       </div>
@@ -504,7 +504,7 @@ export function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                       <StatusBadge domain="task" value={archive.original_status} dot />
                     </TableCell>
                     <TableCell className="text-muted-foreground">{archive.category_name || "未分类"}</TableCell>
-                    <TableCell className="text-muted-foreground whitespace-nowrap text-xs">
+                    <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
                       {archiveDate(archive.archived_at || archive.requested_at)}
                     </TableCell>
                     <TableCell

@@ -63,7 +63,7 @@ export function DiffView({ oldText, newText }: { oldText: string; newText: strin
             l.type === "same" && "text-muted-foreground",
           )}
         >
-          <span className="select-none mr-1 opacity-50">{l.type === "del" ? "-" : l.type === "add" ? "+" : " "}</span>
+          <span className="mr-1 select-none opacity-50">{l.type === "del" ? "-" : l.type === "add" ? "+" : " "}</span>
           {l.text}
         </div>
       ))}
@@ -95,7 +95,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
     try {
       await api.saveAgentConfig(agentKey, patch);
     } catch (e) {
-      toast.error("保存策略失败：" + (e as Error).message);
+      toast.error(`保存策略失败：${(e as Error).message}`);
     }
   }
   const [onInterval, setOnInterval] = React.useState(false);
@@ -238,7 +238,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
       });
       reload();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     }
   }
   async function del(id: number) {
@@ -247,7 +247,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
       if (editingId === id) resetForm();
       reload();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -459,7 +459,7 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
                       <span className="min-w-0">
                         <span className="font-medium">{tool.key}</span>
                         {tool.description && (
-                          <span className="text-muted-foreground line-clamp-1"> {tool.description}</span>
+                          <span className="line-clamp-1 text-muted-foreground"> {tool.description}</span>
                         )}
                       </span>
                     </label>
@@ -522,12 +522,12 @@ export function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="font-medium">{condLabel(t)}</span>
                 {!t.enabled && (
-                  <Badge variant="outline" className="text-destructive px-1 py-0 text-[9px]">
+                  <Badge variant="outline" className="px-1 py-0 text-[9px] text-destructive">
                     已停用
                   </Badge>
                 )}
               </div>
-              <div className="text-muted-foreground grid gap-0.5 text-xs">
+              <div className="grid gap-0.5 text-muted-foreground text-xs">
                 {t.interval_sec > 0 && t.interval_message && (
                   <div className="line-clamp-1">定时：{t.interval_message}</div>
                 )}

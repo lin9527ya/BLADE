@@ -1,6 +1,6 @@
+import { COLD_TAIL_KEEP, capSessionStore } from "./session-cache.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { COLD_TAIL_KEEP, capSessionStore } from "./session-cache.ts";
 
 const activity = (seq, kind = "tool_use") => ({ seq, kind, ts: String(seq) });
 const session = (count, lastTs, extra = {}) => ({

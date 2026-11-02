@@ -64,7 +64,7 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
       await load();
       onChanged?.();
     } catch (e) {
-      toast.error("废弃失败：" + (e as Error).message);
+      toast.error(`废弃失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -78,7 +78,7 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
       await load();
       onChanged?.();
     } catch (e) {
-      toast.error("恢复失败：" + (e as Error).message);
+      toast.error(`恢复失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -104,14 +104,14 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
         </DialogHeader>
         <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
           {rows.length === 0 && (
-            <p className="text-muted-foreground py-6 text-center text-sm">
+            <p className="py-6 text-center text-muted-foreground text-sm">
               还没有沉淀。任务里可用 promote_knowledge 工具，或在发现详情页点「沉淀到公司知识」。
             </p>
           )}
           {rows.map((k) => (
             <div key={k.id} className="flex flex-col gap-1 rounded-md border px-3 py-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[11px]">
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   {KIND_LABELS[k.kind] ?? k.kind}
                 </span>
                 <span
@@ -119,11 +119,11 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
                 >
                   {k.summary}
                 </span>
-                {k.confidence && <span className="text-muted-foreground text-[11px]">置信度 {k.confidence}</span>}
+                {k.confidence && <span className="text-[11px] text-muted-foreground">置信度 {k.confidence}</span>}
                 {k.status === "deprecated" && <span className="text-[11px] text-amber-600">已废弃</span>}
               </div>
-              {k.detail && <p className="text-muted-foreground text-xs whitespace-pre-wrap">{k.detail}</p>}
-              <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 text-[11px]">
+              {k.detail && <p className="whitespace-pre-wrap text-muted-foreground text-xs">{k.detail}</p>}
+              <div className="flex flex-wrap items-center gap-x-3 text-[11px] text-muted-foreground">
                 {k.source_task_id && (
                   <a
                     className="hover:underline"

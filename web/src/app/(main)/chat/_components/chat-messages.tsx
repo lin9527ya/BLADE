@@ -17,21 +17,21 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
-import { pollConversationTail } from "@/lib/conversation-tail";
 import { api } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
+import { pollConversationTail } from "@/lib/conversation-tail";
 import { rememberInputHistory } from "@/lib/input-history";
 import { isBtwCommand } from "@/lib/side-questions";
 import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { fmtBytes, fmtDuration, fmtTokens, HISTORY_PAGE } from "./chat-helpers";
+import { fmtBytes, fmtTokens, HISTORY_PAGE } from "./chat-helpers";
 
 // 对话正文：消息视图、输入框（含附件）、LLM 配置行与草稿会话。
 
 export function LiveBadge() {
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+    <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 font-medium text-[10px] text-blue-600 dark:text-blue-400">
       <span className="size-1 animate-pulse rounded-full bg-blue-500" />
       实时
     </span>
@@ -203,7 +203,7 @@ export function LLMProfileRow({
 
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-1 px-1 pt-0.5 pb-1">
-      <ZapIcon className="text-muted-foreground/50 size-3 shrink-0" />
+      <ZapIcon className="size-3 shrink-0 text-muted-foreground/50" />
       <span className="truncate text-muted-foreground/70 text-xs" title={label}>
         {label}
       </span>
@@ -219,7 +219,7 @@ export function LLMProfileRow({
           </button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-64 p-1">
-          <p className="text-muted-foreground px-2 py-1 text-[11px] font-medium">选择 LLM 配置</p>
+          <p className="px-2 py-1 font-medium text-[11px] text-muted-foreground">选择 LLM 配置</p>
           {/* default option */}
           <button
             type="button"
@@ -234,7 +234,7 @@ export function LLMProfileRow({
           >
             <span className="text-sm">默认{activeDefault ? `（${activeDefault.name}）` : ""}</span>
             {activeDefault && (
-              <span className="text-muted-foreground text-[11px]">
+              <span className="text-[11px] text-muted-foreground">
                 {activeDefault.format} · {activeDefault.model}
               </span>
             )}
@@ -253,7 +253,7 @@ export function LLMProfileRow({
               )}
             >
               <span className="text-sm">{p.name}</span>
-              <span className="text-muted-foreground text-[11px]">
+              <span className="text-[11px] text-muted-foreground">
                 {p.format} · {p.model}
               </span>
             </button>
@@ -300,7 +300,7 @@ export function DraftChat({
       await api.sendConversationMessage(c.id, msg);
       onStarted(c);
     } catch (e) {
-      toast.error("发送失败：" + (e as Error).message);
+      toast.error(`发送失败：${(e as Error).message}`);
       setSending(false);
     }
   }
@@ -318,7 +318,7 @@ export function DraftChat({
       const r = await api.chatUpload("session", `conv-${c.id}`, files);
       onStarted(c, { input, attachments: r.attachments });
     } catch (e) {
-      toast.error("上传失败：" + (e as Error).message);
+      toast.error(`上传失败：${(e as Error).message}`);
       setUploading(false);
     }
   }
@@ -352,11 +352,11 @@ export function DraftChat({
     <>
       {/* empty / landing state fills the panel */}
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-        <div className="bg-primary/10 flex size-12 items-center justify-center rounded-full">
-          <Bot className="text-primary size-6" />
+        <div className="flex size-12 items-center justify-center rounded-full bg-primary/10">
+          <Bot className="size-6 text-primary" />
         </div>
-        <div className="text-sm font-medium">开始和「{agent?.name ?? "Agent"}」对话</div>
-        {agent?.description && <p className="text-muted-foreground max-w-md text-xs">{agent.description}</p>}
+        <div className="font-medium text-sm">开始和「{agent?.name ?? "Agent"}」对话</div>
+        {agent?.description && <p className="max-w-md text-muted-foreground text-xs">{agent.description}</p>}
       </div>
 
       <Composer
@@ -427,7 +427,7 @@ export function ChatView({
       await api.updateConversationProfile(conv.id, id);
       onConvUpdated();
     } catch (e) {
-      toast.error("切换 LLM 失败：" + (e as Error).message);
+      toast.error(`切换 LLM 失败：${(e as Error).message}`);
     }
   }
 
@@ -631,7 +631,7 @@ export function ChatView({
       const r = await api.chatUpload("session", `conv-${conv.id}`, files);
       setAttachments((prev) => [...prev, ...r.attachments]);
     } catch (e) {
-      toast.error("上传失败：" + (e as Error).message);
+      toast.error(`上传失败：${(e as Error).message}`);
     } finally {
       setUploading(false);
     }
@@ -651,7 +651,7 @@ export function ChatView({
       // fetch avoids racing a separate post-send request against the poller.
       setRunning(true);
     } catch (e) {
-      toast.error("发送失败：" + (e as Error).message);
+      toast.error(`发送失败：${(e as Error).message}`);
       setInput(msg); // restore so the user doesn't lose their text
       setAttachments(atts); // and their attachments
     } finally {
@@ -668,7 +668,7 @@ export function ChatView({
     try {
       await api.stopConversation(conv.id);
     } catch (e) {
-      toast.error("停止失败：" + (e as Error).message);
+      toast.error(`停止失败：${(e as Error).message}`);
     } finally {
       setStopping(false);
     }
@@ -678,20 +678,20 @@ export function ChatView({
     <SideQuestionWorkspace side={side} label={agent?.name ?? conv.agent_key} composerLayout="inline">
       {/* header: which agent + live + token meta */}
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b px-4 py-2.5">
-        <Bot className="text-muted-foreground size-4 shrink-0" />
-        <span className="min-w-0 max-w-48 truncate text-sm font-medium">{agent?.name ?? conv.agent_key}</span>
-        <span className="text-muted-foreground hidden shrink-0 font-mono text-xs sm:inline">{conv.agent_key}</span>
+        <Bot className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 max-w-48 truncate font-medium text-sm">{agent?.name ?? conv.agent_key}</span>
+        <span className="hidden shrink-0 font-mono text-muted-foreground text-xs sm:inline">{conv.agent_key}</span>
         {agent && !agent.builtin && (
           <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">
             自定义
           </Badge>
         )}
         {agent?.description && (
-          <span className="text-muted-foreground min-w-0 truncate text-xs">{agent.description}</span>
+          <span className="min-w-0 truncate text-muted-foreground text-xs">{agent.description}</span>
         )}
         {running && <LiveBadge />}
         <SideQuestionButton side={side} />
-        <div className="text-muted-foreground ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-xs max-sm:w-full max-sm:flex-wrap">
+        <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-muted-foreground text-xs max-sm:w-full max-sm:flex-wrap">
           {tokenTotal.turns > 0 && (
             <span title="agent 循环轮次（模型调用次数）" className="tabular-nums">
               {tokenTotal.turns} 轮
@@ -708,16 +708,16 @@ export function ChatView({
       <ApprovalExecutionFocus focus={approvalFocus} history={focusHistory} />
 
       {/* messages */}
-      <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
+      <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
         <div className="min-w-0 max-w-full px-4 py-3" ref={contentRef}>
           {messages.length === 0 && !running ? (
-            <div className="text-muted-foreground py-10 text-center text-sm">
+            <div className="py-10 text-center text-muted-foreground text-sm">
               开始和「{agent?.name ?? conv.agent_key}」对话
             </div>
           ) : (
             <>
               {hasMore && (
-                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">向上滚动加载更早的消息…</div>
+                <div className="pb-2 text-center text-[11px] text-muted-foreground/70">向上滚动加载更早的消息…</div>
               )}
               <Transcript
                 activity={messages}

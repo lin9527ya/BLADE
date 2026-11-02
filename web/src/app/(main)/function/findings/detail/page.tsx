@@ -58,7 +58,7 @@ function fmtTime(ts: string) {
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-3 py-2.5">
-      <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">{label}</span>
+      <span className="shrink-0 pt-0.5 text-muted-foreground text-xs">{label}</span>
       <div className="flex min-w-0 flex-col items-end gap-1 text-right text-sm">{children}</div>
     </div>
   );
@@ -112,7 +112,7 @@ function FindingDetailInner() {
         toast.success(`严重等级已改为「${statusMeta("severity", next).label}」`);
       } catch (e) {
         setFinding((cur) => (cur ? { ...cur, severity: prev } : cur));
-        toast.error("更新失败：" + (e as Error).message);
+        toast.error(`更新失败：${(e as Error).message}`);
       }
     },
     [finding, id],
@@ -129,7 +129,7 @@ function FindingDetailInner() {
         toast.success(`处理状态已改为「${statusMeta("finding", next).label}」`);
       } catch (e) {
         setFinding((cur) => (cur ? { ...cur, status: prev } : cur));
-        toast.error("更新失败：" + (e as Error).message);
+        toast.error(`更新失败：${(e as Error).message}`);
       }
     },
     [finding, id],
@@ -164,10 +164,10 @@ function FindingDetailInner() {
             </Link>
           </Button>
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
-          <h1 className="max-w-md truncate text-sm font-semibold" title={title}>
+          <h1 className="max-w-md truncate font-semibold text-sm" title={title}>
             {title}
           </h1>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{finding.id}</code>
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{finding.id}</code>
           <Separator orientation="vertical" className="mx-1 h-4" />
           <StatusBadge domain="severity" value={finding.severity} dot />
           <StatusBadge domain="finding" value={finding.status} dot />
@@ -218,7 +218,7 @@ function FindingDetailInner() {
                   <CardTitle className="text-sm">摘要</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "（无摘要）"}</p>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{finding.summary || "（无摘要）"}</p>
                 </CardContent>
               </Card>
               {(finding.counterevidence || finding.proof_gap) && (
@@ -229,7 +229,7 @@ function FindingDetailInner() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed">
                       {finding.counterevidence || finding.proof_gap}
                     </p>
                   </CardContent>
@@ -242,11 +242,11 @@ function FindingDetailInner() {
                 </CardHeader>
                 <CardContent>
                   {finding.evidence ? (
-                    <pre className="max-h-[46vh] overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                    <pre className="max-h-[46vh] overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 font-mono text-xs">
                       {finding.evidence}
                     </pre>
                   ) : (
-                    <p className="text-sm text-muted-foreground">（无证据）</p>
+                    <p className="text-muted-foreground text-sm">（无证据）</p>
                   )}
                 </CardContent>
               </Card>
@@ -272,7 +272,7 @@ function FindingDetailInner() {
                   {finding.report ? (
                     <Markdown text={finding.report} />
                   ) : (
-                    <p className="text-sm text-muted-foreground">暂无详细报告。</p>
+                    <p className="text-muted-foreground text-sm">暂无详细报告。</p>
                   )}
                 </CardContent>
               </Card>
@@ -286,7 +286,7 @@ function FindingDetailInner() {
               <CardContent className="divide-y">
                 {/* 漏洞 ID */}
                 <FieldRow label="漏洞 ID">
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
                     #{finding.id}
                   </code>
                 </FieldRow>
@@ -337,7 +337,7 @@ function FindingDetailInner() {
 
                 {/* 置信度标定 */}
                 <FieldRow label="置信度">
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-muted-foreground text-xs">
                     {CONFIDENCE_LABELS[finding.confidence ?? ""] ?? "未标定"}
                   </span>
                 </FieldRow>

@@ -183,14 +183,14 @@ export function ADImportDialog({
               ref={fileRef}
               type="file"
               multiple
-              accept={cfg.accept.join(",") + ",application/json"}
+              accept={`${cfg.accept.join(",")},application/json`}
               className="hidden"
               onChange={(e) => {
                 void addFiles(e.target.files);
                 e.target.value = ""; // 同一个文件能连着选第二次
               }}
             />
-            <span className="text-xs text-muted-foreground">
+            <span className="text-muted-foreground text-xs">
               采集结果里没有的引用（未导的组/账号）会标成「推断节点」，不会被丢掉
             </span>
           </div>
@@ -200,7 +200,7 @@ export function ADImportDialog({
               {files.map((f, i) => (
                 <li key={`${f.name}-${i}`} className="flex items-center gap-2 text-sm">
                   <span className="truncate">{f.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{Math.round(f.json.length / 1024)} KB</span>
+                  <span className="shrink-0 text-muted-foreground text-xs">{Math.round(f.json.length / 1024)} KB</span>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -227,15 +227,15 @@ export function ADImportDialog({
                 {preview.edges_existing > 0 && <Badge variant="outline">已有关系 {preview.edges_existing}</Badge>}
               </div>
               {Object.keys(preview.objects).length > 0 && (
-                <p className="text-sm text-muted-foreground">{countSummary(preview.objects, CATEGORY_LABEL)}</p>
+                <p className="text-muted-foreground text-sm">{countSummary(preview.objects, CATEGORY_LABEL)}</p>
               )}
               {Object.keys(preview.edges).length > 0 && (
-                <p className="text-sm text-muted-foreground">{countSummary(preview.edges, REL_LABEL)}</p>
+                <p className="text-muted-foreground text-sm">{countSummary(preview.edges, REL_LABEL)}</p>
               )}
 
               {preview.highvalue.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">高价值对象（路径会往这些目标收敛）</p>
+                  <p className="font-medium text-muted-foreground text-xs">高价值对象（路径会往这些目标收敛）</p>
                   <ul className="space-y-0.5 text-xs">
                     {preview.highvalue.map((h) => (
                       <li key={`${h.category}-${h.name}`} className="flex items-center gap-2">
@@ -252,8 +252,8 @@ export function ADImportDialog({
 
               {preview.warnings.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">提醒</p>
-                  <ul className="space-y-0.5 text-xs text-muted-foreground">
+                  <p className="font-medium text-muted-foreground text-xs">提醒</p>
+                  <ul className="space-y-0.5 text-muted-foreground text-xs">
                     {preview.warnings.map((w) => (
                       <li key={w}>{w}</li>
                     ))}
@@ -263,10 +263,10 @@ export function ADImportDialog({
 
               {preview.skipped_rights && Object.keys(preview.skipped_rights).length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">
+                  <p className="font-medium text-muted-foreground text-xs">
                     未建边的权限（白名单外，避免图被噪声淹没）
                   </p>
-                  <p className="font-mono text-xs text-muted-foreground">
+                  <p className="font-mono text-muted-foreground text-xs">
                     {Object.entries(preview.skipped_rights)
                       .map(([k, v]) => `${k}×${v}`)
                       .join("、")}

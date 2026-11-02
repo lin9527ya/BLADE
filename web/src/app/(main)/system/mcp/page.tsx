@@ -228,7 +228,7 @@ export default function MCPPage() {
       if (!editing) setSelectedId(null); // 新加的服务器让用户自己在左栏点
       load();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -243,7 +243,7 @@ export default function MCPPage() {
       toast.success(`发现 ${t.length} 个工具`);
       load();
     } catch (e) {
-      toast.error("刷新失败：" + (e as Error).message);
+      toast.error(`刷新失败：${(e as Error).message}`);
     } finally {
       setRefreshing(false);
     }
@@ -259,7 +259,7 @@ export default function MCPPage() {
       }
       load();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -268,7 +268,7 @@ export default function MCPPage() {
       await api.saveMcpServer({ ...s, enabled: !s.enabled });
       load();
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -283,7 +283,7 @@ export default function MCPPage() {
       toast.success(enabled ? `已启用「${t.name}」` : `已停用「${t.name}」：不再注入任何 Agent 的工具面`);
       load(); // 左栏的「N 个工具 · M 停用」跟着变
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
       await loadTools(selected.id);
     } finally {
       setTogglingTool(null);
@@ -297,7 +297,7 @@ export default function MCPPage() {
       toast.success(r.note || `已重置「${s.name}」的熔断`);
       load();
     } catch (e) {
-      toast.error("重置失败：" + (e as Error).message);
+      toast.error(`重置失败：${(e as Error).message}`);
     }
   }
 
@@ -308,7 +308,7 @@ export default function MCPPage() {
       toast.success(`${on ? "取消" : "授予"}「${agentName}」可见`);
       load();
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -417,8 +417,8 @@ export default function MCPPage() {
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
-              <ServerIcon className="text-muted-foreground size-4 shrink-0" />
-              <h2 className="truncate text-lg font-semibold tracking-tight">{s.name}</h2>
+              <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
+              <h2 className="truncate font-semibold text-lg tracking-tight">{s.name}</h2>
               <Badge variant="outline" className="uppercase">
                 {s.transport}
               </Badge>
@@ -531,7 +531,7 @@ export default function MCPPage() {
           actions={
             <>
               <div className="relative">
-                <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   className="h-8 w-44 pl-7 text-xs"
                   placeholder="筛选工具名/描述"
@@ -565,7 +565,7 @@ export default function MCPPage() {
                     >
                       <ChevronRightIcon
                         className={cn(
-                          "text-muted-foreground mt-0.5 size-3.5 shrink-0 transition-transform",
+                          "mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform",
                           expandedTools.has(t.name) && "rotate-90",
                         )}
                       />
@@ -584,7 +584,7 @@ export default function MCPPage() {
                           )}
                         </div>
                         {t.description && (
-                          <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
+                          <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">{t.description}</p>
                         )}
                       </div>
                     </button>
@@ -630,7 +630,7 @@ export default function MCPPage() {
     <div data-content-padding="false" className="flex flex-1 flex-col overflow-hidden">
       <div className="flex items-center gap-3 border-b px-4 py-2.5 lg:px-6">
         <div className="flex flex-col gap-0.5">
-          <h1 className="text-sm leading-tight font-semibold">MCP</h1>
+          <h1 className="font-semibold text-sm leading-tight">MCP</h1>
           <p className="text-muted-foreground text-xs">外部 MCP 工具服务器 · 按 Agent 授权可见</p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -668,10 +668,10 @@ export default function MCPPage() {
             )}
           </div>
           {/* Radix viewport 默认把内容包进 display:table 的 div（长名字会把行撑宽），改 block。 */}
-          <ScrollArea className="flex-1 [&>[data-slot=scroll-area-viewport]>div]:!block">
+          <ScrollArea className="[&>[data-slot=scroll-area-viewport]>div]:!block flex-1">
             <div className="flex flex-col gap-1 p-2">
               {servers.length === 0 && (
-                <p className="text-muted-foreground p-3 text-xs leading-relaxed">
+                <p className="p-3 text-muted-foreground text-xs leading-relaxed">
                   还没有 MCP 服务器。点右上角「添加 MCP」接入 stdio（本地起进程）或 http（远程）。
                 </p>
               )}
@@ -690,8 +690,8 @@ export default function MCPPage() {
                     )}
                   >
                     <div className="flex items-center gap-2">
-                      <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium" title={s.name}>
+                      <ServerIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate font-medium text-sm" title={s.name}>
                         {s.name}
                       </span>
                       <Badge variant="outline" className="px-1.5 py-0 text-[10px] uppercase">
@@ -704,7 +704,7 @@ export default function MCPPage() {
                         {(s.tools_disabled ?? 0) > 0 ? ` · ${s.tools_disabled} 停用` : ""}
                       </span>
                       {!s.enabled && (
-                        <Badge variant="outline" className="text-destructive px-1.5 py-0 text-[10px]">
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-destructive">
                           已停用
                         </Badge>
                       )}
@@ -729,7 +729,7 @@ export default function MCPPage() {
         {/* ── 右栏：选中 server 的完整明细 ── */}
         <div className="flex-1 overflow-y-auto">
           {!selected ? (
-            <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 p-8">
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-muted-foreground">
               <ServerIcon className="size-6" />
               <p className="text-sm">选择左侧的 MCP 服务器查看明细</p>
             </div>

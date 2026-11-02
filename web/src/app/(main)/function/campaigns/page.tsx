@@ -44,7 +44,7 @@ export default function CampaignsPage() {
       setRows(cs);
       setTasks(ts.tasks);
     } catch (e) {
-      toast.error("加载失败：" + String((e as Error)?.message ?? e));
+      toast.error(`加载失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setLoading(false);
     }
@@ -58,7 +58,7 @@ export default function CampaignsPage() {
     try {
       setSummary(await api.campaign(id));
     } catch (e) {
-      toast.error("打开失败：" + String((e as Error)?.message ?? e));
+      toast.error(`打开失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -77,7 +77,7 @@ export default function CampaignsPage() {
       await refresh();
     } catch (e) {
       const msg = String((e as Error)?.message ?? e);
-      toast.error(/已存在同名战役/.test(msg) ? "已存在同名战役" : "创建失败：" + msg);
+      toast.error(/已存在同名战役/.test(msg) ? "已存在同名战役" : `创建失败：${msg}`);
     } finally {
       setBusy(false);
     }
@@ -92,7 +92,7 @@ export default function CampaignsPage() {
       await refresh();
       await openDetail(c.campaign.id);
     } catch (e) {
-      toast.error("保存归属失败：" + String((e as Error)?.message ?? e));
+      toast.error(`保存归属失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setBusy(false);
     }
@@ -108,7 +108,7 @@ export default function CampaignsPage() {
       setSummary(null);
       await refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setBusy(false);
     }
@@ -121,7 +121,7 @@ export default function CampaignsPage() {
     <div className="flex h-[calc(100vh-6rem)] min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">战役</h1>
+          <h1 className="font-semibold text-xl tracking-tight">战役</h1>
           <p className="text-muted-foreground text-sm">
             一次作业 = 一个客户 + 若干任务。这里看的是这轮作业<b>总共</b>拿到了什么。
           </p>
@@ -139,7 +139,7 @@ export default function CampaignsPage() {
       <div className="min-h-0 flex-1 overflow-auto">
         {rows.length === 0 ? (
           <Card className="py-0">
-            <CardContent className="text-muted-foreground py-12 text-center text-sm">
+            <CardContent className="py-12 text-center text-muted-foreground text-sm">
               还没有战役。把同一轮作业下的任务归到一起，就能在这里看到汇总的战果与技术覆盖。
             </CardContent>
           </Card>
@@ -148,18 +148,18 @@ export default function CampaignsPage() {
             {rows.map((c) => (
               <Card
                 key={c.id}
-                className="hover:border-foreground/20 cursor-pointer py-0 transition-colors"
+                className="cursor-pointer py-0 transition-colors hover:border-foreground/20"
                 onClick={() => void openDetail(c.id)}
               >
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <FolderKanbanIcon className="text-muted-foreground size-4" />
+                      <FolderKanbanIcon className="size-4 text-muted-foreground" />
                       <span className="font-medium">{c.name}</span>
                     </div>
                     <Badge variant="outline">{c.task_count ?? 0} 个任务</Badge>
                   </div>
-                  {c.note && <p className="text-muted-foreground mt-2 line-clamp-2 text-xs">{c.note}</p>}
+                  {c.note && <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">{c.note}</p>}
                 </CardContent>
               </Card>
             ))}
@@ -223,7 +223,7 @@ export default function CampaignsPage() {
 
                 {summary.techniques && Object.keys(summary.techniques).length > 0 && (
                   <div>
-                    <p className="mb-1 text-sm font-medium">技术覆盖（ATT&CK）</p>
+                    <p className="mb-1 font-medium text-sm">技术覆盖（ATT&CK）</p>
                     <div className="flex flex-wrap gap-1.5">
                       {Object.entries(summary.techniques)
                         .sort(([a], [b]) => a.localeCompare(b))
@@ -238,7 +238,7 @@ export default function CampaignsPage() {
 
                 {summary.detection_results && Object.keys(summary.detection_results).length > 0 && (
                   <div>
-                    <p className="mb-1 text-sm font-medium">检测验证</p>
+                    <p className="mb-1 font-medium text-sm">检测验证</p>
                     <div className="flex flex-wrap gap-1.5">
                       {(
                         [
@@ -252,7 +252,7 @@ export default function CampaignsPage() {
                         </Badge>
                       ))}
                     </div>
-                    <p className="text-muted-foreground mt-1 text-xs">
+                    <p className="mt-1 text-muted-foreground text-xs">
                       「无法判定」不等于「未被检出」——三态分列，不合成检出率。
                     </p>
                   </div>
@@ -260,7 +260,7 @@ export default function CampaignsPage() {
 
                 <div>
                   <div className="mb-2 flex items-center justify-between">
-                    <p className="text-sm font-medium">任务（{summary.tasks.length}）</p>
+                    <p className="font-medium text-sm">任务（{summary.tasks.length}）</p>
                     {candidates.length > 0 && (
                       <Select
                         value=""

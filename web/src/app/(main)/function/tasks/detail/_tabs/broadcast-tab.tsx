@@ -27,14 +27,13 @@ import {
   TargetIcon,
 } from "lucide-react";
 
+import { PayloadBeautified } from "@/components/_parts/node-detail-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
-import { PayloadBeautified } from "@/components/_parts/node-detail-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
@@ -272,13 +271,13 @@ function PayloadPanel({ node, maxClass = "max-h-64" }: { node: TaskNode; maxClas
   return (
     <div>
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">payload</span>
+        <span className="font-medium text-muted-foreground text-xs">payload</span>
         <div className="flex items-center gap-2">
           {redacted && <span className="text-[10px] text-muted-foreground">凭据本体已脱敏</span>}
           <button
             type="button"
             onClick={() => setRaw((v) => !v)}
-            className="text-muted-foreground hover:text-foreground text-[11px] underline underline-offset-2"
+            className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
           >
             {raw ? "美化" : "原始 JSON"}
           </button>
@@ -288,7 +287,7 @@ function PayloadPanel({ node, maxClass = "max-h-64" }: { node: TaskNode; maxClas
         <pre
           className={cn(
             maxClass,
-            "overflow-auto rounded-md border bg-background p-3 font-mono text-[11px] whitespace-pre-wrap",
+            "overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 font-mono text-[11px]",
           )}
         >
           {prettyPayload(node.payload)}
@@ -327,7 +326,7 @@ function NodeStateBadge({ node }: { node: TaskNode }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 font-medium text-xs",
         toneClasses[meta.tone],
       )}
     >
@@ -340,7 +339,7 @@ function NodeStateBadge({ node }: { node: TaskNode }) {
 function KindChip({ kind }: { kind: string }) {
   const meta = KIND_META[kind] ?? KIND_META.fact;
   return (
-    <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium whitespace-nowrap", meta.chip)}>{meta.label}</span>
+    <span className={cn("whitespace-nowrap rounded px-1.5 py-0.5 font-medium text-xs", meta.chip)}>{meta.label}</span>
   );
 }
 
@@ -350,7 +349,7 @@ function AssetList({ assets, dense = false }: { assets: FindingAsset[]; dense?: 
   if (assets.length === 0) return null;
   return (
     <div>
-      <div className="mb-1.5 text-xs font-medium text-muted-foreground">涉及资产 · {assets.length}</div>
+      <div className="mb-1.5 font-medium text-muted-foreground text-xs">涉及资产 · {assets.length}</div>
       <ul className="flex flex-wrap gap-1.5">
         {assets.map((a) => {
           // 运行时 a.type 可能是标签表未覆盖的类型,退回原始字符串。转一层类型让回退不被判成多余。
@@ -386,18 +385,18 @@ function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsse
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <KindChip kind={kind} />
-        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{node.id}</code>
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{node.id}</code>
         <NodeStateBadge node={node} />
         {node.priority > 0 && (kind === "goal" || kind === "intent") && (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">P{node.priority}</span>
+          <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">P{node.priority}</span>
         )}
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground text-xs">
         <span>类型 {meta.label}</span>
         <span>来源 {node.origin || "system"}</span>
         <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
       </div>
-      <p className="line-clamp-4 text-xs break-words">{summary || "（无摘要）"}</p>
+      <p className="line-clamp-4 break-words text-xs">{summary || "（无摘要）"}</p>
       <AssetList assets={assets} dense />
       <PayloadPanel node={node} maxClass="max-h-40" />
     </div>
@@ -419,7 +418,7 @@ function RelatedList({
   if (rows.length === 0) return null;
   return (
     <div className="min-w-0 flex-1">
-      <div className="mb-1.5 text-xs font-medium text-muted-foreground">{title}</div>
+      <div className="mb-1.5 font-medium text-muted-foreground text-xs">{title}</div>
       <ul className="flex flex-col gap-1.5">
         {rows.map((row) => {
           const node = refs[row.id];
@@ -481,7 +480,7 @@ function BroadcastRow({
   return (
     <div className={cn("relative grid grid-cols-[4.5rem_1.75rem_1fr] gap-x-2", fresh && "bg-primary/5")}>
       {/* 时间列 */}
-      <div className="py-3 text-right text-xs text-muted-foreground tabular-nums">
+      <div className="py-3 text-right text-muted-foreground text-xs tabular-nums">
         <div>{Number.isNaN(ts) ? "--:--:--" : clockFmt.format(ts)}</div>
         <div className="text-[11px] opacity-70">{relTime(ts, now)}</div>
       </div>
@@ -512,17 +511,17 @@ function BroadcastRow({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <KindChip kind={kind} />
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{node.id}</code>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{node.id}</code>
               <NodeStateBadge node={node} />
               {node.priority > 0 && (kind === "goal" || kind === "intent") && (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">P{node.priority}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">P{node.priority}</span>
               )}
               {fresh && (
-                <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
+                <span className="rounded bg-primary px-1.5 py-0.5 font-semibold text-[10px] text-primary-foreground">
                   新
                 </span>
               )}
-              <span className="ml-auto shrink-0 text-xs text-muted-foreground">{node.origin || "system"}</span>
+              <span className="ml-auto shrink-0 text-muted-foreground text-xs">{node.origin || "system"}</span>
             </div>
             <p className={cn("mt-1 text-sm", !open && "line-clamp-2")}>{summary || `节点 #${node.id}`}</p>
           </div>
@@ -530,7 +529,7 @@ function BroadcastRow({
 
         {open && (
           <div className="mt-2 ml-5 flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground text-xs">
               <span>
                 节点 <code className="font-mono">#{node.id}</code>
               </span>
@@ -714,7 +713,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
                 onClick={() => toggleKind(kind)}
                 aria-pressed={active}
                 className={cn(
-                  "rounded-md border px-2 py-0.5 text-xs font-medium transition-colors",
+                  "rounded-md border px-2 py-0.5 font-medium text-xs transition-colors",
                   active ? meta.chip : "border-transparent text-muted-foreground hover:bg-accent",
                 )}
               >
@@ -768,7 +767,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
         <button
           type="button"
           onClick={backToLive}
-          className="flex w-full items-center justify-center gap-1.5 border-b bg-primary/10 py-1.5 text-xs font-medium text-primary hover:bg-primary/15"
+          className="flex w-full items-center justify-center gap-1.5 border-b bg-primary/10 py-1.5 font-medium text-primary text-xs hover:bg-primary/15"
         >
           <ArrowUpToLineIcon className="size-3.5" />
           {pending > 99 ? "99+" : pending} 条新播报 · 回到最新
@@ -783,13 +782,13 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
             ))}
           </div>
         ) : items.length === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">
+          <p className="py-10 text-center text-muted-foreground text-sm">
             {query || kinds.length > 0 ? "没有符合条件的播报。" : "这个任务还没有产生探索节点。"}
           </p>
         ) : (
           groups.map((group) => (
             <div key={group.day}>
-              <div className="py-2 pl-[6.25rem] text-xs font-medium text-muted-foreground">{group.day}</div>
+              <div className="py-2 pl-[6.25rem] font-medium text-muted-foreground text-xs">{group.day}</div>
               {group.rows.map((node) => (
                 <BroadcastRow
                   key={node.id}
@@ -806,7 +805,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
         )}
       </CardContent>
 
-      <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground">
+      <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-muted-foreground text-xs">
         <TablePagination
           variant="compact"
           page={page}

@@ -89,7 +89,7 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
       await load();
       onChanged?.();
     } catch (error) {
-      toast.error("保存失败：" + (error as Error).message);
+      toast.error(`保存失败：${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -104,7 +104,7 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
       onChanged?.();
       toast.success("已设为默认模板");
     } catch (error) {
-      toast.error("设置默认失败：" + (error as Error).message);
+      toast.error(`设置默认失败：${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -122,7 +122,7 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
       onChanged?.();
       toast.success("模板已删除");
     } catch (error) {
-      toast.error("删除失败：" + (error as Error).message);
+      toast.error(`删除失败：${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -166,7 +166,7 @@ export function PlannerTemplateManager({ onChanged }: { onChanged?: () => void }
                     </span>
                   </button>
                 ))}
-                {templates.length === 0 && <span className="p-2 text-xs text-muted-foreground">暂无模板</span>}
+                {templates.length === 0 && <span className="p-2 text-muted-foreground text-xs">暂无模板</span>}
               </div>
             </ScrollArea>
           </div>

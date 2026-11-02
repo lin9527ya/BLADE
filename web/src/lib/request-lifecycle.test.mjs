@@ -1,6 +1,6 @@
+import { createLatestRequest, HttpError, retryRequest, runLatestRequest } from "./request-lifecycle.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createLatestRequest, HttpError, retryRequest, runLatestRequest } from "./request-lifecycle.ts";
 
 test("a superseded response cannot publish over its replacement", async () => {
   const owner = createLatestRequest();

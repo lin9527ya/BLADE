@@ -21,7 +21,6 @@ import {
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
-import { AlertDialog } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -51,7 +50,6 @@ import {
   fmtDateTime,
   fmtDuration,
   fmtTokens,
-  POLL_MS,
   type TaskSortField,
   taskControlAction,
   taskDuration,
@@ -239,16 +237,16 @@ export const TaskRow = React.memo(function TaskRow({
         />
       </TableCell>
       <TableCell>
-        <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-xs">{task.id}</code>
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{task.id}</code>
       </TableCell>
       <TableCell className="font-medium">
         <div className="flex max-w-xs items-center gap-2">
           <TaskNameEditor task={task} onRename={onRename} />
           {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
-          {taskIsPinned(task) && <PinIcon className="text-primary size-4 shrink-0" aria-label="已置顶" />}
+          {taskIsPinned(task) && <PinIcon className="size-4 shrink-0 text-primary" aria-label="已置顶" />}
         </div>
       </TableCell>
-      <TableCell className="text-muted-foreground max-w-40">
+      <TableCell className="max-w-40 text-muted-foreground">
         <Link
           href={`/function/tasks/detail?id=${encodeURIComponent(task.id)}`}
           className="block truncate rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -257,14 +255,14 @@ export const TaskRow = React.memo(function TaskRow({
           {task.description}
         </Link>
       </TableCell>
-      <TableCell className="text-muted-foreground max-w-40 truncate" title={task.goal}>
+      <TableCell className="max-w-40 truncate text-muted-foreground" title={task.goal}>
         {task.goal}
       </TableCell>
       <TableCell>
         <StatusBadge domain="task" value={task.status} dot />
         {(task.policy_techniques?.length ?? 0) + (task.policy_writes?.length ?? 0) + (task.policy_custom ?? 0) > 0 && (
           <span
-            className="text-muted-foreground ml-1.5 rounded border px-1 py-0.5 text-[10px]"
+            className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground"
             title={`探索策略：禁用 ${task.policy_techniques?.length ?? 0} 类手段、${
               task.policy_writes?.length ?? 0
             } 类敏感写${task.policy_custom ? `、${task.policy_custom} 条自定义条目` : ""}${
@@ -275,7 +273,7 @@ export const TaskRow = React.memo(function TaskRow({
           </span>
         )}
       </TableCell>
-      <TableCell className="text-muted-foreground text-center text-xs tabular-nums">
+      <TableCell className="text-center text-muted-foreground text-xs tabular-nums">
         {typeof task.goals_total === "number" && task.goals_total > 0 ? (
           `${task.goals_met}/${task.goals_total}`
         ) : (
@@ -289,7 +287,7 @@ export const TaskRow = React.memo(function TaskRow({
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
           const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
-            <span className="font-medium whitespace-nowrap" title="严重 / 高 / 中 / 低">
+            <span className="whitespace-nowrap font-medium" title="严重 / 高 / 中 / 低">
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
               <span className="text-muted-foreground">/</span>
               {seg(f.high, "text-red-600 dark:text-red-400")}
@@ -303,15 +301,15 @@ export const TaskRow = React.memo(function TaskRow({
       </TableCell>
       <TableCell className="text-center text-xs tabular-nums">
         {task.in_flight && task.in_flight > 0 ? (
-          <span className="text-foreground font-medium">{task.in_flight}</span>
+          <span className="font-medium text-foreground">{task.in_flight}</span>
         ) : (
           <span className="text-muted-foreground">0</span>
         )}
       </TableCell>
-      <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap tabular-nums">
+      <TableCell className="whitespace-nowrap text-right text-muted-foreground text-xs tabular-nums">
         {fmtDateTime(task.created_unix)}
       </TableCell>
-      <TableCell className="text-right text-xs whitespace-nowrap tabular-nums">
+      <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
         {(() => {
           const secs = taskDuration(task, nowSec);
           if (secs <= 0) return <span className="text-muted-foreground">—</span>;
@@ -323,7 +321,7 @@ export const TaskRow = React.memo(function TaskRow({
         })()}
       </TableCell>
       <TableCell
-        className="text-right text-xs whitespace-nowrap tabular-nums"
+        className="whitespace-nowrap text-right text-xs tabular-nums"
         title={
           task.tokens
             ? `输入 ${task.tokens.input_tokens} · 缓存 ${task.tokens.cache_read_tokens} · 输出 ${task.tokens.output_tokens}` +

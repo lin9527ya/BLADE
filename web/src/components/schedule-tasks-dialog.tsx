@@ -10,7 +10,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -163,7 +162,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
       setFormOpen(false);
       await load();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -178,7 +177,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
         enabled ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at)}）` : "已停用（排期已清空）",
       );
     } catch (e) {
-      toast.error("切换失败：" + (e as Error).message);
+      toast.error(`切换失败：${(e as Error).message}`);
       await load();
     }
   }
@@ -191,7 +190,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
       onCreated?.();
       await load();
     } catch (e) {
-      toast.error("运行失败：" + (e as Error).message);
+      toast.error(`运行失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -204,7 +203,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
       toast.success("计划任务已删除（已建出的任务不受影响）");
       await load();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -231,7 +230,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
           {formOpen ? (
             <div className="grid gap-4">
               <div className="grid gap-2">
-                <Label className="text-sm font-normal text-muted-foreground">从模板预填（可选）</Label>
+                <Label className="font-normal text-muted-foreground text-sm">从模板预填（可选）</Label>
                 <NativeSelect
                   size="sm"
                   value=""
@@ -362,7 +361,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
                 </p>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <Label htmlFor="sched-enabled" className="text-sm font-normal text-muted-foreground">
+                <Label htmlFor="sched-enabled" className="font-normal text-muted-foreground text-sm">
                   创建后立即启用{form.enabled ? "" : "（保持停用，之后再开）"}
                 </Label>
                 <Switch
@@ -393,12 +392,12 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
                 rows.map((s) => (
                   <div key={s.id} className="flex flex-col gap-1.5 rounded-md border px-3 py-2">
                     <div className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium" title={s.name}>
+                      <span className="min-w-0 flex-1 truncate font-medium text-sm" title={s.name}>
                         {s.name}
                       </span>
                       <Switch checked={s.enabled} onCheckedChange={(v) => void toggle(s, v)} disabled={busy} />
                     </div>
-                    <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
                       <span>{s.frequency_text}</span>
                       <span>下次 {s.enabled ? fmtLocal(s.next_run_at) : "（停用）"}</span>
                       <span>上次 {fmtLocal(s.last_run_at)}</span>
@@ -411,7 +410,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
                         </a>
                       )}
                     </div>
-                    {s.last_error && <span className="text-xs text-red-500">上次失败：{s.last_error}</span>}
+                    {s.last_error && <span className="text-red-500 text-xs">上次失败：{s.last_error}</span>}
                     <div className="flex items-center gap-1.5">
                       <Button
                         size="sm"

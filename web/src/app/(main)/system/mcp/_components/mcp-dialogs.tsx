@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MCP_CATALOG } from "@/lib/mcp-catalog";
-import type { Agent, MCPServer } from "@/lib/types";
+import type { MCPServer } from "@/lib/types";
 
 // MCP 页尾部的三个弹窗：推荐目录（只预填不安装）、添加/编辑服务器、删除确认。
 // 抽出来是为了让页面本体只剩列表与明细两栏。
@@ -68,20 +68,20 @@ export function MCPDialogs({
                 <div key={item.name} className="flex items-start gap-3 py-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium">{item.title}</span>
+                      <span className="font-medium text-sm">{item.title}</span>
                       <Badge variant="outline" className="px-1.5 py-0 text-[10px] uppercase">
                         {item.transport}
                       </Badge>
-                      <code className="text-muted-foreground font-mono text-[11px]">{item.name}</code>
+                      <code className="font-mono text-[11px] text-muted-foreground">{item.name}</code>
                     </div>
-                    <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{item.desc}</p>
+                    <p className="mt-1 text-muted-foreground text-xs leading-relaxed">{item.desc}</p>
                     {(item.needs || item.note) && (
-                      <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
+                      <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
                         {item.needs && <>需要：{item.needs}　</>}
                         {item.note}
                       </p>
                     )}
-                    <p className="text-muted-foreground mt-1 font-mono text-[11px]">
+                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">
                       {item.transport === "stdio" ? `${item.command} ${item.args ?? ""}` : (item.url ?? "")}
                     </p>
                   </div>

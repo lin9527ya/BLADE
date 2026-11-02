@@ -62,7 +62,7 @@ export function assetTarget(a: Asset): string {
     case "service":
       return a.service_name || a.url || "—";
     case "endpoint":
-      return (a.method ? a.method + " " : "") + (a.url || "—");
+      return (a.method ? `${a.method} ` : "") + (a.url || "—");
     default:
       return a.domain || a.ip || a.url || "—";
   }
@@ -131,7 +131,7 @@ export function AssetCard({
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
-      <div className="min-h-0 flex-1 overflow-auto scrollbar-thin scrollbar-track-transparent">
+      <div className="scrollbar-thin scrollbar-track-transparent min-h-0 flex-1 overflow-auto">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-card">
             <TableRow>
@@ -154,7 +154,7 @@ export function AssetCard({
               childRows
             ) : (
               <TableRow>
-                <TableCell colSpan={cols.length} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={cols.length} className="py-12 text-center text-muted-foreground text-sm">
                   {loaded ? "暂无数据。" : "加载中…"}
                 </TableCell>
               </TableRow>
@@ -179,7 +179,7 @@ export function AssetCard({
 
 export function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
   const clean = items.filter(Boolean);
-  if (clean.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
+  if (clean.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
   return (
     <div className="flex flex-wrap gap-1">
       {clean.map((s, i) => (

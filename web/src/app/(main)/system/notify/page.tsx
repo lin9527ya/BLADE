@@ -59,13 +59,13 @@ export default function NotifyPage() {
         setBaseURL(m.public_base_url);
         setDigestMin(m.digest_interval_min);
       })
-      .catch((e) => toast.error("读取推送配置失败：" + (e as Error).message));
+      .catch((e) => toast.error(`读取推送配置失败：${(e as Error).message}`));
     // 渠道列表加载失败要报出来：静默失败会显示成「一个渠道都没有」，
     // 用户会以为配置丢了，比直接报错更让人慌。
     api
       .notifyChannels()
       .then(setChannels)
-      .catch((e) => toast.error("读取渠道列表失败：" + (e as Error).message));
+      .catch((e) => toast.error(`读取渠道列表失败：${(e as Error).message}`));
   }, []);
   React.useEffect(() => {
     load();
@@ -190,7 +190,7 @@ export default function NotifyPage() {
       }
       load();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -204,7 +204,7 @@ export default function NotifyPage() {
       toast.success(`已发出测试消息（${r.latency_ms} ms），请到群里确认`);
     } catch (e) {
       // 后端把渠道返回的原始错误如实回传，这是排查配置的唯一线索，原样展示。
-      toast.error("测试失败：" + (e as Error).message, { duration: 12000 });
+      toast.error(`测试失败：${(e as Error).message}`, { duration: 12000 });
     } finally {
       setTesting(false);
     }
@@ -217,7 +217,7 @@ export default function NotifyPage() {
       setOpen(false);
       load();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -226,7 +226,7 @@ export default function NotifyPage() {
       await api.notifyUpdateChannel(ch.id, { enabled: !ch.enabled });
       load();
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -237,7 +237,7 @@ export default function NotifyPage() {
       setMeta((m) => (m ? { ...m, enabled: on } : m));
       toast.success(on ? "推送已开启" : "推送已暂停");
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     } finally {
       setGlobalSaving(false);
     }
@@ -253,7 +253,7 @@ export default function NotifyPage() {
       toast.success("已保存");
       load();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setGlobalSaving(false);
     }
@@ -267,7 +267,7 @@ export default function NotifyPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">通知推送</h1>
+          <h1 className="font-semibold text-xl tracking-tight">通知推送</h1>
           <p className="text-muted-foreground text-sm">
             发现漏洞时推送到钉钉 / 飞书 / 企业微信等渠道 · 每个渠道可独立设推送时机与过滤规则
           </p>
@@ -350,7 +350,7 @@ export default function NotifyPage() {
             <button
               type="button"
               onClick={openAdd}
-              className="text-foreground/70 border-foreground/70 hover:bg-muted/60 hover:shadow-sm flex min-h-[130px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed transition"
+              className="flex min-h-[130px] flex-col items-center justify-center gap-2 rounded-xl border border-foreground/70 border-dashed text-foreground/70 transition hover:bg-muted/60 hover:shadow-sm"
             >
               <PlusIcon className="size-6" />
               <span className="text-sm">添加渠道</span>
@@ -360,11 +360,11 @@ export default function NotifyPage() {
               <Card
                 key={ch.id}
                 onClick={() => openEdit(ch)}
-                className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
+                className="cursor-pointer gap-3 transition hover:border-primary/60 hover:shadow-sm"
               >
                 <CardHeader>
                   <div className="flex items-center gap-2">
-                    <BellIcon className="text-muted-foreground size-4 shrink-0" />
+                    <BellIcon className="size-4 shrink-0 text-muted-foreground" />
                     <CardTitle className="truncate text-base">{ch.name}</CardTitle>
                     {/* 卡片整体可点（进入编辑），所以这两个控件必须各自吞掉冒泡，
                         否则开关/删除会顺带触发编辑。把 stopPropagation 挂在控件自己
@@ -509,7 +509,7 @@ export default function NotifyPage() {
               </div>
 
               <div className="border-t pt-4">
-                <p className="mb-3 text-sm font-medium">过滤规则（留空即不过滤）</p>
+                <p className="mb-3 font-medium text-sm">过滤规则（留空即不过滤）</p>
                 <div className="grid gap-4">
                   <div className="grid gap-2">
                     <Label>最低级别</Label>

@@ -1,6 +1,6 @@
+import { pollConversationTail } from "./conversation-tail.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pollConversationTail } from "./conversation-tail.ts";
 
 const page = (cursor, running, hasMore) => ({ cursor, running, hasMore });
 

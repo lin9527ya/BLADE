@@ -1,7 +1,8 @@
 "use client";
 
-import { Loader2Icon, RefreshCwIcon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
 import * as React from "react";
+
+import { Loader2Icon, RefreshCwIcon, ShieldAlertIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -296,7 +297,7 @@ export function FootprintsTab({ taskId }: { taskId: string }) {
             </div>
           ) : (
             <div className="flex flex-col gap-1.5">
-              <div className="text-muted-foreground flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs">
                 <Checkbox
                   checked={
                     allPageSelected ? true : pageCleanable.some((f) => selected.has(f.id)) ? "indeterminate" : false
@@ -323,7 +324,7 @@ export function FootprintsTab({ taskId }: { taskId: string }) {
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-medium break-words">{f.summary}</span>
+                          <span className="break-words font-medium">{f.summary}</span>
                           <StatusBadge domain="footprint" value={f.state} className="px-1.5 text-[10px]" />
                           <Badge variant="outline" className="text-[10px]">
                             {f.source === "predicted" ? "自动推测" : "Agent 上报"}
@@ -339,17 +340,17 @@ export function FootprintsTab({ taskId }: { taskId: string }) {
                             </Badge>
                           )}
                         </div>
-                        <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+                        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground text-xs">
                           {f.category_label && <span>分类：{f.category_label}</span>}
                           {f.host && <span>主机：{f.host}</span>}
                           {f.locator && <span>位置：{f.locator}</span>}
                           {f.where?.length ? <span>留痕：{f.where.join("、")}</span> : null}
                         </div>
                         {f.signals?.length ? (
-                          <div className="text-muted-foreground mt-0.5 text-xs">信号：{f.signals.join("；")}</div>
+                          <div className="mt-0.5 text-muted-foreground text-xs">信号：{f.signals.join("；")}</div>
                         ) : null}
                         {f.sources?.length ? (
-                          <div className="text-muted-foreground mt-0.5 text-xs">
+                          <div className="mt-0.5 text-muted-foreground text-xs">
                             来自：
                             {f.sources.map((src, i) => (
                               <span key={src.id}>
@@ -362,25 +363,25 @@ export function FootprintsTab({ taskId }: { taskId: string }) {
                             ))}
                           </div>
                         ) : null}
-                        {f.cleanup && <div className="text-muted-foreground mt-0.5 text-xs">建议清理：{f.cleanup}</div>}
+                        {f.cleanup && <div className="mt-0.5 text-muted-foreground text-xs">建议清理：{f.cleanup}</div>}
                         {f.removed_evidence && (
-                          <div className="mt-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+                          <div className="mt-0.5 text-emerald-600 text-xs dark:text-emerald-400">
                             清理证据：{f.removed_evidence}
                           </div>
                         )}
                         {f.not_found_evidence && (
-                          <div className="mt-0.5 text-xs text-muted-foreground">核实证据：{f.not_found_evidence}</div>
+                          <div className="mt-0.5 text-muted-foreground text-xs">核实证据：{f.not_found_evidence}</div>
                         )}
                         {f.accepted_reason && (
-                          <div className="mt-0.5 text-xs text-amber-600 dark:text-amber-400">
+                          <div className="mt-0.5 text-amber-600 text-xs dark:text-amber-400">
                             接受风险：{f.accepted_reason}
                           </div>
                         )}
                         {f.evidence && (
-                          <div className="text-muted-foreground mt-0.5 break-all text-xs">观察证据：{f.evidence}</div>
+                          <div className="mt-0.5 break-all text-muted-foreground text-xs">观察证据：{f.evidence}</div>
                         )}
                         {f.cleanup_intent_id ? (
-                          <div className="text-muted-foreground mt-0.5 text-xs">
+                          <div className="mt-0.5 text-muted-foreground text-xs">
                             已排入清理意图 #{f.cleanup_intent_id}
                           </div>
                         ) : null}

@@ -130,7 +130,7 @@ export function AssetImportDialog({ onImported }: { onImported: () => void }) {
             <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={busy || applying}>
               <FileUpIcon data-icon="inline-start" /> 选择文件
             </Button>
-            {fileName && <span className="truncate text-sm text-muted-foreground">{fileName}</span>}
+            {fileName && <span className="truncate text-muted-foreground text-sm">{fileName}</span>}
             <input
               ref={fileRef}
               type="file"
@@ -154,7 +154,7 @@ export function AssetImportDialog({ onImported }: { onImported: () => void }) {
           {preview && (
             <div className="mt-4 space-y-3 rounded-md border p-4">
               {preview.parse_error && (
-                <p className="text-sm text-destructive">文件只解析到一半就被中断：{preview.parse_error}</p>
+                <p className="text-destructive text-sm">文件只解析到一半就被中断：{preview.parse_error}</p>
               )}
               <div className="flex flex-wrap items-center gap-2 text-sm">
                 <Badge variant="secondary">共 {preview.total} 条</Badge>
@@ -162,11 +162,11 @@ export function AssetImportDialog({ onImported }: { onImported: () => void }) {
                 {preview.existing > 0 && <Badge variant="outline">已存在 {preview.existing}</Badge>}
                 {preview.duplicates > 0 && <Badge variant="outline">表内重复 {preview.duplicates}</Badge>}
               </div>
-              {preview.total > 0 && <p className="text-sm text-muted-foreground">{typeSummary(preview.by_type)}</p>}
+              {preview.total > 0 && <p className="text-muted-foreground text-sm">{typeSummary(preview.by_type)}</p>}
 
               {preview.samples.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">判定明细</p>
+                  <p className="font-medium text-muted-foreground text-xs">判定明细</p>
                   <ul className="space-y-0.5 font-mono text-xs">
                     {preview.samples.map((s) => (
                       <li key={`${s.line}-${s.value}`} className="flex items-center gap-2">
@@ -180,15 +180,15 @@ export function AssetImportDialog({ onImported }: { onImported: () => void }) {
                     ))}
                   </ul>
                   {preview.samples_truncated ? (
-                    <p className="text-xs text-muted-foreground">另有 {preview.samples_truncated} 条未列出</p>
+                    <p className="text-muted-foreground text-xs">另有 {preview.samples_truncated} 条未列出</p>
                   ) : null}
                 </div>
               )}
 
               {preview.warnings.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">提醒（会导入，但有折扣）</p>
-                  <ul className="space-y-0.5 text-xs text-muted-foreground">
+                  <p className="font-medium text-muted-foreground text-xs">提醒（会导入，但有折扣）</p>
+                  <ul className="space-y-0.5 text-muted-foreground text-xs">
                     {preview.warnings.map((n) => (
                       <li key={`w-${n.line}-${n.value}`}>
                         第 {n.line} 行 {n.value}：{n.reason}
@@ -200,8 +200,8 @@ export function AssetImportDialog({ onImported }: { onImported: () => void }) {
 
               {preview.unrecognized.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">未识别（不会导入）</p>
-                  <ul className="space-y-0.5 text-xs text-destructive">
+                  <p className="font-medium text-muted-foreground text-xs">未识别（不会导入）</p>
+                  <ul className="space-y-0.5 text-destructive text-xs">
                     {preview.unrecognized.map((n) => (
                       <li key={`u-${n.line}-${n.value}`}>
                         第 {n.line} 行 {n.value || "（空）"}：{n.reason}

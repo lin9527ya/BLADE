@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 import type { InterceptApprovalRow } from "@/lib/types";
 
 // 审批页的共享小工具：时间/来源/命名格式化。

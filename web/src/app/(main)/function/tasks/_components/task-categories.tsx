@@ -31,6 +31,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Combobox,
   ComboboxChip,
@@ -52,12 +53,11 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
 import type { Company, PlannerTemplate, Task, TaskCategory } from "@/lib/types";
@@ -183,7 +183,7 @@ export function CategoryPicker({
               创建分类「{trimmed}」
             </button>
           ) : (
-            <div className="px-2 py-2 text-sm text-muted-foreground">输入名称以搜索或创建分类</div>
+            <div className="px-2 py-2 text-muted-foreground text-sm">输入名称以搜索或创建分类</div>
           ))}
       </ComboboxContent>
     </Combobox>
@@ -255,12 +255,12 @@ export function CompanyPicker({
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-medium">{company?.name ?? `企业 #${companyID}`}</span>
-                    <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                    <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
                       {company?.asset_count ?? 0} 个资产
                     </span>
                   </div>
                   {company && (
-                    <span className="text-muted-foreground truncate text-xs" title={companyScopeSummary(company)}>
+                    <span className="truncate text-muted-foreground text-xs" title={companyScopeSummary(company)}>
                       {companyScopeSummary(company)}
                     </span>
                   )}
@@ -318,7 +318,7 @@ function DraggableCategoryTask({ task, disabled, moving }: { task: Task; disable
 
   return (
     <Item ref={setNodeRef} variant="outline" size="sm" className={cn(isDragging && "opacity-40")}>
-      <ItemMedia className="group-has-data-[slot=item-description]/item:self-center group-has-data-[slot=item-description]/item:translate-y-0">
+      <ItemMedia className="group-has-data-[slot=item-description]/item:translate-y-0 group-has-data-[slot=item-description]/item:self-center">
         {moving ? (
           <Spinner />
         ) : (
@@ -326,7 +326,7 @@ function DraggableCategoryTask({ task, disabled, moving }: { task: Task; disable
             type="button"
             size="icon-xs"
             variant="ghost"
-            className="touch-none cursor-grab active:cursor-grabbing"
+            className="cursor-grab touch-none active:cursor-grabbing"
             disabled={disabled}
             {...listeners}
             {...attributes}
@@ -357,7 +357,7 @@ function DraggableCategoryTask({ task, disabled, moving }: { task: Task; disable
 function CategoryTaskDragPreview({ task }: { task: Task }) {
   return (
     <Item variant="outline" size="sm" className="w-80 bg-background shadow-lg">
-      <ItemMedia className="group-has-data-[slot=item-description]/item:self-center group-has-data-[slot=item-description]/item:translate-y-0">
+      <ItemMedia className="group-has-data-[slot=item-description]/item:translate-y-0 group-has-data-[slot=item-description]/item:self-center">
         <GripVerticalIcon className="size-4 text-muted-foreground" />
       </ItemMedia>
       <ItemContent className="min-w-0">
@@ -652,7 +652,7 @@ export function CategoryManagementDialog({
                           默认启用资产覆盖度
                         </label>
                         <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">默认 planner 模板</span>
+                          <span className="text-muted-foreground text-xs">默认 planner 模板</span>
                           <Select
                             value={String(selectedCategory.default_planner_template_id ?? 0)}
                             onValueChange={(value) => void savePreset({ default_planner_template_id: Number(value) })}

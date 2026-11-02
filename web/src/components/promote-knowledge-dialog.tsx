@@ -79,7 +79,7 @@ export function PromoteKnowledgeDialog({ finding }: { finding: Finding }) {
       toast.success("已沉淀为公司知识：同公司的其它任务会在态势里读到它");
       setOpen(false);
     } catch (e) {
-      toast.error("沉淀失败：" + (e as Error).message);
+      toast.error(`沉淀失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }

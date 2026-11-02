@@ -143,7 +143,7 @@ function CategoryCard({ cat }: { cat: StorageCategoryReport }) {
         </div>
         {cat.stats_only && <p className="text-muted-foreground text-xs leading-relaxed">{cat.stats_only}</p>}
         {oldest.length > 0 && (
-          <div className="text-muted-foreground grid gap-0.5 text-xs">
+          <div className="grid gap-0.5 text-muted-foreground text-xs">
             <span>最早的几项：</span>
             {oldest.map((u) => (
               <span key={u.path} className="font-mono" title={u.path}>
@@ -194,7 +194,7 @@ export default function StoragePage() {
         storage_retention_intercept_pending_days: s.storage_retention_intercept_pending_days ?? 0,
       });
     } catch (e) {
-      toast.error("读取存储体检失败：" + String((e as Error)?.message ?? e));
+      toast.error(`读取存储体检失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setLoading(false);
     }
@@ -211,7 +211,7 @@ export default function StoragePage() {
       toast.success("保留天数已保存（对下一次清理生效）");
       await load();
     } catch (e) {
-      toast.error("保存失败：" + String((e as Error)?.message ?? e));
+      toast.error(`保存失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setSavingDays(false);
     }
@@ -227,7 +227,7 @@ export default function StoragePage() {
       setReport(r.report);
       setLastClean(r.last_clean ?? {});
     } catch (e) {
-      toast.error("清理失败：" + String((e as Error)?.message ?? e));
+      toast.error(`清理失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setCleaning(false);
       setConfirmOpen(false);
@@ -246,10 +246,10 @@ export default function StoragePage() {
     <div className="flex flex-1 flex-col gap-6">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+          <h1 className="flex items-center gap-2 font-semibold text-xl tracking-tight">
             <HardDriveIcon className="size-5" /> 存储
           </h1>
-          <p className="text-muted-foreground mt-1 text-sm">
+          <p className="mt-1 text-muted-foreground text-sm">
             体检数据目录下的产物占用，按分类设保留天数后再清。只删超过保留期、且不在跑的任务产物； 保留天数 0 =
             不清理（默认全 0，装上什么都不会动）。
           </p>

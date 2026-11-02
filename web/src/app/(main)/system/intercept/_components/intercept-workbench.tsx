@@ -74,7 +74,7 @@ export function InterceptWorkbench({ initialSection }: { initialSection?: Sectio
       }
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold tracking-tight">拦截与审批</h1>
+        <h1 className="font-semibold text-xl tracking-tight">拦截与审批</h1>
         <p className="text-muted-foreground text-sm">
           工具调用前先按拦截规则匹配；未命中的可交模型兜底判定，需要人裁决的进审批记录
         </p>

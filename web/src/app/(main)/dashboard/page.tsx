@@ -1,8 +1,5 @@
 "use client";
 
-import * as React from "react";
-
-import Link from "next/link";
 import dynamic from "next/dynamic";
 
 import { RowActivity } from "./_components/activityrow";
@@ -31,7 +28,7 @@ export default function DashboardPage() {
     <div className="flex flex-1 flex-col gap-4 pb-6">
       {/* ── Header ── */}
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">总览</h1>
+        <h1 className="font-semibold text-xl tracking-tight">总览</h1>
         <p className="text-muted-foreground text-sm">系统全局状态 · 实时刷新</p>
       </div>
 

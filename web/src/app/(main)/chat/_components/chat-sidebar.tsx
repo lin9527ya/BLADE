@@ -29,8 +29,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { Agent, Conversation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { type AgentGroup, conversationIsPinned, fmtBytes, fmtTokens, HISTORY_PAGE } from "./chat-helpers";
-import { ChatView, Composer, DraftChat, LLMProfileRow } from "./chat-messages";
+import { type AgentGroup, conversationIsPinned } from "./chat-helpers";
 
 // 对话页左侧会话列表：会话条目（含置顶/重命名/删除）与按 agent 分组的分组头。
 
@@ -112,7 +111,7 @@ export const ConversationItem = React.memo(function ConversationItem({
               onCancelRename();
             }
           }}
-          className="border-input bg-background min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
+          className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm"
         />
       ) : (
         <button
@@ -123,7 +122,7 @@ export const ConversationItem = React.memo(function ConversationItem({
           className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-left"
         >
           <div className="flex min-w-0 items-center gap-1.5">
-            {pinned && <PinIcon className="text-primary size-3 shrink-0" aria-label="已置顶" />}
+            {pinned && <PinIcon className="size-3 shrink-0 text-primary" aria-label="已置顶" />}
             <div className="truncate text-sm">{conv.title || "新对话"}</div>
             {conv.running ? (
               <Badge variant="secondary" className="shrink-0 gap-1" title="Agent 正在运行">
@@ -132,7 +131,7 @@ export const ConversationItem = React.memo(function ConversationItem({
               </Badge>
             ) : null}
           </div>
-          <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-[11px]">
+          <div className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
             {showAgent && (
               <>
                 <Bot className="size-3 shrink-0" />
@@ -157,7 +156,7 @@ export const ConversationItem = React.memo(function ConversationItem({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground shrink-0"
+            className="shrink-0 text-muted-foreground"
             aria-label={`管理对话「${conv.title || "新对话"}」`}
           >
             <MoreHorizontalIcon />

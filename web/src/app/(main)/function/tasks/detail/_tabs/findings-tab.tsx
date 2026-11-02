@@ -1,5 +1,9 @@
 "use client";
 
+import * as React from "react";
+
+import Link from "next/link";
+
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -9,9 +13,6 @@ import {
   DownloadIcon,
   PackageIcon,
 } from "lucide-react";
-
-import Link from "next/link";
-import * as React from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -87,10 +88,10 @@ function Row({
                 </Badge>
               )}
             </div>
-            <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
+            <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
             {(f.status === "ruled_out" || f.status === "open_proof_gap") && (f.counterevidence || f.proof_gap) && (
               <span
-                className="line-clamp-2 text-xs text-amber-600 dark:text-amber-400"
+                className="line-clamp-2 text-amber-600 text-xs dark:text-amber-400"
                 title={f.status === "ruled_out" ? f.counterevidence : f.proof_gap}
               >
                 {f.status === "ruled_out" ? "排除原因：" : "待补证："}
@@ -111,7 +112,7 @@ function Row({
                 {a.label}
               </code>
             ))}
-            {f.assets.length > 2 && <span className="text-xs text-muted-foreground">+{f.assets.length - 2}</span>}
+            {f.assets.length > 2 && <span className="text-muted-foreground text-xs">+{f.assets.length - 2}</span>}
           </div>
         )}
         {f.finding_id && !f.inherited ? (
@@ -132,7 +133,7 @@ function Row({
         ) : (
           <StatusBadge domain="finding" value={f.status} dot />
         )}
-        <span className="hidden shrink-0 text-xs text-muted-foreground md:block">
+        <span className="hidden shrink-0 text-muted-foreground text-xs md:block">
           {new Date(f.ts).toLocaleString("zh-CN")}
         </span>
         {f.finding_id && (
@@ -142,7 +143,7 @@ function Row({
                 ? `/function/findings/detail?id=${f.finding_id}&context_task=${contextTaskId}`
                 : `/function/findings/detail?id=${f.finding_id}`
             }
-            className="text-muted-foreground hover:text-primary inline-flex shrink-0 items-center gap-0.5 text-xs"
+            className="inline-flex shrink-0 items-center gap-0.5 text-muted-foreground text-xs hover:text-primary"
             title="查看漏洞详情"
           >
             详情
@@ -152,8 +153,8 @@ function Row({
       </div>
       {open && (
         <div className="bg-muted/30 px-4 pb-4 pl-11">
-          <div className="mb-1 text-xs font-medium text-muted-foreground">证据 / PoC</div>
-          <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
+          <div className="mb-1 font-medium text-muted-foreground text-xs">证据 / PoC</div>
+          <pre className="overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 font-mono text-xs">
             {f.evidence}
           </pre>
         </div>
@@ -265,7 +266,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <PackageIcon className="size-4 text-sky-500" /> 批量交付
-            <span className="text-muted-foreground text-xs font-normal">
+            <span className="font-normal text-muted-foreground text-xs">
               （把本任务的发现打成一个包：提交说明 + 每条发现的规范简报与 docx；先看计划再下载）
             </span>
           </CardTitle>
@@ -320,11 +321,11 @@ export function FindingsTab({ taskId }: { taskId: string }) {
       </Card>
       <Card className="overflow-hidden py-0">
         <CardContent className="px-0">
-          <div className="flex items-center border-b px-4 py-2 text-xs text-muted-foreground">
+          <div className="flex items-center border-b px-4 py-2 text-muted-foreground text-xs">
             <span className="min-w-0 flex-1">
               漏洞
               {items.length > 0 && (
-                <span className="ml-1.5 tabular-nums text-muted-foreground">（{items.length} 条）</span>
+                <span className="ml-1.5 text-muted-foreground tabular-nums">（{items.length} 条）</span>
               )}
             </span>
             <button
@@ -350,15 +351,15 @@ export function FindingsTab({ taskId }: { taskId: string }) {
             <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
           ))}
           {items.length === 0 && loadError ? (
-            <p className="px-4 py-8 text-center text-sm text-red-600 dark:text-red-400">
+            <p className="px-4 py-8 text-center text-red-600 text-sm dark:text-red-400">
               发现列表加载失败：{loadError}（每 3 秒自动重试）
             </p>
           ) : items.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-muted-foreground">本任务及直接关联任务暂无确认发现。</p>
+            <p className="px-4 py-8 text-center text-muted-foreground text-sm">本任务及直接关联任务暂无确认发现。</p>
           ) : null}
         </CardContent>
         {items.length > 0 && (
-          <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground">
+          <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-muted-foreground text-xs">
             <TablePagination
               variant="compact"
               page={page}

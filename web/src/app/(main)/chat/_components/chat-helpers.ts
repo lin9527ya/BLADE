@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 import type { Agent, Conversation } from "@/lib/types";
 
 // 对话页的纯函数、常量与类型。

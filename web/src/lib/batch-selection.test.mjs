@@ -1,6 +1,6 @@
+import { remainingSelection } from "./batch-selection.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { remainingSelection } from "./batch-selection.ts";
 
 test("acknowledged successes leave the selection; failures stay retryable", () => {
   const next = remainingSelection(new Set(["a", "b", "c"]), [

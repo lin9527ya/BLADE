@@ -2246,7 +2246,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     mockIntents
       .filter((n) => n.state === "running" || n.state === "open" || n.state === "paused")
       .slice(0, 3)
-      .forEach((n, i) => slotOf.set(n.id, i + 1));
+      .forEach((n, i) => {
+        slotOf.set(n.id, i + 1);
+      });
     const items = mockActivity
       .filter((item) => item.seq > since)
       .slice(0, limit)

@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 import type { Finding, FindingAssetNode, FindingGroup, FindingStats } from "@/lib/types";
 
 import { UNASSIGNED_TASK } from "./findings-table";

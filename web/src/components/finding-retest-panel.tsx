@@ -76,7 +76,7 @@ export function FindingRetestPanel({
     () => () => {
       requestSeq.current++;
     },
-    [findingId],
+    [],
   );
 
   const running = items?.find(active);

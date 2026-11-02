@@ -301,8 +301,8 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   if (children === undefined || children === null || children === "") return null;
   return (
     <div className="flex items-start gap-3 py-1 text-sm">
-      <span className="text-muted-foreground w-16 shrink-0">{label}</span>
-      <span className="text-foreground min-w-0 flex-1 break-words">{children}</span>
+      <span className="w-16 shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 flex-1 break-words text-foreground">{children}</span>
     </div>
   );
 }
@@ -311,7 +311,7 @@ function RefList({ title, items }: { title: string; items: CoverageAssetRef[] })
   if (items.length === 0) return null;
   return (
     <div>
-      <h4 className="text-muted-foreground mb-1 text-xs font-medium">
+      <h4 className="mb-1 font-medium text-muted-foreground text-xs">
         {title}（{items.length}）
       </h4>
       <div className="flex flex-col gap-1">
@@ -396,7 +396,7 @@ function AssetSheet({
                 </span>
                 <div className="min-w-0">
                   <DialogTitle className="leading-tight">{meta.label}</DialogTitle>
-                  <span className="text-muted-foreground truncate font-mono text-xs" title={node.label}>
+                  <span className="truncate font-mono text-muted-foreground text-xs" title={node.label}>
                     {node.label}
                   </span>
                 </div>
@@ -406,11 +406,11 @@ function AssetSheet({
               <div className="flex w-full min-w-0 flex-col gap-4 p-4">
                 {coverageEnabled && node.in_scope && !node.tested && node.asset_id && (
                   <section className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-                    <h4 className="flex items-center gap-1.5 text-xs font-medium">
+                    <h4 className="flex items-center gap-1.5 font-medium text-xs">
                       <LightbulbIcon className="size-3.5 text-amber-600 dark:text-amber-400" />
                       覆盖缺口
                     </h4>
-                    <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+                    <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
                       这件资产还没有被测过。可以让规划者补一条测试方向（会加入「战略提示」，并锚定这台资产）。
                     </p>
                     <Button
@@ -425,7 +425,7 @@ function AssetSheet({
                   </section>
                 )}
                 <section>
-                  <h4 className="text-muted-foreground mb-1 text-xs font-medium">属性</h4>
+                  <h4 className="mb-1 font-medium text-muted-foreground text-xs">属性</h4>
                   <DetailRow label="类型">{meta.label}</DetailRow>
                   <DetailRow label="测试状态">
                     {node.in_scope ? (
@@ -443,7 +443,7 @@ function AssetSheet({
                   <DetailRow label="IP">{node.ip}</DetailRow>
                   <DetailRow label="端口">{node.port ? node.port : undefined}</DetailRow>
                   <DetailRow label="URL">
-                    {node.url ? <span className="font-mono text-xs break-all">{node.url}</span> : undefined}
+                    {node.url ? <span className="break-all font-mono text-xs">{node.url}</span> : undefined}
                   </DetailRow>
                   <DetailRow label="标题">{node.page_title}</DetailRow>
                   <DetailRow label="状态码">{node.status_code ? node.status_code : undefined}</DetailRow>
@@ -460,8 +460,8 @@ function AssetSheet({
                   </section>
                 )}
                 <section className="border-t pt-3">
-                  <h4 className="text-muted-foreground mb-1.5 text-xs font-medium">原始数据</h4>
-                  <pre className="bg-muted/50 text-foreground max-w-full overflow-hidden rounded-md border p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
+                  <h4 className="mb-1.5 font-medium text-muted-foreground text-xs">原始数据</h4>
+                  <pre className="max-w-full overflow-hidden whitespace-pre-wrap break-all rounded-md border bg-muted/50 p-3 font-mono text-foreground text-xs leading-relaxed">
                     {raw}
                   </pre>
                 </section>
@@ -505,7 +505,7 @@ function FoldSheet({
                     key={n.key}
                     type="button"
                     onClick={() => onPick(n)}
-                    className="hover:bg-accent flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
                   >
                     <span
                       className={cn(
@@ -553,7 +553,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
   React.useEffect(() => {
     setSelectedAsset(null);
     setSelectedFoldId(null);
-  }, [taskId]);
+  }, []);
 
   const containerRef = React.useRef<HTMLDivElement>(null);
   const graphRef = React.useRef<G6Graph | null>(null);
@@ -732,16 +732,16 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
       <div ref={containerRef} className="h-full w-full" />
 
       {/* 图例 + 统计 + 刷新（叠加层） */}
-      <div className="bg-card/95 pointer-events-auto absolute top-3 left-3 flex max-w-[340px] flex-col gap-2.5 rounded-lg border p-3 text-xs shadow-sm backdrop-blur">
+      <div className="pointer-events-auto absolute top-3 left-3 flex max-w-[340px] flex-col gap-2.5 rounded-lg border bg-card/95 p-3 text-xs shadow-sm backdrop-blur">
         <div className="flex items-center justify-between gap-3">
           {total > 0 ? (
             <span className="text-muted-foreground">
-              范围内 <span className="text-foreground font-semibold tabular-nums">{inScope}</span>
+              范围内 <span className="font-semibold text-foreground tabular-nums">{inScope}</span>
               {coverageEnabled && (
                 <>
                   {" "}
                   · 已测{" "}
-                  <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{tested}</span>
+                  <span className="font-semibold text-emerald-600 tabular-nums dark:text-emerald-400">{tested}</span>
                 </>
               )}
             </span>
@@ -757,7 +757,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
             const m = kindMeta[k];
             const Icon = m.icon;
             return (
-              <span key={k} className="text-foreground inline-flex items-center gap-1.5">
+              <span key={k} className="inline-flex items-center gap-1.5 text-foreground">
                 <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
                   <Icon className="size-2.5 text-white" />
                 </span>
@@ -766,7 +766,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
             );
           })}
         </div>
-        <div className="border-border/60 text-muted-foreground flex flex-wrap gap-x-3 gap-y-1.5 border-t pt-2">
+        <div className="flex flex-wrap gap-x-3 gap-y-1.5 border-border/60 border-t pt-2 text-muted-foreground">
           {coverageEnabled && (
             <>
               <span className="inline-flex items-center gap-1.5">
@@ -778,10 +778,10 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
             </>
           )}
           <span className="inline-flex items-center gap-1.5">
-            <span className="size-3 rounded-full border border-dashed border-neutral-400 bg-neutral-200" /> 范围外
+            <span className="size-3 rounded-full border border-neutral-400 border-dashed bg-neutral-200" /> 范围外
           </span>
         </div>
-        <p className="text-muted-foreground/80 border-border/60 border-t pt-2 leading-relaxed">
+        <p className="border-border/60 border-t pt-2 text-muted-foreground/80 leading-relaxed">
           力导向布局，可拖拽节点、滚轮缩放；灰色「⋯」是折叠节点，点开可展开更多。
         </p>
       </div>

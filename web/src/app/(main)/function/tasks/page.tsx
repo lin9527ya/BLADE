@@ -2,12 +2,9 @@
 
 import * as React from "react";
 
-import Link from "next/link";
-
 import { ArchiveIcon, DownloadIcon, PauseIcon, PlayIcon, SearchIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { PlannerTemplateManager } from "@/components/planner-template-manager";
 import { ScheduleTasksDialog } from "@/components/schedule-tasks-dialog";
 import { TablePagination } from "@/components/table-pagination";
@@ -15,62 +12,19 @@ import { TablePagination } from "@/components/table-pagination";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import {
-  Combobox,
-  ComboboxChip,
-  ComboboxChips,
-  ComboboxChipsInput,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxItem,
-  ComboboxList,
-  ComboboxValue,
-} from "@/components/ui/combobox";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
-import { Label } from "@/components/ui/label";
-/* removed: @/components/ui/progress */
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { usePolling } from "@/hooks/use-polling";
 /* removed: @/components/ui/tooltip */
 import { api } from "@/lib/api";
 import { remainingSelection } from "@/lib/batch-selection";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { createLatestRequest, runLatestRequest } from "@/lib/request-lifecycle";
-import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
-import {
-  AssetInterceptRuleInput,
-  ChatAttachment,
-  Company,
-  CustomRule,
-  type DeleteTaskOptions,
-  DeleteTaskResult,
-  ExplorationPolicyDefault,
-  LLMProfile,
-  type Task,
-  type TaskCategory,
-  type TaskStatus,
-} from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { useStoredSortPreference } from "@/lib/sort-preference";
+import type { DeleteTaskOptions, Task, TaskCategory, TaskStatus } from "@/lib/types";
 
 import { CreateTaskSheet } from "./_components/create-task-sheet";
 import { ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
@@ -80,7 +34,6 @@ import {
   type DeleteCounts,
   deleteDetails,
   deleteSummary,
-  fmtBytes,
   POLL_MS,
   STATUS_OPTIONS,
   TASK_FILTER_PREFERENCE_KEY,
@@ -314,8 +267,8 @@ export default function TasksPage() {
 
   const refreshCategoriesAndTasks = React.useCallback(() => {
     lastRef.current = "";
-    loadCategories();
-    load();
+    void loadCategories();
+    void load();
   }, [load, loadCategories]);
 
   const applyTaskCategoryMove = React.useCallback(
@@ -327,7 +280,7 @@ export default function TasksPage() {
         lastRef.current = JSON.stringify(next);
         return next;
       });
-      loadCategories();
+      void loadCategories();
     },
     [loadCategories],
   );
@@ -361,9 +314,9 @@ export default function TasksPage() {
         } else {
           toast.success(deleteSummary(result));
         }
-        load();
+        void load();
       } catch (e) {
-        toast.error("删除失败：" + (e as Error).message);
+        toast.error(`删除失败：${(e as Error).message}`);
         throw e;
       }
     },
@@ -385,7 +338,7 @@ export default function TasksPage() {
       } finally {
         // 无论成败都刷新:失败多半是状态已变化,重新拉取才能让按钮回到正确形态。
         lastRef.current = "";
-        load();
+        void load();
       }
     },
     [load],
@@ -397,7 +350,7 @@ export default function TasksPage() {
         await api.renameTask(task.id, name);
         toast.success(`任务 #${task.id} 已重命名`);
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`重命名失败：${(error as Error).message}`);
         throw error;
@@ -413,7 +366,7 @@ export default function TasksPage() {
         await api.pinTask(task.id, !pinned);
         toast.success(pinned ? `任务 #${task.id} 已取消置顶` : `任务 #${task.id} 已置顶`);
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`${pinned ? "取消置顶" : "置顶"}失败：${(error as Error).message}`);
         throw error;
@@ -429,7 +382,7 @@ export default function TasksPage() {
         toast.success(`任务 #${task.id} 已进入归档队列`);
         setActiveTab("archived");
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`归档失败：${(error as Error).message}`);
         throw error;
@@ -478,7 +431,7 @@ export default function TasksPage() {
           return next;
         });
         const details = deleteDetails(total);
-        const summary = `已删除 ${deleted.length} 个任务` + (details.length > 0 ? `（${details.join("，")}）` : "");
+        const summary = `已删除 ${deleted.length} 个任务${details.length > 0 ? `（${details.join("，")}）` : ""}`;
         if (warnings.length > 0) {
           toast.warning(`${summary}；部分外部数据清理未完成：${warnings.join("；")}`);
         } else {
@@ -492,7 +445,7 @@ export default function TasksPage() {
           .join("；");
         toast.error(`${failed.length} 个任务删除失败：${head}${failed.length > 3 ? " 等" : ""}`);
       }
-      load();
+      void load();
     },
     [load],
   );
@@ -523,7 +476,7 @@ export default function TasksPage() {
       setSelectedIds((current) => remainingSelection(current, result.items));
       if (failed.length === 0) setActiveTab("archived");
       lastRef.current = "";
-      load();
+      void load();
     } catch (error) {
       toast.error(`批量归档失败：${(error as Error).message}`);
     }
@@ -557,7 +510,7 @@ export default function TasksPage() {
         }
         setSelectedIds((current) => remainingSelection(current, result.items));
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`${action === "pause" ? "批量暂停" : "批量继续"}失败：${(error as Error).message}`);
       } finally {
@@ -606,7 +559,7 @@ export default function TasksPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">任务</h1>
+        <h1 className="font-semibold text-xl tracking-tight">任务</h1>
         <p className="text-muted-foreground text-sm">每个任务是一次独立的探索：一个目标、一棵探索图、一份交付物。</p>
       </div>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -619,7 +572,7 @@ export default function TasksPage() {
             <CardContent className="flex flex-col gap-4 px-0 pt-6">
               <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
                 <div className="relative w-full sm:max-w-xs">
-                  <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder="搜索描述 / 目标 / ID"
                     value={query}
@@ -631,7 +584,7 @@ export default function TasksPage() {
                       type="button"
                       onClick={() => setQuery("")}
                       aria-label="清除搜索"
-                      className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+                      className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
                       <XIcon className="size-4" />
                     </button>
@@ -672,7 +625,7 @@ export default function TasksPage() {
                   {filteredTasks}/{totalTasks} 条
                 </span>
                 {listError && (
-                  <span role="alert" className="text-xs text-destructive">
+                  <span role="alert" className="text-destructive text-xs">
                     刷新失败，显示上次数据：{listError}
                     <Button size="sm" variant="ghost" onClick={() => void load()}>
                       重试
@@ -760,11 +713,11 @@ export default function TasksPage() {
               </div>
 
               {totalTasks === 0 ? (
-                <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
+                <div className="mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-muted-foreground text-sm lg:mx-6">
                   暂无任务，点击右上角「新建任务」开始。
                 </div>
               ) : filteredTasks === 0 ? (
-                <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
+                <div className="mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-muted-foreground text-sm lg:mx-6">
                   没有匹配的任务。
                 </div>
               ) : (
@@ -798,7 +751,7 @@ export default function TasksPage() {
                       />
                       <TableHead className="text-center">目标进度</TableHead>
                       <TableHead className="text-center" title="严重 / 高 / 中 / 低">
-                        漏洞 <span className="text-muted-foreground font-normal">严/高/中/低</span>
+                        漏洞 <span className="font-normal text-muted-foreground">严/高/中/低</span>
                       </TableHead>
                       <TableHead className="text-center">运行中 Worker</TableHead>
                       <SortableTaskHead

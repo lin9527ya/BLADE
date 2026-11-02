@@ -24,7 +24,7 @@ function KV({ label, children }: { label: string; children: React.ReactNode }) {
   if (children === undefined || children === null || children === "") return null;
   return (
     <div className="flex gap-3 text-sm">
-      <span className="text-muted-foreground w-20 shrink-0 text-xs">{label}</span>
+      <span className="w-20 shrink-0 text-muted-foreground text-xs">{label}</span>
       <span className="min-w-0 flex-1 break-words">{children}</span>
     </div>
   );
@@ -69,7 +69,7 @@ export function ExecutionDialog({
         </DialogHeader>
         {error && <p className="text-destructive text-sm">读取失败：{error}</p>}
         {!row && !error && (
-          <p className="text-muted-foreground flex items-center gap-2 text-sm">
+          <p className="flex items-center gap-2 text-muted-foreground text-sm">
             <Loader2Icon className="size-4 animate-spin" /> 加载中…
           </p>
         )}
@@ -91,15 +91,15 @@ export function ExecutionDialog({
               <KV label="错误">{row.error}</KV>
             </div>
             <div>
-              <h4 className="text-muted-foreground mb-1 text-xs font-medium">命令</h4>
-              <pre className="bg-muted/50 max-h-64 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap break-all">
+              <h4 className="mb-1 font-medium text-muted-foreground text-xs">命令</h4>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/50 p-3 font-mono text-xs">
                 {row.command || "—"}
               </pre>
             </div>
             {row.partial_tail && (
               <div>
-                <h4 className="text-muted-foreground mb-1 text-xs font-medium">输出尾部</h4>
-                <pre className="bg-muted/50 max-h-64 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap break-all">
+                <h4 className="mb-1 font-medium text-muted-foreground text-xs">输出尾部</h4>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/50 p-3 font-mono text-xs">
                   {row.partial_tail}
                 </pre>
               </div>
@@ -145,7 +145,7 @@ export function ApprovalDialog({ id, onOpenChange }: { id: number | null; onOpen
         </DialogHeader>
         {error && <p className="text-destructive text-sm">读取失败：{error}</p>}
         {!row && !error && (
-          <p className="text-muted-foreground flex items-center gap-2 text-sm">
+          <p className="flex items-center gap-2 text-muted-foreground text-sm">
             <Loader2Icon className="size-4 animate-spin" /> 加载中…
           </p>
         )}

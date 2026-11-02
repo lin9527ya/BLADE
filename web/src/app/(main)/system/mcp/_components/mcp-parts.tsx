@@ -68,16 +68,16 @@ export function ToolParams({ schema }: { schema?: MCPToolSchema }) {
   const rows = schemaRows(schema);
   if (rows.length === 0) {
     return (
-      <p className="text-muted-foreground mt-2 ml-5 text-xs">
+      <p className="mt-2 ml-5 text-muted-foreground text-xs">
         该工具没有声明参数（或这次发现没取到 schema——点「刷新」重新发现）。
       </p>
     );
   }
   return (
-    <div className="bg-muted/30 mt-2 ml-5 overflow-x-auto rounded-md border p-2">
+    <div className="mt-2 ml-5 overflow-x-auto rounded-md border bg-muted/30 p-2">
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-muted-foreground text-left">
+          <tr className="text-left text-muted-foreground">
             <th className="py-0.5 pr-3 font-normal">参数</th>
             <th className="py-0.5 pr-3 font-normal">类型</th>
             <th className="py-0.5 pr-3 font-normal">必填</th>
@@ -88,12 +88,12 @@ export function ToolParams({ schema }: { schema?: MCPToolSchema }) {
           {rows.map((r) => (
             <tr key={(r.child ? "·" : "") + r.name} className="align-top">
               <td className="py-0.5 pr-3 font-mono">{r.child ? `↳ ${r.name}` : r.name}</td>
-              <td className="text-muted-foreground py-0.5 pr-3 font-mono">
+              <td className="py-0.5 pr-3 font-mono text-muted-foreground">
                 {r.type || "?"}
                 {r.enumText}
               </td>
-              <td className="text-muted-foreground py-0.5 pr-3">{r.required ? "是" : ""}</td>
-              <td className="text-muted-foreground py-0.5">{r.desc}</td>
+              <td className="py-0.5 pr-3 text-muted-foreground">{r.required ? "是" : ""}</td>
+              <td className="py-0.5 text-muted-foreground">{r.desc}</td>
             </tr>
           ))}
         </tbody>
@@ -114,7 +114,7 @@ export function InfoRow({ label, children }: { label: string; children: React.Re
   return (
     <div className="grid gap-1 sm:grid-cols-[8rem_1fr] sm:items-baseline sm:gap-3">
       <span className="text-muted-foreground text-xs">{label}</span>
-      <div className="min-w-0 text-sm break-all">{children}</div>
+      <div className="min-w-0 break-all text-sm">{children}</div>
     </div>
   );
 }

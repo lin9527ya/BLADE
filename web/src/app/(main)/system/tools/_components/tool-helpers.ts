@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 // 工具参数行的解析/回写与相关常量（编辑表单和页面共用）。
 
 export const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get", "traffic_blob"]);

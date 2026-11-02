@@ -2,10 +2,11 @@
 
 import * as React from "react";
 
-import { fmtTime } from "./skills-helpers";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { MissingSkill, SkillItem } from "@/lib/types";
+import type { MissingSkill, SkillItem } from "@/lib/types";
+
+import { fmtTime } from "./skills-helpers";
 
 // 技能总览：调用次数排行、从未使用与近期活跃。
 
@@ -42,7 +43,7 @@ export function SkillsOverview({
   if (skills.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-muted-foreground">暂无 Skill，点击左侧「新建」或「上传压缩包」开始</p>
+        <p className="text-muted-foreground text-sm">暂无 Skill，点击左侧「新建」或「上传压缩包」开始</p>
       </div>
     );
   }
@@ -65,7 +66,7 @@ export function SkillsOverview({
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
       <div>
-        <h2 className="text-base font-semibold">技能库总览</h2>
+        <h2 className="font-semibold text-base">技能库总览</h2>
         <p className="text-muted-foreground text-sm">
           选择左侧的 Skill 查看详情与调用记录，或从这里快速了解整体使用情况。
         </p>
@@ -75,18 +76,18 @@ export function SkillsOverview({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {stats.map((s) => (
           <div key={s.label} className="rounded-lg border p-3">
-            <p className="text-2xl font-semibold tabular-nums">{s.value}</p>
-            <p className="text-xs font-medium">{s.label}</p>
-            {s.hint && <p className="text-muted-foreground mt-0.5 text-[11px]">{s.hint}</p>}
+            <p className="font-semibold text-2xl tabular-nums">{s.value}</p>
+            <p className="font-medium text-xs">{s.label}</p>
+            {s.hint && <p className="mt-0.5 text-[11px] text-muted-foreground">{s.hint}</p>}
           </div>
         ))}
       </div>
 
       {/* 调用排行 */}
       <div className="space-y-2">
-        <Label className="text-xs text-muted-foreground">调用排行</Label>
+        <Label className="text-muted-foreground text-xs">调用排行</Label>
         {agg.ranked.length === 0 ? (
-          <p className="text-muted-foreground rounded-lg border border-dashed p-4 text-center text-xs">
+          <p className="rounded-lg border border-dashed p-4 text-center text-muted-foreground text-xs">
             还没有任何 Skill 调用记录。
           </p>
         ) : (
@@ -107,7 +108,7 @@ export function SkillsOverview({
                     style={{ width: `${agg.topCalls > 0 ? (s.calls / agg.topCalls) * 100 : 0}%` }}
                   />
                 </span>
-                <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                <span className="w-16 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
                   {s.calls} 次
                 </span>
               </button>
@@ -119,7 +120,7 @@ export function SkillsOverview({
       <div className="grid gap-6 sm:grid-cols-2">
         {/* 最近调用 */}
         <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">最近调用</Label>
+          <Label className="text-muted-foreground text-xs">最近调用</Label>
           {agg.recent.length === 0 ? (
             <p className="text-muted-foreground text-xs">暂无记录。</p>
           ) : (
@@ -134,7 +135,7 @@ export function SkillsOverview({
                   <span className="min-w-0 flex-1 truncate font-mono text-xs" title={s.name}>
                     {s.name}
                   </span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
                     {fmtTime(s.last_used)}
                   </span>
                 </button>
@@ -145,7 +146,7 @@ export function SkillsOverview({
 
         {/* 未使用（可清理 / 需曝光） */}
         <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">
+          <Label className="text-muted-foreground text-xs">
             未使用的 Skill
             {agg.neverUsed.length > 0 && <span className="ml-1 font-normal">（{agg.neverUsed.length}）</span>}
           </Label>
@@ -157,7 +158,7 @@ export function SkillsOverview({
                 <button key={s.name} type="button" onClick={() => onSelect(s.name)} title={s.name}>
                   <Badge
                     variant="outline"
-                    className="max-w-[12rem] cursor-pointer truncate font-mono text-xs font-normal hover:bg-muted"
+                    className="max-w-[12rem] cursor-pointer truncate font-mono font-normal text-xs hover:bg-muted"
                   >
                     {s.name}
                   </Badge>

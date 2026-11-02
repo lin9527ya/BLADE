@@ -1,6 +1,6 @@
+import { cacheHitRate } from "./token-stats.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cacheHitRate } from "./token-stats.ts";
 
 test("缓存命中率保留一位小数", () => {
   assert.equal(cacheHitRate(933, 1000), "93.3%");
