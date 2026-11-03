@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/llmpool"
+	"github.com/lin9527ya/blade/llmrec"
 )
 
 // BuildVersion is the backend application version, injected from cmd/blade at
@@ -262,6 +264,29 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			"规划层判定任务在当前授权范围与操作约束内已无可行方向：%s\n平台已停止派发新意图并暂停任务（运行中的意图退回 open）。这不是任务结束，也不会生成终局报告；人工确认后可在任务页继续。", reason)
 		_, err := s.applyTaskControlWithCause(t, "pause", cause)
 		return err
+	})
+	// 穷尽复核看门狗：planner 声称"已无可行方向"时，用一个**独立的只读裁判**核对证据。
+	// 用任务自己的 LLM 链（与它平时规划同一个模型）但走独立的一次性调用——同一会话
+	// 接着问只会重复刚说过的结论。裁判不可用时按"证据不足"处理（任务继续）。
+	s.engine.SetExhaustionReviewer(func(ctx context.Context, claim agent.ExhaustionClaim) (agent.ExhaustionVerdict, error) {
+		profileID := int64(0)
+		if p, err := s.m.pg.ActiveProfile(); err == nil && p != nil {
+			profileID = p.ID
+		}
+		if profileID == 0 {
+			return agent.ExhaustionVerdict{}, fmt.Errorf("未配置可用的复核模型")
+		}
+		prov, _, ok := s.providerForProfile(profileID)
+		if !ok {
+			return agent.ExhaustionVerdict{}, fmt.Errorf("复核模型 profile %d 不可用", profileID)
+		}
+		// 单独记一档用量，便于在配置页把"看门狗开销"与规划/执行分开看。
+		ctx = llmrec.WithWorker(ctx, exhaustionReviewerLane)
+		text, err := streamCollectTextLimit(ctx, prov, agent.ExhaustionReviewPrompt, exhaustionReviewJSON(claim), 800)
+		if err != nil {
+			return agent.ExhaustionVerdict{}, err
+		}
+		return agent.ParseExhaustionVerdict(text)
 	})
 	s.auth.signKey.set(key)
 	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)

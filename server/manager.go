@@ -77,6 +77,38 @@ type Task struct {
 	// a burst into one round, so several may pile up before drainTriggers() clears them.
 	trigMu          sync.Mutex
 	pendingTriggers []agent.TriggerEvent
+
+	// exhaustionNote 是最近一次「穷尽复核未通过」的结论。它随下一轮规划输入下发给
+	// planner（作为"你上次说穷尽，但证据不足"的反馈），消费一次即清空——
+	// 不写进图，因为它不是关于目标的结论，而是关于规划者自己判断的批评。
+	exhaustionMu   sync.Mutex
+	exhaustionNote string
+}
+
+// NoteExhaustionRejected 记录一次复核未通过（由引擎在判定后调用）。
+func (t *Task) NoteExhaustionRejected(reason string, gaps []string) {
+	if t == nil {
+		return
+	}
+	note := "复核结论：" + strings.TrimSpace(reason)
+	if len(gaps) > 0 {
+		note += "\n具体不足：\n- " + strings.Join(gaps, "\n- ")
+	}
+	t.exhaustionMu.Lock()
+	t.exhaustionNote = note
+	t.exhaustionMu.Unlock()
+}
+
+// TakeExhaustionNote 取走并清空复核反馈（规划轮开头调用）。
+func (t *Task) TakeExhaustionNote() string {
+	if t == nil {
+		return ""
+	}
+	t.exhaustionMu.Lock()
+	defer t.exhaustionMu.Unlock()
+	n := t.exhaustionNote
+	t.exhaustionNote = ""
+	return n
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task

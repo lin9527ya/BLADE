@@ -152,9 +152,13 @@ type Engine struct {
 	completionWarn sync.Map
 	// WAF 自动切换出口的窗口计数（task|host -> 最近命中时间）。切一次清一次，
 	// 避免连续 403 把节点切来切去。
-	egressMu       sync.Mutex
-	egressHits     map[string][]time.Time
-	egressRotating bool
+	// exhaustionReview 是穷尽复核员（见 exhaustion_watchdog.go）。nil = 未接线
+	// （无可用 LLM / 测试），此时保持旧行为：声明即暂停。
+	exhaustionReview exhaustionReviewer
+	exhaustionTries  sync.Map // taskID -> int，连续被判"证据不足"的次数
+	egressMu         sync.Mutex
+	egressHits       map[string][]time.Time
+	egressRotating   bool
 	// rotateEgressHook 仅测试注入：默认走 e.m.RotateEgress（真实 Clash 控制器）。
 	rotateEgressHook func(context.Context, string) (ClashRotation, error)
 
@@ -1013,6 +1017,9 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // stops (策略穷尽 / 停滞保护). Without it the engine pauses in memory only.
 func (e *Engine) SetPauseWithReasonHandler(fn func(*Task, string) error) { e.pauseWithReason = fn }
 
+// SetExhaustionReviewer 注入穷尽复核员（见 exhaustion_watchdog.go）。nil = 不复核。
+func (e *Engine) SetExhaustionReviewer(fn exhaustionReviewer) { e.exhaustionReview = fn }
+
 // pauseTaskWithReason 走 server 注入的完整暂停路径（落库 + 取消在跑 LLM + 系统活动）；
 // 未注入时退回引擎内 Pause，仍然保证不空转。
 func (e *Engine) pauseTaskWithReason(t *Task, reason string) {
@@ -1250,8 +1257,20 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 不在工具调用中途取消自己的 ctx——这里是本轮结束后的后处理。
 		if exhausted := planner.TakeStrategyExhaustedReason(); exhausted != "" && !met && ectx.Err() == nil {
 			log.Printf("[planner] task %s 策略内已无可行方向: %s", t.ID, clipRunes(exhausted, 120))
-			e.pauseTaskWithReason(t, "策略内已无可行方向，任务已暂停等待人工："+clipRunes(exhausted, 300))
-			return
+			// 穷尽复核：暂停之前先让独立的只读裁判核对证据。判"证据不足"时**不暂停**，
+			// 把结论交回 planner（下一轮据此补测）——硬门只能数有没有碰过，数不了
+			// "这条证据是否真的排除了这个方向"。
+			allowed, note := e.reviewExhaustion(ectx, t, exhausted)
+			if allowed {
+				e.pauseTaskWithReason(t, "策略内已无可行方向，任务已暂停等待人工："+clipRunes(exhausted, 300))
+				return
+			}
+			// 复核未通过：不暂停，交回 planner 补测。本轮按"已处理"继续往下走，
+			// 用一次延迟唤醒保证即使没有别的触发也会很快再规划一轮。
+			log.Printf("[planner] task %s 穷尽复核未通过，任务继续: %s", t.ID, clipRunes(note, 160))
+			zeroRoundStreak = 0 // 这不是空转，是复核要求补测
+			plannerFailRetries = 0
+			time.AfterFunc(2*time.Second, func() { t.Notify() })
 		}
 		// 槽位利用率 / 停滞保护：一轮结束后看「空闲槽位」和「是否连续空转」。
 		// 此前一轮结束就不会再因空闲槽位自我唤醒，只能等 worker 完成或 10 分钟心跳，
