@@ -140,6 +140,164 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 	return nil
 }
 
+// AddSiblingScope 把「与已入范围资产同根域」的兄弟子域纳入本任务范围（source='auto'，
+// reason 写明依据）。这是用户要求的「确认属于目标的资产都可以加入测试范围」：
+//
+// 判定依据只有一个，且必须可审计——**同一个注册域（eTLD+1）**。它正好是"同一主体"在
+// DNS 层面能自证的最强信号，也是 add_task_scope 的 root_domain 语义；不同根域一律不动
+// （那要靠 company / icp 这类显式授权，绝不能因为"看起来像"就扩）。
+//
+// 返回真正新增的条数（已存在的不重复计）。
+func (s *AssetStore) AddSiblingScope(taskID int64, domain, reason string) (int, error) {
+	if taskID <= 0 {
+		return 0, nil
+	}
+	host := DomainKey(domain)
+	if host == "" || net.ParseIP(host) != nil {
+		return 0, nil
+	}
+	root, isApex := RootDomain(host)
+	if root == "" {
+		return 0, nil
+	}
+	// 自身是裸根域时登记 root_domain（覆盖整域），否则登记精确子域。
+	ts := TaskScope{TaskID: taskID, Source: "auto", Reason: reason}
+	if isApex {
+		ts.Kind, ts.Domain = "root_domain", root
+	} else {
+		ts.Kind, ts.Domain = "subdomain", host
+	}
+	added, err := s.upsertTaskScopeResult(ts)
+	if err != nil {
+		return 0, err
+	}
+	if added {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+// ScopeRootDomains 返回本任务范围里出现过的注册域（root_domain 行 + subdomain 行的 eTLD+1）。
+// 用于「同根兄弟资产入范围」的判定与 planner 态势展示。
+func (s *AssetStore) ScopeRootDomains(taskID int64) ([]string, error) {
+	rows, err := s.ListTaskScope(taskID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, r := range rows {
+		switch r.Kind {
+		case "root_domain":
+			if r.Domain != "" && !seen[r.Domain] {
+				seen[r.Domain] = true
+				out = append(out, r.Domain)
+			}
+		case "subdomain":
+			if root, _ := RootDomain(r.Domain); root != "" && !seen[root] {
+				seen[root] = true
+				out = append(out, root)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// UntouchedSiblings 返回指定注册域下、**没有被本任务任何意图引用过**的具体资产。
+//
+// 「没被引用过」比「没被事实覆盖过」更严格，也更贴近这里的用途：一条意图只要派出去过
+// （哪怕最后 blocked / no_output），就说明这个面已经试过了；只有连意图都没派过的资产，
+// 才是「还没试过、值得在正面受阻时转过去」的候选。
+//
+// 排除 root_domain（聚合，不是可测点）与 service（host:port 属性，覆盖由宿主承担）。
+// limit<=0 → 12。返回窗口 + 真实总数。
+func (s *AssetStore) UntouchedSiblings(taskID int64, roots []string, limit int) ([]CoverageAsset, int, error) {
+	if taskID <= 0 || len(roots) == 0 {
+		return nil, 0, nil
+	}
+	if limit <= 0 {
+		limit = 12
+	}
+	const filter = `
+  AND a.type IN ('subdomain','app','endpoint','ip')
+  AND NOT EXISTS (
+    SELECT 1 FROM exploration_anchors ea
+    JOIN exploration_nodes en ON en.id = ea.node_id
+    JOIN tasks t ON t.exploration_id = en.exploration_id
+    WHERE t.id = $1 AND en.kind = 'intent' AND ea.asset_id = a.id)`
+	label := `COALESCE(NULLIF(a.url,''), NULLIF(a.domain,''), NULLIF(a.ip,''), NULLIF(a.app_name,''), a.type)`
+	var total int
+	if err := s.db.QueryRow(`SELECT count(*) FROM assets a WHERE a.root_domain = ANY($2)`+filter,
+		taskID, roots).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(`SELECT a.id, a.type, `+label+`
+FROM assets a WHERE a.root_domain = ANY($2)`+filter+`
+ORDER BY a.id LIMIT $3`, taskID, roots, limit)
+	if err != nil {
+		return nil, total, err
+	}
+	defer rows.Close()
+	out := []CoverageAsset{}
+	for rows.Next() {
+		var a CoverageAsset
+		if err := rows.Scan(&a.ID, &a.Type, &a.Label); err != nil {
+			return nil, total, err
+		}
+		out = append(out, a)
+	}
+	return out, total, rows.Err()
+}
+
+// SweepSiblingScope 把「已知属于同一注册域」的资产批量纳入任务范围。
+//
+// 与 AddSiblingScope 的分工：那个用于「刚发现一个主机 → 立刻把同根兄弟收进来」；
+// 这个用于**回扫**——任务范围建立之后，资产图里又出现了同根域的主机（别的任务登记过、
+// 或 enrichment 补出的），一次性补进来。两者判定同一件事：同 eTLD+1。
+//
+// 只认 root_domain 字段完全相等的资产（数据库已按 eTLD+1 归一），不做模糊匹配。
+// 返回新增条数。
+func (s *AssetStore) SweepSiblingScope(taskID int64, reason string) (int, error) {
+	if taskID <= 0 {
+		return 0, nil
+	}
+	roots, err := s.ScopeRootDomains(taskID)
+	if err != nil || len(roots) == 0 {
+		return 0, err
+	}
+	rows, err := s.db.Query(`
+SELECT DISTINCT COALESCE(domain, '')
+FROM assets
+WHERE type = 'subdomain' AND root_domain = ANY($1) AND COALESCE(domain,'') <> ''`,
+		roots)
+	if err != nil {
+		return 0, err
+	}
+	var hosts []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		hosts = append(hosts, h)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, h := range hosts {
+		n, err := s.AddSiblingScope(taskID, h, reason)
+		if err != nil {
+			return added, err
+		}
+		added += n
+	}
+	return added, nil
+}
+
 // AddAgentScope parses a (kind,value) pair and records it as task scope.
 // source is "agent" when called from an LLM tool, "manual" from the UI.
 // company: value = company name or id (must already exist). root_domain/subdomain:

@@ -671,6 +671,46 @@ func (t *ToolSet) breadthSummary() *db.BreadthSummary {
 	return t.breadthCached
 }
 
+// scopeSurface 是本任务「范围面」的快照：范围内的注册域、以及同根域下**还没被任何
+// 意图碰过**的资产。它是「目标正面打不进去时，自动转去试范围内的其它资产」这条策略的
+// 依据——planner 必须每轮都看得到还剩哪些同主体资产没试过，而不是凭记忆判断。
+type scopeSurface struct {
+	RootDomains []string `json:"root_domains"`
+	// Untouched 是同根域内**没有任何意图引用**的具体资产（不含 root_domain 与 service）。
+	Untouched []scopeAssetRef `json:"untouched_siblings"`
+	// UntouchedTotal 是真实总数（Untouched 只是展示窗口）。
+	UntouchedTotal int `json:"untouched_siblings_total"`
+}
+
+type scopeAssetRef struct {
+	ID    int64  `json:"id"`
+	Type  string `json:"type"`
+	Label string `json:"label"`
+}
+
+const scopeUntouchedWindow = 12
+
+// scopeSurface 取范围面快照。AssetStore/任务上下文缺失时返回 nil（态势里不出现该字段）。
+func (t *ToolSet) scopeSurface() *scopeSurface {
+	if t.as == nil || t.taskID <= 0 || t.ts == nil {
+		return nil
+	}
+	roots, err := t.as.ScopeRootDomains(t.taskID)
+	if err != nil || len(roots) == 0 {
+		return nil
+	}
+	out := &scopeSurface{RootDomains: roots, Untouched: []scopeAssetRef{}}
+	assets, total, err := t.as.UntouchedSiblings(t.taskID, roots, scopeUntouchedWindow)
+	if err != nil {
+		return out
+	}
+	for _, a := range assets {
+		out.Untouched = append(out.Untouched, scopeAssetRef{ID: a.ID, Type: a.Type, Label: a.Label})
+	}
+	out.UntouchedTotal = total
+	return out
+}
+
 // graphOverviewData computes the distilled situational snapshot shared by the
 // graph_overview tool and the planner's wake-up prompt (which pre-injects it so
 // the model needn't spend a turn calling the tool — every plan round starts with
@@ -1293,6 +1333,11 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	// summaries in a separate field so their intents never enter this task's
 	// frontier or get mistaken for locally claimable work.
 	out["related_tasks"] = t.relatedTaskOverviews()
+	// scope_surface：范围面（范围内注册域 + 同根域下还没被任何意图碰过的资产）。
+	// 「目标正面打不进去就换同主体的其它资产试」这条策略靠它驱动，所以每轮都给。
+	if ss := t.scopeSurface(); ss != nil {
+		out["scope_surface"] = ss
+	}
 	// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
 	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，

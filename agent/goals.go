@@ -58,6 +58,7 @@ const goalsScopeTail = `
   例：目标 https://a1b2c3.lab.example.net/path → kind=subdomain，value=a1b2c3.lab.example.net（**不是** example.net）。
   **严禁**把带子域的主机名缩成根域名——看到 xxx.example.com 就登记整个 example.com 会把范围扩到用户目标之外，违背最小范围原则。
 - 仅当用户给的就是**裸根域名、且不含任何子域**（如直接写 example.com），或明确说“整个站点 / 所有子域 / 全域名” → 才用 kind=root_domain，value=example.com。
+- 用户要求「把子域名等确认属于目标的资产都纳入范围」「正面打不进去就走横向」时：**不要**为此把范围扩成根域。同一注册域（eTLD+1）下的资产在发现时会**自动**纳入范围（insert_assets 的同根入范围），无需在这里放大授权边界。
 - 纯 IP 或网段 → kind=ip / cidr，value=IP 或 CIDR。
 - **不要**登记公司范围（company）——任务刚建立、资产系统里通常还没有这家公司，登记不上，公司级范围交由后续 plan 阶段处理。
 其它规则：

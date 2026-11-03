@@ -1207,6 +1207,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		defer e.decInflight(t.ID)
 		e.stampFirstRun(t) // 首次真正规划 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 		e.warnIfDirectEgress(t)
+		e.sweepSiblingScope(t)
 		e.touch(t.ID)
 		emit := func(r db.Activity) { e.emitActivity(t, r) }
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
@@ -2131,4 +2132,34 @@ func (e *Engine) warnIfDirectEgress(t *Task) {
 	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
 		Summary: "未配置出口代理：本任务的目标流量将直连",
 		Detail:  "测试流量直连会把本机真实 IP 暴露给目标，也无法留下流量证据。目标在公网时请在「设置 → 网络与代理」配置代理池（或 Clash 出口）；确需直连时本提示可忽略。"})
+}
+
+// sweepSiblingScope 在每个规划轮开头把「同注册域、但还没进范围」的资产补进本任务范围。
+//
+// 为什么要在这里补而不是只靠 worker 碰到时补：资产图是全局共享的——别的任务、或
+// enrichment 的 DNS/HTTP 补全，都会往同一个注册域下添加主机。那些资产与目标同主体
+// （eTLD+1 相同），本就该在测试范围里，但没有任何 worker 会「碰到」它们，于是范围面
+// 一直不完整，planner 也就无从知道还有哪些同主体资产可以试。
+//
+// 失败只记日志：范围补全是尽力而为，不该让一轮规划因此失败。
+func (e *Engine) sweepSiblingScope(t *Task) {
+	if e == nil || e.m == nil || t == nil {
+		return
+	}
+	as := e.m.Assets()
+	if as == nil || !as.CoverageEnabled(parseIntDefault(t.ID)) {
+		return
+	}
+	n, err := as.SweepSiblingScope(parseIntDefault(t.ID),
+		"与本任务范围同注册域（eTLD+1）的资产，随规划轮自动纳入")
+	if err != nil {
+		log.Printf("[scope] task %s 同根资产入范围失败: %v", t.ID, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("[scope] task %s 自动纳入 %d 个同根资产到测试范围", t.ID, n)
+		e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+			Summary: fmt.Sprintf("测试范围自动扩充：新增 %d 个同注册域资产", n),
+			Detail:  "同注册域（eTLD+1）是「确认属于目标」的判定依据。这些资产此前不在范围内，现在可以在正面受阻时转去尝试（横向推进）。"})
+	}
 }

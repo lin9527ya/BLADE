@@ -595,6 +595,21 @@ const slotUtilizationBlock = `
 - 派什么：优先【不依赖在跑 work 的独立方向】——不同入口面、不同资产、不同风险类、另一条利用链；已经在跑的意图的后续步骤要等产出，不要为了凑数把它拆成下游意图（那会空转）。独立方向不够时，宁可派"补证缺口 / 复核否定结论 / 换机理重打同一入口"，也不要空着槽位。
 - 空闲槽位不是"派得越多越好"的许可：队列仍受 saturated 约束；同一条方向换措辞重复派仍是严重错误。补的是**并行的广度**，不是重复。`
 
+// lateralDisciplineBlock 是**代码持有**的横向推进纪律。
+//
+// 用户的要求：「子域名等确认属于目标的资产都可以加入测试范围；正面打不进去时自动去试
+// 这些资产，用横向的方式拿下目标」。范围累积已由 insert_assets 的同根自动纳入 +
+// mark_strategy_exhausted 的硬门保证；这一段解决的是**模型主动去想**——正面受阻时
+// 先看范围内还有哪些同主体资产没试过，而不是继续在同一个入口上加码或直接收工。
+const lateralDisciplineBlock = `
+
+【横向推进（代码持有）：正面打不动时，先换同主体的资产】
+- 态势里的 scope_surface 给出本任务范围的注册域，以及同根域下【一条意图都没派过】的具体资产（untouched_siblings，带 id；total 是真实总数，窗口外按需 list_untested_assets / coverage_matrix 查）。
+- 判定顺序：① 目标主机正面受阻（WAF 封禁 / 认证墙 / 无洞 / 关键入口拿不下）时，**先扫一遍 untouched_siblings**，而不是继续在同一入口换 payload；② 从里面挑与目标最贴近的面（管理面 webmail/admin/cp、邮件与 DNS 面、dev/staging 子域、同 IP 的其它 vhost），派带具体 asset_ids 的意图；③ 拿到任何入口（凭据、据点、上传点、SSRF 落点）后，优先考虑用它向目标主机**横向/纵向推进**，而不是另起炉灶从外部重打。
+- 同根域资产是**已确认属于目标**的（eTLD+1 相同），可以直接派意图；不同根域仍要显式授权（company/icp/人工 add_task_scope），不得自行扩面。
+- 横向意图必须写清：从哪台资产、用什么已有能力（战果/凭据/入口）、预期怎么回到目标上。禁止「看一眼 xxx 子域」这种没有推进路径的广度凑数。
+- 只有当 untouched_siblings_total=0（或剩下确有不可达/超授权的理由）时，才算把范围面走完；此时再谈 mark_strategy_exhausted。`
+
 // breadthDisciplineBlock is code-owned (like hintLifecycleBlock): existing DB
 // prompt versions predate the breadth ledger, and a user-edited template may still
 // carry the old “depth-first over coverage” wording. The block names the new
@@ -690,7 +705,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 		}
 	}
 	// 追加段与潜行纪律不属于任何一级正文：静默模式下任务快照/模板库正文同样要带上。
-	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
+	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
 }
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板

@@ -47,6 +47,25 @@ func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 			if len(ids) == 0 {
 				return actool.Errorf("evidence_ids 必填：至少给一个支撑判断的事实/漏洞/意图 id"), nil
 			}
+			// 范围内还有完全没试过的同主体资产时不许宣告穷尽：那是「正面受阻」，
+			// 不是「无路可走」。这一条把「换个资产横向推进」从建议变成硬约束——
+			// 任务 19 就是正面（Gambio 后台）打不动后直接想收工，而范围里还有
+			// webmail/mail/smtp 等 6 个同根子域一条意图都没派过。
+			if t.as != nil && t.taskID > 0 {
+				if roots, err := t.as.ScopeRootDomains(t.taskID); err == nil && len(roots) > 0 {
+					if pending, total, err := t.as.UntouchedSiblings(t.taskID, roots, 8); err == nil && total > 0 {
+						samples := make([]string, 0, len(pending))
+						for _, p := range pending {
+							samples = append(samples, fmt.Sprintf("%s(id=%d)", p.Label, p.ID))
+						}
+						return actool.Errorf(fmt.Sprintf(
+							"范围内还有 %d 个同主体资产一条意图都没派过（样本：%s）：这不是「无路可走」，是正面受阻。\n"+
+								"先派意图去试它们（横向：换子域/换入口/用已有凭据或据点向内推），再谈穷尽。\n"+
+								"确属不可达/超出授权，请逐个写清原因（可在意图里标 out-of-scope 收场）。",
+							total, strings.Join(samples, "、"))), nil
+					}
+				}
+			}
 			for _, id := range ids {
 				n, err := t.ts.GetNode(id)
 				if err != nil || n == nil {

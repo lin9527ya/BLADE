@@ -405,6 +405,20 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					if err := t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP); err != nil {
 						log.Printf("[insert_assets] 自动入范围失败 task=%d type=%s: %v（范围边界可能少一条）", taskID, typ, err)
 					}
+					// 同注册域的兄弟主机一并入范围：用户要的是「确认属于目标的资产都可以测」，
+					// 而同一 eTLD+1 是 DNS 层面能自证同一主体的最强信号。不同根域一律不动。
+					host := item.Domain
+					if host == "" && item.URL != "" {
+						if u, err := url.Parse(item.URL); err == nil {
+							host = u.Hostname()
+						}
+					}
+					if host != "" {
+						if _, err := t.as.AddSiblingScope(taskID, host,
+							"与本任务目标同注册域（eTLD+1），随资产登记自动纳入"); err != nil {
+							log.Printf("[insert_assets] 同根兄弟入范围失败 task=%d host=%s: %v", taskID, host, err)
+						}
+					}
 				}
 			}
 
