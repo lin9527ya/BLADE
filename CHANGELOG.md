@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-03
+
+浏览器工具可用性与授权范围判定的收口：Playwright 改为 headful、deferred 工具的多词
+查询不再零命中，范围门不再把 shell 变量当成越界主机；此外补上了「穷尽」前的深度门
+与独立复核看门狗。
+
 ### 修复
 
 - **shell 变量不再被当成越界主机**：`curl https://games-island.eu$p`、`https://$h/`、
@@ -13,15 +19,6 @@
   现在：主机名遇到 shell 展开字符即截断（`games-island.eu$p` → `games-island.eu`）；
   同一条命令里的简单变量赋值会被展开（`h=x; curl https://$h/` → `x`）；整段都由变量
   构成时无法静态判定，按「抽不出目标」处理（不拦），而不是判越界
-
-### 变更
-
-- **Playwright MCP 改为 headful**：去掉 `--headless`，并加 `--no-sandbox`（这台机器的
-  Chromium 沙箱起不来，不加会直接挂住）。headful 是应对 WAF 挑战页/JS 指纹所必需的；
-  内置 `browser` MCP 的 seed 默认同步去掉 `--headless`
-
-### 修复
-
 - **浏览器 MCP 工具被误判为不可用**（依赖 Norma v0.5.8）：`SearchExtraTools` 对空格分词
   做严格 AND，要求同一条 name+description 同时包含全部 token。模型很自然地一次问多个
   工具名（`"chrome-devtools navigate_page new_page list_pages"`），没有任何工具能同时
@@ -29,6 +26,12 @@
   playwright / chrome-devtools 装配正常（worker/planner 各 57 个工具）。
   现在零命中时退化为按命中 token 数排序的近似匹配（最多 12 条）；真正调用仍需
   `ExecuteExtraTool` 指定确切名字，完全无关的查询仍然零命中
+
+### 变更
+
+- **Playwright MCP 改为 headful**：去掉 `--headless`，并加 `--no-sandbox`（这台机器的
+  Chromium 沙箱起不来，不加会直接挂住）。headful 是应对 WAF 挑战页/JS 指纹所必需的；
+  内置 `browser` MCP 的 seed 默认同步去掉 `--headless`
 
 ### 新增
 
@@ -44,9 +47,6 @@
   - **查看面**：任务详情「总览」新增「穷尽复核」卡片（通过/未通过、结论、具体不足点、
     时间），数据来自新端点 `GET /api/exploration/exhaustion-reviews`。复核结论此前只是
     混在活动流里的普通系统记录，任务跑到上百轮之后没人找得到
-
-### 新增
-
 - **深度门：广度达标不等于测透**。breadth 的 `debt`/`pct` 只回答「有没有碰过」——
   一个资产只要有一类风险终态就从 debt 里消失、pct 变成 100%，另外十几类完全没碰也
   看不出来（任务 22 实测：22 条意图集中在 3 个资产上，其余各测 1 类就再没人管）。
