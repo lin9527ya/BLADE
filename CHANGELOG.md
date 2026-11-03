@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **Playwright MCP 改为 headful**：去掉 `--headless`，并加 `--no-sandbox`（这台机器的
+  Chromium 沙箱起不来，不加会直接挂住）。headful 是应对 WAF 挑战页/JS 指纹所必需的；
+  内置 `browser` MCP 的 seed 默认同步去掉 `--headless`
+
 ### 修复
 
 - **浏览器 MCP 工具被误判为不可用**（依赖 Norma v0.5.8）：`SearchExtraTools` 对空格分词
