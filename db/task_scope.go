@@ -213,12 +213,19 @@ func (s *AssetStore) ScopeRootDomains(taskID int64) ([]string, error) {
 // 排除 root_domain（聚合，不是可测点）与 service（host:port 属性，覆盖由宿主承担）。
 // limit<=0 → 12。返回窗口 + 真实总数。
 func (s *AssetStore) UntouchedSiblings(taskID int64, roots []string, limit int) ([]CoverageAsset, int, error) {
-	if taskID <= 0 || len(roots) == 0 {
+	if taskID <= 0 {
 		return nil, 0, nil
 	}
 	if limit <= 0 {
 		limit = 12
 	}
+	// 没有注册域范围时 roots 为空是合法的：任务可能只按 ip/cidr 授权（$2::text[] 空数组
+	// 让 `= ANY` 恒为 false，下面的 ip/cidr 分支照常生效）。
+	if roots == nil {
+		roots = []string{}
+	}
+	// 范围内资产有两个来源，缺一不可：同注册域（$2），以及按 ip/cidr 纳入的范围行
+	// （IP 资产的 root_domain 为空，只按 root_domain 匹配会把它们整片漏掉）。
 	const filter = `
   AND a.type IN ('subdomain','app','endpoint','ip')
   AND NOT EXISTS (
@@ -226,14 +233,19 @@ func (s *AssetStore) UntouchedSiblings(taskID int64, roots []string, limit int) 
     JOIN exploration_nodes en ON en.id = ea.node_id
     JOIN tasks t ON t.exploration_id = en.exploration_id
     WHERE t.id = $1 AND en.kind = 'intent' AND ea.asset_id = a.id)`
+	const inScope = `
+  (a.root_domain = ANY($2::text[])
+   OR EXISTS (SELECT 1 FROM task_scope ts
+              WHERE ts.task_id = $1 AND ts.kind IN ('ip','cidr')
+                AND ts.net >>= try_inet(a.ip)))`
 	label := `COALESCE(NULLIF(a.url,''), NULLIF(a.domain,''), NULLIF(a.ip,''), NULLIF(a.app_name,''), a.type)`
 	var total int
-	if err := s.db.QueryRow(`SELECT count(*) FROM assets a WHERE a.root_domain = ANY($2)`+filter,
+	if err := s.db.QueryRow(`SELECT count(*) FROM assets a WHERE `+inScope+filter,
 		taskID, roots).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.db.Query(`SELECT a.id, a.type, `+label+`
-FROM assets a WHERE a.root_domain = ANY($2)`+filter+`
+FROM assets a WHERE `+inScope+filter+`
 ORDER BY a.id LIMIT $3`, taskID, roots, limit)
 	if err != nil {
 		return nil, total, err

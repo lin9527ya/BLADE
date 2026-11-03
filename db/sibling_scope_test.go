@@ -91,3 +91,45 @@ func TestAddSiblingScopeApexBecomesRootDomain(t *testing.T) {
 		t.Fatalf("ScopeRootDomains = %v, %v", roots, err)
 	}
 }
+
+// 按 ip/cidr 纳入范围的资产也必须被「未触达同主体资产」看见：IP 资产的 root_domain
+// 为空，只按 root_domain 匹配会把它们整片漏掉（任务 19 的范围里就有一条 /32）。
+func TestUntouchedSiblingsIncludesIPScopedAssets(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTask("ip scope", "x", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = d.DeleteTask(task.ID)
+		_, _ = d.Exec(`DELETE FROM assets WHERE ip = '203.0.113.77'`)
+	})
+	as := d.Assets()
+	if _, err := as.UpsertIP(UpsertIPReq{IP: "203.0.113.77", TaskID: task.ID}); err != nil {
+		t.Fatalf("UpsertIP: %v", err)
+	}
+	if _, err := as.AddAgentScope(task.ID, "ip", "203.0.113.77", "目标解析到的 IP", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := as.ScopeRootDomains(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, total, err := as.UntouchedSiblings(task.ID, roots, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range items {
+		if it.Label == "203.0.113.77" || it.Type == "ip" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("按 ip 范围纳入的资产应出现在未触达清单里（total=%d）：%+v", total, items)
+	}
+}
