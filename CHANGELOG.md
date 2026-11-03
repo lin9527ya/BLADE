@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **浏览器 MCP 工具被误判为不可用**（依赖 Norma v0.5.8）：`SearchExtraTools` 对空格分词
+  做严格 AND，要求同一条 name+description 同时包含全部 token。模型很自然地一次问多个
+  工具名（`"chrome-devtools navigate_page new_page list_pages"`），没有任何工具能同时
+  命中，于是整条查询零命中，模型据此断定「deferred 浏览器工具不可用」——实际
+  playwright / chrome-devtools 装配正常（worker/planner 各 57 个工具）。
+  现在零命中时退化为按命中 token 数排序的近似匹配（最多 12 条）；真正调用仍需
+  `ExecuteExtraTool` 指定确切名字，完全无关的查询仍然零命中
+
 ### 新增
 
 - **穷尽复核看门狗**：planner 声明「策略内已无可行方向」时，暂停之前先由一个**独立的
