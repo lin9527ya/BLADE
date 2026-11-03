@@ -155,13 +155,9 @@ func (w *scopeWindow) Describe() string {
 // 区间内"，而"现在几点"不能由测试摆布——不注入时钟就只能写出靠真实时间碰运气的用例。
 var scopeNow = time.Now
 
-// scopeHours 现读窗口设置（每调用读一次：改设置立即生效，与 ScopeMode 同口径）。
-func (i *Interceptor) scopeHours() (*scopeWindow, error) {
-	w, _, err := i.scopeHoursAndTZ()
-	return w, err
-}
-
-// scopeHoursAndTZ 同时取窗口与时区（两者都是"每次调用现读"，改完即时生效）。
+// scopeHoursAndTZ 现读窗口与时区（两者都是"每次调用现读"：改设置立即生效，与 ScopeMode
+// 同口径）。调用方只有 scope.go 的 CheckScope——时区必须与窗口一起取，否则"按哪个时区判定"
+// 会与"窗口是什么"来自两次读取，配置刚改时可能拼出一次不一致的判定。
 func (i *Interceptor) scopeHoursAndTZ() (*scopeWindow, string, error) {
 	raw, ok, err := i.db.GetSetting(SettingScopeHours)
 	if err != nil || !ok {
