@@ -133,3 +133,44 @@ func TestUntouchedSiblingsIncludesIPScopedAssets(t *testing.T) {
 		t.Fatalf("按 ip 范围纳入的资产应出现在未触达清单里（total=%d）：%+v", total, items)
 	}
 }
+
+// 「同根子域发现做过没有」必须按**主机**计数：同一主机下几十条 endpoint 不说明
+// "还有别的站点"（任务 18 就只有一个主机 + 3 个 endpoint，曾被误判成已发现）。
+func TestCountSiblingsInGraphCountsHostsNotRows(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTask("host count", "x", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = d.DeleteTask(task.ID)
+		_, _ = d.Exec(`DELETE FROM assets WHERE domain LIKE '%host-count-test%'`)
+	})
+	as := d.Assets()
+	root := "host-count-test.example"
+	if _, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "www." + root, TaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/a", "/b", "/c", "/d"} {
+		if _, err := as.UpsertEndpoint(UpsertEndpointReq{URL: "https://www." + root + p, Method: "GET", TaskID: task.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := as.CountSiblingsInGraph([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("只登记了一个主机，应计 1（endpoint 不算新主机），实际 %d", n)
+	}
+	if _, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "mail." + root, TaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := as.CountSiblingsInGraph([]string{root}); n != 2 {
+		t.Fatalf("加了第二个主机后应计 2，实际 %d", n)
+	}
+}

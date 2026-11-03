@@ -204,19 +204,23 @@ func (s *AssetStore) ScopeRootDomains(taskID int64) ([]string, error) {
 	return out, nil
 }
 
-// CountSiblingsInGraph 返回这些注册域在**资产图里已登记**的具体资产数
-// （subdomain/app/endpoint/ip，不含 root_domain 与 service）。
+// CountSiblingsInGraph 返回这些注册域在**资产图里已登记的主机数**。
 //
-// 用途：判断"同根子域发现"做过没有。这个数不依赖本任务范围——资产图是全局共享的，
-// 别的任务登记过的兄弟主机同样算"已经知道它存在"。
+// 按**主机**去重，不按资产行数：同一个主机下的 endpoint 有几十条，它们不说明"还有别的
+// 站点"。判断"同根子域发现做过没有"要的是"知道几个不同的主机"，所以只数
+// subdomain / ip / app（各自的自然键），endpoint 与 service 是挂在主机下的属性。
+//
+// 这个数不依赖本任务范围——资产图是全局共享的，别的任务登记过的兄弟主机同样算
+// "已经知道它存在"。
 func (s *AssetStore) CountSiblingsInGraph(roots []string) (int, error) {
 	if len(roots) == 0 {
 		return 0, nil
 	}
 	var n int
 	err := s.db.QueryRow(`
-SELECT count(*) FROM assets
-WHERE type IN ('subdomain','app','endpoint','ip') AND root_domain = ANY($1::text[])`, roots).Scan(&n)
+SELECT count(DISTINCT COALESCE(NULLIF(domain,''), NULLIF(ip,''), NULLIF(app_name,''), NULLIF(url,'')))
+FROM assets
+WHERE type IN ('subdomain','app','ip') AND root_domain = ANY($1::text[])`, roots).Scan(&n)
 	return n, err
 }
 
