@@ -25,7 +25,10 @@ func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 	return t.writeExpTool("mark_strategy_exhausted",
 		"当你在【授权范围/操作约束内】已确认没有任何可行方向时调用：写一条结论事实，并把任务暂停等待人工决定。\n"+
 			"它**不会**伪造目标达成，也不会让任务结束；人工确认后可继续，planner 会重新评估。\n"+
-			"只在真正穷尽后使用——「暂时想不出」「在等某条 work 的产出」「还有空闲 worker」都不算。",
+			"只在真正穷尽后使用——「暂时想不出」「在等某条 work 的产出」「还有空闲 worker」都不算。\n"+
+			"调用前会被三道硬门检查：①同根子域还没发现过（资产图里只有目标主机本身）；"+
+			"②还有同主体资产一条意图都没派过；③还有资产只终结了 1~2 类风险（深度不足）。"+
+			"被拒时会点名具体资产与缺失的风险类——按它去派意图，不要改写措辞重试。",
 		obj(map[string]any{
 			"reason": str("【必填】为什么策略内已无可行方向：已穷尽哪些方向、各自被什么挡住（授权范围/操作约束/目标侧防御/事实否定）"),
 			"evidence_ids": map[string]any{
@@ -73,6 +76,28 @@ func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 								"确属不可达/超出授权，请逐个写清原因（可在意图里标 out-of-scope 收场）。",
 							total, strings.Join(samples, "、"))), nil
 					}
+				}
+			}
+			// 深度门：范围内还有「测过但只终结了 1~2 类风险」的资产时也不许穷尽。
+			// 这是"广度达标、深度很浅"的直接对策：一个资产只要有一类终态就从 debt 里
+			// 消失，pct 于是 100%，但另外十几类根本没碰过。要求「穷尽」先面对它们。
+			if t.ts != nil && t.taskID > 0 {
+				if gaps, total, err := t.ts.DepthGaps(t.taskID, db.DefaultDepthAreas, 8); err == nil && total > 0 {
+					lines := make([]string, 0, len(gaps))
+					for _, g := range gaps {
+						missing := g.Missing
+						if len(missing) > 6 {
+							missing = missing[:6]
+						}
+						lines = append(lines, fmt.Sprintf("%s(id=%d，已终结 %s；未碰 %s)",
+							g.Label, g.AssetID, strings.Join(g.DoneAreas, "/"), strings.Join(missing, "/")))
+					}
+					return actool.Errorf(fmt.Sprintf(
+						"范围内还有 %d 个资产只测了很少几类风险（阈值：每个资产至少终结 %d 类）：\n%s\n"+
+							"「广度 pct=100%%」只说明每个资产都被碰过，不说明测透了。先补这些资产的其余风险类"+
+							"（按面挑最贴合的一类，带 asset_ids 派意图），再谈穷尽。\n"+
+							"确属该资产上不适用（无该类型入口），请在意图里以 out-of-scope 收场并写明原因。",
+						total, db.DefaultDepthAreas, strings.Join(lines, "\n"))), nil
 				}
 			}
 			for _, id := range ids {

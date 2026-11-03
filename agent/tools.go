@@ -688,6 +688,21 @@ type scopeSurface struct {
 	SubdomainDiscoveryPending bool `json:"subdomain_discovery_pending,omitempty"`
 	// DiscoveryHints 是给 planner 的具体查询表达式（原样可用的 FOFA 语法）。
 	DiscoveryHints []string `json:"discovery_hints,omitempty"`
+	// Shallow 是「测过、但深度不足」的资产：每个资产的终结风险类少于阈值时列出，
+	// 并给出还没终结的风险类。breadth 的 debt/pct 只回答"碰没碰过"，这里回答
+	// "碰到什么程度"——没有这一层，广度达标与测得很浅可以同时成立。
+	Shallow      []shallowAssetRef `json:"shallow_assets,omitempty"`
+	ShallowTotal int               `json:"shallow_assets_total,omitempty"`
+	// DepthThreshold 是上面那层用的阈值（每个资产至少要终结多少个风险类）。
+	DepthThreshold int `json:"depth_threshold,omitempty"`
+}
+
+type shallowAssetRef struct {
+	ID      int64    `json:"id"`
+	Type    string   `json:"type"`
+	Label   string   `json:"label"`
+	Done    []string `json:"done_risk_areas,omitempty"`
+	Missing []string `json:"missing_risk_areas,omitempty"`
 }
 
 // siblingDiscoveryThreshold：同根域内已登记的具体资产（含目标本身）少于这个数时，
@@ -720,6 +735,18 @@ func (t *ToolSet) scopeSurface() *scopeSurface {
 		out.Untouched = append(out.Untouched, scopeAssetRef{ID: a.ID, Type: a.Type, Label: a.Label})
 	}
 	out.UntouchedTotal = total
+	// 深度面：测过但风险类终结数不足的资产。与 untouched 是两个维度——
+	// untouched 回答"有没有碰过"，这里回答"碰到什么程度"。
+	if gaps, total, err := t.ts.DepthGaps(t.taskID, db.DefaultDepthAreas, 8); err == nil && total > 0 {
+		out.ShallowTotal = total
+		out.DepthThreshold = db.DefaultDepthAreas
+		for _, g := range gaps {
+			out.Shallow = append(out.Shallow, shallowAssetRef{
+				ID: g.AssetID, Type: g.Type, Label: g.Label,
+				Done: g.DoneAreas, Missing: g.Missing,
+			})
+		}
+	}
 	// 同根子域一条都没登记 → 横向无从谈起，先做发现。判定用**资产图里的同根具体资产数**
 	// （不是范围行数：范围里可能只有一条 subdomain，而资产图里已经有 10 个兄弟）。
 	if known, err := t.as.CountSiblingsInGraph(roots); err == nil && known < siblingDiscoveryThreshold {

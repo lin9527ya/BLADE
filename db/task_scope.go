@@ -177,6 +177,39 @@ func (s *AssetStore) AddSiblingScope(taskID int64, domain, reason string) (int, 
 	return 0, nil
 }
 
+// scopeRootDomains 是 ScopeRootDomains 的 store 侧实现：深度口径要用它，
+// 而 ExplorationStore 没有 AssetStore 的依赖。SQL 与判定保持同一份语义。
+func (s *ExplorationStore) scopeRootDomains(taskID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+SELECT kind, COALESCE(domain,'') FROM task_scope
+WHERE task_id=$1 AND kind IN ('root_domain','subdomain')`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	out := []string{}
+	for rows.Next() {
+		var kind, domain string
+		if err := rows.Scan(&kind, &domain); err != nil {
+			return nil, err
+		}
+		if kind == "root_domain" {
+			if domain != "" && !seen[domain] {
+				seen[domain] = true
+				out = append(out, domain)
+			}
+			continue
+		}
+		if root, _ := RootDomain(domain); root != "" && !seen[root] {
+			seen[root] = true
+			out = append(out, root)
+		}
+	}
+	sort.Strings(out)
+	return out, rows.Err()
+}
+
 // ScopeRootDomains 返回本任务范围里出现过的注册域（root_domain 行 + subdomain 行的 eTLD+1）。
 // 用于「同根兄弟资产入范围」的判定与 planner 态势展示。
 func (s *AssetStore) ScopeRootDomains(taskID int64) ([]string, error) {
@@ -1078,6 +1111,137 @@ func serviceHostLabel(label string) string {
 	}
 	return strings.ToLower(strings.TrimSuffix(s, "."))
 }
+
+// AssetDepthGap 是一个「已测过、但还有大量风险类没碰」的资产。
+//
+// 为什么需要它：breadth 的 debt 只数「一个终态意图都没有」的资产，一旦某个资产被测过
+// 任意一类（比如只做了 auth），它就从 debt 里消失、pct 变成 100%。于是"广度达标"与
+// "测得很浅"可以同时成立——任务 22 实测：22 条意图集中在 3 个资产上，其余资产各测
+// 1 类就再没人碰，planner 随即宣告穷尽。
+//
+// 这里按「每个资产已终结的风险类数」补一层深度口径：少于 minAreas 的资产列出来，
+// 让「穷尽」这件事必须面对它们。
+type AssetDepthGap struct {
+	AssetID   int64    `json:"asset_id"`
+	Type      string   `json:"type"`
+	Label     string   `json:"label"`
+	DoneAreas []string `json:"done_risk_areas"`
+	// Missing 是**尚未终结**的风险类（没派过、或只有 blocked/no_output）。
+	Missing []string `json:"missing_risk_areas"`
+}
+
+// DepthGaps 返回本任务范围内「已测但深度不足」的资产：终结风险类数 < minAreas。
+// 只统计具体资产（subdomain/app/endpoint/ip；root_domain 与 service 不计，理由同
+// breadth）。minAreas<=0 时用默认值 DefaultDepthAreas。
+func (s *ExplorationStore) DepthGaps(taskID int64, minAreas, limit int) ([]AssetDepthGap, int, error) {
+	if minAreas <= 0 {
+		minAreas = DefaultDepthAreas
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	// 在范围口径必须与 UntouchedSiblings 一致：同注册域 + 任务 ip/cidr 范围行。
+	// 用 covTargetCTE 会漏掉「只登记了精确子域、同根兄弟靠自动纳入」的那一类——
+	// 而恰恰是这些兄弟最容易"碰一下就没人管"，正是本查询要抓的对象。
+	roots, err := s.scopeRootDomains(taskID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if roots == nil {
+		roots = []string{}
+	}
+	rows, err := s.db.Query(`
+SELECT a.id, a.type,
+       COALESCE(NULLIF(a.url,''), NULLIF(a.domain,''), NULLIF(a.ip,''), NULLIF(a.app_name,''), a.type) AS label,
+       -- out-of-scope 也算「已处理」：那是显式判定（越界/不适用），不是没碰过。
+       -- 否则被整体判出去的资产会永远显示为"深度不足"，把收官永久堵死。
+       COALESCE(array_agg(DISTINCT en.payload->>'risk_area')
+         FILTER (WHERE en.kind='intent' AND en.state IN ('done','negative','out-of-scope')), '{}')::text[] AS done_areas
+FROM assets a
+LEFT JOIN exploration_anchors ea ON ea.asset_id = a.id
+LEFT JOIN exploration_nodes en ON en.id = ea.node_id AND en.exploration_id = $2
+WHERE a.type IN ('subdomain','app','endpoint','ip')
+  AND (a.root_domain = ANY($1::text[])
+       OR EXISTS (SELECT 1 FROM task_scope ts
+                  WHERE ts.task_id = $3 AND ts.kind IN ('ip','cidr')
+                    AND ts.net >>= try_inet(a.ip)))
+GROUP BY a.id, a.type, a.url, a.domain, a.ip, a.app_name`, roots, s.expID, taskID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []AssetDepthGap
+	for rows.Next() {
+		var g AssetDepthGap
+		var doneRaw string
+		if err := rows.Scan(&g.AssetID, &g.Type, &g.Label, &doneRaw); err != nil {
+			return nil, 0, err
+		}
+		done := parsePgTextArray(doneRaw)
+		seen := map[string]bool{}
+		for _, a := range done {
+			a = NormalizeRiskArea(a)
+			if a == "" {
+				continue
+			}
+			seen[a] = true
+			g.DoneAreas = append(g.DoneAreas, a)
+		}
+		if len(seen) >= minAreas {
+			continue
+		}
+		for _, a := range RiskAreas {
+			if !seen[a] {
+				g.Missing = append(g.Missing, a)
+			}
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// 缺得最多的排前面：它们最可能是"看起来测过、其实很浅"的那一批。
+	sort.SliceStable(out, func(i, j int) bool {
+		if len(out[i].DoneAreas) != len(out[j].DoneAreas) {
+			return len(out[i].DoneAreas) < len(out[j].DoneAreas)
+		}
+		return out[i].AssetID < out[j].AssetID
+	})
+	total := len(out)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, total, nil
+}
+
+// parsePgTextArray 解析 PostgreSQL 的 text[] 字面量（{a,b,"c d"}）。
+// 驱动在这里返回的是字符串而不是 []string，所以自己拆；元素只会是风险类名
+// （字母/数字/下划线），不需要处理转义与 NULL。
+func parsePgTextArray(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '{' {
+		return nil
+	}
+	body := strings.TrimSuffix(raw[1:], "}")
+	if strings.TrimSpace(body) == "" {
+		return nil
+	}
+	out := make([]string, 0, strings.Count(body, ",")+1)
+	for _, part := range strings.Split(body, ",") {
+		part = strings.Trim(strings.TrimSpace(part), `"`)
+		if part != "" && part != "NULL" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// DefaultDepthAreas 是「一个资产算测过」的最低风险类数。
+//
+// 取 3 的依据：任务 19 的深度资产（www.dampflager.de 主站）终结了 10 类，而同任务里
+// 的兄弟子域各只终结 1 类就再没人碰；任务 22 的两个资产分别终结 3 类与 0 类。3 类
+// 是"真的按面测过"与"只打了个照面"之间的分界，又不至于要求每个子域都跑满 14 类。
+const DefaultDepthAreas = 3
 
 // BuildBreadthSummary is the pure aggregation used by BreadthSummary and tests.
 func BuildBreadthSummary(cov []CoverageMatrixAsset, scopeRows int) *BreadthSummary {

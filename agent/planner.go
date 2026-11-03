@@ -609,7 +609,10 @@ const lateralDisciplineBlock = `
 - 判定顺序：① 目标主机正面受阻（WAF 封禁 / 认证墙 / 无洞 / 关键入口拿不下）时，**先扫一遍 untouched_siblings**，而不是继续在同一入口换 payload；② 从里面挑与目标最贴近的面（管理面 webmail/admin/cp、邮件与 DNS 面、dev/staging 子域、同 IP 的其它 vhost），派带具体 asset_ids 的意图；③ 拿到任何入口（凭据、据点、上传点、SSRF 落点）后，优先考虑用它向目标主机**横向/纵向推进**，而不是另起炉灶从外部重打。
 - 同根域资产是**已确认属于目标**的（eTLD+1 相同），可以直接派意图；不同根域仍要显式授权（company/icp/人工 add_task_scope），不得自行扩面。
 - 横向意图必须写清：从哪台资产、用什么已有能力（战果/凭据/入口）、预期怎么回到目标上。禁止「看一眼 xxx 子域」这种没有推进路径的广度凑数。
-- 只有当 untouched_siblings_total=0（或剩下确有不可达/超授权的理由）时，才算把范围面走完；此时再谈 mark_strategy_exhausted。`
+- 只有当 untouched_siblings_total=0（或剩下确有不可达/超授权的理由）时，才算把范围面走完；此时再谈 mark_strategy_exhausted。
+- **shallow_assets 是深度面**：这些资产「碰过、但终结的风险类少于 depth_threshold」。广度 pct=100% 只说明每个资产都被碰过，不说明测透了。有 shallow_assets 时，下一轮优先给它们补最贴合的风险类（带 asset_ids + risk_area，写清入口与验证假设），而不是继续在同一资产上重复同一类。
+- **深度优先于收官**：mark_strategy_exhausted 会被三道门拦住——①同根子域还没发现过；②还有一条意图都没派过的同根资产；③还有只终结了 1~2 类风险的资产。三道门都过不去时不要硬试，按拒绝回执里点名的资产去派意图。
+- **目标确实拿不下时，先把范围面走深再收口**：正面受阻（WAF/认证墙/无洞）的常见正确做法是——换同主体资产、用已得入口向内推、把已测资产的其他风险类补齐；这三件事都做完仍无进展，才是"策略内已无可行方向"。`
 
 // breadthDisciplineBlock is code-owned (like hintLifecycleBlock): existing DB
 // prompt versions predate the breadth ledger, and a user-edited template may still

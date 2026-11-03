@@ -84,8 +84,7 @@ func TestMarkStrategyExhaustedBlockedByUntouchedSiblings(t *testing.T) {
 		t.Fatalf("还有未试过的同根资产时应拒绝穷尽并给出资产：%s", out)
 	}
 
-	// 把同根资产都派过意图后，穷尽才被接受。锚点必须显式传给 AddIntent——
-	// untouched 的判定看的是 exploration_anchors，不是 payload 里的 asset_ids。
+	// 把同根资产都派过意图后，撞上第二道门（深度）：只终结 1 类风险仍算浅。
 	ids, err := as.IDsByHosts([]string{"mail.exhaust-gate.example", "vpn.exhaust-gate.example"})
 	if err != nil {
 		t.Fatal(err)
@@ -97,13 +96,37 @@ func TestMarkStrategyExhaustedBlockedByUntouchedSiblings(t *testing.T) {
 	if len(anchors) == 0 {
 		t.Fatal("找不到 exhaust-gate 的资产 id")
 	}
-	if _, err := ts.AddIntent(map[string]any{"summary": "试 mail.exhaust-gate.example"}, 5, anchors, "planner"); err != nil {
-		t.Fatal(err)
+	for _, id := range anchors {
+		ni, err := ts.AddIntent(map[string]any{"summary": "试一个面", "risk_area": "auth"}, 5, []int64{id}, "planner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ts.CompareAndSetIntentState(ni, "open", "done"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	out = callTool(t, tools.PlannerTools(), "mark_strategy_exhausted",
 		`{"reason":"范围内同主体资产都已试过且无可行方向","evidence_ids":[`+strconv.FormatInt(intent, 10)+`]}`)
+	if !strings.Contains(out, "只测了很少几类风险") {
+		t.Fatalf("每个资产只终结 1 类时应被深度门拦下：%s", out)
+	}
+
+	// 把每个资产补到 3 类终态后，穷尽才被接受。
+	for _, id := range anchors {
+		for _, area := range []string{"sqli", "xss"} {
+			ni, err := ts.AddIntent(map[string]any{"summary": "补 " + area, "risk_area": area}, 5, []int64{id}, "planner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ts.CompareAndSetIntentState(ni, "open", "done"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	out = callTool(t, tools.PlannerTools(), "mark_strategy_exhausted",
+		`{"reason":"范围内同主体资产都已按面测过且无可行方向","evidence_ids":[`+strconv.FormatInt(intent, 10)+`]}`)
 	if !strings.Contains(out, "strategy exhausted recorded") {
-		t.Fatalf("范围内都试过后应允许穷尽：%s", out)
+		t.Fatalf("三道门都过了应允许穷尽：%s", out)
 	}
 }
 
@@ -138,5 +161,98 @@ func TestScopeSurfaceFlagsSubdomainDiscoveryPending(t *testing.T) {
 	tools.BeginRound(nil, 0, TaskClock{}, 0) // 清掉轮级缓存
 	if ss := tools.scopeSurface(); ss == nil || ss.SubdomainDiscoveryPending {
 		t.Fatalf("已有同根兄弟后不应再要求发现：%+v", ss)
+	}
+}
+
+// 深度门：一个资产只要有一类风险终态就从 debt 里消失、pct 变 100%，但另外十几类
+// 根本没碰。这种「广度达标、深度很浅」的状态不许宣告穷尽。
+func TestMarkStrategyExhaustedBlockedByShallowAssets(t *testing.T) {
+	tools, ts, intent := newToolWorker(t)
+	taskID := tools.taskID
+	as := testDB(t).Assets()
+	tools.SetAssetStore(as, as.Companies())
+	root := "depth-gate-" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".example"
+
+	if _, err := as.AddAgentScope(taskID, "subdomain", "www."+root, "任务目标", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	// 两个同根主机：一个测过 1 类，一个完全没碰；先让「同根发现」门过去。
+	for _, host := range []string{"www." + root, "mail." + root, "vpn." + root} {
+		if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: host, TaskID: taskID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := as.IDsByHosts([]string{"www." + root, "mail." + root, "vpn." + root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anchors []int64
+	for _, id := range ids {
+		anchors = append(anchors, id)
+	}
+	// 每个资产各派一条已终结的 auth 意图 → 广度上"都测过了"。
+	for _, id := range anchors {
+		ni, err := ts.AddIntent(map[string]any{"summary": "测认证面", "risk_area": "auth"}, 5, []int64{id}, "planner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ts.CompareAndSetIntentState(ni, "open", "done"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := callTool(t, tools.PlannerTools(), "mark_strategy_exhausted",
+		`{"reason":"所有资产都测过了","evidence_ids":[`+strconv.FormatInt(intent, 10)+`]}`)
+	if !strings.Contains(out, "只测了很少几类风险") {
+		t.Fatalf("每个资产只终结 1 类风险时应拒绝穷尽：%s", out)
+	}
+}
+
+// scope_surface 必须把「测过但很浅」的资产单独列出来，而不是混在 untouched 里。
+func TestScopeSurfaceListsShallowAssets(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	taskID := tools.taskID
+	as := testDB(t).Assets()
+	tools.SetAssetStore(as, as.Companies())
+	root := "shallow-" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".example"
+	if _, err := as.AddAgentScope(taskID, "subdomain", "www."+root, "任务目标", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"www." + root, "mail." + root} {
+		if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: host, TaskID: taskID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, _ := as.IDsByHosts([]string{"www." + root})
+	for _, id := range ids {
+		ni, err := ts.AddIntent(map[string]any{"summary": "测注入", "risk_area": "sqli"}, 5, []int64{id}, "planner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ts.CompareAndSetIntentState(ni, "open", "done"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ss := tools.scopeSurface()
+	if ss == nil || ss.ShallowTotal == 0 || len(ss.Shallow) == 0 {
+		t.Fatalf("应列出深度不足的资产：%+v", ss)
+	}
+	if ss.DepthThreshold != db.DefaultDepthAreas {
+		t.Fatalf("阈值应为 %d，实际 %d", db.DefaultDepthAreas, ss.DepthThreshold)
+	}
+	found := false
+	for _, sh := range ss.Shallow {
+		if strings.Contains(sh.Label, "www."+root) {
+			found = true
+			if len(sh.Done) != 1 || sh.Done[0] != "sqli" {
+				t.Fatalf("已终结风险类记录不对：%+v", sh)
+			}
+			if len(sh.Missing) == 0 {
+				t.Fatalf("应给出还没碰的风险类：%+v", sh)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("测过 1 类的资产应出现在 shallow 列表里：%+v", ss.Shallow)
 	}
 }

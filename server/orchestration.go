@@ -725,7 +725,8 @@ func (s *Server) reseedPlannerPrompt() {
 	// 并把「用 record_fact 写结论」的旧说法改成这两个 planner 真正拥有的工具。
 	// v10：说明 recent_done_intents 只是一窗（≤30），翻全量用 list_worker_traces。
 	// v11：新增 folded_intents（折叠区已结束意图索引），提示词说明它的字段与用法。
-	const flag = "planner_prompt_slots_v11"
+	// v12：横向推进（scope_surface / shallow_assets）+ 穷尽三道门；深度优先于收官。
+	const flag = "planner_prompt_slots_v12"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
