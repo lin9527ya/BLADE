@@ -2598,6 +2598,39 @@ func (s *ExplorationStore) TokenStatsBySession() ([]SessionTokenUsage, error) {
 
 // ActivityList returns steps after sinceID (exclusive), optionally filtered by node.
 // Returns items and the new cursor (max id seen).
+// ExhaustionReviewRecords 返回本任务的穷尽复核记录（看门狗的输出），最新在前。
+//
+// 复核结论此前只是混在活动流里的普通 system 记录，任务跑到上百轮之后没人找得到。
+// 单独抽出来给任务详情一个明确的查看面：人要看的是"planner 想收工、谁拦下了、
+// 理由是什么"，而不是去几千条活动里翻三条。
+func (s *ExplorationStore) ExhaustionReviewRecords(limit int) ([]Activity, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(`SELECT id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''),
+COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), COALESCE(detail,''), metadata, created_at,
+input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no
+FROM activity
+WHERE exploration_id=$1 AND kind='system'
+  AND (summary LIKE '%穷尽复核%' OR summary LIKE '%穷尽声明未获复核%')
+ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError,
+			&a.Summary, &a.Detail, &a.Metadata, &a.CreatedAt, &a.InputTokens, &a.OutputTokens,
+			&a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int) ([]Activity, int64, error) {
 	if limit <= 0 {
 		limit = 300

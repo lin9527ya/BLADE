@@ -80,6 +80,7 @@ GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
 GET /api/exploration/activity/stream	server.(*Server).streamActivity-fm
 GET /api/exploration/activity/{seq}	server.(*Server).activityDetail-fm
+GET /api/exploration/exhaustion-reviews	server.(*Server).exhaustionReviews-fm
 GET /api/exploration/findings	server.(*Server).findings-fm
 GET /api/exploration/findings/asset-tree	server.(*Server).findingAssetTree-fm
 GET /api/exploration/findings/export	server.(*Server).findingsExport-fm

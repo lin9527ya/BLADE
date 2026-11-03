@@ -223,6 +223,26 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   };
 
   // 精确计数：列表接口有行数上限（意图 300 / 发现 200），len(列表) 是窗口长度不是总数。
+  // 穷尽复核（看门狗）记录：planner 声称"已无可行方向"时，独立裁判的复核结论。
+  // 只在有记录时加载并展示——没声明过穷尽的任务不该多一个空卡片。
+  const [exhaustionReviews, setExhaustionReviews] = React.useState<Awaited<ReturnType<typeof api.exhaustionReviews>>>(
+    [],
+  );
+  React.useEffect(() => {
+    let alive = true;
+    api
+      .exhaustionReviews(taskId, 20)
+      .then((items) => {
+        if (alive) setExhaustionReviews(items);
+      })
+      .catch(() => {
+        if (alive) setExhaustionReviews([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [taskId]);
+
   const totalFindings = stats?.exploration?.finding ?? taskFindings.length;
   const totalIntents = stats?.exploration?.intent ?? intents.length;
   const totalOpen = stats?.claimable_intents ?? open.length;
@@ -267,6 +287,50 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 onAcceptRisk={acceptArtifactRisk}
               />
             </div>
+          </CardContent>
+        </Card>
+      )}
+      {/* 穷尽复核（看门狗）：planner 想收工时，独立裁判核对证据的结果。
+          放在遗留物之后、目标之前——它是"任务为什么停着"的直接解释。 */}
+      {exhaustionReviews.length > 0 && (
+        <Card className="border-sky-500/40 bg-sky-500/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldCheckIcon className="size-4 text-sky-600 dark:text-sky-400" />
+              穷尽复核（{exhaustionReviews.length}）
+            </CardTitle>
+            <CardDescription>
+              规划者声称「策略内已无可行方向」时，由一个独立的只读裁判核对证据。 判定证据不足时不暂停，任务继续补测。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 text-sm">
+            {exhaustionReviews.map((r) => {
+              const passed = r.summary.includes("通过");
+              return (
+                <div key={r.seq} className="flex flex-col gap-1 rounded-md border bg-background/60 p-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={
+                        passed
+                          ? "rounded border border-emerald-500/40 px-1.5 py-0.5 text-emerald-700 text-xs dark:text-emerald-400"
+                          : "rounded border border-amber-500/40 px-1.5 py-0.5 text-amber-700 text-xs dark:text-amber-400"
+                      }
+                    >
+                      {passed ? "通过" : "未通过"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{r.summary}</span>
+                    <span className="shrink-0 text-muted-foreground text-xs">
+                      {new Date(r.ts).toLocaleString("zh-CN")}
+                    </span>
+                  </div>
+                  {r.detail && (
+                    <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-muted-foreground text-xs">
+                      {r.detail}
+                    </pre>
+                  )}
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
       )}

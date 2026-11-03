@@ -1249,6 +1249,11 @@ export const api = {
     }));
   },
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),
+  // 穷尽复核记录（看门狗）：planner 声称"已无可行方向"时，独立裁判的复核结论。
+  exhaustionReviews: (task: string, limit = 20) =>
+    get<{ items: Activity[] }>(`/exploration/exhaustion-reviews?task=${encodeURIComponent(task)}&limit=${limit}`).then(
+      (r) => arr(r.items),
+    ),
   // Reverse-paginated session history. session = "main" | "plan" | "intent:<id>".
   // before=0 → latest page; before=<id> → the older page ending before that id.
   // snapshotCursor is the TASK-level max id at query time — open the task SSE at
