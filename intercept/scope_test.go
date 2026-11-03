@@ -449,3 +449,54 @@ func TestScopeGateFailsLoudOnBadWindow(t *testing.T) {
 		}
 	}
 }
+
+// shell 变量不能把主机名污染成越界目标。
+//
+// VPS 实测：`curl https://games-island.eu$p`（$p 是路径）被抽成主机
+// `games-island.eu$p`，与任何 task_scope 行都不匹配，于是完全合法的请求被判「越界」
+// 并要求审批；`$h` / `${h}` 同理。主机名不可能包含 shell 展开字符，遇到就截断；
+// 整段都由变量构成时无法静态判定，按「抽不出目标」处理（不拦），而不是判越界。
+func TestExtractTargetsIgnoresShellVariables(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want []string
+	}{
+		{
+			"变量作为路径后缀",
+			`curl -s -o /dev/null -w "%{http_code}" "https://games-island.eu$p"`,
+			[]string{"games-island.eu"},
+		},
+		{
+			"循环变量拼路径",
+			`for p in /admin /login; do curl -s "https://games-island.eu$p"; done`,
+			[]string{"games-island.eu"},
+		},
+		{
+			"同命令内的变量赋值可展开",
+			`h=games-island.eu; curl -s "https://$h/"`,
+			[]string{"games-island.eu"},
+		},
+		{
+			"整段由变量构成 → 抽不出，不拦",
+			`curl -s "https://${h}/x"`,
+			nil,
+		},
+		{
+			"变量存整条 URL 可展开",
+			`url="https://games-island.eu"; curl -s "$url/admin"`,
+			[]string{"games-island.eu"},
+		},
+	}
+	for _, tc := range cases {
+		got := ExtractTargets(tc.cmd)
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+			}
+		}
+	}
+}

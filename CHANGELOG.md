@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **shell 变量不再被当成越界主机**：`curl https://games-island.eu$p`、`https://$h/`、
+  `https://${h}/x` 这类命令里，目标抽取会把 `$p`/`$h` 一并吞进主机名，得到
+  `games-island.eu$p` 这种根本不存在的 host——与任何 task_scope 行都不匹配，于是
+  完全合法的请求被判「越界」并要求审批（VPS 实测）。
+  现在：主机名遇到 shell 展开字符即截断（`games-island.eu$p` → `games-island.eu`）；
+  同一条命令里的简单变量赋值会被展开（`h=x; curl https://$h/` → `x`）；整段都由变量
+  构成时无法静态判定，按「抽不出目标」处理（不拦），而不是判越界
+
 ### 变更
 
 - **Playwright MCP 改为 headful**：去掉 `--headless`，并加 `--no-sandbox`（这台机器的

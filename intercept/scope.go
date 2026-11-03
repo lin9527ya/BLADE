@@ -308,11 +308,11 @@ func ExtractTargetsDetailed(cmd string) []TargetHit {
 	if cmd == "" {
 		return nil
 	}
+	cmd = expandSimpleShellVars(cmd)
 	seen := map[string]bool{}
 	out := make([]TargetHit, 0, 4)
 	add := func(raw, source string) {
-		host := strings.ToLower(stripBracketsPort(raw))
-		host = strings.TrimSuffix(host, ".")
+		host := cleanScopeHost(raw)
 		if host == "" || localTarget(host) || seen[host] {
 			return
 		}
@@ -353,6 +353,78 @@ func ExtractTargetsDetailed(cmd string) []TargetHit {
 		collect(decoded, "base64")
 	}
 	return out
+}
+
+// cleanScopeHost 把「抽出来的候选串」收敛成一个可判定的主机名。
+//
+// 为什么需要它：命令里到处是 shell 变量——`curl https://games-island.eu$p`（$p 是路径）、
+// `curl https://$h/`（$h 是主机）、`curl "https://${h}/x"`。正则按分隔符截断时会把
+// `$p`/`${h}` 一起吞进 host，于是范围门拿 `games-island.eu$p` 去比对授权范围——它当然
+// 不匹配任何一条范围行，任务就在完全合法的请求上被判「越界」并要求审批（VPS 实测）。
+//
+// 规则：主机名（含 IPv6 方括号）不可能包含 shell 展开字符，遇到就截断；截断后为空
+// 表示「这个候选完全由变量构成、无法静态判定」，直接丢弃（不是越界，是不知道）。
+// 百分号同理：`http://%65%76...` 是编码过的目标，交给后面的百分号解码轮次去抽，
+// 原始形态不该被当成一个叫 %65%76 的主机。
+func cleanScopeHost(raw string) string {
+	host := strings.ToLower(stripBracketsPort(raw))
+	host = strings.TrimSuffix(host, ".")
+	if i := strings.IndexAny(host, "$`{%}"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return ""
+	}
+	// 主机名只可能是字母/数字/点/连字符/下划线（部分内部主机）、IPv6 的冒号与方括号；
+	// 出现别的字符说明抽取边界没切干净，丢弃比误判越界安全。
+	// `/` 只在 CIDR 里合法（10.0.0.0/24 由 IP 正则抽出来）：主机名本身不含斜杠，
+	// URL 正则也在 `/` 处截断，所以放行它不会把「主机+路径」混成一个值。
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == '_', r == ':', r == '[', r == ']', r == '/':
+		default:
+			return ""
+		}
+	}
+	return host
+}
+
+// scopeAssignRe 匹配命令里「简单变量赋值」：name=value / name='value' / name="value"。
+// 只认字面量，不解析命令替换（`x=$(...)`）——那种解析不了，按原样留给 cleanScopeHost 丢弃。
+var scopeAssignRe = regexp.MustCompile(`(?:^|[;\s&|])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;|&]+)`)
+
+// expandSimpleShellVars 把同一条命令里的简单赋值展开到文本里（两轮，够覆盖
+// `base=https://x; api=$base/v1` 这种链式写法）。
+//
+// 目的只有一个：让范围门看到**真实主机**，而不是 `$h`。展开失败（变量来自环境、
+// 命令替换、循环变量）时保持原样，后续 cleanScopeHost 会把无法判定的候选丢掉——
+// 宁可「不知道」也不要把一个合法请求判成越界。
+func expandSimpleShellVars(cmd string) string {
+	vars := map[string]string{}
+	for _, m := range scopeAssignRe.FindAllStringSubmatch(cmd, -1) {
+		name, val := m[1], strings.TrimSpace(m[2])
+		val = strings.Trim(val, `"'`)
+		if name == "" || val == "" || strings.ContainsAny(val, "$`") {
+			continue
+		}
+		vars[name] = val
+	}
+	if len(vars) == 0 {
+		return cmd
+	}
+	for round := 0; round < 2; round++ {
+		out := cmd
+		for name, val := range vars {
+			out = strings.ReplaceAll(out, "${"+name+"}", val)
+			out = strings.ReplaceAll(out, "$"+name, val)
+		}
+		if out == cmd {
+			break
+		}
+		cmd = out
+	}
+	return cmd
 }
 
 // decodeBase64Segments 找出命令里可能的 base64 段并尝试解码；只接受解出「可打印
