@@ -110,3 +110,45 @@ func TestScopeWindowAllowsMultipleRanges(t *testing.T) {
 	at(t, w, "15:00").mustBe(true)  // 下午段
 	at(t, w, "19:00").mustBe(false)
 }
+
+// 时区：窗口按**配置的时区**判定，而不是部署机时区。VPS 加固脚本把机器设成 UTC 时，
+// 页面上写 09:00-18:00 必须在北京时间 09:00-18:00 生效，而不是 UTC 的。
+func TestWindowAllowsInTimezone(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	// 北京时间 2026-11-03 10:00 = UTC 02:00。
+	at := time.Date(2026, 11, 3, 10, 0, 0, 0, loc)
+	if ok, err := WindowAllowsIn("09:00-18:00", "Asia/Shanghai", at); err != nil || !ok {
+		t.Fatalf("北京 10:00 应在 Asia/Shanghai 的 09:00-18:00 内: %v %v", ok, err)
+	}
+	// 同一个绝对时刻，按 UTC 判定是 02:00 → 不在窗口内。
+	if ok, err := WindowAllowsIn("09:00-18:00", "UTC", at); err != nil || ok {
+		t.Fatalf("同一时刻按 UTC 应是 02:00、不在窗口内: %v %v", ok, err)
+	}
+	// 空时区 = 跟随本机：与 WindowAllows 同口径。
+	if a, err1 := WindowAllowsIn("09:00-18:00", "", at); err1 != nil {
+		t.Fatal(err1)
+	} else if b, _ := WindowAllows("09:00-18:00", at); a != b {
+		t.Fatalf("空时区应等价于本机时区: %v vs %v", a, b)
+	}
+	if _, err := WindowAllowsIn("09:00-18:00", "Not/AZone", at); err == nil {
+		t.Fatal("无法识别的时区必须报错，不能静默退回本机")
+	}
+	if err := ValidateScopeHoursTZ("Mars/Olympus"); err == nil {
+		t.Fatal("非法时区应被 ValidateScopeHoursTZ 拒绝")
+	}
+	if err := ValidateScopeHoursTZ(""); err != nil {
+		t.Fatalf("空时区（跟随本机）应合法: %v", err)
+	}
+}
+
+// ScopeClock 必须同时给出日期与**时区名**：只有时间没有时区，跨时区时人看不出偏差。
+func TestScopeClockNamesZone(t *testing.T) {
+	at := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	got := ScopeClock(at, time.UTC)
+	if !strings.Contains(got, "2026-11-03 10:00") || !strings.Contains(got, "UTC") {
+		t.Fatalf("ScopeClock = %q", got)
+	}
+}

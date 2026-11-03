@@ -106,6 +106,12 @@ func scopeHoursSetting(pg *db.DB) string {
 	return strings.TrimSpace(v)
 }
 
+// scopeHoursTZSetting 读作业时间窗的时区设置（空 = 跟随本机时区）。
+func scopeHoursTZSetting(pg *db.DB) string {
+	v, _, _ := pg.GetSetting(intercept.SettingScopeHoursTZ)
+	return strings.TrimSpace(v)
+}
+
 func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
@@ -181,6 +187,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"intercept_scope_mode":     s.m.interceptor.ScopeMode(),
 		"intercept_scope_mode_env": strings.TrimSpace(os.Getenv("BLADE_SCOPE_ENFORCEMENT")) != "",
 		"intercept_scope_hours":    scopeHoursSetting(s.m.pg),
+		"intercept_scope_hours_tz": scopeHoursTZSetting(s.m.pg),
+		// 服务器本地时间与窗口时区（页面据此提示偏差，不必让用户自己去对时）。
+		"server_local_time": time.Now().Format("2006-01-02 15:04:05 MST"),
+		"server_local_zone": time.Local.String(),
 		// P41 面向目标的产物语言：回**生效值**（缺省即 zh），页面据此显示当前档位。
 		"artifact_language": artifactLanguageSetting(s.m.pg),
 		// P43 凭据尝试预算：回**生效值**（缺省 3 / ask），页面据此显示当前档位。
@@ -323,6 +333,9 @@ type settingsRequest struct {
 	// 拦截层每调用现读，即时生效。
 	ScopeMode  *string `json:"intercept_scope_mode"`
 	ScopeHours *string `json:"intercept_scope_hours"`
+	// ScopeHoursTZ 是作业时间窗的时区（IANA 名；空 = 跟随本机）。写错直接 400——
+	// 判定口径不明确时宁可拒绝保存，也不要让窗口悄悄按另一个时区生效。
+	ScopeHoursTZ *string `json:"intercept_scope_hours_tz"`
 	// P41 面向目标的产物语言（zh 默认不约束 / en 一律 ASCII 英文）。"" = 回到默认。
 	// agent 侧每 run 现读，改完即时生效。与界面语言无关。
 	ArtifactLanguage *string `json:"artifact_language"`
@@ -418,6 +431,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pending[intercept.SettingScopeHours] = v
+	}
+	if req.ScopeHoursTZ != nil {
+		v := strings.TrimSpace(*req.ScopeHoursTZ)
+		if err := intercept.ValidateScopeHoursTZ(v); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		pending[intercept.SettingScopeHoursTZ] = v
 	}
 	if req.ArtifactLanguage != nil {
 		// 取值当场校验：写进一个不认识的档，agent 侧会当成"不约束"静默放行——那正是

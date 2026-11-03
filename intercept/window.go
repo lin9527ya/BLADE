@@ -20,6 +20,42 @@ import (
 // 没配窗口就是"没有时间维度的约束"，而不是"默认禁止"。
 const SettingScopeHours = "intercept_scope_hours"
 
+// SettingScopeHoursTZ 是作业时间窗的**时区**（IANA 名，如 Asia/Shanghai）。
+//
+// 为什么需要它：窗口是按"客户的办公时间"排的，而部署机的时区未必与写窗口的人一致
+// （deploy/vps-hardening.sh 会把 VPS 设成 UTC，于是页面上写 09:00-18:00 实际在北京
+// 时间 17:00–次日 02:00 生效）。空 = 跟随本机时区（旧行为，保持向后兼容）。
+const SettingScopeHoursTZ = "intercept_scope_hours_tz"
+
+// LoadScopeLocation 把时区设置解析成 Location。空 / "local" = 本机时区。
+func LoadScopeLocation(name string) (*time.Location, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "local":
+		return time.Local, nil
+	case "utc":
+		return time.UTC, nil
+	}
+	loc, err := time.LoadLocation(strings.TrimSpace(name))
+	if err != nil {
+		return nil, fmt.Errorf("时区 %q 无法识别（要 IANA 名，如 Asia/Shanghai、UTC；留空 = 跟随平台所在机器）：%w", name, err)
+	}
+	return loc, nil
+}
+
+// ValidateScopeHoursTZ 校验时区设置串，供设置接口在落库前挡住写错的值。
+func ValidateScopeHoursTZ(name string) error {
+	_, err := LoadScopeLocation(name)
+	return err
+}
+
+// ScopeClock 描述"某个时区现在几点"，用于回执与页面（人要能一眼看出偏差）。
+func ScopeClock(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
+	return t.In(loc).Format("2006-01-02 15:04") + " " + loc.String()
+}
+
 // scopeWindow 是一个已解析的作业时间窗。
 type scopeWindow struct {
 	ranges []scopeTimeRange
@@ -121,24 +157,48 @@ var scopeNow = time.Now
 
 // scopeHours 现读窗口设置（每调用读一次：改设置立即生效，与 ScopeMode 同口径）。
 func (i *Interceptor) scopeHours() (*scopeWindow, error) {
+	w, _, err := i.scopeHoursAndTZ()
+	return w, err
+}
+
+// scopeHoursAndTZ 同时取窗口与时区（两者都是"每次调用现读"，改完即时生效）。
+func (i *Interceptor) scopeHoursAndTZ() (*scopeWindow, string, error) {
 	raw, ok, err := i.db.GetSetting(SettingScopeHours)
 	if err != nil || !ok {
-		return nil, nil // 读不到 = 没配 = 不限时，与 ScopeMode 的降级口径一致
+		return nil, "", nil // 读不到 = 没配 = 不限时，与 ScopeMode 的降级口径一致
 	}
-	return parseScopeHours(raw)
+	w, err := parseScopeHours(raw)
+	if err != nil {
+		return nil, "", err
+	}
+	tz, _, _ := i.db.GetSetting(SettingScopeHoursTZ)
+	return w, strings.TrimSpace(tz), nil
 }
 
 // WindowAllows 是给**执行侧**用的窗口判定（server/scope_enforce.go 的到点暂停）：
 // 传原始设置串与一个时刻，回答"这一刻允不允许动手"。空串 = 不限时 = 允许。
+// 按**本机时区**判定（旧口径）；带时区的判定用 WindowAllowsIn。
 //
 // 与 scopeHours() 的区别只是取设置的方式（那边从库读、这边由调用方给串）：判定逻辑共用
 // parseScopeHours/allows，不另写一份——"某一刻在不在窗口内"这件事有两个实现，迟早会不一致。
 func WindowAllows(raw string, t time.Time) (bool, error) {
+	return WindowAllowsIn(raw, "", t)
+}
+
+// WindowAllowsIn 按**指定时区**判定窗口。tzName 为空 = 本机时区。
+//
+// 时刻本身是绝对时间（time.Time 带位置信息），换算到窗口时区后再取时分——
+// 这样"客户办公时间 09:00"在哪个时区部署都是同一个物理时刻。
+func WindowAllowsIn(raw, tzName string, t time.Time) (bool, error) {
 	w, err := parseScopeHours(raw)
 	if err != nil {
 		return false, err
 	}
-	return w.allows(t), nil
+	loc, err := LoadScopeLocation(tzName)
+	if err != nil {
+		return false, err
+	}
+	return w.allows(t.In(loc)), nil
 }
 
 // ValidateScopeHours 校验一个作业时间窗设置串，供设置接口在**落库前**挡住格式错误。

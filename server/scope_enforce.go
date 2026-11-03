@@ -32,9 +32,15 @@ const settingScopeWindowState = "scope_window_state"
 
 // scopeWindowState 是窗口执行状态的快照。
 type scopeWindowState struct {
-	InWindow     bool   `json:"in_window"`
-	Window       string `json:"window"` // 原样回显用户配的窗口串（空 = 不限时）
-	At           string `json:"at"`
+	InWindow bool   `json:"in_window"`
+	Window   string `json:"window"` // 原样回显用户配的窗口串（空 = 不限时）
+	At       string `json:"at"`
+	// TZ 是窗口判定用的时区（空 = 跟随本机）。ServerTime / WindowTime 是**同一个瞬间**
+	// 在机器本地时区与窗口时区里的两种写法：跨时区部署时，人靠这两个值就能看出偏差，
+	// 不必再去猜"为什么明明在窗口内却被拦"。
+	TZ           string `json:"tz,omitempty"`
+	ServerTime   string `json:"server_time,omitempty"`
+	WindowTime   string `json:"window_time,omitempty"`
 	PausedNow    int    `json:"paused_now"`   // 本次动作暂停了几条
 	PausedTotal  int    `json:"paused_total"` // 因窗口而暂停、当前仍未恢复的累计
 	LastClosedAt string `json:"last_closed_at,omitempty"`
@@ -81,12 +87,17 @@ func (s *Server) safetyStop() (blocked bool, reason string, cause error) {
 		return true, "停机开关已启用（" + why + "）", agent.AbortKillSwitch
 	}
 	raw, _, _ := s.m.pg.GetSetting(intercept.SettingScopeHours)
-	in, err := intercept.WindowAllows(raw, time.Now())
+	tz, _, _ := s.m.pg.GetSetting(intercept.SettingScopeHoursTZ)
+	in, err := intercept.WindowAllowsIn(raw, strings.TrimSpace(tz), time.Now())
 	if err != nil {
 		return false, "", nil // 解析不了：不因配置写错而全平台停工（拦截层已转人工），页面会提示
 	}
 	if !in {
-		return true, "已离开授权作业时间窗（允许 " + strings.TrimSpace(raw) + "）", agent.AbortScopeWindowClosed
+		msg := "已离开授权作业时间窗（允许 " + strings.TrimSpace(raw) + "）"
+		if loc, lerr := intercept.LoadScopeLocation(strings.TrimSpace(tz)); lerr == nil {
+			msg += "，窗口时区 " + intercept.ScopeClock(time.Now(), loc)
+		}
+		return true, msg, agent.AbortScopeWindowClosed
 	}
 	return false, "", nil
 }
@@ -121,11 +132,20 @@ func (s *Server) enforceScopeEnforcement() {
 	st := readScopeWindowState(s.m.pg)
 	st.Window = raw
 	st.At = now.Format(time.RFC3339)
+	tzRaw, _, _ := s.m.pg.GetSetting(intercept.SettingScopeHoursTZ)
+	tzRaw = strings.TrimSpace(tzRaw)
+	st.TZ = tzRaw
+	st.ServerTime = intercept.ScopeClock(now, time.Local)
 
-	inWindow, err := intercept.WindowAllows(raw, now)
+	inWindow, err := intercept.WindowAllowsIn(raw, tzRaw, now)
 	st.ParseError = ""
+	st.WindowTime = ""
 	if err != nil {
 		st.ParseError = err.Error()
+	} else if loc, lerr := intercept.LoadScopeLocation(tzRaw); lerr == nil {
+		st.WindowTime = intercept.ScopeClock(now, loc)
+	} else {
+		st.ParseError = lerr.Error()
 	}
 	wasIn := st.InWindow
 	st.InWindow = inWindow && err == nil

@@ -66,7 +66,9 @@ export function SafetyBanner() {
           </span>
         ) : (
           <span>
-            <b>当前不在授权作业时间窗内</b>（允许 {st.window.window}）：平台已停止发起动作
+            <b>当前不在授权作业时间窗内</b>（允许 {st.window.window}
+            {st.window.tz ? `，时区 ${st.window.tz}` : ""}；窗口时区时间 {st.window.window_time || "—"}， 服务器本地{" "}
+            {st.window.server_time || "—"}）：平台已停止发起动作
             {st.window.paused_now > 0 ? `，本轮暂停了 ${st.window.paused_now} 个任务` : ""}。
           </span>
         )}

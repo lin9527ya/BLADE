@@ -229,4 +229,6 @@ var settingsReadOnly = map[string]string{
 	"proxy_blocked":            "运行时状态：全部代理不可用（出口已阻断，不会直连），只读",
 	"proxy_status":             "运行时状态：每个候选的最近探测结果，只读",
 	"compaction_prompt":        "P14 领域压缩模板：刻意只读——设置页不暴露编辑框，覆盖走 API/DB（CompactionPromptOverride）",
+	"server_local_time":        "后端进程当前本地时间，运行时算出，只读",
+	"server_local_zone":        "后端进程本地时区名，运行时算出，只读",
 }

@@ -38,6 +38,10 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     scopeModeEnv,
     scopeHours,
     setScopeHours,
+    scopeHoursTZ,
+    setScopeHoursTZ,
+    serverLocalTime,
+    serverLocalZone,
     savingScope,
     artifactLang,
     savingArtifactLang,
@@ -137,12 +141,38 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               disabled={!loaded || savingScope}
             />
           </Field>
+          <Field label="窗口时区（留空 = 跟随平台所在机器）" htmlFor="scope-hours-tz">
+            <Input
+              id="scope-hours-tz"
+              autoComplete="off"
+              placeholder="Asia/Shanghai；UTC；留空 = 跟随服务器"
+              value={scopeHoursTZ}
+              onChange={(e) => setScopeHoursTZ(e.target.value)}
+              disabled={!loaded || savingScope}
+            />
+          </Field>
         </div>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          窗口按上面填的时区判定；留空则按平台所在机器的本地时区。
+          {serverLocalTime ? (
+            <>
+              {" "}
+              当前服务器本地时间 <code>{serverLocalTime}</code>
+              {serverLocalZone ? `（${serverLocalZone}）` : ""}。
+            </>
+          ) : null}
+          {scopeHours.trim() && scopeHoursTZ.trim() && serverLocalZone && scopeHoursTZ.trim() !== serverLocalZone ? (
+            <b className="text-amber-600 dark:text-amber-500">
+              {" "}
+              注意：窗口时区（{scopeHoursTZ.trim()}）与服务器本地时区（{serverLocalZone}）不同， 窗口将按{" "}
+              {scopeHoursTZ.trim()} 的时间生效。
+            </b>
+          ) : null}
+        </p>
         <p className="text-muted-foreground text-xs leading-relaxed">
           时间窗支持多段（<code>09:00-12:00,14:00-18:00</code>）与跨夜（<code>22:00-06:00</code>= 当天 22:00 到次日
           06:00）；区间左闭右开，"到 18:00"不含 18:00 那一刻起的动作。
-          <b>写错会被拒绝保存</b>——一条解析不了的窗口会让之后每次调用都落到人工确认上，
-          不如当场退回。时区取平台所在机器的本地时间。
+          <b>写错会被拒绝保存</b>——一条解析不了的窗口会让之后每次调用都落到人工确认上， 不如当场退回。
         </p>
         <p className="text-muted-foreground text-xs leading-relaxed">
           配了窗口就是<b>硬边界</b>：窗口外不发动作（与上面那个模式无关，off 也照样拦）， 到点平台会

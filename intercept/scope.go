@@ -522,18 +522,27 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 	//
 	// 配置解析失败时如实交人工：一条写错的窗口设置若静默失效，恰恰会让客户验收时要核对的
 	// 那一项无声消失（同 P12「范围读不出来时不放行」的理由）。
-	if w, err := i.scopeHours(); err != nil {
+	if w, tzName, err := i.scopeHoursAndTZ(); err != nil {
 		return Decision{
 			Action:   "ask",
 			RuleName: "[RoE] 作业时间窗",
 			Message:  "作业时间窗设置无法解析，无法确认当前是否在允许时段内，需要人工确认：" + err.Error(),
 		}, true
-	} else if now := scopeNow(); !w.allows(now) {
+	} else if loc, lerr := LoadScopeLocation(tzName); lerr != nil {
+		// 时区写错与窗口写错同等对待：判定口径不明确时不放行，交人工。
+		return Decision{
+			Action:   "ask",
+			RuleName: "[RoE] 作业时间窗",
+			Message:  "作业时间窗的时区设置无法识别，无法确认当前是否在允许时段内，需要人工确认：" + lerr.Error(),
+		}, true
+	} else if now := scopeNow(); !w.allows(now.In(loc)) {
+		// 两个时间都给：一个是窗口时区里的时间（判定依据），一个是机器本地时间（人对照
+		// 日志/系统时间用）。只给一个时，跨时区部署时人根本看不出为什么"明明在窗口内却被拦"。
 		return Decision{
 			Action:   "deny",
 			RuleName: "[RoE] 作业时间窗",
-			Message: fmt.Sprintf("当前不在授权作业时间窗内（允许 %s，本机时间 %s）：窗口外不发动作；要放宽请改作业时间窗设置",
-				w.Describe(), now.Format("15:04")),
+			Message: fmt.Sprintf("当前不在授权作业时间窗内（允许 %s，窗口时区 %s，本机时间 %s）：窗口外不发动作；要放宽请改作业时间窗设置",
+				w.Describe(), ScopeClock(now, loc), ScopeClock(now, time.Local)),
 		}, true
 	}
 	// ③ 空间门。off = 不做空间判定；此时后面那些"无从判起"的降级（taskID==0）也就无从谈起了。

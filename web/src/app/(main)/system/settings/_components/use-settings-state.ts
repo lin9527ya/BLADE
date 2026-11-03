@@ -149,6 +149,11 @@ export function useSettingsState() {
   const [scopeMode, setScopeMode] = React.useState("ask");
   const [scopeModeEnv, setScopeModeEnv] = React.useState(false);
   const [scopeHours, setScopeHours] = React.useState("");
+  // 作业时间窗的时区（IANA 名；空 = 跟随平台所在机器）。与窗口一起保存。
+  const [scopeHoursTZ, setScopeHoursTZ] = React.useState("");
+  // 服务器本地时间与时区名：页面据此提示"窗口按哪个时区算"，不必让人自己去对时。
+  const [serverLocalTime, setServerLocalTime] = React.useState("");
+  const [serverLocalZone, setServerLocalZone] = React.useState("");
   const [savingScope, setSavingScope] = React.useState(false);
   // P41 面向目标的产物语言（默认 zh = 不约束）。与界面语言是两件事，刻意分开放。
   const [artifactLang, setArtifactLang] = React.useState<"zh" | "en">("zh");
@@ -211,6 +216,9 @@ export function useSettingsState() {
     setScopeMode(s.intercept_scope_mode ?? "ask");
     setScopeModeEnv(!!s.intercept_scope_mode_env);
     setScopeHours(s.intercept_scope_hours ?? "");
+    setScopeHoursTZ(s.intercept_scope_hours_tz ?? "");
+    setServerLocalTime(s.server_local_time ?? "");
+    setServerLocalZone(s.server_local_zone ?? "");
     setArtifactLang(s.artifact_language === "en" ? "en" : "zh");
     setCredBudget(String(s.credential_attempt_budget ?? 3));
     setCredBudgetAction(s.credential_attempt_budget_action ?? "ask");
@@ -479,7 +487,11 @@ export function useSettingsState() {
   const saveScope = () => {
     setSavingScope(true);
     api
-      .setSettings({ intercept_scope_mode: scopeMode, intercept_scope_hours: scopeHours.trim() })
+      .setSettings({
+        intercept_scope_mode: scopeMode,
+        intercept_scope_hours: scopeHours.trim(),
+        intercept_scope_hours_tz: scopeHoursTZ.trim(),
+      })
       .then((next) => {
         apply(next);
         toast.success("已保存授权范围设置");
@@ -1118,6 +1130,10 @@ export function useSettingsState() {
     setScopeModeEnv,
     scopeHours,
     setScopeHours,
+    scopeHoursTZ,
+    setScopeHoursTZ,
+    serverLocalTime,
+    serverLocalZone,
     savingScope,
     setSavingScope,
     artifactLang,

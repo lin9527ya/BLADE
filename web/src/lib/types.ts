@@ -609,6 +609,11 @@ export interface ScopeWindowState {
   in_window: boolean;
   window: string;
   at: string;
+  /** 窗口判定用的时区（空 = 跟随平台所在机器）。 */
+  tz?: string;
+  /** 同一瞬间在服务器本地时区与窗口时区里的两种写法（跨时区部署时用来对照）。 */
+  server_time?: string;
+  window_time?: string;
   paused_now: number;
   paused_total: number;
   last_closed_at?: string;
@@ -1858,6 +1863,11 @@ export interface Settings {
   intercept_scope_mode?: string;
   intercept_scope_mode_env?: boolean;
   intercept_scope_hours?: string;
+  // 作业时间窗的时区（IANA 名；空 = 跟随平台所在机器）。
+  intercept_scope_hours_tz?: string;
+  // 后端进程当前本地时间与时区名（只读，页面据此提示窗口按哪个时区生效）。
+  server_local_time?: string;
+  server_local_zone?: string;
   /** 面向目标的产物语言（P41）：zh 默认不约束 / en 一律 ASCII 英文。与界面语言无关。 */
   artifact_language?: "zh" | "en";
   /**
