@@ -15,6 +15,11 @@
   `mark_strategy_exhausted` 在还有未试过的同根资产时会被拒绝，并点名这些资产
 - 目标拆解提示词补一句：用户要求"纳入子域名/横向推进"时**不要**把范围放大成根域，
   同根资产由系统自动纳入
+- **同根子域发现成为穷尽的前置条件**：态势里的 `scope_surface` 增加
+  `subdomain_discovery_pending` 与 `discovery_hints`（可直接用的 `domain=` / `cert=` /
+  `ip=` 表达式）。同根域在资产图里只登记了目标主机本身时，`mark_strategy_exhausted`
+  会被拒绝并提示先做发现——「没找到别的资产」不等于「没有别的资产」（任务 18 就是
+  这种形状：范围里只有 www.vaticanum.com，资产图里一个兄弟都没有）
 
 ## [0.8.4] - 2026-11-03
 

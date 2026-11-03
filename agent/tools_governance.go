@@ -53,6 +53,15 @@ func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 			// webmail/mail/smtp 等 6 个同根子域一条意图都没派过。
 			if t.as != nil && t.taskID > 0 {
 				if roots, err := t.as.ScopeRootDomains(t.taskID); err == nil && len(roots) > 0 {
+					// 同根子域还没发现过（资产图里只有目标自己）→ 也先别穷尽：
+					// "没找到别的资产"不等于"没有别的资产"。
+					if known, kerr := t.as.CountSiblingsInGraph(roots); kerr == nil && known < siblingDiscoveryThreshold {
+						return actool.Errorf(fmt.Sprintf(
+							"范围内的注册域在资产图里只登记了 %d 个具体资产（很可能只有目标主机本身）：还没做过同根子域发现。\n"+
+								"先 intel_search(domain=\"%s\") / cert=\"%s\" / ip=<目标 IP> 把同根子域找出来，再用 insert_assets 登记（登记即自动入范围），然后才谈穷尽。\n"+
+								"确属该主体只有这一个站点，请在 reason 里写明依据。",
+							known, roots[0], roots[0])), nil
+					}
 					if pending, total, err := t.as.UntouchedSiblings(t.taskID, roots, 8); err == nil && total > 0 {
 						samples := make([]string, 0, len(pending))
 						for _, p := range pending {

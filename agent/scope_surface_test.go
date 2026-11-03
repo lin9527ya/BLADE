@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lin9527ya/blade/db"
 )
@@ -72,6 +73,10 @@ func TestMarkStrategyExhaustedBlockedByUntouchedSiblings(t *testing.T) {
 	if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: "mail.exhaust-gate.example", TaskID: taskID}); err != nil {
 		t.Fatal(err)
 	}
+	// 再登记一个兄弟，让「同根发现」这道门先过去，才测得到「未试资产」那道门。
+	if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: "vpn.exhaust-gate.example", TaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
 
 	out := callTool(t, tools.PlannerTools(), "mark_strategy_exhausted",
 		`{"reason":"正面入口全部封死","evidence_ids":[`+strconv.FormatInt(intent, 10)+`]}`)
@@ -81,7 +86,7 @@ func TestMarkStrategyExhaustedBlockedByUntouchedSiblings(t *testing.T) {
 
 	// 把同根资产都派过意图后，穷尽才被接受。锚点必须显式传给 AddIntent——
 	// untouched 的判定看的是 exploration_anchors，不是 payload 里的 asset_ids。
-	ids, err := as.IDsByHosts([]string{"mail.exhaust-gate.example"})
+	ids, err := as.IDsByHosts([]string{"mail.exhaust-gate.example", "vpn.exhaust-gate.example"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +95,7 @@ func TestMarkStrategyExhaustedBlockedByUntouchedSiblings(t *testing.T) {
 		anchors = append(anchors, id)
 	}
 	if len(anchors) == 0 {
-		t.Fatal("找不到 mail.exhaust-gate.example 的资产 id")
+		t.Fatal("找不到 exhaust-gate 的资产 id")
 	}
 	if _, err := ts.AddIntent(map[string]any{"summary": "试 mail.exhaust-gate.example"}, 5, anchors, "planner"); err != nil {
 		t.Fatal(err)
@@ -99,5 +104,39 @@ func TestMarkStrategyExhaustedBlockedByUntouchedSiblings(t *testing.T) {
 		`{"reason":"范围内同主体资产都已试过且无可行方向","evidence_ids":[`+strconv.FormatInt(intent, 10)+`]}`)
 	if !strings.Contains(out, "strategy exhausted recorded") {
 		t.Fatalf("范围内都试过后应允许穷尽：%s", out)
+	}
+}
+
+// 同根子域一条都没登记时，态势要明确说「先做发现」，穷尽也要被拒：
+// 「没找到别的资产」不等于「没有别的资产」（任务 18 的现场）。
+func TestScopeSurfaceFlagsSubdomainDiscoveryPending(t *testing.T) {
+	tools, _, _ := newToolWorker(t)
+	taskID := tools.taskID
+	as := testDB(t).Assets()
+	tools.SetAssetStore(as, as.Companies())
+	// 唯一根域：共享测试库里别的用例可能留下过同名根域资产，用带随机后缀的域名。
+	root := "discovery-" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".example"
+
+	if _, err := as.AddAgentScope(taskID, "subdomain", "www."+root, "任务目标", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	// 资产图里只有目标主机本身 → 还没做过同根发现。
+	if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: "www." + root, TaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	ss := tools.scopeSurface()
+	if ss == nil || !ss.SubdomainDiscoveryPending {
+		t.Fatalf("同根只有一个主机时应标记 discovery pending：%+v", ss)
+	}
+	if len(ss.DiscoveryHints) == 0 || !strings.Contains(ss.DiscoveryHints[0], root) {
+		t.Fatalf("应给出可用的查询表达式：%+v", ss.DiscoveryHints)
+	}
+	// 登记一个同根兄弟后，pending 消失。
+	if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: "mail." + root, TaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	tools.BeginRound(nil, 0, TaskClock{}, 0) // 清掉轮级缓存
+	if ss := tools.scopeSurface(); ss == nil || ss.SubdomainDiscoveryPending {
+		t.Fatalf("已有同根兄弟后不应再要求发现：%+v", ss)
 	}
 }

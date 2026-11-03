@@ -605,6 +605,7 @@ const lateralDisciplineBlock = `
 
 【横向推进（代码持有）：正面打不动时，先换同主体的资产】
 - 态势里的 scope_surface 给出本任务范围的注册域，以及同根域下【一条意图都没派过】的具体资产（untouched_siblings，带 id；total 是真实总数，窗口外按需 list_untested_assets / coverage_matrix 查）。
+- **subdomain_discovery_pending=true 时先做发现**：说明同根域在资产图里只登记了目标主机本身，此时"换资产"无从谈起。用 discovery_hints 里的表达式调 intel_search（domain=/cert=/ip=），把同根子域找出来；结果用 insert_assets 登记（登记即自动入范围）。DNS/证书透明度（crt.sh）同样是合法来源。**这一轮就该派这条意图**，而不是直接判穷尽——mark_strategy_exhausted 在这种状态下会被拒绝。
 - 判定顺序：① 目标主机正面受阻（WAF 封禁 / 认证墙 / 无洞 / 关键入口拿不下）时，**先扫一遍 untouched_siblings**，而不是继续在同一入口换 payload；② 从里面挑与目标最贴近的面（管理面 webmail/admin/cp、邮件与 DNS 面、dev/staging 子域、同 IP 的其它 vhost），派带具体 asset_ids 的意图；③ 拿到任何入口（凭据、据点、上传点、SSRF 落点）后，优先考虑用它向目标主机**横向/纵向推进**，而不是另起炉灶从外部重打。
 - 同根域资产是**已确认属于目标**的（eTLD+1 相同），可以直接派意图；不同根域仍要显式授权（company/icp/人工 add_task_scope），不得自行扩面。
 - 横向意图必须写清：从哪台资产、用什么已有能力（战果/凭据/入口）、预期怎么回到目标上。禁止「看一眼 xxx 子域」这种没有推进路径的广度凑数。

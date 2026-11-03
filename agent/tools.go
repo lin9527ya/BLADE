@@ -680,7 +680,19 @@ type scopeSurface struct {
 	Untouched []scopeAssetRef `json:"untouched_siblings"`
 	// UntouchedTotal 是真实总数（Untouched 只是展示窗口）。
 	UntouchedTotal int `json:"untouched_siblings_total"`
+	// SubdomainDiscoveryPending 为真表示：范围内的注册域在资产图里只有目标主机本身
+	// （同根子域一条都没登记）。此时「横向」不是"去试别的资产"，而是**先去发现**——
+	// 用 intel_search（domain="<根域>"）与 DNS/证书透明度把同根子域找出来，再用
+	// insert_assets 登记（登记即自动入范围）。任务 18 就是这种形状：范围里只有
+	// www.vaticanum.com，资产图里也一个兄弟都没有，于是"横向"无从谈起。
+	SubdomainDiscoveryPending bool `json:"subdomain_discovery_pending,omitempty"`
+	// DiscoveryHints 是给 planner 的具体查询表达式（原样可用的 FOFA 语法）。
+	DiscoveryHints []string `json:"discovery_hints,omitempty"`
 }
+
+// siblingDiscoveryThreshold：同根域内已登记的具体资产（含目标本身）少于这个数时，
+// 认为"还没做同根子域发现"。取 2 是因为 1 个就等于"只有目标主机自己"。
+const siblingDiscoveryThreshold = 2
 
 type scopeAssetRef struct {
 	ID    int64  `json:"id"`
@@ -708,6 +720,15 @@ func (t *ToolSet) scopeSurface() *scopeSurface {
 		out.Untouched = append(out.Untouched, scopeAssetRef{ID: a.ID, Type: a.Type, Label: a.Label})
 	}
 	out.UntouchedTotal = total
+	// 同根子域一条都没登记 → 横向无从谈起，先做发现。判定用**资产图里的同根具体资产数**
+	// （不是范围行数：范围里可能只有一条 subdomain，而资产图里已经有 10 个兄弟）。
+	if known, err := t.as.CountSiblingsInGraph(roots); err == nil && known < siblingDiscoveryThreshold {
+		out.SubdomainDiscoveryPending = true
+		for _, r := range roots {
+			out.DiscoveryHints = append(out.DiscoveryHints,
+				fmt.Sprintf(`intel_search: domain="%s"（再补 cert="%s"、ip=<目标解析到的 IP>）`, r, r))
+		}
+	}
 	return out
 }
 

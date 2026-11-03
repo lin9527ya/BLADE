@@ -204,6 +204,22 @@ func (s *AssetStore) ScopeRootDomains(taskID int64) ([]string, error) {
 	return out, nil
 }
 
+// CountSiblingsInGraph 返回这些注册域在**资产图里已登记**的具体资产数
+// （subdomain/app/endpoint/ip，不含 root_domain 与 service）。
+//
+// 用途：判断"同根子域发现"做过没有。这个数不依赖本任务范围——资产图是全局共享的，
+// 别的任务登记过的兄弟主机同样算"已经知道它存在"。
+func (s *AssetStore) CountSiblingsInGraph(roots []string) (int, error) {
+	if len(roots) == 0 {
+		return 0, nil
+	}
+	var n int
+	err := s.db.QueryRow(`
+SELECT count(*) FROM assets
+WHERE type IN ('subdomain','app','endpoint','ip') AND root_domain = ANY($1::text[])`, roots).Scan(&n)
+	return n, err
+}
+
 // UntouchedSiblings 返回指定注册域下、**没有被本任务任何意图引用过**的具体资产。
 //
 // 「没被引用过」比「没被事实覆盖过」更严格，也更贴近这里的用途：一条意图只要派出去过
