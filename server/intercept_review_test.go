@@ -59,13 +59,17 @@ func TestReviewCompletionSendsCurrentCallWithoutHistory(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &fields); err != nil {
 		t.Fatal(err)
 	}
-	if len(fields) != 5 {
-		t.Fatalf("unexpected envelope keys: %s", body)
-	}
-	for _, key := range []string{"version", "working_directory", "background", "tool_name", "arguments"} {
+	// 脚本快照字段只在真的执行脚本时出现（not_applicable 仍会带状态，便于复盘）。
+	for _, key := range []string{"version", "working_directory", "background", "tool_name", "arguments", "script_capture_status"} {
 		if _, ok := fields[key]; !ok {
-			t.Fatalf("missing %s", key)
+			t.Fatalf("missing %s: %s", key, body)
 		}
+	}
+	if _, ok := fields["script_files"]; ok {
+		t.Fatalf("非脚本调用不该带脚本快照：%s", body)
+	}
+	if len(fields) != 6 {
+		t.Fatalf("unexpected envelope keys: %s", body)
 	}
 	if strings.Contains(body, "file created") || strings.Contains(body, `"path"`) {
 		t.Fatal("history leaked into actual model request")

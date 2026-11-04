@@ -3,6 +3,8 @@ package intercept
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -180,5 +182,55 @@ func TestReviewWorkingDirectoryPreservesExplicitProvenance(t *testing.T) {
 		} else if in.Background == nil || *in.Background != background {
 			t.Fatal("raw user message was replaced by augmented Agent input")
 		}
+	}
+}
+
+// 审批裁判必须能看到脚本内容：bash x.sh 的实际文件、heredoc 生成脚本、内联 -c。
+func TestBuildReviewInputAttachesScripts(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("curl -s https://example.com/.git/config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in, err := BuildReviewInput(WithReviewWorkingDirectory(context.Background(), dir), "Bash",
+		json.RawMessage(`{"command":"bash probe.sh"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ScriptCaptureStatus != "complete" {
+		t.Fatalf("脚本快照应完整，实际 %q：%+v", in.ScriptCaptureStatus, in.Scripts)
+	}
+	if len(in.Scripts) != 1 || !strings.Contains(in.Scripts[0].Content, "example.com/.git/config") {
+		t.Fatalf("脚本内容未附加：%+v", in.Scripts)
+	}
+	if in.Scripts[0].SHA256 == "" {
+		t.Fatal("快照应带 SHA256，供事后核对")
+	}
+}
+
+// 读不到脚本时必须标 incomplete，而不是当成「没有脚本」静默放行。
+func TestBuildReviewInputMarksMissingScriptIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	in, err := BuildReviewInput(WithReviewWorkingDirectory(context.Background(), dir), "Bash",
+		json.RawMessage(`{"command":"bash does-not-exist.sh"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ScriptCaptureStatus != "incomplete" {
+		t.Fatalf("读不到脚本应标 incomplete，实际 %q", in.ScriptCaptureStatus)
+	}
+	if len(in.Scripts) == 0 || in.Scripts[0].ReadError == "" {
+		t.Fatalf("应记录读取失败原因：%+v", in.Scripts)
+	}
+}
+
+// 不是执行脚本的调用不附带脚本快照（避免把普通命令也标成 incomplete）。
+func TestBuildReviewInputNonScriptTool(t *testing.T) {
+	in, err := BuildReviewInput(context.Background(), "Read", json.RawMessage(`{"file_path":"/tmp/x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ScriptCaptureStatus != "not_applicable" || len(in.Scripts) != 0 {
+		t.Fatalf("非脚本工具不该捕获脚本：%q %+v", in.ScriptCaptureStatus, in.Scripts)
 	}
 }

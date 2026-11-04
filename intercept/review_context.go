@@ -9,6 +9,10 @@ import (
 
 const reviewTextLimit = 4000
 
+// maxReviewScriptBytes 是单个脚本快照与整次调用快照总量的上限（1 MiB）。
+// 超过就标 incomplete，由策略决定转人工还是交给模型判断——「截断着审」比「不审」危险。
+const maxReviewScriptBytes = 1 << 20
+
 const BackgroundUserMessage = "user_message"
 
 // ReviewBackground is explicitly bound from the current human message. Generated
@@ -19,6 +23,20 @@ type ReviewBackground struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+// ReviewScript 是本次工具调用将要执行（或刚刚生成）的脚本快照。裁判只看得到
+// 工具参数，而 `bash x.sh`、heredoc 生成脚本、`sed -i` 改文件的实际内容都在参数之外——
+// 不附上这些，审批等于只看命令名。
+type ReviewScript struct {
+	Path      string `json:"path"`
+	Source    string `json:"source,omitempty"` // file | command；command 表示尚未落盘
+	SHA256    string `json:"sha256,omitempty"`
+	Bytes     int64  `json:"bytes,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Complete  bool   `json:"complete"`
+	Truncated bool   `json:"truncated,omitempty"`
+	ReadError string `json:"read_error,omitempty"`
+}
+
 // ReviewInput contains only the current call and explicitly selected background.
 // Execution history and call correlation belong to the separate audit record.
 type ReviewInput struct {
@@ -27,6 +45,10 @@ type ReviewInput struct {
 	Background *ReviewBackground `json:"background,omitempty"`
 	Tool       string            `json:"tool_name"`
 	Arguments  json.RawMessage   `json:"arguments"`
+	// ScriptCaptureStatus 是脚本快照的完整性：not_applicable（不是执行脚本的调用）|
+	// complete | incomplete。incomplete 时按 llm_judge_incomplete_script_action 处置。
+	ScriptCaptureStatus string         `json:"script_capture_status,omitempty"`
+	Scripts             []ReviewScript `json:"script_files,omitempty"`
 }
 
 type reviewContextKey struct{}
@@ -66,5 +88,6 @@ func BuildReviewInput(ctx context.Context, tool string, arguments json.RawMessag
 			in.Background = &background
 		}
 	}
+	in.Scripts, in.ScriptCaptureStatus = captureScripts(in.WorkingDir, tool, arguments)
 	return in, nil
 }

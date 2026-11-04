@@ -2428,6 +2428,8 @@ export interface JudgeConfig {
   // deny/ask 是结论，不重试。
   retry_count: number;
   retry_interval_ms: number;
+  // 脚本快照不完整时的处置：ask = 直接转人工；model = 交给模型判断（默认）。
+  incomplete_script_action: "ask" | "model";
 }
 
 // JudgeUsage: 模型兜底审批(judge 通道)的累计 token 用量 + 近 N 天每日序列。

@@ -77,6 +77,7 @@ const defaultJudge = (): JudgeConfig => ({
   structured: true,
   retry_count: 2,
   retry_interval_ms: 1000,
+  incomplete_script_action: "model",
 });
 
 export function JudgeSection() {
@@ -289,6 +290,20 @@ export function JudgeSection() {
                       if (Number.isFinite(n) && n >= 0 && n <= 3600000) patch({ retry_interval_ms: n });
                     }}
                   />
+                </Field>
+                <Field label="脚本快照不完整时">
+                  <Select
+                    value={cfg.incomplete_script_action}
+                    onValueChange={(v) => patch({ incomplete_script_action: v as "ask" | "model" })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="model">交给模型判断（默认）</SelectItem>
+                      <SelectItem value="ask">一律转人工</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </Field>
                 <Field label="裁决方式">
                   <Select

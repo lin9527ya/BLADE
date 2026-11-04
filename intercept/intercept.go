@@ -365,6 +365,10 @@ const (
 	settingJudgeStructured       = "llm_judge_structured"
 	settingJudgeRetryCount       = "llm_judge_retry_count"
 	settingJudgeRetryIntervalMS  = "llm_judge_retry_interval_ms"
+	// settingJudgeIncompleteScript 决定「脚本快照不完整」时的处置：
+	//   ask   = 直接转人工（不看模型意见）；
+	//   model = 交给模型判断（默认）——快照缺失本身会作为证据告诉模型。
+	settingJudgeIncompleteScript = "llm_judge_incomplete_script_action"
 )
 
 // Judge default values.
@@ -398,22 +402,30 @@ type JudgeConfig struct {
 	// 只重试「模型出错/输出解析不了」，deny/ask 是结论、不再重试。
 	RetryCount      int `json:"retry_count"`
 	RetryIntervalMS int `json:"retry_interval_ms"`
+	// IncompleteScriptAction：脚本快照不完整（读到一半、路径不确定、超过上限）时的
+	// 处置，ask（转人工）| model（交模型判断，默认）。
+	IncompleteScriptAction string `json:"incomplete_script_action"`
 }
+
+// DefaultIncompleteScriptAction 把不完整快照交给模型判断：快照缺失这件事本身会写进
+// 输入，模型能据此从严；只有操作者显式要求时才对所有不完整快照一律转人工。
+const DefaultIncompleteScriptAction = "model"
 
 // judgeConfig reads the judge configuration from settings, applying defaults for
 // missing/invalid keys. Read fresh on each fallback judgement — the LLM call that
 // follows dwarfs a few KV reads, and freshness avoids a cache-invalidation path.
 func (i *Interceptor) judgeConfig() JudgeConfig {
 	c := JudgeConfig{
-		Enabled:           i.db.GetBool(settingJudgeEnabled, false),
-		ProfileID:         int64(i.getSettingInt(settingJudgeProfileID, 0)),
-		TimeoutSeconds:    i.getSettingInt(settingJudgeTimeoutSecs, defaultJudgeTimeoutSecs),
-		FailAction:        i.getSettingChoice(settingJudgeFailAction, defaultJudgeFailAction, "allow", "ask", "deny"),
-		AskTimeoutSeconds: i.getSettingInt(settingJudgeAskTimeoutSecs, defaultJudgeAskTimeoutSecs),
-		AskTimeoutAction:  i.getSettingChoice(settingJudgeAskTimeoutAction, defaultJudgeAskTimeoutAction, "allow", "deny"),
-		Structured:        i.db.GetBool(settingJudgeStructured, defaultJudgeStructured),
-		RetryCount:        i.getSettingInt(settingJudgeRetryCount, defaultJudgeRetryCount),
-		RetryIntervalMS:   i.getSettingInt(settingJudgeRetryIntervalMS, defaultJudgeRetryIntervalMS),
+		Enabled:                i.db.GetBool(settingJudgeEnabled, false),
+		ProfileID:              int64(i.getSettingInt(settingJudgeProfileID, 0)),
+		TimeoutSeconds:         i.getSettingInt(settingJudgeTimeoutSecs, defaultJudgeTimeoutSecs),
+		FailAction:             i.getSettingChoice(settingJudgeFailAction, defaultJudgeFailAction, "allow", "ask", "deny"),
+		AskTimeoutSeconds:      i.getSettingInt(settingJudgeAskTimeoutSecs, defaultJudgeAskTimeoutSecs),
+		AskTimeoutAction:       i.getSettingChoice(settingJudgeAskTimeoutAction, defaultJudgeAskTimeoutAction, "allow", "deny"),
+		Structured:             i.db.GetBool(settingJudgeStructured, defaultJudgeStructured),
+		RetryCount:             i.getSettingInt(settingJudgeRetryCount, defaultJudgeRetryCount),
+		RetryIntervalMS:        i.getSettingInt(settingJudgeRetryIntervalMS, defaultJudgeRetryIntervalMS),
+		IncompleteScriptAction: i.getSettingChoice(settingJudgeIncompleteScript, DefaultIncompleteScriptAction, "ask", "model"),
 	}
 	// 存量库可能存着越界值（手工改库/旧版本写入）：夹到合法区间，而不是让重试失控。
 	if c.RetryCount < 0 {
@@ -515,6 +527,9 @@ func (i *Interceptor) SetJudgeConfig(c JudgeConfig) error {
 	if err := i.db.SetSetting(settingJudgeRetryIntervalMS, strconv.Itoa(c.RetryIntervalMS)); err != nil {
 		return err
 	}
+	if err := i.db.SetSetting(settingJudgeIncompleteScript, c.IncompleteScriptAction); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -603,6 +618,13 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 		out.Message = "[模型] " + judgeActionLabel(out.Action)
 	} else if !strings.HasPrefix(out.Message, "[模型]") {
 		out.Message = "[模型] " + out.Message
+	}
+	// 脚本快照不完整 = 这次审批看不到完整的执行内容。按策略：要么直接转人工，
+	// 要么保留模型结论（模型在输入里已经看到"快照不完整"）。只有 allow 会被抬成 ask：
+	// deny 本来就是更严的结论，不该被这条策略改写。
+	if input.ScriptCaptureStatus == "incomplete" && cfg.IncompleteScriptAction != "model" && out.Action == "allow" {
+		out.Action = "ask"
+		out.Message = "脚本未能完整附加，无法排除隐藏副作用，需要人工确认"
 	}
 	if out.Action == "ask" {
 		out.TimeoutEnabled = true
