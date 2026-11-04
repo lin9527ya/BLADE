@@ -40,6 +40,10 @@
 
 ### 修复
 
+- **脚本快照的解释器身份判定跨机不稳**：旧判定要求 `sed`/`cat` 解析结果恰好是
+  `/bin/<name>` 或 `/usr/bin/<name>`，宿主布局一变（CI、`/usr/local`、容器）就把
+  快照退化成 incomplete，CI 因此变红。改为 PATH 解析 + 跟随符号链接 + 同名 basename
+  + 原生魔数；相对路径（`./sed`）仍然拒绝
 - **开局轮被 schema 细节白烧调用**：`add_intent` 漏填 `risk_area` 不再把整批意图退回，
   按 summary 推断风险类并在回执里说明（显式填写优先，填错仍报错）；`intents` 字段
   说明补齐 `goal_id` / `kind`，开局段要求一次带全字段
