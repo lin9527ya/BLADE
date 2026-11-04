@@ -45,7 +45,7 @@ func TestFoldedIntentsIndexVisible(t *testing.T) {
 		if _, ok := f["id"]; !ok {
 			t.Fatal("缺少 id")
 		}
-		s, _ := f["s"].(string)
+		s, _ := f["summary"].(string)
 		if s == "" || !strings.Contains(s, "历史方向") {
 			t.Fatalf("摘要缺失：%v", f)
 		}

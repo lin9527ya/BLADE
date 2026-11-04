@@ -220,8 +220,8 @@ type TaskNodeDTO struct {
 	DeleteReason string `json:"delete_reason,omitempty"` // 意图假删除(state='deleted')时的删除原因
 	// Fingerprint 只在凭据节点上非空（P36）：明文不进界面与报告，指认一条凭据靠它。
 	Fingerprint string `json:"fingerprint,omitempty"`
-	// WorkerSeq 是意图在本任务内的创建序号（1-based）；界面显示 "Worker #N" 用它，
-	// 避免把全局意图 id（任务 2 会从 21 继续）当成 worker 编号。
+	// WorkerSeq 是意图在本任务内的创建序号（1-based），**只给界面**显示 "Worker #N"。
+	// agent 侧一律用全局 id（见 db.Node.WorkerSeq 的说明）；这个字段不回流给模型。
 	WorkerSeq int64 `json:"worker_seq,omitempty"`
 	// SlotNo 是该意图当前绑定的固定执行槽位（owner=work#N）；0=未绑定。
 	SlotNo int `json:"slot_no,omitempty"`

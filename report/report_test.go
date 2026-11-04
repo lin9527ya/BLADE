@@ -538,7 +538,7 @@ func TestMarkdownFootprintSources(t *testing.T) {
 	})
 	for _, want := range []string{
 		"- 来自：",
-		"intent-3（id 7） 对 /login 做口令喷洒",
+		"intent-7 对 /login 做口令喷洒",
 		"事实 #8 确认认证失败会计入审计日志",
 	} {
 		if !strings.Contains(md, want) {

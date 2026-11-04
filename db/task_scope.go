@@ -609,15 +609,9 @@ SELECT t.id, t.type, t.label FROM target t ORDER BY t.type, t.label`, taskID, s.
 		return nil, err
 	}
 
-	// 覆盖矩阵里的意图引用也用任务内序号（另注全局 id）：报告与 Agent 叙事一致，
-	// 但工具/API 仍按全局 id 寻址。
-	intentOrd, _ := s.IntentOrdinals(0)
-	intentRef := func(id int64) string {
-		if seq := intentOrd[id]; seq > 0 {
-			return fmt.Sprintf("#%d（id %d）", seq, id)
-		}
-		return fmt.Sprintf("#%d", id)
-	}
+	// 意图引用一律用**全局 id**。此前这里渲染成「#序号（id 全局id）」两个数，
+	// 模型分不清该用哪个去调工具，拿着序号找错节点（VPS 实测）。
+	intentRef := func(id int64) string { return fmt.Sprintf("#%d", id) }
 
 	type cellKey struct {
 		asset int64

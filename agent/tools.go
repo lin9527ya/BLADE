@@ -778,27 +778,16 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
-	// 意图/目标在叙事里用**任务内序号**（seq），机器寻址仍用 id。两个字段都给：
-	// 模型用 id 调工具，用 seq 在话里指代"第几个"。
-	goalSeq, _ := t.ts.NodeOrdinals(db.KindGoal, 0)
-	intentSeq, _ := t.ts.IntentOrdinals(0)
-	withSeq := func(items []map[string]any, seq map[int64]int64) []map[string]any {
-		for _, it := range items {
-			if id, ok := it["id"].(int64); ok {
-				if v := seq[id]; v > 0 {
-					it["seq"] = v
-				}
-			}
-		}
-		return items
-	}
+	// 节点一律只用**全局 id** 标识。此前态势里还带一个任务内序号 seq，模型在叙事里
+	// 用它指代"第几个"、在工具参数里却必须用 id——两套编号同时出现，模型混用时就会
+	// 拿着 seq 去调工具，找错节点（VPS 实测）。序号对机器寻址没有任何价值，直接不给。
 	gsum := make([]map[string]any, 0, len(goals))
 	for _, g := range goals {
 		var p map[string]any
 		_ = json.Unmarshal(g.Payload, &p)
 		gsum = append(gsum, map[string]any{"id": g.ID, "state": g.State, "text": p["text"]})
 	}
-	out["goals"] = withSeq(gsum, goalSeq)
+	out["goals"] = gsum
 	// hints: 人类/主 agent 通过 add_hint 挂上图的战略提示；folded in so the
 	// planner reads them every round when generating intents (否则只写不读)。
 	// 只取 active：consumed 是已采纳的历史，再放进态势会让 planner 据旧提示重复派意图。
@@ -928,7 +917,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if len(openIntents) > openIntentsCap {
 		openIntents = openIntents[:openIntentsCap]
 	}
-	out["open_intents"] = withSeq(compactIntents(openIntents, parentsOf, yieldsOf), intentSeq)
+	out["open_intents"] = compactIntents(openIntents, parentsOf, yieldsOf)
 	var running, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
@@ -941,7 +930,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 			recentDone = append(recentDone, n) // 最新在前（all 按 id 降序）；折叠的已剔除，输出时截最新 N
 		}
 	}
-	out["running_intents"] = withSeq(compactIntents(running, parentsOf, yieldsOf), intentSeq)
+	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
 	// paused 既不是"待领"也不是"已结束"：此前三个桶都不收它，planner 在态势里完全看不到，
 	// 容易把一条被人为暂缓的方向当成从未派过而重派。
 	var pausedIntents []*db.Node
@@ -951,7 +940,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		}
 	}
 	if len(pausedIntents) > 0 {
-		out["paused_intents"] = withSeq(compactIntents(pausedIntents, parentsOf, yieldsOf), intentSeq)
+		out["paused_intents"] = compactIntents(pausedIntents, parentsOf, yieldsOf)
 	}
 	// 串行链：前置未满足的意图**不会**被 worker 领走（Frontier/ClaimIntent 都有闸门）。
 	// 必须把这件事摆到规划层面前——否则它会以为"我派了、怎么没人跑"，或者反复重派。
@@ -1124,7 +1113,9 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		_ = json.Unmarshal(n.Payload, &p)
 		summary, _ := p["summary"].(string)
 		folded = append(folded, map[string]any{
-			"id": n.ID, "s": clipLine(summary, foldedIntentSummaryMax), "state": n.State,
+			// 字段名用 summary 而不是 s：单字母键在模型眼里太容易被当成序号/缩写，
+			// 而这里存的是摘要文本（曾经叫 "s"，和 seq 混在一起读更容易出错）。
+			"id": n.ID, "summary": clipLine(summary, foldedIntentSummaryMax), "state": n.State,
 		})
 	}
 	if total := len(folded); total > 0 {
@@ -1143,7 +1134,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if len(recentDone) > recentDoneCap {
 		recentDone = recentDone[:recentDoneCap]
 	}
-	out["recent_done_intents"] = withSeq(compactIntents(recentDone, parentsOf, yieldsOf), intentSeq)
+	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf)
 	// 战果是否算「已被动用」，取决于用过它的那些意图是怎么收场的——只在 edges 里看到一条
 	// uses 是不够的（见 lootConsumingState）。intentState 复用上面已加载的 all。
 	intentState := make(map[int64]string, len(all))

@@ -413,20 +413,15 @@ func clipRunes(s string, n int) string {
 }
 
 // nodeRef 渲染节点引用：#<任务内序号>（id <全局 id>）。没有序号时退回 #<id>。
-func nodeRef(ord map[int64]int64, id int64) string {
-	if seq := ord[id]; seq > 0 {
-		return fmt.Sprintf("#%d（id %d）", seq, id)
-	}
-	return fmt.Sprintf("#%d", id)
-}
+// nodeRef 渲染节点引用：只用全局 id。
+//
+// 曾经写成「#序号（id 全局id）」两个数——序号是给人看的、id 是给机器寻址的，看起来
+// 两全，实际是混淆源：同一句话里两个编号，读者与模型都得先判断该用哪个。节点标识
+// 只有一种，就是全局 id（与工具参数、API、时间线完全一致）。
+func nodeRef(_ map[int64]int64, id int64) string { return fmt.Sprintf("#%d", id) }
 
-// intentRef 渲染意图引用：intent-<任务内序号>（id <全局 id>）。
-func intentRef(ord map[int64]int64, id int64) string {
-	if seq := ord[id]; seq > 0 {
-		return fmt.Sprintf("intent-%d（id %d）", seq, id)
-	}
-	return fmt.Sprintf("intent-%d", id)
-}
+// intentRef 渲染意图引用：intent-<全局 id>（同上，不再给任务内序号）。
+func intentRef(_ map[int64]int64, id int64) string { return fmt.Sprintf("intent-%d", id) }
 
 // writeLootUses 渲染「这条战果被用在了哪一步」——交付物里的作业叙述靠它串起来。
 // 已失效又没用过的什么都不写：它已经不是一个机会了，占一行只是噪声。

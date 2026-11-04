@@ -76,9 +76,10 @@ type Node struct {
 	State         string          `json:"state"`
 	Origin        string          `json:"origin,omitempty"`
 	Owner         string          `json:"owner,omitempty"`
-	// WorkerSeq 是 intent 在【本任务内】的创建序号（1-based，按 id 升序）。意图 id 是全局
-	// 序列，任务 2 的 worker 会从 #21 继续；界面要显示"任务内第几个 worker"就用这个字段。
-	// 只为展示而填（intents 接口），不参与任何业务判定。
+	// WorkerSeq 是 intent 在【本任务内】的创建序号（1-based，按 id 升序），**仅供界面**
+	// 显示 "Worker #N"。它是唯一保留序号的地方：agent 侧（态势、常驻索引、去重回执、
+	// 报告引用）一律只用全局 id——两套编号同时出现会让模型拿序号去调工具、找错节点
+	// （VPS 实测）。这个字段永远不进 agent 的输入，也不参与任何业务判定。
 	WorkerSeq     int64     `json:"worker_seq,omitempty"`
 	BlockedReason string    `json:"blocked_reason,omitempty"`
 	DeleteReason  string    `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
