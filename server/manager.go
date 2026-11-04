@@ -261,6 +261,9 @@ type Manager struct {
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 	execs       *ExecutionService      // P13 长任务执行台账（托管进程活过 agent run）
+	// onEgressRestored 在出口从阻断恢复时被调用（由 Server 接线到 Engine），
+	// 用来给正在等网络的任务留一条「可以继续了」的提示。nil = 不通知。
+	onEgressRestored func(active string)
 
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
@@ -1247,8 +1250,19 @@ func (m *Manager) startProxyPool() {
 // old env and fail closed if that proxy died.
 func (m *Manager) applyEgressProxy(active string) {
 	m.mu.Lock()
+	previous := m.egressProxy
 	m.egressProxy = active
 	m.mu.Unlock()
+	// 出口从阻断恢复：通知所有正在等网络的任务。worker 卡在黑洞上时唯一的出路就是
+	// "等平台自己修好"——不告诉他们恢复了，它们会继续按失败处理（任务 25 实测）。
+	if previous == blockedProxyURL && active != "" && active != blockedProxyURL {
+		m.mu.RLock()
+		fn := m.onEgressRestored
+		m.mu.RUnlock()
+		if fn != nil {
+			fn(active)
+		}
+	}
 	if tr := m.Traffic(); tr != nil {
 		if err := tr.SetUpstreamProxy(active); err != nil {
 			log.Printf("[proxy] 应用出口代理 %q 失败: %v", active, err)

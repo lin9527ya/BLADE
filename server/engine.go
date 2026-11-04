@@ -152,6 +152,8 @@ type Engine struct {
 	completionWarn sync.Map
 	// WAF 自动切换出口的窗口计数（task|host -> 最近命中时间）。切一次清一次，
 	// 避免连续 403 把节点切来切去。
+	// egressRecovery 记录每个任务的"出口阻断"自愈节奏（见 egress_recovery.go）。
+	egressRecovery sync.Map // taskID -> *egressRecovery
 	// exhaustionReview 是穷尽复核员（见 exhaustion_watchdog.go）。nil = 未接线
 	// （无可用 LLM / 测试），此时保持旧行为：声明即暂停。
 	exhaustionReview exhaustionReviewer
@@ -1461,6 +1463,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			r.SlotNo = &n
 		}
 		e.observeEgress(t, r)
+		e.observeEgressBlocked(t, r)
 		e.emitActivity(t, r)
 	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
