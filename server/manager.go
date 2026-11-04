@@ -38,8 +38,12 @@ type Task struct {
 	Goal         string `json:"goal"`
 	CreatedAt    int64  `json:"created_at"`
 	CompletedAt  int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
-	Paused       bool   `json:"paused"`
-	Queued       bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
+	// 实际运行时长（秒）：已结算部分 + 当前段起点（0 = 当前没在计时）。
+	// 暂停与排队期间不计入；见 db.StartTaskRunSegment / FinalizeTaskRunSegment。
+	ActiveRunSeconds    int64  `json:"active_run_seconds,omitempty"`
+	RunSegmentStartedAt *int64 `json:"-"`
+	Paused              bool   `json:"paused"`
+	Queued              bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	// QueuedAt is an internal Unix-nanosecond ordering key. It is deliberately
 	// finer than CreatedAt so several tasks enqueued in the same second retain
 	// their real FIFO order.
@@ -130,6 +134,10 @@ type taskLifecycleState struct {
 	CompanyIDs    []int64
 	CategoryID    *int64
 	CategoryName  string
+	// ActiveRunSeconds 是已结算的实际运行秒数；RunSegmentStartedAt 是当前段起点
+	// （0 = 当前没有在计时）。暂停与排队期间不计入。
+	ActiveRunSeconds    int64
+	RunSegmentStartedAt int64
 }
 
 func (t *Task) lifecycleSnapshot() taskLifecycleState {
@@ -143,20 +151,22 @@ func (t *Task) lifecycleSnapshot() taskLifecycleState {
 
 func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 	return taskLifecycleState{
-		Name:          t.Name,
-		PinnedAt:      t.PinnedAt,
-		Status:        t.Status,
-		Paused:        t.Paused,
-		Queued:        t.Queued,
-		QueuedAt:      t.QueuedAt,
-		QueueMode:     t.QueueMode,
-		CompletedAt:   t.CompletedAt,
-		FirstRunAt:    t.FirstRunAt,
-		DeadlineAt:    t.DeadlineAt,
-		SourceTaskIDs: append([]int64(nil), t.SourceTaskIDs...),
-		CompanyIDs:    append([]int64(nil), t.CompanyIDs...),
-		CategoryID:    cloneInt64Ptr(t.CategoryID),
-		CategoryName:  t.CategoryName,
+		Name:                t.Name,
+		PinnedAt:            t.PinnedAt,
+		Status:              t.Status,
+		Paused:              t.Paused,
+		Queued:              t.Queued,
+		QueuedAt:            t.QueuedAt,
+		QueueMode:           t.QueueMode,
+		CompletedAt:         t.CompletedAt,
+		ActiveRunSeconds:    t.ActiveRunSeconds,
+		RunSegmentStartedAt: ptrOrZero(t.RunSegmentStartedAt),
+		FirstRunAt:          t.FirstRunAt,
+		DeadlineAt:          t.DeadlineAt,
+		SourceTaskIDs:       append([]int64(nil), t.SourceTaskIDs...),
+		CompanyIDs:          append([]int64(nil), t.CompanyIDs...),
+		CategoryID:          cloneInt64Ptr(t.CategoryID),
+		CategoryName:        t.CategoryName,
 	}
 }
 
@@ -1365,6 +1375,23 @@ func (m *Manager) Close() error {
 func isTerminalStatus(status string) bool { return pgdb.IsTerminal(status) }
 
 // unixOrZero returns t's unix seconds, or 0 when the time is nil.
+// timePtrUnix 把可空时间转成可空 unix 秒指针（nil 保持 nil）。
+func timePtrUnix(t *time.Time) *int64 {
+	if t == nil {
+		return nil
+	}
+	v := t.Unix()
+	return &v
+}
+
+// ptrOrZero 解引用可空的 unix 秒指针（nil/0 都当作"没有"）。
+func ptrOrZero(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
 func unixOrZero(t *time.Time) int64 {
 	if t == nil {
 		return 0
@@ -1388,6 +1415,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
 		QueuedAt: unixNanoOrZero(pt.QueuedAt), QueueMode: pt.QueueMode,
 		CompletedAt: unixOrZero(pt.CompletedAt), Status: pt.Status, ParentRef: pt.ParentRef,
+		ActiveRunSeconds: pt.ActiveRunSeconds, RunSegmentStartedAt: timePtrUnix(pt.RunSegmentStartedAt),
 		LLMProfileID:  pt.LLMProfileID,
 		LLMProfileIDs: append([]int64(nil), pt.LLMProfileIDs...), ActiveLLMProfileID: pt.ActiveLLMProfileID,
 		LLMChainRevision: pt.LLMChainRevision,
@@ -1846,7 +1874,12 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 		    queue_mode=CASE
 		        WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'
 		        ELSE 'resume'
-		    END
+		    END,
+		    -- 排队即离开运行：把当前段结算掉，排队等待的时间不算运行时长。
+		    active_run_seconds = CASE WHEN run_segment_started_at IS NOT NULL
+		                              THEN active_run_seconds + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint)
+		                              ELSE active_run_seconds END,
+		    run_segment_started_at = NULL
 		WHERE id=$1 AND deleted_at IS NULL
 		RETURNING queued_at, queue_mode`, n, mode).Scan(&queuedAt, &committedMode)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1937,6 +1970,29 @@ func (m *Manager) StampTaskFirstRun(id string) (int64, error) {
 	}
 	m.mu.Unlock()
 	return dlUnix, nil
+}
+
+// StartTaskRunSegment 开始/续接本任务的运行计时（幂等）。引擎在任务真正开始跑时调用；
+// 暂停、排队、终态的任务不会开新段。
+func (m *Manager) StartTaskRunSegment(id string) {
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return
+	}
+	if err := m.pg.StartTaskRunSegment(n); err != nil {
+		log.Printf("[runtime] task %s 开始运行计时失败: %v", id, err)
+	}
+}
+
+// FinalizeTaskRunSegment 结算当前运行段（幂等）。暂停/终态/重派之前调用。
+func (m *Manager) FinalizeTaskRunSegment(id string) {
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return
+	}
+	if err := m.pg.FinalizeTaskRunSegment(n); err != nil {
+		log.Printf("[runtime] task %s 结算运行时长失败: %v", id, err)
+	}
 }
 
 // SetTaskStatusGuarded sets a TERMINAL status only if the task isn't already terminal

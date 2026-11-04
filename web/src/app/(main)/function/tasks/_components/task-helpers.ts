@@ -62,9 +62,21 @@ export function fmtDuration(sec: number): string {
   return `${s}s`;
 }
 
-// taskDuration is the task's run duration in seconds: created → now while running,
-// created → completion for a finished task, else created → last activity. 0 when it
-// never ran (no activity yet).
+// activeRunSeconds is the task's ACTUAL run time: settled segments plus the
+// in-progress segment. Paused and queued time is excluded (the server folds the
+// current segment on pause/queue/terminal), so this is the number to compare
+// against "wall clock since creation".
+export function activeRunSeconds(task: Task, nowSec: number): number {
+  const settled = task.active_run_seconds ?? 0;
+  const started = task.run_segment_started_unix ?? 0;
+  if (started > 0 && nowSec > started) return settled + (nowSec - started);
+  return settled;
+}
+
+// taskDuration is the task's wall-clock span in seconds: created → now while
+// running, created → completion for a finished task, else created → last activity.
+// 0 when it never ran (no activity yet). Includes paused/queued time on purpose —
+// pair it with activeRunSeconds when the difference matters.
 export function taskDuration(task: Task, nowSec: number): number {
   const start = task.created_unix ?? 0;
   if (!start) return 0;

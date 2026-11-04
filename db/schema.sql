@@ -706,6 +706,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 -- planner 模板库的快照列（模板正文在建任务时写入，运行中与模板库脱钩）。
 -- 必须放在 CREATE TABLE tasks 之后：全新库上先 ALTER 会因表不存在而整份 schema 失败。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL DEFAULT '';
+-- 实际运行时长分段记账：暂停/排队时间不计入。run_segment_started_at 非空表示
+-- 当前有一段正在计时，收尾时折进 active_run_seconds（见 db/tasks.go 的三个函数）。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_run_seconds BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS run_segment_started_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。

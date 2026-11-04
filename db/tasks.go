@@ -40,6 +40,9 @@ type Task struct {
 	ParentRef          string     `json:"parent_ref,omitempty"` // 父任务 id(编排 spawn 记录;空=顶层)
 	CreatedAt          time.Time  `json:"created_at"`
 	CompletedAt        *time.Time `json:"completed_at,omitempty"` // 进入终态(done/failed/timeout)的时刻;非终态为 nil
+	// 实际运行时长：已结算秒数 + 当前段起点（nil = 当前没有在计时）。
+	ActiveRunSeconds    int64      `json:"active_run_seconds"`
+	RunSegmentStartedAt *time.Time `json:"run_segment_started_at,omitempty"`
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」)。
 	TimeoutSeconds int        `json:"timeout_seconds"`        // 0=不限时
 	FirstRunAt     *time.Time `json:"first_run_at,omitempty"` // 首次真正开始运行的时刻(非 created_at);nil=尚未运行
@@ -401,11 +404,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(exploration_policy,'{}'::jsonb), COALESCE(planner_prompt_override,'')`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(exploration_policy,'{}'::jsonb), COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ExplorationPolicy, &t.PlannerPromptOverride); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ExplorationPolicy, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -541,6 +544,36 @@ func (d *DB) SetQueued(id int64, queued bool) error {
 	return d.Dequeue(id, true)
 }
 
+// StartTaskRunSegment 开始一段运行计时。幂等：已有段时保留原起点。
+// 暂停/排队/终态/已删除的任务不开新段——它们的"没在跑"是事实，不是要补记的时间。
+func (d *DB) StartTaskRunSegment(id int64) error {
+	_, err := d.Exec(`UPDATE tasks
+SET run_segment_started_at=COALESCE(run_segment_started_at, now())
+WHERE id=$1 AND deleted_at IS NULL AND status IN ('created','running') AND NOT paused AND NOT queued`, id)
+	return err
+}
+
+// FinalizeTaskRunSegment 把当前段折进 active_run_seconds 并清空起点。
+// 没有起点时是无害空操作，所以暂停/终态路径可以无脑调用。
+func (d *DB) FinalizeTaskRunSegment(id int64) error {
+	_, err := d.Exec(`UPDATE tasks
+SET active_run_seconds=active_run_seconds + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint),
+    run_segment_started_at=NULL
+WHERE id=$1 AND run_segment_started_at IS NOT NULL`, id)
+	return err
+}
+
+// RunSeconds 返回已结算的运行秒数与当前段起点（无段时 nil）。
+func (d *DB) RunSeconds(id int64) (int64, *time.Time, error) {
+	var active int64
+	var started *time.Time
+	err := d.QueryRow(`SELECT active_run_seconds, run_segment_started_at FROM tasks WHERE id=$1`, id).Scan(&active, &started)
+	if err == sql.ErrNoRows {
+		return 0, nil, nil
+	}
+	return active, started, err
+}
+
 // SetStatus updates a task's lifecycle status. Entering a terminal state
 // (done/failed/timeout) stamps completed_at once (COALESCE keeps the first stamp
 // stable); moving back to a non-terminal state clears it, so a re-run has no stale
@@ -549,7 +582,12 @@ func (d *DB) SetStatus(id int64, status string) error {
 	_, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
-       completed_at = CASE WHEN $1 IN `+TerminalStatusSQL()+` THEN COALESCE(completed_at, now()) ELSE NULL END
+       completed_at = CASE WHEN $1 IN `+TerminalStatusSQL()+` THEN COALESCE(completed_at, now()) ELSE NULL END,
+       -- 进入终态时把当前运行段折进累计时长；离开终态（重跑）时不动累计值。
+       active_run_seconds = CASE WHEN $1 IN `+TerminalStatusSQL()+` AND run_segment_started_at IS NOT NULL
+                                 THEN active_run_seconds + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint)
+                                 ELSE active_run_seconds END,
+       run_segment_started_at = CASE WHEN $1 IN `+TerminalStatusSQL()+` THEN NULL ELSE run_segment_started_at END
  WHERE id = $2`, status, id)
 	return err
 }
@@ -562,7 +600,11 @@ func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err er
 	res, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
-       completed_at = COALESCE(completed_at, now())
+       completed_at = COALESCE(completed_at, now()),
+       active_run_seconds = CASE WHEN run_segment_started_at IS NOT NULL
+                                 THEN active_run_seconds + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint)
+                                 ELSE active_run_seconds END,
+       run_segment_started_at = NULL
  WHERE id = $2 AND status NOT IN `+TerminalStatusSQL()+``, status, id)
 	if err != nil {
 		return false, err

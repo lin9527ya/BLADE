@@ -47,6 +47,7 @@ import { TaskArchiveAction } from "./task-archives";
 import { DeleteTaskDialog } from "./task-dialogs";
 import {
   budgetTextTone,
+  activeRunSeconds,
   fmtDateTime,
   fmtDuration,
   fmtTokens,
@@ -312,10 +313,21 @@ export const TaskRow = React.memo(function TaskRow({
       <TableCell className="whitespace-nowrap text-right text-xs tabular-nums">
         {(() => {
           const secs = taskDuration(task, nowSec);
+          const active = activeRunSeconds(task, nowSec);
           if (secs <= 0) return <span className="text-muted-foreground">—</span>;
+          // 实际运行时长与墙钟时长分开显示：暂停/排队很久的任务，两者差得很远，
+          // 只给墙钟会让人误以为它一直在跑。
+          const showActive = active > 0 && secs - active >= 60;
           return (
-            <span className={task.status === "running" ? "text-foreground" : "text-muted-foreground"}>
-              {fmtDuration(secs)}
+            <span className="inline-flex flex-col items-end leading-tight">
+              <span className={task.status === "running" ? "text-foreground" : "text-muted-foreground"}>
+                {fmtDuration(secs)}
+              </span>
+              {showActive && (
+                <span className="text-[10px] text-muted-foreground" title="实际运行时长（不含暂停与排队）">
+                  实跑 {fmtDuration(active)}
+                </span>
+              )}
             </span>
           );
         })()}

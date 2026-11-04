@@ -16,6 +16,10 @@ export interface Task {
   status: TaskStatus;
   created_at: string;
   created_unix?: number; // created_at as unix seconds (run-duration calc)
+  // 实际运行时长（秒，已结算）：暂停与排队时间不计入。
+  active_run_seconds?: number;
+  // 当前运行段的起点（unix 秒）；0/缺省 = 当前没在计时。
+  run_segment_started_unix?: number;
   completed_at?: string; // RFC3339 finish time (done/failed); "" if unfinished
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)

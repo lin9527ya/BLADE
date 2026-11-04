@@ -533,6 +533,8 @@ func (e *Engine) Resume(t *Task) {
 		return
 	}
 	e.paused.Delete(t.ID)
+	// 恢复 = 重新开始计时（暂停时已经结算过，这里开新段）。
+	e.m.StartTaskRunSegment(t.ID)
 	t.Notify()
 }
 
@@ -1071,6 +1073,8 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	rt := e.registerTaskRoutines(ctx, t.ID, 2+workers)
 	e.setTaskWorkers(t.ID, workers)
 	e.deleteMu.RUnlock()
+	// 真正开跑：开始（或续接）运行计时。暂停/排队期间不会开段，所以这里只需幂等调用。
+	e.m.StartTaskRunSegment(t.ID)
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.supervisorLoop(loopCtx, t) })

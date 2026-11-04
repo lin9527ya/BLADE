@@ -44,28 +44,32 @@ type TaskDTO struct {
 	// paused | done | failed | timeout | policy_blocked。queued 在库里不存在，由
 	// resolvedTaskStatus 从 queued 布尔列 + 引擎状态合成——这里写清楚，免得前端与
 	// 后端各自猜一套。
-	Status             string             `json:"status"`
-	CreatedAt          string             `json:"created_at"`
-	CreatedUnix        int64              `json:"created_unix"`       // created_at as unix seconds (for run-duration calc)
-	CompletedAt        string             `json:"completed_at"`       // RFC3339 finish time (done/failed); "" if unfinished
-	CompletedUnix      int64              `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
-	LastActivity       int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
-	Paused             bool               `json:"paused"`
-	Queued             bool               `json:"queued"`
-	Tokens             TokenTotalDTO      `json:"tokens"` // whole-task token consumption
-	GoalsTotal         int                `json:"goals_total"`
-	GoalsMet           int                `json:"goals_met"`
-	InFlight           int                `json:"in_flight"`                // 运行中 Worker 数（state=running 的意图）
-	Findings           FindingSeverityDTO `json:"findings"`                 // 该任务已登记的漏洞数（findings 表，按严重度分档）
-	LLMProfileID       *int64             `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
-	LLMProfileIDs      []int64            `json:"llm_profile_ids"`
-	ActiveLLMProfileID *int64             `json:"active_llm_profile_id,omitempty"`
-	LLMFailoverState   string             `json:"llm_failover_state"`
-	LLMFailoverReason  string             `json:"llm_failover_reason,omitempty"`
-	SourceTaskIDs      []string           `json:"source_task_ids"`
-	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
-	CompanyIDs         []int64            `json:"company_ids"`
-	CoverageEnabled    bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
+	Status        string `json:"status"`
+	CreatedAt     string `json:"created_at"`
+	CreatedUnix   int64  `json:"created_unix"`   // created_at as unix seconds (for run-duration calc)
+	CompletedAt   string `json:"completed_at"`   // RFC3339 finish time (done/failed); "" if unfinished
+	CompletedUnix int64  `json:"completed_unix"` // completed_at as unix seconds (0 if unfinished)
+	// 实际运行时长（秒，已结算部分）：暂停与排队时间不计入。仍在运行时，前端用它 +
+	// (now - run_segment_started_unix) 算实时值。
+	ActiveRunSeconds      int64              `json:"active_run_seconds"`
+	RunSegmentStartedUnix int64              `json:"run_segment_started_unix,omitempty"`
+	LastActivity          int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
+	Paused                bool               `json:"paused"`
+	Queued                bool               `json:"queued"`
+	Tokens                TokenTotalDTO      `json:"tokens"` // whole-task token consumption
+	GoalsTotal            int                `json:"goals_total"`
+	GoalsMet              int                `json:"goals_met"`
+	InFlight              int                `json:"in_flight"`                // 运行中 Worker 数（state=running 的意图）
+	Findings              FindingSeverityDTO `json:"findings"`                 // 该任务已登记的漏洞数（findings 表，按严重度分档）
+	LLMProfileID          *int64             `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
+	LLMProfileIDs         []int64            `json:"llm_profile_ids"`
+	ActiveLLMProfileID    *int64             `json:"active_llm_profile_id,omitempty"`
+	LLMFailoverState      string             `json:"llm_failover_state"`
+	LLMFailoverReason     string             `json:"llm_failover_reason,omitempty"`
+	SourceTaskIDs         []string           `json:"source_task_ids"`
+	ArchiveBlockedBy      string             `json:"archive_blocked_by_task_id,omitempty"`
+	CompanyIDs            []int64            `json:"company_ids"`
+	CoverageEnabled       bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
 	// P20 探索策略限制摘要(列表页角标用);明细(额度/覆盖层/近期被拒)走 GET /api/tasks/{id}/policy。
 	PolicyTechniques []string `json:"policy_techniques,omitempty"`
 	PolicyWrites     []string `json:"policy_writes,omitempty"`
@@ -126,34 +130,36 @@ func taskDTO(t *Task, status string) TaskDTO {
 		polCustom = len(doc.Effective.Custom)
 	}
 	return TaskDTO{
-		ID:                 t.ID,
-		ExplorationID:      t.ExpID,
-		Name:               lifecycle.Name,
-		CategoryID:         lifecycle.CategoryID,
-		CategoryName:       lifecycle.CategoryName,
-		Pinned:             lifecycle.PinnedAt > 0,
-		PinnedAt:           completedRFC(lifecycle.PinnedAt),
-		Description:        t.Description,
-		Goal:               t.Goal,
-		Status:             status,
-		CreatedAt:          rfc3339(time.Unix(t.CreatedAt, 0)),
-		CreatedUnix:        t.CreatedAt,
-		CompletedAt:        completedRFC(lifecycle.CompletedAt),
-		CompletedUnix:      lifecycle.CompletedAt,
-		Paused:             lifecycle.Paused,
-		Queued:             lifecycle.Queued,
-		LLMProfileID:       llmState.ProfileID,
-		LLMProfileIDs:      profileIDs,
-		ActiveLLMProfileID: llmState.ActiveID,
-		LLMFailoverState:   llmState.FailoverState,
-		LLMFailoverReason:  llmState.FailoverReason,
-		SourceTaskIDs:      sourceIDs,
-		CompanyIDs:         lifecycle.CompanyIDs,
-		CoverageEnabled:    t.CoverageEnabled,
-		PolicyTechniques:   polTech,
-		PolicyWrites:       polWrites,
-		PolicyCustom:       polCustom,
-		PolicyMaxIntents:   polMax,
+		ID:                    t.ID,
+		ExplorationID:         t.ExpID,
+		Name:                  lifecycle.Name,
+		CategoryID:            lifecycle.CategoryID,
+		CategoryName:          lifecycle.CategoryName,
+		Pinned:                lifecycle.PinnedAt > 0,
+		PinnedAt:              completedRFC(lifecycle.PinnedAt),
+		Description:           t.Description,
+		Goal:                  t.Goal,
+		Status:                status,
+		CreatedAt:             rfc3339(time.Unix(t.CreatedAt, 0)),
+		CreatedUnix:           t.CreatedAt,
+		CompletedAt:           completedRFC(lifecycle.CompletedAt),
+		CompletedUnix:         lifecycle.CompletedAt,
+		ActiveRunSeconds:      lifecycle.ActiveRunSeconds,
+		RunSegmentStartedUnix: lifecycle.RunSegmentStartedAt,
+		Paused:                lifecycle.Paused,
+		Queued:                lifecycle.Queued,
+		LLMProfileID:          llmState.ProfileID,
+		LLMProfileIDs:         profileIDs,
+		ActiveLLMProfileID:    llmState.ActiveID,
+		LLMFailoverState:      llmState.FailoverState,
+		LLMFailoverReason:     llmState.FailoverReason,
+		SourceTaskIDs:         sourceIDs,
+		CompanyIDs:            lifecycle.CompanyIDs,
+		CoverageEnabled:       t.CoverageEnabled,
+		PolicyTechniques:      polTech,
+		PolicyWrites:          polWrites,
+		PolicyCustom:          polCustom,
+		PolicyMaxIntents:      polMax,
 	}
 }
 
