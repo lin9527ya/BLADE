@@ -200,6 +200,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"credential_attempt_budget":        s.m.interceptor.CredentialBudget(),
 		"credential_attempt_budget_action": s.m.interceptor.CredentialBudgetAction(),
 		"site_name":                        siteNameSetting(s.m.pg),
+		"chat_auto_title":                  s.m.pg.GetBool(settingChatAutoTitle, false),
 		"cors_allowed_origins":             corsAllowedOriginsSetting(s.m.pg),
 		// P14 领域压缩模板：只读回显 DB 覆盖（空 = 内置模板）。设置页不暴露编辑框，
 		// 写入走 API/DB；在 settings_contract_test.go 的 settingsReadOnly 里登记了理由。
@@ -351,6 +352,8 @@ type settingsRequest struct {
 	CredentialBudgetAction *string `json:"credential_attempt_budget_action"`
 	// P42 界面显示名（空 = 内置 BLADE）。只影响运行时标题；静态 HTML 的 title 是构建期常量。
 	SiteName *string `json:"site_name"`
+	// ChatAutoTitle 新会话自动标题（默认关）。异步生成，失败静默。
+	ChatAutoTitle *bool `json:"chat_auto_title"`
 	// P42 允许跨源访问 API 的来源白名单（逗号分隔；空 = 不发 CORS 头）。
 	CORSAllowedOrigins *string `json:"cors_allowed_origins"`
 	// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
@@ -487,6 +490,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		pending[settingCORSAllowedOrigins] = v
 		corsDirty = true // 提交后失效缓存，改完即时生效
+	}
+	if req.ChatAutoTitle != nil {
+		pending[settingChatAutoTitle] = strconv.FormatBool(*req.ChatAutoTitle)
 	}
 	if req.SiteName != nil {
 		v := strings.TrimSpace(*req.SiteName)

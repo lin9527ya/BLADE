@@ -1886,6 +1886,8 @@ export interface Settings {
   credential_attempt_budget_action?: "allow" | "ask" | "deny";
   /** 界面显示名（P42）：空 = 内置 "BLADE"。只覆盖运行时标题；静态 HTML 的 title 是构建期常量。 */
   site_name?: string;
+  /** 新会话自动标题（默认关）：首条消息落地后异步生成短标题，用户手动改名后不再覆盖。 */
+  chat_auto_title?: boolean;
   /** 允许跨源访问 API 的来源白名单（P42，逗号分隔；空 = 不发 CORS 头）。"*" 才是全开放。 */
   cors_allowed_origins?: string;
   /** P14 领域压缩模板的 DB 覆盖（只读回显；设置页不暴露，写入走 API/DB）。空 = 用内置 7 段模板。 */

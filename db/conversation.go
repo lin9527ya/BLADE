@@ -269,6 +269,13 @@ func (d *DB) RenameConversation(id int64, title string) error {
 	return err
 }
 
+// RenameConversationIfTitle 只在标题仍等于 expected 时改名（CAS）。
+// 自动标题是异步生成的：用户可能在这期间手动改了名，覆盖掉就是"系统抢了人的操作"。
+func (d *DB) RenameConversationIfTitle(id int64, title, expected string) error {
+	_, err := d.Exec(`UPDATE conversations SET title=$2 WHERE id=$1 AND title=$3`, id, title, expected)
+	return err
+}
+
 // TouchConversation bumps updated_at so the thread floats to the top of the list.
 func (d *DB) TouchConversation(id int64) error {
 	_, err := d.Exec(`UPDATE conversations SET updated_at=now() WHERE id=$1`, id)

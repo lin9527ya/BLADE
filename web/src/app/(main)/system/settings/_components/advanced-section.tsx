@@ -19,10 +19,12 @@ export function AdvancedSection({ s }: { s: ReturnType<typeof useSettingsState> 
     pyInterp,
     setPyInterp,
     noaCompaction,
+    chatAutoTitle,
     sendMode,
     savePython,
     detectPython,
     toggleNoaCompaction,
+    toggleChatAutoTitle,
   } = s;
 
   return (
@@ -46,6 +48,19 @@ export function AdvancedSection({ s }: { s: ReturnType<typeof useSettingsState> 
               <b>注意（与 P14 领域化压缩互斥）</b>：默认走的是「领域化压缩 + 常驻索引」（7
               段渗透领域摘要、压缩前原文落盘可回读、每轮附目标/约束/活跃方向索引）。 开启 noa
               后这一层整体让位——两者抢同一个上下文管理器槽位，不会叠加。
+            </>
+          }
+        />
+        <SwitchRow
+          id="chat-auto-title"
+          label={<>新会话自动标题{chatAutoTitle ? " · 已开启" : " · 已关闭"}</>}
+          checked={chatAutoTitle}
+          disabled={!loaded}
+          onChange={toggleChatAutoTitle}
+          hint={
+            <>
+              默认关闭。开启后，会话的第一条消息落地时异步生成一个短标题（只读你的输入，不读
+              Agent 输出）。生成失败保持默认标题；你手动改过名之后不会再被覆盖。
             </>
           }
         />

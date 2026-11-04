@@ -366,6 +366,9 @@ const (
 	// 名字本身是低成本指纹。**注意它只改运行时显示的标题**——静态 HTML 里的 <title> 是构建期
 	// 常量（web/src/config/app-config.ts），要连爬虫看到的也改掉得改那里重新构建（README 有写）。
 	settingSiteName = "site_name"
+	// settingChatAutoTitle 是新会话的自动标题开关（默认关）。开启后首条消息落地时
+	// 异步生成一个短标题；只在标题仍是默认值时写入，用户改过名就不动。
+	settingChatAutoTitle = "chat_auto_title"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
 	// 不可用(余额不足/key 失效/限流/服务异常)时自动切到下一个配置。
 	// settingLLMPoolBindFallback 仅在轮询开启时有意义:默认关闭,即 agent/任务显式

@@ -145,6 +145,7 @@ export function useSettingsState() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  const [chatAutoTitle, setChatAutoTitle] = React.useState(false);
   // 授权范围（RoE）：空间门模式 + 作业时间窗。模式回生效值，另存一个 env 覆盖标志。
   const [scopeMode, setScopeMode] = React.useState("ask");
   const [scopeModeEnv, setScopeModeEnv] = React.useState(false);
@@ -213,6 +214,7 @@ export function useSettingsState() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setChatAutoTitle(!!s.chat_auto_title);
     setScopeMode(s.intercept_scope_mode ?? "ask");
     setScopeModeEnv(!!s.intercept_scope_mode_env);
     setScopeHours(s.intercept_scope_hours ?? "");
@@ -735,6 +737,20 @@ export function useSettingsState() {
       });
   };
 
+  const toggleChatAutoTitle = (v: boolean) => {
+    setChatAutoTitle(v); // optimistic
+    api
+      .setSettings({ chat_auto_title: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启新会话自动标题" : "已关闭新会话自动标题");
+      })
+      .catch((e) => {
+        setChatAutoTitle(!v); // revert on failure
+        toast.error(`保存失败：${(e as Error).message}`);
+      });
+  };
+
   const toggleNoaCompaction = (v: boolean) => {
     setNoaCompaction(v); // optimistic
     api
@@ -1123,6 +1139,8 @@ export function useSettingsState() {
     injectWorker,
     setInjectWorker,
     noaCompaction,
+    chatAutoTitle,
+    toggleChatAutoTitle,
     setNoaCompaction,
     scopeMode,
     setScopeMode,
