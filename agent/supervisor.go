@@ -97,12 +97,19 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 	}
 	if goals, err := ts.ListByKindState(db.KindGoal, "open", 20); err == nil {
 		for _, g := range goals {
+			// 目标正文的键是 text（set_goals 写入，graph_overview 也按 text 读）；
+			// summary 只作老数据的兜底——只认一个键会让审核员拿到一串空目标。
 			var p struct {
+				Text    string `json:"text"`
 				Summary string `json:"summary"`
 			}
 			_ = json.Unmarshal(g.Payload, &p)
+			text := p.Text
+			if strings.TrimSpace(text) == "" {
+				text = p.Summary
+			}
 			claim.Goals = append(claim.Goals, SupervisorGoal{
-				ID: g.ID, Summary: firstLine(p.Summary, 240), State: g.State,
+				ID: g.ID, Summary: firstLine(text, 240), State: g.State,
 			})
 		}
 	}
@@ -137,7 +144,7 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 					if a.ID > it.LastActivityID {
 						it.LastActivityID = a.ID
 					}
-					s := firstLine(a.Summary, 180)
+					s := firstLine(supervisorToolLine(a), 180)
 					if s != "" {
 						lines = append(lines, "→ "+s)
 						repeats[s]++
@@ -184,6 +191,36 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 		claim.Intents = append(claim.Intents, it)
 	}
 	return claim
+}
+
+// supervisorToolLine 把一条 tool_use 摘要压成可读的一行。
+//
+// 活动摘要的格式是「<工具名> <输入 JSON 前 200 字>」，直接塞给裁判与人都很难读：
+// Bash 的 JSON 会把真正要看的那条命令挤到截断处。这里把 Bash 的 command 抽出来，
+// 其余工具保持原样。
+func supervisorToolLine(a db.Activity) string {
+	if a.Tool == "Bash" {
+		if cmd := bashCommandFromSummary(a.Summary); cmd != "" {
+			return "Bash: " + cmd
+		}
+	}
+	return a.Summary
+}
+
+// bashCommandFromSummary 从「Bash {json}` 形式的摘要里取 command 字段。
+// 摘要可能已被截断（JSON 不完整），所以先尝试整体解析，失败再按正则粗取。
+func bashCommandFromSummary(summary string) string {
+	i := strings.Index(summary, "{")
+	if i < 0 {
+		return ""
+	}
+	var in struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal([]byte(summary[i:]), &in) == nil && strings.TrimSpace(in.Command) != "" {
+		return firstLine(in.Command, 300)
+	}
+	return ""
 }
 
 // ParseSupervisorVerdict 解析审核结论。

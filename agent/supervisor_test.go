@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 // 审核结论解析：只保留能落地的判定（有 id、有结论），偏离判定必须带可执行的指令。
@@ -54,4 +56,32 @@ func TestSupervisorPromptGuardsAgainstOverSteering(t *testing.T) {
 			t.Errorf("审核提示词缺少 %q", want)
 		}
 	}
+}
+
+// 审核输入的可读性：目标正文用 text 键（set_goals 的写法），Bash 步骤抽出命令本身。
+func TestSupervisorClaimReadsGoalTextAndBashCommand(t *testing.T) {
+	var goal struct {
+		Text    string `json:"text"`
+		Summary string `json:"summary"`
+	}
+	goal.Text = "拿下后台管理权限"
+	if goal.Text == "" {
+		t.Fatal("fixture 构造失败")
+	}
+	line := supervisorToolLine(dbActivityForTest("Bash", `Bash {"command":"curl -sS -k https://x/ -o out.txt","description":"probe"}`))
+	if !strings.HasPrefix(line, "Bash: curl -sS -k https://x/") {
+		t.Fatalf("Bash 步骤应抽出命令本身，实际 %q", line)
+	}
+	// 非 Bash 工具保持原样；JSON 截断时也不该 panic。
+	if got := supervisorToolLine(dbActivityForTest("Read", "Read {\"file_path\":\"/tmp/x\"}")); got != "Read {\"file_path\":\"/tmp/x\"}" {
+		t.Fatalf("非 Bash 工具应保持原样，实际 %q", got)
+	}
+	if got := supervisorToolLine(dbActivityForTest("Bash", `Bash {"command":"curl -sS`)); got != `Bash {"command":"curl -sS` {
+		t.Fatalf("截断的 JSON 应原样返回，实际 %q", got)
+	}
+}
+
+// dbActivityForTest 造一条 tool_use 活动（只带摘要渲染需要的字段）。
+func dbActivityForTest(tool, summary string) db.Activity {
+	return db.Activity{Kind: "tool_use", Tool: tool, Summary: summary}
 }
