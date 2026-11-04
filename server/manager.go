@@ -589,7 +589,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// 与"构造器不做后台工作"的既有纪律一致）。
 	m.execs = NewExecutionService(pg, dir)
 	// 托管执行与 agent Bash 同环境（记录代理 + CA 信任），按次求值以跟随开关变化。
-	m.execs.SetEnvResolver(func() []string { return agent.ProxyEnv(m.ProxyAddr(), m.ProxyCACert()) })
+	m.execs.SetEnvResolver(func() []string {
+		addr, ca := m.ProxySnapshot()
+		return agent.ProxyEnv(addr, ca)
+	})
 	// 执行落终态就叫醒任务：planner 自己起的执行（run_execution 也在它的工具面里）
 	// 此前无人观察，扫完只能等下一次事件/心跳——最长十分钟，期间很可能重复派活。
 	m.execs.SetOnDone(func(row *pgdb.ToolExecution) {
@@ -1112,6 +1115,37 @@ func (m *Manager) EgressProxy() string {
 		return pool.Active()
 	}
 	return fallback
+}
+
+// WaitProxyReady blocks until the current pool has completed its first probe
+// (bounded by timeout). No pool or no candidates → returns immediately.
+func (m *Manager) WaitProxyReady(timeout time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	pool := m.proxyPool
+	m.mu.RUnlock()
+	if pool == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	pool.WaitReady(ctx)
+}
+
+// ProxySnapshot resolves the egress proxy + CA for an agent run or a single tool
+// call, waiting (bounded) for the pool's first probe first.
+//
+// 为什么必须等：代理池启动时是 fail-closed（先置黑洞，首探成功才放行），这个窗口
+// 约 1 秒。此前 run 在这一秒内启动就会把 blockedProxyURL 冻结进整轮环境变量，
+// 平台 1 秒后已经恢复，这一轮却永远连不上（任务 26 实测）。首探完成后等待立即返回。
+func (m *Manager) ProxySnapshot() (string, string) {
+	if m == nil {
+		return "", ""
+	}
+	m.WaitProxyReady(proxyFirstProbeWait)
+	return m.ProxyAddr(), m.ProxyCACert()
 }
 
 // EgressIPURL is the service used by the on-demand "check exit IP" action. It is

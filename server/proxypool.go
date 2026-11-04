@@ -33,9 +33,13 @@ const (
 	defaultProxyHealthInterval = 30 * time.Second
 	defaultProxyFailThreshold  = 2
 	defaultProxySwitchCooldown = 30 * time.Second
-	maxProxyCandidates         = 20
-	maxEgressIPChecks          = 20
-	egressIPCheckConcurrency   = 4
+	// proxyFirstProbeWait 是 run 启动/每次工具调用等待代理池首探的上限。首探正常在
+	// ~1 秒内完成；10 秒覆盖多候选逐个探测（每个默认 5 秒）的最坏情况，同时不至于
+	// 让一次真正的全网故障把每个 run 拖住太久。
+	proxyFirstProbeWait      = 10 * time.Second
+	maxProxyCandidates       = 20
+	maxEgressIPChecks        = 20
+	egressIPCheckConcurrency = 4
 )
 
 // ProxyPoolConfig 是代理池的完整配置（设置页保存 / Manager 加载）。
@@ -165,6 +169,10 @@ type ProxyPool struct {
 	health     map[string]ProxyHealth
 	stop       chan struct{}
 	wg         sync.WaitGroup
+	// firstProbe 在第一次探测循环结束后关闭。run 启动时用它等首探完成，
+	// 避免把 fail-closed 的启动态（blockedProxyURL）快照进整轮运行环境。
+	firstProbe chan struct{}
+	firstOnce  sync.Once
 }
 
 func newProxyPool(cfg ProxyPoolConfig, probe proxyProbeFunc, apply func(string)) *ProxyPool {
@@ -174,7 +182,24 @@ func newProxyPool(cfg ProxyPoolConfig, probe proxyProbeFunc, apply func(string))
 	if apply == nil {
 		apply = func(string) {}
 	}
-	return &ProxyPool{cfg: cfg, probe: probe, apply: apply, health: map[string]ProxyHealth{}}
+	return &ProxyPool{cfg: cfg, probe: probe, apply: apply, health: map[string]ProxyHealth{}, firstProbe: make(chan struct{})}
+}
+
+// closeFirstProbe 标记首次探测已结束（关一个 channel，幂等）。
+func (p *ProxyPool) closeFirstProbe() {
+	p.firstOnce.Do(func() { close(p.firstProbe) })
+}
+
+// WaitReady 等待首次探测完成（或 ctx 结束）。没有候选时 Start 会立刻关闭该信号，
+// 因此这里不会阻塞。
+func (p *ProxyPool) WaitReady(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	select {
+	case <-p.firstProbe:
+	case <-ctx.Done():
+	}
 }
 
 // Start 启动探测循环。配了候选时**先把出口置为阻断**，第一次探测成功后才放行，
@@ -190,6 +215,7 @@ func (p *ProxyPool) Start() {
 	if len(p.cfg.Candidates) == 0 {
 		p.active = ""
 		p.mu.Unlock()
+		p.closeFirstProbe()
 		if p.cfg.configured {
 			// 配了但全是非法项：fail-closed（正常保存路径会拒绝非法项，这里兜手工改库）。
 			log.Printf("[proxy] 代理配置存在但无有效候选，出口已阻断（不会直连）")
@@ -209,6 +235,7 @@ func (p *ProxyPool) Start() {
 func (p *ProxyPool) run(stop <-chan struct{}) {
 	defer p.wg.Done()
 	p.check()
+	p.closeFirstProbe()
 	t := time.NewTicker(p.cfg.Interval)
 	defer t.Stop()
 	for {
@@ -387,6 +414,8 @@ func (p *ProxyPool) Close() {
 		close(stop)
 		p.wg.Wait()
 	}
+	// 还没跑完首探就被关掉：别让 WaitReady 的调用方一直等到自己的超时。
+	p.closeFirstProbe()
 }
 
 // normalizeEgressIPURL 校验并补默认的出口 IP 查询地址。

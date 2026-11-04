@@ -580,7 +580,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
 	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
-	wk.SetProxyFunc(func() (string, string) { return s.m.ProxyAddr(), s.m.ProxyCACert() })
+	wk.SetProxyFunc(s.m.ProxySnapshot)
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker)     // 操作约束注入 worker(可配置,默认开)
 	wk.SetExecService(s.m.Executions())                  // P13 长任务托管执行(活过 run;nil=工具显式报未接线)
@@ -595,7 +595,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetNoaEnabled(s.m.NoaCompactionEnabled)              // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
-	pl.SetProxyFunc(func() (string, string) { return s.m.ProxyAddr(), s.m.ProxyCACert() })
+	pl.SetProxyFunc(s.m.ProxySnapshot)
 	pl.SetWebSearch(s.webSearchFor("planner"))
 	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
 	pl.SetExecService(s.m.Executions())                                           // P13 长任务托管执行(planner 也能起/查/停)
@@ -618,7 +618,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
-	main.SetProxyFunc(func() (string, string) { return s.m.ProxyAddr(), s.m.ProxyCACert() })
+	main.SetProxyFunc(s.m.ProxySnapshot)
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork)                  // steer_work：人对运行中 work 实时纠偏
 	main.SetPolicyResolver(s.policyResolver(tidOfTask(t))) // P20：主 agent 直投意图也过策略门

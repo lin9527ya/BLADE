@@ -239,3 +239,48 @@ func TestProbeEgressIPNoDirectFallback(t *testing.T) {
 		t.Fatal("出口 IP 查询绕过了代理，直连了查询服务")
 	}
 }
+
+// 首探未完成时 WaitReady 必须等：否则重启后 fail-closed 的黑洞会被快照进
+// 整轮 BashEnv（任务 26 实测：平台 1 秒后已恢复，这一轮却永远连不上）。
+func TestProxyPoolWaitReadyBlocksUntilFirstProbe(t *testing.T) {
+	cfg := mustNormalizePool(t, ProxyPoolConfig{
+		Candidates: []string{"http://a:1"}, HealthURL: "https://health.example/",
+		Timeout: 2 * time.Second, Interval: time.Hour,
+	})
+	release := make(chan struct{})
+	p := newProxyPool(cfg, func(ctx context.Context, proxy, _ string, _ time.Duration) error {
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}, func(string) {})
+	p.Start()
+	defer p.Close()
+
+	short, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	p.WaitReady(short)
+	if elapsed := time.Since(start); elapsed < 25*time.Millisecond {
+		t.Fatalf("首探未完成时 WaitReady 不应立即返回（实际 %s）", elapsed)
+	}
+
+	close(release)
+	ctx, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+	p.WaitReady(ctx)
+	if got := p.Active(); got != "http://a:1" {
+		t.Fatalf("首探完成后应放行健康候选，实际 %q", got)
+	}
+}
+
+// 未配置代理（显式直连）时没有探测循环，WaitReady 必须立即返回。
+func TestProxyPoolWaitReadyNoCandidates(t *testing.T) {
+	cfg := mustNormalizePool(t, ProxyPoolConfig{})
+	p := newProxyPool(cfg, nil, func(string) {})
+	p.Start()
+	defer p.Close()
+	p.WaitReady(context.Background()) // 不阻塞即通过
+}

@@ -29,6 +29,12 @@ func TestSettleIntentState(t *testing.T) {
 		{"什么都没写回 → no_output", nil, harness.ReasonCompleted, agent.WriteCounts{}, "", "", intentPriorOutput{}, "no_output"},
 		{"语义 negative 压过空跑（否定结论本身就是产出）", nil, harness.ReasonCompleted, agent.WriteCounts{}, "negative", "", intentPriorOutput{}, "negative"},
 		{"语义 out-of-scope 压过空跑", nil, harness.ReasonCompleted, agent.WriteCounts{}, "out-of-scope", "", intentPriorOutput{}, "out-of-scope"},
+		// blocked 是「平台/外部阻断，没测成」的如实结论：不能落 done 让覆盖矩阵
+		// 把它算成已测，也不能落 no_output 被当成"跑完没产出"。
+		{"语义 blocked 压过空跑", nil, harness.ReasonCompleted, agent.WriteCounts{}, "blocked", "", intentPriorOutput{}, "blocked"},
+		{"语义 blocked 即使写了产出也以 blocked 收尾", nil, harness.ReasonCompleted, agent.WriteCounts{Facts: 1}, "blocked", "", intentPriorOutput{}, "blocked"},
+		{"超时压过语义 blocked（没跑成不是结论）", nil, harness.ReasonTimeout, agent.WriteCounts{}, "blocked", "", intentPriorOutput{}, "exhausted"},
+		{"出错与语义 blocked 同向 → blocked", errors.New("boom"), harness.ReasonCompleted, agent.WriteCounts{}, "blocked", "", intentPriorOutput{}, "blocked"},
 		{"出错 → blocked（不被空跑覆盖）", errors.New("boom"), harness.ReasonCompleted, agent.WriteCounts{}, "", "", intentPriorOutput{}, "blocked"},
 		{"撞步数上限 → exhausted（即使写了点东西）", nil, harness.ReasonMaxTurns, agent.WriteCounts{Facts: 1}, "", "", intentPriorOutput{}, "exhausted"},
 		{"超时 → exhausted", nil, harness.ReasonTimeout, agent.WriteCounts{}, "", "", intentPriorOutput{}, "exhausted"},

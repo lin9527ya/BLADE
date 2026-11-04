@@ -974,6 +974,31 @@ func accP13(t *testing.T, e *accEnv) {
 	if got, err := st.GetIntentSemanticOutcome(probeIntent); err != nil || got != "negative" {
 		t.Fatalf("通过后语义终态应落库: %q err=%v", got, err)
 	}
+
+	// ⑨ blocked 语义：平台/外部阻断必须能如实落 blocked（覆盖矩阵记「未测成」），
+	// 且必须写清原因——否则就是拿它给"没干活"开脱。
+	blockIntent, err := st.AddIntent(map[string]any{"summary": "被平台出口阻断的意图"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimIntent(blockIntent, "work#1", db.IntentLeaseTTL); err != nil || !ok {
+		t.Fatalf("claim blocked intent: ok=%v err=%v", ok, err)
+	}
+	btx := agent.NewToolSet(st, "work#1")
+	btx.SetTaskID(tid)
+	btx.SetOwnerNode(blockIntent)
+	bconclude := workflowTool(t, btx.WorkerTools(), "conclude_intent")
+	if res, err := bconclude.Call(ctx, json.RawMessage(`{"outcome":"blocked"}`), nil); err != nil || !strings.Contains(res.Flatten(), "note") {
+		t.Fatalf("blocked 缺原因必须被拒: %v %s", err, res.Flatten())
+	}
+	if res, err := bconclude.Call(ctx, json.RawMessage(`{"outcome":"blocked","note":"平台出口代理不可用：curl 全部 exit 7"}`), nil); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(res.Flatten(), "已记录意图") {
+		t.Fatalf("blocked 应被接受: %s", res.Flatten())
+	}
+	if got, err := st.GetIntentSemanticOutcome(blockIntent); err != nil || got != "blocked" {
+		t.Fatalf("blocked 语义应落库: %q err=%v", got, err)
+	}
 }
 
 // execSnapshotJSON pulls the snapshot object out of a run_execution tool result

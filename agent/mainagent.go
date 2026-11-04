@@ -229,12 +229,17 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeepSeekSearchAPIKey: m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:  m.webSearch.DeepSeekModel,
 		WebSearchProxy:       m.webSearch.Proxy,
-		BashEnv:              proxyEnv(proxyAddr, proxyCA), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:           mainDir,                      // 本任务工作目录 <workDir>/tasks/<taskID>
-		ToolOutputDir:        cmdOutDir(mainDir),
-		TaskOutputDir:        taskOutDir(mainDir),
-		MaxTurns:             m.maxTurns,            // 0 = unlimited (configurable in agent management)
-		Todos:                actool.NewTodoStore(), // 会话级临时待办（TodoWrite），纯规划用，退出即丢
+		// Bash 子命令默认走代理+信任 CA。每次工具调用现取（出口可能在 run 中途
+		// 恢复/切换），不把启动瞬间的快照冻结整轮。
+		BashEnvFunc: func() []string {
+			addr, ca := m.proxySnapshot()
+			return proxyEnv(addr, ca)
+		},
+		WorkingDir:    mainDir, // 本任务工作目录 <workDir>/tasks/<taskID>
+		ToolOutputDir: cmdOutDir(mainDir),
+		TaskOutputDir: taskOutDir(mainDir),
+		MaxTurns:      m.maxTurns,            // 0 = unlimited (configurable in agent management)
+		Todos:         actool.NewTodoStore(), // 会话级临时待办（TodoWrite），纯规划用，退出即丢
 		// 命中预算(步数)→ SDK 跑收尾:向用户输出一句进展总结。Prompt 与收尾轮数可后台编辑(默认 10 轮)。
 		Settlement:   wrapupSettlement("mainagent", nil),
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete

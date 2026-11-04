@@ -747,7 +747,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// CVE 库：按资产/指纹查已录入 CVE；有脚本时可直接按库内脚本触发。
 		// 匹配只是线索，脚本执行仍走 guard；执行结果不自动登记 finding/foothold。
 		t.lookupCVEs(), t.cveExploit(),
-		// conclude_intent：worker 对领到的意图声明语义终态（negative / out-of-scope）。
+		// conclude_intent：worker 对领到的意图声明语义终态（negative / out-of-scope / blocked）。
 		// 没测成（blocked/exhausted）由引擎判定，不归本工具。
 		t.concludeIntent(),
 		// 跨 work 回看：worker 也可复用其他 work 的观察，避免重复劳动。

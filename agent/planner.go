@@ -853,12 +853,17 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeepSeekSearchAPIKey: p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:  p.webSearch.DeepSeekModel,
 		WebSearchProxy:       p.webSearch.Proxy,
-		BashEnv:              proxyEnv(proxyAddr, proxyCA), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:           taskDir,                      // 本任务工作目录 <workDir>/tasks/<taskID>
-		ToolOutputDir:        cmdOutDir(taskDir),
-		TaskOutputDir:        taskOutDir(taskDir),
-		MaxTurns:             p.maxTurns, // 0 = unlimited (configurable in agent management)
-		MaxDuration:          maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
+		// Bash 子命令默认走代理+信任 CA。每次工具调用现取（出口可能在 run 中途
+		// 恢复/切换），不把启动瞬间的快照冻结整轮。
+		BashEnvFunc: func() []string {
+			addr, ca := p.proxySnapshot()
+			return proxyEnv(addr, ca)
+		},
+		WorkingDir:    taskDir, // 本任务工作目录 <workDir>/tasks/<taskID>
+		ToolOutputDir: cmdOutDir(taskDir),
+		TaskOutputDir: taskOutDir(taskDir),
+		MaxTurns:      p.maxTurns, // 0 = unlimited (configurable in agent management)
+		MaxDuration:   maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
 		// 跨唤醒共享的规划待办：让串行链在多轮之间保留（session 是新的，store 不是）。
 		Todos: p.todoFor(ts.ID()),
 		// 命中【本轮】步数预算→ SDK 跑收尾:把本轮已想清楚的结论落地(该派的 add_intent、

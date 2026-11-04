@@ -2833,17 +2833,19 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 }
 
 // concludeIntent 让 worker 对领到的意图声明【语义终态】：negative（探针确实发出且有回包，
-// 回包明确否定该假设）/ out-of-scope（该方向超出任务授权范围）。引擎在正常完成时以语义为准；
-// 失败/超时仍记 blocked/exhausted——没测成不是结论。
+// 回包明确否定该假设）/ out-of-scope（该方向超出任务授权范围）/ blocked（平台或外部
+// 因素导致本意图无法执行，如出口代理不可用、平台故障、目标整体不可达）。引擎在正常
+// 完成时以语义为准；失败/超时收尾仍记 blocked/exhausted——没跑成不是结论。
 func (t *ToolSet) concludeIntent() actool.CoreTool {
 	return t.writeExpTool("conclude_intent",
 		"声明你领到的意图的【语义终态】——只在该方向真正得出结论时调用一次：\n"+
 			"  · negative：探针确实发出且有回包，回包【明确否定】了该假设（note 写清是什么证据否定）。\n"+
 			"  · out-of-scope：该方向超出了任务授权范围（note 写清越界点）。\n"+
+			"  · blocked：平台或外部因素导致本意图**无法执行**——出口代理不可用、平台故障、目标整站不可达等（note 写清是哪一种、证据是什么）。这是「外部阻断」，不是方向结论，也不是「没打进去」的委婉说法。\n"+
 			"正常完成时意图将以你声明的语义收尾；若因失败/超时收尾仍是 blocked/exhausted——没测成不得用本工具包装成结论。",
 		obj(map[string]any{
-			"outcome": str("negative（探针实证否定）| out-of-scope（超出授权范围）"),
-			"note":    str("一句话原因：negative 写清是什么证据否定；out-of-scope 写清越界点"),
+			"outcome": str("negative（探针实证否定）| out-of-scope（超出授权范围）| blocked（平台/外部阻断，无法执行）"),
+			"note":    str("一句话原因：negative 写清是什么证据否定；out-of-scope 写清越界点；blocked 写清外部阻断的类型与证据"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2852,8 +2854,14 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 			}
 			_ = json.Unmarshal(in, &a)
 			outcome := strings.TrimSpace(a.Outcome)
-			if outcome != "negative" && outcome != "out-of-scope" {
-				return actool.Errorf("conclude_intent: outcome 必须是 negative 或 out-of-scope"), nil
+			if outcome != "negative" && outcome != "out-of-scope" && outcome != "blocked" {
+				return actool.Errorf("conclude_intent: outcome 必须是 negative / out-of-scope / blocked"), nil
+			}
+			note := strings.TrimSpace(a.Note)
+			if outcome == "blocked" && note == "" {
+				// blocked 会让覆盖矩阵把它记成「未测成」（不是已测），必须留下
+				// 外部阻断的具体原因，否则就是拿它给"没干活"开脱。
+				return actool.Errorf("conclude_intent: outcome=blocked 必须在 note 里写清外部阻断的类型与证据（如「平台出口代理不可用，curl 全部 exit 7」）"), nil
 			}
 			if t.ownerNode <= 0 {
 				return actool.Errorf("conclude_intent: 当前没有运行中的意图（ownerNode 未设置）"), nil
@@ -2873,7 +2881,7 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 						"确实探过就先给出探针证据（真实工具调用，或长任务用 run_execution 起、wait_execution 收），再声明 negative。", t.ownerNode)), nil
 				}
 			}
-			if err := t.ts.SetIntentSemanticOutcome(t.ownerNode, outcome, strings.TrimSpace(a.Note)); err != nil {
+			if err := t.ts.SetIntentSemanticOutcome(t.ownerNode, outcome, note); err != nil {
 				return actool.Errorf("conclude_intent: " + err.Error()), nil
 			}
 			return actool.Text(fmt.Sprintf("已记录意图 #%d 的语义终态 %s：正常完成时以 %s 收尾；若因失败/超时收尾仍记 blocked/exhausted。", t.ownerNode, outcome, outcome)), nil

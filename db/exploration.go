@@ -733,7 +733,8 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.
 }
 
 // SetIntentSemanticOutcome records a worker's semantic conclusion on a RUNNING
-// intent (negative = 探针确实发出且回包明确否定该假设 / out-of-scope = 超出授权范围)。
+// intent (negative = 探针确实发出且回包明确否定该假设 / out-of-scope = 超出授权范围 /
+// blocked = 平台或外部因素导致本意图无法执行)。
 // The engine promotes it to the final state at settlement; a line that ends
 // blocked/exhausted keeps those states — 没测成永远不覆盖成语义结论。
 func (s *ExplorationStore) SetIntentSemanticOutcome(id int64, outcome, note string) error {

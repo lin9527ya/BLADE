@@ -163,11 +163,16 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeepSeekSearchAPIKey: ws.DeepSeekAPIKey,
 		DeepSeekSearchModel:  ws.DeepSeekModel,
 		WebSearchProxy:       ws.Proxy,
-		BashEnv:              proxyEnv(proxyAddr, proxyCA), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:           sessionWorkDir,
-		MaxTurns:             maxTurns,
-		MaxDuration:          maxDuration,
-		Todos:                actool.NewTodoStore(),
+		// Bash 子命令默认走代理+信任 CA。每次工具调用现取（出口可能在 run 中途
+		// 恢复/切换），不把启动瞬间的快照冻结整轮。
+		BashEnvFunc: func() []string {
+			addr, ca := c.proxySnapshot()
+			return proxyEnv(addr, ca)
+		},
+		WorkingDir:  sessionWorkDir,
+		MaxTurns:    maxTurns,
+		MaxDuration: maxDuration,
+		Todos:       actool.NewTodoStore(),
 		// large tool output spills to cmd-output/ under the session dir.
 		// 截断上限用 SDK 默认(tool.Capture 的 30000 字符)。
 		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),

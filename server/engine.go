@@ -1751,8 +1751,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 //
 //  1. 运行结果：出错 → blocked；撞步数上限 / 超时 → exhausted（"试过但没做完"，
 //     planner 据此换角度，而不是当成已覆盖永久跳过）；
-//  2. 语义终态：worker 经 conclude_intent 声明 negative / out-of-scope 时以语义为准；
-//     blocked / exhausted 压过它——没测成不是结论；
+//  2. 语义终态：worker 经 conclude_intent 声明 negative / out-of-scope / blocked 时以
+//     语义为准。negative/out-of-scope 是方向结论，blocked 是「平台或外部因素导致本
+//     意图无法执行」——三者都只在正常完成时生效；出错/超时（blocked/exhausted）压过
+//     它，没跑成不能被包装成任何结论；
 //  3. **空跑**：正常结束、什么都没写回、也没有语义结论 → no_output。
 //     此前这种 run 落 done：planner 当成"已覆盖"不再派、覆盖度当成"已测"，
 //     整条方向就这样静默消失——而它可能连一次探针都没发出去。
@@ -1847,7 +1849,7 @@ func settleIntentState(err error, reason harness.TerminalReason, wrote agent.Wri
 	if state != "done" {
 		return state
 	}
-	if semanticOutcome == "negative" || semanticOutcome == "out-of-scope" {
+	if semanticOutcome == "negative" || semanticOutcome == "out-of-scope" || semanticOutcome == "blocked" {
 		return semanticOutcome
 	}
 	// 本次没写回，但这条意图前几轮已经产出过 → 仍是 done（续跑不能抹掉前段成果）。
