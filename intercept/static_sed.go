@@ -140,15 +140,10 @@ func generatedSedSnapshot(stmt *syntax.Stmt, args []*syntax.Word, dir, target st
 		return "", "", false
 	}
 	name, known := staticCommandName(args[0])
-	if !known || (name != "sed" && name != "/bin/sed" && name != "/usr/bin/sed") {
+	if !known || filepath.Base(name) != "sed" || (name != "sed" && !filepath.IsAbs(name)) {
 		return "", "", false
 	}
-	executable, err := exec.LookPath(name)
-	if err != nil {
-		return "", "", false
-	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil || (executable != "/bin/sed" && executable != "/usr/bin/sed") || !nativeInterpreterFile(executable) {
+	if !nativeSystemBinary(name) {
 		return "", "", false
 	}
 	program, known := staticWord(args[1])
@@ -200,6 +195,30 @@ func generatedSedSnapshot(stmt *syntax.Stmt, args []*syntax.Word, dir, target st
 	}
 	result, known := applyStaticSed(content, subs)
 	return result, "", known
+}
+
+// nativeSystemBinary 判断 name 是否解析到一个**同名的原生可执行文件**：
+// 走 PATH、跟符号链接，最后必须是与 name 同 basename 的 ELF/Mach-O/PE。
+//
+// 以前要求解析结果恰好是 /bin/<name> 或 /usr/bin/<name>，这在 coreutils 装在别处
+// 的宿主（macOS、/usr/local、容器镜像、CI）上会误判成"无法确认"，整个 sed 快照
+// 退化成 incomplete——CI 就因此红过。真正要保证的性质是"跑的是原生系统二进制、
+// 不是同名脚本/别名"，所以按 basename + 原生魔数判定；相对路径（./sed）仍然拒绝，
+// 那指向工作区内容，语义不可控。
+func nativeSystemBinary(name string) bool {
+	base := filepath.Base(name)
+	if base != name && !filepath.IsAbs(name) {
+		return false
+	}
+	executable, err := exec.LookPath(name)
+	if err != nil {
+		return false
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil || filepath.Base(executable) != base || !nativeInterpreterFile(executable) {
+		return false
+	}
+	return true
 }
 
 func staticSedCommandUnshadowed(tree *syntax.File) bool {
@@ -306,13 +325,7 @@ func staticSedPrefixKnown(tree *syntax.File, target *syntax.Stmt, remaining *int
 					safe = false
 				}
 			case "cat", "mkdir", "chmod", "sed":
-				executable, err := exec.LookPath(name)
-				if err != nil {
-					safe = false
-					break
-				}
-				executable, err = filepath.EvalSymlinks(executable)
-				if err != nil || (executable != "/bin/"+base && executable != "/usr/bin/"+base) || !nativeInterpreterFile(executable) {
+				if !nativeSystemBinary(name) {
 					safe = false
 					break
 				}

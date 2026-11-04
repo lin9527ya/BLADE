@@ -1,12 +1,30 @@
 package intercept
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// sedHostDiagnostics 在快照退化成 incomplete 时说明宿主解释器长什么样——
+// 这个判定依赖 PATH 与符号链接布局，跨机排查时先看它。
+func sedHostDiagnostics() string {
+	var b strings.Builder
+	for _, name := range []string{"sed", "cat"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			fmt.Fprintf(&b, "%s: LookPath err=%v; ", name, err)
+			continue
+		}
+		resolved, rerr := filepath.EvalSymlinks(path)
+		fmt.Fprintf(&b, "%s: path=%q resolved=%q err=%v native=%v; ",
+			name, path, resolved, rerr, rerr == nil && nativeInterpreterFile(resolved))
+	}
+	return b.String()
+}
 
 func TestStaticSedSnapshotsMatchNativeSed(t *testing.T) {
 	dir := t.TempDir()
@@ -84,7 +102,7 @@ func TestStaticSedGeneratedInputAndBounds(t *testing.T) {
 	dir := t.TempDir()
 	in := reviewCommandForTest(t, dir, "cat > old.sh <<'SH'\necho old\nSH\nsed 's/old/new/' old.sh > new.sh; bash new.sh")
 	if in.ScriptCaptureStatus != "complete" || in.Scripts[0].Content != "echo new\n" {
-		t.Fatalf("known virtual input ignored: %+v", in)
+		t.Fatalf("known virtual input ignored: %+v（宿主解释器：%s）", in, sedHostDiagnostics())
 	}
 	in = reviewCommandForTest(t, dir, "cat > old.sh <<'SH'\necho old\nSH\nsed 's/old/next/' old.sh > next.sh; sed 's/next/final/' next.sh > final.sh; bash final.sh")
 	if in.ScriptCaptureStatus != "complete" || in.Scripts[0].Content != "echo final\n" {
