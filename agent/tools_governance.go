@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	actool "github.com/lin9527ya/Norma/tool"
@@ -45,6 +47,23 @@ func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 			reason := strings.TrimSpace(a.Reason)
 			if reason == "" {
 				return actool.Errorf("reason 必填：写清已穷尽哪些方向、各自被什么挡住"), nil
+			}
+			// 复核冷却：上一轮刚被复核否决时，先按复核点名的缺口补测，别再消耗一轮
+			// （任务 28 在 25 分钟里连声明 5 次，每次都要走一遍硬门 + 复核）。
+			if n := t.exhaustCooldown(); n > 0 {
+				return actool.Errorf(fmt.Sprintf(
+					"穷尽复核否决后的冷却期（还剩 %d 轮）：本轮先补复核点名的缺口——缺证据的方向派一条能产出具体观察的意图，"+
+						"外部阻断（需登录/被 WAF 拦）如实标成 blocked 而不是 negative；冷却结束后再谈穷尽。", n)), nil
+			}
+			// 未闭合候选门：open_proof_gap 的字面意思就是「还缺证据才能下结论」。带着它们
+			// 宣告穷尽，等于把「没测完」说成「没得测」。要求 reason 逐条点名（#id）：
+			// 点名说明真的看过它，而不是漏在折叠区里。
+			if open := t.openProofGaps(reason); len(open) > 0 {
+				return actool.Errorf(fmt.Sprintf(
+					"还有 %d 条候选停在 open_proof_gap（缺证据才能下结论）：\n%s\n"+
+						"带着未闭合的候选宣告穷尽，等于把「没测完」说成「没得测」。先派意图补它们（或让 worker 用 close_candidate 以真实反证收场）；"+
+						"确实无法闭合的（需要管理员会话/外部条件），在 reason 里逐条点名该 id 并写明阻断原因。",
+					len(open), strings.Join(open, "\n"))), nil
 			}
 			ids := pidList(a.EvidenceIDs)
 			if len(ids) == 0 {
@@ -174,6 +193,43 @@ func (t *ToolSet) abandonGoal() actool.CoreTool {
 			}
 			return actool.Text(fmt.Sprintf("goal abandoned: %d（%s）", id, reason)), nil
 		})
+}
+
+// openProofGaps 列出仍停在 open_proof_gap、且没被 reason 点名的候选。
+// 返回的每一行带 id 与摘要，直接拼进拒绝回执让 planner 逐条处理。
+func (t *ToolSet) openProofGaps(reason string) []string {
+	if t.ts == nil {
+		return nil
+	}
+	nodes, err := t.ts.ListByKind(db.KindFinding, 500)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, n := range nodes {
+		if n.State != db.FindingOpenProofGap {
+			continue
+		}
+		if mentionsNodeID(reason, n.ID) {
+			continue
+		}
+		var p struct {
+			Summary string `json:"summary"`
+		}
+		_ = json.Unmarshal(n.Payload, &p)
+		out = append(out, fmt.Sprintf("#%d %s", n.ID, firstLine(p.Summary, 90)))
+	}
+	return out
+}
+
+// mentionsNodeID 判断 reason 里是否点到了某个节点 id。按"数字边界"匹配，
+// 避免 id=4 被 "4 条" 之类的文字误命中。
+func mentionsNodeID(text string, id int64) bool {
+	if id <= 0 {
+		return false
+	}
+	pat := regexp.MustCompile(`(^|[^0-9])` + strconv.FormatInt(id, 10) + `([^0-9]|$)`)
+	return pat.MatchString(text)
 }
 
 func (t *ToolSet) mergeFindings() actool.CoreTool {

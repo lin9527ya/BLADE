@@ -47,6 +47,12 @@ type Planner struct {
 	// lastRoundNote 是上一轮的结论摘要。默认每轮开新会话（不 resume 全量 transcript），
 	// 用它承接「上一轮想清楚了什么、派了哪些意图、产出了哪些事实」，避免上下文膨胀。
 	lastRoundNote string
+	// openingRounds 是本任务已经走过的「开局摸底」轮数（最多 2 轮）。零事实时先摸清
+	// 入口再派单，但不能拿它当长期空转的借口：第三轮起仍按硬底线派单。
+	openingRounds int
+	// exhaustCooldown 是穷尽复核否决后的冷却轮数：>0 时 mark_strategy_exhausted 直接
+	// 返回「先把复核点名的缺口补上」，不再消耗一轮复核（任务 28 在 25 分钟里声明了 5 次）。
+	exhaustCooldown int
 	// hot 是跨轮复用的规划会话。每轮结束后把历史折叠成「本轮输入 + 结论」两条消息
 	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
 	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
@@ -595,7 +601,8 @@ const slotUtilizationBlock = `
 - 态势里的 intent_queue 给出 workers（槽位总数）、running（在跑意图数）、idle_slots（空闲槽位数）、claimable（可领意图数）。**空闲槽位就是浪费掉的并行度**。
 - **idle_slots ≥ 2 且本轮没有因为队列饱和（saturated=true）而受限时，本轮新增意图数应 ≥ min(idle_slots, 4)**（4 是本轮名额上限）。唯一例外：能逐条说清"我想到的独立方向都已被 open/running 意图覆盖"。「在等某条 work 的产出」「硬底线没触发」「已经有 1 条在跑」都**不是**理由——并行本来就是为同时推进多条互不依赖的方向，留 3 个槽位闲着却只派 1 条，等于把 4 路并行降成 1 路。
 - 派什么：优先【不依赖在跑 work 的独立方向】——不同入口面、不同资产、不同风险类、另一条利用链；已经在跑的意图的后续步骤要等产出，不要为了凑数把它拆成下游意图（那会空转）。独立方向不够时，宁可派"补证缺口 / 复核否定结论 / 换机理重打同一入口"，也不要空着槽位。
-- 空闲槽位不是"派得越多越好"的许可：队列仍受 saturated 约束；同一条方向换措辞重复派仍是严重错误。补的是**并行的广度**，不是重复。`
+- 空闲槽位不是"派得越多越好"的许可：队列仍受 saturated 约束；同一条方向换措辞重复派仍是严重错误。补的是**并行的广度**，不是重复。
+- **开局轮例外**：态势里 done_intents_total=0 且没有任何 open/running 意图时，本轮按【开局摸底】执行——先把目标入口摸清、再派 1–4 条具体意图，不按上面的下限凑数。`
 
 // lateralDisciplineBlock 是**代码持有**的横向推进纪律。
 //
@@ -629,7 +636,27 @@ const breadthDisciplineBlock = `
 - 写法：广度意图必须带具体 asset_ids（不能只给 root_domain）与 risk_area，写清入口/参数、验证的假设、什么算测到；禁止“看一下/补一下覆盖”。优先 breadth.top_gaps 中 state=untouched 的资产，从 untouched_risk_areas 选与入口最贴合的一类；同一入口的相邻资产可以合并一条，但每个资产都要真正被测到。
 - 失败：state=failed 是“没测成”，不是“没问题”；先 get_worker_output / get_worker_trace 看卡点，再换入口/参数/机理，不要原样重试。state=in_flight 只是有人在跑，不是终态。
 - 收尾：准备 0 意图或 prove_goal 前先看 breadth；breadth.debt > 0 且无人负责时不得静默结束，要么派广度，要么把“确属范围外/不可达/受约束”的原因写进 fact/备注。覆盖度类验收以 breadth.pct 为准，未达标禁止 prove_goal；breadth.assets_total=0 且 need_asset_discovery=true 时先做资产发现。
-- 细节：top_gaps 只是窗口，完整矩阵用 coverage_matrix 查看；覆盖度关闭时本段自动失效，不要调用已摘除的工具。`
+- 细节：top_gaps 只是窗口，完整矩阵用 coverage_matrix 查看；覆盖度关闭时本段自动失效，不要调用已摘除的工具。
+- **开局轮例外**：done_intents_total=0 且没有任何 open/running 意图时，本轮不承担广度义务（此时 assets_total 通常还是 0），按【开局摸底】先摸清目标入口；广度从第二轮起照常执行。`
+
+// openingProbeBlock 是**代码持有**的开局摸底协议。
+//
+// 为什么归代码：有效正文可能来自任务快照 / DB 覆盖 / 模板库，任何一级都收不到新纪律
+// （实测：本机 agent_prompts 的 planner v9 与源码正文并不一致，正文级改动全被覆盖）。
+// 而「零事实直接派单」的代价是首轮只能写出风险类目录型意图——worker 把每个路径各探
+// 一次就收工，深度全丢在最浅处，最后好端端走到「策略内已无可行方向」。
+// 本段只在「还没有任何意图」时生效，不改变任务中后段的派单规则。
+const openingProbeBlock = `
+
+【开局摸底（代码持有；仅当态势里没有任何意图、done_intents_total=0 时执行本段）】
+- **这一轮先看，再派**。图上只有任务起点那一条事实时，你对目标一无所知；此时直接派「认证面测试 / 注入测试 / 上传测试」这类风险类目录，worker 只能把每个路径各探一次，整条链在最浅处停住——这正是"策略内已无可行方向"的来路。
+- 动作顺序（本轮按这个顺序做）：
+  1. 用 Bash（curl）或 WebFetch 做 **1–3 次只读请求**，只为把入口说具体：首页响应头与跳转链（curl -sSI）、robots.txt / sitemap.xml、首页 HTML 里的 script src 与 API 前缀、首页链接可见的登录口/后台入口（/admin、/login、/manage 等）的跳转目标。看的是**状态码、Location、Server/X-Powered-By、框架痕迹、实际路径**。
+  2. 把观察直接写进意图 summary：每条意图引用你刚看到的具体入口（路径、跳转、版本、参数名），并写清验证什么假设、什么算测到。
+  3. 再用【一次】add_intent 提交 1–4 条。第一条优先给「最接近目标的那条入口」做深，而不是把风险类铺满。
+- **禁止**把 worker 的活抢过来：本轮不做目录枚举/字典、不做注入或爆破试探、不做子域测绘（域名/证书/子域交给 discovery 意图）。单次请求只为读懂入口，看到 4xx/5xx 记下即可，不追。
+- **本轮允许产出 0 条意图**（只摸底）：摸底成功就必须派 ≥1 条引用观察的意图；只有目标完全不可达（连接失败/被拦）时才允许 0 条，并在回复里说明。
+- **本段压过本文其它段落**：开局轮不适用【槽位利用率】的"必须填满空闲槽位"与【广度纪律】的"本轮至少 1 条广度意图"。首轮把一条入口写具体，比把 4 个槽位用风险类填满更值。`
 
 // PlannerTemplateDefault returns the DB default template body ("" when none).
 // Wired at startup so the agent package stays free of DB imports.
@@ -711,7 +738,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 		}
 	}
 	// 追加段与潜行纪律不属于任何一级正文：静默模式下任务快照/模板库正文同样要带上。
-	return body + promptExtras("planner") + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
+	return body + promptExtras("planner") + openingProbeBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
 }
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
@@ -761,6 +788,14 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 的 registry 在 NewSession 时固定），而不是这里新建的 tsx。所以两处都要走同一套
 	// 重装：否则 intentsRound 停在首轮的值，pace:round 会把后续每一轮的意图都拒掉
 	// （任务 18/19 实测），GoalMet 与广度快照也会跨轮残留。
+	// 开局轮：图上还没有任何意图。首轮的目标不是"把槽位填满"，而是先做 1–3 次只读
+	// 摸底、把首条意图写到具体入口上（见 openingProbeBlock）。只给前两轮：摸底是手段
+	// 不是常态，第三轮起仍按硬底线派单，避免拿"还在摸底"空转。
+	// 放在 wireToolSet 之前：开局轮要求 add_intent 拒收粗粒度意图（openingStrict）。
+	opening := latestIntentID(ts) == 0 && p.openingRounds < 2
+	if opening {
+		p.openingRounds++
+	}
 	wireToolSet := func(t *ToolSet) {
 		t.ts = ts // 任务存储指针跨轮不变；重装一遍以防替换
 		originNode := int64(0)
@@ -781,6 +816,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 		t.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
 		t.exhaustedFn = p.recordStrategyExhausted
+		// 用闭包而不是快照：本轮若刚收到复核否决，同轮内再调用也要被挡（见 takeExhaustionNote）。
+		t.exhaustCooldownFn = func() int { return p.exhaustCooldown }
+		t.openingStrict = opening
 	}
 	wireToolSet(tsx)
 	pol := p.policy()
@@ -896,7 +934,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 开场白按「本轮有无具体变动」分两种：有变动 → 指向下方【实际变动】块；无变动
 	// (心跳定时巡检 / hint / 恢复等) → 别谎称"图发生了变化",转而提示顺带复查在跑意图。
 	lead := "刚有具体变动（见下面的【本次触发本轮的实际变动】），据此规划下一步："
-	if len(triggers) == 0 {
+	if opening {
+		lead = "本轮是**任务开局**：图上除任务起点外没有任何 worker 产出，也还没有任何意图。先按【开局摸底】做 1–3 次只读请求（首页响应头/跳转、robots.txt、首页 script 与后台入口），再把看到的具体入口写进首轮意图："
+	} else if len(triggers) == 0 {
 		lead = "本轮是**定时巡检（心跳到点）/无具体变动信号**的唤醒——图不一定有新变动。顺带复查在跑意图：长时间无进展或跑偏的用 steer_work 纠偏、方向整个错的用 kill_work 止损；再判定目标、决定是否补方向："
 		// 心跳/无变动唤醒时,若全图已无任何 open 或 running 意图 → 探索已停摆(没 worker 在跑、
 		// 也没排队方向)。明确告知 planner 并强制其本轮补出新方向,别只复查在跑意图后空转一轮。
@@ -916,8 +956,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 上一轮结论摘要与态势同属易变段，统一放进 volatile。
 	// P20：硬底线在有策略时改写成"只在策略内成立"——否则提示词自相矛盾：
 	// 一边要求必须派人，一边把提出来的人全拒掉。
-	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。" +
-		policy.HardFloorText(derefPolicy(pol))
+	hardFloor := policy.HardFloorText(derefPolicy(pol))
+	if opening {
+		// 开局轮的唯一合法产物可能是"一句更具体的方向"：摸底之后即使 0 条意图也不算
+		// 停摆。摸底轮数上限保证这条例外不会变成长期空转的借口。
+		hardFloor = "**【开局例外（仅本轮）】本轮是任务开局：按【开局摸底】做完 1–3 次只读请求后，即使本轮只产出 0 条意图也不算停摆；摸底成功则至少派 1 条引用观察的意图。**"
+	}
+	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。" + hardFloor
 	volatile := situational
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
@@ -1002,6 +1047,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			}
 		}
 	}
+	if p.exhaustCooldown > 0 {
+		p.exhaustCooldown--
+	}
 	return tsx.GoalMet, tsx.Reason, err
 }
 
@@ -1014,7 +1062,13 @@ func (p *Planner) takeExhaustionNote() string {
 	if p.exhaustionNoteFn == nil {
 		return ""
 	}
-	return p.exhaustionNoteFn()
+	note := p.exhaustionNoteFn()
+	if strings.TrimSpace(note) != "" {
+		// 复核否决后的两轮冷却：这段时间里 mark_strategy_exhausted 直接返回，逼 planner
+		// 先把复核点名的缺口补上，而不是换措辞再声明一次（任务 28 连声明 5 次）。
+		p.exhaustCooldown = 2
+	}
+	return note
 }
 
 // recordStrategyExhausted 由 mark_strategy_exhausted 工具调用：只记录原因，

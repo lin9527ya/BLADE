@@ -36,7 +36,7 @@ func (p *intentRoundProvider) Complete(_ context.Context, req llm.CompletionRequ
 		if i > 0 {
 			items += ","
 		}
-		items += fmt.Sprintf(`{"risk_area":"other","summary":"热会话第 %d 次调用方向 %d","priority":9}`, p.calls, i)
+		items += fmt.Sprintf(`{"risk_area":"other","summary":"热会话第 %d 次调用：对 /p%d/%d 做验证","priority":9}`, p.calls, p.calls, i)
 	}
 	return toolUseMsg(fmt.Sprintf("tu-%d", p.calls), "add_intent", `{"intents":[`+items+`]}`),
 		"tool_use", llm.Usage{}, nil

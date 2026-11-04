@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -150,6 +151,14 @@ type ToolSet struct {
 	// 事实后把原因交给 Planner；引擎在本轮**结束之后**再暂停任务。不在工具调用中途
 	// 取消自己的 ctx——那会让本轮的结论与回执一起丢掉。
 	exhaustedFn func(reason string)
+	// exhaustCooldownFn 读出「穷尽复核否决后的剩余冷却轮数」。>0 时
+	// mark_strategy_exhausted 直接返回，逼 planner 先补复核点名的缺口；用闭包而不是
+	// 快照，才能挡住同一轮内的再次声明。nil = 不冷却。
+	exhaustCooldownFn func() int
+	// openingStrict 为真时，粗粒度（只有风险类、没有具体入口）的意图直接拒收。
+	// 只在任务开局轮由 planner 打开：那一轮还没有任何事实，重写一条具体方向是唯一
+	// 有意义的动作；任务中后段则只警告不拦（已有事实可依，拦下来只会浪费一轮）。
+	openingStrict bool
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
 	// domain, HTTP probe for a site). nil = no engine enrichment.
 	enrich EnrichTrigger
@@ -210,6 +219,14 @@ func (t *ToolSet) SetRotateEgressHandler(fn func(reason string) (string, error))
 // SetStrategyExhaustedHandler wires the planner's "no viable direction" signal
 // (see ToolSet.exhaustedFn). Set only on the planner's ToolSet.
 func (t *ToolSet) SetStrategyExhaustedHandler(fn func(string)) { t.exhaustedFn = fn }
+
+// exhaustCooldown 返回穷尽复核否决后的剩余冷却轮数（0 = 可声明）。
+func (t *ToolSet) exhaustCooldown() int {
+	if t.exhaustCooldownFn == nil {
+		return 0
+	}
+	return t.exhaustCooldownFn()
+}
 
 // EnrichTrigger is the enrichment engine seen from the tool layer (see package
 // enrich). Kept as an interface here to avoid coupling agent → enrich.
@@ -2077,6 +2094,17 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	default:
 		return 0, "", fmt.Errorf("kind 只能是 discovery（资产发现/侦察，可只登记资产）或 verify（验证/利用，必须写回事实或发现），收到 %q", it.Kind)
 	}
+	// 意图粒度门：任何一条意图都要点名具体入口。目录型 summary（「做认证面测试」
+	// 「测一遍注入」）在零事实时最容易写，但 worker 只能把每个路径各探一次就收工——
+	// 任务 28/29 实测：首轮目录型意图的深度全部停在了最浅处。
+	// 开局轮硬拒（此时还没有事实，重写没有代价）；中后段只警告不拦，避免白烧一轮。
+	coarseWarn := ""
+	if coarse, why := coarseIntentSummary(it.Summary, intentKind, len(pidList(it.AssetIDs)) > 0); coarse {
+		if t.openingStrict {
+			return 0, "", fmt.Errorf("%s", why)
+		}
+		coarseWarn = "coarse_warning: " + firstLine(why, 200)
+	}
 	// ── P20 探索策略门（意图层，硬拒）──
 	// 放在所有 DB 结构校验之前：额度用尽/方向被禁时，不该再为一条注定被拒的意图
 	// 去查 parent/goal，模型也该先听到"别再往这个方向想"。
@@ -2325,6 +2353,13 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			note += " " + warn
 		}
 	}
+	if coarseWarn != "" {
+		if note == "" {
+			note = coarseWarn
+		} else {
+			note += "\n" + coarseWarn
+		}
+	}
 	return id, note, nil
 }
 
@@ -2364,12 +2399,12 @@ func breadthWarning(b *db.BreadthSummary, covered map[int64]bool) string {
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么。\n"+
+	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么；**summary 必须点名具体入口**（路径/主机/参数/版本），只有风险类名称会被拒收。\n"+
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
 		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
 		obj(map[string]any{
 			"intents":         map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":         str("[单条] 一句话描述这个探索方向：做什么+为什么。已写清方向即可，不依赖资产 id。"),
+			"summary":         str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+为什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。risk_area 只是台账键，不是方向本身。"),
 			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
 			"goal_id":         idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：挂上后链路图显示「目标→意图」，push 目标进度。恰有一个未达成(open)目标时省略会自动挂；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
@@ -2425,7 +2460,10 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 					}
 				}
 				if note != "" {
-					goalNote = note
+					if goalNote != "" {
+						goalNote += "\n"
+					}
+					goalNote += note
 				}
 			}
 			breadthWarn := ""
@@ -4335,4 +4373,39 @@ func findingAssetsOverlap(a, b []int64) bool {
 // riskAreaEnum 返回 risk_area 的合法取值说明（错误信息与提示词共用）。
 func riskAreaEnum() string {
 	return strings.Join(db.RiskAreas, " | ")
+}
+
+// intentAnchor* 是「这条意图点名了具体入口」的判据。刻意用宽口径：只要出现路径、
+// URL/主机、查询参数、版本号或显式节点 id 之一就放行——目的是挡住"做认证面测试"
+// 这类纯风险类目录，而不是要求每条意图都写成完整计划。
+var (
+	intentPathAnchor    = regexp.MustCompile(`(^|[\s（(：:,，;；、"“”‘’])/[A-Za-z0-9_.-][A-Za-z0-9_./{}$-]*`)
+	intentHostAnchor    = regexp.MustCompile(`(?i)(https?://|[a-z0-9][a-z0-9-]*(\.[a-z0-9-]+)+)`)
+	intentParamAnchor   = regexp.MustCompile(`([?&][A-Za-z_][A-Za-z0-9_]*=|[A-Za-z_][A-Za-z0-9_]*=(值|参数)|参数[「"“']?[A-Za-z_])`)
+	intentVersionAnchor = regexp.MustCompile(`[0-9]+(\.[0-9xX]+)+`)
+	intentNodeAnchor    = regexp.MustCompile(`(#|id=|intent-|fact-|finding-)[0-9]{1,9}`)
+)
+
+// coarseIntentSummary 判断一条意图 summary 是否"只有风险类、没有具体入口"。
+// kind=discovery 的意图允许只写发现目标（域名/主机/网段）或带 asset_ids——资产发现
+// 本身没有路径可写；其余意图（verify 与未标 kind 的旧口径）必须命中至少一个锚点。
+func coarseIntentSummary(summary, kind string, hasAssets bool) (bool, string) {
+	if kind == "discovery" {
+		if hasAssets || intentHostAnchor.MatchString(summary) || intentPathAnchor.MatchString(summary) {
+			return false, ""
+		}
+		return true, fmt.Sprintf("discovery 意图也要能落地：summary 里要写明要发现什么（域名/主机/网段/证书/服务），或至少带 asset_ids；%q 没有任何可执行目标。", firstLine(summary, 80))
+	}
+	for _, re := range []*regexp.Regexp{intentPathAnchor, intentHostAnchor, intentParamAnchor, intentVersionAnchor, intentNodeAnchor} {
+		if re.MatchString(summary) {
+			return false, ""
+		}
+	}
+	return true, fmt.Sprintf("summary 没有点名任何具体入口（路径 / URL 或主机 / 查询参数 / 组件版本 / 节点 id）：%q。\n"+
+		"意图是「在哪个入口上验证什么」，不是「把哪一类风险测一遍」——目录型意图会让 worker 每个路径各探一次就收工，深度全丢在最浅处。\n"+
+		"改写示例：\n"+
+		"  粗：对目标做认证面测试\n"+
+		"  细：对 <host>/admin/login（302→/login?ReturnUrl=/admin）测账号枚举与低速口令喷洒，先确认错误回显差异，命中即停\n"+
+		"  粗：测试注入\n"+
+		"  细：对 <host>/search?q= 做报错/布尔/时间三通道最小验证，只取 version() 作证；被 WAF 拦时记录 challenge 类型后停", firstLine(summary, 80))
 }

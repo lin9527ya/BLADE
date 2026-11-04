@@ -394,6 +394,18 @@ const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 完成本意图后用一句话总结你做了什么、写回了哪些事实。`
 
+// depthDisciplineBlock 是**代码持有**的否定结论门槛。
+//
+// 为什么归代码：worker 正文存在 agent_prompts 里，已经装好的实例不会因为源码改了
+// 正文就更新（seed 只在空表时写）。而"每个入口只试一次就记无洞"是实测里最贵的浅测：
+// 复核员拿到的 fact 只有一句"未发现"，既无法判断试过什么，也无法据此否定一类问题。
+const depthDisciplineBlock = `
+
+【否定结论的门槛（代码持有）】
+- 写「这条路不通 / 无洞 / 不可注入」之前，先把本入口的合理变体走完：编码（单/双/Unicode/大小写）、参数位置与请求方法（query / body / header / cookie，GET↔POST）、路径变体（前缀、后缀、分号、大小写、编码）、以及认证前提（未登录时先确认是不是只是被重定向）。
+- 否定 fact 的 detail 里写清：试过的变体族数、每族的代表 payload、目标的具体反应（状态码 / 报错 / 跳转 / 长度差异）。只写「未发现 / 无洞」不算结论——下一轮 planner 与穷尽复核员都读不出你试了什么，只能再来一遍。
+- 被 WAF / 登录墙 / 限速挡住 ≠ 已排除：那是外部阻断，按 blocked 或 open_proof_gap 记，不要记成 negative。`
+
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
 // Gated on recording, NOT on the egress proxy: a global proxy with capture off
@@ -445,6 +457,13 @@ func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 // 宿主生命周期、也可能挂在 tmpfs 上（重启即失）。
 func taskOutDir(dir string) string { return filepath.Join(dir, "task-output") }
 
+// perIntentWorkerSession 是 worker 会话粒度的 A/B 开关：每个意图一条独立会话
+// （ARTEX 的做法），而不是按槽位跨意图复用历史。默认关闭——槽位复用是省缓存前缀的
+// 刻意设计，换默认要看实测数据（每条意图的工具调用数、否定结论的质量）。
+func perIntentWorkerSession() bool {
+	return strings.TrimSpace(os.Getenv("BLADE_WORKER_PER_INTENT_SESSION")) == "1"
+}
+
 func workerSystem(proxyAddr, caCert, dataDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
@@ -452,7 +471,7 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 	// Optional finding guidance is added for every role after tool resolution.
 	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
 	// outside this stable string so a reused slot can keep the same cached prefix.
-	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock + untrustedDataBlock()
+	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock + depthDisciplineBlock + untrustedDataBlock()
 }
 
 // renderWorkerIntentTurn is the per-run user message for the claimed intent. It is
@@ -603,8 +622,15 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	sessionID := WorkerSessionID(ts.ID(), intent.ID)
 	ctxDir := runDir
 	if slot > 0 {
-		sessionID = WorkerSessionIDForSlot(ts.ID(), slot)
-		ctxDir = ensureSlotDir(w.workDir, taskID, slot)
+		if perIntentWorkerSession() {
+			// A/B 开关：每意图独立会话（ARTEX 的做法）。槽位复用的历史会把上一条
+			// 意图的结论带进当前意图，实测容易让 worker 把"以前查过"当"这次不用查"。
+			sessionID = WorkerSessionID(ts.ID(), intent.ID)
+			ctxDir = filepath.Join(runDir, "session")
+		} else {
+			sessionID = WorkerSessionIDForSlot(ts.ID(), slot)
+			ctxDir = ensureSlotDir(w.workDir, taskID, slot)
+		}
 	}
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.

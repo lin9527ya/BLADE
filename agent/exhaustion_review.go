@@ -45,6 +45,23 @@ type ExhaustionCoverage struct {
 	UntouchedSilos int `json:"untouched_assets"`
 	ShallowAssets  int `json:"shallow_assets"`
 	DepthThreshold int `json:"depth_threshold"`
+	// Depth 是「资产 × 风险类」的投入面：几条意图、产出几条事实。三道硬门只能数
+	// "碰没碰过"，数不了"是不是每类只取了一次样"——这正是复核员要看的深度证据。
+	Depth []ExhaustionDepthRow `json:"depth,omitempty"`
+}
+
+// ExhaustionDepthRow 是一行投入面：某资产某风险类的意图数与事实数。
+type ExhaustionDepthRow struct {
+	Asset    string `json:"asset"`
+	RiskArea string `json:"risk_area"`
+	Intents  int    `json:"intents"`
+	Facts    int    `json:"facts"`
+}
+
+// intentDepthEntry 是单条意图对深度投入面的贡献。
+type intentDepthEntry struct {
+	area  string
+	facts int
 }
 
 // ExhaustionVerdict 是复核结论。
@@ -93,6 +110,7 @@ const ExhaustionReviewPrompt = `你是渗透测试平台的**穷尽复核员**�
 3. **证据缺失或对不上**：方向描述说"已证否"，但没有任何具体观察（响应码、错误信息、行为差异）支撑；或证据描述的是另一件事。
 4. **范围面没走完**：给出的 untouched_assets > 0，或 shallow_assets > 0（还有资产只测了很少几类风险）。
 5. **把"需要凭据/需要后台"当成否定**：因未登录而测不了，属于**外部阻断**，不是"该方向已排除"。这类方向应标为 blocked 而不是 negative。
+6. **单次取样**：给出的 depth（资产 × 风险类 → 意图数 / 事实数）显示每个方向都只有 1 条意图、1 条事实，而 reason 却声称"该类已排除"。一次观察只能证明"这次没成"，排除一类问题需要覆盖它的主要变体（编码、参数位置、方法、路径变体、认证前提）。
 
 ## 判定为「证据充分」（accurate=true）的情形
 
@@ -120,6 +138,8 @@ func BuildExhaustionClaim(ts *db.ExplorationStore, as *db.AssetStore, taskID int
 	}
 	// 方向证据：最近一批已终结意图。只看最近 40 条——复核员判断的是"这些结论站不站得住"，
 	// 不是重建整段历史；更早的意图即使有毛病，也不影响"现在该不该停"。
+	depthIntents := map[int64]intentDepthEntry{}
+	var depthIDs []int64
 	intents, err := ts.ListByKind(db.KindIntent, 200)
 	if err == nil {
 		kept := 0
@@ -133,15 +153,19 @@ func BuildExhaustionClaim(ts *db.ExplorationStore, as *db.AssetStore, taskID int
 				continue
 			}
 			var p struct {
-				Summary string `json:"summary"`
+				Summary  string `json:"summary"`
+				RiskArea string `json:"risk_area"`
 			}
 			_ = json.Unmarshal(n.Payload, &p)
 			d := ExhaustionDirection{Summary: firstLine(p.Summary, 200), Outcome: n.State}
 			// 该意图的产出：有 yields 边指向的事实/发现才算"有证据"。
-			if ev := intentEvidenceDigest(ts, n.ID); ev != "" {
+			factIDs := intentFactIDs(ts, n.ID)
+			if ev := evidenceDigestFromFacts(ts, factIDs); ev != "" {
 				d.Evidence = ev
 			}
 			claim.Directions = append(claim.Directions, d)
+			depthIntents[n.ID] = intentDepthEntry{area: p.RiskArea, facts: len(factIDs)}
+			depthIDs = append(depthIDs, n.ID)
 			kept++
 		}
 	}
@@ -159,14 +183,85 @@ func BuildExhaustionClaim(ts *db.ExplorationStore, as *db.AssetStore, taskID int
 			claim.Coverage.DepthThreshold = db.DefaultDepthAreas
 		}
 	}
+	claim.Coverage.Depth = buildDepthRows(ts, as, depthIDs, depthIntents)
 	return claim
 }
 
-// intentEvidenceDigest 取一条意图产出的证据摘要（yields 指向的事实）。
-// 只给前两条、每条截断——复核员需要判断"有没有证据"，不需要读全文。
-func intentEvidenceDigest(ts *db.ExplorationStore, intentID int64) string {
+// buildDepthRows 把「意图 → 锚定资产 × 风险类」折成复核员可读的投入面。
+// 只作为判断依据，不参与硬门：任何单一数字都不足以证明深度，但"每条方向都是
+// 1 条意图 1 条事实"足以说明深度不足。
+func buildDepthRows(ts *db.ExplorationStore, as *db.AssetStore, ids []int64, entries map[int64]intentDepthEntry) []ExhaustionDepthRow {
+	if ts == nil || len(ids) == 0 {
+		return nil
+	}
+	nodeAssets, err := ts.NodeAssets(ids)
+	if err != nil {
+		return nil
+	}
+	var assetIDs []int64
+	for _, list := range nodeAssets {
+		assetIDs = append(assetIDs, list...)
+	}
+	labels := map[int64]string{}
+	if as != nil {
+		if assets, err := as.GetByIDs(assetIDs); err == nil {
+			for _, a := range assets {
+				labels[a.ID] = assetLabel(a)
+			}
+		}
+	}
+	type depthKey struct{ asset, area string }
+	rows := map[depthKey]*ExhaustionDepthRow{}
+	var order []depthKey
+	for _, id := range ids {
+		e := entries[id]
+		if e.area == "" {
+			e.area = "other"
+		}
+		for _, aid := range nodeAssets[id] {
+			label := labels[aid]
+			if label == "" {
+				label = fmt.Sprintf("asset#%d", aid)
+			}
+			k := depthKey{label, e.area}
+			row := rows[k]
+			if row == nil {
+				row = &ExhaustionDepthRow{Asset: label, RiskArea: e.area}
+				rows[k] = row
+				order = append(order, k)
+			}
+			row.Intents++
+			row.Facts += e.facts
+		}
+	}
+	out := make([]ExhaustionDepthRow, 0, len(order))
+	for _, k := range order {
+		out = append(out, *rows[k])
+	}
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	return out
+}
+
+// intentFactIDs 返回一条意图产出的事实 id（best-effort）。
+func intentFactIDs(ts *db.ExplorationStore, intentID int64) []int64 {
 	ids, err := ts.FactsYielded(intentID)
-	if err != nil || len(ids) == 0 {
+	if err != nil {
+		return nil
+	}
+	return ids
+}
+
+// intentEvidenceDigest 取一条意图产出的证据摘要（yields 指向的事实）。
+func intentEvidenceDigest(ts *db.ExplorationStore, intentID int64) string {
+	return evidenceDigestFromFacts(ts, intentFactIDs(ts, intentID))
+}
+
+// evidenceDigestFromFacts 只给前两条、每条截断——复核员需要判断"有没有证据"，
+// 不需要读全文。
+func evidenceDigestFromFacts(ts *db.ExplorationStore, ids []int64) string {
+	if len(ids) == 0 {
 		return ""
 	}
 	if len(ids) > 2 {
