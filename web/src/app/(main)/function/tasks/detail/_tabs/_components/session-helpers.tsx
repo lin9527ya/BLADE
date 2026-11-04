@@ -14,6 +14,7 @@ import {
   Loader2Icon,
   PauseIcon,
   RadioIcon,
+  ShieldCheckIcon,
   UserIcon,
   ZapOffIcon,
 } from "lucide-react";
@@ -101,6 +102,7 @@ export function sessionKeyOf(a: Activity): string {
   if (a.worker === "system" || a.kind === "llm_switch" || a.kind === "llm_failover") return "system";
   if (a.worker === "mainagent") return `main:${a.main_seg ?? 0}`; // one key per conversation segment
   if (a.worker === "planner") return "plan";
+  if (a.worker === "supervisor") return "supervisor"; // 执行审核员：独立会话，不混进系统审计
   // Fixed worker slots are the primary key; pre-upgrade rows fall back to intent.
   if (a.slot_no) return `slot:${a.slot_no}`;
   if (a.intent_id) return `intent:${a.intent_id}`;
@@ -221,6 +223,7 @@ export function fmtDuration(ms: number): string {
 export const roleMeta = {
   mainagent: { label: "主 Agent", icon: UserIcon },
   planner: { label: "规划 Planner", icon: BrainIcon },
+  supervisor: { label: "审核 Supervisor", icon: ShieldCheckIcon },
   worker: { label: "Workers", icon: RadioIcon },
   system: { label: "系统审计", icon: HistoryIcon },
 } as const;
@@ -260,6 +263,18 @@ export const PLANNER_SESSION: Session = {
   last_activity: "",
 };
 
+// 执行审核员会话：审核过程（送审输入、模型原始输出、下发的纠偏）都在
+// worker="supervisor" 的活动里，历史走 session=supervisor，SSE 按 worker 分派。
+export const SUPERVISOR_ID = "s-supervisor";
+export const SUPERVISOR_SESSION: Session = {
+  id: SUPERVISOR_ID,
+  role: "supervisor",
+  title: "审核 Supervisor · 执行纠偏",
+  status: "running",
+  live: true,
+  last_activity: "",
+};
+
 // LLM provider switches are task-level audit events rather than agent output. The
 // history endpoint has no "system" filter, so this fixed session is populated by
 // scanning the generic incremental activity endpoint and then tailed by task SSE.
@@ -278,6 +293,7 @@ export const SYSTEM_SESSION: Session = {
 export function keyForSession(s: Session): string {
   if (s.role === "mainagent") return `main:${s.seg ?? 0}`;
   if (s.role === "planner") return "plan";
+  if (s.role === "supervisor") return "supervisor";
   if (s.role === "system") return "system";
   if (s.slot) return `slot:${s.slot}`;
   return `intent:${s.intent_id}`;

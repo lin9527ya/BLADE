@@ -1547,7 +1547,7 @@ export interface LogLine {
   text: string;
 }
 
-export type SessionRole = "mainagent" | "planner" | "worker" | "system";
+export type SessionRole = "mainagent" | "planner" | "supervisor" | "worker" | "system";
 export type SessionStatus =
   | "running"
   | "paused"

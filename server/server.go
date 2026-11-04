@@ -293,18 +293,23 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 执行审核员：按周期抽查在跑 worker 的最近轨迹，判偏则通过 steer 通道纠偏。
 	// 走任务自己的 LLM 链（与 planner/worker 同一个模型来源），单独记一档用量；
 	// 审核员不可用时只记日志、本轮不纠偏——它是附加保护，不该影响任务运行。
-	s.engine.SetSupervisor(func(ctx context.Context, task *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, error) {
+	s.engine.SetSupervisor(func(ctx context.Context, task *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
 		if task == nil {
-			return agent.SupervisorVerdict{}, fmt.Errorf("审核任务为空")
+			return agent.SupervisorVerdict{}, "", fmt.Errorf("审核任务为空")
 		}
 		rt := &taskLLMRuntime{s: s, taskID: task.ID, agentKey: "supervisor"}
 		ctx = llmrec.WithWorker(ctx, supervisorLane)
 		ctx = llmrec.WithExplorationID(ctx, task.ExpID)
 		text, err := streamCollectTextLimit(ctx, rt, agent.SupervisorPrompt, supervisorClaimJSON(claim), 1500)
 		if err != nil {
-			return agent.SupervisorVerdict{}, err
+			return agent.SupervisorVerdict{}, "", err
 		}
-		return agent.ParseSupervisorVerdict(text)
+		verdict, perr := agent.ParseSupervisorVerdict(text)
+		if perr != nil {
+			// 解析失败也把原始输出交回去：时间线要能看到模型到底说了什么。
+			return agent.SupervisorVerdict{}, text, perr
+		}
+		return verdict, text, nil
 	})
 	s.auth.signKey.set(key)
 	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)

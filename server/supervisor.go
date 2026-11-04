@@ -46,10 +46,15 @@ const (
 	supervisorMaxSteers = 3
 	// supervisorLane 是审核调用的用量分档名（与 judge/exhaustion-review 同理）。
 	supervisorLane = "supervisor"
+	// supervisorWorker 是审核活动在时间线/会话页里的归属名。会话页据此把审核过程
+	// 单独成一个会话（session=supervisor），不混进系统审计。
+	supervisorWorker = "supervisor"
 )
 
 // supervisorFunc 是审核员的可注入实现（测试用）。nil = 未接线（无可用 LLM）。
-type supervisorFunc func(ctx context.Context, t *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, error)
+// raw 是模型的原始输出（解析失败时也返回），用于把「审核时到底说了什么」如实
+// 记进时间线，而不是只留下一个解析错误。
+type supervisorFunc func(ctx context.Context, t *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, string, error)
 
 // supervisorState 是单个任务的审核水位与纠偏节奏。
 type supervisorState struct {
@@ -129,15 +134,41 @@ func (e *Engine) supervisorTick(ctx context.Context, t *Task) {
 	if !e.takeSupervisorFreshness(t.ID, runningIDs, eligible) {
 		return
 	}
+	payload := agent.SupervisorClaim{Goal: claim.Goal, Goals: claim.Goals, Intents: eligible}
+	// 审核过程本身写进 supervisor 会话：轮次分隔、送审输入、模型原始输出、纠偏动作。
+	// 这是操作者要看的「它在审什么、看到了什么、结论是什么」，也是复核误判的依据。
+	e.emitActivity(t, db.Activity{Worker: supervisorWorker, Kind: "round",
+		Summary: fmt.Sprintf("审核 · %d 条在跑意图", len(eligible))})
+	e.emitActivity(t, db.Activity{Worker: supervisorWorker, Kind: "supervisor_input",
+		Summary: "审核输入：" + supervisorIntentRefs(eligible),
+		Detail:  supervisorClaimJSON(payload)})
+
 	rctx, cancel := context.WithTimeout(ctx, supervisorReviewTimeout)
 	defer cancel()
-	verdict, err := e.supervisor(rctx, t, agent.SupervisorClaim{Goal: claim.Goal, Goals: claim.Goals, Intents: eligible})
+	verdict, raw, err := e.supervisor(rctx, t, payload)
 	if err != nil {
-		// 不写时间线：审核员故障是平台侧噪音，不是 worker 的进度事件。
+		detail := err.Error()
+		if strings.TrimSpace(raw) != "" {
+			detail += "\n\n原始输出：\n" + raw
+		}
+		e.emitActivity(t, db.Activity{Worker: supervisorWorker, Kind: "result", IsError: true,
+			Summary: "审核失败（本轮不纠偏）：" + firstLine(err.Error(), 200), Detail: detail})
 		log.Printf("[supervisor] task %s 审核失败，本轮不纠偏: %v", t.ID, err)
 		return
 	}
+	// 模型的原始输出是这份会话最该被看见的东西：结论、理由、指令都在里面。
+	e.emitActivity(t, db.Activity{Worker: supervisorWorker, Kind: "result",
+		Summary: firstLine(raw, 400), Detail: raw})
 	e.applySupervisorVerdict(t, eligible, verdict)
+}
+
+// supervisorIntentRefs 给「审核输入」一行摘要：这次都审了哪几条意图。
+func supervisorIntentRefs(intents []agent.SupervisorIntent) string {
+	ids := make([]string, 0, len(intents))
+	for _, it := range intents {
+		ids = append(ids, fmt.Sprintf("#%d", it.ID))
+	}
+	return fmt.Sprintf("任务目标 + %d 条在跑意图（%s）", len(intents), strings.Join(ids, "、"))
 }
 
 // takeSupervisorFreshness 判断本轮是否有值得调模型的新轨迹，并推进水位。
@@ -214,14 +245,13 @@ func (e *Engine) applySupervisorVerdict(t *Task, intents []agent.SupervisorInten
 		st.steers[iv.IntentID] = n + 1
 		st.mu.Unlock()
 		steered++
-		nid := iv.IntentID
 		detail := "审核结论：" + iv.Reason + "\n\n纠偏指令（已注入，下一步动作前生效）：\n" + msg + "\n\n" + supervisorEvidence(it)
 		if n+1 >= supervisorMaxSteers {
 			detail += "\n（本意图已连续纠偏 " + strconv.Itoa(n+1) + " 次，达到上限；若仍无改善，应由 planner 考虑换方向。）"
 		}
 		e.emitActivity(t, db.Activity{
-			NodeID: &nid, Worker: "system", Kind: "system",
-			Summary: fmt.Sprintf("审核员纠偏：意图 #%d 偏离方向，已下发指令", iv.IntentID),
+			Worker: supervisorWorker, Kind: "supervisor_steer",
+			Summary: fmt.Sprintf("已下发纠偏：意图 #%d —— %s", iv.IntentID, firstLine(msg, 120)),
 			Detail:  detail,
 		})
 	}

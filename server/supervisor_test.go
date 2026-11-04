@@ -60,7 +60,7 @@ func TestSupervisorSteersDriftingWorker(t *testing.T) {
 	e.registerWork(iid, func(error) {}) // steer 要求 work 正在运行
 
 	calls := 0
-	e.SetSupervisor(func(_ context.Context, _ *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, error) {
+	e.SetSupervisor(func(_ context.Context, _ *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
 		calls++
 		if claim.Goal != "x" {
 			t.Errorf("审核输入应带任务目标，收到 %q", claim.Goal)
@@ -74,7 +74,7 @@ func TestSupervisorSteersDriftingWorker(t *testing.T) {
 		return agent.SupervisorVerdict{Intents: []agent.SupervisorIntentVerdict{{
 			IntentID: iid, OnTrack: false, Reason: "连续 4 次重放同一个 403 请求",
 			Steer: "停止重放 /admin；换参数或先写回 blocked",
-		}}}, nil
+		}}}, `{"intents":[]}`, nil
 	})
 
 	e.supervisorTick(t.Context(), task)
@@ -92,18 +92,21 @@ func TestSupervisorSteersDriftingWorker(t *testing.T) {
 		t.Fatalf("worker 看到的归属文案不对：%q", msg.render())
 	}
 
+	// 审核过程必须能在 supervisor 会话里看到：轮次分隔、送审输入、模型原始输出、纠偏动作。
 	acts, _, err := task.Store.ActivityList(nil, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found bool
+	seen := map[string]bool{}
 	for _, a := range acts {
-		if strings.Contains(a.Summary, "审核员纠偏") {
-			found = true
+		if a.Worker == "supervisor" {
+			seen[a.Kind] = true
 		}
 	}
-	if !found {
-		t.Fatalf("应在时间线留一条审核员纠偏记录：%+v", acts)
+	for _, kind := range []string{"round", "supervisor_input", "result", "supervisor_steer"} {
+		if !seen[kind] {
+			t.Fatalf("supervisor 会话缺少 %q 记录：%+v", kind, acts)
+		}
 	}
 
 	// 没有新轨迹 → 不重复调模型。
@@ -120,11 +123,11 @@ func TestSupervisorRespectsSteerCooldown(t *testing.T) {
 	e.registerWork(iid, func(error) {})
 
 	calls := 0
-	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, error) {
+	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
 		calls++
 		return agent.SupervisorVerdict{Intents: []agent.SupervisorIntentVerdict{{
 			IntentID: iid, OnTrack: false, Reason: "还在重放", Steer: "别重放了",
-		}}}, nil
+		}}}, `{"intents":[]}`, nil
 	})
 	e.supervisorTick(t.Context(), task)
 	if _, ok := e.drainSteer(iid); !ok {
@@ -150,10 +153,10 @@ func TestSupervisorQuietWhenOnTrack(t *testing.T) {
 	e, task := newSupervisorTestEngine(t)
 	iid := seedRunningIntent(t, task, "验证 /admin 越权访问", 4)
 	e.registerWork(iid, func(error) {})
-	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, error) {
+	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
 		return agent.SupervisorVerdict{Intents: []agent.SupervisorIntentVerdict{{
 			IntentID: iid, OnTrack: true, Reason: "在按意图验证",
-		}}}, nil
+		}}}, `{"intents":[]}`, nil
 	})
 	e.supervisorTick(t.Context(), task)
 	if _, ok := e.drainSteer(iid); ok {
@@ -172,10 +175,10 @@ func TestSupervisorIgnoresUnknownIntent(t *testing.T) {
 	e, task := newSupervisorTestEngine(t)
 	iid := seedRunningIntent(t, task, "验证 /admin 越权访问", 4)
 	e.registerWork(iid, func(error) {})
-	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, error) {
+	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
 		return agent.SupervisorVerdict{Intents: []agent.SupervisorIntentVerdict{{
 			IntentID: iid + 999, OnTrack: false, Reason: "幻觉", Steer: "乱指挥",
-		}}}, nil
+		}}}, `{"intents":[]}`, nil
 	})
 	e.supervisorTick(t.Context(), task)
 	if _, ok := e.drainSteer(iid); ok {
@@ -188,12 +191,20 @@ func TestSupervisorSkipsFreshIntent(t *testing.T) {
 	e, task := newSupervisorTestEngine(t)
 	seedRunningIntent(t, task, "刚领到的意图", 1)
 	calls := 0
-	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, error) {
+	e.SetSupervisor(func(context.Context, *Task, agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
 		calls++
-		return agent.SupervisorVerdict{}, nil
+		return agent.SupervisorVerdict{}, `{"intents":[]}`, nil
 	})
 	e.supervisorTick(t.Context(), task)
 	if calls != 0 {
 		t.Fatalf("轨迹不足时不该调审核员，实际 %d 次", calls)
+	}
+}
+
+// 审核会话在历史接口里可读：session=supervisor 映射到 worker='supervisor'。
+func TestParseActivitySessionSupervisor(t *testing.T) {
+	f, ok := parseActivitySession("supervisor")
+	if !ok || f.Worker != "supervisor" {
+		t.Fatalf("supervisor 会话解析不对：%+v ok=%v", f, ok)
 	}
 }

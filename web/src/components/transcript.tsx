@@ -135,6 +135,8 @@ const KIND_LABELS: Record<string, string> = {
   policy_update: "探索策略变更", // P20: 策略保存/清空/按新策略清理意图
   intel_query: "情报查询", // P21: 外部测绘引擎查询（表达式/命中数/完整结果落盘）
   intercept_wait: "等待审批", // 无超时的审批仍在等：这条 keep-alive 同时也是意图租约的心跳
+  supervisor_input: "审核输入", // 执行审核员送审的证据（任务目标 + 在跑意图轨迹）
+  supervisor_steer: "审核纠偏", // 审核员判定偏离后下发给 worker 的指令
 };
 
 const kindLabel = (k: string) => KIND_LABELS[k] ?? "说明";

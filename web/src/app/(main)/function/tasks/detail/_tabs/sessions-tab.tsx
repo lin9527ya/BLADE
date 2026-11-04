@@ -284,7 +284,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             )}
           >
             <div className="flex w-full flex-col gap-3 p-2">
-              {(["mainagent", "planner", "system", "worker"] as const).map((role) => {
+              {(["mainagent", "planner", "supervisor", "system", "worker"] as const).map((role) => {
                 const items = grouped[role];
                 if (!items.length) return null;
                 const Meta = roleMeta[role];
