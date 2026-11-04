@@ -336,6 +336,11 @@ const (
 	settingProxyEgressIPURL    = "proxy_egress_ip_url"
 	settingWorkers             = "workers"
 	settingLLMRecord           = "llm_record"
+	// settingSupervisorEnabled / settingSupervisorInterval 控制「执行审核员」：
+	// 定时抽查在跑 worker 的最近轨迹，偏离意图/目标时通过 steer 通道纠偏。
+	// 默认开启、默认 180 秒；每轮现读，改完对下一个审核周期生效。
+	settingSupervisorEnabled  = "supervisor_enabled"
+	settingSupervisorInterval = "supervisor_interval_seconds"
 	// settingCompactionPrompt（P14）是领域化压缩模板（7 段）。空 = 用内置模板。
 	// 刻意放 settings 而不是 agent_prompts：它不是某个 agent 的提示词，没有对应
 	// agent 行；塞进 agent_prompts 需要在 Agent 管理里凭空多出一个假 agent。

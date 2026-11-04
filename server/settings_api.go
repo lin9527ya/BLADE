@@ -170,7 +170,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"log_level":                     LogLevelName(),
 		"workers":                       s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
 		"task_concurrency_enabled":      concOn,        // 任务并发上限开关(默认关)
-		"task_concurrency_limit":        concLimit,     // 同时运行任务上限(开启后默认5)
+		// 执行审核员：定时抽查在跑 worker 的轨迹，偏离时注入纠偏（默认开、180 秒）。
+		"supervisor_enabled":          supervisorEnabledSetting(s.m.pg),
+		"supervisor_interval_seconds": int(supervisorIntervalSetting(s.m.pg).Seconds()),
+		"task_concurrency_limit":      concLimit, // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -319,6 +322,9 @@ type settingsRequest struct {
 	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 	LogLevel            *string `json:"log_level"`          // debug|info|warn|error；热切换
 	Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+	// 执行审核员：开关 + 审核周期（秒）。运行时每周期现读，改完对下一个周期生效。
+	SupervisorEnabled  *bool `json:"supervisor_enabled"`
+	SupervisorInterval *int  `json:"supervisor_interval_seconds"`
 	// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
 	ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 	ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
@@ -588,6 +594,17 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pending[f.key] = strconv.Itoa(*f.val)
+	}
+	if req.SupervisorEnabled != nil {
+		pending[settingSupervisorEnabled] = strconv.FormatBool(*req.SupervisorEnabled)
+	}
+	if req.SupervisorInterval != nil {
+		v := *req.SupervisorInterval
+		if v < int(minSupervisorInterval/time.Second) || v > int(maxSupervisorInterval/time.Second) {
+			writeErr(w, 400, "审核周期需在 60 到 1800 秒之间")
+			return
+		}
+		pending[settingSupervisorInterval] = strconv.Itoa(v)
 	}
 	if req.Workers != nil {
 		pending[settingWorkers] = strconv.Itoa(*req.Workers)

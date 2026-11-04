@@ -158,6 +158,10 @@ type Engine struct {
 	// （无可用 LLM / 测试），此时保持旧行为：声明即暂停。
 	exhaustionReview exhaustionReviewer
 	exhaustionTries  sync.Map // taskID -> int，连续被判"证据不足"的次数
+	// supervisor 是定时执行审核员（见 server/supervisor.go）。nil = 未接线。
+	supervisor supervisorFunc
+	// supervisorStates 记录每个任务的审核水位与纠偏节奏（taskID -> *supervisorState）。
+	supervisorStates sync.Map
 	egressMu         sync.Mutex
 	egressHits       map[string][]time.Time
 	egressRotating   bool
@@ -497,6 +501,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.stamped.Delete(taskID)
 	e.inflight.Delete(taskID)
 	e.coordStarted.Delete(taskID)
+	e.supervisorStates.Delete(taskID)
 	e.deleteMu.Lock()
 	e.deleting.Delete(taskID)
 	e.deleteMu.Unlock()
@@ -725,8 +730,9 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 type steerSource int
 
 const (
-	steerFromPlanner steerSource = iota // planner / 主 Agent 的 steer_work 工具
-	steerFromHuman                      // 人在会话页直接对运行中的 Worker 发的提示
+	steerFromPlanner    steerSource = iota // planner / 主 Agent 的 steer_work 工具
+	steerFromHuman                         // 人在会话页直接对运行中的 Worker 发的提示
+	steerFromSupervisor                    // 定时执行审核员（server/supervisor.go）
 )
 
 // steerMsg 是一条待投递的即时指令（FIFO 队列元素）。
@@ -739,8 +745,11 @@ type steerMsg struct {
 // 测试都依赖它），人工那条另起一套归属。
 func (m steerMsg) render() string {
 	const tail = "；本次工具调用未执行，请据此调整下一步。若与你当前打算冲突，以此为准。）"
-	if m.from == steerFromHuman {
+	switch m.from {
+	case steerFromHuman:
 		return "【人工实时提示】" + m.text + "\n（这是人（操作者）对本意图的即时指令" + tail
+	case steerFromSupervisor:
+		return "【审核员实时纠偏】" + m.text + "\n（这是平台审核员对本意图的即时指令" + tail
 	}
 	return "【规划者实时纠偏】" + m.text + "\n（这是规划者对本意图的即时指令" + tail
 }
@@ -757,6 +766,13 @@ func (e *Engine) SteerWork(intentID int64, msg string) error {
 // 没有在跑的 work 时如实报错，不做静默排队——调用方据此让用户重发。
 func (e *Engine) SteerWorkHuman(intentID int64, msg string) error {
 	return e.steer(intentID, steerMsg{from: steerFromHuman, text: msg})
+}
+
+// SteerWorkSupervisor queues a course-correction authored by the periodic supervisor
+// (server/supervisor.go). Same delivery path as planner/human steering, different
+// attribution so the worker knows this came from the platform's audit layer.
+func (e *Engine) SteerWorkSupervisor(intentID int64, msg string) error {
+	return e.steer(intentID, steerMsg{from: steerFromSupervisor, text: msg})
 }
 
 func (e *Engine) steer(intentID int64, msg steerMsg) error {
@@ -1052,11 +1068,12 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
-	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
+	rt := e.registerTaskRoutines(ctx, t.ID, 2+workers)
 	e.setTaskWorkers(t.ID, workers)
 	e.deleteMu.RUnlock()
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
+	runTaskRoutine(rt, func(loopCtx context.Context) { e.supervisorLoop(loopCtx, t) })
 	for i := 0; i < workers; i++ {
 		name := fmt.Sprintf("work#%d", i+1)
 		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
