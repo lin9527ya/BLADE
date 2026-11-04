@@ -20,6 +20,10 @@ export interface Task {
   active_run_seconds?: number;
   // 当前运行段的起点（unix 秒）；0/缺省 = 当前没在计时。
   run_segment_started_unix?: number;
+  // 每任务并发覆盖（0 = 跟随全局 workers）；只在任务首次启动时固化。
+  worker_count?: number;
+  // 任务备注（≤2000 字）。
+  remark?: string;
   completed_at?: string; // RFC3339 finish time (done/failed); "" if unfinished
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)

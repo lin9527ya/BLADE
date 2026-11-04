@@ -710,6 +710,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL
 -- 当前有一段正在计时，收尾时折进 active_run_seconds（见 db/tasks.go 的三个函数）。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_run_seconds BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS run_segment_started_at TIMESTAMPTZ;
+-- 每任务并发覆盖（0 = 跟随全局 workers）与任务备注。并发覆盖只在任务**首次启动**
+-- 固化进 task_worker_slots，之后改这个值不影响已在跑的槽位。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。

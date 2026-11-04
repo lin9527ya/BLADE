@@ -171,6 +171,8 @@ export function CreateTaskSheet({
   const [creating, setCreating] = React.useState(false);
   const [timeoutMin, setTimeoutMin] = React.useState(""); // 任务级超时(分钟);空/0 = 不限时
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
+  const [workerCount, setWorkerCount] = React.useState(""); // 每任务并发覆盖;空/0 = 跟随全局
+  const [remark, setRemark] = React.useState(""); // 任务备注
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
   // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
@@ -291,6 +293,8 @@ export function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
+        remark: remark.trim(),
         plannerTemplateId: plannerTemplateID > 0 ? plannerTemplateID : undefined,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
@@ -548,6 +552,33 @@ export function CreateTaskSheet({
                     距上轮规划结束/任务开始满该时长且期间无触发，自动触发一轮规划（兜底卡死 + 唤醒去监督在跑的
                     worker）。下限 10 分钟。
                   </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="worker-count">并发 Worker 数（可选）</Label>
+                  <Input
+                    id="worker-count"
+                    type="number"
+                    min={0}
+                    max={50}
+                    className="w-40"
+                    placeholder="留空 = 跟随全局"
+                    value={workerCount}
+                    onChange={(e) => setWorkerCount(e.target.value)}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    只在该任务首次启动时生效（槽位一旦固化，改这里不会中途换槽位，避免打断槽位会话）。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="task-remark">备注（可选）</Label>
+                  <Input
+                    id="task-remark"
+                    className="w-full"
+                    maxLength={2000}
+                    placeholder="给自己记的上下文，例如：客户只允许夜间作业"
+                    value={remark}
+                    onChange={(e) => setRemark(e.target.value)}
+                  />
                 </div>
                 <div className="grid gap-2">
                   <label htmlFor="seed-first-intent" className="flex items-center gap-2 text-sm">

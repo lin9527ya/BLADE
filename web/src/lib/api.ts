@@ -357,6 +357,10 @@ export const api = {
     // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
     plannerPrompt?: string;
     plannerTemplateId?: number;
+    // 每任务并发覆盖（0/省略 = 跟随全局）；只在首次启动固化。
+    workerCount?: number;
+    // 任务备注（≤2000 字）。
+    remark?: string;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -374,6 +378,8 @@ export const api = {
       exploration_policy: input.explorationPolicy ?? null, // P20 探索策略覆盖层(null=继承全局默认)
       planner_prompt: input.plannerPrompt ?? "",
       planner_template_id: input.plannerTemplateId ?? 0,
+      worker_count: input.workerCount ?? 0,
+      remark: input.remark ?? "",
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),

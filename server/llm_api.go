@@ -605,4 +605,9 @@ type createTaskReq struct {
 	PlannerPrompt string `json:"planner_prompt,omitempty"`
 	// PlannerTemplateID 从模板库按 id 取正文并快照；省略/0 = 不覆盖。
 	PlannerTemplateID int64 `json:"planner_template_id,omitempty"`
+	// WorkerCount 是每任务并发覆盖（0 = 跟随全局 workers，上限 50）。
+	// 只在任务首次启动时固化，之后改它不影响已在跑的槽位。
+	WorkerCount int `json:"worker_count,omitempty"`
+	// Remark 是任务备注（≤2000 字），给操作者记上下文用。
+	Remark string `json:"remark,omitempty"`
 }

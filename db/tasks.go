@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Task is a row in the task registry (1:1 with an exploration).
@@ -43,6 +44,10 @@ type Task struct {
 	// 实际运行时长：已结算秒数 + 当前段起点（nil = 当前没有在计时）。
 	ActiveRunSeconds    int64      `json:"active_run_seconds"`
 	RunSegmentStartedAt *time.Time `json:"run_segment_started_at,omitempty"`
+	// WorkerCount 是每任务并发覆盖（0 = 跟随全局 workers）。只在首次启动固化进
+	// task_worker_slots，之后改它不影响已在跑的槽位。Remark 是任务备注（≤2000 字）。
+	WorkerCount int    `json:"worker_count"`
+	Remark      string `json:"remark"`
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」)。
 	TimeoutSeconds int        `json:"timeout_seconds"`        // 0=不限时
 	FirstRunAt     *time.Time `json:"first_run_at,omitempty"` // 首次真正开始运行的时刻(非 created_at);nil=尚未运行
@@ -190,6 +195,33 @@ type TaskCreateOptions struct {
 	// PlannerPrompt is the task-level planner prompt snapshot (empty = use the
 	// global prompt chain). Captured at creation, detached from the template library.
 	PlannerPrompt string
+	// WorkerCount 是每任务并发覆盖（0 = 跟随全局 workers，上限 MaxTaskWorkerCount）。
+	// 只在任务首次启动时固化进 task_worker_slots。
+	WorkerCount int
+	// Remark 是任务备注（≤ MaxTaskRemarkRunes 字），给操作者自己记上下文用。
+	Remark string
+}
+
+// MaxTaskWorkerCount 是每任务并发覆盖的硬上限。
+const MaxTaskWorkerCount = 50
+
+// MaxTaskRemarkRunes 是任务备注的字数上限（与任务模板共用）。
+const MaxTaskRemarkRunes = 2000
+
+// normalizeWorkerCount 把负数覆盖归零（0 就是"跟随全局"）。
+func normalizeWorkerCount(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// ValidateWorkerCount 校验每任务并发覆盖的上限。
+func ValidateWorkerCount(n int) error {
+	if n > MaxTaskWorkerCount {
+		return fmt.Errorf("worker_count 不能超过 %d（0 = 跟随全局）", MaxTaskWorkerCount)
+	}
+	return nil
 }
 
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
@@ -248,6 +280,14 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	if opts.TimeoutSeconds < 0 {
 		opts.TimeoutSeconds = 0
 	}
+	opts.WorkerCount = normalizeWorkerCount(opts.WorkerCount)
+	if err := ValidateWorkerCount(opts.WorkerCount); err != nil {
+		return nil, err
+	}
+	opts.Remark = strings.TrimSpace(opts.Remark)
+	if utf8.RuneCountInString(opts.Remark) > MaxTaskRemarkRunes {
+		return nil, fmt.Errorf("任务备注最多 %d 个字符", MaxTaskRemarkRunes)
+	}
 	opts.PlanHeartbeatSeconds = normalizeHeartbeat(opts.PlanHeartbeatSeconds)
 	coverageEnabled := opts.CoverageEnabled == nil || *opts.CoverageEnabled
 	var categoryName string
@@ -284,13 +324,14 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		policyRaw = string(opts.ExplorationPolicy)
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, exploration_policy, planner_prompt_override)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, policyRaw, strings.TrimSpace(opts.PlannerPrompt)).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, exploration_policy, planner_prompt_override, worker_count, remark)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, policyRaw, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	t.ExplorationPolicy = append(json.RawMessage(nil), opts.ExplorationPolicy...)
 	t.PlannerPromptOverride = strings.TrimSpace(opts.PlannerPrompt)
+	t.WorkerCount, t.Remark = opts.WorkerCount, opts.Remark
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
 		return nil, err
 	}
@@ -404,11 +445,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(exploration_policy,'{}'::jsonb), COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(exploration_policy,'{}'::jsonb), COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,'')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ExplorationPolicy, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ExplorationPolicy, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil

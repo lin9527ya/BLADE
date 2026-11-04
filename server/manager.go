@@ -527,6 +527,25 @@ func (m *Manager) EnsureTaskWorkerSlots(taskID string, fallback int) int {
 	return fallback
 }
 
+// TaskWorkerCount 返回任务的并发覆盖值（0 = 未设置/跟随全局）。
+func (m *Manager) TaskWorkerCount(taskID string) int {
+	if m.pg == nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	var count int
+	if err := m.pg.QueryRow(`SELECT COALESCE(worker_count,0) FROM tasks WHERE id=$1`, n).Scan(&count); err != nil {
+		return 0
+	}
+	if count < 0 || count > pgdb.MaxTaskWorkerCount {
+		return 0
+	}
+	return count
+}
+
 // Workers returns the configured fixed worker-slot count (default 3). Snapshot
 // into task_worker_slots at engine.Run; changing it only affects tasks started
 // afterwards.

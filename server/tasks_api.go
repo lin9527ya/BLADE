@@ -722,6 +722,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		InterceptRules:    interceptRules,
 		ExplorationPolicy: policyDoc,
 		PlannerPrompt:     plannerPrompt,
+		WorkerCount:       req.WorkerCount,
+		Remark:            req.Remark,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

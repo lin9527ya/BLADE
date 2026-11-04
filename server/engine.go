@@ -1059,7 +1059,13 @@ func (e *Engine) pauseTaskWithReason(t *Task, reason string) {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
-	workers := e.m.EnsureTaskWorkerSlots(t.ID, e.m.Workers())
+	// 每任务并发覆盖（worker_count）只在首次启动生效：已有槽位记录的任务沿用固化值，
+	// 中途改这个字段不会换槽位——那会打乱槽位会话亲和。
+	fallback := e.m.Workers()
+	if override := e.m.TaskWorkerCount(t.ID); override > 0 {
+		fallback = override
+	}
+	workers := e.m.EnsureTaskWorkerSlots(t.ID, fallback)
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
