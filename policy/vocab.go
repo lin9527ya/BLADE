@@ -251,5 +251,13 @@ func Negated(text string, at int) bool {
 			return true
 		}
 	}
+	// 单字否定紧贴命中词（"不脱库""未脱库""无拖库"）：中文里最常见的否定形态只有
+	// 一个字，多字前缀覆盖不到。"不少/不同"这类词后面不会紧跟命中词，误判风险很小；
+	// 而且这里只决定"放行并留痕"，真正的禁止由命令层负责。
+	for _, suffix := range []string{"不", "未", "无", "非", "勿", "免", "别"} {
+		if strings.HasSuffix(head, suffix) {
+			return true
+		}
+	}
 	return false
 }

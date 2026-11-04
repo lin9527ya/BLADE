@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"strconv"
@@ -158,5 +159,39 @@ func TestPlannerOpeningRejectsCoarseIntent(t *testing.T) {
 	}
 	if intents, _ := ts.ListByKind(db.KindIntent, 10); len(intents) != 1 {
 		t.Fatalf("开局窗口结束后应放行（只警告），实际建了 %d 条", len(intents))
+	}
+}
+
+// 漏填 risk_area 不再整批退回：按 summary 推断并在回执里说明；显式填错仍然报错。
+func TestAddIntentInfersMissingRiskArea(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"对 /search?q= 做 SQL 注入验证"}`)
+	if !strings.Contains(out, "intent created") {
+		t.Fatalf("漏填 risk_area 应放行: %s", out)
+	}
+	if !strings.Contains(out, "推断为 sqli") {
+		t.Fatalf("回执应说明推断结果: %s", out)
+	}
+	nodes, err := ts.ListByKind(db.KindIntent, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	for _, n := range nodes {
+		var p struct {
+			Summary  string `json:"summary"`
+			RiskArea string `json:"risk_area"`
+		}
+		_ = json.Unmarshal(n.Payload, &p)
+		if strings.Contains(p.Summary, "SQL 注入验证") {
+			found = p.RiskArea
+		}
+	}
+	if found != "sqli" {
+		t.Fatalf("推断结果应落库为 sqli，实际 %q", found)
+	}
+	out = callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"对 /x 做验证","risk_area":"nope"}`)
+	if !strings.Contains(out, "不在词表内") {
+		t.Fatalf("显式填错仍应报错: %s", out)
 	}
 }

@@ -470,3 +470,17 @@ func TestRejectTextPaceIsNotExhaustion(t *testing.T) {
 		t.Fatalf("pace 拒绝不应引导模型宣告策略穷尽：\n%s", text)
 	}
 }
+
+// 单字否定紧贴命中词（"不脱库"）不是要发起该手段：任务 30 实测里，一条写明
+// "确认后只取 version() 等最小证据，不脱库"的合规意图被硬拒，白烧一轮。
+func TestCheckIntentSingleCharNegation(t *testing.T) {
+	eff := Effective{ForbiddenWrites: []string{"db_dump"}}
+	v := eff.CheckIntent(IntentInput{Summary: "对 /search?q= 做注入验证，确认后只取 version() 等最小证据，不脱库"})
+	if !v.Allow || !v.Benign {
+		t.Fatalf("「不脱库」应放行并标 Benign: %+v", v)
+	}
+	v = eff.CheckIntent(IntentInput{Summary: "对 /search?q= 注入后脱库，导出整库"})
+	if v.Allow || v.ItemID != "db_dump" {
+		t.Fatalf("正向提及应硬拒: %+v", v)
+	}
+}

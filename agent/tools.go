@@ -2079,13 +2079,18 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		return 0, "", fmt.Errorf("summary 不能为空")
 	}
 	// risk_area 是覆盖矩阵的键：空值/未知词会让这条方向落进 other，报告与覆盖度
-	// 从此失真（任务 14 实测 537/580 条意图是 other）。这里硬拒，并在错误里给枚举。
+	// 从此失真（任务 14 实测 537/580 条意图是 other）。
+	// 漏填不再硬拒：按 summary 推断一个风险类并在回执里说明——开局轮整批被打回的
+	// 代价是白烧一次调用（任务 30 实测：4 条意图因缺 risk_area 全部重交）。显式填写
+	// 仍然优先，填错（不在词表内）照旧报错，不猜。
 	rawRisk := strings.TrimSpace(it.RiskArea)
+	riskArea := rawRisk
+	riskInferred := false
 	if rawRisk == "" {
-		return 0, "", fmt.Errorf("risk_area 必填：%s（覆盖矩阵与报告按它统计，留空会归入 other 使数据失真）", riskAreaEnum())
-	}
-	riskArea := db.NormalizeRiskArea(rawRisk)
-	if riskArea == "other" && !strings.EqualFold(rawRisk, "other") {
+		riskArea, riskInferred = inferRiskArea(it.Summary), true
+	} else if normalized := db.NormalizeRiskArea(rawRisk); normalized != "other" || strings.EqualFold(rawRisk, "other") {
+		riskArea = normalized
+	} else {
 		return 0, "", fmt.Errorf("risk_area=%q 不在词表内：%s", rawRisk, riskAreaEnum())
 	}
 	intentKind := strings.TrimSpace(it.Kind)
@@ -2353,6 +2358,14 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			note += " " + warn
 		}
 	}
+	if riskInferred {
+		hint := fmt.Sprintf("risk_area 未填，已按 summary 推断为 %s（覆盖矩阵按它统计；要精确请在下次显式填写）", riskArea)
+		if note == "" {
+			note = hint
+		} else {
+			note += "\n" + hint
+		}
+	}
 	if coarseWarn != "" {
 		if note == "" {
 			note = coarseWarn
@@ -2403,7 +2416,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
 		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
 		obj(map[string]any{
-			"intents":         map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority/risk_area）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"intents":         map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段——**一次带全 summary + risk_area + goal_id（有多个未达成目标时必填）+ asset_ids + kind**；risk_area 可省略（会按 summary 推断）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
 			"summary":         str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+为什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。risk_area 只是台账键，不是方向本身。"),
 			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
@@ -4373,6 +4386,40 @@ func findingAssetsOverlap(a, b []int64) bool {
 // riskAreaEnum 返回 risk_area 的合法取值说明（错误信息与提示词共用）。
 func riskAreaEnum() string {
 	return strings.Join(db.RiskAreas, " | ")
+}
+
+// riskAreaKeywords 是 risk_area 缺省时的推断表，按特异性从高到低匹配（先命中先返回）。
+// 只用于漏填兜底——显式填写永远优先，填错仍然报错。
+var riskAreaKeywords = []struct {
+	area  string
+	words []string
+}{
+	{"rce", []string{"rce", "命令执行", "命令注入", "代码执行", "反弹 shell", "getshell", "xp_cmdshell", "反序列化"}},
+	{"ssti", []string{"ssti", "模板注入", "模板引擎"}},
+	{"xxe", []string{"xxe", "xml 外部实体", "外部实体"}},
+	{"ssrf", []string{"ssrf", "服务端请求伪造", "内网探测", "元数据"}},
+	{"sqli", []string{"sqli", "sql 注入", "sql注入", "注入点", "盲注", "堆叠注入", "sql"}},
+	{"xss", []string{"xss", "跨站", "存储型", "反射型"}},
+	{"upload", []string{"上传", "upload", "任意文件写", "文件写入"}},
+	{"traversal", []string{"路径穿越", "目录穿越", "traversal", "../"}},
+	{"idor", []string{"idor", "对象级越权", "未授权访问", "越权读"}},
+	{"authz", []string{"越权", "authz", "角色提权", "权限提升"}},
+	{"logic", []string{"业务逻辑", "竞态", "并发", "金额", "优惠券", "支付", "订单"}},
+	{"auth", []string{"登录", "认证", "口令", "密码", "账号", "会话", "session", "cookie", "注册", "找回"}},
+	{"disclosure", []string{"泄露", "robots", "备份", "配置文件", "目录列举", "敏感文件", "信息暴露", "disclosure"}},
+}
+
+// inferRiskArea 从 summary 里推断一个风险类（缺省兜底，不追求完备）。
+func inferRiskArea(summary string) string {
+	low := strings.ToLower(summary)
+	for _, entry := range riskAreaKeywords {
+		for _, w := range entry.words {
+			if strings.Contains(low, w) {
+				return entry.area
+			}
+		}
+	}
+	return "other"
 }
 
 // intentAnchor* 是「这条意图点名了具体入口」的判据。刻意用宽口径：只要出现路径、
