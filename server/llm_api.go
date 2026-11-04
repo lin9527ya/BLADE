@@ -163,7 +163,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	}
 	if prov == nil {
 		var err error
-		prov, err = cfg.NewProvider()
+		prov, err = cfg.NewProviderWithLimiter(s.requestLimiterForProfile(0))
 		if err != nil {
 			return err
 		}
@@ -300,7 +300,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
-	prov, err := cfg.NewProvider()
+	prov, err := cfg.NewProviderWithLimiter(s.requestLimiterForProfile(id))
 	if err != nil {
 		log.Printf("[engine] build provider for LLM profile %d failed: %v", id, err)
 		return nil, agent.Config{}, false
@@ -354,6 +354,24 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	}
 	s.providers.mu.Unlock()
 	return ca
+}
+
+// requestLimiterForProfile returns the stable limiter for one LLM profile (0 =
+// no-profile/global config). Providers are rebuilt often (profile save, activation,
+// agent rebinding); the limiter must survive that, otherwise the quota restarts
+// from zero on every edit and rate limiting is decorative.
+func (s *Server) requestLimiterForProfile(id int64) *agent.RequestLimiter {
+	s.providers.cacheMu.Lock()
+	defer s.providers.cacheMu.Unlock()
+	if l := s.providers.limiters[id]; l != nil {
+		return l
+	}
+	l := &agent.RequestLimiter{}
+	if s.providers.limiters == nil { // 测试里手工构造的 Server 可能没初始化这张表
+		s.providers.limiters = map[int64]*agent.RequestLimiter{}
+	}
+	s.providers.limiters[id] = l
+	return l
 }
 
 // invalidateProfileAgents drops the per-profile ChatAgent + provider caches so a profile

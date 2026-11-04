@@ -260,7 +260,27 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.CustomHeaders)
+	return c.NewProviderWithLimiter(&RequestLimiter{})
+}
+
+// NewProviderWithLimiter builds a provider whose HTTP layer counts every attempt
+// against limiter. Callers that cache providers per LLM profile MUST pass the same
+// limiter across rebuilds, or a profile edit silently resets the quota.
+func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, error) {
+	if limiter == nil {
+		limiter = &RequestLimiter{}
+	}
+	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
+		if err := limiter.Configure(c.RatePerSecond, c.RatePerMinute); err != nil {
+			return nil, err
+		}
+	} else {
+		// 未配置限流：清空窗口，避免沿用上一次的额度（profile 从有限流改成不限流）。
+		if err := limiter.Configure(0, 0); err != nil {
+			return nil, err
+		}
+	}
+	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.CustomHeaders, limiter)
 	if err != nil {
 		return nil, err
 	}
@@ -283,9 +303,9 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	lc.RetryInterval = c.Retry.ConnectInterval
 	lc.EmptyResponseRetries = c.Retry.EmptyAttempts
 	lc.EmptyResponseInterval = c.Retry.EmptyInterval
-	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
-		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
-	}
+	// 限流只在 HTTP 层做（见 RequestLimiter）。SDK 自带的 token bucket 会与本层
+	// 叠加成双重限流，且它不统计 SDK 内部重试，留着一个「看起来生效」的假护栏
+	// 比没有更糟——所以这里不再设置 lc.RateLimit。
 	return llm.NewProvider(lc)
 }
 
@@ -415,7 +435,7 @@ func requestBodySnapshot(req *http.Request) string {
 	return string(b)
 }
 
-func quotaAwareHTTPClient(proxy, sessionHeaderKey string, customHeaders map[string]string) (*http.Client, error) {
+func quotaAwareHTTPClient(proxy, sessionHeaderKey string, customHeaders map[string]string, limiter *RequestLimiter) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// Disable automatic gzip: an SSE response compressed here can be buffered by
 	// an intermediary (Clash and similar) and never flushed, leaving the client
@@ -438,7 +458,13 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string, customHeaders map[stri
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), customHeaders: customHeaders}}, nil
+	var rt http.RoundTripper = quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), customHeaders: customHeaders}
+	if limiter != nil {
+		// 限流包在最外层：SDK 的连接重试、空响应重试都会真实发出 HTTP 请求，
+		// 只有在 RoundTrip 上计数才能把它们算进额度。
+		rt = rateLimitedTransport{base: rt, limiter: limiter}
+	}
+	return &http.Client{Transport: rt}, nil
 }
 
 // logTestConnection prints the raw HTTP status code(s) and response body of a

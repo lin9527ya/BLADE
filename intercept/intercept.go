@@ -363,6 +363,8 @@ const (
 	settingJudgeAskTimeoutSecs   = "llm_judge_ask_timeout_seconds"
 	settingJudgeAskTimeoutAction = "llm_judge_ask_timeout_action"
 	settingJudgeStructured       = "llm_judge_structured"
+	settingJudgeRetryCount       = "llm_judge_retry_count"
+	settingJudgeRetryIntervalMS  = "llm_judge_retry_interval_ms"
 )
 
 // Judge default values.
@@ -392,6 +394,10 @@ type JudgeConfig struct {
 	// Structured：结构化裁决（P15）。开启时裁判按"各轴把握 + 建议 choice + 置信度"
 	// 输出，最终 allow/ask/deny 由代码阈值决定（intercept.DecideStructured）。
 	Structured bool `json:"structured"`
+	// RetryCount / RetryIntervalMS：拿不到终态裁决时的重试次数与间隔。0 = 不重试。
+	// 只重试「模型出错/输出解析不了」，deny/ask 是结论、不再重试。
+	RetryCount      int `json:"retry_count"`
+	RetryIntervalMS int `json:"retry_interval_ms"`
 }
 
 // judgeConfig reads the judge configuration from settings, applying defaults for
@@ -406,6 +412,21 @@ func (i *Interceptor) judgeConfig() JudgeConfig {
 		AskTimeoutSeconds: i.getSettingInt(settingJudgeAskTimeoutSecs, defaultJudgeAskTimeoutSecs),
 		AskTimeoutAction:  i.getSettingChoice(settingJudgeAskTimeoutAction, defaultJudgeAskTimeoutAction, "allow", "deny"),
 		Structured:        i.db.GetBool(settingJudgeStructured, defaultJudgeStructured),
+		RetryCount:        i.getSettingInt(settingJudgeRetryCount, defaultJudgeRetryCount),
+		RetryIntervalMS:   i.getSettingInt(settingJudgeRetryIntervalMS, defaultJudgeRetryIntervalMS),
+	}
+	// 存量库可能存着越界值（手工改库/旧版本写入）：夹到合法区间，而不是让重试失控。
+	if c.RetryCount < 0 {
+		c.RetryCount = 0
+	}
+	if c.RetryCount > MaxJudgeRetryCount {
+		c.RetryCount = MaxJudgeRetryCount
+	}
+	if c.RetryIntervalMS < 0 {
+		c.RetryIntervalMS = 0
+	}
+	if c.RetryIntervalMS > MaxJudgeRetryIntervalMS {
+		c.RetryIntervalMS = MaxJudgeRetryIntervalMS
 	}
 	// Prompt: stored value if non-empty, else the built-in template.
 	if v, ok, _ := i.db.GetSetting(settingJudgePrompt); ok && strings.TrimSpace(v) != "" {
@@ -485,6 +506,15 @@ func (i *Interceptor) SetJudgeConfig(c JudgeConfig) error {
 	if err := i.db.SetBool(settingJudgeStructured, c.Structured); err != nil {
 		return err
 	}
+	if err := c.ValidateRetry(); err != nil {
+		return err
+	}
+	if err := i.db.SetSetting(settingJudgeRetryCount, strconv.Itoa(c.RetryCount)); err != nil {
+		return err
+	}
+	if err := i.db.SetSetting(settingJudgeRetryIntervalMS, strconv.Itoa(c.RetryIntervalMS)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -521,19 +551,25 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 		out = Decision{Action: "ask", ModelFallback: true, Message: "审查上下文不完整，需要人工确认：" + contextErr.Error()}
 	} else {
 		modelInput, _ = json.Marshal(input)
-		out, err = rv(cctx, cfg.ProfileID, cfg.Prompt, input)
-	}
-	if err == nil && cfg.Structured && out.Action == "" {
-		// 结构化模式：Reviewer 只回原始文本，动作由这里按代码阈值算。
-		// 解析失败不在这里定动作——下面 switch 会走失败策略（默认 ask）。
-		if sv, perr := ParseStructuredVerdict(out.RawReply); perr == nil {
+		// 结构化模式的解析必须在重试循环**内部**完成：模型回一段解析不了的文字时，
+		// 那是一次失败的尝试，应该重试，而不是带着空动作退出去走失败策略。
+		finalize := func(d Decision) (Decision, error) {
+			if !cfg.Structured || d.Action != "" {
+				return d, nil
+			}
+			sv, perr := ParseStructuredVerdict(d.RawReply)
+			if perr != nil {
+				return d, fmt.Errorf("结构化裁决解析失败：%w", perr)
+			}
 			action, reason := DecideStructured(sv)
-			out.Action = action
-			out.Message = reason
-			out.ModelVerdict = StructuredVerdictJSON(sv)
-		} else {
-			out.Message = "结构化裁决解析失败：" + perr.Error()
+			d.Action = action
+			d.Message = reason
+			d.ModelVerdict = StructuredVerdictJSON(sv)
+			return d, nil
 		}
+		// 每次尝试各自带 TimeoutSeconds（见 reviewWithRetry），所以这里用父 ctx：
+		// 若沿用带超时的 cctx，重试会在第一次尝试的超时点上一起被取消，等于没有重试。
+		out, err = reviewWithRetry(ctx, cfg, rv, input, finalize)
 	}
 	if err != nil {
 		out = Decision{ProfileID: out.ProfileID, ModelFallback: true, Action: cfg.FailAction, Message: "模型审批失败,按失败策略处理: " + err.Error()}

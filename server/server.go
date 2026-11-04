@@ -124,6 +124,10 @@ type providerState struct {
 	cacheMu   sync.Mutex
 	byProfile map[int64]*provEntry
 	cacheGen  uint64
+	// limiters 是 profile → 限流器的稳定表：provider 每次重建（保存配置、
+	// 切换激活配置、invalidateProfileAgents）都复用同一个限流器，配额历史因此
+	// 不会因为改一次配置就从零开始。key 0 = 无 profile 的全局/环境配置。
+	limiters map[int64]*agent.RequestLimiter
 
 	// health 是 LLM 轮询的进程级熔断状态。刻意放在 provider 缓存**之外**：重建链
 	// （保存无关 profile、改个开关）不该抹掉"哪个后端没额度/被限流"这件事。
@@ -218,6 +222,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		providers: providerState{
 			chatAgents: map[int64]*agent.ChatAgent{},
 			byProfile:  map[int64]*provEntry{},
+			limiters:   map[int64]*agent.RequestLimiter{},
 			health:     newLLMHealthRegistry(m.pg, &m.bgWG),
 		},
 		agents:     agentState{bundles: map[string]*taskAgentBundle{}},

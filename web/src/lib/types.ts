@@ -2424,6 +2424,10 @@ export interface JudgeConfig {
   ask_timeout_seconds: number; // 模型判 ask 转人工后的审批等待超时
   ask_timeout_action: "allow" | "deny"; // 审批超时后的默认动作
   structured: boolean; // P15 结构化裁决:模型给各轴把握+建议,最终动作由代码阈值决定
+  // 拿不到终态裁决（模型出错/输出解析不了）时的重试次数与间隔；0 = 不重试。
+  // deny/ask 是结论，不重试。
+  retry_count: number;
+  retry_interval_ms: number;
 }
 
 // JudgeUsage: 模型兜底审批(judge 通道)的累计 token 用量 + 近 N 天每日序列。

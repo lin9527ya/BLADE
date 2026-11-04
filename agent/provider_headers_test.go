@@ -22,7 +22,7 @@ func TestQuotaAwareTransportAppliesCustomHeaders(t *testing.T) {
 	client, err := quotaAwareHTTPClient("", "X-Session", map[string]string{
 		"User-Agent": "claude-cli/2.1.0 (external, cli)",
 		"X-Route":    "relay",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

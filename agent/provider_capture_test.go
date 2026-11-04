@@ -21,7 +21,7 @@ func TestRoundTripCapturesRawBodies(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := quotaAwareHTTPClient("", "", nil)
+	client, err := quotaAwareHTTPClient("", "", nil, nil)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestRoundTripCaptures429BodyAlongsideQuotaRewrite(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := quotaAwareHTTPClient("", "", nil)
+	client, err := quotaAwareHTTPClient("", "", nil, nil)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRoundTripWithoutCaptureIsUnchanged(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := quotaAwareHTTPClient("", "", nil)
+	client, err := quotaAwareHTTPClient("", "", nil, nil)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}

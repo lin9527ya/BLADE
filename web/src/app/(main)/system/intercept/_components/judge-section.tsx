@@ -75,6 +75,8 @@ const defaultJudge = (): JudgeConfig => ({
   ask_timeout_seconds: 300,
   ask_timeout_action: "deny",
   structured: true,
+  retry_count: 2,
+  retry_interval_ms: 1000,
 });
 
 export function JudgeSection() {
@@ -261,6 +263,30 @@ export function JudgeSection() {
                     onChange={(e) => {
                       const n = parseInt(e.target.value, 10);
                       if (n > 0) patch({ timeout_seconds: n });
+                    }}
+                  />
+                </Field>
+                <Field label="失败重试次数">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={20}
+                    value={cfg.retry_count}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      if (Number.isFinite(n) && n >= 0 && n <= 20) patch({ retry_count: n });
+                    }}
+                  />
+                </Field>
+                <Field label="重试间隔（毫秒）">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={3600000}
+                    value={cfg.retry_interval_ms}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      if (Number.isFinite(n) && n >= 0 && n <= 3600000) patch({ retry_interval_ms: n });
                     }}
                   />
                 </Field>
