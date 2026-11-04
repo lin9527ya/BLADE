@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -283,4 +284,47 @@ func TestProxyPoolWaitReadyNoCandidates(t *testing.T) {
 	p.Start()
 	defer p.Close()
 	p.WaitReady(context.Background()) // 不阻塞即通过
+}
+
+// 健康检查/出口 IP 的 URL 是用户可配的：没有拨号守卫时把它指向环回地址，
+// 平台就会替用户去连内网。这里钉住"拨号阶段按真实 IP 拒绝"。
+func TestProbeDialGuardBlocksLoopbackAndLinkLocal(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:80", "[::1]:80", "169.254.169.254:80"} {
+		if err := blockProbeInternalDial("tcp", addr, nil); err == nil {
+			t.Fatalf("%s 应被拨号守卫拒绝", addr)
+		}
+	}
+	// RFC1918 放行：内网自建的健康检查服务是常见部署。
+	for _, addr := range []string{"10.0.0.5:80", "192.168.1.10:443"} {
+		if err := blockProbeInternalDial("tcp", addr, nil); err != nil {
+			t.Fatalf("%s 不该被拒：%v", addr, err)
+		}
+	}
+}
+
+// 跨主机重定向必须拒绝：否则"校验时公网、实际连内网"又成立了。
+func TestProbeRedirectPolicyRejectsCrossHost(t *testing.T) {
+	first := &http.Request{URL: mustURL(t, "https://health.example/204")}
+	next := &http.Request{URL: mustURL(t, "http://169.254.169.254/latest/meta-data")}
+	if err := probeRedirectPolicy(next, []*http.Request{first}); err == nil {
+		t.Fatal("跨主机重定向应被拒绝")
+	}
+	same := &http.Request{URL: mustURL(t, "https://health.example/other")}
+	if err := probeRedirectPolicy(same, []*http.Request{first}); err != nil {
+		t.Fatalf("同主机重定向应放行：%v", err)
+	}
+	// 最多 3 跳。
+	via := []*http.Request{first, first, first}
+	if err := probeRedirectPolicy(same, via); err == nil {
+		t.Fatal("超过 3 跳应被拒绝")
+	}
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

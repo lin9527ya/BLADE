@@ -33,7 +33,9 @@ type Server struct {
 	ctx      context.Context
 	sched    *Scheduler
 	skillDir string // root directory for skill subdirectories
-	side     *sideQuestionState
+	// sysMetrics 保存上一次 CPU 采样（/api/metrics 的 system 段用它算占用率）。
+	sysMetrics systemSamplerState
+	side       *sideQuestionState
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
@@ -227,6 +229,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		},
 		agents:     agentState{bundles: map[string]*taskAgentBundle{}},
 		agentCache: newAgentRowCache(),
+		sysMetrics: systemSamplerState{},
 		archive:    archiveState{wake: make(chan struct{}, 1)},
 	}
 	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。

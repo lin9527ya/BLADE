@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/lin9527ya/blade/traffic"
@@ -498,13 +499,8 @@ func probeEgressIP(ctx context.Context, proxyURL, ipURL string, timeout time.Dur
 	if err != nil {
 		return "", err
 	}
-	tr := &http.Transport{
-		Proxy:                 http.ProxyURL(u),
-		TLSHandshakeTimeout:   timeout,
-		ResponseHeaderTimeout: timeout,
-		DisableKeepAlives:     true,
-	}
-	client := &http.Client{Transport: tr, Timeout: timeout}
+	tr := probeTransport(u, timeout)
+	client := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: probeRedirectPolicy}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipURL, nil)
 	if err != nil {
 		return "", err
@@ -519,6 +515,69 @@ func probeEgressIP(ctx context.Context, proxyURL, ipURL string, timeout time.Dur
 		return "", fmt.Errorf("出口 IP 查询服务返回 HTTP %d", resp.StatusCode)
 	}
 	return parseEgressIP(body)
+}
+
+// probeTransport 是健康检查与出口 IP 查询共用的 Transport。
+//
+// 两条防护缺一不可：
+//   - **拨号守卫**：健康检查/出口 IP 的 URL 是用户可配的，没有守卫时把它指向
+//     127.0.0.1 或云元数据地址，平台就会替用户去连内网（DNS 重绑定也一样，只有
+//     在拨号阶段检查才挡得住）。复用 mcphttp 的判定口径：拒绝环回、链路本地、
+//     未指定与组播，放行 RFC1918（自建探测服务常见）。
+//   - **重定向限制**：跨主机 302 会让"校验时是公网域名、实际连到内网"重新成立。
+func probeTransport(proxy *url.URL, timeout time.Duration) *http.Transport {
+	tr := &http.Transport{
+		Proxy:                 http.ProxyURL(proxy),
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		DisableKeepAlives:     true,
+	}
+	// 只有「直连到探测 URL」这一跳要过守卫。经代理时 DialContext 连的是代理本身，
+	// 代理常常就在本机（Clash 的 127.0.0.1:7890）——在那里拦环回会把正常配置判死。
+	if proxy == nil {
+		tr.DialContext = (&net.Dialer{Timeout: timeout, Control: blockProbeInternalDial}).DialContext
+	}
+	return tr
+}
+
+// blockProbeInternalDial 是拨号阶段的 Control 钩子：连接建立时按真实 IP 判定。
+func blockProbeInternalDial(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("无法解析探测目标地址 %q", host)
+	}
+	if probeBlockedIP(ip) {
+		return fmt.Errorf("拒绝连接本机/链路本地探测地址 %s", ip)
+	}
+	return nil
+}
+
+// probeBlockedIP 与 mcphttp.isBlockedDialIP 同一口径：只挡环回、链路本地、
+// 未指定与组播；RFC1918 私网放行（内网自建的健康检查服务是常见部署）。
+func probeBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+}
+
+// probeRedirectPolicy 只允许同主机重定向，最多 3 跳。
+func probeRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 3 {
+		return fmt.Errorf("健康检查重定向次数过多")
+	}
+	if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+		return fmt.Errorf("健康检查重定向到其它主机被拒绝：%s → %s", via[0].URL.Host, req.URL.Host)
+	}
+	return nil
 }
 
 // parseEgressIP 兼容三种常见返回：纯 IP（ipify）、cloudflare trace 的 ip= 行、
@@ -558,13 +617,8 @@ func probeHTTPProxy(ctx context.Context, proxyURL, healthURL string, timeout tim
 	if err != nil {
 		return err
 	}
-	tr := &http.Transport{
-		Proxy:                 http.ProxyURL(u),
-		TLSHandshakeTimeout:   timeout,
-		ResponseHeaderTimeout: timeout,
-		DisableKeepAlives:     true,
-	}
-	client := &http.Client{Transport: tr, Timeout: timeout}
+	tr := probeTransport(u, timeout)
+	client := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: probeRedirectPolicy}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
 		return err

@@ -37,6 +37,9 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		"now":            time.Now().UTC(),
 		"uptime_seconds": int64(time.Since(processStarted).Seconds()),
 		"llm_in_flight":  llmrec.InFlightCalls(),
+		// 机器资源：任务卡住时先排除「机器跑满了」再查模型与代理。只读 cgroup/proc，
+		// 读不到时 supported=false，不影响其余指标。
+		"system": s.systemMetricsSnapshot(),
 	}
 
 	var ms runtime.MemStats
