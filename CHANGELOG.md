@@ -4,6 +4,67 @@
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-11-05
+
+探索图与知识回流的一轮：线索与事实语义进图、复盘轮成为节律、死依赖可见、跨任务知识自动沉淀，审核输出解析加固。
+
+### 新增
+
+- **线索通道（lead）**：`record_fact` 支持 `leads`（本意图之外的具体线索，每条事实
+  最多 8 条）；`add_intent` 支持 `converts_lead_ids`，新增 `dismiss_leads`；态势新增
+  `recent_leads` / `leads_total` / `leads_open` / `leads_converted`。lead 状态由
+  convert/dismiss 显式决定，不靠「来源事实有没有子意图」猜
+- **事实语义**：`record_fact` 支持 `polarity`（positive/negative/inconclusive）、
+  `enables`（credential/foothold/access/info/surface）、`limitations`；态势新增
+  `capabilities` / `ruled_out` / `unconsumed_facts`（只催办正向与存疑事实）
+- **图可读性**：意图的 `parents`/`yields` 增加 `parent_kinds`/`yield_kinds`；新增
+  `folded_facts` 冷区事实索引与 SQL 真计数；`stopped` 意图进入 `recent_done_intents`
+  与 `folded_intents`
+- **意图假设与验收标准**：`add_intent` 支持 `hypothesis` / `success_criteria` /
+  `stop_condition`，随意图落库并在态势里带出
+- **态势减负**：`breadth.top_gaps` 每资产只展示最贴合的两类风险类（完整矩阵仍走
+  `coverage_matrix`）；`recent_facts` 增加 `detail_len`/`has_evidence`，未消费事实带
+  围栏后的 detail 摘要
+- **种子意图对齐开局摸底**：`seed_first_intent` 开启时改为下发 discovery 开局意图
+  （指纹/robots/首页 script/后台入口跳转），不再写「完成任务目标：…」这种泛化目标
+- **复盘轮（合成节律）**：每 5 个普通轮或新增 ≥4 条事实后，规划轮切为复盘轮——
+  只读节点详情/轨迹，用 TodoWrite 写 3 条候选路线，`add_intent` 最多 3 条；两次复盘
+  之间至少 3 个普通轮，没有在跑/可领意图时不进复盘
+- **死依赖可见化**：`graph_overview` 的 `blocked_by` 对「前置已终态但不是
+  done/negative」的依赖标 `dead: true`；图审计新增 `dead_dependency`
+- **资产登记自动转凭据**：`insert_assets` 的 `auth` 含 secret 时自动建 credential 节点
+  （`verification=unverified`、`source=asset_registration`、低 confidence，按
+  kind+username+secret 去重），不再依赖 worker 记得再调 `report_credential`
+- **验证链提示**：`verify` 意图若只是单点检查（没有「先…再…/命中后…」），回执带
+  `chain_warning`，不硬拦
+- **图健康回流**：`graph_overview` 新增 `graph_health`（8 类审计计数 + 前 3 条问题，
+  30 秒缓存），依赖环/饥饿/死依赖/过期租约不再只躺在启动日志里
+- **真计数与游标**：overview 新增 `intents_total`/`edges_total` 与窗口提示；
+  `folded_intents_total` 改用 SQL 真计数；`blocked_intents_total` 改为全量
+- **审核员重复判定校准**：`Repeated` 改为「工具 + 参数 + 结果」三元组一致才计数，
+  同入口不同 payload/参数/编码的变体枚举不再算原地打转
+- **广度义务热线索例外**：有新材料性线索（confirmed finding / open gap / 新凭据）时，
+  一条深度意图可抵一条广度义务，同一资产债最多延后 2 轮
+- **公司知识自动沉淀**：任务收尾/暂停时把 confirmed finding、ruled_out 结论与
+  observed 否定事实沉淀到 `company_knowledge`（按 source_task_id+node_id 幂等），
+  同公司后续任务在态势里可见
+- **DeepSeek 直连搜索**：移植 ARTEX 的 `deepseek_search` / `deepseek_fetch`（任意
+  profile 可用、一次调用返回正文、可配独立出口代理），仅在 WebSearch 选 deepseek
+  且有 key 时注册
+
+### 修复
+
+- **审核员输出解析过脆**：`ParseSupervisorVerdict` 现在支持 ```json 围栏、前后说明
+  文字、顶层数组、单条对象、字符串内的括号；空输出单独报错。解析失败时服务端用
+  「只输出 JSON 对象」自动重试一次，仍失败才记「审核失败（本轮不纠偏）」，不再把
+  一次格式抖动当成审核故障
+- **`conclude_intent` 零写回提醒**：本次 run 有动作但零写回时，收尾回执提示先写回
+  事实/凭据/发现（不硬拒，避免续跑意图误判）
+- **`stopped` 意图在态势里不可见**：被终止的方向会被当成「没派过」重派；现在
+  `recent_done_intents`/`folded_intents`/`done_intents_total` 都计入 `stopped`
+- **种子意图绕过开局摸底**：有种子意图时 planner 首轮被跳过，worker 直接拿泛化目标
+  开跑；现在种子本身就是一条具体的 discovery 摸底意图
+
 ## [0.8.8] - 2026-11-04
 
 规划与深度的一轮：首轮先摸底再派单，意图必须点名具体入口，穷尽声明要拿得出深度证据。

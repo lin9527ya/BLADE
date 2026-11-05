@@ -379,6 +379,21 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				results = append(results, result{Index: i, ID: id, Type: typ})
 				countAsset(item)
 				t.anchorOwner(id)
+				// auth 字段顺手转成凭据节点：worker 在资产登记里填的账号口令，
+				// 不该因为忘记再调一次 report_credential 就丢（任务 30 实测）。
+				if len(item.Auth) > 0 && id > 0 {
+					host := item.Domain
+					if host == "" && item.URL != "" {
+						if u, uerr := url.Parse(item.URL); uerr == nil {
+							host = u.Hostname()
+						}
+					}
+					for _, entry := range item.Auth {
+						if _, cerr := t.recordAssetCredential(id, host, item.Port, entry); cerr != nil {
+							log.Printf("[insert_assets] 自动登记凭据失败 asset=%d: %v", id, cerr)
+						}
+					}
+				}
 				if taskID > 0 {
 					var sourceNodeID *int64
 					if t.ownerNode > 0 {

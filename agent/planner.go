@@ -53,6 +53,12 @@ type Planner struct {
 	// exhaustCooldown 是穷尽复核否决后的冷却轮数：>0 时 mark_strategy_exhausted 直接
 	// 返回「先把复核点名的缺口补上」，不再消耗一轮复核（任务 28 在 25 分钟里声明了 5 次）。
 	exhaustCooldown int
+	// reviewRound 标记本轮是否为复盘轮（只读图 + 写路线池，add_intent 最多 3 条）。
+	// roundsSinceReview / factsAtLastReview 是节律计数：每 5 个普通轮或新增 ≥4 条事实
+	// 触发一次，两次之间至少 3 个普通轮，避免复盘把规划轮吃光。
+	reviewRound       bool
+	roundsSinceReview int
+	factsAtLastReview int
 	// hot 是跨轮复用的规划会话。每轮结束后把历史折叠成「本轮输入 + 结论」两条消息
 	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
 	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
@@ -633,6 +639,7 @@ const breadthDisciplineBlock = `
 【广度纪律（代码持有；覆盖度开启时生效，态势没有 breadth 字段时忽略本段，并以后文与本段为准）】
 - 口径：breadth.assets_total 只数具体资产（subdomain/app/endpoint/ip）；service 是 host:port 属性（services_excluded），不单独计债——它的覆盖由挂在其下的 endpoint/subdomain 承担；root_domain 只是聚合，root_domains_excluded 不计债。breadth.pct 是具体资产终态覆盖率，breadth.debt 是没有终态且没有在跑意图的资产数（含只有 blocked/exhausted/no_output 的资产；no_output 不算覆盖）。
 - 义务：breadth.debt > 0 时，本轮新增意图至少 1 条必须是广度意图，占用本轮名额；其余 worker 可继续深度。不要用“深度优先”作为 0 意图或不补广度的理由。广度债不要求一轮清空，但不得连续多轮无人接手。
+- **例外（热线索优先）**：本轮若有材料性新线索（新 confirmed finding / open_proof_gap / 新凭据），一条深度意图可抵一条广度义务；同一资产的债最多延后 2 轮，第 3 轮必须补。
 - 写法：广度意图必须带具体 asset_ids（不能只给 root_domain）与 risk_area，写清入口/参数、验证的假设、什么算测到；禁止“看一下/补一下覆盖”。优先 breadth.top_gaps 中 state=untouched 的资产，从 untouched_risk_areas 选与入口最贴合的一类；同一入口的相邻资产可以合并一条，但每个资产都要真正被测到。
 - 失败：state=failed 是“没测成”，不是“没问题”；先 get_worker_output / get_worker_trace 看卡点，再换入口/参数/机理，不要原样重试。state=in_flight 只是有人在跑，不是终态。
 - 收尾：准备 0 意图或 prove_goal 前先看 breadth；breadth.debt > 0 且无人负责时不得静默结束，要么派广度，要么把“确属范围外/不可达/受约束”的原因写进 fact/备注。覆盖度类验收以 breadth.pct 为准，未达标禁止 prove_goal；breadth.assets_total=0 且 need_asset_discovery=true 时先做资产发现。
@@ -657,6 +664,27 @@ const openingProbeBlock = `
 - **禁止**把 worker 的活抢过来：本轮不做目录枚举/字典、不做注入或爆破试探、不做子域测绘（域名/证书/子域交给 discovery 意图）。单次请求只为读懂入口，看到 4xx/5xx 记下即可，不追。
 - **本轮允许产出 0 条意图**（只摸底）：摸底成功就必须派 ≥1 条引用观察的意图；只有目标完全不可达（连接失败/被拦）时才允许 0 条，并在回复里说明。
 - **本段压过本文其它段落**：开局轮不适用【槽位利用率】的"必须填满空闲槽位"与【广度纪律】的"本轮至少 1 条广度意图"。首轮把一条入口写具体，比把 4 个槽位用风险类填满更值。`
+
+// reviewRoundBlock 是**代码持有**的复盘轮纪律：把「读图-综合」从偶然变成节律。
+// 只在 Plan 判定 reviewRound 时追加；它显式压过槽位利用率与广度纪律的派单下限，
+// 否则复盘轮会被那两段逼着继续铺量。
+const reviewRoundBlock = `
+
+【复盘轮（代码持有）】
+- 本轮是复盘轮：不要急着派单。先读 2–3 个节点详情（node_detail / get_worker_trace / list_facts / expand_digest），把最近的事实、线索、失败方向综合一遍。
+- 用 TodoWrite 写 3 条候选路线：每条写「从哪条事实/线索来、验证什么、什么算测到、下一步是什么」。这是下一轮的路线池，别只放在脑子里。
+- 本轮 add_intent 最多 3 条，只派「候选路线里最值得先打的一条」；本段压过【槽位利用率】与【广度纪律】的派单下限。
+- 复盘后确实没有新方向时，允许 0 条意图（写明理由）；但不要用「想不出」代替复盘。`
+
+// leadTriageBlock 是**代码持有**的线索分诊纪律：recent_leads/unconsumed_facts 是
+// worker 留下的、本意图之外的具体线索。没有这一段，planner 会继续只看 summary、
+// 把线索留在图里烂掉——任务 30 里 7/14 条事实没有任何下游意图。
+const leadTriageBlock = `
+
+【线索分诊（代码持有；态势里有 recent_leads / unconsumed_facts 时执行本段）】
+- ` + "`recent_leads`" + ` 是 worker 在别的方向看到的具体线索（入口/参数/行为/资产），不是结论；` + "`unconsumed_facts`" + ` 是还没有任何意图接手的正向事实（已过滤否定收尾）。每轮最多处理 3 条。
+- 采纳：` + "`add_intent`" + ` 带 ` + "`converts_lead_ids=[...]`" + `，parent_ids 指向来源事实；不采纳：` + "`dismiss_leads`" + ` 写明理由（已否定/重复/超范围/代价过高）。不要静默忽略。
+- 连续 3 轮不处理的 lead 会被顶到最前；` + "`leads_open`" + ` 是未处理数，` + "`leads_converted`" + ` 是已转意图数。` + "`capabilities`" + ` 是本任务已到手的能力，` + "`ruled_out`" + ` 是已否定方向——派单前先看这两段，避免重派。`
 
 // PlannerTemplateDefault returns the DB default template body ("" when none).
 // Wired at startup so the agent package stays free of DB imports.
@@ -694,7 +722,7 @@ const endgameDoctrineBlock = `
 - 只做三类事：①把在跑/待领方向推到结论；②清理目标上的遗留物并用 mark_artifact_cleared 销账；③补齐报告缺项（open_proof_gap 的候选要么给出结论、要么 close_candidate 成 ruled_out；覆盖空白写清为什么没测）。
 - 收官期与任何"继续深挖"的建议冲突时，**以收官期为准**；剩余时间不足以完成的事，写进结论交给报告，而不是硬开。`
 
-func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
+func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	body := ""
 	// ① 任务级快照（tasks.planner_prompt_override）
@@ -738,7 +766,11 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 		}
 	}
 	// 追加段与潜行纪律不属于任何一级正文：静默模式下任务快照/模板库正文同样要带上。
-	return body + promptExtras("planner") + openingProbeBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
+	reviewBlock := ""
+	if len(review) > 0 && review[0] {
+		reviewBlock = reviewRoundBlock
+	}
+	return body + promptExtras("planner") + openingProbeBlock + leadTriageBlock + reviewBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
 }
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
@@ -796,6 +828,29 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if opening {
 		p.openingRounds++
 	}
+	// 复盘轮节律：有在跑的活才复盘（没活时硬底线优先）；每 5 个普通轮或新增 ≥4 条
+	// 事实触发一次，两次之间至少 3 个普通轮。计数器放在 Planner 上，按任务隔离。
+	review := false
+	if active, aerr := ts.HasActiveIntent(); aerr == nil && active {
+		facts := 0
+		if n, cerr := ts.CountByKind(db.KindFact); cerr == nil {
+			facts = n
+		}
+		if p.factsAtLastReview == 0 {
+			p.factsAtLastReview = facts
+		}
+		if p.roundsSinceReview >= 5 || facts-p.factsAtLastReview >= 4 {
+			if p.roundsSinceReview >= 3 {
+				review = true
+				p.roundsSinceReview = 0
+				p.factsAtLastReview = facts
+			}
+		}
+	}
+	if !review {
+		p.roundsSinceReview++
+	}
+	p.reviewRound = review
 	wireToolSet := func(t *ToolSet) {
 		t.ts = ts // 任务存储指针跨轮不变；重装一遍以防替换
 		originNode := int64(0)
@@ -819,6 +874,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		// 用闭包而不是快照：本轮若刚收到复核否决，同轮内再调用也要被挡（见 takeExhaustionNote）。
 		t.exhaustCooldownFn = func() int { return p.exhaustCooldown }
 		t.openingStrict = opening
+		t.reviewRound = p.reviewRound
 	}
 	wireToolSet(tsx)
 	pol := p.policy()
@@ -828,6 +884,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "planner", base)
 	defer cleanup()
+	tools = append(tools, deepSeekTools(p.webSearch)...)
 	// 工具 schema 瘦身：把低频内置工具的 schema 从每轮工具列表里摘出去，只留名字在
 	// 系统提示的 deferred 块里。planner 37 个工具的 schema 合计约 3.3 万字符，每轮都
 	// 随缓存前缀发送；这几项在绝大多数轮次里不会被调用（见 plannerDeferredTools）。
@@ -856,7 +913,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
+	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride(), p.reviewRound)
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
@@ -927,7 +984,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	installClock := taskClockFrom(ctx)
 	InstallContextManager(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func() string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
-		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
+		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true})
 	})
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。

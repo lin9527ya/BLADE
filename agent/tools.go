@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -40,7 +41,22 @@ func payloadAttempts(p map[string]any) int {
 	return 0
 }
 
-func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[string]any {
+// kindMap 把 id 列表映射成 {id: kind}，只保留已知 kind。
+func kindMap(ids []int64, kinds map[int64]string) map[string]string {
+	out := map[string]string{}
+	for _, id := range ids {
+		if k := kinds[id]; k != "" {
+			out[strconv.FormatInt(id, 10)] = k
+		}
+	}
+	return out
+}
+
+func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMaps ...map[int64]string) []map[string]any {
+	var kinds map[int64]string
+	if len(kindMaps) > 0 {
+		kinds = kindMaps[0]
+	}
 	out := make([]map[string]any, 0, len(ns))
 	for _, n := range ns {
 		var p map[string]any
@@ -62,9 +78,19 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 		}
 		if ps := parentsOf[n.ID]; len(ps) > 0 {
 			m["parents"] = ps // 上游：本意图派生自哪些节点（多个事实可共同产生一个意图）
+			if kinds != nil {
+				if pk := kindMap(ps, kinds); len(pk) > 0 {
+					m["parent_kinds"] = pk // id→kind：分清 goal / fact / finding
+				}
+			}
 		}
 		if ys := yieldsOf[n.ID]; len(ys) > 0 {
 			m["yields"] = ys // 下游：本意图产生了哪些事实/发现
+			if kinds != nil {
+				if yk := kindMap(ys, kinds); len(yk) > 0 {
+					m["yield_kinds"] = yk // id→kind：分清 fact / finding / loot
+				}
+			}
 		}
 		// 领取次数：升级阶梯的判据（第 2 次必须换角度，第 3 次不再原样重派）。
 		if att := payloadAttempts(p); att > 0 {
@@ -72,6 +98,17 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 			if lo, _ := p["last_outcome"].(string); lo != "" {
 				m["last_outcome"] = lo
 			}
+		}
+		// 意图的假设与验收标准：复盘轮按它比较候选路线，worker 按 success_criteria
+		// 判 done/no_output。只带非空字段，避免把旧意图的输出撑大。
+		if h, _ := p["hypothesis"].(string); strings.TrimSpace(h) != "" {
+			m["hypothesis"] = clipLine(h, 200)
+		}
+		if sc, _ := p["success_criteria"].(string); strings.TrimSpace(sc) != "" {
+			m["success_criteria"] = clipLine(sc, 200)
+		}
+		if stop, _ := p["stop_condition"].(string); strings.TrimSpace(stop) != "" {
+			m["stop_condition"] = clipLine(stop, 160)
 		}
 		out = append(out, m)
 	}
@@ -155,6 +192,8 @@ type ToolSet struct {
 	// mark_strategy_exhausted 直接返回，逼 planner 先补复核点名的缺口；用闭包而不是
 	// 快照，才能挡住同一轮内的再次声明。nil = 不冷却。
 	exhaustCooldownFn func() int
+	// reviewRound 为真时，本轮是复盘轮：add_intent 最多 3 条（复盘优先于铺量）。
+	reviewRound bool
 	// openingStrict 为真时，粗粒度（只有风险类、没有具体入口）的意图直接拒收。
 	// 只在任务开局轮由 planner 打开：那一轮还没有任何事实，重写一条具体方向是唯一
 	// 有意义的动作；任务中后段则只警告不拦（已有事实可依，拦下来只会浪费一轮）。
@@ -788,7 +827,56 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 // intent and must not try to widen its job. Skipping it also avoids a needless
 // coverage-matrix query for every worker run.
 func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
-	return t.graphOverviewDataInternal(false)
+	out := t.graphOverviewDataInternal(false)
+	// 线索/未消费事实/冷区事实索引/能力/已否定方向是**规划层**的决策材料：
+	// worker 只该做手里这一条意图，看到这些会诱发自行扩面。显式过滤，避免
+	// 以后往 overview 加字段时又漏进 worker 上下文。
+	for _, k := range []string{
+		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
+		"unconsumed_facts", "capabilities", "ruled_out", "folded_facts", "folded_facts_total",
+	} {
+		delete(out, k)
+	}
+	return out
+}
+
+// graphHealth 是图体检的轻量摘要：每 30 秒最多跑一次 AuditGraph（8 类检查），
+// 把问题计数与最严重的几条带进态势。没有它，依赖环/饥饿/死依赖只在启动日志里。
+type graphHealthEntry struct {
+	at   time.Time
+	data map[string]any
+}
+
+var graphHealthCache sync.Map // exploration id → graphHealthEntry
+
+func (t *ToolSet) graphHealth() map[string]any {
+	if t.ts == nil {
+		return nil
+	}
+	key := t.ts.ID()
+	if v, ok := graphHealthCache.Load(key); ok {
+		if e, ok := v.(graphHealthEntry); ok && time.Since(e.at) < 30*time.Second {
+			return e.data
+		}
+	}
+	rep, err := t.ts.AuditGraph()
+	if err != nil || rep == nil || len(rep.Counts) == 0 {
+		return nil
+	}
+	data := map[string]any{"issues": len(rep.Issues), "counts": rep.Counts}
+	if len(rep.Issues) > 0 {
+		n := len(rep.Issues)
+		if n > 3 {
+			n = 3
+		}
+		list := make([]map[string]any, 0, n)
+		for _, is := range rep.Issues[:n] {
+			list = append(list, map[string]any{"code": is.Code, "severity": is.Severity, "detail": clipLine(is.Detail, 160)})
+		}
+		data["top"] = list
+	}
+	graphHealthCache.Store(key, graphHealthEntry{at: time.Now(), data: data})
+	return data
 }
 
 func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any {
@@ -899,6 +987,37 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 			lootUsers[e.To] = append(lootUsers[e.To], e.From)
 		}
 	}
+	// 血缘 kind：parents/yields 只有 id，planner 分不清 goal/fact/finding/loot。
+	// 一次批量取 kind，输出 parent_kinds/yield_kinds（只增字段，不改旧语义）。
+	lineageIDs := map[int64]bool{}
+	for _, ids := range parentsOf {
+		for _, id := range ids {
+			lineageIDs[id] = true
+		}
+	}
+	for _, ids := range yieldsOf {
+		for _, id := range ids {
+			lineageIDs[id] = true
+		}
+	}
+	lineageKinds := map[int64]string{}
+	if len(lineageIDs) > 0 {
+		ids := make([]int64, 0, len(lineageIDs))
+		for id := range lineageIDs {
+			ids = append(ids, id)
+		}
+		if nodes, err := t.ts.NodesByIDs(ids); err == nil {
+			for _, n := range nodes {
+				lineageKinds[n.ID] = n.Kind
+			}
+		}
+	}
+	if total, eerr := t.ts.CountEdges(); eerr == nil {
+		out["edges_total"] = total
+		if total > len(edges) {
+			out["edges_window_note"] = fmt.Sprintf("血缘边只取前 %d 条（共 %d 条）；更旧的边不在 parents/yields 里。", len(edges), total)
+		}
+	}
 	// cold-digest §6: members folded into an active digest are shown via cold_digests
 	// (below), not the flat recent_* lists. `covered` maps member id → its digest id.
 	// §6 render-time revival check: a covered member that has become hot again (a new
@@ -917,6 +1036,12 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	const openIntentsCap = 30
 	fr, _ := t.ts.Frontier(openIntentsCap) // 可领的（前置已满足）；真实总数见 frontier_open
 	all, _ := t.ts.ListByKind(db.KindIntent, 300)
+	if total, ierr := t.ts.CountByKind(db.KindIntent); ierr == nil {
+		out["intents_total"] = total
+		if total > len(all) {
+			out["intents_window_note"] = fmt.Sprintf("意图列表只取最新 %d 条（共 %d 条）；更旧的用 list_worker_traces 翻页。", len(all), total)
+		}
+	}
 	// 展示用「全部 open」而不是 frontier：被前置挡住的意图**也是 planner 要看见的**
 	// ——它得知道"我派了、但它在等谁"，否则只会反复重派或以为系统没跑。
 	var openIntents []*db.Node
@@ -934,20 +1059,20 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if len(openIntents) > openIntentsCap {
 		openIntents = openIntents[:openIntentsCap]
 	}
-	out["open_intents"] = compactIntents(openIntents, parentsOf, yieldsOf)
+	out["open_intents"] = compactIntents(openIntents, parentsOf, yieldsOf, lineageKinds)
 	var running, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
 		case "running":
 			running = append(running, n)
-		case "done", "negative", "out-of-scope", "blocked", "exhausted", "no_output":
+		case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped", "no_output":
 			if hidden(n.ID) {
 				continue // in a cold_digest and still cold — shown via cold_digests (§6.2)
 			}
 			recentDone = append(recentDone, n) // 最新在前（all 按 id 降序）；折叠的已剔除，输出时截最新 N
 		}
 	}
-	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf, lineageKinds)
 	// paused 既不是"待领"也不是"已结束"：此前三个桶都不收它，planner 在态势里完全看不到，
 	// 容易把一条被人为暂缓的方向当成从未派过而重派。
 	var pausedIntents []*db.Node
@@ -957,7 +1082,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		}
 	}
 	if len(pausedIntents) > 0 {
-		out["paused_intents"] = compactIntents(pausedIntents, parentsOf, yieldsOf)
+		out["paused_intents"] = compactIntents(pausedIntents, parentsOf, yieldsOf, lineageKinds)
 	}
 	// 串行链：前置未满足的意图**不会**被 worker 领走（Frontier/ClaimIntent 都有闸门）。
 	// 必须把这件事摆到规划层面前——否则它会以为"我派了、怎么没人跑"，或者反复重派。
@@ -982,14 +1107,21 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 				blocked++
 				by := make([]map[string]any, 0, len(depIDs))
 				for _, d := range depIDs {
-					by = append(by, map[string]any{
+					item := map[string]any{
 						"id": d, "state": stateByID[d], "summary": clipLine(summaryByID[d], 60),
-					})
+					}
+					switch stateByID[d] {
+					case "out-of-scope", "blocked", "exhausted", "stopped", "no_output", "deleted":
+						item["dead"] = true // 前置永远不会满足：下游不能等，要重派/拆链/丢弃
+					}
+					by = append(by, item)
 				}
 				it["blocked_by"] = by
 			}
 		}
-		if blocked > 0 {
+		if total, cerr := t.ts.CountBlockedOpenIntents(); cerr == nil {
+			out["blocked_intents_total"] = total // 全量，不是 open_intents 窗口内的计数
+		} else if blocked > 0 {
 			out["blocked_intents_total"] = blocked
 		}
 	}
@@ -1096,6 +1228,18 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 			if c, ok := fp["confidence"].(string); ok && c != "" {
 				m["confidence"] = c
 			}
+			if pol, ok := fp["polarity"].(string); ok && pol != "" {
+				m["polarity"] = pol // positive/negative/inconclusive：否定收尾不催办
+			}
+			if en, ok := fp["enables"].([]any); ok && len(en) > 0 {
+				m["enables"] = en // 这条事实给了什么能力
+			}
+			if d, ok := fp["detail"].(string); ok {
+				m["detail_len"] = len([]rune(d))
+			}
+			if e, ok := fp["evidence"].(string); ok && strings.TrimSpace(e) != "" {
+				m["has_evidence"] = true
+			}
 		}
 		recentFacts = append(recentFacts, m)
 	}
@@ -1108,6 +1252,173 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		out["recent_facts_note"] = "recent_facts 是最新一窗（已折叠进 digest 的不在此重复，见 cold_digests）。" +
 			"更旧的 facts 用 list_facts 翻页：传 before=recent_facts_next_before；全文用 node_detail(id)。"
 	}
+	// 线索账本：leads 存在 fact payload 里，id 由事实 id + 下标生成。
+	// converted 由意图 payload 的 converted_lead_ids 决定；dismissed 由事实 payload 的
+	// dismissed_leads 决定——都不靠「来源 fact 有没有子意图」猜。
+	convertedLeads := map[string]bool{}
+	for _, n := range all {
+		var p struct {
+			Converted []string `json:"converted_lead_ids"`
+		}
+		if json.Unmarshal(n.Payload, &p) == nil {
+			for _, id := range p.Converted {
+				convertedLeads[strings.ToUpper(strings.TrimSpace(id))] = true
+			}
+		}
+	}
+	childIntents := map[int64][]int64{}
+	for iid, ps := range parentsOf {
+		for _, pid := range ps {
+			childIntents[pid] = append(childIntents[pid], iid)
+		}
+	}
+	leadsTotal, leadsOpen, leadsConverted, leadsDismissed := 0, 0, 0, 0
+	recentLeads := make([]map[string]any, 0, 20)
+	unconsumed := make([]map[string]any, 0, 5)
+	capCounts := map[string]int{}
+	for _, n := range factNodes {
+		if n.State == "origin" || n.State == "dismissed" {
+			continue
+		}
+		var fp map[string]any
+		_ = json.Unmarshal(n.Payload, &fp)
+		if en, ok := fp["enables"].([]any); ok {
+			for _, v := range en {
+				if sv, ok := v.(string); ok {
+					capCounts[sv]++
+				}
+			}
+		}
+		leads, _ := fp["leads"].([]any)
+		dismissed := map[string]bool{}
+		if arr, ok := fp["dismissed_leads"].([]any); ok {
+			for _, v := range arr {
+				if sv, ok := v.(string); ok {
+					dismissed[strings.ToUpper(strings.TrimSpace(sv))] = true
+				}
+			}
+		}
+		for i, raw := range leads {
+			lm, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := leadID(n.ID, i)
+			key := strings.ToUpper(id)
+			leadsTotal++
+			switch {
+			case convertedLeads[key]:
+				leadsConverted++
+				continue
+			case dismissed[key]:
+				leadsDismissed++
+				continue
+			}
+			leadsOpen++
+			if len(recentLeads) < 20 {
+				item := map[string]any{"id": id, "text": asText(lm["text"]), "from_fact": n.ID}
+				if from := factFrom[n.ID]; from > 0 {
+					item["from_intent"] = from
+				}
+				if ids, ok := lm["asset_ids"].([]any); ok && len(ids) > 0 {
+					item["asset_ids"] = ids
+				}
+				item["age_min"] = int(time.Since(n.CreatedAt).Minutes())
+				recentLeads = append(recentLeads, item)
+			}
+		}
+		// 未被接手、且不是否定收尾的事实：给 planner 一个「这些线索还没人接」的窗口。
+		pol, _ := fp["polarity"].(string)
+		if pol != factPolarityNeg && len(childIntents[n.ID]) == 0 && !hidden(n.ID) && len(unconsumed) < 5 {
+			item := map[string]any{
+				"id": n.ID, "summary": asText(fp["summary"]), "polarity": pol,
+				"confidence": asText(fp["confidence"]), "age_min": int(time.Since(n.CreatedAt).Minutes()),
+			}
+			if d, ok := fp["detail"].(string); ok && strings.TrimSpace(d) != "" {
+				item["detail_excerpt"] = FenceUntrusted("事实详情", clipLine(d, 200))
+			}
+			unconsumed = append(unconsumed, item)
+		}
+	}
+	if len(recentLeads) > 0 {
+		out["recent_leads"] = recentLeads
+	}
+	out["leads_total"] = leadsTotal
+	out["leads_open"] = leadsOpen
+	out["leads_converted"] = leadsConverted
+	out["leads_dismissed"] = leadsDismissed
+	if len(unconsumed) > 0 {
+		out["unconsumed_facts"] = unconsumed
+	}
+	if len(capCounts) > 0 {
+		out["capabilities"] = capCounts
+	}
+	// ruled_out：已否定的方向（否定事实 + ruled_out 发现），一行式，供 planner 避免重派。
+	ruled := make([]map[string]any, 0, 8)
+	for _, n := range factNodes {
+		if len(ruled) >= 6 {
+			break
+		}
+		var fp map[string]any
+		_ = json.Unmarshal(n.Payload, &fp)
+		if pol, _ := fp["polarity"].(string); pol == factPolarityNeg {
+			ruled = append(ruled, map[string]any{"id": n.ID, "kind": "fact", "summary": clipLine(asText(fp["summary"]), 100)})
+		}
+	}
+	if fs, err := t.ts.ListByKind(db.KindFinding, 200); err == nil {
+		for _, n := range fs {
+			if len(ruled) >= 8 {
+				break
+			}
+			if n.State != "ruled_out" {
+				continue
+			}
+			var fp map[string]any
+			_ = json.Unmarshal(n.Payload, &fp)
+			ruled = append(ruled, map[string]any{"id": n.ID, "kind": "finding", "summary": clipLine(asText(fp["summary"]), 100)})
+		}
+	}
+	if len(ruled) > 0 {
+		out["ruled_out"] = ruled
+	}
+	// folded_facts：折叠进冷摘要的事实索引（id + 截断摘要 + state + digest_id）。
+	// 事实没有 folded_intents 那样的索引，大图里折叠后只剩 digest body。
+	var foldedFacts []map[string]any
+	var foldedFactIDs []int64
+	for _, n := range factNodes {
+		if hidden(n.ID) {
+			foldedFactIDs = append(foldedFactIDs, n.ID)
+		}
+	}
+	digestOf := map[int64]int64{}
+	if len(foldedFactIDs) > 0 {
+		if m, err := t.ts.FoldedDigestByNode(foldedFactIDs); err == nil {
+			digestOf = m
+		}
+	}
+	for _, id := range foldedFactIDs {
+		if len(foldedFacts) >= 50 {
+			break
+		}
+		n, err := t.ts.GetNode(id)
+		if err != nil || n == nil {
+			continue
+		}
+		var fp map[string]any
+		_ = json.Unmarshal(n.Payload, &fp)
+		item := map[string]any{"id": id, "summary": clipLine(asText(fp["summary"]), 60), "state": n.State}
+		if d := digestOf[id]; d > 0 {
+			item["digest_id"] = d
+		}
+		foldedFacts = append(foldedFacts, item)
+	}
+	if len(foldedFacts) > 0 {
+		out["folded_facts"] = foldedFacts
+		if total, err := t.ts.CountCoveredFacts(); err == nil {
+			out["folded_facts_total"] = total
+		}
+	}
+
 	// folded_intents：折叠进冷摘要、且仍然冷的已结束意图索引（id + 截断摘要 + 状态）。
 	//
 	// 为什么需要：recent_done_intents 会剔除折叠成员，而 cold_digests 只展开前 15 个摘要
@@ -1119,7 +1430,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	folded := make([]map[string]any, 0, 32)
 	for _, n := range all {
 		switch n.State {
-		case "done", "negative", "out-of-scope", "blocked", "exhausted", "no_output":
+		case "done", "negative", "out-of-scope", "blocked", "exhausted", "stopped", "no_output":
 		default:
 			continue
 		}
@@ -1140,7 +1451,11 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 			folded = folded[:foldedIntentsCap]
 		}
 		out["folded_intents"] = folded
-		out["folded_intents_total"] = total // 真实总数，folded_intents 可能被截断
+		if realTotal, cerr := t.ts.CountCoveredIntents(); cerr == nil {
+			out["folded_intents_total"] = realTotal // SQL 真计数，不是窗口长度
+		} else {
+			out["folded_intents_total"] = total
+		}
 		out["folded_intents_note"] = "折叠区已结束意图索引（摘要截断）：这些方向已经试过，state 决定要不要换打法重派。" +
 			"更旧的用 list_worker_traces 翻页；要看某个摘要的完整叙述用 expand_digest(digest_id)。"
 	}
@@ -1151,7 +1466,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if len(recentDone) > recentDoneCap {
 		recentDone = recentDone[:recentDoneCap]
 	}
-	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf)
+	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf, lineageKinds)
 	// 战果是否算「已被动用」，取决于用过它的那些意图是怎么收场的——只在 edges 里看到一条
 	// uses 是不够的（见 lootConsumingState）。intentState 复用上面已加载的 all。
 	intentState := make(map[int64]string, len(all))
@@ -1425,6 +1740,9 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 				out["coverage"] = m
 			}
 		}
+	}
+	if health := t.graphHealth(); len(health) > 0 {
+		out["graph_health"] = health
 	}
 	return out
 }
@@ -2051,6 +2369,14 @@ type intentItem struct {
 	// IdempotencyKey 让重试/重复提交落到同一条意图，而不是靠摘要相似度猜重。
 	// 非空时写进 payload；同键已存在则直接返回已有 id。
 	IdempotencyKey string `json:"idempotency_key"`
+	// ConvertsLeadIDs 是本意图要接手的线索 id（L<factID>-<n>，见 graph_overview
+	// 的 recent_leads）。lead 的 converted 状态由它决定，不靠「来源 fact 有没有子意图」猜。
+	ConvertsLeadIDs []string `json:"converts_lead_ids"`
+	// Hypothesis / SuccessCriteria / StopCondition 是意图的假设与验收标准：
+	// worker 按 success_criteria 判 done/no_output，复盘轮按它比较候选路线。
+	Hypothesis      string `json:"hypothesis"`
+	SuccessCriteria string `json:"success_criteria"`
+	StopCondition   string `json:"stop_condition"`
 }
 
 // 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
@@ -2099,6 +2425,9 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	default:
 		return 0, "", fmt.Errorf("kind 只能是 discovery（资产发现/侦察，可只登记资产）或 verify（验证/利用，必须写回事实或发现），收到 %q", it.Kind)
 	}
+	if t.reviewRound && q.round >= 3 {
+		return 0, "", fmt.Errorf("复盘轮最多派 3 条意图：先完成复盘（node_detail / list_facts + TodoWrite 路线池），其余方向留到下一轮")
+	}
 	// 意图粒度门：任何一条意图都要点名具体入口。目录型 summary（「做认证面测试」
 	// 「测一遍注入」）在零事实时最容易写，但 worker 只能把每个路径各探一次就收工——
 	// 任务 28/29 实测：首轮目录型意图的深度全部停在了最浅处。
@@ -2109,6 +2438,12 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			return 0, "", fmt.Errorf("%s", why)
 		}
 		coarseWarn = "coarse_warning: " + firstLine(why, 200)
+	}
+	// 意图形态：verify 意图最好是「一条验证链」，不是单点检查。只警告不拦——
+	// 单点方向仍然有价值，但复盘轮会把它们合并成链（任务 30 的单意图深度 33.6 vs ARTEX 67）。
+	chainWarn := ""
+	if intentKind == "verify" && !hasVerificationChain(it.Summary) {
+		chainWarn = "chain_warning: 这条 verify 意图看起来是单点检查（没有「先…再…/命中后…」的验证链）。若它只是测一个入口的一个点，考虑并入更长的利用链，或改标 discovery/广度意图。"
 	}
 	// ── P20 探索策略门（意图层，硬拒）──
 	// 放在所有 DB 结构校验之前：额度用尽/方向被禁时，不该再为一条注定被拒的意图
@@ -2238,7 +2573,23 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if rej := t.checkIntentSpin(q, it.Summary, riskArea, anchors, strings.TrimSpace(it.RiskArea) != ""); rej != "" {
 		return 0, "", fmt.Errorf("%s", rej)
 	}
+	leadIDs, lerr := t.validateLeadIDs(it.ConvertsLeadIDs)
+	if lerr != nil {
+		return 0, "", lerr
+	}
 	payload := map[string]any{"summary": it.Summary, "risk_area": riskArea}
+	if len(leadIDs) > 0 {
+		payload["converted_lead_ids"] = leadIDs
+	}
+	if h := strings.TrimSpace(it.Hypothesis); h != "" {
+		payload["hypothesis"] = h
+	}
+	if sc := strings.TrimSpace(it.SuccessCriteria); sc != "" {
+		payload["success_criteria"] = sc
+	}
+	if stop := strings.TrimSpace(it.StopCondition); stop != "" {
+		payload["stop_condition"] = stop
+	}
 	if intentKind != "" {
 		// 完成口径随意图落库：收尾判定按它区分「资产发现」与「验证」——
 		// verify 意图只登记资产不算测过（见 server.settleIntentState）。
@@ -2373,6 +2724,13 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			note += "\n" + coarseWarn
 		}
 	}
+	if chainWarn != "" {
+		if note == "" {
+			note = chainWarn
+		} else {
+			note += "\n" + chainWarn
+		}
+	}
 	return id, note, nil
 }
 
@@ -2411,23 +2769,101 @@ func breadthWarning(b *db.BreadthSummary, covered map[int64]bool) string {
 		remaining, pct, strings.Join(samples, "、"))
 }
 
+// dismissLeads 把不再跟进的线索标记为 dismissed。线索不是任务，不需要走
+// drop_intent；但「为什么放弃」必须留下，复盘时才能分清「没价值」与「漏掉了」。
+func (t *ToolSet) dismissLeads() actool.CoreTool {
+	return t.writeExpTool("dismiss_leads",
+		"把不再跟进的线索标记为 dismissed（reason 必填）。线索来自 record_fact 的 leads 或 graph_overview 的 recent_leads；\n"+
+			"已 dismiss 的线索不再出现在 recent_leads，也不能再用 converts_lead_ids 转意图。",
+		obj(map[string]any{
+			"lead_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "要 dismiss 的线索 id（L<事实id>-<序号>，来自 recent_leads）"},
+			"reason":   str("【必填】为什么不再跟进：已否定/重复/超出范围/代价过高"),
+		}, "lead_ids", "reason"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				LeadIDs []string `json:"lead_ids"`
+				Reason  string   `json:"reason"`
+			}
+			_ = json.Unmarshal(in, &a)
+			reason := strings.TrimSpace(a.Reason)
+			if reason == "" {
+				return actool.Errorf("reason 必填：写明为什么不再跟进这条线索"), nil
+			}
+			byFact := map[int64][]int{}
+			for _, raw := range a.LeadIDs {
+				fid, idx, ok := parseLeadID(raw)
+				if !ok {
+					return actool.Errorf(fmt.Sprintf("lead_ids 里的 %q 不是合法 lead id（格式 L<事实id>-<序号>）", raw)), nil
+				}
+				byFact[fid] = append(byFact[fid], idx)
+			}
+			if len(byFact) == 0 {
+				return actool.Errorf("lead_ids 必填：至少给一条 recent_leads 里的线索 id"), nil
+			}
+			dismissed := 0
+			for fid, idxs := range byFact {
+				n, err := t.ts.GetNode(fid)
+				if err != nil || n == nil || n.Kind != db.KindFact {
+					return actool.Errorf(fmt.Sprintf("线索 %d 指向的事实不存在于本任务", fid)), nil
+				}
+				var p map[string]any
+				_ = json.Unmarshal(n.Payload, &p)
+				leads, _ := p["leads"].([]any)
+				var dis []string
+				if arr, ok := p["dismissed_leads"].([]any); ok {
+					for _, v := range arr {
+						if sv, ok := v.(string); ok {
+							dis = append(dis, sv)
+						}
+					}
+				}
+				for _, idx := range idxs {
+					if idx < 0 || idx >= len(leads) {
+						return actool.Errorf(fmt.Sprintf("线索 %s 超出事实 %d 的线索条数（共 %d 条）", leadID(fid, idx), fid, len(leads))), nil
+					}
+					id := leadID(fid, idx)
+					found := false
+					for _, d := range dis {
+						if strings.EqualFold(d, id) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						dis = append(dis, id)
+						dismissed++
+					}
+				}
+				p["dismissed_leads"] = dis
+				if err := t.ts.SetNodePayload(fid, db.KindFact, p); err != nil {
+					return actool.Errorf(fmt.Sprintf("写回线索状态失败：%v", err)), nil
+				}
+			}
+			return actool.Text(fmt.Sprintf("leads dismissed: %d（%s）", dismissed, firstLine(reason, 100))), nil
+		})
+}
+
 func (t *ToolSet) addIntent() actool.CoreTool {
 	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么；**summary 必须点名具体入口**（路径/主机/参数/版本），只有风险类名称会被拒收。\n"+
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
 		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
 		obj(map[string]any{
-			"intents":         map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段——**一次带全 summary + risk_area + goal_id（有多个未达成目标时必填）+ asset_ids + kind**；risk_area 可省略（会按 summary 推断）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":         str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+为什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。risk_area 只是台账键，不是方向本身。"),
-			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
-			"parent_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
-			"goal_id":         idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：挂上后链路图显示「目标→意图」，push 目标进度。恰有一个未达成(open)目标时省略会自动挂；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
-			"depends_on":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
-			"uses_loot_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
-			"priority":        intp("优先级 0-10，默认5"),
-			"risk_area":       str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
-			"kind":            str("【完成口径】discovery：资产发现/侦察，允许只登记资产就结束；verify：验证/利用，必须写回事实(record_fact)、发现(report_finding)或战果才算做完——只登记资产会被判为 no_output。省略 = 历史判定（任何写回都算产出）。"),
-			"idempotency_key": str("可选幂等键：重试或重复提交同一条方向时带上同一个键，平台直接返回已有意图，不重复创建。"),
-			"techniques":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
+			"intents":           map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段——**一次带全 summary + risk_area + goal_id（有多个未达成目标时必填）+ asset_ids + kind**；risk_area 可省略（会按 summary 推断）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"summary":           str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+为什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。risk_area 只是台账键，不是方向本身。"),
+			"asset_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
+			"parent_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
+			"goal_id":           idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：挂上后链路图显示「目标→意图」，push 目标进度。恰有一个未达成(open)目标时省略会自动挂；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
+			"depends_on":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
+			"uses_loot_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
+			"priority":          intp("优先级 0-10，默认5"),
+			"risk_area":         str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
+			"kind":              str("【完成口径】discovery：资产发现/侦察，允许只登记资产就结束；verify：验证/利用，必须写回事实(record_fact)、发现(report_finding)或战果才算做完——只登记资产会被判为 no_output。省略 = 历史判定（任何写回都算产出）。"),
+			"idempotency_key":   str("可选幂等键：重试或重复提交同一条方向时带上同一个键，平台直接返回已有意图，不重复创建。"),
+			"converts_lead_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【接手的线索】graph_overview.recent_leads 里的 lead id（L<事实id>-<序号>）：这条意图是在把某条线索转成探索方向时填。填了之后该 lead 标记为 converted。"},
+			"hypothesis":        str("【假设】这条方向验证的假设（可选但推荐）：如「nopCommerce 4.x 的 PSAjax 堆叠注入可读到 QueuedEmail」"),
+			"success_criteria":  str("【验收标准】什么算测到/测完（可选但推荐）：如「拿到 version() 或 current_user 回显」「登录后 /admin 返回 200 且带后台 cookie」"),
+			"stop_condition":    str("【停止条件】什么情况下不再投入（可选）：如「连续 3 种编码均被 WAF 拦」「需要管理员会话且无法获得」"),
+			"techniques":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2832,12 +3268,166 @@ func (t *ToolSet) closeCandidate() actool.CoreTool {
 // must NOT be stuffed into the asset graph via upsert_asset.
 // factItem 是 record_fact 批量/单条的一条事实。
 type factItem struct {
-	Summary    string            `json:"summary"`
-	Detail     string            `json:"detail"`
-	Evidence   string            `json:"evidence"`   // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
-	Confidence string            `json:"confidence"` // observed（直接看到）| inferred（据现象推断）
-	IntentID   json.RawMessage   `json:"intent_id"`
-	AssetIDs   []json.RawMessage `json:"asset_ids"`
+	Summary     string            `json:"summary"`
+	Detail      string            `json:"detail"`
+	Evidence    string            `json:"evidence"`    // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
+	Confidence  string            `json:"confidence"`  // observed（直接看到）| inferred（据现象推断）
+	Polarity    string            `json:"polarity"`    // positive（正向观察）| negative（否定收尾）| inconclusive（存疑）
+	Enables     []string          `json:"enables"`     // credential|foothold|access|info|surface
+	Limitations string            `json:"limitations"` // 这条结论的适用边界/前提
+	Leads       []leadItem        `json:"leads"`       // 本意图之外值得深挖的线索（交给 planner）
+	IntentID    json.RawMessage   `json:"intent_id"`
+	AssetIDs    []json.RawMessage `json:"asset_ids"`
+}
+
+// leadItem 是一条「本意图之外」的线索。线索不是结论：它没有证据门槛，
+// 但必须有具体指向（入口/参数/行为），由 planner 决定是否转成意图。
+type leadItem struct {
+	Text     string            `json:"text"`
+	AssetIDs []json.RawMessage `json:"asset_ids"`
+}
+
+const (
+	maxLeadsPerFact   = 8
+	maxLeadRunes      = 300
+	maxLeadsPerBatch  = 32
+	factPolarityPos   = "positive"
+	factPolarityNeg   = "negative"
+	factPolarityMaybe = "inconclusive"
+)
+
+// normalizeFactPolarity 规范化 polarity；缺省按否定关键词与 confidence 兜底。
+func normalizeFactPolarity(raw, summary, confidence string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case factPolarityPos:
+		return factPolarityPos
+	case factPolarityNeg:
+		return factPolarityNeg
+	case factPolarityMaybe:
+		return factPolarityMaybe
+	}
+	low := strings.ToLower(summary)
+	for _, w := range []string{"未发现", "不存在", "不可", "无法", "失败", "拒绝", "关闭", "均无", "全 404", "全部 404", "not found", "no "} {
+		if strings.Contains(low, w) {
+			return factPolarityNeg
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(confidence), "inferred") {
+		return factPolarityMaybe
+	}
+	return factPolarityPos
+}
+
+// normalizeEnables 只保留词表内的能力标签。
+func normalizeEnables(raw []string) []string {
+	allowed := map[string]bool{"credential": true, "foothold": true, "access": true, "info": true, "surface": true}
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range raw {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if allowed[v] && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// cleanLeads 清洗线索：去空、截断、去重、限量。
+func cleanLeads(raw []leadItem) []map[string]any {
+	var out []map[string]any
+	seen := map[string]bool{}
+	for _, l := range raw {
+		text := strings.TrimSpace(l.Text)
+		if text == "" {
+			continue
+		}
+		if r := []rune(text); len(r) > maxLeadRunes {
+			text = string(r[:maxLeadRunes])
+		}
+		key := strings.ToLower(strings.Join(strings.Fields(text), " "))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		item := map[string]any{"text": text}
+		if ids := pidList(l.AssetIDs); len(ids) > 0 {
+			item["asset_ids"] = ids
+		}
+		out = append(out, item)
+		if len(out) >= maxLeadsPerFact {
+			break
+		}
+	}
+	return out
+}
+
+// leadID 是 lead 的稳定标识：L<事实id>-<下标>。payload 只存 text/asset_ids，
+// id 在读取时按同一下标生成，因此不需要在落库后回写。
+func leadID(factID int64, index int) string { return fmt.Sprintf("L%d-%d", factID, index) }
+
+// parseLeadID 解析 L<factID>-<index>。
+func parseLeadID(raw string) (int64, int, bool) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 4 || (raw[0] != 'L' && raw[0] != 'l') {
+		return 0, 0, false
+	}
+	rest := raw[1:]
+	i := strings.IndexByte(rest, '-')
+	if i <= 0 || i == len(rest)-1 {
+		return 0, 0, false
+	}
+	fid, err := strconv.ParseInt(rest[:i], 10, 64)
+	if err != nil || fid <= 0 {
+		return 0, 0, false
+	}
+	idx, err := strconv.Atoi(rest[i+1:])
+	if err != nil || idx < 0 {
+		return 0, 0, false
+	}
+	return fid, idx, true
+}
+
+// validateLeadIDs 校验 converts_lead_ids：必须指向本任务某条事实里真实存在的 lead，
+// 且尚未被 dismiss。返回去重后的合法 id。
+func (t *ToolSet) validateLeadIDs(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, item := range raw {
+		id := strings.TrimSpace(item)
+		if id == "" {
+			continue
+		}
+		fid, idx, ok := parseLeadID(id)
+		if !ok {
+			return nil, fmt.Errorf("converts_lead_ids 里的 %q 不是合法 lead id（格式 L<事实id>-<序号>，见 graph_overview 的 recent_leads）", id)
+		}
+		n, err := t.ts.GetNode(fid)
+		if err != nil || n == nil || n.Kind != db.KindFact {
+			return nil, fmt.Errorf("converts_lead_ids 里的 %q 指向的事实不存在于本任务", id)
+		}
+		var p struct {
+			Leads     []map[string]any `json:"leads"`
+			Dismissed []string         `json:"dismissed_leads"`
+		}
+		_ = json.Unmarshal(n.Payload, &p)
+		if idx >= len(p.Leads) {
+			return nil, fmt.Errorf("converts_lead_ids 里的 %q 超出该事实的线索条数（共 %d 条）", id, len(p.Leads))
+		}
+		for _, d := range p.Dismissed {
+			if strings.EqualFold(strings.TrimSpace(d), id) {
+				return nil, fmt.Errorf("converts_lead_ids 里的 %q 已被 dismiss，不能再转意图", id)
+			}
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
@@ -2855,6 +3445,18 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	}
 	if c := strings.TrimSpace(it.Confidence); c != "" {
 		payload["confidence"] = c
+	}
+	// 事实语义：polarity 决定这条事实还能不能开出下文（否定收尾不催办），
+	// enables 是「这条事实给了什么能力」，leads 是本意图之外的线索。
+	payload["polarity"] = normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence)
+	if en := normalizeEnables(it.Enables); len(en) > 0 {
+		payload["enables"] = en
+	}
+	if lim := strings.TrimSpace(it.Limitations); lim != "" {
+		payload["limitations"] = lim
+	}
+	if leads := cleanLeads(it.Leads); len(leads) > 0 {
+		payload["leads"] = leads
 	}
 	intent := pid(it.IntentID)
 	if intent <= 0 {
@@ -2935,7 +3537,11 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 			if err := t.ts.SetIntentSemanticOutcome(t.ownerNode, outcome, note); err != nil {
 				return actool.Errorf("conclude_intent: " + err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("已记录意图 #%d 的语义终态 %s：正常完成时以 %s 收尾；若因失败/超时收尾仍记 blocked/exhausted。", t.ownerNode, outcome, outcome)), nil
+			msg := fmt.Sprintf("已记录意图 #%d 的语义终态 %s：正常完成时以 %s 收尾；若因失败/超时收尾仍记 blocked/exhausted。", t.ownerNode, outcome, outcome)
+			if t.writes.Total() == 0 {
+				msg = "注意：本次 run 还没有任何写回（record_fact / report_finding / report_credential / report_artifact / leads）。如果已经拿到结论，先写回再收尾——只留在本地文件里的东西 planner 看不到。\n" + msg
+			}
+			return actool.Text(msg), nil
 		},
 	)
 }
@@ -2949,13 +3555,17 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"  · confidence=observed（输出里直接看到）| inferred（据现象推断）。\n"+
 		"  · **否定类结论**（不可注入/端口关闭/未发现入口等）只写\"观察 + 试探性读法\"——陈述你实际看到什么，方向是否放弃由规划者综合全局定；务必给 evidence，手段没穷尽或证据弱（含只探一次、看起来像）标 inferred，确已穷尽且直接看到才标 observed。",
 		obj(map[string]any{
-			"facts":      map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":    str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
-			"intent_id":  idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
-			"detail":     str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
-			"evidence":   str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
-			"confidence": str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
+			"facts":       map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/polarity/enables/leads/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"summary":     str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
+			"intent_id":   idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
+			"detail":      str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
+			"evidence":    str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
+			"confidence":  str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
+			"polarity":    str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 summary 关键词与 confidence 推断。"),
+			"enables":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【能力标签】这条事实给了什么：credential | foothold | access | info | surface（可多选，没有就省略）"},
+			"limitations": str("这条结论的适用边界/前提（可选）：在什么条件下不成立、还缺什么验证。"),
+			"leads":       map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "【本意图之外的线索】数组，元素 {text, asset_ids?}：看到的其它入口/参数/行为/资产，值得 planner 下一轮跟进。最多 8 条、每条 ≤300 字；线索不是结论，不需要 evidence。不要把线索塞进 summary。"},
+			"asset_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2967,6 +3577,18 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			items := a.Facts
 			if !batch {
 				items = []factItem{a.factItem}
+			}
+			// 一批事实的线索总量封顶，避免一次写回把态势撑爆。
+			leadBudget := maxLeadsPerBatch
+			for i := range items {
+				if leadBudget <= 0 {
+					items[i].Leads = nil
+					continue
+				}
+				if len(items[i].Leads) > leadBudget {
+					items[i].Leads = items[i].Leads[:leadBudget]
+				}
+				leadBudget -= len(items[i].Leads)
 			}
 			defaultIntent := pid(a.factItem.IntentID) // 顶层 intent_id = 批量默认
 
@@ -3070,6 +3692,89 @@ func normalizeTargets(in []db.CredentialTarget) ([]db.CredentialTarget, error) {
 // **故意比 record_fact 严**：summary、evidence、confidence 三者缺一不可。战果会被规划层
 // 当作既定事实拿去规划「能从这条通路往下做什么」，一条编出来的 shell 会让后续所有意图跑空，
 // 而且看不出是哪里错的——所以宁可拒收，也不要一条没有证据的战果入库。
+// recordAssetCredential 把 insert_assets.auth 里的一条认证信息转成凭据节点。
+// 与 report_credential 的区别：这里没有「读到它的命令与输出」，所以不设证据门，
+// 只标 verification=unverified / confidence=low；按 kind+username+secret 去重，
+// 跳过没有 secret 的条目（用户名、服务名这类不算凭据）。
+func (t *ToolSet) recordAssetCredential(assetID int64, host string, port int, entry map[string]any) (int64, error) {
+	if t.ts == nil || len(entry) == 0 {
+		return 0, nil
+	}
+	field := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := entry[k]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+		return ""
+	}
+	secret := field("secret", "password", "pass", "passwd", "token", "key", "hash", "cookie")
+	if secret == "" {
+		return 0, nil
+	}
+	user := field("username", "user", "login", "account", "email")
+	kind := strings.ToLower(field("kind", "type"))
+	switch {
+	case strings.Contains(kind, "token"), strings.Contains(kind, "cookie"):
+		kind = "token"
+	case strings.Contains(kind, "key"):
+		kind = "key"
+	case strings.Contains(kind, "hash"):
+		kind = "hash"
+	default:
+		kind = "password"
+	}
+	service := field("service", "protocol", "proto")
+	// 去重：同一 kind+username+secret 已经登记过就不重复造节点。
+	if nodes, err := t.ts.ListByKind(db.KindCredential, 1000); err == nil {
+		for _, n := range nodes {
+			var p struct {
+				Kind     string `json:"kind"`
+				Username string `json:"username"`
+				Secret   string `json:"secret"`
+			}
+			if json.Unmarshal(n.Payload, &p) != nil {
+				continue
+			}
+			if p.Kind == kind && p.Username == user && p.Secret == secret {
+				return n.ID, nil
+			}
+		}
+	}
+	label := host
+	if label == "" {
+		label = fmt.Sprintf("asset#%d", assetID)
+	}
+	payload := map[string]any{
+		"summary":      fmt.Sprintf("资产登记时记录的凭据：%s @ %s", user, label),
+		"kind":         kind,
+		"username":     user,
+		"secret":       secret,
+		"verification": "unverified",
+		"source":       "asset_registration",
+		"confidence":   "low",
+		"evidence":     "insert_assets auth 字段",
+	}
+	if host != "" {
+		target := map[string]any{"host": host}
+		if port > 0 {
+			target["port"] = port
+		}
+		if service != "" {
+			target["service"] = service
+		}
+		payload["targets"] = []map[string]any{target}
+	}
+	id, err := t.ts.AddNode(db.KindCredential, payload, 8, db.StateLootActive, t.worker, []int64{assetID})
+	if err != nil {
+		return 0, err
+	}
+	t.writes.Credentials++
+	return id, nil
+}
+
 func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (int64, error) {
 	summary := strings.TrimSpace(base.Summary)
 	if summary == "" {
@@ -4275,7 +4980,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_worker_traces：态势里的 recent_done_intents 只是一窗（12 条），上百意图的任务里
 		// 大部分已结束意图不在视野中。这个工具让 planner 能翻全量已跑意图，确认某方向是否试过。
 		t.listWorkerTraces(),
-		t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		t.listGoals(), t.addIntent(), t.dismissLeads(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),
@@ -4432,6 +5137,17 @@ var (
 	intentVersionAnchor = regexp.MustCompile(`[0-9]+(\.[0-9xX]+)+`)
 	intentNodeAnchor    = regexp.MustCompile(`(#|id=|intent-|fact-|finding-)[0-9]{1,9}`)
 )
+
+// hasVerificationChain 判断 summary 是否写了「先确认→再据它做→命中后」的链。
+// 只用于提示，不做硬门。
+func hasVerificationChain(summary string) bool {
+	for _, w := range []string{"→", "先", "再", "然后", "接着", "之后", "命中后", "若", "如果", "第一步", "第二步", "确认后"} {
+		if strings.Contains(summary, w) {
+			return true
+		}
+	}
+	return false
+}
 
 // coarseIntentSummary 判断一条意图 summary 是否"只有风险类、没有具体入口"。
 // kind=discovery 的意图允许只写发现目标（域名/主机/网段）或带 asset_ids——资产发现

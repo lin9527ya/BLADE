@@ -1285,15 +1285,36 @@ func (s *ExplorationStore) countByKindFiltered(kind, q string) (int, error) {
 	return n, err
 }
 
-// CountFinishedIntents counts this exploration's intents in a terminal explored
-// state (done/blocked/exhausted/no_output) — graph_overview's done_intents_total, so the planner
-// knows recent_done_intents (capped at a recent window) is a truncated view and
-// stays cautious about "already tried" dedup. Excludes 'stopped' (killed/deleted),
-// matching exactly what recent_done_intents surfaces.
+// CountFinishedIntents counts this exploration's intents in a terminal state
+// (done/negative/out-of-scope/blocked/exhausted/stopped/no_output) — graph_overview's
+// done_intents_total, so the planner knows recent_done_intents (capped at a recent
+// window) is a truncated view and stays cautious about "already tried" dedup.
+// stopped 也算：被终止的方向必须能被看见，否则会被当成「没派过」重派。
 func (s *ExplorationStore) CountFinishedIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state IN ('done','negative','out-of-scope','blocked','exhausted','no_output')`, s.expID).Scan(&n)
+WHERE exploration_id=$1 AND kind='intent' AND state IN ('done','negative','out-of-scope','blocked','exhausted','stopped','no_output')`, s.expID).Scan(&n)
+	return n, err
+}
+
+// CountEdges 是本 exploration 的边总数（SQL COUNT，不是 Edges(5000) 的窗口长度）。
+func (s *ExplorationStore) CountEdges() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_edges WHERE exploration_id=$1`, s.expID).Scan(&n)
+	return n, err
+}
+
+// CountBlockedOpenIntents 是「有 depends_on 前置尚未满足」的 open 意图全量数
+// （不是 open_intents 展示窗口内的计数）。
+func (s *ExplorationStore) CountBlockedOpenIntents() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+    WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+      AND d.state NOT IN ('done','negative'))`, s.expID).Scan(&n)
 	return n, err
 }
 

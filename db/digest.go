@@ -174,6 +174,33 @@ ORDER BY e.src_id`, s.expID, RelCovers, KindDigest, StateDigestActive)
 	return out, rows.Err()
 }
 
+// CountCoveredIntents 是当前被 active digest 覆盖的 intent 节点数。
+func (s *ExplorationStore) CountCoveredIntents() (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+SELECT COUNT(DISTINCT m.id)
+FROM exploration_edges e
+JOIN exploration_nodes d ON d.id=e.src_id AND d.exploration_id=e.exploration_id
+JOIN exploration_nodes m ON m.id=e.dst_id AND m.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.rel=$2 AND d.kind=$3 AND d.state=$4 AND m.kind=$5`,
+		s.expID, RelCovers, KindDigest, StateDigestActive, KindIntent).Scan(&n)
+	return n, err
+}
+
+// CountCoveredFacts 是当前被 active digest 覆盖的 fact 节点数（SQL COUNT，不是窗口长度）。
+// 概览里的 folded_facts_total 用它，避免 ListByKind 的行数上限把总数说小。
+func (s *ExplorationStore) CountCoveredFacts() (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+SELECT COUNT(DISTINCT m.id)
+FROM exploration_edges e
+JOIN exploration_nodes d ON d.id=e.src_id AND d.exploration_id=e.exploration_id
+JOIN exploration_nodes m ON m.id=e.dst_id AND m.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.rel=$2 AND d.kind=$3 AND d.state=$4 AND m.kind=$5`,
+		s.expID, RelCovers, KindDigest, StateDigestActive, KindFact).Scan(&n)
+	return n, err
+}
+
 // DigestMembers returns the member ids a digest covers (covers edges), sorted.
 func (s *ExplorationStore) DigestMembers(digestID int64) ([]int64, error) {
 	rows, err := s.db.Query(`SELECT dst_id FROM exploration_edges

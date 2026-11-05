@@ -927,8 +927,11 @@ func (s *Server) seed(t *Task, text string) {
 // links from the origin fact (RelDerivedFrom) so it still traces back to a fact
 // node. Best-effort — a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
-	summary := fmt.Sprintf("完成任务目标：%s（任务：%s）", t.Goal, t.Description)
-	id, err := t.Store.AddIntent(map[string]any{"summary": summary}, 8, nil, "seed")
+	// 种子意图不再写「完成任务目标：…」这种泛化目标：那会让 worker 直接开跑、
+	// planner 首轮被跳过（engine 见 active intent 就不 kick），开局摸底协议形同虚设。
+	// 改成一条 discovery 开局意图，让它产出的指纹/入口/资产正好喂给下一轮 planner。
+	summary := fmt.Sprintf("开局摸底：对 %s 做只读侦察——首页响应头与跳转、robots.txt/sitemap、首页 script 与 API 前缀、登录口/后台入口跳转（/admin /login /manage 等）；把指纹、入口与资产写回，不做目录枚举/注入/爆破", strings.TrimSpace(t.Description))
+	id, err := t.Store.AddIntent(map[string]any{"summary": summary, "intent_kind": "discovery"}, 8, nil, "seed")
 	if err != nil {
 		log.Printf("[seed] task %s: 下发种子意图失败: %v", t.ID, err)
 		return

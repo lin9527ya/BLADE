@@ -455,6 +455,7 @@ func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback s
 		fallback = "timeout"
 	}
 	log.Printf("[deadline] task %s %s,进入收尾时序", t.ID, why)
+	e.promoteTaskKnowledge(t)
 
 	// ④ 等在跑 worker/planner drain(在跑 run 因夹逼的 MaxDuration 自行进收尾);
 	// 超过 grace 仍未清空 → 硬 cancel 该任务 exec ctx(settling-aware 分支正确归类)。

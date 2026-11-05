@@ -136,7 +136,15 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 		acts, err := ts.ActivityListTail(&n.ID, supervisorActivityWindow)
 		if err == nil {
 			var lines []string
-			repeats := map[string]int{}
+			// 重复动作按「工具+参数+结果」三元组计数：同入口不同 payload/参数/编码
+			// 是变体枚举，结果不同就不算原地打转（任务 30 的 #4260 曾被误伤）。
+			type repeatStat struct {
+				tool   string
+				result string
+				n      int
+			}
+			repeats := map[string]*repeatStat{}
+			lastTool := ""
 			for _, a := range acts {
 				switch a.Kind {
 				case "tool_use":
@@ -147,7 +155,7 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 					s := firstLine(supervisorToolLine(a), 180)
 					if s != "" {
 						lines = append(lines, "→ "+s)
-						repeats[s]++
+						lastTool = s
 					}
 				case "tool_result":
 					if a.ID > it.LastActivityID {
@@ -164,6 +172,16 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 							lines = append(lines, "← "+s)
 						}
 					}
+					if lastTool != "" {
+						key := lastTool + "\x00" + firstLine(a.Summary, 80)
+						st := repeats[key]
+						if st == nil {
+							st = &repeatStat{tool: lastTool, result: firstLine(a.Summary, 80)}
+							repeats[key] = st
+						}
+						st.n++
+						lastTool = ""
+					}
 				case "text":
 					if a.ID > it.LastActivityID {
 						it.LastActivityID = a.ID
@@ -178,13 +196,13 @@ func BuildSupervisorClaim(ts *db.ExplorationStore, goal string, running []*db.No
 			}
 			it.Steps = lines
 			top, topN := "", 0
-			for s, c := range repeats {
-				if c > topN {
-					top, topN = s, c
+			for _, st := range repeats {
+				if st.n > topN {
+					top, topN = st.tool, st.n
 				}
 			}
 			if topN >= 3 {
-				it.Repeated = fmt.Sprintf("同一动作重复 %d 次：%s", topN, top)
+				it.Repeated = fmt.Sprintf("同一动作重复 %d 次（输入与结果都一致）：%s", topN, top)
 			}
 		}
 		it.Outputs = intentEvidenceDigest(ts, n.ID)
@@ -225,26 +243,81 @@ func bashCommandFromSummary(summary string) string {
 
 // ParseSupervisorVerdict 解析审核结论。
 //
-// 与穷尽复核不同，这里的失败策略是「本轮不纠偏」（引擎侧只记日志）：审核员是一层
-// 附加保护，它挂了不该影响任务运行，也不该把不确定的结论变成对 worker 的指令。
+// 模型的输出不保证是"裸 JSON"：可能包在 ```json 围栏里、可能先写一段说明、
+// 可能返回数组而不是对象、也可能因为 maxTokens 截断而没有闭合。这里只做**宽容提取**：
+// 按顶层形态选对象或数组，再交给 parseSupervisorObject 做语义校验。
 func ParseSupervisorVerdict(text string) (SupervisorVerdict, error) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return SupervisorVerdict{}, fmt.Errorf("审核模型没有输出任何文本（空响应或流被截断）")
+	}
+	body := stripCodeFence(trimmed)
+	if strings.HasPrefix(body, "{") {
+		obj, ok := extractJSONBlock(body, '{', '}')
+		if !ok {
+			return SupervisorVerdict{}, fmt.Errorf("审核结论不是完整 JSON 对象（可能被截断）：%s", firstLine(trimmed, 200))
+		}
+		return parseSupervisorObject(obj)
+	}
+	if strings.HasPrefix(body, "[") {
+		arr, ok := extractJSONBlock(body, '[', ']')
+		if !ok {
+			return SupervisorVerdict{}, fmt.Errorf("审核结论不是完整 JSON 数组（可能被截断）：%s", firstLine(trimmed, 200))
+		}
+		return parseSupervisorObject(`{"intents":` + arr + `}`)
+	}
+	// 前后有说明文字：先试对象，再试数组。
+	if obj, ok := extractJSONBlock(body, '{', '}'); ok {
+		if v, err := parseSupervisorObject(obj); err == nil {
+			return v, nil
+		}
+	}
+	if arr, ok := extractJSONBlock(body, '[', ']'); ok {
+		return parseSupervisorObject(`{"intents":` + arr + `}`)
+	}
+	return SupervisorVerdict{}, fmt.Errorf("审核结论不是 JSON 对象：%s", firstLine(trimmed, 200))
+}
+
+// stripCodeFence 去掉 ```json ... ``` 围栏（只处理第一段）。
+func stripCodeFence(text string) string {
+	i := strings.Index(text, "```")
+	if i < 0 {
+		return text
+	}
+	rest := text[i+3:]
+	if j := strings.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[j+1:]
+	}
+	if k := strings.Index(rest, "```"); k >= 0 {
+		rest = rest[:k]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// parseSupervisorObject 解析 {"intents":[...]}；数组/单条对象都兼容。
+func parseSupervisorObject(obj string) (SupervisorVerdict, error) {
 	var out SupervisorVerdict
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return out, fmt.Errorf("审核结论不是 JSON 对象：%s", firstLine(text, 200))
-	}
 	var raw struct {
-		Intents *[]SupervisorIntentVerdict `json:"intents"`
+		Intents json.RawMessage `json:"intents"`
 	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &raw); err != nil {
+	if err := json.Unmarshal([]byte(obj), &raw); err != nil {
 		return out, fmt.Errorf("审核结论解析失败：%w", err)
 	}
-	if raw.Intents == nil {
+	if len(raw.Intents) == 0 || string(raw.Intents) == "null" {
 		return out, fmt.Errorf("审核结论缺少 intents 数组")
 	}
+	var list []SupervisorIntentVerdict
+	if err := json.Unmarshal(raw.Intents, &list); err != nil {
+		// 宽容：模型把单条结论写成对象而不是数组。
+		var one SupervisorIntentVerdict
+		if e2 := json.Unmarshal(raw.Intents, &one); e2 == nil && one.IntentID > 0 {
+			list = []SupervisorIntentVerdict{one}
+		} else {
+			return out, fmt.Errorf("审核结论的 intents 既不是数组也不是单条结论：%w", err)
+		}
+	}
 	seen := map[int64]bool{}
-	for _, v := range *raw.Intents {
+	for _, v := range list {
 		if v.IntentID <= 0 || strings.TrimSpace(v.Reason) == "" {
 			continue
 		}
@@ -259,6 +332,45 @@ func ParseSupervisorVerdict(text string) (SupervisorVerdict, error) {
 		out.Intents = append(out.Intents, v)
 	}
 	return out, nil
+}
+
+// extractJSONBlock 从任意文本里提取第一个平衡的 JSON 对象/数组。
+// 会跳过 ``` 围栏，忽略字符串内部的括号与转义；找不到闭合时返回 false
+// （截断的输出交给上层重试，不做危险的自动补括号）。
+func extractJSONBlock(text string, open, close byte) (string, bool) {
+	start := strings.IndexByte(text, open)
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(text); i++ {
+		c := text[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return text[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 // SupervisorPrompt 是审核员的系统提示。供 server 侧注入 LLM 调用。
@@ -280,7 +392,7 @@ JSON：
 
 ## 判为「偏离」(on_track=false) 的情形
 
-1. **原地打转**：对同一目标重复同一动作（同命令/同 payload/同路径）≥3 次且结果一致（尤其连续失败），或 repeated_action 已点名。
+1. **原地打转**：对同一目标重复同一动作（同命令/同 payload/同路径）≥3 次且**结果一致**（尤其连续失败），或 repeated_action 已点名。**同入口不同 payload/参数/编码是变体枚举，不算原地打转**——只要输入或结果不同，就还在推进。
 2. **与意图无关**：最近动作明显不是在推进 summary 描述的事（在做别的资产、别的漏洞类型、纯环境/工具折腾）。
 3. **与任务目标无关**：动作不服务 task_goal 或 goals（在扫与目标无关的资产、做与授权目标无关的事）。
 4. **越界**：动作指向授权范围/任务目标以外的目标——最严重的一类，必须纠偏。

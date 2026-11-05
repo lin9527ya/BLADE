@@ -1216,6 +1216,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
 					log.Printf("[goalless] task %s 收尾落 done 失败: %v", t.ID, err)
 				} else if won {
+					e.promoteTaskKnowledge(t)
 					// 文案区分「全部达成」与「了结（含放弃）」：放弃不是达成，报告与时间线不能混为一谈。
 					met, abandoned := 0, 0
 					if goals, gerr := t.Store.ListByKind(db.KindGoal, 10000); gerr == nil {
@@ -1364,6 +1365,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				log.Printf("[planner] task %s 收官时已是终态，保留原状态", t.ID)
 			} else {
 				e.completionWarn.Delete(t.ID)
+				e.promoteTaskKnowledge(t)
 				// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
 				// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
 				// 归为 stopped(而非 blocked)。

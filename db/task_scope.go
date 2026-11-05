@@ -1033,12 +1033,15 @@ ORDER BY t.id LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
 // failed (blocked/exhausted/no_output only), in_flight (open/running/paused),
 // tested (at least one done/negative), or out_of_scope (explicitly ruled out).
 type BreadthAssetGap struct {
-	AssetID        int64    `json:"asset_id"`
-	Type           string   `json:"type"`
-	Label          string   `json:"label"`
-	State          string   `json:"state"`
-	Facts          int      `json:"facts"`
-	Partial        bool     `json:"partial,omitempty"` // tested, but some risk areas untouched
+	AssetID int64  `json:"asset_id"`
+	Type    string `json:"type"`
+	Label   string `json:"label"`
+	State   string `json:"state"`
+	Facts   int    `json:"facts"`
+	Partial bool   `json:"partial,omitempty"` // tested, but some risk areas untouched
+	// UntouchedCount 是未碰风险类的真实数量；UntouchedAreas 只展示最贴合的两类，
+	// 避免态势被「8 资产 × 13 类」的矩阵淹没（完整矩阵走 coverage_matrix）。
+	UntouchedCount int      `json:"untouched_count,omitempty"`
 	UntouchedAreas []string `json:"untouched_risk_areas,omitempty"`
 	FailedAreas    []string `json:"failed_risk_areas,omitempty"`
 	InFlightAreas  []string `json:"in_flight_risk_areas,omitempty"`
@@ -1310,6 +1313,7 @@ func BuildBreadthSummary(cov []CoverageMatrixAsset, scopeRows int) *BreadthSumma
 				gap.UntouchedAreas = append(gap.UntouchedAreas, area)
 			}
 		}
+		gap.UntouchedCount = len(gap.UntouchedAreas)
 		switch {
 		case testedArea:
 			gap.State = "tested"
@@ -1361,6 +1365,18 @@ func BuildBreadthSummary(cov []CoverageMatrixAsset, scopeRows int) *BreadthSumma
 		}
 		return gi.AssetID < gj.AssetID
 	})
+	// 排序用完整列表（缺口多的优先），输出前再裁剪：每资产只留最贴合的两类。
+	for i := range out.TopGaps {
+		if len(out.TopGaps[i].UntouchedAreas) > 2 {
+			out.TopGaps[i].UntouchedAreas = out.TopGaps[i].UntouchedAreas[:2]
+		}
+		if len(out.TopGaps[i].FailedAreas) > 2 {
+			out.TopGaps[i].FailedAreas = out.TopGaps[i].FailedAreas[:2]
+		}
+		if len(out.TopGaps[i].InFlightAreas) > 2 {
+			out.TopGaps[i].InFlightAreas = out.TopGaps[i].InFlightAreas[:2]
+		}
+	}
 	if len(out.TopGaps) > breadthTopGapLimit {
 		out.TopGaps = out.TopGaps[:breadthTopGapLimit]
 	}

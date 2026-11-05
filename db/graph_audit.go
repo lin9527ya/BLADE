@@ -147,6 +147,12 @@ func (s *ExplorationStore) AuditGraph() (*GraphAuditReport, error) {
 		return nil, err
 	}
 
+	// ⑤b 前置已终态但不是 done/negative：这类前置永远不会再产出下游需要的结论，
+	// 下游会永久停在 open。它与「饥饿」不同——不是 worker 没领，是永远领不了。
+	if err := s.auditDeadDependencies(add); err != nil {
+		return nil, err
+	}
+
 	// ⑥ running 意图租约过期/无 owner：协调器没在跑时的兜底信号（看门狗正常时不会出现）。
 	if err := s.auditExpiredLeases(add); err != nil {
 		return nil, err
@@ -294,6 +300,33 @@ ORDER BY n.id LIMIT $3`
 		}
 		add(GraphIssue{Code: "starved_open_intent", Severity: "warn", NodeIDs: []int64{id},
 			Detail: "前置已全部收场，但这条意图长时间没被领取；检查 worker 槽位/队列是否卡住"})
+	}
+	return rows.Err()
+}
+
+// auditDeadDependencies：open 意图的前置已以非 done/negative 的终态收场。
+// 这些下游永远不会被 Frontier 派出去，也不会被 auditStarvedIntents 捕获（后者要求
+// 前置全是 done/negative）。必须在图体检里显式报出来，否则只能靠 planner 自己发现。
+func (s *ExplorationStore) auditDeadDependencies(add func(GraphIssue)) error {
+	const q = `SELECT n.id, d.id, d.state FROM exploration_nodes n
+JOIN exploration_edges e ON e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=n.exploration_id
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND d.state IN ('out-of-scope','blocked','exhausted','stopped','no_output','deleted')
+ORDER BY n.id, d.id LIMIT $2`
+	rows, err := s.db.Query(q, s.expID, graphAuditIssueLimit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, dep int64
+		var state string
+		if err := rows.Scan(&id, &dep, &state); err != nil {
+			return err
+		}
+		add(GraphIssue{Code: "dead_dependency", Severity: "warn", NodeIDs: []int64{id, dep},
+			Detail: fmt.Sprintf("前置 #%d 以 %s 收场，永远不会满足；下游需重派前置、unblock_intent 或 drop_intent", dep, state)})
 	}
 	return rows.Err()
 }

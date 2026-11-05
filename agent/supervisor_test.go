@@ -85,3 +85,21 @@ func TestSupervisorClaimReadsGoalTextAndBashCommand(t *testing.T) {
 func dbActivityForTest(tool, summary string) db.Activity {
 	return db.Activity{Kind: "tool_use", Tool: tool, Summary: summary}
 }
+
+// 宽容提取：数组、单条对象、前后夹着说明文字、字符串里带括号，都应能解析。
+func TestParseSupervisorVerdictLenientForms(t *testing.T) {
+	cases := []string{
+		`[{"intent_id":1,"on_track":true,"reason":"在轨"}]`,
+		`{"intents":{"intent_id":1,"on_track":true,"reason":"在轨"}}`,
+		`结论如下：{"intents":[{"intent_id":1,"on_track":true,"reason":"理由里有 { 括号 } 与 \" 引号"}]} 以上。`,
+	}
+	for _, text := range cases {
+		v, err := ParseSupervisorVerdict(text)
+		if err != nil || len(v.Intents) != 1 || v.Intents[0].IntentID != 1 {
+			t.Fatalf("宽容解析失败：%q err=%v v=%+v", text, err, v)
+		}
+	}
+	if _, err := ParseSupervisorVerdict("   "); err == nil || !strings.Contains(err.Error(), "没有输出任何文本") {
+		t.Fatalf("空输出应给出明确错误：%v", err)
+	}
+}

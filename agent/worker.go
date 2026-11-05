@@ -406,6 +406,17 @@ const depthDisciplineBlock = `
 - 否定 fact 的 detail 里写清：试过的变体族数、每族的代表 payload、目标的具体反应（状态码 / 报错 / 跳转 / 长度差异）。只写「未发现 / 无洞」不算结论——下一轮 planner 与穷尽复核员都读不出你试了什么，只能再来一遍。
 - 被 WAF / 登录墙 / 限速挡住 ≠ 已排除：那是外部阻断，按 blocked 或 open_proof_gap 记，不要记成 negative。`
 
+// leadWritebackBlock 是**代码持有**的线索/写回纪律：worker 正文可被 agent_prompts
+// 覆盖，只改默认正文收不到；而「做完了不收尾、线索塞进 summary」是实测最贵的损耗
+// （任务 30 的 planner 因此被迫 steer 3 次催登记凭据/催写否定结论）。
+const leadWritebackBlock = `
+
+【线索与写回（代码持有）】
+- 本意图之外看到的入口/参数/行为/资产，写进 record_fact 的 ` + "`leads`" + `（元素 {text, asset_ids?}），不要塞进 summary：线索不是结论，不需要 evidence，但要有具体指向。每条事实最多 8 条。
+- 事实写回带 polarity：positive（正向观察，能开出下文）/ negative（否定收尾：不可注入/端口关闭/未发现入口）/ inconclusive（存疑）。否定结论不要写成 positive。
+- 收尾前自检：建了账号/拿到口令 → report_credential；方向失败 → record_fact（polarity=negative）；留下文件 → report_artifact；看到别的线索 → leads。漏写等于没做——planner 看不到，下一轮只会再派一遍。
+- 被 WAF/登录墙/限速挡住 ≠ 已排除：记 blocked 或 open_proof_gap，不要记 negative。`
+
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
 // Gated on recording, NOT on the egress proxy: a global proxy with capture off
@@ -471,7 +482,7 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 	// Optional finding guidance is added for every role after tool resolution.
 	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
 	// outside this stable string so a reused slot can keep the same cached prefix.
-	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock + depthDisciplineBlock + untrustedDataBlock()
+	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock + depthDisciplineBlock + leadWritebackBlock + untrustedDataBlock()
 }
 
 // renderWorkerIntentTurn is the per-run user message for the claimed intent. It is
@@ -607,6 +618,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
 	defer cleanup()
+	tools = append(tools, deepSeekTools(w.webSearch)...)
 
 	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同启动指令、意图锚定的目标资产
 	// 原始数据一起放进 system prompt：system 每次 run 都重新拼一遍、绝不会被 compaction 压掉，

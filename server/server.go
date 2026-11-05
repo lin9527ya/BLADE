@@ -308,16 +308,27 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		rt := &taskLLMRuntime{s: s, taskID: task.ID, agentKey: "supervisor"}
 		ctx = llmrec.WithWorker(ctx, supervisorLane)
 		ctx = llmrec.WithExplorationID(ctx, task.ExpID)
-		text, err := streamCollectTextLimit(ctx, rt, agent.SupervisorPrompt, supervisorClaimJSON(claim), 1500)
+		user := supervisorClaimJSON(claim)
+		text, err := streamCollectTextLimit(ctx, rt, agent.SupervisorPrompt, user, 1500)
 		if err != nil {
 			return agent.SupervisorVerdict{}, "", err
 		}
 		verdict, perr := agent.ParseSupervisorVerdict(text)
-		if perr != nil {
-			// 解析失败也把原始输出交回去：时间线要能看到模型到底说了什么。
-			return agent.SupervisorVerdict{}, text, perr
+		if perr == nil {
+			return verdict, text, nil
 		}
-		return verdict, text, nil
+		// 修复重试：模型偶尔会先写一段说明、返回数组、或输出被截断。把原始输出
+		// 与"只输出 JSON 对象"再发一次；仍失败才把错误交回时间线（本轮不纠偏）。
+		repair := user + "\n\n【上一次输出无法解析为 JSON】\n" + firstLine(text, 400) +
+			"\n请只输出一个 JSON 对象：{\"intents\":[{\"intent_id\":123,\"on_track\":true,\"reason\":\"一句话\"}]}，不要任何其他文字。"
+		text2, err2 := streamCollectTextLimit(ctx, rt, agent.SupervisorPrompt, repair, 1500)
+		if err2 == nil {
+			if v2, p2 := agent.ParseSupervisorVerdict(text2); p2 == nil {
+				return v2, text2, nil
+			}
+		}
+		// 解析失败也把原始输出交回去：时间线要能看到模型到底说了什么。
+		return agent.SupervisorVerdict{}, text, perr
 	})
 	s.auth.signKey.set(key)
 	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)
