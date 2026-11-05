@@ -19,6 +19,7 @@ file="${2:-CHANGELOG.md}"
 # v0.7.7 → 0.7.7；也接受已经是 0.7.7 的写法。
 ver="${tag#v}"
 
+rc=0
 awk -v ver="$ver" '
   # 段落标题形如：## [0.7.7] - 2026-10-31  或  ## [0.7.7]
   function is_heading(line,   m) {
@@ -28,4 +29,17 @@ awk -v ver="$ver" '
   found { print }
   !found && is_heading($0) { found = 1 }
   END { if (!found) exit 3 }
-' "$file"
+' "$file" || rc=$?
+
+# 缺段落时把原因写清楚：workflow 里只看到 exit 3 的话，没人知道该补什么。
+# 正文照旧不输出（调用方通常重定向到文件），失败路径不产生半份说明。
+if [ "$rc" -eq 3 ]; then
+  printf '%s\n' \
+    "找不到「## [$ver]」段（tag: $tag，文件: $file）。" \
+    "发布正文取自 CHANGELOG，缺段落时不会退回自动生成的提交列表——这是有意的。" \
+    "补法：在 $file 的 [Unreleased] 之下加一段" \
+    "  ## [$ver] - $(date +%F)" \
+    "  <这一版改了什么、要注意什么>" \
+    "然后重新打（或移动）tag 再发布。" >&2
+fi
+exit "$rc"

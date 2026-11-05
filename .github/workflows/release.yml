@@ -7,8 +7,23 @@ permissions:
   contents: write # 创建 Release 需要
 
 jobs:
+  # ⓪ 发布正文预检：先把 CHANGELOG 里该版本的段落抽出来并归档。
+  #    缺段落时**在这里就失败**（十几秒），而不是等前端和五平台编译都跑完（约 9 分钟）
+  #    才在最后一步报 exit 3。frontend / quality 都依赖它，也就是没有任何构建是白跑的。
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Extract release notes from CHANGELOG
+        run: ./scripts/changelog-section.sh "${GITHUB_REF_NAME}" > release-notes.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
   # ① 前端静态导出（一次），产物给交叉编译各平台复用
   frontend:
+    needs: [notes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -32,6 +47,7 @@ jobs:
   # ② 同一提交的质量门（与 test.yml 同口径）：tag 可能打在 test 未覆盖的提交上，
   #    所以 release 自己不重复跑一遍就不算"发布通过了质量检查"。
   quality:
+    needs: [notes]
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -135,7 +151,10 @@ jobs:
     needs: binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 # 取 CHANGELOG 与抽段脚本
+      # 发布正文由 ⓪ 的预检 job 生成并归档；这里不再重复抽取，避免两处逻辑漂移。
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-notes
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: pkg-*
@@ -144,11 +163,6 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum *.zip > SHA256SUMS
-      # 发布正文 = CHANGELOG 里该版本的段落。此前用 generate_release_notes，
-      # 正文是 GitHub 按提交自动生成的列表，与仓库维护的 CHANGELOG 是两套东西。
-      # 找不到对应段落时脚本返回非零 → 发布失败，逼着补 changelog（不静默退回提交列表）。
-      - name: Extract release notes from CHANGELOG
-        run: ./scripts/changelog-section.sh "${GITHUB_REF_NAME}" > release-notes.md
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
