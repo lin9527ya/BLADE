@@ -359,6 +359,21 @@ export default function TasksPage() {
     [load],
   );
 
+  const remarkTask = React.useCallback(
+    async (task: Task, remark: string) => {
+      try {
+        await api.updateTask(task.id, { remark });
+        toast.success(`任务 #${task.id} 备注已保存`);
+        lastRef.current = "";
+        void load();
+      } catch (error) {
+        toast.error(`备注保存失败：${(error as Error).message}`);
+        throw error;
+      }
+    },
+    [load],
+  );
+
   const toggleTaskPinned = React.useCallback(
     async (task: Task) => {
       const pinned = taskIsPinned(task);
@@ -740,6 +755,7 @@ export default function TasksPage() {
                         onSort={sortTasksBy}
                       />
                       <TableHead>名称</TableHead>
+                      <TableHead>备注</TableHead>
                       <TableHead>描述</TableHead>
                       <TableHead>目标</TableHead>
                       <SortableTaskHead
@@ -787,6 +803,7 @@ export default function TasksPage() {
                         onDelete={deleteTask}
                         onControl={controlTask}
                         onRename={renameTask}
+                        onRemark={remarkTask}
                         onTogglePinned={toggleTaskPinned}
                         onArchive={queueTaskArchive}
                         selected={selectedIds.has(task.id)}

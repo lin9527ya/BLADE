@@ -504,6 +504,7 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, id DESC`)
 type TaskPatch struct {
 	Name   *string
 	Pinned *bool
+	Remark *string
 }
 
 // UpdateTask applies a partial task name/pin mutation and returns the updated row.
@@ -515,9 +516,10 @@ func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 		WHEN $4::boolean IS NULL THEN pinned_at
 		WHEN $4::boolean THEN COALESCE(pinned_at, now())
 		ELSE NULL
-	END
+	END,
+	remark = CASE WHEN $5::boolean THEN $6 ELSE remark END
 WHERE id=$1 AND deleted_at IS NULL
-RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned))
+RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.Remark != nil, patch.Remark))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

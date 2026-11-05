@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { RemarkEditor } from "@/components/remark-editor";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -209,6 +210,7 @@ export const TaskRow = React.memo(function TaskRow({
   onDelete,
   onControl,
   onRename,
+  onRemark,
   onTogglePinned,
   onArchive,
   selected,
@@ -221,6 +223,7 @@ export const TaskRow = React.memo(function TaskRow({
   onDelete: (id: string, options: DeleteTaskOptions) => Promise<void>;
   onControl: (id: string, action: "pause" | "resume") => Promise<void>;
   onRename: (task: Task, name: string) => Promise<void>;
+  onRemark: (task: Task, remark: string) => Promise<void>;
   onTogglePinned: (task: Task) => Promise<void>;
   onArchive: (task: Task) => Promise<void>;
   selected: boolean;
@@ -246,6 +249,9 @@ export const TaskRow = React.memo(function TaskRow({
           {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
           {taskIsPinned(task) && <PinIcon className="size-4 shrink-0 text-primary" aria-label="已置顶" />}
         </div>
+      </TableCell>
+      <TableCell className="max-w-40">
+        <RemarkEditor value={task.remark} label={`任务 #${task.id}`} onSave={(remark) => onRemark(task, remark)} />
       </TableCell>
       <TableCell className="max-w-40 text-muted-foreground">
         <Link

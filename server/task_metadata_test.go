@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
@@ -52,6 +54,34 @@ func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
 	}
 	if updated.Name != "renamed task" || !updated.Pinned || updated.PinnedAt == "" {
 		t.Fatalf("unexpected task patch response: %+v", updated)
+	}
+
+	// 备注：单独 patch、trim 后落库；超长拒绝。
+	body, _ = json.Marshal(map[string]any{"remark": "  中文备注 📝\n第二行  "})
+	req = httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remark patch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var remarkResp struct {
+		Remark string `json:"remark"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &remarkResp); err != nil {
+		t.Fatal(err)
+	}
+	if remarkResp.Remark != "中文备注 📝\n第二行" {
+		t.Fatalf("remark trim 不对：%q", remarkResp.Remark)
+	}
+
+	body, _ = json.Marshal(map[string]any{"remark": strings.Repeat("注", db.MaxTaskRemarkRunes+1)})
+	req = httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("overlong remark status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	body, _ = json.Marshal(map[string]any{"name": strings.Repeat("任", maxTaskNameRunes+1)})

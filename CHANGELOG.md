@@ -10,6 +10,9 @@
 
 ### 新增
 
+- **任务列表备注列**：任务表在「名称」之后新增「备注」列，支持行内编辑/清空
+  （≤2000 字，Enter 保存、Esc 取消、失焦保存）；`PATCH /api/tasks/{id}` 支持
+  `remark`，任务 DTO 回传该字段。参考 ARTEX 的 RemarkEditor 交互
 - **线索通道（lead）**：`record_fact` 支持 `leads`（本意图之外的具体线索，每条事实
   最多 8 条）；`add_intent` 支持 `converts_lead_ids`，新增 `dismiss_leads`；态势新增
   `recent_leads` / `leads_total` / `leads_open` / `leads_converted`。lead 状态由

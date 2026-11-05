@@ -33,7 +33,8 @@ func rawString(raw json.RawMessage) string {
 type TaskDTO struct {
 	ID            string `json:"id"`
 	ExplorationID int64  `json:"exploration_id"`
-	Name          string `json:"name"` // 可选任务名称;空=未命名
+	Name          string `json:"name"`             // 可选任务名称;空=未命名
+	Remark        string `json:"remark,omitempty"` // 任务备注（≤2000 字）
 	CategoryID    *int64 `json:"category_id,omitempty"`
 	CategoryName  string `json:"category_name,omitempty"`
 	Pinned        bool   `json:"pinned"`
@@ -133,6 +134,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		ID:                    t.ID,
 		ExplorationID:         t.ExpID,
 		Name:                  lifecycle.Name,
+		Remark:                lifecycle.Remark,
 		CategoryID:            lifecycle.CategoryID,
 		CategoryName:          lifecycle.CategoryName,
 		Pinned:                lifecycle.PinnedAt > 0,

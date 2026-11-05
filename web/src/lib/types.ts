@@ -1,6 +1,9 @@
 // BLADE domain model — types used across the UI.
 // Derived from the functional spec (section 7: 关键数据形状).
 
+// 任务备注长度上限（与后端 db.MaxTaskRemarkRunes 一致）。
+export const MAX_TASK_REMARK_RUNES = 2000;
+
 export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout" | "policy_blocked"; // P20：探索策略内已无可行方向而收尾（不是超时——改策略/加目标即可复活）
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
