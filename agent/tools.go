@@ -149,7 +149,7 @@ type ToolSet struct {
 	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
 	pol *policy.Effective
 	// workerCap 是本任务的 worker 池大小（0 = 未知/不启用）。用途只有一个：
-	// 队列背压——待领意图超过 intentQueueFactor×workerCap 时拒收低优先级新意图。
+	// 队列背压——待领意图超过 intentQueueFactor×workerCap（默认 3×）时拒收低优先级新意图。
 	workerCap int
 	// intentsRound 计**本轮**成功创建的意图数（pace:round 额度）。
 	//
@@ -2382,7 +2382,7 @@ type intentItem struct {
 // 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
 // urgent 及以上是逃生口——材料性新发现（新战果、新漏洞链）驱动的跟进不该被队列挡住。
 const (
-	intentQueueFactor         = 2
+	intentQueueFactor         = 3
 	intentQueueUrgentPriority = 8
 )
 
@@ -3031,7 +3031,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 	return writeTool("goal_met", "【立即结束整个任务】——**仅用于没有显式目标(goals)的任务**：有目标时请用 prove_goal 逐个证明（系统会在最后一个目标达成时自动收官）。它必须带上证明任务已达成的【证据节点】(evidence_id)，空口无凭的「完成了」会被拒收。⚠️它不是用来“结束本轮规划”的：本轮没有新意图要派、或在等 worker 产出，都【直接结束本轮即可，不要调本工具】（0 个意图是完全正常的）。",
 		obj(map[string]any{
 			"reason":      str("达成理由：这个证据为什么说明任务已经完成"),
-			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；必须是前面 work 或主 Agent 已写下的结论，planner 自己没有 record_fact）"),
+			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；必须是前面 work 或主 Agent 已写下的结论，planner 只有 record_probe_fact，不能写通用结论）"),
 		}, "reason", "evidence_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
@@ -3053,7 +3053,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 			ev := pid(a.EvidenceID)
 			if ev <= 0 {
 				return actool.Errorf("goal_met: evidence_id 必填——没有证据的「任务完成」是一句口号。" +
-					"请指向证明任务已达成的【事实/漏洞】节点（planner 没有 record_fact：先让 worker 把结论写成事实，再来证明）"), nil
+					"请指向证明任务已达成的【事实/漏洞】节点（planner 只有 record_probe_fact：先让 worker 把结论写成事实，再来证明）"), nil
 			}
 			node, err := t.ts.GetNodeWithSources(ev)
 			if err != nil || node == nil || (node.Kind != db.KindFact && node.Kind != db.KindFinding) {
@@ -3544,6 +3544,81 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 			return actool.Text(msg), nil
 		},
 	)
+}
+
+// recordProbeFact 是 planner 专用的「开局侦察事实」写入口。
+//
+// 为什么单独开一个而不是把 record_fact 绑给 planner：planner 不执行攻击、也不该把
+// 推测写成事实；但 openingProbeBlock 要求它先做只读摸底，这些观察（响应头、跳转、
+// 版本、路径）如果不入图，后面的意图只能挂到目标上，血缘变平、其它 worker 也复用
+// 不到。这里用 evidence 必填 + source=opening_probe 把口子收窄到「本轮真实看到的
+// 侦察观察」，仍然不允许 planner 写漏洞结论或凭据。
+func (t *ToolSet) recordProbeFact() actool.CoreTool {
+	return t.writeExpTool("record_probe_fact",
+		"记录【开局摸底】中真实看到的侦察观察（响应头/跳转/版本/路径/指纹），写入探索图并挂到任务起点。\n"+
+			"只给 planner 用，且 evidence 必填：写清命令 + 最能证明的那一两行输出；没有 evidence 的观察会被拒收。\n"+
+			"这不是通用 record_fact：不要写推测、漏洞结论、凭据或战果——那些交给 worker 用 report_finding / report_credential。\n"+
+			"返回的 fact id 直接放进 add_intent 的 parent_ids，意图就会显示为「由事实派生」而不是从目标凭空长出来。",
+		obj(map[string]any{
+			"facts":      map[string]any{"type": "array", "description": "【多条观察时用】数组，元素字段同下方顶层字段；一次最多 8 条。", "items": map[string]any{"type": "object"}},
+			"summary":    str("一句话观察结论（如：/admin 302 到 /login?ReturnUrl=/admin）"),
+			"detail":     str("相关细节：响应头、版本、路径、跳转链等，可合并多个观察"),
+			"evidence":   str("【必填】一行关键证据：命令 + 最能证明结论的 1-2 行输出"),
+			"confidence": str("observed（输出里直接看到，默认）| inferred（据现象推断）"),
+			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选）"},
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.worker != "planner" {
+				return actool.Errorf("record_probe_fact 只供 planner 记录开局侦察观察；执行层请用 record_fact / report_finding"), nil
+			}
+			var a struct {
+				Facts []factItem `json:"facts"`
+				factItem
+			}
+			_ = json.Unmarshal(in, &a)
+			items := a.Facts
+			if len(items) == 0 {
+				items = []factItem{a.factItem}
+			}
+			if len(items) > 8 {
+				items = items[:8]
+			}
+			origin, _ := t.ts.OriginFactID()
+			ids := make([]int64, 0, len(items))
+			for i, it := range items {
+				summary := strings.TrimSpace(it.Summary)
+				if summary == "" {
+					return actool.Errorf(fmt.Sprintf("facts[%d].summary 不能为空", i)), nil
+				}
+				evidence := strings.TrimSpace(it.Evidence)
+				if evidence == "" {
+					return actool.Errorf(fmt.Sprintf("facts[%d].evidence 必填：开局侦察事实必须留下命令与关键输出，不能凭记忆写", i)), nil
+				}
+				conf := strings.ToLower(strings.TrimSpace(it.Confidence))
+				if conf == "" {
+					conf = "observed"
+				}
+				if conf != "observed" && conf != "inferred" {
+					return actool.Errorf(fmt.Sprintf("facts[%d].confidence 只能是 observed 或 inferred", i)), nil
+				}
+				payload := map[string]any{
+					"summary": summary, "evidence": evidence, "confidence": conf,
+					"polarity": factPolarityPos, "source": "opening_probe",
+				}
+				if d := strings.TrimSpace(it.Detail); d != "" {
+					payload["detail"] = d
+				}
+				id, err := t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs))
+				if err != nil {
+					return actool.Errorf(fmt.Sprintf("facts[%d] 写入失败：%v", i, err)), nil
+				}
+				if origin > 0 && origin != id {
+					_ = t.ts.Link(origin, db.RelYields, id)
+				}
+				ids = append(ids, id)
+			}
+			return jsonResult(map[string]any{"ids": ids, "origin": origin})
+		})
 }
 
 func (t *ToolSet) recordFact() actool.CoreTool {
@@ -4980,7 +5055,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_worker_traces：态势里的 recent_done_intents 只是一窗（12 条），上百意图的任务里
 		// 大部分已结束意图不在视野中。这个工具让 planner 能翻全量已跑意图，确认某方向是否试过。
 		t.listWorkerTraces(),
-		t.listGoals(), t.addIntent(), t.dismissLeads(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		t.listGoals(), t.recordProbeFact(), t.addIntent(), t.dismissLeads(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),

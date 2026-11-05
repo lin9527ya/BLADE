@@ -6,6 +6,12 @@
 
 ### 新增
 
+- **Planner 开局侦察事实写回**：新增 planner 专用 `record_probe_fact`。开局摸底用
+  Bash/WebFetch 看到的响应头、跳转、版本、路径等观察，现在可以带 `evidence` 批量
+  写入探索图（`source=opening_probe`），再用返回的 fact id 作为 `add_intent` 的
+  `parent_ids`，意图从「目标派生」变成「事实派生」。工具只允许 planner 调用且
+  evidence 必填，不能写推测、漏洞结论或凭据；执行层仍用 `record_fact` / `report_finding`
+
 - **漏洞案例（P2-7）**：新增 `finding_cases` / `finding_case_members` /
   `finding_case_events` / `finding_case_suggestions` / `finding_case_blocks`；
   支持创建案例、加/移除成员、统一报告与 `report_version` 版本保护；候选评分按
@@ -15,6 +21,11 @@
   编辑/下载统一报告、移除成员
 
 ### 修复
+
+- **Planner 待执行队列深度**：`slotUtilizationBlock` 不再只看 `idle_slots`。目标未达成、
+  队列未饱和时，本轮新增意图数要补到 `claimable >= soft_limit`（默认 3×worker），
+  不再因为“4 个 worker 都在跑”就停止发散；仍受每轮 4 条、队列 3×worker 的成本边界
+  约束，重复方向照旧拦截
 
 - **播报板/探索链路只展示已确认漏洞**：`report_finding` 默认把漏洞记为
   `pending`，但探索节点 state 直接写 `confirmed`；候选闭合又会产生

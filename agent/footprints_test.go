@@ -300,14 +300,14 @@ func TestGraphOverviewExposesIdleSlots(t *testing.T) {
 // 槽位利用率纪律必须随 planner 系统提示词下发，且用户改正文也删不掉。
 func TestPlannerSystemCarriesSlotUtilization(t *testing.T) {
 	sys := plannerSystem("目标", "/tmp", "/tmp", "")
-	for _, want := range []string{"槽位利用率", "idle_slots", "min(idle_slots, 4)"} {
+	for _, want := range []string{"槽位与队列深度", "idle_slots", "soft_limit - claimable"} {
 		if !strings.Contains(sys, want) {
 			t.Fatalf("planner 系统提示词缺 %q", want)
 		}
 	}
 	// 自定义正文（第四级兜底之前的任意一级）同样要带上这段。
 	custom := plannerSystem("目标", "/tmp", "/tmp", "你是一个自定义规划者。")
-	if !strings.Contains(custom, "槽位利用率") {
-		t.Fatal("自定义正文也必须带代码持有的槽位利用率段")
+	if !strings.Contains(custom, "槽位与队列深度") {
+		t.Fatal("自定义正文也必须带代码持有的槽位与队列深度段")
 	}
 }

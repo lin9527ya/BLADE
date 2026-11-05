@@ -21,7 +21,7 @@ import (
 //
 // 为什么归 planner 而不是 worker：worker 只对自己的意图负责；"整个策略是否已经
 // 穷尽"和"这个目标还要不要追"是规划层的判断。此前两个出口都不存在——硬底线要求
-// planner 写结论 fact，但它根本没有 record_fact 工具，于是只能无限派边缘意图。
+// planner 写结论 fact，但它没有通用 record_fact（只有 record_probe_fact 写开局侦察观察），于是只能无限派边缘意图。
 
 func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 	return t.writeExpTool("mark_strategy_exhausted",

@@ -10,11 +10,11 @@ import (
 	"github.com/lin9527ya/blade/policy"
 )
 
-// 队列背压：可领意图 ≥ 2×workers 时拒收常规方向；priority ≥8 是逃生口；
+// 队列背压：可领意图 ≥ 3×workers 时拒收常规方向；priority ≥8 是逃生口；
 // 链路步骤（前置未满足）不占额度——它们此刻也进不了 frontier。
 func TestIntentQueueBackpressure(t *testing.T) {
 	tools, ts, _ := newToolWorker(t) // 已有一条 open 意图
-	tools.SetWorkerCap(1)            // 上限 = 2×1 = 2
+	tools.SetWorkerCap(1)            // 上限 = 3×1 = 3
 	add := func(summary string, priority int, extra string) string {
 		return callTool(t, tools.PlannerTools(), "add_intent",
 			fmt.Sprintf(`{"risk_area":"other","summary":%q,"priority":%d%s}`, summary, priority, extra))
@@ -49,10 +49,10 @@ func TestIntentQueueBackpressure(t *testing.T) {
 	if !ok {
 		t.Fatalf("概览缺少 intent_queue：%#v", overview["intent_queue"])
 	}
-	if q["saturated"] != true || q["workers"] != 1 || q["soft_limit"] != 2 {
+	if q["saturated"] != true || q["workers"] != 1 || q["soft_limit"] != 3 {
 		t.Fatalf("饱和标记不对：%+v", q)
 	}
-	if got, _ := overview["claimable_intents"].(int); got < 2 {
+	if got, _ := overview["claimable_intents"].(int); got < 3 {
 		t.Fatalf("claimable_intents 不对：%v", overview["claimable_intents"])
 	}
 }

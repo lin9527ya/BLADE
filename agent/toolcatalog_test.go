@@ -33,6 +33,18 @@ func TestBuiltinToolSeeds(t *testing.T) {
 	if !ok || !hasWorker {
 		t.Errorf("record_fact agents = %v, want to include worker", rf.Agents)
 	}
+	// record_probe_fact is planner-only: opening-probe observations must be
+	// writable by the planner, but the general record_fact must stay worker-only.
+	pf, ok := byKey["record_probe_fact"]
+	hasPlanner := false
+	for _, a := range pf.Agents {
+		if a == "planner" {
+			hasPlanner = true
+		}
+	}
+	if !ok || !hasPlanner || len(pf.Agents) != 1 {
+		t.Errorf("record_probe_fact agents = %v, want planner only", pf.Agents)
+	}
 	// add_task_scope is bound to the planner (deliberate scope widening).
 	if ts, ok := byKey["add_task_scope"]; !ok || len(ts.Agents) == 0 {
 		t.Errorf("add_task_scope not seeded / has no agent binding: %v", ts.Agents)
