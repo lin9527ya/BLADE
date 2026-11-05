@@ -4,31 +4,48 @@
 
 ## [Unreleased]
 
-### 探索充分性：台账 / 通路 / 收官审计
+## [0.9.1] - 2026-11-05
 
-黑板架构缺的不是"再写一段提示词"，而是把策略从散文变成可执行状态：
+探索充分性的一版：把「该测什么、该往哪打、能不能收」从提示词里的散文，变成平台状态与
+可验收的门禁。
 
-- **探索台账**：`db/exploration_ledger.go` 把「资产 × 风险类」投影成 untested/inflight/
-  tested/failed/out_of_scope 状态，豁免折叠进同一张表；态势新增 `ledger`（计数 + top 缺口），
-  完整网格走新工具 `exploration_ledger`，逐格接受风险走 `dismiss_coverage`（理由 ≥10 字，
-  进报告数据缺项）。`coverage_matrix` 与台账共用一次矩阵查询。
-- **通路台账**：`db/chain_ledger.go` 用 `uses`/`yields` 边把据点/凭据的推进状态算成
-  unused/open/attempted/advanced（`uses` 是规划者声明，字段名 `declared_uses` 如实标注），
-  阶段 access→privilege→lateral；态势新增 `chains`，`chain_detail(loot_id)` 给建议下一步
-  （asset_neighbors / ad_paths / verify_credential）。
-- **收官审计**：`db/completion_gate.go` 检查未闭合候选、覆盖/深度缺口、未闭合通路、未处理
-  线索；`prove_goal` 关闭最后一个目标时按 `completion_gate`（block 默认 / notice / off）
-  拒收或提醒；`accept_completion_risk(scope, reason)` 显式接受风险。新增小表
-  `completion_waivers`（不写进事实面，避免污染 `unconsumed_facts`/证据门）。
-- **串行链断链修复**：`add_intent` 拒收指向死态前置的 `depends_on`；态势新增
-  `stranded_dependents`（前置永远等不到、仍是 open，可 `unblock_intent` 拆链），不改状态
-  以免制造新的死路。
-- **调度小修**：带 `uses_loot_ids`/发现父节点的意图默认优先级 7（深度跟进先于广度）；
-  去重对"同资产同风险但技术/完成口径不同"放行；连续 3 轮无新收成也触发复盘轮。
-- 新提示块：`ledgerDisciplineBlock` / `chainDisciplineBlock`（代码持有，旧库同样生效）。
-- 可观测性：`/api/metrics` 增加 `exploration`（收官审计拒收次数 + 豁免按 scope 分布）；
-  新增只读 `GET /api/exploration/ledger?task=` 一次返回台账与通路（供后续 UI 使用）。
+**行为变更（请留意）**：收官审计默认开启（`block`）。目标达成但仍有未豁免的缺口时，
+`prove_goal` 会被拒收并要求补测或显式接受风险；可在「系统设置 → 执行与并发 → 收官审计」
+改为「只提醒」或「关闭」。无目标的一次性任务保持旧行为。
 
+### 本次更新
+
+- 探索台账（广度）：`db/exploration_ledger.go` 把「资产 × 风险类」投影成
+  untested / inflight / tested / failed / out_of_scope，并把豁免折叠进去；态势新增 `ledger`
+  （状态计数 + top 12 缺口），完整网格走 `exploration_ledger`，逐格接受风险走
+  `dismiss_coverage`（理由 ≥10 字，进报告数据缺项）。`coverage_matrix` 与台账共用一次矩阵查询。
+- 通路台账（深度）：`db/chain_ledger.go` 由 `uses`/`yields` 边算出据点/凭据的推进状态
+  unused / open / attempted / advanced 与阶段 access→privilege→lateral；态势新增 `chains`，
+  `chain_detail(loot_id)` 给出下一步建议（asset_neighbors / ad_paths / verify_credential）。
+  `uses` 是规划者声明的，字段名 `declared_uses` 如实标注。
+- 收官审计：`db/completion_gate.go` 检查未闭合候选、覆盖/深度缺口、未闭合通路、未处理线索；
+  `accept_completion_risk(scope, reason)` 显式接受风险，`completion_waivers` 小表记录（不写进
+  事实面，避免污染 `unconsumed_facts` 与证据门）；审计拒收后下一轮强制复盘，避免原地重试。
+- 串行链断链修复：`add_intent` 拒收指向死态前置的 `depends_on`；态势新增
+  `stranded_dependents`（前置永远等不到、仍保持 open，可 `unblock_intent` 拆链），不改成
+  blocked 以免制造新的死路。
+- 调度小修：带 `uses_loot_ids`/发现父节点的意图默认优先级 7（深度跟进先于广度）；去重对
+  「同资产同风险但技术/完成口径不同」放行；连续 3 轮无新收成也触发复盘轮。
+- 穷尽复核：输入增加台账失败格与 `chains_open`，提示词补「失败格未处理 / 通路没推进」两条；
+  与收官审计共用 `db.CoverageGapSummary`，口径只有一份。
+- 可观测性：`/api/metrics` 增加 `exploration`（审计拒收次数、豁免按 scope 分布）；新增只读
+  `GET /api/exploration/ledger?task=` 一次返回台账与通路。
+- 提示块：`ledgerDisciplineBlock` / `chainDisciplineBlock`（代码持有，旧库的可编辑正文同样生效）。
+
+### 验证与限制
+
+功能提交：`556292e`。本版在独立 PostgreSQL 测试库上跑过 agent / db / server 全量测试与
+`-race`，`gofmt` / `go vet` / `staticcheck` 干净；前端 `tsc --noEmit`、43 项单测与静态构建
+通过；Linux amd64 本地编译通过。
+
+验证范围限于上述检查：未在本机对真实靶场跑完整任务（收官审计与台账的端到端行为只经过
+测试夹具与验收用例）；通路台账的 `uses` 只统计规划者声明，worker 执行类工具不会自动补边；
+台账/通路的前端页面尚未实现，只提供只读接口；worker 主动提议下一步（propose_intent）不在本版。
 
 ## [0.9.0] - 2026-11-05
 
