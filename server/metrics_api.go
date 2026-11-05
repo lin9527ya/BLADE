@@ -122,6 +122,8 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	// HTTP 请求：QPS 与错误率此前完全不可见（只有慢请求写日志）。
 	out["http"] = httpStats.snapshot()
+	// 探索充分性：收官审计拒收次数 + 豁免分布——"模型是不是在偷懒/在哪里放水"的直接信号。
+	out["exploration"] = s.metricsExploration(r.Context())
 	out["logs"] = logSink.DBStats()
 	if s.engine != nil {
 		if bc := s.engine.Broadcaster(); bc != nil {
@@ -159,6 +161,31 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 
 // metricsLLMBy 聚合 24h 内每条 lane 的调用数、token 与延迟分位数。
 // column 只允许代码内常量（profile_name / worker），不来自请求。
+// metricsExploration 汇总收官审计相关的计数（全局，不含每任务的台账明细；
+// 每任务明细走 GET /api/exploration/ledger?task=）。
+func (s *Server) metricsExploration(ctx context.Context) map[string]any {
+	out := map[string]any{
+		"completion_blocks": s.engine.CompletionBlocks(),
+		"waivers":           map[string]int64{},
+	}
+	rows, err := s.m.pg.QueryContext(ctx, `SELECT scope, count(*) FROM completion_waivers GROUP BY scope`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	byScope := map[string]int64{}
+	for rows.Next() {
+		var scope string
+		var n int64
+		if err := rows.Scan(&scope, &n); err != nil {
+			return out
+		}
+		byScope[scope] = n
+	}
+	out["waivers"] = byScope
+	return out
+}
+
 func (s *Server) metricsLLMBy(column string) []metricsLLMRow {
 	pg := s.m.PG()
 	if pg == nil {

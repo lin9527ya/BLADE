@@ -138,6 +138,21 @@ type ToolSet struct {
 	// it between graphOverviewData and add_intent avoids a second matrix query.
 	breadthLoaded bool
 	breadthCached *db.BreadthSummary
+	// coverageCached 是本轮 task_scope 覆盖矩阵的快照：探索台账与 coverage_matrix 工具
+	// 共用一次查询（矩阵本身是一次 CTE）。ToolSet 每轮一个，失效即重建。
+	coverageLoaded bool
+	coverageCached []db.CoverageMatrixAsset
+	ledgerLoaded   bool
+	ledgerCached   *db.LedgerReport
+	chainsLoaded   bool
+	chainsCached   *db.ChainReport
+	// completionGate 是收官审计的语气（block/notice/off），由 server 注入、每轮现读。
+	// nil = off（agent 单测/无 server 上下文时保持旧行为）。
+	completionGate func() string
+	// completionBlocked 是"审计拒收了一次"的通知（server 用来累计指标）。nil = 不记。
+	completionBlocked func()
+	// forceReview 让下一轮强制复盘（收官审计拒收后：先补空白再重试）。nil = 不支持。
+	forceReview func()
 	// breadthNewDebt tracks debt assets already targeted by intents created in this
 	// ToolSet, so a second add_intent call in the same round does not re-warn for
 	// the same asset.
@@ -357,6 +372,53 @@ func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
 
 // SetTaskClock 注入本轮的任务截止信息（nil/零值 = 没有期限，行为不变）。
 func (t *ToolSet) SetTaskClock(tc TaskClock) { t.clock = tc }
+
+// SetCompletionGate 注入收官审计语气：block（默认）/ notice / off。nil 或空 = off。
+func (t *ToolSet) SetCompletionGate(fn func() string) { t.completionGate = fn }
+
+// SetCompletionBlocked 注入"审计拒收"的回调（指标用；nil = 不记）。
+func (t *ToolSet) SetCompletionBlocked(fn func()) { t.completionBlocked = fn }
+
+// SetForceReview 注入"下一轮强制复盘"的回调（收官审计拒收后）。nil = 不支持。
+func (t *ToolSet) SetForceReview(fn func()) { t.forceReview = fn }
+
+// completionGateMode 读当前语气；未注入时 off（不改变 agent 单测/无 server 场景的行为）。
+func (t *ToolSet) completionGateMode() string {
+	if t.completionGate == nil {
+		return "off"
+	}
+	switch m := strings.ToLower(strings.TrimSpace(t.completionGate())); m {
+	case "block", "notice", "off":
+		return m
+	default:
+		return "block"
+	}
+}
+
+// completionGaps 是收官审计的 agent 侧入口（db 层实现，server 的 goalless 路径也用它）。
+func (t *ToolSet) completionGaps() []db.CompletionGap {
+	if t.ts == nil || t.taskID <= 0 {
+		return nil
+	}
+	gaps, err := t.ts.CompletionGaps(t.as, db.CompletionOptions{
+		TaskID: t.taskID, CoverageEnabled: !t.coverageDisabled,
+	})
+	if err != nil {
+		return nil // 读不出来不阻断收尾：门坏了不能把人锁在里面
+	}
+	return gaps
+}
+
+// formatCompletionGaps 把缺口渲染成可直接执行的一段话。
+func formatCompletionGaps(gaps []db.CompletionGap) string {
+	var b strings.Builder
+	b.WriteString("目标已达成，但探索还不充分（收官审计）：")
+	for _, g := range gaps {
+		b.WriteString("\n- " + g.Detail)
+	}
+	b.WriteString("\n\n处理完再来 prove_goal；确实接受风险的，用 accept_completion_risk 写明理由（会进报告的数据缺项）。")
+	return b.String()
+}
 
 // endgameWarning 是收官期的**软信号**（不拒收）。硬拒有风险：收官期仍可能需要清理/
 // 补齐意图，按 kind 区分又不足以说明"这条是不是新探索面"。与 breadth_warning 同形态。
@@ -834,6 +896,7 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	for _, k := range []string{
 		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
 		"unconsumed_facts", "capabilities", "ruled_out", "folded_facts", "folded_facts_total",
+		"ledger", "chains",
 	} {
 		delete(out, k)
 	}
@@ -965,6 +1028,33 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if includeBreadth && !t.coverageDisabled {
 		if b := t.breadthSummary(); b != nil {
 			out["breadth"] = b
+		}
+		// 探索台账：把「资产 × 风险类」摊成状态计数 + 待处理缺口（≤12）。它是发散的
+		// 第一来源，也是收官审计的依据；完整网格走 exploration_ledger 按需取。
+		if rep := t.ledgerReport(); rep != nil && rep.CellsTotal > 0 {
+			out["ledger"] = map[string]any{
+				"counts": rep.Counts, "waived": rep.Waived,
+				"gaps": rep.Gaps, "gaps_total": rep.GapsTotal,
+				"note": "untested/failed 是发散来源；tested 只代表有一条结论，不代表测透",
+			}
+		}
+	}
+	// 通路台账：手上有哪些据点/凭据、推进到哪一步。深度不靠模型自觉，靠这张表。
+	if rep := t.chainReport(); rep != nil && len(rep.Rows) > 0 {
+		rows := make([]map[string]any, 0, 8)
+		for _, r := range rep.Rows {
+			if len(rows) >= 8 {
+				break
+			}
+			rows = append(rows, map[string]any{
+				"loot_id": r.LootID, "kind": r.Kind, "label": r.Label,
+				"stage": r.Stage, "status": r.Status, "uses": r.Uses,
+				"downstream": len(r.Downstream),
+			})
+		}
+		out["chains"] = map[string]any{
+			"counts": rep.Counts, "rows": rows,
+			"note": "unused/open 是深度缺口；用过一次不算推进，看 stage 与 downstream",
 		}
 	}
 	// lineage from the exploration edges: an intent's parents (what it
@@ -1124,6 +1214,42 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		} else if blocked > 0 {
 			out["blocked_intents_total"] = blocked
 		}
+	}
+	// 永远等不到的排队意图：前置已全部收场、且至少一个不会有结论。它们仍是 open，
+	// unblock_intent 有效；单独列出来是因为 open_intents 窗口（30 条）外的那些只能靠计数猜。
+	if stranded, serr := t.ts.StrandedDependents(); serr == nil && len(stranded) > 0 {
+		out["stranded_dependents_total"] = len(stranded)
+		ids := make([]int64, 0, len(stranded))
+		deadIDs := make([]int64, 0, len(stranded))
+		for id, ds := range stranded {
+			ids = append(ids, id)
+			deadIDs = append(deadIDs, ds...)
+		}
+		deadState := map[int64]string{}
+		if nodes, nerr := t.ts.NodesByIDs(deadIDs); nerr == nil {
+			for _, n := range nodes {
+				deadState[n.ID] = n.State
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		items := make([]map[string]any, 0, 8)
+		for _, id := range ids {
+			if len(items) >= 8 {
+				break
+			}
+			var p map[string]any
+			if n, nerr := t.ts.GetNode(id); nerr == nil && n != nil {
+				_ = json.Unmarshal(n.Payload, &p)
+			}
+			dead := make([]map[string]any, 0, len(stranded[id]))
+			for _, d := range stranded[id] {
+				dead = append(dead, map[string]any{"id": d, "state": deadState[d]})
+			}
+			items = append(items, map[string]any{
+				"id": id, "summary": clipLine(asText(p["summary"]), 80), "dead_deps": dead,
+			})
+		}
+		out["stranded_dependents"] = items
 	}
 	// 队列深度与容量：planner 判断"还能不能再派"唯一该看的数。
 	// frontier_open 仍保留（含被前置挡住的），但判定请用 claimable_intents。
@@ -2470,6 +2596,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	}
 	// 先校验锚点（建节点前，避免坏锚点留下孤儿意图）。
 	parents := pidList(it.ParentIDs)
+	hasFindingParent := false
 	for _, pidv := range parents {
 		n, err := t.ts.GetNodeWithSources(pidv)
 		if err != nil || n == nil {
@@ -2477,6 +2604,9 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		}
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
 			return 0, "", fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上，不能挂在意图/目标/提示上；顶层全新方向请留空 parent_ids", pidv, n.Kind)
+		}
+		if n.Kind == db.KindFinding {
+			hasFindingParent = true
 		}
 	}
 	// 目标轴校验（同样在建节点前）：显式 goal_id 必须是本任务的 open 目标。
@@ -2535,10 +2665,22 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		if n.State != "done" && n.State != "negative" {
 			depsSatisfied = false
 		}
+		// 前置已经是“永远不会有结论”的收场（blocked/exhausted/no_output/…）：这条链
+		// 一定跑不起来。当场拒收，比让它默默排在那里（永远进不了 frontier）好——
+		// 后者才是“深度链凭空消失”的真实来路。
+		if db.IntentStateDead(n.State) {
+			return 0, "", fmt.Errorf("depends_on 里的前置意图 #%d 已经以 %q 收场（不会有结论）：这条链永远跑不起来。"+
+				"先重派前置，或去掉 depends_on、把这一步需要的输入自己写进意图", n.ID, n.State)
+		}
 	}
 	priority := it.Priority
 	if priority == 0 {
 		priority = 5
+		// 深度跟进（动用已得战果 / 由已确认发现派生）默认排在广度意图前面。
+		// 7 < 队列背压的 urgent 阈值 8，所以仍受背压约束——只调默认，不改排序规则。
+		if len(pidList(it.UsesLootIDs)) > 0 || hasFindingParent {
+			priority = 7
+		}
 	}
 	// ── 队列背压（软上限）──
 	// 生产端每次唤醒最多 4 条，消化端只有 workers 个 worker、每条跑几分钟——不设上限时
@@ -2569,7 +2711,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 防打转：同资产 + 同风险类 + 同义描述，要么已有在跑的、要么已经结束过 3 次。
 	// 判定放在策略/资产/血缘/战果校验之后、建节点之前：前面的校验说的是"能不能做"，
 	// 这一条说的是"这件事是不是已经有人在做/已经做过了"。
-	if rej := t.checkIntentSpin(q, it.Summary, riskArea, anchors, strings.TrimSpace(it.RiskArea) != ""); rej != "" {
+	if rej := t.checkIntentSpin(q, it.Summary, riskArea, anchors, strings.TrimSpace(it.RiskArea) != "", it.Techniques, it.Kind); rej != "" {
 		return 0, "", fmt.Errorf("%s", rej)
 	}
 	leadIDs, lerr := t.validateLeadIDs(it.ConvertsLeadIDs)
@@ -2657,7 +2799,8 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	for _, a := range anchors {
 		newAssets[a] = true
 	}
-	q.rememberIntent(intentFP{id: id, summary: it.Summary, riskArea: riskArea, state: "open", assets: newAssets})
+	q.rememberIntent(intentFP{id: id, summary: it.Summary, riskArea: riskArea, state: "open",
+		kind: it.Kind, assets: newAssets, techniques: techniqueSetOfStrings(it.Techniques)})
 	// 目标轴：显式 goal_id 已在上面校验；自动挂载已在建边前完成。这里只补
 	// "有多个 open 目标却没指名"的回执提示（不猜，也不阻止创建）。
 	note := ""
@@ -2984,9 +3127,27 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
 				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞节点"), nil
 			}
-			// 清理门：这次 prove 会让所有目标都达成时，检查有没有没销账的遗留物。
-			if msg := t.cleanupGateForCompletion(goal); msg != "" {
-				return actool.Errorf(msg), nil
+			// 清理门 + 收官审计：只有这次 prove 会关闭**最后一个**目标时才跑——
+			// 中途证明单个目标不该被全局缺口挡住。block 直接拒收；notice 放行并带警告。
+			completionNotice := ""
+			if t.isLastOpenGoal(goal) {
+				if msg := t.cleanupGate(); msg != "" {
+					return actool.Errorf(msg), nil
+				}
+				if gaps := t.completionGaps(); len(gaps) > 0 {
+					switch t.completionGateMode() {
+					case "block":
+						if t.completionBlocked != nil {
+							t.completionBlocked()
+						}
+						if t.forceReview != nil {
+							t.forceReview() // 下一轮先复盘，别原地重试
+						}
+						return actool.Errorf(formatCompletionGaps(gaps)), nil
+					case "notice":
+						completionNotice = "\n\n⚠ " + formatCompletionGaps(gaps)
+					}
+				}
 			}
 			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
 				log.Printf("[goal] 关联证据失败 goal=%d evidence=%d: %v", goal, ev, err)
@@ -3008,10 +3169,10 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 				if allMet {
 					t.GoalMet = true
 					t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", len(goals), goal)
-					return actool.Text(fmt.Sprintf("goal %d marked met；本任务所有目标均已达成，任务自动判定完成", goal)), nil
+					return actool.Text(fmt.Sprintf("goal %d marked met；本任务所有目标均已达成，任务自动判定完成%s", goal, completionNotice)), nil
 				}
 			}
-			return actool.Text(fmt.Sprintf("goal %d marked met", goal)), nil
+			return actool.Text(fmt.Sprintf("goal %d marked met%s", goal, completionNotice)), nil
 		})
 }
 
@@ -5067,7 +5228,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.mergeFindings(),
 		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
 		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
-		t.coverageMatrix(),
+		t.coverageMatrix(), t.explorationLedger(), t.dismissCoverage(), t.chainDetail(), t.acceptCompletionRisk(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// 执行类工具（run/wait/get/grep/cancel_execution、loot_*、foothold_exec、
 		// tunnel_open、oast_*、cve_exploit）与 report_finding 已从规划层移除：

@@ -73,25 +73,25 @@ func (t *ToolSet) artifactRiskAccepted() bool {
 	return false
 }
 
-// cleanupGateForCompletion 只在"这次 prove_goal 会让所有目标都达成"时才拦——
-// 中途证明某个目标不该被遗留物挡住。
-func (t *ToolSet) cleanupGateForCompletion(goalID int64) string {
+// isLastOpenGoal 报告"把 goalID 标 met 之后是否所有目标都达成"。收官审计与遗留物门
+// 都只在这一次证明上触发，避免中途证明某个目标就被全局检查挡住。
+func (t *ToolSet) isLastOpenGoal(goalID int64) bool {
 	if t.ts == nil {
-		return ""
+		return false
 	}
 	goals, err := t.ts.ListByKind(db.KindGoal, 1000)
 	if err != nil || len(goals) == 0 {
-		return ""
+		return false
 	}
 	for _, g := range goals {
 		if g.ID == goalID {
 			continue
 		}
 		if g.State != "met" {
-			return ""
+			return false
 		}
 	}
-	return t.cleanupGate()
+	return true
 }
 
 // ArtifactCleanupBlocked 是给引擎侧收官路径用的导出入口（goalless 收尾不经过

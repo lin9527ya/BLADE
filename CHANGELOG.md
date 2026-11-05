@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+### 探索充分性：台账 / 通路 / 收官审计
+
+黑板架构缺的不是"再写一段提示词"，而是把策略从散文变成可执行状态：
+
+- **探索台账**：`db/exploration_ledger.go` 把「资产 × 风险类」投影成 untested/inflight/
+  tested/failed/out_of_scope 状态，豁免折叠进同一张表；态势新增 `ledger`（计数 + top 缺口），
+  完整网格走新工具 `exploration_ledger`，逐格接受风险走 `dismiss_coverage`（理由 ≥10 字，
+  进报告数据缺项）。`coverage_matrix` 与台账共用一次矩阵查询。
+- **通路台账**：`db/chain_ledger.go` 用 `uses`/`yields` 边把据点/凭据的推进状态算成
+  unused/open/attempted/advanced（`uses` 是规划者声明，字段名 `declared_uses` 如实标注），
+  阶段 access→privilege→lateral；态势新增 `chains`，`chain_detail(loot_id)` 给建议下一步
+  （asset_neighbors / ad_paths / verify_credential）。
+- **收官审计**：`db/completion_gate.go` 检查未闭合候选、覆盖/深度缺口、未闭合通路、未处理
+  线索；`prove_goal` 关闭最后一个目标时按 `completion_gate`（block 默认 / notice / off）
+  拒收或提醒；`accept_completion_risk(scope, reason)` 显式接受风险。新增小表
+  `completion_waivers`（不写进事实面，避免污染 `unconsumed_facts`/证据门）。
+- **串行链断链修复**：`add_intent` 拒收指向死态前置的 `depends_on`；态势新增
+  `stranded_dependents`（前置永远等不到、仍是 open，可 `unblock_intent` 拆链），不改状态
+  以免制造新的死路。
+- **调度小修**：带 `uses_loot_ids`/发现父节点的意图默认优先级 7（深度跟进先于广度）；
+  去重对"同资产同风险但技术/完成口径不同"放行；连续 3 轮无新收成也触发复盘轮。
+- 新提示块：`ledgerDisciplineBlock` / `chainDisciplineBlock`（代码持有，旧库同样生效）。
+- 可观测性：`/api/metrics` 增加 `exploration`（收官审计拒收次数 + 豁免按 scope 分布）；
+  新增只读 `GET /api/exploration/ledger?task=` 一次返回台账与通路（供后续 UI 使用）。
+
+
 ## [0.9.0] - 2026-11-05
 
 漏洞案例与发现视图、探索链路派生、实时流可靠性的一轮；顺带把 planner 开局侦察的观察

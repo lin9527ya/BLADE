@@ -28,6 +28,10 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     tokenBudget,
     setTokenBudget,
     savingBudget,
+    completionGate,
+    setCompletionGate,
+    savingCompletionGate,
+    saveCompletionGate,
     execCPU,
     setExecCPU,
     execMem,
@@ -111,6 +115,40 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               onChange={(e) => setTokenBudget(e.target.value)}
             />
             <Button type="button" onClick={saveTokenBudget} disabled={!loaded || savingBudget}>
+              保存
+            </Button>
+          </div>
+        </Field>
+      </SubBlock>
+
+      <SubBlock title="收官审计" icon={<ShieldCheckIcon className="size-4 text-muted-foreground" />}>
+        <Field
+          label="目标达成后的充分性检查"
+          htmlFor="completion-gate"
+          hint={
+            <>
+              目标已达成但探索台账仍有<b>未接受的风险</b>（未测面、未推进的据点/凭据、未闭合候选、未处理线索）时：
+              <b>阻断</b>会拒绝收官并要求补测或显式接受风险；<b>只提醒</b>把缺口写进回执但不拦；<b>关闭</b>恢复旧行为。
+              <br />
+              接受风险需要写理由，理由会进报告的数据缺项——放行可以，但必须说得出来。
+            </>
+          }
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={completionGate} onValueChange={(v) => setCompletionGate(v as typeof completionGate)}>
+              <SelectTrigger id="completion-gate" className="w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="block">阻断（默认）</SelectItem>
+                  <SelectItem value="notice">只提醒</SelectItem>
+                  <SelectItem value="off">关闭</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Button size="sm" onClick={() => void saveCompletionGate()} disabled={savingCompletionGate || !loaded}>
+              {savingCompletionGate ? <Spinner data-icon="inline-start" /> : null}
               保存
             </Button>
           </div>

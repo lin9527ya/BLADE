@@ -1977,6 +1977,58 @@ WHERE e.exploration_id=$1 AND e.rel='depends_on' AND d.state NOT IN ('done','neg
 	return out, rows.Err()
 }
 
+// StrandedDependents 返回「所有前置都已结束、且至少一个前置不会有结论」的 open 意图，
+// 以及各自的死前置列表。这类意图永远进不了 frontier，但仍是 open——所以
+// unblock_intent（只接受 open）仍然有效。
+//
+// 不改状态是刻意的：blocked 不在 blocked_by 的装饰范围、不计入 CountBlockedOpenIntents，
+// 而且 ReopenBlockedIntents 会把所有 blocked 翻成 open；把 stranded 标成 blocked 只会
+// 制造新的死路。
+func (s *ExplorationStore) StrandedDependents() (map[int64][]int64, error) {
+	rows, err := s.db.Query(`SELECT e.src_id, d.id, d.state
+FROM exploration_edges e
+JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+JOIN exploration_nodes s ON s.id=e.src_id AND s.exploration_id=e.exploration_id AND s.state='open'
+WHERE e.exploration_id=$1 AND e.rel='depends_on'`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type agg struct {
+		dead    []int64
+		allTerm bool
+	}
+	byIntent := map[int64]*agg{}
+	for rows.Next() {
+		var src, dep int64
+		var state string
+		if err := rows.Scan(&src, &dep, &state); err != nil {
+			return nil, err
+		}
+		a := byIntent[src]
+		if a == nil {
+			a = &agg{allTerm: true}
+			byIntent[src] = a
+		}
+		if !IntentStateTerminal(state) {
+			a.allTerm = false
+		}
+		if IntentStateDead(state) {
+			a.dead = append(a.dead, dep)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := map[int64][]int64{}
+	for id, a := range byIntent {
+		if a.allTerm && len(a.dead) > 0 {
+			out[id] = a.dead
+		}
+	}
+	return out, nil
+}
+
 // ClearIntentDependencies 拆掉一条意图的全部前置（planner 判定"不再等它"时用）。
 func (s *ExplorationStore) ClearIntentDependencies(id int64) (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM exploration_edges

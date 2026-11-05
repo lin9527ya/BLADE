@@ -28,7 +28,11 @@ type intentFP struct {
 	summary  string
 	riskArea string
 	state    string
+	kind     string
 	assets   map[int64]bool
+	// techniques：两条方向"同资产同风险类、措辞相近"，但用的 ATT&CK 技术不同，
+	// 就不是重复——去重不能把更深/更细的变体拦掉。
+	techniques map[string]bool
 }
 
 // loadIntentPool 读最近的意图做对比基准（一次 add_intent 调用只读一次）。
@@ -43,8 +47,10 @@ func (t *ToolSet) loadIntentPool() []intentFP {
 		_ = json.Unmarshal(n.Payload, &p)
 		out = append(out, intentFP{
 			id: n.ID, summary: asText(p["summary"]), state: n.State,
-			riskArea: db.NormalizeRiskArea(asText(p["risk_area"])),
-			assets:   idSetOf(p["asset_ids"]),
+			riskArea:   db.NormalizeRiskArea(asText(p["risk_area"])),
+			kind:       asText(p["intent_kind"]),
+			assets:     idSetOf(p["asset_ids"]),
+			techniques: techniqueSetOf(p["techniques"]),
 		})
 	}
 	return out
@@ -74,7 +80,7 @@ func (q *intentQuota) rememberIntent(fp intentFP) {
 //     也是两条 worker 干一件事）。
 //  2. 同一方向已经**结束**过 3 次（done/negative/exhausted/blocked）→ 同样的打法
 //     再来一次不会不同，必须换机理/入口/资产。
-func (t *ToolSet) checkIntentSpin(q *intentQuota, summary, riskArea string, assets []int64, explicitRisk bool) string {
+func (t *ToolSet) checkIntentSpin(q *intentQuota, summary, riskArea string, assets []int64, explicitRisk bool, techniques []string, kind string) string {
 	if t.ts == nil || strings.TrimSpace(summary) == "" {
 		return ""
 	}
@@ -89,10 +95,20 @@ func (t *ToolSet) checkIntentSpin(q *intentQuota, summary, riskArea string, asse
 	}
 	var active *intentFP
 	attempts := make([]intentFP, 0, intentDupAttemptCap)
+	newTech := techniqueSetOfStrings(techniques)
 	pool := q.poolFor(t)
 	for i := range pool {
 		fp := &pool[i]
 		if fp.state == "deleted" || !assetsComparable(newAssets, fp.assets) || fp.riskArea != riskArea {
+			continue
+		}
+		// 完成口径不同（侦察 vs 验证）不是重复；技术集不同也不是重复——这两种
+		// 差异恰恰是"同一面换个打法"的信号，拦掉等于把深度变体挡在门外。
+		// 空表示历史意图（任何写回都算产出），与显式 discovery/verify 不同口径——一律放行。
+		if kind != fp.kind {
+			continue
+		}
+		if techniqueSetsDiffer(newTech, fp.techniques) {
 			continue
 		}
 		if summarySimilarity(summary, fp.summary) < intentDupSimilarity {
@@ -127,6 +143,50 @@ func (t *ToolSet) checkIntentSpin(q *intentQuota, summary, riskArea string, asse
 			len(attempts), strings.Join(ids, "、"))
 	}
 	return ""
+}
+
+// techniqueSetOf 解析 payload 里的 ATT&CK 技术列表。
+func techniqueSetOf(v any) map[string]bool {
+	arr, _ := v.([]any)
+	out := map[string]bool{}
+	for _, item := range arr {
+		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+			out[strings.ToUpper(strings.TrimSpace(s))] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func techniqueSetOfStrings(in []string) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out[strings.ToUpper(strings.TrimSpace(s))] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// techniqueSetsDiffer：两边都标了技术且集合不同 → 不同打法（空集合不参与判定）。
+func techniqueSetsDiffer(a, b map[string]bool) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	if len(a) != len(b) {
+		return true
+	}
+	for k := range a {
+		if !b[k] {
+			return true
+		}
+	}
+	return false
 }
 
 // assetsComparable 判断两批资产是不是"同一批"：两边都空算同一批（此时靠风险类与

@@ -113,6 +113,9 @@ export function useSettingsState() {
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
+  // 收官审计语气：目标达成后是否要求"探索充分"（block 默认 / notice / off）。
+  const [completionGate, setCompletionGate] = React.useState<"block" | "notice" | "off">("block");
+  const [savingCompletionGate, setSavingCompletionGate] = React.useState(false);
   // P24 执行资源限额与外部 MCP 守卫（0 = 不限；保存即对之后提交的执行/调用生效）。
   const [execCPU, setExecCPU] = React.useState("1800");
   const [execMem, setExecMem] = React.useState("0");
@@ -217,6 +220,7 @@ export function useSettingsState() {
     setSupervisorEnabled(s.supervisor_enabled !== false);
     setSupervisorInterval(String(s.supervisor_interval_seconds ?? 180));
     setTokenBudget(String(s.task_token_budget ?? 0));
+    setCompletionGate(s.completion_gate === "notice" || s.completion_gate === "off" ? s.completion_gate : "block");
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
@@ -436,6 +440,24 @@ export function useSettingsState() {
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingSupervisor(false));
+  };
+
+  const saveCompletionGate = () => {
+    setSavingCompletionGate(true);
+    api
+      .setSettings({ completion_gate: completionGate })
+      .then((s) => {
+        apply(s);
+        toast.success(
+          completionGate === "block"
+            ? "已开启收官审计：目标达成但有未豁免缺口时不允许收官"
+            : completionGate === "notice"
+              ? "已设为只提醒：缺口会写进收官回执，但不阻断"
+              : "已关闭收官审计",
+        );
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingCompletionGate(false));
   };
 
   const saveTokenBudget = () => {
@@ -1109,6 +1131,10 @@ export function useSettingsState() {
     setTokenBudget,
     savingBudget,
     setSavingBudget,
+    completionGate,
+    setCompletionGate,
+    savingCompletionGate,
+    saveCompletionGate,
     execCPU,
     setExecCPU,
     execMem,

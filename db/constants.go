@@ -224,6 +224,23 @@ var IntentTerminalStatesSQL = func() string {
 	return "(" + strings.Join(q, ",") + ")"
 }()
 
+// IntentDeadStates 是「这条前置永远不会有结论」的状态：终态里除 done/negative 之外，
+// 再加上 deleted（软删除不进终态清单，但对依赖方同样是死路）。
+//
+// 为什么单独列一份而不是“终态减 done/negative”：del 不在 IntentTerminalStates 里，
+// 两处各写一个集合、迟早漂移；串行链的“永远等不到”判断必须与 frontier 的口径一致。
+var IntentDeadStates = []string{"out-of-scope", "blocked", "exhausted", "stopped", "no_output", "deleted"}
+
+// IntentStateDead 报告一个前置意图状态是否意味着下游“永远等不到”。
+func IntentStateDead(state string) bool {
+	for _, st := range IntentDeadStates {
+		if state == st {
+			return true
+		}
+	}
+	return false
+}
+
 // IntentStateTerminal 报告一个意图状态是否属于「已结束」。
 func IntentStateTerminal(state string) bool {
 	for _, st := range IntentTerminalStates {

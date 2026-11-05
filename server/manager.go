@@ -336,6 +336,7 @@ const (
 	settingOpsecNoise          = "opsec_noise_level" // 噪声档位：quiet 时给 planner/worker 追加潜行纪律
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
+	settingCompletionGate      = "completion_gate"
 	settingWebSearchOn         = "web_search_enabled"
 	settingWebSearchBackend    = "web_search_backend"
 	settingBraveKey            = "brave_search_api_key"

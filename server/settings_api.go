@@ -140,6 +140,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"opsec_noise_level":     noiseLevel(s.m.pg),
 		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":     s.taskTokenBudget(),
+		"completion_gate":       s.completionGateMode(),
 		"llm_record":            s.m.LLMRecordEnabled(),
 		"web_search_enabled":    on,
 		"web_search_backend":    backend,
@@ -298,7 +299,8 @@ type settingsRequest struct {
 	OpsecNoise          *string `json:"opsec_noise_level"`
 	AgentAutoRetest     *bool   `json:"agent_auto_retest"`
 	TaskTokenBudget     *int64  `json:"task_token_budget"`
-	LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+	CompletionGate      *string `json:"completion_gate"` // block|notice|off
+	LLMRecord           *bool   `json:"llm_record"`      // LLM 录制开关（默认关）；即时生效，无需重建 agent
 	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 	WebSearchEnabled    *bool   `json:"web_search_enabled"`
@@ -689,6 +691,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			v = 0
 		}
 		pending[settingTokenBudget] = strconv.FormatInt(v, 10)
+	}
+	if req.CompletionGate != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.CompletionGate))
+		if mode != "block" && mode != "notice" && mode != "off" {
+			writeErr(w, 400, "completion_gate 只能是 block / notice / off")
+			return
+		}
+		pending[settingCompletionGate] = mode
 	}
 	if req.AgentTrafficBinding != nil {
 		pending[settingAgentTrafficBinding] = strconv.FormatBool(*req.AgentTrafficBinding)

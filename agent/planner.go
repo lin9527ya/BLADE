@@ -59,6 +59,12 @@ type Planner struct {
 	reviewRound       bool
 	roundsSinceReview int
 	factsAtLastReview int
+	// lastYieldTotal / lowYieldStreak：收成（finding+foothold+credential）连续不增长时
+	// 强制复盘一次——比"每 5 轮"更贴近"卡住了"的真实信号。
+	lastYieldTotal int
+	lowYieldStreak int
+	// forceReview 由工具侧置位（收官审计拒收后）：下一轮强制复盘，先补空白再重试。
+	forceReview bool
 	// hot 是跨轮复用的规划会话。每轮结束后把历史折叠成「本轮输入 + 结论」两条消息
 	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
 	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
@@ -87,8 +93,11 @@ type Planner struct {
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
-	maxTokensFn     func() int // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor       *Compactor // cold-node compaction (§7); nil = disabled
+	// completionGate 是收官审计的语气 resolver（block/notice/off；nil = off）。
+	completionGate    func() string
+	completionBlocked func()
+	maxTokensFn       func() int // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor         *Compactor // cold-node compaction (§7); nil = disabled
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
@@ -216,6 +225,16 @@ func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
 // constraints get injected into the planner system prompt. Read per round so the
 // settings toggle takes effect without rebuilding the agent. nil = inject (default).
 func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn }
+
+// SetCompletionGate wires the completion-audit tone resolver (block/notice/off).
+// Read per round so a settings change takes effect without rebuilding the agent.
+func (p *Planner) SetCompletionGate(fn func() string) { p.completionGate = fn }
+
+// SetCompletionBlocked wires the "audit rejected a prove_goal" callback (metrics).
+func (p *Planner) SetCompletionBlocked(fn func()) { p.completionBlocked = fn }
+
+// requestReview 让下一轮成为复盘轮（收官审计拒收后由 prove_goal 触发）。
+func (p *Planner) requestReview() { p.forceReview = true }
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
@@ -711,10 +730,31 @@ const escalationLadderBlock = `
 - **第 2 次**：必须**明确不同角度**——换入口、换技术、换资产面或换利用链，并在 summary 里写清与前一次的区别。原样重派（换个措辞）是最贵的浪费。
 - **第 3 次**：停止原样重派：要么落一条否定/局限结论（record_fact + close_candidate 说明阻断点），要么换一个机理完全不同的方向。
 - 被领取 ≥3 次且仍无新产出：默认把它视为穷尽，把时间让给其它未测面。
-判定依据始终是 trace 里的真实进度（get_worker_trace），不是 state 本身；收官期以【收官期】为准。`
+判定依据始终是 trace 里的真实进度（get_worker_trace），不是 state 本身；收官期以【收官期】为准。
+- **等不到的前置**：态势里的 stranded_dependents 是"前置已失败、永远进不了队列"的 open 意图。不要干等——重派前置，或用 unblock_intent 拆链后自己接手（它们仍是 open，拆链有效）。`
 
 // endgameDoctrineBlock 是收官期的**代码持有**纪律。旧库里存的可编辑正文写于这个阶段
 // 存在之前，只改默认模板覆盖不到它们；而"最后一小时停止扩面、转入对账"是交付质量的一部分。
+// ledgerDisciplineBlock 是**代码持有**的台账纪律：覆盖矩阵只是数字，台账把「哪一格」
+// 摊到模型面前；不写这一段，模型仍会凭记忆发散。
+const ledgerDisciplineBlock = `
+
+【探索台账（代码持有；态势里有 ledger 字段时生效）】
+- 态势里的 ledger.counts / ledger.gaps 是「资产 × 风险类」的台账：untested 没碰过、failed 没测成（blocked/exhausted/no_output）、tested 已有结论（**不代表测透**）、inflight 在跑、out_of_scope 越界。
+- **发散的第一来源是台账**：每轮至少处理 gaps（failed 排在前面）。对每格二选一：派意图（带 asset_ids + risk_area + 点名入口），或 dismiss_coverage 写清理由（范围外/代价过高/已有证据）。不要静默略过。
+- **知识扫描**：对已知技术栈的资产，先用自己的知识列出适用的攻击类（认证/会话、注入、文件、SSRF/XXE、反序列化、业务逻辑/竞态、配置与信息泄露、云元数据、供应链…），再逐条落成意图或豁免——这是"在知识范围内穷尽"的执行方式。
+- 台账是**下限而非全枚举**：收官只要求深度下限、失败格有结论、未处理线索清零，不要求 14 类全测。完整网格用 exploration_ledger。`
+
+// chainDisciplineBlock 是**代码持有**的通路纪律：战果不是"记下来就完了"，
+// 深度取决于它有没有被推进；不写这一段，模型会把"用过一次"当成"处理完了"。
+const chainDisciplineBlock = `
+
+【通路台账（代码持有；态势里有 chains 字段时生效）】
+- chains.counts / chains.rows 是手上据点与凭据的推进状态：unused 从没被任何意图动用、open 动过但没产出且最后一次没善终、attempted 动过没产出但没失败、advanced 已产出下游。
+- 有 open/unused 时**深度优先于新扩面**：每一条都要么派一条带 uses_loot_ids 指向它的意图（提权/横向/验证凭据），要么写清为什么停（已失陷风险/越界/代价过高）。
+- "用过一次"不等于"推进了"：看 stage 有没有前进、有没有产出新据点/凭据/主机；只写一条"看看能干什么"的意图不算。
+- 完整链路与建议下一步用 chain_detail(loot_id)；规划下一步前可以配合 asset_neighbors / ad_paths / 凭据 targets。`
+
 const endgameDoctrineBlock = `
 
 【收官期（代码持有）】
@@ -771,7 +811,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) 
 	if len(review) > 0 && review[0] {
 		reviewBlock = reviewRoundBlock
 	}
-	return body + promptExtras("planner") + openingProbeBlock + leadTriageBlock + reviewBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + endgameDoctrineBlock + untrustedDataBlock()
+	return body + promptExtras("planner") + openingProbeBlock + leadTriageBlock + reviewBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + ledgerDisciplineBlock + chainDisciplineBlock + endgameDoctrineBlock + untrustedDataBlock()
 }
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
@@ -807,6 +847,16 @@ const hintLifecycleBlock = `
 // and/or finding(s) reported (may be several — the engine debounces a burst; empty
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
+// shouldReview 是复盘轮的纯判定：每 5 个普通轮、新增 ≥4 条事实、或连续 3 轮没有新收成
+// （finding/foothold/credential 总数不增长）三者之一；两次复盘之间至少隔 3 个普通轮，
+// 避免复盘把规划轮吃光。
+func shouldReview(roundsSinceReview, newFacts, lowYieldStreak int) bool {
+	if roundsSinceReview < 3 {
+		return false
+	}
+	return roundsSinceReview >= 5 || newFacts >= 4 || lowYieldStreak >= 3
+}
+
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
 	proxyAddr, proxyCA := p.proxySnapshot()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
@@ -840,13 +890,29 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if p.factsAtLastReview == 0 {
 			p.factsAtLastReview = facts
 		}
-		if p.roundsSinceReview >= 5 || facts-p.factsAtLastReview >= 4 {
-			if p.roundsSinceReview >= 3 {
-				review = true
-				p.roundsSinceReview = 0
-				p.factsAtLastReview = facts
-			}
+		// 收成下降：连续 3 轮没有新的 finding/foothold/credential，说明这一轮在跑的方向
+		// 没带来新能力，先把图和线索综合一遍再派单。
+		yieldTotal := 0
+		if st, serr := ts.Stats(); serr == nil {
+			yieldTotal = st[db.KindFinding] + st[db.KindFoothold] + st[db.KindCredential]
 		}
+		if p.lastYieldTotal > 0 && yieldTotal <= p.lastYieldTotal {
+			p.lowYieldStreak++
+		} else {
+			p.lowYieldStreak = 0
+		}
+		p.lastYieldTotal = yieldTotal
+		if shouldReview(p.roundsSinceReview, facts-p.factsAtLastReview, p.lowYieldStreak) {
+			review = true
+			p.roundsSinceReview = 0
+			p.factsAtLastReview = facts
+			p.lowYieldStreak = 0
+		}
+	}
+	if p.forceReview {
+		review = true
+		p.forceReview = false
+		p.roundsSinceReview = 0
 	}
 	if !review {
 		p.roundsSinceReview++
@@ -868,6 +934,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		}
 		t.SetTaskID(taskID)
 		t.SetTaskClock(taskClockFrom(ctx))
+		t.SetCompletionGate(p.completionGate)
+		t.SetCompletionBlocked(p.completionBlocked)
+		t.SetForceReview(p.requestReview)
 		t.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 		t.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)

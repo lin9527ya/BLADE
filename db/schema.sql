@@ -355,6 +355,21 @@ CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
 -- 图体检与依赖解析都按 (exploration_id, rel) 过滤；没有它时每条检查都要走全表。
 CREATE INDEX IF NOT EXISTS idx_expedges_exp_rel ON exploration_edges(exploration_id, rel);
+
+-- 探索充分性豁免：收官审计与探索台账共用。
+-- 为什么不用 fact 承载：事实会被 recent_facts / unconsumed_facts / 证据门 / 覆盖矩阵的
+-- 事实计数当成"结论"消费，豁免会诱导规划者去处理自己刚写的东西。一张小表最干净。
+-- scope=coverage 时 asset_id/risk_area 为空表示"该维度全放行"；其余 scope 只用 scope+reason。
+CREATE TABLE IF NOT EXISTS completion_waivers (
+    id             BIGSERIAL PRIMARY KEY,
+    exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    scope          TEXT NOT NULL CHECK (scope IN ('coverage','chains','proof_gaps','leads')),
+    asset_id       BIGINT,
+    risk_area      TEXT,
+    reason         TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_completion_waivers_exp ON completion_waivers(exploration_id, scope);
 -- 目标初始态不再连任务根。旧版本创建 goal 时会写 origin fact --spawns--> goal，
 -- 图上看起来像「起点直接连目标」，把未完成的进度画成了已完成。新代码不再写这条边；
 -- 这里清理旧库已有的初始边（幂等；之后每次启动匹配 0 行）。达成目标时仍由

@@ -48,6 +48,12 @@ type ExhaustionCoverage struct {
 	// Depth 是「资产 × 风险类」的投入面：几条意图、产出几条事实。三道硬门只能数
 	// "碰没碰过"，数不了"是不是每类只取了一次样"——这正是复核员要看的深度证据。
 	Depth []ExhaustionDepthRow `json:"depth,omitempty"`
+	// LedgerFailed / LedgerWaived 来自探索台账：failed = 测过但没结论的格子（未豁免），
+	// 它和"没碰过"不是一回事——失败只说明这次没测成，不说明这条路不通。
+	LedgerFailed int `json:"ledger_failed"`
+	LedgerWaived int `json:"ledger_waived"`
+	// ChainsOpen 是"从没被推进/上次没善终"的据点与凭据数——深度面的客观信号。
+	ChainsOpen int `json:"chains_open"`
 }
 
 // ExhaustionDepthRow 是一行投入面：某资产某风险类的意图数与事实数。
@@ -111,6 +117,8 @@ const ExhaustionReviewPrompt = `你是渗透测试平台的**穷尽复核员**�
 4. **范围面没走完**：给出的 untouched_assets > 0，或 shallow_assets > 0（还有资产只测了很少几类风险）。
 5. **把"需要凭据/需要后台"当成否定**：因未登录而测不了，属于**外部阻断**，不是"该方向已排除"。这类方向应标为 blocked 而不是 negative。
 6. **单次取样**：给出的 depth（资产 × 风险类 → 意图数 / 事实数）显示每个方向都只有 1 条意图、1 条事实，而 reason 却声称"该类已排除"。一次观察只能证明"这次没成"，排除一类问题需要覆盖它的主要变体（编码、参数位置、方法、路径变体、认证前提）。
+7. **失败格未处理**：ledger_failed > 0 表示台账里还有「测过但没结论」的格子（blocked/exhausted/no_output）且没有豁免。失败不是否定——这些格子要先换角度重派，或由规划者写明接受的代价，才谈得上穷尽。
+8. **通路没推进**：chains_open > 0 表示还有据点/凭据从没被任何意图动用，或动过但没产出且最后一次没善终。手上还握着能继续往里推的访问却宣称穷尽，通常意味着深度没走完（提权/横向/凭据验证），需要给出为什么停在原地的证据。
 
 ## 判定为「证据充分」（accurate=true）的情形
 
@@ -184,6 +192,25 @@ func BuildExhaustionClaim(ts *db.ExplorationStore, as *db.AssetStore, taskID int
 		}
 	}
 	claim.Coverage.Depth = buildDepthRows(ts, as, depthIDs, depthIntents)
+	if rep, err := ts.ChainLedger(); err == nil {
+		for _, r := range rep.Rows {
+			if r.Status == db.ChainStatusUnused || r.Status == db.ChainStatusOpen {
+				claim.Coverage.ChainsOpen++
+			}
+		}
+	}
+	if taskID > 0 {
+		if cov, err := ts.CoverageMatrix(taskID); err == nil && len(cov) > 0 {
+			waivers, _ := ts.CoverageWaivers()
+			rep := db.BuildCoverageLedger(cov, waivers, db.RiskAreas)
+			claim.Coverage.LedgerWaived = rep.Waived
+			for _, c := range rep.CellsList {
+				if !c.Waived && c.Status == db.LedgerFailed {
+					claim.Coverage.LedgerFailed++
+				}
+			}
+		}
+	}
 	return claim
 }
 

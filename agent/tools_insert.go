@@ -567,9 +567,9 @@ func (t *ToolSet) coverageMatrix() actool.CoreTool {
 			if t.ts == nil || t.taskID <= 0 {
 				return actool.Errorf("coverage_matrix 需要任务上下文"), nil
 			}
-			assets, err := t.ts.CoverageMatrix(t.taskID)
-			if err != nil {
-				return actool.Errorf(err.Error()), nil
+			assets := t.coverageSnapshot()
+			if assets == nil {
+				return actool.Errorf("coverage_matrix 需要覆盖度开启且有任务上下文"), nil
 			}
 			return jsonResult(map[string]any{"risk_areas": db.RiskAreas, "assets": assets})
 		},

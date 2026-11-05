@@ -119,6 +119,25 @@ func (t *ToolSet) markStrategyExhausted() actool.CoreTool {
 						total, db.DefaultDepthAreas, strings.Join(lines, "\n"))), nil
 				}
 			}
+			// 台账门：还有「测过但没结论」的格子（blocked/exhausted/no_output）且没重派、没豁免时，
+			// 不许穷尽——失败不是否定，这是复核员最常纠正的误判。口径与收官审计共用
+			// db.CoverageGapSummary，避免两处各算一套。
+			if t.taskID > 0 {
+				if sum, err := t.ts.CoverageGapSummary(t.taskID); err == nil && len(sum.Failed) > 0 {
+					lines := make([]string, 0, 6)
+					for _, c := range sum.Failed {
+						if len(lines) >= 6 {
+							break
+						}
+						lines = append(lines, fmt.Sprintf("%s(id=%d) × %s", c.Label, c.AssetID, c.RiskArea))
+					}
+					return actool.Errorf(fmt.Sprintf(
+						"台账里还有 %d 个「测过但没结论」的格子（failed：blocked/exhausted/no_output）：%s\n"+
+							"失败只说明这次没测成，不说明这条路不通。先重派这些格子（换角度/补变体），"+
+							"或用 dismiss_coverage 写清为什么不做，再谈穷尽。",
+						len(sum.Failed), strings.Join(lines, "、"))), nil
+				}
+			}
 			for _, id := range ids {
 				n, err := t.ts.GetNode(id)
 				if err != nil || n == nil {
