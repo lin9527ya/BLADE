@@ -7,6 +7,7 @@ DELETE /api/conversations/{id}	server.(*Server).pgDeleteConversation-fm
 DELETE /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 DELETE /api/cves/{id}	server.(*Server).deleteCVE-fm
 DELETE /api/cves/{id}/script	server.(*Server).clearCVEScript-fm
+DELETE /api/exploration/finding-cases/{id}/members/{finding_id}	server.(*Server).removeFindingCaseMember-fm
 DELETE /api/exploration/findings/{id}	server.(*Server).deleteFinding-fm
 DELETE /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 DELETE /api/intercept/rules/{id}	server.(*Server).interceptDeleteRule-fm
@@ -81,6 +82,10 @@ GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
 GET /api/exploration/activity/stream	server.(*Server).streamActivity-fm
 GET /api/exploration/activity/{seq}	server.(*Server).activityDetail-fm
 GET /api/exploration/exhaustion-reviews	server.(*Server).exhaustionReviews-fm
+GET /api/exploration/finding-case-suggestions	server.(*Server).listFindingCaseSuggestions-fm
+GET /api/exploration/finding-cases	server.(*Server).listFindingCases-fm
+GET /api/exploration/finding-cases/stats	server.(*Server).findingCaseStats-fm
+GET /api/exploration/finding-cases/{id}	server.(*Server).getFindingCase-fm
 GET /api/exploration/findings	server.(*Server).findings-fm
 GET /api/exploration/findings/asset-tree	server.(*Server).findingAssetTree-fm
 GET /api/exploration/findings/export	server.(*Server).findingsExport-fm
@@ -88,6 +93,7 @@ GET /api/exploration/findings/groups	server.(*Server).findingGroups-fm
 GET /api/exploration/findings/retests/active	server.(*Server).listActiveFindingRetests-fm
 GET /api/exploration/findings/stats	server.(*Server).findingStats-fm
 GET /api/exploration/findings/{id}	server.(*Server).getFinding-fm
+GET /api/exploration/findings/{id}/case-candidates	server.(*Server).findingCaseCandidates-fm
 GET /api/exploration/findings/{id}/lineage	server.(*Server).findingLineage-fm
 GET /api/exploration/findings/{id}/retests	server.(*Server).listFindingRetests-fm
 GET /api/exploration/findings/{id}/traffic	server.(*Server).getFindingTraffic-fm
@@ -204,6 +210,7 @@ PATCH /api/companies/{id}/knowledge/{kid}	server.(*Server).patchCompanyKnowledge
 PATCH /api/conversations/{id}	server.(*Server).pgRenameConversation-fm
 PATCH /api/conversations/{id}/profile	server.(*Server).pgUpdateConversation-fm
 PATCH /api/cves/{id}	server.(*Server).patchCVE-fm
+PATCH /api/exploration/finding-cases/{id}	server.(*Server).updateFindingCaseReport-fm
 PATCH /api/exploration/findings/{id}	server.(*Server).patchFinding-fm
 PATCH /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 PATCH /api/notify/channels/{id}	server.(*Server).notifyUpdateChannel-fm
@@ -257,6 +264,12 @@ POST /api/cves/delete/batch	server.(*Server).deleteCVEsBatch-fm
 POST /api/cves/import/preview	server.(*Server).previewCVEImport-fm
 POST /api/cves/{id}/script	server.(*Server).uploadCVEScript-fm
 POST /api/debug/pprof/symbol	net/http/pprof.Symbol
+POST /api/exploration/finding-case-blocks	server.(*Server).blockFindingCasePair-fm
+POST /api/exploration/finding-case-suggestions	server.(*Server).generateFindingCaseSuggestions-fm
+POST /api/exploration/finding-case-suggestions/{id}/accept	server.(*Server).acceptFindingCaseSuggestion-fm
+POST /api/exploration/finding-case-suggestions/{id}/dismiss	server.(*Server).dismissFindingCaseSuggestion-fm
+POST /api/exploration/finding-cases	server.(*Server).createFindingCase-fm
+POST /api/exploration/finding-cases/{id}/members	server.(*Server).addFindingCaseMembers-fm
 POST /api/exploration/findings/{id}/deepen	server.(*Server).deepenFinding-fm
 POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-fm
 POST /api/exploration/findings/{id}/traffic	server.(*Server).bindFindingTraffic-fm

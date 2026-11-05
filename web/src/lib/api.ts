@@ -57,6 +57,9 @@ import type {
   ExplorationPolicyEffective,
   ExplorationPolicyOverride,
   Finding,
+  FindingCase,
+  FindingCaseStats,
+  FindingCaseSuggestion,
   FindingAssetTree,
   FindingDeepenResponse,
   FindingGroupsPage,
@@ -383,6 +386,26 @@ export const api = {
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean; remark?: string }) => patch<Task>(`/tasks/${id}`, input),
+  findingCases: (taskId: string) =>
+    get<{ items: FindingCase[] }>(`/exploration/finding-cases?task_id=${encodeURIComponent(taskId)}`).then((r) => arr(r.items)),
+  findingCaseStats: (taskId: string) =>
+    get<FindingCaseStats>(`/exploration/finding-cases/stats?task_id=${encodeURIComponent(taskId)}`),
+  createFindingCase: (input: { task_id: number; title: string; reason: string; severity?: string; finding_ids: number[] }) =>
+    post<FindingCase>("/exploration/finding-cases", input),
+  getFindingCase: (id: number) => get<FindingCase>(`/exploration/finding-cases/${id}`),
+  updateFindingCaseReport: (id: number, report: string, expectedVersion: number) =>
+    patch<FindingCase>(`/exploration/finding-cases/${id}`, { report, expected_version: expectedVersion }),
+  findingCaseSuggestions: (taskId: string) =>
+    get<{ items: FindingCaseSuggestion[] }>(`/exploration/finding-case-suggestions?task_id=${encodeURIComponent(taskId)}`).then((r) => arr(r.items)),
+  generateFindingCaseSuggestions: (taskId: string) =>
+    post<{ created: number }>(`/exploration/finding-case-suggestions?task_id=${encodeURIComponent(taskId)}`, {}),
+  acceptFindingCaseSuggestion: (id: number) => post<FindingCase>(`/exploration/finding-case-suggestions/${id}/accept`, {}),
+  dismissFindingCaseSuggestion: (id: number, reason: string) =>
+    post<{ ok: boolean }>(`/exploration/finding-case-suggestions/${id}/dismiss`, { reason }),
+  blockFindingCasePair: (input: { task_id: number; finding_ids: number[]; reason: string }) =>
+    post<{ ok: boolean }>("/exploration/finding-case-blocks", input),
+  removeFindingCaseMember: (caseId: number, findingId: number, reason: string) =>
+    del<{ ok: boolean }>(`/exploration/finding-cases/${caseId}/members/${findingId}?reason=${encodeURIComponent(reason)}`),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),

@@ -4,7 +4,7 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { ArrowUpRightIcon, BugIcon, ChevronRightIcon, DownloadIcon, SearchIcon } from "lucide-react";
+import { ArrowUpRightIcon, BugIcon, ChevronRightIcon, DownloadIcon, FolderIcon, SearchIcon } from "lucide-react";
 
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
 import { StatusBadge } from "@/components/status-badge";
@@ -32,11 +32,13 @@ import type { ActiveFindingRetest, FindingStatus, Severity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { AssetTree } from "./_components/asset-tree";
+import { FindingCaseDialog } from "./_components/finding-case-dialog";
 import { type FindingView, findingGroupKey } from "./_components/findings-helpers";
 import { FINDING_STATUSES, FindingsTable, fmtTime, SEVERITIES, UNASSIGNED_TASK } from "./_components/findings-table";
 import { useFindingsState } from "./_components/use-findings-state";
 
 export default function FindingsPage() {
+  const [caseOpen, setCaseOpen] = React.useState(false);
   const {
     view,
     setView,
@@ -236,6 +238,9 @@ export default function FindingsPage() {
             {selectedIds.size > 0 && (
               <span className="text-muted-foreground text-xs tabular-nums">已选 {selectedIds.size} 条</span>
             )}
+            <Button size="sm" variant="outline" onClick={() => setCaseOpen(true)}>
+              <FolderIcon /> 案例
+            </Button>
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> 导出
             </Button>
@@ -483,6 +488,13 @@ export default function FindingsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <FindingCaseDialog
+        open={caseOpen}
+        onOpenChange={setCaseOpen}
+        taskID={task !== "all" && task !== UNASSIGNED_TASK ? task : ""}
+        selectedFindingIDs={[...selectedIds].map(Number).filter((n) => Number.isFinite(n) && n > 0)}
+      />
 
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent>

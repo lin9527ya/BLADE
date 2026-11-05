@@ -521,7 +521,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             out the width and defeat the truncation below — the transcript wraps to
             the panel instead of overflowing horizontally. */}
             <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
-              <div className="min-w-0 max-w-full p-4" ref={contentRef}>
+              <div className="min-w-0 max-w-full p-4 [overflow-anchor:none]" ref={contentRef}>
                 {activeState?.loadingMore && (
                   <div className="flex items-center justify-center gap-2 pb-2 text-muted-foreground text-xs">
                     <Loader2Icon className="size-3.5 animate-spin" />

@@ -534,10 +534,22 @@ export function ChatView({
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const atBottomRef = React.useRef(true);
+  // 程序化滚动期间忽略 scroll 事件：否则内容增长时的 scroll anchoring 会把
+  // atBottom 误判成 false，后续流式更新就再也不自动跟底。
+  const programmaticScrollRef = React.useRef(false);
   const viewport = React.useCallback(
     () => (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ?? null,
     [],
   );
+  const scrollToBottom = React.useCallback(() => {
+    const vp = viewport();
+    if (!vp) return;
+    programmaticScrollRef.current = true;
+    vp.scrollTop = vp.scrollHeight;
+    requestAnimationFrame(() => {
+      programmaticScrollRef.current = false;
+    });
+  }, [viewport]);
   // Scroll-up loads one older page and prepends it, preserving the visual position
   // so the view doesn't jump (record height/offset before, restore the delta after).
   const loadEarlier = React.useCallback(async () => {
@@ -569,8 +581,9 @@ export function ChatView({
     const vp = viewport();
     if (!vp) return;
     const onScroll = () => {
+      if (programmaticScrollRef.current) return;
       if (approvalFocus.state && !focusHistory.ready) return;
-      atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60;
+      atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 120;
       if (vp.scrollTop <= 80) void loadEarlier(); // near top → pull an older page
     };
     vp.addEventListener("scroll", onScroll, { passive: true });
@@ -579,19 +592,26 @@ export function ChatView({
   // open/switch a conversation → jump to the latest (bottom)
   // biome-ignore lint/correctness/useExhaustiveDependencies: changing conversations intentionally retriggers the scroll reset.
   React.useLayoutEffect(() => {
-    const vp = viewport();
-    if (vp) {
-      vp.scrollTop = vp.scrollHeight;
-      atBottomRef.current = true;
-    }
-  }, [conv.id, viewport]);
+    atBottomRef.current = true;
+    scrollToBottom();
+  }, [conv.id, viewport, scrollToBottom]);
   // new activity → stick to bottom only if the user is already pinned there
   // biome-ignore lint/correctness/useExhaustiveDependencies: message and running changes intentionally retrigger bottom anchoring.
   React.useLayoutEffect(() => {
     if (approvalFocus.state || !atBottomRef.current) return;
-    const vp = viewport();
-    if (vp) vp.scrollTop = vp.scrollHeight;
-  }, [messages, running, viewport, approvalFocus.state]);
+    scrollToBottom();
+  }, [messages, running, viewport, approvalFocus.state, scrollToBottom]);
+  // 流式正文可能只改文本节点、不改变 messages 数组引用；MutationObserver 兜底。
+  React.useEffect(() => {
+    const el = contentRef.current;
+    if (!el || typeof MutationObserver === "undefined") return;
+    const mo = new MutationObserver(() => {
+      if (approvalFocus.state || !atBottomRef.current) return;
+      scrollToBottom();
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => mo.disconnect();
+  }, [conv.id, approvalFocus.state, scrollToBottom]);
 
   // Per-conversation token total, live — same accounting as the main-agent
   // console: completed runs' `result` sum + the in-progress run's latest `usage`.
@@ -709,7 +729,7 @@ export function ChatView({
 
       {/* messages */}
       <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
-        <div className="min-w-0 max-w-full px-4 py-3" ref={contentRef}>
+        <div className="min-w-0 max-w-full px-4 py-3 [overflow-anchor:none]" ref={contentRef}>
           {messages.length === 0 && !running ? (
             <div className="py-10 text-center text-muted-foreground text-sm">
               开始和「{agent?.name ?? conv.agent_key}」对话

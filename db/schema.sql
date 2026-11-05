@@ -1840,3 +1840,64 @@ CREATE INDEX IF NOT EXISTS idx_cred_attempts_task
 -- 保留清理按 at 扫过期行（此前这张表没有任何回收路径，随使用线性增长）。
 CREATE INDEX IF NOT EXISTS idx_cred_attempts_at
     ON credential_attempts (at);
+
+-- 漏洞案例（P2-7）：把同一根因/同一资产的重复上报归并成一个独立缺陷。
+-- 原始 findings 保留为成员；案例持有统一报告与版本，报告编辑用 report_version 做 CAS。
+CREATE TABLE IF NOT EXISTS finding_cases (
+    id              BIGSERIAL PRIMARY KEY,
+    task_id         BIGINT REFERENCES tasks(id) ON DELETE SET NULL,
+    origin_task_id  BIGINT NOT NULL,
+    title           TEXT NOT NULL,
+    reason          TEXT NOT NULL,
+    severity        TEXT NOT NULL DEFAULT '',
+    severity_reason TEXT NOT NULL DEFAULT '',
+    report          TEXT NOT NULL DEFAULT '',
+    version         BIGINT NOT NULL DEFAULT 1,
+    report_version  BIGINT NOT NULL DEFAULT 0,
+    active          BOOLEAN NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_cases_task ON finding_cases(task_id);
+
+CREATE TABLE IF NOT EXISTS finding_case_members (
+    finding_id BIGINT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+    case_id    BIGINT NOT NULL REFERENCES finding_cases(id) ON DELETE CASCADE,
+    joined_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_case_members_case ON finding_case_members(case_id);
+
+CREATE TABLE IF NOT EXISTS finding_case_events (
+    id          BIGSERIAL PRIMARY KEY,
+    case_id     BIGINT NOT NULL REFERENCES finding_cases(id) ON DELETE CASCADE,
+    action      TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    finding_ids JSONB NOT NULL DEFAULT '[]',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 疑似分组建议：同一任务里评分达到阈值的发现对/组，等人或 reporter 采纳。
+CREATE TABLE IF NOT EXISTS finding_case_suggestions (
+    id          BIGSERIAL PRIMARY KEY,
+    task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    finding_ids JSONB NOT NULL,
+    title       TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    score       INT NOT NULL DEFAULT 0,
+    state       TEXT NOT NULL DEFAULT 'pending',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(task_id, finding_ids)
+);
+CREATE INDEX IF NOT EXISTS idx_finding_case_suggestions_task
+    ON finding_case_suggestions(task_id, state);
+
+-- 人工否决：这一对发现明确不是同一漏洞，候选评分与建议生成都不再提。
+CREATE TABLE IF NOT EXISTS finding_case_blocks (
+    left_id    BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    right_id   BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    reason     TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(left_id, right_id),
+    CHECK(left_id < right_id)
+);

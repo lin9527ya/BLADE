@@ -1279,6 +1279,42 @@ export interface FindingAsset {
   label: string;
 }
 
+export interface FindingCase {
+  id: number;
+  task_id?: number;
+  origin_task_id: number;
+  title: string;
+  reason: string;
+  severity: Severity | "";
+  severity_reason?: string;
+  report: string;
+  version: number;
+  report_version: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  member_count: number;
+  members?: Finding[];
+}
+
+export interface FindingCaseSuggestion {
+  id: number;
+  task_id: number;
+  finding_ids: number[];
+  title: string;
+  reason: string;
+  score: number;
+  state: string;
+  created_at: string;
+}
+
+export interface FindingCaseStats {
+  cases: number;
+  ungrouped: number;
+  distinct: number;
+  reports: number;
+}
+
 export interface Finding {
   traffic_count?: number;
   evidence_version?: number;

@@ -1133,17 +1133,30 @@ export function useSessionsState(taskId: string) {
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
+  // 程序化滚动期间忽略 scroll 事件：否则内容增长时的 scroll anchoring 会把
+  // atBottom 误判成 false，后续流式更新就再也不自动跟底（用户要刷新才看到新内容）。
+  const programmaticScrollRef = React.useRef(false);
   const viewport = React.useCallback(
     () => (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ?? null,
     [],
   );
+  const scrollToBottom = React.useCallback(() => {
+    const vp = viewport();
+    if (!vp) return;
+    programmaticScrollRef.current = true;
+    vp.scrollTop = vp.scrollHeight;
+    requestAnimationFrame(() => {
+      programmaticScrollRef.current = false;
+    });
+  }, [viewport]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally rebinds the scroll listener.
   React.useEffect(() => {
     const vp = viewport();
     if (!vp) return;
     const onScroll = () => {
+      if (programmaticScrollRef.current) return;
       if (approvalFocus.state && !focusHistory.ready) return;
-      atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60;
+      atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 120;
       if (vp.scrollTop <= 80) loadEarlier(activeKeyRef.current, viewport); // near top → older page
     };
     vp.addEventListener("scroll", onScroll, { passive: true });
@@ -1152,19 +1165,17 @@ export function useSessionsState(taskId: string) {
   // open/switch a session → jump to the latest (bottom)
   // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally scrolls a newly selected session.
   React.useLayoutEffect(() => {
-    const vp = viewport();
-    if (vp && !approvalFocus.state) {
-      vp.scrollTop = vp.scrollHeight;
+    if (!approvalFocus.state) {
       atBottomRef.current = true;
+      scrollToBottom();
     }
-  }, [activeId, viewport, approvalFocus.state]);
+  }, [activeId, viewport, approvalFocus.state, scrollToBottom]);
   // new activity → stick to bottom only if the user is already pinned there
   // biome-ignore lint/correctness/useExhaustiveDependencies: activity growth intentionally drives live-edge scrolling.
   React.useLayoutEffect(() => {
     if (approvalFocus.state || !atBottomRef.current) return;
-    const vp = viewport();
-    if (vp) vp.scrollTop = vp.scrollHeight;
-  }, [activity, viewport, approvalFocus.state]);
+    scrollToBottom();
+  }, [activity, viewport, approvalFocus.state, scrollToBottom]);
   // Lazy detail loads (AnswerBlock / ToolBlock / Markdown) grow the content AFTER the
   // activity array settles, WITHOUT changing its reference — so the layout effects
   // above never re-fire and a freshly opened session would leave its last message
@@ -1179,12 +1190,23 @@ export function useSessionsState(taskId: string) {
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
       if (approvalFocus.state || !atBottomRef.current) return;
-      const vp = viewport();
-      if (vp) vp.scrollTop = vp.scrollHeight;
+      scrollToBottom();
     });
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [activeId, viewport, approvalFocus.state]);
+    // 流式正文可能只改文本节点、不改变 activity 数组引用；MutationObserver 兜底。
+    const mo =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(() => {
+            if (approvalFocus.state || !atBottomRef.current) return;
+            scrollToBottom();
+          });
+    mo?.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => {
+      ro.disconnect();
+      mo?.disconnect();
+    };
+  }, [activeId, viewport, approvalFocus.state, scrollToBottom]);
 
   function stop() {
     if (stopping) return;
