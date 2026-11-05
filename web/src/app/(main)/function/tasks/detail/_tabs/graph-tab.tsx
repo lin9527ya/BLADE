@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { findingConfirmedForDisplay } from "@/lib/finding-status";
 import { graphAuditHeadline, graphAuditIssueLabel, graphAuditRefs, graphAuditSummary } from "@/lib/graph-audit";
 import type { Edge, GraphAuditReport, TaskNode } from "@/lib/types";
 
@@ -54,8 +55,14 @@ export function GraphTab({ taskId }: { taskId: string }) {
           .explorationGraph(taskId)
           .then((g) => {
             if (!alive()) return;
-            const ns = g.nodes ?? [];
-            const es = g.edges ?? [];
+            // 探索链路只画「确认存在」的漏洞：pending / open_proof_gap / ruled_out /
+            // false_positive 等候选节点留在「发现」页做 triage。API 仍返回完整图，
+            // 时间线要靠它按 id 打开候选节点，所以过滤放在显示层。
+            const ns = (g.nodes ?? []).filter(
+              (n) => n.type !== "finding" || findingConfirmedForDisplay(n.finding_status),
+            );
+            const visible = new Set(ns.map((n) => n.id));
+            const es = (g.edges ?? []).filter((e) => visible.has(e.src) && visible.has(e.dst));
             const sig = JSON.stringify([
               ns.map((n) => [n.id, n.type, n.state, n.priority, n.payload]),
               es.map((e) => [e.src, e.dst, e.rel]),

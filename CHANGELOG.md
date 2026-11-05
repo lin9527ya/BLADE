@@ -16,6 +16,13 @@
 
 ### 修复
 
+- **播报板/探索链路只展示已确认漏洞**：`report_finding` 默认把漏洞记为
+  `pending`，但探索节点 state 直接写 `confirmed`；候选闭合又会产生
+  `ruled_out` / `open_proof_gap` 节点。之前播报板和探索链路按节点 kind 全量展示，
+  未确认候选、已排除项都显示成「漏洞」。现在两处都按 `findings.status` 过滤，只有
+  `confirmed` / `resolved` / `fixed` / `risk_accepted` 才作为漏洞出现；候选仍在
+  「发现」页做 triage。播报板的邻居引用和边也同步隐藏未确认 finding。
+
 - **实时流「必须刷新页面」**：同源 EventSource 之前只靠 `blade_token` cookie 认证；
   cookie 因换 host（localhost / 127.0.0.1 / 反代域名）、清理站点数据或旧版本登录而
   缺失时，普通请求仍能用 `Authorization` 头正常工作，SSE 却静默 401 并无限重连——

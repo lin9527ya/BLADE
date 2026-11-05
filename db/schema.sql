@@ -1352,6 +1352,7 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS confidence      TEXT NOT NULL DEFA
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS counterevidence TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS proof_gap       TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);
 -- 「按资产」视图靠 asset_ids @> '[<id>]' 反查发现,没有这个 GIN 索引就是全表扫。

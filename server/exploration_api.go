@@ -166,6 +166,10 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if err := t.Store.PopulateFindingStatuses(nodes); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	edges, err := t.Store.Edges(5000)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -187,10 +191,16 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, edgeErr.Error())
 			return
 		}
+		if err := source.Store.PopulateFindingStatuses(sourceNodes); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 		sourceNodes, sourceEdges = inheritedGraphSnapshot(sourceNodes, sourceEdges, source.Task.TaskID)
 		nodes = append(nodes, sourceNodes...)
 		edges = append(edges, sourceEdges...)
 	}
+	// 这里保留完整图：探索链路的显示过滤在 GraphTab 做（只画 confirmed 漏洞），
+	// 而时间线还要用这个接口按 id 打开候选/已排除节点，不能在 API 层删掉它们。
 	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
 }
 
@@ -213,11 +223,15 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	states := csvValues(q.Get("state"))
 	filter := db.NodeFilter{
 		Kinds:  csvValues(q.Get("kind")),
-		States: csvValues(q.Get("state")),
+		States: states,
 		Query:  q.Get("q"),
 		Asc:    q.Get("order") == "asc",
+		// 默认只把「已确认存在」的 finding 当漏洞播报；显式按 state 过滤时尊重调用方
+		// （例如排查 open_proof_gap 候选），不额外收窄。
+		OnlyConfirmedFindings: len(states) == 0,
 	}
 	nodes, total, err := t.Store.NodesPage(filter, page, size)
 	if err != nil {
@@ -253,18 +267,36 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// 未确认的 finding 也不该以「邻居」身份出现在行内引用里：播报板只展示
+	// 已确认漏洞，候选/已排除项留在「发现」页做 triage。同时丢掉指向隐藏节点的边。
+	visible := make(map[int64]bool, len(nodes)+len(neighbours))
+	for _, n := range nodes {
+		visible[n.ID] = true
+	}
 	refs := make(map[string]TaskNodeDTO, len(neighbours))
+	visibleIDs := append([]int64(nil), ids...)
 	for _, n := range neighbours {
+		if n.Kind == db.KindFinding && !db.FindingConfirmedForDisplay(n.FindingStatus) {
+			continue
+		}
 		refs[i64s(n.ID)] = taskNodeDTO(n)
+		visible[n.ID] = true
+		visibleIDs = append(visibleIDs, n.ID)
+	}
+	visibleEdges := edges[:0]
+	for _, e := range edges {
+		if visible[e.From] && visible[e.To] {
+			visibleEdges = append(visibleEdges, e)
+		}
 	}
 	writeJSON(w, 200, map[string]any{
 		"items":  taskNodeDTOs(nodes),
 		"total":  total,
 		"page":   page,
 		"size":   size,
-		"edges":  edgeDTOs(edges),
+		"edges":  edgeDTOs(visibleEdges),
 		"refs":   refs,
-		"assets": s.nodeAnchoredAssets(t, append(ids, neighbourIDs...)),
+		"assets": s.nodeAnchoredAssets(t, visibleIDs),
 	})
 }
 

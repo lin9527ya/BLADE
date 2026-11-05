@@ -754,6 +754,10 @@ export interface TaskNode {
   worker_seq?: number;
   // 当前绑定的固定执行槽位（owner=work#N）；0/缺省=未绑定。
   slot_no?: number;
+  // kind=finding 节点的 findings.status 投影（pending/confirmed/ruled_out/
+  // open_proof_gap…）。节点 state 只有四态，播报板/探索链路按这个字段只展示
+  // 已确认漏洞；非 finding 节点为空。
+  finding_status?: string;
 }
 
 // GET /api/tasks/{id}/worker-slots — fixed N execution slots (sessions reused

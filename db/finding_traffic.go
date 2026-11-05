@@ -458,6 +458,48 @@ func (d *DB) FindingIDByNodeID(nodeID int64) (id int64, err error) {
 	return
 }
 
+// PopulateFindingStatuses fills Node.FindingStatus from the standalone findings
+// table for the given finding nodes. The exploration node state only has four
+// values (confirmed/dismissed/ruled_out/open_proof_gap) and report_finding writes
+// node state "confirmed" while findings.status is still "pending" — so the node
+// state alone cannot tell the broadcast/graph whether a vulnerability was truly
+// confirmed. Latest finding row wins (findings are append-only for a node).
+func (s *ExplorationStore) PopulateFindingStatuses(nodes []*Node) error {
+	byID := map[int64]*Node{}
+	args := make([]any, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil || n.Kind != KindFinding || byID[n.ID] != nil {
+			continue
+		}
+		byID[n.ID] = n
+		args = append(args, n.ID)
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	marks := make([]string, len(args))
+	for i := range args {
+		marks[i] = "$" + fmt.Sprint(i+1)
+	}
+	rows, err := s.db.Query(`SELECT node_id, COALESCE(NULLIF(status,''),'pending') FROM findings
+WHERE node_id IN (`+strings.Join(marks, ",")+`) ORDER BY id`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID int64
+		var status string
+		if err := rows.Scan(&nodeID, &status); err != nil {
+			return err
+		}
+		if n := byID[nodeID]; n != nil {
+			n.FindingStatus = status
+		}
+	}
+	return rows.Err()
+}
+
 // PopulateFindingTrafficIDs only enriches already-visible nodes. It performs no
 // discovery or ID guessing, and leaves the legacy node ID unchanged.
 func (s *ExplorationStore) PopulateFindingTrafficIDs(nodes []*Node) error {

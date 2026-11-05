@@ -233,20 +233,25 @@ type TaskNodeDTO struct {
 	WorkerSeq int64 `json:"worker_seq,omitempty"`
 	// SlotNo 是该意图当前绑定的固定执行槽位（owner=work#N）；0=未绑定。
 	SlotNo int `json:"slot_no,omitempty"`
+	// FindingStatus 是 kind=finding 节点的 findings.status 投影（pending/confirmed/
+	// ruled_out/open_proof_gap…）。播报板与探索链路据此只展示已确认漏洞；非 finding
+	// 节点为空。节点 state 只有四态，不能替代它。
+	FindingStatus string `json:"finding_status,omitempty"`
 }
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {
 	d := TaskNodeDTO{
-		ID:           i64s(n.ID),
-		Type:         n.Kind,
-		Payload:      rawString(n.Payload),
-		DeleteReason: n.DeleteReason,
-		Priority:     n.Priority,
-		State:        n.State,
-		Origin:       n.Origin,
-		TS:           rfc3339(n.CreatedAt),
-		WorkerSeq:    n.WorkerSeq,
-		SlotNo:       slotNumber(n.Owner),
+		ID:            i64s(n.ID),
+		Type:          n.Kind,
+		Payload:       rawString(n.Payload),
+		DeleteReason:  n.DeleteReason,
+		Priority:      n.Priority,
+		State:         n.State,
+		Origin:        n.Origin,
+		TS:            rfc3339(n.CreatedAt),
+		WorkerSeq:     n.WorkerSeq,
+		SlotNo:        slotNumber(n.Owner),
+		FindingStatus: n.FindingStatus,
 	}
 	if n.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(n.SourceTaskID)

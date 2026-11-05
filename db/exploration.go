@@ -80,10 +80,15 @@ type Node struct {
 	// 显示 "Worker #N"。它是唯一保留序号的地方：agent 侧（态势、常驻索引、去重回执、
 	// 报告引用）一律只用全局 id——两套编号同时出现会让模型拿序号去调工具、找错节点
 	// （VPS 实测）。这个字段永远不进 agent 的输入，也不参与任何业务判定。
-	WorkerSeq     int64     `json:"worker_seq,omitempty"`
-	BlockedReason string    `json:"blocked_reason,omitempty"`
-	DeleteReason  string    `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
-	Anchors       []int64   `json:"anchors,omitempty"`
+	WorkerSeq     int64   `json:"worker_seq,omitempty"`
+	BlockedReason string  `json:"blocked_reason,omitempty"`
+	DeleteReason  string  `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
+	Anchors       []int64 `json:"anchors,omitempty"`
+	// FindingStatus 是 findings.status 的只读投影（仅 kind=finding 且由
+	// populateFindingStatuses 填充）。节点自身 state 只有 confirmed/dismissed/
+	// ruled_out/open_proof_gap 四态，无法区分 report_finding 产生的 pending 与真正
+	// 人工确认；播报板和探索链路要按这个字段决定是否把一条 finding 当漏洞展示。
+	FindingStatus string    `json:"finding_status,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	SourceTaskID  int64     `json:"source_task_id,omitempty"`
 	Inherited     bool      `json:"inherited,omitempty"`
@@ -1452,6 +1457,11 @@ type NodeFilter struct {
 	States []string // exploration_nodes.state
 	Query  string   // case-insensitive substring over payload text / origin
 	Asc    bool     // true = oldest first (replay); default newest first (broadcast)
+	// OnlyConfirmedFindings 把 finding 节点限制为「已确认存在」的漏洞：
+	// findings.status ∈ confirmed/resolved/fixed/risk_accepted。report_finding
+	// 默认写 pending，节点 state 却是 confirmed，所以必须查 findings 行，不能
+	// 只看节点 state。播报板/探索链路用它挡住未确认候选和已排除项。
+	OnlyConfirmedFindings bool
 }
 
 // NodesPage returns one 1-based page of this exploration's nodes plus the total
@@ -1486,6 +1496,9 @@ func (s *ExplorationStore) NodesPage(f NodeFilter, page, size int) ([]*Node, int
 	}
 	addIn("kind", f.Kinds)
 	addIn("state", f.States)
+	if f.OnlyConfirmedFindings {
+		conds = append(conds, `(exploration_nodes.kind <> 'finding' OR COALESCE((SELECT f.status FROM findings f WHERE f.node_id=exploration_nodes.id ORDER BY f.id DESC LIMIT 1), 'pending') IN (`+FindingConfirmedForDisplaySQL+`))`)
+	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		args = append(args, "%"+q+"%")
 		mark := "$" + fmt.Sprint(len(args))
@@ -1521,6 +1534,9 @@ func (s *ExplorationStore) NodesPage(f NodeFilter, page, size int) ([]*Node, int
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := s.PopulateFindingStatuses(nodes); err != nil {
+		return nil, 0, err
+	}
 	return nodes, total, nil
 }
 
@@ -1543,7 +1559,14 @@ WHERE exploration_id=$1 AND id IN (`+strings.Join(marks, ",")+`) ORDER BY id`, a
 		return nil, err
 	}
 	defer rows.Close()
-	return scanNodes(rows)
+	nodes, err := scanNodes(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.PopulateFindingStatuses(nodes); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // EdgesTouching returns every edge with one end among ids — the 播报板 uses it to

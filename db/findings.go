@@ -56,6 +56,23 @@ const (
 	FindingOpenProofGap  = "open_proof_gap" // 存疑待补证(proof_gap 写清缺什么;不得视为安全)
 )
 
+// FindingConfirmedForDisplay 判断一条 findings.status 是否已经「确认存在」，
+// 足以作为漏洞出现在播报板/探索链路。report_finding 默认写 pending，必须经人工
+// 或复测确认后才算；resolved/fixed/risk_accepted 都蕴含已确认过，保留展示。
+// pending/in_progress/open_proof_gap/ruled_out/false_positive/duplicate/retracted/ignored
+// 都不是确认漏洞，不能当「漏洞」展示。
+func FindingConfirmedForDisplay(status string) bool {
+	switch status {
+	case FindingConfirmed, FindingResolved, FindingFixed, FindingRiskAccepted:
+		return true
+	}
+	return false
+}
+
+// FindingConfirmedForDisplaySQL 是上面集合的 SQL 形式，供 NodesPage 的 finding
+// 过滤子句使用（必须与 FindingConfirmedForDisplay 同步）。
+const FindingConfirmedForDisplaySQL = `'confirmed','resolved','fixed','risk_accepted'`
+
 // FindingPromotableForKnowledge 判断一条发现的 triage 状态是否允许沉淀成公司知识（P23）。
 // 被推翻/排除/重复的结论沉淀出去会误导后来人，一律拒；其余状态（含待处理）由调用方
 // 决定要不要提示——这里只拦"与结论本身矛盾"的那些。
