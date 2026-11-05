@@ -10,11 +10,31 @@ export interface CurrentUser {
   role: string;
 }
 
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(";")) {
+    const item = part.trim();
+    if (item.startsWith(prefix)) return decodeURIComponent(item.slice(prefix.length));
+  }
+  return null;
+}
+
 export const auth = {
   getToken(): string | null {
     if (typeof window === "undefined") return null;
     // Mock demo：无真实登录，返回一个假 token 让路由守卫放行、直接进主界面。
     return localStorage.getItem(TOKEN_KEY) ?? (process.env.NEXT_PUBLIC_MOCK === "1" ? "mock-demo" : null);
+  },
+
+  // 登录后 localStorage 与 cookie 可能不同步：旧版本只写 localStorage、cookie 过期、
+  // 或用户在 localhost / 127.0.0.1 / 反代域名之间切换，都会让 fetch（Authorization 头）
+  // 正常而 EventSource（只能靠 cookie 或查询串）静默 401。挂载时把当前 origin 的
+  // cookie 重新对齐到 localStorage 里的有效 token。
+  ensureCookie(): void {
+    const token = this.getToken();
+    if (!token || readCookie(TOKEN_KEY) === token) return;
+    this.setToken(token);
   },
 
   setToken(token: string): void {

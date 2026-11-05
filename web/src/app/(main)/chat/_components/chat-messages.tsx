@@ -728,7 +728,7 @@ export function ChatView({
       <ApprovalExecutionFocus focus={approvalFocus} history={focusHistory} />
 
       {/* messages */}
-      <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
+      <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]]:[overflow-anchor:none] [&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
         <div className="min-w-0 max-w-full px-4 py-3 [overflow-anchor:none]" ref={contentRef}>
           {messages.length === 0 && !running ? (
             <div className="py-10 text-center text-muted-foreground text-sm">

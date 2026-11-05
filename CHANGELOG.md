@@ -16,6 +16,13 @@
 
 ### 修复
 
+- **实时流「必须刷新页面」**：同源 EventSource 之前只靠 `blade_token` cookie 认证；
+  cookie 因换 host（localhost / 127.0.0.1 / 反代域名）、清理站点数据或旧版本登录而
+  缺失时，普通请求仍能用 `Authorization` 头正常工作，SSE 却静默 401 并无限重连——
+  表现为页面不更新、刷新后才看到新内容。现在 `sseUrl` 始终携带 `?token=`（服务端
+  只对 `Accept: text/event-stream` 的 GET 接受），根布局挂载时也会把 cookie 与
+  localStorage 里的 token 重新对齐
+
 - **实时流式会话不自动跟底**：任务会话页与聊天页的内容增长会触发浏览器 scroll
   anchoring，把「是否在底部」误判成 false，之后流式更新不再自动滚动。现在内容容器
   关闭 `overflow-anchor`，并用 MutationObserver 兜住「只改文本节点、不换数组引用」

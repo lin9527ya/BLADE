@@ -220,31 +220,22 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
 
-// baseIsCrossOrigin 判断 SSE 是否落在与页面不同的源上。
-function baseIsCrossOrigin(base: string): boolean {
-  if (!base) return false; // 空 = 同源（生产默认）
-  if (!/^https?:\/\//i.test(base)) return false; // 相对路径 = 同源
-  if (typeof window === "undefined") return true; // 拿不到页面地址时保守当跨源
-  try {
-    return new URL(base, window.location.href).origin !== window.location.origin;
-  } catch {
-    return true;
-  }
-}
-
-// SSE 的凭据只在**跨源**时才放进查询串：EventSource 不支持自定义头，而跨源请求又带不上
-// 同站 cookie（SameSite=Lax），那种情况下 ?token= 是唯一可行的认证方式。
+// SSE 的凭据放进查询串：EventSource 不支持自定义头，而跨源请求带不上同站 cookie
+// （SameSite=Lax）。同源时也**始终**带 token——服务端 extractToken 只在
+// Accept: text/event-stream 的 GET 上接受 ?token=，这正是 EventSource 的请求形态。
 //
-// 同源（生产默认 base 为空）时**不带**：让浏览器用 blade_token cookie 认证，URL 里就不出现
-// 凭据——否则它会进浏览器历史，以及反向代理的 access log（README 的 nginx 示例默认记录
-// $request，其中含查询串）。开发态前端在 :5173、后端在 :9898，属跨源，仍走 ?token=。
+// 不能只依赖 blade_token cookie：cookie 可能因换 host（localhost ↔ 127.0.0.1 ↔ 反代域名）、
+// 清理站点数据或旧版本登录而缺失；此时 fetch 仍能用 Authorization 头正常工作，只有
+// EventSource 会静默 401 并无限重连，表现为「页面必须刷新才能看到新内容」。
+// 查询串只在 EventSource 请求里出现，不会进浏览器历史；反向代理若记录 $request，
+// 建议在 access log 里对 token 参数脱敏。
 export function sseUrl(path: string): string {
   const base =
     process.env.NEXT_PUBLIC_SSE_BASE ??
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:9898`
       : "");
-  const token = baseIsCrossOrigin(base) ? getToken() : null;
+  const token = getToken();
   const sep = path.includes("?") ? "&" : "?";
   return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
 }

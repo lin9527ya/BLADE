@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { Metadata } from "next";
 
+import { AuthCookieSync } from "@/components/auth-cookie-sync";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { APP_CONFIG } from "@/config/app-config";
@@ -38,6 +39,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
         <ThemeBootScript />
       </head>
       <body className={`${fontVars} min-h-screen antialiased`}>
+        <AuthCookieSync />
         {/* I18nProvider 在最外层：登录页与主界面都要能取到 t()（中文是源文，英文走词典）。 */}
         <I18nProvider>
           <TooltipProvider>
