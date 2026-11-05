@@ -281,7 +281,7 @@ func TestTimedOutTaskRevivalResetsClockAndSettlingAcrossFIFO(t *testing.T) {
 	// Release the only slot and promote the revived task. The test server uses a
 	// cancelled root context so no real Agent call races these state assertions.
 	s.engine.Pause(holder.ID, agent.AbortPausedByUser)
-	if err := m.ApplyTaskPause(holder.ID); err != nil {
+	if err := m.ApplyTaskPause(holder.ID, "test pause"); err != nil {
 		t.Fatal(err)
 	}
 	s.reconcileConcurrency()
@@ -878,7 +878,7 @@ func TestApplyTaskPauseRejectsPolicyBlocked(t *testing.T) {
 	if err := m.pg.SetStatus(mustInt64(t, task.ID), "policy_blocked"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ApplyTaskPause(task.ID); err == nil {
+	if err := m.ApplyTaskPause(task.ID, "test pause"); err == nil {
 		t.Fatal("policy_blocked 任务不应允许暂停")
 	}
 	var status string

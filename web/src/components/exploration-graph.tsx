@@ -285,7 +285,7 @@ function ExplorationGraphInner({
   const [selected, setSelected] = React.useState<TaskNode | null>(null);
   // 缩略图默认收起：它是绝对定位的浮层，贴住右下角就会在 pan 之后压住节点卡片（截图里就压着一张
   // 漏洞卡）。图小的时候它本来也没用——需要时一键展开，而不是让它常驻遮挡内容。
-  const [showMiniMap, setShowMiniMap] = React.useState(false);
+  const [showMiniMap, setShowMiniMap] = React.useState(true);
   // Full node index (incl. folded members) so the digest drawer can resolve
   // covered members even though they are not rendered on the canvas.
   const nodesById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
@@ -366,6 +366,7 @@ function ExplorationGraphInner({
         />
         {showMiniMap && (
           <MiniMap
+            position="bottom-right"
             pannable
             zoomable
             className="!bg-card !rounded-lg !border !shadow-sm"

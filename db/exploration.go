@@ -2433,7 +2433,7 @@ func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
 			       COUNT(*) FILTER (WHERE severity='medium')   AS medium,
 			       COUNT(*) FILTER (WHERE severity='low')      AS low
 			FROM findings
-			WHERE task_id=task.id
+			WHERE task_id=task.id AND COALESCE(status,'pending') IN ('pending','confirmed')
 		) finding_metrics ON true
 		WHERE task.deleted_at IS NULL`)
 	if err != nil {
@@ -2525,7 +2525,7 @@ func (d *DB) TaskListMetricsForContext(ctx context.Context, explorationIDs []int
 			       COUNT(*) FILTER (WHERE severity='medium')   AS medium,
 			       COUNT(*) FILTER (WHERE severity='low')      AS low
 			FROM findings
-			WHERE task_id=task.id
+			WHERE task_id=task.id AND COALESCE(status,'pending') IN ('pending','confirmed')
 		) finding_metrics ON true
 		WHERE task.deleted_at IS NULL AND task.exploration_id = ANY($1)`, explorationIDs)
 	if err != nil {

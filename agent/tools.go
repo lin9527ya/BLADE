@@ -2389,12 +2389,11 @@ const (
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
 // 血缘有三条正交的轴：
 //   - 知识轴：parent_ids → derived_from（只能锚已确认的 fact/finding），顶层留空时兜底连 origin fact；
-//   - 目标轴：goal_id → spawns（本条方向服务哪个目标）。显式指定必须是本任务的 open 目标；
-//     省略时恰有一个 open 目标则自动挂；零个（goalless）正常不挂；多个不猜，回执提示指名。
+//   - 目标归属：goal_id 只作为意图的归属记录，不再写「目标→意图」边。目标只保留
+//     origin→goal 的初始派生链；目标达成后由 prove_goal 写证据→目标的 proves 边。
+//     意图本身始终从事实/漏洞派生，顶层意图兜底连 origin fact（与 ARTEX 一致）。
 //   - 战果轴：uses_loot_ids → uses（本条方向在动用哪次已得的访问：据点/凭据）。只接受本任务里
 //     仍在手(active)的战果；这条边是「哪些战果还没被推进过」的唯一依据。
-//
-// 挂上目标后不再写 origin 兜底边——意图经目标仍可回溯任务起点（README/链路图的形状）。
 func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
 	// 本轮已判定全部目标达成（prove_goal/goal_met）后不得再派意图：否则同一轮里
 	// 先收官、后面又冒出几条永远没人领的 open 意图，任务结束时 frontier 留下假待办。
@@ -2606,20 +2605,21 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
-	// 目标轴：没显式指名时，恰有一个 open 目标就自动挂；多个不猜（回执提示）。
+	// 目标轴：没显式指名时，恰有一个 open 目标就自动记录归属；多个不猜（回执提示）。
+	// 注意：这里只记录 goal_id，不建 goal→intent 边（目标只连 origin，完成时才连证据）。
 	// 必须在建边前确定，否则原子提交时还不知道要写哪条 goal 边。
 	if goalID == 0 {
 		if only, err := t.ts.SingleOpenGoal(); err == nil && only > 0 {
 			goalID = only
 		}
 	}
+	if goalID > 0 {
+		payload["goal_id"] = goalID
+	}
 	// 节点、锚点与全部血缘边一次提交：任何一条边写失败都会回滚整条意图，
 	// 不会出现"意图已 open、worker 已能领取、但 depends_on/goal 边还没写"的窗口。
 	// 0 端点表示"正在创建的这条意图"（见 db.IntentEdge）。
 	edges := make([]db.IntentEdge, 0, len(parents)+len(lootIDs)+len(deps)+2)
-	if goalID > 0 {
-		edges = append(edges, db.IntentEdge{From: goalID, Rel: db.RelSpawns, To: 0})
-	}
 	for _, parent := range parents {
 		edges = append(edges, db.IntentEdge{From: parent, Rel: db.RelDerivedFrom, To: 0})
 	}
@@ -2629,18 +2629,13 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	for _, dep := range deps {
 		edges = append(edges, db.IntentEdge{From: 0, Rel: db.RelDependsOn, To: dep})
 	}
-	// 兜底血缘：既没给 parent_ids、也没挂到目标时怎么连。
-	//
-	// 图里一条结论都还没有（真正的开局）→ 连任务起点，避免出现无来路的意图。
-	// 图里**已经有事实/漏洞**却还漏填 → 不再连起点：那会让图上所有意图都从起点长出来，
-	// 后续轮次读 parents 也读不出因果（这正是"只能从起点发散"的观感来源）。改为不写
-	// 血缘边，并在回执里点名要求用 parent_ids 或 link_intent_source 补上。
+	// 兜底血缘：意图没有显式 fact/finding 父节点时，统一连任务起点（origin fact）。
+	// 这与 ARTEX 的起点派生一致；目标不参与意图链（目标只保留 origin→goal 初始边，
+	// 达成后才由 prove_goal 连证据）。图里已有事实却漏填 parent_ids 时仍会提示补真实来源，
+	// 但不会再让意图从目标长出来。
 	fellBackToOrigin := false
-	missingParents := false
-	if len(parents) == 0 && goalID == 0 {
-		if has, err := t.ts.HasDerivableKnowledge(); err == nil && has {
-			missingParents = true
-		} else if origin, _ := t.ts.OriginFactID(); origin > 0 {
+	if len(parents) == 0 {
+		if origin, _ := t.ts.OriginFactID(); origin > 0 {
 			edges = append(edges, db.IntentEdge{From: origin, Rel: db.RelDerivedFrom, To: 0})
 			fellBackToOrigin = true
 		}
@@ -2675,20 +2670,13 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 				}
 			}
 			if open > 1 {
-				note = "本任务有多个未达成目标，本条意图未挂目标：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals），链路图才能显示「目标→意图」。"
+				note = "本任务有多个未达成目标，本条意图未记录目标归属：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals）；goal_id 只作归属记录，不会生成目标→意图边。"
 			}
 		}
 	}
-	if fellBackToOrigin || missingParents {
-		var hint string
-		if missingParents {
-			hint = "本条意图没有给 parent_ids，而图里已经有事实/漏洞：**已按「来源缺失」建好，没有连任务起点**。" +
-				"请立刻用 link_intent_source(intent_id, source_ids=[...]) 把它接回真正的事实/漏洞；" +
-				"不补的话，链路图与后续规划都读不到这条方向从哪来（看起来像凭空出现）。"
-		} else {
-			hint = "本条意图没有给 parent_ids，图里还没有任何事实/漏洞，已兜底连到任务起点（开局正常）。" +
-				"后续一旦有结论支撑，请用 parent_ids 指明来源，或用 link_intent_source 补回来。"
-		}
+	if fellBackToOrigin {
+		hint := "本条意图没有给 parent_ids，已兜底连到任务起点（与 ARTEX 的起点派生一致）。" +
+			"若它其实由某条事实/漏洞驱动，请用 parent_ids 指明来源，或用 link_intent_source 补回真实来源。"
 		if note != "" {
 			note += "\n" + hint
 		} else {
@@ -2852,7 +2840,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"summary":           str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+为什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。risk_area 只是台账键，不是方向本身。"),
 			"asset_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
-			"goal_id":           idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：挂上后链路图显示「目标→意图」，push 目标进度。恰有一个未达成(open)目标时省略会自动挂；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
+			"goal_id":           idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：仅作归属记录，不生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。恰有一个未达成(open)目标时省略会自动记录；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
 			"depends_on":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
 			"uses_loot_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":          intp("优先级 0-10，默认5"),
@@ -4431,7 +4419,15 @@ func (t *ToolSet) addOneGoal(it goalItem) (int64, error) {
 	if origin == "" {
 		origin = "system"
 	}
-	return t.ts.AddNode(db.KindGoal, payload, 0, "open", origin, nil)
+	id, err := t.ts.AddNode(db.KindGoal, payload, 0, "open", origin, nil)
+	if err != nil {
+		return 0, err
+	}
+	// 目标只保留「起点 → 目标」这条初始派生链；目标与意图之间不再建边。
+	if of, _ := t.ts.OriginFactID(); of > 0 && id > 0 {
+		_ = t.ts.Link(of, db.RelSpawns, id)
+	}
+	return id, nil
 }
 
 // setGoals 给【本任务】新增探索目标(goal 节点)。既是目标拆解器的提交工具,也是主

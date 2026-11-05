@@ -922,10 +922,10 @@ func (s *Server) seed(t *Task, text string) {
 
 // seedFirstIntent writes ONE open intent (summary = 描述+目标) into the task's
 // frontier at creation, so a worker can claim and run it immediately without first
-// waiting a planner round. Mirrors a planner top-level intent: it hangs off the
-// task's single open goal when there is one (goal --spawns--> intent), otherwise it
-// links from the origin fact (RelDerivedFrom) so it still traces back to a fact
-// node. Best-effort — a failure just falls back to the normal planner-driven flow.
+// waiting a planner round. Mirrors a planner top-level intent: it links from the
+// origin fact (RelDerivedFrom), never from a goal — goals keep only their initial
+// origin --spawns--> goal edge until prove_goal attaches evidence. Best-effort —
+// a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
 	// 种子意图不再写「完成任务目标：…」这种泛化目标：那会让 worker 直接开跑、
 	// planner 首轮被跳过（engine 见 active intent 就不 kick），开局摸底协议形同虚设。
@@ -936,18 +936,10 @@ func (s *Server) seedFirstIntent(t *Task) {
 		log.Printf("[seed] task %s: 下发种子意图失败: %v", t.ID, err)
 		return
 	}
-	linked := false
-	if only, err := t.Store.SingleOpenGoal(); err == nil && only > 0 {
-		if ok, _ := t.Store.LinkIntentToGoal(only, id); ok {
-			linked = true
-		}
+	if origin, _ := t.Store.OriginFactID(); origin > 0 {
+		_ = t.Store.Link(origin, db.RelDerivedFrom, id)
 	}
-	if !linked {
-		if origin, _ := t.Store.OriginFactID(); origin > 0 {
-			_ = t.Store.Link(origin, db.RelDerivedFrom, id)
-		}
-	}
-	log.Printf("[seed] task %s: 已下发种子意图 #%d（挂目标=%v）", t.ID, id, linked)
+	log.Printf("[seed] task %s: 已下发种子意图 #%d（起点派生）", t.ID, id)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {

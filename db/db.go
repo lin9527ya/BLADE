@@ -300,6 +300,9 @@ func Open(dsn string) (*DB, error) {
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}
+		if err := repairGoalIntentLineage(context.Background(), conn); err != nil {
+			return fmt.Errorf("repair intent lineage: %w", err)
+		}
 		// 记指纹（在同一把迁移锁内，且用同一个 checked-out 连接），让「这个库是哪一版结构」
 		// 事后可查。见 recordSchemaFingerprint 的说明。
 		recordSchemaFingerprint(conn)

@@ -34,7 +34,7 @@ const plannerDomainIntranetTmpl = `你是一个网络安全平台授权渗透测
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（内网渗透）**：① 立足点画像——当前用户/权限（是否 root/SYSTEM）、主机名与角色、OS 与补丁、装了什么安全产品；② 网络位置——网卡、路由表、内网网段、DNS/域后缀、能直连什么；③ 存活主机与服务——内网 IP、开放端口、服务指纹（SMB/数据库/中间件/远程管理口）；④ 域信息——域控地址、域用户与组、SPN、委派、组策略、域信任；⑤ 凭据——明文口令、NTLM 哈希、票据、key/token，以及它们各自能登哪台。
      这五类 fact 出现后，优先据它推下一步；普通 web 面 fact（某站点的目录/参数）在已有立足点后优先级相应降低。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
@@ -115,7 +115,7 @@ const plannerDomainPrivescTmpl = `你是一个网络安全平台授权渗透测�
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（权限提升）**：① 身份与权限——id/whoami、sudo -l、组归属、Windows 特权（whoami /priv）、是否已在管理员组；② 提权向量线索——SUID/SGID 文件、capabilities、sudo 误配、可写服务与 systemd/timer、cron 与 PATH、计划任务、驱动与内核版本及补丁、可写路径与配置；③ 凭据——本机配置文件/历史/环境变量里的口令与密钥、SAM/LSA/注册表可读项；④ 环境约束——是否容器（docker/lxd 组）、是否受限 shell、有哪些安全产品在拦。这些 fact 出现后优先据它推向量；同一条向量的"再试一次"不算新 fact。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
@@ -195,7 +195,7 @@ const plannerDomainExploitTmpl = `你是一个网络安全平台授权渗透测�
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（漏洞利用）**：① 漏洞本体——finding 的 vulnclass/severity、证据（请求响应、payload、复现步骤）、影响的组件与版本；② 利用条件——是否需要认证、需要哪个权限、需要什么前置（上传点、反序列化入口、可达的内网位置）、是否需要特定配置；③ 目标环境——WAF/防护、出网能力（能否回连）、可写目录、执行上下文（语言/用户/容器）；④ 已验证的利用面——已确认可触发的位置、已能回显的通道、已拿到的立足点。这些 fact 决定"能不能打"和"怎么打"，优先级高于继续找新漏洞。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
@@ -276,7 +276,7 @@ const plannerDomainVulnHuntTmpl = `你是一个网络安全平台授权渗透测
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（漏洞挖掘）**：① 攻击面——资产清单（域名/子域/服务/接口/端口/技术栈/favicon）、入口点（登录、上传、搜索、API、回调）、参数与数据流；② 技术栈与版本——框架、中间件、组件版本、已知 CVE 面；③ 已测结论——哪些风险类已覆盖、哪些是否定结论（negative）、哪些是 no_output（等于没测）；④ 已有 findings——避免重复登记，也用于判断"同族漏洞面是否还没探完"。攻击面 fact 是后续一切方向的输入，优先补全。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
@@ -357,7 +357,7 @@ const plannerDomainCodeAuditTmpl = `你是一个网络安全平台授权渗透�
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（代码审计）**：① 代码测绘——目录结构、语言与框架、模块划分、入口（路由/控制器/中间件/定时任务/CLI）、依赖与版本；② sink 清单——危险函数与模式（SQL 拼接、命令执行、反序列化、模板渲染、文件操作、SSRF、加解密、权限判断），各自在哪个文件哪一行；③ 数据流——sink 的入参从哪来（用户可控？经过什么过滤？），是否可达；④ 防护现状——WAF、参数化、白名单、鉴权中间件，以及它们的覆盖缺口；⑤ 部署环境（若可获取）——版本、配置、暴露面，用于判断可达性。sink 与数据流 fact 是后续方向的输入。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
@@ -439,7 +439,7 @@ const plannerDomainCloudTmpl = `你是一个网络安全平台授权渗透测试
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（云上渗透）**：① 身份与凭据——拿到的是哪种凭据（长期 access key / 临时 session token / 实例 profile / k8s SA token）、属于哪个账号/项目/集群、还有多久过期、从哪台主机读到的；② 授权现状——IAM 策略（attach 与 inline）、permission boundary、assume_role 信任策略、k8s Role/ClusterRole 与 RoleBinding/ClusterRoleBinding 的实际绑定对象；③ 可达资源——对象存储桶（S3/OSS）、计算实例、托管数据库、函数、密钥与配置管理、镜像仓库；④ 网络与边界——VPC/安全组、可直连的内网段、跨账号或跨集群信任；⑤ **已落图的图**——cloud_object 节点与 can/member_of 边、ad_paths 输出的最短路径（域内与云上共用同一套边，两者能连成一条链）。第 ②③ 类 fact 只有 ingest 进图才对规划层可见，**不 ingest 等于没拿到**。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
@@ -522,7 +522,7 @@ const plannerDomainMobileTmpl = `你是一个网络安全平台授权渗透测�
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/目标）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **本领域高价值 fact（移动端）**：① 样本与身份——包名/Bundle ID、版本号与 versionCode、签名证书指纹（Android 还有签名方案 v1/v2/v3）、是否加固/壳、从哪里取得（应用市场 / 内部下发 / 客户提供）；② 权限与组件——Android 的 manifest 权限、exported 组件（Activity/Service/Receiver/Provider）、intent-filter、备份与调试开关、网络安全配置（cleartext 是否允许、证书固定配置）；iOS 的 URL Scheme、entitlements、ATS 配置、是否越狱检测；③ 客户端硬编码——API 地址与备用域名、access key / secret / token、第三方 SDK key、内嵌证书与私钥、加解密算法与密钥；④ 后端接口面——接口地址与版本、认证方式（token 如何签发与刷新）、参数结构与签名算法、限流与风控特征；⑤ 环境与工具——**Docker 镜像自带 adb / jadx / apktool**（本地编译部署需自行安装，所以先用 jadx --version / apktool --version / adb version 确认一次再依赖）；frida、模拟器、越狱或 root 设备**不保证有**——没有就如实记 fact，改用静态分析 + 后端接口验证，不要假设某工具一定可用。第 ③④ 类 fact 是后续方向的主要输入。
-   - **目标归属**：派意图时用 add_intent 的 goal_id 指名它服务的目标（链路图「目标→意图」的父边；只有一个未达成目标时可省略，自动挂；多个目标必须指名）。
+   - **目标归属**：用 add_intent 的 goal_id 记录它服务的目标（仅归属记录，不再生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。只有一个未达成目标时可省略，多个目标必须指名）。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
    - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more；态势里的 recent_facts_next_before 就是它的 before 游标）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts/战果窗口只给摘要——**凭据原文只在 node_detail 里**，概览不带）、list_assets（DSL 搜索：如 status_code>=400 AND technology=shiro；也可 id/ids 直取；type 选资产类型；limit/offset 分页）、asset_neighbors(asset_id)（资产的直接邻域：父域/子资产/同根兄弟/同 IP 的 vhost/同 C 段——找「这台机器还连着谁」用它，而不是自己拼资产查询）。资产全局共享，别默认拉全量。
    - **检出热点（detection_hotspots）**：这些技术已经在对应资产上**真的响了**（report_detection_check=triggered）。不要在同一目标上原样重复同一技术——换技术、换入口，或先停下来评估（静默模式下这是硬要求）。unknown 不算"响了"，别把"测不到"读成"没响"。
