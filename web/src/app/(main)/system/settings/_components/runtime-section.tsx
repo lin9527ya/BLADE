@@ -1,12 +1,13 @@
 "use client";
 
-import { CpuIcon, GaugeIcon } from "lucide-react";
+import { CpuIcon, GaugeIcon, ShieldCheckIcon } from "lucide-react";
 
 import { Field, Section, SubBlock } from "@/components/page-sections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 
 import type { useSettingsState } from "./use-settings-state";
 
@@ -18,6 +19,12 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     workers,
     setWorkers,
     savingWorkers,
+    supervisorEnabled,
+    setSupervisorEnabled,
+    supervisorInterval,
+    setSupervisorInterval,
+    savingSupervisor,
+    saveSupervisor,
     tokenBudget,
     setTokenBudget,
     savingBudget,
@@ -104,6 +111,37 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               onChange={(e) => setTokenBudget(e.target.value)}
             />
             <Button type="button" onClick={saveTokenBudget} disabled={!loaded || savingBudget}>
+              保存
+            </Button>
+          </div>
+        </Field>
+      </SubBlock>
+
+      <SubBlock title="执行审核员（Supervisor）" icon={<ShieldCheckIcon className="size-4 text-muted-foreground" />}>
+        <Field
+          label="启用与审核周期"
+          htmlFor="supervisor-enabled"
+          hint="定时抽查在跑 worker 的最近轨迹，判定偏离时注入纠偏。关闭后不再调用审核模型、不再下发纠偏（已有会话记录保留）。周期 60–1800 秒，改完对下一个周期生效。"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Switch
+              id="supervisor-enabled"
+              checked={supervisorEnabled}
+              disabled={!loaded || savingSupervisor}
+              onCheckedChange={setSupervisorEnabled}
+            />
+            <Input
+              id="supervisor-interval"
+              type="number"
+              min={60}
+              max={1800}
+              className="w-32 font-mono text-sm"
+              value={supervisorInterval}
+              disabled={!loaded || savingSupervisor || !supervisorEnabled}
+              onChange={(e) => setSupervisorInterval(e.target.value)}
+            />
+            <span className="text-muted-foreground text-xs">秒</span>
+            <Button onClick={saveSupervisor} disabled={!loaded || savingSupervisor}>
               保存
             </Button>
           </div>

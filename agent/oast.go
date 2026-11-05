@@ -191,10 +191,27 @@ func fetchOASTRequests(ctx context.Context, token string) ([]oastRequest, error)
 
 // oastMatches 判断一条记录是不是本任务的回调（HTTP 看 path/query/url，DNS 看域名）。
 func oastMatches(it oastRequest, marker string) bool {
-	marker = strings.ToLower(marker)
+	marker = strings.ToLower(strings.TrimSpace(marker))
+	if marker == "" {
+		return false
+	}
 	for _, v := range []string{it.Path, it.Query, it.URL, it.Domain} {
-		if v != "" && strings.Contains(strings.ToLower(v), marker) {
-			return true
+		lower := strings.ToLower(v)
+		if lower == "" {
+			continue
+		}
+		// 任务标记以数字结尾（blade9 / blade12）：必须要求标记后面不是数字，
+		// 否则任务 9 会把任务 99 的回调（/blade999-other）也算成自己的。
+		for offset := 0; offset < len(lower); {
+			i := strings.Index(lower[offset:], marker)
+			if i < 0 {
+				break
+			}
+			end := offset + i + len(marker)
+			if end >= len(lower) || lower[end] < '0' || lower[end] > '9' {
+				return true
+			}
+			offset = end
 		}
 	}
 	return false

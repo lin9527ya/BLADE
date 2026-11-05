@@ -103,3 +103,18 @@ func TestParseSupervisorVerdictLenientForms(t *testing.T) {
 		t.Fatalf("空输出应给出明确错误：%v", err)
 	}
 }
+
+// 授权范围判断不归审核员：这类措辞只应留观察，不能变成停止指令。
+func TestSupervisorScopeConcern(t *testing.T) {
+	for _, text := range []string{"该资产越界", "未授权的第三方主机", "不在授权范围内", "超出授权范围"} {
+		if !SupervisorScopeConcern(text) {
+			t.Fatalf("%q 应被识别为授权范围问题", text)
+		}
+	}
+	if SupervisorScopeConcern("连续重放同一个 403 请求，结果一致") {
+		t.Fatal("普通原地打转不应被误判为授权范围问题")
+	}
+	if !strings.Contains(SupervisorPrompt, "平台门") {
+		t.Fatal("审核提示词应写明授权范围由平台门判定")
+	}
+}

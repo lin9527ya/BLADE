@@ -106,6 +106,10 @@ export function useSettingsState() {
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
+  // 执行审核员：开关 + 周期（秒）。运行时每周期现读，改完对下一个周期生效。
+  const [supervisorEnabled, setSupervisorEnabled] = React.useState(true);
+  const [supervisorInterval, setSupervisorInterval] = React.useState("180");
+  const [savingSupervisor, setSavingSupervisor] = React.useState(false);
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
@@ -210,6 +214,8 @@ export function useSettingsState() {
     setProxyStatus(s.proxy_status ?? []);
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
+    setSupervisorEnabled(s.supervisor_enabled !== false);
+    setSupervisorInterval(String(s.supervisor_interval_seconds ?? 180));
     setTokenBudget(String(s.task_token_budget ?? 0));
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
@@ -413,6 +419,23 @@ export function useSettingsState() {
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingWorkers(false));
+  };
+
+  const saveSupervisor = () => {
+    const n = Number(supervisorInterval);
+    if (!Number.isInteger(n) || n < 60 || n > 1800) {
+      toast.error("审核周期必须在 60–1800 秒之间");
+      return;
+    }
+    setSavingSupervisor(true);
+    api
+      .setSettings({ supervisor_enabled: supervisorEnabled, supervisor_interval_seconds: n })
+      .then((s) => {
+        apply(s);
+        toast.success(supervisorEnabled ? `已保存审核员设置（每 ${n} 秒）` : "已关闭执行审核员");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingSupervisor(false));
   };
 
   const saveTokenBudget = () => {
@@ -1076,6 +1099,12 @@ export function useSettingsState() {
     setWorkers,
     savingWorkers,
     setSavingWorkers,
+    supervisorEnabled,
+    setSupervisorEnabled,
+    supervisorInterval,
+    setSupervisorInterval,
+    savingSupervisor,
+    saveSupervisor,
     tokenBudget,
     setTokenBudget,
     savingBudget,

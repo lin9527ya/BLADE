@@ -127,3 +127,19 @@ func TestOASTDoesNotLeakToken(t *testing.T) {
 		}
 	}
 }
+
+// 任务标记必须以「非数字」为边界：任务 9 不能把任务 99 的回调算成自己的。
+func TestOASTMatchesTaskMarkerBoundary(t *testing.T) {
+	if oastMatches(oastRequest{Path: "/blade999-other"}, "blade9") {
+		t.Fatal("blade9 不应匹配 blade999")
+	}
+	if !oastMatches(oastRequest{Path: "/blade9-ssrf"}, "blade9") {
+		t.Fatal("blade9 应匹配 blade9-ssrf")
+	}
+	if !oastMatches(oastRequest{Domain: "blade9.ok9iwmcq.requestrepo.com"}, "blade9") {
+		t.Fatal("blade9 应匹配 DNS 域名")
+	}
+	if oastMatches(oastRequest{Path: "/blade12-ssrf"}, "blade1") {
+		t.Fatal("blade1 不应匹配 blade12")
+	}
+}

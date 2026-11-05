@@ -233,6 +233,16 @@ func (e *Engine) applySupervisorVerdict(t *Task, intents []agent.SupervisorInten
 			continue
 		}
 
+		// 授权范围由平台 RoE/命令门判定，不由审核员 LLM 判断。模型若仍以「越界/未授权/
+		// 第三方/范围外」为由要求停止，只留观察、不下发 steer——一次误判就会把正在推进的
+		// 探索打断（用户实测）。真正的越界由命令门拦截，不靠审核员喊停。
+		if agent.SupervisorScopeConcern(iv.Reason) || agent.SupervisorScopeConcern(iv.Steer) {
+			e.emitActivity(t, db.Activity{Worker: supervisorWorker, Kind: "result",
+				Summary: fmt.Sprintf("审核观察：意图 #%d 疑似越界，交平台门/规划者处理（未纠偏）", iv.IntentID),
+				Detail:  "审核结论：" + iv.Reason + "\n\n（授权范围由平台 RoE/命令门判定；审核员不下发停止指令）"})
+			continue
+		}
+
 		msg := strings.TrimSpace(iv.Steer)
 		if err := e.SteerWorkSupervisor(iv.IntentID, msg); err != nil {
 			// 竞态：意图刚被领取（work 尚未登记）或刚好收场。不消耗冷却/次数——

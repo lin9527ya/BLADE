@@ -1765,6 +1765,9 @@ export interface ClashRotation {
 
 export interface Settings {
   traffic_capture: boolean;
+  // 执行审核员：定时抽查在跑 worker 的轨迹，偏离时注入纠偏（默认开、180 秒）。
+  supervisor_enabled: boolean;
+  supervisor_interval_seconds: number;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
   agent_loot_exec: boolean; // 战果直接执行（loot_exec）：用登记过的凭据连目标，默认关闭
   agent_auto_retest: boolean; // 自动复测：每条新漏洞启动一次独立复测会话，默认关闭（有 LLM 开销）

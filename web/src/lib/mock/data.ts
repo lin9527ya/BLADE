@@ -3354,6 +3354,8 @@ export const tools: Tool[] = [
 // ── Settings ─────────────────────────────────────────────────────────────────
 export const settings: Settings = {
   log_level: "info",
+  supervisor_enabled: true,
+  supervisor_interval_seconds: 180,
   traffic_capture: true,
   agent_traffic_binding: false,
   agent_loot_exec: false,
