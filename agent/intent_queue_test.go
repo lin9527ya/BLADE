@@ -22,7 +22,10 @@ func TestIntentQueueBackpressure(t *testing.T) {
 	if out := add("第二条常规方向", 5, ""); !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("到上限前应放行：%s", out)
 	}
-	if out := add("第三条常规方向", 5, ""); !strings.Contains(out, "队列里已有") {
+	if out := add("第三条常规方向", 5, ""); !strings.HasPrefix(out, "intent created: ") {
+		t.Fatalf("达到上限前仍应放行：%s", out)
+	}
+	if out := add("第四条常规方向", 5, ""); !strings.Contains(out, "队列里已有") {
 		t.Fatalf("饱和后常规方向应被拒：%s", out)
 	}
 	if out := add("刚发现凭据驱动的跟进", 8, ""); !strings.HasPrefix(out, "intent created: ") {

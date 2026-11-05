@@ -242,8 +242,7 @@ func TestLinkIntentSourceRepairsFallbackEdge(t *testing.T) {
 	}
 }
 
-// 图里已有事实时漏填 parent_ids：不能连任务起点（那会让所有意图看起来都从起点长出来），
-// 回执必须点名要求补血缘。
+// 图里已有事实时漏填 parent_ids：与 ARTEX 一致仍兜底连起点，但回执提醒补真实来源。
 func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "确认上传点可写"}, 5, "confirmed", "work#1", nil)
@@ -251,8 +250,8 @@ func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"从上传点继续推进"}`)
-	if !strings.Contains(out, "link_intent_source") || !strings.Contains(out, "来源缺失") {
-		t.Fatalf("已有事实时漏填 parent_ids 应要求补血缘：%s", out)
+	if !strings.Contains(out, "link_intent_source") || !strings.Contains(out, "起点派生") {
+		t.Fatalf("漏填 parent_ids 应提示补真实来源：%s", out)
 	}
 	intentID := lootNodeID(t, out)
 	origin, _ := ts.OriginFactID()
@@ -260,10 +259,14 @@ func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, e := range edges {
 		if e.Rel == db.RelDerivedFrom && e.From == origin && e.To == intentID {
-			t.Fatalf("已有事实时不应再兜底连起点：%+v", e)
+			found = true
 		}
+	}
+	if !found {
+		t.Fatal("无 parent_ids 的意图应兜底连到起点")
 	}
 	// 补上之后就有了真实来源。
 	if out := callTool(t, tools.PlannerTools(), "link_intent_source",

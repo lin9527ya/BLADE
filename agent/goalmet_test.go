@@ -47,9 +47,9 @@ func TestGoalMetRequiresEvidence(t *testing.T) {
 	_ = goalID
 }
 
-// 目标初始必须独立：起点与目标之间不能有边。只有 prove_goal 写证据时，
-// 才由事实/漏洞 --proves--> 目标，把达成路径接到图上。
-func TestGoalStartsUnlinkedAndProofConnectsEvidence(t *testing.T) {
+// 目标初始只保留 origin --spawns--> goal 这一条链；prove_goal 才追加
+// 事实/漏洞 --proves--> 目标，把达成路径接到图上。
+func TestGoalStartsFromOriginAndProofConnectsEvidence(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	origin, err := ts.OriginFactID()
 	if err != nil || origin == 0 {
@@ -65,13 +65,18 @@ func TestGoalStartsUnlinkedAndProofConnectsEvidence(t *testing.T) {
 	}
 	goalID := goals[0].ID
 	edges, _ := ts.Edges(100)
+	initial := false
 	for _, e := range edges {
-		if e.From == goalID || e.To == goalID {
-			t.Fatalf("新目标初始不应有任何边：%+v", e)
-		}
 		if e.From == origin && e.To == goalID && e.Rel == db.RelSpawns {
-			t.Fatalf("起点不应直接连目标：%+v", e)
+			initial = true
+			continue
 		}
+		if e.From == goalID || e.To == goalID {
+			t.Fatalf("新目标除起点初始边外不应有其它边：%+v", e)
+		}
+	}
+	if !initial {
+		t.Fatal("新目标应保留 origin --spawns--> goal 初始边")
 	}
 
 	factID, err := ts.AddNode(db.KindFact, map[string]any{"summary": "已拿到管理员会话"}, 0, "confirmed", "worker", nil)
@@ -89,9 +94,7 @@ func TestGoalStartsUnlinkedAndProofConnectsEvidence(t *testing.T) {
 		if e.From == factID && e.To == goalID && e.Rel == db.RelProves {
 			linked = true
 		}
-		if e.From == origin && e.To == goalID {
-			t.Fatalf("达成后也不该出现起点→目标的边：%+v", e)
-		}
+
 	}
 	if !linked {
 		t.Fatalf("达成后应写 evidence --proves--> goal：%+v", edges)

@@ -9,10 +9,10 @@ import (
 )
 
 // TestAddIntentGoalAxis drives the 目标分解 axis through the real tool: a
-// top-level intent with no goal falls back to the origin fact; once a single open
-// goal exists it attaches automatically (goal --spawns--> intent, no origin edge);
-// several open goals are never guessed (a note asks for goal_id); an explicit
-// goal_id wins; a settled goal is refused.
+// top-level intent always falls back to the origin fact; goal_id is only an
+// attribution record and never creates goal --spawns--> intent. Several open goals
+// are never guessed (a note asks for goal_id); an explicit goal_id is recorded
+// without an edge; a settled goal is refused.
 func TestAddIntentGoalAxis(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
@@ -73,7 +73,7 @@ func TestAddIntentGoalAxis(t *testing.T) {
 		t.Fatalf("goalless top-level intent must fall back to origin: spawns=%v origin=%v", spawnsFrom(lone), derivedFrom(lone))
 	}
 
-	// 2) 单个 open 目标：自动挂，且不再写 origin 兜底边。
+	// 2) 单个 open 目标：只记录目标归属，不建目标→意图边；意图仍从起点派生。
 	if res, err := ts.setGoals().Call(context.Background(), json.RawMessage(`{"text":"拿到站点 flag"}`), nil); err != nil {
 		t.Fatal(err)
 	} else if res.IsError {
@@ -84,11 +84,11 @@ func TestAddIntentGoalAxis(t *testing.T) {
 		t.Fatalf("goals: %+v err=%v", goals, err)
 	}
 	auto := intentID(call("add_intent", `{"risk_area":"other","summary":"挂单目标"}`))
-	if from := spawnsFrom(auto); len(from) != 1 || from[0] != goals[0].ID {
-		t.Fatalf("single open goal must auto-attach: %v want %d", from, goals[0].ID)
+	if from := spawnsFrom(auto); len(from) != 0 {
+		t.Fatalf("goal_id 不应生成目标→意图边：%v", from)
 	}
-	if derivedFrom(auto) {
-		t.Fatal("goal-attached intent must not also write the origin fallback edge")
+	if !derivedFrom(auto) {
+		t.Fatal("未给 parent_ids 的意图应兜底连起点")
 	}
 
 	// 3) 目标已 met：显式指名被拒收。
@@ -113,7 +113,10 @@ func TestAddIntentGoalAxis(t *testing.T) {
 		t.Fatalf("多目标未指名应被拒并说明原因：%s", out)
 	}
 	named := intentID(call("add_intent", `{"risk_area":"other","summary":"指名目标二","goal_id":`+strconv.FormatInt(g2, 10)+`}`))
-	if from := spawnsFrom(named); len(from) != 1 || from[0] != g2 {
-		t.Fatalf("explicit goal_id must win: %v want %d (g1=%d)", from, g2, g1)
+	if from := spawnsFrom(named); len(from) != 0 {
+		t.Fatalf("explicit goal_id 也不应生成目标→意图边：%v (g1=%d g2=%d)", from, g1, g2)
+	}
+	if !derivedFrom(named) {
+		t.Fatal("指名目标的意图仍应从起点派生")
 	}
 }

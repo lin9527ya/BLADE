@@ -27,14 +27,14 @@ func TestFindingDTOIncludesClosureReason(t *testing.T) {
 		9: {ID: 70, Status: db.FindingRuledOut, Counterevidence: "应用层域名白名单：内网地址 403"},
 	}
 	out := findingDTOsForOwner("1", "", []*db.Node{n}, meta, nil)
-	if len(out) != 1 || out[0].Counterevidence != "应用层域名白名单：内网地址 403" {
-		t.Fatalf("任务发现列表 DTO 丢了反证：%+v", out)
+	if len(out) != 0 {
+		t.Fatalf("候选闭合不应进入任务发现列表：%+v", out)
 	}
 
-	// 存疑缺口同理。
+	// 存疑缺口同样隐藏。
 	meta[9] = db.FindingMeta{ID: 70, Status: db.FindingOpenProofGap, ProofGap: "缺登录态，无法验证渲染执行"}
 	out = findingDTOsForOwner("1", "", []*db.Node{n}, meta, nil)
-	if len(out) != 1 || out[0].ProofGap != "缺登录态，无法验证渲染执行" {
-		t.Fatalf("任务发现列表 DTO 丢了缺口：%+v", out)
+	if len(out) != 0 {
+		t.Fatalf("存疑候选不应进入任务发现列表：%+v", out)
 	}
 }
