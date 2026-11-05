@@ -33,12 +33,14 @@ import { cn } from "@/lib/utils";
 
 import { AssetTree } from "./_components/asset-tree";
 import { FindingCaseDialog } from "./_components/finding-case-dialog";
+import { FindingCaseList } from "@/components/finding-case-list";
 import { type FindingView, findingGroupKey } from "./_components/findings-helpers";
 import { FINDING_STATUSES, FindingsTable, fmtTime, SEVERITIES, UNASSIGNED_TASK } from "./_components/findings-table";
 import { useFindingsState } from "./_components/use-findings-state";
 
 export default function FindingsPage() {
   const [caseOpen, setCaseOpen] = React.useState(false);
+  const [caseTotal, setCaseTotal] = React.useState(0);
   const {
     view,
     setView,
@@ -54,6 +56,7 @@ export default function FindingsPage() {
     setSort,
     search,
     setSearch,
+    query,
     expanded,
     flat,
     assetTree,
@@ -108,7 +111,8 @@ export default function FindingsPage() {
         </div>
         <Tabs value={view} onValueChange={(v) => setView(v as FindingView)}>
           <TabsList>
-            <TabsTrigger value="flat">全部发现</TabsTrigger>
+            <TabsTrigger value="cases">按漏洞</TabsTrigger>
+            <TabsTrigger value="flat">原始上报</TabsTrigger>
             <TabsTrigger value="grouped">按任务分组</TabsTrigger>
             <TabsTrigger value="asset">按资产</TabsTrigger>
           </TabsList>
@@ -174,7 +178,7 @@ export default function FindingsPage() {
               <SelectValue placeholder="状态" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="all">全部有效漏洞</SelectItem>
               {FINDING_STATUSES.map((st) => (
                 <SelectItem key={st} value={st}>
                   {statusMeta("finding", st).label}
@@ -246,6 +250,13 @@ export default function FindingsPage() {
             </Button>
           </div>
         </div>
+
+        {view === "cases" && (
+          <FindingCaseList
+            query={{ severity, status, vulnclass, task, query, sort }}
+            onTotal={setCaseTotal}
+          />
+        )}
 
         {view === "flat" && flatListCard}
 
@@ -508,7 +519,7 @@ export default function FindingsPage() {
               <span className="text-muted-foreground text-xs">导出范围</span>
               <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as typeof exportScope)}>
                 <label htmlFor="export-scope-filtered" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {filteredTotal}{" "}
+                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {view === "cases" ? caseTotal : filteredTotal}{" "}
                   条）
                 </label>
                 <label htmlFor="export-scope-all" className="flex items-center gap-2 text-sm">

@@ -243,7 +243,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     };
   }, [taskId]);
 
-  const totalFindings = stats?.exploration?.finding ?? taskFindings.length;
+  // 与「发现」页同口径：api.findings(taskId) 已过滤掉候选闭合，统计不再用节点总数。
+  const totalFindings = taskFindings.length;
   const totalIntents = stats?.exploration?.intent ?? intents.length;
   const totalOpen = stats?.claimable_intents ?? open.length;
   const totalRunning = stats?.intent_states?.running ?? running.length;

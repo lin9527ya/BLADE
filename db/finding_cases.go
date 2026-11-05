@@ -267,7 +267,7 @@ func (d *DB) FindingCaseCandidates(taskID, findingID int64, limit int) ([]Findin
 	}
 	rows, err := d.Query(`SELECT `+findingSelectCols+`
 FROM findings f LEFT JOIN tasks t ON f.task_id=t.id
-WHERE f.task_id=$1 AND f.id<>$2 AND COALESCE(f.status,'pending') NOT IN ('duplicate','retracted')
+WHERE f.task_id=$1 AND f.id<>$2 AND COALESCE(f.status,'pending') NOT IN ('ruled_out','open_proof_gap','false_positive','duplicate','retracted','ignored')
 AND NOT EXISTS (SELECT 1 FROM finding_case_members m WHERE m.finding_id=f.id)
 ORDER BY f.id DESC LIMIT 200`, taskID, findingID)
 	if err != nil {
@@ -309,12 +309,12 @@ func (d *DB) FindingCaseStats(taskID int64) (*FindingCaseStats, error) {
 		return nil, err
 	}
 	if err := d.QueryRow(`SELECT count(*) FROM findings f WHERE f.task_id=$1
-AND COALESCE(f.status,'pending') NOT IN ('duplicate','retracted')
+AND COALESCE(f.status,'pending') NOT IN ('ruled_out','open_proof_gap','false_positive','duplicate','retracted','ignored')
 AND NOT EXISTS (SELECT 1 FROM finding_case_members m WHERE m.finding_id=f.id)`, taskID).Scan(&st.Ungrouped); err != nil {
 		return nil, err
 	}
 	if err := d.QueryRow(`SELECT count(*) FROM findings f WHERE f.task_id=$1
-AND COALESCE(f.status,'pending') NOT IN ('duplicate','retracted')`, taskID).Scan(&st.Reports); err != nil {
+AND COALESCE(f.status,'pending') NOT IN ('ruled_out','open_proof_gap','false_positive','duplicate','retracted','ignored')`, taskID).Scan(&st.Reports); err != nil {
 		return nil, err
 	}
 	st.Distinct = st.Cases + st.Ungrouped
@@ -387,7 +387,7 @@ JOIN findings f ON f.id=b.left_id WHERE f.task_id=$1`, taskID)
 func (d *DB) GenerateFindingCaseSuggestions(taskID int64) (int, error) {
 	rows, err := d.Query(`SELECT `+findingSelectCols+`
 FROM findings f LEFT JOIN tasks t ON f.task_id=t.id
-WHERE f.task_id=$1 AND COALESCE(f.status,'pending') NOT IN ('duplicate','retracted')
+WHERE f.task_id=$1 AND COALESCE(f.status,'pending') NOT IN ('ruled_out','open_proof_gap','false_positive','duplicate','retracted','ignored')
 AND NOT EXISTS (SELECT 1 FROM finding_case_members m WHERE m.finding_id=f.id)
 ORDER BY f.id DESC LIMIT 500`, taskID)
 	if err != nil {
@@ -530,4 +530,121 @@ func normalizeCaseText(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// FindingCaseListRow 是「按漏洞」视图的一行：要么是一个案例（含匹配成员 id），
+// 要么是一条尚未归并的原始发现。与 ARTEX 的 finding-case-list 行形状一致，
+// 前端据此渲染案例文件夹 + 独立漏洞。
+type FindingCaseListRow struct {
+	Case       *FindingCase `json:"case,omitempty"`
+	Finding    *DBFinding   `json:"finding,omitempty"`
+	MatchedIDs []int64      `json:"matched_ids,omitempty"`
+}
+
+// ListFindingCaseRows 分页返回「案例 + 未归并发现」的混合列表。
+// filter 与全局发现页共用（task/severity/status/query/assetScope/sort），
+// 默认由调用方把 ExcludeCandidates 置 true，避免候选闭合混进来。
+func (d *DB) ListFindingCaseRows(filter FindingFilter, page, size int) ([]FindingCaseListRow, int, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 20
+	}
+	if size > 200 {
+		size = 200
+	}
+	where, args := filter.where()
+	base := `WITH matched AS (
+		SELECT f.id, f.severity, f.created_at, COALESCE(m.case_id,0) AS cid
+		FROM findings f
+		LEFT JOIN tasks t ON t.id=f.task_id
+		LEFT JOIN finding_case_members m ON m.finding_id=f.id` + where + `
+	), entities AS (
+		SELECT CASE WHEN cid>0 THEN 'c:'||cid ELSE 'f:'||id END AS key,
+		       MAX(cid) AS cid, MIN(id) AS fid,
+		       jsonb_agg(id ORDER BY id) AS matched_ids,
+		       MAX(created_at) AS created,
+		       MAX(CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS severity_rank
+		FROM matched GROUP BY key
+	)`
+	var total int
+	if err := d.QueryRow(base+` SELECT count(*) FROM entities`, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	timeOrder := "DESC"
+	if filter.Asc {
+		timeOrder = "ASC"
+	}
+	order := `e.created ` + timeOrder + `, e.fid ` + timeOrder
+	if filter.Sort == "severity" {
+		order = `e.severity_rank DESC, ` + order
+	}
+	args = append(args, size, (page-1)*size)
+	rows, err := d.Query(base+fmt.Sprintf(` SELECT e.cid,e.fid,e.matched_ids FROM entities e ORDER BY %s LIMIT $%d OFFSET $%d`, order, len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	type rawRow struct {
+		cid, fid int64
+		matched  []int64
+	}
+	var raw []rawRow
+	for rows.Next() {
+		var r rawRow
+		var ids []byte
+		if err := rows.Scan(&r.cid, &r.fid, &ids); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		_ = json.Unmarshal(ids, &r.matched)
+		raw = append(raw, r)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]FindingCaseListRow, 0, len(raw))
+	for _, r := range raw {
+		if r.cid > 0 {
+			c, err := d.getFindingCaseMeta(r.cid)
+			if err != nil {
+				return nil, 0, err
+			}
+			if c == nil {
+				continue
+			}
+			// 列表不传统一报告正文：详情页再取，避免一页 20 个案例把响应撑大。
+			c.Report = ""
+			out = append(out, FindingCaseListRow{Case: c, MatchedIDs: r.matched})
+			continue
+		}
+		f, err := d.GetFinding(r.fid)
+		if err != nil {
+			return nil, 0, err
+		}
+		if f == nil {
+			continue
+		}
+		out = append(out, FindingCaseListRow{Finding: f, MatchedIDs: r.matched})
+	}
+	return out, total, nil
+}
+
+// getFindingCaseMeta 读取案例元信息，不加载成员；列表页一行一个案例时避免 N×成员。
+func (d *DB) getFindingCaseMeta(id int64) (*FindingCase, error) {
+	c := &FindingCase{}
+	err := d.QueryRow(`SELECT id, task_id, origin_task_id, title, reason, COALESCE(severity,''), COALESCE(severity_reason,''),
+COALESCE(report,''), version, report_version, active, created_at, updated_at,
+(SELECT count(*) FROM finding_case_members m WHERE m.case_id=finding_cases.id)
+FROM finding_cases WHERE id=$1`, id).Scan(&c.ID, &c.TaskID, &c.OriginTaskID, &c.Title, &c.Reason, &c.Severity, &c.SeverityReason,
+		&c.Report, &c.Version, &c.ReportVersion, &c.Active, &c.CreatedAt, &c.UpdatedAt, &c.MemberCount)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }

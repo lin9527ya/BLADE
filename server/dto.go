@@ -56,6 +56,7 @@ type TaskDTO struct {
 	RunSegmentStartedUnix int64              `json:"run_segment_started_unix,omitempty"`
 	LastActivity          int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
 	Paused                bool               `json:"paused"`
+	PauseReason           string             `json:"pause_reason,omitempty"`
 	Queued                bool               `json:"queued"`
 	Tokens                TokenTotalDTO      `json:"tokens"` // whole-task token consumption
 	GoalsTotal            int                `json:"goals_total"`
@@ -149,6 +150,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		ActiveRunSeconds:      lifecycle.ActiveRunSeconds,
 		RunSegmentStartedUnix: lifecycle.RunSegmentStartedAt,
 		Paused:                lifecycle.Paused,
+		PauseReason:           lifecycle.PauseReason,
 		Queued:                lifecycle.Queued,
 		LLMProfileID:          llmState.ProfileID,
 		LLMProfileIDs:         profileIDs,
@@ -507,6 +509,10 @@ func findingDTOsForOwner(taskID, description string, in []*db.Node, meta map[int
 		d.TaskID = taskID
 		d.TaskDescription = description
 		if m, ok := meta[n.ID]; ok {
+			// 候选闭合不是漏洞：任务「发现」页也不展示 ruled_out/open_proof_gap。
+			if db.FindingCandidateStatus(m.Status) {
+				continue
+			}
 			d.FindingID = i64s(m.ID)
 			d.Status = m.Status
 			d.TrafficCount = m.TrafficCount

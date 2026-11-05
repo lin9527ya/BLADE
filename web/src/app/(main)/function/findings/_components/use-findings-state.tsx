@@ -41,7 +41,7 @@ import {
 // 发现页的状态与取数：平铺/分组两种视图、资产树、筛选与轮询。
 
 export function useFindingsState() {
-  const [view, setView] = React.useState<FindingView>("flat");
+  const [view, setView] = React.useState<FindingView>("cases");
   const [severity, setSeverity] = React.useState<"all" | Severity>("all");
   const [status, setStatus] = React.useState<"all" | FindingStatus>("all");
   const [vulnclass, setVulnclass] = React.useState<string>("all");
@@ -448,6 +448,7 @@ export function useFindingsState() {
     async () => {
       if (!preferencesHydrated) return;
       void activeRetestFingerprint; // 包括不定时轮询的资产视图，也在复测结束后刷新处置状态。
+      if (view === "cases") return; // 「按漏洞」视图由 FindingCaseList 自己取数。
       if (view === "flat" || view === "asset") {
         if (!flatStateRef.current.loading) await loadFlat();
         return;

@@ -12,25 +12,29 @@ import {
   ClipboardCheckIcon,
   DownloadIcon,
   PackageIcon,
+  SearchIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { FindingCaseList } from "@/components/finding-case-list";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { filterAndSortFindings, type FindingSortField } from "@/lib/finding-severity";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import { statusMeta } from "@/lib/status";
-import type { Finding, FindingStatus, TaskSrcBatchPlan } from "@/lib/types";
+import type { Finding, FindingStatus, Severity, TaskSrcBatchPlan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type FindingSortField = "time";
 
-const FINDING_SORT_FIELDS: readonly FindingSortField[] = ["time"];
+const FINDING_SORT_FIELDS: readonly FindingSortField[] = ["time", "severity"];
 // 发现列表按页展示（与播报板一致）：长任务几百条发现时，全量渲染既卡又找不到东西。
 const PAGE_SIZES = [20, 50, 100];
 const DEFAULT_PAGE_SIZE = 20;
@@ -53,8 +57,6 @@ const FINDING_STATUSES: FindingStatus[] = [
   "duplicate",
   "risk_accepted",
   "retracted",
-  "ruled_out",
-  "open_proof_gap",
 ];
 
 function Row({
@@ -115,6 +117,9 @@ function Row({
             {f.assets.length > 2 && <span className="text-muted-foreground text-xs">+{f.assets.length - 2}</span>}
           </div>
         )}
+        <span className="hidden shrink-0 text-muted-foreground text-xs md:block">
+          {new Date(f.ts).toLocaleString("zh-CN")}
+        </span>
         {f.finding_id && !f.inherited ? (
           <Select value={f.status} onValueChange={(v) => onStatus(f, v as FindingStatus)}>
             <SelectTrigger size="sm" className="h-7 w-28 shrink-0 border-none px-1 shadow-none focus-visible:ring-0">
@@ -133,9 +138,6 @@ function Row({
         ) : (
           <StatusBadge domain="finding" value={f.status} dot />
         )}
-        <span className="hidden shrink-0 text-muted-foreground text-xs md:block">
-          {new Date(f.ts).toLocaleString("zh-CN")}
-        </span>
         {f.finding_id && (
           <Link
             href={
@@ -166,6 +168,9 @@ function Row({
 export function FindingsTab({ taskId }: { taskId: string }) {
   const [findings, setFindings] = React.useState<Finding[]>([]);
   const [loadError, setLoadError] = React.useState("");
+  const [severity, setSeverity] = React.useState<"all" | Severity>("all");
+  const [search, setSearch] = React.useState("");
+  const [query, setQuery] = React.useState("");
   // 分页：接口一次返回全量（含直接关联任务），在客户端切片。page 为 1-based。
   const [page, setPage] = React.useState(1);
   const [size, setSize] = React.useState(DEFAULT_PAGE_SIZE);
@@ -213,13 +218,8 @@ export function FindingsTab({ taskId }: { taskId: string }) {
     }
   }, []);
 
-  const items = findings
-    .filter((f) => f.task_id === taskId || f.inherited)
-    .sort((a, b) => {
-      const compared = Date.parse(a.ts) - Date.parse(b.ts);
-      if (compared !== 0) return sortPreference.direction === "asc" ? compared : -compared;
-      return b.id.localeCompare(a.id, undefined, { numeric: true });
-    });
+  const taskFindings = findings.filter((f) => f.task_id === taskId || f.inherited);
+  const items = filterAndSortFindings(taskFindings, severity, sortPreference, query);
 
   const pageCount = Math.max(1, Math.ceil(items.length / size));
   // 条数变少（撤回/换筛选/换任务）时把越界页码收回来，否则会停在空白页。
@@ -319,6 +319,91 @@ export function FindingsTab({ taskId }: { taskId: string }) {
           ) : null}
         </CardContent>
       </Card>
+      <div className="flex flex-wrap items-center gap-2">
+        <ToggleGroup
+          type="single"
+          value={severity}
+          onValueChange={(value) => value && setSeverity(value as "all" | Severity)}
+          variant="outline"
+          size="sm"
+          spacing={0}
+        >
+          {(
+            [
+              ["all", "全部"],
+              ["critical", "严重"],
+              ["high", "高危"],
+              ["medium", "中危"],
+              ["low", "低危"],
+            ] as const
+          ).map(([value, label]) => (
+            <ToggleGroupItem key={value} value={value} aria-label={`按${label}等级筛选`}>
+              {label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <Select
+          value={sortPreference.field}
+          onValueChange={(field) => {
+            if (field === "time" || field === "severity") {
+              setSortPreference((current) => ({ ...current, field }));
+            }
+          }}
+        >
+          <SelectTrigger size="sm" className="w-36" aria-label="发现排序方式">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="time">按时间排序</SelectItem>
+            <SelectItem value="severity">按严重度排序</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`发现时间当前${sortPreference.direction === "asc" ? "正序" : "倒序"}，点击切换排序方向`}
+          onClick={() =>
+            setSortPreference((current) => ({
+              ...current,
+              direction: current.direction === "asc" ? "desc" : "asc",
+            }))
+          }
+        >
+          {sortPreference.direction === "asc" ? <ArrowUpIcon /> : <ArrowDownIcon />}
+          {sortPreference.direction === "asc" ? "最早优先" : "最新优先"}
+        </Button>
+        <form
+          className="flex w-full items-center gap-2 sm:w-auto"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setQuery(search.trim());
+            setPage(1);
+          }}
+        >
+          <InputGroup className="flex-1 sm:w-72">
+            <InputGroupInput
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="检索漏洞内容"
+              aria-label="检索漏洞内容"
+            />
+            <InputGroupAddon>
+              <SearchIcon aria-hidden="true" />
+            </InputGroupAddon>
+          </InputGroup>
+          <Button type="submit" size="sm">
+            搜索
+          </Button>
+        </form>
+      </div>
+      <FindingCaseList
+        query={{ task: taskId, severity, query: query || undefined, sort: sortPreference.field, timeDirection: sortPreference.direction }}
+        contextTask={taskId}
+      />
+      <details>
+        <summary className="cursor-pointer text-muted-foreground text-sm">查看原始上报列表</summary>
       <Card className="overflow-hidden py-0">
         <CardContent className="px-0">
           <div className="flex items-center border-b px-4 py-2 text-muted-foreground text-xs">
@@ -375,6 +460,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
           </CardFooter>
         )}
       </Card>
+      </details>
     </div>
   );
 }

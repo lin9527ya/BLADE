@@ -28,14 +28,20 @@ func findingPaginationParam(raw string, fallback, upperBound int) int {
 // findingFilterFromQuery builds the shared findings filter from a request's
 // query string. 列表 / 分组 / 资产树 / 导出走同一份解析,新增筛选项只改这里。
 func findingFilterFromQuery(q url.Values) db.FindingFilter {
+	status := normFilter(q.Get("status"))
 	return db.FindingFilter{
-		Severity:  normFilter(q.Get("severity")),
-		Status:    normFilter(q.Get("status")),
-		VulnClass: normFilter(q.Get("vulnclass")),
+		Severity: normFilter(q.Get("severity")),
+		Status:   status,
+		// 发现页默认只展示真实漏洞（pending/confirmed/…），候选闭合
+		// （ruled_out / open_proof_gap）不再混进列表和统计。显式按候选状态
+		// 查询时保留原样，方便排查/审计。
+		ExcludeCandidates: status == "",
+		VulnClass:         normFilter(q.Get("vulnclass")),
 		// task_id(独立于会切到「按任务节点」分支的 task 参数):全局表按任务筛选。
 		TaskID:     normFilter(q.Get("task_id")),
 		Query:      q.Get("q"),
 		Sort:       q.Get("sort"),
+		Asc:        q.Get("time_direction") == "asc",
 		AssetScope: strings.TrimSpace(q.Get("asset_scope")),
 	}
 }

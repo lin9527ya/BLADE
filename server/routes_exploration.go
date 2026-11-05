@@ -22,6 +22,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/findings/stats", s.findingStats)
 	// 漏洞案例（P2-7）：归并重复上报、统一报告、case-aware 统计。
 	mux.HandleFunc("GET /api/exploration/finding-cases", s.listFindingCases)
+	mux.HandleFunc("GET /api/exploration/finding-case-rows", s.listFindingCaseRows)
 	mux.HandleFunc("GET /api/exploration/finding-cases/stats", s.findingCaseStats)
 	mux.HandleFunc("POST /api/exploration/finding-cases", s.createFindingCase)
 	mux.HandleFunc("GET /api/exploration/finding-cases/{id}", s.getFindingCase)

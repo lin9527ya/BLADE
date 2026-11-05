@@ -6,13 +6,14 @@ import { UNASSIGNED_TASK } from "./findings-table";
 
 // 发现页的类型与常量：视图档位、平铺/分组/资产树三种状态、空值哨兵。
 
-export const FINDING_LIST_PREFERENCE_KEY = "blade_finding_list_preferences";
+// v2：视图默认切到「按漏洞」，旧版保存的 flat 不再把用户拉回原始上报。
+export const FINDING_LIST_PREFERENCE_KEY = "blade_finding_list_preferences_v2";
 
-// 列表视图:flat = 跨任务平铺大表(默认);grouped = 按任务分组折叠;
-// asset = 左侧资产树 + 右侧该子树下的发现。
-export type FindingView = "flat" | "grouped" | "asset";
+// 列表视图:cases = 按漏洞(案例文件夹 + 未归并发现,默认);flat = 原始上报平铺;
+// grouped = 按任务分组折叠;asset = 左侧资产树 + 右侧该子树下的发现。
+export type FindingView = "cases" | "flat" | "grouped" | "asset";
 
-export const FINDING_VIEWS: FindingView[] = ["flat", "grouped", "asset"];
+export const FINDING_VIEWS: FindingView[] = ["cases", "flat", "grouped", "asset"];
 
 // 资产树的一次性快照。与另外两个视图不同,资产视图不轮询:进入视图、改筛选、
 // 或本页改动了发现之后才重新查询。

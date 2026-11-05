@@ -31,6 +31,7 @@ export interface Task {
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
+  pause_reason?: string;
   queued?: boolean;
   active?: boolean;
   in_flight?: number;
@@ -354,6 +355,8 @@ export interface CoverageGraphNode {
   app_name?: string;
   page_title?: string;
   status_code?: number;
+  zone?: "internet" | "boundary" | "internal";
+  zone_reason?: string;
 }
 
 export interface CoverageGraphEdge {
@@ -1301,6 +1304,20 @@ export interface FindingCase {
   members?: Finding[];
 }
 
+// FindingCaseListRow 是「按漏洞」视图的一行：案例文件夹或未归并的原始发现。
+export interface FindingCaseListRow {
+  case?: FindingCase;
+  finding?: Finding;
+  matched_ids?: number[];
+}
+
+export interface FindingCaseListPage {
+  items: FindingCaseListRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface FindingCaseSuggestion {
   id: number;
   task_id: number;
@@ -1413,6 +1430,7 @@ export interface FindingQuery {
   task?: string; // 任务 id;"all"/空 = 不按任务筛选
   query?: string;
   sort?: "severity" | "time";
+  timeDirection?: "asc" | "desc";
   // 资产树节点 key;选中一个节点 = 选中它的整棵子树。空 = 不按资产筛选。
   assetScope?: string;
 }

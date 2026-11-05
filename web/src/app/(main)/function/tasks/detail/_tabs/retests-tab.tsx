@@ -128,7 +128,9 @@ export function RetestsTab({ taskId }: { taskId: string }) {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <h2 className="min-w-0 flex-1 break-words font-medium">{findingLabel(selected)}</h2>
                 <Button asChild variant="ghost" size="sm">
-                  <Link href={`/function/findings/detail?id=${selected.finding_id || selected.id}`}>
+                  <Link
+                    href={`/function/findings/detail?id=${selected.finding_id || selected.id}&context_task=${encodeURIComponent(taskId)}&context_tab=retests`}
+                  >
                     漏洞详情 <ArrowUpRightIcon data-icon="inline-end" />
                   </Link>
                 </Button>

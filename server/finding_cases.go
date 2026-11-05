@@ -28,6 +28,48 @@ func (s *Server) listFindingCases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": cases, "count": len(cases)})
 }
 
+// listFindingCaseRows 是「按漏洞」视图的数据源：案例文件夹 + 未归并发现混排。
+// 与全局发现页共用 FindingFilter（severity/status/task/query/sort/asset_scope），
+// 默认排除 ruled_out / open_proof_gap 候选闭合，只展示真实漏洞。
+func (s *Server) listFindingCaseRows(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page := findingPaginationParam(q.Get("page"), 1, 0)
+	size := findingPaginationParam(q.Get("limit"), 20, 200)
+	rows, total, err := s.m.pg.ListFindingCaseRows(findingFilterFromQuery(q), page, size)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// DBFinding 没有 JSON 标签（内部结构），这里统一转 FindingDTO，前端才能按
+	// id/name/status/ts 消费；案例成员报告正文不在列表里返回。
+	var findings []*db.DBFinding
+	for _, row := range rows {
+		if row.Finding != nil {
+			findings = append(findings, row.Finding)
+		}
+	}
+	assets := s.resolveFindingAssets(findings)
+	items := make([]findingCaseRowDTO, 0, len(rows))
+	for _, row := range rows {
+		dto := findingCaseRowDTO{MatchedIDs: row.MatchedIDs}
+		dto.Case = row.Case
+		if row.Finding != nil {
+			f := findingFromDB(row.Finding, assets)
+			dto.Finding = &f
+		}
+		items = append(items, dto)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "page": page, "page_size": size,
+	})
+}
+
+type findingCaseRowDTO struct {
+	Case       *db.FindingCase `json:"case,omitempty"`
+	Finding    *FindingDTO     `json:"finding,omitempty"`
+	MatchedIDs []int64         `json:"matched_ids,omitempty"`
+}
+
 func (s *Server) createFindingCase(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TaskID     int64   `json:"task_id"`
@@ -60,6 +102,30 @@ func (s *Server) createFindingCase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c)
 }
 
+type findingCaseDTO struct {
+	db.FindingCase
+	Members []FindingDTO `json:"members,omitempty"`
+}
+
+// findingCaseDTOWithMembers 把案例成员从内部 DBFinding 转成前端 FindingDTO
+// （id/name/status/ts 等小写字段）。案例详情对话框和「按漏洞」成员列表共用。
+func (s *Server) findingCaseDTOWithMembers(c *db.FindingCase) *findingCaseDTO {
+	if c == nil {
+		return nil
+	}
+	d := &findingCaseDTO{FindingCase: *c}
+	d.FindingCase.Members = nil // 外层 Members 用 DTO 形态，避免内部结构把字段盖掉
+	if len(c.Members) == 0 {
+		return d
+	}
+	assets := s.resolveFindingAssets(c.Members)
+	d.Members = make([]FindingDTO, 0, len(c.Members))
+	for _, m := range c.Members {
+		d.Members = append(d.Members, findingFromDB(m, assets))
+	}
+	return d
+}
+
 func (s *Server) getFindingCase(w http.ResponseWriter, r *http.Request) {
 	id := int64(atoiDefault(r.PathValue("id"), 0))
 	if id <= 0 {
@@ -75,7 +141,7 @@ func (s *Server) getFindingCase(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "finding case not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, c)
+	writeJSON(w, http.StatusOK, s.findingCaseDTOWithMembers(c))
 }
 
 func (s *Server) updateFindingCaseReport(w http.ResponseWriter, r *http.Request) {

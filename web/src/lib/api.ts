@@ -58,6 +58,7 @@ import type {
   ExplorationPolicyOverride,
   Finding,
   FindingCase,
+  FindingCaseListPage,
   FindingCaseStats,
   FindingCaseSuggestion,
   FindingAssetTree,
@@ -264,6 +265,7 @@ function findingFilterParams(q: Omit<FindingQuery, "page" | "pageSize">): URLSea
   if (q.task && q.task !== "all") p.set("task_id", q.task);
   if (q.query?.trim()) p.set("q", q.query.trim());
   if (q.sort) p.set("sort", q.sort);
+  if (q.timeDirection) p.set("time_direction", q.timeDirection);
   if (q.assetScope) p.set("asset_scope", q.assetScope);
   return p;
 }
@@ -377,6 +379,12 @@ export const api = {
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean; remark?: string }) => patch<Task>(`/tasks/${id}`, input),
+  findingCaseRows: (q: FindingQuery) => {
+    const p = findingFilterParams(q);
+    p.set("page", String(q.page));
+    p.set("limit", String(q.pageSize));
+    return get<FindingCaseListPage>(`/exploration/finding-case-rows?${p.toString()}`);
+  },
   findingCases: (taskId: string) =>
     get<{ items: FindingCase[] }>(`/exploration/finding-cases?task_id=${encodeURIComponent(taskId)}`).then((r) => arr(r.items)),
   findingCaseStats: (taskId: string) =>

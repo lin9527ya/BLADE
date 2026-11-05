@@ -73,6 +73,19 @@ func FindingConfirmedForDisplay(status string) bool {
 // 过滤子句使用（必须与 FindingConfirmedForDisplay 同步）。
 const FindingConfirmedForDisplaySQL = `'confirmed','resolved','fixed','risk_accepted'`
 
+// FindingCandidateStatus 标记默认发现列表应隐藏的状态：候选闭合（待补证/已排除）
+// 以及已被否定/重复/撤回/忽略的记录。report_finding 产生的 pending/confirmed 才是
+// 当前需要展示的漏洞；显式按这些状态筛选时仍可查看。
+func FindingCandidateStatus(status string) bool {
+	switch status {
+	case FindingRuledOut, FindingOpenProofGap, FindingFalsePositive, FindingDuplicate, FindingRetracted, FindingIgnored:
+		return true
+	}
+	return false
+}
+
+const FindingCandidateStatusSQL = `'ruled_out','open_proof_gap','false_positive','duplicate','retracted','ignored'`
+
 // FindingPromotableForKnowledge 判断一条发现的 triage 状态是否允许沉淀成公司知识（P23）。
 // 被推翻/排除/重复的结论沉淀出去会误导后来人，一律拒；其余状态（含待处理）由调用方
 // 决定要不要提示——这里只拦"与结论本身矛盾"的那些。
@@ -205,6 +218,7 @@ func (d *DB) ListFindings(limit int) ([]*DBFinding, error) {
 		SELECT `+findingSelectCols+`
 		FROM findings f
 		LEFT JOIN tasks t ON f.task_id = t.id
+		WHERE COALESCE(f.status,'pending') NOT IN (`+FindingCandidateStatusSQL+`)
 		ORDER BY f.created_at DESC
 		LIMIT $1`, limit)
 	if err != nil {
@@ -224,9 +238,14 @@ type FindingFilter struct {
 	TaskID    string // 任务 id(字符串形式;空/非法 = 不按任务筛选)
 	Query     string // 名称/类型/摘要/证据/报告正文的模糊检索关键词
 	Sort      string // "severity" | "time"
+	// Asc 为 true 时时间升序（最早优先）；默认最新优先。
+	Asc bool
 	// AssetScope 是资产树的节点 key(a:<id> / c:<id> / r:<domain> / __none__),
 	// 选中一个节点等于选中它的整棵子树。空 = 不按资产筛选。
 	AssetScope string
+	// ExcludeCandidates 默认隐藏候选闭合（ruled_out / open_proof_gap）。发现页
+	// 只展示真实漏洞；显式按候选状态筛选时调用方置 false。
+	ExcludeCandidates bool
 
 	// 下面三个由 applyAssetScope 从 AssetScope 解析而来,调用方不用设置。
 	assetIDs  []int64 // 子树里所有资产 id
@@ -254,6 +273,9 @@ func (f FindingFilter) where() (string, []any) {
 	}
 	add("severity", f.Severity)
 	add("status", f.Status)
+	if f.ExcludeCandidates {
+		conds = append(conds, "COALESCE(f.status,'pending') NOT IN ("+FindingCandidateStatusSQL+")")
+	}
 	add("vulnclass", f.VulnClass)
 	// task_id 是 bigint 列,按整数比较(不能走上面的文本 add);空/非法值忽略。
 	if f.TaskID == FindingUnassignedTask {
@@ -324,10 +346,14 @@ func (d *DB) ListFindingsPage(f FindingFilter, page, pageSize int) ([]*DBFinding
 		return []*DBFinding{}, total, nil
 	}
 
-	order := "f.created_at DESC, f.id DESC"
+	timeOrder := "DESC"
+	if f.Asc {
+		timeOrder = "ASC"
+	}
+	order := "f.created_at " + timeOrder + ", f.id " + timeOrder
 	if f.Sort == "severity" {
-		// critical > high > medium > low > 其它, then newest first.
-		order = `CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC, f.id DESC`
+		// critical > high > medium > low > 其它, then by time in the chosen direction.
+		order = `CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at ` + timeOrder + `, f.id ` + timeOrder
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	q := fmt.Sprintf(`
@@ -628,11 +654,14 @@ func (d *DB) FindingStats() (*FindingStats, error) {
 		COUNT(*) FILTER (WHERE severity = 'high'),
 		COUNT(*) FILTER (WHERE severity = 'medium'),
 		COUNT(*) FILTER (WHERE severity = 'low')
-		FROM findings`).Scan(&st.Total, &st.Pending, &st.Critical, &st.High, &st.Medium, &st.Low)
+		FROM findings
+		WHERE COALESCE(status,'pending') NOT IN (`+FindingCandidateStatusSQL+`)`).Scan(&st.Total, &st.Pending, &st.Critical, &st.High, &st.Medium, &st.Low)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.Query(`SELECT DISTINCT vulnclass FROM findings WHERE vulnclass <> '' ORDER BY vulnclass`)
+	rows, err := d.Query(`SELECT DISTINCT vulnclass FROM findings
+		WHERE vulnclass <> '' AND COALESCE(status,'pending') NOT IN (` + FindingCandidateStatusSQL + `)
+		ORDER BY vulnclass`)
 	if err != nil {
 		return nil, err
 	}
@@ -652,7 +681,7 @@ func (d *DB) FindingStats() (*FindingStats, error) {
 	trows, err := d.Query(`SELECT f.task_id, COALESCE(t.name, ''), COALESCE(t.description, ''), COUNT(*)
 		FROM findings f
 		LEFT JOIN tasks t ON f.task_id = t.id
-		WHERE f.task_id IS NOT NULL
+		WHERE f.task_id IS NOT NULL AND COALESCE(f.status,'pending') NOT IN (` + FindingCandidateStatusSQL + `)
 		GROUP BY f.task_id, t.name, t.description
 		ORDER BY MAX(f.created_at) DESC`)
 	if err != nil {

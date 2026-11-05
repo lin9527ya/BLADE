@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -71,5 +72,69 @@ func TestOnlyConfirmedFindingsFilter(t *testing.T) {
 	}
 	if !seen {
 		t.Fatalf("confirmed finding node %d missing from page", rec.NodeID)
+	}
+}
+
+// TestFindingListExcludesCandidates 验证发现页默认口径：pending 真实上报可见，
+// ruled_out/open_proof_gap 候选闭合不进入列表、统计和「按漏洞」混合列表。
+func TestFindingListExcludesCandidates(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	task, err := d.CreateTaskWithOptions("finding candidate filter", "目标", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	es := d.Exploration(task.ExplorationID)
+	rec, err := es.RecordFinding(context.Background(), RecordFindingInput{
+		TaskID: task.ID, Worker: "worker", VulnClass: "xss", Name: "pending real",
+		Severity: "medium", Summary: "pending real", Confidence: "medium",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := es.RecordCandidateClosure(context.Background(), CandidateClosureInput{
+		TaskID: task.ID, Worker: "worker", VulnClass: "sqli", Name: "ruled out",
+		Severity: "high", Summary: "ruled out", Outcome: FindingRuledOut, Confidence: "high",
+		Counterevidence: "parameterized query",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := es.RecordCandidateClosure(context.Background(), CandidateClosureInput{
+		TaskID: task.ID, Worker: "worker", VulnClass: "ssrf", Name: "proof gap",
+		Severity: "medium", Summary: "proof gap", Outcome: FindingOpenProofGap, Confidence: "low",
+		ProofGap: "no out-of-band listener",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, total, err := d.ListFindingsPage(FindingFilter{TaskID: fmt.Sprint(task.ID), ExcludeCandidates: true}, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(page) != 1 || page[0].ID != rec.FindingID {
+		t.Fatalf("pending only expected: total=%d rows=%+v", total, page)
+	}
+
+	rows, total, err := d.ListFindingCaseRows(FindingFilter{TaskID: fmt.Sprint(task.ID), ExcludeCandidates: true}, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].Finding == nil || rows[0].Finding.ID != rec.FindingID {
+		t.Fatalf("case rows should contain only pending finding: total=%d rows=%+v", total, rows)
+	}
+
+	if _, err := d.CreateFindingCase(task.ID, task.ID, "real case", "same root cause", "medium", []int64{rec.FindingID}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err = d.ListFindingCaseRows(FindingFilter{TaskID: fmt.Sprint(task.ID), ExcludeCandidates: true}, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].Case == nil || rows[0].Case.Title != "real case" {
+		t.Fatalf("case folder expected: total=%d rows=%+v", total, rows)
 	}
 }

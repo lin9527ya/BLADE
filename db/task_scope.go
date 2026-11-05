@@ -764,6 +764,47 @@ type CoverageGraphNode struct {
 	AppName     string `json:"app_name,omitempty"`
 	PageTitle   string `json:"page_title,omitempty"`
 	StatusCode  int    `json:"status_code,omitempty"`
+	// Zone 是保守的网络层级（internet/boundary/internal），由地址证据计算；
+	// 前端「网络拓扑」视图按它分区布局。
+	Zone       string `json:"zone,omitempty"`
+	ZoneReason string `json:"zone_reason,omitempty"`
+}
+
+// coverageZone 给覆盖图节点一个保守的网络层级：公网域名/公网 IP 是互联网区，
+// 有公开主机证据的服务/应用/端点是边界区，私有/回环/链路本地地址是内网区。
+// 只看 kind 不够——公网 endpoint 不能因为类型是 endpoint 就被放进内网。
+func coverageZone(n *CoverageGraphNode) {
+	if n == nil {
+		return
+	}
+	host := strings.TrimSpace(n.IP)
+	if host == "" {
+		host = strings.TrimSpace(n.Domain)
+	}
+	if host == "" && n.URL != "" {
+		parsed, _, _ := parseURL(normalizeURL(n.URL))
+		host = parsed
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			n.Zone, n.ZoneReason = "internal", "私有、回环或链路本地地址"
+			return
+		}
+	}
+	switch n.Kind {
+	case "company", "root_domain", "subdomain":
+		n.Zone, n.ZoneReason = "internet", "公网域名或外部入口"
+	case "service", "app", "endpoint":
+		if host != "" {
+			n.Zone, n.ZoneReason = "boundary", "存在可访问的域名、IP或URL暴露面"
+		} else {
+			n.Zone, n.ZoneReason = "internal", "未发现公网主机证据，按业务资产处理"
+		}
+	case "ip":
+		n.Zone, n.ZoneReason = "internet", "未识别为私有地址的IP入口"
+	default:
+		n.Zone, n.ZoneReason = "internal", "按业务资产默认归类"
+	}
 }
 
 // CoverageGraphEdge is a child→parent containment link (endpoint→service→
@@ -830,6 +871,9 @@ ORDER BY a.id`, taskID)
 	companyIDs := map[int64]bool{} // referenced company ids (need a node)
 
 	add := func(n CoverageGraphNode) *CoverageGraphNode {
+		if n.Zone == "" {
+			coverageZone(&n)
+		}
 		if _, ok := byKey[n.Key]; ok {
 			return byKey[n.Key]
 		}

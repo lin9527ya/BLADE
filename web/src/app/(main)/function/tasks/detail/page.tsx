@@ -428,6 +428,14 @@ function TaskDetailInner() {
           </Button>
         </div>
         <p className="truncate text-muted-foreground text-xs">{task.goal}</p>
+        {paused ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2.5 py-1.5 text-amber-700 text-xs dark:text-amber-300">
+            <PauseIcon className="size-3.5 shrink-0" />
+            <span className="min-w-0 break-words">
+              暂停原因：{task.pause_reason || "未记录（任务在旧版本中暂停）"}
+            </span>
+          </div>
+        ) : null}
         {/* Tabs */}
         <div className="no-scrollbar min-w-0 overflow-x-auto">
           <TabsList variant="default" className="min-w-max">

@@ -683,6 +683,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status         TEXT NOT NULL DEFAULT 'created'
                      CHECK (status IN ('created','running','paused','done','failed','timeout','policy_blocked')),
     paused         BOOLEAN NOT NULL DEFAULT false,
+    pause_reason   TEXT NOT NULL DEFAULT '',
     queued         BOOLEAN NOT NULL DEFAULT false,
     queued_at      TIMESTAMPTZ,
     queue_mode     TEXT NOT NULL DEFAULT '',
@@ -714,6 +715,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS run_segment_started_at TIMESTAMPTZ;
 -- 固化进 task_worker_slots，之后改这个值不影响已在跑的槽位。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT '';
+-- 暂停原因：任务页在「会话/总览」上方显示，说明为什么停下（用户/编排/预算/规划穷尽）。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_reason TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。
@@ -1859,6 +1862,8 @@ CREATE TABLE IF NOT EXISTS finding_cases (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 老库的 finding_cases 建于 updated_at 列加入之前；CREATE TABLE IF NOT EXISTS 不会补列。
+ALTER TABLE finding_cases ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_finding_cases_task ON finding_cases(task_id);
 
 CREATE TABLE IF NOT EXISTS finding_case_members (

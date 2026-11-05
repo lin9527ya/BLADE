@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -123,7 +124,19 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 			pauseCause = agent.AbortPausedByUser
 		}
 		s.engine.Pause(t.ID, pauseCause)
-		if err := s.m.ApplyTaskPause(t.ID); err != nil {
+		pauseReason := strings.TrimSpace(pauseCause.Error())
+		switch {
+		case errors.Is(pauseCause, agent.AbortPausedByUser):
+			pauseReason = "用户手动暂停"
+		case errors.Is(pauseCause, agent.AbortPausedByOrchestrator):
+			pauseReason = "编排 Agent 暂停"
+		case errors.Is(pauseCause, agent.AbortBudgetExhausted):
+			pauseReason = "Token 预算耗尽，等待人工确认后继续"
+		}
+		if runes := []rune(pauseReason); len(runes) > 300 {
+			pauseReason = string(runes[:300]) + "…"
+		}
+		if err := s.m.ApplyTaskPause(t.ID, pauseReason); err != nil {
 			if !wasEnginePaused && !wasQueued {
 				s.engine.Resume(t)
 			}

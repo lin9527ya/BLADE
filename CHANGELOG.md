@@ -6,6 +6,10 @@
 
 ### 新增
 
+- **资产覆盖图对齐 ARTEX**：覆盖图新增按地址证据计算的 `zone/zone_reason`
+  （互联网 / 边界 / 内网），新增「网络拓扑」视图、区域背景、数据库类型图标、
+  重置视图、路径高亮与可折叠图例；节点/边沿用原资产库关系，不伪造未验证通路
+
 - **Planner 开局侦察事实写回**：新增 planner 专用 `record_probe_fact`。开局摸底用
   Bash/WebFetch 看到的响应头、跳转、版本、路径等观察，现在可以带 `evidence` 批量
   写入探索图（`source=opening_probe`），再用返回的 fact id 作为 `add_intent` 的
@@ -21,6 +25,21 @@
   编辑/下载统一报告、移除成员
 
 ### 修复
+
+- **任务复测返回与暂停原因**：复测页打开漏洞详情时携带 `context_tab=retests`，
+  返回按钮回到任务-复测页；任务详情在会话/总览上方显示暂停原因（用户暂停 /
+  编排 Agent / Token 预算 / 规划穷尽），旧任务无记录时显示「未记录」
+
+- **发现行时间位置**：任务「发现」页与按漏洞列表的时间移到「待处理」状态左侧，
+  与 ARTEX 的阅读顺序一致
+
+- **发现页对齐 ARTEX 并隐藏候选闭合**：新增「按漏洞」案例视图（案例文件夹 +
+  未归并发现混排，`GET /api/exploration/finding-cases/rows`），默认视图从原始
+  上报切到按漏洞；任务发现页也以案例列表为主、原始上报折叠。发现列表、统计、
+  任务发现接口与案例统计默认排除 `ruled_out` / `open_proof_gap` 候选闭合以及
+  `false_positive` / `duplicate` / `retracted` / `ignored` 已否定记录，只展示
+  pending/confirmed 等真实漏洞；显式按这些状态筛选仍可查。补 `finding_cases.updated_at`
+  的老库迁移列
 
 - **Planner 待执行队列深度**：`slotUtilizationBlock` 不再只看 `idle_slots`。目标未达成、
   队列未饱和时，本轮新增意图数要补到 `claimable >= soft_limit`（默认 3×worker），

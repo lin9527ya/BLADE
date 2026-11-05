@@ -5,3 +5,16 @@ const CONFIRMED_FINDING_STATUSES = new Set(["confirmed", "resolved", "fixed", "r
 export function findingConfirmedForDisplay(status: string | undefined): boolean {
   return !!status && CONFIRMED_FINDING_STATUSES.has(status);
 }
+
+// 候选闭合不是漏洞：ruled_out（已排除）/ open_proof_gap（存疑待补证）只留在
+// 报告与审计里，不进入发现页 / 案例成员列表。
+export function findingCandidateStatus(status: string | undefined): boolean {
+  return (
+    status === "ruled_out" ||
+    status === "open_proof_gap" ||
+    status === "false_positive" ||
+    status === "duplicate" ||
+    status === "retracted" ||
+    status === "ignored"
+  );
+}
