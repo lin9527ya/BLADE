@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -52,6 +54,25 @@ func kindMap(ids []int64, kinds map[int64]string) map[string]string {
 	return out
 }
 
+func compactIntentContract(c map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, k := range []string{"mechanism", "route", "class", "estimated_tokens", "variant", "recheck_of"} {
+		if v, ok := c[k]; ok {
+			out[k] = v
+		}
+	}
+	if v, ok := c["produces"]; ok {
+		out["produces"] = v
+	}
+	if s, ok := c["acceptance"].(string); ok && strings.TrimSpace(s) != "" {
+		out["acceptance"] = clipLine(s, 240)
+	}
+	if v, ok := c["change_evidence"]; ok {
+		out["change_evidence"] = v
+	}
+	return out
+}
+
 func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMaps ...map[int64]string) []map[string]any {
 	var kinds map[int64]string
 	if len(kindMaps) > 0 {
@@ -62,6 +83,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
 		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
+		if ra, _ := p["risk_area"].(string); strings.TrimSpace(ra) != "" {
+			m["risk_area"] = ra
+		}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true
@@ -109,6 +133,10 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		}
 		if stop, _ := p["stop_condition"].(string); strings.TrimSpace(stop) != "" {
 			m["stop_condition"] = clipLine(stop, 160)
+		}
+		// 契约只带决策需要的字段：acceptance 截断到 240 字，完整内容走 node_detail。
+		if c, ok := p["contract"].(map[string]any); ok && len(c) > 0 {
+			m["contract"] = compactIntentContract(c)
 		}
 		out = append(out, m)
 	}
@@ -741,10 +769,40 @@ func jsonResult(v any) (actool.Result, error) {
 
 func (t *ToolSet) graphOverview() actool.CoreTool {
 	return t.readExpTool("graph_overview",
-		"(探索链路图)探索态势蒸馏摘要：资产计数、无接口的站点、frontier、发现、hints(人类/主 agent 的战略提示，生成意图时须纳入)。规划时先调它。",
-		obj(map[string]any{}),
-		func(context.Context, json.RawMessage) (actool.Result, error) {
-			return jsonResult(t.graphOverviewData())
+		"探索态势。默认返回有界黑板视图（真实总数与窗口分离、活动意图/最近知识/路线/增量事件）；detail=true 返回完整态势（字段多、token 高，需要折叠区/继承任务/AD 图等时用）。",
+		obj(map[string]any{
+			"detail": map[string]any{"type": "boolean", "description": "true=完整态势；默认 false=有界黑板视图"},
+			"after":  intp("事件游标：只返回 id>after 的节点（用上次 blackboard.next_cursor）"),
+			"limit":  intp("事件窗口 1..100，默认 40"),
+		}),
+		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Detail bool  `json:"detail"`
+				After  int64 `json:"after"`
+				Limit  int   `json:"limit"`
+			}
+			_ = json.Unmarshal(raw, &a)
+			if a.Detail {
+				return jsonResult(t.graphOverviewData())
+			}
+			return jsonResult(t.blackboardViewData(a.After, a.Limit))
+		})
+}
+
+func (t *ToolSet) blackboardView() actool.CoreTool {
+	return t.readExpTool("blackboard_view",
+		"有界黑板视图：真实总数、活动意图（含 contract）、最近知识、路线聚合与增量事件。窗口不是全量；更早的详情用 graph_overview(detail=true) / list_facts / list_worker_traces 翻页。",
+		obj(map[string]any{
+			"after": intp("事件游标：只返回 id>after 的节点（用上次 blackboard.next_cursor）"),
+			"limit": intp("事件窗口 1..100，默认 40"),
+		}),
+		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
+			var a struct {
+				After int64 `json:"after"`
+				Limit int   `json:"limit"`
+			}
+			_ = json.Unmarshal(raw, &a)
+			return jsonResult(t.blackboardViewData(a.After, a.Limit))
 		})
 }
 
@@ -899,6 +957,206 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 		"ledger", "chains",
 	} {
 		delete(out, k)
+	}
+	return out
+}
+
+// blackboardViewData is the bounded read-side projection used by the planner's
+// pre-fetched situation block and the blackboard_view tool. It keeps the real
+// totals separate from display windows, adds revision/event cursor/route
+// aggregation, and drops bulky derived sections that are one detail call away.
+func (t *ToolSet) blackboardViewData(after int64, limit int) map[string]any {
+	if after < 0 {
+		after = 0
+	}
+	if limit <= 0 {
+		limit = 40
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	out := t.graphOverviewData()
+	// Capture totals before pruning fields.
+	totals := map[string]any{}
+	if states, err := t.ts.CountIntentStates(); err == nil {
+		totals["intents"] = states
+	}
+	if v, ok := out["facts"]; ok {
+		totals["facts"] = v
+	}
+	if v, ok := out["findings_total"]; ok {
+		totals["findings"] = v
+	}
+	if v, ok := out["footholds_total"]; ok {
+		totals["footholds"] = v
+	}
+	if v, ok := out["credentials_total"]; ok {
+		totals["credentials"] = v
+	}
+	if v, ok := out["edges_total"]; ok {
+		totals["edges"] = v
+	}
+	if v, ok := out["frontier_open"]; ok {
+		totals["open_intents"] = v
+	}
+	if v, ok := out["done_intents_total"]; ok {
+		totals["done_intents"] = v
+	}
+	if v, ok := out["claimable_intents"]; ok {
+		totals["claimable"] = v
+	}
+
+	// Bulky/derived sections stay available through graph_overview(detail=true).
+	for _, k := range []string{
+		"folded_facts", "folded_intents", "folded_intents_note",
+		"related_tasks", "cold_digests_more",
+	} {
+		delete(out, k)
+	}
+	truncateMaps := func(key string, n int) {
+		if arr, ok := out[key].([]map[string]any); ok && len(arr) > n {
+			out[key] = arr[:n]
+		}
+	}
+	truncateMaps("open_intents", 12)
+	truncateMaps("running_intents", 8)
+	truncateMaps("paused_intents", 8)
+	truncateMaps("recent_done_intents", 10)
+	truncateMaps("recent_facts", 10)
+	truncateMaps("finding_list", 5)
+	truncateMaps("footholds", 3)
+	truncateMaps("credentials", 3)
+	truncateMaps("cold_digests", 3)
+	truncateMaps("hints", 20)
+	truncateMaps("goals", 20)
+	for _, key := range []string{"matching_playbooks", "matching_cves", "company_knowledge"} {
+		if arr, ok := out[key].([]string); ok && len(arr) > 3 {
+			out[key] = arr[:3]
+		}
+	}
+
+	// Incremental events. With a cursor we page forward (oldest first) and ask
+	// for one extra row to report has_more. Without a cursor the first view shows
+	// the LATEST page; has_earlier says older history exists but is behind the
+	// forward-only cursor, so it must not be reported as has_more.
+	events := make([]map[string]any, 0, limit)
+	hasMore, hasEarlier := false, false
+	probe := limit + 1
+	nodes, err := t.ts.NodesChangedSince(after, probe)
+	if err == nil {
+		if len(nodes) > limit {
+			if after == 0 {
+				nodes = nodes[1:] // drop the oldest, keep the latest page
+				hasEarlier = true
+			} else {
+				nodes = nodes[:limit]
+				hasMore = true
+			}
+		}
+		for _, n := range nodes {
+			m := compactNode(n)
+			m["kind"] = n.Kind
+			if s, ok := m["summary"].(string); ok {
+				m["summary"] = clipLine(s, 160)
+			}
+			events = append(events, m)
+		}
+	}
+	nextCursor := after
+	if len(events) > 0 {
+		if id, ok := events[len(events)-1]["id"].(int64); ok {
+			nextCursor = id
+		}
+	}
+	revision, _ := t.ts.MaxNodeID()
+	out["totals"] = totals
+	out["events"] = events
+	out["routes"] = blackboardRoutes(out)
+	out["blackboard"] = map[string]any{
+		"revision":    revision,
+		"cursor":      after,
+		"has_more":    hasMore,
+		"has_earlier": hasEarlier,
+		"next_cursor": nextCursor,
+		"window_note": "有界黑板视图：totals 是真实总数，意图/知识/事件与 routes 都是当前窗口；折叠列表已省略（计数看 folded_*_total）。更早的详情用 graph_overview(detail=true) 或 list_facts/list_worker_traces 翻页。",
+	}
+	return out
+}
+
+// blackboardRoutes groups the visible intents by contract.route (falling back to
+// risk_area) so the planner can see which chains are open/running/done without
+// reading every intent. The summaries are intentionally bounded.
+func blackboardRoutes(overview map[string]any) []map[string]any {
+	type routeGroup struct {
+		route     string
+		intents   int
+		open      int
+		running   int
+		done      int
+		summaries []map[string]any
+	}
+	groups := map[string]*routeGroup{}
+	order := []string{}
+	add := func(items []map[string]any) {
+		for _, it := range items {
+			route := ""
+			if c, ok := it["contract"].(map[string]any); ok {
+				route, _ = c["route"].(string)
+			}
+			if strings.TrimSpace(route) == "" {
+				route, _ = it["risk_area"].(string)
+			}
+			if strings.TrimSpace(route) == "" {
+				route = "unrouted"
+			}
+			route = strings.TrimSpace(route)
+			g := groups[route]
+			if g == nil {
+				g = &routeGroup{route: route}
+				groups[route] = g
+				order = append(order, route)
+			}
+			g.intents++
+			switch it["state"] {
+			case "open":
+				g.open++
+			case "running":
+				g.running++
+			case "paused":
+				g.open++
+			default:
+				g.done++
+			}
+			if len(g.summaries) < 3 {
+				summary, _ := it["summary"].(string)
+				g.summaries = append(g.summaries, map[string]any{
+					"id": it["id"], "state": it["state"], "summary": clipLine(summary, 80),
+				})
+			}
+		}
+	}
+	for _, key := range []string{"open_intents", "running_intents", "paused_intents", "recent_done_intents"} {
+		items, _ := overview[key].([]map[string]any)
+		add(items)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := groups[order[i]], groups[order[j]]
+		if a.intents != b.intents {
+			return a.intents > b.intents
+		}
+		return a.route < b.route
+	})
+	out := make([]map[string]any, 0, len(order))
+	for _, route := range order {
+		if len(out) >= 15 {
+			break
+		}
+		g := groups[route]
+		out = append(out, map[string]any{
+			"route": g.route, "intents": g.intents,
+			"open": g.open, "running": g.running, "done": g.done,
+			"recent": g.summaries,
+		})
 	}
 	return out
 }
@@ -2530,6 +2788,176 @@ type intentItem struct {
 	Hypothesis      string `json:"hypothesis"`
 	SuccessCriteria string `json:"success_criteria"`
 	StopCondition   string `json:"stop_condition"`
+	// Contract 是可选意图契约（P0）：显式给 mechanism 才参与方向去重；
+	// produces/acceptance 是给 worker 的验收声明；缺省时完全沿用旧行为。
+	Contract *intentContract `json:"contract,omitempty"`
+}
+
+// intentContract 把「一句话方向」补成可去重、可验收的声明。所有字段都是软契约：
+// 缺省不改变旧 add_intent 行为；只有 mechanism 非空才计算 direction_key 去重。
+type intentContract struct {
+	Mechanism       string   `json:"mechanism,omitempty"`        // 稳定打法键：同目标同打法保持一致
+	Route           string   `json:"route,omitempty"`            // 路线/链路名，用于态势聚合
+	Produces        []string `json:"produces,omitempty"`         // 约定产物 claim
+	Acceptance      string   `json:"acceptance,omitempty"`       // 产物验收条件
+	Class           *int     `json:"class,omitempty"`            // 0 目标推进 / 1 解除依赖 / 2 新证据 / 3 复核
+	EstimatedTokens int64    `json:"estimated_tokens,omitempty"` // 预估成本（只作信号）
+	Variant         string   `json:"variant,omitempty"`          // 已有方向的实质变化
+	ChangeEvidence  []int64  `json:"change_evidence,omitempty"`  // 支持 variant 的事实/发现 id
+	RecheckOf       int64    `json:"recheck_of,omitempty"`       // 复核哪条已结束意图
+}
+
+func canonicalIntentContractText(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+}
+
+// normalizeIntentContract validates the optional contract before any node is
+// written. Errors are reserved for structurally invalid input (bad ids/kinds);
+// soft-contract issues (variant without evidence, produces without acceptance)
+// come back as warnings so classic mode never turns a suggestion into a hard gate.
+func (t *ToolSet) normalizeIntentContract(c *intentContract) (map[string]any, []string, error) {
+	if c == nil {
+		return nil, nil, nil
+	}
+	out := map[string]any{}
+	var warns []string
+	mech := strings.TrimSpace(c.Mechanism)
+	if len([]rune(mech)) > 128 {
+		return nil, nil, fmt.Errorf("contract.mechanism 最多 128 字符")
+	}
+	if mech != "" {
+		out["mechanism"] = mech
+	}
+	route := strings.TrimSpace(c.Route)
+	if len([]rune(route)) > 128 {
+		return nil, nil, fmt.Errorf("contract.route 最多 128 字符")
+	}
+	if route != "" {
+		out["route"] = route
+	}
+	produces := make([]string, 0, len(c.Produces))
+	seen := map[string]bool{}
+	for _, p := range c.Produces {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		key := canonicalIntentContractText(p)
+		if seen[key] {
+			continue
+		}
+		if len([]rune(p)) > 128 {
+			return nil, nil, fmt.Errorf("contract.produces 单项最多 128 字符")
+		}
+		seen[key] = true
+		produces = append(produces, p)
+		if len(produces) >= 8 {
+			break
+		}
+	}
+	if len(produces) > 0 {
+		out["produces"] = produces
+	}
+	acceptance := strings.TrimSpace(c.Acceptance)
+	if len([]rune(acceptance)) > 1200 {
+		return nil, nil, fmt.Errorf("contract.acceptance 最多 1200 字符")
+	}
+	if acceptance != "" {
+		out["acceptance"] = acceptance
+	}
+	if c.Class != nil {
+		if *c.Class < 0 || *c.Class > 3 {
+			return nil, nil, fmt.Errorf("contract.class 只能是 0（目标推进）/1（解除依赖）/2（新证据）/3（复核）")
+		}
+		out["class"] = *c.Class
+	}
+	if c.EstimatedTokens < 0 {
+		return nil, nil, fmt.Errorf("contract.estimated_tokens 不能为负数")
+	}
+	if c.EstimatedTokens > 0 {
+		out["estimated_tokens"] = c.EstimatedTokens
+	}
+	variant := strings.TrimSpace(c.Variant)
+	if len([]rune(variant)) > 200 {
+		return nil, nil, fmt.Errorf("contract.variant 最多 200 字符")
+	}
+	if variant != "" {
+		out["variant"] = variant
+	}
+	if len(c.ChangeEvidence) > 0 {
+		ids := make([]int64, 0, len(c.ChangeEvidence))
+		seenID := map[int64]bool{}
+		for _, id := range c.ChangeEvidence {
+			if id <= 0 || seenID[id] {
+				continue
+			}
+			n, err := t.ts.GetNodeWithSources(id)
+			if err != nil || n == nil {
+				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 不存在于本任务或直接关联任务", id)
+			}
+			if n.Kind != db.KindFact && n.Kind != db.KindFinding {
+				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 是 %q 节点：只能用事实(fact)或发现(finding)", id, n.Kind)
+			}
+			if n.Kind == db.KindFact && n.State != "confirmed" && n.State != "origin" {
+				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 事实状态是 %q：只能用已确认(confirmed)的事实", id, n.State)
+			}
+			if n.Kind == db.KindFinding && n.State != "confirmed" {
+				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 发现状态是 %q：只能用已确认(confirmed)的发现", id, n.State)
+			}
+			seenID[id] = true
+			ids = append(ids, id)
+		}
+		if len(ids) > 0 {
+			out["change_evidence"] = ids
+		}
+	}
+	if c.RecheckOf > 0 {
+		n, err := t.ts.GetNode(c.RecheckOf)
+		if err != nil || n == nil || n.Kind != db.KindIntent {
+			return nil, nil, fmt.Errorf("contract.recheck_of 必须是本任务的意图 id")
+		}
+		if !db.IntentStateTerminal(n.State) {
+			return nil, nil, fmt.Errorf("contract.recheck_of 指向的意图 #%d 还在 %s：只能复核已结束的方向", n.ID, n.State)
+		}
+		out["recheck_of"] = c.RecheckOf
+	}
+	if variant != "" && len(c.ChangeEvidence) == 0 {
+		warns = append(warns, "contract_warning: variant 没有 change_evidence 支撑；方向去重会把「只换措辞」当成同一条，建议补事实/发现 id。")
+	}
+	if (len(produces) > 0) != (acceptance != "") {
+		warns = append(warns, "contract_warning: produces 与 acceptance 最好同时填写（产物名 + 验收条件），否则 worker 只能按一侧理解契约。")
+	}
+	if len(out) == 0 {
+		return nil, nil, nil
+	}
+	return out, warns, nil
+}
+
+// intentDirectionKey fingerprints the stable direction. Only an explicit
+// mechanism opts in, so old callers keep the historical add_intent behavior.
+func intentDirectionKey(contract map[string]any, goalID int64, anchors []int64) string {
+	if len(contract) == 0 {
+		return ""
+	}
+	mech, _ := contract["mechanism"].(string)
+	if canonicalIntentContractText(mech) == "" {
+		return ""
+	}
+	ids := append([]int64{}, anchors...)
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	variant, _ := contract["variant"].(string)
+	route, _ := contract["route"].(string)
+	recheck, _ := contract["recheck_of"].(int64)
+	raw, _ := json.Marshal(map[string]any{
+		"goal_id":    goalID,
+		"asset_ids":  ids,
+		"mechanism":  canonicalIntentContractText(mech),
+		"route":      canonicalIntentContractText(route),
+		"variant":    canonicalIntentContractText(variant),
+		"recheck_of": recheck,
+	})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
@@ -2562,6 +2990,10 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 代价是白烧一次调用（任务 30 实测：4 条意图因缺 risk_area 全部重交）。显式填写
 	// 仍然优先，填错（不在词表内）照旧报错，不猜。
 	riskWarn, kindWarn, queueWarn, dupWarn := "", "", "", ""
+	contractPayload, contractWarns, cerr := t.normalizeIntentContract(it.Contract)
+	if cerr != nil {
+		return 0, "", cerr
+	}
 	rawRisk := strings.TrimSpace(it.RiskArea)
 	riskArea := rawRisk
 	riskInferred := false
@@ -2781,6 +3213,9 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if idempotencyKey != "" {
 		payload["idempotency_key"] = idempotencyKey
 	}
+	if len(contractPayload) > 0 {
+		payload["contract"] = contractPayload
+	}
 	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
 	// 不在这里返错。它是给交付物用的分类，不是约束。
 	if techs := db.NormalizeTechniques(it.Techniques); len(techs) > 0 {
@@ -2795,6 +3230,21 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	if goalID == 0 {
 		if only, err := t.ts.SingleOpenGoal(); err == nil && only > 0 {
 			goalID = only
+		}
+	}
+	// 方向键只在显式给 mechanism 时生效：同目标 + 同资产 + 同机制 + 同 variant
+	// 视为同一方向，直接返回已有意图，避免换措辞重派。要重开必须用
+	// contract.variant + change_evidence 说明实质变化（键会随之改变）。
+	if key := intentDirectionKey(contractPayload, goalID, anchors); key != "" {
+		payload["direction_key"] = key
+		if existing, err := t.ts.FindNodeByPayload(db.KindIntent, "direction_key", key); err == nil && existing > 0 {
+			if n, nerr := t.ts.GetNode(existing); nerr == nil && n != nil && n.State != "deleted" {
+				note := fmt.Sprintf("direction_dedup: 同目标/同资产/同机制方向已存在 #%d（state=%s），未重复创建；要重开请用 contract.variant + change_evidence 说明实质变化。", existing, n.State)
+				if len(contractWarns) > 0 {
+					note += "\n" + strings.Join(contractWarns, "\n")
+				}
+				return existing, note, nil
+			}
 		}
 	}
 	if goalID > 0 {
@@ -2904,7 +3354,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			note += "\n" + chainWarn
 		}
 	}
-	for _, w := range []string{riskWarn, kindWarn, queueWarn, dupWarn} {
+	for _, w := range append([]string{riskWarn, kindWarn, queueWarn, dupWarn}, contractWarns...) {
 		if w == "" {
 			continue
 		}
@@ -3047,7 +3497,22 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"hypothesis":        str("【假设】这条方向验证的假设（可选但推荐）：如「nopCommerce 4.x 的 PSAjax 堆叠注入可读到 QueuedEmail」"),
 			"success_criteria":  str("【验收标准】什么算测到/测完（可选但推荐）：如「拿到 version() 或 current_user 回显」「登录后 /admin 返回 200 且带后台 cookie」"),
 			"stop_condition":    str("【停止条件】什么情况下不再投入（可选）：如「连续 3 种编码均被 WAF 拦」「需要管理员会话且无法获得」"),
-			"techniques":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
+			"contract": map[string]any{
+				"type":        "object",
+				"description": "【可选意图契约（P0，软契约）】显式填 mechanism 才参与方向去重：同目标+同资产+同机制+同 variant 会直接返回已有意图；要重开用 variant + change_evidence 说明实质变化。produces/acceptance 是给 worker 的验收声明。旧调用可完全省略。",
+				"properties": map[string]any{
+					"mechanism":        str("稳定机制键：同目标同资产同打法始终用同一值，换措辞不算新方向。"),
+					"route":            str("路线/链路名（如 登录链、上传链），用于态势聚合。"),
+					"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "约定产物 claim（最多 8 个）：如 version() 回显、后台 cookie、可读文件路径。"},
+					"acceptance":       str("产物验收条件：什么证据算满足 produces。"),
+					"class":            intp("0 目标推进 / 1 解除依赖 / 2 新证据 / 3 复核；缺省不填。"),
+					"estimated_tokens": intp("预估 token 成本（只作信号，>0 才记录）。"),
+					"variant":          str("同一机制重开时的实质变化；建议同时给 change_evidence。"),
+					"change_evidence":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "支持 variant 的事实/发现节点 id。"},
+					"recheck_of":       intp("复核哪条已结束意图；与 variant 一起构成新的方向键。"),
+				},
+			},
+			"techniques": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -5260,7 +5725,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 // PlannerTools is the read + intent-generation + goal-judgement tool set.
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	tools := []actool.CoreTool{
-		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
+		t.graphOverview(), t.blackboardView(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(),

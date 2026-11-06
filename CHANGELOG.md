@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **意图契约（P0，软）**：`add_intent` 增加可选 `contract`：
+  `mechanism / route / produces / acceptance / class / estimated_tokens / variant /
+  change_evidence / recheck_of`。显式给 `mechanism` 才参与方向去重：同目标 + 同资产 +
+  同机制 + 同 `variant` 直接返回已有意图；要重开必须用 `variant + change_evidence`
+  说明材料变化。缺省时完全沿用旧行为，`depends_on` 仍是串行链的唯一放行依据。
+- **有界黑板视图（P0）**：`graph_overview` 默认返回有界视图（真实 totals 与窗口分离、
+  revision/事件游标、路线聚合、活动意图契约），`detail=true` 回到完整态势；新增
+  `blackboard_view(after, limit)` 只看增量事件。planner 每轮预取改为有界视图，
+  折叠区/继承任务等大字段按需展开。
+
 ## [0.9.2] - 2026-11-06
 
 探索自由度与 CVE 覆盖的一版：默认回到经典模式，探索约束改为可分组开关；本地 CVE

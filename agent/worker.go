@@ -506,6 +506,24 @@ func renderWorkerIntentTurn(intent *db.Node, assetsJSON, runDir string, slot int
 	b.WriteString("\n【当前意图（本次唯一任务：只做这一条、只产生事实、做完即停）】\n")
 	b.WriteString("以下历史对话属于此前已经结束的意图，仅作背景参考；不要继续旧目标，也不要把旧 intent id/旧工作目录用于本条写回。\n")
 	b.WriteString(SanitizeUntrusted(string(intent.Payload)))
+	// P0 契约：worker 看得到完整 payload，但契约里的 produces/acceptance 决定
+	// “什么算做完”，单独提一句，避免被长 payload 淹没。
+	var contractWrap struct {
+		Contract *intentContract `json:"contract"`
+	}
+	if json.Unmarshal(intent.Payload, &contractWrap) == nil && contractWrap.Contract != nil {
+		var parts []string
+		if len(contractWrap.Contract.Produces) > 0 {
+			parts = append(parts, "约定产物："+strings.Join(contractWrap.Contract.Produces, "、"))
+		}
+		if acc := strings.TrimSpace(contractWrap.Contract.Acceptance); acc != "" {
+			parts = append(parts, "验收："+clipLine(acc, 300))
+		}
+		if len(parts) > 0 {
+			b.WriteString("\n【意图契约（P0）】" + strings.Join(parts, "；") +
+				"。完成前逐项对照；未满足的产物写清限制，不要宣称完成。")
+		}
+	}
 	b.WriteString(fmt.Sprintf("\n意图 id: %d（record_fact / report_finding 等写回时传它）", intent.ID))
 	if slot > 0 {
 		b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本槽位会话跨意图复用）", slot))

@@ -1429,6 +1429,47 @@ WHERE exploration_id=$1 AND kind=$2`, s.expID, kind).Scan(&n)
 	return n, err
 }
 
+// MaxNodeID returns the newest node id in this exploration (0 when empty).
+// It is the blackboard view's revision: ids are BIGSERIAL, so a larger id always
+// means a later write.
+func (s *ExplorationStore) MaxNodeID() (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(id),0) FROM exploration_nodes WHERE exploration_id=$1`, s.expID).Scan(&id)
+	return id, err
+}
+
+// NodesChangedSince returns nodes written after the given cursor, oldest first.
+// after<=0 returns the latest page (still oldest-first) so a first blackboard
+// view shows recent events instead of the task's first-ever nodes.
+func (s *ExplorationStore) NodesChangedSince(after int64, limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 40
+	}
+	if after > 0 {
+		rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND id>$2 ORDER BY id ASC LIMIT $3`, s.expID, after, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanNodes(rows)
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out, err := scanNodes(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
 // GetNode returns one node of this exploration by id (nil, nil if not found).
 func (s *ExplorationStore) GetNode(id int64) (*Node, error) {
 	n, err := scanNode(s.db.QueryRow(`SELECT `+nodeCols+` FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID))

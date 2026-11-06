@@ -541,7 +541,7 @@ func renderGraphOverview(data map[string]any) string {
 	if err != nil {
 		return "" // fall back to the model calling graph_overview itself
 	}
-	return "\n\n【本轮态势（graph_overview 预取，等同你调用该工具的返回；需要细节再按需调 node_detail/list_facts 等）】：\n" + string(b)
+	return "\n\n【本轮态势（有界黑板视图，等同 graph_overview 的默认返回；totals 是真实总数，列表只是窗口。需要折叠区/继承任务/AD 图等完整态势时调 graph_overview(detail=true)；更早的知识用 list_facts/list_worker_traces 翻页）】：\n" + string(b)
 }
 
 // plannerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the planner prompt,
@@ -822,8 +822,29 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) 
 		artifactSpec(workDir) + footprintPlannerBlock() +
 		gated("review_endgame", escalationLadderBlock+endgameDoctrineBlock) +
 		gated("ledger", ledgerDisciplineBlock+chainDisciplineBlock) +
-		untrustedDataBlock() + constraintOverrideBlock() + intentSummaryDisciplineBlock
+		untrustedDataBlock() + constraintOverrideBlock() + intentSummaryDisciplineBlock + intentContractBlock + blackboardViewBlock
 }
+
+// blackboardViewBlock is code-owned: the editable body predates the bounded view
+// and still says the situation is the complete graph. Keep the distinction in
+// front of the model without rewriting operator-edited prompts.
+const blackboardViewBlock = `
+
+【黑板视图（代码持有）】
+- 本轮预取的是有界视图：totals 是真实总数，open/running/recent 等列表只是窗口；窗口外的方向不等于没派过。
+- 需要完整态势（折叠区、继承任务、AD 图、检测热点等）时调 graph_overview(detail=true)；只看增量事件与路线用 blackboard_view(after=blackboard.next_cursor)。
+- 意图的 contract（mechanism/route/produces/acceptance）只在显式填写时存在；它是去重与验收声明，不替代 summary 的入口/动作/验证目标。`
+
+// intentContractBlock 是**代码持有**的意图契约写法（P0）：只做软契约与方向去重，
+// 不替代 depends_on，也不改变 summary 的入口/验证目标写法。
+const intentContractBlock = `
+
+【意图契约（P0，软；可选但推荐）】
+- add_intent 可在 contract 里填 mechanism / route / produces / acceptance / class / estimated_tokens；显式给 mechanism 才参与方向去重：同目标 + 同资产 + 同 mechanism + 同 variant 会直接返回已有意图，不再新建。
+- 同一目标对象、同一打法始终用同一个 mechanism；换措辞不是新方向。
+- 已有方向要重开：给 variant + change_evidence（事实/发现 id）说明材料变化，或换 mechanism；只说“再测一次”会被去重挡回。
+- produces 写约定产物名，acceptance 写什么证据算完成；worker 会按这两项理解验收。它们不替代 summary 里的入口/动作/验证目标，也不替代 depends_on 的串行链。
+- 契约是软约束：没有填 mechanism 的旧调用完全按原逻辑走；class/estimated_tokens 只作信号，不硬性限流。`
 
 // intentSummaryDisciplineBlock 是**代码持有**的意图摘要写法：planner 把操作边界、
 // 速率、UA/账号、与其它意图不重叠等内容写成“纪律段”塞进 add_intent.summary，
@@ -990,7 +1011,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
-	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.graphOverviewData())
+	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.blackboardViewData(0, 40))
 	// 穷尽复核反馈：上一轮 planner 声明穷尽、但复核员判定证据不足。必须放进本轮输入，
 	// 否则模型会拿着同一个结论再声明一次（它并不知道有人否过它）。
 	if note := p.takeExhaustionNote(); note != "" {
