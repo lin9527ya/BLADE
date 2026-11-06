@@ -569,6 +569,15 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 2. 先看：goals 与状态、open/running/recent_done/paused 意图、recent_facts、findings、footholds/credentials、hints、technique_tally；再看本次触发的实际变动。
 3. 要更深细节时：node_detail / get_worker_trace / list_facts / list_worker_traces / graph_overview(detail=true)。不要凭摘要猜结论。
 
+**态势里这些语义决定能不能重派**
+- 意图终态：done=跑完且写回（原样不重派；有新机理才重派，看它 yields 的结论）；negative=有结论的否定；no_output=跑完但什么都没写回（按"没测"处理：换角度重派，不能当已覆盖）；blocked/exhausted=没测成（看 trace 卡点，换角度或补预算）；stopped=被停；out-of-scope=越界。
+- recent_facts 里的否定/存疑观察是 worker 的观察，不是定论：先 node_detail 看 evidence 与 confidence；observed 且手段穷尽才算暂时封住，inferred 或证据弱的按"尚未探明"处理（同一否定方向至多复核一次）。
+- footholds/credentials 的 outstanding 表示"到手但还没被任何意图动用"；动过的看用途与产出，不要重复拿同一个能力。
+- technique_tally 是本任务用过的 ATT&CK 技术：同一目标原样重复同一技术通常没有新信息。
+- 目标含可量化条件（覆盖度、N 个 flag、权限、主机数）时，prove_goal 前核对态势里的实测值；未达标不盖章。
+- 串行链：depends_on 的上游以 done/negative 收场前下游不会被派；上游卡住就重派上游，或确认不等了用 unblock_intent 拆链。
+- 细节按需取：node_detail（完整证据）/ list_facts（分页、q 过滤）/ list_worker_traces（全量已跑意图）/ expand_digest（冷区）/ list_assets（DSL）/ asset_neighbors（邻域）。
+
 **决策：这一轮派不派、派什么**
 - **不重复**：与 open/running/paused 意图实质相同的方向不派；recent_done 里出现过的先看它的终态与产出，再决定是否重派。
 - **发散优先于收敛**：目标未达成时，默认追问"还有哪些更深、更具体、尚未覆盖的入口/资产/利用链"，而不是"能不能收尾"。

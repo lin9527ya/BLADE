@@ -23,18 +23,19 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"572992a24cbc479fcd22b167a815c60ad72aea1b5ce0fd5c7d5317ccb82a75b7": true, // v0.8.1–v0.8.6
 	"00602dbb6b504b9a611c9311c22742756c06bf00720f3430b8c3e31f1c414384": true, // v0.8.7–v0.8.9
 	"5ca5b8b2147c6aa75ee0b02436b4aa4238e9bc07b03230a0946ee5f41c457f84": true, // v0.9.0–v0.9.2（重写前）
+	"7e178641779bc359ba32198ee15d4bfa0fda2d73814f322c85d00576af7dc24d": true, // 重写 v2（首版瘦身，缺态势语义）
 }
 
-const settingPlannerPromptV2 = "planner_prompt_v2"
+const settingPlannerPromptV3 = "planner_prompt_v3"
 
-// migratePlannerPrompt 把旧版内置 planner 正文升级到 v2（经典模式瘦身版）。
+// migratePlannerPrompt 把旧版内置 planner 正文升级到 v3（经典瘦身 + 态势语义）。
 // 只执行一次（settings 旗标）；领域模板不在这里处理——planner_templates 的内置行
 // 每次启动都会被 SeedPlannerTemplateIfEmpty 刷新正文，用户自建模板不受影响。
 func migratePlannerPrompt(pg *db.DB) {
 	if pg == nil {
 		return
 	}
-	if v, ok, err := pg.GetSetting(settingPlannerPromptV2); err != nil || (ok && v == "true") {
+	if v, ok, err := pg.GetSetting(settingPlannerPromptV3); err != nil || (ok && v == "true") {
 		return
 	}
 	a, err := pg.GetAgentByKey("planner")
@@ -49,13 +50,13 @@ func migratePlannerPrompt(pg *db.DB) {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(cur)))
 	switch {
 	case cur != "" && plannerBuiltinPromptSHA256[hex.EncodeToString(sum[:])]:
-		if _, err := pg.SavePrompt(a.ID, agent.PlannerPromptBody(), "重写：经典模式瘦身（v2）", "system"); err != nil {
-			log.Printf("[prompts] planner 正文 v2 迁移失败: %v", err)
+		if _, err := pg.SavePrompt(a.ID, agent.PlannerPromptBody(), "重写：经典模式瘦身（v3）", "system"); err != nil {
+			log.Printf("[prompts] planner 正文 v3 迁移失败: %v", err)
 			return
 		}
-		log.Printf("[prompts] planner 正文已迁移到 v2（旧正文备份见 docs/prompts/planner）")
+		log.Printf("[prompts] planner 正文已迁移到 v3（旧正文备份见 docs/prompts/planner）")
 	case cur != "":
 		log.Printf("[prompts] planner 正文已被编辑，保留现状（旧正文备份见 docs/prompts/planner）")
 	}
-	_ = pg.SetSetting(settingPlannerPromptV2, "true")
+	_ = pg.SetSetting(settingPlannerPromptV3, "true")
 }

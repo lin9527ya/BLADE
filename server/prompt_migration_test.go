@@ -23,12 +23,12 @@ func TestMigratePlannerPrompt(t *testing.T) {
 		t.Fatalf("读旧正文备份: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV2)
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV3)
 		_, _ = m.pg.SavePrompt(a.ID, agent.PlannerPromptBody(), "test cleanup", "test")
 	})
 
 	// 其它用例构造 Server 时可能已经跑过迁移并置旗标；本用例显式从"未迁移"开始。
-	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV2)
+	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV3)
 	// ① 旧内置正文 → 迁移到 v2。
 	if _, err := m.pg.SavePrompt(a.ID, string(old), "test seed v1", "test"); err != nil {
 		t.Fatal(err)
@@ -42,8 +42,23 @@ func TestMigratePlannerPrompt(t *testing.T) {
 		t.Fatalf("旧正文应迁移到 v2（当前长度 %d，want %d）", len(cur), len(agent.PlannerPromptBody()))
 	}
 
+	// ①b v2（首版瘦身）→ 迁移到 v3。
+	v2, err := os.ReadFile("../docs/prompts/planner/v2.body.md")
+	if err != nil {
+		t.Fatalf("读 v2 正文备份: %v", err)
+	}
+	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV3)
+	if _, err := m.pg.SavePrompt(a.ID, string(v2), "test seed v2", "test"); err != nil {
+		t.Fatal(err)
+	}
+	migratePlannerPrompt(m.pg)
+	cur, _ = m.pg.CurrentPrompt(a.ID)
+	if cur != agent.PlannerPromptBody() {
+		t.Fatalf("v2 正文应迁移到 v3（当前长度 %d）", len(cur))
+	}
+
 	// ② 用户编辑过的正文 → 不覆盖（清旗标后重跑）。
-	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV2)
+	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPlannerPromptV3)
 	if _, err := m.pg.SavePrompt(a.ID, "用户自己改过的正文", "user edit", "test"); err != nil {
 		t.Fatal(err)
 	}
