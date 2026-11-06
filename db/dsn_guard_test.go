@@ -33,3 +33,21 @@ func TestSameDatabaseIgnoresCredentials(t *testing.T) {
 		t.Fatal("different db names must not compare equal")
 	}
 }
+
+// TestIsTestDatabase 守住破坏性测试清理的开关：只有 test/acceptance 库允许执行
+// 整表 DELETE。应用库（blade）和普通名字必须判为 false —— 否则本地用
+// BLADE_TEST_ALLOW_UNSAFE=1 跑测试时会把运维的 LLM 配置清空。
+func TestIsTestDatabase(t *testing.T) {
+	cases := map[string]bool{
+		"postgres://u:p@127.0.0.1:5432/blade":         false,
+		"postgres://u:p@127.0.0.1:5432/blade_test":    true,
+		"postgres://u:p@127.0.0.1:5432/blade_ci":      false,
+		"postgres://u:p@127.0.0.1:5432/blade_test_ci": true,
+		"postgres://u:p@127.0.0.1:5432/acceptance":    true,
+	}
+	for dsn, want := range cases {
+		if got := IsTestDatabase(dsn); got != want {
+			t.Errorf("IsTestDatabase(%q) = %v, want %v", dsn, got, want)
+		}
+	}
+}

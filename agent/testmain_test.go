@@ -32,6 +32,12 @@ func TestMain(m *testing.M) {
 	// 各自按需建 profile（CI 空库全绿即是证明），这里统一清残留，让拆解走
 	// 「无 provider → 原始目标作为单目标」的确定性快路径。
 	// （tasks 的 profile 外键是 ON DELETE SET NULL，清残留不会牵连任务行。）
-	_, _ = conn.Exec(`DELETE FROM llm_profiles`)
+	//
+	// 只清理隔离测试库：本地排障时 BLADE_TEST_ALLOW_UNSAFE=1 可能让测试连上正在使用的
+	// blade 库，无条件整表 DELETE 会把运维的 LLM 配置清空；服务重启后静默退回 env
+	// provider，输入/缓存命中率随之变成 0。破坏性清理必须限定在 test/acceptance 库。
+	if db.IsTestDatabase(dsn) {
+		_, _ = conn.Exec(`DELETE FROM llm_profiles`)
+	}
 	os.Exit(m.Run())
 }

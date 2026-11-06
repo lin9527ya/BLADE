@@ -27,7 +27,13 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	// 后台目标拆解会真发网络 LLM 调用，慢到越过本用例的轮询窗口——本用例只验证
 	// 「目标节点最终存在」，不需要外部 LLM。与 TestMain 同一处置：开跑前清空，
 	// 让拆解走「无 provider → 原始目标作为单目标」的确定性快路径。
-	_, _ = m.pg.Exec(`DELETE FROM llm_profiles`)
+	//
+	// 只清理隔离测试库：BLADE_TEST_ALLOW_UNSAFE=1 会让测试连上正在使用的 blade 库，
+	// 这里若无条件整表删除，会清空运维的 LLM 配置（0.9.x 更新后缓存命中率消失即由
+	// 此而来）。非测试库宁可让本用例慢一点，也不能动生产配置。
+	if dsn, _, err := db.DSN(); err == nil && db.IsTestDatabase(dsn) {
+		_, _ = m.pg.Exec(`DELETE FROM llm_profiles`)
+	}
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
