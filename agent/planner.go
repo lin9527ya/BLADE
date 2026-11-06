@@ -811,8 +811,22 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) 
 	if len(review) > 0 && review[0] {
 		reviewBlock = reviewRoundBlock
 	}
-	return body + promptExtras("planner") + openingProbeBlock + leadTriageBlock + reviewBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + ledgerDisciplineBlock + chainDisciplineBlock + endgameDoctrineBlock + untrustedDataBlock()
+	return body + promptExtras("planner") + openingProbeBlock + leadTriageBlock + reviewBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + ledgerDisciplineBlock + chainDisciplineBlock + endgameDoctrineBlock + untrustedDataBlock() + intentSummaryDisciplineBlock
 }
+
+// intentSummaryDisciplineBlock 是**代码持有**的意图摘要写法：planner 把操作边界、
+// 速率、UA/账号、与其它意图不重叠等内容写成“纪律段”塞进 add_intent.summary，
+// worker 会把它当意图正文读走，既浪费 token 又稀释真正的入口/验证目标。
+// 这段不挂任何探索约束开关，所有模式都追加；操作边界由 constraintBlock/policyBlock
+// 统一注入，planner 只写“入口 + 动作 + 验证什么”。
+const intentSummaryDisciplineBlock = `
+
+【意图摘要写法（代码持有，所有模式生效）】
+- add_intent.summary 只写一句话：在哪个具体入口（主机/路径/参数/版本）做什么 + 验证什么。
+- 不要写“纪律 / 操作规范 / 速率 / UA / 账号 / 请求上限 / 与其它意图不重叠”等段落（包括“⑦纪律：…”这种编号段）；这些不是意图本身。
+- 操作边界（allow/deny、速率、OPSEC）由 constraintBlock / policyBlock 统一注入，summary 里重复不会增加约束，只会浪费 token。
+- 需要与已有方向区分时，只写一句“与 iX 的 X 面不同”，不要用长列表引用其它意图 id 证明不重叠。
+- 确实需要速率/请求上限时，由操作者在任务约束里声明；planner 不要自行发明纪律。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经

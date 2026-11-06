@@ -2976,11 +2976,12 @@ func (t *ToolSet) dismissLeads() actool.CoreTool {
 
 func (t *ToolSet) addIntent() actool.CoreTool {
 	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么；**summary 必须点名具体入口**（路径/主机/参数/版本），只有风险类名称会被拒收。\n"+
+		"★summary 只写入口+动作+验证目标：不写纪律/操作规范/速率/UA/账号/请求上限/与其它意图不重叠段落；操作边界由 constraintBlock/policyBlock 统一注入，不要重复。\n"+
 		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
 		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
 		obj(map[string]any{
 			"intents":           map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段——**一次带全 summary + risk_area + goal_id（有多个未达成目标时必填）+ asset_ids + kind**；risk_area 可省略（会按 summary 推断）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":           str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+为什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。risk_area 只是台账键，不是方向本身。"),
+			"summary":           str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+验证什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。**不要写纪律/操作规范/速率/UA/账号/请求上限/与其它意图不重叠段落**（操作约束由平台统一注入）；risk_area 只是台账键，不是方向本身。"),
 			"asset_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
 			"goal_id":           idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：仅作归属记录，不生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。恰有一个未达成(open)目标时省略会自动记录；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
