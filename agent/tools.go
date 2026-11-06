@@ -2800,7 +2800,7 @@ type intentContract struct {
 	Route           string   `json:"route,omitempty"`            // 路线/链路名，用于态势聚合
 	Produces        []string `json:"produces,omitempty"`         // 约定产物 claim
 	Acceptance      string   `json:"acceptance,omitempty"`       // 产物验收条件
-	Class           *int     `json:"class,omitempty"`            // 0 目标推进 / 1 解除依赖 / 2 新证据 / 3 复核
+	Class           any      `json:"class,omitempty"`            // 0-3 或语义标签（auth/recon/web…），原样记录
 	EstimatedTokens int64    `json:"estimated_tokens,omitempty"` // 预估成本（只作信号）
 	Variant         string   `json:"variant,omitempty"`          // 已有方向的实质变化
 	ChangeEvidence  []int64  `json:"change_evidence,omitempty"`  // 支持 variant 的事实/发现 id
@@ -2866,10 +2866,22 @@ func (t *ToolSet) normalizeIntentContract(c *intentContract) (map[string]any, []
 		out["acceptance"] = acceptance
 	}
 	if c.Class != nil {
-		if *c.Class < 0 || *c.Class > 3 {
-			return nil, nil, fmt.Errorf("contract.class 只能是 0（目标推进）/1（解除依赖）/2（新证据）/3（复核）")
+		switch v := c.Class.(type) {
+		case float64:
+			n := int(v)
+			if v != float64(n) || n < 0 || n > 3 {
+				return nil, nil, fmt.Errorf("contract.class 只能是 0（目标推进）/1（解除依赖）/2（新证据）/3（复核），或语义标签字符串")
+			}
+			out["class"] = n
+		case string:
+			label := strings.TrimSpace(v)
+			if label == "" || len([]rune(label)) > 40 {
+				return nil, nil, fmt.Errorf("contract.class 语义标签不能为空且最多 40 字符")
+			}
+			out["class"] = label
+		default:
+			return nil, nil, fmt.Errorf("contract.class 只能是 0..3 或语义标签字符串")
 		}
-		out["class"] = *c.Class
 	}
 	if c.EstimatedTokens < 0 {
 		return nil, nil, fmt.Errorf("contract.estimated_tokens 不能为负数")
@@ -3505,7 +3517,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 					"route":            str("路线/链路名（如 登录链、上传链），用于态势聚合。"),
 					"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "约定产物 claim（最多 8 个）：如 version() 回显、后台 cookie、可读文件路径。"},
 					"acceptance":       str("产物验收条件：什么证据算满足 produces。"),
-					"class":            intp("0 目标推进 / 1 解除依赖 / 2 新证据 / 3 复核；缺省不填。"),
+					"class":            str("0 目标推进 / 1 解除依赖 / 2 新证据 / 3 复核；也可填语义标签（auth/recon/web 等），平台原样记录。"),
 					"estimated_tokens": intp("预估 token 成本（只作信号，>0 才记录）。"),
 					"variant":          str("同一机制重开时的实质变化；建议同时给 change_evidence。"),
 					"change_evidence":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "支持 variant 的事实/发现节点 id。"},

@@ -50,7 +50,7 @@ func TestIntentContractStoredAndDirectionDedup(t *testing.T) {
 // variant 构成新的方向键；没有 change_evidence 只告警不拒收（经典模式软契约）。
 // 结构性错误仍然报错：class 越界、recheck_of 指向未结束意图。
 func TestIntentContractVariantAndValidation(t *testing.T) {
-	tools, _, _ := newToolWorker(t)
+	tools, ts, _ := newToolWorker(t)
 	first := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
 		`{"risk_area":"sqli","summary":"对 /search?q= 做报错注入","contract":{"mechanism":"sqli-error","produces":["db-error"],"acceptance":"数据库报错"}}`))
 
@@ -73,6 +73,22 @@ func TestIntentContractVariantAndValidation(t *testing.T) {
 	if out := callTool(t, tools.PlannerTools(), "add_intent",
 		`{"risk_area":"sqli","summary":"复核未结束意图","contract":{"mechanism":"sqli-other","recheck_of":`+itoa(first)+`}}`); !strings.Contains(out, "只能复核已结束") {
 		t.Fatalf("recheck_of 未结束意图应报错: %s", out)
+	}
+
+	// 模型常把 class 写成语义标签；必须原样保留，不能被静默落成 0。
+	labelID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
+		`{"risk_area":"recon","summary":"证书透明度找源站","contract":{"mechanism":"origin-ip","class":"recon"}}`))
+	n, err := ts.GetNode(labelID)
+	if err != nil || n == nil {
+		t.Fatalf("读取 label 意图失败: %v", err)
+	}
+	var p map[string]any
+	if err := json.Unmarshal(n.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := p["contract"].(map[string]any)
+	if c["class"] != "recon" {
+		t.Fatalf("class 语义标签被改写: %+v", c)
 	}
 }
 

@@ -840,7 +840,7 @@ const blackboardViewBlock = `
 const intentContractBlock = `
 
 【意图契约（P0，软；可选但推荐）】
-- add_intent 可在 contract 里填 mechanism / route / produces / acceptance / class / estimated_tokens；显式给 mechanism 才参与方向去重：同目标 + 同资产 + 同 mechanism + 同 variant 会直接返回已有意图，不再新建。
+- add_intent 可在 contract 里填 mechanism / route / produces / acceptance / class / estimated_tokens；class 可填 0–3 或语义标签（auth/recon/web…），平台原样记录。显式给 mechanism 才参与方向去重：同目标 + 同资产 + 同 mechanism + 同 variant 会直接返回已有意图，不再新建。
 - 同一目标对象、同一打法始终用同一个 mechanism；换措辞不是新方向。
 - 已有方向要重开：给 variant + change_evidence（事实/发现 id）说明材料变化，或换 mechanism；只说“再测一次”会被去重挡回。
 - produces 写约定产物名，acceptance 写什么证据算完成；worker 会按这两项理解验收。它们不替代 summary 里的入口/动作/验证目标，也不替代 depends_on 的串行链。
