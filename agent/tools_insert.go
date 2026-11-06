@@ -759,8 +759,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// 指纹打法库：动手前先查同类指纹的历史打法（lookup 会累加使用次数），
 		// 用后回报 worked/failed，卡片靠它越用越准。沉淀本身归 playbook agent。
 		t.lookupPlaybooks(), t.recordPlaybookFeedback(),
-		// CVE 库：按资产/指纹查已录入 CVE；有脚本时可直接按库内脚本触发。
-		// 匹配只是线索，脚本执行仍走 guard；执行结果不自动登记 finding/foothold。
+		// CVE 库：按资产/指纹查已录入 CVE；本地库只是优先源，未命中时提示模型用
+		// web_search/Bash 查公网。有脚本时可直接按库内脚本触发；匹配只是线索，
+		// 脚本执行仍走 guard，执行结果不自动登记 finding/foothold。
 		t.lookupCVEs(), t.cveExploit(),
 		// conclude_intent：worker 对领到的意图声明语义终态（negative / out-of-scope / blocked）。
 		// 没测成（blocked/exhausted）由引擎判定，不归本工具。

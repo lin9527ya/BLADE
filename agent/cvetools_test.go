@@ -124,6 +124,24 @@ func TestLookupCVEsByAssetAndID(t *testing.T) {
 	}
 }
 
+// TestLookupCVEsMissSuggestsWebSearch 守住「本地库优先、但不是唯一来源」：
+// 本地库无匹配时，工具结果必须明确给出 web_search 下一步和可直接复用的检索词，
+// 否则 worker 会把「库里没有」误当成「目标没有 CVE」而停住。
+func TestLookupCVEsMissSuggestsWebSearch(t *testing.T) {
+	ts, _, _, _, _ := cveToolSet(t)
+	out, isErr := callCVETool(t, ts.lookupCVEs(), map[string]any{
+		"technologies": []string{"AcmeWidget 9.9.9"},
+	})
+	if isErr {
+		t.Fatalf("lookup miss should not be an error: %s", out)
+	}
+	for _, want := range []string{"web_search", "acmewidget 9.9.9 CVE", "next_step"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("lookup miss must point at public CVE search (missing %q): %s", want, out)
+		}
+	}
+}
+
 func TestCVEExploitRefusals(t *testing.T) {
 	ts, as, taskID, assetID, _ := cveToolSet(t)
 	createTestCVE(t, as, "CVE-2098-0101")

@@ -473,7 +473,7 @@ func renderCVESection(lines []string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n同类 CVE 线索（全局 CVE 库·只读线索·匹配不是证据；具体资产用 lookup_cves(asset_id=...)，有脚本时可用 cve_exploit）：")
+	b.WriteString("\n同类 CVE 线索（全局 CVE 库·只读线索·匹配不是证据；具体资产用 lookup_cves(asset_id=...)，有脚本时可用 cve_exploit；库未命中或版本未知时用 web_search 查公网 CVE）：")
 	for _, l := range lines {
 		b.WriteString("\n  · " + clipLine(l, 180))
 	}

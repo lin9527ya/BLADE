@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 //     用现有的 report_finding/report_foothold 登记。
 
 const cveLookupNote = "CVE/版本/指纹匹配只是线索，不是漏洞证据；先按 probe_guide/描述实际验证。" +
+	"本地库只是优先来源：无匹配时用 web_search 检索公网 CVE/公告（结果仍是线索，必须实际验证）。" +
 	"cve_exploit 只执行库内脚本并返回输出/execution_id，不会自动产生 finding 或据点；" +
 	"真实可复现的输出才能用 report_finding/report_foothold 登记。"
 
@@ -30,15 +32,18 @@ const cveLookupNote = "CVE/版本/指纹匹配只是线索，不是漏洞证据�
 // 与 hintLifecycleBlock 同一模式：旧库里的自定义提示词也能收到这条纪律。
 const cveToolBlock = `
 
-**CVE 库（lookup_cves / cve_exploit）**：
-- 识别到产品/版本或指纹时，可 lookup_cves(asset_id) 查库；它返回详情、探测指南与"是否有脚本"，不返回脚本正文。
-- 版本匹配且条目 active 时，可用 cve_exploit(cve_id, asset_id, target, args) 按库内脚本实际触发；平台仍会走授权范围/拦截规则/作业时间窗/人工审批门。
+**CVE 匹配（lookup_cves / web_search / cve_exploit）**：
+- **本地库优先**：识别到产品/版本或指纹时，先用 lookup_cves(asset_id) 查本地 CVE 库；它返回详情、探测指南与"是否有脚本"，不返回脚本正文。
+- **本地库不是唯一来源**：本地库无匹配、只有低分匹配，或版本未知/产品未确认时，不要停在"库里没有"就放弃这个方向——用 web_search 检索「<产品> <版本> CVE」「<banner/指纹> CVE」「<组件> <版本> vulnerability」（NVD/厂商公告用英文关键词更准），来源包括 NVD、厂商公告、Exploit-DB、GitHub 等；规划者也要把这条检索写进意图，别因为本地库没条目就跳过已知版本面。
+- 若 web_search 没有注册到工具列表（全局搜索关闭时），用 Bash/WebFetch 直接查公开接口与页面（如 NVD API、厂商公告、GitHub 搜索）；不要因为缺一个工具就跳过公网核对。
+- 本地库有条目、版本匹配且有脚本时才可 cve_exploit(cve_id, asset_id, target, args)；**公网找到但本地库没有的 CVE 不能 cve_exploit**（没有库内脚本），按公告/PoC 手工构造请求验证。
+- 本地库有条目但没脚本（has_exploit=false）时，也要用 web_search 找公开 PoC/公告，再手工验证，不要因为"库里有条目"就停在详情页。
 - cve_exploit 只执行并返回输出/execution_id，**不会自动产生 finding 或据点**；输出必须自己核实，真实可复现才用 report_finding/report_foothold 登记。
-- **CVE/版本/指纹匹配本身不是证据**；匹配只是线索，不能据此报漏洞或据此判定目标达成。`
+- **本地匹配和公网搜索结果都只是线索，不是证据**；不能据此报漏洞或据此判定目标达成。`
 
 const cveLookupBlock = `
 
-**CVE 库（lookup_cves）**：识别到产品/版本或指纹时，可 lookup_cves(asset_id) 查 CVE 详情、探测指南与是否有脚本；**匹配本身不是证据**。脚本执行由任务内的 worker/planner 用 cve_exploit 负责（主 Agent 无执行服务）。`
+**CVE 匹配（lookup_cves / web_search）**：识别到产品/版本或指纹时，先用 lookup_cves(asset_id) 查本地 CVE 详情、探测指南与是否有脚本；本地库无匹配时，用 web_search（未注册则用 Bash/WebFetch）检索公网 CVE/公告作为线索（匹配与搜索都不是证据）。脚本执行由任务内的 worker/planner 用 cve_exploit 负责（主 Agent 无执行服务）。`
 
 func cveAgentView(c db.CVE) map[string]any {
 	return map[string]any{
@@ -81,6 +86,7 @@ func cveMatchView(m db.CVEMatch) map[string]any {
 func (t *ToolSet) lookupCVEs() actool.CoreTool {
 	return readTool("lookup_cves",
 		"查【CVE 库】：按 cve_id 取详情（描述/探测指引/测绘语法/是否有脚本），或按 asset_id/指纹/产品+版本找匹配的 CVE。\n"+
+			"★ 本地库是优先来源，不是唯一来源：无匹配时用 web_search 检索「产品/版本/指纹 CVE」，公网结果仍需实际验证。\n"+
 			"★ CVE 命中只是线索，不是漏洞证据；先按 probe_guide 实际验证。\n"+
 			"★ 返回 exploit 元数据（语言/用法/SHA），**不返回脚本正文**；要执行用 cve_exploit。\n"+
 			"★ 具体到某台资产时优先传 asset_id，平台会按任务范围与真实指纹匹配。",
@@ -129,7 +135,7 @@ func (t *ToolSet) lookupCVEs() actool.CoreTool {
 					return actool.Errorf(err.Error()), nil
 				}
 				if c == nil {
-					return actool.Errorf(fmt.Sprintf("CVE 不存在: %s", cveID)), nil
+					return actool.Errorf(fmt.Sprintf("本地 CVE 库没有 %s。不要据此判定该 CVE 不存在：可用 web_search 检索该编号的公网公告/PoC；本地库无脚本，不能 cve_exploit。", cveID)), nil
 				}
 				t.as.TouchCVEUses([]int64{c.ID})
 				out := map[string]any{"cve": cveAgentView(*c), "note": cveLookupNote}
@@ -187,11 +193,53 @@ func (t *ToolSet) lookupCVEs() actool.CoreTool {
 				},
 				"note": cveLookupNote,
 			}
+			if len(views) == 0 {
+				// 本地库未命中不是"没有 CVE"的结论。给模型一个明确的下一步和可直接
+				// 复用的检索词，避免任务在本地库边界上停住。
+				out["next_step"] = "本地 CVE 库没有匹配。不要据此判定没有 CVE：用 web_search 检索公网 CVE/公告（NVD、厂商公告、Exploit-DB、GitHub），再回到目标实际验证；本地库无脚本，不能 cve_exploit。"
+				if queries := cveSearchQueries(sig); len(queries) > 0 {
+					out["web_search_suggestions"] = queries
+				}
+			}
 			if assetView != nil {
 				out["asset"] = assetView
 			}
 			return jsonResult(out)
 		})
+}
+
+// cveSearchQueries 把本地库未命中的指纹转成可直接交给 web_search 的检索词。
+// 本地 CVE 库只是优先来源：库覆盖不到的长尾产品/版本必须能走到公网检索。
+func cveSearchQueries(sig db.CVEAssetSignals) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 5)
+	add := func(q string) {
+		q = strings.TrimSpace(q)
+		if q == "" || seen[q] || len(out) >= 5 {
+			return
+		}
+		seen[q] = true
+		out = append(out, q)
+	}
+	products := make([]string, 0, len(sig.Products))
+	for p := range sig.Products {
+		products = append(products, p)
+	}
+	sort.Strings(products)
+	for _, p := range products {
+		if v := strings.TrimSpace(sig.Products[p]); v != "" {
+			add(p + " " + v + " CVE")
+		} else {
+			add(p + " CVE")
+		}
+	}
+	for _, t := range sig.Technologies {
+		add(t + " CVE")
+	}
+	if len(out) == 0 && sig.PageTitle != "" {
+		add(sig.PageTitle + " CVE")
+	}
+	return out
 }
 
 // lookupCVEAsset resolves an asset in task scope when task context exists; otherwise
