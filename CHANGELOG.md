@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **兼容网关的输入 / 缓存计量**（Norma v0.5.10）：官方 Anthropic 在 `message_start`
+  报输入侧，部分兼容网关（opencode 等）start 全 0、真实输入只在 `message_delta`。
+  此前只认 start，这类部署的 `input` / `cache` 恒为 0，会话页「入 / 缓 / 出 / 命中」
+  因此缺失。现在：start 已报输入时仍忽略 delta（不重复计数）；start 全 0 时由 delta
+  补齐一次，后续 delta 不重复补。
+- 测试：契约用例的 `risk_area` 改用词表内值（`recon` 是 class 标签，不是风险类）；
+  序号断言加空格边界，避免全局 id 到四位数时把 `intent-2934` 误判成任务内序号。
+
+
 ### 新增
 
 - **意图契约（P0，软）**：`add_intent` 增加可选 `contract`：

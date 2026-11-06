@@ -26,7 +26,7 @@ func TestAgentLabelsUseGlobalIDsOnly(t *testing.T) {
 	}
 	// 序号已被彻底移除：任何 "intent-1" / "goal-1" 这类小序号都不该出现
 	// （测试库里的 id 是全局自增的，远大于任务内条数）。
-	if strings.Contains(block, "intent-1 ") || strings.Contains(block, "intent-2") {
+	if strings.Contains(block, "intent-1 ") || strings.Contains(block, "intent-2 ") || strings.Contains(block, "goal-1 ") {
 		t.Fatalf("不该再出现任务内序号：\n%s", block)
 	}
 	if !strings.Contains(block, "全局 id") {

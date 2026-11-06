@@ -77,7 +77,7 @@ func TestIntentContractVariantAndValidation(t *testing.T) {
 
 	// 模型常把 class 写成语义标签；必须原样保留，不能被静默落成 0。
 	labelID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		`{"risk_area":"recon","summary":"证书透明度找源站","contract":{"mechanism":"origin-ip","class":"recon"}}`))
+		`{"risk_area":"disclosure","summary":"证书透明度找源站","contract":{"mechanism":"origin-ip","class":"recon"}}`))
 	n, err := ts.GetNode(labelID)
 	if err != nil || n == nil {
 		t.Fatalf("读取 label 意图失败: %v", err)
