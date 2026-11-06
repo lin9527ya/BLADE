@@ -1930,6 +1930,17 @@ export interface Settings {
   // worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction;每 run 读一次,对
   // 之后启动的 run 生效。
   noa_compaction?: boolean;
+  // 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
+  exploration_constraints_profile?: "classic" | "enhanced" | "custom";
+  constraint_opening?: boolean;
+  constraint_dispatch?: boolean;
+  constraint_breadth?: boolean;
+  constraint_ledger?: boolean;
+  constraint_review_endgame?: boolean;
+  constraint_completion?: boolean;
+  constraint_exhaustion?: boolean;
+  constraint_supervisor?: boolean;
+  constraint_depth?: boolean;
   // 授权范围（RoE）：空间门模式 + 作业时间窗（空 = 不限时）。
   // intercept_scope_mode 回的是**生效值**（env 优先于 setting）；intercept_scope_mode_env
   // 说明 env 是否把它压住了——页面据此提示，否则用户改了没反应会莫名其妙。

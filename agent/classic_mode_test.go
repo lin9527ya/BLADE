@@ -1,0 +1,88 @@
+package agent
+
+import (
+	"strings"
+	"testing"
+)
+
+func classicConstraints() Overrides {
+	return Overrides{ConstraintEnabled: func(string) bool { return false }}
+}
+
+// 经典模式：planner 提示不含补位/广度/台账/复盘/开局等约束块，但保留安全/契约块。
+func TestPlannerPromptClassicOmitsConstraintBlocks(t *testing.T) {
+	WithOverrides(classicConstraints(), func() {
+		got := plannerSystem("目标", "/d", "/w", "")
+		for _, absent := range []string{
+			"【槽位与队列深度（代码持有）】", "【广度纪律（代码持有", "【探索台账（代码持有",
+			"【通路台账（代码持有", "【开局摸底（代码持有", "【复盘轮（代码持有）】",
+			"【升级阶梯（代码持有）】", "【收官期（代码持有）】",
+		} {
+			if strings.Contains(got, absent) {
+				t.Fatalf("经典 planner 提示不应包含 %q", absent)
+			}
+		}
+		for _, present := range []string{"意图摘要写法", "探索约束开关", "不可信数据", "出口代理", "中间产物输出规约"} {
+			if !strings.Contains(got, present) {
+				t.Fatalf("经典 planner 提示应保留 %q", present)
+			}
+		}
+	})
+}
+
+// 经典模式：planner 工具面不注册记账/补证/穷尽工具，能力工具保留。
+func TestPlannerToolsClassicOmitsConstraintTools(t *testing.T) {
+	WithOverrides(classicConstraints(), func() {
+		names := map[string]bool{}
+		for _, tool := range NewToolSet(nil, "planner").PlannerTools() {
+			names[tool.Name()] = true
+		}
+		for _, banned := range []string{
+			"record_probe_fact", "exploration_ledger", "chain_detail", "dismiss_coverage",
+			"coverage_matrix", "accept_completion_risk", "mark_strategy_exhausted", "dismiss_leads",
+		} {
+			if names[banned] {
+				t.Fatalf("经典 planner 工具面不应包含 %q", banned)
+			}
+		}
+		for _, keep := range []string{"add_intent", "prove_goal", "abandon_goal", "accept_artifact_risk", "lookup_cves"} {
+			if !names[keep] {
+				t.Fatalf("经典 planner 工具面应保留能力/安全工具 %q", keep)
+			}
+		}
+	})
+}
+
+// 经典模式：态势不输出补位/广度/台账/线索字段，避免模型被记账材料牵着走。
+func TestGraphOverviewClassicOmitsConstraintFields(t *testing.T) {
+	WithOverrides(classicConstraints(), func() {
+		ts, _, _, _, _ := breadthToolSet(t)
+		out := ts.graphOverviewData()
+		for _, k := range []string{
+			"breadth", "ledger", "chains", "scope_surface", "intent_queue",
+			"recent_leads", "unconsumed_facts", "capabilities",
+		} {
+			if _, ok := out[k]; ok {
+				t.Fatalf("经典态势不应包含 %q", k)
+			}
+		}
+		if _, ok := out["goals"]; !ok {
+			t.Fatal("经典态势仍应保留 goals")
+		}
+	})
+}
+
+// 经典模式：risk_area/kind 非法只警告并回落，不再拒收整条意图。
+func TestAddIntentClassicSoftWarnings(t *testing.T) {
+	WithOverrides(classicConstraints(), func() {
+		ts, _, _, _, _ := breadthToolSet(t)
+		out := callTool(t, ts.PlannerTools(), "add_intent",
+			`{"summary":"对 https://debt.breadth-test.example/admin 做认证面测试","risk_area":"not-a-risk","kind":"bogus"}`)
+		if !strings.Contains(out, "intent created") {
+			t.Fatalf("经典模式应创建意图：%s", out)
+		}
+		if !strings.Contains(out, "risk_warning") || !strings.Contains(out, "kind_warning") {
+			t.Fatalf("经典模式应返回 risk/kind 软警告：%s", out)
+		}
+	})
+}

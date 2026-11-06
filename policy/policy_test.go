@@ -484,3 +484,30 @@ func TestCheckIntentSingleCharNegation(t *testing.T) {
 		t.Fatalf("正向提及应硬拒: %+v", v)
 	}
 }
+
+// 经典模式：跳过每轮意图上限，但 max_open / max_total 与内容边界仍生效；
+// 渲染段不再出现“每轮最多 N 条”。
+func TestCheckIntentIgnoreRoundCap(t *testing.T) {
+	eff := Effective{MaxIntentsPerRound: 4, MaxOpenIntents: 12}
+	in := IntentInput{Summary: "对 /admin 做权限测试", RoundUsed: 4}
+	if v := eff.CheckIntent(in); v.Allow {
+		t.Fatal("默认应被每轮上限拒绝")
+	}
+	if v := eff.CheckIntentWithOptions(in, CheckOptions{IgnoreRoundCap: true}); !v.Allow {
+		t.Fatalf("经典模式应放行每轮上限: %+v", v)
+	}
+	overOpen := IntentInput{Summary: "对 /admin 做权限测试", RoundUsed: 4, OpenCount: 12}
+	if v := eff.CheckIntentWithOptions(overOpen, CheckOptions{IgnoreRoundCap: true}); v.Allow {
+		t.Fatal("max_open 是操作者显式边界，经典模式仍应生效")
+	}
+	block := RenderBlockWithOptions(eff, CheckOptions{IgnoreRoundCap: true})
+	if strings.Contains(block, "每轮最多") {
+		t.Fatalf("经典模式策略段不应渲染每轮上限：\n%s", block)
+	}
+	if !strings.Contains(HardFloorTextWithOptions(eff, CheckOptions{IgnoreRoundCap: true}), "没有‘必须派’") {
+		t.Fatal("经典模式硬底线应改为中性表述")
+	}
+	if got := RenderBlockWithOptions(Effective{MaxIntentsPerRound: 4}, CheckOptions{IgnoreRoundCap: true}); got != "" {
+		t.Fatalf("只剩每轮上限且经典模式忽略时，策略段应为空：%q", got)
+	}
+}

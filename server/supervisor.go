@@ -98,7 +98,7 @@ func (e *Engine) supervisorTick(ctx context.Context, t *Task) {
 	if e == nil || e.supervisor == nil || t == nil || t.Store == nil {
 		return
 	}
-	if !supervisorEnabledSetting(e.pg()) {
+	if !supervisorEnabledSetting(e.pg()) || !e.constraintEnabled("supervisor") {
 		return
 	}
 	if e.IsDeleting(t.ID) || e.IsPaused(t.ID) || e.isSettling(t.ID) {

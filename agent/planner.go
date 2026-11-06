@@ -811,7 +811,18 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) 
 	if len(review) > 0 && review[0] {
 		reviewBlock = reviewRoundBlock
 	}
-	return body + promptExtras("planner") + openingProbeBlock + leadTriageBlock + reviewBlock + lineageDisciplineBlock + slotUtilizationBlock + breadthDisciplineBlock + lateralDisciplineBlock + coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock + artifactSpec(workDir) + footprintPlannerBlock() + escalationLadderBlock + ledgerDisciplineBlock + chainDisciplineBlock + endgameDoctrineBlock + untrustedDataBlock() + intentSummaryDisciplineBlock
+	return body + promptExtras("planner") +
+		gated("opening", openingProbeBlock) +
+		gated("depth", leadTriageBlock) +
+		gated("review_endgame", reviewBlock) +
+		lineageDisciplineBlock +
+		gated("dispatch", slotUtilizationBlock) +
+		gated("breadth", breadthDisciplineBlock+lateralDisciplineBlock) +
+		coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock +
+		artifactSpec(workDir) + footprintPlannerBlock() +
+		gated("review_endgame", escalationLadderBlock+endgameDoctrineBlock) +
+		gated("ledger", ledgerDisciplineBlock+chainDisciplineBlock) +
+		untrustedDataBlock() + constraintOverrideBlock() + intentSummaryDisciplineBlock
 }
 
 // intentSummaryDisciplineBlock 是**代码持有**的意图摘要写法：planner 把操作边界、
@@ -1076,15 +1087,23 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// (心跳定时巡检 / hint / 恢复等) → 别谎称"图发生了变化",转而提示顺带复查在跑意图。
 	lead := "刚有具体变动（见下面的【本次触发本轮的实际变动】），据此规划下一步："
 	if opening {
-		lead = "本轮是**任务开局**：图上除任务起点外没有任何 worker 产出，也还没有任何意图。先按【开局摸底】做 1–3 次只读请求（首页响应头/跳转、robots.txt、首页 script 与后台入口），再把看到的具体入口写进首轮意图："
+		if constraintOn("opening") {
+			lead = "本轮是**任务开局**：图上除任务起点外没有任何 worker 产出，也还没有任何意图。先按【开局摸底】做 1–3 次只读请求（首页响应头/跳转、robots.txt、首页 script 与后台入口），再把看到的具体入口写进首轮意图："
+		} else {
+			lead = "本轮是**任务开局**：图上除任务起点外没有任何 worker 产出，也还没有任何意图。按目标与已有信息直接规划；如确需，可做 1–3 次只读探测，但不强制："
+		}
 	} else if len(triggers) == 0 {
 		lead = "本轮是**定时巡检（心跳到点）/无具体变动信号**的唤醒——图不一定有新变动。顺带复查在跑意图：长时间无进展或跑偏的用 steer_work 纠偏、方向整个错的用 kill_work 止损；再判定目标、决定是否补方向："
 		// 心跳/无变动唤醒时,若全图已无任何 open 或 running 意图 → 探索已停摆(没 worker 在跑、
 		// 也没排队方向)。明确告知 planner 并强制其本轮补出新方向,别只复查在跑意图后空转一轮。
 		if active, err := ts.HasActiveIntent(); err == nil && !active {
-			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
-			if pol != nil && !pol.IsZero() {
-				lead += "\n（若【策略允许的范围内】确已无可行方向：本轮产出 0 条意图并调用 mark_strategy_exhausted（附证据 id）——这不叫停摆，系统会暂停任务等人工。）"
+			if constraintOn("dispatch") {
+				lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
+				if pol != nil && !pol.IsZero() {
+					lead += "\n（若【策略允许的范围内】确已无可行方向：本轮产出 0 条意图并调用 mark_strategy_exhausted（附证据 id）——这不叫停摆，系统会暂停任务等人工。）"
+				}
+			} else {
+				lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**。按目标与已有事实判断：如确有新方向可派，0 条也是正常结果；没有“必须派”的硬底线："
 			}
 		}
 	}
@@ -1097,8 +1116,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 上一轮结论摘要与态势同属易变段，统一放进 volatile。
 	// P20：硬底线在有策略时改写成"只在策略内成立"——否则提示词自相矛盾：
 	// 一边要求必须派人，一边把提出来的人全拒掉。
-	hardFloor := policy.HardFloorText(derefPolicy(pol))
-	if opening {
+	hardFloor := policy.HardFloorTextWithOptions(derefPolicy(pol), policy.CheckOptions{IgnoreRoundCap: !constraintOn("dispatch")})
+	if opening && constraintOn("opening") {
 		// 开局轮的唯一合法产物可能是"一句更具体的方向"：摸底之后即使 0 条意图也不算
 		// 停摆。摸底轮数上限保证这条例外不会变成长期空转的借口。
 		hardFloor = "**【开局例外（仅本轮）】本轮是任务开局：按【开局摸底】做完 1–3 次只读请求后，即使本轮只产出 0 条意图也不算停摆；摸底成功则至少派 1 条引用观察的意图。**"

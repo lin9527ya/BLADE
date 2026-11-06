@@ -152,6 +152,10 @@ export function useSettingsState() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  // 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
+  const [constraintProfile, setConstraintProfile] = React.useState<"classic" | "enhanced" | "custom">("classic");
+  const [constraintGroups, setConstraintGroups] = React.useState<Record<string, boolean>>({});
+  const [savingConstraints, setSavingConstraints] = React.useState(false);
   const [chatAutoTitle, setChatAutoTitle] = React.useState(false);
   // 授权范围（RoE）：空间门模式 + 作业时间窗。模式回生效值，另存一个 env 覆盖标志。
   const [scopeMode, setScopeMode] = React.useState("ask");
@@ -224,6 +228,22 @@ export function useSettingsState() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setConstraintProfile(
+      s.exploration_constraints_profile === "enhanced" || s.exploration_constraints_profile === "custom"
+        ? s.exploration_constraints_profile
+        : "classic",
+    );
+    setConstraintGroups({
+      opening: !!s.constraint_opening,
+      dispatch: !!s.constraint_dispatch,
+      breadth: !!s.constraint_breadth,
+      ledger: !!s.constraint_ledger,
+      review_endgame: !!s.constraint_review_endgame,
+      completion: !!s.constraint_completion,
+      exhaustion: !!s.constraint_exhaustion,
+      supervisor: !!s.constraint_supervisor,
+      depth: !!s.constraint_depth,
+    });
     setChatAutoTitle(!!s.chat_auto_title);
     setScopeMode(s.intercept_scope_mode ?? "ask");
     setScopeModeEnv(!!s.intercept_scope_mode_env);
@@ -796,6 +816,23 @@ export function useSettingsState() {
       });
   };
 
+  const saveConstraints = (patch: { profile?: "classic" | "enhanced" | "custom"; group?: string; value?: boolean }) => {
+    setSavingConstraints(true);
+    const body: Partial<Settings> = {};
+    if (patch.profile) body.exploration_constraints_profile = patch.profile;
+    if (patch.group) body[`constraint_${patch.group}` as keyof Settings] = patch.value as never;
+    api
+      .setSettings(body)
+      .then((s) => {
+        apply(s);
+        toast.success("已保存探索约束");
+      })
+      .catch((e) => {
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingConstraints(false));
+  };
+
   const toggleNoaCompaction = (v: boolean) => {
     setNoaCompaction(v); // optimistic
     api
@@ -1194,6 +1231,10 @@ export function useSettingsState() {
     injectWorker,
     setInjectWorker,
     noaCompaction,
+    constraintProfile,
+    constraintGroups,
+    savingConstraints,
+    saveConstraints,
     chatAutoTitle,
     toggleChatAutoTitle,
     setNoaCompaction,

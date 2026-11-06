@@ -46,6 +46,10 @@ type Overrides struct {
 	// NoiseLevel 返回本次作业的噪声档位（"quiet" / "normal"）。quiet 时 planner/worker
 	// 的提示词会追加一段代码持有的潜行纪律。
 	NoiseLevel func() string
+	// ConstraintEnabled 返回某个探索约束分组是否开启（opening/dispatch/breadth/
+	// ledger/review_endgame/completion/exhaustion/supervisor/depth）。经典模式全关，
+	// 增强模式逐组打开；agent 每轮现读。
+	ConstraintEnabled func(group string) bool
 }
 
 // SetOverrides 用 o **整体替换**当前这套 hook；nil 字段表示把那一项关掉。
@@ -69,6 +73,7 @@ func SetOverrides(o Overrides) {
 	LootExecEnabled = o.LootExecEnabled
 	OASTConfig = o.OASTConfig
 	NoiseLevel = o.NoiseLevel
+	ConstraintEnabled = o.ConstraintEnabled
 }
 
 // CurrentOverrides 返回当前生效的一整套 hook（读取 / 保存 / 恢复用）。
@@ -88,6 +93,7 @@ func CurrentOverrides() Overrides {
 		LootExecEnabled:                LootExecEnabled,
 		OASTConfig:                     OASTConfig,
 		NoiseLevel:                     NoiseLevel,
+		ConstraintEnabled:              ConstraintEnabled,
 	}
 }
 

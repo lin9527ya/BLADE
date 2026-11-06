@@ -3377,6 +3377,16 @@ export const settings: Settings = {
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,
+  exploration_constraints_profile: "classic",
+  constraint_opening: false,
+  constraint_dispatch: false,
+  constraint_breadth: false,
+  constraint_ledger: false,
+  constraint_review_endgame: false,
+  constraint_completion: false,
+  constraint_exhaustion: false,
+  constraint_supervisor: false,
+  constraint_depth: false,
 };
 
 // ── LLM 轮询（故障转移）──────────────────────────────────────────────────────

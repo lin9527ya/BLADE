@@ -1025,12 +1025,14 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	// coverage_matrix 按需取；这里只给规模 + 最多 8 个缺口，避免撑爆上下文。
 	// 覆盖度关闭时 coverage_matrix 已被摘除、也不注入 breadth——否则模型会去找不存在
 	// 的工具/字段。
-	if includeBreadth && !t.coverageDisabled {
+	if includeBreadth && !t.coverageDisabled && t.constraintOn("breadth") {
 		if b := t.breadthSummary(); b != nil {
 			out["breadth"] = b
 		}
-		// 探索台账：把「资产 × 风险类」摊成状态计数 + 待处理缺口（≤12）。它是发散的
-		// 第一来源，也是收官审计的依据；完整网格走 exploration_ledger 按需取。
+	}
+	// 探索台账：把「资产 × 风险类」摊成状态计数 + 待处理缺口（≤12）。它是发散的
+	// 第一来源，也是收官审计的依据；完整网格走 exploration_ledger 按需取。
+	if t.constraintOn("ledger") {
 		if rep := t.ledgerReport(); rep != nil && rep.CellsTotal > 0 {
 			out["ledger"] = map[string]any{
 				"counts": rep.Counts, "waived": rep.Waived,
@@ -1040,21 +1042,23 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		}
 	}
 	// 通路台账：手上有哪些据点/凭据、推进到哪一步。深度不靠模型自觉，靠这张表。
-	if rep := t.chainReport(); rep != nil && len(rep.Rows) > 0 {
-		rows := make([]map[string]any, 0, 8)
-		for _, r := range rep.Rows {
-			if len(rows) >= 8 {
-				break
+	if t.constraintOn("ledger") {
+		if rep := t.chainReport(); rep != nil && len(rep.Rows) > 0 {
+			rows := make([]map[string]any, 0, 8)
+			for _, r := range rep.Rows {
+				if len(rows) >= 8 {
+					break
+				}
+				rows = append(rows, map[string]any{
+					"loot_id": r.LootID, "kind": r.Kind, "label": r.Label,
+					"stage": r.Stage, "status": r.Status, "uses": r.Uses,
+					"downstream": len(r.Downstream),
+				})
 			}
-			rows = append(rows, map[string]any{
-				"loot_id": r.LootID, "kind": r.Kind, "label": r.Label,
-				"stage": r.Stage, "status": r.Status, "uses": r.Uses,
-				"downstream": len(r.Downstream),
-			})
-		}
-		out["chains"] = map[string]any{
-			"counts": rep.Counts, "rows": rows,
-			"note": "unused/open 是深度缺口；用过一次不算推进，看 stage 与 downstream",
+			out["chains"] = map[string]any{
+				"counts": rep.Counts, "rows": rows,
+				"note": "unused/open 是深度缺口；用过一次不算推进，看 stage 与 downstream",
+			}
 		}
 	}
 	// lineage from the exploration edges: an intent's parents (what it
@@ -1832,8 +1836,10 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	out["related_tasks"] = t.relatedTaskOverviews()
 	// scope_surface：范围面（范围内注册域 + 同根域下还没被任何意图碰过的资产）。
 	// 「目标正面打不进去就换同主体的其它资产试」这条策略靠它驱动，所以每轮都给。
-	if ss := t.scopeSurface(); ss != nil {
-		out["scope_surface"] = ss
+	if t.constraintOn("breadth") {
+		if ss := t.scopeSurface(); ss != nil {
+			out["scope_surface"] = ss
+		}
 	}
 	// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
@@ -1869,6 +1875,27 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	}
 	if health := t.graphHealth(); len(health) > 0 {
 		out["graph_health"] = health
+	}
+	// 兜底：分组关闭时这些字段一律不出现在 agent 上下文（查询可能已在上面跑过，
+	// 但提示里不泄漏）。worker 视图另有更严格的 drop。
+	if !t.constraintOn("dispatch") {
+		delete(out, "intent_queue")
+	}
+	if !t.constraintOn("depth") {
+		for _, k := range []string{
+			"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
+			"unconsumed_facts", "capabilities",
+		} {
+			delete(out, k)
+		}
+	}
+	if !t.constraintOn("breadth") {
+		delete(out, "breadth")
+		delete(out, "scope_surface")
+	}
+	if !t.constraintOn("ledger") {
+		delete(out, "ledger")
+		delete(out, "chains")
 	}
 	return out
 }
@@ -2534,6 +2561,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 漏填不再硬拒：按 summary 推断一个风险类并在回执里说明——开局轮整批被打回的
 	// 代价是白烧一次调用（任务 30 实测：4 条意图因缺 risk_area 全部重交）。显式填写
 	// 仍然优先，填错（不在词表内）照旧报错，不猜。
+	riskWarn, kindWarn, queueWarn, dupWarn := "", "", "", ""
 	rawRisk := strings.TrimSpace(it.RiskArea)
 	riskArea := rawRisk
 	riskInferred := false
@@ -2541,16 +2569,23 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 		riskArea, riskInferred = inferRiskArea(it.Summary), true
 	} else if normalized := db.NormalizeRiskArea(rawRisk); normalized != "other" || strings.EqualFold(rawRisk, "other") {
 		riskArea = normalized
-	} else {
+	} else if t.constraintOn("dispatch") {
 		return 0, "", fmt.Errorf("risk_area=%q 不在词表内：%s", rawRisk, riskAreaEnum())
+	} else {
+		riskArea = "other"
+		riskWarn = fmt.Sprintf("risk_warning: risk_area=%q 不在词表内，已回落 other；增强模式会拒收，这里只提醒。", rawRisk)
 	}
 	intentKind := strings.TrimSpace(it.Kind)
 	switch intentKind {
 	case "", "discovery", "verify":
 	default:
-		return 0, "", fmt.Errorf("kind 只能是 discovery（资产发现/侦察，可只登记资产）或 verify（验证/利用，必须写回事实或发现），收到 %q", it.Kind)
+		if t.constraintOn("dispatch") {
+			return 0, "", fmt.Errorf("kind 只能是 discovery（资产发现/侦察，可只登记资产）或 verify（验证/利用，必须写回事实或发现），收到 %q", it.Kind)
+		}
+		kindWarn = fmt.Sprintf("kind_warning: kind=%q 非法，已省略（不落 payload）；增强模式会拒收，这里只提醒。", it.Kind)
+		intentKind = ""
 	}
-	if t.reviewRound && q.round >= 3 {
+	if t.reviewRound && q.round >= 3 && t.constraintOn("review_endgame") {
 		return 0, "", fmt.Errorf("复盘轮最多派 3 条意图：先完成复盘（node_detail / list_facts + TodoWrite 路线池），其余方向留到下一轮")
 	}
 	// 意图粒度门：任何一条意图都要点名具体入口。目录型 summary（「做认证面测试」
@@ -2559,7 +2594,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 开局轮硬拒（此时还没有事实，重写没有代价）；中后段只警告不拦，避免白烧一轮。
 	coarseWarn := ""
 	if coarse, why := coarseIntentSummary(it.Summary, intentKind, len(pidList(it.AssetIDs)) > 0); coarse {
-		if t.openingStrict {
+		if t.openingStrict && t.constraintOn("opening") {
 			return 0, "", fmt.Errorf("%s", why)
 		}
 		coarseWarn = "coarse_warning: " + firstLine(why, 200)
@@ -2575,7 +2610,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 去查 parent/goal，模型也该先听到"别再往这个方向想"。
 	if t.pol != nil && !t.pol.IsZero() {
 		in := policy.IntentInput{Summary: it.Summary, OpenCount: q.open, RoundUsed: q.round, TotalUsed: q.total}
-		v := t.pol.CheckIntent(in)
+		v := t.pol.CheckIntentWithOptions(in, policy.CheckOptions{IgnoreRoundCap: !t.constraintOn("dispatch")})
 		if !v.Allow {
 			t.reportPolicyReject(it, v)
 			return 0, "", fmt.Errorf("%s", policy.RejectText(v, it.Summary))
@@ -2629,7 +2664,7 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 					openIDs = append(openIDs, g.ID)
 				}
 			}
-			if len(openIDs) > 1 {
+			if len(openIDs) > 1 && t.constraintOn("dispatch") {
 				return 0, "", fmt.Errorf("本任务有 %d 个未达成目标（%v）：goal_id 必填，指明这条方向服务哪个目标；只有确实不属于任何目标时才可留空", len(openIDs), openIDs)
 			}
 		}
@@ -2687,10 +2722,14 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 待领意图会一路涨。按**可领**计数：被前置挡住的链路步骤不消耗 worker，也不占额度
 	// （它们此刻进不了 frontier）；而带已满足前置的意图立即可领，照样受上限约束。
 	if t.workerCap > 0 && depsSatisfied && priority < intentQueueUrgentPriority && q.claimable >= intentQueueFactor*t.workerCap {
-		return 0, "", fmt.Errorf("队列里已有 %d 条可领方向（worker %d 个，上限 %d）：本轮先让 worker 消化，不再接常规新方向。"+
+		msg := fmt.Sprintf("队列里已有 %d 条可领方向（worker %d 个，上限 %d）：本轮先让 worker 消化，不再接常规新方向。"+
 			"确有材料性新发现驱动的跟进，把 priority 提到 %d 以上再提交；已过时的排队方向用 drop_intent 清掉。"+
 			"**这个方向本身不必丢**：把它写进 TodoWrite（注明为什么先不派），等 worker 消化后再派——别直接忘掉",
 			q.claimable, t.workerCap, intentQueueFactor*t.workerCap, intentQueueUrgentPriority)
+		if t.constraintOn("dispatch") {
+			return 0, "", fmt.Errorf("%s", msg)
+		}
+		queueWarn = "queue_warning: " + msg
 	}
 	anchors := pidList(it.AssetIDs)
 	// 资产拦截：意图绑定的资产若命中系统资产拦截规则，则禁止下发该意图。
@@ -2712,7 +2751,10 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 判定放在策略/资产/血缘/战果校验之后、建节点之前：前面的校验说的是"能不能做"，
 	// 这一条说的是"这件事是不是已经有人在做/已经做过了"。
 	if rej := t.checkIntentSpin(q, it.Summary, riskArea, anchors, strings.TrimSpace(it.RiskArea) != "", it.Techniques, it.Kind); rej != "" {
-		return 0, "", fmt.Errorf("%s", rej)
+		if t.constraintOn("dispatch") {
+			return 0, "", fmt.Errorf("%s", rej)
+		}
+		dupWarn = "dup_warning: " + rej
 	}
 	leadIDs, lerr := t.validateLeadIDs(it.ConvertsLeadIDs)
 	if lerr != nil {
@@ -2860,6 +2902,16 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			note = chainWarn
 		} else {
 			note += "\n" + chainWarn
+		}
+	}
+	for _, w := range []string{riskWarn, kindWarn, queueWarn, dupWarn} {
+		if w == "" {
+			continue
+		}
+		if note == "" {
+			note = w
+		} else {
+			note += "\n" + w
 		}
 	}
 	return id, note, nil
@@ -3048,7 +3100,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				}
 			}
 			breadthWarn := ""
-			if createdAny && breadth != nil && !breadthTouched {
+			if createdAny && breadth != nil && !breadthTouched && t.constraintOn("breadth") {
 				breadthWarn = breadthWarning(breadth, t.breadthNewDebt)
 			}
 
@@ -3135,18 +3187,20 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 				if msg := t.cleanupGate(); msg != "" {
 					return actool.Errorf(msg), nil
 				}
-				if gaps := t.completionGaps(); len(gaps) > 0 {
-					switch t.completionGateMode() {
-					case "block":
-						if t.completionBlocked != nil {
-							t.completionBlocked()
+				if t.constraintOn("completion") {
+					if gaps := t.completionGaps(); len(gaps) > 0 {
+						switch t.completionGateMode() {
+						case "block":
+							if t.completionBlocked != nil {
+								t.completionBlocked()
+							}
+							if t.forceReview != nil {
+								t.forceReview() // 下一轮先复盘，别原地重试
+							}
+							return actool.Errorf(formatCompletionGaps(gaps)), nil
+						case "notice":
+							completionNotice = "\n\n⚠ " + formatCompletionGaps(gaps)
 						}
-						if t.forceReview != nil {
-							t.forceReview() // 下一轮先复盘，别原地重试
-						}
-						return actool.Errorf(formatCompletionGaps(gaps)), nil
-					case "notice":
-						completionNotice = "\n\n⚠ " + formatCompletionGaps(gaps)
 					}
 				}
 			}
@@ -5205,7 +5259,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 
 // PlannerTools is the read + intent-generation + goal-judgement tool set.
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
-	return []actool.CoreTool{
+	tools := []actool.CoreTool{
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
@@ -5213,7 +5267,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_worker_traces：态势里的 recent_done_intents 只是一窗（12 条），上百意图的任务里
 		// 大部分已结束意图不在视野中。这个工具让 planner 能翻全量已跑意图，确认某方向是否试过。
 		t.listWorkerTraces(),
-		t.listGoals(), t.recordProbeFact(), t.addIntent(), t.dismissLeads(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),
@@ -5221,15 +5275,14 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listFootprints(), t.acceptFootprintRisk(),
 		// 补血缘：add_intent 漏传 parent_ids 时，把已建意图接回真实来源（不动节点、不丢产出）。
 		t.linkIntentSource(),
-		// 收口：策略内已无可行方向 → 写结论 + 暂停等人工；不可达目标 → 放弃（理由必填）。
-		t.markStrategyExhausted(), t.abandonGoal(),
+		// 收口：不可达目标 → 放弃（理由必填）。mark_strategy_exhausted 仅在
+		// exhaustion 分组开启时注册（见函数末尾）。
+		t.abandonGoal(),
 		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
 		t.rotateEgressTool(),
 		// 去重：planner 自己报的重复漏洞要能合并，而不是留着两条污染计数。
 		t.mergeFindings(),
-		// coverage_matrix：规划补测方向前应能看到「哪些资产×风险类还没碰过」。
-		// 此前它只绑在 MainAgentTools，planner 只能看到粗粒度百分比。
-		t.coverageMatrix(), t.explorationLedger(), t.dismissCoverage(), t.chainDetail(), t.acceptCompletionRisk(),
+		// coverage_matrix / 台账 / 收官豁免仅在对应分组开启时注册（见函数末尾）。
 		t.killWorkTool(), t.steerWorkTool(),
 		// 执行类工具（run/wait/get/grep/cancel_execution、loot_*、foothold_exec、
 		// tunnel_open、oast_*、cve_exploit）与 report_finding 已从规划层移除：
@@ -5257,6 +5310,23 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// CVE 库：规划时按资产/指纹查已录入 CVE；有脚本时可显式触发，匹配只是线索。
 		t.lookupCVEs(),
 	}
+	// 探索约束工具按分组注册：默认经典模式不暴露记账/补证工具，增强模式逐组恢复。
+	if t.constraintOn("opening") {
+		tools = append(tools, t.recordProbeFact())
+	}
+	if t.constraintOn("depth") {
+		tools = append(tools, t.dismissLeads())
+	}
+	if t.constraintOn("exhaustion") {
+		tools = append(tools, t.markStrategyExhausted())
+	}
+	if t.constraintOn("ledger") {
+		tools = append(tools, t.coverageMatrix(), t.explorationLedger(), t.dismissCoverage(), t.chainDetail())
+	}
+	if t.constraintOn("completion") {
+		tools = append(tools, t.acceptCompletionRisk())
+	}
+	return tools
 }
 
 // normalizeFindingText 把摘要归一成只含字母/数字（含中文）的串，用于重复判断：

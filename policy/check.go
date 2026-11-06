@@ -28,11 +28,22 @@ type Verdict struct {
 	Benign bool
 }
 
+// CheckOptions 是意图门的可选开关（经典模式用）。
+type CheckOptions struct {
+	// IgnoreRoundCap 跳过「每轮最多 N 条」；max_open / max_total 与内容边界仍生效。
+	IgnoreRoundCap bool
+}
+
 // CheckIntent 是意图层策略门（纯函数）。判定顺序：节奏面 → 内容面——
 // 额度用尽时不该再为一条注定被拒的意图去扫词表，模型也该先听到"别再派了"。
 func (e Effective) CheckIntent(in IntentInput) Verdict {
+	return e.CheckIntentWithOptions(in, CheckOptions{})
+}
+
+// CheckIntentWithOptions 是 CheckIntent 的可选开关版本。
+func (e Effective) CheckIntentWithOptions(in IntentInput, opt CheckOptions) Verdict {
 	var benign Verdict // first negated hit: allow only if nothing else rejects
-	if e.MaxIntentsPerRound > 0 && in.RoundUsed >= e.MaxIntentsPerRound {
+	if !opt.IgnoreRoundCap && e.MaxIntentsPerRound > 0 && in.RoundUsed >= e.MaxIntentsPerRound {
 		return Verdict{ItemID: "pace:round", ItemLabel: "本轮意图配额", Where: "pace_round",
 			Hint: fmt.Sprintf("本轮已提出 %d 条意图（上限 %d）：把本轮剩下的判断留到下一轮，或先让在跑的方向出结果", in.RoundUsed, e.MaxIntentsPerRound)}
 	}

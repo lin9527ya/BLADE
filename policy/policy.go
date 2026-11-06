@@ -32,8 +32,19 @@ type Effective struct {
 
 // IsZero 报告这份策略是否什么都没限制（执行点据此完全跳过策略逻辑）。
 func (e Effective) IsZero() bool {
-	return len(e.Techniques) == 0 && len(e.ForbiddenWrites) == 0 && len(e.Custom) == 0 &&
-		e.MaxIntentsPerRound <= 0 && e.MaxOpenIntents <= 0 && e.MaxIntentsTotal <= 0
+	return e.isEmptyFor(CheckOptions{})
+}
+
+// isEmptyFor 是 IsZero 的开关版本：经典模式忽略每轮上限后，只有 round cap
+// 的策略也应视为“没有可渲染/可执行的内容”。
+func (e Effective) isEmptyFor(opt CheckOptions) bool {
+	if len(e.Techniques) > 0 || len(e.ForbiddenWrites) > 0 || len(e.Custom) > 0 {
+		return false
+	}
+	if e.MaxOpenIntents > 0 || e.MaxIntentsTotal > 0 {
+		return false
+	}
+	return opt.IgnoreRoundCap || e.MaxIntentsPerRound <= 0
 }
 
 // 自定义条目的生效层。

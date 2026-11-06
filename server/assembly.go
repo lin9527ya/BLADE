@@ -422,6 +422,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		if _, _, on := oastConfig(); !on {
 			out = dropToolByName(out, "oast_mint", "oast_poll")
 		}
+		// 探索约束开关：经典模式不把已关闭分组的工具重新注入 planner。
+		if agentKey == "planner" {
+			out = dropPlannerConstraintTools(pg, out)
+		}
 		// 失败提示：包在最后，覆盖上面所有 DecorateTool 的结果。模型此前只看到
 		// `[exit code N]`，没有「下一步该换什么」的线索。
 		for i, t := range out {

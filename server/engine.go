@@ -160,6 +160,8 @@ type Engine struct {
 	exhaustionTries  sync.Map // taskID -> int，连续被判"证据不足"的次数
 	// supervisor 是定时执行审核员（见 server/supervisor.go）。nil = 未接线。
 	supervisor supervisorFunc
+	// constraintOn 是探索约束分组 resolver（默认走 Manager；测试可注入）。
+	constraintOn func(string) bool
 	// supervisorStates 记录每个任务的审核水位与纠偏节奏（taskID -> *supervisorState）。
 	supervisorStates sync.Map
 	egressMu         sync.Mutex
@@ -617,6 +619,16 @@ func NewEngine(m *Manager) *Engine {
 		execCancel: map[string]context.CancelCauseFunc{}, execCtx: map[string]context.Context{},
 		work: map[int64]*workExecution{}, steerBox: map[int64][]steerMsg{},
 		runtimes: map[string]*taskRuntime{}}
+}
+
+// SetConstraintResolver overrides the exploration-constraint resolver (tests).
+func (e *Engine) SetConstraintResolver(fn func(string) bool) { e.constraintOn = fn }
+
+func (e *Engine) constraintEnabled(group string) bool {
+	if e.constraintOn != nil {
+		return e.constraintOn(group)
+	}
+	return e.m != nil && e.m.ConstraintEnabled(group)
 }
 
 // registerWork records the cancel for the work currently running intentID.
@@ -1149,8 +1161,14 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 尾沿去抖：每来一个通知就重置计时，把一串「worker 完成 / finding / kill」
 		// 合并成一轮；但最多等 plannerDebounceMax，避免持续的小事件流把规划无限
 		// 后推（旧实现是固定 800ms 窗口，落在窗口边缘的触发会被拖到下一轮）。
-		const plannerDebounceMax = 3 * time.Second
-		timer := time.NewTimer(e.debounce)
+		plannerDebounceMax := 3 * time.Second
+		debounce := e.debounce
+		if !e.constraintEnabled("dispatch") {
+			// 经典模式：把事件合并得更厚，减少碎片化规划轮（42 分钟 45 轮 → 争取 ~15 轮）。
+			debounce = 2 * time.Second
+			plannerDebounceMax = 10 * time.Second
+		}
+		timer := time.NewTimer(debounce)
 		deadline := time.Now().Add(plannerDebounceMax)
 	drain:
 		for {
@@ -1163,7 +1181,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				if remain <= 0 {
 					break drain
 				}
-				wait := e.debounce
+				wait := debounce
 				if wait > remain {
 					wait = remain
 				}
@@ -1292,7 +1310,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		// 策略穷尽：planner 已用 mark_strategy_exhausted 写下结论事实。暂停任务等人工，
 		// 不在工具调用中途取消自己的 ctx——这里是本轮结束后的后处理。
-		if exhausted := planner.TakeStrategyExhaustedReason(); exhausted != "" && !met && ectx.Err() == nil {
+		if exhausted := planner.TakeStrategyExhaustedReason(); exhausted != "" && !met && ectx.Err() == nil && e.constraintEnabled("exhaustion") {
 			log.Printf("[planner] task %s 策略内已无可行方向: %s", t.ID, clipRunes(exhausted, 120))
 			// 穷尽复核：暂停之前先让独立的只读裁判核对证据。判"证据不足"时**不暂停**，
 			// 把结论交回 planner（下一轮据此补测）——硬门只能数有没有碰过，数不了
@@ -1327,6 +1345,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			var refill, stall bool
 			zeroRoundStreak, capacityRefills, refill, stall = plannerRoundSignals(
 				made, running, claimable, idle, hasOpenGoal, zeroRoundStreak, capacityRefills)
+			if !e.constraintEnabled("dispatch") {
+				// 经典模式：不补派、不因连续 0 意图暂停；让任务按 open 意图自然收束。
+				refill, stall = false, false
+			}
 			if refill {
 				log.Printf("[planner] task %s 本轮 0 意图且有 %d 个空闲槽位，4s 后补派一轮", t.ID, idle)
 				time.AfterFunc(4*time.Second, func() { t.Notify() })
@@ -1738,7 +1760,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			log.Printf("[worker %s] task %s 意图 #%d 历史产出查询失败（按本次口径结算）: %v", name, t.ID, intent.ID, herr)
 		}
 	}
-	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior)
+	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior, !e.constraintEnabled("dispatch"))
 	recordValidatedAssets(t, intent, intentKind, state, wrote)
 	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
@@ -1857,7 +1879,7 @@ type intentPriorOutput struct {
 	Validation bool
 }
 
-func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string, prior intentPriorOutput) string {
+func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string, prior intentPriorOutput, classic bool) string {
 	state := "done"
 	switch {
 	case err != nil:
@@ -1870,6 +1892,11 @@ func settleIntentState(err error, reason harness.TerminalReason, wrote agent.Wri
 	}
 	if semanticOutcome == "negative" || semanticOutcome == "out-of-scope" || semanticOutcome == "blocked" {
 		return semanticOutcome
+	}
+	// 经典模式：正常完成即 done，不把“零写回/verify 只登记资产”判成 no_output。
+	// no_output 是 BLADE 增强层的重派口径；ARTEX 没有它，保留会让 planner 反复重派。
+	if classic {
+		return "done"
 	}
 	// 本次没写回，但这条意图前几轮已经产出过 → 仍是 done（续跑不能抹掉前段成果）。
 	if wrote.Total() == 0 && !prior.Any {

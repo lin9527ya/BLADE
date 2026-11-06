@@ -49,7 +49,9 @@ func newSupervisorTestEngine(t *testing.T) (*Engine, *Task) {
 	}
 	tid, _ := strconv.ParseInt(task.ID, 10, 64)
 	t.Cleanup(func() { m.pg.DeleteTask(tid) })
-	return NewEngine(m), task
+	e := NewEngine(m)
+	e.SetConstraintResolver(allConstraints)
+	return e, task
 }
 
 // 审核员判定偏离 → 通过 steer 通道下发纠偏（来源必须是审核员，不是 planner/人），

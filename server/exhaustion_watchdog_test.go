@@ -24,6 +24,7 @@ func TestReviewExhaustionGatesPause(t *testing.T) {
 	tid, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer m.pg.DeleteTask(tid)
 	e := NewEngine(m)
+	e.SetConstraintResolver(allConstraints)
 
 	calls := 0
 	e.SetExhaustionReviewer(func(_ context.Context, claim agent.ExhaustionClaim) (agent.ExhaustionVerdict, error) {
@@ -70,6 +71,7 @@ func TestReviewExhaustionFailsOpenTowardContinuing(t *testing.T) {
 	tid, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer m.pg.DeleteTask(tid)
 	e := NewEngine(m)
+	e.SetConstraintResolver(allConstraints)
 	e.SetExhaustionReviewer(func(context.Context, agent.ExhaustionClaim) (agent.ExhaustionVerdict, error) {
 		return agent.ExhaustionVerdict{}, errors.New("model unavailable")
 	})
@@ -92,6 +94,7 @@ func TestReviewExhaustionCapsRejections(t *testing.T) {
 	tid, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer m.pg.DeleteTask(tid)
 	e := NewEngine(m)
+	e.SetConstraintResolver(allConstraints)
 	e.SetExhaustionReviewer(func(context.Context, agent.ExhaustionClaim) (agent.ExhaustionVerdict, error) {
 		return agent.ExhaustionVerdict{Accurate: false, Reason: "证据不足"}, nil
 	})

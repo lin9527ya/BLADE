@@ -337,11 +337,23 @@ const (
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
 	settingCompletionGate      = "completion_gate"
-	settingWebSearchOn         = "web_search_enabled"
-	settingWebSearchBackend    = "web_search_backend"
-	settingBraveKey            = "brave_search_api_key"
-	settingTavilyKey           = "tavily_search_api_key"
-	settingWebSearchProxy      = "web_search_proxy"
+	// 探索约束分组（P0）：经典模式默认全关，增强模式可逐组打开。
+	// profile 只是预设：classic=全关、enhanced=全开、custom=按下面的 group 键。
+	settingConstraintProfile       = "exploration_constraints_profile"
+	settingConstraintOpening       = "constraint_opening"
+	settingConstraintDispatch      = "constraint_dispatch"
+	settingConstraintBreadth       = "constraint_breadth"
+	settingConstraintLedger        = "constraint_ledger"
+	settingConstraintReviewEndgame = "constraint_review_endgame"
+	settingConstraintCompletion    = "constraint_completion"
+	settingConstraintExhaustion    = "constraint_exhaustion"
+	settingConstraintSupervisor    = "constraint_supervisor"
+	settingConstraintDepth         = "constraint_depth"
+	settingWebSearchOn             = "web_search_enabled"
+	settingWebSearchBackend        = "web_search_backend"
+	settingBraveKey                = "brave_search_api_key"
+	settingTavilyKey               = "tavily_search_api_key"
+	settingWebSearchProxy          = "web_search_proxy"
 	// settingGlobalProxy is the legacy single global egress proxy (first pool
 	// entry). settingGlobalProxyPool is the real config: newline-separated list.
 	// Distinct from web_search_proxy (search backend only) and per-profile LLM proxy.
@@ -778,6 +790,76 @@ func (m *Manager) SetLLMRecordEnabled(on bool) error {
 	m.llmRecOn = on
 	m.mu.Unlock()
 	return nil
+}
+
+// ConstraintGroups 是探索约束的稳定分组名（前端/API/agent resolver 共用）。
+var ConstraintGroups = []string{
+	"opening", "dispatch", "breadth", "ledger", "review_endgame",
+	"completion", "exhaustion", "supervisor", "depth",
+}
+
+// NormalizeConstraintProfile canonicalizes the preset name. Unknown/empty → classic,
+// so a bad value never silently turns the enhancement layer on.
+func NormalizeConstraintProfile(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "enhanced":
+		return "enhanced"
+	case "custom":
+		return "custom"
+	default:
+		return "classic"
+	}
+}
+
+// ExplorationConstraintsProfile returns the current preset (classic by default).
+func (m *Manager) ExplorationConstraintsProfile() string {
+	v, _, err := m.pg.GetSetting(settingConstraintProfile)
+	if err != nil {
+		return "classic"
+	}
+	return NormalizeConstraintProfile(v)
+}
+
+// ConstraintEnabled reports whether one exploration-constraint group is on.
+// profile=classic → all off; enhanced → all on; custom → read the per-group key
+// (missing/unparseable → false, i.e. classic behavior).
+func (m *Manager) ConstraintEnabled(group string) bool {
+	return constraintGroupEnabled(m.pg, group)
+}
+
+// constraintGroupEnabled 是纯 DB 版本：assembly 的工具装配阶段只有 *db.DB，
+// 没有 Manager；两处共用同一套 classic/enhanced/custom 解析。
+func constraintGroupEnabled(pg *pgdb.DB, group string) bool {
+	v, _, _ := pg.GetSetting(settingConstraintProfile)
+	switch NormalizeConstraintProfile(v) {
+	case "classic":
+		return false
+	case "enhanced":
+		return true
+	}
+	switch group {
+	case "opening", "dispatch", "breadth", "ledger", "review_endgame",
+		"completion", "exhaustion", "supervisor", "depth":
+		return pg.GetBool("constraint_"+group, false)
+	}
+	return false
+}
+
+// SetConstraintProfilePreset writes the preset and, for classic/enhanced, all group
+// values in one transaction. custom leaves the individual switches untouched.
+func (m *Manager) SetConstraintProfilePreset(profile string) error {
+	profile = NormalizeConstraintProfile(profile)
+	pending := map[string]string{settingConstraintProfile: profile}
+	if profile != "custom" {
+		val := "false"
+		if profile == "enhanced" {
+			val = "true"
+		}
+		for _, g := range ConstraintGroups {
+			pending["constraint_"+g] = val
+		}
+	}
+	return m.pg.SetSettings(pending)
 }
 
 // NoaCompactionEnabled reports whether the experimental noa context-compression

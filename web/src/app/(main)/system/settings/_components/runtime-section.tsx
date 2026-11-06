@@ -2,7 +2,7 @@
 
 import { CpuIcon, GaugeIcon, ShieldCheckIcon } from "lucide-react";
 
-import { Field, Section, SubBlock } from "@/components/page-sections";
+import { Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -56,10 +56,59 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     setLogLevel,
     savingLogLevel,
     saveLogLevel,
+    constraintProfile,
+    constraintGroups,
+    savingConstraints,
+    saveConstraints,
   } = s;
 
   return (
     <Section title="执行与并发" hint="改完对之后启动的任务与之后提交的长任务执行生效（运行中的任务不受影响）。">
+      <SubBlock title="探索约束" icon={<GaugeIcon className="size-4 text-muted-foreground" />}>
+        <Field
+          label="预设"
+          htmlFor="constraint-profile"
+          hint="经典：全部关闭（接近原版行为，默认）。增强：全部开启。自定义：逐组选择；单独拨动任一组会自动切到自定义。"
+        >
+          <Select
+            value={constraintProfile}
+            onValueChange={(v) => saveConstraints({ profile: v as "classic" | "enhanced" | "custom" })}
+            disabled={!loaded || savingConstraints}
+          >
+            <SelectTrigger id="constraint-profile" className="w-48">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="classic">经典（约束关）</SelectItem>
+                <SelectItem value="enhanced">增强（约束全开）</SelectItem>
+                <SelectItem value="custom">自定义</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </Field>
+        {[
+          ["opening", "开局摸底", "开局探测、粗粒度硬拒与 record_probe_fact 证据门。"],
+          ["dispatch", "派单与补位", "槽位补满、空闲补派、空转暂停、队列背压、防打转、每轮意图上限。"],
+          ["breadth", "广度与横向", "广度债、横向推进纪律、scope_surface。"],
+          ["ledger", "探索/通路台账", "ledger/chain 提示、coverage_matrix、台账工具与态势字段。"],
+          ["review_endgame", "复盘与收官期", "强制复盘轮、复盘 3 条上限、升级阶梯、收官期禁扩面。"],
+          ["completion", "收官审计", "prove_goal 的覆盖/通路/线索/证据缺口审计。"],
+          ["exhaustion", "穷尽复核", "mark_strategy_exhausted 六门与独立复核员。"],
+          ["supervisor", "执行审核员", "定期抽查 worker 并用 steer 纠偏（额外 LLM 调用）。"],
+          ["depth", "深度与线索", "否定结论变体门槛、线索写回/分诊与 leads 态势。"],
+        ].map(([key, label, hint]) => (
+          <SwitchRow
+            key={key}
+            id={`constraint-${key}`}
+            label={label}
+            hint={hint}
+            checked={!!constraintGroups[key]}
+            disabled={!loaded || savingConstraints}
+            onChange={(v) => saveConstraints({ group: key, value: v })}
+          />
+        ))}
+      </SubBlock>
       <SubBlock title="日志级别" icon={<CpuIcon className="size-4 text-muted-foreground" />}>
         <Field
           label="最低级别"
