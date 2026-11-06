@@ -32,6 +32,10 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     setCompletionGate,
     savingCompletionGate,
     saveCompletionGate,
+    boundedView,
+    setBoundedView,
+    savingBoundedView,
+    saveBoundedView,
     execCPU,
     setExecCPU,
     execMem,
@@ -164,6 +168,33 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               onChange={(e) => setTokenBudget(e.target.value)}
             />
             <Button type="button" onClick={saveTokenBudget} disabled={!loaded || savingBudget}>
+              保存
+            </Button>
+          </div>
+        </Field>
+      </SubBlock>
+
+      <SubBlock title="态势视图" icon={<GaugeIcon className="size-4 text-muted-foreground" />}>
+        <Field
+          label="有界黑板视图"
+          htmlFor="bounded-view"
+          hint={
+            <>
+              开启时 planner 每轮只预取窗口化的态势（totals 真实、列表有上限，省 token），需要更多细节时由模型自己
+              <b> graph_overview(detail=true) / list_facts</b> 翻页；关闭后每轮预取完整态势，<b>上下文更大但不再裁剪</b>。
+              只想让大模型自己决定看多少时，可以关掉它。
+            </>
+          }
+        >
+          <div className="flex items-center gap-3">
+            <Switch
+              id="bounded-view"
+              checked={boundedView}
+              disabled={!loaded || savingBoundedView}
+              onCheckedChange={setBoundedView}
+            />
+            <Button size="sm" onClick={() => void saveBoundedView()} disabled={savingBoundedView || !loaded}>
+              {savingBoundedView ? <Spinner data-icon="inline-start" /> : null}
               保存
             </Button>
           </div>

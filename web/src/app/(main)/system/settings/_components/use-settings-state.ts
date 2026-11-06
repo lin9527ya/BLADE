@@ -116,6 +116,9 @@ export function useSettingsState() {
   // 收官审计语气：目标达成后是否要求"探索充分"（block 默认 / notice / off）。
   const [completionGate, setCompletionGate] = React.useState<"block" | "notice" | "off">("block");
   const [savingCompletionGate, setSavingCompletionGate] = React.useState(false);
+  // 有界黑板视图：默认裁剪态势省 token；关掉后 planner 每轮预取完整态势。
+  const [boundedView, setBoundedView] = React.useState(true);
+  const [savingBoundedView, setSavingBoundedView] = React.useState(false);
   // P24 执行资源限额与外部 MCP 守卫（0 = 不限；保存即对之后提交的执行/调用生效）。
   const [execCPU, setExecCPU] = React.useState("1800");
   const [execMem, setExecMem] = React.useState("0");
@@ -225,6 +228,7 @@ export function useSettingsState() {
     setSupervisorInterval(String(s.supervisor_interval_seconds ?? 180));
     setTokenBudget(String(s.task_token_budget ?? 0));
     setCompletionGate(s.completion_gate === "notice" || s.completion_gate === "off" ? s.completion_gate : "block");
+    setBoundedView(s.planner_bounded_view !== false);
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
@@ -460,6 +464,18 @@ export function useSettingsState() {
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingSupervisor(false));
+  };
+
+  const saveBoundedView = () => {
+    setSavingBoundedView(true);
+    api
+      .setSettings({ planner_bounded_view: boundedView })
+      .then((s) => {
+        apply(s);
+        toast.success(boundedView ? "已开启有界黑板视图（省 token）" : "已关闭有界视图：planner 每轮预取完整态势");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingBoundedView(false));
   };
 
   const saveCompletionGate = () => {
@@ -1172,6 +1188,10 @@ export function useSettingsState() {
     setCompletionGate,
     savingCompletionGate,
     saveCompletionGate,
+    boundedView,
+    setBoundedView,
+    savingBoundedView,
+    saveBoundedView,
     execCPU,
     setExecCPU,
     execMem,

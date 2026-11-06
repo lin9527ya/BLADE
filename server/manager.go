@@ -337,6 +337,7 @@ const (
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
 	settingCompletionGate      = "completion_gate"
+	settingPlannerBoundedView  = "planner_bounded_view"
 	// 探索约束分组（P0）：经典模式默认全关，增强模式可逐组打开。
 	// profile 只是预设：classic=全关、enhanced=全开、custom=按下面的 group 键。
 	settingConstraintProfile       = "exploration_constraints_profile"

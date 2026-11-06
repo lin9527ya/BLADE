@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **有界黑板视图开关**（系统设置 →「执行与并发 → 态势视图」）：默认开启，planner 每轮
+  只预取窗口化态势（省 token）；关闭后每轮预取完整态势，`graph_overview` 的默认返回也
+  变成全量（`detail=true` 行为不变）。对应设置键 `planner_bounded_view`，每轮现读，
+  改完对下一轮规划生效。
+
+
 ### 修复
 
 - **兼容网关的输入 / 缓存计量**（Norma v0.5.10）：官方 Anthropic 在 `message_start`

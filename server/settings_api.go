@@ -141,6 +141,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":     s.taskTokenBudget(),
 		"completion_gate":       s.completionGateMode(),
+		"planner_bounded_view":  s.plannerBoundedView(),
 		// 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
 		"exploration_constraints_profile": s.m.ExplorationConstraintsProfile(),
 		"constraint_opening":              s.m.ConstraintEnabled("opening"),
@@ -310,7 +311,8 @@ type settingsRequest struct {
 	OpsecNoise          *string `json:"opsec_noise_level"`
 	AgentAutoRetest     *bool   `json:"agent_auto_retest"`
 	TaskTokenBudget     *int64  `json:"task_token_budget"`
-	CompletionGate      *string `json:"completion_gate"` // block|notice|off
+	CompletionGate      *string `json:"completion_gate"`      // block|notice|off
+	PlannerBoundedView  *bool   `json:"planner_bounded_view"` // 默认态势是否裁剪为有界视图
 	// 探索约束分组：profile 预设 + 9 个逐组开关。预设写入时批量落 group 值；
 	// 单独提交 group 值时自动切到 custom。
 	ConstraintProfile       *string `json:"exploration_constraints_profile"`
@@ -754,6 +756,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			v = 0
 		}
 		pending[settingTokenBudget] = strconv.FormatInt(v, 10)
+	}
+	if req.PlannerBoundedView != nil {
+		pending[settingPlannerBoundedView] = strconv.FormatBool(*req.PlannerBoundedView)
 	}
 	if req.CompletionGate != nil {
 		mode := strings.ToLower(strings.TrimSpace(*req.CompletionGate))

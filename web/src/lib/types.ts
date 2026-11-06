@@ -1915,6 +1915,7 @@ export interface Settings {
   // 100% 时任务进入收尾(停派新意图 → drain → 终局报告)。0 或空 = 关闭。
   task_token_budget?: number;
   completion_gate?: "block" | "notice" | "off";
+  planner_bounded_view?: boolean;
   // 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
   task_concurrency_enabled?: boolean; // 默认 false
   task_concurrency_limit?: number; // 开启后默认 5

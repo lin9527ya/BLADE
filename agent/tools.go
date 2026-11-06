@@ -177,6 +177,9 @@ type ToolSet struct {
 	// completionGate 是收官审计的语气（block/notice/off），由 server 注入、每轮现读。
 	// nil = off（agent 单测/无 server 上下文时保持旧行为）。
 	completionGate func() string
+	// boundedView 决定 graph_overview/planner 预取默认走有界黑板视图还是完整态势。
+	// nil = true（保持 0.9.2 默认）；server 注入设置项，每轮现读。
+	boundedView func() bool
 	// completionBlocked 是"审计拒收了一次"的通知（server 用来累计指标）。nil = 不记。
 	completionBlocked func()
 	// forceReview 让下一轮强制复盘（收官审计拒收后：先补空白再重试）。nil = 不支持。
@@ -403,6 +406,11 @@ func (t *ToolSet) SetTaskClock(tc TaskClock) { t.clock = tc }
 
 // SetCompletionGate 注入收官审计语气：block（默认）/ notice / off。nil 或空 = off。
 func (t *ToolSet) SetCompletionGate(fn func() string) { t.completionGate = fn }
+
+// SetBoundedView 注入"默认态势是否裁剪为有界视图"的 resolver。nil = 有界（默认）。
+func (t *ToolSet) SetBoundedView(fn func() bool) { t.boundedView = fn }
+
+func (t *ToolSet) useBoundedView() bool { return t.boundedView == nil || t.boundedView() }
 
 // SetCompletionBlocked 注入"审计拒收"的回调（指标用；nil = 不记）。
 func (t *ToolSet) SetCompletionBlocked(fn func()) { t.completionBlocked = fn }
@@ -784,6 +792,9 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 			_ = json.Unmarshal(raw, &a)
 			if a.Detail {
 				return jsonResult(t.graphOverviewData())
+			}
+			if !t.useBoundedView() {
+				return jsonResult(t.graphOverviewData()) // 关闭有界视图：默认即全量
 			}
 			return jsonResult(t.blackboardViewData(a.After, a.Limit))
 		})

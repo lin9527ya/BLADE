@@ -96,8 +96,9 @@ type Planner struct {
 	// completionGate 是收官审计的语气 resolver（block/notice/off；nil = off）。
 	completionGate    func() string
 	completionBlocked func()
-	maxTokensFn       func() int // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor         *Compactor // cold-node compaction (§7); nil = disabled
+	boundedView       func() bool // nil = 有界视图（默认）
+	maxTokensFn       func() int  // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor         *Compactor  // cold-node compaction (§7); nil = disabled
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
@@ -232,6 +233,13 @@ func (p *Planner) SetCompletionGate(fn func() string) { p.completionGate = fn }
 
 // SetCompletionBlocked wires the "audit rejected a prove_goal" callback (metrics).
 func (p *Planner) SetCompletionBlocked(fn func()) { p.completionBlocked = fn }
+
+// SetBoundedView wires the resolver deciding whether the pre-fetched situation is
+// the bounded blackboard view (default) or the full graph_overview payload.
+// Read per round so the setting takes effect without rebuilding the planner.
+func (p *Planner) SetBoundedView(fn func() bool) { p.boundedView = fn }
+
+func (p *Planner) useBoundedView() bool { return p.boundedView == nil || p.boundedView() }
 
 // requestReview 让下一轮成为复盘轮（收官审计拒收后由 prove_goal 触发）。
 func (p *Planner) requestReview() { p.forceReview = true }
@@ -982,6 +990,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.SetTaskClock(taskClockFrom(ctx))
 		t.SetCompletionGate(p.completionGate)
 		t.SetCompletionBlocked(p.completionBlocked)
+		t.SetBoundedView(p.boundedView)
 		t.SetForceReview(p.requestReview)
 		t.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
@@ -1011,7 +1020,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
-	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.blackboardViewData(0, 20))
+	situation := ""
+	if p.useBoundedView() {
+		situation = renderGraphOverview(tsx.blackboardViewData(0, 20))
+	} else {
+		situation = renderGraphOverview(tsx.graphOverviewData()) // 有界视图关闭：预取完整态势
+	}
+	situational := renderTriggers(ts, triggers) + situation
 	// 穷尽复核反馈：上一轮 planner 声明穷尽、但复核员判定证据不足。必须放进本轮输入，
 	// 否则模型会拿着同一个结论再声明一次（它并不知道有人否过它）。
 	if note := p.takeExhaustionNote(); note != "" {

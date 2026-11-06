@@ -600,6 +600,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
 	pl.SetCompletionGate(s.completionGateMode)                                    // 收官审计语气(block/notice/off)
 	pl.SetCompletionBlocked(s.engine.NoteCompletionBlock)                         // 指标：审计拒收次数
+	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界视图 / 全量
 	pl.SetExecService(s.m.Executions())                                           // P13 长任务托管执行(planner 也能起/查/停)
 	pl.SetPolicyResolver(s.policyResolver(tidOfTask(t)))                          // P20 探索策略(意图门 + 提示词段 + 停摆通告)
 	pl.SetWorkersResolver(func() int { return s.engine.TaskWorkers(t.ID) })       // 队列背压：按本任务启动时的 worker 池快照
