@@ -773,7 +773,7 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 		obj(map[string]any{
 			"detail": map[string]any{"type": "boolean", "description": "true=完整态势；默认 false=有界黑板视图"},
 			"after":  intp("事件游标：只返回 id>after 的节点（用上次 blackboard.next_cursor）"),
-			"limit":  intp("事件窗口 1..100，默认 40"),
+			"limit":  intp("事件窗口 1..100，默认 20"),
 		}),
 		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -794,7 +794,7 @@ func (t *ToolSet) blackboardView() actool.CoreTool {
 		"有界黑板视图：真实总数、活动意图（含 contract）、最近知识、路线聚合与增量事件。窗口不是全量；更早的详情用 graph_overview(detail=true) / list_facts / list_worker_traces 翻页。",
 		obj(map[string]any{
 			"after": intp("事件游标：只返回 id>after 的节点（用上次 blackboard.next_cursor）"),
-			"limit": intp("事件窗口 1..100，默认 40"),
+			"limit": intp("事件窗口 1..100，默认 20"),
 		}),
 		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -970,7 +970,7 @@ func (t *ToolSet) blackboardViewData(after int64, limit int) map[string]any {
 		after = 0
 	}
 	if limit <= 0 {
-		limit = 40
+		limit = 20
 	}
 	if limit > 100 {
 		limit = 100
@@ -1057,7 +1057,7 @@ func (t *ToolSet) blackboardViewData(after int64, limit int) map[string]any {
 			m := compactNode(n)
 			m["kind"] = n.Kind
 			if s, ok := m["summary"].(string); ok {
-				m["summary"] = clipLine(s, 160)
+				m["summary"] = clipLine(s, 80)
 			}
 			events = append(events, m)
 		}

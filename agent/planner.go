@@ -1011,7 +1011,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
-	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.blackboardViewData(0, 40))
+	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.blackboardViewData(0, 20))
 	// 穷尽复核反馈：上一轮 planner 声明穷尽、但复核员判定证据不足。必须放进本轮输入，
 	// 否则模型会拿着同一个结论再声明一次（它并不知道有人否过它）。
 	if note := p.takeExhaustionNote(); note != "" {
