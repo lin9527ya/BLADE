@@ -11,9 +11,6 @@ func dropPlannerConstraintTools(pg *db.DB, out []actool.CoreTool) []actool.CoreT
 	if !constraintGroupEnabled(pg, "opening") {
 		out = dropToolByName(out, "record_probe_fact")
 	}
-	if !constraintGroupEnabled(pg, "dispatch") {
-		// dispatch 关闭只影响硬门，不单独删工具；留空便于以后扩展。
-	}
 	if !constraintGroupEnabled(pg, "ledger") {
 		out = dropToolByName(out, "exploration_ledger", "chain_detail", "dismiss_coverage", "coverage_matrix")
 	}
