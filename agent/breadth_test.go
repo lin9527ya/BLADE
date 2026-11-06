@@ -135,7 +135,7 @@ func TestAddIntentSingleBreadthWarningKeepsPrefix(t *testing.T) {
 func TestPlannerPromptBreadthContract(t *testing.T) {
 	p := plannerSystem("g", "/d", "/w", "")
 	for _, needle := range []string{
-		"广度保底与深度并行", "breadth.debt", "assets_total", "need_asset_discovery",
+		"breadth.debt > 0 时，本轮新增意图至少 1 条", "breadth.debt", "assets_total", "need_asset_discovery",
 		"no_output", "asset_ids", "risk_area", "coverage_matrix",
 	} {
 		if !strings.Contains(p, needle) {

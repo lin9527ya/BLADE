@@ -17,8 +17,8 @@ func TestPlannerDomainTemplatesKeepSkeleton(t *testing.T) {
 		lines := strings.Split(body, "\n")
 		i := 0
 		for _, want := range base {
-			if strings.TrimSpace(want) == "" {
-				continue
+			if strings.TrimSpace(want) == "" || strings.HasPrefix(strings.TrimSpace(want), "<!--DOMAIN:") {
+				continue // 组合标记在落库正文里会被替换成领域片段
 			}
 			for i < len(lines) && lines[i] != want {
 				i++
@@ -63,10 +63,11 @@ func TestPlannerDomainSections(t *testing.T) {
 		t.Fatalf("领域模板数量 = %d，期望 %d", len(seeds), len(wantDomains))
 	}
 	// 骨架里 BLADE 独有的机制，任何一套都不能改写掉。
+	// 组合后的正文共享同一份骨架：这些锚点必须每一套都在（原有机制段落已移到
+	// 代码持有块，按开关注入，不再由可编辑正文重复）。
 	skeletonMechanisms := []string{
-		"intent_queue", "depends_on", "breadth.debt", "kind（完成口径）",
-		"matching_playbooks", "detection_hotspots", "tunnels", "loot_upload",
-		"outstanding", "no_output",
+		"读态势", "决策：这一轮派不派、派什么", "写意图（add_intent）",
+		"判目标（prove_goal）", "depends_on", "asset_ids", "parent_ids",
 		// 云上模板特有：云侧数据必须 ingest 进图才对规划层可见
 	}
 	// 云上渗透额外钉住：它依赖的是 BLADE 真实的云能力（ingest_cloud_data 落图 +
