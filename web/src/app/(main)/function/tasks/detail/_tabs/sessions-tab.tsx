@@ -98,6 +98,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     controlWorker,
     sseLive,
     taskTokens,
+    liveTaskTokens,
     retrySession,
     loadOlderIntents,
     workerSessions,
@@ -254,23 +255,23 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 </span>
               )}
             </div>
-            {taskTokens && (
+            {liveTaskTokens && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-muted-foreground text-xs">
                     <span>任务总计</span>
                     <span>·</span>
                     <TokenMetrics
-                      input={taskTokens.input_tokens}
-                      cache={taskTokens.cache_read_tokens}
-                      output={taskTokens.output_tokens}
+                      input={liveTaskTokens.input_tokens}
+                      cache={liveTaskTokens.cache_read_tokens}
+                      output={liveTaskTokens.output_tokens}
                     />
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  输入 {taskTokens.input_tokens.toLocaleString()} · 输出 {taskTokens.output_tokens.toLocaleString()} ·
-                  缓存读取 {taskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
-                  {taskTokens.cache_write_tokens.toLocaleString()}
+                  输入 {liveTaskTokens.input_tokens.toLocaleString()} · 输出 {liveTaskTokens.output_tokens.toLocaleString()} ·
+                  缓存读取 {liveTaskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
+                  {liveTaskTokens.cache_write_tokens.toLocaleString()}
                 </TooltipContent>
               </Tooltip>
             )}

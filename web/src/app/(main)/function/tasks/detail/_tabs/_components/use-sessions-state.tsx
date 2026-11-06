@@ -1100,6 +1100,40 @@ export function useSessionsState(taskId: string) {
   );
 
   const activeTokens = tokenForSession(activeKey);
+  // 顶部「任务总计」来自后端已完成 result 行的轮询；非流式/长跑期间当前 run 的
+  // usage 累计帧还没落成 result，轮询值会滞后。把所有已知会话里“最后一条 result
+  // 之后的最新 usage”加回去，任务总计就能随 SSE 实时走，而不会和会话头部的
+  // 实时令牌数脱节。
+  const liveTaskTokens = React.useMemo(() => {
+    if (!taskTokens) return null;
+    let input = taskTokens.input_tokens;
+    let output = taskTokens.output_tokens;
+    let cacheRead = taskTokens.cache_read_tokens;
+    let cacheWrite = taskTokens.cache_write_tokens;
+    for (const st of Object.values(store)) {
+      let live: Activity | undefined;
+      for (let i = st.items.length - 1; i >= 0; i--) {
+        const item = st.items[i];
+        if (item.kind === "result") break;
+        if (item.kind === "usage") {
+          live = item;
+          break;
+        }
+      }
+      if (!live) continue;
+      input += live.input_tokens ?? 0;
+      output += live.output_tokens ?? 0;
+      cacheRead += live.cache_read_tokens ?? 0;
+      cacheWrite += live.cache_write_tokens ?? 0;
+    }
+    return {
+      ...taskTokens,
+      input_tokens: input,
+      output_tokens: output,
+      cache_read_tokens: cacheRead,
+      cache_write_tokens: cacheWrite,
+    };
+  }, [taskTokens, store]);
   const tokenTotal = {
     i: activeTokens.input_tokens,
     o: activeTokens.output_tokens,
@@ -1364,6 +1398,7 @@ export function useSessionsState(taskId: string) {
     sseLive,
     setSseLive,
     taskTokens,
+    liveTaskTokens,
     setTaskTokens,
     sessionTokens,
     setSessionTokens,
