@@ -4,51 +4,55 @@
 
 ## [Unreleased]
 
-### 变更
+## [0.9.3] - 2026-11-06
 
-- **planner 提示词重写（经典模式瘦身）**：可编辑正文 21.7KB → 4.8KB；增强纪律全部由代码
-  持有块按开关注入（经典装配 34.2KB → 17.2KB，增强 47.5KB → 30.5KB）。正文不再引用被裁剪
-  的字段（intent_queue / breadth / leads / ledger / chains），也不再把"硬底线/补满槽位"
-  写进经典模式；保留并压缩了影响正确性的语义规则——意图终态与重派口径（done/negative/
-  no_output/blocked/exhausted）、否定观察的 evidence/confidence 门槛、战果 outstanding、
-  可量化目标的验收核对、串行链拆链、按需取细节的工具口径。
-- **领域模板改为组合**：共享正文 + 5 段领域片段（视角/高价值事实/达成判据/方向侧重/禁忌），
-  落库仍是完整正文；每份约 25KB → 8.7–11.1KB，改骨架不再需要同步 7 份。
-- **启动迁移**：库里 planner 正文若仍等于任一历史内置正文（v0.7–v0.9 / 首版瘦身 v2 的
-  sha256）则追加一版 v3；用户编辑过的正文保留。旧正文与装配结果逐字备份在
-  `docs/prompts/planner/`（含 v2 与恢复步骤）。
+探索质量与计量正确性的一版：planner 提示词重写瘦身、有界视图可关、兼容网关的输入/缓存
+计量修复，并补齐 0.9.2 之后的意图契约与有界黑板视图。
 
+**行为变更（请留意）**
 
-### 新增
+- planner 可编辑正文由 21.7KB 重写为 4.8KB；增强纪律（开局摸底/补位/广度/台账/复盘/
+  收官/升级阶梯）全部由代码持有块按开关注入——经典模式装配 34.2KB → 17.2KB，增强
+  47.5KB → 30.5KB。正文保留影响正确性的语义规则（意图终态与重派口径、否定观察的
+  evidence 门槛、战果 outstanding、量化目标验收、串行链拆链、按需取细节）。
+- 首次启动会把**仍是历史内置正文**的 planner 正文迁移到 v3（按 sha256 识别 v0.7–v0.9
+  与首版瘦身 v2）；用户自己编辑过的正文不覆盖。领域模板每次启动刷新内置行正文。
+- 新增设置「执行与并发 → 态势视图 → 有界黑板视图」，默认开启（与 0.9.2 行为一致）；
+  关闭后 planner 每轮预取完整态势、`graph_overview` 无参也返回全量。
 
-- **有界黑板视图开关**（系统设置 →「执行与并发 → 态势视图」）：默认开启，planner 每轮
-  只预取窗口化态势（省 token）；关闭后每轮预取完整态势，`graph_overview` 的默认返回也
-  变成全量（`detail=true` 行为不变）。对应设置键 `planner_bounded_view`，每轮现读，
-  改完对下一轮规划生效。
+### 本次更新
 
+- **意图契约（软）**：`add_intent` 增加可选 `contract`（mechanism / route / produces /
+  acceptance / class / estimated_tokens / variant / change_evidence / recheck_of）。
+  显式给 `mechanism` 才参与方向去重：同目标 + 同资产 + 同机制 + 同 `variant` 直接返回已有
+  意图；要重开必须用 `variant + change_evidence` 说明材料变化。缺省完全沿用旧行为。
+- **有界黑板视图**：`graph_overview` 默认返回有界视图（真实 totals 与窗口分离、revision/
+  事件游标、路线聚合、活动意图契约），`detail=true` 回到完整态势；新增
+  `blackboard_view(after, limit)` 只看增量事件。planner 每轮预取改为有界视图。
+- **有界视图开关**：`planner_bounded_view`（设置页「态势视图」）可关闭，关闭后不再裁剪；
+  每轮现读，改完对下一轮规划生效。
+- **planner 提示词重写**：正文不再引用经典模式被裁掉的字段（intent_queue / breadth /
+  leads / ledger / chains），也不再把"硬底线/补满槽位"写进经典模式。
+- **领域模板改为组合**：共享正文 + 5 段领域片段（视角/高价值事实/达成判据/方向侧重/
+  禁忌），落库仍是完整正文；每份约 25KB → 8.7–11.1KB，改骨架不再需要同步 7 份。
+  旧正文与装配结果逐字备份在 `docs/prompts/planner/`（含 v2 与恢复步骤）。
+- **兼容网关的输入/缓存计量**（Norma v0.5.10）：官方 Anthropic 在 `message_start` 报输入
+  侧，部分兼容网关（opencode 等）start 全 0、真实输入只在 `message_delta`。此前只认
+  start，这类部署的 input/cache 恒为 0，会话页「入/缓/出/命中」因此缺失。现在 start 已报
+  输入时仍忽略 delta（不重复计数），start 全 0 时由 delta 补齐一次。
+- 测试修复：契约用例的 `risk_area` 改用词表内值（`recon` 是 class 标签，不是风险类）；
+  序号断言加空格边界，避免全局 id 到四位数时误命中。
 
-### 修复
+### 验证与限制
 
-- **兼容网关的输入 / 缓存计量**（Norma v0.5.10）：官方 Anthropic 在 `message_start`
-  报输入侧，部分兼容网关（opencode 等）start 全 0、真实输入只在 `message_delta`。
-  此前只认 start，这类部署的 `input` / `cache` 恒为 0，会话页「入 / 缓 / 出 / 命中」
-  因此缺失。现在：start 已报输入时仍忽略 delta（不重复计数）；start 全 0 时由 delta
-  补齐一次，后续 delta 不重复补。
-- 测试：契约用例的 `risk_area` 改用词表内值（`recon` 是 class 标签，不是风险类）；
-  序号断言加空格边界，避免全局 id 到四位数时把 `intent-2934` 误判成任务内序号。
+功能提交：`1a6866b`（意图契约/有界视图）、`3ce485d`（视图开关）、`ac54a60`（Norma 升级）、
+`c73e590`（提示词 v3 与迁移）。已在独立 PostgreSQL 测试库通过 agent / db / server 全量
+测试与 `-race`，`gofmt` / `go vet` / `staticcheck` 干净；前端 `tsc --noEmit`、43 项单测与
+静态构建通过；Linux amd64 本地编译通过。
 
-
-### 新增
-
-- **意图契约（P0，软）**：`add_intent` 增加可选 `contract`：
-  `mechanism / route / produces / acceptance / class / estimated_tokens / variant /
-  change_evidence / recheck_of`。显式给 `mechanism` 才参与方向去重：同目标 + 同资产 +
-  同机制 + 同 `variant` 直接返回已有意图；要重开必须用 `variant + change_evidence`
-  说明材料变化。缺省时完全沿用旧行为，`depends_on` 仍是串行链的唯一放行依据。
-- **有界黑板视图（P0）**：`graph_overview` 默认返回有界视图（真实 totals 与窗口分离、
-  revision/事件游标、路线聚合、活动意图契约），`detail=true` 回到完整态势；新增
-  `blackboard_view(after, limit)` 只看增量事件。planner 每轮预取改为有界视图，
-  折叠区/继承任务等大字段按需展开。
+验证范围限于上述检查：提示词效果未做真实任务集 A/B（尤其"精简版是否降低探索质量"）；
+关闭有界视图的 token 成本未量化；缓存命中率取决于网关是否上报
+`cache_read_input_tokens`（opencode 的 DeepSeek 端点目前回 0，属上游行为）。
 
 ## [0.9.2] - 2026-11-06
 
