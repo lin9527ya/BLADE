@@ -6,6 +6,7 @@ import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import { Card } from "@/components/ui/card";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { cn } from "@/lib/utils";
+import { cacheHitRate } from "@/lib/token-stats";
 
 import { dailyTrendConfig, fmtTokens } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
@@ -181,7 +182,7 @@ export function RowTokenCard({ s }: { s: ReturnType<typeof useDashboardState>["t
               <div className="flex items-center justify-between rounded-lg border bg-muted/20 px-3 py-2 text-[10px]">
                 <span className="text-muted-foreground">缓存命中率（命中 / 总输入）</span>
                 <span className={cn("font-semibold tabular-nums", hitPct > 50 ? "text-emerald-400" : "text-amber-400")}>
-                  {hitPct.toFixed(1)}%
+                  {cacheHitRate(displayedTokens.cacheRead, denominator)}
                 </span>
               </div>
             );

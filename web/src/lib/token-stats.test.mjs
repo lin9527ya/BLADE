@@ -15,3 +15,10 @@ test("没有输入时不伪造命中率", () => {
 test("全额命中显示 100.0%", () => {
   assert.equal(cacheHitRate(500, 500), "100.0%");
 });
+
+test("无效或不可能的缓存数据不伪造百分比", () => {
+  assert.equal(cacheHitRate(1, NaN), "—");
+  assert.equal(cacheHitRate(Infinity, 100), "—");
+  assert.equal(cacheHitRate(-1, 100), "—");
+  assert.equal(cacheHitRate(101, 100), "数据异常");
+});

@@ -111,7 +111,7 @@ import type {
   ScheduleFrequency,
   ScheduleTaskSpec,
   ScopeEnforcement,
-  SessionTokenUsage,
+  TokenStatsSnapshot,
   Settings,
   Severity,
   SkillCall,
@@ -1232,12 +1232,11 @@ export const api = {
     post<FindingDeepenResponse>(`/exploration/findings/${id}/deepen`, { description }),
   intents: (task?: string) => get<TaskNode[]>(`/exploration/intents${tq(task)}`).then(arr),
   tokenStats: (task?: string) =>
-    get<{ workers: TokenUsage[]; sessions: SessionTokenUsage[]; total: TokenTotal }>(
-      `/exploration/tokens${tq(task)}`,
-    ).then((r) => ({
+    get<TokenStatsSnapshot>(`/exploration/tokens${tq(task)}`).then((r) => ({
       workers: arr(r.workers),
       sessions: arr(r.sessions),
       total: r.total,
+      snapshot_cursor: r.snapshot_cursor,
     })),
   tokenDaily: (days = 30) => get<DailyTokenBucket[]>(`/tokens/daily?days=${days}`).then(arr),
   conversationTokens: () =>

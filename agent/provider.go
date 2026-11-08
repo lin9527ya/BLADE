@@ -390,9 +390,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 		capt.SetRequest(requestBodySnapshot(req))
 	}
 
+	traceCache := traceModelRequest(req)
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
 		return resp, err
+	}
+	if traceCache != 0 {
+		wrapCacheTraceResponse(req, resp, traceCache)
 	}
 	// Tee rather than read: a 200 is an SSE stream that must keep streaming. The
 	// 429 branch below reads through this wrapper, so its body lands in the

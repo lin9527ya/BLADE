@@ -111,3 +111,20 @@ git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
 - 收官审计默认 **block**（系统设置 →「执行与并发」→ 收官审计）：目标达成但有未豁免的
   覆盖缺口/未闭合通路/未闭合候选/未处理线索时，`prove_goal` 会被拒绝；`accept_completion_risk`
   写理由可放行，理由进报告数据缺项。`notice` 只提醒，`off` 恢复旧行为。
+
+## 七、缓存计量排障
+
+- 任务会话页从 `/api/exploration/tokens?task=<id>` 读取同一个数据库快照中的已完成合计、
+  `snapshot_cursor`、各会话最后的 `result` 边界与最新未结算 `live` usage。SSE 仅合并快照以外的
+  事件；不要把逐次 `llm_usage` 合计与整个 run 的累计 usage 再直接相加。
+- `入` 已包含缓存读/写，命中率 = 缓存读 / 入。没有输入样本显示 `—`，不是 0%；缓存读大于
+  输入表示计量数据异常，不应把它显示成超过 100% 的正常命中率。
+- 对 Planner 全部零命中的排查，可在服务环境里设置 `BLADE_LLM_CACHE_DEBUG=1`，之后按正常部署
+  流程重启（**不要另起一个连接同库的实例**）。默认关闭；不自动生成额外模型请求。
+  `[cache-trace]` 只输出 trace_id（关联同次请求/响应）、session、model、system/tools/messages 的长度与 SHA256、缓存断点位置、
+  `system_same/tools_same/shared_messages`，以及原始 usage 数值（含兼容网关的数值扩展字段）。
+  不输出 API key、请求/响应正文、目标内容；响应扫描有固定缓冲上限，不阻塞/改写 SSE。
+- 先比较同一 session 连续请求：system/tools 是否变化、断点是否存在；再比较
+  `message_start` 与 `message_delta` 的 input/cache。若 start 已报 input 而 cache 在 delta
+  才出现，SDK 的迟报字段兼容性仍需另修；不能仅凭界面的 0% 判定网关不支持缓存。
+- 排障结束移除该环境变量。历史缺失用量不能凭估算回填为“上游实测缓存”。

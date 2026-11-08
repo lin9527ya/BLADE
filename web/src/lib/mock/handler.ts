@@ -2179,7 +2179,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const selectedTask = task ? mockTasks.find((item) => item.id === task) : undefined;
     return {
       workers: D.tokenWorkers,
-      sessions: D.tokenSessions,
+      sessions: D.tokenSessions.map((s) => ({ ...s, last_result_seq: 0 })),
+      snapshot_cursor: 0,
       total: selectedTask?.tokens ?? D.tokenTotal,
     };
   }

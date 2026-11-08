@@ -12,13 +12,13 @@ import { useChatSendMode } from "@/lib/chat-send-mode";
 import { rememberInputHistory } from "@/lib/input-history";
 import { MOCK } from "@/lib/mock/enabled";
 import { capSessionStore } from "@/lib/session-cache";
+import { acceptTokenEvent, acceptTokenSnapshot, emptyTokenAccounting, projectTokenAccounting } from "@/lib/token-accounting";
 import type {
   Activity,
   ChatAttachment,
   IntentAsset,
   InterceptApprovalRow,
   Session,
-  SessionTokenUsage,
   TaskLLMResolution,
   TaskLLMResolutions,
   TaskNode,
@@ -230,8 +230,7 @@ export function useSessionsState(taskId: string) {
   // silently shown as "no messages".
   const [sseLive, setSseLive] = React.useState(false);
   // Whole-task token total (all agents), polled from the backend aggregate.
-  const [taskTokens, setTaskTokens] = React.useState<TokenTotal | null>(null);
-  const [sessionTokens, setSessionTokens] = React.useState<Record<string, SessionTokenUsage>>({});
+  const [tokenAccounting, setTokenAccounting] = React.useState(emptyTokenAccounting);
   const [llmResolutions, setLLMResolutions] = React.useState<TaskLLMResolutions | null>(null);
   // Pending intercept requests for this task — used to show warning icons on sessions.
   const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
@@ -400,8 +399,7 @@ export function useSessionsState(taskId: string) {
           .tokenStats(taskId)
           .then((r) => {
             if (!alive()) return;
-            setTaskTokens(r.total);
-            setSessionTokens(Object.fromEntries(r.sessions.map((item) => [item.session, item])));
+            setTokenAccounting((state) => acceptTokenSnapshot(state, r));
           })
           .catch((e) => {
             if (alive()) throw e;
@@ -489,8 +487,7 @@ export function useSessionsState(taskId: string) {
     setOlderIntentsHasMore(false);
     firstIntentsRef.current = []; // 别拿上个任务的首页快照去算 displaced
     setHasLoadedOlderIntentsPage(false);
-    setTaskTokens(null);
-    setSessionTokens({});
+    setTokenAccounting(emptyTokenAccounting());
     setLLMResolutions(null);
     setSseLive(false);
     setActiveId(MAIN_ID); // a stale worker id from the previous task must not leak in
@@ -612,6 +609,7 @@ export function useSessionsState(taskId: string) {
             if (key) loadSession(key);
           });
           es.onmessage = (e) => {
+            if (!alive) return;
             let a: Activity;
             try {
               a = JSON.parse(e.data) as Activity;
@@ -638,6 +636,9 @@ export function useSessionsState(taskId: string) {
                 });
             }
             const k = sessionKeyOf(a);
+            if (a.kind === "usage" || a.kind === "result") {
+              setTokenAccounting((state) => acceptTokenEvent(state, { ...a, session: k === "unknown" ? `worker:${a.worker}` : k, kind: a.kind as "usage" | "result" }));
+            }
             setStore((prev) => {
               const cur = prev[k] ?? emptyState();
               const activeK = activeKeyRef.current;
@@ -1074,66 +1075,18 @@ export function useSessionsState(taskId: string) {
   // Persisted result totals come from the backend's full activity history. Only
   // the latest unfinished usage frame is added client-side, so partial history
   // pages cannot undercount completed runs or double-count the active one.
+  // 快照与 SSE 按 seq 合并，与当前打开了哪些会话无关。
+  const liveAccounting = React.useMemo(() => projectTokenAccounting(tokenAccounting), [tokenAccounting]);
+  const taskTokens = tokenAccounting.snapshot?.total ?? null;
+  const sessionTokens = liveAccounting.sessions;
   const tokenForSession = React.useCallback(
-    (key: string): TokenTotal => {
-      const saved = sessionTokens[key];
-      const total: TokenTotal = {
-        input_tokens: saved?.input_tokens ?? 0,
-        output_tokens: saved?.output_tokens ?? 0,
-        cache_read_tokens: saved?.cache_read_tokens ?? 0,
-        cache_write_tokens: saved?.cache_write_tokens ?? 0,
-      };
-      const items = store[key]?.items ?? [];
-      for (let index = items.length - 1; index >= 0; index--) {
-        const item = items[index];
-        if (item.kind === "result") break;
-        if (item.kind !== "usage") continue;
-        total.input_tokens += item.input_tokens ?? 0;
-        total.output_tokens += item.output_tokens ?? 0;
-        total.cache_read_tokens += item.cache_read_tokens ?? 0;
-        total.cache_write_tokens += item.cache_write_tokens ?? 0;
-        break;
-      }
-      return total;
+    (key: string): TokenTotal => sessionTokens[key] ?? {
+      input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
     },
-    [sessionTokens, store],
+    [sessionTokens],
   );
-
   const activeTokens = tokenForSession(activeKey);
-  // 顶部「任务总计」来自后端已完成 result 行的轮询；非流式/长跑期间当前 run 的
-  // usage 累计帧还没落成 result，轮询值会滞后。把所有已知会话里“最后一条 result
-  // 之后的最新 usage”加回去，任务总计就能随 SSE 实时走，而不会和会话头部的
-  // 实时令牌数脱节。
-  const liveTaskTokens = React.useMemo(() => {
-    if (!taskTokens) return null;
-    let input = taskTokens.input_tokens;
-    let output = taskTokens.output_tokens;
-    let cacheRead = taskTokens.cache_read_tokens;
-    let cacheWrite = taskTokens.cache_write_tokens;
-    for (const st of Object.values(store)) {
-      let live: Activity | undefined;
-      for (let i = st.items.length - 1; i >= 0; i--) {
-        const item = st.items[i];
-        if (item.kind === "result") break;
-        if (item.kind === "usage") {
-          live = item;
-          break;
-        }
-      }
-      if (!live) continue;
-      input += live.input_tokens ?? 0;
-      output += live.output_tokens ?? 0;
-      cacheRead += live.cache_read_tokens ?? 0;
-      cacheWrite += live.cache_write_tokens ?? 0;
-    }
-    return {
-      ...taskTokens,
-      input_tokens: input,
-      output_tokens: output,
-      cache_read_tokens: cacheRead,
-      cache_write_tokens: cacheWrite,
-    };
-  }, [taskTokens, store]);
+  const liveTaskTokens = liveAccounting.total;
   const tokenTotal = {
     i: activeTokens.input_tokens,
     o: activeTokens.output_tokens,
@@ -1399,9 +1352,7 @@ export function useSessionsState(taskId: string) {
     setSseLive,
     taskTokens,
     liveTaskTokens,
-    setTaskTokens,
     sessionTokens,
-    setSessionTokens,
     llmResolutions,
     setLLMResolutions,
     pendingIntercepts,

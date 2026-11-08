@@ -1657,6 +1657,19 @@ export interface SessionTokenUsage {
   cache_write_tokens: number;
 }
 
+// 结果基线与未结算 run 的累计 usage 来自同一数据库快照。
+export interface SessionTokenSnapshot extends SessionTokenUsage {
+  last_result_seq: number;
+  live?: (TokenTotal & { seq: number }) | null;
+}
+
+export interface TokenStatsSnapshot {
+  workers: TokenUsage[];
+  sessions: SessionTokenSnapshot[];
+  total: TokenTotal;
+  snapshot_cursor: number;
+}
+
 export interface BatchControlItem {
   id: string;
   ok: boolean;
