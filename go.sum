@@ -53,6 +53,8 @@ github.com/lin9527ya/Norma v0.5.10 h1:d5cFPmcLVsydsxVdVO+GDy1U+69xL5Hne9M5cTXJrJ
 github.com/lin9527ya/Norma v0.5.10/go.mod h1:uf5HBOWZSf+a7rrXtx5Q3vkDVjxJNkygVI7mbhfF+Jg=
 github.com/lin9527ya/Norma v0.5.11 h1:AQdc3QbwxD+HmvUM2EoGg07Ie6wLGEKp770SADRcrsk=
 github.com/lin9527ya/Norma v0.5.11/go.mod h1:uf5HBOWZSf+a7rrXtx5Q3vkDVjxJNkygVI7mbhfF+Jg=
+github.com/lin9527ya/Norma v0.5.12 h1:ncyQRURg0KxYYZsbxwz6fPOtliVZifBVD51PjVpx97c=
+github.com/lin9527ya/Norma v0.5.12/go.mod h1:uf5HBOWZSf+a7rrXtx5Q3vkDVjxJNkygVI7mbhfF+Jg=
 github.com/lqqyt2423/go-mitmproxy v1.9.2 h1:+QTbDyUUaVRmEavPq0/eWzJ2K+K4JdL4ff91s/adnxk=
 github.com/lqqyt2423/go-mitmproxy v1.9.2/go.mod h1:6H5PR+nbVsiGQJC/Y98GHJItyFcmP/Z0txAgjhG2a80=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
