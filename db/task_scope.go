@@ -1175,6 +1175,15 @@ type AssetDepthGap struct {
 // 只统计具体资产（subdomain/app/endpoint/ip；root_domain 与 service 不计，理由同
 // breadth）。minAreas<=0 时用默认值 DefaultDepthAreas。
 func (s *ExplorationStore) DepthGaps(taskID int64, minAreas, limit int) ([]AssetDepthGap, int, error) {
+	return s.depthGaps(taskID, minAreas, limit, nil)
+}
+
+// DepthGapsWithWaivers 对审计应用精确豁免，豁免不冒充测试结果（DoneAreas 仍只含实测/越界结论）。
+func (s *ExplorationStore) DepthGapsWithWaivers(taskID int64, minAreas, limit int, waivers []CoverageWaiver) ([]AssetDepthGap, int, error) {
+	return s.depthGaps(taskID, minAreas, limit, waivers)
+}
+
+func (s *ExplorationStore) depthGaps(taskID int64, minAreas, limit int, waivers []CoverageWaiver) ([]AssetDepthGap, int, error) {
 	if minAreas <= 0 {
 		minAreas = DefaultDepthAreas
 	}
@@ -1228,13 +1237,19 @@ GROUP BY a.id, a.type, a.url, a.domain, a.ip, a.app_name`, roots, s.expID, taskI
 			seen[a] = true
 			g.DoneAreas = append(g.DoneAreas, a)
 		}
-		if len(seen) >= minAreas {
-			continue
-		}
-		for _, a := range RiskAreas {
-			if !seen[a] {
-				g.Missing = append(g.Missing, a)
+		handled := len(seen)
+		for _, area := range RiskAreas {
+			if seen[area] {
+				continue
 			}
+			if _, ok := matchCoverageWaiver(waivers, g.AssetID, area); ok {
+				handled++
+				continue
+			}
+			g.Missing = append(g.Missing, area)
+		}
+		if handled >= minAreas {
+			continue
 		}
 		out = append(out, g)
 	}

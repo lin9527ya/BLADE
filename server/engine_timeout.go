@@ -368,8 +368,9 @@ func directionReject(a db.Activity) bool {
 // settlePolicyStall 是"策略停摆"的收尾动作：先留痕再走与超时/预算共用的收尾时序，
 // 只是终态记 policy_blocked（"策略封死"与"超时"是两回事，改策略/加目标即可复活）。
 func (e *Engine) settlePolicyStall(ctx context.Context, t *Task) {
+	cfg := e.policyStallSettings()
 	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
-		Summary: fmt.Sprintf("探索策略内已无可行方向（近 %s 内被拒 ≥ %d 条且无新增意图），任务进入收尾", policyStallWindow, policyStallMinRejects)})
+		Summary: fmt.Sprintf("探索策略内已无可行方向（近 %s 内被拒 ≥ %d 条且无新增意图），任务进入收尾", cfg.window, cfg.minRejects)})
 	log.Printf("[policy] task %s 策略停摆，进入收尾时序", t.ID)
 	e.settleTask(ctx, t, "探索策略内已无可行方向", "policy_blocked")
 }
@@ -378,6 +379,7 @@ func (e *Engine) settlePolicyStall(ctx context.Context, t *Task) {
 // 无在跑执行或 run）、窗口内被拒达阈值且期间没有任何成功创建的意图。
 // 抽成方法便于验收直接驱动（不用等真跑满一个窗口）。
 func (e *Engine) policyStall(t *Task) bool {
+	cfg := e.policyStallSettings()
 	pgTask, err := e.m.pg.GetTask(parseIntDefault(t.ID))
 	if err != nil || pgTask == nil {
 		return false
@@ -414,7 +416,7 @@ func (e *Engine) policyStall(t *Task) bool {
 	if err != nil {
 		return false
 	}
-	cutoff := time.Now().Add(-policyStallWindow)
+	cutoff := time.Now().Add(-cfg.window)
 	recent := 0
 	oldest := time.Time{}
 	for _, r := range rejects {
@@ -429,14 +431,14 @@ func (e *Engine) policyStall(t *Task) bool {
 			oldest = r.CreatedAt
 		}
 	}
-	if recent < policyStallMinRejects {
+	if recent < cfg.minRejects {
 		return false
 	}
 	// 窗口起点之后成功创建过意图 → 探索仍在推进，只是偶尔被拒。
 	if last, err := t.Store.LastIntentCreatedAt(); err == nil && last != nil && last.After(cutoff) {
 		return false
 	}
-	return time.Since(oldest) >= policyStallGrace
+	return time.Since(oldest) >= cfg.grace
 }
 
 // settleTask runs the ordered settle sequence once (§4 steps ①–⑥).

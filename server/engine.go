@@ -211,16 +211,17 @@ type Engine struct {
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
-	settling         sync.Map     // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
-	deadline         sync.Map     // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
-	stamped          sync.Map     // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
-	inflight         sync.Map     // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
-	coordStarted     sync.Map     // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
-	budgetStage      sync.Map     // taskID -> string, token 预算提示已投递到的最高档(每档一次)
-	budgetAck        sync.Map     // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
-	endgameNotified  sync.Map     // taskID -> bool, 收官期入口已提醒过(每任务一次)
-	completionBlocks atomic.Int64 // 收官审计拒收 prove_goal 的累计次数（指标用）
-	execWatch        sync.Map     // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
+	settling         sync.Map          // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
+	deadline         sync.Map          // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
+	stamped          sync.Map          // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
+	inflight         sync.Map          // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
+	coordStarted     sync.Map          // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
+	budgetStage      sync.Map          // taskID -> string, token 预算提示已投递到的最高档(每档一次)
+	budgetAck        sync.Map          // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
+	endgameNotified  sync.Map          // taskID -> bool, 收官期入口已提醒过(每任务一次)
+	completionBlocks atomic.Int64      // 收官审计拒收 prove_goal 的累计次数（指标用）
+	stallPolicy      policyStallConfig // 启动前配置，之后只读；零值使用出厂参数
+	execWatch        sync.Map          // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
 	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
 	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
 	budgetPause func(*Task) error

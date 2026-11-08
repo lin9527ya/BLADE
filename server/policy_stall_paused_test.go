@@ -34,10 +34,8 @@ func TestPolicyStallSkipsPausedTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := NewEngine(m)
-	savedW, savedN, savedG := policyStallWindow, policyStallMinRejects, policyStallGrace
-	t.Cleanup(func() { policyStallWindow, policyStallMinRejects, policyStallGrace = savedW, savedN, savedG })
-	policyStallWindow, policyStallMinRejects, policyStallGrace = time.Minute, 3, 0
-	for i := 0; i < policyStallMinRejects; i++ {
+	e.stallPolicy = policyStallConfig{window: time.Minute, minRejects: 3, grace: 0}
+	for i := 0; i < e.stallPolicy.minRejects; i++ {
 		e.emitActivity(task, db.Activity{Worker: "planner", Kind: "policy_reject", Summary: "探索策略拒绝：本轮意图配额"})
 	}
 	if !e.policyStall(task) {
@@ -72,23 +70,21 @@ func TestPolicyStallIgnoresPacingRejects(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := NewEngine(m)
-	savedW, savedN, savedG := policyStallWindow, policyStallMinRejects, policyStallGrace
-	t.Cleanup(func() { policyStallWindow, policyStallMinRejects, policyStallGrace = savedW, savedN, savedG })
-	policyStallWindow, policyStallMinRejects, policyStallGrace = time.Minute, 3, 0
+	e.stallPolicy = policyStallConfig{window: time.Minute, minRejects: 3, grace: 0}
 
 	reject := func(item string, benign bool) {
 		meta, _ := json.Marshal(map[string]any{"policy_item": item, "benign": benign})
 		e.emitActivity(task, db.Activity{Worker: "system", Kind: "policy_reject",
 			Summary: "探索策略拒绝：" + item, Metadata: meta})
 	}
-	for i := 0; i < policyStallMinRejects; i++ {
+	for i := 0; i < e.stallPolicy.minRejects; i++ {
 		reject("pace:round", false)
 	}
 	reject("technique:bruteforce", true) // 否定语境放行，不是拒绝
 	if e.policyStall(task) {
 		t.Fatal("pace:* 与 benign 记录不该被判成策略停摆")
 	}
-	for i := 0; i < policyStallMinRejects; i++ {
+	for i := 0; i < e.stallPolicy.minRejects; i++ {
 		reject("technique:bruteforce", false) // 真正的方向禁用
 	}
 	if !e.policyStall(task) {

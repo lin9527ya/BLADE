@@ -97,3 +97,23 @@ export async function retryRequest<T>(
     }
   }
 }
+
+// 任务内每个历史请求有独立 owner；切任务时取消所有 owner。
+// 不能把每 key 的整数计数清零：旧任务 token=1 与新任务 token=1 会碰撞。
+export function createSessionRequests() {
+  const owners = new Map<string, ReturnType<typeof createLatestRequest>>();
+  return {
+    start(key: string) {
+      let owner = owners.get(key);
+      if (!owner) {
+        owner = createLatestRequest();
+        owners.set(key, owner);
+      }
+      return owner.start();
+    },
+    reset() {
+      for (const owner of owners.values()) owner.cancel();
+      owners.clear();
+    },
+  };
+}

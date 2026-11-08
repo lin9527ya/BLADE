@@ -1286,7 +1286,7 @@ export const api = {
   // snapshotCursor is the TASK-level max id at query time — open the task SSE at
   // since=snapshotCursor so history (id≤cursor) and the live tail (id>cursor) meet
   // gap-free. hasMore = still-older steps exist (drives scroll-up loading).
-  activityHistory: (task: string, session: string, before = 0, limit = 200) => {
+  activityHistory: (task: string, session: string, before = 0, limit = 200, signal?: AbortSignal) => {
     const q = new URLSearchParams({ session, limit: String(limit) });
     if (task) q.set("task", task);
     if (before > 0) q.set("before", String(before));
@@ -1297,7 +1297,7 @@ export const api = {
       has_more: boolean;
       // 整个会话的首步时间（与本次分页窗口无关）；缺省表示服务端没有可见行。
       first_activity?: string;
-    }>(`/exploration/activity/history?${q.toString()}`).then((r) => ({
+    }>(`/exploration/activity/history?${q.toString()}`, { signal }).then((r) => ({
       items: arr(r.items),
       snapshotCursor: r.snapshot_cursor ?? 0,
       earliestCursor: r.earliest_cursor ?? 0,

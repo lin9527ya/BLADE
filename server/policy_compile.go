@@ -28,18 +28,26 @@ import (
 // settingExplorationPolicy 是全局默认策略的 settings key。
 const settingExplorationPolicy = "exploration_policy"
 
-// 策略停摆判定（反空转）：窗口内被拒次数达到阈值且期间没有任何成功创建的意图 →
-// 认定"策略内已无可行方向"，让任务体面收尾（复用超时收尾时序 + policy_blocked 终态）。
-// 参数用 var 而非 const：验收要在测试里把窗口调小，驱动与生产完全同一条判定路径
-// （直接测一个"只有测试才走"的副本等于没测）。
-var (
-	policyStallWindow     = 10 * time.Minute
-	policyStallMinRejects = 3
-	policyStallGrace      = 2 * time.Minute
-	// 判定节流：结论依赖的是分钟级窗口，没必要跟着 2s 的截止时间轮询每次都查库
-	// （无策略的任务只需要这一次 GetTask 就返回 false）。
+// 策略停摆出厂参数是常量，测试使用自己的 Engine 配置，不修改正在运行的协调器共享值。
+const (
+	policyStallWindow        = 10 * time.Minute
+	policyStallMinRejects    = 3
+	policyStallGrace         = 2 * time.Minute
 	policyStallCheckInterval = 60 * time.Second
 )
+
+type policyStallConfig struct {
+	window     time.Duration
+	minRejects int
+	grace      time.Duration
+}
+
+func (e *Engine) policyStallSettings() policyStallConfig {
+	if e.stallPolicy.window > 0 && e.stallPolicy.minRejects > 0 {
+		return e.stallPolicy
+	}
+	return policyStallConfig{window: policyStallWindow, minRejects: policyStallMinRejects, grace: policyStallGrace}
+}
 
 // globalPolicy 读全局默认（含版本号）；解析失败回退出厂默认。
 func (s *Server) globalPolicy() (policy.Effective, int) {

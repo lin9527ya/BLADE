@@ -857,6 +857,10 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 	}
 	defer tx.Rollback()
 
+	if err := s.lockActivityOrder(tx); err != nil {
+		return out, err
+	}
+
 	// 锁定意图行确认存在(幂等:已删则 not found)。状态不校验——真删除对任何状态成立,
 	// running 的 worker 由调用方先停。
 	if err := tx.QueryRow(`SELECT 1 FROM exploration_nodes
@@ -2366,6 +2370,15 @@ func (s *ExplorationStore) Stats() (map[string]int, error) {
 
 // --- activity (poll by global id cursor) ---
 
+// 同一探索的 ID 必须按提交顺序分配，否则 MAX(id) 不是可靠的重放水位。
+// 所有活动写路径在取得序列 ID 前获取同一个事务锁；不同探索不互相阻塞。
+const activityOrderLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('blade.activity:' || $1::bigint::text, 0))`
+
+func (s *ExplorationStore) lockActivityOrder(tx *sql.Tx) error {
+	_, err := tx.Exec(activityOrderLockSQL, s.expID)
+	return err
+}
+
 // AppendActivity records one worker step and returns its id.
 func (s *ExplorationStore) AppendActivity(a Activity) (int64, error) {
 	metadata := a.Metadata
@@ -2374,8 +2387,9 @@ func (s *ExplorationStore) AppendActivity(a Activity) (int64, error) {
 	}
 	var id int64
 	err := s.db.QueryRow(`
+WITH activity_order AS MATERIALIZED (`+activityOrderLockSQL+`)
 INSERT INTO activity(exploration_id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, metadata, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no)
-VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16)
+SELECT $1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16 FROM activity_order
 RETURNING id`, s.expID, a.NodeID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool), utf8Clean(a.ToolUseID), a.IsError, utf8Clean(a.Summary), utf8Clean(a.Detail),
 		metadata, a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.MainSeg, a.SlotNo).Scan(&id)
 	return id, err

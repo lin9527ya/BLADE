@@ -452,32 +452,40 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// 就是 200 次查询 + 十万帧，订阅通道同时溢出并触发另一次全量重放。
 	// 超出上限直接结束流，让客户端带着新游标重连（而不是无限重放）。
 	const replayMaxFrames = 5000
-	replayed := 0
-	for {
-		items, cursor, err := t.Store.ActivityList(intentPtr, since, replayBatch)
-		if err != nil {
-			log.Printf("[activity/stream] task=%s replay since=%d: %v", t.ID, since, err)
-			return
-		}
-		for _, a := range items {
-			if !sendSSE(a) {
-				return
+	// ID 按数据库提交顺序分配，但各 goroutine 的 Publish 仍可能乱序。
+	// 广播只唤醒读取：从 since 按 ID 读取已提交记录，先到的 101 也会补出 100。
+	drain := func() bool {
+		replayed := 0
+		for {
+			items, cursor, err := t.Store.ActivityList(intentPtr, since, replayBatch)
+			if err != nil {
+				log.Printf("[activity/stream] task=%s replay since=%d: %v", t.ID, since, err)
+				return false
+			}
+			for _, a := range items {
+				if !sendSSE(a) {
+					return false
+				}
+			}
+			replayed += len(items)
+			if cursor > since {
+				since = cursor
+			}
+			if len(items) < replayBatch {
+				break
+			}
+			if replayed >= replayMaxFrames {
+				// 让客户端从当前游标重连：不丢数据，只是把一次长重放拆成多次短重放。
+				log.Printf("[activity/stream] task=%s 重放超过 %d 帧，结束本次流由客户端续传（since=%d）",
+					t.ID, replayMaxFrames, since)
+				_ = sseWrite(w, flusher, "event: resync\ndata: {}\n\n")
+				return false
 			}
 		}
-		replayed += len(items)
-		if cursor > since {
-			since = cursor
-		}
-		if len(items) < replayBatch {
-			break
-		}
-		if replayed >= replayMaxFrames {
-			// 让客户端从当前游标重连：不丢数据，只是把一次长重放拆成多次短重放。
-			log.Printf("[activity/stream] task=%s 重放超过 %d 帧，结束本次流由客户端续传（since=%d）",
-				t.ID, replayMaxFrames, since)
-			_ = sseWrite(w, flusher, "event: resync\ndata: {}\n\n")
-			return
-		}
+		return true
+	}
+	if !drain() {
+		return
 	}
 	if !sseWrite(w, flusher, "") {
 		return
@@ -510,8 +518,7 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 			if intentPtr != nil && (a.NodeID == nil || *a.NodeID != *intentPtr) {
 				continue // scoped session: only this intent's steps
 			}
-			since = a.ID
-			if !sendSSE(a) {
+			if !drain() {
 				return
 			}
 		case <-ping.C:

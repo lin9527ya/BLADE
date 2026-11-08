@@ -60,7 +60,7 @@ func (s *ExplorationStore) CoverageGapSummary(taskID int64) (CoverageGapSummary,
 			out.Failed = append(out.Failed, c)
 		}
 	}
-	if gaps, total, gerr := s.DepthGaps(taskID, DefaultDepthAreas, 8); gerr == nil {
+	if gaps, total, gerr := s.DepthGapsWithWaivers(taskID, DefaultDepthAreas, 8, waivers); gerr == nil {
 		out.ShallowTotal = total
 		out.ShallowSamples = gaps
 	}
@@ -75,6 +75,10 @@ func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions)
 	}
 	waived := map[string]bool{}
 	for _, w := range waivers {
+		// 指定了资产/风险类的 coverage waiver 只在对应格子折叠，不能跳过整任务审计。
+		if w.Scope == "coverage" && (w.AssetID != nil || strings.TrimSpace(w.RiskArea) != "") {
+			continue
+		}
 		waived[w.Scope] = true
 	}
 	var gaps []CompletionGap

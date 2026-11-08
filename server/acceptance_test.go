@@ -2012,9 +2012,9 @@ func accP20(t *testing.T, e *accEnv) {
 	// ⑦ 停摆收尾：策略内确实无路可走时（窗口内被拒达阈值 + 期间没有任何新意图 + 真的没活干），
 	// 不再无限唤醒 planner，而是以 policy_blocked 收尾。窗口/阈值临时调小，驱动的仍是生产
 	// 那条判定与收尾路径。
-	savedW, savedN, savedG := policyStallWindow, policyStallMinRejects, policyStallGrace
-	t.Cleanup(func() { policyStallWindow, policyStallMinRejects, policyStallGrace = savedW, savedN, savedG })
-	policyStallWindow, policyStallMinRejects, policyStallGrace = 2*time.Second, 3, 0
+	// 独立实例调用同一生产判定路径，不影响本验收其他任务的后台协调器。
+	stallEngine := NewEngine(e.m)
+	stallEngine.stallPolicy = policyStallConfig{window: 2 * time.Second, minRejects: 3, grace: 0}
 	// ⑤b 把策略清空了，这里重新装一条（停摆判定要求"有策略"——没策略的任务永远不因此收尾）。
 	rec = e.request(http.MethodPatch, "/api/tasks/"+task.ID+"/policy",
 		`{"override":{"techniques":["bruteforce"],"forbidden_writes":[],"max_intents_per_round":0,`+
@@ -2037,20 +2037,20 @@ func accP20(t *testing.T, e *accEnv) {
 	}
 	time.Sleep(2200 * time.Millisecond) // 让"最后一次成功创建意图"落到窗口之外
 	// （⑤c 建的那条 command 层意图已在上面被置 done，不会挡住停摆判定。）
-	for i := 0; i < policyStallMinRejects; i++ {
+	for i := 0; i < stallEngine.stallPolicy.minRejects; i++ {
 		if _, err := intentTool.Call(context.Background(),
 			json.RawMessage(`{"risk_area":"auth","summary":"继续用 hydra 爆破这个登录口"}`), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if !e.s.engine.policyStall(task) {
+	if !stallEngine.policyStall(task) {
 		t.Fatal("窗口内连续被拒且无新意图，应判定为策略停摆")
 	}
 	// 用已取消的 ctx 驱动正式收尾路径：终局 planner 轮直接返回（验收环境没有 LLM），
 	// 终态落 policy_blocked（不是 timeout——"策略封死"与"超时"必须能分清）。
 	cctx, cancel := context.WithCancel(e.ctx)
 	cancel()
-	e.s.engine.settlePolicyStall(cctx, task)
+	stallEngine.settlePolicyStall(cctx, task)
 	if got := e.m.TaskStatus(task.ID); got != "policy_blocked" {
 		t.Fatalf("策略停摆的终态应为 policy_blocked，实际 %q", got)
 	}

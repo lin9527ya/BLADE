@@ -730,11 +730,15 @@ func (s *Server) reseedPlannerPrompt() {
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
+	completed := false
 	defer func() {
+		if !completed {
+			return
+		}
 		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
 			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
 		}
-	}() // 无论成功与否只尝试一次
+	}() // 读取/保存失败不置旗标，下一次启动重试
 	a, err := s.m.pg.GetAgentByKey("planner")
 	if err != nil || a == nil {
 		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
@@ -745,19 +749,31 @@ func (s *Server) reseedPlannerPrompt() {
 	}
 	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
 	cur, curErr := s.m.pg.CurrentPrompt(a.ID)
-	if curErr == nil && cur == tmpl {
+	if curErr != nil {
+		log.Printf("[prompts] 读取 planner 正文失败，未重刷: %v", curErr)
 		return
 	}
-	// 只刷新仍带旧默认特征句的正文；已自定义且不含旧句的模板保留（广度纪律由
-	// plannerSystem 的代码持有块兜底，不依赖这次迁移）。
-	if curErr == nil && cur != "" && plannerPromptIsCustom(cur) {
+	if cur == tmpl {
+		completed = true
+		return
+	}
+	// 只刷新精确匹配历史内置正文的版本，保留任何自定义正文及其追加段。
+	// 判定与新 hash 迁移共用，不因用户保留旧术语而取得整份正文的所有权。
+	if plannerPromptIsCustom(cur) {
+		completed = true
 		log.Printf("[prompts] planner 提示词已是自定义版本，保留正文；广度纪律运行时注入")
 		return
 	}
-	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+	appendText, err := s.m.pg.CurrentPromptAppend(a.ID)
+	if err != nil {
+		log.Printf("[prompts] 读取 planner 追加段失败，未重刷: %v", err)
+		return
+	}
+	if _, err := s.m.pg.SavePromptWithAppend(a.ID, tmpl, appendText, "更新内置 planner 正文", "system"); err != nil {
 		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
 		return
 	}
+	completed = true
 	log.Printf("[prompts] planner 提示词已追加新默认版本(血缘必填 + 槽位利用率,一次性)")
 }
 
@@ -1374,27 +1390,7 @@ func (s *Server) seedAutoDefaultBindings() {
 	}
 }
 
-// plannerPromptIsCustom 判断库里的 planner 正文是否已被用户改成自定义版本。
-//
-// 判据是"不含任何出厂旧版特征句、也不含当前默认的特征句"。旧版本用一串否定条件
-// 平铺表达，后来加条件时 `&&` 与 `||` 混写让优先级出错（`a && b && !c || !d` 等价于
-// `(a && b && !c) || !d`），结果一份刚被刷成新默认的正文被判成"自定义"，此后再也
-// 刷不动。收成一个显式循环，加特征句时只改这个切片。
+// plannerPromptIsCustom 与新 hash 迁移共用精确判定；用户正文保留旧特征词仍然是自定义。
 func plannerPromptIsCustom(cur string) bool {
-	if strings.TrimSpace(cur) == "" {
-		return false
-	}
-	// 出厂正文的特征句（任一命中 = 仍是平台默认，可以整份刷新）。
-	stale := []string{
-		"深度优先于覆盖度",
-		"广度保底与深度并行",
-		"本方向由哪些上游节点综合得出（可选",
-		"槽位利用率",
-	}
-	for _, marker := range stale {
-		if strings.Contains(cur, marker) {
-			return false
-		}
-	}
-	return true
+	return !plannerPromptIsBuiltin(cur)
 }

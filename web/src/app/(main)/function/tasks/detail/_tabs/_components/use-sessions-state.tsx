@@ -12,6 +12,7 @@ import { useChatSendMode } from "@/lib/chat-send-mode";
 import { rememberInputHistory } from "@/lib/input-history";
 import { MOCK } from "@/lib/mock/enabled";
 import { capSessionStore } from "@/lib/session-cache";
+import { createSessionRequests } from "@/lib/request-lifecycle";
 import { acceptTokenEvent, acceptTokenSnapshot, emptyTokenAccounting, projectTokenAccounting } from "@/lib/token-accounting";
 import type {
   Activity,
@@ -243,10 +244,10 @@ export function useSessionsState(taskId: string) {
   const llmToastSeqRef = React.useRef<Set<number>>(new Set());
   const chatStatusRequestRef = React.useRef(0);
   const firstIntentsRef = React.useRef<TaskNode[]>([]);
-  // Per-key request token: a stale response for a key is ignored (guards fast
-  // latest/older interleaving). Writes are ALWAYS keyed, so a late response can only
-  // touch its own session cache — never the currently-viewed one (see §7.5).
-  const reqTokenRef = React.useRef<Record<string, number>>({});
+  // 每个历史请求各持有 owner；切任务时统一取消，迟到成功/失败/滚动回调都不能写入新任务。
+  // 不复用归零后的数字 token，以免 main:0 / plan 在不同任务之间碰撞。
+  const requestsRef = React.useRef(createSessionRequests());
+  React.useEffect(() => () => requestsRef.current.reset(), []);
   // Keys with a latest-page load in flight — dedups the double trigger where the
   // first-load effect and the active-session effect both want "main" on mount (the
   // former also opens the SSE, so it must not be pre-empted).
@@ -267,8 +268,7 @@ export function useSessionsState(taskId: string) {
       if (MOCK) return; // MOCK preloads everything up front
       if (loadingKeysRef.current.has(key)) return; // already in flight (e.g. main on mount)
       loadingKeysRef.current.add(key);
-      const token = (reqTokenRef.current[key] ?? 0) + 1;
-      reqTokenRef.current[key] = token;
+      const request = requestsRef.current.start(key);
       patchStore(key, (s) => ({ ...s, loading: true, error: undefined }));
 
       if (key === "system") {
@@ -277,7 +277,7 @@ export function useSessionsState(taskId: string) {
           let systemItems: Activity[] = [];
           for (;;) {
             const page = await api.activity(taskId, { since, limit: SYSTEM_SCAN_PAGE });
-            if (reqTokenRef.current[key] !== token) return;
+            if (!request.alive()) return;
             systemItems = mergeBySeq(
               systemItems,
               page.items.filter(
@@ -303,21 +303,21 @@ export function useSessionsState(taskId: string) {
           });
         })()
           .catch((error) => {
-            if (reqTokenRef.current[key] !== token) return;
+            if (!request.alive()) return;
             patchStore(key, (s) => ({
               ...s,
               loading: false,
               error: (error as Error).message || "加载失败",
             }));
           })
-          .finally(() => loadingKeysRef.current.delete(key));
+          .finally(() => { if (request.alive()) loadingKeysRef.current.delete(key); });
         return;
       }
 
       api
-        .activityHistory(taskId, key, 0, PAGE)
+        .activityHistory(taskId, key, 0, PAGE, request.signal)
         .then((r) => {
-          if (reqTokenRef.current[key] !== token) return; // superseded
+          if (!request.alive()) return; // superseded
           if (r.snapshotCursor > snapshotRef.current) snapshotRef.current = r.snapshotCursor;
           patchStore(key, (s) => {
             const items = mergeBySeq(r.items, s.items); // keep any live frames arrived meanwhile
@@ -335,10 +335,10 @@ export function useSessionsState(taskId: string) {
           });
         })
         .catch((e) => {
-          if (reqTokenRef.current[key] !== token) return;
+          if (!request.alive()) return;
           patchStore(key, (s) => ({ ...s, loading: false, error: (e as Error).message || "加载失败" }));
         })
-        .finally(() => loadingKeysRef.current.delete(key));
+        .finally(() => { if (request.alive()) loadingKeysRef.current.delete(key); });
     },
     [taskId, patchStore],
   );
@@ -361,14 +361,17 @@ export function useSessionsState(taskId: string) {
     (key: string, viewport: () => HTMLElement | null) => {
       const st = store[key];
       if (!st || st.loadingMore || !st.hasMore || !st.earliestSeq) return;
+      const request = requestsRef.current.start(`earlier:${key}`);
       const vp = viewport();
       const prevH = vp?.scrollHeight ?? 0;
       const prevTop = vp?.scrollTop ?? 0;
       patchStore(key, (s) => ({ ...s, loadingMore: true }));
       api
-        .activityHistory(taskId, key, st.earliestSeq, PAGE)
+        .activityHistory(taskId, key, st.earliestSeq, PAGE, request.signal)
         .then((r) => {
+          if (!request.alive()) return;
           patchStore(key, (s) => {
+            if (!request.alive()) return s;
             const items = mergeBySeq(r.items, s.items);
             return {
               ...s,
@@ -380,11 +383,13 @@ export function useSessionsState(taskId: string) {
             };
           });
           requestAnimationFrame(() => {
+            if (!request.alive() || activeKeyRef.current !== key) return;
             const v = viewport();
             if (v) v.scrollTop = prevTop + (v.scrollHeight - prevH);
           });
         })
         .catch(() => {
+          if (!request.alive()) return;
           patchStore(key, (s) => ({ ...s, loadingMore: false }));
         });
     },
@@ -495,7 +500,7 @@ export function useSessionsState(taskId: string) {
     setCurrentSeg(0);
     snapshotRef.current = 0;
     llmToastSeqRef.current = new Set();
-    reqTokenRef.current = {};
+    requestsRef.current.reset();
     // Reserve the initial main key so the active-session effect (which fires for main on
     // mount) won't double-load it and pre-empt the SSE opened here.
     loadingKeysRef.current = new Set([mainSessionKey(0)]);
@@ -536,8 +541,7 @@ export function useSessionsState(taskId: string) {
       };
     }
 
-    const token = (reqTokenRef.current.mainboot ?? 0) + 1;
-    reqTokenRef.current.mainboot = token;
+    const bootRequest = requestsRef.current.start("mainboot");
     let bootKey = mainSessionKey(0);
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let bootInFlight = false;
@@ -561,7 +565,7 @@ export function useSessionsState(taskId: string) {
       api
         .mainSessions(taskId)
         .then((ms) => {
-          if (!alive || reqTokenRef.current.mainboot !== token) throw new Error("superseded");
+          if (!alive || !bootRequest.alive()) throw new Error("superseded");
           const segs = ms.sessions.length ? ms.sessions : [{ seq: 0, created_at: "" }];
           setMainSegs(segs);
           setCurrentSeg(ms.current);
@@ -570,10 +574,10 @@ export function useSessionsState(taskId: string) {
           loadingKeysRef.current.add(bootKey);
           setActiveId(mainSessionId(ms.current));
           patchStore(bootKey, (s) => ({ ...s, loading: true }));
-          return api.activityHistory(taskId, bootKey, 0, PAGE);
+          return api.activityHistory(taskId, bootKey, 0, PAGE, bootRequest.signal);
         })
         .then((r) => {
-          if (!alive || reqTokenRef.current.mainboot !== token) return;
+          if (!alive || !bootRequest.alive()) return;
           snapshotRef.current = r.snapshotCursor;
           patchStore(bootKey, (s) => {
             const items = mergeBySeq(r.items, s.items);
@@ -671,7 +675,7 @@ export function useSessionsState(taskId: string) {
           };
         })
         .catch((err) => {
-          if (!alive || reqTokenRef.current.mainboot !== token) return;
+          if (!alive || !bootRequest.alive()) return;
           if ((err as Error).message === "superseded") return;
           bootInFlight = false;
           loadingKeysRef.current.delete(bootKey);
@@ -1364,7 +1368,7 @@ export function useSessionsState(taskId: string) {
     llmToastSeqRef,
     chatStatusRequestRef,
     firstIntentsRef,
-    reqTokenRef,
+    requestsRef,
     loadingKeysRef,
     patchStore,
     loadSession,

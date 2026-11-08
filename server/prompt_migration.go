@@ -28,6 +28,16 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 
 const settingPlannerPromptV3 = "planner_prompt_v3"
 
+// 自定义正文与默认正文的区别只能精确识别，不能靠“含某个旧特征词”。
+func plannerPromptIsBuiltin(cur string) bool {
+	cur = strings.TrimSpace(cur)
+	if cur == "" || cur == strings.TrimSpace(agent.PlannerPromptBody()) {
+		return true
+	}
+	sum := sha256.Sum256([]byte(cur))
+	return plannerBuiltinPromptSHA256[hex.EncodeToString(sum[:])]
+}
+
 // migratePlannerPrompt 把旧版内置 planner 正文升级到 v3（经典瘦身 + 态势语义）。
 // 只执行一次（settings 旗标）；领域模板不在这里处理——planner_templates 的内置行
 // 每次启动都会被 SeedPlannerTemplateIfEmpty 刷新正文，用户自建模板不受影响。
@@ -50,7 +60,12 @@ func migratePlannerPrompt(pg *db.DB) {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(cur)))
 	switch {
 	case cur != "" && plannerBuiltinPromptSHA256[hex.EncodeToString(sum[:])]:
-		if _, err := pg.SavePrompt(a.ID, agent.PlannerPromptBody(), "重写：经典模式瘦身（v3）", "system"); err != nil {
+		appendText, err := pg.CurrentPromptAppend(a.ID)
+		if err != nil {
+			log.Printf("[prompts] 读取 planner 追加段失败，未迁移: %v", err)
+			return
+		}
+		if _, err := pg.SavePromptWithAppend(a.ID, agent.PlannerPromptBody(), appendText, "重写：经典模式瘦身（v3）", "system"); err != nil {
 			log.Printf("[prompts] planner 正文 v3 迁移失败: %v", err)
 			return
 		}

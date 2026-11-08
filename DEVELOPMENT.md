@@ -125,6 +125,6 @@ git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
   `system_same/tools_same/shared_messages`，以及原始 usage 数值（含兼容网关的数值扩展字段）。
   不输出 API key、请求/响应正文、目标内容；响应扫描有固定缓冲上限，不阻塞/改写 SSE。
 - 先比较同一 session 连续请求：system/tools 是否变化、断点是否存在；再比较
-  `message_start` 与 `message_delta` 的 input/cache。若 start 已报 input 而 cache 在 delta
-  才出现，SDK 的迟报字段兼容性仍需另修；不能仅凭界面的 0% 判定网关不支持缓存。
+  `message_start` 与 `message_delta` 的 input/cache。Norma v0.5.11 起按字段合并累计快照，
+  支持 start 已报 input、delta 才补 cache；不能仅凭界面的 0% 判定网关不支持缓存。
 - 排障结束移除该环境变量。历史缺失用量不能凭估算回填为“上游实测缓存”。
