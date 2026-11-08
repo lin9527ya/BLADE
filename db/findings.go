@@ -32,6 +32,7 @@ type DBFinding struct {
 	Worker          string
 	AssetIDs        []int64
 	Status          string
+	RetractReason   string
 	Confidence      string // 置信度标定 high/medium/low;"" = 未标定
 	Counterevidence string // ruled_out 的反证(点名控制点)
 	ProofGap        string // open_proof_gap 的缺口说明
@@ -185,7 +186,7 @@ const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.n
 	       f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
  (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id),
-	       COALESCE(f.confidence, ''), COALESCE(f.counterevidence, ''), COALESCE(f.proof_gap, '')`
+	       COALESCE(f.confidence, ''), COALESCE(f.counterevidence, ''), COALESCE(f.proof_gap, ''), COALESCE(f.retract_reason, '')`
 
 // scanFindings materializes rows selected via findingSelectCols.
 func scanFindings(rows interface {
@@ -199,7 +200,7 @@ func scanFindings(rows interface {
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount,
-			&f.Confidence, &f.Counterevidence, &f.ProofGap); err != nil {
+			&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.RetractReason); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -612,7 +613,7 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
 			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount,
-			&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.Report); err != nil {
+			&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.RetractReason, &f.Report); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -744,7 +745,7 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
 		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount,
-		&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.Report)
+		&f.Confidence, &f.Counterevidence, &f.ProofGap, &f.RetractReason, &f.Report)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

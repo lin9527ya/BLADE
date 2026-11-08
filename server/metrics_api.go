@@ -253,6 +253,8 @@ FROM firsts GROUP BY worker`)
 // registerMetricsRoutes 由 registerRoutes 调用（唯一注册入口）。
 func (s *Server) registerMetricsRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/metrics", s.metrics)
+	mux.HandleFunc("GET /api/diagnostics/cache", s.getCacheDiagnostics)
+	mux.HandleFunc("POST /api/diagnostics/cache", s.setCacheDiagnostics)
 	mux.HandleFunc("GET /api/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("GET /api/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("GET /api/debug/pprof/symbol", pprof.Symbol)

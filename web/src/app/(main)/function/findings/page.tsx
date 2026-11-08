@@ -100,10 +100,12 @@ export default function FindingsPage() {
     doExport,
     submitDeepen,
     rowProps,
+    triageDialog,
   } = useFindingsState();
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
+      {triageDialog}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-semibold text-xl tracking-tight">发现</h1>
@@ -252,10 +254,7 @@ export default function FindingsPage() {
         </div>
 
         {view === "cases" && (
-          <FindingCaseList
-            query={{ severity, status, vulnclass, task, query, sort }}
-            onTotal={setCaseTotal}
-          />
+          <FindingCaseList query={{ severity, status, vulnclass, task, query, sort }} onTotal={setCaseTotal} />
         )}
 
         {view === "flat" && flatListCard}
@@ -519,8 +518,8 @@ export default function FindingsPage() {
               <span className="text-muted-foreground text-xs">导出范围</span>
               <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as typeof exportScope)}>
                 <label htmlFor="export-scope-filtered" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {view === "cases" ? caseTotal : filteredTotal}{" "}
-                  条）
+                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共{" "}
+                  {view === "cases" ? caseTotal : filteredTotal} 条）
                 </label>
                 <label htmlFor="export-scope-all" className="flex items-center gap-2 text-sm">
                   <RadioGroupItem id="export-scope-all" value="all" /> 导出全部

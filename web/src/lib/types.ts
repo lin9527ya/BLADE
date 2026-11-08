@@ -397,6 +397,7 @@ export interface WorkspaceListing {
   entries: WorkspaceEntry[];
 }
 export interface WorkspaceFile {
+  version?: string; // required when overwriting an existing file
   path: string;
   size: number;
   binary: boolean;
@@ -1351,6 +1352,7 @@ export interface Finding {
   evidence: string;
   report?: string; // 详细报告(Markdown);仅详情接口返回,列表为空
   confidence?: string; // 置信度标定 high/medium/low;空=未标定
+  retract_reason?: string; // retracted 的撤回原因
   counterevidence?: string; // ruled_out 的反证（点名控制点）
   proof_gap?: string; // open_proof_gap 的缺口说明
   intent_id?: string;
@@ -2881,4 +2883,11 @@ export interface CampaignSummary {
   totals: { tasks: number; findings: number; footholds: number; credentials: number; detections: number };
   techniques?: Record<string, number>;
   detection_results?: Record<string, number>;
+}
+
+export interface FindingSrcCheck {
+  ready: boolean;
+  warnings: string[];
+  steps: number;
+  endpoints: number;
 }

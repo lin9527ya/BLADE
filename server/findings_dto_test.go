@@ -38,3 +38,21 @@ func TestFindingDTOIncludesClosureReason(t *testing.T) {
 		t.Fatalf("存疑候选不应进入任务发现列表：%+v", out)
 	}
 }
+
+func TestFindingDTOIncludesTriageFields(t *testing.T) {
+	f := findingFromDB(&db.DBFinding{ID: 7, Confidence: db.ConfidenceHigh, Status: db.FindingRetracted, RetractReason: "fixture reason"}, nil)
+	if f.Confidence != db.ConfidenceHigh || f.RetractReason != "fixture reason" {
+		t.Fatalf("triage fields missing: %+v", f)
+	}
+	raw, _ := json.Marshal(findingFromDB(&db.DBFinding{ID: 8}, nil))
+	var fields map[string]any
+	json.Unmarshal(raw, &fields)
+	if value, ok := fields["confidence"]; !ok || value != "" {
+		t.Fatal("unset confidence must round-trip explicitly")
+	}
+	payload, _ := json.Marshal(map[string]any{"summary": "fixture"})
+	out := findingDTOsForOwner("1", "", []*db.Node{{ID: 9, Kind: db.KindFinding, Payload: payload}}, map[int64]db.FindingMeta{9: {ID: 7, Status: db.FindingConfirmed, Confidence: db.ConfidenceMedium}}, nil)
+	if len(out) != 1 || out[0].Confidence != db.ConfidenceMedium {
+		t.Fatal("task list lost confidence")
+	}
+}

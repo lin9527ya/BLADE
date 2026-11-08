@@ -123,6 +123,7 @@ export const sidebarItems: NavGroup[] = [
         liveBadge: "intercept_pending",
       },
       { id: "notify", title: "通知推送", url: "/system/notify", icon: BellRing },
+      { id: "diagnostics", title: "运行体检", url: "/system/diagnostics", icon: Activity },
       { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
       // P28：存储体检与清理（试算 → 执行，默认保留天数全 0 = 什么都不删）。
       { id: "storage", title: "存储", url: "/system/storage", icon: HardDrive },

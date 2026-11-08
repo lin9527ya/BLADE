@@ -128,3 +128,13 @@ git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
   `message_start` 与 `message_delta` 的 input/cache。Norma v0.5.11 起按字段合并累计快照，
   支持 start 已报 input、delta 才补 cache；不能仅凭界面的 0% 判定网关不支持缓存。
 - 排障结束移除该环境变量。历史缺失用量不能凭估算回填为“上游实测缓存”。
+
+
+## 八、运行体检与安全诊断
+
+- 系统菜单的「运行体检」读取 `/api/metrics` 和 `/api/diagnostics/cache`，不会为采样发送模型或目标请求。
+- 结构采样可由既有 `BLADE_LLM_CACHE_DEBUG=1` 或页面短时窗口开启。环境变量开启时页面不能关闭它；调整环境后重启。页面窗口默认 10 分钟、最多 30 分钟，不落库。
+- 样本最多 256 条，仅返回近 30 分钟，每次最多 100 条；单请求 usage 最多 16 帧（保留首帧与最新帧）。只存哈希/长度/断点和白名单数值。关闭页面窗口会清空样本，计量台账不受影响。
+- `llm_usage` 的逐调用 ID 与结构请求 ID 不是同一编号。原始协议用量可能是累计值或不含缓存的 input，不要直接求和或拿它当 canonical input；结构变化只是相关证据，不等于根因。
+- 工作区既有文件写入要带读取返回的 `version`；同名上传通过 `/api/workspace/upload-check` 得到版本，在用户确认后随 multipart 的 `expected_versions` 提交。409 不自动强制覆盖。
+- 文本使用内容哈希；超过在线编辑上限的文件使用大小/纳秒修改时间。API 写入串行化并再次复查后原子替换，但不能宣称对不遵守同一锁的外部进程提供完整跨进程 CAS。

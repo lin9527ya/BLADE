@@ -14,6 +14,7 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("DELETE /api/workspace/delete", s.wsDelete)
 	mux.HandleFunc("GET /api/workspace/download", s.wsDownload)
 	mux.HandleFunc("POST /api/workspace/upload", s.wsUpload)
+	mux.HandleFunc("POST /api/workspace/upload-check", s.wsUploadCheck)
 	mux.HandleFunc("GET /api/tasks/{id}/scope", s.taskScopeList)
 	mux.HandleFunc("POST /api/tasks/{id}/scope", s.taskScopeAdd)
 	mux.HandleFunc("DELETE /api/tasks/{id}/scope/{sid}", s.taskScopeDelete)

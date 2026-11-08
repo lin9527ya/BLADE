@@ -76,6 +76,12 @@ function fmtTime(ts: string) {
 export default function LogsPage() {
   const [lines, setLines] = React.useState<LogLine[]>([]);
   const [q, setQ] = React.useState("");
+  React.useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    setQ(query.get("q") ?? "");
+    const selected = query.get("level");
+    if (selected === "info" || selected === "warn" || selected === "error") setLevel(selected);
+  }, []);
   const [level, setLevel] = React.useState<"all" | LogLine["level"]>("all");
   const [paused, setPaused] = React.useState(false);
   const [loadingHistory, setLoadingHistory] = React.useState(false);

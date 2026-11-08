@@ -76,6 +76,7 @@ GET /api/debug/pprof/profile	net/http/pprof.Profile
 GET /api/debug/pprof/symbol	net/http/pprof.Symbol
 GET /api/debug/pprof/threadcreate	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/trace	net/http/pprof.Trace
+GET /api/diagnostics/cache	server.(*Server).getCacheDiagnostics-fm
 GET /api/executions/{eid}	server.(*Server).getExecution-fm
 GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
@@ -266,6 +267,7 @@ POST /api/cves/delete/batch	server.(*Server).deleteCVEsBatch-fm
 POST /api/cves/import/preview	server.(*Server).previewCVEImport-fm
 POST /api/cves/{id}/script	server.(*Server).uploadCVEScript-fm
 POST /api/debug/pprof/symbol	net/http/pprof.Symbol
+POST /api/diagnostics/cache	server.(*Server).setCacheDiagnostics-fm
 POST /api/exploration/finding-case-blocks	server.(*Server).blockFindingCasePair-fm
 POST /api/exploration/finding-case-suggestions	server.(*Server).generateFindingCaseSuggestions-fm
 POST /api/exploration/finding-case-suggestions/{id}/accept	server.(*Server).acceptFindingCaseSuggestion-fm
@@ -363,6 +365,7 @@ POST /api/visibility/skill/toggle	server.(*Server).pgToggleSkillVisibility-fm
 POST /api/visibility/toggle	server.(*Server).pgToggleVisibility-fm
 POST /api/workspace/mkdir	server.(*Server).wsMkdir-fm
 POST /api/workspace/upload	server.(*Server).wsUpload-fm
+POST /api/workspace/upload-check	server.(*Server).wsUploadCheck-fm
 POST /api/workspace/write	server.(*Server).wsWrite-fm
 PUT /api/agents/{key}/config	server.(*Server).pgSaveAgentConfig-fm
 PUT /api/agents/{key}/prompt	server.(*Server).pgSavePrompt-fm

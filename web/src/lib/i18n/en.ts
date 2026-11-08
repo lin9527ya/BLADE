@@ -65,6 +65,7 @@ export const en: Record<string, string> = {
   "nav.agents": "Agents",
   "nav.intercept": "Intercept & approvals",
   "nav.notify": "Notifications",
+  "nav.diagnostics": "Diagnostics",
   "nav.logs": "Logs",
   "nav.storage": "Storage",
   "nav.settings": "Settings",

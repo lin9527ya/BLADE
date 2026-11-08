@@ -410,8 +410,10 @@ type FindingDTO struct {
 	Summary   string `json:"summary"`
 	Evidence  string `json:"evidence"`
 	// 已排除/存疑的"为什么"：列表页也要直接看得到，不必点进详情。
-	Counterevidence string `json:"counterevidence,omitempty"`
-	ProofGap        string `json:"proof_gap,omitempty"`
+	Confidence      string `json:"confidence"`
+	RetractReason   string `json:"retract_reason"`
+	Counterevidence string `json:"counterevidence"`
+	ProofGap        string `json:"proof_gap"`
 	Report          string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
 
 	IntentID        string            `json:"intent_id,omitempty"`
@@ -515,6 +517,8 @@ func findingDTOsForOwner(taskID, description string, in []*db.Node, meta map[int
 			}
 			d.FindingID = i64s(m.ID)
 			d.Status = m.Status
+			d.Confidence = m.Confidence
+			d.RetractReason = m.RetractReason
 			d.TrafficCount = m.TrafficCount
 			d.Counterevidence = m.Counterevidence
 			d.ProofGap = m.ProofGap
@@ -555,6 +559,8 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		Status:          status,
 		Summary:         f.Summary,
 		Evidence:        f.Evidence,
+		Confidence:      f.Confidence,
+		RetractReason:   f.RetractReason,
 		Counterevidence: f.Counterevidence,
 		ProofGap:        f.ProofGap,
 		Report:          f.Report,

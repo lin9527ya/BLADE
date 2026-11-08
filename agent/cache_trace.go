@@ -8,11 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lin9527ya/Norma/transcript"
 )
@@ -47,14 +47,40 @@ func cachePartOf(raw json.RawMessage) cachePart {
 
 func requestCacheSignature(raw string) (cacheSignature, error) {
 	var req struct {
-		Model    string            `json:"model"`
-		System   json.RawMessage   `json:"system"`
-		Tools    json.RawMessage   `json:"tools"`
-		Messages []json.RawMessage `json:"messages"`
+		Model        string            `json:"model"`
+		System       json.RawMessage   `json:"system"`
+		Tools        json.RawMessage   `json:"tools"`
+		Messages     []json.RawMessage `json:"messages"`
+		Instructions json.RawMessage   `json:"instructions"`
+		Input        []json.RawMessage `json:"input"`
 	}
 	var out cacheSignature
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		return out, err
+	}
+
+	if req.System == nil {
+		if req.Instructions != nil {
+			req.System = req.Instructions
+			req.Messages = req.Input
+		} else {
+			var systems, messages []json.RawMessage
+			for _, raw := range req.Messages {
+				var msg struct {
+					Role string `json:"role"`
+				}
+				_ = json.Unmarshal(raw, &msg)
+				if msg.Role == "system" || msg.Role == "developer" {
+					systems = append(systems, raw)
+				} else {
+					messages = append(messages, raw)
+				}
+			}
+			if len(systems) > 0 {
+				req.System, _ = json.Marshal(systems)
+				req.Messages = messages
+			}
+		}
 	}
 	out.Model = req.Model
 	out.System = cachePartOf(req.System)
@@ -100,7 +126,7 @@ var cacheTraceHistory = struct {
 var cacheTraceSequence atomic.Uint64
 
 func traceModelRequest(req *http.Request) uint64 {
-	if os.Getenv(CacheTraceEnv) != "1" {
+	if !CacheTraceState().Enabled {
 		return 0
 	}
 	sig, err := requestCacheSignature(requestBodySnapshot(req))
@@ -108,10 +134,11 @@ func traceModelRequest(req *http.Request) uint64 {
 		return 0
 	}
 	sid := transcript.SessionIDFrom(req.Context())
-	key := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path + "|" + sid + "|" + sig.Model
+	endpoint := sha256.Sum256([]byte(req.URL.String() + "|" + sid + "|" + sig.Model))
+	key := hex.EncodeToString(endpoint[:])
 	cacheTraceHistory.Lock()
 	previous, seen := cacheTraceHistory.last[key]
-	if len(cacheTraceHistory.last) >= 64 {
+	if !seen && len(cacheTraceHistory.last) >= 64 {
 		cacheTraceHistory.last = map[string]cacheSignature{}
 	}
 	cacheTraceHistory.last[key] = sig
@@ -123,6 +150,12 @@ func traceModelRequest(req *http.Request) uint64 {
 		}
 	}
 	traceID := cacheTraceSequence.Add(1)
+	addCacheDiagnostic(CacheDiagnostic{
+		ID: traceID, At: time.Now().UTC(), Session: sid, Model: sig.Model, Previous: seen,
+		SystemSame: seen && previous.System == sig.System, ToolsSame: seen && previous.Tools == sig.Tools,
+		SharedMessages: shared, Messages: len(sig.Messages), PreviousMessages: len(previous.Messages),
+		System: sig.System, Tools: sig.Tools, Breakpoints: append([]string{}, sig.Breakpoints...), Frames: []CacheUsageFrame{},
+	})
 	encoded, _ := json.Marshal(sig)
 	log.Printf("[cache-trace] trace_id=%d session=%q previous=%t system_same=%t tools_same=%t shared_messages=%d structure=%s",
 		traceID, sid, seen, seen && previous.System == sig.System, seen && previous.Tools == sig.Tools, shared, encoded)
@@ -213,6 +246,15 @@ func (b *cacheTraceBody) emit(raw []byte) {
 		event = frame.Type
 	}
 	log.Printf("[cache-trace] trace_id=%d session=%q event=%s raw_usage=%s", b.traceID, b.session, event, encoded)
+	updateCacheDiagnostic(b.traceID, func(row *CacheDiagnostic) {
+		row.ObservedFrames++
+		frame := CacheUsageFrame{Event: event, Values: fields}
+		if len(row.Frames) >= 16 {
+			copy(row.Frames[1:], row.Frames[2:])
+			row.Frames = row.Frames[:15]
+		}
+		row.Frames = append(row.Frames, frame)
+	})
 }
 
 func (b *cacheTraceBody) observe(chunk []byte) {
@@ -222,6 +264,7 @@ func (b *cacheTraceBody) observe(chunk []byte) {
 		}
 		if len(b.buffer)+len(chunk) > cacheTraceLineLimit {
 			b.skipping = true
+			updateCacheDiagnostic(b.traceID, func(row *CacheDiagnostic) { row.Truncated = true })
 			b.buffer = nil
 			return
 		}
@@ -238,6 +281,7 @@ func (b *cacheTraceBody) observe(chunk []byte) {
 			if len(b.buffer)+len(part) > cacheTraceLineLimit {
 				b.buffer = nil
 				b.skipping = true
+				updateCacheDiagnostic(b.traceID, func(row *CacheDiagnostic) { row.Truncated = true })
 			} else {
 				b.buffer = append(b.buffer, part...)
 			}
@@ -273,6 +317,7 @@ func (b *cacheTraceBody) finish() {
 		}
 	}
 	b.buffer = nil
+	updateCacheDiagnostic(b.traceID, func(row *CacheDiagnostic) { row.Complete = true; row.Truncated = row.Truncated || b.skipping })
 }
 func (b *cacheTraceBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
@@ -285,6 +330,11 @@ func (b *cacheTraceBody) Read(p []byte) (int, error) {
 func (b *cacheTraceBody) Close() error { b.finish(); return b.ReadCloser.Close() }
 
 func wrapCacheTraceResponse(req *http.Request, resp *http.Response, traceID uint64) {
+	updateCacheDiagnostic(traceID, func(row *CacheDiagnostic) {
+		if resp != nil {
+			row.Status = resp.StatusCode
+		}
+	})
 	if resp == nil || resp.Body == nil {
 		return
 	}

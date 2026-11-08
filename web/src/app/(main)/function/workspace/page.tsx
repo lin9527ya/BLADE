@@ -21,6 +21,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
+import { createLatestRequest } from "@/lib/request-lifecycle";
+import { workspaceDirty, workspaceExpectedVersions } from "@/lib/workspace-edit";
 import { api } from "@/lib/api";
 import type { WorkspaceEntry, WorkspaceFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -56,17 +59,41 @@ export default function WorkspacePage() {
   const [mkdirOpen, setMkdirOpen] = React.useState(false);
   const [mkdirName, setMkdirName] = React.useState("");
   const uploadRef = React.useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = React.useState(false);
+  const directoryRequest = React.useRef(createLatestRequest());
+  const fileRequest = React.useRef(createLatestRequest());
+  useUnsavedChanges(edit?.dirty ?? false);
+  React.useEffect(
+    () => () => {
+      directoryRequest.current.cancel();
+      fileRequest.current.cancel();
+    },
+    [],
+  );
+  const closeEditor = () => {
+    if (edit?.saving) return;
+    if (edit?.dirty && !window.confirm("有未保存的修改，确认关闭并丢弃吗？")) return;
+    fileRequest.current.cancel();
+    setEdit(null);
+  };
 
   const load = React.useCallback((p: string) => {
+    const request = directoryRequest.current.start();
     setLoading(true);
     api
-      .workspaceList(p)
+      .workspaceList(p, request.signal)
       .then((r) => {
-        setEntries(r.entries);
-        setPath(r.path);
+        if (request.alive()) {
+          setEntries(r.entries);
+          setPath(r.path);
+        }
       })
-      .catch((e) => toast.error(`读取目录失败：${(e as Error).message}`))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (request.alive()) toast.error(`读取目录失败：${(e as Error).message}`);
+      })
+      .finally(() => {
+        if (request.alive()) setLoading(false);
+      });
   }, []);
 
   React.useEffect(() => {
@@ -84,27 +111,54 @@ export default function WorkspacePage() {
     return acc;
   }, [path]);
 
-  const openFile = (e: WorkspaceEntry) => {
+  const openFile = (e: WorkspaceEntry, discardConfirmed = false) => {
+    if (
+      edit?.saving ||
+      (edit?.dirty && !discardConfirmed && !window.confirm("有未保存的修改，确认丢弃并打开其他文件吗？"))
+    )
+      return;
+    const request = fileRequest.current.start();
     api
-      .workspaceRead(e.path)
-      .then((f) => setEdit({ file: f, content: f.content ?? "", dirty: false, saving: false }))
-      .catch((err) => toast.error(`打开文件失败：${(err as Error).message}`));
-  };
-
-  const saveFile = () => {
-    if (!edit) return;
-    setEdit({ ...edit, saving: true });
-    api
-      .workspaceWrite(edit.file.path, edit.content)
-      .then(() => {
-        toast.success("已保存");
-        setEdit((cur) => (cur ? { ...cur, dirty: false, saving: false } : cur));
-        load(path);
+      .workspaceRead(e.path, request.signal)
+      .then((f) => {
+        if (request.alive()) setEdit({ file: f, content: f.content ?? "", dirty: false, saving: false });
       })
       .catch((err) => {
-        toast.error(`保存失败：${(err as Error).message}`);
-        setEdit((cur) => (cur ? { ...cur, saving: false } : cur));
+        if (request.alive()) toast.error(`打开文件失败：${(err as Error).message}`);
       });
+  };
+
+  const saveFile = async () => {
+    if (!edit || edit.saving) return;
+    const submitted = edit;
+    if (!submitted.file.version) {
+      toast.error("缺少文件版本，请重新读取后保存");
+      return;
+    }
+    setEdit({ ...submitted, saving: true });
+    try {
+      const result = await api.workspaceWrite(submitted.file.path, submitted.content, submitted.file.version);
+      setEdit((cur) =>
+        cur?.file.path === submitted.file.path
+          ? {
+              ...cur,
+              file: {
+                ...cur.file,
+                version: result.version,
+                content: submitted.content,
+                size: new TextEncoder().encode(submitted.content).length,
+              },
+              dirty: workspaceDirty(cur.content, submitted.content),
+              saving: false,
+            }
+          : cur,
+      );
+      toast.success("已保存");
+      load(path);
+    } catch (err) {
+      toast.error(`保存失败：${(err as Error).message}。草稿未丢弃，可复制后重新读取。`);
+      setEdit((cur) => (cur?.file.path === submitted.file.path ? { ...cur, saving: false } : cur));
+    }
   };
 
   const del = (e: WorkspaceEntry) => {
@@ -119,18 +173,34 @@ export default function WorkspacePage() {
       .catch((err) => toast.error(`删除失败：${(err as Error).message}`));
   };
 
-  const doUpload = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    api
-      .workspaceUpload(path, Array.from(files))
-      .then((r) => {
-        toast.success(`已上传 ${r.uploaded} 个文件`);
-        load(path);
-      })
-      .catch((err) => toast.error(`上传失败：${(err as Error).message}`))
-      .finally(() => {
-        if (uploadRef.current) uploadRef.current.value = "";
-      });
+  const doUpload = async (files: FileList | null) => {
+    if (!files?.length || uploading) return;
+    const selected = Array.from(files);
+    setUploading(true);
+    try {
+      const preview = await api.workspaceUploadCheck(
+        path,
+        selected.map((f) => f.name),
+      );
+      if (
+        preview.conflicts.length &&
+        !window.confirm(
+          `以下文件已存在，确认覆盖当前版本吗？\n${preview.conflicts
+            .slice(0, 15)
+            .map((item) => item.path)
+            .join("\n")}${preview.conflicts.length > 15 ? `\n…共 ${preview.conflicts.length} 个` : ""}`,
+        )
+      )
+        return;
+      const result = await api.workspaceUpload(path, selected, workspaceExpectedVersions(preview.conflicts));
+      toast.success(`已上传 ${result.uploaded} 个文件`);
+      load(path);
+    } catch (err) {
+      toast.error(`上传失败：${(err as Error).message}`);
+    } finally {
+      setUploading(false);
+      if (uploadRef.current) uploadRef.current.value = "";
+    }
   };
 
   const doMkdir = () => {
@@ -178,8 +248,8 @@ export default function WorkspacePage() {
           <Button variant="outline" size="sm" onClick={() => setMkdirOpen(true)}>
             <FolderPlusIcon /> 新建文件夹
           </Button>
-          <Button variant="outline" size="sm" onClick={() => uploadRef.current?.click()}>
-            <UploadIcon /> 上传
+          <Button variant="outline" size="sm" onClick={() => uploadRef.current?.click()} disabled={uploading}>
+            <UploadIcon /> {uploading ? "上传中…" : "上传"}
           </Button>
           <Button variant="ghost" size="icon" className="size-8" onClick={() => load(path)} title="刷新">
             <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} />
@@ -263,7 +333,7 @@ export default function WorkspacePage() {
       </Card>
 
       {/* 文件查看 / 编辑 */}
-      <Dialog open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
+      <Dialog open={edit !== null} onOpenChange={(o) => !o && closeEditor()}>
         <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {edit && (
             <>
@@ -291,7 +361,14 @@ export default function WorkspacePage() {
                   <div className="min-h-0 flex-1 p-3">
                     <Textarea
                       value={edit.content}
-                      onChange={(ev) => setEdit({ ...edit, content: ev.target.value, dirty: true })}
+                      onChange={(ev) =>
+                        setEdit({
+                          ...edit,
+                          content: ev.target.value,
+                          dirty: workspaceDirty(ev.target.value, edit.file.content),
+                        })
+                      }
+                      disabled={edit.saving}
                       spellCheck={false}
                       className="h-full min-h-[50vh] resize-none font-mono text-xs leading-relaxed"
                     />
@@ -299,6 +376,19 @@ export default function WorkspacePage() {
                   <DialogFooter className="flex-row items-center justify-between border-t p-3">
                     <span className="text-muted-foreground text-xs">{edit.dirty ? "未保存的修改" : "已同步"}</span>
                     <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        disabled={edit.saving}
+                        onClick={() => {
+                          if (edit.dirty && !window.confirm("确认丢弃当前草稿并重新读取服务器版本吗？")) return;
+                          openFile(
+                            { name: edit.file.path, path: edit.file.path, dir: false, size: edit.file.size, mtime: 0 },
+                            true,
+                          );
+                        }}
+                      >
+                        重新读取
+                      </Button>
                       <Button variant="outline" onClick={() => api.workspaceDownload(edit.file.path)}>
                         <DownloadIcon /> 下载
                       </Button>

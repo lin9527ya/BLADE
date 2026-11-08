@@ -2,6 +2,11 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -162,8 +167,13 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "是目录，不能作为文件读取")
 		return
 	}
+	version, err := workspaceVersion(abs)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	if fi.Size() > maxWorkspaceRead {
-		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "too_large": true, "binary": true})
+		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "too_large": true, "binary": true, "version": version})
 		return
 	}
 	data, err := os.ReadFile(abs)
@@ -172,40 +182,62 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
-		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "binary": true})
+		writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "binary": true, "version": version})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "binary": false, "content": string(data)})
+	writeJSON(w, 200, map[string]any{"path": s.wsRel(abs), "size": fi.Size(), "binary": false, "content": string(data), "version": workspaceContentVersion(data)})
 }
 
-// POST /api/workspace/write  {path, content} — create/overwrite a text file.
+// Existing files require the version returned by read; omission only creates new files.
 func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		Path    string  `json:"path"`
+		Content string  `json:"content"`
+		Version *string `json:"version"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceRead*6+65536)
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if len(req.Content) > maxWorkspaceRead {
+		writeErr(w, 413, "在线编辑最多支持 2 MiB")
+		return
+	}
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	abs, ok := s.wsResolve(req.Path)
 	if !ok || abs == filepath.Clean(s.m.dir) {
 		writeErr(w, 400, "非法路径")
 		return
 	}
-	if fi, err := os.Stat(abs); err == nil && fi.IsDir() {
-		writeErr(w, 400, "目标是目录")
+	real, ok := resolveExisting(abs)
+	if !ok {
+		writeErr(w, 400, "非法路径")
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	current, err := workspaceVersion(real)
+	if err != nil && !os.IsNotExist(err) {
+		writeErr(w, 400, "目标不可编辑："+err.Error())
+		return
+	}
+	expected := ""
+	if req.Version != nil {
+		expected = *req.Version
+	}
+	if current != expected {
+		writeJSON(w, 409, map[string]any{"error": "文件已修改或覆盖尚未确认；请重新读取，当前草稿仍可保留", "conflicts": []workspaceConflict{{Path: s.wsRel(abs), Version: current}}})
+		return
+	}
+	if err := workspaceAtomicWrite(real, strings.NewReader(req.Content), expected); err != nil {
+		if errors.Is(err, errWorkspaceChanged) {
+			writeErr(w, 409, err.Error())
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := os.WriteFile(abs, []byte(req.Content), 0o644); err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, map[string]any{"ok": true, "path": s.wsRel(abs)})
+	writeJSON(w, 200, map[string]any{"ok": true, "path": s.wsRel(abs), "version": workspaceContentVersion([]byte(req.Content))})
 }
 
 // POST /api/workspace/mkdir  {path}
@@ -232,6 +264,8 @@ func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/workspace/delete?path=<rel> — removes a file or a directory tree
 // (confined to the work dir; the root itself can't be deleted).
 func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
 	if !ok {
 		writeErr(w, 400, "非法路径")
@@ -270,39 +304,121 @@ func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, abs)
 }
 
-// POST /api/workspace/upload?path=<dir> — multipart form field "file" (one or more).
-func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
-	dirAbs, ok := s.wsResolve(r.URL.Query().Get("path"))
+type workspaceUploadTarget struct {
+	path     string
+	expected string
+}
+
+type workspaceConflict struct {
+	Path    string `json:"path"`
+	Version string `json:"version"`
+}
+
+// Preview existing names without transferring file bodies or changing the workspace.
+func (s *Server) wsUploadCheck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path  string   `json:"path"`
+		Names []string `json:"names"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if len(req.Names) == 0 || len(req.Names) > 1000 {
+		writeErr(w, 400, "请选择 1–1000 个文件")
+		return
+	}
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
+	_, conflicts, err := s.workspaceUploadTargets(req.Path, req.Names, nil)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"conflicts": conflicts})
+}
+
+func (s *Server) workspaceUploadTargets(dir string, names []string, expected map[string]string) ([]workspaceUploadTarget, []workspaceConflict, error) {
+	abs, ok := s.wsResolve(dir)
 	if !ok {
-		writeErr(w, 400, "非法路径")
-		return
+		return nil, nil, fmt.Errorf("非法路径")
 	}
-	if fi, err := os.Stat(dirAbs); err != nil || !fi.IsDir() {
-		writeErr(w, 400, "目标目录不存在")
-		return
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return nil, nil, fmt.Errorf("目标目录不存在")
 	}
+	targets := make([]workspaceUploadTarget, 0, len(names))
+	conflicts := make([]workspaceConflict, 0)
+	seen := make(map[string]bool)
+	for _, raw := range names {
+		name := filepath.Base(raw)
+		if name == "" || name == "." || name == ".." || seen[name] {
+			return nil, nil, fmt.Errorf("上传文件名无效或重复")
+		}
+		seen[name] = true
+		dest, ok := s.wsResolve(filepath.Join(s.wsRel(abs), name))
+		if !ok {
+			return nil, nil, fmt.Errorf("上传目标越界")
+		}
+		real, ok := resolveExisting(dest)
+		if !ok {
+			return nil, nil, fmt.Errorf("上传目标不可用")
+		}
+		version, err := workspaceVersion(real)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("目标不可覆盖：%w", err)
+		}
+		key := s.wsRel(dest)
+		if version != expected[key] {
+			conflicts = append(conflicts, workspaceConflict{Path: key, Version: version})
+		}
+		targets = append(targets, workspaceUploadTarget{path: real, expected: expected[key]})
+	}
+	return targets, conflicts, nil
+}
+
+// POST /api/workspace/upload?path=<dir> — overwrite only versions explicitly confirmed by the client.
+func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceUpload)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, 400, "解析上传失败或超出大小限制："+err.Error())
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 	files := r.MultipartForm.File["file"]
-	if len(files) == 0 {
-		writeErr(w, 400, "缺少上传文件(表单字段 file)")
+	if len(files) == 0 || len(files) > 1000 {
+		writeErr(w, 400, "请选择 1–1000 个上传文件")
+		return
+	}
+	expected := map[string]string{}
+	if raw := r.FormValue("expected_versions"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &expected); err != nil {
+			writeErr(w, 400, "覆盖版本无效")
+			return
+		}
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Filename)
+	}
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
+	targets, conflicts, err := s.workspaceUploadTargets(r.URL.Query().Get("path"), names, expected)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if len(conflicts) > 0 {
+		writeJSON(w, 409, map[string]any{"error": "同名文件未确认覆盖或确认后又有修改；未上传任何文件", "conflicts": conflicts})
 		return
 	}
 	saved := 0
-	for _, hdr := range files {
-		name := filepath.Base(hdr.Filename) // strip any path component
-		if name == "" || name == "." || name == ".." {
-			continue
-		}
-		destAbs, okd := s.wsResolve(filepath.Join(s.wsRel(dirAbs), name))
-		if !okd {
-			continue
-		}
-		if err := saveUpload(hdr, destAbs); err != nil {
-			writeErr(w, 500, err.Error())
+	for i, hdr := range files {
+		if err := saveWorkspaceUpload(hdr, targets[i].path, targets[i].expected); err != nil {
+			status := 500
+			if errors.Is(err, errWorkspaceChanged) {
+				status = 409
+			}
+			writeJSON(w, status, map[string]any{"error": err.Error(), "uploaded": saved})
 			return
 		}
 		saved++
@@ -311,18 +427,88 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func saveUpload(hdr *multipart.FileHeader, dest string) error {
+	return saveWorkspaceUpload(hdr, dest, "")
+}
+
+func saveWorkspaceUpload(hdr *multipart.FileHeader, dest, expected string) error {
 	src, err := hdr.Open()
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	out, err := os.Create(dest)
+	return workspaceAtomicWrite(dest, src, expected)
+}
+
+// Editable files use content hashes; large files use size and nanosecond mtime.
+func workspaceVersion(path string) (string, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("不是普通文件")
+	}
+	if fi.Size() > maxWorkspaceRead {
+		return fmt.Sprintf("stat:%d:%d", fi.Size(), fi.ModTime().UnixNano()), nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxWorkspaceRead+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxWorkspaceRead {
+		return "", fmt.Errorf("文件在读取过程中发生变化，请重试")
+	}
+	return workspaceContentVersion(data), nil
+}
+
+func workspaceContentVersion(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+var errWorkspaceChanged = errors.New("文件在写入过程中再次修改；未覆盖该文件")
+
+func workspaceAtomicWrite(path string, src io.Reader, expected string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".blade-edit-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, src)
-	return err
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if _, err := io.Copy(f, src); err != nil {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	version, err := workspaceVersion(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if version != expected {
+		return errWorkspaceChanged
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // sanitizeFilename strips characters unsafe for a Content-Disposition filename token.

@@ -393,6 +393,7 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	traceCache := traceModelRequest(req)
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
+		updateCacheDiagnostic(traceCache, func(row *CacheDiagnostic) { row.Complete = true })
 		return resp, err
 	}
 	if traceCache != 0 {

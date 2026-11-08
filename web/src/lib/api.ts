@@ -4,7 +4,9 @@
 // are passed through and formatted at the call site.
 
 import type { ChatMention } from "@/lib/chat-mentions";
+import type { RuntimeMetrics, CacheDiagnostics, CacheTraceState } from "@/lib/diagnostics";
 import { MOCK } from "@/lib/mock/enabled";
+import { WorkspaceUploadConflict, type WorkspaceConflict } from "@/lib/workspace-edit";
 import { HttpError } from "@/lib/request-lifecycle";
 import type {
   ActiveFindingRetest,
@@ -57,6 +59,7 @@ import type {
   ExplorationPolicyEffective,
   ExplorationPolicyOverride,
   Finding,
+  FindingSrcCheck,
   FindingCase,
   FindingCaseListPage,
   FindingCaseStats,
@@ -278,6 +281,22 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
 }
 
 export const api = {
+  metrics: (signal?: AbortSignal) => get<RuntimeMetrics>("/metrics", { signal }),
+  cacheDiagnostics: (
+    filters: { task?: string; worker?: string; cache?: string; before?: number },
+    signal?: AbortSignal,
+  ) =>
+    get<CacheDiagnostics>(
+      `/diagnostics/cache?${new URLSearchParams(
+        Object.entries(filters)
+          .filter(([, v]) => v !== undefined && v !== "")
+          .map(([k, v]) => [k, String(v)]),
+      )}`,
+      { signal },
+    ),
+  setCacheDiagnostics: (fields: { enabled?: boolean; seconds?: number; clear?: boolean }) =>
+    post<CacheTraceState>("/diagnostics/cache", fields),
+
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
   // health 只回 ok（P42 去指纹：免认证端点不自报家门）；版本走需登录的 /system/info。
   health: (init?: RequestInit) => get<{ ok: boolean }>("/health", init),
@@ -378,7 +397,8 @@ export const api = {
       remark: input.remark ?? "",
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
-  updateTask: (id: string, input: { name?: string; pinned?: boolean; remark?: string }) => patch<Task>(`/tasks/${id}`, input),
+  updateTask: (id: string, input: { name?: string; pinned?: boolean; remark?: string }) =>
+    patch<Task>(`/tasks/${id}`, input),
   findingCaseRows: (q: FindingQuery) => {
     const p = findingFilterParams(q);
     p.set("page", String(q.page));
@@ -386,25 +406,37 @@ export const api = {
     return get<FindingCaseListPage>(`/exploration/finding-case-rows?${p.toString()}`);
   },
   findingCases: (taskId: string) =>
-    get<{ items: FindingCase[] }>(`/exploration/finding-cases?task_id=${encodeURIComponent(taskId)}`).then((r) => arr(r.items)),
+    get<{ items: FindingCase[] }>(`/exploration/finding-cases?task_id=${encodeURIComponent(taskId)}`).then((r) =>
+      arr(r.items),
+    ),
   findingCaseStats: (taskId: string) =>
     get<FindingCaseStats>(`/exploration/finding-cases/stats?task_id=${encodeURIComponent(taskId)}`),
-  createFindingCase: (input: { task_id: number; title: string; reason: string; severity?: string; finding_ids: number[] }) =>
-    post<FindingCase>("/exploration/finding-cases", input),
+  createFindingCase: (input: {
+    task_id: number;
+    title: string;
+    reason: string;
+    severity?: string;
+    finding_ids: number[];
+  }) => post<FindingCase>("/exploration/finding-cases", input),
   getFindingCase: (id: number) => get<FindingCase>(`/exploration/finding-cases/${id}`),
   updateFindingCaseReport: (id: number, report: string, expectedVersion: number) =>
     patch<FindingCase>(`/exploration/finding-cases/${id}`, { report, expected_version: expectedVersion }),
   findingCaseSuggestions: (taskId: string) =>
-    get<{ items: FindingCaseSuggestion[] }>(`/exploration/finding-case-suggestions?task_id=${encodeURIComponent(taskId)}`).then((r) => arr(r.items)),
+    get<{ items: FindingCaseSuggestion[] }>(
+      `/exploration/finding-case-suggestions?task_id=${encodeURIComponent(taskId)}`,
+    ).then((r) => arr(r.items)),
   generateFindingCaseSuggestions: (taskId: string) =>
     post<{ created: number }>(`/exploration/finding-case-suggestions?task_id=${encodeURIComponent(taskId)}`, {}),
-  acceptFindingCaseSuggestion: (id: number) => post<FindingCase>(`/exploration/finding-case-suggestions/${id}/accept`, {}),
+  acceptFindingCaseSuggestion: (id: number) =>
+    post<FindingCase>(`/exploration/finding-case-suggestions/${id}/accept`, {}),
   dismissFindingCaseSuggestion: (id: number, reason: string) =>
     post<{ ok: boolean }>(`/exploration/finding-case-suggestions/${id}/dismiss`, { reason }),
   blockFindingCasePair: (input: { task_id: number; finding_ids: number[]; reason: string }) =>
     post<{ ok: boolean }>("/exploration/finding-case-blocks", input),
   removeFindingCaseMember: (caseId: number, findingId: number, reason: string) =>
-    del<{ ok: boolean }>(`/exploration/finding-cases/${caseId}/members/${findingId}?reason=${encodeURIComponent(reason)}`),
+    del<{ ok: boolean }>(
+      `/exploration/finding-cases/${caseId}/members/${findingId}?reason=${encodeURIComponent(reason)}`,
+    ),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
@@ -807,25 +839,47 @@ export const api = {
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 
   // ---- workspace file manager (workDir) ----
-  workspaceList: (path = "") => get<WorkspaceListing>(`/workspace/list?path=${encodeURIComponent(path)}`),
-  workspaceRead: (path: string) => get<WorkspaceFile>(`/workspace/read?path=${encodeURIComponent(path)}`),
-  workspaceWrite: (path: string, content: string) =>
-    post<{ ok: boolean; path: string }>(`/workspace/write`, { path, content }),
+  workspaceList: (path = "", signal?: AbortSignal) =>
+    get<WorkspaceListing>(`/workspace/list?path=${encodeURIComponent(path)}`, { signal }),
+  workspaceRead: (path: string, signal?: AbortSignal) =>
+    get<WorkspaceFile>(`/workspace/read?path=${encodeURIComponent(path)}`, { signal }),
+  workspaceWrite: (path: string, content: string, version?: string) =>
+    post<{ ok: boolean; path: string; version: string }>(`/workspace/write`, { path, content, version }),
   workspaceMkdir: (path: string) => post<{ ok: boolean; path: string }>(`/workspace/mkdir`, { path }),
   workspaceDelete: (path: string) => del<{ ok: boolean }>(`/workspace/delete?path=${encodeURIComponent(path)}`),
-  workspaceUpload: async (dir: string, files: File[]) => {
+  workspaceUploadCheck: (path: string, names: string[]) =>
+    post<{ conflicts: WorkspaceConflict[] }>("/workspace/upload-check", { path, names }),
+  workspaceUpload: async (dir: string, files: File[], expectedVersions: Record<string, string> = {}) => {
     if (MOCK) return { uploaded: files.length };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
+    fd.append("expected_versions", JSON.stringify(expectedVersions));
     const token = getToken();
     const r = await fetch(`/api/workspace/upload?path=${encodeURIComponent(dir)}`, {
       method: "POST",
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: fd,
     });
-    if (!r.ok) throw new Error(`上传失败: ${r.status}`);
+    if (!r.ok) {
+      const payload = (await r.json().catch(() => ({}))) as {
+        error?: string;
+        conflicts?: WorkspaceConflict[];
+        uploaded?: number;
+      };
+      if (r.status === 409)
+        throw new WorkspaceUploadConflict(
+          `${payload.error ?? "文件覆盖需要重新确认"}${payload.uploaded ? `（已上传 ${payload.uploaded} 个文件）` : ""}`,
+          payload.conflicts ?? [],
+        );
+      throw new HttpError(
+        `${payload.error ?? `上传失败: ${r.status}`}${payload.uploaded ? `（已上传 ${payload.uploaded} 个文件）` : ""}`,
+        r.status,
+      );
+    }
     return r.json() as Promise<{ uploaded: number }>;
   },
+  findingSrcCheck: (id: string, signal?: AbortSignal) =>
+    get<FindingSrcCheck>(`/findings/${encodeURIComponent(id)}/src-report/check`, { signal }),
   // downloadSrcReport 下载单条发现的 SRC 交付件（md 简报 / docx 可提交件）。
   // 服务端按 src-dig 报告规范渲染 8 块骨架；文件名取 Content-Disposition（= 漏洞标题）。
   downloadSrcReport: async (findingId: string, format: "md" | "docx") => {
@@ -1214,7 +1268,16 @@ export const api = {
   // 一次保存漏洞的名称/类别/严重等级(发现列表行内编辑用),只传出现的字段。
   updateFinding: (
     id: string,
-    fields: { name?: string; vulnclass?: string; severity?: Severity; status?: FindingStatus },
+    fields: {
+      name?: string;
+      vulnclass?: string;
+      severity?: Severity;
+      status?: FindingStatus;
+      confidence?: string;
+      counterevidence?: string;
+      proof_gap?: string;
+      retract_reason?: string;
+    },
   ) => patch<Finding>(`/exploration/findings/${id}`, fields),
   // 删除漏洞:移除 findings 记录 + 来源探索节点(从发现列表/任务发现 Tab/探索图一并消失)。
   deleteFinding: (id: string) => del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}`),

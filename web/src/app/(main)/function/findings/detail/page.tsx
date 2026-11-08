@@ -9,6 +9,8 @@ import { ArrowLeftIcon, ArrowUpRightIcon, FileDownIcon, FileTextIcon, ShieldAler
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
+import { useFindingTriage } from "@/components/finding-triage-dialog";
+import { FindingSrcExportDialog } from "@/components/finding-src-export-dialog";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
 import { Markdown } from "@/components/markdown";
@@ -23,6 +25,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { triageNoteLabel } from "@/lib/finding-triage";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
@@ -73,27 +76,17 @@ function FindingDetailInner() {
   const backHref = contextTaskId
     ? `/function/tasks/detail?id=${encodeURIComponent(contextTaskId)}&tab=${contextTab}`
     : "/function/findings";
-  const backLabel = contextTaskId
-    ? contextTab === "retests"
-      ? "返回任务复测"
-      : "返回任务发现"
-    : "返回发现列表";
+  const backLabel = contextTaskId ? (contextTab === "retests" ? "返回任务复测" : "返回任务发现") : "返回发现列表";
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
   // SRC 交付件导出中（md/docx），用于禁用按钮。
   const [exporting, setExporting] = React.useState<"md" | "docx" | null>(null);
-  async function exportSrc(format: "md" | "docx") {
-    if (exporting) return;
+  const triage = useFindingTriage((_original, updated) =>
+    setFinding((cur) => (cur ? { ...cur, ...updated } : updated)),
+  );
+  function exportSrc(format: "md" | "docx") {
     setExporting(format);
-    try {
-      await api.downloadSrcReport(id, format);
-      toast.success(format === "docx" ? "已导出 docx（可提交件）" : "已导出 SRC 简报（Markdown）");
-    } catch (e) {
-      toast.error(`导出失败：${(e as Error).message}`);
-    } finally {
-      setExporting(null);
-    }
   }
 
   const load = React.useCallback(() => {
@@ -128,22 +121,9 @@ function FindingDetailInner() {
     [finding, id],
   );
 
-  const changeStatus = React.useCallback(
-    async (next: FindingStatus) => {
-      if (!finding || finding.inherited || next === finding.status) return;
-      const prev = finding.status;
-      setFinding({ ...finding, status: next });
-      try {
-        const updated = await api.setFindingStatus(id, next);
-        setFinding(updated);
-        toast.success(`处理状态已改为「${statusMeta("finding", next).label}」`);
-      } catch (e) {
-        setFinding((cur) => (cur ? { ...cur, status: prev } : cur));
-        toast.error(`更新失败：${(e as Error).message}`);
-      }
-    },
-    [finding, id],
-  );
+  const changeStatus = (next: FindingStatus) => {
+    if (finding && !finding.inherited && next !== finding.status) triage.openTriage(finding, next);
+  };
 
   if (!finding) {
     return (
@@ -164,6 +144,15 @@ function FindingDetailInner() {
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
+      {triage.dialog}
+      {exporting && (
+        <FindingSrcExportDialog
+          key={`${id}:${exporting}`}
+          id={id}
+          format={exporting}
+          onClose={() => setExporting(null)}
+        />
+      )}
       {/* Sticky header */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
         <div className="flex flex-wrap items-center gap-2">
@@ -231,16 +220,18 @@ function FindingDetailInner() {
                   <p className="whitespace-pre-wrap text-sm leading-relaxed">{finding.summary || "（无摘要）"}</p>
                 </CardContent>
               </Card>
-              {(finding.counterevidence || finding.proof_gap) && (
+              {(finding.counterevidence ||
+                finding.proof_gap ||
+                (finding.status === "retracted" && finding.retract_reason)) && (
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-sm">
-                      {finding.status === "ruled_out" ? "反证（点名控制点）" : "存疑缺口（未闭合，不得视为安全）"}
-                    </CardTitle>
+                    <CardTitle className="text-sm">{triageNoteLabel(finding.status) ?? "处置依据"}</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {finding.counterevidence || finding.proof_gap}
+                      {finding.status === "retracted"
+                        ? finding.retract_reason
+                        : finding.counterevidence || finding.proof_gap}
                     </p>
                   </CardContent>
                 </Card>
@@ -349,6 +340,11 @@ function FindingDetailInner() {
                 <FieldRow label="置信度">
                   <span className="text-muted-foreground text-xs">
                     {CONFIDENCE_LABELS[finding.confidence ?? ""] ?? "未标定"}
+                    {!finding.inherited && (
+                      <Button variant="link" size="sm" onClick={() => triage.openTriage(finding, finding.status)}>
+                        编辑处置信息
+                      </Button>
+                    )}
                   </span>
                 </FieldRow>
 

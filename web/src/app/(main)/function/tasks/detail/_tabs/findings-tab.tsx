@@ -1,5 +1,7 @@
 "use client";
 
+import { useFindingTriage } from "@/components/finding-triage-dialog";
+
 import * as React from "react";
 
 import Link from "next/link";
@@ -32,7 +34,6 @@ import { useStoredSortPreference } from "@/lib/sort-preference";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity, TaskSrcBatchPlan } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
 
 const FINDING_SORT_FIELDS: readonly FindingSortField[] = ["time", "severity"];
 // 发现列表按页展示（与播报板一致）：长任务几百条发现时，全量渲染既卡又找不到东西。
@@ -205,18 +206,10 @@ export function FindingsTab({ taskId }: { taskId: string }) {
     [taskId],
   );
 
-  const onStatus = React.useCallback(async (f: Finding, next: FindingStatus) => {
-    if (f.inherited || !f.finding_id || next === f.status) return;
-    const prev = f.status;
-    setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: next } : x)));
-    try {
-      await api.setFindingStatus(f.finding_id, next);
-      toast.success(`已标记为「${statusMeta("finding", next).label}」`);
-    } catch (e) {
-      setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: prev } : x)));
-      toast.error(`更新失败：${(e as Error).message}`);
-    }
-  }, []);
+  const triage = useFindingTriage((f, updated) => {
+    setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, ...updated } : x)));
+  });
+  const onStatus = triage.openTriage;
 
   const taskFindings = findings.filter((f) => f.task_id === taskId || f.inherited);
   const items = filterAndSortFindings(taskFindings, severity, sortPreference, query);
@@ -260,6 +253,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
+      {triage.dialog}
       {/* 批量交付：一个任务的全部发现打成一份包（提交说明 + 每条发现的简报/docx），
           证据门与疑似重复都在提交说明里说清楚。 */}
       <Card>
@@ -399,67 +393,73 @@ export function FindingsTab({ taskId }: { taskId: string }) {
         </form>
       </div>
       <FindingCaseList
-        query={{ task: taskId, severity, query: query || undefined, sort: sortPreference.field, timeDirection: sortPreference.direction }}
+        query={{
+          task: taskId,
+          severity,
+          query: query || undefined,
+          sort: sortPreference.field,
+          timeDirection: sortPreference.direction,
+        }}
         contextTask={taskId}
       />
       <details>
         <summary className="cursor-pointer text-muted-foreground text-sm">查看原始上报列表</summary>
-      <Card className="overflow-hidden py-0">
-        <CardContent className="px-0">
-          <div className="flex items-center border-b px-4 py-2 text-muted-foreground text-xs">
-            <span className="min-w-0 flex-1">
-              漏洞
-              {items.length > 0 && (
-                <span className="ml-1.5 text-muted-foreground tabular-nums">（{items.length} 条）</span>
-              )}
-            </span>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 outline-none focus-visible:underline"
-              aria-label={`发现时间当前${sortPreference.direction === "asc" ? "正序" : "倒序"}，点击切换排序方向`}
-              onClick={() =>
-                setSortPreference((current) => ({
-                  field: "time",
-                  direction: current.direction === "asc" ? "desc" : "asc",
-                }))
-              }
-            >
-              <span>发现时间</span>
-              {sortPreference.direction === "asc" ? (
-                <ArrowUpIcon className="size-3.5" />
-              ) : (
-                <ArrowDownIcon className="size-3.5" />
-              )}
-            </button>
-          </div>
-          {pageItems.map((f) => (
-            <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
-          ))}
-          {items.length === 0 && loadError ? (
-            <p className="px-4 py-8 text-center text-red-600 text-sm dark:text-red-400">
-              发现列表加载失败：{loadError}（每 3 秒自动重试）
-            </p>
-          ) : items.length === 0 ? (
-            <p className="px-4 py-8 text-center text-muted-foreground text-sm">本任务及直接关联任务暂无确认发现。</p>
-          ) : null}
-        </CardContent>
-        {items.length > 0 && (
-          <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-muted-foreground text-xs">
-            <TablePagination
-              variant="compact"
-              page={page}
-              pageSize={size}
-              total={items.length}
-              onPageChange={setPage}
-              onPageSizeChange={(s) => {
-                setSize(s);
-                setPage(1);
-              }}
-              pageSizeOptions={PAGE_SIZES}
-            />
-          </CardFooter>
-        )}
-      </Card>
+        <Card className="overflow-hidden py-0">
+          <CardContent className="px-0">
+            <div className="flex items-center border-b px-4 py-2 text-muted-foreground text-xs">
+              <span className="min-w-0 flex-1">
+                漏洞
+                {items.length > 0 && (
+                  <span className="ml-1.5 text-muted-foreground tabular-nums">（{items.length} 条）</span>
+                )}
+              </span>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 outline-none focus-visible:underline"
+                aria-label={`发现时间当前${sortPreference.direction === "asc" ? "正序" : "倒序"}，点击切换排序方向`}
+                onClick={() =>
+                  setSortPreference((current) => ({
+                    field: "time",
+                    direction: current.direction === "asc" ? "desc" : "asc",
+                  }))
+                }
+              >
+                <span>发现时间</span>
+                {sortPreference.direction === "asc" ? (
+                  <ArrowUpIcon className="size-3.5" />
+                ) : (
+                  <ArrowDownIcon className="size-3.5" />
+                )}
+              </button>
+            </div>
+            {pageItems.map((f) => (
+              <Row key={f.id} f={f} contextTaskId={taskId} onStatus={onStatus} />
+            ))}
+            {items.length === 0 && loadError ? (
+              <p className="px-4 py-8 text-center text-red-600 text-sm dark:text-red-400">
+                发现列表加载失败：{loadError}（每 3 秒自动重试）
+              </p>
+            ) : items.length === 0 ? (
+              <p className="px-4 py-8 text-center text-muted-foreground text-sm">本任务及直接关联任务暂无确认发现。</p>
+            ) : null}
+          </CardContent>
+          {items.length > 0 && (
+            <CardFooter className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 text-muted-foreground text-xs">
+              <TablePagination
+                variant="compact"
+                page={page}
+                pageSize={size}
+                total={items.length}
+                onPageChange={setPage}
+                onPageSizeChange={(s) => {
+                  setSize(s);
+                  setPage(1);
+                }}
+                pageSizeOptions={PAGE_SIZES}
+              />
+            </CardFooter>
+          )}
+        </Card>
       </details>
     </div>
   );

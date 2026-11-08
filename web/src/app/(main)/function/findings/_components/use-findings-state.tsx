@@ -1,5 +1,7 @@
 "use client";
 
+import { useFindingTriage } from "@/components/finding-triage-dialog";
+
 import * as React from "react";
 
 import { BugIcon, ClockIcon, InfoIcon, ShieldAlertIcon, TriangleAlertIcon } from "lucide-react";
@@ -508,35 +510,20 @@ export function useFindingsState() {
     }
   }, [stats, statsLoaded, task, vulnclass]);
 
-  // updateStatus optimistically flips one finding's triage state, reverting on error.
-  const updateStatus = React.useCallback(
-    async (f: Finding, next: FindingStatus) => {
-      if (!f.finding_id || next === f.status) return;
-      const prev = f.status;
-      setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, status: next } : x)));
-      try {
-        await api.setFindingStatus(f.finding_id, next);
-        toast.success(`已标记为「${statusMeta("finding", next).label}」`);
-        // refresh stat cards (pending count) and drop the row if it no longer matches the status filter
-        api
-          .findingStats()
-          .then(setStats)
-          .catch(() => {
-            // The row update remains valid even if the aggregate refresh fails.
-          });
-        if (status !== "all" && next !== status) {
-          setFindings((cur) => cur.filter((x) => !isSameFinding(x, f)));
-          setTotal((t) => Math.max(0, t - 1));
-          setFlat((cur) => ({ ...cur, total: Math.max(0, cur.total - 1) }));
-        }
-        refreshAfterMutation(f);
-      } catch (e) {
-        setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, status: prev } : x)));
-        toast.error(`更新失败：${(e as Error).message}`);
-      }
-    },
-    [refreshAfterMutation, setFindings, status],
-  );
+  const triage = useFindingTriage((f, updated) => {
+    setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, ...updated } : x)));
+    api
+      .findingStats()
+      .then(setStats)
+      .catch(() => {});
+    if (status !== "all" && updated.status !== status) {
+      setFindings((cur) => cur.filter((x) => !isSameFinding(x, f)));
+      setTotal((t) => Math.max(0, t - 1));
+      setFlat((cur) => ({ ...cur, total: Math.max(0, cur.total - 1) }));
+    }
+    refreshAfterMutation(f);
+  });
+  const updateStatus = triage.openTriage;
 
   // 行内展开的详细报告缓存按全局稳定行键存。report 是大段 Markdown,列表查询不带它,
   // 故展开时才按 finding_id 单独拉取一次;done 且文本为空 = 该漏洞暂无报告。
@@ -821,6 +808,7 @@ export function useFindingsState() {
     toggleGroup,
     refreshAfterMutation,
     updateStatus,
+    triageDialog: triage.dialog,
     reports,
     setReports,
     edit,
