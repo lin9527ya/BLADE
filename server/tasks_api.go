@@ -324,8 +324,8 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // taskDTOsFor builds DTOs (with per-task metrics) for just these tasks.
-// Shared by the paginated JSON list and the CSV export so the two can never
-// report different numbers for the same task.
+// Shared by task detail, the paginated JSON list and the CSV export so they
+// cannot report different metrics for the same task.
 func (s *Server) taskDTOsFor(ctx context.Context, list []*Task) []TaskDTO {
 	expIDs := make([]int64, 0, len(list))
 	taskIDs := make([]int64, 0, len(list))
@@ -948,12 +948,8 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
-	dto := taskDTO(t, s.resolvedTaskStatus(t))
-	if id, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
-		archiveBlockers, _ := s.m.PG().TaskArchiveBlockersForContext(r.Context(), []int64{id})
-		applyTaskArchiveBlocker(&dto, archiveBlockers)
-	}
-	writeJSON(w, 200, dto)
+	dtos := s.taskDTOsFor(r.Context(), []*Task{t})
+	writeJSON(w, 200, dtos[0])
 }
 
 // taskCoverage returns a task's rough asset test coverage (denominator/tested/backlog).
