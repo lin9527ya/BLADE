@@ -615,7 +615,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		return nil, err
 	}
 	log.Printf("[pg] 数据库配置来源: %s", source)
-	pg, err := pgdb.Open(dsn)
+	pg, err := pgdb.OpenRuntime(dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -655,6 +655,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			return
 		}
 		if t, ok := m.Task(row.TaskID); ok && t != nil {
+			if row.ExecutionGeneration > 0 {
+				n, err := t.Store.GetNode(row.IntentID)
+				if err != nil || n == nil || n.State != "running" || n.ExecutionGeneration != row.ExecutionGeneration || n.LogicalSessionID != row.LogicalSessionID || n.Owner != row.ExecutionOwner {
+					return
+				}
+			}
 			t.Notify()
 		}
 	})

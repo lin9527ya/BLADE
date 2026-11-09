@@ -166,6 +166,10 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if err := t.Store.PopulateEvidenceReadState(nodes); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	if err := t.Store.PopulateFindingStatuses(nodes); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -189,6 +193,10 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 		sourceEdges, edgeErr := source.Store.Edges(5000)
 		if edgeErr != nil {
 			writeErr(w, 500, edgeErr.Error())
+			return
+		}
+		if err := source.Store.PopulateEvidenceReadState(sourceNodes); err != nil {
+			writeErr(w, 500, err.Error())
 			return
 		}
 		if err := source.Store.PopulateFindingStatuses(sourceNodes); err != nil {

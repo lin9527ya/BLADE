@@ -59,6 +59,9 @@ func TestWorkerSlotReusesTranscriptAcrossIntents(t *testing.T) {
 		if _, _, err := worker.Execute(t.Context(), "work#1", expID, nil, ts, &db.Node{ID: id, Payload: payload}, nil, nil, nil, nil); err != nil {
 			t.Fatalf("execute intent %d: %v", id, err)
 		}
+		if err := ts.SetIntentState(id, "done"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	run(intentA, "first slot task")
 	run(intentB, "second slot task")

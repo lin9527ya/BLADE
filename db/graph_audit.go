@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -27,8 +28,8 @@ type GraphIssue struct {
 	Detail   string  `json:"detail,omitempty"`
 }
 
-// GraphAuditReport 是一次体检的完整结论。Counts 按 Code 汇总（含被 LIMIT 截断的部分
-// 只统计到上限，报告里明说）。
+// GraphAuditReport 是一次体检的完整结论。Counts 按 Code 精确汇总；只有 Issues 示例按类截断。
+// dependency_cycle 的单位是循环强连通分量，不是简单环数。
 type GraphAuditReport struct {
 	ExplorationID int64           `json:"exploration_id"`
 	CheckedAt     time.Time       `json:"checked_at"`
@@ -90,6 +91,11 @@ var intentStates = map[string]bool{
 
 // AuditGraph 对当前 exploration 做一次只读体检。
 func (s *ExplorationStore) AuditGraph() (*GraphAuditReport, error) {
+	if !s.InReadSnapshot() {
+		var out *GraphAuditReport
+		err := s.ReadSnapshot(context.Background(), func(_ *DB, view *ExplorationStore) error { var err error; out, err = view.AuditGraph(); return err })
+		return out, err
+	}
 	rep := &GraphAuditReport{
 		ExplorationID: s.expID,
 		CheckedAt:     time.Now(),
@@ -173,8 +179,8 @@ LEFT JOIN exploration_nodes s ON s.id=e.src_id
 LEFT JOIN exploration_nodes d ON d.id=e.dst_id
 WHERE e.exploration_id=$1
   AND (s.id IS NULL OR d.id IS NULL OR s.exploration_id<>e.exploration_id OR d.exploration_id<>e.exploration_id)
-ORDER BY e.src_id LIMIT $2`
-	rows, err := s.db.Query(q, s.expID, graphAuditIssueLimit)
+ORDER BY e.src_id`
+	rows, err := s.db.Query(q, s.expID)
 	if err != nil {
 		return err
 	}
@@ -190,13 +196,13 @@ ORDER BY e.src_id LIMIT $2`
 	return rows.Err()
 }
 
-// eachEdge 遍历某类关系里满足条件的边（每类最多 graphAuditIssueLimit 条）。
+// eachEdge 遍历全部匹配边；add 只保留有限示例，但仍累计全部数量。
 func (s *ExplorationStore) eachEdge(rel, cond string, fn func(src, dst int64)) error {
 	q := `SELECT e.src_id, e.dst_id FROM exploration_edges e
 JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
 WHERE e.exploration_id=$1 AND e.rel=$2 AND ` + cond + `
-ORDER BY e.src_id LIMIT $3`
-	rows, err := s.db.Query(q, s.expID, rel, graphAuditIssueLimit)
+ORDER BY e.src_id`
+	rows, err := s.db.Query(q, s.expID, rel)
 	if err != nil {
 		return err
 	}
@@ -229,38 +235,54 @@ func (s *ExplorationStore) auditDependencyCycles(add func(GraphIssue)) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	const (
-		white = 0
-		gray  = 1
-		black = 2
-	)
-	color := map[int64]int{}
+	// Count cyclic strongly-connected components, not simple paths (which may be exponential).
+	index := 0
+	indices := map[int64]int{}
+	low := map[int64]int{}
+	onStack := map[int64]bool{}
 	var stack []int64
-	var walk func(n int64) bool
-	walk = func(n int64) bool {
-		color[n] = gray
+	var visit func(int64)
+	visit = func(n int64) {
+		index++
+		indices[n] = index
+		low[n] = index
 		stack = append(stack, n)
+		onStack[n] = true
 		for _, next := range adj[n] {
-			switch color[next] {
-			case gray:
-				// 找到环：从 next 在栈里的位置到栈顶就是环上的节点。
-				cycle := []int64{next}
-				for i := len(stack) - 1; i >= 0 && stack[i] != next; i-- {
-					cycle = append(cycle, stack[i])
+			if indices[next] == 0 {
+				visit(next)
+				if low[next] < low[n] {
+					low[n] = low[next]
 				}
-				sort.Slice(cycle, func(i, j int) bool { return cycle[i] < cycle[j] })
-				add(GraphIssue{Code: "dependency_cycle", Severity: "error", NodeIDs: cycle,
-					Detail: "depends_on 成环：环上的意图永远不会 ready"})
-				return true
-			case white:
-				if walk(next) {
-					return true
+			} else if onStack[next] && indices[next] < low[n] {
+				low[n] = indices[next]
+			}
+		}
+		if low[n] != indices[n] {
+			return
+		}
+		var component []int64
+		for {
+			v := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			onStack[v] = false
+			component = append(component, v)
+			if v == n {
+				break
+			}
+		}
+		cyclic := len(component) > 1
+		if !cyclic {
+			for _, next := range adj[n] {
+				if next == n {
+					cyclic = true
 				}
 			}
 		}
-		stack = stack[:len(stack)-1]
-		color[n] = black
-		return false
+		if cyclic {
+			sort.Slice(component, func(i, j int) bool { return component[i] < component[j] })
+			add(GraphIssue{Code: "dependency_cycle", Severity: "error", NodeIDs: component, Detail: "depends_on 循环分量：这些意图互相等待；按强连通分量计数，不枚举简单环"})
+		}
 	}
 	ids := make([]int64, 0, len(adj))
 	for id := range adj {
@@ -268,10 +290,8 @@ func (s *ExplorationStore) auditDependencyCycles(add func(GraphIssue)) error {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
-		if color[id] == white {
-			if walk(id) {
-				break // 报一个环就够；同一个 bug 往往会产生一串
-			}
+		if indices[id] == 0 {
+			visit(id)
 		}
 	}
 	return nil
@@ -280,15 +300,15 @@ func (s *ExplorationStore) auditDependencyCycles(add func(GraphIssue)) error {
 // auditStarvedIntents：open、无 owner、前置已全终态，却超过 2×租约 TTL 仍没被领取。
 func (s *ExplorationStore) auditStarvedIntents(add func(GraphIssue)) error {
 	const q = `SELECT n.id FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND coalesce(n.owner,'')=''
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id) AND coalesce(n.owner,'')=''
   AND n.created_at < now() - make_interval(secs => $2)
   AND EXISTS (SELECT 1 FROM exploration_edges e WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on')
   AND NOT EXISTS (
       SELECT 1 FROM exploration_edges e JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
       WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
         AND d.state NOT IN ('done','negative'))
-ORDER BY n.id LIMIT $3`
-	rows, err := s.db.Query(q, s.expID, int64((2 * IntentLeaseTTL).Seconds()), graphAuditIssueLimit)
+ORDER BY n.id`
+	rows, err := s.db.Query(q, s.expID, int64((2 * IntentLeaseTTL).Seconds()))
 	if err != nil {
 		return err
 	}
@@ -313,8 +333,8 @@ JOIN exploration_edges e ON e.exploration_id=n.exploration_id AND e.src_id=n.id 
 JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=n.exploration_id
 WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
   AND d.state IN ('out-of-scope','blocked','exhausted','stopped','no_output','deleted')
-ORDER BY n.id, d.id LIMIT $2`
-	rows, err := s.db.Query(q, s.expID, graphAuditIssueLimit)
+ORDER BY n.id, d.id`
+	rows, err := s.db.Query(q, s.expID)
 	if err != nil {
 		return err
 	}
@@ -336,8 +356,8 @@ func (s *ExplorationStore) auditExpiredLeases(add func(GraphIssue)) error {
 	const q = `SELECT id FROM exploration_nodes
 WHERE exploration_id=$1 AND kind='intent' AND state='running'
   AND (coalesce(owner,'')='' OR lease_expires_at IS NULL OR lease_expires_at < now())
-ORDER BY id LIMIT $2`
-	rows, err := s.db.Query(q, s.expID, graphAuditIssueLimit)
+ORDER BY id`
+	rows, err := s.db.Query(q, s.expID)
 	if err != nil {
 		return err
 	}

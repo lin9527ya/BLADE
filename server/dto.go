@@ -218,16 +218,20 @@ func trafficDTOs(ex []traffic.ExchangeMeta) []TrafficExchangeDTO {
 // ---- TaskNode (frontend "TaskNode") — frontier, intents, exploration graph nodes ----
 
 type TaskNodeDTO struct {
-	ID           string `json:"id"`
-	Type         string `json:"type"` // db Node.Kind
-	Payload      string `json:"payload,omitempty"`
-	Priority     int    `json:"priority"`
-	State        string `json:"state"`
-	Origin       string `json:"origin"`
-	TS           string `json:"ts"`
-	SourceTaskID string `json:"source_task_id,omitempty"`
-	Inherited    bool   `json:"inherited,omitempty"`
-	DeleteReason string `json:"delete_reason,omitempty"` // 意图假删除(state='deleted')时的删除原因
+	EvidenceState       *db.EvidenceState `json:"evidence_state,omitempty"`
+	RequiresMissing     []map[string]any  `json:"requires_missing,omitempty"`
+	LogicalSessionID    string            `json:"logical_session_id,omitempty"`
+	ExecutionGeneration string            `json:"execution_generation,omitempty"`
+	ID                  string            `json:"id"`
+	Type                string            `json:"type"` // db Node.Kind
+	Payload             string            `json:"payload,omitempty"`
+	Priority            int               `json:"priority"`
+	State               string            `json:"state"`
+	Origin              string            `json:"origin"`
+	TS                  string            `json:"ts"`
+	SourceTaskID        string            `json:"source_task_id,omitempty"`
+	Inherited           bool              `json:"inherited,omitempty"`
+	DeleteReason        string            `json:"delete_reason,omitempty"` // 意图假删除(state='deleted')时的删除原因
 	// Fingerprint 只在凭据节点上非空（P36）：明文不进界面与报告，指认一条凭据靠它。
 	Fingerprint string `json:"fingerprint,omitempty"`
 	// WorkerSeq 是意图在本任务内的创建序号（1-based），**只给界面**显示 "Worker #N"。
@@ -243,6 +247,7 @@ type TaskNodeDTO struct {
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {
 	d := TaskNodeDTO{
+		EvidenceState: n.EvidenceState, RequiresMissing: n.RequiresMissing, LogicalSessionID: n.LogicalSessionID,
 		ID:            i64s(n.ID),
 		Type:          n.Kind,
 		Payload:       rawString(n.Payload),
@@ -254,6 +259,9 @@ func taskNodeDTO(n *db.Node) TaskNodeDTO {
 		WorkerSeq:     n.WorkerSeq,
 		SlotNo:        slotNumber(n.Owner),
 		FindingStatus: n.FindingStatus,
+	}
+	if n.ExecutionGeneration > 0 {
+		d.ExecutionGeneration = i64s(n.ExecutionGeneration)
 	}
 	if n.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(n.SourceTaskID)

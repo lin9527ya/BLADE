@@ -30,6 +30,20 @@ export function DetailRow({ label, children }: { label: string; children: React.
 // 这里按字段语义直接给出内容：严重度/置信度用徽标、id 数组用 chips、长文本用段落、
 // PoC/证据用等宽块、嵌套对象（evidence / closure / member_ids）递归展开。
 const payloadFieldLabels: Record<string, string> = {
+  evidence_meta: "证据元信息",
+  claim_key: "稳定声明键",
+  observed_at: "实际观察时间",
+  valid_until: "有效截止",
+  method: "观察方法",
+  scope: "适用资产",
+  source_refs: "证据来源引用",
+  requires: "显式数据前提",
+  node_id: "引用节点",
+  key: "声明键",
+  max_age_seconds: "时效秒数",
+  verification: "需实测验证",
+  validation_status: "验证状态",
+  target: "验证目标",
   summary: "摘要",
   detail: "详情",
   evidence: "证据",
@@ -86,6 +100,8 @@ const payloadFieldOrder = [
   "risk_area",
   "detail",
   "evidence",
+  "evidence_meta",
+  "requires",
   "poc",
   // 战果/凭据/遗留物的结构化字段：先身份与位置，再清理与验证信息。
   "kind",
@@ -173,7 +189,9 @@ export function PayloadValue({ k, v }: { k: string; v: unknown }) {
             <span key={`${host}${port}${i}`} className="flex flex-wrap items-center gap-2 text-xs">
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{`${host}${port}${svc}`}</code>
               <span className={verified ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>
-                {verified ? "已验证可登" : "待验证"}
+                {verified ? "历史实测成功" : "待验证"}
+                {verified && typeof t.observed_at !== "string" && " · 验证时间未知"}
+                {typeof t.valid_until === "string" && ` · 有效截止 ${t.valid_until}`}
               </span>
               {typeof t.evidence === "string" && t.evidence !== "" && (
                 <span className="truncate text-muted-foreground">{t.evidence}</span>
@@ -386,6 +404,36 @@ export function NodeDetailDialog({
                       <span className="font-mono text-xs">{node.state}</span>
                     )}
                   </DetailRow>
+                  {node.logical_session_id && (
+                    <DetailRow label="会话">
+                      <span className="font-mono text-xs">
+                        {node.logical_session_id} · 代次 {node.execution_generation}
+                      </span>
+                    </DetailRow>
+                  )}
+                  {node.evidence_state && node.evidence_state.flags.length > 0 && (
+                    <DetailRow label="证据状态">
+                      {node.evidence_state.flags
+                        .map(
+                          (flag) =>
+                            ({
+                              observation_time_unknown: "观察时间未知",
+                              expired: "已过期",
+                              contested: "有矛盾",
+                              superseded: "已被新证据替代",
+                            })[flag],
+                        )
+                        .join("、")}
+                    </DetailRow>
+                  )}
+                  {node.requires_missing && node.requires_missing.length > 0 && (
+                    <DetailRow label="待满足">
+                      <span>
+                        缺 {node.requires_missing.length} 项显式前提；保持候选方向，不是负面结论。
+                        {node.requires_missing.map((r) => r.key || `节点 #${r.node_id || "未知"}`).join("、")}
+                      </span>
+                    </DetailRow>
+                  )}
                   <DetailRow label="优先级">
                     <span className="tabular-nums">{node.priority}</span>
                   </DetailRow>

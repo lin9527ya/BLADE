@@ -100,16 +100,16 @@ func TestSlotHandoffWhenOwnerIdle(t *testing.T) {
 	}
 
 	// 场景 2：work#3 正在跑另一条意图 → 它名下的 open 意图对 work#1 仍不可见。
-	i2, _ := es.AddIntent(map[string]any{"summary": "busy"}, 5, nil, "planner")
-	if ok, _ := es.ClaimIntent(i2, "work#3", IntentLeaseTTL); !ok {
-		t.Fatal("claim i2 by work#3")
-	}
 	i3, _ := es.AddIntent(map[string]any{"summary": "affinity"}, 5, nil, "planner")
 	if ok, _ := es.ClaimIntent(i3, "work#3", IntentLeaseTTL); !ok {
 		t.Fatal("claim i3 by work#3")
 	}
 	if err := es.SetIntentState(i3, "open"); err != nil {
 		t.Fatal(err)
+	}
+	i2, _ := es.AddIntent(map[string]any{"summary": "busy"}, 5, nil, "planner")
+	if ok, _ := es.ClaimIntent(i2, "work#3", IntentLeaseTTL); !ok {
+		t.Fatal("claim i2 by work#3")
 	}
 	fr, err = es.FrontierForSlot("work#1", nil, 10)
 	if err != nil {

@@ -133,7 +133,16 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return agent.ExecStatus{}, err
 	}
-	id, err := s.pg.CreateExecutionWithinLimit(ctx, &db.ToolExecution{
+	ri := agent.RunInfoFrom(ctx)
+	pg := s.pg
+	if ri.ExecutionGeneration > 0 {
+		if ri.IntentID != intentID || strconv.FormatInt(ri.TaskID, 10) != taskID {
+			return agent.ExecStatus{}, db.ErrStaleExecution
+		}
+		pg = s.pg.WithAuthority(db.WriteAuthority{TaskID: ri.TaskID, ExplorationID: ri.ExplorationID, IntentID: ri.IntentID, Generation: ri.ExecutionGeneration, Owner: ri.ExecutionOwner, LogicalSessionID: ri.LogicalSessionID})
+	}
+	id, err := pg.CreateExecutionWithinLimit(ctx, &db.ToolExecution{
+		LogicalSessionID: ri.LogicalSessionID, ExecutionGeneration: ri.ExecutionGeneration, ExecutionOwner: ri.ExecutionOwner,
 		TaskID: taskID, IntentID: intentID, Worker: worker, Tool: tool,
 		Command: command, Description: strings.TrimSpace(desc),
 	}, maxActive)

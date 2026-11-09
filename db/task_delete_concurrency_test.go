@@ -154,7 +154,7 @@ func createTaskDeleteRaceFixture(t *testing.T, d *DB) (first, second *Task, host
 
 func openTaskDeleteTestDB(t *testing.T, dsn string) (*DB, int) {
 	t.Helper()
-	sqlDB, err := sql.Open("pgx", dsn)
+	sqlDB, err := sql.Open("pgx", writerProtocolDSN(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}

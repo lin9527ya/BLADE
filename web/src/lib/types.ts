@@ -541,6 +541,8 @@ export type IntentState =
 export type FindingState = "confirmed" | "dismissed";
 export type HintState = "active" | "consumed";
 export type ExploreRel =
+  | "contradicts"
+  | "supersedes"
   | "spawns"
   | "derived_from"
   | "yields"
@@ -740,7 +742,40 @@ export interface ADPathsResponse {
   start_id?: number;
 }
 
+export interface BlackboardReadStatus {
+  state: "complete" | "unknown" | "truncated";
+  total?: number;
+  sample_count: number;
+  has_more?: boolean;
+  read_more?: string;
+}
+export interface EvidenceState {
+  flags: ("observation_time_unknown" | "expired" | "contested" | "superseded")[];
+  observed_at?: string;
+  valid_until?: string;
+}
+export interface EvidenceMetadata {
+  claim_key?: string;
+  observed_at?: string;
+  valid_until?: string;
+  method?: string;
+  scope?: number[];
+  source_refs?: { type: "activity" | "execution" | "finding_binding"; id: number }[];
+}
+export interface IntentRequirement {
+  type: "fact" | "capability" | "credential";
+  node_id?: number;
+  key?: string;
+  polarity?: "positive" | "negative" | "any";
+  verification?: boolean;
+  target?: string;
+  max_age_seconds?: number;
+}
 export interface TaskNode {
+  evidence_state?: EvidenceState;
+  requires_missing?: { index: number; type?: string; node_id?: string; key?: string; reason: string }[];
+  logical_session_id?: string;
+  execution_generation?: string;
   /** 凭据节点才有：明文不进界面的前提下，用指纹指认一条凭据（P36）。 */
   fingerprint?: string;
   id: string;

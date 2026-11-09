@@ -827,7 +827,7 @@ const blackboardViewBlock = `
 
 【黑板视图（代码持有）】
 - 本轮预取的是有界视图：totals 是真实总数，open/running/recent 等列表只是窗口；窗口外的方向不等于没派过。
-- 需要完整态势（折叠区、继承任务、AD 图、检测热点等）时调 graph_overview(detail=true)；只看增量事件与路线用 blackboard_view(after=blackboard.next_cursor)。
+- 需要完整态势（折叠区、继承任务、AD 图、检测热点等）时调 graph_overview(detail=true)；只看增量事件与路线用 blackboard_view(change_cursor=change_cursor)（旧 after 只跟踪节点新增，不代表全部图变化）。
 - 意图的 contract（mechanism/route/produces/acceptance）只在显式填写时存在；它是去重与验收声明，不替代 summary 的入口/动作/验证目标。`
 
 // hybridPlannerBlock is the classic-mode scaffolding: ARTEX's anti-stall,

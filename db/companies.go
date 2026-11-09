@@ -605,7 +605,7 @@ FROM matched
 WHERE a.id = matched.asset_id`); err != nil {
 		return "", err
 	}
-	return malformedIPAssetWarning(tx)
+	return malformedIPAssetWarning(txRows{tx})
 }
 
 // malformedIPAssetsSampled bounds how many offending ids one warning names, so a
@@ -624,7 +624,7 @@ func logAttributionWarning(warning string) {
 // malformedIPAssetQueryer is satisfied by both *sql.Tx and *DB so the warning
 // can be produced inside a recompute transaction or read standalone by the API.
 type malformedIPAssetQueryer interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	Query(query string, args ...any) (*Rows, error)
 }
 
 // MalformedIPAssetWarning reports assets with an unparseable ip outside of any
@@ -756,7 +756,7 @@ func (s *CompanyStore) ResolveCompanyWithICP(rootDomain, ipStr, icp string) (*in
 }
 
 type companyScopeQueryer interface {
-	QueryRow(query string, args ...any) *sql.Row
+	QueryRow(query string, args ...any) *Row
 }
 
 func resolveCompanyWithICP(q companyScopeQueryer, rootDomain, ipStr, icp string) (*int64, error) {

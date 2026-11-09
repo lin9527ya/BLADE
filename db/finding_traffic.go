@@ -358,6 +358,7 @@ func (d *DB) EditFindingTraffic(ctx context.Context, findingID, bindingID, versi
 }
 
 type RecordFindingInput struct {
+	Authority                                            *WriteAuthority
 	TaskID, ExplorationID, IntentID                      int64
 	VulnClass, Name, Severity, Summary, Evidence, Worker string
 	// Confidence is the honest-calibration label (high/medium/low; "" = 未标定,
@@ -375,6 +376,11 @@ type RecordedFinding struct {
 // ctx 由调用方传入本次事务所用的上下文（而非在内部取 context.Background）：
 // 事务内新加的推送事件写入同样应受调用方的取消与超时约束。
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
+	if in.Authority != nil {
+		if err := CheckWriteAuthorityTx(ctx, tx, *in.Authority); err != nil {
+			return nil, err
+		}
+	}
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}

@@ -634,6 +634,21 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// Resolve egress per run: with capture off this follows the proxy pool's
 	// active candidate; with capture on it is the local MITM (upstream switches
 	// inside the MITM). Never read the static fields directly below.
+	if intent.ExecutionGeneration == 0 {
+		current, err := ts.ClaimNode(ctx, intent.ID, name, "open", db.IntentLeaseTTL, nil, false)
+		if err != nil {
+			return "", WriteCounts{}, err
+		}
+		if current == nil {
+			return "", WriteCounts{}, db.ErrStaleExecution
+		}
+		intent = current
+	}
+	authority := intent.WriteAuthority(taskID, ts.ID())
+	ts = ts.WithAuthority(authority)
+	if as != nil {
+		as = as.WithAuthority(authority)
+	}
 	proxyAddr, proxyCA := w.proxySnapshot()
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
@@ -643,6 +658,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
+	tsx.SetWriteAuthority(authority)
 	tsx.SetOwnerIntent(intent.ID)              // writes anchor to this intent and reject stale intent_id
 	tsx.SetExecService(w.execService)          // P13：长任务执行（进程活过本次 run）
 	tsx.SetRotateEgressHandler(w.rotateEgress) // WAF 封禁出口时切换 Clash 节点
@@ -657,7 +673,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// worker 刻意不给 MultiEdit/Glob/Grep：文件精改用 Edit、检索走 Bash(grep/find)，
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
-	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
+	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID, LogicalSessionID: intent.LogicalSessionID, ExecutionGeneration: intent.ExecutionGeneration, ExecutionOwner: intent.Owner})
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
 	defer cleanup()
 	if w.webSearch.Enabled {
@@ -694,6 +710,16 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		} else {
 			sessionID = WorkerSessionIDForSlot(ts.ID(), slot)
 			ctxDir = ensureSlotDir(w.workDir, taskID, slot)
+		}
+	}
+	if intent.LogicalSessionID != "" {
+		sessionID = intent.LogicalSessionID
+		if at := strings.LastIndex(sessionID, "-slot"); at >= 0 {
+			if originalSlot, err := strconv.Atoi(sessionID[at+5:]); err == nil && originalSlot > 0 {
+				ctxDir = ensureSlotDir(w.workDir, taskID, originalSlot)
+			}
+		} else {
+			ctxDir = filepath.Join(runDir, "session")
 		}
 	}
 	// The run-wide intent is not the current tool action. Do not forward it or

@@ -135,6 +135,16 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 			m["stop_condition"] = clipLine(stop, 160)
 		}
 		// 契约只带决策需要的字段：acceptance 截断到 240 字，完整内容走 node_detail。
+		if p["requires"] != nil {
+			m["requires"] = p["requires"]
+		}
+		if p["evidence_meta"] != nil {
+			m["evidence_meta"] = p["evidence_meta"]
+		}
+		if n.LogicalSessionID != "" {
+			m["logical_session_id"] = n.LogicalSessionID
+			m["execution_generation"] = fmt.Sprint(n.ExecutionGeneration)
+		}
 		if c, ok := p["contract"].(map[string]any); ok && len(c) > 0 {
 			m["contract"] = compactIntentContract(c)
 		}
@@ -146,6 +156,7 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 // ToolSet exposes the PG-backed dual graph (asset + exploration) to an LLM agent.
 // One ToolSet is created per planner/worker run; per-run signals live here.
 type ToolSet struct {
+	writeAuthority  *db.WriteAuthority
 	findingRecorder FindingRecorder
 	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs              *db.CompanyStore // company store (optional)
@@ -524,6 +535,8 @@ func (t *ToolSet) SetOwnerNode(id int64) { t.ownerNode = id }
 
 // SetOwnerIntent marks the owner as the worker's current intent, enabling the
 // stale-intent write-back guard (worker slot transcripts span multiple intents).
+func (t *ToolSet) SetWriteAuthority(a db.WriteAuthority) { t.writeAuthority = &a }
+
 func (t *ToolSet) SetOwnerIntent(id int64) {
 	t.ownerNode = id
 	t.ownerIsIntent = id > 0
@@ -779,15 +792,17 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 	return t.readExpTool("graph_overview",
 		"探索态势。默认返回有界黑板视图（真实总数与窗口分离、活动意图/最近知识/路线/增量事件）；detail=true 返回完整态势（字段多、token 高，需要折叠区/继承任务/AD 图等时用）。",
 		obj(map[string]any{
-			"detail": map[string]any{"type": "boolean", "description": "true=完整态势；默认 false=有界黑板视图"},
-			"after":  intp("事件游标：只返回 id>after 的节点（用上次 blackboard.next_cursor）"),
-			"limit":  intp("事件窗口 1..100，默认 20"),
+			"detail":        map[string]any{"type": "boolean", "description": "true=完整态势；默认 false=有界黑板视图"},
+			"change_cursor": str("真实变更游标ev1，覆盖旧节点更新/删除、边和证据；用上次change_cursor，跨任务拒绝，过期需resync"),
+			"after":         intp("旧版节点新增游标：只返回 id>after，不含更新/删除；新调用用change_cursor"),
+			"limit":         intp("事件窗口 1..100，默认 20"),
 		}),
 		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
 			var a struct {
-				Detail bool  `json:"detail"`
-				After  int64 `json:"after"`
-				Limit  int   `json:"limit"`
+				ChangeCursor string `json:"change_cursor"`
+				Detail       bool   `json:"detail"`
+				After        int64  `json:"after"`
+				Limit        int    `json:"limit"`
 			}
 			_ = json.Unmarshal(raw, &a)
 			if a.Detail {
@@ -796,7 +811,7 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 			if !t.useBoundedView() {
 				return jsonResult(t.graphOverviewData()) // 关闭有界视图：默认即全量
 			}
-			return jsonResult(t.blackboardViewData(a.After, a.Limit))
+			return jsonResult(t.blackboardViewData(a.After, a.Limit, a.ChangeCursor))
 		})
 }
 
@@ -804,16 +819,18 @@ func (t *ToolSet) blackboardView() actool.CoreTool {
 	return t.readExpTool("blackboard_view",
 		"有界黑板视图：真实总数、活动意图（含 contract）、最近知识、路线聚合与增量事件。窗口不是全量；更早的详情用 graph_overview(detail=true) / list_facts / list_worker_traces 翻页。",
 		obj(map[string]any{
-			"after": intp("事件游标：只返回 id>after 的节点（用上次 blackboard.next_cursor）"),
-			"limit": intp("事件窗口 1..100，默认 20"),
+			"change_cursor": str("真实变更游标ev1，覆盖旧节点更新/删除、边和证据；用上次change_cursor，跨任务拒绝，过期需resync"),
+			"after":         intp("旧版节点新增游标：只返回 id>after，不含更新/删除；新调用用change_cursor"),
+			"limit":         intp("事件窗口 1..100，默认 20"),
 		}),
 		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
 			var a struct {
-				After int64 `json:"after"`
-				Limit int   `json:"limit"`
+				ChangeCursor string `json:"change_cursor"`
+				After        int64  `json:"after"`
+				Limit        int    `json:"limit"`
 			}
 			_ = json.Unmarshal(raw, &a)
-			return jsonResult(t.blackboardViewData(a.After, a.Limit))
+			return jsonResult(t.blackboardViewData(a.After, a.Limit, a.ChangeCursor))
 		})
 }
 
@@ -951,14 +968,22 @@ func (t *ToolSet) scopeSurface() *scopeSurface {
 // the model needn't spend a turn calling the tool — every plan round starts with
 // an empty context and always needs this first).
 func (t *ToolSet) graphOverviewData() map[string]any {
-	return t.graphOverviewDataInternal(true)
+	return t.snapshotProjection(func(view *ToolSet) map[string]any {
+		out := view.graphOverviewDataInternal(true)
+		view.projectionContract(out)
+		return out
+	})
 }
 
 // graphOverviewDataForWorker omits the breadth ledger: a worker acts on one
 // intent and must not try to widen its job. Skipping it also avoids a needless
 // coverage-matrix query for every worker run.
 func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
-	out := t.graphOverviewDataInternal(false)
+	out := t.snapshotProjection(func(view *ToolSet) map[string]any {
+		out := view.graphOverviewDataInternal(false)
+		view.projectionContract(out)
+		return out
+	})
 	// 线索/未消费事实/冷区事实索引/能力/已否定方向是**规划层**的决策材料：
 	// worker 只该做手里这一条意图，看到这些会诱发自行扩面。显式过滤，避免
 	// 以后往 overview 加字段时又漏进 worker 上下文。
@@ -976,7 +1001,10 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 // pre-fetched situation block and the blackboard_view tool. It keeps the real
 // totals separate from display windows, adds revision/event cursor/route
 // aggregation, and drops bulky derived sections that are one detail call away.
-func (t *ToolSet) blackboardViewData(after int64, limit int) map[string]any {
+func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) map[string]any {
+	if !t.ts.InReadSnapshot() {
+		return t.snapshotProjection(func(view *ToolSet) map[string]any { return view.blackboardViewData(after, limit, cursor...) })
+	}
 	if after < 0 {
 		after = 0
 	}
@@ -1084,13 +1112,30 @@ func (t *ToolSet) blackboardViewData(after int64, limit int) map[string]any {
 	out["events"] = events
 	out["routes"] = blackboardRoutes(out)
 	out["blackboard"] = map[string]any{
-		"revision":    revision,
-		"cursor":      after,
-		"has_more":    hasMore,
-		"has_earlier": hasEarlier,
-		"next_cursor": nextCursor,
-		"window_note": "有界黑板视图：totals 是真实总数，意图/知识/事件与 routes 都是当前窗口；折叠列表已省略（计数看 folded_*_total）。更早的详情用 graph_overview(detail=true) 或 list_facts/list_worker_traces 翻页。",
+		"node_revision":      revision,
+		"revision":           out["revision"],
+		"legacy_node_cursor": true,
+		"cursor":             after,
+		"has_more":           hasMore,
+		"has_earlier":        hasEarlier,
+		"next_cursor":        nextCursor,
+		"window_note":        "有界黑板视图：totals 是真实总数，意图/知识/事件与 routes 都是当前窗口；折叠列表已省略（计数看 folded_*_total）。更早的详情用 graph_overview(detail=true) 或 list_facts/list_worker_traces 翻页。",
 	}
+	var changeCursor string
+	if len(cursor) > 0 {
+		changeCursor = cursor[0]
+	}
+	changes, cerr := t.ts.BlackboardChanges(context.Background(), changeCursor, limit)
+	if cerr != nil {
+		return map[string]any{"read_status": db.ReadStatus{State: "unknown"}, "error": cerr.Error()}
+	}
+	out["changes"] = changes.Changes
+	out["change_cursor"] = changes.Cursor
+	out["changes_status"] = changes.Status
+	out["resync_required"] = changes.Resync
+	t.projectionContract(out)
+	// The forward page cursor is the last returned change, not the newest revision.
+	out["change_cursor"] = changes.Cursor
 	return out
 }
 
@@ -1186,7 +1231,7 @@ func (t *ToolSet) graphHealth() map[string]any {
 		return nil
 	}
 	key := t.ts.ID()
-	if v, ok := graphHealthCache.Load(key); ok {
+	if v, ok := graphHealthCache.Load(key); ok && !t.ts.InReadSnapshot() {
 		if e, ok := v.(graphHealthEntry); ok && time.Since(e.at) < 30*time.Second {
 			return e.data
 		}
@@ -1195,7 +1240,11 @@ func (t *ToolSet) graphHealth() map[string]any {
 	if err != nil || rep == nil || len(rep.Counts) == 0 {
 		return nil
 	}
-	data := map[string]any{"issues": len(rep.Issues), "counts": rep.Counts}
+	total := 0
+	for _, n := range rep.Counts {
+		total += n
+	}
+	data := map[string]any{"issues": total, "counts": rep.Counts, "read_status": db.ReadSetStatus(int64(total), len(rep.Issues), "audit_graph"), "cycle_unit": "cyclic_strongly_connected_component"}
 	if len(rep.Issues) > 0 {
 		n := len(rep.Issues)
 		if n > 3 {
@@ -1207,7 +1256,9 @@ func (t *ToolSet) graphHealth() map[string]any {
 		}
 		data["top"] = list
 	}
-	graphHealthCache.Store(key, graphHealthEntry{at: time.Now(), data: data})
+	if !t.ts.InReadSnapshot() {
+		graphHealthCache.Store(key, graphHealthEntry{at: time.Now(), data: data})
+	}
 	return data
 }
 
@@ -2767,6 +2818,22 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 			if err := t.ts.PopulateFindingTrafficIDs([]*db.Node{n}); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
+			store := t.ts
+			if n.Inherited {
+				sources, serr := t.ts.DirectSourceStores()
+				if serr != nil {
+					return actool.Errorf(serr.Error()), nil
+				}
+				for _, source := range sources {
+					if source.Task.TaskID == n.SourceTaskID {
+						store = source.Store
+						break
+					}
+				}
+			}
+			if err := store.PopulateEvidenceReadState([]*db.Node{n}); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
 			return jsonResult(n) // full payload incl. detail / evidence, plus explicit finding IDs
 		})
 }
@@ -2775,10 +2842,11 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 
 // intentItem 是 add_intent 批量/单条的一条探索方向。
 type intentItem struct {
-	Summary     string            `json:"summary"`
-	AssetIDs    []json.RawMessage `json:"asset_ids"`
-	ParentIDs   []json.RawMessage `json:"parent_ids"`
-	UsesLootIDs []json.RawMessage `json:"uses_loot_ids"`
+	Requires    []db.IntentRequirement `json:"requires,omitempty"`
+	Summary     string                 `json:"summary"`
+	AssetIDs    []json.RawMessage      `json:"asset_ids"`
+	ParentIDs   []json.RawMessage      `json:"parent_ids"`
+	UsesLootIDs []json.RawMessage      `json:"uses_loot_ids"`
 	// DependsOn 是串行链的前置意图：它们有结论（done/negative）之前，本条不会被派给 worker。
 	DependsOn []json.RawMessage `json:"depends_on"`
 	GoalID    json.RawMessage   `json:"goal_id"`
@@ -2999,6 +3067,9 @@ const (
 //   - 战果轴：uses_loot_ids → uses（本条方向在动用哪次已得的访问：据点/凭据）。只接受本任务里
 //     仍在手(active)的战果；这条边是「哪些战果还没被推进过」的唯一依据。
 func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
+	if err := t.ts.ValidateRequirements(it.Requires); err != nil {
+		return 0, "", err
+	}
 	// 本轮已判定全部目标达成（prove_goal/goal_met）后不得再派意图：否则同一轮里
 	// 先收官、后面又冒出几条永远没人领的 open 意图，任务结束时 frontier 留下假待办。
 	if t.GoalMet {
@@ -3238,6 +3309,9 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	}
 	if len(contractPayload) > 0 {
 		payload["contract"] = contractPayload
+	}
+	if len(it.Requires) > 0 {
+		payload["requires"] = it.Requires
 	}
 	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
 	// 不在这里返错。它是给交付物用的分类，不是约束。
@@ -3510,6 +3584,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"asset_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
 			"parent_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
 			"goal_id":           idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：仅作归属记录，不生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。恰有一个未达成(open)目标时省略会自动记录；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
+			"requires":          map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "可选数据前提，AND：{type:fact|capability|credential,node_id?或key?,polarity?,max_age_seconds?,verification?,target?}。缺条件仍可创建候选，但暂不领取；key匹配claim_key/enables。能力需正向事实，争议/过期/替代不满足；凭据verification需target。depends_on只表示上游执行收束，不表示能力存在。不要给无必要条件的方向加门。"},
 			"depends_on":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
 			"uses_loot_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
 			"priority":          intp("优先级 0-10，默认5"),
@@ -3854,6 +3929,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			}
 		}
 		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: intentID, VulnClass: a.VulnClass, Name: a.Name, Severity: severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, Confidence: a.Confidence, AssetIDs: assetIDs}
+		input.Authority = t.writeAuthority
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -3967,16 +4043,19 @@ func (t *ToolSet) closeCandidate() actool.CoreTool {
 // must NOT be stuffed into the asset graph via upsert_asset.
 // factItem 是 record_fact 批量/单条的一条事实。
 type factItem struct {
-	Summary     string            `json:"summary"`
-	Detail      string            `json:"detail"`
-	Evidence    string            `json:"evidence"`    // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
-	Confidence  string            `json:"confidence"`  // observed（直接看到）| inferred（据现象推断）
-	Polarity    string            `json:"polarity"`    // positive（正向观察）| negative（否定收尾）| inconclusive（存疑）
-	Enables     []string          `json:"enables"`     // credential|foothold|access|info|surface
-	Limitations string            `json:"limitations"` // 这条结论的适用边界/前提
-	Leads       []leadItem        `json:"leads"`       // 本意图之外值得深挖的线索（交给 planner）
-	IntentID    json.RawMessage   `json:"intent_id"`
-	AssetIDs    []json.RawMessage `json:"asset_ids"`
+	EvidenceMeta   *db.EvidenceMetadata `json:"evidence_meta,omitempty"`
+	ContradictsIDs []int64              `json:"contradicts_ids,omitempty"`
+	SupersedesIDs  []int64              `json:"supersedes_ids,omitempty"`
+	Summary        string               `json:"summary"`
+	Detail         string               `json:"detail"`
+	Evidence       string               `json:"evidence"`    // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
+	Confidence     string               `json:"confidence"`  // observed（直接看到）| inferred（据现象推断）
+	Polarity       string               `json:"polarity"`    // positive（正向观察）| negative（否定收尾）| inconclusive（存疑）
+	Enables        []string             `json:"enables"`     // credential|foothold|access|info|surface
+	Limitations    string               `json:"limitations"` // 这条结论的适用边界/前提
+	Leads          []leadItem           `json:"leads"`       // 本意图之外值得深挖的线索（交给 planner）
+	IntentID       json.RawMessage      `json:"intent_id"`
+	AssetIDs       []json.RawMessage    `json:"asset_ids"`
 }
 
 // leadItem 是一条「本意图之外」的线索。线索不是结论：它没有证据门槛，
@@ -4136,6 +4215,12 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		return 0, fmt.Errorf("summary 不能为空")
 	}
 	payload := map[string]any{"summary": it.Summary}
+	if err := t.ts.ValidateEvidenceMetadata(it.EvidenceMeta); err != nil {
+		return 0, err
+	}
+	if it.EvidenceMeta != nil {
+		payload["evidence_meta"] = it.EvidenceMeta
+	}
 	if it.Detail != "" {
 		payload["detail"] = it.Detail
 	}
@@ -4172,13 +4257,18 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		}
 	}
 	// a fact is its OWN node kind (distinct from a vuln finding).
-	id, err := t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs))
+	relations := make([]db.IntentEdge, 0, len(it.ContradictsIDs)+len(it.SupersedesIDs))
+	for _, id := range it.ContradictsIDs {
+		relations = append(relations, db.IntentEdge{To: id, Rel: db.RelContradicts})
+	}
+	for _, id := range it.SupersedesIDs {
+		relations = append(relations, db.IntentEdge{To: id, Rel: db.RelSupersedes})
+	}
+	id, err := t.ts.AddFactGraph(payload, t.worker, pidList(it.AssetIDs), intent, relations)
 	if err != nil {
 		return 0, err
 	}
-	if intent > 0 {
-		_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> fact
-	}
+
 	t.writes.Facts++
 	t.writes.noteValidationAssets(pidList(it.AssetIDs))
 	return id, nil
@@ -4307,12 +4397,13 @@ func (t *ToolSet) recordProbeFact() actool.CoreTool {
 				if d := strings.TrimSpace(it.Detail); d != "" {
 					payload["detail"] = d
 				}
-				id, err := t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs))
+				from := int64(0)
+				if origin > 0 {
+					from = origin
+				}
+				id, err := t.ts.AddLinkedNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs), from, db.RelYields)
 				if err != nil {
 					return actool.Errorf(fmt.Sprintf("facts[%d] 写入失败：%v", i, err)), nil
-				}
-				if origin > 0 && origin != id {
-					_ = t.ts.Link(origin, db.RelYields, id)
 				}
 				ids = append(ids, id)
 			}
@@ -4329,17 +4420,20 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"  · confidence=observed（输出里直接看到）| inferred（据现象推断）。\n"+
 		"  · **否定类结论**（不可注入/端口关闭/未发现入口等）只写\"观察 + 试探性读法\"——陈述你实际看到什么，方向是否放弃由规划者综合全局定；务必给 evidence，手段没穷尽或证据弱（含只探一次、看起来像）标 inferred，确已穷尽且直接看到才标 observed。",
 		obj(map[string]any{
-			"facts":       map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/polarity/enables/leads/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":     str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
-			"intent_id":   idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
-			"detail":      str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
-			"evidence":    str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
-			"confidence":  str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
-			"polarity":    str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 summary 关键词与 confidence 推断。"),
-			"enables":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【能力标签】这条事实给了什么：credential | foothold | access | info | surface（可多选，没有就省略）"},
-			"limitations": str("这条结论的适用边界/前提（可选）：在什么条件下不成立、还缺什么验证。"),
-			"leads":       map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "【本意图之外的线索】数组，元素 {text, asset_ids?}：看到的其它入口/参数/行为/资产，值得 planner 下一轮跟进。最多 8 条、每条 ≤300 字；线索不是结论，不需要 evidence。不要把线索塞进 summary。"},
-			"asset_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
+			"evidence_meta":   map[string]any{"type": "object", "description": "可选{claim_key,observed_at,valid_until,method,scope:[assetID],source_refs:[{type:activity|execution|finding_binding,id}]}。时间RFC3339，是实际观察时间，不是提交时间；未知则省略。来源必须属于本任务或直接关联任务。"},
+			"contradicts_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "与本事实矛盾的本任务fact id；双方保留，不自动判真假。"},
+			"supersedes_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "由本次新观察替代的本任务fact id，新→旧；原件保留。"},
+			"facts":           map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/polarity/enables/leads/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"summary":         str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
+			"intent_id":       idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
+			"detail":          str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
+			"evidence":        str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
+			"confidence":      str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
+			"polarity":        str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 summary 关键词与 confidence 推断。"),
+			"enables":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【能力标签】这条事实给了什么：credential | foothold | access | info | surface（可多选，没有就省略）"},
+			"limitations":     str("这条结论的适用边界/前提（可选）：在什么条件下不成立、还缺什么验证。"),
+			"leads":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "【本意图之外的线索】数组，元素 {text, asset_ids?}：看到的其它入口/参数/行为/资产，值得 planner 下一轮跟进。最多 8 条、每条 ≤300 字；线索不是结论，不需要 evidence。不要把线索塞进 summary。"},
+			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -4605,18 +4699,16 @@ func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (
 	if state == "" {
 		state = db.StateLootActive
 	}
-	id, err := t.ts.AddNode(kind, payload, 8, state, t.worker, pidList(base.AssetIDs))
+	// 痕迹记的是「这条意图在目标上留下了什么」：用 leaves 而不是 yields。
+	// yields 是产出物，会被意图删除的独占级联带走；痕迹是交付证据，必须留得住。
+	// 节点、锚点与血缘同事务提交——事后 best-effort 连边失败会留下无法归因的战果。
+	rel := db.RelYields
+	if kind == db.KindFootprint {
+		rel = db.RelLeaves
+	}
+	id, err := t.ts.AddLinkedNode(kind, payload, 8, state, t.worker, pidList(base.AssetIDs), intent, rel)
 	if err != nil {
 		return 0, err
-	}
-	if intent > 0 {
-		// 痕迹记的是「这条意图在目标上留下了什么」：用 leaves 而不是 yields。
-		// yields 是产出物，会被意图删除的独占级联带走；痕迹是交付证据，必须留得住。
-		rel := db.RelYields
-		if kind == db.KindFootprint {
-			rel = db.RelLeaves
-		}
-		_ = t.ts.Link(intent, rel, id)
 	}
 	return id, nil
 }
@@ -4697,9 +4789,13 @@ func (t *ToolSet) verifyCredential() actool.CoreTool {
 			"protocol":      str("怎么连（可省略）"),
 			"evidence":      str("【一行】登录成功的命令 + 关键输出行（必填）"),
 			"note":          str("备注（可省略）"),
+			"observed_at":   str("实际验证时间RFC3339，未知则省略"),
+			"valid_until":   str("验证适用到何时RFC3339，可选"),
 		}, "credential_id", "host", "evidence"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
+				ObservedAt   string          `json:"observed_at"`
+				ValidUntil   string          `json:"valid_until"`
 				CredentialID json.RawMessage `json:"credential_id"`
 				Host         string          `json:"host"`
 				Port         int             `json:"port"`
@@ -4709,6 +4805,9 @@ func (t *ToolSet) verifyCredential() actool.CoreTool {
 				Note         string          `json:"note"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if err := t.ts.ValidateEvidenceMetadata(&db.EvidenceMetadata{ObservedAt: a.ObservedAt, ValidUntil: a.ValidUntil}); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			id := pid(a.CredentialID)
@@ -4727,6 +4826,7 @@ func (t *ToolSet) verifyCredential() actool.CoreTool {
 			cur := db.ParseCredential(node)
 			merged := db.MergeCredentialTarget(cur.Targets, db.CredentialTarget{
 				Host: a.Host, Port: a.Port, Service: a.Service, Protocol: a.Protocol,
+				ObservedAt: a.ObservedAt, ValidUntil: a.ValidUntil, ValidationStatus: "verified",
 				Verified: true, Evidence: strings.TrimSpace(a.Evidence), Note: a.Note,
 			})
 			db.SortCredentialTargets(merged)
@@ -5002,12 +5102,10 @@ func (t *ToolSet) reportDetection() actool.CoreTool {
 				}
 			}
 			// state 就是结果本身：kind='detection' 的三态在 schema 里已经定死，这里不另立一档。
-			id, err := t.ts.AddNode(db.KindDetection, payload, 6, a.Result, t.worker, pidList(a.AssetIDs))
+			// 与 fact/finding/战果同一条链，节点与血缘同事务落库。
+			id, err := t.ts.AddLinkedNode(db.KindDetection, payload, 6, a.Result, t.worker, pidList(a.AssetIDs), intent, db.RelYields)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
-			}
-			if intent > 0 {
-				_ = t.ts.Link(intent, db.RelYields, id) // 与 fact/finding/战果同一条链
 			}
 			t.writes.Detections++
 			t.writes.noteValidationAssets(pidList(a.AssetIDs))

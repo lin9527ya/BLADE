@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"strconv"
@@ -55,9 +56,14 @@ func ActiveLootIDs(ns []*Node) map[int64]bool {
 
 // ChainLedger 构造当前探索的通路台账（只读，单次定点查询 + 两次批量读节点）。
 func (s *ExplorationStore) ChainLedger() (*ChainReport, error) {
+	if !s.InReadSnapshot() {
+		var out *ChainReport
+		err := s.ReadSnapshot(context.Background(), func(_ *DB, view *ExplorationStore) error { var err error; out, err = view.ChainLedger(); return err })
+		return out, err
+	}
 	loot := make([]*Node, 0, 64)
 	for _, kind := range []string{KindFoothold, KindCredential} {
-		ns, err := s.ListByKindState(kind, StateLootActive, 500)
+		ns, err := s.AllByKindState(kind, StateLootActive)
 		if err != nil {
 			return nil, err
 		}

@@ -42,6 +42,9 @@ func ExecutionTerminal(status string) bool {
 
 // ToolExecution is one row of the ledger.
 type ToolExecution struct {
+	LogicalSessionID    string `json:"logical_session_id,omitempty"`
+	ExecutionGeneration int64  `json:"execution_generation,omitempty"`
+	ExecutionOwner      string `json:"execution_owner,omitempty"`
 	// Limits 是资源限额快照（P24）：请求值 + 实际生效情况（本机不支持某项时如实标注）。
 	Limits      json.RawMessage `json:"limits,omitempty"`
 	ID          int64           `json:"id"`
@@ -65,14 +68,14 @@ type ToolExecution struct {
 
 const executionCols = `id, task_id, COALESCE(intent_id,0), worker, tool, command, COALESCE(description,''), status,
 	COALESCE(exit_code,-1), output_path, output_bytes, partial_tail, cancel_note, error,
-	started_at, ended_at, created_at, limits`
+	started_at, ended_at, created_at, limits,logical_session_id,execution_generation,execution_owner`
 
 func scanExecution(sc interface{ Scan(...any) error }) (*ToolExecution, error) {
 	var e ToolExecution
 	var exit int
 	if err := sc.Scan(&e.ID, &e.TaskID, &e.IntentID, &e.Worker, &e.Tool, &e.Command, &e.Description, &e.Status,
 		&exit, &e.OutputPath, &e.OutputBytes, &e.PartialTail, &e.CancelNote, &e.Error,
-		&e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.Limits); err != nil {
+		&e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.Limits, &e.LogicalSessionID, &e.ExecutionGeneration, &e.ExecutionOwner); err != nil {
 		return nil, err
 	}
 	if exit >= 0 {
@@ -108,7 +111,7 @@ WHERE task_id=$1 AND status IN ($2,$3)`, e.TaskID, ExecQueued, ExecRunning).Scan
 	if n >= limit {
 		return 0, fmt.Errorf("本任务同时运行的后台执行已达上限（%d/%d）：先 wait_execution 等已有的收尾，或用 cancel_execution 取消一条，再起新的", n, limit)
 	}
-	id, err := insertExecution(ctx, tx, e)
+	id, err := insertExecution(ctx, txRows{tx}, e)
 	if err != nil {
 		return 0, err
 	}
@@ -116,16 +119,16 @@ WHERE task_id=$1 AND status IN ($2,$3)`, e.TaskID, ExecQueued, ExecRunning).Scan
 }
 
 func insertExecution(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryRowContext(context.Context, string, ...any) *Row
 }, e *ToolExecution) (int64, error) {
 	var intentID any
 	if e.IntentID > 0 {
 		intentID = e.IntentID
 	}
 	var id int64
-	err := q.QueryRowContext(ctx, `INSERT INTO tool_executions(task_id, intent_id, worker, tool, command, description, status, output_path)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		e.TaskID, intentID, e.Worker, e.Tool, e.Command, e.Description, ExecQueued, e.OutputPath).Scan(&id)
+	err := q.QueryRowContext(ctx, `INSERT INTO tool_executions(task_id, intent_id, worker, tool, command, description, status, output_path,logical_session_id,execution_generation,execution_owner)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		e.TaskID, intentID, e.Worker, e.Tool, e.Command, e.Description, ExecQueued, e.OutputPath, e.LogicalSessionID, e.ExecutionGeneration, e.ExecutionOwner).Scan(&id)
 	return id, err
 }
 
