@@ -113,3 +113,15 @@ func TestAddIntentClassicBatchSoftCap(t *testing.T) {
 		}
 	})
 }
+
+// 混合版硬底线必须同时出现在系统骨架和每轮 user 输入里；增强模式不覆盖。
+func TestPlannerHardFloorHybrid(t *testing.T) {
+	WithOverrides(classicConstraints(), func() {
+		if got := plannerHardFloor(nil, true); !strings.Contains(got, "混合版硬底线") || !strings.Contains(got, "必须至少产出 1 条") {
+			t.Fatalf("经典混合模式硬底线错误: %s", got)
+		}
+	})
+	if got := plannerHardFloor(nil, true); strings.Contains(got, "混合版硬底线") {
+		t.Fatalf("增强模式不应使用混合版硬底线: %s", got)
+	}
+}

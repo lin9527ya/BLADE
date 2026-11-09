@@ -502,14 +502,6 @@ func truncOutput(s string, n int) string {
 	return string(r[:n]) + " …（已截断，完整见 get_worker_output）"
 }
 
-// derefPolicy 把可空策略转成零值（HardFloorText 等纯函数按值接收）。
-func derefPolicy(p *policy.Effective) policy.Effective {
-	if p == nil {
-		return policy.Effective{}
-	}
-	return *p
-}
-
 // stallNoticeFromStore 读本任务最近的策略拒绝记录并渲染成"不要重复这些方向"的提示。
 // 走库而不是新回调：跨进程重启不丢、验收可直接断言、也不给 ToolSet 再加回调。
 func stallNoticeFromStore(ts *db.ExplorationStore, eff policy.Effective) string {
@@ -837,6 +829,11 @@ const blackboardViewBlock = `
 // hybridPlannerBlock is the classic-mode scaffolding: ARTEX's anti-stall,
 // opening-probe, depth-first and route-diversity rules without BLADE's
 // breadth/ledger/review/completion/supervisor gates.
+// hybridHardFloorText is used in the planner's per-round user input (closer to
+// the model than the system block). policy.HardFloorText's classic variant says
+// "0 条也可以"; that would contradict the hybrid system block.
+const hybridHardFloorText = "**混合版硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图，本轮必须至少产出 1 条向目标推进的意图；只有目标不可达/不再适用（先 abandon_goal）或存在明确外部阻断证据时，才允许 0 条并说明。**"
+
 const hybridPlannerBlock = `
 
 【混合版规划骨架（代码持有；经典模式生效）】
@@ -1144,7 +1141,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 					lead += "\n（若【策略允许的范围内】确已无可行方向：本轮产出 0 条意图并调用 mark_strategy_exhausted（附证据 id）——这不叫停摆，系统会暂停任务等人工。）"
 				}
 			} else {
-				lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**。按目标与已有事实判断：如确有新方向可派，0 条也是正常结果；没有“必须派”的硬底线："
+				lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——探索已停摆。**混合版硬底线：目标未达成时必须至少补出 1 条向目标推进的意图；只有目标不可达/不再适用（先 abandon_goal）或有明确外部阻断证据时，才允许 0 条并说明。** 先据下面的态势判定目标是否已达成，未达成则立即补方向："
 			}
 		}
 	}
@@ -1157,12 +1154,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 上一轮结论摘要与态势同属易变段，统一放进 volatile。
 	// P20：硬底线在有策略时改写成"只在策略内成立"——否则提示词自相矛盾：
 	// 一边要求必须派人，一边把提出来的人全拒掉。
-	hardFloor := policy.HardFloorTextWithOptions(derefPolicy(pol), policy.CheckOptions{IgnoreRoundCap: !constraintOn("dispatch")})
-	if opening && constraintOn("opening") {
-		// 开局轮的唯一合法产物可能是"一句更具体的方向"：摸底之后即使 0 条意图也不算
-		// 停摆。摸底轮数上限保证这条例外不会变成长期空转的借口。
-		hardFloor = "**【开局例外（仅本轮）】本轮是任务开局：按【开局摸底】做完 1–3 次只读请求后，即使本轮只产出 0 条意图也不算停摆；摸底成功则至少派 1 条引用观察的意图。**"
-	}
+	hardFloor := plannerHardFloor(pol, opening)
 	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。" + hardFloor
 	volatile := situational
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
@@ -1298,6 +1290,26 @@ func (p *Planner) LastRoundIntents() int { return p.lastRoundIntents }
 // 顺序不能随意调换：provider 的提示缓存按 **token 前缀** 匹配，把每轮都变的态势放在
 // 最前面，第一条消息从开头就分叉，整段前缀都吃不到缓存（实测 planner 轮首命中率 40%，
 // worker 89%）。按上面的顺序，前两段在同类唤醒之间完全一致，能跨轮命中。
+// plannerHardFloor resolves the per-round "must produce an intent?" line.
+// Enhanced mode keeps policy's text; classic hybrid overrides policy's soft
+// "0 条也可以" with the ARTEX-style anti-stall floor.
+func plannerHardFloor(pol *policy.Effective, opening bool) string {
+	eff := policy.Effective{}
+	if pol != nil {
+		eff = *pol
+	}
+	hardFloor := policy.HardFloorTextWithOptions(eff, policy.CheckOptions{IgnoreRoundCap: !constraintOn("dispatch")})
+	if opening && constraintOn("opening") {
+		// 开局轮的唯一合法产物可能是"一句更具体的方向"：摸底之后即使 0 条意图也不算
+		// 停摆。摸底轮数上限保证这条例外不会变成长期空转的借口。
+		hardFloor = "**【开局例外（仅本轮）】本轮是任务开局：按【开局摸底】做完 1–3 次只读请求后，即使本轮只产出 0 条意图也不算停摆；摸底成功则至少派 1 条引用观察的意图。**"
+	}
+	if !constraintOn("dispatch") {
+		hardFloor = hybridHardFloorText
+	}
+	return hardFloor
+}
+
 func composePlannerInput(staticRules, lead, volatile, todos string) string {
 	return staticRules + "\n\n" + lead + "\n\n" + volatile + "\n" + todos
 }
