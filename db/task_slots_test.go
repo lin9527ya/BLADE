@@ -224,3 +224,37 @@ func TestRestartResumeMarksInterruptedIntent(t *testing.T) {
 		t.Fatalf("claim must clear resume_slot: %+v", after)
 	}
 }
+
+// 优雅关停会等 run 收尾，running 行在进程退出前已变成 open；启动时的
+// ResetRunningIntents 只认 running 行，兜不到。关停分支必须自己盖续跑标记，
+// 否则重启后换槽领取会丢原槽位 transcript，只能从头探索。
+func TestParkIntentForRestartMarksSlot(t *testing.T) {
+	d, st := intentLeaseFixture(t)
+	id, err := st.AddIntent(map[string]any{"summary": "shutdown mid-run"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE exploration_nodes SET state='running', owner='work#3' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := st.ParkIntentForRestart(id, 3)
+	if err != nil || !changed {
+		t.Fatalf("park: changed=%v err=%v", changed, err)
+	}
+	node, err := st.GetNode(id)
+	if err != nil || node == nil {
+		t.Fatal(err)
+	}
+	if node.State != "open" {
+		t.Fatalf("state = %s, want open", node.State)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(node.Payload, &payload)
+	if payload["resume_after_restart"] != true || payload["resume_slot"] != float64(3) {
+		t.Fatalf("parked intent missing resume marker: %+v", payload)
+	}
+	// 已不是 running 的行不能被重复标记（CAS）。
+	if changed, err := st.ParkIntentForRestart(id, 3); err != nil || changed {
+		t.Fatalf("second park must be a no-op: changed=%v err=%v", changed, err)
+	}
+}

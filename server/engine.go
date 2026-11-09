@@ -1533,7 +1533,15 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
+		// 关停取消也要带续跑标记：优雅关停会在退出前等 run 收尾，残留行不会停在
+		// running，启动时的 ResetRunningIntents 兜不到它们。
+		if ectx.Err() != nil && !e.IsDeleting(t.ID) && shutdownAborted(context.Cause(ectx)) {
+			if changed, err := t.Store.ParkIntentForRestart(intent.ID, slotNo); err != nil {
+				log.Printf("[worker %s] task %s 意图 #%d 关停回退失败: %v", name, t.ID, intent.ID, err)
+			} else if changed {
+				log.Printf("[worker %s] task %s 意图 #%d 因进程关停结束，已标记重启续跑（槽位 %d）", name, t.ID, intent.ID, slotNo)
+			}
+		} else if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 领取后回退失败: %v", name, t.ID, intent.ID, err)
 		}
 		return true
@@ -1721,10 +1729,13 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// running、不修它（planner 会把它当外部故障重派，但图上留了个假终态）。
 	// 排在其它特判之后：超时收尾/任务终态/kill 都比"整个进程要关了"更具体。
 	if ectx.Err() != nil && shutdownAborted(context.Cause(ectx)) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
+		// 带上 resume_after_restart/resume_slot：优雅关停会等 run 收尾，启动重置
+		// 只认 running 行，不在这里标就没人标。
+		changed, err := t.Store.ParkIntentForRestart(intent.ID, slotNo)
+		if err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 关停回退失败: %v", name, t.ID, intent.ID, err)
-		} else {
-			log.Printf("[worker %s] task %s 意图 #%d 因进程关停结束，已退回 open 等待重启后重派", name, t.ID, intent.ID)
+		} else if changed {
+			log.Printf("[worker %s] task %s 意图 #%d 因进程关停结束，已标记重启续跑（槽位 %d）", name, t.ID, intent.ID, slotNo)
 		}
 		e.touch(t.ID)
 		return true

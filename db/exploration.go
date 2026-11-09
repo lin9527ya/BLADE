@@ -744,6 +744,25 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.
 	return n == 1, err
 }
 
+// ParkIntentForRestart returns ONE running intent to 'open' while stamping the
+// restart-resume marker. Graceful shutdown cancels in-flight runs and waits for
+// them to settle, so those intents are already open by the time the next process
+// boots — ResetRunningIntents (the crash path) never sees them. Without this
+// marker the re-claim can land on a different worker slot and lose the prior slot
+// transcript. slot<=0 omits resume_slot (no slot affinity to preserve).
+func (s *ExplorationStore) ParkIntentForRestart(id int64, slot int) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='open', blocked_reason=NULL, content_version=content_version+1, lease_expires_at=NULL,
+    payload = (COALESCE(payload,'{}'::jsonb) || jsonb_build_object('resume_after_restart', true)) ||
+              CASE WHEN $3::int > 0 THEN jsonb_build_object('resume_slot', $3::int) ELSE '{}'::jsonb END
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'`, id, s.expID, slot)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // SetIntentSemanticOutcome records a worker's semantic conclusion on a RUNNING
 // intent (negative = 探针确实发出且回包明确否定该假设 / out-of-scope = 超出授权范围 /
 // blocked = 平台或外部因素导致本意图无法执行)。
