@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-09
+
+联网搜索与经典 planner 行为的一版：DeepSeek 官方搜索、Brave/DDG 回退，经典模式补回
+ARTEX 的防停摆/开局/深度优先骨架；不恢复 BLADE 的广度债、台账、收官审计或 supervisor。
+
 ### 经典混合模式
 
 - **补回 ARTEX 的 planner 骨架**：经典模式增加防停摆硬底线（目标未达成且无 open/running
@@ -29,11 +34,18 @@
   captcha，未接入。
 - **DeepSeek 专用搜索配置**：`deepseek` 搜索来源优先使用名为 `deepseek` / `Deepseek`
   （或 `deepseek-*`）的 LLM 配置，找不到才回退当前激活配置；可以专门建一个低成本
-  DeepSeek 搜索配置，不影响 planner 的激活模型。
+  DeepSeek 搜索配置，不影响 planner 的激活模型。建议把该配置标记为「从模型池排除」，
+  这样主模型故障转移不会切到 DeepSeek，搜索仍按名字使用它。
 - **测试回执**：搜索测试返回 `fallback_from`，设置页提示原后端与回退后的实际后端。
 - **搜索工具收口**：planner / worker 不再注册旧的 `deepseek_search` / `deepseek_fetch`；
   搜索统一走 `web_search`（DeepSeek 优先），`WebFetch` 仍是客户端通用抓取，不会被
   DeepSeek 搜索配置接管。
+
+### 验证
+
+- `agent` / `server` 全量测试通过；`gofmt` / `go vet` / `staticcheck` 干净；前端静态构建通过。
+- 实测 DeepSeek 官方 `web_search`、Brave 网页和 DuckDuckGo 出口代理回退；经典混合版硬底线与
+  态势标题已用 planner 输入回归验证。
 
 ## [0.9.4] - 2026-11-08
 
