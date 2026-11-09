@@ -536,12 +536,16 @@ func stallNoticeFromStore(ts *db.ExplorationStore, eff policy.Effective) string 
 // hand — saving the round-trip it would otherwise spend calling the tool. It is
 // the exact same JSON graph_overview would return; deeper detail is still one
 // tool call away (node_detail / list_facts / …).
-func renderGraphOverview(data map[string]any) string {
+func renderGraphOverview(data map[string]any, bounded bool) string {
 	b, err := json.Marshal(SanitizeJSONStrings(data))
 	if err != nil {
 		return "" // fall back to the model calling graph_overview itself
 	}
-	return "\n\n【本轮态势（有界黑板视图，等同 graph_overview 的默认返回；totals 是真实总数，列表只是窗口。需要折叠区/继承任务/AD 图等完整态势时调 graph_overview(detail=true)；更早的知识用 list_facts/list_worker_traces 翻页）】：\n" + string(b)
+	header := "\n\n【本轮态势（完整 graph_overview 预取，等同你调用该工具的返回；有界视图已关闭。更早的知识用 list_facts/list_worker_traces 翻页）】：\n"
+	if bounded {
+		header = "\n\n【本轮态势（有界黑板视图，等同 graph_overview 的默认返回；totals 是真实总数，列表只是窗口。需要折叠区/继承任务/AD 图等完整态势时调 graph_overview(detail=true)；更早的知识用 list_facts/list_worker_traces 翻页）】：\n"
+	}
+	return header + string(b)
 }
 
 // plannerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the planner prompt,
@@ -1024,9 +1028,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
 	situation := ""
 	if p.useBoundedView() {
-		situation = renderGraphOverview(tsx.blackboardViewData(0, 20))
+		situation = renderGraphOverview(tsx.blackboardViewData(0, 20), true)
 	} else {
-		situation = renderGraphOverview(tsx.graphOverviewData()) // 有界视图关闭：预取完整态势
+		situation = renderGraphOverview(tsx.graphOverviewData(), false) // 有界视图关闭：预取完整态势
 	}
 	situational := renderTriggers(ts, triggers) + situation
 	// 穷尽复核反馈：上一轮 planner 声明穷尽、但复核员判定证据不足。必须放进本轮输入，

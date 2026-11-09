@@ -125,3 +125,12 @@ func TestPlannerHardFloorHybrid(t *testing.T) {
 		t.Fatalf("增强模式不应使用混合版硬底线: %s", got)
 	}
 }
+
+func TestRenderGraphOverviewHeaderMatchesMode(t *testing.T) {
+	if got := renderGraphOverview(map[string]any{}, false); !strings.Contains(got, "完整 graph_overview 预取") || strings.Contains(got, "有界黑板视图") {
+		t.Fatalf("完整态势标题错误: %s", got)
+	}
+	if got := renderGraphOverview(map[string]any{}, true); !strings.Contains(got, "有界黑板视图") {
+		t.Fatalf("有界态势标题错误: %s", got)
+	}
+}
