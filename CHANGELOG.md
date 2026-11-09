@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-09
+
+补上 0.9.6 重启续跑在**优雅关停**路径上的缺口：标记必须由关停分支自己写，不能指望启动重置。
+
+### 修复
+
+- **优雅关停也标记重启续跑**：进程关停时 `runIntent` 会在退出前把 running 意图 CAS 回 open，
+  并等 run 收尾；下次启动的 `ResetRunningIntents` 只重置仍为 running 的行（崩溃/SIGKILL 路径），
+  兜不到这些已回退的行，`resume_after_restart` / `resume_slot` 从未写入。关停分支（含领取后
+  立即被取消的早退分支）改为调用新增的 `ParkIntentForRestart`，回退 open 的同时直接落续跑标记
+  和原槽位；任务删除、暂停、租约回收仍保持原语义，不误标。
+
+### 验证
+
+- 端到端关停用例扩展断言：意图退回 open 时必须带 `resume_after_restart`，`resume_slot` 等于
+  原槽位；实测日志输出「因进程关停结束，已标记重启续跑（槽位 1）」。
+- 新增 DB 单测覆盖标记写入、槽位值与 CAS 幂等；相关 `db` / `server` 测试、`go build`、
+  `go vet`、`staticcheck` 全部通过。
+
 ## [0.9.6] - 2026-11-09
 
 重启恢复的一版：worker 优先续跑重启前被中断的意图，而不是先领另一条排队意图从头探索。
