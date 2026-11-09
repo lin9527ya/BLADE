@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **重启后优先续跑被中断的意图**：`ResetRunningIntents` 给重启前仍在 running 的意图写入
+  `resume_after_restart` / `resume_slot`；`FrontierForSlot` 优先领取它，worker 用原槽位
+  transcript 续跑，而不是先领另一条排队意图重新探索。领取后清除标记。
+
 ## [0.9.5] - 2026-11-09
 
 联网搜索与经典 planner 行为的一版：DeepSeek 官方搜索、Brave/DDG 回退，经典模式补回

@@ -657,7 +657,14 @@ WHERE id=$2 AND exploration_id=$3 AND kind='artifact' AND state IN ($6,$7)`,
 // backend restart or crashed worker goroutine left it stuck) would otherwise spin
 // forever in the UI. Workers resume from their transcript, so reopening is safe.
 func (s *ExplorationStore) ResetRunningIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL
+	// Mark the interrupted intents so the first claim after restart prefers them and
+	// can resume the slot transcript that was active before shutdown. Owner is kept
+	// (existing affinity); resume_slot lets a changed worker pool still find it.
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL,
+payload = (COALESCE(payload,'{}'::jsonb) || jsonb_build_object('resume_after_restart', true)) ||
+          CASE WHEN owner ~ '^work#[0-9]+$'
+               THEN jsonb_build_object('resume_slot', substring(owner from 'work#([0-9]+)')::int)
+               ELSE '{}'::jsonb END
 WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 	if err != nil {
 		return 0, err
@@ -1882,7 +1889,8 @@ WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
     JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
     WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
       AND d.state NOT IN ('done','negative'))
-ORDER BY (owner=$2) DESC, n.priority DESC, n.id ASC LIMIT $`+fmt.Sprint(len(args)), args...)
+ORDER BY (COALESCE(payload->>'resume_after_restart','false')='true') DESC,
+         (owner=$2) DESC, n.priority DESC, n.id ASC LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1958,9 +1966,10 @@ func (s *ExplorationStore) ClaimIntentForSlot(id int64, slot string, ttl time.Du
 	}
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
 heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
-payload = jsonb_set(payload, '{attempts}',
+payload = (COALESCE(payload,'{}'::jsonb) - 'resume_after_restart' - 'resume_slot') ||
+          jsonb_build_object('attempts',
     to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
-                  THEN (payload->>'attempts')::int ELSE 0 END + 1), true)
+                  THEN (payload->>'attempts')::int ELSE 0 END + 1))
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
   AND (
     COALESCE(owner,'')='' OR owner=$5 OR `+exclude+`

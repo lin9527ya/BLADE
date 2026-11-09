@@ -121,6 +121,19 @@ func WorkerSessionIDForSlot(explorationID int64, slot int) string {
 	return fmt.Sprintf("exp%d-worker-slot%d", explorationID, slot)
 }
 
+// workerResumeSlot returns the slot whose transcript should be resumed after a
+// restart. Only intents explicitly marked by ResetRunningIntents qualify.
+func workerResumeSlot(payload []byte) int {
+	var meta struct {
+		ResumeAfterRestart bool `json:"resume_after_restart"`
+		ResumeSlot         int  `json:"resume_slot"`
+	}
+	if json.Unmarshal(payload, &meta) == nil && meta.ResumeAfterRestart && meta.ResumeSlot > 0 {
+		return meta.ResumeSlot
+	}
+	return 0
+}
+
 func workerSlotNumber(name string) int {
 	if !strings.HasPrefix(name, "work#") {
 		return 0
@@ -664,12 +677,20 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	slot := workerSlotNumber(name)
 	sessionID := WorkerSessionID(ts.ID(), intent.ID)
 	ctxDir := runDir
+	// A restart may move the resumed intent to a different slot (worker count
+	// changed) or the same slot may now prefer a newer queued intent. The DB
+	// marks the actually-interrupted intent with resume_after_restart/resume_slot;
+	// resume THAT slot's transcript even when this worker's slot number differs.
+	resumeSlot := workerResumeSlot(intent.Payload)
 	if slot > 0 {
 		if perIntentWorkerSession() {
 			// A/B 开关：每意图独立会话（ARTEX 的做法）。槽位复用的历史会把上一条
 			// 意图的结论带进当前意图，实测容易让 worker 把"以前查过"当"这次不用查"。
 			sessionID = WorkerSessionID(ts.ID(), intent.ID)
 			ctxDir = filepath.Join(runDir, "session")
+		} else if resumeSlot > 0 {
+			sessionID = WorkerSessionIDForSlot(ts.ID(), resumeSlot)
+			ctxDir = ensureSlotDir(w.workDir, taskID, resumeSlot)
 		} else {
 			sessionID = WorkerSessionIDForSlot(ts.ID(), slot)
 			ctxDir = ensureSlotDir(w.workDir, taskID, slot)

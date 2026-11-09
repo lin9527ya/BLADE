@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"strconv"
 	"testing"
 )
@@ -166,3 +167,60 @@ func TestActiveSlotIntentsAndResetKeepsOwner(t *testing.T) {
 }
 
 func iptr(n int) *int { return &n }
+
+// 重启时必须优先领取“真正 running 过”的意图，并带上原槽位，worker 才能续跑
+// 原槽位 transcript；普通 open 排队意图不能因为 priority 更高而抢走。
+func TestRestartResumeMarksInterruptedIntent(t *testing.T) {
+	d, st := intentLeaseFixture(t)
+	interrupted, err := st.AddIntent(map[string]any{"summary": "interrupted"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := st.AddIntent(map[string]any{"summary": "queued"}, 9, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE exploration_nodes SET state='running', owner='work#2' WHERE id=$1`, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE exploration_nodes SET state='open', owner='work#2' WHERE id=$1`, queued); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.ResetRunningIntents(); err != nil || n != 1 {
+		t.Fatalf("reset: n=%d err=%v", n, err)
+	}
+	node, err := st.GetNode(interrupted)
+	if err != nil || node == nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(node.Payload, &payload)
+	if payload["resume_after_restart"] != true || payload["resume_slot"] != float64(2) {
+		t.Fatalf("interrupted intent missing resume marker: %+v", payload)
+	}
+	// Marker beats a higher-priority queued intent and even allows another slot to
+	// pick it up after a worker-count change.
+	fr, err := st.FrontierForSlot("work#1", []string{"work#1", "work#2"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr) == 0 || fr[0].ID != interrupted {
+		for _, n := range fr {
+			t.Logf("frontier node id=%d state=%s owner=%s payload=%s", n.ID, n.State, n.Owner, string(n.Payload))
+		}
+		t.Fatalf("frontier must put interrupted intent first (interrupted=%d): %+v", interrupted, fr)
+	}
+	ok, err := st.ClaimIntentForSlot(interrupted, "work#1", IntentLeaseTTL, []string{"work#1", "work#2"})
+	if err != nil || !ok {
+		t.Fatalf("claim interrupted: ok=%v err=%v", ok, err)
+	}
+	node, _ = st.GetNode(interrupted)
+	var after map[string]any
+	_ = json.Unmarshal(node.Payload, &after)
+	if _, ok := after["resume_after_restart"]; ok {
+		t.Fatalf("claim must clear resume marker: %+v", after)
+	}
+	if _, ok := after["resume_slot"]; ok {
+		t.Fatalf("claim must clear resume_slot: %+v", after)
+	}
+}

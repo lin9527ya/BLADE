@@ -56,3 +56,15 @@ func TestWorkerIntentMarkerDedup(t *testing.T) {
 		t.Fatalf("last marker index = %d, want 1", got)
 	}
 }
+
+func TestWorkerResumeSlot(t *testing.T) {
+	if got := workerResumeSlot([]byte(`{"resume_after_restart":true,"resume_slot":3}`)); got != 3 {
+		t.Fatalf("resume slot = %d, want 3", got)
+	}
+	if got := workerResumeSlot([]byte(`{"resume_slot":3}`)); got != 0 {
+		t.Fatalf("unmarked resume_slot = %d, want 0", got)
+	}
+	if got := workerResumeSlot([]byte(`{"resume_after_restart":true,"resume_slot":0}`)); got != 0 {
+		t.Fatalf("zero slot = %d, want 0", got)
+	}
+}
