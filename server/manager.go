@@ -1065,6 +1065,13 @@ func (m *Manager) profileForSearch(name string) (*pgdb.LLMProfile, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Names are case-sensitive in the DB, but operators write "Deepseek" /
+	// "deepseek" interchangeably. Treat those as the same search profile.
+	for _, p := range profiles {
+		if strings.EqualFold(strings.TrimSpace(p.Name), name) {
+			return m.pg.ProfileByID(p.ID)
+		}
+	}
 	prefixes := []string{strings.ToLower(name) + "-", strings.ToLower(name) + "_"}
 	var best *pgdb.LLMProfile
 	for _, p := range profiles {
@@ -1109,7 +1116,13 @@ func profileSearchHeaders(p *pgdb.LLMProfile, label string) map[string]string {
 }
 
 func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string, headers map[string]string) {
-	p, err := m.pg.ActiveProfile()
+	// Prefer a dedicated profile named deepseek/Deepseek (or deepseek-*): it lets
+	// operators keep a cheap search-only profile without making it the active
+	// planner model. Fall back to the active profile for old installations.
+	p, err := m.profileForSearch("deepseek")
+	if err != nil || p == nil {
+		p, err = m.pg.ActiveProfile()
+	}
 	if err != nil || p == nil {
 		return "", "", "", nil
 	}

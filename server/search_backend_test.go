@@ -165,3 +165,45 @@ func TestDeepSeekSearchCarriesSessionHeader(t *testing.T) {
 		t.Fatalf("deepseek 搜索请求缺少会话头: %+v", res.Headers)
 	}
 }
+
+func TestDeepSeekSearchPrefersNamedProfile(t *testing.T) {
+	m := searchTestManager(t)
+	oldActive, _ := m.pg.ActiveProfile()
+	activeID, err := m.pg.SaveProfile(&db.LLMProfile{
+		Name: "opencode-active-test", Format: "anthropic",
+		BaseURL: "https://opencode.ai/zen/go", Model: "deepseek-v4.1-flash",
+		APIKey: "active-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchID, err := m.pg.SaveProfile(&db.LLMProfile{
+		Name: "Deepseek", Format: "anthropic",
+		BaseURL: "https://api.deepseek.com/anthropic", Model: "deepseek-flash",
+		APIKey: "search-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if oldActive != nil {
+			_ = m.pg.SetActiveProfile(oldActive.ID)
+		} else {
+			_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id IN ($1,$2)`, activeID, searchID)
+		}
+		_ = m.pg.DeleteProfile(activeID)
+		_ = m.pg.DeleteProfile(searchID)
+	})
+	if err := m.pg.SetActiveProfile(activeID); err != nil {
+		t.Fatal(err)
+	}
+
+	base, key, model, _ := m.deepSeekSearchCreds()
+	if base != "https://api.deepseek.com/anthropic" || key != "search-key" || model != "deepseek-flash" {
+		t.Fatalf("deepseek 搜索应优先同名配置，得到 base=%q model=%q key=%q", base, model, key)
+	}
+	res := m.searchBackendForSDK(deepSeekWebSearchBackend)
+	if res.Backend != deepSeekWebSearchBackend || res.FallbackFrom != "" || res.BaseURL != base || res.Model != model {
+		t.Fatalf("deepseek 解析错误: %+v", res)
+	}
+}

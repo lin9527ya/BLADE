@@ -19,6 +19,9 @@
 - **Brave 网页（brave-html，免费无 Key）**：新增无 Key 搜索来源，抓取 Brave 公开结果页；
   DDG 202 或主后端失败时自动兜底。Bing RSS、Mojeek、公共 SearXNG 实测结果不相关或
   captcha，未接入。
+- **DeepSeek 专用搜索配置**：`deepseek` 搜索来源优先使用名为 `deepseek` / `Deepseek`
+  （或 `deepseek-*`）的 LLM 配置，找不到才回退当前激活配置；可以专门建一个低成本
+  DeepSeek 搜索配置，不影响 planner 的激活模型。
 - **测试回执**：搜索测试返回 `fallback_from`，设置页提示原后端与回退后的实际后端。
 
 ## [0.9.4] - 2026-11-08

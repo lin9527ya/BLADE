@@ -47,8 +47,8 @@ type WebSearchOpts struct {
 	BraveKey  string
 	TavilyKey string
 	Proxy     string
-	// DeepSeek* 来自当前激活的 LLM 配置(仅 anthropic 格式的 DeepSeek 官方端点)，
-	// 不单独配置，随 LLM 配置切换而变。
+	// DeepSeek* 优先来自名为 deepseek/Deepseek（或 deepseek-*）的配置；没有时
+	// 回退当前激活配置。仅 anthropic 格式的 DeepSeek 官方端点支持服务端 web_search。
 	DeepSeekBaseURL string
 	DeepSeekAPIKey  string
 	DeepSeekModel   string

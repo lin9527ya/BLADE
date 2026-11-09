@@ -98,10 +98,11 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
             <p className="text-muted-foreground text-xs leading-relaxed">
               {backend === "deepseek" ? (
                 <>
-                  该来源直接复用<b>当前激活的 LLM 配置</b>。因此它<b>仅支持 DeepSeek 官方模型</b>，且该配置
-                  <b>必须使用 anthropic 协议</b>
-                  ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。若激活的是 opencode Go 等不执行服务端
-                  搜索的网关，会自动回退到 <b>DuckDuckGo（经平台出口代理）</b>。
+                  优先使用<b>名为 deepseek / Deepseek（或 deepseek-*）的 LLM 配置</b>；没有时才复用
+                  <b>当前激活配置</b>。因此可以专门建一个低成本的 DeepSeek 搜索配置，不影响 planner 的激活模型。
+                  该配置<b>必须使用 anthropic 协议</b>，且指向 <b>DeepSeek 官方端点</b>——官方端点支持服务端
+                  <code>web_search</code>；opencode Go 等网关不执行该工具，会自动回退到
+                  <b>Brave 网页 / DuckDuckGo</b>。
                 </>
               ) : backend === "opencode" ? (
                 <>

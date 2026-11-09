@@ -136,7 +136,11 @@ func NewWebSearchTool(o WebSearchOpts) actool.CoreTool {
 			if limit > 20 {
 				limit = 20
 			}
-			cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			wall := 60 * time.Second
+			if strings.EqualFold(strings.TrimSpace(o.Backend), "deepseek") {
+				wall = 120 * time.Second // server-side model call + search
+			}
+			cctx, cancel := context.WithTimeout(ctx, wall)
 			defer cancel()
 			results, actual, fallbackFrom, err := o.search(cctx, query, limit)
 			if err != nil {
