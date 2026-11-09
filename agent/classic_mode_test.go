@@ -22,7 +22,7 @@ func TestPlannerPromptClassicOmitsConstraintBlocks(t *testing.T) {
 				t.Fatalf("经典 planner 提示不应包含 %q", absent)
 			}
 		}
-		for _, present := range []string{"意图摘要写法", "探索约束开关", "不可信数据", "出口代理", "中间产物输出规约"} {
+		for _, present := range []string{"意图摘要写法", "探索约束开关", "不可信数据", "出口代理", "中间产物输出规约", "混合版规划骨架", "防停摆硬底线"} {
 			if !strings.Contains(got, present) {
 				t.Fatalf("经典 planner 提示应保留 %q", present)
 			}
@@ -83,6 +83,33 @@ func TestAddIntentClassicSoftWarnings(t *testing.T) {
 		}
 		if !strings.Contains(out, "risk_warning") || !strings.Contains(out, "kind_warning") {
 			t.Fatalf("经典模式应返回 risk/kind 软警告：%s", out)
+		}
+	})
+}
+
+// 增强模式不应再叠加混合版骨架（增强模式有自己的槽位/广度/台账/复盘块）。
+func TestPlannerPromptEnhancedOmitsHybridBlock(t *testing.T) {
+	if strings.Contains(plannerSystem("g", "/d", "/w", ""), "混合版规划骨架") {
+		t.Fatal("增强模式不应包含混合版规划骨架")
+	}
+}
+
+// 经典混合版：一次提交超过 4 条只提醒，不拒收。
+func TestAddIntentClassicBatchSoftCap(t *testing.T) {
+	WithOverrides(classicConstraints(), func() {
+		tools, _, _ := newToolWorker(t)
+		out := callTool(t, tools.PlannerTools(), "add_intent", `{"intents":[
+			{"summary":"对 /a 测 SQL 注入","risk_area":"sqli"},
+			{"summary":"对 /b 测 XSS","risk_area":"xss"},
+			{"summary":"对 /c 测 SSRF","risk_area":"ssrf"},
+			{"summary":"对 /d 测越权","risk_area":"idor"},
+			{"summary":"对 /e 测上传","risk_area":"upload"}
+		]}`)
+		if !strings.Contains(out, "batch_warning") {
+			t.Fatalf("5 条批量应返回 batch_warning：%s", out)
+		}
+		if !strings.Contains(out, `"ids"`) {
+			t.Fatalf("批量仍应创建意图：%s", out)
 		}
 	})
 }

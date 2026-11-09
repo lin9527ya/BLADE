@@ -39,3 +39,35 @@ func TestPlannerRoundSignals(t *testing.T) {
 		t.Fatal("连续 3 轮空转应触发停滞保护")
 	}
 }
+
+// 混合版：经典模式只保留「无 open/running 时的防停摆硬底线」，不看空闲槽位，
+// 也不因 1 个空闲槽去刷 LLM。
+func TestHybridPlannerRoundSignals(t *testing.T) {
+	// 0 意图 + 无 running/claimable + 目标未达成 → 补一轮，不看 idle。
+	st, rf, refill, stall := hybridPlannerRoundSignals(0, 0, 0, true, 0, 0)
+	if !refill || st != 1 || rf != 1 || stall {
+		t.Fatalf("应补一轮，got streak=%d refills=%d refill=%v stall=%v", st, rf, refill, stall)
+	}
+	// 有 running 或可领意图 → 不补、不累计空转。
+	if st, _, refill, _ = hybridPlannerRoundSignals(0, 1, 0, true, 2, 0); refill || st != 0 {
+		t.Fatalf("有 running 不应补派，got streak=%d refill=%v", st, refill)
+	}
+	if st, _, refill, _ = hybridPlannerRoundSignals(0, 0, 1, true, 2, 0); refill || st != 0 {
+		t.Fatalf("有可领意图不应补派，got streak=%d refill=%v", st, refill)
+	}
+	// 有产出 → 清零。
+	if st, rf, refill, stall = hybridPlannerRoundSignals(2, 0, 0, true, 2, 1); st != 0 || rf != 0 || refill || stall {
+		t.Fatalf("made>0 应清零，got streak=%d refills=%d refill=%v stall=%v", st, rf, refill, stall)
+	}
+	// 目标已了结 → 不补。
+	if _, _, refill, stall = hybridPlannerRoundSignals(0, 0, 0, false, 2, 0); refill || stall {
+		t.Fatal("无 open 目标不应补派/停滞")
+	}
+	// 补派上限 2 次；第 3 轮连续空转暂停。
+	if _, rf, refill, stall = hybridPlannerRoundSignals(0, 0, 0, true, 1, 2); refill || stall || rf != 2 {
+		t.Fatalf("第 3 轮不应再补派，但未到停滞：refill=%v stall=%v refills=%d", refill, stall, rf)
+	}
+	if _, _, _, stall = hybridPlannerRoundSignals(0, 0, 0, true, 2, 2); !stall {
+		t.Fatal("连续 3 轮空转应暂停")
+	}
+}

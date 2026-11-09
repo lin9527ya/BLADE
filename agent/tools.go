@@ -3548,6 +3548,10 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			if !batch {
 				items = []intentItem{a.intentItem}
 			}
+			batchWarn := ""
+			if batch && len(items) > 4 && !t.constraintOn("dispatch") {
+				batchWarn = fmt.Sprintf("batch_warning: 经典混合模式建议一次最多 4 条，本轮提交了 %d 条；已全部处理，下一轮请控制在 4 条以内。", len(items))
+			}
 
 			// 一次调用共享一份额度快照（库存量各查一次库，本轮用量在循环里累加）。
 			quota := t.beginIntentQuota()
@@ -3619,6 +3623,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
+			}
+			if batchWarn != "" {
+				out["batch_warning"] = batchWarn
 			}
 			if goalNote != "" {
 				out["goal_note"] = goalNote

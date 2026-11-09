@@ -1344,14 +1344,20 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			hasOpenGoal, _ := t.Store.HasOpenGoal()
 			made := planner.LastRoundIntents()
 			var refill, stall bool
-			zeroRoundStreak, capacityRefills, refill, stall = plannerRoundSignals(
-				made, running, claimable, idle, hasOpenGoal, zeroRoundStreak, capacityRefills)
-			if !e.constraintEnabled("dispatch") {
-				// 经典模式：不补派、不因连续 0 意图暂停；让任务按 open 意图自然收束。
-				refill, stall = false, false
+			if e.constraintEnabled("dispatch") {
+				zeroRoundStreak, capacityRefills, refill, stall = plannerRoundSignals(
+					made, running, claimable, idle, hasOpenGoal, zeroRoundStreak, capacityRefills)
+			} else {
+				// 经典混合版：只保留防停摆硬底线，不补槽位、不因空闲槽位派单。
+				zeroRoundStreak, capacityRefills, refill, stall = hybridPlannerRoundSignals(
+					made, running, claimable, hasOpenGoal, zeroRoundStreak, capacityRefills)
 			}
 			if refill {
-				log.Printf("[planner] task %s 本轮 0 意图且有 %d 个空闲槽位，4s 后补派一轮", t.ID, idle)
+				if e.constraintEnabled("dispatch") {
+					log.Printf("[planner] task %s 本轮 0 意图且有 %d 个空闲槽位，4s 后补派一轮", t.ID, idle)
+				} else {
+					log.Printf("[planner] task %s 本轮 0 意图且没有 open/running 意图，4s 后按混合版硬底线补一轮", t.ID)
+				}
 				time.AfterFunc(4*time.Second, func() { t.Notify() })
 			}
 			if stall {
@@ -2182,6 +2188,25 @@ func plannerRoundSignals(made, running, claimable, idle int, hasOpenGoal bool, s
 	}
 	stall = newStreak >= 3
 	return
+}
+
+// hybridPlannerRoundSignals is the classic-hybrid anti-stall rule: only when
+// there is no running/claimable work and the goal is still open does an empty
+// planner round trigger a retry. It never fills idle slots and never uses the
+// queue-depth heuristics. After two retries, a third empty round pauses for
+// human inspection instead of burning tokens forever.
+func hybridPlannerRoundSignals(made, running, claimable int, hasOpenGoal bool, streak, refills int) (newStreak, newRefills int, refill, stall bool) {
+	if made > 0 {
+		return 0, 0, false, false
+	}
+	if running == 0 && claimable == 0 && hasOpenGoal {
+		newStreak = streak + 1
+		if refills < 2 {
+			return newStreak, refills + 1, true, false
+		}
+		return newStreak, refills, false, newStreak >= 3
+	}
+	return 0, refills, false, false
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) (done bool) {

@@ -72,7 +72,7 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
         <Field
           label="预设"
           htmlFor="constraint-profile"
-          hint="经典：全部关闭（接近原版行为，默认）。增强：全部开启。自定义：逐组选择；单独拨动任一组会自动切到自定义。"
+          hint="经典混合：约束关闭，但保留 ARTEX 的防停摆/开局探测/深度优先骨架（默认）。增强：全部开启。自定义：逐组选择；单独拨动任一组会自动切到自定义。"
         >
           <Select
             value={constraintProfile}

@@ -805,7 +805,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) 
 	if len(review) > 0 && review[0] {
 		reviewBlock = reviewRoundBlock
 	}
-	return body + promptExtras("planner") +
+	out := body + promptExtras("planner") +
 		gated("opening", openingProbeBlock) +
 		gated("depth", leadTriageBlock) +
 		gated("review_endgame", reviewBlock) +
@@ -817,6 +817,11 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string, review ...bool) 
 		gated("review_endgame", escalationLadderBlock+endgameDoctrineBlock) +
 		gated("ledger", ledgerDisciplineBlock+chainDisciplineBlock) +
 		untrustedDataBlock() + constraintOverrideBlock() + intentSummaryDisciplineBlock + intentContractBlock + blackboardViewBlock
+	// 经典模式补回 ARTEX 的防停摆/开局/深度优先骨架；增强模式已有自己的约束块。
+	if !constraintOn("dispatch") {
+		out += hybridPlannerBlock
+	}
+	return out
 }
 
 // blackboardViewBlock is code-owned: the editable body predates the bounded view
@@ -828,6 +833,17 @@ const blackboardViewBlock = `
 - 本轮预取的是有界视图：totals 是真实总数，open/running/recent 等列表只是窗口；窗口外的方向不等于没派过。
 - 需要完整态势（折叠区、继承任务、AD 图、检测热点等）时调 graph_overview(detail=true)；只看增量事件与路线用 blackboard_view(after=blackboard.next_cursor)。
 - 意图的 contract（mechanism/route/produces/acceptance）只在显式填写时存在；它是去重与验收声明，不替代 summary 的入口/动作/验证目标。`
+
+// hybridPlannerBlock is the classic-mode scaffolding: ARTEX's anti-stall,
+// opening-probe, depth-first and route-diversity rules without BLADE's
+// breadth/ledger/review/completion/supervisor gates.
+const hybridPlannerBlock = `
+
+【混合版规划骨架（代码持有；经典模式生效）】
+- **防停摆硬底线**：只要目标未达成，且没有任何 open/running 意图，本轮必须至少产出 1 条向目标推进的意图；本段压过正文里“0 条也可以”的默认。只有目标不可达/不再适用（先 abandon_goal）或有明确外部阻断证据时，才允许 0 条并在回复中说明。
+- **开局轻量探测**：done_intents_total=0 且没有任何意图时，可用 Bash/WebFetch 做 1–3 次只读请求，只看首页/响应头/跳转/robots/script/登录入口，把首轮意图写到具体入口；一旦图上出现任何 worker fact，立即停止探测，不再自己查，深挖交给 worker。本模式不强制 record_probe_fact。
+- **深度优先于覆盖度**：目标未达成时，优先把高价值入口往深打穿，不按“资产 × 风险类”铺广；允许 2–3 条机理不同的路线并存，某条交出目标逼近的证据后再集中资源。多样性永远服从操作约束。
+- **批量节奏**：一次 add_intent 建议最多 4 条（超出只返回 batch_warning，不硬拒）；不引入广度债、探索/通路台账、收官审计、supervisor 或复盘硬轮。`
 
 // intentContractBlock 是**代码持有**的意图契约写法（P0）：只做软契约与方向去重，
 // 不替代 depends_on，也不改变 summary 的入口/验证目标写法。
