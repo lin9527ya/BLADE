@@ -206,6 +206,16 @@ func TestShutdownCancellationReopensRunningIntent(t *testing.T) {
 	if node.State != "open" {
 		t.Fatalf("关停取消后意图状态=%s，应为 open（标 blocked 是假失败：关停不是这条意图没探成，且启动重置只认 running 不修它）", node.State)
 	}
+	// 优雅关停会在退出前等 run 收尾，这一行已经变成 open，启动时的
+	// ResetRunningIntents 只认 running 行，兜不到它；续跑标记必须由关停分支自己写。
+	var payload map[string]any
+	_ = json.Unmarshal(node.Payload, &payload)
+	if payload["resume_after_restart"] != true {
+		t.Fatalf("关停回退必须带 resume_after_restart，得到 %+v", payload)
+	}
+	if got, want := payload["resume_slot"], float64(slotNumber(node.Owner)); got != want {
+		t.Fatalf("resume_slot=%v，应为原槽位 %v（owner=%s，payload=%+v）", got, want, node.Owner, payload)
+	}
 }
 
 // TestSendWorkerMessageResumesBlockedIntent 钉住中断续跑：blocked 不再是死状态，
