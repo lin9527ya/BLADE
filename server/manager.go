@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -907,8 +908,9 @@ func (m *Manager) SetLLMPoolBindFallback(on bool) error {
 }
 
 // WebSearch returns the current web-search config: whether it is enabled, the
-// backend ("ddgs" | "brave-free" | "tavily"), the Brave API key, the Tavily API
-// key (each empty unless set), and the dedicated egress proxy (empty = direct).
+// backend ("ddgs" | "brave-free" | "tavily" | "deepseek" | "opencode" |
+// "commandcode"), the Brave/Tavily keys, and the dedicated search proxy. For
+// ddgs an empty proxy is filled from the platform egress proxy by WebSearchOpts.
 func (m *Manager) WebSearch() (on bool, backend, braveKey, tavilyKey, proxy string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -934,6 +936,13 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	r := m.searchBackendForSDK(backend)
 	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = r.Backend, r.BaseURL, r.APIKey, r.Model, r.Headers
 	o.CommandCodeBaseURL, o.CommandCodeAPIKey = r.CCBaseURL, r.CCAPIKey
+	// DuckDuckGo 直连很容易被 202 限流；用户没单独填搜索代理时，优先走平台出口代理。
+	if o.Backend == defaultWebSearchBackend && strings.TrimSpace(o.Proxy) == "" {
+		o.Proxy = m.usableEgressProxy()
+	}
+	if r.FallbackFrom != "" {
+		log.Printf("[websearch] %s 端点不提供服务端搜索，已回退 DuckDuckGo（proxy=%q）", r.FallbackFrom, o.Proxy)
+	}
 	return o
 }
 
@@ -961,25 +970,60 @@ type searchBackendResolution struct {
 	Headers   map[string]string
 	CCBaseURL string // commandcode 原生通道
 	CCAPIKey  string
+	// FallbackFrom 非空表示原后端在当前端点无法搜索，已回退到 Backend（目前是 ddgs）。
+	// 仅用于设置页测试回执与日志；面向 SDK 的 Backend 已经是真正会跑的实现。
+	FallbackFrom string
+}
+
+func fallbackDDGS(from string) searchBackendResolution {
+	return searchBackendResolution{Backend: defaultWebSearchBackend, FallbackFrom: from}
+}
+
+// isOpencodeGateway reports whether the endpoint is opencode's hosted model gateway.
+// opencode Go exposes model inference only — it does not execute the Anthropic
+// web_search server tool and has no native search route, so a search backend that
+// points here must fall back to a real search source.
+func isOpencodeGateway(base string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
+}
+
+// usableEgressProxy returns the active proxy only when it is not the fail-closed
+// blackhole. Search must never dial direct just because the pool is down.
+func (m *Manager) usableEgressProxy() string {
+	p := strings.TrimSpace(m.EgressProxy())
+	if p == "" || p == blockedProxyURL {
+		return ""
+	}
+	return p
 }
 
 func (m *Manager) searchBackendForSDK(backend string) searchBackendResolution {
 	switch backend {
 	case deepSeekWebSearchBackend:
-		base, key, model := m.deepSeekSearchCreds()
-		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model}
+		base, key, model, headers := m.deepSeekSearchCreds()
+		if strings.TrimSpace(base) == "" || strings.TrimSpace(key) == "" || strings.TrimSpace(model) == "" || isOpencodeGateway(base) {
+			return fallbackDDGS(deepSeekWebSearchBackend)
+		}
+		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model, Headers: headers}
 	case opencodeWebSearchBackend:
-		// opencode 与 deepseek 同机制（anthropic + web_search 工具），只是换端点/凭据 →
-		// 面向 SDK 归一为 deepseek（SDK 的白名单只区分"哪套机制"）。
+		// opencode Go 只提供模型推理，不执行服务端 web_search；若端点不是 opencode
+		// 网关（自建兼容端点），仍按 deepseek 的服务端工具机制尝试。
 		base, key, model, headers := m.namedProfileSearchCreds(backend)
+		if base == "" || isOpencodeGateway(base) {
+			return fallbackDDGS(opencodeWebSearchBackend)
+		}
 		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model, Headers: headers}
 	case commandCodeWebSearchBackend:
 		// commandcode 走**它自己的原生搜索通道**（/alpha/web-search）：与模型无关、
-		// 与 LLM 配额解耦。它没有"消息 + 工具"这条路（/messages 只服务 Claude 系，
-		// deepseek 只在 /responses 上且拒收内置 web_search 工具），所以不归一。
-		p, err := m.pg.ProfileByName(backend)
-		if err != nil || p == nil {
-			return searchBackendResolution{Backend: commandCodeWebSearchBackend}
+		// 与 LLM 配额解耦。配置缺失时不要静默把工具摘掉，回退到真实可用的 DDG。
+		p, err := m.profileForSearch(backend)
+		if err != nil || p == nil || strings.TrimSpace(p.APIKey) == "" || strings.TrimSpace(p.BaseURL) == "" {
+			return fallbackDDGS(commandCodeWebSearchBackend)
 		}
 		return searchBackendResolution{Backend: commandCodeWebSearchBackend,
 			CCBaseURL: strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), CCAPIKey: p.APIKey}
@@ -994,32 +1038,79 @@ func (m *Manager) searchBackendForSDK(backend string) searchBackendResolution {
 // 配置不存在时返回空串：与 deepseek 那边同一处置——设置页会提示、搜索时报明确的错，
 // 而不是在这里偷偷回退到别的配置（那会让"我明明选了 opencode"变成打到别处）。
 func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model string, headers map[string]string) {
-	p, err := m.pg.ProfileByName(name)
+	p, err := m.profileForSearch(name)
 	if err != nil || p == nil {
 		return "", "", "", nil
 	}
-	// 配置里点名了 session_header_key 的端点（如 opencode zen 的 x-opencode-session）
-	// 要求每个请求带路由头，缺了直接 400。值用**稳定**串（按配置名派生）：它只影响
-	// 路由/缓存亲和，不需要每次变化；稳定反而对端点的缓存更友好。
-	headers = make(map[string]string, len(p.CustomHeaders)+1)
+	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel, profileSearchHeaders(p, name)
+}
+
+// profileForSearch resolves a search backend's named profile. Exact name wins;
+// otherwise a name with the backend prefix (opencode-*, commandcode-*) is used,
+// so an installation that calls its profile opencode-gs1 keeps working. The
+// prefix lookup is deliberately not a silent fallback to the active profile: a
+// wrong endpoint should fail visibly, not send search traffic elsewhere.
+func (m *Manager) profileForSearch(name string) (*pgdb.LLMProfile, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	if p, err := m.pg.ProfileByName(name); err != nil || p != nil {
+		return p, err
+	}
+	profiles, err := m.pg.ListProfiles()
+	if err != nil {
+		return nil, err
+	}
+	prefixes := []string{strings.ToLower(name) + "-", strings.ToLower(name) + "_"}
+	var best *pgdb.LLMProfile
+	for _, p := range profiles {
+		lower := strings.ToLower(strings.TrimSpace(p.Name))
+		match := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(lower, prefix) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		if best == nil || (p.IsDefault && !best.IsDefault) ||
+			(p.IsDefault == best.IsDefault && p.Priority > best.Priority) ||
+			(p.IsDefault == best.IsDefault && p.Priority == best.Priority && p.ID < best.ID) {
+			best = p
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return m.pg.ProfileByID(best.ID)
+}
+
+// profileSearchHeaders adds the route/session headers a gateway requires. The
+// value is stable per profile: it only affects routing/cache affinity, and a
+// stable value is friendlier to the endpoint's prompt cache.
+func profileSearchHeaders(p *pgdb.LLMProfile, label string) map[string]string {
+	headers := make(map[string]string, len(p.CustomHeaders)+1)
 	for k, v := range p.CustomHeaders {
 		headers[k] = v
 	}
 	if k := strings.TrimSpace(p.SessionHeaderKey); k != "" {
-		headers[k] = "blade-" + name
+		headers[k] = "blade-" + label
 	}
 	if len(headers) == 0 {
-		headers = nil
+		return nil
 	}
-	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel, headers
+	return headers
 }
 
-func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string) {
+func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string, headers map[string]string) {
 	p, err := m.pg.ActiveProfile()
 	if err != nil || p == nil {
-		return "", "", ""
+		return "", "", "", nil
 	}
-	return p.BaseURL, p.APIKey, p.Model
+	return p.BaseURL, p.APIKey, p.Model, profileSearchHeaders(p, strings.TrimSpace(p.Name))
 }
 
 // SetWebSearch persists and applies the web-search settings. braveKey, tavilyKey, and

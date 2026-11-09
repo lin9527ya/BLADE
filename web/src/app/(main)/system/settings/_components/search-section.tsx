@@ -99,15 +99,17 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
                 <>
                   该来源直接复用<b>当前激活的 LLM 配置</b>。因此它<b>仅支持 DeepSeek 官方模型</b>，且该配置
                   <b>必须使用 anthropic 协议</b>
-                  ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。切换 LLM 配置后此来源可能失效。
+                  ——DeepSeek 的 OpenAI 协议端点不支持服务端搜索。若激活的是 opencode Go 等不执行服务端
+                  搜索的网关，会自动回退到 <b>DuckDuckGo（经平台出口代理）</b>。
                 </>
               ) : backend === "opencode" ? (
                 <>
-                  借用<b>名为 opencode 的 LLM 配置</b>的端点与 Key，走 Anthropic 兼容的
-                  <code> /v1/messages</code> + 服务端 <code>web_search</code> 工具， 搜索模型
-                  <b>固定 deepseek-v4-flash</b>（实测：同端点上 v4.1-flash 不执行服务端工具， 只会空想一轮）。配置里
+                  借用<b>名为 opencode（或 opencode-*）的 LLM 配置</b>的端点与 Key，走 Anthropic 兼容的
+                  <code> /v1/messages</code> + 服务端 <code>web_search</code> 工具。配置里
                   <b>必须填会话头名字</b>（opencode 要求
-                  <code> x-opencode-session</code>，缺了直接 400）且<b>协议为 anthropic</b>。 改配置后<b>立即生效</b>。
+                  <code> x-opencode-session</code>）且<b>协议为 anthropic</b>。opencode Go 目前
+                  <b>不执行服务端搜索</b>：命中原生网关时会自动回退到
+                  <b>DuckDuckGo（经平台出口代理）</b>，不会再让工具静默消失。
                 </>
               ) : (
                 <>
@@ -209,13 +211,13 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
             <Field
               label="出口代理（可选）"
               htmlFor="ws-proxy"
-              hint="独立出口代理，仅用于访问搜索端点（VPN/SOCKS 等）。与记录流量的 MITM 代理无关；网络不通时经此代理访问。"
+              hint="独立出口代理，仅用于访问搜索端点（VPN/SOCKS 等）。与记录流量的 MITM 代理无关。留空时 DuckDuckGo 优先使用平台出口代理——直连 DDG 很容易被 202 限流。"
             >
               <div className="flex items-center gap-2">
                 <Input
                   id="ws-proxy"
                   autoComplete="off"
-                  placeholder="http://host:port 或 socks5://host:port（留空=直连）"
+                  placeholder="http://host:port 或 socks5://host:port（留空=平台出口代理）"
                   value={proxyInput}
                   disabled={!loaded || savingProxy}
                   onChange={(e) => setProxyInput(e.target.value)}

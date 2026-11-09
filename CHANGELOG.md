@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 联网搜索
+
+- **DuckDuckGo 202**：搜索代理留空时，DDG 优先走平台出口代理（直连 DDG 容易被 202 限流）；
+  设置页「测试搜索」与线上工具使用同一套代理回退。
+- **opencode Go 不支持服务端搜索**：opencode 网关只做模型推理，不执行 Anthropic
+  `web_search` 服务端工具。命中原生网关时自动回退到 DuckDuckGo（经平台出口代理），
+  不再静默摘掉 `web_search` 工具；`deepseek` 来源在激活配置是 opencode 时同样回退。
+- **MissingSessionID**：`deepseek` 来源复用激活 LLM 配置时，搜索请求现在会带上该配置的
+  `CustomHeaders` 与 `SessionHeaderKey`（如 `x-opencode-session`），不再 400。
+- **配置名匹配**：opencode / commandcode 搜索配置支持前缀匹配（如 `opencode-gs1` 可被
+  `opencode` 来源使用）；commandcode 配置缺失时回退 DDG，而不是让工具不可用。
+- **测试回执**：搜索测试返回 `fallback_from`，设置页提示原后端与回退后的实际后端。
+
 ## [0.9.4] - 2026-11-08
 
 补齐发现处置与交付预检，增加工作区文件保护、运行体检和短时缓存诊断；同时统一

@@ -977,8 +977,8 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Backend) != "" {
 		backend = req.Backend
 	}
-	// Proxy is taken from the form as-is (empty = direct), so testing reflects exactly
-	// what's shown — including an intentional "clear proxy to test direct" before saving.
+	// Proxy is taken from the form as-is. Empty means "use the platform egress proxy"
+	// for DDG (direct DDG is routinely 202-rate-limited); other backends stay direct.
 	proxy := strings.TrimSpace(req.Proxy)
 	// API keys are secrets the form omits when already saved, so fall back to stored.
 	braveKey := storedBraveKey
@@ -991,9 +991,13 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	// 与线上工具**同一套解析**（后端归一 + 凭据 + 路由头）——自己拼一份的话，
 	// "测试通过但工具不能用"是迟早的事（opencode 的 x-opencode-session 就是这么漏的）。
-	cfg := actool.WebSearchConfig{BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
 	res := s.m.searchBackendForSDK(backend)
-	backend, cfg.Backend = res.Backend, res.Backend
+	backend = res.Backend
+	// DDG 直连经常 202；用户没单独填搜索代理时，测试与线上工具一样走平台出口代理。
+	if backend == defaultWebSearchBackend && strings.TrimSpace(proxy) == "" {
+		proxy = s.m.usableEgressProxy()
+	}
+	cfg := actool.WebSearchConfig{Backend: res.Backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
 	cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekHeaders = res.BaseURL, res.APIKey, res.Model, res.Headers
 	cfg.CommandCodeBaseURL, cfg.CommandCodeAPIKey = res.CCBaseURL, res.CCAPIKey
 	// Hard cap so a slow/blocked proxy can't hang the request.
@@ -1010,15 +1014,26 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), wall)
 	defer cancel()
 	results, err := actool.WebSearchProbe(ctx, cfg, probeQuery, 3)
+	fail := func(msg string) {
+		out := map[string]any{"ok": false, "error": msg, "backend": backend}
+		if res.FallbackFrom != "" {
+			out["fallback_from"] = res.FallbackFrom
+		}
+		writeJSON(w, 200, out)
+	}
 	if err != nil {
-		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error(), "backend": backend})
+		fail(err.Error())
 		return
 	}
 	if len(results) == 0 {
-		writeJSON(w, 200, map[string]any{"ok": false, "error": "搜索返回 0 条结果（可能被限流或代理不通）", "backend": backend})
+		fail("搜索返回 0 条结果（可能被限流或代理不通）")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "count": len(results), "backend": backend})
+	out := map[string]any{"ok": true, "count": len(results), "backend": backend}
+	if res.FallbackFrom != "" {
+		out["fallback_from"] = res.FallbackFrom
+	}
+	writeJSON(w, 200, out)
 }
 
 // noiseLevel 读噪声档位（缺省 normal）。

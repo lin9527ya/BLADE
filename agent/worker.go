@@ -33,8 +33,9 @@ import (
 // (TavilyKey required), or "deepseek" (DeepSeek* required, filled from the
 // active LLM profile). It maps directly onto agentcore.Options.
 // Proxy is a dedicated egress proxy for the search request (http/https/socks5),
-// independent of the traffic-recording MITM proxy — set it when the search endpoint
-// is only reachable via a VPN/SOCKS proxy. Empty = direct.
+// independent of the traffic-recording MITM proxy. For ddgs an empty value means
+// "use the platform egress proxy" (direct DDG is routinely 202-rate-limited);
+// server-side backends keep their own egress semantics.
 //
 // 注意 deepseek 后端与其它三个的性质不同：DeepSeek 没有可直接调用的搜索接口，
 // 搜索只存在于其 Anthropic 兼容 messages 接口内部(web_search_20250305 server

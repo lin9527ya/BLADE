@@ -1064,8 +1064,9 @@ export function useSettingsState() {
         tavily_search_api_key: tavilyKeyInput,
       })
       .then((r) => {
-        if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果`);
-        else toast.error(`搜索测试失败：${r.error || "未知错误"}`);
+        const fallback = r.fallback_from ? `（${r.fallback_from} 端点不支持服务端搜索，已回退）` : "";
+        if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果${fallback}`);
+        else toast.error(`搜索测试失败：${r.error || "未知错误"}${fallback}`);
       })
       .catch((e) => toast.error(`搜索测试失败：${(e as Error).message}`))
       .finally(() => setTesting(false));
