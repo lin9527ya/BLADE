@@ -109,7 +109,8 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
                   <b>必须填会话头名字</b>（opencode 要求
                   <code> x-opencode-session</code>）且<b>协议为 anthropic</b>。opencode Go 目前
                   <b>不执行服务端搜索</b>：命中原生网关时会自动回退到
-                  <b>DuckDuckGo（经平台出口代理）</b>，不会再让工具静默消失。
+                  <b>DuckDuckGo（经平台出口代理）</b>，不会再让工具静默消失；未配置该名称的
+                  LLM 配置时同样回退。
                 </>
               ) : (
                 <>
@@ -117,7 +118,7 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
                   <b>与模型无关、与 LLM 配额解耦</b>——它没有"消息 + 工具"这条路 （<code>/messages</code> 只服务 Claude
                   系，deepseek 只在
                   <code>/responses</code> 上且拒收内置 web_search 工具）。只需该配置的 端点与 Key 可用，
-                  <b>不用管它选的模型与协议</b>。
+                  <b>不用管它选的模型与协议</b>；未配置 commandcode 配置时自动回退 DuckDuckGo。
                 </>
               )}
             </p>
