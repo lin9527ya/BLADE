@@ -31,6 +31,9 @@
   （或 `deepseek-*`）的 LLM 配置，找不到才回退当前激活配置；可以专门建一个低成本
   DeepSeek 搜索配置，不影响 planner 的激活模型。
 - **测试回执**：搜索测试返回 `fallback_from`，设置页提示原后端与回退后的实际后端。
+- **搜索工具收口**：planner / worker 不再注册旧的 `deepseek_search` / `deepseek_fetch`；
+  搜索统一走 `web_search`（DeepSeek 优先），`WebFetch` 仍是客户端通用抓取，不会被
+  DeepSeek 搜索配置接管。
 
 ## [0.9.4] - 2026-11-08
 

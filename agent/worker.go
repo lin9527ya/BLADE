@@ -650,7 +650,6 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.webSearch.Enabled {
 		tools = append(tools, NewWebSearchTool(w.webSearch))
 	}
-	tools = append(tools, deepSeekTools(w.webSearch)...)
 
 	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同启动指令、意图锚定的目标资产
 	// 原始数据一起放进 system prompt：system 每次 run 都重新拼一遍、绝不会被 compaction 压掉，

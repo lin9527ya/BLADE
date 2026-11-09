@@ -1015,7 +1015,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if p.webSearch.Enabled {
 		tools = append(tools, NewWebSearchTool(p.webSearch))
 	}
-	tools = append(tools, deepSeekTools(p.webSearch)...)
 	// 工具 schema 瘦身：把低频内置工具的 schema 从每轮工具列表里摘出去，只留名字在
 	// 系统提示的 deferred 块里。planner 37 个工具的 schema 合计约 3.3 万字符，每轮都
 	// 随缓存前缀发送；这几项在绝大多数轮次里不会被调用（见 plannerDeferredTools）。

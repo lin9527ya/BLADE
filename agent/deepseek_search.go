@@ -16,9 +16,11 @@ import (
 
 const deepSeekToolsURL = "https://api.deepseek.com/v1/tools/"
 
-// deepSeekTools 是 DeepSeek 直连搜索/抓正文工具（移植自 ARTEX）：与主模型协议解耦，
-// 任意 profile 都能用；一次调用返回结果/正文，不额外消耗主模型配额。仅在
-// WebSearch 选 deepseek 且有 key 时注册。
+// deepSeekTools is the legacy DeepSeek-direct search/fetch tool pair. It is no
+// longer registered in planner/worker: production search now goes through the
+// BLADE-owned web_search (which already prefers DeepSeek and has Brave/DDG
+// fallback), and the generic WebFetch remains client-side. Kept for regression
+// tests of the legacy API shape.
 func deepSeekTools(opts WebSearchOpts) []actool.CoreTool {
 	if !opts.Enabled || opts.Backend != "deepseek" {
 		return nil
