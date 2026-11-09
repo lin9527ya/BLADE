@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
@@ -994,13 +993,15 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	res := s.m.searchBackendForSDK(backend)
 	backend = res.Backend
 	// DDG 直连经常 202；用户没单独填搜索代理时，测试与线上工具一样走平台出口代理。
-	if backend == defaultWebSearchBackend && strings.TrimSpace(proxy) == "" {
+	if (backend == defaultWebSearchBackend || backend == "brave-html") && strings.TrimSpace(proxy) == "" {
 		s.m.WaitProxyReady(proxyFirstProbeWait)
 		proxy = s.m.usableEgressProxy()
 	}
-	cfg := actool.WebSearchConfig{Backend: res.Backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
-	cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel, cfg.DeepSeekHeaders = res.BaseURL, res.APIKey, res.Model, res.Headers
-	cfg.CommandCodeBaseURL, cfg.CommandCodeAPIKey = res.CCBaseURL, res.CCAPIKey
+	probeOpts := agent.WebSearchOpts{
+		Enabled: true, Backend: res.Backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy,
+		DeepSeekBaseURL: res.BaseURL, DeepSeekAPIKey: res.APIKey, DeepSeekModel: res.Model,
+		Headers: res.Headers, CommandCodeBaseURL: res.CCBaseURL, CommandCodeAPIKey: res.CCAPIKey,
+	}
 	// Hard cap so a slow/blocked proxy can't hang the request.
 	wall := 30 * time.Second
 	// deepseek 的凭据不在表单里，来自当前激活的 LLM 配置；同时它每次搜索都跑一次
@@ -1014,7 +1015,13 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wall)
 	defer cancel()
-	results, err := actool.WebSearchProbe(ctx, cfg, probeQuery, 3)
+	results, actual, fallback, err := agent.WebSearchProbeContext(ctx, probeOpts, probeQuery, 3)
+	if actual != "" {
+		backend = actual
+	}
+	if fallback != "" {
+		res.FallbackFrom = fallback
+	}
 	fail := func(msg string) {
 		out := map[string]any{"ok": false, "error": msg, "backend": backend}
 		if res.FallbackFrom != "" {

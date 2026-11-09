@@ -79,6 +79,7 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="ddgs">DuckDuckGo（ddgs · 免费无 Key）</SelectItem>
+                <SelectItem value="brave-html">Brave 网页（免费无 Key · DDG 202 时自动兜底）</SelectItem>
                 <SelectItem value="brave-free">Brave（免费版 · 需 Key）</SelectItem>
                 <SelectItem value="tavily">Tavily（需 Key）</SelectItem>
                 <SelectItem value="deepseek">DeepSeek（官方 · 复用激活配置）</SelectItem>
@@ -129,6 +130,17 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
             </p>
             <p className="text-muted-foreground text-xs leading-relaxed">
               是否满足上述条件由你自行确认，系统不做拦截；可用下方「测试搜索」按钮实际跑一次来验证。
+            </p>
+          </div>
+        )}
+
+        {webSearch && backend === "brave-html" && (
+          <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-3">
+            <p className="font-medium text-sm">Brave 网页（免费无 Key）</p>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              抓取 Brave 公开搜索结果页，<b>不是官方 API</b>，可能被限流或随页面改版失效。
+              DDG 202 或主搜索源失败时会自动用它兜底；要稳定长期使用，请选
+              <b>Brave（免费版）</b>并填写官方 API Key。
             </p>
           </div>
         )}
@@ -212,7 +224,7 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
             <Field
               label="出口代理（可选）"
               htmlFor="ws-proxy"
-              hint="独立出口代理，仅用于访问搜索端点（VPN/SOCKS 等）。与记录流量的 MITM 代理无关。留空时 DuckDuckGo 优先使用平台出口代理——直连 DDG 很容易被 202 限流。"
+              hint="独立出口代理，仅用于访问搜索端点（VPN/SOCKS 等）。与记录流量的 MITM 代理无关。留空时 DuckDuckGo / Brave 网页优先使用平台出口代理——直连 DDG 很容易被 202 限流。"
             >
               <div className="flex items-center gap-2">
                 <Input

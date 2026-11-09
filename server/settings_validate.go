@@ -157,7 +157,7 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 	if req.WebSearchBackend != nil {
 		// 未知后端此前会被原样存下、运行期再静默失效；保存时当场拒掉。
 		switch strings.TrimSpace(*req.WebSearchBackend) {
-		case "", defaultWebSearchBackend, "brave-free", "tavily",
+		case "", defaultWebSearchBackend, "brave-html", "brave-free", "tavily",
 			deepSeekWebSearchBackend, opencodeWebSearchBackend, commandCodeWebSearchBackend:
 		default:
 			return fmt.Errorf("未知的搜索后端 %q", strings.TrimSpace(*req.WebSearchBackend))
