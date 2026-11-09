@@ -25,6 +25,9 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed blackboard.sql
+var blackboardSQL string
+
 const schemaMigrationLockKey int64 = 7337741001
 
 // settingSchemaFingerprint 记录最近一次被应用的 schema.sql 指纹。「重启即迁移」意味着库的结构
@@ -38,7 +41,7 @@ const settingSchemaFingerprint = "schema_fingerprint"
 // 失败只记一行日志：它只是可观测性，不该拦住启动。
 func recordSchemaFingerprint(conn *sql.Conn) {
 	ctx := context.Background()
-	sum := sha256.Sum256([]byte(schemaSQL))
+	sum := sha256.Sum256([]byte(schemaSQL + blackboardSQL))
 	want := hex.EncodeToString(sum[:])
 	var prev string
 	_ = conn.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, settingSchemaFingerprint).Scan(&prev)
@@ -87,9 +90,16 @@ func isPostgresDeadlock(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
+func schemaBatch() string {
+	fingerprint := sha256.Sum256([]byte(schemaSQL + blackboardSQL))
+	want := hex.EncodeToString(fingerprint[:])
+	return "SELECT set_config('blade.graph_migration','on',true);\n" + schemaSQL + "\n" + blackboardSQL +
+		"\nUPDATE blackboard_versions SET epoch=md5(random()::text||clock_timestamp()::text) WHERE COALESCE((SELECT value FROM settings WHERE key='schema_fingerprint'),'') NOT IN ('','" + want + "');\nSELECT set_config('blade.graph_migration','off',true);"
+}
+
 func applySchemaWithRetry(ctx context.Context, execer schemaExecer, sleep func(time.Duration)) error {
 	for attempt := 0; ; attempt++ {
-		if _, err := execer.ExecContext(ctx, schemaSQL); err != nil {
+		if _, err := execer.ExecContext(ctx, schemaBatch()); err != nil {
 			if !isPostgresDeadlock(err) || attempt >= len(schemaDeadlockRetryDelays) {
 				return err
 			}
@@ -222,6 +232,10 @@ func sameDatabase(a, b string) bool {
 // (MVCC), so unlike the old SQLite store there is no process-wide write mutex.
 type DB struct {
 	*sql.DB
+	readTx     *sql.Tx
+	readCtx    context.Context
+	authority  *WriteAuthority
+	readErrors []error
 	// lock 持有实例独占锁的那条连接（见 instance_lock.go）。
 	lock instanceLock
 }
@@ -259,7 +273,11 @@ func ensureDatabase(dsn string) error {
 }
 
 // Open connects, applies the schema (idempotent), and seeds builtin rows.
-func Open(dsn string) (*DB, error) {
+func Open(dsn string) (*DB, error) { return openDatabase(dsn, false) }
+
+func OpenRuntime(dsn string) (*DB, error) { return openDatabase(dsn, true) }
+
+func openDatabase(dsn string, runtime bool) (*DB, error) {
 	if err := ensureDatabase(dsn); err != nil {
 		return nil, err
 	}
@@ -271,6 +289,7 @@ func Open(dsn string) (*DB, error) {
 	// 用 DSN 的 options 而不是启动时 SET 一次：后者只作用于当时那条连接，池里后来
 	// 新建的连接不受影响，等于没有兜底。DSN 自己写了 statement_timeout 时以 DSN 为准。
 	dsn = withStatementTimeout(dsn, defaultStatementTimeout)
+	dsn = writerProtocolDSN(dsn)
 	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, err
@@ -290,6 +309,12 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("ping postgres (%s): %w", config.Redact(dsn), err)
 	}
 	d := &DB{DB: sqlDB}
+	if runtime {
+		if err := d.AcquireInstanceLock(context.Background()); err != nil {
+			sqlDB.Close()
+			return nil, err
+		}
+	}
 	// pgx runs multi-statement Exec via the simple protocol when there are no args.
 	// Keep the dedicated lock connection checked out until both DDL and seeding
 	// finish so concurrent application instances cannot initialize out of order.
@@ -309,7 +334,8 @@ func Open(dsn string) (*DB, error) {
 		return nil
 	})
 	if err != nil {
-		sqlDB.Close()
+		d.ReleaseInstanceLock()
+		d.Close()
 		return nil, err
 	}
 	return d, nil

@@ -138,3 +138,59 @@ git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
 - `llm_usage` 的逐调用 ID 与结构请求 ID 不是同一编号。原始协议用量可能是累计值或不含缓存的 input，不要直接求和或拿它当 canonical input；结构变化只是相关证据，不等于根因。
 - 工作区既有文件写入要带读取返回的 `version`；同名上传通过 `/api/workspace/upload-check` 得到版本，在用户确认后随 multipart 的 `expected_versions` 提交。409 不自动强制覆盖。
 - 文本使用内容哈希；超过在线编辑上限的文件使用大小/纳秒修改时间。API 写入串行化并再次复查后原子替换，但不能宣称对不遵守同一锁的外部进程提供完整跨进程 CAS。
+
+## 黑板完整性、恢复栅栏与可选前置条件
+
+本轮（未发布）把「图上发生了什么」「这次执行是谁」「证据从哪来」三件事做成可核对的协议。
+
+### 写协议与迁移顺序
+
+- 运行时数据库连接由 `db/writer_protocol.go` 追加 `blade.writer_protocol=2`。事件触发器在
+  缺少该 GUC 时拒绝图写入（SQLSTATE 55000）——旧二进制不能和新二进制混在同一库上跑。
+  升级流程：停旧进程并等任务收尾 → 启动新进程（`OpenRuntime` 先取实例独占锁再迁移）→
+  观察 `schema_fingerprint` 变化与 epoch 更新。不要并行启动新旧版本。
+- `db/blackboard.sql` 负责事件表、路由列（anchors/findings/bindings 的 `exploration_id`）、
+  回填和触发器；由 `schemaBatch()` 与 `schema.sql` 一起在迁移 GUC 下应用。迁移期间不捕获事件，
+  结构指纹变化时 `blackboard_versions.epoch` 更新；历史只建立基线，不补造过去事件。
+- 测试里用原始 `sql.Open` 建的连接也必须走 `writerProtocolDSN(dsn)`，否则会被协议检查拒绝。
+
+### 变更流与读取完整性
+
+- `BlackboardVersion.Cursor()` 形如 `ev1:<exploration>:<epoch>:<revision>`。`BlackboardChanges`
+  校验协议、任务与 epoch；epoch 不符、序号超前或 `blackboard_events` 存在缺段时返回
+  `Resync=true`，调用方必须重新取全量快照。跨任务游标直接报错。
+- `blackboard_view` 的 `change_cursor` 是真实变更游标；旧 `after/next_cursor` 只跟踪节点新增，
+  不要把它当事件序号解释。`blackboard.revision` 是事件水位，`blackboard.node_revision` 是旧节点上限。
+- `DB.ReadSnapshot` 是只读 repeatable-read 门面：概览、常驻索引、账本、收官审计、图体检都经它
+  读取，不复制实例锁。查询/Scan/`Rows.Err` 失败会累积并在快照末尾作为 error 返回，绝不当作零。
+- 每个投影节带 `read_status`（`complete/unknown/truncated`、精确 `total`、`sample_count`、
+  `read_more`）。窗口截断是正常现象，失败才是 unknown；模型不得把 unknown 当「没有」。
+- 账本/线索/收官审计使用无窗口查询统计精确总数，示例才截断；依赖环按循环强连通分量计数。
+  异步执行/租约回收/会话等待都有具名取消原因，终态写入、验证资产与阻塞原因同事务。
+
+### 稳定身份与写权威
+
+- `exploration_nodes.logical_session_id` 首次领取时确定（默认沿用槽位，`BLADE_WORKER_PER_INTENT_SESSION=1`
+  才每意图独立），之后不因暂停、跨槽或配置变化重算；`execution_generation` 每次真正重新领取加一。
+- 服务端构造 `db.WriteAuthority`（任务/探索/意图/owner/代次/逻辑会话），Worker 的 RunInfo 与
+  ToolSet 使用它；发现记录器、异步执行提交也携带它。写入、续租、语义结论、结算在事务内核对
+  `state=running` 且 owner/代次/会话一致，否则 `ErrStaleExecution`。
+- 托管长任务把代次与逻辑会话写进 `tool_executions`；完成回调只唤醒仍匹配当前 run 的任务。
+  看门狗按 `ExpiredLease.Generation` 取消和回收；`detachWork(id, *workExecution)` 只清理自己。
+- 领取代次只在真正 claim 时增加；模型重试仍是同一代。旧代的图写、结算、续租、cancel/detach
+  全部拒绝且不发布成功事件。宿主的记录器与无记录器路径同样校验，管理/人工入口不因「没有
+  authority」被当成任意 worker 的逃生口。
+
+### 证据与可选前置条件
+
+- `record_fact` 的 `evidence_meta` 是可选元信息：时间用 RFC3339；`source_refs` 只接受本任务或
+  直接关联任务的 activity/execution/finding_binding id；缺失时间为未知，不补造。
+- `contradicts` 与 `supersedes` 只允许本任务事实为端点；替代检查传递闭包避免成环。它们只产生
+  读取标记（`EvidenceStates`），不改变节点 state、不判真假；删除关系时写 `blackboard_operations`
+  因果记录（`operation_id`/`reason_code`），完整理由留在库内供审计，不复制进模型上下文。
+- `add_intent.requires[]` 为 AND，类型限 fact/capability/credential，可引用节点或 claim_key。
+  判定 SQL 与 Frontier/计数/领取共用（`blackboard_intent_ready`/`blackboard_requirement_issues`），
+  领取事务先按 id 升序 `FOR SHARE` 锁相关节点再重查，故并发失效的竞争更新会让领取失败而不是
+  按旧快照放行。缺条件是「暂时不可领」，不是负面结论；不填字段的旧意图完全沿用旧规则。
+- 凭据目标可带 `observed_at`/`valid_until`/`validation_status`；历史验证保留，未知时间不冒充
+  新鲜；要求实测的条件必须指定目标，且按目标的时间判定。

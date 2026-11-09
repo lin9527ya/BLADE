@@ -39,6 +39,12 @@ type instanceLock struct {
 // 环境变量 BLADE_ALLOW_MULTI_INSTANCE=1 是显式逃生口：某些排障场景（只读副本、
 // 短暂双跑做数据比对）确实需要，但必须由人显式承担互相拆台的风险。
 func (d *DB) AcquireInstanceLock(ctx context.Context) error {
+	d.lock.mu.Lock()
+	held := d.lock.conn != nil
+	d.lock.mu.Unlock()
+	if held {
+		return nil
+	}
 	if v := strings.TrimSpace(os.Getenv("BLADE_ALLOW_MULTI_INSTANCE")); v == "1" || strings.EqualFold(v, "true") {
 		return nil
 	}

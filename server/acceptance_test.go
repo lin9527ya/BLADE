@@ -975,6 +975,10 @@ func accP13(t *testing.T, e *accEnv) {
 		t.Fatalf("通过后语义终态应落库: %q err=%v", got, err)
 	}
 
+	if err := st.SetIntentState(probeIntent, "negative"); err != nil {
+		t.Fatal(err)
+	}
+
 	// ⑨ blocked 语义：平台/外部阻断必须能如实落 blocked（覆盖矩阵记「未测成」），
 	// 且必须写清原因——否则就是拿它给"没干活"开脱。
 	blockIntent, err := st.AddIntent(map[string]any{"summary": "被平台出口阻断的意图"}, 5, nil, "planner")

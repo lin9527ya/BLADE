@@ -558,7 +558,11 @@ func (s *Server) RestoreTaskRuntimes() {
 		lifecycle := t.lifecycleSnapshot()
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
-		if n, _ := t.Store.ResetRunningIntents(); n > 0 {
+		if n, rerr := t.Store.ResetRunningIntents(); rerr != nil {
+			s.boot.set(rerr)
+			log.Printf("[restore] task %s 残留意图恢复失败，未启动任务循环: %v", t.ID, rerr)
+			return
+		} else if n > 0 {
 			log.Printf("[engine] task %s 重置 %d 个残留 running 意图为 open", t.ID, n)
 		}
 		if lifecycle.Paused {
@@ -569,7 +573,7 @@ func (s *Server) RestoreTaskRuntimes() {
 		if !isTerminalStatus(lifecycle.Status) {
 			if rep, aerr := t.Store.AuditGraph(); aerr != nil {
 				log.Printf("[restore] task %s 图体检失败: %v", t.ID, aerr)
-			} else if !rep.Clean() {
+			} else if len(rep.Counts) > 0 {
 				log.Printf("[restore] task %s 图体检发现问题：%s", t.ID, rep.Summary())
 			}
 		}

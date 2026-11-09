@@ -22,10 +22,13 @@ import (
 
 // CredentialTarget 是一条「这条凭据能登哪」的记录。
 type CredentialTarget struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port,omitempty"`
-	Service  string `json:"service,omitempty"`  // 什么服务：ssh / rdp / smb / winrm / mysql / http…
-	Protocol string `json:"protocol,omitempty"` // 怎么连（可与 service 不同：smb 走 445/tcp）
+	ObservedAt       string `json:"observed_at,omitempty"`
+	ValidUntil       string `json:"valid_until,omitempty"`
+	ValidationStatus string `json:"validation_status,omitempty"`
+	Host             string `json:"host"`
+	Port             int    `json:"port,omitempty"`
+	Service          string `json:"service,omitempty"`  // 什么服务：ssh / rdp / smb / winrm / mysql / http…
+	Protocol         string `json:"protocol,omitempty"` // 怎么连（可与 service 不同：smb 走 445/tcp）
 	// Verified 是**在这条目标上**实测登入成功过。它比 confidence 硬：confidence 说的是
 	// "我多确定读到的是真凭据"，verified 说的是"我用它真的进去了"。
 	Verified bool   `json:"verified,omitempty"`
@@ -125,6 +128,16 @@ func MergeCredentialTarget(list []CredentialTarget, add CredentialTarget) []Cred
 		}
 		if add.Verified {
 			merged.Verified = true
+			if add.ObservedAt != "" {
+				merged.ObservedAt = add.ObservedAt
+				merged.ValidUntil = add.ValidUntil
+			}
+			if add.ValidUntil != "" {
+				merged.ValidUntil = add.ValidUntil
+			}
+			if add.ValidationStatus != "" {
+				merged.ValidationStatus = add.ValidationStatus
+			}
 			if add.Evidence != "" {
 				merged.Evidence = add.Evidence
 			}

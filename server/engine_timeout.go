@@ -320,8 +320,8 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 		if execs := e.m.Executions(); execs != nil && len(execs.ActiveForIntent(l.IntentID)) > 0 {
 			continue
 		}
-		live := e.cancelWork(l.IntentID, agent.AbortWorkLeaseExpired)
-		reopened, err := t.Store.ReopenExpiredIntent(l.IntentID, l.Owner)
+		live := e.cancelWork(l.IntentID, agent.AbortWorkLeaseExpired, l.Generation)
+		reopened, err := t.Store.ReopenExpiredIntent(l.IntentID, l.Owner, l.Generation)
 		if err != nil {
 			log.Printf("[lease] task %s 意图 #%d 回收失败: %v", t.ID, l.IntentID, err)
 			continue

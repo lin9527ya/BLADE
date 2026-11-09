@@ -19,7 +19,7 @@ func TestSchemaFingerprintRecorded(t *testing.T) {
 	}
 	defer d.Close()
 
-	sum := sha256.Sum256([]byte(schemaSQL))
+	sum := sha256.Sum256([]byte(schemaSQL + blackboardSQL))
 	want := hex.EncodeToString(sum[:])
 
 	got, ok, err := d.GetSetting(settingSchemaFingerprint)

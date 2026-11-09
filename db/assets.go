@@ -126,7 +126,7 @@ func (s *AssetStore) withCompanyScopeMutation(fn func(*AssetStore) (int64, error
 
 func (s *AssetStore) resolveCompanyWithICP(rootDomain, ipStr, icp string) (*int64, error) {
 	if s.tx != nil {
-		return resolveCompanyWithICP(s.tx, rootDomain, ipStr, icp)
+		return resolveCompanyWithICP(txRows{s.tx}, rootDomain, ipStr, icp)
 	}
 	return s.company.ResolveCompanyWithICP(rootDomain, ipStr, icp)
 }
@@ -1366,7 +1366,7 @@ func (s *AssetStore) HostsForTaskDeletion(taskID, explorationID int64) ([]string
 }
 
 type rowsQuerier interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	Query(query string, args ...any) (*Rows, error)
 }
 
 // hostsForTaskDeletion is shared by the read-only AssetStore API and the task
@@ -1591,7 +1591,7 @@ func (s *AssetStore) CountsByType() (map[string]int, error) {
 	return scanTypeCounts(rows)
 }
 
-func scanTypeCounts(rows *sql.Rows) (map[string]int, error) {
+func scanTypeCounts(rows RowSet) (map[string]int, error) {
 	out := map[string]int{}
 	for rows.Next() {
 		var typ string
@@ -1605,7 +1605,7 @@ func scanTypeCounts(rows *sql.Rows) (map[string]int, error) {
 }
 
 // scanAssets scans the wide SELECT that covers all type columns.
-func scanAssets(rows *sql.Rows) ([]*Asset, error) {
+func scanAssets(rows RowSet) ([]*Asset, error) {
 	var out []*Asset
 	for rows.Next() {
 		a := &Asset{}

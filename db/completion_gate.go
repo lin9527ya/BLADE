@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -53,7 +54,10 @@ func (s *ExplorationStore) CoverageGapSummary(taskID int64) (CoverageGapSummary,
 	if err != nil {
 		return out, err
 	}
-	waivers, _ := s.CoverageWaivers()
+	waivers, err := s.CoverageWaivers()
+	if err != nil {
+		return out, err
+	}
 	rep := BuildCoverageLedger(cov, waivers, RiskAreas)
 	for _, c := range rep.CellsList {
 		if !c.Waived && c.Status == LedgerFailed {
@@ -63,12 +67,27 @@ func (s *ExplorationStore) CoverageGapSummary(taskID int64) (CoverageGapSummary,
 	if gaps, total, gerr := s.DepthGapsWithWaivers(taskID, DefaultDepthAreas, 8, waivers); gerr == nil {
 		out.ShallowTotal = total
 		out.ShallowSamples = gaps
+	} else {
+		return out, gerr
 	}
 	return out, nil
 }
 
 // CompletionGaps 计算当前探索的收官缺口（只读）。
 func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions) ([]CompletionGap, error) {
+	if !s.InReadSnapshot() {
+		var out []CompletionGap
+		err := s.ReadSnapshot(context.Background(), func(d *DB, view *ExplorationStore) error {
+			var err error
+			var assets *AssetStore
+			if as != nil {
+				assets = d.Assets()
+			}
+			out, err = view.CompletionGaps(assets, opt)
+			return err
+		})
+		return out, err
+	}
 	waivers, err := s.CoverageWaivers()
 	if err != nil {
 		return nil, err
@@ -84,7 +103,11 @@ func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions)
 	var gaps []CompletionGap
 
 	// ① 未闭合候选：open_proof_gap 不是"已排除"，收官前必须给出结论 or 显式豁免。
-	if states, err := s.CountKindStates(KindFinding); err == nil {
+	states, err := s.CountKindStates(KindFinding)
+	if err != nil {
+		return nil, err
+	}
+	{
 		if n := states["open_proof_gap"]; n > 0 && !waived["proof_gaps"] {
 			gaps = append(gaps, CompletionGap{Kind: GapProofGap, Detail: fmt.Sprintf(
 				"%d 条候选还是 open_proof_gap：用 close_candidate 收成 ruled_out（写清阻断点），"+
@@ -94,7 +117,11 @@ func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions)
 
 	// ② 覆盖/深度缺口（覆盖度开启时）。
 	if opt.CoverageEnabled && opt.TaskID > 0 && !waived["coverage"] {
-		if sum, err := s.CoverageGapSummary(opt.TaskID); err == nil {
+		sum, err := s.CoverageGapSummary(opt.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		{
 			var parts []string
 			if len(sum.Failed) > 0 {
 				parts = append(parts, fmt.Sprintf("%d 个格子测过但没结论（failed）", len(sum.Failed)))
@@ -110,12 +137,18 @@ func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions)
 	}
 
 	// ③ 未闭合通路：从没被任何意图动用、或动过没产出且最后一次没善终。
-	if rep, err := s.ChainLedger(); err == nil && !waived["chains"] {
+	rep, err := s.ChainLedger()
+	if err != nil {
+		return nil, err
+	}
+	if !waived["chains"] {
 		var open []string
+		totalOpen := 0
 		for _, r := range rep.Rows {
 			if r.Status != ChainStatusUnused && r.Status != ChainStatusOpen {
 				continue
 			}
+			totalOpen++
 			if len(open) < 5 {
 				open = append(open, fmt.Sprintf("%s#%d（%s）", r.Kind, r.LootID, r.Status))
 			}
@@ -123,12 +156,16 @@ func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions)
 		if len(open) > 0 {
 			gaps = append(gaps, CompletionGap{Kind: GapChain, Detail: fmt.Sprintf(
 				"%d 条据点/凭据还没推进：%s。用 chain_detail 看下一步，或 accept_completion_risk(scope=\"chains\")",
-				len(open), strings.Join(open, "、"))})
+				totalOpen, strings.Join(open, "、"))})
 		}
 	}
 
 	// ④ 未处理线索：worker 已经把下一步写出来了，不处理等于丢掉。
-	if n, err := s.OpenLeadsCount(); err == nil && n > 0 && !waived["leads"] {
+	n, err := s.OpenLeadsCount()
+	if err != nil {
+		return nil, err
+	}
+	if n > 0 && !waived["leads"] {
 		gaps = append(gaps, CompletionGap{Kind: GapLead, Detail: fmt.Sprintf(
 			"%d 条线索还没处理：用 add_intent(converts_lead_ids) 转成意图，或 dismiss_leads 写清理由；"+
 				"整类接受用 accept_completion_risk(scope=\"leads\")", n)})
@@ -141,11 +178,11 @@ func (s *ExplorationStore) CompletionGaps(as *AssetStore, opt CompletionOptions)
 // OpenLeadsCount 数还没被转换/驳回的线索。口径与 graph_overview 的 leads_open 一致：
 // converted 只看意图 payload 的 converted_lead_ids，dismissed 只看事实 payload 的 dismissed_leads。
 func (s *ExplorationStore) OpenLeadsCount() (int, error) {
-	facts, err := s.ListByKind(KindFact, 2000)
+	facts, err := s.AllByKindState(KindFact, "")
 	if err != nil {
 		return 0, err
 	}
-	intents, err := s.ListByKind(KindIntent, 2000)
+	intents, err := s.AllByKindState(KindIntent, "")
 	if err != nil {
 		return 0, err
 	}

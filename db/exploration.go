@@ -66,16 +66,21 @@ func jsonbClean(b []byte) []byte {
 
 // Node is a typed reasoning node (= old task_nodes). kind ∈ goal|intent|finding|hint.
 type Node struct {
-	FindingID     int64           `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
-	FindingNodeID int64           `json:"finding_node_id,omitempty"`
-	TrafficCount  int             `json:"traffic_count,omitempty"`
-	ID            int64           `json:"id"`
-	Kind          string          `json:"kind"`
-	Payload       json.RawMessage `json:"payload"`
-	Priority      int             `json:"priority"`
-	State         string          `json:"state"`
-	Origin        string          `json:"origin,omitempty"`
-	Owner         string          `json:"owner,omitempty"`
+	EvidenceState       *EvidenceState   `json:"evidence_state,omitempty"`
+	RequiresMissing     []map[string]any `json:"requires_missing,omitempty"`
+	LogicalSessionID    string           `json:"logical_session_id,omitempty"`
+	ExecutionGeneration int64            `json:"execution_generation,omitempty"`
+	ContentVersion      int64            `json:"content_version"`
+	FindingID           int64            `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
+	FindingNodeID       int64            `json:"finding_node_id,omitempty"`
+	TrafficCount        int              `json:"traffic_count,omitempty"`
+	ID                  int64            `json:"id"`
+	Kind                string           `json:"kind"`
+	Payload             json.RawMessage  `json:"payload"`
+	Priority            int              `json:"priority"`
+	State               string           `json:"state"`
+	Origin              string           `json:"origin,omitempty"`
+	Owner               string           `json:"owner,omitempty"`
 	// WorkerSeq 是 intent 在【本任务内】的创建序号（1-based，按 id 升序），**仅供界面**
 	// 显示 "Worker #N"。它是唯一保留序号的地方：agent 侧（态势、常驻索引、去重回执、
 	// 报告引用）一律只用全局 id——两套编号同时出现会让模型拿序号去调工具、找错节点
@@ -233,6 +238,9 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 
 // AddIntent is a convenience: an open intent.
 func (s *ExplorationStore) AddIntent(payload map[string]any, priority int, anchors []int64, origin string) (int64, error) {
+	if err := s.validateStoredRequires(payload); err != nil {
+		return 0, err
+	}
 	if origin == "" {
 		origin = "planner"
 	}
@@ -255,6 +263,9 @@ type IntentEdge struct {
 // edges existed — the frontier then saw an unblocked intent that was supposed to
 // wait, and the graph silently missed lineage when a later Link failed.
 func (s *ExplorationStore) AddIntentGraph(payload map[string]any, priority int, anchors []int64, origin string, edges []IntentEdge) (int64, error) {
+	if err := s.validateStoredRequires(payload); err != nil {
+		return 0, err
+	}
 	if origin == "" {
 		origin = "planner"
 	}
@@ -332,6 +343,9 @@ func (s *ExplorationStore) Anchor(nodeID, assetID int64) error {
 
 // Link adds a typed exploration edge (idempotent).
 func (s *ExplorationStore) Link(from int64, rel string, to int64) error {
+	if rel == RelContradicts || rel == RelSupersedes {
+		return s.LinkEvidenceRelation(from, rel, to)
+	}
 	_, err := s.db.Exec(`
 INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id) VALUES ($1,$2,$3,$4)
 ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, rel, to)
@@ -340,9 +354,18 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 
 // Unlink 删除一条边（不存在时不算错误）。
 func (s *ExplorationStore) Unlink(from int64, rel string, to int64) error {
-	_, err := s.db.Exec(`DELETE FROM exploration_edges
-WHERE exploration_id=$1 AND src_id=$2 AND rel=$3 AND dst_id=$4`, s.expID, from, rel, to)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := GraphOperationTx(tx, s.expID, "unlink", fmt.Sprintf("%d --%s--> %d", from, rel, to)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM exploration_edges WHERE exploration_id=$1 AND src_id=$2 AND rel=$3 AND dst_id=$4`, s.expID, from, rel, to); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // LinkIntentSource 给一条**已存在**的意图补「派生自哪条事实/漏洞」的血缘边。
@@ -399,6 +422,9 @@ VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, sourceID, RelDerivedFrom,
 // 已存在则**覆盖** attrs：多条权限合并成一条边时的并集在 Go 侧算好（见 server/ad_import.go），
 // 这里不做 SQL 里的 jsonb 数组并集——那种表达式没人能在 review 时一眼看懂。
 func (s *ExplorationStore) LinkAttrs(from int64, rel string, to int64, attrs map[string]any) error {
+	if rel == RelContradicts || rel == RelSupersedes {
+		return s.LinkEvidenceRelation(from, rel, to)
+	}
 	raw, _ := json.Marshal(attrs)
 	_, err := s.db.Exec(`
 INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id, attrs) VALUES ($1,$2,$3,$4,$5)
@@ -813,6 +839,10 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, []
 	}
 	defer tx.Rollback()
 
+	if _, err := GraphOperationTx(tx, s.expID, "delete_intent", reason); err != nil {
+		return "", nil, err
+	}
+
 	var state string
 	var rawPayload []byte
 	if err := tx.QueryRow(`SELECT state, payload FROM exploration_nodes
@@ -1163,19 +1193,19 @@ func (u *TokenUsage) add(other TokenUsage) {
 	u.CacheWriteTokens += other.CacheWriteTokens
 }
 
-const nodeCols = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), COALESCE(delete_reason,''), created_at`
+const nodeCols = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), COALESCE(delete_reason,''), created_at, logical_session_id, execution_generation, content_version`
 
 func scanNode(sc interface{ Scan(...any) error }) (*Node, error) {
 	var n Node
 	var payload []byte
-	if err := sc.Scan(&n.ID, &n.Kind, &payload, &n.Priority, &n.State, &n.Origin, &n.Owner, &n.BlockedReason, &n.DeleteReason, &n.CreatedAt); err != nil {
+	if err := sc.Scan(&n.ID, &n.Kind, &payload, &n.Priority, &n.State, &n.Origin, &n.Owner, &n.BlockedReason, &n.DeleteReason, &n.CreatedAt, &n.LogicalSessionID, &n.ExecutionGeneration, &n.ContentVersion); err != nil {
 		return nil, err
 	}
 	n.Payload = json.RawMessage(payload)
 	return &n, nil
 }
 
-func scanNodes(rows *sql.Rows) ([]*Node, error) {
+func scanNodes(rows RowSet) ([]*Node, error) {
 	var out []*Node
 	for rows.Next() {
 		n, err := scanNode(rows)
@@ -1344,7 +1374,7 @@ func (s *ExplorationStore) CountEdges() (int, error) {
 func (s *ExplorationStore) CountBlockedOpenIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
   AND EXISTS (
     SELECT 1 FROM exploration_edges e
     JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
@@ -1415,7 +1445,7 @@ func (d *DB) ClaimableIntentCountsForContext(ctx context.Context, explorationIDs
 	}
 	rows, err := d.QueryContext(ctx, `SELECT n.exploration_id, COUNT(*)
 FROM exploration_nodes n
-WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open'
+WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
   AND NOT EXISTS (
     SELECT 1 FROM exploration_edges e
     JOIN exploration_nodes dep ON dep.id=e.dst_id AND dep.exploration_id=e.exploration_id
@@ -1440,7 +1470,7 @@ GROUP BY n.exploration_id`, explorationIDs)
 func (s *ExplorationStore) CountClaimableIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
   AND NOT EXISTS (
     SELECT 1 FROM exploration_edges e
     JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
@@ -1860,7 +1890,7 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	// 前置未满足的意图不进 frontier：串行链的下一步在前一步有结论前不该被派给 worker
 	// （下游拿不到前置只会空转/重复）。满足 = 前置以 done/negative 收场。
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
   AND NOT EXISTS (
     SELECT 1 FROM exploration_edges e
     JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
@@ -1894,7 +1924,7 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 	}
 	args = append(args, limit)
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
   AND (
     COALESCE(owner,'')='' OR owner=$2 OR `+exclude+`
     -- 槽位亲和不是硬绑定：owner 槽位当前没有在跑任何意图时，其它空闲槽位可以接手。
@@ -1973,57 +2003,15 @@ WHERE exploration_id=$1 AND slot_no IN (`+strings.Join(ph, ",")+`) GROUP BY slot
 // ClaimIntentForSlot claims an open intent only if it is unowned, owned by this
 // slot, or owned by a slot outside the current pool; writes this slot as owner.
 func (s *ExplorationStore) ClaimIntentForSlot(id int64, slot string, ttl time.Duration, pool []string) (bool, error) {
-	args := []any{slot, id, s.expID, int64(ttl / time.Second), slot}
-	exclude := "owner !~ '^work#[0-9]+$'"
-	if len(pool) > 0 {
-		ph := make([]string, len(pool))
-		for i, name := range pool {
-			ph[i] = fmt.Sprintf("$%d", len(args)+1)
-			args = append(args, name)
-		}
-		exclude = fmt.Sprintf("(owner !~ '^work#[0-9]+$' OR owner NOT IN (%s))", strings.Join(ph, ","))
-	}
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
-heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
-payload = (COALESCE(payload,'{}'::jsonb) - 'resume_after_restart' - 'resume_slot') ||
-          jsonb_build_object('attempts',
-    to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
-                  THEN (payload->>'attempts')::int ELSE 0 END + 1))
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
-  AND (
-    COALESCE(owner,'')='' OR owner=$5 OR `+exclude+`
-    -- 与 FrontierForSlot 同一条规则：owner 槽位空闲时允许跨槽接手（CAS 决定谁赢）。
-    OR NOT EXISTS (
-      SELECT 1 FROM exploration_nodes o
-      WHERE o.exploration_id=$3 AND o.kind='intent' AND o.state='running' AND o.owner=exploration_nodes.owner)
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-    WHERE e.exploration_id=$3 AND e.src_id=exploration_nodes.id AND e.rel='depends_on'
-      AND d.state NOT IN ('done','negative'))`, args...)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
+	n, err := s.ClaimNode(context.Background(), id, slot, "open", ttl, pool, true)
+	return n != nil, err
 }
 
 // ClaimPausedIntent atomically resumes a paused/interrupted intent into a slot:
 // state + owner + lease move together, so the pool can never see it as open.
 func (s *ExplorationStore) ClaimPausedIntent(id int64, fromState, slot string, ttl time.Duration) (bool, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
-heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
-blocked_reason=NULL, completed_at=NULL,
-payload = jsonb_set(payload, '{attempts}',
-    to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
-                  THEN (payload->>'attempts')::int ELSE 0 END + 1), true)
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$5`, slot, id, s.expID, int64(ttl/time.Second), fromState)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
+	n, err := s.ClaimNode(context.Background(), id, slot, fromState, ttl, nil, false)
+	return n != nil, err
 }
 
 // IntentDependencies 返回本任务里**未满足的前置**：intentID → 还没结论的依赖 id。
@@ -2104,13 +2092,23 @@ WHERE e.exploration_id=$1 AND e.rel='depends_on'`, s.expID)
 
 // ClearIntentDependencies 拆掉一条意图的全部前置（planner 判定"不再等它"时用）。
 func (s *ExplorationStore) ClearIntentDependencies(id int64) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM exploration_edges
-WHERE exploration_id=$1 AND src_id=$2 AND rel=$3`, s.expID, id, RelDependsOn)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	defer tx.Rollback()
+	if _, err := GraphOperationTx(tx, s.expID, "clear_dependencies", fmt.Sprintf("intent %d", id)); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`DELETE FROM exploration_edges WHERE exploration_id=$1 AND src_id=$2 AND rel=$3`, s.expID, id, RelDependsOn)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
 
 // HasActiveIntent reports whether this exploration has any intent still in play
@@ -2145,22 +2143,8 @@ const IntentLeaseTTL = 15 * time.Minute
 // ClaimIntent atomically moves an open intent to running, stamping the claimer, the
 // heartbeat and a fresh lease expiry. Returns true if claimed.
 func (s *ExplorationStore) ClaimIntent(id int64, owner string, ttl time.Duration) (bool, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1,
-heartbeat_at=now(), lease_expires_at=now()+($4 * interval '1 second'),
-payload = jsonb_set(payload, '{attempts}',
-    to_jsonb(CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$'
-                  THEN (payload->>'attempts')::int ELSE 0 END + 1), true)
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'
-  AND NOT EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-    WHERE e.exploration_id=$3 AND e.src_id=exploration_nodes.id AND e.rel='depends_on'
-      AND d.state NOT IN ('done','negative'))`, owner, id, s.expID, int64(ttl/time.Second))
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
+	n, err := s.ClaimNode(context.Background(), id, owner, "open", ttl, nil, false)
+	return n != nil, err
 }
 
 // TouchIntentLease renews the lease on a running intent still owned by owner (heartbeat
@@ -2179,16 +2163,17 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running' AND COAL
 
 // ExpiredLease is one running intent whose lease lapsed — the watchdog's reap list.
 type ExpiredLease struct {
-	IntentID int64
-	Owner    string
-	LastSeen *time.Time // heartbeat_at, nil when never stamped
+	Generation int64
+	IntentID   int64
+	Owner      string
+	LastSeen   *time.Time // heartbeat_at, nil when never stamped
 }
 
 // ExpiredIntentLeases lists running intents whose lease lapsed. Intents without a lease
 // (paused, or never claimed through ClaimIntent) are not listed: no lease, no watchdog
 // jurisdiction.
 func (s *ExplorationStore) ExpiredIntentLeases() ([]ExpiredLease, error) {
-	rows, err := s.db.Query(`SELECT id, COALESCE(owner,''), heartbeat_at FROM exploration_nodes
+	rows, err := s.db.Query(`SELECT id, COALESCE(owner,''), heartbeat_at,execution_generation FROM exploration_nodes
 WHERE exploration_id=$1 AND kind='intent' AND state='running'
   AND lease_expires_at IS NOT NULL AND lease_expires_at < now()
 ORDER BY lease_expires_at`, s.expID)
@@ -2199,7 +2184,7 @@ ORDER BY lease_expires_at`, s.expID)
 	var out []ExpiredLease
 	for rows.Next() {
 		var l ExpiredLease
-		if err := rows.Scan(&l.IntentID, &l.Owner, &l.LastSeen); err != nil {
+		if err := rows.Scan(&l.IntentID, &l.Owner, &l.LastSeen, &l.Generation); err != nil {
 			return nil, err
 		}
 		out = append(out, l)
@@ -2211,11 +2196,15 @@ ORDER BY lease_expires_at`, s.expID)
 // pool re-claims it (the worker resumes from its transcript; graph writes already made
 // stay). Guarded on the same owner AND a still-lapsed lease, so a worker that renewed or
 // settled between the watchdog's scan and its reap wins the race harmlessly (false).
-func (s *ExplorationStore) ReopenExpiredIntent(id int64, owner string) (bool, error) {
+func (s *ExplorationStore) ReopenExpiredIntent(id int64, owner string, generation ...int64) (bool, error) {
+	gen := int64(-1)
+	if len(generation) > 0 {
+		gen = generation[0]
+	}
 	res, err := s.db.Exec(`UPDATE exploration_nodes
 SET state='open', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL
 WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
-  AND COALESCE(owner,'')=$3 AND lease_expires_at IS NOT NULL AND lease_expires_at < now()`, id, s.expID, owner)
+  AND COALESCE(owner,'')=$3 AND lease_expires_at IS NOT NULL AND lease_expires_at < now() AND ($4::bigint<0 OR execution_generation=$4)`, id, s.expID, owner, gen)
 	if err != nil {
 		return false, err
 	}
@@ -2816,7 +2805,7 @@ func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int)
 	if limit <= 0 {
 		limit = 300
 	}
-	var rows *sql.Rows
+	var rows RowSet
 	var err error
 	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no`
 	if nodeID != nil {
@@ -2856,7 +2845,7 @@ func (s *ExplorationStore) ActivityListTail(nodeID *int64, limit int) ([]Activit
 		limit = 300
 	}
 	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no`
-	var rows *sql.Rows
+	var rows RowSet
 	var err error
 	if nodeID != nil {
 		rows, err = s.db.Query(`SELECT `+cols+`
@@ -3419,7 +3408,7 @@ func (s *ExplorationStore) ActivityDetail(id int64) (string, error) {
 // scanTrace reads the summary-only column set shared by the worker-trace tools
 // (ActivityTrace / ActivityTraceSearch). Detail is never selected here — it is
 // pulled separately, on demand, via ActivityByIDs.
-func scanTrace(rows *sql.Rows) ([]Activity, error) {
+func scanTrace(rows RowSet) ([]Activity, error) {
 	out := []Activity{}
 	for rows.Next() {
 		var a Activity
@@ -3524,7 +3513,7 @@ func (s *ExplorationStore) ActivityTraceSearch(nodeID *int64, q string, limit in
 		limit = 100
 	}
 	like := "%" + q + "%"
-	var rows *sql.Rows
+	var rows RowSet
 	var err error
 	if nodeID != nil {
 		rows, err = s.db.Query(`SELECT `+traceCols+`

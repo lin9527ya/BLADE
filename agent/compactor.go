@@ -221,6 +221,19 @@ func renderCompanySection(lines []string, hasOverview bool) string {
 // 上限刻意收紧（每类 ≤8 行、单行截断）——它每个请求都发一次，是"防丢"的保险，
 // 不是态势全量（全量走 graph_overview / node_detail）。
 func BuildContextIndex(v ContextIndexVars) string {
+	if v.Store != nil && !v.Store.InReadSnapshot() {
+		var out string
+		err := v.Store.ReadSnapshot(context.Background(), func(_ *db.DB, store *db.ExplorationStore) error {
+			copy := v
+			copy.Store = store
+			out = BuildContextIndex(copy)
+			return nil
+		})
+		if err != nil {
+			return "【常驻上下文：读取失败，图状态unknown；不要把缺失当作没有事实/方向，稍后用node_detail重读】"
+		}
+		return out
+	}
 	ts := v.Store
 	if ts == nil {
 		return ""
@@ -277,6 +290,9 @@ func BuildContextIndex(v ContextIndexVars) string {
 		open, running := []string{}, []string{}
 		for _, n := range intents {
 			line := fmt.Sprintf("intent-%d「%s」", n.ID, clipLine(n.Summary, 90))
+			if issues, err := ts.RequirementIssues(n.ID); err == nil && len(issues) > 0 {
+				line += fmt.Sprintf("（缺%d项显式requires；仍是候选方向）", len(issues))
+			}
 			if n.Attempts >= 2 {
 				line += fmt.Sprintf("（第 %d 次尝试）", n.Attempts)
 			}

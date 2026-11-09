@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 func TestPauseCancelsWithNamedCause(t *testing.T) {
@@ -321,4 +322,33 @@ func TestWaitAllQuiescentBoundsWaitAndReportsRemaining(t *testing.T) {
 	if n := s.WaitAllQuiescent(idle); n != 0 {
 		t.Fatalf("空闲时应报 0，得到 %d", n)
 	}
+}
+
+func TestOldGenerationCannotCancelOrDetachNewRun(t *testing.T) {
+	e := NewEngine(nil)
+	oldCtx, oldCancel := context.WithCancelCause(t.Context())
+	defer oldCancel(nil)
+	old := e.registerWork(42, oldCancel, db.WriteAuthority{Generation: 1})
+	newCtx, newCancel := context.WithCancelCause(t.Context())
+	defer newCancel(nil)
+	current := e.registerWork(42, newCancel, db.WriteAuthority{Generation: 2})
+	if e.cancelWork(42, agent.AbortWorkLeaseExpired, 1) {
+		t.Fatal("old lease cancelled a new run")
+	}
+	_, complete := e.detachWork(42, old)
+	complete(nil)
+	e.workMu.Lock()
+	got := e.work[42]
+	e.workMu.Unlock()
+	if got != current || newCtx.Err() != nil {
+		t.Fatal("old detach removed current handle")
+	}
+	if !e.cancelWork(42, agent.AbortWorkLeaseExpired, 2) || newCtx.Err() == nil {
+		t.Fatal("current lease did not cancel its own run")
+	}
+	if oldCtx.Err() != nil {
+		t.Fatal("generation-specific cancel touched old context")
+	}
+	_, finish := e.detachWork(42, current)
+	finish(nil)
 }

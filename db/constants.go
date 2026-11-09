@@ -308,6 +308,8 @@ const StateIntentDeleted = "deleted"
 
 // Exploration edge relations (exploration_edges.rel).
 const (
+	RelContradicts = "contradicts"
+	RelSupersedes  = "supersedes"
 	RelSpawns      = "spawns"
 	RelDerivedFrom = "derived_from"
 	RelYields      = "yields"

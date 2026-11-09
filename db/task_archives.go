@@ -461,7 +461,7 @@ func (d *DB) FailTaskArchiveJob(id int64, activeState string, cause error) error
 }
 
 func queryArchiveRows(q interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	Query(query string, args ...any) (*Rows, error)
 }, inner string, args ...any) (json.RawMessage, int64, error) {
 	// Do not aggregate the result in PostgreSQL. A jsonb array has a hard limit
 	// of 256 MiB for its elements, which large LLM request/response histories can
@@ -531,7 +531,7 @@ func writeArchiveRows(rows interface {
 }
 
 func streamArchiveRows(q interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	Query(query string, args ...any) (*Rows, error)
 }, writer io.Writer, inner string, args ...any) (int64, error) {
 	rows, err := q.Query(`SELECT row_to_json(row_data)::text FROM (`+inner+`) row_data`, args...)
 	if err != nil {
@@ -626,7 +626,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	streamedTables := map[string]string{}
 	for _, query := range queries {
 		if query.name == "llm_records" && llmRecords != nil {
-			count, err := streamArchiveRows(tx, llmRecords, query.query, query.args...)
+			count, err := streamArchiveRows(txRows{tx}, llmRecords, query.query, query.args...)
 			if err != nil {
 				return nil, fmt.Errorf("snapshot %s: %w", query.name, err)
 			}
@@ -635,7 +635,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 			streamedTables[query.name] = TaskArchiveLLMRecordsPath
 			continue
 		}
-		raw, count, err := queryArchiveRows(tx, query.query, query.args...)
+		raw, count, err := queryArchiveRows(txRows{tx}, query.query, query.args...)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot %s: %w", query.name, err)
 		}
@@ -699,7 +699,7 @@ func archiveAssetMetadata(tx *sql.Tx, taskID, expID int64, assetRows json.RawMes
 			}
 		}
 	}
-	exclusiveHosts, err := hostsForTaskDeletion(tx, taskID, expID)
+	exclusiveHosts, err := hostsForTaskDeletion(txRows{tx}, taskID, expID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

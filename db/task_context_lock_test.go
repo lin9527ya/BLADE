@@ -465,7 +465,7 @@ VALUES ($1,$2,0)`, task.ID, profileID); err != nil {
 
 func openSingleConnectionTestDB(t *testing.T, dsn string) (*DB, int) {
 	t.Helper()
-	sqlDB, err := sql.Open("pgx", dsn)
+	sqlDB, err := sql.Open("pgx", writerProtocolDSN(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}

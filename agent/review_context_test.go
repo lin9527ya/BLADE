@@ -26,15 +26,20 @@ func TestWorkerReviewContextAcrossToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	expID, err := d.CreateExploration("只操作隔离测试目录", "验证创建和清理")
+	task, err := d.CreateTask("只操作隔离测试目录", "验证创建和清理", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var expID int64
+	if err := d.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, task.ID).Scan(&expID); err != nil {
+		t.Fatal(err)
+	}
 	ts := d.Exploration(expID)
-	taskID := fmt.Sprint(expID)
+	taskID := fmt.Sprint(task.ID)
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM intercept_pending WHERE task_id=$1`, taskID)
 		_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+		_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
 	})
 	ic := intercept.New(d)
 	priorTools, err := ic.GetEnabledTools()
@@ -87,14 +92,17 @@ func TestWorkerReviewContextAcrossToolCalls(t *testing.T) {
 	ctx := intercept.WithTaskContext(t.Context(), taskID, "test-agent", nil)
 	ctx = intercept.WithReviewContext(ctx, "/parent", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: "PARENT_BACKGROUND_SENTINEL"})
 	intentPayload := map[string]any{"summary": "创建并清理", "extra": "FULL_INTENT_SENTINEL"}
-	intentID, err := ts.AddNode("intent", intentPayload, 0, "running", "planner", nil)
+	intentID, err := ts.AddNode("intent", intentPayload, 0, "open", "planner", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawIntent, _ := json.Marshal(intentPayload)
+	claimed, err := ts.ClaimNode(ctx, intentID, "test-agent", "open", db.IntentLeaseTTL, nil, false)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim: %v", err)
+	}
 	worker := NewWorker(provider, "test-model", workDir, nil, 0, 3, probe)
-	_, _, err = worker.Execute(ctx, "test-agent", expID, nil, ts, &db.Node{ID: intentID, Payload: rawIntent}, guard.NewWithInterceptor(ic, 0).Hooks(), nil, nil, nil)
-	runDir := ensureRunDir(workDir, expID, intentID)
+	_, _, err = worker.Execute(ctx, "test-agent", task.ID, nil, ts, claimed, guard.NewWithInterceptor(ic, 0).Hooks(), nil, nil, nil)
+	runDir := ensureRunDir(workDir, task.ID, intentID)
 	if err != nil {
 		t.Fatal(err)
 	}
