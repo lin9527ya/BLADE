@@ -4,11 +4,21 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-09
+
+重启恢复的一版：worker 优先续跑重启前被中断的意图，而不是先领另一条排队意图从头探索。
+
 ### 修复
 
 - **重启后优先续跑被中断的意图**：`ResetRunningIntents` 给重启前仍在 running 的意图写入
   `resume_after_restart` / `resume_slot`；`FrontierForSlot` 优先领取它，worker 用原槽位
   transcript 续跑，而不是先领另一条排队意图重新探索。领取后清除标记。
+- **跨槽恢复**：worker 池数量变化后，新槽位也能按 `resume_slot` 找到原槽 transcript。
+
+### 验证
+
+- `db` / `agent` / `server` 全量测试通过；新增重启标记、排序、领取清除与跨槽恢复测试。
+- `gofmt` / `go vet` / `staticcheck` 干净。
 
 ## [0.9.5] - 2026-11-09
 
