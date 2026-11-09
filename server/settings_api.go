@@ -995,6 +995,7 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	backend = res.Backend
 	// DDG 直连经常 202；用户没单独填搜索代理时，测试与线上工具一样走平台出口代理。
 	if backend == defaultWebSearchBackend && strings.TrimSpace(proxy) == "" {
+		s.m.WaitProxyReady(proxyFirstProbeWait)
 		proxy = s.m.usableEgressProxy()
 	}
 	cfg := actool.WebSearchConfig{Backend: res.Backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}

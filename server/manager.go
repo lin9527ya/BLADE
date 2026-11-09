@@ -937,7 +937,10 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = r.Backend, r.BaseURL, r.APIKey, r.Model, r.Headers
 	o.CommandCodeBaseURL, o.CommandCodeAPIKey = r.CCBaseURL, r.CCAPIKey
 	// DuckDuckGo 直连很容易被 202 限流；用户没单独填搜索代理时，优先走平台出口代理。
+	// 代理池是 fail-closed 的：启动瞬间 active 还是黑洞地址，先等首探完成再取，
+	// 否则会把空代理冻结进这一轮 agent，之后即使代理恢复也只能直连。
 	if o.Backend == defaultWebSearchBackend && strings.TrimSpace(o.Proxy) == "" {
+		m.WaitProxyReady(proxyFirstProbeWait)
 		o.Proxy = m.usableEgressProxy()
 	}
 	if r.FallbackFrom != "" {
