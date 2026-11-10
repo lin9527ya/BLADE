@@ -692,7 +692,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 		t.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
 		t.exhaustedFn = p.recordStrategyExhausted
-		// 用闭包而不是快照：本轮若刚收到复核否决，同轮内再调用也要被挡（见 takeExhaustionNote）。
 		t.exhaustCooldownFn = func() int { return p.exhaustCooldown }
 	}
 	wireToolSet(tsx)

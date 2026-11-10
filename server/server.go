@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -17,7 +16,6 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/llmpool"
-	"github.com/lin9527ya/blade/llmrec"
 )
 
 // BuildVersion is the backend application version, injected from cmd/blade at
@@ -279,58 +277,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 接着问只会重复刚说过的结论。裁判不可用时按"证据不足"处理（任务继续）。
 	// 出口从阻断恢复时通知在跑任务（见 server/egress_recovery.go）。
 	s.m.onEgressRestored = s.engine.notifyEgressRestoredAll
-	s.engine.SetExhaustionReviewer(func(ctx context.Context, claim agent.ExhaustionClaim) (agent.ExhaustionVerdict, error) {
-		profileID := int64(0)
-		if p, err := s.m.pg.ActiveProfile(); err == nil && p != nil {
-			profileID = p.ID
-		}
-		if profileID == 0 {
-			return agent.ExhaustionVerdict{}, fmt.Errorf("未配置可用的复核模型")
-		}
-		prov, _, ok := s.providerForProfile(profileID)
-		if !ok {
-			return agent.ExhaustionVerdict{}, fmt.Errorf("复核模型 profile %d 不可用", profileID)
-		}
-		// 单独记一档用量，便于在配置页把"看门狗开销"与规划/执行分开看。
-		ctx = llmrec.WithWorker(ctx, exhaustionReviewerLane)
-		text, err := streamCollectTextLimit(ctx, prov, agent.ExhaustionReviewPrompt, exhaustionReviewJSON(claim), 800)
-		if err != nil {
-			return agent.ExhaustionVerdict{}, err
-		}
-		return agent.ParseExhaustionVerdict(text)
-	})
-	// 执行审核员：按周期抽查在跑 worker 的最近轨迹，判偏则通过 steer 通道纠偏。
-	// 走任务自己的 LLM 链（与 planner/worker 同一个模型来源），单独记一档用量；
-	// 审核员不可用时只记日志、本轮不纠偏——它是附加保护，不该影响任务运行。
-	s.engine.SetSupervisor(func(ctx context.Context, task *Task, claim agent.SupervisorClaim) (agent.SupervisorVerdict, string, error) {
-		if task == nil {
-			return agent.SupervisorVerdict{}, "", fmt.Errorf("审核任务为空")
-		}
-		rt := &taskLLMRuntime{s: s, taskID: task.ID, agentKey: "supervisor"}
-		ctx = llmrec.WithWorker(ctx, supervisorLane)
-		ctx = llmrec.WithExplorationID(ctx, task.ExpID)
-		user := supervisorClaimJSON(claim)
-		text, err := streamCollectTextLimit(ctx, rt, agent.SupervisorPrompt, user, 1500)
-		if err != nil {
-			return agent.SupervisorVerdict{}, "", err
-		}
-		verdict, perr := agent.ParseSupervisorVerdict(text)
-		if perr == nil {
-			return verdict, text, nil
-		}
-		// 修复重试：模型偶尔会先写一段说明、返回数组、或输出被截断。把原始输出
-		// 与"只输出 JSON 对象"再发一次；仍失败才把错误交回时间线（本轮不纠偏）。
-		repair := user + "\n\n【上一次输出无法解析为 JSON】\n" + firstLine(text, 400) +
-			"\n请只输出一个 JSON 对象：{\"intents\":[{\"intent_id\":123,\"on_track\":true,\"reason\":\"一句话\"}]}，不要任何其他文字。"
-		text2, err2 := streamCollectTextLimit(ctx, rt, agent.SupervisorPrompt, repair, 1500)
-		if err2 == nil {
-			if v2, p2 := agent.ParseSupervisorVerdict(text2); p2 == nil {
-				return v2, text2, nil
-			}
-		}
-		// 解析失败也把原始输出交回去：时间线要能看到模型到底说了什么。
-		return agent.SupervisorVerdict{}, text, perr
-	})
 	s.auth.signKey.set(key)
 	s.auth.jwtKeyPath = filepath.Join(keyDir, jwtKeyFilename)
 	// 旁路提问的 checkpoint 发布器挂在 ctx 上；返回值一次性写回 s.ctx。

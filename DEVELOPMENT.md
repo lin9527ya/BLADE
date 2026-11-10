@@ -243,3 +243,12 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   `ExplorationPolicy*`/`TaskPolicy`/`CustomRule` 等前端类型和对应 API 调用。
 - 保留授权范围/任务拦截规则/操作约束注入/覆盖度/战果/遗留物/痕迹/打法库/CVE 等非探索控件。
 - 后端 policy 快照与命令门仍可作为遗留数据/安全边界存在；前端不再提供意图策略编辑入口。
+
+### 已移除：执行审核员与穷尽复核
+
+- `agent/supervisor.go`、`agent/exhaustion_review.go`、`server/supervisor.go`、`server/exhaustion_watchdog.go`、
+  `server/exhaustion_api.go` 及相关测试/设置字段已删除；引擎不再持有 supervisor/exhaustion 状态，也不再注入
+  LLM 复核回调。`/api/exploration/exhaustion-reviews` 路由移除。
+- 任务会话列表移除「审核 Supervisor」固定会话、角色分组与 `supervisor_input/supervisor_steer` 标签；历史
+  supervisor 活动仍留在数据库，但不再作为独立会话展示。
+- guard/拦截规则/人工审批仍保留，不属于被删除的审核功能。

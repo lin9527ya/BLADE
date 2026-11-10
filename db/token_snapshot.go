@@ -41,7 +41,7 @@ func (s *ExplorationStore) TokenSnapshot(ctx context.Context) (TokenSnapshot, er
  SELECT a.id, COALESCE(a.worker,'') worker, a.kind,
  CASE WHEN a.worker='mainagent' THEN 'main:'||COALESCE(a.main_seg,0)::text
       WHEN a.worker='planner' THEN 'plan'
-      WHEN a.worker IN ('system','supervisor') THEN a.worker
+      WHEN a.worker IN ('system') THEN a.worker
       WHEN a.slot_no IS NOT NULL THEN 'slot:'||a.slot_no::text
       WHEN n.id IS NOT NULL THEN 'intent:'||n.id::text
       ELSE 'worker:'||COALESCE(a.worker,'') END AS session,

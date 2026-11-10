@@ -53,7 +53,6 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/activity", s.activity)
 	mux.HandleFunc("GET /api/exploration/activity/history", s.activityHistory)
 	// 穷尽复核记录（看门狗）：planner 想收工时的复核结论，任务详情据此展示。
-	mux.HandleFunc("GET /api/exploration/exhaustion-reviews", s.exhaustionReviews)
 	mux.HandleFunc("GET /api/exploration/main-sessions", s.mainSessions)
 	mux.HandleFunc("POST /api/exploration/main-session/new", s.newMainSession)
 	mux.HandleFunc("GET /api/exploration/activity/stream", s.streamActivity)

@@ -84,38 +84,6 @@ type Task struct {
 	// a burst into one round, so several may pile up before drainTriggers() clears them.
 	trigMu          sync.Mutex
 	pendingTriggers []agent.TriggerEvent
-
-	// exhaustionNote 是最近一次「穷尽复核未通过」的结论。它随下一轮规划输入下发给
-	// planner（作为"你上次说穷尽，但证据不足"的反馈），消费一次即清空——
-	// 不写进图，因为它不是关于目标的结论，而是关于规划者自己判断的批评。
-	exhaustionMu   sync.Mutex
-	exhaustionNote string
-}
-
-// NoteExhaustionRejected 记录一次复核未通过（由引擎在判定后调用）。
-func (t *Task) NoteExhaustionRejected(reason string, gaps []string) {
-	if t == nil {
-		return
-	}
-	note := "复核结论：" + strings.TrimSpace(reason)
-	if len(gaps) > 0 {
-		note += "\n具体不足：\n- " + strings.Join(gaps, "\n- ")
-	}
-	t.exhaustionMu.Lock()
-	t.exhaustionNote = note
-	t.exhaustionMu.Unlock()
-}
-
-// TakeExhaustionNote 取走并清空复核反馈（规划轮开头调用）。
-func (t *Task) TakeExhaustionNote() string {
-	if t == nil {
-		return ""
-	}
-	t.exhaustionMu.Lock()
-	defer t.exhaustionMu.Unlock()
-	n := t.exhaustionNote
-	t.exhaustionNote = ""
-	return n
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task
@@ -348,8 +316,6 @@ const (
 	settingConstraintLedger        = "constraint_ledger"
 	settingConstraintReviewEndgame = "constraint_review_endgame"
 	settingConstraintCompletion    = "constraint_completion"
-	settingConstraintExhaustion    = "constraint_exhaustion"
-	settingConstraintSupervisor    = "constraint_supervisor"
 	settingConstraintDepth         = "constraint_depth"
 	settingWebSearchOn             = "web_search_enabled"
 	settingWebSearchBackend        = "web_search_backend"
@@ -372,11 +338,6 @@ const (
 	// 与 workers 不同，它每轮规划现读，保存后下一轮生效。
 	settingIntentQueueFactor = "intent_queue_factor"
 	settingLLMRecord         = "llm_record"
-	// settingSupervisorEnabled / settingSupervisorInterval 控制「执行审核员」：
-	// 定时抽查在跑 worker 的最近轨迹，偏离意图/目标时通过 steer 通道纠偏。
-	// 默认开启、默认 180 秒；每轮现读，改完对下一个审核周期生效。
-	settingSupervisorEnabled  = "supervisor_enabled"
-	settingSupervisorInterval = "supervisor_interval_seconds"
 	// settingCompactionPrompt（P14）是领域化压缩模板（7 段）。空 = 用内置模板。
 	// 刻意放 settings 而不是 agent_prompts：它不是某个 agent 的提示词，没有对应
 	// agent 行；塞进 agent_prompts 需要在 Agent 管理里凭空多出一个假 agent。
@@ -821,7 +782,6 @@ func (m *Manager) SetLLMRecordEnabled(on bool) error {
 // ConstraintGroups 是探索约束的稳定分组名（前端/API/agent resolver 共用）。
 var ConstraintGroups = []string{
 	"opening", "dispatch", "breadth", "ledger", "review_endgame",
-	"completion", "exhaustion", "supervisor", "depth",
 }
 
 // NormalizeConstraintProfile canonicalizes the preset name. Unknown/empty → classic,
@@ -864,8 +824,7 @@ func constraintGroupEnabled(pg *pgdb.DB, group string) bool {
 		return true
 	}
 	switch group {
-	case "opening", "dispatch", "breadth", "ledger", "review_endgame",
-		"completion", "exhaustion", "supervisor", "depth":
+	case "opening", "dispatch", "breadth", "ledger", "review_endgame", "completion", "depth":
 		return pg.GetBool("constraint_"+group, false)
 	}
 	return false

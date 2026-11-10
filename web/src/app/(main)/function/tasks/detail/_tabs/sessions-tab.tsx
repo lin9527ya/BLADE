@@ -269,8 +269,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  输入 {liveTaskTokens.input_tokens.toLocaleString()} · 输出 {liveTaskTokens.output_tokens.toLocaleString()} ·
-                  缓存读取 {liveTaskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
+                  输入 {liveTaskTokens.input_tokens.toLocaleString()} · 输出{" "}
+                  {liveTaskTokens.output_tokens.toLocaleString()} · 缓存读取{" "}
+                  {liveTaskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
                   {liveTaskTokens.cache_write_tokens.toLocaleString()}
                 </TooltipContent>
               </Tooltip>
@@ -285,7 +286,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             )}
           >
             <div className="flex w-full flex-col gap-3 p-2">
-              {(["mainagent", "planner", "supervisor", "system", "worker"] as const).map((role) => {
+              {(["mainagent", "planner", "system", "worker"] as const).map((role) => {
                 const items = grouped[role];
                 if (!items.length) return null;
                 const Meta = roleMeta[role];
@@ -521,7 +522,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             to block so wide/unbreakable steps (long commands, code, URLs) can't blow
             out the width and defeat the truncation below — the transcript wraps to
             the panel instead of overflowing horizontally. */}
-            <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]]:[overflow-anchor:none] [&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
+            <ScrollArea
+              type="auto"
+              className="[&_[data-slot=scroll-area-viewport]]:[overflow-anchor:none] [&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1"
+            >
               <div className="min-w-0 max-w-full p-4 [overflow-anchor:none]" ref={contentRef}>
                 {activeState?.loadingMore && (
                   <div className="flex items-center justify-center gap-2 pb-2 text-muted-foreground text-xs">

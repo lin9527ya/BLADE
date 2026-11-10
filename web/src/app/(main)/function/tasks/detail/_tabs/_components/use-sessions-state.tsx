@@ -11,9 +11,14 @@ import { api, sseUrl } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import { rememberInputHistory } from "@/lib/input-history";
 import { MOCK } from "@/lib/mock/enabled";
-import { capSessionStore } from "@/lib/session-cache";
 import { createSessionRequests } from "@/lib/request-lifecycle";
-import { acceptTokenEvent, acceptTokenSnapshot, emptyTokenAccounting, projectTokenAccounting } from "@/lib/token-accounting";
+import { capSessionStore } from "@/lib/session-cache";
+import {
+  acceptTokenEvent,
+  acceptTokenSnapshot,
+  emptyTokenAccounting,
+  projectTokenAccounting,
+} from "@/lib/token-accounting";
 import type {
   Activity,
   ChatAttachment,
@@ -45,7 +50,6 @@ import {
   type SessionState,
   type SessionStore,
   STREAM_WINDOW_MS,
-  SUPERVISOR_SESSION,
   SYSTEM_SCAN_PAGE,
   SYSTEM_SESSION,
   sessionKeyOf,
@@ -67,7 +71,6 @@ export function useSessionsState(taskId: string) {
       return { ...MAIN_SESSION, id: mainSessionId(seg), seg, title: mainSessionTitle(seg), live: false };
     }
     if (source.session === "plan") return { ...PLANNER_SESSION, live: false };
-    if (source.session === "supervisor") return { ...SUPERVISOR_SESSION, live: false };
     if (source.session.startsWith("slot:")) {
       const slot = Number(source.session.slice(5));
       if (Number.isFinite(slot) && slot > 0) {
@@ -310,7 +313,9 @@ export function useSessionsState(taskId: string) {
               error: (error as Error).message || "加载失败",
             }));
           })
-          .finally(() => { if (request.alive()) loadingKeysRef.current.delete(key); });
+          .finally(() => {
+            if (request.alive()) loadingKeysRef.current.delete(key);
+          });
         return;
       }
 
@@ -338,7 +343,9 @@ export function useSessionsState(taskId: string) {
           if (!request.alive()) return;
           patchStore(key, (s) => ({ ...s, loading: false, error: (e as Error).message || "加载失败" }));
         })
-        .finally(() => { if (request.alive()) loadingKeysRef.current.delete(key); });
+        .finally(() => {
+          if (request.alive()) loadingKeysRef.current.delete(key);
+        });
     },
     [taskId, patchStore],
   );
@@ -641,7 +648,13 @@ export function useSessionsState(taskId: string) {
             }
             const k = sessionKeyOf(a);
             if (a.kind === "usage" || a.kind === "result") {
-              setTokenAccounting((state) => acceptTokenEvent(state, { ...a, session: k === "unknown" ? `worker:${a.worker}` : k, kind: a.kind as "usage" | "result" }));
+              setTokenAccounting((state) =>
+                acceptTokenEvent(state, {
+                  ...a,
+                  session: k === "unknown" ? `worker:${a.worker}` : k,
+                  kind: a.kind as "usage" | "result",
+                }),
+              );
             }
             setStore((prev) => {
               const cur = prev[k] ?? emptyState();
@@ -871,7 +884,6 @@ export function useSessionsState(taskId: string) {
   );
   const currentMainKey = mainSessionKey(currentSeg);
   const plannerLive = recentLive("plan");
-  const supervisorLive = recentLive("supervisor");
 
   // 只在「有东西正在流式」时才需要周期性重渲染：没有活的会话时，「活」这个渲染期判断
   // （recentLive 读 Date.now()）不会随时间改变，周期重渲染纯属浪费。此前是无条件每 1.5
@@ -923,22 +935,15 @@ export function useSessionsState(taskId: string) {
   );
 
   const sessions = React.useMemo(() => {
-    const items = [
-      ...mainSessions,
-      { ...PLANNER_SESSION, live: plannerLive },
-      { ...SUPERVISOR_SESSION, live: supervisorLive },
-      ...workerSessions,
-      SYSTEM_SESSION,
-    ];
+    const items = [...mainSessions, { ...PLANNER_SESSION, live: plannerLive }, ...workerSessions, SYSTEM_SESSION];
     const located = focusSession ?? retainedSession;
     if (located && !items.some((s) => s.id === located.id)) items.push(located);
     return items;
-  }, [mainSessions, workerSessions, plannerLive, supervisorLive, focusSession, retainedSession]);
+  }, [mainSessions, workerSessions, plannerLive, focusSession, retainedSession]);
 
   const grouped = {
     mainagent: sessions.filter((s) => s.role === "mainagent"),
     planner: sessions.filter((s) => s.role === "planner"),
-    supervisor: sessions.filter((s) => s.role === "supervisor"),
     worker: sessions.filter((s) => s.role === "worker"),
     system: sessions.filter((s) => s.role === "system"),
   };
@@ -953,7 +958,6 @@ export function useSessionsState(taskId: string) {
   );
   const isMain = active.role === "mainagent";
   const isPlanner = active.role === "planner";
-  const isSupervisor = active.role === "supervisor";
   const isSystem = active.role === "system";
   const activeKey = keyForSession(active);
   const activeState = store[activeKey];
@@ -1035,7 +1039,7 @@ export function useSessionsState(taskId: string) {
     // same SSE stream (worker="mainagent") as every agent step — no client-side
     // optimistic echo, hence no fabricated seq that could collide with real DB ids.
     if (isMain) return items;
-    if (isPlanner || isSupervisor || isSystem) return items;
+    if (isPlanner || isSystem) return items;
     // Slot sessions get a backend "intent" boundary row on each new intent, so the
     // transcript already leads with the real objective. Only legacy intent-focused
     // sessions still need the client-side synthetic bubble.
@@ -1054,7 +1058,6 @@ export function useSessionsState(taskId: string) {
   }, [
     isMain,
     isPlanner,
-    isSupervisor,
     isSystem,
     activeState,
     active.id,
@@ -1084,9 +1087,13 @@ export function useSessionsState(taskId: string) {
   const taskTokens = tokenAccounting.snapshot?.total ?? null;
   const sessionTokens = liveAccounting.sessions;
   const tokenForSession = React.useCallback(
-    (key: string): TokenTotal => sessionTokens[key] ?? {
-      input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
-    },
+    (key: string): TokenTotal =>
+      sessionTokens[key] ?? {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
     [sessionTokens],
   );
   const activeTokens = tokenForSession(activeKey);
@@ -1384,8 +1391,6 @@ export function useSessionsState(taskId: string) {
     recentLive,
     currentMainKey,
     plannerLive,
-    supervisorLive,
-    isSupervisor,
     liveMainSeg,
     mainSessions,
     sessions,

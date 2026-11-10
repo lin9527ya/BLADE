@@ -154,19 +154,11 @@ type Engine struct {
 	// 避免连续 403 把节点切来切去。
 	// egressRecovery 记录每个任务的"出口阻断"自愈节奏（见 egress_recovery.go）。
 	egressRecovery sync.Map // taskID -> *egressRecovery
-	// exhaustionReview 是穷尽复核员（见 exhaustion_watchdog.go）。nil = 未接线
-	// （无可用 LLM / 测试），此时保持旧行为：声明即暂停。
-	exhaustionReview exhaustionReviewer
-	exhaustionTries  sync.Map // taskID -> int，连续被判"证据不足"的次数
-	// supervisor 是定时执行审核员（见 server/supervisor.go）。nil = 未接线。
-	supervisor supervisorFunc
 	// constraintOn 是探索约束分组 resolver（默认走 Manager；测试可注入）。
-	constraintOn func(string) bool
-	// supervisorStates 记录每个任务的审核水位与纠偏节奏（taskID -> *supervisorState）。
-	supervisorStates sync.Map
-	egressMu         sync.Mutex
-	egressHits       map[string][]time.Time
-	egressRotating   bool
+	constraintOn   func(string) bool
+	egressMu       sync.Mutex
+	egressHits     map[string][]time.Time
+	egressRotating bool
 	// rotateEgressHook 仅测试注入：默认走 e.m.RotateEgress（真实 Clash 控制器）。
 	rotateEgressHook func(context.Context, string) (ClashRotation, error)
 
@@ -507,7 +499,6 @@ func (e *Engine) StopTask(taskID string) {
 	e.stamped.Delete(taskID)
 	e.inflight.Delete(taskID)
 	e.coordStarted.Delete(taskID)
-	e.supervisorStates.Delete(taskID)
 	e.deleteMu.Lock()
 	e.deleting.Delete(taskID)
 	e.deleteMu.Unlock()
@@ -626,13 +617,6 @@ func NewEngine(m *Manager) *Engine {
 
 // SetConstraintResolver overrides the exploration-constraint resolver (tests).
 func (e *Engine) SetConstraintResolver(fn func(string) bool) { e.constraintOn = fn }
-
-func (e *Engine) constraintEnabled(group string) bool {
-	if e.constraintOn != nil {
-		return e.constraintOn(group)
-	}
-	return e.m != nil && e.m.ConstraintEnabled(group)
-}
 
 // registerWork records the cancel for the work currently running intentID.
 func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc, authority ...db.WriteAuthority) *workExecution {
@@ -757,9 +741,8 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 type steerSource int
 
 const (
-	steerFromPlanner    steerSource = iota // planner / 主 Agent 的 steer_work 工具
-	steerFromHuman                         // 人在会话页直接对运行中的 Worker 发的提示
-	steerFromSupervisor                    // 定时执行审核员（server/supervisor.go）
+	steerFromPlanner steerSource = iota // planner / 主 Agent 的 steer_work 工具
+	steerFromHuman                      // 人在会话页直接对运行中的 Worker 发的提示
 )
 
 // steerMsg 是一条待投递的即时指令（FIFO 队列元素）。
@@ -775,8 +758,6 @@ func (m steerMsg) render() string {
 	switch m.from {
 	case steerFromHuman:
 		return "【人工实时提示】" + m.text + "\n（这是人（操作者）对本意图的即时指令" + tail
-	case steerFromSupervisor:
-		return "【审核员实时纠偏】" + m.text + "\n（这是平台审核员对本意图的即时指令" + tail
 	}
 	return "【规划者实时纠偏】" + m.text + "\n（这是规划者对本意图的即时指令" + tail
 }
@@ -793,13 +774,6 @@ func (e *Engine) SteerWork(intentID int64, msg string) error {
 // 没有在跑的 work 时如实报错，不做静默排队——调用方据此让用户重发。
 func (e *Engine) SteerWorkHuman(intentID int64, msg string) error {
 	return e.steer(intentID, steerMsg{from: steerFromHuman, text: msg})
-}
-
-// SteerWorkSupervisor queues a course-correction authored by the periodic supervisor
-// (server/supervisor.go). Same delivery path as planner/human steering, different
-// attribution so the worker knows this came from the platform's audit layer.
-func (e *Engine) SteerWorkSupervisor(intentID int64, msg string) error {
-	return e.steer(intentID, steerMsg{from: steerFromSupervisor, text: msg})
 }
 
 func (e *Engine) steer(intentID int64, msg steerMsg) error {
@@ -1067,9 +1041,6 @@ func (e *Engine) NoteCompletionBlock() { e.completionBlocks.Add(1) }
 
 // CompletionBlocks 返回累计拒收次数。
 func (e *Engine) CompletionBlocks() int64 { return e.completionBlocks.Load() }
-
-// SetExhaustionReviewer 注入穷尽复核员（见 exhaustion_watchdog.go）。nil = 不复核。
-func (e *Engine) SetExhaustionReviewer(fn exhaustionReviewer) { e.exhaustionReview = fn }
 
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up

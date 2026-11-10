@@ -70,9 +70,6 @@ func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 		return db.ActivitySessionFilter{Main: true, MainSeg: &seg}, true
 	case sess == "plan":
 		return db.ActivitySessionFilter{Worker: "planner"}, true
-	case sess == "supervisor":
-		// 执行审核员的独立会话：输入/结论/纠偏都记在 worker='supervisor' 下。
-		return db.ActivitySessionFilter{Worker: "supervisor"}, true
 	case strings.HasPrefix(sess, "slot:"):
 		n, err := strconv.Atoi(strings.TrimPrefix(sess, "slot:"))
 		if err != nil || n <= 0 {

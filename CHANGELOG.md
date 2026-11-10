@@ -78,6 +78,12 @@
   任务创建策略覆盖、任务详情探索策略卡、穷尽复核展示及对应 API；授权范围、任务拦截规则、操作约束注入、
   战果/遗留物/痕迹/打法库/CVE 等非探索 UI 保留。
 
+### 清理执行审核员与穷尽复核
+
+- 删除运行时已无调用点的 supervisor（执行审核员）与穷尽复核实现、引擎字段/注入、设置字段与
+  `/api/exploration/exhaustion-reviews` 路由；任务会话列表不再显示「审核 Supervisor」会话与相关活动标签。
+- 保留 guard/拦截规则/人工审批（它们不是这两个审核），授权与任务约束不变。
+
 ### 验证
 
 - 新增 ARTEX parity 回归：planner 提示/工具面无 BLADE 约束块；add_intent 最小 payload

@@ -17,9 +17,6 @@ func dropPlannerConstraintTools(pg *db.DB, out []actool.CoreTool) []actool.CoreT
 	if !constraintGroupEnabled(pg, "completion") {
 		out = dropToolByName(out, "accept_completion_risk")
 	}
-	if !constraintGroupEnabled(pg, "exhaustion") {
-		out = dropToolByName(out, "mark_strategy_exhausted")
-	}
 	if !constraintGroupEnabled(pg, "depth") {
 		out = dropToolByName(out, "dismiss_leads")
 	}
