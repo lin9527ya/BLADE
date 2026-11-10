@@ -43,6 +43,25 @@ func TestOverviewTrueCounts(t *testing.T) {
 	}
 }
 
+// 软删除的意图保留在 DB/血缘里供审计，但不进入 planner 的活跃意图总数/
+// blackboard 摘要；否则已丢弃方向会把“还有多少探索面”说大。
+func TestOverviewExcludesDeletedIntents(t *testing.T) {
+	tools, ts, intent := newToolWorker(t)
+	if _, _, err := ts.SoftDeleteIntent(intent, "test drop"); err != nil {
+		t.Fatal(err)
+	}
+	data := tools.graphOverviewData()
+	if got, _ := data["intents_total"].(int); got != 0 {
+		t.Fatalf("intents_total = %d, want 0 (deleted excluded)", got)
+	}
+	view := tools.blackboardViewData(0, 20)
+	totals, _ := view["totals"].(map[string]any)
+	states, _ := totals["intents"].(map[string]int)
+	if _, ok := states["deleted"]; ok {
+		t.Fatalf("blackboard totals must not include deleted: %+v", states)
+	}
+}
+
 // DeepSeek 直连搜索工具：关闭或非 deepseek 后端不注册，开启且有 key 时注册两个。
 func TestDeepSeekToolsGated(t *testing.T) {
 	if got := deepSeekTools(WebSearchOpts{}); len(got) != 0 {

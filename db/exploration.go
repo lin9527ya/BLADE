@@ -1489,6 +1489,17 @@ WHERE exploration_id=$1 AND kind=$2`, s.expID, kind).Scan(&n)
 	return n, err
 }
 
+// CountByKindExcludingState counts one kind while omitting a state. The
+// graph_overview intent total uses it to keep planner-dropped (state='deleted')
+// intents out of the “active exploration” count; the nodes themselves stay for
+// lineage and audit.
+func (s *ExplorationStore) CountByKindExcludingState(kind, state string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 AND state<>$3`, s.expID, kind, state).Scan(&n)
+	return n, err
+}
+
 // MaxNodeID returns the newest node id in this exploration (0 when empty).
 // It is the blackboard view's revision: ids are BIGSERIAL, so a larger id always
 // means a later write.

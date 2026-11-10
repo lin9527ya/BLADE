@@ -136,7 +136,9 @@ func (g *coldGraph) hotSet() map[int64]bool {
 func (g *coldGraph) structuralCold(hot map[int64]bool) map[int64]bool {
 	cold := map[int64]bool{}
 	for id, n := range g.nodes {
-		if foldableKind(n.Kind) && !hot[id] {
+		// deleted 意图保留节点与血缘做审计，但不应被压缩进 cold digest 的
+		// 摘要正文——否则规划者丢弃的方向会以摘要形式重新进入上下文。
+		if foldableKind(n.Kind) && n.State != db.StateIntentDeleted && !hot[id] {
 			cold[id] = true
 		}
 	}

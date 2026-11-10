@@ -4,6 +4,41 @@
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-11-10
+
+修复意图结算回归，并把待领队列上限做成系统设置；同时让规划者已丢弃的意图退出默认
+探索链路和摘要计数，但保留数据库节点、血缘与审计入口。
+
+### 修复
+
+- **非验证意图结算失败**：非 `verify` 意图的 `validated` 为 nil，`json.Marshal` 得到
+  JSON null，`jsonb_array_length('null')` 报 `SQLSTATE 22023`，意图永远停在 running，
+  随后被租约回收、被规划者当成陈旧队列覆盖。结算前统一归一为空数组，并在 SQL 中按
+  `jsonb_typeof` 保护；新增回归测试覆盖非验证意图正常落终态。
+- **续跑意图被规划者删除**：`drop_intent` 拒绝删除带 `resume_after_restart` 的待续跑
+  意图；`compactIntents` 同时向规划者暴露 `resume_after_restart` / `resume_slot`，
+  避免重启中断的方向被误判为普通陈旧队列。
+
+### 新增与调整
+
+- **待领意图上限可配置**：新增系统设置 `intent_queue_factor`（默认 **4×workers**，
+  原硬编码 3×；范围 1–32）。规划者每轮现读，保存后下一轮生效，不需要重启；`intent_queue`
+  态势增加 `factor`，`soft_limit` 按当前值计算。`workers` 仍按任务首次启动时固化。
+- **已丢弃意图退出默认探索链路**：「探索链路」不再绘制 `state='deleted'` 的意图及其边；
+  播报板仍显示「已删除」与删除原因，时间线/`node_detail` 仍可按 id 审计。
+- **摘要计数排除已丢弃意图**：`graph_overview.intents_total`、`blackboard_view.totals.intents`
+  与任务总览「意图总数」不再计入 deleted；任务 893 的 19 条意图中 8 条已丢弃，显示为 11。
+- **冷摘要不再折叠已丢弃意图**：`structuralCold` 跳过 `deleted`，避免已丢弃方向通过
+  cold digest 摘要重新进入上下文；历史 digest 正文不做自动重写。
+- **不物理删除**：deleted 节点、fact/finding 血缘与审计保持不变，避免 `CancelIntent`
+  级联误删独占事实/证据。
+
+### 验证
+
+- `db`、`agent`、`server` 全量测试通过；`go vet`、`staticcheck`、`gofmt` 通过。
+- 新增结算空数组、续跑意图保护、队列倍数解析/设置往返、deleted 摘要计数与冷摘要排除测试。
+- 前端 59 个单测与静态构建通过；设置页实际 chunk 已包含队列倍数控件。
+
 ## [0.9.8] - 2026-11-10
 
 黑板探索的完整性与恢复可靠性：让模型看到的图变化是真实的、断点续跑的执行身份是稳定的、

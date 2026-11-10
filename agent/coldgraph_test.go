@@ -37,6 +37,20 @@ func TestHotCold_AnyLiveBranchKeepsChainHot(t *testing.T) {
 	}
 }
 
+// deleted 意图不能在冷摘要里复活：保留节点/血缘审计，但不进入压缩成员。
+func TestStructuralCold_ExcludesDeletedIntent(t *testing.T) {
+	nodes := []cgNode{intent(1, db.StateIntentDeleted), fact(2)}
+	edges := []cgEdge{yields(1, 2)}
+	g := newColdGraph(nodes, edges)
+	cold := g.structuralCold(g.hotSet())
+	if cold[1] {
+		t.Fatal("deleted intent must not be structurally cold")
+	}
+	if !cold[2] {
+		t.Fatal("its fact can still be cold; only the deleted intent is excluded")
+	}
+}
+
 // §附 快照2: once d also finishes, a/b/c/d are all cold and connected → one block.
 func TestHotCold_WholeChainFoldsWhenAllSettled(t *testing.T) {
 	nodes := []cgNode{intent(1, "done"), intent(2, "done"), fact(3), intent(4, "done")}

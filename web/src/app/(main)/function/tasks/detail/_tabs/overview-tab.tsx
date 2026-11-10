@@ -245,7 +245,12 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
   // 与「发现」页同口径：api.findings(taskId) 已过滤掉候选闭合，统计不再用节点总数。
   const totalFindings = taskFindings.length;
-  const totalIntents = stats?.exploration?.intent ?? intents.length;
+  // deleted 是规划者主动丢弃的方向，不计入「意图总数」；精确计数优先用
+  // intent_states（列表接口有行数上限），无精确计数时回退到过滤后的窗口。
+  const intentStates = stats?.intent_states;
+  const totalIntents = intentStates
+    ? Object.entries(intentStates).reduce((n, [state, count]) => (state === "deleted" ? n : n + count), 0)
+    : intents.filter((i) => i.state !== "deleted").length;
   const totalOpen = stats?.claimable_intents ?? open.length;
   const totalRunning = stats?.intent_states?.running ?? running.length;
   const totalBlocked = stats?.intent_states?.blocked ?? blocked.length;
@@ -1330,7 +1335,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <StatCard label="待领意图" value={totalOpen} icon={ShieldCheckIcon} sub="可领（前置已满足）" />
         <StatCard label="确认发现" value={totalFindings} icon={BugIcon} sub="本任务" />
-        <StatCard label="意图总数" value={totalIntents} icon={AlertTriangleIcon} sub="本任务全部意图" />
+        <StatCard label="意图总数" value={totalIntents} icon={AlertTriangleIcon} sub="不含已丢弃" />
       </div>
     </div>
   );

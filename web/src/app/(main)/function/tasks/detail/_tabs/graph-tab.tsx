@@ -56,10 +56,13 @@ export function GraphTab({ taskId }: { taskId: string }) {
           .then((g) => {
             if (!alive()) return;
             // 探索链路只画「确认存在」的漏洞：pending / open_proof_gap / ruled_out /
-            // false_positive 等候选节点留在「发现」页做 triage。API 仍返回完整图，
-            // 时间线要靠它按 id 打开候选节点，所以过滤放在显示层。
+            // false_positive 等候选节点留在「发现」页做 triage。deleted 意图是规划者
+            // 主动丢弃的方向，保留在播报板/时间线做审计，不进入默认探索链路。API 仍返回
+            // 完整图，时间线要靠它按 id 打开这些节点，所以过滤放在显示层。
             const ns = (g.nodes ?? []).filter(
-              (n) => n.type !== "finding" || findingConfirmedForDisplay(n.finding_status),
+              (n) =>
+                n.state !== "deleted" &&
+                (n.type !== "finding" || findingConfirmedForDisplay(n.finding_status)),
             );
             const visible = new Set(ns.map((n) => n.id));
             const es = (g.edges ?? []).filter((e) => visible.has(e.src) && visible.has(e.dst));

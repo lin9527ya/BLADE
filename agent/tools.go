@@ -1042,6 +1042,9 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 	// Capture totals before pruning fields.
 	totals := map[string]any{}
 	if states, err := t.ts.CountIntentStates(); err == nil {
+		// deleted 是规划者主动丢弃的方向：保留在任务页/播报板审计，但不进入
+		// planner 的活跃意图摘要计数。
+		delete(states, db.StateIntentDeleted)
 		totals["intents"] = states
 	}
 	if v, ok := out["facts"]; ok {
@@ -1474,7 +1477,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	const openIntentsCap = 30
 	fr, _ := t.ts.Frontier(openIntentsCap) // 可领的（前置已满足）；真实总数见 frontier_open
 	all, _ := t.ts.ListByKind(db.KindIntent, 300)
-	if total, ierr := t.ts.CountByKind(db.KindIntent); ierr == nil {
+	if total, ierr := t.ts.CountByKindExcludingState(db.KindIntent, db.StateIntentDeleted); ierr == nil {
 		out["intents_total"] = total
 		if total > len(all) {
 			out["intents_window_note"] = fmt.Sprintf("意图列表只取最新 %d 条（共 %d 条）；更旧的用 list_worker_traces 翻页。", len(all), total)
