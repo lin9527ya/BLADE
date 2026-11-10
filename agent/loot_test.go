@@ -235,54 +235,6 @@ func TestLootToolsAreOnBothToolFaces(t *testing.T) {
 	}
 }
 
-// 战果轴：意图声明「我在动用哪次已得的访问」→ 建 uses 边 → 概览里那条战果随即不再是
-// outstanding。这一条把「哪些能力还没被接管」从散文变成了可核对的状态。
-func TestIntentUsesLootClearsOutstanding(t *testing.T) {
-	tools, ts, _ := newToolWorker(t)
-	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"risk_area":"other","summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
-			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
-
-	out := tools.graphOverviewData()
-	if got := out["outstanding_loot_total"].(int); got != 1 {
-		t.Fatalf("刚记下的据点该是 outstanding：got=%d out=%v", got, out["outstanding_loot_total"])
-	}
-
-	intentOut := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"risk_area":"other","summary":"以 web01 为跳板看内网还有什么","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`)
-	if !strings.HasPrefix(intentOut, "intent created: ") {
-		t.Fatalf("带 uses_loot_ids 的意图没建上：%s", intentOut)
-	}
-
-	// 边建上了（intent --uses--> 据点）
-	edges, err := ts.Edges(100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	linked := false
-	for _, e := range edges {
-		if e.To == footholdID && e.Rel == db.RelUses {
-			linked = true
-		}
-	}
-	if !linked {
-		t.Fatalf("没有 intent --uses--> 据点 的边：%+v", edges)
-	}
-
-	// 概览里不再 outstanding，且那一行不再带 outstanding 字段
-	out = tools.graphOverviewData()
-	if got := out["outstanding_loot_total"].(int); got != 0 {
-		t.Fatalf("已被动用的据点不该还算 outstanding：got=%d", got)
-	}
-	rows, _ := out["footholds"].([]map[string]any)
-	if len(rows) != 1 {
-		t.Fatalf("据点行数 = %d，应为 1", len(rows))
-	}
-	if _, has := rows[0]["outstanding"]; has {
-		t.Fatalf("已被动用的据点不该再带 outstanding 标记：%v", rows[0])
-	}
-}
-
 // 这一条钉住的是「为什么不复用 derived_from」：删除一条意图时会沿 yields/derived_from
 // 向下做独占级联，而战果**不在受保护集里**（只有目标和 origin fact 在）。若 uses 当初
 // 选了 derived_from，删掉一条用过据点的意图就会把据点本身带走——那是证据级数据。
@@ -317,43 +269,6 @@ func TestDeletingUsingIntentKeepsLoot(t *testing.T) {
 	}
 }
 
-// uses_loot_ids 只接受本任务里仍在手的真实战果——填错要在建节点前被拒，且说清为什么。
-func TestIntentUsesLootValidation(t *testing.T) {
-	tools, ts, intent := newToolWorker(t)
-	// 一个非战果节点（就用 newToolWorker 建的那条意图）与一个已失效的战果。
-	live := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"risk_area":"other","summary":"在手据点","access":"SSH","privilege":"user","evidence":"ssh 登录成功","confidence":"high"}`))
-	lost, err := ts.AddNode(db.KindFoothold, map[string]any{"summary": "掉了的据点"}, 8, db.StateLootLost, "work#1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cases := []struct {
-		name, ids string
-		want      string
-	}{
-		{"不存在的 id", "999999", "不存在于本任务"},
-		{"非战果节点", strconv.FormatInt(intent, 10), "不是战果"},
-		{"已失效的战果", strconv.FormatInt(lost, 10), "已失效"},
-	}
-	for _, c := range cases {
-		out := callTool(t, tools.PlannerTools(), "add_intent",
-			`{"risk_area":"other","summary":"x","uses_loot_ids":[`+c.ids+`]}`)
-		if strings.HasPrefix(out, "intent created: ") {
-			t.Fatalf("%s：本该被拒，却建成了：%s", c.name, out)
-		}
-		if !strings.Contains(out, c.want) {
-			t.Fatalf("%s：拒绝理由没说清 %q：%s", c.name, c.want, out)
-		}
-	}
-
-	// 在手的战果则放行（对照组，证明上面的拒绝不是因为参数本身没通）。
-	if out := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"risk_area":"other","summary":"用它在手的据点","uses_loot_ids":[`+strconv.FormatInt(live, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
-		t.Fatalf("在手的战果该被接受：%s", out)
-	}
-}
-
 // lootNodeID 从工具回执里取节点 id（"foothold recorded: 12" / "intent created: 12\n…"）。
 func lootNodeID(t *testing.T, out string) int64 {
 	t.Helper()
@@ -367,45 +282,6 @@ func lootNodeID(t *testing.T, out string) int64 {
 		t.Fatalf("解析节点 id 失败：%q（原文 %q）", raw, out)
 	}
 	return id
-}
-
-// 中途没善终的意图（blocked/exhausted/stopped）**不算**真的动用了战果。
-//
-// 这是这一层最容易出错的地方：若一条 blocked 的意图就把战果永久标成「已处理」，那条到手的能力
-// 会在图里静默烂掉，planner 再也不会回头看它——而「静默失效」正是本仓一贯要防的东西。
-// 判据是 db.LootConsumingIntentState，与 server 渲染报告的「动用于」共用一份口径。
-func TestLootStaysOutstandingWhenUsingIntentDiedMidway(t *testing.T) {
-	tools, ts, _ := newToolWorker(t)
-	footholdID := lootNodeID(t, callTool(t, tools.WorkerTools(), "report_foothold",
-		`{"risk_area":"other","summary":"在 web01 上拿到 root 的反弹 shell","access":"反弹 shell","privilege":"root",`+
-			`"evidence":"nc -lvnp 4444 → connect from 10.0.0.9","confidence":"high"}`))
-	intentID := lootNodeID(t, callTool(t, tools.PlannerTools(), "add_intent",
-		`{"risk_area":"other","summary":"以 web01 为跳板看内网","uses_loot_ids":[`+strconv.FormatInt(footholdID, 10)+`]}`))
-
-	outstanding := func() int {
-		t.Helper()
-		return tools.graphOverviewData()["outstanding_loot_total"].(int)
-	}
-	if got := outstanding(); got != 0 {
-		t.Fatalf("意图刚派出（open），据点该算已被接手：got=%d", got)
-	}
-
-	for _, dead := range []string{"blocked", "exhausted", "stopped"} {
-		if err := ts.SetIntentState(intentID, dead); err != nil {
-			t.Fatalf("置状态 %s: %v", dead, err)
-		}
-		if got := outstanding(); got != 1 {
-			t.Fatalf("意图以 %s 收场（没能把这次访问用出去），据点该重新算 outstanding：got=%d", dead, got)
-		}
-	}
-
-	// 真的跑完了才算用出去。
-	if err := ts.SetIntentState(intentID, "done"); err != nil {
-		t.Fatal(err)
-	}
-	if got := outstanding(); got != 0 {
-		t.Fatalf("意图跑完(done)后据点不该还算 outstanding：got=%d", got)
-	}
 }
 
 // 凭据的可利用面（P36）：能登哪要记下来，验证过的要有证据，概览里给指纹不给明文。

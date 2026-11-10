@@ -31,9 +31,6 @@ const (
 	defaultSupervisorInterval = 3 * time.Minute
 	minSupervisorInterval     = 60 * time.Second
 	maxSupervisorInterval     = 30 * time.Minute
-	// supervisorInitialDelay 是任务启动后第一次审核的延迟：刚领到的意图还没有轨迹，
-	// 太早审核只会得到"证据不足"。
-	supervisorInitialDelay = 2 * time.Minute
 	// supervisorReviewTimeout 是单次审核的硬上限。裁判只读一小段轨迹，不该跑很久。
 	supervisorReviewTimeout = 90 * time.Second
 	// supervisorMinToolCalls 是「值得审核」的最少工具调用数：更少的意图还在热身。
@@ -68,30 +65,6 @@ type supervisorState struct {
 
 // SetSupervisor 注入执行审核员（见 server/supervisor.go）。nil = 不启用。
 func (e *Engine) SetSupervisor(fn supervisorFunc) { e.supervisor = fn }
-
-// supervisorLoop 是任务级的定时审核循环。它随任务运行时一起启动/拆除；任务暂停时
-// 只是空转（tick 会跳过），恢复后无需特殊处理。
-func (e *Engine) supervisorLoop(ctx context.Context, t *Task) {
-	if e == nil || t == nil || e.supervisor == nil {
-		return
-	}
-	interval := supervisorIntervalSetting(e.pg())
-	delay := supervisorInitialDelay
-	if interval < delay {
-		delay = interval
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		}
-		e.supervisorTick(ctx, t)
-		timer.Reset(supervisorIntervalSetting(e.pg()))
-	}
-}
 
 // supervisorTick 执行一次审核。返回前不会阻塞任务：只有真正需要时才会调用模型。
 func (e *Engine) supervisorTick(ctx context.Context, t *Task) {

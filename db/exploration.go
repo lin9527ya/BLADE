@@ -1372,15 +1372,8 @@ func (s *ExplorationStore) CountEdges() (int, error) {
 // CountBlockedOpenIntents 是「有 depends_on 前置尚未满足」的 open 意图全量数
 // （不是 open_intents 展示窗口内的计数）。
 func (s *ExplorationStore) CountBlockedOpenIntents() (int, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
-  AND EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-    WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
-      AND d.state NOT IN ('done','negative'))`, s.expID).Scan(&n)
-	return n, err
+	// ARTEX parity: open intents are never blocked by dependency edges.
+	return 0, nil
 }
 
 // CountOpenIntents counts this exploration's open intents — graph_overview's
@@ -1445,12 +1438,7 @@ func (d *DB) ClaimableIntentCountsForContext(ctx context.Context, explorationIDs
 	}
 	rows, err := d.QueryContext(ctx, `SELECT n.exploration_id, COUNT(*)
 FROM exploration_nodes n
-WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
-  AND NOT EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes dep ON dep.id=e.dst_id AND dep.exploration_id=e.exploration_id
-    WHERE e.exploration_id=n.exploration_id AND e.rel='depends_on' AND e.src_id=n.id
-      AND dep.state NOT IN ('done','negative'))
+WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open'
 GROUP BY n.exploration_id`, explorationIDs)
 	if err != nil {
 		return nil, err
@@ -1469,13 +1457,8 @@ GROUP BY n.exploration_id`, explorationIDs)
 
 func (s *ExplorationStore) CountClaimableIntents() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
-  AND NOT EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-    WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
-      AND d.state NOT IN ('done','negative'))`, s.expID).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state='open'`, s.expID).Scan(&n)
 	return n, err
 }
 
@@ -1898,16 +1881,11 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	// 前置未满足的意图不进 frontier：串行链的下一步在前一步有结论前不该被派给 worker
-	// （下游拿不到前置只会空转/重复）。满足 = 前置以 done/negative 收场。
+	// ARTEX parity: every open intent is claimable; legacy depends_on/requires data
+	// is kept for display but no longer gates dispatch.
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
-  AND NOT EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-    WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
-      AND d.state NOT IN ('done','negative'))
-ORDER BY n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+ORDER BY (COALESCE(n.payload->>'resume_after_restart','false')='true') DESC, n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1920,42 +1898,9 @@ ORDER BY n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
 // slot outside the current pool (worker count shrank / upgrade) are fair game.
 // Owned-by-this-slot rows sort first so a resumed intent is picked before new work.
 func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int) ([]*Node, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	args := []any{s.expID, slot}
-	exclude := "owner !~ '^work#[0-9]+$'"
-	if len(pool) > 0 {
-		ph := make([]string, len(pool))
-		for i, name := range pool {
-			ph[i] = fmt.Sprintf("$%d", len(args)+1)
-			args = append(args, name)
-		}
-		exclude = fmt.Sprintf("(owner !~ '^work#[0-9]+$' OR owner NOT IN (%s))", strings.Join(ph, ","))
-	}
-	args = append(args, limit)
-	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id)
-  AND (
-    COALESCE(owner,'')='' OR owner=$2 OR `+exclude+`
-    -- 槽位亲和不是硬绑定：owner 槽位当前没有在跑任何意图时，其它空闲槽位可以接手。
-    -- 否则重启/租约回收/暂停恢复留下的 open 意图会被原槽位"占着"，其它槽位空转。
-    OR NOT EXISTS (
-      SELECT 1 FROM exploration_nodes o
-      WHERE o.exploration_id=$1 AND o.kind='intent' AND o.state='running' AND o.owner=n.owner)
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM exploration_edges e
-    JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-    WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id=n.id
-      AND d.state NOT IN ('done','negative'))
-ORDER BY (COALESCE(payload->>'resume_after_restart','false')='true') DESC,
-         (owner=$2) DESC, n.priority DESC, n.id ASC LIMIT $`+fmt.Sprint(len(args)), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanNodes(rows)
+	// Worker slots keep their names/leases, but dispatch order is ARTEX's plain
+	// priority/id frontier: no owner affinity and no dependency filtering.
+	return s.Frontier(limit)
 }
 
 // ActiveSlotIntents returns the newest non-terminal intent per slot owner in pool

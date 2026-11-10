@@ -2,12 +2,9 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -261,11 +258,9 @@ type ToolSet struct {
 	// 快照，才能挡住同一轮内的再次声明。nil = 不冷却。
 	exhaustCooldownFn func() int
 	// reviewRound 为真时，本轮是复盘轮：add_intent 最多 3 条（复盘优先于铺量）。
-	reviewRound bool
 	// openingStrict 为真时，粗粒度（只有风险类、没有具体入口）的意图直接拒收。
 	// 只在任务开局轮由 planner 打开：那一轮还没有任何事实，重写一条具体方向是唯一
 	// 有意义的动作；任务中后段则只警告不拦（已有事实可依，拦下来只会浪费一轮）。
-	openingStrict bool
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
 	// domain, HTTP probe for a site). nil = no engine enrichment.
 	enrich EnrichTrigger
@@ -326,14 +321,6 @@ func (t *ToolSet) SetRotateEgressHandler(fn func(reason string) (string, error))
 // SetStrategyExhaustedHandler wires the planner's "no viable direction" signal
 // (see ToolSet.exhaustedFn). Set only on the planner's ToolSet.
 func (t *ToolSet) SetStrategyExhaustedHandler(fn func(string)) { t.exhaustedFn = fn }
-
-// exhaustCooldown 返回穷尽复核否决后的剩余冷却轮数（0 = 可声明）。
-func (t *ToolSet) exhaustCooldown() int {
-	if t.exhaustCooldownFn == nil {
-		return 0
-	}
-	return t.exhaustCooldownFn()
-}
 
 // EnrichTrigger is the enrichment engine seen from the tool layer (see package
 // enrich). Kept as an interface here to avoid coupling agent → enrich.
@@ -439,53 +426,6 @@ func (t *ToolSet) SetCompletionBlocked(fn func()) { t.completionBlocked = fn }
 
 // SetForceReview 注入"下一轮强制复盘"的回调（收官审计拒收后）。nil = 不支持。
 func (t *ToolSet) SetForceReview(fn func()) { t.forceReview = fn }
-
-// completionGateMode 读当前语气；未注入时 off（不改变 agent 单测/无 server 场景的行为）。
-func (t *ToolSet) completionGateMode() string {
-	if t.completionGate == nil {
-		return "off"
-	}
-	switch m := strings.ToLower(strings.TrimSpace(t.completionGate())); m {
-	case "block", "notice", "off":
-		return m
-	default:
-		return "block"
-	}
-}
-
-// completionGaps 是收官审计的 agent 侧入口（db 层实现，server 的 goalless 路径也用它）。
-func (t *ToolSet) completionGaps() []db.CompletionGap {
-	if t.ts == nil || t.taskID <= 0 {
-		return nil
-	}
-	gaps, err := t.ts.CompletionGaps(t.as, db.CompletionOptions{
-		TaskID: t.taskID, CoverageEnabled: !t.coverageDisabled,
-	})
-	if err != nil {
-		return nil // 读不出来不阻断收尾：门坏了不能把人锁在里面
-	}
-	return gaps
-}
-
-// formatCompletionGaps 把缺口渲染成可直接执行的一段话。
-func formatCompletionGaps(gaps []db.CompletionGap) string {
-	var b strings.Builder
-	b.WriteString("目标已达成，但探索还不充分（收官审计）：")
-	for _, g := range gaps {
-		b.WriteString("\n- " + g.Detail)
-	}
-	b.WriteString("\n\n处理完再来 prove_goal；确实接受风险的，用 accept_completion_risk 写明理由（会进报告的数据缺项）。")
-	return b.String()
-}
-
-// endgameWarning 是收官期的**软信号**（不拒收）。硬拒有风险：收官期仍可能需要清理/
-// 补齐意图，按 kind 区分又不足以说明"这条是不是新探索面"。与 breadth_warning 同形态。
-func (t *ToolSet) endgameWarning() string {
-	if !t.clock.Endgame(time.Now()) {
-		return ""
-	}
-	return "任务已进入收官期：不再新开探索面。除非这条意图是把在跑方向推到结论、清理遗留物或补齐报告缺项，否则本轮应当收笔而不是继续扩面。"
-}
 
 // SetCoverageEnabled records whether this task has the asset-coverage feature on
 // (default enabled). Passing false makes graphOverviewData omit the coverage block
@@ -625,78 +565,6 @@ func (t *ToolSet) BeginRound(pol *policy.Effective, workerCap int, clock TaskClo
 	t.breadthLoaded = false
 	t.breadthCached = nil
 	t.breadthNewDebt = map[int64]bool{}
-}
-
-// beginIntentQuota 在一次 add_intent 调用开始时取额度快照：库存量各查一次库，
-// 本轮用量从 ToolSet 计数起算并在批量循环里累加（一批 4 条不该打 8 次库）。
-func (t *ToolSet) beginIntentQuota() *intentQuota {
-	q := &intentQuota{round: t.intentsRound}
-	if t.ts != nil && (t.workerCap > 0 || (t.pol != nil && !t.pol.IsZero())) {
-		if n, err := t.ts.CountOpenIntents(); err == nil {
-			q.open = n
-		}
-		if n, err := t.ts.CountIntents(); err == nil {
-			q.total = n
-		}
-	}
-	// 队列背压只看可领数（被前置挡住的步骤不消耗 worker）。
-	if t.ts != nil && t.workerCap > 0 {
-		if n, err := t.ts.CountClaimableIntents(); err == nil {
-			q.claimable = n
-		}
-	}
-	return q
-}
-
-// intentQuota 是一次 add_intent 调用期间共享的额度视图。
-type intentQuota struct {
-	open  int
-	total int
-	round int
-	// claimable 是"现在就能被 worker 领走"的条数（不含 depends_on 未满足的）。队列背压按它算：
-	// 被前置挡住的步骤不消耗 worker，拿它们占额度会在 worker 全空闲时反而拒新活。
-	claimable int
-	// pool 是防打转判定的对比池（见 intent_dedup.go）：同一批里的重复也要当场拦住，
-	// 所以整批共享一份，每建一条就追加进去。
-	pool       []intentFP
-	poolLoaded bool
-}
-
-// reportPolicyReject 把一次拒绝写进时间线：模型想做什么、被哪条策略拦、命中什么。
-// 图里不落这条意图（刻意——不污染探索与去重），但人必须看得见。
-func (t *ToolSet) reportPolicyReject(it intentItem, v policy.Verdict) {
-	meta, _ := json.Marshal(map[string]any{
-		"intent_summary": it.Summary,
-		"policy_item":    v.ItemID,
-		"item_label":     v.ItemLabel,
-		"where":          v.Where,
-		"matched":        v.Matched,
-		"benign":         v.Benign,
-		"risk_area":      db.NormalizeRiskArea(it.RiskArea),
-	})
-	summary := fmt.Sprintf("探索策略拒绝：%s", v.ItemLabel)
-	if v.Benign {
-		summary = fmt.Sprintf("探索策略放行（否定语境，仅留痕）：%s", v.ItemLabel)
-	}
-	act := db.Activity{Worker: "system", Kind: "policy_reject", Summary: summary,
-		Detail:   fmt.Sprintf("意图：「%s」\n命中：%s（%s）%s\n", it.Summary, v.ItemLabel, v.ItemID, matchNote(v)),
-		Metadata: meta}
-	if t.emitPolicy != nil {
-		t.emitPolicy(act)
-		return
-	}
-	if t.ts != nil {
-		if _, err := t.ts.AppendActivity(act); err != nil {
-			log.Printf("[policy] 拒绝留痕失败: %v", err)
-		}
-	}
-}
-
-func matchNote(v policy.Verdict) string {
-	if v.Matched == "" {
-		return ""
-	}
-	return "命中词「" + v.Matched + "」"
 }
 
 // anchorOwner records a lineage edge from this run's owner node to an asset
@@ -2914,171 +2782,6 @@ type intentContract struct {
 	RecheckOf       int64    `json:"recheck_of,omitempty"`       // 复核哪条已结束意图
 }
 
-func canonicalIntentContractText(s string) string {
-	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
-}
-
-// normalizeIntentContract validates the optional contract before any node is
-// written. Errors are reserved for structurally invalid input (bad ids/kinds);
-// soft-contract issues (variant without evidence, produces without acceptance)
-// come back as warnings so classic mode never turns a suggestion into a hard gate.
-func (t *ToolSet) normalizeIntentContract(c *intentContract) (map[string]any, []string, error) {
-	if c == nil {
-		return nil, nil, nil
-	}
-	out := map[string]any{}
-	var warns []string
-	mech := strings.TrimSpace(c.Mechanism)
-	if len([]rune(mech)) > 128 {
-		return nil, nil, fmt.Errorf("contract.mechanism 最多 128 字符")
-	}
-	if mech != "" {
-		out["mechanism"] = mech
-	}
-	route := strings.TrimSpace(c.Route)
-	if len([]rune(route)) > 128 {
-		return nil, nil, fmt.Errorf("contract.route 最多 128 字符")
-	}
-	if route != "" {
-		out["route"] = route
-	}
-	produces := make([]string, 0, len(c.Produces))
-	seen := map[string]bool{}
-	for _, p := range c.Produces {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		key := canonicalIntentContractText(p)
-		if seen[key] {
-			continue
-		}
-		if len([]rune(p)) > 128 {
-			return nil, nil, fmt.Errorf("contract.produces 单项最多 128 字符")
-		}
-		seen[key] = true
-		produces = append(produces, p)
-		if len(produces) >= 8 {
-			break
-		}
-	}
-	if len(produces) > 0 {
-		out["produces"] = produces
-	}
-	acceptance := strings.TrimSpace(c.Acceptance)
-	if len([]rune(acceptance)) > 1200 {
-		return nil, nil, fmt.Errorf("contract.acceptance 最多 1200 字符")
-	}
-	if acceptance != "" {
-		out["acceptance"] = acceptance
-	}
-	if c.Class != nil {
-		switch v := c.Class.(type) {
-		case float64:
-			n := int(v)
-			if v != float64(n) || n < 0 || n > 3 {
-				return nil, nil, fmt.Errorf("contract.class 只能是 0（目标推进）/1（解除依赖）/2（新证据）/3（复核），或语义标签字符串")
-			}
-			out["class"] = n
-		case string:
-			label := strings.TrimSpace(v)
-			if label == "" || len([]rune(label)) > 40 {
-				return nil, nil, fmt.Errorf("contract.class 语义标签不能为空且最多 40 字符")
-			}
-			out["class"] = label
-		default:
-			return nil, nil, fmt.Errorf("contract.class 只能是 0..3 或语义标签字符串")
-		}
-	}
-	if c.EstimatedTokens < 0 {
-		return nil, nil, fmt.Errorf("contract.estimated_tokens 不能为负数")
-	}
-	if c.EstimatedTokens > 0 {
-		out["estimated_tokens"] = c.EstimatedTokens
-	}
-	variant := strings.TrimSpace(c.Variant)
-	if len([]rune(variant)) > 200 {
-		return nil, nil, fmt.Errorf("contract.variant 最多 200 字符")
-	}
-	if variant != "" {
-		out["variant"] = variant
-	}
-	if len(c.ChangeEvidence) > 0 {
-		ids := make([]int64, 0, len(c.ChangeEvidence))
-		seenID := map[int64]bool{}
-		for _, id := range c.ChangeEvidence {
-			if id <= 0 || seenID[id] {
-				continue
-			}
-			n, err := t.ts.GetNodeWithSources(id)
-			if err != nil || n == nil {
-				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 不存在于本任务或直接关联任务", id)
-			}
-			if n.Kind != db.KindFact && n.Kind != db.KindFinding {
-				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 是 %q 节点：只能用事实(fact)或发现(finding)", id, n.Kind)
-			}
-			if n.Kind == db.KindFact && n.State != "confirmed" && n.State != "origin" {
-				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 事实状态是 %q：只能用已确认(confirmed)的事实", id, n.State)
-			}
-			if n.Kind == db.KindFinding && n.State != "confirmed" {
-				return nil, nil, fmt.Errorf("contract.change_evidence 里的 %d 发现状态是 %q：只能用已确认(confirmed)的发现", id, n.State)
-			}
-			seenID[id] = true
-			ids = append(ids, id)
-		}
-		if len(ids) > 0 {
-			out["change_evidence"] = ids
-		}
-	}
-	if c.RecheckOf > 0 {
-		n, err := t.ts.GetNode(c.RecheckOf)
-		if err != nil || n == nil || n.Kind != db.KindIntent {
-			return nil, nil, fmt.Errorf("contract.recheck_of 必须是本任务的意图 id")
-		}
-		if !db.IntentStateTerminal(n.State) {
-			return nil, nil, fmt.Errorf("contract.recheck_of 指向的意图 #%d 还在 %s：只能复核已结束的方向", n.ID, n.State)
-		}
-		out["recheck_of"] = c.RecheckOf
-	}
-	if variant != "" && len(c.ChangeEvidence) == 0 {
-		warns = append(warns, "contract_warning: variant 没有 change_evidence 支撑；方向去重会把「只换措辞」当成同一条，建议补事实/发现 id。")
-	}
-	if (len(produces) > 0) != (acceptance != "") {
-		warns = append(warns, "contract_warning: produces 与 acceptance 最好同时填写（产物名 + 验收条件），否则 worker 只能按一侧理解契约。")
-	}
-	if len(out) == 0 {
-		return nil, nil, nil
-	}
-	return out, warns, nil
-}
-
-// intentDirectionKey fingerprints the stable direction. Only an explicit
-// mechanism opts in, so old callers keep the historical add_intent behavior.
-func intentDirectionKey(contract map[string]any, goalID int64, anchors []int64) string {
-	if len(contract) == 0 {
-		return ""
-	}
-	mech, _ := contract["mechanism"].(string)
-	if canonicalIntentContractText(mech) == "" {
-		return ""
-	}
-	ids := append([]int64{}, anchors...)
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	variant, _ := contract["variant"].(string)
-	route, _ := contract["route"].(string)
-	recheck, _ := contract["recheck_of"].(int64)
-	raw, _ := json.Marshal(map[string]any{
-		"goal_id":    goalID,
-		"asset_ids":  ids,
-		"mechanism":  canonicalIntentContractText(mech),
-		"route":      canonicalIntentContractText(route),
-		"variant":    canonicalIntentContractText(variant),
-		"recheck_of": recheck,
-	})
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
-}
-
 // 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
 // urgent 及以上是逃生口——材料性新发现（新战果、新漏洞链）驱动的跟进不该被队列挡住。
 const (
@@ -3097,204 +2800,51 @@ const (
 //     意图本身始终从事实/漏洞派生，顶层意图兜底连 origin fact（与 ARTEX 一致）。
 //   - 战果轴：uses_loot_ids → uses（本条方向在动用哪次已得的访问：据点/凭据）。只接受本任务里
 //     仍在手(active)的战果；这条边是「哪些战果还没被推进过」的唯一依据。
-func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, error) {
-	if err := t.ts.ValidateRequirements(it.Requires); err != nil {
-		return 0, "", err
-	}
-	// 本轮已判定全部目标达成（prove_goal/goal_met）后不得再派意图：否则同一轮里
-	// 先收官、后面又冒出几条永远没人领的 open 意图，任务结束时 frontier 留下假待办。
-	if t.GoalMet {
-		return 0, "", fmt.Errorf("本轮已判定目标全部达成（prove_goal/goal_met），不能再新增意图；确有新方向，请先把目标重新打开/登记为新目标（set_goals）再派")
-	}
+func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	if strings.TrimSpace(it.Summary) == "" {
-		return 0, "", fmt.Errorf("summary 不能为空")
+		return 0, fmt.Errorf("summary 不能为空")
 	}
-	// risk_area 是覆盖矩阵的键：空值/未知词会让这条方向落进 other，报告与覆盖度
-	// 从此失真（任务 14 实测 537/580 条意图是 other）。
-	// 漏填不再硬拒：按 summary 推断一个风险类并在回执里说明——开局轮整批被打回的
-	// 代价是白烧一次调用（任务 30 实测：4 条意图因缺 risk_area 全部重交）。显式填写
-	// 仍然优先，填错（不在词表内）照旧报错，不猜。
-	riskWarn, kindWarn, queueWarn, dupWarn := "", "", "", ""
-	contractPayload, contractWarns, cerr := t.normalizeIntentContract(it.Contract)
-	if cerr != nil {
-		return 0, "", cerr
-	}
-	rawRisk := strings.TrimSpace(it.RiskArea)
-	riskArea := rawRisk
-	riskInferred := false
-	if rawRisk == "" {
-		riskArea, riskInferred = inferRiskArea(it.Summary), true
-	} else if normalized := db.NormalizeRiskArea(rawRisk); normalized != "other" || strings.EqualFold(rawRisk, "other") {
-		riskArea = normalized
-	} else if t.constraintOn("dispatch") {
-		return 0, "", fmt.Errorf("risk_area=%q 不在词表内：%s", rawRisk, riskAreaEnum())
-	} else {
-		riskArea = "other"
-		riskWarn = fmt.Sprintf("risk_warning: risk_area=%q 不在词表内，已回落 other；增强模式会拒收，这里只提醒。", rawRisk)
-	}
-	intentKind := strings.TrimSpace(it.Kind)
-	switch intentKind {
-	case "", "discovery", "verify":
-	default:
-		if t.constraintOn("dispatch") {
-			return 0, "", fmt.Errorf("kind 只能是 discovery（资产发现/侦察，可只登记资产）或 verify（验证/利用，必须写回事实或发现），收到 %q", it.Kind)
-		}
-		kindWarn = fmt.Sprintf("kind_warning: kind=%q 非法，已省略（不落 payload）；增强模式会拒收，这里只提醒。", it.Kind)
-		intentKind = ""
-	}
-	if t.reviewRound && q.round >= 3 && t.constraintOn("review_endgame") {
-		return 0, "", fmt.Errorf("复盘轮最多派 3 条意图：先完成复盘（node_detail / list_facts + TodoWrite 路线池），其余方向留到下一轮")
-	}
-	// 意图粒度门：任何一条意图都要点名具体入口。目录型 summary（「做认证面测试」
-	// 「测一遍注入」）在零事实时最容易写，但 worker 只能把每个路径各探一次就收工——
-	// 任务 28/29 实测：首轮目录型意图的深度全部停在了最浅处。
-	// 开局轮硬拒（此时还没有事实，重写没有代价）；中后段只警告不拦，避免白烧一轮。
-	coarseWarn := ""
-	if coarse, why := coarseIntentSummary(it.Summary, intentKind, len(pidList(it.AssetIDs)) > 0); coarse {
-		if t.openingStrict && t.constraintOn("opening") {
-			return 0, "", fmt.Errorf("%s", why)
-		}
-		coarseWarn = "coarse_warning: " + firstLine(why, 200)
-	}
-	// 意图形态：verify 意图最好是「一条验证链」，不是单点检查。只警告不拦——
-	// 单点方向仍然有价值，但复盘轮会把它们合并成链（任务 30 的单意图深度 33.6 vs ARTEX 67）。
-	chainWarn := ""
-	if intentKind == "verify" && !hasVerificationChain(it.Summary) {
-		chainWarn = "chain_warning: 这条 verify 意图看起来是单点检查（没有「先…再…/命中后…」的验证链）。若它只是测一个入口的一个点，考虑并入更长的利用链，或改标 discovery/广度意图。"
-	}
-	// ── P20 探索策略门（意图层，硬拒）──
-	// 放在所有 DB 结构校验之前：额度用尽/方向被禁时，不该再为一条注定被拒的意图
-	// 去查 parent/goal，模型也该先听到"别再往这个方向想"。
-	if t.pol != nil && !t.pol.IsZero() {
-		in := policy.IntentInput{Summary: it.Summary, OpenCount: q.open, RoundUsed: q.round, TotalUsed: q.total}
-		v := t.pol.CheckIntentWithOptions(in, policy.CheckOptions{IgnoreRoundCap: !t.constraintOn("dispatch")})
-		if !v.Allow {
-			t.reportPolicyReject(it, v)
-			return 0, "", fmt.Errorf("%s", policy.RejectText(v, it.Summary))
-		}
-		if v.Benign {
-			// 命中词表但处于否定语境（"检查是否有爆破防护"）：放行，但留痕——
-			// 事后能看出策略是不是太糙、误放了多少。
-			t.reportPolicyReject(it, v)
-		}
-	}
-	// 显式幂等键：重试/重复提交不该造第二条意图。只有非空键才生效——不能用
-	// summary 相似度冒充幂等（换措辞的同一方向由防打转逻辑处理）。
-	idempotencyKey := strings.TrimSpace(it.IdempotencyKey)
-	if idempotencyKey != "" {
-		if existing, err := t.ts.FindNodeByPayload(db.KindIntent, "idempotency_key", idempotencyKey); err == nil && existing > 0 {
-			return existing, fmt.Sprintf("幂等键 %q 已对应意图 #%d，未重复创建", idempotencyKey, existing), nil
-		}
-	}
-	// 先校验锚点（建节点前，避免坏锚点留下孤儿意图）。
+	// ARTEX parity: parent links are optional; when present they must be existing
+	// fact/finding nodes of this task or a directly related task.
 	parents := pidList(it.ParentIDs)
-	hasFindingParent := false
-	for _, pidv := range parents {
-		n, err := t.ts.GetNodeWithSources(pidv)
+	for _, parent := range parents {
+		n, err := t.ts.GetNodeWithSources(parent)
 		if err != nil || n == nil {
-			return 0, "", fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", pidv)
+			return 0, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", parent)
 		}
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
-			return 0, "", fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上，不能挂在意图/目标/提示上；顶层全新方向请留空 parent_ids", pidv, n.Kind)
-		}
-		if n.Kind == db.KindFinding {
-			hasFindingParent = true
-		}
-	}
-	// 目标轴校验（同样在建节点前）：显式 goal_id 必须是本任务的 open 目标。
-	goalID := pid(it.GoalID)
-	if goalID > 0 {
-		g, err := t.ts.GetNode(goalID)
-		if err != nil || g == nil || g.Kind != db.KindGoal {
-			return 0, "", fmt.Errorf("goal_id %d 不是本任务的目标节点（目标 id 见 graph_overview 的 goals；只有确实没有明确目标时才留空）", goalID)
-		}
-		if g.State != "open" {
-			return 0, "", fmt.Errorf("goal_id %d 已是 %s 状态：意图只能挂到未达成(open)的目标上", goalID, g.State)
-		}
-	}
-	// 多目标时不许留空：没有归属的意图不会推进任何目标，图上也看不出它服务于哪条线。
-	if goalID == 0 {
-		if goals, gerr := t.ts.ListByKind(db.KindGoal, 1000); gerr == nil {
-			var openIDs []int64
-			for _, g := range goals {
-				if g.State == "open" {
-					openIDs = append(openIDs, g.ID)
-				}
-			}
-			if len(openIDs) > 1 && t.constraintOn("dispatch") {
-				return 0, "", fmt.Errorf("本任务有 %d 个未达成目标（%v）：goal_id 必填，指明这条方向服务哪个目标；只有确实不属于任何目标时才可留空", len(openIDs), openIDs)
-			}
-		}
-	}
-	// 战果轴校验（同样在建节点前）：uses_loot_ids 必须是本任务里真实存在、且仍在手的战果。
-	// 拒收已失效的战果是有意义的——据点掉了/凭据失效了还按它派意图，等于派一条注定跑空的活，
-	// 不如让 planner 当场听到「这条已经不能用了」。
-	lootIDs := pidList(it.UsesLootIDs)
-	for _, lid := range lootIDs {
-		n, err := t.ts.GetNode(lid)
-		if err != nil || n == nil {
-			return 0, "", fmt.Errorf("uses_loot_ids 里的 %d 不存在于本任务：只能填 graph_overview 里 footholds/credentials 的节点 id", lid)
-		}
-		if n.Kind != db.KindFoothold && n.Kind != db.KindCredential {
-			return 0, "", fmt.Errorf("uses_loot_ids 里的 %d 是 %q 节点，不是战果：只能填据点(foothold)或凭据(credential)的节点 id", lid, n.Kind)
-		}
-		if n.State != db.StateLootActive {
-			return 0, "", fmt.Errorf("战果节点 %d 当前状态是 %q（已失效）：不能按它派意图，请先确认它是否还能用", lid, n.State)
-		}
-	}
-	// 串行链：前置必须是本任务的意图。**不必查环**——新意图此刻还没有任何出边，
-	// 环只能由"先建 A 再给 B 加边指向 A"之外的路径形成，而本入口只在新节点上建边。
-	deps := pidList(it.DependsOn)
-	depsSatisfied := true
-	for _, dep := range deps {
-		n, err := t.ts.GetNode(dep)
-		if err != nil || n == nil {
-			return 0, "", fmt.Errorf("depends_on 里的 %d 不存在于本任务：前置只能是本任务的意图 id", dep)
-		}
-		if n.Kind != db.KindIntent {
-			return 0, "", fmt.Errorf("depends_on 里的 %d 是 %q 节点，不是意图：串行链的前置只能是意图", dep, n.Kind)
-		}
-		if n.State != "done" && n.State != "negative" {
-			depsSatisfied = false
-		}
-		// 前置已经是“永远不会有结论”的收场（blocked/exhausted/no_output/…）：这条链
-		// 一定跑不起来。当场拒收，比让它默默排在那里（永远进不了 frontier）好——
-		// 后者才是“深度链凭空消失”的真实来路。
-		if db.IntentStateDead(n.State) {
-			return 0, "", fmt.Errorf("depends_on 里的前置意图 #%d 已经以 %q 收场（不会有结论）：这条链永远跑不起来。"+
-				"先重派前置，或去掉 depends_on、把这一步需要的输入自己写进意图", n.ID, n.State)
+			return 0, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上", parent, n.Kind)
 		}
 	}
 	priority := it.Priority
 	if priority == 0 {
 		priority = 5
-		// 深度跟进（动用已得战果 / 由已确认发现派生）默认排在广度意图前面。
-		// 7 < 队列背压的 urgent 阈值 8，所以仍受背压约束——只调默认，不改排序规则。
-		if len(pidList(it.UsesLootIDs)) > 0 || hasFindingParent {
-			priority = 7
-		}
-	}
-	// ── 队列背压（软上限）──
-	// 生产端每次唤醒最多 4 条，消化端只有 workers 个 worker、每条跑几分钟——不设上限时
-	// 待领意图会一路涨。按**可领**计数：被前置挡住的链路步骤不消耗 worker，也不占额度
-	// （它们此刻进不了 frontier）；而带已满足前置的意图立即可领，照样受上限约束。
-	factor := t.intentQueueFactor()
-	if t.workerCap > 0 && depsSatisfied && priority < intentQueueUrgentPriority && q.claimable >= factor*t.workerCap {
-		msg := fmt.Sprintf("队列里已有 %d 条可领方向（worker %d 个，上限 %d）：本轮先让 worker 消化，不再接常规新方向。"+
-			"确有材料性新发现驱动的跟进，把 priority 提到 %d 以上再提交；已过时的排队方向用 drop_intent 清掉。"+
-			"**这个方向本身不必丢**：把它写进 TodoWrite（注明为什么先不派），等 worker 消化后再派——别直接忘掉",
-			q.claimable, t.workerCap, factor*t.workerCap, intentQueueUrgentPriority)
-		if t.constraintOn("dispatch") {
-			return 0, "", fmt.Errorf("%s", msg)
-		}
-		queueWarn = "queue_warning: " + msg
 	}
 	anchors := pidList(it.AssetIDs)
-	// 资产拦截：意图绑定的资产若命中系统资产拦截规则，则禁止下发该意图。
+	seen := map[int64]bool{}
+	unique := anchors[:0]
+	for _, id := range anchors {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	anchors = unique
+	// Authorization boundaries stay: assets must be visible to this task and must
+	// not hit the operator's intercept rules.
+	if t.as != nil && t.taskID > 0 && len(anchors) > 0 {
+		visible, err := t.as.GetByIDsInScope(t.taskID, anchors)
+		if err != nil {
+			return 0, fmt.Errorf("资产可见范围校验失败：%w", err)
+		}
+		if len(visible) != len(anchors) {
+			return 0, fmt.Errorf("目标资产不属于本任务或直接关联任务；如需使用全局资产，请由用户开启「共享全局资产」")
+		}
+	}
 	if t.as != nil && len(anchors) > 0 {
 		hits, err := t.as.CheckAssetsIntercept(t.taskID, anchors)
 		if err != nil {
-			return 0, "", fmt.Errorf("资产拦截校验失败：%w", err)
+			return 0, fmt.Errorf("资产拦截校验失败：%w", err)
 		}
 		if len(hits) > 0 {
 			var b strings.Builder
@@ -3302,352 +2852,38 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 			for _, h := range hits {
 				fmt.Fprintf(&b, "\n - %s", h.Describe())
 			}
-			return 0, "", fmt.Errorf("%s", b.String())
+			return 0, fmt.Errorf("%s", b.String())
 		}
 	}
-	// 防打转：同资产 + 同风险类 + 同义描述，要么已有在跑的、要么已经结束过 3 次。
-	// 判定放在策略/资产/血缘/战果校验之后、建节点之前：前面的校验说的是"能不能做"，
-	// 这一条说的是"这件事是不是已经有人在做/已经做过了"。
-	if rej := t.checkIntentSpin(q, it.Summary, riskArea, anchors, strings.TrimSpace(it.RiskArea) != "", it.Techniques, it.Kind); rej != "" {
-		if t.constraintOn("dispatch") {
-			return 0, "", fmt.Errorf("%s", rej)
-		}
-		dupWarn = "dup_warning: " + rej
-	}
-	leadIDs, lerr := t.validateLeadIDs(it.ConvertsLeadIDs)
-	if lerr != nil {
-		return 0, "", lerr
-	}
-	payload := map[string]any{"summary": it.Summary, "risk_area": riskArea}
-	if len(leadIDs) > 0 {
-		payload["converted_lead_ids"] = leadIDs
-	}
-	if h := strings.TrimSpace(it.Hypothesis); h != "" {
-		payload["hypothesis"] = h
-	}
-	if sc := strings.TrimSpace(it.SuccessCriteria); sc != "" {
-		payload["success_criteria"] = sc
-	}
-	if stop := strings.TrimSpace(it.StopCondition); stop != "" {
-		payload["stop_condition"] = stop
-	}
-	if intentKind != "" {
-		// 完成口径随意图落库：收尾判定按它区分「资产发现」与「验证」——
-		// verify 意图只登记资产不算测过（见 server.settleIntentState）。
-		payload["intent_kind"] = intentKind
-	}
-	if idempotencyKey != "" {
-		payload["idempotency_key"] = idempotencyKey
-	}
-	if len(contractPayload) > 0 {
-		payload["contract"] = contractPayload
-	}
-	if len(it.Requires) > 0 {
-		payload["requires"] = it.Requires
-	}
-	// ATT&CK 技术标注：**标错不该让整条方向作废**，所以非法项由 NormalizeTechniques 丢弃，
-	// 不在这里返错。它是给交付物用的分类，不是约束。
-	if techs := db.NormalizeTechniques(it.Techniques); len(techs) > 0 {
-		payload["techniques"] = techs
-	}
+	payload := map[string]any{"summary": it.Summary}
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
-	// 目标轴：没显式指名时，恰有一个 open 目标就自动记录归属；多个不猜（回执提示）。
-	// 注意：这里只记录 goal_id，不建 goal→intent 边（目标只连 origin，完成时才连证据）。
-	// 必须在建边前确定，否则原子提交时还不知道要写哪条 goal 边。
-	if goalID == 0 {
-		if only, err := t.ts.SingleOpenGoal(); err == nil && only > 0 {
-			goalID = only
-		}
-	}
-	// 方向键只在显式给 mechanism 时生效：同目标 + 同资产 + 同机制 + 同 variant
-	// 视为同一方向，直接返回已有意图，避免换措辞重派。要重开必须用
-	// contract.variant + change_evidence 说明实质变化（键会随之改变）。
-	if key := intentDirectionKey(contractPayload, goalID, anchors); key != "" {
-		payload["direction_key"] = key
-		if existing, err := t.ts.FindNodeByPayload(db.KindIntent, "direction_key", key); err == nil && existing > 0 {
-			if n, nerr := t.ts.GetNode(existing); nerr == nil && n != nil && n.State != "deleted" {
-				note := fmt.Sprintf("direction_dedup: 同目标/同资产/同机制方向已存在 #%d（state=%s），未重复创建；要重开请用 contract.variant + change_evidence 说明实质变化。", existing, n.State)
-				if len(contractWarns) > 0 {
-					note += "\n" + strings.Join(contractWarns, "\n")
-				}
-				return existing, note, nil
-			}
-		}
-	}
-	if goalID > 0 {
-		payload["goal_id"] = goalID
-	}
-	// 节点、锚点与全部血缘边一次提交：任何一条边写失败都会回滚整条意图，
-	// 不会出现"意图已 open、worker 已能领取、但 depends_on/goal 边还没写"的窗口。
-	// 0 端点表示"正在创建的这条意图"（见 db.IntentEdge）。
-	edges := make([]db.IntentEdge, 0, len(parents)+len(lootIDs)+len(deps)+2)
+	edges := make([]db.IntentEdge, 0, len(parents)+1)
 	for _, parent := range parents {
-		edges = append(edges, db.IntentEdge{From: parent, Rel: db.RelDerivedFrom, To: 0})
+		edges = append(edges, db.IntentEdge{From: parent, Rel: db.RelDerivedFrom})
 	}
-	for _, lid := range lootIDs {
-		edges = append(edges, db.IntentEdge{From: 0, Rel: db.RelUses, To: lid})
-	}
-	for _, dep := range deps {
-		edges = append(edges, db.IntentEdge{From: 0, Rel: db.RelDependsOn, To: dep})
-	}
-	// 兜底血缘：意图没有显式 fact/finding 父节点时，统一连任务起点（origin fact）。
-	// 这与 ARTEX 的起点派生一致；目标不参与意图链（目标只保留 origin→goal 初始边，
-	// 达成后才由 prove_goal 连证据）。图里已有事实却漏填 parent_ids 时仍会提示补真实来源，
-	// 但不会再让意图从目标长出来。
-	fellBackToOrigin := false
 	if len(parents) == 0 {
-		if origin, _ := t.ts.OriginFactID(); origin > 0 {
-			edges = append(edges, db.IntentEdge{From: origin, Rel: db.RelDerivedFrom, To: 0})
-			fellBackToOrigin = true
+		if origin, err := t.ts.OriginFactID(); err == nil && origin > 0 {
+			edges = append(edges, db.IntentEdge{From: origin, Rel: db.RelDerivedFrom})
 		}
 	}
-	id, err := t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
-	if err != nil {
-		return 0, "", err
-	}
-	q.round++
-	q.open++
-	q.total++
-	if depsSatisfied {
-		q.claimable++
-	}
-	t.intentsRound++
-	// 同一批里刚建的方向也要参与后续判定：否则一次 add_intent 带 4 条同义意图时，
-	// 它们互相都看不见，等于没拦。
-	newAssets := make(map[int64]bool, len(anchors))
-	for _, a := range anchors {
-		newAssets[a] = true
-	}
-	q.rememberIntent(intentFP{id: id, summary: it.Summary, riskArea: riskArea, state: "open",
-		kind: it.Kind, assets: newAssets, techniques: techniqueSetOfStrings(it.Techniques)})
-	// 目标轴：显式 goal_id 已在上面校验；自动挂载已在建边前完成。这里只补
-	// "有多个 open 目标却没指名"的回执提示（不猜，也不阻止创建）。
-	note := ""
-	if goalID == 0 {
-		if goals, gErr := t.ts.ListByKind(db.KindGoal, 1000); gErr == nil {
-			open := 0
-			for _, g := range goals {
-				if g.State == "open" {
-					open++
-				}
-			}
-			if open > 1 {
-				note = "本任务有多个未达成目标，本条意图未记录目标归属：请在 goal_id 指名它服务的目标（见 graph_overview 的 goals）；goal_id 只作归属记录，不会生成目标→意图边。"
-			}
-		}
-	}
-	if fellBackToOrigin {
-		hint := "本条意图没有给 parent_ids，已兜底连到任务起点（与 ARTEX 的起点派生一致）。" +
-			"若它其实由某条事实/漏洞驱动，请用 parent_ids 指明来源，或用 link_intent_source 补回真实来源。"
-		if note != "" {
-			note += "\n" + hint
-		} else {
-			note = hint
-		}
-	}
-	// 血缘边已随节点在同一事务里提交（见上面的 edges / AddIntentGraph）。
-	if len(deps) > 0 {
-		parts := make([]string, 0, len(deps))
-		for _, d := range deps {
-			parts = append(parts, fmt.Sprintf("#%d", d))
-		}
-		warn := fmt.Sprintf("本条在等前置 %s 有结论（done/negative）之前不会被派给 worker；前置卡住时可用 unblock_intent 拆链。",
-			strings.Join(parts, "、"))
-		if note == "" {
-			note = warn
-		} else {
-			note += " " + warn
-		}
-	}
-	if riskInferred {
-		hint := fmt.Sprintf("risk_area 未填，已按 summary 推断为 %s（覆盖矩阵按它统计；要精确请在下次显式填写）", riskArea)
-		if note == "" {
-			note = hint
-		} else {
-			note += "\n" + hint
-		}
-	}
-	if coarseWarn != "" {
-		if note == "" {
-			note = coarseWarn
-		} else {
-			note += "\n" + coarseWarn
-		}
-	}
-	if chainWarn != "" {
-		if note == "" {
-			note = chainWarn
-		} else {
-			note += "\n" + chainWarn
-		}
-	}
-	for _, w := range append([]string{riskWarn, kindWarn, queueWarn, dupWarn}, contractWarns...) {
-		if w == "" {
-			continue
-		}
-		if note == "" {
-			note = w
-		} else {
-			note += "\n" + w
-		}
-	}
-	return id, note, nil
-}
-
-// breadthWarning is the soft breadth-floor nudge returned after an add_intent
-// batch that only targeted already-covered (or in-flight) assets while concrete
-// assets still have no terminal intent. It never rejects the batch.
-func breadthWarning(b *db.BreadthSummary, covered map[int64]bool) string {
-	if b == nil {
-		return ""
-	}
-	remaining := 0
-	var samples []string
-	for _, g := range b.TopGaps {
-		if !b.DebtIDs[g.AssetID] || covered[g.AssetID] {
-			continue
-		}
-		remaining++
-		if len(samples) < 3 {
-			samples = append(samples, fmt.Sprintf("%s(%s,%s)", g.Label, g.Type, g.State))
-		}
-	}
-	if remaining == 0 {
-		return ""
-	}
-	// TopGaps is capped, so debt may exceed the sampled window.
-	if b.Debt-len(covered) > remaining {
-		remaining = b.Debt - len(covered)
-	}
-	pct := "null"
-	if b.Pct != nil {
-		pct = fmt.Sprintf("%.1f%%", *b.Pct*100)
-	}
-	return fmt.Sprintf("本轮新增意图没有绑定仍有广度缺口的具体资产（debt=%d，coverage=%s；样本：%s）。"+
-		"下一轮请至少派 1 条广度意图：带 asset_ids + risk_area，写清入口/参数与要验证的假设，"+
-		"不要只写“看一下/补一下覆盖”；完整缺口用 coverage_matrix 查看。",
-		remaining, pct, strings.Join(samples, "、"))
-}
-
-// dismissLeads 把不再跟进的线索标记为 dismissed。线索不是任务，不需要走
-// drop_intent；但「为什么放弃」必须留下，复盘时才能分清「没价值」与「漏掉了」。
-func (t *ToolSet) dismissLeads() actool.CoreTool {
-	return t.writeExpTool("dismiss_leads",
-		"把不再跟进的线索标记为 dismissed（reason 必填）。线索来自 record_fact 的 leads 或 graph_overview 的 recent_leads；\n"+
-			"已 dismiss 的线索不再出现在 recent_leads，也不能再用 converts_lead_ids 转意图。",
-		obj(map[string]any{
-			"lead_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "要 dismiss 的线索 id（L<事实id>-<序号>，来自 recent_leads）"},
-			"reason":   str("【必填】为什么不再跟进：已否定/重复/超出范围/代价过高"),
-		}, "lead_ids", "reason"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			var a struct {
-				LeadIDs []string `json:"lead_ids"`
-				Reason  string   `json:"reason"`
-			}
-			_ = json.Unmarshal(in, &a)
-			reason := strings.TrimSpace(a.Reason)
-			if reason == "" {
-				return actool.Errorf("reason 必填：写明为什么不再跟进这条线索"), nil
-			}
-			byFact := map[int64][]int{}
-			for _, raw := range a.LeadIDs {
-				fid, idx, ok := parseLeadID(raw)
-				if !ok {
-					return actool.Errorf(fmt.Sprintf("lead_ids 里的 %q 不是合法 lead id（格式 L<事实id>-<序号>）", raw)), nil
-				}
-				byFact[fid] = append(byFact[fid], idx)
-			}
-			if len(byFact) == 0 {
-				return actool.Errorf("lead_ids 必填：至少给一条 recent_leads 里的线索 id"), nil
-			}
-			dismissed := 0
-			for fid, idxs := range byFact {
-				n, err := t.ts.GetNode(fid)
-				if err != nil || n == nil || n.Kind != db.KindFact {
-					return actool.Errorf(fmt.Sprintf("线索 %d 指向的事实不存在于本任务", fid)), nil
-				}
-				var p map[string]any
-				_ = json.Unmarshal(n.Payload, &p)
-				leads, _ := p["leads"].([]any)
-				var dis []string
-				if arr, ok := p["dismissed_leads"].([]any); ok {
-					for _, v := range arr {
-						if sv, ok := v.(string); ok {
-							dis = append(dis, sv)
-						}
-					}
-				}
-				for _, idx := range idxs {
-					if idx < 0 || idx >= len(leads) {
-						return actool.Errorf(fmt.Sprintf("线索 %s 超出事实 %d 的线索条数（共 %d 条）", leadID(fid, idx), fid, len(leads))), nil
-					}
-					id := leadID(fid, idx)
-					found := false
-					for _, d := range dis {
-						if strings.EqualFold(d, id) {
-							found = true
-							break
-						}
-					}
-					if !found {
-						dis = append(dis, id)
-						dismissed++
-					}
-				}
-				p["dismissed_leads"] = dis
-				if err := t.ts.SetNodePayload(fid, db.KindFact, p); err != nil {
-					return actool.Errorf(fmt.Sprintf("写回线索状态失败：%v", err)), nil
-				}
-			}
-			return actool.Text(fmt.Sprintf("leads dismissed: %d（%s）", dismissed, firstLine(reason, 100))), nil
-		})
+	return t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么；**summary 必须点名具体入口**（路径/主机/参数/版本），只有风险类名称会被拒收。\n"+
-		"★summary 只写入口+动作+验证目标：不写纪律/操作规范/速率/UA/账号/请求上限/与其它意图不重叠段落；操作边界由 constraintBlock/policyBlock 统一注入，不要重复。\n"+
-		"★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors）。单条则省略 intents 直接给顶层 summary。\n"+
-		"★广度回执：若范围内仍有具体资产没有终态覆盖，而本批没有一条绑定这些资产，返回会带 breadth_warning（不拒收）——下一轮至少补 1 条广度意图。",
+	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向：summary 一句话写清要在哪个入口做什么、验证什么。优先把一轮筛出的多个方向放进 intents 数组一次提交；返回 ids 与 intents 等长同序，失败项 id=0 并带 errors。",
 		obj(map[string]any{
-			"intents":           map[string]any{"type": "array", "description": "【优先用这个】要新增的探索方向数组，按顺序处理。每个元素字段同下方顶层字段——**一次带全 summary + risk_area + goal_id（有多个未达成目标时必填）+ asset_ids + kind**；risk_area 可省略（会按 summary 推断）。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":           str("[单条] 一句话描述这个探索方向：在**哪个具体入口**（路径/主机/参数/版本）上做什么+验证什么。**必须点名具体入口**——只写“做认证面测试 / 测一遍注入”这类风险类目录会被拒收：worker 只能每个路径各探一次就收工。**不要写纪律/操作规范/速率/UA/账号/请求上限/与其它意图不重叠段落**（操作约束由平台统一注入）；risk_area 只是台账键，不是方向本身。"),
-			"asset_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向要测试/攻击的【目标资产 id】（**尽量传**，0/1/多个；是 list_assets 返回的资产 id，不是探索节点 id）：这条探索方向针对哪些资产（站点/接口/参数/主机等）。只要方向围绕某些具体资产就务必传上——它是「这条探索打哪些目标」的结构化标记，用于覆盖去重、把意图连入资产链路。仅当纯全局侦察、确实没有具体目标资产时才留空。"},
-			"parent_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
-			"goal_id":           idp("【目标归属】本条方向服务的目标 id（graph_overview 的 goals）：仅作归属记录，不生成「目标→意图」边；意图链从起点/事实派生，目标只在 prove_goal 后由证据连边。恰有一个未达成(open)目标时省略会自动记录；**有多个未达成目标时必填**（不猜），无目标的直投任务可留空。"),
-			"requires":          map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "可选数据前提，AND：{type:fact|capability|credential,node_id?或key?,polarity?,max_age_seconds?,verification?,target?}。缺条件仍可创建候选，但暂不领取；key匹配claim_key/enables。能力需正向事实，争议/过期/替代不满足；凭据verification需target。depends_on只表示上游执行收束，不表示能力存在。不要给无必要条件的方向加门。"},
-			"depends_on":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【串行链】前置意图 id（可选，0/1/多个）：本方向要用到某个前一步的**实际产出**时填。系统在前置以 done/negative 收场前不会把这条派给 worker（下游拿不到前置只会空转）。前置失败时本条会一直停着——重派前置，或用 unblock_intent 拆链。只填本任务的意图 id。"},
-			"uses_loot_ids":     map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【本方向在动用哪次已得的访问】战果节点 id（graph_overview 的 footholds/credentials；可选，0/1/多个）：这条方向的立足点来自某个据点/某条凭据时**务必传**。它让系统能算出「哪些战果还没被推进过」——不传的话那条战果会一直显示为 outstanding，你也看不出它是否已经被别的意图接手了。"},
-			"priority":          intp("优先级 0-10，默认5"),
-			"risk_area":         str("【覆盖矩阵键】本方向要打的风险类：sqli(注入) | xss | rce(命令执行/反序列化) | ssrf | ssti | xxe | idor(对象级越权) | authz(功能级越权) | auth(认证/会话) | logic(业务逻辑/竞态) | upload | traversal | disclosure | other。**必须填写**——报告与覆盖度按「范围内资产 × 风险类」统计；不填会归入 other，覆盖矩阵与报告都会因此失真。"),
-			"kind":              str("【完成口径】discovery：资产发现/侦察，允许只登记资产就结束；verify：验证/利用，必须写回事实(record_fact)、发现(report_finding)或战果才算做完——只登记资产会被判为 no_output。省略 = 历史判定（任何写回都算产出）。"),
-			"idempotency_key":   str("可选幂等键：重试或重复提交同一条方向时带上同一个键，平台直接返回已有意图，不重复创建。"),
-			"converts_lead_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【接手的线索】graph_overview.recent_leads 里的 lead id（L<事实id>-<序号>）：这条意图是在把某条线索转成探索方向时填。填了之后该 lead 标记为 converted。"},
-			"hypothesis":        str("【假设】这条方向验证的假设（可选但推荐）：如「nopCommerce 4.x 的 PSAjax 堆叠注入可读到 QueuedEmail」"),
-			"success_criteria":  str("【验收标准】什么算测到/测完（可选但推荐）：如「拿到 version() 或 current_user 回显」「登录后 /admin 返回 200 且带后台 cookie」"),
-			"stop_condition":    str("【停止条件】什么情况下不再投入（可选）：如「连续 3 种编码均被 WAF 拦」「需要管理员会话且无法获得」"),
-			"contract": map[string]any{
-				"type":        "object",
-				"description": "【可选意图契约（P0，软契约）】显式填 mechanism 才参与方向去重：同目标+同资产+同机制+同 variant 会直接返回已有意图；要重开用 variant + change_evidence 说明实质变化。produces/acceptance 是给 worker 的验收声明。旧调用可完全省略。",
-				"properties": map[string]any{
-					"mechanism":        str("稳定机制键：同目标同资产同打法始终用同一值，换措辞不算新方向。"),
-					"route":            str("路线/链路名（如 登录链、上传链），用于态势聚合。"),
-					"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "约定产物 claim（最多 8 个）：如 version() 回显、后台 cookie、可读文件路径。"},
-					"acceptance":       str("产物验收条件：什么证据算满足 produces。"),
-					"class":            str("0 目标推进 / 1 解除依赖 / 2 新证据 / 3 复核；也可填语义标签（auth/recon/web 等），平台原样记录。"),
-					"estimated_tokens": intp("预估 token 成本（只作信号，>0 才记录）。"),
-					"variant":          str("同一机制重开时的实质变化；建议同时给 change_evidence。"),
-					"change_evidence":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "支持 variant 的事实/发现节点 id。"},
-					"recheck_of":       intp("复核哪条已结束意图；与 variant 一起构成新的方向键。"),
-				},
-			},
-			"techniques": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【ATT&CK 技术 ID】本方向用到的技术，如 T1190(利用公开漏洞) / T1078(有效账户) / T1552.001(凭据文件) / T1021(远程服务)。可选但**尽量填**——红队交付物按 ATT&CK 组织，报告会据此汇总「本次作业覆盖了哪些技术」；不标就只剩一堆没有共同语言的方向描述。只写 ID（T#### 或 T####.###），不要写技术名。"},
+			"intents":    map[string]any{"type": "array", "description": "要新增的探索方向数组。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。", "items": map[string]any{"type": "object"}},
+			"summary":    str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
+			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
+			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的已确认事实/发现节点 id；顶层全新方向留空，会自动挂到任务起点。"},
+			"priority":   intp("优先级 0-10，默认 5"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				Intents    []intentItem `json:"intents"`
-				intentItem              // 单条模式：顶层 summary/asset_ids/parent_ids/priority
+				Intents []intentItem `json:"intents"`
+				intentItem
 			}
 			_ = json.Unmarshal(in, &a)
 			batch := len(a.Intents) > 0
@@ -3655,93 +2891,30 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			if !batch {
 				items = []intentItem{a.intentItem}
 			}
-			batchWarn := ""
-			if batch && len(items) > 4 && !t.constraintOn("dispatch") {
-				batchWarn = fmt.Sprintf("batch_warning: 经典混合模式建议一次最多 4 条，本轮提交了 %d 条；已全部处理，下一轮请控制在 4 条以内。", len(items))
-			}
-
-			// 一次调用共享一份额度快照（库存量各查一次库，本轮用量在循环里累加）。
-			quota := t.beginIntentQuota()
-			// 广度快照：通常已由本轮 graphOverviewData 填充；同一 ToolSet 不重复查矩阵。
-			var breadth *db.BreadthSummary
-			debtIDs := map[int64]bool{}
-			if b := t.breadthSummary(); b != nil && b.Debt > 0 {
-				breadth = b
-				debtIDs = b.DebtIDs
-			}
-			if t.breadthNewDebt == nil {
-				t.breadthNewDebt = map[int64]bool{}
-			}
-			breadthTouched := false
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
-			createdAny := false
-			goalNote := ""
+			created := false
 			for i, it := range items {
-				id, note, err := t.addOneIntent(it, quota)
+				id, err := t.addOneIntent(it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
 				}
 				ids[i] = id
-				createdAny = true
-				for _, assetID := range pidList(it.AssetIDs) {
-					if debtIDs[assetID] {
-						breadthTouched = true
-						t.breadthNewDebt[assetID] = true
-					}
-				}
-				if note != "" {
-					if goalNote != "" {
-						goalNote += "\n"
-					}
-					goalNote += note
-				}
+				created = true
 			}
-			breadthWarn := ""
-			if createdAny && breadth != nil && !breadthTouched && t.constraintOn("breadth") {
-				breadthWarn = breadthWarning(breadth, t.breadthNewDebt)
-			}
-
-			// 人经主 agent 直投意图 → 若任务已 done（无 open 目标的 goalless 分支），把它
-			// 拉回 running，worker 才能领这条意图执行。resumeTask 仅由主 agent 的 Chat 接入
-			// (SetResumeTask)；planner 的 ToolSet 为 nil，故 planner 自己调 add_intent 时此段
-			// no-op，不影响其正常产意图。意图节点已在上面建好(open)，复活时不会被误判抽干。
-			if createdAny && t.resumeTask != nil {
-				t.resumeTask()
-			}
-
-			if !batch { // 单条：保持原返回
+			if !batch {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
-				body := fmt.Sprintf("intent created: %d", ids[0])
-				if goalNote != "" {
-					body += "\n" + goalNote
-				}
-				if breadthWarn != "" {
-					body += "\nbreadth_warning: " + breadthWarn
-				}
-				if ew := t.endgameWarning(); ew != "" {
-					body += "\nendgame_warning: " + ew
-				}
-				return actool.Text(body), nil
+				return actool.Text(fmt.Sprintf("intent created: %d", ids[0])), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			if batchWarn != "" {
-				out["batch_warning"] = batchWarn
-			}
-			if goalNote != "" {
-				out["goal_note"] = goalNote
-			}
-			if breadthWarn != "" {
-				out["breadth_warning"] = breadthWarn
-			}
-			if ew := t.endgameWarning(); ew != "" {
-				out["endgame_warning"] = ew
+			if created && t.resumeTask != nil {
+				t.resumeTask()
 			}
 			return jsonResult(out)
 		})
@@ -3782,30 +2955,7 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
 				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞节点"), nil
 			}
-			// 清理门 + 收官审计：只有这次 prove 会关闭**最后一个**目标时才跑——
-			// 中途证明单个目标不该被全局缺口挡住。block 直接拒收；notice 放行并带警告。
 			completionNotice := ""
-			if t.isLastOpenGoal(goal) {
-				if msg := t.cleanupGate(); msg != "" {
-					return actool.Errorf(msg), nil
-				}
-				if t.constraintOn("completion") {
-					if gaps := t.completionGaps(); len(gaps) > 0 {
-						switch t.completionGateMode() {
-						case "block":
-							if t.completionBlocked != nil {
-								t.completionBlocked()
-							}
-							if t.forceReview != nil {
-								t.forceReview() // 下一轮先复盘，别原地重试
-							}
-							return actool.Errorf(formatCompletionGaps(gaps)), nil
-						case "notice":
-							completionNotice = "\n\n⚠ " + formatCompletionGaps(gaps)
-						}
-					}
-				}
-			}
 			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
 				log.Printf("[goal] 关联证据失败 goal=%d evidence=%d: %v", goal, ev, err)
 			}
@@ -3864,10 +3014,6 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 			node, err := t.ts.GetNodeWithSources(ev)
 			if err != nil || node == nil || (node.Kind != db.KindFact && node.Kind != db.KindFinding) {
 				return actool.Errorf("goal_met: evidence_id 必须是本任务（或直接关联任务）的事实/漏洞节点"), nil
-			}
-			// goal_met 直接结束整个任务，同样要过清理门。
-			if msg := t.cleanupGate(); msg != "" {
-				return actool.Errorf(msg), nil
 			}
 			t.GoalMet = true
 			t.Reason = a.Reason
@@ -4176,70 +3322,6 @@ func cleanLeads(raw []leadItem) []map[string]any {
 // id 在读取时按同一下标生成，因此不需要在落库后回写。
 func leadID(factID int64, index int) string { return fmt.Sprintf("L%d-%d", factID, index) }
 
-// parseLeadID 解析 L<factID>-<index>。
-func parseLeadID(raw string) (int64, int, bool) {
-	raw = strings.TrimSpace(raw)
-	if len(raw) < 4 || (raw[0] != 'L' && raw[0] != 'l') {
-		return 0, 0, false
-	}
-	rest := raw[1:]
-	i := strings.IndexByte(rest, '-')
-	if i <= 0 || i == len(rest)-1 {
-		return 0, 0, false
-	}
-	fid, err := strconv.ParseInt(rest[:i], 10, 64)
-	if err != nil || fid <= 0 {
-		return 0, 0, false
-	}
-	idx, err := strconv.Atoi(rest[i+1:])
-	if err != nil || idx < 0 {
-		return 0, 0, false
-	}
-	return fid, idx, true
-}
-
-// validateLeadIDs 校验 converts_lead_ids：必须指向本任务某条事实里真实存在的 lead，
-// 且尚未被 dismiss。返回去重后的合法 id。
-func (t *ToolSet) validateLeadIDs(raw []string) ([]string, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, item := range raw {
-		id := strings.TrimSpace(item)
-		if id == "" {
-			continue
-		}
-		fid, idx, ok := parseLeadID(id)
-		if !ok {
-			return nil, fmt.Errorf("converts_lead_ids 里的 %q 不是合法 lead id（格式 L<事实id>-<序号>，见 graph_overview 的 recent_leads）", id)
-		}
-		n, err := t.ts.GetNode(fid)
-		if err != nil || n == nil || n.Kind != db.KindFact {
-			return nil, fmt.Errorf("converts_lead_ids 里的 %q 指向的事实不存在于本任务", id)
-		}
-		var p struct {
-			Leads     []map[string]any `json:"leads"`
-			Dismissed []string         `json:"dismissed_leads"`
-		}
-		_ = json.Unmarshal(n.Payload, &p)
-		if idx >= len(p.Leads) {
-			return nil, fmt.Errorf("converts_lead_ids 里的 %q 超出该事实的线索条数（共 %d 条）", id, len(p.Leads))
-		}
-		for _, d := range p.Dismissed {
-			if strings.EqualFold(strings.TrimSpace(d), id) {
-				return nil, fmt.Errorf("converts_lead_ids 里的 %q 已被 dismiss，不能再转意图", id)
-			}
-		}
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
-		}
-	}
-	return out, nil
-}
-
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
 // 批量时的默认意图（本条未给 intent_id 时用）。
 func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error) {
@@ -4365,82 +3447,6 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 			return actool.Text(msg), nil
 		},
 	)
-}
-
-// recordProbeFact 是 planner 专用的「开局侦察事实」写入口。
-//
-// 为什么单独开一个而不是把 record_fact 绑给 planner：planner 不执行攻击、也不该把
-// 推测写成事实；但 openingProbeBlock 要求它先做只读摸底，这些观察（响应头、跳转、
-// 版本、路径）如果不入图，后面的意图只能挂到目标上，血缘变平、其它 worker 也复用
-// 不到。这里用 evidence 必填 + source=opening_probe 把口子收窄到「本轮真实看到的
-// 侦察观察」，仍然不允许 planner 写漏洞结论或凭据。
-func (t *ToolSet) recordProbeFact() actool.CoreTool {
-	return t.writeExpTool("record_probe_fact",
-		"记录【开局摸底】中真实看到的侦察观察（响应头/跳转/版本/路径/指纹），写入探索图并挂到任务起点。\n"+
-			"只给 planner 用，且 evidence 必填：写清命令 + 最能证明的那一两行输出；没有 evidence 的观察会被拒收。\n"+
-			"这不是通用 record_fact：不要写推测、漏洞结论、凭据或战果——那些交给 worker 用 report_finding / report_credential。\n"+
-			"返回的 fact id 直接放进 add_intent 的 parent_ids，意图就会显示为「由事实派生」而不是从目标凭空长出来。",
-		obj(map[string]any{
-			"facts":      map[string]any{"type": "array", "description": "【多条观察时用】数组，元素字段同下方顶层字段；一次最多 8 条。", "items": map[string]any{"type": "object"}},
-			"summary":    str("一句话观察结论（如：/admin 302 到 /login?ReturnUrl=/admin）"),
-			"detail":     str("相关细节：响应头、版本、路径、跳转链等，可合并多个观察"),
-			"evidence":   str("【必填】一行关键证据：命令 + 最能证明结论的 1-2 行输出"),
-			"confidence": str("observed（输出里直接看到，默认）| inferred（据现象推断）"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选）"},
-		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			if t.worker != "planner" {
-				return actool.Errorf("record_probe_fact 只供 planner 记录开局侦察观察；执行层请用 record_fact / report_finding"), nil
-			}
-			var a struct {
-				Facts []factItem `json:"facts"`
-				factItem
-			}
-			_ = json.Unmarshal(in, &a)
-			items := a.Facts
-			if len(items) == 0 {
-				items = []factItem{a.factItem}
-			}
-			if len(items) > 8 {
-				items = items[:8]
-			}
-			origin, _ := t.ts.OriginFactID()
-			ids := make([]int64, 0, len(items))
-			for i, it := range items {
-				summary := strings.TrimSpace(it.Summary)
-				if summary == "" {
-					return actool.Errorf(fmt.Sprintf("facts[%d].summary 不能为空", i)), nil
-				}
-				evidence := strings.TrimSpace(it.Evidence)
-				if evidence == "" {
-					return actool.Errorf(fmt.Sprintf("facts[%d].evidence 必填：开局侦察事实必须留下命令与关键输出，不能凭记忆写", i)), nil
-				}
-				conf := strings.ToLower(strings.TrimSpace(it.Confidence))
-				if conf == "" {
-					conf = "observed"
-				}
-				if conf != "observed" && conf != "inferred" {
-					return actool.Errorf(fmt.Sprintf("facts[%d].confidence 只能是 observed 或 inferred", i)), nil
-				}
-				payload := map[string]any{
-					"summary": summary, "evidence": evidence, "confidence": conf,
-					"polarity": factPolarityPos, "source": "opening_probe",
-				}
-				if d := strings.TrimSpace(it.Detail); d != "" {
-					payload["detail"] = d
-				}
-				from := int64(0)
-				if origin > 0 {
-					from = origin
-				}
-				id, err := t.ts.AddLinkedNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs), from, db.RelYields)
-				if err != nil {
-					return actool.Errorf(fmt.Sprintf("facts[%d] 写入失败：%v", i, err)), nil
-				}
-				ids = append(ids, id)
-			}
-			return jsonResult(map[string]any{"ids": ids, "origin": origin})
-		})
 }
 
 func (t *ToolSet) recordFact() actool.CoreTool {
@@ -5892,7 +4898,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_worker_traces：态势里的 recent_done_intents 只是一窗（12 条），上百意图的任务里
 		// 大部分已结束意图不在视野中。这个工具让 planner 能翻全量已跑意图，确认某方向是否试过。
 		t.listWorkerTraces(),
-		t.listGoals(), t.addIntent(), t.unblockIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		t.listGoals(), t.addIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),
@@ -5934,22 +4940,6 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.lookupPlaybooks(), t.recordPlaybook(), t.recordPlaybookFeedback(),
 		// CVE 库：规划时按资产/指纹查已录入 CVE；有脚本时可显式触发，匹配只是线索。
 		t.lookupCVEs(),
-	}
-	// 探索约束工具按分组注册：默认经典模式不暴露记账/补证工具，增强模式逐组恢复。
-	if t.constraintOn("opening") {
-		tools = append(tools, t.recordProbeFact())
-	}
-	if t.constraintOn("depth") {
-		tools = append(tools, t.dismissLeads())
-	}
-	if t.constraintOn("exhaustion") {
-		tools = append(tools, t.markStrategyExhausted())
-	}
-	if t.constraintOn("ledger") {
-		tools = append(tools, t.coverageMatrix(), t.explorationLedger(), t.dismissCoverage(), t.chainDetail())
-	}
-	if t.constraintOn("completion") {
-		tools = append(tools, t.acceptCompletionRisk())
 	}
 	return tools
 }
@@ -6016,87 +5006,6 @@ func findingAssetsOverlap(a, b []int64) bool {
 	return false
 }
 
-// riskAreaEnum 返回 risk_area 的合法取值说明（错误信息与提示词共用）。
-func riskAreaEnum() string {
-	return strings.Join(db.RiskAreas, " | ")
-}
-
-// riskAreaKeywords 是 risk_area 缺省时的推断表，按特异性从高到低匹配（先命中先返回）。
-// 只用于漏填兜底——显式填写永远优先，填错仍然报错。
-var riskAreaKeywords = []struct {
-	area  string
-	words []string
-}{
-	{"rce", []string{"rce", "命令执行", "命令注入", "代码执行", "反弹 shell", "getshell", "xp_cmdshell", "反序列化"}},
-	{"ssti", []string{"ssti", "模板注入", "模板引擎"}},
-	{"xxe", []string{"xxe", "xml 外部实体", "外部实体"}},
-	{"ssrf", []string{"ssrf", "服务端请求伪造", "内网探测", "元数据"}},
-	{"sqli", []string{"sqli", "sql 注入", "sql注入", "注入点", "盲注", "堆叠注入", "sql"}},
-	{"xss", []string{"xss", "跨站", "存储型", "反射型"}},
-	{"upload", []string{"上传", "upload", "任意文件写", "文件写入"}},
-	{"traversal", []string{"路径穿越", "目录穿越", "traversal", "../"}},
-	{"idor", []string{"idor", "对象级越权", "未授权访问", "越权读"}},
-	{"authz", []string{"越权", "authz", "角色提权", "权限提升"}},
-	{"logic", []string{"业务逻辑", "竞态", "并发", "金额", "优惠券", "支付", "订单"}},
-	{"auth", []string{"登录", "认证", "口令", "密码", "账号", "会话", "session", "cookie", "注册", "找回"}},
-	{"disclosure", []string{"泄露", "robots", "备份", "配置文件", "目录列举", "敏感文件", "信息暴露", "disclosure"}},
-}
-
-// inferRiskArea 从 summary 里推断一个风险类（缺省兜底，不追求完备）。
-func inferRiskArea(summary string) string {
-	low := strings.ToLower(summary)
-	for _, entry := range riskAreaKeywords {
-		for _, w := range entry.words {
-			if strings.Contains(low, w) {
-				return entry.area
-			}
-		}
-	}
-	return "other"
-}
-
 // intentAnchor* 是「这条意图点名了具体入口」的判据。刻意用宽口径：只要出现路径、
 // URL/主机、查询参数、版本号或显式节点 id 之一就放行——目的是挡住"做认证面测试"
 // 这类纯风险类目录，而不是要求每条意图都写成完整计划。
-var (
-	intentPathAnchor    = regexp.MustCompile(`(^|[\s（(：:,，;；、"“”‘’])/[A-Za-z0-9_.-][A-Za-z0-9_./{}$-]*`)
-	intentHostAnchor    = regexp.MustCompile(`(?i)(https?://|[a-z0-9][a-z0-9-]*(\.[a-z0-9-]+)+)`)
-	intentParamAnchor   = regexp.MustCompile(`([?&][A-Za-z_][A-Za-z0-9_]*=|[A-Za-z_][A-Za-z0-9_]*=(值|参数)|参数[「"“']?[A-Za-z_])`)
-	intentVersionAnchor = regexp.MustCompile(`[0-9]+(\.[0-9xX]+)+`)
-	intentNodeAnchor    = regexp.MustCompile(`(#|id=|intent-|fact-|finding-)[0-9]{1,9}`)
-)
-
-// hasVerificationChain 判断 summary 是否写了「先确认→再据它做→命中后」的链。
-// 只用于提示，不做硬门。
-func hasVerificationChain(summary string) bool {
-	for _, w := range []string{"→", "先", "再", "然后", "接着", "之后", "命中后", "若", "如果", "第一步", "第二步", "确认后"} {
-		if strings.Contains(summary, w) {
-			return true
-		}
-	}
-	return false
-}
-
-// coarseIntentSummary 判断一条意图 summary 是否"只有风险类、没有具体入口"。
-// kind=discovery 的意图允许只写发现目标（域名/主机/网段）或带 asset_ids——资产发现
-// 本身没有路径可写；其余意图（verify 与未标 kind 的旧口径）必须命中至少一个锚点。
-func coarseIntentSummary(summary, kind string, hasAssets bool) (bool, string) {
-	if kind == "discovery" {
-		if hasAssets || intentHostAnchor.MatchString(summary) || intentPathAnchor.MatchString(summary) {
-			return false, ""
-		}
-		return true, fmt.Sprintf("discovery 意图也要能落地：summary 里要写明要发现什么（域名/主机/网段/证书/服务），或至少带 asset_ids；%q 没有任何可执行目标。", firstLine(summary, 80))
-	}
-	for _, re := range []*regexp.Regexp{intentPathAnchor, intentHostAnchor, intentParamAnchor, intentVersionAnchor, intentNodeAnchor} {
-		if re.MatchString(summary) {
-			return false, ""
-		}
-	}
-	return true, fmt.Sprintf("summary 没有点名任何具体入口（路径 / URL 或主机 / 查询参数 / 组件版本 / 节点 id）：%q。\n"+
-		"意图是「在哪个入口上验证什么」，不是「把哪一类风险测一遍」——目录型意图会让 worker 每个路径各探一次就收工，深度全丢在最浅处。\n"+
-		"改写示例：\n"+
-		"  粗：对目标做认证面测试\n"+
-		"  细：对 <host>/admin/login（302→/login?ReturnUrl=/admin）测账号枚举与低速口令喷洒，先确认错误回显差异，命中即停\n"+
-		"  粗：测试注入\n"+
-		"  细：对 <host>/search?q= 做报错/布尔/时间三通道最小验证，只取 version() 作证；被 WAF 拦时记录 challenge 类型后停", firstLine(summary, 80))
-}

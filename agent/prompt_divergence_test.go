@@ -20,9 +20,9 @@ func TestPlannerPromptDivergenceContract(t *testing.T) {
 
 	for _, want := range []struct{ needle, why string }{
 		{`不是"能少派就少派"`, "「不重复」必须被限定为不重复，而不是少派"},
-		{"发散优先于收敛", "目标未达成时发散优先"},
-		{"都**不算**死路", "「试过一次没成」不能当成死路"},
-		{"所有已知方向都已被证明为死路", "收敛必须有证据门槛"},
+		{"深度优先于覆盖度", "目标未达成时优先深挖"},
+		{`"再试一次说不定行"不算`, "换措辞/再试一次不能算新方向"},
+		{"所有已知方向都被仍在 open/running 的意图覆盖", "收敛必须有证据门槛"},
 		{"多样性永远服从顶部【操作约束】", "授权边界是硬约束，不能被发散冲掉"},
 	} {
 		if !strings.Contains(p, want.needle) {
@@ -30,7 +30,7 @@ func TestPlannerPromptDivergenceContract(t *testing.T) {
 		}
 	}
 
-	div := strings.Index(p, "发散优先于收敛")
+	div := strings.Index(p, "深度优先于覆盖度")
 	con := strings.Index(p, "多样性永远服从顶部【操作约束】")
 	if div < 0 || con < 0 || con < div {
 		t.Fatalf("操作约束应排在发散段之后（divergence@%d constraint@%d）", div, con)

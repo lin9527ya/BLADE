@@ -211,3 +211,20 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   `consolidateFindingCaseExport` 合成统一报告；过期/缺失时输出明确说明与全部原始证据。
 - Reporter 工具在启动时通过 `seedFindingCaseTools` 一次性 seed 并绑定；提示词扩展在
   `agent/finding_workflow.go` 运行时追加，仅对具备案例工具的 reporter 生效。
+
+## 探索流程：ARTEX parity
+
+- 默认探索层已按 ARTEX 行为替换：planner 提示词来自 ARTEX 默认正文（`agent/planner.go` 的
+  `plannerDefaultTmpl`），只追加安全/上下文块（冷区、退避、出口、hint 生命周期、CVE、
+  artifact、不可信数据、黑板视图），不再追加 BLADE 的探索约束块或 policy 段。
+- 引擎没有 anti-stall 补派/空转暂停、supervisor、穷尽复核、completion/遗留物完成门；
+  planner 由图变化与心跳唤醒，0 意图是正常结果。
+- `add_intent` 只校验 summary、parent 为 fact/finding、资产在本任务/直接关联任务可见且未命中
+  资产拦截；其它旧字段（risk_area/kind/goal_id/uses_loot_ids/depends_on/requires/contract/
+  idempotency_key 等）即使出现在 JSON 中也被忽略，不写入 payload。
+- Frontier/Count/Claim 按 `priority DESC, id ASC`；legacy `depends_on`/`requires` 边与 payload
+  只作展示，不阻断领取；worker 槽位只保留命名/租约/恢复，不再做 owner 亲和或同会话互斥。
+- 完成只由 `prove_goal`（最后一个 goal met 自动收尾）或 goalless frontier 抽干驱动；授权、
+  资产拦截、guard、task_constraints、写入栅栏、报告/证据/统一报告保持不变。
+- 设置页不再暴露探索约束/队列倍数/收官审计/supervisor 控件；旧 profile/policy 设置仍存库但
+  探索层不读取。恢复旧行为需要回滚代码与提示词历史，不存在运行时开关。

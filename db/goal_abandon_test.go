@@ -99,7 +99,8 @@ func TestSlotHandoffWhenOwnerIdle(t *testing.T) {
 		t.Fatalf("空闲 owner 槽位应允许跨槽领取: ok=%v err=%v", ok, err)
 	}
 
-	// 场景 2：work#3 正在跑另一条意图 → 它名下的 open 意图对 work#1 仍不可见。
+	// ARTEX parity：槽位只保留命名/租约，不构成 owner 亲和；work#3 在跑别的意图时，
+	// 它名下的 open 意图仍对其他槽位可见、可领。
 	i3, _ := es.AddIntent(map[string]any{"summary": "affinity"}, 5, nil, "planner")
 	if ok, _ := es.ClaimIntent(i3, "work#3", IntentLeaseTTL); !ok {
 		t.Fatal("claim i3 by work#3")
@@ -115,12 +116,16 @@ func TestSlotHandoffWhenOwnerIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seen = false
 	for _, n := range fr {
 		if n.ID == i3 {
-			t.Fatal("owner 槽位仍在跑意图时，它的 open 意图不应被其它槽位看到")
+			seen = true
 		}
 	}
-	if ok, err := es.ClaimIntentForSlot(i3, "work#1", IntentLeaseTTL, nil); err != nil || ok {
-		t.Fatalf("owner 槽位忙时应拒绝跨槽领取: ok=%v err=%v", ok, err)
+	if !seen {
+		t.Fatal("ARTEX parity 下 open 意图应对所有槽位可见")
+	}
+	if ok, err := es.ClaimIntentForSlot(i3, "work#1", IntentLeaseTTL, nil); err != nil || !ok {
+		t.Fatalf("ARTEX parity 下应允许跨槽领取: ok=%v err=%v", ok, err)
 	}
 }

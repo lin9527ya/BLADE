@@ -29,7 +29,7 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2, $3)`, KindFoothold, KindCredential, KindDetection); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`DELETE FROM exploration_edges WHERE rel=$1`, RelLeaves); err != nil {
+	if _, err := d.Exec(`DELETE FROM exploration_edges WHERE rel NOT IN ('spawns','derived_from','yields','proves','covers')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind=$1`, KindFootprint); err != nil {

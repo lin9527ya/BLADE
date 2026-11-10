@@ -1,8 +1,6 @@
 package db
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -124,48 +122,6 @@ func (s *ExplorationStore) ValidateEvidenceMetadata(meta *EvidenceMetadata) erro
 	return nil
 }
 
-func intentRequirementsReady(ctx context.Context, tx *sql.Tx, exploration int64, n *Node, lock bool) (bool, []string, error) {
-	var p struct {
-		Requires []IntentRequirement `json:"requires"`
-	}
-	if err := json.Unmarshal(n.Payload, &p); err != nil {
-		return false, nil, err
-	}
-
-	if lock {
-		for _, r := range p.Requires {
-			rows, err := tx.QueryContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND (id=$2 OR ($2=0 AND (payload->'evidence_meta'->>'claim_key'=$3 OR COALESCE(payload->'enables','[]'::jsonb)?$3))) ORDER BY id FOR SHARE`, exploration, r.NodeID, r.Key)
-			if err != nil {
-				return false, nil, err
-			}
-			for rows.Next() {
-				var id int64
-				if err := rows.Scan(&id); err != nil {
-					rows.Close()
-					return false, nil, err
-				}
-			}
-			err = rows.Err()
-			rows.Close()
-			if err != nil {
-				return false, nil, err
-			}
-		}
-	}
-	var raw []byte
-	if err := tx.QueryRowContext(ctx, `SELECT blackboard_requirement_issues($1::jsonb,$2::bigint)`, string(n.Payload), exploration).Scan(&raw); err != nil {
-		return false, nil, err
-	}
-	var issues []json.RawMessage
-	if err := json.Unmarshal(raw, &issues); err != nil {
-		return false, nil, err
-	}
-	reasons := make([]string, len(issues))
-	for i, v := range issues {
-		reasons[i] = string(v)
-	}
-	return len(issues) == 0, reasons, nil
-}
 func (s *ExplorationStore) RequirementIssues(id int64) ([]map[string]any, error) {
 	var raw []byte
 	err := s.db.QueryRow(`SELECT blackboard_requirement_issues(payload,exploration_id) FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&raw)

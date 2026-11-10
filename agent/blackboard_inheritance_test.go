@@ -12,13 +12,6 @@ import (
 	"github.com/lin9527ya/blade/db"
 )
 
-// toolsQ 是 P20 意图额度的验收辅助：裸 ToolSet 没有"本轮已用几条"的上下文，
-// 取一份空额度快照（未接策略时判定完全跳过，行为与从前一致）。
-func toolsQ() *intentQuota { return &intentQuota{} }
-
-// disabledToolsQ 同上（coverage-disabled 场景用的 ToolSet）。
-func disabledToolsQ() *intentQuota { return &intentQuota{} }
-
 func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {
 	t.Helper()
 	result, err := tool.Call(context.Background(), json.RawMessage(input), nil)
@@ -153,10 +146,10 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 		t.Fatalf("company asset missing from company-scoped agent query: %#v", byCompany)
 	}
 	assetJSON, _ := json.Marshal(assetID)
-	intentID, _, err := tools.addOneIntent(intentItem{
+	intentID, err := tools.addOneIntent(intentItem{
 		Summary: "test associated company asset", RiskArea: "other",
 		AssetIDs: []json.RawMessage{assetJSON},
-	}, toolsQ())
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,11 +184,11 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if linked, err := assets.QueryByTask(disabledTask.ID, "root_domain", 10, 0); err != nil || len(linked) != 1 || linked[0].ID != assetID {
 		t.Fatalf("coverage-disabled task asset link=%+v err=%v", linked, err)
 	}
-	disabledIntentID, _, err := disabledTools.addOneIntent(intentItem{
+	disabledIntentID, err := disabledTools.addOneIntent(intentItem{
 		Summary:  "test associated company asset without coverage metrics",
 		RiskArea: "other",
 		AssetIDs: []json.RawMessage{assetJSON},
-	}, disabledToolsQ())
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,9 +283,9 @@ func TestBlackboardToolsReadDirectSources(t *testing.T) {
 	tools.SetTaskID(current.ID)
 	tools.SetAssetStore(assets, assets.Companies())
 	parentID, _ := json.Marshal(sourceFact)
-	derivedID, _, err := tools.addOneIntent(intentItem{
+	derivedID, err := tools.addOneIntent(intentItem{
 		Summary: "derive locally from shared fact", RiskArea: "other", ParentIDs: []json.RawMessage{parentID},
-	}, toolsQ())
+	})
 	if err != nil {
 		t.Fatalf("derive from inherited fact: %v", err)
 	}

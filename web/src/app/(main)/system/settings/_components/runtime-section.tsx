@@ -18,22 +18,10 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     loaded,
     workers,
     setWorkers,
-    intentQueueFactor,
-    setIntentQueueFactor,
     savingWorkers,
-    supervisorEnabled,
-    setSupervisorEnabled,
-    supervisorInterval,
-    setSupervisorInterval,
-    savingSupervisor,
-    saveSupervisor,
     tokenBudget,
     setTokenBudget,
     savingBudget,
-    completionGate,
-    setCompletionGate,
-    savingCompletionGate,
-    saveCompletionGate,
     boundedView,
     setBoundedView,
     savingBoundedView,
@@ -62,59 +50,10 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     setLogLevel,
     savingLogLevel,
     saveLogLevel,
-    constraintProfile,
-    constraintGroups,
-    savingConstraints,
-    saveConstraints,
   } = s;
 
   return (
     <Section title="执行与并发" hint="改完对之后启动的任务与之后提交的长任务执行生效（运行中的任务不受影响）。">
-      <SubBlock title="探索约束" icon={<GaugeIcon className="size-4 text-muted-foreground" />}>
-        <Field
-          label="预设"
-          htmlFor="constraint-profile"
-          hint="经典混合：约束关闭，但保留 ARTEX 的防停摆/开局探测/深度优先骨架（默认）。增强：全部开启。自定义：逐组选择；单独拨动任一组会自动切到自定义。"
-        >
-          <Select
-            value={constraintProfile}
-            onValueChange={(v) => saveConstraints({ profile: v as "classic" | "enhanced" | "custom" })}
-            disabled={!loaded || savingConstraints}
-          >
-            <SelectTrigger id="constraint-profile" className="w-48">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="classic">经典（约束关）</SelectItem>
-                <SelectItem value="enhanced">增强（约束全开）</SelectItem>
-                <SelectItem value="custom">自定义</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
-        {[
-          ["opening", "开局摸底", "开局探测、粗粒度硬拒与 record_probe_fact 证据门。"],
-          ["dispatch", "派单与补位", "槽位补满、空闲补派、空转暂停、队列背压、防打转、每轮意图上限。"],
-          ["breadth", "广度与横向", "广度债、横向推进纪律、scope_surface。"],
-          ["ledger", "探索/通路台账", "ledger/chain 提示、coverage_matrix、台账工具与态势字段。"],
-          ["review_endgame", "复盘与收官期", "强制复盘轮、复盘 3 条上限、升级阶梯、收官期禁扩面。"],
-          ["completion", "收官审计", "prove_goal 的覆盖/通路/线索/证据缺口审计。"],
-          ["exhaustion", "穷尽复核", "mark_strategy_exhausted 六门与独立复核员。"],
-          ["supervisor", "执行审核员", "定期抽查 worker 并用 steer 纠偏（额外 LLM 调用）。"],
-          ["depth", "深度与线索", "否定结论变体门槛、线索写回/分诊与 leads 态势。"],
-        ].map(([key, label, hint]) => (
-          <SwitchRow
-            key={key}
-            id={`constraint-${key}`}
-            label={label}
-            hint={hint}
-            checked={!!constraintGroups[key]}
-            disabled={!loaded || savingConstraints}
-            onChange={(v) => saveConstraints({ group: key, value: v })}
-          />
-        ))}
-      </SubBlock>
       <SubBlock title="日志级别" icon={<CpuIcon className="size-4 text-muted-foreground" />}>
         <Field
           label="最低级别"
@@ -183,8 +122,8 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
           hint={
             <>
               开启时 planner 每轮只预取窗口化的态势（totals 真实、列表有上限，省 token），需要更多细节时由模型自己
-              <b> graph_overview(detail=true) / list_facts</b> 翻页；关闭后每轮预取完整态势，<b>上下文更大但不再裁剪</b>。
-              只想让大模型自己决定看多少时，可以关掉它。
+              <b> graph_overview(detail=true) / list_facts</b> 翻页；关闭后每轮预取完整态势，<b>上下文更大但不再裁剪</b>
+              。 只想让大模型自己决定看多少时，可以关掉它。
             </>
           }
         >
@@ -197,71 +136,6 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
             />
             <Button size="sm" onClick={() => void saveBoundedView()} disabled={savingBoundedView || !loaded}>
               {savingBoundedView ? <Spinner data-icon="inline-start" /> : null}
-              保存
-            </Button>
-          </div>
-        </Field>
-      </SubBlock>
-
-      <SubBlock title="收官审计" icon={<ShieldCheckIcon className="size-4 text-muted-foreground" />}>
-        <Field
-          label="目标达成后的充分性检查"
-          htmlFor="completion-gate"
-          hint={
-            <>
-              目标已达成但探索台账仍有<b>未接受的风险</b>（未测面、未推进的据点/凭据、未闭合候选、未处理线索）时：
-              <b>阻断</b>会拒绝收官并要求补测或显式接受风险；<b>只提醒</b>把缺口写进回执但不拦；<b>关闭</b>恢复旧行为。
-              <br />
-              接受风险需要写理由，理由会进报告的数据缺项——放行可以，但必须说得出来。
-            </>
-          }
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Select value={completionGate} onValueChange={(v) => setCompletionGate(v as typeof completionGate)}>
-              <SelectTrigger id="completion-gate" className="w-56">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="block">阻断（默认）</SelectItem>
-                  <SelectItem value="notice">只提醒</SelectItem>
-                  <SelectItem value="off">关闭</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Button size="sm" onClick={() => void saveCompletionGate()} disabled={savingCompletionGate || !loaded}>
-              {savingCompletionGate ? <Spinner data-icon="inline-start" /> : null}
-              保存
-            </Button>
-          </div>
-        </Field>
-      </SubBlock>
-
-      <SubBlock title="执行审核员（Supervisor）" icon={<ShieldCheckIcon className="size-4 text-muted-foreground" />}>
-        <Field
-          label="启用与审核周期"
-          htmlFor="supervisor-enabled"
-          hint="定时抽查在跑 worker 的最近轨迹，判定偏离时注入纠偏。关闭后不再调用审核模型、不再下发纠偏（已有会话记录保留）。周期 60–1800 秒，改完对下一个周期生效。"
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Switch
-              id="supervisor-enabled"
-              checked={supervisorEnabled}
-              disabled={!loaded || savingSupervisor}
-              onCheckedChange={setSupervisorEnabled}
-            />
-            <Input
-              id="supervisor-interval"
-              type="number"
-              min={60}
-              max={1800}
-              className="w-32 font-mono text-sm"
-              value={supervisorInterval}
-              disabled={!loaded || savingSupervisor || !supervisorEnabled}
-              onChange={(e) => setSupervisorInterval(e.target.value)}
-            />
-            <span className="text-muted-foreground text-xs">秒</span>
-            <Button onClick={saveSupervisor} disabled={!loaded || savingSupervisor}>
               保存
             </Button>
           </div>
@@ -285,28 +159,6 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               disabled={!loaded || savingWorkers}
               onChange={(e) => setWorkers(e.target.value)}
             />
-          </div>
-        </Field>
-        <Field
-          label="待领意图上限倍数（×workers）"
-          htmlFor="intent-queue-factor"
-          hint="待领意图达到「倍数×worker 数」时，规划者不再接收低优先级新方向（priority ≥8 的跟进仍放行）。默认 4；保存后下一轮规划生效，无需重启。"
-        >
-          <div className="flex items-center gap-2">
-            <Input
-              id="intent-queue-factor"
-              type="number"
-              min={1}
-              max={32}
-              className="w-32 font-mono text-sm"
-              placeholder="4"
-              value={intentQueueFactor}
-              disabled={!loaded || savingWorkers}
-              onChange={(e) => setIntentQueueFactor(e.target.value)}
-            />
-            <Button onClick={saveWorkers} disabled={!loaded || savingWorkers}>
-              保存
-            </Button>
           </div>
         </Field>
       </SubBlock>

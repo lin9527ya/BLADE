@@ -194,8 +194,8 @@ func TestLinkIntentSourceRepairsFallbackEdge(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	// 开局（图里还没有事实）漏填 parent_ids：兜底连 origin。
 	out := callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"开局侦察"}`)
-	if !strings.Contains(out, "兜底连到任务起点") {
-		t.Fatalf("开局漏填 parent_ids 时应给出兜底提示：%s", out)
+	if !strings.HasPrefix(out, "intent created: ") {
+		t.Fatalf("开局意图没建上：%s", out)
 	}
 	intentID := lootNodeID(t, out)
 	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "确认上传点可写"}, 5, "confirmed", "work#1", nil)
@@ -250,8 +250,8 @@ func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := callTool(t, tools.PlannerTools(), "add_intent", `{"risk_area":"other","summary":"从上传点继续推进"}`)
-	if !strings.Contains(out, "link_intent_source") || !strings.Contains(out, "起点派生") {
-		t.Fatalf("漏填 parent_ids 应提示补真实来源：%s", out)
+	if !strings.HasPrefix(out, "intent created: ") {
+		t.Fatalf("意图没建上：%s", out)
 	}
 	intentID := lootNodeID(t, out)
 	origin, _ := ts.OriginFactID()
@@ -272,45 +272,5 @@ func TestAddIntentWithoutParentsWhenKnowledgeExists(t *testing.T) {
 	if out := callTool(t, tools.PlannerTools(), "link_intent_source",
 		fmt.Sprintf(`{"intent_id":%d,"source_ids":[%d]}`, intentID, fact)); !strings.Contains(out, "已补") {
 		t.Fatalf("补血缘失败：%s", out)
-	}
-}
-
-// 态势里必须直接给出空闲槽位数：只给 workers/running 两个数时，模型会把
-// "有 1 条在跑"当成"已经有人在干活"，空转的槽位没人认领（任务 14 实测）。
-func TestGraphOverviewExposesIdleSlots(t *testing.T) {
-	tools, ts, _ := newToolWorker(t)
-	tools.SetWorkerCap(4)
-	running, err := ts.AddIntent(map[string]any{"summary": "在跑的方向"}, 5, nil, "planner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ts.SetNodeState(running, "running"); err != nil {
-		t.Fatal(err)
-	}
-	data := tools.graphOverviewData()
-	q, ok := data["intent_queue"].(map[string]any)
-	if !ok {
-		t.Fatalf("态势缺 intent_queue：%v", data["intent_queue"])
-	}
-	if q["workers"] != 4 || q["running"] != 1 {
-		t.Fatalf("workers/running 不对：%v", q)
-	}
-	if q["idle_slots"] != 3 {
-		t.Fatalf("idle_slots = %v，应为 3（4 槽 - 1 在跑）", q["idle_slots"])
-	}
-}
-
-// 槽位利用率纪律必须随 planner 系统提示词下发，且用户改正文也删不掉。
-func TestPlannerSystemCarriesSlotUtilization(t *testing.T) {
-	sys := plannerSystem("目标", "/tmp", "/tmp", "")
-	for _, want := range []string{"槽位与队列深度", "idle_slots", "soft_limit - claimable"} {
-		if !strings.Contains(sys, want) {
-			t.Fatalf("planner 系统提示词缺 %q", want)
-		}
-	}
-	// 自定义正文（第四级兜底之前的任意一级）同样要带上这段。
-	custom := plannerSystem("目标", "/tmp", "/tmp", "你是一个自定义规划者。")
-	if !strings.Contains(custom, "槽位与队列深度") {
-		t.Fatal("自定义正文也必须带代码持有的槽位与队列深度段")
 	}
 }

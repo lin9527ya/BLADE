@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 // 常驻索引要能回答「手上还有什么、哪条还没用」：压缩之后模型靠这一行避免重复去拿
@@ -18,9 +20,14 @@ func TestContextIndexShowsLootAndOutstanding(t *testing.T) {
 		`{"risk_area":"other","summary":"db02 的 ssh 登录","access":"ssh","privilege":"app",`+
 			`"evidence":"ssh db02","confidence":"high"}`))
 
-	if out := callTool(t, tools.PlannerTools(), "add_intent",
-		`{"risk_area":"other","summary":"拿 web01 当跳板","uses_loot_ids":[`+strconv.FormatInt(usedID, 10)+`]}`); !strings.HasPrefix(out, "intent created: ") {
-		t.Fatalf("意图没建上：%s", out)
+	intentID, err := ts.AddIntent(map[string]any{"summary": "拿 web01 当跳板"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ARTEX add_intent no longer accepts uses_loot_ids; the relationship is still
+	// valid graph data for human/worker-produced links.
+	if err := ts.Link(intentID, db.RelUses, usedID); err != nil {
+		t.Fatal(err)
 	}
 
 	block := BuildContextIndex(ContextIndexVars{Store: ts})

@@ -715,74 +715,43 @@ func (s *Server) reseedMainAgentPrompt() {
 // 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
 // reseedGoalsPrompt 完全同构。
 func (s *Server) reseedPlannerPrompt() {
-	// v7：槽位利用率收紧为「按空闲数补齐」（≥ min(idle_slots,4)），并允许派补证缺口/换机理。
-	// v6：加入「槽位利用率」——空闲 worker ≥2 时本轮必须补至少 1 条独立方向。
-	// v5：parent_ids 从"可选"改成"几乎总是要填"——漏填会让意图全部兜底连到任务起点，
-	// 图上读起来像"只能从起点发散"。代码持有的纪律见 plannerSystem 的
-	// lineageDisciplineBlock / slotUtilizationBlock，这里只是把可编辑正文同步到新口径。
-	// v8 起用修正后的 plannerPromptIsCustom 判据；v7 那次因为 && / || 优先级写错，
-	// 把"刚刷成 v5 的正文"误判成自定义并置位了标记，所以换一个新 flag 重跑一次。
-	// v9：硬底线补上「无方向时调用 mark_strategy_exhausted / abandon_goal」出口，
-	// 并把「用 record_fact 写结论」的旧说法改成这两个 planner 真正拥有的工具。
-	// v10：说明 recent_done_intents 只是一窗（≤30），翻全量用 list_worker_traces。
-	// v11：新增 folded_intents（折叠区已结束意图索引），提示词说明它的字段与用法。
-	// v12：横向推进（scope_surface / shallow_assets）+ 穷尽三道门；深度优先于收官。
-	const flag = "planner_prompt_slots_v12"
+	// ARTEX parity: the planner flow is replaced, not toggled. Install the ARTEX
+	// default body as the current prompt version for every DB (old versions stay in
+	// prompt history for rollback). Explicit task snapshots are left untouched.
+	const flag = "planner_prompt_artex_parity_v1"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	completed := false
-	defer func() {
-		if !completed {
-			return
-		}
-		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
-			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
-		}
-	}() // 读取/保存失败不置旗标，下一次启动重试
 	a, err := s.m.pg.GetAgentByKey("planner")
 	if err != nil || a == nil {
-		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
+		return
 	}
 	tmpl := agent.BuiltinPromptSeeds()["planner"]
 	if tmpl == "" {
 		return
 	}
-	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	cur, curErr := s.m.pg.CurrentPrompt(a.ID)
-	if curErr != nil {
-		log.Printf("[prompts] 读取 planner 正文失败，未重刷: %v", curErr)
-		return
-	}
-	if cur == tmpl {
-		completed = true
-		return
-	}
-	// 只刷新精确匹配历史内置正文的版本，保留任何自定义正文及其追加段。
-	// 判定与新 hash 迁移共用，不因用户保留旧术语而取得整份正文的所有权。
-	if plannerPromptIsCustom(cur) {
-		completed = true
-		log.Printf("[prompts] planner 提示词已是自定义版本，保留正文；广度纪律运行时注入")
-		return
-	}
-	appendText, err := s.m.pg.CurrentPromptAppend(a.ID)
+	cur, err := s.m.pg.CurrentPrompt(a.ID)
 	if err != nil {
-		log.Printf("[prompts] 读取 planner 追加段失败，未重刷: %v", err)
+		log.Printf("[prompts] 读取 planner 正文失败，未切换 ARTEX 默认: %v", err)
 		return
 	}
-	if _, err := s.m.pg.SavePromptWithAppend(a.ID, tmpl, appendText, "更新内置 planner 正文", "system"); err != nil {
-		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
-		return
+	if cur != tmpl {
+		appendText, err := s.m.pg.CurrentPromptAppend(a.ID)
+		if err != nil {
+			log.Printf("[prompts] 读取 planner 追加段失败，未切换: %v", err)
+			return
+		}
+		if _, err := s.m.pg.SavePromptWithAppend(a.ID, tmpl, appendText, "切换为 ARTEX 探索流程", "system"); err != nil {
+			log.Printf("[prompts] 切换 ARTEX planner 正文失败: %v", err)
+			return
+		}
 	}
-	completed = true
-	log.Printf("[prompts] planner 提示词已追加新默认版本(血缘必填 + 槽位利用率,一次性)")
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)
+	}
+	log.Printf("[prompts] planner 已切换为 ARTEX 探索提示")
 }
 
-// reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论
-// 写观察+试探性读法」整句、并把 confidence(observed/inferred)与「是否穷尽本意图手段」解耦(这些易误导规划者),
-// 同时把 facts 数组分条收紧为「彼此完全独立、无法归并」的极少数例外。bump flag 至 v3 让存量旧库再刷一次。
-// SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理【追加一个新版本】并切过去,旧版本仍保留在历史里可找回。
-// settings flag 守卫 → 只做一次。全新库无需处理。与 reseedGoalsPrompt 完全同构。
 func (s *Server) reseedWorkerPrompt() {
 	const flag = "worker_prompt_playbooks_v5"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {

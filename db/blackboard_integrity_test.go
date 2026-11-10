@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,69 +9,6 @@ import (
 	"testing"
 	"time"
 )
-
-func TestBlackboardRequiresSharesFrontierAndClaim(t *testing.T) {
-	_, s := intentLeaseFixture(t)
-	ctx := t.Context()
-	id, err := s.AddIntent(map[string]any{"summary": "optional prerequisite", "requires": []IntentRequirement{{Type: "capability", Key: "access"}}}, 5, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertReady := func(want bool) {
-		t.Helper()
-		n, err := s.CountClaimableIntents()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if (n > 0) != want {
-			t.Fatalf("claimable=%d want ready=%v", n, want)
-		}
-		nodes, err := s.Frontier(10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if (len(nodes) > 0) != want {
-			t.Fatalf("frontier=%d want ready=%v", len(nodes), want)
-		}
-	}
-	assertReady(false)
-	n, err := s.ClaimNode(ctx, id, "work#1", "open", IntentLeaseTTL, nil, false)
-	if err != nil || n != nil {
-		t.Fatalf("missing prerequisite claimed: %v %v", n, err)
-	}
-	fact, err := s.AddFactGraph(map[string]any{"summary": "negative observation", "polarity": "negative", "enables": []string{"access"}}, "test", nil, 0, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertReady(false)
-	if err := s.SetNodePayload(fact, KindFact, map[string]any{"summary": "positive observation", "polarity": "positive", "enables": []string{"access"}, "evidence_meta": EvidenceMetadata{ObservedAt: time.Now().UTC().Format(time.RFC3339)}}); err != nil {
-		t.Fatal(err)
-	}
-	assertReady(true)
-	contrary, err := s.AddFactGraph(map[string]any{"summary": "counter observation"}, "test", nil, 0, []IntentEdge{{To: fact, Rel: RelContradicts}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertReady(false)
-	if err := s.Unlink(contrary, RelContradicts, fact); err != nil {
-		t.Fatal(err)
-	}
-	assertReady(true)
-	if err := s.Link(contrary, RelSupersedes, fact); err != nil {
-		t.Fatal(err)
-	}
-	assertReady(false)
-	if err := s.Link(fact, RelSupersedes, contrary); err == nil {
-		t.Fatal("replacement cycle accepted")
-	}
-	if err := s.Unlink(contrary, RelSupersedes, fact); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetNodePayload(fact, KindFact, map[string]any{"summary": "expired", "polarity": "positive", "enables": []string{"access"}, "evidence_meta": EvidenceMetadata{ValidUntil: time.Now().Add(-time.Minute).Format(time.RFC3339)}}); err != nil {
-		t.Fatal(err)
-	}
-	assertReady(false)
-}
 
 func TestBlackboardCredentialHistoricalVerificationAndFreshness(t *testing.T) {
 	_, s := intentLeaseFixture(t)
@@ -214,35 +150,6 @@ func TestSettleIntentNilValidated(t *testing.T) {
 	}
 	if payload["last_outcome"] != "done" {
 		t.Fatalf("last_outcome = %v, want done", payload["last_outcome"])
-	}
-}
-
-func TestBlackboardSharedSessionClaimMutex(t *testing.T) {
-	_, s := intentLeaseFixture(t)
-	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "")
-	add := func() int64 {
-		t.Helper()
-		id, err := s.AddIntent(map[string]any{"summary": "shared historical slot", "resume_after_restart": true, "resume_slot": 1}, 5, nil, "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
-	a, b := add(), add()
-	first, err := s.ClaimNode(t.Context(), a, "work#2", "open", IntentLeaseTTL, nil, false)
-	if err != nil || first == nil {
-		t.Fatal(err)
-	}
-	second, err := s.ClaimNode(t.Context(), b, "work#3", "open", IntentLeaseTTL, nil, false)
-	if err != nil || second != nil {
-		t.Fatalf("same transcript used simultaneously: %v %v", second, err)
-	}
-	if err := s.SetIntentState(a, "done"); err != nil {
-		t.Fatal(err)
-	}
-	second, err = s.ClaimNode(t.Context(), b, "work#3", "open", IntentLeaseTTL, nil, false)
-	if err != nil || second == nil || second.LogicalSessionID != first.LogicalSessionID {
-		t.Fatalf("shared transcript did not resume: %v %v", second, err)
 	}
 }
 
@@ -424,60 +331,6 @@ func TestBlackboardLargeLedgersCountBeyondSamples(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("five examples mistaken for total: %+v", gaps)
-	}
-}
-
-func TestBlackboardClaimRechecksConditionAfterContendedUpdate(t *testing.T) {
-	d, s := intentLeaseFixture(t)
-	fact, err := s.AddFactGraph(map[string]any{"summary": "ready", "polarity": "positive"}, "test", nil, 0, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := s.AddIntent(map[string]any{"summary": "race against invalidation", "requires": []IntentRequirement{{Type: "capability", NodeID: fact}}}, 5, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := d.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	var lockID int64
-	if err := tx.QueryRow(`SELECT id FROM exploration_nodes WHERE id=$1 FOR UPDATE`, fact).Scan(&lockID); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		n, err := s.ClaimNode(ctx, id, "work#1", "open", IntentLeaseTTL, nil, false)
-		if n != nil {
-			err = errors.New("stale condition snapshot was claimed")
-		}
-		done <- err
-	}()
-	deadline := time.Now().Add(3 * time.Second)
-	blocked := false
-	for time.Now().Before(deadline) {
-		if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM exploration_nodes WHERE exploration_id=%')`).Scan(&blocked); err != nil {
-			t.Fatal(err)
-		}
-		if blocked {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !blocked {
-		t.Fatal("claim did not lock its prerequisite")
-	}
-	if _, err := tx.Exec(`UPDATE exploration_nodes SET payload=payload||'{"evidence_meta":{"valid_until":"2000-01-01T00:00:00Z"}}'::jsonb WHERE id=$1`, fact); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
 	}
 }
 

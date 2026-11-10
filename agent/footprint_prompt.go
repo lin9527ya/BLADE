@@ -18,28 +18,4 @@ const footprintWorkerBlockText = `
   · 不顺手清理与所选 footprint 无关的任何东西；清理过程中新发现的其他痕迹用 report_footprint 另记。
 `
 
-const footprintPlannerBlockText = `
-
-【目标侧痕迹的收官纪律】
-- 收官前用 list_footprints 看一遍：open（未处置）与 unknown（未确认）的痕迹要么已有清理意图在跑，要么由你决定接受风险（accept_footprint_risk，理由必填）。痕迹**不会硬性阻断**收官，但报告会点名未处置项。
-- 自动归纳来自执行命令 + 可检出性知识库，是**预期不是实测**；知识库未收录的命令不产生条目，不等于没有日志。不要把“列表为空”当成“没有痕迹”。
-- 操作者提交的清理意图（payload 含 footprint_id）**不归你丢/杀**：drop_intent 与 kill_work 会拒绝。它们执行期间任务暂缓收官；等 worker 收尾后再判目标。
-`
-
-func footprintWorkerBlock() string  { return footprintWorkerBlockText }
-func footprintPlannerBlock() string { return footprintPlannerBlockText }
-
-// lineageDisciplineBlock 是「意图必须锚在已有结论上」的**代码持有**纪律。
-//
-// 为什么不能只改内置模板：planner 正文有四级来源（任务快照 / 全局覆盖 / 模板库默认 /
-// 内置），已有库里存的是旧文本；而这条纪律直接决定图上读不读得出因果——漏了它，模型会
-// 把 parent_ids 当可选项，意图全被兜底连到任务起点，看起来"只能从起点发散"。
-// 与 breadthDisciplineBlock / hintLifecycleBlock 同一模式：归代码，用户改不掉。
-const lineageDisciplineBlock = `
-
-【意图血缘（代码持有）】
-- **每条意图都要能说出「我从哪条已有结论来」**。add_intent 的 parent_ids 不是可选项：由某条 fact 推进来的传它，多个事实结合就都传，由某个 finding/战果推进来的也传其 id。
-- **只有真正的开局才留空**：图上一条 fact 都还没有（facts=0 / recent_facts 为空）时，顶层全新侦察方向才留空 parent_ids。
-- 留空的后果不是"没关系"：系统会把意图兜底连到任务起点，图上读起来就是"从起点凭空派生"，后续轮次（以及报告里的攻击链）都看不到这条方向的真实来路。
-- 已经建好但漏填的意图用 **link_intent_source(intent_id, source_ids=[...])** 补血缘——补上后指向起点的兜底边会自动去掉。**不要为了修血缘重派一条意图**，那会丢掉它已经跑出来的产出。
-- 读态势时同理：recent_facts 的 from_intent、意图的 parents/yields 就是因果链。要发散，就从这些节点往下一步想，而不是从任务起点重新想一遍。`
+func footprintWorkerBlock() string { return footprintWorkerBlockText }

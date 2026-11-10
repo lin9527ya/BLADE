@@ -1071,21 +1071,6 @@ func (e *Engine) CompletionBlocks() int64 { return e.completionBlocks.Load() }
 // SetExhaustionReviewer 注入穷尽复核员（见 exhaustion_watchdog.go）。nil = 不复核。
 func (e *Engine) SetExhaustionReviewer(fn exhaustionReviewer) { e.exhaustionReview = fn }
 
-// pauseTaskWithReason 走 server 注入的完整暂停路径（落库 + 取消在跑 LLM + 系统活动）；
-// 未注入时退回引擎内 Pause，仍然保证不空转。
-func (e *Engine) pauseTaskWithReason(t *Task, reason string) {
-	if t == nil {
-		return
-	}
-	if e.pauseWithReason != nil {
-		if err := e.pauseWithReason(t, reason); err != nil {
-			log.Printf("[engine] task %s 暂停失败: %v", t.ID, err)
-		}
-		return
-	}
-	e.Pause(t.ID, agent.AbortStrategyExhausted)
-}
-
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
@@ -1107,14 +1092,13 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
-	rt := e.registerTaskRoutines(ctx, t.ID, 2+workers)
+	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
 	e.setTaskWorkers(t.ID, workers)
 	e.deleteMu.RUnlock()
 	// 真正开跑：开始（或续接）运行计时。暂停/排队期间不会开段，所以这里只需幂等调用。
 	e.m.StartTaskRunSegment(t.ID)
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
-	runTaskRoutine(rt, func(loopCtx context.Context) { e.supervisorLoop(loopCtx, t) })
 	for i := 0; i < workers; i++ {
 		name := fmt.Sprintf("work#%d", i+1)
 		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
@@ -1159,11 +1143,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	heartbeat := time.NewTimer(interval)
 	defer heartbeat.Stop()
 
-	// 槽位利用率与停滞保护（每任务 planner loop 内计数，重启即清零足够）。
-	//   zeroRoundStreak：连续「本轮 0 意图 + 没有 running/可领意图」的轮数。
-	//   capacityRefills：连续因空闲槽位而补派的次数（每轮最多 1 次，最多 2 次）。
-	zeroRoundStreak := 0
-	capacityRefills := 0
 	// plannerFailRetries：连续规划失败时的自动重试预算。只在失败后 2s 重试一次，
 	// 避免 provider 抖动时整轮规划白等下一次心跳；连续失败就回到心跳节奏，不刷屏。
 	plannerFailRetries := 0
@@ -1174,11 +1153,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 合并成一轮；但最多等 plannerDebounceMax，避免持续的小事件流把规划无限
 		// 后推（旧实现是固定 800ms 窗口，落在窗口边缘的触发会被拖到下一轮）。
 		plannerDebounceMax := 3 * time.Second
+		// ARTEX parity: no dispatch-profile branch; keep the conservative coalescing.
 		debounce := e.debounce
-		if !e.constraintEnabled("dispatch") {
-			// 经典模式：把事件合并得更厚，减少碎片化规划轮（42 分钟 45 轮 → 争取 ~15 轮）。
+		if debounce < 2*time.Second {
 			debounce = 2 * time.Second
-			plannerDebounceMax = 10 * time.Second
 		}
 		timer := time.NewTimer(debounce)
 		deadline := time.Now().Add(plannerDebounceMax)
@@ -1236,18 +1214,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
 			t.drainTriggers() // 丢弃累积的 done/finding 触发，避免 goalless 长会话里无界增长
 			if active, err := t.Store.HasActiveIntent(); err == nil && !active {
-				// goalless 收尾不经过 planner 的 prove_goal，遗留物门必须在这里补：
-				// 目标上还有没销账的 webshell/账号，不能因为「目标都了结了」就静默收官。
-				if blocked, msg := agent.ArtifactCleanupBlocked(t.Store); blocked {
-					if _, warned := e.completionWarn.LoadOrStore(t.ID, true); !warned {
-						e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
-							Summary: "目标已了结，但目标上还有未销账的遗留物，暂不收尾",
-							Detail:  msg})
-						log.Printf("[goalless] task %s 有未销账遗留物，暂不收尾", t.ID)
-					}
-					return
-				}
-				e.completionWarn.Delete(t.ID)
 				// frontier 抽干且无在跑意图 → 收尾。用 Guarded 版做 CAS，避免踩到并发的
 				// pause/delete/超时收尾的状态转换。
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
@@ -1319,63 +1285,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		if err == nil {
 			plannerFailRetries = 0
-		}
-		// 策略穷尽：planner 已用 mark_strategy_exhausted 写下结论事实。暂停任务等人工，
-		// 不在工具调用中途取消自己的 ctx——这里是本轮结束后的后处理。
-		if exhausted := planner.TakeStrategyExhaustedReason(); exhausted != "" && !met && ectx.Err() == nil && e.constraintEnabled("exhaustion") {
-			log.Printf("[planner] task %s 策略内已无可行方向: %s", t.ID, clipRunes(exhausted, 120))
-			// 穷尽复核：暂停之前先让独立的只读裁判核对证据。判"证据不足"时**不暂停**，
-			// 把结论交回 planner（下一轮据此补测）——硬门只能数有没有碰过，数不了
-			// "这条证据是否真的排除了这个方向"。
-			allowed, note := e.reviewExhaustion(ectx, t, exhausted)
-			if allowed {
-				e.pauseTaskWithReason(t, "策略内已无可行方向，任务已暂停等待人工："+clipRunes(exhausted, 300))
-				return
-			}
-			// 复核未通过：不暂停，交回 planner 补测。本轮按"已处理"继续往下走，
-			// 用一次延迟唤醒保证即使没有别的触发也会很快再规划一轮。
-			log.Printf("[planner] task %s 穷尽复核未通过，任务继续: %s", t.ID, clipRunes(note, 160))
-			zeroRoundStreak = 0 // 这不是空转，是复核要求补测
-			plannerFailRetries = 0
-			time.AfterFunc(2*time.Second, func() { t.Notify() })
-		}
-		// 槽位利用率 / 停滞保护：一轮结束后看「空闲槽位」和「是否连续空转」。
-		// 此前一轮结束就不会再因空闲槽位自我唤醒，只能等 worker 完成或 10 分钟心跳，
-		// 于是 4 个 worker 长期只跑 1~2 条（任务 14 实测 31 轮中 17 轮 0 意图）。
-		// 收官期这两个信号都不适用：它们的前提是"还有空闲槽位就该继续派"，
-		// 而收官期明确要求不再扩面——0 意图是预期结果，补派与停滞暂停都会跟政策打架。
-		eg := endgameStartUnix(e.taskDeadline(t), int64(t.TimeoutSeconds))
-		inEndgame := eg > 0 && time.Now().Unix() >= eg
-		if !met && err == nil && ectx.Err() == nil && !inEndgame {
-			states, _ := t.Store.CountIntentStates()
-			running := states["running"]
-			claimable, _ := t.Store.CountClaimableIntents()
-			workers := e.TaskWorkers(t.ID)
-			idle := workers - running
-			hasOpenGoal, _ := t.Store.HasOpenGoal()
-			made := planner.LastRoundIntents()
-			var refill, stall bool
-			if e.constraintEnabled("dispatch") {
-				zeroRoundStreak, capacityRefills, refill, stall = plannerRoundSignals(
-					made, running, claimable, idle, hasOpenGoal, zeroRoundStreak, capacityRefills)
-			} else {
-				// 经典混合版：只保留防停摆硬底线，不补槽位、不因空闲槽位派单。
-				zeroRoundStreak, capacityRefills, refill, stall = hybridPlannerRoundSignals(
-					made, running, claimable, hasOpenGoal, zeroRoundStreak, capacityRefills)
-			}
-			if refill {
-				if e.constraintEnabled("dispatch") {
-					log.Printf("[planner] task %s 本轮 0 意图且有 %d 个空闲槽位，4s 后补派一轮", t.ID, idle)
-				} else {
-					log.Printf("[planner] task %s 本轮 0 意图且没有 open/running 意图，4s 后按混合版硬底线补一轮", t.ID)
-				}
-				time.AfterFunc(4*time.Second, func() { t.Notify() })
-			}
-			if stall {
-				zeroRoundStreak = 0
-				e.pauseTaskWithReason(t, "连续 3 轮规划未产出意图，且没有在跑/可领意图；任务已暂停等待人工检查（目标仍未达成）")
-				return
-			}
 		}
 		switch {
 		case err != nil && ectx.Err() == nil:
@@ -1807,17 +1716,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			log.Printf("[worker %s] task %s 意图 #%d 历史产出查询失败（按本次口径结算）: %v", name, t.ID, intent.ID, herr)
 		}
 	}
-	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior, !e.constraintEnabled("dispatch"))
+	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior, true)
 
 	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
-	}
-	if state == "no_output" {
-		if intentKind == "verify" && wrote.Total() > 0 {
-			log.Printf("[worker %s] intent %d 是验证意图但只登记了资产、没有验证结论 → no_output（planner 可重派）", name, intent.ID)
-		} else {
-			log.Printf("[worker %s] intent %d 正常结束但什么都没写回 → no_output（planner 可重派）", name, intent.ID)
-		}
 	}
 	blockedReason := ""
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
@@ -2255,48 +2157,6 @@ func taskExecutionPaused(cause error) bool {
 	default:
 		return false
 	}
-}
-
-// plannerRoundSignals 是一轮规划结束后的纯判定：是否需要因空闲槽位补派一次，
-// 以及是否已连续空转到需要暂停。抽成纯函数是为了让「不计代价派活」与「空转停机」
-// 这两条纪律能被单测钉住（实测任务 14：31 轮里 17 轮 0 意图，4 槽长期只跑 1~2 条）。
-//
-//	refill：本轮 0 意图、至少 2 个空闲槽位、没有可领意图、目标未达成，且补派次数未用尽；
-//	stall ：连续 3 轮「0 意图 + 没有 running/可领意图」——planner 已无产出，任务不能再空转。
-func plannerRoundSignals(made, running, claimable, idle int, hasOpenGoal bool, streak, refills int) (newStreak, newRefills int, refill, stall bool) {
-	newRefills = refills
-	if made > 0 {
-		newStreak, newRefills = 0, 0
-	} else if running == 0 && claimable == 0 && hasOpenGoal {
-		newStreak = streak + 1
-	} else {
-		newStreak = 0
-	}
-	refill = made == 0 && idle >= 2 && claimable == 0 && hasOpenGoal && refills < 2
-	if refill {
-		newRefills++
-	}
-	stall = newStreak >= 3
-	return
-}
-
-// hybridPlannerRoundSignals is the classic-hybrid anti-stall rule: only when
-// there is no running/claimable work and the goal is still open does an empty
-// planner round trigger a retry. It never fills idle slots and never uses the
-// queue-depth heuristics. After two retries, a third empty round pauses for
-// human inspection instead of burning tokens forever.
-func hybridPlannerRoundSignals(made, running, claimable int, hasOpenGoal bool, streak, refills int) (newStreak, newRefills int, refill, stall bool) {
-	if made > 0 {
-		return 0, 0, false, false
-	}
-	if running == 0 && claimable == 0 && hasOpenGoal {
-		newStreak = streak + 1
-		if refills < 2 {
-			return newStreak, refills + 1, true, false
-		}
-		return newStreak, refills, false, newStreak >= 3
-	}
-	return 0, refills, false, false
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) (done bool) {

@@ -43,6 +43,35 @@
   `staticcheck`、`gofmt` 通过；前端 `tsc`、59 个单测与静态构建通过。
 
 
+### 探索流程切换为 ARTEX 实现
+
+同一目标上 ARTEX 能完成、BLADE 默认 classic-hybrid 反复打转；本轮把 BLADE 的探索层直接
+替换为 ARTEX 行为，而不是继续调参开关。
+
+- **planner 提示词**：默认正文改为 ARTEX 的决策流程（硬底线、0 意图正当理由、
+  done/exhausted/blocked 复盘、开局只读探测 ≤3 次、深度优先、2–3 条不同机理路线、
+  TodoWrite 串行链、prove_goal 前量化核对）。移除混合骨架、槽位利用率、广度/台账/复盘/
+  收官/穷尽/升级阶梯/血缘/意图契约/摘要纪律等代码持有约束块；任务级自定义提示词仍优先。
+- **调度**：删除 anti-stall 补派与“连续 3 轮空转自动暂停”、supervisor 定时纠偏、
+  穷尽复核、goalless 遗留物收尾门；0 意图只按心跳/图变化继续等待，与 ARTEX 一致。
+- **意图准入**：`add_intent` 只保留 summary、parent 类型、资产可见范围与资产拦截校验；
+  删除 risk_area/kind/goal_id/uses_loot_ids/depends_on/requires/contract/幂等键/防打转/
+  队列上限/批量/开局粒度/收官提醒等门与回执。旧字段仍可解析但被忽略。
+- **领取与完成**：Frontier/Count/Claim 不再按 depends_on/requires 过滤，也不再按 owner
+  槽位亲和或同逻辑会话互斥拒绝；历史边与 payload 保留为只读数据。完成只由逐 goal
+  `prove_goal`（或 goalless frontier 抽干）驱动，无覆盖/深度/遗留物完成门。
+- **设置面**：设置页移除探索约束预设、队列倍数、收官审计与 supervisor 控件；旧的
+  profile/policy 数据保留但探索层不再读取。授权/资产拦截、guard、任务约束文本、写入栅栏、
+  租约/恢复身份、报告与证据功能保持不变。
+- **迁移**：启动时把 planner 当前正文切换为 ARTEX 默认（旧版本保留在提示词历史）；已有
+  depends_on/requires 意图不再被阻塞，旧任务恢复后会按 ARTEX 顺序执行。
+
+### 验证
+
+- 新增 ARTEX parity 回归：planner 提示/工具面无 BLADE 约束块；add_intent 最小 payload
+  直接成功且旧字段被忽略；Frontier/claim 忽略历史依赖与 requires；全仓 `go test -race`、
+  `go vet`、`staticcheck`、`gofmt`；前端 `tsc`、59 个单测与静态构建。
+
 ## [0.9.9] - 2026-11-10
 
 修复意图结算回归，并把待领队列上限做成系统设置；同时让规划者已丢弃的意图退出默认

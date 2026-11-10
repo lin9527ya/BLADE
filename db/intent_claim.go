@@ -66,45 +66,9 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 	if n.State != expected {
 		return nil, nil
 	}
-	if slotAffinity && n.Owner != "" && n.Owner != owner && strings.HasPrefix(n.Owner, "work#") {
-		inPool := len(pool) == 0
-		for _, p := range pool {
-			if p == n.Owner {
-				inPool = true
-			}
-		}
-		if inPool {
-			var busy bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND state='running' AND kind='intent' AND owner=$2)`, s.expID, n.Owner).Scan(&busy); err != nil {
-				return nil, err
-			}
-			if busy {
-				return nil, nil
-			}
-		}
-	}
 	session := logicalSessionForClaim(n, s.expID, owner)
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "blade.logical-session:"+session); err != nil {
 		return nil, err
-	}
-	var occupied bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='running' AND logical_session_id=$2 AND id<>$3)`, s.expID, session, id).Scan(&occupied); err != nil {
-		return nil, err
-	}
-	if occupied {
-		return nil, nil
-	}
-	var blocked bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_edges e JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id WHERE e.exploration_id=$1 AND e.src_id=$2 AND e.rel='depends_on' AND d.state NOT IN ('done','negative'))`, s.expID, id).Scan(&blocked); err != nil {
-		return nil, err
-	}
-	if blocked {
-		return nil, nil
-	}
-	if ready, _, err := intentRequirementsReady(ctx, tx, s.expID, n, true); err != nil {
-		return nil, err
-	} else if !ready {
-		return nil, nil
 	}
 	next, err := scanNode(tx.QueryRowContext(ctx, `UPDATE exploration_nodes SET state='running',owner=$1,
  logical_session_id=$2,execution_generation=execution_generation+1,content_version=content_version+1,
