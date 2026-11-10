@@ -1,12 +1,11 @@
 "use client";
 
-import { useFindingTriage } from "@/components/finding-triage-dialog";
-
 import * as React from "react";
 
 import { BugIcon, ClockIcon, InfoIcon, ShieldAlertIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { useFindingTriage } from "@/components/finding-triage-dialog";
 import { TablePagination } from "@/components/table-pagination";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -162,6 +161,9 @@ export function useFindingsState() {
   const [exportOpen, setExportOpen] = React.useState(false);
   const [exportScope, setExportScope] = React.useState<"filtered" | "all" | "selected">("filtered");
   const [exportFormat, setExportFormat] = React.useState<"md-single" | "md-zip" | "csv" | "json">("md-single");
+  // 默认把同一漏洞文件夹合并成统一报告；包含原始子报告是显式选项。
+  const [exportConsolidated, setExportConsolidated] = React.useState(true);
+  const [exportIncludeOriginals, setExportIncludeOriginals] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
 
   const toggleSelected = React.useCallback((id: string, checked: boolean) => {
@@ -198,6 +200,8 @@ export function useFindingsState() {
         scope: exportScope,
         filters: { severity, status, vulnclass, task, query, sort },
         ids: [...selectedIds],
+        mode: exportConsolidated ? "consolidated" : "",
+        includeOriginals: exportConsolidated && exportIncludeOriginals,
       });
       setExportOpen(false);
       toast.success("已开始下载导出文件");
@@ -787,6 +791,10 @@ export function useFindingsState() {
     setExportScope,
     exportFormat,
     setExportFormat,
+    exportConsolidated,
+    setExportConsolidated,
+    exportIncludeOriginals,
+    setExportIncludeOriginals,
     exporting,
     setExporting,
     toggleSelected,

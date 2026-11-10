@@ -72,6 +72,9 @@ function CaseRow({
         </button>
         {c.severity ? <StatusBadge domain="severity" value={c.severity} /> : null}
         <Badge variant="outline">{c.member_count} 条上报</Badge>
+        <Badge variant={c.report && c.report_version === c.version ? "secondary" : "outline"}>
+          {!c.report ? "统一报告未生成" : c.report_version === c.version ? "统一报告已更新" : "统一报告待更新"}
+        </Badge>
         <span className="text-muted-foreground text-xs tabular-nums">#{c.id}</span>
         <span className="text-muted-foreground text-xs">{new Date(c.updated_at).toLocaleString("zh-CN")}</span>
       </div>
@@ -199,7 +202,11 @@ export function FindingCaseList({
     );
   }
   if (error && rows.length === 0) {
-    return <Card><CardContent className="py-10 text-center text-destructive text-sm">{error}</CardContent></Card>;
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-destructive text-sm">{error}</CardContent>
+      </Card>
+    );
   }
   return (
     <Card className="overflow-hidden py-0">

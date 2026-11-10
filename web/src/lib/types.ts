@@ -1373,6 +1373,9 @@ export interface FindingCaseStats {
 }
 
 export interface Finding {
+  export_case_id?: string;
+  export_member_ids?: number[];
+  case_report_stale?: boolean;
   traffic_count?: number;
   evidence_version?: number;
   report_evidence_version?: number;

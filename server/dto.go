@@ -409,6 +409,11 @@ type FindingDTO struct {
 	ReportStale           bool                       `json:"report_stale"`
 	TrafficBindings       []db.FindingTrafficBinding `json:"traffic_bindings,omitempty"`
 
+	// 统一报告导出：案例本身不是 findings 行，用 case 编号与成员列表指认。
+	ExportCaseID    string  `json:"export_case_id,omitempty"`
+	ExportMemberIDs []int64 `json:"export_member_ids,omitempty"`
+	CaseReportStale bool    `json:"case_report_stale,omitempty"`
+
 	ID        string `json:"id"`
 	FindingID string `json:"finding_id,omitempty"` // standalone findings-table id — the handle for status updates
 	VulnClass string `json:"vulnclass"`
@@ -573,6 +578,11 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		ProofGap:        f.ProofGap,
 		Report:          f.Report,
 		TS:              rfc3339(f.CreatedAt),
+	}
+	if f.ExportCaseID > 0 {
+		d.ExportCaseID = i64s(f.ExportCaseID)
+		d.ExportMemberIDs = f.ExportMemberIDs
+		d.CaseReportStale = f.ReportEvidenceVersion < 0 || f.ReportEvidenceVersion != f.EvidenceVersion
 	}
 	d.Assets = findingAssetDTOs(f.AssetIDs, assets)
 	if f.TaskID != nil {

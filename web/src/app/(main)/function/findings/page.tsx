@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { ArrowUpRightIcon, BugIcon, ChevronRightIcon, DownloadIcon, FolderIcon, SearchIcon } from "lucide-react";
 
+import { FindingCaseList } from "@/components/finding-case-list";
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
@@ -33,7 +34,6 @@ import { cn } from "@/lib/utils";
 
 import { AssetTree } from "./_components/asset-tree";
 import { FindingCaseDialog } from "./_components/finding-case-dialog";
-import { FindingCaseList } from "@/components/finding-case-list";
 import { type FindingView, findingGroupKey } from "./_components/findings-helpers";
 import { FINDING_STATUSES, FindingsTable, fmtTime, SEVERITIES, UNASSIGNED_TASK } from "./_components/findings-table";
 import { useFindingsState } from "./_components/use-findings-state";
@@ -88,6 +88,10 @@ export default function FindingsPage() {
     setExportScope,
     exportFormat,
     setExportFormat,
+    exportConsolidated,
+    setExportConsolidated,
+    exportIncludeOriginals,
+    setExportIncludeOriginals,
     exporting,
     openExport,
     loadAssetTree,
@@ -532,6 +536,32 @@ export default function FindingsPage() {
                   导出勾选的 {selectedIds.size} 条
                 </label>
               </RadioGroup>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-muted-foreground text-xs">漏洞文件夹</span>
+              <label htmlFor="export-consolidated" className="flex items-center gap-2 text-sm">
+                <input
+                  id="export-consolidated"
+                  type="checkbox"
+                  className="size-4"
+                  checked={exportConsolidated}
+                  onChange={(e) => setExportConsolidated(e.target.checked)}
+                />
+                同一漏洞文件夹合并为一份统一报告
+              </label>
+              {exportConsolidated ? (
+                <label htmlFor="export-originals" className="ml-6 flex items-center gap-2 text-sm">
+                  <input
+                    id="export-originals"
+                    type="checkbox"
+                    className="size-4"
+                    checked={exportIncludeOriginals}
+                    onChange={(e) => setExportIncludeOriginals(e.target.checked)}
+                  />
+                  同时附原始子报告
+                </label>
+              ) : null}
             </div>
 
             <div className="flex flex-col gap-2">

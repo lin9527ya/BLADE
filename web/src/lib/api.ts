@@ -4,9 +4,8 @@
 // are passed through and formatted at the call site.
 
 import type { ChatMention } from "@/lib/chat-mentions";
-import type { RuntimeMetrics, CacheDiagnostics, CacheTraceState } from "@/lib/diagnostics";
+import type { CacheDiagnostics, CacheTraceState, RuntimeMetrics } from "@/lib/diagnostics";
 import { MOCK } from "@/lib/mock/enabled";
-import { WorkspaceUploadConflict, type WorkspaceConflict } from "@/lib/workspace-edit";
 import { HttpError } from "@/lib/request-lifecycle";
 import type {
   ActiveFindingRetest,
@@ -59,16 +58,16 @@ import type {
   ExplorationPolicyEffective,
   ExplorationPolicyOverride,
   Finding,
-  FindingSrcCheck,
+  FindingAssetTree,
   FindingCase,
   FindingCaseListPage,
   FindingCaseStats,
   FindingCaseSuggestion,
-  FindingAssetTree,
   FindingDeepenResponse,
   FindingGroupsPage,
   FindingQuery,
   FindingRetest,
+  FindingSrcCheck,
   FindingStats,
   FindingStatus,
   FindingsPage,
@@ -114,7 +113,6 @@ import type {
   ScheduleFrequency,
   ScheduleTaskSpec,
   ScopeEnforcement,
-  TokenStatsSnapshot,
   Settings,
   Severity,
   SkillCall,
@@ -143,6 +141,7 @@ import type {
   TaskSrcBatchPlan,
   TaskTemplate,
   TimelineResponse,
+  TokenStatsSnapshot,
   TokenTotal,
   TokenUsage,
   Tool,
@@ -159,6 +158,7 @@ import type {
   WorkspaceFile,
   WorkspaceListing,
 } from "@/lib/types";
+import { type WorkspaceConflict, WorkspaceUploadConflict } from "@/lib/workspace-edit";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -419,8 +419,10 @@ export const api = {
     finding_ids: number[];
   }) => post<FindingCase>("/exploration/finding-cases", input),
   getFindingCase: (id: number) => get<FindingCase>(`/exploration/finding-cases/${id}`),
-  updateFindingCaseReport: (id: number, report: string, expectedVersion: number) =>
-    patch<FindingCase>(`/exploration/finding-cases/${id}`, { report, expected_version: expectedVersion }),
+  updateFindingCaseReport: (
+    id: number,
+    input: { report: string; title?: string; severity?: string; severity_reason?: string; version: number },
+  ) => patch<FindingCase>(`/exploration/finding-cases/${id}`, input),
   findingCaseSuggestions: (taskId: string) =>
     get<{ items: FindingCaseSuggestion[] }>(
       `/exploration/finding-case-suggestions?task_id=${encodeURIComponent(taskId)}`,
@@ -1164,8 +1166,14 @@ export const api = {
     scope: "filtered" | "all" | "selected";
     filters?: Omit<FindingQuery, "page" | "pageSize">;
     ids?: string[];
+    /** consolidated=同一漏洞文件夹合并成一份统一报告；省略=逐条（旧行为）。 */
+    mode?: "consolidated" | "";
+    /** 统一报告模式下是否同时附全部原始子报告。 */
+    includeOriginals?: boolean;
   }) => {
     const p = new URLSearchParams({ format: opts.format, scope: opts.scope });
+    if (opts.mode) p.set("mode", opts.mode);
+    if (opts.includeOriginals) p.set("include_originals", "true");
     if (opts.scope === "selected") {
       p.set("ids", (opts.ids ?? []).join(","));
     } else if (opts.scope === "filtered" && opts.filters) {
@@ -1455,7 +1463,11 @@ export const api = {
     web_search_proxy?: string;
     brave_search_api_key?: string;
     tavily_search_api_key?: string;
-  }) => post<{ ok: boolean; error?: string; count?: number; backend?: string; fallback_from?: string }>(`/settings/web-search/test`, patch),
+  }) =>
+    post<{ ok: boolean; error?: string; count?: number; backend?: string; fallback_from?: string }>(
+      `/settings/web-search/test`,
+      patch,
+    ),
 
   // ---- 漏洞 IM 推送 ----
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，

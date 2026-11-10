@@ -6,13 +6,7 @@ import { DownloadIcon, FolderIcon, SaveIcon, ThumbsDownIcon, ThumbsUpIcon, Trash
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -45,6 +39,9 @@ export function FindingCaseDialog({
   const [creating, setCreating] = React.useState(false);
   const [detail, setDetail] = React.useState<FindingCase | null>(null);
   const [report, setReport] = React.useState("");
+  const [reportTitle, setReportTitle] = React.useState("");
+  const [reportSeverity, setReportSeverity] = React.useState<Severity>("high");
+  const [reportSeverityReason, setReportSeverityReason] = React.useState("");
   const [savingReport, setSavingReport] = React.useState(false);
   const [generating, setGenerating] = React.useState(false);
   const [busySuggestion, setBusySuggestion] = React.useState<number | null>(null);
@@ -136,7 +133,11 @@ export function FindingCaseDialog({
     setBusySuggestion(id);
     try {
       if (block) {
-        await api.blockFindingCasePair({ task_id: Number(taskID), finding_ids: findingIDs, reason: "人工否决：不是同一漏洞" });
+        await api.blockFindingCasePair({
+          task_id: Number(taskID),
+          finding_ids: findingIDs,
+          reason: "人工否决：不是同一漏洞",
+        });
       }
       await api.dismissFindingCaseSuggestion(id, block ? "人工否决" : "人工忽略");
       await load();
@@ -154,6 +155,9 @@ export function FindingCaseDialog({
       const c = await api.getFindingCase(detail.id);
       setDetail(c);
       setReport(c.report ?? "");
+      setReportTitle(c.title);
+      setReportSeverity((c.severity || "high") as Severity);
+      setReportSeverityReason(c.severity_reason ?? "");
       await load();
     } catch (e) {
       toast.error(`移除失败：${(e as Error).message}`);
@@ -177,6 +181,9 @@ export function FindingCaseDialog({
       const c = await api.getFindingCase(id);
       setDetail(c);
       setReport(c.report ?? "");
+      setReportTitle(c.title);
+      setReportSeverity((c.severity || "high") as Severity);
+      setReportSeverityReason(c.severity_reason ?? "");
     } catch (e) {
       toast.error(`读取案例失败：${(e as Error).message}`);
     }
@@ -186,9 +193,18 @@ export function FindingCaseDialog({
     if (!detail) return;
     setSavingReport(true);
     try {
-      const updated = await api.updateFindingCaseReport(detail.id, report, detail.report_version);
+      const updated = await api.updateFindingCaseReport(detail.id, {
+        report,
+        title: reportTitle,
+        severity: reportSeverity,
+        severity_reason: reportSeverityReason,
+        version: detail.version,
+      });
       setDetail(updated);
       setReport(updated.report ?? "");
+      setReportTitle(updated.title);
+      setReportSeverity((updated.severity || "high") as Severity);
+      setReportSeverityReason(updated.severity_reason ?? "");
       toast.success("统一报告已保存");
       await load();
     } catch (e) {
@@ -235,10 +251,15 @@ export function FindingCaseDialog({
                 </Button>
               </div>
               {suggestions.length === 0 ? (
-                <p className="text-muted-foreground text-xs">暂无待处理建议；生成后按「同类型/资产重叠/名称相近」评分。</p>
+                <p className="text-muted-foreground text-xs">
+                  暂无待处理建议；生成后按「同类型/资产重叠/名称相近」评分。
+                </p>
               ) : (
                 suggestions.map((sg) => (
-                  <div key={sg.id} className="flex items-start justify-between gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+                  <div
+                    key={sg.id}
+                    className="flex items-start justify-between gap-2 rounded-md bg-muted/40 px-2 py-1.5"
+                  >
                     <div className="min-w-0">
                       <p className="truncate text-sm">{sg.title}</p>
                       <p className="text-muted-foreground text-xs">
@@ -246,13 +267,28 @@ export function FindingCaseDialog({
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <Button size="sm" variant="outline" onClick={() => void acceptSuggestion(sg.id)} disabled={busySuggestion === sg.id}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void acceptSuggestion(sg.id)}
+                        disabled={busySuggestion === sg.id}
+                      >
                         <ThumbsUpIcon /> 采纳
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => void dismissSuggestion(sg.id, false, sg.finding_ids)} disabled={busySuggestion === sg.id}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void dismissSuggestion(sg.id, false, sg.finding_ids)}
+                        disabled={busySuggestion === sg.id}
+                      >
                         <ThumbsDownIcon /> 忽略
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => void dismissSuggestion(sg.id, true, sg.finding_ids)} disabled={busySuggestion === sg.id}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void dismissSuggestion(sg.id, true, sg.finding_ids)}
+                        disabled={busySuggestion === sg.id}
+                      >
                         不是同一漏洞
                       </Button>
                     </div>
@@ -325,7 +361,12 @@ export function FindingCaseDialog({
                   >
                     <span className="truncate">{c.title}</span>
                     <span className="shrink-0 text-muted-foreground text-xs">
-                      {c.member_count} 条 · {c.severity || "未定级"} · v{c.report_version}
+                      {c.member_count} 条 · {c.severity || "未定级"} ·{" "}
+                      {!c.report
+                        ? "统一报告未生成"
+                        : c.report_version === c.version
+                          ? "统一报告已更新"
+                          : "统一报告待更新"}
                     </span>
                   </button>
                 ))
@@ -334,20 +375,62 @@ export function FindingCaseDialog({
 
             {detail ? (
               <div className="flex flex-col gap-2 border-t pt-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">{detail.title}</span>
-                  <span className="text-muted-foreground text-xs">{detail.member_count} 条发现</span>
+                  <span className="flex shrink-0 items-center gap-2 text-xs">
+                    {!detail.report ? (
+                      <span className="text-amber-600 dark:text-amber-400">统一报告未生成</span>
+                    ) : detail.report_version !== detail.version ? (
+                      <span className="text-amber-600 dark:text-amber-400">统一报告待更新</span>
+                    ) : (
+                      <span className="text-emerald-600 dark:text-emerald-400">统一报告已更新</span>
+                    )}
+                    <span className="text-muted-foreground">{detail.member_count} 条发现</span>
+                  </span>
+                </div>
+                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_10rem]">
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="case-report-title">统一报告标题</Label>
+                    <Input
+                      id="case-report-title"
+                      value={reportTitle}
+                      onChange={(e) => setReportTitle(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="case-report-severity">统一评级</Label>
+                    <Select value={reportSeverity} onValueChange={(v) => setReportSeverity(v as Severity)}>
+                      <SelectTrigger id="case-report-severity">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="critical">严重</SelectItem>
+                        <SelectItem value="high">高危</SelectItem>
+                        <SelectItem value="medium">中危</SelectItem>
+                        <SelectItem value="low">低危</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="case-report-reason">评级依据</Label>
+                  <Input
+                    id="case-report-reason"
+                    value={reportSeverityReason}
+                    placeholder="基于已验证影响的评级理由（不直接取成员最高等级）"
+                    onChange={(e) => setReportSeverityReason(e.target.value)}
+                  />
                 </div>
                 <Textarea
                   rows={10}
                   value={report}
-                  placeholder="统一报告（Markdown）：概述、影响、复现、证据、修复建议…"
+                  placeholder="统一报告（Markdown）：概述、影响、前置条件、复现步骤、证据、PoC、根因分析、修复建议…"
                   onChange={(e) => setReport(e.target.value)}
                 />
                 <div className="flex flex-wrap items-center gap-2">
                   <Button size="sm" onClick={() => void saveReport()} disabled={savingReport}>
                     {savingReport ? <Spinner data-icon="inline-start" /> : <SaveIcon />}
-                    保存统一报告（v{detail.report_version}）
+                    保存统一报告（基于案例 v{detail.version}）
                   </Button>
                   <Button size="sm" variant="outline" onClick={downloadReport}>
                     <DownloadIcon /> 下载报告

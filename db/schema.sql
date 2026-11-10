@@ -1915,6 +1915,29 @@ CREATE TABLE IF NOT EXISTS finding_case_suggestions (
 CREATE INDEX IF NOT EXISTS idx_finding_case_suggestions_task
     ON finding_case_suggestions(task_id, state);
 
+-- 统一报告的新鲜度：任一成员被修改或移出，案例 version 前进；已保存的
+-- report_version 不等于 version 时，导出与界面必须标记统一报告待更新。
+CREATE OR REPLACE FUNCTION finding_case_version_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE cid BIGINT;
+BEGIN
+    IF TG_TABLE_NAME = 'findings' THEN
+        IF OLD IS NOT DISTINCT FROM NEW THEN RETURN NEW; END IF;
+        SELECT case_id INTO cid FROM finding_case_members WHERE finding_id=NEW.id;
+    ELSE
+        cid := OLD.case_id;
+    END IF;
+    IF cid IS NOT NULL THEN
+        UPDATE finding_cases SET version=version+1, updated_at=now() WHERE id=cid;
+    END IF;
+    RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS finding_case_finding_changed ON findings;
+CREATE TRIGGER finding_case_finding_changed AFTER UPDATE ON findings
+FOR EACH ROW EXECUTE FUNCTION finding_case_version_changed();
+DROP TRIGGER IF EXISTS finding_case_member_changed ON finding_case_members;
+CREATE TRIGGER finding_case_member_changed AFTER DELETE ON finding_case_members
+FOR EACH ROW EXECUTE FUNCTION finding_case_version_changed();
+
 -- 人工否决：这一对发现明确不是同一漏洞，候选评分与建议生成都不再提。
 CREATE TABLE IF NOT EXISTS finding_case_blocks (
     left_id    BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,

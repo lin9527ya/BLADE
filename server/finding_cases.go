@@ -8,7 +8,8 @@ import (
 )
 
 // 漏洞案例（P2-7）：把同一根因/同一资产的重复上报归并成一个独立缺陷。
-// 原始 findings 保留为成员；案例持有统一报告与版本（report_version 做 CAS）。
+// 原始 findings 保留为成员；案例持有统一报告与版本（按实际读取的 version 做 CAS，
+// report_version 记录保存时的依据版本）。
 // 路由：/api/exploration/finding-cases...
 
 func (s *Server) listFindingCases(w http.ResponseWriter, r *http.Request) {
@@ -152,13 +153,21 @@ func (s *Server) updateFindingCaseReport(w http.ResponseWriter, r *http.Request)
 	}
 	var req struct {
 		Report          string `json:"report"`
-		ExpectedVersion int64  `json:"expected_version"`
+		Title           string `json:"title"`
+		Severity        string `json:"severity"`
+		SeverityReason  string `json:"severity_reason"`
+		Version         int64  `json:"version"`
+		ExpectedVersion int64  `json:"expected_version"` // 旧客户端：此前实际是 report_version
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	c, err := s.m.pg.UpdateFindingCaseReport(id, req.Report, req.ExpectedVersion)
+	version := req.Version
+	if version <= 0 {
+		version = req.ExpectedVersion
+	}
+	c, err := s.m.pg.UpdateFindingCaseReport(r.Context(), id, version, req.Title, req.Report, req.Severity, req.SeverityReason)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return

@@ -4,6 +4,45 @@
 
 ## [Unreleased]
 
+移植 ARTEX 的统一报告实现：把同一缺陷的重复上报归并成漏洞文件夹，由报告 Agent 在读取
+全部成员原始材料后生成一份统一报告；原始 finding 的报告、评级与证据始终保留。
+
+### 新增
+
+- **Report Agent 的统一报告工具**：新增 `search_finding_duplicates`、`get_finding_record`、
+  `merge_finding_records`、`suggest_finding_merge`、`get_finding_case`、
+  `update_finding_case_report`，默认绑定到 reporter。工具只在当前任务内操作；归并保留全部
+  原始记录，疑似分组 2–20 条提交人工确认而不是自动合并；已有案例会被 union 成同一个文件夹。
+- **统一报告完整性校验**：保存时必须包含有内容的概述、影响、前置条件、复现步骤、证据、
+  PoC、根因分析、修复建议，代码块必须闭合；评级依据必填，评级不得直接取成员最高等级。
+- **案例版本与证据新鲜度**：案例 `version` 随任一成员 finding 修改或移出自动前进；统一报告
+  保存时 CAS 实际读取的 `version`，`report_version` 记录该版本。成员或原报告变化后旧版本写入
+  返回冲突并要求重新读取，不能只换 version 重试。案例详情、列表、「按漏洞」视图会显示
+  「统一报告未生成/已更新/待更新」。
+- **统一报告导出**：发现页导出新增「同一漏洞文件夹合并为一份统一报告」（默认勾选）与
+  「同时附原始子报告」。导出先展开完整案例并冻结成员证据，再合成为一条统一报告记录；
+  统一报告缺失或过期时明确标注，并附全部原始证据。Markdown 文件名、CSV 编号、JSON DTO
+  都标识案例与成员，zip 内统一报告仍复用已冻结的成员流量证据。
+- **Reporter 工作流提示**：仅当 reporter 拥有案例工具时追加统一报告指引（合并须同根因、
+  疑似分组需具体共同点、版本冲突重新读取），worker 与关闭流量绑定的环境都不会收到该段。
+- **数据层**：`finding_case_version_changed` 触发器跟踪成员变化；`MergeFindingCase` 支持
+  已有案例并集并遵守人工否决；`SuggestFindingCase` 保存分组建议；`FindingCaseID` 用于导出
+  展开；案例读取补齐成员原始报告。
+
+### 边界
+
+- 未移植 ARTEX 的「历史整理」评审运行（`finding_case_review_runs`）与 `complete_finding_case_review`；
+  统一报告由 reporter 在正常上报流程中生成，或由人工在案例对话框编辑。
+- 统一报告是独立材料，不覆盖、不删除任何原始 finding 或报告；不改变探索/规划策略。
+
+### 验证
+
+- 新增回归：案例版本随成员修改/移出前进、旧版本保存冲突、空报告拒绝、完整章节校验、
+  案例并集与人工否决、Reporter 工具归并/建议/保存/跨任务拒绝、工具播种绑定、导出展开与
+  过期提示、原始子报告选项；Go 全仓测试与 `db/server/agent/report` race 通过，`go vet`、
+  `staticcheck`、`gofmt` 通过；前端 `tsc`、59 个单测与静态构建通过。
+
+
 ## [0.9.9] - 2026-11-10
 
 修复意图结算回归，并把待领队列上限做成系统设置；同时让规划者已丢弃的意图退出默认

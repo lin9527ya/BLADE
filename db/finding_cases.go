@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,8 @@ import (
 )
 
 // FindingCase 是「漏洞案例」：把同一根因/同一资产的重复上报归并成一个独立缺陷。
-// 原始 findings 保留（成员），案例持有统一报告与版本，报告编辑用 report_version 做 CAS。
+// 原始 findings 保留（成员），案例持有统一报告与版本；保存统一报告用实际读取的
+// 案例 version 做 CAS，report_version 记录该版本（成员变化后即过期）。
 type FindingCase struct {
 	ID             int64        `json:"id"`
 	TaskID         *int64       `json:"task_id,omitempty"`
@@ -139,6 +141,37 @@ WHERE m.case_id=$1 ORDER BY f.id`, id)
 	if err != nil {
 		return nil, err
 	}
+	if len(members) > 0 {
+		// findingSelectCols deliberately omits the long report body; the unified
+		// report workflow needs every member's original report, so load them in
+		// one extra keyed query instead of widening every list scan.
+		ids := make([]int64, 0, len(members))
+		for _, m := range members {
+			ids = append(ids, m.ID)
+		}
+		reportRows, err := d.Query(`SELECT id, COALESCE(report,'') FROM findings WHERE id=ANY($1)`, ids)
+		if err != nil {
+			return nil, err
+		}
+		reports := map[int64]string{}
+		for reportRows.Next() {
+			var id int64
+			var report string
+			if err := reportRows.Scan(&id, &report); err != nil {
+				reportRows.Close()
+				return nil, err
+			}
+			reports[id] = report
+		}
+		if err := reportRows.Err(); err != nil {
+			reportRows.Close()
+			return nil, err
+		}
+		reportRows.Close()
+		for _, m := range members {
+			m.Report = reports[m.ID]
+		}
+	}
 	c.Members = members
 	c.MemberCount = len(members)
 	return c, nil
@@ -242,15 +275,53 @@ active = EXISTS (SELECT 1 FROM finding_case_members WHERE case_id=$1) WHERE id=$
 	return tx.Commit()
 }
 
-// UpdateFindingCaseReport 用 report_version 做 CAS 更新统一报告；expectedVersion=0 表示不校验。
-func (d *DB) UpdateFindingCaseReport(id int64, report string, expectedVersion int64) (*FindingCase, error) {
-	res, err := d.Exec(`UPDATE finding_cases SET report=$2, report_version=report_version+1, version=version+1, updated_at=now()
-WHERE id=$1 AND ($3=0 OR report_version=$3)`, id, report, expectedVersion)
+// UpdateFindingCaseReport saves the unified report under the case version the
+// caller actually read. report_version records that evidence version; any member
+// or finding change bumps version and therefore makes the saved report stale.
+func (d *DB) UpdateFindingCaseReport(ctx context.Context, id, version int64, title, report, severity, severityReason string) (*FindingCase, error) {
+	if strings.TrimSpace(report) == "" {
+		return nil, fmt.Errorf("统一报告不能为空")
+	}
+	severity = strings.ToLower(strings.TrimSpace(severity))
+	if severity != "" && !ValidSeverity(severity) {
+		return nil, fmt.Errorf("severity 取值必须是 critical|high|medium|low")
+	}
+	err := d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		c, err := scanCase(tx.QueryRow(`SELECT id, task_id, origin_task_id, title, reason, COALESCE(severity,''), COALESCE(severity_reason,''),
+COALESCE(report,''), version, report_version, active, created_at, updated_at
+FROM finding_cases WHERE id=$1 FOR UPDATE`, id))
+		if err != nil {
+			return err
+		}
+		if !c.Active {
+			return fmt.Errorf("案例已关闭")
+		}
+		if version <= 0 {
+			version = c.Version
+		}
+		if c.Version != version {
+			return fmt.Errorf("案例版本冲突：材料已变化，请重新读取后再写统一报告")
+		}
+		if strings.TrimSpace(title) == "" {
+			title = c.Title
+		}
+		if severity == "" {
+			severity = c.Severity
+		}
+		if strings.TrimSpace(severityReason) == "" {
+			severityReason = c.SeverityReason
+		}
+		if c.Title == title && c.Report == report && c.Severity == severity && c.SeverityReason == severityReason && c.ReportVersion == version {
+			return nil
+		}
+		if _, err := tx.Exec(`UPDATE finding_cases SET title=$2,report=$3,severity=$4,severity_reason=$5,report_version=$6,updated_at=now() WHERE id=$1`,
+			id, title, report, severity, severityReason, version); err != nil {
+			return err
+		}
+		return insertFindingCaseEvent(tx, id, "report_updated", "reporter", "统一报告已更新；评级依据："+severityReason, nil)
+	})
 	if err != nil {
 		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, fmt.Errorf("报告版本冲突：请刷新后重试")
 	}
 	return d.GetFindingCase(id)
 }
@@ -647,4 +718,224 @@ FROM finding_cases WHERE id=$1`, id).Scan(&c.ID, &c.TaskID, &c.OriginTaskID, &c.
 		return nil, err
 	}
 	return c, nil
+}
+
+// scanCase reads one finding_cases row (columns in GetFindingCase order).
+func scanCase(row interface{ Scan(...any) error }) (*FindingCase, error) {
+	c := &FindingCase{}
+	err := row.Scan(&c.ID, &c.TaskID, &c.OriginTaskID, &c.Title, &c.Reason, &c.Severity, &c.SeverityReason,
+		&c.Report, &c.Version, &c.ReportVersion, &c.Active, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("案例不存在")
+	}
+	return c, err
+}
+
+// FindingCaseID reports the active case containing a finding (0 = ungrouped).
+func (d *DB) FindingCaseID(findingID int64) (int64, error) {
+	var cid int64
+	err := d.QueryRow(`SELECT COALESCE(m.case_id,0) FROM finding_case_members m JOIN finding_cases c ON c.id=m.case_id AND c.active WHERE m.finding_id=$1`, findingID).Scan(&cid)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return cid, err
+}
+
+func normalizeFindingIDs(ids []int64) ([]int64, error) {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, fmt.Errorf("finding id 不合法")
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+func findingCaseBlockedTx(tx *sql.Tx, ids []int64) error {
+	var blocked int
+	if err := tx.QueryRow(`SELECT count(*) FROM finding_case_blocks b WHERE (b.left_id=ANY($1) AND b.right_id=ANY($1))`, ids).Scan(&blocked); err != nil {
+		return err
+	}
+	if blocked > 0 {
+		return fmt.Errorf("所选记录包含人工否决的组合，不能归并")
+	}
+	return nil
+}
+
+// MergeFindingCase is the Reporter's merge: the requested findings end up in one
+// case. Existing groups are unioned into the lowest case id instead of spawning a
+// second folder for the same defect. Original findings, reports and evidence stay.
+func (d *DB) MergeFindingCase(ctx context.Context, taskID int64, ids []int64, title, reason, actor string) (*FindingCase, error) {
+	if taskID <= 0 {
+		return nil, fmt.Errorf("task_id 必填")
+	}
+	ids, err := normalizeFindingIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) < 2 || len(ids) > 20 {
+		return nil, fmt.Errorf("归并需要 2 至 20 条记录")
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT id FROM findings WHERE id=ANY($1) AND task_id=$2 FOR UPDATE`, ids, taskID)
+	if err != nil {
+		return nil, err
+	}
+	found := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		found[id] = true
+	}
+	rows.Close()
+	for _, id := range ids {
+		if !found[id] {
+			return nil, fmt.Errorf("发现 %d 不属于任务 %d", id, taskID)
+		}
+	}
+	if err := findingCaseBlockedTx(tx, ids); err != nil {
+		return nil, err
+	}
+	var target int64
+	if err := tx.QueryRow(`SELECT COALESCE(min(case_id),0) FROM finding_case_members WHERE finding_id=ANY($1)`, ids).Scan(&target); err != nil {
+		return nil, err
+	}
+	if target == 0 {
+		// Nothing grouped yet: reuse the ordinary creation path after releasing
+		// this transaction so create and union share one implementation.
+		if err := tx.Rollback(); err != nil {
+			return nil, err
+		}
+		c, err := d.CreateFindingCase(taskID, taskID, title, reason, "", ids, actor)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := d.Exec(`UPDATE finding_case_suggestions SET state='accepted' WHERE task_id=$1 AND state='pending' AND finding_ids=$2::jsonb`, taskID, jsonIDs(ids)); err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	var caseTask int64
+	if err := tx.QueryRow(`SELECT COALESCE(task_id,0) FROM finding_cases WHERE id=$1 AND active FOR UPDATE`, target).Scan(&caseTask); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("案例 %d 不存在或已关闭", target)
+		}
+		return nil, err
+	}
+	if caseTask != taskID {
+		return nil, fmt.Errorf("案例不属于同一个任务")
+	}
+	var others []int64
+	rows, err = tx.Query(`SELECT id FROM finding_cases WHERE active AND id IN (SELECT case_id FROM finding_case_members WHERE finding_id=ANY($1)) AND id<>$2 FOR UPDATE`, ids, target)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		others = append(others, id)
+	}
+	rows.Close()
+	for _, id := range others {
+		// Move every member of the losing folder; no finding is duplicated because
+		// finding_case_members is keyed by finding id.
+		if _, err := tx.Exec(`UPDATE finding_case_members SET case_id=$1 WHERE case_id=$2`, target, id); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`UPDATE finding_cases SET active=false, updated_at=now() WHERE id=$1`, id); err != nil {
+			return nil, err
+		}
+		if err := insertFindingCaseEvent(tx, target, "merge_case", actor, fmt.Sprintf("并入案例 #%d", id), nil); err != nil {
+			return nil, err
+		}
+	}
+	for _, id := range ids {
+		if _, err := tx.Exec(`INSERT INTO finding_case_members(finding_id,case_id) VALUES($1,$2) ON CONFLICT (finding_id) DO UPDATE SET case_id=EXCLUDED.case_id`, id, target); err != nil {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(title) != "" {
+		if _, err := tx.Exec(`UPDATE finding_cases SET title=$2 WHERE id=$1`, target, strings.TrimSpace(title)); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE finding_cases SET version=version+1, updated_at=now() WHERE id=$1`, target); err != nil {
+		return nil, err
+	}
+	if err := insertFindingCaseEvent(tx, target, "merge", actor, reason, ids); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE finding_case_suggestions SET state='accepted' WHERE task_id=$1 AND state='pending' AND finding_ids=$2::jsonb`, taskID, jsonIDs(ids)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetFindingCase(target)
+}
+
+func jsonIDs(ids []int64) string {
+	raw, _ := json.Marshal(ids)
+	return string(raw)
+}
+
+// SuggestFindingCase stores a Reporter-proposed group (2..20 same-task records)
+// for a human decision. It never creates or merges a case itself.
+func (d *DB) SuggestFindingCase(ctx context.Context, taskID int64, ids []int64, title, reason string) (int64, error) {
+	ids, err := normalizeFindingIDs(ids)
+	if err != nil {
+		return 0, err
+	}
+	if taskID <= 0 || len(ids) < 2 || len(ids) > 20 {
+		return 0, fmt.Errorf("疑似分组需要 2 至 20 条同任务记录")
+	}
+	if strings.TrimSpace(title) == "" || strings.TrimSpace(reason) == "" {
+		return 0, fmt.Errorf("title 与 reason 必填")
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRow(`SELECT count(*) FROM findings WHERE id=ANY($1) AND task_id=$2`, ids, taskID).Scan(&count); err != nil {
+		return 0, err
+	}
+	if count != len(ids) {
+		return 0, fmt.Errorf("候选必须全部属于同一个任务")
+	}
+	if err := findingCaseBlockedTx(tx, ids); err != nil {
+		return 0, err
+	}
+	var grouped int
+	if err := tx.QueryRow(`SELECT count(*) FROM finding_case_members WHERE finding_id=ANY($1)`, ids).Scan(&grouped); err != nil {
+		return 0, err
+	}
+	if grouped > 0 {
+		return 0, fmt.Errorf("所选记录已有归并案例；已有案例的成员可作为上下文，不要再提交新的疑似分组")
+	}
+	var id int64
+	err = tx.QueryRow(`INSERT INTO finding_case_suggestions(task_id,finding_ids,title,reason,score)
+VALUES($1,$2::jsonb,$3,$4,0) ON CONFLICT (task_id,finding_ids) DO UPDATE SET title=EXCLUDED.title,reason=EXCLUDED.reason
+RETURNING id`, taskID, jsonIDs(ids), strings.TrimSpace(title), strings.TrimSpace(reason)).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }

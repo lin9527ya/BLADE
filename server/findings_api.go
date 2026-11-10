@@ -225,6 +225,8 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 //	format  = md-single（整合一份 .md）| md-zip（一漏洞一 .md,打包 zip）
 //	          | csv | json
 //	ids     = 逗号分隔的 finding id（scope=selected 时必填）
+//	mode    = consolidated（把案例合并为一条统一报告）| 空（逐条，legacy）
+//	include_originals = mode=consolidated 时是否同时附原始子报告（默认否）
 //	筛选参数 severity/status/vulnclass/task_id/q/sort 与列表接口一致（scope=filtered 用）。
 func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -266,6 +268,14 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var casePlan *findingCaseExportPlan
+	if q.Get("mode") == "consolidated" {
+		fs, casePlan, err = s.prepareFindingCaseExport(fs)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	stage, err := os.MkdirTemp("", "blade-finding-export-")
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -275,6 +285,13 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 	if err = s.evidenceStore().StageFindingsExport(r.Context(), fs, stage, format == "md-zip"); err != nil {
 		evidenceError(w, err)
 		return
+	}
+	if casePlan != nil {
+		fs, err = s.consolidateFindingCaseExport(fs, casePlan, q.Get("include_originals") == "true")
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	now := time.Now()
 	stamp := now.Format("20060102-150405")

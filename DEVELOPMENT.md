@@ -194,3 +194,20 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   按旧快照放行。缺条件是「暂时不可领」，不是负面结论；不填字段的旧意图完全沿用旧规则。
 - 凭据目标可带 `observed_at`/`valid_until`/`validation_status`；历史验证保留，未知时间不冒充
   新鲜；要求实测的条件必须指定目标，且按目标的时间判定。
+
+## 统一报告（移植自 ARTEX）
+
+- 数据结构：`finding_cases` 持有统一报告、`version`（材料版本）与 `report_version`（保存时实际
+  读取的版本）；`finding_case_members` 保留原始 finding 归属。`finding_case_version_changed`
+  触发器在成员 finding 被修改或移出时推进 `version`，因此「统一报告是否新鲜」只看
+  `report_version == version` 且报告非空。
+- 保存：HTTP `PATCH /api/exploration/finding-cases/{id}` 接受 `report/title/severity/severity_reason/version`
+  （旧客户端可继续传 `expected_version`）；Reporter 工具 `update_finding_case_report` 额外要求
+  八段完整章节与评级依据。冲突一律要求重新读取，不做「只换版本号」重试。
+- 归并：`MergeFindingCase` 把请求的 finding 收敛到一个案例；已有案例会被并集、其他文件夹停用，
+  不复制/删除原始 finding。`finding_case_blocks` 是人工否决，候选、建议与归并都会检查。
+- 导出：`/api/exploration/findings/export?mode=consolidated&include_originals=true`。先
+  `prepareFindingCaseExport` 展开完整案例，`StageFindingsExport` 冻结成员证据，再
+  `consolidateFindingCaseExport` 合成统一报告；过期/缺失时输出明确说明与全部原始证据。
+- Reporter 工具在启动时通过 `seedFindingCaseTools` 一次性 seed 并绑定；提示词扩展在
+  `agent/finding_workflow.go` 运行时追加，仅对具备案例工具的 reporter 生效。

@@ -20,6 +20,10 @@ type DBFinding struct {
 	EvidenceVersion       int64
 	ReportEvidenceVersion int64
 	TrafficBindings       []FindingTrafficBinding // populated only for export
+	// Export-only projection of a unified finding case: the synthetic row carries
+	// the case report and member ids, never a new findings-table record.
+	ExportCaseID    int64
+	ExportMemberIDs []int64
 
 	ID              int64
 	TaskID          *int64

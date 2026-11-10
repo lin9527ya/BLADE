@@ -113,6 +113,13 @@ func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
 	if desc := strings.TrimSpace(f.TaskDescription); desc != "" {
 		fmt.Fprintf(&b, "- **所属任务**：%s\n", desc)
 	}
+	if f.ExportCaseID > 0 {
+		ids := make([]string, 0, len(f.ExportMemberIDs))
+		for _, id := range f.ExportMemberIDs {
+			ids = append(ids, fmt.Sprintf("#%d", id))
+		}
+		fmt.Fprintf(&b, "- **统一报告**：案例 #%d（原始记录 %s）\n", f.ExportCaseID, strings.Join(ids, "、"))
+	}
 	fmt.Fprintf(&b, "- **发现时间**：%s\n", f.CreatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&b, "- **生成时间**：%s\n\n", generatedAt.Format("2006-01-02 15:04:05"))
 	if s := strings.TrimSpace(f.Summary); s != "" {
@@ -138,6 +145,9 @@ func FindingFilename(f *db.DBFinding) string {
 	sev := nz(f.Severity, "info")
 	title := FindingTitle(f)
 	name := fmt.Sprintf("%s_%s_#%d", sev, title, f.ID)
+	if f.ExportCaseID > 0 {
+		name = fmt.Sprintf("case_%d_%s_%s", f.ExportCaseID, sev, title)
+	}
 	name = unsafeFilenameChars.ReplaceAllString(name, "_")
 	name = strings.Trim(name, "._")
 	if name == "" {
@@ -162,8 +172,12 @@ func FindingsCSV(fs []*db.DBFinding) []byte {
 	w := csv.NewWriter(&buf)
 	_ = w.Write([]string{"ID", "名称", "类别", "严重等级", "状态", "所属任务", "发现时间", "概述", "流量证据数量", "流量证据ID"})
 	for _, f := range items {
+		id := fmt.Sprintf("%d", f.ID)
+		if f.ExportCaseID > 0 {
+			id = fmt.Sprintf("case:%d", f.ExportCaseID)
+		}
 		_ = w.Write([]string{
-			fmt.Sprintf("%d", f.ID),
+			id,
 			FindingTitle(f),
 			f.VulnClass,
 			nz(f.Severity, "info"),

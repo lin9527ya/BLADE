@@ -22,6 +22,18 @@ func findingTrafficBindingEnabled() bool {
 // Applied after ToolResolve: user descriptions and prompts remain intact, while
 // all actual reporters (including Planner and custom chat agents) see the same
 // API contract. Disabled/unbound tools are never reintroduced here.
+
+// findingCaseGuidance is independent of traffic binding: unified reports only
+// need the case tools, and must also be explained when binding is turned off.
+func findingCaseGuidance(agentKey string, has map[string]bool) string {
+	if agentKey != "reporter" || !has["get_finding_case"] || !has["update_finding_case_report"] || !has["merge_finding_records"] {
+		return ""
+	}
+	return "\n\n**同一漏洞的重复上报与统一报告**：先保存本次独立报告，再 search_finding_duplicates(finding_id=独立记录ID) 分页读取候选摘要，按需 get_finding_record 核对证据。仅凭漏洞类型、标题、令牌、登录入口或等级相似不能归并；须核对目标、端点/路由、参数、权限边界、处理器或缺失检查属于同一代码路径，以及实际验证证据。" +
+		"只有根因明确相同时才 merge_finding_records(task_id,finding_ids,title,reason)；只有存在具体共同点（同一端点/参数/组件/缺失检查）但缺少确认共同根因的关键证据时，才 suggest_finding_merge 提交一个覆盖 2..20 条同任务记录的分组，不要拆成两两建议；没有具体共同点就保持 independent，不重复上报、删除记录或重新探测。归并成功或已有 case_id 时，get_finding_case 记录实际 version，分页读取全部成员的原报告、证据及流量，根因明确时尽力用 update_finding_case_report 保存统一报告；统一报告暂缺不阻塞归并。" +
+		"统一报告是独立材料，不覆盖原报告，必须包含有内容的概述、影响、前置条件、复现步骤、证据、PoC、根因分析、修复建议；评级与 severity_reason 必须基于已验证影响，不能直接取成员最高等级。成员或原报告变化会使案例 version 前进，此时保存会版本冲突，必须重新读取材料后重写，不能只换 version 重试。"
+}
+
 func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, string) {
 	if !findingTrafficBindingEnabled() {
 		out := make([]actool.CoreTool, 0, len(tools))
@@ -44,7 +56,11 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 			}
 			out = append(out, tool)
 		}
-		return out, ""
+		has := map[string]bool{}
+		for _, tool := range out {
+			has[tool.Name()] = true
+		}
+		return out, findingCaseGuidance(agentKey, has)
 	}
 	out := append([]actool.CoreTool(nil), tools...)
 	has := map[string]bool{}
@@ -76,6 +92,7 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 	if has["update_finding_report"] && has["bind_finding_traffic"] && has["get_finding_traffic"] {
 		guidance += "\n\n**报告前自动关联流量（已开启）**：你负责为本次触发的漏洞核对并绑定流量，再撰写报告。先从 report_finding 返回 JSON 或 get_task_node_detail / list_task_findings 取得明确的 finding_id 与 finding_node_id。读取漏洞详情、对应意图的执行记录及已有证据清单，优先使用上报者交接的真实 ID。若本次验证为 HTTP 且流量工具可用，用 traffic_search 筛选候选，再用 traffic_get 逐条核实请求/响应确实支持该漏洞；域名和时间只用于筛选，不证明归属。将确认的证据按复现顺序用 bind_finding_traffic(finding_id, traffic_refs) 关联，选择 baseline / proof / verification / supporting 并说明用途。只能操作本次漏洞，不重复创建漏洞或重新探测目标。绑定成功后重新调用 get_finding_traffic 获取最新 version，读取所需正文，再将实际读取的 version 作为 evidence_version 传给 update_finding_report（其 finding_id 参数仍用 finding_node_id）。已有绑定不必重复追加。TCP、未采集、工具不可用或没有确切匹配时，跳过自动绑定，依据文字/命令证据正常写报告并说明原因，不得为凑齐流量而猜测。绑定失败不宣称成功；保留已有证据并在报告说明未绑定原因。"
 	}
+	guidance += findingCaseGuidance(agentKey, has)
 	if guidance != "" || has["get_finding_traffic"] || has["update_finding_report"] {
 		guidance += findingIDGuidance
 	}
