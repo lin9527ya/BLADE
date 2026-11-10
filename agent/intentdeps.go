@@ -106,6 +106,13 @@ func (t *ToolSet) dropIntent() actool.CoreTool {
 			if n.State != "open" && n.State != "paused" {
 				return actool.Errorf(fmt.Sprintf("drop_intent: 意图 %d 当前状态是 %q，只有排队中(open)/已暂停(paused)的可以丢", id, n.State)), nil
 			}
+			var rp struct {
+				ResumeAfterRestart bool `json:"resume_after_restart"`
+			}
+			_ = json.Unmarshal(n.Payload, &rp)
+			if rp.ResumeAfterRestart {
+				return actool.Errorf(fmt.Sprintf("drop_intent: 意图 %d 是重启中断后等待续跑的意图，不能直接丢弃；先让 worker 按原 transcript 续跑，确需放弃请等它领取后再处理", id)), nil
+			}
 			summary, dependents, derr := t.ts.SoftDeleteIntent(id, reason)
 			if derr != nil {
 				return actool.Errorf("drop_intent: " + derr.Error()), nil

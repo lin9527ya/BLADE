@@ -145,6 +145,14 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 			m["logical_session_id"] = n.LogicalSessionID
 			m["execution_generation"] = fmt.Sprint(n.ExecutionGeneration)
 		}
+		// 重启续跑标记必须让规划者看见：否则一条“被中断、等 worker 续跑”的
+		// open 意图和普通陈旧队列长得一样，容易被 drop_intent 清掉。
+		if resume, _ := p["resume_after_restart"].(bool); resume {
+			m["resume_after_restart"] = true
+			if slot, ok := p["resume_slot"].(float64); ok && slot > 0 {
+				m["resume_slot"] = int(slot)
+			}
+		}
 		if c, ok := p["contract"].(map[string]any); ok && len(c) > 0 {
 			m["contract"] = compactIntentContract(c)
 		}
@@ -206,8 +214,11 @@ type ToolSet struct {
 	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
 	pol *policy.Effective
 	// workerCap 是本任务的 worker 池大小（0 = 未知/不启用）。用途只有一个：
-	// 队列背压——待领意图超过 intentQueueFactor×workerCap（默认 3×）时拒收低优先级新意图。
+	// 队列背压——待领意图超过 倍数×workerCap（默认 4×）时拒收低优先级新意图。
 	workerCap int
+	// queueFactor 返回待领意图上限倍数（默认 4）。server 每轮注入设置读取器；
+	// nil/非法值回落默认，保证 agent 单测与无 server 场景行为不变。
+	queueFactor func() int
 	// intentsRound 计**本轮**成功创建的意图数（pace:round 额度）。
 	//
 	// 它曾经等于「本 ToolSet 生命周期内创建的意图数」，因为 planner 每轮新建一个
@@ -568,6 +579,19 @@ func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 
 // SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
 func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
+
+// SetIntentQueueFactor 注入待领意图上限倍数解析器（nil/<=0 = 默认 4）。
+func (t *ToolSet) SetIntentQueueFactor(fn func() int) { t.queueFactor = fn }
+
+// intentQueueFactor 返回当前生效的队列倍数；只用于队列背压与态势展示。
+func (t *ToolSet) intentQueueFactor() int {
+	if t.queueFactor != nil {
+		if n := t.queueFactor(); n > 0 && n <= MaxIntentQueueFactor {
+			return n
+		}
+	}
+	return DefaultIntentQueueFactor
+}
 
 // SetWorkerCap 注入本任务的 worker 池大小，用于队列背压（0 = 不启用）。
 // 由 planner 按**任务运行时的池快照**注入——实时读设置会让改过 workers 的任务按错误容量排队。
@@ -1588,13 +1612,14 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 		if idle < 0 {
 			idle = 0
 		}
+		factor := t.intentQueueFactor()
 		q := map[string]any{
-			"workers": t.workerCap, "soft_limit": intentQueueFactor * t.workerCap,
+			"workers": t.workerCap, "soft_limit": factor * t.workerCap, "factor": factor,
 			"running": len(running), "idle_slots": idle,
 		}
 		if v, ok := out["claimable_intents"].(int); ok {
 			q["claimable"] = v
-			if v >= intentQueueFactor*t.workerCap {
+			if v >= factor*t.workerCap {
 				q["saturated"] = true
 			}
 		}
@@ -3054,7 +3079,10 @@ func intentDirectionKey(contract map[string]any, goalID int64, anchors []int64) 
 // 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
 // urgent 及以上是逃生口——材料性新发现（新战果、新漏洞链）驱动的跟进不该被队列挡住。
 const (
-	intentQueueFactor         = 3
+	// DefaultIntentQueueFactor 是待领意图上限相对 worker 数的默认倍数。
+	DefaultIntentQueueFactor = 4
+	// MaxIntentQueueFactor 是设置项允许的上限，防止手滑写成天文数字。
+	MaxIntentQueueFactor      = 32
 	intentQueueUrgentPriority = 8
 )
 
@@ -3247,11 +3275,12 @@ func (t *ToolSet) addOneIntent(it intentItem, q *intentQuota) (int64, string, er
 	// 生产端每次唤醒最多 4 条，消化端只有 workers 个 worker、每条跑几分钟——不设上限时
 	// 待领意图会一路涨。按**可领**计数：被前置挡住的链路步骤不消耗 worker，也不占额度
 	// （它们此刻进不了 frontier）；而带已满足前置的意图立即可领，照样受上限约束。
-	if t.workerCap > 0 && depsSatisfied && priority < intentQueueUrgentPriority && q.claimable >= intentQueueFactor*t.workerCap {
+	factor := t.intentQueueFactor()
+	if t.workerCap > 0 && depsSatisfied && priority < intentQueueUrgentPriority && q.claimable >= factor*t.workerCap {
 		msg := fmt.Sprintf("队列里已有 %d 条可领方向（worker %d 个，上限 %d）：本轮先让 worker 消化，不再接常规新方向。"+
 			"确有材料性新发现驱动的跟进，把 priority 提到 %d 以上再提交；已过时的排队方向用 drop_intent 清掉。"+
 			"**这个方向本身不必丢**：把它写进 TodoWrite（注明为什么先不派），等 worker 消化后再派——别直接忘掉",
-			q.claimable, t.workerCap, intentQueueFactor*t.workerCap, intentQueueUrgentPriority)
+			q.claimable, t.workerCap, factor*t.workerCap, intentQueueUrgentPriority)
 		if t.constraintOn("dispatch") {
 			return 0, "", fmt.Errorf("%s", msg)
 		}

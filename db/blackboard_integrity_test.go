@@ -182,6 +182,41 @@ func TestBlackboardStableSessionAndStaleWriteAuthority(t *testing.T) {
 	}
 }
 
+// 非 verify 意图的 validated 是 nil；结算不能被 jsonb_array_length('null')
+// 拒绝（v0.9.8 回归：意图永远停在 running，随后被规划者当陈旧队列丢弃）。
+func TestSettleIntentNilValidated(t *testing.T) {
+	_, s := intentLeaseFixture(t)
+	id, err := s.AddIntent(map[string]any{"summary": "non-verify settlement"}, 5, nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.ClaimNode(t.Context(), id, "work#1", "open", IntentLeaseTTL, nil, false)
+	if err != nil || n == nil {
+		t.Fatalf("claim: %v %v", n, err)
+	}
+	current := s.WithAuthority(n.WriteAuthority(0, s.ID()))
+	if err := current.SettleIntent(id, "done", nil, ""); err != nil {
+		t.Fatalf("nil validated settlement failed: %v", err)
+	}
+	got, err := s.GetNode(id)
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	if got.State != "done" {
+		t.Fatalf("state = %s, want done", got.State)
+	}
+	if strings.Contains(string(got.Payload), "validated_asset_ids") {
+		t.Fatalf("nil validated must not add validated_asset_ids: %s", got.Payload)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["last_outcome"] != "done" {
+		t.Fatalf("last_outcome = %v, want done", payload["last_outcome"])
+	}
+}
+
 func TestBlackboardSharedSessionClaimMutex(t *testing.T) {
 	_, s := intentLeaseFixture(t)
 	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "")

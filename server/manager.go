@@ -368,7 +368,10 @@ const (
 	settingProxySwitchCooldown = "proxy_switch_cooldown_seconds"
 	settingProxyEgressIPURL    = "proxy_egress_ip_url"
 	settingWorkers             = "workers"
-	settingLLMRecord           = "llm_record"
+	// settingIntentQueueFactor 是待领意图上限相对 worker 数的倍数（默认 4）。
+	// 与 workers 不同，它每轮规划现读，保存后下一轮生效。
+	settingIntentQueueFactor = "intent_queue_factor"
+	settingLLMRecord         = "llm_record"
 	// settingSupervisorEnabled / settingSupervisorInterval 控制「执行审核员」：
 	// 定时抽查在跑 worker 的最近轨迹，偏离意图/目标时通过 steer 通道纠偏。
 	// 默认开启、默认 180 秒；每轮现读，改完对下一个审核周期生效。
@@ -590,6 +593,21 @@ func (m *Manager) SetWorkers(n int) error {
 		return fmt.Errorf("workers 必须 >0")
 	}
 	return m.pg.SetSetting(settingWorkers, strconv.Itoa(n))
+}
+
+// IntentQueueFactor returns the pending-intent cap multiplier (default 4).
+// Unlike workers, this is read every planner round so a saved change takes
+// effect on the next round without restarting or recreating tasks.
+func (m *Manager) IntentQueueFactor() int {
+	v, ok, err := m.pg.GetSetting(settingIntentQueueFactor)
+	if err != nil || !ok {
+		return agent.DefaultIntentQueueFactor
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 || n > agent.MaxIntentQueueFactor {
+		return agent.DefaultIntentQueueFactor
+	}
+	return n
 }
 
 // Enrich returns the asset auto-completion engine (may be nil if init failed).

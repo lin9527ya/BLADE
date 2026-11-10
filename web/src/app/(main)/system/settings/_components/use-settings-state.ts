@@ -105,6 +105,7 @@ export function useSettingsState() {
   const [savingKey, setSavingKey] = React.useState(false);
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
+  const [intentQueueFactor, setIntentQueueFactor] = React.useState("4");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   // 执行审核员：开关 + 周期（秒）。运行时每周期现读，改完对下一个周期生效。
   const [supervisorEnabled, setSupervisorEnabled] = React.useState(true);
@@ -224,6 +225,7 @@ export function useSettingsState() {
     setProxyStatus(s.proxy_status ?? []);
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
+    setIntentQueueFactor(String(s.intent_queue_factor ?? 4));
     setSupervisorEnabled(s.supervisor_enabled !== false);
     setSupervisorInterval(String(s.supervisor_interval_seconds ?? 180));
     setTokenBudget(String(s.task_token_budget ?? 0));
@@ -434,16 +436,21 @@ export function useSettingsState() {
 
   const saveWorkers = () => {
     const n = Number(workers);
+    const factor = Number(intentQueueFactor);
     if (!Number.isInteger(n) || n <= 0) {
       toast.error("并发数必须是大于 0 的整数");
       return;
     }
+    if (!Number.isInteger(factor) || factor < 1 || factor > 32) {
+      toast.error("待领意图上限倍数必须是 1–32 的整数");
+      return;
+    }
     setSavingWorkers(true);
     api
-      .setSettings({ workers: n })
+      .setSettings({ workers: n, intent_queue_factor: factor })
       .then((s) => {
         apply(s);
-        toast.success("已保存并发工作 agent 数（对之后启动的任务生效）");
+        toast.success("已保存并发数与待领意图上限倍数（后者下一轮规划生效）");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingWorkers(false));
@@ -1173,6 +1180,8 @@ export function useSettingsState() {
     setPyInterp,
     workers,
     setWorkers,
+    intentQueueFactor,
+    setIntentQueueFactor,
     savingWorkers,
     setSavingWorkers,
     supervisorEnabled,

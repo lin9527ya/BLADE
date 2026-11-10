@@ -110,6 +110,17 @@ func TestCompactIntentsCarriesContract(t *testing.T) {
 	}
 }
 
+func TestCompactIntentsCarriesResumeMarker(t *testing.T) {
+	n := &db.Node{ID: 7, Kind: db.KindIntent, State: "open", Payload: []byte(`{"summary":"中断后续跑","resume_after_restart":true,"resume_slot":2}`)}
+	items := compactIntents([]*db.Node{n}, nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("items=%d", len(items))
+	}
+	if items[0]["resume_after_restart"] != true || items[0]["resume_slot"] != 2 {
+		t.Fatalf("resume marker missing: %+v", items[0])
+	}
+}
+
 func itoa(v int64) string {
 	b, _ := json.Marshal(v)
 	return string(b)

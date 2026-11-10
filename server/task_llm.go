@@ -604,6 +604,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetExecService(s.m.Executions())                                           // P13 长任务托管执行(planner 也能起/查/停)
 	pl.SetPolicyResolver(s.policyResolver(tidOfTask(t)))                          // P20 探索策略(意图门 + 提示词段 + 停摆通告)
 	pl.SetWorkersResolver(func() int { return s.engine.TaskWorkers(t.ID) })       // 队列背压：按本任务启动时的 worker 池快照
+	pl.SetIntentQueueFactorResolver(s.m.IntentQueueFactor)                        // 待领意图上限倍数：每轮现读设置
 	pl.SetPlannerPromptResolver(func() string { return t.PlannerPromptOverride }) // 任务级 planner 提示词快照
 	// 穷尽复核反馈：上一轮声明穷尽被复核员否掉时，把结论下发到下一轮规划输入。
 	pl.SetExhaustionNoteSource(t.TakeExhaustionNote)

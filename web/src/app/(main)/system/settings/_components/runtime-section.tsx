@@ -18,6 +18,8 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     loaded,
     workers,
     setWorkers,
+    intentQueueFactor,
+    setIntentQueueFactor,
     savingWorkers,
     supervisorEnabled,
     setSupervisorEnabled,
@@ -282,6 +284,25 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               value={workers}
               disabled={!loaded || savingWorkers}
               onChange={(e) => setWorkers(e.target.value)}
+            />
+          </div>
+        </Field>
+        <Field
+          label="待领意图上限倍数（×workers）"
+          htmlFor="intent-queue-factor"
+          hint="待领意图达到「倍数×worker 数」时，规划者不再接收低优先级新方向（priority ≥8 的跟进仍放行）。默认 4；保存后下一轮规划生效，无需重启。"
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              id="intent-queue-factor"
+              type="number"
+              min={1}
+              max={32}
+              className="w-32 font-mono text-sm"
+              placeholder="4"
+              value={intentQueueFactor}
+              disabled={!loaded || savingWorkers}
+              onChange={(e) => setIntentQueueFactor(e.target.value)}
             />
             <Button onClick={saveWorkers} disabled={!loaded || savingWorkers}>
               保存

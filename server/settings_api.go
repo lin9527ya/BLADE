@@ -180,8 +180,9 @@ func (s *Server) settingsPayload() map[string]any {
 		"clash_status":                  s.m.ClashEgressStatus(),
 		"python_interpreter":            strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"log_level":                     LogLevelName(),
-		"workers":                       s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"task_concurrency_enabled":      concOn,        // 任务并发上限开关(默认关)
+		"workers":                       s.m.Workers(),           // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"intent_queue_factor":           s.m.IntentQueueFactor(), // 待领意图上限 = 倍数 × workers（默认4）
+		"task_concurrency_enabled":      concOn,                  // 任务并发上限开关(默认关)
 		// 执行审核员：定时抽查在跑 worker 的轨迹，偏离时注入纠偏（默认开、180 秒）。
 		"supervisor_enabled":          supervisorEnabledSetting(s.m.pg),
 		"supervisor_interval_seconds": int(supervisorIntervalSetting(s.m.pg).Seconds()),
@@ -346,9 +347,10 @@ type settingsRequest struct {
 	ClashProxyGroup     *string `json:"clash_proxy_group"`
 	ClashAutoRotate     *bool   `json:"clash_auto_rotate"`
 	ClashRotateCooldown *int    `json:"clash_rotate_cooldown_seconds"`
-	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
-	LogLevel            *string `json:"log_level"`          // debug|info|warn|error；热切换
-	Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+	PythonInterp        *string `json:"python_interpreter"`  // 自定义脚本工具的 python 解释器路径
+	LogLevel            *string `json:"log_level"`           // debug|info|warn|error；热切换
+	Workers             *int    `json:"workers"`             // 并发工作 agent 数(>0)；对之后启动的任务生效
+	IntentQueueFactor   *int    `json:"intent_queue_factor"` // 待领意图上限倍数(1-32，默认4)；下一轮规划生效
 	// 执行审核员：开关 + 审核周期（秒）。运行时每周期现读，改完对下一个周期生效。
 	SupervisorEnabled  *bool `json:"supervisor_enabled"`
 	SupervisorInterval *int  `json:"supervisor_interval_seconds"`
@@ -680,6 +682,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Workers != nil {
 		pending[settingWorkers] = strconv.Itoa(*req.Workers)
+	}
+	if req.IntentQueueFactor != nil {
+		pending[settingIntentQueueFactor] = strconv.Itoa(*req.IntentQueueFactor)
 	}
 	if req.ConcurrencyEnabled != nil || req.ConcurrencyLimit != nil {
 		// 部分 PUT:未给的字段用当前值兜底,避免只改一个把另一个重置。

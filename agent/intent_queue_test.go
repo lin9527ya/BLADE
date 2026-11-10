@@ -10,11 +10,11 @@ import (
 	"github.com/lin9527ya/blade/policy"
 )
 
-// 队列背压：可领意图 ≥ 3×workers 时拒收常规方向；priority ≥8 是逃生口；
+// 队列背压：可领意图 ≥ 4×workers 时拒收常规方向；priority ≥8 是逃生口；
 // 链路步骤（前置未满足）不占额度——它们此刻也进不了 frontier。
 func TestIntentQueueBackpressure(t *testing.T) {
 	tools, ts, _ := newToolWorker(t) // 已有一条 open 意图
-	tools.SetWorkerCap(1)            // 上限 = 3×1 = 3
+	tools.SetWorkerCap(1)            // 上限 = 4×1 = 4
 	add := func(summary string, priority int, extra string) string {
 		return callTool(t, tools.PlannerTools(), "add_intent",
 			fmt.Sprintf(`{"risk_area":"other","summary":%q,"priority":%d%s}`, summary, priority, extra))
@@ -25,7 +25,10 @@ func TestIntentQueueBackpressure(t *testing.T) {
 	if out := add("第三条常规方向", 5, ""); !strings.HasPrefix(out, "intent created: ") {
 		t.Fatalf("达到上限前仍应放行：%s", out)
 	}
-	if out := add("第四条常规方向", 5, ""); !strings.Contains(out, "队列里已有") {
+	if out := add("第四条常规方向", 5, ""); !strings.HasPrefix(out, "intent created: ") {
+		t.Fatalf("达到 4×1 前仍应放行：%s", out)
+	}
+	if out := add("第五条常规方向", 5, ""); !strings.Contains(out, "队列里已有") {
 		t.Fatalf("饱和后常规方向应被拒：%s", out)
 	}
 	if out := add("刚发现凭据驱动的跟进", 8, ""); !strings.HasPrefix(out, "intent created: ") {
@@ -52,11 +55,31 @@ func TestIntentQueueBackpressure(t *testing.T) {
 	if !ok {
 		t.Fatalf("概览缺少 intent_queue：%#v", overview["intent_queue"])
 	}
-	if q["saturated"] != true || q["workers"] != 1 || q["soft_limit"] != 3 {
+	if q["saturated"] != true || q["workers"] != 1 || q["soft_limit"] != 4 || q["factor"] != 4 {
 		t.Fatalf("饱和标记不对：%+v", q)
 	}
-	if got, _ := overview["claimable_intents"].(int); got < 3 {
+	if got, _ := overview["claimable_intents"].(int); got < 4 {
 		t.Fatalf("claimable_intents 不对：%v", overview["claimable_intents"])
+	}
+}
+
+// 队列倍数由 server 每轮注入；非法值必须回落到默认 4，不能让设置把上限关掉。
+func TestIntentQueueFactorResolver(t *testing.T) {
+	tools, _, _ := newToolWorker(t)
+	tools.SetWorkerCap(2)
+	tools.SetIntentQueueFactor(func() int { return 2 })
+	data := tools.graphOverviewData()
+	q, _ := data["intent_queue"].(map[string]any)
+	if q["factor"] != 2 || q["soft_limit"] != 4 {
+		t.Fatalf("resolver 未生效：%+v", q)
+	}
+	tools.SetIntentQueueFactor(func() int { return 0 })
+	if q, _ = tools.graphOverviewData()["intent_queue"].(map[string]any); q["factor"] != DefaultIntentQueueFactor {
+		t.Fatalf("非法倍数应回落默认：%+v", q)
+	}
+	tools.SetIntentQueueFactor(func() int { return MaxIntentQueueFactor + 1 })
+	if q, _ = tools.graphOverviewData()["intent_queue"].(map[string]any); q["factor"] != DefaultIntentQueueFactor {
+		t.Fatalf("超大倍数应回落默认：%+v", q)
 	}
 }
 
@@ -90,6 +113,25 @@ func TestIntentBatchRespectsOpenCap(t *testing.T) {
 	}
 	if open, _ := ts.CountOpenIntents(); open != 5 {
 		t.Fatalf("在途数应停在上限 5，实际 %d", open)
+	}
+}
+
+// 重启中断后带续跑标记的 open 意图不能由规划者直接丢弃：它应当先由 worker
+// 按原 transcript 续跑，否则又会出现“旧意图被新意图覆盖”。
+func TestDropIntentRefusesResumeMarkedIntent(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	id, err := ts.AddIntent(map[string]any{"summary": "重启中断方向", "resume_after_restart": true, "resume_slot": 2}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callTool(t, tools.PlannerTools(), "drop_intent",
+		fmt.Sprintf(`{"intent_id":%d,"reason":"想换新方向"}`, id))
+	if !strings.Contains(out, "等待续跑") {
+		t.Fatalf("续跑意图应被拒绝删除：%s", out)
+	}
+	n, err := ts.GetNode(id)
+	if err != nil || n == nil || n.State != "open" {
+		t.Fatalf("resume-marked intent changed: %+v %v", n, err)
 	}
 }
 

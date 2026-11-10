@@ -88,9 +88,10 @@ type Planner struct {
 	execService ExecService
 	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
 	// 改策略下一轮生效，无需重建 agent。
-	policyFn     func() *policy.Effective
-	workersFn    func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
-	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
+	policyFn      func() *policy.Effective
+	workersFn     func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
+	queueFactorFn func() int  // 待领意图上限倍数（默认 4；nil = 默认）
+	noaEnabledFn  func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
 	// completionGate 是收官审计的语气 resolver（block/notice/off；nil = off）。
@@ -156,6 +157,18 @@ func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = 
 // SetWorkersResolver 注入本任务**运行时**的 worker 池大小（队列背压用；nil/0 = 不启用上限）。
 // 用池快照而不是实时设置：改 workers 只影响之后启动的任务，按实时值排队会算错容量。
 func (p *Planner) SetWorkersResolver(fn func() int) { p.workersFn = fn }
+
+// SetIntentQueueFactorResolver 注入待领意图上限倍数（每轮读取，保存设置后下一轮生效）。
+func (p *Planner) SetIntentQueueFactorResolver(fn func() int) { p.queueFactorFn = fn }
+
+func (p *Planner) intentQueueFactor() int {
+	if p.queueFactorFn != nil {
+		if n := p.queueFactorFn(); n > 0 && n <= MaxIntentQueueFactor {
+			return n
+		}
+	}
+	return DefaultIntentQueueFactor
+}
 
 func (p *Planner) workers() int {
 	if p.workersFn == nil {
@@ -613,7 +626,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 const slotUtilizationBlock = `
 
 【槽位与队列深度（代码持有）】
-- 态势里的 intent_queue 给出 workers（槽位总数）、running（在跑意图数）、idle_slots（空闲槽位数）、claimable（可领意图数）、soft_limit（默认 3×workers）、saturated。**空闲槽位是浪费掉的并行度，待执行队列见底同样是浪费**：worker 跑完一条后如果 claimable=0，下一轮规划到来前就只能空转。
+- 态势里的 intent_queue 给出 workers（槽位总数）、running（在跑意图数）、idle_slots（空闲槽位数）、claimable（可领意图数）、factor（倍数，默认 4）、soft_limit（factor×workers）、saturated。**空闲槽位是浪费掉的并行度，待执行队列见底同样是浪费**：worker 跑完一条后如果 claimable=0，下一轮规划到来前就只能空转。
 - **目标未达成、saturated=false 时，本轮新增意图数应 ≥ min(max(idle_slots, soft_limit - claimable), 4)**（4 是本轮名额上限）。也就是说：既要把空闲槽位补上，也要把待执行队列补到 soft_limit；不要因为"4 个 worker 都在跑"就停手。唯一例外：能逐条说清"我想到的独立方向都已被 open/running 意图覆盖"。「在等某条 work 的产出」「硬底线没触发」「已经有 1 条在跑」都**不是**理由。
 - 派什么：优先【不依赖在跑 work 的独立方向】——不同入口面、不同资产、不同风险类、另一条利用链；已经在跑的意图的后续步骤要等产出，不要为了凑数把它拆成下游意图（那会空转）。独立方向不够时，宁可派"补证缺口 / 复核否定结论 / 换机理重打同一入口"，也不要空着槽位或让队列见底。
 - 队列深度不是"派得越多越好"的许可：仍受 saturated 约束；同一条方向换措辞重复派仍是严重错误。补的是**并行的广度**，不是重复。
@@ -982,6 +995,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			originNode = origin
 		}
 		t.BeginRound(p.policy(), p.workers(), taskClockFrom(ctx), originNode)
+		t.SetIntentQueueFactor(p.intentQueueFactor)
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
 		t.SetPolicyAudit(emit) // 被拒留痕进时间线

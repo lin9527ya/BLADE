@@ -1961,6 +1961,7 @@ export interface Settings {
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   log_level: "debug" | "info" | "warn" | "error"; // 日志页/DB/SSE 的最低级别（热切换）
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
+  intent_queue_factor?: number; // 待领意图上限 = 倍数 × workers（默认4）；保存后下一轮规划生效
   // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，
   // 100% 时任务进入收尾(停派新意图 → drain → 终局报告)。0 或空 = 关闭。
   task_token_budget?: number;

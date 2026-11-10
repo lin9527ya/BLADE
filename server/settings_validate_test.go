@@ -32,6 +32,7 @@ func TestValidateSettingsRequest(t *testing.T) {
 	badBudget := -1
 	badNoise := "loud"
 	badBackend := "bing"
+	badQueueFactor := 33
 	cases := []struct {
 		name string
 		req  settingsRequest
@@ -42,6 +43,7 @@ func TestValidateSettingsRequest(t *testing.T) {
 		{"负预算", settingsRequest{CredentialBudget: &badBudget}, "凭据尝试预算"},
 		{"噪声档位非法", settingsRequest{OpsecNoise: &badNoise}, "opsec_noise_level"},
 		{"未知搜索后端", settingsRequest{WebSearchBackend: &badBackend}, "未知的搜索后端"},
+		{"队列倍数越界", settingsRequest{IntentQueueFactor: &badQueueFactor}, "待领意图上限倍数"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
