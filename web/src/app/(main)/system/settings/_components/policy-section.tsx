@@ -6,7 +6,6 @@ import Link from "next/link";
 
 import { EyeOffIcon, LanguagesIcon, OctagonXIcon, RadarIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
 
-import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { Advanced, Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,14 +22,6 @@ import { exposureWeight } from "./use-settings-state";
 export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> }) {
   const {
     loaded,
-    polDefault,
-    polTech,
-    setPolTech,
-    polWrites,
-    setPolWrites,
-    polCustom,
-    setPolCustom,
-    savingPol,
     injectPlanner,
     injectWorker,
     scopeMode,
@@ -81,8 +72,6 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     killBusy,
     opsecKB,
     resumeBusy,
-    savePolicyDefault,
-    togglePolicyChip,
     toggleInjectPlanner,
     saveScope,
     saveArtifactLang,
@@ -94,10 +83,7 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
   } = s;
 
   return (
-    <Section
-      title="安全与策略"
-      hint="授权范围改完即时生效；探索策略只影响之后新建的任务（创建时抄一份快照）；操作约束注入下一轮读取即生效。"
-    >
+    <Section title="安全与策略" hint="授权范围改完即时生效；操作约束注入下一轮读取即生效。">
       <SafetyBoundarySummary s={s} />
       <SubBlock
         title="授权范围（RoE）"
@@ -631,99 +617,6 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
         )}
       </SubBlock>
 
-      <SubBlock
-        title="探索策略（全局默认）"
-        icon={<ShieldAlertIcon className="size-4 text-muted-foreground" />}
-        actions={
-          <Button type="button" size="sm" onClick={() => void savePolicyDefault()} disabled={savingPol}>
-            保存默认
-          </Button>
-        }
-      >
-        {polDefault ? (
-          <>
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              给「探索链路」划边界的默认值，<b>只影响之后新建的任务</b>
-              ——每个任务创建时会把当时的默认解析成自己的快照（运行中的任务不会被这里改动意外改变边界），任务页可单独覆盖。
-              不符合的<b>探索方向不会进探索图</b>（拒绝时说明命中什么、往哪改），同一份策略还会编译成
-              <b>任务级拦截规则</b>兜住命令层——换措辞也绕不过。这里是<b>加法</b>
-              ：平台内置的破坏性拦截（删除类请求等）始终生效，不因这里放开而解除。
-            </p>
-
-            <div className="flex flex-col gap-1.5">
-              <span className="font-medium text-sm">默认禁用手段</span>
-              <div className="flex flex-wrap gap-1.5">
-                {polDefault.techniques.map((t) => {
-                  const on = polTech.includes(t.id);
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      title={t.hint}
-                      disabled={savingPol}
-                      onClick={() => togglePolicyChip(polTech, setPolTech, t.id)}
-                      className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
-                        on
-                          ? "border-red-500/40 bg-red-500/15 text-red-600 dark:text-red-400"
-                          : "border-border text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      {on ? "禁止 · " : ""}
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <span className="font-medium text-sm">默认禁止的敏感写</span>
-              <div className="flex flex-wrap gap-1.5">
-                {polDefault.writes.map((w) => {
-                  const on = polWrites.includes(w.id);
-                  return (
-                    <button
-                      key={w.id}
-                      type="button"
-                      title={w.hint}
-                      disabled={savingPol}
-                      onClick={() => togglePolicyChip(polWrites, setPolWrites, w.id)}
-                      className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
-                        on
-                          ? "border-red-500/40 bg-red-500/15 text-red-600 dark:text-red-400"
-                          : "border-border text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      {on ? "禁止 · " : ""}
-                      {w.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <Advanced title="高级：自定义禁止条目（词表覆盖不到时手写）">
-              <CustomRulesEditor
-                rules={polCustom}
-                onChange={setPolCustom}
-                disabled={savingPol}
-                limit={polDefault.custom_limit ?? 16}
-                patternLimit={polDefault.custom_pattern_limit ?? 200}
-              />
-            </Advanced>
-
-            <p className="text-muted-foreground text-xs">
-              当前第 {polDefault.version} 版
-              {polDefault.effective.max_intents_per_round
-                ? ` · 每轮最多 ${polDefault.effective.max_intents_per_round} 条意图（任务页可单独覆盖）`
-                : " · 每轮意图数不限（任务页可单独覆盖）"}
-            </p>
-          </>
-        ) : (
-          <p className="text-muted-foreground text-sm">加载中…</p>
-        )}
-      </SubBlock>
-
       <SubBlock title="操作约束注入" icon={<ShieldAlertIcon className="size-4 text-muted-foreground" />}>
         <p className="text-muted-foreground text-xs leading-relaxed">
           开启后，把每个任务的<b>操作约束</b>（在任务总览「操作约束」里维护的 allow/deny 条目）拼进对应 Agent
@@ -774,9 +667,8 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
   const asked = (rules ?? []).filter((r) => r.enabled && r.action === "ask");
   const off = (rules ?? []).filter((r) => !r.enabled);
 
-  const techLabels = s.polTech.map((id) => s.polDefault?.techniques.find((t) => t.id === id)?.label ?? id);
-  const writeLabels = s.polWrites.map((id) => s.polDefault?.writes.find((w) => w.id === id)?.label ?? id);
-  const policyBlocked = [...techLabels, ...writeLabels];
+  // Exploration policy UI was removed with the ARTEX switch; only built-in
+  // intercept rules + credential budget remain in the safety summary.
 
   const credAction =
     s.credBudgetAction === "allow" ? "放行（只记账）" : s.credBudgetAction === "deny" ? "直接拒绝" : "转人工审批";
@@ -816,7 +708,7 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
           <BoundaryRow
             tone="policy"
             title="探索策略额外禁止"
-            items={policyBlocked}
+            items={[]}
             empty="无（探索方向全授权）"
             hint="只影响本页下方「探索策略（全局默认）」，改完只对新建任务生效。"
           />

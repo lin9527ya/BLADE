@@ -36,7 +36,6 @@ import type {
   CompanyKnowledge,
   CompanyScopeMutation,
   CompanyScopeRule,
-  ConstraintCompilePreview,
   ConstraintCompileResult,
   Conversation,
   ConvTokenSummary,
@@ -54,9 +53,6 @@ import type {
   EvidenceBodyPreview,
   ExplorationNodePage,
   ExplorationNodeQuery,
-  ExplorationPolicyDefault,
-  ExplorationPolicyEffective,
-  ExplorationPolicyOverride,
   Finding,
   FindingAssetTree,
   FindingCase,
@@ -107,7 +103,6 @@ import type {
   PlannerTemplate,
   Playbook,
   PlaybookFingerprint,
-  PolicyRuleDraft,
   PromptVar,
   PromptVersion,
   ScheduleFrequency,
@@ -135,7 +130,6 @@ import type {
   TaskHint,
   TaskLLMResolutions,
   TaskNode,
-  TaskPolicy,
   TaskSchedule,
   TaskScopeRow,
   TaskSrcBatchPlan,
@@ -368,7 +362,6 @@ export const api = {
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
     // P20：任务级探索策略覆盖层；省略 = 完全继承当时的全局默认（服务端解析成快照落库）。
-    explorationPolicy?: ExplorationPolicyOverride;
     // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
     plannerPrompt?: string;
     plannerTemplateId?: number;
@@ -390,7 +383,6 @@ export const api = {
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
-      exploration_policy: input.explorationPolicy ?? null, // P20 探索策略覆盖层(null=继承全局默认)
       planner_prompt: input.plannerPrompt ?? "",
       planner_template_id: input.plannerTemplateId ?? 0,
       worker_count: input.workerCount ?? 0,
@@ -661,38 +653,6 @@ export const api = {
   deleteConstraint: (id: string, constraintId: string) =>
     del<{ ok: boolean }>(`/tasks/${id}/constraints/${constraintId}`),
 
-  // ---- P20 探索策略（任务级 + 全局默认）----
-  // Go 把 nil slice 序列化成 null——统一归一成 []，UI 侧不用到处判空。
-  taskPolicy: (id: string) =>
-    get<TaskPolicy>(`/tasks/${id}/policy`).then((p) => ({
-      ...p,
-      effective: {
-        ...p.effective,
-        techniques: arr(p.effective.techniques),
-        forbidden_writes: arr(p.effective.forbidden_writes),
-        custom: arr(p.effective.custom),
-      },
-      global: {
-        ...p.global,
-        techniques: arr(p.global.techniques),
-        forbidden_writes: arr(p.global.forbidden_writes),
-        custom: arr(p.global.custom),
-      },
-      recent_rejects: arr(p.recent_rejects),
-    })),
-  // 保存任务策略（整份覆盖层）：解析成 effective 快照落库，并重建命令门。改动下一轮规划生效。
-  saveTaskPolicy: (id: string, override: ExplorationPolicyOverride) =>
-    patch<TaskPolicy>(`/tasks/${id}/policy`, { override }),
-  // 清空覆盖层（回到"无策略"；不动全局默认）。
-  resetTaskPolicy: (id: string) => del<TaskPolicy>(`/tasks/${id}/policy`),
-  // 只读预览：这套策略会编译出哪些规则、每条命中最近多少条真实调用。
-  previewTaskPolicy: (id: string) =>
-    post<{ rules: PolicyRuleDraft[] | null; preview: ConstraintCompilePreview[] | null }>(
-      `/tasks/${id}/policy/preview`,
-      {},
-    ).then((r) => ({ rules: arr(r.rules), preview: arr(r.preview) })),
-  // 按当前策略清理"未领取"的意图（运行中的不动）。
-  pruneTaskPolicy: (id: string) => post<{ stopped: number; note?: string }>(`/tasks/${id}/policy/prune`, {}),
   // ---- P23 公司级知识 ----
   companyKnowledge: (companyId: number) =>
     get<{ knowledge: CompanyKnowledge[] | null; active: number; total: number }>(
@@ -812,12 +772,6 @@ export const api = {
   testIntelSource: (provider?: string) => post<IntelTestResult>(`/settings/intel/test`, { provider: provider ?? "" }),
   // 查询台账 + 今日用量（设置页展示与排障）。
   intelQueries: () => get<IntelQueryList>(`/settings/intel/queries`),
-  explorationPolicyDefault: () => get<ExplorationPolicyDefault>(`/settings/exploration-policy`),
-  saveExplorationPolicyDefault: (override: ExplorationPolicyOverride) =>
-    put<{ effective: ExplorationPolicyEffective; version: number; note: string }>(`/settings/exploration-policy`, {
-      override,
-    }),
-
   // ---- 任务级资产拦截/允许规则（总览）----
   taskInterceptRules: (id: string) =>
     get<{ rules: AssetInterceptRule[] | null }>(`/tasks/${id}/intercept-rules`).then((r) => arr(r.rules)),
@@ -1347,11 +1301,6 @@ export const api = {
     }));
   },
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),
-  // 穷尽复核记录（看门狗）：planner 声称"已无可行方向"时，独立裁判的复核结论。
-  exhaustionReviews: (task: string, limit = 20) =>
-    get<{ items: Activity[] }>(`/exploration/exhaustion-reviews?task=${encodeURIComponent(task)}&limit=${limit}`).then(
-      (r) => arr(r.items),
-    ),
   // Reverse-paginated session history. session = "main" | "plan" | "intent:<id>".
   // before=0 → latest page; before=<id> → the older page ending before that id.
   // snapshotCursor is the TASK-level max id at query time — open the task SSE at

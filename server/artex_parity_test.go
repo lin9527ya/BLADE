@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/lin9527ya/blade/agent"
@@ -49,5 +50,28 @@ func TestARTEXPParityPlannerPromptMigration(t *testing.T) {
 	}
 	if v, _, _ := pg.GetSetting("planner_prompt_artex_parity_v1"); v != "true" {
 		t.Fatalf("migration flag not set")
+	}
+}
+
+func TestPlannerExploreToolsBinding(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skip("test postgres not configured")
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pg.Close() })
+	s := &Server{m: &Manager{pg: pg}}
+	s.seedPlannerExploreTools()
+	for _, key := range []string{"report_finding", "add_task_scope", "add_company_scope"} {
+		var agents string
+		if err := pg.QueryRow(`SELECT agents::text FROM tools WHERE key=$1 AND system`, key).Scan(&agents); err != nil {
+			t.Fatalf("%s not seeded: %v", key, err)
+		}
+		if !strings.Contains(agents, "planner") {
+			t.Fatalf("%s not bound to planner: %s", key, agents)
+		}
 	}
 }

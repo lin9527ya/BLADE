@@ -23,17 +23,18 @@ func TestPlannerPromptToolReferencesExist(t *testing.T) {
 	}
 }
 
-// planner 是意图生成者，不亲自执行/写漏洞/扩面：执行类、report_finding、scope 工具
-// 必须留在 worker / 主 Agent 面，规划层只描述「让 worker 做什么」。
+// planner 是意图生成者，不亲自执行/长任务：执行类工具必须留在 worker / 主 Agent 面。
+// ARTEX planner 例外：report_finding 与 add_task_scope/add_company_scope 是探索入口，
+// 允许规划层直接登记已确证漏洞和扩面。
 func TestPlannerToolsExcludeExecutionAndWriteSurface(t *testing.T) {
 	have := map[string]bool{}
 	for _, tl := range NewToolSet(nil, "").PlannerTools() {
 		have[tl.Name()] = true
 	}
 	for _, name := range []string{
-		"report_finding", "run_execution", "wait_execution", "get_execution", "grep_execution",
+		"run_execution", "wait_execution", "get_execution", "grep_execution",
 		"cancel_execution", "loot_exec", "loot_upload", "loot_download", "foothold_exec",
-		"tunnel_open", "oast_mint", "oast_poll", "add_task_scope", "add_company_scope", "cve_exploit",
+		"tunnel_open", "oast_mint", "oast_poll", "cve_exploit",
 	} {
 		if have[name] {
 			t.Fatalf("%s 不应出现在 PlannerTools：规划层只产意图，执行/写漏洞/扩面交给 worker 或主 Agent", name)

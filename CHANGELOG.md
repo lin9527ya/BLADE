@@ -66,6 +66,18 @@
 - **迁移**：启动时把 planner 当前正文切换为 ARTEX 默认（旧版本保留在提示词历史）；已有
   depends_on/requires 意图不再被阻塞，旧任务恢复后会按 ARTEX 顺序执行。
 
+### planner 探索入口补齐
+
+- planner 补回 ARTEX 的三个探索入口：`report_finding`（已确证漏洞可直接登记）、
+  `add_task_scope`、`add_company_scope`；老库通过一次性迁移补绑，执行类工具仍不回到 planner。
+- 移除 planner 的 policy 提示段与穷尽复核反馈注入（探索层已无 policy/穷尽门）；任务操作
+  `constraintBlock` 保留。
+- 未删除 BLADE 的战果、遗留物、痕迹、打法库、CVE、AD、opsec、长任务执行等能力；worker
+  工具面与写回保持原样。
+- 前端同步删除探索策略/约束/审核员/收官审计/队列/穷尽复核相关控件与类型：系统设置「探索策略（全局默认）」、
+  任务创建策略覆盖、任务详情探索策略卡、穷尽复核展示及对应 API；授权范围、任务拦截规则、操作约束注入、
+  战果/遗留物/痕迹/打法库/CVE 等非探索 UI 保留。
+
 ### 验证
 
 - 新增 ARTEX parity 回归：planner 提示/工具面无 BLADE 约束块；add_intent 最小 payload

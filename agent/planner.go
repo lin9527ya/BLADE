@@ -40,8 +40,6 @@ type Planner struct {
 	// exhaustedReason 是本轮 mark_strategy_exhausted 写下的原因。引擎在 Plan 返回后
 	// 取走它并暂停任务——不在工具调用中途取消自己的上下文。
 	exhaustedReason string
-	// exhaustionNoteFn 取「上一轮穷尽复核未通过」的反馈（引擎注入，见 takeExhaustionNote）。
-	exhaustionNoteFn func() string
 	// lastRoundIntents 是本轮成功创建的意图数（引擎用它做槽位利用率/停滞判定）。
 	lastRoundIntents int
 	// lastRoundNote 是上一轮的结论摘要。默认每轮开新会话（不 resume 全量 transcript），
@@ -698,7 +696,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.exhaustCooldownFn = func() int { return p.exhaustCooldown }
 	}
 	wireToolSet(tsx)
-	pol := p.policy()
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
@@ -727,11 +724,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	situational := renderTriggers(ts, triggers) + situation
 	// 穷尽复核反馈：上一轮 planner 声明穷尽、但复核员判定证据不足。必须放进本轮输入，
 	// 否则模型会拿着同一个结论再声明一次（它并不知道有人否过它）。
-	if note := p.takeExhaustionNote(); note != "" {
-		situational = "【穷尽复核未通过（上一轮）】\n" + note +
-			"\n处理：本轮**不要**再调用 mark_strategy_exhausted；按上面的不足点补测——" +
-			"缺证据的方向补一条能产出具体观察的意图，或把外部阻断（需登录/被 WAF 拦）如实标成 blocked 而不是 negative。\n\n" + situational
-	}
 	// 任务级 deadline / 终局模式(经 ctx 注入,见 taskclock.go)。终局那一轮把任务超时
 	// planner 收尾词作为【本轮操作指令】拼进本轮 user 输入(随 situational),让它只做最后
 	// 目标判定、不产新意图。
@@ -746,8 +738,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
-	// P20：探索策略段不受 wantConstraints 开关控制——它是操作者声明的硬边界。
-	sysBody += policyBlock(pol)
 	system, boundary := deferredSystem(sysBody, def)
 	// 单轮墙钟预算：优先用 agent 配置的 run_seconds（默认 1200s），有任务 deadline 时
 	// 再夹逼到剩余时间。到点由 SDK 进收尾（不是硬杀），已想清楚的结论能落地。
@@ -917,24 +907,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		p.exhaustCooldown--
 	}
 	return tsx.GoalMet, tsx.Reason, err
-}
-
-// SetExhaustionNoteSource 注入「取走上一轮穷尽复核反馈」的通道（引擎侧写入）。
-// nil = 不复核（测试/无 LLM），此时行为与从前一致。
-func (p *Planner) SetExhaustionNoteSource(fn func() string) { p.exhaustionNoteFn = fn }
-
-// takeExhaustionNote 取走本轮要下发的复核反馈（一次消费）。
-func (p *Planner) takeExhaustionNote() string {
-	if p.exhaustionNoteFn == nil {
-		return ""
-	}
-	note := p.exhaustionNoteFn()
-	if strings.TrimSpace(note) != "" {
-		// 复核否决后的两轮冷却：这段时间里 mark_strategy_exhausted 直接返回，逼 planner
-		// 先把复核点名的缺口补上，而不是换措辞再声明一次（任务 28 连声明 5 次）。
-		p.exhaustCooldown = 2
-	}
-	return note
 }
 
 // recordStrategyExhausted 由 mark_strategy_exhausted 工具调用：只记录原因，

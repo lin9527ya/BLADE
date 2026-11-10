@@ -12,7 +12,9 @@ func TestSeedPlannerToolsConverge(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pg.SetSetting(flag, "true") })
-	keys := []string{"report_finding", "run_execution", "loot_exec", "add_task_scope", "cve_exploit"}
+	execKeys := []string{"run_execution", "loot_exec", "cve_exploit"}
+	exploreKeys := []string{"report_finding", "add_task_scope"}
+	keys := append(append([]string{}, execKeys...), exploreKeys...)
 	if err := pg.AddAgentToToolBinding("planner", keys); err != nil {
 		t.Fatal(err)
 	}
@@ -25,13 +27,19 @@ func TestSeedPlannerToolsConverge(t *testing.T) {
 		}
 		return false
 	}
-	for _, key := range keys {
+	for _, key := range execKeys {
 		tool, err := pg.GetTool(key)
 		if err != nil || tool == nil {
 			t.Fatalf("get tool %s: %+v %v", key, tool, err)
 		}
 		if contains(tool.Agents, "planner") {
 			t.Fatalf("%s still bound to planner after converge: %v", key, tool.Agents)
+		}
+	}
+	for _, key := range exploreKeys {
+		tool, err := pg.GetTool(key)
+		if err != nil || tool == nil || !contains(tool.Agents, "planner") {
+			t.Fatalf("ARTEX exploration tool %s must remain bound to planner: %+v %v", key, tool, err)
 		}
 	}
 	tool, _ := pg.GetTool("run_execution")

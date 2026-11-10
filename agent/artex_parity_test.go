@@ -32,11 +32,14 @@ func TestPlannerToolsARTEXSurface(t *testing.T) {
 			t.Fatalf("ARTEX parity: planner still exposes constraint tool %q", banned)
 		}
 	}
-	for _, keep := range []string{"add_intent", "prove_goal", "drop_intent", "graph_overview", "list_facts", "node_detail"} {
+	for _, keep := range []string{"add_intent", "prove_goal", "drop_intent", "graph_overview", "list_facts", "node_detail", "report_finding", "add_task_scope", "add_company_scope"} {
 		if !have[keep] {
 			t.Fatalf("planner lost capability tool %q", keep)
 		}
 	}
+	// Feature tools unrelated to exploration remain available to the planner; they
+	// are intentionally not treated as worker-only. Execution tools are still
+	// excluded (checked by prompt_tools_test).
 }
 
 func TestAddIntentARTEXMinimalPayload(t *testing.T) {

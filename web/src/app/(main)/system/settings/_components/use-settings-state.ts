@@ -8,8 +8,6 @@ import { api } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import type {
   ClashEgressStatus,
-  CustomRule,
-  ExplorationPolicyDefault,
   IntelQueryRow,
   OpsecKnowledgeResponse,
   ProxyEgressResult,
@@ -105,18 +103,12 @@ export function useSettingsState() {
   const [savingKey, setSavingKey] = React.useState(false);
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
-  const [intentQueueFactor, setIntentQueueFactor] = React.useState("4");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   // 执行审核员：开关 + 周期（秒）。运行时每周期现读，改完对下一个周期生效。
-  const [supervisorEnabled, setSupervisorEnabled] = React.useState(true);
-  const [supervisorInterval, setSupervisorInterval] = React.useState("180");
-  const [savingSupervisor, setSavingSupervisor] = React.useState(false);
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
   // 收官审计语气：目标达成后是否要求"探索充分"（block 默认 / notice / off）。
-  const [completionGate, setCompletionGate] = React.useState<"block" | "notice" | "off">("block");
-  const [savingCompletionGate, setSavingCompletionGate] = React.useState(false);
   // 有界黑板视图：默认裁剪态势省 token；关掉后 planner 每轮预取完整态势。
   const [boundedView, setBoundedView] = React.useState(true);
   const [savingBoundedView, setSavingBoundedView] = React.useState(false);
@@ -145,21 +137,12 @@ export function useSettingsState() {
   const [intelTesting, setIntelTesting] = React.useState(false);
   const [intelTestMsg, setIntelTestMsg] = React.useState("");
   const [intelRows, setIntelRows] = React.useState<IntelQueryRow[]>([]);
-  // P20 探索策略的全局默认（新建任务继承；已存在的任务各自持有快照，不被回溯）。
-  const [polDefault, setPolDefault] = React.useState<ExplorationPolicyDefault | null>(null);
-  const [polTech, setPolTech] = React.useState<string[]>([]);
-  const [polWrites, setPolWrites] = React.useState<string[]>([]);
-  const [polCustom, setPolCustom] = React.useState<CustomRule[]>([]);
-  const [savingPol, setSavingPol] = React.useState(false);
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
   // 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
-  const [constraintProfile, setConstraintProfile] = React.useState<"classic" | "enhanced" | "custom">("classic");
-  const [constraintGroups, setConstraintGroups] = React.useState<Record<string, boolean>>({});
-  const [savingConstraints, setSavingConstraints] = React.useState(false);
   const [chatAutoTitle, setChatAutoTitle] = React.useState(false);
   // 授权范围（RoE）：空间门模式 + 作业时间窗。模式回生效值，另存一个 env 覆盖标志。
   const [scopeMode, setScopeMode] = React.useState("ask");
@@ -225,31 +208,11 @@ export function useSettingsState() {
     setProxyStatus(s.proxy_status ?? []);
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
-    setIntentQueueFactor(String(s.intent_queue_factor ?? 4));
-    setSupervisorEnabled(s.supervisor_enabled !== false);
-    setSupervisorInterval(String(s.supervisor_interval_seconds ?? 180));
     setTokenBudget(String(s.task_token_budget ?? 0));
-    setCompletionGate(s.completion_gate === "notice" || s.completion_gate === "off" ? s.completion_gate : "block");
     setBoundedView(s.planner_bounded_view !== false);
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
-    setConstraintProfile(
-      s.exploration_constraints_profile === "enhanced" || s.exploration_constraints_profile === "custom"
-        ? s.exploration_constraints_profile
-        : "classic",
-    );
-    setConstraintGroups({
-      opening: !!s.constraint_opening,
-      dispatch: !!s.constraint_dispatch,
-      breadth: !!s.constraint_breadth,
-      ledger: !!s.constraint_ledger,
-      review_endgame: !!s.constraint_review_endgame,
-      completion: !!s.constraint_completion,
-      exhaustion: !!s.constraint_exhaustion,
-      supervisor: !!s.constraint_supervisor,
-      depth: !!s.constraint_depth,
-    });
     setChatAutoTitle(!!s.chat_auto_title);
     setScopeMode(s.intercept_scope_mode ?? "ask");
     setScopeModeEnv(!!s.intercept_scope_mode_env);
@@ -280,50 +243,7 @@ export function useSettingsState() {
   }, []);
 
   // 全局默认策略：独立加载（不进 apply——它由 /api/settings 触发，而策略走自己的端点）。
-  React.useEffect(() => {
-    let alive = true;
-    void api
-      .explorationPolicyDefault()
-      .then((pd) => {
-        if (!alive) return;
-        setPolDefault(pd);
-        setPolTech([...pd.effective.techniques]);
-        setPolWrites([...pd.effective.forbidden_writes]);
-        setPolCustom((pd.effective.custom ?? []).map((r) => ({ ...r })));
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
 
-  const savePolicyDefault = async () => {
-    setSavingPol(true);
-    try {
-      // 全局默认 = 出厂默认 + 这里的覆盖；两轴显式提交，避免"看着没禁、其实继承着什么"。
-      const r = await api.saveExplorationPolicyDefault({
-        techniques: polTech,
-        forbidden_writes: polWrites,
-        custom: polCustom.filter((x) => x.pattern.trim() !== ""),
-      });
-      toast.success(`探索策略全局默认已更新（第 ${r.version} 版）：只影响之后新建的任务`);
-      const pd = await api.explorationPolicyDefault();
-      setPolDefault(pd);
-      setPolTech([...pd.effective.techniques]);
-      setPolWrites([...pd.effective.forbidden_writes]);
-      setPolCustom((pd.effective.custom ?? []).map((x) => ({ ...x })));
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setSavingPol(false);
-    }
-  };
-
-  const togglePolicyChip = (list: string[], set: (v: string[]) => void, id: string) => {
-    set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
-  };
-
-  // 情报台账（用量 + 排障）：进页面拉一次，保存/测试后再刷新。
   const loadIntelQueries = React.useCallback(() => {
     void api
       .intelQueries()
@@ -436,41 +356,19 @@ export function useSettingsState() {
 
   const saveWorkers = () => {
     const n = Number(workers);
-    const factor = Number(intentQueueFactor);
     if (!Number.isInteger(n) || n <= 0) {
       toast.error("并发数必须是大于 0 的整数");
       return;
     }
-    if (!Number.isInteger(factor) || factor < 1 || factor > 32) {
-      toast.error("待领意图上限倍数必须是 1–32 的整数");
-      return;
-    }
     setSavingWorkers(true);
     api
-      .setSettings({ workers: n, intent_queue_factor: factor })
+      .setSettings({ workers: n })
       .then((s) => {
         apply(s);
-        toast.success("已保存并发数与待领意图上限倍数（后者下一轮规划生效）");
+        toast.success("已保存并发数");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingWorkers(false));
-  };
-
-  const saveSupervisor = () => {
-    const n = Number(supervisorInterval);
-    if (!Number.isInteger(n) || n < 60 || n > 1800) {
-      toast.error("审核周期必须在 60–1800 秒之间");
-      return;
-    }
-    setSavingSupervisor(true);
-    api
-      .setSettings({ supervisor_enabled: supervisorEnabled, supervisor_interval_seconds: n })
-      .then((s) => {
-        apply(s);
-        toast.success(supervisorEnabled ? `已保存审核员设置（每 ${n} 秒）` : "已关闭执行审核员");
-      })
-      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
-      .finally(() => setSavingSupervisor(false));
   };
 
   const saveBoundedView = () => {
@@ -483,24 +381,6 @@ export function useSettingsState() {
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingBoundedView(false));
-  };
-
-  const saveCompletionGate = () => {
-    setSavingCompletionGate(true);
-    api
-      .setSettings({ completion_gate: completionGate })
-      .then((s) => {
-        apply(s);
-        toast.success(
-          completionGate === "block"
-            ? "已开启收官审计：目标达成但有未豁免缺口时不允许收官"
-            : completionGate === "notice"
-              ? "已设为只提醒：缺口会写进收官回执，但不阻断"
-              : "已关闭收官审计",
-        );
-      })
-      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
-      .finally(() => setSavingCompletionGate(false));
   };
 
   const saveTokenBudget = () => {
@@ -839,23 +719,6 @@ export function useSettingsState() {
       });
   };
 
-  const saveConstraints = (patch: { profile?: "classic" | "enhanced" | "custom"; group?: string; value?: boolean }) => {
-    setSavingConstraints(true);
-    const body: Partial<Settings> = {};
-    if (patch.profile) body.exploration_constraints_profile = patch.profile;
-    if (patch.group) body[`constraint_${patch.group}` as keyof Settings] = patch.value as never;
-    api
-      .setSettings(body)
-      .then((s) => {
-        apply(s);
-        toast.success("已保存探索约束");
-      })
-      .catch((e) => {
-        toast.error(`保存失败：${(e as Error).message}`);
-      })
-      .finally(() => setSavingConstraints(false));
-  };
-
   const toggleNoaCompaction = (v: boolean) => {
     setNoaCompaction(v); // optimistic
     api
@@ -1180,24 +1043,12 @@ export function useSettingsState() {
     setPyInterp,
     workers,
     setWorkers,
-    intentQueueFactor,
-    setIntentQueueFactor,
     savingWorkers,
     setSavingWorkers,
-    supervisorEnabled,
-    setSupervisorEnabled,
-    supervisorInterval,
-    setSupervisorInterval,
-    savingSupervisor,
-    saveSupervisor,
     tokenBudget,
     setTokenBudget,
     savingBudget,
     setSavingBudget,
-    completionGate,
-    setCompletionGate,
-    savingCompletionGate,
-    saveCompletionGate,
     boundedView,
     setBoundedView,
     savingBoundedView,
@@ -1246,25 +1097,11 @@ export function useSettingsState() {
     setIntelTestMsg,
     intelRows,
     setIntelRows,
-    polDefault,
-    setPolDefault,
-    polTech,
-    setPolTech,
-    polWrites,
-    setPolWrites,
-    polCustom,
-    setPolCustom,
-    savingPol,
-    setSavingPol,
     injectPlanner,
     setInjectPlanner,
     injectWorker,
     setInjectWorker,
     noaCompaction,
-    constraintProfile,
-    constraintGroups,
-    savingConstraints,
-    saveConstraints,
     chatAutoTitle,
     toggleChatAutoTitle,
     setNoaCompaction,
@@ -1310,8 +1147,6 @@ export function useSettingsState() {
     setResumeBusy,
     sendMode,
     apply,
-    savePolicyDefault,
-    togglePolicyChip,
     loadIntelQueries,
     saveIntel,
     clearIntelKey,

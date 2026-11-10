@@ -4892,6 +4892,9 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	tools := []actool.CoreTool{
 		t.graphOverview(), t.blackboardView(), t.listFindings(), t.listFacts(), t.nodeDetail(),
+		// ARTEX planner exploration entries: the planner may register a finding it
+		// already verified and widen task/company scope when the model decides to.
+		t.addFinding(), t.addTaskScope(), t.addCompanyScope(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(),

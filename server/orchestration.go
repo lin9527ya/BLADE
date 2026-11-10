@@ -550,7 +550,8 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedPlannerListAssetsBinding()
 	s.seedGraphToolBindings()
 	s.seedCompanyScopeRebind()
-	s.seedPlannerToolsConverge()  // planner 只产意图：执行/写漏洞/扩面工具从默认绑定移除(一次性)
+	s.seedPlannerToolsConverge()  // planner 执行类工具从默认绑定移除(一次性)
+	s.seedPlannerExploreTools()   // 补回 ARTEX 的写 finding / 扩面入口
 	s.seedRedTeamPolicyDefault()  // 旧全局策略若仍是"只读验证"默认，迁到红队默认(一次性)
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
@@ -1238,11 +1239,9 @@ func (s *Server) seedPlannerToolsConverge() {
 		return
 	}
 	for _, k := range []string{
-		"report_finding",
 		"run_execution", "wait_execution", "get_execution", "grep_execution", "cancel_execution",
 		"loot_exec", "loot_upload", "loot_download", "foothold_exec", "tunnel_open",
 		"oast_mint", "oast_poll",
-		"add_task_scope", "add_company_scope",
 		"cve_exploit",
 	} {
 		if err := s.m.pg.RemoveAgentFromTool("planner", k); err != nil {
@@ -1254,6 +1253,25 @@ func (s *Server) seedPlannerToolsConverge() {
 		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
 	}
 	log.Printf("[planner] 执行/写漏洞/扩面工具已从规划层解绑(一次性)")
+}
+
+// seedPlannerExploreTools restores the three ARTEX planner exploration entries
+// (report_finding / add_task_scope / add_company_scope) on existing DBs whose
+// older converge migration removed them. One-shot and additive; it does not
+// re-bind execution tools.
+func (s *Server) seedPlannerExploreTools() {
+	const flag = "planner_explore_tools_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"report_finding", "add_task_scope", "add_company_scope"}); err != nil {
+		log.Printf("[planner] ARTEX 探索工具绑定失败: %v", err)
+		return
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)
+	}
+	log.Printf("[planner] 已补绑 ARTEX 探索工具（report_finding/add_task_scope/add_company_scope）")
 }
 
 // seedWorkerReadToolsUnbind strips the read-context tools off worker's default

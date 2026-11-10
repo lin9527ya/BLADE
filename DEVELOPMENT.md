@@ -228,3 +228,18 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   资产拦截、guard、task_constraints、写入栅栏、报告/证据/统一报告保持不变。
 - 设置页不再暴露探索约束/队列倍数/收官审计/supervisor 控件；旧 profile/policy 设置仍存库但
   探索层不读取。恢复旧行为需要回滚代码与提示词历史，不存在运行时开关。
+
+### planner 探索入口（最小对齐）
+
+- `PlannerTools` 在 ARTEX 核心工具上补回 `report_finding`、`add_task_scope`、
+  `add_company_scope`；启动迁移 `seedPlannerExploreTools` 给老库补绑，执行类工具仍不在 planner。
+- planner 不再注入 policy 段/穷尽复核反馈；任务操作约束 `constraintBlock` 保留。
+- BLADE 的战果、遗留物、痕迹、打法库、CVE、AD、opsec、长任务执行等 worker/planner 能力
+  刻意保留（不影响意图探索），因此不是 ARTEX 的逐字复刻。
+
+### 前端清理（探索约束）
+
+- 已删除系统设置「探索策略（全局默认）」、任务创建策略覆盖、任务详情探索策略卡、穷尽复核卡片，以及
+  `ExplorationPolicy*`/`TaskPolicy`/`CustomRule` 等前端类型和对应 API 调用。
+- 保留授权范围/任务拦截规则/操作约束注入/覆盖度/战果/遗留物/痕迹/打法库/CVE 等非探索控件。
+- 后端 policy 快照与命令门仍可作为遗留数据/安全边界存在；前端不再提供意图策略编辑入口。

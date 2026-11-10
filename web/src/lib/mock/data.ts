@@ -3354,8 +3354,6 @@ export const tools: Tool[] = [
 // ── Settings ─────────────────────────────────────────────────────────────────
 export const settings: Settings = {
   log_level: "info",
-  supervisor_enabled: true,
-  supervisor_interval_seconds: 180,
   traffic_capture: true,
   agent_traffic_binding: false,
   agent_loot_exec: false,
@@ -3377,16 +3375,6 @@ export const settings: Settings = {
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,
-  exploration_constraints_profile: "classic",
-  constraint_opening: false,
-  constraint_dispatch: false,
-  constraint_breadth: false,
-  constraint_ledger: false,
-  constraint_review_endgame: false,
-  constraint_completion: false,
-  constraint_exhaustion: false,
-  constraint_supervisor: false,
-  constraint_depth: false,
 };
 
 // ── LLM 轮询（故障转移）──────────────────────────────────────────────────────

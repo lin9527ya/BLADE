@@ -930,101 +930,6 @@ export interface TaskConstraint {
   compiled_rules?: number;
 }
 
-// ---- P20 探索策略 ----
-
-/**
- * 自定义禁止条目（策略的逃生舱）：词表覆盖不到时操作者手写一条。
- * Regex=false 走关键词（ASCII 词边界 / 中文子串，与词表同款否定语境豁免）；
- * Regex=true 按正则原文匹配（不套否定豁免）。Layer="command" 时只编译进命令门，不判意图措辞。
- */
-export interface CustomRule {
-  label?: string;
-  pattern: string;
-  regex?: boolean;
-  layer?: "both" | "command";
-}
-
-/** 一份解析完成的策略（执行点读的就是它）。0 = 不限。 */
-export interface ExplorationPolicyEffective {
-  version: number;
-  source: string; // global_default | task
-  techniques: string[];
-  forbidden_writes: string[];
-  custom?: CustomRule[] | null;
-  max_intents_per_round: number;
-  max_open_intents: number;
-  max_intents_total: number;
-}
-
-/** 任务自己的覆盖层：字段缺省 = 继承，显式空数组 = 本任务不禁该项，0 = 不限。 */
-export interface ExplorationPolicyOverride {
-  techniques?: string[];
-  forbidden_writes?: string[];
-  custom?: CustomRule[];
-  max_intents_per_round?: number;
-  max_open_intents?: number;
-  max_intents_total?: number;
-}
-
-/** 词表项（设置页/策略卡渲染"禁了什么、为什么"）。 */
-export interface PolicyTechnique {
-  id: string;
-  label: string;
-  hint: string;
-  words: string[];
-}
-export interface PolicyWriteItem {
-  id: string;
-  label: string;
-  hint: string;
-  words: string[];
-  patterns: string[];
-}
-
-/** 策略编译出的规则草案（命令门；落库前）。 */
-export interface PolicyRuleDraft {
-  name: string;
-  match_target: string;
-  match_type: string;
-  pattern: string;
-  action: string;
-  message: string;
-  priority: number;
-  item_id: string;
-  item_label: string;
-}
-
-/** 近期被拒的一条意图（模型想做什么、被哪条策略拦）。 */
-export interface PolicyRejectNote {
-  summary: string;
-  item_label: string;
-  item_id: string;
-  matched: string;
-}
-
-export interface TaskPolicy {
-  effective: ExplorationPolicyEffective;
-  override: ExplorationPolicyOverride;
-  global: ExplorationPolicyEffective;
-  global_version: number;
-  custom: boolean; // 本任务自己配过（false = 创建时抄的全局默认快照）
-  intents_used: number;
-  intents_total: number;
-  rule_count: number; // 命令门当前落库的规则数
-  custom_limit: number; // 自定义条目的条数上限（UI 据此禁用"添加"）
-  recent_rejects: PolicyRejectNote[] | null;
-}
-
-export interface ExplorationPolicyDefault {
-  effective: ExplorationPolicyEffective;
-  version: number;
-  override: ExplorationPolicyOverride;
-  techniques: PolicyTechnique[];
-  writes: PolicyWriteItem[];
-  custom_limit: number;
-  custom_pattern_limit: number;
-}
-
 // ---- P21 情报/测绘 ----
 
 /** 一次情报查询的台账行（审计 + 用量）。 */
@@ -1876,9 +1781,6 @@ export interface ClashRotation {
 
 export interface Settings {
   traffic_capture: boolean;
-  // 执行审核员：定时抽查在跑 worker 的轨迹，偏离时注入纠偏（默认开、180 秒）。
-  supervisor_enabled: boolean;
-  supervisor_interval_seconds: number;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
   agent_loot_exec: boolean; // 战果直接执行（loot_exec）：用登记过的凭据连目标，默认关闭
   agent_auto_retest: boolean; // 自动复测：每条新漏洞启动一次独立复测会话，默认关闭（有 LLM 开销）
@@ -1964,11 +1866,9 @@ export interface Settings {
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   log_level: "debug" | "info" | "warn" | "error"; // 日志页/DB/SSE 的最低级别（热切换）
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
-  intent_queue_factor?: number; // 待领意图上限 = 倍数 × workers（默认4）；保存后下一轮规划生效
   // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，
   // 100% 时任务进入收尾(停派新意图 → drain → 终局报告)。0 或空 = 关闭。
   task_token_budget?: number;
-  completion_gate?: "block" | "notice" | "off";
   planner_bounded_view?: boolean;
   // 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
   task_concurrency_enabled?: boolean; // 默认 false
@@ -1985,17 +1885,6 @@ export interface Settings {
   // worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction;每 run 读一次,对
   // 之后启动的 run 生效。
   noa_compaction?: boolean;
-  // 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
-  exploration_constraints_profile?: "classic" | "enhanced" | "custom";
-  constraint_opening?: boolean;
-  constraint_dispatch?: boolean;
-  constraint_breadth?: boolean;
-  constraint_ledger?: boolean;
-  constraint_review_endgame?: boolean;
-  constraint_completion?: boolean;
-  constraint_exhaustion?: boolean;
-  constraint_supervisor?: boolean;
-  constraint_depth?: boolean;
   // 授权范围（RoE）：空间门模式 + 作业时间窗（空 = 不限时）。
   // intercept_scope_mode 回的是**生效值**（env 优先于 setting）；intercept_scope_mode_env
   // 说明 env 是否把它压住了——页面据此提示，否则用户改了没反应会莫名其妙。

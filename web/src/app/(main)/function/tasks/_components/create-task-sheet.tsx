@@ -6,7 +6,6 @@ import { ChevronRightIcon, Loader2Icon, PaperclipIcon, PlusIcon } from "lucide-r
 import { toast } from "sonner";
 
 import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-editor";
-import { CustomRulesEditor } from "@/components/custom-rules-editor";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { TaskTemplateControls } from "@/components/task-template-controls";
@@ -41,16 +40,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type {
-  AssetInterceptRuleInput,
-  Company,
-  CustomRule,
-  ExplorationPolicyDefault,
-  LLMProfile,
-  PlannerTemplate,
-  Task,
-  TaskCategory,
-} from "@/lib/types";
+import type { AssetInterceptRuleInput, Company, LLMProfile, PlannerTemplate, Task, TaskCategory } from "@/lib/types";
 
 import { CategoryPicker, CompanyPicker } from "./task-categories";
 import { appendUploads, MAX_SOURCE_TASKS } from "./task-helpers";
@@ -183,12 +173,6 @@ export function CreateTaskSheet({
   // 选过就保留用户的选择，不被分类预设覆盖。选「跟随全局 / 分类默认」视为没选过。
   const plannerTemplateTouched = React.useRef(false);
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
-  // P20 探索策略:默认继承当时的全局默认(服务端解析成快照);勾选"自定义"才发覆盖层。
-  const [policyCustom, setPolicyCustom] = React.useState(false);
-  const [policyVocab, setPolicyVocab] = React.useState<ExplorationPolicyDefault | null>(null);
-  const [policyTech, setPolicyTech] = React.useState<string[]>([]);
-  const [policyWrites, setPolicyWrites] = React.useState<string[]>([]);
-  const [policyRules, setPolicyRules] = React.useState<CustomRule[]>([]);
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
@@ -250,24 +234,6 @@ export function CreateTaskSheet({
     }
   }, [open, categoryID, categories, presetAppliedFor]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    void api
-      .explorationPolicyDefault()
-      .then((pd) => {
-        if (!alive) return;
-        setPolicyVocab(pd);
-        setPolicyTech([...pd.effective.techniques]);
-        setPolicyWrites([...pd.effective.forbidden_writes]);
-        setPolicyRules((pd.effective.custom ?? []).map((r) => ({ ...r })));
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [open]);
-
   async function createTask() {
     if (!description.trim() || !goal.trim()) {
       toast.error("请填写描述与目标");
@@ -299,15 +265,6 @@ export function CreateTaskSheet({
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
-        // 勾了自定义才发覆盖层（两轴显式：勾选状态就是本任务的最终策略）；
-        // 不勾则整段省略 → 服务端按当时的全局默认落快照。
-        explorationPolicy: policyCustom
-          ? {
-              techniques: policyTech,
-              forbidden_writes: policyWrites,
-              custom: policyRules.filter((r) => r.pattern.trim() !== ""),
-            }
-          : undefined,
       });
       toast.success("任务已创建");
       setName("");
@@ -326,7 +283,6 @@ export function CreateTaskSheet({
       plannerTemplateTouched.current = false;
       setPresetAppliedFor(undefined);
       setInterceptRules([]);
-      setPolicyCustom(false);
       setUploadCount(0);
       draftIdRef.current = "";
       setOpen(false);
@@ -607,87 +563,6 @@ export function CreateTaskSheet({
                     默认开启：计算并展示测试覆盖度、态势图显示测试进度、自动累积测试范围。关闭后不再计算/展示覆盖度，
                     态势图仅展示资产不显示进度，agent 也不再获得范围类工具。关闭不影响「关联企业资产范围」。
                   </p>
-                </div>
-                <div className="grid gap-2">
-                  <label htmlFor="policy-custom" className="flex items-center gap-2 text-sm">
-                    <Checkbox id="policy-custom" checked={policyCustom} onCheckedChange={(v) => setPolicyCustom(!!v)} />
-                    自定义本任务的探索策略（默认继承全局默认）
-                  </label>
-                  {!policyCustom ? (
-                    <p className="text-muted-foreground text-xs">
-                      {policyVocab
-                        ? `将继承当前全局默认（第 ${policyVocab.version} 版）：禁用 ${
-                            policyVocab.effective.techniques?.length ?? 0
-                          } 类手段、${policyVocab.effective.forbidden_writes?.length ?? 0} 类敏感写${
-                            policyVocab.effective.max_intents_per_round
-                              ? `，每轮最多 ${policyVocab.effective.max_intents_per_round} 条意图`
-                              : ""
-                          }。默认值是快照：之后改全局默认不影响本任务。`
-                        : "加载全局默认…"}
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-2 rounded-md border border-dashed p-2.5">
-                      <span className="font-medium text-xs">禁用的手段（点选切换；未选 = 本任务不禁）</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(policyVocab?.techniques ?? []).map((t) => {
-                          const on = policyTech.includes(t.id);
-                          return (
-                            <button
-                              key={t.id}
-                              type="button"
-                              title={t.hint}
-                              onClick={() =>
-                                setPolicyTech(on ? policyTech.filter((x) => x !== t.id) : [...policyTech, t.id])
-                              }
-                              className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
-                                on
-                                  ? "border-red-500/40 bg-red-500/15 text-red-600 dark:text-red-400"
-                                  : "border-border text-muted-foreground hover:bg-muted"
-                              }`}
-                            >
-                              {on ? "禁止 · " : ""}
-                              {t.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <span className="font-medium text-xs">禁止的敏感写</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(policyVocab?.writes ?? []).map((w) => {
-                          const on = policyWrites.includes(w.id);
-                          return (
-                            <button
-                              key={w.id}
-                              type="button"
-                              title={w.hint}
-                              onClick={() =>
-                                setPolicyWrites(on ? policyWrites.filter((x) => x !== w.id) : [...policyWrites, w.id])
-                              }
-                              className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
-                                on
-                                  ? "border-red-500/40 bg-red-500/15 text-red-600 dark:text-red-400"
-                                  : "border-border text-muted-foreground hover:bg-muted"
-                              }`}
-                            >
-                              {on ? "禁止 · " : ""}
-                              {w.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <span className="font-medium text-xs">自定义禁止条目（词表覆盖不到时手写）</span>
-                      <CustomRulesEditor
-                        rules={policyRules}
-                        onChange={setPolicyRules}
-                        limit={policyVocab?.custom_limit ?? 16}
-                        patternLimit={policyVocab?.custom_pattern_limit ?? 200}
-                      />
-                      <p className="text-muted-foreground text-xs">
-                        生效方式：不符策略的探索方向不会进探索图（拒绝时说明命中什么、往哪改），同一份策略还会
-                        编译成仅本任务生效的拦截规则兜住命令层。这里是加法——平台内置的破坏性拦截始终生效。
-                      </p>
-                    </div>
-                  )}
                 </div>
               </CollapsibleContent>
             </Collapsible>
