@@ -259,6 +259,9 @@ func TestRenderBlockAndHardFloor(t *testing.T) {
 			t.Fatalf("策略段缺少 %q：\n%s", want, block)
 		}
 	}
+	if strings.Contains(block, "mark_strategy_exhausted") {
+		t.Fatalf("策略段仍在引用已下线的穷尽工具：\n%s", block)
+	}
 	if RenderBlock(Effective{}) != "" {
 		t.Fatal("零策略不该注入任何段")
 	}

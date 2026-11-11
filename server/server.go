@@ -14,7 +14,6 @@ import (
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/blade/agent"
-	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/llmpool"
 )
 
@@ -256,25 +255,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		_, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBudgetExhausted)
 		return err
 	})
-	// 规划层的「无方向」出口（mark_strategy_exhausted 与停滞保护）走同一条完整暂停路径：
-	// 先落一条 system 活动留痕（含原因），再暂停任务、取消在跑 Agent。不终止任务、不出报告。
-	s.engine.SetPauseWithReasonHandler(func(t *Task, reason string) error {
-		reason = strings.TrimSpace(reason)
-		if reason == "" {
-			reason = "规划者判定当前已无可行方向"
-		}
-		s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
-			Summary: "任务已暂停：" + clipRunes(reason, 120),
-			Detail: "由规划层（mark_strategy_exhausted / 停滞保护）触发：平台已停止派发新意图并取消在跑的 Planner/Worker，" +
-				"运行中的意图退回 open。这不是任务结束，也不会生成终局报告；人工确认后可在任务页继续。\n原因：" + reason})
-		cause := agent.Causef("strategy_exhausted", "规划者判定无可行方向，任务已暂停",
-			"规划层判定任务在当前授权范围与操作约束内已无可行方向：%s\n平台已停止派发新意图并暂停任务（运行中的意图退回 open）。这不是任务结束，也不会生成终局报告；人工确认后可在任务页继续。", reason)
-		_, err := s.applyTaskControlWithCause(t, "pause", cause)
-		return err
-	})
-	// 穷尽复核看门狗：planner 声称"已无可行方向"时，用一个**独立的只读裁判**核对证据。
-	// 用任务自己的 LLM 链（与它平时规划同一个模型）但走独立的一次性调用——同一会话
-	// 接着问只会重复刚说过的结论。裁判不可用时按"证据不足"处理（任务继续）。
 	// 出口从阻断恢复时通知在跑任务（见 server/egress_recovery.go）。
 	s.m.onEgressRestored = s.engine.notifyEgressRestoredAll
 	s.auth.signKey.set(key)

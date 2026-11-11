@@ -60,11 +60,6 @@ func (t *ToolSet) projectionContract(out map[string]any) {
 				for _, r := range rows {
 					if id, ok := r["id"].(int64); ok {
 						r["evidence_state"] = states[id]
-						if key == "open_intents" {
-							if issues, err := t.ts.RequirementIssues(id); err == nil && len(issues) > 0 {
-								r["requires_missing"] = issues
-							}
-						}
 					}
 				}
 			}

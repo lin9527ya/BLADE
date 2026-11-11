@@ -2,17 +2,14 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
-	"github.com/lin9527ya/blade/policy"
 )
 
 // 任务级超时协调器(见 docs/README.md「任务级超时与收尾」)。
@@ -211,7 +208,6 @@ func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
 // sequence. Absolute wall-clock: it keeps counting through pauses.
 func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 	var lastLeaseSweep time.Time // 零值 → 首轮立即扫一次，之后按 leaseSweepInterval 节流
-	var lastStallCheck time.Time // 同上（P20 策略停摆判定）
 	for {
 		select {
 		case <-ctx.Done():
@@ -260,17 +256,6 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 						}
 					}
 				}
-			}
-		}
-		// P20 探索策略停摆：策略内已无可行方向（窗口内被拒达阈值、期间没有任何成功
-		// 创建的意图、也没有在跑的活）——再唤醒 planner 只会继续烧 token，主动收尾。
-		// 终态用 policy_blocked（不是 timeout）：改策略或加目标即可复活，UI 也该显示
-		// "策略封死"而不是"超时"。
-		if time.Since(lastStallCheck) >= policyStallCheckInterval && !e.isSettling(t.ID) {
-			lastStallCheck = time.Now()
-			if e.policyStall(t) {
-				e.settlePolicyStall(ctx, t)
-				return
 			}
 		}
 		dl := e.taskDeadline(t)
@@ -340,105 +325,6 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 			Detail:  fmt.Sprintf("owner=%s 心跳停止超过 %s，意图已退回 open 重新领取（worker 从既有 transcript 续跑，已写入的产出保留）", l.Owner, db.IntentLeaseTTL)})
 		t.Notify() // 图里出现了重新可领的意图 → 唤醒 planner
 	}
-}
-
-// directionReject 判断一条 policy_reject 是否真的表示"这个方向被策略禁掉"。
-//
-// 配额/节奏类（pace:round / pace:open / pace:total）与否定语境放行（benign）都不是
-// 方向问题：前者是"本轮额度用完、下一轮再来"，后者压根没被拦。把它们计入停摆，会让
-// 一次调度节奏问题被写成"策略内已无可行方向"的终态——任务 19 就是这样被判封死的
-// （08:45 后热会话额度卡死，连续 pace:round 拒绝触发 policy_blocked）。
-func directionReject(a db.Activity) bool {
-	if len(a.Metadata) == 0 {
-		return true // 旧记录没有元数据，按方向拒绝计
-	}
-	var meta struct {
-		Item   string `json:"policy_item"`
-		Benign bool   `json:"benign"`
-	}
-	if err := json.Unmarshal(a.Metadata, &meta); err != nil {
-		return true
-	}
-	if meta.Benign {
-		return false
-	}
-	return !strings.HasPrefix(meta.Item, "pace:")
-}
-
-// settlePolicyStall 是"策略停摆"的收尾动作：先留痕再走与超时/预算共用的收尾时序，
-// 只是终态记 policy_blocked（"策略封死"与"超时"是两回事，改策略/加目标即可复活）。
-func (e *Engine) settlePolicyStall(ctx context.Context, t *Task) {
-	cfg := e.policyStallSettings()
-	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
-		Summary: fmt.Sprintf("探索策略内已无可行方向（近 %s 内被拒 ≥ %d 条且无新增意图），任务进入收尾", cfg.window, cfg.minRejects)})
-	log.Printf("[policy] task %s 策略停摆，进入收尾时序", t.ID)
-	e.settleTask(ctx, t, "探索策略内已无可行方向", "policy_blocked")
-}
-
-// policyStall 判定"策略内已无可行方向"：任务有非空策略、真的没活干（无待领/在跑意图、
-// 无在跑执行或 run）、窗口内被拒达阈值且期间没有任何成功创建的意图。
-// 抽成方法便于验收直接驱动（不用等真跑满一个窗口）。
-func (e *Engine) policyStall(t *Task) bool {
-	cfg := e.policyStallSettings()
-	pgTask, err := e.m.pg.GetTask(parseIntDefault(t.ID))
-	if err != nil || pgTask == nil {
-		return false
-	}
-	doc := policy.ParseDoc(pgTask.ExplorationPolicy)
-	if doc == nil || doc.Effective.IsZero() {
-		return false // 无策略的任务永不受此影响
-	}
-	// 暂停的任务不判停摆：暂停是「等人决定」的稳定态，此刻没有 planner 在跑、也不烧
-	// token，不满足"再唤醒只会烧 token"这条前提。更关键的是停摆收尾写的是终态，
-	// 一旦在这里落下去，人工暂停就被系统抢先收尾，用户连「继续运行」都按不动
-	// （任务 18：05:17 因连续空轮被停滞保护暂停，05:20 又被这里判成 policy_blocked）。
-	if e.IsPaused(t.ID) || t.lifecycleSnapshot().Paused {
-		return false
-	}
-	// 进程正在关闭 / 任务正要随重载暂停时不再判停摆：这个 tick 恰好落在"planner 已被
-	// 中断、重载暂停还没落库"的缝隙里时，会把一个马上要暂停的任务直接写成终态
-	// （任务 19：重启时刻 09:03:55 被判 policy_blocked）。
-	select {
-	case <-e.m.Closed():
-		return false
-	default:
-	}
-	if active, err := t.Store.HasActiveIntent(); err != nil || active {
-		return false
-	}
-	if x := e.m.Executions(); x != nil && len(x.ActiveForTask(t.ID)) > 0 {
-		return false
-	}
-	if e.inflightCount(t.ID) > 0 {
-		return false
-	}
-	rejects, err := t.Store.RecentPolicyRejects(50)
-	if err != nil {
-		return false
-	}
-	cutoff := time.Now().Add(-cfg.window)
-	recent := 0
-	oldest := time.Time{}
-	for _, r := range rejects {
-		if r.CreatedAt.Before(cutoff) {
-			continue
-		}
-		if !directionReject(r) {
-			continue
-		}
-		recent++
-		if oldest.IsZero() || r.CreatedAt.Before(oldest) {
-			oldest = r.CreatedAt
-		}
-	}
-	if recent < cfg.minRejects {
-		return false
-	}
-	// 窗口起点之后成功创建过意图 → 探索仍在推进，只是偶尔被拒。
-	if last, err := t.Store.LastIntentCreatedAt(); err == nil && last != nil && last.After(cutoff) {
-		return false
-	}
-	return time.Since(oldest) >= cfg.grace
 }
 
 // settleTask runs the ordered settle sequence once (§4 steps ①–⑥).

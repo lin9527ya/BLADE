@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
@@ -27,27 +26,6 @@ import (
 
 // settingExplorationPolicy 是全局默认策略的 settings key。
 const settingExplorationPolicy = "exploration_policy"
-
-// 策略停摆出厂参数是常量，测试使用自己的 Engine 配置，不修改正在运行的协调器共享值。
-const (
-	policyStallWindow        = 10 * time.Minute
-	policyStallMinRejects    = 3
-	policyStallGrace         = 2 * time.Minute
-	policyStallCheckInterval = 60 * time.Second
-)
-
-type policyStallConfig struct {
-	window     time.Duration
-	minRejects int
-	grace      time.Duration
-}
-
-func (e *Engine) policyStallSettings() policyStallConfig {
-	if e.stallPolicy.window > 0 && e.stallPolicy.minRejects > 0 {
-		return e.stallPolicy
-	}
-	return policyStallConfig{window: policyStallWindow, minRejects: policyStallMinRejects, grace: policyStallGrace}
-}
 
 // globalPolicy 读全局默认（含版本号）；解析失败回退出厂默认。
 func (s *Server) globalPolicy() (policy.Effective, int) {

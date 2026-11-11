@@ -37,21 +37,11 @@ type Planner struct {
 	killWork        func(intentID int64) error             // engine callback to terminate a running work (nil = off)
 	rotateEgress    func(reason string) (string, error)    // host callback: switch Clash egress node
 	steerWork       func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
-	// exhaustedReason 是本轮 mark_strategy_exhausted 写下的原因。引擎在 Plan 返回后
-	// 取走它并暂停任务——不在工具调用中途取消自己的上下文。
-	exhaustedReason string
-	// lastRoundIntents 是本轮成功创建的意图数（引擎用它做槽位利用率/停滞判定）。
-	lastRoundIntents int
 	// lastRoundNote 是上一轮的结论摘要。默认每轮开新会话（不 resume 全量 transcript），
 	// 用它承接「上一轮想清楚了什么、派了哪些意图、产出了哪些事实」，避免上下文膨胀。
 	lastRoundNote string
-	// exhaustCooldown 是穷尽复核否决后的冷却轮数：>0 时 mark_strategy_exhausted 直接
-	// 返回「先把复核点名的缺口补上」，不再消耗一轮复核（任务 28 在 25 分钟里声明了 5 次）。
-	exhaustCooldown int
 	// lastYieldTotal / lowYieldStreak：收成（finding+foothold+credential）连续不增长时
 	// 强制复盘一次——比"每 5 轮"更贴近"卡住了"的真实信号。
-	// forceReview 由工具侧置位（收官审计拒收后）：下一轮强制复盘，先补空白再重试。
-	forceReview bool
 	// hot 是跨轮复用的规划会话。每轮结束后把历史折叠成「本轮输入 + 结论」两条消息
 	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
 	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
@@ -75,18 +65,14 @@ type Planner struct {
 	execService ExecService
 	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
 	// 改策略下一轮生效，无需重建 agent。
-	policyFn      func() *policy.Effective
-	workersFn     func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
-	queueFactorFn func() int  // 待领意图上限倍数（默认 4；nil = 默认）
-	noaEnabledFn  func() bool // resolver: use experimental noa compaction? (nil = off)
+	policyFn     func() *policy.Effective
+	workersFn    func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
+	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
-	// completionGate 是收官审计的语气 resolver（block/notice/off；nil = off）。
-	completionGate    func() string
-	completionBlocked func()
-	boundedView       func() bool // nil = 有界视图（默认）
-	maxTokensFn       func() int  // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor         *Compactor  // cold-node compaction (§7); nil = disabled
+	boundedView     func() bool // nil = 有界视图（默认）
+	maxTokensFn     func() int  // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor       *Compactor  // cold-node compaction (§7); nil = disabled
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
@@ -144,18 +130,6 @@ func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = 
 // SetWorkersResolver 注入本任务**运行时**的 worker 池大小（队列背压用；nil/0 = 不启用上限）。
 // 用池快照而不是实时设置：改 workers 只影响之后启动的任务，按实时值排队会算错容量。
 func (p *Planner) SetWorkersResolver(fn func() int) { p.workersFn = fn }
-
-// SetIntentQueueFactorResolver 注入待领意图上限倍数（每轮读取，保存设置后下一轮生效）。
-func (p *Planner) SetIntentQueueFactorResolver(fn func() int) { p.queueFactorFn = fn }
-
-func (p *Planner) intentQueueFactor() int {
-	if p.queueFactorFn != nil {
-		if n := p.queueFactorFn(); n > 0 && n <= MaxIntentQueueFactor {
-			return n
-		}
-	}
-	return DefaultIntentQueueFactor
-}
 
 func (p *Planner) workers() int {
 	if p.workersFn == nil {
@@ -227,22 +201,12 @@ func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
 // settings toggle takes effect without rebuilding the agent. nil = inject (default).
 func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn }
 
-// SetCompletionGate wires the completion-audit tone resolver (block/notice/off).
-// Read per round so a settings change takes effect without rebuilding the agent.
-func (p *Planner) SetCompletionGate(fn func() string) { p.completionGate = fn }
-
-// SetCompletionBlocked wires the "audit rejected a prove_goal" callback (metrics).
-func (p *Planner) SetCompletionBlocked(fn func()) { p.completionBlocked = fn }
-
 // SetBoundedView wires the resolver deciding whether the pre-fetched situation is
 // the bounded blackboard view (default) or the full graph_overview payload.
 // Read per round so the setting takes effect without rebuilding the planner.
 func (p *Planner) SetBoundedView(fn func() bool) { p.boundedView = fn }
 
 func (p *Planner) useBoundedView() bool { return p.boundedView == nil || p.boundedView() }
-
-// requestReview 让下一轮成为复盘轮（收官审计拒收后由 prove_goal 触发）。
-func (p *Planner) requestReview() { p.forceReview = true }
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
@@ -674,7 +638,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			originNode = origin
 		}
 		t.BeginRound(p.policy(), p.workers(), taskClockFrom(ctx), originNode)
-		t.SetIntentQueueFactor(p.intentQueueFactor)
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
 		t.SetPolicyAudit(emit) // 被拒留痕进时间线
@@ -684,15 +647,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		}
 		t.SetTaskID(taskID)
 		t.SetTaskClock(taskClockFrom(ctx))
-		t.SetCompletionGate(p.completionGate)
-		t.SetCompletionBlocked(p.completionBlocked)
 		t.SetBoundedView(p.boundedView)
-		t.SetForceReview(p.requestReview)
 		t.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 		t.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
-		t.exhaustedFn = p.recordStrategyExhausted
-		t.exhaustCooldownFn = func() int { return p.exhaustCooldown }
 	}
 	wireToolSet(tsx)
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
@@ -865,7 +823,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 				emit(r)
 			}
 		})
-	p.lastRoundIntents = tsx.intentsRound
 	switch {
 	case err == nil && !resumePlannerSession():
 		// 成功：把历史折叠成「本轮输入 + 结论」，留作下一轮的前缀。
@@ -902,27 +859,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			}
 		}
 	}
-	if p.exhaustCooldown > 0 {
-		p.exhaustCooldown--
-	}
 	return tsx.GoalMet, tsx.Reason, err
 }
-
-// recordStrategyExhausted 由 mark_strategy_exhausted 工具调用：只记录原因，
-// 真正的暂停由引擎在 Plan 返回后执行（避免在工具调用中途取消自己的 ctx）。
-func (p *Planner) recordStrategyExhausted(reason string) {
-	p.exhaustedReason = strings.TrimSpace(reason)
-}
-
-// TakeStrategyExhaustedReason 取走并清空本轮记录的策略穷尽原因。
-func (p *Planner) TakeStrategyExhaustedReason() string {
-	r := p.exhaustedReason
-	p.exhaustedReason = ""
-	return r
-}
-
-// LastRoundIntents 返回最近一轮成功创建的意图数（引擎的槽位利用率/停滞判定用）。
-func (p *Planner) LastRoundIntents() int { return p.lastRoundIntents }
 
 // composePlannerInput 按「稳定 → 易变」拼接本轮规划输入：
 //

@@ -13,8 +13,6 @@ import (
 
 // 规划层的两个「收口」工具：
 //
-//   - mark_strategy_exhausted：planner 在授权范围/操作约束内确认已无可行方向时，
-//     写一条结论事实并把任务交给人工（引擎在本轮结束后暂停任务）。
 //   - abandon_goal：把一个不可达/不再适用的目标标记为 abandoned（理由必填）。
 //
 // 为什么归 planner 而不是 worker：worker 只对自己的意图负责；"整个策略是否已经

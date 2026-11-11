@@ -112,9 +112,6 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 	if req.Workers != nil && *req.Workers <= 0 {
 		return fmt.Errorf("workers 必须 >0")
 	}
-	if req.IntentQueueFactor != nil && (*req.IntentQueueFactor < 1 || *req.IntentQueueFactor > agent.MaxIntentQueueFactor) {
-		return fmt.Errorf("待领意图上限倍数需在 1 到 %d 之间", agent.MaxIntentQueueFactor)
-	}
 	if req.OpsecNoise != nil {
 		switch strings.ToLower(strings.TrimSpace(*req.OpsecNoise)) {
 		case "normal", "quiet":

@@ -190,16 +190,9 @@ type ToolSet struct {
 	ledgerCached   *db.LedgerReport
 	chainsLoaded   bool
 	chainsCached   *db.ChainReport
-	// completionGate 是收官审计的语气（block/notice/off），由 server 注入、每轮现读。
-	// nil = off（agent 单测/无 server 上下文时保持旧行为）。
-	completionGate func() string
 	// boundedView 决定 graph_overview/planner 预取默认走有界黑板视图还是完整态势。
 	// nil = true（保持 0.9.2 默认）；server 注入设置项，每轮现读。
 	boundedView func() bool
-	// completionBlocked 是"审计拒收了一次"的通知（server 用来累计指标）。nil = 不记。
-	completionBlocked func()
-	// forceReview 让下一轮强制复盘（收官审计拒收后：先补空白再重试）。nil = 不支持。
-	forceReview func()
 	// breadthNewDebt tracks debt assets already targeted by intents created in this
 	// ToolSet, so a second add_intent call in the same round does not re-warn for
 	// the same asset.
@@ -213,9 +206,6 @@ type ToolSet struct {
 	// workerCap 是本任务的 worker 池大小（0 = 未知/不启用）。用途只有一个：
 	// 队列背压——待领意图超过 倍数×workerCap（默认 4×）时拒收低优先级新意图。
 	workerCap int
-	// queueFactor 返回待领意图上限倍数（默认 4）。server 每轮注入设置读取器；
-	// nil/非法值回落默认，保证 agent 单测与无 server 场景行为不变。
-	queueFactor func() int
 	// intentsRound 计**本轮**成功创建的意图数（pace:round 额度）。
 	//
 	// 它曾经等于「本 ToolSet 生命周期内创建的意图数」，因为 planner 每轮新建一个
@@ -249,18 +239,6 @@ type ToolSet struct {
 	steerWork func(intentID int64, msg string) error
 	// rotateEgressFn 是「切换 Clash 出口」的宿主回调；nil = 未配置（工具返回可读拒绝）。
 	rotateEgressFn func(reason string) (string, error)
-	// exhaustedFn 是 planner 的「策略穷尽」信号：mark_strategy_exhausted 写完结论
-	// 事实后把原因交给 Planner；引擎在本轮**结束之后**再暂停任务。不在工具调用中途
-	// 取消自己的 ctx——那会让本轮的结论与回执一起丢掉。
-	exhaustedFn func(reason string)
-	// exhaustCooldownFn 读出「穷尽复核否决后的剩余冷却轮数」。>0 时
-	// mark_strategy_exhausted 直接返回，逼 planner 先补复核点名的缺口；用闭包而不是
-	// 快照，才能挡住同一轮内的再次声明。nil = 不冷却。
-	exhaustCooldownFn func() int
-	// reviewRound 为真时，本轮是复盘轮：add_intent 最多 3 条（复盘优先于铺量）。
-	// openingStrict 为真时，粗粒度（只有风险类、没有具体入口）的意图直接拒收。
-	// 只在任务开局轮由 planner 打开：那一轮还没有任何事实，重写一条具体方向是唯一
-	// 有意义的动作；任务中后段则只警告不拦（已有事实可依，拦下来只会浪费一轮）。
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
 	// domain, HTTP probe for a site). nil = no engine enrichment.
 	enrich EnrichTrigger
@@ -317,10 +295,6 @@ func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = f
 func (t *ToolSet) SetRotateEgressHandler(fn func(reason string) (string, error)) {
 	t.rotateEgressFn = fn
 }
-
-// SetStrategyExhaustedHandler wires the planner's "no viable direction" signal
-// (see ToolSet.exhaustedFn). Set only on the planner's ToolSet.
-func (t *ToolSet) SetStrategyExhaustedHandler(fn func(string)) { t.exhaustedFn = fn }
 
 // EnrichTrigger is the enrichment engine seen from the tool layer (see package
 // enrich). Kept as an interface here to avoid coupling agent → enrich.
@@ -413,19 +387,10 @@ func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
 // SetTaskClock 注入本轮的任务截止信息（nil/零值 = 没有期限，行为不变）。
 func (t *ToolSet) SetTaskClock(tc TaskClock) { t.clock = tc }
 
-// SetCompletionGate 注入收官审计语气：block（默认）/ notice / off。nil 或空 = off。
-func (t *ToolSet) SetCompletionGate(fn func() string) { t.completionGate = fn }
-
 // SetBoundedView 注入"默认态势是否裁剪为有界视图"的 resolver。nil = 有界（默认）。
 func (t *ToolSet) SetBoundedView(fn func() bool) { t.boundedView = fn }
 
 func (t *ToolSet) useBoundedView() bool { return t.boundedView == nil || t.boundedView() }
-
-// SetCompletionBlocked 注入"审计拒收"的回调（指标用；nil = 不记）。
-func (t *ToolSet) SetCompletionBlocked(fn func()) { t.completionBlocked = fn }
-
-// SetForceReview 注入"下一轮强制复盘"的回调（收官审计拒收后）。nil = 不支持。
-func (t *ToolSet) SetForceReview(fn func()) { t.forceReview = fn }
 
 // SetCoverageEnabled records whether this task has the asset-coverage feature on
 // (default enabled). Passing false makes graphOverviewData omit the coverage block
@@ -519,19 +484,6 @@ func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 
 // SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
 func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
-
-// SetIntentQueueFactor 注入待领意图上限倍数解析器（nil/<=0 = 默认 4）。
-func (t *ToolSet) SetIntentQueueFactor(fn func() int) { t.queueFactor = fn }
-
-// intentQueueFactor 返回当前生效的队列倍数；只用于队列背压与态势展示。
-func (t *ToolSet) intentQueueFactor() int {
-	if t.queueFactor != nil {
-		if n := t.queueFactor(); n > 0 && n <= MaxIntentQueueFactor {
-			return n
-		}
-	}
-	return DefaultIntentQueueFactor
-}
 
 // SetWorkerCap 注入本任务的 worker 池大小，用于队列背压（0 = 不启用）。
 // 由 planner 按**任务运行时的池快照**注入——实时读设置会让改过 workers 的任务按错误容量排队。
@@ -1393,111 +1345,10 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if len(pausedIntents) > 0 {
 		out["paused_intents"] = compactIntents(pausedIntents, parentsOf, yieldsOf, lineageKinds)
 	}
-	// 串行链：前置未满足的意图**不会**被 worker 领走（Frontier/ClaimIntent 都有闸门）。
-	// 必须把这件事摆到规划层面前——否则它会以为"我派了、怎么没人跑"，或者反复重派。
-	if deps, derr := t.ts.IntentDependencies(); derr == nil && len(deps) > 0 {
-		stateByID := make(map[int64]string, len(all))
-		summaryByID := make(map[int64]string, len(all))
-		for _, n := range all {
-			stateByID[n.ID] = n.State
-			var p map[string]any
-			if json.Unmarshal(n.Payload, &p) == nil {
-				summaryByID[n.ID] = asText(p["summary"])
-			}
-		}
-		blocked := 0
-		if items, ok := out["open_intents"].([]map[string]any); ok {
-			for _, it := range items {
-				id, _ := it["id"].(int64)
-				depIDs := deps[id]
-				if len(depIDs) == 0 {
-					continue
-				}
-				blocked++
-				by := make([]map[string]any, 0, len(depIDs))
-				for _, d := range depIDs {
-					item := map[string]any{
-						"id": d, "state": stateByID[d], "summary": clipLine(summaryByID[d], 60),
-					}
-					switch stateByID[d] {
-					case "out-of-scope", "blocked", "exhausted", "stopped", "no_output", "deleted":
-						item["dead"] = true // 前置永远不会满足：下游不能等，要重派/拆链/丢弃
-					}
-					by = append(by, item)
-				}
-				it["blocked_by"] = by
-			}
-		}
-		if total, cerr := t.ts.CountBlockedOpenIntents(); cerr == nil {
-			out["blocked_intents_total"] = total // 全量，不是 open_intents 窗口内的计数
-		} else if blocked > 0 {
-			out["blocked_intents_total"] = blocked
-		}
-	}
-	// 永远等不到的排队意图：前置已全部收场、且至少一个不会有结论。它们仍是 open，
-	// unblock_intent 有效；单独列出来是因为 open_intents 窗口（30 条）外的那些只能靠计数猜。
-	if stranded, serr := t.ts.StrandedDependents(); serr == nil && len(stranded) > 0 {
-		out["stranded_dependents_total"] = len(stranded)
-		ids := make([]int64, 0, len(stranded))
-		deadIDs := make([]int64, 0, len(stranded))
-		for id, ds := range stranded {
-			ids = append(ids, id)
-			deadIDs = append(deadIDs, ds...)
-		}
-		deadState := map[int64]string{}
-		if nodes, nerr := t.ts.NodesByIDs(deadIDs); nerr == nil {
-			for _, n := range nodes {
-				deadState[n.ID] = n.State
-			}
-		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		items := make([]map[string]any, 0, 8)
-		for _, id := range ids {
-			if len(items) >= 8 {
-				break
-			}
-			var p map[string]any
-			if n, nerr := t.ts.GetNode(id); nerr == nil && n != nil {
-				_ = json.Unmarshal(n.Payload, &p)
-			}
-			dead := make([]map[string]any, 0, len(stranded[id]))
-			for _, d := range stranded[id] {
-				dead = append(dead, map[string]any{"id": d, "state": deadState[d]})
-			}
-			items = append(items, map[string]any{
-				"id": id, "summary": clipLine(asText(p["summary"]), 80), "dead_deps": dead,
-			})
-		}
-		out["stranded_dependents"] = items
-	}
 	// 队列深度与容量：planner 判断"还能不能再派"唯一该看的数。
 	// frontier_open 仍保留（含被前置挡住的），但判定请用 claimable_intents。
 	if claimable, err := t.ts.CountClaimableIntents(); err == nil {
 		out["claimable_intents"] = claimable
-	}
-	if t.workerCap > 0 {
-		// idle_slots 直接给出「还有几个 worker 闲着」。此前只给 workers/running 两个数，
-		// 要模型自己做减法：结果是"有 1 条在跑"就当成"已经有人在干活"，空转的槽位
-		// 没人认领（任务 14 实测：4 个 worker 只跑 1 条，planner 连续几轮不派活）。
-		idle := t.workerCap - len(running)
-		if idle < 0 {
-			idle = 0
-		}
-		factor := t.intentQueueFactor()
-		q := map[string]any{
-			"workers": t.workerCap, "soft_limit": factor * t.workerCap, "factor": factor,
-			"running": len(running), "idle_slots": idle,
-		}
-		if v, ok := out["claimable_intents"].(int); ok {
-			q["claimable"] = v
-			if v >= factor*t.workerCap {
-				q["saturated"] = true
-			}
-		}
-		if v, ok := out["blocked_intents_total"].(int); ok {
-			q["blocked"] = v
-		}
-		out["intent_queue"] = q
 	}
 	// done_intents_total：已结束意图（done/blocked/exhausted）总数，与 recent_done_intents
 	// 平行命名——后者只是它的最新窗口截断视图。两键并排即自描述："看到的是 N/总数"，
@@ -2092,11 +1943,8 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	if health := t.graphHealth(); len(health) > 0 {
 		out["graph_health"] = health
 	}
-	// 兜底：分组关闭时这些字段一律不出现在 agent 上下文（查询可能已在上面跑过，
+	// 兜底：已下线的探索约束字段一律不出现在 agent 上下文（查询可能已在上面跑过，
 	// 但提示里不泄漏）。worker 视图另有更严格的 drop。
-	if !t.constraintOn("dispatch") {
-		delete(out, "intent_queue")
-	}
 	if !t.constraintOn("depth") {
 		for _, k := range []string{
 			"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
@@ -2781,16 +2629,6 @@ type intentContract struct {
 	ChangeEvidence  []int64  `json:"change_evidence,omitempty"`  // 支持 variant 的事实/发现 id
 	RecheckOf       int64    `json:"recheck_of,omitempty"`       // 复核哪条已结束意图
 }
-
-// 队列背压的两个旋钮。上限按「可领意图 ≥ factor×workers」算：worker 数是本任务的运行快照；
-// urgent 及以上是逃生口——材料性新发现（新战果、新漏洞链）驱动的跟进不该被队列挡住。
-const (
-	// DefaultIntentQueueFactor 是待领意图上限相对 worker 数的默认倍数。
-	DefaultIntentQueueFactor = 4
-	// MaxIntentQueueFactor 是设置项允许的上限，防止手滑写成天文数字。
-	MaxIntentQueueFactor      = 32
-	intentQueueUrgentPriority = 8
-)
 
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
 // 血缘有三条正交的轴：
@@ -4909,8 +4747,6 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listFootprints(), t.acceptFootprintRisk(),
 		// 补血缘：add_intent 漏传 parent_ids 时，把已建意图接回真实来源（不动节点、不丢产出）。
 		t.linkIntentSource(),
-		// 收口：不可达目标 → 放弃（理由必填）。mark_strategy_exhausted 仅在
-		// exhaustion 分组开启时注册（见函数末尾）。
 		t.abandonGoal(),
 		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
 		t.rotateEgressTool(),

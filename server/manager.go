@@ -305,7 +305,6 @@ const (
 	settingOpsecNoise          = "opsec_noise_level" // 噪声档位：quiet 时给 planner/worker 追加潜行纪律
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
-	settingCompletionGate      = "completion_gate"
 	settingPlannerBoundedView  = "planner_bounded_view"
 	// 探索约束分组（P0）：经典模式默认全关，增强模式可逐组打开。
 	// profile 只是预设：classic=全关、enhanced=全开、custom=按下面的 group 键。
@@ -334,10 +333,7 @@ const (
 	settingProxySwitchCooldown = "proxy_switch_cooldown_seconds"
 	settingProxyEgressIPURL    = "proxy_egress_ip_url"
 	settingWorkers             = "workers"
-	// settingIntentQueueFactor 是待领意图上限相对 worker 数的倍数（默认 4）。
-	// 与 workers 不同，它每轮规划现读，保存后下一轮生效。
-	settingIntentQueueFactor = "intent_queue_factor"
-	settingLLMRecord         = "llm_record"
+	settingLLMRecord           = "llm_record"
 	// settingCompactionPrompt（P14）是领域化压缩模板（7 段）。空 = 用内置模板。
 	// 刻意放 settings 而不是 agent_prompts：它不是某个 agent 的提示词，没有对应
 	// agent 行；塞进 agent_prompts 需要在 Agent 管理里凭空多出一个假 agent。
@@ -554,21 +550,6 @@ func (m *Manager) SetWorkers(n int) error {
 		return fmt.Errorf("workers 必须 >0")
 	}
 	return m.pg.SetSetting(settingWorkers, strconv.Itoa(n))
-}
-
-// IntentQueueFactor returns the pending-intent cap multiplier (default 4).
-// Unlike workers, this is read every planner round so a saved change takes
-// effect on the next round without restarting or recreating tasks.
-func (m *Manager) IntentQueueFactor() int {
-	v, ok, err := m.pg.GetSetting(settingIntentQueueFactor)
-	if err != nil || !ok {
-		return agent.DefaultIntentQueueFactor
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 1 || n > agent.MaxIntentQueueFactor {
-		return agent.DefaultIntentQueueFactor
-	}
-	return n
 }
 
 // Enrich returns the asset auto-completion engine (may be nil if init failed).

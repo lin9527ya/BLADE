@@ -139,24 +139,14 @@ func (s *Server) settingsPayload() map[string]any {
 		"opsec_noise_level":     noiseLevel(s.m.pg),
 		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":     s.taskTokenBudget(),
-		"completion_gate":       s.completionGateMode(),
 		"planner_bounded_view":  s.plannerBoundedView(),
-		// 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
-		"exploration_constraints_profile": s.m.ExplorationConstraintsProfile(),
-		"constraint_opening":              s.m.ConstraintEnabled("opening"),
-		"constraint_dispatch":             s.m.ConstraintEnabled("dispatch"),
-		"constraint_breadth":              s.m.ConstraintEnabled("breadth"),
-		"constraint_ledger":               s.m.ConstraintEnabled("ledger"),
-		"constraint_review_endgame":       s.m.ConstraintEnabled("review_endgame"),
-		"constraint_completion":           s.m.ConstraintEnabled("completion"),
-		"constraint_depth":                s.m.ConstraintEnabled("depth"),
-		"llm_record":                      s.m.LLMRecordEnabled(),
-		"web_search_enabled":              on,
-		"web_search_backend":              backend,
-		"brave_key_set":                   strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":                  strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":                proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":                    s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
+		"llm_record":            s.m.LLMRecordEnabled(),
+		"web_search_enabled":    on,
+		"web_search_backend":    backend,
+		"brave_key_set":         strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":        strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":      proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":          s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
 		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
 		// 全部候选都不可用、出口已阻断（**不会直连**）。
 		"global_proxy_pool":             strings.Join(proxyCfg.Candidates, "\n"),
@@ -178,10 +168,9 @@ func (s *Server) settingsPayload() map[string]any {
 		"clash_status":                  s.m.ClashEgressStatus(),
 		"python_interpreter":            strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"log_level":                     LogLevelName(),
-		"workers":                       s.m.Workers(),           // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"intent_queue_factor":           s.m.IntentQueueFactor(), // 待领意图上限 = 倍数 × workers（默认4）
-		"task_concurrency_enabled":      concOn,                  // 任务并发上限开关(默认关)
-		"task_concurrency_limit":        concLimit,               // 同时运行任务上限(开启后默认5)
+		"workers":                       s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"task_concurrency_enabled":      concOn,        // 任务并发上限开关(默认关)
+		"task_concurrency_limit":        concLimit,     // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -306,19 +295,8 @@ type settingsRequest struct {
 	OpsecNoise          *string `json:"opsec_noise_level"`
 	AgentAutoRetest     *bool   `json:"agent_auto_retest"`
 	TaskTokenBudget     *int64  `json:"task_token_budget"`
-	CompletionGate      *string `json:"completion_gate"`      // block|notice|off
 	PlannerBoundedView  *bool   `json:"planner_bounded_view"` // 默认态势是否裁剪为有界视图
-	// 探索约束分组：profile 预设 + 9 个逐组开关。预设写入时批量落 group 值；
-	// 单独提交 group 值时自动切到 custom。
-	ConstraintProfile       *string `json:"exploration_constraints_profile"`
-	ConstraintOpening       *bool   `json:"constraint_opening"`
-	ConstraintDispatch      *bool   `json:"constraint_dispatch"`
-	ConstraintBreadth       *bool   `json:"constraint_breadth"`
-	ConstraintLedger        *bool   `json:"constraint_ledger"`
-	ConstraintReviewEndgame *bool   `json:"constraint_review_endgame"`
-	ConstraintCompletion    *bool   `json:"constraint_completion"`
-	ConstraintDepth         *bool   `json:"constraint_depth"`
-	LLMRecord               *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+	LLMRecord           *bool   `json:"llm_record"`           // LLM 录制开关（默认关）；即时生效，无需重建 agent
 	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 	WebSearchEnabled    *bool   `json:"web_search_enabled"`
@@ -340,10 +318,9 @@ type settingsRequest struct {
 	ClashProxyGroup     *string `json:"clash_proxy_group"`
 	ClashAutoRotate     *bool   `json:"clash_auto_rotate"`
 	ClashRotateCooldown *int    `json:"clash_rotate_cooldown_seconds"`
-	PythonInterp        *string `json:"python_interpreter"`  // 自定义脚本工具的 python 解释器路径
-	LogLevel            *string `json:"log_level"`           // debug|info|warn|error；热切换
-	Workers             *int    `json:"workers"`             // 并发工作 agent 数(>0)；对之后启动的任务生效
-	IntentQueueFactor   *int    `json:"intent_queue_factor"` // 待领意图上限倍数(1-32，默认4)；下一轮规划生效
+	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
+	LogLevel            *string `json:"log_level"`          // debug|info|warn|error；热切换
+	Workers             *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 	// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
 	ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 	ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
@@ -520,45 +497,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		pending[settingSiteName] = v
 	}
-	constraintsDirty := false
-	if req.ConstraintProfile != nil {
-		profile := NormalizeConstraintProfile(*req.ConstraintProfile)
-		pending[settingConstraintProfile] = profile
-		if profile != "custom" {
-			val := "false"
-			if profile == "enhanced" {
-				val = "true"
-			}
-			for _, g := range ConstraintGroups {
-				pending["constraint_"+g] = val
-			}
-		}
-		constraintsDirty = true
-	}
-	groupChanged := false
-	for _, g := range []struct {
-		name string
-		val  *bool
-	}{
-		{"opening", req.ConstraintOpening}, {"dispatch", req.ConstraintDispatch},
-		{"breadth", req.ConstraintBreadth}, {"ledger", req.ConstraintLedger},
-		{"review_endgame", req.ConstraintReviewEndgame}, {"completion", req.ConstraintCompletion},
-		{"depth", req.ConstraintDepth},
-	} {
-		if g.val == nil {
-			continue
-		}
-		pending["constraint_"+g.name] = strconv.FormatBool(*g.val)
-		groupChanged = true
-	}
-	if groupChanged {
-		// 逐组改动意味着“自定义”，否则 classic/enhanced 的预设值会把它们盖掉。
-		// 只有调用方没显式给预设（或显式给 custom）时才切 custom；显式预设优先。
-		if req.ConstraintProfile == nil || NormalizeConstraintProfile(*req.ConstraintProfile) == "custom" {
-			pending[settingConstraintProfile] = "custom"
-		}
-		constraintsDirty = true
-	}
 	if req.ConstraintsInjectPlanner != nil {
 		pending[settingConstraintsInjectPlanner] = strconv.FormatBool(*req.ConstraintsInjectPlanner)
 	}
@@ -661,9 +599,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.Workers != nil {
 		pending[settingWorkers] = strconv.Itoa(*req.Workers)
 	}
-	if req.IntentQueueFactor != nil {
-		pending[settingIntentQueueFactor] = strconv.Itoa(*req.IntentQueueFactor)
-	}
 	if req.ConcurrencyEnabled != nil || req.ConcurrencyLimit != nil {
 		// 部分 PUT:未给的字段用当前值兜底,避免只改一个把另一个重置。
 		curOn, curLimit := s.m.ConcurrencyLimit()
@@ -741,14 +676,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PlannerBoundedView != nil {
 		pending[settingPlannerBoundedView] = strconv.FormatBool(*req.PlannerBoundedView)
-	}
-	if req.CompletionGate != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.CompletionGate))
-		if mode != "block" && mode != "notice" && mode != "off" {
-			writeErr(w, 400, "completion_gate 只能是 block / notice / off")
-			return
-		}
-		pending[settingCompletionGate] = mode
 	}
 	if req.AgentTrafficBinding != nil {
 		pending[settingAgentTrafficBinding] = strconv.FormatBool(*req.AgentTrafficBinding)
@@ -906,10 +833,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := s.m.pg.SetSettings(pending); err != nil {
 		writeErr(w, 500, "设置保存失败（本次改动未写入）："+err.Error())
 		return
-	}
-	if constraintsDirty {
-		// 工具面/提示块按分组装配；下一轮必须拿到新的 bundle。
-		s.invalidateTaskAgents()
 	}
 	if corsDirty {
 		s.cors.mu.Lock()

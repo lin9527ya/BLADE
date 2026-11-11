@@ -182,7 +182,7 @@ func TestTaskPauseCauseSurvivesImmediateResume(t *testing.T) {
 		t.Fatal("goal completion was misclassified as a task pause")
 	}
 	// 平台主动刹车（预算/停机/时间窗/策略穷尽）取消的意图要退回 open，不能落 blocked。
-	for _, cause := range []error{agent.AbortBudgetExhausted, agent.AbortKillSwitch, agent.AbortScopeWindowClosed, agent.AbortStrategyExhausted} {
+	for _, cause := range []error{agent.AbortBudgetExhausted, agent.AbortKillSwitch, agent.AbortScopeWindowClosed} {
 		if !taskExecutionPaused(cause) {
 			t.Fatalf("%v must be classified as a task pause (intent returns to open)", cause)
 		}

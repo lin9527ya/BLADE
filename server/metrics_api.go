@@ -165,8 +165,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 // 每任务明细走 GET /api/exploration/ledger?task=）。
 func (s *Server) metricsExploration(ctx context.Context) map[string]any {
 	out := map[string]any{
-		"completion_blocks": s.engine.CompletionBlocks(),
-		"waivers":           map[string]int64{},
+		"waivers": map[string]int64{},
 	}
 	rows, err := s.m.pg.QueryContext(ctx, `SELECT scope, count(*) FROM completion_waivers GROUP BY scope`)
 	if err != nil {
