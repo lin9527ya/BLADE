@@ -110,7 +110,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # 与 test.yml 一致，从 go.mod 读版本：写死 "1.26" 会让发布产物用浮动
-          # patch 版编译，而测试跑在 go.mod 钉死的 1.26.10 上——两者的差异只在
+          # patch 版编译，而测试跑在 go.mod 钉死的 1.26.11 上——两者的差异只在
           # 发布件里暴露。
           go-version-file: go.mod
           cache: true
