@@ -246,6 +246,12 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   planner/worker 策略段与意图门均不再存在；`tasks.exploration_policy` 列保留但不再读写，
   `policy_blocked` 仅作为历史终态兼容已有任务。
 
+### 主 agent 工具 schema 瘦身
+
+- 22 个低频工具改为 deferred（schema 不随每轮对话发送）：足迹/遗留物补记与销账、
+  CVE/打法/AD/opsec 查询、合并漏洞、知识沉淀、凭据验证、出口切换等。
+- 报告核心写回与态势/意图/提示工具保持常驻；工具实现与绑定不变。
+
 ### worker 工具 schema 瘦身
 
 - 18 个低频工具改为 deferred（schema 不随每轮 prompt 发送，模型按需 SearchExtraTools）：

@@ -156,3 +156,40 @@ func TestWorkerDeferredTools(t *testing.T) {
 		t.Fatalf("deferred 块缺少 worker 工具：%v", sys)
 	}
 }
+
+// 主 agent 的低频工具 deferred 清单：名字必须真实存在，核心对话/写回工具不得
+// 被 deferred（否则用户一句「记一下」会先多一轮查 schema）。
+func TestMainAgentDeferredTools(t *testing.T) {
+	base := NewToolSet(nil, "").MainAgentTools()
+	have := map[string]bool{}
+	for _, tl := range base {
+		have[tl.Name()] = true
+	}
+	deferred := map[string]bool{}
+	for _, name := range mainDeferredTools {
+		if !have[name] {
+			t.Fatalf("deferred 工具 %q 不在 MainAgentTools 里", name)
+		}
+		deferred[name] = true
+	}
+	for _, core := range []string{
+		"graph_overview", "list_findings", "list_facts", "node_detail",
+		"get_worker_output", "get_worker_trace", "search_all_worker_traces",
+		"add_hint", "add_intent", "steer_work", "set_goals", "set_constraints",
+		"add_task_scope", "add_company_scope", "insert_assets", "list_assets",
+		"list_companies", "report_finding", "record_fact", "report_foothold",
+		"report_credential",
+	} {
+		if deferred[core] {
+			t.Fatalf("核心对话/写回工具 %q 不应 deferred", core)
+		}
+	}
+	got := deferMainTools(base)
+	if len(got) != len(mainDeferredTools) {
+		t.Fatalf("deferMainTools 丢了名字：%v", got)
+	}
+	sys, _ := deferredSystem("SYS", DeferredInfo{Deferred: got, GlobalNames: got})
+	if len(sys) < 2 || !strings.Contains(sys[1], "report_footprint") {
+		t.Fatalf("deferred 块缺少主 agent 工具：%v", sys)
+	}
+}

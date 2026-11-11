@@ -78,6 +78,15 @@
   任务创建策略覆盖、任务详情探索策略卡、穷尽复核展示及对应 API；授权范围、任务拦截规则、操作约束注入、
   战果/遗留物/痕迹/打法库/CVE 等非探索 UI 保留。
 
+### 主 agent 工具 schema 瘦身
+
+- 新增 `mainDeferredTools`（22 项）：足迹/遗留物补记与销账、CVE/打法/AD/opsec 查询、
+  重复漏洞合并、知识沉淀、凭据验证、出口切换等低频工具的 schema 不再随每轮对话发送，
+  需要时用 `SearchExtraTools` 取用。
+- 报告核心写回保持常驻：`report_finding`、`record_fact`、`report_foothold`、
+  `report_credential`、`insert_assets`，以及全部态势查询/意图/提示/目标工具。
+- 工具实现与绑定不变；每轮约少 13,700 字符工具 schema。
+
 ### worker 工具 schema 瘦身
 
 - 新增 `workerDeferredTools`（18 项）：足迹/遗留物销账、CVE/打法/AD/opsec 查询、

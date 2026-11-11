@@ -36,21 +36,25 @@ var plannerDeferredTools = []string{
 	"list_companies",       // 443
 }
 
-// deferPlannerTools 返回 plannerDeferredTools 里**实际存在**于 base 的工具名。
-// 工具本身仍留在工具面（SDK 负责隐藏 schema、经 SearchExtraTools/ExecuteExtraTool 调用）；
-// 只标记确实存在的名字，避免把不存在的工具写进提示词（模型会去查一个查不到的名字）。
-func deferPlannerTools(base []actool.CoreTool) []string {
+// deferToolsNamed 返回 names 里**实际存在**于 base 的工具名。
+// 工具本身仍留在工具面（SDK 负责隐藏 schema、经 SearchExtraTools/ExecuteExtraTool
+// 调用）；只标记确实存在的名字，避免把不存在的工具写进提示词（模型会去查一个查不到的名字）。
+func deferToolsNamed(base []actool.CoreTool, names []string) []string {
 	have := make(map[string]bool, len(base))
 	for _, tl := range base {
 		have[tl.Name()] = true
 	}
-	deferred := make([]string, 0, len(plannerDeferredTools))
-	for _, name := range plannerDeferredTools {
+	deferred := make([]string, 0, len(names))
+	for _, name := range names {
 		if have[name] {
 			deferred = append(deferred, name)
 		}
 	}
 	return deferred
+}
+
+func deferPlannerTools(base []actool.CoreTool) []string {
+	return deferToolsNamed(base, plannerDeferredTools)
 }
 
 // workerDeferredTools 是 worker 按需才用的内置工具：schema 不进每轮工具列表，
@@ -80,20 +84,41 @@ var workerDeferredTools = []string{
 	"close_candidate",
 }
 
-// deferWorkerTools 返回 workerDeferredTools 里实际存在于 base 的工具名（与 planner
-// 同一套过滤：不把不存在的名字写进提示词，否则模型会去查一个查不到的名字）。
 func deferWorkerTools(base []actool.CoreTool) []string {
-	have := make(map[string]bool, len(base))
-	for _, tl := range base {
-		have[tl.Name()] = true
-	}
-	deferred := make([]string, 0, len(workerDeferredTools))
-	for _, name := range workerDeferredTools {
-		if have[name] {
-			deferred = append(deferred, name)
-		}
-	}
-	return deferred
+	return deferToolsNamed(base, workerDeferredTools)
+}
+
+// mainDeferredTools 是主 agent 的低频工具清单。主 agent 是对话入口，用户随时可能
+// 让它补记战果/销账，但这些动作在绝大多数轮次里不会发生；把大 schema 藏起来，
+// 需要时由模型 SearchExtraTools 取。报告相关的核心写回（report_finding /
+// record_fact / report_foothold / report_credential / insert_assets）保持常驻。
+var mainDeferredTools = []string{
+	"report_footprint",
+	"report_artifact",
+	"report_detection_check",
+	"close_candidate",
+	"lookup_cves",
+	"lookup_playbooks",
+	"verify_credential",
+	"promote_knowledge",
+	"merge_findings",
+	"mark_artifact_cleared",
+	"mark_footprint_cleaned",
+	"mark_footprint_not_found",
+	"accept_footprint_risk",
+	"link_intent_source",
+	"abandon_goal",
+	"list_untested_assets",
+	"list_footprints",
+	"asset_neighbors",
+	"ad_paths",
+	"opsec_notes",
+	"rotate_egress",
+	"expand_digest",
+}
+
+func deferMainTools(base []actool.CoreTool) []string {
+	return deferToolsNamed(base, mainDeferredTools)
 }
 
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
