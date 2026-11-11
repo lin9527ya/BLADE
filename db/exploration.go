@@ -1369,13 +1369,6 @@ func (s *ExplorationStore) CountEdges() (int, error) {
 	return n, err
 }
 
-// CountBlockedOpenIntents 是「有 depends_on 前置尚未满足」的 open 意图全量数
-// （不是 open_intents 展示窗口内的计数）。
-func (s *ExplorationStore) CountBlockedOpenIntents() (int, error) {
-	// ARTEX parity: open intents are never blocked by dependency edges.
-	return 0, nil
-}
-
 // CountOpenIntents counts this exploration's open intents — graph_overview's
 // frontier_open, so the planner knows open_intents (capped at the top-N by
 // priority) is a truncated view and there may be more claimable work.
@@ -1968,103 +1961,6 @@ func (s *ExplorationStore) ClaimIntentForSlot(id int64, slot string, ttl time.Du
 func (s *ExplorationStore) ClaimPausedIntent(id int64, fromState, slot string, ttl time.Duration) (bool, error) {
 	n, err := s.ClaimNode(context.Background(), id, slot, fromState, ttl, nil, false)
 	return n != nil, err
-}
-
-// IntentDependencies 返回本任务里**未满足的前置**：intentID → 还没结论的依赖 id。
-//
-// 「满足」= 依赖意图以 done/negative 收场（真的有了结论）。blocked/exhausted/no_output
-// 意味着那一步没跑成——下游继续停着，等 planner 决定是重派前置还是拆链。
-func (s *ExplorationStore) IntentDependencies() (map[int64][]int64, error) {
-	rows, err := s.db.Query(`SELECT e.src_id, e.dst_id
-FROM exploration_edges e
-JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-WHERE e.exploration_id=$1 AND e.rel='depends_on' AND d.state NOT IN ('done','negative')`, s.expID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64][]int64{}
-	for rows.Next() {
-		var src, dst int64
-		if err := rows.Scan(&src, &dst); err != nil {
-			return nil, err
-		}
-		out[src] = append(out[src], dst)
-	}
-	return out, rows.Err()
-}
-
-// StrandedDependents 返回「所有前置都已结束、且至少一个前置不会有结论」的 open 意图，
-// 以及各自的死前置列表。这类意图永远进不了 frontier，但仍是 open——所以
-// unblock_intent（只接受 open）仍然有效。
-//
-// 不改状态是刻意的：blocked 不在 blocked_by 的装饰范围、不计入 CountBlockedOpenIntents，
-// 而且 ReopenBlockedIntents 会把所有 blocked 翻成 open；把 stranded 标成 blocked 只会
-// 制造新的死路。
-func (s *ExplorationStore) StrandedDependents() (map[int64][]int64, error) {
-	rows, err := s.db.Query(`SELECT e.src_id, d.id, d.state
-FROM exploration_edges e
-JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
-JOIN exploration_nodes s ON s.id=e.src_id AND s.exploration_id=e.exploration_id AND s.state='open'
-WHERE e.exploration_id=$1 AND e.rel='depends_on'`, s.expID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	type agg struct {
-		dead    []int64
-		allTerm bool
-	}
-	byIntent := map[int64]*agg{}
-	for rows.Next() {
-		var src, dep int64
-		var state string
-		if err := rows.Scan(&src, &dep, &state); err != nil {
-			return nil, err
-		}
-		a := byIntent[src]
-		if a == nil {
-			a = &agg{allTerm: true}
-			byIntent[src] = a
-		}
-		if !IntentStateTerminal(state) {
-			a.allTerm = false
-		}
-		if IntentStateDead(state) {
-			a.dead = append(a.dead, dep)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := map[int64][]int64{}
-	for id, a := range byIntent {
-		if a.allTerm && len(a.dead) > 0 {
-			out[id] = a.dead
-		}
-	}
-	return out, nil
-}
-
-// ClearIntentDependencies 拆掉一条意图的全部前置（planner 判定"不再等它"时用）。
-func (s *ExplorationStore) ClearIntentDependencies(id int64) (int64, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	if _, err := GraphOperationTx(tx, s.expID, "clear_dependencies", fmt.Sprintf("intent %d", id)); err != nil {
-		return 0, err
-	}
-	res, err := tx.Exec(`DELETE FROM exploration_edges WHERE exploration_id=$1 AND src_id=$2 AND rel=$3`, s.expID, id, RelDependsOn)
-	if err != nil {
-		return 0, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	return n, tx.Commit()
 }
 
 // HasActiveIntent reports whether this exploration has any intent still in play

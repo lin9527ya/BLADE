@@ -13,9 +13,6 @@ import (
 // agent test suite so cross-package DELETE cleanup races with db/server
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
-	// 测试默认走增强模式，保留既有用例对探索约束块的断言；经典模式用例显式用
-	// WithOverrides(Overrides{ConstraintEnabled: func(string) bool { return false }})。
-	ConstraintEnabled = func(string) bool { return true }
 	dsn, _, err := db.DSN()
 	if err != nil {
 		os.Exit(m.Run())

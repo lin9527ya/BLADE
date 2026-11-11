@@ -17,7 +17,7 @@ import (
 func TestBeginRoundResetsRoundScopedState(t *testing.T) {
 	tools, _, _ := newToolWorker(t)
 	eff := &policy.Effective{Version: 1, MaxIntentsPerRound: 1}
-	tools.BeginRound(eff, 0, TaskClock{}, 0)
+	tools.BeginRound(eff, TaskClock{}, 0)
 	_ = fmt.Sprintf
 
 	add := func(summary string) string {
@@ -34,7 +34,7 @@ func TestBeginRoundResetsRoundScopedState(t *testing.T) {
 
 	// GoalMet 同理：上一轮判定全部达成，不该压住下一轮的新方向。
 	tools.GoalMet = true
-	tools.BeginRound(eff, 0, TaskClock{}, 0)
+	tools.BeginRound(eff, TaskClock{}, 0)
 	if tools.GoalMet {
 		t.Fatal("BeginRound 应清掉上一轮留下的 GoalMet")
 	}

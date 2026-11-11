@@ -408,18 +408,6 @@ const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 完成本意图后用一句话总结你做了什么、写回了哪些事实。`
 
-// depthDisciplineBlock 是**代码持有**的否定结论门槛。
-//
-// 为什么归代码：worker 正文存在 agent_prompts 里，已经装好的实例不会因为源码改了
-// 正文就更新（seed 只在空表时写）。而"每个入口只试一次就记无洞"是实测里最贵的浅测：
-// 复核员拿到的 fact 只有一句"未发现"，既无法判断试过什么，也无法据此否定一类问题。
-const depthDisciplineBlock = `
-
-【否定结论的门槛（代码持有）】
-- 写「这条路不通 / 无洞 / 不可注入」之前，先把本入口的合理变体走完：编码（单/双/Unicode/大小写）、参数位置与请求方法（query / body / header / cookie，GET↔POST）、路径变体（前缀、后缀、分号、大小写、编码）、以及认证前提（未登录时先确认是不是只是被重定向）。
-- 否定 fact 的 detail 里写清：试过的变体族数、每族的代表 payload、目标的具体反应（状态码 / 报错 / 跳转 / 长度差异）。只写「未发现 / 无洞」不算结论——下一轮 planner 与穷尽复核员都读不出你试了什么，只能再来一遍。
-- 被 WAF / 登录墙 / 限速挡住 ≠ 已排除：那是外部阻断，按 blocked 或 open_proof_gap 记，不要记成 negative。`
-
 // writebackBaselineBlock 是**始终生效**的写回自检：线索/深度开关关闭时也不能丢
 // 凭据、据点、遗留物与否定结论。它只保留最必要的四句，避免把深度纪律整段带回来。
 const writebackBaselineBlock = `
@@ -428,17 +416,6 @@ const writebackBaselineBlock = `
 - 收尾前自检：建了账号/拿到口令 → report_credential；拿到据点 → report_foothold；留下文件 → report_artifact；方向失败 → record_fact（polarity=negative）。
 - 被 WAF/登录墙/限速挡住 ≠ 已排除：记 blocked 或 open_proof_gap，不要记 negative。
 - 漏写等于没做——planner 看不到，下一轮只会再派一遍。`
-
-// leadWritebackBlock 是**代码持有**的线索/写回纪律：worker 正文可被 agent_prompts
-// 覆盖，只改默认正文收不到；而「做完了不收尾、线索塞进 summary」是实测最贵的损耗
-// （任务 30 的 planner 因此被迫 steer 3 次催登记凭据/催写否定结论）。
-const leadWritebackBlock = `
-
-【线索与写回（代码持有）】
-- 本意图之外看到的入口/参数/行为/资产，写进 record_fact 的 ` + "`leads`" + `（元素 {text, asset_ids?}），不要塞进 summary：线索不是结论，不需要 evidence，但要有具体指向。每条事实最多 8 条。
-- 事实写回带 polarity：positive（正向观察，能开出下文）/ negative（否定收尾：不可注入/端口关闭/未发现入口）/ inconclusive（存疑）。否定结论不要写成 positive。
-- 收尾前自检：建了账号/拿到口令 → report_credential；方向失败 → record_fact（polarity=negative）；留下文件 → report_artifact；看到别的线索 → leads。漏写等于没做——planner 看不到，下一轮只会再派一遍。
-- 被 WAF/登录墙/限速挡住 ≠ 已排除：记 blocked 或 open_proof_gap，不要记 negative。`
 
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -506,7 +483,7 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
 	// outside this stable string so a reused slot can keep the same cached prefix.
 	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock +
-		writebackBaselineBlock + gated("depth", depthDisciplineBlock+leadWritebackBlock) + untrustedDataBlock() + constraintOverrideBlock()
+		writebackBaselineBlock + untrustedDataBlock()
 }
 
 // renderWorkerIntentTurn is the per-run user message for the claimed intent. It is
@@ -594,11 +571,10 @@ func intentAssetIDs(intent *db.Node) []int64 {
 // purpose is letting the worker read context (existing facts/assets/hints)
 // so it avoids redundant work and doesn't re-derive what others already found.
 func renderWorkerGraphOverview(data map[string]any) string {
-	// coverage/breadth 是给规划者判断「哪类测得少 / 要不要扩范围」的信号，与 worker
+	// coverage 是给规划者判断「哪类测得少 / 要不要扩范围」的信号，与 worker
 	// 「只做领到的那条意图、别追未覆盖的点」的职责边界相悖 → 从 worker 视图里剔除。
 	// data 是本次 worker 专属的新 map，删键不影响 planner。
 	delete(data, "coverage")
-	delete(data, "breadth")
 	b, err := json.Marshal(SanitizeJSONStrings(data))
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context

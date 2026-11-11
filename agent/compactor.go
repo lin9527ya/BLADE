@@ -290,9 +290,6 @@ func BuildContextIndex(v ContextIndexVars) string {
 		open, running := []string{}, []string{}
 		for _, n := range intents {
 			line := fmt.Sprintf("intent-%d「%s」", n.ID, clipLine(n.Summary, 90))
-			if issues, err := ts.RequirementIssues(n.ID); err == nil && len(issues) > 0 {
-				line += fmt.Sprintf("（缺%d项显式requires；仍是候选方向）", len(issues))
-			}
 			if n.Attempts >= 2 {
 				line += fmt.Sprintf("（第 %d 次尝试）", n.Attempts)
 			}

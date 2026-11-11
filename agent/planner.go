@@ -66,7 +66,6 @@ type Planner struct {
 	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
 	// 改策略下一轮生效，无需重建 agent。
 	policyFn     func() *policy.Effective
-	workersFn    func() int  // 本任务运行时的 worker 池大小（队列背压；nil = 不启用）
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
@@ -126,17 +125,6 @@ func (p *Planner) SetRotateEgressHandler(fn func(reason string) (string, error))
 
 // SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
 func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = fn }
-
-// SetWorkersResolver 注入本任务**运行时**的 worker 池大小（队列背压用；nil/0 = 不启用上限）。
-// 用池快照而不是实时设置：改 workers 只影响之后启动的任务，按实时值排队会算错容量。
-func (p *Planner) SetWorkersResolver(fn func() int) { p.workersFn = fn }
-
-func (p *Planner) workers() int {
-	if p.workersFn == nil {
-		return 0
-	}
-	return p.workersFn()
-}
 
 // policy 取本轮的策略快照（解析器未接线 → nil = 不判定）。
 func (p *Planner) policy() *policy.Effective {
@@ -637,7 +625,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if origin, _ := ts.OriginFactID(); origin > 0 {
 			originNode = origin
 		}
-		t.BeginRound(p.policy(), p.workers(), taskClockFrom(ctx), originNode)
+		t.BeginRound(p.policy(), taskClockFrom(ctx), originNode)
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
 		t.SetPolicyAudit(emit) // 被拒留痕进时间线
@@ -840,24 +828,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	if !keepSession {
 		_ = s.Close()
-	}
-	// 槽位空转可见化：本轮派的意图数没跟上空闲槽位，就在时间线上留一行，写清空了几个槽、
-	// 本轮派了几条、按纪律应该派几条。纪律（slotUtilizationBlock）只要求"能说清已被覆盖"
-	// 才允许少派；把它记下来，操作者能直接看出是哪一轮空转，而不是只在 worker 列表里看到
-	// 几个 idle 却不知道为什么。只观察、不阻断——确实已覆盖时少派是正确的，硬拦会制造垃圾。
-	if emit != nil && err == nil && !tsx.GoalMet {
-		if states, serr := ts.CountIntentStates(); serr == nil {
-			idle := p.workers() - states["running"]
-			want := idle
-			if want > 4 {
-				want = 4 // 与"本轮最多 4 条"的名额上限一致
-			}
-			if idle >= 2 && tsx.intentsRound < want {
-				emit(db.Activity{Worker: "planner", Kind: "text",
-					Summary: fmt.Sprintf("本轮派了 %d 条意图，收尾时仍有 %d 个 worker 空闲（在跑 %d / 共 %d）：按槽位利用率纪律应派 %d 条，未补齐时请说明哪条方向覆盖了它们",
-						tsx.intentsRound, idle, states["running"], p.workers(), want)})
-			}
-		}
 	}
 	return tsx.GoalMet, tsx.Reason, err
 }

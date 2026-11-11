@@ -27,14 +27,6 @@ func (t *ToolSet) snapshotProjection(fn func(*ToolSet) map[string]any) map[strin
 		if t.cs != nil {
 			copy.cs = view.Companies()
 		}
-		copy.breadthLoaded = false
-		copy.breadthCached = nil
-		copy.coverageLoaded = false
-		copy.coverageCached = nil
-		copy.ledgerLoaded = false
-		copy.ledgerCached = nil
-		copy.chainsLoaded = false
-		copy.chainsCached = nil
 		out = fn(&copy)
 		return nil
 	})

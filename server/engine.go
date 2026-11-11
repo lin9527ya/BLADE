@@ -154,8 +154,6 @@ type Engine struct {
 	// 避免连续 403 把节点切来切去。
 	// egressRecovery 记录每个任务的"出口阻断"自愈节奏（见 egress_recovery.go）。
 	egressRecovery sync.Map // taskID -> *egressRecovery
-	// constraintOn 是探索约束分组 resolver（默认走 Manager；测试可注入）。
-	constraintOn   func(string) bool
 	egressMu       sync.Mutex
 	egressHits     map[string][]time.Time
 	egressRotating bool
@@ -609,9 +607,6 @@ func NewEngine(m *Manager) *Engine {
 		work: map[int64]*workExecution{}, steerBox: map[int64][]steerMsg{},
 		runtimes: map[string]*taskRuntime{}}
 }
-
-// SetConstraintResolver overrides the exploration-constraint resolver (tests).
-func (e *Engine) SetConstraintResolver(fn func(string) bool) { e.constraintOn = fn }
 
 // registerWork records the cancel for the work currently running intentID.
 func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc, authority ...db.WriteAuthority) *workExecution {

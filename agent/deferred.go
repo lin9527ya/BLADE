@@ -32,7 +32,7 @@ var plannerDeferredTools = []string{
 	"merge_findings",           // 817
 	"add_task_scope",           // 范围扩张是低频决策（当前已不在 planner 面上，留作兜底）
 	"add_company_scope",
-	"list_untested_assets", // 691：广度债优先看 breadth.top_gaps，逐条翻页是低频动作
+	"list_untested_assets", // 691：按需翻页是低频动作
 	"list_companies",       // 443
 }
 

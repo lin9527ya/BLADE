@@ -7,15 +7,10 @@ import (
 	actool "github.com/lin9527ya/Norma/tool"
 )
 
-// TestWithOverridesRestoresOnExitAndPanic pins the scoping contract: whatever the
-// previous hook set was, it must be back after fn returns — and after fn panics
-// (a leaked override would silently change every later test in the package).
-func testConstraints(string) bool { return true }
-
 func TestWithOverridesRestoresOnExitAndPanic(t *testing.T) {
 	base := Overrides{ArtifactLanguage: func() string { return "zh" }}
 	SetOverrides(base)
-	t.Cleanup(func() { SetOverrides(Overrides{ConstraintEnabled: testConstraints}) })
+	t.Cleanup(func() { SetOverrides(Overrides{}) })
 
 	WithOverrides(Overrides{ArtifactLanguage: func() string { return "en" }}, func() {
 		if got := ArtifactLanguage(); got != "en" {
@@ -55,23 +50,21 @@ func TestSetOverridesReplacesEveryHook(t *testing.T) {
 		ToolAugment: func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func()) {
 			return nil, DeferredInfo{}, nil
 		},
-		ConstraintEnabled: testConstraints,
 	}
 	SetOverrides(all)
-	t.Cleanup(func() { SetOverrides(Overrides{ConstraintEnabled: testConstraints}) })
+	t.Cleanup(func() { SetOverrides(Overrides{}) })
 
 	got := CurrentOverrides()
 	if got.PromptOverride == nil || got.CompactionPromptOverride == nil ||
 		got.ArtifactLanguage == nil || got.WrapupOverride == nil ||
 		got.WrapupMaxTurnsOverride == nil || got.WrapupTaskTimeoutOverride == nil ||
 		got.WrapupTaskTimeoutTurnsOverride == nil || got.FindingTrafficBindingEnabled == nil ||
-		got.ToolResolve == nil || got.ToolAugment == nil || got.ConstraintEnabled == nil {
+		got.ToolResolve == nil || got.ToolAugment == nil {
 		t.Fatalf("CurrentOverrides 丢了字段：%+v", got)
 	}
 
 	// 整体替换语义：nil 字段必须把那一项清掉，而不是保留旧值。
-	// 保留测试默认的约束 resolver，避免清空后影响同包后续用例。
-	SetOverrides(Overrides{ConstraintEnabled: testConstraints})
+	SetOverrides(Overrides{})
 	if CurrentOverrides().PromptOverride != nil {
 		t.Fatal("SetOverrides 应整体替换；nil 字段没有清掉旧 hook")
 	}

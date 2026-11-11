@@ -18,13 +18,6 @@ import (
 	"github.com/lin9527ya/blade/policy"
 )
 
-// compactIntents distills intents to {id, summary, state, asset_ids, parents,
-// yields} so the planner sees both the direction and its LINEAGE — parents (the
-// upstream nodes it derived from: facts/intents/findings) and yields (the facts/
-// findings it produced) — without pulling full payloads. parentsOf/yieldsOf are
-// built from the exploration edges in graph_overview.
-// payloadAttempts 读意图 payload 里的领取次数（写入方是 claim 的原子 UPDATE）。
-// 兼容 JSON 数字与历史脏值：解析不出就当 0，绝不让展示层报错。
 func payloadAttempts(p map[string]any) int {
 	switch v := p["attempts"].(type) {
 	case float64:
@@ -40,7 +33,6 @@ func payloadAttempts(p map[string]any) int {
 	return 0
 }
 
-// kindMap 把 id 列表映射成 {id: kind}，只保留已知 kind。
 func kindMap(ids []int64, kinds map[int64]string) map[string]string {
 	out := map[string]string{}
 	for _, id := range ids {
@@ -131,10 +123,6 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		if stop, _ := p["stop_condition"].(string); strings.TrimSpace(stop) != "" {
 			m["stop_condition"] = clipLine(stop, 160)
 		}
-		// 契约只带决策需要的字段：acceptance 截断到 240 字，完整内容走 node_detail。
-		if p["requires"] != nil {
-			m["requires"] = p["requires"]
-		}
 		if p["evidence_meta"] != nil {
 			m["evidence_meta"] = p["evidence_meta"]
 		}
@@ -177,35 +165,15 @@ type ToolSet struct {
 	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
 	// are filtered out of the agent's tool list. The scope field stays regardless.
 	coverageDisabled bool
-	// breadthCached is the per-ToolSet snapshot of the concrete-asset breadth
-	// ledger. Planner ToolSets live one round, so this is a round snapshot; sharing
-	// it between graphOverviewData and add_intent avoids a second matrix query.
-	breadthLoaded bool
-	breadthCached *db.BreadthSummary
-	// coverageCached 是本轮 task_scope 覆盖矩阵的快照：探索台账与 coverage_matrix 工具
-	// 共用一次查询（矩阵本身是一次 CTE）。ToolSet 每轮一个，失效即重建。
-	coverageLoaded bool
-	coverageCached []db.CoverageMatrixAsset
-	ledgerLoaded   bool
-	ledgerCached   *db.LedgerReport
-	chainsLoaded   bool
-	chainsCached   *db.ChainReport
 	// boundedView 决定 graph_overview/planner 预取默认走有界黑板视图还是完整态势。
 	// nil = true（保持 0.9.2 默认）；server 注入设置项，每轮现读。
 	boundedView func() bool
-	// breadthNewDebt tracks debt assets already targeted by intents created in this
-	// ToolSet, so a second add_intent call in the same round does not re-warn for
-	// the same asset.
-	breadthNewDebt map[int64]bool
 	// execService（P13）由 host 注入：长任务执行的托管后端。nil = 未接线，
 	// 四个执行工具会返回可读拒绝而不是静默消失。
 	execService ExecService
 	// pol（P20）是本任务的探索策略：意图层硬门（add_intent）按它判定。
 	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
 	pol *policy.Effective
-	// workerCap 是本任务的 worker 池大小（0 = 未知/不启用）。用途只有一个：
-	// 队列背压——待领意图超过 倍数×workerCap（默认 4×）时拒收低优先级新意图。
-	workerCap int
 	// intentsRound 计**本轮**成功创建的意图数（pace:round 额度）。
 	//
 	// 它曾经等于「本 ToolSet 生命周期内创建的意图数」，因为 planner 每轮新建一个
@@ -410,7 +378,7 @@ func (t *ToolSet) CoverageDisabled() bool { return t.coverageDisabled }
 // (the filter basis for asset queries), not merely a coverage denominator, so the
 // agents that own范围定义 keep it either way — in lockstep with insertAssets'
 // auto-scope hook, which also runs regardless of the switch.
-var coverageOnlyTools = map[string]bool{"list_untested_assets": true, "coverage_matrix": true}
+var coverageOnlyTools = map[string]bool{"list_untested_assets": true}
 
 // DropCoverageTools returns tools with the coverage-only ones removed when this
 // task has the feature disabled; otherwise it returns tools unchanged.
@@ -485,10 +453,6 @@ func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 // SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
 func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
 
-// SetWorkerCap 注入本任务的 worker 池大小，用于队列背压（0 = 不启用）。
-// 由 planner 按**任务运行时的池快照**注入——实时读设置会让改过 workers 的任务按错误容量排队。
-func (t *ToolSet) SetWorkerCap(n int) { t.workerCap = n }
-
 // SetPolicyAudit 注入"意图被策略拒绝"的留痕通道（引擎活动流）。
 func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 
@@ -499,24 +463,18 @@ func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 // registry），于是第 2 轮起仍调用同一个闭包。不重置的话：
 //   - intentsRound 停在上一轮的值 → 每轮都被 pace:round 拒（任务 18 被判策略封死）；
 //   - GoalMet 残留 → 上一轮判定达成后，本轮所有 add_intent 被拒；
-//   - breadthCached / breadthNewDebt 是上一轮的快照 → 广度提示与实际不符；
 //   - writes 会跨轮累加，收尾统计失真。
 //
 // 每轮由 Planner.Plan 在调用模型之前调一次；热会话复用时调的是**会话工具闭包绑定的
 // 那个** ToolSet（首轮创建的那个），而不是当轮新建的实例——见 planner.go 的 wireToolSet。
-func (t *ToolSet) BeginRound(pol *policy.Effective, workerCap int, clock TaskClock, ownerNode int64) {
+func (t *ToolSet) BeginRound(pol *policy.Effective, clock TaskClock, ownerNode int64) {
 	t.intentsRound = 0
 	t.GoalMet = false
 	t.Reason = ""
 	t.writes = WriteCounts{}
 	t.pol = pol
-	t.workerCap = workerCap
 	t.clock = clock
 	t.ownerNode = ownerNode
-	// 广度快照按轮重取：资产/意图在上一轮结束后可能已经变了。
-	t.breadthLoaded = false
-	t.breadthCached = nil
-	t.breadthNewDebt = map[int64]bool{}
 }
 
 // anchorOwner records a lineage edge from this run's owner node to an asset
@@ -703,128 +661,24 @@ const (
 // 超过窗口时概览会给出 recent_facts_next_before，让 planner 用 list_facts 接着翻。
 const recentFactsCap = 20
 
-// breadthSummary returns this round's concrete-asset breadth ledger. It is
-// cached per ToolSet so graphOverviewData and add_intent share one matrix query.
-func (t *ToolSet) breadthSummary() *db.BreadthSummary {
-	if t.coverageDisabled || t.ts == nil || t.taskID <= 0 {
-		return nil
-	}
-	if t.breadthLoaded {
-		return t.breadthCached
-	}
-	t.breadthLoaded = true
-	if b, err := t.ts.BreadthSummary(t.taskID); err == nil {
-		t.breadthCached = b
-	}
-	return t.breadthCached
-}
-
-// scopeSurface 是本任务「范围面」的快照：范围内的注册域、以及同根域下**还没被任何
-// 意图碰过**的资产。它是「目标正面打不进去时，自动转去试范围内的其它资产」这条策略的
-// 依据——planner 必须每轮都看得到还剩哪些同主体资产没试过，而不是凭记忆判断。
-type scopeSurface struct {
-	RootDomains []string `json:"root_domains"`
-	// Untouched 是同根域内**没有任何意图引用**的具体资产（不含 root_domain 与 service）。
-	Untouched []scopeAssetRef `json:"untouched_siblings"`
-	// UntouchedTotal 是真实总数（Untouched 只是展示窗口）。
-	UntouchedTotal int `json:"untouched_siblings_total"`
-	// SubdomainDiscoveryPending 为真表示：范围内的注册域在资产图里只有目标主机本身
-	// （同根子域一条都没登记）。此时「横向」不是"去试别的资产"，而是**先去发现**——
-	// 用 intel_search（domain="<根域>"）与 DNS/证书透明度把同根子域找出来，再用
-	// insert_assets 登记（登记即自动入范围）。任务 18 就是这种形状：范围里只有
-	// www.vaticanum.com，资产图里也一个兄弟都没有，于是"横向"无从谈起。
-	SubdomainDiscoveryPending bool `json:"subdomain_discovery_pending,omitempty"`
-	// DiscoveryHints 是给 planner 的具体查询表达式（原样可用的 FOFA 语法）。
-	DiscoveryHints []string `json:"discovery_hints,omitempty"`
-	// Shallow 是「测过、但深度不足」的资产：每个资产的终结风险类少于阈值时列出，
-	// 并给出还没终结的风险类。breadth 的 debt/pct 只回答"碰没碰过"，这里回答
-	// "碰到什么程度"——没有这一层，广度达标与测得很浅可以同时成立。
-	Shallow      []shallowAssetRef `json:"shallow_assets,omitempty"`
-	ShallowTotal int               `json:"shallow_assets_total,omitempty"`
-	// DepthThreshold 是上面那层用的阈值（每个资产至少要终结多少个风险类）。
-	DepthThreshold int `json:"depth_threshold,omitempty"`
-}
-
-type shallowAssetRef struct {
-	ID      int64    `json:"id"`
-	Type    string   `json:"type"`
-	Label   string   `json:"label"`
-	Done    []string `json:"done_risk_areas,omitempty"`
-	Missing []string `json:"missing_risk_areas,omitempty"`
-}
-
-// siblingDiscoveryThreshold：同根域内已登记的具体资产（含目标本身）少于这个数时，
-// 认为"还没做同根子域发现"。取 2 是因为 1 个就等于"只有目标主机自己"。
-const siblingDiscoveryThreshold = 2
-
-type scopeAssetRef struct {
-	ID    int64  `json:"id"`
-	Type  string `json:"type"`
-	Label string `json:"label"`
-}
-
-const scopeUntouchedWindow = 12
-
-// scopeSurface 取范围面快照。AssetStore/任务上下文缺失时返回 nil（态势里不出现该字段）。
-func (t *ToolSet) scopeSurface() *scopeSurface {
-	if t.as == nil || t.taskID <= 0 || t.ts == nil {
-		return nil
-	}
-	roots, err := t.as.ScopeRootDomains(t.taskID)
-	if err != nil || len(roots) == 0 {
-		return nil
-	}
-	out := &scopeSurface{RootDomains: roots, Untouched: []scopeAssetRef{}}
-	assets, total, err := t.as.UntouchedSiblings(t.taskID, roots, scopeUntouchedWindow)
-	if err != nil {
-		return out
-	}
-	for _, a := range assets {
-		out.Untouched = append(out.Untouched, scopeAssetRef{ID: a.ID, Type: a.Type, Label: a.Label})
-	}
-	out.UntouchedTotal = total
-	// 深度面：测过但风险类终结数不足的资产。与 untouched 是两个维度——
-	// untouched 回答"有没有碰过"，这里回答"碰到什么程度"。
-	if gaps, total, err := t.ts.DepthGaps(t.taskID, db.DefaultDepthAreas, 8); err == nil && total > 0 {
-		out.ShallowTotal = total
-		out.DepthThreshold = db.DefaultDepthAreas
-		for _, g := range gaps {
-			out.Shallow = append(out.Shallow, shallowAssetRef{
-				ID: g.AssetID, Type: g.Type, Label: g.Label,
-				Done: g.DoneAreas, Missing: g.Missing,
-			})
-		}
-	}
-	// 同根子域一条都没登记 → 横向无从谈起，先做发现。判定用**资产图里的同根具体资产数**
-	// （不是范围行数：范围里可能只有一条 subdomain，而资产图里已经有 10 个兄弟）。
-	if known, err := t.as.CountSiblingsInGraph(roots); err == nil && known < siblingDiscoveryThreshold {
-		out.SubdomainDiscoveryPending = true
-		for _, r := range roots {
-			out.DiscoveryHints = append(out.DiscoveryHints,
-				fmt.Sprintf(`intel_search: domain="%s"（再补 cert="%s"、ip=<目标解析到的 IP>）`, r, r))
-		}
-	}
-	return out
-}
-
 // graphOverviewData computes the distilled situational snapshot shared by the
 // graph_overview tool and the planner's wake-up prompt (which pre-injects it so
 // the model needn't spend a turn calling the tool — every plan round starts with
 // an empty context and always needs this first).
 func (t *ToolSet) graphOverviewData() map[string]any {
 	return t.snapshotProjection(func(view *ToolSet) map[string]any {
-		out := view.graphOverviewDataInternal(true)
+		out := view.graphOverviewDataInternal()
 		view.projectionContract(out)
 		return out
 	})
 }
 
-// graphOverviewDataForWorker omits the breadth ledger: a worker acts on one
+// graphOverviewDataForWorker omits the coverage ledger: a worker acts on one
 // intent and must not try to widen its job. Skipping it also avoids a needless
 // coverage-matrix query for every worker run.
 func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	out := t.snapshotProjection(func(view *ToolSet) map[string]any {
-		out := view.graphOverviewDataInternal(false)
+		out := view.graphOverviewDataInternal()
 		view.projectionContract(out)
 		return out
 	})
@@ -834,7 +688,6 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	for _, k := range []string{
 		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
 		"unconsumed_facts", "capabilities", "ruled_out", "folded_facts", "folded_facts_total",
-		"ledger", "chains",
 	} {
 		delete(out, k)
 	}
@@ -1109,7 +962,7 @@ func (t *ToolSet) graphHealth() map[string]any {
 	return data
 }
 
-func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any {
+func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
@@ -1186,46 +1039,6 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 			out["matching_cves_note"] = "以上是按本任务范围内资产指纹/产品/版本匹配到的 CVE 库条目（全局只读线索）。" +
 				"**CVE/版本匹配不是证据**：具体到某台资产时用 lookup_cves(asset_id=...) 取详情与 probe_guide；" +
 				"有脚本且目标明确时才用 cve_exploit 实际触发。cve_exploit 只返回输出/execution_id，不会自动产生 finding/foothold。"
-		}
-	}
-	// 广度账本：具体资产（root_domain 除外）的终态覆盖与债务。完整矩阵走
-	// coverage_matrix 按需取；这里只给规模 + 最多 8 个缺口，避免撑爆上下文。
-	// 覆盖度关闭时 coverage_matrix 已被摘除、也不注入 breadth——否则模型会去找不存在
-	// 的工具/字段。
-	if includeBreadth && !t.coverageDisabled && t.constraintOn("breadth") {
-		if b := t.breadthSummary(); b != nil {
-			out["breadth"] = b
-		}
-	}
-	// 探索台账：把「资产 × 风险类」摊成状态计数 + 待处理缺口（≤12）。它是发散的
-	// 第一来源，也是收官审计的依据；完整网格走 exploration_ledger 按需取。
-	if t.constraintOn("ledger") {
-		if rep := t.ledgerReport(); rep != nil && rep.CellsTotal > 0 {
-			out["ledger"] = map[string]any{
-				"counts": rep.Counts, "waived": rep.Waived,
-				"gaps": rep.Gaps, "gaps_total": rep.GapsTotal,
-				"note": "untested/failed 是发散来源；tested 只代表有一条结论，不代表测透",
-			}
-		}
-	}
-	// 通路台账：手上有哪些据点/凭据、推进到哪一步。深度不靠模型自觉，靠这张表。
-	if t.constraintOn("ledger") {
-		if rep := t.chainReport(); rep != nil && len(rep.Rows) > 0 {
-			rows := make([]map[string]any, 0, 8)
-			for _, r := range rep.Rows {
-				if len(rows) >= 8 {
-					break
-				}
-				rows = append(rows, map[string]any{
-					"loot_id": r.LootID, "kind": r.Kind, "label": r.Label,
-					"stage": r.Stage, "status": r.Status, "uses": r.Uses,
-					"downstream": len(r.Downstream),
-				})
-			}
-			out["chains"] = map[string]any{
-				"counts": rep.Counts, "rows": rows,
-				"note": "unused/open 是深度缺口；用过一次不算推进，看 stage 与 downstream",
-			}
 		}
 	}
 	// lineage from the exploration edges: an intent's parents (what it
@@ -1901,13 +1714,6 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	// summaries in a separate field so their intents never enter this task's
 	// frontier or get mistaken for locally claimable work.
 	out["related_tasks"] = t.relatedTaskOverviews()
-	// scope_surface：范围面（范围内注册域 + 同根域下还没被任何意图碰过的资产）。
-	// 「目标正面打不进去就换同主体的其它资产试」这条策略靠它驱动，所以每轮都给。
-	if t.constraintOn("breadth") {
-		if ss := t.scopeSurface(); ss != nil {
-			out["scope_surface"] = ss
-		}
-	}
 	// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
 	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
@@ -1921,7 +1727,7 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 					m["denominator"] = cov.Denominator
 					m["tested"] = cov.Tested
 					m["by_type"] = cov.ByType
-					m["note"] = "coverage 是事实锚点口径的粗略参考（含直接关联任务），不是终态验收；具体资产的广度缺口看 breadth。list_untested_assets 只是 fact 级 backlog，按需参考，不要拿它代替 breadth。"
+					m["note"] = "coverage 是事实锚点口径的粗略参考（含直接关联任务），不是终态验收；具体资产的覆盖情况以这里的 coverage 为准。list_untested_assets 只是 fact 级 backlog，按需参考。"
 					if cov.Denominator == 0 {
 						m["pct"] = nil
 						m["status"] = "范围未锚定"
@@ -1942,24 +1748,6 @@ func (t *ToolSet) graphOverviewDataInternal(includeBreadth bool) map[string]any 
 	}
 	if health := t.graphHealth(); len(health) > 0 {
 		out["graph_health"] = health
-	}
-	// 兜底：已下线的探索约束字段一律不出现在 agent 上下文（查询可能已在上面跑过，
-	// 但提示里不泄漏）。worker 视图另有更严格的 drop。
-	if !t.constraintOn("depth") {
-		for _, k := range []string{
-			"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
-			"unconsumed_facts", "capabilities",
-		} {
-			delete(out, k)
-		}
-	}
-	if !t.constraintOn("breadth") {
-		delete(out, "breadth")
-		delete(out, "scope_surface")
-	}
-	if !t.constraintOn("ledger") {
-		delete(out, "ledger")
-		delete(out, "chains")
 	}
 	return out
 }
@@ -2067,9 +1855,6 @@ func recentTerminalIntents(store *db.ExplorationStore, limit int) []*db.Node {
 	return out
 }
 
-// relatedTaskOverviews distills persistent blackboard state from direct source
-// tasks. It intentionally reads each source's local store methods, never its own
-// related sources, so inheritance is one level only.
 func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 	sources, err := t.ts.DirectSourceStores()
 	if err != nil {
@@ -2293,9 +2078,6 @@ func compactNode(n *db.Node) map[string]any {
 	return m
 }
 
-// detectionResults 统计检测验证的三态各有多少条。三态**分别计数、不合成"检出率"**：
-// 把 unknown 混进分母就是把「测不到」读成「没响」。
-// triggeredDetections 只取"确实响了"的那一档（unknown 不算——测不到 ≠ 没响，更 ≠ 响了）。
 func triggeredDetections(nodes []*db.Node) []*db.Node {
 	out := make([]*db.Node, 0, 4)
 	for _, n := range nodes {
@@ -2317,6 +2099,8 @@ func detectionResults(nodes []*db.Node) map[string]int {
 	return out
 }
 
+func leadID(factID int64, index int) string { return fmt.Sprintf("L%d-%d", factID, index) }
+
 // lootOutstanding 报告一条战果是不是「在手、但还没有被真正动用过」。
 // 「算不算真动用」的判定在 db.LootConsumingIntentState（agent 与 server 共用一份口径）。
 // 已失效(state != active)的不算：不能用就不是机会。
@@ -2324,13 +2108,6 @@ func lootOutstanding(n *db.Node, used map[int64]bool) bool {
 	return n.State == db.StateLootActive && !used[n.ID]
 }
 
-// compactLoot 把战果节点压成概览行：{id, state, summary, from_intent?, outstanding?, keep…}。
-//
-// keep 是**白名单**，不是黑名单：只有列出的 payload 字段会被带出。凭据的 secret 因此
-// 不可能因为「忘了删」而漏进概览——加字段时得显式写进来，那一步是能看见的。
-//
-// outstanding 只在为真时出现（在手 + 未被任何意图 uses）。false 不写出来：概览是给模型读的，
-// 缺省即「已接手/已失效」，多一个 false 只是噪声。
 func compactLoot(nodes []*db.Node, from map[int64]int64, used map[int64]bool, keep ...string) []map[string]any {
 	out := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
@@ -2358,11 +2135,6 @@ func compactLoot(nodes []*db.Node, from map[int64]int64, used map[int64]bool, ke
 	return out
 }
 
-// compactCredentials 是凭据版的 compactLoot（P36）：在战果那套字段之上补三样**规划层真正需要**的
-// 东西——指纹（可指认但**不含明文**）、能登哪（targets）、以及"哪条目标上验证过"。
-//
-// 明文照旧不进概览：概览会被折进每一轮提示词、还可能进日志。指纹让模型能在多轮之间指认
-// 「就是那条 wp_user 的口令」，而不需要看到它。
 func compactCredentials(nodes []*db.Node, from map[int64]int64, used map[int64]bool) []map[string]any {
 	out := compactLoot(nodes, from, used, "kind", "username", "confidence")
 	for i, n := range nodes {
@@ -2585,35 +2357,13 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 // --- planner write tools ---
 
 // intentItem 是 add_intent 批量/单条的一条探索方向。
+// ARTEX parity: 只有 summary / asset_ids / parent_ids / priority 会被读取；
+// 其它字段即使模型传来也不会落库，靠 schema 与本文档保持工具面最小。
 type intentItem struct {
-	Requires    []db.IntentRequirement `json:"requires,omitempty"`
-	Summary     string                 `json:"summary"`
-	AssetIDs    []json.RawMessage      `json:"asset_ids"`
-	ParentIDs   []json.RawMessage      `json:"parent_ids"`
-	UsesLootIDs []json.RawMessage      `json:"uses_loot_ids"`
-	// DependsOn 是串行链的前置意图：它们有结论（done/negative）之前，本条不会被派给 worker。
-	DependsOn []json.RawMessage `json:"depends_on"`
-	GoalID    json.RawMessage   `json:"goal_id"`
+	Summary   string            `json:"summary"`
+	AssetIDs  []json.RawMessage `json:"asset_ids"`
+	ParentIDs []json.RawMessage `json:"parent_ids"`
 	Priority  int               `json:"priority"`
-	RiskArea  string            `json:"risk_area"`
-	// Kind 是完成口径：discovery（资产发现/侦察，允许只登记资产）| verify（验证/利用，
-	// 必须写回事实或发现才算做完）。空 = 旧意图，沿用历史判定（任何写回都算产出）。
-	Kind       string   `json:"kind"`
-	Techniques []string `json:"techniques"`
-	// IdempotencyKey 让重试/重复提交落到同一条意图，而不是靠摘要相似度猜重。
-	// 非空时写进 payload；同键已存在则直接返回已有 id。
-	IdempotencyKey string `json:"idempotency_key"`
-	// ConvertsLeadIDs 是本意图要接手的线索 id（L<factID>-<n>，见 graph_overview
-	// 的 recent_leads）。lead 的 converted 状态由它决定，不靠「来源 fact 有没有子意图」猜。
-	ConvertsLeadIDs []string `json:"converts_lead_ids"`
-	// Hypothesis / SuccessCriteria / StopCondition 是意图的假设与验收标准：
-	// worker 按 success_criteria 判 done/no_output，复盘轮按它比较候选路线。
-	Hypothesis      string `json:"hypothesis"`
-	SuccessCriteria string `json:"success_criteria"`
-	StopCondition   string `json:"stop_condition"`
-	// Contract 是可选意图契约（P0）：显式给 mechanism 才参与方向去重；
-	// produces/acceptance 是给 worker 的验收声明；缺省时完全沿用旧行为。
-	Contract *intentContract `json:"contract,omitempty"`
 }
 
 // intentContract 把「一句话方向」补成可去重、可验收的声明。所有字段都是软契约：
@@ -2825,7 +2575,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 	return writeTool("goal_met", "【立即结束整个任务】——**仅用于没有显式目标(goals)的任务**：有目标时请用 prove_goal 逐个证明（系统会在最后一个目标达成时自动收官）。它必须带上证明任务已达成的【证据节点】(evidence_id)，空口无凭的「完成了」会被拒收。⚠️它不是用来“结束本轮规划”的：本轮没有新意图要派、或在等 worker 产出，都【直接结束本轮即可，不要调本工具】（0 个意图是完全正常的）。",
 		obj(map[string]any{
 			"reason":      str("达成理由：这个证据为什么说明任务已经完成"),
-			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；必须是前面 work 或主 Agent 已写下的结论，planner 只有 record_probe_fact，不能写通用结论）"),
+			"evidence_id": idp("证明任务已达成的事实/漏洞节点 id（必填；必须是前面 work 或主 Agent 已写下的结论，planner 不直接写事实，需先让 worker 写下结论）"),
 		}, "reason", "evidence_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
@@ -2847,7 +2597,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 			ev := pid(a.EvidenceID)
 			if ev <= 0 {
 				return actool.Errorf("goal_met: evidence_id 必填——没有证据的「任务完成」是一句口号。" +
-					"请指向证明任务已达成的【事实/漏洞】节点（planner 只有 record_probe_fact：先让 worker 把结论写成事实，再来证明）"), nil
+					"请指向证明任务已达成的【事实/漏洞】节点（planner 不直接写事实：先让 worker 把结论写成事实，再来证明）"), nil
 			}
 			node, err := t.ts.GetNodeWithSources(ev)
 			if err != nil || node == nil || (node.Kind != db.KindFact && node.Kind != db.KindFinding) {
@@ -3155,10 +2905,6 @@ func cleanLeads(raw []leadItem) []map[string]any {
 	}
 	return out
 }
-
-// leadID 是 lead 的稳定标识：L<事实id>-<下标>。payload 只存 text/asset_ids，
-// id 在读取时按同一下标生成，因此不需要在落库后回写。
-func leadID(factID int64, index int) string { return fmt.Sprintf("L%d-%d", factID, index) }
 
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
 // 批量时的默认意图（本条未给 intent_id 时用）。
@@ -4752,7 +4498,6 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.rotateEgressTool(),
 		// 去重：planner 自己报的重复漏洞要能合并，而不是留着两条污染计数。
 		t.mergeFindings(),
-		// coverage_matrix / 台账 / 收官豁免仅在对应分组开启时注册（见函数末尾）。
 		t.killWorkTool(), t.steerWorkTool(),
 		// 执行类工具（run/wait/get/grep/cancel_execution、loot_*、foothold_exec、
 		// tunnel_open、oast_*、cve_exploit）与 report_finding 已从规划层移除：

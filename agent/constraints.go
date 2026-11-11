@@ -19,8 +19,8 @@ func policyBlock(p *policy.Effective) string {
 		return ""
 	}
 	// 不再传"当前已用 N 条"：它每新增一条意图就变，而这段在 system prompt（缓存前缀）里。
-	// 经典模式（dispatch 关）不渲染每轮上限，但内容边界照常。
-	return policy.RenderBlockWithOptions(*p, policy.CheckOptions{IgnoreRoundCap: !constraintOn("dispatch")})
+	// 每轮上限不进入 ARTEX 探索路径；策略的内容边界照常渲染。
+	return policy.RenderBlockWithOptions(*p, policy.CheckOptions{IgnoreRoundCap: true})
 }
 
 func constraintBlock(ts *db.ExplorationStore) string {

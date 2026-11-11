@@ -423,7 +423,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			out = dropToolByName(out, "oast_mint", "oast_poll")
 		}
 		// 已下线的 BLADE 探索约束工具：DB 旧绑定也不允许重新注入任何 agent。
-		out = dropRetiredConstraintTools(pg, out)
+		out = dropRetiredConstraintTools(out)
 		// 失败提示：包在最后，覆盖上面所有 DecorateTool 的结果。模型此前只看到
 		// `[exit code N]`，没有「下一步该换什么」的线索。
 		for i, t := range out {

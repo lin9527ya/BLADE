@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"go.uber.org/goleak"
 )
@@ -28,8 +27,6 @@ func degrade(step string, err error) {
 // server test suite so cross-package DELETE cleanup races with db/agent
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
-	// 测试默认走增强模式，保留既有用例对探索约束/工具面的断言；经典模式用例显式关闭。
-	agent.ConstraintEnabled = func(string) bool { return true }
 	requireDB := os.Getenv("BLADE_PG_DSN") != "" || os.Getenv("BLADE_REQUIRE_TESTS") == "1"
 	fail := func(step string, err error) {
 		if requireDB {

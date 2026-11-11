@@ -16,10 +16,10 @@ func TestPlannerConstraintToolsCannotBeReinjected(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
 	defer m.Close()
-	defer func() { _ = m.SetConstraintProfilePreset("classic") }()
-	if err := m.SetConstraintProfilePreset("enhanced"); err != nil {
+	if err := m.pg.SetSetting("exploration_constraints_profile", "enhanced"); err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _, _ = m.pg.Exec(`DELETE FROM settings WHERE key='exploration_constraints_profile'`) }()
 	build := func(name string) actool.CoreTool {
 		return actool.Build(actool.Spec{
 			Name: name,
@@ -34,7 +34,7 @@ func TestPlannerConstraintToolsCannotBeReinjected(t *testing.T) {
 		tools = append(tools, build(name))
 	}
 	tools = append(tools, build("graph_overview"))
-	got := dropRetiredConstraintTools(m.pg, tools)
+	got := dropRetiredConstraintTools(tools)
 	names := map[string]bool{}
 	for _, tool := range got {
 		names[tool.Name()] = true
@@ -46,32 +46,5 @@ func TestPlannerConstraintToolsCannotBeReinjected(t *testing.T) {
 	}
 	if !names["graph_overview"] {
 		t.Fatal("capability tool was dropped")
-	}
-}
-
-// 升级后默认经典（约束全关）；预设可切增强，再切回经典。
-func TestConstraintProfilePreset(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
-	}
-	defer m.Close()
-	if got := m.ExplorationConstraintsProfile(); got != "classic" {
-		t.Fatalf("默认 profile = %q, want classic", got)
-	}
-	if m.ConstraintEnabled("dispatch") {
-		t.Fatal("classic 模式默认不应开启 dispatch 约束")
-	}
-	if err := m.SetConstraintProfilePreset("enhanced"); err != nil {
-		t.Fatal(err)
-	}
-	if !m.ConstraintEnabled("dispatch") || !m.ConstraintEnabled("ledger") {
-		t.Fatal("enhanced 预设应打开全部分组")
-	}
-	if err := m.SetConstraintProfilePreset("classic"); err != nil {
-		t.Fatal(err)
-	}
-	if m.ConstraintEnabled("dispatch") {
-		t.Fatal("切回 classic 后应全部关闭")
 	}
 }

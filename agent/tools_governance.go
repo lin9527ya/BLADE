@@ -16,8 +16,8 @@ import (
 //   - abandon_goal：把一个不可达/不再适用的目标标记为 abandoned（理由必填）。
 //
 // 为什么归 planner 而不是 worker：worker 只对自己的意图负责；"整个策略是否已经
-// 穷尽"和"这个目标还要不要追"是规划层的判断。此前两个出口都不存在——硬底线要求
-// planner 写结论 fact，但它没有通用 record_fact（只有 record_probe_fact 写开局侦察观察），于是只能无限派边缘意图。
+// 穷尽"和"这个目标还要不要追"是规划层的判断。此前这个出口不存在——硬底线要求
+// planner 写结论 fact，但 planner 不直接写事实，结论由 worker 写回，于是只能无限派边缘意图。
 
 func (t *ToolSet) abandonGoal() actool.CoreTool {
 	return t.writeExpTool("abandon_goal",

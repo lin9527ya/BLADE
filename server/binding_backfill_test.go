@@ -9,7 +9,7 @@ import (
 )
 
 // 存量库回填：代码把工具加进默认集后，tools.agents 不会自动更新；ToolResolve 又会按
-// DB 行过滤。这个用例把两条绑定先删掉，再跑一次迁移，确认补回来且幂等。
+// DB 行过滤。这个用例把 list_companies 绑定先删掉，再跑一次迁移，确认补回来且幂等。
 func TestBuiltinBindingBackfillAddsMissingBindings(t *testing.T) {
 	dsn, _, err := db.DSN()
 	if err != nil {
@@ -29,7 +29,7 @@ func TestBuiltinBindingBackfillAddsMissingBindings(t *testing.T) {
 		key    string
 		agents string
 	}
-	for _, key := range []string{"coverage_matrix", "list_companies"} {
+	for _, key := range []string{"list_companies"} {
 		var raw string
 		if err := d.QueryRow(`SELECT agents::text FROM tools WHERE key=$1`, key).Scan(&raw); err != nil {
 			t.Skipf("tool %s not seeded in this DB: %v", key, err)
@@ -39,10 +39,7 @@ func TestBuiltinBindingBackfillAddsMissingBindings(t *testing.T) {
 			_, _ = d.Exec(`UPDATE tools SET agents=$2::jsonb WHERE key=$1`, b.key, b.agents)
 		})
 	}
-	// 模拟旧库：两条绑定都不在。
-	if _, err := d.Exec(`UPDATE tools SET agents = agents - 'planner' WHERE key='coverage_matrix'`); err != nil {
-		t.Fatal(err)
-	}
+	// 模拟旧库：绑定不在。
 	if _, err := d.Exec(`UPDATE tools SET agents = agents - 'mainagent' WHERE key='list_companies'`); err != nil {
 		t.Fatal(err)
 	}
@@ -65,9 +62,6 @@ func TestBuiltinBindingBackfillAddsMissingBindings(t *testing.T) {
 			}
 		}
 		return false
-	}
-	if !has("coverage_matrix", "planner") {
-		t.Fatal("planner 仍未绑定 coverage_matrix")
 	}
 	if !has("list_companies", "mainagent") {
 		t.Fatal("mainagent 仍未绑定 list_companies")

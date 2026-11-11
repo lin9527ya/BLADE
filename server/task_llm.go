@@ -600,8 +600,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
 	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界视图 / 全量
 	pl.SetExecService(s.m.Executions())                                           // P13 长任务托管执行(planner 也能起/查/停)
-	pl.SetPolicyResolver(s.policyResolver(tidOfTask(t)))                          // P20 探索策略(意图门 + 提示词段 + 停摆通告)
-	pl.SetWorkersResolver(func() int { return s.engine.TaskWorkers(t.ID) })       // 队列背压：按本任务启动时的 worker 池快照
+	pl.SetPolicyResolver(s.policyResolver(tidOfTask(t)))                          // P20 探索策略(提示词段)
 	pl.SetPlannerPromptResolver(func() string { return t.PlannerPromptOverride }) // 任务级 planner 提示词快照
 	// 穷尽复核反馈：上一轮声明穷尽被复核员否掉时，把结论下发到下一轮规划输入。
 	// cold-digest §7: 冷节点后台压缩。引擎经权威解析器实际驱动的就是这套 per-task planner

@@ -336,8 +336,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 				}
 				return strings.TrimSpace(v)
 			},
-			// 探索约束分组：每轮现读；classic 全关、enhanced 全开、custom 逐组。
-			ConstraintEnabled: m.ConstraintEnabled,
 			// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 			WrapupOverride: func(key string) (string, bool) {
 				a, err := m.pg.GetAgentByKey(key)
