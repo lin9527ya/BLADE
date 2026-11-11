@@ -12,13 +12,7 @@ import (
 // fact 说明）——最后一条是反空转的关键：没有它，planner 的"必须派人"底线会把它
 // 逼成反复重试被拒方向。
 func RenderBlock(e Effective) string {
-	return RenderBlockWithOptions(e, CheckOptions{})
-}
-
-// RenderBlockWithOptions 是 RenderBlock 的可选开关版本；经典模式用 IgnoreRoundCap
-// 去掉“每轮最多 N 条”，内容边界照常渲染。
-func RenderBlockWithOptions(e Effective, opt CheckOptions) string {
-	if e.isEmptyFor(opt) {
+	if e.IsZero() {
 		return ""
 	}
 	var b strings.Builder
@@ -47,12 +41,9 @@ func RenderBlockWithOptions(e Effective, opt CheckOptions) string {
 			fmt.Fprintf(&b, "- %s（%s：%s；%s）\n", r.Display(), kind, r.Pattern, scope)
 		}
 	}
-	if (!opt.IgnoreRoundCap && e.MaxIntentsPerRound > 0) || e.MaxOpenIntents > 0 || e.MaxIntentsTotal > 0 {
+	if e.MaxOpenIntents > 0 || e.MaxIntentsTotal > 0 {
 		b.WriteString("\n二、节奏：")
 		var parts []string
-		if !opt.IgnoreRoundCap && e.MaxIntentsPerRound > 0 {
-			parts = append(parts, fmt.Sprintf("每轮最多提出 %d 条意图", e.MaxIntentsPerRound))
-		}
 		if e.MaxOpenIntents > 0 {
 			parts = append(parts, fmt.Sprintf("同时在途（待领）意图不超过 %d 条", e.MaxOpenIntents))
 		}
@@ -94,15 +85,6 @@ func HardFloorText(e Effective) string {
 	return base + "\n" +
 		"**但硬底线只在【策略内】成立**：被探索策略排除的方向不算可行方向（提了也会被硬拒）。" +
 		"若你确认【策略允许的范围内】已无可行方向：本轮请产出 0 条意图，并在说明/事实中写清已穷尽哪些方向、各自命中哪条策略及证据；这不算停摆。"
-}
-
-// HardFloorTextWithOptions 在经典模式（IgnoreRoundCap）下返回中性的“自主决定”文本，
-// 不再要求“必须派”，也不提任何已下线的穷尽工具。
-func HardFloorTextWithOptions(e Effective, opt CheckOptions) string {
-	if opt.IgnoreRoundCap {
-		return "**本轮按目标与已有事实自主决定派 0 条或多条意图；没有‘必须派’的硬底线。**"
-	}
-	return HardFloorText(e)
 }
 
 // RejectNote 是一条被拒记录（从 activity 里读回来的摘要）。

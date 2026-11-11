@@ -108,7 +108,6 @@ export function useSettingsState() {
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
-  // 收官审计语气：目标达成后是否要求"探索充分"（block 默认 / notice / off）。
   // 有界黑板视图：默认裁剪态势省 token；关掉后 planner 每轮预取完整态势。
   const [boundedView, setBoundedView] = React.useState(true);
   const [savingBoundedView, setSavingBoundedView] = React.useState(false);
@@ -142,7 +141,6 @@ export function useSettingsState() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
-  // 探索约束分组：classic 全关 / enhanced 全开 / custom 逐组。
   const [chatAutoTitle, setChatAutoTitle] = React.useState(false);
   // 授权范围（RoE）：空间门模式 + 作业时间窗。模式回生效值，另存一个 env 覆盖标志。
   const [scopeMode, setScopeMode] = React.useState("ask");

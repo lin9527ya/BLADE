@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
 	"strings"
 
 	"github.com/lin9527ya/blade/db"
@@ -18,9 +21,43 @@ func policyBlock(p *policy.Effective) string {
 	if p == nil || p.IsZero() {
 		return ""
 	}
-	// 不再传"当前已用 N 条"：它每新增一条意图就变，而这段在 system prompt（缓存前缀）里。
-	// 每轮上限不进入 ARTEX 探索路径；策略的内容边界照常渲染。
-	return policy.RenderBlockWithOptions(*p, policy.CheckOptions{IgnoreRoundCap: true})
+	return policy.RenderBlock(*p)
+}
+
+// reportPolicyReject 把一次拒绝写进时间线：模型想做什么、被哪条策略拦、命中什么。
+// 图里不落这条意图（刻意——不污染探索与去重），但人必须看得见。
+func (t *ToolSet) reportPolicyReject(it intentItem, v policy.Verdict) {
+	meta, _ := json.Marshal(map[string]any{
+		"intent_summary": it.Summary,
+		"policy_item":    v.ItemID,
+		"item_label":     v.ItemLabel,
+		"where":          v.Where,
+		"matched":        v.Matched,
+		"benign":         v.Benign,
+	})
+	summary := fmt.Sprintf("探索策略拒绝：%s", v.ItemLabel)
+	if v.Benign {
+		summary = fmt.Sprintf("探索策略放行（否定语境，仅留痕）：%s", v.ItemLabel)
+	}
+	act := db.Activity{Worker: "system", Kind: "policy_reject", Summary: summary,
+		Detail:   fmt.Sprintf("意图：「%s」\n命中：%s（%s）%s\n", it.Summary, v.ItemLabel, v.ItemID, matchNote(v)),
+		Metadata: meta}
+	if t.emitPolicy != nil {
+		t.emitPolicy(act)
+		return
+	}
+	if t.ts != nil {
+		if _, err := t.ts.AppendActivity(act); err != nil {
+			log.Printf("[policy] 拒绝留痕失败: %v", err)
+		}
+	}
+}
+
+func matchNote(v policy.Verdict) string {
+	if v.Matched == "" {
+		return ""
+	}
+	return "命中词「" + v.Matched + "」"
 }
 
 func constraintBlock(ts *db.ExplorationStore) string {

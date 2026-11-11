@@ -56,15 +56,14 @@ func TestCheckIntentNegationExemption(t *testing.T) {
 
 // 节奏面：每轮/在途/总量三档，各自独立可断言。
 func TestCheckIntentPace(t *testing.T) {
-	eff := Effective{MaxIntentsPerRound: 4, MaxOpenIntents: 12, MaxIntentsTotal: 60}
+	eff := Effective{MaxOpenIntents: 12, MaxIntentsTotal: 60}
 	cases := []struct {
 		in   IntentInput
 		want string
 	}{
-		{IntentInput{RoundUsed: 4}, "pace:round"},
 		{IntentInput{OpenCount: 12}, "pace:open"},
 		{IntentInput{TotalUsed: 60}, "pace:total"},
-		{IntentInput{RoundUsed: 3, OpenCount: 5, TotalUsed: 10}, ""},
+		{IntentInput{OpenCount: 5, TotalUsed: 10}, ""},
 	}
 	for _, c := range cases {
 		v := eff.CheckIntent(c.in)
@@ -92,11 +91,10 @@ func TestCheckIntentPace(t *testing.T) {
 // 提示词段仍需一组有内容的策略来验证机制本身。
 func restrictivePolicy() Effective {
 	return Effective{
-		Version:            1,
-		Source:             "global_default",
-		Techniques:         []string{"bruteforce", "dos", "social_engineering", "webshell", "reverse_shell", "persistence"},
-		ForbiddenWrites:    []string{"http_delete", "http_write_method", "mutation_endpoint", "db_write", "db_dump"},
-		MaxIntentsPerRound: 4,
+		Version:         1,
+		Source:          "global_default",
+		Techniques:      []string{"bruteforce", "dos", "social_engineering", "webshell", "reverse_shell", "persistence"},
+		ForbiddenWrites: []string{"http_delete", "http_write_method", "mutation_endpoint", "db_write", "db_dump"},
 	}
 }
 
@@ -104,26 +102,22 @@ func restrictivePolicy() Effective {
 func TestMergeSemantics(t *testing.T) {
 	base := Default()
 	empty := []string{}
-	zero := 0
 	twenty := 20
 
 	inherit := Merge(base, Override{})
-	if len(inherit.Techniques) != len(base.Techniques) || inherit.MaxIntentsPerRound != base.MaxIntentsPerRound {
+	if len(inherit.Techniques) != len(base.Techniques) {
 		t.Fatalf("空覆盖层应完全继承: %+v", inherit)
 	}
 	cleared := Merge(base, Override{Techniques: &empty, ForbiddenWrites: &empty})
 	if len(cleared.Techniques) != 0 || len(cleared.ForbiddenWrites) != 0 {
 		t.Fatalf("空数组应显式清空: %+v", cleared)
 	}
-	replaced := Merge(base, Override{Techniques: &[]string{"dos"}, MaxIntentsPerRound: &zero})
+	replaced := Merge(base, Override{Techniques: &[]string{"dos"}})
 	if len(replaced.Techniques) != 1 || replaced.Techniques[0] != "dos" {
 		t.Fatalf("数组应整体替换而非并集: %+v", replaced.Techniques)
 	}
-	if replaced.MaxIntentsPerRound != 0 {
-		t.Fatalf("数值 0 应表示不限: %d", replaced.MaxIntentsPerRound)
-	}
 	capped := Merge(base, Override{MaxIntentsTotal: &twenty})
-	if capped.MaxIntentsTotal != 20 || capped.MaxIntentsPerRound != base.MaxIntentsPerRound {
+	if capped.MaxIntentsTotal != 20 {
 		t.Fatalf("数值覆盖应只动那一项: %+v", capped)
 	}
 	// 未知 id：写入侧拒绝，读取侧忽略。
@@ -156,11 +150,11 @@ func TestDocRoundTrip(t *testing.T) {
 	}
 	// 全局默认：空 → 出厂默认；坏 JSON → 出厂默认。
 	eff, ver := ParseGlobalDefault("")
-	if eff.Source != "global_default" || ver != 1 || eff.IsZero() {
+	if eff.Source != "global_default" || ver != 1 {
 		t.Fatalf("空设置应给出厂默认: %+v v=%d", eff, ver)
 	}
-	if eff, _ := ParseGlobalDefault("{bad"); eff.IsZero() {
-		t.Fatal("坏设置应回退出厂默认而不是空策略")
+	if eff, _ := ParseGlobalDefault("{bad"); eff.Source != "global_default" {
+		t.Fatal("坏设置应回退出厂默认")
 	}
 }
 
@@ -458,9 +452,9 @@ func TestCheckIntentMixedNegationDoesNotShortCircuit(t *testing.T) {
 // 节奏类拒绝（pace:*）必须明说"这是配额，不是方向被禁"：否则模型会把一次配额拒绝
 // 读成策略穷尽，继而调用 mark_strategy_exhausted 把任务停掉（任务 19 实测）。
 func TestRejectTextPaceIsNotExhaustion(t *testing.T) {
-	eff := Effective{MaxIntentsPerRound: 4}
-	v := eff.CheckIntent(IntentInput{Summary: "补测 /admin 的越权面", RoundUsed: 4})
-	if v.Allow || v.ItemID != "pace:round" {
+	eff := Effective{MaxOpenIntents: 1}
+	v := eff.CheckIntent(IntentInput{Summary: "补测 /admin 的越权面", OpenCount: 1})
+	if v.Allow || v.ItemID != "pace:open" {
 		t.Fatalf("基线不成立：%+v", v)
 	}
 	text := RejectText(v, "补测 /admin 的越权面")
@@ -485,32 +479,5 @@ func TestCheckIntentSingleCharNegation(t *testing.T) {
 	v = eff.CheckIntent(IntentInput{Summary: "对 /search?q= 注入后脱库，导出整库"})
 	if v.Allow || v.ItemID != "db_dump" {
 		t.Fatalf("正向提及应硬拒: %+v", v)
-	}
-}
-
-// 经典模式：跳过每轮意图上限，但 max_open / max_total 与内容边界仍生效；
-// 渲染段不再出现“每轮最多 N 条”。
-func TestCheckIntentIgnoreRoundCap(t *testing.T) {
-	eff := Effective{MaxIntentsPerRound: 4, MaxOpenIntents: 12}
-	in := IntentInput{Summary: "对 /admin 做权限测试", RoundUsed: 4}
-	if v := eff.CheckIntent(in); v.Allow {
-		t.Fatal("默认应被每轮上限拒绝")
-	}
-	if v := eff.CheckIntentWithOptions(in, CheckOptions{IgnoreRoundCap: true}); !v.Allow {
-		t.Fatalf("经典模式应放行每轮上限: %+v", v)
-	}
-	overOpen := IntentInput{Summary: "对 /admin 做权限测试", RoundUsed: 4, OpenCount: 12}
-	if v := eff.CheckIntentWithOptions(overOpen, CheckOptions{IgnoreRoundCap: true}); v.Allow {
-		t.Fatal("max_open 是操作者显式边界，经典模式仍应生效")
-	}
-	block := RenderBlockWithOptions(eff, CheckOptions{IgnoreRoundCap: true})
-	if strings.Contains(block, "每轮最多") {
-		t.Fatalf("经典模式策略段不应渲染每轮上限：\n%s", block)
-	}
-	if !strings.Contains(HardFloorTextWithOptions(eff, CheckOptions{IgnoreRoundCap: true}), "没有‘必须派’") {
-		t.Fatal("经典模式硬底线应改为中性表述")
-	}
-	if got := RenderBlockWithOptions(Effective{MaxIntentsPerRound: 4}, CheckOptions{IgnoreRoundCap: true}); got != "" {
-		t.Fatalf("只剩每轮上限且经典模式忽略时，策略段应为空：%q", got)
 	}
 }

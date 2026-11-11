@@ -11,16 +11,15 @@ type IntentInput struct {
 	Summary   string
 	RiskArea  string
 	OpenCount int // 本任务当前待领(open)意图数
-	RoundUsed int // 本规划轮已成功创建的意图数
 	TotalUsed int // 本任务累计已创建意图数（含种子/人直投）
 }
 
 // Verdict 是判定结果。Allow=false 时其余字段说明"被哪条策略拦、命中了什么、怎么改"。
 type Verdict struct {
 	Allow     bool
-	ItemID    string // 命中的词表条目 id，或 "pace:round|open|total"
+	ItemID    string // 命中的词表条目 id，或 "pace:open|total"
 	ItemLabel string
-	Where     string // summary | pace_round | pace_open | pace_total
+	Where     string // summary | pace_open | pace_total
 	Matched   string // 命中的原文片段（pace 类为空）
 	Hint      string // 合规改写建议
 	// Benign：命中词表但处于否定语境（如"检查登录是否有爆破防护"）——放行，但记审计，
@@ -28,25 +27,11 @@ type Verdict struct {
 	Benign bool
 }
 
-// CheckOptions 是意图门的可选开关（经典模式用）。
-type CheckOptions struct {
-	// IgnoreRoundCap 跳过「每轮最多 N 条」；max_open / max_total 与内容边界仍生效。
-	IgnoreRoundCap bool
-}
-
 // CheckIntent 是意图层策略门（纯函数）。判定顺序：节奏面 → 内容面——
 // 额度用尽时不该再为一条注定被拒的意图去扫词表，模型也该先听到"别再派了"。
+// 注意：ARTEX 探索路径没有“每轮意图数”额度，这里只判存量/总量与内容边界。
 func (e Effective) CheckIntent(in IntentInput) Verdict {
-	return e.CheckIntentWithOptions(in, CheckOptions{})
-}
-
-// CheckIntentWithOptions 是 CheckIntent 的可选开关版本。
-func (e Effective) CheckIntentWithOptions(in IntentInput, opt CheckOptions) Verdict {
 	var benign Verdict // first negated hit: allow only if nothing else rejects
-	if !opt.IgnoreRoundCap && e.MaxIntentsPerRound > 0 && in.RoundUsed >= e.MaxIntentsPerRound {
-		return Verdict{ItemID: "pace:round", ItemLabel: "本轮意图配额", Where: "pace_round",
-			Hint: fmt.Sprintf("本轮已提出 %d 条意图（上限 %d）：把本轮剩下的判断留到下一轮，或先让在跑的方向出结果", in.RoundUsed, e.MaxIntentsPerRound)}
-	}
 	if e.MaxOpenIntents > 0 && in.OpenCount >= e.MaxOpenIntents {
 		return Verdict{ItemID: "pace:open", ItemLabel: "在途意图上限", Where: "pace_open",
 			Hint: fmt.Sprintf("当前已有 %d 条待领意图（上限 %d）：先让它们跑起来、出结果，再补新方向", in.OpenCount, e.MaxOpenIntents)}

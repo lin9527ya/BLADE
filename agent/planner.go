@@ -605,6 +605,7 @@ const hintLifecycleBlock = `
 
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
 	proxyAddr, proxyCA := p.proxySnapshot()
+	pol := p.policy()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -615,7 +616,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	//
 	// 热会话复用时，模型调用的工具闭包绑定的是热会话首轮的 ToolSet（agentcore.Session
 	// 的 registry 在 NewSession 时固定），而不是这里新建的 tsx。所以两处都要走同一套
-	// 重装：否则 intentsRound 停在首轮的值，pace:round 会把后续每一轮的意图都拒掉
 	// （任务 18/19 实测），GoalMet 与广度快照也会跨轮残留。
 	// 复盘轮节律：有在跑的活才复盘（没活时硬底线优先）；每 5 个普通轮或新增 ≥4 条
 	// 事实触发一次，两次之间至少 3 个普通轮。计数器放在 Planner 上，按任务隔离。
@@ -625,7 +625,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if origin, _ := ts.OriginFactID(); origin > 0 {
 			originNode = origin
 		}
-		t.BeginRound(p.policy(), taskClockFrom(ctx), originNode)
+		t.BeginRound(pol, taskClockFrom(ctx), originNode)
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
 		t.SetPolicyAudit(emit) // 被拒留痕进时间线
@@ -683,6 +683,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
+	sysBody += policyBlock(pol) // 探索策略：planner 需要看到内容边界与每轮额度
 	system, boundary := deferredSystem(sysBody, def)
 	// 单轮墙钟预算：优先用 agent 配置的 run_seconds（默认 1200s），有任务 deadline 时
 	// 再夹逼到剩余时间。到点由 SDK 进收尾（不是硬杀），已想清楚的结论能落地。

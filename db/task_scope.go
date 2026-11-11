@@ -105,7 +105,8 @@ func (s *AssetStore) upsertTaskScope(ts TaskScope) error {
 // AddAutoScope records the conservative task scope implied by ONE explicitly-inserted
 // asset item (source='auto'). MUST be called only from insertAssets' top-level loop —
 // never from a db-layer side effect (linkHostAssets), so派生资产不会盲目扩大范围。
-// Rule: scope granularity follows the asset's own type. taskID<=0 → no-op.
+// Rule: scope granularity follows the asset's own type; CNAME record values are
+// CDN/WAF edges and are excluded from auto scope. taskID<=0 → no-op.
 func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip string) error {
 	if taskID <= 0 {
 		return nil
@@ -129,15 +130,59 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "subdomain", Domain: host})
 		}
 		// IP-literal host or no host → fall back to ip scope if we have one.
+		edge, err := s.isCNAMEEdgeIP(taskID, ip)
+		if err != nil {
+			return err
+		}
+		if edge {
+			return nil // CDN/WAF 边缘地址不自动扩范围
+		}
 		if c := ipToHostCIDR(ip); c != "" {
 			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "ip", Net: c})
 		}
 	case "ip":
+		edge, err := s.isCNAMEEdgeIP(taskID, ip)
+		if err != nil {
+			return err
+		}
+		if edge {
+			return nil // CDN/WAF 边缘地址：登记资产可以，但不能自动成为授权范围
+		}
 		if c := ipToHostCIDR(ip); c != "" {
 			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "ip", Net: c})
 		}
 	}
 	return nil
+}
+
+// isCNAMEEdgeIP reports whether ip is a value of a CNAME record already linked
+// to this task. Such IPs are CDN/WAF edge infrastructure resolved from the
+// target's DNS chain, not the target's own origin: registering them as assets
+// is useful for topology, but promoting them to task_scope would silently widen
+// the authorization boundary. Only CNAME values are considered; A/AAAA values
+// are normally the origin and keep the existing auto-scope behavior.
+func (s *AssetStore) isCNAMEEdgeIP(taskID int64, ip string) (bool, error) {
+	raw := strings.TrimSpace(ip)
+	parsed := net.ParseIP(raw)
+	if taskID <= 0 || parsed == nil {
+		return false, nil
+	}
+	normalized := parsed.String()
+	var found bool
+	err := s.db.QueryRow(`
+SELECT EXISTS (
+    SELECT 1
+      FROM assets a
+     WHERE a.type = 'subdomain'
+       AND lower(COALESCE(a.record_type, '')) = 'cname'
+       AND $1 = ANY(a.task_ids)
+       AND EXISTS (
+           SELECT 1
+             FROM unnest(COALESCE(a.record_value, '{}'::text[])) AS rv
+            WHERE btrim(rv) = $2 OR btrim(rv) = $3
+       )
+)`, taskID, normalized, raw).Scan(&found)
+	return found, err
 }
 
 // AddSiblingScope 把「与已入范围资产同根域」的兄弟子域纳入本任务范围（source='auto'，

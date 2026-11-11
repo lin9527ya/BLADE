@@ -174,14 +174,6 @@ type ToolSet struct {
 	// pol（P20）是本任务的探索策略：意图层硬门（add_intent）按它判定。
 	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
 	pol *policy.Effective
-	// intentsRound 计**本轮**成功创建的意图数（pace:round 额度）。
-	//
-	// 它曾经等于「本 ToolSet 生命周期内创建的意图数」，因为 planner 每轮新建一个
-	// ToolSet。热会话复用打破了这个前提：agentcore.Session 的工具注册表在 NewSession
-	// 时固定，复用时第 2 轮起调用的仍是第 1 轮那个 ToolSet 的闭包，计数永远停在上一轮
-	// 的值——于是每一轮都被 pace:round 硬拒，最终被判「策略封死」（任务 18 实测）。
-	// 现在由 BeginRound 在每轮开头显式清零，与 ToolSet 是否复用无关。
-	intentsRound int
 	// emitPolicy 是"意图被策略拒绝"的留痕通道（引擎的 emitActivity）。
 	// nil 时退回直接写库 + 日志，保证不静默丢。
 	emitPolicy func(db.Activity)
@@ -453,6 +445,36 @@ func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 // SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
 func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
 
+// intentQuota 是一次 add_intent 调用期间共享的额度视图。批量新增时，
+// 每条成功后本地累加，避免一批 N 条各打一次库，也保证同批内互相占用额度。
+type intentQuota struct {
+	open  int
+	total int
+}
+
+// beginIntentQuota 在 add_intent 开始时取一次额度快照。没有策略时不查库。
+func (t *ToolSet) beginIntentQuota() (intentQuota, error) {
+	var q intentQuota
+	if t.ts == nil || t.pol == nil {
+		return q, nil
+	}
+	if t.pol.MaxOpenIntents > 0 {
+		open, err := t.ts.CountOpenIntents()
+		if err != nil {
+			return q, err
+		}
+		q.open = open
+	}
+	if t.pol.MaxIntentsTotal > 0 {
+		total, err := t.ts.CountIntents()
+		if err != nil {
+			return q, err
+		}
+		q.total = total
+	}
+	return q, nil
+}
+
 // SetPolicyAudit 注入"意图被策略拒绝"的留痕通道（引擎活动流）。
 func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 
@@ -461,14 +483,12 @@ func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 // 为什么需要它：planner 正常路径每轮新建 ToolSet，这些字段天然是新的；但**热会话复用**
 // 时 Session 的工具注册表固定在第 1 轮那个 ToolSet 上（SDK 的 NewSession 之后无法替换
 // registry），于是第 2 轮起仍调用同一个闭包。不重置的话：
-//   - intentsRound 停在上一轮的值 → 每轮都被 pace:round 拒（任务 18 被判策略封死）；
 //   - GoalMet 残留 → 上一轮判定达成后，本轮所有 add_intent 被拒；
 //   - writes 会跨轮累加，收尾统计失真。
 //
 // 每轮由 Planner.Plan 在调用模型之前调一次；热会话复用时调的是**会话工具闭包绑定的
 // 那个** ToolSet（首轮创建的那个），而不是当轮新建的实例——见 planner.go 的 wireToolSet。
 func (t *ToolSet) BeginRound(pol *policy.Effective, clock TaskClock, ownerNode int64) {
-	t.intentsRound = 0
 	t.GoalMet = false
 	t.Reason = ""
 	t.writes = WriteCounts{}
@@ -2482,7 +2502,26 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			created := false
+			quota, qerr := t.beginIntentQuota()
+			if qerr != nil {
+				return actool.Errorf(fmt.Sprintf("探索策略额度读取失败：%v", qerr)), nil
+			}
 			for i, it := range items {
+				if t.pol != nil && !t.pol.IsZero() {
+					v := t.pol.CheckIntent(policy.IntentInput{
+						Summary:   it.Summary,
+						OpenCount: quota.open,
+						TotalUsed: quota.total,
+					})
+					if !v.Allow {
+						t.reportPolicyReject(it, v)
+						errs[strconv.Itoa(i)] = policy.RejectText(v, it.Summary)
+						continue
+					}
+					if v.Benign {
+						t.reportPolicyReject(it, v)
+					}
+				}
 				id, err := t.addOneIntent(it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
@@ -2490,6 +2529,8 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				}
 				ids[i] = id
 				created = true
+				quota.open++
+				quota.total++
 			}
 			if !batch {
 				if e, bad := errs["0"]; bad {

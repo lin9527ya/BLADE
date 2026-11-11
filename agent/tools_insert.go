@@ -214,6 +214,20 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			// task_id 由程序权威赋值(worker: SetTaskID)，不接受模型传入——避免模型漏传/错传
 			// 导致资产未归任务或归错任务。无任务上下文的调用方(auto/pentest/chat)其 t.taskID=0。
 			taskID := t.taskID
+			// 同一批里先收集 CNAME 的解析值：它们通常是 CDN/WAF 边缘，不能自动扩成
+			// task_scope。批次内 IP 可能排在子域前面，所以不能只依赖 AddAutoScope 回查。
+			cnameEdgeIPs := map[string]bool{}
+			for _, item := range a.Assets {
+				if !strings.EqualFold(strings.TrimSpace(item.Type), "subdomain") ||
+					!strings.EqualFold(strings.TrimSpace(item.RecordType), "CNAME") {
+					continue
+				}
+				for _, rv := range item.RecordValue {
+					if ip := net.ParseIP(strings.TrimSpace(rv)); ip != nil {
+						cnameEdgeIPs[ip.String()] = true
+					}
+				}
+			}
 
 			type result struct {
 				Index int    `json:"index"`
@@ -417,8 +431,16 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					if svcIP == "" {
 						svcIP = item.IP
 					}
-					if err := t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP); err != nil {
-						log.Printf("[insert_assets] 自动入范围失败 task=%d type=%s: %v（范围边界可能少一条）", taskID, typ, err)
+					skipAutoScope := false
+					if typ == "ip" {
+						if ip := net.ParseIP(strings.TrimSpace(item.IP)); ip != nil && cnameEdgeIPs[ip.String()] {
+							skipAutoScope = true // 同批 CNAME 的边缘 IP
+						}
+					}
+					if !skipAutoScope {
+						if err := t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP); err != nil {
+							log.Printf("[insert_assets] 自动入范围失败 task=%d type=%s: %v（范围边界可能少一条）", taskID, typ, err)
+						}
 					}
 					// 同注册域的兄弟主机一并入范围：用户要的是「确认属于目标的资产都可以测」，
 					// 而同一 eTLD+1 是 DNS 层面能自证同一主体的最强信号。不同根域一律不动。

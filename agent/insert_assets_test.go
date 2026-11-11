@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -482,5 +483,79 @@ func TestInsertAssetsCountsOnlyNew(t *testing.T) {
 	}})
 	if got := ts.Writes().Assets; got != 2 {
 		t.Fatalf("新 IP 应再计 1，got %d", got)
+	}
+}
+
+// CNAME 的解析值是 CDN/WAF 边缘，不是目标源站：登记资产可以，但不能自动
+// 进入 task_scope，否则授权范围会被静默放大。A/AAAA 的 IP 仍按原行为入范围。
+func TestInsertAssetsCNAMEEdgeIPsStayOutOfAutoScope(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+
+	task, err := d.CreateTask("cdn-scope test", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domain := fmt.Sprintf("cdn-scope-%d.example", task.ID)
+	const (
+		edgeIP   = "203.0.113.10"
+		originIP = "198.51.100.20"
+	)
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM assets WHERE domain=$1 OR ip IN ($2,$3)`, domain, edgeIP, originIP)
+	})
+
+	ts := NewToolSet(nil, "")
+	ts.SetAssetStore(d.Assets(), d.Companies())
+	ts.SetTaskID(task.ID)
+	out := callInsertAssets(t, ts, map[string]any{
+		"assets": []any{
+			map[string]any{
+				"type":         "subdomain",
+				"domain":       domain,
+				"record_type":  "CNAME",
+				"record_value": []string{"edge.cdn.example", edgeIP},
+			},
+			map[string]any{"type": "ip", "ip": edgeIP, "bound_domains": []string{domain}},
+			map[string]any{"type": "ip", "ip": originIP, "bound_domains": []string{domain}},
+		},
+	})
+	if errs, _ := out["errors"].([]any); len(errs) > 0 {
+		t.Fatalf("insert_assets errors: %v", errs)
+	}
+
+	rows, err := d.Query(`SELECT kind, COALESCE(domain,''), COALESCE(net::text,'') FROM task_scope WHERE task_id=$1`, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	hasSubdomain, hasEdgeIP, hasOriginIP := false, false, false
+	for rows.Next() {
+		var kind, dom, net string
+		if err := rows.Scan(&kind, &dom, &net); err != nil {
+			t.Fatal(err)
+		}
+		if kind == "subdomain" && dom == domain {
+			hasSubdomain = true
+		}
+		if kind == "ip" && net == edgeIP+"/32" {
+			hasEdgeIP = true
+		}
+		if kind == "ip" && net == originIP+"/32" {
+			hasOriginIP = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasSubdomain {
+		t.Fatalf("subdomain should still enter scope: %+v", out)
+	}
+	if hasEdgeIP {
+		t.Fatal("CNAME edge IP must not enter task_scope automatically")
+	}
+	if !hasOriginIP {
+		t.Fatal("non-CNAME IP should keep the existing auto-scope behavior")
 	}
 }

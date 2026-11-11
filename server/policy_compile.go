@@ -276,9 +276,7 @@ func policyDiffText(old, new policy.Effective) string {
 	if diff := customRulesDiff(old.Custom, new.Custom); diff != "" {
 		parts = append(parts, "自定义条目 "+diff)
 	}
-	if old.MaxIntentsPerRound != new.MaxIntentsPerRound {
-		parts = append(parts, fmt.Sprintf("每轮意图上限 %d→%d", old.MaxIntentsPerRound, new.MaxIntentsPerRound))
-	}
+
 	if old.MaxOpenIntents != new.MaxOpenIntents {
 		parts = append(parts, fmt.Sprintf("在途意图上限 %d→%d", old.MaxOpenIntents, new.MaxOpenIntents))
 	}

@@ -24,27 +24,16 @@ type Effective struct {
 	// Custom 是操作者手写的额外禁止条目（词表的逃生舱；数量与形状由 Validate 把关）。
 	Custom []CustomRule `json:"custom,omitempty"`
 
-	// 节奏面：0 = 不限。
-	MaxIntentsPerRound int `json:"max_intents_per_round"`
-	MaxOpenIntents     int `json:"max_open_intents"`
-	MaxIntentsTotal    int `json:"max_intents_total"`
+	// 节奏面：0 = 不限。ARTEX 探索路径没有“每轮最多几条”的额度，这里只保留
+	// 操作者显式设置的存量/总量上限。
+	MaxOpenIntents  int `json:"max_open_intents"`
+	MaxIntentsTotal int `json:"max_intents_total"`
 }
 
 // IsZero 报告这份策略是否什么都没限制（执行点据此完全跳过策略逻辑）。
 func (e Effective) IsZero() bool {
-	return e.isEmptyFor(CheckOptions{})
-}
-
-// isEmptyFor 是 IsZero 的开关版本：经典模式忽略每轮上限后，只有 round cap
-// 的策略也应视为“没有可渲染/可执行的内容”。
-func (e Effective) isEmptyFor(opt CheckOptions) bool {
-	if len(e.Techniques) > 0 || len(e.ForbiddenWrites) > 0 || len(e.Custom) > 0 {
-		return false
-	}
-	if e.MaxOpenIntents > 0 || e.MaxIntentsTotal > 0 {
-		return false
-	}
-	return opt.IgnoreRoundCap || e.MaxIntentsPerRound <= 0
+	return len(e.Techniques) == 0 && len(e.ForbiddenWrites) == 0 && len(e.Custom) == 0 &&
+		e.MaxOpenIntents <= 0 && e.MaxIntentsTotal <= 0
 }
 
 // 自定义条目的生效层。
@@ -87,19 +76,18 @@ func (r CustomRule) IsCommandOnly() bool { return r.Layer == CustomLayerCommand 
 // Override 是任务自己的覆盖层：**指针字段**让"没填"（继承）与"显式清空"可区分——
 // 数组 nil = 继承全局、[] = 显式不禁；数值 nil = 继承、0 = 不限。
 type Override struct {
-	Techniques         *[]string     `json:"techniques,omitempty"`
-	ForbiddenWrites    *[]string     `json:"forbidden_writes,omitempty"`
-	Custom             *[]CustomRule `json:"custom,omitempty"`
-	MaxIntentsPerRound *int          `json:"max_intents_per_round,omitempty"`
-	MaxOpenIntents     *int          `json:"max_open_intents,omitempty"`
-	MaxIntentsTotal    *int          `json:"max_intents_total,omitempty"`
+	Techniques      *[]string     `json:"techniques,omitempty"`
+	ForbiddenWrites *[]string     `json:"forbidden_writes,omitempty"`
+	Custom          *[]CustomRule `json:"custom,omitempty"`
+	MaxOpenIntents  *int          `json:"max_open_intents,omitempty"`
+	MaxIntentsTotal *int          `json:"max_intents_total,omitempty"`
 }
 
 // IsZero 报告覆盖层是否什么都没改（全 nil）——用于区分"这个任务是显式配过策略"还是
 // "创建时把全局默认抄了一份快照"。两者落库形状相同，语义不同（UI 要显示"继承自全局默认"）。
 func (o Override) IsZero() bool {
 	return o.Techniques == nil && o.ForbiddenWrites == nil && o.Custom == nil &&
-		o.MaxIntentsPerRound == nil && o.MaxOpenIntents == nil && o.MaxIntentsTotal == nil
+		o.MaxOpenIntents == nil && o.MaxIntentsTotal == nil
 }
 
 // Doc 是落库的完整策略文档：override（UI 编辑的那层）+ effective（解析结果）+
@@ -122,9 +110,8 @@ const DocVersion = 1
 // 用户可在设置页改；**已存在的任务不回溯**（它们各自的 effective 已快照）。
 func Default() Effective {
 	return Effective{
-		Version:            1,
-		Source:             "global_default",
-		MaxIntentsPerRound: 4, // 与 planner 提示词"最多 4 个"同一口径
+		Version: 1,
+		Source:  "global_default",
 	}
 }
 
@@ -167,9 +154,6 @@ func Merge(base Effective, ov Override) Effective {
 	if ov.Custom != nil {
 		out.Custom = append([]CustomRule(nil), (*ov.Custom)...)
 	}
-	if ov.MaxIntentsPerRound != nil {
-		out.MaxIntentsPerRound = *ov.MaxIntentsPerRound
-	}
 	if ov.MaxOpenIntents != nil {
 		out.MaxOpenIntents = *ov.MaxOpenIntents
 	}
@@ -185,7 +169,6 @@ func Normalize(e Effective) Effective {
 	e.Techniques, _ = normalizeIDs(e.Techniques, func(id string) bool { _, ok := techniqueByID[id]; return ok })
 	e.ForbiddenWrites, _ = normalizeIDs(e.ForbiddenWrites, func(id string) bool { _, ok := writeItemByID[id]; return ok })
 	e.Custom = normalizeCustom(e.Custom)
-	e.MaxIntentsPerRound = max0(e.MaxIntentsPerRound)
 	e.MaxOpenIntents = max0(e.MaxOpenIntents)
 	e.MaxIntentsTotal = max0(e.MaxIntentsTotal)
 	return e
