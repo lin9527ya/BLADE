@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/lin9527ya/blade/db"
-	"github.com/lin9527ya/blade/policy"
 	"github.com/lin9527ya/blade/sched"
 )
 
@@ -42,7 +41,6 @@ type scheduleSpec struct {
 	CoverageEnabled      *bool                  `json:"coverage_enabled,omitempty"`
 	SeedFirstIntent      *bool                  `json:"seed_first_intent,omitempty"`
 	InterceptRules       []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
-	ExplorationPolicy    *policy.Override       `json:"exploration_policy,omitempty"`
 }
 
 // taskScheduleDTO 是给 UI 的计划任务视图：多给一个 frequency_text（人话），
@@ -107,33 +105,21 @@ func (s *Server) validateScheduleSpec(spec scheduleSpec) error {
 	if _, err := buildTaskInterceptRules(spec.InterceptRules); err != nil {
 		return fmt.Errorf("任务级拦截规则无效：%w", err)
 	}
-	if spec.ExplorationPolicy != nil {
-		global, _ := s.globalPolicy()
-		eff := policy.Merge(global, *spec.ExplorationPolicy)
-		if err := policy.Validate(eff); err != nil {
-			return fmt.Errorf("探索策略无效：%w", err)
-		}
-	}
 	return nil
 }
 
-// scheduleTaskOptions resolves the parts of the spec that need DB/policy
-// lookups. Both the manual and scheduled paths use the same options.
+// scheduleTaskOptions resolves the parts of the spec that need DB lookups.
+// Both the manual and scheduled paths use the same options.
 func (s *Server) scheduleTaskOptions(spec scheduleSpec) (db.TaskCreateOptions, error) {
 	interceptRules, err := buildTaskInterceptRules(spec.InterceptRules)
 	if err != nil {
 		return db.TaskCreateOptions{}, fmt.Errorf("任务级拦截规则无效：%w", err)
-	}
-	policyDoc, err := s.newTaskPolicy(spec.ExplorationPolicy)
-	if err != nil {
-		return db.TaskCreateOptions{}, err
 	}
 	return db.TaskCreateOptions{
 		Name: strings.TrimSpace(spec.Name), CategoryID: spec.CategoryID,
 		CompanyIDs: spec.CompanyIDs, LLMProfileIDs: spec.LLMProfileIDs,
 		TimeoutSeconds: spec.TimeoutSeconds, PlanHeartbeatSeconds: spec.PlanHeartbeatSeconds,
 		CoverageEnabled: spec.CoverageEnabled, InterceptRules: interceptRules,
-		ExplorationPolicy: policyDoc,
 	}, nil
 }
 

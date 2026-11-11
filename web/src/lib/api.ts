@@ -361,7 +361,6 @@ export const api = {
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
-    // P20：任务级探索策略覆盖层；省略 = 完全继承当时的全局默认（服务端解析成快照落库）。
     // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
     plannerPrompt?: string;
     plannerTemplateId?: number;

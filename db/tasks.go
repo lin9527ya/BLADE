@@ -1,7 +1,6 @@
 package db
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -60,13 +59,8 @@ type Task struct {
 	// 覆盖度、不自动累积 task_scope(source=auto)、不给 agent 开放 add_task_scope/
 	// list_untested_assets、态势里不注入 coverage 块(scope 字段仍保留)。company 关联
 	// (task_scope kind=company)与此开关无关，永不受影响。见 db/task_scope.go。
-	CoverageEnabled bool `json:"coverage_enabled"`
-	// ExplorationPolicy 是任务级探索策略文档（P20，JSONB；nil/空 = 无策略，
-	// 行为与从前完全一致）。执行点（意图门/提示词段/命令门）只读它里面的
-	// effective 快照，绝不回头读全局设置——这样"改全局默认"与"运行中的任务"
-	// 之间不存在竞态。
-	ExplorationPolicy     json.RawMessage `json:"exploration_policy,omitempty"`
-	PlannerPromptOverride string          `json:"planner_prompt_override,omitempty"`
+	CoverageEnabled       bool   `json:"coverage_enabled"`
+	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -88,8 +82,8 @@ type TaskDeletePreparation struct {
 
 // IsTerminal reports whether a task status is a terminal (finished) state.
 // 单一真源，替换散落各处的 done/failed 硬编码判定。
-// TerminalStatuses 是任务的全部终态。policy_blocked = 探索策略内已无可行方向、
-// 平台主动收尾（P20）——它不是超时，也不等于失败：改策略或加目标即可复活。
+// TerminalStatuses 是任务的全部终态。policy_blocked 是历史遗留终态（旧版本探索策略
+// 停摆收尾），保留给已有任务与外部 API 兼容，当前代码不再写入该状态。
 //
 // failed 目前**没有自动写入点**，是保留态：平台把"没做成"分别归到 timeout /
 // policy_blocked / paused+人工决定，而不是笼统地判失败；保留它是为了外部 API 与
@@ -190,9 +184,6 @@ type TaskCreateOptions struct {
 	CoverageEnabled *bool
 	// InterceptRules 是任务级资产拦截规则,创建时随任务在同一事务内写入 task_intercept_rules。
 	InterceptRules []TaskInterceptRuleInput
-	// ExplorationPolicy 是任务级探索策略文档（P20）；nil/空 = 无策略（= 与从前一致）。
-	// 由服务端在创建时把「全局默认 + 任务覆盖」解析成 effective 后落库（快照语义）。
-	ExplorationPolicy json.RawMessage
 	// PlannerPrompt is the task-level planner prompt snapshot (empty = use the
 	// global prompt chain). Captured at creation, detached from the template library.
 	PlannerPrompt string
@@ -318,19 +309,12 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		CoverageEnabled: coverageEnabled,
 	}
-	// P20：创建时就把「全局默认 + 创建页覆盖」解析成 effective 快照落库，此后执行点
-	// 只读这份快照——全局默认怎么改都不会影响已建任务（快照语义）。
-	var policyRaw any
-	if len(opts.ExplorationPolicy) > 0 {
-		policyRaw = string(opts.ExplorationPolicy)
-	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, exploration_policy, planner_prompt_override, worker_count, remark)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, policyRaw, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, remark)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
-	t.ExplorationPolicy = append(json.RawMessage(nil), opts.ExplorationPolicy...)
 	t.PlannerPromptOverride = strings.TrimSpace(opts.PlannerPrompt)
 	t.WorkerCount, t.Remark = opts.WorkerCount, opts.Remark
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
@@ -446,26 +430,15 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(exploration_policy,'{}'::jsonb), COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,'')`
+description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,'')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ExplorationPolicy, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
 	return &t, nil
-}
-
-// UpdateTaskExplorationPolicy replaces a task's exploration-policy document (P20).
-// Empty raw clears it (任务回到"无策略"，执行点随即不再做任何策略判定).
-func (d *DB) UpdateTaskExplorationPolicy(id int64, raw json.RawMessage) error {
-	var arg any
-	if len(bytes.TrimSpace(raw)) > 0 {
-		arg = []byte(raw)
-	}
-	_, err := d.Exec(`UPDATE tasks SET exploration_policy=$1 WHERE id=$2`, arg, id)
-	return err
 }
 
 // SetParentRef records a task's parent task id (编排 agent spawn_task 关联).

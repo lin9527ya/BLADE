@@ -30,7 +30,6 @@ DELETE /api/tasks/{id}/goals/{gid}	server.(*Server).deleteGoal-fm
 DELETE /api/tasks/{id}/hints/{hid}	server.(*Server).deleteHint-fm
 DELETE /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 DELETE /api/tasks/{id}/intercept-rules/{rid}	server.(*Server).taskInterceptDeleteRule-fm
-DELETE /api/tasks/{id}/policy	server.(*Server).patchTaskPolicy-fm
 DELETE /api/tasks/{id}/scope/{sid}	server.(*Server).taskScopeDelete-fm
 DELETE /api/tools/custom/{key}	server.(*Server).pgDeleteCustomTool-fm
 DELETE /api/traffic	server.(*Server).deleteTraffic-fm
@@ -147,7 +146,6 @@ GET /api/playbooks/{id}	server.(*Server).getPlaybook-fm
 GET /api/report	server.(*Server).getReport-fm
 GET /api/scope/enforcement	server.(*Server).scopeEnforcementStatus-fm
 GET /api/settings	server.(*Server).getSettings-fm
-GET /api/settings/exploration-policy	server.(*Server).getExplorationPolicyDefault-fm
 GET /api/settings/intel/queries	server.(*Server).listIntelQueries-fm
 GET /api/side-questions/{requestID}/events	server.(*Server).sideEvents-fm
 GET /api/skills	server.(*Server).fsListSkills-fm
@@ -184,7 +182,6 @@ GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
 GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
 GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
-GET /api/tasks/{id}/policy	server.(*Server).getTaskPolicy-fm
 GET /api/tasks/{id}/scope	server.(*Server).taskScopeList-fm
 GET /api/tasks/{id}/src-batch	server.(*Server).getTaskSrcBatch-fm
 GET /api/tasks/{id}/src-report.zip	server.(*Server).getTaskSrcReportZip-fm
@@ -227,7 +224,6 @@ PATCH /api/tasks/{id}/category	server.(*Server).updateTaskCategory-fm
 PATCH /api/tasks/{id}/constraints/{cid}	server.(*Server).editConstraint-fm
 PATCH /api/tasks/{id}/goals/{gid}	server.(*Server).editGoal-fm
 PATCH /api/tasks/{id}/hints/{hid}	server.(*Server).updateHint-fm
-PATCH /api/tasks/{id}/policy	server.(*Server).patchTaskPolicy-fm
 PATCH /api/triggers/{id}	server.(*Server).pgUpdateTrigger-fm
 POST /api/active	server.(*Server).setActive-fm
 POST /api/ad/import	server.(*Server).adImportApply-fm
@@ -352,8 +348,6 @@ POST /api/tasks/{id}/intents/{iid}/rerun	server.(*Server).rerunIntent-fm
 POST /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptCreateRule-fm
 POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskInterceptToggleRule-fm
-POST /api/tasks/{id}/policy/preview	server.(*Server).previewTaskPolicy-fm
-POST /api/tasks/{id}/policy/prune	server.(*Server).pruneTaskPolicy-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm
 POST /api/tools/custom	server.(*Server).pgCreateCustomTool-fm
 POST /api/tools/custom/test	server.(*Server).pgTestCustomTool-fm
@@ -380,7 +374,6 @@ PUT /api/intercept/rules/{id}	server.(*Server).interceptUpdateRule-fm
 PUT /api/intercept/tool-config	server.(*Server).interceptSetToolConfig-fm
 PUT /api/playbooks/{id}	server.(*Server).updatePlaybook-fm
 PUT /api/settings	server.(*Server).putSettings-fm
-PUT /api/settings/exploration-policy	server.(*Server).putExplorationPolicyDefault-fm
 PUT /api/skills/{name}/files/{file...}	server.(*Server).fsWriteFile-fm
 PUT /api/skills/{name}/meta	server.(*Server).fsUpdateSkillMeta-fm
 PUT /api/tasks/{id}/intercept-rules/{rid}	server.(*Server).taskInterceptUpdateRule-fm

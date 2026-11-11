@@ -15,7 +15,6 @@ import (
 	acperm "github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/db"
-	"github.com/lin9527ya/blade/policy"
 )
 
 func payloadAttempts(p map[string]any) int {
@@ -156,9 +155,7 @@ type ToolSet struct {
 	ts              *db.ExplorationStore
 	worker          string
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
-	// clock 是本轮的任务截止信息（可空）。只用来给 add_intent 加收官期软信号——
-	// 策略判定仍走 pol；时间到了不该拒收意图（收官期还可能要清理/补齐），只提醒。
-	clock TaskClock
+	clock           TaskClock
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops the coverage block, the
@@ -171,12 +168,6 @@ type ToolSet struct {
 	// execService（P13）由 host 注入：长任务执行的托管后端。nil = 未接线，
 	// 四个执行工具会返回可读拒绝而不是静默消失。
 	execService ExecService
-	// pol（P20）是本任务的探索策略：意图层硬门（add_intent）按它判定。
-	// nil / 零策略 = 不做任何策略判定（行为与从前完全一致）。
-	pol *policy.Effective
-	// emitPolicy 是"意图被策略拒绝"的留痕通道（引擎的 emitActivity）。
-	// nil 时退回直接写库 + 日志，保证不静默丢。
-	emitPolicy func(db.Activity)
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
@@ -442,42 +433,6 @@ func (t *ToolSet) writeIntentID(id int64) (int64, error) {
 // SetExecService 注入长任务执行服务（P13）；nil 表示本运行环境不支持后台执行。
 func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 
-// SetPolicy 注入任务级探索策略（P20）；nil / 零策略 = 不判定。
-func (t *ToolSet) SetPolicy(p *policy.Effective) { t.pol = p }
-
-// intentQuota 是一次 add_intent 调用期间共享的额度视图。批量新增时，
-// 每条成功后本地累加，避免一批 N 条各打一次库，也保证同批内互相占用额度。
-type intentQuota struct {
-	open  int
-	total int
-}
-
-// beginIntentQuota 在 add_intent 开始时取一次额度快照。没有策略时不查库。
-func (t *ToolSet) beginIntentQuota() (intentQuota, error) {
-	var q intentQuota
-	if t.ts == nil || t.pol == nil {
-		return q, nil
-	}
-	if t.pol.MaxOpenIntents > 0 {
-		open, err := t.ts.CountOpenIntents()
-		if err != nil {
-			return q, err
-		}
-		q.open = open
-	}
-	if t.pol.MaxIntentsTotal > 0 {
-		total, err := t.ts.CountIntents()
-		if err != nil {
-			return q, err
-		}
-		q.total = total
-	}
-	return q, nil
-}
-
-// SetPolicyAudit 注入"意图被策略拒绝"的留痕通道（引擎活动流）。
-func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
-
 // BeginRound 把 ToolSet 上所有「轮级」状态重置为本轮初值。
 //
 // 为什么需要它：planner 正常路径每轮新建 ToolSet，这些字段天然是新的；但**热会话复用**
@@ -488,11 +443,10 @@ func (t *ToolSet) SetPolicyAudit(fn func(db.Activity)) { t.emitPolicy = fn }
 //
 // 每轮由 Planner.Plan 在调用模型之前调一次；热会话复用时调的是**会话工具闭包绑定的
 // 那个** ToolSet（首轮创建的那个），而不是当轮新建的实例——见 planner.go 的 wireToolSet。
-func (t *ToolSet) BeginRound(pol *policy.Effective, clock TaskClock, ownerNode int64) {
+func (t *ToolSet) BeginRound(clock TaskClock, ownerNode int64) {
 	t.GoalMet = false
 	t.Reason = ""
 	t.writes = WriteCounts{}
-	t.pol = pol
 	t.clock = clock
 	t.ownerNode = ownerNode
 }
@@ -2502,26 +2456,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			created := false
-			quota, qerr := t.beginIntentQuota()
-			if qerr != nil {
-				return actool.Errorf(fmt.Sprintf("探索策略额度读取失败：%v", qerr)), nil
-			}
 			for i, it := range items {
-				if t.pol != nil && !t.pol.IsZero() {
-					v := t.pol.CheckIntent(policy.IntentInput{
-						Summary:   it.Summary,
-						OpenCount: quota.open,
-						TotalUsed: quota.total,
-					})
-					if !v.Allow {
-						t.reportPolicyReject(it, v)
-						errs[strconv.Itoa(i)] = policy.RejectText(v, it.Summary)
-						continue
-					}
-					if v.Benign {
-						t.reportPolicyReject(it, v)
-					}
-				}
 				id, err := t.addOneIntent(it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
@@ -2529,8 +2464,6 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				}
 				ids[i] = id
 				created = true
-				quota.open++
-				quota.total++
 			}
 			if !batch {
 				if e, bad := errs["0"]; bad {
@@ -4523,8 +4456,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(),
-		// list_worker_traces：态势里的 recent_done_intents 只是一窗（12 条），上百意图的任务里
-		// 大部分已结束意图不在视野中。这个工具让 planner 能翻全量已跑意图，确认某方向是否试过。
+		// list_worker_traces 只作工具目录保留（defaultUnbound）：规划者用
+		// search_all_worker_traces 已能翻全量轨迹，默认不再重复给。
 		t.listWorkerTraces(),
 		t.listGoals(), t.addIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
@@ -4535,18 +4468,12 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// 补血缘：add_intent 漏传 parent_ids 时，把已建意图接回真实来源（不动节点、不丢产出）。
 		t.linkIntentSource(),
 		t.abandonGoal(),
-		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
-		t.rotateEgressTool(),
-		// 去重：planner 自己报的重复漏洞要能合并，而不是留着两条污染计数。
-		t.mergeFindings(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// 执行类工具（run/wait/get/grep/cancel_execution、loot_*、foothold_exec、
 		// tunnel_open、oast_*、cve_exploit）与 report_finding 已从规划层移除：
 		// planner 只产意图、不亲自打；执行与写漏洞由 worker 做。规划层需要这些动作时
 		// 写进意图 summary，交给 worker 执行（见提示词）。
 		//
-		// promote_knowledge（P23）：把已确认的结论沉淀为公司级知识（跨任务只读背景）。
-		t.promoteKnowledge(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。
 		t.listCompanies(),
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，
@@ -4560,11 +4487,12 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.adPaths(),
 		// opsec_notes（P38）：派意图前查这一手预计会留下什么（事前知识库，与 P31 的实测分开）。
 		t.opsecNotes(),
-		// 指纹打法库：规划时按资产/指纹查"同类目标以前怎么打穿的"，并把规划层确认的打法
-		// 手动沉淀/回填反馈（自动沉淀由 playbook agent 在 report_foothold 时完成）。
-		t.lookupPlaybooks(), t.recordPlaybook(), t.recordPlaybookFeedback(),
-		// CVE 库：规划时按资产/指纹查已录入 CVE；有脚本时可显式触发，匹配只是线索。
-		t.lookupCVEs(),
+		// 只读知识查询留在规划层：开局就能按资产/指纹查已有打法与 CVE，避免重复探测。
+		// 写回打法（record_playbook / feedback）归 playbook agent 与 worker。
+		t.lookupPlaybooks(), t.recordPlaybookFeedback(), t.lookupCVEs(),
+		// record_playbook 只作工具目录保留（defaultUnbound）：默认绑在 playbook agent，
+		// 需要时可在工具页改绑；不放给 planner 默认使用。
+		t.recordPlaybook(),
 	}
 	return tools
 }

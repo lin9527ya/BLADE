@@ -78,6 +78,42 @@
   任务创建策略覆盖、任务详情探索策略卡、穷尽复核展示及对应 API；授权范围、任务拦截规则、操作约束注入、
   战果/遗留物/痕迹/打法库/CVE 等非探索 UI 保留。
 
+### planner 工具面精简
+
+- planner 默认绑定不再包含写回/动作类工具：`record_playbook`、`promote_knowledge`、
+  `merge_findings`、`rotate_egress`、`list_worker_traces`。实现全部保留：前三者与
+  `rotate_egress` 本就在主 agent/worker 上；`record_playbook` 仍绑 playbook agent；
+  `list_worker_traces` 保留在工具目录，可按需改绑。
+- 只读知识查询继续留在规划层：`lookup_cves`、`lookup_playbooks`、`record_playbook_feedback`、
+  `ad_paths`、`opsec_notes`，规划初期即可按资产/指纹查已有打法与 CVE。
+- `drop_intent`、`link_intent_source`、`accept_artifact_risk`、`accept_footprint_risk`、
+  `list_footprints` 保留在 planner；worker 工具面不变。
+- planner 的 CVE 提示段改用只读版（不再教它调用 worker 的 `cve_exploit`）；出口纪律按角色
+  区分 worker（可 `conclude_intent`）与 planner/主 agent（只写回说明）；态势提示中的
+  翻页工具改为 `search_all_worker_traces`。
+- 老库通过一次性迁移 `planner_tools_slim_v1` 解绑上述 planner 默认绑定，不触碰其他 agent。
+
+### 移除被拦退避纪律
+
+- 删除 `backoffDisciplineBlock`（原始终注入 planner/worker 的「403/429/WAF 后如何退避、
+  最多重试几次、何时换方向」提示段）。被拦后的处置改由模型结合响应自行判断，不再由代码
+  规定重试次数与换向节奏。
+- 出口代理纪律段保留（禁止绕过代理、出口不可用时的处置），它对应真实的 IP 泄露风险。
+
+### 移除 P20 探索策略
+
+- 删除 `policy/` 包及意图层策略门、额度快照与拒绝留痕：`add_intent` 只做参数、父节点、
+  资产范围与拦截校验，不再按内容或节奏拒绝意图。
+- 删除策略端点 `/api/settings/exploration-policy`、`/api/tasks/{id}/policy[/preview|/prune]`
+  及 `server/policy_compile.go`；任务创建/计划任务/LLM 任务接口不再接受 `exploration_policy`。
+- 任务结构、创建选项、DTO 与数据库读写移除 `exploration_policy`；`tasks.exploration_policy`
+  列保留在库中但不再读写，已有快照数据原样保留。
+- planner/worker 不再解析或注入策略段；`policyResolver`、`policyBlock`、`SeedRedTeamPolicyDefault`
+  与已无调用点的 `RecentPolicyRejects`/`LastIntentCreatedAt`/`CountIntents` 一并删除。
+- 前端删除任务列表策略角标、`policy_*` 类型字段、`policy_reject`/`policy_update` 标签与设置页
+  「探索策略额外禁止」空行；`policy_blocked` 仅作为历史终态保留，当前代码不再写入。
+- 命令门仍可由操作约束（P18）编译成任务级拦截规则；本次只移除探索策略这一来源与全部意图准入。
+
 ### 清理执行审核员与穷尽复核
 
 - 删除运行时已无调用点的 supervisor（执行审核员）与穷尽复核实现、引擎字段/注入、设置字段与

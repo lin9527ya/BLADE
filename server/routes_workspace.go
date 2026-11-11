@@ -1,6 +1,6 @@
 package server
 
-// 任务详情面：工作空间文件管理、约束与探索策略（P18/P20）、
+// 任务详情面：工作空间文件管理与操作约束（P18）、
 // 任务/意图控制、单条意图重跑、active 标记。
 //
 // 路由注册按域拆到本文件，由 registerRoutes 串起来（见 server.go）。
@@ -43,11 +43,6 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("PATCH /api/tasks/{id}/constraints/{cid}", s.editConstraint)    // 约束管理:修改约束
 	mux.HandleFunc("DELETE /api/tasks/{id}/constraints/{cid}", s.deleteConstraint) // 约束管理:删除约束
 	// P18 约束可执行化：把约束编译成任务级拦截规则 / 授权范围（compile 只读预览，apply 落库）。
-	mux.HandleFunc("GET /api/tasks/{id}/policy", s.getTaskPolicy)              // P20 探索策略:读生效策略+覆盖层+额度+近期被拒
-	mux.HandleFunc("PATCH /api/tasks/{id}/policy", s.patchTaskPolicy)          // P20 探索策略:保存(下一轮规划生效,不回溯已有意图)
-	mux.HandleFunc("DELETE /api/tasks/{id}/policy", s.patchTaskPolicy)         // P20 探索策略:清空覆盖(回到无策略)
-	mux.HandleFunc("POST /api/tasks/{id}/policy/preview", s.previewTaskPolicy) // P20 探索策略:编译预览(只读,拿本任务真实调用当样本)
-	mux.HandleFunc("POST /api/tasks/{id}/policy/prune", s.pruneTaskPolicy)     // P20 探索策略:清理被新策略禁止的未领取意图
 	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/compile", s.compileConstraint)
 	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/apply", s.applyConstraint)
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)

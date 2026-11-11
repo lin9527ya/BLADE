@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import type { AssetInterceptKind, AssetInterceptRule } from "@/lib/types";
 
-// 任务级资产拦截规则与探索策略两张卡片（各带自己的编辑表单与保存逻辑）。
+// 任务级资产拦截规则卡片（自带编辑表单与保存逻辑）。
 
 const TASK_RULE_KIND_OPTIONS: { value: AssetInterceptKind; label: string; placeholder: string }[] = [
   { value: "exact_domain", label: "域名(全等)", placeholder: "example.gov.cn" },

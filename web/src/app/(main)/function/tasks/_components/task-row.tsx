@@ -267,18 +267,6 @@ export const TaskRow = React.memo(function TaskRow({
       </TableCell>
       <TableCell>
         <StatusBadge domain="task" value={task.status} dot />
-        {(task.policy_techniques?.length ?? 0) + (task.policy_writes?.length ?? 0) + (task.policy_custom ?? 0) > 0 && (
-          <span
-            className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground"
-            title={`探索策略：禁用 ${task.policy_techniques?.length ?? 0} 类手段、${
-              task.policy_writes?.length ?? 0
-            } 类敏感写${task.policy_custom ? `、${task.policy_custom} 条自定义条目` : ""}${
-              task.policy_max_intents ? `；意图总上限 ${task.policy_max_intents}` : ""
-            }（任务页「探索策略」卡可改）`}
-          >
-            策略
-          </span>
-        )}
       </TableCell>
       <TableCell className="text-center text-muted-foreground text-xs tabular-nums">
         {typeof task.goals_total === "number" && task.goals_total > 0 ? (

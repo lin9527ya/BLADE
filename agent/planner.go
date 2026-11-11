@@ -18,7 +18,6 @@ import (
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/guard"
 	"github.com/lin9527ya/blade/intercept"
-	"github.com/lin9527ya/blade/policy"
 )
 
 // Planner is the event-driven LLM planner (docs §4.3): each time the asset or
@@ -62,10 +61,7 @@ type Planner struct {
 	injectConstraints func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
 	nonStreamingFn    func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
-	execService ExecService
-	// policyFn（P20）解析本任务的探索策略（nil = 无策略）。每个 run 现读：
-	// 改策略下一轮生效，无需重建 agent。
-	policyFn     func() *policy.Effective
+	execService  ExecService
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
@@ -122,17 +118,6 @@ func (p *Planner) SetExecService(svc ExecService) { p.execService = svc }
 
 // SetRotateEgressHandler wires the Clash egress rotation callback.
 func (p *Planner) SetRotateEgressHandler(fn func(reason string) (string, error)) { p.rotateEgress = fn }
-
-// SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
-func (p *Planner) SetPolicyResolver(fn func() *policy.Effective) { p.policyFn = fn }
-
-// policy 取本轮的策略快照（解析器未接线 → nil = 不判定）。
-func (p *Planner) policy() *policy.Effective {
-	if p.policyFn == nil {
-		return nil
-	}
-	return p.policyFn()
-}
 
 func (p *Planner) nonStreaming() bool { return p.nonStreamingFn != nil && p.nonStreamingFn() }
 
@@ -464,9 +449,9 @@ func renderGraphOverview(data map[string]any, bounded bool) string {
 	if err != nil {
 		return "" // fall back to the model calling graph_overview itself
 	}
-	header := "\n\n【本轮态势（完整 graph_overview 预取，等同你调用该工具的返回；有界视图已关闭。更早的知识用 list_facts/list_worker_traces 翻页）】：\n"
+	header := "\n\n【本轮态势（完整 graph_overview 预取，等同你调用该工具的返回；有界视图已关闭。更早的知识用 list_facts/search_all_worker_traces 翻页）】：\n"
 	if bounded {
-		header = "\n\n【本轮态势（有界黑板视图，等同 graph_overview 的默认返回；totals 是真实总数，列表只是窗口。需要折叠区/继承任务/AD 图等完整态势时调 graph_overview(detail=true)；更早的知识用 list_facts/list_worker_traces 翻页）】：\n"
+		header = "\n\n【本轮态势（有界黑板视图，等同 graph_overview 的默认返回；totals 是真实总数，列表只是窗口。需要折叠区/继承任务/AD 图等完整态势时调 graph_overview(detail=true)；更早的知识用 list_facts/search_all_worker_traces 翻页）】：\n"
 	}
 	return header + string(b)
 }
@@ -562,7 +547,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	// provenance/context and artifact rules stay code-owned; no constraint groups,
 	// hybrid scaffold or policy/override blocks are appended.
 	out := body + promptExtras("planner") +
-		coldArchiveBlock + backoffDisciplineBlock + egressDisciplineBlock + hintLifecycleBlock + cveToolBlock +
+		coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
 		artifactSpec(workDir) +
 		untrustedDataBlock() + blackboardViewBlock
 	return out
@@ -605,7 +590,6 @@ const hintLifecycleBlock = `
 
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
 	proxyAddr, proxyCA := p.proxySnapshot()
-	pol := p.policy()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -625,10 +609,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if origin, _ := ts.OriginFactID(); origin > 0 {
 			originNode = origin
 		}
-		t.BeginRound(pol, taskClockFrom(ctx), originNode)
+		t.BeginRound(taskClockFrom(ctx), originNode)
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
-		t.SetPolicyAudit(emit) // 被拒留痕进时间线
 		t.SetFindingRecorder(p.findingRecorder)
 		if as != nil {
 			t.SetAssetStore(as, as.Companies())
@@ -683,7 +666,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
-	sysBody += policyBlock(pol) // 探索策略：planner 需要看到内容边界与每轮额度
 	system, boundary := deferredSystem(sysBody, def)
 	// 单轮墙钟预算：优先用 agent 配置的 run_seconds（默认 1200s），有任务 deadline 时
 	// 再夹逼到剩余时间。到点由 SDK 进收尾（不是硬杀），已想清楚的结论能落地。
@@ -762,8 +744,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 本轮输入的**分段顺序**是「稳定 → 易变」，见 composePlannerInput 的说明：
 	// 缓存按 token 前缀匹配，每轮都变的态势放在最前面会让整段前缀失效。
 	// 上一轮结论摘要与态势同属易变段，统一放进 volatile。
-	// P20：硬底线在有策略时改写成"只在策略内成立"——否则提示词自相矛盾：
-	// 一边要求必须派人，一边把提出来的人全拒掉。
 	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。"
 	volatile := situational
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再

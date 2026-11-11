@@ -643,8 +643,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
 }
 
 // SafetyBoundarySummary 把"默认能用/禁用哪些行为"收成一张表：内置拦截规则（拒绝/审批/
-// 已关闭）+ 探索策略额外禁止项 + 凭据预算。此前这些散落在拦截规则页和策略区，操作者
-// 只能靠碰壁来猜边界；这里只做只读汇总，调整仍走各自原有入口。
+// 已关闭）与凭据预算。此前这些散落在拦截规则页，操作者只能靠碰壁来猜边界；这里只做
+// 只读汇总，调整仍走各自原有入口。
 function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }) {
   const [rules, setRules] = React.useState<InterceptRule[] | null>(null);
   React.useEffect(() => {
@@ -666,9 +666,6 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
   const denied = (rules ?? []).filter((r) => r.enabled && r.action === "deny");
   const asked = (rules ?? []).filter((r) => r.enabled && r.action === "ask");
   const off = (rules ?? []).filter((r) => !r.enabled);
-
-  // Exploration policy UI was removed with the ARTEX switch; only built-in
-  // intercept rules + credential budget remain in the safety summary.
 
   const credAction =
     s.credBudgetAction === "allow" ? "放行（只记账）" : s.credBudgetAction === "deny" ? "直接拒绝" : "转人工审批";
@@ -705,13 +702,6 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
             empty="无"
             hint="规则仍在，只是不生效；按授权边界需要时可重新打开。"
           />
-          <BoundaryRow
-            tone="policy"
-            title="探索策略额外禁止"
-            items={[]}
-            empty="无（探索方向全授权）"
-            hint="只影响本页下方「探索策略（全局默认）」，改完只对新建任务生效。"
-          />
         </div>
       )}
       <p className="text-muted-foreground text-xs leading-relaxed">
@@ -730,7 +720,7 @@ function SafetyBoundarySummary({ s }: { s: ReturnType<typeof useSettingsState> }
         <Link className="underline underline-offset-2" href="/system/intercept">
           拦截与审批
         </Link>
-        （内置规则的开关/动作）、下方「探索策略（全局默认）」（方向与写操作）、本页「凭据尝试预算」。
+        （内置规则的开关/动作）与本页「凭据尝试预算」。
       </p>
     </SubBlock>
   );
@@ -743,7 +733,7 @@ function BoundaryRow({
   empty,
   hint,
 }: {
-  tone: "deny" | "ask" | "off" | "policy";
+  tone: "deny" | "ask" | "off";
   title: string;
   items: string[];
   empty: string;
@@ -754,9 +744,7 @@ function BoundaryRow({
       ? "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400"
       : tone === "ask"
         ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-        : tone === "policy"
-          ? "border-border bg-muted text-foreground"
-          : "border-border text-muted-foreground";
+        : "border-border text-muted-foreground";
   return (
     <div className="flex flex-col gap-1">
       <span className="font-medium text-sm">{title}</span>

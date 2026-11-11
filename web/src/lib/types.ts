@@ -4,7 +4,7 @@
 // 任务备注长度上限（与后端 db.MaxTaskRemarkRunes 一致）。
 export const MAX_TASK_REMARK_RUNES = 2000;
 
-export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout" | "policy_blocked"; // P20：探索策略内已无可行方向而收尾（不是超时——改策略/加目标即可复活）
+export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout" | "policy_blocked"; // policy_blocked 为历史终态，仅保留兼容旧任务
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
@@ -51,11 +51,6 @@ export interface Task {
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
-  // P20 探索策略限制摘要（列表角标用）；明细走 GET /api/tasks/{id}/policy。
-  policy_techniques?: string[] | null;
-  policy_writes?: string[] | null;
-  policy_custom?: number;
-  policy_max_intents?: number;
 }
 
 export interface TaskCategory {
@@ -1427,8 +1422,6 @@ export type ActivityKind =
   | "intercept_request" // user-approval request from the intercept layer
   | "execution_pending" // P13: 收笔时托管长任务仍在跑，意图暂不判完
   | "execution_done" // P13: 托管执行收束，意图退回待领续跑
-  | "policy_reject" // P20: 意图被任务探索策略硬拒（不落图，但时间线留痕）
-  | "policy_update" // P20: 策略保存/清空/按新策略清理未领取意图
   | "intel_query" // P21: 情报/测绘查询（表达式 + 命中数 + 完整结果落盘路径）
   | "intercept_wait"; // 无超时审批的等待中标记（同时是意图租约的心跳，防止被看门狗回收）
 

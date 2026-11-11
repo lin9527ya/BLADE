@@ -526,13 +526,13 @@ FROM intercept_pending WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, t.
 // timelineNoteKinds 是「系统留言」认的 activity kind 白名单。它同时用于逐条判定与
 // COUNT(*) 汇总——两处共用一份清单，就不会出现「数出来 3 条、列出来 5 条」。
 var timelineNoteKinds = []string{
-	"text", "system", "hint", "policy_reject", "goal", "goal_edited", "goal_deleted",
+	"text", "system", "hint", "goal", "goal_edited", "goal_deleted",
 	"llm_switch", "intel_query", "keyword",
 }
 
 // timelineNoteActivity 判一条 activity 该不该进"系统留言"这一档。
 //
-// 取的是**人话性质的记录**（系统说明、策略拒绝、目标变更、模型切换、情报查询…），
+// 取的是**人话性质的记录**（系统说明、目标变更、模型切换、情报查询…），
 // 排除 LLM 的原始步骤（tool_use/tool_result/round/result/usage）——那些是过程，
 // 要看就显式 kinds=all。判断按 kind 白名单而不是黑名单：将来新增的 activity kind
 // 默认不进时间线（时间线是交付物，多一格都要有理由）。

@@ -582,9 +582,8 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxyFunc(s.m.ProxySnapshot)
 	wk.SetWebSearch(s.webSearchFor("worker"))
-	wk.SetConstraintInject(s.constraintInjectWorker)     // 操作约束注入 worker(可配置,默认开)
-	wk.SetExecService(s.m.Executions())                  // P13 长任务托管执行(活过 run;nil=工具显式报未接线)
-	wk.SetPolicyResolver(s.policyResolver(tidOfTask(t))) // P20 探索策略(每 run 现读;改策略下一轮生效)
+	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
+	wk.SetExecService(s.m.Executions())              // P13 长任务托管执行(活过 run;nil=工具显式报未接线)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
 	pl.SetFindingRecorder(s.evidenceStore())
 	pl.SetGuard(t.Guard) // 与 worker 同一把任务 Guard：Planner 开局探测不得绕过命令边界
@@ -600,7 +599,6 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
 	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界视图 / 全量
 	pl.SetExecService(s.m.Executions())                                           // P13 长任务托管执行(planner 也能起/查/停)
-	pl.SetPolicyResolver(s.policyResolver(tidOfTask(t)))                          // P20 探索策略(提示词段)
 	pl.SetPlannerPromptResolver(func() string { return t.PlannerPromptOverride }) // 任务级 planner 提示词快照
 	// 穷尽复核反馈：上一轮声明穷尽被复核员否掉时，把结论下发到下一轮规划输入。
 	// cold-digest §7: 冷节点后台压缩。引擎经权威解析器实际驱动的就是这套 per-task planner
@@ -619,8 +617,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	main.SetProxyFunc(s.m.ProxySnapshot)
 	main.SetWebSearch(s.webSearchFor("mainagent"))
-	main.SetSteerWork(s.engine.SteerWork)                  // steer_work：人对运行中 work 实时纠偏
-	main.SetPolicyResolver(s.policyResolver(tidOfTask(t))) // P20：主 agent 直投意图也过策略门
+	main.SetSteerWork(s.engine.SteerWork) // steer_work：人对运行中 work 实时纠偏
 	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。
 	// 真正的安全校验（只选非 DIRECT 节点、验证出口 IP 变化、失败不直连）在 Manager.RotateEgress。
 	rotateEgress := func(reason string) (string, error) {

@@ -44,6 +44,41 @@ func TestPlannerToolsARTEXSurface(t *testing.T) {
 	// excluded (checked by prompt_tools_test).
 }
 
+// 写回/动作类工具不再默认绑给 planner，但仍留在工具目录，可在工具页改绑
+// worker/mainagent；只读知识查询（打法/CVE/AD/opsec）继续留给 planner。
+func TestPlannerDefaultBindingSlim(t *testing.T) {
+	agents := map[string][]string{}
+	for _, seed := range BuiltinToolSeeds() {
+		agents[seed.Key] = seed.Agents
+	}
+	has := func(key, agent string) bool {
+		for _, a := range agents[key] {
+			if a == agent {
+				return true
+			}
+		}
+		return false
+	}
+	for _, gone := range []string{
+		"record_playbook", "promote_knowledge",
+		"merge_findings", "rotate_egress", "list_worker_traces",
+	} {
+		if has(gone, "planner") {
+			t.Fatalf("write/action tool %q still default-bound to planner: %v", gone, agents[gone])
+		}
+	}
+	for _, keep := range []string{
+		"lookup_cves", "lookup_playbooks", "ad_paths", "opsec_notes",
+		"drop_intent", "link_intent_source", "accept_artifact_risk",
+		"accept_footprint_risk", "list_footprints", "blackboard_view",
+		"consume_hint", "abandon_goal", "asset_neighbors",
+	} {
+		if !has(keep, "planner") {
+			t.Fatalf("planner lost retained tool %q: %v", keep, agents[keep])
+		}
+	}
+}
+
 func TestAddIntentARTEXMinimalPayload(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	out := callTool(t, tools.PlannerTools(), "add_intent", `{"summary":"对 /login 的 user 参数测账号枚举"}`)

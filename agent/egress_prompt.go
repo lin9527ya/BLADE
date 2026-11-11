@@ -1,13 +1,13 @@
 package agent
 
 // egressDisciplineBlock 是出口代理的**代码持有**纪律。它随 system prompt 每轮下发，
-// 与 backoffDisciplineBlock 一样，编辑正文/领域模板删不掉它；内容保持稳定，利于缓存前缀。
+// 编辑正文/领域模板删不掉；内容保持稳定，利于缓存前缀。
 //
 // 为什么必须写在提示词里：平台在 Bash 子进程上注入了代理环境变量，但模型完全可以显式
 // 绕过（--noproxy、NO_PROXY、清空变量）——一旦绕过，目标看到的是操作者的真实 IP，
 // 这是这个平台最不能犯的错误之一。代码侧还有一道 guard（转人工审批），这里是让模型
 // 从一开始就不去写这种命令。
-const egressDisciplineBlock = `
+const egressDisciplineBlockText = `
 
 【出口代理纪律（代码持有，任何提示词改动都删不掉）】
 - 目标流量一律走平台配置的出口代理。禁止用 --noproxy / --no-proxy、NO_PROXY=*、清空或 unset HTTP(S)_PROXY、curl -x '' 等方式直连：那会把本机真实 IP 暴露给目标，并让流量绕开留痕。
@@ -17,4 +17,16 @@ const egressDisciplineBlock = `
   - 不要用 rotate_egress（它换的是 Clash 节点，代理池本身挂了换节点也没用）；
   - 不要用 --noproxy / NO_PROXY / 清空代理变量去"直连试试"（平台会拦，而且那是真实 IP 泄漏）；
   - 不要花轮次去诊断它（ping 代理、扫本机端口、读进程列表、找别的代理端口都属于无效工作）；
-  - 正确做法：立刻停下需要联网的步骤，先把不依赖网络的事做完（读图、整理已有结论、写回 fact）；平台恢复出口后，下一条 Bash 会自动使用新出口（无需重启会话），先重试一次确认。若本意图只能联网完成，调用 conclude_intent(outcome=blocked, note="平台出口不可用：<证据>") 收场，把方向交回 planner——不要用 done/negative 伪装完成。`
+  - 正确做法：立刻停下需要联网的步骤，先把不依赖网络的事做完（读图、整理已有结论、写回 fact）；平台恢复出口后，下一条 Bash 会自动使用新出口（无需重启会话），先重试一次确认。`
+
+// egressDisciplineBlock 渲染出口纪律。withConclude 只在 worker 上为 true：
+// 只有 worker 有 conclude_intent；planner/主 agent 只能把出口不可用写进说明。
+func egressDisciplineBlock(withConclude bool) string {
+	out := egressDisciplineBlockText
+	if withConclude {
+		out += `若本意图只能联网完成，调用 conclude_intent(outcome=blocked, note="平台出口不可用：<证据>") 收场，把方向交回 planner——不要用 done/negative 伪装完成。`
+	} else {
+		out += `若本次运行只能联网完成，把「平台出口不可用」及证据写进说明/事实，交回规划层处理——不要伪装完成。`
+	}
+	return out
+}

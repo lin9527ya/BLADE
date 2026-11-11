@@ -226,8 +226,8 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   只作展示，不阻断领取；worker 槽位只保留命名/租约/恢复，不再做 owner 亲和或同会话互斥。
 - 完成只由 `prove_goal`（最后一个 goal met 自动收尾）或 goalless frontier 抽干驱动；授权、
   资产拦截、guard、task_constraints、写入栅栏、报告/证据/统一报告保持不变。
-- 设置页不再暴露探索约束/队列倍数/收官审计/supervisor 控件；旧 profile/policy 设置仍存库但
-  探索层不读取。恢复旧行为需要回滚代码与提示词历史，不存在运行时开关。
+- 设置页不再暴露探索约束/队列倍数/收官审计/supervisor 控件；P20 探索策略已整体删除，
+  恢复旧行为需要回滚代码与提示词历史，不存在运行时开关。
 
 ### planner 探索入口（最小对齐）
 
@@ -242,7 +242,22 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
 - 已删除系统设置「探索策略（全局默认）」、任务创建策略覆盖、任务详情探索策略卡、穷尽复核卡片，以及
   `ExplorationPolicy*`/`TaskPolicy`/`CustomRule` 等前端类型和对应 API 调用。
 - 保留授权范围/任务拦截规则/操作约束注入/覆盖度/战果/遗留物/痕迹/打法库/CVE 等非探索控件。
-- 后端 policy 快照与命令门仍可作为遗留数据/安全边界存在；前端不再提供意图策略编辑入口。
+- P20 探索策略后端也已整体删除：`policy/` 包、策略端点、`exploration_policy` 读写、
+  planner/worker 策略段与意图门均不再存在；`tasks.exploration_policy` 列保留但不再读写，
+  `policy_blocked` 仅作为历史终态兼容已有任务。
+
+### planner 工具面精简
+
+- planner 默认不再绑定写回/动作类工具（`record_playbook`、`promote_knowledge`、
+  `merge_findings`、`rotate_egress`、`list_worker_traces`），实现与其它 agent 的绑定保留；
+  只读查询（CVE/打法库/AD/opsec）和生产反馈仍留给 planner。
+- 老库由 `planner_tools_slim_v1` 一次性解绑；worker 工具面不变。
+
+### 已移除：被拦退避纪律
+
+- planner/worker 的 `backoffDisciplineBlock` 已删除，403/429/WAF 后的等待、重试次数与换向
+  由模型自行判断；反复撞墙不再有代码规定的最多 2 次/必须换方向。
+- `egressDisciplineBlock` 保留：它约束的是「不得绕过出口代理」，与探索策略无关。
 
 ### 已移除：执行审核员与穷尽复核
 

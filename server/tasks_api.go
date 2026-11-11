@@ -687,11 +687,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "任务级拦截规则无效："+err.Error())
 		return
 	}
-	policyDoc, err := s.newTaskPolicy(req.ExplorationPolicy)
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
 	// 场景预设：分类未显式指定的项按分类默认值带出；显式值优先。
 	seedFirstIntent := req.SeedFirstIntent
 	coverageEnabled := req.CoverageEnabled
@@ -718,12 +713,11 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
-		CoverageEnabled:   coverageEnabled,
-		InterceptRules:    interceptRules,
-		ExplorationPolicy: policyDoc,
-		PlannerPrompt:     plannerPrompt,
-		WorkerCount:       req.WorkerCount,
-		Remark:            req.Remark,
+		CoverageEnabled: coverageEnabled,
+		InterceptRules:  interceptRules,
+		PlannerPrompt:   plannerPrompt,
+		WorkerCount:     req.WorkerCount,
+		Remark:          req.Remark,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

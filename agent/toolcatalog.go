@@ -56,7 +56,11 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 //
 // goal_met：绕过逐个 prove_goal、直接从全局宣布【整个任务完成】,权重大且有误判风险,又与
 // 「prove_goal 标记最后一个目标 → 自动收官」重复,故默认不给任何 agent,需要时再手动绑。
-var defaultUnbound = map[string]bool{"goal_met": true}
+var defaultUnbound = map[string]bool{
+	"goal_met":           true,
+	"record_playbook":    true, // 默认只给 playbook agent（由 seedPlaybookAgent 绑定），planner 不再默认持有
+	"list_worker_traces": true, // search_all_worker_traces 已覆盖全量轨迹，planner 不再默认持有
+}
 
 // BuiltinToolSeeds 把各 agent 的内置工具集去重合并成 seed 列表：同名工具（如 list_assets
 // 多个 agent 都有）合成一条，Agents 取并集；defaultUnbound 里的工具则强制绑定为空。

@@ -28,7 +28,7 @@ const cveLookupNote = "CVE/版本/指纹匹配只是线索，不是漏洞证据�
 	"cve_exploit 只执行库内脚本并返回输出/execution_id，不会自动产生 finding 或据点；" +
 	"真实可复现的输出才能用 report_finding/report_foothold 登记。"
 
-// cveToolBlock 是代码持有的 CVE 纪律，追加在 worker/planner 可编辑提示词之后。
+// cveToolBlock 是代码持有的 CVE 纪律，追加在 worker 可编辑提示词之后。
 // 与 hintLifecycleBlock 同一模式：旧库里的自定义提示词也能收到这条纪律。
 const cveToolBlock = `
 
@@ -43,7 +43,7 @@ const cveToolBlock = `
 
 const cveLookupBlock = `
 
-**CVE 匹配（lookup_cves / web_search）**：识别到产品/版本或指纹时，先用 lookup_cves(asset_id) 查本地 CVE 详情、探测指南与是否有脚本；本地库无匹配时，用 web_search（未注册则用 Bash/WebFetch）检索公网 CVE/公告作为线索（匹配与搜索都不是证据）。脚本执行由任务内的 worker/planner 用 cve_exploit 负责（主 Agent 无执行服务）。`
+**CVE 匹配（lookup_cves / web_search）**：识别到产品/版本或指纹时，先用 lookup_cves(asset_id) 查本地 CVE 详情、探测指南与是否有脚本；本地库无匹配时，用 web_search（未注册则用 Bash/WebFetch）检索公网 CVE/公告作为线索（匹配与搜索都不是证据）。脚本执行由任务内的 worker 用 cve_exploit 负责（规划层/主 Agent 只查线索，不执行脚本）。`
 
 func cveAgentView(c db.CVE) map[string]any {
 	return map[string]any{

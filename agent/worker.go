@@ -19,7 +19,6 @@ import (
 	"github.com/lin9527ya/Norma/transcript"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
-	"github.com/lin9527ya/blade/policy"
 )
 
 // Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
@@ -95,8 +94,6 @@ type Worker struct {
 	rotateEgress func(reason string) (string, error)
 
 	execService ExecService
-	// policyFn（P20）解析本任务的探索策略；nil = 无策略。每个 run 现读。
-	policyFn func() *policy.Effective
 	// noaEnabledFn resolves whether this run uses the experimental noa context-
 	// compression mechanism. Read per run, like nonStreaming. nil = off (built-in
 	// compaction).
@@ -226,16 +223,6 @@ func (w *Worker) SetExecService(svc ExecService) { w.execService = svc }
 
 // SetRotateEgressHandler wires the Clash egress rotation callback.
 func (w *Worker) SetRotateEgressHandler(fn func(reason string) (string, error)) { w.rotateEgress = fn }
-
-// SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
-func (w *Worker) SetPolicyResolver(fn func() *policy.Effective) { w.policyFn = fn }
-
-func (w *Worker) policy() *policy.Effective {
-	if w.policyFn == nil {
-		return nil
-	}
-	return w.policyFn()
-}
 
 func (w *Worker) nonStreaming() bool { return w.nonStreamingFn != nil && w.nonStreamingFn() }
 
@@ -482,7 +469,7 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 	// Optional finding guidance is added for every role after tool resolution.
 	// Per-intent content (intent payload/assets/runDir/start) deliberately lives
 	// outside this stable string so a reused slot can keep the same cached prefix.
-	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + backoffDisciplineBlock + egressDisciplineBlock +
+	return body + workerTrafficBlock(caCert != "") + workerExecSpec() + cveToolBlock + footprintWorkerBlock() + egressDisciplineBlock(true) +
 		writebackBaselineBlock + untrustedDataBlock()
 }
 
@@ -638,10 +625,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx.SetOwnerIntent(intent.ID)              // writes anchor to this intent and reject stale intent_id
 	tsx.SetExecService(w.execService)          // P13：长任务执行（进程活过本次 run）
 	tsx.SetRotateEgressHandler(w.rotateEgress) // WAF 封禁出口时切换 Clash 节点
-	pol := w.policy()
-	tsx.SetPolicy(pol)                  // P20：worker 本身不派意图，但策略段要进它的 system（见下）
-	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
-	tsx.SetNotifyFinding(notifyFinding) // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
+	tsx.SetEnrich(enr)                         // async DNS/HTTP auto-completion for assets this worker writes
+	tsx.SetNotifyFinding(notifyFinding)        // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).
@@ -708,9 +693,6 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
-	// P20：探索策略段（不受开关控制）——worker 是"探测"的执行者，禁用手段与只读声明
-	// 在这里必须与 planner 看到的一致，否则它会照着被禁的方向硬干、直到命令层拦下。
-	sysBody += policyBlock(pol)
 	assetsJSON := ""
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {

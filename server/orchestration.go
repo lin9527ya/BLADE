@@ -552,7 +552,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedCompanyScopeRebind()
 	s.seedPlannerToolsConverge()  // planner 执行类工具从默认绑定移除(一次性)
 	s.seedPlannerExploreTools()   // 补回 ARTEX 的写 finding / 扩面入口
-	s.seedRedTeamPolicyDefault()  // 旧全局策略若仍是"只读验证"默认，迁到红队默认(一次性)
+	s.seedPlannerToolsSlim()      // planner 只保留规划/查询工具，写回/动作类改绑其他 agent(一次性)
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
 	s.seedAutoReportFindingBinding()
@@ -1253,6 +1253,32 @@ func (s *Server) seedPlannerToolsConverge() {
 		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
 	}
 	log.Printf("[planner] 执行/写漏洞/扩面工具已从规划层解绑(一次性)")
+}
+
+// seedPlannerToolsSlim removes write/action tools from the planner's default
+// binding on existing DBs (one-shot, flag-guarded). Tool implementations stay in
+// the catalog: most are already bound to worker/mainagent, and the planner-only
+// ones (record_playbook, list_worker_traces) are defaultUnbound so they can be
+// re-bound from the tools page when needed. Read-only knowledge lookups
+// (lookup_cves / lookup_playbooks / ad_paths / opsec_notes) stay on the planner.
+func (s *Server) seedPlannerToolsSlim() {
+	const flag = "planner_tools_slim_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	for _, k := range []string{
+		"record_playbook", "promote_knowledge",
+		"merge_findings", "rotate_egress", "list_worker_traces",
+	} {
+		if err := s.m.pg.RemoveAgentFromTool("planner", k); err != nil {
+			log.Printf("[planner] %s 从 planner 解绑失败: %v", k, err)
+			return // 出错不落 flag，下次启动重试
+		}
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v", flag, err)
+	}
+	log.Printf("[planner] 写回/动作类工具已从规划层解绑(一次性)")
 }
 
 // seedPlannerExploreTools restores the three ARTEX planner exploration entries

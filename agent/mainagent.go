@@ -13,7 +13,6 @@ import (
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/guard"
 	"github.com/lin9527ya/blade/intercept"
-	"github.com/lin9527ya/blade/policy"
 )
 
 // MainAgent is the thin human-interface orchestrator (docs §4.2 / §7). The human
@@ -38,7 +37,6 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
-	policyFn        func() *policy.Effective               // resolver: task exploration policy (P20; nil = none)
 	// guard（可选）把拦截规则、LLM 兜底裁判与 RoE 授权范围门挂到本 agent 的每一次 run 上。
 	// nil = 不挂、无任何拦截。接线方式与 ChatAgent 一致——任务内的人在环路同样能执行命令，
 	// 而且这里拿得到任务的**真实 id**，所以范围门本就该生效（此前漏挂，见下）。
@@ -138,16 +136,6 @@ func (m *MainAgent) SetRotateEgressHandler(fn func(reason string) (string, error
 	m.rotateEgress = fn
 }
 
-// SetPolicyResolver 注入任务级探索策略解析器（P20）；nil = 无策略。
-func (m *MainAgent) SetPolicyResolver(fn func() *policy.Effective) { m.policyFn = fn }
-
-func (m *MainAgent) policy() *policy.Effective {
-	if m.policyFn == nil {
-		return nil
-	}
-	return m.policyFn()
-}
-
 // mainAgentDefaultTmpl is the built-in EDITABLE body (段 [A]) of the main agent
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the 中间
 // 产物输出规约 tail is code-owned (artifactSpec), appended after rendering.
@@ -169,7 +157,7 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
 
 func mainAgentSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir) + cveLookupBlock + egressDisciplineBlock + untrustedDataBlock()
+	return body + artifactSpec(workDir) + cveLookupBlock + egressDisciplineBlock(false) + untrustedDataBlock()
 }
 
 // Chat handles one human message and returns the assistant reply. emit, if
@@ -179,13 +167,6 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
 	proxyAddr, proxyCA := m.proxySnapshot()
 	tsx := NewToolSet(ts, "human")
-	// P20：主 agent 也能 add_intent（人经聊天直投方向）→ 同一道策略门 + 同一份留痕。
-	tsx.SetPolicy(m.policy())
-	tsx.SetPolicyAudit(func(r db.Activity) {
-		if emit != nil {
-			emit(r)
-		}
-	})
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())

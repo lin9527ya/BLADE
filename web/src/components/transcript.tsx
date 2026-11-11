@@ -131,8 +131,6 @@ const KIND_LABELS: Record<string, string> = {
   result: "总结",
   execution_pending: "长任务待收束", // P13: 收笔时托管执行仍在跑，意图暂不判完
   execution_done: "长任务已收束", // P13: 托管执行收束，意图退回待领续跑
-  policy_reject: "探索策略拒绝", // P20: 意图被任务策略硬拒（不落图，但必须看得见）
-  policy_update: "探索策略变更", // P20: 策略保存/清空/按新策略清理意图
   intel_query: "情报查询", // P21: 外部测绘引擎查询（表达式/命中数/完整结果落盘）
   intercept_wait: "等待审批", // 无超时的审批仍在等：这条 keep-alive 同时也是意图租约的心跳
 };

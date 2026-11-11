@@ -2064,53 +2064,6 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
 	return n == 1, nil
 }
 
-// RecentPolicyRejects returns the exploration's most recent policy rejections,
-// newest first (P20：planner 下一轮要看到"上一轮想做什么、被哪条策略拦了"，
-// 否则它会无限重试同一方向——硬拒但不闭环是这类设计最典型的翻车点).
-func (s *ExplorationStore) RecentPolicyRejects(limit int) ([]Activity, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 10
-	}
-	rows, err := s.db.Query(`SELECT id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''),
-COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), COALESCE(detail,''), metadata, created_at,
-input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no
-FROM activity WHERE exploration_id=$1 AND kind='policy_reject' ORDER BY id DESC LIMIT $2`, s.expID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Activity{}
-	for rows.Next() {
-		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError,
-			&a.Summary, &a.Detail, &a.Metadata, &a.CreatedAt, &a.InputTokens, &a.OutputTokens,
-			&a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
-}
-
-// LastIntentCreatedAt returns the creation time of the most recent intent node
-// (nil = 没有任何意图). P20 的停摆判定用它回答"窗口内探索还在推进吗"。
-func (s *ExplorationStore) LastIntentCreatedAt() (*time.Time, error) {
-	var ts *time.Time
-	err := s.db.QueryRow(`SELECT max(created_at) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'`, s.expID).Scan(&ts)
-	if err != nil {
-		return nil, err
-	}
-	return ts, nil
-}
-
-// CountIntents returns how many intent nodes this exploration has (P20 的意图额度口径 =
-// 累计创建过的意图，含种子意图与人直投的——它是"总量预算"，不是"当前存量"）。
-func (s *ExplorationStore) CountIntents() (int, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'`, s.expID).Scan(&n)
-	return n, err
-}
-
 // CountIntentStates 按 state 统计本探索的意图数。页面上的「待领/执行中/被拦」用它的
 // 精确值——意图列表接口有 300 行上限，用 len(列表筛选) 会把窗口长度当总数。
 func (s *ExplorationStore) CountIntentStates() (map[string]int, error) {

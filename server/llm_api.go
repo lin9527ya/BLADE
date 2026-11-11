@@ -14,7 +14,6 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/llmrec"
-	"github.com/lin9527ya/blade/policy"
 )
 
 // agentMaxTurns returns the configured max_turns for an agent key (0 = unlimited,
@@ -598,8 +597,6 @@ type createTaskReq struct {
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏 add_task_scope/list_untested_assets。company 关联不受影响。
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
-	// ExplorationPolicy(P20) 任务级探索策略覆盖层;省略/null=完全继承当时的全局默认。
-	ExplorationPolicy *policy.Override `json:"exploration_policy,omitempty"`
 	// PlannerPrompt 任务级 planner 提示词全文（创建时快照，上限 32KB）。
 	// 与 PlannerTemplateID 同传时本字段优先。
 	PlannerPrompt string `json:"planner_prompt,omitempty"`

@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lin9527ya/blade/db"
-	"github.com/lin9527ya/blade/policy"
 	"github.com/lin9527ya/blade/traffic"
 )
 
@@ -17,6 +17,15 @@ import (
 // the canonical contracts; this file maps one onto the other.
 
 func i64s(v int64) string { return strconv.FormatInt(v, 10) }
+
+// parseIntDefault 解析路径/查询参数里的整数，坏值按 0 处理。
+func parseIntDefault(s string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
 
 func rfc3339(t time.Time) string { return t.Format(time.RFC3339) }
 
@@ -72,11 +81,6 @@ type TaskDTO struct {
 	ArchiveBlockedBy      string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs            []int64            `json:"company_ids"`
 	CoverageEnabled       bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
-	// P20 探索策略限制摘要(列表页角标用);明细(额度/覆盖层/近期被拒)走 GET /api/tasks/{id}/policy。
-	PolicyTechniques []string `json:"policy_techniques,omitempty"`
-	PolicyWrites     []string `json:"policy_writes,omitempty"`
-	PolicyCustom     int      `json:"policy_custom,omitempty"`
-	PolicyMaxIntents int      `json:"policy_max_intents,omitempty"`
 }
 
 // FindingSeverityDTO 是任务列表里按严重度分档的漏洞计数（严重/高/中/低）。
@@ -125,12 +129,6 @@ func taskDTO(t *Task, status string) TaskDTO {
 		sourceIDs = append(sourceIDs, i64s(id))
 	}
 	profileIDs := append(make([]int64, 0, len(llmState.ProfileIDs)), llmState.ProfileIDs...)
-	var polTech, polWrites []string
-	polCustom, polMax := 0, 0
-	if doc := policy.ParseDoc(t.ExplorationPolicy); doc != nil {
-		polTech, polWrites, polMax = doc.Effective.Techniques, doc.Effective.ForbiddenWrites, doc.Effective.MaxIntentsTotal
-		polCustom = len(doc.Effective.Custom)
-	}
 	return TaskDTO{
 		ID:                    t.ID,
 		ExplorationID:         t.ExpID,
@@ -160,10 +158,6 @@ func taskDTO(t *Task, status string) TaskDTO {
 		SourceTaskIDs:         sourceIDs,
 		CompanyIDs:            lifecycle.CompanyIDs,
 		CoverageEnabled:       t.CoverageEnabled,
-		PolicyTechniques:      polTech,
-		PolicyWrites:          polWrites,
-		PolicyCustom:          polCustom,
-		PolicyMaxIntents:      polMax,
 	}
 }
 

@@ -2260,7 +2260,7 @@ func accP23(t *testing.T, e *accEnv) {
 	tsxA := agent.NewToolSet(taskA.Store, "planner")
 	tsxA.SetTaskID(tidA)
 	tsxA.SetAssetStore(e.m.Assets(), e.m.Assets().Companies())
-	promote := workflowTool(t, tsxA.PlannerTools(), "promote_knowledge")
+	promote := workflowTool(t, tsxA.MainAgentTools(), "promote_knowledge")
 	pres, err := promote.Call(context.Background(), json.RawMessage(fmt.Sprintf(
 		`{"company_id":%d,"node_id":%d,"kind":"conclusion","confidence":"high","detail":"复现：普通账号打 /api/admin/users"}`,
 		companyA, nodeID)), nil)
