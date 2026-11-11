@@ -78,6 +78,16 @@
   任务创建策略覆盖、任务详情探索策略卡、穷尽复核展示及对应 API；授权范围、任务拦截规则、操作约束注入、
   战果/遗留物/痕迹/打法库/CVE 等非探索 UI 保留。
 
+### worker 工具 schema 瘦身
+
+- 新增 `workerDeferredTools`（18 项）：足迹/遗留物销账、CVE/打法/AD/opsec 查询、
+  执行台账的检索/取消、出口切换、候选关闭等低频工具的 schema 不再随每轮 prompt 发送，
+  只把名字列进 deferred 块，需要时用 `SearchExtraTools` 取用。
+- 高频写回与执行主路径保持常驻：`record_fact`、`report_finding`、`report_credential`、
+  `report_foothold`、`report_artifact`、`insert_assets`、`run/wait/get_execution` 等。
+- 工具实现、绑定与 capability 不变；每轮约少 11,200 字符工具 schema。
+- OAST 未配置、`loot_exec` 关闭时原有的运行期裁剪继续生效。
+
 ### planner 工具面精简
 
 - planner 默认绑定不再包含写回/动作类工具：`record_playbook`、`promote_knowledge`、

@@ -121,3 +121,38 @@ func TestUnlockGatingFlow(t *testing.T) {
 		t.Fatal("gated tool should be unlocked after skill load")
 	}
 }
+
+// worker 的 schema 瘦身清单必须只包含真实存在的工具，且不能把高频写回/执行主路径
+// 也 deferred——那样每轮会多一次「先查 schema」的往返，反而拖慢主流程。
+func TestWorkerDeferredTools(t *testing.T) {
+	base := NewToolSet(nil, "").WorkerTools()
+	have := map[string]bool{}
+	for _, tl := range base {
+		have[tl.Name()] = true
+	}
+	deferred := map[string]bool{}
+	for _, name := range workerDeferredTools {
+		if !have[name] {
+			t.Fatalf("deferred 工具 %q 不在 WorkerTools 里：提示词会指向不存在的工具", name)
+		}
+		deferred[name] = true
+	}
+	for _, core := range []string{
+		"insert_assets", "record_fact", "report_finding", "report_credential",
+		"report_foothold", "report_artifact", "list_assets", "get_worker_trace",
+		"search_all_worker_traces", "node_detail", "list_findings", "conclude_intent",
+		"run_execution", "wait_execution", "get_execution",
+	} {
+		if deferred[core] {
+			t.Fatalf("高频/核心工具 %q 不应 deferred：每轮会多一次 SearchExtraTools 往返", core)
+		}
+	}
+	got := deferWorkerTools(base)
+	if len(got) != len(workerDeferredTools) {
+		t.Fatalf("deferWorkerTools 丢了名字：%v", got)
+	}
+	sys, _ := deferredSystem("SYS", DeferredInfo{Deferred: got, GlobalNames: got})
+	if len(sys) < 2 || !strings.Contains(sys[1], "report_footprint") {
+		t.Fatalf("deferred 块缺少 worker 工具：%v", sys)
+	}
+}

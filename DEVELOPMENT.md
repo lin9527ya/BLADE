@@ -246,6 +246,13 @@ v0.9.8 把「图上发生了什么」「这次执行是谁」「证据从哪来�
   planner/worker 策略段与意图门均不再存在；`tasks.exploration_policy` 列保留但不再读写，
   `policy_blocked` 仅作为历史终态兼容已有任务。
 
+### worker 工具 schema 瘦身
+
+- 18 个低频工具改为 deferred（schema 不随每轮 prompt 发送，模型按需 SearchExtraTools）：
+  足迹/遗留物销账、CVE/打法/AD/opsec 查询、grep/cancel execution、rotate_egress、
+  close_candidate 等。
+- 高频写回与执行主路径保持常驻；工具实现与绑定不变。
+
 ### planner 工具面精简
 
 - planner 默认不再绑定写回/动作类工具（`record_playbook`、`promote_knowledge`、

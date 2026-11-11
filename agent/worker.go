@@ -637,6 +637,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID, LogicalSessionID: intent.LogicalSessionID, ExecutionGeneration: intent.ExecutionGeneration, ExecutionOwner: intent.Owner})
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
 	defer cleanup()
+	if own := deferWorkerTools(tools); len(own) > 0 {
+		def.Deferred = append(def.Deferred, own...)
+		def.GlobalNames = append(def.GlobalNames, own...)
+	}
 	if w.webSearch.Enabled {
 		tools = append(tools, NewWebSearchTool(w.webSearch))
 	}

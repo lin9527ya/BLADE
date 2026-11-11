@@ -53,6 +53,49 @@ func deferPlannerTools(base []actool.CoreTool) []string {
 	return deferred
 }
 
+// workerDeferredTools 是 worker 按需才用的内置工具：schema 不进每轮工具列表，
+// 只把名字列进 system 的 <available-deferred-tools>，模型需要时用 SearchExtraTools
+// 取 schema。挑的是**低频但 schema 大**的项：查询类（CVE/打法/AD/opsec/足迹）、
+// 清理销账类、执行台账的检索/取消、出口切换。高频写回（record_fact / report_finding /
+// report_credential / report_foothold / insert_assets）与长任务主路径（run/wait/get）
+// 保持 schema 常驻，避免每轮多一次「先查 schema」的往返。
+var workerDeferredTools = []string{
+	"report_footprint",
+	"mark_footprint_cleaned",
+	"mark_footprint_not_found",
+	"mark_artifact_cleared",
+	"lookup_cves",
+	"cve_exploit",
+	"verify_credential",
+	"lookup_playbooks",
+	"record_playbook_feedback",
+	"ad_paths",
+	"opsec_notes",
+	"list_footprints",
+	"asset_neighbors",
+	"rotate_egress",
+	"grep_execution",
+	"cancel_execution",
+	"report_detection_check",
+	"close_candidate",
+}
+
+// deferWorkerTools 返回 workerDeferredTools 里实际存在于 base 的工具名（与 planner
+// 同一套过滤：不把不存在的名字写进提示词，否则模型会去查一个查不到的名字）。
+func deferWorkerTools(base []actool.CoreTool) []string {
+	have := make(map[string]bool, len(base))
+	for _, tl := range base {
+		have[tl.Name()] = true
+	}
+	deferred := make([]string, 0, len(workerDeferredTools))
+	for _, name := range workerDeferredTools {
+		if have[name] {
+			deferred = append(deferred, name)
+		}
+	}
+	return deferred
+}
+
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
 	sysText += def.FindingGuidance
 	// 出站产物语言（P41）：放在这里而不是各 agent 的拼装点——四个 agent（planner/worker/
