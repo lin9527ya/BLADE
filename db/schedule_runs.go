@@ -133,14 +133,28 @@ func (d *DB) FailTaskScheduleRun(ctx context.Context, scheduleID int64, schedule
 
 // ListScheduleRuns exposes the firing ledger for diagnostics and UI drill-down.
 func (d *DB) ListScheduleRuns(ctx context.Context, scheduleID int64, limit int) ([]ScheduleRun, error) {
+	runs, _, err := d.ListScheduleRunsPage(ctx, scheduleID, limit, 0)
+	return runs, err
+}
+
+// ListScheduleRunsPage is the paginated view used by the schedule ops console.
+// total is the full history size so the UI can show "第 N / M 页".
+func (d *DB) ListScheduleRunsPage(ctx context.Context, scheduleID int64, limit, offset int) ([]ScheduleRun, int, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	if offset < 0 {
+		offset = 0
+	}
+	var total int
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM schedule_runs WHERE schedule_id=$1`, scheduleID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := d.QueryContext(ctx, `
 SELECT id, schedule_id, scheduled_at, state, COALESCE(task_id,''), COALESCE(error,''), created_at, updated_at
-FROM schedule_runs WHERE schedule_id=$1 ORDER BY scheduled_at DESC, id DESC LIMIT $2`, scheduleID, limit)
+FROM schedule_runs WHERE schedule_id=$1 ORDER BY scheduled_at DESC, id DESC LIMIT $2 OFFSET $3`, scheduleID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []ScheduleRun{}
@@ -148,9 +162,9 @@ FROM schedule_runs WHERE schedule_id=$1 ORDER BY scheduled_at DESC, id DESC LIMI
 		var run ScheduleRun
 		if err := rows.Scan(&run.ID, &run.ScheduleID, &run.ScheduledAt, &run.State, &run.TaskID,
 			&run.Error, &run.CreatedAt, &run.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, run)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }

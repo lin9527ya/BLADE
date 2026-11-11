@@ -1129,6 +1129,62 @@ export interface TaskSchedule {
   created_at: string;
 }
 
+/** 全局战果台账的一行（foothold / credential / artifact / footprint）。凭据不含明文。 */
+export interface LootItem {
+  id: number;
+  kind: "foothold" | "credential" | "artifact" | "footprint" | string;
+  state: string;
+  created_at: string;
+  task_id: number;
+  task_name: string;
+  task_description?: string;
+  campaign_id?: number;
+  summary?: string;
+  detail?: string;
+  host?: string;
+  locator?: string;
+  url?: string;
+  category?: string;
+  exposure?: string;
+  where?: string;
+  signals?: string;
+  cleanup?: string;
+  access?: string;
+  privilege?: string;
+  protocol?: string;
+  port?: number;
+  credential_id?: number;
+  username?: string;
+  credential_kind?: string;
+  fingerprint?: string;
+  targets?: { host: string; port?: number; service?: string; protocol?: string; verified?: boolean }[];
+  verified_count?: number;
+}
+
+/** 全局凭据尝试台账（credential_attempts）。 */
+export interface CredentialAttempt {
+  id: number;
+  task_id: number;
+  host: string;
+  account?: string;
+  tool?: string;
+  command?: string;
+  spray?: boolean;
+  at: string;
+}
+
+/** 计划任务的一次触发记录（schedule_runs）。claimed 是认领中的瞬时态。 */
+export interface ScheduleRun {
+  id: number;
+  schedule_id: number;
+  scheduled_at: string;
+  state: "claimed" | "created" | "failed" | string;
+  task_id?: string;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** P19 批量交付计划：一个任务全部发现的清单 + 证据门 + 疑似重复分组。 */
 export interface TaskSrcBatchEntry {
   id: number;

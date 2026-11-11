@@ -580,6 +580,7 @@ func (s *Server) registerRoutes(mux routeRegistrar) {
 	s.registerWorkspaceRoutes(mux)
 	s.registerAssetRoutes(mux)
 	s.registerExplorationRoutes(mux)
+	s.registerLootRoutes(mux)
 	s.registerMetricsRoutes(mux)
 	s.registerChatRoutes(mux)
 	s.registerAgentRoutes(mux)

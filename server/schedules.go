@@ -299,6 +299,42 @@ func (s *Server) runTaskScheduleNow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"task_id": t.ID, "note": "已按规格建任务（不影响下次排期）"})
 }
 
+// listTaskScheduleRuns returns the firing ledger for one schedule. It is a
+// read-only ops view: the scheduler's claim/CAS semantics are untouched.
+func (s *Server) listTaskScheduleRuns(w http.ResponseWriter, r *http.Request) {
+	id := parseIntDefault(r.PathValue("id"))
+	if id <= 0 {
+		writeErr(w, 400, "bad id")
+		return
+	}
+	row, err := s.m.pg.GetTaskSchedule(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if row == nil {
+		writeErr(w, 404, "计划任务不存在")
+		return
+	}
+	page := int(parseIntDefault(r.URL.Query().Get("page")))
+	if page <= 0 {
+		page = 1
+	}
+	size := int(parseIntDefault(r.URL.Query().Get("size")))
+	if size <= 0 {
+		size = 20
+	}
+	if size > 100 {
+		size = 100
+	}
+	runs, total, err := s.m.pg.ListScheduleRunsPage(r.Context(), id, size, (page-1)*size)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"runs": runs, "total": total, "page": page, "size": size})
+}
+
 // fireSchedule is the manual "run now" path: it creates a task without touching
 // the occurrence schedule or the scheduled-run ledger.
 func (s *Server) fireSchedule(row *db.TaskSchedule) (*Task, error) {

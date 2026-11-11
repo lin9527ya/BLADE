@@ -4,6 +4,35 @@
 
 ## [Unreleased]
 
+### 全局战果与凭据台账
+
+- 新增 `GET /api/loot`：跨任务分页查看 foothold / credential / artifact / footprint，
+  支持 kind/state/task/company/campaign 过滤；凭据只输出身份、指纹、可登目标，明文不经过该接口。
+- 新增 `GET /api/loot/export?format=csv|json`：流式导出同一过滤条件；CSV/JSON 均不含凭据明文。
+- 新增 `GET /api/credential-attempts`（分页/CSV/JSON）：跨任务查看账号尝试（主机、账号、工具、
+  命令、是否成批、时间）。
+- 新增「战果」页面（`/function/loot`）：战果与账号尝试两个 Tab，支持筛选、翻页、CSV/JSON 导出、
+  任务跳转；凭据明文仍需在任务内走受控 reveal。
+- 数据库补充 partial index `idx_expnodes_loot` 与 `idx_cred_attempts_global`。
+
+### 计划任务运维台
+
+- 新增「计划任务」独立页面（`/function/schedules`）：列表、启用/停用、立即运行、删除、
+  下次/上次运行时间与最近任务链接。
+- 新增 `GET /api/task-schedules/{id}/runs`：按页读取 `schedule_runs` 触发历史
+  （计划时间、状态 created/failed/claimed、任务 id、错误原因）。
+- 复用现有调度语义：立即运行是额外一次、不推进排期；停机不追补；停用清空排期而非删除。
+
+### 交付包与报告分发
+
+- 完整任务报告支持下载：`GET /api/report?format=md|docx`。默认行为不变（内联 Markdown）；
+  `md/docx` 返回附件并带安全文件名；DOCX 由纯 Go OOXML 渲染，不引入 Chromium/LibreOffice。
+- 前端报告页新增「Markdown」「DOCX」下载按钮，复用鉴权 fetch + blob 下载。
+- SRC 批量交付不再在 500 条处静默截断：改为全量读取，`srcBatchPlan` 增加 `total`。
+- SRC 批量 ZIP 改为临时文件 + `http.ServeContent`，避免大任务把整包常驻内存。
+- 交付 ZIP 新增 `manifest.json` 与 `SHA256SUMS`：逐文件 sha256/size、跳过项及原因、
+  任务/格式/版本元信息；解压后可直接 `sha256sum -c SHA256SUMS`。
+
 ## [0.9.10] - 2026-11-11
 
 移植 ARTEX 的统一报告实现：把同一缺陷的重复上报归并成漏洞文件夹，由报告 Agent 在读取

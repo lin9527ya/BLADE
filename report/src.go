@@ -131,6 +131,20 @@ func SrcFilename(title, ext string) string {
 	return name + ext
 }
 
+// FullFilename 是完整任务报告的下载文件名：复用 SRC 的安全字符清洗，空标题回退
+// 「渗透测试报告」。完整报告与单条 SRC 共用同一套跨平台安全规则。
+func FullFilename(title, ext string) string {
+	name := unsafeFilenameChars.ReplaceAllString(strings.TrimSpace(title), "_")
+	name = strings.Trim(name, "._")
+	if runes := []rune(name); len(runes) > 80 {
+		name = string(runes[:80])
+	}
+	if name == "" {
+		name = "渗透测试报告"
+	}
+	return name + ext
+}
+
 // Section 从报告 Markdown 里取一个「小节」的正文：标题行包含 keyword 的那段，直到下一个
 // 标题（# 开头）或文末。用于把报告 Agent 写的「影响 / 修复建议」摘出来填进 SRC 提交稿——
 // 这两个字段此前从来没被赋值，导出稿永远带着「（待补：…）」占位。

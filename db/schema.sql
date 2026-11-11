@@ -293,6 +293,10 @@ BEGIN
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_expnodes_part     ON exploration_nodes(exploration_id, kind);
+-- 全局战果台账：跨任务按 kind 扫战果节点（partial index 避免把 fact/intent 也塞进来）。
+CREATE INDEX IF NOT EXISTS idx_expnodes_loot
+    ON exploration_nodes(kind, id DESC)
+    WHERE kind IN ('foothold','credential','artifact','footprint');
 CREATE INDEX IF NOT EXISTS idx_expnodes_frontier ON exploration_nodes(exploration_id, priority DESC)
     WHERE kind='intent' AND state='open';
 DROP TRIGGER IF EXISTS trg_expnodes_upd ON exploration_nodes;
@@ -1861,6 +1865,9 @@ CREATE INDEX IF NOT EXISTS idx_cred_attempts_task
 -- 保留清理按 at 扫过期行（此前这张表没有任何回收路径，随使用线性增长）。
 CREATE INDEX IF NOT EXISTS idx_cred_attempts_at
     ON credential_attempts (at);
+-- 全局凭据尝试台账：按时间倒序翻页。
+CREATE INDEX IF NOT EXISTS idx_cred_attempts_global
+    ON credential_attempts (at DESC, id DESC);
 
 -- 漏洞案例（P2-7）：把同一根因/同一资产的重复上报归并成一个独立缺陷。
 -- 原始 findings 保留为成员；案例持有统一报告与版本，报告编辑用 report_version 做 CAS。

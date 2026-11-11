@@ -13,6 +13,17 @@ import (
 // always produce a submittable document; the version styled by the user's
 // render_docx.py remains available from the exported .md.
 func SrcDOCX(in SrcInput) ([]byte, error) {
+	return docxPackage(docxDocument(in))
+}
+
+// FullDOCX renders the full task report Markdown as a .docx. It reuses the same
+// standard-library-only OOXML package as SrcDOCX; the Markdown subset emitted by
+// report.Markdown (headings, lists, code fences, rules, paragraphs) is enough.
+func FullDOCX(markdown string) ([]byte, error) {
+	return docxPackage(docxFullDocument(markdown))
+}
+
+func docxPackage(document string) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	files := []struct{ name, body string }{
@@ -20,7 +31,7 @@ func SrcDOCX(in SrcInput) ([]byte, error) {
 		{"_rels/.rels", docxRootRels},
 		{"word/_rels/document.xml.rels", docxDocRels},
 		{"word/styles.xml", docxStyles},
-		{"word/document.xml", docxDocument(in)},
+		{"word/document.xml", document},
 	}
 	for _, f := range files {
 		w, err := zw.Create(f.name)
@@ -35,6 +46,98 @@ func SrcDOCX(in SrcInput) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// docxFullDocument converts the report Markdown subset into a WordprocessingML
+// body. Fenced code keeps the shaded SrcCode style; headings reuse SrcTitle /
+// SrcHeading; `---` becomes the existing rule paragraph. Unknown lines (tables,
+// callouts) fall back to normal paragraphs so no content is dropped.
+func docxFullDocument(markdown string) string {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + "\n")
+	b.WriteString(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>`)
+	inCode := false
+	for _, raw := range strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n") {
+		line := strings.TrimRight(raw, "\r")
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			if trimmed != "" {
+				b.WriteString(docxPara("SrcCode", line))
+			}
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+		if isDocxRule(trimmed) {
+			b.WriteString(docxRule())
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "# "):
+			b.WriteString(docxPara("SrcTitle", docxStripInline(strings.TrimSpace(trimmed[2:]))))
+		case strings.HasPrefix(trimmed, "## "):
+			b.WriteString(docxPara("SrcHeading", docxStripInline(strings.TrimSpace(trimmed[3:]))))
+		case strings.HasPrefix(trimmed, "### "):
+			b.WriteString(docxPara("SrcHeading", docxStripInline(strings.TrimSpace(trimmed[4:]))))
+		case strings.HasPrefix(trimmed, "#### "):
+			b.WriteString(docxPara("SrcHeading", docxStripInline(strings.TrimSpace(trimmed[5:]))))
+		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "), strings.HasPrefix(trimmed, "+ "):
+			b.WriteString(docxPara("", "• "+docxStripInline(strings.TrimSpace(trimmed[2:]))))
+		case strings.HasPrefix(trimmed, "> "):
+			b.WriteString(docxPara("", docxStripInline(strings.TrimSpace(trimmed[2:]))))
+		default:
+			b.WriteString(docxPara("", docxStripInline(trimmed)))
+		}
+	}
+	b.WriteString(`<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>`)
+	b.WriteString(`</w:body></w:document>`)
+	return b.String()
+}
+
+func isDocxRule(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	for _, r := range s {
+		if r != '-' && r != '*' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// docxStripInline 去掉报告 Markdown 里的行内标记（粗体/斜体/行内代码/链接目标），
+// 保留可读文本；真正需要保留的原始内容在代码围栏里，不走这条路径。
+func docxStripInline(s string) string {
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "__", "")
+	s = strings.ReplaceAll(s, "`", "")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.ReplaceAll(s, "_", "")
+	// [text](url) → text
+	for {
+		open := strings.Index(s, "[")
+		if open < 0 {
+			break
+		}
+		mid := strings.Index(s[open:], "](")
+		if mid < 0 {
+			break
+		}
+		mid += open
+		end := strings.Index(s[mid:], ")")
+		if end < 0 {
+			break
+		}
+		end += mid
+		s = s[:open] + s[open+1:mid] + s[end+1:]
+	}
+	return strings.TrimSpace(s)
 }
 
 const docxContentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

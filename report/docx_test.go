@@ -112,3 +112,65 @@ func TestSrcDOCXStructure(t *testing.T) {
 		t.Fatal("document.xml 不应含裸 CR")
 	}
 }
+
+// FullDOCX 是完整任务报告（Markdown）的 Word 导出：复用同一 OOXML 包，覆盖标题、
+// 列表、代码围栏与分隔线，且 XML 特殊字符必须转义、行内 Markdown 标记不能残留。
+func TestFullDOCXStructure(t *testing.T) {
+	md := "# 渗透测试报告\n\n## 发现概览\n\n- 高危：**SQL 注入**\n- 中危：越权\n\n```\nGET /a?b=1&c=<x>\n```\n\n---\n\n普通段落。"
+	blob, err := FullDOCX(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(blob), int64(len(blob)))
+	if err != nil {
+		t.Fatalf("not a zip: %v", err)
+	}
+	want := map[string]bool{
+		"[Content_Types].xml": false, "_rels/.rels": false,
+		"word/_rels/document.xml.rels": false, "word/styles.xml": false, "word/document.xml": false,
+	}
+	var doc string
+	for _, f := range zr.File {
+		if _, ok := want[f.Name]; ok {
+			want[f.Name] = true
+		}
+		if f.Name != "word/document.xml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc = string(b)
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Fatalf("missing OOXML part %s", name)
+		}
+	}
+	if err := xml.Unmarshal([]byte(doc), new(any)); err != nil {
+		t.Fatalf("document.xml not XML: %v", err)
+	}
+	for _, wantText := range []string{"渗透测试报告", "发现概览", "• 高危：SQL 注入", "GET /a?b=1&amp;c=&lt;x&gt;"} {
+		if !strings.Contains(doc, wantText) {
+			t.Fatalf("document.xml missing %q:\n%s", wantText, doc)
+		}
+	}
+	if strings.Contains(doc, "**") || strings.Contains(doc, "- 高危") {
+		t.Fatalf("markdown markers leaked into DOCX:\n%s", doc)
+	}
+}
+
+func TestFullFilenameSanitizes(t *testing.T) {
+	if got := FullFilename("  某项目/交付:报告  ", ".docx"); got != "某项目_交付_报告.docx" {
+		t.Fatalf("FullFilename = %q", got)
+	}
+	if got := FullFilename("", ".md"); got != "渗透测试报告.md" {
+		t.Fatalf("empty title fallback = %q", got)
+	}
+}

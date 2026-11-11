@@ -62,6 +62,7 @@ GET /api/conversations/{id}	server.(*Server).pgGetConversation-fm
 GET /api/conversations/{id}/messages	server.(*Server).pgConversationMessages-fm
 GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDetail-fm
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+GET /api/credential-attempts	server.(*Server).listCredentialAttempts-fm
 GET /api/cves	server.(*Server).listCVEs-fm
 GET /api/cves/{id}	server.(*Server).getCVE-fm
 GET /api/dashboard	server.(*Server).dashboardSummary-fm
@@ -133,6 +134,8 @@ GET /api/llm/retry-policy	server.(*Server).pgGetLLMRetryPolicy-fm
 GET /api/logs	server.(*Server).getLogs-fm
 GET /api/logs/history	server.(*Server).getLogsHistory-fm
 GET /api/logs/stream	server.(*Server).streamLogs-fm
+GET /api/loot	server.(*Server).listLoot-fm
+GET /api/loot/export	server.(*Server).exportLoot-fm
 GET /api/mcp	server.(*Server).pgListMCP-fm
 GET /api/mcp/{id}/tools	server.(*Server).pgMCPTools-fm
 GET /api/metrics	server.(*Server).metrics-fm
@@ -163,6 +166,7 @@ GET /api/task-archives	server.(*Server).listTaskArchives-fm
 GET /api/task-archives/{id}	server.(*Server).getTaskArchive-fm
 GET /api/task-categories	server.(*Server).pgListTaskCategories-fm
 GET /api/task-schedules	server.(*Server).listTaskSchedules-fm
+GET /api/task-schedules/{id}/runs	server.(*Server).listTaskScheduleRuns-fm
 GET /api/task-templates	server.(*Server).pgListTaskTemplates-fm
 GET /api/tasks	server.(*Server).listTasks-fm
 GET /api/tasks/export.csv	server.(*Server).exportTasksCSV-fm

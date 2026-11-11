@@ -33,10 +33,15 @@ Norma 的 `tool/shell_session.go`（PTY 生命周期）。
 
 `server/customtool.go`（四种 kind：command / script / http / shell 的执行器与校验）。
 
-## 探索策略
+## 功能拓展路线图
 
-`policy/`（词汇表与校验）、`server/policy_compile.go`（编译成任务级规则）、
-`server/engine_timeout.go`（停摆判定）。`policy_blocked` 是它的终态。
+`docs/功能拓展路线图.md`：交付/报告、资产/情报、自动化/运维四个方向的候选、排序与验收口径。
+本轮只做本地闭环；黑板与探索意图流程已冻结，不再优化。
+
+## 探索策略（已下线）
+
+P20 探索策略已整体删除（`policy/`、策略端点、`exploration_policy` 读写、planner/worker
+策略段）；`policy_blocked` 仅作为历史终态兼容旧任务。详见 `CHANGELOG.md`。
 
 ## 情报与计划任务
 

@@ -56,6 +56,7 @@ func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("PATCH /api/task-schedules/{id}", s.patchTaskSchedule)
 	mux.HandleFunc("DELETE /api/task-schedules/{id}", s.deleteTaskSchedule)
 	mux.HandleFunc("POST /api/task-schedules/{id}/run", s.runTaskScheduleNow)
+	mux.HandleFunc("GET /api/task-schedules/{id}/runs", s.listTaskScheduleRuns)
 	mux.HandleFunc("POST /api/tasks/{id}/archive", s.queueTaskArchive)
 	mux.HandleFunc("POST /api/tasks/archive/batch", s.queueTaskArchivesBatch)
 	mux.HandleFunc("POST /api/task-archives/{id}/restore", s.queueTaskArchiveRestore)

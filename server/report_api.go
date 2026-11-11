@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,11 @@ import (
 )
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
+	format := strings.TrimSpace(r.URL.Query().Get("format"))
+	if format != "" && format != "md" && format != "docx" {
+		writeErr(w, 400, "bad format: "+format)
+		return
+	}
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "no active task")
@@ -267,9 +273,31 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		TechniqueTally: techniqueTally, Detections: detections,
 		CredentialAttempts: credAttempts,
 	})
-	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.WriteHeader(200)
-	_, _ = w.Write([]byte(md))
+	// 默认行为保持不变：内联 Markdown。format=md/docx 走附件下载；先算完 body 再写
+	// 响应头，避免生成失败时已经送出半份文件。
+	switch format {
+	case "md":
+		name := report.FullFilename(t.Description, ".md")
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(md))
+	case "docx":
+		blob, err := report.FullDOCX(md)
+		if err != nil {
+			writeErr(w, 500, "生成 DOCX 失败："+err.Error())
+			return
+		}
+		name := report.FullFilename(t.Description, ".docx")
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
+		w.WriteHeader(200)
+		_, _ = w.Write(blob)
+	default:
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(md))
+	}
 }
 
 func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) {

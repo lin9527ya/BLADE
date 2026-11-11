@@ -2,12 +2,13 @@ package server
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,11 +57,14 @@ type srcBatchPlan struct {
 	Warnings    []string        `json:"warnings"`
 	Included    int             `json:"included"`
 	Skipped     int             `json:"skipped"`
+	Total       int             `json:"total"`
 }
 
 // buildSrcBatch 组装交付计划：一次查完所有发现的绑定端点，据此算指纹与分组。
 func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, error) {
-	rows, _, err := s.m.pg.ListFindingsPage(db.FindingFilter{TaskID: t.ID, Sort: "time"}, 1, 500)
+	// 全量读取，不再有 500 条静默上限：交付物少一条都是错误，宁可慢也不能少交。
+	// ListFindingsForExport 的单查询语义也让「计划 / ZIP」天然一致。
+	rows, err := s.m.pg.ListFindingsForExport(db.FindingFilter{TaskID: t.ID}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +90,7 @@ func (s *Server) buildSrcBatch(ctx context.Context, t *Task) (*srcBatchPlan, err
 		Goal:        t.Goal,
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
 		Entries:     make([]srcBatchEntry, 0, len(rows)),
+		Total:       len(rows),
 	}
 	type groupInfo struct {
 		ids []int64
@@ -250,61 +255,124 @@ func (s *Server) getTaskSrcReportZip(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	blob, err := s.buildSrcZip(r.Context(), t, plan)
+	stage, err := os.MkdirTemp("", "blade-src-batch-")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	defer os.RemoveAll(stage)
+	path := filepath.Join(stage, "交付包.zip")
+	manifest, err := s.buildSrcZipToFile(r.Context(), t, plan, path)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer f.Close()
 	name := report.SrcFilename(t.Name, "")
 	if strings.TrimSpace(t.Name) == "" {
 		name = "task-" + t.ID
 	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name+"-交付包.zip"))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(blob)
+	http.ServeContent(w, r, name+"-交付包.zip", time.Now(), f)
+	log.Printf("[src-batch] task=%s findings=%d zip_bytes=%d manifest_files=%d",
+		t.ID, plan.Total, fileSize(path), len(manifest.Files))
 }
 
-// buildSrcZip 打包：提交说明 + 每条（未撤回）发现的 md 与 docx。
-func (s *Server) buildSrcZip(ctx context.Context, t *Task, plan *srcBatchPlan) ([]byte, error) {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	add := func(name string, data []byte) error {
-		f, err := zw.Create(name)
-		if err != nil {
+// buildSrcZipToFile 打包：提交说明 + 每条（未撤回）发现的 md/docx + manifest/SHA256SUMS。
+// 写临时文件而不是 bytes.Buffer，避免大任务把整包常驻内存。
+func (s *Server) buildSrcZipToFile(ctx context.Context, t *Task, plan *srcBatchPlan, path string) (*zipManifest, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	zw := zip.NewWriter(f)
+	skipped := make([]map[string]any, 0)
+	for _, e := range plan.Entries {
+		if !e.Included {
+			skipped = append(skipped, map[string]any{
+				"id": e.ID, "title": e.Title, "skip_reason": e.SkipReason,
+			})
+		}
+	}
+	manifest := newZipManifest(map[string]any{
+		"format_version":   1,
+		"task_id":          plan.TaskID,
+		"task_name":        plan.TaskName,
+		"generated_at":     plan.GeneratedAt,
+		"platform_version": BuildVersion,
+		"total":            plan.Total,
+		"included":         plan.Included,
+		"skipped":          plan.Skipped,
+		"warnings":         plan.Warnings,
+		"skipped_entries":  skipped,
+	})
+	closeAll := func() error {
+		if err := zw.Close(); err != nil {
+			_ = f.Close()
 			return err
 		}
-		_, err = f.Write(data)
-		return err
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		return f.Close()
 	}
-	if err := add("提交说明.md", []byte(srcBatchReadme(t, plan))); err != nil {
+	if err := manifest.add(zw, "提交说明.md", []byte(srcBatchReadme(t, plan))); err != nil {
+		_ = zw.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	for _, e := range plan.Entries {
 		if !e.Included {
 			continue
 		}
-		f, err := s.m.pg.GetFinding(e.ID)
-		if err != nil || f == nil {
+		finding, err := s.m.pg.GetFinding(e.ID)
+		if err != nil || finding == nil {
+			_ = zw.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("读取发现 #%d 失败: %v", e.ID, err)
 		}
-		in, _ := s.buildSrcInput(ctx, f)
+		in, _ := s.buildSrcInput(ctx, finding)
 		base := fmt.Sprintf("findings/%d-%s", e.ID, srcFileSlug(e.Title, e.VulnClass))
-		if err := add(base+".md", []byte(report.SrcMarkdown(in))); err != nil {
+		if err := manifest.add(zw, base+".md", []byte(report.SrcMarkdown(in))); err != nil {
+			_ = zw.Close()
+			_ = f.Close()
 			return nil, err
 		}
 		docx, err := report.SrcDOCX(in)
 		if err != nil {
+			_ = zw.Close()
+			_ = f.Close()
 			return nil, err
 		}
-		if err := add(base+".docx", docx); err != nil {
+		if err := manifest.add(zw, base+".docx", docx); err != nil {
+			_ = zw.Close()
+			_ = f.Close()
 			return nil, err
 		}
 	}
-	if err := zw.Close(); err != nil {
+	if err := manifest.writeTo(zw); err != nil {
+		_ = zw.Close()
+		_ = f.Close()
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	if err := closeAll(); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+func fileSize(path string) int64 {
+	if st, err := os.Stat(path); err == nil {
+		return st.Size()
+	}
+	return 0
 }
 
 // srcFileSlug 把标题变成安全的文件名片段（保留中文，去掉路径分隔符与控制字符）。

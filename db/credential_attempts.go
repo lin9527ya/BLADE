@@ -1,6 +1,11 @@
 package db
 
-import "time"
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+)
 
 // P43 凭据尝试台账（表结构见 schema.sql）。
 //
@@ -69,4 +74,98 @@ SELECT id, task_id, host, account, tool, command, spray, at
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// CredentialAttemptFilter 是全局凭据尝试台账的筛选条件。零值 = 全部。
+type CredentialAttemptFilter struct {
+	TaskID  int64
+	Host    string
+	Account string
+	Since   time.Time // 零值 = 不限
+	Until   time.Time
+}
+
+func (f CredentialAttemptFilter) where() (string, []any) {
+	where := []string{"1=1"}
+	args := []any{}
+	if f.TaskID > 0 {
+		args = append(args, f.TaskID)
+		where = append(where, fmt.Sprintf("task_id=$%d", len(args)))
+	}
+	if h := strings.TrimSpace(f.Host); h != "" {
+		args = append(args, h)
+		where = append(where, fmt.Sprintf("host=$%d", len(args)))
+	}
+	if a := strings.TrimSpace(f.Account); a != "" {
+		args = append(args, a)
+		where = append(where, fmt.Sprintf("account=$%d", len(args)))
+	}
+	if !f.Since.IsZero() {
+		args = append(args, f.Since)
+		where = append(where, fmt.Sprintf("at >= $%d", len(args)))
+	}
+	if !f.Until.IsZero() {
+		args = append(args, f.Until)
+		where = append(where, fmt.Sprintf("at < $%d", len(args)))
+	}
+	return strings.Join(where, " AND "), args
+}
+
+// ListCredentialAttemptsPage 是全局台账分页查询；total 用于翻页显示。
+func (d *DB) ListCredentialAttemptsPage(ctx context.Context, f CredentialAttemptFilter, page, size int) ([]CredentialAttempt, int, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 50
+	}
+	if size > 200 {
+		size = 200
+	}
+	where, args := f.where()
+	var total int
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM credential_attempts WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	limit := len(args) + 1
+	offset := len(args) + 2
+	rows, err := d.QueryContext(ctx, fmt.Sprintf(`
+SELECT id, task_id, host, account, tool, command, spray, at
+  FROM credential_attempts WHERE %s ORDER BY at DESC, id DESC LIMIT $%d OFFSET $%d`, where, limit, offset),
+		append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []CredentialAttempt{}
+	for rows.Next() {
+		var a CredentialAttempt
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.Host, &a.Account, &a.Tool, &a.Command, &a.Spray, &a.At); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, a)
+	}
+	return out, total, rows.Err()
+}
+
+// IterateCredentialAttempts 流式导出用（不计数、不分页）。
+func (d *DB) IterateCredentialAttempts(ctx context.Context, f CredentialAttemptFilter, fn func(CredentialAttempt) error) error {
+	where, args := f.where()
+	rows, err := d.QueryContext(ctx, `
+SELECT id, task_id, host, account, tool, command, spray, at
+  FROM credential_attempts WHERE `+where+` ORDER BY at DESC, id DESC`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a CredentialAttempt
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.Host, &a.Account, &a.Tool, &a.Command, &a.Spray, &a.At); err != nil {
+			return err
+		}
+		if err := fn(a); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }

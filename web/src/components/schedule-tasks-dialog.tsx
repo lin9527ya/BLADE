@@ -61,7 +61,15 @@ function fmtLocal(ts?: string): string {
   });
 }
 
-export function ScheduleTasksDialog({ categories, onCreated }: { categories: TaskCategory[]; onCreated?: () => void }) {
+export function ScheduleTasksDialog({
+  categories,
+  onCreated,
+  triggerLabel = "计划任务",
+}: {
+  categories: TaskCategory[];
+  onCreated?: () => void;
+  triggerLabel?: string;
+}) {
   const [open, setOpen] = React.useState(false);
   const [rows, setRows] = React.useState<TaskSchedule[]>([]);
   const [templates, setTemplates] = React.useState<TaskTemplate[]>([]);
@@ -214,7 +222,7 @@ export function ScheduleTasksDialog({ categories, onCreated }: { categories: Tas
       <DialogTrigger asChild>
         <Button size="sm" variant="outline">
           <CalendarClockIcon data-icon="inline-start" />
-          计划任务
+          {triggerLabel}
         </Button>
       </DialogTrigger>
       <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { CheckIcon, CopyIcon, FileTextIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, FileDownIcon, FileTextIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Markdown } from "@/components/markdown";
@@ -16,6 +16,7 @@ export function ReportTab({ taskId }: { taskId: string }) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [copied, setCopied] = React.useState(false);
+  const [downloading, setDownloading] = React.useState<"md" | "docx" | null>(null);
 
   const load = React.useCallback(
     (active: () => boolean = () => true) => {
@@ -62,6 +63,18 @@ export function ReportTab({ taskId }: { taskId: string }) {
     }
   }
 
+  async function download(format: "md" | "docx") {
+    if (!report) return;
+    setDownloading(format);
+    try {
+      await api.downloadReport(taskId, format);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "下载失败");
+    } finally {
+      setDownloading(null);
+    }
+  }
+
   let content: React.ReactNode;
   if (loading) {
     content = (
@@ -103,9 +116,17 @@ export function ReportTab({ taskId }: { taskId: string }) {
         </CardTitle>
         <div className="flex gap-2">
           {report && (
-            <Button size="sm" variant="outline" onClick={copy}>
-              {copied ? <CheckIcon /> : <CopyIcon />} 复制
-            </Button>
+            <>
+              <Button size="sm" variant="outline" onClick={() => download("md")} disabled={downloading !== null}>
+                <FileDownIcon /> {downloading === "md" ? "下载中…" : "Markdown"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => download("docx")} disabled={downloading !== null}>
+                <FileDownIcon /> {downloading === "docx" ? "下载中…" : "DOCX"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={copy}>
+                {copied ? <CheckIcon /> : <CopyIcon />} 复制
+              </Button>
+            </>
           )}
         </div>
       </CardHeader>

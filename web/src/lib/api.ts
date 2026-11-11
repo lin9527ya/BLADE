@@ -130,6 +130,9 @@ import type {
   TaskHint,
   TaskLLMResolutions,
   TaskNode,
+  CredentialAttempt,
+  LootItem,
+  ScheduleRun,
   TaskSchedule,
   TaskScopeRow,
   TaskSrcBatchPlan,
@@ -765,6 +768,55 @@ export const api = {
   deleteTaskSchedule: (id: number) => del<{ deleted: boolean }>(`/task-schedules/${id}`),
   // 立即按规格建一个任务（额外一次运行，不改排期）。
   runTaskScheduleNow: (id: number) => post<{ task_id: string; note: string }>(`/task-schedules/${id}/run`, {}),
+  // 计划任务触发历史（schedule_runs，按 scheduled_at 倒序分页）。
+  taskScheduleRuns: (id: number, page = 1, size = 20) =>
+    get<{ runs: ScheduleRun[] | null; total: number; page: number; size: number }>(
+      `/task-schedules/${id}/runs?page=${page}&size=${size}`,
+    ).then((r) => ({ ...r, runs: arr(r.runs) })),
+
+  // ---- 全局战果与凭据台账（只读） ----
+  loot: (params: { kind?: string; state?: string; task?: string; company?: number; campaign?: number; page?: number; size?: number }) => {
+    const q = new URLSearchParams();
+    if (params.kind) q.set("kind", params.kind);
+    if (params.state) q.set("state", params.state);
+    if (params.task) q.set("task", params.task);
+    if (params.company) q.set("company", String(params.company));
+    if (params.campaign) q.set("campaign", String(params.campaign));
+    q.set("page", String(params.page ?? 1));
+    q.set("size", String(params.size ?? 50));
+    return get<{ items: LootItem[] | null; total: number; page: number; size: number }>(`/loot?${q.toString()}`).then(
+      (r) => ({ ...r, items: arr(r.items) }),
+    );
+  },
+  lootExport: async (params: { kind?: string; state?: string; task?: string; company?: number; campaign?: number }, format: "csv" | "json") => {
+    const q = new URLSearchParams();
+    if (params.kind) q.set("kind", params.kind);
+    if (params.state) q.set("state", params.state);
+    if (params.task) q.set("task", params.task);
+    if (params.company) q.set("company", String(params.company));
+    if (params.campaign) q.set("campaign", String(params.campaign));
+    q.set("format", format);
+    await downloadAuthedBlob(`/api/loot/export?${q.toString()}`, `战果台账.${format}`);
+  },
+  credentialAttempts: (params: { task?: string; host?: string; account?: string; page?: number; size?: number }) => {
+    const q = new URLSearchParams();
+    if (params.task) q.set("task", params.task);
+    if (params.host) q.set("host", params.host);
+    if (params.account) q.set("account", params.account);
+    q.set("page", String(params.page ?? 1));
+    q.set("size", String(params.size ?? 50));
+    return get<{ items: CredentialAttempt[] | null; total: number; page: number; size: number }>(
+      `/credential-attempts?${q.toString()}`,
+    ).then((r) => ({ ...r, items: arr(r.items) }));
+  },
+  credentialAttemptsExport: async (params: { task?: string; host?: string; account?: string }, format: "csv" | "json") => {
+    const q = new URLSearchParams();
+    if (params.task) q.set("task", params.task);
+    if (params.host) q.set("host", params.host);
+    if (params.account) q.set("account", params.account);
+    q.set("format", format);
+    await downloadAuthedBlob(`/api/credential-attempts?${q.toString()}`, `凭据尝试.${format}`);
+  },
 
   // ---- P21 情报源 ----
   // 测试连接：用当前设置打一次源的信息接口，回显账号与剩余额度（不回显 key）。
@@ -1470,6 +1522,34 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
+  // 完整报告下载：服务端按 format=md|docx 返回附件；文件名取 Content-Disposition。
+  downloadReport: async (task: string, format: "md" | "docx") => {
+    const token = getToken();
+    const q = tq(task);
+    const r = await fetch(`/api/report${q}${q ? "&" : "?"}format=${format}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`报告下载失败: ${r.status}`);
+    const blob = await r.blob();
+    let name = `report.${format}`;
+    const cd = r.headers.get("Content-Disposition") ?? "";
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    if (m) {
+      try {
+        name = decodeURIComponent(m[1]);
+      } catch {
+        /* 保留回退文件名 */
+      }
+    }
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
   chatMentions: (kind: string, query: string, signal?: AbortSignal, cursor = "") =>
     http<{ items: ChatMention[]; next_cursor?: string }>(
       `/chat/mentions?${new URLSearchParams({ kind, q: query, cursor })}`,
@@ -2015,3 +2095,30 @@ export const api = {
   applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),
   rollbackUpdate: () => post<{ ok: boolean }>(`/update/rollback`),
 };
+
+// 带鉴权的文件下载：fetch → blob → 临时 object URL；文件名优先用服务端
+// Content-Disposition（filename*=UTF-8''...），否则用调用方给的回退名。
+async function downloadAuthedBlob(path: string, fallbackName: string) {
+  const token = getToken();
+  const r = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+  const blob = await r.blob();
+  let name = fallbackName;
+  const cd = r.headers.get("Content-Disposition") ?? "";
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (m) {
+    try {
+      name = decodeURIComponent(m[1]);
+    } catch {
+      /* 保留回退文件名 */
+    }
+  }
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objUrl);
+}
