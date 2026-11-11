@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-11-12
+
 ### 全局战果与凭据台账
 
 - 新增 `GET /api/loot`：跨任务分页查看 foothold / credential / artifact / footprint，
@@ -32,6 +34,12 @@
 - SRC 批量 ZIP 改为临时文件 + `http.ServeContent`，避免大任务把整包常驻内存。
 - 交付 ZIP 新增 `manifest.json` 与 `SHA256SUMS`：逐文件 sha256/size、跳过项及原因、
   任务/格式/版本元信息；解压后可直接 `sha256sum -c SHA256SUMS`。
+
+### 修复
+
+- 内置 deferred 工具（如 `close_candidate`）现在会加入会话的 `UnlockSet`：此前有 MCP/技能时，
+  `SearchExtraTools` 能查到 schema，但 `ExecuteExtraTool` 会报 “not unlocked in this session”。
+  planner/worker/主 agent 统一走 `mergeDeferred` 修复。
 
 ## [0.9.10] - 2026-11-11
 
