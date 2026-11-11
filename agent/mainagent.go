@@ -188,10 +188,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	if m.webSearch.Enabled {
 		tools = append(tools, NewWebSearchTool(m.webSearch))
 	}
-	if own := deferMainTools(tools); len(own) > 0 {
-		def.Deferred = append(def.Deferred, own...)
-		def.GlobalNames = append(def.GlobalNames, own...)
-	}
+	mergeDeferred(&def, deferMainTools(tools))
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)

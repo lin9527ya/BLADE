@@ -36,6 +36,22 @@ var plannerDeferredTools = []string{
 	"list_companies",       // 443
 }
 
+// mergeDeferred 把内置 deferred 工具并入本轮 DeferredInfo：既要藏 schema、列进
+// system 的 deferred 块，也要加进会话的 UnlockSet。后者容易漏：有 MCP/技能时
+// def.Unlock 非 nil 且只含 MCP 名字，此时只 append 名字、不 Add 到 unlock，
+// ExecuteExtraTool 会报 "not unlocked in this session"——内置工具没有技能可加载，
+// 于是永远解锁不了。
+func mergeDeferred(def *DeferredInfo, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	def.Deferred = append(def.Deferred, names...)
+	def.GlobalNames = append(def.GlobalNames, names...)
+	if def.Unlock != nil {
+		def.Unlock.Add(names...)
+	}
+}
+
 // deferToolsNamed 返回 names 里**实际存在**于 base 的工具名。
 // 工具本身仍留在工具面（SDK 负责隐藏 schema、经 SearchExtraTools/ExecuteExtraTool
 // 调用）；只标记确实存在的名字，避免把不存在的工具写进提示词（模型会去查一个查不到的名字）。

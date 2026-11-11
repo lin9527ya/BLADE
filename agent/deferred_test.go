@@ -193,3 +193,25 @@ func TestMainAgentDeferredTools(t *testing.T) {
 		t.Fatalf("deferred 块缺少主 agent 工具：%v", sys)
 	}
 }
+
+// 有 MCP/技能时 def.Unlock 非 nil 且只含 MCP 名字；内置 deferred 工具必须一并加入
+// unlock，否则 ExecuteExtraTool 会以为它是技能工具、永远报 "not unlocked"。
+func TestMergeDeferredUnlocksBuiltins(t *testing.T) {
+	def := DeferredInfo{Unlock: actool.NewUnlockSet("mcp__browser__navigate")}
+	mergeDeferred(&def, []string{"close_candidate", "report_footprint"})
+	if !def.Unlock.Has("close_candidate") || !def.Unlock.Has("report_footprint") {
+		t.Fatalf("built-in deferred tools not unlocked: %v", def.Unlock.List())
+	}
+	if !def.Unlock.Has("mcp__browser__navigate") {
+		t.Fatal("existing MCP unlock was lost")
+	}
+	if len(def.Deferred) != 2 || len(def.GlobalNames) != 2 {
+		t.Fatalf("deferred wiring = %+v", def)
+	}
+	// nil unlock（无 MCP/技能）：保持 nil，SDK 会按 DeferredTools 自行全量解锁。
+	var bare DeferredInfo
+	mergeDeferred(&bare, []string{"close_candidate"})
+	if bare.Unlock != nil {
+		t.Fatal("nil unlock should stay nil")
+	}
+}

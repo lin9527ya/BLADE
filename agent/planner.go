@@ -636,10 +636,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 工具 schema 瘦身：把低频内置工具的 schema 从每轮工具列表里摘出去，只留名字在
 	// 系统提示的 deferred 块里。planner 37 个工具的 schema 合计约 3.3 万字符，每轮都
 	// 随缓存前缀发送；这几项在绝大多数轮次里不会被调用（见 plannerDeferredTools）。
-	if own := deferPlannerTools(tools); len(own) > 0 {
-		def.Deferred = append(def.Deferred, own...)
-		def.GlobalNames = append(def.GlobalNames, own...)
-	}
+	mergeDeferred(&def, deferPlannerTools(tools))
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
