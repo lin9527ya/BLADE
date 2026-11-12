@@ -196,8 +196,151 @@ func (m *Manager) clashState(group string) *clashEgressState {
 	return s
 }
 
-// TaskEgressGroup 给任务稳定分配一个出口组：优先空闲组，其次当前任务最少的组。
-// 同一任务暂停/恢复仍用同一组；任务终态/删除后 ReleaseTaskEgress 归还名额。
+// taskEgressPool returns the groups that can actually isolate a task: listed in
+// the configured pool AND mapped to a non-blocked dedicated listener. Group
+// names alone only rotate a shared listener; they must not consume an exclusive
+// slot. Empty means there is no strict isolation pool.
+func taskEgressPool(cfg ClashEgressConfig) []string {
+	if len(cfg.Groups) == 0 {
+		return nil
+	}
+	listeners := map[string]string{}
+	for _, ep := range cfg.Endpoints {
+		if ep.Group != "" && ep.Proxy != "" && ep.Proxy != blockedProxyURL {
+			listeners[ep.Group] = ep.Proxy
+		}
+	}
+	out := make([]string, 0, len(cfg.Groups))
+	seen := map[string]bool{}
+	for _, g := range cfg.Groups {
+		if g == "" || seen[g] || listeners[g] == "" {
+			continue
+		}
+		seen[g] = true
+		out = append(out, g)
+	}
+	return out
+}
+
+// TaskEgressCapacity is the number of tasks that can hold an exclusive group.
+// Zero means no strict pool is available: no groups, no dedicated listeners, or
+// traffic capture is on (the process-wide MITM must see every request and uses
+// the global proxy).
+func (m *Manager) TaskEgressCapacity() int {
+	if m == nil || m.taskEgressIsolationDisabled() {
+		return 0
+	}
+	return len(taskEgressPool(m.ClashEgressConfig()))
+}
+
+// taskEgressIsolationDisabled mirrors ProxySnapshotForTask: a live recording
+// MITM is process-wide, so per-task listeners cannot be used while it is on.
+func (m *Manager) taskEgressIsolationDisabled() bool {
+	return m != nil && m.Traffic() != nil && m.TrafficEnabled()
+}
+
+// TaskEgressInUse counts running tasks that currently hold a strict-pool group.
+// Fallback/default-group tasks do not consume a pool slot.
+func (m *Manager) TaskEgressInUse() int {
+	if m == nil || m.taskEgressIsolationDisabled() {
+		return 0
+	}
+	pool := taskEgressPool(m.ClashEgressConfig())
+	if len(pool) == 0 {
+		return 0
+	}
+	held := make(map[string]bool, len(pool))
+	for _, g := range pool {
+		held[g] = true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, g := range m.clashTaskGroups {
+		if held[g] {
+			n++
+		}
+	}
+	return n
+}
+
+// TaskEgressClaim is the result of one admission-time lease attempt. Pooled is
+// false when no strict pool exists, so the caller should not queue on capacity.
+// Acquired is true only when this call took a free slot and must release it if
+// the subsequent admission fails.
+type TaskEgressClaim struct {
+	Group    string
+	Pooled   bool
+	Acquired bool
+}
+
+// ClaimTaskEgress reserves one exclusive group for a task at admission time.
+// Paused, queued and terminal tasks must not hold a lease; their release paths
+// clear both the in-memory map and tasks.egress_group.
+func (m *Manager) ClaimTaskEgress(taskID string) (TaskEgressClaim, error) {
+	if m == nil || taskID == "" || m.taskEgressIsolationDisabled() {
+		return TaskEgressClaim{}, nil
+	}
+	cfg := m.ClashEgressConfig()
+	pool := taskEgressPool(cfg)
+	if len(pool) == 0 {
+		return TaskEgressClaim{}, nil
+	}
+	out := TaskEgressClaim{Pooled: true}
+	defaultGroup := cfg.Group
+	if defaultGroup == "" {
+		defaultGroup = cfg.Groups[0]
+	}
+
+	m.mu.Lock()
+	if m.clashTaskGroups == nil {
+		m.clashTaskGroups = map[string]string{}
+	}
+	if g, ok := m.clashTaskGroups[taskID]; ok && g != "" {
+		if containsString(pool, g) || g == defaultGroup {
+			m.mu.Unlock()
+			out.Group = g
+			return out, nil
+		}
+		delete(m.clashTaskGroups, taskID)
+	}
+	counts := map[string]int{}
+	for _, g := range m.clashTaskGroups {
+		counts[g]++
+	}
+	best := ""
+	for _, g := range pool {
+		if counts[g] == 0 {
+			best = g
+			break
+		}
+	}
+	if best == "" {
+		m.mu.Unlock()
+		return out, nil
+	}
+	m.clashTaskGroups[taskID] = best
+	m.mu.Unlock()
+	out.Group, out.Acquired = best, true
+
+	if n, err := strconv.ParseInt(taskID, 10, 64); err == nil {
+		if err := m.pg.SetTaskEgressGroup(n, best); err != nil {
+			m.mu.Lock()
+			if m.clashTaskGroups[taskID] == best {
+				delete(m.clashTaskGroups, taskID)
+			}
+			m.mu.Unlock()
+			return TaskEgressClaim{Pooled: true}, fmt.Errorf("persist task egress group: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// TaskEgressGroup returns the task's stable group. With a strict pool it only
+// ever assigns a free exclusive group; when none is free it returns "" so the
+// task falls back to the global proxy instead of silently sharing another
+// task's exit. Without dedicated listeners, it keeps the legacy least-loaded
+// behavior used for rotation-only configurations.
 func (m *Manager) TaskEgressGroup(taskID string) string {
 	if m == nil {
 		return ""
@@ -206,30 +349,61 @@ func (m *Manager) TaskEgressGroup(taskID string) string {
 	if len(cfg.Groups) == 0 {
 		return cfg.Group
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.clashTaskGroups == nil {
-		m.clashTaskGroups = map[string]string{}
-	}
+	pool := taskEgressPool(cfg)
+	strict := len(pool) > 0 && !m.taskEgressIsolationDisabled()
 	defaultGroup := cfg.Group
 	if defaultGroup == "" {
 		defaultGroup = cfg.Groups[0]
 	}
-	if g, ok := m.clashTaskGroups[taskID]; ok && (containsString(cfg.Groups, g) || g == defaultGroup) {
-		return g
+
+	m.mu.Lock()
+	if m.clashTaskGroups == nil {
+		m.clashTaskGroups = map[string]string{}
 	}
-	delete(m.clashTaskGroups, taskID)
-	counts := map[string]int{}
-	for _, g := range m.clashTaskGroups {
-		counts[g]++
+	if g, ok := m.clashTaskGroups[taskID]; ok && g != "" {
+		valid := false
+		if strict {
+			valid = containsString(pool, g) || g == defaultGroup
+		} else {
+			valid = containsString(cfg.Groups, g) || g == defaultGroup
+		}
+		if valid {
+			m.mu.Unlock()
+			return g
+		}
+		delete(m.clashTaskGroups, taskID)
 	}
-	best := cfg.Groups[0]
-	for _, g := range cfg.Groups[1:] {
-		if counts[g] < counts[best] {
-			best = g
+	best := ""
+	if strict {
+		counts := map[string]int{}
+		for _, g := range m.clashTaskGroups {
+			counts[g]++
+		}
+		for _, g := range pool {
+			if counts[g] == 0 {
+				best = g
+				break
+			}
+		}
+		if best == "" {
+			m.mu.Unlock()
+			return ""
+		}
+	} else {
+		counts := map[string]int{}
+		for _, g := range m.clashTaskGroups {
+			counts[g]++
+		}
+		best = cfg.Groups[0]
+		for _, g := range cfg.Groups[1:] {
+			if counts[g] < counts[best] {
+				best = g
+			}
 		}
 	}
 	m.clashTaskGroups[taskID] = best
+	m.mu.Unlock()
+	m.persistTaskEgressGroup(taskID, best)
 	return best
 }
 
@@ -255,14 +429,34 @@ func (m *Manager) egressProxyForGroup(group string) string {
 	return m.EgressProxy()
 }
 
-// ReleaseTaskEgress 在任务终态/删除后归还出口组名额。
+// ReleaseTaskEgress returns a task's exclusive group. It is called on terminal
+// status/delete and from every pause/queue commit, because those states must not
+// keep a pool slot while another task could run.
 func (m *Manager) ReleaseTaskEgress(taskID string) {
-	if m == nil {
+	if m == nil || taskID == "" {
 		return
 	}
 	m.mu.Lock()
 	delete(m.clashTaskGroups, taskID)
 	m.mu.Unlock()
+	if n, err := strconv.ParseInt(taskID, 10, 64); err == nil && m.pg != nil {
+		if err := m.pg.SetTaskEgressGroup(n, ""); err != nil {
+			log.Printf("[egress] task %s release group: %v", taskID, err)
+		}
+	}
+}
+
+func (m *Manager) persistTaskEgressGroup(taskID, group string) {
+	if m == nil || m.pg == nil {
+		return
+	}
+	n, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return
+	}
+	if err := m.pg.SetTaskEgressGroup(n, group); err != nil {
+		log.Printf("[egress] task %s persist group %q: %v", taskID, group, err)
+	}
 }
 
 func formatClashEndpoints(eps []ClashEndpoint) string {
@@ -370,6 +564,7 @@ func (m *Manager) assignTaskEgressGroup(taskID, group string) {
 	}
 	m.clashTaskGroups[taskID] = group
 	m.mu.Unlock()
+	m.persistTaskEgressGroup(taskID, group)
 }
 
 func (m *Manager) rotateEgressGroup(ctx context.Context, group, proxyURL, reason string, avoidRegions map[string]bool) (ClashRotation, map[string]bool, error) {

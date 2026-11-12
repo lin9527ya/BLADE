@@ -65,6 +65,72 @@ func (s *Server) startTaskEngine(t *Task) {
 	s.engine.Run(s.ctx, t)
 }
 
+// admissionCapacity combines the optional task-concurrency cap with the
+// exclusive egress-group pool. Both are independent hard capacities: three
+// groups permit at most three pooled tasks even when the concurrency feature is
+// off, and five concurrency slots with three groups permit at most three.
+type admissionCapacity struct {
+	enabled     bool
+	limit       int
+	poolLimited bool
+	concEnabled bool
+	concLimit   int
+	poolCap     int
+}
+
+func (s *Server) admissionCapacity() admissionCapacity {
+	concEnabled, concLimit := s.m.ConcurrencyLimit()
+	poolCap := s.m.TaskEgressCapacity()
+	c := admissionCapacity{concEnabled: concEnabled, concLimit: concLimit, poolCap: poolCap}
+	switch {
+	case concEnabled && poolCap > 0:
+		c.enabled = true
+		c.limit = min(concLimit, poolCap)
+		c.poolLimited = poolCap <= concLimit
+	case concEnabled:
+		c.enabled = true
+		c.limit = concLimit
+	case poolCap > 0:
+		c.enabled = true
+		c.limit = poolCap
+		c.poolLimited = true
+	}
+	return c
+}
+
+// admissionFull reports whether an additional task would exceed either cap.
+// Pool occupancy is counted by held group leases, not by every running task:
+// a task that fell back to the shared default group no longer occupies a pool
+// slot (though it still occupies a concurrency slot when that cap is on).
+func (s *Server) admissionFull(excludeID string, c admissionCapacity) bool {
+	if !c.enabled {
+		return false
+	}
+	if c.concEnabled && s.runningTaskCount(excludeID) >= c.concLimit {
+		return true
+	}
+	return c.poolCap > 0 && s.m.TaskEgressInUse() >= c.poolCap
+}
+
+// admissionSlots is the number of queued tasks that may be promoted right now.
+func (s *Server) admissionSlots(excludeID string, c admissionCapacity) int {
+	slots := 0
+	first := true
+	if c.concEnabled {
+		slots = c.concLimit - s.runningTaskCount(excludeID)
+		first = false
+	}
+	if c.poolCap > 0 {
+		if n := c.poolCap - s.m.TaskEgressInUse(); first || n < slots {
+			slots = n
+		}
+	}
+	if slots < 0 {
+		return 0
+	}
+	return slots
+}
+
 func (s *Server) occupiesConcurrencySlot(t *Task) bool {
 	if t == nil {
 		return false
@@ -141,7 +207,8 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	wasPaused := lifecycle.Paused || s.engine.IsPaused(t.ID)
 	wasQueued := lifecycle.Queued
 	engineWasPaused := s.engine.IsPaused(t.ID)
-	enabled, limit := s.m.ConcurrencyLimit()
+	capacity := s.admissionCapacity()
+	enabled, limit := capacity.enabled, capacity.limit
 	ready := s.engine.ReadyFor(t)
 
 	// Work added to a task that is already admitted only needs a wake-up. This
@@ -153,6 +220,12 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	if !wasTerminal && !wasPaused && !wasQueued && s.engine.Started(t.ID) && (!enabled || ready) {
 		if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, lifecycle.Status, false, "resume", false); err != nil {
 			return false, err
+		}
+		// An already-running task cannot be queued retroactively (that would
+		// strand live loops), but it should still get a pool lease if one is
+		// free. No slot here means it keeps using the global proxy.
+		if enabled {
+			_, _ = s.m.ClaimTaskEgress(t.ID)
 		}
 		s.startAdmittedTask(t, "resume")
 		return false, nil
@@ -170,8 +243,23 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	}
 
 	readyBacklog := enabled && s.hasReadyQueuedTask(t.ID)
-	atCapacity := enabled && s.runningTaskCount(t.ID) >= limit
+	atCapacity := capacity.enabled && s.admissionFull(t.ID, capacity)
 	shouldQueue := enabled && (!ready || readyBacklog || atCapacity)
+	var egressClaim TaskEgressClaim
+	egressBlocked := false
+	if !shouldQueue {
+		claim, claimErr := s.m.ClaimTaskEgress(t.ID)
+		if claimErr != nil {
+			return false, claimErr
+		}
+		egressClaim = claim
+		if claim.Pooled && claim.Group == "" {
+			// Another running task owns every exclusive group. Queue instead of
+			// sharing an exit IP or silently switching to the global proxy.
+			shouldQueue = true
+			egressBlocked = true
+		}
+	}
 
 	// Install the execution barrier before reviving a terminal/paused task. Without
 	// this ordering, its already-running worker loops can claim the newly-opened
@@ -192,6 +280,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 		status = "running"
 	}
 	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued); err != nil {
+		if egressClaim.Acquired {
+			s.m.ReleaseTaskEgress(t.ID)
+		}
 		if !engineWasPaused && !wasPaused && !wasQueued {
 			s.engine.Resume(t)
 		}
@@ -209,8 +300,12 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 			switch {
 			case !ready:
 				summary = "已排队：当前没有可运行的 LLM 配置，配置恢复后自动开始"
+			case egressBlocked:
+				summary = fmt.Sprintf("已排队：节点池 %d 个出口组均已占用，等待空位后自动开始", limit)
 			case readyBacklog:
 				summary = "已排队：已有更早的任务等待运行，将按 FIFO 顺序自动开始"
+			case capacity.poolLimited:
+				summary = fmt.Sprintf("已排队：达到节点池上限 %d，等待空位后自动开始", limit)
 			}
 			s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: summary})
 		}
@@ -267,7 +362,8 @@ func (s *Server) reconcileConcurrency() {
 	if s.safetyAdmissionBlocked() {
 		return
 	}
-	enabled, limit := s.m.ConcurrencyLimit()
+	capacity := s.admissionCapacity()
+	enabled := capacity.enabled
 
 	// A task whose provider chain becomes unavailable cannot do useful work and
 	// must not reserve a limited running slot forever. Park it persistently so a
@@ -326,7 +422,7 @@ func (s *Server) reconcileConcurrency() {
 	})
 	slots := len(queued)
 	if enabled {
-		slots = limit - s.runningTaskCount("")
+		slots = s.admissionSlots("", capacity)
 	}
 	for _, entry := range queued {
 		if slots <= 0 {
@@ -347,10 +443,24 @@ func (s *Server) reconcileConcurrency() {
 		if mode != "bootstrap" {
 			mode = "resume"
 		}
+		claim, claimErr := s.m.ClaimTaskEgress(task.ID)
+		if claimErr != nil {
+			log.Printf("[concurrency] task %s claim egress group: %v", task.ID, claimErr)
+			continue
+		}
+		if claim.Pooled && claim.Group == "" {
+			continue // no exclusive group; leave it queued without consuming a slot
+		}
 		if !s.engine.beginTaskOperation(task.ID) {
+			if claim.Acquired {
+				s.m.ReleaseTaskEgress(task.ID)
+			}
 			continue
 		}
 		if err := s.m.ApplyTaskAdmission(task.ID, lifecycle.Status, lifecycle.Status, false, mode, false); err != nil {
+			if claim.Acquired {
+				s.m.ReleaseTaskEgress(task.ID)
+			}
 			s.engine.decInflight(task.ID)
 			continue
 		}

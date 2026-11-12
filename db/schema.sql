@@ -708,6 +708,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     queued         BOOLEAN NOT NULL DEFAULT false,
     queued_at      TIMESTAMPTZ,
     queue_mode     TEXT NOT NULL DEFAULT '',
+    -- 任务当前独占的出口组。非空只代表运行态租约；暂停/排队/终态会被清空，
+    -- 让出节点池名额（重启后据此恢复任务与组的绑定）。
+    egress_group   TEXT NOT NULL DEFAULT '',
     llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL,
     active_llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL,
     llm_chain_revision BIGINT NOT NULL DEFAULT 0,
@@ -767,6 +770,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEF
 -- exploration that already owns goals/history.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queue_mode TEXT NOT NULL DEFAULT '';
+-- 任务出口组租约（见 server/clash.go）。旧库补列；空串 = 未占用节点池名额。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS egress_group TEXT NOT NULL DEFAULT '';
 -- 可选的任务名称;补旧库。空串=未命名,前端展示时回退到描述。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES task_categories(id) ON DELETE SET NULL;

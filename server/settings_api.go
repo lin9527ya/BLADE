@@ -813,6 +813,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			cfg.Cooldown = time.Duration(secs) * time.Second
 			pending[settingClashRotateCooldown] = strconv.Itoa(secs)
 		}
+		if req.ClashProxyGroups != nil || req.ClashTaskEndpoints != nil {
+			// 组池或 listener 变化会改变可用容量：变大时立即补位，变小时新任务
+			// 排队；已在跑的任务不抢占（由它们下一次暂停/结束自然让出）。
+			runtimeApplies = append(runtimeApplies, func() error {
+				goSafe("server/reconcile-concurrency", nil, func() { s.reconcileConcurrency() })
+				return nil
+			})
+		}
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.

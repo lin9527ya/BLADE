@@ -520,6 +520,34 @@ func (s *Server) RestoreTaskRuntimes() {
 			s.engine.startDeadlineCoordinator(s.ctx, t)
 		}
 	}
+	// Rebuild the exclusive egress leases before starting loops. A task that
+	// cannot get a group is parked in the same FIFO as a concurrency hold, so a
+	// restart cannot resume five tasks onto a three-group pool and silently send
+	// two through the shared global proxy.
+	if s.m.TaskEgressCapacity() > 0 {
+		for _, t := range m.List() {
+			lifecycle := t.lifecycleSnapshot()
+			if lifecycle.Queued || lifecycle.Paused || isTerminalStatus(lifecycle.Status) {
+				continue
+			}
+			claim, err := s.m.ClaimTaskEgress(t.ID)
+			if err != nil {
+				log.Printf("[restore] task %s claim egress group: %v", t.ID, err)
+				continue
+			}
+			if !claim.Pooled || claim.Group != "" {
+				continue
+			}
+			s.engine.Pause(t.ID, agent.Causef("queued_for_admission", "任务等待运行准入",
+				"重启后节点池没有空闲出口组，任务已排队；空位出现后自动开始"))
+			if err := s.m.EnqueueTask(t.ID, s.resumeAdmissionMode(t)); err != nil {
+				s.engine.Resume(t)
+				log.Printf("[restore] task %s queue on exhausted egress pool: %v", t.ID, err)
+				continue
+			}
+			log.Printf("[restore] task %s queued: egress pool has no free group", t.ID)
+		}
+	}
 	// Restore every task that had already been admitted before shutdown. Starting
 	// only the active UI task left other non-queued tasks counted as concurrency
 	// occupants without live loops, which could permanently block the persistent

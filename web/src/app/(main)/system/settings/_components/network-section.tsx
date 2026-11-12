@@ -320,8 +320,9 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             />
             <p className="text-muted-foreground text-xs leading-relaxed">
               每个组必须在 Clash 里是独立的 <code>Selector</code>，组内节点互不重叠；BLADE 会把任务稳定绑定到
-              最空闲的组，任务之间不会互抢出口 IP。组数不少于同时运行的任务数时才能保证每组独占；
-              只有一个组时退化为全局共用。
+              空闲的组，任务之间不会互抢出口 IP。只有同时配置了任务专属 listener 的组才算可用组；
+              可用组数就是独占运行的任务上限，超出部分自动排队，任务暂停/结束立即让出组并补位。
+              未配置 listener 的组仅用于节点轮换，不参与独占调度；开启流量捕获时按任务出口隔离不可用。
             </p>
           </div>
           <div className="space-y-1.5">

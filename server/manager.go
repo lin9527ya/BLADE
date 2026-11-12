@@ -1817,8 +1817,8 @@ func (m *Manager) LoadExisting() ([]*Task, error) {
 		return nil, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	var loaded []*Task
+	var staleEgress []int64
 	for _, pt := range pts {
 		id := strconv.FormatInt(pt.ID, 10)
 		if _, ok := m.tasks[id]; ok {
@@ -1827,6 +1827,20 @@ func (m *Manager) LoadExisting() ([]*Task, error) {
 		t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
 		m.tasks[id] = t
 		loaded = append(loaded, t)
+		if pt.EgressGroup == "" {
+			continue
+		}
+		// Only a running task may hold a lease. A paused/queued/terminal task
+		// inherits a stale row from an older process; release it so its slot is
+		// available to the admission queue immediately.
+		if pt.Paused || pt.Queued || isTerminalStatus(pt.Status) {
+			staleEgress = append(staleEgress, pt.ID)
+			continue
+		}
+		if m.clashTaskGroups == nil {
+			m.clashTaskGroups = map[string]string{}
+		}
+		m.clashTaskGroups[id] = pt.EgressGroup
 	}
 	if m.active == "" {
 		var newest *Task
@@ -1837,6 +1851,12 @@ func (m *Manager) LoadExisting() ([]*Task, error) {
 		}
 		if newest != nil {
 			m.active = newest.ID
+		}
+	}
+	m.mu.Unlock()
+	for _, taskID := range staleEgress {
+		if err := m.pg.SetTaskEgressGroup(taskID, ""); err != nil {
+			log.Printf("[egress] clear stale task %d group: %v", taskID, err)
 		}
 	}
 	if len(loaded) > 0 {
@@ -1864,6 +1884,9 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 				state.PauseReason = ""
 			}
 		})
+	}
+	if paused {
+		delete(m.clashTaskGroups, id)
 	}
 	m.mu.Unlock()
 	return nil
@@ -1903,6 +1926,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	    paused=false,
 	    pause_reason='',
 	    queued=$3,
+	    egress_group=CASE WHEN $3 THEN '' ELSE egress_group END,
 	    queued_at=CASE
 	        WHEN NOT $3 THEN NULL
 	        WHEN $5 AND queued THEN COALESCE(queued_at, now())
@@ -1957,6 +1981,9 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 			}
 		})
 	}
+	if queued {
+		delete(m.clashTaskGroups, id)
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -1974,7 +2001,7 @@ func (m *Manager) ApplyTaskPause(id string, reason string) error {
 	}
 	var mode string
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, pause_reason=$2, queued=false, queued_at=NULL
+		SET paused=true, pause_reason=$2, queued=false, queued_at=NULL, egress_group=''
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN `+pgdb.TerminalStatusSQL()+`
 		RETURNING COALESCE(queue_mode,'')`, n, strings.TrimSpace(reason)).Scan(&mode)
@@ -1994,6 +2021,7 @@ func (m *Manager) ApplyTaskPause(id string, reason string) error {
 			state.QueueMode = mode
 		})
 	}
+	delete(m.clashTaskGroups, id)
 	m.mu.Unlock()
 	return nil
 }
@@ -2014,6 +2042,7 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 	err = m.pg.QueryRow(`UPDATE tasks
 		SET queued=true,
 		    queued_at=CASE WHEN queued THEN COALESCE(queued_at, now()) ELSE now() END,
+		    egress_group='',
 		    queue_mode=CASE
 		        WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'
 		        ELSE 'resume'
@@ -2039,6 +2068,7 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 			state.QueueMode = committedMode
 		})
 	}
+	delete(m.clashTaskGroups, id)
 	m.mu.Unlock()
 	return nil
 }
