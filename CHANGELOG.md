@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 低风险平台标识清理
+
+- 导出文件名去掉平台前缀：`tasks.csv`、`approvals.csv`、`assets-YYYY-MM-DD.csv`。
+- MCP 客户端 `clientInfo.name` 从 `"blade"` 改为中性的 `"mcp-client"`。
+- LLM 网关 session header 的值前缀从 `"blade-"` 改为 `"sess-"`。
+
 ## [0.9.12] - 2026-11-12
 
 ### 修复

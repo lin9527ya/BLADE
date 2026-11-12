@@ -373,7 +373,7 @@ func (s *Server) activeTaskID() string {
 // exportTasksCSV 把任务列表导成 CSV（Excel 直接可开：带 UTF-8 BOM）。
 func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="blade-tasks.csv"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="tasks.csv"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // BOM：否则 Excel 会把中文读成乱码
 	cw := csv.NewWriter(w)

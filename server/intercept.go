@@ -408,7 +408,7 @@ func (s *Server) interceptHistoryCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="blade-approvals.csv"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="approvals.csv"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // Excel 读中文需要 BOM
 	cw := csv.NewWriter(w)

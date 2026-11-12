@@ -992,7 +992,7 @@ func profileSearchHeaders(p *pgdb.LLMProfile, label string) map[string]string {
 		headers[k] = v
 	}
 	if k := strings.TrimSpace(p.SessionHeaderKey); k != "" {
-		headers[k] = "blade-" + label
+		headers[k] = "sess-" + label
 	}
 	if len(headers) == 0 {
 		return nil

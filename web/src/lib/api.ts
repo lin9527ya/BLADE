@@ -1040,7 +1040,7 @@ export const api = {
     const objUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = objUrl;
-    a.download = "blade-tasks.csv";
+    a.download = "tasks.csv";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1062,7 +1062,7 @@ export const api = {
     const objUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = objUrl;
-    a.download = "blade-approvals.csv";
+    a.download = "approvals.csv";
     document.body.appendChild(a);
     a.click();
     a.remove();
