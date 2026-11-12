@@ -11,6 +11,7 @@ import { useCurrentUser } from "@/hooks/use-current-user";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+import { LiveClock } from "./live-clock";
 import { AccountSwitcher } from "./sidebar/account-switcher";
 import { LanguageSwitcher } from "./sidebar/language-switcher";
 import { LayoutControls } from "./sidebar/layout-controls";
@@ -89,6 +90,7 @@ export function MainContent({ children }: { children: ReactNode }) {
             <SearchDialog />
           </div>
           <div className="flex items-center gap-2">
+            <LiveClock />
             {version && (
               <span className="font-medium text-muted-foreground text-xs tabular-nums">版本 · {version}</span>
             )}
