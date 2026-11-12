@@ -22,6 +22,20 @@ type Parent struct {
 	IntentID       int64 `json:"intent_id,omitempty"`
 }
 
+// Normalized 把 Parent 收敛成数据库 CHECK 允许的两种形态之一：
+//   - conversation_id 非空 → 只保留 conversation_id（task/exploration/intent 清空）
+//   - 否则保留 task+exploration(+intent)
+//
+// 触发式 agent 会话（reporter/retester/playbook…）同时带 conv-N 会话名和任务上下文，
+// 之前两者一起写进 side_question_sessions，命中 CHECK 唯一约束，checkpoint 每轮
+// 反复失败刷日志。会话是旁路记录的归属键，任务上下文只用于工具/计量归因，不写这一行。
+func (p Parent) Normalized() Parent {
+	if p.ConversationID > 0 {
+		return Parent{ConversationID: p.ConversationID}
+	}
+	return p
+}
+
 func (p Parent) Key() string {
 	if p.ConversationID > 0 {
 		return fmt.Sprintf("conv-%d", p.ConversationID)

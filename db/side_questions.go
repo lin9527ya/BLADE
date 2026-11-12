@@ -41,6 +41,9 @@ func nullableSideID(id int64) any {
 }
 
 func (d *DB) SaveSideSnapshot(ctx context.Context, s sidequestion.Snapshot) error {
+	// 防御性归一化：即便调用方仍带着 conversation+task 的组合，也先收敛成
+	// CHECK 允许的形态，避免每个 checkpoint 都失败刷 ERROR。
+	s.Parent = s.Parent.Normalized()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err

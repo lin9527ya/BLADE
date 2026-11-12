@@ -15,6 +15,9 @@ func attachSideCapture(ctx context.Context, opts *agentcore.Options) context.Con
 	if strings.HasPrefix(ri.SessionID, "conv-") {
 		p.ConversationID, _ = strconv.ParseInt(strings.TrimPrefix(ri.SessionID, "conv-"), 10, 64)
 	}
+	// 会话名与任务上下文同时存在时，检查点归属会话；归一化后 task/exploration/intent
+	// 被清空，避免写入 side_question_sessions 时违反“二选一”CHECK。
+	p = p.Normalized()
 	if p.ConversationID == 0 && (p.TaskID == 0 || p.ExplorationID == 0) {
 		return ctx
 	}

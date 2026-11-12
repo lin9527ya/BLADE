@@ -6,6 +6,13 @@
 
 ## [0.9.12] - 2026-11-12
 
+### 修复
+
+- 旁路会话检查点不再因 `side_question_sessions_check` 约束失败而每个 checkpoint 刷 ERROR：
+  触发式 agent 会话同时带 `conv-N` 会话名与 task/exploration 上下文时，写入前把 Parent
+  归一成 conversation-only（任务上下文仅用于工具/计量归因，不写这一行）。
+  涉及 `sidequestion.Parent.Normalized`、`attachSideCapture`、`SaveSideSnapshot`。
+
 ### 目标侧指纹清理
 
 - 资产补全 HTTP 探测不再发送 `blade-enrich/1.0`，改为中性浏览器 UA；可用

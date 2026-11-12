@@ -444,3 +444,29 @@ func TestSideTaskArchiveVersions(t *testing.T) {
 		})
 	}
 }
+
+// 触发式 agent 会话同时带 conv-N 会话名和 task/exploration 任务上下文；检查点必须
+// 归一成 conversation-only，否则 side_question_sessions 的 CHECK 会拒绝每一轮写入。
+func TestSideSnapshotNormalizesConversationParent(t *testing.T) {
+	d, s := sideFixture(t)
+	p := sidequestion.Parent{ConversationID: s.Parent.ConversationID, TaskID: 999999, ExplorationID: 999999, IntentID: 999999}
+	s.Parent = p
+	s.RunID = 2
+	if err := d.SaveSideSnapshot(t.Context(), s); err != nil {
+		t.Fatalf("save normalized snapshot: %v", err)
+	}
+	var conv int64
+	var taskNull, expNull, intentNull bool
+	if err := d.QueryRow(`
+SELECT conversation_id, task_id IS NULL, exploration_id IS NULL, intent_id IS NULL
+FROM side_question_sessions WHERE session_key=$1`, p.Key()).Scan(&conv, &taskNull, &expNull, &intentNull); err != nil {
+		t.Fatal(err)
+	}
+	if conv != p.ConversationID || !taskNull || !expNull || !intentNull {
+		t.Fatalf("row = conv:%d taskNull:%v expNull:%v intentNull:%v", conv, taskNull, expNull, intentNull)
+	}
+	got, err := d.SideSnapshot(t.Context(), p.Key())
+	if err != nil || got == nil || got.Parent != (sidequestion.Parent{ConversationID: p.ConversationID}) {
+		t.Fatalf("snapshot parent not normalized: %+v %v", got, err)
+	}
+}
