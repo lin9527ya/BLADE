@@ -132,6 +132,8 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 			pauseReason = "编排 Agent 暂停"
 		case errors.Is(pauseCause, agent.AbortBudgetExhausted):
 			pauseReason = "Token 预算耗尽，等待人工确认后继续"
+		case errors.Is(pauseCause, agent.AbortScopeWindowClosed):
+			pauseReason = scopeWindowPauseReason
 		}
 		if runes := []rune(pauseReason); len(runes) > 300 {
 			pauseReason = string(runes[:300]) + "…"

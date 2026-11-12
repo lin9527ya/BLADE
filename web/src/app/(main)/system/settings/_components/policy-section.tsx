@@ -162,8 +162,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
         </p>
         <p className="text-muted-foreground text-xs leading-relaxed">
           配了窗口就是<b>硬边界</b>：窗口外不发动作（与上面那个模式无关，off 也照样拦）， 到点平台会
-          <b>暂停所有在跑任务</b>并取消在跑的长任务；窗口重开<b>不会自动恢复</b>，
-          要在这里点「继续全部暂停任务」。没配窗口 = 不限时。
+          <b>暂停所有在跑任务</b>并取消在跑的长任务；窗口重开会<b>自动恢复因窗口暂停的任务</b>，
+          但用户手动暂停、停机或其他原因暂停的任务不会自动启动，仍需人工处理。没配窗口 = 不限时。
         </p>
         {enforce && enforce.window.window !== "" && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-xs">

@@ -110,7 +110,7 @@ func TestAcceptance(t *testing.T) {
 	t.Run("P32 授权范围设置（模式+时间窗经 API 存取，写错当场退回且不改动已存值）", func(t *testing.T) { accP32(t, env.forTest(t)) })
 	t.Run("P33 战役层（归属与聚合；删战役只解绑不删任务）", func(t *testing.T) { accP33(t, env.forTest(t)) })
 	t.Run("P34 AD 攻击路径导入（预览只读/路径可读/重导只合并/坏输入退回）", func(t *testing.T) { accP34(t, env.forTest(t)) })
-	t.Run("P35 停机开关与作业时间窗（到点全停/三层拦得住/恢复靠手动/回执可查）", func(t *testing.T) { accP35(t, env.forTest(t)) })
+	t.Run("P35 停机开关与作业时间窗（到点全停/三层拦得住/窗口自动恢复/用户暂停不恢复）", func(t *testing.T) { accP35(t, env.forTest(t)) })
 	t.Run("P36 凭据可利用面（能登哪/验证要有证据/明文受控且留痕）", func(t *testing.T) { accP36(t, env.forTest(t)) })
 	t.Run("P37 作业时间线（台账/审批/发现/战果/检测串一条线；导出与页面同源）", func(t *testing.T) { accP37(t, env.forTest(t)) })
 	t.Run("P38 事前可检出性（命中给笔记/没收录明说/落在审批卡上/非动作工具不标）", func(t *testing.T) { accP38(t, env.forTest(t)) })
@@ -3841,7 +3841,7 @@ func (e *accEnv) taskCount() int {
 // 调用层（动作类工具被拒）。以及两条刻意的行为选择：
 //
 //	· 窗口与 scope_mode 解耦——off 只关空间判定，不关时间；
-//	· 恢复一律手动——解除停机不会顺手把任务放起来。
+//	· 窗口重开只自动恢复“因窗口暂停”的任务；用户暂停/停机暂停不自动恢复。
 func accP35(t *testing.T, e *accEnv) {
 	for _, key := range []string{
 		intercept.SettingKillSwitch, intercept.SettingScopeHours, settingScopeWindowState,
@@ -3912,13 +3912,24 @@ func accP35(t *testing.T, e *accEnv) {
 		t.Errorf("暂停时该在任务时间线留一句原因：%+v", acts)
 	}
 
-	// ② 窗口清空（=不限时）+ 手动继续 → 恢复；**不自动恢复**是刻意的。
+	// ② 窗口清空（=不限时）→ 自动恢复“因窗口暂停”的任务。
 	if err := e.m.pg.SetSetting(intercept.SettingScopeHours, ""); err != nil {
 		t.Fatal(err)
 	}
 	e.s.enforceScopeEnforcement()
+	if pausedNow() {
+		t.Error("窗口重开后，因窗口暂停的任务应自动恢复")
+	}
+	// ②b 用户手动暂停不能被窗口自动拉起。
+	if _, err := e.s.applyTaskControl(task, "pause"); err != nil {
+		t.Fatalf("用户手动暂停失败：%v", err)
+	}
+	e.s.enforceScopeEnforcement()
 	if !pausedNow() {
-		t.Error("窗口重开不该自动恢复任务（恢复要人点一下）")
+		t.Error("用户手动暂停的任务不应被窗口自动恢复")
+	}
+	if _, err := e.s.applyTaskControl(task, "resume"); err != nil {
+		t.Fatalf("手动恢复失败：%v", err)
 	}
 	rec := e.request(http.MethodPost, "/api/scope/resume-all", "")
 	if rec.Code != http.StatusOK {

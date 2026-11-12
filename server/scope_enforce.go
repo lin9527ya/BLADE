@@ -24,7 +24,13 @@ import (
 //   ② 入口层：禁止新任务开始（reconcileConcurrency 早退）；
 //   ③ 调用层：拦截层拒绝一切动作类工具（intercept/killswitch.go）。
 //
-// 恢复一律**手动**：停机与窗口关闭都是一次明确的停止，自动恢复会把"停"变成"稍后自己动"。
+// 恢复策略：停机开关解除后仍需人工继续；作业时间窗重开时只自动恢复
+// 「因窗口关闭而暂停」的任务，用户手动暂停、停机、预算耗尽、编排暂停都不自动恢复。
+
+// scopeWindowPauseReason 是窗口关闭时写入任务 pause_reason 的稳定标记。
+// 窗口重开后只会自动恢复带这个标记（或旧版同义文案）的任务；用户暂停、停机、
+// 预算耗尽、编排暂停都不会被自动拉起。
+const scopeWindowPauseReason = "作业时间窗关闭，自动暂停"
 
 // settingScopeWindowState 存窗口执行状态（当前在不在窗口内、上次关闭/开启的时间、因窗口暂停了几条）。
 // 存下来是为了让页面能回答"为什么都停了"——只写日志的话，人得去翻日志才知道。
@@ -153,9 +159,23 @@ func (s *Server) enforceScopeEnforcement() {
 	blocked, reason, cause := s.safetyStop()
 	if !blocked {
 		if err == nil && !wasIn && inWindow {
-			// 窗口刚开：**不自动恢复**，只记一笔让页面能提示"可以继续了"。
 			st.LastOpenedAt = st.At
-			log.Printf("[scope] 已进入授权作业时间窗（%s）：暂停中的任务需要手动继续", raw)
+			log.Printf("[scope] 已进入授权作业时间窗（%s）：自动恢复因时间窗暂停的任务", raw)
+		}
+		if err == nil && inWindow {
+			// 只恢复“因窗口关闭而暂停”的任务；用户手动暂停、停机、预算耗尽、
+			// 编排暂停等一律不动。每 tick 都检查，顺带补上重启/瞬时失败后的恢复。
+			resumed, errs := s.resumeWindowPaused()
+			if resumed > 0 {
+				st.PausedTotal -= resumed
+				if st.PausedTotal < 0 {
+					st.PausedTotal = 0
+				}
+				log.Printf("[scope] 作业时间窗已开启：自动恢复 %d 个因窗口暂停的任务", resumed)
+			}
+			for _, e := range errs {
+				log.Printf("[scope] 自动恢复失败：%s", e)
+			}
 		}
 		writeScopeWindowState(s.m.pg, st)
 		return
@@ -174,6 +194,35 @@ func (s *Server) enforceScopeEnforcement() {
 		log.Printf("[scope] 暂停失败：%s", e)
 	}
 	writeScopeWindowState(s.m.pg, st)
+}
+
+// pausedByScopeWindow reports whether a task's pause reason was written by the
+// work-time-window enforcement. The old reason text is accepted for tasks paused
+// before the marker was introduced.
+func pausedByScopeWindow(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == scopeWindowPauseReason || reason == agent.AbortScopeWindowClosed.Error()
+}
+
+// resumeWindowPaused resumes only tasks paused by the work-time window. It never
+// touches user/orchestrator/budget/kill-switch pauses.
+func (s *Server) resumeWindowPaused() (int, []string) {
+	resumed := 0
+	var errs []string
+	for _, t := range s.m.List() {
+		lc := t.lifecycleSnapshot()
+		if isTerminalStatus(lc.Status) || !lc.Paused || !pausedByScopeWindow(lc.PauseReason) {
+			continue
+		}
+		if _, err := s.applyTaskControlWithCause(t, "resume", nil); err != nil {
+			errs = append(errs, "task#"+t.ID+"："+err.Error())
+			continue
+		}
+		s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+			Summary: "作业时间窗已开启，任务自动恢复"})
+		resumed++
+	}
+	return resumed, errs
 }
 
 // pauseRunningForSafety 暂停所有**在跑**的非终态任务（排队任务不动：它们没在跑，
@@ -203,7 +252,7 @@ func (s *Server) pauseRunningForSafety(cause error, reason string) (int, []strin
 	return paused, errs
 }
 
-// resumeAllPaused 继续所有暂停中的非终态任务（停机解除 / 窗口重开之后的那一下手动恢复）。
+// resumeAllPaused 继续所有暂停中的非终态任务（停机解除后的人工恢复，或操作者主动“继续全部”）。
 // 逐条走人工恢复的同一条路径；单条失败不连坐，失败的如实回报。
 func (s *Server) resumeAllPaused() (int, []string) {
 	resumed := 0
