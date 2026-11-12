@@ -140,7 +140,6 @@ func FetchLatest(ctx context.Context, c *http.Client) (*Release, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "blade-selfupdate")
 
 	resp, err := c.Do(req)
 	if err != nil {

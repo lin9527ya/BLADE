@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 目标侧指纹清理
+
+- 资产补全 HTTP 探测不再发送 `blade-enrich/1.0`，改为中性浏览器 UA；可用
+  `TARGET_USER_AGENT` 环境变量按客户环境覆盖。
+- 自更新请求不再发送 `blade-selfupdate`，使用 HTTP 客户端默认 UA。
+- `api-recon` 的 `harvest_static.py` / `spider_mpa.py` 不再发送 `spa-api-recon`，
+  改为中性浏览器 UA（同样支持 `TARGET_USER_AGENT`）。
+- OAST 回调标记从 `blade<taskID>` / `bladetask` 改为中性的 `cb<taskID>` / `cbtask`，
+  避免目标侧从回调 URL 识别平台。
+- Norma 依赖升级：`WebFetch` 默认 UA 从 `norma/0.4` 改为中性浏览器，并支持
+  `WebFetchConfig.UserAgent` 覆盖（Norma `de8aa8f`）。
+
 ## [0.9.11] - 2026-11-12
 
 ### 全局战果与凭据台账

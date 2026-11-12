@@ -29,14 +29,14 @@ func TestOASTMintBuildsMarkedURL(t *testing.T) {
 	withOAST(t, fakeOASTToken("ok9iwmcq"), "requestrepo.com", true)
 	tools, _, _ := newToolWorker(t)
 	out := callTool(t, tools.WorkerTools(), "oast_mint", `{"label":"ssrf_admin"}`)
-	want := fmt.Sprintf("http://ok9iwmcq.requestrepo.com/blade%d-ssrf-admin", tools.taskID)
+	want := fmt.Sprintf("http://ok9iwmcq.requestrepo.com/cb%d-ssrf-admin", tools.taskID)
 	if !strings.Contains(out, want) {
 		t.Fatalf("回调地址应带任务标记与归一化后的 label：want %q got %s", want, out)
 	}
 	if !strings.Contains(out, "oast_poll") {
 		t.Fatalf("回执应告诉模型命中后怎么取：%s", out)
 	}
-	if out := callTool(t, tools.WorkerTools(), "oast_mint", `{}`); !strings.Contains(out, fmt.Sprintf("/blade%d", tools.taskID)) {
+	if out := callTool(t, tools.WorkerTools(), "oast_mint", `{}`); !strings.Contains(out, fmt.Sprintf("/cb%d", tools.taskID)) {
 		t.Fatalf("不带 label 时也要带任务标记：%s", out)
 	}
 }
@@ -51,7 +51,7 @@ func TestOASTPollRecordsNewHitsOnce(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"requests": []map[string]any{
 			{"_id": "hit-1", "type": "http", "method": "GET", "path": "/" + marker + "-ssrf", "ip": "10.0.0.9", "country": "CN", "date": 1792815288},
-			{"_id": "other-1", "type": "http", "method": "GET", "path": "/blade999-other", "ip": "10.0.0.10", "country": "CN"},
+			{"_id": "other-1", "type": "http", "method": "GET", "path": "/cb999-other", "ip": "10.0.0.10", "country": "CN"},
 			{"_id": "dns-1", "type": "dns", "domain": marker + ".ok9iwmcq.requestrepo.com", "ip": "10.0.0.11", "country": "CN"},
 		}})
 	}))
@@ -130,16 +130,16 @@ func TestOASTDoesNotLeakToken(t *testing.T) {
 
 // 任务标记必须以「非数字」为边界：任务 9 不能把任务 99 的回调算成自己的。
 func TestOASTMatchesTaskMarkerBoundary(t *testing.T) {
-	if oastMatches(oastRequest{Path: "/blade999-other"}, "blade9") {
-		t.Fatal("blade9 不应匹配 blade999")
+	if oastMatches(oastRequest{Path: "/cb999-other"}, "cb9") {
+		t.Fatal("cb9 不应匹配 cb999")
 	}
-	if !oastMatches(oastRequest{Path: "/blade9-ssrf"}, "blade9") {
-		t.Fatal("blade9 应匹配 blade9-ssrf")
+	if !oastMatches(oastRequest{Path: "/cb9-ssrf"}, "cb9") {
+		t.Fatal("cb9 应匹配 cb9-ssrf")
 	}
-	if !oastMatches(oastRequest{Domain: "blade9.ok9iwmcq.requestrepo.com"}, "blade9") {
-		t.Fatal("blade9 应匹配 DNS 域名")
+	if !oastMatches(oastRequest{Domain: "cb9.ok9iwmcq.requestrepo.com"}, "cb9") {
+		t.Fatal("cb9 应匹配 DNS 域名")
 	}
-	if oastMatches(oastRequest{Path: "/blade12-ssrf"}, "blade1") {
-		t.Fatal("blade1 不应匹配 blade12")
+	if oastMatches(oastRequest{Path: "/cb12-ssrf"}, "cb1") {
+		t.Fatal("cb1 不应匹配 cb12")
 	}
 }

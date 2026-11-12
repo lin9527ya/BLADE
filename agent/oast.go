@@ -47,11 +47,14 @@ func oastCfg() (string, string, bool) {
 
 // oastMarker 是本任务的回调标记。带任务 id：同一账号下的多个任务共用一个子域，
 // 只有靠标记才分得清哪条回调是哪个任务的。
+//
+// 标记会出现在目标侧（payload 里的回调 URL），因此不能带平台名；用中性的 cb
+// 前缀，避免把作业归属写成"这台机器属于哪个平台"。
 func (t *ToolSet) oastMarker() string {
 	if t.taskID <= 0 {
-		return "bladetask"
+		return "cbtask"
 	}
-	return fmt.Sprintf("blade%d", t.taskID)
+	return fmt.Sprintf("cb%d", t.taskID)
 }
 
 // oastMint 生成一个带任务标记的回调地址。
@@ -200,8 +203,8 @@ func oastMatches(it oastRequest, marker string) bool {
 		if lower == "" {
 			continue
 		}
-		// 任务标记以数字结尾（blade9 / blade12）：必须要求标记后面不是数字，
-		// 否则任务 9 会把任务 99 的回调（/blade999-other）也算成自己的。
+		// 任务标记以数字结尾（cb9 / cb12）：必须要求标记后面不是数字，
+		// 否则任务 9 会把任务 99 的回调（/cb999-other）也算成自己的。
 		for offset := 0; offset < len(lower); {
 			i := strings.Index(lower[offset:], marker)
 			if i < 0 {

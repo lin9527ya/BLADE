@@ -224,7 +224,6 @@ func get(ctx context.Context, c *http.Client, rawURL string) (io.ReadCloser, err
 	if err := checkURL(req.URL); err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "blade-selfupdate")
 	// API 资产端点默认回 JSON 元数据；要二进制内容必须显式要 octet-stream。
 	// 对浏览器地址这个头无害，所以两条路都带上，不用分支。
 	req.Header.Set("Accept", "application/octet-stream")

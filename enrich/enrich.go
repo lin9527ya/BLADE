@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -294,6 +295,18 @@ func (e *Engine) doDNS(id int64, host string) bool {
 
 var reTitle = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
+// targetUserAgent 是资产补全探测目标站点时使用的通用浏览器 UA。此前这里是
+// "blade-enrich/1.0"——目标/蓝队/测绘引擎一眼就能认出平台。不要改回任何带
+// 平台名的值；需要按客户环境伪装时用 TARGET_USER_AGENT 覆盖。
+const targetUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+func probeUserAgent() string {
+	if v := strings.TrimSpace(os.Getenv("TARGET_USER_AGENT")); v != "" {
+		return v
+	}
+	return targetUserAgent
+}
+
 func (e *Engine) doHTTP(id int64, rawURL string) bool {
 	host := hostOf(rawURL)
 	if host == "" {
@@ -303,7 +316,7 @@ func (e *Engine) doHTTP(id int64, rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	req.Header.Set("User-Agent", "blade-enrich/1.0")
+	req.Header.Set("User-Agent", probeUserAgent())
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return false

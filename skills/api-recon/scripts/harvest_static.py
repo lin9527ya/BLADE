@@ -20,7 +20,7 @@ import sys, os, re, ssl, json, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-UA = "Mozilla/5.0 (spa-api-recon)"
+UA = os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 def fetch(url, binary=False):
     try:
