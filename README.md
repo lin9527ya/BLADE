@@ -153,6 +153,7 @@ BLADE_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 - **更新会中断正在运行的任务**——更新即重启，请在空闲时进行。
 - **开发构建不给更新**：版本号是 `dev` 或 `git describe` 带后缀时禁用，避免正式版覆盖掉本地调试的二进制。
 - **Docker 下只换程序、不换镜像**：镜像里的 playwright / nmap 等工具链不会跟着升级，且 `docker compose up -d` 重建容器后会退回镜像自带的版本。要连镜像一起升级请先在源码目录运行 `./build.sh --docker`，再执行 `docker compose up -d --build blade`。
+- **页面更新不会同步 `skills/`**：一键更新只替换二进制；内置技能（如 `skills/coldcoffee`）需要按方式四覆盖 `skills/`，或重建 Docker 镜像后才会出现在技能列表里。旧库里新增的默认可见性行是安全的，技能文件缺失时它只是不生效。
 - 访问 GitHub 需要代理时，在同一页面配置**全局代理**即可，更新链路会走它。更新只从 GitHub 域名下载并强制 HTTPS。
 
 > **⚠️ 这条链路信任什么**：更新包与它的 `SHA256SUMS` 取自 GitHub 的**同一个 release**，所以校验和保证的是

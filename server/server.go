@@ -307,7 +307,19 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 					return "", false
 				}
 				t, err := m.pg.CurrentPromptAppend(a.ID)
-				if err != nil || t == "" {
+				if err != nil {
+					t = ""
+				}
+				// 冷咖啡激活提示由代码持有：用户改提示词或"恢复默认"不会把它删掉，
+				// 关掉该 agent 的 coldcoffee 技能可见性后它也会自动消失。只查三个人工
+				// agent，planner/worker/goals 不拿用户原句，不付这次查询。
+				switch key {
+				case "auto", "pentest", "mainagent":
+					if names, nameErr := m.pg.AgentSkillNames(a.ID); nameErr == nil {
+						t = appendColdCoffeeCue(key, t, names)
+					}
+				}
+				if strings.TrimSpace(t) == "" {
 					return "", false
 				}
 				return t, true

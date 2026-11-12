@@ -184,6 +184,27 @@
   直接成功且旧字段被忽略；Frontier/claim 忽略历史依赖与 requires；全仓 `go test -race`、
   `go vet`、`staticcheck`、`gofmt`；前端 `tsc`、59 个单测与静态构建。
 
+### 内置冷咖啡技能
+
+- **内置技能**：新增 `skills/coldcoffee`，由 gpt6-Astra 的冷咖啡词包生成：`SKILL.md` 带激活契约、
+  激活页、统一工单与六类父路由；6 个父技能与 80 个叶子放在 `references/` 按需读取。来源、
+  适配说明与重新生成命令见该目录 `SOURCE.md`，不要手工编辑。
+- **默认可见性**：`builtinSkillVisibility` 把 `coldcoffee` 默认绑定到 `auto`、`pentest`、
+  `mainagent`。种子每次启动只补缺失行，用户关掉后不会被复活；其它 agent 仍可在 agent
+  编辑器按需开关。
+- **激活提示**：`PromptAppend` 为上述三个 agent 追加代码持有的激活提示（仅当该 agent 可见
+  `coldcoffee`），不写入 `agent_prompts`；用户改提示词或恢复默认都不会丢，关掉技能后自动消失。
+- **升级提示**：页面一键更新只替换二进制，不同步 `skills/`；需要新内置技能时按发布包覆盖
+  `skills/` 或重建 Docker 镜像。IDA MCP 不预置；手动接入需 `BLADE_MCP_ALLOW_LOCAL=1`，
+  Docker 还要解决容器访问宿主机 13337 的问题。
+
+### 验证（内置冷咖啡技能）
+
+- 新增回归：技能 frontmatter/激活页 golden/6 父 80 叶/无占位符与座位标记、cue 的 agent 白名单；
+  `TestOpenSeed` 断言 `auto`/`pentest`/`mainagent` 的默认可见性行存在（不断言 enabled）。
+- 生成器 `--check` 防漂移；`go build ./...`、`go vet ./...`、`TestRouteSnapshot` 与
+  `BLADE_TEST_PG_DSN=<test-db> go test ./db -run TestOpenSeed` 通过。
+
 ## [0.9.9] - 2026-11-10
 
 修复意图结算回归，并把待领队列上限做成系统设置；同时让规划者已丢弃的意图退出默认

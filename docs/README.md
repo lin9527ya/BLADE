@@ -58,6 +58,18 @@ CAS 防重与水位语义）、`server/scheduler.go`（触发器调度）。
 `db/tasks.go`（`plan_heartbeat_seconds` 的下限归一）、`server/engine.go`
 （`pendingTriggers` 的 debounce 与合并）。
 
+## 内置技能与冷咖啡
+
+- 文件：`skills/coldcoffee/SKILL.md`（激活契约、激活页、统一工单、路由表）与 `references/`
+  （6 个父路由、80 个叶子、normalizer、索引）。这是生成产物，来源与再生成见
+  `skills/coldcoffee/SOURCE.md`；生成器在 gpt6-Astra `desktop/scripts/export-blade-skill.cjs`。
+- 默认可见性：`db/db.go` 的 `builtinSkillVisibility`。种子每次启动 insert-if-absent，
+  默认绑定 `auto` / `pentest` / `mainagent`，不覆盖用户的关闭；任意 agent 的开关仍在
+  agent 编辑器。
+- 激活提示：`server/coldcoffee.go` 的代码级 cue，由 `server/server.go` 的 `PromptAppend`
+  接入；不写 `agent_prompts`，重置提示词不会丢。
+- 技能加载与分层注入：`server/assembly.go`；prompt 追加钩子：`agent/prompt.go`。
+
 ## SDK 维护线
 
 `go.mod` 里 `github.com/lin9527ya/Norma` 的说明注释；差异账本在 Norma 仓库自己的

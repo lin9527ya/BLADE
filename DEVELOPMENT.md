@@ -108,6 +108,10 @@ git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
   需要重建 provider 链的项在提交后统一 `applyLLM`。
 - 设置保存分两阶段：先全量校验，再单事务写入，最后应用运行态；失败信息会明确
   「设置已保存，运行态未生效」。
+- 内置技能 = 磁盘 `skills/<name>/SKILL.md` + DB `agent_skill_visibility` 种子。种子每次启动
+  补缺失行（`db/db.go` 的 `builtinSkillVisibility`），用户关掉后不会被复活；
+  `always=true` 是另一层（正文整段进稳定 prompt，≤5 条）。新增内置技能时三处一起改：
+  技能目录、种子表、按需的代码级提示/测试。
 - 收官审计默认 **block**（系统设置 →「执行与并发」→ 收官审计）：目标达成但有未豁免的
   覆盖缺口/未闭合通路/未闭合候选/未处理线索时，`prove_goal` 会被拒绝；`accept_completion_risk`
   写理由可放行，理由进报告数据缺项。`notice` 只提醒，`off` 恢复旧行为。

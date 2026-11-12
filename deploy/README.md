@@ -337,6 +337,10 @@ OS 用户**执行。所以一条被提示注入的 worker 命令，能做管理�
 Environment=BLADE_MCP_ALLOW_LOCAL=1
 ```
 
+例如接本机 IDA MCP（`http://127.0.0.1:13337/mcp`）：先在 BLADE 的 MCP 页面添加一个名为
+`ida-pro-mcp`、transport 为 `http` 的 server，再设置上面的环境变量。Docker 部署时容器里的
+`127.0.0.1` 不是宿主机，需要 host 网络或 `host.docker.internal` 才能连到宿主机的 13337。
+
 ### 9.1 开启降权
 
 前提：Norma ≥ v0.5.3（`tool.SetExecHook` / `tool.SetPathGuard`），BLADE 以 **root** 启动，

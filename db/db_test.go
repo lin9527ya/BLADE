@@ -103,6 +103,21 @@ WHERE a.key = 'planner'`).Scan(&plannerVars); err != nil {
 		t.Fatalf("want at least %d planner vars, got %d", wantPlannerVars, plannerVars)
 	}
 
+	// 内置冷咖啡技能必须默认绑定到面向人的 agent。这里只断言行存在，不断言
+	// enabled——用户可能在 agent 编辑器里关掉它，种子不应该覆盖那次选择。
+	for _, key := range []string{"auto", "pentest", "mainagent"} {
+		var rows int
+		if err := d.QueryRow(`
+SELECT count(*) FROM agent_skill_visibility v
+JOIN agents a ON a.id = v.agent_id
+WHERE a.key = $1 AND v.skill_name = 'coldcoffee'`, key).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 {
+			t.Fatalf("coldcoffee visibility for %s = %d rows, want 1", key, rows)
+		}
+	}
+
 	// re-open must be idempotent (no duplicate agents)
 	d2, err := Open(testDSN(t))
 	if err != nil {

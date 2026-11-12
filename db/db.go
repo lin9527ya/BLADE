@@ -610,8 +610,13 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // default — the user turns them on per-agent when needed. scopesentry additionally
 // declares `mcps: ScopeSentry`, which only takes effect once it's made visible and
 // that MCP is enabled/configured.
+//
+// coldcoffee 是随仓库内置的冷咖啡激活/路由技能（skills/coldcoffee，生成产物见其
+// SOURCE.md）。默认绑定到三个面向人的 agent；任意 agent 的开关仍以 agent 编辑器
+// 的可见性设置为准——本种子每次启动只补缺失行，不会覆盖用户的关闭。
 var builtinSkillVisibility = map[string][]string{
-	"api-recon": {"auto", "pentest", "worker"},
+	"api-recon":  {"auto", "pentest", "worker"},
+	"coldcoffee": {"auto", "pentest", "mainagent"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default
