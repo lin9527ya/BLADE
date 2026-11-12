@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -37,7 +38,15 @@ const (
 	settingClashRotateCooldown = "clash_rotate_cooldown_seconds"
 
 	defaultClashRotateCooldown = 120 * time.Second
+	// 每个区域最多连续尝试的节点数；区域之间轮换，避免目标把某个地区整片封禁。
+	clashRegionAttempts = 3
+	// 区域轮换可能跨多个地区，给足探测时间；调用方 ctx 仍可提前取消。
+	clashRotateTimeout = 3 * time.Minute
 )
+
+// errClashGroupExhausted 表示当前组按区域策略试完仍没有可用节点，
+// 调用方可以据此回退默认组；API/冷却/并发错误不能触发回退。
+var errClashGroupExhausted = errors.New("当前出口组没有可用节点")
 
 // ClashEgressConfig 是设置页保存的 Clash 控制器配置。
 type ClashEndpoint struct {
@@ -119,9 +128,13 @@ func (m *Manager) ClashEgressConfig() ClashEgressConfig {
 	c.Group = get(settingClashProxyGroup, "")
 	c.Groups = splitProxyCandidates(get(settingClashProxyGroups, ""))
 	c.Endpoints = parseClashEndpoints(get(settingClashTaskEndpoints, ""))
-	for _, ep := range c.Endpoints {
-		if !containsString(c.Groups, ep.Group) {
-			c.Groups = append(c.Groups, ep.Group)
+	// 显式组池决定任务可分配哪些组；listener 表里的默认组只是回退/手动手动入口，
+	// 不能反过来把默认组塞进任务池。只有组池为空时才从 listener 推导。
+	if len(c.Groups) == 0 {
+		for _, ep := range c.Endpoints {
+			if !containsString(c.Groups, ep.Group) {
+				c.Groups = append(c.Groups, ep.Group)
+			}
 		}
 	}
 	if len(c.Groups) == 0 && c.Group != "" {
@@ -198,7 +211,11 @@ func (m *Manager) TaskEgressGroup(taskID string) string {
 	if m.clashTaskGroups == nil {
 		m.clashTaskGroups = map[string]string{}
 	}
-	if g, ok := m.clashTaskGroups[taskID]; ok && containsString(cfg.Groups, g) {
+	defaultGroup := cfg.Group
+	if defaultGroup == "" {
+		defaultGroup = cfg.Groups[0]
+	}
+	if g, ok := m.clashTaskGroups[taskID]; ok && (containsString(cfg.Groups, g) || g == defaultGroup) {
 		return g
 	}
 	delete(m.clashTaskGroups, taskID)
@@ -224,7 +241,12 @@ func (m *Manager) TaskEgressProxy(taskID string) string {
 	if m == nil {
 		return ""
 	}
-	group := m.TaskEgressGroup(taskID)
+	return m.egressProxyForGroup(m.TaskEgressGroup(taskID))
+}
+
+// egressProxyForGroup returns the dedicated listener for a group, or the global
+// active proxy when no listener is configured for it.
+func (m *Manager) egressProxyForGroup(group string) string {
 	for _, ep := range m.ClashEgressConfig().Endpoints {
 		if ep.Group == group && ep.Proxy != "" {
 			return ep.Proxy
@@ -293,41 +315,85 @@ func containsString(list []string, want string) bool {
 // button uses it; task traffic uses RotateEgressForTask so one task cannot move
 // another task's exit IP.
 func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotation, error) {
+	group := m.defaultEgressGroup()
+	res, _, err := m.rotateEgressGroup(ctx, group, m.egressProxyForGroup(group), reason, nil)
+	return res, err
+}
+
+// DefaultEgressGroup is the all-nodes fallback group (not necessarily in the
+// task group pool).
+func (m *Manager) DefaultEgressGroup() string { return m.defaultEgressGroup() }
+
+func (m *Manager) defaultEgressGroup() string {
 	cfg := m.ClashEgressConfig()
-	group := cfg.Group
-	if group == "" && len(cfg.Groups) > 0 {
-		group = cfg.Groups[0]
+	if cfg.Group != "" {
+		return cfg.Group
 	}
-	return m.rotateEgressGroup(ctx, group, m.EgressProxy(), reason)
+	if len(cfg.Groups) > 0 {
+		return cfg.Groups[0]
+	}
+	return ""
 }
 
 // RotateEgressForTask rotates only the Selector group assigned to this task.
+// If the task group is exhausted, it falls back to the default all-nodes group
+// while avoiding regions already attempted in the task group.
 func (m *Manager) RotateEgressForTask(ctx context.Context, taskID, reason string) (ClashRotation, error) {
-	return m.rotateEgressGroup(ctx, m.TaskEgressGroup(taskID), m.TaskEgressProxy(taskID), reason)
+	group := m.TaskEgressGroup(taskID)
+	res, tried, err := m.rotateEgressGroup(ctx, group, m.TaskEgressProxy(taskID), reason, nil)
+	if err == nil || !errors.Is(err, errClashGroupExhausted) {
+		return res, err
+	}
+	fallback := m.defaultEgressGroup()
+	if fallback == "" || fallback == group {
+		return res, err
+	}
+	fres, _, ferr := m.rotateEgressGroup(ctx, fallback,
+		m.egressProxyForGroup(fallback),
+		reason+"（原组不可用，回退默认组）", tried)
+	if ferr != nil {
+		return fres, fmt.Errorf("%v；默认组回退失败：%w", err, ferr)
+	}
+	m.assignTaskEgressGroup(taskID, fallback)
+	return fres, nil
 }
 
-func (m *Manager) rotateEgressGroup(ctx context.Context, group, proxyURL, reason string) (ClashRotation, error) {
+// assignTaskEgressGroup pins a task to a group (including the default fallback
+// group, which may not be in the task pool).
+func (m *Manager) assignTaskEgressGroup(taskID, group string) {
+	if taskID == "" || group == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.clashTaskGroups == nil {
+		m.clashTaskGroups = map[string]string{}
+	}
+	m.clashTaskGroups[taskID] = group
+	m.mu.Unlock()
+}
+
+func (m *Manager) rotateEgressGroup(ctx context.Context, group, proxyURL, reason string, avoidRegions map[string]bool) (ClashRotation, map[string]bool, error) {
 	var out ClashRotation
 	cfg := m.ClashEgressConfig()
 	if cfg.APIURL == "" {
-		return out, fmt.Errorf("未配置 Clash 外部控制器（设置 → 网络与代理 → Clash 出口切换）")
+		return out, nil, fmt.Errorf("未配置 Clash 外部控制器（设置 → 网络与代理 → Clash 出口切换）")
 	}
 	if strings.TrimSpace(group) == "" {
-		return out, fmt.Errorf("未配置任务出口 Selector 组（设置 → 网络与代理 → 任务出口组池）")
+		return out, nil, fmt.Errorf("未配置任务出口 Selector 组（设置 → 网络与代理 → 任务出口组池）")
 	}
 	if proxyURL == "" || proxyURL == blockedProxyURL {
-		return out, fmt.Errorf("出口代理未配置或已阻断：无法验证新出口 IP，拒绝切换（绝不直连）")
+		return out, nil, fmt.Errorf("出口代理未配置或已阻断：无法验证新出口 IP，拒绝切换（绝不直连）")
 	}
 	s := m.clashState(group)
 	s.mu.Lock()
 	if s.rotating {
 		s.mu.Unlock()
-		return out, fmt.Errorf("已有一次出口切换正在进行")
+		return out, nil, fmt.Errorf("已有一次出口切换正在进行")
 	}
 	if cfg.Cooldown > 0 && !s.lastAt.IsZero() {
 		if remain := cfg.Cooldown - time.Since(s.lastAt); remain > 0 {
 			s.mu.Unlock()
-			return out, fmt.Errorf("出口刚切换过，请 %.0f 秒后再试", remain.Seconds()+0.5)
+			return out, nil, fmt.Errorf("出口刚切换过，请 %.0f 秒后再试", remain.Seconds()+0.5)
 		}
 	}
 	s.rotating = true
@@ -351,18 +417,18 @@ func (m *Manager) rotateEgressGroup(ctx context.Context, group, proxyURL, reason
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, clashRotateTimeout)
 	defer cancel()
 	client := clashClient{apiURL: cfg.APIURL, secret: cfg.Secret}
 	proxies, err := client.proxies(ctx)
 	if err != nil {
 		s.setErr(err)
-		return out, err
+		return out, nil, err
 	}
 	groupName, groupEntry, err := clashPickSelector(proxies, group)
 	if err != nil {
 		s.setErr(err)
-		return out, err
+		return out, nil, err
 	}
 	out.Group, out.From = groupName, groupEntry.Now
 	lastIP := ""
@@ -376,78 +442,69 @@ func (m *Manager) rotateEgressGroup(ctx context.Context, group, proxyURL, reason
 		// 直接换到一个安全节点，再验证新出口。
 		lastIP = ""
 	}
-	candidates := clashCandidateNodes(groupEntry, proxies)
-	if len(candidates) == 0 {
-		err = fmt.Errorf("代理组 %q 没有可用的非 DIRECT 节点（现有：%s）", groupName, strings.Join(groupEntry.All, ", "))
+	plans := clashRegionPlans(groupEntry, proxies, avoidRegions)
+	if len(plans) == 0 {
+		err = fmt.Errorf("%w：代理组 %q 没有可用的非 DIRECT 节点（现有：%s）", errClashGroupExhausted, groupName, strings.Join(groupEntry.All, ", "))
 		s.setErr(err)
-		return out, err
+		return out, nil, err
 	}
-	// 从当前节点之后开始轮转：每次都从头选会把候选永远钉在前几个节点上，
-	// 表现为「只在那两个 IP 之间来回切」。按组内顺序向后推进，才能吃到整组节点。
-	candidates = rotateCandidatesAfter(candidates, groupEntry.Now)
-	// rotate 会包含当前节点（用于定位起点），把它剔除；否则会选回自己。
-	filtered := candidates[:0]
-	for _, name := range candidates {
-		if name != groupEntry.Now {
-			filtered = append(filtered, name)
-		}
-	}
-	candidates = filtered
-	if len(candidates) > 12 {
-		candidates = candidates[:12]
-	}
+	tried := map[string]bool{}
 	var lastErr error
-	for _, node := range candidates {
-		if err := client.selectNode(ctx, groupName, node); err != nil {
-			lastErr = err
-			continue
-		}
-		now, err := client.groupNow(ctx, groupName)
-		if err != nil || now != node {
-			if err == nil {
-				err = fmt.Errorf("Clash 未接受节点 %q（当前仍是 %q）", node, now)
+	for _, plan := range plans {
+		tried[plan.Region] = true
+		for _, node := range plan.Nodes { // 每个区域最多 clashRegionAttempts 个
+			if err := client.selectNode(ctx, groupName, node); err != nil {
+				lastErr = err
+				continue
 			}
-			lastErr = err
-			continue
+			now, err := client.groupNow(ctx, groupName)
+			if err != nil || now != node {
+				if err == nil {
+					err = fmt.Errorf("Clash 未接受节点 %q（当前仍是 %q）", node, now)
+				}
+				lastErr = err
+				continue
+			}
+			ip, err := clashProbeEgressIP(ctx, proxyURL, m.EgressIPURL(), 8*time.Second)
+			if err != nil {
+				lastErr = fmt.Errorf("节点 %q 已选中但出口 IP 检测失败：%w", node, err)
+				continue
+			}
+			// Clash 切换节点后已有连接/新连接可能短暂走旧节点；稍等再查一次，用稳定后的
+			// 出口 IP 作为结果（第一次查询只用来确认链路通）。
+			select {
+			case <-time.After(400 * time.Millisecond):
+			case <-ctx.Done():
+				lastErr = ctx.Err()
+				continue
+			}
+			if ip2, err2 := clashProbeEgressIP(ctx, proxyURL, m.EgressIPURL(), 8*time.Second); err2 == nil {
+				ip = ip2
+			}
+			if isLocalEgressIP(ip) {
+				lastErr = fmt.Errorf("节点 %q 的出口 IP %s 与本机网卡地址相同（疑似未走代理），拒绝采用", node, ip)
+				continue
+			}
+			if lastIP != "" && ip == lastIP {
+				lastErr = fmt.Errorf("节点 %q 的出口 IP 仍为 %s（未变化），继续尝试下一个", node, ip)
+				continue
+			}
+			out.To, out.EgressIP = node, ip
+			success = true
+			log.Printf("[clash] %s；原因：%s", out.Summary(), clipRunes(strings.TrimSpace(reason), 120))
+			return out, tried, nil
 		}
-		ip, err := clashProbeEgressIP(ctx, proxyURL, m.EgressIPURL(), 8*time.Second)
-		if err != nil {
-			lastErr = fmt.Errorf("节点 %q 已选中但出口 IP 检测失败：%w", node, err)
-			continue
-		}
-		// Clash 切换节点后已有连接/新连接可能短暂走旧节点；稍等再查一次，用稳定后的
-		// 出口 IP 作为结果（第一次查询只用来确认链路通）。
-		select {
-		case <-time.After(400 * time.Millisecond):
-		case <-ctx.Done():
-			lastErr = ctx.Err()
-			continue
-		}
-		if ip2, err2 := clashProbeEgressIP(ctx, proxyURL, m.EgressIPURL(), 8*time.Second); err2 == nil {
-			ip = ip2
-		}
-		if isLocalEgressIP(ip) {
-			lastErr = fmt.Errorf("节点 %q 的出口 IP %s 与本机网卡地址相同（疑似未走代理），拒绝采用", node, ip)
-			continue
-		}
-		if lastIP != "" && ip == lastIP {
-			lastErr = fmt.Errorf("节点 %q 的出口 IP 仍为 %s（未变化），继续尝试下一个", node, ip)
-			continue
-		}
-		out.To, out.EgressIP = node, ip
-		success = true
-		log.Printf("[clash] %s；原因：%s", out.Summary(), clipRunes(strings.TrimSpace(reason), 120))
-		return out, nil
 	}
-	// 全部失败：尽力恢复原节点（仅当它是安全节点时），保持原来的出口。
+	// 全部区域/节点失败：尽力恢复原节点（仅当它是安全节点时），保持原来的出口。
 	if clashNodeSafe(groupEntry.Now, proxies, 0) && groupEntry.Now != "" {
 		_ = client.selectNode(ctx, groupName, groupEntry.Now)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("没有可切换的安全节点")
 	}
-	s.setErr(lastErr)
-	return out, lastErr
+	err = fmt.Errorf("%w：%v", errClashGroupExhausted, lastErr)
+	s.setErr(err)
+	return out, tried, err
 }
 
 func (s *clashEgressState) setErr(err error) {
@@ -646,6 +703,105 @@ func clashNodeSafe(name string, proxies map[string]clashProxyEntry, depth int) b
 		return p.Now != "" && clashNodeSafe(p.Now, proxies, depth+1)
 	}
 	return true
+}
+
+// clashNodeRegion maps a node name to a coarse region used for rotation. The
+// first three attempts stay inside one region; after that the next region is
+// tried, so a WAF cannot force a whole region to be burned before we diversify.
+var clashRegionFlags = []struct{ prefix, region string }{
+	{"🇭🇰", "香港"}, {"🇹🇼", "台湾"}, {"🇯🇵", "日本"}, {"🇸🇬", "新加坡"},
+	{"🇰🇷", "韩国"}, {"🇬🇧", "英国"}, {"🇩🇪", "德国"}, {"🇺🇸", "美国"},
+	{"🇧🇷", "巴西"}, {"🇹🇷", "土耳其"}, {"🇮🇳", "印度"}, {"🇲🇾", "马来西亚"},
+	{"🇹🇭", "泰国"}, {"🇵🇭", "菲律宾"},
+}
+
+func clashNodeRegion(name string) string {
+	for _, f := range clashRegionFlags {
+		if strings.HasPrefix(name, f.prefix) {
+			return f.region
+		}
+	}
+	switch {
+	case strings.Contains(name, "乌克兰"):
+		return "乌克兰"
+	case strings.Contains(name, "香港"):
+		return "香港"
+	case strings.Contains(name, "台湾"):
+		return "台湾"
+	case strings.Contains(name, "日本"):
+		return "日本"
+	case strings.Contains(name, "新加坡"):
+		return "新加坡"
+	case strings.Contains(name, "韩国"):
+		return "韩国"
+	case strings.Contains(name, "英国"):
+		return "英国"
+	case strings.Contains(name, "美国"):
+		return "美国"
+	}
+	return "其他"
+}
+
+type clashRegionPlan struct {
+	Region string
+	Nodes  []string
+}
+
+// clashRegionPlans orders safe leaf nodes by region (starting at the current
+// node's region), caps each region at clashRegionAttempts nodes, and skips
+// avoidRegions. This is the core "don't burn one region" rule.
+func clashRegionPlans(group clashProxyEntry, proxies map[string]clashProxyEntry, avoid map[string]bool) []clashRegionPlan {
+	buckets := map[string][]string{}
+	var order []string
+	for _, name := range group.All {
+		if !clashNodeSafe(name, proxies, 0) {
+			continue
+		}
+		if p, ok := proxies[name]; ok && clashGroupType(p.Type) {
+			continue
+		}
+		region := clashNodeRegion(name)
+		if avoid != nil && avoid[region] {
+			continue
+		}
+		if _, ok := buckets[region]; !ok {
+			order = append(order, region)
+		}
+		buckets[region] = append(buckets[region], name)
+	}
+	// Start at the current node's region so a rotation changes something, then
+	// continue with the remaining regions in group order.
+	current := clashNodeRegion(group.Now)
+	if i := indexString(order, current); i > 0 {
+		order = append(order[i:], order[:i]...)
+	}
+	out := make([]clashRegionPlan, 0, len(order))
+	for _, region := range order {
+		nodes := rotateCandidatesAfter(buckets[region], group.Now)
+		filtered := nodes[:0]
+		for _, name := range nodes {
+			if name != group.Now {
+				filtered = append(filtered, name)
+			}
+		}
+		nodes = filtered
+		if len(nodes) > clashRegionAttempts {
+			nodes = nodes[:clashRegionAttempts]
+		}
+		if len(nodes) > 0 {
+			out = append(out, clashRegionPlan{Region: region, Nodes: nodes})
+		}
+	}
+	return out
+}
+
+func indexString(list []string, want string) int {
+	for i, v := range list {
+		if v == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // rotateCandidatesAfter 把候选列表旋转到 after 之后（after 不在列表里则原样返回）。

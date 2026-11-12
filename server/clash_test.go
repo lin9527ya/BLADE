@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,12 +111,12 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 延迟排序为 [B(30ms), A(120ms), C]；从当前 A 之后轮转 → C。
-	if res.From != "A" || res.To != "C" || res.EgressIP != ip {
-		t.Fatalf("rotation=%+v, want A→C ip=%s", res, ip)
+	// 按组内顺序从当前 A 之后轮转 → B（延迟排序不再跨区域打乱顺序）。
+	if res.From != "A" || res.To != "B" || res.EgressIP != ip {
+		t.Fatalf("rotation=%+v, want A→B ip=%s", res, ip)
 	}
-	if now["BLADE"] != "C" {
-		t.Fatalf("clash group now=%q, want C", now["BLADE"])
+	if now["BLADE"] != "B" {
+		t.Fatalf("clash group now=%q, want B", now["BLADE"])
 	}
 	// 第二次：即使 Clash 侧节点被别人改成 A（与缓存节点不同），出口 IP 没变化
 	// 也必须失败——“切成功但 IP 没变”是假切换。
@@ -303,5 +304,110 @@ func TestRotateEgressAdvancesThroughCandidates(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("切换序列=%v, want %v（不应在两个节点间来回跳）", got, want)
 		}
+	}
+}
+
+func TestClashRegionPlansCapThreePerRegion(t *testing.T) {
+	all := []string{
+		"🇭🇰 H1", "🇭🇰 H2", "🇭🇰 H3", "🇭🇰 H4", "🇭🇰 H5",
+		"🇹🇼 T1", "🇹🇼 T2", "🇹🇼 T3", "🇹🇼 T4",
+		"🇯🇵 J1", "🇯🇵 J2", "🇯🇵 J3",
+	}
+	proxies := map[string]clashProxyEntry{}
+	for _, name := range all {
+		proxies[name] = clashProxyEntry{Type: "Vmess"}
+	}
+	group := clashProxyEntry{Type: "Selector", Now: "🇭🇰 H1", All: all}
+	plans := clashRegionPlans(group, proxies, nil)
+	if len(plans) < 2 || plans[0].Region != "香港" || len(plans[0].Nodes) != 3 {
+		t.Fatalf("first region should be 香港 with 3 attempts, got %+v", plans)
+	}
+	if plans[0].Nodes[0] != "🇭🇰 H2" || plans[0].Nodes[2] != "🇭🇰 H4" {
+		t.Fatalf("香港 should advance after current node and cap at 3: %+v", plans[0].Nodes)
+	}
+	if plans[1].Region != "台湾" || len(plans[1].Nodes) != 3 {
+		t.Fatalf("second region should be 台湾 with 3 attempts, got %+v", plans[1])
+	}
+	// 默认组回退时跳过已经试过的地区。
+	plans = clashRegionPlans(group, proxies, map[string]bool{"香港": true, "台湾": true})
+	if len(plans) == 0 || plans[0].Region != "日本" {
+		t.Fatalf("avoiding 香港/台湾 should start at 日本, got %+v", plans)
+	}
+}
+
+func TestRotateEgressForTaskFallsBackToDefaultAndSkipsTriedRegions(t *testing.T) {
+	var mu sync.Mutex
+	now := map[string]string{"ASIA": "🇭🇰 H1", "BLADE": "🇬🇧 G1"}
+	proxies := map[string]any{
+		"ASIA":  map[string]any{"type": "Selector", "now": now["ASIA"], "all": []string{"🇭🇰 H1", "🇭🇰 H2", "🇭🇰 H3", "🇹🇼 T1", "🇹🇼 T2"}},
+		"BLADE": map[string]any{"type": "Selector", "now": now["BLADE"], "all": []string{"🇬🇧 G1", "🇺🇸 U1"}},
+		"🇭🇰 H1": map[string]any{"type": "Vmess"}, "🇭🇰 H2": map[string]any{"type": "Vmess"},
+		"🇭🇰 H3": map[string]any{"type": "Vmess"}, "🇹🇼 T1": map[string]any{"type": "Vmess"},
+		"🇹🇼 T2": map[string]any{"type": "Vmess"}, "🇬🇧 G1": map[string]any{"type": "Vmess"},
+		"🇺🇸 U1": map[string]any{"type": "Vmess"},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/proxies" {
+			proxies["ASIA"].(map[string]any)["now"] = now["ASIA"]
+			proxies["BLADE"].(map[string]any)["now"] = now["BLADE"]
+			_ = json.NewEncoder(w).Encode(map[string]any{"proxies": proxies})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/proxies/") {
+			group := strings.TrimPrefix(r.URL.Path, "/proxies/")
+			var body struct {
+				Name string `json:"name"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			now[group] = body.Name
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	_ = m.pg.SetSetting(settingClashAPIURL, srv.URL)
+	_ = m.pg.SetSetting(settingClashProxyGroup, "BLADE")
+	_ = m.pg.SetSetting(settingClashProxyGroups, "ASIA")
+	_ = m.pg.SetSetting(settingClashTaskEndpoints, "ASIA=http://asia.local\nBLADE=http://default.local")
+	_ = m.pg.SetSetting(settingClashRotateCooldown, "0")
+	t.Cleanup(func() {
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2,$3,$4,$5)`,
+			settingClashAPIURL, settingClashProxyGroup, settingClashProxyGroups, settingClashTaskEndpoints, settingClashRotateCooldown)
+	})
+	m.mu.Lock()
+	m.proxyPool = nil
+	m.egressProxy = "http://127.0.0.1:7898"
+	m.mu.Unlock()
+
+	oldProbe := clashProbeEgressIP
+	t.Cleanup(func() { clashProbeEgressIP = oldProbe })
+	clashProbeEgressIP = func(_ context.Context, proxyURL, _ string, _ time.Duration) (string, error) {
+		if proxyURL == "http://asia.local" {
+			return "", fmt.Errorf("asia nodes blocked")
+		}
+		return "198.51.100.44", nil
+	}
+
+	if got := m.TaskEgressGroup("task-1"); got != "ASIA" {
+		t.Fatalf("task group=%q, want ASIA", got)
+	}
+	res, err := m.RotateEgressForTask(context.Background(), "task-1", "fallback test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Group != "BLADE" || res.To != "🇺🇸 U1" {
+		t.Fatalf("fallback should skip tried HK/TW and use US: %+v", res)
+	}
+	if got := m.TaskEgressGroup("task-1"); got != "BLADE" {
+		t.Fatalf("task should stay on default fallback group, got %q", got)
 	}
 }
