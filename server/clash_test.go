@@ -14,13 +14,14 @@ import (
 func fakeClash(t *testing.T) (*httptest.Server, *sync.Mutex, map[string]string) {
 	t.Helper()
 	var mu sync.Mutex
-	now := map[string]string{"BLADE": "A"}
+	now := map[string]string{"BLADE": "A", "ALT": "A"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r.URL.Path == "/proxies" && r.Method == http.MethodGet {
 			_ = json.NewEncoder(w).Encode(map[string]any{"proxies": map[string]any{
 				"BLADE":  map[string]any{"type": "Selector", "now": now["BLADE"], "all": []string{"A", "B", "DIRECT", "C"}},
+				"ALT":    map[string]any{"type": "Selector", "now": now["ALT"], "all": []string{"A", "B", "DIRECT", "C"}},
 				"A":      map[string]any{"type": "Vmess", "history": []map[string]int{{"delay": 120}}},
 				"B":      map[string]any{"type": "Vmess", "history": []map[string]int{{"delay": 30}}},
 				"C":      map[string]any{"type": "Trojan"},
@@ -125,6 +126,60 @@ func TestRotateEgressSwitchesNodeAndVerifiesIP(t *testing.T) {
 	}
 }
 
+func TestTaskEgressGroupsAreIsolated(t *testing.T) {
+	s, _, now := fakeClash(t)
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	_ = m.pg.SetSetting(settingClashAPIURL, s.URL)
+	_ = m.pg.SetSetting(settingClashProxyGroup, "BLADE")
+	_ = m.pg.SetSetting(settingClashProxyGroups, "BLADE\nALT")
+	_ = m.pg.SetSetting(settingClashTaskEndpoints, "BLADE=http://127.0.0.1:7801\nALT=http://127.0.0.1:7802")
+	_ = m.pg.SetSetting(settingClashRotateCooldown, "0")
+	t.Cleanup(func() {
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2,$3,$4,$5)`,
+			settingClashAPIURL, settingClashProxyGroup, settingClashProxyGroups, settingClashTaskEndpoints, settingClashRotateCooldown)
+	})
+	m.mu.Lock()
+	m.proxyPool = nil
+	m.egressProxy = "http://127.0.0.1:7898"
+	m.mu.Unlock()
+
+	oldProbe := clashProbeEgressIP
+	t.Cleanup(func() { clashProbeEgressIP = oldProbe })
+	clashProbeEgressIP = func(context.Context, string, string, time.Duration) (string, error) {
+		return "203.0.113.9", nil
+	}
+
+	if got := m.TaskEgressGroup("task-1"); got != "BLADE" {
+		t.Fatalf("task-1 group=%q, want BLADE", got)
+	}
+	if got := m.TaskEgressGroup("task-2"); got != "ALT" {
+		t.Fatalf("task-2 should get the least-loaded group ALT, got %q", got)
+	}
+	if got := m.TaskEgressProxy("task-1"); got != "http://127.0.0.1:7801" {
+		t.Fatalf("task-1 endpoint=%q, want its dedicated BLADE listener", got)
+	}
+	if got := m.TaskEgressProxy("task-2"); got != "http://127.0.0.1:7802" {
+		t.Fatalf("task-2 endpoint=%q, want its dedicated ALT listener", got)
+	}
+	res, err := m.RotateEgressForTask(context.Background(), "task-1", "isolation test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Group != "BLADE" {
+		t.Fatalf("task-1 rotated group=%q, want BLADE", res.Group)
+	}
+	if now["ALT"] != "A" {
+		t.Fatalf("rotating task-1 must not move task-2's ALT group, got %q", now["ALT"])
+	}
+	if now["BLADE"] == "A" {
+		t.Fatalf("task-1's BLADE group did not rotate: %q", now["BLADE"])
+	}
+}
+
 func TestRotateEgressRefusesWithoutProxy(t *testing.T) {
 	s, _, _ := fakeClash(t)
 	m, err := NewManager(t.TempDir(), "")
@@ -136,7 +191,10 @@ func TestRotateEgressRefusesWithoutProxy(t *testing.T) {
 	// 已关闭的连接池上、静默失败，残留行污染共享测试库。
 	t.Cleanup(func() { _ = m.Close() })
 	_ = m.pg.SetSetting(settingClashAPIURL, s.URL)
-	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingClashAPIURL) })
+	_ = m.pg.SetSetting(settingClashProxyGroup, "BLADE")
+	t.Cleanup(func() {
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2)`, settingClashAPIURL, settingClashProxyGroup)
+	})
 	m.mu.Lock()
 	m.egressProxy = ""
 	m.proxyPool = nil

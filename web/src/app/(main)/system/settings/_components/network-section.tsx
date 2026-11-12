@@ -42,6 +42,10 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     clashSecretSet,
     clashGroup,
     setClashGroup,
+    clashGroups,
+    setClashGroups,
+    clashTaskEndpoints,
+    setClashTaskEndpoints,
     clashAuto,
     setClashAuto,
     clashCooldown,
@@ -110,12 +114,8 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
               <br />
               服务端按健康检查自动切换；<b>全部不可用时出口会被阻断（不会直连）</b>，避免泄漏真实 IP。
               <br />
-              代理池只切换你填的多个地址；
-              <b>
-                只填一个 Clash 端口时，Clash 内部节点由 Clash 的代理组 （select / url-test / fallback）决定，BLADE
-                不会替你切换 Clash 节点
-              </b>
-              。 LLM 的代理在各自 profile 里配置，不在此池内。
+              代理池只切换你填的多个地址；Clash <b>内部节点的按任务切换</b>在下方「Clash 出口切换」里配置。
+              LLM 的代理在各自 profile 里配置，不在此池内。
             </>
           }
         >
@@ -285,7 +285,7 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
           </div>
           <div className="grid gap-3 md:grid-cols-[1fr_130px]">
             <div className="space-y-1.5">
-              <span className="text-muted-foreground text-xs">Selector 组名（留空 = 自动选第一个）</span>
+              <span className="text-muted-foreground text-xs">默认 / 回退 Selector 组</span>
               <Input
                 autoComplete="off"
                 placeholder="BLADE（global 模式填 GLOBAL）"
@@ -305,6 +305,42 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 onChange={(e) => setClashCooldown(e.target.value)}
               />
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <span className="text-muted-foreground text-xs">
+              任务出口组池（每行一个 Selector 组；任务按组隔离出口 IP，留空 = 全部共用默认组）
+            </span>
+            <Textarea
+              autoComplete="off"
+              rows={3}
+              placeholder={"Tiktok\nAI\nNetflix\nSteam"}
+              value={clashGroups}
+              disabled={!loaded || savingClash}
+              onChange={(e) => setClashGroups(e.target.value)}
+            />
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              每个组必须在 Clash 里是独立的 <code>Selector</code>，组内节点互不重叠；BLADE 会把任务稳定绑定到
+              最空闲的组，任务之间不会互抢出口 IP。组数不少于同时运行的任务数时才能保证每组独占；
+              只有一个组时退化为全局共用。
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <span className="text-muted-foreground text-xs">
+              任务专属出口 listener（每行 <code>组名=代理地址</code>；填了才会让任务真正走不同端口/IP）
+            </span>
+            <Textarea
+              autoComplete="off"
+              rows={3}
+              placeholder={"Tiktok=http://127.0.0.1:7890\nAI=http://127.0.0.1:7891\nNetflix=http://127.0.0.1:7892"}
+              value={clashTaskEndpoints}
+              disabled={!loaded || savingClash}
+              onChange={(e) => setClashTaskEndpoints(e.target.value)}
+            />
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              在 Clash 配置里给每个组建一个独立 <code>mixed</code> listener，并设置{" "}
+              <code>proxy: 组名</code>，再把 listener 地址填到这里。只填组池不填 listener 时，任务仍共用
+              全局代理端口，只能隔离“切换哪个组”，不能同时给不同任务不同 IP。
+            </p>
           </div>
           <SwitchRow
             id="clash-auto-rotate"

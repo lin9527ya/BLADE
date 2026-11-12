@@ -276,9 +276,11 @@ type Manager struct {
 	// direct connection and leak the real source IP.
 	egressProxy string
 	proxyPool   *ProxyPool
-	// clash 是 Clash 出口切换的最近状态（切换节点/出口 IP/冷却）。设置页只读它，
-	// 不在 GET 时实时请求 Clash 控制器。
-	clash *clashEgressState
+	// Clash 出口切换按任务隔离：每个候选 Selector 组是一口独立的出口 IP，
+	// clashTaskGroups 固定「任务 → 组」，clashStates 按组保存切换节点/出口 IP/冷却。
+	// 设置页只读默认组的缓存，不在 GET 时实时请求控制器。
+	clashTaskGroups map[string]string
+	clashStates     map[string]*clashEgressState
 
 	// bgWG 登记 Manager 自己起的短命后台写入（LLM 健康状态落库等）。Close 在关池
 	// 之前等它：这些写入此前是 fire-and-forget，关停时可能在池关闭之后才执行。
@@ -1262,6 +1264,37 @@ func (m *Manager) ProxySnapshot() (string, string) {
 	return m.ProxyAddr(), m.ProxyCACert()
 }
 
+// ProxySnapshotForTask is ProxySnapshot with a task's dedicated Clash listener.
+// Traffic capture is process-wide: when it is on, the recording MITM must see
+// every request, so its upstream remains the global proxy and per-task listener
+// isolation is not available in that mode.
+func (m *Manager) ProxySnapshotForTask(taskID string) (string, string) {
+	if m == nil {
+		return "", ""
+	}
+	if tr := m.Traffic(); tr != nil && m.TrafficEnabled() {
+		return m.ProxySnapshot()
+	}
+	if p := m.TaskEgressProxy(taskID); p != "" {
+		return p, ""
+	}
+	return m.ProxySnapshot()
+}
+
+// ProxyAddrForTask mirrors ProxyAddr with the task's dedicated listener.
+func (m *Manager) ProxyAddrForTask(taskID string) string {
+	if m == nil {
+		return ""
+	}
+	if tr := m.Traffic(); tr != nil && m.TrafficEnabled() {
+		return tr.ProxyAddr()
+	}
+	if p := m.TaskEgressProxy(taskID); p != "" {
+		return p
+	}
+	return m.EgressProxy()
+}
+
 // EgressIPURL is the service used by the on-demand "check exit IP" action. It is
 // fetched **through** each candidate proxy; no direct request is made by that
 // action (a direct request would itself leak the host IP to the echo service).
@@ -2129,6 +2162,7 @@ func (m *Manager) SetTaskStatusGuarded(id, status string) (won bool, err error) 
 		})
 	}
 	m.mu.Unlock()
+	m.ReleaseTaskEgress(id)
 	return true, nil
 }
 
@@ -2160,6 +2194,9 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 		})
 	}
 	m.mu.Unlock()
+	if pgdb.IsTerminal(status) {
+		m.ReleaseTaskEgress(id)
+	}
 	return nil
 }
 
@@ -2269,6 +2306,7 @@ func rollbackTaskDelete(cause error, trafficStage *traffic.HostDeleteStage, file
 }
 
 func (m *Manager) forgetTask(id string, numericID int64) {
+	m.ReleaseTaskEgress(id)
 	m.mu.Lock()
 	delete(m.tasks, id)
 	for _, task := range m.tasks {

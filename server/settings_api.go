@@ -163,6 +163,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"clash_api_url":                 clashCfg.APIURL,
 		"clash_api_secret_set":          clashCfg.Secret != "",
 		"clash_proxy_group":             clashCfg.Group,
+		"clash_proxy_groups":            strings.Join(clashCfg.Groups, "\n"),
+		"clash_task_endpoints":          formatClashEndpoints(clashCfg.Endpoints),
 		"clash_auto_rotate":             clashCfg.Auto,
 		"clash_rotate_cooldown_seconds": int(clashCfg.Cooldown.Seconds()),
 		"clash_status":                  s.m.ClashEgressStatus(),
@@ -316,6 +318,8 @@ type settingsRequest struct {
 	ClashAPIURL         *string `json:"clash_api_url"`
 	ClashAPISecret      *string `json:"clash_api_secret"`
 	ClashProxyGroup     *string `json:"clash_proxy_group"`
+	ClashProxyGroups    *string `json:"clash_proxy_groups"`
+	ClashTaskEndpoints  *string `json:"clash_task_endpoints"`
 	ClashAutoRotate     *bool   `json:"clash_auto_rotate"`
 	ClashRotateCooldown *int    `json:"clash_rotate_cooldown_seconds"`
 	PythonInterp        *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
@@ -763,7 +767,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		pending[settingProxyEgressIPURL] = u
 	}
 	if req.ClashAPIURL != nil || req.ClashAPISecret != nil || req.ClashProxyGroup != nil ||
-		req.ClashAutoRotate != nil || req.ClashRotateCooldown != nil {
+		req.ClashProxyGroups != nil || req.ClashTaskEndpoints != nil || req.ClashAutoRotate != nil || req.ClashRotateCooldown != nil {
 		cfg := s.m.ClashEgressConfig()
 		if req.ClashAPIURL != nil {
 			u := strings.TrimRight(strings.TrimSpace(*req.ClashAPIURL), "/")
@@ -784,6 +788,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.ClashProxyGroup != nil {
 			cfg.Group = strings.TrimSpace(*req.ClashProxyGroup)
 			pending[settingClashProxyGroup] = cfg.Group
+		}
+		if req.ClashProxyGroups != nil {
+			groups := splitProxyCandidates(*req.ClashProxyGroups)
+			cfg.Groups = groups
+			pending[settingClashProxyGroups] = strings.Join(groups, "\n")
+		}
+		if req.ClashTaskEndpoints != nil {
+			cfg.Endpoints = parseClashEndpoints(*req.ClashTaskEndpoints)
+			pending[settingClashTaskEndpoints] = formatClashEndpoints(cfg.Endpoints)
 		}
 		if req.ClashAutoRotate != nil {
 			cfg.Auto = *req.ClashAutoRotate

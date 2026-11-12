@@ -31,6 +31,8 @@ const (
 	settingClashAPIURL         = "clash_api_url"
 	settingClashAPISecret      = "clash_api_secret"
 	settingClashProxyGroup     = "clash_proxy_group"
+	settingClashProxyGroups    = "clash_proxy_groups"
+	settingClashTaskEndpoints  = "clash_task_endpoints"
 	settingClashAutoRotate     = "clash_auto_rotate"
 	settingClashRotateCooldown = "clash_rotate_cooldown_seconds"
 
@@ -38,12 +40,24 @@ const (
 )
 
 // ClashEgressConfig 是设置页保存的 Clash 控制器配置。
+type ClashEndpoint struct {
+	Group string
+	Proxy string
+}
+
 type ClashEgressConfig struct {
-	APIURL   string
-	Secret   string
-	Group    string
-	Auto     bool
-	Cooldown time.Duration
+	APIURL string
+	Secret string
+	// Group 是默认/回退 Selector 组（设置页单组字段，兼容旧配置）。
+	Group string
+	// Groups 是任务出口组池：每个任务稳定绑定一个组，组内节点互不影响。
+	// 只有一组时退化为所有任务共用一个出口；空 = 使用 Group。
+	Groups []string
+	// Endpoints 把组映射到独立 listener（组名|代理URL）。真正让任务走不同
+	// 出口 IP 的是 listener；只给组名时只能做节点轮换，流量仍走全局代理端口。
+	Endpoints []ClashEndpoint
+	Auto      bool
+	Cooldown  time.Duration
 }
 
 // ClashRotation 是一次成功切换的结果。
@@ -60,15 +74,16 @@ func (r ClashRotation) Summary() string {
 
 // ClashEgressStatus 是设置页展示的运行时状态（不实时请求 Clash，避免拖慢 GET）。
 type ClashEgressStatus struct {
-	Configured  bool   `json:"configured"`
-	Auto        bool   `json:"auto"`
-	Group       string `json:"group,omitempty"`
-	Node        string `json:"node,omitempty"`
-	EgressIP    string `json:"egress_ip,omitempty"`
-	RotatedAt   string `json:"rotated_at,omitempty"`
-	LastError   string `json:"last_error,omitempty"`
-	LastReason  string `json:"last_reason,omitempty"`
-	CooldownSec int    `json:"cooldown_seconds"`
+	Configured  bool     `json:"configured"`
+	Auto        bool     `json:"auto"`
+	Group       string   `json:"group,omitempty"`
+	Groups      []string `json:"groups,omitempty"`
+	Node        string   `json:"node,omitempty"`
+	EgressIP    string   `json:"egress_ip,omitempty"`
+	RotatedAt   string   `json:"rotated_at,omitempty"`
+	LastError   string   `json:"last_error,omitempty"`
+	LastReason  string   `json:"last_reason,omitempty"`
+	CooldownSec int      `json:"cooldown_seconds"`
 }
 
 type clashEgressState struct {
@@ -102,6 +117,16 @@ func (m *Manager) ClashEgressConfig() ClashEgressConfig {
 	c.APIURL = strings.TrimRight(get(settingClashAPIURL, ""), "/")
 	c.Secret = get(settingClashAPISecret, "")
 	c.Group = get(settingClashProxyGroup, "")
+	c.Groups = splitProxyCandidates(get(settingClashProxyGroups, ""))
+	c.Endpoints = parseClashEndpoints(get(settingClashTaskEndpoints, ""))
+	for _, ep := range c.Endpoints {
+		if !containsString(c.Groups, ep.Group) {
+			c.Groups = append(c.Groups, ep.Group)
+		}
+	}
+	if len(c.Groups) == 0 && c.Group != "" {
+		c.Groups = []string{c.Group}
+	}
 	c.Auto = m.pg.GetBool(settingClashAutoRotate, true)
 	if v := get(settingClashRotateCooldown, ""); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -123,11 +148,15 @@ func (m *Manager) ClashAutoRotateEnabled() bool {
 // ClashEgressStatus returns cached last-rotation info for the settings page.
 func (m *Manager) ClashEgressStatus() ClashEgressStatus {
 	cfg := m.ClashEgressConfig()
-	st := ClashEgressStatus{Configured: cfg.APIURL != "", Auto: cfg.Auto, Group: cfg.Group, CooldownSec: int(cfg.Cooldown.Seconds())}
+	st := ClashEgressStatus{Configured: cfg.APIURL != "", Auto: cfg.Auto, Group: cfg.Group, Groups: cfg.Groups, CooldownSec: int(cfg.Cooldown.Seconds())}
 	if m == nil {
 		return st
 	}
-	s := m.clashState()
+	group := cfg.Group
+	if group == "" && len(cfg.Groups) > 0 {
+		group = cfg.Groups[0]
+	}
+	s := m.clashState(group)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.group != "" {
@@ -140,29 +169,156 @@ func (m *Manager) ClashEgressStatus() ClashEgressStatus {
 	return st
 }
 
-func (m *Manager) clashState() *clashEgressState {
+func (m *Manager) clashState(group string) *clashEgressState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.clash == nil {
-		m.clash = &clashEgressState{}
+	if m.clashStates == nil {
+		m.clashStates = map[string]*clashEgressState{}
 	}
-	return m.clash
+	if s := m.clashStates[group]; s != nil {
+		return s
+	}
+	s := &clashEgressState{group: group}
+	m.clashStates[group] = s
+	return s
 }
 
-// RotateEgress switches the configured Clash Selector group to the next safe node
-// and verifies the egress IP actually changed. It never falls back to a direct
-// connection: without a usable proxy to probe through, it refuses to rotate.
+// TaskEgressGroup 给任务稳定分配一个出口组：优先空闲组，其次当前任务最少的组。
+// 同一任务暂停/恢复仍用同一组；任务终态/删除后 ReleaseTaskEgress 归还名额。
+func (m *Manager) TaskEgressGroup(taskID string) string {
+	if m == nil {
+		return ""
+	}
+	cfg := m.ClashEgressConfig()
+	if len(cfg.Groups) == 0 {
+		return cfg.Group
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.clashTaskGroups == nil {
+		m.clashTaskGroups = map[string]string{}
+	}
+	if g, ok := m.clashTaskGroups[taskID]; ok && containsString(cfg.Groups, g) {
+		return g
+	}
+	delete(m.clashTaskGroups, taskID)
+	counts := map[string]int{}
+	for _, g := range m.clashTaskGroups {
+		counts[g]++
+	}
+	best := cfg.Groups[0]
+	for _, g := range cfg.Groups[1:] {
+		if counts[g] < counts[best] {
+			best = g
+		}
+	}
+	m.clashTaskGroups[taskID] = best
+	return best
+}
+
+// TaskEgressProxy returns the task's dedicated listener URL, or the global
+// active proxy when the group has no dedicated listener. This is what makes
+// two tasks actually use different exit IPs; group rotation alone only changes
+// the Clash selector that a shared listener may or may not be bound to.
+func (m *Manager) TaskEgressProxy(taskID string) string {
+	if m == nil {
+		return ""
+	}
+	group := m.TaskEgressGroup(taskID)
+	for _, ep := range m.ClashEgressConfig().Endpoints {
+		if ep.Group == group && ep.Proxy != "" {
+			return ep.Proxy
+		}
+	}
+	return m.EgressProxy()
+}
+
+// ReleaseTaskEgress 在任务终态/删除后归还出口组名额。
+func (m *Manager) ReleaseTaskEgress(taskID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.clashTaskGroups, taskID)
+	m.mu.Unlock()
+}
+
+func formatClashEndpoints(eps []ClashEndpoint) string {
+	var b strings.Builder
+	for _, ep := range eps {
+		if ep.Group == "" {
+			continue
+		}
+		b.WriteString(ep.Group)
+		if ep.Proxy != "" {
+			b.WriteString("=")
+			b.WriteString(ep.Proxy)
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func parseClashEndpoints(raw string) []ClashEndpoint {
+	var out []ClashEndpoint
+	seen := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		group, proxy := line, ""
+		if i := strings.IndexAny(line, "=|"); i >= 0 {
+			group, proxy = strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+1:])
+		}
+		if group == "" || seen[group] {
+			continue
+		}
+		seen[group] = true
+		out = append(out, ClashEndpoint{Group: group, Proxy: proxy})
+	}
+	return out
+}
+
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// RotateEgress rotates the default/fallback group. The settings-page manual
+// button uses it; task traffic uses RotateEgressForTask so one task cannot move
+// another task's exit IP.
 func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotation, error) {
+	cfg := m.ClashEgressConfig()
+	group := cfg.Group
+	if group == "" && len(cfg.Groups) > 0 {
+		group = cfg.Groups[0]
+	}
+	return m.rotateEgressGroup(ctx, group, m.EgressProxy(), reason)
+}
+
+// RotateEgressForTask rotates only the Selector group assigned to this task.
+func (m *Manager) RotateEgressForTask(ctx context.Context, taskID, reason string) (ClashRotation, error) {
+	return m.rotateEgressGroup(ctx, m.TaskEgressGroup(taskID), m.TaskEgressProxy(taskID), reason)
+}
+
+func (m *Manager) rotateEgressGroup(ctx context.Context, group, proxyURL, reason string) (ClashRotation, error) {
 	var out ClashRotation
 	cfg := m.ClashEgressConfig()
 	if cfg.APIURL == "" {
 		return out, fmt.Errorf("未配置 Clash 外部控制器（设置 → 网络与代理 → Clash 出口切换）")
 	}
-	active := m.EgressProxy()
-	if active == "" || active == blockedProxyURL {
+	if strings.TrimSpace(group) == "" {
+		return out, fmt.Errorf("未配置任务出口 Selector 组（设置 → 网络与代理 → 任务出口组池）")
+	}
+	if proxyURL == "" || proxyURL == blockedProxyURL {
 		return out, fmt.Errorf("出口代理未配置或已阻断：无法验证新出口 IP，拒绝切换（绝不直连）")
 	}
-	s := m.clashState()
+	s := m.clashState(group)
 	s.mu.Lock()
 	if s.rotating {
 		s.mu.Unlock()
@@ -203,36 +359,36 @@ func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotatio
 		s.setErr(err)
 		return out, err
 	}
-	groupName, group, err := clashPickSelector(proxies, cfg.Group)
+	groupName, groupEntry, err := clashPickSelector(proxies, group)
 	if err != nil {
 		s.setErr(err)
 		return out, err
 	}
-	out.Group, out.From = groupName, group.Now
+	out.Group, out.From = groupName, groupEntry.Now
 	lastIP := ""
 	if cachedGroup == groupName {
 		// 同一组内比较旧出口 IP：即使 Clash 侧节点被别人改过，也要保证这次切换
 		// 真的换了出口——否则“切成功但 IP 没变”就是假切换。
 		lastIP = cachedIP
 	}
-	if !clashNodeSafe(group.Now, proxies, 0) {
+	if !clashNodeSafe(groupEntry.Now, proxies, 0) {
 		// 当前节点是 DIRECT/REJECT：先不要探测（那会把真实 IP 发给出口检测服务），
 		// 直接换到一个安全节点，再验证新出口。
 		lastIP = ""
 	}
-	candidates := clashCandidateNodes(group, proxies)
+	candidates := clashCandidateNodes(groupEntry, proxies)
 	if len(candidates) == 0 {
-		err = fmt.Errorf("代理组 %q 没有可用的非 DIRECT 节点（现有：%s）", groupName, strings.Join(group.All, ", "))
+		err = fmt.Errorf("代理组 %q 没有可用的非 DIRECT 节点（现有：%s）", groupName, strings.Join(groupEntry.All, ", "))
 		s.setErr(err)
 		return out, err
 	}
 	// 从当前节点之后开始轮转：每次都从头选会把候选永远钉在前几个节点上，
 	// 表现为「只在那两个 IP 之间来回切」。按组内顺序向后推进，才能吃到整组节点。
-	candidates = rotateCandidatesAfter(candidates, group.Now)
+	candidates = rotateCandidatesAfter(candidates, groupEntry.Now)
 	// rotate 会包含当前节点（用于定位起点），把它剔除；否则会选回自己。
 	filtered := candidates[:0]
 	for _, name := range candidates {
-		if name != group.Now {
+		if name != groupEntry.Now {
 			filtered = append(filtered, name)
 		}
 	}
@@ -254,7 +410,7 @@ func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotatio
 			lastErr = err
 			continue
 		}
-		ip, err := clashProbeEgressIP(ctx, active, m.EgressIPURL(), 8*time.Second)
+		ip, err := clashProbeEgressIP(ctx, proxyURL, m.EgressIPURL(), 8*time.Second)
 		if err != nil {
 			lastErr = fmt.Errorf("节点 %q 已选中但出口 IP 检测失败：%w", node, err)
 			continue
@@ -267,7 +423,7 @@ func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotatio
 			lastErr = ctx.Err()
 			continue
 		}
-		if ip2, err2 := clashProbeEgressIP(ctx, active, m.EgressIPURL(), 8*time.Second); err2 == nil {
+		if ip2, err2 := clashProbeEgressIP(ctx, proxyURL, m.EgressIPURL(), 8*time.Second); err2 == nil {
 			ip = ip2
 		}
 		if isLocalEgressIP(ip) {
@@ -284,8 +440,8 @@ func (m *Manager) RotateEgress(ctx context.Context, reason string) (ClashRotatio
 		return out, nil
 	}
 	// 全部失败：尽力恢复原节点（仅当它是安全节点时），保持原来的出口。
-	if clashNodeSafe(group.Now, proxies, 0) && group.Now != "" {
-		_ = client.selectNode(ctx, groupName, group.Now)
+	if clashNodeSafe(groupEntry.Now, proxies, 0) && groupEntry.Now != "" {
+		_ = client.selectNode(ctx, groupName, groupEntry.Now)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("没有可切换的安全节点")

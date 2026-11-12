@@ -156,7 +156,8 @@ type Engine struct {
 	egressRecovery sync.Map // taskID -> *egressRecovery
 	egressMu       sync.Mutex
 	egressHits     map[string][]time.Time
-	egressRotating bool
+	// egressRotating 按任务出口组串行：同组只允许一个切换，不同组可以并行。
+	egressRotating map[string]bool
 	// rotateEgressHook 仅测试注入：默认走 e.m.RotateEgress（真实 Clash 控制器）。
 	rotateEgressHook func(context.Context, string) (ClashRotation, error)
 
@@ -2140,7 +2141,7 @@ func (e *Engine) warnIfDirectEgress(t *Task) {
 	if _, seen := e.egressWarn.LoadOrStore(t.ID, true); seen {
 		return
 	}
-	if strings.TrimSpace(e.m.ProxyAddr()) != "" {
+	if strings.TrimSpace(e.m.ProxyAddrForTask(t.ID)) != "" {
 		return
 	}
 	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",

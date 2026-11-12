@@ -84,6 +84,8 @@ export function useSettingsState() {
   const [clashSecretInput, setClashSecretInput] = React.useState("");
   const [clashSecretSet, setClashSecretSet] = React.useState(false);
   const [clashGroup, setClashGroup] = React.useState("");
+  const [clashGroups, setClashGroups] = React.useState("");
+  const [clashTaskEndpoints, setClashTaskEndpoints] = React.useState("");
   const [clashAuto, setClashAuto] = React.useState(true);
   const [clashCooldown, setClashCooldown] = React.useState("120");
   const [clashStatus, setClashStatus] = React.useState<ClashEgressStatus | null>(null);
@@ -198,6 +200,8 @@ export function useSettingsState() {
     setClashApiURL(s.clash_api_url ?? "");
     setClashSecretSet(!!s.clash_api_secret_set);
     setClashGroup(s.clash_proxy_group ?? "");
+    setClashGroups(s.clash_proxy_groups ?? "");
+    setClashTaskEndpoints(s.clash_task_endpoints ?? "");
     setClashAuto(s.clash_auto_rotate !== false);
     setClashCooldown(String(s.clash_rotate_cooldown_seconds ?? 120));
     setClashStatus(s.clash_status ?? null);
@@ -893,6 +897,8 @@ export function useSettingsState() {
       .setSettings({
         clash_api_url: clashApiURL.trim(),
         clash_proxy_group: clashGroup.trim(),
+        clash_proxy_groups: clashGroups.trim(),
+        clash_task_endpoints: clashTaskEndpoints.trim(),
         clash_auto_rotate: clashAuto,
         clash_rotate_cooldown_seconds: cooldown,
         ...(clashSecretInput.trim() ? { clash_api_secret: clashSecretInput.trim() } : {}),
@@ -994,6 +1000,10 @@ export function useSettingsState() {
     clashSecretSet,
     clashGroup,
     setClashGroup,
+    clashGroups,
+    setClashGroups,
+    clashTaskEndpoints,
+    setClashTaskEndpoints,
     clashAuto,
     setClashAuto,
     clashCooldown,

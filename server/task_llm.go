@@ -580,7 +580,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
 	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
-	wk.SetProxyFunc(s.m.ProxySnapshot)
+	wk.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
 	wk.SetExecService(s.m.Executions())              // P13 长任务托管执行(活过 run;nil=工具显式报未接线)
@@ -594,7 +594,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetNoaEnabled(s.m.NoaCompactionEnabled)              // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
-	pl.SetProxyFunc(s.m.ProxySnapshot)
+	pl.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	pl.SetWebSearch(s.webSearchFor("planner"))
 	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
 	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界视图 / 全量
@@ -615,13 +615,14 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
-	main.SetProxyFunc(s.m.ProxySnapshot)
+	main.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork) // steer_work：人对运行中 work 实时纠偏
 	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。
-	// 真正的安全校验（只选非 DIRECT 节点、验证出口 IP 变化、失败不直连）在 Manager.RotateEgress。
+	// 任务只切自己绑定的 Selector 组，不会移动其它任务的出口 IP；真正的安全校验
+	// （只选非 DIRECT 节点、验证出口 IP 变化、失败不直连）在 Manager.RotateEgressForTask。
 	rotateEgress := func(reason string) (string, error) {
-		res, err := s.m.RotateEgress(s.ctx, reason)
+		res, err := s.m.RotateEgressForTask(s.ctx, t.ID, reason)
 		if err != nil {
 			return "", err
 		}

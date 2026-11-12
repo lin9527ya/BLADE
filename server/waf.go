@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"regexp"
@@ -185,12 +186,23 @@ func (e *Engine) observeEgress(t *Task, r db.Activity) {
 	}
 	hits = append(hits, now)
 	e.egressHits[key] = hits
-	if len(hits) < egressHitThreshold || e.egressRotating {
+	if len(hits) < egressHitThreshold {
+		e.egressMu.Unlock()
+		return
+	}
+	group := e.m.TaskEgressGroup(t.ID)
+	if group == "" {
+		group = "__default__"
+	}
+	if e.egressRotating == nil {
+		e.egressRotating = map[string]bool{}
+	}
+	if e.egressRotating[group] {
 		e.egressMu.Unlock()
 		return
 	}
 	delete(e.egressHits, key)
-	e.egressRotating = true
+	e.egressRotating[group] = true
 	e.egressMu.Unlock()
 
 	// 用任务的运行时 ctx：任务停掉/进程关停时不该再继续切出口（此前传
@@ -199,11 +211,13 @@ func (e *Engine) observeEgress(t *Task, r db.Activity) {
 	goSafe("engine/egress-rotate", nil, func() {
 		defer func() {
 			e.egressMu.Lock()
-			e.egressRotating = false
+			delete(e.egressRotating, group)
 			e.egressMu.Unlock()
 		}()
 		reason := fmt.Sprintf("%s（%s）", sig.label(), host)
-		rotate := e.m.RotateEgress
+		rotate := func(ctx context.Context, reason string) (ClashRotation, error) {
+			return e.m.RotateEgressForTask(ctx, t.ID, reason)
+		}
 		if e.rotateEgressHook != nil {
 			rotate = e.rotateEgressHook
 		}

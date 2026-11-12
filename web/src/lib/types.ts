@@ -1813,6 +1813,7 @@ export interface ClashEgressStatus {
   configured: boolean;
   auto: boolean;
   group?: string;
+  groups?: string[];
   node?: string;
   egress_ip?: string;
   rotated_at?: string;
@@ -1870,6 +1871,8 @@ export interface Settings {
   clash_api_secret_set?: boolean;
   clash_api_secret?: string;
   clash_proxy_group?: string;
+  clash_proxy_groups?: string;
+  clash_task_endpoints?: string;
   clash_auto_rotate?: boolean;
   clash_rotate_cooldown_seconds?: number;
   clash_status?: ClashEgressStatus;
