@@ -514,10 +514,12 @@ export function useSessionsState(taskId: string) {
     // 全局播报/任务链接的 ?session=intent:<id> 深链：首屏定位到产生该节点的会话。
     // 片段/槽位/意图 key 与 approval 深链共用同一套还原逻辑；用户随后点其它会话
     // 不受影响（这里只定位一次，不像 approval focus 那样持续压住选择）。
+    let initialFocusID = "";
     if (typeof window !== "undefined") {
       const urlSession = new URLSearchParams(window.location.search).get("session")?.trim();
       const located = urlSession ? sessionFromFocusKey(urlSession) : undefined;
       if (located) {
+        initialFocusID = located.id;
         setActiveId(located.id);
         setLocatedSession({ taskId, session: located });
       }
@@ -598,7 +600,9 @@ export function useSessionsState(taskId: string) {
           bootKey = mainSessionKey(ms.current);
           if (bootKey !== mainSessionKey(0)) loadingKeysRef.current.delete(mainSessionKey(0));
           loadingKeysRef.current.add(bootKey);
-          setActiveId(mainSessionId(ms.current));
+          // 深链定位优先于「默认打开当前主会话」：mainSessions 的异步回包
+          // 不能在用户从全局播报点进来后把焦点抢回主 Agent。
+          if (!initialFocusID) setActiveId(mainSessionId(ms.current));
           patchStore(bootKey, (s) => ({ ...s, loading: true }));
           return api.activityHistory(taskId, bootKey, 0, PAGE, bootRequest.signal);
         })
