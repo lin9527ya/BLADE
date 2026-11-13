@@ -155,7 +155,15 @@ type ToolSet struct {
 	ts              *db.ExplorationStore
 	worker          string
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
-	clock           TaskClock
+	// runDir is the current run's task-scoped working directory. Domain tools
+	// that stage small helper scripts (http_probe/js_audit/diff/contract/poc)
+	// write here; empty = tool unavailable rather than writing to /tmp.
+	runDir string
+	// Native HTTP tools (http_request/session_login) use the same egress proxy
+	// and CA as Bash/WebFetch so traffic capture and per-task egress still apply.
+	egressProxy string
+	egressCA    string
+	clock       TaskClock
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops the coverage block, the
@@ -181,6 +189,9 @@ type ToolSet struct {
 	GoalMet       bool
 	Reason        string
 	writes        WriteCounts
+	// evidenceVerifyMode controls the evidence gate. The zero value would be
+	// Off, so NewToolSet initializes Warn; Block is opt-in from the host.
+	evidenceVerifyMode EvidenceVerifyMode
 	// killWork, if set, terminates a running work by intent id (engine callback,
 	// wired by the planner). nil = the kill_work tool reports unavailable.
 	killWork func(intentID int64) error
@@ -328,8 +339,16 @@ func (w WriteCounts) String() string {
 func (t *ToolSet) Writes() WriteCounts { return t.writes }
 
 func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
-	return &ToolSet{ts: ts, worker: worker}
+	return &ToolSet{ts: ts, worker: worker, evidenceVerifyMode: EvidenceVerifyWarn}
 }
+
+// SetRunDir binds the current run's working directory for script-staging tools.
+func (t *ToolSet) SetRunDir(dir string) { t.runDir = strings.TrimSpace(dir) }
+
+// SetEvidenceVerifyMode changes the evidence gate for this tool set. Warn is the
+// default; Block is deliberately opt-in to avoid rejecting legitimate non-HTTP
+// evidence while the matching heuristics are being tuned.
+func (t *ToolSet) SetEvidenceVerifyMode(mode EvidenceVerifyMode) { t.evidenceVerifyMode = mode }
 
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
@@ -2637,6 +2656,33 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 				"若目前只有推断、还拿不出可复现的证据，把 severity 降到 medium/low 并在 evidence 里写清依据，"+
 				"或先用 close_candidate 记存疑——不要用高危 + 空证据去占报告的头条", a.Severity)), nil
 		}
+		// 证据质量闸：默认 Warn；Block 由宿主设置。长度/纯版本匹配属于可拒绝项，
+		// 缺少机械信号先告警（TCP/二进制/自定义协议不能一律判死）。
+		gate := assessFindingEvidence(severity, a.Evidence)
+		verifyNote := ""
+		if gate.Block != "" && t.evidenceVerifyMode == EvidenceVerifyBlock {
+			return actool.Errorf(gate.Block), nil
+		}
+		if gate.Warn != "" {
+			verifyNote = "⚠️ " + gate.Warn
+		}
+		if gate.Block != "" && verifyNote == "" {
+			verifyNote = "⚠️ " + gate.Block
+		}
+		// 证据逐字回验：台账来自本次 run 实际看到的工具回显。默认 Warn；
+		// Block 档只拒绝 critical/high 且完全没有原文出处的证据。
+		if ledger, _ := ToolOutputsFromContext(ctx); ledger != nil && t.evidenceVerifyMode != EvidenceVerifyOff && strings.TrimSpace(a.Evidence) != "" {
+			matched, total := ledger.VerifyEvidence(a.Evidence)
+			switch evidenceVerdict(matched, total) {
+			case "none":
+				if t.evidenceVerifyMode == EvidenceVerifyBlock && (severity == "critical" || severity == "high") {
+					return actool.Errorf(fmt.Sprintf("证据逐字回验未通过：evidence 里没有任何一行能在本次工具输出中找到出处（已比对 %d 行有效内容）。critical/high 必须带本会话真实命令输出：请把工具回显中的关键行原样粘进 evidence，或降为 medium，或改用 record_fact 记为待验证线索。", total)), nil
+				}
+				verifyNote = strings.TrimSpace(verifyNote + " ⚠️ 证据出处核对：0/" + fmt.Sprint(total) + " 行可在本次工具输出中逐字找到——报告读者将无法复核，建议补粘命令与输出原文。")
+			case "partial":
+				verifyNote = strings.TrimSpace(verifyNote + " ⚠️ 证据出处核对：仅 " + fmt.Sprint(matched) + "/" + fmt.Sprint(total) + " 行可在本次工具输出中逐字找到，其余为转述。")
+			}
+		}
 		// Auto-binding off: ignore the evidence params instead of rejecting the call.
 		// stripTrafficParameters already removes them from the advertised schema, but
 		// models routinely emit fields anyway — failing here would discard a confirmed
@@ -2699,9 +2745,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		result := struct {
 			*db.RecordedFinding
-			EvidenceStatus string `json:"evidence_status"`
-			EvidenceNote   string `json:"evidence_note,omitempty"`
-		}{RecordedFinding: recorded, EvidenceStatus: "bound"}
+			EvidenceStatus     string `json:"evidence_status"`
+			EvidenceNote       string `json:"evidence_note,omitempty"`
+			EvidenceVerifyNote string `json:"evidence_verify_note,omitempty"`
+		}{RecordedFinding: recorded, EvidenceStatus: "bound", EvidenceVerifyNote: verifyNote}
 		if len(recorded.Traffic.Bindings) == 0 {
 			result.EvidenceStatus = "not_bound"
 			result.EvidenceNote = "漏洞已保存，未绑定流量。TCP/无包情形可正常继续；若已有核实的 HTTP 流量，请用可用的 bind_finding_traffic 或漏洞页面补绑，再完成证据交接。不要重复创建漏洞。"
@@ -2710,7 +2757,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			}
 		}
 		raw, _ := json.Marshal(result)
-		return actool.Text(fmt.Sprintf("finding recorded: %d\n%s", recorded.NodeID, raw)), nil
+		text := fmt.Sprintf("finding recorded: %d\n%s", recorded.NodeID, raw)
+		if verifyNote != "" {
+			text += "\n" + verifyNote
+		}
+		return actool.Text(text), nil
 	})
 }
 
@@ -4490,6 +4541,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// 只读知识查询留在规划层：开局就能按资产/指纹查已有打法与 CVE，避免重复探测。
 		// 写回打法（record_playbook / feedback）归 playbook agent 与 worker。
 		t.lookupPlaybooks(), t.recordPlaybookFeedback(), t.lookupCVEs(),
+		// SRC 领域工具（只组命令/落脚本，规划层可用；真正执行仍由 worker/Bash 完成）。
+		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),
+		t.diffResponses(), t.apiContractTool(),
 		// record_playbook 只作工具目录保留（defaultUnbound）：默认绑在 playbook agent，
 		// 需要时可在工具页改绑；不放给 planner 默认使用。
 		t.recordPlaybook(),

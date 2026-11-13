@@ -122,7 +122,13 @@ func shellCommandOf(toolName string, input []byte) string {
 		}
 		_ = json.Unmarshal(input, &in)
 		return strings.TrimSpace(in.Target + " " + strings.Join(in.Args, " "))
-	case "WebFetch":
+	case "WebFetch", "http_request":
+		var in struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return in.URL
+	case "session_login":
 		var in struct {
 			URL string `json:"url"`
 		}

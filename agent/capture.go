@@ -37,6 +37,11 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
+	ledger, _ := ToolOutputsFromContext(ctx)
+	if ledger == nil {
+		ledger = NewToolOutputLedger()
+		ctx = WithToolOutputs(ctx, ledger, EvidenceVerifyWarn)
+	}
 	var reason harness.TerminalReason
 	rec := func(r db.Activity) {
 		if r.Kind == "text" || r.Kind == "tool_result" {
@@ -106,6 +111,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 			flush()
 			out := blocksText(ev.ToolResult.Content)
+			ledger.Add(out)
 			lastTool.done(ev.ToolResult.ToolUseID)
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,

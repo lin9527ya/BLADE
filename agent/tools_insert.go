@@ -780,6 +780,11 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// P13 长任务执行：进程活过本次 run、输出落盘、状态进台账。未接线（nil 服务）
 		// 时工具返回可读拒绝，绑定可见性与目录 seed 不受影响。
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.lootUpload(), t.lootDownload(), t.footholdExec(), t.tunnelOpen(), t.cancelExecution(),
+		// SRC 领域工具（Pojun 借鉴第一批）：只组命令/落脚本，执行仍走 Bash，
+		// 因而自动经过流量录制、审批与出口代理。
+		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),
+		t.httpRequest(), t.sessionLogin(),
+		t.diffResponses(), t.apiContractTool(),
 		// OAST（带外回调）：盲打类漏洞的唯一确认手段；未配置时由 server 从工具面移除。
 		t.oastMint(), t.oastPoll(),
 		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
@@ -818,6 +823,10 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.mergeFindings(),
 		// 出口被 WAF 封禁时切换 Clash 节点。
 		t.rotateEgressTool(),
+		// SRC 领域工具（只读/组命令，human-in-the-loop 也可用）。
+		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),
+		t.httpRequest(), t.sessionLogin(),
+		t.diffResponses(), t.apiContractTool(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
 		t.verifyCredential(),

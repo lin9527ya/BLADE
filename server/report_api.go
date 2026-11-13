@@ -256,12 +256,29 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		dataGaps = append(dataGaps, "凭据尝试台账读取失败：报告不含对账号的尝试记录")
 	}
 
+	// 目标进度：报告必须如实呈现 met/unmet/abandoned。读失败时记数据缺项，
+	// 不伪造「全部达成」。
+	var reportGoals []report.GoalNote
+	goals, gerr := t.Store.ListByKind(db.KindGoal, 1000)
+	if gerr != nil {
+		log.Printf("[report] 任务 %s 目标列表读取失败：%v", t.ID, gerr)
+		dataGaps = append(dataGaps, "目标列表读取失败：报告不含目标达成情况")
+	} else {
+		for _, n := range goals {
+			var p struct {
+				Text      string `json:"text"`
+				VulnClass string `json:"vulnclass"`
+			}
+			_ = json.Unmarshal(n.Payload, &p)
+			reportGoals = append(reportGoals, report.GoalNote{Text: p.Text, VulnClass: p.VulnClass, State: n.State})
+		}
+	}
 	// 展示编号：任务内序号 + 全局 id。正文/附录写成「#3（id 659）」，
 	// 工具与 API 寻址仍用全局 id（同一数字在两种编号下含义不同）。
 	nodeOrd, _ := t.Store.NodeOrdinals(db.KindFinding, 0)
 	intentOrd, _ := t.Store.IntentOrdinals(0)
 	md := report.Markdown(report.Input{
-		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
+		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(), Goals: reportGoals,
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		FindingReports: findingReports, FindingReportStale: findingReportStale, Scope: scope, Duplicates: duplicates, Truncated: truncated,
 		DataGaps:         dataGaps,

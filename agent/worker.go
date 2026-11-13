@@ -614,6 +614,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	}
 	proxyAddr, proxyCA := w.proxySnapshot()
 	tsx := NewToolSet(ts, name)
+	tsx.SetEgressProxy(proxyAddr, proxyCA)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
 	coverageEnabled := as == nil || as.CoverageEnabled(taskID)
@@ -650,6 +651,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// worker 有。仅【全局态势 overview】留在启动 user 消息里——它可降级、容忍 stale，压掉无碍。
 	// 本次意图的专属工作目录 <workDir>/tasks/<taskID>/i<intentID>，引擎侧先建好。
 	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
+	tsx.SetRunDir(runDir)
 	// 槽位会话：worker 名字即 work#N。任务内的所有意图都在同一槽位会话里顺序执行，
 	// transcript/system 前缀因此可以跨意图复用（缓存命中的前提）。
 	slot := workerSlotNumber(name)

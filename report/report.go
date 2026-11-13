@@ -18,6 +18,10 @@ type Input struct {
 	Title       string
 	Goal        string
 	GeneratedAt time.Time
+	// Goals is the task's goal nodes with their current state. The report must
+	// state met/unmet/abandoned progress honestly instead of implying the task
+	// finished because it produced a document.
+	Goals       []GoalNote
 	AssetCounts map[string]int
 	Findings    []*db.Node
 	// Unconfirmed lists findings that did not pass the confirmation gate
@@ -303,6 +307,13 @@ func nodeLabel(n *db.Node) string {
 	return ""
 }
 
+// GoalNote is one task goal in the report's "目标达成情况" section.
+type GoalNote struct {
+	Text      string
+	VulnClass string
+	State     string
+}
+
 type findingView struct {
 	VulnClass string
 	Name      string
@@ -499,6 +510,41 @@ func Markdown(in Input) string {
 		fmt.Fprintf(&b, "%s %d", t, in.AssetCounts[t])
 	}
 	b.WriteString("\n\n")
+
+	// 目标达成情况：交付物必须如实写清 met/unmet/abandoned，不能因为报告生成成功
+	// 就暗示任务完成。没有 goal 节点时保留旧行为，不伪造进度。
+	if len(in.Goals) > 0 {
+		met, abandoned := 0, 0
+		for _, g := range in.Goals {
+			switch g.State {
+			case "met":
+				met++
+			case "abandoned":
+				abandoned++
+			}
+		}
+		fmt.Fprintf(&b, "## 目标达成情况\n\n")
+		fmt.Fprintf(&b, "- 目标进度：**%d/%d** 已达成", met, len(in.Goals))
+		if abandoned > 0 {
+			fmt.Fprintf(&b, "，**%d** 个已放弃", abandoned)
+		}
+		b.WriteString("\n\n")
+		for i, g := range in.Goals {
+			label := "未达成"
+			switch g.State {
+			case "met":
+				label = "已达成"
+			case "abandoned":
+				label = "已放弃"
+			}
+			class := ""
+			if strings.TrimSpace(g.VulnClass) != "" {
+				class = "（" + g.VulnClass + "）"
+			}
+			fmt.Fprintf(&b, "%d. [%s] %s%s\n", i+1, label, nz(g.Text, "（未填写目标）"), class)
+		}
+		b.WriteString("\n")
+	}
 
 	// 战果（利用成功之后的产物）。排在「发现」之前：它是"拿到了什么"的直接交代——
 	// 发现说的是"哪里有洞"，战果说的是"这些洞已经打通到什么程度"。

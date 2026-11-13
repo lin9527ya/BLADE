@@ -596,6 +596,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
+	tsx.SetEgressProxy(proxyAddr, proxyCA)
 	// wireToolSet 把「本轮」依赖与轮级状态装到**本轮实际被调用的**那个 ToolSet 上。
 	//
 	// 热会话复用时，模型调用的工具闭包绑定的是热会话首轮的 ToolSet（agentcore.Session
@@ -658,6 +659,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
+	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
 	if p.wantConstraints() {
