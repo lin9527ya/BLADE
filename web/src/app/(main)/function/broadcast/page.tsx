@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePolling } from "@/hooks/use-polling";
-import { api } from "@/lib/api";
+import { api, sseUrl } from "@/lib/api";
 import {
   BROADCAST_KIND_CHIP,
   BROADCAST_KIND_LABEL,
@@ -37,6 +37,61 @@ import { cn } from "@/lib/utils";
 
 const PAGE_SIZES = [30, 50, 100];
 const POLL_MS = 8000;
+const SSE_FALLBACK_MS = 30_000;
+
+const STATE_OPTIONS = [
+  { value: "", label: "全部状态" },
+  { value: "open", label: "待领" },
+  { value: "running", label: "执行中" },
+  { value: "paused", label: "已暂停" },
+  { value: "done", label: "已完成" },
+  { value: "confirmed", label: "已确认" },
+  { value: "dismissed", label: "已排除" },
+  { value: "open_proof_gap", label: "待补证" },
+  { value: "negative", label: "已测（未发现）" },
+  { value: "no_output", label: "无产出" },
+  { value: "deleted", label: "已删除" },
+  { value: "active", label: "在手" },
+  { value: "lost", label: "已丢失" },
+  { value: "cleaned", label: "已清理" },
+];
+
+const FINDING_STATUS_OPTIONS = [
+  { value: "", label: "全部发现状态" },
+  { value: "pending", label: "待处理" },
+  { value: "in_progress", label: "处理中" },
+  { value: "confirmed", label: "已确认" },
+  { value: "resolved", label: "已处理" },
+  { value: "fixed", label: "已修复" },
+  { value: "ruled_out", label: "已排除" },
+  { value: "open_proof_gap", label: "待补证" },
+  { value: "false_positive", label: "误报" },
+  { value: "ignored", label: "忽略" },
+];
+
+const TASK_STATE_OPTIONS = [
+  { value: "", label: "全部任务状态" },
+  { value: "running", label: "运行中" },
+  { value: "paused", label: "已暂停" },
+  { value: "queued", label: "排队中" },
+  { value: "done", label: "已完成" },
+  { value: "failed", label: "失败" },
+  { value: "timeout", label: "已超时" },
+];
+
+const TIME_RANGE_OPTIONS = [
+  { value: "all", label: "全部时间", seconds: 0 },
+  { value: "1h", label: "最近 1 小时", seconds: 3600 },
+  { value: "24h", label: "最近 24 小时", seconds: 86400 },
+  { value: "7d", label: "最近 7 天", seconds: 604800 },
+  { value: "30d", label: "最近 30 天", seconds: 2592000 },
+];
+
+function timeRangeSince(range: string): number | undefined {
+  const option = TIME_RANGE_OPTIONS.find((o) => o.value === range);
+  if (!option || option.seconds <= 0) return undefined;
+  return Math.floor(Date.now() / 1000) - option.seconds;
+}
 
 const timeFmt = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
@@ -171,7 +226,13 @@ export default function GlobalBroadcastPage() {
   const [query, setQuery] = React.useState("");
   const [order, setOrder] = React.useState<"asc" | "desc">("desc");
   const [taskFilter, setTaskFilter] = React.useState("");
+  const [stateFilter, setStateFilter] = React.useState("");
+  const [findingStatus, setFindingStatus] = React.useState("");
+  const [taskState, setTaskState] = React.useState("");
+  const [timeRange, setTimeRange] = React.useState("all");
   const [live, setLive] = React.useState(true);
+  const [sseLive, setSseLive] = React.useState(false);
+  const [refreshTick, setRefreshTick] = React.useState(0);
   const [items, setItems] = React.useState<GlobalBroadcastItem[]>([]);
   const [total, setTotal] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
@@ -205,7 +266,36 @@ export default function GlobalBroadcastPage() {
 
   usePolling(() => setNow(Date.now()), 30_000);
 
-  const kindsKey = kinds.join(",");
+  // 全局 SSE：服务端按节点 id 追库，只推新节点；浏览器收到后按当前筛选重拉。
+  // SSE 断开时保留 8 秒轮询兜底，SSE 正常时降到 30 秒一次心跳校验。
+  React.useEffect(() => {
+    if (!live) {
+      setSseLive(false);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const es = new EventSource(sseUrl("/api/broadcast/stream"));
+    es.onopen = () => {
+      setSseLive(true);
+      setRefreshTick((v) => v + 1); // 连上后补一次，覆盖首屏请求与建流之间的空隙
+    };
+    es.onerror = () => setSseLive(false);
+    const bump = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setRefreshTick((v) => v + 1), 300);
+    };
+    es.addEventListener("node", bump);
+    return () => {
+      if (timer) clearTimeout(timer);
+      es.removeEventListener("node", bump);
+      es.close();
+    };
+  }, [live]);
+
+  const stateFilterKey = stateFilter;
+  const findingStatusKey = findingStatus;
+  const taskStateKey = taskState;
+  const timeRangeKey = timeRange;
   usePolling(
     async (alive) => {
       const req = ++requestRef.current;
@@ -215,6 +305,10 @@ export default function GlobalBroadcastPage() {
           page,
           size,
           kinds,
+          states: stateFilter ? [stateFilter] : undefined,
+          findingStatuses: findingStatus ? [findingStatus] : undefined,
+          taskStates: taskState ? [taskState] : undefined,
+          since: timeRangeSince(timeRange),
           q: query,
           order,
           task: taskFilter || undefined,
@@ -231,12 +325,38 @@ export default function GlobalBroadcastPage() {
         if (alive() && req === requestRef.current) setLoading(false);
       }
     },
-    live ? POLL_MS : 0,
-    [page, size, kindsKey, query, order, taskFilter, live],
+    live ? (sseLive ? SSE_FALLBACK_MS : POLL_MS) : 0,
+    [
+      page,
+      size,
+      kinds.join(","),
+      query,
+      order,
+      taskFilter,
+      stateFilterKey,
+      findingStatusKey,
+      taskStateKey,
+      timeRangeKey,
+      live,
+      sseLive,
+      refreshTick,
+    ],
   );
 
   const toggleKind = (kind: ExploreKind) => {
     setKinds((prev) => (prev.includes(kind) ? prev.filter((k) => k !== kind) : [...prev, kind]));
+    setPage(1);
+  };
+
+  const resetFilters = () => {
+    setKinds([]);
+    setStateFilter("");
+    setFindingStatus("");
+    setTaskState("");
+    setTimeRange("all");
+    setTaskFilter("");
+    setQueryInput("");
+    setQuery("");
     setPage(1);
   };
 
@@ -245,7 +365,18 @@ export default function GlobalBroadcastPage() {
     const req = ++requestRef.current; // 让在途轮询的响应失效，触发一次新的读取
     setLoading(true);
     void api
-      .globalBroadcast({ page, size, kinds, q: query, order, task: taskFilter || undefined })
+      .globalBroadcast({
+        page,
+        size,
+        kinds,
+        states: stateFilter ? [stateFilter] : undefined,
+        findingStatuses: findingStatus ? [findingStatus] : undefined,
+        taskStates: taskState ? [taskState] : undefined,
+        since: timeRangeSince(timeRange),
+        q: query,
+        order,
+        task: taskFilter || undefined,
+      })
       .then((r) => {
         if (req !== requestRef.current) return;
         setItems(r.items);
@@ -273,7 +404,7 @@ export default function GlobalBroadcastPage() {
         <div className="flex items-center gap-3 text-muted-foreground text-sm">
           <span className="tabular-nums">{loading ? "加载中…" : `${items.length} / ${total} 条`}</span>
           <span className="flex items-center gap-2">
-            实时
+            {live ? (sseLive ? "SSE 实时" : "轮询") : "已暂停"}
             <Switch checked={live} onCheckedChange={setLive} aria-label="实时刷新" />
           </span>
           <Button variant="outline" size="icon" className="size-8" onClick={manualRefresh} disabled={loading}>
@@ -354,6 +485,83 @@ export default function GlobalBroadcastPage() {
                 {BROADCAST_KIND_LABEL[kind] ?? kind}
               </Button>
             ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={stateFilter || "all"}
+              onValueChange={(v) => {
+                setStateFilter(v === "all" ? "" : v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value || "all"} value={o.value || "all"}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={findingStatus || "all"}
+              onValueChange={(v) => {
+                setFindingStatus(v === "all" ? "" : v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FINDING_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value || "all"} value={o.value || "all"}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={taskState || "all"}
+              onValueChange={(v) => {
+                setTaskState(v === "all" ? "" : v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TASK_STATE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value || "all"} value={o.value || "all"}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={timeRange}
+              onValueChange={(v) => {
+                setTimeRange(v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TIME_RANGE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={resetFilters}>
+              重置筛选
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">

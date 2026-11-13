@@ -38,17 +38,31 @@ func TestGlobalNodesPageJoinsTasksAndMapsSession(t *testing.T) {
 VALUES ($1,$2,$3,'yields')`, taskA.ExplorationID, intentID, factID); err != nil {
 		t.Fatal(err)
 	}
+	derivedID, err := storeA.AddNode(KindFact, map[string]any{"summary": "needle-derived"}, 0, "confirmed", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeA.Link(factID, RelDerivedFrom, derivedID); err != nil {
+		t.Fatal(err)
+	}
 	storeB := d.Exploration(taskB.ExplorationID)
 	if _, err := storeB.AddNode(KindFact, map[string]any{"summary": "needle-fact-b"}, 0, "confirmed", "worker", nil); err != nil {
 		t.Fatal(err)
 	}
 
-	rows, total, err := d.GlobalNodesPage(NodeFilter{Query: "needle-fact"}, 0, 1, 50)
+	rows, total, err := d.GlobalNodesPage(GlobalNodeFilter{Query: "needle-fact"}, 0, 1, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if total != 2 || len(rows) != 2 {
 		t.Fatalf("cross-task query: total=%d rows=%+v, want A+B", total, rows)
+	}
+	derivedRows, derivedTotal, err := d.GlobalNodesPage(GlobalNodeFilter{Query: "needle-derived"}, 0, 1, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derivedTotal != 1 || len(derivedRows) != 1 || derivedRows[0].SessionKey != "intent:"+i64s(intentID) {
+		t.Fatalf("derived fact must inherit the intent session: total=%d rows=%+v", derivedTotal, derivedRows)
 	}
 	var sawA, sawB bool
 	for _, row := range rows {
@@ -76,7 +90,7 @@ VALUES ($1,$2,$3,'yields')`, taskA.ExplorationID, intentID, factID); err != nil 
 	if _, err := d.Exec(`UPDATE tasks SET deleted_at=now() WHERE id=$1`, taskB.ID); err != nil {
 		t.Fatal(err)
 	}
-	rows, total, err = d.GlobalNodesPage(NodeFilter{Query: "needle-fact"}, 0, 1, 50)
+	rows, total, err = d.GlobalNodesPage(GlobalNodeFilter{Query: "needle-fact"}, 0, 1, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +100,7 @@ VALUES ($1,$2,$3,'yields')`, taskA.ExplorationID, intentID, factID); err != nil 
 	if _, err := d.Exec(`UPDATE tasks SET paused=true WHERE id=$1`, taskA.ID); err != nil {
 		t.Fatal(err)
 	}
-	rows, _, err = d.GlobalNodesPage(NodeFilter{Query: "needle-fact"}, 0, 1, 50)
+	rows, _, err = d.GlobalNodesPage(GlobalNodeFilter{Query: "needle-fact"}, 0, 1, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,17 +130,26 @@ func TestGlobalNodesPageConfirmedFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, total, err := d.GlobalNodesPage(NodeFilter{Query: "needle-pending", OnlyConfirmedFindings: true}, 0, 1, 50)
+	rows, total, err := d.GlobalNodesPage(GlobalNodeFilter{Query: "needle-pending", OnlyConfirmedFindings: true}, 0, 1, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if total != 0 || len(rows) != 0 {
 		t.Fatalf("pending finding must be hidden: total=%d rows=%+v", total, rows)
 	}
+	pendingRows, pendingTotal, err := d.GlobalNodesPage(GlobalNodeFilter{
+		Query: "needle-pending", FindingStatuses: []string{FindingPending},
+	}, 0, 1, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingTotal != 1 || len(pendingRows) != 1 || pendingRows[0].Node.FindingStatus != FindingPending {
+		t.Fatalf("finding_status filter must expose pending explicitly: total=%d rows=%+v", pendingTotal, pendingRows)
+	}
 	if _, err := d.SetFindingStatus(rec.FindingID, FindingConfirmed); err != nil {
 		t.Fatal(err)
 	}
-	rows, total, err = d.GlobalNodesPage(NodeFilter{Query: "needle-pending", OnlyConfirmedFindings: true}, 0, 1, 50)
+	rows, total, err = d.GlobalNodesPage(GlobalNodeFilter{Query: "needle-pending", OnlyConfirmedFindings: true}, 0, 1, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

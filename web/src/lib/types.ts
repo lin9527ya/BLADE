@@ -850,9 +850,13 @@ export interface GlobalBroadcastQuery {
   size?: number;
   kinds?: ExploreKind[];
   states?: string[];
+  findingStatuses?: string[];
+  taskStates?: string[];
   q?: string;
   order?: "asc" | "desc";
   task?: string;
+  since?: number;
+  until?: number;
 }
 
 // 目标管理卡片用的目标(后端已把 payload 拆成 text/vulnclass)。

@@ -1363,9 +1363,13 @@ export const api = {
     q.set("size", String(query.size ?? 30));
     if (query.kinds?.length) q.set("kind", query.kinds.join(","));
     if (query.states?.length) q.set("state", query.states.join(","));
+    if (query.findingStatuses?.length) q.set("finding_status", query.findingStatuses.join(","));
+    if (query.taskStates?.length) q.set("task_state", query.taskStates.join(","));
     if (query.q?.trim()) q.set("q", query.q.trim());
     if (query.order === "asc") q.set("order", "asc");
     if (query.task) q.set("task", query.task);
+    if (query.since) q.set("since", String(query.since));
+    if (query.until) q.set("until", String(query.until));
     return get<GlobalBroadcastPage>(`/broadcast?${q.toString()}`).then((r) => ({
       items: arr(r.items),
       total: r.total ?? 0,
