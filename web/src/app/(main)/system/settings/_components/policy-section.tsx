@@ -58,6 +58,9 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     oastTokenSet,
     noiseLevel,
     saveNoiseLevel,
+    evidenceVerify,
+    savingEvidenceVerify,
+    saveEvidenceVerify,
     oastTokenInput,
     setOastTokenInput,
     oastDomain,
@@ -365,6 +368,39 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
           默认不约束；切到英文后，规约随系统提示词下发（只能改设置，改不掉那段规约），
           模型确需中文时会照用并在意图里说明理由。
           出站命令里出现汉字时，审批卡上会多一条「语言痕迹」的可检出性笔记（只标注，不拦）。
+        </p>
+      </SubBlock>
+
+      <SubBlock title="证据质量闸（反幻觉）" icon={<ScanSearchIcon className="size-4 text-muted-foreground" />}>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          `report_finding` 的证据会经过三档检查：critical/high 的最小篇幅、可机械复现的信号 （HTTP 状态码 / curl /
+          sqlmap / nuclei / 命令输出），以及本次运行工具回显的逐字出处。 纯版本/banner 匹配不会被当成高危证据。
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="档位" htmlFor="evidence-verify">
+            <Select
+              value={evidenceVerify}
+              onValueChange={(v) => {
+                if (!loaded || savingEvidenceVerify) return;
+                if (v === "off" || v === "warn" || v === "block") saveEvidenceVerify(v);
+              }}
+              disabled={!loaded || savingEvidenceVerify}
+            >
+              <SelectTrigger id="evidence-verify" className="w-96">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="warn">warn —— 只告警，保留发现（默认）</SelectItem>
+                <SelectItem value="block">block —— critical/high 关键证据不通过则拒收</SelectItem>
+                <SelectItem value="off">off —— 关闭证据闸</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          block 只拦截 critical/high：证据太短、只有版本匹配，或逐字回验完全没有出处时拒收；
+          TCP、二进制、自定义协议等没有 HTTP 信号时的机械校验会保留为非阻断提示。 当前档位对下一次 `report_finding`
+          生效。
         </p>
       </SubBlock>
 

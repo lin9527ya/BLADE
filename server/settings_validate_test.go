@@ -31,6 +31,7 @@ func TestValidateSettingsRequest(t *testing.T) {
 	bad := 0
 	badBudget := -1
 	badNoise := "loud"
+	badEvidence := "strict"
 	badBackend := "bing"
 	cases := []struct {
 		name string
@@ -41,6 +42,7 @@ func TestValidateSettingsRequest(t *testing.T) {
 		{"汇总周期为 0", settingsRequest{NotifyDigestMins: &bad}, "汇总周期"},
 		{"负预算", settingsRequest{CredentialBudget: &badBudget}, "凭据尝试预算"},
 		{"噪声档位非法", settingsRequest{OpsecNoise: &badNoise}, "opsec_noise_level"},
+		{"证据闸档位非法", settingsRequest{EvidenceVerify: &badEvidence}, "证据闸档位"},
 		{"未知搜索后端", settingsRequest{WebSearchBackend: &badBackend}, "未知的搜索后端"},
 	}
 	for _, tc := range cases {

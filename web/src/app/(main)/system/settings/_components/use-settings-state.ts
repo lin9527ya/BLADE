@@ -55,6 +55,8 @@ export function useSettingsState() {
   const [oastTokenInput, setOastTokenInput] = React.useState("");
   const [oastDomain, setOastDomain] = React.useState("requestrepo.com");
   const [noiseLevel, setNoiseLevel] = React.useState("normal");
+  const [evidenceVerify, setEvidenceVerify] = React.useState<"off" | "warn" | "block">("warn");
+  const [savingEvidenceVerify, setSavingEvidenceVerify] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
@@ -185,6 +187,9 @@ export function useSettingsState() {
     setOastTokenSet(!!s.oast_token_set);
     setOastDomain(s.oast_domain || "requestrepo.com");
     setNoiseLevel(s.opsec_noise_level === "quiet" ? "quiet" : "normal");
+    setEvidenceVerify(
+      s.finding_evidence_verify === "off" || s.finding_evidence_verify === "block" ? s.finding_evidence_verify : "warn",
+    );
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
@@ -653,6 +658,29 @@ export function useSettingsState() {
       .finally(() => setSavingOast(false));
   };
 
+  const saveEvidenceVerify = (v: "off" | "warn" | "block") => {
+    const prev = evidenceVerify;
+    setEvidenceVerify(v);
+    setSavingEvidenceVerify(true);
+    api
+      .setSettings({ finding_evidence_verify: v })
+      .then((next) => {
+        apply(next);
+        toast.success(
+          v === "block"
+            ? "已开启证据拦截：critical/high 的关键证据不通过将被拒收"
+            : v === "off"
+              ? "已关闭证据质量闸"
+              : "证据闸已切到告警模式",
+        );
+      })
+      .catch((e) => {
+        setEvidenceVerify(prev);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingEvidenceVerify(false));
+  };
+
   const toggleOast = (v: boolean) => {
     setOastEnabled(v); // optimistic
     setSavingOast(true);
@@ -1033,6 +1061,10 @@ export function useSettingsState() {
     oastTokenSet,
     noiseLevel,
     saveNoiseLevel,
+    evidenceVerify,
+    setEvidenceVerify,
+    savingEvidenceVerify,
+    saveEvidenceVerify,
     oastTokenInput,
     setOastTokenInput,
     oastDomain,

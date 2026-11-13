@@ -50,6 +50,13 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 			return fmt.Errorf("超预算处置必须是 allow / ask / deny")
 		}
 	}
+	if req.EvidenceVerify != nil {
+		switch strings.ToLower(strings.TrimSpace(*req.EvidenceVerify)) {
+		case "off", "warn", "block":
+		default:
+			return fmt.Errorf("证据闸档位必须是 off / warn / block")
+		}
+	}
 	if req.CORSAllowedOrigins != nil {
 		if utf8.RuneCountInString(strings.TrimSpace(*req.CORSAllowedOrigins)) > 500 {
 			return fmt.Errorf("CORS 来源列表过长（最多 500 字）")

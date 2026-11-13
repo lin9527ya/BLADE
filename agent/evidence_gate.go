@@ -13,6 +13,10 @@ const (
 	highEvidenceMinRunes     = 120
 )
 
+// EvidenceVerifyModeFn is wired by the host and read per report_finding call,
+// so changing the setting takes effect without rebuilding a hot session.
+var EvidenceVerifyModeFn func() EvidenceVerifyMode
+
 type evidenceGateResult struct {
 	Block string // Block 档才拒绝
 	Warn  string // Warn/Block 档都提示

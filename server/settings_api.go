@@ -111,6 +111,14 @@ func scopeHoursTZSetting(pg *db.DB) string {
 	return strings.TrimSpace(v)
 }
 
+func evidenceVerifySetting(pg *db.DB) agent.EvidenceVerifyMode {
+	v, ok, _ := pg.GetSetting(settingEvidenceVerify)
+	if !ok {
+		return agent.EvidenceVerifyWarn
+	}
+	return agent.EvidenceVerifyModeFromString(v)
+}
+
 func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
@@ -130,23 +138,24 @@ func (s *Server) settingsPayload() map[string]any {
 	proxyStatus := s.m.ProxyStatus()
 	clashCfg := s.m.ClashEgressConfig()
 	return map[string]any{
-		"traffic_capture":       s.m.TrafficEnabled(),
-		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
-		"agent_loot_exec":       s.m.pg.GetBool(settingLootExec, false),
-		"oast_enabled":          s.m.pg.GetBool(settingOASTEnabled, false),
-		"oast_token_set":        strings.TrimSpace(oastToken) != "", // 只回"是否已配"，绝不回显 token
-		"oast_domain":           oastDomain,
-		"opsec_noise_level":     noiseLevel(s.m.pg),
-		"agent_auto_retest":     s.m.pg.GetBool(settingAutoRetest, false),
-		"task_token_budget":     s.taskTokenBudget(),
-		"planner_bounded_view":  s.plannerBoundedView(),
-		"llm_record":            s.m.LLMRecordEnabled(),
-		"web_search_enabled":    on,
-		"web_search_backend":    backend,
-		"brave_key_set":         strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":        strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":      proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":          s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
+		"traffic_capture":         s.m.TrafficEnabled(),
+		"agent_traffic_binding":   s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"agent_loot_exec":         s.m.pg.GetBool(settingLootExec, false),
+		"oast_enabled":            s.m.pg.GetBool(settingOASTEnabled, false),
+		"oast_token_set":          strings.TrimSpace(oastToken) != "", // 只回"是否已配"，绝不回显 token
+		"oast_domain":             oastDomain,
+		"opsec_noise_level":       noiseLevel(s.m.pg),
+		"finding_evidence_verify": evidenceVerifySetting(s.m.pg).String(),
+		"agent_auto_retest":       s.m.pg.GetBool(settingAutoRetest, false),
+		"task_token_budget":       s.taskTokenBudget(),
+		"planner_bounded_view":    s.plannerBoundedView(),
+		"llm_record":              s.m.LLMRecordEnabled(),
+		"web_search_enabled":      on,
+		"web_search_backend":      backend,
+		"brave_key_set":           strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":          strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":        proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":            s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
 		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
 		// 全部候选都不可用、出口已阻断（**不会直连**）。
 		"global_proxy_pool":             strings.Join(proxyCfg.Candidates, "\n"),
@@ -295,6 +304,7 @@ type settingsRequest struct {
 	OastToken           *string `json:"oast_token"` // 只写：空串 = 清除
 	OastDomain          *string `json:"oast_domain"`
 	OpsecNoise          *string `json:"opsec_noise_level"`
+	EvidenceVerify      *string `json:"finding_evidence_verify"`
 	AgentAutoRetest     *bool   `json:"agent_auto_retest"`
 	TaskTokenBudget     *int64  `json:"task_token_budget"`
 	PlannerBoundedView  *bool   `json:"planner_bounded_view"` // 默认态势是否裁剪为有界视图
@@ -704,6 +714,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.OastDomain != nil {
 		pending[settingOASTDomain] = strings.TrimSpace(*req.OastDomain)
+	}
+	if req.EvidenceVerify != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.EvidenceVerify))
+		if mode != "off" && mode != "warn" && mode != "block" {
+			writeErr(w, 400, "finding_evidence_verify 只能是 off / warn / block")
+			return
+		}
+		pending[settingEvidenceVerify] = mode
 	}
 	if req.TrafficCapture != nil {
 		on := *req.TrafficCapture

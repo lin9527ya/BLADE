@@ -46,6 +46,9 @@ type Overrides struct {
 	// NoiseLevel 返回本次作业的噪声档位（"quiet" / "normal"）。quiet 时 planner/worker
 	// 的提示词会追加一段代码持有的潜行纪律。
 	NoiseLevel func() string
+	// EvidenceVerifyModeFn 返回证据闸档位（off/warn/block）。每轮现读，改设置后
+	// 下一次 report_finding 生效。
+	EvidenceVerifyModeFn func() EvidenceVerifyMode
 }
 
 // SetOverrides 用 o **整体替换**当前这套 hook；nil 字段表示把那一项关掉。
@@ -69,6 +72,7 @@ func SetOverrides(o Overrides) {
 	LootExecEnabled = o.LootExecEnabled
 	OASTConfig = o.OASTConfig
 	NoiseLevel = o.NoiseLevel
+	EvidenceVerifyModeFn = o.EvidenceVerifyModeFn
 }
 
 // CurrentOverrides 返回当前生效的一整套 hook（读取 / 保存 / 恢复用）。
@@ -88,6 +92,7 @@ func CurrentOverrides() Overrides {
 		LootExecEnabled:                LootExecEnabled,
 		OASTConfig:                     OASTConfig,
 		NoiseLevel:                     NoiseLevel,
+		EvidenceVerifyModeFn:           EvidenceVerifyModeFn,
 	}
 }
 

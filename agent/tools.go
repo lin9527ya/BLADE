@@ -2658,9 +2658,13 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		// 证据质量闸：默认 Warn；Block 由宿主设置。长度/纯版本匹配属于可拒绝项，
 		// 缺少机械信号先告警（TCP/二进制/自定义协议不能一律判死）。
+		mode := t.evidenceVerifyMode
+		if EvidenceVerifyModeFn != nil {
+			mode = EvidenceVerifyModeFn()
+		}
 		gate := assessFindingEvidence(severity, a.Evidence)
 		verifyNote := ""
-		if gate.Block != "" && t.evidenceVerifyMode == EvidenceVerifyBlock {
+		if gate.Block != "" && mode == EvidenceVerifyBlock {
 			return actool.Errorf(gate.Block), nil
 		}
 		if gate.Warn != "" {
@@ -2671,11 +2675,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		// 证据逐字回验：台账来自本次 run 实际看到的工具回显。默认 Warn；
 		// Block 档只拒绝 critical/high 且完全没有原文出处的证据。
-		if ledger, _ := ToolOutputsFromContext(ctx); ledger != nil && t.evidenceVerifyMode != EvidenceVerifyOff && strings.TrimSpace(a.Evidence) != "" {
+		if ledger, _ := ToolOutputsFromContext(ctx); ledger != nil && mode != EvidenceVerifyOff && strings.TrimSpace(a.Evidence) != "" {
 			matched, total := ledger.VerifyEvidence(a.Evidence)
 			switch evidenceVerdict(matched, total) {
 			case "none":
-				if t.evidenceVerifyMode == EvidenceVerifyBlock && (severity == "critical" || severity == "high") {
+				if mode == EvidenceVerifyBlock && (severity == "critical" || severity == "high") {
 					return actool.Errorf(fmt.Sprintf("证据逐字回验未通过：evidence 里没有任何一行能在本次工具输出中找到出处（已比对 %d 行有效内容）。critical/high 必须带本会话真实命令输出：请把工具回显中的关键行原样粘进 evidence，或降为 medium，或改用 record_fact 记为待验证线索。", total)), nil
 				}
 				verifyNote = strings.TrimSpace(verifyNote + " ⚠️ 证据出处核对：0/" + fmt.Sprint(total) + " 行可在本次工具输出中逐字找到——报告读者将无法复核，建议补粘命令与输出原文。")

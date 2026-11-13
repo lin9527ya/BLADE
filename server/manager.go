@@ -297,11 +297,12 @@ type Manager struct {
 const (
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
-	settingLootExec            = "agent_loot_exec"   // loot_exec 总开关（默认关：凭据直接变动作，风险最高）
-	settingOASTEnabled         = "oast_enabled"      // OAST 回调总开关（默认关）
-	settingOASTToken           = "oast_token"        // requestrepo 会话 token（只写，GET 回 *_set）
-	settingOASTDomain          = "oast_domain"       // OAST 服务域名（默认 requestrepo.com）
-	settingOpsecNoise          = "opsec_noise_level" // 噪声档位：quiet 时给 planner/worker 追加潜行纪律
+	settingLootExec            = "agent_loot_exec"         // loot_exec 总开关（默认关：凭据直接变动作，风险最高）
+	settingOASTEnabled         = "oast_enabled"            // OAST 回调总开关（默认关）
+	settingOASTToken           = "oast_token"              // requestrepo 会话 token（只写，GET 回 *_set）
+	settingOASTDomain          = "oast_domain"             // OAST 服务域名（默认 requestrepo.com）
+	settingOpsecNoise          = "opsec_noise_level"       // 噪声档位：quiet 时给 planner/worker 追加潜行纪律
+	settingEvidenceVerify      = "finding_evidence_verify" // 证据闸档位：off/warn/block
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
 	settingPlannerBoundedView  = "planner_bounded_view"

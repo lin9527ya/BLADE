@@ -446,6 +446,9 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		}
 		return "normal"
 	}
+	o.EvidenceVerifyModeFn = func() agent.EvidenceVerifyMode {
+		return evidenceVerifySetting(pg)
+	}
 	o.ToolResolve = resolveTools
 	agent.SetOverrides(o)
 }
