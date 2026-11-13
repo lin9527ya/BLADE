@@ -41,6 +41,7 @@ import type {
   ConvTokenSummary,
   CoverageAssetRefs,
   CoverageGraphData,
+  CredentialAttempt,
   CredentialReveal,
   CVE,
   CVEImportPreview,
@@ -69,6 +70,8 @@ import type {
   FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
+  GlobalBroadcastPage,
+  GlobalBroadcastQuery,
   GraphAuditReport,
   IntelQueryList,
   IntelSearchResult,
@@ -90,6 +93,7 @@ import type {
   LLMRetryOverride,
   LLMRetryPolicy,
   LLMTask,
+  LootItem,
   MCPGuardStatus,
   MCPServer,
   MCPTool,
@@ -106,6 +110,7 @@ import type {
   PromptVar,
   PromptVersion,
   ScheduleFrequency,
+  ScheduleRun,
   ScheduleTaskSpec,
   ScopeEnforcement,
   Settings,
@@ -130,9 +135,6 @@ import type {
   TaskHint,
   TaskLLMResolutions,
   TaskNode,
-  CredentialAttempt,
-  LootItem,
-  ScheduleRun,
   TaskSchedule,
   TaskScopeRow,
   TaskSrcBatchPlan,
@@ -775,7 +777,15 @@ export const api = {
     ).then((r) => ({ ...r, runs: arr(r.runs) })),
 
   // ---- 全局战果与凭据台账（只读） ----
-  loot: (params: { kind?: string; state?: string; task?: string; company?: number; campaign?: number; page?: number; size?: number }) => {
+  loot: (params: {
+    kind?: string;
+    state?: string;
+    task?: string;
+    company?: number;
+    campaign?: number;
+    page?: number;
+    size?: number;
+  }) => {
     const q = new URLSearchParams();
     if (params.kind) q.set("kind", params.kind);
     if (params.state) q.set("state", params.state);
@@ -788,7 +798,10 @@ export const api = {
       (r) => ({ ...r, items: arr(r.items) }),
     );
   },
-  lootExport: async (params: { kind?: string; state?: string; task?: string; company?: number; campaign?: number }, format: "csv" | "json") => {
+  lootExport: async (
+    params: { kind?: string; state?: string; task?: string; company?: number; campaign?: number },
+    format: "csv" | "json",
+  ) => {
     const q = new URLSearchParams();
     if (params.kind) q.set("kind", params.kind);
     if (params.state) q.set("state", params.state);
@@ -809,7 +822,10 @@ export const api = {
       `/credential-attempts?${q.toString()}`,
     ).then((r) => ({ ...r, items: arr(r.items) }));
   },
-  credentialAttemptsExport: async (params: { task?: string; host?: string; account?: string }, format: "csv" | "json") => {
+  credentialAttemptsExport: async (
+    params: { task?: string; host?: string; account?: string },
+    format: "csv" | "json",
+  ) => {
     const q = new URLSearchParams();
     if (params.task) q.set("task", params.task);
     if (params.host) q.set("host", params.host);
@@ -1338,6 +1354,23 @@ export const api = {
       edges: arr(r.edges),
       refs: r.refs ?? {},
       assets: r.assets ?? {},
+    }));
+  },
+  // 全局播报板：跨任务汇总，不展开边/邻居/资产；点行进任务详情会话。
+  globalBroadcast: (query: GlobalBroadcastQuery = {}) => {
+    const q = new URLSearchParams();
+    q.set("page", String(query.page ?? 1));
+    q.set("size", String(query.size ?? 30));
+    if (query.kinds?.length) q.set("kind", query.kinds.join(","));
+    if (query.states?.length) q.set("state", query.states.join(","));
+    if (query.q?.trim()) q.set("q", query.q.trim());
+    if (query.order === "asc") q.set("order", "asc");
+    if (query.task) q.set("task", query.task);
+    return get<GlobalBroadcastPage>(`/broadcast?${q.toString()}`).then((r) => ({
+      items: arr(r.items),
+      total: r.total ?? 0,
+      page: r.page ?? 1,
+      size: r.size ?? query.size ?? 30,
     }));
   },
   activity: (task?: string, opts?: { intent?: string; since?: number; limit?: number }) => {

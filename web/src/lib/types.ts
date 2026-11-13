@@ -829,6 +829,32 @@ export interface ExplorationNodeQuery {
   order?: "asc" | "desc";
 }
 
+// 全局播报板的一条：任务详情播报节点的跨任务聚合，附带任务元信息与可跳转的
+// 会话 key（intent:<id>；无法归属到某条意图时为空，回退到任务播报页）。
+export interface GlobalBroadcastItem extends TaskNode {
+  task_id: string;
+  task_name: string;
+  task_state: TaskStatus;
+  session_key?: string;
+}
+
+export interface GlobalBroadcastPage {
+  items: GlobalBroadcastItem[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export interface GlobalBroadcastQuery {
+  page?: number;
+  size?: number;
+  kinds?: ExploreKind[];
+  states?: string[];
+  q?: string;
+  order?: "asc" | "desc";
+  task?: string;
+}
+
 // 目标管理卡片用的目标(后端已把 payload 拆成 text/vulnclass)。
 export interface TaskGoal {
   id: string;

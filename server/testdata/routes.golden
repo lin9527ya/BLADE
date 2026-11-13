@@ -49,6 +49,7 @@ GET /api/assets/counts	server.(*Server).assetCounts-fm
 GET /api/audit	server.(*Server).getAudit-fm
 GET /api/auth/account	server.(*Server).authAccount-fm
 GET /api/auth/status	server.(*Server).authStatus-fm
+GET /api/broadcast	server.(*Server).globalBroadcast-fm
 GET /api/campaigns	server.(*Server).listCampaigns-fm
 GET /api/campaigns/{id}	server.(*Server).getCampaign-fm
 GET /api/chat/mentions	server.(*Server).searchChatMentions-fm

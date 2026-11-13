@@ -50,6 +50,8 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/intents", s.intents)
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/nodes", s.explorationNodes)
+	// 全局播报板：跨任务汇总探索节点，任务详情页负责行内图/资产展开。
+	mux.HandleFunc("GET /api/broadcast", s.globalBroadcast)
 	mux.HandleFunc("GET /api/exploration/activity", s.activity)
 	mux.HandleFunc("GET /api/exploration/activity/history", s.activityHistory)
 	// 穷尽复核记录（看门狗）：planner 想收工时的复核结论，任务详情据此展示。

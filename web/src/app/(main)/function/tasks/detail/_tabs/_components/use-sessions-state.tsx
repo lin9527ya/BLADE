@@ -60,45 +60,53 @@ import {
 
 // 会话页签的状态与取数：会话列表、分段消息、意图/资产、SSE、令牌与 LLM 解析。
 
+// 把 approval 深链 / 全局播报 ?session= 的 key 还原成可定位的会话对象。
+// 归档会话可能不在当前 sessions 列表里，由 locatedSession 补进去。
+function sessionFromFocusKey(key: string, lastActivity = ""): Session | undefined {
+  if (key.startsWith("main:")) {
+    const seg = Number(key.slice(5));
+    if (!Number.isFinite(seg) || seg < 0) return undefined;
+    return { ...MAIN_SESSION, id: mainSessionId(seg), seg, title: mainSessionTitle(seg), live: false };
+  }
+  if (key === "plan") return { ...PLANNER_SESSION, live: false };
+  if (key.startsWith("slot:")) {
+    const slot = Number(key.slice(5));
+    if (Number.isFinite(slot) && slot > 0) {
+      return {
+        id: workerSlotSessionId(slot),
+        role: "worker",
+        slot,
+        worker_no: slot,
+        title: `Worker #${slot}`,
+        status: "done",
+        live: false,
+        last_activity: lastActivity,
+      };
+    }
+  }
+  if (key.startsWith("intent:")) {
+    const id = key.slice(7);
+    if (!id) return undefined;
+    return {
+      id,
+      role: "worker",
+      intent_id: id,
+      title: `Worker #${id}`,
+      status: "done",
+      live: false,
+      last_activity: lastActivity,
+    };
+  }
+  return undefined;
+}
+
 export function useSessionsState(taskId: string) {
   const approvalFocus = useApprovalFocus({ taskId });
   const [selectedSessionId, setActiveId] = React.useState(MAIN_ID);
   const focusSession = React.useMemo<Session | undefined>(() => {
     const source = approvalFocus.state?.source;
     if (!source) return undefined;
-    if (source.session.startsWith("main:")) {
-      const seg = Number(source.session.slice(5));
-      return { ...MAIN_SESSION, id: mainSessionId(seg), seg, title: mainSessionTitle(seg), live: false };
-    }
-    if (source.session === "plan") return { ...PLANNER_SESSION, live: false };
-    if (source.session.startsWith("slot:")) {
-      const slot = Number(source.session.slice(5));
-      if (Number.isFinite(slot) && slot > 0) {
-        return {
-          id: workerSlotSessionId(slot),
-          role: "worker",
-          slot,
-          worker_no: slot,
-          title: `Worker #${slot}`,
-          status: "done",
-          live: false,
-          last_activity: source.items[0]?.ts ?? "",
-        };
-      }
-    }
-    if (source.session.startsWith("intent:")) {
-      const id = source.session.slice(7);
-      return {
-        id,
-        role: "worker",
-        intent_id: id,
-        title: `Worker #${id}`,
-        status: "done",
-        live: false,
-        last_activity: source.items[0]?.ts ?? "",
-      };
-    }
-    return undefined;
+    return sessionFromFocusKey(source.session, source.items[0]?.ts ?? "");
   }, [approvalFocus.state?.source]);
   // Keep a located archived/older session selectable after leaving focus mode.
   const [locatedSession, setLocatedSession] = React.useState<{ taskId: string; session: Session }>();
@@ -503,6 +511,17 @@ export function useSessionsState(taskId: string) {
     setLLMResolutions(null);
     setSseLive(false);
     setActiveId(MAIN_ID); // a stale worker id from the previous task must not leak in
+    // 全局播报/任务链接的 ?session=intent:<id> 深链：首屏定位到产生该节点的会话。
+    // 片段/槽位/意图 key 与 approval 深链共用同一套还原逻辑；用户随后点其它会话
+    // 不受影响（这里只定位一次，不像 approval focus 那样持续压住选择）。
+    if (typeof window !== "undefined") {
+      const urlSession = new URLSearchParams(window.location.search).get("session")?.trim();
+      const located = urlSession ? sessionFromFocusKey(urlSession) : undefined;
+      if (located) {
+        setActiveId(located.id);
+        setLocatedSession({ taskId, session: located });
+      }
+    }
     setMainSegs([{ seq: 0, created_at: "" }]);
     setCurrentSeg(0);
     snapshotRef.current = 0;
