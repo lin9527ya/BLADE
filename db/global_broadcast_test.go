@@ -83,6 +83,16 @@ VALUES ($1,$2,$3,'yields')`, taskA.ExplorationID, intentID, factID); err != nil 
 	if total != 1 || len(rows) != 1 || rows[0].TaskID != taskA.ID {
 		t.Fatalf("deleted task leaked: total=%d rows=%+v", total, rows)
 	}
+	if _, err := d.Exec(`UPDATE tasks SET paused=true WHERE id=$1`, taskA.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err = d.GlobalNodesPage(NodeFilter{Query: "needle-fact"}, 0, 1, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].TaskState != "paused" {
+		t.Fatalf("paused task must project paused, got rows=%+v", rows)
+	}
 }
 
 // TestGlobalNodesPageConfirmedFindings 复用播报板的展示口径：pending finding

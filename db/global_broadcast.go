@@ -99,7 +99,8 @@ FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id`+wher
 	}
 	args = append(args, size, (page-1)*size)
 	rows, err := d.Query(`SELECT `+globalNodeCols+`,
-		t.id, COALESCE(NULLIF(t.name,''), NULLIF(t.goal,''), t.description), t.status
+		t.id, COALESCE(NULLIF(t.name,''), NULLIF(t.goal,''), t.description),
+		CASE WHEN t.paused THEN 'paused' WHEN t.queued THEN 'queued' ELSE t.status END
 FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id`+where+
 		` ORDER BY n.id `+order+` LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
 	if err != nil {

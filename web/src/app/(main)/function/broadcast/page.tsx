@@ -128,8 +128,8 @@ function Row({ item, now }: { item: GlobalBroadcastItem; now: number }) {
           </div>
           <Link
             href={href}
-            className="mt-1 block break-words text-sm leading-6 hover:text-primary hover:underline"
-            title={item.session_key ? "打开产生这条播报的会话" : "该节点没有精确会话，打开任务播报"}
+            className="mt-1 line-clamp-3 break-words text-sm leading-6 hover:text-primary hover:underline"
+            title={summary || (item.session_key ? "打开产生这条播报的会话" : "该节点没有精确会话，打开任务播报")}
           >
             {summary || `节点 #${item.id}`}
           </Link>
