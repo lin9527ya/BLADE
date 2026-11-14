@@ -37,6 +37,9 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	// compactionLLM optionally supplies an independent provider for context
+	// summarization. nil = use this agent's provider.
+	compactionLLM func() (CompactionLLM, bool)
 	// guard（可选）把拦截规则、LLM 兜底裁判与 RoE 授权范围门挂到本 agent 的每一次 run 上。
 	// nil = 不挂、无任何拦截。接线方式与 ChatAgent 一致——任务内的人在环路同样能执行命令，
 	// 而且这里拿得到任务的**真实 id**，所以范围门本就该生效（此前漏挂，见下）。
@@ -87,6 +90,10 @@ func (m *MainAgent) nonStreaming() bool { return m.nonStreamingFn != nil && m.no
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
 func (m *MainAgent) SetMaxTokens(fn func() int) { m.maxTokensFn = fn }
+
+// SetCompactionLLM supplies an optional independent provider for context
+// summarization. nil/false = keep using this agent's own provider.
+func (m *MainAgent) SetCompactionLLM(fn func() (CompactionLLM, bool)) { m.compactionLLM = fn }
 
 func (m *MainAgent) maxTokens() int {
 	if m.maxTokensFn == nil {
@@ -249,9 +256,15 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, noaWarn(noaSession))
 	// P14 领域上下文：主 agent 与人的长对话最容易被压缩吃掉"人说过什么"——领域摘要模板
 	// 强制逐字保留所有用户消息，常驻索引另外带上目标/约束/图状态。
+	var compactionOverride []CompactionLLM
+	if m.compactionLLM != nil {
+		if c, ok := m.compactionLLM(); ok {
+			compactionOverride = append(compactionOverride, c)
+		}
+	}
 	InstallContextManager(&opts, m.compactionWindow(), m.maxTokens(), mainDir, func() string {
 		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true})
-	})
+	}, compactionOverride...)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()

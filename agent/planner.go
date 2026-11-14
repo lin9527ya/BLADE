@@ -68,6 +68,9 @@ type Planner struct {
 	boundedView     func() bool // nil = 有界视图（默认）
 	maxTokensFn     func() int  // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor       *Compactor  // cold-node compaction (§7); nil = disabled
+	// compactionLLM, when set, supplies an independent provider for context
+	// summarization (see InstallContextManager). nil = use this agent's provider.
+	compactionLLM func() (CompactionLLM, bool)
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
@@ -95,6 +98,10 @@ func (p *Planner) SetRoundSeconds(n int64) { p.roundDur = time.Duration(n) * tim
 // planner wake-up to advance the round counter, maintain cold stamps, and
 // (off the hot path) fold cold nodes into digests. nil = feature disabled.
 func (p *Planner) SetCompactor(c *Compactor) { p.compactor = c }
+
+// SetCompactionLLM supplies an optional independent provider for context
+// summarization. nil/false = keep using this agent's own provider.
+func (p *Planner) SetCompactionLLM(fn func() (CompactionLLM, bool)) { p.compactionLLM = fn }
 
 // WaitCompaction 等这个 planner 名下的后台压缩收尾（任务停止/删除时调用）。
 // 压缩不受单轮 ctx 约束，没有这一步它会在任务拆掉之后继续写探索图。
@@ -728,10 +735,16 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// P14 领域上下文（详见 agent/compactor.go）：规划者被压缩吃掉态势后，常驻索引仍带着
 	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。
 	installClock := taskClockFrom(ctx)
+	var compactionOverride []CompactionLLM
+	if p.compactionLLM != nil {
+		if c, ok := p.compactionLLM(); ok {
+			compactionOverride = append(compactionOverride, c)
+		}
+	}
 	InstallContextManager(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func() string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
 		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true})
-	})
+	}, compactionOverride...)
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。
 	// 开场白按「本轮有无具体变动」分两种：有变动 → 指向下方【实际变动】块；无变动

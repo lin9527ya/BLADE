@@ -1864,6 +1864,12 @@ export interface Settings {
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
   agent_loot_exec: boolean; // 战果直接执行（loot_exec）：用登记过的凭据连目标，默认关闭
   agent_auto_retest: boolean; // 自动复测：每条新漏洞启动一次独立复测会话，默认关闭（有 LLM 开销）
+  /** 新 high/critical finding 后给 planner 的非强制「评估下一跳」提醒，默认开。 */
+  attack_chain_continuation?: boolean;
+  /** 已确认但无详细报告的 finding 由 reporter 补写，默认关（有 LLM 开销）。 */
+  empty_report_patrol?: boolean;
+  /** 压缩摘要使用的独立 LLM 配置 id；0/未设为跟随任务链/角色绑定。 */
+  compactor_llm_profile_id?: number;
   oast_enabled: boolean; // 带外确认（OAST）总开关，默认关闭
   oast_token_set: boolean; // OAST 服务 token 是否已配置（值不回显）
   oast_token?: string; // 只写：仅在 PUT 时用于保存/清除 token

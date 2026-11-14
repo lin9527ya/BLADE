@@ -101,6 +101,9 @@ type Worker struct {
 	// maxTokensFn resolves the per-reply output cap in tokens, on the same
 	// per-run basis. nil or 0 = send no cap and let the endpoint decide.
 	maxTokensFn func() int
+	// compactionLLM optionally supplies an independent provider for context
+	// summarization. nil = use this agent's provider.
+	compactionLLM func() (CompactionLLM, bool)
 }
 
 // WorkerSessionID is the legacy per-intent transcript key. New runs use
@@ -234,6 +237,10 @@ func (w *Worker) SetNoaEnabled(fn func() bool) { w.noaEnabledFn = fn }
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
 func (w *Worker) SetMaxTokens(fn func() int) { w.maxTokensFn = fn }
+
+// SetCompactionLLM supplies an optional independent provider for context
+// summarization. nil/false = keep using this agent's own provider.
+func (w *Worker) SetCompactionLLM(fn func() (CompactionLLM, bool)) { w.compactionLLM = fn }
 
 func (w *Worker) maxTokens() int {
 	if w.maxTokensFn == nil {
@@ -805,9 +812,15 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// P14 领域上下文：领域化摘要（7 段 + 原文落盘回读）+ 每请求附常驻索引（目标/约束/
 	// 活跃方向/发现一行式）。noa 开启时它已占 Compactor 槽位，这里自动让位（互斥）。
 	installClock := taskClockFrom(ctx)
+	var compactionOverride []CompactionLLM
+	if w.compactionLLM != nil {
+		if c, ok := w.compactionLLM(); ok {
+			compactionOverride = append(compactionOverride, c)
+		}
+	}
 	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), ctxDir, func() string {
 		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: slot, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
-	})
+	}, compactionOverride...)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)

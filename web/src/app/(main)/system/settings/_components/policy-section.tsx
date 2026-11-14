@@ -54,6 +54,12 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     agentAutoRetest,
     savingAutoRetest,
     toggleAgentAutoRetest,
+    attackChainContinuation,
+    savingAttackChain,
+    toggleAttackChainContinuation,
+    emptyReportPatrol,
+    savingEmptyReportPatrol,
+    toggleEmptyReportPatrol,
     oastEnabled,
     oastTokenSet,
     noiseLevel,
@@ -513,6 +519,55 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               <br />
               前提是 <code>retester</code> agent 处于启用状态（系统 → Agent）；它被停用时本开关不起作用。
               对之后新收到的漏洞生效，已收到的不会补跑。
+            </>
+          }
+        />
+      </SubBlock>
+
+      <SubBlock title="攻击链续跳提醒（自主推进）" icon={<RadarIcon className="size-4 text-muted-foreground" />}>
+        <SwitchRow
+          id="attack-chain-continuation"
+          describedBy="attack-chain-continuation-description"
+          label={
+            attackChainContinuation
+              ? "已开启（默认）· high/critical 发现后提示 planner 评估下一跳"
+              : "已关闭 · planner 只按常规轮询/触发推进"
+          }
+          checked={attackChainContinuation}
+          disabled={!loaded || savingAttackChain}
+          onChange={toggleAttackChainContinuation}
+          hint={
+            <>
+              默认开启。每收到一条新的 high/critical 发现，平台会给该任务的 planner 投一条<strong>非强制提示</strong>
+              ：评估这个发现能否推进到影响面（利用、提权、横向、读取数据）。
+              <br />
+              它<strong>不会创建意图、不会设完成门、不会限制队列</strong>——派不派下一跳仍由 planner
+              按黑板自由决定。已有意图覆盖或只是版本线索时，提示会明确要求不要重复探测。
+            </>
+          }
+        />
+      </SubBlock>
+
+      <SubBlock title="空报告巡检（交付质量）" icon={<ScanSearchIcon className="size-4 text-muted-foreground" />}>
+        <SwitchRow
+          id="empty-report-patrol"
+          describedBy="empty-report-patrol-description"
+          label={
+            emptyReportPatrol
+              ? "已开启 · 已确认但无详细报告的漏洞会派 reporter 补写"
+              : "已关闭（默认）· 不自动补写 finding 详细报告"
+          }
+          checked={emptyReportPatrol}
+          disabled={!loaded || savingEmptyReportPatrol}
+          onChange={toggleEmptyReportPatrol}
+          hint={
+            <>
+              默认关闭（会产生 LLM 开销）。开启后，调度器每 10 分钟巡检一次：已确认（或 high
+              置信度、复测复现/已修复）但仍无详细报告的漏洞，会交给
+              <code>reporter</code> agent 按证据补写。
+              <br />
+              每条漏洞最多尝试 2 次、间隔至少 30 分钟，失败不会热循环；证据不足时 reporter
+              只说明缺口，不臆造。前提是 <code>reporter</code> agent 处于启用状态。
             </>
           }
         />

@@ -149,13 +149,19 @@ func (s *Server) settingsPayload() map[string]any {
 		"agent_auto_retest":       s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":       s.taskTokenBudget(),
 		"planner_bounded_view":    s.plannerBoundedView(),
-		"llm_record":              s.m.LLMRecordEnabled(),
-		"web_search_enabled":      on,
-		"web_search_backend":      backend,
-		"brave_key_set":           strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":          strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":        proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":            s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
+		// 压缩摘要独立模型（0 = 跟随任务链/角色绑定）。
+		"compactor_llm_profile_id": s.compactorLLMProfileID(),
+		// 新 high/critical finding 后提示 planner 评估下一跳（非强制意图）。
+		"attack_chain_continuation": s.m.pg.GetBool(settingAttackChainContinuation, true),
+		// 对已确认但无详细报告的 finding 触发 reporter 补写（默认关）。
+		"empty_report_patrol": s.m.pg.GetBool(settingEmptyReportPatrol, false),
+		"llm_record":          s.m.LLMRecordEnabled(),
+		"web_search_enabled":  on,
+		"web_search_backend":  backend,
+		"brave_key_set":       strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":      strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":    proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":        s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
 		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
 		// 全部候选都不可用、出口已阻断（**不会直连**）。
 		"global_proxy_pool":             strings.Join(proxyCfg.Candidates, "\n"),
@@ -297,18 +303,21 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // settingsRequest 是设置保存请求体。提取为具名类型，让「先全量校验、再写库/应用」
 // 两阶段处理能共用同一份字段定义（见 settings_validate.go）。
 type settingsRequest struct {
-	TrafficCapture      *bool   `json:"traffic_capture"`
-	AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
-	LootExec            *bool   `json:"agent_loot_exec"`
-	OastEnabled         *bool   `json:"oast_enabled"`
-	OastToken           *string `json:"oast_token"` // 只写：空串 = 清除
-	OastDomain          *string `json:"oast_domain"`
-	OpsecNoise          *string `json:"opsec_noise_level"`
-	EvidenceVerify      *string `json:"finding_evidence_verify"`
-	AgentAutoRetest     *bool   `json:"agent_auto_retest"`
-	TaskTokenBudget     *int64  `json:"task_token_budget"`
-	PlannerBoundedView  *bool   `json:"planner_bounded_view"` // 默认态势是否裁剪为有界视图
-	LLMRecord           *bool   `json:"llm_record"`           // LLM 录制开关（默认关）；即时生效，无需重建 agent
+	TrafficCapture          *bool   `json:"traffic_capture"`
+	AgentTrafficBinding     *bool   `json:"agent_traffic_binding"`
+	LootExec                *bool   `json:"agent_loot_exec"`
+	OastEnabled             *bool   `json:"oast_enabled"`
+	OastToken               *string `json:"oast_token"` // 只写：空串 = 清除
+	OastDomain              *string `json:"oast_domain"`
+	OpsecNoise              *string `json:"opsec_noise_level"`
+	EvidenceVerify          *string `json:"finding_evidence_verify"`
+	AgentAutoRetest         *bool   `json:"agent_auto_retest"`
+	TaskTokenBudget         *int64  `json:"task_token_budget"`
+	PlannerBoundedView      *bool   `json:"planner_bounded_view"`     // 默认态势是否裁剪为有界视图
+	CompactorLLMProfileID   *int64  `json:"compactor_llm_profile_id"` // 0 = 跟随任务链
+	AttackChainContinuation *bool   `json:"attack_chain_continuation"`
+	EmptyReportPatrol       *bool   `json:"empty_report_patrol"`
+	LLMRecord               *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 	WebSearchEnabled    *bool   `json:"web_search_enabled"`
@@ -690,6 +699,20 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PlannerBoundedView != nil {
 		pending[settingPlannerBoundedView] = strconv.FormatBool(*req.PlannerBoundedView)
+	}
+	if req.CompactorLLMProfileID != nil {
+		v := *req.CompactorLLMProfileID
+		if v < 0 {
+			v = 0
+		}
+		pending[settingCompactorLLMProfile] = strconv.FormatInt(v, 10)
+		changed = true // cold-node compactor provider is captured in the task bundle
+	}
+	if req.AttackChainContinuation != nil {
+		pending[settingAttackChainContinuation] = strconv.FormatBool(*req.AttackChainContinuation)
+	}
+	if req.EmptyReportPatrol != nil {
+		pending[settingEmptyReportPatrol] = strconv.FormatBool(*req.EmptyReportPatrol)
 	}
 	if req.AgentTrafficBinding != nil {
 		pending[settingAgentTrafficBinding] = strconv.FormatBool(*req.AgentTrafficBinding)

@@ -781,12 +781,23 @@ var _ iter.Seq2[llm.StreamEvent, error]
 
 // --- 装配 ---
 
+// CompactionLLM is an optional independent provider for the summary calls. The
+// agent's own provider remains the default; a host can bind a cheaper/faster
+// model here without changing the model that drives the tool loop.
+type CompactionLLM struct {
+	Provider     llm.Provider
+	MaxTokens    int
+	NonStreaming bool
+}
+
 // InstallContextManager 在 opts 上装 P14 领域上下文管理器。调用点必须在 enableNoa 之后。
 //
 // 压缩策略与请求投影分开处理：noa 已占用 Options.Compactor 时，不再整个让位
 // （那样常驻索引——含当前意图/目标/约束——就不发了，压缩后槽位会话会丢职责），而是把
 // 已有压缩器包一层 indexView：怎么压仍由 noa 决定，每请求的职责投影始终在。
-func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func() string) {
+// 可选的 override 只替换摘要调用使用的 provider/输出上限/流式档位；压缩时机与
+// 投影逻辑不变。
+func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func() string, override ...CompactionLLM) {
 	if opts == nil {
 		return
 	}
@@ -798,7 +809,13 @@ func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int,
 	if cfg == nil {
 		cfg = &compaction.Config{}
 	}
-	opts.Compactor = NewDomainCompactor(*cfg, opts.Provider, opts.MaxTokens, opts.NonStreaming, dumpDir, index)
+	prov, maxOut, nonStreaming := opts.Provider, opts.MaxTokens, opts.NonStreaming
+	if len(override) > 0 && override[0].Provider != nil {
+		prov = override[0].Provider
+		maxOut = override[0].MaxTokens
+		nonStreaming = override[0].NonStreaming
+	}
+	opts.Compactor = NewDomainCompactor(*cfg, prov, maxOut, nonStreaming, dumpDir, index)
 	// Compactor 与 Compaction 互斥（SDK 会告警并忽略后者），显式清掉。
 	opts.Compaction = nil
 }

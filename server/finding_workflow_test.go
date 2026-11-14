@@ -99,7 +99,7 @@ func TestFindingWorkflowAutoHintToMainAgentAndSetting(t *testing.T) {
 	report := workflowTool(t, tools, "report_finding")
 	result := workflowCall(t, ctx, report, map[string]any{"vulnclass": "TEST", "severity": "low", "summary": "Planner handoff fixture", "evidence_hint_id": hints.IDs[0]}, false)
 	var recorded db.RecordedFinding
-	if err := json.Unmarshal([]byte(strings.SplitN(result, "\n", 2)[1]), &recorded); err != nil {
+	if err := json.NewDecoder(strings.NewReader(strings.SplitN(result, "\n", 2)[1])).Decode(&recorded); err != nil {
 		t.Fatal(err)
 	}
 	if recorded.FindingID == recorded.NodeID || len(recorded.Traffic.Bindings) != 3 || notices != 1 {
@@ -172,7 +172,7 @@ func TestFindingWorkflowAutoHintToMainAgentAndSetting(t *testing.T) {
 		EvidenceStatus string `json:"evidence_status"`
 		EvidenceNote   string `json:"evidence_note"`
 	}
-	if err := json.Unmarshal([]byte(strings.SplitN(offResult, "\n", 2)[1]), &offRecord); err != nil {
+	if err := json.NewDecoder(strings.NewReader(strings.SplitN(offResult, "\n", 2)[1])).Decode(&offRecord); err != nil {
 		t.Fatal(err)
 	}
 	if offRecord.FindingID <= 0 || len(offRecord.Traffic.Bindings) != 0 || offRecord.EvidenceStatus != "not_bound" || !strings.Contains(offRecord.EvidenceNote, "已关闭") {

@@ -207,7 +207,9 @@ func (e *accEnv) newFinding(task *Task, tid int64, payload string) (int64, int64
 		e.t.Fatalf("report_finding: %v %s", err, res.Flatten())
 	}
 	var out db.RecordedFinding
-	if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &out); err != nil {
+	// report_finding 追加了证据闸说明行；只取第一段 JSON，忽略尾部告警文本。
+	raw := strings.SplitN(res.Flatten(), "\n", 2)[1]
+	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&out); err != nil {
 		e.t.Fatalf("decode finding: %v raw=%s", err, res.Flatten())
 	}
 	return out.FindingID, out.NodeID

@@ -147,14 +147,18 @@ func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary
 	sysText += traceNeutralityBlock()
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
 	always := strings.TrimSpace(def.AlwaysSkills)
-	if always == "" && block == "" {
+	capabilities := strings.TrimSpace(def.CapabilityIndex)
+	if always == "" && capabilities == "" && block == "" {
 		return []string{sysText}, 1
 	}
-	// 分层注入：常量层（常驻技能正文）在前、deferred 工具块在后，二者都是会话固定的
-	// 稳定段，随整段 system 一起被缓存（boundary 覆盖全部）。
+	// 分层注入：常量层（常驻技能正文）在前、能力速查/deferred 工具块在后，二者都是
+	// 会话固定的稳定段，随整段 system 一起被缓存（boundary 覆盖全部）。
 	system = []string{sysText}
 	if always != "" {
 		system = append(system, always)
+	}
+	if capabilities != "" {
+		system = append(system, capabilities)
 	}
 	if block != "" {
 		system = append(system, block)

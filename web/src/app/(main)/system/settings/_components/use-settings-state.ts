@@ -9,6 +9,7 @@ import { useChatSendMode } from "@/lib/chat-send-mode";
 import type {
   ClashEgressStatus,
   IntelQueryRow,
+  LLMProfile,
   OpsecKnowledgeResponse,
   ProxyEgressResult,
   ProxyPoolHealth,
@@ -50,6 +51,13 @@ export function useSettingsState() {
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [agentLootExec, setAgentLootExec] = React.useState(false);
   const [agentAutoRetest, setAgentAutoRetest] = React.useState(false);
+  const [attackChainContinuation, setAttackChainContinuation] = React.useState(true);
+  const [savingAttackChain, setSavingAttackChain] = React.useState(false);
+  const [emptyReportPatrol, setEmptyReportPatrol] = React.useState(false);
+  const [savingEmptyReportPatrol, setSavingEmptyReportPatrol] = React.useState(false);
+  const [compactorProfileID, setCompactorProfileID] = React.useState("0");
+  const [llmProfiles, setLlmProfiles] = React.useState<LLMProfile[]>([]);
+  const [savingCompactorProfile, setSavingCompactorProfile] = React.useState(false);
   const [oastEnabled, setOastEnabled] = React.useState(false);
   const [oastTokenSet, setOastTokenSet] = React.useState(false);
   const [oastTokenInput, setOastTokenInput] = React.useState("");
@@ -183,6 +191,9 @@ export function useSettingsState() {
     setAgentTrafficBinding(!!s.agent_traffic_binding);
     setAgentLootExec(!!s.agent_loot_exec);
     setAgentAutoRetest(!!s.agent_auto_retest);
+    setAttackChainContinuation(s.attack_chain_continuation !== false);
+    setEmptyReportPatrol(!!s.empty_report_patrol);
+    setCompactorProfileID(String(s.compactor_llm_profile_id ?? 0));
     setOastEnabled(!!s.oast_enabled);
     setOastTokenSet(!!s.oast_token_set);
     setOastDomain(s.oast_domain || "requestrepo.com");
@@ -433,6 +444,10 @@ export function useSettingsState() {
       .then(apply)
       .catch(() => undefined)
       .finally(() => setLoaded(true));
+    api
+      .llmProfiles()
+      .then(setLlmProfiles)
+      .catch(() => undefined);
   }, [apply]);
 
   const toggleTraffic = (v: boolean) => {
@@ -639,6 +654,51 @@ export function useSettingsState() {
         toast.error(`保存失败：${(e as Error).message}`);
       })
       .finally(() => setSavingAutoRetest(false));
+  };
+
+  const toggleAttackChainContinuation = (v: boolean) => {
+    setAttackChainContinuation(v); // optimistic
+    setSavingAttackChain(true);
+    api
+      .setSettings({ attack_chain_continuation: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启攻击链续跳提醒" : "已关闭攻击链续跳提醒");
+      })
+      .catch((e) => {
+        setAttackChainContinuation(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingAttackChain(false));
+  };
+
+  const toggleEmptyReportPatrol = (v: boolean) => {
+    setEmptyReportPatrol(v); // optimistic
+    setSavingEmptyReportPatrol(true);
+    api
+      .setSettings({ empty_report_patrol: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启空报告巡检" : "已关闭空报告巡检");
+      })
+      .catch((e) => {
+        setEmptyReportPatrol(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingEmptyReportPatrol(false));
+  };
+
+  const saveCompactorProfile = () => {
+    const id = Number.parseInt(compactorProfileID, 10) || 0;
+    setSavingCompactorProfile(true);
+    api
+      .setSettings({ compactor_llm_profile_id: id })
+      .then((s) => {
+        apply(s);
+        toast.success(id > 0 ? "已保存压缩摘要模型" : "已改为跟随任务链/角色绑定");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingCompactorProfile(false));
   };
 
   const saveNoiseLevel = (v: string) => {
@@ -1057,6 +1117,19 @@ export function useSettingsState() {
     setAgentAutoRetest,
     savingAutoRetest,
     toggleAgentAutoRetest,
+    attackChainContinuation,
+    setAttackChainContinuation,
+    savingAttackChain,
+    toggleAttackChainContinuation,
+    emptyReportPatrol,
+    setEmptyReportPatrol,
+    savingEmptyReportPatrol,
+    toggleEmptyReportPatrol,
+    compactorProfileID,
+    setCompactorProfileID,
+    llmProfiles,
+    savingCompactorProfile,
+    saveCompactorProfile,
     oastEnabled,
     oastTokenSet,
     noiseLevel,

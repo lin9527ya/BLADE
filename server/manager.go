@@ -306,11 +306,17 @@ const (
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
 	settingPlannerBoundedView  = "planner_bounded_view"
-	settingWebSearchOn         = "web_search_enabled"
-	settingWebSearchBackend    = "web_search_backend"
-	settingBraveKey            = "brave_search_api_key"
-	settingTavilyKey           = "tavily_search_api_key"
-	settingWebSearchProxy      = "web_search_proxy"
+	// 压缩摘要独立模型（0/空 = 跟随任务链/角色绑定）。只在任务 run 的压缩摘要调用上生效。
+	settingCompactorLLMProfile = "compactor_llm_profile_id"
+	// 新 high/critical finding 后给 planner 的「评估下一跳」提醒（非强制意图）。
+	settingAttackChainContinuation = "attack_chain_continuation"
+	// 空报告巡检：对已确认但仍无详细报告的 finding 触发 reporter 补写（默认关）。
+	settingEmptyReportPatrol = "empty_report_patrol"
+	settingWebSearchOn       = "web_search_enabled"
+	settingWebSearchBackend  = "web_search_backend"
+	settingBraveKey          = "brave_search_api_key"
+	settingTavilyKey         = "tavily_search_api_key"
+	settingWebSearchProxy    = "web_search_proxy"
 	// settingGlobalProxy is the legacy single global egress proxy (first pool
 	// entry). settingGlobalProxyPool is the real config: newline-separated list.
 	// Distinct from web_search_proxy (search backend only) and per-profile LLM proxy.

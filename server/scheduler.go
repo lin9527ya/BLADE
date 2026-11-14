@@ -23,6 +23,8 @@ type Scheduler struct {
 	s    *Server
 	pg   *db.DB
 	tick time.Duration
+	// lastEmptyReportPatrol throttles the opt-in empty-report scan.
+	lastEmptyReportPatrol time.Time
 }
 
 const (
@@ -31,6 +33,8 @@ const (
 	schedKeyLastTimeout    = "last_timeout_id"    // watermark: max task id fired for task timeout
 	schedKeyLastToolCall   = "last_toolcall_id"   // watermark: max activity id fired for tool call
 	schedKeyLastTaskCreate = "last_taskcreate_id" // watermark: max task id fired for task create
+	// 攻击链续跳提醒独立水位：不依赖是否配置了自定义触发器。
+	schedKeyLastAttackChainFinding = "last_attack_chain_finding_id"
 )
 
 func newScheduler(s *Server) *Scheduler {
@@ -69,9 +73,11 @@ func (sc *Scheduler) tickOnce(ctx context.Context) {
 	if sc.s.safetyAdmissionBlocked() {
 		return
 	}
-	sc.s.reconcileConcurrency() // 并发上限:有空位就把排队任务补位启动
+	sc.s.reconcileConcurrency()      // 并发上限:有空位就把排队任务补位启动
+	sc.tickAttackChainContinuation() // 新 high/critical finding 的非强制下一跳提醒
 	sc.step()
-	sc.runDueSchedules(ctx) // P22 计划任务:到点按规格建任务(CAS 抢跑,不重复)
+	sc.tickEmptyReportPatrol() // 可选：已确认但无详细报告的 finding 派 reporter 补写
+	sc.runDueSchedules(ctx)    // P22 计划任务:到点按规格建任务(CAS 抢跑,不重复)
 }
 
 // init seeds the watermarks on first run so pre-existing findings/goals don't all
@@ -106,6 +112,17 @@ func (sc *Scheduler) init() {
 			}
 		}
 		sc.saveFiredGoalSet(set)
+	}
+	if sc.mustState(schedKeyLastAttackChainFinding) == "" {
+		var maxID int64
+		if evs, err := sc.pg.NewFindingsSince(0); err == nil {
+			for _, e := range evs {
+				if e.NodeID > maxID {
+					maxID = e.NodeID
+				}
+			}
+		}
+		sc.setWatermark(schedKeyLastAttackChainFinding, maxID)
 	}
 	if sc.mustState(schedKeyLastTimeout) == "" {
 		var maxID int64

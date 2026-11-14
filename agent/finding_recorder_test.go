@@ -38,7 +38,7 @@ func TestReportFindingOptionalTrafficWithoutCapture(t *testing.T) {
 			t.Fatalf("optional traffic rejected: %v %s", err, res.Flatten())
 		}
 		var out db.RecordedFinding
-		if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &out); err != nil {
+		if err := json.NewDecoder(strings.NewReader(strings.SplitN(res.Flatten(), "\n", 2)[1])).Decode(&out); err != nil {
 			t.Fatal(err)
 		}
 		f, err := d.GetFinding(out.FindingID)

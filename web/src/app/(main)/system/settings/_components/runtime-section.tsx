@@ -22,6 +22,11 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     tokenBudget,
     setTokenBudget,
     savingBudget,
+    compactorProfileID,
+    setCompactorProfileID,
+    llmProfiles,
+    savingCompactorProfile,
+    saveCompactorProfile,
     boundedView,
     setBoundedView,
     savingBoundedView,
@@ -109,6 +114,36 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               onChange={(e) => setTokenBudget(e.target.value)}
             />
             <Button type="button" onClick={saveTokenBudget} disabled={!loaded || savingBudget}>
+              保存
+            </Button>
+          </div>
+        </Field>
+      </SubBlock>
+
+      <SubBlock title="压缩摘要模型（可选）" icon={<CpuIcon className="size-4 text-muted-foreground" />}>
+        <Field
+          label="摘要/压缩使用哪个 LLM 配置"
+          htmlFor="compactor-profile"
+          hint="默认跟随任务链（与 planner 相同的模型）。选一个独立配置后，冷节点摘要与上下文压缩改用该模型；工具循环本身仍用任务模型。改完对之后启动的 run 生效。"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={compactorProfileID} onValueChange={setCompactorProfileID}>
+              <SelectTrigger id="compactor-profile" className="w-96">
+                <SelectValue placeholder="跟随任务链" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="0">跟随任务链 / 角色绑定（默认）</SelectItem>
+                  {llmProfiles.map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.name} · {p.model}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Button size="sm" onClick={() => void saveCompactorProfile()} disabled={!loaded || savingCompactorProfile}>
+              {savingCompactorProfile ? <Spinner data-icon="inline-start" /> : null}
               保存
             </Button>
           </div>

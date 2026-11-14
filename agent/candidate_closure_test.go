@@ -54,7 +54,7 @@ func TestCloseCandidateValidation(t *testing.T) {
 		t.Fatalf("valid closure rejected: %v %s", err, res.Flatten())
 	}
 	var out db.RecordedFinding
-	if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &out); err != nil {
+	if err := json.NewDecoder(strings.NewReader(strings.SplitN(res.Flatten(), "\n", 2)[1])).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	f, err := d.GetFinding(out.FindingID)
@@ -79,7 +79,7 @@ func TestCloseCandidateValidation(t *testing.T) {
 		t.Fatalf("open_proof_gap happy path rejected: %v %s", err, res.Flatten())
 	}
 	var gapOut db.RecordedFinding
-	if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &gapOut); err != nil {
+	if err := json.NewDecoder(strings.NewReader(strings.SplitN(res.Flatten(), "\n", 2)[1])).Decode(&gapOut); err != nil {
 		t.Fatal(err)
 	}
 	gf, err := d.GetFinding(gapOut.FindingID)
@@ -107,7 +107,7 @@ func TestReportFindingStoresConfidence(t *testing.T) {
 		t.Fatalf("valid finding rejected: %v %s", err, res.Flatten())
 	}
 	var out db.RecordedFinding
-	if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &out); err != nil {
+	if err := json.NewDecoder(strings.NewReader(strings.SplitN(res.Flatten(), "\n", 2)[1])).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	f, err := d.GetFinding(out.FindingID)

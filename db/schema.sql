@@ -1367,6 +1367,9 @@ CREATE TABLE IF NOT EXISTS findings (
     proof_gap   TEXT NOT NULL DEFAULT '',
     -- 漏洞详细报告(Markdown)；默认空,仅详情页读取/展示,不进列表接口以免 payload 膨胀。
     report      TEXT NOT NULL DEFAULT '',
+    -- 空报告巡检：最近一次触发 reporter 补写的时间与次数（默认 2 次封顶）。
+    report_patrol_at       TIMESTAMPTZ,
+    report_patrol_attempts INT NOT NULL DEFAULT 0,
     -- 撤回原因(status='retracted' 时必填语义):复测推翻后写入,随报告「已撤回」段展示。
     retract_reason TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1374,6 +1377,9 @@ CREATE TABLE IF NOT EXISTS findings (
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+-- 空报告巡检状态（旧库幂等补列）。
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS report_patrol_at TIMESTAMPTZ;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS report_patrol_attempts INT NOT NULL DEFAULT 0;
 -- 撤回原因(status='retracted')：旧库幂等补列。
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS retract_reason TEXT NOT NULL DEFAULT '';
 -- 候选闭合(strix 三态纪律)：confidence 诚实标定 + ruled_out 反证 + open_proof_gap 缺口。旧库幂等补列。
@@ -1386,6 +1392,9 @@ CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);
 -- 「按资产」视图靠 asset_ids @> '[<id>]' 反查发现,没有这个 GIN 索引就是全表扫。
 CREATE INDEX IF NOT EXISTS idx_findings_asset_ids ON findings USING GIN(asset_ids jsonb_path_ops);
+-- 空报告巡检扫描：只关心还没有详细报告、且有探索节点的行。
+CREATE INDEX IF NOT EXISTS idx_findings_report_patrol ON findings(report_patrol_at NULLS FIRST)
+    WHERE COALESCE(report,'') = '' AND node_id IS NOT NULL AND task_id IS NOT NULL;
 
 -- 手动复测属于独立会话；结论与原漏洞处置状态分开保存。
 CREATE TABLE IF NOT EXISTS finding_retests (

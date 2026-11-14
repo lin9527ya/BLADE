@@ -50,6 +50,13 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 			return fmt.Errorf("超预算处置必须是 allow / ask / deny")
 		}
 	}
+	if req.CompactorLLMProfileID != nil {
+		if *req.CompactorLLMProfileID > 0 {
+			if err := s.validateCompactorProfile(*req.CompactorLLMProfileID); err != nil {
+				return err
+			}
+		}
+	}
 	if req.EvidenceVerify != nil {
 		switch strings.ToLower(strings.TrimSpace(*req.EvidenceVerify)) {
 		case "off", "warn", "block":

@@ -84,6 +84,29 @@ func TestDeferredSystem_AlwaysSkillsLayer(t *testing.T) {
 	}
 }
 
+func TestDeferredSystem_CapabilityIndexLayer(t *testing.T) {
+	def := DeferredInfo{
+		AlwaysSkills:    "RULES",
+		CapabilityIndex: "## 【能力速查】\n技能：\n- recon：侦察",
+		GlobalNames:     []string{"mcp__browser__navigate"},
+	}
+	sys, boundary := deferredSystem("SYS", def)
+	if len(sys) != 4 {
+		t.Fatalf("want [SYS, always, capabilities, deferred], got %d: %v", len(sys), sys)
+	}
+	if sys[1] != def.AlwaysSkills || sys[2] != def.CapabilityIndex || !strings.Contains(sys[3], "mcp__browser__navigate") {
+		t.Fatalf("capability layer order wrong: %v", sys)
+	}
+	if boundary != len(sys) {
+		t.Fatalf("boundary=%d want %d", boundary, len(sys))
+	}
+	// 只有能力速查、没有常驻/deferred：两段且 boundary 覆盖全部。
+	sys, boundary = deferredSystem("SYS", DeferredInfo{CapabilityIndex: "CAPS"})
+	if len(sys) != 2 || sys[1] != "CAPS" || boundary != 2 {
+		t.Fatalf("capability-only: %v,%d", sys, boundary)
+	}
+}
+
 func TestSeedUnlockFromHistory(t *testing.T) {
 	skillCall := func(name string) llm.ContentBlock {
 		return llm.ContentBlock{Type: llm.BlockToolUse, Name: "Skill", Input: json.RawMessage(`{"name":"` + name + `"}`)}

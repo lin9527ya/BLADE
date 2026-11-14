@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/lin9527ya/Norma/skill"
@@ -204,17 +206,59 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			}
 		}
 		def := agent.DeferredInfo{
-			Deferred:     allNames,
-			GlobalNames:  globalNames,
-			Unlock:       unlock,
-			UnlockSkill:  unlockSkill,
-			AlwaysSkills: alwaysText,
+			Deferred:        allNames,
+			GlobalNames:     globalNames,
+			Unlock:          unlock,
+			UnlockSkill:     unlockSkill,
+			AlwaysSkills:    alwaysText,
+			CapabilityIndex: renderCapabilityIndex(reg, serverTools),
 		}
 		return extra, def, cleanup
 	}
 	o := agent.CurrentOverrides()
 	o.ToolAugment = augment
 	agent.SetOverrides(o)
+}
+
+// renderCapabilityIndex is a compact, cache-stable table of what this agent can
+// reach: visible skills (name + description) and connected MCP servers (name +
+// tool count). Full instructions still come from Skill(name); this is only a
+// discoverability index so the model doesn't have to guess.
+func renderCapabilityIndex(reg *skill.Registry, serverTools map[string][]string) string {
+	if reg == nil && len(serverTools) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## 【能力速查】\n以下能力已对本 agent 可见。技能用 Skill(name) 取完整步骤；MCP 工具可直接调用。\n")
+	if reg != nil {
+		skills := reg.List()
+		sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+		if len(skills) > 0 {
+			b.WriteString("技能：\n")
+			for _, s := range skills {
+				desc := strings.TrimSpace(s.Description)
+				if desc == "" {
+					desc = strings.TrimSpace(s.WhenToUse)
+				}
+				if desc == "" {
+					desc = "（无描述）"
+				}
+				b.WriteString("- " + s.Name + "：" + clipRunes(desc, 140) + "\n")
+			}
+		}
+	}
+	if len(serverTools) > 0 {
+		names := make([]string, 0, len(serverTools))
+		for name := range serverTools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		b.WriteString("MCP 服务器：\n")
+		for _, name := range names {
+			fmt.Fprintf(&b, "- %s（%d 个工具）\n", name, len(serverTools[name]))
+		}
+	}
+	return b.String()
 }
 
 func idSet(ids []int64) map[int64]bool {

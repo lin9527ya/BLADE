@@ -51,6 +51,10 @@ type taskLLMRuntime struct {
 	s        *Server
 	taskID   string
 	agentKey string
+	// forcedProfileFn, when set and > 0, pins this runtime to that LLM profile.
+	// Used by the compactor: a summary model must not mutate the task's failover
+	// chain, so a forced selection keeps profileID=0 in the failover hooks.
+	forcedProfileFn func() int64
 }
 
 type taskLLMError struct {
@@ -122,6 +126,15 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	r.s.syncTaskLLMState(pt)
 	t, _ := r.s.m.Task(r.taskID)
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
+	if r.forcedProfileFn != nil {
+		if id := r.forcedProfileFn(); id > 0 {
+			if prov, cfg, ok := r.s.providerForProfile(id); ok {
+				sel.provider, sel.retry = prov, cfg.Retry
+				return sel, nil
+			}
+			log.Printf("[compactor] task %s: forced LLM profile #%d is unavailable; falling back to the task chain", r.taskID, id)
+		}
+	}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		sel.provider, sel.retry = prov, cfg.Retry
 		return sel, nil
@@ -160,6 +173,13 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	if err != nil || pt == nil {
 		return agent.Config{}, false
 	}
+	if r.forcedProfileFn != nil {
+		if id := r.forcedProfileFn(); id > 0 {
+			if _, cfg, ok := r.s.providerForProfile(id); ok {
+				return cfg, true
+			}
+		}
+	}
 	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg, true
 	}
@@ -186,6 +206,23 @@ func (r *taskLLMRuntime) nonStreaming() bool {
 func (r *taskLLMRuntime) maxTokens() int {
 	cfg, _ := r.activeCfg() // 未解析出配置时是零值 0
 	return cfg.MaxTokens
+}
+
+// compactionLLM resolves the optional independent summary provider. It returns
+// false (use the agent's own provider) when no compactor profile is configured.
+func (r *taskLLMRuntime) compactionLLM() (agent.CompactionLLM, bool) {
+	if r == nil || r.forcedProfileFn == nil {
+		return agent.CompactionLLM{}, false
+	}
+	id := r.forcedProfileFn()
+	if id <= 0 {
+		return agent.CompactionLLM{}, false
+	}
+	prov, cfg, ok := r.s.providerForProfile(id)
+	if !ok {
+		return agent.CompactionLLM{}, false
+	}
+	return agent.CompactionLLM{Provider: prov, MaxTokens: cfg.MaxTokens, NonStreaming: !cfg.Stream}, true
 }
 
 func parseTaskID(id string) (int64, error) {
@@ -454,6 +491,13 @@ func isRetryableStreamError(err error) bool {
 // CompactionWindow mirrors current()'s precedence so the context window always
 // matches the provider the role will actually stream on.
 func (r *taskLLMRuntime) CompactionWindow() int {
+	if r.forcedProfileFn != nil {
+		if id := r.forcedProfileFn(); id > 0 {
+			if _, cfg, ok := r.s.providerForProfile(id); ok {
+				return cfg.CompactionWindow()
+			}
+		}
+	}
 	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg.CompactionWindow()
 	}
@@ -571,6 +615,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	plannerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "planner"}
 	workerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker"}
 	mainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "mainagent"}
+	// Compaction is a separate role: it can be pinned to a cheaper/faster profile
+	// without changing the model that drives planner/worker/mainagent.
+	compactorRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "compactor", forcedProfileFn: s.compactorLLMProfileID}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
@@ -581,6 +628,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
+	wk.SetCompactionLLM(compactorRuntime.compactionLLM)
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
 	wk.SetExecService(s.m.Executions())              // P13 长任务托管执行(活过 run;nil=工具显式报未接线)
@@ -595,6 +643,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
 	pl.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
+	pl.SetCompactionLLM(compactorRuntime.compactionLLM)
 	pl.SetWebSearch(s.webSearchFor("planner"))
 	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
 	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界视图 / 全量
@@ -604,7 +653,11 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// cold-digest §7: 冷节点后台压缩。引擎经权威解析器实际驱动的就是这套 per-task planner
 	// (agentsForTask),Compactor 必须接在这里。走任务路由的 planner provider(§4:与 agent
 	// 同模型,随任务 LLM 链解析),压缩用 Complete 一次性生成 body。
-	pl.SetCompactor(agent.NewCompactor(plannerRuntime, "task-router"))
+	compactorProvider := llm.Provider(plannerRuntime)
+	if s.compactorLLMProfileID() > 0 {
+		compactorProvider = compactorRuntime
+	}
+	pl.SetCompactor(agent.NewCompactor(compactorProvider, "task-router"))
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
 	main.SetFindingRecorder(s.evidenceStore())
 	// 任务内的人在环路也要过拦截面：它同样带 Bash/WebFetch，而且这里拿得到任务的真实 id，
@@ -616,6 +669,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetMaxTokens(mainRuntime.maxTokens)
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	main.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
+	main.SetCompactionLLM(compactorRuntime.compactionLLM)
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork) // steer_work：人对运行中 work 实时纠偏
 	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。

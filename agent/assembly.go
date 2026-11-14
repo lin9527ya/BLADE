@@ -26,6 +26,10 @@ type DeferredInfo struct {
 	// followed on every request without the model having to invoke the Skill tool.
 	// Empty = no always-on skills.
 	AlwaysSkills string
+	// CapabilityIndex is a compact, stable list of the visible skills and MCP
+	// servers (name + one-line purpose). It rides in the system prefix so the
+	// model can see what is available without first probing the Skill tool.
+	CapabilityIndex string
 }
 
 // ToolAugment, if set, returns the EXTRA tools an agent should see beyond its

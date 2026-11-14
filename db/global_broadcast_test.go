@@ -13,7 +13,7 @@ func TestGlobalNodesPageJoinsTasksAndMapsSession(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() }) // register before task cleanup → LIFO closes last
 	taskA, err := d.CreateTaskWithOptions("global broadcast A", "目标 A", TaskCreateOptions{Name: "广播任务 A"})
 	if err != nil {
 		t.Fatal(err)
@@ -22,8 +22,8 @@ func TestGlobalNodesPageJoinsTasksAndMapsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = d.DeleteTaskCascade(taskA.ID, true, true, true) })
-	t.Cleanup(func() { _, _ = d.DeleteTaskCascade(taskB.ID, true, true, true) })
+	t.Cleanup(func() { _, _ = d.DeleteTaskCascade(taskA.ID, true, true) })
+	t.Cleanup(func() { _, _ = d.DeleteTaskCascade(taskB.ID, true, true) })
 
 	storeA := d.Exploration(taskA.ExplorationID)
 	intentID, err := storeA.AddNode(KindIntent, map[string]any{"summary": "needle-intent"}, 1, "open", "planner", nil)
@@ -116,12 +116,12 @@ func TestGlobalNodesPageConfirmedFindings(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() }) // register before task cleanup → LIFO closes last
 	task, err := d.CreateTaskWithOptions("global finding", "目标", TaskCreateOptions{Name: "finding 广播"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = d.DeleteTaskCascade(task.ID, true, true, true) })
+	t.Cleanup(func() { _, _ = d.DeleteTaskCascade(task.ID, true, true) })
 	store := d.Exploration(task.ExplorationID)
 	rec, err := store.RecordFinding(context.Background(), RecordFindingInput{
 		TaskID: task.ID, Worker: "worker", VulnClass: "xss", Name: "needle-pending",
