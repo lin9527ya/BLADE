@@ -1407,6 +1407,71 @@ CREATE INDEX IF NOT EXISTS idx_findings_asset_ids ON findings USING GIN(asset_id
 CREATE INDEX IF NOT EXISTS idx_findings_report_patrol ON findings(report_patrol_at NULLS FIRST)
     WHERE COALESCE(report,'') = '' AND node_id IS NOT NULL AND task_id IS NOT NULL;
 
+-- API 令牌：给 Prometheus/自动化用的长期凭据；只存 SHA-256，明文只返回一次。
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    scopes       TEXT NOT NULL DEFAULT 'admin',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_active ON api_tokens(id) WHERE revoked_at IS NULL;
+
+-- 审计事件：只记变更类请求，足够回答「谁在什么时候改了什么」。
+CREATE TABLE IF NOT EXISTS audit_events (
+    id         BIGSERIAL PRIMARY KEY,
+    actor      TEXT NOT NULL DEFAULT '',
+    method     TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    status     INTEGER NOT NULL,
+    ip         TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC);
+
+-- 交付物台账：一份可签收的交付物，多次版本，签收绑定到具体版本。
+-- 与 findings/report 的分工：报告是任务材料，交付物是「发给客户的正式版本」。
+CREATE TABLE IF NOT EXISTS deliverables (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'pentest',
+    task_id     BIGINT REFERENCES tasks(id) ON DELETE SET NULL,
+    company_id  BIGINT REFERENCES companies(id) ON DELETE SET NULL,
+    campaign_id BIGINT REFERENCES campaigns(id) ON DELETE SET NULL,
+    status      TEXT NOT NULL DEFAULT 'draft',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_deliverables_task ON deliverables(task_id);
+CREATE INDEX IF NOT EXISTS idx_deliverables_company ON deliverables(company_id);
+CREATE INDEX IF NOT EXISTS idx_deliverables_campaign ON deliverables(campaign_id);
+
+CREATE TABLE IF NOT EXISTS deliverable_versions (
+    id             BIGSERIAL PRIMARY KEY,
+    deliverable_id BIGINT NOT NULL REFERENCES deliverables(id) ON DELETE CASCADE,
+    version        INTEGER NOT NULL,
+    report_md      TEXT NOT NULL DEFAULT '',
+    sha256         TEXT NOT NULL DEFAULT '',
+    note           TEXT NOT NULL DEFAULT '',
+    created_by     TEXT NOT NULL DEFAULT 'operator',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (deliverable_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_deliverable_versions_deliverable ON deliverable_versions(deliverable_id, version DESC);
+
+CREATE TABLE IF NOT EXISTS deliverable_acceptances (
+    id             BIGSERIAL PRIMARY KEY,
+    deliverable_id BIGINT NOT NULL REFERENCES deliverables(id) ON DELETE CASCADE,
+    version_id     BIGINT NOT NULL REFERENCES deliverable_versions(id) ON DELETE CASCADE,
+    accepted_by    TEXT NOT NULL DEFAULT 'operator',
+    note           TEXT NOT NULL DEFAULT '',
+    accepted_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_deliverable_acceptances_deliverable ON deliverable_acceptances(deliverable_id, id DESC);
+
 -- 发现评论：单管理员场景下是处置记录/沟通留痕；finding 删除时级联。
 CREATE TABLE IF NOT EXISTS finding_comments (
     id         BIGSERIAL PRIMARY KEY,

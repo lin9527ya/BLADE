@@ -1,4 +1,5 @@
 DELETE /api/agents/{key}	server.(*Server).pgDeleteAgent-fm
+DELETE /api/api-tokens/{id}	server.(*Server).revokeAPIToken-fm
 DELETE /api/asset-intercept/rules/{id}	server.(*Server).assetInterceptDeleteRule-fm
 DELETE /api/assets	server.(*Server).deleteAssets-fm
 DELETE /api/campaigns/{id}	server.(*Server).deleteCampaign-fm
@@ -7,6 +8,7 @@ DELETE /api/conversations/{id}	server.(*Server).pgDeleteConversation-fm
 DELETE /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 DELETE /api/cves/{id}	server.(*Server).deleteCVE-fm
 DELETE /api/cves/{id}/script	server.(*Server).clearCVEScript-fm
+DELETE /api/deliverables/{id}	server.(*Server).deleteDeliverable-fm
 DELETE /api/exploration/finding-cases/{id}/members/{finding_id}	server.(*Server).removeFindingCaseMember-fm
 DELETE /api/exploration/findings/{id}	server.(*Server).deleteFinding-fm
 DELETE /api/exploration/findings/{id}/comments/{comment_id}	server.(*Server).deleteFindingComment-fm
@@ -44,11 +46,13 @@ GET /api/agents/{key}/prompts	server.(*Server).pgListPromptVersions-fm
 GET /api/agents/{key}/triggers	server.(*Server).pgListTriggers-fm
 GET /api/agents/{key}/variables	server.(*Server).pgPromptVars-fm
 GET /api/agents/{key}/visibility	server.(*Server).pgGetAgentVisibility-fm
+GET /api/api-tokens	server.(*Server).listAPITokens-fm
 GET /api/asset-intercept/rules	server.(*Server).assetInterceptListRules-fm
 GET /api/assets	server.(*Server).listAssets-fm
 GET /api/assets/counts	server.(*Server).assetCounts-fm
 GET /api/assets/{id}	server.(*Server).getAssetDetail-fm
 GET /api/audit	server.(*Server).getAudit-fm
+GET /api/audit/events	server.(*Server).listAuditEvents-fm
 GET /api/auth/account	server.(*Server).authAccount-fm
 GET /api/auth/status	server.(*Server).authStatus-fm
 GET /api/broadcast	server.(*Server).globalBroadcast-fm
@@ -68,6 +72,7 @@ GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDet
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/credential-attempts	server.(*Server).listCredentialAttempts-fm
 GET /api/cves	server.(*Server).listCVEs-fm
+GET /api/cves/export	server.(*Server).exportCVEs-fm
 GET /api/cves/{id}	server.(*Server).getCVE-fm
 GET /api/dashboard	server.(*Server).dashboardSummary-fm
 GET /api/debug/pprof/allocs	net/http.Handler.ServeHTTP-fm
@@ -80,6 +85,11 @@ GET /api/debug/pprof/profile	net/http/pprof.Profile
 GET /api/debug/pprof/symbol	net/http/pprof.Symbol
 GET /api/debug/pprof/threadcreate	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/trace	net/http/pprof.Trace
+GET /api/deliverables	server.(*Server).listDeliverables-fm
+GET /api/deliverables/{id}	server.(*Server).getDeliverable-fm
+GET /api/deliverables/{id}/diff	server.(*Server).deliverableDiff-fm
+GET /api/deliverables/{id}/versions/{version_id}/export	server.(*Server).exportDeliverableVersion-fm
+GET /api/diagnostics/bundle	server.(*Server).diagnosticsBundle-fm
 GET /api/diagnostics/cache	server.(*Server).getCacheDiagnostics-fm
 GET /api/executions/{eid}	server.(*Server).getExecution-fm
 GET /api/exploration/activity	server.(*Server).activity-fm
@@ -145,13 +155,16 @@ GET /api/loot/export	server.(*Server).exportLoot-fm
 GET /api/mcp	server.(*Server).pgListMCP-fm
 GET /api/mcp/{id}/tools	server.(*Server).pgMCPTools-fm
 GET /api/metrics	server.(*Server).metrics-fm
+GET /api/metrics.prometheus	server.(*Server).metricsPrometheus-fm
 GET /api/notify/channels	server.(*Server).notifyListChannels-fm
 GET /api/notify/deliveries	server.(*Server).notifyListDeliveries-fm
 GET /api/notify/meta	server.(*Server).notifyMeta-fm
 GET /api/opsec/knowledge	server.(*Server).opsecKnowledge-fm
 GET /api/planner-templates	server.(*Server).pgListPlannerTemplates-fm
 GET /api/playbooks	server.(*Server).listPlaybooks-fm
+GET /api/playbooks/export	server.(*Server).exportPlaybooks-fm
 GET /api/playbooks/{id}	server.(*Server).getPlaybook-fm
+GET /api/readyz	server.(*Server).readyz-fm
 GET /api/report	server.(*Server).getReport-fm
 GET /api/scope/enforcement	server.(*Server).scopeEnforcementStatus-fm
 GET /api/search	server.(*Server).globalSearch-fm
@@ -171,6 +184,7 @@ GET /api/sync/scopesentry/tasks	server.(*Server).syncSSTasks-fm
 GET /api/system/info	server.(*Server).systemInfo-fm
 GET /api/task-archives	server.(*Server).listTaskArchives-fm
 GET /api/task-archives/{id}	server.(*Server).getTaskArchive-fm
+GET /api/task-archives/{id}/download	server.(*Server).downloadTaskArchive-fm
 GET /api/task-categories	server.(*Server).pgListTaskCategories-fm
 GET /api/task-schedules	server.(*Server).listTaskSchedules-fm
 GET /api/task-schedules/{id}/runs	server.(*Server).listTaskScheduleRuns-fm
@@ -248,6 +262,7 @@ POST /api/agents/{key}/prompt/reset	server.(*Server).pgResetPrompt-fm
 POST /api/agents/{key}/triggers	server.(*Server).pgCreateTrigger-fm
 POST /api/agents/{key}/wrapup/reset	server.(*Server).pgResetWrapup-fm
 POST /api/agents/{key}/wrapup/task-timeout/reset	server.(*Server).pgResetTaskTimeoutWrapup-fm
+POST /api/api-tokens	server.(*Server).createAPIToken-fm
 POST /api/asset-intercept/rules	server.(*Server).assetInterceptCreateRule-fm
 POST /api/asset-intercept/rules/{id}/toggle	server.(*Server).assetInterceptToggleRule-fm
 POST /api/assets	server.(*Server).insertAssets-fm
@@ -273,9 +288,13 @@ POST /api/conversations/{id}/stop	server.(*Server).pgStopConversation-fm
 POST /api/credentials/{id}/reveal	server.(*Server).revealCredential-fm
 POST /api/cves	server.(*Server).createCVE-fm
 POST /api/cves/delete/batch	server.(*Server).deleteCVEsBatch-fm
+POST /api/cves/import	server.(*Server).importCVEs-fm
 POST /api/cves/import/preview	server.(*Server).previewCVEImport-fm
 POST /api/cves/{id}/script	server.(*Server).uploadCVEScript-fm
 POST /api/debug/pprof/symbol	net/http/pprof.Symbol
+POST /api/deliverables	server.(*Server).createDeliverable-fm
+POST /api/deliverables/{id}/accept	server.(*Server).acceptDeliverable-fm
+POST /api/deliverables/{id}/versions	server.(*Server).addDeliverableVersion-fm
 POST /api/diagnostics/cache	server.(*Server).setCacheDiagnostics-fm
 POST /api/exploration/finding-case-blocks	server.(*Server).blockFindingCasePair-fm
 POST /api/exploration/finding-case-suggestions	server.(*Server).generateFindingCaseSuggestions-fm
@@ -314,6 +333,7 @@ POST /api/notify/deliveries/{id}/retry	server.(*Server).notifyRetryDelivery-fm
 POST /api/planner-templates	server.(*Server).pgCreatePlannerTemplate-fm
 POST /api/planner-templates/validate	server.(*Server).pgValidatePlannerTemplate-fm
 POST /api/planner-templates/{id}/default	server.(*Server).pgSetDefaultPlannerTemplate-fm
+POST /api/playbooks/import	server.(*Server).importPlaybooks-fm
 POST /api/scope/kill-switch	server.(*Server).setKillSwitch-fm
 POST /api/scope/resume-all	server.(*Server).resumeAllTasks-fm
 POST /api/settings/intel/test	server.(*Server).testIntelSource-fm

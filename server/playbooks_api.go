@@ -14,6 +14,8 @@ import (
 // 因此与其它 /api/* 一样走 requireAuth。
 func (s *Server) registerPlaybookRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/playbooks", s.listPlaybooks)
+	mux.HandleFunc("GET /api/playbooks/export", s.exportPlaybooks)
+	mux.HandleFunc("POST /api/playbooks/import", s.importPlaybooks)
 	mux.HandleFunc("GET /api/playbooks/{id}", s.getPlaybook)
 	mux.HandleFunc("PATCH /api/playbooks/{id}", s.patchPlaybook)
 	mux.HandleFunc("PUT /api/playbooks/{id}", s.updatePlaybook)

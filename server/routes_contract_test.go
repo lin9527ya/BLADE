@@ -169,7 +169,7 @@ func TestRequireAuthExemptionContract(t *testing.T) {
 		return false
 	})
 	sort.Strings(paths)
-	want := []string{"/api/auth/", "/api/health"}
+	want := []string{"/api/auth/", "/api/health", "/api/readyz"}
 	if !slices.Equal(paths, want) {
 		t.Fatalf("requireAuth 的路径豁免 = %v，want %v：公开面变更必须同步更新契约测试", paths, want)
 	}

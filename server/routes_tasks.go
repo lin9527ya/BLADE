@@ -50,6 +50,7 @@ func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/control/batch", s.controlTasksBatch)
 	mux.HandleFunc("GET /api/task-archives", s.listTaskArchives)
 	mux.HandleFunc("GET /api/task-archives/{id}", s.getTaskArchive)
+	mux.HandleFunc("GET /api/task-archives/{id}/download", s.downloadTaskArchive)
 	// P23 公司级知识:跨任务只读背景(Agent 只能沉淀,改/废由人做)
 	mux.HandleFunc("GET /api/companies/{id}/knowledge", s.listCompanyKnowledge)
 	mux.HandleFunc("PATCH /api/companies/{id}/knowledge/{kid}", s.patchCompanyKnowledge)

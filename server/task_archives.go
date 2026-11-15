@@ -472,6 +472,31 @@ func (s *Server) getTaskArchive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, item)
 }
 
+// downloadTaskArchive streams the completed archive package. Paths are checked
+// against the managed data dir before ServeFile.
+func (s *Server) downloadTaskArchive(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, 400, "归档 id 无效")
+		return
+	}
+	item, err := s.m.pg.GetTaskArchive(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if item == nil || item.State != pgdb.ArchiveReady || item.ArchivePath == "" {
+		writeErr(w, 404, "归档包不可用")
+		return
+	}
+	if err := validateArchivePath(s.m.dir, item.ArchivePath); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fmt.Sprintf("task-%d-archive-%d.tar.zst", item.TaskID, item.ID)))
+	http.ServeFile(w, r, item.ArchivePath)
+}
+
 func (s *Server) queueTaskArchive(w http.ResponseWriter, r *http.Request) {
 	id, ok := canonicalTaskID(r.PathValue("id"))
 	if !ok {

@@ -1,8 +1,10 @@
 "use client";
 
 import * as React from "react";
+
 import Link from "next/link";
-import { ActivityIcon, AlertTriangleIcon, ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
+
+import { ActivityIcon, AlertTriangleIcon, DownloadIcon, ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,9 +15,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import {
+  type CacheDiagnostics,
   cacheStructureExplanation,
   diagnosticHitRate,
-  type CacheDiagnostics,
   type RuntimeMetrics,
 } from "@/lib/diagnostics";
 import { createLatestRequest } from "@/lib/request-lifecycle";
@@ -129,10 +131,18 @@ export default function DiagnosticsPage() {
             读取运行状态和计量；不会请求模型或目标。最新页每 10 秒刷新，历史页不自动翻回。
           </p>
         </div>
-        <Button variant="outline" onClick={() => setVersion((v) => v + 1)} disabled={loading}>
-          <RefreshCwIcon />
-          {loading ? "刷新中…" : "刷新"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => void api.downloadDiagnosticsBundle().catch((e: Error) => toast.error(e.message))}
+          >
+            <DownloadIcon /> 诊断包
+          </Button>
+          <Button variant="outline" onClick={() => setVersion((v) => v + 1)} disabled={loading}>
+            <RefreshCwIcon />
+            {loading ? "刷新中…" : "刷新"}
+          </Button>
+        </div>
       </div>
       {errors && (
         <div role="alert" className="rounded border p-3 text-sm">

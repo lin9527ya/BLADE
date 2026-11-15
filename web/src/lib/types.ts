@@ -2186,6 +2186,70 @@ export interface NotificationDelivery {
   severity: string;
 }
 
+// ---- API 令牌与审计 ----
+export interface APIToken {
+  id: number;
+  name: string;
+  scopes: string;
+  created_at: string;
+  last_used_at?: string;
+  revoked_at?: string;
+}
+
+export interface AuditEvent {
+  id: number;
+  actor: string;
+  method: string;
+  path: string;
+  status: number;
+  ip: string;
+  user_agent: string;
+  created_at: string;
+}
+
+// ---- 交付物台账 ----
+export interface Deliverable {
+  id: number;
+  name: string;
+  kind: string;
+  task_id?: number;
+  company_id?: number;
+  campaign_id?: number;
+  status: "draft" | "accepted" | string;
+  latest_version: number;
+  latest_sha256?: string;
+  acceptance_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeliverableVersion {
+  id: number;
+  deliverable_id: number;
+  version: number;
+  report_md?: string;
+  sha256: string;
+  note: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface DeliverableAcceptance {
+  id: number;
+  deliverable_id: number;
+  version_id: number;
+  version: number;
+  accepted_by: string;
+  note: string;
+  accepted_at: string;
+}
+
+export interface DeliverableDetail {
+  deliverable: Deliverable;
+  versions: DeliverableVersion[];
+  acceptances: DeliverableAcceptance[];
+}
+
 // ---- 站内收件箱 ----
 export interface InboxItem {
   id: string;

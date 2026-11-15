@@ -5,6 +5,7 @@ import * as React from "react";
 import { BookOpenIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { KnowledgeTransferButtons } from "@/components/knowledge-transfer-buttons";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
@@ -286,6 +287,7 @@ export default function PlaybooksPage() {
               <SelectItem value="all">全部</SelectItem>
             </SelectContent>
           </Select>
+          <KnowledgeTransferButtons kind="playbooks" onImported={load} />
         </div>
       </div>
 

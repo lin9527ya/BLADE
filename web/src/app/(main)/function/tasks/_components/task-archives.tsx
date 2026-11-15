@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { ArchiveIcon, SearchIcon, Trash2Icon, Undo2Icon } from "lucide-react";
+import { ArchiveIcon, DownloadIcon, SearchIcon, Trash2Icon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -545,6 +545,19 @@ export function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                             title="重试"
                           >
                             <Undo2Icon />
+                          </Button>
+                        )}
+                        {archive.state === "ready" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() =>
+                              void api.downloadTaskArchive(archive.id).catch((e: Error) => toast.error(e.message))
+                            }
+                            aria-label="下载归档包"
+                            title="下载归档包"
+                          >
+                            <DownloadIcon />
                           </Button>
                         )}
                         {canRestore && (

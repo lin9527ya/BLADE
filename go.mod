@@ -10,6 +10,7 @@ require (
 	github.com/lin9527ya/Norma v0.5.13-0.20261112130025-de8aa8f206f9
 	github.com/lqqyt2423/go-mitmproxy v1.9.2
 	github.com/miekg/dns v1.1.72
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/projectdiscovery/dnsx v1.2.3
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.58.0

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
@@ -531,12 +532,25 @@ func extractToken(r *http.Request) string {
 	return ""
 }
 
+type actorContextKey struct{}
+
+func actorFrom(r *http.Request) string {
+	if v, ok := r.Context().Value(actorContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func withActor(r *http.Request, actor string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), actorContextKey{}, actor))
+}
+
 // requireAuth wraps h with JWT validation.
 // /api/auth/* and /api/health are exempt.
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" {
+		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" || p == "/api/readyz" {
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -545,11 +559,18 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "未授权")
 			return
 		}
-		if !verifyJWT(tok, s.auth.signKey.get()) {
-			writeErr(w, 401, "token 无效或已过期")
+		if verifyJWT(tok, s.auth.signKey.get()) {
+			h.ServeHTTP(w, withActor(r, "admin"))
 			return
 		}
-		h.ServeHTTP(w, r)
+		// 长期 API 令牌（Prometheus/自动化）只存哈希；JWT 校验失败后再查一次。
+		if strings.HasPrefix(tok, "blt_") && s.m != nil && s.m.PG() != nil {
+			if name, ok, err := s.m.PG().ValidateAPIToken(tok); err == nil && ok {
+				h.ServeHTTP(w, withActor(r, "token:"+name))
+				return
+			}
+		}
+		writeErr(w, 401, "token 无效或已过期")
 	})
 }
 

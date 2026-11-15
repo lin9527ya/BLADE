@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentDetail,
   AgentTrigger,
+  APIToken,
   ArchiveBatchItem,
   Asset,
   AssetDetail,
@@ -25,6 +26,7 @@ import type {
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
+  AuditEvent,
   BatchCategoryItem,
   BatchControlItem,
   Campaign,
@@ -51,6 +53,10 @@ import type {
   DashboardSummary,
   DeleteTaskOptions,
   DeleteTaskResult,
+  Deliverable,
+  DeliverableAcceptance,
+  DeliverableDetail,
+  DeliverableVersion,
   Edge,
   EvidenceBodyPreview,
   ExplorationNodePage,
@@ -691,6 +697,22 @@ export const api = {
     }));
   },
   playbook: (id: number) => get<Playbook>(`/playbooks/${id}`),
+  exportPlaybooks: async () => {
+    const token = getToken();
+    const r = await fetch("/api/playbooks/export", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `playbooks-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  importPlaybooks: (items: Playbook[]) =>
+    post<{ created: number; updated: number; failed: number; errors?: string[] }>("/playbooks/import", { items }),
   // 手动让「打法沉淀」agent 复盘本任务（历史任务不会因触发水位补发）。
   distillTaskPlaybook: (id: string) => post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
   setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>
@@ -734,6 +756,22 @@ export const api = {
     }));
   },
   cve: (id: number) => get<CVE>(`/cves/${id}`),
+  exportCVEs: async () => {
+    const token = getToken();
+    const r = await fetch("/api/cves/export", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cves-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  importCVEs: (items: CVE[]) =>
+    post<{ created: number; updated: number; failed: number; errors?: string[] }>("/cves/import", { items }),
   createCVE: (input: CVEInput) => post<CVE>("/cves", input),
   updateCVE: (id: number, input: CVEInput) => put<CVE>(`/cves/${id}`, input),
   setCVEStatus: (id: number, status: "active" | "deprecated", reason = "") =>
@@ -1577,6 +1615,85 @@ export const api = {
   // ---- 漏洞 IM 推送 ----
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
+  // ---- API 令牌与审计 ----
+  apiTokens: () => get<{ items: APIToken[] }>("/api-tokens").then((r) => arr(r.items)),
+  createAPIToken: (name: string) => post<{ token: APIToken; plaintext: string }>("/api-tokens", { name }),
+  revokeAPIToken: (id: number) => del<{ ok: boolean }>(`/api-tokens/${id}`),
+  downloadDiagnosticsBundle: async () => {
+    const token = getToken();
+    const r = await fetch("/api/diagnostics/bundle", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `blade-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  downloadTaskArchive: async (id: number) => {
+    const token = getToken();
+    const r = await fetch(`/api/task-archives/${id}/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`下载失败: ${r.status}`);
+    const blob = await r.blob();
+    const disp = r.headers.get("Content-Disposition") ?? "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const filename = m?.[1] ?? `task-archive-${id}.tar.zst`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  auditEvents: (limit = 100) => get<{ items: AuditEvent[] }>(`/audit/events?limit=${limit}`).then((r) => arr(r.items)),
+
+  // ---- 交付物台账 ----
+  deliverables: () => get<{ items: Deliverable[] }>("/deliverables").then((r) => arr(r.items)),
+  deliverable: (id: number) => get<DeliverableDetail>(`/deliverables/${id}`),
+  createDeliverable: (input: {
+    name: string;
+    kind?: string;
+    task_id?: number;
+    company_id?: number;
+    campaign_id?: number;
+    report_md?: string;
+    note?: string;
+  }) => post<DeliverableDetail>("/deliverables", input),
+  addDeliverableVersion: (id: number, report_md: string, note = "") =>
+    post<DeliverableVersion>(`/deliverables/${id}/versions`, { report_md, note }),
+  acceptDeliverable: (id: number, version_id: number, note = "") =>
+    post<DeliverableAcceptance>(`/deliverables/${id}/accept`, { version_id, note }),
+  deliverableDiff: (id: number, from: number, to: number) =>
+    get<{ diff: string }>(`/deliverables/${id}/diff?from=${from}&to=${to}`).then((r) => r.diff),
+  exportDeliverableVersion: async (id: number, versionId: number, format: "md" | "docx") => {
+    const token = getToken();
+    const r = await fetch(`/api/deliverables/${id}/versions/${versionId}/export?format=${format}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const disp = r.headers.get("Content-Disposition") ?? "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const filename = m?.[1] ?? `deliverable-${id}-v${versionId}.${format}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  deleteDeliverable: (id: number) => del<{ deleted: boolean }>(`/deliverables/${id}`),
   // 站内收件箱：无需外部渠道，Bell 轮询这个只读聚合。
   inbox: (limit = 100) => get<InboxPage>(`/inbox?limit=${limit}`),
   markInboxRead: () => post<{ ok: boolean; read_at: string }>("/inbox/read", {}),

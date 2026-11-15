@@ -17,6 +17,16 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/frontier", s.frontier)
 	mux.HandleFunc("GET /api/exploration/invariants", s.explorationInvariants)
 	mux.HandleFunc("GET /api/exploration/ledger", s.explorationLedger)
+	// 交付物台账：版本、签收、版本 diff 与导出。
+	mux.HandleFunc("GET /api/deliverables", s.listDeliverables)
+	mux.HandleFunc("POST /api/deliverables", s.createDeliverable)
+	mux.HandleFunc("GET /api/deliverables/{id}", s.getDeliverable)
+	mux.HandleFunc("DELETE /api/deliverables/{id}", s.deleteDeliverable)
+	mux.HandleFunc("POST /api/deliverables/{id}/versions", s.addDeliverableVersion)
+	mux.HandleFunc("POST /api/deliverables/{id}/accept", s.acceptDeliverable)
+	mux.HandleFunc("GET /api/deliverables/{id}/diff", s.deliverableDiff)
+	mux.HandleFunc("GET /api/deliverables/{id}/versions/{version_id}/export", s.exportDeliverableVersion)
+
 	// 命令面板跨实体检索（任务/发现/资产/CVE/打法）；每类独立封顶。
 	mux.HandleFunc("GET /api/search", s.globalSearch)
 	mux.HandleFunc("GET /api/exploration/findings", s.findings)
@@ -87,6 +97,11 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/llm/records/tasks", s.pgLLMTasks)
 	mux.HandleFunc("GET /api/llm/records/by-model", s.pgTokenByModel) // 按模型聚合本任务 token 用量
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
+	// API 令牌：给 Prometheus/自动化使用的长期凭据；明文只返回一次。
+	mux.HandleFunc("GET /api/api-tokens", s.listAPITokens)
+	mux.HandleFunc("POST /api/api-tokens", s.createAPIToken)
+	mux.HandleFunc("DELETE /api/api-tokens/{id}", s.revokeAPIToken)
+	mux.HandleFunc("GET /api/audit/events", s.listAuditEvents)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/proxy/egress-ip", s.proxyEgressIPs)

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
 import { CVEImportDialog } from "@/components/cve-import-dialog";
+import { KnowledgeTransferButtons } from "@/components/knowledge-transfer-buttons";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
@@ -541,6 +542,7 @@ export default function CVEPage() {
             </SelectContent>
           </Select>
           <CVEImportDialog onImported={load} />
+          <KnowledgeTransferButtons kind="cves" onImported={load} />
           {selectedIds.size > 0 && (
             <>
               <span className="text-xs tabular-nums">已选 {selectedIds.size} 项</span>
