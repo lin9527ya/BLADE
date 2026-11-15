@@ -223,6 +223,15 @@ export default function CVEPage() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // 命令面板/分享链接用 ?q= 直达筛选结果。
+  React.useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) {
+      setQuery(q);
+      setQueryQ(q);
+    }
+  }, []);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: filter changes reset pagination intentionally.
   React.useEffect(() => {
     setPage(0);
@@ -342,7 +351,12 @@ export default function CVEPage() {
                   : lower.endsWith(".ps1")
                     ? "pwsh"
                     : form.exploit_language;
-      setForm((f) => ({ ...f, exploit_script: text, exploit_language: language, exploit_filename: file.name }));
+      setForm((f) => ({
+        ...f,
+        exploit_script: text,
+        exploit_language: language,
+        exploit_filename: file.name,
+      }));
     } catch (e) {
       toast.error(`读取脚本失败：${(e as Error).message}`);
     }

@@ -4,12 +4,31 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { ArrowUpRightIcon, BugIcon, ChevronRightIcon, DownloadIcon, FolderIcon, SearchIcon } from "lucide-react";
+import {
+  ArrowUpRightIcon,
+  BugIcon,
+  ChevronRightIcon,
+  DownloadIcon,
+  FolderIcon,
+  SearchIcon,
+  Trash2Icon,
+} from "lucide-react";
 
+import { CopyLinkButton } from "@/components/copy-link-button";
 import { FindingCaseList } from "@/components/finding-case-list";
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -38,6 +57,9 @@ import { type FindingView, findingGroupKey } from "./_components/findings-helper
 import { FINDING_STATUSES, FindingsTable, fmtTime, SEVERITIES, UNASSIGNED_TASK } from "./_components/findings-table";
 import { useFindingsState } from "./_components/use-findings-state";
 
+// 批量处置只开放不需要附注的状态；撤回/反证闭合/待补证仍必须单条说明理由。
+const BATCH_STATUSES = FINDING_STATUSES.filter((st) => !["retracted", "ruled_out", "open_proof_gap"].includes(st));
+
 export default function FindingsPage() {
   const [caseOpen, setCaseOpen] = React.useState(false);
   const [caseTotal, setCaseTotal] = React.useState(0);
@@ -57,7 +79,6 @@ export default function FindingsPage() {
     search,
     setSearch,
     query,
-    expanded,
     flat,
     assetTree,
     assetScope,
@@ -66,7 +87,6 @@ export default function FindingsPage() {
     groupTotal,
     expandedGroups,
     groupFindings,
-    total,
     stats,
     page,
     setPage,
@@ -105,7 +125,11 @@ export default function FindingsPage() {
     submitDeepen,
     rowProps,
     triageDialog,
+    batchUpdate,
+    batchDelete,
+    batchBusy,
   } = useFindingsState();
+  const [batchDeleteOpen, setBatchDeleteOpen] = React.useState(false);
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
@@ -246,8 +270,53 @@ export default function FindingsPage() {
 
           <div className="ml-auto flex items-center gap-3">
             {selectedIds.size > 0 && (
-              <span className="text-muted-foreground text-xs tabular-nums">已选 {selectedIds.size} 条</span>
+              <div className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
+                <span className="text-muted-foreground text-xs tabular-nums">已选 {selectedIds.size} 条</span>
+                <Select
+                  value=""
+                  onValueChange={(value) => void batchUpdate({ status: value as FindingStatus })}
+                  disabled={batchBusy}
+                >
+                  <SelectTrigger size="sm" className="h-7 w-28">
+                    <SelectValue placeholder="批量改状态" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BATCH_STATUSES.map((st) => (
+                      <SelectItem key={st} value={st}>
+                        {statusMeta("finding", st).label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value=""
+                  onValueChange={(value) => void batchUpdate({ severity: value as Severity })}
+                  disabled={batchBusy}
+                >
+                  <SelectTrigger size="sm" className="h-7 w-24">
+                    <SelectValue placeholder="批量改等级" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SEVERITIES.map((level) => (
+                      <SelectItem key={level} value={level}>
+                        {statusMeta("severity", level).label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => setBatchDeleteOpen(true)}
+                  disabled={batchBusy}
+                  aria-label="批量删除已选发现"
+                >
+                  <Trash2Icon />
+                </Button>
+              </div>
             )}
+            <CopyLinkButton />
             <Button size="sm" variant="outline" onClick={() => setCaseOpen(true)}>
               <FolderIcon /> 案例
             </Button>
@@ -445,7 +514,10 @@ export default function FindingsPage() {
               conversation_id: retest.conversation_id,
               status: retest.status === "pending" ? "pending" : "running",
             };
-            setActiveRetests((current) => ({ ...current, [findingId]: active }));
+            setActiveRetests((current) => ({
+              ...current,
+              [findingId]: active,
+            }));
           }}
           onClose={() => setRetestFinding(null)}
         />
@@ -509,6 +581,31 @@ export default function FindingsPage() {
         taskID={task !== "all" && task !== UNASSIGNED_TASK ? task : ""}
         selectedFindingIDs={[...selectedIds].map(Number).filter((n) => Number.isFinite(n) && n > 0)}
       />
+
+      <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量删除发现</AlertDialogTitle>
+            <AlertDialogDescription>
+              将永久删除已选的 <span className="font-semibold tabular-nums">{selectedIds.size}</span>{" "}
+              条发现及其来源节点，此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={batchBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void batchDelete().finally(() => setBatchDeleteOpen(false));
+              }}
+              disabled={batchBusy}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {batchBusy ? "删除中…" : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent>

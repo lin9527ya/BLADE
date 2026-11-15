@@ -138,6 +138,15 @@ export default function PlaybooksPage() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // 命令面板/分享链接用 ?q= 直达筛选结果。
+  React.useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) {
+      setQuery(q);
+      setQueryQ(q);
+    }
+  }, []);
+
   // 搜索/筛选变化时回到第一页。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 过滤条件变化时重置分页是刻意的。
   React.useEffect(() => {
@@ -147,7 +156,12 @@ export default function PlaybooksPage() {
   const load = React.useCallback(() => {
     setLoading(true);
     api
-      .playbooks({ q: queryQ, status: status === "all" ? "" : status, limit: PAGE_SIZE, offset: page * PAGE_SIZE })
+      .playbooks({
+        q: queryQ,
+        status: status === "all" ? "" : status,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+      })
       .then((r) => {
         setRows(r.playbooks);
         setTotal(r.total);
@@ -461,7 +475,8 @@ export default function PlaybooksPage() {
               )}
               {selected.last_note && (
                 <div className="text-muted-foreground text-sm">
-                  最近反馈（{selected.last_outcome || "—"}）：{selected.last_note}
+                  最近反馈（{selected.last_outcome || "—"}）：
+                  {selected.last_note}
                 </div>
               )}
             </div>

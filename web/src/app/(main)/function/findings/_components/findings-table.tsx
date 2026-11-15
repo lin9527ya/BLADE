@@ -234,13 +234,15 @@ export function FindingsTable({
                   {f.assets && f.assets.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {f.assets.slice(0, 3).map((a) => (
-                        <code
+                        <Link
                           key={a.id}
-                          className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
+                          href={`/function/assets/detail?id=${a.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs hover:text-primary hover:underline"
                           title={`${a.type} · ${a.label}`}
                         >
                           {a.label}
-                        </code>
+                        </Link>
                       ))}
                       {f.assets.length > 3 && (
                         <span className="text-muted-foreground text-xs">+{f.assets.length - 3}</span>

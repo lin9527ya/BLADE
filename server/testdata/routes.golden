@@ -46,6 +46,7 @@ GET /api/agents/{key}/visibility	server.(*Server).pgGetAgentVisibility-fm
 GET /api/asset-intercept/rules	server.(*Server).assetInterceptListRules-fm
 GET /api/assets	server.(*Server).listAssets-fm
 GET /api/assets/counts	server.(*Server).assetCounts-fm
+GET /api/assets/{id}	server.(*Server).getAssetDetail-fm
 GET /api/audit	server.(*Server).getAudit-fm
 GET /api/auth/account	server.(*Server).authAccount-fm
 GET /api/auth/status	server.(*Server).authStatus-fm
@@ -150,6 +151,7 @@ GET /api/playbooks	server.(*Server).listPlaybooks-fm
 GET /api/playbooks/{id}	server.(*Server).getPlaybook-fm
 GET /api/report	server.(*Server).getReport-fm
 GET /api/scope/enforcement	server.(*Server).scopeEnforcementStatus-fm
+GET /api/search	server.(*Server).globalSearch-fm
 GET /api/settings	server.(*Server).getSettings-fm
 GET /api/settings/intel/queries	server.(*Server).listIntelQueries-fm
 GET /api/side-questions/{requestID}/events	server.(*Server).sideEvents-fm

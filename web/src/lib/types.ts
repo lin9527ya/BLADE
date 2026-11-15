@@ -304,6 +304,63 @@ export interface Asset {
   task_source_node_id?: number;
 }
 
+export interface AssetNeighbor {
+  id: number;
+  type: string;
+  relation: "parent" | "child" | "sibling" | "same_ip" | "same_csegment" | string;
+  label: string;
+  ip?: string;
+  url?: string;
+  port?: number;
+}
+
+export interface AssetRef {
+  id: number;
+  kind: string;
+  state: string;
+  summary: string;
+  source_task_id?: number;
+  inherited?: boolean;
+}
+
+export interface AssetDetailTask {
+  id: string;
+  name?: string;
+  description?: string;
+  status: string;
+}
+
+export interface AssetDetailCompany {
+  id: number;
+  name: string;
+  logo?: string;
+}
+
+export interface AssetDetail {
+  asset: Asset;
+  company?: AssetDetailCompany;
+  tasks: AssetDetailTask[];
+  neighbors: AssetNeighbor[];
+  findings: Finding[];
+  findings_total: number;
+  refs: AssetRef[];
+}
+
+export interface GlobalSearchHit {
+  id: string;
+  title: string;
+  subtitle?: string;
+  url: string;
+}
+
+export interface GlobalSearchResponse {
+  tasks: GlobalSearchHit[];
+  findings: GlobalSearchHit[];
+  assets: GlobalSearchHit[];
+  cves: GlobalSearchHit[];
+  playbooks: GlobalSearchHit[];
+}
+
 export interface IntentAsset {
   intent_id: number | string;
   asset_id: number;

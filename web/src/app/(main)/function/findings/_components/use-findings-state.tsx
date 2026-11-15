@@ -11,9 +11,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { remainingSelection } from "@/lib/batch-selection";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
-import { statusMeta } from "@/lib/status";
 import type { ActiveFindingRetest, Finding, FindingGroup, FindingStats, FindingStatus, Severity } from "@/lib/types";
+import { readUrlView, useUrlViewPopState, useUrlViewSync } from "@/lib/url-view";
 
 import { assetPathOf } from "./asset-tree";
 import {
@@ -38,6 +39,18 @@ import {
   SEVERITIES,
   UNASSIGNED_TASK,
 } from "./findings-table";
+
+// URL 参数只承载可分享的视图状态；分页仍按本地交互重置，避免刷新时页码与筛选打架。
+const FINDINGS_URL_DEFAULTS = {
+  view: "cases",
+  severity: "all",
+  status: "all",
+  vulnclass: "all",
+  task: "all",
+  sort: "severity",
+  q: "",
+  asset: "",
+};
 
 // 发现页的状态与取数：平铺/分组两种视图、资产树、筛选与轮询。
 
@@ -102,31 +115,46 @@ export function useFindingsState() {
   );
 
   React.useEffect(() => {
+    const url = readUrlView(FINDINGS_URL_DEFAULTS);
+    const fromUrl = Object.keys(url).length > 0;
+    let parsed: {
+      view?: unknown;
+      severity?: unknown;
+      status?: unknown;
+      vulnclass?: unknown;
+      task?: unknown;
+      sort?: unknown;
+    } = {};
     const raw = getLocalStorageValue(FINDING_LIST_PREFERENCE_KEY);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as {
-          view?: unknown;
-          severity?: unknown;
-          status?: unknown;
-          vulnclass?: unknown;
-          task?: unknown;
-          sort?: unknown;
-        };
-        if (FINDING_VIEWS.includes(parsed.view as FindingView)) setView(parsed.view as FindingView);
-        if (parsed.severity === "all" || SEVERITIES.includes(parsed.severity as Severity)) {
-          setSeverity(parsed.severity as "all" | Severity);
-        }
-        if (parsed.status === "all" || FINDING_STATUSES.includes(parsed.status as FindingStatus)) {
-          setStatus(parsed.status as "all" | FindingStatus);
-        }
-        if (typeof parsed.vulnclass === "string" && parsed.vulnclass) setVulnclass(parsed.vulnclass);
-        if (typeof parsed.task === "string" && parsed.task) setTask(parsed.task);
-        if (parsed.sort === "severity" || parsed.sort === "time") setSort(parsed.sort);
+        parsed = JSON.parse(raw) as typeof parsed;
       } catch {
         // Ignore malformed or legacy preferences and retain the defaults.
       }
     }
+    const viewValue = url.view ?? parsed.view;
+    if (url.asset && !url.view) setView("asset");
+    else if (FINDING_VIEWS.includes(viewValue as FindingView)) setView(viewValue as FindingView);
+    const severityValue = url.severity ?? parsed.severity;
+    if (severityValue === "all" || SEVERITIES.includes(severityValue as Severity)) {
+      setSeverity(severityValue as "all" | Severity);
+    }
+    const statusValue = url.status ?? parsed.status;
+    if (statusValue === "all" || FINDING_STATUSES.includes(statusValue as FindingStatus)) {
+      setStatus(statusValue as "all" | FindingStatus);
+    }
+    const vulnclassValue = url.vulnclass ?? parsed.vulnclass;
+    if (typeof vulnclassValue === "string" && vulnclassValue) setVulnclass(vulnclassValue);
+    const taskValue = url.task ?? parsed.task;
+    if (typeof taskValue === "string" && taskValue) setTask(taskValue);
+    const sortValue = url.sort ?? parsed.sort;
+    if (sortValue === "severity" || sortValue === "time") setSort(sortValue);
+    if (fromUrl && url.q !== undefined) {
+      setSearch(url.q);
+      setQuery(url.q);
+    }
+    if (fromUrl) setAssetScope(url.asset || null);
     setPreferencesHydrated(true);
   }, []);
 
@@ -137,6 +165,46 @@ export function useFindingsState() {
       JSON.stringify({ view, severity, status, vulnclass, task, sort }),
     );
   }, [preferencesHydrated, severity, sort, status, task, view, vulnclass]);
+
+  useUrlViewSync(
+    {
+      view,
+      severity,
+      status,
+      vulnclass,
+      task,
+      sort,
+      q: query,
+      asset: assetScope ?? "",
+    },
+    FINDINGS_URL_DEFAULTS,
+    preferencesHydrated,
+  );
+
+  useUrlViewPopState(() => {
+    const url = readUrlView(FINDINGS_URL_DEFAULTS);
+    if (url.asset && !url.view) {
+      setView("asset");
+    } else if (FINDING_VIEWS.includes((url.view ?? "cases") as FindingView)) {
+      setView((url.view ?? "cases") as FindingView);
+    }
+    setSeverity(
+      url.severity === "all" || SEVERITIES.includes(url.severity as Severity)
+        ? (url.severity as "all" | Severity)
+        : "all",
+    );
+    setStatus(
+      url.status === "all" || FINDING_STATUSES.includes(url.status as FindingStatus)
+        ? (url.status as "all" | FindingStatus)
+        : "all",
+    );
+    setVulnclass(url.vulnclass || "all");
+    setTask(url.task || "all");
+    setSort(url.sort === "time" ? "time" : "severity");
+    setSearch(url.q ?? "");
+    setQuery(url.q ?? "");
+    setAssetScope(url.asset || null);
+  });
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => setQuery(search.trim()), 300);
@@ -247,7 +315,13 @@ export function useFindingsState() {
         assetScope: activeAssetScope ?? undefined,
       });
       if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      setFlat({ items: result.items, total: result.total, loaded: true, loading: false, error: "" });
+      setFlat({
+        items: result.items,
+        total: result.total,
+        loaded: true,
+        loading: false,
+        error: "",
+      });
     } catch (e) {
       if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
       // Polling keeps the last successful snapshot visible, but the failure must be
@@ -268,7 +342,14 @@ export function useFindingsState() {
     const request = ++assetTreeRequest.current;
     setAssetTree((current) => ({ ...current, loading: true }));
     try {
-      const result = await api.findingAssetTree({ severity, status, vulnclass, task, query, sort });
+      const result = await api.findingAssetTree({
+        severity,
+        status,
+        vulnclass,
+        task,
+        query,
+        sort,
+      });
       if (request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter) return;
       setAssetTree({
         nodes: result.nodes ?? [],
@@ -419,7 +500,14 @@ export function useFindingsState() {
   );
 
   // Reset every view's pagination and expansion when a shared finding filter changes.
+  // 水合后的第一次不重置：URL 里带来的 asset/筛选要先生效。
+  const filterResetHydrated = React.useRef(false);
   React.useEffect(() => {
+    if (!preferencesHydrated) return;
+    if (!filterResetHydrated.current) {
+      filterResetHydrated.current = true;
+      return;
+    }
     void filterFingerprint;
     setPage(1);
     setExpanded(null);
@@ -430,7 +518,7 @@ export function useFindingsState() {
     // 筛选变了树也会变,原先选中的节点可能已经不在树里,退回「全部资产」。
     setAssetScope(null);
     setAssetTree(EMPTY_ASSET_TREE);
-  }, [filterFingerprint]);
+  }, [filterFingerprint, preferencesHydrated]);
 
   // 换资产节点等于换了一份结果集,回到第一页。
   React.useEffect(() => {
@@ -548,13 +636,22 @@ export function useFindingsState() {
         setEdit(null);
         return;
       }
-      setEdit({ name: f.name ?? "", vulnclass: f.vulnclass, severity: f.severity });
+      setEdit({
+        name: f.name ?? "",
+        vulnclass: f.vulnclass,
+        severity: f.severity,
+      });
       if (!f.finding_id || reports[key]) return;
       const fid = f.finding_id;
       setReports((r) => ({ ...r, [key]: { status: "loading", text: "" } }));
       api
         .getFinding(fid)
-        .then((full) => setReports((r) => ({ ...r, [key]: { status: "done", text: full.report ?? "" } })))
+        .then((full) =>
+          setReports((r) => ({
+            ...r,
+            [key]: { status: "done", text: full.report ?? "" },
+          })),
+        )
         .catch(() => setReports((r) => ({ ...r, [key]: { status: "error", text: "" } })));
     },
     [expanded, reports],
@@ -574,7 +671,12 @@ export function useFindingsState() {
         setFindings((cur) =>
           cur.map((x) =>
             isSameFinding(x, f)
-              ? { ...x, name: updated.name, vulnclass: updated.vulnclass, severity: updated.severity }
+              ? {
+                  ...x,
+                  name: updated.name,
+                  vulnclass: updated.vulnclass,
+                  severity: updated.severity,
+                }
               : x,
           ),
         );
@@ -626,6 +728,82 @@ export function useFindingsState() {
     [refreshAfterMutation, setFindings],
   );
 
+  // 批量处置：只开放不需要理由的状态；撤回/反证闭合/待补证仍走单条弹窗。
+  const [batchBusy, setBatchBusy] = React.useState(false);
+
+  const refreshAfterBatch = React.useCallback(async () => {
+    await Promise.all([
+      loadFlat(),
+      refreshGroups(),
+      loadAssetTree(),
+      api
+        .findingStats()
+        .then(setStats)
+        .catch(() => undefined),
+    ]);
+  }, [loadAssetTree, loadFlat, refreshGroups]);
+
+  const batchUpdate = React.useCallback(
+    async (fields: { status?: FindingStatus; severity?: Severity }) => {
+      const ids = [...selectedIds].filter((id) => /^[0-9]+$/.test(id));
+      if (ids.length === 0 || batchBusy) return;
+      if (ids.length > 200) {
+        toast.error("一次最多批量处置 200 条，请缩小选择范围");
+        return;
+      }
+      setBatchBusy(true);
+      try {
+        const results = await Promise.all(
+          ids.map(async (id) => {
+            try {
+              await api.updateFinding(id, fields);
+              return { id, ok: true };
+            } catch {
+              return { id, ok: false };
+            }
+          }),
+        );
+        const failed = results.filter((item) => !item.ok).length;
+        setSelectedIds((current) => remainingSelection(current, results));
+        await refreshAfterBatch();
+        if (failed === 0) toast.success(`已更新 ${ids.length} 条发现`);
+        else toast.warning(`已更新 ${ids.length - failed} 条，${failed} 条失败并保留选中`);
+      } finally {
+        setBatchBusy(false);
+      }
+    },
+    [batchBusy, refreshAfterBatch, selectedIds],
+  );
+
+  const batchDelete = React.useCallback(async () => {
+    const ids = [...selectedIds].filter((id) => /^[0-9]+$/.test(id));
+    if (ids.length === 0 || batchBusy) return;
+    if (ids.length > 200) {
+      toast.error("一次最多批量删除 200 条，请缩小选择范围");
+      return;
+    }
+    setBatchBusy(true);
+    try {
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            await api.deleteFinding(id);
+            return { id, ok: true };
+          } catch {
+            return { id, ok: false };
+          }
+        }),
+      );
+      const failed = results.filter((item) => !item.ok).length;
+      setSelectedIds((current) => remainingSelection(current, results));
+      await refreshAfterBatch();
+      if (failed === 0) toast.success(`已删除 ${ids.length} 条发现`);
+      else toast.warning(`已删除 ${ids.length - failed} 条，${failed} 条失败并保留选中`);
+    } finally {
+      setBatchBusy(false);
+    }
+  }, [batchBusy, refreshAfterBatch, selectedIds]);
+
   const openDeepen = React.useCallback((f: Finding) => {
     setDeepenFinding(f);
     setDeepenDescription("");
@@ -653,10 +831,30 @@ export function useFindingsState() {
 
   const statCards = [
     { label: "发现总数", value: stats.total, icon: BugIcon },
-    { label: "待处理", value: stats.pending, tone: "text-amber-500", icon: ClockIcon },
-    { label: "严重", value: stats.critical, tone: "text-rose-600", icon: ShieldAlertIcon },
-    { label: "高危", value: stats.high, tone: "text-red-500", icon: TriangleAlertIcon },
-    { label: "中危", value: stats.medium, tone: "text-amber-500", icon: TriangleAlertIcon },
+    {
+      label: "待处理",
+      value: stats.pending,
+      tone: "text-amber-500",
+      icon: ClockIcon,
+    },
+    {
+      label: "严重",
+      value: stats.critical,
+      tone: "text-rose-600",
+      icon: ShieldAlertIcon,
+    },
+    {
+      label: "高危",
+      value: stats.high,
+      tone: "text-red-500",
+      icon: TriangleAlertIcon,
+    },
+    {
+      label: "中危",
+      value: stats.medium,
+      tone: "text-amber-500",
+      icon: TriangleAlertIcon,
+    },
     { label: "低危", value: stats.low, tone: "text-slate-500", icon: InfoIcon },
   ];
 
@@ -826,6 +1024,9 @@ export function useFindingsState() {
     toggleRow,
     saveEdit,
     deleteFinding,
+    batchUpdate,
+    batchDelete,
+    batchBusy,
     openDeepen,
     statCards,
     filteredTotal,

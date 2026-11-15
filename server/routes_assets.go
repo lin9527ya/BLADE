@@ -9,6 +9,8 @@ func (s *Server) registerAssetRoutes(mux routeRegistrar) {
 	// asset system
 	mux.HandleFunc("GET /api/assets", s.listAssets)
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
+	// 资产详情：公司、来源任务、邻域、关联发现与图引用（调查落点）。
+	mux.HandleFunc("GET /api/assets/{id}", s.getAssetDetail)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
 	// CSV 目标清单导入：预览只读、应用才写（同一份解析器，见 server/asset_import.go）。

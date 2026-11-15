@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { CopyLinkButton } from "@/components/copy-link-button";
 import { HttpCodeBlock } from "@/components/http-code-block";
 import { LinkTrafficDialog } from "@/components/link-traffic-dialog";
 import { TablePagination } from "@/components/table-pagination";
@@ -44,6 +45,7 @@ import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import type { TrafficDetail, TrafficExchange, TrafficHost, TrafficResp } from "@/lib/types";
+import { readUrlView, useUrlViewPopState, useUrlViewSync } from "@/lib/url-view";
 import { cn } from "@/lib/utils";
 
 function fmtTime(ts: string) {
@@ -111,6 +113,22 @@ const SORT_STORAGE_KEY = "traffic-sort";
 // which the backend reads as either an exact code or an "Nxx" class band.
 const STATUS_BUCKETS = ["2xx", "3xx", "4xx", "5xx"];
 
+// 流量页的可分享视图：目标/关键词/方法/高级筛选/页码/排序。
+const TRAFFIC_URL_DEFAULTS = {
+  host: "",
+  q: "",
+  method: "all",
+  body: "",
+  path: "",
+  status: "all",
+  resp_min: "",
+  resp_max: "",
+  page: "0",
+  size: "50",
+  sort: "ts",
+  order: "desc",
+};
+
 export default function TrafficPage() {
   const [selectedFlows, setSelectedFlows] = React.useState<Set<string>>(() => new Set());
   const [linking, setLinking] = React.useState(false);
@@ -149,6 +167,39 @@ export default function TrafficPage() {
   const [deleteMode, setDeleteMode] = React.useState<"filter" | "selected" | "all" | null>(null); // null = dialog closed
   const [deleting, setDeleting] = React.useState(false);
   const [reloadTick, setReloadTick] = React.useState(0); // manual refetch trigger
+  const [urlHydrated, setUrlHydrated] = React.useState(false);
+  const pageResetReady = React.useRef(false);
+
+  React.useEffect(() => {
+    const url = readUrlView(TRAFFIC_URL_DEFAULTS);
+    setHost(url.host ?? "");
+    setHostQ(url.host ?? "");
+    setQuery(url.q ?? "");
+    setQueryQ(url.q ?? "");
+    const methodValue = url.method ?? "";
+    setMethod(METHODS.includes(methodValue) ? methodValue : "all");
+    setBody(url.body ?? "");
+    setBodyQ(url.body ?? "");
+    setPath(url.path ?? "");
+    setPathQ(url.path ?? "");
+    const statusValue = url.status ?? "";
+    setStatusFilter(STATUS_BUCKETS.includes(statusValue) ? statusValue : "all");
+    setRespMin(url.resp_min ?? "");
+    setRespMinQ(url.resp_min ?? "");
+    setRespMax(url.resp_max ?? "");
+    setRespMaxQ(url.resp_max ?? "");
+    const parsedPage = Number(url.page);
+    if (Number.isFinite(parsedPage) && parsedPage >= 0) setPage(Math.floor(parsedPage));
+    const parsedSize = Number(url.size);
+    if (Number.isFinite(parsedSize) && parsedSize > 0) setSize(Math.floor(parsedSize));
+    if (SORT_FIELDS.includes(url.sort as SortField)) {
+      setSort({
+        field: url.sort as SortField,
+        direction: url.order === "asc" ? "asc" : "desc",
+      });
+    }
+    setUrlHydrated(true);
+  }, [setSort]);
 
   // Debounce both filters so we don't refetch on every keystroke.
   React.useEffect(() => {
@@ -192,15 +243,68 @@ export default function TrafficPage() {
   // Any filter/size/sort change resets to the first page.
   // biome-ignore lint/correctness/useExhaustiveDependencies: these values intentionally trigger a page reset.
   React.useEffect(() => {
+    if (!urlHydrated) return;
+    if (!pageResetReady.current) {
+      pageResetReady.current = true;
+      return;
+    }
     setPage(0);
-  }, [hostQ, queryQ, method, size, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort]);
+  }, [hostQ, queryQ, method, size, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, urlHydrated]);
+
+  useUrlViewSync(
+    {
+      host: hostQ,
+      q: queryQ,
+      method,
+      body: bodyQ,
+      path: pathQ,
+      status: statusFilter,
+      resp_min: respMinQ,
+      resp_max: respMaxQ,
+      page,
+      size,
+      sort: sort.field,
+      order: sort.direction,
+    },
+    TRAFFIC_URL_DEFAULTS,
+    urlHydrated,
+  );
+
+  useUrlViewPopState(() => {
+    const url = readUrlView(TRAFFIC_URL_DEFAULTS);
+    setHost(url.host ?? "");
+    setHostQ(url.host ?? "");
+    setQuery(url.q ?? "");
+    setQueryQ(url.q ?? "");
+    const methodValue = url.method ?? "";
+    setMethod(METHODS.includes(methodValue) ? methodValue : "all");
+    setBody(url.body ?? "");
+    setBodyQ(url.body ?? "");
+    setPath(url.path ?? "");
+    setPathQ(url.path ?? "");
+    const statusValue = url.status ?? "";
+    setStatusFilter(STATUS_BUCKETS.includes(statusValue) ? statusValue : "all");
+    setRespMin(url.resp_min ?? "");
+    setRespMinQ(url.resp_min ?? "");
+    setRespMax(url.resp_max ?? "");
+    setRespMaxQ(url.resp_max ?? "");
+    const parsedPage = Number(url.page);
+    setPage(Number.isFinite(parsedPage) && parsedPage >= 0 ? Math.floor(parsedPage) : 0);
+    const parsedSize = Number(url.size);
+    setSize(Number.isFinite(parsedSize) && parsedSize > 0 ? Math.floor(parsedSize) : 50);
+    if (SORT_FIELDS.includes(url.sort as SortField)) {
+      setSort({
+        field: url.sort as SortField,
+        direction: url.order === "asc" ? "asc" : "desc",
+      });
+    }
+  });
 
   // Load the current page. Auto-refresh only on page 0 (newest) so paging back
   // through history isn't yanked out from under the user.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
   usePolling(
     async (alive) => {
+      if (!urlHydrated) return;
       await Promise.all([
         api
           .traffic(page, size, hostQ, method, queryQ, {
@@ -232,7 +336,7 @@ export default function TrafficPage() {
     },
     // 只在最新页自动刷新；往回翻历史不该被脚下抽走。
     page === 0 ? 5000 : 0,
-    [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick],
+    [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick, urlHydrated],
   );
 
   // Delete traffic for the current host filter (substring) or the checked
@@ -352,6 +456,7 @@ export default function TrafficPage() {
             {traffic?.enabled ? "录制中" : "已停用"}
           </span>
           {traffic?.proxy && <span className="font-mono text-muted-foreground text-xs">{traffic.proxy}</span>}
+          <CopyLinkButton />
           <span className="text-muted-foreground text-xs">
             共 <span className="tabular-nums">{traffic?.count ?? 0}</span> 条
           </span>
@@ -391,7 +496,10 @@ export default function TrafficPage() {
                         {hostCountSortDirection === "desc" ? <ArrowDownWideNarrowIcon /> : <ArrowUpNarrowWideIcon />}
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>按数据包数量{hostCountSortDirection === "desc" ? "倒序" : "正序"}</TooltipContent>
+                    <TooltipContent>
+                      按数据包数量
+                      {hostCountSortDirection === "desc" ? "倒序" : "正序"}
+                    </TooltipContent>
                   </Tooltip>
                 )}
                 {hosts.length > 0 && (

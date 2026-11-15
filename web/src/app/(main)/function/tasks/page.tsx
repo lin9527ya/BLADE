@@ -5,6 +5,7 @@ import * as React from "react";
 import { ArchiveIcon, DownloadIcon, PauseIcon, PlayIcon, SearchIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { CopyLinkButton } from "@/components/copy-link-button";
 import { PlannerTemplateManager } from "@/components/planner-template-manager";
 import { ScheduleTasksDialog } from "@/components/schedule-tasks-dialog";
 import { TablePagination } from "@/components/table-pagination";
@@ -25,6 +26,7 @@ import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.
 import { createLatestRequest, runLatestRequest } from "@/lib/request-lifecycle";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import type { DeleteTaskOptions, Task, TaskCategory, TaskStatus } from "@/lib/types";
+import { readUrlView, useUrlViewPopState, useUrlViewSync } from "@/lib/url-view";
 
 import { CreateTaskSheet } from "./_components/create-task-sheet";
 import { ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
@@ -44,6 +46,16 @@ import {
   UNCATEGORIZED_VALUE,
 } from "./_components/task-helpers";
 import { ConcurrencySettingsDialog, SortableTaskHead, TaskRow } from "./_components/task-row";
+
+// 任务列表的可分享视图：页签、筛选、排序与搜索词；分页不写 URL（筛选变化会回到第一页）。
+const TASK_URL_DEFAULTS = {
+  tab: "current",
+  q: "",
+  status: "all",
+  category: "all",
+  sort: "id",
+  dir: "desc",
+};
 
 // fmtBytes renders a human file size for the upload manifest.
 
@@ -83,25 +95,35 @@ export default function TasksPage() {
   const [movingCategory, setMovingCategory] = React.useState(false);
 
   React.useEffect(() => {
+    const url = readUrlView(TASK_URL_DEFAULTS);
+    let parsed: { status?: unknown; category?: unknown } = {};
     const raw = getLocalStorageValue(TASK_FILTER_PREFERENCE_KEY);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as { status?: unknown; category?: unknown };
-        if (parsed.status === "all" || STATUS_OPTIONS.some((option) => option.value === parsed.status)) {
-          setStatusFilter(parsed.status as TaskStatus | "all");
-        }
-        if (
-          typeof parsed.category === "string" &&
-          (parsed.category === "all" || parsed.category === UNCATEGORIZED_VALUE || /^\d+$/.test(parsed.category))
-        ) {
-          setCategoryFilter(parsed.category);
-        }
+        parsed = JSON.parse(raw) as typeof parsed;
       } catch {
         // Ignore malformed or legacy preferences and retain the defaults.
       }
     }
+    const statusValue = url.status ?? parsed.status;
+    if (statusValue === "all" || STATUS_OPTIONS.some((option) => option.value === statusValue)) {
+      setStatusFilter(statusValue as TaskStatus | "all");
+    }
+    const categoryValue = url.category ?? parsed.category;
+    if (
+      typeof categoryValue === "string" &&
+      (categoryValue === "all" || categoryValue === UNCATEGORIZED_VALUE || /^\d+$/.test(categoryValue))
+    ) {
+      setCategoryFilter(categoryValue);
+    }
+    if (url.tab === "current" || url.tab === "archived") setActiveTab(url.tab);
+    if (url.q !== undefined) setQuery(url.q);
+    if (TASK_SORT_FIELDS.includes(url.sort as TaskSortField)) {
+      const direction = url.dir === "asc" ? "asc" : "desc";
+      setSortPreference({ field: url.sort as TaskSortField, direction });
+    }
     setFiltersHydrated(true);
-  }, []);
+  }, [setSortPreference]);
 
   React.useEffect(() => {
     if (!filtersHydrated) return;
@@ -118,6 +140,38 @@ export default function TasksPage() {
     return () => clearTimeout(timer);
   }, [query]);
 
+  useUrlViewSync(
+    {
+      tab: activeTab,
+      q: debouncedQuery,
+      status: statusFilter,
+      category: categoryFilter,
+      sort: sortField,
+      dir: sortDirection,
+    },
+    TASK_URL_DEFAULTS,
+    filtersHydrated,
+  );
+
+  useUrlViewPopState(() => {
+    const url = readUrlView(TASK_URL_DEFAULTS);
+    if (url.tab === "current" || url.tab === "archived") setActiveTab(url.tab);
+    setQuery(url.q ?? "");
+    setDebouncedQuery(url.q ?? "");
+    setStatusFilter(
+      url.status === "all" || STATUS_OPTIONS.some((option) => option.value === url.status)
+        ? (url.status as TaskStatus | "all")
+        : "all",
+    );
+    setCategoryFilter(url.category || "all");
+    if (TASK_SORT_FIELDS.includes(url.sort as TaskSortField)) {
+      setSortPreference({
+        field: url.sort as TaskSortField,
+        direction: url.dir === "asc" ? "asc" : "desc",
+      });
+    }
+  });
+
   // reset to page 1 whenever filters or ordering change
   // biome-ignore lint/correctness/useExhaustiveDependencies: both filters intentionally reset pagination.
   React.useEffect(() => {
@@ -130,7 +184,10 @@ export default function TasksPage() {
     (field: TaskSortField) => {
       setSortPreference((current) => {
         if (current.field !== field) return { field, direction: "desc" };
-        return { field, direction: current.direction === "asc" ? "desc" : "asc" };
+        return {
+          field,
+          direction: current.direction === "asc" ? "desc" : "asc",
+        };
       });
     },
     [setSortPreference],
@@ -275,7 +332,13 @@ export default function TasksPage() {
     (taskID: string, category: TaskCategory | null) => {
       setTasks((current) => {
         const next = current.map((task) =>
-          task.id === taskID ? { ...task, category_id: category?.id, category_name: category?.name } : task,
+          task.id === taskID
+            ? {
+                ...task,
+                category_id: category?.id,
+                category_name: category?.name,
+              }
+            : task,
         );
         lastRef.current = JSON.stringify(next);
         return next;
@@ -698,6 +761,7 @@ export default function TasksPage() {
                     <BulkDeleteTasksDialog ids={[...selectedIds]} onDelete={deleteTasks} />
                   </>
                 )}
+                <CopyLinkButton />
                 <Button
                   size="sm"
                   variant="outline"

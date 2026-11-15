@@ -2,7 +2,10 @@
 
 import * as React from "react";
 
+import Link from "next/link";
+
 import {
+  ArrowUpRightIcon,
   GlobeIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
@@ -425,7 +428,32 @@ export function AssetsTab({ taskId }: { taskId: string }) {
     </Button>
   );
 
-  const commonCardProps = { loaded, onPage: setPage, onSize: setSize, page, size, total };
+  const detailButton = (asset: Asset) => (
+    <Button asChild variant="ghost" size="icon-sm" title="查看资产详情">
+      <Link
+        href={`/function/assets/detail?id=${asset.id}&task_id=${encodeURIComponent(taskId)}`}
+        aria-label={`查看资产 ${assetLabel(asset)} 详情`}
+      >
+        <ArrowUpRightIcon />
+      </Link>
+    </Button>
+  );
+
+  const rowActions = (asset: Asset) => (
+    <div className="flex items-center justify-end">
+      {detailButton(asset)}
+      {removeButton(asset)}
+    </div>
+  );
+
+  const commonCardProps = {
+    loaded,
+    onPage: setPage,
+    onSize: setSize,
+    page,
+    size,
+    total,
+  };
   const totalAll = TABS.reduce((sum, item) => sum + (counts[item.key] ?? 0), 0);
 
   const searchBox = (
@@ -479,7 +507,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                 <TableCell>
                   <SourceCell asset={asset} />
                 </TableCell>
-                <TableCell className="w-16">{removeButton(asset)}</TableCell>
+                <TableCell className="w-24">{rowActions(asset)}</TableCell>
               </TableRow>
             ))}
           </AssetCard>
@@ -505,7 +533,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                 <TableCell>
                   <SourceCell asset={asset} />
                 </TableCell>
-                <TableCell className="w-16">{removeButton(asset)}</TableCell>
+                <TableCell className="w-24">{rowActions(asset)}</TableCell>
               </TableRow>
             ))}
           </AssetCard>
@@ -524,7 +552,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                 <TableCell>
                   <SourceCell asset={asset} />
                 </TableCell>
-                <TableCell className="w-16">{removeButton(asset)}</TableCell>
+                <TableCell className="w-24">{rowActions(asset)}</TableCell>
               </TableRow>
             ))}
           </AssetCard>
@@ -546,7 +574,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                 <TableCell>
                   <SourceCell asset={asset} />
                 </TableCell>
-                <TableCell className="w-16">{removeButton(asset)}</TableCell>
+                <TableCell className="w-24">{rowActions(asset)}</TableCell>
               </TableRow>
             ))}
           </AssetCard>
@@ -604,7 +632,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                   <TableCell>
                     <SourceCell asset={asset} />
                   </TableCell>
-                  <TableCell className="w-16">{removeButton(asset)}</TableCell>
+                  <TableCell className="w-24">{rowActions(asset)}</TableCell>
                 </TableRow>
               );
             })}
@@ -633,7 +661,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                 <TableCell>
                   <SourceCell asset={asset} />
                 </TableCell>
-                <TableCell className="w-16">{removeButton(asset)}</TableCell>
+                <TableCell className="w-24">{rowActions(asset)}</TableCell>
               </TableRow>
             ))}
           </AssetCard>

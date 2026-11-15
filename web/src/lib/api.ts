@@ -19,6 +19,7 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  AssetDetail,
   AssetImportPreview,
   AssetImportResult,
   AssetInterceptRule,
@@ -72,6 +73,7 @@ import type {
   FindingTrafficDetail,
   GlobalBroadcastPage,
   GlobalBroadcastQuery,
+  GlobalSearchResponse,
   GraphAuditReport,
   IntelQueryList,
   IntelSearchResult,
@@ -1010,6 +1012,12 @@ export const api = {
     ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
   assetCounts: (taskId = "") =>
     get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
+  assetDetail: (id: string | number, taskId = "") =>
+    get<AssetDetail>(
+      `/assets/${encodeURIComponent(String(id))}${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`,
+    ),
+  globalSearch: (q: string, limit = 5) =>
+    get<GlobalSearchResponse>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   deleteAssets: (ids: number[]) =>
     http<{ deleted: number }>("/assets", { method: "DELETE", body: JSON.stringify({ ids }) }),
   // CSV 目标清单导入。同一份 CSV 喂两条路径：preview 只读、import 才写——所以

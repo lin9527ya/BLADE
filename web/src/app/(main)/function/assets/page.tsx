@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import Link from "next/link";
+
 import {
   BuildingIcon,
   DownloadIcon,
@@ -20,6 +22,7 @@ import { toast } from "sonner";
 import { AssetDslSearch } from "@/components/asset-dsl-search";
 import { AssetImportDialog } from "@/components/asset-import-dialog";
 import { CompanyKnowledgeDialog } from "@/components/company-knowledge-dialog";
+import { CopyLinkButton } from "@/components/copy-link-button";
 import { FofaSearchDialog } from "@/components/fofa-search-dialog";
 import {
   AlertDialog,
@@ -39,6 +42,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Asset, Company } from "@/lib/types";
+import { readUrlView, useUrlViewPopState, useUrlViewSync } from "@/lib/url-view";
 import { cn } from "@/lib/utils";
 
 import {
@@ -99,6 +103,14 @@ const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   { key: "endpoint", label: "接口", icon: LinkIcon },
 ];
 
+// 资产页的可分享视图：页签、DSL/关键词、页码与页长。
+const ASSET_URL_DEFAULTS = {
+  tab: "company",
+  q: "",
+  page: "0",
+  size: "50",
+};
+
 export default function AssetsPage() {
   const [rows, setRows] = React.useState<Asset[]>([]);
   const [exporting, setExporting] = React.useState(false);
@@ -115,6 +127,9 @@ export default function AssetsPage() {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const assetsRequestRef = React.useRef(0);
   const [rowsTab, setRowsTab] = React.useState("");
+  const [urlHydrated, setUrlHydrated] = React.useState(false);
+  const tabResetReady = React.useRef(false);
+  const pageResetReady = React.useRef(false);
 
   // asset selection & delete
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -220,9 +235,26 @@ export default function AssetsPage() {
     loadMeta();
   }, [loadMeta]);
 
+  React.useEffect(() => {
+    const url = readUrlView(ASSET_URL_DEFAULTS);
+    const tabValue = url.tab;
+    if (tabValue && TABS.some((t) => t.key === tabValue)) setTab(tabValue);
+    if (url.q !== undefined) setQuery(url.q);
+    const parsedPage = Number(url.page);
+    if (Number.isFinite(parsedPage) && parsedPage >= 0) setPage(Math.floor(parsedPage));
+    const parsedSize = Number(url.size);
+    if (Number.isFinite(parsedSize) && parsedSize > 0) setSize(Math.floor(parsedSize));
+    setUrlHydrated(true);
+  }, []);
+
   // Reset query + page + selection when switching tabs
   // biome-ignore lint/correctness/useExhaustiveDependencies: tab changes intentionally reset tab-local controls.
   React.useEffect(() => {
+    if (!urlHydrated) return;
+    if (!tabResetReady.current) {
+      tabResetReady.current = true;
+      return;
+    }
     setQuery("");
     setDslError("");
     setSelected(new Set());
@@ -230,17 +262,37 @@ export default function AssetsPage() {
     setRowsTab("");
     setTotal(0);
     setLoaded(false);
-  }, [tab]);
+  }, [tab, urlHydrated]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: these controls intentionally reset server pagination.
-  React.useEffect(() => setPage(0), [tab, size, query]);
+  React.useEffect(() => {
+    if (!urlHydrated) return;
+    if (!pageResetReady.current) {
+      pageResetReady.current = true;
+      return;
+    }
+    setPage(0);
+  }, [tab, size, query, urlHydrated]);
+
+  useUrlViewSync({ tab, q: query, page, size }, ASSET_URL_DEFAULTS, urlHydrated);
+
+  useUrlViewPopState(() => {
+    const url = readUrlView(ASSET_URL_DEFAULTS);
+    const tabValue = url.tab;
+    if (tabValue && TABS.some((t) => t.key === tabValue)) setTab(tabValue);
+    setQuery(url.q ?? "");
+    const parsedPage = Number(url.page);
+    setPage(Number.isFinite(parsedPage) && parsedPage >= 0 ? Math.floor(parsedPage) : 0);
+    const parsedSize = Number(url.size);
+    setSize(Number.isFinite(parsedSize) && parsedSize > 0 ? Math.floor(parsedSize) : 50);
+  });
 
   const dslMode = query.trim() !== "";
 
   // Server-side paginated page loader for the active data tab (company tab excluded).
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is an explicit manual-reload trigger.
   React.useEffect(() => {
-    if (tab === "company") return;
+    if (!urlHydrated || tab === "company") return;
     const request = ++assetsRequestRef.current;
     const dsl = query.trim();
     setLoading(true);
@@ -273,7 +325,7 @@ export default function AssetsPage() {
       clearTimeout(tid);
       if (assetsRequestRef.current === request) assetsRequestRef.current++;
     };
-  }, [tab, page, size, query, refreshKey]);
+  }, [tab, page, size, query, refreshKey, urlHydrated]);
 
   React.useEffect(() => {
     if (tab === "company") return;
@@ -289,7 +341,10 @@ export default function AssetsPage() {
 
   const companyName = (id?: number) => (id ? (companyById.get(id) ?? "") : "");
 
-  const tabCounts: Record<string, number> = { ...counts, company: companies.length };
+  const tabCounts: Record<string, number> = {
+    ...counts,
+    company: companies.length,
+  };
   const totalAssets = Object.values(counts).reduce((a, b) => a + b, 0);
 
   // rows are already the current server-side page.
@@ -343,7 +398,9 @@ export default function AssetsPage() {
         if (r.assets.length === 0 || offset >= r.total || out.length - 1 >= cap) break;
       }
       const truncated = total > out.length - 1;
-      const blob = new Blob([`\ufeff${out.join("\n")}\n`], { type: "text/csv;charset=utf-8" });
+      const blob = new Blob([`\ufeff${out.join("\n")}\n`], {
+        type: "text/csv;charset=utf-8",
+      });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = `assets-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -368,6 +425,7 @@ export default function AssetsPage() {
           <h1 className="font-semibold text-xl tracking-tight">资产</h1>
         </div>
         <div className="flex items-center gap-3">
+          <CopyLinkButton />
           <span className="text-muted-foreground text-sm">
             共 <span className="tabular-nums">{totalAssets}</span> 项资产
           </span>
@@ -506,7 +564,15 @@ export default function AssetsPage() {
                       </Badge>
                     </TableCell>
                   )}
-                  <TableCell className="font-medium font-mono text-xs">{assetTarget(a)}</TableCell>
+                  <TableCell className="font-medium font-mono text-xs">
+                    <Link
+                      href={`/function/assets/detail?id=${a.id}`}
+                      className="hover:text-primary hover:underline"
+                      title="查看资产详情"
+                    >
+                      {assetTarget(a)}
+                    </Link>
+                  </TableCell>
                   <TableCell className="text-muted-foreground text-xs">{assetPortStatus(a)}</TableCell>
                   <TableCell className="max-w-[22rem] truncate text-muted-foreground text-xs" title={assetExtras(a)}>
                     {assetExtras(a)}
