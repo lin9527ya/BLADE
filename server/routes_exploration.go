@@ -49,6 +49,10 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/exploration/findings/{id}/retests", s.startFindingRetest)
 	mux.HandleFunc("PATCH /api/exploration/findings/{id}", s.patchFinding)
 	mux.HandleFunc("DELETE /api/exploration/findings/{id}", s.deleteFinding)
+	// 发现协作：评论列表 / 新增 / 删除。
+	mux.HandleFunc("GET /api/exploration/findings/{id}/comments", s.findingComments)
+	mux.HandleFunc("POST /api/exploration/findings/{id}/comments", s.addFindingComment)
+	mux.HandleFunc("DELETE /api/exploration/findings/{id}/comments/{comment_id}", s.deleteFindingComment)
 	mux.HandleFunc("GET /api/exploration/intents", s.intents)
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/nodes", s.explorationNodes)
@@ -69,6 +73,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 
 	mux.HandleFunc("GET /api/audit", s.getAudit)
 	mux.HandleFunc("GET /api/traffic", s.getTraffic)
+	mux.HandleFunc("GET /api/traffic/export", s.trafficExport)
 	mux.HandleFunc("GET /api/traffic/hosts", s.getTrafficHosts)
 	mux.HandleFunc("DELETE /api/traffic", s.deleteTraffic)
 	mux.HandleFunc("DELETE /api/traffic/hosts", s.deleteTrafficHosts)

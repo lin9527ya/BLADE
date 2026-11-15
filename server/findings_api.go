@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/report"
@@ -202,6 +203,7 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	assets := s.resolveAssetIDs(f.AssetIDs)
 	dto := findingFromDB(f, assets)
+	s.enrichFindingCollab(&dto, id)
 	if contextTaskID := strings.TrimSpace(r.URL.Query().Get("context_task")); contextTaskID != "" {
 		contextTask := s.m.ResolveTask(contextTaskID)
 		if contextTask == nil {
@@ -415,14 +417,21 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		Confidence      *string `json:"confidence"`
 		Counterevidence *string `json:"counterevidence"`
 		ProofGap        *string `json:"proof_gap"`
+		// 发现协作字段
+		Assignee    *string   `json:"assignee"`
+		DueAt       *string   `json:"due_at"`
+		CVSSScore   *float64  `json:"cvss_score"`
+		CVEIDs      *[]string `json:"cve_ids"`
+		Remediation *string   `json:"remediation"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
 	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil &&
-		body.Confidence == nil && body.Counterevidence == nil && body.ProofGap == nil {
-		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass/confidence/counterevidence/proof_gap")
+		body.Confidence == nil && body.Counterevidence == nil && body.ProofGap == nil &&
+		body.Assignee == nil && body.DueAt == nil && body.CVSSScore == nil && body.CVEIDs == nil && body.Remediation == nil {
+		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass/confidence/counterevidence/proof_gap/assignee/due_at/cvss_score/cve_ids/remediation")
 		return
 	}
 	if body.Status != nil {
@@ -540,6 +549,53 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var collab db.FindingCollabPatch
+	if body.Assignee != nil {
+		assignee := strings.TrimSpace(*body.Assignee)
+		if utf8.RuneCountInString(assignee) > maxFindingAssigneeRunes {
+			writeErr(w, 400, "负责人最多 120 个字符")
+			return
+		}
+		collab.Assignee = &assignee
+	}
+	if body.DueAt != nil {
+		due, err := parseFindingDueAt(*body.DueAt)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		collab.SetDueAt = true
+		collab.DueAt = due
+	}
+	if body.CVSSScore != nil {
+		if *body.CVSSScore < 0 || *body.CVSSScore > 10 {
+			writeErr(w, 400, "CVSS 分数必须在 0–10 之间")
+			return
+		}
+		collab.CVSSScore = body.CVSSScore
+	}
+	if body.CVEIDs != nil {
+		ids, err := normalizeFindingCVEIDs(*body.CVEIDs)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		collab.CVEIDs = &ids
+	}
+	if body.Remediation != nil {
+		remediation := strings.TrimSpace(*body.Remediation)
+		if utf8.RuneCountInString(remediation) > maxFindingRemediationRune {
+			writeErr(w, 400, "修复建议最多 8000 个字符")
+			return
+		}
+		collab.Remediation = &remediation
+	}
+	if collab.Assignee != nil || collab.SetDueAt || collab.CVSSScore != nil || collab.CVEIDs != nil || collab.Remediation != nil {
+		if _, err := s.m.pg.UpdateFindingCollab(id, collab); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	f, err := s.m.pg.GetFinding(id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -549,7 +605,9 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "finding not found")
 		return
 	}
-	writeJSON(w, 200, findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)))
+	dto := findingFromDB(f, s.resolveAssetIDs(f.AssetIDs))
+	s.enrichFindingCollab(&dto, id)
+	writeJSON(w, 200, dto)
 }
 
 // deleteFinding removes a finding (findings row + originating exploration node).

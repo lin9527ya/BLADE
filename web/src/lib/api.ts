@@ -61,6 +61,7 @@ import type {
   FindingCaseListPage,
   FindingCaseStats,
   FindingCaseSuggestion,
+  FindingComment,
   FindingDeepenResponse,
   FindingGroupsPage,
   FindingQuery,
@@ -75,6 +76,7 @@ import type {
   GlobalBroadcastQuery,
   GlobalSearchResponse,
   GraphAuditReport,
+  InboxPage,
   IntelQueryList,
   IntelSearchResult,
   IntelTestResult,
@@ -131,12 +133,14 @@ import type {
   TaskAssetMutation,
   TaskAssetScopeMutation,
   TaskCategory,
+  TaskCompareRow,
   TaskConstraint,
   TaskFootprint,
   TaskGoal,
   TaskHint,
   TaskLLMResolutions,
   TaskNode,
+  TaskRelationRef,
   TaskSchedule,
   TaskScopeRow,
   TaskSrcBatchPlan,
@@ -355,6 +359,14 @@ export const api = {
     }));
   },
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
+  cloneTask: (id: string) => post<Task>(`/tasks/${encodeURIComponent(id)}/clone`, {}),
+  saveTaskTemplate: (id: string) => post<TaskTemplate>(`/tasks/${encodeURIComponent(id)}/template`, {}),
+  taskRelations: (id: string) =>
+    get<{ items: TaskRelationRef[] }>(`/tasks/${encodeURIComponent(id)}/relations`).then((r) => arr(r.items)),
+  compareTasks: (ids: string[]) =>
+    get<{ items: TaskCompareRow[] }>(`/tasks/compare?ids=${encodeURIComponent(ids.join(","))}`).then((r) =>
+      arr(r.items),
+    ),
   createTask: (input: {
     name?: string;
     categoryId?: number;
@@ -1329,8 +1341,21 @@ export const api = {
       counterevidence?: string;
       proof_gap?: string;
       retract_reason?: string;
+      assignee?: string;
+      due_at?: string;
+      cvss_score?: number;
+      cve_ids?: string[];
+      remediation?: string;
     },
   ) => patch<Finding>(`/exploration/findings/${id}`, fields),
+  findingComments: (id: string) =>
+    get<{ comments: FindingComment[] }>(`/exploration/findings/${encodeURIComponent(id)}/comments`).then((r) =>
+      arr(r.comments),
+    ),
+  addFindingComment: (id: string, body: string) =>
+    post<FindingComment>(`/exploration/findings/${encodeURIComponent(id)}/comments`, { body }),
+  deleteFindingComment: (id: string, commentId: number) =>
+    del<{ deleted: boolean }>(`/exploration/findings/${encodeURIComponent(id)}/comments/${commentId}`),
   // 删除漏洞:移除 findings 记录 + 来源探索节点(从发现列表/任务发现 Tab/探索图一并消失)。
   deleteFinding: (id: string) => del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}`),
   findingRetests: (id: string) =>
@@ -1496,6 +1521,26 @@ export const api = {
         (opts.sort ? `&sort=${encodeURIComponent(opts.sort)}` : "") +
         (opts.order ? `&order=${encodeURIComponent(opts.order)}` : ""),
     ),
+  trafficExport: async (ids: string[], format: "curl" | "har", mask = true) => {
+    const q = new URLSearchParams({ ids: ids.join(","), format, mask: mask ? "1" : "0" });
+    const token = getToken();
+    const r = await fetch(`/api/traffic/export?${q.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const disp = r.headers.get("Content-Disposition") ?? "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const filename = m?.[1] ?? `traffic-export.${format === "har" ? "har" : "curl.txt"}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   trafficExchange: (id: string) => get<TrafficDetail>(`/traffic/exchange?id=${encodeURIComponent(id)}`),
   trafficHosts: () => get<{ hosts: TrafficHost[] }>(`/traffic/hosts`),
   trafficDeleteHost: (host: string) => del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
@@ -1532,6 +1577,9 @@ export const api = {
   // ---- 漏洞 IM 推送 ----
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
+  // 站内收件箱：无需外部渠道，Bell 轮询这个只读聚合。
+  inbox: (limit = 100) => get<InboxPage>(`/inbox?limit=${limit}`),
+  markInboxRead: () => post<{ ok: boolean; read_at: string }>("/inbox/read", {}),
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
   notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {

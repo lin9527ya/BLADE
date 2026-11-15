@@ -9,6 +9,7 @@ DELETE /api/cves/{id}	server.(*Server).deleteCVE-fm
 DELETE /api/cves/{id}/script	server.(*Server).clearCVEScript-fm
 DELETE /api/exploration/finding-cases/{id}/members/{finding_id}	server.(*Server).removeFindingCaseMember-fm
 DELETE /api/exploration/findings/{id}	server.(*Server).deleteFinding-fm
+DELETE /api/exploration/findings/{id}/comments/{comment_id}	server.(*Server).deleteFindingComment-fm
 DELETE /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
 DELETE /api/intercept/rules/{id}	server.(*Server).interceptDeleteRule-fm
 DELETE /api/llm/profiles/{id}	server.(*Server).pgDeleteProfile-fm
@@ -98,6 +99,7 @@ GET /api/exploration/findings/retests/active	server.(*Server).listActiveFindingR
 GET /api/exploration/findings/stats	server.(*Server).findingStats-fm
 GET /api/exploration/findings/{id}	server.(*Server).getFinding-fm
 GET /api/exploration/findings/{id}/case-candidates	server.(*Server).findingCaseCandidates-fm
+GET /api/exploration/findings/{id}/comments	server.(*Server).findingComments-fm
 GET /api/exploration/findings/{id}/lineage	server.(*Server).findingLineage-fm
 GET /api/exploration/findings/{id}/retests	server.(*Server).listFindingRetests-fm
 GET /api/exploration/findings/{id}/traffic	server.(*Server).getFindingTraffic-fm
@@ -115,6 +117,7 @@ GET /api/findings/{id}/src-report	server.(*Server).getFindingSrcReport-fm
 GET /api/findings/{id}/src-report.docx	server.(*Server).getFindingSrcReportDocx-fm
 GET /api/findings/{id}/src-report/check	server.(*Server).getFindingSrcReportCheck-fm
 GET /api/health	server.(*Server).health-fm
+GET /api/inbox	server.(*Server).inboxList-fm
 GET /api/intercept/history	server.(*Server).interceptHistory-fm
 GET /api/intercept/history.csv	server.(*Server).interceptHistoryCSV-fm
 GET /api/intercept/history/{id}	server.(*Server).interceptDetail-fm
@@ -173,6 +176,7 @@ GET /api/task-schedules	server.(*Server).listTaskSchedules-fm
 GET /api/task-schedules/{id}/runs	server.(*Server).listTaskScheduleRuns-fm
 GET /api/task-templates	server.(*Server).pgListTaskTemplates-fm
 GET /api/tasks	server.(*Server).listTasks-fm
+GET /api/tasks/compare	server.(*Server).compareTasks-fm
 GET /api/tasks/export.csv	server.(*Server).exportTasksCSV-fm
 GET /api/tasks/{id}	server.(*Server).getTask-fm
 GET /api/tasks/{id}/ad-paths	server.(*Server).taskADPaths-fm
@@ -190,6 +194,7 @@ GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
 GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
 GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
+GET /api/tasks/{id}/relations	server.(*Server).taskRelations-fm
 GET /api/tasks/{id}/scope	server.(*Server).taskScopeList-fm
 GET /api/tasks/{id}/src-batch	server.(*Server).getTaskSrcBatch-fm
 GET /api/tasks/{id}/src-report.zip	server.(*Server).getTaskSrcReportZip-fm
@@ -203,6 +208,7 @@ GET /api/tools	server.(*Server).pgListTools-fm
 GET /api/traffic	server.(*Server).getTraffic-fm
 GET /api/traffic/blob	server.(*Server).getTrafficBlob-fm
 GET /api/traffic/exchange	server.(*Server).getTrafficExchange-fm
+GET /api/traffic/export	server.(*Server).trafficExport-fm
 GET /api/traffic/hosts	server.(*Server).getTrafficHosts-fm
 GET /api/update/check	server.(*Server).updateCheck-fm
 GET /api/update/stream	server.(*Server).updateStream-fm
@@ -277,11 +283,13 @@ POST /api/exploration/finding-case-suggestions/{id}/accept	server.(*Server).acce
 POST /api/exploration/finding-case-suggestions/{id}/dismiss	server.(*Server).dismissFindingCaseSuggestion-fm
 POST /api/exploration/finding-cases	server.(*Server).createFindingCase-fm
 POST /api/exploration/finding-cases/{id}/members	server.(*Server).addFindingCaseMembers-fm
+POST /api/exploration/findings/{id}/comments	server.(*Server).addFindingComment-fm
 POST /api/exploration/findings/{id}/deepen	server.(*Server).deepenFinding-fm
 POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-fm
 POST /api/exploration/findings/{id}/traffic	server.(*Server).bindFindingTraffic-fm
 POST /api/exploration/main-session/new	server.(*Server).newMainSession-fm
 POST /api/findings/{id}/promote-knowledge	server.(*Server).promoteFindingKnowledge-fm
+POST /api/inbox/read	server.(*Server).inboxMarkRead-fm
 POST /api/intel/search	server.(*Server).searchIntelAssets-fm
 POST /api/intercept/pending/batch-decide	server.(*Server).interceptBatchDecide-fm
 POST /api/intercept/pending/{id}/always-allow	server.(*Server).interceptAlwaysAllow-fm
@@ -337,6 +345,7 @@ POST /api/tasks/{id}/artifacts/{aid}/cleared	server.(*Server).clearArtifact-fm
 POST /api/tasks/{id}/assets	server.(*Server).attachTaskAssets-fm
 POST /api/tasks/{id}/chat/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/tasks/{id}/chat/stop	server.(*Server).stopChat-fm
+POST /api/tasks/{id}/clone	server.(*Server).cloneTask-fm
 POST /api/tasks/{id}/constraints	server.(*Server).addConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/apply	server.(*Server).applyConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/compile	server.(*Server).compileConstraint-fm
@@ -359,6 +368,7 @@ POST /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideR
 POST /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptCreateRule-fm
 POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskInterceptToggleRule-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm
+POST /api/tasks/{id}/template	server.(*Server).taskToTemplate-fm
 POST /api/tools/custom	server.(*Server).pgCreateCustomTool-fm
 POST /api/tools/custom/test	server.(*Server).pgTestCustomTool-fm
 POST /api/tools/{key}/reset	server.(*Server).pgResetTool-fm

@@ -53,6 +53,20 @@ export interface Task {
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
 }
 
+export interface TaskRelationRef {
+  id: number;
+  name?: string;
+  description?: string;
+  status: string;
+  direction: "source" | "dependent" | string;
+}
+
+export interface TaskCompareRow {
+  task: Task;
+  assets_total: number;
+  findings_total: number;
+}
+
 export interface TaskCategory {
   id: number;
   name: string;
@@ -1445,6 +1459,13 @@ export interface Finding {
   summary: string;
   evidence: string;
   report?: string; // 详细报告(Markdown);仅详情接口返回,列表为空
+  // 发现协作：仅详情接口返回。
+  assignee?: string;
+  due_at?: string;
+  cvss_score?: number;
+  cve_ids?: string[];
+  remediation?: string;
+  comments?: FindingComment[];
   confidence?: string; // 置信度标定 high/medium/low;空=未标定
   retract_reason?: string; // retracted 的撤回原因
   counterevidence?: string; // ruled_out 的反证（点名控制点）
@@ -1457,6 +1478,14 @@ export interface Finding {
   inherited?: boolean;
   assets?: FindingAsset[];
   ts: string;
+}
+
+export interface FindingComment {
+  id: number;
+  finding_id: number;
+  author: string;
+  body: string;
+  created_at: string;
 }
 
 // FindingsPage 是发现列表的服务端分页响应。
@@ -2155,6 +2184,23 @@ export interface NotificationDelivery {
   next_attempt_at: string;
   title: string;
   severity: string;
+}
+
+// ---- 站内收件箱 ----
+export interface InboxItem {
+  id: string;
+  kind: "approval" | "task" | "schedule" | "finding" | string;
+  title: string;
+  subtitle?: string;
+  url: string;
+  severity?: string;
+  created_at: string;
+}
+
+export interface InboxPage {
+  items: InboxItem[];
+  unread: number;
+  read_at?: string;
 }
 
 // ---- LLM config ----

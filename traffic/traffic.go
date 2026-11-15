@@ -885,6 +885,19 @@ type ExchangeMeta struct {
 	Path          string `json:"path"`
 }
 
+// Meta returns one exchange's index row (never bodies). Export paths use it for
+// the canonical URL/method/status without re-parsing the raw request line.
+func (t *Traffic) Meta(id string) (*ExchangeMeta, error) {
+	var m ExchangeMeta
+	err := t.db.QueryRow(`SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path
+FROM exchanges WHERE id=?`, id).Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status,
+		&m.ContentType, &m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Path)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // Search returns paged exchange metadata (never bodies).
 func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
 	if size <= 0 || size > 500 {

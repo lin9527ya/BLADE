@@ -101,6 +101,12 @@ var (
 	cveVersionR = map[string]int{"compatible": 4, "unconstrained": 3, "version_unknown": 2, "product_unknown": 1}
 )
 
+// ValidCVEID reports whether s is a real CVE id or one of BLADE's local
+// blade-YYYY-NNNN identifiers (after canonicalization).
+func ValidCVEID(s string) bool {
+	return cveIDRe.MatchString(NormalizeCVEID(s))
+}
+
 // NormalizeCVEID canonicalizes an identifier: real CVE IDs uppercase, our own
 // blade-YYYY-NNNN internal IDs lowercase (matches what the importer displays).
 // Whitespace is always trimmed.

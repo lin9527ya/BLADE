@@ -9,10 +9,11 @@ import { ArrowLeftIcon, ArrowUpRightIcon, FileDownIcon, FileTextIcon, ShieldAler
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
-import { useFindingTriage } from "@/components/finding-triage-dialog";
-import { FindingSrcExportDialog } from "@/components/finding-src-export-dialog";
+import { FindingCollaborationPanel } from "@/components/finding-collaboration-panel";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
+import { FindingSrcExportDialog } from "@/components/finding-src-export-dialog";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
+import { useFindingTriage } from "@/components/finding-triage-dialog";
 import { Markdown } from "@/components/markdown";
 import { PromoteKnowledgeDialog } from "@/components/promote-knowledge-dialog";
 import { StatusBadge } from "@/components/status-badge";
@@ -279,125 +280,134 @@ function FindingDetailInner() {
               </Card>
             </div>
 
-            {/* 右栏：状态区 */}
-            <Card className="h-fit lg:sticky lg:top-24">
-              <CardHeader>
-                <CardTitle className="text-sm">状态</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y">
-                {/* 漏洞 ID */}
-                <FieldRow label="漏洞 ID">
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
-                    #{finding.id}
-                  </code>
-                </FieldRow>
+            {/* 右栏：状态区 + 协作 */}
+            <div className="flex flex-col gap-4">
+              <Card className="h-fit">
+                <CardHeader>
+                  <CardTitle className="text-sm">状态</CardTitle>
+                </CardHeader>
+                <CardContent className="divide-y">
+                  {/* 漏洞 ID */}
+                  <FieldRow label="漏洞 ID">
+                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
+                      #{finding.id}
+                    </code>
+                  </FieldRow>
 
-                {/* 严重等级 */}
-                <FieldRow label="严重等级">
-                  {finding.inherited ? (
-                    <StatusBadge domain="severity" value={finding.severity} dot />
-                  ) : (
-                    <Select value={finding.severity} onValueChange={(v) => changeSeverity(v as Severity)}>
-                      <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
-                        <StatusBadge domain="severity" value={finding.severity} dot />
-                      </SelectTrigger>
-                      <SelectContent position="popper" align="end">
-                        <SelectGroup>
-                          {SEVERITIES.map((sv) => (
-                            <SelectItem key={sv} value={sv}>
-                              {statusMeta("severity", sv).label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  )}
-                </FieldRow>
-
-                {/* 处理状态 */}
-                <FieldRow label="处理状态">
-                  {finding.inherited ? (
-                    <StatusBadge domain="finding" value={finding.status} dot />
-                  ) : (
-                    <Select value={finding.status} onValueChange={(v) => changeStatus(v as FindingStatus)}>
-                      <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
-                        <StatusBadge domain="finding" value={finding.status} dot />
-                      </SelectTrigger>
-                      <SelectContent position="popper" align="end">
-                        <SelectGroup>
-                          {FINDING_STATUSES.map((st) => (
-                            <SelectItem key={st} value={st}>
-                              {statusMeta("finding", st).label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  )}
-                </FieldRow>
-
-                {/* 置信度标定 */}
-                <FieldRow label="置信度">
-                  <span className="text-muted-foreground text-xs">
-                    {CONFIDENCE_LABELS[finding.confidence ?? ""] ?? "未标定"}
-                    {!finding.inherited && (
-                      <Button variant="link" size="sm" onClick={() => triage.openTriage(finding, finding.status)}>
-                        编辑处置信息
-                      </Button>
-                    )}
-                  </span>
-                </FieldRow>
-
-                {/* 漏洞类型 */}
-                <FieldRow label="漏洞类型">
-                  {finding.vulnclass ? (
-                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{finding.vulnclass}</code>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </FieldRow>
-
-                {/* 涉及资产 */}
-                <FieldRow label="涉及资产">
-                  {finding.assets && finding.assets.length > 0 ? (
-                    <div className="flex flex-wrap justify-end gap-1">
-                      {finding.assets.map((a) => (
-                        <code
-                          key={a.id}
-                          className="max-w-[16rem] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
-                          title={`${a.type} · ${a.label}`}
+                  {/* 严重等级 */}
+                  <FieldRow label="严重等级">
+                    {finding.inherited ? (
+                      <StatusBadge domain="severity" value={finding.severity} dot />
+                    ) : (
+                      <Select value={finding.severity} onValueChange={(v) => changeSeverity(v as Severity)}>
+                        <SelectTrigger
+                          size="sm"
+                          className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0"
                         >
-                          {a.label}
-                        </code>
-                      ))}
-                    </div>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </FieldRow>
+                          <StatusBadge domain="severity" value={finding.severity} dot />
+                        </SelectTrigger>
+                        <SelectContent position="popper" align="end">
+                          <SelectGroup>
+                            {SEVERITIES.map((sv) => (
+                              <SelectItem key={sv} value={sv}>
+                                {statusMeta("severity", sv).label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FieldRow>
 
-                {/* 所属任务 */}
-                <FieldRow label="所属任务">
-                  {finding.task_id ? (
-                    <Link
-                      href={`/function/tasks/detail?id=${finding.task_id}`}
-                      className="inline-flex max-w-[16rem] items-center gap-1 text-primary hover:underline"
-                      title={finding.task_description}
-                    >
-                      <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>
-                      <ArrowUpRightIcon className="size-3 shrink-0" />
-                    </Link>
-                  ) : (
-                    <span className="text-muted-foreground">—（任务已删除）</span>
-                  )}
-                </FieldRow>
+                  {/* 处理状态 */}
+                  <FieldRow label="处理状态">
+                    {finding.inherited ? (
+                      <StatusBadge domain="finding" value={finding.status} dot />
+                    ) : (
+                      <Select value={finding.status} onValueChange={(v) => changeStatus(v as FindingStatus)}>
+                        <SelectTrigger
+                          size="sm"
+                          className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0"
+                        >
+                          <StatusBadge domain="finding" value={finding.status} dot />
+                        </SelectTrigger>
+                        <SelectContent position="popper" align="end">
+                          <SelectGroup>
+                            {FINDING_STATUSES.map((st) => (
+                              <SelectItem key={st} value={st}>
+                                {statusMeta("finding", st).label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FieldRow>
 
-                {/* 发现时间 */}
-                <FieldRow label="发现时间">
-                  <span className="tabular-nums">{fmtTime(finding.ts)}</span>
-                </FieldRow>
-              </CardContent>
-            </Card>
+                  {/* 置信度标定 */}
+                  <FieldRow label="置信度">
+                    <span className="text-muted-foreground text-xs">
+                      {CONFIDENCE_LABELS[finding.confidence ?? ""] ?? "未标定"}
+                      {!finding.inherited && (
+                        <Button variant="link" size="sm" onClick={() => triage.openTriage(finding, finding.status)}>
+                          编辑处置信息
+                        </Button>
+                      )}
+                    </span>
+                  </FieldRow>
+
+                  {/* 漏洞类型 */}
+                  <FieldRow label="漏洞类型">
+                    {finding.vulnclass ? (
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{finding.vulnclass}</code>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </FieldRow>
+
+                  {/* 涉及资产 */}
+                  <FieldRow label="涉及资产">
+                    {finding.assets && finding.assets.length > 0 ? (
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {finding.assets.map((a) => (
+                          <code
+                            key={a.id}
+                            className="max-w-[16rem] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
+                            title={`${a.type} · ${a.label}`}
+                          >
+                            {a.label}
+                          </code>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </FieldRow>
+
+                  {/* 所属任务 */}
+                  <FieldRow label="所属任务">
+                    {finding.task_id ? (
+                      <Link
+                        href={`/function/tasks/detail?id=${finding.task_id}`}
+                        className="inline-flex max-w-[16rem] items-center gap-1 text-primary hover:underline"
+                        title={finding.task_description}
+                      >
+                        <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>
+                        <ArrowUpRightIcon className="size-3 shrink-0" />
+                      </Link>
+                    ) : (
+                      <span className="text-muted-foreground">—（任务已删除）</span>
+                    )}
+                  </FieldRow>
+
+                  {/* 发现时间 */}
+                  <FieldRow label="发现时间">
+                    <span className="tabular-nums">{fmtTime(finding.ts)}</span>
+                  </FieldRow>
+                </CardContent>
+              </Card>
+              <FindingCollaborationPanel finding={finding} onChanged={load} />
+            </div>
           </div>
         </TabsContent>
 

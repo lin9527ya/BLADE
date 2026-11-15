@@ -31,6 +31,7 @@ import { readUrlView, useUrlViewPopState, useUrlViewSync } from "@/lib/url-view"
 import { CreateTaskSheet } from "./_components/create-task-sheet";
 import { ArchiveConfirmDialog, TaskArchivesPanel } from "./_components/task-archives";
 import { CategoryManagementDialog } from "./_components/task-categories";
+import { TaskCompareDialog } from "./_components/task-compare-dialog";
 import { BulkDeleteTasksDialog, MoveTasksCategoryDialog } from "./_components/task-dialogs";
 import {
   type DeleteCounts,
@@ -93,6 +94,7 @@ export default function TasksPage() {
   const [nowSec, setNowSec] = React.useState(() => Math.floor(Date.now() / 1000));
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
+  const [compareOpen, setCompareOpen] = React.useState(false);
 
   React.useEffect(() => {
     const url = readUrlView(TASK_URL_DEFAULTS);
@@ -532,6 +534,29 @@ export default function TasksPage() {
   // re-check current state per item. Never derive the candidate set from the page.
   const selectedTaskIDs = React.useMemo(() => [...selectedIds], [selectedIds]);
 
+  const cloneTask = React.useCallback(
+    async (task: Task) => {
+      try {
+        const created = await api.cloneTask(task.id);
+        toast.success(`已克隆为任务 #${created.id}`);
+        lastRef.current = "";
+        void load();
+      } catch (e) {
+        toast.error(`克隆失败：${(e as Error).message}`);
+      }
+    },
+    [load],
+  );
+
+  const saveTaskTemplate = React.useCallback(async (task: Task) => {
+    try {
+      const template = await api.saveTaskTemplate(task.id);
+      toast.success(`已保存为模板「${template.name}」`);
+    } catch (e) {
+      toast.error(`保存模板失败：${(e as Error).message}`);
+    }
+  }, []);
+
   const archiveSelectedTasks = React.useCallback(async () => {
     if (selectedTaskIDs.length === 0) return;
     if (selectedTaskIDs.length > 100) {
@@ -752,6 +777,14 @@ export default function TasksPage() {
                         </Button>
                       }
                     />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={selectedTaskIDs.length < 2}
+                      onClick={() => setCompareOpen(true)}
+                    >
+                      对比 {selectedTaskIDs.length}
+                    </Button>
                     <MoveTasksCategoryDialog
                       categories={categories}
                       count={selectedIds.size}
@@ -870,6 +903,8 @@ export default function TasksPage() {
                         onRemark={remarkTask}
                         onTogglePinned={toggleTaskPinned}
                         onArchive={queueTaskArchive}
+                        onClone={cloneTask}
+                        onSaveTemplate={saveTaskTemplate}
                         selected={selectedIds.has(task.id)}
                         onSelectedChange={toggleSelected}
                         tokenBudget={tokenBudget}
@@ -896,6 +931,7 @@ export default function TasksPage() {
           <TaskArchivesPanel onChanged={load} />
         </TabsContent>
       </Tabs>
+      <TaskCompareDialog ids={selectedTaskIDs} open={compareOpen} onOpenChange={setCompareOpen} />
     </div>
   );
 }

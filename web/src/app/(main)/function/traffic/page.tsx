@@ -5,6 +5,7 @@ import * as React from "react";
 import {
   ArrowDownWideNarrowIcon,
   ArrowUpNarrowWideIcon,
+  DownloadIcon,
   EraserIcon,
   FilterXIcon,
   ListChecksIcon,
@@ -132,6 +133,8 @@ const TRAFFIC_URL_DEFAULTS = {
 export default function TrafficPage() {
   const [selectedFlows, setSelectedFlows] = React.useState<Set<string>>(() => new Set());
   const [linking, setLinking] = React.useState(false);
+  const [exportingTraffic, setExportingTraffic] = React.useState<"" | "curl" | "har">("");
+  const [maskExport, setMaskExport] = React.useState(true);
   const [page, setPage] = React.useState(0);
   const [size, setSize] = React.useState(50);
   const [host, setHost] = React.useState(""); // raw host input
@@ -690,6 +693,46 @@ export default function TrafficPage() {
         <span className="text-muted-foreground text-sm">已选 {selectedFlows.size} 条流量</span>
         <Button variant="outline" size="sm" disabled={selectedFlows.size === 0} onClick={() => setLinking(true)}>
           关联到漏洞
+        </Button>
+        <label htmlFor="traffic-mask-export" className="flex items-center gap-1.5 text-muted-foreground text-xs">
+          <Checkbox
+            id="traffic-mask-export"
+            checked={maskExport}
+            onCheckedChange={(checked) => setMaskExport(checked === true)}
+          />
+          脱敏导出
+        </label>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={selectedFlows.size === 0 || exportingTraffic !== ""}
+          onClick={() => {
+            setExportingTraffic("curl");
+            void api
+              .trafficExport([...selectedFlows], "curl", maskExport)
+              .then(() => toast.success("已导出 cURL"))
+              .catch((e: Error) => toast.error(e.message))
+              .finally(() => setExportingTraffic(""));
+          }}
+        >
+          <DownloadIcon className="size-3.5" />
+          {exportingTraffic === "curl" ? "导出中…" : "cURL"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={selectedFlows.size === 0 || exportingTraffic !== ""}
+          onClick={() => {
+            setExportingTraffic("har");
+            void api
+              .trafficExport([...selectedFlows], "har", maskExport)
+              .then(() => toast.success("已导出 HAR"))
+              .catch((e: Error) => toast.error(e.message))
+              .finally(() => setExportingTraffic(""));
+          }}
+        >
+          <DownloadIcon className="size-3.5" />
+          {exportingTraffic === "har" ? "导出中…" : "HAR"}
         </Button>
         {selectedFlows.size > 0 ? (
           <Button variant="ghost" size="sm" onClick={() => setSelectedFlows(new Set())}>

@@ -8,6 +8,9 @@ package server
 func (s *Server) registerChatRoutes(mux routeRegistrar) {
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
+	// 站内收件箱：待审批、任务终态、计划失败、发现事件聚合；单管理员读游标。
+	mux.HandleFunc("GET /api/inbox", s.inboxList)
+	mux.HandleFunc("POST /api/inbox/read", s.inboxMarkRead)
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
 	mux.HandleFunc("GET /api/notify/channels", s.notifyListChannels)
 	mux.HandleFunc("POST /api/notify/channels", s.notifyCreateChannel)

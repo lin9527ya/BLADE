@@ -428,6 +428,13 @@ type FindingDTO struct {
 	Counterevidence string `json:"counterevidence"`
 	ProofGap        string `json:"proof_gap"`
 	Report          string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
+	// 发现协作：详情接口返回；列表不携带，避免列表 payload 膨胀。
+	Assignee    string              `json:"assignee,omitempty"`
+	DueAt       string              `json:"due_at,omitempty"`
+	CVSSScore   float64             `json:"cvss_score,omitempty"`
+	CVEIDs      []string            `json:"cve_ids,omitempty"`
+	Remediation string              `json:"remediation,omitempty"`
+	Comments    []db.FindingComment `json:"comments,omitempty"`
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`

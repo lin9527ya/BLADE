@@ -40,6 +40,7 @@ import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
 import { ArtifactPanel } from "./_components/artifact-panel";
 import { TaskInterceptRulesCard } from "./_components/task-policy-cards";
+import { TaskRelationsCard } from "./_components/task-relations-card";
 import { useOverviewState } from "./_components/use-overview-state";
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
@@ -238,6 +239,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <TaskRelationsCard taskId={taskId} />
       {/* 遗留物（P43）：我们留在目标上的东西。放在最前面——任务收尾前最该被看见的一条，
           没清掉的 webshell 就是留在客户系统上的后门。
           active 与 unknown 分开说：unknown 是"没去确认还在不在"，并进未清理会把

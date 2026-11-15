@@ -8,6 +8,8 @@ import {
   ArrowDownIcon,
   ArrowUpDownIcon,
   ArrowUpIcon,
+  BookMarkedIcon,
+  CopyIcon,
   EyeIcon,
   Loader2Icon,
   PauseIcon,
@@ -47,8 +49,8 @@ import { cn } from "@/lib/utils";
 import { TaskArchiveAction } from "./task-archives";
 import { DeleteTaskDialog } from "./task-dialogs";
 import {
-  budgetTextTone,
   activeRunSeconds,
+  budgetTextTone,
   fmtDateTime,
   fmtDuration,
   fmtTokens,
@@ -213,6 +215,8 @@ export const TaskRow = React.memo(function TaskRow({
   onRemark,
   onTogglePinned,
   onArchive,
+  onClone,
+  onSaveTemplate,
   selected,
   onSelectedChange,
   tokenBudget,
@@ -226,6 +230,8 @@ export const TaskRow = React.memo(function TaskRow({
   onRemark: (task: Task, remark: string) => Promise<void>;
   onTogglePinned: (task: Task) => Promise<void>;
   onArchive: (task: Task) => Promise<void>;
+  onClone: (task: Task) => Promise<void>;
+  onSaveTemplate: (task: Task) => Promise<void>;
   selected: boolean;
   onSelectedChange: (id: string, checked: boolean) => void;
 }) {
@@ -362,6 +368,24 @@ export const TaskRow = React.memo(function TaskRow({
           </Button>
           <TaskControlButton task={task} onControl={onControl} />
           <TaskPinAction task={task} onTogglePinned={onTogglePinned} />
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => void onClone(task)}
+            aria-label="克隆任务"
+            title="克隆任务配置"
+          >
+            <CopyIcon />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => void onSaveTemplate(task)}
+            aria-label="另存为任务模板"
+            title="另存为任务模板"
+          >
+            <BookMarkedIcon />
+          </Button>
           <TaskArchiveAction task={task} onArchive={onArchive} />
           <DeleteTaskDialog task={task} onDelete={onDelete} />
         </div>

@@ -1391,6 +1391,12 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS retract_reason TEXT NOT NULL DEFAU
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS confidence      TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS counterevidence TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS proof_gap       TEXT NOT NULL DEFAULT '';
+-- 发现协作（第二批）：负责人/截止时间/CVSS/CVE 关联/修复建议。旧库幂等补列。
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS assignee    TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS due_at      TIMESTAMPTZ;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_score  DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS cve_ids     JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS remediation TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
@@ -1400,6 +1406,16 @@ CREATE INDEX IF NOT EXISTS idx_findings_asset_ids ON findings USING GIN(asset_id
 -- 空报告巡检扫描：只关心还没有详细报告、且有探索节点的行。
 CREATE INDEX IF NOT EXISTS idx_findings_report_patrol ON findings(report_patrol_at NULLS FIRST)
     WHERE COALESCE(report,'') = '' AND node_id IS NOT NULL AND task_id IS NOT NULL;
+
+-- 发现评论：单管理员场景下是处置记录/沟通留痕；finding 删除时级联。
+CREATE TABLE IF NOT EXISTS finding_comments (
+    id         BIGSERIAL PRIMARY KEY,
+    finding_id BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    author     TEXT NOT NULL DEFAULT '',
+    body       TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_comments_finding ON finding_comments(finding_id, id);
 
 -- 手动复测属于独立会话；结论与原漏洞处置状态分开保存。
 CREATE TABLE IF NOT EXISTS finding_retests (
