@@ -50,7 +50,8 @@ CAS 防重与水位语义、create/start/pause/resume 动作、固定时区墙�
 （结构化频率：间隔/每天/每周/指定日期一次性）、`server/scheduler.go`（触发器调度）。
 计划任务默认按 `Asia/Shanghai`（北京时间）解释 daily/weekly/once 的 `HH:MM`，可在每条
 计划上切换 IANA 时区；一次性计划执行后自动停用。`create` 动作可设置可选的
-`auto_pause_at`，任务创建后到点会派生一条一次性 `pause` 计划，自动暂停该任务。
+`auto_pause_date` + `auto_pause_at`，任务创建后到点会派生一条一次性 `pause` 计划，
+自动暂停该任务；日期留空时按时间字段计算运行后的下一次。
 
 ## 资产模型与自动关联
 

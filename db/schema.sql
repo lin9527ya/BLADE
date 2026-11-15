@@ -1718,7 +1718,8 @@ CREATE TABLE IF NOT EXISTS task_schedules (
     timezone     TEXT NOT NULL DEFAULT 'Asia/Shanghai',
     -- create 动作的可选自动暂停墙钟时间（HH:MM，空=不自动暂停）；到点会派生一条
     -- 一次性 pause 计划，绑定本次新建的任务。
-    auto_pause_at TEXT NOT NULL DEFAULT '',
+    auto_pause_date TEXT NOT NULL DEFAULT '',
+    auto_pause_at   TEXT NOT NULL DEFAULT '',
     -- next_run_at 兼作"到期判据"与"CAS 锁"：到点先把 next_run_at 推到下一次（原子），
     -- 推成功的那次才去建任务，于是多 tick/多实例/重启都不会重复建。
     -- 进程停机期间错过的次数不追补（开机只跑一次），改由人工用「立即运行」补。
@@ -1732,6 +1733,7 @@ CREATE TABLE IF NOT EXISTS task_schedules (
 ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'create';
 ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS target_task_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';
+ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS auto_pause_date TEXT NOT NULL DEFAULT '';
 ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS auto_pause_at TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_task_schedules_due ON task_schedules(next_run_at) WHERE enabled;
 

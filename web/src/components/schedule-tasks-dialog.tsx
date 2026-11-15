@@ -63,6 +63,7 @@ const emptyForm = () => ({
   date: dateInZone("Asia/Shanghai"),
   weekday: 1,
   timezone: "Asia/Shanghai",
+  autoPauseDate: "",
   autoPauseAt: "",
 });
 
@@ -148,6 +149,7 @@ export function ScheduleTasksDialog({
       date: s.frequency.date ?? dateInZone(s.timezone || "Asia/Shanghai"),
       weekday: s.frequency.weekday ?? 1,
       timezone: s.timezone || "Asia/Shanghai",
+      autoPauseDate: s.auto_pause_date ?? "",
       autoPauseAt: s.auto_pause_at ?? "",
     });
     setFormOpen(true);
@@ -203,6 +205,7 @@ export function ScheduleTasksDialog({
         action: form.action,
         target_task_id: form.action === "create" ? "" : form.targetTaskID,
         timezone: form.timezone,
+        auto_pause_date: form.action === "create" ? form.autoPauseDate : "",
         auto_pause_at: form.action === "create" ? form.autoPauseAt : "",
         frequency: buildFrequency(),
       };
@@ -494,7 +497,14 @@ export function ScheduleTasksDialog({
               {form.action === "create" ? (
                 <div className="grid gap-2">
                   <Label htmlFor="sched-auto-pause">自动暂停时间（可选）</Label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      className="h-8 w-40"
+                      type="date"
+                      value={form.autoPauseDate}
+                      onChange={(e) => setForm({ ...form, autoPauseDate: e.target.value })}
+                      disabled={busy}
+                    />
                     <Input
                       id="sched-auto-pause"
                       className="h-8 w-28"
@@ -507,14 +517,14 @@ export function ScheduleTasksDialog({
                       type="button"
                       size="sm"
                       variant="ghost"
-                      disabled={busy || !form.autoPauseAt}
-                      onClick={() => setForm({ ...form, autoPauseAt: "" })}
+                      disabled={busy || (!form.autoPauseAt && !form.autoPauseDate)}
+                      onClick={() => setForm({ ...form, autoPauseDate: "", autoPauseAt: "" })}
                     >
                       不自动暂停
                     </Button>
                   </div>
                   <p className="text-muted-foreground text-xs">
-                    任务创建后到该时区的这个时间自动暂停；到点会生成一条一次性“自动暂停”计划，可在列表中查看。留空 = 不自动暂停。
+                    任务创建后到该时区的指定日期/时间自动暂停；日期留空时按时间计算运行后的下一次。到点会生成一条一次性“自动暂停”计划，可在列表中查看。留空 = 不自动暂停。
                   </p>
                 </div>
               ) : null}

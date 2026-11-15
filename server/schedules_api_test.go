@@ -127,7 +127,7 @@ func TestDueSchedulePausesTargetTask(t *testing.T) {
 	next := time.Now().Add(-time.Minute).Truncate(time.Second)
 	sched, err := m.pg.CreateTaskScheduleFull("pause-due", true,
 		json.RawMessage(`{}`), json.RawMessage(`{"kind":"once_at","date":"2020-01-01","at":"09:30"}`),
-		"pause", task.ID, "Asia/Shanghai", "", &next)
+		"pause", task.ID, "Asia/Shanghai", "", "", &next)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,12 @@ func TestCreateTaskScheduleDerivesAutoPause(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) })
 	s := &Server{m: m}
-	parent := &db.TaskSchedule{Name: "daily scan", Timezone: "Asia/Shanghai", AutoPauseAt: "23:59"}
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauseDate := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
+	parent := &db.TaskSchedule{Name: "daily scan", Timezone: "Asia/Shanghai", AutoPauseDate: pauseDate, AutoPauseAt: "23:59"}
 	s.createAutoPauseSchedule(parent, task, time.Now())
 	var (
 		id       int64
@@ -182,7 +187,7 @@ FROM task_schedules WHERE target_task_id=$1 AND action='pause' ORDER BY id DESC 
 		t.Fatalf("child=%d action=%s target=%s next=%v tz=%s", id, action, target, nextRun, timezone)
 	}
 	var freq sched.Frequency
-	if err := json.Unmarshal(freqRaw, &freq); err != nil || freq.Kind != sched.KindOnceAt || freq.At != "23:59" {
+	if err := json.Unmarshal(freqRaw, &freq); err != nil || freq.Kind != sched.KindOnceAt || freq.At != "23:59" || freq.Date != pauseDate {
 		t.Fatalf("child frequency=%+v err=%v", freq, err)
 	}
 }

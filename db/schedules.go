@@ -19,10 +19,12 @@ type TaskSchedule struct {
 	TargetTaskID string `json:"target_task_id,omitempty"`
 	// Timezone 是解释 daily/weekly/once 墙钟值所用的 IANA 时区；默认 Asia/Shanghai。
 	Timezone string `json:"timezone"`
-	// AutoPauseAt 是 create 动作的可选自动暂停墙钟时间（HH:MM）。
-	AutoPauseAt string     `json:"auto_pause_at,omitempty"`
-	NextRunAt   *time.Time `json:"next_run_at,omitempty"`
-	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
+	// AutoPauseDate/AutoPauseAt 是 create 动作的可选自动暂停日期（YYYY-MM-DD）与墙钟时间（HH:MM）。
+	// Date 为空时按时间落到运行后的下一次；Date 非空时使用该绝对日期。
+	AutoPauseDate string     `json:"auto_pause_date,omitempty"`
+	AutoPauseAt   string     `json:"auto_pause_at,omitempty"`
+	NextRunAt     *time.Time `json:"next_run_at,omitempty"`
+	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
 	// LastTaskID 是最近一次触发建出来的任务 id（链接用）；空 = 还没跑过或建失败。
 	LastTaskID string    `json:"last_task_id,omitempty"`
 	LastError  string    `json:"last_error,omitempty"`
@@ -32,12 +34,12 @@ type TaskSchedule struct {
 
 const scheduleCols = `id, name, enabled, task_spec, frequency,
 COALESCE(action,'create'), COALESCE(target_task_id,''), COALESCE(timezone,'Asia/Shanghai'),
-COALESCE(auto_pause_at,''), next_run_at, last_run_at, COALESCE(last_task_id,''), COALESCE(last_error,''), created_at, updated_at`
+COALESCE(auto_pause_date,''), COALESCE(auto_pause_at,''), next_run_at, last_run_at, COALESCE(last_task_id,''), COALESCE(last_error,''), created_at, updated_at`
 
 func scanSchedule(sc interface{ Scan(...any) error }) (*TaskSchedule, error) {
 	var s TaskSchedule
 	if err := sc.Scan(&s.ID, &s.Name, &s.Enabled, &s.TaskSpec, &s.Frequency,
-		&s.Action, &s.TargetTaskID, &s.Timezone, &s.AutoPauseAt,
+		&s.Action, &s.TargetTaskID, &s.Timezone, &s.AutoPauseDate, &s.AutoPauseAt,
 		&s.NextRunAt, &s.LastRunAt, &s.LastTaskID, &s.LastError, &s.CreatedAt, &s.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -46,17 +48,17 @@ func scanSchedule(sc interface{ Scan(...any) error }) (*TaskSchedule, error) {
 
 // CreateTaskSchedule 是兼容入口：默认 action=create、北京时间。
 func (d *DB) CreateTaskSchedule(name string, enabled bool, spec, freq json.RawMessage, next *time.Time) (*TaskSchedule, error) {
-	return d.CreateTaskScheduleFull(name, enabled, spec, freq, "create", "", "Asia/Shanghai", "", next)
+	return d.CreateTaskScheduleFull(name, enabled, spec, freq, "create", "", "Asia/Shanghai", "", "", next)
 }
 
 // CreateTaskScheduleFull 落一条计划任务。next 由调用方用 sched.Frequency.NextIn
 // 算好（禁用时传 nil：不排期；一次性计划跑完也传 nil 并会停用）。
 func (d *DB) CreateTaskScheduleFull(name string, enabled bool, spec, freq json.RawMessage,
-	action, targetTaskID, timezone, autoPauseAt string, next *time.Time) (*TaskSchedule, error) {
+	action, targetTaskID, timezone, autoPauseDate, autoPauseAt string, next *time.Time) (*TaskSchedule, error) {
 	s, err := scanSchedule(d.QueryRow(`
-INSERT INTO task_schedules(name, enabled, task_spec, frequency, action, target_task_id, timezone, auto_pause_at, next_run_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+scheduleCols,
-		name, enabled, spec, freq, action, targetTaskID, timezone, autoPauseAt, next))
+INSERT INTO task_schedules(name, enabled, task_spec, frequency, action, target_task_id, timezone, auto_pause_date, auto_pause_at, next_run_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+scheduleCols,
+		name, enabled, spec, freq, action, targetTaskID, timezone, autoPauseDate, autoPauseAt, next))
 	if err != nil {
 		return nil, err
 	}
@@ -92,13 +94,13 @@ func (d *DB) GetTaskSchedule(id int64) (*TaskSchedule, error) {
 
 // UpdateTaskSchedule 是兼容入口：只改 name/enabled/spec/frequency。
 func (d *DB) UpdateTaskSchedule(id int64, name *string, enabled *bool, spec, freq json.RawMessage, next *time.Time, clearNext bool) (*TaskSchedule, error) {
-	return d.UpdateTaskScheduleFull(id, name, enabled, spec, freq, nil, nil, nil, nil, next, clearNext)
+	return d.UpdateTaskScheduleFull(id, name, enabled, spec, freq, nil, nil, nil, nil, nil, next, clearNext)
 }
 
 // UpdateTaskScheduleFull 改一条计划任务：nil 字段 = 不改。next 非 nil 时一并写
 // next_run_at（改频率/重新启用时由调用方算好；禁用传 nil + clearNext=true 清空排期）。
 func (d *DB) UpdateTaskScheduleFull(id int64, name *string, enabled *bool, spec, freq json.RawMessage,
-	action, targetTaskID, timezone, autoPauseAt *string, next *time.Time, clearNext bool) (*TaskSchedule, error) {
+	action, targetTaskID, timezone, autoPauseDate, autoPauseAt *string, next *time.Time, clearNext bool) (*TaskSchedule, error) {
 	s, err := scanSchedule(d.QueryRow(`
 UPDATE task_schedules SET
   name           = COALESCE($2, name),
@@ -108,10 +110,11 @@ UPDATE task_schedules SET
   action         = COALESCE($6, action),
   target_task_id = COALESCE($7, target_task_id),
   timezone       = COALESCE($8, timezone),
-  auto_pause_at  = COALESCE($9, auto_pause_at),
-  next_run_at    = CASE WHEN $10 THEN NULL ELSE COALESCE($11, next_run_at) END,
-  updated_at     = now()
-WHERE id=$1 RETURNING `+scheduleCols, id, name, enabled, spec, freq, action, targetTaskID, timezone, autoPauseAt, clearNext, next))
+  auto_pause_date = COALESCE($9, auto_pause_date),
+  auto_pause_at   = COALESCE($10, auto_pause_at),
+  next_run_at     = CASE WHEN $11 THEN NULL ELSE COALESCE($12, next_run_at) END,
+  updated_at      = now()
+WHERE id=$1 RETURNING `+scheduleCols, id, name, enabled, spec, freq, action, targetTaskID, timezone, autoPauseDate, autoPauseAt, clearNext, next))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

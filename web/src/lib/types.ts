@@ -1160,7 +1160,8 @@ export interface TaskSchedule {
   target_task_id?: string;
   /** IANA 时区；默认 Asia/Shanghai（北京时间）。 */
   timezone: string;
-  /** create 动作的可选自动暂停墙钟时间（HH:MM）。 */
+  /** create 动作的可选自动暂停日期（YYYY-MM-DD）与墙钟时间（HH:MM）。 */
+  auto_pause_date?: string;
   auto_pause_at?: string;
   next_run_at?: string;
   last_run_at?: string;

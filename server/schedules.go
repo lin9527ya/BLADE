@@ -102,6 +102,25 @@ func formatScheduleTime(t *time.Time, tz string) string {
 	return t.In(loc).Format("2006-01-02 15:04 MST")
 }
 
+func normalizeAutoPauseDate(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", nil
+	}
+	if _, err := time.Parse("2006-01-02", v); err != nil {
+		return "", fmt.Errorf("自动暂停日期 %q 不合法：要写成 YYYY-MM-DD", raw)
+	}
+	return v, nil
+}
+
+func validateAutoPauseForSchedule(freq sched.Frequency, loc *time.Location, date, at string, start *time.Time) error {
+	if strings.TrimSpace(date) == "" || strings.TrimSpace(at) == "" || start == nil || freq.Kind != sched.KindOnceAt {
+		return nil
+	}
+	_, _, err := nextAutoPause(date, at, loc, *start)
+	return err
+}
+
 func normalizeAutoPauseAt(raw string) (string, error) {
 	v := strings.TrimSpace(raw)
 	if v == "" {
@@ -115,7 +134,7 @@ func normalizeAutoPauseAt(raw string) (string, error) {
 
 // nextAutoPause returns the next wall-clock occurrence of HH:MM strictly after
 // after, in loc. Empty autoPauseAt means no auto-pause.
-func nextAutoPause(raw string, loc *time.Location, after time.Time) (time.Time, bool, error) {
+func nextAutoPause(date, raw string, loc *time.Location, after time.Time) (time.Time, bool, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}, false, nil
@@ -123,6 +142,17 @@ func nextAutoPause(raw string, loc *time.Location, after time.Time) (time.Time, 
 	t, err := time.Parse("15:04", raw)
 	if err != nil {
 		return time.Time{}, false, err
+	}
+	if date = strings.TrimSpace(date); date != "" {
+		d, err := time.ParseInLocation("2006-01-02", date, loc)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		candidate := time.Date(d.Year(), d.Month(), d.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+		if !candidate.After(after) {
+			return time.Time{}, false, fmt.Errorf("自动暂停时间 %s %s 必须晚于启动时间", date, raw)
+		}
+		return candidate, true, nil
 	}
 	wall := after.In(loc)
 	candidate := time.Date(wall.Year(), wall.Month(), wall.Day(), t.Hour(), t.Minute(), 0, 0, loc)
@@ -176,6 +206,7 @@ type taskScheduleDTO struct {
 	ActionText    string          `json:"action_text"`
 	TargetTaskID  string          `json:"target_task_id,omitempty"`
 	Timezone      string          `json:"timezone"`
+	AutoPauseDate string          `json:"auto_pause_date,omitempty"`
 	AutoPauseAt   string          `json:"auto_pause_at,omitempty"`
 	NextRunAt     string          `json:"next_run_at,omitempty"`
 	LastRunAt     string          `json:"last_run_at,omitempty"`
@@ -200,7 +231,7 @@ func scheduleDTO(s *db.TaskSchedule) taskScheduleDTO {
 	dto := taskScheduleDTO{
 		ID: s.ID, Name: s.Name, Enabled: s.Enabled, TaskSpec: spec, Frequency: freq,
 		FrequencyText: freq.Describe(), Action: action, ActionText: scheduleActionText(action),
-		TargetTaskID: s.TargetTaskID, Timezone: tz, AutoPauseAt: s.AutoPauseAt,
+		TargetTaskID: s.TargetTaskID, Timezone: tz, AutoPauseDate: s.AutoPauseDate, AutoPauseAt: s.AutoPauseAt,
 		LastTaskID: s.LastTaskID, LastError: s.LastError,
 		CreatedAt: s.CreatedAt.Format(time.RFC3339),
 	}
@@ -288,14 +319,15 @@ func (s *Server) listTaskSchedules(w http.ResponseWriter, r *http.Request) {
 }
 
 type taskScheduleReq struct {
-	Name         string          `json:"name"`
-	Enabled      *bool           `json:"enabled"`
-	TaskSpec     scheduleSpec    `json:"task_spec"`
-	Frequency    sched.Frequency `json:"frequency"`
-	Action       string          `json:"action"`
-	TargetTaskID string          `json:"target_task_id"`
-	Timezone     string          `json:"timezone"`
-	AutoPauseAt  string          `json:"auto_pause_at"`
+	Name          string          `json:"name"`
+	Enabled       *bool           `json:"enabled"`
+	TaskSpec      scheduleSpec    `json:"task_spec"`
+	Frequency     sched.Frequency `json:"frequency"`
+	Action        string          `json:"action"`
+	TargetTaskID  string          `json:"target_task_id"`
+	Timezone      string          `json:"timezone"`
+	AutoPauseDate string          `json:"auto_pause_date"`
+	AutoPauseAt   string          `json:"auto_pause_at"`
 }
 
 // validateScheduleActionTarget checks the target of a pause/resume action at
@@ -331,13 +363,22 @@ func (s *Server) createTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	autoPauseDate, err := normalizeAutoPauseDate(req.AutoPauseDate)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	autoPause, err := normalizeAutoPauseAt(req.AutoPauseAt)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	if action != scheduleActionCreate {
-		autoPause = ""
+		autoPauseDate, autoPause = "", ""
+	}
+	if autoPauseDate != "" && autoPause == "" {
+		writeErr(w, 400, "设置自动暂停日期时必须同时设置时间")
+		return
 	}
 	req.TargetTaskID = strings.TrimSpace(req.TargetTaskID)
 	if strings.TrimSpace(req.Name) == "" {
@@ -371,7 +412,13 @@ func (s *Server) createTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	row, err := s.m.pg.CreateTaskScheduleFull(req.Name, enabled, specRaw, freqRaw, action, req.TargetTaskID, tz, autoPause, next)
+	if action == scheduleActionCreate {
+		if err := validateAutoPauseForSchedule(req.Frequency, loc, autoPauseDate, autoPause, next); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	}
+	row, err := s.m.pg.CreateTaskScheduleFull(req.Name, enabled, specRaw, freqRaw, action, req.TargetTaskID, tz, autoPauseDate, autoPause, next)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -392,14 +439,15 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name         *string          `json:"name"`
-		Enabled      *bool            `json:"enabled"`
-		TaskSpec     *scheduleSpec    `json:"task_spec"`
-		Frequency    *sched.Frequency `json:"frequency"`
-		Action       *string          `json:"action"`
-		TargetTaskID *string          `json:"target_task_id"`
-		Timezone     *string          `json:"timezone"`
-		AutoPauseAt  *string          `json:"auto_pause_at"`
+		Name          *string          `json:"name"`
+		Enabled       *bool            `json:"enabled"`
+		TaskSpec      *scheduleSpec    `json:"task_spec"`
+		Frequency     *sched.Frequency `json:"frequency"`
+		Action        *string          `json:"action"`
+		TargetTaskID  *string          `json:"target_task_id"`
+		Timezone      *string          `json:"timezone"`
+		AutoPauseDate *string          `json:"auto_pause_date"`
+		AutoPauseAt   *string          `json:"auto_pause_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
@@ -445,6 +493,17 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		tzPtr = &tz
 	}
 
+	autoPauseDate := cur.AutoPauseDate
+	var autoPauseDatePtr *string
+	if req.AutoPauseDate != nil {
+		normalized, err := normalizeAutoPauseDate(*req.AutoPauseDate)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		autoPauseDate = normalized
+		autoPauseDatePtr = &autoPauseDate
+	}
 	autoPause := cur.AutoPauseAt
 	var autoPausePtr *string
 	if req.AutoPauseAt != nil {
@@ -457,8 +516,12 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		autoPausePtr = &autoPause
 	}
 	if action != scheduleActionCreate {
-		autoPause = ""
-		autoPausePtr = &autoPause
+		autoPauseDate, autoPause = "", ""
+		autoPauseDatePtr, autoPausePtr = &autoPauseDate, &autoPause
+	}
+	if autoPauseDate != "" && autoPause == "" {
+		writeErr(w, 400, "设置自动暂停日期时必须同时设置时间")
+		return
 	}
 	var specRaw json.RawMessage
 	if req.TaskSpec != nil {
@@ -508,9 +571,15 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if action == scheduleActionCreate {
+		if err := validateAutoPauseForSchedule(freq, loc, autoPauseDate, autoPause, next); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	}
 	clearNext := !enabled
 	row, err := s.m.pg.UpdateTaskScheduleFull(id, req.Name, req.Enabled, specRaw, freqRaw,
-		actionPtr, targetPtr, tzPtr, autoPausePtr, next, clearNext)
+		actionPtr, targetPtr, tzPtr, autoPauseDatePtr, autoPausePtr, next, clearNext)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -613,7 +682,7 @@ func (s *Server) createAutoPauseSchedule(parent *db.TaskSchedule, task *Task, st
 	if start.After(after) {
 		after = start
 	}
-	pause, ok, err := nextAutoPause(parent.AutoPauseAt, loc, after)
+	pause, ok, err := nextAutoPause(parent.AutoPauseDate, parent.AutoPauseAt, loc, after)
 	if err != nil || !ok {
 		log.Printf("[schedule] 计算自动暂停时间失败 task #%s：%v", task.ID, err)
 		return
@@ -626,7 +695,7 @@ func (s *Server) createAutoPauseSchedule(parent *db.TaskSchedule, task *Task, st
 	freqRaw, _ := json.Marshal(freq)
 	child, err := s.m.pg.CreateTaskScheduleFull(
 		"自动暂停："+parent.Name, true, json.RawMessage(`{}`), freqRaw,
-		scheduleActionPause, task.ID, tz, "", &pause,
+		scheduleActionPause, task.ID, tz, "", "", &pause,
 	)
 	if err != nil {
 		log.Printf("[schedule] 创建自动暂停计划失败 task #%s：%v", task.ID, err)
