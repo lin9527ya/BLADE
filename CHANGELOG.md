@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-11-15
+
 ### 计划任务日期/时区/启停优化
 
 - 频率新增 `once_at`：可选具体日期 + 时间，只执行一次；执行后计划任务自动停用。
@@ -54,6 +56,21 @@
 - **空报告巡检（默认关）**：调度器每 10 分钟领取「已确认但无详细报告」的 finding，
   交给现有 reporter 补写；每条最多 2 次、间隔 30 分钟，`FOR UPDATE SKIP LOCKED`
   防重复派单。设置页可开启。
+
+### 跨任务全局播报
+
+- 新增 `GET /api/broadcast`：跨任务聚合探索节点并回填任务元数据、真实暂停状态与会话归属；
+  新增 SSE `GET /api/broadcast/stream`，按节点 id 追库推送，断线时保留轮询兜底。
+- 新增「全局播报」页面与侧栏入口，支持状态、发现状态、任务状态、时间范围筛选和节点展开；
+  任务详情支持 `?session=` 深链定位意图/槽位/主会话。
+
+### 证据闸与 SRC 领域工具
+
+- 新增证据长度/机械验证/纯版本匹配告警与工具输出逐字回验；`finding_evidence_verify`
+  支持 off/warn/block，默认 warn，block 对 critical/high 的关键证据拒收。
+- 引入 `auth_request`、`http_probe`、`js_audit`、`api_contract`、`diff_responses`、
+  `poc_scaffold`、`http_request`/`session_login` 等 SRC 工具，统一接入拦截/RoE。
+- 完整任务报告增加目标达成情况；保存 Pojun 功能分析与第一批实施记录。
 
 ### 节点池独占调度
 
