@@ -2932,6 +2932,10 @@ export interface InterceptAudit {
   initial_reason: string;
   effective_action?: "allow" | "deny";
   decision_reason?: string;
+  /** 谁做出的裁决：admin / token:<name> / system / unknown。 */
+  decided_by?: string;
+  /** 裁决通道：manual / batch / timeout / cancel / rule / auto。 */
+  decision_channel?: string;
   rule_name?: string;
   config_digest?: string;
   profile_id?: number;

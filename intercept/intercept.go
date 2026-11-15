@@ -940,7 +940,9 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 					Summary: fmt.Sprintf("仍在等待人工审批 (#%d)：工具 %s", pendingID, toolName),
 				})
 			case <-ctx.Done():
-				_, _ = i.db.ResolveIntercept(pendingID, "denied", "deny", "工作已取消")
+				_, _ = i.db.ResolveInterceptWith(pendingID, "denied", "deny", "工作已取消", map[string]any{
+					"decided_by": "system", "decision_channel": "cancel",
+				})
 				_ = i.db.CompleteIntercept(pendingID, audit.RunID, audit.ToolUseID, "not_executed", "执行前工作已取消", false)
 				return AskOutcome{}, false
 			}
@@ -962,7 +964,9 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 		if allowed {
 			action = "allow"
 		}
-		resolved, err := i.db.ResolveIntercept(pendingID, "timeout", action, "审批超时，按超时策略处理")
+		resolved, err := i.db.ResolveInterceptWith(pendingID, "timeout", action, "审批超时，按超时策略处理", map[string]any{
+			"decided_by": "system", "decision_channel": "timeout",
+		})
 		if err != nil {
 			return AskOutcome{}, false
 		}
@@ -973,7 +977,9 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 		}
 		return AskOutcome{Allowed: allowed}, allowed
 	case <-ctx.Done():
-		_, _ = i.db.ResolveIntercept(pendingID, "denied", "deny", "工作已取消")
+		_, _ = i.db.ResolveInterceptWith(pendingID, "denied", "deny", "工作已取消", map[string]any{
+			"decided_by": "system", "decision_channel": "cancel",
+		})
 		_ = i.db.CompleteIntercept(pendingID, audit.RunID, audit.ToolUseID, "not_executed", "执行前工作已取消", false)
 		return AskOutcome{}, false
 	}
@@ -981,9 +987,15 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 
 var ErrAlreadyDecided = errors.New("审批已处理或不存在，请刷新记录")
 
-// Decide resolves a pending request. Called by the HTTP decide endpoint.
+// Decide resolves a pending request. Called by tests and legacy paths; the HTTP
+// endpoints use DecideWithActor/DecideWithInputActor so the audit can say who
+// decided (admin vs API token) and through which channel (manual vs batch).
 func (i *Interceptor) Decide(pendingID int64, allowed bool) error {
-	return i.DecideWithInput(pendingID, allowed, nil, nil)
+	return i.DecideWithActor(pendingID, allowed, "", "manual")
+}
+
+func (i *Interceptor) DecideWithActor(pendingID int64, allowed bool, actor, channel string) error {
+	return i.DecideWithInputActor(pendingID, allowed, nil, nil, actor, channel)
 }
 
 // DecideWithInput resolves a pending request, optionally with the human-edited
@@ -994,6 +1006,10 @@ func (i *Interceptor) Decide(pendingID int64, allowed bool) error {
 // The edit and its diff go into the audit next to the decision, so the record
 // answers "which exact arguments were approved" and not merely "approved".
 func (i *Interceptor) DecideWithInput(pendingID int64, allowed bool, edited json.RawMessage, diff []string) error {
+	return i.DecideWithInputActor(pendingID, allowed, edited, diff, "", "manual")
+}
+
+func (i *Interceptor) DecideWithInputActor(pendingID int64, allowed bool, edited json.RawMessage, diff []string, actor, channel string) error {
 	status := "denied"
 	if allowed {
 		status = "allowed"
@@ -1002,10 +1018,17 @@ func (i *Interceptor) DecideWithInput(pendingID int64, allowed bool, edited json
 	if allowed {
 		action, reason = "allow", "人工允许执行"
 	}
-	var extra map[string]any
+	if actor == "" {
+		actor = "unknown"
+	}
+	if channel == "" {
+		channel = "manual"
+	}
+	extra := map[string]any{"decided_by": actor, "decision_channel": channel}
 	if allowed && len(edited) > 0 {
 		reason = "人工改参放行（只许收窄）：" + strings.Join(diff, "；")
-		extra = map[string]any{"edited_input": json.RawMessage(edited), "narrow_diff": diff}
+		extra["edited_input"] = json.RawMessage(edited)
+		extra["narrow_diff"] = diff
 	}
 	resolved, err := i.db.ResolveInterceptWith(pendingID, status, action, reason, extra)
 	if err != nil {

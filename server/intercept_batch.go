@@ -52,11 +52,15 @@ func (s *Server) interceptBatchDecide(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, id)
 	}
 	allowed := req.Decision == "allowed"
+	actor := actorFrom(r)
+	if actor == "" {
+		actor = "admin"
+	}
 	results := make([]batchDecideResult, 0, len(ids))
 	decided, failed := 0, 0
 	for _, id := range ids {
 		item := batchDecideResult{ID: id}
-		if err := s.m.interceptor.Decide(id, allowed); err != nil {
+		if err := s.m.interceptor.DecideWithActor(id, allowed, actor, "batch"); err != nil {
 			item.Error = err.Error()
 			failed++
 		} else {

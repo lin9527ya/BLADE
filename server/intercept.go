@@ -509,7 +509,11 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 		}
 		edited, diff = out.Input, out.Diff
 	}
-	if err := s.m.interceptor.DecideWithInput(id, req.Decision == "allowed", edited, diff); err != nil {
+	actor := actorFrom(r)
+	if actor == "" {
+		actor = "admin"
+	}
+	if err := s.m.interceptor.DecideWithInputActor(id, req.Decision == "allowed", edited, diff, actor, "manual"); err != nil {
 		if errors.Is(err, intercept.ErrAlreadyDecided) {
 			writeErr(w, 409, err.Error())
 			return

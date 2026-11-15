@@ -6,8 +6,8 @@ import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -29,6 +29,19 @@ import {
   ModelReviewContext,
   StatusBadge,
 } from "./approval-parts";
+
+const DECISION_CHANNEL_LABELS: Record<string, string> = {
+  manual: "人工单条",
+  batch: "人工批量",
+  timeout: "超时自动",
+  cancel: "工作取消",
+  rule: "规则自动",
+  auto: "自动",
+};
+
+function decisionChannelLabel(channel: string): string {
+  return DECISION_CHANNEL_LABELS[channel] ?? channel;
+}
 
 // 审批详情面板与审批列表（含列可见性计算）。
 
@@ -135,6 +148,15 @@ export function ApprovalDetail({
             <dd>{fmtTime(row.created_at)}</dd>
             <dt className="text-muted-foreground">决定时间</dt>
             <dd>{fmtTime(current.decided_at)}</dd>
+            {audit?.decided_by ? (
+              <>
+                <dt className="text-muted-foreground">决定来源</dt>
+                <dd className="break-words">
+                  {audit.decided_by}
+                  {audit.decision_channel ? ` · ${decisionChannelLabel(audit.decision_channel)}` : ""}
+                </dd>
+              </>
+            ) : null}
             {audit?.rule_name ? (
               <>
                 <dt className="text-muted-foreground">规则快照</dt>
@@ -179,7 +201,11 @@ export function ApprovalDetail({
           {row.risk ? (
             <div className="rounded-md border p-3">
               <div className="mb-1 flex flex-wrap items-center gap-2">
-                <Badge variant={row.risk.level === "high" ? "destructive" : row.risk.level === "medium" ? "secondary" : "outline"}>
+                <Badge
+                  variant={
+                    row.risk.level === "high" ? "destructive" : row.risk.level === "medium" ? "secondary" : "outline"
+                  }
+                >
                   风险 {row.risk.level === "high" ? "高" : row.risk.level === "medium" ? "中" : "低"} · {row.risk.score}
                 </Badge>
                 <span className="text-muted-foreground text-xs">确定性评分，仅用于辅助审批，不改变裁决</span>
@@ -191,9 +217,7 @@ export function ApprovalDetail({
               </ul>
             </div>
           ) : null}
-          {!readOnly ? (
-            <DecisionActions row={current} busy={busy} decide={decide} alwaysAllow={alwaysAllow} />
-          ) : null}
+          {!readOnly ? <DecisionActions row={current} busy={busy} decide={decide} alwaysAllow={alwaysAllow} /> : null}
         </div>
       </div>
       {error ? (
@@ -430,7 +454,13 @@ export function ApprovalTable({
                   <code className="block truncate text-xs">{row.tool_name}</code>
                   {row.risk ? (
                     <Badge
-                      variant={row.risk.level === "high" ? "destructive" : row.risk.level === "medium" ? "secondary" : "outline"}
+                      variant={
+                        row.risk.level === "high"
+                          ? "destructive"
+                          : row.risk.level === "medium"
+                            ? "secondary"
+                            : "outline"
+                      }
                       className="mt-1"
                     >
                       {row.risk.level === "high" ? "高" : row.risk.level === "medium" ? "中" : "低"} · {row.risk.score}

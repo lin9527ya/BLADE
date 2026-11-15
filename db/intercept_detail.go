@@ -37,8 +37,13 @@ type InterceptAudit struct {
 	InitialReason    string                  `json:"initial_reason"`
 	EffectiveAction  string                  `json:"effective_action,omitempty"`
 	DecisionReason   string                  `json:"decision_reason,omitempty"`
-	RuleName         string                  `json:"rule_name,omitempty"`
-	ConfigDigest     string                  `json:"config_digest,omitempty"`
+	// DecidedBy/DecisionChannel record who settled the request and through which
+	// path (manual / batch / timeout / cancel / rule); human vs token vs system
+	// is no longer inferable only from timing.
+	DecidedBy       string `json:"decided_by,omitempty"`
+	DecisionChannel string `json:"decision_channel,omitempty"`
+	RuleName        string `json:"rule_name,omitempty"`
+	ConfigDigest    string `json:"config_digest,omitempty"`
 	// MatchedSurface / MatchedText：规则命中的具体表面（raw | nested_string |
 	// nested_key | percent_decoded:N | tool_name）与命中片段——P12 遮挡面，
 	// 让「为什么命中/为什么没命中」可复盘。
@@ -119,9 +124,9 @@ func (d *DB) ResolveInterceptWith(id int64, status, action, reason string, extra
 		return false, err
 	}
 	r, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=NOW(),
-		audit=CASE WHEN audit IS NULL THEN NULL ELSE audit || $3::jsonb ||
-        CASE WHEN $4='allow' AND audit->>'correlation' IS DISTINCT FROM 'exact'
-        THEN '{"execution_status":"unknown"}'::jsonb ELSE '{}'::jsonb END END
+		audit=COALESCE(audit, '{}'::jsonb) || $3::jsonb ||
+        CASE WHEN $4='allow' AND COALESCE(audit,'{}'::jsonb)->>'correlation' IS DISTINCT FROM 'exact'
+        THEN '{"execution_status":"unknown"}'::jsonb ELSE '{}'::jsonb END
         WHERE id=$1 AND status='pending'`, id, status, patch, action)
 	if err != nil {
 		return false, err
