@@ -20,17 +20,22 @@ import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
 import type { ScheduleRun, TaskCategory, TaskSchedule } from "@/lib/types";
 
-function fmtLocal(ts?: string): string {
+function fmtLocal(ts?: string, timeZone = "Asia/Shanghai"): string {
   if (!ts) return "—";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  try {
+    return d.toLocaleString("zh-CN", {
+      timeZone,
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } catch {
+    return d.toLocaleString("zh-CN", { hour12: false });
+  }
 }
 
 const RUN_STATE: Record<string, { label: string; cls: string }> = {
@@ -104,7 +109,11 @@ export default function SchedulesPage() {
     try {
       const updated = await api.updateTaskSchedule(s.id, { enabled: !s.enabled });
       setRows((prev) => prev.map((x) => (x.id === s.id ? updated : x)));
-      toast.success(updated.enabled ? `已启用（下次 ${fmtLocal(updated.next_run_at)}）` : "已停用（排期已清空）");
+      toast.success(
+        updated.enabled
+          ? `已启用（下次 ${fmtLocal(updated.next_run_at, updated.timezone)} ${updated.timezone}）`
+          : "已停用（排期已清空）",
+      );
     } catch (e) {
       toast.error(`切换失败：${(e as Error).message}`);
     } finally {
@@ -116,7 +125,7 @@ export default function SchedulesPage() {
     setBusy(s.id);
     try {
       const r = await api.runTaskScheduleNow(s.id);
-      toast.success(`已建任务 #${r.task_id}（不改排期）`);
+      toast.success(s.action === "create" ? `已建任务 #${r.task_id}（不改排期）` : `已执行：${s.action_text} #${r.task_id}（不改排期）`);
       await load();
     } catch (e) {
       toast.error(`运行失败：${(e as Error).message}`);
@@ -182,7 +191,7 @@ export default function SchedulesPage() {
                 <thead className="border-b bg-muted/40 text-muted-foreground text-xs">
                   <tr>
                     <th className="px-4 py-2 text-left font-medium">名称 / 任务</th>
-                    <th className="px-4 py-2 text-left font-medium">频率</th>
+                    <th className="px-4 py-2 text-left font-medium">动作 / 频率</th>
                     <th className="px-4 py-2 text-left font-medium">状态</th>
                     <th className="px-4 py-2 text-left font-medium">下次运行</th>
                     <th className="px-4 py-2 text-left font-medium">上次运行</th>
@@ -199,7 +208,12 @@ export default function SchedulesPage() {
                         </div>
                         {s.last_error && <div className="mt-1 text-red-600 text-xs dark:text-red-400">{s.last_error}</div>}
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{s.frequency_text}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        <div>{s.action_text}{s.target_task_id ? ` · 任务 #${s.target_task_id}` : ""}</div>
+                        <div className="text-xs">
+                          {s.frequency_text} · {s.timezone}
+                        </div>
+                      </td>
                       <td className="px-4 py-3">
                         <span
                           className={
@@ -211,9 +225,9 @@ export default function SchedulesPage() {
                           {s.enabled ? "启用中" : "已停用"}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground">{fmtLocal(s.next_run_at)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{fmtLocal(s.next_run_at, s.timezone)}</td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {fmtLocal(s.last_run_at)}
+                        {fmtLocal(s.last_run_at, s.timezone)}
                         {s.last_task_id && (
                           <Link
                             className="ml-1 underline underline-offset-2"
@@ -262,7 +276,9 @@ export default function SchedulesPage() {
               <HistoryIcon className="size-4" /> 运行历史
             </DialogTitle>
             <DialogDescription>
-              {historyOf ? `${historyOf.name} · ${historyOf.frequency_text} · 共 ${historyTotal} 条` : ""}
+              {historyOf
+                ? `${historyOf.name} · ${historyOf.action_text} · ${historyOf.frequency_text} · ${historyOf.timezone} · 共 ${historyTotal} 条`
+                : ""}
             </DialogDescription>
           </DialogHeader>
           {historyLoading ? (
@@ -287,7 +303,7 @@ export default function SchedulesPage() {
                     const st = RUN_STATE[r.state] ?? { label: r.state, cls: "border-border text-muted-foreground" };
                     return (
                       <tr key={r.id} className="border-b last:border-0">
-                        <td className="py-2 text-muted-foreground">{fmtLocal(r.scheduled_at)}</td>
+                        <td className="py-2 text-muted-foreground">{fmtLocal(r.scheduled_at, historyOf?.timezone)}</td>
                         <td className="py-2">
                           <span className={`rounded border px-1.5 py-0.5 text-[11px] ${st.cls}`}>{st.label}</span>
                         </td>

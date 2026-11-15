@@ -20,7 +20,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { ScheduleFrequency, TaskCategory, TaskSchedule, TaskTemplate } from "@/lib/types";
+import type { ScheduleFrequency, Task, TaskCategory, TaskSchedule, TaskTemplate } from "@/lib/types";
 
 /**
  * ScheduleTasksDialog 管理「计划任务」（P22）：按结构化频率到点自动建任务。
@@ -33,32 +33,56 @@ import type { ScheduleFrequency, TaskCategory, TaskSchedule, TaskTemplate } from
  *  · 「立即运行」是额外一次，不改排期。
  */
 
+const TIMEZONES = ["Asia/Shanghai", "Asia/Tokyo", "Asia/Singapore", "UTC", "Europe/London", "America/New_York"];
+
+function dateInZone(zone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .formatToParts(new Date())
+    .filter((p) => p.type !== "literal");
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 const emptyForm = () => ({
   name: "",
   description: "",
   goal: "",
   categoryID: undefined as number | undefined,
   enabled: true,
+  action: "create" as "create" | "start" | "pause" | "resume",
+  targetTaskID: "",
   kind: "every_hours" as ScheduleFrequency["kind"],
   everyMinutes: "30",
   everyHours: "6",
   at: "09:30",
+  date: dateInZone("Asia/Shanghai"),
   weekday: 1,
+  timezone: "Asia/Shanghai",
 });
 
 type FormState = ReturnType<typeof emptyForm>;
 
-function fmtLocal(ts?: string): string {
+function fmtLocal(ts?: string, timeZone = "Asia/Shanghai"): string {
   if (!ts) return "—";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  try {
+    return d.toLocaleString("zh-CN", {
+      timeZone,
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } catch {
+    return d.toLocaleString("zh-CN", { hour12: false });
+  }
 }
 
 export function ScheduleTasksDialog({
@@ -73,6 +97,7 @@ export function ScheduleTasksDialog({
   const [open, setOpen] = React.useState(false);
   const [rows, setRows] = React.useState<TaskSchedule[]>([]);
   const [templates, setTemplates] = React.useState<TaskTemplate[]>([]);
+  const [tasks, setTasks] = React.useState<Task[]>([]);
   const [editingID, setEditingID] = React.useState<number | null>(null); // null = 新建
   const [formOpen, setFormOpen] = React.useState(false);
   const [form, setForm] = React.useState<FormState>(emptyForm);
@@ -93,6 +118,10 @@ export function ScheduleTasksDialog({
       .taskTemplates()
       .then(setTemplates)
       .catch(() => {});
+    void api
+      .tasks({ size: 200 })
+      .then((r) => setTasks(r.tasks))
+      .catch(() => {});
   }, [open, load]);
 
   function startCreate() {
@@ -105,15 +134,19 @@ export function ScheduleTasksDialog({
     setEditingID(s.id);
     setForm({
       name: s.name,
-      description: s.task_spec.description,
-      goal: s.task_spec.goal,
+      description: s.task_spec.description ?? "",
+      goal: s.task_spec.goal ?? "",
       categoryID: s.task_spec.category_id,
       enabled: s.enabled,
+      action: s.action ?? "create",
+      targetTaskID: s.target_task_id ?? "",
       kind: s.frequency.kind,
       everyMinutes: String(s.frequency.every_minutes ?? 30),
       everyHours: String(s.frequency.every_hours ?? 6),
       at: s.frequency.at ?? "09:30",
+      date: s.frequency.date ?? dateInZone(s.timezone || "Asia/Shanghai"),
       weekday: s.frequency.weekday ?? 1,
+      timezone: s.timezone || "Asia/Shanghai",
     });
     setFormOpen(true);
   }
@@ -138,28 +171,45 @@ export function ScheduleTasksDialog({
         return { kind: "every_hours", every_hours: Number(form.everyHours) || 0 };
       case "daily_at":
         return { kind: "daily_at", at: form.at };
+      case "once_at":
+        return { kind: "once_at", date: form.date, at: form.at };
       default:
         return { kind: "weekly_at", at: form.at, weekday: form.weekday };
     }
   }
 
   async function save() {
-    if (!form.description.trim() || !form.goal.trim()) {
-      toast.error("描述与目标必填");
+    if (form.action === "create" && (!form.description.trim() || !form.goal.trim())) {
+      toast.error("创建任务时描述与目标必填");
+      return;
+    }
+    if (form.action !== "create" && !form.targetTaskID) {
+      toast.error("请选择要暂停/继续的任务");
+      return;
+    }
+    if (form.kind === "once_at" && !form.date) {
+      toast.error("请选择一次性执行的日期");
       return;
     }
     setBusy(true);
     try {
-      const payload = {
-        name: form.name.trim() || form.description.trim().slice(0, 40),
+      const payload: Parameters<typeof api.createTaskSchedule>[0] = {
+        name:
+          form.name.trim() ||
+          (form.action === "create" ? form.description.trim().slice(0, 40) : `${form.action === "pause" ? "暂停" : "继续"} #${form.targetTaskID}`),
         enabled: form.enabled,
-        task_spec: {
+        action: form.action,
+        target_task_id: form.action === "create" ? "" : form.targetTaskID,
+        timezone: form.timezone,
+        frequency: buildFrequency(),
+      };
+      if (form.action === "create") {
+        payload.task_spec = {
           description: form.description.trim(),
           goal: form.goal.trim(),
           category_id: form.categoryID,
-        },
-        frequency: buildFrequency(),
-      };
+        };
+      }
       if (editingID == null) {
         await api.createTaskSchedule(payload);
         toast.success(form.enabled ? "计划任务已创建（到点自动建任务）" : "计划任务已创建（当前停用）");
@@ -182,7 +232,7 @@ export function ScheduleTasksDialog({
       const updated = await api.updateTaskSchedule(s.id, { enabled });
       setRows((prev) => prev.map((x) => (x.id === s.id ? updated : x)));
       toast.success(
-        enabled ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at)}）` : "已停用（排期已清空）",
+        enabled ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at, updated.timezone)}）` : "已停用（排期已清空）",
       );
     } catch (e) {
       toast.error(`切换失败：${(e as Error).message}`);
@@ -194,7 +244,7 @@ export function ScheduleTasksDialog({
     setBusy(true);
     try {
       const r = await api.runTaskScheduleNow(s.id);
-      toast.success(`已建任务 #${r.task_id}（不改排期）`);
+      toast.success(s.action === "create" ? `已建任务 #${r.task_id}（不改排期）` : `已执行：${s.action_text} #${r.task_id}（不改排期）`);
       onCreated?.();
       await load();
     } catch (e) {
@@ -229,32 +279,36 @@ export function ScheduleTasksDialog({
         <DialogHeader className="border-b p-6">
           <DialogTitle>计划任务</DialogTitle>
           <DialogDescription>
-            按固定节奏自动建任务（定期复测 / 新资产巡检）。到点按这里的规格原样建一个普通任务，
-            推送与交付走既有链路；停机期间错过的次数不追补，急就跑「立即运行」。
+            到点自动创建并启动任务，或暂停/继续指定任务。支持每天/每周/指定日期时间；
+            默认按北京时间（Asia/Shanghai）解释，可切换时区。停机期间错过的次数不追补。
           </DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {formOpen ? (
             <div className="grid gap-4">
-              <div className="grid gap-2">
-                <Label className="font-normal text-muted-foreground text-sm">从模板预填（可选）</Label>
-                <NativeSelect
-                  size="sm"
-                  value=""
-                  onChange={(e) => {
-                    const id = Number(e.target.value);
-                    if (id) applyTemplate(id);
-                  }}
-                >
-                  <NativeSelectOption value="">不预填</NativeSelectOption>
-                  {templates.map((t) => (
-                    <NativeSelectOption key={t.id} value={String(t.id)}>
-                      {t.name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </div>
+              {form.action === "create" ? (
+                <>
+                <div className="grid gap-2">
+                  <Label className="font-normal text-muted-foreground text-sm">从模板预填（可选）</Label>
+                  <NativeSelect
+                    size="sm"
+                    value=""
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      if (id) applyTemplate(id);
+                    }}
+                  >
+                    <NativeSelectOption value="">不预填</NativeSelectOption>
+                    {templates.map((t) => (
+                      <NativeSelectOption key={t.id} value={String(t.id)}>
+                        {t.name}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+                </>
+              ) : null}
               <div className="grid gap-2">
                 <Label htmlFor="sched-name">名称</Label>
                 <Input
@@ -266,45 +320,82 @@ export function ScheduleTasksDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="sched-desc">任务描述（必填）</Label>
-                <Textarea
-                  id="sched-desc"
-                  rows={2}
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder="如：example.com 主站与 API 只读复测"
-                  disabled={busy}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="sched-goal">任务目标（必填）</Label>
-                <Textarea
-                  id="sched-goal"
-                  rows={2}
-                  value={form.goal}
-                  onChange={(e) => setForm({ ...form, goal: e.target.value })}
-                  placeholder="如：确认上周的越权读取已修复，并检查新上线的接口"
-                  disabled={busy}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="sched-cat">分类（可选）</Label>
+                <Label htmlFor="sched-action">到点执行</Label>
                 <NativeSelect
                   size="sm"
-                  id="sched-cat"
-                  value={form.categoryID == null ? "" : String(form.categoryID)}
-                  onChange={(e) =>
-                    setForm({ ...form, categoryID: e.target.value ? Number(e.target.value) : undefined })
-                  }
+                  id="sched-action"
+                  value={form.action}
+                  onChange={(e) => setForm({ ...form, action: e.target.value as FormState["action"] })}
                 >
-                  <NativeSelectOption value="">无分类</NativeSelectOption>
-                  {categories.map((c) => (
-                    <NativeSelectOption key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </NativeSelectOption>
-                  ))}
+                  <NativeSelectOption value="create">创建并启动任务</NativeSelectOption>
+                  <NativeSelectOption value="start">启动指定任务</NativeSelectOption>
+                  <NativeSelectOption value="pause">暂停指定任务</NativeSelectOption>
+                  <NativeSelectOption value="resume">继续指定任务</NativeSelectOption>
                 </NativeSelect>
               </div>
+              {form.action !== "create" ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="sched-target">目标任务</Label>
+                  <NativeSelect
+                    size="sm"
+                    id="sched-target"
+                    value={form.targetTaskID}
+                    onChange={(e) => setForm({ ...form, targetTaskID: e.target.value })}
+                  >
+                    <NativeSelectOption value="">选择任务…</NativeSelectOption>
+                    {tasks.map((t) => (
+                      <NativeSelectOption key={t.id} value={t.id}>
+                        #{t.id} {t.name || t.description}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                  <p className="text-muted-foreground text-xs">暂停要求任务正在运行；继续要求任务处于暂停状态。</p>
+                </div>
+              ) : null}
+              {form.action === "create" ? (
+                <>
+                <div className="grid gap-2">
+                  <Label htmlFor="sched-desc">任务描述（必填）</Label>
+                  <Textarea
+                    id="sched-desc"
+                    rows={2}
+                    value={form.description}
+                    onChange={(e) => setForm({ ...form, description: e.target.value })}
+                    placeholder="如：example.com 主站与 API 只读复测"
+                    disabled={busy}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="sched-goal">任务目标（必填）</Label>
+                  <Textarea
+                    id="sched-goal"
+                    rows={2}
+                    value={form.goal}
+                    onChange={(e) => setForm({ ...form, goal: e.target.value })}
+                    placeholder="如：确认上周的越权读取已修复，并检查新上线的接口"
+                    disabled={busy}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="sched-cat">分类（可选）</Label>
+                  <NativeSelect
+                    size="sm"
+                    id="sched-cat"
+                    value={form.categoryID == null ? "" : String(form.categoryID)}
+                    onChange={(e) =>
+                      setForm({ ...form, categoryID: e.target.value ? Number(e.target.value) : undefined })
+                    }
+                  >
+                    <NativeSelectOption value="">无分类</NativeSelectOption>
+                    {categories.map((c) => (
+                      <NativeSelectOption key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+                </>
+              ) : null}
               <div className="grid gap-2">
                 <Label htmlFor="sched-kind">频率</Label>
                 <div className="flex flex-wrap items-center gap-2">
@@ -318,6 +409,7 @@ export function ScheduleTasksDialog({
                     <NativeSelectOption value="every_hours">每 N 小时</NativeSelectOption>
                     <NativeSelectOption value="daily_at">每天 HH:MM</NativeSelectOption>
                     <NativeSelectOption value="weekly_at">每周某天 HH:MM</NativeSelectOption>
+                    <NativeSelectOption value="once_at">指定日期时间（仅一次）</NativeSelectOption>
                   </NativeSelect>
                   {form.kind === "every_minutes" && (
                     <Input
@@ -350,12 +442,21 @@ export function ScheduleTasksDialog({
                       ))}
                     </NativeSelect>
                   )}
-                  {(form.kind === "daily_at" || form.kind === "weekly_at") && (
+                  {form.kind === "once_at" && (
                     <Input
-                      className="h-8 w-24"
+                      className="h-8 w-40"
+                      type="date"
+                      value={form.date}
+                      onChange={(e) => setForm({ ...form, date: e.target.value })}
+                      disabled={busy}
+                    />
+                  )}
+                  {(form.kind === "daily_at" || form.kind === "weekly_at" || form.kind === "once_at") && (
+                    <Input
+                      className="h-8 w-28"
+                      type="time"
                       value={form.at}
                       onChange={(e) => setForm({ ...form, at: e.target.value })}
-                      placeholder="09:30"
                       disabled={busy}
                     />
                   )}
@@ -363,9 +464,28 @@ export function ScheduleTasksDialog({
                 <p className="text-muted-foreground text-xs">
                   {form.kind === "every_minutes" || form.kind === "every_hours"
                     ? "间隔型从创建时刻起算（首次运行 = 创建后一个间隔）。"
-                    : "按服务器本地时间（当前 " +
-                      new Date().toLocaleTimeString("zh-CN", { hour12: false }) +
-                      "）在到点时触发。"}
+                    : form.kind === "once_at"
+                      ? "只执行一次；执行后计划任务自动停用。"
+                      : "按下方时区的墙钟时间触发。"}
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="sched-timezone">时区</Label>
+                <NativeSelect
+                  size="sm"
+                  id="sched-timezone"
+                  value={form.timezone}
+                  onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+                >
+                  {[...new Set([form.timezone, ...TIMEZONES])].map((tz) => (
+                    <NativeSelectOption key={tz} value={tz}>
+                      {tz}
+                      {tz === "Asia/Shanghai" ? "（北京时间，默认）" : ""}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <p className="text-muted-foreground text-xs">
+                  当前 {form.timezone} 时间：{new Date().toLocaleString("zh-CN", { timeZone: form.timezone, hour12: false })}
                 </p>
               </div>
               <div className="flex items-center justify-between gap-4">
@@ -406,9 +526,9 @@ export function ScheduleTasksDialog({
                       <Switch checked={s.enabled} onCheckedChange={(v) => void toggle(s, v)} disabled={busy} />
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-                      <span>{s.frequency_text}</span>
-                      <span>下次 {s.enabled ? fmtLocal(s.next_run_at) : "（停用）"}</span>
-                      <span>上次 {fmtLocal(s.last_run_at)}</span>
+                      <span>{s.action_text}{s.target_task_id ? ` #${s.target_task_id}` : ""} · {s.frequency_text} · {s.timezone}</span>
+                      <span>下次 {s.enabled ? fmtLocal(s.next_run_at, s.timezone) : "（停用）"}</span>
+                      <span>上次 {fmtLocal(s.last_run_at, s.timezone)}</span>
                       {s.last_task_id && (
                         <a
                           className="hover:underline"

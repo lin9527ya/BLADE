@@ -19,6 +19,8 @@ const (
 	KindEveryHours   = "every_hours"
 	KindDailyAt      = "daily_at"
 	KindWeeklyAt     = "weekly_at"
+	// KindOnceAt 是「指定日期 + 时间，只跑一次」；Date 为 YYYY-MM-DD。
+	KindOnceAt = "once_at"
 )
 
 // 间隔频率的上限：7 天。比这更长的时间尺度用"每周某天"表达更清楚。
@@ -34,8 +36,10 @@ type Frequency struct {
 	Kind         string `json:"kind"`
 	EveryMinutes int    `json:"every_minutes,omitempty"`
 	EveryHours   int    `json:"every_hours,omitempty"`
-	// At 是 "HH:MM"（本地时区）。
+	// At 是 "HH:MM"（由 TaskSchedule.Timezone 指定的墙钟时区）。
 	At string `json:"at,omitempty"`
+	// Date 是 once_at 的日期 YYYY-MM-DD（该时区的墙钟日期）。
+	Date string `json:"date,omitempty"`
 	// Weekday 是 0=周日 … 6=周六（与 time.Weekday 对齐）。
 	Weekday int `json:"weekday,omitempty"`
 }
@@ -65,8 +69,15 @@ func (f Frequency) Validate() error {
 		if _, _, err := parseAt(f.At); err != nil {
 			return err
 		}
+	case KindOnceAt:
+		if _, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(f.Date), time.UTC); err != nil {
+			return fmt.Errorf("日期 %q 不合法：要写成 YYYY-MM-DD", f.Date)
+		}
+		if _, _, err := parseAt(f.At); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("未知的频率类型 %q（可用：every_minutes / every_hours / daily_at / weekly_at）", f.Kind)
+		return fmt.Errorf("未知的频率类型 %q（可用：every_minutes / every_hours / daily_at / weekly_at / once_at）", f.Kind)
 	}
 	return nil
 }
@@ -86,21 +97,28 @@ func (f Frequency) Describe() string {
 			w = 0
 		}
 		return fmt.Sprintf("每%s %s", weekdayNames[w], f.At)
+	case KindOnceAt:
+		return fmt.Sprintf("%s %s（仅一次）", f.Date, f.At)
 	}
 	return f.Kind
 }
 
-// Next 返回严格晚于 after 的下一次触发时刻（本地时区）。
-//
-// 语义（写进 UI 与文档，避免"为什么没跑"的歧义）：
-//   - 间隔型：**从锚点起算**（创建/上次触发 + 间隔），秒截到 0；不追补错过的那几次
-//     （进程停机三天后再开机，只跑一次，不补三次）。
-//   - 定时刻型（每天/每周）：按本地墙钟算；"就是现在"算下一次（严格晚于 after），
-//     避免同一分钟里连触发两次。
+// Next 返回严格晚于 after 的下一次触发时刻（用 after 的时区）。
 func (f Frequency) Next(after time.Time) (time.Time, error) {
+	return f.NextIn(after, after.Location())
+}
+
+// NextIn 用显式时区解释「每天/每周/指定日期」的墙钟值。间隔型与位置无关。
+//
+// 返回零值表示这条一次性计划已经没有下一次（调用方应停用它，而不是继续排期）。
+func (f Frequency) NextIn(after time.Time, loc *time.Location) (time.Time, error) {
 	if err := f.Validate(); err != nil {
 		return time.Time{}, err
 	}
+	if loc == nil {
+		loc = after.Location()
+	}
+	wall := after.In(loc)
 	switch f.Kind {
 	case KindEveryMinutes:
 		return after.Truncate(time.Minute).Add(time.Duration(f.EveryMinutes) * time.Minute), nil
@@ -108,18 +126,28 @@ func (f Frequency) Next(after time.Time) (time.Time, error) {
 		return after.Truncate(time.Minute).Add(time.Duration(f.EveryHours) * time.Hour), nil
 	case KindDailyAt:
 		h, m, _ := parseAt(f.At)
-		t := time.Date(after.Year(), after.Month(), after.Day(), h, m, 0, 0, after.Location())
+		t := time.Date(wall.Year(), wall.Month(), wall.Day(), h, m, 0, 0, loc)
 		if !t.After(after) {
 			t = t.AddDate(0, 0, 1)
 		}
 		return t, nil
 	case KindWeeklyAt:
 		h, m, _ := parseAt(f.At)
-		// 先落到"本周该星期几的 HH:MM"，不满足严格晚于就加一周。
-		delta := (f.Weekday - int(after.Weekday()) + 7) % 7
-		t := time.Date(after.Year(), after.Month(), after.Day(), h, m, 0, 0, after.Location()).AddDate(0, 0, delta)
+		delta := (f.Weekday - int(wall.Weekday()) + 7) % 7
+		t := time.Date(wall.Year(), wall.Month(), wall.Day(), h, m, 0, 0, loc).AddDate(0, 0, delta)
 		if !t.After(after) {
 			t = t.AddDate(0, 0, 7)
+		}
+		return t, nil
+	case KindOnceAt:
+		date, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(f.Date), loc)
+		if err != nil {
+			return time.Time{}, err
+		}
+		h, m, _ := parseAt(f.At)
+		t := time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, loc)
+		if !t.After(after) {
+			return time.Time{}, nil
 		}
 		return t, nil
 	}

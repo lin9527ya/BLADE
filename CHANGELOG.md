@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 计划任务日期/时区/启停优化
+
+- 频率新增 `once_at`：可选具体日期 + 时间，只执行一次；执行后计划任务自动停用。
+- 计划任务新增动作：`create`（创建并启动任务，原有行为）、`start`（启动指定任务）、
+  `pause`（暂停指定任务）、`resume`（继续指定任务）；启停动作可按间隔、每天、每周或一次性时间执行。
+- 每条计划新增 IANA `timezone`，默认 `Asia/Shanghai`（北京时间）；daily/weekly/once
+  按该时区墙钟计算，前端日期/时间选择器与下次运行时间也按该时区展示。
+- 一次性计划使用 nil 下次时间原子停用；暂停/继续动作复用任务控制路径并写
+  `schedule_runs`（state=applied/failed）与 `last_run_at`。
+- 计划任务表单/列表新增动作、目标任务选择、日期/时间选择器、时区选择与操作回执。
+
 ### Pojun 第三批：扫描入库 / 审批风险 / argv 规则 / URL 清洗 / 发布溯源
 
 - **扫描器结果入库**：新增 worker 工具 `ingest_scan_output`，支持 nmap XML、nuclei JSONL、

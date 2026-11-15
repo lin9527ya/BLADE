@@ -137,3 +137,36 @@ func TestNextRejectsInvalid(t *testing.T) {
 		t.Fatal("未知类型必须报错")
 	}
 }
+
+func TestFrequencyOnceAndTimezone(t *testing.T) {
+	now := at(2026, 11, 19, 12, 0)
+	f := Frequency{Kind: KindOnceAt, Date: "2026-11-20", At: "09:30"}
+	got, err := f.Next(now)
+	if err != nil || !got.Equal(at(2026, 11, 20, 9, 30)) {
+		t.Fatalf("once future: %v %v", got, err)
+	}
+	if _, err := f.Next(at(2026, 11, 20, 9, 30)); err != nil {
+		t.Fatal(err)
+	}
+	past, err := f.Next(at(2026, 11, 21, 9, 30))
+	if err != nil || !past.IsZero() {
+		t.Fatalf("once past must have no next: %v %v", past, err)
+	}
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2026-11-20 00:00 UTC = 08:00 Beijing; daily 09:30 Beijing = 01:30 UTC.
+	daily := Frequency{Kind: KindDailyAt, At: "09:30"}
+	next, err := daily.NextIn(at(2026, 11, 20, 0, 0), loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 11, 20, 9, 30, 0, 0, loc)
+	if !next.Equal(want) {
+		t.Fatalf("daily in Beijing: got %v want %v", next, want)
+	}
+	if f.Describe() != "2026-11-20 09:30（仅一次）" {
+		t.Fatalf("describe=%q", f.Describe())
+	}
+}

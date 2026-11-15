@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 // 计划任务运维台读取 schedule_runs：按页返回触发历史，任务 id/错误字段原样透出。
@@ -63,5 +66,82 @@ INSERT INTO schedule_runs(schedule_id, scheduled_at, state, task_id, error) VALU
 	w = request(http.MethodGet, "/api/task-schedules/999999999/runs", "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("missing schedule = %d %s", w.Code, w.Body)
+	}
+}
+
+func TestCreateOneTimePauseScheduleWithBeijingTimezone(t *testing.T) {
+	s, f, request := trafficEvidenceServer(t)
+	full, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || full.TaskID == nil {
+		t.Fatalf("fixture finding: %+v %v", full, err)
+	}
+	taskID := strconv.FormatInt(*full.TaskID, 10)
+	if _, ok := s.m.Task(taskID); !ok {
+		t.Fatalf("fixture task %s not loaded", taskID)
+	}
+	date := time.Now().Add(24 * time.Hour).Format("2006-01-02")
+	body := `{"name":"一次性暂停","action":"pause","target_task_id":"` + taskID + `",` +
+		`"timezone":"Asia/Shanghai","frequency":{"kind":"once_at","date":"` + date + `","at":"09:30"}}`
+	w := request(http.MethodPost, "/api/task-schedules", body)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", w.Code, w.Body)
+	}
+	var got struct {
+		ID            int64  `json:"id"`
+		Action        string `json:"action"`
+		ActionText    string `json:"action_text"`
+		TargetTaskID  string `json:"target_task_id"`
+		Timezone      string `json:"timezone"`
+		NextRunAt     string `json:"next_run_at"`
+		FrequencyText string `json:"frequency_text"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Action != "pause" || got.TargetTaskID != taskID || got.Timezone != "Asia/Shanghai" || got.NextRunAt == "" {
+		t.Fatalf("created schedule = %+v", got)
+	}
+	if !strings.Contains(got.FrequencyText, "仅一次") {
+		t.Fatalf("frequency_text=%q", got.FrequencyText)
+	}
+	_, _ = s.m.pg.Exec(`DELETE FROM task_schedules WHERE id=$1`, got.ID)
+}
+
+func TestDueSchedulePausesTargetTask(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+	task, err := m.CreateTask("scheduled pause target", "be paused by schedule", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) })
+	if err := m.SetTaskStatus(task.ID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	next := time.Now().Add(-time.Minute).Truncate(time.Second)
+	sched, err := m.pg.CreateTaskScheduleFull("pause-due", true,
+		json.RawMessage(`{}`), json.RawMessage(`{"kind":"once_at","date":"2020-01-01","at":"09:30"}`),
+		"pause", task.ID, "Asia/Shanghai", &next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM task_schedules WHERE id=$1`, sched.ID) })
+	s := newAdmissionTestServer(m, nil)
+	sc := newScheduler(s)
+	sc.runDueSchedules(context.Background())
+	taskNum, _ := strconv.ParseInt(task.ID, 10, 64)
+	row, err := m.pg.GetTask(taskNum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row == nil || !row.Paused {
+		t.Fatalf("scheduled pause did not pause target: %+v", row)
+	}
+	runs, err := m.pg.ListScheduleRuns(context.Background(), sched.ID, 10)
+	if err != nil || len(runs) != 1 || runs[0].State != "applied" {
+		t.Fatalf("schedule runs=%+v err=%v", runs, err)
 	}
 }

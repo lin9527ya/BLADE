@@ -1711,6 +1711,11 @@ CREATE TABLE IF NOT EXISTS task_schedules (
     enabled      BOOLEAN NOT NULL DEFAULT true,
     task_spec    JSONB NOT NULL DEFAULT '{}',
     frequency    JSONB NOT NULL DEFAULT '{}',
+    -- create = 按 task_spec 建任务；pause/resume = 控制 target_task_id 指定的任务。
+    action       TEXT NOT NULL DEFAULT 'create',
+    target_task_id TEXT NOT NULL DEFAULT '',
+    -- IANA 时区；空/非法时后端回退 Asia/Shanghai（北京时间）。
+    timezone     TEXT NOT NULL DEFAULT 'Asia/Shanghai',
     -- next_run_at 兼作"到期判据"与"CAS 锁"：到点先把 next_run_at 推到下一次（原子），
     -- 推成功的那次才去建任务，于是多 tick/多实例/重启都不会重复建。
     -- 进程停机期间错过的次数不追补（开机只跑一次），改由人工用「立即运行」补。
@@ -1721,6 +1726,9 @@ CREATE TABLE IF NOT EXISTS task_schedules (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'create';
+ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS target_task_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';
 CREATE INDEX IF NOT EXISTS idx_task_schedules_due ON task_schedules(next_run_at) WHERE enabled;
 
 -- 每次到点触发一份账本：唯一键 (schedule_id, scheduled_at) 让重复 tick/多实例

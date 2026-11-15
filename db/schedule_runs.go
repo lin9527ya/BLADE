@@ -51,6 +51,26 @@ WHERE id=$1 AND next_run_at=$2 AND enabled`, scheduleID, from, to)
 	return nil
 }
 
+func advanceScheduleRunCASMaybe(ctx context.Context, tx *sql.Tx, scheduleID int64, from time.Time, to *time.Time) error {
+	var next any
+	if to != nil {
+		next = *to
+	}
+	res, err := tx.ExecContext(ctx, `
+UPDATE task_schedules SET
+  next_run_at=$3,
+  enabled=CASE WHEN $3::timestamptz IS NULL THEN false ELSE enabled END,
+  updated_at=now()
+WHERE id=$1 AND next_run_at=$2 AND enabled`, scheduleID, from, next)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrScheduleRunAdvanced
+	}
+	return nil
+}
+
 func finishScheduleRunTx(ctx context.Context, tx *sql.Tx, runID, scheduleID int64, state, taskID, errMsg string) error {
 	if _, err := tx.ExecContext(ctx, `
 UPDATE schedule_runs SET state=$2, task_id=$3, error=$4, updated_at=now() WHERE id=$1`,
@@ -68,6 +88,12 @@ UPDATE task_schedules SET last_run_at=now(), last_task_id=$2, last_error=$3, upd
 // recorded as a failed run, and still advances the schedule so a broken spec
 // cannot hot-loop every scheduler tick.
 func (d *DB) FireTaskScheduleRun(ctx context.Context, scheduleID int64, scheduledAt, nextRunAt time.Time, description, goal string, opts TaskCreateOptions) (*Task, error) {
+	return d.FireTaskScheduleRunWithNext(ctx, scheduleID, scheduledAt, &nextRunAt, description, goal, opts)
+}
+
+// FireTaskScheduleRunWithNext is the one-time-aware variant: a nil next disables
+// the schedule atomically with the task creation.
+func (d *DB) FireTaskScheduleRunWithNext(ctx context.Context, scheduleID int64, scheduledAt time.Time, nextRunAt *time.Time, description, goal string, opts TaskCreateOptions) (*Task, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -78,7 +104,7 @@ func (d *DB) FireTaskScheduleRun(ctx context.Context, scheduleID int64, schedule
 	if err != nil {
 		return nil, err
 	}
-	if err := advanceScheduleRunCAS(ctx, tx, scheduleID, scheduledAt, nextRunAt); err != nil {
+	if err := advanceScheduleRunCASMaybe(ctx, tx, scheduleID, scheduledAt, nextRunAt); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `SAVEPOINT schedule_task`); err != nil {
@@ -113,6 +139,10 @@ func (d *DB) FireTaskScheduleRun(ctx context.Context, scheduleID int64, schedule
 // FailTaskScheduleRun records a permanently invalid occurrence and advances the
 // schedule, without creating a task.
 func (d *DB) FailTaskScheduleRun(ctx context.Context, scheduleID int64, scheduledAt, nextRunAt time.Time, errMsg string) error {
+	return d.FailTaskScheduleRunWithNext(ctx, scheduleID, scheduledAt, &nextRunAt, errMsg)
+}
+
+func (d *DB) FailTaskScheduleRunWithNext(ctx context.Context, scheduleID int64, scheduledAt time.Time, nextRunAt *time.Time, errMsg string) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -122,10 +152,45 @@ func (d *DB) FailTaskScheduleRun(ctx context.Context, scheduleID int64, schedule
 	if err != nil {
 		return err
 	}
-	if err := advanceScheduleRunCAS(ctx, tx, scheduleID, scheduledAt, nextRunAt); err != nil {
+	if err := advanceScheduleRunCASMaybe(ctx, tx, scheduleID, scheduledAt, nextRunAt); err != nil {
 		return err
 	}
 	if err := finishScheduleRunTx(ctx, tx, runID, scheduleID, "failed", "", errMsg); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ClaimTaskScheduleAction claims one occurrence and advances/disable the next run
+// without creating a task. The caller performs the pause/resume and records the
+// result with FinishTaskScheduleAction.
+func (d *DB) ClaimTaskScheduleAction(ctx context.Context, scheduleID int64, scheduledAt time.Time, nextRunAt *time.Time) (int64, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	runID, err := claimScheduleRun(ctx, tx, scheduleID, scheduledAt)
+	if err != nil {
+		return 0, err
+	}
+	if err := advanceScheduleRunCASMaybe(ctx, tx, scheduleID, scheduledAt, nextRunAt); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return runID, nil
+}
+
+// FinishTaskScheduleAction records the outcome of a claimed pause/resume run.
+func (d *DB) FinishTaskScheduleAction(ctx context.Context, scheduleID, runID int64, state, taskID, errMsg string) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := finishScheduleRunTx(ctx, tx, runID, scheduleID, state, taskID, errMsg); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -760,12 +760,23 @@ export const api = {
   createTaskSchedule: (input: {
     name: string;
     enabled: boolean;
-    task_spec: ScheduleTaskSpec;
+    task_spec?: ScheduleTaskSpec;
     frequency: ScheduleFrequency;
+    action?: "create" | "start" | "pause" | "resume";
+    target_task_id?: string;
+    timezone?: string;
   }) => post<TaskSchedule>(`/task-schedules`, input),
   updateTaskSchedule: (
     id: number,
-    input: { name?: string; enabled?: boolean; task_spec?: ScheduleTaskSpec; frequency?: ScheduleFrequency },
+    input: {
+      name?: string;
+      enabled?: boolean;
+      task_spec?: ScheduleTaskSpec;
+      frequency?: ScheduleFrequency;
+      action?: "create" | "start" | "pause" | "resume";
+      target_task_id?: string;
+      timezone?: string;
+    },
   ) => patch<TaskSchedule>(`/task-schedules/${id}`, input),
   deleteTaskSchedule: (id: number) => del<{ deleted: boolean }>(`/task-schedules/${id}`),
   // 立即按规格建一个任务（额外一次运行，不改排期）。

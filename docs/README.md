@@ -46,7 +46,10 @@ P20 探索策略已整体删除（`policy/`、策略端点、`exploration_policy
 ## 情报与计划任务
 
 `server/intel_tools.go`（情报工具的三条边界）、`server/schedules.go`（计划任务的
-CAS 防重与水位语义）、`server/scheduler.go`（触发器调度）。
+CAS 防重与水位语义、create/start/pause/resume 动作、固定时区墙钟计算）、`sched/freq.go`
+（结构化频率：间隔/每天/每周/指定日期一次性）、`server/scheduler.go`（触发器调度）。
+计划任务默认按 `Asia/Shanghai`（北京时间）解释 daily/weekly/once 的 `HH:MM`，可在每条
+计划上切换 IANA 时区；一次性计划执行后自动停用。
 
 ## 资产模型与自动关联
 

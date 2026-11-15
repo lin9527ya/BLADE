@@ -1123,12 +1123,15 @@ export interface CVEImportPreview {
 
 /** 结构化频率（刻意不是 cron 字符串：覆盖巡检需要，且没有方言/边界歧义）。 */
 export interface ScheduleFrequency {
-  kind: "every_minutes" | "every_hours" | "daily_at" | "weekly_at";
+  kind: "every_minutes" | "every_hours" | "daily_at" | "weekly_at" | "once_at";
   every_minutes?: number;
   every_hours?: number;
   at?: string; // "HH:MM"
+  date?: string; // "YYYY-MM-DD"（once_at）
   weekday?: number; // 0=周日 … 6=周六
 }
+
+export type ScheduleAction = "create" | "start" | "pause" | "resume";
 
 /** 到点要建的任务规格（与建任务表单同形状的子集；计划任务存整份，不引用模板）。 */
 export interface ScheduleTaskSpec {
@@ -1152,6 +1155,11 @@ export interface TaskSchedule {
   task_spec: ScheduleTaskSpec;
   frequency: ScheduleFrequency;
   frequency_text: string;
+  action: ScheduleAction;
+  action_text: string;
+  target_task_id?: string;
+  /** IANA 时区；默认 Asia/Shanghai（北京时间）。 */
+  timezone: string;
   next_run_at?: string;
   last_run_at?: string;
   last_task_id?: string;
