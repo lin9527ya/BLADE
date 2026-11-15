@@ -67,7 +67,6 @@ func (e jarEntry) key() string { return e.Domain + "\x00" + e.Path + "\x00" + e.
 // jarStore 是一个可持久化的 http.CookieJar。跨 goroutine 安全；同一进程内
 // 不同意图共用同一个文件时以路径为键共用一把锁（避免读改写相互覆盖）。
 type jarStore struct {
-	mu      sync.Mutex
 	path    string
 	entries map[string]jarEntry
 	loaded  bool
@@ -263,18 +262,6 @@ func (j *jarStore) Cookies(u *url.URL) []*http.Cookie {
 		out = append(out, &http.Cookie{Name: e.Name, Value: e.Value, Domain: e.Domain, Path: e.Path})
 	}
 	return out
-}
-
-// cookieJarFor 返回会话名对应的任务级 cookie jar；空会话名/非法名返回 nil（直连）。
-func (t *ToolSet) cookieJarFor(session string) http.CookieJar {
-	if strings.TrimSpace(session) == "" {
-		return nil
-	}
-	p := t.sessionJarPath(session)
-	if p == "" {
-		return nil
-	}
-	return newJarStore(p)
 }
 
 // ── 请求执行 ────────────────────────────────────────────────────────────────

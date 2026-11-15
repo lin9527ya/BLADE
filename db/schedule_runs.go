@@ -38,19 +38,6 @@ RETURNING id`, scheduleID, scheduledAt).Scan(&id)
 	return id, err
 }
 
-func advanceScheduleRunCAS(ctx context.Context, tx *sql.Tx, scheduleID int64, from, to time.Time) error {
-	res, err := tx.ExecContext(ctx, `
-UPDATE task_schedules SET next_run_at=$3, updated_at=now()
-WHERE id=$1 AND next_run_at=$2 AND enabled`, scheduleID, from, to)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrScheduleRunAdvanced
-	}
-	return nil
-}
-
 func advanceScheduleRunCASMaybe(ctx context.Context, tx *sql.Tx, scheduleID int64, from time.Time, to *time.Time) error {
 	var next any
 	if to != nil {
