@@ -13,8 +13,9 @@ import (
 	"github.com/lin9527ya/blade/db"
 )
 
-// 全局战果/凭据台账：只读、跨任务。凭据明文永远不经过这里；需要时仍走受控
-// reveal 接口并留痕。筛选条件对列表与导出共用一份解析。
+// 全局战果/凭据台账：只读、跨任务。默认不输出凭据明文；开启「凭据明文保真」
+// 设置后列表/导出直接带上 secret（方便人工核对），关闭时仍走受控 reveal 接口并留痕。
+// 筛选条件对列表与导出共用一份解析。
 
 func lootFilterFromQuery(r *http.Request) db.LootFilter {
 	q := r.URL.Query()
@@ -30,7 +31,9 @@ func lootFilterFromQuery(r *http.Request) db.LootFilter {
 func (s *Server) listLoot(w http.ResponseWriter, r *http.Request) {
 	page := int(parseIntDefault(r.URL.Query().Get("page")))
 	size := int(parseIntDefault(r.URL.Query().Get("size")))
-	items, total, err := s.m.pg.ListLootLedger(r.Context(), lootFilterFromQuery(r), page, size)
+	filter := lootFilterFromQuery(r)
+	filter.IncludeCredentialSecret = s.credentialPlaintextEnabled()
+	items, total, err := s.m.pg.ListLootLedger(r.Context(), filter, page, size)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -49,6 +52,7 @@ func (s *Server) exportLoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter := lootFilterFromQuery(r)
+	filter.IncludeCredentialSecret = s.credentialPlaintextEnabled()
 	name := `战果台账-` + time.Now().Format("20060102-150405") + "." + format
 	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
 	if format == "json" {
@@ -79,14 +83,14 @@ func (s *Server) exportLoot(w http.ResponseWriter, r *http.Request) {
 	_ = cw.Write([]string{
 		"kind", "state", "task_id", "task_name", "campaign_id", "summary", "host", "locator", "url",
 		"category", "exposure", "username", "fingerprint", "access", "privilege", "protocol", "port",
-		"where", "signals", "cleanup", "created_at",
+		"where", "signals", "cleanup", "created_at", "secret",
 	})
 	err := s.m.pg.IterateLootLedger(r.Context(), filter, func(it db.LootItem) error {
 		return cw.Write([]string{
 			it.Kind, it.State, strconv.FormatInt(it.TaskID, 10), it.TaskName, strconv.FormatInt(it.CampaignID, 10),
 			it.Summary, it.Host, it.Locator, it.URL, it.Category, it.Exposure, it.Username, it.Fingerprint,
 			it.Access, it.Privilege, it.Protocol, strconv.Itoa(it.Port), it.Where, it.Signals, it.Cleanup,
-			it.CreatedAt.Format(time.RFC3339),
+			it.CreatedAt.Format(time.RFC3339), it.Secret,
 		})
 	})
 	if err != nil {

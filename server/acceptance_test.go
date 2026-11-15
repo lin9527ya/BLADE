@@ -4093,6 +4093,12 @@ func accP35(t *testing.T, e *accEnv) {
 // accP36 凭据可利用面：把 credential 节点从「在手/掉了」做成能据此行动的东西——
 // 能登哪、验证过没有、以及**明文只在受控入口出且留痕**。
 func accP36(t *testing.T, e *accEnv) {
+	// This acceptance targets the controlled-reveal path; turn the default-on
+	// plaintext fidelity off for its masking assertions.
+	if err := e.m.pg.SetSetting(settingCredentialPlaintext, "false"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingCredentialPlaintext) })
 	task, tid := e.newTask("acceptance-p36", "凭据可利用面")
 	tsx := agent.NewToolSet(task.Store, "work#1")
 	tsx.SetTaskID(tid)

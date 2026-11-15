@@ -18,6 +18,8 @@ type LootFilter struct {
 	TaskID     int64
 	CompanyID  int64
 	CampaignID int64
+	// IncludeCredentialSecret 由服务端按「凭据明文保真」设置打开；DB 默认不填充。
+	IncludeCredentialSecret bool
 }
 
 func (f LootFilter) kindClause() (string, []any) {
@@ -68,14 +70,17 @@ type LootItem struct {
 	Port         int    `json:"port,omitempty"`
 	CredentialID int64  `json:"credential_id,omitempty"`
 
-	Username       string             `json:"username,omitempty"`
-	CredentialKind string             `json:"credential_kind,omitempty"`
-	Fingerprint    string             `json:"fingerprint,omitempty"`
-	Targets        []CredentialTarget `json:"targets,omitempty"`
-	VerifiedCount  int                `json:"verified_count,omitempty"`
+	Username       string `json:"username,omitempty"`
+	CredentialKind string `json:"credential_kind,omitempty"`
+	// Secret 只在 IncludeCredentialSecret=true 时填充；默认空，跨任务列表/导出
+	// 不会无意带出凭据本体。
+	Secret        string             `json:"secret,omitempty"`
+	Fingerprint   string             `json:"fingerprint,omitempty"`
+	Targets       []CredentialTarget `json:"targets,omitempty"`
+	VerifiedCount int                `json:"verified_count,omitempty"`
 }
 
-func lootItemFromRow(r lootRow) LootItem {
+func lootItemFromRow(r lootRow, includeCredentialSecret bool) LootItem {
 	n := r.node
 	item := LootItem{
 		ID: n.ID, Kind: n.Kind, State: n.State, CreatedAt: n.CreatedAt,
@@ -91,6 +96,9 @@ func lootItemFromRow(r lootRow) LootItem {
 		v := ParseCredential(n)
 		item.Summary = v.Summary
 		item.Username, item.CredentialKind, item.Fingerprint = v.Username, v.Kind, v.Fingerprint()
+		if includeCredentialSecret {
+			item.Secret = v.Secret
+		}
 		item.Targets = v.Targets
 		for _, t := range v.Targets {
 			if t.Verified {
@@ -139,7 +147,7 @@ WHERE ` + strings.Join(where, " AND ") + ` ` + suffix
 	return q, append(args, extraArgs...)
 }
 
-func scanLootRows(rows *Rows) ([]LootItem, error) {
+func scanLootRows(rows *Rows, includeCredentialSecret bool) ([]LootItem, error) {
 	out := []LootItem{}
 	for rows.Next() {
 		r := lootRow{node: &Node{}}
@@ -149,7 +157,7 @@ func scanLootRows(rows *Rows) ([]LootItem, error) {
 			return nil, err
 		}
 		r.node.Payload = payload
-		out = append(out, lootItemFromRow(r))
+		out = append(out, lootItemFromRow(r, includeCredentialSecret))
 	}
 	return out, rows.Err()
 }
@@ -179,7 +187,7 @@ func (d *DB) ListLootLedger(ctx context.Context, f LootFilter, page, size int) (
 		return nil, 0, err
 	}
 	defer rows.Close()
-	items, err := scanLootRows(rows)
+	items, err := scanLootRows(rows, f.IncludeCredentialSecret)
 	return items, total, err
 }
 
@@ -199,7 +207,7 @@ func (d *DB) IterateLootLedger(ctx context.Context, f LootFilter, fn func(LootIt
 			return err
 		}
 		r.node.Payload = payload
-		if err := fn(lootItemFromRow(r)); err != nil {
+		if err := fn(lootItemFromRow(r, f.IncludeCredentialSecret)); err != nil {
 			return err
 		}
 	}

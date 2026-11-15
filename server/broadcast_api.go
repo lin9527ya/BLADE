@@ -23,9 +23,9 @@ type GlobalBroadcastDTO struct {
 	SessionKey string `json:"session_key,omitempty"`
 }
 
-func globalBroadcastDTO(g *db.GlobalNode) GlobalBroadcastDTO {
+func (s *Server) globalBroadcastDTO(g *db.GlobalNode) GlobalBroadcastDTO {
 	return GlobalBroadcastDTO{
-		TaskNodeDTO: taskNodeDTO(g.Node),
+		TaskNodeDTO: taskNodeDTO(g.Node, s.credentialPlaintextEnabled()),
 		TaskID:      i64s(g.TaskID),
 		TaskName:    g.TaskName,
 		TaskState:   g.TaskState,
@@ -78,7 +78,7 @@ func (s *Server) globalBroadcast(w http.ResponseWriter, r *http.Request) {
 		if g == nil || g.Node == nil {
 			continue
 		}
-		items = append(items, globalBroadcastDTO(g))
+		items = append(items, s.globalBroadcastDTO(g))
 	}
 	writeJSON(w, 200, map[string]any{
 		"items": items,
@@ -141,7 +141,7 @@ func (s *Server) streamGlobalBroadcast(w http.ResponseWriter, r *http.Request) {
 			if g == nil || g.Node == nil {
 				continue
 			}
-			b, err := json.Marshal(globalBroadcastDTO(g))
+			b, err := json.Marshal(s.globalBroadcastDTO(g))
 			if err != nil {
 				continue
 			}

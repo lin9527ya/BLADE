@@ -393,7 +393,7 @@ func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
+	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes, s.credentialPlaintextEnabled()), "edges": edgeDTOs(edges)})
 }
 
 // patchFinding partially updates a finding: any subset of {status, severity}.

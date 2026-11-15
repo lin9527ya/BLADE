@@ -4,7 +4,7 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { EyeOffIcon, LanguagesIcon, OctagonXIcon, RadarIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
+import { EyeOffIcon, KeyRoundIcon, LanguagesIcon, OctagonXIcon, RadarIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
 
 import { Advanced, Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
 import { Badge } from "@/components/ui/badge";
@@ -60,6 +60,9 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     emptyReportPatrol,
     savingEmptyReportPatrol,
     toggleEmptyReportPatrol,
+    credentialPlaintext,
+    savingCredentialPlaintext,
+    toggleCredentialPlaintext,
     oastEnabled,
     oastTokenSet,
     noiseLevel,
@@ -568,6 +571,31 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               <br />
               每条漏洞最多尝试 2 次、间隔至少 30 分钟，失败不会热循环；证据不足时 reporter
               只说明缺口，不臆造。前提是 <code>reporter</code> agent 处于启用状态。
+            </>
+          }
+        />
+      </SubBlock>
+
+      <SubBlock title="凭据明文保真（手工核验）" icon={<KeyRoundIcon className="size-4 text-muted-foreground" />}>
+        <SwitchRow
+          id="credential-plaintext"
+          describedBy="credential-plaintext-description"
+          label={
+            credentialPlaintext
+              ? "已开启（默认）· 凭据节点与战果台账直接显示明文"
+              : "已关闭 · 只显示指纹，明文走受控入口并留痕"
+          }
+          checked={credentialPlaintext}
+          disabled={!loaded || savingCredentialPlaintext}
+          onChange={toggleCredentialPlaintext}
+          hint={
+            <>
+              开启后，节点接口与「战果」台账会直接下发凭据本体（secret），方便在凭据页/节点详情里
+              查看并手工验证。关闭后恢复原行为：只下发 sha256 指纹，明文仅在节点详情点「显示明文」时
+              由受控接口返回，并写入任务时间线。
+              <br />
+              报告/交付物仍按原口径只印身份与指纹；导出战果台账时，开启本项会把 secret 一并写入
+              CSV/JSON。请只在受控环境使用。
             </>
           }
         />

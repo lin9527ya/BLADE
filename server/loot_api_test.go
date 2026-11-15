@@ -17,6 +17,10 @@ func TestLootLedgerAndCredentialAttempts(t *testing.T) {
 		t.Fatalf("fixture finding: %+v %v", full, err)
 	}
 	taskID := *full.TaskID
+	if err := s.m.pg.SetSetting(settingCredentialPlaintext, "false"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = s.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingCredentialPlaintext) })
 	task, ok := s.m.Task(strconv.FormatInt(taskID, 10))
 	if !ok || task == nil {
 		t.Fatal("task not found")
@@ -89,6 +93,18 @@ func TestLootLedgerAndCredentialAttempts(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "kind,state,task_id") {
 		t.Fatalf("csv header missing: %s", w.Body)
+	}
+	// 明文保真开启后，列表与导出都应带出 secret（便于人工核对）。
+	if err := s.m.pg.SetSetting(settingCredentialPlaintext, "true"); err != nil {
+		t.Fatal(err)
+	}
+	w = request(http.MethodGet, "/api/loot?task="+strconv.FormatInt(taskID, 10), "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "s3cr3t-value") {
+		t.Fatalf("plaintext-on loot missing credential secret: %d %s", w.Code, w.Body)
+	}
+	w = request(http.MethodGet, "/api/loot/export?format=csv&task="+strconv.FormatInt(taskID, 10), "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "s3cr3t-value") {
+		t.Fatalf("plaintext-on csv missing credential secret: %d %s", w.Code, w.Body)
 	}
 
 	w = request(http.MethodGet, "/api/credential-attempts?task="+strconv.FormatInt(taskID, 10), "")

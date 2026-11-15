@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Pojun 技能全量导入与凭据明文保真
+
+- 从 Pojun 导入全部 22 个技能（BLADE 现共 24 个技能目录）。新技能**默认不绑定任何 agent**，
+  需在「系统 → Agent → 技能可见性」中手动确认启用；同名技能保留 BLADE 的脚本/授权边界适配，
+  仅合并 Pojun 的新流程与 tags。
+- 新增 `credential_plaintext_fidelity`（默认开）：凭据节点接口与战果台账/导出直接携带 `secret`，
+  方便在凭据页与节点详情中查看并手工验证。关闭后恢复指纹 + 受控 reveal 并留痕。
+- 报告与批量交付物仍只印身份/指纹/可登目标，不随该设置输出明文。
+
 ### Pojun 第二批能力
 
 - **攻击链续跳提醒**：新的 high/critical finding 会向 planner 投一条非强制 hint，

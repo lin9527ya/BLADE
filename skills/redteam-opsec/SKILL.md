@@ -1,6 +1,10 @@
 ---
 name: redteam-opsec
 description: OPSEC 隐蔽作战纪律：渐进暴露、速率时序、流量混淆、最小足迹与授权范围内的封禁规避。在需要降低噪声、避开 WAF/IDS 或者目标业务敏感、必须控制影响时使用。
+tags:
+  cwe: []
+  attack: [TA0005]
+  class: [opsec, stealth, red-team]
 ---
 
 # OPSEC / 隐蔽作战纪律

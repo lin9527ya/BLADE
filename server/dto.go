@@ -239,7 +239,7 @@ type TaskNodeDTO struct {
 	FindingStatus string `json:"finding_status,omitempty"`
 }
 
-func taskNodeDTO(n *db.Node) TaskNodeDTO {
+func taskNodeDTO(n *db.Node, plaintext ...bool) TaskNodeDTO {
 	d := TaskNodeDTO{
 		EvidenceState: n.EvidenceState, RequiresMissing: n.RequiresMissing, LogicalSessionID: n.LogicalSessionID,
 		ID:            i64s(n.ID),
@@ -269,7 +269,13 @@ func taskNodeDTO(n *db.Node) TaskNodeDTO {
 	if n.Kind == db.KindCredential {
 		v := db.ParseCredential(n)
 		d.Fingerprint = v.Fingerprint()
-		d.Payload = redactCredentialSecret(n.Payload)
+		if len(plaintext) > 0 && plaintext[0] {
+			// 明文保真：操作者要求直接看到凭据本体，便于手工验证。存储层本来就是
+			// 原文；这里只是不下发脱敏副本，报告/交付物仍按各自口径只印指纹。
+			d.Payload = rawString(n.Payload)
+		} else {
+			d.Payload = redactCredentialSecret(n.Payload)
+		}
 	}
 	return d
 }
@@ -345,10 +351,10 @@ type ConstraintDTO struct {
 	CompiledRules int `json:"compiled_rules,omitempty"`
 }
 
-func taskNodeDTOs(in []*db.Node) []TaskNodeDTO {
+func taskNodeDTOs(in []*db.Node, plaintext ...bool) []TaskNodeDTO {
 	out := make([]TaskNodeDTO, 0, len(in))
 	for _, n := range in {
-		out = append(out, taskNodeDTO(n))
+		out = append(out, taskNodeDTO(n, plaintext...))
 	}
 	return out
 }

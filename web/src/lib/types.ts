@@ -1186,6 +1186,8 @@ export interface LootItem {
   credential_id?: number;
   username?: string;
   credential_kind?: string;
+  /** 仅在「凭据明文保真」开启时由服务端下发。 */
+  secret?: string;
   fingerprint?: string;
   targets?: { host: string; port?: number; service?: string; protocol?: string; verified?: boolean }[];
   verified_count?: number;
@@ -1870,6 +1872,8 @@ export interface Settings {
   empty_report_patrol?: boolean;
   /** 压缩摘要使用的独立 LLM 配置 id；0/未设为跟随任务链/角色绑定。 */
   compactor_llm_profile_id?: number;
+  /** 凭据明文保真：节点接口/战果台账直接带 secret（默认开）。 */
+  credential_plaintext_fidelity?: boolean;
   oast_enabled: boolean; // 带外确认（OAST）总开关，默认关闭
   oast_token_set: boolean; // OAST 服务 token 是否已配置（值不回显）
   oast_token?: string; // 只写：仅在 PUT 时用于保存/清除 token

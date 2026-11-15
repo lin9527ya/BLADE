@@ -55,6 +55,8 @@ export function useSettingsState() {
   const [savingAttackChain, setSavingAttackChain] = React.useState(false);
   const [emptyReportPatrol, setEmptyReportPatrol] = React.useState(false);
   const [savingEmptyReportPatrol, setSavingEmptyReportPatrol] = React.useState(false);
+  const [credentialPlaintext, setCredentialPlaintext] = React.useState(true);
+  const [savingCredentialPlaintext, setSavingCredentialPlaintext] = React.useState(false);
   const [compactorProfileID, setCompactorProfileID] = React.useState("0");
   const [llmProfiles, setLlmProfiles] = React.useState<LLMProfile[]>([]);
   const [savingCompactorProfile, setSavingCompactorProfile] = React.useState(false);
@@ -193,6 +195,7 @@ export function useSettingsState() {
     setAgentAutoRetest(!!s.agent_auto_retest);
     setAttackChainContinuation(s.attack_chain_continuation !== false);
     setEmptyReportPatrol(!!s.empty_report_patrol);
+    setCredentialPlaintext(s.credential_plaintext_fidelity !== false);
     setCompactorProfileID(String(s.compactor_llm_profile_id ?? 0));
     setOastEnabled(!!s.oast_enabled);
     setOastTokenSet(!!s.oast_token_set);
@@ -688,6 +691,22 @@ export function useSettingsState() {
       .finally(() => setSavingEmptyReportPatrol(false));
   };
 
+  const toggleCredentialPlaintext = (v: boolean) => {
+    setCredentialPlaintext(v); // optimistic
+    setSavingCredentialPlaintext(true);
+    api
+      .setSettings({ credential_plaintext_fidelity: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启凭据明文保真" : "已关闭凭据明文保真（改为指纹 + 受控查看）");
+      })
+      .catch((e) => {
+        setCredentialPlaintext(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingCredentialPlaintext(false));
+  };
+
   const saveCompactorProfile = () => {
     const id = Number.parseInt(compactorProfileID, 10) || 0;
     setSavingCompactorProfile(true);
@@ -1125,6 +1144,10 @@ export function useSettingsState() {
     setEmptyReportPatrol,
     savingEmptyReportPatrol,
     toggleEmptyReportPatrol,
+    credentialPlaintext,
+    setCredentialPlaintext,
+    savingCredentialPlaintext,
+    toggleCredentialPlaintext,
     compactorProfileID,
     setCompactorProfileID,
     llmProfiles,

@@ -1116,5 +1116,5 @@ func (s *Server) frontier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fr, _ := t.Store.Frontier(atoiDefault(r.URL.Query().Get("limit"), 100))
-	writeJSON(w, 200, taskNodeDTOs(fr))
+	writeJSON(w, 200, taskNodeDTOs(fr, s.credentialPlaintextEnabled()))
 }

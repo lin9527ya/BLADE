@@ -269,6 +269,21 @@ export function withRevealedSecret(n: TaskNode | null, revealed: string | null):
   return { ...n, payload: JSON.stringify({ ...data, secret: revealed }) };
 }
 
+// payloadHasPlaintextSecret reports whether the server already included the
+// credential secret (credential_plaintext_fidelity on). Used only to avoid
+// showing the "reveal with audit" action when the value is already visible.
+function payloadHasPlaintextSecret(n: TaskNode | null): boolean {
+  if (n?.type !== "credential") return false;
+  try {
+    const data: unknown = JSON.parse(n.payload ?? "");
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+    const row = data as Record<string, unknown>;
+    return typeof row.secret === "string" && row.secret !== "" && row.secret_redacted !== true;
+  } catch {
+    return false;
+  }
+}
+
 export function PayloadBeautified({ node }: { node: TaskNode }) {
   let data: Record<string, unknown> | null = null;
   try {
@@ -329,6 +344,7 @@ export function NodeDetailDialog({
   const [reveal, setReveal] = React.useState<{ id: string; secret: string } | null>(null);
   const [revealing, setRevealing] = React.useState(false);
   const revealedSecret = node && reveal && reveal.id === node.id ? reveal.secret : null;
+  const plaintextInPayload = payloadHasPlaintextSecret(node);
   const displayNode = React.useMemo(() => withRevealedSecret(node, revealedSecret), [node, revealedSecret]);
   const doReveal = () => {
     if (!node || !taskId) return;
@@ -460,6 +476,8 @@ export function NodeDetailDialog({
                           >
                             已显示 · 收起
                           </button>
+                        ) : plaintextInPayload ? (
+                          <span className="text-muted-foreground text-xs">已明文下发（明文保真开启）</span>
                         ) : taskId ? (
                           <button
                             type="button"

@@ -155,13 +155,15 @@ func (s *Server) settingsPayload() map[string]any {
 		"attack_chain_continuation": s.m.pg.GetBool(settingAttackChainContinuation, true),
 		// 对已确认但无详细报告的 finding 触发 reporter 补写（默认关）。
 		"empty_report_patrol": s.m.pg.GetBool(settingEmptyReportPatrol, false),
-		"llm_record":          s.m.LLMRecordEnabled(),
-		"web_search_enabled":  on,
-		"web_search_backend":  backend,
-		"brave_key_set":       strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":      strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":    proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":        s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
+		// 凭据明文保真（默认开）：节点接口与战果台账直接带 secret。
+		"credential_plaintext_fidelity": s.m.pg.GetBool(settingCredentialPlaintext, true),
+		"llm_record":                    s.m.LLMRecordEnabled(),
+		"web_search_enabled":            on,
+		"web_search_backend":            backend,
+		"brave_key_set":                 strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":                strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":              proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":                  s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
 		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
 		// 全部候选都不可用、出口已阻断（**不会直连**）。
 		"global_proxy_pool":             strings.Join(proxyCfg.Candidates, "\n"),
@@ -317,6 +319,7 @@ type settingsRequest struct {
 	CompactorLLMProfileID   *int64  `json:"compactor_llm_profile_id"` // 0 = 跟随任务链
 	AttackChainContinuation *bool   `json:"attack_chain_continuation"`
 	EmptyReportPatrol       *bool   `json:"empty_report_patrol"`
+	CredentialPlaintext     *bool   `json:"credential_plaintext_fidelity"`
 	LLMRecord               *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
@@ -713,6 +716,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EmptyReportPatrol != nil {
 		pending[settingEmptyReportPatrol] = strconv.FormatBool(*req.EmptyReportPatrol)
+	}
+	if req.CredentialPlaintext != nil {
+		pending[settingCredentialPlaintext] = strconv.FormatBool(*req.CredentialPlaintext)
 	}
 	if req.AgentTrafficBinding != nil {
 		pending[settingAgentTrafficBinding] = strconv.FormatBool(*req.AgentTrafficBinding)

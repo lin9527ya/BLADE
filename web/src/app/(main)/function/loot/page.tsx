@@ -240,6 +240,11 @@ export default function LootPage() {
                                 {it.username && <span>账号 {it.username}</span>}
                                 {it.fingerprint && <span className="font-mono">指纹 {it.fingerprint}</span>}
                                 {(it.verified_count ?? 0) > 0 && <span>已验证 {it.verified_count} 个目标</span>}
+                                {it.secret && (
+                                  <span className="w-full break-all font-mono text-[11px] text-foreground select-all">
+                                    明文 {it.secret}
+                                  </span>
+                                )}
                               </div>
                             )}
                           </td>

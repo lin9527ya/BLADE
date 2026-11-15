@@ -23,6 +23,17 @@ func (s *Server) compactorLLMProfileID() int64 {
 	return id
 }
 
+// credentialPlaintextEnabled controls whether credential node DTOs and the loot
+// ledger carry the secret. Default on (the operator explicitly asked for
+// plaintext fidelity so credentials can be inspected and verified by hand);
+// turning it off restores fingerprint-only views plus the audited reveal API.
+func (s *Server) credentialPlaintextEnabled() bool {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return false
+	}
+	return s.m.pg.GetBool(settingCredentialPlaintext, true)
+}
+
 // attackChainContinuationEnabled controls the non-blocking planner hint emitted
 // after a new high/critical finding (default on). It never creates intents or
 // gates completion; the planner still decides the next hop.

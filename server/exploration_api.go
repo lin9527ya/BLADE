@@ -30,7 +30,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		assignIntentOrdinals(t.Store, in)
-		writeJSON(w, 200, taskNodeDTOs(in))
+		writeJSON(w, 200, taskNodeDTOs(in, s.credentialPlaintextEnabled()))
 		return
 	}
 	// Paged form: ?before=<id> (or ?page as a marker) → {items, has_more} so the
@@ -65,7 +65,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 		in = in[:limit]
 		hasMore = true
 	}
-	writeJSON(w, 200, map[string]any{"items": taskNodeDTOs(in), "has_more": hasMore})
+	writeJSON(w, 200, map[string]any{"items": taskNodeDTOs(in, s.credentialPlaintextEnabled()), "has_more": hasMore})
 }
 
 // assignIntentOrdinals 给页面上的意图补 WorkerSeq（任务内序号）。失败就留空——序号
@@ -209,7 +209,7 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	// 这里保留完整图：探索链路的显示过滤在 GraphTab 做（只画 confirmed 漏洞），
 	// 而时间线还要用这个接口按 id 打开候选/已排除节点，不能在 API 层删掉它们。
-	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
+	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes, s.credentialPlaintextEnabled()), "edges": edgeDTOs(edges)})
 }
 
 // explorationNodes serves the 播报板: this task's own exploration nodes as a
@@ -287,7 +287,7 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 		if n.Kind == db.KindFinding && !db.FindingConfirmedForDisplay(n.FindingStatus) {
 			continue
 		}
-		refs[i64s(n.ID)] = taskNodeDTO(n)
+		refs[i64s(n.ID)] = taskNodeDTO(n, s.credentialPlaintextEnabled())
 		visible[n.ID] = true
 		visibleIDs = append(visibleIDs, n.ID)
 	}
@@ -298,7 +298,7 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"items":  taskNodeDTOs(nodes),
+		"items":  taskNodeDTOs(nodes, s.credentialPlaintextEnabled()),
 		"total":  total,
 		"page":   page,
 		"size":   size,

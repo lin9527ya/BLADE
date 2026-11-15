@@ -312,11 +312,14 @@ const (
 	settingAttackChainContinuation = "attack_chain_continuation"
 	// 空报告巡检：对已确认但仍无详细报告的 finding 触发 reporter 补写（默认关）。
 	settingEmptyReportPatrol = "empty_report_patrol"
-	settingWebSearchOn       = "web_search_enabled"
-	settingWebSearchBackend  = "web_search_backend"
-	settingBraveKey          = "brave_search_api_key"
-	settingTavilyKey         = "tavily_search_api_key"
-	settingWebSearchProxy    = "web_search_proxy"
+	// 凭据明文保真：节点接口/战果台账直接带 secret（默认开）。关闭后只给指纹，
+	// 明文走受控 reveal 入口并留痕。
+	settingCredentialPlaintext = "credential_plaintext_fidelity"
+	settingWebSearchOn         = "web_search_enabled"
+	settingWebSearchBackend    = "web_search_backend"
+	settingBraveKey            = "brave_search_api_key"
+	settingTavilyKey           = "tavily_search_api_key"
+	settingWebSearchProxy      = "web_search_proxy"
 	// settingGlobalProxy is the legacy single global egress proxy (first pool
 	// entry). settingGlobalProxyPool is the real config: newline-separated list.
 	// Distinct from web_search_proxy (search backend only) and per-profile LLM proxy.

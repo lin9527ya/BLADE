@@ -1,6 +1,10 @@
 ---
 name: api-recon
 description: 收集网站API接口时调用该skill。
+tags:
+  cwe: [CWE-200]
+  attack: [T1595.002]
+  class: [recon, api-surface]
 ---
 
 # API Recon（前端接口侦察）
@@ -86,7 +90,7 @@ description: 收集网站API接口时调用该skill。
 | 门禁 | 何时 | 参考脚本 → OUTDIR 副本 | 常见必改项 |
 |---|---|---|---|
 | **A（静态）** | Phase 0 后、**第一次**跑 harvest/spider 前 | `harvest_static.py` / `spider_mpa.py` | **多数站点默认 regex 可直接跑**；仅 manifest/方言不匹配时改 endpoint 正则、webpack/Vite `publicPath`、MPA exclude/cookie |
-| **B（运行时）** | Phase 2 后、跑 depth/coverage 前 | `runtime_harvest.js`（puppeteer）/ `collect.mjs`（Playwright，零安装，自动找 npx 缓存与系统 Chromium）/ `preload.js` + `config.json` | Cookie/localStorage 键、neutralize 成功值、stubs、login 正则、api 前缀、hash/history |
+| **B（运行时）** | Phase 2 后、跑 depth/coverage 前 | `runtime_harvest.js`（puppeteer）/ `collect.mjs`（Playwright，零安装）/ `preload.js` + `config.json` | Cookie/localStorage 键、neutralize 成功值、stubs、login 正则、api 前缀、hash/history |
 
 **SPA 强制顺序**（不可交换；Phase 编号优先于「先探索再脚本」）：
 
@@ -152,6 +156,27 @@ python3 recon/spider_mpa.py <BASE_URL> <OUTDIR> [--cookie "session=..."] [--max 
 ```
 
 产出 `forms.txt`、`links.txt`、`api_inline.txt`。SPA 若 forms ≈ 0 → 切 Phase 1。
+
+---
+
+## Phase 0b — API 契约（先试这个，可能直接省掉 Phase 1）
+
+**先试契约文件，再考虑爬 JS。** 契约（OpenAPI/Swagger/Postman）直接给出「后端支持哪些接口、哪些参数、哪些方法、哪些要鉴权」——比爬虫准、比静态分析快（一次 GET vs 下载全部 chunk）。目标暴露 `/swagger-ui/`、`/api-docs` 时，契约往往**一次就够**。
+
+用 `api_contract` 工具（它会探测常见契约路径并解析出清单）：
+
+```
+api_contract(base_url="https://target.example.com")
+```
+
+**拿到契约后**：
+- 契约里的接口清单 → 直接进 Phase 4（权限树还原）与参数分析，**可以跳过 Phase 1/3**；
+- 契约里的 `auth_required` 标记 → **需要鉴权的那批接口是越权挖掘的核心对象**，单独列出来看；
+- 契约里没有的接口（后端支持但没写进契约的）→ 仍要靠 Phase 1/3 补。
+
+**没找到契约很常见**（很多站点不暴露）→ 直接进 Phase 1，不要在这里耗时间。
+
+> 契约是**接口清单，不是漏洞**。拿到清单后是否可打、怎么打，交回 vuln-hunting 的方法论判断。
 
 ---
 
@@ -423,3 +448,26 @@ stub 检查：外层 `response_code` 与拦截器门一致；flat codes 与 tree
 
 - Grep 配方、`config.json` 模板、排障、Hook、参数逆向 J 节、site_map 模板：**[reference.md](reference.md)**
 - 参考脚本路径见 [脚本与门禁](#脚本与门禁) 表
+
+## Webpack/Sourcemap 源码泄露（js_audit 工具，SPA 必跑）
+
+Vue/React 单页应用的 dist 产物常把 sourcemap 一起发上线——`.js.map` 里的
+`sourcesContent` 就是**原始源码全文**（Vue SFC 组件、接口封装、硬编码密钥），
+属 CWE-540 源码信息泄露。
+
+**用平台工具 `js_audit`**（入口 URL 1-6 个，自动完成全链路）：
+
+1. 给入口 HTML（或已知 .js）→ 脚本提取 `<script src>` 与 chunk；
+2. 每个 JS 检测 `//# sourceMappingURL=`（外链/内联 base64）+ 兜底探测 `<js>.map`；
+3. 命中则还原 sourcesContent 落盘到任务目录 `jsmap/`（保留 .vue/.env 结构）；
+4. 同步扫描密钥（阿里云 LTAI/AKID、AWS AKIA、私钥、JWT、AK-SK 键值对、内网段）
+   与接口/路由清单（http URL、`/api/**`、vue-router path）。
+
+**结论口径**：
+- map 命中且 sourcesContent 可还原 = CWE-540 **high**（L3：拿到原始源码）；
+- 还原内容里有**真实可用凭据**（AK/SK 能调通、私钥能解密）= **critical**；
+- 只有压缩后 JS 无 map：从 chunk 里抽 `baseURL`/`/api/**`/路由进契约清单
+  （接 `api_contract` / `api-security-testing`）。
+
+假点：`.map` 请求返回 200 但内容是 SPA fallback 的 HTML（不是 JSON）不算命中；
+`sources` 只有 webpack runtime 没有业务文件不算。
