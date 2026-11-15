@@ -211,7 +211,7 @@ export default function SchedulesPage() {
                       <td className="px-4 py-3 text-muted-foreground">
                         <div>{s.action_text}{s.target_task_id ? ` · 任务 #${s.target_task_id}` : ""}</div>
                         <div className="text-xs">
-                          {s.frequency_text} · {s.timezone}
+                          {s.frequency_text} · {s.timezone}{s.auto_pause_at ? ` · 自动暂停 ${s.auto_pause_at}` : ""}
                         </div>
                       </td>
                       <td className="px-4 py-3">

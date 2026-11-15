@@ -63,6 +63,7 @@ const emptyForm = () => ({
   date: dateInZone("Asia/Shanghai"),
   weekday: 1,
   timezone: "Asia/Shanghai",
+  autoPauseAt: "",
 });
 
 type FormState = ReturnType<typeof emptyForm>;
@@ -147,6 +148,7 @@ export function ScheduleTasksDialog({
       date: s.frequency.date ?? dateInZone(s.timezone || "Asia/Shanghai"),
       weekday: s.frequency.weekday ?? 1,
       timezone: s.timezone || "Asia/Shanghai",
+      autoPauseAt: s.auto_pause_at ?? "",
     });
     setFormOpen(true);
   }
@@ -201,6 +203,7 @@ export function ScheduleTasksDialog({
         action: form.action,
         target_task_id: form.action === "create" ? "" : form.targetTaskID,
         timezone: form.timezone,
+        auto_pause_at: form.action === "create" ? form.autoPauseAt : "",
         frequency: buildFrequency(),
       };
       if (form.action === "create") {
@@ -488,6 +491,33 @@ export function ScheduleTasksDialog({
                   当前 {form.timezone} 时间：{new Date().toLocaleString("zh-CN", { timeZone: form.timezone, hour12: false })}
                 </p>
               </div>
+              {form.action === "create" ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="sched-auto-pause">自动暂停时间（可选）</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="sched-auto-pause"
+                      className="h-8 w-28"
+                      type="time"
+                      value={form.autoPauseAt}
+                      onChange={(e) => setForm({ ...form, autoPauseAt: e.target.value })}
+                      disabled={busy}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy || !form.autoPauseAt}
+                      onClick={() => setForm({ ...form, autoPauseAt: "" })}
+                    >
+                      不自动暂停
+                    </Button>
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    任务创建后到该时区的这个时间自动暂停；到点会生成一条一次性“自动暂停”计划，可在列表中查看。留空 = 不自动暂停。
+                  </p>
+                </div>
+              ) : null}
               <div className="flex items-center justify-between gap-4">
                 <Label htmlFor="sched-enabled" className="font-normal text-muted-foreground text-sm">
                   创建后立即启用{form.enabled ? "" : "（保持停用，之后再开）"}
@@ -526,7 +556,7 @@ export function ScheduleTasksDialog({
                       <Switch checked={s.enabled} onCheckedChange={(v) => void toggle(s, v)} disabled={busy} />
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-                      <span>{s.action_text}{s.target_task_id ? ` #${s.target_task_id}` : ""} · {s.frequency_text} · {s.timezone}</span>
+                      <span>{s.action_text}{s.target_task_id ? ` #${s.target_task_id}` : ""} · {s.frequency_text} · {s.timezone}{s.auto_pause_at ? ` · 自动暂停 ${s.auto_pause_at}` : ""}</span>
                       <span>下次 {s.enabled ? fmtLocal(s.next_run_at, s.timezone) : "（停用）"}</span>
                       <span>上次 {fmtLocal(s.last_run_at, s.timezone)}</span>
                       {s.last_task_id && (

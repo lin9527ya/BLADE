@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/sched"
 )
 
 // 计划任务运维台读取 schedule_runs：按页返回触发历史，任务 id/错误字段原样透出。
@@ -124,7 +127,7 @@ func TestDueSchedulePausesTargetTask(t *testing.T) {
 	next := time.Now().Add(-time.Minute).Truncate(time.Second)
 	sched, err := m.pg.CreateTaskScheduleFull("pause-due", true,
 		json.RawMessage(`{}`), json.RawMessage(`{"kind":"once_at","date":"2020-01-01","at":"09:30"}`),
-		"pause", task.ID, "Asia/Shanghai", &next)
+		"pause", task.ID, "Asia/Shanghai", "", &next)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,5 +146,43 @@ func TestDueSchedulePausesTargetTask(t *testing.T) {
 	runs, err := m.pg.ListScheduleRuns(context.Background(), sched.ID, 10)
 	if err != nil || len(runs) != 1 || runs[0].State != "applied" {
 		t.Fatalf("schedule runs=%+v err=%v", runs, err)
+	}
+}
+
+func TestCreateTaskScheduleDerivesAutoPause(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+	task, err := m.CreateTask("auto pause target", "will be paused", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) })
+	s := &Server{m: m}
+	parent := &db.TaskSchedule{Name: "daily scan", Timezone: "Asia/Shanghai", AutoPauseAt: "23:59"}
+	s.createAutoPauseSchedule(parent, task, time.Now())
+	var (
+		id       int64
+		action   string
+		target   string
+		freqRaw  []byte
+		nextRun  *time.Time
+		timezone string
+	)
+	err = m.pg.QueryRow(`SELECT id, action, target_task_id, frequency, next_run_at, timezone
+FROM task_schedules WHERE target_task_id=$1 AND action='pause' ORDER BY id DESC LIMIT 1`, task.ID).
+		Scan(&id, &action, &target, &freqRaw, &nextRun, &timezone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM task_schedules WHERE id=$1`, id) })
+	if action != "pause" || target != task.ID || nextRun == nil || timezone != "Asia/Shanghai" {
+		t.Fatalf("child=%d action=%s target=%s next=%v tz=%s", id, action, target, nextRun, timezone)
+	}
+	var freq sched.Frequency
+	if err := json.Unmarshal(freqRaw, &freq); err != nil || freq.Kind != sched.KindOnceAt || freq.At != "23:59" {
+		t.Fatalf("child frequency=%+v err=%v", freq, err)
 	}
 }

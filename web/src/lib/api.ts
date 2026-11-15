@@ -765,6 +765,7 @@ export const api = {
     action?: "create" | "start" | "pause" | "resume";
     target_task_id?: string;
     timezone?: string;
+    auto_pause_at?: string;
   }) => post<TaskSchedule>(`/task-schedules`, input),
   updateTaskSchedule: (
     id: number,
@@ -776,6 +777,7 @@ export const api = {
       action?: "create" | "start" | "pause" | "resume";
       target_task_id?: string;
       timezone?: string;
+      auto_pause_at?: string;
     },
   ) => patch<TaskSchedule>(`/task-schedules/${id}`, input),
   deleteTaskSchedule: (id: number) => del<{ deleted: boolean }>(`/task-schedules/${id}`),

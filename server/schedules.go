@@ -102,6 +102,36 @@ func formatScheduleTime(t *time.Time, tz string) string {
 	return t.In(loc).Format("2006-01-02 15:04 MST")
 }
 
+func normalizeAutoPauseAt(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", nil
+	}
+	if _, err := time.Parse("15:04", v); err != nil {
+		return "", fmt.Errorf("自动暂停时间 %q 不合法：要写成 HH:MM", raw)
+	}
+	return v, nil
+}
+
+// nextAutoPause returns the next wall-clock occurrence of HH:MM strictly after
+// after, in loc. Empty autoPauseAt means no auto-pause.
+func nextAutoPause(raw string, loc *time.Location, after time.Time) (time.Time, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	t, err := time.Parse("15:04", raw)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	wall := after.In(loc)
+	candidate := time.Date(wall.Year(), wall.Month(), wall.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+	if !candidate.After(after) {
+		candidate = candidate.AddDate(0, 0, 1)
+	}
+	return candidate, true, nil
+}
+
 func scheduleNext(freq sched.Frequency, loc *time.Location, enabled bool) (*time.Time, error) {
 	if !enabled {
 		return nil, nil
@@ -146,6 +176,7 @@ type taskScheduleDTO struct {
 	ActionText    string          `json:"action_text"`
 	TargetTaskID  string          `json:"target_task_id,omitempty"`
 	Timezone      string          `json:"timezone"`
+	AutoPauseAt   string          `json:"auto_pause_at,omitempty"`
 	NextRunAt     string          `json:"next_run_at,omitempty"`
 	LastRunAt     string          `json:"last_run_at,omitempty"`
 	LastTaskID    string          `json:"last_task_id,omitempty"`
@@ -169,7 +200,7 @@ func scheduleDTO(s *db.TaskSchedule) taskScheduleDTO {
 	dto := taskScheduleDTO{
 		ID: s.ID, Name: s.Name, Enabled: s.Enabled, TaskSpec: spec, Frequency: freq,
 		FrequencyText: freq.Describe(), Action: action, ActionText: scheduleActionText(action),
-		TargetTaskID: s.TargetTaskID, Timezone: tz,
+		TargetTaskID: s.TargetTaskID, Timezone: tz, AutoPauseAt: s.AutoPauseAt,
 		LastTaskID: s.LastTaskID, LastError: s.LastError,
 		CreatedAt: s.CreatedAt.Format(time.RFC3339),
 	}
@@ -264,6 +295,7 @@ type taskScheduleReq struct {
 	Action       string          `json:"action"`
 	TargetTaskID string          `json:"target_task_id"`
 	Timezone     string          `json:"timezone"`
+	AutoPauseAt  string          `json:"auto_pause_at"`
 }
 
 // validateScheduleActionTarget checks the target of a pause/resume action at
@@ -299,6 +331,14 @@ func (s *Server) createTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	autoPause, err := normalizeAutoPauseAt(req.AutoPauseAt)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if action != scheduleActionCreate {
+		autoPause = ""
+	}
 	req.TargetTaskID = strings.TrimSpace(req.TargetTaskID)
 	if strings.TrimSpace(req.Name) == "" {
 		req.Name = strings.TrimSpace(req.TaskSpec.Name)
@@ -331,7 +371,7 @@ func (s *Server) createTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	row, err := s.m.pg.CreateTaskScheduleFull(req.Name, enabled, specRaw, freqRaw, action, req.TargetTaskID, tz, next)
+	row, err := s.m.pg.CreateTaskScheduleFull(req.Name, enabled, specRaw, freqRaw, action, req.TargetTaskID, tz, autoPause, next)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -359,6 +399,7 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		Action       *string          `json:"action"`
 		TargetTaskID *string          `json:"target_task_id"`
 		Timezone     *string          `json:"timezone"`
+		AutoPauseAt  *string          `json:"auto_pause_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
@@ -404,6 +445,21 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 		tzPtr = &tz
 	}
 
+	autoPause := cur.AutoPauseAt
+	var autoPausePtr *string
+	if req.AutoPauseAt != nil {
+		normalized, err := normalizeAutoPauseAt(*req.AutoPauseAt)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		autoPause = normalized
+		autoPausePtr = &autoPause
+	}
+	if action != scheduleActionCreate {
+		autoPause = ""
+		autoPausePtr = &autoPause
+	}
 	var specRaw json.RawMessage
 	if req.TaskSpec != nil {
 		if action == scheduleActionCreate {
@@ -454,7 +510,7 @@ func (s *Server) patchTaskSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	clearNext := !enabled
 	row, err := s.m.pg.UpdateTaskScheduleFull(id, req.Name, req.Enabled, specRaw, freqRaw,
-		actionPtr, targetPtr, tzPtr, next, clearNext)
+		actionPtr, targetPtr, tzPtr, autoPausePtr, next, clearNext)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -540,6 +596,45 @@ func (s *Server) listTaskScheduleRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"runs": runs, "total": total, "page": page, "size": size})
 }
 
+// createAutoPauseSchedule derives a one-time pause schedule for a task just
+// created by a create action. The child schedule is a normal task_schedules row
+// (action=pause, target=taskID), so it reuses the same CAS/ledger machinery and
+// remains visible in the schedule list.
+func (s *Server) createAutoPauseSchedule(parent *db.TaskSchedule, task *Task, start time.Time) {
+	if parent == nil || task == nil || strings.TrimSpace(parent.AutoPauseAt) == "" {
+		return
+	}
+	tz, loc, err := normalizeScheduleTimezone(parent.Timezone)
+	if err != nil {
+		log.Printf("[schedule] 自动暂停配置无效 task #%s：%v", task.ID, err)
+		return
+	}
+	after := time.Now()
+	if start.After(after) {
+		after = start
+	}
+	pause, ok, err := nextAutoPause(parent.AutoPauseAt, loc, after)
+	if err != nil || !ok {
+		log.Printf("[schedule] 计算自动暂停时间失败 task #%s：%v", task.ID, err)
+		return
+	}
+	freq := sched.Frequency{
+		Kind: sched.KindOnceAt,
+		Date: pause.In(loc).Format("2006-01-02"),
+		At:   pause.In(loc).Format("15:04"),
+	}
+	freqRaw, _ := json.Marshal(freq)
+	child, err := s.m.pg.CreateTaskScheduleFull(
+		"自动暂停："+parent.Name, true, json.RawMessage(`{}`), freqRaw,
+		scheduleActionPause, task.ID, tz, "", &pause,
+	)
+	if err != nil {
+		log.Printf("[schedule] 创建自动暂停计划失败 task #%s：%v", task.ID, err)
+		return
+	}
+	log.Printf("[schedule] 已为任务 #%s 派生自动暂停计划 #%d（%s）", task.ID, child.ID, formatScheduleTime(&pause, tz))
+}
+
 // fireSchedule is the manual "run now" path: it creates a task or applies a
 // pause/resume action without touching the occurrence schedule or the scheduled-run ledger.
 func (s *Server) fireSchedule(row *db.TaskSchedule) (*Task, error) {
@@ -559,6 +654,7 @@ func (s *Server) fireSchedule(row *db.TaskSchedule) (*Task, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.createAutoPauseSchedule(row, t, time.Now())
 		log.Printf("[schedule] 计划任务 #%d「%s」立即运行，建任务 #%s（%s）", row.ID, row.Name, t.ID, t.Description)
 		_ = s.m.pg.FinishScheduleRun(row.ID, time.Now(), t.ID, "")
 		return t, nil
@@ -700,6 +796,9 @@ func (sc *Scheduler) runDueSchedules(ctx context.Context) {
 		}
 		t := sc.s.m.RegisterCreatedTask(pt)
 		sc.s.launchTask(t, spec.Description+" "+spec.Goal, spec.SeedFirstIntent != nil && *spec.SeedFirstIntent)
+		if row.AutoPauseAt != "" {
+			sc.s.createAutoPauseSchedule(row, t, *row.NextRunAt)
+		}
 		log.Printf("[schedule] 计划任务 #%d「%s」到点触发，建任务 #%s（%s）", row.ID, row.Name, t.ID, t.Description)
 	}
 }

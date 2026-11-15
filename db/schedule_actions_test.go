@@ -17,7 +17,7 @@ func TestClaimTaskScheduleActionDisablesOneTimeAndRecordsRun(t *testing.T) {
 	scheduled := time.Now().Add(-time.Minute).Truncate(time.Second)
 	s, err := d.CreateTaskScheduleFull("once-pause", true,
 		json.RawMessage(`{}`), json.RawMessage(`{"kind":"once_at","date":"2026-11-20","at":"09:30"}`),
-		"pause", "123", "Asia/Shanghai", &scheduled)
+		"pause", "123", "Asia/Shanghai", "", &scheduled)
 	if err != nil {
 		t.Fatal(err)
 	}
