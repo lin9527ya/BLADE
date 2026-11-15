@@ -2023,6 +2023,16 @@ export const api = {
       decision,
       ...(editedInput === undefined ? {} : { edited_input: editedInput }),
     }),
+  interceptBatchDecide: (ids: number[], decision: "allowed" | "denied") =>
+    post<{ decided: number; failed: number; results: { id: number; ok: boolean; error?: string }[] }>(
+      "/intercept/pending/batch-decide",
+      { ids, decision },
+    ),
+  interceptAlwaysAllow: (id: number) =>
+    post<{ rule: import("@/lib/types").InterceptRule; created: boolean; prefix: string }>(
+      `/intercept/pending/${id}/always-allow`,
+      {},
+    ),
   interceptExecution: (id: number, conversationId?: number) =>
     get<import("@/lib/types").InterceptExecution>(
       `/intercept/history/${id}/execution${conversationId ? `?conversation=${conversationId}` : ""}`,

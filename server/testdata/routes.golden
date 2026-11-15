@@ -281,6 +281,8 @@ POST /api/exploration/findings/{id}/traffic	server.(*Server).bindFindingTraffic-
 POST /api/exploration/main-session/new	server.(*Server).newMainSession-fm
 POST /api/findings/{id}/promote-knowledge	server.(*Server).promoteFindingKnowledge-fm
 POST /api/intel/search	server.(*Server).searchIntelAssets-fm
+POST /api/intercept/pending/batch-decide	server.(*Server).interceptBatchDecide-fm
+POST /api/intercept/pending/{id}/always-allow	server.(*Server).interceptAlwaysAllow-fm
 POST /api/intercept/pending/{id}/decide	server.(*Server).interceptDecide-fm
 POST /api/intercept/rules	server.(*Server).interceptCreateRule-fm
 POST /api/intercept/rules/test	server.(*Server).interceptTestRule-fm

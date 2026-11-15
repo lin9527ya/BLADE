@@ -500,6 +500,12 @@ func restoreArchiveAssets(tx *sql.Tx, taskID int64, raw json.RawMessage) (map[in
 				warnings = append(warnings, fmt.Sprintf("资产 %d 的企业 %d 已删除，已恢复为未归属", oldID, companyID))
 			}
 		}
+		// Archived rows were written verbatim by older versions; strip URL
+		// userinfo before the natural-id lookup so a credential-bearing URL both
+		// dedupes with its clean form and never comes back into the asset graph.
+		if rawURL, ok := row["url"].(string); ok && rawURL != "" {
+			row["url"] = normalizeURL(rawURL)
+		}
 		if existing, found, err := findArchiveAssetNaturalID(tx, row); err != nil {
 			return nil, nil, err
 		} else if found {

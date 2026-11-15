@@ -79,7 +79,8 @@ func taskEmitFromCtx(ctx context.Context) func(db.Activity) {
 // compiledRule is an InterceptRule with the regex pre-compiled (nil for string rules).
 type compiledRule struct {
 	db.InterceptRule
-	re *regexp.Regexp
+	re   *regexp.Regexp
+	argv []string
 }
 
 // pendingManager tracks in-flight "ask" requests via per-request channels.
@@ -203,12 +204,19 @@ func (i *Interceptor) loadLocked() error {
 			continue
 		}
 		cr := compiledRule{InterceptRule: r}
-		if r.MatchType == "regex" {
+		switch r.MatchType {
+		case "regex":
 			re, err := regexp.Compile(r.Pattern)
 			if err != nil {
 				continue // skip rules with bad regex rather than crashing
 			}
 			cr.re = re
+		case "argv":
+			tokens, err := ParseArgvPattern(r.Pattern)
+			if err != nil {
+				continue // skip malformed argv rules rather than crashing
+			}
+			cr.argv = tokens
 		}
 		out = append(out, cr)
 	}
@@ -715,6 +723,12 @@ func matchRule(r compiledRule, toolName string, input []byte) (text, surface str
 		}
 		return "", "", false
 	case "tool_input":
+		if r.MatchType == "argv" {
+			if argvRuleMatches(r.argv, toolName, input) {
+				return strings.Join(r.argv, " "), "argv", true
+			}
+			return "", "", false
+		}
 		for _, c := range candidateTexts(input) {
 			if ruleMatchesText(r, c.Text) {
 				return c.Text, c.Surface, true
@@ -781,12 +795,19 @@ func PreviewRule(toolName string, input []byte, matchTarget, matchType, pattern,
 		Name: ruleName, MatchTarget: matchTarget, MatchType: matchType,
 		Pattern: pattern, Action: action, Message: message,
 	}}
-	if matchType == "regex" {
+	switch matchType {
+	case "regex":
 		re, cerr := regexp.Compile(pattern)
 		if cerr != nil {
 			return false, "", "", "", cerr
 		}
 		cr.re = re
+	case "argv":
+		tokens, cerr := ParseArgvPattern(pattern)
+		if cerr != nil {
+			return false, "", "", "", cerr
+		}
+		cr.argv = tokens
 	}
 	t, s, ok := matchRule(cr, toolName, input)
 	if !ok {

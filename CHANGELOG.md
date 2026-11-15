@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Pojun 第三批：扫描入库 / 审批风险 / argv 规则 / URL 清洗 / 发布溯源
+
+- **扫描器结果入库**：新增 worker 工具 `ingest_scan_output`，支持 nmap XML、nuclei JSONL、
+  httpx JSONL、ffuf JSON。文件路径限制在本次 run 工作目录内，256 MiB 文件、64 KiB
+  JSONL 行、50k 条目上限；只给模型紧凑摘要，扫描命中记“未验证”fact，不自动生成 finding。
+- **审批风险与批量**：pending 接口增加确定性 0–100 风险分与原因；新增批量决定接口
+  `/api/intercept/pending/batch-decide`（≤100 条，逐条部分失败）与前端勾选/批量操作。
+- **argv 前缀规则**：拦截规则新增 `match_type=argv`（JSON token 数组），只匹配 Bash
+  单条简单命令的“程序+子命令”；新增待审批一键 `always-allow`，代码内置危险程序
+  denylist，避免“允许前缀=允许任意执行”。
+- **资产 URL 清洗**：`normalizeURL` 剥离 `user:pass@` userinfo；归档恢复同样归一化，
+  避免历史归档把凭据带回资产表。存量行不自动回填。
+- **发布溯源**：release workflow 增加 CycloneDX SBOM、GitHub build provenance
+  attestation 与 `workflow_dispatch` dry-run；dry-run 不创建 Release、不推镜像。
+
 ### Pojun 技能全量导入与凭据明文保真
 
 - 从 Pojun 导入全部 22 个技能（BLADE 现共 24 个技能目录）。新技能**默认不绑定任何 agent**，

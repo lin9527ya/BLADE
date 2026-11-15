@@ -891,6 +891,9 @@ func TestNormalizeURL(t *testing.T) {
 		{"HTTPS://Example.COM/path", "https://example.com/path"},
 		{"http://example.com/", "http://example.com"},
 		{"http://example.com/page", "http://example.com/page"},
+		{"https://alice:s3cr3t@App.Example.com/a?x=1", "https://app.example.com/a?x=1"},
+		{"https://alice@example.com", "https://example.com"},
+		{"https://example.com/path@name?q=@x", "https://example.com/path@name?q=@x"},
 	}
 	for _, tc := range tests {
 		got := normalizeURL(tc.raw)

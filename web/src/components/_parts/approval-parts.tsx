@@ -271,7 +271,17 @@ export function NarrowEditor({
   );
 }
 
-export function DecisionActions({ row, busy, decide }: { row: InterceptApprovalRow; busy: boolean; decide: Decide }) {
+export function DecisionActions({
+  row,
+  busy,
+  decide,
+  alwaysAllow,
+}: {
+  row: InterceptApprovalRow;
+  busy: boolean;
+  decide: Decide;
+  alwaysAllow?: (id: number) => void;
+}) {
   const [editing, setEditing] = React.useState(false);
   if (row.status !== "pending") return null;
   if (editing) {
@@ -286,6 +296,11 @@ export function DecisionActions({ row, busy, decide }: { row: InterceptApprovalR
       <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(true)}>
         改参放行
       </Button>
+      {alwaysAllow && row.always_allow_prefix ? (
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => alwaysAllow(row.id)}>
+          总是允许：<code className="font-mono">{row.always_allow_prefix}</code>
+        </Button>
+      ) : null}
       <Button size="sm" variant="destructive" disabled={busy} onClick={() => void decide(row.id, "denied")}>
         <XIcon data-icon="inline-start" />
         拒绝

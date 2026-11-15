@@ -2458,7 +2458,7 @@ export interface Stats {
 // ---- Intercept Rules ----
 export type InterceptAction = "allow" | "deny" | "ask";
 export type InterceptMatchTarget = "tool_name" | "tool_input";
-export type InterceptMatchType = "string" | "regex";
+export type InterceptMatchType = "string" | "regex" | "argv";
 
 // InterceptRuleTestResult 是规则 dry-run 的返回（P12）：命中面、渲染后的文案与
 // 展开出的候选面（规则实际逐条看过的文本）。
@@ -2522,8 +2522,18 @@ export interface AssetInterceptRule {
   updated_at: string;
 }
 
+export interface InterceptRisk {
+  score: number;
+  level: "low" | "medium" | "high";
+  reasons: string[];
+}
+
 export interface InterceptPending {
   decision_source?: "rule" | "model" | "unknown" | "";
+  /** Display-only deterministic risk; never changes the decision. */
+  risk?: InterceptRisk;
+  /** For a pending Bash request, the prefix an "always allow" rule would use. */
+  always_allow_prefix?: string;
   id: number;
   rule_id?: number;
   conversation_id?: number;

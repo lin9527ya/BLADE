@@ -1303,6 +1303,11 @@ ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS source_constraint_id BIGINT
 -- P20 规则来源：'' = 手工/内置 | 'constraint' = P18 约束编译 | 'policy' = 探索策略编译。
 -- 策略规则按 source 整批替换（ReplaceTaskRulesBySource），与 P18 的按约束替换互不干扰。
 ALTER TABLE intercept_rules ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+-- argv 前缀规则（match_type='argv'）：pattern 是 JSON 字符串数组，只对 Bash 的
+-- 单条简单命令做「程序+子命令」前缀匹配。旧库重建 CHECK 以接受新值。
+ALTER TABLE intercept_rules DROP CONSTRAINT IF EXISTS intercept_rules_match_type_check;
+ALTER TABLE intercept_rules ADD CONSTRAINT intercept_rules_match_type_check
+    CHECK (match_type IN ('string', 'regex', 'argv'));
 UPDATE intercept_rules SET source='constraint' WHERE source_constraint_id IS NOT NULL AND source='';
 CREATE INDEX IF NOT EXISTS idx_intercept_rules_task ON intercept_rules(task_id) WHERE task_id <> '';
 

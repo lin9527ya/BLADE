@@ -76,7 +76,7 @@ type RuleForm = {
   enabled: boolean;
   priority: number;
   match_target: "tool_name" | "tool_input";
-  match_type: "string" | "regex";
+  match_type: "string" | "regex" | "argv";
   pattern: string;
   action: InterceptAction;
   message: string;
@@ -495,20 +495,27 @@ export function RulesSection() {
             </Field>
 
             <Field label="匹配类型">
-              <Select value={form.match_type} onValueChange={(v) => set({ match_type: v as RuleForm["match_type"] })}>
+              <Select
+                value={form.match_type}
+                onValueChange={(v) => {
+                  const match_type = v as RuleForm["match_type"];
+                  set(match_type === "argv" ? { match_type, match_target: "tool_input" } : { match_type });
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="string">字符串包含</SelectItem>
                   <SelectItem value="regex">正则表达式</SelectItem>
+                  <SelectItem value="argv">Bash argv 前缀（JSON 数组）</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
 
             <Field label="模式">
               <Input
-                placeholder={form.match_type === "regex" ? "^Bash$" : "rm -rf"}
+                placeholder={form.match_type === "regex" ? "^Bash$" : form.match_type === "argv" ? '["git","push"]' : "rm -rf"}
                 value={form.pattern}
                 onChange={(e) => set({ pattern: e.target.value })}
                 className={regexErr ? "border-destructive focus-visible:ring-destructive" : ""}

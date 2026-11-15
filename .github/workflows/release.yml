@@ -2,6 +2,8 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # 手动 dry-run：构建/生成 SBOM/attestation/上传 workflow artifact，但不创建 Release、不推镜像。
+  workflow_dispatch:
 
 permissions:
   contents: write # 创建 Release 需要
@@ -150,8 +152,14 @@ jobs:
   release:
     needs: binaries
     runs-on: ubuntu-latest
+    # 发布 provenance/SBOM 需要 OIDC；contents 仍要 write 给 action-gh-release。
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       # 发布正文由 ⓪ 的预检 job 生成并归档；这里不再重复抽取，避免两处逻辑漂移。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-notes
@@ -163,11 +171,41 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum *.zip > SHA256SUMS
+      # CycloneDX SBOM：从已构建的 linux/amd64 二进制 + 锁文件生成，附在 Release 旁。
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bin-linux-amd64
+          path: sbom
+      - name: Stage SBOM inputs
+        run: |
+          cp go.mod go.sum sbom/
+          cp web/package-lock.json sbom/
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: v1.54.0
+      - name: Generate CycloneDX SBOM
+        run: |
+          syft scan dir:sbom -o cyclonedx-json="dist/blade-${GITHUB_REF_NAME}.cdx.json"
+          grep -q 'pkg:golang/' "dist/blade-${GITHUB_REF_NAME}.cdx.json"
+          grep -q 'pkg:npm/' "dist/blade-${GITHUB_REF_NAME}.cdx.json"
+      # GitHub build provenance：用户可用 `gh attestation verify <zip> --repo <owner>/<repo>` 校验。
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+      - name: Upload release metadata (dry-run included)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-metadata
+          path: |
+            dist/SHA256SUMS
+            dist/*.cdx.json
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        if: github.event_name == 'push'
         with:
           files: |
             dist/*.zip
             dist/SHA256SUMS
+            dist/*.cdx.json
           body_path: release-notes.md
 
   # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
@@ -179,7 +217,7 @@ jobs:
   #    DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret——填好后本 job 自动生效。
   docker:
     needs: binaries
-    if: vars.DOCKERHUB_IMAGE != ''
+    if: vars.DOCKERHUB_IMAGE != '' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 # 取 Dockerfile 与 skills/

@@ -168,6 +168,10 @@ func normalizeURL(raw string) string {
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
+	// URL userinfo can carry credentials (https://user:pass@host/). Assets are
+	// shared across tasks and end up in reports/exports; never store credentials
+	// in a URL. Keep every other component (path/query may legitimately contain @).
+	u.User = nil
 	s := u.String()
 	if strings.HasSuffix(s, "/") && u.Path == "/" && u.RawQuery == "" {
 		s = strings.TrimSuffix(s, "/")

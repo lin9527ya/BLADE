@@ -6,6 +6,7 @@ import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -39,6 +40,7 @@ export function ApprovalDetail({
   readOnly = false,
   defaultExpanded = false,
   onResolved,
+  alwaysAllow,
 }: {
   row: InterceptApprovalRow;
   busy: boolean;
@@ -47,6 +49,7 @@ export function ApprovalDetail({
   readOnly?: boolean;
   defaultExpanded?: boolean;
   onResolved?: (status: "allowed" | "denied" | "timeout") => void;
+  alwaysAllow?: (id: number) => void;
 }) {
   const [detail, setDetail] = React.useState<InterceptDetail | null>(null);
   const [error, setError] = React.useState("");
@@ -173,7 +176,24 @@ export function ApprovalDetail({
               可检出性：知识库没有收录这条命令——**这不代表没有日志**，只是本库没有依据。必要时用检测验证记录实测结果。
             </p>
           ) : null}
-          {!readOnly ? <DecisionActions row={current} busy={busy} decide={decide} /> : null}
+          {row.risk ? (
+            <div className="rounded-md border p-3">
+              <div className="mb-1 flex flex-wrap items-center gap-2">
+                <Badge variant={row.risk.level === "high" ? "destructive" : row.risk.level === "medium" ? "secondary" : "outline"}>
+                  风险 {row.risk.level === "high" ? "高" : row.risk.level === "medium" ? "中" : "低"} · {row.risk.score}
+                </Badge>
+                <span className="text-muted-foreground text-xs">确定性评分，仅用于辅助审批，不改变裁决</span>
+              </div>
+              <ul className="list-inside list-disc text-muted-foreground text-xs">
+                {row.risk.reasons.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {!readOnly ? (
+            <DecisionActions row={current} busy={busy} decide={decide} alwaysAllow={alwaysAllow} />
+          ) : null}
         </div>
       </div>
       {error ? (
@@ -316,12 +336,22 @@ export function ApprovalTable({
   decide,
   revision,
   label,
+  selectable = false,
+  selected,
+  onToggleSelect,
+  onToggleAll,
+  alwaysAllow,
 }: {
   rows: InterceptApprovalRow[];
   busy: boolean;
   decide: Decide;
   revision: number;
   label: string;
+  selectable?: boolean;
+  selected?: Set<number>;
+  onToggleSelect?: (id: number, checked: boolean) => void;
+  onToggleAll?: (checked: boolean) => void;
+  alwaysAllow?: (id: number) => void;
 }) {
   const [expanded, setExpanded] = React.useState<Set<number>>(() => new Set());
   const columns = React.useSyncExternalStore(subscribeColumns, visibleColumnCount, serverColumnCount);
@@ -338,6 +368,15 @@ export function ApprovalTable({
     <Table className="table-fixed" aria-label={label}>
       <TableHeader>
         <TableRow>
+          {selectable ? (
+            <TableHead className="w-10">
+              <Checkbox
+                checked={rows.length > 0 && rows.every((r) => selected?.has(r.id))}
+                onCheckedChange={(v) => onToggleAll?.(!!v)}
+                aria-label="全选待处理审批"
+              />
+            </TableHead>
+          ) : null}
           <TableHead className="w-10">
             <span className="sr-only">展开详情</span>
           </TableHead>
@@ -362,6 +401,15 @@ export function ApprovalTable({
                 className="cursor-pointer"
                 onClick={() => toggle(row.id)}
               >
+                {selectable ? (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={!!selected?.has(row.id)}
+                      onCheckedChange={(v) => onToggleSelect?.(row.id, !!v)}
+                      aria-label={`选择审批 #${row.id}`}
+                    />
+                  </TableCell>
+                ) : null}
                 <TableCell>
                   <Button
                     variant="ghost"
@@ -380,6 +428,14 @@ export function ApprovalTable({
                 <TableCell className="hidden text-muted-foreground sm:table-cell">{row.id}</TableCell>
                 <TableCell>
                   <code className="block truncate text-xs">{row.tool_name}</code>
+                  {row.risk ? (
+                    <Badge
+                      variant={row.risk.level === "high" ? "destructive" : row.risk.level === "medium" ? "secondary" : "outline"}
+                      className="mt-1"
+                    >
+                      {row.risk.level === "high" ? "高" : row.risk.level === "medium" ? "中" : "低"} · {row.risk.score}
+                    </Badge>
+                  ) : null}
                 </TableCell>
                 <TableCell className="hidden md:table-cell">
                   <div className="flex flex-col gap-1">
@@ -409,9 +465,15 @@ export function ApprovalTable({
               </TableRow>
               {open ? (
                 <TableRow className="hover:bg-transparent has-aria-expanded:bg-transparent">
-                  <TableCell colSpan={columns} className="whitespace-normal p-0">
+                  <TableCell colSpan={columns + (selectable ? 1 : 0)} className="whitespace-normal p-0">
                     <section id={panelID} aria-label={`审批详情 #${row.id}`}>
-                      <ApprovalDetail row={row} busy={busy} decide={decide} revision={revision} />
+                      <ApprovalDetail
+                        row={row}
+                        busy={busy}
+                        decide={decide}
+                        revision={revision}
+                        alwaysAllow={alwaysAllow}
+                      />
                     </section>
                   </TableCell>
                 </TableRow>

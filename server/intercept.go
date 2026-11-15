@@ -263,7 +263,11 @@ func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 		if pending == nil {
 			pending = []db.InterceptPending{}
 		}
-		writeJSON(w, 200, map[string]any{"pending": pending, "pending_count": n})
+		out := make([]interceptPendingDTO, 0, len(pending))
+		for i := range pending {
+			out = append(out, pendingApprovalDTO(&pending[i]))
+		}
+		writeJSON(w, 200, map[string]any{"pending": out, "pending_count": n})
 		return
 	}
 	pending, err := pg.ListPendingIntercepts()
@@ -274,7 +278,11 @@ func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 	if pending == nil {
 		pending = []db.InterceptPending{}
 	}
-	writeJSON(w, 200, map[string]any{"pending": pending})
+	out := make([]interceptPendingDTO, 0, len(pending))
+	for i := range pending {
+		out = append(out, pendingApprovalDTO(&pending[i]))
+	}
+	writeJSON(w, 200, map[string]any{"pending": out})
 }
 
 func (s *Server) interceptGetOne(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +304,7 @@ func (s *Server) interceptGetOne(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not found")
 		return
 	}
-	writeJSON(w, 200, p)
+	writeJSON(w, 200, pendingApprovalDTO(p))
 }
 
 func (s *Server) interceptListTaskItems(w http.ResponseWriter, r *http.Request) {
@@ -634,9 +642,9 @@ func validateInterceptRuleReq(req interceptRuleReq) error {
 		return fmt.Errorf("match_target 必须是 tool_name 或 tool_input")
 	}
 	switch req.MatchType {
-	case "string", "regex":
+	case "string", "regex", "argv":
 	default:
-		return fmt.Errorf("match_type 必须是 string 或 regex")
+		return fmt.Errorf("match_type 必须是 string、regex 或 argv")
 	}
 	if req.Pattern == "" {
 		return fmt.Errorf("pattern 不能为空")
@@ -652,9 +660,17 @@ func validateInterceptRuleReq(req interceptRuleReq) error {
 	default:
 		return fmt.Errorf("action 必须是 allow、deny 或 ask")
 	}
-	if req.MatchType == "regex" {
+	switch req.MatchType {
+	case "regex":
 		if _, err := regexp.Compile(req.Pattern); err != nil {
 			return fmt.Errorf("pattern 不是有效正则：%w", err)
+		}
+	case "argv":
+		if req.MatchTarget != "tool_input" {
+			return fmt.Errorf("argv 规则只能匹配 tool_input")
+		}
+		if _, err := intercept.ParseArgvPattern(req.Pattern); err != nil {
+			return err
 		}
 	}
 	return nil

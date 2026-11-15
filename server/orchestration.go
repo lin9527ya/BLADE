@@ -43,6 +43,7 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools = append(tools, s.platformTools()...)    // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
 	tools = append(tools, s.intelTools()...)       // P21 情报/测绘工具(默认绑 planner/worker/mainagent)
 	tools = append(tools, s.graphIngestTools()...) // P40 域内/云上枚举结果的摄入(同绑三面)
+	tools = append(tools, s.scanIngestTools()...)  // 扫描器输出文件入库(worker)
 	custom, err := s.customTools()
 	if err != nil {
 		log.Printf("[custom-tool] 加载失败: %v", err)
@@ -543,6 +544,11 @@ func (s *Server) seedOrchestrationTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, intelAgents)
 	}
+	// 扫描器结果入库：worker 是唯一产出方；planner 通过 fact/asset 看到结果。
+	for _, t := range s.scanIngestTools() {
+		schema, _ := json.Marshal(t.InputSchema())
+		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, json.RawMessage(`["worker"]`))
+	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedBuiltinBindingBackfill()
@@ -584,13 +590,14 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v10_report_artifact_url"
+	const flag = "tool_schema_refresh_v11_scan_ingest"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
 	tools := append(s.orchestrationTools(), s.platformTools()...)
 	tools = append(tools, s.intelTools()...)
 	tools = append(tools, s.graphIngestTools()...)
+	tools = append(tools, s.scanIngestTools()...)
 	for _, t := range tools {
 		schema, _ := json.Marshal(t.InputSchema())
 		if err := s.m.pg.RefreshToolDefaults(t.Name(), t.Description(), schema); err != nil {

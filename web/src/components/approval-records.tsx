@@ -33,6 +33,8 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const [error, setError] = React.useState("");
   const [pendingError, setPendingError] = React.useState("");
   const [deciding, setDeciding] = React.useState(false);
+  const [batchBusy, setBatchBusy] = React.useState(false);
+  const [selected, setSelected] = React.useState<Set<number>>(() => new Set());
   const [revision, setRevision] = React.useState(0);
   const request = React.useRef(0);
   const decisionLock = React.useRef(false);
@@ -144,6 +146,61 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
     }
   };
 
+  const toggleSelect = (id: number, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const batchDecide = async (decision: "allowed" | "denied") => {
+    if (batchBusy) return;
+    const ids = pending.filter((row) => selected.has(row.id)).map((row) => row.id);
+    if (ids.length === 0) {
+      toast.error("先选择要处理的审批");
+      return;
+    }
+    setBatchBusy(true);
+    let decided = 0;
+    let failed = 0;
+    const errors: string[] = [];
+    try {
+      for (let start = 0; start < ids.length; start += 100) {
+        const chunk = ids.slice(start, start + 100);
+        try {
+          const res = await api.interceptBatchDecide(chunk, decision);
+          decided += res.decided;
+          failed += res.failed;
+          for (const item of res.results) {
+            if (!item.ok && item.error) errors.push(`#${item.id}: ${item.error}`);
+          }
+        } catch (e) {
+          failed += chunk.length;
+          errors.push((e as Error).message || "批量审批请求失败");
+          break;
+        }
+      }
+      setSelected(new Set());
+      await latestLoad.current(true);
+      if (failed === 0) toast.success(decision === "allowed" ? `已允许 ${decided} 条` : `已拒绝 ${decided} 条`);
+      else toast.error(`已处理 ${decided} 条，失败 ${failed} 条${errors.length ? `：${errors.slice(0, 3).join("；")}` : ""}`);
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const alwaysAllow = async (id: number) => {
+    try {
+      const res = await api.interceptAlwaysAllow(id);
+      toast.success(res.created ? `已创建规则：总是允许 ${res.prefix}` : `已有规则：总是允许 ${res.prefix}`);
+      await latestLoad.current(true);
+    } catch (e) {
+      toast.error((e as Error).message || "创建 always-allow 规则失败");
+    }
+  };
+
   const historyById = new Map(rows.map((row) => [row.id, row]));
   const pending: InterceptApprovalRow[] = pendingRows
     .filter((row) => !taskId || row.task_id === taskId)
@@ -252,11 +309,37 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       ) : null}
       {pending.length ? (
         <section className="overflow-hidden rounded-xl border">
-          <div className="flex items-center gap-2 border-b bg-muted/40 px-4 py-3 font-medium text-sm">
+          <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-3 text-sm">
             <ShieldAlertIcon className="size-4" />
-            待处理（{pending.length}）<span className="text-muted-foreground text-xs">展开后允许或拒绝</span>
+            <span className="font-medium">待处理（{pending.length}）</span>
+            <span className="text-muted-foreground text-xs">展开后允许或拒绝；可勾选后批量处理</span>
+            {selected.size > 0 ? (
+              <span className="ml-auto flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground text-xs">已选 {selected.size}</span>
+                <Button size="sm" disabled={batchBusy} onClick={() => void batchDecide("allowed")}>
+                  批量允许
+                </Button>
+                <Button size="sm" variant="destructive" disabled={batchBusy} onClick={() => void batchDecide("denied")}>
+                  批量拒绝
+                </Button>
+                <Button size="sm" variant="ghost" disabled={batchBusy} onClick={() => setSelected(new Set())}>
+                  清除
+                </Button>
+              </span>
+            ) : null}
           </div>
-          <ApprovalTable rows={pending} busy={deciding} decide={decide} revision={revision} label="待处理审批" />
+          <ApprovalTable
+            rows={pending}
+            busy={deciding || batchBusy}
+            decide={decide}
+            revision={revision}
+            label="待处理审批"
+            selectable
+            selected={selected}
+            onToggleSelect={toggleSelect}
+            onToggleAll={(checked) => setSelected(checked ? new Set(pending.map((row) => row.id)) : new Set())}
+            alwaysAllow={alwaysAllow}
+          />
         </section>
       ) : null}
       <section className="overflow-hidden rounded-xl border">
