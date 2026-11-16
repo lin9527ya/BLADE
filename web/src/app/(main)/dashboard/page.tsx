@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 
 import { RowActivity } from "./_components/activityrow";
 import { RowAssetTraffic } from "./_components/assettrafficrow";
+import { RowCostCard } from "./_components/costcard";
 import { RowStatCards } from "./_components/statcards";
 import { RowTaskTable } from "./_components/tasktable";
 import { useDashboardState } from "./_components/use-dashboard-state";
@@ -20,7 +21,7 @@ const RowTokenCard = dynamic(() => import("./_components/tokencard").then((m) =>
 export default function DashboardPage() {
   // 每个面板拿自己那份切片（hook 里按面板 memo 过）。此前页面把整个返回对象交给
   // 5 个面板，任一字段变化都会让它们**全部**重渲染；切成切片后只有受影响的那个重渲染。
-  const { statCards, tokenCard, activityRow, taskTable, assetTraffic } = useDashboardState();
+  const { statCards, tokenCard, costCard, activityRow, taskTable, assetTraffic } = useDashboardState();
 
   // ── render ────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,9 @@ export default function DashboardPage() {
 
       {/* ── Row 2: LLM Token 消耗 ── */}
       <RowTokenCard s={tokenCard} />
+
+      {/* ── Row 2.5: LLM 成本与预算 ── */}
+      <RowCostCard s={costCard} />
 
       {/* ── Row 3: 活动流 | 发现 ── */}
       <RowActivity s={activityRow} />

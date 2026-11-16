@@ -479,7 +479,12 @@ export default function AssetsPage() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <CompanyAvatar name={c.name} logo={c.logo} />
-                          <span className="font-medium">{c.name}</span>
+                          <Link
+                            href={`/function/companies/detail?id=${c.id}`}
+                            className="font-medium hover:text-primary hover:underline"
+                          >
+                            {c.name}
+                          </Link>
                         </div>
                       </TableCell>
                       <TableCell className="text-right text-sm tabular-nums">{c.asset_count}</TableCell>

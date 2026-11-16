@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { FileCheck2Icon, FileDownIcon, GitCompareIcon, PlusIcon, SendIcon, Trash2Icon } from "lucide-react";
+import { FileCheck2Icon, FileDownIcon, GitCompareIcon, LayersIcon, PlusIcon, SendIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -35,6 +35,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { Deliverable, DeliverableDetail, DeliverableVersion } from "@/lib/types";
+
+import { AggregateDeliverableDialog } from "./_components/aggregate-dialog";
 
 function fmtTime(value: string): string {
   const d = new Date(value);
@@ -436,6 +438,7 @@ export default function DeliverablesPage() {
   const [rows, setRows] = React.useState<Deliverable[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [aggregateOpen, setAggregateOpen] = React.useState(false);
   const [detailID, setDetailID] = React.useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<Deliverable | null>(null);
 
@@ -473,9 +476,14 @@ export default function DeliverablesPage() {
           </h1>
           <p className="text-muted-foreground text-sm">版本、签收与导出；报告正文仍由任务报告生成。</p>
         </div>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <PlusIcon /> 新建交付物
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setAggregateOpen(true)}>
+            <LayersIcon /> 从战役/公司生成
+          </Button>
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <PlusIcon /> 新建交付物
+          </Button>
+        </div>
       </div>
 
       <Card className="py-0">
@@ -544,6 +552,7 @@ export default function DeliverablesPage() {
       </Card>
 
       <CreateDeliverableDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={load} />
+      <AggregateDeliverableDialog open={aggregateOpen} onOpenChange={setAggregateOpen} onCreated={load} />
       <DeliverableDetailDialog
         id={detailID}
         open={detailID !== null}

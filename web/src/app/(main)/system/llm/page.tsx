@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 
 import { cooldownText } from "./_components/llm-helpers";
 import { PoolDialog } from "./_components/pool-dialog";
+import { LLMPriceTab } from "./_components/price-tab";
 import { ProfileDialog } from "./_components/profile-dialog";
 import { RetryPolicyPanel } from "./_components/retry";
 
@@ -152,7 +153,12 @@ export default function LLMPage() {
         <TabsList>
           <TabsTrigger value="profiles">模型配置</TabsTrigger>
           <TabsTrigger value="retry">重试与退避</TabsTrigger>
+          <TabsTrigger value="prices">模型价格</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="prices" className="mt-4">
+          <LLMPriceTab />
+        </TabsContent>
 
         <TabsContent value="profiles" className="mt-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">

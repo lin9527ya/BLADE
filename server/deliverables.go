@@ -42,7 +42,7 @@ func (s *Server) createDeliverable(w http.ResponseWriter, r *http.Request) {
 		ReportMD   string `json:"report_md"`
 		Note       string `json:"note"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
@@ -86,7 +86,7 @@ func (s *Server) addDeliverableVersion(w http.ResponseWriter, r *http.Request) {
 		ReportMD string `json:"report_md"`
 		Note     string `json:"note"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return

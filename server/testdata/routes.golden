@@ -65,11 +65,13 @@ GET /api/commands/stats	server.(*Server).pgToolStats-fm
 GET /api/companies	server.(*Server).listCompanies-fm
 GET /api/companies/{id}	server.(*Server).getCompany-fm
 GET /api/companies/{id}/knowledge	server.(*Server).listCompanyKnowledge-fm
+GET /api/companies/{id}/overview	server.(*Server).companyOverview-fm
 GET /api/conversations	server.(*Server).pgListConversations-fm
 GET /api/conversations/{id}	server.(*Server).pgGetConversation-fm
 GET /api/conversations/{id}/messages	server.(*Server).pgConversationMessages-fm
 GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDetail-fm
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+GET /api/costs	server.(*Server).costSummary-fm
 GET /api/credential-attempts	server.(*Server).listCredentialAttempts-fm
 GET /api/cves	server.(*Server).listCVEs-fm
 GET /api/cves/export	server.(*Server).exportCVEs-fm
@@ -141,6 +143,7 @@ GET /api/intercept/task/{taskID}	server.(*Server).interceptListTaskItems-fm
 GET /api/intercept/tool-config	server.(*Server).interceptGetToolConfig-fm
 GET /api/llm	server.(*Server).getLLM-fm
 GET /api/llm/pool	server.(*Server).pgLLMPoolStatus-fm
+GET /api/llm/prices	server.(*Server).listLLMPrices-fm
 GET /api/llm/profiles	server.(*Server).pgListProfiles-fm
 GET /api/llm/records	server.(*Server).pgListLLMRecords-fm
 GET /api/llm/records/by-model	server.(*Server).pgTokenByModel-fm
@@ -412,6 +415,7 @@ PUT /api/exploration/findings/{id}/traffic/order	server.(*Server).editFindingTra
 PUT /api/intercept/judge	server.(*Server).interceptSetJudgeConfig-fm
 PUT /api/intercept/rules/{id}	server.(*Server).interceptUpdateRule-fm
 PUT /api/intercept/tool-config	server.(*Server).interceptSetToolConfig-fm
+PUT /api/llm/prices	server.(*Server).saveLLMPrices-fm
 PUT /api/playbooks/{id}	server.(*Server).updatePlaybook-fm
 PUT /api/settings	server.(*Server).putSettings-fm
 PUT /api/skills/{name}/files/{file...}	server.(*Server).fsWriteFile-fm

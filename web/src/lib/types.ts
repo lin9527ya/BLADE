@@ -1842,6 +1842,64 @@ export interface UsageStats {
   daily: ProfileDayUsage[];
 }
 
+// ---- LLM 成本与价格 ----
+export interface LLMPrice {
+  model: string;
+  input_per_million: number;
+  output_per_million: number;
+  cache_read_per_million: number;
+  cache_write_per_million: number;
+  updated_at?: string;
+}
+
+export interface CostTotals {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number;
+  cache_savings_usd: number;
+  unpriced_tokens: number;
+}
+
+export interface CostDay {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  unpriced_tokens: number;
+}
+
+export interface CostModel {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  unpriced_tokens: number;
+  priced: boolean;
+}
+
+export interface CostProfile {
+  profile_name: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  unpriced_tokens: number;
+}
+
+export interface CostSummary {
+  days: number;
+  daily: CostDay[];
+  by_model: CostModel[];
+  by_profile: CostProfile[];
+  total: CostTotals;
+  month: CostTotals;
+  budget_usd: number;
+  alert_pct: number;
+  budget_status: "unset" | "ok" | "warning" | "exceeded" | string;
+}
+
 // Per-model token usage for one task (GET /api/llm/records/by-model), from the
 // always-on llm_usage metering ledger. calls = number of LLM calls on this model.
 export interface ModelTokenStat {
@@ -2060,6 +2118,8 @@ export interface Settings {
   // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，
   // 100% 时任务进入收尾(停派新意图 → drain → 终局报告)。0 或空 = 关闭。
   task_token_budget?: number;
+  llm_monthly_budget_usd?: number;
+  llm_budget_alert_pct?: number;
   planner_bounded_view?: boolean;
   // 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
   task_concurrency_enabled?: boolean; // 默认 false
@@ -2205,6 +2265,69 @@ export interface AuditEvent {
   ip: string;
   user_agent: string;
   created_at: string;
+}
+
+// ---- 公司 360 ----
+export interface CompanyOverviewTask {
+  id: string;
+  name?: string;
+  description?: string;
+  status: TaskStatus | string;
+  findings: number;
+  footholds: number;
+  credentials: number;
+  detections: number;
+}
+
+export interface CompanyFindingsSummary {
+  total: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface CompanyCVEMatch extends CVE {
+  score: number;
+  match_reasons: string[];
+  version_match: string;
+  asset_version?: string;
+  matched_product?: string;
+  asset_id?: number;
+  asset_label?: string;
+}
+
+export interface CompanyPlaybookMatch extends Playbook {
+  score: number;
+}
+
+export interface CompanyActivity {
+  id: number;
+  kind: string;
+  tool?: string;
+  summary: string;
+  task_id: number;
+  task_name?: string;
+  worker?: string;
+  created_at: string;
+}
+
+export interface CompanyOverview {
+  company: Company;
+  scope: ScopeRow[];
+  asset_counts: Record<string, number>;
+  asset_total: number;
+  tasks: CompanyOverviewTask[];
+  findings: CompanyFindingsSummary;
+  recent_findings: Finding[];
+  loot_by_kind: Record<string, number>;
+  loot_total: number;
+  credential_attempts: number;
+  knowledge: CompanyKnowledge[];
+  deliverables: Deliverable[];
+  cves: CompanyCVEMatch[];
+  playbooks: CompanyPlaybookMatch[];
+  activity: CompanyActivity[];
 }
 
 // ---- 交付物台账 ----

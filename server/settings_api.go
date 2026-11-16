@@ -148,6 +148,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"finding_evidence_verify": evidenceVerifySetting(s.m.pg).String(),
 		"agent_auto_retest":       s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":       s.taskTokenBudget(),
+		"llm_monthly_budget_usd":  func() float64 { b, _ := llmBudgetSettings(s.m.pg); return b }(),
+		"llm_budget_alert_pct":    func() int { _, a := llmBudgetSettings(s.m.pg); return a }(),
 		"planner_bounded_view":    s.plannerBoundedView(),
 		// 压缩摘要独立模型（0 = 跟随任务链/角色绑定）。
 		"compactor_llm_profile_id": s.compactorLLMProfileID(),
@@ -305,22 +307,24 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // settingsRequest 是设置保存请求体。提取为具名类型，让「先全量校验、再写库/应用」
 // 两阶段处理能共用同一份字段定义（见 settings_validate.go）。
 type settingsRequest struct {
-	TrafficCapture          *bool   `json:"traffic_capture"`
-	AgentTrafficBinding     *bool   `json:"agent_traffic_binding"`
-	LootExec                *bool   `json:"agent_loot_exec"`
-	OastEnabled             *bool   `json:"oast_enabled"`
-	OastToken               *string `json:"oast_token"` // 只写：空串 = 清除
-	OastDomain              *string `json:"oast_domain"`
-	OpsecNoise              *string `json:"opsec_noise_level"`
-	EvidenceVerify          *string `json:"finding_evidence_verify"`
-	AgentAutoRetest         *bool   `json:"agent_auto_retest"`
-	TaskTokenBudget         *int64  `json:"task_token_budget"`
-	PlannerBoundedView      *bool   `json:"planner_bounded_view"`     // 默认态势是否裁剪为有界视图
-	CompactorLLMProfileID   *int64  `json:"compactor_llm_profile_id"` // 0 = 跟随任务链
-	AttackChainContinuation *bool   `json:"attack_chain_continuation"`
-	EmptyReportPatrol       *bool   `json:"empty_report_patrol"`
-	CredentialPlaintext     *bool   `json:"credential_plaintext_fidelity"`
-	LLMRecord               *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+	TrafficCapture          *bool    `json:"traffic_capture"`
+	AgentTrafficBinding     *bool    `json:"agent_traffic_binding"`
+	LootExec                *bool    `json:"agent_loot_exec"`
+	OastEnabled             *bool    `json:"oast_enabled"`
+	OastToken               *string  `json:"oast_token"` // 只写：空串 = 清除
+	OastDomain              *string  `json:"oast_domain"`
+	OpsecNoise              *string  `json:"opsec_noise_level"`
+	EvidenceVerify          *string  `json:"finding_evidence_verify"`
+	AgentAutoRetest         *bool    `json:"agent_auto_retest"`
+	TaskTokenBudget         *int64   `json:"task_token_budget"`
+	LLMMonthlyBudgetUSD     *float64 `json:"llm_monthly_budget_usd"`   // 0 = 不设预算
+	LLMBudgetAlertPct       *int     `json:"llm_budget_alert_pct"`     // 超预算告警阈值（1–100）
+	PlannerBoundedView      *bool    `json:"planner_bounded_view"`     // 默认态势是否裁剪为有界视图
+	CompactorLLMProfileID   *int64   `json:"compactor_llm_profile_id"` // 0 = 跟随任务链
+	AttackChainContinuation *bool    `json:"attack_chain_continuation"`
+	EmptyReportPatrol       *bool    `json:"empty_report_patrol"`
+	CredentialPlaintext     *bool    `json:"credential_plaintext_fidelity"`
+	LLMRecord               *bool    `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 	WebSearchEnabled    *bool   `json:"web_search_enabled"`
@@ -699,6 +703,22 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			v = 0
 		}
 		pending[settingTokenBudget] = strconv.FormatInt(v, 10)
+	}
+	if req.LLMMonthlyBudgetUSD != nil {
+		v := *req.LLMMonthlyBudgetUSD
+		if v < 0 || v > 1e9 {
+			writeErr(w, 400, "LLM 月度预算必须是 0–1e9 的非负数（0 = 不设预算）")
+			return
+		}
+		pending[settingLLMMonthlyBudget] = strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	if req.LLMBudgetAlertPct != nil {
+		v := *req.LLMBudgetAlertPct
+		if v < 1 || v > 100 {
+			writeErr(w, 400, "预算告警阈值必须在 1–100 之间")
+			return
+		}
+		pending[settingLLMBudgetAlert] = strconv.Itoa(v)
 	}
 	if req.PlannerBoundedView != nil {
 		pending[settingPlannerBoundedView] = strconv.FormatBool(*req.PlannerBoundedView)

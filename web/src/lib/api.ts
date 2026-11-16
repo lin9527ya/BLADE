@@ -37,11 +37,13 @@ import type {
   CommandRecord,
   Company,
   CompanyKnowledge,
+  CompanyOverview,
   CompanyScopeMutation,
   CompanyScopeRule,
   ConstraintCompileResult,
   Conversation,
   ConvTokenSummary,
+  CostSummary,
   CoverageAssetRefs,
   CoverageGraphData,
   CredentialAttempt,
@@ -97,6 +99,7 @@ import type {
   JudgeUsage,
   KillSwitchReceipt,
   LLMPoolStatus,
+  LLMPrice,
   LLMProfile,
   LLMRecordDetail,
   LLMRecordItem,
@@ -580,6 +583,9 @@ export const api = {
   taskCoverageGraph: (id: string) => get<CoverageGraphData>(`/tasks/${id}/coverage-graph`),
   // 全局 llm_usage 聚合（仪表盘新版 token 视图）：按 profile 总量 + 按天分桶。
   usageStats: (days = 365) => get<UsageStats>(`/tokens/usage?days=${days}`),
+  costs: (days = 30) => get<CostSummary>(`/costs?days=${days}`),
+  llmPrices: () => get<{ items: LLMPrice[] }>("/llm/prices").then((r) => arr(r.items)),
+  saveLLMPrices: (items: LLMPrice[]) => put<{ items: LLMPrice[] }>("/llm/prices", { items }).then((r) => arr(r.items)),
   // ---- 目标管理（总览）----
   // 本任务全部目标（text/vulnclass/state）。
   taskGoals: (id: string) =>
@@ -1206,6 +1212,7 @@ export const api = {
 
   // ---- companies (企业 + 资产范围；归属唯一来源) ----
   companies: () => get<Company[]>("/companies").then(arr),
+  companyOverview: (id: number) => get<CompanyOverview>(`/companies/${id}/overview`),
   createCompany: (name: string, scope: CompanyScopeRule[]) =>
     post<{ id: number; created: boolean; scope_added?: number; scope_invalid?: number; scope_errors?: string[] }>(
       "/companies",

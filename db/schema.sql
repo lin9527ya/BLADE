@@ -1407,6 +1407,17 @@ CREATE INDEX IF NOT EXISTS idx_findings_asset_ids ON findings USING GIN(asset_id
 CREATE INDEX IF NOT EXISTS idx_findings_report_patrol ON findings(report_patrol_at NULLS FIRST)
     WHERE COALESCE(report,'') = '' AND node_id IS NOT NULL AND task_id IS NOT NULL;
 
+-- LLM 模型价格表（每百万 token，USD）。model='default' 作为未登记模型的兜底；
+-- 没有精确行且 default 不存在/全 0 时，成本接口把 token 标为 unpriced，不伪造成本。
+CREATE TABLE IF NOT EXISTS llm_prices (
+    model                  TEXT PRIMARY KEY,
+    input_per_million      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    output_per_million     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cache_read_per_million DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cache_write_per_million DOUBLE PRECISION NOT NULL DEFAULT 0,
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- API 令牌：给 Prometheus/自动化用的长期凭据；只存 SHA-256，明文只返回一次。
 CREATE TABLE IF NOT EXISTS api_tokens (
     id           BIGSERIAL PRIMARY KEY,

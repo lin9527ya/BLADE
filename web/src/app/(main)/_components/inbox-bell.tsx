@@ -4,7 +4,15 @@ import * as React from "react";
 
 import { useRouter } from "next/navigation";
 
-import { BellIcon, BugIcon, CalendarClockIcon, CheckCheckIcon, ShieldAlertIcon, TargetIcon } from "lucide-react";
+import {
+  BellIcon,
+  BugIcon,
+  CalendarClockIcon,
+  CheckCheckIcon,
+  ShieldAlertIcon,
+  TargetIcon,
+  WalletIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +30,7 @@ const KIND_ICON = {
   task: TargetIcon,
   schedule: CalendarClockIcon,
   finding: BugIcon,
+  budget: WalletIcon,
 } as const;
 
 function relTime(iso: string): string {

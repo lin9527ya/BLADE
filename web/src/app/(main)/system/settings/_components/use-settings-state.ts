@@ -122,6 +122,9 @@ export function useSettingsState() {
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
   const [savingBudget, setSavingBudget] = React.useState(false);
+  const [llmBudgetUSD, setLLMBudgetUSD] = React.useState("0");
+  const [llmBudgetAlertPct, setLLMBudgetAlertPct] = React.useState("80");
+  const [savingLLMBudget, setSavingLLMBudget] = React.useState(false);
   // 有界黑板视图：默认裁剪态势省 token；关掉后 planner 每轮预取完整态势。
   const [boundedView, setBoundedView] = React.useState(true);
   const [savingBoundedView, setSavingBoundedView] = React.useState(false);
@@ -230,6 +233,8 @@ export function useSettingsState() {
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setTokenBudget(String(s.task_token_budget ?? 0));
+    setLLMBudgetUSD(String(s.llm_monthly_budget_usd ?? 0));
+    setLLMBudgetAlertPct(String(s.llm_budget_alert_pct ?? 80));
     setBoundedView(s.planner_bounded_view !== false);
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
@@ -419,6 +424,28 @@ export function useSettingsState() {
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingBudget(false));
+  };
+
+  const saveLLMBudget = () => {
+    const budget = Number(llmBudgetUSD.trim() === "" ? "0" : llmBudgetUSD);
+    const alertPct = Number(llmBudgetAlertPct.trim() === "" ? "80" : llmBudgetAlertPct);
+    if (!Number.isFinite(budget) || budget < 0) {
+      toast.error("月度预算必须是不小于 0 的数字（0 = 不设预算）");
+      return;
+    }
+    if (!Number.isInteger(alertPct) || alertPct < 1 || alertPct > 100) {
+      toast.error("告警阈值必须是 1–100 的整数");
+      return;
+    }
+    setSavingLLMBudget(true);
+    api
+      .setSettings({ llm_monthly_budget_usd: budget, llm_budget_alert_pct: alertPct })
+      .then((s) => {
+        apply(s);
+        toast.success(budget > 0 ? "已保存 LLM 月度预算" : "已关闭 LLM 月度预算告警");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingLLMBudget(false));
   };
 
   const savePython = () => {
@@ -1185,6 +1212,12 @@ export function useSettingsState() {
     setTokenBudget,
     savingBudget,
     setSavingBudget,
+    llmBudgetUSD,
+    setLLMBudgetUSD,
+    llmBudgetAlertPct,
+    setLLMBudgetAlertPct,
+    savingLLMBudget,
+    saveLLMBudget,
     boundedView,
     setBoundedView,
     savingBoundedView,

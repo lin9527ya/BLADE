@@ -10,6 +10,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/companies", s.listCompanies)
 	mux.HandleFunc("POST /api/companies", s.createCompany)
 	mux.HandleFunc("GET /api/companies/{id}", s.getCompany)
+	mux.HandleFunc("GET /api/companies/{id}/overview", s.companyOverview)
 	mux.HandleFunc("DELETE /api/companies/{id}", s.deleteCompany)
 	mux.HandleFunc("POST /api/companies/{id}/scope", s.addCompanyScope)
 	mux.HandleFunc("POST /api/companies/reattribute", s.reattribute)
@@ -80,6 +81,9 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/tokens/daily", s.tokenDailyStats)
 	mux.HandleFunc("GET /api/tokens/conversations", s.conversationTokens)
 	mux.HandleFunc("GET /api/tokens/usage", s.pgUsageStats) // 全局 llm_usage 聚合（仪表盘新版视图）
+	mux.HandleFunc("GET /api/costs", s.costSummary)
+	mux.HandleFunc("GET /api/llm/prices", s.listLLMPrices)
+	mux.HandleFunc("PUT /api/llm/prices", s.saveLLMPrices)
 
 	mux.HandleFunc("GET /api/audit", s.getAudit)
 	mux.HandleFunc("GET /api/traffic", s.getTraffic)

@@ -22,6 +22,12 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     tokenBudget,
     setTokenBudget,
     savingBudget,
+    llmBudgetUSD,
+    setLLMBudgetUSD,
+    llmBudgetAlertPct,
+    setLLMBudgetAlertPct,
+    savingLLMBudget,
+    saveLLMBudget,
     compactorProfileID,
     setCompactorProfileID,
     llmProfiles,
@@ -114,6 +120,43 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               onChange={(e) => setTokenBudget(e.target.value)}
             />
             <Button type="button" onClick={saveTokenBudget} disabled={!loaded || savingBudget}>
+              保存
+            </Button>
+          </div>
+        </Field>
+      </SubBlock>
+
+      <SubBlock title="LLM 成本预算" icon={<GaugeIcon className="size-4 text-muted-foreground" />}>
+        <Field
+          label="月度预算（USD）"
+          htmlFor="llm-monthly-budget"
+          hint={
+            <>
+              按模型价格表估算本月成本；达到告警阈值后写入站内收件箱。填 <b>0</b> = 不设预算。 价格表在「系统 → LLM →
+              模型价格」维护。
+            </>
+          }
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              id="llm-monthly-budget"
+              inputMode="decimal"
+              className="max-w-40"
+              value={llmBudgetUSD}
+              disabled={!loaded || savingLLMBudget}
+              onChange={(e) => setLLMBudgetUSD(e.target.value)}
+            />
+            <span className="text-muted-foreground text-xs">USD / 月</span>
+            <Input
+              aria-label="预算告警阈值"
+              inputMode="numeric"
+              className="max-w-24"
+              value={llmBudgetAlertPct}
+              disabled={!loaded || savingLLMBudget}
+              onChange={(e) => setLLMBudgetAlertPct(e.target.value)}
+            />
+            <span className="text-muted-foreground text-xs">% 告警</span>
+            <Button type="button" onClick={saveLLMBudget} disabled={!loaded || savingLLMBudget}>
               保存
             </Button>
           </div>

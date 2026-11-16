@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -83,5 +84,35 @@ LIMIT $1`, limit)
 		}
 		out = append(out, item)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if item := d.budgetInboxItem(); item != nil {
+		// Keep the budget alert at the top: it is a current-state warning, not a
+		// historical event, and it must not be buried under routine findings.
+		out = append([]InboxItem{*item}, out...)
+	}
+	return out, nil
+}
+
+func (d *DB) budgetInboxItem() *InboxItem {
+	summary, err := d.CostSummary(31)
+	if err != nil || summary.BudgetStatus != "warning" && summary.BudgetStatus != "exceeded" {
+		return nil
+	}
+	percent := 0.0
+	if summary.BudgetUSD > 0 {
+		percent = summary.Month.CostUSD / summary.BudgetUSD * 100
+	}
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return &InboxItem{
+		ID:        "budget-" + start.Format("2006-01-02"),
+		Kind:      "budget",
+		Title:     "LLM 预算告警",
+		Subtitle:  fmt.Sprintf("本月 $%.2f / 预算 $%.2f（%.0f%%）", summary.Month.CostUSD, summary.BudgetUSD, percent),
+		URL:       "/system/llm",
+		Severity:  "high",
+		CreatedAt: start,
+	}
 }

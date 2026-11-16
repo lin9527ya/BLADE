@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import type {
   Activity,
   ConvTokenSummary,
+  CostSummary,
   DashboardTaskTokenDay,
   DashboardTaskTokenProfile,
   Finding,
@@ -59,6 +60,7 @@ export function useDashboardState() {
   const [activity, setActivity] = React.useState<Activity[]>([]);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
+  const [costs, setCosts] = React.useState<CostSummary | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
   // 流量总条数（服务端 count 是 COUNT(*)，不是当前 50 行窗口）。
@@ -148,11 +150,12 @@ export function useDashboardState() {
         // enabledTools 自己也是死的）——等于每 15 秒白发四个请求。要加相关面板时
         // 再把对应的源加回来。
         const wantUsage = tokenVersion === "new";
-        const [traf, counts, profileList, usage] = await Promise.all([
+        const [traf, counts, profileList, usage, costSummary] = await Promise.all([
           api.traffic(0, 50),
           api.assetCounts(),
           api.llmProfiles(),
           wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
+          api.costs(30),
         ]);
         if (!alive()) return;
         setTraffic(traf.exchanges ?? []);
@@ -160,6 +163,7 @@ export function useDashboardState() {
         setAssetCounts(counts ?? {});
         setLLMProfiles(profileList);
         if (usage) setUsageStats(usage);
+        setCosts(costSummary);
       };
       await load();
     },
@@ -433,6 +437,7 @@ export function useDashboardState() {
       dailyTokenData,
     ],
   );
+  const costCard = React.useMemo(() => ({ costs }), [costs]);
   // kindLabel / workerBg 现在是模块级纯函数，身份恒定，放进切片不会导致失效。
   const activityRow = React.useMemo(
     () => ({ findings, activity, recentFindings, recentActivity, kindLabel, workerBg }),
@@ -475,5 +480,5 @@ export function useDashboardState() {
     ],
   );
 
-  return { statCards, tokenCard, activityRow, taskTable, assetTraffic };
+  return { statCards, tokenCard, costCard, activityRow, taskTable, assetTraffic };
 }

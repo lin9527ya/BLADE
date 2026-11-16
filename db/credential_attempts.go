@@ -78,11 +78,12 @@ SELECT id, task_id, host, account, tool, command, spray, at
 
 // CredentialAttemptFilter 是全局凭据尝试台账的筛选条件。零值 = 全部。
 type CredentialAttemptFilter struct {
-	TaskID  int64
-	Host    string
-	Account string
-	Since   time.Time // 零值 = 不限
-	Until   time.Time
+	TaskID    int64
+	CompanyID int64
+	Host      string
+	Account   string
+	Since     time.Time // 零值 = 不限
+	Until     time.Time
 }
 
 func (f CredentialAttemptFilter) where() (string, []any) {
@@ -91,6 +92,13 @@ func (f CredentialAttemptFilter) where() (string, []any) {
 	if f.TaskID > 0 {
 		args = append(args, f.TaskID)
 		where = append(where, fmt.Sprintf("task_id=$%d", len(args)))
+	}
+	if f.CompanyID > 0 {
+		args = append(args, f.CompanyID)
+		where = append(where, fmt.Sprintf(`EXISTS (
+  SELECT 1 FROM task_scope ts
+  WHERE ts.task_id=credential_attempts.task_id AND ts.kind='company' AND ts.company_id=$%d
+)`, len(args)))
 	}
 	if h := strings.TrimSpace(f.Host); h != "" {
 		args = append(args, h)
