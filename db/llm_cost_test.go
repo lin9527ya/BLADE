@@ -130,7 +130,7 @@ func TestCostSummaryOffpeakWindow(t *testing.T) {
 	}
 	if err := d.ReplaceLLMPrices([]LLMPrice{{
 		Model: model, InputPerMillion: 10, OutputPerMillion: 20, CacheReadPerMillion: 1,
-		OffpeakStart: "00:30", OffpeakEnd: "08:30", OffpeakTimezone: "Asia/Shanghai",
+		OffpeakWindows: []LLMOffpeakWindow{{Start: "00:30", End: "08:30"}}, OffpeakTimezone: "Asia/Shanghai",
 		OffpeakInputPerMillion: 4, OffpeakOutputPerMillion: 8, OffpeakCacheReadPerMillion: 0.5,
 	}}); err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestCostSummaryOffpeakCrossMidnight(t *testing.T) {
 	}
 	if err := d.ReplaceLLMPrices([]LLMPrice{{
 		Model: model, InputPerMillion: 10, OutputPerMillion: 20, CacheReadPerMillion: 1,
-		OffpeakStart: "22:30", OffpeakEnd: "08:30", OffpeakTimezone: "Asia/Shanghai",
+		OffpeakWindows: []LLMOffpeakWindow{{Start: "22:30", End: "08:30"}}, OffpeakTimezone: "Asia/Shanghai",
 		OffpeakInputPerMillion: 4, OffpeakOutputPerMillion: 8, OffpeakCacheReadPerMillion: 0.5,
 	}}); err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestCostSummaryOffpeakCrossMidnight(t *testing.T) {
 }
 
 func TestNormalizeLLMPriceOffpeakValidation(t *testing.T) {
-	valid := LLMPrice{Model: "deepseek-chat", InputPerMillion: 1, OffpeakStart: "22:30", OffpeakEnd: "08:30", OffpeakTimezone: "Asia/Shanghai"}
+	valid := LLMPrice{Model: "deepseek-chat", InputPerMillion: 1, OffpeakWindows: []LLMOffpeakWindow{{Start: "22:30", End: "08:30"}}, OffpeakTimezone: "Asia/Shanghai"}
 	if _, err := normalizeLLMPrice(valid); err != nil {
 		t.Fatalf("valid cross-midnight window rejected: %v", err)
 	}
@@ -234,15 +234,79 @@ func TestNormalizeLLMPriceOffpeakValidation(t *testing.T) {
 		t.Fatalf("default timezone = %q, err=%v", got.OffpeakTimezone, err)
 	}
 	for name, item := range map[string]LLMPrice{
-		"start only":     {Model: "m", OffpeakStart: "22:30"},
-		"end only":       {Model: "m", OffpeakEnd: "08:30"},
-		"equal":          {Model: "m", OffpeakStart: "08:30", OffpeakEnd: "08:30"},
-		"bad format":     {Model: "m", OffpeakStart: "8:30", OffpeakEnd: "09:30"},
-		"bad timezone":   {Model: "m", OffpeakStart: "22:30", OffpeakEnd: "08:30", OffpeakTimezone: "Mars/Olympus"},
+		"start only":     {Model: "m", OffpeakWindows: []LLMOffpeakWindow{{Start: "22:30"}}},
+		"end only":       {Model: "m", OffpeakWindows: []LLMOffpeakWindow{{End: "08:30"}}},
+		"equal":          {Model: "m", OffpeakWindows: []LLMOffpeakWindow{{Start: "08:30", End: "08:30"}}},
+		"bad format":     {Model: "m", OffpeakWindows: []LLMOffpeakWindow{{Start: "8:30", End: "09:30"}}},
+		"bad timezone":   {Model: "m", OffpeakWindows: []LLMOffpeakWindow{{Start: "22:30", End: "08:30"}}, OffpeakTimezone: "Mars/Olympus"},
+		"duplicate":      {Model: "m", OffpeakWindows: []LLMOffpeakWindow{{Start: "00:30", End: "08:30"}, {Start: "00:30", End: "08:30"}}},
 		"negative price": {Model: "m", OffpeakInputPerMillion: -1},
 	} {
 		if _, err := normalizeLLMPrice(item); err == nil {
 			t.Errorf("%s: expected validation error", name)
 		}
+	}
+}
+
+func TestCostSummaryMultipleOffpeakWindows(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer d.Close()
+
+	model := "cost-test-multi-offpeak"
+	workers := []string{"cost-test-multi-peak", "cost-test-multi-night", "cost-test-multi-noon"}
+	cleanup := func() {
+		_, _ = d.Exec(`DELETE FROM llm_usage WHERE model=$1`, model)
+		_, _ = d.Exec(`DELETE FROM llm_prices WHERE model=$1`, model)
+	}
+	cleanup()
+	defer cleanup()
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two off-peak windows: 00:30–08:30 and 12:00–14:00.
+	times := []time.Time{
+		time.Date(2026, 11, 16, 10, 0, 0, 0, loc).UTC(),
+		time.Date(2026, 11, 16, 3, 0, 0, 0, loc).UTC(),
+		time.Date(2026, 11, 16, 13, 0, 0, 0, loc).UTC(),
+	}
+	for i, worker := range workers {
+		if err := d.InsertLLMUsage(&LLMUsage{TaskID: "cost-test-multi-offpeak-task", Worker: worker, Model: model,
+			ProfileName: "cost-test-multi-offpeak-profile", InputTokens: 1_000_000, OutputTokens: 500_000}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`UPDATE llm_usage SET ts=$1 WHERE model=$2 AND worker=$3`, times[i], model, worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.ReplaceLLMPrices([]LLMPrice{{
+		Model: model, InputPerMillion: 10, OutputPerMillion: 20,
+		OffpeakWindows:  []LLMOffpeakWindow{{Start: "00:30", End: "08:30"}, {Start: "12:00", End: "14:00"}},
+		OffpeakTimezone: "Asia/Shanghai", OffpeakInputPerMillion: 4, OffpeakOutputPerMillion: 8,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := d.CostSummary(30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *CostModel
+	for _, m := range summary.ByModel {
+		if m.Model == model {
+			row = &m
+			break
+		}
+	}
+	if row == nil {
+		t.Fatalf("model %s missing from summary: %+v", model, summary.ByModel)
+	}
+	// Peak: 1M*10 + 0.5M*20 = 20.
+	// Each off-peak window: 1M*4 + 0.5M*8 = 8; two windows = 16.
+	if math.Abs(row.PeakCostUSD-20) > 0.0001 || math.Abs(row.OffpeakCostUSD-16) > 0.0001 {
+		t.Fatalf("multi-window peak/offpeak = %.4f/%.4f, want 20/16 (%+v)", row.PeakCostUSD, row.OffpeakCostUSD, row)
 	}
 }

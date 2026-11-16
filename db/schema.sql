@@ -1426,6 +1426,8 @@ CREATE TABLE IF NOT EXISTS llm_prices (
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- 0.9.15 已存在的 llm_prices 没有谷时列，幂等补列。
+-- offpeak_start/offpeak_end 是 0.9.15 的单窗口字段，仅用于迁移；运行期以
+-- llm_price_offpeak_windows 为准（一个模型可配置多个谷时时段）。
 ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_start TIME;
 ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_end TIME;
 ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';
@@ -1433,6 +1435,26 @@ ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_input_per_million DOUBLE
 ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_output_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_cache_read_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_cache_write_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- 一个模型可以有多个不相连的谷时时段（如 DeepSeek 的两段优惠时间）。
+-- start > end 表示跨午夜；时区沿用 llm_prices.offpeak_timezone。
+CREATE TABLE IF NOT EXISTS llm_price_offpeak_windows (
+    model      TEXT NOT NULL REFERENCES llm_prices(model) ON DELETE CASCADE,
+    position   INTEGER NOT NULL DEFAULT 0,
+    start_time TIME NOT NULL,
+    end_time   TIME NOT NULL,
+    PRIMARY KEY (model, position),
+    CHECK (start_time <> end_time)
+);
+
+-- 单窗口 → 多窗口迁移。每次启动都会执行，复制后清空旧列，后续启动即为空操作。
+INSERT INTO llm_price_offpeak_windows(model, position, start_time, end_time)
+SELECT model, 0, offpeak_start, offpeak_end
+FROM llm_prices
+WHERE offpeak_start IS NOT NULL AND offpeak_end IS NOT NULL
+ON CONFLICT (model, position) DO NOTHING;
+UPDATE llm_prices SET offpeak_start = NULL, offpeak_end = NULL
+WHERE offpeak_start IS NOT NULL OR offpeak_end IS NOT NULL;
 
 -- API 令牌：给 Prometheus/自动化用的长期凭据；只存 SHA-256，明文只返回一次。
 CREATE TABLE IF NOT EXISTS api_tokens (

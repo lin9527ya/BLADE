@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// LLMOffpeakWindow is one daily off-peak interval in the price row's timezone.
+// start > end means the window crosses midnight.
+type LLMOffpeakWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
 // LLMPrice is USD per million tokens for one model. model="default" is the
 // fallback for models without an exact row.
 type LLMPrice struct {
@@ -17,15 +24,14 @@ type LLMPrice struct {
 	OutputPerMillion     float64 `json:"output_per_million"`
 	CacheReadPerMillion  float64 `json:"cache_read_per_million"`
 	CacheWritePerMillion float64 `json:"cache_write_per_million"`
-	// 谷时窗口（HH:MM，空 = 不启用）。基础价格即峰时价；start > end 表示跨午夜。
-	OffpeakStart                string    `json:"offpeak_start,omitempty"`
-	OffpeakEnd                  string    `json:"offpeak_end,omitempty"`
-	OffpeakTimezone             string    `json:"offpeak_timezone,omitempty"`
-	OffpeakInputPerMillion      float64   `json:"offpeak_input_per_million"`
-	OffpeakOutputPerMillion     float64   `json:"offpeak_output_per_million"`
-	OffpeakCacheReadPerMillion  float64   `json:"offpeak_cache_read_per_million"`
-	OffpeakCacheWritePerMillion float64   `json:"offpeak_cache_write_per_million"`
-	UpdatedAt                   time.Time `json:"updated_at"`
+	// 谷时时段（HH:MM，可多个；空 = 不启用）。基础价格即峰时/窗口外价格。
+	OffpeakWindows              []LLMOffpeakWindow `json:"offpeak_windows"`
+	OffpeakTimezone             string             `json:"offpeak_timezone,omitempty"`
+	OffpeakInputPerMillion      float64            `json:"offpeak_input_per_million"`
+	OffpeakOutputPerMillion     float64            `json:"offpeak_output_per_million"`
+	OffpeakCacheReadPerMillion  float64            `json:"offpeak_cache_read_per_million"`
+	OffpeakCacheWritePerMillion float64            `json:"offpeak_cache_write_per_million"`
+	UpdatedAt                   time.Time          `json:"updated_at"`
 }
 
 type CostTotals struct {
@@ -87,7 +93,6 @@ const (
 
 func (d *DB) ListLLMPrices() ([]*LLMPrice, error) {
 	rows, err := d.Query(`SELECT model,input_per_million,output_per_million,cache_read_per_million,cache_write_per_million,
-COALESCE(to_char(offpeak_start,'HH24:MI'),''), COALESCE(to_char(offpeak_end,'HH24:MI'),''),
 COALESCE(offpeak_timezone,'Asia/Shanghai'),
 offpeak_input_per_million,offpeak_output_per_million,offpeak_cache_read_per_million,offpeak_cache_write_per_million,
 updated_at
@@ -95,46 +100,86 @@ FROM llm_prices ORDER BY (model='default') DESC, model`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 	out := []*LLMPrice{}
+	byModel := map[string]*LLMPrice{}
 	for rows.Next() {
 		var p LLMPrice
 		if err := rows.Scan(&p.Model, &p.InputPerMillion, &p.OutputPerMillion, &p.CacheReadPerMillion, &p.CacheWritePerMillion,
-			&p.OffpeakStart, &p.OffpeakEnd, &p.OffpeakTimezone,
+			&p.OffpeakTimezone,
 			&p.OffpeakInputPerMillion, &p.OffpeakOutputPerMillion, &p.OffpeakCacheReadPerMillion, &p.OffpeakCacheWritePerMillion,
 			&p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.OffpeakWindows = []LLMOffpeakWindow{}
 		out = append(out, &p)
+		byModel[p.Model] = &p
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	windows, err := d.Query(`SELECT model, to_char(start_time,'HH24:MI'), to_char(end_time,'HH24:MI')
+FROM llm_price_offpeak_windows ORDER BY model, position`)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.Close() //nolint:errcheck
+	for windows.Next() {
+		var model, start, end string
+		if err := windows.Scan(&model, &start, &end); err != nil {
+			return nil, err
+		}
+		if p := byModel[model]; p != nil {
+			p.OffpeakWindows = append(p.OffpeakWindows, LLMOffpeakWindow{Start: start, End: end})
+		}
+	}
+	return out, windows.Err()
 }
 
 func normalizeLLMPrice(item LLMPrice) (LLMPrice, error) {
 	model := strings.TrimSpace(item.Model)
 	item.Model = model
-	item.OffpeakStart = strings.TrimSpace(item.OffpeakStart)
-	item.OffpeakEnd = strings.TrimSpace(item.OffpeakEnd)
 	item.OffpeakTimezone = strings.TrimSpace(item.OffpeakTimezone)
 	if item.OffpeakTimezone == "" {
 		item.OffpeakTimezone = "Asia/Shanghai"
 	}
-	if (item.OffpeakStart == "") != (item.OffpeakEnd == "") {
-		return item, fmt.Errorf("模型 %q 的谷时开始/结束必须同时填写或同时留空", model)
+	if len(item.OffpeakWindows) > 8 {
+		return item, fmt.Errorf("模型 %q 最多配置 8 个谷时时段", model)
 	}
-	if item.OffpeakStart != "" {
-		start, err := time.Parse("15:04", item.OffpeakStart)
-		if err != nil || start.Format("15:04") != item.OffpeakStart {
+	windows := make([]LLMOffpeakWindow, 0, len(item.OffpeakWindows))
+	seenWindows := map[string]bool{}
+	for _, window := range item.OffpeakWindows {
+		window.Start = strings.TrimSpace(window.Start)
+		window.End = strings.TrimSpace(window.End)
+		if window.Start == "" && window.End == "" {
+			continue
+		}
+		if window.Start == "" || window.End == "" {
+			return item, fmt.Errorf("模型 %q 的每个谷时时段都必须同时填写开始和结束", model)
+		}
+		start, err := time.Parse("15:04", window.Start)
+		if err != nil || start.Format("15:04") != window.Start {
 			return item, fmt.Errorf("模型 %q 的谷时开始时间必须是 HH:MM", model)
 		}
-		end, err := time.Parse("15:04", item.OffpeakEnd)
-		if err != nil || end.Format("15:04") != item.OffpeakEnd {
+		end, err := time.Parse("15:04", window.End)
+		if err != nil || end.Format("15:04") != window.End {
 			return item, fmt.Errorf("模型 %q 的谷时结束时间必须是 HH:MM", model)
 		}
 		if start.Equal(end) {
 			return item, fmt.Errorf("模型 %q 的谷时开始和结束不能相同", model)
 		}
+		key := window.Start + "-" + window.End
+		if seenWindows[key] {
+			return item, fmt.Errorf("模型 %q 的谷时时段 %s 重复", model, key)
+		}
+		seenWindows[key] = true
+		windows = append(windows, LLMOffpeakWindow{Start: window.Start, End: window.End})
 	}
+	item.OffpeakWindows = windows
 	if _, err := time.LoadLocation(item.OffpeakTimezone); err != nil {
 		return item, fmt.Errorf("模型 %q 的谷时时区无效：%v", model, err)
 	}
@@ -176,13 +221,18 @@ func (d *DB) ReplaceLLMPrices(items []LLMPrice) error {
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO llm_prices(model,input_per_million,output_per_million,cache_read_per_million,cache_write_per_million,
-offpeak_start,offpeak_end,offpeak_timezone,
-offpeak_input_per_million,offpeak_output_per_million,offpeak_cache_read_per_million,offpeak_cache_write_per_million)
-VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::time,NULLIF($7,'')::time,$8,$9,$10,$11,$12)`,
+offpeak_timezone,offpeak_input_per_million,offpeak_output_per_million,offpeak_cache_read_per_million,offpeak_cache_write_per_million)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 			model, normalized.InputPerMillion, normalized.OutputPerMillion, normalized.CacheReadPerMillion, normalized.CacheWritePerMillion,
-			normalized.OffpeakStart, normalized.OffpeakEnd, normalized.OffpeakTimezone,
+			normalized.OffpeakTimezone,
 			normalized.OffpeakInputPerMillion, normalized.OffpeakOutputPerMillion, normalized.OffpeakCacheReadPerMillion, normalized.OffpeakCacheWritePerMillion); err != nil {
 			return err
+		}
+		for position, window := range normalized.OffpeakWindows {
+			if _, err := tx.Exec(`INSERT INTO llm_price_offpeak_windows(model,position,start_time,end_time)
+VALUES($1,$2,$3::time,$4::time)`, model, position, window.Start, window.End); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -210,13 +260,16 @@ func (d *DB) costRows(days int) ([]costUsageRow, error) {
 SELECT to_char(u.ts AT TIME ZONE 'UTC','YYYY-MM-DD'),
        COALESCE(NULLIF(u.model,''), '(unknown)'),
        COALESCE(u.profile_name,''),
-       CASE WHEN pr.offpeak_start IS NOT NULL AND pr.offpeak_end IS NOT NULL AND (
-         CASE WHEN pr.offpeak_start < pr.offpeak_end
-           THEN (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= pr.offpeak_start
-                AND (u.ts AT TIME ZONE pr.offpeak_timezone)::time < pr.offpeak_end
-           ELSE (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= pr.offpeak_start
-                OR (u.ts AT TIME ZONE pr.offpeak_timezone)::time < pr.offpeak_end
-         END
+       CASE WHEN EXISTS (
+         SELECT 1 FROM llm_price_offpeak_windows w
+         WHERE w.model = pr.model AND (
+           CASE WHEN w.start_time < w.end_time
+             THEN (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= w.start_time
+                  AND (u.ts AT TIME ZONE pr.offpeak_timezone)::time < w.end_time
+             ELSE (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= w.start_time
+                  OR (u.ts AT TIME ZONE pr.offpeak_timezone)::time < w.end_time
+           END
+         )
        ) THEN 'offpeak' ELSE 'peak' END,
        COALESCE(SUM(u.input_tokens),0), COALESCE(SUM(u.output_tokens),0),
        COALESCE(SUM(u.cache_read),0), COALESCE(SUM(u.cache_write),0)
@@ -289,7 +342,7 @@ func pricedFor(model string, prices map[string]LLMPrice, period string) (LLMPric
 			return LLMPrice{}, false
 		}
 	}
-	if period == "offpeak" && p.OffpeakStart != "" {
+	if period == "offpeak" && len(p.OffpeakWindows) > 0 {
 		p.InputPerMillion = p.OffpeakInputPerMillion
 		p.OutputPerMillion = p.OffpeakOutputPerMillion
 		p.CacheReadPerMillion = p.OffpeakCacheReadPerMillion

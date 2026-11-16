@@ -13,6 +13,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api } from "@/lib/api";
 import type { LLMPrice } from "@/lib/types";
 
+type DraftWindow = {
+  // Stable key so editing a time does not remount the input.
+  id: string;
+  start: string;
+  end: string;
+};
+
 type Draft = {
   // Stable React key: model edits must not remount the row/input.
   id: string;
@@ -21,8 +28,7 @@ type Draft = {
   output: string;
   cacheRead: string;
   cacheWrite: string;
-  offpeakStart: string;
-  offpeakEnd: string;
+  offpeakWindows: DraftWindow[];
   offpeakTimezone: string;
   offpeakInput: string;
   offpeakOutput: string;
@@ -44,8 +50,11 @@ function draftOf(p: LLMPrice): Draft {
     output: String(p.output_per_million),
     cacheRead: String(p.cache_read_per_million),
     cacheWrite: String(p.cache_write_per_million),
-    offpeakStart: p.offpeak_start ?? "",
-    offpeakEnd: p.offpeak_end ?? "",
+    offpeakWindows: (p.offpeak_windows ?? []).map((window) => ({
+      id: nextDraftID(),
+      start: window.start,
+      end: window.end,
+    })),
     offpeakTimezone: p.offpeak_timezone || "Asia/Shanghai",
     offpeakInput: String(p.offpeak_input_per_million),
     offpeakOutput: String(p.offpeak_output_per_million),
@@ -82,6 +91,39 @@ export function LLMPriceTab() {
     setRows((current) => current.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
   }
 
+  function patchWindow(index: number, windowID: string, key: "start" | "end", value: string) {
+    setRows((current) =>
+      current.map((row, i) =>
+        i === index
+          ? {
+              ...row,
+              offpeakWindows: row.offpeakWindows.map((window) =>
+                window.id === windowID ? { ...window, [key]: value } : window,
+              ),
+            }
+          : row,
+      ),
+    );
+  }
+
+  function addWindow(index: number) {
+    setRows((current) =>
+      current.map((row, i) =>
+        i === index
+          ? { ...row, offpeakWindows: [...row.offpeakWindows, { id: nextDraftID(), start: "", end: "" }] }
+          : row,
+      ),
+    );
+  }
+
+  function removeWindow(index: number, windowID: string) {
+    setRows((current) =>
+      current.map((row, i) =>
+        i === index ? { ...row, offpeakWindows: row.offpeakWindows.filter((window) => window.id !== windowID) } : row,
+      ),
+    );
+  }
+
   function addRow() {
     setRows((current) => [
       ...current,
@@ -92,8 +134,7 @@ export function LLMPriceTab() {
         output: "0",
         cacheRead: "0",
         cacheWrite: "0",
-        offpeakStart: "",
-        offpeakEnd: "",
+        offpeakWindows: [],
         offpeakTimezone: "Asia/Shanghai",
         offpeakInput: "0",
         offpeakOutput: "0",
@@ -121,13 +162,29 @@ export function LLMPriceTab() {
         return;
       }
       seen.add(model);
-      if (Boolean(row.offpeakStart) !== Boolean(row.offpeakEnd)) {
-        toast.error(`模型 ${model} 的谷时开始/结束必须同时填写或同时留空`);
+      const windows = row.offpeakWindows
+        .map((window) => ({ start: window.start.trim(), end: window.end.trim() }))
+        .filter((window) => window.start || window.end);
+      if (windows.length > 8) {
+        toast.error(`模型 ${model} 最多配置 8 个谷时时段`);
         return;
       }
-      if (row.offpeakStart && row.offpeakStart === row.offpeakEnd) {
-        toast.error(`模型 ${model} 的谷时开始和结束不能相同`);
-        return;
+      const seenWindows = new Set<string>();
+      for (const window of windows) {
+        if (!window.start || !window.end) {
+          toast.error(`模型 ${model} 的每个谷时时段都必须同时填写开始和结束`);
+          return;
+        }
+        if (window.start === window.end) {
+          toast.error(`模型 ${model} 的谷时开始和结束不能相同`);
+          return;
+        }
+        const key = `${window.start}-${window.end}`;
+        if (seenWindows.has(key)) {
+          toast.error(`模型 ${model} 的谷时时段 ${key} 重复`);
+          return;
+        }
+        seenWindows.add(key);
       }
       const values = [
         num(row.input),
@@ -149,8 +206,7 @@ export function LLMPriceTab() {
         output_per_million: values[1],
         cache_read_per_million: values[2],
         cache_write_per_million: values[3],
-        offpeak_start: row.offpeakStart,
-        offpeak_end: row.offpeakEnd,
+        offpeak_windows: windows,
         offpeak_timezone: row.offpeakTimezone.trim() || "Asia/Shanghai",
         offpeak_input_per_million: values[4],
         offpeak_output_per_million: values[5],
@@ -182,7 +238,8 @@ export function LLMPriceTab() {
       <CardHeader>
         <CardTitle>模型价格</CardTitle>
         <CardDescription>
-          每百万 token 的 USD 价格。精确匹配模型；`default` 是未登记模型的兜底。价格全为 0
+          每百万 token 的 USD 价格。上方四项是峰时价；谷时只需添加优惠时段并填写谷时单价，
+          未命中任何谷时时段的时间都按峰时价计费。`default` 是未登记模型的兜底，全为 0
           的模型按“未计价”展示，不会伪造成本。
         </CardDescription>
       </CardHeader>
@@ -191,10 +248,10 @@ export function LLMPriceTab() {
           <TableHeader>
             <TableRow>
               <TableHead>模型</TableHead>
-              <TableHead className="w-32 text-right">输入 / M</TableHead>
-              <TableHead className="w-32 text-right">输出 / M</TableHead>
-              <TableHead className="w-32 text-right">Cache 读 / M</TableHead>
-              <TableHead className="w-32 text-right">Cache 写 / M</TableHead>
+              <TableHead className="w-32 text-right">峰时输入 / M</TableHead>
+              <TableHead className="w-32 text-right">峰时输出 / M</TableHead>
+              <TableHead className="w-32 text-right">峰时 Cache 读 / M</TableHead>
+              <TableHead className="w-32 text-right">峰时 Cache 写 / M</TableHead>
               <TableHead className="w-12" />
             </TableRow>
           </TableHeader>
@@ -235,24 +292,48 @@ export function LLMPriceTab() {
                   </TableRow>
                   <TableRow className="hover:bg-transparent">
                     <TableCell colSpan={6} className="bg-muted/20 pt-0 pb-3">
-                      <div className="grid gap-2 rounded-md border border-dashed p-3 md:grid-cols-[auto_auto_minmax(9rem,1fr)_repeat(4,minmax(6rem,1fr))] md:items-end">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-muted-foreground text-xs">谷时开始</span>
-                          <Input
-                            type="time"
-                            value={row.offpeakStart}
-                            onChange={(e) => patch(index, "offpeakStart", e.target.value)}
-                            className="h-8 font-mono"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-muted-foreground text-xs">谷时结束</span>
-                          <Input
-                            type="time"
-                            value={row.offpeakEnd}
-                            onChange={(e) => patch(index, "offpeakEnd", e.target.value)}
-                            className="h-8 font-mono"
-                          />
+                      <div className="grid gap-3 rounded-md border border-dashed p-3 md:grid-cols-[minmax(18rem,1.5fr)_minmax(9rem,1fr)_repeat(4,minmax(6rem,1fr))] md:items-start">
+                        <div className="flex flex-col gap-2">
+                          <span className="text-muted-foreground text-xs">谷时时段（可添加多个）</span>
+                          {row.offpeakWindows.length === 0 ? (
+                            <span className="text-muted-foreground text-xs">未设置：全天按上方峰时价计费</span>
+                          ) : (
+                            row.offpeakWindows.map((window) => (
+                              <div key={window.id} className="flex items-end gap-1.5">
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-[10px] text-muted-foreground">开始</span>
+                                  <Input
+                                    type="time"
+                                    value={window.start}
+                                    onChange={(e) => patchWindow(index, window.id, "start", e.target.value)}
+                                    aria-label={`${row.model || "模型"} 谷时开始`}
+                                    className="h-8 w-28 font-mono"
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-[10px] text-muted-foreground">结束</span>
+                                  <Input
+                                    type="time"
+                                    value={window.end}
+                                    onChange={(e) => patchWindow(index, window.id, "end", e.target.value)}
+                                    aria-label={`${row.model || "模型"} 谷时结束`}
+                                    className="h-8 w-28 font-mono"
+                                  />
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={() => removeWindow(index, window.id)}
+                                  aria-label="删除谷时时段"
+                                >
+                                  <Trash2Icon />
+                                </Button>
+                              </div>
+                            ))
+                          )}
+                          <Button variant="outline" size="sm" className="w-fit" onClick={() => addWindow(index)}>
+                            <PlusIcon /> 添加谷时时段
+                          </Button>
                         </div>
                         <div className="flex flex-col gap-1">
                           <span className="text-muted-foreground text-xs">时区（默认北京时间）</span>
@@ -281,8 +362,9 @@ export function LLMPriceTab() {
                             />
                           </div>
                         ))}
-                        <p className="text-muted-foreground text-xs md:col-span-7">
-                          开始/结束留空 = 全天按上方峰时价。支持跨午夜（如 22:30–08:30）；窗口外按峰时价计费。
+                        <p className="text-muted-foreground text-xs md:col-span-6">
+                          可添加多个谷时时段（如 DeepSeek 两段优惠时间）；未命中任何谷时时段的时间按上方峰时价计费。
+                          支持跨午夜（如 22:30–08:30）。
                         </p>
                       </div>
                     </TableCell>

@@ -1843,14 +1843,18 @@ export interface UsageStats {
 }
 
 // ---- LLM 成本与价格 ----
+export interface LLMOffpeakWindow {
+  start: string;
+  end: string;
+}
+
 export interface LLMPrice {
   model: string;
   input_per_million: number;
   output_per_million: number;
   cache_read_per_million: number;
   cache_write_per_million: number;
-  offpeak_start?: string;
-  offpeak_end?: string;
+  offpeak_windows?: LLMOffpeakWindow[];
   offpeak_timezone?: string;
   offpeak_input_per_million: number;
   offpeak_output_per_million: number;
