@@ -26,6 +26,8 @@ export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["co
   const recent = costs?.daily.slice(-14) ?? [];
   const maxDay = Math.max(...recent.map((d) => d.cost_usd), 0.000001);
   const topModels = costs?.by_model.filter((m) => m.cost_usd > 0).slice(0, 4) ?? [];
+  const peakCost = costs?.total.peak_cost_usd ?? 0;
+  const offpeakCost = costs?.total.offpeak_cost_usd ?? 0;
 
   return (
     <Card className="p-4">
@@ -76,6 +78,11 @@ export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["co
           </div>
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
             <span>缓存节省 {usd(costs?.total.cache_savings_usd ?? 0)}</span>
+            {offpeakCost > 0 && (
+              <span>
+                近 30 天 峰时 {usd(peakCost)} · 谷时 <span className="text-emerald-500">{usd(offpeakCost)}</span>
+              </span>
+            )}
             {(costs?.total.unpriced_tokens ?? 0) > 0 && (
               <span className="text-amber-500">未计价 {fmtTokens(costs?.total.unpriced_tokens ?? 0)} token</span>
             )}

@@ -12,12 +12,20 @@ import (
 // LLMPrice is USD per million tokens for one model. model="default" is the
 // fallback for models without an exact row.
 type LLMPrice struct {
-	Model                string    `json:"model"`
-	InputPerMillion      float64   `json:"input_per_million"`
-	OutputPerMillion     float64   `json:"output_per_million"`
-	CacheReadPerMillion  float64   `json:"cache_read_per_million"`
-	CacheWritePerMillion float64   `json:"cache_write_per_million"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	Model                string  `json:"model"`
+	InputPerMillion      float64 `json:"input_per_million"`
+	OutputPerMillion     float64 `json:"output_per_million"`
+	CacheReadPerMillion  float64 `json:"cache_read_per_million"`
+	CacheWritePerMillion float64 `json:"cache_write_per_million"`
+	// 谷时窗口（HH:MM，空 = 不启用）。基础价格即峰时价；start > end 表示跨午夜。
+	OffpeakStart                string    `json:"offpeak_start,omitempty"`
+	OffpeakEnd                  string    `json:"offpeak_end,omitempty"`
+	OffpeakTimezone             string    `json:"offpeak_timezone,omitempty"`
+	OffpeakInputPerMillion      float64   `json:"offpeak_input_per_million"`
+	OffpeakOutputPerMillion     float64   `json:"offpeak_output_per_million"`
+	OffpeakCacheReadPerMillion  float64   `json:"offpeak_cache_read_per_million"`
+	OffpeakCacheWritePerMillion float64   `json:"offpeak_cache_write_per_million"`
+	UpdatedAt                   time.Time `json:"updated_at"`
 }
 
 type CostTotals struct {
@@ -27,6 +35,8 @@ type CostTotals struct {
 	CacheWriteTokens int64   `json:"cache_write_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
 	CacheSavingsUSD  float64 `json:"cache_savings_usd"`
+	PeakCostUSD      float64 `json:"peak_cost_usd"`
+	OffpeakCostUSD   float64 `json:"offpeak_cost_usd"`
 	UnpricedTokens   int64   `json:"unpriced_tokens"`
 }
 
@@ -44,6 +54,8 @@ type CostModel struct {
 	OutputTokens    int64   `json:"output_tokens"`
 	CacheReadTokens int64   `json:"cache_read_tokens"`
 	CostUSD         float64 `json:"cost_usd"`
+	PeakCostUSD     float64 `json:"peak_cost_usd"`
+	OffpeakCostUSD  float64 `json:"offpeak_cost_usd"`
 	UnpricedTokens  int64   `json:"unpriced_tokens"`
 	Priced          bool    `json:"priced"`
 }
@@ -74,7 +86,11 @@ const (
 )
 
 func (d *DB) ListLLMPrices() ([]*LLMPrice, error) {
-	rows, err := d.Query(`SELECT model,input_per_million,output_per_million,cache_read_per_million,cache_write_per_million,updated_at
+	rows, err := d.Query(`SELECT model,input_per_million,output_per_million,cache_read_per_million,cache_write_per_million,
+COALESCE(to_char(offpeak_start,'HH24:MI'),''), COALESCE(to_char(offpeak_end,'HH24:MI'),''),
+COALESCE(offpeak_timezone,'Asia/Shanghai'),
+offpeak_input_per_million,offpeak_output_per_million,offpeak_cache_read_per_million,offpeak_cache_write_per_million,
+updated_at
 FROM llm_prices ORDER BY (model='default') DESC, model`)
 	if err != nil {
 		return nil, err
@@ -83,12 +99,52 @@ FROM llm_prices ORDER BY (model='default') DESC, model`)
 	out := []*LLMPrice{}
 	for rows.Next() {
 		var p LLMPrice
-		if err := rows.Scan(&p.Model, &p.InputPerMillion, &p.OutputPerMillion, &p.CacheReadPerMillion, &p.CacheWritePerMillion, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Model, &p.InputPerMillion, &p.OutputPerMillion, &p.CacheReadPerMillion, &p.CacheWritePerMillion,
+			&p.OffpeakStart, &p.OffpeakEnd, &p.OffpeakTimezone,
+			&p.OffpeakInputPerMillion, &p.OffpeakOutputPerMillion, &p.OffpeakCacheReadPerMillion, &p.OffpeakCacheWritePerMillion,
+			&p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &p)
 	}
 	return out, rows.Err()
+}
+
+func normalizeLLMPrice(item LLMPrice) (LLMPrice, error) {
+	model := strings.TrimSpace(item.Model)
+	item.Model = model
+	item.OffpeakStart = strings.TrimSpace(item.OffpeakStart)
+	item.OffpeakEnd = strings.TrimSpace(item.OffpeakEnd)
+	item.OffpeakTimezone = strings.TrimSpace(item.OffpeakTimezone)
+	if item.OffpeakTimezone == "" {
+		item.OffpeakTimezone = "Asia/Shanghai"
+	}
+	if (item.OffpeakStart == "") != (item.OffpeakEnd == "") {
+		return item, fmt.Errorf("模型 %q 的谷时开始/结束必须同时填写或同时留空", model)
+	}
+	if item.OffpeakStart != "" {
+		start, err := time.Parse("15:04", item.OffpeakStart)
+		if err != nil || start.Format("15:04") != item.OffpeakStart {
+			return item, fmt.Errorf("模型 %q 的谷时开始时间必须是 HH:MM", model)
+		}
+		end, err := time.Parse("15:04", item.OffpeakEnd)
+		if err != nil || end.Format("15:04") != item.OffpeakEnd {
+			return item, fmt.Errorf("模型 %q 的谷时结束时间必须是 HH:MM", model)
+		}
+		if start.Equal(end) {
+			return item, fmt.Errorf("模型 %q 的谷时开始和结束不能相同", model)
+		}
+	}
+	if _, err := time.LoadLocation(item.OffpeakTimezone); err != nil {
+		return item, fmt.Errorf("模型 %q 的谷时时区无效：%v", model, err)
+	}
+	for _, v := range []float64{item.InputPerMillion, item.OutputPerMillion, item.CacheReadPerMillion, item.CacheWritePerMillion,
+		item.OffpeakInputPerMillion, item.OffpeakOutputPerMillion, item.OffpeakCacheReadPerMillion, item.OffpeakCacheWritePerMillion} {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1e7 {
+			return item, fmt.Errorf("模型 %q 的价格必须是 0–1e7 的非负数", model)
+		}
+	}
+	return item, nil
 }
 
 // ReplaceLLMPrices replaces the whole table atomically. The table is tiny
@@ -115,13 +171,17 @@ func (d *DB) ReplaceLLMPrices(items []LLMPrice) error {
 			return fmt.Errorf("模型 %q 重复", model)
 		}
 		seen[model] = true
-		for _, v := range []float64{item.InputPerMillion, item.OutputPerMillion, item.CacheReadPerMillion, item.CacheWritePerMillion} {
-			if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1e7 {
-				return fmt.Errorf("模型 %q 的价格必须是 0–1e7 的非负数", model)
-			}
+		normalized, err := normalizeLLMPrice(item)
+		if err != nil {
+			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO llm_prices(model,input_per_million,output_per_million,cache_read_per_million,cache_write_per_million)
-VALUES($1,$2,$3,$4,$5)`, model, item.InputPerMillion, item.OutputPerMillion, item.CacheReadPerMillion, item.CacheWritePerMillion); err != nil {
+		if _, err := tx.Exec(`INSERT INTO llm_prices(model,input_per_million,output_per_million,cache_read_per_million,cache_write_per_million,
+offpeak_start,offpeak_end,offpeak_timezone,
+offpeak_input_per_million,offpeak_output_per_million,offpeak_cache_read_per_million,offpeak_cache_write_per_million)
+VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::time,NULLIF($7,'')::time,$8,$9,$10,$11,$12)`,
+			model, normalized.InputPerMillion, normalized.OutputPerMillion, normalized.CacheReadPerMillion, normalized.CacheWritePerMillion,
+			normalized.OffpeakStart, normalized.OffpeakEnd, normalized.OffpeakTimezone,
+			normalized.OffpeakInputPerMillion, normalized.OffpeakOutputPerMillion, normalized.OffpeakCacheReadPerMillion, normalized.OffpeakCacheWritePerMillion); err != nil {
 			return err
 		}
 	}
@@ -132,6 +192,7 @@ type costUsageRow struct {
 	Date       string
 	Model      string
 	Profile    string
+	Period     string // peak | offpeak
 	Input      int64
 	Output     int64
 	CacheRead  int64
@@ -146,14 +207,28 @@ func (d *DB) costRows(days int) ([]costUsageRow, error) {
 		days = 3660
 	}
 	rows, err := d.Query(`
-SELECT to_char(ts AT TIME ZONE 'UTC','YYYY-MM-DD'),
-       COALESCE(NULLIF(model,''), '(unknown)'),
-       COALESCE(profile_name,''),
-       COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
-FROM llm_usage
-WHERE ts >= now() - ($1 * interval '1 day')
-GROUP BY 1,2,3
+SELECT to_char(u.ts AT TIME ZONE 'UTC','YYYY-MM-DD'),
+       COALESCE(NULLIF(u.model,''), '(unknown)'),
+       COALESCE(u.profile_name,''),
+       CASE WHEN pr.offpeak_start IS NOT NULL AND pr.offpeak_end IS NOT NULL AND (
+         CASE WHEN pr.offpeak_start < pr.offpeak_end
+           THEN (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= pr.offpeak_start
+                AND (u.ts AT TIME ZONE pr.offpeak_timezone)::time < pr.offpeak_end
+           ELSE (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= pr.offpeak_start
+                OR (u.ts AT TIME ZONE pr.offpeak_timezone)::time < pr.offpeak_end
+         END
+       ) THEN 'offpeak' ELSE 'peak' END,
+       COALESCE(SUM(u.input_tokens),0), COALESCE(SUM(u.output_tokens),0),
+       COALESCE(SUM(u.cache_read),0), COALESCE(SUM(u.cache_write),0)
+FROM llm_usage u
+LEFT JOIN LATERAL (
+  SELECT p.* FROM llm_prices p
+  WHERE p.model = COALESCE(NULLIF(u.model,''), '(unknown)') OR p.model = 'default'
+  ORDER BY (p.model = 'default') ASC
+  LIMIT 1
+) pr ON true
+WHERE u.ts >= now() - ($1 * interval '1 day')
+GROUP BY 1,2,3,4
 ORDER BY 1`, days)
 	if err != nil {
 		return nil, err
@@ -162,7 +237,7 @@ ORDER BY 1`, days)
 	out := []costUsageRow{}
 	for rows.Next() {
 		var r costUsageRow
-		if err := rows.Scan(&r.Date, &r.Model, &r.Profile, &r.Input, &r.Output, &r.CacheRead, &r.CacheWrite); err != nil {
+		if err := rows.Scan(&r.Date, &r.Model, &r.Profile, &r.Period, &r.Input, &r.Output, &r.CacheRead, &r.CacheWrite); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -181,7 +256,7 @@ ORDER BY 1`, days)
 				continue
 			}
 			out = append(out, costUsageRow{
-				Date: cold.Date, Model: "(archived)", Profile: cold.ProfileName,
+				Date: cold.Date, Model: "(archived)", Profile: cold.ProfileName, Period: "peak",
 				Input: int64(cold.InputTokens), Output: int64(cold.OutputTokens), CacheRead: int64(cold.CacheReadTokens),
 			})
 		}
@@ -201,16 +276,26 @@ func (d *DB) llmPriceMap() (map[string]LLMPrice, error) {
 	return out, nil
 }
 
-func pricedFor(model string, prices map[string]LLMPrice) (LLMPrice, bool) {
-	if p, ok := prices[model]; ok {
-		return p, true
-	}
-	if p, ok := prices["default"]; ok {
-		if p.InputPerMillion > 0 || p.OutputPerMillion > 0 || p.CacheReadPerMillion > 0 || p.CacheWritePerMillion > 0 {
-			return p, true
+func pricedFor(model string, prices map[string]LLMPrice, period string) (LLMPrice, bool) {
+	p, exact := prices[model]
+	if !exact {
+		var ok bool
+		p, ok = prices["default"]
+		if !ok {
+			return LLMPrice{}, false
+		}
+		if p.InputPerMillion <= 0 && p.OutputPerMillion <= 0 && p.CacheReadPerMillion <= 0 && p.CacheWritePerMillion <= 0 &&
+			p.OffpeakInputPerMillion <= 0 && p.OffpeakOutputPerMillion <= 0 && p.OffpeakCacheReadPerMillion <= 0 && p.OffpeakCacheWritePerMillion <= 0 {
+			return LLMPrice{}, false
 		}
 	}
-	return LLMPrice{}, false
+	if period == "offpeak" && p.OffpeakStart != "" {
+		p.InputPerMillion = p.OffpeakInputPerMillion
+		p.OutputPerMillion = p.OffpeakOutputPerMillion
+		p.CacheReadPerMillion = p.OffpeakCacheReadPerMillion
+		p.CacheWritePerMillion = p.OffpeakCacheWritePerMillion
+	}
+	return p, true
 }
 
 func addCost(t *CostTotals, r costUsageRow, p LLMPrice, priced bool) {
@@ -226,10 +311,16 @@ func addCost(t *CostTotals, r costUsageRow, p LLMPrice, priced bool) {
 	if uncached < 0 {
 		uncached = 0
 	}
-	t.CostUSD += (float64(uncached)*p.InputPerMillion +
+	cost := (float64(uncached)*p.InputPerMillion +
 		float64(r.CacheRead)*p.CacheReadPerMillion +
 		float64(r.CacheWrite)*p.CacheWritePerMillion +
 		float64(r.Output)*p.OutputPerMillion) / 1e6
+	t.CostUSD += cost
+	if r.Period == "offpeak" {
+		t.OffpeakCostUSD += cost
+	} else {
+		t.PeakCostUSD += cost
+	}
 	if p.CacheReadPerMillion < p.InputPerMillion {
 		t.CacheSavingsUSD += float64(r.CacheRead) * (p.InputPerMillion - p.CacheReadPerMillion) / 1e6
 	}
@@ -262,7 +353,7 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 	profileMap := map[string]*CostProfile{}
 	var total, month CostTotals
 	for _, r := range rows {
-		p, priced := pricedFor(r.Model, prices)
+		p, priced := pricedFor(r.Model, prices, r.Period)
 		dayCost := CostTotals{}
 		addCost(&dayCost, r, p, priced)
 		if r.Date >= cutoff {
@@ -285,6 +376,8 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 			m.OutputTokens += r.Output
 			m.CacheReadTokens += r.CacheRead
 			m.CostUSD += dayCost.CostUSD
+			m.PeakCostUSD += dayCost.PeakCostUSD
+			m.OffpeakCostUSD += dayCost.OffpeakCostUSD
 			m.UnpricedTokens += dayCost.UnpricedTokens
 			pr := profileMap[r.Profile]
 			if pr == nil {

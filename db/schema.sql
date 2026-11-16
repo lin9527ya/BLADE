@@ -1415,8 +1415,24 @@ CREATE TABLE IF NOT EXISTS llm_prices (
     output_per_million     DOUBLE PRECISION NOT NULL DEFAULT 0,
     cache_read_per_million DOUBLE PRECISION NOT NULL DEFAULT 0,
     cache_write_per_million DOUBLE PRECISION NOT NULL DEFAULT 0,
+    -- 谷时窗口：空 start/end = 全天峰时价；start > end 表示跨午夜。
+    offpeak_start          TIME,
+    offpeak_end            TIME,
+    offpeak_timezone       TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    offpeak_input_per_million      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    offpeak_output_per_million     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    offpeak_cache_read_per_million DOUBLE PRECISION NOT NULL DEFAULT 0,
+    offpeak_cache_write_per_million DOUBLE PRECISION NOT NULL DEFAULT 0,
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 0.9.15 已存在的 llm_prices 没有谷时列，幂等补列。
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_start TIME;
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_end TIME;
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai';
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_input_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_output_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_cache_read_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE llm_prices ADD COLUMN IF NOT EXISTS offpeak_cache_write_per_million DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 -- API 令牌：给 Prometheus/自动化用的长期凭据；只存 SHA-256，明文只返回一次。
 CREATE TABLE IF NOT EXISTS api_tokens (

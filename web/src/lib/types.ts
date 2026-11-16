@@ -1849,6 +1849,13 @@ export interface LLMPrice {
   output_per_million: number;
   cache_read_per_million: number;
   cache_write_per_million: number;
+  offpeak_start?: string;
+  offpeak_end?: string;
+  offpeak_timezone?: string;
+  offpeak_input_per_million: number;
+  offpeak_output_per_million: number;
+  offpeak_cache_read_per_million: number;
+  offpeak_cache_write_per_million: number;
   updated_at?: string;
 }
 
@@ -1859,6 +1866,8 @@ export interface CostTotals {
   cache_write_tokens: number;
   cost_usd: number;
   cache_savings_usd: number;
+  peak_cost_usd: number;
+  offpeak_cost_usd: number;
   unpriced_tokens: number;
 }
 
@@ -1876,6 +1885,8 @@ export interface CostModel {
   output_tokens: number;
   cache_read_tokens: number;
   cost_usd: number;
+  peak_cost_usd: number;
+  offpeak_cost_usd: number;
   unpriced_tokens: number;
   priced: boolean;
 }
