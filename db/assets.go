@@ -167,11 +167,25 @@ func normalizeURL(raw string) string {
 		return raw
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
-	u.Host = strings.ToLower(u.Host)
 	// URL userinfo can carry credentials (https://user:pass@host/). Assets are
 	// shared across tasks and end up in reports/exports; never store credentials
 	// in a URL. Keep every other component (path/query may legitimately contain @).
 	u.User = nil
+	// A task description pasted into a URL field used to leave the whole
+	// sentence in the host ("https://www.example.com，本地代理…"). Keep only the
+	// valid hostname prefix; a URL without one is not an asset.
+	host := SanitizeHostname(u.Hostname())
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, ":") { // IPv6 literal
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(strings.Trim(host, "[]"), port)
+	} else {
+		u.Host = host
+	}
 	s := u.String()
 	if strings.HasSuffix(s, "/") && u.Path == "/" && u.RawQuery == "" {
 		s = strings.TrimSuffix(s, "/")
@@ -185,7 +199,7 @@ func parseURL(raw string) (domain string, port int, serviceName string) {
 	if err != nil {
 		return "", 0, ""
 	}
-	domain = strings.ToLower(u.Hostname())
+	domain = SanitizeHostname(u.Hostname())
 	port = defaultPort(strings.ToLower(u.Scheme), u.Port())
 	switch strings.ToLower(u.Scheme) {
 	case "https":
@@ -260,6 +274,9 @@ func (s *AssetStore) UpsertRootDomain(req UpsertRootDomainReq) (int64, error) {
 	domain := DomainKey(req.Domain)
 	if domain == "" {
 		return 0, fmt.Errorf("domain is required")
+	}
+	if net.ParseIP(domain) == nil && SanitizeHostname(domain) != domain {
+		return 0, fmt.Errorf("invalid domain %q：只填主机名/域名，不要带路径、说明文字或中文标点", req.Domain)
 	}
 	if s.tx == nil {
 		return s.withCompanyScopeMutation(func(scoped *AssetStore) (int64, error) {
@@ -458,6 +475,9 @@ func (s *AssetStore) UpsertSubdomain(req UpsertSubdomainReq) (id int64, err erro
 	domain := DomainKey(req.Domain)
 	if domain == "" {
 		return 0, fmt.Errorf("domain is required")
+	}
+	if net.ParseIP(domain) == nil && SanitizeHostname(domain) != domain {
+		return 0, fmt.Errorf("invalid domain %q：只填主机名/域名，不要带路径、说明文字或中文标点", req.Domain)
 	}
 	if s.tx == nil {
 		return s.withCompanyScopeMutation(func(scoped *AssetStore) (int64, error) {
@@ -698,6 +718,9 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 	}
 	normURL := normalizeURL(req.URL)
 	domain, port, serviceName := parseURL(normURL)
+	if domain == "" {
+		return 0, fmt.Errorf("invalid url %q：URL 中未解析出合法主机名", req.URL)
+	}
 	rootDomain, _ := RootDomain(domain)
 	if rootDomain == "" {
 		rootDomain = domain
@@ -982,6 +1005,9 @@ func (s *AssetStore) UpsertEndpoint(req UpsertEndpointReq) (int64, error) {
 	method := strings.ToUpper(req.Method)
 	normURL := normalizeURL(req.URL)
 	domain, port, _ := parseURL(normURL)
+	if domain == "" {
+		return 0, fmt.Errorf("invalid url %q：URL 中未解析出合法主机名", req.URL)
+	}
 	rootDomain, _ := RootDomain(domain)
 	if rootDomain == "" {
 		rootDomain = domain

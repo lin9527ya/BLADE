@@ -812,11 +812,16 @@ var (
 func parseTarget(text string) (scheme, host string, port int, ok bool) {
 	text = strings.TrimSpace(text)
 	if m := reURL.FindString(text); m != "" {
-		if u, err := url.Parse(m); err == nil && u.Hostname() != "" {
-			scheme = strings.ToLower(u.Scheme)
-			host = strings.ToLower(u.Hostname())
-			port = portOr(u.Port(), defaultPort(scheme))
-			return scheme, host, port, true
+		if u, err := url.Parse(m); err == nil {
+			// 任务描述常被整段粘贴进目标框，reURL 会把后面的中文说明一起吞进
+			// host（"https://www.example.com，本地代理…"）。只取合法主机名前缀，
+			// 取不到就落到下面的 IP/domain 分支，绝不让说明文字进资产表。
+			if h := db.SanitizeHostname(u.Hostname()); h != "" {
+				scheme = strings.ToLower(u.Scheme)
+				host = h
+				port = portOr(u.Port(), defaultPort(scheme))
+				return scheme, host, port, true
+			}
 		}
 	}
 	if m := reIPPort.FindStringSubmatch(text); m != nil {

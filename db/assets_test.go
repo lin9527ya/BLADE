@@ -1127,3 +1127,35 @@ func TestQueryDSLInScopeMembership(t *testing.T) {
 		t.Fatalf("taskID<=0 should fall back to global and include out-of-scope asset %d", outIDs[0])
 	}
 }
+
+// 任务描述曾被整段粘进目标框，seed 把中文说明一起写进 domain/url。
+// 写入层必须拒绝这种值，避免资产图再次出现“域名字段里是一句话”。
+func TestUpsertRejectsPastedInstructions(t *testing.T) {
+	_, as, _ := testSetup(t)
+	dirtyDomain := "www.calida.com，本地用了全局代理，严禁使用直连的方式暴露本机真实ip"
+	if _, err := as.UpsertRootDomain(UpsertRootDomainReq{Domain: dirtyDomain}); err == nil {
+		t.Fatal("UpsertRootDomain accepted a pasted instruction as domain")
+	}
+	if _, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: dirtyDomain}); err == nil {
+		t.Fatal("UpsertSubdomain accepted a pasted instruction as domain")
+	}
+	// URL 走清洗而不是拒绝：只保留合法主机名前缀。
+	svcID, err := as.UpsertHTTPService(UpsertHTTPServiceReq{URL: "https://" + dirtyDomain})
+	if err != nil || svcID == 0 {
+		t.Fatalf("clean-prefix URL rejected: id=%d err=%v", svcID, err)
+	}
+	var gotDomain, gotURL string
+	if err := as.db.QueryRow(`SELECT COALESCE(domain,''), COALESCE(url,'') FROM assets WHERE id=$1`, svcID).Scan(&gotDomain, &gotURL); err != nil {
+		t.Fatal(err)
+	}
+	if gotDomain != "www.calida.com" || gotURL != "https://www.calida.com" {
+		t.Fatalf("service stored dirty values: domain=%q url=%q", gotDomain, gotURL)
+	}
+	deleteAsset(as.db, svcID)
+	// 干净值仍应可用。
+	id, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: "www.calida.example"})
+	if err != nil || id == 0 {
+		t.Fatalf("clean subdomain rejected: id=%d err=%v", id, err)
+	}
+	deleteAsset(as.db, id)
+}

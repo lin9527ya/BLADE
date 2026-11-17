@@ -19,6 +19,58 @@ func DomainKey(fqdn string) string {
 
 func IPKey(ip string) string { return strings.TrimSpace(ip) }
 
+// SanitizeHostname extracts the leading syntactically valid hostname (or IP
+// literal) from a free-text value such as a task description pasted into a
+// target field. Everything from the first character that cannot appear in a
+// hostname is dropped, so "https://www.example.com，本地代理…" yields
+// "www.example.com" instead of storing the whole sentence as a domain. A
+// leading "*." wildcard is preserved for scope imports. Returns "" when no
+// usable hostname prefix exists.
+func SanitizeHostname(raw string) string {
+	s := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	if s == "" {
+		return ""
+	}
+	if ip := net.ParseIP(strings.Trim(s, "[]")); ip != nil {
+		return strings.Trim(s, "[]")
+	}
+	if strings.HasPrefix(s, "*.") {
+		if rest := sanitizeHostnameCore(s[2:]); rest != "" {
+			return "*." + rest
+		}
+		return ""
+	}
+	return sanitizeHostnameCore(s)
+}
+
+func sanitizeHostnameCore(s string) string {
+	cut := len(s)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' {
+			continue
+		}
+		cut = i
+		break
+	}
+	s = strings.TrimRight(s[:cut], ".-")
+	if s == "" {
+		return ""
+	}
+	if net.ParseIP(s) != nil {
+		return s
+	}
+	if len(s) > 253 || strings.Contains(s, "..") {
+		return ""
+	}
+	for _, label := range strings.Split(s, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return ""
+		}
+	}
+	return s
+}
+
 // RootDomain returns the registrable domain (eTLD+1) for a host and whether the
 // host itself IS that apex (§3.1). Edge cases (§3.1 边界处理): an IP literal or a
 // host publicsuffix can't classify (localhost / internal / non-ICANN TLD) is
