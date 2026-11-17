@@ -9,6 +9,7 @@ import { BuildingIcon, DownloadIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyLinkButton } from "@/components/copy-link-button";
+import { CostBudgetDialog } from "@/components/cost-budget-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,7 @@ function CompanyOverviewInner() {
   const [data, setData] = React.useState<CompanyOverview | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [budgetOpen, setBudgetOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (!id) {
@@ -136,6 +138,9 @@ function CompanyOverviewInner() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setBudgetOpen(true)}>
+            预算
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -503,6 +508,13 @@ function CompanyOverviewInner() {
           </Card>
         </TabsContent>
       </Tabs>
+      <CostBudgetDialog
+        open={budgetOpen}
+        onOpenChange={setBudgetOpen}
+        scopeType="company"
+        scopeID={data.company.id}
+        scopeName={data.company.name}
+      />
     </div>
   );
 }

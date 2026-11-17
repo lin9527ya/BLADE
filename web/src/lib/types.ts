@@ -372,6 +372,24 @@ export interface AssetDetail {
   sources?: AssetSource[];
 }
 
+export interface VerificationLedgerRow {
+  id: number;
+  task_id: string;
+  task_name?: string;
+  intent_id?: number;
+  worker?: string;
+  tool: string;
+  command: string;
+  description?: string;
+  status: string;
+  exit_code?: number;
+  partial_tail?: string;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  ended_at?: string;
+}
+
 export interface GlobalSearchHit {
   id: string;
   title: string;
@@ -1921,6 +1939,16 @@ export interface CostProfile {
 export interface CostScope extends CostTotals {
   id: number;
   name: string;
+  budget_usd: number;
+  budget_status: "unset" | "ok" | "warning" | "exceeded" | string;
+}
+
+export interface CostBudget {
+  scope_type: "company" | "campaign" | string;
+  scope_id: number;
+  budget_usd: number;
+  alert_pct: number;
+  updated_at: string;
 }
 
 export interface CostSummary {

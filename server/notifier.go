@@ -441,9 +441,13 @@ func (n *Notifier) itemFor(ctx context.Context, snap notify.Snapshot, baseURL st
 		ToStatus:   snap.ToStatus,
 	}
 	if baseURL != "" {
-		// 详情页路由见 web/src/app/(main)/function/findings/detail/page.tsx，
-		// 它从 query 参数 id 读取漏洞 id。
-		item.DetailURL = fmt.Sprintf("%s/function/findings/detail?id=%d", baseURL, snap.FindingID)
+		if snap.URL != "" {
+			item.DetailURL = baseURL + snap.URL
+		} else {
+			// 详情页路由见 web/src/app/(main)/function/findings/detail/page.tsx，
+			// 它从 query 参数 id 读取漏洞 id。
+			item.DetailURL = fmt.Sprintf("%s/function/findings/detail?id=%d", baseURL, snap.FindingID)
+		}
 	}
 	return item, nil
 }

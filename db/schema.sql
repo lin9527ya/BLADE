@@ -193,6 +193,18 @@ DROP TRIGGER IF EXISTS trg_asset_source ON assets;
 CREATE TRIGGER trg_asset_source AFTER INSERT OR UPDATE OF provider ON assets
     FOR EACH ROW EXECUTE FUNCTION record_asset_provider_source();
 
+-- 按公司/战役的 LLM 预算。scope 是 soft reference：公司/战役删除后预算行保留，
+-- 由读取方忽略；这样不会因为删除业务实体而连带删掉历史配置。
+CREATE TABLE IF NOT EXISTS cost_budgets (
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('company','campaign')),
+    scope_id   BIGINT NOT NULL,
+    budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+    alert_pct  INTEGER NOT NULL DEFAULT 80 CHECK (alert_pct BETWEEN 1 AND 100),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (scope_type, scope_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cost_budgets_scope ON cost_budgets(scope_type, scope_id);
+
 CREATE TABLE IF NOT EXISTS company_scope (
     id         BIGSERIAL PRIMARY KEY,
     company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

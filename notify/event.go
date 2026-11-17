@@ -20,6 +20,9 @@ type Snapshot struct {
 	// 仅 kind=finding_status_changed 时非空。
 	FromStatus string `json:"from_status,omitempty"`
 	ToStatus   string `json:"to_status,omitempty"`
+	// URL is a platform-relative detail link for non-finding events (approval,
+	// budget, schedule). Empty means the finding detail link is used.
+	URL string `json:"url,omitempty"`
 }
 
 // Item 是一条待推送的漏洞，供渠道渲染。

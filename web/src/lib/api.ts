@@ -45,6 +45,7 @@ import type {
   ConstraintCompileResult,
   Conversation,
   ConvTokenSummary,
+  CostBudget,
   CostSummary,
   CoverageAssetRefs,
   CoverageGraphData,
@@ -174,6 +175,7 @@ import type {
   TunnelItem,
   UpdateCheck,
   UsageStats,
+  VerificationLedgerRow,
   WorkerSlot,
   WorkspaceFile,
   WorkspaceListing,
@@ -590,6 +592,15 @@ export const api = {
   // 全局 llm_usage 聚合（仪表盘新版 token 视图）：按 profile 总量 + 按天分桶。
   usageStats: (days = 365) => get<UsageStats>(`/tokens/usage?days=${days}`),
   costs: (days = 30) => get<CostSummary>(`/costs?days=${days}`),
+  costBudgets: () => get<{ items: CostBudget[] }>("/cost-budgets").then((r) => arr(r.items)),
+  saveCostBudget: (body: {
+    scope_type: "company" | "campaign";
+    scope_id: number;
+    budget_usd: number;
+    alert_pct: number;
+  }) => put<CostBudget>("/cost-budgets", body),
+  deleteCostBudget: (scopeType: "company" | "campaign", scopeID: number) =>
+    del<{ ok: boolean }>(`/cost-budgets/${scopeType}/${scopeID}`),
   llmPrices: () => get<{ items: LLMPrice[] }>("/llm/prices").then((r) => arr(r.items)),
   saveLLMPrices: (items: LLMPrice[]) => put<{ items: LLMPrice[] }>("/llm/prices", { items }).then((r) => arr(r.items)),
   // ---- 目标管理（总览）----
@@ -1938,6 +1949,13 @@ export const api = {
     report_md?: string;
     note?: string;
   }) => post<DeliverableDetail>("/deliverables", input),
+  aggregateDeliverable: (body: {
+    scope_kind: "campaign" | "company";
+    scope_id: number;
+    name: string;
+    kind: string;
+    note?: string;
+  }) => post<DeliverableDetail>("/deliverables/aggregate", body),
   addDeliverableVersion: (id: number, report_md: string, note = "") =>
     post<DeliverableVersion>(`/deliverables/${id}/versions`, { report_md, note }),
   acceptDeliverable: (id: number, version_id: number, note = "") =>
@@ -2482,6 +2500,23 @@ export const api = {
   // ---- intercept pending (ask) ----
   interceptPending: () => get<{ pending: InterceptPending[] }>("/intercept/pending").then((r) => arr(r.pending)),
   interceptSLA: (seconds = 3600) => get<InterceptSLAStats>(`/intercept/pending/sla?seconds=${seconds}`),
+  verificationLedger: (params: {
+    task_id?: string;
+    tool?: string;
+    status?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (params.task_id?.trim()) p.set("task_id", params.task_id.trim());
+    if (params.tool?.trim()) p.set("tool", params.tool.trim());
+    if (params.status?.trim()) p.set("status", params.status.trim());
+    if (params.q?.trim()) p.set("q", params.q.trim());
+    p.set("limit", String(params.limit ?? 50));
+    p.set("offset", String(params.offset ?? 0));
+    return get<{ items: VerificationLedgerRow[]; total: number }>(`/verification-ledger?${p}`);
+  },
   /** 只要计数：徽章轮询不该把每一行的完整 tool_input 都拉回来。 */
   interceptPendingCount: () =>
     get<{ pending_count: number }>("/intercept/pending?count=1").then((r) => r.pending_count ?? 0),

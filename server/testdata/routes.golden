@@ -7,6 +7,7 @@ DELETE /api/campaigns/{id}/phases/{pid}	server.(*Server).deleteCampaignPhase-fm
 DELETE /api/companies/{id}	server.(*Server).deleteCompany-fm
 DELETE /api/conversations/{id}	server.(*Server).pgDeleteConversation-fm
 DELETE /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+DELETE /api/cost-budgets/{scope}/{id}	server.(*Server).deleteCostBudget-fm
 DELETE /api/cves/{id}	server.(*Server).deleteCVE-fm
 DELETE /api/cves/{id}/script	server.(*Server).clearCVEScript-fm
 DELETE /api/deliverables/{id}	server.(*Server).deleteDeliverable-fm
@@ -76,6 +77,7 @@ GET /api/conversations/{id}	server.(*Server).pgGetConversation-fm
 GET /api/conversations/{id}/messages	server.(*Server).pgConversationMessages-fm
 GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDetail-fm
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
+GET /api/cost-budgets	server.(*Server).listCostBudgets-fm
 GET /api/costs	server.(*Server).costSummary-fm
 GET /api/credential-attempts	server.(*Server).listCredentialAttempts-fm
 GET /api/credentials	server.(*Server).listCredentialsWorkbench-fm
@@ -241,6 +243,7 @@ GET /api/traffic/hosts	server.(*Server).getTrafficHosts-fm
 GET /api/tunnels	server.(*Server).listTunnels-fm
 GET /api/update/check	server.(*Server).updateCheck-fm
 GET /api/update/stream	server.(*Server).updateStream-fm
+GET /api/verification-ledger	server.(*Server).verificationLedger-fm
 GET /api/visibility/skill/{name}	server.(*Server).pgSkillVisibility-fm
 GET /api/visibility/{kind}/{id}	server.(*Server).pgResourceVisibility-fm
 GET /api/workspace/download	server.(*Server).wsDownload-fm
@@ -316,6 +319,7 @@ POST /api/cves/import/preview	server.(*Server).previewCVEImport-fm
 POST /api/cves/{id}/script	server.(*Server).uploadCVEScript-fm
 POST /api/debug/pprof/symbol	net/http/pprof.Symbol
 POST /api/deliverables	server.(*Server).createDeliverable-fm
+POST /api/deliverables/aggregate	server.(*Server).aggregateDeliverable-fm
 POST /api/deliverables/{id}/accept	server.(*Server).acceptDeliverable-fm
 POST /api/deliverables/{id}/versions	server.(*Server).addDeliverableVersion-fm
 POST /api/diagnostics/cache	server.(*Server).setCacheDiagnostics-fm
@@ -437,6 +441,7 @@ PUT /api/agents/{key}/wrapup	server.(*Server).pgSaveWrapup-fm
 PUT /api/agents/{key}/wrapup/task-timeout	server.(*Server).pgSaveTaskTimeoutWrapup-fm
 PUT /api/asset-intercept/rules/{id}	server.(*Server).assetInterceptUpdateRule-fm
 PUT /api/campaigns/{id}/tasks	server.(*Server).putCampaignTasks-fm
+PUT /api/cost-budgets	server.(*Server).saveCostBudget-fm
 PUT /api/cves/{id}	server.(*Server).updateCVE-fm
 PUT /api/exploration/findings/{id}/traffic/order	server.(*Server).editFindingTraffic-fm
 PUT /api/intercept/judge	server.(*Server).interceptSetJudgeConfig-fm

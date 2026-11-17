@@ -77,8 +77,10 @@ type CostProfile struct {
 // CostScope is one company/campaign attribution bucket. CostTotals is embedded
 // so JSON keeps the same token/cost fields as the global summary.
 type CostScope struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID           int64   `json:"id"`
+	Name         string  `json:"name"`
+	BudgetUSD    float64 `json:"budget_usd"`
+	BudgetStatus string  `json:"budget_status"` // unset | ok | warning | exceeded
 	CostTotals
 }
 
@@ -416,6 +418,14 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 	if err != nil {
 		return nil, err
 	}
+	budgets, err := d.ListCostBudgets()
+	if err != nil {
+		return nil, err
+	}
+	budgetMap := map[string]CostBudget{}
+	for _, b := range budgets {
+		budgetMap[b.ScopeType+":"+strconv.FormatInt(b.ScopeID, 10)] = *b
+	}
 	now := time.Now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	queryDays := days
@@ -513,6 +523,12 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 		out.ByCampaign = append(out.ByCampaign, *c)
 	}
 	sort.Slice(out.ByCampaign, func(i, j int) bool { return out.ByCampaign[i].CostUSD > out.ByCampaign[j].CostUSD })
+	for i := range out.ByCompany {
+		applyCostBudget(&out.ByCompany[i], budgetMap, "company")
+	}
+	for i := range out.ByCampaign {
+		applyCostBudget(&out.ByCampaign[i], budgetMap, "campaign")
+	}
 
 	if raw, ok, _ := d.GetSetting(settingLLMMonthlyBudget); ok {
 		out.BudgetUSD, _ = strconv.ParseFloat(strings.TrimSpace(raw), 64)
@@ -534,4 +550,23 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 		out.BudgetStatus = "ok"
 	}
 	return out, nil
+}
+
+func applyCostBudget(scope *CostScope, budgets map[string]CostBudget, scopeType string) {
+	b, ok := budgets[scopeType+":"+strconv.FormatInt(scope.ID, 10)]
+	if !ok {
+		scope.BudgetStatus = "unset"
+		return
+	}
+	scope.BudgetUSD = b.BudgetUSD
+	switch {
+	case b.BudgetUSD <= 0:
+		scope.BudgetStatus = "unset"
+	case scope.CostUSD >= b.BudgetUSD:
+		scope.BudgetStatus = "exceeded"
+	case scope.CostUSD*100 >= b.BudgetUSD*float64(b.AlertPct):
+		scope.BudgetStatus = "warning"
+	default:
+		scope.BudgetStatus = "ok"
+	}
 }

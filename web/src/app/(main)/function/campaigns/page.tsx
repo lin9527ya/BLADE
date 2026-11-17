@@ -5,6 +5,7 @@ import * as React from "react";
 import { DownloadIcon, FolderKanbanIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
+import { CostBudgetDialog } from "@/components/cost-budget-dialog";
 import { Field } from "@/components/page-sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,7 @@ export default function CampaignsPage() {
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [summary, setSummary] = React.useState<CampaignSummary | null>(null);
+  const [budgetOpen, setBudgetOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [phases, setPhases] = React.useState<CampaignPhase[]>([]);
   const [chains, setChains] = React.useState<CampaignAttackChains | null>(null);
@@ -390,10 +392,12 @@ export default function CampaignsPage() {
                   {summary.campaign.ends_at && (
                     <span className="text-muted-foreground text-xs">结束 {summary.campaign.ends_at.slice(0, 16)}</span>
                   )}
+                  <Button size="sm" variant="outline" className="ml-auto" onClick={() => setBudgetOpen(true)}>
+                    预算
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    className="ml-auto"
                     onClick={() =>
                       void api
                         .downloadScopeDeliverablesZIP({ campaign_id: summary.campaign.id })
@@ -663,6 +667,15 @@ export default function CampaignsPage() {
           )}
         </DialogContent>
       </Dialog>
+      {summary ? (
+        <CostBudgetDialog
+          open={budgetOpen}
+          onOpenChange={setBudgetOpen}
+          scopeType="campaign"
+          scopeID={summary.campaign.id}
+          scopeName={summary.campaign.name}
+        />
+      ) : null}
     </div>
   );
 }

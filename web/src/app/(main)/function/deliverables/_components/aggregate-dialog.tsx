@@ -20,43 +20,9 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { Campaign, CampaignTaskBrief, Company, CompanyOverviewTask } from "@/lib/types";
+import type { Campaign, Company } from "@/lib/types";
 
 const MAX_TASKS = 200;
-
-function buildMarkdown(input: {
-  name: string;
-  scopeKind: string;
-  scopeName: string;
-  tasks: { id: string; name: string; status: string; report: string; error?: string }[];
-}): string {
-  const now = new Date().toLocaleString("zh-CN", { hour12: false });
-  const lines = [
-    `# ${input.name}`,
-    "",
-    `- 生成时间：${now}`,
-    `- 范围：${input.scopeKind === "campaign" ? "战役" : "公司"} · ${input.scopeName}`,
-    `- 任务数：${input.tasks.length}`,
-    "",
-    "## 任务清单",
-    "",
-    "| 任务 | 状态 | 报告 |",
-    "| --- | --- | --- |",
-    ...input.tasks.map(
-      (t) =>
-        `| #${t.id} ${t.name.replace(/\|/g, "\\|")} | ${t.status} | ${t.error ? `失败：${t.error.replace(/\|/g, "\\|")}` : "已收录"} |`,
-    ),
-    "",
-    "## 分任务报告",
-    "",
-  ];
-  for (const task of input.tasks) {
-    lines.push(`### 任务 #${task.id} · ${task.name}`, "");
-    if (task.error) lines.push(`> 报告读取失败：${task.error}`, "");
-    else lines.push(task.report.trim() || "_（任务报告为空）_", "");
-  }
-  return lines.join("\n");
-}
 
 export function AggregateDeliverableDialog({
   open,
@@ -107,48 +73,18 @@ export function AggregateDeliverableDialog({
       return;
     }
     setBusy(true);
-    setProgress(0);
-    setProgressText("读取范围…");
+    setProgress(20);
+    setProgressText("服务端生成中…");
     try {
-      let tasks: { id: string; name: string; status: string }[] = [];
-      let scopeName = "";
-      if (scopeKind === "campaign") {
-        const summary = await api.campaign(id);
-        scopeName = summary.campaign.name;
-        tasks = summary.tasks.map((t: CampaignTaskBrief) => ({ id: String(t.id), name: t.name, status: t.status }));
-      } else {
-        const overview = await api.companyOverview(id);
-        scopeName = overview.company.name;
-        tasks = overview.tasks.map((t: CompanyOverviewTask) => ({
-          id: t.id,
-          name: t.name || t.description || `任务 #${t.id}`,
-          status: t.status,
-        }));
-      }
-      if (tasks.length === 0) throw new Error("所选范围没有任务");
-      if (tasks.length > MAX_TASKS) throw new Error(`一次最多聚合 ${MAX_TASKS} 个任务，当前 ${tasks.length} 个`);
-
-      const collected: { id: string; name: string; status: string; report: string; error?: string }[] = [];
-      for (let i = 0; i < tasks.length; i++) {
-        const task = tasks[i];
-        setProgressText(`读取任务 #${task.id} 报告（${i + 1}/${tasks.length}）…`);
-        try {
-          collected.push({ ...task, report: await api.report(task.id) });
-        } catch (e) {
-          collected.push({ ...task, report: "", error: (e as Error).message });
-        }
-        setProgress(Math.round(((i + 1) / tasks.length) * 100));
-      }
-      setProgressText("创建交付物…");
-      await api.createDeliverable({
+      await api.aggregateDeliverable({
+        scope_kind: scopeKind,
+        scope_id: id,
         name: name.trim(),
         kind,
-        campaign_id: scopeKind === "campaign" ? id : undefined,
-        company_id: scopeKind === "company" ? id : undefined,
-        report_md: buildMarkdown({ name: name.trim(), scopeKind, scopeName, tasks: collected }),
         note: note.trim(),
       });
-      toast.success(`已生成聚合交付物（${collected.length} 个任务）`);
+      setProgress(100);
+      toast.success("已生成聚合交付物");
       onOpenChange(false);
       onCreated();
     } catch (e) {
@@ -172,7 +108,8 @@ export function AggregateDeliverableDialog({
             <LayersIcon className="size-4" /> 从战役/公司生成交付物
           </DialogTitle>
           <DialogDescription>
-            逐个读取范围内任务报告，拼接成一份带任务清单的 Markdown，并保存为交付物第一版。单次最多 {MAX_TASKS} 个任务；任务较多时请保持页面打开直到完成。任务报告会带上复测结论与人工整改建议。
+            由服务端读取范围内任务报告并拼接为带任务清单的 Markdown，保存为交付物第一版。单次最多 {MAX_TASKS}{" "}
+            个任务；报告会带上复测结论与人工整改建议。
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>

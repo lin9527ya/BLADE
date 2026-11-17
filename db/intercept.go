@@ -1,11 +1,15 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
+
+	"github.com/lin9527ya/blade/notify"
 )
 
 // InterceptRule is one row of intercept_rules.
@@ -234,7 +238,22 @@ func (d *DB) CreateInterceptPending(ruleID, convID int64, taskID, agentName, too
 INSERT INTO intercept_pending(rule_id, conversation_id, task_id, agent_name, tool_name, tool_input, reason, decision_source, audit)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		ruleIDPtr, convIDPtr, taskIDPtr, agentName, toolName, raw, reason, interceptSource(ruleID, reason), firstAudit(audits)).Scan(&id)
-	return id, err
+	if err != nil {
+		return id, err
+	}
+	// External approval alerts: do not copy tool_input (commands may contain
+	// credentials); the platform link is where the full request lives.
+	summary := "有操作等待人工审批"
+	if taskID != "" {
+		summary += "（任务 #" + taskID + "）"
+	}
+	if _, nerr := d.AddNotificationEvent(context.Background(), notify.EventApprovalPending, 0, notify.Snapshot{
+		Kind: notify.EventApprovalPending, Name: "审批待处理：" + toolName, Severity: "high",
+		Summary: summary, URL: "/system/intercept/approvals",
+	}); nerr != nil {
+		log.Printf("[notify] 写入审批通知事件失败 pending=%d: %v", id, nerr)
+	}
+	return id, nil
 }
 
 // DecideInterceptPending updates a pending record's status (allowed/denied/timeout).

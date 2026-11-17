@@ -22,6 +22,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/deliverables", s.listDeliverables)
 	mux.HandleFunc("GET /api/deliverables/export.zip", s.exportScopeDeliverables)
 	mux.HandleFunc("POST /api/deliverables", s.createDeliverable)
+	mux.HandleFunc("POST /api/deliverables/aggregate", s.aggregateDeliverable)
 	mux.HandleFunc("GET /api/deliverables/{id}", s.getDeliverable)
 	mux.HandleFunc("DELETE /api/deliverables/{id}", s.deleteDeliverable)
 	mux.HandleFunc("POST /api/deliverables/{id}/versions", s.addDeliverableVersion)
@@ -85,6 +86,9 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/tokens/conversations", s.conversationTokens)
 	mux.HandleFunc("GET /api/tokens/usage", s.pgUsageStats) // 全局 llm_usage 聚合（仪表盘新版视图）
 	mux.HandleFunc("GET /api/costs", s.costSummary)
+	mux.HandleFunc("GET /api/cost-budgets", s.listCostBudgets)
+	mux.HandleFunc("PUT /api/cost-budgets", s.saveCostBudget)
+	mux.HandleFunc("DELETE /api/cost-budgets/{scope}/{id}", s.deleteCostBudget)
 	mux.HandleFunc("GET /api/llm/prices", s.listLLMPrices)
 	mux.HandleFunc("PUT /api/llm/prices", s.saveLLMPrices)
 

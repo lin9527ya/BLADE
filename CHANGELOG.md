@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 批次 B：通知、验证台账、聚合与分域预算
+
+- 审批待处理写入外部通知事件（finding_id=0，快照带平台内链接）；外部渠道可收到
+  「审批待处理：工具名」，消息不复制 tool_input，避免命令/凭据外泄。
+- 新增「验证台账」页面与 `GET /api/verification-ledger`：只读汇总 tool_executions，
+  支持任务/工具/状态/关键词筛选，作为 PoC 与利用验证的既有事实视图。
+- 交付聚合改由服务端生成：`POST /api/deliverables/aggregate` 复用任务报告构建器，
+  逐任务生成报告并写入交付物，最多 200 个任务；前端不再逐任务请求。
+- 新增公司/战役 LLM 预算：`cost_budgets` 表、`GET/PUT/DELETE /api/cost-budgets`，
+  公司详情与战役详情可设置预算与告警阈值；成本卡显示分域预算状态。
+
 ### 批次 A：交付、审计与审批运营
 
 - 审计事件纳入存储保留清理：新增 `storage_retention_audit_events_days`，默认 0 = 不清理。

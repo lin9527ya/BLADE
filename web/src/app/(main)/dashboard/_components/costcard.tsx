@@ -15,6 +15,13 @@ function usd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function budgetText(status?: string, budget?: number): string {
+  if (!budget || !status || status === "unset") return "";
+  if (status === "exceeded") return "超预算";
+  if (status === "warning") return "接近预算";
+  return "预算内";
+}
+
 export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["costCard"] }) {
   const { costs } = s;
   const todayKey = new Date().toISOString().slice(0, 10);
@@ -109,6 +116,16 @@ export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["co
                 <div key={c.id} className="flex items-center justify-between gap-2 text-[10px]">
                   <span className="min-w-0 truncate" title={c.name}>
                     {c.name || `#${c.id}`}
+                    {budgetText(c.budget_status, c.budget_usd) ? (
+                      <span
+                        className={cn(
+                          "ml-1",
+                          c.budget_status === "exceeded" ? "text-red-400" : "text-muted-foreground",
+                        )}
+                      >
+                        {budgetText(c.budget_status, c.budget_usd)}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="shrink-0 font-semibold tabular-nums">{usd(c.cost_usd)}</span>
                 </div>
@@ -122,6 +139,16 @@ export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["co
                 <div key={c.id} className="flex items-center justify-between gap-2 text-[10px]">
                   <span className="min-w-0 truncate" title={c.name}>
                     {c.name || `#${c.id}`}
+                    {budgetText(c.budget_status, c.budget_usd) ? (
+                      <span
+                        className={cn(
+                          "ml-1",
+                          c.budget_status === "exceeded" ? "text-red-400" : "text-muted-foreground",
+                        )}
+                      >
+                        {budgetText(c.budget_status, c.budget_usd)}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="shrink-0 font-semibold tabular-nums">{usd(c.cost_usd)}</span>
                 </div>
