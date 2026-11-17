@@ -14,7 +14,7 @@ func TestAPITokenLifecycleAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	// revoke keeps the audit row; purge removes it (checked at the end).
-	defer d.PurgeAPIToken(token.ID) //nolint:errcheck
+	defer d.PurgeAPIToken(token.ID)  //nolint:errcheck
 	defer d.RevokeAPIToken(token.ID) //nolint:errcheck
 	if plain == "" || token.ID == 0 {
 		t.Fatalf("created token = %+v plain=%q", token, plain)
