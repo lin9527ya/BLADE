@@ -83,7 +83,16 @@ export const sidebarItems: NavGroup[] = [
       { id: "campaigns", title: "战役", url: "/function/campaigns", icon: FolderKanban },
       { id: "deliverables", title: "交付物", url: "/function/deliverables", icon: FileCheck2 },
       { id: "findings", title: "发现", url: "/function/findings", icon: Bug },
-      { id: "loot", title: "战果", url: "/function/loot", icon: Trophy },
+      {
+        id: "loot",
+        title: "战果与执行面",
+        icon: Trophy,
+        subItems: [
+          { id: "loot-ledger", title: "战果台账", url: "/function/loot", icon: Trophy },
+          { id: "credentials", title: "凭据工作台", url: "/function/credentials", icon: KeyRound },
+          { id: "footholds", title: "据点与隧道", url: "/function/footholds", icon: Terminal },
+        ],
+      },
       { id: "playbooks", title: "打法库", url: "/function/playbooks", icon: BookOpen },
       { id: "cves", title: "CVE库", url: "/function/cve", icon: ShieldAlert },
       { id: "traffic", title: "流量", url: "/function/traffic", icon: Activity },

@@ -73,6 +73,8 @@ GET /api/conversations/{id}/messages/{seq}	server.(*Server).pgConversationMsgDet
 GET /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/costs	server.(*Server).costSummary-fm
 GET /api/credential-attempts	server.(*Server).listCredentialAttempts-fm
+GET /api/credentials	server.(*Server).listCredentialsWorkbench-fm
+GET /api/credentials/{id}/checks	server.(*Server).listCredentialChecks-fm
 GET /api/cves	server.(*Server).listCVEs-fm
 GET /api/cves/export	server.(*Server).exportCVEs-fm
 GET /api/cves/{id}	server.(*Server).getCVE-fm
@@ -128,6 +130,7 @@ GET /api/exploration/tokens	server.(*Server).tokenStats-fm
 GET /api/findings/{id}/src-report	server.(*Server).getFindingSrcReport-fm
 GET /api/findings/{id}/src-report.docx	server.(*Server).getFindingSrcReportDocx-fm
 GET /api/findings/{id}/src-report/check	server.(*Server).getFindingSrcReportCheck-fm
+GET /api/footholds	server.(*Server).listFootholdsWorkbench-fm
 GET /api/health	server.(*Server).health-fm
 GET /api/inbox	server.(*Server).inboxList-fm
 GET /api/intercept/history	server.(*Server).interceptHistory-fm
@@ -227,6 +230,7 @@ GET /api/traffic/blob	server.(*Server).getTrafficBlob-fm
 GET /api/traffic/exchange	server.(*Server).getTrafficExchange-fm
 GET /api/traffic/export	server.(*Server).trafficExport-fm
 GET /api/traffic/hosts	server.(*Server).getTrafficHosts-fm
+GET /api/tunnels	server.(*Server).listTunnels-fm
 GET /api/update/check	server.(*Server).updateCheck-fm
 GET /api/update/stream	server.(*Server).updateStream-fm
 GET /api/visibility/skill/{name}	server.(*Server).pgSkillVisibility-fm
@@ -288,7 +292,10 @@ POST /api/conversations/delete/batch	server.(*Server).pgDeleteConversationsBatch
 POST /api/conversations/{id}/messages	server.(*Server).pgSendConversationMessage-fm
 POST /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/conversations/{id}/stop	server.(*Server).pgStopConversation-fm
+POST /api/credentials/{id}/checks	server.(*Server).recordCredentialCheck-fm
+POST /api/credentials/{id}/lost	server.(*Server).markCredentialLost-fm
 POST /api/credentials/{id}/reveal	server.(*Server).revealCredential-fm
+POST /api/credentials/{id}/verify-intent	server.(*Server).credentialVerifyIntent-fm
 POST /api/cves	server.(*Server).createCVE-fm
 POST /api/cves/delete/batch	server.(*Server).deleteCVEsBatch-fm
 POST /api/cves/import	server.(*Server).importCVEs-fm
@@ -299,6 +306,7 @@ POST /api/deliverables	server.(*Server).createDeliverable-fm
 POST /api/deliverables/{id}/accept	server.(*Server).acceptDeliverable-fm
 POST /api/deliverables/{id}/versions	server.(*Server).addDeliverableVersion-fm
 POST /api/diagnostics/cache	server.(*Server).setCacheDiagnostics-fm
+POST /api/executions/{eid}/cancel	server.(*Server).cancelExecution-fm
 POST /api/exploration/finding-case-blocks	server.(*Server).blockFindingCasePair-fm
 POST /api/exploration/finding-case-suggestions	server.(*Server).generateFindingCaseSuggestions-fm
 POST /api/exploration/finding-case-suggestions/{id}/accept	server.(*Server).acceptFindingCaseSuggestion-fm
@@ -311,6 +319,8 @@ POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-
 POST /api/exploration/findings/{id}/traffic	server.(*Server).bindFindingTraffic-fm
 POST /api/exploration/main-session/new	server.(*Server).newMainSession-fm
 POST /api/findings/{id}/promote-knowledge	server.(*Server).promoteFindingKnowledge-fm
+POST /api/footholds/{id}/check-intent	server.(*Server).footholdCheckIntent-fm
+POST /api/footholds/{id}/lost	server.(*Server).markFootholdLost-fm
 POST /api/inbox/read	server.(*Server).inboxMarkRead-fm
 POST /api/intel/search	server.(*Server).searchIntelAssets-fm
 POST /api/intercept/pending/batch-decide	server.(*Server).interceptBatchDecide-fm

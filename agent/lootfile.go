@@ -170,11 +170,19 @@ func (t *ToolSet) lootTransfer(ctx context.Context, in json.RawMessage, upload b
 		timeout = time.Duration(a.TimeoutMs) * time.Millisecond
 	}
 	desc := fmt.Sprintf("%s：%s %s → %s@%s", name, map[bool]string{true: "上传", false: "下载"}[upload], local, user, target.Host)
-	st, subErr := t.execService.Submit(ctx, t.taskIDStr(), t.ownerNode, t.worker, command, desc, timeout)
+	direction := "download"
+	if upload {
+		direction = "upload"
+	}
+	st, subErr := t.submitToolMeta(ctx, name, command, desc, timeout, map[string]any{
+		"loot_id": node.ID, "host": target.Host, "direction": direction,
+		"remote_path": remote, "local_path": local,
+	})
 	if subErr != nil {
 		cleanup()
 		return actool.Errorf(name + ": " + subErr.Error()), nil
 	}
+	t.noteLootUse(node.ID)
 	t.auditLootExec(name,
 		fmt.Sprintf("文件传输：%s %s@%s:%s", map[bool]string{true: "上传", false: "下载"}[upload], user, target.Host, remote),
 		fmt.Sprintf("凭据 #%d（%s），本地 %s，远端 %s", node.ID, v.Fingerprint(), local, remote))

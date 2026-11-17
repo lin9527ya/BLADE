@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/opsec"
 )
 
@@ -80,19 +81,34 @@ func (i *Interceptor) CheckCredentialBudget(_ context.Context, taskID int64, too
 		return Decision{}, false
 	}
 	budget := i.CredentialBudget()
-	cmd := shellCommandOf(toolName, input)
-	if cmd == "" {
-		return Decision{}, false
-	}
-	at, ok := opsec.CredentialAttempt(cmd)
-	if !ok {
-		return Decision{}, false // 认不出来就说认不出来，不猜（同 opsec.Annotate 的 Uncovered）
-	}
 
-	// **先记账，且无论拦不拦、也无论预算是否为 0。** 报告问的是"我们动过谁的账号"，
-	// 那个答案不该取决于当时有没有超预算，也不该因为有人把护栏关掉就整段消失
-	// ——不限的是"拦"，不是"记"。
-	recErr := i.db.RecordCredentialAttempt(taskID, at.Host, at.Account, at.Tool, clipRunes(cmd, 500), at.Spray)
+	var at opsec.Attempt
+	var recErr error
+	if use, structured := i.structuredCredentialAttempt(toolName, input); structured {
+		// 结构化执行（loot_exec 等）的命令由平台构造，shellCommandOf 看不到 nxc/ssh 参数；
+		// 直接按凭据 id 记账，命令字段只放不含明文的合成描述。
+		at = opsec.Attempt{Host: use.Host, Account: use.Username, Tool: toolName}
+		desc := fmt.Sprintf("%s: loot=%d host=%s service=%s", toolName, use.NodeID, use.Host, use.Service)
+		if use.CredentialID > 0 {
+			recErr = i.db.RecordStructuredCredentialAttempt(taskID, use.CredentialID, at.Host, at.Account, at.Tool, desc)
+		} else {
+			recErr = i.db.RecordCredentialAttempt(taskID, at.Host, at.Account, at.Tool, desc, false)
+		}
+	} else {
+		cmd := shellCommandOf(toolName, input)
+		if cmd == "" {
+			return Decision{}, false
+		}
+		var ok bool
+		at, ok = opsec.CredentialAttempt(cmd)
+		if !ok {
+			return Decision{}, false // 认不出来就说认不出来，不猜（同 opsec.Annotate 的 Uncovered）
+		}
+		// **先记账，且无论拦不拦、也无论预算是否为 0。** 报告问的是"我们动过谁的账号"，
+		// 那个答案不该取决于当时有没有超预算，也不该因为有人把护栏关掉就整段消失
+		// ——不限的是"拦"，不是"记"。
+		recErr = i.db.RecordCredentialAttempt(taskID, at.Host, at.Account, at.Tool, clipRunes(cmd, 500), at.Spray)
+	}
 	if budget <= 0 {
 		return Decision{}, false // 0 = 不限（靶场逃生舱）：只记不拦
 	}
@@ -126,6 +142,37 @@ func (i *Interceptor) CheckCredentialBudget(_ context.Context, taskID int64, too
 			"**平台计的是尝试次数，不是失败次数**——shell 层分不出成败，宁可多问一句。"+
 			"域策略常见锁定阈值 5–10，锁掉的是客户的业务账号。",
 		who, n, int(credentialAttemptWindow.Minutes()), budget)), true
+}
+
+// structuredCredentialAttempt 识别结构化执行工具（loot_exec/foothold_exec/tunnel_open/
+// loot_upload/loot_download）实际使用的凭据。只对口令/哈希计数：私钥与令牌不会触发
+// 目标侧账号锁定，计入预算只会制造噪音。读不到节点时按"认不出来"处理，不猜。
+func (i *Interceptor) structuredCredentialAttempt(toolName string, input json.RawMessage) (*db.CredentialUsage, bool) {
+	switch toolName {
+	case "loot_exec", "foothold_exec", "tunnel_open", "loot_upload", "loot_download":
+	default:
+		return nil, false
+	}
+	var in struct {
+		LootID     int64  `json:"loot_id"`
+		FootholdID int64  `json:"foothold_id"`
+		Host       string `json:"host"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, false
+	}
+	id := in.LootID
+	if id <= 0 {
+		id = in.FootholdID
+	}
+	if id <= 0 {
+		return nil, false
+	}
+	use, err := i.db.CredentialUsage(id, in.Host)
+	if err != nil || use == nil || !use.CountsAgainstBudget() {
+		return nil, false
+	}
+	return use, true
 }
 
 func (i *Interceptor) credentialDecision(action, msg string) Decision {

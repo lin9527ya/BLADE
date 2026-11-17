@@ -452,6 +452,16 @@ func (t *ToolSet) writeIntentID(id int64) (int64, error) {
 // SetExecService 注入长任务执行服务（P13）；nil 表示本运行环境不支持后台执行。
 func (t *ToolSet) SetExecService(svc ExecService) { t.execService = svc }
 
+// submitToolMeta 优先使用支持结构化元数据的执行服务；旧实现或测试 fake 自动降级为
+// Submit（丢掉 meta 与 tool 标签，行为不变）。meta 只用于据点/隧道面板索引，
+// 不影响执行本身。
+func (t *ToolSet) submitToolMeta(ctx context.Context, tool, command, desc string, timeout time.Duration, meta map[string]any) (ExecStatus, error) {
+	if ms, ok := t.execService.(MetaExecService); ok {
+		return ms.SubmitToolMeta(ctx, t.taskIDStr(), t.ownerNode, t.worker, tool, command, desc, timeout, meta)
+	}
+	return t.execService.Submit(ctx, t.taskIDStr(), t.ownerNode, t.worker, command, desc, timeout)
+}
+
 // BeginRound 把 ToolSet 上所有「轮级」状态重置为本轮初值。
 //
 // 为什么需要它：planner 正常路径每轮新建 ToolSet，这些字段天然是新的；但**热会话复用**
@@ -1596,7 +1606,8 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 		if rows := t.execService.ActiveForTask(t.taskIDStr()); len(rows) > 0 {
 			var tunnels []map[string]any
 			for _, r := range rows {
-				if !strings.HasPrefix(r.Description, tunnelDescPrefix) {
+				// 新执行带 tool=tunnel_open；旧台账只有描述前缀，保留兼容。
+				if r.Tool != "tunnel_open" && !strings.HasPrefix(r.Description, tunnelDescPrefix) {
 					continue
 				}
 				tunnels = append(tunnels, map[string]any{
@@ -3485,8 +3496,180 @@ func (t *ToolSet) verifyCredential() actool.CoreTool {
 			if err := t.ts.SetNodePayload(id, db.KindCredential, payload); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
+			if _, err := t.ts.RecordCredentialCheck(id, a.Host, a.Port, a.Service, "verified",
+				strings.TrimSpace(a.Evidence), a.Note, a.ObservedAt, a.ValidUntil, "agent", ""); err != nil {
+				return actool.Errorf("凭据已标记 verified，但验证流水写入失败：" + err.Error()), nil
+			}
 			return actool.Text(fmt.Sprintf("credential %d verified on %s（指纹 %s）",
 				id, merged[len(merged)-1].Label(), cur.Fingerprint())), nil
+		})
+}
+
+// recordCredentialCheck 记录一次凭据复核结果（verified/failed/locked/expired/unknown）。
+// 只写台账与节点 targets，不接触目标；实际尝试由 loot_exec/foothold_exec/Bash 完成。
+func (t *ToolSet) recordCredentialCheck() actool.CoreTool {
+	return t.writeExpTool("record_credential_check",
+		"记录一次【凭据在某条目标上的复核结果】：verified / failed / locked / expired / unknown。"+
+			"它只写台账与时间线，**不接触目标**；实际尝试用 loot_exec / foothold_exec / Bash。"+
+			"verified 必须给 evidence（实测命令 + 关键输出）；failed/locked/expired 不会抹掉历史已验证记录，"+
+			"只更新这条目标的状态，页面与链路据此判断凭据还能不能用。",
+		obj(map[string]any{
+			"credential_id": idp("凭据节点 id（report_credential 回执里的那个数）"),
+			"host":          str("目标主机（域名或 IP）"),
+			"port":          intp("端口（可省略）"),
+			"service":       str("什么服务：ssh / rdp / smb / winrm / mysql / http / 其他"),
+			"protocol":      str("怎么连（可省略）"),
+			"result":        str("verified | failed | locked | expired | unknown"),
+			"evidence":      str("实测命令 + 关键输出；result 不是 unknown 时必填"),
+			"note":          str("备注（可省略）"),
+			"observed_at":   str("实际观察时间 RFC3339，未知则省略"),
+			"valid_until":   str("结果适用到何时 RFC3339，可选"),
+		}, "credential_id", "host", "result"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				ObservedAt   string          `json:"observed_at"`
+				ValidUntil   string          `json:"valid_until"`
+				CredentialID json.RawMessage `json:"credential_id"`
+				Host         string          `json:"host"`
+				Port         int             `json:"port"`
+				Service      string          `json:"service"`
+				Protocol     string          `json:"protocol"`
+				Result       string          `json:"result"`
+				Evidence     string          `json:"evidence"`
+				Note         string          `json:"note"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id := pid(a.CredentialID)
+			if id <= 0 {
+				return actool.Errorf("credential_id 必填"), nil
+			}
+			result := strings.ToLower(strings.TrimSpace(a.Result))
+			if !db.ValidCredentialCheckResult(result) {
+				return actool.Errorf(fmt.Sprintf("result 必须是 %s 之一", strings.Join(db.CredentialCheckResults, " / "))), nil
+			}
+			a.Host = strings.TrimSpace(a.Host)
+			if a.Host == "" {
+				return actool.Errorf("host 必填"), nil
+			}
+			a.Evidence = strings.TrimSpace(a.Evidence)
+			if result != "unknown" && a.Evidence == "" {
+				return actool.Errorf(fmt.Sprintf("result=%s 时必须给 evidence（实测命令 + 关键输出）", result)), nil
+			}
+			if err := t.ts.ValidateEvidenceMetadata(&db.EvidenceMetadata{ObservedAt: a.ObservedAt, ValidUntil: a.ValidUntil}); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			node, err := t.ts.GetNode(id)
+			if err != nil || node == nil || node.Kind != db.KindCredential {
+				return actool.Errorf("credential_id 必须是本任务里的一条凭据节点"), nil
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(node.Payload, &payload); err != nil || payload == nil {
+				payload = map[string]any{}
+			}
+			cur := db.ParseCredential(node)
+			verified := result == "verified"
+			merged := db.MergeCredentialTarget(cur.Targets, db.CredentialTarget{
+				Host: a.Host, Port: a.Port, Service: a.Service, Protocol: a.Protocol,
+				ObservedAt: a.ObservedAt, ValidUntil: a.ValidUntil, ValidationStatus: result,
+				Verified: verified, Evidence: a.Evidence, Note: a.Note,
+			})
+			// MergeCredentialTarget 只在 verified 时更新状态；失败/锁定/过期要单独写回，
+			// 但不改动 Verified（历史成功记录保留）。
+			if !verified {
+				for i := range merged {
+					if strings.EqualFold(strings.TrimSpace(merged[i].Host), a.Host) &&
+						merged[i].Port == a.Port &&
+						strings.EqualFold(strings.TrimSpace(merged[i].Service), strings.TrimSpace(a.Service)) {
+						merged[i].ValidationStatus = result
+						if a.Note != "" {
+							merged[i].Note = a.Note
+						}
+					}
+				}
+			}
+			db.SortCredentialTargets(merged)
+			payload["targets"] = merged
+			if err := t.ts.SetNodePayload(id, db.KindCredential, payload); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if _, err := t.ts.RecordCredentialCheck(id, a.Host, a.Port, a.Service, result,
+				a.Evidence, a.Note, a.ObservedAt, a.ValidUntil, "agent", ""); err != nil {
+				return actool.Errorf("状态已更新，但验证流水写入失败：" + err.Error()), nil
+			}
+			t.auditLootExec("record_credential_check",
+				fmt.Sprintf("凭据 %d 在 %s 上复核：%s", id, a.Host, result),
+				fmt.Sprintf("服务 %s，证据：%s", a.Service, a.Evidence))
+			return actool.Text(fmt.Sprintf("credential %d 在 %s 上的复核结果：%s（指纹 %s）",
+				id, a.Host, result, cur.Fingerprint())), nil
+		})
+}
+
+// markLootLost 把一条据点/凭据标记为失效，并列出仍在跑的关联隧道（不自动取消）。
+func (t *ToolSet) markLootLost() actool.CoreTool {
+	return t.writeExpTool("mark_loot_lost",
+		"把一条【据点 / 凭据】标记为失效：连接断了、口令被改、账号被锁等。"+
+			"必须给 evidence（哪次尝试、什么报错）。它只改状态与时间线，**不接触目标**；"+
+			"已开启的隧道不会自动关闭——回执会列出仍在跑的 execution，由你决定是否 cancel。"+
+			"标记后 loot_exec/foothold_exec 会拒绝再用这条战果；确需复用先重新验证并 report。",
+		obj(map[string]any{
+			"loot_id":  idp("据点或凭据节点 id"),
+			"reason":   str("为什么失效：ssh 拒绝 / 口令已改 / 账号锁定 / webshell 404 …"),
+			"evidence": str("实测证据：命令 + 关键输出（必填）"),
+		}, "loot_id", "reason", "evidence"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				LootID   json.RawMessage `json:"loot_id"`
+				Reason   string          `json:"reason"`
+				Evidence string          `json:"evidence"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			id := pid(a.LootID)
+			if id <= 0 {
+				return actool.Errorf("loot_id 必填"), nil
+			}
+			reason := strings.TrimSpace(a.Reason)
+			evidence := strings.TrimSpace(a.Evidence)
+			if reason == "" || evidence == "" {
+				return actool.Errorf("reason 与 evidence 都必填：失效状态会进报告，不能只写一句「掉了」"), nil
+			}
+			node, err := t.ts.GetNode(id)
+			if err != nil || node == nil || (node.Kind != db.KindFoothold && node.Kind != db.KindCredential) {
+				return actool.Errorf("loot_id 必须是本任务里的一条据点或凭据节点"), nil
+			}
+			if node.State == db.StateLootLost {
+				return actool.Text(fmt.Sprintf("节点 %d 已经是 lost 状态（%s）；无需重复标记", id, reason)), nil
+			}
+			if err := t.ts.SetNodeState(id, db.StateLootLost); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			// 只提示关联隧道，不替操作者关闭：隧道可能正在被别的 worker 使用。
+			var tunnels []string
+			if t.execService != nil && t.taskID > 0 {
+				for _, r := range t.execService.ActiveForTask(t.taskIDStr()) {
+					if r.Tool != "tunnel_open" && !strings.HasPrefix(r.Description, tunnelDescPrefix) {
+						continue
+					}
+					var m struct {
+						FootholdID int64 `json:"foothold_id"`
+					}
+					_ = json.Unmarshal(r.Meta, &m)
+					if m.FootholdID == id || (m.FootholdID == 0 && r.Tool != "tunnel_open") {
+						tunnels = append(tunnels, fmt.Sprintf("#%d", r.ID))
+					}
+				}
+			}
+			t.auditLootExec("mark_loot_lost",
+				fmt.Sprintf("战果 %d（%s）标记失效：%s", id, node.Kind, reason),
+				evidence)
+			msg := fmt.Sprintf("节点 %d 已标记 lost（%s）", id, node.Kind)
+			if len(tunnels) > 0 {
+				msg += "；仍在跑的相关隧道：" + strings.Join(tunnels, ", ") + "（未自动关闭，必要时 cancel_execution）"
+			}
+			return actool.Text(msg), nil
 		})
 }
 

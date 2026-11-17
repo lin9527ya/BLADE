@@ -143,11 +143,14 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 				timeout = time.Duration(a.TimeoutMs) * time.Millisecond
 			}
 			desc := fmt.Sprintf("loot_exec：用凭据 %d（%s）在 %s 上执行", id, v.Fingerprint(), host)
-			st, err := t.execService.Submit(ctx, t.taskIDStr(), t.ownerNode, t.worker, command, desc, timeout)
+			st, err := t.submitToolMeta(ctx, "loot_exec", command, desc, timeout, map[string]any{
+				"loot_id": id, "host": host, "service": service, "account": user, "port": target.Port,
+			})
 			if err != nil {
 				cleanup() // 没起来就别留明文文件
 				return actool.Errorf("loot_exec: " + err.Error()), nil
 			}
+			t.noteLootUse(id)
 			// 留痕：谁在什么时候动用了哪条凭据（只记指纹，不记明文）。
 			t.auditLootExec("loot_exec", fmt.Sprintf("动用凭据 %s 在 %s 上执行命令", v.Fingerprint(), host),
 				fmt.Sprintf("凭据节点 #%d → %s@%s:%d\n命令：%s", id, user, host, portOf(service, target.Port), a.Command))

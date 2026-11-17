@@ -46,7 +46,10 @@ type ToolExecution struct {
 	ExecutionGeneration int64  `json:"execution_generation,omitempty"`
 	ExecutionOwner      string `json:"execution_owner,omitempty"`
 	// Limits 是资源限额快照（P24）：请求值 + 实际生效情况（本机不支持某项时如实标注）。
-	Limits      json.RawMessage `json:"limits,omitempty"`
+	Limits json.RawMessage `json:"limits,omitempty"`
+	// Meta 是结构化执行上下文（隧道/凭据使用/文件传输），供据点与隧道面板按 tool
+	// 查询；command 仍是执行事实，meta 只是索引。
+	Meta        json.RawMessage `json:"meta,omitempty"`
 	ID          int64           `json:"id"`
 	TaskID      string          `json:"task_id"`
 	IntentID    int64           `json:"intent_id,omitempty"`
@@ -68,14 +71,16 @@ type ToolExecution struct {
 
 const executionCols = `id, task_id, COALESCE(intent_id,0), worker, tool, command, COALESCE(description,''), status,
 	COALESCE(exit_code,-1), output_path, output_bytes, partial_tail, cancel_note, error,
-	started_at, ended_at, created_at, limits,logical_session_id,execution_generation,execution_owner`
+	started_at, ended_at, created_at, limits,logical_session_id,execution_generation,execution_owner,
+	COALESCE(meta,'{}'::jsonb)`
 
 func scanExecution(sc interface{ Scan(...any) error }) (*ToolExecution, error) {
 	var e ToolExecution
 	var exit int
 	if err := sc.Scan(&e.ID, &e.TaskID, &e.IntentID, &e.Worker, &e.Tool, &e.Command, &e.Description, &e.Status,
 		&exit, &e.OutputPath, &e.OutputBytes, &e.PartialTail, &e.CancelNote, &e.Error,
-		&e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.Limits, &e.LogicalSessionID, &e.ExecutionGeneration, &e.ExecutionOwner); err != nil {
+		&e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.Limits, &e.LogicalSessionID, &e.ExecutionGeneration, &e.ExecutionOwner,
+		&e.Meta); err != nil {
 		return nil, err
 	}
 	if exit >= 0 {
@@ -125,10 +130,14 @@ func insertExecution(ctx context.Context, q interface {
 	if e.IntentID > 0 {
 		intentID = e.IntentID
 	}
+	meta := e.Meta
+	if len(meta) == 0 {
+		meta = json.RawMessage(`{}`)
+	}
 	var id int64
-	err := q.QueryRowContext(ctx, `INSERT INTO tool_executions(task_id, intent_id, worker, tool, command, description, status, output_path,logical_session_id,execution_generation,execution_owner)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-		e.TaskID, intentID, e.Worker, e.Tool, e.Command, e.Description, ExecQueued, e.OutputPath, e.LogicalSessionID, e.ExecutionGeneration, e.ExecutionOwner).Scan(&id)
+	err := q.QueryRowContext(ctx, `INSERT INTO tool_executions(task_id, intent_id, worker, tool, command, description, status, output_path,logical_session_id,execution_generation,execution_owner,meta)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+		e.TaskID, intentID, e.Worker, e.Tool, e.Command, e.Description, ExecQueued, e.OutputPath, e.LogicalSessionID, e.ExecutionGeneration, e.ExecutionOwner, meta).Scan(&id)
 	return id, err
 }
 

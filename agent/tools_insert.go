@@ -752,7 +752,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.reportFootprint(), t.listFootprints(), t.markFootprintCleaned(), t.markFootprintNotFound(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
-		t.verifyCredential(),
+		t.verifyCredential(), t.recordCredentialCheck(), t.markLootLost(), t.recordCredentialCheck(), t.markLootLost(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(), t.assetNeighbors(),

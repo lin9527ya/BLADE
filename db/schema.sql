@@ -2117,3 +2117,58 @@ CREATE TABLE IF NOT EXISTS finding_case_blocks (
     PRIMARY KEY(left_id, right_id),
     CHECK(left_id < right_id)
 );
+
+-- =====================================================================
+-- 红队执行面（P0）：执行元数据 / 凭据尝试结果 / 凭据验证流水
+-- =====================================================================
+
+-- 结构化执行上下文：隧道、凭据使用、文件传输把自己的关键字段写进 meta，
+-- 供据点/隧道面板按 tool 与状态直接查询；command 仍是执行事实，meta 只是索引。
+ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS idx_tool_exec_tool_status
+    ON tool_executions(tool, status, created_at DESC);
+
+-- 凭据尝试台账扩展：把一次尝试关联到具体凭据与执行，并记录可核对的执行结果。
+-- outcome='success' 只表示命令退出码为 0，**不代表凭据已验证**；
+-- 是否可用以 credential_checks 的证据记录为准（verified 必须附证据）。
+ALTER TABLE credential_attempts ADD COLUMN IF NOT EXISTS credential_id BIGINT;
+ALTER TABLE credential_attempts ADD COLUMN IF NOT EXISTS intent_id BIGINT;
+ALTER TABLE credential_attempts ADD COLUMN IF NOT EXISTS execution_id BIGINT;
+ALTER TABLE credential_attempts ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE credential_attempts ADD COLUMN IF NOT EXISTS outcome_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE credential_attempts ADD COLUMN IF NOT EXISTS outcome_at TIMESTAMPTZ;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_cred_attempts_outcome') THEN
+    ALTER TABLE credential_attempts ADD CONSTRAINT ck_cred_attempts_outcome
+      CHECK (outcome IN ('unknown','pending','success','failure','locked'));
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_cred_attempts_exec
+    ON credential_attempts(execution_id) WHERE execution_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_cred_attempts_cred
+    ON credential_attempts(credential_id, at DESC) WHERE credential_id IS NOT NULL;
+
+-- 凭据验证 / 复核流水：多次事件，节点 payload 的 targets 只保留合并后的最新视图。
+CREATE TABLE IF NOT EXISTS credential_checks (
+    id            BIGSERIAL PRIMARY KEY,
+    node_id       BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    exploration_id BIGINT NOT NULL,
+    host          TEXT NOT NULL,
+    port          INT NOT NULL DEFAULT 0,
+    service       TEXT NOT NULL DEFAULT '',
+    result        TEXT NOT NULL
+                  CHECK (result IN ('verified','failed','locked','expired','unknown')),
+    evidence      TEXT NOT NULL DEFAULT '',
+    note          TEXT NOT NULL DEFAULT '',
+    observed_at   TIMESTAMPTZ,
+    valid_until   TIMESTAMPTZ,
+    origin        TEXT NOT NULL DEFAULT 'agent',
+    actor         TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cred_checks_node
+    ON credential_checks(node_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cred_checks_host
+    ON credential_checks(lower(host), service, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cred_checks_exploration
+    ON credential_checks(exploration_id, created_at DESC);

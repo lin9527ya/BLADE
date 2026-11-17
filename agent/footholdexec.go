@@ -185,11 +185,14 @@ func (t *ToolSet) footholdExec() actool.CoreTool {
 				return actool.Errorf(fmt.Sprintf("foothold_exec: 据点协议 %q 不可执行", v.Protocol)), nil
 			}
 
-			st, subErr := t.execService.Submit(ctx, t.taskIDStr(), t.ownerNode, t.worker, command, desc, timeout)
+			st, subErr := t.submitToolMeta(ctx, "foothold_exec", command, desc, timeout, map[string]any{
+				"foothold_id": id, "host": host, "protocol": v.Protocol,
+			})
 			if subErr != nil {
 				cleanup()
 				return actool.Errorf("foothold_exec: " + subErr.Error()), nil
 			}
+			t.noteLootUse(id)
 			t.auditLootExec("foothold_exec",
 				fmt.Sprintf("经据点 %d（%s）在 %s 上执行命令", id, v.Protocol, host),
 				fmt.Sprintf("据点 #%d（%s）→ %s\n命令：%s", id, v.Protocol, host, a.Command))

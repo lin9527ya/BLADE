@@ -105,11 +105,14 @@ func (t *ToolSet) tunnelOpen() actool.CoreTool {
 			}
 			command := buildTunnelCommand(kind, user, v.Host, v.Port, localPort, secretPath)
 			desc := fmt.Sprintf("%ssocks5h://127.0.0.1:%d ← 据点 #%d（%s@%s）", tunnelDescPrefix, localPort, id, user, v.Host)
-			st, subErr := t.execService.Submit(ctx, t.taskIDStr(), t.ownerNode, t.worker, command, desc, ttl)
+			st, subErr := t.submitToolMeta(ctx, "tunnel_open", command, desc, ttl, map[string]any{
+				"foothold_id": id, "host": v.Host, "local_port": localPort, "ttl_ms": ttl.Milliseconds(),
+			})
 			if subErr != nil {
 				_ = removeLootSecret(secretPath)
 				return actool.Errorf("tunnel_open: " + subErr.Error()), nil
 			}
+			t.noteLootUse(id)
 			t.auditLootExec("tunnel_open",
 				fmt.Sprintf("开隧道 socks5h://127.0.0.1:%d 经据点 %d", localPort, id),
 				fmt.Sprintf("据点 #%d → %s@%s:%d，execution=%d，TTL=%s", id, user, v.Host, portOf("ssh", v.Port), st.ID, ttl))

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -104,6 +105,17 @@ func (s *ExecutionService) Submit(ctx context.Context, taskID string, intentID i
 // execution UI/audit shows; callers that are not run_execution (cve_exploit) use it
 // so a script run is distinguishable from a generic shell command.
 func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intentID int64, worker, tool, command, desc string, timeout time.Duration) (agent.ExecStatus, error) {
+	return s.submitTool(ctx, taskID, intentID, worker, tool, command, desc, timeout, nil)
+}
+
+// SubmitToolMeta 与 SubmitTool 相同，但把结构化上下文写入 tool_executions.meta。
+// 隧道、凭据使用与文件传输用它登记 foothold_id/loot_id/host 等索引字段；
+// command 仍是执行事实，meta 不参与执行。
+func (s *ExecutionService) SubmitToolMeta(ctx context.Context, taskID string, intentID int64, worker, tool, command, desc string, timeout time.Duration, meta map[string]any) (agent.ExecStatus, error) {
+	return s.submitTool(ctx, taskID, intentID, worker, tool, command, desc, timeout, meta)
+}
+
+func (s *ExecutionService) submitTool(ctx context.Context, taskID string, intentID int64, worker, tool, command, desc string, timeout time.Duration, meta map[string]any) (agent.ExecStatus, error) {
 	tool = strings.TrimSpace(tool)
 	if tool == "" {
 		tool = "run_execution"
@@ -141,10 +153,18 @@ func (s *ExecutionService) SubmitTool(ctx context.Context, taskID string, intent
 		}
 		pg = s.pg.WithAuthority(db.WriteAuthority{TaskID: ri.TaskID, ExplorationID: ri.ExplorationID, IntentID: ri.IntentID, Generation: ri.ExecutionGeneration, Owner: ri.ExecutionOwner, LogicalSessionID: ri.LogicalSessionID})
 	}
+	var metaJSON json.RawMessage
+	if len(meta) > 0 {
+		b, merr := json.Marshal(meta)
+		if merr != nil {
+			return agent.ExecStatus{}, fmt.Errorf("执行元数据无法序列化: %w", merr)
+		}
+		metaJSON = b
+	}
 	id, err := pg.CreateExecutionWithinLimit(ctx, &db.ToolExecution{
 		LogicalSessionID: ri.LogicalSessionID, ExecutionGeneration: ri.ExecutionGeneration, ExecutionOwner: ri.ExecutionOwner,
 		TaskID: taskID, IntentID: intentID, Worker: worker, Tool: tool,
-		Command: command, Description: strings.TrimSpace(desc),
+		Command: command, Description: strings.TrimSpace(desc), Meta: metaJSON,
 	}, maxActive)
 	if err != nil {
 		return agent.ExecStatus{}, err

@@ -613,6 +613,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		if row == nil {
 			return
 		}
+		// 结构化执行结束后回填凭据尝试结果（只表示命令退出码，不代表已验证）。
+		if _, err := pg.SettleExecutionAttempt(row); err != nil {
+			log.Printf("[exec] %d 凭据尝试结果回填失败: %v", row.ID, err)
+		}
 		if t, ok := m.Task(row.TaskID); ok && t != nil {
 			if row.ExecutionGeneration > 0 {
 				n, err := t.Store.GetNode(row.IntentID)

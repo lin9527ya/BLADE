@@ -47,6 +47,10 @@ import type {
   CoverageAssetRefs,
   CoverageGraphData,
   CredentialAttempt,
+  CredentialCheckItem,
+  CredentialWorkbenchItem,
+  FootholdWorkbenchItem,
+  TunnelItem,
   CredentialReveal,
   CVE,
   CVEImportPreview,
@@ -895,6 +899,97 @@ export const api = {
       `/credential-attempts?${q.toString()}`,
     ).then((r) => ({ ...r, items: arr(r.items) }));
   },
+  // ---- P0 执行面：凭据工作台 / 据点 / 隧道 ----
+  credentialsWorkbench: (params: {
+    task?: string;
+    company?: number;
+    campaign?: number;
+    state?: string;
+    host?: string;
+    service?: string;
+    lifecycle?: string;
+    verified?: boolean;
+    q?: string;
+    page?: number;
+    size?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params.task) qs.set("task", params.task);
+    if (params.company) qs.set("company", String(params.company));
+    if (params.campaign) qs.set("campaign", String(params.campaign));
+    if (params.state) qs.set("state", params.state);
+    if (params.host) qs.set("host", params.host);
+    if (params.service) qs.set("service", params.service);
+    if (params.lifecycle) qs.set("lifecycle", params.lifecycle);
+    if (params.verified !== undefined) qs.set("verified", String(params.verified));
+    if (params.q) qs.set("q", params.q);
+    qs.set("page", String(params.page ?? 1));
+    qs.set("size", String(params.size ?? 50));
+    return get<{ items: CredentialWorkbenchItem[] | null; total: number; page: number; size: number }>(
+      `/credentials?${qs.toString()}`,
+    ).then((r) => ({ ...r, items: arr(r.items) }));
+  },
+  credentialChecks: (id: number, limit = 50) =>
+    get<{ items: CredentialCheckItem[] | null }>(`/credentials/${id}/checks?limit=${limit}`).then((r) => ({
+      ...r,
+      items: arr(r.items),
+    })),
+  recordCredentialCheck: (
+    id: number,
+    body: {
+      host: string;
+      port?: number;
+      service?: string;
+      protocol?: string;
+      result: "verified" | "failed" | "locked" | "expired" | "unknown";
+      evidence?: string;
+      note?: string;
+      observed_at?: string;
+      valid_until?: string;
+    },
+  ) => post<{ ok: boolean; check_id: number; lifecycle: string }>(`/credentials/${id}/checks`, body),
+  verifyCredentialIntent: (id: number, description?: string) =>
+    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
+      `/credentials/${id}/verify-intent`,
+      { description: description ?? "" },
+    ),
+  markCredentialLost: (id: number, body: { reason: string; evidence: string }) =>
+    post<{ ok: boolean }>(`/credentials/${id}/lost`, body),
+  footholdsWorkbench: (params: {
+    task?: string;
+    company?: number;
+    campaign?: number;
+    state?: string;
+    host?: string;
+    q?: string;
+    page?: number;
+    size?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params.task) qs.set("task", params.task);
+    if (params.company) qs.set("company", String(params.company));
+    if (params.campaign) qs.set("campaign", String(params.campaign));
+    if (params.state) qs.set("state", params.state);
+    if (params.host) qs.set("host", params.host);
+    if (params.q) qs.set("q", params.q);
+    qs.set("page", String(params.page ?? 1));
+    qs.set("size", String(params.size ?? 50));
+    return get<{ items: FootholdWorkbenchItem[] | null; total: number; page: number; size: number }>(
+      `/footholds?${qs.toString()}`,
+    ).then((r) => ({ ...r, items: arr(r.items) }));
+  },
+  footholdCheckIntent: (id: number, description?: string) =>
+    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
+      `/footholds/${id}/check-intent`,
+      { description: description ?? "" },
+    ),
+  markFootholdLost: (id: number, body: { reason: string; evidence: string }) =>
+    post<{ ok: boolean }>(`/footholds/${id}/lost`, body),
+  tunnels: (limit = 100) =>
+    get<{ items: TunnelItem[] | null }>(`/tunnels?limit=${limit}`).then((r) => ({ ...r, items: arr(r.items) })),
+  cancelExecution: (eid: number, reason: string) =>
+    post<{ ok: boolean }>(`/executions/${eid}/cancel`, { reason }),
+
   credentialAttemptsExport: async (
     params: { task?: string; host?: string; account?: string },
     format: "csv" | "json",

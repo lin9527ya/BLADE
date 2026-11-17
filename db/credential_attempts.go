@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -176,4 +178,70 @@ SELECT id, task_id, host, account, tool, command, spray, at
 		}
 	}
 	return rows.Err()
+}
+
+// RecordStructuredCredentialAttempt 记录一次结构化执行工具的凭据尝试（loot_exec 等）。
+// 命令由平台构造，明文不进入台账；这里只保存可核对的合成描述与凭据 id。
+func (d *DB) RecordStructuredCredentialAttempt(taskID, credentialID int64, host, account, tool, command string) error {
+	_, err := d.Exec(`
+INSERT INTO credential_attempts(task_id, host, account, tool, command, spray, credential_id)
+VALUES ($1,$2,$3,$4,$5,false,$6)`, taskID, host, account, tool, command, credentialID)
+	return err
+}
+
+// SettleExecutionAttempt 在结构化执行落终态时，把执行结果回填到最近一条未结算的
+// 凭据尝试。outcome='success' 只表示命令退出码为 0，**不代表凭据已验证**；
+// verified 仍以 credential_checks 的证据记录为准。
+func (d *DB) SettleExecutionAttempt(row *ToolExecution) (int64, error) {
+	if row == nil || row.ID <= 0 || !ExecutionTerminal(row.Status) {
+		return 0, nil
+	}
+	outcome, note := executionOutcome(row)
+	var lootID int64
+	if len(row.Meta) > 0 {
+		var m struct {
+			LootID     int64 `json:"loot_id"`
+			FootholdID int64 `json:"foothold_id"`
+		}
+		_ = json.Unmarshal(row.Meta, &m)
+		lootID = m.LootID
+		if lootID == 0 {
+			lootID = m.FootholdID
+		}
+	}
+	var credID int64
+	var host string
+	if lootID > 0 {
+		if use, err := d.CredentialUsage(lootID, ""); err == nil && use != nil {
+			credID = use.CredentialID
+			host = use.Host
+		}
+	}
+	taskID, _ := strconv.ParseInt(strings.TrimSpace(row.TaskID), 10, 64)
+	res, err := d.Exec(`UPDATE credential_attempts SET execution_id=$1, outcome=$2, outcome_note=$3, outcome_at=now()
+WHERE id=(SELECT id FROM credential_attempts
+          WHERE task_id=$4 AND execution_id IS NULL
+            AND ($5=0 OR credential_id=$5)
+            AND ($6='' OR host=$6)
+            AND at > now()-interval '10 minutes'
+          ORDER BY id DESC LIMIT 1)`, row.ID, outcome, note, taskID, credID, host)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func executionOutcome(row *ToolExecution) (string, string) {
+	switch row.Status {
+	case ExecCompleted:
+		if row.ExitCode != nil && *row.ExitCode == 0 {
+			return "success", ""
+		}
+		return "failure", ""
+	case ExecFailed:
+		return "failure", row.Error
+	case ExecCancelled, ExecHardTimeout, ExecOrphaned:
+		return "unknown", row.Status
+	}
+	return "unknown", ""
 }

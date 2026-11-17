@@ -13,6 +13,7 @@ import (
 
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/opsec"
+	"github.com/lin9527ya/blade/toolpolicy"
 )
 
 // 目标侧痕迹台账：自动归纳（命令历史 + opsec 知识库）+ Agent 补录 + 可选清理。
@@ -178,10 +179,7 @@ type footprintScanResult struct {
 
 // footprintCommandTools 是“真正执行了命令/命令串”的工具。opsec_notes 不在其中：
 // 它只是查询，不是执行，扫进来会把自己的输入当成目标痕迹。
-var footprintCommandTools = map[string]bool{
-	"Bash": true, "run_execution": true, "foothold_exec": true, "loot_exec": true,
-	"shell_open": true, "shell_send": true,
-}
+var footprintCommandTools = toolpolicy.FootprintTools()
 
 func commandFromDetail(detail string) string {
 	var m map[string]any

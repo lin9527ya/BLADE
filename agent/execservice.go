@@ -58,6 +58,14 @@ type ExecService interface {
 	ActiveForTask(taskID string) []*db.ToolExecution
 }
 
+// MetaExecService 是执行服务对“结构化元数据”的扩展能力（可选实现）。
+// 未实现时调用方降级为 ExecService.Submit，行为与旧宿主一致。
+type MetaExecService interface {
+	// SubmitToolMeta 与 Submit 相同，但显式指定台账 Tool 标签，并把结构化上下文
+	// （foothold_id/loot_id/host/local_port 等）写入 tool_executions.meta。
+	SubmitToolMeta(ctx context.Context, taskID string, intentID int64, worker, tool, command, desc string, timeout time.Duration, meta map[string]any) (ExecStatus, error)
+}
+
 // CVEScriptService 是 host 执行服务对 CVE 脚本的扩展能力（可选实现）。
 // 单独一个窄接口，避免给所有 fake/调用方增加负担；未实现时 cve_exploit 返回可读拒绝。
 type CVEScriptService interface {

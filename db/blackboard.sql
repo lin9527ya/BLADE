@@ -188,3 +188,88 @@ BEGIN
 EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN RETURN '["invalid_requires"]'::jsonb;
 END $$;
 CREATE OR REPLACE FUNCTION blackboard_intent_ready(p JSONB,exp BIGINT) RETURNS boolean LANGUAGE SQL STABLE AS $$ SELECT jsonb_array_length(blackboard_requirement_issues(p,exp))=0 $$;
+
+-- =====================================================================
+-- 凭据目标投影（P0）：payload.targets 的索引副本
+--
+-- 权威数据仍然是 exploration_nodes.payload->'targets'；这张表只解决
+-- "按 host/service/verified/过期时间检索凭据"无法给 JSONB 数组建索引的问题。
+-- 节点增删改由下面的触发器同步，启动时对历史节点做一次幂等回填。
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS credential_targets (
+    node_id          BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    exploration_id   BIGINT NOT NULL,
+    node_state       TEXT NOT NULL DEFAULT '',
+    ordinal          INT NOT NULL,
+    host             TEXT NOT NULL DEFAULT '',
+    port             INT NOT NULL DEFAULT 0,
+    service          TEXT NOT NULL DEFAULT '',
+    protocol         TEXT NOT NULL DEFAULT '',
+    verified         BOOLEAN NOT NULL DEFAULT false,
+    validation_status TEXT NOT NULL DEFAULT '',
+    observed_at      TIMESTAMPTZ,
+    valid_until      TIMESTAMPTZ,
+    PRIMARY KEY (node_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_cred_targets_host
+    ON credential_targets(lower(host));
+CREATE INDEX IF NOT EXISTS idx_cred_targets_service
+    ON credential_targets(service);
+CREATE INDEX IF NOT EXISTS idx_cred_targets_verified
+    ON credential_targets(verified) WHERE verified;
+CREATE INDEX IF NOT EXISTS idx_cred_targets_expiry
+    ON credential_targets(valid_until) WHERE valid_until IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_cred_targets_exp
+    ON credential_targets(exploration_id);
+
+CREATE OR REPLACE FUNCTION credential_targets_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE elem JSONB; ord INT := 0;
+BEGIN
+  IF NEW.kind <> 'credential' THEN RETURN NULL; END IF;
+  DELETE FROM credential_targets WHERE node_id = NEW.id;
+  IF jsonb_typeof(NEW.payload->'targets') <> 'array' THEN RETURN NULL; END IF;
+  FOR elem IN SELECT * FROM jsonb_array_elements(NEW.payload->'targets') LOOP
+    IF jsonb_typeof(elem) <> 'object' THEN CONTINUE; END IF;
+    ord := ord + 1;
+    INSERT INTO credential_targets(
+      node_id, exploration_id, node_state, ordinal, host, port, service, protocol,
+      verified, validation_status, observed_at, valid_until)
+    VALUES (
+      NEW.id, NEW.exploration_id, NEW.state, ord,
+      lower(COALESCE(elem->>'host','')),
+      CASE WHEN COALESCE(elem->>'port','') ~ '^[0-9]{1,5}$' THEN (elem->>'port')::int ELSE 0 END,
+      lower(COALESCE(elem->>'service','')),
+      lower(COALESCE(elem->>'protocol','')),
+      CASE WHEN lower(COALESCE(elem->>'verified','')) IN ('true','false') THEN (lower(elem->>'verified'))::boolean ELSE false END,
+      COALESCE(elem->>'validation_status',''),
+      blackboard_time(elem->>'observed_at'),
+      blackboard_time(elem->>'valid_until'));
+  END LOOP;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_credential_targets_sync ON exploration_nodes;
+CREATE TRIGGER trg_credential_targets_sync
+AFTER INSERT OR UPDATE OF payload, state, kind ON exploration_nodes
+FOR EACH ROW EXECUTE FUNCTION credential_targets_sync();
+
+-- 历史回填：只补还没有投影的节点，避免每次启动重写仍活跃的凭据。
+INSERT INTO credential_targets(
+  node_id, exploration_id, node_state, ordinal, host, port, service, protocol,
+  verified, validation_status, observed_at, valid_until)
+SELECT n.id, n.exploration_id, n.state, t.ord,
+       lower(COALESCE(t.elem->>'host','')),
+       CASE WHEN COALESCE(t.elem->>'port','') ~ '^[0-9]{1,5}$' THEN (t.elem->>'port')::int ELSE 0 END,
+       lower(COALESCE(t.elem->>'service','')),
+       lower(COALESCE(t.elem->>'protocol','')),
+       CASE WHEN lower(COALESCE(t.elem->>'verified','')) IN ('true','false') THEN (lower(t.elem->>'verified'))::boolean ELSE false END,
+       COALESCE(t.elem->>'validation_status',''),
+       blackboard_time(t.elem->>'observed_at'),
+       blackboard_time(t.elem->>'valid_until')
+FROM exploration_nodes n
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE WHEN jsonb_typeof(n.payload->'targets')='array' THEN n.payload->'targets' ELSE '[]'::jsonb END
+) WITH ORDINALITY AS t(elem, ord)
+WHERE n.kind='credential' AND jsonb_typeof(t.elem)='object'
+  AND NOT EXISTS (SELECT 1 FROM credential_targets ct WHERE ct.node_id=n.id)
+ON CONFLICT (node_id, ordinal) DO NOTHING;

@@ -38,6 +38,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/toolpolicy"
 )
 
 // SettingScopeMode / SettingScopeHours 是授权边界的两个设置键。导出是为了让设置接口
@@ -68,6 +69,12 @@ func (i *Interceptor) ScopeMode() string {
 // without a case here silently loses RoE coverage, so register new ones here (and
 // in defaultEnabledTools) alongside the tool itself.
 func shellCommandOf(toolName string, input []byte) string {
+	return toolpolicy.Surface(toolName, input)
+}
+
+// legacyShellCommandOf 是拆分到 toolpolicy 之前的实现，保留用于对照测试；
+// 生产路径已经统一走 toolpolicy.Surface。
+func legacyShellCommandOf(toolName string, input []byte) string {
 	switch toolName {
 	case "Bash", "shell_open", "run_execution":
 		var in struct {
@@ -141,21 +148,9 @@ func shellCommandOf(toolName string, input []byte) string {
 // builtinActionTools 是**会对外动手**的内置工具：停机开关与作业时间窗管的是动手，
 // 不是看图/记事实。新增动作类工具必须登记在这里，否则它只受规则/裁判约束，不受停机
 // 与时间窗约束。读类内置工具刻意不在表里。
-var builtinActionTools = map[string]bool{
-	"Bash": true, "shell_open": true, "shell_send": true, "run_execution": true,
-	"WebFetch":  true,
-	"loot_exec": true, "loot_upload": true, "loot_download": true,
-	"foothold_exec": true, "tunnel_open": true,
-	"cve_exploit": true,
-	"Write":       true, "Edit": true, "MultiEdit": true,
-	// MCP 配置类工具：它们能让平台**以服务端身份启动一个新进程**（stdio 传输的
-	// command/args 就是一条任意命令），或让平台向任意 URL 发请求。这比 Bash 更靠前——
-	// Bash 至少还过拦截规则与 RoE 门，而 create_mcp 只写一行配置，真正执行发生在
-	// 之后的连接阶段。登记为动作类，停机开关与作业时间窗才管得住它。
-	"create_mcp": true, "update_mcp": true,
-	// 自定义工具同样能落地一条命令/HTTP 模板，后续每次调用都会执行。
-	"create_custom_tool": true, "update_custom_tool": true,
-}
+// 由 toolpolicy 的 Action 类派生。新增动作类工具在登记表里标 Class: Action 即可，
+// 停机开关 / 作业时间窗 / RoE 目标提取会同时覆盖到它。
+var builtinActionTools = toolpolicy.ActionTools()
 
 // BuiltinActionTool 报告某个内置工具是否登记为动作类（受停机开关 / 作业时间窗约束）。
 // 导出给测试与审计使用：这条登记漏了不会报错，只会静默失去约束。

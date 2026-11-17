@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/toolpolicy"
 )
 
 // ctxKey is the unexported context key type to avoid collisions.
@@ -163,14 +164,9 @@ func (i *Interceptor) SetReviewer(r Reviewer) {
 // run_execution 是 shell 类工具（后台长任务，worker 段 [D] 把 nmap/nuclei 这类扫描
 // 导流到它）——漏登记意味着规则与裁判对它不生效。RoE 范围门不受本列表约束
 // （见 guard.applyIntercept 的排序），但这条仍必须在此，否则破坏性/外泄规则看不住它。
-var defaultEnabledTools = []string{
-	"Bash", "run_execution", "http_request", "session_login", "loot_exec", "loot_upload", "loot_download", "foothold_exec", "tunnel_open", "cve_exploit", "WebFetch", "web_search",
-	"shell_open", "shell_send",
-	"Write", "Edit", "MultiEdit",
-	// MCP / 自定义工具的配置写入：它们能把"一条任意命令"变成平台的常驻能力
-	// （stdio 传输会 spawn 子进程，自定义工具每次调用都会执行），必须走规则与裁判。
-	"create_mcp", "update_mcp", "create_custom_tool", "update_custom_tool",
-}
+// 由 toolpolicy.Registry 派生：新增执行类工具在登记表里标 InterceptDefault 即可，
+// 不再维护第二份字符串列表。
+var defaultEnabledTools = toolpolicy.DefaultEnabledTools()
 
 // New creates an Interceptor backed by d. The rule cache is lazy-loaded on
 // first use.

@@ -3243,3 +3243,93 @@ export interface FindingSrcCheck {
   steps: number;
   endpoints: number;
 }
+
+// ---- P0 执行面：凭据工作台 / 据点 / 隧道 ----
+export interface CredentialTargetView {
+  host: string;
+  port?: number;
+  service?: string;
+  protocol?: string;
+  verified?: boolean;
+  validation_status?: string;
+  observed_at?: string;
+  valid_until?: string;
+  evidence?: string;
+  note?: string;
+}
+
+export interface CredentialWorkbenchItem {
+  id: number;
+  task_id: number;
+  campaign_id?: number;
+  task_name: string;
+  summary?: string;
+  kind?: string;
+  username?: string;
+  fingerprint?: string;
+  state: string;
+  lifecycle: string;
+  targets?: CredentialTargetView[];
+  last_checked_at?: string;
+  last_result?: string;
+  use_count: number;
+  secret?: string;
+  created_at: string;
+}
+
+export interface CredentialCheckItem {
+  id: number;
+  node_id: number;
+  host: string;
+  port?: number;
+  service?: string;
+  result: string;
+  evidence?: string;
+  note?: string;
+  observed_at?: string;
+  valid_until?: string;
+  origin: string;
+  actor?: string;
+  created_at: string;
+}
+
+export interface FootholdTunnelView {
+  execution_id: number;
+  local_port?: number;
+  status: string;
+  started_at?: string;
+}
+
+export interface FootholdWorkbenchItem {
+  id: number;
+  task_id: number;
+  campaign_id?: number;
+  task_name: string;
+  summary?: string;
+  access?: string;
+  privilege?: string;
+  protocol?: string;
+  host?: string;
+  port?: number;
+  url?: string;
+  credential_id?: number;
+  credential_fingerprint?: string;
+  state: string;
+  last_used_at?: string;
+  tunnels?: FootholdTunnelView[];
+  created_at: string;
+}
+
+export interface TunnelItem {
+  execution_id: number;
+  task_id: number;
+  task_name?: string;
+  description?: string;
+  status: string;
+  local_port?: number;
+  foothold_id?: number;
+  started_at?: string;
+  created_at: string;
+  expires_at?: string;
+  listening: boolean;
+}
