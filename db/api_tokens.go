@@ -93,3 +93,14 @@ func (d *DB) RevokeAPIToken(id int64) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// PurgeAPIToken permanently removes a token row. Removing an active token also
+// invalidates it; revoke first when the credential may still be in use and the
+// audit trail matters.
+func (d *DB) PurgeAPIToken(id int64) (int64, error) {
+	res, err := d.Exec(`DELETE FROM api_tokens WHERE id=$1`, id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

@@ -2,10 +2,20 @@
 
 import * as React from "react";
 
-import { KeyRoundIcon, PlusIcon, ScrollTextIcon, Trash2Icon } from "lucide-react";
+import { BanIcon, KeyRoundIcon, PlusIcon, ScrollTextIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,6 +49,8 @@ export default function APITokensPage() {
   const [name, setName] = React.useState("");
   const [creating, setCreating] = React.useState(false);
   const [issued, setIssued] = React.useState<{ token: APIToken; plaintext: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<APIToken | null>(null);
+  const [deleting, setDeleting] = React.useState(false);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -81,6 +93,21 @@ export default function APITokensPage() {
       load();
     } catch (e) {
       toast.error(`撤销失败：${(e as Error).message}`);
+    }
+  }
+
+  async function purge() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.purgeAPIToken(deleteTarget.id);
+      toast.success(`已删除「${deleteTarget.name}」`);
+      setDeleteTarget(null);
+      load();
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -133,7 +160,7 @@ export default function APITokensPage() {
                     <TableHead className="w-24">状态</TableHead>
                     <TableHead className="w-44">创建时间</TableHead>
                     <TableHead className="w-44">最后使用</TableHead>
-                    <TableHead className="w-20" />
+                    <TableHead className="w-24" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -159,17 +186,30 @@ export default function APITokensPage() {
                         <TableCell className="text-muted-foreground text-xs">{fmtTime(token.created_at)}</TableCell>
                         <TableCell className="text-muted-foreground text-xs">{fmtTime(token.last_used_at)}</TableCell>
                         <TableCell>
-                          {!token.revoked_at ? (
+                          <div className="flex justify-end gap-1">
+                            {!token.revoked_at ? (
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                className="text-muted-foreground hover:text-destructive"
+                                onClick={() => void revoke(token)}
+                                aria-label="撤销令牌"
+                                title="撤销（保留记录）"
+                              >
+                                <BanIcon />
+                              </Button>
+                            ) : null}
                             <Button
                               variant="ghost"
                               size="icon-sm"
                               className="text-muted-foreground hover:text-destructive"
-                              onClick={() => void revoke(token)}
-                              aria-label="撤销令牌"
+                              onClick={() => setDeleteTarget(token)}
+                              aria-label="删除令牌"
+                              title="永久删除"
                             >
                               <Trash2Icon />
                             </Button>
-                          ) : null}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))
@@ -248,6 +288,31 @@ export default function APITokensPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>永久删除令牌</AlertDialogTitle>
+            <AlertDialogDescription>
+              将删除「{deleteTarget?.name}」及其记录，使用该令牌的自动化会立即失效，且不可恢复
+              {deleteTarget?.revoked_at ? "。" : "。若只是想停用，请先「撤销」保留审计记录。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void purge();
+              }}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? "删除中…" : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

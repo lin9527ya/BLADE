@@ -1626,6 +1626,7 @@ export const api = {
   apiTokens: () => get<{ items: APIToken[] }>("/api-tokens").then((r) => arr(r.items)),
   createAPIToken: (name: string) => post<{ token: APIToken; plaintext: string }>("/api-tokens", { name }),
   revokeAPIToken: (id: number) => del<{ ok: boolean }>(`/api-tokens/${id}`),
+  purgeAPIToken: (id: number) => del<{ ok: boolean; purged?: boolean }>(`/api-tokens/${id}?purge=1`),
   downloadDiagnosticsBundle: async () => {
     const token = getToken();
     const r = await fetch("/api/diagnostics/bundle", {

@@ -49,6 +49,20 @@ func (s *Server) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad token id")
 		return
 	}
+	// DELETE 默认是“撤销”（保留审计记录）；?purge=1 才是永久删除该行。
+	if r.URL.Query().Get("purge") == "1" {
+		n, err := pg.PurgeAPIToken(id)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if n == 0 {
+			writeErr(w, 404, "token not found")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "purged": true})
+		return
+	}
 	n, err := pg.RevokeAPIToken(id)
 	if err != nil {
 		writeErr(w, 500, err.Error())

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,57 @@ func TestAPITokenAuthenticatesAndSetsActor(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRevokeAPITokenPurgeRemovesRow(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	token, _, err := m.PG().CreateAPIToken("purge test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{m: m, engine: &Engine{}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/api-tokens/1?purge=1", nil)
+	req.SetPathValue("id", fmt.Sprint(token.ID))
+	s.revokeAPIToken(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"purged":true`) {
+		t.Fatalf("purge status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if n, err := m.PG().PurgeAPIToken(token.ID); err != nil || n != 0 {
+		t.Fatalf("row still present after purge: n=%d err=%v", n, err)
+	}
+
+	// 不带 purge 的 DELETE 仍然是撤销而不是删除。
+	second, _, err := m.PG().CreateAPIToken("revoke test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.PG().PurgeAPIToken(second.ID) //nolint:errcheck
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/api-tokens/2", nil)
+	req.SetPathValue("id", fmt.Sprint(second.ID))
+	s.revokeAPIToken(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := m.PG().ListAPITokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range items {
+		if it.ID == second.ID && it.RevokedAt != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("revoked token row missing")
 	}
 }
 
