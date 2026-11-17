@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { FolderKanbanIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { DownloadIcon, FolderKanbanIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Field } from "@/components/page-sections";
@@ -82,9 +82,18 @@ export default function CampaignsPage() {
       setPhases(next.phases ?? []);
       setChains(null);
       setMatrix(null);
-      void api.campaignPhases(id).then(setPhases).catch(() => undefined);
-      void api.campaignAttackChains(id).then(setChains).catch(() => undefined);
-      void api.detectionMatrix({ campaign: id }).then(setMatrix).catch(() => undefined);
+      void api
+        .campaignPhases(id)
+        .then(setPhases)
+        .catch(() => undefined);
+      void api
+        .campaignAttackChains(id)
+        .then(setChains)
+        .catch(() => undefined);
+      void api
+        .detectionMatrix({ campaign: id })
+        .then(setMatrix)
+        .catch(() => undefined);
     } catch (e) {
       toast.error(`打开失败：${String((e as Error)?.message ?? e)}`);
     }
@@ -247,7 +256,8 @@ export default function CampaignsPage() {
                   </div>
                   {(c.goal || c.phase) && (
                     <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">
-                      {c.phase ? `[${c.phase}] ` : ""}{c.goal || ""}
+                      {c.phase ? `[${c.phase}] ` : ""}
+                      {c.goal || ""}
                     </p>
                   )}
                   {c.note && <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">{c.note}</p>}
@@ -300,11 +310,21 @@ export default function CampaignsPage() {
             <DialogDescription>目标/阶段/时间窗只用于展示与交接，不参与 RoE，也不会自动写任务范围。</DialogDescription>
           </DialogHeader>
           <Field label="目标" htmlFor="campaign-goal">
-            <Input id="campaign-goal" value={plan.goal} onChange={(e) => setPlan({ ...plan, goal: e.target.value })} placeholder="本轮作业要达成什么" />
+            <Input
+              id="campaign-goal"
+              value={plan.goal}
+              onChange={(e) => setPlan({ ...plan, goal: e.target.value })}
+              placeholder="本轮作业要达成什么"
+            />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="阶段" htmlFor="campaign-phase">
-              <Input id="campaign-phase" value={plan.phase} onChange={(e) => setPlan({ ...plan, phase: e.target.value })} placeholder="如 外网打点" />
+              <Input
+                id="campaign-phase"
+                value={plan.phase}
+                onChange={(e) => setPlan({ ...plan, phase: e.target.value })}
+                placeholder="如 外网打点"
+              />
             </Field>
             <Field label="状态" htmlFor="campaign-status">
               <select
@@ -313,19 +333,37 @@ export default function CampaignsPage() {
                 value={plan.status}
                 onChange={(e) => setPlan({ ...plan, status: e.target.value })}
               >
-                {["active", "paused", "done", "archived"].map((v) => <option key={v} value={v}>{v}</option>)}
+                {["active", "paused", "done", "archived"].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
               </select>
             </Field>
             <Field label="开始（RFC3339，可空）" htmlFor="campaign-starts">
-              <Input id="campaign-starts" value={plan.starts_at} onChange={(e) => setPlan({ ...plan, starts_at: e.target.value })} placeholder="2026-11-17T09:00:00+08:00" />
+              <Input
+                id="campaign-starts"
+                value={plan.starts_at}
+                onChange={(e) => setPlan({ ...plan, starts_at: e.target.value })}
+                placeholder="2026-11-17T09:00:00+08:00"
+              />
             </Field>
             <Field label="结束（RFC3339，可空）" htmlFor="campaign-ends">
-              <Input id="campaign-ends" value={plan.ends_at} onChange={(e) => setPlan({ ...plan, ends_at: e.target.value })} placeholder="2026-11-20T18:00:00+08:00" />
+              <Input
+                id="campaign-ends"
+                value={plan.ends_at}
+                onChange={(e) => setPlan({ ...plan, ends_at: e.target.value })}
+                placeholder="2026-11-20T18:00:00+08:00"
+              />
             </Field>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPlanOpen(false)} disabled={planBusy}>取消</Button>
-            <Button onClick={() => void savePlan()} disabled={planBusy}>{planBusy ? "保存中…" : "保存"}</Button>
+            <Button variant="outline" onClick={() => setPlanOpen(false)} disabled={planBusy}>
+              取消
+            </Button>
+            <Button onClick={() => void savePlan()} disabled={planBusy}>
+              {planBusy ? "保存中…" : "保存"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -345,7 +383,9 @@ export default function CampaignsPage() {
                   </Badge>
                   {summary.campaign.phase && <Badge variant="outline">阶段 {summary.campaign.phase}</Badge>}
                   {summary.campaign.starts_at && (
-                    <span className="text-muted-foreground text-xs">开始 {summary.campaign.starts_at.slice(0, 16)}</span>
+                    <span className="text-muted-foreground text-xs">
+                      开始 {summary.campaign.starts_at.slice(0, 16)}
+                    </span>
                   )}
                   {summary.campaign.ends_at && (
                     <span className="text-muted-foreground text-xs">结束 {summary.campaign.ends_at.slice(0, 16)}</span>
@@ -407,12 +447,19 @@ export default function CampaignsPage() {
                 <div>
                   <p className="mb-2 font-medium text-sm">阶段</p>
                   <div className="flex flex-wrap items-center gap-2">
-                    {phases.length === 0 && <span className="text-muted-foreground text-xs">还没有阶段（可选，仅用于归组与交接）。</span>}
+                    {phases.length === 0 && (
+                      <span className="text-muted-foreground text-xs">还没有阶段（可选，仅用于归组与交接）。</span>
+                    )}
                     {phases.map((p) => (
                       <div key={p.id} className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
                         <span>{p.name}</span>
                         <Badge variant="outline">{p.status}</Badge>
-                        <button className="text-muted-foreground hover:text-destructive" onClick={() => void dropPhase(p.id)}>×</button>
+                        <button
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => void dropPhase(p.id)}
+                        >
+                          ×
+                        </button>
                       </div>
                     ))}
                     <Input
@@ -430,7 +477,20 @@ export default function CampaignsPage() {
 
                 {chains && (
                   <div>
-                    <p className="mb-2 font-medium text-sm">攻击链（逐任务复用，不合成跨任务边）</p>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="font-medium text-sm">攻击链（逐任务复用，不合成跨任务边）</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          void api
+                            .downloadCampaignAttackChainsCSV(summary.campaign.id)
+                            .catch((e: Error) => toast.error(e.message))
+                        }
+                      >
+                        <DownloadIcon /> 导出 CSV
+                      </Button>
+                    </div>
                     {chains.tasks.length === 0 ? (
                       <p className="text-muted-foreground text-xs">暂无可用任务。</p>
                     ) : (
@@ -466,7 +526,11 @@ export default function CampaignsPage() {
                     )}
                     {chains.shared_assets.length > 0 && (
                       <p className="mt-1 text-muted-foreground text-xs">
-                        共享资产：{chains.shared_assets.slice(0, 8).map((a) => a.label).join(", ")}
+                        共享资产：
+                        {chains.shared_assets
+                          .slice(0, 8)
+                          .map((a) => a.label)
+                          .join(", ")}
                       </p>
                     )}
                   </div>
@@ -488,6 +552,18 @@ export default function CampaignsPage() {
                       ))}
                     </div>
                     <p className="mt-1 text-muted-foreground text-xs">{matrix.note}</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      onClick={() =>
+                        void api
+                          .downloadDetectionMatrixCSV({ campaign: summary.campaign.id })
+                          .catch((e: Error) => toast.error(e.message))
+                      }
+                    >
+                      <DownloadIcon /> 导出 CSV
+                    </Button>
                   </div>
                 )}
 
@@ -537,7 +613,9 @@ export default function CampaignsPage() {
                               <SelectContent>
                                 <SelectItem value="0">未分配</SelectItem>
                                 {phases.map((p) => (
-                                  <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+                                  <SelectItem key={p.id} value={String(p.id)}>
+                                    {p.name}
+                                  </SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>

@@ -44,9 +44,14 @@ function fmtTime(value?: string): string {
 export default function APITokensPage() {
   const [tokens, setTokens] = React.useState<APIToken[]>([]);
   const [events, setEvents] = React.useState<AuditEvent[]>([]);
+  const [auditActor, setAuditActor] = React.useState("");
+  const [auditMethod, setAuditMethod] = React.useState("");
+  const [auditQuery, setAuditQuery] = React.useState("");
+  const [exporting, setExporting] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
+  const [scopes, setScopes] = React.useState("admin");
   const [creating, setCreating] = React.useState(false);
   const [issued, setIssued] = React.useState<{ token: APIToken; plaintext: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<APIToken | null>(null);
@@ -54,14 +59,14 @@ export default function APITokensPage() {
 
   const load = React.useCallback(() => {
     setLoading(true);
-    Promise.all([api.apiTokens(), api.auditEvents(100)])
+    Promise.all([api.apiTokens(), api.auditEvents(200, { actor: auditActor, method: auditMethod, q: auditQuery })])
       .then(([nextTokens, nextEvents]) => {
         setTokens(nextTokens);
         setEvents(nextEvents);
       })
       .catch((e: Error) => toast.error(`读取失败：${e.message}`))
       .finally(() => setLoading(false));
-  }, []);
+  }, [auditActor, auditMethod, auditQuery]);
 
   React.useEffect(() => {
     load();
@@ -74,9 +79,10 @@ export default function APITokensPage() {
     }
     setCreating(true);
     try {
-      const result = await api.createAPIToken(name.trim());
+      const result = await api.createAPIToken(name.trim(), scopes);
       setIssued(result);
       setName("");
+      setScopes("admin");
       setOpen(false);
       load();
     } catch (e) {
@@ -157,6 +163,7 @@ export default function APITokensPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>名称</TableHead>
+                    <TableHead className="w-28">权限</TableHead>
                     <TableHead className="w-24">状态</TableHead>
                     <TableHead className="w-44">创建时间</TableHead>
                     <TableHead className="w-44">最后使用</TableHead>
@@ -166,13 +173,13 @@ export default function APITokensPage() {
                 <TableBody>
                   {loading && tokens.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-10 text-center">
+                      <TableCell colSpan={6} className="py-10 text-center">
                         <Spinner />
                       </TableCell>
                     </TableRow>
                   ) : tokens.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
                         还没有 API 令牌。
                       </TableCell>
                     </TableRow>
@@ -180,6 +187,11 @@ export default function APITokensPage() {
                     tokens.map((token) => (
                       <TableRow key={token.id}>
                         <TableCell className="font-medium">{token.name}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            {token.scopes === "read" ? "只读" : token.scopes === "operator" ? "操作员" : "管理员"}
+                          </Badge>
+                        </TableCell>
                         <TableCell>
                           <Badge variant="outline">{token.revoked_at ? "已撤销" : "有效"}</Badge>
                         </TableCell>
@@ -222,6 +234,47 @@ export default function APITokensPage() {
         <TabsContent value="audit" className="mt-3">
           <Card className="py-0">
             <CardContent className="px-0">
+              <div className="flex flex-wrap items-end gap-2 border-b px-3 py-2">
+                <Input
+                  value={auditActor}
+                  onChange={(e) => setAuditActor(e.target.value)}
+                  placeholder="操作者，如 token:prometheus"
+                  className="h-8 w-56 text-xs"
+                />
+                <select
+                  value={auditMethod}
+                  onChange={(e) => setAuditMethod(e.target.value)}
+                  className="h-8 rounded-md border bg-transparent px-2 text-xs"
+                  aria-label="审计方法筛选"
+                >
+                  <option value="">全部方法</option>
+                  {["POST", "PUT", "PATCH", "DELETE"].map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <Input
+                  value={auditQuery}
+                  onChange={(e) => setAuditQuery(e.target.value)}
+                  placeholder="路径包含…"
+                  className="h-8 w-56 font-mono text-xs"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={exporting}
+                  onClick={() => {
+                    setExporting(true);
+                    void api
+                      .downloadAuditEventsCSV({ actor: auditActor, method: auditMethod, q: auditQuery })
+                      .catch((e: Error) => toast.error(e.message))
+                      .finally(() => setExporting(false));
+                  }}
+                >
+                  <ScrollTextIcon /> {exporting ? "导出中…" : "导出 CSV"}
+                </Button>
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -236,7 +289,7 @@ export default function APITokensPage() {
                   {events.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                        还没有审计事件。
+                        没有匹配的审计事件。
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -265,7 +318,7 @@ export default function APITokensPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>新建 API 令牌</DialogTitle>
-            <DialogDescription>用于 Prometheus 抓取或自动化调用；权限等同管理员。</DialogDescription>
+            <DialogDescription>用于 Prometheus 抓取或自动化调用。只读令牌只能发 GET/HEAD 请求。</DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field>
@@ -276,6 +329,19 @@ export default function APITokensPage() {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="例如：prometheus"
               />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="api-token-scopes">权限</FieldLabel>
+              <select
+                id="api-token-scopes"
+                value={scopes}
+                onChange={(e) => setScopes(e.target.value)}
+                className="h-9 rounded-md border bg-transparent px-2 text-sm"
+              >
+                <option value="admin">管理员（读写）</option>
+                <option value="operator">操作员（读写）</option>
+                <option value="read">只读</option>
+              </select>
             </Field>
           </FieldGroup>
           <DialogFooter>

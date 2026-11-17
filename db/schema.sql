@@ -37,6 +37,21 @@ DROP TRIGGER IF EXISTS trg_companies_upd ON companies;
 CREATE TRIGGER trg_companies_upd BEFORE UPDATE ON companies
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 资产同步批次：每次 CSV/AD/云/FOFA 等导入或外部同步一行，用于来源归因与回执。
+CREATE TABLE IF NOT EXISTS asset_sync_batches (
+    id            BIGSERIAL PRIMARY KEY,
+    source        TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'running'
+                  CHECK (status IN ('running','completed','failed')),
+    total_count   INTEGER NOT NULL DEFAULT 0,
+    created_count INTEGER NOT NULL DEFAULT 0,
+    updated_count INTEGER NOT NULL DEFAULT 0,
+    note          TEXT NOT NULL DEFAULT '',
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_asset_sync_batches_source ON asset_sync_batches(source, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS assets (
     id              BIGSERIAL PRIMARY KEY,
     type            TEXT NOT NULL CHECK (type IN (
@@ -76,8 +91,13 @@ CREATE TABLE IF NOT EXISTS assets (
     method          TEXT,
     params          JSONB[] NOT NULL DEFAULT '{}',
     extra           JSONB   NOT NULL DEFAULT '{}',
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','stale','archived')),
+    provider        TEXT NOT NULL DEFAULT 'agent',
+    last_sync_batch_id BIGINT REFERENCES asset_sync_batches(id) ON DELETE SET NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_root_domain  ON assets(domain) WHERE type = 'root_domain';
@@ -111,6 +131,67 @@ ALTER TABLE assets ADD CONSTRAINT assets_company_source_check
 DROP TRIGGER IF EXISTS trg_av2_upd ON assets;
 CREATE TRIGGER trg_av2_upd BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- 旧库补列：first_seen 先可空，回填 last_seen 后再收紧，避免给存量行伪造“今天首次发现”。
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ;
+UPDATE assets SET first_seen = last_seen WHERE first_seen IS NULL;
+ALTER TABLE assets ALTER COLUMN first_seen SET DEFAULT now();
+ALTER TABLE assets ALTER COLUMN first_seen SET NOT NULL;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS status TEXT;
+UPDATE assets SET status = 'active' WHERE status IS NULL;
+ALTER TABLE assets ALTER COLUMN status SET DEFAULT 'active';
+ALTER TABLE assets ALTER COLUMN status SET NOT NULL;
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_status_check;
+ALTER TABLE assets ADD CONSTRAINT assets_status_check CHECK (status IN ('active','stale','archived'));
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS provider TEXT;
+UPDATE assets SET provider = 'agent' WHERE provider IS NULL OR provider = '';
+ALTER TABLE assets ALTER COLUMN provider SET DEFAULT 'agent';
+ALTER TABLE assets ALTER COLUMN provider SET NOT NULL;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_sync_batch_id BIGINT;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'assets_last_sync_batch_fk') THEN
+        ALTER TABLE assets ADD CONSTRAINT assets_last_sync_batch_fk
+            FOREIGN KEY (last_sync_batch_id) REFERENCES asset_sync_batches(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_av2_status   ON assets(status, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_av2_provider ON assets(provider, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_av2_first_seen ON assets(first_seen DESC);
+
+-- 资产来源台账：同一资产可被多个来源看到，保留每个来源的首次/最近发现与批次。
+CREATE TABLE IF NOT EXISTS asset_sources (
+    asset_id           BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    source             TEXT NOT NULL,
+    first_seen         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_sync_batch_id BIGINT REFERENCES asset_sync_batches(id) ON DELETE SET NULL,
+    PRIMARY KEY (asset_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_sources_source ON asset_sources(source, last_seen DESC);
+
+-- 已有资产至少保留一条来源记录（provider 是当前来源）。
+INSERT INTO asset_sources(asset_id, source, first_seen, last_seen, last_sync_batch_id)
+SELECT id, provider, first_seen, last_seen, last_sync_batch_id
+FROM assets WHERE provider <> ''
+ON CONFLICT (asset_id, source) DO NOTHING;
+
+-- 新资产/来源变化自动记一行来源。显式调用 RecordAssetSource 仍可补充批次号。
+CREATE OR REPLACE FUNCTION record_asset_provider_source() RETURNS trigger AS $$
+BEGIN
+    IF NEW.provider IS NOT NULL AND NEW.provider <> '' THEN
+        INSERT INTO asset_sources(asset_id, source, first_seen, last_seen, last_sync_batch_id)
+        VALUES (NEW.id, NEW.provider, NEW.first_seen, NEW.last_seen, NEW.last_sync_batch_id)
+        ON CONFLICT (asset_id, source) DO UPDATE SET
+            last_seen = EXCLUDED.last_seen,
+            last_sync_batch_id = COALESCE(EXCLUDED.last_sync_batch_id, asset_sources.last_sync_batch_id);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_asset_source ON assets;
+CREATE TRIGGER trg_asset_source AFTER INSERT OR UPDATE OF provider ON assets
+    FOR EACH ROW EXECUTE FUNCTION record_asset_provider_source();
 
 CREATE TABLE IF NOT EXISTS company_scope (
     id         BIGSERIAL PRIMARY KEY,

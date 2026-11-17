@@ -143,8 +143,14 @@ function AssetDetailInner() {
               <Badge variant="secondary">{KIND_LABEL[a.type] ?? a.type}</Badge>
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{a.id}</code>
             </div>
-            <p className="mt-1 text-muted-foreground text-sm">
-              {assetPortStatus(a)} · 最后发现 {fmtSeen(a.last_seen)}
+            <p className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground text-sm">
+              <span>{assetPortStatus(a)}</span>
+              <span>最后发现 {fmtSeen(a.last_seen)}</span>
+              {a.status ? (
+                <Badge variant={a.status === "active" ? "secondary" : "outline"}>
+                  {a.status === "active" ? "活跃" : a.status === "archived" ? "已归档" : "过期"}
+                </Badge>
+              ) : null}
             </p>
           </div>
         </div>
@@ -163,8 +169,28 @@ function AssetDetailInner() {
               <div className="break-all font-mono">{label}</div>
             </div>
             <div>
+              <div className="text-muted-foreground text-xs">首次发现</div>
+              <div>{fmtTime(a.first_seen)}</div>
+            </div>
+            <div>
               <div className="text-muted-foreground text-xs">最后发现</div>
               <div>{fmtTime(a.last_seen)}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground text-xs">生命周期</div>
+              <div>
+                {a.status === "active"
+                  ? "活跃"
+                  : a.status === "archived"
+                    ? "已归档"
+                    : a.status === "stale"
+                      ? "过期"
+                      : "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-muted-foreground text-xs">当前来源</div>
+              <div className="font-mono">{a.provider || "—"}</div>
             </div>
             {a.domain ? (
               <div>
@@ -270,6 +296,27 @@ function AssetDetailInner() {
             <div>
               <div className="text-muted-foreground text-xs">归属企业</div>
               <div>{detail.company?.name ?? "未归属"}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground text-xs">来源记录</div>
+              {detail.sources?.length ? (
+                <div className="mt-1 flex flex-col gap-1">
+                  {detail.sources.map((s) => (
+                    <div key={s.source} className="rounded-md border px-2 py-1.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono">{s.source}</span>
+                        <span className="text-muted-foreground">{fmtTime(s.last_seen)}</span>
+                      </div>
+                      <div className="mt-0.5 text-muted-foreground">
+                        首次 {fmtTime(s.first_seen)}
+                        {s.last_sync_batch_id ? ` · 批次 #${s.last_sync_batch_id}` : ""}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-muted-foreground">暂无来源记录</div>
+              )}
             </div>
             <div>
               <div className="text-muted-foreground text-xs">来源任务</div>

@@ -29,6 +29,7 @@ type AssetDetailDTO struct {
 	Findings      []FindingDTO        `json:"findings"`
 	FindingsTotal int                 `json:"findings_total"`
 	Refs          []db.AssetRef       `json:"refs"`
+	Sources       []db.AssetSource    `json:"sources"`
 }
 
 // getAssetDetail is the investigation landing page for one asset: identity,
@@ -94,6 +95,11 @@ func (s *Server) getAssetDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	out.Sources, err = as.AssetSources(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	out.Neighbors, err = as.AssetNeighbors(taskID, id, 12)
 	if err != nil {
 		writeErr(w, 500, err.Error())

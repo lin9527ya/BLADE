@@ -344,13 +344,24 @@ function DeliverableDetailDialog({
                         >
                           <FileDownIcon /> docx
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            void api
+                              .exportDeliverableVersion(detail.deliverable.id, version.id, "zip")
+                              .catch((e: Error) => toast.error(e.message))
+                          }
+                        >
+                          <FileDownIcon /> zip
+                        </Button>
                         <Button size="sm" onClick={() => void accept(version)} disabled={busy}>
                           <SendIcon /> 签收
                         </Button>
                       </span>
                     </div>
                     {version.note ? <p className="mt-1 text-muted-foreground text-xs">{version.note}</p> : null}
-                    <code className="mt-1 block truncate text-muted-foreground text-[10px]">
+                    <code className="mt-1 block truncate text-[10px] text-muted-foreground">
                       sha256 {version.sha256}
                     </code>
                   </div>

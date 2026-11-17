@@ -312,7 +312,11 @@ export interface Asset {
   method?: string;
   params?: Record<string, unknown>[];
   extra?: Record<string, unknown>;
+  first_seen?: string;
   last_seen: string;
+  status?: "active" | "stale" | "archived" | string;
+  provider?: string;
+  last_sync_batch_id?: number;
   task_source?: string;
   task_source_summary?: string;
   task_source_node_id?: number;
@@ -350,6 +354,13 @@ export interface AssetDetailCompany {
   logo?: string;
 }
 
+export interface AssetSource {
+  source: string;
+  first_seen: string;
+  last_seen: string;
+  last_sync_batch_id?: number;
+}
+
 export interface AssetDetail {
   asset: Asset;
   company?: AssetDetailCompany;
@@ -358,6 +369,7 @@ export interface AssetDetail {
   findings: Finding[];
   findings_total: number;
   refs: AssetRef[];
+  sources?: AssetSource[];
 }
 
 export interface GlobalSearchHit {
@@ -554,6 +566,7 @@ export interface AssetImportPreview {
 }
 
 export interface AssetImportResult {
+  batch_id?: number;
   created: number;
   merged: number;
   by_type: Record<string, number>;
@@ -1905,11 +1918,18 @@ export interface CostProfile {
   unpriced_tokens: number;
 }
 
+export interface CostScope extends CostTotals {
+  id: number;
+  name: string;
+}
+
 export interface CostSummary {
   days: number;
   daily: CostDay[];
   by_model: CostModel[];
   by_profile: CostProfile[];
+  by_company: CostScope[];
+  by_campaign: CostScope[];
   total: CostTotals;
   month: CostTotals;
   budget_usd: number;
@@ -3289,12 +3309,7 @@ export interface CampaignAttackChains {
 }
 
 // 检测矩阵：五态分开计数，不合成检出率。
-export type DetectionMatrixStatus =
-  | "triggered"
-  | "not_triggered"
-  | "unknown"
-  | "unmeasured"
-  | "not_attempted";
+export type DetectionMatrixStatus = "triggered" | "not_triggered" | "unknown" | "unmeasured" | "not_attempted";
 
 export interface DetectionMatrix {
   techniques: string[];

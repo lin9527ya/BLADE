@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,6 +61,36 @@ func (s *Server) campaignAttackChains(w http.ResponseWriter, r *http.Request) {
 	shared, err := s.sharedCampaignAssets(ids)
 	if err != nil {
 		writeErr(w, 500, err.Error())
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "csv") {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="campaign-attack-chains.csv"`)
+		cw := csv.NewWriter(w)
+		_ = cw.Write([]string{"task_id", "task_name", "chain", "step", "intent_id", "summary", "techniques", "produced", "error"})
+		for _, row := range tasks {
+			taskID := fmt.Sprint(row["task_id"])
+			name, _ := row["name"].(string)
+			if errText, ok := row["error"].(string); ok && errText != "" {
+				_ = cw.Write([]string{taskID, name, "", "", "", "", "", "", errText})
+				continue
+			}
+			chains, _ := row["chains"].([]report.AttackChain)
+			for ci, chain := range chains {
+				if len(chain.Steps) == 0 {
+					_ = cw.Write([]string{taskID, name, fmt.Sprint(ci + 1), "", "", chain.Head, "", "", ""})
+					continue
+				}
+				for si, step := range chain.Steps {
+					_ = cw.Write([]string{taskID, name, fmt.Sprint(ci + 1), fmt.Sprint(si + 1), fmt.Sprint(step.IntentID),
+						step.Summary, strings.Join(step.Techniques, " "), strings.Join(step.Produced, " | "), ""})
+				}
+			}
+		}
+		for _, row := range missing {
+			_ = cw.Write([]string{fmt.Sprint(row["task_id"]), "", "", "", "", "", "", "", fmt.Sprint(row["reason"])})
+		}
+		cw.Flush()
 		return
 	}
 	writeJSON(w, 200, map[string]any{

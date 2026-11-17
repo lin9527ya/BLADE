@@ -114,3 +114,36 @@ func TestReadyzAndPrometheusText(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyAPITokenCannotWrite(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	token, plain, err := m.PG().CreateAPIToken("readonly test", "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.PG().RevokeAPIToken(token.ID) //nolint:errcheck
+
+	s := &Server{m: m, engine: &Engine{}}
+	handler := s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/assets", nil)
+	req.Header.Set("Authorization", "Bearer "+plain)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("read GET status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/assets", nil)
+	req.Header.Set("Authorization", "Bearer "+plain)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("read POST status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}

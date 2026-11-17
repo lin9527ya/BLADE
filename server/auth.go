@@ -565,7 +565,11 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		}
 		// 长期 API 令牌（Prometheus/自动化）只存哈希；JWT 校验失败后再查一次。
 		if strings.HasPrefix(tok, "blt_") && s.m != nil && s.m.PG() != nil {
-			if name, ok, err := s.m.PG().ValidateAPIToken(tok); err == nil && ok {
+			if name, scopes, ok, err := s.m.PG().ValidateAPIToken(tok); err == nil && ok {
+				if scopes == "read" && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+					writeErr(w, http.StatusForbidden, "只读令牌不能执行写操作")
+					return
+				}
 				h.ServeHTTP(w, withActor(r, "token:"+name))
 				return
 			}

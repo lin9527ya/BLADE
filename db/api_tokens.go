@@ -25,10 +25,17 @@ func HashAPIToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (d *DB) CreateAPIToken(name string) (*APIToken, string, error) {
+func (d *DB) CreateAPIToken(name string, scopesOpt ...string) (*APIToken, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, "", fmt.Errorf("令牌名称不能为空")
+	}
+	scopes := "admin"
+	if len(scopesOpt) > 0 && strings.TrimSpace(scopesOpt[0]) != "" {
+		scopes = strings.TrimSpace(scopesOpt[0])
+	}
+	if scopes != "admin" && scopes != "operator" && scopes != "read" {
+		return nil, "", fmt.Errorf("scopes 必须是 admin/operator/read")
 	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -36,8 +43,8 @@ func (d *DB) CreateAPIToken(name string) (*APIToken, string, error) {
 	}
 	plain := "blt_" + base64.RawURLEncoding.EncodeToString(raw)
 	var token APIToken
-	err := d.QueryRow(`INSERT INTO api_tokens(name,token_hash,scopes) VALUES($1,$2,'admin')
-RETURNING id,name,scopes,created_at`, name, HashAPIToken(plain)).Scan(&token.ID, &token.Name, &token.Scopes, &token.CreatedAt)
+	err := d.QueryRow(`INSERT INTO api_tokens(name,token_hash,scopes) VALUES($1,$2,$3)
+RETURNING id,name,scopes,created_at`, name, HashAPIToken(plain), scopes).Scan(&token.ID, &token.Name, &token.Scopes, &token.CreatedAt)
 	if err != nil {
 		return nil, "", err
 	}
@@ -73,17 +80,17 @@ FROM api_tokens ORDER BY (revoked_at IS NULL) DESC, id DESC`)
 
 // ValidateAPIToken returns the token's display name when the hash matches an
 // active token, and refreshes last_used_at best-effort.
-func (d *DB) ValidateAPIToken(token string) (string, bool, error) {
-	var name string
-	err := d.QueryRow(`SELECT name FROM api_tokens WHERE token_hash=$1 AND revoked_at IS NULL`, HashAPIToken(token)).Scan(&name)
+func (d *DB) ValidateAPIToken(token string) (string, string, bool, error) {
+	var name, scopes string
+	err := d.QueryRow(`SELECT name, scopes FROM api_tokens WHERE token_hash=$1 AND revoked_at IS NULL`, HashAPIToken(token)).Scan(&name, &scopes)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	_, _ = d.Exec(`UPDATE api_tokens SET last_used_at=now() WHERE token_hash=$1`, HashAPIToken(token))
-	return name, true, nil
+	return name, scopes, true, nil
 }
 
 func (d *DB) RevokeAPIToken(id int64) (int64, error) {

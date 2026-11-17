@@ -74,11 +74,21 @@ type CostProfile struct {
 	UnpricedTokens int64   `json:"unpriced_tokens"`
 }
 
+// CostScope is one company/campaign attribution bucket. CostTotals is embedded
+// so JSON keeps the same token/cost fields as the global summary.
+type CostScope struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	CostTotals
+}
+
 type CostSummary struct {
 	Days         int           `json:"days"`
 	Daily        []CostDay     `json:"daily"`
 	ByModel      []CostModel   `json:"by_model"`
 	ByProfile    []CostProfile `json:"by_profile"`
+	ByCompany    []CostScope   `json:"by_company"`
+	ByCampaign   []CostScope   `json:"by_campaign"`
 	Total        CostTotals    `json:"total"`
 	Month        CostTotals    `json:"month"`
 	BudgetUSD    float64       `json:"budget_usd"`
@@ -239,14 +249,18 @@ VALUES($1,$2,$3::time,$4::time)`, model, position, window.Start, window.End); er
 }
 
 type costUsageRow struct {
-	Date       string
-	Model      string
-	Profile    string
-	Period     string // peak | offpeak
-	Input      int64
-	Output     int64
-	CacheRead  int64
-	CacheWrite int64
+	Date         string
+	Model        string
+	Profile      string
+	Period       string // peak | offpeak
+	CompanyID    int64
+	CompanyName  string
+	CampaignID   int64
+	CampaignName string
+	Input        int64
+	Output       int64
+	CacheRead    int64
+	CacheWrite   int64
 }
 
 func (d *DB) costRows(days int) ([]costUsageRow, error) {
@@ -271,9 +285,19 @@ SELECT to_char(u.ts AT TIME ZONE 'UTC','YYYY-MM-DD'),
            END
          )
        ) THEN 'offpeak' ELSE 'peak' END,
+       COALESCE(t.company_id, tc.company_id, 0), COALESCE(c.name,''),
+       COALESCE(t.campaign_id,0), COALESCE(cp.name,''),
        COALESCE(SUM(u.input_tokens),0), COALESCE(SUM(u.output_tokens),0),
        COALESCE(SUM(u.cache_read),0), COALESCE(SUM(u.cache_write),0)
 FROM llm_usage u
+LEFT JOIN tasks t ON t.id::text = u.task_id
+LEFT JOIN LATERAL (
+  SELECT ts.company_id FROM task_scope ts
+  WHERE ts.task_id = t.id AND ts.kind = 'company' AND ts.company_id IS NOT NULL
+  ORDER BY ts.id LIMIT 1
+) tc ON true
+LEFT JOIN companies c ON c.id = COALESCE(t.company_id, tc.company_id)
+LEFT JOIN campaigns cp ON cp.id = t.campaign_id
 LEFT JOIN LATERAL (
   SELECT p.* FROM llm_prices p
   WHERE p.model = COALESCE(NULLIF(u.model,''), '(unknown)') OR p.model = 'default'
@@ -281,7 +305,7 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) pr ON true
 WHERE u.ts >= now() - ($1 * interval '1 day')
-GROUP BY 1,2,3,4
+GROUP BY 1,2,3,4,5,6,7,8
 ORDER BY 1`, days)
 	if err != nil {
 		return nil, err
@@ -290,7 +314,9 @@ ORDER BY 1`, days)
 	out := []costUsageRow{}
 	for rows.Next() {
 		var r costUsageRow
-		if err := rows.Scan(&r.Date, &r.Model, &r.Profile, &r.Period, &r.Input, &r.Output, &r.CacheRead, &r.CacheWrite); err != nil {
+		if err := rows.Scan(&r.Date, &r.Model, &r.Profile, &r.Period,
+			&r.CompanyID, &r.CompanyName, &r.CampaignID, &r.CampaignName,
+			&r.Input, &r.Output, &r.CacheRead, &r.CacheWrite); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -404,6 +430,8 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 	dayMap := map[string]*CostDay{}
 	modelMap := map[string]*CostModel{}
 	profileMap := map[string]*CostProfile{}
+	companyMap := map[int64]*CostScope{}
+	campaignMap := map[int64]*CostScope{}
 	var total, month CostTotals
 	for _, r := range rows {
 		p, priced := pricedFor(r.Model, prices, r.Period)
@@ -441,13 +469,30 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 			pr.OutputTokens += r.Output
 			pr.CostUSD += dayCost.CostUSD
 			pr.UnpricedTokens += dayCost.UnpricedTokens
+			if r.CompanyID > 0 {
+				scope := companyMap[r.CompanyID]
+				if scope == nil {
+					scope = &CostScope{ID: r.CompanyID, Name: r.CompanyName}
+					companyMap[r.CompanyID] = scope
+				}
+				addCost(&scope.CostTotals, r, p, priced)
+			}
+			if r.CampaignID > 0 {
+				scope := campaignMap[r.CampaignID]
+				if scope == nil {
+					scope = &CostScope{ID: r.CampaignID, Name: r.CampaignName}
+					campaignMap[r.CampaignID] = scope
+				}
+				addCost(&scope.CostTotals, r, p, priced)
+			}
 		}
 		if r.Date >= monthStart.Format("2006-01-02") {
 			addCost(&month, r, p, priced)
 		}
 	}
 
-	out := &CostSummary{Days: days, Daily: []CostDay{}, ByModel: []CostModel{}, ByProfile: []CostProfile{}, Total: total, Month: month}
+	out := &CostSummary{Days: days, Daily: []CostDay{}, ByModel: []CostModel{}, ByProfile: []CostProfile{},
+		ByCompany: []CostScope{}, ByCampaign: []CostScope{}, Total: total, Month: month}
 	for _, day := range dayMap {
 		out.Daily = append(out.Daily, *day)
 	}
@@ -460,6 +505,14 @@ func (d *DB) CostSummary(days int) (*CostSummary, error) {
 		out.ByProfile = append(out.ByProfile, *p)
 	}
 	sort.Slice(out.ByProfile, func(i, j int) bool { return out.ByProfile[i].CostUSD > out.ByProfile[j].CostUSD })
+	for _, c := range companyMap {
+		out.ByCompany = append(out.ByCompany, *c)
+	}
+	sort.Slice(out.ByCompany, func(i, j int) bool { return out.ByCompany[i].CostUSD > out.ByCompany[j].CostUSD })
+	for _, c := range campaignMap {
+		out.ByCampaign = append(out.ByCampaign, *c)
+	}
+	sort.Slice(out.ByCampaign, func(i, j int) bool { return out.ByCampaign[i].CostUSD > out.ByCampaign[j].CostUSD })
 
 	if raw, ok, _ := d.GetSetting(settingLLMMonthlyBudget); ok {
 		out.BudgetUSD, _ = strconv.ParseFloat(strings.TrimSpace(raw), 64)

@@ -1,6 +1,10 @@
 package db
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type AuditEvent struct {
 	ID        int64     `json:"id"`
@@ -19,15 +23,41 @@ VALUES($1,$2,$3,$4,$5,$6)`, actor, method, path, status, ip, userAgent)
 	return err
 }
 
+type AuditFilter struct {
+	Actor  string
+	Method string
+	Query  string
+	Limit  int
+}
+
 func (d *DB) ListAuditEvents(limit int) ([]*AuditEvent, error) {
-	if limit <= 0 {
-		limit = 100
+	return d.ListAuditEventsFiltered(AuditFilter{Limit: limit})
+}
+
+func (d *DB) ListAuditEventsFiltered(f AuditFilter) ([]*AuditEvent, error) {
+	if f.Limit <= 0 {
+		f.Limit = 100
 	}
-	if limit > 500 {
-		limit = 500
+	if f.Limit > 10000 {
+		f.Limit = 10000
 	}
+	where := "1=1"
+	args := []any{}
+	if v := strings.TrimSpace(f.Actor); v != "" {
+		args = append(args, "%"+v+"%")
+		where += fmt.Sprintf(" AND actor ILIKE $%d", len(args))
+	}
+	if v := strings.TrimSpace(f.Method); v != "" {
+		args = append(args, strings.ToUpper(v))
+		where += fmt.Sprintf(" AND method = $%d", len(args))
+	}
+	if v := strings.TrimSpace(f.Query); v != "" {
+		args = append(args, "%"+v+"%")
+		where += fmt.Sprintf(" AND path ILIKE $%d", len(args))
+	}
+	args = append(args, f.Limit)
 	rows, err := d.Query(`SELECT id,actor,method,path,status,ip,user_agent,created_at
-FROM audit_events ORDER BY id DESC LIMIT $1`, limit)
+FROM audit_events WHERE `+where+` ORDER BY id DESC LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}

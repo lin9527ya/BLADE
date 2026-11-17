@@ -22,7 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { Campaign, CampaignTaskBrief, Company, CompanyOverviewTask } from "@/lib/types";
 
-const MAX_TASKS = 50;
+const MAX_TASKS = 200;
 
 function buildMarkdown(input: {
   name: string;
@@ -172,7 +172,7 @@ export function AggregateDeliverableDialog({
             <LayersIcon className="size-4" /> 从战役/公司生成交付物
           </DialogTitle>
           <DialogDescription>
-            逐个读取范围内任务报告，拼接成一份带任务清单的 Markdown，并保存为交付物第一版。单次最多 {MAX_TASKS} 个任务。
+            逐个读取范围内任务报告，拼接成一份带任务清单的 Markdown，并保存为交付物第一版。单次最多 {MAX_TASKS} 个任务；任务较多时请保持页面打开直到完成。
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>

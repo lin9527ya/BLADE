@@ -54,7 +54,11 @@ type Asset struct {
 	Params []map[string]any `json:"params,omitempty"`
 	// meta
 	Extra             map[string]any `json:"extra,omitempty"`
+	FirstSeen         string         `json:"first_seen"`
 	LastSeen          string         `json:"last_seen"`
+	Status            string         `json:"status"`
+	Provider          string         `json:"provider"`
+	LastSyncBatchID   *int64         `json:"last_sync_batch_id,omitempty"`
 	TaskSource        string         `json:"task_source,omitempty"`
 	TaskSourceSummary string         `json:"task_source_summary,omitempty"`
 	TaskSourceNodeID  *int64         `json:"task_source_node_id,omitempty"`
@@ -1118,7 +1122,7 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, first_seen::text, last_seen::text, status, provider, last_sync_batch_id
 FROM assets `+where+`
 ORDER BY last_seen DESC, id DESC
 LIMIT $`+itoa(int64(len(args)-1))+` OFFSET $`+itoa(int64(len(args))), args...)
@@ -1233,7 +1237,7 @@ func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset i
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, first_seen::text, last_seen::text, status, provider, last_sync_batch_id
 FROM assets WHERE company_id = $1`
 	args := []any{companyID}
 	if typ != "" {
@@ -1285,7 +1289,7 @@ func (s *AssetStore) QueryByTask(taskID int64, typ string, limit, offset int) ([
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, first_seen::text, last_seen::text, status, provider, last_sync_batch_id
 FROM assets WHERE $1 = ANY(task_ids)`
 	args := []any{taskID}
 	if typ != "" {
@@ -1483,7 +1487,7 @@ const assetSelectCols = `SELECT id, type, company_id, array_to_json(task_ids)::t
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, first_seen::text, last_seen::text, status, provider, last_sync_batch_id
 FROM assets`
 
 // GetByIDs returns assets with the given ids (order preserved by id array order).
@@ -1642,7 +1646,7 @@ func scanAssets(rows RowSet) ([]*Asset, error) {
 		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw []byte
 		var port, statusCode sql.NullInt64
 		var contentLength sql.NullInt64
-		var companyID sql.NullInt64
+		var companyID, lastSyncBatchID sql.NullInt64
 		if err := rows.Scan(
 			&a.ID, &a.Type, &companyID, &taskIDsRaw,
 			&a.Domain, &a.RootDomain, &a.IP, &a.CSegment, &port,
@@ -1652,7 +1656,7 @@ func scanAssets(rows RowSet) ([]*Asset, error) {
 			&a.URL, &a.ServiceType, &a.ServiceName,
 			&a.FaviconMMH3, &statusCode, &contentLength,
 			&a.PageTitle, &techsRaw, &authRaw,
-			&a.Method, &paramsRaw, &extraRaw, &a.LastSeen,
+			&a.Method, &paramsRaw, &extraRaw, &a.FirstSeen, &a.LastSeen, &a.Status, &a.Provider, &lastSyncBatchID,
 		); err != nil {
 			return nil, err
 		}
@@ -1671,6 +1675,10 @@ func scanAssets(rows RowSet) ([]*Asset, error) {
 		if contentLength.Valid {
 			cl := contentLength.Int64
 			a.ContentLength = &cl
+		}
+		if lastSyncBatchID.Valid {
+			bid := lastSyncBatchID.Int64
+			a.LastSyncBatchID = &bid
 		}
 		// parse arrays
 		if len(taskIDsRaw) > 0 {

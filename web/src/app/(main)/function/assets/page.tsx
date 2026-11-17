@@ -38,6 +38,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
@@ -56,7 +57,6 @@ import {
   assetTitle,
   CompanyAvatar,
   CompanyDialog,
-  csvCell,
   EditScopeDialog,
   fmtSeen,
   KIND_LABEL,
@@ -112,6 +112,8 @@ const ASSET_URL_DEFAULTS = {
   q: "",
   page: "0",
   size: "50",
+  status: "all",
+  provider: "",
 };
 
 export default function AssetsPage() {
@@ -126,6 +128,8 @@ export default function AssetsPage() {
   const [loading, setLoading] = React.useState(false);
   const [page, setPage] = React.useState(0);
   const [size, setSize] = React.useState(50);
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [providerFilter, setProviderFilter] = React.useState("");
   const [dslError, setDslError] = React.useState("");
   const [refreshKey, setRefreshKey] = React.useState(0);
   const assetsRequestRef = React.useRef(0);
@@ -247,6 +251,8 @@ export default function AssetsPage() {
     if (Number.isFinite(parsedPage) && parsedPage >= 0) setPage(Math.floor(parsedPage));
     const parsedSize = Number(url.size);
     if (Number.isFinite(parsedSize) && parsedSize > 0) setSize(Math.floor(parsedSize));
+    if (url.status) setStatusFilter(url.status);
+    if (url.provider !== undefined) setProviderFilter(url.provider);
     setUrlHydrated(true);
   }, []);
 
@@ -275,9 +281,13 @@ export default function AssetsPage() {
       return;
     }
     setPage(0);
-  }, [tab, size, query, urlHydrated]);
+  }, [tab, size, query, statusFilter, providerFilter, urlHydrated]);
 
-  useUrlViewSync({ tab, q: query, page, size }, ASSET_URL_DEFAULTS, urlHydrated);
+  useUrlViewSync(
+    { tab, q: query, page, size, status: statusFilter, provider: providerFilter },
+    ASSET_URL_DEFAULTS,
+    urlHydrated,
+  );
 
   useUrlViewPopState(() => {
     const url = readUrlView(ASSET_URL_DEFAULTS);
@@ -288,6 +298,8 @@ export default function AssetsPage() {
     setPage(Number.isFinite(parsedPage) && parsedPage >= 0 ? Math.floor(parsedPage) : 0);
     const parsedSize = Number(url.size);
     setSize(Number.isFinite(parsedSize) && parsedSize > 0 ? Math.floor(parsedSize) : 50);
+    setStatusFilter(url.status ?? "all");
+    setProviderFilter(url.provider ?? "");
   });
 
   const dslMode = query.trim() !== "";
@@ -304,7 +316,13 @@ export default function AssetsPage() {
       try {
         // 「全部」把 type 传空：后端空类型 = 全类型（P28），DSL 也随之跨类型匹配。
         const typ = tab === "all" ? "" : tab;
-        const r = dsl ? await api.searchAssets(dsl, typ, size, offset) : await api.assets(typ, size, offset);
+        const filters = {
+          status: statusFilter === "all" ? "" : statusFilter,
+          provider: providerFilter,
+        };
+        const r = dsl
+          ? await api.searchAssets(dsl, typ, size, offset, filters)
+          : await api.assets(typ, size, offset, filters);
         if (assetsRequestRef.current !== request) return;
         setRows(r.assets);
         setRowsTab(tab);
@@ -328,7 +346,7 @@ export default function AssetsPage() {
       clearTimeout(tid);
       if (assetsRequestRef.current === request) assetsRequestRef.current++;
     };
-  }, [tab, page, size, query, refreshKey, urlHydrated]);
+  }, [tab, page, size, query, refreshKey, statusFilter, providerFilter, urlHydrated]);
 
   React.useEffect(() => {
     if (tab === "company") return;
@@ -365,55 +383,17 @@ export default function AssetsPage() {
     />
   );
 
-  // exportCSV 导出**当前筛选条件**下的资产（不是当前页）：逐页拉取，封顶 5000 行并如实提示截断。
-  // 列名用导入侧认得的 host/ip/url（P26 的表头口径），因此导出的文件可以直接再导入。
+  // exportCSV 走服务端流式导出：跟随当前 DSL/类型/状态/来源筛选，不再有 5000 行封顶。
   async function exportCSV() {
-    const cap = 5000;
-    const pageSize = 500;
     setExporting(true);
     try {
-      const typ = tab === "all" ? "" : tab;
-      const dsl = query.trim();
-      const out: string[] = ["host,ip,url,type,title,company,last_seen"];
-      let offset = 0;
-      let total = 0;
-      for (;;) {
-        const r = dsl ? await api.searchAssets(dsl, typ, pageSize, offset) : await api.assets(typ, pageSize, offset);
-        total = r.total;
-        for (const a of r.assets) {
-          const host = a.domain || a.root_domain || "";
-          const url = a.url || "";
-          out.push(
-            [
-              host,
-              a.ip || a.c_segment || "",
-              url,
-              KIND_LABEL[a.type] ?? a.type,
-              a.page_title || a.app_name || a.service_name || "",
-              companyName(a.company_id),
-              a.last_seen || "",
-            ]
-              .map(csvCell)
-              .join(","),
-          );
-        }
-        offset += r.assets.length;
-        if (r.assets.length === 0 || offset >= r.total || out.length - 1 >= cap) break;
-      }
-      const truncated = total > out.length - 1;
-      const blob = new Blob([`\ufeff${out.join("\n")}\n`], {
-        type: "text/csv;charset=utf-8",
+      await api.downloadAssetsCSV({
+        type: tab === "all" ? "" : tab,
+        dsl: query,
+        status: statusFilter === "all" ? "" : statusFilter,
+        provider: providerFilter,
       });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `assets-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      toast.success(
-        truncated
-          ? `已导出 ${out.length - 1} 行（命中 ${total} 条，封顶 ${cap} 行，其余请缩小筛选后再导）`
-          : `已导出 ${out.length - 1} 行`,
-      );
+      toast.success("已导出全部匹配资产");
     } catch (e) {
       toast.error(`导出失败：${String((e as Error)?.message ?? e)}`);
     } finally {
@@ -436,6 +416,28 @@ export default function AssetsPage() {
             <Button variant="destructive" size="sm" onClick={() => openDelete(Array.from(selected) as number[])}>
               <Trash2Icon className="size-3.5" /> 删除已选 ({selected.size})
             </Button>
+          )}
+          {tab !== "company" && (
+            <>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                aria-label="资产状态筛选"
+                className="h-8 rounded-md border bg-background px-2 text-xs"
+              >
+                <option value="all">全部状态</option>
+                <option value="active">活跃</option>
+                <option value="stale">过期</option>
+                <option value="archived">已归档</option>
+              </select>
+              <Input
+                value={providerFilter}
+                onChange={(e) => setProviderFilter(e.target.value)}
+                placeholder="来源，如 csv"
+                aria-label="资产来源筛选"
+                className="h-8 w-28 font-mono text-xs"
+              />
+            </>
           )}
           <Button variant="outline" size="sm" onClick={() => void exportCSV()} disabled={exporting}>
             <DownloadIcon className={cn("size-4", exporting && "animate-spin")} />
@@ -687,5 +689,3 @@ export default function AssetsPage() {
     </div>
   );
 }
-
-// csvCell：CSV 单元格转义（含逗号/引号/换行就加引号，引号翻倍）。

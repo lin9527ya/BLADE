@@ -1,6 +1,9 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -185,8 +188,17 @@ func (s *Server) exportDeliverableVersion(w http.ResponseWriter, r *http.Request
 		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", base+".docx"))
 		_, _ = w.Write(data)
+	case "zip":
+		data, err := deliverableZIP(base, version)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", base+".zip"))
+		_, _ = w.Write(data)
 	default:
-		writeErr(w, 400, "format 必须是 md 或 docx")
+		writeErr(w, 400, "format 必须是 md、docx 或 zip")
 	}
 }
 
@@ -206,4 +218,50 @@ func (s *Server) deleteDeliverable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"deleted": true})
+}
+
+// deliverableZIP packages the version report with a manifest and SHA256SUMS so a
+// customer can verify what they received. Evidence-attachment inclusion is left
+// to a later batch; this keeps the first ZIP format stable and auditable.
+func deliverableZIP(base string, version *db.DeliverableVersion) ([]byte, error) {
+	reportName := base + ".md"
+	reportBytes := []byte(version.ReportMD)
+	reportSum := fmt.Sprintf("%x", sha256.Sum256(reportBytes))
+	manifest := map[string]any{
+		"format":        "blade-deliverable-v1",
+		"deliverable":   version.DeliverableID,
+		"version":       version.Version,
+		"version_id":    version.ID,
+		"created_at":    version.CreatedAt,
+		"created_by":    version.CreatedBy,
+		"report_sha256": version.SHA256,
+		"files": []map[string]any{{
+			"path": reportName, "size": len(reportBytes), "sha256": reportSum,
+		}},
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	manifestSum := fmt.Sprintf("%x", sha256.Sum256(manifestBytes))
+	sums := fmt.Sprintf("%s  %s\n%s  manifest.json\n", reportSum, reportName, manifestSum)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, file := range []struct {
+		name string
+		data []byte
+	}{{reportName, reportBytes}, {"manifest.json", manifestBytes}, {"SHA256SUMS", []byte(sums)}} {
+		fw, err := zw.Create(file.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := fw.Write(file.data); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

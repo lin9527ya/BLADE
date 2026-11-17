@@ -223,6 +223,60 @@ func (s *Server) markNodeLost(w http.ResponseWriter, r *http.Request, wantKind s
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// batchMarkCredentialsLost applies the same human decision to up to 200 credentials.
+// Each node still gets its own activity entry; partial failures are returned per id.
+func (s *Server) batchMarkCredentialsLost(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var req struct {
+		IDs      []int64 `json:"ids"`
+		Reason   string  `json:"reason"`
+		Evidence string  `json:"evidence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	evidence := strings.TrimSpace(req.Evidence)
+	if len(req.IDs) == 0 || len(req.IDs) > 200 {
+		writeErr(w, 400, "ids 必须包含 1–200 条")
+		return
+	}
+	if reason == "" || evidence == "" {
+		writeErr(w, 400, "reason 与 evidence 都必填")
+		return
+	}
+	type errEntry struct {
+		ID    int64  `json:"id"`
+		Error string `json:"error"`
+	}
+	updated := 0
+	errs := []errEntry{}
+	for _, id := range req.IDs {
+		_, task, err := s.nodeTask(pg, id, db.KindCredential)
+		if err != nil {
+			errs = append(errs, errEntry{ID: id, Error: "凭据不存在"})
+			continue
+		}
+		if err := task.Store.SetNodeState(id, db.StateLootLost); err != nil {
+			errs = append(errs, errEntry{ID: id, Error: err.Error()})
+			continue
+		}
+		if _, err := task.Store.AppendActivity(db.Activity{
+			NodeID: &id, Kind: "mark_loot_lost", Summary: "批量标记失效：" + reason, Detail: evidence,
+		}); err != nil {
+			errs = append(errs, errEntry{ID: id, Error: err.Error()})
+			continue
+		}
+		updated++
+	}
+	writeJSON(w, 200, map[string]any{"updated": updated, "errors": errs})
+}
+
 func (s *Server) credentialVerifyIntent(w http.ResponseWriter, r *http.Request) {
 	s.nodeFollowUpIntent(w, r, db.KindCredential, "验证凭据")
 }

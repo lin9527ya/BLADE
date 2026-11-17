@@ -108,6 +108,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/api-tokens", s.createAPIToken)
 	mux.HandleFunc("DELETE /api/api-tokens/{id}", s.revokeAPIToken)
 	mux.HandleFunc("GET /api/audit/events", s.listAuditEvents)
+	mux.HandleFunc("GET /api/audit/events/export", s.exportAuditEvents)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/proxy/egress-ip", s.proxyEgressIPs)

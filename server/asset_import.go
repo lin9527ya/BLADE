@@ -266,6 +266,11 @@ func (s *Server) assetImportApply(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	batchID, err := as.CreateAssetSyncBatch("csv")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	created, merged := 0, 0
 	type errEntry struct {
 		Line  int    `json:"line"`
@@ -293,6 +298,9 @@ func (s *Server) assetImportApply(w http.ResponseWriter, r *http.Request) {
 			errs = append(errs, errEntry{Line: it.Line, Value: it.Value, Error: err.Error()})
 			continue
 		}
+		if serr := as.RecordAssetSource(id, "csv", batchID); serr != nil {
+			log.Printf("[assets] 记录来源失败 asset=%d batch=%d: %v（资产已建立，只是来源缺失）", id, batchID, serr)
+		}
 		if plan.TaskID > 0 {
 			// 来源如实标注：任务页的「测试资产」按来源分组，混进 "api" 会让「这批是怎么来的」查不清。
 			if serr := as.SetTaskAssetSource(plan.TaskID, id, "csv", "通过 CSV 导入登记", nil); serr != nil {
@@ -306,7 +314,19 @@ func (s *Server) assetImportApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	batchStatus := "completed"
+	if len(errs) > 0 && created+merged == 0 {
+		batchStatus = "failed"
+	}
+	note := ""
+	if len(errs) > 0 {
+		note = fmt.Sprintf("%d 条写入失败", len(errs))
+	}
+	if ferr := as.FinishAssetSyncBatch(batchID, batchStatus, len(plan.Items), created, merged, note); ferr != nil {
+		log.Printf("[assets] 结束同步批次失败 batch=%d: %v", batchID, ferr)
+	}
 	resp := map[string]any{
+		"batch_id":     batchID,
 		"created":      created,
 		"merged":       merged,
 		"by_type":      plan.byType(),

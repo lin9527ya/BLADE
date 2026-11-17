@@ -51,9 +51,11 @@ GET /api/api-tokens	server.(*Server).listAPITokens-fm
 GET /api/asset-intercept/rules	server.(*Server).assetInterceptListRules-fm
 GET /api/assets	server.(*Server).listAssets-fm
 GET /api/assets/counts	server.(*Server).assetCounts-fm
+GET /api/assets/export	server.(*Server).exportAssets-fm
 GET /api/assets/{id}	server.(*Server).getAssetDetail-fm
 GET /api/audit	server.(*Server).getAudit-fm
 GET /api/audit/events	server.(*Server).listAuditEvents-fm
+GET /api/audit/events/export	server.(*Server).exportAuditEvents-fm
 GET /api/auth/account	server.(*Server).authAccount-fm
 GET /api/auth/status	server.(*Server).authStatus-fm
 GET /api/broadcast	server.(*Server).globalBroadcast-fm
@@ -243,6 +245,7 @@ GET /api/workspace/download	server.(*Server).wsDownload-fm
 GET /api/workspace/list	server.(*Server).wsList-fm
 GET /api/workspace/read	server.(*Server).wsRead-fm
 PATCH /api/agents/{key}	server.(*Server).pgUpdateAgent-fm
+PATCH /api/assets/{id}	server.(*Server).updateAssetLifecycle-fm
 PATCH /api/campaigns/{id}	server.(*Server).patchCampaign-fm
 PATCH /api/campaigns/{id}/phases/{pid}	server.(*Server).patchCampaignPhase-fm
 PATCH /api/campaigns/{id}/tasks/{tid}/phase	server.(*Server).setCampaignTaskPhase-fm
@@ -299,6 +302,7 @@ POST /api/conversations/delete/batch	server.(*Server).pgDeleteConversationsBatch
 POST /api/conversations/{id}/messages	server.(*Server).pgSendConversationMessage-fm
 POST /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/conversations/{id}/stop	server.(*Server).pgStopConversation-fm
+POST /api/credentials/batch-lost	server.(*Server).batchMarkCredentialsLost-fm
 POST /api/credentials/{id}/checks	server.(*Server).recordCredentialCheck-fm
 POST /api/credentials/{id}/lost	server.(*Server).markCredentialLost-fm
 POST /api/credentials/{id}/reveal	server.(*Server).revealCredential-fm

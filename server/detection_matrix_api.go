@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -173,6 +174,7 @@ func (s *Server) detectionMatrix(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(techniques)
 
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 	rows := make([]map[string]any, 0, len(assetIDs))
 	counts := map[string]int{
 		matrixTriggered: 0, matrixNotTriggered: 0, matrixUnknown: 0,
@@ -193,6 +195,24 @@ func (s *Server) detectionMatrix(w http.ResponseWriter, r *http.Request) {
 			counts[status]++
 		}
 		rows = append(rows, map[string]any{"asset_id": assetID, "label": label, "cells": cells})
+	}
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="detection-matrix.csv"`)
+		cw := csv.NewWriter(w)
+		_ = cw.Write(append([]string{"asset_id", "label"}, techniques...))
+		for _, row := range rows {
+			assetID, _ := row["asset_id"].(int64)
+			label, _ := row["label"].(string)
+			cells, _ := row["cells"].(map[string]string)
+			line := []string{fmt.Sprint(assetID), label}
+			for _, tech := range techniques {
+				line = append(line, cells[tech])
+			}
+			_ = cw.Write(line)
+		}
+		cw.Flush()
+		return
 	}
 	writeJSON(w, 200, map[string]any{
 		"techniques": techniques, "rows": rows, "counts": counts,

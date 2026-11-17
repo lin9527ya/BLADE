@@ -1,9 +1,14 @@
 package server
 
 import (
+	"encoding/csv"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/lin9527ya/blade/db"
 )
 
 func auditMutation(method string) bool {
@@ -46,10 +51,42 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	items, err := pg.ListAuditEvents(queryInt(r, "limit", 100))
+	items, err := pg.ListAuditEventsFiltered(db.AuditFilter{
+		Actor:  strings.TrimSpace(r.URL.Query().Get("actor")),
+		Method: strings.TrimSpace(r.URL.Query().Get("method")),
+		Query:  strings.TrimSpace(r.URL.Query().Get("q")),
+		Limit:  queryInt(r, "limit", 100),
+	})
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	items, err := pg.ListAuditEventsFiltered(db.AuditFilter{
+		Actor:  strings.TrimSpace(r.URL.Query().Get("actor")),
+		Method: strings.TrimSpace(r.URL.Query().Get("method")),
+		Query:  strings.TrimSpace(r.URL.Query().Get("q")),
+		Limit:  10000,
+	})
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="audit-events.csv"`)
+	_, _ = w.Write([]byte("\ufeff"))
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"id", "time", "actor", "method", "path", "status", "ip", "user_agent"})
+	for _, e := range items {
+		_ = cw.Write([]string{fmt.Sprint(e.ID), e.CreatedAt.Format(time.RFC3339), e.Actor, e.Method, e.Path,
+			fmt.Sprint(e.Status), e.IP, e.UserAgent})
+	}
+	cw.Flush()
 }

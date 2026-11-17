@@ -324,7 +324,6 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	typ := q.Get("type")
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	if limit <= 0 {
@@ -341,41 +340,14 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	// total is the full match count ignoring limit/offset. Count first so an offset
 	// beyond the last row can return an empty page without an expensive scan.
 	total := 0
-
-	if dsl := q.Get("dsl"); dsl != "" {
-		if err := db.ValidateDSL(dsl); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		// task_id scopes the DSL search to a task's assets (the task detail
-		// "测试资产" search); 0 means the global asset view.
-		taskID, _ := strconv.ParseInt(q.Get("task_id"), 10, 64)
-		total, err = as.CountDSL(dsl, typ, taskID)
-		if err == nil && offset < total {
-			assets, err = as.QueryDSL(dsl, typ, taskID, limit, offset)
-		}
-	} else {
-		companyID, _ := strconv.ParseInt(q.Get("company_id"), 10, 64)
-		taskID, _ := strconv.ParseInt(q.Get("task_id"), 10, 64)
-		switch {
-		case companyID > 0:
-			total, err = as.CountByCompany(companyID, typ)
-			if err == nil && offset < total {
-				assets, err = as.QueryByCompany(companyID, typ, limit, offset)
-			}
-		case taskID > 0:
-			total, err = as.CountByTask(taskID, typ)
-			if err == nil && offset < total {
-				assets, err = as.QueryByTask(taskID, typ, limit, offset)
-			}
-		default:
-			// typ == "" 是全类型（资产页「全部类型」）：不再兜底成 root_domain——
-			// 那会让"没传类型"与"只看根域名"变成同一件事，前端一改就静默看错数据。
-			total, err = as.CountByType(typ)
-			if err == nil && offset < total {
-				assets, err = as.QueryByType(typ, limit, offset)
-			}
-		}
+	filter, ferr := assetFilterFromQuery(r)
+	if ferr != nil {
+		writeErr(w, http.StatusBadRequest, ferr.Error())
+		return
+	}
+	total, err = as.CountFiltered(filter)
+	if err == nil && offset < total {
+		assets, err = as.QueryFiltered(filter, limit, offset)
 	}
 
 	if err != nil {
@@ -387,6 +359,29 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 		"total":  total,
 		"assets": assets,
 	})
+}
+
+// assetFilterFromQuery builds the shared list/export filter. DSL is validated here
+// so a bad expression is a 400, not a 500 from the query builder.
+func assetFilterFromQuery(r *http.Request) (db.AssetFilter, error) {
+	q := r.URL.Query()
+	f := db.AssetFilter{
+		Type:     strings.TrimSpace(q.Get("type")),
+		Status:   strings.TrimSpace(q.Get("status")),
+		Provider: strings.TrimSpace(q.Get("provider")),
+		DSL:      strings.TrimSpace(q.Get("dsl")),
+	}
+	f.CompanyID, _ = strconv.ParseInt(q.Get("company_id"), 10, 64)
+	f.TaskID, _ = strconv.ParseInt(q.Get("task_id"), 10, 64)
+	if f.Status != "" && f.Status != "active" && f.Status != "stale" && f.Status != "archived" {
+		return f, fmt.Errorf("status 必须是 active/stale/archived")
+	}
+	if f.DSL != "" {
+		if err := db.ValidateDSL(f.DSL); err != nil {
+			return f, err
+		}
+	}
+	return f, nil
 }
 
 // =====================================================================
@@ -540,6 +535,9 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			errs = append(errs, errEntry{Index: i, Error: err.Error()})
 			continue
+		}
+		if serr := as.RecordAssetSource(id, "api", 0); serr != nil {
+			log.Printf("[assets] 记录来源失败 asset=%d: %v", id, serr)
 		}
 		if req.TaskID > 0 {
 			if serr := as.SetTaskAssetSource(req.TaskID, id, "api", "通过资产 API 登记", nil); serr != nil {

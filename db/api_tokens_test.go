@@ -19,17 +19,17 @@ func TestAPITokenLifecycleAndAudit(t *testing.T) {
 	if plain == "" || token.ID == 0 {
 		t.Fatalf("created token = %+v plain=%q", token, plain)
 	}
-	name, ok, err := d.ValidateAPIToken(plain)
+	name, _, ok, err := d.ValidateAPIToken(plain)
 	if err != nil || !ok || name != "test token" {
 		t.Fatalf("validate: name=%q ok=%v err=%v", name, ok, err)
 	}
-	if _, ok, _ := d.ValidateAPIToken("blt_invalid"); ok {
+	if _, _, ok, _ := d.ValidateAPIToken("blt_invalid"); ok {
 		t.Fatal("invalid token validated")
 	}
 	if _, err := d.RevokeAPIToken(token.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := d.ValidateAPIToken(plain); ok {
+	if _, _, ok, _ := d.ValidateAPIToken(plain); ok {
 		t.Fatal("revoked token still validates")
 	}
 	if n, err := d.PurgeAPIToken(token.ID); err != nil || n != 1 {

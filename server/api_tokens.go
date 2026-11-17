@@ -24,13 +24,14 @@ func (s *Server) createAPIToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Scopes string `json:"scopes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
-	token, plain, err := pg.CreateAPIToken(req.Name)
+	token, plain, err := pg.CreateAPIToken(req.Name, req.Scopes)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

@@ -26,6 +26,8 @@ export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["co
   const recent = costs?.daily.slice(-14) ?? [];
   const maxDay = Math.max(...recent.map((d) => d.cost_usd), 0.000001);
   const topModels = costs?.by_model.filter((m) => m.cost_usd > 0).slice(0, 4) ?? [];
+  const topCompanies = costs?.by_company.filter((c) => c.cost_usd > 0).slice(0, 3) ?? [];
+  const topCampaigns = costs?.by_campaign.filter((c) => c.cost_usd > 0).slice(0, 3) ?? [];
   const peakCost = costs?.total.peak_cost_usd ?? 0;
   const offpeakCost = costs?.total.offpeak_cost_usd ?? 0;
 
@@ -96,6 +98,32 @@ export function RowCostCard({ s }: { s: ReturnType<typeof useDashboardState>["co
                     {m.model}
                   </span>
                   <span className="shrink-0 font-semibold tabular-nums">{usd(m.cost_usd)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {topCompanies.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="text-[10px] text-muted-foreground">按公司</div>
+              {topCompanies.map((c) => (
+                <div key={c.id} className="flex items-center justify-between gap-2 text-[10px]">
+                  <span className="min-w-0 truncate" title={c.name}>
+                    {c.name || `#${c.id}`}
+                  </span>
+                  <span className="shrink-0 font-semibold tabular-nums">{usd(c.cost_usd)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {topCampaigns.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="text-[10px] text-muted-foreground">按战役</div>
+              {topCampaigns.map((c) => (
+                <div key={c.id} className="flex items-center justify-between gap-2 text-[10px]">
+                  <span className="min-w-0 truncate" title={c.name}>
+                    {c.name || `#${c.id}`}
+                  </span>
+                  <span className="shrink-0 font-semibold tabular-nums">{usd(c.cost_usd)}</span>
                 </div>
               ))}
             </div>

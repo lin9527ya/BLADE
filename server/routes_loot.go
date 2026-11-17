@@ -13,6 +13,7 @@ func (s *Server) registerLootRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/credentials/{id}/checks", s.recordCredentialCheck)
 	mux.HandleFunc("POST /api/credentials/{id}/verify-intent", s.credentialVerifyIntent)
 	mux.HandleFunc("POST /api/credentials/{id}/lost", s.markCredentialLost)
+	mux.HandleFunc("POST /api/credentials/batch-lost", s.batchMarkCredentialsLost)
 	mux.HandleFunc("GET /api/footholds", s.listFootholdsWorkbench)
 	mux.HandleFunc("POST /api/footholds/{id}/check-intent", s.footholdCheckIntent)
 	mux.HandleFunc("POST /api/footholds/{id}/lost", s.markFootholdLost)

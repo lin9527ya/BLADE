@@ -958,6 +958,11 @@ export const api = {
     ),
   markCredentialLost: (id: number, body: { reason: string; evidence: string }) =>
     post<{ ok: boolean }>(`/credentials/${id}/lost`, body),
+  batchMarkCredentialsLost: (ids: number[], body: { reason: string; evidence: string }) =>
+    post<{ updated: number; errors: { id: number; error: string }[] }>("/credentials/batch-lost", {
+      ids,
+      ...body,
+    }),
   footholdsWorkbench: (params: {
     task?: string;
     company?: number;
@@ -1156,20 +1161,67 @@ export const api = {
 
   // ---- assets ----
   // Server-side paginated: pass limit/offset, get back the page + full match total.
-  assets: (type = "", limit = 50, offset = 0) =>
-    get<{ count: number; total: number; assets: Asset[] }>(`/assets?type=${type}&limit=${limit}&offset=${offset}`).then(
-      (r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 }),
-    ),
-  searchAssets: (dsl: string, type = "", limit = 50, offset = 0) =>
-    get<{ count: number; total: number; assets: Asset[] }>(
-      `/assets?dsl=${encodeURIComponent(dsl)}${type ? `&type=${encodeURIComponent(type)}` : ""}&limit=${limit}&offset=${offset}`,
-    ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
+  assets: (
+    type = "",
+    limit = 50,
+    offset = 0,
+    filters: { status?: string; provider?: string } = {},
+  ) => {
+    const p = new URLSearchParams({ type, limit: String(limit), offset: String(offset) });
+    if (filters.status) p.set("status", filters.status);
+    if (filters.provider?.trim()) p.set("provider", filters.provider.trim());
+    return get<{ count: number; total: number; assets: Asset[] }>(`/assets?${p}`).then((r) => ({
+      assets: r?.assets ?? [],
+      total: r?.total ?? r?.count ?? 0,
+    }));
+  },
+  searchAssets: (
+    dsl: string,
+    type = "",
+    limit = 50,
+    offset = 0,
+    filters: { status?: string; provider?: string } = {},
+  ) => {
+    const p = new URLSearchParams({ dsl, type, limit: String(limit), offset: String(offset) });
+    if (filters.status) p.set("status", filters.status);
+    if (filters.provider?.trim()) p.set("provider", filters.provider.trim());
+    return get<{ count: number; total: number; assets: Asset[] }>(`/assets?${p}`).then((r) => ({
+      assets: r?.assets ?? [],
+      total: r?.total ?? r?.count ?? 0,
+    }));
+  },
   assetCounts: (taskId = "") =>
     get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
   assetDetail: (id: string | number, taskId = "") =>
     get<AssetDetail>(
       `/assets/${encodeURIComponent(String(id))}${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`,
     ),
+  updateAssetLifecycle: (id: number, fields: { status?: string; provider?: string }) =>
+    patch<{ ok: boolean }>(`/assets/${id}`, fields),
+  downloadAssetsCSV: async (opts: { type?: string; dsl?: string; status?: string; provider?: string } = {}) => {
+    const p = new URLSearchParams({ format: "csv" });
+    if (opts.type) p.set("type", opts.type);
+    if (opts.dsl?.trim()) p.set("dsl", opts.dsl.trim());
+    if (opts.status) p.set("status", opts.status);
+    if (opts.provider?.trim()) p.set("provider", opts.provider.trim());
+    const token = getToken();
+    const r = await fetch(`/api/assets/export?${p}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const disp = r.headers.get("Content-Disposition") ?? "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const filename = m?.[1] ?? "assets.csv";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   globalSearch: (q: string, limit = 5) =>
     get<GlobalSearchResponse>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   deleteAssets: (ids: number[]) =>
@@ -1335,6 +1387,22 @@ export const api = {
   setCampaignTaskPhase: (id: number, tid: number, phaseId: number) =>
     patch<{ ok: boolean }>(`/campaigns/${id}/tasks/${tid}/phase`, { phase_id: phaseId }),
   campaignAttackChains: (id: number) => get<CampaignAttackChains>(`/campaigns/${id}/attack-chains`),
+  downloadCampaignAttackChainsCSV: async (id: number) => {
+    const token = getToken();
+    const r = await fetch(`/api/campaigns/${id}/attack-chains?format=csv`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "campaign-attack-chains.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   taskFollowUpIntent: (taskId: string, nodeId: number, description = "") =>
     post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
       `/tasks/${taskId}/nodes/${nodeId}/follow-up-intent`,
@@ -1357,6 +1425,25 @@ export const api = {
     if (params.task) qs.set("task", params.task);
     if (params.campaign) qs.set("campaign", String(params.campaign));
     return get<DetectionMatrix>(`/exploration/detection-matrix?${qs.toString()}`);
+  },
+  downloadDetectionMatrixCSV: async (params: { task?: string; campaign?: number }) => {
+    const qs = new URLSearchParams({ format: "csv" });
+    if (params.task) qs.set("task", params.task);
+    if (params.campaign) qs.set("campaign", String(params.campaign));
+    const token = getToken();
+    const r = await fetch(`/api/exploration/detection-matrix?${qs}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "detection-matrix.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   },
 
   // ---- companies (企业 + 资产范围；归属唯一来源) ----
@@ -1773,7 +1860,8 @@ export const api = {
   // 不塞进扁平的 settings 键值里。
   // ---- API 令牌与审计 ----
   apiTokens: () => get<{ items: APIToken[] }>("/api-tokens").then((r) => arr(r.items)),
-  createAPIToken: (name: string) => post<{ token: APIToken; plaintext: string }>("/api-tokens", { name }),
+  createAPIToken: (name: string, scopes = "admin") =>
+    post<{ token: APIToken; plaintext: string }>("/api-tokens", { name, scopes }),
   revokeAPIToken: (id: number) => del<{ ok: boolean }>(`/api-tokens/${id}`),
   purgeAPIToken: (id: number) => del<{ ok: boolean; purged?: boolean }>(`/api-tokens/${id}?purge=1`),
   downloadDiagnosticsBundle: async () => {
@@ -1811,7 +1899,33 @@ export const api = {
     a.remove();
     URL.revokeObjectURL(url);
   },
-  auditEvents: (limit = 100) => get<{ items: AuditEvent[] }>(`/audit/events?limit=${limit}`).then((r) => arr(r.items)),
+  auditEvents: (limit = 100, filters: { actor?: string; method?: string; q?: string } = {}) => {
+    const p = new URLSearchParams({ limit: String(limit) });
+    if (filters.actor?.trim()) p.set("actor", filters.actor.trim());
+    if (filters.method) p.set("method", filters.method);
+    if (filters.q?.trim()) p.set("q", filters.q.trim());
+    return get<{ items: AuditEvent[] }>(`/audit/events?${p}`).then((r) => arr(r.items));
+  },
+  downloadAuditEventsCSV: async (filters: { actor?: string; method?: string; q?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (filters.actor?.trim()) p.set("actor", filters.actor.trim());
+    if (filters.method) p.set("method", filters.method);
+    if (filters.q?.trim()) p.set("q", filters.q.trim());
+    const token = getToken();
+    const r = await fetch(`/api/audit/events/export?${p}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "audit-events.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 
   // ---- 交付物台账 ----
   deliverables: () => get<{ items: Deliverable[] }>("/deliverables").then((r) => arr(r.items)),
@@ -1831,7 +1945,7 @@ export const api = {
     post<DeliverableAcceptance>(`/deliverables/${id}/accept`, { version_id, note }),
   deliverableDiff: (id: number, from: number, to: number) =>
     get<{ diff: string }>(`/deliverables/${id}/diff?from=${from}&to=${to}`).then((r) => r.diff),
-  exportDeliverableVersion: async (id: number, versionId: number, format: "md" | "docx") => {
+  exportDeliverableVersion: async (id: number, versionId: number, format: "md" | "docx" | "zip") => {
     const token = getToken();
     const r = await fetch(`/api/deliverables/${id}/versions/${versionId}/export?format=${format}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},

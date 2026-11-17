@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+### 资产情报
+
+- 资产新增 `first_seen`、生命周期状态（active/stale/archived）、来源 Provider 与同步批次；
+  新增 `asset_sync_batches`、`asset_sources` 台账，旧资产自动回填 `first_seen=last_seen`。
+- 资产列表与导出支持状态/来源筛选；新增 `GET /api/assets/export` 服务端流式 CSV/JSON，
+  不再受前端 5000 行封顶；资产详情展示来源记录与生命周期。
+- CSV 导入创建同步批次并记录每条资产的来源；手动 API 写入标记为 `api`。
+
+### 红队运营
+
+- 凭据工作台支持勾选后批量标记失效（原因/证据必填），逐条返回失败项。
+- 检测矩阵支持 `format=csv` 导出资产 × ATT&CK 技术五态矩阵。
+
+### 交付
+
+- 交付物版本导出新增 ZIP：报告 + `manifest.json` + `SHA256SUMS`，可逐项校验。
+- 战役/公司聚合交付任务上限从 50 提高到 200，仍保留逐任务进度与失败项。
+
+### 治理与成本
+
+- API 令牌支持 `admin`/`operator`/`read` 作用域；只读令牌只能发 GET/HEAD/OPTIONS，
+  写请求返回 403；令牌页面可选择并展示权限。
+- 审计事件支持按操作者/方法/路径筛选，新增 `GET /api/audit/events/export` CSV 导出。
+- 成本汇总新增公司与战役归属（按任务主公司/首个任务范围与 `campaign_id`），
+  仪表盘成本卡展示花费最高的公司与战役；归档用量无归属时只计入全局。
+
 ## [0.9.16] - 2026-11-17
 
 ### 模型价格
