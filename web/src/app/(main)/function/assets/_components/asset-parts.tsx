@@ -77,6 +77,35 @@ export function assetPortStatus(a: Asset): string {
   return bits.join(" · ") || "—";
 }
 
+// assetPort：单个端口；IP 资产可能只有开放端口列表，按数量截断展示。
+export function assetPort(a: Asset): string {
+  if (a.port) return String(a.port);
+  const ports = (a.open_ports ?? []).map((p) => p.port).filter((p) => p > 0);
+  if (ports.length === 0) return "—";
+  const head = ports.slice(0, 4).join(", ");
+  return ports.length > 4 ? `${head} +${ports.length - 4}` : head;
+}
+
+// assetStatus：HTTP 状态码。
+export function assetStatus(a: Asset): string {
+  return typeof a.status_code === "number" && a.status_code > 0 ? String(a.status_code) : "—";
+}
+
+// assetTitle：页面标题。
+export function assetTitle(a: Asset): string {
+  return a.page_title || "—";
+}
+
+// assetTech：技术栈，最多展示 3 个。
+export function assetTech(a: Asset): string {
+  return a.technologies?.length ? a.technologies.slice(0, 3).join(", ") : "—";
+}
+
+// assetIcp：ICP 备案号。
+export function assetIcp(a: Asset): string {
+  return a.icp || "—";
+}
+
 // assetExtras：标题 / 技术栈 / 备案——一行里最能让"这条是什么"认出来的信息。
 export function assetExtras(a: Asset): string {
   const bits: string[] = [];

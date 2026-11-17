@@ -48,9 +48,12 @@ import { cn } from "@/lib/utils";
 import {
   AppendScopeDialog,
   AssetCard,
-  assetExtras,
-  assetPortStatus,
+  assetIcp,
+  assetPort,
+  assetStatus,
   assetTarget,
+  assetTech,
+  assetTitle,
   CompanyAvatar,
   CompanyDialog,
   csvCell,
@@ -536,7 +539,7 @@ export default function AssetsPage() {
         </TabsContent>
 
         {/* 资产表：全部类型与 6 类资产共用同一张表——「全部」下多一列类型，选中某一类时该列隐藏。
-            列按 kind 渲染目标与附加信息（assetTarget/assetPortStatus/assetExtras），
+            列按 kind 渲染目标与附加信息（assetTarget/assetPort/assetStatus/assetTitle/assetTech/assetIcp），
             不再一类一张表：加一类资产不用再抄一份表格代码。 */}
         {(["all", "root_domain", "ip", "subdomain", "app", "service", "endpoint"] as const).map((kind) => (
           <TabsContent key={kind} value={kind} className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
@@ -544,8 +547,8 @@ export default function AssetsPage() {
             <AssetCard
               cols={
                 kind === "all"
-                  ? ["", "类型", "目标", "端口 / 状态", "标题 / 技术", "归属企业", "最后发现", ""]
-                  : ["", "目标", "端口 / 状态", "标题 / 技术", "归属企业", "最后发现", ""]
+                  ? ["", "类型", "目标", "端口", "状态", "标题", "技术", "ICP", "归属企业", "最后发现", ""]
+                  : ["", "目标", "端口", "状态", "标题", "技术", "ICP", "归属企业", "最后发现", ""]
               }
               loaded={loaded}
               total={total}
@@ -578,10 +581,15 @@ export default function AssetsPage() {
                       {assetTarget(a)}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-muted-foreground text-xs">{assetPortStatus(a)}</TableCell>
-                  <TableCell className="max-w-[22rem] truncate text-muted-foreground text-xs" title={assetExtras(a)}>
-                    {assetExtras(a)}
+                  <TableCell className="text-muted-foreground text-xs tabular-nums">{assetPort(a)}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs tabular-nums">{assetStatus(a)}</TableCell>
+                  <TableCell className="max-w-[18rem] truncate text-xs" title={assetTitle(a)}>
+                    {assetTitle(a)}
                   </TableCell>
+                  <TableCell className="max-w-[16rem] truncate text-muted-foreground text-xs" title={assetTech(a)}>
+                    {assetTech(a)}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{assetIcp(a)}</TableCell>
                   <TableCell className="text-xs">
                     {companyName(a.company_id) || <span className="text-muted-foreground">未归属</span>}
                   </TableCell>
