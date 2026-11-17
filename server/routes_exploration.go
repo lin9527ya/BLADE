@@ -58,6 +58,8 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/findings/{id}/retests", s.listFindingRetests)
 	mux.HandleFunc("GET /api/exploration/findings/retests/active", s.listActiveFindingRetests)
 	mux.HandleFunc("POST /api/exploration/findings/{id}/retests", s.startFindingRetest)
+	mux.HandleFunc("POST /api/exploration/findings/retests/batch", s.startFindingRetestsBatch)
+	mux.HandleFunc("GET /api/exploration/detection-matrix", s.detectionMatrix)
 	mux.HandleFunc("PATCH /api/exploration/findings/{id}", s.patchFinding)
 	mux.HandleFunc("DELETE /api/exploration/findings/{id}", s.deleteFinding)
 	// 发现协作：评论列表 / 新增 / 删除。

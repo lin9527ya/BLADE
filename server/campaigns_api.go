@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lin9527ya/blade/db"
 )
@@ -109,6 +111,8 @@ type campaignTaskBrief struct {
 	// 只报未清理的那个数：把清掉的也算进去会稀释掉唯一要紧的那条信息——
 	// 「这次作业结束时，客户系统上还有几样东西是我们留下的」。
 	ArtifactsUncleaned int `json:"artifacts_uncleaned"`
+	// PhaseID 是任务挂在战役哪个阶段（0 = 未分配）。阶段只是标签，不参与调度。
+	PhaseID int64 `json:"phase_id,omitempty"`
 }
 
 // campaignSummary 汇总一次作业：它的任务、以及跨任务相加的产出。
@@ -128,6 +132,7 @@ func (s *Server) campaignSummary(id int64) (map[string]any, error) {
 	techniques := map[string]int{}
 	detectionResults := map[string]int{}
 	totals := map[string]int{"tasks": 0, "findings": 0, "footholds": 0, "credentials": 0, "detections": 0}
+	phaseMap, _ := s.m.pg.CampaignTaskPhases(id)
 	for _, tid := range ids {
 		t := s.m.ResolveTask(strconv.FormatInt(tid, 10))
 		if t == nil {
@@ -138,7 +143,7 @@ func (s *Server) campaignSummary(id int64) (map[string]any, error) {
 		if name == "" {
 			name = t.Description
 		}
-		b := campaignTaskBrief{ID: tid, Name: name, Status: t.Status}
+		b := campaignTaskBrief{ID: tid, Name: name, Status: t.Status, PhaseID: phaseMap[tid]}
 		b.Findings, _ = t.Store.CountByKind(db.KindFinding)
 		b.Footholds, _ = t.Store.CountByKind(db.KindFoothold)
 		b.Credentials, _ = t.Store.CountByKind(db.KindCredential)
@@ -169,6 +174,9 @@ func (s *Server) campaignSummary(id int64) (map[string]any, error) {
 		}
 	}
 	out := map[string]any{"campaign": c, "tasks": briefs, "totals": totals}
+	if phases, perr := s.m.pg.ListCampaignPhases(id); perr == nil {
+		out["phases"] = phases
+	}
 	if len(techniques) > 0 {
 		out["techniques"] = techniques
 	}
@@ -199,9 +207,15 @@ func (s *Server) patchCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name      *string `json:"name"`
-		Note      *string `json:"note"`
-		CompanyID *int64  `json:"company_id"`
+		Name      *string         `json:"name"`
+		Note      *string         `json:"note"`
+		CompanyID *int64          `json:"company_id"`
+		Goal      *string         `json:"goal"`
+		Scope     json.RawMessage `json:"scope"`
+		Phase     *string         `json:"phase"`
+		Status    *string         `json:"status"`
+		StartsAt  *string         `json:"starts_at"`
+		EndsAt    *string         `json:"ends_at"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
@@ -229,6 +243,55 @@ func (s *Server) patchCampaign(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if req.Goal != nil || req.Scope != nil || req.Phase != nil || req.Status != nil || req.StartsAt != nil || req.EndsAt != nil {
+		goal, phase, status := cur.Goal, cur.Phase, cur.Status
+		if req.Goal != nil {
+			goal = *req.Goal
+		}
+		if req.Phase != nil {
+			phase = *req.Phase
+		}
+		if req.Status != nil {
+			status = *req.Status
+		}
+		scope := cur.Scope
+		if len(req.Scope) > 0 {
+			scope = req.Scope
+		}
+		starts, ends := cur.StartsAt, cur.EndsAt
+		parse := func(field string, raw *string, curVal *time.Time) (*time.Time, bool) {
+			if raw == nil {
+				return curVal, true
+			}
+			s := strings.TrimSpace(*raw)
+			if s == "" {
+				return nil, true
+			}
+			ts, perr := time.Parse(time.RFC3339, s)
+			if perr != nil {
+				writeErr(w, 400, field+" 必须是 RFC3339 时间")
+				return nil, false
+			}
+			utc := ts.UTC()
+			return &utc, true
+		}
+		var ok bool
+		if starts, ok = parse("starts_at", req.StartsAt, starts); !ok {
+			return
+		}
+		if ends, ok = parse("ends_at", req.EndsAt, ends); !ok {
+			return
+		}
+		c, err = s.m.pg.UpdateCampaignMeta(id, goal, scope, phase, status, starts, ends)
+		if err != nil {
+			if errors.Is(err, db.ErrCampaignInvalid) {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	writeJSON(w, 200, c)
 }

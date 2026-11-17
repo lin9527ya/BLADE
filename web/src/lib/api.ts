@@ -30,7 +30,10 @@ import type {
   BatchCategoryItem,
   BatchControlItem,
   Campaign,
+  CampaignAttackChains,
+  CampaignPhase,
   CampaignSummary,
+  DetectionMatrix,
   ChatAttachment,
   ClashEgressStatus,
   ClashRotation,
@@ -1295,8 +1298,20 @@ export const api = {
   campaigns: () => get<{ campaigns: Campaign[] }>("/campaigns").then((r) => r?.campaigns ?? []),
   campaign: (id: number) => get<CampaignSummary>(`/campaigns/${id}`),
   createCampaign: (name: string, note = "") => post<Campaign>("/campaigns", { name, note }),
-  updateCampaign: (id: number, body: { name?: string; note?: string; company_id?: number }) =>
-    patch<Campaign>(`/campaigns/${id}`, body),
+  updateCampaign: (
+    id: number,
+    body: {
+      name?: string;
+      note?: string;
+      company_id?: number;
+      goal?: string;
+      scope?: Record<string, unknown>;
+      phase?: string;
+      status?: string;
+      starts_at?: string;
+      ends_at?: string;
+    },
+  ) => patch<Campaign>(`/campaigns/${id}`, body),
   deleteCampaign: (id: number) => del<{ deleted: boolean; tasks_unbound: number }>(`/campaigns/${id}`),
   // 声明式：给出这次作业应当包含的全部任务，多退少补。
   setCampaignTasks: (id: number, taskIds: number[]) =>
@@ -1304,6 +1319,45 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ task_ids: taskIds }),
     }),
+
+  // P1 编排面：阶段只是标签，不参与调度与 RoE。
+  campaignPhases: (id: number) =>
+    get<{ phases: CampaignPhase[] | null }>(`/campaigns/${id}/phases`).then((r) => arr(r.phases)),
+  createCampaignPhase: (id: number, body: { name: string; position?: number; status?: string; note?: string }) =>
+    post<CampaignPhase>(`/campaigns/${id}/phases`, body),
+  updateCampaignPhase: (
+    id: number,
+    pid: number,
+    body: { name: string; position?: number; status?: string; note?: string; starts_at?: string; ends_at?: string },
+  ) => patch<CampaignPhase>(`/campaigns/${id}/phases/${pid}`, body),
+  deleteCampaignPhase: (id: number, pid: number) =>
+    del<{ deleted: boolean }>(`/campaigns/${id}/phases/${pid}`),
+  setCampaignTaskPhase: (id: number, tid: number, phaseId: number) =>
+    patch<{ ok: boolean }>(`/campaigns/${id}/tasks/${tid}/phase`, { phase_id: phaseId }),
+  campaignAttackChains: (id: number) => get<CampaignAttackChains>(`/campaigns/${id}/attack-chains`),
+  taskFollowUpIntent: (taskId: string, nodeId: number, description = "") =>
+    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
+      `/tasks/${taskId}/nodes/${nodeId}/follow-up-intent`,
+      { description },
+    ),
+  setADObjectOwned: (taskId: string, oid: number, body: { owned: boolean; evidence?: string; source_loot_id?: number }) =>
+    post<{ ok: boolean; owned: boolean; linked: boolean }>(`/tasks/${taskId}/ad-objects/${oid}/owned`, body),
+  pursueADObject: (taskId: string, oid: number, description = "") =>
+    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
+      `/tasks/${taskId}/ad-objects/${oid}/pursue`,
+      { description },
+    ),
+  batchFindingRetests: (findingIds: number[], notes = "") =>
+    post<{ items: { finding_id: number; retest_id?: number; conversation_id?: number; created?: boolean; state?: string; error?: string }[] }>(
+      "/exploration/findings/retests/batch",
+      { finding_ids: findingIds, notes },
+    ),
+  detectionMatrix: (params: { task?: string; campaign?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.task) qs.set("task", params.task);
+    if (params.campaign) qs.set("campaign", String(params.campaign));
+    return get<DetectionMatrix>(`/exploration/detection-matrix?${qs.toString()}`);
+  },
 
   // ---- companies (企业 + 资产范围；归属唯一来源) ----
   companies: () => get<Company[]>("/companies").then(arr),

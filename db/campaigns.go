@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,19 +20,30 @@ var ErrCampaignInvalid = errors.New("invalid campaign")
 
 // Campaign 是一次作业：一个客户、若干目标、一份交付物。
 type Campaign struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	CompanyID *int64    `json:"company_id,omitempty"`
-	Note      string    `json:"note"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	CompanyID *int64 `json:"company_id,omitempty"`
+	Note      string `json:"note"`
+	// P1 编排字段：goal/scope 只做展示与交接，**不参与 RoE**——授权范围仍由
+	// task_scope/company_scope 决定，战役 scope 不自动写入它们。
+	Goal      string          `json:"goal"`
+	Scope     json.RawMessage `json:"scope,omitempty"`
+	Phase     string          `json:"phase"`
+	Status    string          `json:"status"`
+	StartsAt  *time.Time      `json:"starts_at,omitempty"`
+	EndsAt    *time.Time      `json:"ends_at,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-const campaignCols = `id, name, company_id, note, created_at, updated_at`
+const campaignCols = `id, name, company_id, note, created_at, updated_at,
+	COALESCE(goal,''), COALESCE(scope,'{}'::jsonb), COALESCE(phase,''), COALESCE(status,'active'),
+	starts_at, ends_at`
 
 func scanCampaign(row interface{ Scan(...any) error }) (*Campaign, error) {
 	c := &Campaign{}
-	err := row.Scan(&c.ID, &c.Name, &c.CompanyID, &c.Note, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.CompanyID, &c.Note, &c.CreatedAt, &c.UpdatedAt,
+		&c.Goal, &c.Scope, &c.Phase, &c.Status, &c.StartsAt, &c.EndsAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -159,6 +171,158 @@ func (d *DB) CampaignTaskIDs(campaignID int64) ([]int64, error) {
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ---------- P1：战役目标与阶段 ----------
+
+// CampaignPhase 是战役里的一个阶段（planned/active/done/aborted）。
+type CampaignPhase struct {
+	ID         int64      `json:"id"`
+	CampaignID int64      `json:"campaign_id"`
+	Name       string     `json:"name"`
+	Position   int        `json:"position"`
+	Status     string     `json:"status"`
+	Note       string     `json:"note"`
+	StartsAt   *time.Time `json:"starts_at,omitempty"`
+	EndsAt     *time.Time `json:"ends_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+const campaignPhaseCols = `id, campaign_id, name, position, status, note, starts_at, ends_at, created_at, updated_at`
+
+func scanCampaignPhase(row interface{ Scan(...any) error }) (*CampaignPhase, error) {
+	p := &CampaignPhase{}
+	err := row.Scan(&p.ID, &p.CampaignID, &p.Name, &p.Position, &p.Status, &p.Note,
+		&p.StartsAt, &p.EndsAt, &p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// UpdateCampaignMeta 更新 P1 编排字段（goal/scope/phase/status/时间窗）。
+func (d *DB) UpdateCampaignMeta(id int64, goal string, scope json.RawMessage, phase, status string, startsAt, endsAt *time.Time) (*Campaign, error) {
+	if len(scope) == 0 {
+		scope = json.RawMessage(`{}`)
+	}
+	if !json.Valid(scope) {
+		return nil, fmt.Errorf("%w：scope 不是合法 JSON", ErrCampaignInvalid)
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "active"
+	}
+	c, err := scanCampaign(d.QueryRow(`UPDATE campaigns
+SET goal=$2, scope=$3::jsonb, phase=$4, status=$5, starts_at=$6, ends_at=$7
+WHERE id=$1 RETURNING `+campaignCols,
+		id, strings.TrimSpace(goal), string(scope), strings.TrimSpace(phase), status, startsAt, endsAt))
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, fmt.Errorf("%w：战役不存在", ErrCampaignInvalid)
+	}
+	return c, nil
+}
+
+// ListCampaignPhases 按 position 列出一个战役的阶段。
+func (d *DB) ListCampaignPhases(campaignID int64) ([]*CampaignPhase, error) {
+	rows, err := d.Query(`SELECT `+campaignPhaseCols+` FROM campaign_phases
+WHERE campaign_id=$1 ORDER BY position, id`, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*CampaignPhase{}
+	for rows.Next() {
+		p, err := scanCampaignPhase(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// CreateCampaignPhase 新建阶段；同名不唯一（阶段是标签，不是主键）。
+func (d *DB) CreateCampaignPhase(campaignID int64, name string, position int, status, note string, startsAt, endsAt *time.Time) (*CampaignPhase, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("%w：阶段名不能为空", ErrCampaignInvalid)
+	}
+	if strings.TrimSpace(status) == "" {
+		status = "planned"
+	}
+	return scanCampaignPhase(d.QueryRow(`INSERT INTO campaign_phases(campaign_id,name,position,status,note,starts_at,ends_at)
+VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING `+campaignPhaseCols,
+		campaignID, name, position, strings.TrimSpace(status), strings.TrimSpace(note), startsAt, endsAt))
+}
+
+// UpdateCampaignPhase 整体更新一个阶段（不改归属性）。
+func (d *DB) UpdateCampaignPhase(campaignID, phaseID int64, name string, position int, status, note string, startsAt, endsAt *time.Time) (*CampaignPhase, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("%w：阶段名不能为空", ErrCampaignInvalid)
+	}
+	if strings.TrimSpace(status) == "" {
+		status = "planned"
+	}
+	return scanCampaignPhase(d.QueryRow(`UPDATE campaign_phases
+SET name=$3, position=$4, status=$5, note=$6, starts_at=$7, ends_at=$8
+WHERE id=$2 AND campaign_id=$1 RETURNING `+campaignPhaseCols,
+		campaignID, phaseID, name, position, strings.TrimSpace(status), strings.TrimSpace(note), startsAt, endsAt))
+}
+
+// DeleteCampaignPhase 删除阶段；任务的 campaign_phase_id 由 FK SET NULL 自动清空。
+func (d *DB) DeleteCampaignPhase(campaignID, phaseID int64) (int64, error) {
+	res, err := d.Exec(`DELETE FROM campaign_phases WHERE id=$2 AND campaign_id=$1`, campaignID, phaseID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// SetTaskCampaignPhase 把一个任务挂到阶段（0 = 取消归属）。任务必须已属于该战役。
+func (d *DB) SetTaskCampaignPhase(campaignID, taskID, phaseID int64) (int64, error) {
+	if phaseID > 0 {
+		var ok bool
+		if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM campaign_phases WHERE id=$1 AND campaign_id=$2)`, phaseID, campaignID).Scan(&ok); err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, fmt.Errorf("%w：阶段不属于该战役", ErrCampaignInvalid)
+		}
+	}
+	var phase any
+	if phaseID > 0 {
+		phase = phaseID
+	}
+	res, err := d.Exec(`UPDATE tasks SET campaign_phase_id=$3
+WHERE id=$2 AND campaign_id=$1 AND deleted_at IS NULL`, campaignID, taskID, phase)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// CampaignTaskPhases 返回战役内 task_id → phase_id 的映射。
+func (d *DB) CampaignTaskPhases(campaignID int64) (map[int64]int64, error) {
+	rows, err := d.Query(`SELECT id, COALESCE(campaign_phase_id,0) FROM tasks
+WHERE campaign_id=$1 AND deleted_at IS NULL`, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var tid, pid int64
+		if err := rows.Scan(&tid, &pid); err != nil {
+			return nil, err
+		}
+		out[tid] = pid
 	}
 	return out, rows.Err()
 }

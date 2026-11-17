@@ -51,8 +51,10 @@ type ADPath struct {
 // ADHop 是域内路径上的一跳。
 type ADHop struct {
 	From   string   `json:"from"`
+	FromID int64    `json:"from_id,omitempty"`
 	Rel    string   `json:"rel"`
 	To     string   `json:"to"`
+	ToID   int64    `json:"to_id,omitempty"`
 	Rights []string `json:"rights,omitempty"` // can 边的具体权限名
 	Note   string   `json:"note,omitempty"`   // 一句人话：这一跳为什么能走
 }
@@ -349,8 +351,10 @@ func (g *ADPathGraph) shortestPaths(startID int64) ([]ADPath, []ADStart) {
 		for _, s := range steps {
 			p.Steps = append(p.Steps, ADHop{
 				From:   g.name(s.From),
+				FromID: s.From,
 				Rel:    s.Edge.Rel,
 				To:     g.name(s.Edge.To),
+				ToID:   s.Edge.To,
 				Rights: s.Edge.Rights,
 				Note:   g.hopNote(s),
 			})

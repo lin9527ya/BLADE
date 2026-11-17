@@ -16,6 +16,17 @@ func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("PATCH /api/campaigns/{id}", s.patchCampaign)
 	mux.HandleFunc("DELETE /api/campaigns/{id}", s.deleteCampaign)
 	mux.HandleFunc("PUT /api/campaigns/{id}/tasks", s.putCampaignTasks)
+	// P1 编排面：战役目标/阶段/攻击链；阶段只是标签，不参与调度与 RoE。
+	mux.HandleFunc("GET /api/campaigns/{id}/phases", s.listCampaignPhases)
+	mux.HandleFunc("POST /api/campaigns/{id}/phases", s.createCampaignPhase)
+	mux.HandleFunc("PATCH /api/campaigns/{id}/phases/{pid}", s.patchCampaignPhase)
+	mux.HandleFunc("DELETE /api/campaigns/{id}/phases/{pid}", s.deleteCampaignPhase)
+	mux.HandleFunc("PATCH /api/campaigns/{id}/tasks/{tid}/phase", s.setCampaignTaskPhase)
+	mux.HandleFunc("GET /api/campaigns/{id}/attack-chains", s.campaignAttackChains)
+	// 通用「节点 → 人工意图」与 AD 路径标记：只生成意图/写节点属性，不直接执行。
+	mux.HandleFunc("POST /api/tasks/{id}/nodes/{nid}/follow-up-intent", s.taskFollowUpIntent)
+	mux.HandleFunc("POST /api/tasks/{id}/ad-objects/{oid}/owned", s.setADObjectOwned)
+	mux.HandleFunc("POST /api/tasks/{id}/ad-objects/{oid}/pursue", s.pursueADObject)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)

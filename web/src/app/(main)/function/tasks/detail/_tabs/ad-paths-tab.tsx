@@ -6,11 +6,21 @@ import { LoaderIcon, MoveRightIcon, RefreshCwIcon } from "lucide-react";
 
 import { ADImportDialog } from "@/components/ad-import-dialog";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import type { ADPath, ADPathsResponse } from "@/lib/types";
+import { toast } from "sonner";
 
 // 攻击路径（P32 域内 / P39 云上）：把导入的拓扑读成「从手头账号到高价值目标」的最短路。
 //
@@ -47,7 +57,15 @@ const REL_LABEL: Record<string, string> = {
   can: "权限",
 };
 
-function PathCard({ path }: { path: ADPath }) {
+function PathCard({
+  path,
+  onOwned,
+  onPursue,
+}: {
+  path: ADPath;
+  onOwned: (id: number, name: string) => void;
+  onPursue: (id: number, name: string) => void;
+}) {
   return (
     <div className="rounded-md border p-4">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -74,6 +92,16 @@ function PathCard({ path }: { path: ADPath }) {
               )}
               <MoveRightIcon className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono">{s.to}</span>
+              {s.to_id ? (
+                <span className="ml-auto flex gap-1">
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => onOwned(s.to_id!, s.to)}>
+                    拿下
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => onPursue(s.to_id!, s.to)}>
+                    推进
+                  </Button>
+                </span>
+              ) : null}
             </div>
             {s.note && <p className="mt-0.5 text-muted-foreground text-xs">{s.note}</p>}
           </li>
@@ -88,6 +116,9 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
   const [start, setStart] = React.useState("0");
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState("");
+  const [ownedTarget, setOwnedTarget] = React.useState<{ id: number; name: string } | null>(null);
+  const [ownedEvidence, setOwnedEvidence] = React.useState("");
+  const [ownedBusy, setOwnedBusy] = React.useState(false);
 
   const load = React.useCallback(
     (startID: number) => {
@@ -193,7 +224,17 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
       )}
 
       {(data?.paths ?? []).map((p) => (
-        <PathCard key={`${p.start}-${p.target}`} path={p} />
+        <PathCard
+          key={`${p.start}-${p.target}`}
+          path={p}
+          onOwned={(id, name) => { setOwnedTarget({ id, name }); setOwnedEvidence(""); }}
+          onPursue={(id, name) => {
+            void api
+              .pursueADObject(taskId, id)
+              .then((r) => toast.success(`已生成意图 #${r.intent_id}（${name}）${r.queued ? "，任务已排队" : ""}`))
+              .catch((e: Error) => toast.error(`生成意图失败：${e.message}`));
+          }}
+        />
       ))}
 
       {(data?.paths.length ?? 0) > 0 && (
@@ -201,6 +242,45 @@ export function ADPathsTab({ taskId }: { taskId: string }) {
           这些路径由目录采集结果推导，表示**存在**这条利用链，不代表已实施；动手仍走意图与命令门。
         </p>
       )}
+
+      <Dialog open={!!ownedTarget} onOpenChange={(o) => !o && setOwnedTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>标记已拥有 · {ownedTarget?.name}</DialogTitle>
+            <DialogDescription>只写节点属性与证据，不会自动执行；之后路径起点会把它算作已持有。</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={ownedEvidence}
+            onChange={(e) => setOwnedEvidence(e.target.value)}
+            placeholder="凭据/会话来源与验证输出"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOwnedTarget(null)} disabled={ownedBusy}>取消</Button>
+            <Button
+              onClick={() => {
+                if (!ownedTarget) return;
+                if (!ownedEvidence.trim()) {
+                  toast.error("请填写证据");
+                  return;
+                }
+                setOwnedBusy(true);
+                api
+                  .setADObjectOwned(taskId, ownedTarget.id, { owned: true, evidence: ownedEvidence.trim() })
+                  .then(() => {
+                    toast.success("已标记为已拥有");
+                    setOwnedTarget(null);
+                    void load(Number(start));
+                  })
+                  .catch((e: Error) => toast.error(`标记失败：${e.message}`))
+                  .finally(() => setOwnedBusy(false));
+              }}
+              disabled={ownedBusy}
+            >
+              {ownedBusy ? "保存中…" : "确认"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

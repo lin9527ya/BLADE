@@ -20,7 +20,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import type { Campaign, CampaignSummary, Task } from "@/lib/types";
+import type {
+  Campaign,
+  CampaignAttackChains,
+  CampaignPhase,
+  CampaignSummary,
+  DetectionMatrix,
+  Task,
+} from "@/lib/types";
 
 // 战役：任务之上的一层（一个客户、若干目标、一份交付物）。
 //
@@ -32,6 +39,13 @@ export default function CampaignsPage() {
   const [loading, setLoading] = React.useState(false);
   const [summary, setSummary] = React.useState<CampaignSummary | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [phases, setPhases] = React.useState<CampaignPhase[]>([]);
+  const [chains, setChains] = React.useState<CampaignAttackChains | null>(null);
+  const [matrix, setMatrix] = React.useState<DetectionMatrix | null>(null);
+  const [planOpen, setPlanOpen] = React.useState(false);
+  const [planBusy, setPlanBusy] = React.useState(false);
+  const [plan, setPlan] = React.useState({ goal: "", phase: "", status: "active", starts_at: "", ends_at: "" });
+  const [newPhase, setNewPhase] = React.useState("");
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [newName, setNewName] = React.useState("");
@@ -56,9 +70,78 @@ export default function CampaignsPage() {
 
   const openDetail = async (id: number) => {
     try {
-      setSummary(await api.campaign(id));
+      const next = await api.campaign(id);
+      setSummary(next);
+      setPlan({
+        goal: next.campaign.goal ?? "",
+        phase: next.campaign.phase ?? "",
+        status: next.campaign.status || "active",
+        starts_at: next.campaign.starts_at ? next.campaign.starts_at.slice(0, 16) : "",
+        ends_at: next.campaign.ends_at ? next.campaign.ends_at.slice(0, 16) : "",
+      });
+      setPhases(next.phases ?? []);
+      setChains(null);
+      setMatrix(null);
+      void api.campaignPhases(id).then(setPhases).catch(() => undefined);
+      void api.campaignAttackChains(id).then(setChains).catch(() => undefined);
+      void api.detectionMatrix({ campaign: id }).then(setMatrix).catch(() => undefined);
     } catch (e) {
       toast.error(`打开失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  const savePlan = async () => {
+    if (!summary) return;
+    setPlanBusy(true);
+    try {
+      await api.updateCampaign(summary.campaign.id, {
+        goal: plan.goal,
+        phase: plan.phase,
+        status: plan.status,
+        starts_at: plan.starts_at,
+        ends_at: plan.ends_at,
+      });
+      toast.success("计划已保存");
+      setPlanOpen(false);
+      await openDetail(summary.campaign.id);
+      await refresh();
+    } catch (e) {
+      toast.error(`保存失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  const addPhase = async () => {
+    if (!summary || !newPhase.trim()) return;
+    try {
+      await api.createCampaignPhase(summary.campaign.id, { name: newPhase.trim(), position: phases.length });
+      setNewPhase("");
+      setPhases(await api.campaignPhases(summary.campaign.id));
+      toast.success("阶段已添加");
+    } catch (e) {
+      toast.error(`添加阶段失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  const dropPhase = async (pid: number) => {
+    if (!summary) return;
+    try {
+      await api.deleteCampaignPhase(summary.campaign.id, pid);
+      setPhases(await api.campaignPhases(summary.campaign.id));
+      await openDetail(summary.campaign.id);
+    } catch (e) {
+      toast.error(`删除阶段失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  const assignPhase = async (tid: number, phaseId: number) => {
+    if (!summary) return;
+    try {
+      await api.setCampaignTaskPhase(summary.campaign.id, tid, phaseId);
+      await openDetail(summary.campaign.id);
+    } catch (e) {
+      toast.error(`调整阶段失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -157,8 +240,16 @@ export default function CampaignsPage() {
                       <FolderKanbanIcon className="size-4 text-muted-foreground" />
                       <span className="font-medium">{c.name}</span>
                     </div>
-                    <Badge variant="outline">{c.task_count ?? 0} 个任务</Badge>
+                    <div className="flex items-center gap-1">
+                      <Badge variant={c.status === "active" ? "default" : "secondary"}>{c.status || "active"}</Badge>
+                      <Badge variant="outline">{c.task_count ?? 0} 个任务</Badge>
+                    </div>
                   </div>
+                  {(c.goal || c.phase) && (
+                    <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">
+                      {c.phase ? `[${c.phase}] ` : ""}{c.goal || ""}
+                    </p>
+                  )}
                   {c.note && <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">{c.note}</p>}
                 </CardContent>
               </Card>
@@ -202,6 +293,43 @@ export default function CampaignsPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={planOpen} onOpenChange={setPlanOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>编辑战役计划</DialogTitle>
+            <DialogDescription>目标/阶段/时间窗只用于展示与交接，不参与 RoE，也不会自动写任务范围。</DialogDescription>
+          </DialogHeader>
+          <Field label="目标" htmlFor="campaign-goal">
+            <Input id="campaign-goal" value={plan.goal} onChange={(e) => setPlan({ ...plan, goal: e.target.value })} placeholder="本轮作业要达成什么" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="阶段" htmlFor="campaign-phase">
+              <Input id="campaign-phase" value={plan.phase} onChange={(e) => setPlan({ ...plan, phase: e.target.value })} placeholder="如 外网打点" />
+            </Field>
+            <Field label="状态" htmlFor="campaign-status">
+              <select
+                id="campaign-status"
+                className="h-9 rounded-md border bg-transparent px-2 text-sm"
+                value={plan.status}
+                onChange={(e) => setPlan({ ...plan, status: e.target.value })}
+              >
+                {["active", "paused", "done", "archived"].map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </Field>
+            <Field label="开始（RFC3339，可空）" htmlFor="campaign-starts">
+              <Input id="campaign-starts" value={plan.starts_at} onChange={(e) => setPlan({ ...plan, starts_at: e.target.value })} placeholder="2026-11-17T09:00:00+08:00" />
+            </Field>
+            <Field label="结束（RFC3339，可空）" htmlFor="campaign-ends">
+              <Input id="campaign-ends" value={plan.ends_at} onChange={(e) => setPlan({ ...plan, ends_at: e.target.value })} placeholder="2026-11-20T18:00:00+08:00" />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPlanOpen(false)} disabled={planBusy}>取消</Button>
+            <Button onClick={() => void savePlan()} disabled={planBusy}>{planBusy ? "保存中…" : "保存"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!summary} onOpenChange={(v) => !v && setSummary(null)}>
         <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {summary && (
@@ -211,6 +339,24 @@ export default function CampaignsPage() {
                 <DialogDescription>
                   {summary.campaign.note || "（无备注）"} · 删战役只解绑任务，不删任务本身。
                 </DialogDescription>
+                <div className="flex flex-wrap items-center gap-2 pt-2">
+                  <Badge variant={summary.campaign.status === "active" ? "default" : "secondary"}>
+                    {summary.campaign.status || "active"}
+                  </Badge>
+                  {summary.campaign.phase && <Badge variant="outline">阶段 {summary.campaign.phase}</Badge>}
+                  {summary.campaign.starts_at && (
+                    <span className="text-muted-foreground text-xs">开始 {summary.campaign.starts_at.slice(0, 16)}</span>
+                  )}
+                  {summary.campaign.ends_at && (
+                    <span className="text-muted-foreground text-xs">结束 {summary.campaign.ends_at.slice(0, 16)}</span>
+                  )}
+                  <Button size="sm" variant="outline" className="ml-auto" onClick={() => setPlanOpen(true)}>
+                    编辑计划
+                  </Button>
+                </div>
+                {summary.campaign.goal && (
+                  <p className="rounded-md border bg-muted/30 p-2 text-sm">目标：{summary.campaign.goal}</p>
+                )}
               </DialogHeader>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
                 <div className="flex flex-wrap gap-2">
@@ -259,6 +405,93 @@ export default function CampaignsPage() {
                 )}
 
                 <div>
+                  <p className="mb-2 font-medium text-sm">阶段</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {phases.length === 0 && <span className="text-muted-foreground text-xs">还没有阶段（可选，仅用于归组与交接）。</span>}
+                    {phases.map((p) => (
+                      <div key={p.id} className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
+                        <span>{p.name}</span>
+                        <Badge variant="outline">{p.status}</Badge>
+                        <button className="text-muted-foreground hover:text-destructive" onClick={() => void dropPhase(p.id)}>×</button>
+                      </div>
+                    ))}
+                    <Input
+                      className="h-7 w-40"
+                      value={newPhase}
+                      onChange={(e) => setNewPhase(e.target.value)}
+                      placeholder="新阶段名"
+                      onKeyDown={(e) => e.key === "Enter" && void addPhase()}
+                    />
+                    <Button size="sm" variant="outline" onClick={() => void addPhase()} disabled={!newPhase.trim()}>
+                      添加
+                    </Button>
+                  </div>
+                </div>
+
+                {chains && (
+                  <div>
+                    <p className="mb-2 font-medium text-sm">攻击链（逐任务复用，不合成跨任务边）</p>
+                    {chains.tasks.length === 0 ? (
+                      <p className="text-muted-foreground text-xs">暂无可用任务。</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {chains.tasks.map((t) => (
+                          <div key={t.task_id} className="rounded-md border p-2 text-xs">
+                            <div className="font-medium">{t.name || `任务 ${t.task_id}`}</div>
+                            {t.error ? (
+                              <div className="text-destructive">{t.error}</div>
+                            ) : (t.chains?.length ?? 0) === 0 ? (
+                              <div className="text-muted-foreground">还没有走出攻击链（需要 uses/yields 边）。</div>
+                            ) : (
+                              t.chains?.map((ch, i) => (
+                                <div key={i} className="mt-1">
+                                  <span className="font-mono">{ch.head}</span>
+                                  {ch.steps.map((st, j) => (
+                                    <span key={j} className="text-muted-foreground">
+                                      {" → "}#{st.intent_id} {st.summary}
+                                      {st.produced?.length ? `（产出 ${st.produced.join(", ")}）` : ""}
+                                    </span>
+                                  ))}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {chains.missing_tasks.length > 0 && (
+                      <p className="mt-1 text-muted-foreground text-xs">
+                        未加载任务：{chains.missing_tasks.map((m) => `#${m.task_id}`).join(", ")}
+                      </p>
+                    )}
+                    {chains.shared_assets.length > 0 && (
+                      <p className="mt-1 text-muted-foreground text-xs">
+                        共享资产：{chains.shared_assets.slice(0, 8).map((a) => a.label).join(", ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {matrix && matrix.techniques.length > 0 && (
+                  <div>
+                    <p className="mb-1 font-medium text-sm">检测矩阵</p>
+                    <div className="flex flex-wrap gap-1.5 text-xs">
+                      {[
+                        ["triggered", "已检出"],
+                        ["not_triggered", "未检出"],
+                        ["unknown", "无法判定"],
+                        ["unmeasured", "未记录"],
+                      ].map(([k, label]) => (
+                        <Badge key={k} variant="outline">
+                          {label} {matrix.counts[k] ?? 0}
+                        </Badge>
+                      ))}
+                    </div>
+                    <p className="mt-1 text-muted-foreground text-xs">{matrix.note}</p>
+                  </div>
+                )}
+
+                <div>
                   <div className="mb-2 flex items-center justify-between">
                     <p className="font-medium text-sm">任务（{summary.tasks.length}）</p>
                     {candidates.length > 0 && (
@@ -293,6 +526,22 @@ export default function CampaignsPage() {
                               {t.detections}
                             </div>
                           </div>
+                          {phases.length > 0 && (
+                            <Select
+                              value={String(t.phase_id ?? 0)}
+                              onValueChange={(v) => void assignPhase(t.id, Number(v))}
+                            >
+                              <SelectTrigger className="h-7 w-36">
+                                <SelectValue placeholder="阶段" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">未分配</SelectItem>
+                                {phases.map((p) => (
+                                  <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"

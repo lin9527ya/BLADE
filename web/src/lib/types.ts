@@ -783,8 +783,10 @@ export interface CredentialReveal {
 
 export interface ADHop {
   from: string;
+  from_id?: number;
   rel: string;
   to: string;
+  to_id?: number;
   rights?: string[];
   note?: string;
 }
@@ -3212,9 +3214,28 @@ export interface Campaign {
   name: string;
   company_id?: number;
   note: string;
+  goal: string;
+  scope?: Record<string, unknown>;
+  phase: string;
+  status: string;
+  starts_at?: string;
+  ends_at?: string;
   created_at: string;
   updated_at: string;
   task_count?: number;
+}
+
+export interface CampaignPhase {
+  id: number;
+  campaign_id: number;
+  name: string;
+  position: number;
+  status: string;
+  note: string;
+  starts_at?: string;
+  ends_at?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // 汇总里每个任务的一行。
@@ -3226,6 +3247,8 @@ export interface CampaignTaskBrief {
   footholds: number;
   credentials: number;
   detections: number;
+  artifacts_uncleaned?: number;
+  phase_id?: number;
 }
 
 // GET /api/campaigns/{id}：归属 + 跨任务聚合。techniques / detection_results 无数据时缺省。
@@ -3235,6 +3258,49 @@ export interface CampaignSummary {
   totals: { tasks: number; findings: number; footholds: number; credentials: number; detections: number };
   techniques?: Record<string, number>;
   detection_results?: Record<string, number>;
+  phases?: CampaignPhase[];
+}
+
+// P1 跨任务攻击链：逐任务复用单任务链，不合成跨 exploration 的边。
+export interface CampaignChainStep {
+  intent_id: number;
+  summary: string;
+  produced?: string[];
+  techniques?: string[];
+}
+
+export interface CampaignAttackChain {
+  head: string;
+  steps: CampaignChainStep[];
+}
+
+export interface CampaignTaskChains {
+  task_id: number;
+  name: string;
+  chains?: CampaignAttackChain[];
+  error?: string;
+}
+
+export interface CampaignAttackChains {
+  campaign_id: number;
+  tasks: CampaignTaskChains[];
+  missing_tasks: { task_id: number; reason: string }[];
+  shared_assets: { asset_id: number; type: string; label: string; task_ids: number[] }[];
+}
+
+// 检测矩阵：五态分开计数，不合成检出率。
+export type DetectionMatrixStatus =
+  | "triggered"
+  | "not_triggered"
+  | "unknown"
+  | "unmeasured"
+  | "not_attempted";
+
+export interface DetectionMatrix {
+  techniques: string[];
+  rows: { asset_id: number; label: string; cells: Record<string, DetectionMatrixStatus> }[];
+  counts: Record<string, number>;
+  note: string;
 }
 
 export interface FindingSrcCheck {

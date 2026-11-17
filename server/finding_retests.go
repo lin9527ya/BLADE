@@ -79,51 +79,71 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "复测补充说明最多 4000 个字符")
 		return
 	}
-	f, err := pg.GetFinding(id)
+	retest, created, err := s.startRetestForFinding(r.Context(), id, req.Notes)
 	if err != nil {
+		var se *retestStartError
+		if errors.As(err, &se) {
+			writeErr(w, se.code, se.err.Error())
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
+	code := http.StatusOK
+	if created {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, map[string]any{"retest": retest, "created": created})
+}
+
+// retestStartError 把“复测无法启动”的 HTTP 语义带到批量接口之外的调用点。
+type retestStartError struct {
+	code int
+	err  error
+}
+
+func (e *retestStartError) Error() string { return e.err.Error() }
+func (e *retestStartError) Unwrap() error { return e.err }
+
+// startRetestForFinding 校验复测 Agent/工具并创建（或复用）复测会话。
+// 单条与批量接口共用同一入口，避免两套校验漂移。
+func (s *Server) startRetestForFinding(ctx context.Context, id int64, notes string) (*db.FindingRetest, bool, error) {
+	pg := s.m.pg
+	f, err := pg.GetFinding(id)
+	if err != nil {
+		return nil, false, err
+	}
 	if f == nil {
-		writeErr(w, 404, "finding not found")
-		return
+		return nil, false, &retestStartError{code: 404, err: errors.New("finding not found")}
 	}
 	a, err := pg.GetAgentByKey(db.FindingRetestAgentKey)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
+		return nil, false, err
 	}
 	if a == nil || !a.Enabled {
-		writeErr(w, 409, "漏洞复测 Agent 不存在或未启用，请在 Agent 管理中配置 retester")
-		return
+		return nil, false, &retestStartError{code: 409, err: errors.New("漏洞复测 Agent 不存在或未启用，请在 Agent 管理中配置 retester")}
 	}
 	for _, key := range []string{"get_finding_retest_context", "record_finding_retest_result"} {
 		t, err := pg.GetTool(key)
 		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
+			return nil, false, err
 		}
 		if t == nil || !t.Enabled || !slices.Contains(t.Agents, a.Key) {
-			writeErr(w, 409, "请为复测 Agent 启用并绑定工具："+key)
-			return
+			return nil, false, &retestStartError{code: 409, err: errors.New("请为复测 Agent 启用并绑定工具：" + key)}
 		}
 	}
 	if s.resolveChatAgent(&db.Conversation{AgentKey: a.Key}) == nil {
-		writeErr(w, 503, s.chatUnavailableReason())
-		return
+		return nil, false, &retestStartError{code: 503, err: errors.New(s.chatUnavailableReason())}
 	}
 	if s.ctx.Err() != nil {
-		writeErr(w, 503, "服务正在停止")
-		return
+		return nil, false, &retestStartError{code: 503, err: errors.New("服务正在停止")}
 	}
-	retest, conv, created, err := pg.CreateFindingRetest(r.Context(), id, req.Notes)
+	retest, conv, created, err := pg.CreateFindingRetest(ctx, id, notes)
 	if errors.Is(err, sql.ErrNoRows) {
-		writeErr(w, 404, "finding not found")
-		return
+		return nil, false, &retestStartError{code: 404, err: errors.New("finding not found")}
 	}
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
+		return nil, false, err
 	}
 	if created {
 		busyKey := s.convBusyKey(conv.ID)
@@ -132,11 +152,59 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 		s.chatRuns.mu.Unlock()
 		s.runConversation(conv, retest.InitialMessage(), busyKey)
 	}
-	code := http.StatusOK
-	if created {
-		code = http.StatusAccepted
+	return retest, created, nil
+}
+
+// startFindingRetestsBatch 逐条启动复测；每条独立返回，部分失败不影响其余。
+func (s *Server) startFindingRetestsBatch(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
 	}
-	writeJSON(w, code, map[string]any{"retest": retest, "created": created})
+	var req struct {
+		FindingIDs []int64 `json:"finding_ids"`
+		Notes      string  `json:"notes"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+	req.Notes = strings.TrimSpace(req.Notes)
+	if utf8.RuneCountInString(req.Notes) > 4000 {
+		writeErr(w, 400, "复测补充说明最多 4000 个字符")
+		return
+	}
+	if len(req.FindingIDs) == 0 {
+		writeErr(w, 400, "finding_ids 不能为空")
+		return
+	}
+	if len(req.FindingIDs) > 20 {
+		writeErr(w, 400, "单次最多批量复测 20 条")
+		return
+	}
+	out := make([]map[string]any, 0, len(req.FindingIDs))
+	for _, id := range req.FindingIDs {
+		row := map[string]any{"finding_id": id}
+		if id <= 0 {
+			row["error"] = "bad finding id"
+			out = append(out, row)
+			continue
+		}
+		retest, created, err := s.startRetestForFinding(r.Context(), id, req.Notes)
+		if err != nil {
+			row["error"] = err.Error()
+			out = append(out, row)
+			continue
+		}
+		row["retest_id"] = retest.ID
+		row["created"] = created
+		row["state"] = retest.Status
+		if retest.ConversationID != nil {
+			row["conversation_id"] = *retest.ConversationID
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, 200, map[string]any{"items": out})
 }
 
 // Both tools derive the finding from server-owned conversation context. Tool

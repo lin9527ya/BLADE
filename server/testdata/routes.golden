@@ -3,6 +3,7 @@ DELETE /api/api-tokens/{id}	server.(*Server).revokeAPIToken-fm
 DELETE /api/asset-intercept/rules/{id}	server.(*Server).assetInterceptDeleteRule-fm
 DELETE /api/assets	server.(*Server).deleteAssets-fm
 DELETE /api/campaigns/{id}	server.(*Server).deleteCampaign-fm
+DELETE /api/campaigns/{id}/phases/{pid}	server.(*Server).deleteCampaignPhase-fm
 DELETE /api/companies/{id}	server.(*Server).deleteCompany-fm
 DELETE /api/conversations/{id}	server.(*Server).pgDeleteConversation-fm
 DELETE /api/conversations/{id}/side-questions	server.(*Server).registerSideRoutes.func1
@@ -59,6 +60,8 @@ GET /api/broadcast	server.(*Server).globalBroadcast-fm
 GET /api/broadcast/stream	server.(*Server).streamGlobalBroadcast-fm
 GET /api/campaigns	server.(*Server).listCampaigns-fm
 GET /api/campaigns/{id}	server.(*Server).getCampaign-fm
+GET /api/campaigns/{id}/attack-chains	server.(*Server).campaignAttackChains-fm
+GET /api/campaigns/{id}/phases	server.(*Server).listCampaignPhases-fm
 GET /api/chat/mentions	server.(*Server).searchChatMentions-fm
 GET /api/commands	server.(*Server).pgListCommands-fm
 GET /api/commands/stats	server.(*Server).pgToolStats-fm
@@ -100,6 +103,7 @@ GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
 GET /api/exploration/activity/stream	server.(*Server).streamActivity-fm
 GET /api/exploration/activity/{seq}	server.(*Server).activityDetail-fm
+GET /api/exploration/detection-matrix	server.(*Server).detectionMatrix-fm
 GET /api/exploration/finding-case-rows	server.(*Server).listFindingCaseRows-fm
 GET /api/exploration/finding-case-suggestions	server.(*Server).listFindingCaseSuggestions-fm
 GET /api/exploration/finding-cases	server.(*Server).listFindingCases-fm
@@ -240,6 +244,8 @@ GET /api/workspace/list	server.(*Server).wsList-fm
 GET /api/workspace/read	server.(*Server).wsRead-fm
 PATCH /api/agents/{key}	server.(*Server).pgUpdateAgent-fm
 PATCH /api/campaigns/{id}	server.(*Server).patchCampaign-fm
+PATCH /api/campaigns/{id}/phases/{pid}	server.(*Server).patchCampaignPhase-fm
+PATCH /api/campaigns/{id}/tasks/{tid}/phase	server.(*Server).setCampaignTaskPhase-fm
 PATCH /api/companies/{id}/knowledge/{kid}	server.(*Server).patchCompanyKnowledge-fm
 PATCH /api/conversations/{id}	server.(*Server).pgRenameConversation-fm
 PATCH /api/conversations/{id}/profile	server.(*Server).pgUpdateConversation-fm
@@ -280,6 +286,7 @@ POST /api/auth/change-username	server.(*Server).authChangeUsername-fm
 POST /api/auth/init	server.(*Server).authInit-fm
 POST /api/auth/login	server.(*Server).authLogin-fm
 POST /api/campaigns	server.(*Server).createCampaign-fm
+POST /api/campaigns/{id}/phases	server.(*Server).createCampaignPhase-fm
 POST /api/chat	server.(*Server).chat-fm
 POST /api/chat/upload	server.(*Server).chatUpload-fm
 POST /api/cloud/import	server.(*Server).cloudImportApply-fm
@@ -313,6 +320,7 @@ POST /api/exploration/finding-case-suggestions/{id}/accept	server.(*Server).acce
 POST /api/exploration/finding-case-suggestions/{id}/dismiss	server.(*Server).dismissFindingCaseSuggestion-fm
 POST /api/exploration/finding-cases	server.(*Server).createFindingCase-fm
 POST /api/exploration/finding-cases/{id}/members	server.(*Server).addFindingCaseMembers-fm
+POST /api/exploration/findings/retests/batch	server.(*Server).startFindingRetestsBatch-fm
 POST /api/exploration/findings/{id}/comments	server.(*Server).addFindingComment-fm
 POST /api/exploration/findings/{id}/deepen	server.(*Server).deepenFinding-fm
 POST /api/exploration/findings/{id}/retests	server.(*Server).startFindingRetest-fm
@@ -372,6 +380,8 @@ POST /api/tasks	server.(*Server).createTask-fm
 POST /api/tasks/archive/batch	server.(*Server).queueTaskArchivesBatch-fm
 POST /api/tasks/category/batch	server.(*Server).updateTasksCategoryBatch-fm
 POST /api/tasks/control/batch	server.(*Server).controlTasksBatch-fm
+POST /api/tasks/{id}/ad-objects/{oid}/owned	server.(*Server).setADObjectOwned-fm
+POST /api/tasks/{id}/ad-objects/{oid}/pursue	server.(*Server).pursueADObject-fm
 POST /api/tasks/{id}/archive	server.(*Server).queueTaskArchive-fm
 POST /api/tasks/{id}/artifacts/accept-risk	server.(*Server).acceptArtifactRisk-fm
 POST /api/tasks/{id}/artifacts/{aid}/cleared	server.(*Server).clearArtifact-fm
@@ -400,6 +410,7 @@ POST /api/tasks/{id}/intents/{iid}/rerun	server.(*Server).rerunIntent-fm
 POST /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptCreateRule-fm
 POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskInterceptToggleRule-fm
+POST /api/tasks/{id}/nodes/{nid}/follow-up-intent	server.(*Server).taskFollowUpIntent-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm
 POST /api/tasks/{id}/template	server.(*Server).taskToTemplate-fm
 POST /api/tools/custom	server.(*Server).pgCreateCustomTool-fm

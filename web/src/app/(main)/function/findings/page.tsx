@@ -49,7 +49,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { statusMeta } from "@/lib/status";
 import type { ActiveFindingRetest, FindingStatus, Severity } from "@/lib/types";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 import { AssetTree } from "./_components/asset-tree";
 import { FindingCaseDialog } from "./_components/finding-case-dialog";
@@ -130,6 +132,12 @@ export default function FindingsPage() {
     batchBusy,
   } = useFindingsState();
   const [batchDeleteOpen, setBatchDeleteOpen] = React.useState(false);
+  const [batchRetestOpen, setBatchRetestOpen] = React.useState(false);
+  const [batchRetestNotes, setBatchRetestNotes] = React.useState("");
+  const [batchRetestBusy, setBatchRetestBusy] = React.useState(false);
+  const [batchRetestResults, setBatchRetestResults] = React.useState<
+    { finding_id: number; retest_id?: number; conversation_id?: number; created?: boolean; state?: string; error?: string }[]
+  >([]);
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
@@ -304,6 +312,15 @@ export default function FindingsPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  onClick={() => { setBatchRetestResults([]); setBatchRetestOpen(true); }}
+                  disabled={batchBusy}
+                >
+                  批量复测
+                </Button>
                 <Button
                   size="icon-sm"
                   variant="ghost"
@@ -581,6 +598,71 @@ export default function FindingsPage() {
         taskID={task !== "all" && task !== UNASSIGNED_TASK ? task : ""}
         selectedFindingIDs={[...selectedIds].map(Number).filter((n) => Number.isFinite(n) && n > 0)}
       />
+
+      <Dialog open={batchRetestOpen} onOpenChange={setBatchRetestOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>批量复测</DialogTitle>
+            <DialogDescription>
+              为已选 {selectedIds.size} 条发现逐条启动复测会话（单次最多 20 条）。复测只读证据，不自动改漏洞结论。
+            </DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <div>
+              <FieldLabel htmlFor="batch-retest-notes">补充说明（可选）</FieldLabel>
+              <InputGroup>
+                <InputGroupInput
+                  id="batch-retest-notes"
+                  value={batchRetestNotes}
+                  onChange={(e) => setBatchRetestNotes(e.target.value)}
+                  placeholder="本轮需要重点确认什么"
+                />
+              </InputGroup>
+            </div>
+          </FieldGroup>
+          {batchRetestResults.length > 0 && (
+            <div className="max-h-48 space-y-1 overflow-auto rounded border p-2 text-xs">
+              {batchRetestResults.map((r) => (
+                <div key={r.finding_id} className="flex items-center justify-between gap-2">
+                  <span>#{r.finding_id}</span>
+                  {r.error ? (
+                    <span className="text-destructive">{r.error}</span>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      复测 #{r.retest_id} · {r.state}{r.conversation_id ? ` · 会话 #${r.conversation_id}` : ""}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchRetestOpen(false)} disabled={batchRetestBusy}>关闭</Button>
+            <Button
+              onClick={() => {
+                const ids = [...selectedIds].map(Number).filter((n) => Number.isFinite(n) && n > 0).slice(0, 20);
+                if (ids.length === 0) {
+                  toast.error("请先勾选发现");
+                  return;
+                }
+                setBatchRetestBusy(true);
+                api
+                  .batchFindingRetests(ids, batchRetestNotes.trim())
+                  .then((r) => {
+                    setBatchRetestResults(r.items);
+                    const failed = r.items.filter((it) => it.error).length;
+                    toast.success(failed > 0 ? `已提交 ${r.items.length - failed} 条，${failed} 条失败` : `已提交 ${r.items.length} 条复测`);
+                  })
+                  .catch((e: Error) => toast.error(`批量复测失败：${e.message}`))
+                  .finally(() => setBatchRetestBusy(false));
+              }}
+              disabled={batchRetestBusy || selectedIds.size === 0}
+            >
+              {batchRetestBusy ? "提交中…" : "开始复测"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
         <AlertDialogContent>

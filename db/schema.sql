@@ -2172,3 +2172,36 @@ CREATE INDEX IF NOT EXISTS idx_cred_checks_host
     ON credential_checks(lower(host), service, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cred_checks_exploration
     ON credential_checks(exploration_id, created_at DESC);
+
+-- =====================================================================
+-- P1 编排面：战役目标/阶段/状态 + 任务阶段归属
+-- =====================================================================
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS goal TEXT NOT NULL DEFAULT '';
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scope JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT '';
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS campaign_phases (
+    id          BIGSERIAL PRIMARY KEY,
+    campaign_id BIGINT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    position    INT NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'planned',
+    note        TEXT NOT NULL DEFAULT '',
+    starts_at   TIMESTAMPTZ,
+    ends_at     TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_phases
+    ON campaign_phases(campaign_id, position, id);
+DROP TRIGGER IF EXISTS trg_campaign_phases_upd ON campaign_phases;
+CREATE TRIGGER trg_campaign_phases_upd BEFORE UPDATE ON campaign_phases
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS campaign_phase_id BIGINT
+    REFERENCES campaign_phases(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_campaign_phase
+    ON tasks(campaign_phase_id) WHERE campaign_phase_id IS NOT NULL;
