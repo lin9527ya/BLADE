@@ -233,6 +233,23 @@ func (s *Server) interceptToggleRule(w http.ResponseWriter, r *http.Request) {
 
 // --- pending (ask) ---
 
+func (s *Server) interceptSLAStats(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	threshold, _ := strconv.ParseInt(r.URL.Query().Get("seconds"), 10, 64)
+	if threshold <= 0 {
+		threshold = 3600
+	}
+	stats, err := pg.InterceptSLAStats(threshold)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, stats)
+}
+
 func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {

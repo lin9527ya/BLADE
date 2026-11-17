@@ -5,7 +5,8 @@ import * as React from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
-import { ArrowUpRightIcon, BuildingIcon, NetworkIcon } from "lucide-react";
+import { BuildingIcon, DownloadIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { CopyLinkButton } from "@/components/copy-link-button";
 import { StatusBadge } from "@/components/status-badge";
@@ -134,7 +135,20 @@ function CompanyOverviewInner() {
             )}
           </div>
         </div>
-        <CopyLinkButton />
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              void api
+                .downloadScopeDeliverablesZIP({ company_id: data.company.id })
+                .catch((e: Error) => toast.error(e.message))
+            }
+          >
+            <DownloadIcon /> 导出交付 ZIP
+          </Button>
+          <CopyLinkButton />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

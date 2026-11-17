@@ -250,6 +250,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"storage_retention_notify_events_days":         s.storageRetentionDays(settingRetentionNotifyEvents),
 		"storage_retention_conversation_activity_days": s.storageRetentionDays(settingRetentionConvActivity),
 		"storage_retention_intercept_pending_days":     s.storageRetentionDays(settingRetentionInterceptPending),
+		"storage_retention_audit_events_days":          s.storageRetentionDays(settingRetentionAuditEvents),
 		"storage_retention_traffic_days":               s.storageRetentionDays(settingRetentionTraffic),
 		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
@@ -415,6 +416,7 @@ type settingsRequest struct {
 	RetentionNotifyEvents   *int `json:"storage_retention_notify_events_days"`
 	RetentionConvActivity   *int `json:"storage_retention_conversation_activity_days"`
 	RetentionInterceptPend  *int `json:"storage_retention_intercept_pending_days"`
+	RetentionAuditEvents    *int `json:"storage_retention_audit_events_days"`
 	ExecMemoryMB            *int `json:"exec_memory_mb"`
 	ExecMaxProcs            *int `json:"exec_max_procs"`
 	ExecMaxActive           *int `json:"exec_max_active"`
@@ -616,6 +618,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingRetentionNotifyEvents, req.RetentionNotifyEvents, 3650, "通知事件保留天数"},
 		{settingRetentionConvActivity, req.RetentionConvActivity, 3650, "对话活动流保留天数"},
 		{settingRetentionInterceptPending, req.RetentionInterceptPend, 3650, "审批记录保留天数"},
+		{settingRetentionAuditEvents, req.RetentionAuditEvents, 3650, "审计事件保留天数"},
 	} {
 		if f.val == nil {
 			continue

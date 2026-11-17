@@ -172,7 +172,7 @@ export function AggregateDeliverableDialog({
             <LayersIcon className="size-4" /> 从战役/公司生成交付物
           </DialogTitle>
           <DialogDescription>
-            逐个读取范围内任务报告，拼接成一份带任务清单的 Markdown，并保存为交付物第一版。单次最多 {MAX_TASKS} 个任务；任务较多时请保持页面打开直到完成。
+            逐个读取范围内任务报告，拼接成一份带任务清单的 Markdown，并保存为交付物第一版。单次最多 {MAX_TASKS} 个任务；任务较多时请保持页面打开直到完成。任务报告会带上复测结论与人工整改建议。
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>

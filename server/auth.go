@@ -547,6 +547,31 @@ func withActor(r *http.Request, actor string) *http.Request {
 
 // requireAuth wraps h with JWT validation.
 // /api/auth/* and /api/health are exempt.
+// operatorWriteAllowed is the operator token's write policy. It is deliberately
+// a deny-list for admin surfaces: operators can run and edit business data
+// (tasks, findings, assets, campaigns, deliverables, approvals), but cannot
+// change system settings, credentials, model configuration or audit storage.
+func operatorWriteAllowed(path string) bool {
+	// Approving one request is operational; turning it into a persistent
+	// always-allow rule is policy authoring and stays admin-only.
+	if strings.HasSuffix(path, "/always-allow") {
+		return false
+	}
+	adminOnly := []string{
+		"/api/settings", "/api/api-tokens", "/api/audit", "/api/llm", "/api/agents",
+		"/api/mcp", "/api/skills", "/api/tools", "/api/custom-tools", "/api/storage",
+		"/api/diagnostics", "/api/update", "/api/notify", "/api/system", "/api/sync",
+		"/api/intercept/rules", "/api/asset-intercept", "/api/intercept/tool-config",
+		"/api/intercept/judge",
+	}
+	for _, prefix := range adminOnly {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
@@ -566,8 +591,13 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		// 长期 API 令牌（Prometheus/自动化）只存哈希；JWT 校验失败后再查一次。
 		if strings.HasPrefix(tok, "blt_") && s.m != nil && s.m.PG() != nil {
 			if name, scopes, ok, err := s.m.PG().ValidateAPIToken(tok); err == nil && ok {
-				if scopes == "read" && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+				write := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+				if scopes == "read" && write {
 					writeErr(w, http.StatusForbidden, "只读令牌不能执行写操作")
+					return
+				}
+				if scopes == "operator" && write && !operatorWriteAllowed(r.URL.Path) {
+					writeErr(w, http.StatusForbidden, "操作员令牌不能修改系统配置")
 					return
 				}
 				h.ServeHTTP(w, withActor(r, "token:"+name))

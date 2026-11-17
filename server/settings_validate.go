@@ -115,6 +115,12 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 		{req.RetentionLLMRecordBodys, 3650, "LLM 录制载荷保留天数"},
 		{req.RetentionLLMRecords, 3650, "LLM 录制整行保留天数"},
 		{req.RetentionTraffic, 3650, "流量归档保留天数"},
+		{req.RetentionToolExecs, 3650, "长任务台账保留天数"},
+		{req.RetentionCredAttempts, 3650, "凭据尝试记录保留天数"},
+		{req.RetentionNotifyEvents, 3650, "通知事件保留天数"},
+		{req.RetentionConvActivity, 3650, "对话活动流保留天数"},
+		{req.RetentionInterceptPend, 3650, "审批记录保留天数"},
+		{req.RetentionAuditEvents, 3650, "审计事件保留天数"},
 	} {
 		if f.val == nil {
 			continue

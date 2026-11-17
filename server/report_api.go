@@ -167,6 +167,11 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 报告 Agent 为每条发现写的详细分析：链路里最值钱的一段，此前完全没进总报告。
 	// 同时核对证据版本：写完之后又补了证据的分析要显式标「可能已过期」，不能拿旧结论当现状。
+	remediationByNode, remErr := s.m.pg.FindingRemediationByNode(tid)
+	if remErr != nil {
+		log.Printf("[report] 任务 %s 整改建议读取失败：%v", t.ID, remErr)
+		dataGaps = append(dataGaps, "整改建议读取失败：报告正文不含人工整改建议")
+	}
 	reportDetails, rerr := s.m.pg.FindingReportsByNode(tid)
 	findingReports := make(map[int64]string, len(reportDetails))
 	findingReportStale := map[int64]string{}
@@ -280,7 +285,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(), Goals: reportGoals,
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
-		FindingReports: findingReports, FindingReportStale: findingReportStale, Scope: scope, Duplicates: duplicates, Truncated: truncated,
+		FindingReports: findingReports, FindingReportStale: findingReportStale, RemediationByNode: remediationByNode,
+		Scope: scope, Duplicates: duplicates, Truncated: truncated,
 		DataGaps:         dataGaps,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
 		NodeOrdinal: nodeOrd, IntentOrdinal: intentOrd,

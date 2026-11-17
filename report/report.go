@@ -66,6 +66,9 @@ type Input struct {
 	// FindingReportStale 按 finding 节点 id 标注「详细分析撰写后证据又变了」：
 	// 证据版本不一致时提示读者该段可能已过期，需重新核对——不静默把旧分析当现状。
 	FindingReportStale map[int64]string
+	// RemediationByNode 是操作者维护的整改建议，按 finding 节点 id。它不属于
+	// 报告 Agent 的分析，但交付物必须带上——否则客户只看到漏洞、看不到怎么修。
+	RemediationByNode map[int64]string
 	// Scope 是「测了什么 / 没测什么」的账目；nil = 没有可核对的范围信息。
 	Scope *ScopeSummary
 	// Truncated 列出「本次报告因上限被截断」的清单。截断必须被声明——让读者以为
@@ -778,6 +781,9 @@ func Markdown(in Input) string {
 					fmt.Fprintf(&b, "> ⚠ %s\n\n", note)
 				}
 				fmt.Fprintf(&b, "**详细分析（报告 Agent）：**\n\n%s\n\n", txt)
+			}
+			if rem := strings.TrimSpace(in.RemediationByNode[r.node.ID]); rem != "" {
+				fmt.Fprintf(&b, "**整改建议：**\n\n%s\n\n", rem)
 			}
 		}
 	}

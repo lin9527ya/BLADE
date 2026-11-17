@@ -420,10 +420,11 @@ func TestMarkdownIncludesFindingReports(t *testing.T) {
 	node := findingNode(7, "confirmed", "sqli", "SQL 注入", "high")
 	md := Markdown(Input{
 		Title: "t", Goal: "g", GeneratedAt: time.Now(),
-		Findings:       []*db.Node{node},
-		FindingReports: map[int64]string{7: "### 利用过程\n\npayload 回显数据库名。\n\n**修复建议**：参数化查询。"},
+		Findings:          []*db.Node{node},
+		FindingReports:    map[int64]string{7: "### 利用过程\n\npayload 回显数据库名。\n\n**修复建议**：参数化查询。"},
+		RemediationByNode: map[int64]string{7: "升级 ORM 并统一参数化查询。"},
 	})
-	for _, want := range []string{"**详细分析（报告 Agent）：**", "payload 回显数据库名", "**修复建议**：参数化查询"} {
+	for _, want := range []string{"**详细分析（报告 Agent）：**", "payload 回显数据库名", "**修复建议**：参数化查询", "**整改建议：**", "升级 ORM"} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("缺少 %q：\n%s", want, md)
 		}

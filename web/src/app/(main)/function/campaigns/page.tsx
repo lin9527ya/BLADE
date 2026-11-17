@@ -390,7 +390,19 @@ export default function CampaignsPage() {
                   {summary.campaign.ends_at && (
                     <span className="text-muted-foreground text-xs">结束 {summary.campaign.ends_at.slice(0, 16)}</span>
                   )}
-                  <Button size="sm" variant="outline" className="ml-auto" onClick={() => setPlanOpen(true)}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto"
+                    onClick={() =>
+                      void api
+                        .downloadScopeDeliverablesZIP({ campaign_id: summary.campaign.id })
+                        .catch((e: Error) => toast.error(e.message))
+                    }
+                  >
+                    <DownloadIcon /> 导出交付 ZIP
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setPlanOpen(true)}>
                     编辑计划
                   </Button>
                 </div>

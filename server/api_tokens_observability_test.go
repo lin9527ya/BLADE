@@ -147,3 +147,46 @@ func TestReadOnlyAPITokenCannotWrite(t *testing.T) {
 		t.Fatalf("read POST status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestOperatorAPITokenCanOperateButNotChangeSystem(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	token, plain, err := m.PG().CreateAPIToken("operator test", "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.PG().RevokeAPIToken(token.ID) //nolint:errcheck
+
+	s := &Server{m: m, engine: &Engine{}}
+	handler := s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	call := func(method, path string) int {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := call(http.MethodPost, "/api/tasks/1/pause"); code != http.StatusNoContent {
+		t.Fatalf("operator task action status = %d", code)
+	}
+	if code := call(http.MethodPost, "/api/findings/1/comments"); code != http.StatusNoContent {
+		t.Fatalf("operator finding action status = %d", code)
+	}
+	if code := call(http.MethodPost, "/api/intercept/pending/1/always-allow"); code != http.StatusForbidden {
+		t.Fatalf("operator always-allow status = %d, want 403", code)
+	}
+	if code := call(http.MethodPut, "/api/settings"); code != http.StatusForbidden {
+		t.Fatalf("operator settings write status = %d, want 403", code)
+	}
+	if code := call(http.MethodPost, "/api/api-tokens"); code != http.StatusForbidden {
+		t.Fatalf("operator token write status = %d, want 403", code)
+	}
+	if code := call(http.MethodGet, "/api/settings"); code != http.StatusNoContent {
+		t.Fatalf("operator settings read status = %d", code)
+	}
+}

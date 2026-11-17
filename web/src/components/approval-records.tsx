@@ -15,15 +15,24 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import type { InterceptApprovalFilter, InterceptApprovalRow, InterceptPending } from "@/lib/types";
+import type { InterceptApprovalFilter, InterceptApprovalRow, InterceptPending, InterceptSLAStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { ApprovalTable } from "./_parts/approval-detail";
 import type { Decide } from "./_parts/approval-parts";
 
+function fmtWait(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} 小时`;
+  return `${(seconds / 86400).toFixed(1)} 天`;
+}
+
 export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const [rows, setRows] = React.useState<InterceptApprovalRow[]>([]);
   const [pendingRows, setPendingRows] = React.useState<InterceptPending[]>([]);
+  const [sla, setSla] = React.useState<InterceptSLAStats | null>(null);
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
   const [total, setTotal] = React.useState(0);
@@ -56,11 +65,12 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         // The approval queue is independent of the current history page and its
         // filter. Older requests must remain actionable even when newer decisions
         // fill the page or a filter would hide them.
-        const [history, pending] = await Promise.allSettled([
+        const [history, pending, slaResult] = await Promise.allSettled([
           taskId
             ? api.interceptTaskPage(taskId, page, pageSize, filter)
             : api.interceptHistoryPage(page, pageSize, filter),
           api.interceptPending(),
+          api.interceptSLA(),
         ]);
         if (id !== request.current) return;
         if (history.status === "fulfilled") {
@@ -76,6 +86,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         } else {
           setPendingError((pending.reason as Error).message || "加载失败");
         }
+        if (slaResult.status === "fulfilled") setSla(slaResult.value);
         if (manual) setRevision((v) => v + 1);
       } catch (e) {
         if (id === request.current) setError((e as Error).message || "加载失败");
@@ -185,7 +196,10 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       setSelected(new Set());
       await latestLoad.current(true);
       if (failed === 0) toast.success(decision === "allowed" ? `已允许 ${decided} 条` : `已拒绝 ${decided} 条`);
-      else toast.error(`已处理 ${decided} 条，失败 ${failed} 条${errors.length ? `：${errors.slice(0, 3).join("；")}` : ""}`);
+      else
+        toast.error(
+          `已处理 ${decided} 条，失败 ${failed} 条${errors.length ? `：${errors.slice(0, 3).join("；")}` : ""}`,
+        );
     } finally {
       setBatchBusy(false);
     }
@@ -241,6 +255,18 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         </div>
       </div>
       <p className="text-muted-foreground text-sm">展开记录查看工具请求和审批裁决，以及当时的上下文与执行结果。</p>
+      {sla ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant={sla.overdue_pending > 0 ? "destructive" : "outline"}>待审批 {sla.pending}</Badge>
+          <Badge variant="outline">最久等待 {fmtWait(sla.oldest_pending_seconds)}</Badge>
+          <Badge variant={sla.overdue_pending > 0 ? "destructive" : "outline"}>
+            超 SLA {sla.overdue_pending}（{fmtWait(sla.threshold_seconds)}）
+          </Badge>
+          <Badge variant="outline">近 24h 已裁决 {sla.decided_24h}</Badge>
+          <Badge variant="outline">平均裁决 {fmtWait(sla.avg_decision_seconds)}</Badge>
+          <Badge variant={sla.timeouts_24h > 0 ? "secondary" : "outline"}>近 24h 超时 {sla.timeouts_24h}</Badge>
+        </div>
+      ) : null}
       <FieldGroup className="flex-row flex-wrap items-end gap-3" aria-label="审批记录筛选">
         <Field className="w-full sm:w-40">
           <FieldLabel htmlFor={`${filterID}-status`}>审批状态</FieldLabel>

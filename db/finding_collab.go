@@ -160,3 +160,24 @@ func (d *DB) DeleteFindingComment(findingID, commentID int64) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// FindingRemediationByNode returns the operator-maintained remediation note for
+// each finding of a task, keyed by exploration node id. Empty notes are omitted.
+func (d *DB) FindingRemediationByNode(taskID int64) (map[int64]string, error) {
+	rows, err := d.Query(`SELECT node_id, remediation FROM findings
+WHERE task_id=$1 AND node_id IS NOT NULL AND COALESCE(remediation,'') <> ''`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var nodeID int64
+		var remediation string
+		if err := rows.Scan(&nodeID, &remediation); err != nil {
+			return nil, err
+		}
+		out[nodeID] = remediation
+	}
+	return out, rows.Err()
+}

@@ -511,3 +511,41 @@ func (d *DB) listInterceptsPage(taskID string, page, size int, filter InterceptA
 	}
 	return out, total, rows.Err()
 }
+
+// InterceptSLAStats is a read-only view of approval queue health. It does not
+// change decisions; it only makes waiting time and the timeout rate visible.
+type InterceptSLAStats struct {
+	Pending              int     `json:"pending"`
+	OldestPendingSeconds int64   `json:"oldest_pending_seconds"`
+	OverduePending       int     `json:"overdue_pending"`
+	Decided24h           int     `json:"decided_24h"`
+	AvgDecisionSeconds   float64 `json:"avg_decision_seconds"`
+	Timeouts24h          int     `json:"timeouts_24h"`
+	ThresholdSeconds     int64   `json:"threshold_seconds"`
+}
+
+func (d *DB) InterceptSLAStats(thresholdSeconds int64) (*InterceptSLAStats, error) {
+	if thresholdSeconds <= 0 {
+		thresholdSeconds = 3600
+	}
+	if thresholdSeconds > 30*24*3600 {
+		thresholdSeconds = 30 * 24 * 3600
+	}
+	var out InterceptSLAStats
+	out.ThresholdSeconds = thresholdSeconds
+	err := d.QueryRow(`
+SELECT count(*) FILTER (WHERE status='pending'),
+       COALESCE((EXTRACT(EPOCH FROM now() - min(created_at) FILTER (WHERE status='pending')))::bigint,0),
+       count(*) FILTER (WHERE status='pending' AND created_at < now() - make_interval(secs => $1)),
+       count(*) FILTER (WHERE status<>'pending' AND decided_at >= now() - interval '24 hours'),
+       COALESCE((avg(EXTRACT(EPOCH FROM decided_at-created_at)) FILTER (
+         WHERE status<>'pending' AND decided_at >= now() - interval '24 hours'))::float8,0),
+       count(*) FILTER (WHERE status='timeout' AND created_at >= now() - interval '24 hours')
+FROM intercept_pending`, thresholdSeconds).Scan(
+		&out.Pending, &out.OldestPendingSeconds, &out.OverduePending,
+		&out.Decided24h, &out.AvgDecisionSeconds, &out.Timeouts24h)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

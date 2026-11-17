@@ -339,7 +339,7 @@ export default function APITokensPage() {
                 className="h-9 rounded-md border bg-transparent px-2 text-sm"
               >
                 <option value="admin">管理员（读写）</option>
-                <option value="operator">操作员（读写）</option>
+                <option value="operator">操作员（业务读写，系统配置只读）</option>
                 <option value="read">只读</option>
               </select>
             </Field>

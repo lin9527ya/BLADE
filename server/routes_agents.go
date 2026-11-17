@@ -76,6 +76,7 @@ func (s *Server) registerAgentRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/asset-intercept/rules/{id}/toggle", s.assetInterceptToggleRule)
 
 	mux.HandleFunc("GET /api/intercept/pending", s.interceptListPending)
+	mux.HandleFunc("GET /api/intercept/pending/sla", s.interceptSLAStats)
 	mux.HandleFunc("GET /api/intercept/pending/{id}", s.interceptGetOne)
 	mux.HandleFunc("POST /api/intercept/pending/{id}/decide", s.interceptDecide)
 	mux.HandleFunc("POST /api/intercept/pending/{id}/always-allow", s.interceptAlwaysAllow)

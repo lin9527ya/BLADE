@@ -20,6 +20,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/ledger", s.explorationLedger)
 	// 交付物台账：版本、签收、版本 diff 与导出。
 	mux.HandleFunc("GET /api/deliverables", s.listDeliverables)
+	mux.HandleFunc("GET /api/deliverables/export.zip", s.exportScopeDeliverables)
 	mux.HandleFunc("POST /api/deliverables", s.createDeliverable)
 	mux.HandleFunc("GET /api/deliverables/{id}", s.getDeliverable)
 	mux.HandleFunc("DELETE /api/deliverables/{id}", s.deleteDeliverable)

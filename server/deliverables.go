@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/report"
@@ -264,4 +265,120 @@ func deliverableZIP(base string, version *db.DeliverableVersion) ([]byte, error)
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// exportScopeDeliverables packages the latest version of every deliverable in one
+// campaign or company. The per-version ZIP keeps the same manifest/SHA256SUMS
+// discipline; this scope ZIP is for handing a whole engagement to a customer.
+func (s *Server) exportScopeDeliverables(w http.ResponseWriter, r *http.Request) {
+	if !s.deliverableStore() {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	campaignID, _ := strconv.ParseInt(r.URL.Query().Get("campaign_id"), 10, 64)
+	companyID, _ := strconv.ParseInt(r.URL.Query().Get("company_id"), 10, 64)
+	if (campaignID > 0) == (companyID > 0) {
+		writeErr(w, 400, "campaign_id 或 company_id 必须且只能提供一个")
+		return
+	}
+	all, err := s.m.PG().ListDeliverables()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	type exportItem struct {
+		d    *db.Deliverable
+		file string
+		data []byte
+		sum  string
+	}
+	items := []exportItem{}
+	for _, d := range all {
+		if campaignID > 0 && (d.CampaignID == nil || *d.CampaignID != campaignID) {
+			continue
+		}
+		if companyID > 0 && (d.CompanyID == nil || *d.CompanyID != companyID) {
+			continue
+		}
+		if d.LatestVersion <= 0 {
+			continue
+		}
+		versions, err := s.m.PG().ListDeliverableVersions(d.ID, true)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if len(versions) == 0 {
+			continue
+		}
+		v := versions[0]
+		data := []byte(v.ReportMD)
+		items = append(items, exportItem{
+			d: d, file: fmt.Sprintf("deliverable-%d-v%d.md", d.ID, v.Version), data: data,
+			sum: fmt.Sprintf("%x", sha256.Sum256(data)),
+		})
+	}
+	if len(items) == 0 {
+		writeErr(w, 404, "该范围没有可导出的交付物版本")
+		return
+	}
+	manifestItems := make([]map[string]any, 0, len(items))
+	sumLines := make([]string, 0, len(items)+1)
+	for _, item := range items {
+		manifestItems = append(manifestItems, map[string]any{
+			"id": item.d.ID, "name": item.d.Name, "kind": item.d.Kind, "status": item.d.Status,
+			"version": item.d.LatestVersion, "acceptance_count": item.d.AcceptanceCount,
+			"file": item.file, "sha256": item.sum,
+		})
+		sumLines = append(sumLines, fmt.Sprintf("%s  %s", item.sum, item.file))
+	}
+	scopeType, scopeID := "campaign", campaignID
+	if companyID > 0 {
+		scopeType, scopeID = "company", companyID
+	}
+	manifest := map[string]any{
+		"format": "blade-deliverables-scope-v1", "scope_type": scopeType, "scope_id": scopeID,
+		"generated_at": time.Now().UTC(), "deliverables": manifestItems,
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	sumLines = append(sumLines, fmt.Sprintf("%x  manifest.json", sha256.Sum256(manifestBytes)))
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, item := range items {
+		fw, err := zw.Create(item.file)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if _, err := fw.Write(item.data); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	for _, file := range []struct {
+		name string
+		data []byte
+	}{{"manifest.json", manifestBytes}, {"SHA256SUMS", []byte(strings.Join(sumLines, "\n") + "\n")}} {
+		fw, err := zw.Create(file.name)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if _, err := fw.Write(file.data); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if err := zw.Close(); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	filename := fmt.Sprintf("%s-%d-deliverables.zip", scopeType, scopeID)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	_, _ = w.Write(buf.Bytes())
 }

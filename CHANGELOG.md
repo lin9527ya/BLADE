@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 批次 A：交付、审计与审批运营
+
+- 审计事件纳入存储保留清理：新增 `storage_retention_audit_events_days`，默认 0 = 不清理。
+- 新增战役/公司级交付 ZIP：`GET /api/deliverables/export.zip?campaign_id=|company_id=`，
+  打包范围内全部交付物的最新版本 + `manifest.json` + `SHA256SUMS`。
+- 任务报告正文加入人工「整改建议」；复测结论原本已在报告中，聚合交付会一并带入。
+- 审批记录页新增 SLA 指标：待审批数、最久等待、超 SLA 数、近 24h 裁决/平均耗时/超时数；
+  新增 `GET /api/intercept/pending/sla`。
+- `operator` API 令牌从“等同 admin”收紧为“业务读写、系统配置只读”；设置、令牌、LLM、
+  Agent、MCP、技能、工具、存储、诊断、审计等管理面写请求返回 403。
+
 ### 资产情报
 
 - 资产新增 `first_seen`、生命周期状态（active/stale/archived）、来源 Provider 与同步批次；

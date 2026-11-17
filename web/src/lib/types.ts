@@ -2138,6 +2138,7 @@ export interface Settings {
   storage_retention_notify_events_days?: number;
   storage_retention_conversation_activity_days?: number;
   storage_retention_intercept_pending_days?: number;
+  storage_retention_audit_events_days?: number;
   // 自更新用的 GitHub token（私有发布源）：只回布尔"是否已配"，值不回显。
   update_token_set?: boolean;
   update_github_token?: string;
@@ -2864,6 +2865,16 @@ export interface InterceptRisk {
   score: number;
   level: "low" | "medium" | "high";
   reasons: string[];
+}
+
+export interface InterceptSLAStats {
+  pending: number;
+  oldest_pending_seconds: number;
+  overdue_pending: number;
+  decided_24h: number;
+  avg_decision_seconds: number;
+  timeouts_24h: number;
+  threshold_seconds: number;
 }
 
 export interface InterceptPending {

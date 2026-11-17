@@ -43,6 +43,8 @@ const (
 	RetentionNotificationEvents   RetentionTable = "notification_events"
 	RetentionConversationActivity RetentionTable = "conversation_activities"
 	RetentionInterceptPending     RetentionTable = "intercept_pending"
+	// 安全审计事件同样只增不减；默认保留天数 0 = 不清理，避免误删合规证据。
+	RetentionAuditEvents RetentionTable = "audit_events"
 )
 
 // RetentionStat 是一张表在一次体检里的计数与体积（试算：只读）。
@@ -108,6 +110,9 @@ func retentionFilter(
 	case RetentionInterceptPending:
 		// 审批记录：只清**已判定**的（pending 还在等人/等模型，删了就成悬案）。
 		return "created_at", "created_at < $1 AND status <> 'pending'", []any{cutoff}, nil
+	case RetentionAuditEvents:
+		// 审计事件不归属任务；只按时间清理，默认策略 0 天即不清理。
+		return "created_at", "created_at < $1", []any{cutoff}, nil
 	case RetentionCredentialAttempts:
 		// task_id 是 BIGINT NOT NULL；同样按任务保护（用任务 id 集合，不是探索 id）。
 		return "at",

@@ -33,7 +33,6 @@ import type {
   CampaignAttackChains,
   CampaignPhase,
   CampaignSummary,
-  DetectionMatrix,
   ChatAttachment,
   ClashEgressStatus,
   ClashRotation,
@@ -51,10 +50,8 @@ import type {
   CoverageGraphData,
   CredentialAttempt,
   CredentialCheckItem,
-  CredentialWorkbenchItem,
-  FootholdWorkbenchItem,
-  TunnelItem,
   CredentialReveal,
+  CredentialWorkbenchItem,
   CVE,
   CVEImportPreview,
   CVEInput,
@@ -66,6 +63,7 @@ import type {
   DeliverableAcceptance,
   DeliverableDetail,
   DeliverableVersion,
+  DetectionMatrix,
   Edge,
   EvidenceBodyPreview,
   ExplorationNodePage,
@@ -87,6 +85,7 @@ import type {
   FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
+  FootholdWorkbenchItem,
   GlobalBroadcastPage,
   GlobalBroadcastQuery,
   GlobalSearchResponse,
@@ -102,6 +101,7 @@ import type {
   InterceptPending,
   InterceptRule,
   InterceptRuleTestResult,
+  InterceptSLAStats,
   JudgeConfig,
   JudgeUsage,
   KillSwitchReceipt,
@@ -163,8 +163,6 @@ import type {
   TaskTemplate,
   TimelineResponse,
   TokenStatsSnapshot,
-  TokenTotal,
-  TokenUsage,
   Tool,
   ToolExecution,
   ToolStat,
@@ -173,6 +171,7 @@ import type {
   TrafficEvidenceRole,
   TrafficHost,
   TrafficResp,
+  TunnelItem,
   UpdateCheck,
   UsageStats,
   WorkerSlot,
@@ -952,10 +951,9 @@ export const api = {
     },
   ) => post<{ ok: boolean; check_id: number; lifecycle: string }>(`/credentials/${id}/checks`, body),
   verifyCredentialIntent: (id: number, description?: string) =>
-    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
-      `/credentials/${id}/verify-intent`,
-      { description: description ?? "" },
-    ),
+    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(`/credentials/${id}/verify-intent`, {
+      description: description ?? "",
+    }),
   markCredentialLost: (id: number, body: { reason: string; evidence: string }) =>
     post<{ ok: boolean }>(`/credentials/${id}/lost`, body),
   batchMarkCredentialsLost: (ids: number[], body: { reason: string; evidence: string }) =>
@@ -987,16 +985,14 @@ export const api = {
     ).then((r) => ({ ...r, items: arr(r.items) }));
   },
   footholdCheckIntent: (id: number, description?: string) =>
-    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
-      `/footholds/${id}/check-intent`,
-      { description: description ?? "" },
-    ),
+    post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(`/footholds/${id}/check-intent`, {
+      description: description ?? "",
+    }),
   markFootholdLost: (id: number, body: { reason: string; evidence: string }) =>
     post<{ ok: boolean }>(`/footholds/${id}/lost`, body),
   tunnels: (limit = 100) =>
     get<{ items: TunnelItem[] | null }>(`/tunnels?limit=${limit}`).then((r) => ({ ...r, items: arr(r.items) })),
-  cancelExecution: (eid: number, reason: string) =>
-    post<{ ok: boolean }>(`/executions/${eid}/cancel`, { reason }),
+  cancelExecution: (eid: number, reason: string) => post<{ ok: boolean }>(`/executions/${eid}/cancel`, { reason }),
 
   credentialAttemptsExport: async (
     params: { task?: string; host?: string; account?: string },
@@ -1161,12 +1157,7 @@ export const api = {
 
   // ---- assets ----
   // Server-side paginated: pass limit/offset, get back the page + full match total.
-  assets: (
-    type = "",
-    limit = 50,
-    offset = 0,
-    filters: { status?: string; provider?: string } = {},
-  ) => {
+  assets: (type = "", limit = 50, offset = 0, filters: { status?: string; provider?: string } = {}) => {
     const p = new URLSearchParams({ type, limit: String(limit), offset: String(offset) });
     if (filters.status) p.set("status", filters.status);
     if (filters.provider?.trim()) p.set("provider", filters.provider.trim());
@@ -1382,8 +1373,7 @@ export const api = {
     pid: number,
     body: { name: string; position?: number; status?: string; note?: string; starts_at?: string; ends_at?: string },
   ) => patch<CampaignPhase>(`/campaigns/${id}/phases/${pid}`, body),
-  deleteCampaignPhase: (id: number, pid: number) =>
-    del<{ deleted: boolean }>(`/campaigns/${id}/phases/${pid}`),
+  deleteCampaignPhase: (id: number, pid: number) => del<{ deleted: boolean }>(`/campaigns/${id}/phases/${pid}`),
   setCampaignTaskPhase: (id: number, tid: number, phaseId: number) =>
     patch<{ ok: boolean }>(`/campaigns/${id}/tasks/${tid}/phase`, { phase_id: phaseId }),
   campaignAttackChains: (id: number) => get<CampaignAttackChains>(`/campaigns/${id}/attack-chains`),
@@ -1408,18 +1398,27 @@ export const api = {
       `/tasks/${taskId}/nodes/${nodeId}/follow-up-intent`,
       { description },
     ),
-  setADObjectOwned: (taskId: string, oid: number, body: { owned: boolean; evidence?: string; source_loot_id?: number }) =>
-    post<{ ok: boolean; owned: boolean; linked: boolean }>(`/tasks/${taskId}/ad-objects/${oid}/owned`, body),
+  setADObjectOwned: (
+    taskId: string,
+    oid: number,
+    body: { owned: boolean; evidence?: string; source_loot_id?: number },
+  ) => post<{ ok: boolean; owned: boolean; linked: boolean }>(`/tasks/${taskId}/ad-objects/${oid}/owned`, body),
   pursueADObject: (taskId: string, oid: number, description = "") =>
     post<{ ok: boolean; intent_id: number; queued: boolean; description: string }>(
       `/tasks/${taskId}/ad-objects/${oid}/pursue`,
       { description },
     ),
   batchFindingRetests: (findingIds: number[], notes = "") =>
-    post<{ items: { finding_id: number; retest_id?: number; conversation_id?: number; created?: boolean; state?: string; error?: string }[] }>(
-      "/exploration/findings/retests/batch",
-      { finding_ids: findingIds, notes },
-    ),
+    post<{
+      items: {
+        finding_id: number;
+        retest_id?: number;
+        conversation_id?: number;
+        created?: boolean;
+        state?: string;
+        error?: string;
+      }[];
+    }>("/exploration/findings/retests/batch", { finding_ids: findingIds, notes }),
   detectionMatrix: (params: { task?: string; campaign?: number }) => {
     const qs = new URLSearchParams();
     if (params.task) qs.set("task", params.task);
@@ -1964,6 +1963,28 @@ export const api = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+  downloadScopeDeliverablesZIP: async (scope: { campaign_id?: number; company_id?: number }) => {
+    const p = new URLSearchParams();
+    if (scope.campaign_id) p.set("campaign_id", String(scope.campaign_id));
+    if (scope.company_id) p.set("company_id", String(scope.company_id));
+    const token = getToken();
+    const r = await fetch(`/api/deliverables/export.zip?${p}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const disp = r.headers.get("Content-Disposition") ?? "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = m?.[1] ?? "deliverables.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+
   deleteDeliverable: (id: number) => del<{ deleted: boolean }>(`/deliverables/${id}`),
   // 站内收件箱：无需外部渠道，Bell 轮询这个只读聚合。
   inbox: (limit = 100) => get<InboxPage>(`/inbox?limit=${limit}`),
@@ -2460,6 +2481,7 @@ export const api = {
 
   // ---- intercept pending (ask) ----
   interceptPending: () => get<{ pending: InterceptPending[] }>("/intercept/pending").then((r) => arr(r.pending)),
+  interceptSLA: (seconds = 3600) => get<InterceptSLAStats>(`/intercept/pending/sla?seconds=${seconds}`),
   /** 只要计数：徽章轮询不该把每一行的完整 tool_input 都拉回来。 */
   interceptPendingCount: () =>
     get<{ pending_count: number }>("/intercept/pending?count=1").then((r) => r.pending_count ?? 0),

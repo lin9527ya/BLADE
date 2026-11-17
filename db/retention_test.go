@@ -261,3 +261,35 @@ VALUES ('Bash','allowed', now() - interval '90 days') RETURNING id`).Scan(&decid
 		t.Fatal("已判定的过期审批记录应被清掉")
 	}
 }
+
+func TestPurgeAuditEventsBefore(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	var oldID, freshID int64
+	if err := d.QueryRow(`INSERT INTO audit_events(actor,method,path,status,created_at)
+VALUES ('retention-test','POST','/api/test',200, now() - interval '90 days') RETURNING id`).Scan(&oldID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`INSERT INTO audit_events(actor,method,path,status,created_at)
+VALUES ('retention-test','POST','/api/test',200, now()) RETURNING id`).Scan(&freshID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Exec(`DELETE FROM audit_events WHERE id IN ($1,$2)`, oldID, freshID) })
+	if _, err := d.PurgeTableBefore(context.Background(), RetentionAuditEvents,
+		time.Now().AddDate(0, 0, -30), nil, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	var oldLeft, freshLeft int64
+	if err := d.QueryRow(`SELECT count(*) FROM audit_events WHERE id=$1`, oldID).Scan(&oldLeft); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT count(*) FROM audit_events WHERE id=$1`, freshID).Scan(&freshLeft); err != nil {
+		t.Fatal(err)
+	}
+	if oldLeft != 0 || freshLeft != 1 {
+		t.Fatalf("old=%d fresh=%d, want 0/1", oldLeft, freshLeft)
+	}
+}

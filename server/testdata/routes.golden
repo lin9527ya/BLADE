@@ -95,6 +95,7 @@ GET /api/debug/pprof/symbol	net/http/pprof.Symbol
 GET /api/debug/pprof/threadcreate	net/http.Handler.ServeHTTP-fm
 GET /api/debug/pprof/trace	net/http/pprof.Trace
 GET /api/deliverables	server.(*Server).listDeliverables-fm
+GET /api/deliverables/export.zip	server.(*Server).exportScopeDeliverables-fm
 GET /api/deliverables/{id}	server.(*Server).getDeliverable-fm
 GET /api/deliverables/{id}/diff	server.(*Server).deliverableDiff-fm
 GET /api/deliverables/{id}/versions/{version_id}/export	server.(*Server).exportDeliverableVersion-fm
@@ -146,6 +147,7 @@ GET /api/intercept/history/{id}/execution	server.(*Server).interceptExecution-fm
 GET /api/intercept/judge	server.(*Server).interceptGetJudgeConfig-fm
 GET /api/intercept/judge/usage	server.(*Server).interceptJudgeUsage-fm
 GET /api/intercept/pending	server.(*Server).interceptListPending-fm
+GET /api/intercept/pending/sla	server.(*Server).interceptSLAStats-fm
 GET /api/intercept/pending/{id}	server.(*Server).interceptGetOne-fm
 GET /api/intercept/rules	server.(*Server).interceptListRules-fm
 GET /api/intercept/task/{taskID}	server.(*Server).interceptListTaskItems-fm
