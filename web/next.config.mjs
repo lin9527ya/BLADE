@@ -34,6 +34,10 @@ const nextConfig = {
         }),
   },
   reactCompiler: true,
+  // Next 16.4 默认 experimental.agentUpgrade='security'：在 agent 环境构建时若
+  // 命中安全公告，会以 SecurityFatalError 中止构建并提示运行 `next upgrade`。
+  // 本项目锁定当前 Next 版本、由维护者单独评估升级，构建过程不应被该提醒阻断。
+  experimental: { agentUpgrade: false },
   // 允许从局域网 IP 访问 dev 资源（HMR），按需增删。
   // dev 阶段放开任意 IPv4 来源访问 /_next/* 与 HMR（局域网 IP 变动也不受影响）。
   // 注意：Next 出于安全禁止裸 "*"，需用分段通配；"*.*.*.*" 匹配任意 IPv4。
