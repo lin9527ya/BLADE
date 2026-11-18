@@ -64,6 +64,7 @@ export function useSettingsState() {
   const [oastTokenSet, setOastTokenSet] = React.useState(false);
   const [oastTokenInput, setOastTokenInput] = React.useState("");
   const [oastDomain, setOastDomain] = React.useState("requestrepo.com");
+  const [oastNucleiServer, setOastNucleiServer] = React.useState("oast.fun");
   const [noiseLevel, setNoiseLevel] = React.useState("normal");
   const [evidenceVerify, setEvidenceVerify] = React.useState<"off" | "warn" | "block">("warn");
   const [savingEvidenceVerify, setSavingEvidenceVerify] = React.useState(false);
@@ -203,6 +204,7 @@ export function useSettingsState() {
     setOastEnabled(!!s.oast_enabled);
     setOastTokenSet(!!s.oast_token_set);
     setOastDomain(s.oast_domain || "requestrepo.com");
+    setOastNucleiServer(s.oast_nuclei_server || "oast.fun");
     setNoiseLevel(s.opsec_noise_level === "quiet" ? "quiet" : "normal");
     setEvidenceVerify(
       s.finding_evidence_verify === "off" || s.finding_evidence_verify === "block" ? s.finding_evidence_verify : "warn",
@@ -802,8 +804,9 @@ export function useSettingsState() {
 
   const saveOast = () => {
     setSavingOast(true);
-    const payload: { oast_domain: string; oast_token?: string } = {
+    const payload: { oast_domain: string; oast_nuclei_server: string; oast_token?: string } = {
       oast_domain: oastDomain.trim() || "requestrepo.com",
+      oast_nuclei_server: oastNucleiServer.trim() || "oast.fun",
     };
     // token 只写：输入为空时不动已存的值（想清除用 clearOastToken）。
     if (oastTokenInput.trim()) payload.oast_token = oastTokenInput.trim();
@@ -1192,6 +1195,8 @@ export function useSettingsState() {
     setOastTokenInput,
     oastDomain,
     setOastDomain,
+    oastNucleiServer,
+    setOastNucleiServer,
     savingOast,
     toggleOast,
     saveOast,

@@ -235,6 +235,45 @@ export default function CoveragePage() {
             <span>{coverage?.note ?? ""}</span>
             {coverage ? <span>未标注意图：{coverage.unlabeled_intents}</span> : null}
           </div>
+          {(coverage?.unlabeled?.length ?? 0) > 0 && (
+            <Card className="mt-3">
+              <CardHeader>
+                <CardTitle className="text-sm">未标注意图与建议</CardTitle>
+                <CardDescription>建议只是关键词映射；采纳后会写进该意图的 techniques。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {coverage?.unlabeled?.map((u) => (
+                  <div key={u.intent_id} className="flex flex-wrap items-center gap-2 rounded border p-2 text-xs">
+                    <span className="font-mono text-muted-foreground">#{u.intent_id}</span>
+                    <span className="max-w-[28rem] truncate" title={u.summary}>{u.summary || "（无摘要）"}</span>
+                    {u.suggested.length === 0 ? (
+                      <span className="text-muted-foreground">无建议</span>
+                    ) : (
+                      u.suggested.map((tech) => <Badge key={tech} variant="outline">{tech}</Badge>)
+                    )}
+                    {u.suggested.length > 0 && mode === "task" && scopeId && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="ml-auto h-6"
+                        onClick={() => {
+                          void api
+                            .setIntentTechniques(scopeId, u.intent_id, u.suggested)
+                            .then(() => {
+                              toast.success(`意图 #${u.intent_id} 已补标`);
+                              load();
+                            })
+                            .catch((e: Error) => toast.error(`补标失败：${e.message}`));
+                        }}
+                      >
+                        采纳
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="matrix" className="mt-3">

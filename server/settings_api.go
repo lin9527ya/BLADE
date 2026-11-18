@@ -137,6 +137,10 @@ func (s *Server) settingsPayload() map[string]any {
 	proxyCfg := s.m.ProxyPoolConfig()
 	proxyStatus := s.m.ProxyStatus()
 	clashCfg := s.m.ClashEgressConfig()
+	oastNuclei := "oast.fun"
+	if v, ok, err := s.m.pg.GetSetting(settingOASTNucleiServer); err == nil && ok && strings.TrimSpace(v) != "" {
+		oastNuclei = strings.TrimSpace(v)
+	}
 	return map[string]any{
 		"traffic_capture":         s.m.TrafficEnabled(),
 		"agent_traffic_binding":   s.m.pg.GetBool(settingAgentTrafficBinding, false),
@@ -144,6 +148,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"oast_enabled":            s.m.pg.GetBool(settingOASTEnabled, false),
 		"oast_token_set":          strings.TrimSpace(oastToken) != "", // 只回"是否已配"，绝不回显 token
 		"oast_domain":             oastDomain,
+		"oast_nuclei_server":      oastNuclei,
 		"opsec_noise_level":       noiseLevel(s.m.pg),
 		"finding_evidence_verify": evidenceVerifySetting(s.m.pg).String(),
 		"agent_auto_retest":       s.m.pg.GetBool(settingAutoRetest, false),
@@ -314,6 +319,7 @@ type settingsRequest struct {
 	OastEnabled             *bool    `json:"oast_enabled"`
 	OastToken               *string  `json:"oast_token"` // 只写：空串 = 清除
 	OastDomain              *string  `json:"oast_domain"`
+	OastNucleiServer        *string  `json:"oast_nuclei_server"`
 	OpsecNoise              *string  `json:"opsec_noise_level"`
 	EvidenceVerify          *string  `json:"finding_evidence_verify"`
 	AgentAutoRetest         *bool    `json:"agent_auto_retest"`
@@ -766,6 +772,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.OastDomain != nil {
 		pending[settingOASTDomain] = strings.TrimSpace(*req.OastDomain)
+	}
+	if req.OastNucleiServer != nil {
+		pending[settingOASTNucleiServer] = strings.TrimSpace(*req.OastNucleiServer)
 	}
 	if req.EvidenceVerify != nil {
 		mode := strings.ToLower(strings.TrimSpace(*req.EvidenceVerify))

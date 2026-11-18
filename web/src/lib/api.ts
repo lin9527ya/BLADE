@@ -67,6 +67,7 @@ import type {
   AttackCoverage,
   DetectionMatrix,
   EgressStatus,
+  HostToolStatus,
   Edge,
   EvidenceBodyPreview,
   ExplorationNodePage,
@@ -1433,6 +1434,11 @@ export const api = {
       }[];
     }>("/exploration/findings/retests/batch", { finding_ids: findingIds, notes }),
   egressStatus: () => get<EgressStatus>("/egress/status"),
+  hostToolsInventory: () =>
+    get<{ tools: HostToolStatus[] | null; note?: string }>("/host-tools/inventory").then((r) => ({
+      ...r,
+      tools: arr(r.tools),
+    })),
 
   attackCoverage: (params: { task?: string; campaign?: number }) => {
     const qs = new URLSearchParams();
@@ -1440,6 +1446,9 @@ export const api = {
     if (params.campaign) qs.set("campaign", String(params.campaign));
     return get<AttackCoverage>(`/exploration/attack-coverage?${qs.toString()}`);
   },
+  setIntentTechniques: (taskId: string, nodeId: number, techniques: string[]) =>
+    post<{ ok: boolean; techniques: string[] }>(`/tasks/${taskId}/nodes/${nodeId}/techniques`, { techniques }),
+
   recordDetection: (
     taskId: string,
     body: {

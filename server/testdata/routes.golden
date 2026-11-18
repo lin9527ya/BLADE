@@ -143,6 +143,7 @@ GET /api/findings/{id}/src-report.docx	server.(*Server).getFindingSrcReportDocx-
 GET /api/findings/{id}/src-report/check	server.(*Server).getFindingSrcReportCheck-fm
 GET /api/footholds	server.(*Server).listFootholdsWorkbench-fm
 GET /api/health	server.(*Server).health-fm
+GET /api/host-tools/inventory	server.(*Server).hostToolsInventory-fm
 GET /api/inbox	server.(*Server).inboxList-fm
 GET /api/intercept/history	server.(*Server).interceptHistory-fm
 GET /api/intercept/history.csv	server.(*Server).interceptHistoryCSV-fm
@@ -424,6 +425,7 @@ POST /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideR
 POST /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptCreateRule-fm
 POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskInterceptToggleRule-fm
 POST /api/tasks/{id}/nodes/{nid}/follow-up-intent	server.(*Server).taskFollowUpIntent-fm
+POST /api/tasks/{id}/nodes/{nid}/techniques	server.(*Server).setIntentTechniques-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm
 POST /api/tasks/{id}/template	server.(*Server).taskToTemplate-fm
 POST /api/tools/custom	server.(*Server).pgCreateCustomTool-fm

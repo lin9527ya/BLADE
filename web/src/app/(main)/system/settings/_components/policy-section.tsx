@@ -74,6 +74,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
     setOastTokenInput,
     oastDomain,
     setOastDomain,
+    oastNucleiServer,
+    setOastNucleiServer,
     savingOast,
     toggleOast,
     saveOast,
@@ -649,6 +651,20 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               value={oastDomain}
               disabled={!loaded || savingOast}
               onChange={(e) => setOastDomain(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="nuclei OAST"
+            htmlFor="oast-nuclei-server"
+            hint="nuclei 的 -interactsh-url（默认 oast.fun）；平台不轮询其回调，命中以 nuclei 输出为准。"
+          >
+            <Input
+              id="oast-nuclei-server"
+              autoComplete="off"
+              placeholder="oast.fun"
+              value={oastNucleiServer}
+              disabled={!loaded || savingOast}
+              onChange={(e) => setOastNucleiServer(e.target.value)}
             />
           </Field>
           <div className="flex items-end">

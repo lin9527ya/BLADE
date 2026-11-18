@@ -483,6 +483,12 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	o.FindingTrafficBindingEnabled = bindingEnabled
 	o.LootExecEnabled = lootExecEnabled
 	o.OASTConfig = oastConfig
+	agent.NucleiOASTServer = func() string {
+		if v, ok, err := pg.GetSetting(settingOASTNucleiServer); err == nil && ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+		return "oast.fun"
+	}
 	// 噪声档位：每轮现读，改完下一轮生效。只认 normal|quiet，其它值按 normal。
 	o.NoiseLevel = func() string {
 		v, ok, _ := pg.GetSetting(settingOpsecNoise)

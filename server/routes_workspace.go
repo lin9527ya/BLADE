@@ -56,6 +56,7 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/verification-ledger", s.verificationLedger)
 	mux.HandleFunc("GET /api/executions/{eid}", s.getExecution)
 	mux.HandleFunc("GET /api/egress/status", s.egressStatus)
+	mux.HandleFunc("GET /api/host-tools/inventory", s.hostToolsInventory)
 	mux.HandleFunc("POST /api/executions/{eid}/cancel", s.cancelExecution) // 长任务执行台账详情（时间线跳转）
 	mux.HandleFunc("POST /api/active", s.setActive)
 }

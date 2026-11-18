@@ -2098,6 +2098,7 @@ export interface Settings {
   oast_token_set: boolean; // OAST 服务 token 是否已配置（值不回显）
   oast_token?: string; // 只写：仅在 PUT 时用于保存/清除 token
   oast_domain: string; // OAST 服务域名（默认 requestrepo.com）
+  oast_nuclei_server: string; // nuclei 使用的 interactsh 服务器（默认 oast.fun）
   opsec_noise_level: string; // 噪声档位：normal（默认）| quiet（追加潜行纪律）
   /** 证据质量闸：off | warn（默认，只告警）| block（critical/high 关键证据不通过则拒收）。 */
   finding_evidence_verify?: "off" | "warn" | "block";
@@ -3474,6 +3475,7 @@ export interface AttackCoverageRow {
 export interface AttackCoverage {
   techniques: AttackCoverageRow[];
   unlabeled_intents: number;
+  unlabeled?: { intent_id: number; summary: string; suggested: string[] }[];
   note: string;
 }
 
@@ -3496,4 +3498,15 @@ export interface EgressStatus {
   };
   tasks: { task_id: number; name?: string; group: string }[];
   note?: string;
+}
+
+// 宿主工具只读清单（诊断页）。
+export interface HostToolStatus {
+  name: string;
+  path?: string;
+  version?: string;
+  available: boolean;
+  required: boolean;
+  purpose: string;
+  error?: string;
 }

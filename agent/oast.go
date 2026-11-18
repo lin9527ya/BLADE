@@ -26,6 +26,10 @@ import (
 // OASTConfig 返回 (token, domain, enabled)。nil 或 enabled=false 时两个工具不可用。
 var OASTConfig func() (token, domain string, enabled bool)
 
+// NucleiOASTServer 是 nuclei 使用的 interactsh 公共服务器（默认 oast.fun）。
+// 它只用于 nuclei 自身的 OAST 判定：BLADE 不轮询该服务的回调，命中以 nuclei 输出为准。
+var NucleiOASTServer = func() string { return "oast.fun" }
+
 // OASTBaseURL 是 requestrepo 的 API 入口。变量而非常量：测试用 httptest 覆盖它。
 var OASTBaseURL = "https://requestrepo.com"
 
@@ -87,7 +91,12 @@ func (t *ToolSet) oastMint() actool.CoreTool {
 				marker += "-" + label
 			}
 			callback := fmt.Sprintf("http://%s.%s/%s", sub, domain, marker)
-			return actool.Text(fmt.Sprintf("callback url: %s\n把它放进 payload；目标执行后调 oast_poll 取命中记录（按请求 id 去重，可重复轮询）。", callback)), nil
+			nucleiServer := strings.TrimSpace(NucleiOASTServer())
+			nucleiHint := ""
+			if nucleiServer != "" {
+				nucleiHint = fmt.Sprintf("\nnuclei OAST：nuclei -u <target> -interactsh-url %s（命中以 nuclei 输出为准；平台不轮询该服务的回调）。", nucleiServer)
+			}
+			return actool.Text(fmt.Sprintf("callback url: %s\n把它放进 payload；目标执行后调 oast_poll 取命中记录（按请求 id 去重，可重复轮询）。%s", callback, nucleiHint)), nil
 		})
 }
 

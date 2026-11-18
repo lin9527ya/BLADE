@@ -451,6 +451,11 @@ func (s *ExecutionService) Wait(ctx context.Context, id int64, timeout time.Dura
 
 // Get returns the current snapshot, preferring the in-memory tail while live and
 // persisting it best-effort so the page/agent see the same bytes.
+// GetExecutionRow 返回完整台账行（含 meta），供隧道链等需要结构化字段的调用方使用。
+func (s *ExecutionService) GetExecutionRow(_ context.Context, id int64) (*db.ToolExecution, error) {
+	return s.pg.GetExecution(id)
+}
+
 func (s *ExecutionService) Get(ctx context.Context, id int64) (agent.ExecStatus, error) {
 	row, err := s.pg.GetExecution(id)
 	if err != nil {

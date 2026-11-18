@@ -192,6 +192,49 @@ func (s *Server) pursueADObject(w http.ResponseWriter, r *http.Request) {
 	s.writeFollowUpIntent(w, r, t, node, description)
 }
 
+// setIntentTechniques 人工补标 ATT&CK 技术（覆盖页的“采纳建议”入口）。
+func (s *Server) setIntentTechniques(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	t := s.taskFromPath(w, r)
+	if t == nil {
+		return
+	}
+	nid, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("nid")), 10, 64)
+	if err != nil || nid <= 0 {
+		writeErr(w, 400, "节点 id 非法")
+		return
+	}
+	var req struct {
+		Techniques []string `json:"techniques"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+	techs := db.NormalizeTechniques(req.Techniques)
+	if len(techs) == 0 {
+		writeErr(w, 400, "techniques 里没有合法的 ATT&CK 技术 ID（T#### 或 T####.###）")
+		return
+	}
+	node, err := t.Store.GetNode(nid)
+	if err != nil || node == nil || node.Kind != db.KindIntent {
+		writeErr(w, 404, "意图不存在或不属于该任务")
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(node.Payload, &payload); err != nil || payload == nil {
+		payload = map[string]any{}
+	}
+	payload["techniques"] = techs
+	if err := t.Store.SetNodePayload(nid, db.KindIntent, payload); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "techniques": techs})
+}
+
 // taskFromPath 解析 {id} 并取运行中的任务；失败时已写响应。
 func (s *Server) taskFromPath(w http.ResponseWriter, r *http.Request) *Task {
 	id := strings.TrimSpace(r.PathValue("id"))

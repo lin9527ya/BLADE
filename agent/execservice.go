@@ -58,6 +58,12 @@ type ExecService interface {
 	ActiveForTask(taskID string) []*db.ToolExecution
 }
 
+// ExecutionRowService 是执行服务对“完整台账行”的扩展能力（可选实现）。
+// 隧道链需要读取 meta 里的 local_port，而 ExecStatus 不携带 meta。
+type ExecutionRowService interface {
+	GetExecutionRow(ctx context.Context, id int64) (*db.ToolExecution, error)
+}
+
 // MetaExecService 是执行服务对“结构化元数据”的扩展能力（可选实现）。
 // 未实现时调用方降级为 ExecService.Submit，行为与旧宿主一致。
 type MetaExecService interface {

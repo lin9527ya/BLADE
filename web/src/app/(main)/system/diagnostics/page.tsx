@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import type { HostToolStatus } from "@/lib/types";
 import {
   type CacheDiagnostics,
   cacheStructureExplanation,
@@ -49,7 +50,18 @@ export default function DiagnosticsPage() {
   const [before, setBefore] = React.useState(0);
   const [version, setVersion] = React.useState(0);
   const [toggling, setToggling] = React.useState(false);
+  const [hostTools, setHostTools] = React.useState<HostToolStatus[]>([]);
+  const [hostToolsNote, setHostToolsNote] = React.useState("");
   const owner = React.useRef(createLatestRequest());
+  React.useEffect(() => {
+    api
+      .hostToolsInventory()
+      .then((r) => {
+        setHostTools(r.tools);
+        setHostToolsNote(r.note ?? "");
+      })
+      .catch(() => undefined);
+  }, []);
   React.useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("task") ?? "";
     if (/^\d+$/.test(id)) {
@@ -164,6 +176,23 @@ export default function DiagnosticsPage() {
         资源范围：{resources?.scope ?? "不支持或尚未采样"} · 更新：{metrics ? stamp(metrics.now) : "—"} ·
         累计指标在进程重启后重置；有累计值不等于当前正在故障。
       </p>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">宿主工具</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            {hostTools.map((t) => (
+              <Badge key={t.name} variant={t.available ? "secondary" : t.required ? "destructive" : "outline"}>
+                {t.name}
+                {t.version ? ` · ${t.version.slice(0, 40)}` : t.available ? "" : " · 缺失"}
+              </Badge>
+            ))}
+          </div>
+          {hostToolsNote && <p className="text-muted-foreground text-xs">{hostToolsNote}</p>}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>

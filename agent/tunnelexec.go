@@ -36,9 +36,10 @@ func (t *ToolSet) tunnelOpen() actool.CoreTool {
 			"再实际访问一次内网验证。用完用 cancel_execution 关掉——忘记关的隧道会挡住意图收尾。\n"+
 			"★ 内网目标仍受授权范围约束：能不能打由 RoE 判定，隧道只解决「够不够得着」。",
 		obj(map[string]any{
-			"foothold_id": idp("据点节点 id（protocol=ssh，且带 credential_id）"),
-			"host":        str("跳板机地址（必填；必须与据点登记的一致）"),
-			"ttl_ms":      intp("隧道存活上限毫秒（默认 2 小时；到点进程被杀）"),
+			"foothold_id":   idp("据点节点 id（protocol=ssh，且带 credential_id）"),
+			"host":          str("跳板机地址（必填；必须与据点登记的一致）"),
+			"ttl_ms":        intp("隧道存活上限毫秒（默认 2 小时；到点进程被杀）"),
+			"via_tunnel_id": idp("可选：上游隧道 execution_id。给了就经这条隧道（它的 SOCKS）再跳一层，用于多跳内网"),
 		}, "foothold_id", "host"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			if !lootExecOn() {
@@ -49,9 +50,10 @@ func (t *ToolSet) tunnelOpen() actool.CoreTool {
 				return actool.Errorf("tunnel_open: 执行服务未接线（当前运行环境不支持后台执行）"), nil
 			}
 			var a struct {
-				FootholdID json.RawMessage `json:"foothold_id"`
-				Host       string          `json:"host"`
-				TTLMs      int             `json:"ttl_ms"`
+				FootholdID  json.RawMessage `json:"foothold_id"`
+				ViaTunnelID json.RawMessage `json:"via_tunnel_id"`
+				Host        string          `json:"host"`
+				TTLMs       int             `json:"ttl_ms"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf(err.Error()), nil
@@ -103,11 +105,46 @@ func (t *ToolSet) tunnelOpen() actool.CoreTool {
 			if a.TTLMs > 0 {
 				ttl = time.Duration(a.TTLMs) * time.Millisecond
 			}
-			command := buildTunnelCommand(kind, user, v.Host, v.Port, localPort, secretPath, t.sshHostKeyOpts())
+			viaID := pid(a.ViaTunnelID)
+			proxyCommand := ""
+			if viaID > 0 {
+				if viaID == 0 || viaID == id {
+					return actool.Errorf("tunnel_open: via_tunnel_id 不能指向自己"), nil
+				}
+				rows, ok := t.execService.(ExecutionRowService)
+				if !ok {
+					return actool.Errorf("tunnel_open: 当前执行服务不支持多跳隧道"), nil
+				}
+				up, uerr := rows.GetExecutionRow(ctx, viaID)
+				if uerr != nil || up == nil {
+					return actool.Errorf(fmt.Sprintf("tunnel_open: 上游隧道 %d 不存在", viaID)), nil
+				}
+				if up.TaskID != t.taskIDStr() || !db.ExecutionActive(up.Status) {
+					return actool.Errorf(fmt.Sprintf("tunnel_open: 上游隧道 %d 不在本任务运行中", viaID)), nil
+				}
+				var um struct {
+					LocalPort int `json:"local_port"`
+				}
+				_ = json.Unmarshal(up.Meta, &um)
+				if um.LocalPort <= 0 {
+					return actool.Errorf(fmt.Sprintf("tunnel_open: 上游隧道 %d 没有 local_port", viaID)), nil
+				}
+				conn, derr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", um.LocalPort), 500*time.Millisecond)
+				if derr != nil {
+					return actool.Errorf(fmt.Sprintf("tunnel_open: 上游隧道 %d 未在 127.0.0.1:%d 监听：%v", viaID, um.LocalPort, derr)), nil
+				}
+				_ = conn.Close()
+				proxyCommand = fmt.Sprintf("nc -x 127.0.0.1:%d -X 5 %%h %%p", um.LocalPort)
+			}
+			command := buildTunnelCommand(kind, user, v.Host, v.Port, localPort, secretPath, t.sshHostKeyOpts(), proxyCommand)
 			desc := fmt.Sprintf("%ssocks5h://127.0.0.1:%d ← 据点 #%d（%s@%s）", tunnelDescPrefix, localPort, id, user, v.Host)
-			st, subErr := t.submitToolMeta(ctx, "tunnel_open", command, desc, ttl, map[string]any{
+			meta := map[string]any{
 				"foothold_id": id, "host": v.Host, "local_port": localPort, "ttl_ms": ttl.Milliseconds(),
-			})
+			}
+			if viaID > 0 {
+				meta["via_tunnel_id"] = viaID
+			}
+			st, subErr := t.submitToolMeta(ctx, "tunnel_open", command, desc, ttl, meta)
 			if subErr != nil {
 				_ = removeLootSecret(secretPath)
 				return actool.Errorf("tunnel_open: " + subErr.Error()), nil
@@ -145,12 +182,15 @@ func allocSocksPort() (int, error) {
 
 // buildTunnelCommand 构造 ssh 动态转发命令（-N -D）。明文处理与 loot_exec 同一套：
 // 0600 临时文件、读走即删，命令里只有路径。
-func buildTunnelCommand(kind, user, host string, sshPort, localPort int, secretPath, hostKeyOpts string) string {
+func buildTunnelCommand(kind, user, host string, sshPort, localPort int, secretPath, hostKeyOpts, proxyCommand string) string {
 	sp := shQuote(secretPath)
 	target := shQuote(user + "@" + host)
 	opts := fmt.Sprintf("-N -D 127.0.0.1:%d %s "+
 		"-o ExitOnForwardFailure=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -p %d",
 		localPort, hostKeyOpts, portOf("ssh", sshPort))
+	if strings.TrimSpace(proxyCommand) != "" {
+		opts += " -o " + shQuote("ProxyCommand="+proxyCommand)
+	}
 	if kind == "key" {
 		// 私钥要活到连接建立且认证完成；命令本身是长连接，退出时再删。
 		return fmt.Sprintf("ssh -i %s %s %s; rc=$?; rm -f %s; exit $rc", sp, opts, target, sp)

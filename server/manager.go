@@ -301,6 +301,7 @@ const (
 	settingOASTEnabled         = "oast_enabled"            // OAST 回调总开关（默认关）
 	settingOASTToken           = "oast_token"              // requestrepo 会话 token（只写，GET 回 *_set）
 	settingOASTDomain          = "oast_domain"             // OAST 服务域名（默认 requestrepo.com）
+	settingOASTNucleiServer    = "oast_nuclei_server"      // nuclei 使用的 interactsh 公共服务器（默认 oast.fun）
 	settingOpsecNoise          = "opsec_noise_level"       // 噪声档位：quiet 时给 planner/worker 追加潜行纪律
 	settingEvidenceVerify      = "finding_evidence_verify" // 证据闸档位：off/warn/block
 	settingAutoRetest          = "agent_auto_retest"

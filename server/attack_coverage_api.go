@@ -71,9 +71,10 @@ func (s *Server) attackCoverage(w http.ResponseWriter, r *http.Request) {
 
 	rows := map[string]*attackCoverageRow{}
 	unlabeled := 0
+	unlabeledList := []map[string]any{}
 	assetSeen := map[string]map[int64]bool{}
 	for _, t := range tasks {
-		if err := accumulateCoverage(t, rows, assetSeen, &unlabeled); err != nil {
+		if err := accumulateCoverage(t, rows, assetSeen, &unlabeled, &unlabeledList); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -96,12 +97,12 @@ func (s *Server) attackCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Technique < out[j].Technique })
 	writeJSON(w, 200, map[string]any{
-		"techniques": out, "unlabeled_intents": unlabeled,
+		"techniques": out, "unlabeled_intents": unlabeled, "unlabeled": unlabeledList,
 		"note": "只统计已标注 ATT&CK 技术的意图与检测记录；未标注不代表没测，本页不计算覆盖率百分比。",
 	})
 }
 
-func accumulateCoverage(t *Task, rows map[string]*attackCoverageRow, assetSeen map[string]map[int64]bool, unlabeled *int) error {
+func accumulateCoverage(t *Task, rows map[string]*attackCoverageRow, assetSeen map[string]map[int64]bool, unlabeled *int, unlabeledList *[]map[string]any) error {
 	intents, err := t.Store.ListByKind(db.KindIntent, 100000)
 	if err != nil {
 		return err
@@ -125,6 +126,17 @@ func accumulateCoverage(t *Task, rows map[string]*attackCoverageRow, assetSeen m
 		techs := db.NodeTechniques(n)
 		if len(techs) == 0 {
 			*unlabeled++
+			if len(*unlabeledList) < 50 {
+				var p struct {
+					Summary string `json:"summary"`
+				}
+				_ = json.Unmarshal(n.Payload, &p)
+				summary := strings.TrimSpace(p.Summary)
+				*unlabeledList = append(*unlabeledList, map[string]any{
+					"intent_id": n.ID, "summary": summary,
+					"suggested": db.SuggestTechniques(summary),
+				})
+			}
 			continue
 		}
 		for _, tech := range techs {
