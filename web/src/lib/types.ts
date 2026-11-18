@@ -56,6 +56,7 @@ export interface Task {
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
   asset_scope_policy?: "exact" | "target"; // 资产范围策略：target=目标所属全资产(同根/同公司跨根/本任务发现)；exact=仅明确登记
   exploration_mode?: "balanced" | "divergent"; // balanced=现有行为；divergent=覆盖仅参考/完整态势/no_output可续派
+  loot_exec_enabled?: boolean; // 任务级后渗透执行 opt-in；默认关
 }
 
 export interface TaskRelationRef {

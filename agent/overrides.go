@@ -40,6 +40,9 @@ type Overrides struct {
 	// LootExecEnabled 是 loot_exec 的总开关（默认关）：它把库里的凭据直接变成对目标的
 	// 动作，是 agent 能力里风险最高的一项。
 	LootExecEnabled func() bool
+	// LootExecTaskEnabled is the task-level opt-in for post-exploitation tools.
+	// It is ORed with the global switch; nil = no task override.
+	LootExecTaskEnabled func(taskID int64) bool
 	// OASTConfig 返回 OAST 回调服务的配置（token、域名、是否启用）。nil/未启用时
 	// oast_mint / oast_poll 从工具面移除。
 	OASTConfig func() (token, domain string, enabled bool)
@@ -70,6 +73,7 @@ func SetOverrides(o Overrides) {
 	ToolAugment = o.ToolAugment
 	FindingTrafficBindingEnabled = o.FindingTrafficBindingEnabled
 	LootExecEnabled = o.LootExecEnabled
+	LootExecTaskEnabled = o.LootExecTaskEnabled
 	OASTConfig = o.OASTConfig
 	NoiseLevel = o.NoiseLevel
 	EvidenceVerifyModeFn = o.EvidenceVerifyModeFn
@@ -90,6 +94,7 @@ func CurrentOverrides() Overrides {
 		ToolAugment:                    ToolAugment,
 		FindingTrafficBindingEnabled:   FindingTrafficBindingEnabled,
 		LootExecEnabled:                LootExecEnabled,
+		LootExecTaskEnabled:            LootExecTaskEnabled,
 		OASTConfig:                     OASTConfig,
 		NoiseLevel:                     NoiseLevel,
 		EvidenceVerifyModeFn:           EvidenceVerifyModeFn,

@@ -14,11 +14,24 @@ import (
 	"github.com/lin9527ya/blade/db"
 )
 
-// LootExecEnabled 是 loot_exec 的总开关（**默认关**）：它把库里的凭据直接变成对目标的
+// LootExecEnabled 是 loot_exec 的全局总开关（**默认关**）：它把库里的凭据直接变成对目标的
 // 动作——风险最高的一类能力，所以出厂不启用。server 层接到设置项 agent_loot_exec。
-var LootExecEnabled func() bool
+// LootExecTaskEnabled 是任务级显式 opt-in；两者为 OR，任务开关不绕过任何安全门。
+var (
+	LootExecEnabled     func() bool
+	LootExecTaskEnabled func(taskID int64) bool
+)
 
-func lootExecOn() bool { return LootExecEnabled != nil && LootExecEnabled() }
+func lootExecOn(ctx context.Context) bool {
+	if LootExecEnabled != nil && LootExecEnabled() {
+		return true
+	}
+	if LootExecTaskEnabled == nil {
+		return false
+	}
+	ri := RunInfoFrom(ctx)
+	return ri.TaskID > 0 && LootExecTaskEnabled(ri.TaskID)
+}
 
 // lootExec 用一条**已登记的凭据**在目标上执行命令，凭据明文不经过模型、命令与台账。
 //
@@ -47,7 +60,7 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 			"timeout_ms": intp("可选硬超时毫秒（到点杀进程）；省略=不限"),
 		}, "loot_id", "host", "command"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			if !lootExecOn() {
+			if !lootExecOn(ctx) {
 				return actool.Errorf("loot_exec: 该能力默认关闭（它会把库里的凭据直接变成对目标的动作）。" +
 					"请让操作者在设置里打开 agent_loot_exec；在此之前用 Bash 自己构造连接。"), nil
 			}

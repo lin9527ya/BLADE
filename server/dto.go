@@ -83,6 +83,7 @@ type TaskDTO struct {
 	CoverageEnabled       bool               `json:"coverage_enabled"`   // 资产覆盖度功能开关(创建时定)
 	AssetScopePolicy      string             `json:"asset_scope_policy"` // exact | target
 	ExplorationMode       string             `json:"exploration_mode"`   // balanced | divergent
+	LootExecEnabled       bool               `json:"loot_exec_enabled"`  // 任务级后渗透执行 opt-in
 	WorkerCount           int                `json:"worker_count"`       // 每任务并发覆盖；0=跟随全局
 	TimeoutSeconds        int                `json:"timeout_seconds"`    // 任务级超时；0=不限时
 	PlanHeartbeatSeconds  int                `json:"plan_heartbeat_seconds"`
@@ -165,6 +166,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CoverageEnabled:       t.CoverageEnabled,
 		AssetScopePolicy:      lifecycle.AssetScopePolicy,
 		ExplorationMode:       lifecycle.ExplorationMode,
+		LootExecEnabled:       lifecycle.LootExecEnabled,
 		WorkerCount:           t.WorkerCount,
 		TimeoutSeconds:        t.TimeoutSeconds,
 		PlanHeartbeatSeconds:  t.PlanHeartbeatSeconds,

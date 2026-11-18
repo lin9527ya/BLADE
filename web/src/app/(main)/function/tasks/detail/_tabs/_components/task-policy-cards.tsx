@@ -2,7 +2,17 @@
 
 import * as React from "react";
 
-import { CheckIcon, ClockIcon, CpuIcon, PencilIcon, PlusIcon, ShieldCheckIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ClockIcon,
+  CpuIcon,
+  PencilIcon,
+  PlusIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -434,6 +444,61 @@ export function TaskExplorationModeCard({ taskId, mode }: { taskId: string; mode
         <p className="text-muted-foreground text-xs">
           发散模式不会因“全面测试/全资产”自动追加 100% 覆盖目标，planner 使用完整黑板视图， no_output 可按 worker
           执行轨迹续派。RoE、时间窗、停机、审批/拦截和证据底线不变。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// TaskLootExecCard controls the task-level post-exploitation opt-in. Enabling it
+// only adds the tools to this task's agent surface; RoE/approval/evidence gates
+// still apply. The global agent_loot_exec remains a separate master/default.
+export function TaskLootExecCard({ taskId, enabled }: { taskId: string; enabled?: boolean }) {
+  const [value, setValue] = React.useState(Boolean(enabled));
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => setValue(Boolean(enabled)), [enabled]);
+
+  async function change(next: boolean) {
+    if (next === value) return;
+    if (
+      next &&
+      !window.confirm(
+        "允许本任务执行后渗透动作（loot_exec / foothold_exec / tunnel_open / 文件传输 / 提权枚举）？\n\n" +
+          "这些工具会把已登记的凭据/据点变成对目标的真实动作。开启后仍受 RoE、时间窗、停机、拦截规则、审批和证据底线约束。",
+      )
+    ) {
+      return;
+    }
+    const prev = value;
+    setValue(next);
+    setBusy(true);
+    try {
+      await api.updateTask(taskId, { loot_exec_enabled: next });
+      toast.success(next ? "已允许本任务后渗透执行" : "已关闭本任务后渗透执行");
+    } catch (e) {
+      setValue(prev);
+      toast.error(`切换失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ShieldAlertIcon className="size-4 text-amber-500" /> 后渗透执行
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <label htmlFor="task-loot-exec" className="flex items-center gap-2 text-sm">
+          <Switch id="task-loot-exec" checked={value} disabled={busy} onCheckedChange={(v) => void change(v)} />
+          允许本任务使用后渗透执行工具
+        </label>
+        <p className="text-muted-foreground text-xs">
+          仅对本任务生效；默认关闭。开启后可用 loot_exec、foothold_exec、tunnel_open、loot_upload/download、
+          enum_privilege，但仍走 RoE、时间窗、停机、拦截/审批与证据底线。全局 agent_loot_exec 仍可作为总开关。
         </p>
       </CardContent>
     </Card>

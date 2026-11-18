@@ -33,6 +33,7 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		Remark           *string `json:"remark"`
 		AssetScopePolicy *string `json:"asset_scope_policy"`
 		ExplorationMode  *string `json:"exploration_mode"`
+		LootExecEnabled  *bool   `json:"loot_exec_enabled"`
 	}
 	if err := decode(r, &request); err != nil {
 		var tooLarge *http.MaxBytesError
@@ -43,7 +44,7 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if request.Name == nil && request.Pinned == nil && request.Remark == nil && request.AssetScopePolicy == nil && request.ExplorationMode == nil {
+	if request.Name == nil && request.Pinned == nil && request.Remark == nil && request.AssetScopePolicy == nil && request.ExplorationMode == nil && request.LootExecEnabled == nil {
 		writeErr(w, http.StatusBadRequest, "至少需要提供 name、pinned、remark、asset_scope_policy 或 exploration_mode")
 		return
 	}
@@ -104,6 +105,7 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := s.m.UpdateTaskMetadata(taskID, db.TaskPatch{
 		Name: request.Name, Pinned: request.Pinned, Remark: request.Remark, ExplorationMode: request.ExplorationMode,
+		LootExecEnabled: request.LootExecEnabled,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

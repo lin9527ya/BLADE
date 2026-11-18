@@ -68,7 +68,7 @@ func (t *ToolSet) lootTransfer(ctx context.Context, in json.RawMessage, upload b
 	if upload {
 		name = "loot_upload"
 	}
-	if !lootExecOn() {
+	if !lootExecOn(ctx) {
 		return actool.Errorf(name + ": 该能力默认关闭（它会把库里的凭据直接变成对目标的动作）。" +
 			"请让操作者在设置里打开 agent_loot_exec。"), nil
 	}

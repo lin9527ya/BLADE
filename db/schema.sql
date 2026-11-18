@@ -813,6 +813,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
     exploration_mode TEXT NOT NULL DEFAULT 'balanced',
+    loot_exec_enabled BOOLEAN NOT NULL DEFAULT false,
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -837,6 +838,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_reason TEXT NOT NULL DEFAULT '';
 -- 探索模式：balanced=现有行为；divergent=覆盖度仅参考、完整态势、no_output 可续派。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS exploration_mode TEXT NOT NULL DEFAULT 'balanced';
+-- 后渗透执行：任务级显式 opt-in；默认关，开启后仍受 RoE/时间窗/停机/拦截/审批。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loot_exec_enabled BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。

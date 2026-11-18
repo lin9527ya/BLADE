@@ -69,6 +69,7 @@ type Task struct {
 	CoverageEnabled      bool   `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
 	AssetScopePolicy     string `json:"asset_scope_policy"`     // exact | target（目标所属全资产）
 	ExplorationMode      string `json:"exploration_mode"`       // balanced | divergent
+	LootExecEnabled      bool   `json:"loot_exec_enabled"`      // 任务级后渗透执行 opt-in；默认关
 	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
 	PlannerPromptOverride string                 `json:"planner_prompt_override,omitempty"`
 	FirstRunAt            int64                  `json:"first_run_at,omitempty"`
@@ -109,6 +110,7 @@ type taskLifecycleState struct {
 	CategoryName     string
 	AssetScopePolicy string
 	ExplorationMode  string
+	LootExecEnabled  bool
 	// ActiveRunSeconds 是已结算的实际运行秒数；RunSegmentStartedAt 是当前段起点
 	// （0 = 当前没有在计时）。暂停与排队期间不计入。
 	ActiveRunSeconds    int64
@@ -146,6 +148,7 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		CategoryName:        t.CategoryName,
 		AssetScopePolicy:    t.AssetScopePolicy,
 		ExplorationMode:     t.ExplorationMode,
+		LootExecEnabled:     t.LootExecEnabled,
 	}
 }
 
@@ -198,6 +201,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CategoryID = cloneInt64Ptr(state.CategoryID)
 	t.CategoryName = state.CategoryName
 	t.ExplorationMode = state.ExplorationMode
+	t.LootExecEnabled = state.LootExecEnabled
 	t.lifecycleMu.Unlock()
 }
 
@@ -1612,6 +1616,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		CoverageEnabled:       pt.CoverageEnabled,
 		AssetScopePolicy:      pt.AssetScopePolicy,
 		ExplorationMode:       pt.ExplorationMode,
+		LootExecEnabled:       pt.LootExecEnabled,
 		PlannerPromptOverride: pt.PlannerPromptOverride,
 		FirstRunAt:            unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1),
@@ -1642,6 +1647,7 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 		state.Remark = updated.Remark
 		state.PinnedAt = unixOrZero(updated.PinnedAt)
 		state.ExplorationMode = pgdb.NormalizeExplorationMode(updated.ExplorationMode)
+		state.LootExecEnabled = updated.LootExecEnabled
 	})
 	return task, nil
 }

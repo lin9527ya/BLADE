@@ -41,7 +41,7 @@ func (t *ToolSet) enumPrivilege() actool.CoreTool {
 			"timeout_ms":  intp("可选硬超时毫秒（默认 120000）"),
 		}, "host", "profile"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			if !lootExecOn() {
+			if !lootExecOn(ctx) {
 				return actool.Errorf("enum_privilege: 该能力默认关闭（会在目标上执行命令）。请让操作者在设置里打开 agent_loot_exec"), nil
 			}
 			if !t.execToolsReady() {

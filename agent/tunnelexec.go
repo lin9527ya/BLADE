@@ -42,7 +42,7 @@ func (t *ToolSet) tunnelOpen() actool.CoreTool {
 			"via_tunnel_id": idp("可选：上游隧道 execution_id。给了就经这条隧道（它的 SOCKS）再跳一层，用于多跳内网"),
 		}, "foothold_id", "host"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			if !lootExecOn() {
+			if !lootExecOn(ctx) {
 				return actool.Errorf("tunnel_open: 该能力默认关闭（它会用凭据在目标上建立长连接）。" +
 					"请让操作者在设置里打开 agent_loot_exec。"), nil
 			}

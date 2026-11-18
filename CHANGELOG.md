@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 授权后渗透 opt-in
+
+- 任务新增 `loot_exec_enabled`（默认 false）。开启后该任务的 agent 工具面才会出现
+  `loot_exec` / `foothold_exec` / `tunnel_open` / `loot_upload` / `loot_download` /
+  `enum_privilege`；全局 `agent_loot_exec` 仍作为总开关/默认。
+- 工具装配按任务上下文判断，任务级 opt-in 不改变全局设置。
+- 后渗透工具内部同样按任务开关放行；开启后仍完整经过 RoE、时间窗、停机、拦截规则、
+  LLM 裁判/人工审批和证据底线。
+- 新建任务表单与任务详情总览可开启；切换写入现有审计中间件（PATCH 任务、actor、时间）。
+- 新增任务开关持久化、任务级工具放行和全局开关回归测试。
+
 ### 发散探索模式
 
 - 任务新增 `exploration_mode=balanced|divergent`（默认 balanced，现有行为不变）。

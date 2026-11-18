@@ -168,6 +168,7 @@ export function CreateTaskSheet({
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
   const [assetScopePolicy, setAssetScopePolicy] = React.useState<"exact" | "target">("target"); // 资产范围策略;新任务默认 target=目标所属全资产自动可测
   const [explorationMode, setExplorationMode] = React.useState<"balanced" | "divergent">("balanced"); // 发散模式;只影响覆盖目标/视图/no_output 语义
+  const [lootExecEnabled, setLootExecEnabled] = React.useState(false); // 任务级后渗透执行 opt-in;默认关
   // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
   const [presetAppliedFor, setPresetAppliedFor] = React.useState<number | undefined>(undefined);
   const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
@@ -264,6 +265,7 @@ export function CreateTaskSheet({
         coverageEnabled,
         assetScopePolicy,
         explorationMode,
+        lootExecEnabled,
         workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
         remark: remark.trim(),
         plannerTemplateId: plannerTemplateID > 0 ? plannerTemplateID : undefined,
@@ -281,6 +283,7 @@ export function CreateTaskSheet({
       setCompanyIDs([]);
       setLLMProfileIDs([]);
       setExplorationMode("balanced");
+      setLootExecEnabled(false);
       setTimeoutMin("");
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
@@ -591,6 +594,20 @@ export function CreateTaskSheet({
                   <p className="text-muted-foreground text-xs">
                     发散模式不会自动追加 100% 覆盖目标，planner 使用完整黑板视图，no_output 可按执行轨迹续派； 不改变
                     RoE、时间窗、审批和证据底线。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="loot-exec-enabled" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="loot-exec-enabled"
+                      checked={lootExecEnabled}
+                      onCheckedChange={(v) => setLootExecEnabled(!!v)}
+                    />
+                    允许后渗透执行（任务级）
+                  </label>
+                  <p className="text-muted-foreground text-xs">
+                    开启后本任务可使用 loot_exec / foothold_exec / tunnel_open / loot_upload / loot_download /
+                    enum_privilege；仍受 RoE、时间窗、停机、拦截/审批和证据底线约束。默认关闭。
                   </p>
                 </div>
                 <div className="grid gap-2">

@@ -728,6 +728,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Remark:           req.Remark,
 		AssetScopePolicy: req.AssetScopePolicy,
 		ExplorationMode:  req.ExplorationMode,
+		LootExecEnabled:  req.LootExecEnabled,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

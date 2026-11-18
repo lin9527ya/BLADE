@@ -451,6 +451,7 @@ export const api = {
     coverageEnabled?: boolean;
     assetScopePolicy?: "exact" | "target";
     explorationMode?: "balanced" | "divergent";
+    lootExecEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
     // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
     plannerPrompt?: string;
@@ -474,6 +475,7 @@ export const api = {
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       asset_scope_policy: input.assetScopePolicy ?? "target", // 默认 target：目标所属全资产自动可测
       exploration_mode: input.explorationMode ?? "balanced",
+      loot_exec_enabled: input.lootExecEnabled ?? false,
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       planner_prompt: input.plannerPrompt ?? "",
       planner_template_id: input.plannerTemplateId ?? 0,
@@ -489,6 +491,7 @@ export const api = {
       remark?: string;
       asset_scope_policy?: "exact" | "target";
       exploration_mode?: "balanced" | "divergent";
+      loot_exec_enabled?: boolean;
     },
   ) => patch<Task>(`/tasks/${id}`, input),
   findingCaseRows: (q: FindingQuery) => {

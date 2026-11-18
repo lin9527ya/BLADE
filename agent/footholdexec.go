@@ -103,7 +103,7 @@ func (t *ToolSet) footholdExec() actool.CoreTool {
 			"timeout_ms":  intp("可选硬超时毫秒（到点杀进程）；省略=不限"),
 		}, "foothold_id", "host", "command"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			if !lootExecOn() {
+			if !lootExecOn(ctx) {
 				return actool.Errorf("foothold_exec: 该能力默认关闭（它会把据点的连法直接变成对目标的动作）。" +
 					"请让操作者在设置里打开 agent_loot_exec；在此之前按据点的 detail 用 Bash 自己连。"), nil
 			}

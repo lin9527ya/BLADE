@@ -326,6 +326,10 @@ func seedPlannerDomainTemplates(pg *db.DB) {
 func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	bindingEnabled := func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
 	lootExecEnabled := func() bool { return pg.GetBool(settingLootExec, false) }
+	taskLootExecEnabled := func(ctx context.Context) bool {
+		ri := agent.RunInfoFrom(ctx)
+		return ri.TaskID > 0 && pg.TaskLootExecEnabled(ri.TaskID)
+	}
 	// OAST：总开关 + token 都在设置里；token 为空等于没配。
 	oastConfig := func() (string, string, bool) {
 		if !pg.GetBool(settingOASTEnabled, false) {
@@ -460,7 +464,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		}
 		// loot_exec 默认关：未启用时**从工具面移除**，而不是让模型看见一个永远拒绝的工具——
 		// 那样每轮都会浪费一次调用去确认它能不能用。操作者打开设置后，下一次装配即出现。
-		if !lootExecEnabled() {
+		if !lootExecEnabled() && !taskLootExecEnabled(ctx) {
 			out = dropToolByName(out, toolpolicy.GatedTools("agent_loot_exec")...)
 		}
 		// OAST 未配置时同样从工具面移除：让模型看见一个永远拒绝的工具只会浪费调用。
@@ -482,6 +486,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	o := agent.CurrentOverrides()
 	o.FindingTrafficBindingEnabled = bindingEnabled
 	o.LootExecEnabled = lootExecEnabled
+	o.LootExecTaskEnabled = func(taskID int64) bool { return pg.TaskLootExecEnabled(taskID) }
 	o.OASTConfig = oastConfig
 	agent.NucleiOASTServer = func() string {
 		if v, ok, err := pg.GetSetting(settingOASTNucleiServer); err == nil && ok && strings.TrimSpace(v) != "" {

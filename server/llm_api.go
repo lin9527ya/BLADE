@@ -598,6 +598,7 @@ type createTaskReq struct {
 	AssetScopePolicy     string   `json:"asset_scope_policy,omitempty"` // exact | target；空=新任务默认 target  // 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏 add_task_scope/list_untested_assets。company 关联不受影响。
 	// ExplorationMode 空=balanced；divergent 仅改变覆盖目标/黑板视图/no_output 语义。
 	ExplorationMode string `json:"exploration_mode,omitempty"`
+	LootExecEnabled bool   `json:"loot_exec_enabled,omitempty"`
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 	// PlannerPrompt 任务级 planner 提示词全文（创建时快照，上限 32KB）。
