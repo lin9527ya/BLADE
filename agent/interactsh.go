@@ -204,6 +204,7 @@ func decryptInteractsh(key *rsa.PrivateKey, aesKeyB64, data string) ([]byte, err
 		return ctr, nil
 	}
 	cfb := make([]byte, len(cipherText))
+	//lint:ignore SA1019 兼容旧版 interactsh 服务端：仅在 CTR 解出非 JSON 时回退
 	cipher.NewCFBDecrypter(block, iv).XORKeyStream(cfb, cipherText)
 	if json.Valid(cfb) {
 		return cfb, nil

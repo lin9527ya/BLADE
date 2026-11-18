@@ -22,6 +22,7 @@ func TestInteractshProtocolPrimitives(t *testing.T) {
 	iv := make([]byte, aes.BlockSize)
 	_, _ = rand.Read(iv)
 	ct := make([]byte, len(plain))
+	//lint:ignore SA1019 测试旧版 interactsh 的 CFB 回退路径
 	cipher.NewCFBEncrypter(block, iv).XORKeyStream(ct, plain)
 	encData := base64.StdEncoding.EncodeToString(append(iv, ct...))
 	encKey, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &key.PublicKey, aesKey, nil)
