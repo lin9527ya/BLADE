@@ -153,6 +153,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"finding_evidence_verify": evidenceVerifySetting(s.m.pg).String(),
 		"agent_auto_retest":       s.m.pg.GetBool(settingAutoRetest, false),
 		"task_token_budget":       s.taskTokenBudget(),
+		"task_token_budget_pause": s.m.pg.GetBool(settingTokenBudgetPause, false),
 		"llm_monthly_budget_usd":  func() float64 { b, _ := llmBudgetSettings(s.m.pg); return b }(),
 		"llm_budget_alert_pct":    func() int { _, a := llmBudgetSettings(s.m.pg); return a }(),
 		"planner_bounded_view":    s.plannerBoundedView(),
@@ -324,6 +325,7 @@ type settingsRequest struct {
 	EvidenceVerify          *string  `json:"finding_evidence_verify"`
 	AgentAutoRetest         *bool    `json:"agent_auto_retest"`
 	TaskTokenBudget         *int64   `json:"task_token_budget"`
+	TaskTokenBudgetPause    *bool    `json:"task_token_budget_pause"`
 	LLMMonthlyBudgetUSD     *float64 `json:"llm_monthly_budget_usd"`   // 0 = 不设预算
 	LLMBudgetAlertPct       *int     `json:"llm_budget_alert_pct"`     // 超预算告警阈值（1–100）
 	PlannerBoundedView      *bool    `json:"planner_bounded_view"`     // 默认态势是否裁剪为有界视图
@@ -712,6 +714,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			v = 0
 		}
 		pending[settingTokenBudget] = strconv.FormatInt(v, 10)
+	}
+	if req.TaskTokenBudgetPause != nil {
+		pending[settingTokenBudgetPause] = strconv.FormatBool(*req.TaskTokenBudgetPause)
 	}
 	if req.LLMMonthlyBudgetUSD != nil {
 		v := *req.LLMMonthlyBudgetUSD

@@ -365,13 +365,59 @@ func accP4(t *testing.T, e *accEnv) {
 	if err := e.m.pg.SetSetting(settingTokenBudget, "1000"); err != nil {
 		t.Fatal(err)
 	}
+	oldPause, hadPause, err := e.m.pg.GetSetting(settingTokenBudgetPause)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if had {
 			_ = e.m.pg.SetSetting(settingTokenBudget, old)
 		} else {
 			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingTokenBudget)
 		}
+		if hadPause {
+			_ = e.m.pg.SetSetting(settingTokenBudgetPause, oldPause)
+		} else {
+			_, _ = e.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingTokenBudgetPause)
+		}
 	})
+	// 默认（未显式开启暂停）只告警，不打断任务。
+	if err := e.m.pg.SetSetting(settingTokenBudgetPause, "false"); err != nil {
+		t.Fatal(err)
+	}
+	warnTask, _ := e.newTask("acceptance-p4-warn", "预算仅告警")
+	if err := e.m.pg.InsertLLMUsage(&db.LLMUsage{TaskID: warnTask.ID, InputTokens: 1000, OutputTokens: 0, Status: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	e.s.engine.startDeadlineCoordinator(e.ctx, warnTask)
+	deadlineWarn := time.Now().Add(20 * time.Second)
+	for {
+		acts, _, aerr := warnTask.Store.ActivityList(nil, 0, 200)
+		if aerr != nil {
+			t.Fatal(aerr)
+		}
+		found := false
+		for _, a := range acts {
+			if strings.Contains(a.Summary, "仅告警继续") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadlineWarn) {
+			t.Fatal("预算耗尽默认应仅告警，但等待超时")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if e.s.engine.IsPaused(warnTask.ID) || warnTask.lifecycleSnapshot().Paused {
+		t.Fatal("未开启暂停设置时，预算耗尽不应暂停任务")
+	}
+	// 显式 opt-in 后才在 100% 暂停（既有行为）。
+	if err := e.m.pg.SetSetting(settingTokenBudgetPause, "true"); err != nil {
+		t.Fatal(err)
+	}
 	task, _ := e.newTask("acceptance-p4", "预算护栏")
 	use := func(in, out int) {
 		if err := e.m.pg.InsertLLMUsage(&db.LLMUsage{TaskID: task.ID, InputTokens: in, OutputTokens: out, Status: "ok"}); err != nil {
@@ -5246,6 +5292,65 @@ func accP43(t *testing.T, e *accEnv) {
 	}
 	if n, err := e.m.pg.CountCredentialAttempts(tid, "10.0.0.5", "svc_backup", time.Now().Add(-time.Hour)); err != nil || n != 8 {
 		t.Fatalf("预算 0 时仍要记账：count=%d err=%v，want 8", n, err)
+	}
+
+	// ⑤b 任务级覆盖：全局 2 次，但本任务单独放宽到 4 次；超预算仍走全局裁决。
+	setBudget(2, "ask")
+	_, tid4 := e.newTask("accP43-task-override", "任务级凭据预算")
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM credential_attempts WHERE task_id=$1`, tid4) })
+	override := 4
+	if _, err := e.m.pg.UpdateTask(tid4, db.TaskPatch{CredentialAttemptBudget: &override}); err != nil {
+		t.Fatalf("设置任务级凭据预算：%v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if dec, hit := ic.CheckCredentialBudget(ctx, tid4, "Bash",
+			bash(fmt.Sprintf("nxc smb 10.0.0.7 -u svc -p 'try%d'", i))); hit {
+			t.Fatalf("任务级预算 4 内第 %d 次不该拦：%s", i+1, dec.Message)
+		}
+	}
+	if dec, hit := ic.CheckCredentialBudget(ctx, tid4, "Bash",
+		bash("nxc smb 10.0.0.7 -u svc -p 'try5'")); !hit {
+		t.Fatal("任务级预算 4 的第 5 次必须超预算")
+	} else if dec.Action != "ask" {
+		t.Fatalf("任务级覆盖不改裁决动作，得到 %q，want ask", dec.Action)
+	}
+
+	// ⑤c 战役级覆盖：任务未单独设置时，继承所属战役的预算；任务级仍优先。
+	_, tid5 := e.newTask("accP43-campaign-override", "战役级凭据预算")
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM credential_attempts WHERE task_id=$1`, tid5) })
+	camp, err := e.m.pg.CreateCampaign("accP43 战役预算", "", nil)
+	if err != nil {
+		t.Fatalf("创建战役：%v", err)
+	}
+	t.Cleanup(func() { _, _ = e.m.pg.Exec(`DELETE FROM campaigns WHERE id=$1`, camp.ID) })
+	if _, err := e.m.pg.Exec(`UPDATE tasks SET campaign_id=$1 WHERE id=$2`, camp.ID, tid5); err != nil {
+		t.Fatalf("任务挂到战役：%v", err)
+	}
+	if _, err := e.m.pg.UpdateCampaignMeta(camp.ID, "", nil, "", "active", nil, nil, 3); err != nil {
+		t.Fatalf("设置战役级凭据预算：%v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if dec, hit := ic.CheckCredentialBudget(ctx, tid5, "Bash",
+			bash(fmt.Sprintf("nxc smb 10.0.0.11 -u svc -p 'try%d'", i))); hit {
+			t.Fatalf("战役级预算 3 内第 %d 次不该拦：%s", i+1, dec.Message)
+		}
+	}
+	if _, hit := ic.CheckCredentialBudget(ctx, tid5, "Bash",
+		bash("nxc smb 10.0.0.11 -u svc -p 'try4'")); !hit {
+		t.Fatal("战役级预算 3 的第 4 次必须超预算")
+	}
+	// 任务级优先于战役级：把任务预算设为 1，第 2 次就该拦。
+	one := 1
+	if _, err := e.m.pg.UpdateTask(tid5, db.TaskPatch{CredentialAttemptBudget: &one}); err != nil {
+		t.Fatalf("设置任务级覆盖：%v", err)
+	}
+	if _, hit := ic.CheckCredentialBudget(ctx, tid5, "Bash",
+		bash("nxc smb 10.0.0.12 -u svc -p 'x'")); hit {
+		t.Fatal("换主机后的第 1 次仍应在任务级预算 1 内")
+	}
+	if _, hit := ic.CheckCredentialBudget(ctx, tid5, "Bash",
+		bash("nxc smb 10.0.0.12 -u svc -p 'y'")); !hit {
+		t.Fatal("任务级预算 1 的第 2 次必须超预算（任务级优先于战役级）")
 	}
 
 	// ⑥ 咽喉点顺序：把 run_execution 移出启用集，它照样要被凭据预算看住。

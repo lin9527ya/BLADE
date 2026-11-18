@@ -44,6 +44,7 @@ import {
   TaskExplorationModeCard,
   TaskInterceptRulesCard,
   TaskLootExecCard,
+  TaskCredentialBudgetCard,
   TaskRuntimeCard,
 } from "./_components/task-policy-cards";
 import { TaskRelationsCard } from "./_components/task-relations-card";
@@ -869,6 +870,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       <TaskAssetScopeCard taskId={taskId} policy={task?.asset_scope_policy} />
       <TaskExplorationModeCard taskId={taskId} mode={task?.exploration_mode} />
       <TaskLootExecCard taskId={taskId} enabled={task?.loot_exec_enabled} />
+      <TaskCredentialBudgetCard taskId={taskId} budget={task?.credential_attempt_budget} />
       <TaskRuntimeCard task={task} />
       <TaskInterceptRulesCard taskId={taskId} />
       {coverage?.enabled && coverage.scope_rows > 0 && (

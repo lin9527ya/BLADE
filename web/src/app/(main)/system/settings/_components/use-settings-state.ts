@@ -122,6 +122,7 @@ export function useSettingsState() {
   // 执行审核员：开关 + 周期（秒）。运行时每周期现读，改完对下一个周期生效。
   // 任务级 token 预算(0 = 关闭)。
   const [tokenBudget, setTokenBudget] = React.useState("0");
+  const [tokenBudgetPause, setTokenBudgetPause] = React.useState(false);
   const [savingBudget, setSavingBudget] = React.useState(false);
   const [llmBudgetUSD, setLLMBudgetUSD] = React.useState("0");
   const [llmBudgetAlertPct, setLLMBudgetAlertPct] = React.useState("80");
@@ -235,6 +236,7 @@ export function useSettingsState() {
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setTokenBudget(String(s.task_token_budget ?? 0));
+    setTokenBudgetPause(!!s.task_token_budget_pause);
     setLLMBudgetUSD(String(s.llm_monthly_budget_usd ?? 0));
     setLLMBudgetAlertPct(String(s.llm_budget_alert_pct ?? 80));
     setBoundedView(s.planner_bounded_view !== false);
@@ -419,12 +421,29 @@ export function useSettingsState() {
     }
     setSavingBudget(true);
     api
-      .setSettings({ task_token_budget: n })
+      .setSettings({ task_token_budget: n, task_token_budget_pause: tokenBudgetPause })
       .then((s) => {
         apply(s);
         toast.success(n > 0 ? `已保存任务 token 预算（${n}）` : "已关闭任务 token 预算护栏");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingBudget(false));
+  };
+
+  const toggleTokenBudgetPause = (next: boolean) => {
+    const prev = tokenBudgetPause;
+    setTokenBudgetPause(next);
+    setSavingBudget(true);
+    api
+      .setSettings({ task_token_budget_pause: next })
+      .then((s) => {
+        apply(s);
+        toast.success(next ? "预算耗尽时将暂停任务" : "已改为仅告警，任务继续");
+      })
+      .catch((e) => {
+        setTokenBudgetPause(prev);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
       .finally(() => setSavingBudget(false));
   };
 
@@ -1215,6 +1234,9 @@ export function useSettingsState() {
     setSavingWorkers,
     tokenBudget,
     setTokenBudget,
+    tokenBudgetPause,
+    setTokenBudgetPause,
+    toggleTokenBudgetPause,
     savingBudget,
     setSavingBudget,
     llmBudgetUSD,

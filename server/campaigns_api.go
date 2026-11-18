@@ -207,15 +207,16 @@ func (s *Server) patchCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name      *string         `json:"name"`
-		Note      *string         `json:"note"`
-		CompanyID *int64          `json:"company_id"`
-		Goal      *string         `json:"goal"`
-		Scope     json.RawMessage `json:"scope"`
-		Phase     *string         `json:"phase"`
-		Status    *string         `json:"status"`
-		StartsAt  *string         `json:"starts_at"`
-		EndsAt    *string         `json:"ends_at"`
+		Name                    *string         `json:"name"`
+		Note                    *string         `json:"note"`
+		CompanyID               *int64          `json:"company_id"`
+		Goal                    *string         `json:"goal"`
+		Scope                   json.RawMessage `json:"scope"`
+		Phase                   *string         `json:"phase"`
+		Status                  *string         `json:"status"`
+		StartsAt                *string         `json:"starts_at"`
+		EndsAt                  *string         `json:"ends_at"`
+		CredentialAttemptBudget *int            `json:"credential_attempt_budget"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
@@ -244,7 +245,15 @@ func (s *Server) patchCampaign(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if req.Goal != nil || req.Scope != nil || req.Phase != nil || req.Status != nil || req.StartsAt != nil || req.EndsAt != nil {
+	credBudget := cur.CredentialAttemptBudget
+	if req.CredentialAttemptBudget != nil {
+		if *req.CredentialAttemptBudget < -1 {
+			writeErr(w, 400, "credential_attempt_budget 必须 >= -1（-1=继承全局，0=不限）")
+			return
+		}
+		credBudget = *req.CredentialAttemptBudget
+	}
+	if req.Goal != nil || req.Scope != nil || req.Phase != nil || req.Status != nil || req.StartsAt != nil || req.EndsAt != nil || req.CredentialAttemptBudget != nil {
 		goal, phase, status := cur.Goal, cur.Phase, cur.Status
 		if req.Goal != nil {
 			goal = *req.Goal
@@ -283,7 +292,7 @@ func (s *Server) patchCampaign(w http.ResponseWriter, r *http.Request) {
 		if ends, ok = parse("ends_at", req.EndsAt, ends); !ok {
 			return
 		}
-		c, err = s.m.pg.UpdateCampaignMeta(id, goal, scope, phase, status, starts, ends)
+		c, err = s.m.pg.UpdateCampaignMeta(id, goal, scope, phase, status, starts, ends, credBudget)
 		if err != nil {
 			if errors.Is(err, db.ErrCampaignInvalid) {
 				writeErr(w, 400, err.Error())

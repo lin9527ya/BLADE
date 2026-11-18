@@ -169,6 +169,7 @@ export function CreateTaskSheet({
   const [assetScopePolicy, setAssetScopePolicy] = React.useState<"exact" | "target">("target"); // 资产范围策略;新任务默认 target=目标所属全资产自动可测
   const [explorationMode, setExplorationMode] = React.useState<"balanced" | "divergent">("balanced"); // 发散模式;只影响覆盖目标/视图/no_output 语义
   const [lootExecEnabled, setLootExecEnabled] = React.useState(false); // 任务级后渗透执行 opt-in;默认关
+  const [credentialBudget, setCredentialBudget] = React.useState(""); // 任务级凭据预算;-1/空=继承全局,0=不限
   // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
   const [presetAppliedFor, setPresetAppliedFor] = React.useState<number | undefined>(undefined);
   const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
@@ -249,6 +250,12 @@ export function CreateTaskSheet({
     }
     setCreating(true);
     try {
+      const credBudget = credentialBudget.trim() === "" ? undefined : Number(credentialBudget);
+      if (credBudget !== undefined && (!Number.isInteger(credBudget) || credBudget < -1)) {
+        toast.error("凭据尝试预算必须是不小于 -1 的整数（留空=继承全局，0=不限）");
+        setCreating(false);
+        return;
+      }
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
       const heartbeatSec = Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
       await api.createTask({
@@ -266,6 +273,7 @@ export function CreateTaskSheet({
         assetScopePolicy,
         explorationMode,
         lootExecEnabled,
+        credentialAttemptBudget: credBudget,
         workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
         remark: remark.trim(),
         plannerTemplateId: plannerTemplateID > 0 ? plannerTemplateID : undefined,
@@ -284,6 +292,7 @@ export function CreateTaskSheet({
       setLLMProfileIDs([]);
       setExplorationMode("balanced");
       setLootExecEnabled(false);
+      setCredentialBudget("");
       setTimeoutMin("");
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
@@ -608,6 +617,24 @@ export function CreateTaskSheet({
                   <p className="text-muted-foreground text-xs">
                     开启后本任务可使用 loot_exec / foothold_exec / tunnel_open / loot_upload / loot_download /
                     enum_privilege；仍受 RoE、时间窗、停机、拦截/审批和证据底线约束。默认关闭。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="credential-budget" className="text-sm">
+                    凭据尝试预算（次 / 30 分钟）
+                  </Label>
+                  <Input
+                    id="credential-budget"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    className="max-w-xs"
+                    placeholder="留空=继承全局；0=不限"
+                    value={credentialBudget}
+                    onChange={(e) => setCredentialBudget(e.target.value)}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    仅对本任务生效。留空继承系统设置（默认 3 次/30 分钟），0 = 不限但仍记账；超预算仍按全局策略
+                    ask/deny。用于密码喷洒或凭据复用验证时放宽，注意账号锁定风险。
                   </p>
                 </div>
                 <div className="grid gap-2">

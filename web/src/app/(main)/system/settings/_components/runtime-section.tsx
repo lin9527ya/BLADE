@@ -21,6 +21,8 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
     savingWorkers,
     tokenBudget,
     setTokenBudget,
+    tokenBudgetPause,
+    toggleTokenBudgetPause,
     savingBudget,
     llmBudgetUSD,
     setLLMBudgetUSD,
@@ -98,13 +100,15 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
           htmlFor="token-budget"
           hint={
             <>
-              按任务累计 LLM 用量（输入+输出）：到 <b>70% / 85% / 95%</b> 各向 planner 投递一次收敛提示，达到{" "}
-              <b>100%</b> 时任务进入收尾——停派新意图、收在跑方向、出终局报告，不再无限消耗。 留空或填 <b>0</b> =
-              关闭护栏。
+              按任务累计 LLM 用量（输入+输出）：到 <b>70% / 85% / 95%</b> 各向 planner 投递一次收敛提示。
+              达到 <b>100%</b> 时默认<b>仅告警并继续</b>；只有开启下方“预算耗尽时暂停任务”才会暂停等待人工确认。
+              留空或填 <b>0</b> = 关闭护栏。
               <br />
               这是<b>体量护栏</b>：缓存命中的 token 也按全量计入，不代表实际费用。
               <br />
-              {Number(tokenBudget) > 0 ? "已配置 · 到量提示并自动收尾" : "未配置 · 任务不设 token 上限"}
+              {Number(tokenBudget) > 0
+                ? `已配置 · ${tokenBudgetPause ? "耗尽时暂停" : "耗尽仅告警"}`
+                : "未配置 · 任务不设 token 上限"}
             </>
           }
         >
@@ -124,6 +128,14 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
             </Button>
           </div>
         </Field>
+        <SwitchRow
+          id="token-budget-pause"
+          label="预算耗尽时暂停任务（默认仅告警）"
+          hint="开启后，任务用量达到 100% 会暂停并等待人工确认；关闭时只向 planner 投递收敛提示，任务继续。"
+          checked={tokenBudgetPause}
+          disabled={!loaded || savingBudget}
+          onChange={toggleTokenBudgetPause}
+        />
       </SubBlock>
 
       <SubBlock title="LLM 成本预算" icon={<GaugeIcon className="size-4 text-muted-foreground" />}>

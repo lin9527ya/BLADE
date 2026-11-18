@@ -46,7 +46,14 @@ export default function CampaignsPage() {
   const [matrix, setMatrix] = React.useState<DetectionMatrix | null>(null);
   const [planOpen, setPlanOpen] = React.useState(false);
   const [planBusy, setPlanBusy] = React.useState(false);
-  const [plan, setPlan] = React.useState({ goal: "", phase: "", status: "active", starts_at: "", ends_at: "" });
+  const [plan, setPlan] = React.useState({
+    goal: "",
+    phase: "",
+    status: "active",
+    starts_at: "",
+    ends_at: "",
+    credential_budget: "",
+  });
   const [newPhase, setNewPhase] = React.useState("");
 
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -80,6 +87,10 @@ export default function CampaignsPage() {
         status: next.campaign.status || "active",
         starts_at: next.campaign.starts_at ? next.campaign.starts_at.slice(0, 16) : "",
         ends_at: next.campaign.ends_at ? next.campaign.ends_at.slice(0, 16) : "",
+        credential_budget:
+          next.campaign.credential_attempt_budget !== undefined && next.campaign.credential_attempt_budget >= 0
+            ? String(next.campaign.credential_attempt_budget)
+            : "",
       });
       setPhases(next.phases ?? []);
       setChains(null);
@@ -105,12 +116,19 @@ export default function CampaignsPage() {
     if (!summary) return;
     setPlanBusy(true);
     try {
+      const cred = plan.credential_budget.trim() === "" ? -1 : Number(plan.credential_budget);
+      if (!Number.isInteger(cred) || cred < -1) {
+        toast.error("凭据尝试预算必须是不小于 -1 的整数（留空=继承全局，0=不限）");
+        setPlanBusy(false);
+        return;
+      }
       await api.updateCampaign(summary.campaign.id, {
         goal: plan.goal,
         phase: plan.phase,
         status: plan.status,
         starts_at: plan.starts_at,
         ends_at: plan.ends_at,
+        credential_attempt_budget: cred,
       });
       toast.success("计划已保存");
       setPlanOpen(false);
@@ -311,6 +329,20 @@ export default function CampaignsPage() {
             <DialogTitle>编辑战役计划</DialogTitle>
             <DialogDescription>目标/阶段/时间窗只用于展示与交接，不参与 RoE，也不会自动写任务范围。</DialogDescription>
           </DialogHeader>
+          <Field
+            label="凭据尝试预算（次 / 30 分钟）"
+            htmlFor="campaign-credential-budget"
+            hint="战役内任务的默认值：留空继承系统设置，0=不限，任务级设置可再覆盖；超预算仍按全局策略 ask/deny。"
+          >
+            <Input
+              id="campaign-credential-budget"
+              inputMode="numeric"
+              autoComplete="off"
+              value={plan.credential_budget}
+              onChange={(e) => setPlan({ ...plan, credential_budget: e.target.value })}
+              placeholder="留空=继承全局；0=不限"
+            />
+          </Field>
           <Field label="目标" htmlFor="campaign-goal">
             <Input
               id="campaign-goal"

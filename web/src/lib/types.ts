@@ -57,6 +57,7 @@ export interface Task {
   asset_scope_policy?: "exact" | "target"; // 资产范围策略：target=目标所属全资产(同根/同公司跨根/本任务发现)；exact=仅明确登记
   exploration_mode?: "balanced" | "divergent"; // balanced=现有行为；divergent=覆盖仅参考/完整态势/no_output可续派
   loot_exec_enabled?: boolean; // 任务级后渗透执行 opt-in；默认关
+  credential_attempt_budget?: number; // 任务级凭据尝试预算/30分钟：-1=继承全局，0=不限
 }
 
 export interface TaskRelationRef {
@@ -2220,6 +2221,8 @@ export interface Settings {
   // 任务级 token 预算(输入+输出合计)：到 70/85/95% 各向 planner 投递一次收敛提示，
   // 100% 时任务进入收尾(停派新意图 → drain → 终局报告)。0 或空 = 关闭。
   task_token_budget?: number;
+  /** 预算耗尽时是否暂停任务；false(默认)=仅告警继续。 */
+  task_token_budget_pause?: boolean;
   llm_monthly_budget_usd?: number;
   llm_budget_alert_pct?: number;
   planner_bounded_view?: boolean;
@@ -3315,6 +3318,8 @@ export interface Campaign {
   status: string;
   starts_at?: string;
   ends_at?: string;
+  /** 战役级凭据尝试预算/30分钟：-1=继承全局，0=不限，任务级可再覆盖。 */
+  credential_attempt_budget?: number;
   created_at: string;
   updated_at: string;
   task_count?: number;

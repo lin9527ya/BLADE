@@ -69,9 +69,10 @@ type Task struct {
 	AssetScopePolicy string `json:"asset_scope_policy"`
 	// ExplorationMode 决定 planner 的探索约束：balanced=现有行为；
 	// divergent=覆盖度仅参考、完整黑板视图、no_output 可按 trace 续派。
-	ExplorationMode       string `json:"exploration_mode"`
-	LootExecEnabled       bool   `json:"loot_exec_enabled"`
-	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
+	ExplorationMode         string `json:"exploration_mode"`
+	LootExecEnabled         bool   `json:"loot_exec_enabled"`
+	CredentialAttemptBudget int    `json:"credential_attempt_budget"` // -1=继承全局；0=不限；>0=本任务预算
+	PlannerPromptOverride   string `json:"planner_prompt_override,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -209,6 +210,8 @@ type TaskCreateOptions struct {
 	ExplorationMode string
 	// LootExecEnabled 是任务级后渗透执行 opt-in；默认 false，开启后仍走安全门。
 	LootExecEnabled bool
+	// CredentialAttemptBudget 是任务级凭据尝试预算/30分钟：nil=继承全局，0=不限。
+	CredentialAttemptBudget *int
 }
 
 // MaxTaskWorkerCount 是每任务并发覆盖的硬上限。
@@ -369,6 +372,13 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	}
 	policy = NormalizeAssetScopePolicy(policy)
 	explorationMode := NormalizeExplorationMode(opts.ExplorationMode)
+	credentialBudget := -1
+	if opts.CredentialAttemptBudget != nil {
+		credentialBudget = *opts.CredentialAttemptBudget
+		if credentialBudget < -1 {
+			credentialBudget = -1
+		}
+	}
 	t := &Task{
 		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
 		Description: description, Goal: goal, ExplorationID: expID,
@@ -378,12 +388,13 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CompanyIDs:     append([]int64(nil), opts.CompanyIDs...),
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		CoverageEnabled: coverageEnabled, AssetScopePolicy: policy, ExplorationMode: explorationMode,
-		LootExecEnabled: opts.LootExecEnabled,
+		LootExecEnabled:         opts.LootExecEnabled,
+		CredentialAttemptBudget: credentialBudget,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, remark, asset_scope_policy, exploration_mode, loot_exec_enabled)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark, policy, explorationMode, opts.LootExecEnabled).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, remark, asset_scope_policy, exploration_mode, loot_exec_enabled, credential_attempt_budget)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark, policy, explorationMode, opts.LootExecEnabled, credentialBudget).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	t.PlannerPromptOverride = strings.TrimSpace(opts.PlannerPrompt)
@@ -501,11 +512,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(exploration_mode,'balanced'), COALESCE(loot_exec_enabled,false)`
+description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(exploration_mode,'balanced'), COALESCE(loot_exec_enabled,false), COALESCE(credential_attempt_budget,-1)`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.ExplorationMode, &t.LootExecEnabled); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.ExplorationMode, &t.LootExecEnabled, &t.CredentialAttemptBudget); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -547,11 +558,12 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, id DESC`)
 
 // TaskPatch updates task list metadata without changing execution state.
 type TaskPatch struct {
-	Name            *string
-	Pinned          *bool
-	Remark          *string
-	ExplorationMode *string
-	LootExecEnabled *bool
+	Name                    *string
+	Pinned                  *bool
+	Remark                  *string
+	ExplorationMode         *string
+	LootExecEnabled         *bool
+	CredentialAttemptBudget *int
 }
 
 // UpdateTask applies a partial task name/pin mutation and returns the updated row.
@@ -566,10 +578,12 @@ func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 	END,
 	remark = CASE WHEN $5::boolean THEN $6 ELSE remark END,
 	exploration_mode = CASE WHEN $7::boolean THEN $8 ELSE exploration_mode END,
-	loot_exec_enabled = CASE WHEN $9::boolean THEN $10 ELSE loot_exec_enabled END
+	loot_exec_enabled = CASE WHEN $9::boolean THEN $10 ELSE loot_exec_enabled END,
+	credential_attempt_budget = CASE WHEN $11::boolean THEN $12 ELSE credential_attempt_budget END
 WHERE id=$1 AND deleted_at IS NULL
 RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.Remark != nil, patch.Remark,
-		patch.ExplorationMode != nil, patch.ExplorationMode, patch.LootExecEnabled != nil, patch.LootExecEnabled))
+		patch.ExplorationMode != nil, patch.ExplorationMode, patch.LootExecEnabled != nil, patch.LootExecEnabled,
+		patch.CredentialAttemptBudget != nil, patch.CredentialAttemptBudget))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -882,4 +896,18 @@ WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&enabled); err != nil {
 		return false
 	}
 	return enabled
+}
+
+// TaskCredentialBudget resolves a task-level credential attempt budget. ok=false
+// means "inherit the global setting" (-1).
+func (d *DB) TaskCredentialBudget(taskID int64) (int, bool) {
+	if taskID <= 0 {
+		return 0, false
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COALESCE(credential_attempt_budget,-1) FROM tasks
+WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&n); err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }

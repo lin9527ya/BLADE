@@ -599,6 +599,8 @@ type createTaskReq struct {
 	// ExplorationMode 空=balanced；divergent 仅改变覆盖目标/黑板视图/no_output 语义。
 	ExplorationMode string `json:"exploration_mode,omitempty"`
 	LootExecEnabled bool   `json:"loot_exec_enabled,omitempty"`
+	// CredentialAttemptBudget 任务级凭据尝试预算/30分钟；nil=继承全局，0=不限。
+	CredentialAttemptBudget *int `json:"credential_attempt_budget,omitempty"`
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 	// PlannerPrompt 任务级 planner 提示词全文（创建时快照，上限 32KB）。

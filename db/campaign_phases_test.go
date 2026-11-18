@@ -22,7 +22,7 @@ func TestCampaignMetaAndPhases(t *testing.T) {
 
 	starts := time.Now().UTC().Truncate(time.Second)
 	ends := starts.Add(24 * time.Hour)
-	meta, err := d.UpdateCampaignMeta(c.ID, "达成外网打点", json.RawMessage(`{"note":"display only"}`), "recon", "active", &starts, &ends)
+	meta, err := d.UpdateCampaignMeta(c.ID, "达成外网打点", json.RawMessage(`{"note":"display only"}`), "recon", "active", &starts, &ends, -1)
 	if err != nil {
 		t.Fatal(err)
 	}

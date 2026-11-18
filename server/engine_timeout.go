@@ -252,7 +252,11 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 						// 已经暂停（用户手动暂停/其它策略）就不重复打扰；恢复时
 						// startAdmittedTask → AckExhaustedBudget 会接住这次确认。
 						if !t.lifecycleSnapshot().Paused && !e.IsPaused(t.ID) {
-							e.pauseForBudget(t, used, budget)
+							if e.tokenBudgetPauseEnabled() {
+								e.pauseForBudget(t, used, budget)
+							} else {
+								e.budgetWarnOnly(t, used, budget)
+							}
 						}
 					}
 				}

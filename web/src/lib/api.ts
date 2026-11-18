@@ -452,6 +452,7 @@ export const api = {
     assetScopePolicy?: "exact" | "target";
     explorationMode?: "balanced" | "divergent";
     lootExecEnabled?: boolean;
+    credentialAttemptBudget?: number; // -1=继承全局，0=不限
     interceptRules?: AssetInterceptRuleInput[];
     // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
     plannerPrompt?: string;
@@ -476,6 +477,7 @@ export const api = {
       asset_scope_policy: input.assetScopePolicy ?? "target", // 默认 target：目标所属全资产自动可测
       exploration_mode: input.explorationMode ?? "balanced",
       loot_exec_enabled: input.lootExecEnabled ?? false,
+      credential_attempt_budget: input.credentialAttemptBudget,
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       planner_prompt: input.plannerPrompt ?? "",
       planner_template_id: input.plannerTemplateId ?? 0,
@@ -492,6 +494,7 @@ export const api = {
       asset_scope_policy?: "exact" | "target";
       exploration_mode?: "balanced" | "divergent";
       loot_exec_enabled?: boolean;
+      credential_attempt_budget?: number;
     },
   ) => patch<Task>(`/tasks/${id}`, input),
   findingCaseRows: (q: FindingQuery) => {
@@ -1432,6 +1435,7 @@ export const api = {
       status?: string;
       starts_at?: string;
       ends_at?: string;
+      credential_attempt_budget?: number;
     },
   ) => patch<Campaign>(`/campaigns/${id}`, body),
   deleteCampaign: (id: number) => del<{ deleted: boolean; tasks_unbound: number }>(`/campaigns/${id}`),

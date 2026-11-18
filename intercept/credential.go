@@ -60,6 +60,21 @@ func (i *Interceptor) CredentialBudget() int {
 	return i.getSettingInt(SettingCredentialBudget, defaultCredentialBudget)
 }
 
+// CredentialBudgetForTask resolves task override → campaign override → global.
+// A missing/failed lookup falls back to the next level, so a broken task/campaign
+// row cannot disable the guard. TaskID <= 0 (no task context) uses global.
+func (i *Interceptor) CredentialBudgetForTask(taskID int64) int {
+	if taskID > 0 && i.db != nil {
+		if n, ok := i.db.TaskCredentialBudget(taskID); ok {
+			return n
+		}
+		if n, ok := i.db.CampaignCredentialBudget(taskID); ok {
+			return n
+		}
+	}
+	return i.CredentialBudget()
+}
+
 // CredentialBudgetAction 返回超预算后的裁决动作。
 func (i *Interceptor) CredentialBudgetAction() string {
 	if i.db == nil {
@@ -80,7 +95,7 @@ func (i *Interceptor) CheckCredentialBudget(_ context.Context, taskID int64, too
 	if i.db == nil {
 		return Decision{}, false
 	}
-	budget := i.CredentialBudget()
+	budget := i.CredentialBudgetForTask(taskID)
 
 	var at opsec.Attempt
 	var recErr error

@@ -504,3 +504,64 @@ export function TaskLootExecCard({ taskId, enabled }: { taskId: string; enabled?
     </Card>
   );
 }
+
+// TaskCredentialBudgetCard overrides the global credential-attempt budget for this
+// task. -1/empty = inherit; 0 = unlimited (still recorded); >0 = attempts per 30 min.
+export function TaskCredentialBudgetCard({ taskId, budget }: { taskId: string; budget?: number }) {
+  const current = budget ?? -1;
+  const [value, setValue] = React.useState(current >= 0 ? String(current) : "");
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => setValue(current >= 0 ? String(current) : ""), [current]);
+
+  async function save() {
+    const n = value.trim() === "" ? -1 : Number(value);
+    if (!Number.isInteger(n) || n < -1) {
+      toast.error("凭据尝试预算必须是不小于 -1 的整数（留空=继承全局，0=不限）");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.updateTask(taskId, { credential_attempt_budget: n });
+      toast.success(n < 0 ? "已改为继承全局凭据预算" : n === 0 ? "本任务凭据尝试已不限次数（仍记账）" : `本任务凭据预算：${n} 次/30 分钟`);
+    } catch (e) {
+      toast.error(`保存失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ClockIcon className="size-4 text-sky-500" /> 凭据尝试预算
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            id="task-credential-budget"
+            inputMode="numeric"
+            autoComplete="off"
+            className="h-8 w-48"
+            placeholder="留空=继承全局；0=不限"
+            value={value}
+            disabled={busy}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+            }}
+          />
+          <Button size="sm" onClick={() => void save()} disabled={busy}>
+            保存
+          </Button>
+        </div>
+        <p className="text-muted-foreground text-xs">
+          仅对本任务生效，按目标 + 账号在 30 分钟窗口内累计；留空继承系统设置（默认 3 次）。0 = 不限但仍记账。
+          超预算后的 ask/deny 仍由全局凭据策略决定，不会绕过 RoE、审批或证据底线。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}

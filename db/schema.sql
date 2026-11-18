@@ -779,6 +779,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     nkey       TEXT NOT NULL UNIQUE,
     company_id BIGINT REFERENCES companies(id) ON DELETE SET NULL,
     note       TEXT NOT NULL DEFAULT '',
+    credential_attempt_budget INTEGER NOT NULL DEFAULT -1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -814,6 +815,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
     exploration_mode TEXT NOT NULL DEFAULT 'balanced',
     loot_exec_enabled BOOLEAN NOT NULL DEFAULT false,
+    credential_attempt_budget INTEGER NOT NULL DEFAULT -1,
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -840,6 +842,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_reason TEXT NOT NULL DEFAULT ''
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS exploration_mode TEXT NOT NULL DEFAULT 'balanced';
 -- 后渗透执行：任务级显式 opt-in；默认关，开启后仍受 RoE/时间窗/停机/拦截/审批。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loot_exec_enabled BOOLEAN NOT NULL DEFAULT false;
+-- 凭据尝试预算/30分钟：-1=继承全局，0=不限，>0=本任务窗口内允许次数。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS credential_attempt_budget INTEGER NOT NULL DEFAULT -1;
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。
@@ -2281,6 +2285,8 @@ ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT '';
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;
+-- 战役级凭据尝试预算/30分钟：-1=继承全局，0=不限，>0=本战役任务默认预算（任务级可再覆盖）。
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS credential_attempt_budget INTEGER NOT NULL DEFAULT -1;
 
 CREATE TABLE IF NOT EXISTS campaign_phases (
     id          BIGSERIAL PRIMARY KEY,

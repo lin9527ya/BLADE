@@ -2457,7 +2457,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			return 0, fmt.Errorf("资产可见范围校验失败：%w", err)
 		}
 		if len(visible) != len(anchors) {
-			return 0, fmt.Errorf("目标资产不在本任务可测范围内：先用 list_assets 确认；若确属目标，用 add_task_scope（公司资产先 add_company_scope 再 add_task_scope company）扩面并写明依据")
+			return 0, fmt.Errorf("资产 %v 不在本任务可测范围内：先用 list_assets 确认。若确属目标：worker 侧先用 request_scope_expansion 记录归属证据；planner 复核后调用 add_task_scope（公司资产先 add_company_scope 再 add_task_scope company）扩面，再派发意图。不要直接测试范围外资产", anchors)
 		}
 	}
 	if t.as != nil && len(anchors) > 0 {

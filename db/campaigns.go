@@ -26,24 +26,25 @@ type Campaign struct {
 	Note      string `json:"note"`
 	// P1 编排字段：goal/scope 只做展示与交接，**不参与 RoE**——授权范围仍由
 	// task_scope/company_scope 决定，战役 scope 不自动写入它们。
-	Goal      string          `json:"goal"`
-	Scope     json.RawMessage `json:"scope,omitempty"`
-	Phase     string          `json:"phase"`
-	Status    string          `json:"status"`
-	StartsAt  *time.Time      `json:"starts_at,omitempty"`
-	EndsAt    *time.Time      `json:"ends_at,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	Goal                    string          `json:"goal"`
+	Scope                   json.RawMessage `json:"scope,omitempty"`
+	Phase                   string          `json:"phase"`
+	Status                  string          `json:"status"`
+	StartsAt                *time.Time      `json:"starts_at,omitempty"`
+	EndsAt                  *time.Time      `json:"ends_at,omitempty"`
+	CredentialAttemptBudget int             `json:"credential_attempt_budget"` // -1=继承全局；0=不限
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
 }
 
 const campaignCols = `id, name, company_id, note, created_at, updated_at,
 	COALESCE(goal,''), COALESCE(scope,'{}'::jsonb), COALESCE(phase,''), COALESCE(status,'active'),
-	starts_at, ends_at`
+	starts_at, ends_at, COALESCE(credential_attempt_budget,-1)`
 
 func scanCampaign(row interface{ Scan(...any) error }) (*Campaign, error) {
 	c := &Campaign{}
 	err := row.Scan(&c.ID, &c.Name, &c.CompanyID, &c.Note, &c.CreatedAt, &c.UpdatedAt,
-		&c.Goal, &c.Scope, &c.Phase, &c.Status, &c.StartsAt, &c.EndsAt)
+		&c.Goal, &c.Scope, &c.Phase, &c.Status, &c.StartsAt, &c.EndsAt, &c.CredentialAttemptBudget)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -204,7 +205,7 @@ func scanCampaignPhase(row interface{ Scan(...any) error }) (*CampaignPhase, err
 }
 
 // UpdateCampaignMeta 更新 P1 编排字段（goal/scope/phase/status/时间窗）。
-func (d *DB) UpdateCampaignMeta(id int64, goal string, scope json.RawMessage, phase, status string, startsAt, endsAt *time.Time) (*Campaign, error) {
+func (d *DB) UpdateCampaignMeta(id int64, goal string, scope json.RawMessage, phase, status string, startsAt, endsAt *time.Time, credentialBudget int) (*Campaign, error) {
 	if len(scope) == 0 {
 		scope = json.RawMessage(`{}`)
 	}
@@ -216,9 +217,9 @@ func (d *DB) UpdateCampaignMeta(id int64, goal string, scope json.RawMessage, ph
 		status = "active"
 	}
 	c, err := scanCampaign(d.QueryRow(`UPDATE campaigns
-SET goal=$2, scope=$3::jsonb, phase=$4, status=$5, starts_at=$6, ends_at=$7
+SET goal=$2, scope=$3::jsonb, phase=$4, status=$5, starts_at=$6, ends_at=$7, credential_attempt_budget=$8
 WHERE id=$1 RETURNING `+campaignCols,
-		id, strings.TrimSpace(goal), string(scope), strings.TrimSpace(phase), status, startsAt, endsAt))
+		id, strings.TrimSpace(goal), string(scope), strings.TrimSpace(phase), status, startsAt, endsAt, credentialBudget))
 	if err != nil {
 		return nil, err
 	}
@@ -325,4 +326,19 @@ WHERE campaign_id=$1 AND deleted_at IS NULL`, campaignID)
 		out[tid] = pid
 	}
 	return out, rows.Err()
+}
+
+// CampaignCredentialBudget resolves the campaign-level credential budget for a
+// task. ok=false means the task has no campaign or the campaign inherits (-1).
+func (d *DB) CampaignCredentialBudget(taskID int64) (int, bool) {
+	if taskID <= 0 {
+		return 0, false
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COALESCE(c.credential_attempt_budget,-1)
+FROM tasks t JOIN campaigns c ON c.id=t.campaign_id
+WHERE t.id=$1 AND t.deleted_at IS NULL`, taskID).Scan(&n); err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }

@@ -690,6 +690,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if req.CredentialAttemptBudget != nil && *req.CredentialAttemptBudget < -1 {
+		writeErr(w, 400, "credential_attempt_budget 必须 >= -1（-1=继承全局，0=不限）")
+		return
+	}
 	interceptRules, err := buildTaskInterceptRules(req.InterceptRules)
 	if err != nil {
 		writeErr(w, 400, "任务级拦截规则无效："+err.Error())
@@ -721,14 +725,15 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
-		CoverageEnabled:  coverageEnabled,
-		InterceptRules:   interceptRules,
-		PlannerPrompt:    plannerPrompt,
-		WorkerCount:      req.WorkerCount,
-		Remark:           req.Remark,
-		AssetScopePolicy: req.AssetScopePolicy,
-		ExplorationMode:  req.ExplorationMode,
-		LootExecEnabled:  req.LootExecEnabled,
+		CoverageEnabled:         coverageEnabled,
+		InterceptRules:          interceptRules,
+		PlannerPrompt:           plannerPrompt,
+		WorkerCount:             req.WorkerCount,
+		Remark:                  req.Remark,
+		AssetScopePolicy:        req.AssetScopePolicy,
+		ExplorationMode:         req.ExplorationMode,
+		LootExecEnabled:         req.LootExecEnabled,
+		CredentialAttemptBudget: req.CredentialAttemptBudget,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

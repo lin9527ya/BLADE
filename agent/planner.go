@@ -478,6 +478,17 @@ func renderGraphOverview(data map[string]any, bounded bool) string {
 // PlannerPromptBody 返回内置 planner 正文（DB agent_prompts 的播种与迁移用）。
 func PlannerPromptBody() string { return plannerDefaultTmpl }
 
+// plannerScopeRequestBlock is code-owned: worker scope-expansion requests must be
+// reviewed rather than silently ignored, and a denial must still leave an audit trail.
+const plannerScopeRequestBlock = `
+
+【扩面请求处理（任务级，代码持有）】
+- recent_facts 中出现 summary 以「[扩面请求]」开头的事实，说明 worker 在目标上发现了疑似属于目标、但当前不在授权范围的资产。它不是授权，也不是可直接测试的对象。
+- 先 node_detail(fact_id) 核对 detail/evidence：whois、证书 SAN、ASN、ICP、页面互链、同一控制台等归属证据是否成立。
+- 证据成立：调用 add_task_scope（或先 add_company_scope 再 add_task_scope company）扩面，然后才可派发相关意图；summary 里写清扩面依据。
+- 证据不足：不要扩面、不要派单；写一条 fact 说明拒绝理由（缺哪类归属证据），让 worker 继续补证。
+- 无论扩面与否，都不直接测试范围外资产；RoE、拦截规则与审批仍然是最高优先。`
+
 // plannerDivergentBlock is code-owned: editing the DB prompt cannot remove it.
 // It only changes exploration guidance, not authorization/approval boundaries.
 const plannerDivergentBlock = `
@@ -702,6 +713,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
+	sysBody += plannerScopeRequestBlock
 	if p.isDivergent() {
 		sysBody += plannerDivergentBlock
 	}

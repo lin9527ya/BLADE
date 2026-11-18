@@ -70,6 +70,8 @@ type Task struct {
 	AssetScopePolicy     string `json:"asset_scope_policy"`     // exact | target（目标所属全资产）
 	ExplorationMode      string `json:"exploration_mode"`       // balanced | divergent
 	LootExecEnabled      bool   `json:"loot_exec_enabled"`      // 任务级后渗透执行 opt-in；默认关
+	// CredentialAttemptBudget 是任务级凭据尝试预算/30分钟：-1=继承全局，0=不限。
+	CredentialAttemptBudget int `json:"credential_attempt_budget"`
 	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
 	PlannerPromptOverride string                 `json:"planner_prompt_override,omitempty"`
 	FirstRunAt            int64                  `json:"first_run_at,omitempty"`
@@ -92,25 +94,26 @@ type Task struct {
 // updateLifecycle instead of reading or writing the corresponding Task fields
 // directly after the task has been published by Manager.
 type taskLifecycleState struct {
-	Name             string
-	Remark           string
-	PinnedAt         int64
-	Status           string
-	Paused           bool
-	PauseReason      string
-	Queued           bool
-	QueuedAt         int64
-	QueueMode        string
-	CompletedAt      int64
-	FirstRunAt       int64
-	DeadlineAt       int64
-	SourceTaskIDs    []int64
-	CompanyIDs       []int64
-	CategoryID       *int64
-	CategoryName     string
-	AssetScopePolicy string
-	ExplorationMode  string
-	LootExecEnabled  bool
+	Name                    string
+	Remark                  string
+	PinnedAt                int64
+	Status                  string
+	Paused                  bool
+	PauseReason             string
+	Queued                  bool
+	QueuedAt                int64
+	QueueMode               string
+	CompletedAt             int64
+	FirstRunAt              int64
+	DeadlineAt              int64
+	SourceTaskIDs           []int64
+	CompanyIDs              []int64
+	CategoryID              *int64
+	CategoryName            string
+	AssetScopePolicy        string
+	ExplorationMode         string
+	LootExecEnabled         bool
+	CredentialAttemptBudget int
 	// ActiveRunSeconds 是已结算的实际运行秒数；RunSegmentStartedAt 是当前段起点
 	// （0 = 当前没有在计时）。暂停与排队期间不计入。
 	ActiveRunSeconds    int64
@@ -128,27 +131,28 @@ func (t *Task) lifecycleSnapshot() taskLifecycleState {
 
 func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 	return taskLifecycleState{
-		Name:                t.Name,
-		Remark:              t.Remark,
-		PinnedAt:            t.PinnedAt,
-		Status:              t.Status,
-		Paused:              t.Paused,
-		PauseReason:         t.PauseReason,
-		Queued:              t.Queued,
-		QueuedAt:            t.QueuedAt,
-		QueueMode:           t.QueueMode,
-		CompletedAt:         t.CompletedAt,
-		ActiveRunSeconds:    t.ActiveRunSeconds,
-		RunSegmentStartedAt: ptrOrZero(t.RunSegmentStartedAt),
-		FirstRunAt:          t.FirstRunAt,
-		DeadlineAt:          t.DeadlineAt,
-		SourceTaskIDs:       append([]int64(nil), t.SourceTaskIDs...),
-		CompanyIDs:          append([]int64(nil), t.CompanyIDs...),
-		CategoryID:          cloneInt64Ptr(t.CategoryID),
-		CategoryName:        t.CategoryName,
-		AssetScopePolicy:    t.AssetScopePolicy,
-		ExplorationMode:     t.ExplorationMode,
-		LootExecEnabled:     t.LootExecEnabled,
+		Name:                    t.Name,
+		Remark:                  t.Remark,
+		PinnedAt:                t.PinnedAt,
+		Status:                  t.Status,
+		Paused:                  t.Paused,
+		PauseReason:             t.PauseReason,
+		Queued:                  t.Queued,
+		QueuedAt:                t.QueuedAt,
+		QueueMode:               t.QueueMode,
+		CompletedAt:             t.CompletedAt,
+		ActiveRunSeconds:        t.ActiveRunSeconds,
+		RunSegmentStartedAt:     ptrOrZero(t.RunSegmentStartedAt),
+		FirstRunAt:              t.FirstRunAt,
+		DeadlineAt:              t.DeadlineAt,
+		SourceTaskIDs:           append([]int64(nil), t.SourceTaskIDs...),
+		CompanyIDs:              append([]int64(nil), t.CompanyIDs...),
+		CategoryID:              cloneInt64Ptr(t.CategoryID),
+		CategoryName:            t.CategoryName,
+		AssetScopePolicy:        t.AssetScopePolicy,
+		ExplorationMode:         t.ExplorationMode,
+		LootExecEnabled:         t.LootExecEnabled,
+		CredentialAttemptBudget: t.CredentialAttemptBudget,
 	}
 }
 
@@ -202,6 +206,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CategoryName = state.CategoryName
 	t.ExplorationMode = state.ExplorationMode
 	t.LootExecEnabled = state.LootExecEnabled
+	t.CredentialAttemptBudget = state.CredentialAttemptBudget
 	t.lifecycleMu.Unlock()
 }
 
@@ -343,6 +348,7 @@ const (
 	settingEvidenceVerify      = "finding_evidence_verify" // 证据闸档位：off/warn/block
 	settingAutoRetest          = "agent_auto_retest"
 	settingTokenBudget         = "task_token_budget"
+	settingTokenBudgetPause    = "task_token_budget_pause" // 预算耗尽时是否暂停；默认 false=仅告警
 	settingPlannerBoundedView  = "planner_bounded_view"
 	// 压缩摘要独立模型（0/空 = 跟随任务链/角色绑定）。只在任务 run 的压缩摘要调用上生效。
 	settingCompactorLLMProfile = "compactor_llm_profile_id"
@@ -1613,12 +1619,13 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		SourceTaskIDs:  append([]int64(nil), pt.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds, WorkerCount: pt.WorkerCount,
-		CoverageEnabled:       pt.CoverageEnabled,
-		AssetScopePolicy:      pt.AssetScopePolicy,
-		ExplorationMode:       pt.ExplorationMode,
-		LootExecEnabled:       pt.LootExecEnabled,
-		PlannerPromptOverride: pt.PlannerPromptOverride,
-		FirstRunAt:            unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
+		CoverageEnabled:         pt.CoverageEnabled,
+		AssetScopePolicy:        pt.AssetScopePolicy,
+		ExplorationMode:         pt.ExplorationMode,
+		LootExecEnabled:         pt.LootExecEnabled,
+		CredentialAttemptBudget: pt.CredentialAttemptBudget,
+		PlannerPromptOverride:   pt.PlannerPromptOverride,
+		FirstRunAt:              unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1),
 	}
 }
@@ -1648,6 +1655,7 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 		state.PinnedAt = unixOrZero(updated.PinnedAt)
 		state.ExplorationMode = pgdb.NormalizeExplorationMode(updated.ExplorationMode)
 		state.LootExecEnabled = updated.LootExecEnabled
+		state.CredentialAttemptBudget = updated.CredentialAttemptBudget
 	})
 	return task, nil
 }

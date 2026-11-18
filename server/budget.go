@@ -1,11 +1,11 @@
 package server
 
-// 任务级 token 预算护栏：用量到 70/85/95% 各向 planner 投递一次收敛提示；
-// 达到 100% 时**暂停任务**（取消在跑的 Planner/Worker、停止派发），由人决定是否继续。
-// 它不终止任务、不出终局报告——预算是"停下来问一句"，不是"替人做决定"。
-// 用户继续后，同一档预算不再重复打断；改了预算值会重新生效。
-// 预算存 setting `task_token_budget`（单位 token，0=关闭）；提示经 hint 通道
-// 进入 planner 输入（与人工提示同路）。
+// 任务级 token 预算护栏：用量到 70/85/95% 各向 planner 投递一次收敛提示。
+// 达到 100% 时默认**仅告警并继续**；设置 `task_token_budget_pause=true` 才暂停任务
+// （取消在跑的 Planner/Worker、停止派发），由人决定是否继续。暂停不终止任务、不出终局报告
+// ——预算是"停下来问一句"，不是"替人做决定"。用户继续后，同一档预算不再重复打断；
+// 改了预算值会重新生效。预算存 setting `task_token_budget`（单位 token，0=关闭）；
+// 提示经 hint 通道进入 planner 输入（与人工提示同路）。
 
 import (
 	"fmt"
@@ -58,7 +58,7 @@ func BudgetNoticeText(stage string, used, budget int64) string {
 	case "urgent":
 		return "⚠【预算提示 85%】本任务 token 用量 " + head + "。只保留高价值方向，不再新增低优先级探索面。"
 	case "critical":
-		return "❗【预算告急 95%】本任务 token 用量 " + head + "。尽快让在跑方向收尾并把关键结论写成事实/漏洞——预算耗尽时任务会**暂停**（不会终止），由人决定是否继续。"
+		return "❗【预算告急 95%】本任务 token 用量 " + head + "。尽快让在跑方向收尾并把关键结论写成事实/漏洞——预算耗尽后的处理由系统设置决定：可能暂停等人工确认，也可能仅告警继续。"
 	}
 	return ""
 }
@@ -74,6 +74,25 @@ func (s *Server) taskTokenBudget() int64 {
 		return 0
 	}
 	return n
+}
+
+// tokenBudgetPauseEnabled reports whether exhaustion should pause the task. The
+// default is false (warn-only) so a configured budget never hard-stops a deep chain
+// unless the operator explicitly opts in.
+func (e *Engine) tokenBudgetPauseEnabled() bool {
+	if e == nil || e.m == nil || e.m.pg == nil {
+		return false
+	}
+	return e.m.pg.GetBool(settingTokenBudgetPause, false)
+}
+
+// budgetWarnOnly records the exhaustion event without pausing. The ack is stored by
+// the caller, so this fires once per budget value.
+func (e *Engine) budgetWarnOnly(t *Task, used, budget int64) {
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
+		Summary: fmt.Sprintf("Token 预算耗尽（%d/%d），仅告警继续", used, budget),
+		Detail:  "按设置：预算耗尽不暂停任务，也不生成终局报告。平台继续派发；如需硬停，请在「系统 → 执行与并发」开启“预算耗尽时暂停任务”，或调整任务 token 预算。"})
+	log.Printf("[budget] task %s 预算耗尽 (%d/%d)，仅告警（未启用暂停）", t.ID, used, budget)
 }
 
 // tokenBudget is the engine-side view of the same setting.

@@ -61,32 +61,33 @@ type TaskDTO struct {
 	CompletedUnix int64  `json:"completed_unix"` // completed_at as unix seconds (0 if unfinished)
 	// 实际运行时长（秒，已结算部分）：暂停与排队时间不计入。仍在运行时，前端用它 +
 	// (now - run_segment_started_unix) 算实时值。
-	ActiveRunSeconds      int64              `json:"active_run_seconds"`
-	RunSegmentStartedUnix int64              `json:"run_segment_started_unix,omitempty"`
-	LastActivity          int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
-	Paused                bool               `json:"paused"`
-	PauseReason           string             `json:"pause_reason,omitempty"`
-	Queued                bool               `json:"queued"`
-	Tokens                TokenTotalDTO      `json:"tokens"` // whole-task token consumption
-	GoalsTotal            int                `json:"goals_total"`
-	GoalsMet              int                `json:"goals_met"`
-	InFlight              int                `json:"in_flight"`                // 运行中 Worker 数（state=running 的意图）
-	Findings              FindingSeverityDTO `json:"findings"`                 // 该任务已登记的漏洞数（findings 表，按严重度分档）
-	LLMProfileID          *int64             `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
-	LLMProfileIDs         []int64            `json:"llm_profile_ids"`
-	ActiveLLMProfileID    *int64             `json:"active_llm_profile_id,omitempty"`
-	LLMFailoverState      string             `json:"llm_failover_state"`
-	LLMFailoverReason     string             `json:"llm_failover_reason,omitempty"`
-	SourceTaskIDs         []string           `json:"source_task_ids"`
-	ArchiveBlockedBy      string             `json:"archive_blocked_by_task_id,omitempty"`
-	CompanyIDs            []int64            `json:"company_ids"`
-	CoverageEnabled       bool               `json:"coverage_enabled"`   // 资产覆盖度功能开关(创建时定)
-	AssetScopePolicy      string             `json:"asset_scope_policy"` // exact | target
-	ExplorationMode       string             `json:"exploration_mode"`   // balanced | divergent
-	LootExecEnabled       bool               `json:"loot_exec_enabled"`  // 任务级后渗透执行 opt-in
-	WorkerCount           int                `json:"worker_count"`       // 每任务并发覆盖；0=跟随全局
-	TimeoutSeconds        int                `json:"timeout_seconds"`    // 任务级超时；0=不限时
-	PlanHeartbeatSeconds  int                `json:"plan_heartbeat_seconds"`
+	ActiveRunSeconds        int64              `json:"active_run_seconds"`
+	RunSegmentStartedUnix   int64              `json:"run_segment_started_unix,omitempty"`
+	LastActivity            int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
+	Paused                  bool               `json:"paused"`
+	PauseReason             string             `json:"pause_reason,omitempty"`
+	Queued                  bool               `json:"queued"`
+	Tokens                  TokenTotalDTO      `json:"tokens"` // whole-task token consumption
+	GoalsTotal              int                `json:"goals_total"`
+	GoalsMet                int                `json:"goals_met"`
+	InFlight                int                `json:"in_flight"`                // 运行中 Worker 数（state=running 的意图）
+	Findings                FindingSeverityDTO `json:"findings"`                 // 该任务已登记的漏洞数（findings 表，按严重度分档）
+	LLMProfileID            *int64             `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
+	LLMProfileIDs           []int64            `json:"llm_profile_ids"`
+	ActiveLLMProfileID      *int64             `json:"active_llm_profile_id,omitempty"`
+	LLMFailoverState        string             `json:"llm_failover_state"`
+	LLMFailoverReason       string             `json:"llm_failover_reason,omitempty"`
+	SourceTaskIDs           []string           `json:"source_task_ids"`
+	ArchiveBlockedBy        string             `json:"archive_blocked_by_task_id,omitempty"`
+	CompanyIDs              []int64            `json:"company_ids"`
+	CoverageEnabled         bool               `json:"coverage_enabled"`          // 资产覆盖度功能开关(创建时定)
+	AssetScopePolicy        string             `json:"asset_scope_policy"`        // exact | target
+	ExplorationMode         string             `json:"exploration_mode"`          // balanced | divergent
+	LootExecEnabled         bool               `json:"loot_exec_enabled"`         // 任务级后渗透执行 opt-in
+	CredentialAttemptBudget int                `json:"credential_attempt_budget"` // -1=继承全局；0=不限
+	WorkerCount             int                `json:"worker_count"`              // 每任务并发覆盖；0=跟随全局
+	TimeoutSeconds          int                `json:"timeout_seconds"`           // 任务级超时；0=不限时
+	PlanHeartbeatSeconds    int                `json:"plan_heartbeat_seconds"`
 }
 
 // FindingSeverityDTO 是任务列表里按严重度分档的漏洞计数（严重/高/中/低）。
@@ -136,40 +137,41 @@ func taskDTO(t *Task, status string) TaskDTO {
 	}
 	profileIDs := append(make([]int64, 0, len(llmState.ProfileIDs)), llmState.ProfileIDs...)
 	return TaskDTO{
-		ID:                    t.ID,
-		ExplorationID:         t.ExpID,
-		Name:                  lifecycle.Name,
-		Remark:                lifecycle.Remark,
-		CategoryID:            lifecycle.CategoryID,
-		CategoryName:          lifecycle.CategoryName,
-		Pinned:                lifecycle.PinnedAt > 0,
-		PinnedAt:              completedRFC(lifecycle.PinnedAt),
-		Description:           t.Description,
-		Goal:                  t.Goal,
-		Status:                status,
-		CreatedAt:             rfc3339(time.Unix(t.CreatedAt, 0)),
-		CreatedUnix:           t.CreatedAt,
-		CompletedAt:           completedRFC(lifecycle.CompletedAt),
-		CompletedUnix:         lifecycle.CompletedAt,
-		ActiveRunSeconds:      lifecycle.ActiveRunSeconds,
-		RunSegmentStartedUnix: lifecycle.RunSegmentStartedAt,
-		Paused:                lifecycle.Paused,
-		PauseReason:           lifecycle.PauseReason,
-		Queued:                lifecycle.Queued,
-		LLMProfileID:          llmState.ProfileID,
-		LLMProfileIDs:         profileIDs,
-		ActiveLLMProfileID:    llmState.ActiveID,
-		LLMFailoverState:      llmState.FailoverState,
-		LLMFailoverReason:     llmState.FailoverReason,
-		SourceTaskIDs:         sourceIDs,
-		CompanyIDs:            lifecycle.CompanyIDs,
-		CoverageEnabled:       t.CoverageEnabled,
-		AssetScopePolicy:      lifecycle.AssetScopePolicy,
-		ExplorationMode:       lifecycle.ExplorationMode,
-		LootExecEnabled:       lifecycle.LootExecEnabled,
-		WorkerCount:           t.WorkerCount,
-		TimeoutSeconds:        t.TimeoutSeconds,
-		PlanHeartbeatSeconds:  t.PlanHeartbeatSeconds,
+		ID:                      t.ID,
+		ExplorationID:           t.ExpID,
+		Name:                    lifecycle.Name,
+		Remark:                  lifecycle.Remark,
+		CategoryID:              lifecycle.CategoryID,
+		CategoryName:            lifecycle.CategoryName,
+		Pinned:                  lifecycle.PinnedAt > 0,
+		PinnedAt:                completedRFC(lifecycle.PinnedAt),
+		Description:             t.Description,
+		Goal:                    t.Goal,
+		Status:                  status,
+		CreatedAt:               rfc3339(time.Unix(t.CreatedAt, 0)),
+		CreatedUnix:             t.CreatedAt,
+		CompletedAt:             completedRFC(lifecycle.CompletedAt),
+		CompletedUnix:           lifecycle.CompletedAt,
+		ActiveRunSeconds:        lifecycle.ActiveRunSeconds,
+		RunSegmentStartedUnix:   lifecycle.RunSegmentStartedAt,
+		Paused:                  lifecycle.Paused,
+		PauseReason:             lifecycle.PauseReason,
+		Queued:                  lifecycle.Queued,
+		LLMProfileID:            llmState.ProfileID,
+		LLMProfileIDs:           profileIDs,
+		ActiveLLMProfileID:      llmState.ActiveID,
+		LLMFailoverState:        llmState.FailoverState,
+		LLMFailoverReason:       llmState.FailoverReason,
+		SourceTaskIDs:           sourceIDs,
+		CompanyIDs:              lifecycle.CompanyIDs,
+		CoverageEnabled:         t.CoverageEnabled,
+		AssetScopePolicy:        lifecycle.AssetScopePolicy,
+		ExplorationMode:         lifecycle.ExplorationMode,
+		LootExecEnabled:         lifecycle.LootExecEnabled,
+		CredentialAttemptBudget: lifecycle.CredentialAttemptBudget,
+		WorkerCount:             t.WorkerCount,
+		TimeoutSeconds:          t.TimeoutSeconds,
+		PlanHeartbeatSeconds:    t.PlanHeartbeatSeconds,
 	}
 }
 
