@@ -2,7 +2,17 @@
 
 import * as React from "react";
 
-import { CheckIcon, PencilIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ClockIcon,
+  CpuIcon,
+  PencilIcon,
+  PlusIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -11,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import type { AssetInterceptKind, AssetInterceptRule } from "@/lib/types";
+import type { AssetInterceptKind, AssetInterceptRule, Task } from "@/lib/types";
 
 // 任务级资产拦截规则卡片（自带编辑表单与保存逻辑）。
 
@@ -281,6 +291,49 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
             暂无任务级规则。「拦截」命中即禁止测试；「允许」为白名单——配置后本任务只允许命中允许规则的资产（未配置则不启用白名单）。
           </p>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// TaskRuntimeCard 展示任务的并发与预算……这些值在创建任务时确定：
+// worker 槽位首次启动即固化；任务超时/心跳影响 coordinator 与 planner 节律。
+export function TaskRuntimeCard({ task }: { task?: Task | null }) {
+  if (!task) return null;
+  const workers = task.worker_count && task.worker_count > 0 ? String(task.worker_count) : "跟随全局";
+  const timeout =
+    task.timeout_seconds && task.timeout_seconds > 0 ? `${Math.round(task.timeout_seconds / 60)} 分钟` : "不限时";
+  const heartbeat =
+    task.plan_heartbeat_seconds && task.plan_heartbeat_seconds > 0
+      ? `${Math.round(task.plan_heartbeat_seconds / 60)} 分钟`
+      : "默认";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <CpuIcon className="size-4 text-sky-500" /> 运行并发与预算
+          <span className="font-normal text-muted-foreground text-xs">（创建时确定）</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-2 text-sm sm:grid-cols-3">
+        <div className="rounded-md border px-2.5 py-1.5">
+          <div className="text-muted-foreground text-xs">Worker 槽位</div>
+          <div className="font-medium">{workers}</div>
+        </div>
+        <div className="rounded-md border px-2.5 py-1.5">
+          <div className="flex items-center gap-1 text-muted-foreground text-xs">
+            <ClockIcon className="size-3" /> 任务超时
+          </div>
+          <div className="font-medium">{timeout}</div>
+        </div>
+        <div className="rounded-md border px-2.5 py-1.5">
+          <div className="text-muted-foreground text-xs">规划心跳</div>
+          <div className="font-medium">{heartbeat}</div>
+        </div>
+        <p className="text-muted-foreground text-xs sm:col-span-3">
+          并发槽位只在任务首次启动时固化；全局默认在「系统设置 →
+          执行与并发」调整。需要不同的并发/预算请在新建任务时设置。
+        </p>
       </CardContent>
     </Card>
   );

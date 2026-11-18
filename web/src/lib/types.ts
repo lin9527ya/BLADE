@@ -25,6 +25,9 @@ export interface Task {
   run_segment_started_unix?: number;
   // 每任务并发覆盖（0 = 跟随全局 workers）；只在任务首次启动时固化。
   worker_count?: number;
+  // 任务级超时 / planner 心跳（秒）；0=不限时/后端默认
+  timeout_seconds?: number;
+  plan_heartbeat_seconds?: number;
   // 任务备注（≤2000 字）。
   remark?: string;
   completed_at?: string; // RFC3339 finish time (done/failed); "" if unfinished

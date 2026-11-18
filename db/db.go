@@ -470,6 +470,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultInterceptRulesV6(); err != nil {
 		return fmt.Errorf("seed intercept rules v6: %w", err)
 	}
+	if err := d.seedDefaultInterceptRulesV7(); err != nil {
+		return fmt.Errorf("seed intercept rules v7: %w", err)
+	}
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
@@ -572,6 +575,29 @@ UPDATE intercept_rules
 		return fmt.Errorf("rule %q v6 migrate: %w", name, err)
 	}
 	return d.SetSetting("intercept_default_rules_v6", "done")
+}
+
+// seedDefaultInterceptRulesV7 把“数据库破坏性操作”的默认处理从 deny 降为 ask：
+// 红队验证 SQL 注入/数据库越权时，payload 里出现 DROP TABLE / TRUNCATE / dropDatabase
+// 是合法验证动作，硬拒会让模型无法证明影响；改为逐次人工审批，超时仍 deny。
+// 系统级破坏命令（rm -rf、mkfs、dd、shutdown 等）保持 deny。
+func (d *DB) seedDefaultInterceptRulesV7() error {
+	if v, _, _ := d.GetSetting("intercept_default_rules_v7"); v == "done" {
+		return nil
+	}
+	for _, name := range []string{
+		"[内置] SQL DROP DATABASE / TABLE / SCHEMA",
+		"[内置] SQL TRUNCATE",
+		"[内置] MongoDB drop / dropDatabase",
+		"[内置] Redis FLUSHALL / FLUSHDB",
+	} {
+		if _, err := d.Exec(`UPDATE intercept_rules
+SET action='ask', timeout_enabled=true, timeout_seconds=300, timeout_action='deny', updated_at=NOW()
+WHERE name=$1 AND action='deny'`, name); err != nil {
+			return fmt.Errorf("rule %q v7 migrate: %w", name, err)
+		}
+	}
+	return d.SetSetting("intercept_default_rules_v7", "done")
 }
 
 // seedDefaultAssetInterceptRules inserts the built-in asset blocklist (fuzzy

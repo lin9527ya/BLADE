@@ -65,6 +65,7 @@ type Task struct {
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」)。DeadlineAt/FirstRunAt 为 unix 秒,0=未设/未运行。
 	TimeoutSeconds       int    `json:"timeout_seconds"`
 	PlanHeartbeatSeconds int    `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
+	WorkerCount          int    `json:"worker_count"`           // 每任务并发覆盖；0=跟随全局
 	CoverageEnabled      bool   `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
 	AssetScopePolicy     string `json:"asset_scope_policy"`     // exact | target（目标所属全资产）
 	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
@@ -1588,7 +1589,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		LLMFailoverState: pt.LLMFailoverState, LLMFailoverReason: pt.LLMFailoverReason,
 		SourceTaskIDs:  append([]int64(nil), pt.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
-		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
+		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds, WorkerCount: pt.WorkerCount,
 		CoverageEnabled:       pt.CoverageEnabled,
 		AssetScopePolicy:      pt.AssetScopePolicy,
 		PlannerPromptOverride: pt.PlannerPromptOverride,

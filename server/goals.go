@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -549,5 +550,55 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 			specs = []goalSpec{{Text: g}}
 		}
 	}
+	// “全面测试 / 全资产 / 所属资产全覆盖”类任务必须有一个可量化的覆盖目标；
+	// 否则 LLM 只拆出“拿权限/找漏洞”时，找到一条就会收官，资产面永远测不全。
+	// 这是确定性的补充，不依赖拆解模型是否听话；显式写了覆盖度百分比时沿用该值。
+	if broadCoverageRequested(t.Goal+" "+t.Description) && !hasCoverageGoal(specs) {
+		text := coverageGoalText(t.Goal + " " + t.Description)
+		if _, err := t.Store.AddGoal(map[string]any{"text": text}, "system"); err != nil {
+			log.Printf("[goals] task %s: 写入覆盖目标失败: %v", t.ID, err)
+		} else {
+			specs = append(specs, goalSpec{Text: text})
+			log.Printf("[goals] task %s: 已追加覆盖目标：%s", t.ID, text)
+		}
+	}
 	return specs
+}
+
+// broadCoverageRequested 识别用户明确要求“测全”而不是只拿一个结果的描述。
+// 刻意不匹配裸“全面”（“全面拿权限”不是覆盖要求）。
+func broadCoverageRequested(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"全面测试", "全量测试", "全资产", "所有资产", "全部资产", "所属资产",
+		"所有子域", "全部子域", "全站测试", "覆盖率", "覆盖度", "全面覆盖",
+		"每个资产", "每个子域", "all assets", "every asset", "full coverage",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCoverageGoal(specs []goalSpec) bool {
+	for _, g := range specs {
+		lower := strings.ToLower(g.Text)
+		if strings.Contains(g.Text, "覆盖") || strings.Contains(lower, "coverage") {
+			return true
+		}
+	}
+	return false
+}
+
+var coveragePercentPattern = regexp.MustCompile(`(\d{1,3})\s*%`)
+
+func coverageGoalText(text string) string {
+	pct := 100
+	if m := coveragePercentPattern.FindStringSubmatch(text); len(m) == 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 && n <= 100 {
+			pct = n
+		}
+	}
+	return fmt.Sprintf("完成目标所属资产的全面测试：范围内资产覆盖度达到 %d%%（以事实/发现锚点计；不足时继续补测）", pct)
 }

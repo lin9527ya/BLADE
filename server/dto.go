@@ -82,6 +82,9 @@ type TaskDTO struct {
 	CompanyIDs            []int64            `json:"company_ids"`
 	CoverageEnabled       bool               `json:"coverage_enabled"`   // 资产覆盖度功能开关(创建时定)
 	AssetScopePolicy      string             `json:"asset_scope_policy"` // exact | target
+	WorkerCount           int                `json:"worker_count"`       // 每任务并发覆盖；0=跟随全局
+	TimeoutSeconds        int                `json:"timeout_seconds"`    // 任务级超时；0=不限时
+	PlanHeartbeatSeconds  int                `json:"plan_heartbeat_seconds"`
 }
 
 // FindingSeverityDTO 是任务列表里按严重度分档的漏洞计数（严重/高/中/低）。
@@ -160,6 +163,9 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CompanyIDs:            lifecycle.CompanyIDs,
 		CoverageEnabled:       t.CoverageEnabled,
 		AssetScopePolicy:      lifecycle.AssetScopePolicy,
+		WorkerCount:           t.WorkerCount,
+		TimeoutSeconds:        t.TimeoutSeconds,
+		PlanHeartbeatSeconds:  t.PlanHeartbeatSeconds,
 	}
 }
 
