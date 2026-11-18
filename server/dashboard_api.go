@@ -35,7 +35,7 @@ func (s *Server) dashboardSummary(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[dashboard] token aggregate: %v", err)
 	}
 
-	writeJSON(w, 200, map[string]any{
+	writeJSONETag(w, r, 200, map[string]any{
 		"task_total":       len(all),
 		"tasks_by_status":  statuses,
 		"recent_tasks":     s.taskDTOsFor(r.Context(), recent),

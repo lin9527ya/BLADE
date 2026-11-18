@@ -31,7 +31,7 @@ func (s *Server) costSummary(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, summary)
+	writeJSONETag(w, r, 200, summary)
 }
 
 func (s *Server) listLLMPrices(w http.ResponseWriter, r *http.Request) {

@@ -48,7 +48,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 404, "task not found")
 			return
 		}
-		writeJSON(w, 200, out) // no task selected: only global fields
+		writeJSONETag(w, r, 200, out) // no task selected: only global fields
 		return
 	}
 	out["llm_configured"] = s.engine.ReadyFor(t)
@@ -122,7 +122,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"goals_total":   goalsTotal,
 		"goals_met":     goalsMet,
 	}
-	writeJSON(w, 200, out)
+	writeJSONETag(w, r, 200, out)
 }
 
 // taskListQuery 是任务列表的服务端过滤/排序/分页参数。
@@ -305,7 +305,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	all := s.m.List()
 	if q.Page == 0 {
 		// 旧行为：全量（CSV 导出与内部调用依赖它）。
-		writeJSON(w, 200, map[string]any{"tasks": s.taskDTOsFor(r.Context(), all), "active": s.activeTaskID()})
+		writeJSONETag(w, r, 200, map[string]any{"tasks": s.taskDTOsFor(r.Context(), all), "active": s.activeTaskID()})
 		return
 	}
 	filtered := s.filterAndSortTasks(r.Context(), all, q, time.Now().Unix())
@@ -313,7 +313,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	start, end := taskPageBounds(total, q.Page, q.Size)
 	pageRows := filtered[start:end]
 	dtos := s.taskDTOsFor(r.Context(), pageRows)
-	writeJSON(w, 200, map[string]any{
+	writeJSONETag(w, r, 200, map[string]any{
 		"tasks":    dtos,
 		"active":   s.activeTaskID(),
 		"total":    len(all),
@@ -1018,7 +1018,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dtos := s.taskDTOsFor(r.Context(), []*Task{t})
-	writeJSON(w, 200, dtos[0])
+	writeJSONETag(w, r, 200, dtos[0])
 }
 
 // taskCoverage returns a task's rough asset test coverage (denominator/tested/backlog).

@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### ETag 第一批
+
+- 新增 `writeJSONETag`：强 ETag、`Cache-Control: private, no-cache`、`Vary: Authorization`，
+  支持 `If-None-Match` 返回 304。
+- 任务列表、任务详情、任务统计、仪表盘、收件箱、待审批/审批历史/SLA、成本汇总接入 ETag。
+- 前端 `http()` 增加内存 ETag 缓存：GET 自动带 `If-None-Match`，304 复用缓存正文；
+  非 GET 成功或 401 时清空缓存，缓存按 token 隔离并限制 6MB。
+
 ## [0.9.18] - 2026-11-18
 
 ### 出口与执行面

@@ -247,7 +247,7 @@ func (s *Server) interceptSLAStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, stats)
+	writeJSONETag(w, r, 200, stats)
 }
 
 func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +263,7 @@ func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"pending_count": n})
+		writeJSONETag(w, r, 200, map[string]any{"pending_count": n})
 		return
 	}
 	if limit, _ := strconv.Atoi(q.Get("limit")); limit > 0 {
@@ -284,7 +284,7 @@ func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 		for i := range pending {
 			out = append(out, pendingApprovalDTO(&pending[i]))
 		}
-		writeJSON(w, 200, map[string]any{"pending": out, "pending_count": n})
+		writeJSONETag(w, r, 200, map[string]any{"pending": out, "pending_count": n})
 		return
 	}
 	pending, err := pg.ListPendingIntercepts()
@@ -299,7 +299,7 @@ func (s *Server) interceptListPending(w http.ResponseWriter, r *http.Request) {
 	for i := range pending {
 		out = append(out, pendingApprovalDTO(&pending[i]))
 	}
-	writeJSON(w, 200, map[string]any{"pending": out})
+	writeJSONETag(w, r, 200, map[string]any{"pending": out})
 }
 
 func (s *Server) interceptGetOne(w http.ResponseWriter, r *http.Request) {
@@ -358,7 +358,7 @@ func (s *Server) interceptListTaskItems(w http.ResponseWriter, r *http.Request) 
 		if items == nil {
 			items = []db.InterceptApprovalRow{}
 		}
-		writeJSON(w, 200, map[string]any{"items": items, "total": len(items)})
+		writeJSONETag(w, r, 200, map[string]any{"items": items, "total": len(items)})
 		return
 	}
 	page, size := interceptPageParams(q)
@@ -370,7 +370,7 @@ func (s *Server) interceptListTaskItems(w http.ResponseWriter, r *http.Request) 
 	if items == nil {
 		items = []db.InterceptApprovalRow{}
 	}
-	writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size})
+	writeJSONETag(w, r, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size})
 }
 
 func (s *Server) interceptHistory(w http.ResponseWriter, r *http.Request) {

@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -707,6 +709,40 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONETag writes a JSON response with a strong ETag and handles
+// If-None-Match. It is opt-in per GET handler: global buffering would touch
+// large/streaming responses and hide accidental dynamic fields.
+func writeJSONETag(w http.ResponseWriter, r *http.Request, code int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	sum := sha256.Sum256(body)
+	etag := fmt.Sprintf(`"%x"`, sum)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Set("Vary", "Authorization")
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, _ = w.Write(body)
+}
+
+func etagMatches(header, etag string) bool {
+	for _, part := range strings.Split(header, ",") {
+		candidate := strings.TrimSpace(part)
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {

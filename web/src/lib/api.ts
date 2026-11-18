@@ -190,6 +190,33 @@ function getToken(): string | null {
   return localStorage.getItem("blade_token");
 }
 
+// ETag cache is intentionally in-memory and keyed by token + path. It is not
+// persisted: a reload, logout or deployment must never reuse another session's
+// body. Non-GET writes clear the whole cache (the simplest safe invalidation).
+type CachedJSON = { etag: string; body: string };
+const etagCache = new Map<string, CachedJSON>();
+let etagCacheBytes = 0;
+const MAX_ETAG_CACHE_BYTES = 6 * 1024 * 1024;
+
+function cacheETag(key: string, entry: CachedJSON) {
+  const previous = etagCache.get(key);
+  if (previous) etagCacheBytes -= previous.body.length;
+  etagCache.set(key, entry);
+  etagCacheBytes += entry.body.length;
+  while (etagCacheBytes > MAX_ETAG_CACHE_BYTES && etagCache.size > 0) {
+    const oldest = etagCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    const removed = etagCache.get(oldest);
+    if (removed) etagCacheBytes -= removed.body.length;
+    etagCache.delete(oldest);
+  }
+}
+
+function clearETagCache() {
+  etagCache.clear();
+  etagCacheBytes = 0;
+}
+
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (MOCK) {
     // **动态 import**：mock 层有 6.7k 行（含演示数据），静态 import 会被无条件打进
@@ -199,15 +226,22 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
   }
   const token = getToken();
+  const method = (init?.method ?? "GET").toUpperCase();
+  const isGet = method === "GET";
+  const cacheKey = `${token ?? ""}|${path}`;
+  const cached = isGet ? etagCache.get(cacheKey) : undefined;
   const r = await fetch(`/api${path}`, {
     ...init,
+    cache: init?.cache ?? (isGet ? "no-cache" : undefined),
     headers: {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers as Record<string, string> | undefined),
+      ...(cached ? { "If-None-Match": cached.etag } : {}),
     },
   });
   if (r.status === 401) {
+    clearETagCache();
     if (typeof window !== "undefined") {
       localStorage.removeItem("blade_token");
       document.cookie = "blade_token=; path=/; max-age=0";
@@ -215,6 +249,13 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
     throw new HttpError("未授权", 401);
+  }
+  if (r.status === 304) {
+    // A 304 without a locally cached body means the cache was evicted between
+    // requests; drop the conditional header and retry once.
+    if (cached) return JSON.parse(cached.body) as T;
+    etagCache.delete(cacheKey);
+    return http<T>(path, init);
   }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
@@ -229,8 +270,17 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new HttpError(message, r.status);
   }
+  if (!isGet) clearETagCache();
   if (r.status === 204) return undefined as T;
-  return r.json();
+  if (!isGet) return r.json();
+  const etag = r.headers.get("ETag");
+  if (!etag) {
+    etagCache.delete(cacheKey);
+    return r.json();
+  }
+  const body = await r.text();
+  cacheETag(cacheKey, { etag, body });
+  return JSON.parse(body) as T;
 }
 
 // sseUrl builds a URL for Server-Sent Events streams.

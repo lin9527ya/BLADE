@@ -39,7 +39,7 @@ func (s *Server) inboxList(w http.ResponseWriter, r *http.Request) {
 	if !readAt.IsZero() {
 		resp["read_at"] = readAt.UTC().Format(time.RFC3339Nano)
 	}
-	writeJSON(w, 200, resp)
+	writeJSONETag(w, r, 200, resp)
 }
 
 func (s *Server) inboxMarkRead(w http.ResponseWriter, r *http.Request) {
