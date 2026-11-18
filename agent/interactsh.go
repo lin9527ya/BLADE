@@ -197,7 +197,16 @@ func decryptInteractsh(key *rsa.PrivateKey, aesKeyB64, data string) ([]byte, err
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 	iv, cipherText := cipherText[:aes.BlockSize], cipherText[aes.BlockSize:]
-	out := make([]byte, len(cipherText))
-	cipher.NewCFBDecrypter(block, iv).XORKeyStream(out, cipherText)
-	return out, nil
+	// 新版 interactsh 用 AES-CTR；老版用 AES-CFB。先试 CTR，解出来不是合法 JSON 再退回 CFB。
+	ctr := make([]byte, len(cipherText))
+	cipher.NewCTR(block, iv).XORKeyStream(ctr, cipherText)
+	if json.Valid(ctr) {
+		return ctr, nil
+	}
+	cfb := make([]byte, len(cipherText))
+	cipher.NewCFBDecrypter(block, iv).XORKeyStream(cfb, cipherText)
+	if json.Valid(cfb) {
+		return cfb, nil
+	}
+	return ctr, nil
 }
