@@ -573,6 +573,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.reseedGoalsPrompt()             // goals 提示词加入「抽操作约束」步 → 旧库追加一版新默认(一次性)
 	s.reseedMainAgentPrompt()         // mainagent 提示词加入「目标达成后 add_intent 反问是否建目标」(一次性)
 	s.reseedPlannerPrompt()           // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
+	s.reseedPlannerBreadthPrompt()    // 放宽固定意图数量、鼓励按资产面并行(一次性)
 	s.reseedWorkerPrompt()            // worker 提示词:加否定结论证据门槛(一次性)
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.reseedReporterPrompt()          // 报告模板:补详细利用过程/绝对路径/命令回显(一次性)
@@ -1455,6 +1456,50 @@ func (s *Server) seedAutoDefaultBindings() {
 	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
 		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", flag, err)
 	}
+}
+
+// reseedPlannerBreadthPrompt 把内置 planner 正文升级到“广度不设死上限”的版本：
+// 意图数量从固定最多 4 个改为通常 2–6、资产面广时最多 8；同时保留自定义正文。
+// 只对仍等于历史内置正文的库生效，用户编辑过的不覆盖。
+func (s *Server) reseedPlannerBreadthPrompt() {
+	const flag = "planner_prompt_breadth_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	a, err := s.m.pg.GetAgentByKey("planner")
+	if err != nil || a == nil {
+		return
+	}
+	cur, err := s.m.pg.CurrentPrompt(a.ID)
+	if err != nil {
+		log.Printf("[prompts] 读取 planner 正文失败，跳过广度迁移: %v", err)
+		return
+	}
+	if strings.TrimSpace(cur) != "" && !plannerPromptIsBuiltin(cur) {
+		_ = s.m.pg.SetSetting(flag, "true")
+		log.Printf("[prompts] planner 正文已被编辑，保留现状，不覆盖广度迁移")
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["planner"]
+	if tmpl == "" {
+		return
+	}
+	if strings.TrimSpace(cur) != strings.TrimSpace(tmpl) {
+		appendText, err := s.m.pg.CurrentPromptAppend(a.ID)
+		if err != nil {
+			log.Printf("[prompts] 读取 planner 追加段失败，未迁移广度: %v", err)
+			return
+		}
+		if _, err := s.m.pg.SavePromptWithAppend(a.ID, tmpl, appendText, "放宽意图数量，资产面广时允许并行更多路线", "system"); err != nil {
+			log.Printf("[prompts] planner 广度迁移失败: %v", err)
+			return
+		}
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)
+		return
+	}
+	log.Printf("[prompts] planner 已升级为广度优先提示（意图上限放宽到 8，鼓励多路线并行）")
 }
 
 // plannerPromptIsCustom 与新 hash 迁移共用精确判定；用户正文保留旧特征词仍然是自定义。

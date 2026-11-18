@@ -66,3 +66,22 @@ func TestGuardPanicConvertsPanicToToolError(t *testing.T) {
 		t.Fatalf("want the panic reported as a tool error, got IsError=%v %q", res.IsError, res.Flatten())
 	}
 }
+
+// worker 发现范围外疑似目标时，必须有“请求扩面”通道；但它不能直接授权。
+func TestWorkerScopeRequestToolIsProposalOnly(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	have := map[string]bool{}
+	for _, tool := range ts.WorkerTools() {
+		have[tool.Name()] = true
+	}
+	if !have["request_scope_expansion"] {
+		t.Fatal("worker 缺少 request_scope_expansion 扩面请求通道")
+	}
+	if have["add_task_scope"] || have["add_company_scope"] {
+		t.Fatal("worker 不应直接拥有扩面授权工具")
+	}
+	out := callTool(t, ts.WorkerTools(), "request_scope_expansion", `{"kind":"subdomain","value":"x.example","reason":"cert SAN"}`)
+	if !strings.Contains(out, "需要任务上下文") {
+		t.Fatalf("无任务上下文应拒绝: %s", out)
+	}
+}

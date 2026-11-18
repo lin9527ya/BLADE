@@ -24,6 +24,7 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"00602dbb6b504b9a611c9311c22742756c06bf00720f3430b8c3e31f1c414384": true, // v0.8.7–v0.8.9
 	"5ca5b8b2147c6aa75ee0b02436b4aa4238e9bc07b03230a0946ee5f41c457f84": true, // v0.9.0–v0.9.2（重写前）
 	"7e178641779bc359ba32198ee15d4bfa0fda2d73814f322c85d00576af7dc24d": true, // 重写 v2（首版瘦身，缺态势语义）
+	"6a832e1146013f13d6fceaca1d89be85bddc2cf7e5515b9b525d8da8bd4b8430": true, // ARTEX parity v3（扩面/瓶颈提示前）
 }
 
 const settingPlannerPromptV3 = "planner_prompt_v3"

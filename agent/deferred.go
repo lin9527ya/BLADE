@@ -23,15 +23,14 @@ import (
 //
 // 为什么挑这几个：planner 37 个工具的 schema 合计约 3.3 万字符（≈1.1 万 token），每轮都
 // 随缓存前缀发送；而这几项在绝大多数轮次里根本不会被调用（沉淀知识、合并重复、打标签法、
-// 扩测范围、给公司范围补域名）。把它们降为 deferred，每轮固定省下约 6k 字符，且不改变
-// 任何工具的实际能力——只是多一次「先查 schema」的往返。
+// 给公司范围补域名）。把它们降为 deferred，每轮固定省下数 k 字符，且不改变任何工具的
+// 实际能力——只是多一次「先查 schema」的往返。注意：list_untested_assets / list_companies
+// 是广度探索的关键入口，已从 deferred 提为一等工具，不要重新放回这里。
 var plannerDeferredTools = []string{
 	"record_playbook",          // 2612 字符：只在规划层确认了一条可复用打法时用
 	"record_playbook_feedback", // 727
 	"promote_knowledge",        // 1542
 	"merge_findings",           // 817
-	"list_untested_assets",     // 691：按需翻页是低频动作
-	"list_companies",           // 443
 }
 
 // mergeDeferred 把内置 deferred 工具并入本轮 DeferredInfo：既要藏 schema、列进

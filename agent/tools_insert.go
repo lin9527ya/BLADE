@@ -518,6 +518,67 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 	)
 }
 
+// requestScopeExpansion 是 worker 的“请求扩面”通道：worker 在目标上发现疑似属于
+// 目标、但当前不在授权范围的主机/网段时，不能直接扩大授权去测；它把证据写成一条
+// fact 交给 planner。planner 复核证据后才调用 add_task_scope / add_company_scope。
+// 这样既不把 worker 的自动发现当成授权，也不用等操作者手工去翻资产。
+func (t *ToolSet) requestScopeExpansion() actool.CoreTool {
+	return t.writeExpTool("request_scope_expansion",
+		"请求 planner 把某个疑似属于目标的资产/网段扩展到本任务范围。**不会自动授权**：本工具只写一条事实（recent_fact）供规划者复核，planner 才会调用 add_task_scope/add_company_scope。\n"+
+			"何时用：你在目标上发现了一个新主机/云资产/同公司根域，但 list_assets 或 RoE 显示它不在本任务范围；不要直接打它，也不要自己猜公司。\n"+
+			"kind：root_domain / company / subdomain / ip / cidr / icp / keyword；value：域名、公司名/id、IP 或网段。\n"+
+			"reason 必须写清归属证据（whois/证书 SAN/ASN/ICP/页面互链/同一控制台等）；evidence 写一条可核验的原始观察。",
+		obj(map[string]any{
+			"kind":     str("root_domain / company / subdomain / ip / cidr / icp / keyword"),
+			"value":    str("要扩面的域名 / 公司名或id / IP / CIDR / ICP / 关键词"),
+			"reason":   str("归属依据（必须是可审计的证据，不是猜测）"),
+			"evidence": str("一行原始证据：命令 + 关键输出/页面片段"),
+		}, "kind", "value", "reason"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Kind     string `json:"kind"`
+				Value    string `json:"value"`
+				Reason   string `json:"reason"`
+				Evidence string `json:"evidence"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			kind := strings.ToLower(strings.TrimSpace(a.Kind))
+			value := strings.TrimSpace(a.Value)
+			reason := strings.TrimSpace(a.Reason)
+			switch kind {
+			case "root_domain", "company", "subdomain", "ip", "cidr", "icp", "keyword":
+			default:
+				return actool.Errorf("kind 必须是 root_domain/company/subdomain/ip/cidr/icp/keyword"), nil
+			}
+			if value == "" || reason == "" {
+				return actool.Errorf("value 和 reason 必填：扩面请求必须带具体资产和归属证据"), nil
+			}
+			summary := fmt.Sprintf("[扩面请求] kind=%s value=%s", kind, value)
+			detail := "归属依据：" + reason
+			if strings.TrimSpace(a.Evidence) != "" {
+				detail += "\n原始证据：" + strings.TrimSpace(a.Evidence)
+			}
+			id, err := t.recordOneFact(factItem{
+				Summary:    summary,
+				Detail:     detail,
+				Evidence:   strings.TrimSpace(a.Evidence),
+				Confidence: "observed",
+				Polarity:   "inconclusive",
+				Enables:    []string{"info"},
+			}, 0)
+			if err != nil {
+				return actool.Errorf("记录扩面请求失败：" + err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"fact_id": id,
+				"status":  "pending_planner_review",
+				"note":    "已交给 planner 复核；不要直接测试范围外资产。",
+			})
+		})
+}
+
 // addTaskScope lets the plan agent add test scope to THE CURRENT TASK — the coverage
 // denominator and the task's authorization edge. Worker discoveries are auto-scoped
 // (precise host) by insertAssets; this tool is for DELIBERATELY WIDENING: pull a whole
@@ -755,7 +816,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.verifyCredential(), t.recordCredentialCheck(), t.markLootLost(), t.recordCredentialCheck(), t.markLootLost(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
-		t.insertAssets(), t.listAssets(), t.assetNeighbors(),
+		// 但 worker 发现范围外疑似目标资产时，可以用 request_scope_expansion 把证据交给 planner。
+		t.insertAssets(), t.listAssets(), t.assetNeighbors(), t.requestScopeExpansion(),
 		// 指纹打法库：动手前先查同类指纹的历史打法（lookup 会累加使用次数），
 		// 用后回报 worked/failed，卡片靠它越用越准。沉淀本身归 playbook agent。
 		t.lookupPlaybooks(), t.recordPlaybookFeedback(),
