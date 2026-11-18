@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-11-18
+
+### 出口与执行面
+
+- 新增 `GET /api/egress/status`：代理池健康、Clash 最近轮换与任务→出口组绑定；
+  设置页展示只读任务出口绑定。代理 URL 去 userinfo，不返回控制器密钥。
+- `tunnel_open` 新增 `via_tunnel_id` 多跳：经已运行隧道的 SOCKS 再跳一层，
+  校验上游任务/状态/local_port 并本地探测监听；ProxyCommand 走 nc，不引入新二进制。
+- 新增 `template=redteam` 报告模板：攻击链→战果动用→AD 路径→检测三态→凭据尝试→
+  确认发现→遗留物；不输出凭据明文，DOCX 自动生效。
+- SSH 主机密钥改用本次 run 的 `.ssh/known_hosts`（0700），不再使用
+  `UserKnownHostsFile=/dev/null`；覆盖隧道、loot_exec、文件传输、enum_privilege、
+  foothold_exec。
+
+### OAST
+
+- requestrepo 不可用时自动回退 interactsh：轮询失败进入 5 分钟降级窗口，
+  新回调改走 `oast_nuclei_server`（默认 oast.fun，再依次尝试 oast.pro/live/site/online）。
+- `oast_poll` 同时汇总 requestrepo 与当前任务的 interactsh 会话，继续按请求 id 去重。
+- 自带最小 interactsh 客户端（RSA-OAEP + AES-CTR/CFB 兼容），不引入 ProjectDiscovery
+  依赖；oast.fun 真实注册、HTTP/DNS 回调与解密已验证。
+- 设置页新增 nuclei OAST 服务器；`oast_mint` 输出 `nuclei -interactsh-url` 用法。
+
+### 运营与知识
+
+- 新增 `GET /api/host-tools/inventory` 与诊断页宿主工具卡片：只读检查 19 个关键
+  二进制的存在与版本，缺失项按 required/optional 标记。
+- ATT&CK 覆盖接口返回未标注意图与确定性技术建议；覆盖页可一键采纳写入意图
+  `techniques`（人工确认，不自动改库）。
+
 ## [0.9.17] - 2026-11-18
 
 ### 红队执行面（P0）
