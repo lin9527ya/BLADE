@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	actool "github.com/lin9527ya/Norma/tool"
@@ -29,6 +30,70 @@ var OASTConfig func() (token, domain string, enabled bool)
 // NucleiOASTServer 是 nuclei 使用的 interactsh 公共服务器（默认 oast.fun）。
 // 它只用于 nuclei 自身的 OAST 判定：BLADE 不轮询该服务的回调，命中以 nuclei 输出为准。
 var NucleiOASTServer = func() string { return "oast.fun" }
+
+// OASTInteractshServers 是 requestrepo 不可用时的回退服务器列表（按顺序尝试）。
+var OASTInteractshServers = func() []string {
+	return []string{"oast.fun", "oast.pro", "oast.live", "oast.site", "oast.online"}
+}
+
+var (
+	oastSessionMu   sync.Mutex
+	oastSessions    = map[int64][]*interactshSession{}
+	oastRRDownUntil time.Time
+)
+
+func oastEnabled() bool {
+	if OASTConfig == nil {
+		return false
+	}
+	_, _, ok := OASTConfig()
+	return ok
+}
+
+// interactshSessionFor 返回本任务的 interactsh 会话；没有就按服务器列表注册一个。
+// 注册失败逐个换服务器；全部失败才算不可用。
+func (t *ToolSet) interactshSessionFor(ctx context.Context) (*interactshSession, error) {
+	oastSessionMu.Lock()
+	if list := oastSessions[t.taskID]; len(list) > 0 {
+		last := list[len(list)-1]
+		oastSessionMu.Unlock()
+		return last, nil
+	}
+	oastSessionMu.Unlock()
+	var lastErr error
+	for _, server := range OASTInteractshServers() {
+		s, err := newInteractshSession(ctx, server)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		oastSessionMu.Lock()
+		oastSessions[t.taskID] = append(oastSessions[t.taskID], s)
+		oastSessionMu.Unlock()
+		return s, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有配置 interactsh 服务器")
+	}
+	return nil, lastErr
+}
+
+func (t *ToolSet) pollInteractsh(ctx context.Context) ([]oastRequest, error) {
+	oastSessionMu.Lock()
+	list := append([]*interactshSession(nil), oastSessions[t.taskID]...)
+	oastSessionMu.Unlock()
+	var out []oastRequest
+	var lastErr error
+	for _, s := range list {
+		items, err := s.Poll(ctx)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		out = append(out, items...)
+	}
+	return out, lastErr
+}
 
 // OASTBaseURL 是 requestrepo 的 API 入口。变量而非常量：测试用 httptest 覆盖它。
 var OASTBaseURL = "https://requestrepo.com"
@@ -73,14 +138,9 @@ func (t *ToolSet) oastMint() actool.CoreTool {
 		obj(map[string]any{
 			"label": str("可选：给这次回调起个短标签（如 ssrf-admin、rce-ping），便于分辨是哪条 payload 命中的"),
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			token, domain, ok := oastCfg()
-			if !ok {
-				return actool.Errorf("oast_mint: 未配置 OAST——请在设置里填入 requestrepo 会话 token 并打开 OAST 开关"), nil
-			}
-			sub := oastSubdomain(token)
-			if sub == "" {
-				return actool.Errorf("oast_mint: token 里解析不出子域——请确认填的是 requestrepo 的会话 token"), nil
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if !oastEnabled() {
+				return actool.Errorf("oast_mint: 未配置 OAST——请在设置里打开 OAST 开关"), nil
 			}
 			var a struct {
 				Label string `json:"label"`
@@ -90,13 +150,20 @@ func (t *ToolSet) oastMint() actool.CoreTool {
 			if label := sanitizeOASTLabel(a.Label); label != "" {
 				marker += "-" + label
 			}
-			callback := fmt.Sprintf("http://%s.%s/%s", sub, domain, marker)
-			nucleiServer := strings.TrimSpace(NucleiOASTServer())
-			nucleiHint := ""
-			if nucleiServer != "" {
-				nucleiHint = fmt.Sprintf("\nnuclei OAST：nuclei -u <target> -interactsh-url %s（命中以 nuclei 输出为准；平台不轮询该服务的回调）。", nucleiServer)
+			token, domain, rrOK := oastCfg()
+			// requestrepo 可用且近 5 分钟没失败过 → 优先它；否则回退 interactsh（oast.fun 等）。
+			if rrOK && time.Now().After(oastRRDownUntil) {
+				if sub := oastSubdomain(token); sub != "" {
+					callback := fmt.Sprintf("http://%s.%s/%s", sub, domain, marker)
+					return actool.Text(fmt.Sprintf("callback url: %s（requestrepo）\n把它放进 payload；目标执行后调 oast_poll 取命中记录。", callback)), nil
+				}
 			}
-			return actool.Text(fmt.Sprintf("callback url: %s\n把它放进 payload；目标执行后调 oast_poll 取命中记录（按请求 id 去重，可重复轮询）。%s", callback, nucleiHint)), nil
+			session, err := t.interactshSessionFor(ctx)
+			if err != nil {
+				return actool.Errorf("oast_mint: requestrepo 不可用，interactsh 回退也失败：" + err.Error()), nil
+			}
+			callback := fmt.Sprintf("http://%s/%s", session.URL(), marker)
+			return actool.Text(fmt.Sprintf("callback url: %s（interactsh %s）\n把它放进 payload；目标执行后调 oast_poll 取命中记录。", callback, session.Server)), nil
 		})
 }
 
@@ -108,13 +175,24 @@ func (t *ToolSet) oastPoll() actool.CoreTool {
 			"★ 只证明访问，不证明执行路径；结论里如实写「目标回连了 X」，别写成「确认 RCE」。",
 		obj(map[string]any{}),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			token, _, ok := oastCfg()
-			if !ok {
-				return actool.Errorf("oast_poll: 未配置 OAST——请在设置里填入 requestrepo 会话 token 并打开 OAST 开关"), nil
+			if !oastEnabled() {
+				return actool.Errorf("oast_poll: 未配置 OAST——请在设置里打开 OAST 开关"), nil
 			}
-			items, err := fetchOASTRequests(ctx, token)
-			if err != nil {
-				return actool.Errorf("oast_poll: 拉取回调记录失败：" + err.Error()), nil
+			var items []oastRequest
+			var rrErr error
+			if token, _, ok := oastCfg(); ok && time.Now().After(oastRRDownUntil) {
+				got, ferr := fetchOASTRequests(ctx, token)
+				if ferr != nil {
+					oastRRDownUntil = time.Now().Add(5 * time.Minute)
+					rrErr = ferr
+				} else {
+					items = append(items, got...)
+				}
+			}
+			ish, ierr := t.pollInteractsh(ctx)
+			items = append(items, ish...)
+			if len(items) == 0 && rrErr != nil && ierr != nil {
+				return actool.Errorf("oast_poll: requestrepo 与 interactsh 都不可用：requestrepo=" + rrErr.Error() + "; interactsh=" + ierr.Error()), nil
 			}
 			marker := t.oastMarker()
 			known := t.knownOASTRequestIDs()

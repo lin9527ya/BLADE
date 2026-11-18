@@ -489,6 +489,19 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		}
 		return "oast.fun"
 	}
+	agent.OASTInteractshServers = func() []string {
+		primary := agent.NucleiOASTServer()
+		out := []string{primary, "oast.fun", "oast.pro", "oast.live", "oast.site", "oast.online"}
+		seen := map[string]bool{}
+		uniq := out[:0]
+		for _, s := range out {
+			if s = strings.TrimSpace(s); s != "" && !seen[s] {
+				seen[s] = true
+				uniq = append(uniq, s)
+			}
+		}
+		return uniq
+	}
 	// 噪声档位：每轮现读，改完下一轮生效。只认 normal|quiet，其它值按 normal。
 	o.NoiseLevel = func() string {
 		v, ok, _ := pg.GetSetting(settingOpsecNoise)
