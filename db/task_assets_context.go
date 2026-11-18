@@ -63,13 +63,13 @@ scope_asset_ids AS (
   UNION
   SELECT a.id FROM assets a
   JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target' AND task.deleted_at IS NULL
-  WHERE $1 = ANY(a.task_ids)
+  WHERE EXISTS (SELECT 1 FROM context_tasks ctx WHERE ctx.task_id = ANY(a.task_ids))
   UNION
   SELECT a.id FROM assets a
   JOIN exploration_anchors ea ON ea.asset_id=a.id
   JOIN exploration_nodes en ON en.id=ea.node_id
-  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target'
-    AND task.exploration_id=en.exploration_id AND task.deleted_at IS NULL
+  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target' AND task.deleted_at IS NULL
+  WHERE EXISTS (SELECT 1 FROM context_tasks ctx WHERE ctx.exploration_id=en.exploration_id)
 )
 `
 
@@ -105,11 +105,11 @@ tested AS (
 // whole shared库.
 const scopeTargetCTE = `
 context_tasks AS (
-  SELECT t.id AS task_id
+  SELECT t.id AS task_id, t.exploration_id
   FROM tasks t
   WHERE t.id=$1 AND t.deleted_at IS NULL
   UNION ALL
-  SELECT source.id
+  SELECT source.id, source.exploration_id
   FROM task_relations relation
   JOIN tasks source ON source.id=relation.source_task_id AND source.deleted_at IS NULL
   WHERE relation.task_id=$1
@@ -131,13 +131,13 @@ target AS (
   UNION
   SELECT a.id FROM assets a
   JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target' AND task.deleted_at IS NULL
-  WHERE $1 = ANY(a.task_ids)
+  WHERE EXISTS (SELECT 1 FROM context_tasks ctx WHERE ctx.task_id = ANY(a.task_ids))
   UNION
   SELECT a.id FROM assets a
   JOIN exploration_anchors ea ON ea.asset_id=a.id
   JOIN exploration_nodes en ON en.id=ea.node_id
-  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target'
-    AND task.exploration_id=en.exploration_id AND task.deleted_at IS NULL
+  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target' AND task.deleted_at IS NULL
+  WHERE EXISTS (SELECT 1 FROM context_tasks ctx WHERE ctx.exploration_id=en.exploration_id)
 )
 `
 

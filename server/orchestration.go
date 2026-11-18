@@ -564,6 +564,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedCompanyScopeRebind()
 	s.seedPlannerToolsConverge()  // planner 执行类工具从默认绑定移除(一次性)
 	s.seedPlannerExploreTools()   // 补回 ARTEX 的写 finding / 扩面入口
+	s.migrateAssetScopeTarget()   // 旧 exact 任务一次性升级为 target（目标所属全资产）
 	s.seedPlannerToolsSlim()      // planner 只保留规划/查询工具，写回/动作类改绑其他 agent(一次性)
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)

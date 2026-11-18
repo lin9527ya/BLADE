@@ -132,7 +132,7 @@ WHERE task_id=$1 AND source='policy' AND kind IN ('root_domain','company')`, tas
 // 复用 scopeTargetCTE：包含 task_scope 成员、target 策略下的本任务 task_ids 与
 // 探索锚定资产。只用于 RoE 的成员判定，不扩大任何写入。
 func (d *DB) HostInDeclaredScope(taskID int64, host string) (bool, error) {
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.ToLower(stripHostPort(strings.TrimSpace(host)))
 	if taskID <= 0 || host == "" {
 		return false, nil
 	}
@@ -145,6 +145,19 @@ SELECT EXISTS(
      OR lower(COALESCE(a.ip,''))=$2
      OR lower(split_part(split_part(COALESCE(a.url,''),'://',2),'/',1))=$2
      OR lower(split_part(split_part(split_part(COALESCE(a.url,''),'://',2),'/',1),':',1))=$2
+)
+OR EXISTS(
+  -- 公司范围要能授权“尚未入资产图”的同公司主机：company_scope 的 domain
+  -- 覆盖该根域及其子域，ip/cidr 覆盖该地址；否则新主机在 insert_assets 之前
+  -- 会被 RoE 误判为越界。
+  SELECT 1
+  FROM task_scope ts
+  JOIN context_tasks ctx ON ctx.task_id=ts.task_id
+  JOIN company_scope cs ON cs.company_id=ts.company_id
+  WHERE ts.kind='company' AND (
+    (cs.kind='domain' AND (lower($2)=lower(cs.domain) OR lower($2) LIKE '%.' || lower(cs.domain)))
+    OR (cs.kind IN ('ip','cidr') AND cs.net >>= try_inet($2))
+  )
 )`, taskID, host).Scan(&ok)
 	return ok, err
 }

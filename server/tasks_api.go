@@ -952,6 +952,19 @@ func applySeedScope(as *db.AssetStore, taskID int64, host, policy string, compan
 		if _, err := as.AddAgentScope(taskID, "ip", host, "任务目标", "auto"); err != nil {
 			log.Printf("[seed] 写入 IP 范围失败 task=%d host=%s: %v", taskID, host, err)
 		}
+		// target 策略下 IP 目标同样按公司归因扩面：IP 只写 ip 范围，但公司
+		// scope 能让同公司的跨根域资产进入可见范围（否则 IP 目标任务永远只测单 IP）。
+		if policy == db.AssetScopePolicyTarget {
+			companies := append([]int64(nil), companyIDs...)
+			if cid, found, err := as.ResolveCompanyForHost(host); err == nil && found {
+				companies = append(companies, cid)
+			}
+			if len(companies) > 0 {
+				if _, err := as.SetTaskAssetScopePolicy(taskID, db.AssetScopePolicyTarget, nil, companies); err != nil {
+					log.Printf("[seed] 写入 IP target 公司范围失败 task=%d host=%s: %v", taskID, host, err)
+				}
+			}
+		}
 		return
 	}
 	root, isApex := db.RootDomain(host)

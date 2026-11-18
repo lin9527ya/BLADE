@@ -122,3 +122,105 @@ func TestAssetScopePolicyTargetVisibilityAndSwitch(t *testing.T) {
 		}
 	}
 }
+
+// 公司范围应能授权“尚未登记到资产图”的同公司主机：否则 target 任务在 worker
+// insert_assets 之前访问 example.net 的新子域会被 RoE 误判越界。
+func TestCompanyScopeAuthorizesUnregisteredHost(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	tag := fmt.Sprintf("companyscope-%d", time.Now().UnixNano())
+	domain := tag + ".example"
+	netRange := "203.0.113.0/24"
+	comp, _, err := d.Companies().UpsertCompany("companyscope-"+tag, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Companies().DeleteCompany(comp) })
+	if _, _, _, errs := d.Companies().AddScope(comp, []string{domain, netRange}, "test company scope"); len(errs) > 0 {
+		t.Fatalf("add company scope: %v", errs)
+	}
+
+	task, err := d.CreateTaskWithOptions("company scope", "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	as := d.Assets()
+	if _, err := as.AddAgentScope(task.ID, "company", fmt.Sprintf("%d", comp), "test", "manual"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, host := range []string{"new." + domain, "deep.new." + domain, "203.0.113.55"} {
+		if ok, err := d.HostInDeclaredScope(task.ID, host); err != nil || !ok {
+			t.Fatalf("%s 应被公司范围授权 ok=%v err=%v", host, ok, err)
+		}
+	}
+	for _, host := range []string{"unrelated.example", "203.0.114.55"} {
+		if ok, err := d.HostInDeclaredScope(task.ID, host); err != nil || ok {
+			t.Fatalf("%s 不应被公司范围授权 ok=%v err=%v", host, ok, err)
+		}
+	}
+}
+
+// target 策略的可见范围应包含直接关联任务发现/锚定的资产，否则 list_assets 与
+// add_intent 看不到来源任务已经交给本任务继承的线索。
+func TestTargetScopeIncludesDirectSourceTaskAssets(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	tag := fmt.Sprintf("sourcectx-%d", time.Now().UnixNano())
+	mainTask, err := d.CreateTaskWithOptions("target main", "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceTask, err := d.CreateTaskWithOptions("source", "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyExact})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(mainTask.ID); _ = d.DeleteTask(sourceTask.ID) })
+	if _, err := d.Exec(`INSERT INTO task_relations(task_id,source_task_id) VALUES($1,$2)`, mainTask.ID, sourceTask.ID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM assets WHERE domain LIKE $1`, tag+"%")
+	})
+
+	linkedHost := "linked." + tag + ".example"
+	anchoredHost := "anchored." + tag + ".example"
+	var linkedID, anchoredID int64
+	if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,task_ids) VALUES('subdomain',$1,$2,ARRAY[$3]::bigint[]) RETURNING id`,
+		linkedHost, tag+".example", sourceTask.ID).Scan(&linkedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain) VALUES('subdomain',$1,$2) RETURNING id`,
+		anchoredHost, tag+".example").Scan(&anchoredID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exploration(sourceTask.ExplorationID).AddNode(KindFact, map[string]any{"summary": "source discovered"}, 0, "confirmed", "worker", []int64{anchoredID}); err != nil {
+		t.Fatal(err)
+	}
+
+	visible, err := d.Assets().QueryDSLInScope("", "", mainTask.ID, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, a := range visible {
+		seen[a.Domain] = true
+	}
+	if !seen[linkedHost] || !seen[anchoredHost] {
+		t.Fatalf("target 主任务应继承直接来源任务的 task_ids/anchors：%v", seen)
+	}
+	for _, host := range []string{linkedHost, anchoredHost} {
+		if ok, err := d.HostInDeclaredScope(mainTask.ID, host); err != nil || !ok {
+			t.Fatalf("%s 应进入 RoE 范围 ok=%v err=%v", host, ok, err)
+		}
+	}
+}
