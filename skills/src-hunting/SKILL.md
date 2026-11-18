@@ -19,8 +19,8 @@ tags:
 | 批量探活 | `http_probe`（一行一个 URL，输出 JSON） |
 | 事实/结论落库 | `record_fact`（含请求/响应关键行）；负结果也落 |
 | 漏洞上报 | `report_finding`（critical/high 必须有机械验证凭据，见 `pentest-verification`） |
-| 已知 CVE/PoC | `search_vulns` / `get_vuln` / `get_poc` / `scan_with_nuclei` |
-| 回连/OOB | `listener_start` + `listener_sessions` |
+| 已知 CVE/PoC | `lookup_cves`（编号/资产/指纹）；`run_execution` 跑 nuclei 仍需审批 |
+| 回连/OOB | `oast_mint` + `oast_poll`（平台不提供入站 Listener/C2） |
 | 鉴权对照 | `auth_request`（用已登记凭据组请求）+ `diff_responses` |
 | SPA/webpack 源码泄露 | `js_audit`（sourcemap 还原+密钥/接口抽取，Vue/React 必跑） |
 | 新资产入库 | `insert_assets` / `add_task_scope` |

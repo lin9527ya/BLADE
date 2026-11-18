@@ -30,7 +30,7 @@ tags:
 - SUID：`find / -perm -4000 -type f 2>/dev/null`（对照 GTFOBins）；
 - 定时任务：`cat /etc/crontab`、`ls -la /etc/cron.d/`、`crontab -l`（可写脚本 = 提权）；
 - 可写服务配置：`systemctl list-units --type=service` + `ls -la /etc/systemd/system/`；
-- 内核/发行版版本 → `search_vulns` 查本地提权 CVE（先 `uname -a`、`cat /etc/os-release`）；
+- 内核/发行版版本 → `lookup_cves` 查本地提权 CVE（先 `uname -a`、`cat /etc/os-release`）；
 - 环境与历史：`env`、`~/.bash_history`、`~/.ssh/`、`/etc/passwd` 可写性；
 - 计划用 linpeas/pspy（宿主工具已装）：`linpeas.sh` 输出保存为证据文件。
 
@@ -74,15 +74,15 @@ tags:
 
 - 先明确「证明什么」：后台权限/某类数据可读/某接口可控——用最小读取证明，不拖库；
 - 数据库只读证明：`SELECT ... LIMIT 1`；文件只取一条样本；
-- 每次数据读取都要 `save_evidence` 并对 source_url/文件名负责；
+- 每次数据读取都用 `record_fact`/`report_finding` 记录来源、文件名与哈希；
 - 内网横向拿到的**新服务/新资产登记进资产库**（`insert_assets` / `add_task_scope`），
   未测资产用 `list_untested_assets` 规划下一步。
 
-## 回连与 C2（平台内建，别手搭）
+## 回连与带外确认（平台不提供入站 C2）
 
-- `listener_start` 起监听，返回解析后的回连地址；payload 直接用返回地址生成；
-- 回连落在 `listener_sessions`，逐会话留证；**不要**自建公网 C2；
-- 出口形态按平台 C2 配置（direct / SSH 中继 / manual），不自作主张开公网端口。
+- 盲打类漏洞用 `oast_mint` 生成回连地址，`oast_poll` 收回调并留证；
+- 平台不提供 Listener / beacon / implant，也不要自建公网 C2；
+- 横向通路由 `loot_exec` / `foothold_exec` / `tunnel_open` 出站发起，出口按任务 Clash 隔离。
 
 ## 证据与失败处理
 

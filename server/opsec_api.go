@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/lin9527ya/blade/opsec"
 )
@@ -14,8 +15,12 @@ import (
 //
 // 只读、无参数、不落库：知识库是编译进二进制的常量表（opsec.Knowledge），改它要改代码、过评审。
 func (s *Server) opsecKnowledge(w http.ResponseWriter, r *http.Request) {
+	entries := opsec.Knowledge
+	if tech := strings.TrimSpace(r.URL.Query().Get("technique")); tech != "" {
+		entries = opsec.ByTechnique(tech)
+	}
 	writeJSON(w, 200, map[string]any{
-		"entries": opsec.Knowledge,
+		"entries": entries,
 		"note": "这是**事前**的可检出性知识库：给的是「预计会落在哪里」（公开、稳定的日志与遥测常识），" +
 			"不是实测结论——实测用 report_detection_check 记录（P31）。命令没被收录时工具会明说「没收录」，" +
 			"那不代表没有日志，只代表本库没有依据。本库刻意保守：只收公开、可核对的信号，宁可少收不可编。" +

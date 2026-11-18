@@ -84,6 +84,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "campaigns", title: "战役", url: "/function/campaigns", icon: FolderKanban },
       { id: "deliverables", title: "交付物", url: "/function/deliverables", icon: FileCheck2 },
       { id: "findings", title: "发现", url: "/function/findings", icon: Bug },
+      { id: "coverage", title: "覆盖与检测", url: "/function/coverage", icon: ShieldCheck },
       {
         id: "loot",
         title: "战果与执行面",

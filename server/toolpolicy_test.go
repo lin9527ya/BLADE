@@ -24,7 +24,7 @@ func TestFootprintToolsDerivedFromRegistry(t *testing.T) {
 
 // 受 agent_loot_exec 控制的工具必须正好是装配时剔除的那一组。
 func TestLootExecGatedTools(t *testing.T) {
-	want := []string{"foothold_exec", "loot_download", "loot_exec", "loot_upload", "tunnel_open"}
+	want := []string{"enum_privilege", "foothold_exec", "loot_download", "loot_exec", "loot_upload", "tunnel_open"}
 	got := toolpolicy.GatedTools("agent_loot_exec")
 	slices.Sort(got)
 	slices.Sort(want)

@@ -3453,3 +3453,26 @@ export interface TunnelItem {
   expires_at?: string;
   listening: boolean;
 }
+
+// ---- P2：ATT&CK 覆盖 / 检测录入 ----
+export interface AttackCoverageOpsecNote {
+  id: string;
+  title: string;
+  exposure: string;
+}
+
+export interface AttackCoverageRow {
+  technique: string;
+  intents: number;
+  intent_states?: Record<string, number>;
+  assets?: number[];
+  detections?: Record<string, number>;
+  last_at?: string;
+  opsec_notes?: AttackCoverageOpsecNote[];
+}
+
+export interface AttackCoverage {
+  techniques: AttackCoverageRow[];
+  unlabeled_intents: number;
+  note: string;
+}

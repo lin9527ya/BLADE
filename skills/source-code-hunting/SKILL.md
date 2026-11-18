@@ -46,7 +46,7 @@ tags:
 ## semgrep / 依赖
 
 - `semgrep --config auto .` 快速起量，重点看 high confidence 项；
-- 依赖：`mvn dependency:tree`/`npm audit`/`gosum` + `search_vulns` 匹配版本；
+- 依赖：`mvn dependency:tree`/`npm audit`/`gosum` + `lookup_cves` 匹配版本；
 - 依赖命中同样要行为验证（版本匹配 ≠ 漏洞）。
 
 ## 输出

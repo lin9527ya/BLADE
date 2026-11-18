@@ -65,6 +65,9 @@ type Note struct {
 	// Exposure 是**预计**可见度。
 	Exposure string `json:"exposure"`
 	Note     string `json:"note"`
+	// Techniques 是该手法对应的 ATT&CK 技术 ID。一条知识可映射多条技术；
+	// 没有映射的条目（如语言痕迹）保持为空——不硬凑。
+	Techniques []string `json:"techniques,omitempty"`
 }
 
 // Result 是一次标注的结果。
@@ -81,8 +84,9 @@ type Result struct {
 var Knowledge = []Note{
 	{
 		ID: "portscan-syn", Title: "端口扫描（半开 / 全连接）",
-		Match: []string{"nmap", "masscan", "zmap", "nc -zv", "nc -z"},
-		Where: []string{WhereNetwork, WhereTargetSystem},
+		Techniques: []string{"T1046"},
+		Match:      []string{"nmap", "masscan", "zmap", "nc -zv", "nc -z"},
+		Where:      []string{WhereNetwork, WhereTargetSystem},
 		Signals: []string{"边界防火墙/IDS 的连接记录（源 IP + 目标端口序列）",
 			"目标主机：-sT 全连接会进应用/系统连接日志；-sS 半开通常不落系统日志",
 			"masscan/zmap 速率高，流量特征明显"},
@@ -92,8 +96,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "bruteforce", Title: "口令爆破 / 喷洒",
-		Match: []string{"hydra", "medusa", "ncrack", "patator", "crackmapexec", "nxc", "kerbrute", " spray"},
-		Where: []string{WhereTargetSystem, WhereEDR, WhereNetwork},
+		Techniques: []string{"T1110"},
+		Match:      []string{"hydra", "medusa", "ncrack", "patator", "crackmapexec", "nxc", "kerbrute", " spray"},
+		Where:      []string{WhereTargetSystem, WhereEDR, WhereNetwork},
 		Signals: []string{"Windows：4625（失败登录）成批出现，可能触发账户锁定策略",
 			"Linux：sshd 的 Failed password 行 / PAM 记录",
 			"EDR/IPS：暴破是标准检测项，命中率高"},
@@ -103,25 +108,28 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "sqli-tool", Title: "SQL 注入扫描/利用工具",
-		Match:    []string{"sqlmap", "sqlninja", "nosqlmap"},
-		Where:    []string{WhereApp, WhereEDR, WhereNetwork},
-		Signals:  []string{"WAF 告警（特征明显）", "web access.log：同一 URI 的高频参数变形", "数据库端慢查询/错误日志"},
-		Exposure: ExposureHigh,
-		Note:     "工具化注入在 WAF 与 web 日志里特征很强。手工验证单点通常比全自动扫更隐蔽，也更容易控制影响面。",
+		Techniques: []string{"T1190"},
+		Match:      []string{"sqlmap", "sqlninja", "nosqlmap"},
+		Where:      []string{WhereApp, WhereEDR, WhereNetwork},
+		Signals:    []string{"WAF 告警（特征明显）", "web access.log：同一 URI 的高频参数变形", "数据库端慢查询/错误日志"},
+		Exposure:   ExposureHigh,
+		Note:       "工具化注入在 WAF 与 web 日志里特征很强。手工验证单点通常比全自动扫更隐蔽，也更容易控制影响面。",
 	},
 	{
 		ID: "lsass-access", Title: "LSASS 内存读取 / 凭据抓取",
-		Match:    []string{"mimikatz", "sekurlsa", "lsadump", "procdump", "comsvcs", "nanodump", "lsassy", "pypykatz"},
-		Where:    []string{WhereEDR, WhereTargetSystem},
-		Signals:  []string{"Sysmon 10（进程访问 LSASS）", "Windows 4688/进程创建", "EDR 对 LSASS 句柄访问的专项检测（命中率极高）"},
-		Exposure: ExposureHigh,
+		Techniques: []string{"T1003.001"},
+		Match:      []string{"mimikatz", "sekurlsa", "lsadump", "procdump", "comsvcs", "nanodump", "lsassy", "pypykatz"},
+		Where:      []string{WhereEDR, WhereTargetSystem},
+		Signals:    []string{"Sysmon 10（进程访问 LSASS）", "Windows 4688/进程创建", "EDR 对 LSASS 句柄访问的专项检测（命中率极高）"},
+		Exposure:   ExposureHigh,
 		Note: "这是 EDR 覆盖最好的一类动作，几乎必然告警。它同时也是**最有价值的一手**——所以更该先和蓝队约好" +
 			"（是演练还是真打），并在 P31 里如实记下防御侧到底有没有响。",
 	},
 	{
 		ID: "lateral-smb", Title: "横向执行（PsExec / SMB / WMI / at）",
-		Match: []string{"psexec", "smbexec", "wmiexec", "atexec", "dcomexec", "impacket", "wmic", "schtasks", "at.exe"},
-		Where: []string{WhereTargetSystem, WhereEDR, WhereNetwork},
+		Techniques: []string{"T1021.002", "T1047", "T1053.005"},
+		Match:      []string{"psexec", "smbexec", "wmiexec", "atexec", "dcomexec", "impacket", "wmic", "schtasks", "at.exe"},
+		Where:      []string{WhereTargetSystem, WhereEDR, WhereNetwork},
 		Signals: []string{"Windows 7045（服务安装，PsExec 类）", "4698（计划任务创建）", "WMI 活动日志 / Sysmon 1、3、11",
 			"SMB 登录 4624 type 3 / 5140 共享访问"},
 		Exposure: ExposureHigh,
@@ -129,8 +137,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "dcsync", Title: "目录数据库同步（DCSync / 导出 NTDS）",
-		Match: []string{"dcsync", "ntdsutil", "esentutl", "vssadmin", "secretsdump", "GetChanges"},
-		Where: []string{WhereTargetSystem, WhereEDR},
+		Techniques: []string{"T1003.006"},
+		Match:      []string{"dcsync", "ntdsutil", "esentutl", "vssadmin", "secretsdump", "GetChanges"},
+		Where:      []string{WhereTargetSystem, WhereEDR},
 		Signals: []string{"Windows 4662（DS-Replication-Get-Changes / -All，需目录服务访问审计）",
 			"域控上的大量磁盘 IO / 卷影服务调用", "EDR 对 NTDS.dit 访问的专项检测"},
 		Exposure: ExposureHigh,
@@ -138,16 +147,18 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "kerberoast", Title: "Kerberos 相关（Kerberoast / AS-REP / 票据）",
-		Match:    []string{"rubeus", "kerberoast", "getuserspns", "getnpusers", "gettgt", "asktgt", "ticketer"},
-		Where:    []string{WhereTargetSystem, WhereEDR},
-		Signals:  []string{"4769（服务票据请求，RC4 加密时尤其显眼）", "4768（TGT 请求）", "LDAP 查询 1644 / 4662"},
-		Exposure: ExposureHigh,
-		Note:     "票据请求本身是正常域行为，但**成批 + 弱加密**的组合是标准检测特征。",
+		Techniques: []string{"T1558.003", "T1558.004"},
+		Match:      []string{"rubeus", "kerberoast", "getuserspns", "getnpusers", "gettgt", "asktgt", "ticketer"},
+		Where:      []string{WhereTargetSystem, WhereEDR},
+		Signals:    []string{"4769（服务票据请求，RC4 加密时尤其显眼）", "4768（TGT 请求）", "LDAP 查询 1644 / 4662"},
+		Exposure:   ExposureHigh,
+		Note:       "票据请求本身是正常域行为，但**成批 + 弱加密**的组合是标准检测特征。",
 	},
 	{
 		ID: "dir-query", Title: "目录枚举（LDAP / 域信息查询 / 采集器）",
-		Match: []string{"ldapsearch", "bloodhound", "sharphound", "adfind", "net group", "net user", "dsquery", "enum4linux"},
-		Where: []string{WhereTargetSystem},
+		Techniques: []string{"T1087.002", "T1018"},
+		Match:      []string{"ldapsearch", "bloodhound", "sharphound", "adfind", "net group", "net user", "dsquery", "enum4linux"},
+		Where:      []string{WhereTargetSystem},
 		Signals: []string{"域控 LDAP 查询量大（1644 / 4662）", "采集器（SharpHound）会在短时间内产生大量查询，特征明显",
 			"本机 net user / net group 通常无痕（无 /domain 时）"},
 		Exposure: ExposureMedium,
@@ -155,8 +166,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "webshell-download", Title: "下载并执行（curl|bash / wget|sh / 落马）",
-		Match: []string{"curl", "wget", "certutil", "bitsadmin", "Invoke-WebRequest", "iwr "},
-		Where: []string{WhereApp, WhereLocal, WhereTargetSystem},
+		Techniques: []string{"T1105", "T1059"},
+		Match:      []string{"curl", "wget", "certutil", "bitsadmin", "Invoke-WebRequest", "iwr "},
+		Where:      []string{WhereApp, WhereLocal, WhereTargetSystem},
 		Signals: []string{"目标 web access.log（UA、源 IP）", "被控机 shell 历史 / PowerShell 转录（若开启）",
 			"EDR 进程树：下载器拉起解释器（curl→sh）是典型可疑链", "Sysmon 1 / 3、Windows 4688"},
 		Exposure: ExposureMedium,
@@ -164,8 +176,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "reverse-shell", Title: "反弹 shell / 交互式通路",
-		Match: []string{"nc -e", "ncat", "bash -i", "/dev/tcp", "socat", "meterpreter", "msfconsole"},
-		Where: []string{WhereNetwork, WhereEDR, WhereLocal},
+		Techniques: []string{"T1059", "T1071"},
+		Match:      []string{"nc -e", "ncat", "bash -i", "/dev/tcp", "socat", "meterpreter", "msfconsole"},
+		Where:      []string{WhereNetwork, WhereEDR, WhereLocal},
 		Signals: []string{"网络侧：非常规端口的**长连接**与外联（egress）", "进程树：web/服务进程拉起 shell",
 			"EDR 对反弹 shell 的专项检测", "被控端 shell 历史"},
 		Exposure: ExposureHigh,
@@ -174,8 +187,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "sensitive-read", Title: "读敏感文件（shadow / 配置 / 密钥）",
-		Match: []string{"/etc/shadow", "/etc/passwd", "id_rsa", ".ssh/", "wp-config", "web.config", ".env", "kdbx", "unattend.xml"},
-		Where: []string{WhereTargetSystem, WhereLocal},
+		Techniques: []string{"T1552", "T1005"},
+		Match:      []string{"/etc/shadow", "/etc/passwd", "id_rsa", ".ssh/", "wp-config", "web.config", ".env", "kdbx", "unattend.xml"},
+		Where:      []string{WhereTargetSystem, WhereLocal},
 		Signals: []string{"auditd（若配置了文件访问审计：-w /etc/shadow）", "无 auditd 时通常无系统日志",
 			"被控端 shell 历史（如果用交互式 shell 敲的）"},
 		Exposure: ExposureMedium,
@@ -184,8 +198,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "privesc-enum", Title: "本机提权枚举（脚本化）",
-		Match: []string{"linpeas", "winpeas", "unix-privesc-check", "seatbelt", "beacon", "sudo -l", "find / -perm"},
-		Where: []string{WhereLocal, WhereEDR, WhereTargetSystem},
+		Techniques: []string{"T1082"},
+		Match:      []string{"linpeas", "winpeas", "unix-privesc-check", "seatbelt", "beacon", "sudo -l", "find / -perm"},
+		Where:      []string{WhereLocal, WhereEDR, WhereTargetSystem},
 		Signals: []string{"大量文件读取/目录遍历（可能触发 HIDS/FIM）", "auditd execve（若开启）",
 			"EDR 对已知枚举脚本的字符串检测"},
 		Exposure: ExposureMedium,
@@ -210,8 +225,9 @@ var Knowledge = []Note{
 	},
 	{
 		ID: "anti-forensics", Title: "清理痕迹（history -c / 删日志 / 时间戳）",
-		Match: []string{"history -c", "unset HISTFILE", "shred", "wevtutil cl", "Clear-EventLog", "timestomp", "log cleaner"},
-		Where: []string{WhereTargetSystem, WhereEDR},
+		Techniques: []string{"T1070"},
+		Match:      []string{"history -c", "unset HISTFILE", "shred", "wevtutil cl", "Clear-EventLog", "timestomp", "log cleaner"},
+		Where:      []string{WhereTargetSystem, WhereEDR},
 		Signals: []string{"日志服务被清空本身是**高危告警**（Windows 1102：审核日志已清除）",
 			"文件时间戳异常（MACB 不一致）是取证的标准发现点", "EDR 对清日志行为的专项检测"},
 		Exposure: ExposureHigh,
@@ -281,6 +297,25 @@ func hanRunes(s string) []string {
 // 为什么宁可说「没收录」：这个功能的全部价值在于让人对「会留下什么」有预期。若命中不了时返回空列表
 // 而不作声，读的人很容易把它当成「这条没有日志」——那正好是本仓一路在防的那种误读
 // （同 P31 的 unknown、P24 的「没限住就要如实说」）。
+// ByTechnique 返回映射到某个 ATT&CK 技术的知识条目（大小写不敏感）。
+// 未收录时返回空切片——调用方必须明说「未收录」，不能把空当成「没有日志」。
+func ByTechnique(technique string) []Note {
+	want := strings.ToUpper(strings.TrimSpace(technique))
+	if want == "" {
+		return nil
+	}
+	var out []Note
+	for _, n := range Knowledge {
+		for _, t := range n.Techniques {
+			if strings.EqualFold(t, want) {
+				out = append(out, n)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func Annotate(command string) Result {
 	cmd := strings.TrimSpace(command)
 	if cmd == "" {

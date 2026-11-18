@@ -117,6 +117,7 @@ var Registry = []Tool{
 	{Name: "tunnel_open", Class: Action, Surface: hostOnly, InterceptDefault: true, RequiresSetting: "agent_loot_exec"},
 	{Name: "loot_upload", Class: Action, Surface: hostRemotePath, InterceptDefault: true, RequiresSetting: "agent_loot_exec"},
 	{Name: "loot_download", Class: Action, Surface: hostRemotePath, InterceptDefault: true, RequiresSetting: "agent_loot_exec"},
+	{Name: "enum_privilege", Class: Action, Surface: hostOnly, InterceptDefault: true, Footprint: true, RequiresSetting: "agent_loot_exec"},
 
 	// CVE 脚本与本地文件/配置写入。
 	{Name: "cve_exploit", Class: Action, Surface: targetArgs, InterceptDefault: true},

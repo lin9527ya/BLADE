@@ -1,6 +1,7 @@
 package opsec
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -172,5 +173,35 @@ func TestHanRunesDedupes(t *testing.T) {
 	}
 	if len(hanRunes("no chinese here")) != 0 {
 		t.Error("没有汉字时该返回空")
+	}
+}
+
+func TestByTechnique(t *testing.T) {
+	notes := ByTechnique("t1046")
+	if len(notes) == 0 {
+		t.Fatal("T1046 没有映射到任何知识条目")
+	}
+	found := false
+	for _, n := range notes {
+		if n.ID == "portscan-syn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("T1046 应命中 portscan-syn，实际 %+v", notes)
+	}
+	if got := ByTechnique("T9999"); len(got) != 0 {
+		t.Fatalf("未收录技术应返回空，实际 %+v", got)
+	}
+}
+
+func TestTechniqueMappingsLookValid(t *testing.T) {
+	re := regexp.MustCompile(`^T\d{4}(\.\d{3})?$`)
+	for _, n := range Knowledge {
+		for _, tech := range n.Techniques {
+			if !re.MatchString(tech) {
+				t.Errorf("%s 的技术 ID %q 形状不合法", n.ID, tech)
+			}
+		}
 	}
 }

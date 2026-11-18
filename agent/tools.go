@@ -3898,24 +3898,10 @@ func (t *ToolSet) reportDetection() actool.CoreTool {
 			if summary == "" {
 				return actool.Errorf("summary 不能为空"), nil
 			}
-			// 技术 ID 复用意图那套归一化：同一个形状规则，别在两处各写一份。
-			techs := db.NormalizeTechniques([]string{a.Technique})
-			if len(techs) != 1 {
-				return actool.Errorf(fmt.Sprintf("technique 必须是单个 ATT&CK 技术 ID（T#### 或 T####.###），收到 %q", a.Technique)), nil
-			}
-			switch a.Result {
-			case db.StateDetectionTriggered, db.StateDetectionNotTriggered, db.StateDetectionUnknown:
-			default:
-				return actool.Errorf(fmt.Sprintf("result 必须是 triggered / not_triggered / unknown（三态要分清：unknown 不是「没响」），收到 %q", a.Result)), nil
-			}
-			if strings.TrimSpace(a.Evidence) == "" {
-				return actool.Errorf("evidence 不能为空：你查了哪里、看到了什么——「没看到」本身也要有据（查的哪个源、哪个时段）"), nil
-			}
-			if strings.TrimSpace(a.Confidence) == "" {
-				return actool.Errorf("confidence 不能为空：high 直接看到日志 / medium 间接推断 / low 仅凭现象"), nil
-			}
-			if !db.ValidConfidence(a.Confidence) {
-				return actool.Errorf("confidence 取值必须是 high|medium|low"), nil
+			// 与人工录入共用同一套校验（三态 / 技术 ID / 证据 / 置信度）。
+			tech, err := db.ValidateDetectionResult(a.Result, a.Technique, a.Evidence, a.Confidence)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
 			}
 			intent, err := t.writeIntent(a.IntentID)
 			if err != nil {
@@ -3927,7 +3913,7 @@ func (t *ToolSet) reportDetection() actool.CoreTool {
 					return actool.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）"), nil
 				}
 			}
-			payload := map[string]any{"summary": summary, "technique": techs[0]}
+			payload := map[string]any{"summary": summary, "technique": tech}
 			for k, v := range map[string]string{
 				"detail": a.Detail, "evidence": a.Evidence, "confidence": a.Confidence,
 			} {

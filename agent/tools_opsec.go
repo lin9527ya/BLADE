@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	actool "github.com/lin9527ya/Norma/tool"
 
@@ -27,19 +28,33 @@ func (t *ToolSet) opsecNotes() actool.CoreTool {
 			"②知识库没收录时会明确说「没收录」，**那不代表这条没有日志**，只代表我们没有依据；"+
 			"③它不给规避手法：降暴露在本平台走授权范围、作业时间窗与人工审批。",
 		obj(map[string]any{
-			"command": str("要查的命令原文（一行即可；命中按词边界匹配）"),
-		}, "command"),
+			"command":   str("要查的命令原文（一行即可；命中按词边界匹配）"),
+			"technique": str("ATT&CK 技术 ID（T#### / T####.###）；与 command 二选一，用于查该技术的预计信号"),
+		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				Command string `json:"command"`
+				Command   string `json:"command"`
+				Technique string `json:"technique"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			if a.Command == "" {
-				return actool.Errorf("command 必填：要查哪一条命令的可检出性"), nil
+			a.Command = strings.TrimSpace(a.Command)
+			a.Technique = strings.TrimSpace(a.Technique)
+			switch {
+			case a.Command == "" && a.Technique == "":
+				return actool.Errorf("command 或 technique 必须给一个：command 查这一条命令，technique 查该技术的预计信号"), nil
+			case a.Command != "" && a.Technique != "":
+				return actool.Errorf("command 与 technique 二选一，不要同时给"), nil
+			case a.Technique != "":
+				notes := opsec.ByTechnique(a.Technique)
+				if len(notes) == 0 {
+					return jsonResult(opsec.Result{Uncovered: true, Message: "知识库未收录该 ATT&CK 技术。**未收录不等于没有日志**，只代表本库没有依据；实测仍用 report_detection_check。"})
+				}
+				return jsonResult(opsec.Result{Notes: notes})
+			default:
+				return jsonResult(opsec.Annotate(a.Command))
 			}
-			return jsonResult(opsec.Annotate(a.Command))
 		},
 	)
 }

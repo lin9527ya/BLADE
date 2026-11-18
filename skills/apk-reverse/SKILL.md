@@ -16,11 +16,11 @@ tags:
 
 | 场景 | 用平台能力 |
 |---|---|
-| 样本本身是证据 | `save_evidence` 存档原始 APK 并登记 SHA-256（先哈希，再解包） |
+| 样本本身是证据 | `Bash sha256sum` 计算哈希，用 `record_fact` 登记路径与 SHA-256（先哈希，再解包） |
 | 接口/密钥/结论 | `record_fact` 落库（类名、方法、算法、密钥位置） |
 | 后端接口测试 | 逆向拿到接口后转 `http_probe` / `auth_request` / `diff_responses` |
 | 流量还原 | 平台流量捕获（默认开）或 mitmproxy；`traffic` 里看请求 |
-| 已知组件 CVE | `search_vulns` / `scan_with_nuclei`（服务端） |
+| 已知组件 CVE | `lookup_cves` 查库；`run_execution` 跑 nuclei（仍走审批与 RoE） |
 
 ## 环境事实（服务器形态）
 
@@ -53,7 +53,7 @@ bash scripts/rebuild-sign-install.sh -ProjectDir apktool_out -Install -Reinstall
 
 ### 1. Triage（先定性，不动手）
 
-1. 原始包先 `sha256sum app.apk` → `save_evidence`（证据链起点）。
+1. 原始包先 `sha256sum app.apk`，再用 `record_fact` 登记哈希（证据链起点）。
 2. `jadx -d jadx_out app.apk` 出 Java；`apktool d app.apk -o apktool_out` 出 smali+资源。
 3. 先看：`AndroidManifest.xml`（权限/导出组件/主入口/debuggable/allowBackup）、
    `package`、`application`、`lib/**/*.so` 是否存在、包名与签名（`apksigner verify --print-certs`）。
@@ -105,7 +105,7 @@ Java 只是 JNI 包装 / 核心签名在 native / `System.loadLibrary()` 后逻�
 
 逆向只是拿钥匙。拿到接口后用平台工具直接打授权域名：
 未授权/越权（换 id/token）/注入/逻辑；签名算法可复算后自己构造请求。
-按取证口径**可以导出样本与数据**，但要分批控速、登记哈希（save_evidence 自动算 SHA-256）。
+按取证口径**可以导出样本与数据**，但要分批控速、登记哈希（先 sha256sum，再 record_fact）。
 
 ## 输出要求
 
@@ -133,7 +133,7 @@ Java 只是 JNI 包装 / 核心签名在 native / `System.loadLibrary()` 后逻�
 
 ## 完成自检
 
-- [ ] 原始 APK 已哈希并 `save_evidence`
+- [ ] 原始 APK 已哈希并 `record_fact` 登记
 - [ ] manifest/入口/导出组件已过一遍
 - [ ] 接口清单、签名算法、密钥位置已落 fact
 - [ ] 有设备则完成 Hook 验证；无设备则写明缺设备与替代验证

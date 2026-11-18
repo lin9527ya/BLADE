@@ -108,6 +108,7 @@ GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm
 GET /api/exploration/activity/stream	server.(*Server).streamActivity-fm
 GET /api/exploration/activity/{seq}	server.(*Server).activityDetail-fm
+GET /api/exploration/attack-coverage	server.(*Server).attackCoverage-fm
 GET /api/exploration/detection-matrix	server.(*Server).detectionMatrix-fm
 GET /api/exploration/finding-case-rows	server.(*Server).listFindingCaseRows-fm
 GET /api/exploration/finding-case-suggestions	server.(*Server).listFindingCaseSuggestions-fm
@@ -403,6 +404,7 @@ POST /api/tasks/{id}/constraints	server.(*Server).addConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/apply	server.(*Server).applyConstraint-fm
 POST /api/tasks/{id}/constraints/{cid}/compile	server.(*Server).compileConstraint-fm
 POST /api/tasks/{id}/control	server.(*Server).control-fm
+POST /api/tasks/{id}/detections	server.(*Server).recordDetection-fm
 POST /api/tasks/{id}/distill-playbook	server.(*Server).distillTaskPlaybook-fm
 POST /api/tasks/{id}/footprints/cleanup	server.(*Server).cleanupFootprints-fm
 POST /api/tasks/{id}/footprints/scan	server.(*Server).scanFootprints-fm

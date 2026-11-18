@@ -1,6 +1,6 @@
 ---
 name: component-vuln-intel
-description: 拿到组件指纹或版本号、要判断是否存在已知 CVE、找 PoC 或决定是否值得打时调用——平台内置漏洞情报（search_vulns/get_vuln/get_poc/scan_with_nuclei）的标准用法与版本区间判定、误报规避。当意图涉及「已知漏洞/CVE/版本匹配/PoC」时使用。
+description: 拿到组件指纹或版本号、要判断是否存在已知 CVE、找 PoC 或决定是否值得打时调用——平台内置漏洞情报（lookup_cves + run_execution 跑 nuclei）的标准用法与版本区间判定、误报规避。当意图涉及「已知漏洞/CVE/版本匹配/PoC」时使用。
 tags:
   cwe: [CWE-1104, CWE-1395, CWE-1035]
   attack: [T1190, T1203]
@@ -12,15 +12,15 @@ tags:
 ## 为什么用工具而不用脑子
 
 模型记忆里的 CVE 版本区间经常记错、记旧。平台情报库（NVD + CISA KEV + GHSA + PoC 聚合）
-是唯一可信来源：**先 `search_vulns`，再决定打不打**。
+是唯一可信来源：**先 `lookup_cves`，再决定打不打**。
 
 ## 标准流程
 
 1. **拿准指纹**：组件名 + 精确版本（`Server: nginx/1.18.0`、`X-Powered-By`、
    `/actuator/info`、favicon、静态资源 hash、错误页版本号）。版本拿不准就先想办法拿准；
-2. `search_vulns` 查询：返回 CVE、CVSS、KEV（在野利用）、`version_in_range` 三态；
-3. `get_vuln` 看详情与受影响范围说明；`get_poc` 找公开 PoC / 利用链接；
-4. 命中后**必须行为验证**：`scan_with_nuclei` 或手工构造请求，拿到响应特征才算漏洞；
+2. `lookup_cves` 查询：返回 CVE、CVSS、KEV（在野利用）、版本区间与脚本信息；
+3. 用 `lookup_cves` 的详情/脚本字段核对受影响范围与 PoC 链接；
+4. 命中后**必须行为验证**：`run_execution` 跑 nuclei 或手工构造请求，拿到响应特征才算漏洞；
 5. `report_finding` 时写明：组件+版本、CVE 编号、验证方式、真实响应证据。
 
 ## 版本区间判定的三个坑
@@ -35,14 +35,14 @@ tags:
 ## nuclei 的正确用法
 
 - 先确认模板覆盖：`nuclei -t <匹配的模板/标签> -u <url> -severity high,critical -stats`；
-- 平台工具 `scan_with_nuclei` 会组好命令并留流量；自己跑时结果落文件后 `save_evidence`；
+- 平台用 `run_execution` 跑 nuclei（仍走审批与流量录制）；结果落文件后用 `record_fact` 登记；
 - 模板命中 ≠ 漏洞：核对请求/响应是否真的触发（有些模板只匹配版本 banner）；
 - 高危模板（如 RCE）先确认目标有授权且不影响业务，再执行。
 
 ## PoC 使用纪律
 
 - 公开 PoC 常带反连/写文件行为：先读代码，确认不会破坏目标（无 rm/无加密/无批量）；
-- 需要 OOB 时用平台回连器（`listener_start` 或 interactsh）留证；
+- 需要 OOB 时用 `oast_mint` / `oast_poll`（或 interactsh）留证；平台不提供入站 Listener/C2；
 - 利用失败也落 fact（哪一步失败、错误特征），避免换人再打一遍。
 
 ## 高频组件优先表（先看这些）

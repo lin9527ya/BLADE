@@ -27,6 +27,8 @@ func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/nodes/{nid}/follow-up-intent", s.taskFollowUpIntent)
 	mux.HandleFunc("POST /api/tasks/{id}/ad-objects/{oid}/owned", s.setADObjectOwned)
 	mux.HandleFunc("POST /api/tasks/{id}/ad-objects/{oid}/pursue", s.pursueADObject)
+	// 检测验证人工录入：与 agent 工具共用校验，落同一类 detection 节点。
+	mux.HandleFunc("POST /api/tasks/{id}/detections", s.recordDetection)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
 	mux.HandleFunc("PATCH /api/task-categories/{id}", s.pgRenameTaskCategory)

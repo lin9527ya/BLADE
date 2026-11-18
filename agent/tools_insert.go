@@ -780,6 +780,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// P13 长任务执行：进程活过本次 run、输出落盘、状态进台账。未接线（nil 服务）
 		// 时工具返回可读拒绝，绑定可见性与目录 seed 不受影响。
 		t.runExecution(), t.waitExecution(), t.getExecution(), t.grepExecution(), t.lootExec(), t.lootUpload(), t.lootDownload(), t.footholdExec(), t.tunnelOpen(), t.cancelExecution(),
+		// 只读提权枚举：固定 profile、无 command 参数，默认关（agent_loot_exec）。
+		t.enumPrivilege(),
 		// SRC 领域工具（Pojun 借鉴第一批）：只组命令/落脚本，执行仍走 Bash，
 		// 因而自动经过流量录制、审批与出口代理。
 		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),

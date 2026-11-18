@@ -64,6 +64,7 @@ import type {
   DeliverableAcceptance,
   DeliverableDetail,
   DeliverableVersion,
+  AttackCoverage,
   DetectionMatrix,
   Edge,
   EvidenceBodyPreview,
@@ -1430,6 +1431,29 @@ export const api = {
         error?: string;
       }[];
     }>("/exploration/findings/retests/batch", { finding_ids: findingIds, notes }),
+  attackCoverage: (params: { task?: string; campaign?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.task) qs.set("task", params.task);
+    if (params.campaign) qs.set("campaign", String(params.campaign));
+    return get<AttackCoverage>(`/exploration/attack-coverage?${qs.toString()}`);
+  },
+  recordDetection: (
+    taskId: string,
+    body: {
+      summary: string;
+      technique: string;
+      result: "triggered" | "not_triggered" | "unknown";
+      evidence: string;
+      confidence: "high" | "medium" | "low";
+      detail?: string;
+      detector?: string;
+      log_source?: string;
+      time_window?: string;
+      asset_ids?: number[];
+      intent_id?: number;
+    },
+  ) => post<{ ok: boolean; detection_id: number }>(`/tasks/${taskId}/detections`, body),
+
   detectionMatrix: (params: { task?: string; campaign?: number }) => {
     const qs = new URLSearchParams();
     if (params.task) qs.set("task", params.task);
