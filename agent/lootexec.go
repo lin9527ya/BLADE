@@ -136,7 +136,7 @@ func (t *ToolSet) lootExec() actool.CoreTool {
 					return actool.Errorf("loot_exec: 无法暂存凭据明文：" + serr.Error()), nil
 				}
 				cleanup = func() { _ = removeLootSecret(secretPath) }
-				command = buildLootCommand(kind, service, user, host, target.Port, secretPath, a.Command)
+				command = buildLootCommand(kind, service, user, host, target.Port, secretPath, a.Command, t.sshHostKeyOpts())
 			}
 			var timeout time.Duration
 			if a.TimeoutMs > 0 {
@@ -246,21 +246,22 @@ func writeLootFile(name, content string) (string, error) {
 //   - **明文不进命令**：口令/私钥都从 0600 临时文件读，命令里只有路径；读到即删。
 //   - **远程命令按原样执行**：用户给的命令先 base64，再在远端侧解码，避免引号/分号
 //     在本地 shell 里被解释（那是把模型输出当代码执行）。
-//   - **不校验主机指纹**：渗透目标的主机密钥没有可信来源，StrictHostKeyChecking=accept-new
-//     只记首次密钥、不阻断连接；UserKnownHostsFile=/dev/null 保证不污染本机 known_hosts。
-func buildLootCommand(kind, service, user, host string, port int, secretPath, remote string) string {
+//   - **主机密钥按首次信任**：渗透目标的主机密钥没有可信来源，StrictHostKeyChecking=accept-new
+//     只记首次密钥、不阻断连接；known_hosts 落在本次 run 的工作目录，同一目标再次连接时可发现
+//     密钥变化，不再把 UserKnownHostsFile 指向 /dev/null（那等于永远不校验）。
+func buildLootCommand(kind, service, user, host string, port int, secretPath, remote, hostKeyOpts string) string {
 	sp := shQuote(secretPath)
 	b64 := base64.StdEncoding.EncodeToString([]byte(remote))
 	port = portOf(service, port)
 	switch {
 	case service == "ssh" && kind == "key":
 		return fmt.Sprintf(
-			`ssh -i %s -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p %d %s "$(printf %%s %s | base64 -d)"; rc=$?; rm -f %s; exit $rc`,
-			sp, port, shQuote(user+"@"+host), shQuote(b64), sp)
+			`ssh -i %s %s -o ConnectTimeout=15 -p %d %s "$(printf %%s %s | base64 -d)"; rc=$?; rm -f %s; exit $rc`,
+			sp, hostKeyOpts, port, shQuote(user+"@"+host), shQuote(b64), sp)
 	case service == "ssh":
 		return fmt.Sprintf(
-			`SSHPASS="$(cat %s)"; rm -f %s; export SSHPASS; exec sshpass -e ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p %d %s "$(printf %%s %s | base64 -d)"`,
-			sp, sp, port, shQuote(user+"@"+host), shQuote(b64))
+			`SSHPASS="$(cat %s)"; rm -f %s; export SSHPASS; exec sshpass -e ssh %s -o ConnectTimeout=15 -p %d %s "$(printf %%s %s | base64 -d)"`,
+			sp, sp, hostKeyOpts, port, shQuote(user+"@"+host), shQuote(b64))
 	default: // mysql + password
 		return fmt.Sprintf(
 			`d=$(mktemp -d) || exit 1; f="$d/my.cnf"; umask 077; `+

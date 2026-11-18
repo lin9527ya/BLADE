@@ -55,6 +55,7 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked) // 批量重跑本任务全部 blocked 意图
 	mux.HandleFunc("GET /api/verification-ledger", s.verificationLedger)
 	mux.HandleFunc("GET /api/executions/{eid}", s.getExecution)
+	mux.HandleFunc("GET /api/egress/status", s.egressStatus)
 	mux.HandleFunc("POST /api/executions/{eid}/cancel", s.cancelExecution) // 长任务执行台账详情（时间线跳转）
 	mux.HandleFunc("POST /api/active", s.setActive)
 }

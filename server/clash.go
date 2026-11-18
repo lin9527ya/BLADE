@@ -158,6 +158,21 @@ func (m *Manager) ClashAutoRotateEnabled() bool {
 	return c.Auto && c.APIURL != ""
 }
 
+// ClashTaskBindings 返回任务 → 出口组绑定的只读快照（任务 id 字符串 → 组名）。
+// 只读视图；不改变租约，也不暴露 Clash 控制器密钥。
+func (m *Manager) ClashTaskBindings() map[string]string {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string, len(m.clashTaskGroups))
+	for task, group := range m.clashTaskGroups {
+		out[task] = group
+	}
+	return out
+}
+
 // ClashEgressStatus returns cached last-rotation info for the settings page.
 func (m *Manager) ClashEgressStatus() ClashEgressStatus {
 	cfg := m.ClashEgressConfig()

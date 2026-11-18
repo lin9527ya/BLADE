@@ -66,6 +66,7 @@ import type {
   DeliverableVersion,
   AttackCoverage,
   DetectionMatrix,
+  EgressStatus,
   Edge,
   EvidenceBodyPreview,
   ExplorationNodePage,
@@ -1431,6 +1432,8 @@ export const api = {
         error?: string;
       }[];
     }>("/exploration/findings/retests/batch", { finding_ids: findingIds, notes }),
+  egressStatus: () => get<EgressStatus>("/egress/status"),
+
   attackCoverage: (params: { task?: string; campaign?: number }) => {
     const qs = new URLSearchParams();
     if (params.task) qs.set("task", params.task);

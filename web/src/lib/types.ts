@@ -3476,3 +3476,24 @@ export interface AttackCoverage {
   unlabeled_intents: number;
   note: string;
 }
+
+// GET /api/egress/status：出口只读视图（代理池健康 + Clash 最近轮换 + 任务绑定）。
+export interface EgressStatus {
+  proxy: {
+    active: string;
+    blocked: boolean;
+    candidates?: { proxy: string; ok: boolean; latency_ms?: number; error?: string }[];
+  };
+  clash: {
+    configured: boolean;
+    auto?: boolean;
+    group?: string;
+    node?: string;
+    egress_ip?: string;
+    rotated_at?: string;
+    last_error?: string;
+    last_reason?: string;
+  };
+  tasks: { task_id: number; name?: string; group: string }[];
+  note?: string;
+}

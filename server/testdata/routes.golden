@@ -103,6 +103,7 @@ GET /api/deliverables/{id}/diff	server.(*Server).deliverableDiff-fm
 GET /api/deliverables/{id}/versions/{version_id}/export	server.(*Server).exportDeliverableVersion-fm
 GET /api/diagnostics/bundle	server.(*Server).diagnosticsBundle-fm
 GET /api/diagnostics/cache	server.(*Server).getCacheDiagnostics-fm
+GET /api/egress/status	server.(*Server).egressStatus-fm
 GET /api/executions/{eid}	server.(*Server).getExecution-fm
 GET /api/exploration/activity	server.(*Server).activity-fm
 GET /api/exploration/activity/history	server.(*Server).activityHistory-fm

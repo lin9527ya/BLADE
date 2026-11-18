@@ -23,6 +23,11 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad format: "+format)
 		return
 	}
+	template := strings.TrimSpace(r.URL.Query().Get("template"))
+	if template != "" && template != "redteam" {
+		writeErr(w, 400, "bad template: "+template)
+		return
+	}
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "no active task")
@@ -282,7 +287,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// 工具与 API 寻址仍用全局 id（同一数字在两种编号下含义不同）。
 	nodeOrd, _ := t.Store.NodeOrdinals(db.KindFinding, 0)
 	intentOrd, _ := t.Store.IntentOrdinals(0)
-	md := report.Markdown(report.Input{
+	input := report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(), Goals: reportGoals,
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
 		FindingReports: findingReports, FindingReportStale: findingReportStale, RemediationByNode: remediationByNode,
@@ -295,12 +300,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		LootUsedBy:       lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
 		CredentialAttempts: credAttempts,
-	})
+	}
+	md := report.Markdown(input)
+	if template == "redteam" {
+		md = report.RedTeamMarkdown(input)
+	}
 	// 默认行为保持不变：内联 Markdown。format=md/docx 走附件下载；先算完 body 再写
 	// 响应头，避免生成失败时已经送出半份文件。
 	switch format {
 	case "md":
-		name := report.FullFilename(t.Description, ".md")
+		name := report.FullFilename(reportName(t.Description, template), ".md")
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
 		w.WriteHeader(200)
@@ -311,7 +320,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, "生成 DOCX 失败："+err.Error())
 			return
 		}
-		name := report.FullFilename(t.Description, ".docx")
+		name := report.FullFilename(reportName(t.Description, template), ".docx")
 		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
 		w.WriteHeader(200)
@@ -436,4 +445,12 @@ func nodeVulnClass(n *db.Node) string {
 	}
 	_ = json.Unmarshal(n.Payload, &p)
 	return p.VulnClass
+}
+
+// reportName 在默认文件名后加模板后缀，避免同一任务的两种版式互相覆盖。
+func reportName(base, template string) string {
+	if template == "" {
+		return base
+	}
+	return base + "-" + template
 }

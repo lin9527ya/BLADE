@@ -121,7 +121,7 @@ func (t *ToolSet) enumPrivilege() actool.CoreTool {
 						return actool.Errorf("enum_privilege: 无法暂存凭据：" + serr.Error()), nil
 					}
 					cleanup = func() { _ = removeLootSecret(secretPath) }
-					shellCmd = buildLootCommand(kind, service, user, host, target.Port, secretPath, command)
+					shellCmd = buildLootCommand(kind, service, user, host, target.Port, secretPath, command, t.sshHostKeyOpts())
 				}
 				if err != nil {
 					return actool.Errorf("enum_privilege: " + err.Error()), nil
@@ -159,7 +159,7 @@ func (t *ToolSet) enumPrivilege() actool.CoreTool {
 						return actool.Errorf("enum_privilege: 无法暂存凭据：" + serr.Error()), nil
 					}
 					cleanup = func() { _ = removeLootSecret(secretPath) }
-					shellCmd = buildLootCommand(kind, "ssh", user, v.Host, v.Port, secretPath, command)
+					shellCmd = buildLootCommand(kind, "ssh", user, v.Host, v.Port, secretPath, command, t.sshHostKeyOpts())
 				case "webshell":
 					shellCmd = buildWebshellCommand(v.URL, v.Param, command, timeout)
 					cleanup = func() {}

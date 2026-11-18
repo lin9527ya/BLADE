@@ -1,5 +1,7 @@
 "use client";
 
+import * as React from "react";
+
 import { RadioTowerIcon } from "lucide-react";
 
 import { Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
@@ -7,11 +9,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
+import { api } from "@/lib/api";
+import type { EgressStatus } from "@/lib/types";
+
 import type { useSettingsState } from "./use-settings-state";
 
 // 系统配置 · 网络与代理。
 
 export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }) {
+  const [egress, setEgress] = React.useState<EgressStatus | null>(null);
+  React.useEffect(() => {
+    api.egressStatus().then(setEgress).catch(() => undefined);
+  }, []);
   const {
     trafficCapture,
     agentTrafficBinding,
@@ -367,6 +376,19 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             )}
           </div>
           {clashStatus?.last_error && <p className="text-destructive text-xs">最近错误：{clashStatus.last_error}</p>}
+          {egress && egress.tasks.length > 0 && (
+            <div className="space-y-1 text-xs">
+              <p className="text-muted-foreground">任务出口绑定（只读，来自服务端租约）</p>
+              <ul className="space-y-0.5">
+                {egress.tasks.map((t) => (
+                  <li key={t.task_id} className="text-muted-foreground">
+                    #{t.task_id} {t.name || ""} → {t.group}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {egress?.note && <p className="text-muted-foreground text-xs">{egress.note}</p>}
           {clashStatus?.rotated_at && (
             <p className="text-muted-foreground text-xs">
               最近切换：{new Date(clashStatus.rotated_at).toLocaleString()}

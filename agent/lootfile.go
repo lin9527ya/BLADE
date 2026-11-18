@@ -141,7 +141,7 @@ func (t *ToolSet) lootTransfer(ctx context.Context, in json.RawMessage, upload b
 			return actool.Errorf(name + ": 无法暂存凭据明文：" + serr.Error()), nil
 		}
 		cleanup = func() { _ = removeLootSecret(sp) }
-		command = buildSCPCommand(kind, user, target.Host, portOf("ssh", target.Port), sp, local, remote, upload, maxBytes)
+		command = buildSCPCommand(kind, user, target.Host, portOf("ssh", target.Port), sp, local, remote, upload, maxBytes, t.sshHostKeyOpts())
 	case "smb":
 		if kind != "password" {
 			// smbclient 不支持传递哈希（impacket-smbclient 支持）。不猜，直接说清。
@@ -222,10 +222,10 @@ func safeRelativePath(tool, field, p string) (string, error) {
 }
 
 // buildSCPCommand 构造 scp 传输命令。明文沿用 loot_exec 的处理：0600 文件 + 读完即删。
-func buildSCPCommand(kind, user, host string, port int, secretPath, local, remote string, upload bool, maxBytes int) string {
+func buildSCPCommand(kind, user, host string, port int, secretPath, local, remote string, upload bool, maxBytes int, hostKeyOpts string) string {
 	sp := shQuote(secretPath)
 	target := shQuote(user + "@" + host)
-	opts := fmt.Sprintf("-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -P %d", port)
+	opts := fmt.Sprintf("%s -P %d", hostKeyOpts, port)
 	var args string
 	if upload {
 		args = fmt.Sprintf("%s %s:%s", shQuote(local), target, shQuote(remote))

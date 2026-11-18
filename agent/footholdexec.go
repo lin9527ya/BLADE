@@ -177,7 +177,7 @@ func (t *ToolSet) footholdExec() actool.CoreTool {
 					return actool.Errorf("foothold_exec: 无法暂存凭据明文：" + serr.Error()), nil
 				}
 				cleanup = func() { _ = removeLootSecret(secretPath) }
-				command = buildLootCommand(kind, "ssh", user, v.Host, v.Port, secretPath, a.Command)
+				command = buildLootCommand(kind, "ssh", user, v.Host, v.Port, secretPath, a.Command, t.sshHostKeyOpts())
 			case "webshell":
 				command = buildWebshellCommand(v.URL, v.Param, a.Command, timeout)
 				cleanup = func() {}

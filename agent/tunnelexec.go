@@ -103,7 +103,7 @@ func (t *ToolSet) tunnelOpen() actool.CoreTool {
 			if a.TTLMs > 0 {
 				ttl = time.Duration(a.TTLMs) * time.Millisecond
 			}
-			command := buildTunnelCommand(kind, user, v.Host, v.Port, localPort, secretPath)
+			command := buildTunnelCommand(kind, user, v.Host, v.Port, localPort, secretPath, t.sshHostKeyOpts())
 			desc := fmt.Sprintf("%ssocks5h://127.0.0.1:%d ← 据点 #%d（%s@%s）", tunnelDescPrefix, localPort, id, user, v.Host)
 			st, subErr := t.submitToolMeta(ctx, "tunnel_open", command, desc, ttl, map[string]any{
 				"foothold_id": id, "host": v.Host, "local_port": localPort, "ttl_ms": ttl.Milliseconds(),
@@ -145,12 +145,12 @@ func allocSocksPort() (int, error) {
 
 // buildTunnelCommand 构造 ssh 动态转发命令（-N -D）。明文处理与 loot_exec 同一套：
 // 0600 临时文件、读走即删，命令里只有路径。
-func buildTunnelCommand(kind, user, host string, sshPort, localPort int, secretPath string) string {
+func buildTunnelCommand(kind, user, host string, sshPort, localPort int, secretPath, hostKeyOpts string) string {
 	sp := shQuote(secretPath)
 	target := shQuote(user + "@" + host)
-	opts := fmt.Sprintf("-N -D 127.0.0.1:%d -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null "+
+	opts := fmt.Sprintf("-N -D 127.0.0.1:%d %s "+
 		"-o ExitOnForwardFailure=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -p %d",
-		localPort, portOf("ssh", sshPort))
+		localPort, hostKeyOpts, portOf("ssh", sshPort))
 	if kind == "key" {
 		// 私钥要活到连接建立且认证完成；命令本身是长连接，退出时再删。
 		return fmt.Sprintf("ssh -i %s %s %s; rc=$?; rm -f %s; exit $rc", sp, opts, target, sp)
