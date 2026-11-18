@@ -2,17 +2,7 @@
 
 import * as React from "react";
 
-import {
-  CheckIcon,
-  ClockIcon,
-  CpuIcon,
-  PencilIcon,
-  PlusIcon,
-  ShieldAlertIcon,
-  ShieldCheckIcon,
-  Trash2Icon,
-  XIcon,
-} from "lucide-react";
+import { CheckIcon, ClockIcon, CpuIcon, PencilIcon, PlusIcon, ShieldCheckIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -392,6 +382,58 @@ export function TaskAssetScopeCard({ taskId, policy }: { taskId: string; policy?
         <p className="text-muted-foreground text-xs">
           target：通过目标获取且属于目标的资产都可自动测试——同根域子域、同公司跨根域资产、本任务发现/锚定的资产；不会扩到未归因的第三方根域。
           切换立即生效，RoE 停机/时间窗/拦截规则/裁判仍照常生效。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// TaskExplorationModeCard 在任务详情总览里展示并切换探索模式。
+// divergent 只影响覆盖目标/黑板视图/no_output 语义，不放宽 RoE/审批/证据底线。
+export function TaskExplorationModeCard({ taskId, mode }: { taskId: string; mode?: "balanced" | "divergent" }) {
+  const current = mode ?? "balanced";
+  const [value, setValue] = React.useState<"balanced" | "divergent">(current);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => setValue(current), [current]);
+
+  async function change(next: "balanced" | "divergent") {
+    if (next === value) return;
+    const prev = value;
+    setValue(next);
+    setBusy(true);
+    try {
+      await api.updateTask(taskId, { exploration_mode: next });
+      toast.success(next === "divergent" ? "已切换到发散模式" : "已切换到均衡模式");
+    } catch (e) {
+      setValue(prev);
+      toast.error(`切换失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ShieldCheckIcon className="size-4 text-sky-500" /> 探索模式
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <NativeSelect
+          size="sm"
+          className="max-w-80"
+          value={value}
+          disabled={busy}
+          onChange={(e) => void change(e.target.value as "balanced" | "divergent")}
+        >
+          <NativeSelectOption value="balanced">均衡（现有行为）</NativeSelectOption>
+          <NativeSelectOption value="divergent">发散（覆盖仅参考 / 完整态势）</NativeSelectOption>
+        </NativeSelect>
+        <p className="text-muted-foreground text-xs">
+          发散模式不会因“全面测试/全资产”自动追加 100% 覆盖目标，planner 使用完整黑板视图， no_output 可按 worker
+          执行轨迹续派。RoE、时间窗、停机、审批/拦截和证据底线不变。
         </p>
       </CardContent>
     </Card>

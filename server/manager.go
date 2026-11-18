@@ -68,6 +68,7 @@ type Task struct {
 	WorkerCount          int    `json:"worker_count"`           // 每任务并发覆盖；0=跟随全局
 	CoverageEnabled      bool   `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
 	AssetScopePolicy     string `json:"asset_scope_policy"`     // exact | target（目标所属全资产）
+	ExplorationMode      string `json:"exploration_mode"`       // balanced | divergent
 	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
 	PlannerPromptOverride string                 `json:"planner_prompt_override,omitempty"`
 	FirstRunAt            int64                  `json:"first_run_at,omitempty"`
@@ -107,6 +108,7 @@ type taskLifecycleState struct {
 	CategoryID       *int64
 	CategoryName     string
 	AssetScopePolicy string
+	ExplorationMode  string
 	// ActiveRunSeconds 是已结算的实际运行秒数；RunSegmentStartedAt 是当前段起点
 	// （0 = 当前没有在计时）。暂停与排队期间不计入。
 	ActiveRunSeconds    int64
@@ -143,6 +145,7 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		CategoryID:          cloneInt64Ptr(t.CategoryID),
 		CategoryName:        t.CategoryName,
 		AssetScopePolicy:    t.AssetScopePolicy,
+		ExplorationMode:     t.ExplorationMode,
 	}
 }
 
@@ -154,6 +157,21 @@ func (t *Task) setAssetScopePolicy(policy string) {
 	t.lifecycleMu.Lock()
 	t.AssetScopePolicy = policy
 	t.lifecycleMu.Unlock()
+}
+
+// explorationModeSnapshot returns the task's exploration mode under the same
+// lock used by DTO reads; empty/legacy rows normalize to balanced.
+func (t *Task) explorationModeSnapshot() string {
+	if t == nil {
+		return "balanced"
+	}
+	t.lifecycleMu.RLock()
+	mode := t.ExplorationMode
+	t.lifecycleMu.RUnlock()
+	if mode == "" {
+		return "balanced"
+	}
+	return mode
 }
 
 func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
@@ -179,6 +197,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CompanyIDs = append(t.CompanyIDs[:0], state.CompanyIDs...)
 	t.CategoryID = cloneInt64Ptr(state.CategoryID)
 	t.CategoryName = state.CategoryName
+	t.ExplorationMode = state.ExplorationMode
 	t.lifecycleMu.Unlock()
 }
 
@@ -1592,6 +1611,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds, WorkerCount: pt.WorkerCount,
 		CoverageEnabled:       pt.CoverageEnabled,
 		AssetScopePolicy:      pt.AssetScopePolicy,
+		ExplorationMode:       pt.ExplorationMode,
 		PlannerPromptOverride: pt.PlannerPromptOverride,
 		FirstRunAt:            unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1),
@@ -1621,6 +1641,7 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 		state.Name = updated.Name
 		state.Remark = updated.Remark
 		state.PinnedAt = unixOrZero(updated.PinnedAt)
+		state.ExplorationMode = pgdb.NormalizeExplorationMode(updated.ExplorationMode)
 	})
 	return task, nil
 }

@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 发散探索模式
+
+- 任务新增 `exploration_mode=balanced|divergent`（默认 balanced，现有行为不变）。
+- divergent 模式：
+  - “全面测试/全资产”不再自动追加 100% 覆盖目标，coverage 仅作参考；
+  - planner 使用完整黑板视图，不再只看到有界窗口；
+  - no_output 按“有执行轨迹但无写回”处理，可依据 worker trace 续派，
+    不直接当作方向失败。
+- 创建任务与任务详情总览可切换模式；RoE、时间窗、停机、审批/拦截和证据底线不变。
+- 新增任务模式存储、覆盖目标跳过、planner 发散提示和视图切换测试。
+
 ### ETag 第一批
 
 - 新增 `writeJSONETag`：强 ETag、`Cache-Control: private, no-cache`、`Vary: Authorization`，

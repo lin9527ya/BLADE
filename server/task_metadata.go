@@ -32,6 +32,7 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		Pinned           *bool   `json:"pinned"`
 		Remark           *string `json:"remark"`
 		AssetScopePolicy *string `json:"asset_scope_policy"`
+		ExplorationMode  *string `json:"exploration_mode"`
 	}
 	if err := decode(r, &request); err != nil {
 		var tooLarge *http.MaxBytesError
@@ -42,8 +43,8 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if request.Name == nil && request.Pinned == nil && request.Remark == nil && request.AssetScopePolicy == nil {
-		writeErr(w, http.StatusBadRequest, "至少需要提供 name、pinned、remark 或 asset_scope_policy")
+	if request.Name == nil && request.Pinned == nil && request.Remark == nil && request.AssetScopePolicy == nil && request.ExplorationMode == nil {
+		writeErr(w, http.StatusBadRequest, "至少需要提供 name、pinned、remark、asset_scope_policy 或 exploration_mode")
 		return
 	}
 	if request.Name != nil {
@@ -65,6 +66,15 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		request.Remark = &remark
+	}
+	if request.ExplorationMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*request.ExplorationMode))
+		if err := db.ValidateExplorationMode(mode); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mode = db.NormalizeExplorationMode(mode)
+		request.ExplorationMode = &mode
 	}
 	if request.AssetScopePolicy != nil {
 		policy := strings.ToLower(strings.TrimSpace(*request.AssetScopePolicy))
@@ -92,7 +102,9 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		task.setAssetScopePolicy(db.NormalizeAssetScopePolicy(policy))
 		s.m.interceptor.InvalidateTaskScope(id)
 	}
-	task, err := s.m.UpdateTaskMetadata(taskID, db.TaskPatch{Name: request.Name, Pinned: request.Pinned, Remark: request.Remark})
+	task, err := s.m.UpdateTaskMetadata(taskID, db.TaskPatch{
+		Name: request.Name, Pinned: request.Pinned, Remark: request.Remark, ExplorationMode: request.ExplorationMode,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

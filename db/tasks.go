@@ -66,7 +66,10 @@ type Task struct {
 	// AssetScopePolicy 决定任务可测资产面：exact=明确登记主机；target=目标所属
 	// 全资产（同根域 + 同公司跨根域 + 本任务发现/锚定）。默认 exact（旧任务），
 	// 新任务由 CreateTask 默认 target。
-	AssetScopePolicy      string `json:"asset_scope_policy"`
+	AssetScopePolicy string `json:"asset_scope_policy"`
+	// ExplorationMode 决定 planner 的探索约束：balanced=现有行为；
+	// divergent=覆盖度仅参考、完整黑板视图、no_output 可按 trace 续派。
+	ExplorationMode       string `json:"exploration_mode"`
 	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
 }
 
@@ -201,6 +204,8 @@ type TaskCreateOptions struct {
 	Remark string
 	// AssetScopePolicy 空=target（新任务默认）；exact 保留旧行为。
 	AssetScopePolicy string
+	// ExplorationMode 空=balanced；divergent 只影响覆盖目标/视图/no_output 语义。
+	ExplorationMode string
 }
 
 // MaxTaskWorkerCount 是每任务并发覆盖的硬上限。
@@ -215,6 +220,26 @@ const (
 	AssetScopePolicyExact  = "exact"
 	AssetScopePolicyTarget = "target"
 )
+
+const (
+	ExplorationModeBalanced  = "balanced"
+	ExplorationModeDivergent = "divergent"
+)
+
+func NormalizeExplorationMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), ExplorationModeDivergent) {
+		return ExplorationModeDivergent
+	}
+	return ExplorationModeBalanced
+}
+
+func ValidateExplorationMode(mode string) error {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", ExplorationModeBalanced, ExplorationModeDivergent:
+		return nil
+	}
+	return fmt.Errorf("exploration_mode 必须是 balanced 或 divergent")
+}
 
 // NormalizeAssetScopePolicy 把空值/非法值收敛到 DB 的安全默认 exact。
 func NormalizeAssetScopePolicy(p string) string {
@@ -340,6 +365,7 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		policy = AssetScopePolicyTarget
 	}
 	policy = NormalizeAssetScopePolicy(policy)
+	explorationMode := NormalizeExplorationMode(opts.ExplorationMode)
 	t := &Task{
 		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
 		Description: description, Goal: goal, ExplorationID: expID,
@@ -348,12 +374,12 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		SourceTaskIDs:  append([]int64(nil), opts.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), opts.CompanyIDs...),
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
-		CoverageEnabled: coverageEnabled, AssetScopePolicy: policy,
+		CoverageEnabled: coverageEnabled, AssetScopePolicy: policy, ExplorationMode: explorationMode,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, remark, asset_scope_policy)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark, policy).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, remark, asset_scope_policy, exploration_mode)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark, policy, explorationMode).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	t.PlannerPromptOverride = strings.TrimSpace(opts.PlannerPrompt)
@@ -471,11 +497,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact')`
+description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(exploration_mode,'balanced')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.ExplorationMode); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -517,9 +543,10 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, id DESC`)
 
 // TaskPatch updates task list metadata without changing execution state.
 type TaskPatch struct {
-	Name   *string
-	Pinned *bool
-	Remark *string
+	Name            *string
+	Pinned          *bool
+	Remark          *string
+	ExplorationMode *string
 }
 
 // UpdateTask applies a partial task name/pin mutation and returns the updated row.
@@ -532,9 +559,11 @@ func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 		WHEN $4::boolean THEN COALESCE(pinned_at, now())
 		ELSE NULL
 	END,
-	remark = CASE WHEN $5::boolean THEN $6 ELSE remark END
+	remark = CASE WHEN $5::boolean THEN $6 ELSE remark END,
+	exploration_mode = CASE WHEN $7::boolean THEN $8 ELSE exploration_mode END
 WHERE id=$1 AND deleted_at IS NULL
-RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.Remark != nil, patch.Remark))
+RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned, patch.Remark != nil, patch.Remark,
+		patch.ExplorationMode != nil, patch.ExplorationMode))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

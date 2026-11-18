@@ -812,6 +812,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_seconds INTEGER NOT NULL DEFAULT 0,
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
+    exploration_mode TEXT NOT NULL DEFAULT 'balanced',
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -834,6 +835,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INTEGER NOT NULL DEFAULT
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT '';
 -- 暂停原因：任务页在「会话/总览」上方显示，说明为什么停下（用户/编排/预算/规划穷尽）。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_reason TEXT NOT NULL DEFAULT '';
+-- 探索模式：balanced=现有行为；divergent=覆盖度仅参考、完整态势、no_output 可续派。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS exploration_mode TEXT NOT NULL DEFAULT 'balanced';
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。

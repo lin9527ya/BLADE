@@ -65,9 +65,10 @@ type Planner struct {
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
-	boundedView     func() bool // nil = 有界视图（默认）
-	maxTokensFn     func() int  // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor       *Compactor  // cold-node compaction (§7); nil = disabled
+	boundedView     func() bool   // nil = 有界视图（默认）
+	explorationMode func() string // nil = balanced；divergent 注入发散模式块
+	maxTokensFn     func() int    // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor       *Compactor    // cold-node compaction (§7); nil = disabled
 	// compactionLLM, when set, supplies an independent provider for context
 	// summarization (see InstallContextManager). nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
@@ -187,6 +188,14 @@ func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn
 func (p *Planner) SetBoundedView(fn func() bool) { p.boundedView = fn }
 
 func (p *Planner) useBoundedView() bool { return p.boundedView == nil || p.boundedView() }
+
+// SetExplorationModeResolver wires the task-level mode resolver. The mode only
+// changes the coverage/view/no_output guidance; it never relaxes safety gates.
+func (p *Planner) SetExplorationModeResolver(fn func() string) { p.explorationMode = fn }
+
+func (p *Planner) isDivergent() bool {
+	return p.explorationMode != nil && p.explorationMode() == "divergent"
+}
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
@@ -469,6 +478,16 @@ func renderGraphOverview(data map[string]any, bounded bool) string {
 // PlannerPromptBody 返回内置 planner 正文（DB agent_prompts 的播种与迁移用）。
 func PlannerPromptBody() string { return plannerDefaultTmpl }
 
+// plannerDivergentBlock is code-owned: editing the DB prompt cannot remove it.
+// It only changes exploration guidance, not authorization/approval boundaries.
+const plannerDivergentBlock = `
+
+【发散模式（任务级，代码持有）】
+- 覆盖度是参考信号，不是完成条件：除非用户目标明确写了“覆盖度达到 X%”，不要因为 coverage 未达 100% 拒绝或推迟 prove_goal；优先沿高价值入口向深打穿。
+- 不要为了铺平覆盖度制造浅测意图；优先机理多样、攻击链更深的未覆盖方向。
+- no_output 只表示本次运行没有写回，不等于方向失败：先 get_worker_trace / get_worker_output 看真实进度；有进展就续派或换机理，完全没有跑成才换方向。
+- 本模式不放宽 RoE、时间窗、停机、拦截/审批、操作约束和证据底线；这些仍然最高优先。`
+
 const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系统的"规划者"，被频繁唤醒（图一变就唤醒）。职责：读态势 → 判目标 → **只在确有未被覆盖的新方向时**补充探索意图。你是规划者、不是执行者：本轮所有产物只能是【生成/说清意图】或【判定目标】，绝不在 plan 里把活干了。
 
 任务目标：{{.Goal}}
@@ -683,6 +702,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
+	if p.isDivergent() {
+		sysBody += plannerDivergentBlock
+	}
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}

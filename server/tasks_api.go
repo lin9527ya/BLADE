@@ -686,6 +686,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if err := db.ValidateExplorationMode(req.ExplorationMode); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	interceptRules, err := buildTaskInterceptRules(req.InterceptRules)
 	if err != nil {
 		writeErr(w, 400, "任务级拦截规则无效："+err.Error())
@@ -723,6 +727,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		WorkerCount:      req.WorkerCount,
 		Remark:           req.Remark,
 		AssetScopePolicy: req.AssetScopePolicy,
+		ExplorationMode:  req.ExplorationMode,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

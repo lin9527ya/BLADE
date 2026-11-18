@@ -553,7 +553,7 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 	// “全面测试 / 全资产 / 所属资产全覆盖”类任务必须有一个可量化的覆盖目标；
 	// 否则 LLM 只拆出“拿权限/找漏洞”时，找到一条就会收官，资产面永远测不全。
 	// 这是确定性的补充，不依赖拆解模型是否听话；显式写了覆盖度百分比时沿用该值。
-	if broadCoverageRequested(t.Goal+" "+t.Description) && !hasCoverageGoal(specs) {
+	if shouldAutoAddCoverageGoal(t, specs) {
 		text := coverageGoalText(t.Goal + " " + t.Description)
 		if _, err := t.Store.AddGoal(map[string]any{"text": text}, "system"); err != nil {
 			log.Printf("[goals] task %s: 写入覆盖目标失败: %v", t.ID, err)
@@ -563,6 +563,11 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 		}
 	}
 	return specs
+}
+
+func shouldAutoAddCoverageGoal(t *Task, specs []goalSpec) bool {
+	return t.explorationModeSnapshot() != db.ExplorationModeDivergent &&
+		broadCoverageRequested(t.Goal+" "+t.Description) && !hasCoverageGoal(specs)
 }
 
 // broadCoverageRequested 识别用户明确要求“测全”而不是只拿一个结果的描述。

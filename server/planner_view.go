@@ -1,5 +1,7 @@
 package server
 
+import "github.com/lin9527ya/blade/db"
+
 // plannerBoundedView 决定 planner 每轮预取与 graph_overview 默认返回的是
 // 有界黑板视图（true，默认；省 token）还是完整态势（false）。
 //
@@ -10,4 +12,13 @@ func (s *Server) plannerBoundedView() bool {
 		return true
 	}
 	return s.m.pg.GetBool(settingPlannerBoundedView, true)
+}
+
+// plannerBoundedViewForTask lets divergent tasks use the full blackboard view
+// without changing the global setting (balanced tasks keep the existing cap).
+func (s *Server) plannerBoundedViewForTask(t *Task) bool {
+	if t != nil && t.explorationModeSnapshot() == db.ExplorationModeDivergent {
+		return false
+	}
+	return s.plannerBoundedView()
 }
