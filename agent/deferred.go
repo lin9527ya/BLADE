@@ -30,10 +30,8 @@ var plannerDeferredTools = []string{
 	"record_playbook_feedback", // 727
 	"promote_knowledge",        // 1542
 	"merge_findings",           // 817
-	"add_task_scope",           // 范围扩张是低频决策（当前已不在 planner 面上，留作兜底）
-	"add_company_scope",
-	"list_untested_assets", // 691：按需翻页是低频动作
-	"list_companies",       // 443
+	"list_untested_assets",     // 691：按需翻页是低频动作
+	"list_companies",           // 443
 }
 
 // mergeDeferred 把内置 deferred 工具并入本轮 DeferredInfo：既要藏 schema、列进

@@ -26,7 +26,7 @@ func TestPlannerDeferredToolsAreCallableAndMinimal(t *testing.T) {
 		}
 	}
 	// 核心工具必须留在常规工具列表里：它们每轮都要用，deferred 会强迫模型多绕一次。
-	for _, core := range []string{"add_intent", "graph_overview", "list_facts", "prove_goal", "drop_intent"} {
+	for _, core := range []string{"add_intent", "graph_overview", "list_facts", "prove_goal", "drop_intent", "add_task_scope", "add_company_scope"} {
 		for _, name := range own {
 			if name == core {
 				t.Fatalf("%q 是每轮都要用的核心工具，不应 deferred", core)

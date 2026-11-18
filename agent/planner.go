@@ -556,7 +556,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	out := body + promptExtras("planner") +
 		coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
 		artifactSpec(workDir) +
-		untrustedDataBlock() + blackboardViewBlock
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock
 	return out
 }
 
@@ -569,6 +569,19 @@ const blackboardViewBlock = `
 - 本轮预取的是有界视图：totals 是真实总数，open/running/recent 等列表只是窗口；窗口外的方向不等于没派过。
 - 需要完整态势（折叠区、继承任务、AD 图、检测热点等）时调 graph_overview(detail=true)；只看增量事件与路线用 blackboard_view(change_cursor=change_cursor)（旧 after 只跟踪节点新增，不代表全部图变化）。
 - 意图 summary 就是方向本身：写清入口、动作和验证目标；图中已有的 open/running/recent 意图决定是否重复。`
+
+// scopeExpansionBlock 是资产范围扩张的**代码持有**纪律。ARTEX 把 add_task_scope /
+// add_company_scope 作为规划层的核心扩面入口；BLADE 保留了 RoE 强制门，因此必须把
+// 「什么证据下可以扩、扩了就等于授权」写死在系统提示里，避免模型凭名称相似乱扩。
+const scopeExpansionBlock = `
+
+【资产范围扩张（add_task_scope / add_company_scope）】
+- 本任务已有 asset_scope_policy 自动范围（target=同根域/同公司/本任务发现资产）。以下工具用于**发现新归属证据后主动扩面**，不是每轮必调。
+- add_company_scope：把域名 / 子域 / URL / IP / CIDR / ICP / 公司关键词写入某公司的资产范围；域名（根域）、IP/CIDR、ICP 会自动认领命中的资产并触发归属重算，关键词只作提示。
+- 仅定义公司范围还不够：要让**本任务**实际测试该公司资产，再调 add_task_scope(kind=company, value=公司名或 id)。
+- add_task_scope：写入本任务授权边界与覆盖度分母。kind=company（公司全部资产，可跨根域）/ root_domain（整个根域及所有子域）/ subdomain（精确主机）/ ip / cidr / icp / keyword。
+- 扩面即授权：新增范围立即对 RoE 生效，后续 worker 可直接测试。**只在有归属证据时使用**（whois、证书 SAN、ASN、ICP、页面互链、同一控制台/云账号、同一公司官网等），并在 reason 写清证据；不得凭名称相似或猜测扩到未归因的第三方根域。
+- 发现新主机/云资产先由 worker 用 insert_assets 登记（按精确主机自动入范围）；需要整域/整公司级别时才由 planner 调这两个工具。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经

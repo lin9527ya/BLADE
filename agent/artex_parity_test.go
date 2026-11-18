@@ -12,7 +12,8 @@ import (
 // not in code-held constraint blocks.
 func TestPlannerPromptARTEXParity(t *testing.T) {
 	p := plannerSystem("g", "/d", "/w", "")
-	for _, want := range []string{"硬底线（最高优先）", "产出 0 个意图是正常结果", "深度优先于覆盖度", "保持路线多样", "TodoWrite"} {
+	for _, want := range []string{"硬底线（最高优先）", "产出 0 个意图是正常结果", "深度优先于覆盖度", "保持路线多样", "TodoWrite",
+		"add_task_scope", "add_company_scope", "扩面即授权"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("planner prompt missing ARTEX guidance %q", want)
 		}
