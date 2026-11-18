@@ -30,6 +30,8 @@
   是否继续尾部拉取。
 - 聊天正文接入 SSE；SSE 正常时不再每秒尾部 HTTP 拉取，断线时保留原
   `pollConversationTail` 兜底。
+- 任务状态快照增加 `chat_running`；任务会话页的主 Agent 聊天状态改用任务 SSE，
+  断线时回退到 2 秒 `chatStatus` 轮询。
 
 ## [0.9.18] - 2026-11-18
 

@@ -91,6 +91,7 @@ type TaskLiveStats struct {
 	LastActivity      int64  `json:"last_activity"`
 	Stalled           bool   `json:"stalled"`
 	PendingIntercepts int    `json:"pending_intercepts"`
+	ChatRunning       bool   `json:"chat_running"`
 }
 
 type TaskLiveEvent struct {
@@ -143,6 +144,9 @@ func (s *Server) taskLiveSnapshot(taskID string) TaskLiveEvent {
 	if n, err := s.m.PG().CountTaskPendingIntercepts(t.ID); err == nil {
 		stats.PendingIntercepts = n
 	}
+	s.chatRuns.mu.Lock()
+	stats.ChatRunning = s.chatRuns.busy[t.ID]
+	s.chatRuns.mu.Unlock()
 	return TaskLiveEvent{Task: taskDTO(t, status), Stats: stats, At: time.Now().Unix()}
 }
 

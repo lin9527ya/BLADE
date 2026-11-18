@@ -405,6 +405,7 @@ export interface TaskLiveStats {
   last_activity: number;
   stalled: boolean;
   pending_intercepts: number;
+  chat_running: boolean;
 }
 
 export interface TaskLiveEvent {

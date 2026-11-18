@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useApprovalFocus, useApprovalHistory } from "@/components/approval-execution-focus";
 import { usePolling } from "@/hooks/use-polling";
 import { useSideQuestions } from "@/hooks/use-side-questions";
+import { useSSE } from "@/hooks/use-sse";
 import { api, sseUrl } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import { rememberInputHistory } from "@/lib/input-history";
@@ -25,6 +26,7 @@ import type {
   IntentAsset,
   InterceptApprovalRow,
   Session,
+  TaskLiveEvent,
   TaskLLMResolution,
   TaskLLMResolutions,
   TaskNode,
@@ -430,6 +432,15 @@ export function useSessionsState(taskId: string) {
     [taskId],
   );
 
+  const taskLiveSSE = useSSE<TaskLiveEvent>(
+    sseUrl(`/api/tasks/${encodeURIComponent(taskId)}/events`),
+    "task",
+    (event) => {
+      if (event.error) return;
+      setMainChatRunning(event.stats.chat_running);
+    },
+  );
+
   usePolling(
     async (alive) => {
       // 不在这里把 running 置回 null：每 2 秒置一次会让「运行中」徽标灭一下再亮，
@@ -449,8 +460,8 @@ export function useSessionsState(taskId: string) {
       };
       await load();
     },
-    2000,
-    [taskId],
+    taskLiveSSE.connected ? 30000 : 2000,
+    [taskId, taskLiveSSE.connected],
   );
 
   usePolling(
