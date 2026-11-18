@@ -4,6 +4,49 @@
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-11-18
+
+### 红队执行面（P0）
+
+- 新增凭据工作台：跨任务凭据、可登目标、生命周期（valid/expiring/stale/lost/locked…）
+  与复核时间线；「验证」只生成 human 意图，实际登录仍由 worker 在 RoE/审批链下发起。
+- 新增据点与隧道面板：据点状态、关联凭据/隧道、最近使用；隧道展示本地 SOCKS、
+  监听状态与过期时间，可带理由取消执行。
+- 恢复攻击链的 `uses` 边：`loot_exec` / `foothold_exec` / `tunnel_open` / 文件传输
+  成功提交后自动记录 `intent --uses--> 战果`，失败/拒绝不写，不参与任何完成门。
+- 结构化执行计入凭据尝试预算：按凭据 id 解析目标，口令/哈希计数、私钥跳过；
+  执行终态回填 outcome（success 只表示退出码，不等于已验证）。
+- 新增 `record_credential_check` 与 `mark_loot_lost`；`credential_checks` 流水与
+  `credential_targets` 投影表（payload 仍是权威）。
+- 新增 `toolpolicy` 包统一登记动作类工具，派生拦截默认集、动作集、RoE 目标提取、
+  痕迹归纳与 `agent_loot_exec` 默认关剔除，并用测试强制覆盖。
+
+### 红队编排面（P1）
+
+- 战役增加目标/范围/阶段/状态/时间窗与 `campaign_phases`；战役 scope 只做展示，
+  不写入 `task_scope`、不参与 RoE。战役详情可编辑计划、管理阶段、给任务分配阶段。
+- 新增 `GET /api/campaigns/{id}/attack-chains`：逐任务复用单任务攻击链，不合成
+  跨 exploration 边；归档/未加载任务列入 missing_tasks，共享资产只作线索。
+- 新增通用 `POST /api/tasks/{id}/nodes/{nid}/follow-up-intent`，支持 finding/
+  credential/foothold/ad_object/cloud_object/detection；同来源同描述 open 意图幂等复用。
+- AD 路径支持「标记已拥有」（需证据，可关联战果写 reaches）与「推进」（生成意图），
+  不自动执行、不自动标记；AD hop 增加 from_id/to_id。
+- 发现页支持批量复测（单次最多 20 条，逐条返回结果）。
+- 新增检测矩阵接口与页面：资产 × ATT&CK 五态（triggered/not_triggered/unknown/
+  unmeasured/not_attempted），不合成检出率；支持 CSV 导出。
+
+### 红队情报与检测（P2）
+
+- 检测验证支持人工录入 `POST /api/tasks/{id}/detections`，与 agent 工具共用
+  `db.ValidateDetectionResult`；落同一类 detection 节点，origin=human。
+- OPSEC 知识库增加 ATT&CK 技术映射，`opsec_notes` 与 `/api/opsec/knowledge`
+  支持按 technique 查询；未收录时明确说明「不等于没有日志」。
+- 新增 ATT&CK 覆盖接口与 `/function/coverage` 页面：按任务/战役聚合意图状态、
+  检测三态、资产与预计信号；不计算覆盖率，未标注不等于没测。
+- 新增只读提权枚举 `enum_privilege`：固定 linux/windows/network profile，无 command
+  参数，默认关（agent_loot_exec），不包含凭据抓取/持久化，不生成或投递 linpeas。
+- 修正 8 个技能文件中不存在的工具引用；新增技能与 planner 提示词防漂移测试。
+
 ### 批次 B：通知、验证台账、聚合与分域预算
 
 - 审批待处理写入外部通知事件（finding_id=0，快照带平台内链接）；外部渠道可收到
