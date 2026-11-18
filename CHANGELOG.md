@@ -22,6 +22,15 @@
   正常时 30 秒的低频轮询兜底。
 - SSE 使用快照全量推送，丢帧由下一帧自愈；仍复用现有 sseUrl 鉴权、心跳和代理配置。
 
+### 聊天 SSE
+
+- 新增 `GET /api/conversations/{id}/events`：首次连接发送最新一页消息，随后按游标
+  推送新活动帧；每帧带 `id:`，EventSource 重连时用 `Last-Event-ID` 续传。
+- 同时推送会话运行状态（running/cursor/has_more），完成或断开均可由前端决定
+  是否继续尾部拉取。
+- 聊天正文接入 SSE；SSE 正常时不再每秒尾部 HTTP 拉取，断线时保留原
+  `pollConversationTail` 兜底。
+
 ## [0.9.18] - 2026-11-18
 
 ### 出口与执行面

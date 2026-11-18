@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useConversationStream } from "@/hooks/use-conversation-stream";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
 import { api } from "@/lib/api";
@@ -421,6 +422,20 @@ export function ChatView({
   const agent = agents.find((a) => a.key === conv.agent_key);
   const currentProfileId = conv.llm_profile_id ?? null;
   const side = useSideQuestions(`/api/conversations/${conv.id}`);
+  const convStream = useConversationStream(
+    conv.id,
+    (activity) => {
+      setMessages((prev) => mergeActivities(prev, [activity]));
+      cursorRef.current = Math.max(cursorRef.current, activity.seq);
+      if (earliestRef.current === 0 || activity.seq < earliestRef.current) earliestRef.current = activity.seq;
+    },
+    (status) => {
+      if (status.error) return;
+      setRunning(status.running);
+      if (status.running) setTailing(true);
+      else if (!status.has_more) setTailing(false);
+    },
+  );
 
   async function changeProfile(id: number | null) {
     try {
@@ -493,7 +508,7 @@ export function ChatView({
   // The transport stays alive after running=false until every cursor page is
   // drained; a completed turn can still have a batch of results behind it.
   React.useEffect(() => {
-    if (!tailing) return;
+    if (!tailing || convStream.connected) return;
     return pollConversationTail({
       cursor: () => cursorRef.current,
       fetchPage: (cursor, signal) => api.conversationMessages(conv.id, cursor, signal),
@@ -511,7 +526,7 @@ export function ChatView({
         toast.error("实时消息加载中断，请刷新页面后重试");
       },
     });
-  }, [tailing, conv.id]);
+  }, [tailing, conv.id, convStream.connected]);
 
   const loadFocusPage = React.useCallback(
     (before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE),
@@ -611,7 +626,7 @@ export function ChatView({
     });
     mo.observe(el, { childList: true, subtree: true, characterData: true });
     return () => mo.disconnect();
-  }, [conv.id, approvalFocus.state, scrollToBottom]);
+  }, [approvalFocus.state, scrollToBottom]);
 
   // Per-conversation token total, live — same accounting as the main-agent
   // console: completed runs' `result` sum + the in-progress run's latest `usage`.
@@ -728,7 +743,10 @@ export function ChatView({
       <ApprovalExecutionFocus focus={approvalFocus} history={focusHistory} />
 
       {/* messages */}
-      <ScrollArea type="auto" className="[&_[data-slot=scroll-area-viewport]]:[overflow-anchor:none] [&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1">
+      <ScrollArea
+        type="auto"
+        className="[&_[data-slot=scroll-area-viewport]>div]:block! min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]]:[overflow-anchor:none]"
+      >
         <div className="min-w-0 max-w-full px-4 py-3 [overflow-anchor:none]" ref={contentRef}>
           {messages.length === 0 && !running ? (
             <div className="py-10 text-center text-muted-foreground text-sm">

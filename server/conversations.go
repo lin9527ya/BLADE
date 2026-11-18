@@ -85,7 +85,7 @@ func (s *Server) pgListConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	items := s.conversationItems(cs)
 	if !paginated {
-		writeJSON(w, 200, map[string]any{"conversations": items})
+		writeJSONETag(w, r, 200, map[string]any{"conversations": items})
 		return
 	}
 	agent := strings.TrimSpace(q.Get("agent"))
@@ -100,7 +100,7 @@ func (s *Server) pgListConversations(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[conversations] 分 agent 计数读取失败：%v", cerr)
 		counts = map[string]int{}
 	}
-	writeJSON(w, 200, map[string]any{
+	writeJSONETag(w, r, 200, map[string]any{
 		"conversations": items,
 		"total":         total,
 		"agent_counts":  counts,
