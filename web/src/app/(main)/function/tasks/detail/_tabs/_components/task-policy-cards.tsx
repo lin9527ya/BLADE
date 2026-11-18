@@ -285,3 +285,62 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
     </Card>
   );
 }
+
+// TaskAssetScopeCard 在任务详情总览里展示并切换「资产范围策略」。
+// target = 目标所属全资产（同根域、同公司跨根域、本任务发现/锚定资产）自动可测；
+// exact = 仅明确登记的主机。切回 exact 只移除策略自动写入的范围行（source=policy）。
+export function TaskAssetScopeCard({ taskId, policy }: { taskId: string; policy?: "exact" | "target" }) {
+  const current = policy ?? "exact";
+  const [value, setValue] = React.useState<"exact" | "target">(current);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => setValue(current), [current]);
+
+  async function change(next: "exact" | "target") {
+    if (next === value) return;
+    if (
+      next === "exact" &&
+      !window.confirm("切回“仅精确目标主机”会移除策略自动扩出的同根/同公司范围行（手工/agent 登记的范围保留）。确定？")
+    ) {
+      return;
+    }
+    const prev = value;
+    setValue(next);
+    setBusy(true);
+    try {
+      await api.updateTask(taskId, { asset_scope_policy: next });
+      toast.success(next === "target" ? "已切换为目标所属全部资产" : "已切换为仅精确目标主机");
+    } catch (e) {
+      setValue(prev);
+      toast.error(`切换失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ShieldCheckIcon className="size-4 text-emerald-500" /> 测试范围（资产策略）
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <NativeSelect
+          size="sm"
+          className="max-w-80"
+          value={value}
+          disabled={busy}
+          onChange={(e) => void change(e.target.value as "exact" | "target")}
+        >
+          <NativeSelectOption value="target">目标所属全部资产（同根/同公司跨根/任务发现）</NativeSelectOption>
+          <NativeSelectOption value="exact">仅精确目标主机</NativeSelectOption>
+        </NativeSelect>
+        <p className="text-muted-foreground text-xs">
+          target：通过目标获取且属于目标的资产都可自动测试——同根域子域、同公司跨根域资产、本任务发现/锚定的资产；不会扩到未归因的第三方根域。
+          切换立即生效，RoE 停机/时间窗/拦截规则/裁判仍照常生效。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}

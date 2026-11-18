@@ -59,6 +59,7 @@ func (s *Server) cloneTask(w http.ResponseWriter, r *http.Request) {
 		PlannerPrompt:        t.PlannerPromptOverride,
 		WorkerCount:          t.WorkerCount,
 		Remark:               t.Remark,
+		AssetScopePolicy:     t.AssetScopePolicy,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

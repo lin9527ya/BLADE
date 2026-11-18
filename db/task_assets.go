@@ -179,22 +179,49 @@ func (s *AssetStore) RegisterTaskAssetScopes(taskID int64, inputs []ScopeInput) 
 		var assetID int64
 		switch rule.Kind {
 		case "domain":
-			taskScope.Kind = "root_domain"
-			taskScope.Domain = rule.Domain
-			var alreadyLinked bool
-			err := tx.QueryRow(`SELECT id, $2=ANY(task_ids) FROM assets WHERE type='root_domain' AND domain=$1`, rule.Domain, taskID).
-				Scan(&assetID, &alreadyLinked)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return mutation, err
-			}
-			assetID, err = scoped.UpsertRootDomain(UpsertRootDomainReq{Domain: rule.Domain, TaskID: taskID})
-			if err != nil {
-				return mutation, err
-			}
-			if alreadyLinked {
-				mutation.AssetsExisting++
+			host := rule.Domain
+			root, isApex := RootDomain(host)
+			if isApex {
+				taskScope.Kind = "root_domain"
+				taskScope.Domain = root
+				var alreadyLinked bool
+				err := tx.QueryRow(`SELECT id, $2=ANY(task_ids) FROM assets WHERE type='root_domain' AND domain=$1`, root, taskID).
+					Scan(&assetID, &alreadyLinked)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return mutation, err
+				}
+				assetID, err = scoped.UpsertRootDomain(UpsertRootDomainReq{Domain: root, TaskID: taskID})
+				if err != nil {
+					return mutation, err
+				}
+				if alreadyLinked {
+					mutation.AssetsExisting++
+				} else {
+					mutation.AssetsLinked++
+				}
 			} else {
-				mutation.AssetsLinked++
+				// 子域必须写成 subdomain=完整主机名；写成 root_domain=完整子域时
+				// scopeTargetCTE 按 assets.root_domain 匹配，永远匹配不到。
+				taskScope.Kind = "subdomain"
+				taskScope.Domain = host
+				if _, err := scoped.UpsertRootDomain(UpsertRootDomainReq{Domain: root, TaskID: taskID}); err != nil {
+					return mutation, err
+				}
+				var alreadyLinked bool
+				err := tx.QueryRow(`SELECT id, $2=ANY(task_ids) FROM assets WHERE type='subdomain' AND domain=$1`, host, taskID).
+					Scan(&assetID, &alreadyLinked)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return mutation, err
+				}
+				assetID, err = scoped.UpsertSubdomain(UpsertSubdomainReq{Domain: host, TaskID: taskID})
+				if err != nil {
+					return mutation, err
+				}
+				if alreadyLinked {
+					mutation.AssetsExisting++
+				} else {
+					mutation.AssetsLinked++
+				}
 			}
 		case "ip":
 			taskScope.Kind = "ip"

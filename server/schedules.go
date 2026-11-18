@@ -189,6 +189,7 @@ type scheduleSpec struct {
 	TimeoutSeconds       int                    `json:"timeout_seconds,omitempty"`
 	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds,omitempty"`
 	CoverageEnabled      *bool                  `json:"coverage_enabled,omitempty"`
+	AssetScopePolicy     string                 `json:"asset_scope_policy,omitempty"` // exact|target；空=target
 	SeedFirstIntent      *bool                  `json:"seed_first_intent,omitempty"`
 	InterceptRules       []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 }
@@ -281,11 +282,15 @@ func (s *Server) scheduleTaskOptions(spec scheduleSpec) (db.TaskCreateOptions, e
 	if err != nil {
 		return db.TaskCreateOptions{}, fmt.Errorf("任务级拦截规则无效：%w", err)
 	}
+	if err := db.ValidateAssetScopePolicy(spec.AssetScopePolicy); err != nil {
+		return db.TaskCreateOptions{}, err
+	}
 	return db.TaskCreateOptions{
 		Name: strings.TrimSpace(spec.Name), CategoryID: spec.CategoryID,
 		CompanyIDs: spec.CompanyIDs, LLMProfileIDs: spec.LLMProfileIDs,
 		TimeoutSeconds: spec.TimeoutSeconds, PlanHeartbeatSeconds: spec.PlanHeartbeatSeconds,
 		CoverageEnabled: spec.CoverageEnabled, InterceptRules: interceptRules,
+		AssetScopePolicy: spec.AssetScopePolicy,
 	}, nil
 }
 

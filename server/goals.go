@@ -30,12 +30,35 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 		return
 	}
 	s.seed(t, seedText)
+	s.primeTaskScope(t)
 	if seedFirstIntent {
 		s.seedFirstIntent(t)
 	}
 	s.engine.decInflight(t.ID)
 	if _, err := s.admitTask(t, "bootstrap"); err != nil {
 		log.Printf("[concurrency] task %s 启动失败: %v", t.ID, err)
+	}
+}
+
+// primeTaskScope 在首轮规划前补一次同根范围：target 策略由 seed 的 root/company 行覆盖，
+// exact 策略按旧行为（受 coverage 开关）扫一次已登记兄弟资产。
+func (s *Server) primeTaskScope(t *Task) {
+	if t == nil {
+		return
+	}
+	as := s.m.Assets()
+	if as == nil {
+		return
+	}
+	taskID := parseIntDefault(t.ID)
+	if taskID <= 0 || as.TaskAssetScopePolicy(taskID) == db.AssetScopePolicyTarget {
+		return
+	}
+	if !as.CoverageEnabled(taskID) {
+		return
+	}
+	if _, err := as.SweepSiblingScope(taskID, "任务启动时补入同注册域已登记资产"); err != nil {
+		log.Printf("[scope] task %s 启动范围补全失败: %v", t.ID, err)
 	}
 }
 

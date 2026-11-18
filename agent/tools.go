@@ -1723,6 +1723,33 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
 	// 丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、也不诱导
 	// 已隐藏的 add_task_scope/list_untested_assets。
+	// asset_scope：本任务当前的资产范围策略与依据（root/company），让 planner 明确
+	// “哪些资产属于目标、可以自动测”，避免自己猜或把范围外的第三方根域派单。
+	if t.as != nil && t.taskID > 0 {
+		sc := map[string]any{"policy": t.as.TaskAssetScopePolicy(t.taskID)}
+		if roots, err := t.as.ScopeRootDomains(t.taskID); err == nil && len(roots) > 0 {
+			sc["roots"] = roots
+		}
+		if scopes, err := t.as.ListTaskScope(t.taskID); err == nil {
+			var ids []int64
+			var names []string
+			for _, row := range scopes {
+				if row.Kind == "company" && row.CompanyID != nil {
+					ids = append(ids, *row.CompanyID)
+					if row.CompanyName != "" {
+						names = append(names, row.CompanyName)
+					}
+				}
+			}
+			if len(ids) > 0 {
+				sc["company_ids"] = ids
+			}
+			if len(names) > 0 {
+				sc["companies"] = names
+			}
+		}
+		out["asset_scope"] = sc
+	}
 	if t.as != nil && t.ts != nil && t.taskID > 0 {
 		{
 			m := map[string]any{}
@@ -2430,7 +2457,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			return 0, fmt.Errorf("资产可见范围校验失败：%w", err)
 		}
 		if len(visible) != len(anchors) {
-			return 0, fmt.Errorf("目标资产不属于本任务或直接关联任务；如需使用全局资产，请由用户开启「共享全局资产」")
+			return 0, fmt.Errorf("目标资产不在本任务可测范围内：先用 list_assets 确认；扩面请由操作者在任务「测试范围」中添加，或切换 asset_scope_policy")
 		}
 	}
 	if t.as != nil && len(anchors) > 0 {

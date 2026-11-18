@@ -36,6 +36,7 @@ import {
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -165,6 +166,7 @@ export function CreateTaskSheet({
   const [remark, setRemark] = React.useState(""); // 任务备注
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
+  const [assetScopePolicy, setAssetScopePolicy] = React.useState<"exact" | "target">("target"); // 资产范围策略;新任务默认 target=目标所属全资产自动可测
   // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
   const [presetAppliedFor, setPresetAppliedFor] = React.useState<number | undefined>(undefined);
   const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
@@ -259,6 +261,7 @@ export function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        assetScopePolicy,
         workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
         remark: remark.trim(),
         plannerTemplateId: plannerTemplateID > 0 ? plannerTemplateID : undefined,
@@ -279,6 +282,7 @@ export function CreateTaskSheet({
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
       setCoverageEnabled(true);
+      setAssetScopePolicy("target");
       setPlannerTemplateID(0);
       plannerTemplateTouched.current = false;
       setPresetAppliedFor(undefined);
@@ -548,6 +552,24 @@ export function CreateTaskSheet({
                   <p className="text-muted-foreground text-xs">
                     开启后创建即把「描述+目标」作为一条意图下发，worker 免等首轮规划直接开跑，跑完再由 planner
                     接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="asset-scope-policy" className="text-sm">
+                    资产范围策略
+                  </Label>
+                  <NativeSelect
+                    id="asset-scope-policy"
+                    size="sm"
+                    value={assetScopePolicy}
+                    onChange={(e) => setAssetScopePolicy(e.target.value as "exact" | "target")}
+                  >
+                    <NativeSelectOption value="target">目标所属全部资产（推荐）</NativeSelectOption>
+                    <NativeSelectOption value="exact">仅精确目标主机</NativeSelectOption>
+                  </NativeSelect>
+                  <p className="text-muted-foreground text-xs">
+                    target：通过目标获取到的、且属于目标的所有资产都可自动测试——同根域子域、同公司跨根域资产、本任务发现/锚定的云或第三方资产；
+                    不会扩到未归因的第三方根域。exact：只测明确登记的主机（旧版行为）。
                   </p>
                 </div>
                 <div className="grid gap-2">

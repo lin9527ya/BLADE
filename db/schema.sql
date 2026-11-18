@@ -2298,3 +2298,20 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS campaign_phase_id BIGINT
     REFERENCES campaign_phases(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_campaign_phase
     ON tasks(campaign_phase_id) WHERE campaign_phase_id IS NOT NULL;
+
+-- =====================================================================
+-- 资产范围策略：exact=只测明确登记的主机（旧行为）；target=目标所属全资产
+-- （同 eTLD+1 + 同公司跨根域 + 本任务发现/锚定资产）。
+-- 存量任务保持 exact；新任务由 CreateTask 代码默认 target。
+-- =====================================================================
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS asset_scope_policy TEXT NOT NULL DEFAULT 'exact';
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='tasks_asset_scope_policy_check') THEN
+    ALTER TABLE tasks ADD CONSTRAINT tasks_asset_scope_policy_check
+      CHECK (asset_scope_policy IN ('exact','target'));
+  END IF;
+END $$;
+-- 策略自动写入的范围行用 source='policy'，便于切换策略时只撤销策略行。
+ALTER TABLE task_scope DROP CONSTRAINT IF EXISTS task_scope_source_check;
+ALTER TABLE task_scope ADD CONSTRAINT task_scope_source_check
+    CHECK (source IN ('auto','agent','manual','policy'));

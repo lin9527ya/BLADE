@@ -60,7 +60,18 @@ scope_asset_ids AS (
        OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
      )
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
-)`
+  UNION
+  SELECT a.id FROM assets a
+  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target' AND task.deleted_at IS NULL
+  WHERE $1 = ANY(a.task_ids)
+  UNION
+  SELECT a.id FROM assets a
+  JOIN exploration_anchors ea ON ea.asset_id=a.id
+  JOIN exploration_nodes en ON en.id=ea.node_id
+  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target'
+    AND task.exploration_id=en.exploration_id AND task.deleted_at IS NULL
+)
+`
 
 const contextCoverageCTE = directTaskContextCTE + scopeAssetIDsCTE + `,
 target AS (
@@ -117,7 +128,18 @@ target AS (
        ))
   )
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
-)`
+  UNION
+  SELECT a.id FROM assets a
+  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target' AND task.deleted_at IS NULL
+  WHERE $1 = ANY(a.task_ids)
+  UNION
+  SELECT a.id FROM assets a
+  JOIN exploration_anchors ea ON ea.asset_id=a.id
+  JOIN exploration_nodes en ON en.id=ea.node_id
+  JOIN tasks task ON task.id=$1 AND task.asset_scope_policy='target'
+    AND task.exploration_id=en.exploration_id AND task.deleted_at IS NULL
+)
+`
 
 // ListTaskScopeWithSources returns the current task's scope followed by the
 // scopes of its direct source tasks. TaskScope.TaskID preserves provenance.

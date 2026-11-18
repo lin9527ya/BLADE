@@ -63,9 +63,10 @@ type Task struct {
 	CompanyIDs         []int64 `json:"company_ids,omitempty"`
 	Status             string  `json:"status"` // persisted lifecycle status (done/failed/timeout 为终态；空/其它则由运行态推导)
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」)。DeadlineAt/FirstRunAt 为 unix 秒,0=未设/未运行。
-	TimeoutSeconds       int  `json:"timeout_seconds"`
-	PlanHeartbeatSeconds int  `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
-	CoverageEnabled      bool `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
+	TimeoutSeconds       int    `json:"timeout_seconds"`
+	PlanHeartbeatSeconds int    `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
+	CoverageEnabled      bool   `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
+	AssetScopePolicy     string `json:"asset_scope_policy"`     // exact | target（目标所属全资产）
 	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
 	PlannerPromptOverride string                 `json:"planner_prompt_override,omitempty"`
 	FirstRunAt            int64                  `json:"first_run_at,omitempty"`
@@ -88,22 +89,23 @@ type Task struct {
 // updateLifecycle instead of reading or writing the corresponding Task fields
 // directly after the task has been published by Manager.
 type taskLifecycleState struct {
-	Name          string
-	Remark        string
-	PinnedAt      int64
-	Status        string
-	Paused        bool
-	PauseReason   string
-	Queued        bool
-	QueuedAt      int64
-	QueueMode     string
-	CompletedAt   int64
-	FirstRunAt    int64
-	DeadlineAt    int64
-	SourceTaskIDs []int64
-	CompanyIDs    []int64
-	CategoryID    *int64
-	CategoryName  string
+	Name             string
+	Remark           string
+	PinnedAt         int64
+	Status           string
+	Paused           bool
+	PauseReason      string
+	Queued           bool
+	QueuedAt         int64
+	QueueMode        string
+	CompletedAt      int64
+	FirstRunAt       int64
+	DeadlineAt       int64
+	SourceTaskIDs    []int64
+	CompanyIDs       []int64
+	CategoryID       *int64
+	CategoryName     string
+	AssetScopePolicy string
 	// ActiveRunSeconds 是已结算的实际运行秒数；RunSegmentStartedAt 是当前段起点
 	// （0 = 当前没有在计时）。暂停与排队期间不计入。
 	ActiveRunSeconds    int64
@@ -139,7 +141,18 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		CompanyIDs:          append([]int64(nil), t.CompanyIDs...),
 		CategoryID:          cloneInt64Ptr(t.CategoryID),
 		CategoryName:        t.CategoryName,
+		AssetScopePolicy:    t.AssetScopePolicy,
 	}
+}
+
+// setAssetScopePolicy 在 lifecycle 锁内更新策略字段（DTO 读取同一把锁）。
+func (t *Task) setAssetScopePolicy(policy string) {
+	if t == nil {
+		return
+	}
+	t.lifecycleMu.Lock()
+	t.AssetScopePolicy = policy
+	t.lifecycleMu.Unlock()
 }
 
 func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
@@ -1577,6 +1590,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
 		CoverageEnabled:       pt.CoverageEnabled,
+		AssetScopePolicy:      pt.AssetScopePolicy,
 		PlannerPromptOverride: pt.PlannerPromptOverride,
 		FirstRunAt:            unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1),

@@ -63,6 +63,16 @@ func (i *Interceptor) ScopeMode() string {
 	return i.getSettingChoice(SettingScopeMode, "ask", "off", "ask", "deny")
 }
 
+// InvalidateTaskScope 清掉一个任务的 scope 缓存（策略切换/手工加范围后立即生效）。
+func (i *Interceptor) InvalidateTaskScope(taskID int64) {
+	if i == nil || taskID <= 0 {
+		return
+	}
+	i.scopeMu.Lock()
+	delete(i.scopeCache, taskID)
+	i.scopeMu.Unlock()
+}
+
 // shellCommandOf extracts the network-target-bearing surface a tool call carries:
 // the command field for shell-class tools, the URL for WebFetch. Tools not listed
 // here carry no target this gate can read — a network-capable tool that gets added
@@ -618,11 +628,7 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 				w.Describe(), ScopeClock(now, loc), ScopeClock(now, time.Local)),
 		}, true
 	}
-	// ③ 空间门。off = 不做空间判定；此时后面那些"无从判起"的降级（taskID==0）也就无从谈起了。
-	mode := i.ScopeMode()
-	if mode == "off" {
-		return Decision{}, false
-	}
+	// ③ 空间门。mode 在资产闸门之后判定：.gov/.edu 等 block 即使 scope_mode=off 也要转人工。
 	// taskID == 0 是**没有任务**的上下文（对话页 / 平台 Auto agent）：它们没有 task_scope 行
 	// 可比，所以这里不是"漏判"，而是**无从判起**——那类上下文照常受拦截规则与 LLM 兜底裁判
 	// 约束，只是不落在 RoE 上。任务**内**的人在环路（mainagent）拿得到任务的真实 id，走的是
@@ -638,6 +644,28 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 	if len(hits) == 0 {
 		return Decision{}, false
 	}
+	// 资产闸门（全局 block ∪ 任务级 block，task allow 可覆盖）：放在空间判定之前，
+	// 即使 scope_mode=off 也不让 .gov/.edu 等规则静默放行。
+	if i.db != nil {
+		for _, h := range hits {
+			if strings.TrimSpace(h.Value) == "" {
+				continue
+			}
+			reason, blocked, gerr := i.db.Assets().AssetBlockedOverride(taskID, h.Value)
+			if gerr != nil {
+				return Decision{Action: "ask", RuleName: "[资产闸门]",
+					Message: "资产闸门规则读取失败，无法确认目标是否被拦截，需要人工确认：" + gerr.Error()}, true
+			}
+			if blocked {
+				return Decision{Action: "ask", RuleName: "[资产闸门]",
+					Message: fmt.Sprintf("目标 %s 命中资产拦截规则：%s", h.Value, reason)}, true
+			}
+		}
+	}
+	mode := i.ScopeMode()
+	if mode == "off" {
+		return Decision{}, false
+	}
 	rows, err := i.scopeRows(taskID)
 	if err != nil {
 		// 失效安全（P12）：范围读不出来时不放行——授权边界宁停勿越。此前实现与
@@ -649,18 +677,30 @@ func (i *Interceptor) CheckScope(ctx context.Context, taskID int64, toolName str
 		}, true
 	}
 	usable := usableScope(rows)
-	if len(usable) == 0 {
-		return Decision{}, false
-	}
 	var outside []string
 	for _, h := range hits {
-		if !targetInScope(usable, h.Value) {
-			label := h.Value
-			if h.Source != "raw" {
-				label += "（" + sourceLabel(h.Source) + "）"
-			}
-			outside = append(outside, label)
+		if targetInScope(usable, h.Value) {
+			continue
 		}
+		// company/icp 范围、target 策略下的本任务资产（task_ids/anchors）不在 usableScope，
+		// 用成员判定补上；读失败按失效安全转人工。
+		inDeclared, derr := i.db.HostInDeclaredScope(taskID, h.Value)
+		if derr != nil {
+			return Decision{Action: "ask", RuleName: "[RoE] 授权范围",
+				Message: "授权范围成员判定失败，无法确认目标是否在范围内，需要人工确认：" + derr.Error()}, true
+		}
+		if inDeclared {
+			continue
+		}
+		if len(rows) == 0 {
+			// 完全没有 scope 行的遗留任务保持原有 fail-open，避免升级后突然全拦。
+			continue
+		}
+		label := h.Value
+		if h.Source != "raw" {
+			label += "（" + sourceLabel(h.Source) + "）"
+		}
+		outside = append(outside, label)
 	}
 	if len(outside) == 0 {
 		return Decision{}, false

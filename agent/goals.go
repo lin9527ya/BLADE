@@ -67,6 +67,18 @@ const goalsScopeTail = `
 - 若目标/描述中没有任何明确资产范围，则**不要**调用 add_task_scope。
 先用 add_task_scope 登记范围（如有），再调用 set_goals 提交目标。`
 
+// goalsScopeTailTarget 是 target 策略（目标所属全资产）的范围登记尾块。
+const goalsScopeTailTarget = `
+
+**额外职责：登记目标所属资产范围（target 策略）**
+本任务采用 target 策略：目标主机归约到注册域 eTLD+1，该根域下已登记与后续发现的资产自动可测；若目标可归因到公司，公司名下跨根域资产也自动纳入。
+- URL / 带主机名的目标 → 取其完整的注册域（eTLD+1），kind=root_domain，value=注册域。例：https://www.example.com → root_domain example.com。
+- 目标/描述明确给出多个根域 → 分别登记 root_domain；明确给出公司名/id → 可登记 company。
+- 纯 IP 或网段 → kind=ip / cidr。
+- **严禁**登记目标/描述里未提及的根域或公司；不得凭名称相似猜测归属。
+- 若没有任何明确范围，不要调用 add_task_scope。
+先用 add_task_scope 登记范围（如有），再调用 set_goals 提交目标。`
+
 // GoalSpec is one decomposed objective.
 type GoalSpec struct {
 	Text      string `json:"text"`
@@ -137,7 +149,11 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// a tool that isn't present.
 	if as != nil && taskID > 0 {
 		tools = append(tools, tsx.addTaskScope())
-		sys += goalsScopeTail
+		if as.TaskAssetScopePolicy(taskID) == db.AssetScopePolicyTarget {
+			sys += goalsScopeTailTarget
+		} else {
+			sys += goalsScopeTail
+		}
 	}
 	userMsg := "任务目标：\n" + goalText
 	if d := strings.TrimSpace(desc); d != "" {

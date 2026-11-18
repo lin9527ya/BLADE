@@ -25,6 +25,7 @@ import type {
   AssetImportResult,
   AssetInterceptRule,
   AssetInterceptRuleInput,
+  AttackCoverage,
   Audit,
   AuditEvent,
   BatchCategoryItem,
@@ -64,11 +65,9 @@ import type {
   DeliverableAcceptance,
   DeliverableDetail,
   DeliverableVersion,
-  AttackCoverage,
   DetectionMatrix,
-  EgressStatus,
-  HostToolStatus,
   Edge,
+  EgressStatus,
   EvidenceBodyPreview,
   ExplorationNodePage,
   ExplorationNodeQuery,
@@ -94,6 +93,7 @@ import type {
   GlobalBroadcastQuery,
   GlobalSearchResponse,
   GraphAuditReport,
+  HostToolStatus,
   InboxPage,
   IntelQueryList,
   IntelSearchResult,
@@ -399,6 +399,7 @@ export const api = {
     seedFirstIntent?: boolean;
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
+    assetScopePolicy?: "exact" | "target";
     interceptRules?: AssetInterceptRuleInput[];
     // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
     plannerPrompt?: string;
@@ -420,6 +421,7 @@ export const api = {
       seed_first_intent: input.seedFirstIntent ?? false,
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
+      asset_scope_policy: input.assetScopePolicy ?? "target", // 默认 target：目标所属全资产自动可测
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       planner_prompt: input.plannerPrompt ?? "",
       planner_template_id: input.plannerTemplateId ?? 0,
@@ -427,8 +429,10 @@ export const api = {
       remark: input.remark ?? "",
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
-  updateTask: (id: string, input: { name?: string; pinned?: boolean; remark?: string }) =>
-    patch<Task>(`/tasks/${id}`, input),
+  updateTask: (
+    id: string,
+    input: { name?: string; pinned?: boolean; remark?: string; asset_scope_policy?: "exact" | "target" },
+  ) => patch<Task>(`/tasks/${id}`, input),
   findingCaseRows: (q: FindingQuery) => {
     const p = findingFilterParams(q);
     p.set("page", String(q.page));

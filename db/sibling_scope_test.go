@@ -16,6 +16,10 @@ func TestSweepSiblingScopeSameRootOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 本用例验证的是 exact 策略下的同根回收；新任务默认 target，需显式切回 exact。
+	if _, err := d.Assets().SetTaskAssetScopePolicy(task.ID, AssetScopePolicyExact, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		_ = d.DeleteTask(task.ID)
 		_, _ = d.Exec(`DELETE FROM assets WHERE domain LIKE '%sibling-scope-%' OR url LIKE '%sibling-scope-%'`)

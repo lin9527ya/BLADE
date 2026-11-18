@@ -38,15 +38,26 @@ func TestRegisterTaskAssetScopesCreatesAssetsAndPersistsTextScope(t *testing.T) 
 		t.Fatalf("unexpected first mutation: %+v", first)
 	}
 	assets, err := d.Assets().QueryByTask(task.ID, "", 10, 0)
-	if err != nil || len(assets) != 2 {
+	// 域名/子域登记会把父根域资产一并建出并关联（target 策略下同根资产可测），
+	// 所以是 子域 + 父根域 + IP 共 3 条。
+	if err != nil || len(assets) != 3 {
 		t.Fatalf("task assets=%+v err=%v", assets, err)
 	}
 	assetIDs := make([]int64, 0, len(assets))
+	manualAssets := 0
 	for _, asset := range assets {
 		assetIDs = append(assetIDs, asset.ID)
+		// 父根域资产是登记子域时自动建出并关联的（TaskSource=system），不属手工输入项。
+		if asset.Type == "root_domain" {
+			continue
+		}
+		manualAssets++
 		if asset.TaskSource != "manual" || asset.TaskSourceSummary != manualTaskScopeSummary {
 			t.Fatalf("unexpected task asset provenance: %+v", asset)
 		}
+	}
+	if manualAssets != 2 {
+		t.Fatalf("手工登记应关联 2 条资产，实际 %d：%+v", manualAssets, assets)
 	}
 	t.Cleanup(func() { _, _ = d.Assets().DeleteByIDs(assetIDs) })
 	scopes, err := d.Assets().ListTaskScope(task.ID)

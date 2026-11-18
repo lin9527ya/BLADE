@@ -39,7 +39,7 @@ import { cacheHitRate } from "@/lib/token-stats";
 import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
 import { ArtifactPanel } from "./_components/artifact-panel";
-import { TaskInterceptRulesCard } from "./_components/task-policy-cards";
+import { TaskAssetScopeCard, TaskInterceptRulesCard } from "./_components/task-policy-cards";
 import { TaskRelationsCard } from "./_components/task-relations-card";
 import { useOverviewState } from "./_components/use-overview-state";
 
@@ -860,6 +860,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           )}
         </CardContent>
       </Card>
+      <TaskAssetScopeCard taskId={taskId} policy={task?.asset_scope_policy} />
       <TaskInterceptRulesCard taskId={taskId} />
       {coverage?.enabled && coverage.scope_rows > 0 && (
         <Card>

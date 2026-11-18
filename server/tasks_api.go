@@ -682,6 +682,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.CompanyIDs = companyIDs
+	if err := db.ValidateAssetScopePolicy(req.AssetScopePolicy); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	interceptRules, err := buildTaskInterceptRules(req.InterceptRules)
 	if err != nil {
 		writeErr(w, 400, "任务级拦截规则无效："+err.Error())
@@ -713,11 +717,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
-		CoverageEnabled: coverageEnabled,
-		InterceptRules:  interceptRules,
-		PlannerPrompt:   plannerPrompt,
-		WorkerCount:     req.WorkerCount,
-		Remark:          req.Remark,
+		CoverageEnabled:  coverageEnabled,
+		InterceptRules:   interceptRules,
+		PlannerPrompt:    plannerPrompt,
+		WorkerCount:      req.WorkerCount,
+		Remark:           req.Remark,
+		AssetScopePolicy: req.AssetScopePolicy,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
@@ -893,6 +898,19 @@ func (s *Server) seed(t *Task, text string) {
 	var rootID int64
 	if as := s.m.Assets(); as != nil {
 		taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+		// 显式目标也走完整资产闸门（block + task allow）；命中则只告警，不建范围。
+		block, allow, rerr := as.TaskInterceptRulesSplit(taskID)
+		if rerr == nil {
+			domains := []string{host}
+			var ips []string
+			if net.ParseIP(host) != nil {
+				ips = []string{host}
+			}
+			if dec := db.EvaluateAssetGate(block, allow, domains, ips, []string{u}); !dec.Allowed {
+				slogFor("seed").Warn("目标命中资产拦截规则，不建立测试范围", "task", t.ID, "host", host, "reason", dec.Reason)
+				return
+			}
+		}
 		if net.ParseIP(host) != nil {
 			rootID, _ = as.UpsertIP(db.UpsertIPReq{IP: host, TaskID: taskID})
 		} else if scheme == "https" || scheme == "http" {
@@ -906,6 +924,11 @@ func (s *Server) seed(t *Task, text string) {
 			}
 		}
 	}
+	// 资产范围：所有策略都写精确目标；target 策略再写根域与公司（跨根域）范围。
+	if as := s.m.Assets(); as != nil {
+		taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+		applySeedScope(as, taskID, host, t.AssetScopePolicy, t.CompanyIDs)
+	}
 	// anchor the seeded assets to this task's begin root as lineage/provenance
 	// (the asset graph is global and shared; anchoring no longer gates reads).
 	if rootID > 0 {
@@ -917,6 +940,40 @@ func (s *Server) seed(t *Task, text string) {
 	// 不在这里 Notify:首轮是否触发统一由 engine.Run 的 HasActiveIntent 决定(种子意图任务
 	// 跳过首轮)。seed 早于 Run 执行,若在此 Notify 会 buffered 到通道、被 plannerLoop 启动时
 	// 消费掉而绕过 Run 的门控 → 种子任务仍误触发首轮。
+}
+
+// applySeedScope 写入任务初始授权范围：精确目标 + target 策略的根域/公司。
+func applySeedScope(as *db.AssetStore, taskID int64, host, policy string, companyIDs []int64) {
+	if taskID <= 0 || host == "" {
+		return
+	}
+	policy = db.NormalizeAssetScopePolicy(policy)
+	if ip := net.ParseIP(host); ip != nil {
+		if _, err := as.AddAgentScope(taskID, "ip", host, "任务目标", "auto"); err != nil {
+			log.Printf("[seed] 写入 IP 范围失败 task=%d host=%s: %v", taskID, host, err)
+		}
+		return
+	}
+	root, isApex := db.RootDomain(host)
+	if isApex {
+		if _, err := as.AddAgentScope(taskID, "root_domain", root, "任务目标", "auto"); err != nil {
+			log.Printf("[seed] 写入根域范围失败 task=%d root=%s: %v", taskID, root, err)
+		}
+	} else {
+		if _, err := as.AddAgentScope(taskID, "subdomain", host, "任务目标", "auto"); err != nil {
+			log.Printf("[seed] 写入子域范围失败 task=%d host=%s: %v", taskID, host, err)
+		}
+	}
+	if policy != db.AssetScopePolicyTarget {
+		return
+	}
+	companies := append([]int64(nil), companyIDs...)
+	if cid, found, err := as.ResolveCompanyForHost(host); err == nil && found {
+		companies = append(companies, cid)
+	}
+	if _, err := as.SetTaskAssetScopePolicy(taskID, db.AssetScopePolicyTarget, []string{host}, companies); err != nil {
+		log.Printf("[seed] 写入 target 范围失败 task=%d host=%s: %v", taskID, host, err)
+	}
 }
 
 // seedFirstIntent writes ONE open intent (summary = 描述+目标) into the task's

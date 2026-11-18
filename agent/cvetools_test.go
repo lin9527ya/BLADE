@@ -189,9 +189,10 @@ func TestCVEExploitRefusals(t *testing.T) {
 		t.Fatalf("target mismatch should refuse: isErr=%v %s", isErr, out)
 	}
 
-	// 资产不在任务范围。
+	// 资产不在任务范围：不关联本任务、不同根域（target 策略下“本任务发现/关联”的资产
+	// 属于可测范围，所以这里刻意不传 TaskID）。
 	outside, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{
-		URL: "https://outside.example/", Technologies: []string{"log4j 2.14.1"}, TaskID: taskID,
+		URL: "https://outside.example/", Technologies: []string{"log4j 2.14.1"},
 	})
 	if err != nil {
 		t.Fatal(err)

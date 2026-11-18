@@ -2162,10 +2162,15 @@ func (e *Engine) sweepSiblingScope(t *Task) {
 		return
 	}
 	as := e.m.Assets()
-	if as == nil || !as.CoverageEnabled(parseIntDefault(t.ID)) {
+	if as == nil {
 		return
 	}
-	n, err := as.SweepSiblingScope(parseIntDefault(t.ID),
+	taskID := parseIntDefault(t.ID)
+	// target 策略由根域/公司 scope 覆盖，root sweep 是 no-op；exact 策略仍受 coverage 开关控制。
+	if as.TaskAssetScopePolicy(taskID) != db.AssetScopePolicyTarget && !as.CoverageEnabled(taskID) {
+		return
+	}
+	n, err := as.SweepSiblingScope(taskID,
 		"与本任务范围同注册域（eTLD+1）的资产，随规划轮自动纳入")
 	if err != nil {
 		log.Printf("[scope] task %s 同根资产入范围失败: %v", t.ID, err)

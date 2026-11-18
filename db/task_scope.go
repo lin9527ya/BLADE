@@ -339,14 +339,23 @@ func (s *AssetStore) SweepSiblingScope(taskID int64, reason string) (int, error)
 	if taskID <= 0 {
 		return 0, nil
 	}
+	// target 策略下根域/公司行已覆盖全部同主体资产；逐主机补 scope 是冗余的，
+	// 也会让 worker 发现的第三方根域被整域授权，因此明确 no-op。
+	if s.TaskAssetScopePolicy(taskID) == AssetScopePolicyTarget {
+		return 0, nil
+	}
 	roots, err := s.ScopeRootDomains(taskID)
 	if err != nil || len(roots) == 0 {
 		return 0, err
 	}
 	rows, err := s.db.Query(`
-SELECT DISTINCT COALESCE(domain, '')
+SELECT DISTINCT COALESCE(NULLIF(domain,''),
+       split_part(split_part(COALESCE(url,''),'://',2),'/',1), '')
 FROM assets
-WHERE type = 'subdomain' AND root_domain = ANY($1) AND COALESCE(domain,'') <> ''`,
+WHERE type IN ('subdomain','service','endpoint','app')
+  AND root_domain = ANY($1)
+  AND COALESCE(NULLIF(domain,''), split_part(split_part(COALESCE(url,''),'://',2),'/',1), '') <> ''
+LIMIT 5000`,
 		roots)
 	if err != nil {
 		return 0, err
