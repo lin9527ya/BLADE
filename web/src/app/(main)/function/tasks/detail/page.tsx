@@ -38,9 +38,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePolling } from "@/hooks/use-polling";
-import { api } from "@/lib/api";
+import { useSSE } from "@/hooks/use-sse";
+import { api, sseUrl } from "@/lib/api";
 import { taskIsTerminal } from "@/lib/status";
-import type { LLMProfile, Task } from "@/lib/types";
+import type { LLMProfile, Task, TaskLiveEvent } from "@/lib/types";
 
 import { ADPathsTab } from "./_tabs/ad-paths-tab";
 import { AssetsTab } from "./_tabs/assets-tab";
@@ -230,6 +231,19 @@ function TaskDetailInner() {
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
 
+  const taskSSE = useSSE<TaskLiveEvent>(
+    id ? sseUrl(`/api/tasks/${encodeURIComponent(id)}/events`) : null,
+    "task",
+    (event) => {
+      if (event.error) return;
+      setTask((current) => (current ? { ...current, ...event.task } : event.task));
+      setPaused(event.stats.paused);
+      setInterceptPendingCount(event.stats.pending_intercepts);
+      setLoaded(true);
+    },
+    Boolean(id),
+  );
+
   // 外部改 URL（前进/后退、从别处深链）时同步当前页签。只认 URL 真正变化的那一次：
   // changeTab 自己也会写 URL，若拿 tab 当依赖会在 replace 落地前把选择弹回去。
   const lastTabParam = React.useRef(tabParam);
@@ -263,8 +277,8 @@ function TaskDetailInner() {
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         }),
-    5000,
-    [id],
+    taskSSE.connected ? 30000 : 5000,
+    [id, taskSSE.connected],
   );
 
   const taskLoadInFlight = React.useRef<string | null>(null);
@@ -296,7 +310,7 @@ function TaskDetailInner() {
         }
       });
   }, [id]);
-  usePolling(load, 5000, [load]);
+  usePolling(load, taskSSE.connected ? 30000 : 5000, [load, taskSSE.connected]);
 
   async function togglePause() {
     if (!task) return;
@@ -431,9 +445,7 @@ function TaskDetailInner() {
         {paused ? (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2.5 py-1.5 text-amber-700 text-xs dark:text-amber-300">
             <PauseIcon className="size-3.5 shrink-0" />
-            <span className="min-w-0 break-words">
-              暂停原因：{task.pause_reason || "未记录（任务在旧版本中暂停）"}
-            </span>
+            <span className="min-w-0 break-words">暂停原因：{task.pause_reason || "未记录（任务在旧版本中暂停）"}</span>
           </div>
         ) : null}
         {/* Tabs */}

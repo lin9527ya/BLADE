@@ -14,8 +14,15 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/hooks/use-polling";
-import { api } from "@/lib/api";
-import type { InterceptApprovalFilter, InterceptApprovalRow, InterceptPending, InterceptSLAStats } from "@/lib/types";
+import { useSSE } from "@/hooks/use-sse";
+import { api, sseUrl } from "@/lib/api";
+import type {
+  ApprovalLiveEvent,
+  InterceptApprovalFilter,
+  InterceptApprovalRow,
+  InterceptPending,
+  InterceptSLAStats,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { ApprovalTable } from "./_parts/approval-detail";
@@ -102,7 +109,14 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const latestLoad = React.useRef(load);
   latestLoad.current = load;
 
-  usePolling(() => load(), 5000, [load]);
+  const approvalSSE = useSSE<ApprovalLiveEvent>(sseUrl("/api/intercept/pending/stream"), "approvals", (event) => {
+    if (event.error) return;
+    setPendingRows(event.pending ?? []);
+    if (event.sla) setSla(event.sla);
+    setPendingError("");
+  });
+
+  usePolling(() => load(), approvalSSE.connected ? 30000 : 5000, [load, approvalSSE.connected]);
   // 轮询停止（卸载或依赖变化）时让在途请求作废——与旧的 clearInterval 同一时机。
   // biome-ignore lint/correctness/useExhaustiveDependencies: load 变化即代表轮询重启，需作废在途请求；effect 体内不读取 load。
   React.useEffect(

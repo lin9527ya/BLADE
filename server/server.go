@@ -61,7 +61,9 @@ type Server struct {
 	// cancel 由 New 在传入 ctx 上派生，Shutdown 用它通知后台循环退出。
 	cancel context.CancelFunc
 
-	queryCache queryCacheState
+	queryCache   queryCacheState
+	taskLive     *liveHub[TaskLiveEvent]
+	approvalLive *liveHub[ApprovalLiveEvent]
 }
 
 // restoreState 记录启动恢复是否成功。恢复失败时 readiness 必须如实失败：
@@ -227,10 +229,12 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			limiters:   map[int64]*agent.RequestLimiter{},
 			health:     newLLMHealthRegistry(m.pg, &m.bgWG),
 		},
-		agents:     agentState{bundles: map[string]*taskAgentBundle{}},
-		agentCache: newAgentRowCache(),
-		sysMetrics: systemSamplerState{},
-		archive:    archiveState{wake: make(chan struct{}, 1)},
+		agents:       agentState{bundles: map[string]*taskAgentBundle{}},
+		agentCache:   newAgentRowCache(),
+		sysMetrics:   systemSamplerState{},
+		archive:      archiveState{wake: make(chan struct{}, 1)},
+		taskLive:     newLiveHub[TaskLiveEvent](),
+		approvalLive: newLiveHub[ApprovalLiveEvent](),
 	}
 	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。
 	// 用户继续后同一档预算不再打断；具体见 server/budget.go 的 pauseForBudget。

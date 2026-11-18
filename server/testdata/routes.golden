@@ -153,6 +153,7 @@ GET /api/intercept/judge	server.(*Server).interceptGetJudgeConfig-fm
 GET /api/intercept/judge/usage	server.(*Server).interceptJudgeUsage-fm
 GET /api/intercept/pending	server.(*Server).interceptListPending-fm
 GET /api/intercept/pending/sla	server.(*Server).interceptSLAStats-fm
+GET /api/intercept/pending/stream	server.(*Server).approvalLiveStream-fm
 GET /api/intercept/pending/{id}	server.(*Server).interceptGetOne-fm
 GET /api/intercept/rules	server.(*Server).interceptListRules-fm
 GET /api/intercept/task/{taskID}	server.(*Server).interceptListTaskItems-fm
@@ -220,6 +221,7 @@ GET /api/tasks/{id}/chat/status	server.(*Server).taskChatStatus-fm
 GET /api/tasks/{id}/constraints	server.(*Server).listConstraints-fm
 GET /api/tasks/{id}/coverage	server.(*Server).taskCoverage-fm
 GET /api/tasks/{id}/coverage-graph	server.(*Server).taskCoverageGraph-fm
+GET /api/tasks/{id}/events	server.(*Server).taskLiveStream-fm
 GET /api/tasks/{id}/footprints	server.(*Server).listFootprints-fm
 GET /api/tasks/{id}/goals	server.(*Server).listGoals-fm
 GET /api/tasks/{id}/hints	server.(*Server).listHints-fm

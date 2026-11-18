@@ -394,6 +394,34 @@ export interface VerificationLedgerRow {
   ended_at?: string;
 }
 
+export interface TaskLiveStats {
+  engine_mode: string;
+  in_flight: number;
+  goals_total: number;
+  goals_met: number;
+  paused: boolean;
+  running: boolean;
+  llm_in_flight: number;
+  last_activity: number;
+  stalled: boolean;
+  pending_intercepts: number;
+}
+
+export interface TaskLiveEvent {
+  task: Task;
+  stats: TaskLiveStats;
+  at: number;
+  error?: string;
+}
+
+export interface ApprovalLiveEvent {
+  pending: InterceptPending[];
+  pending_count: number;
+  sla?: InterceptSLAStats;
+  at: number;
+  error?: string;
+}
+
 export interface GlobalSearchHit {
   id: string;
   title: string;
