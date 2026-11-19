@@ -3086,6 +3086,13 @@ type factItem struct {
 	Leads          []leadItem           `json:"leads"`       // 本意图之外值得深挖的线索（交给 planner）
 	IntentID       json.RawMessage      `json:"intent_id"`
 	AssetIDs       []json.RawMessage    `json:"asset_ids"`
+	// Origin marks synthetic/derived facts (currently "proposal"). Not a
+	// record_fact input; used by propose_intents so the planner can distinguish
+	// candidate directions from observed facts.
+	Origin string `json:"-"`
+	// NotifyKind overrides the semantic trigger kind (empty = infer from
+	// contradiction/supersede/polarity). Currently "proposal" gets immediate wake.
+	NotifyKind string `json:"-"`
 }
 
 // leadItem 是一条「本意图之外」的线索。线索不是结论：它没有证据门槛，
@@ -3177,6 +3184,9 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		return 0, fmt.Errorf("summary 不能为空")
 	}
 	payload := map[string]any{"summary": it.Summary}
+	if origin := strings.TrimSpace(it.Origin); origin != "" {
+		payload["origin"] = origin
+	}
 	if err := t.ts.ValidateEvidenceMetadata(it.EvidenceMeta); err != nil {
 		return 0, err
 	}
@@ -3231,13 +3241,16 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		return 0, err
 	}
 	if t.notifyFact != nil {
-		kind := "fact"
-		if len(it.ContradictsIDs) > 0 {
-			kind = "contradiction"
-		} else if len(it.SupersedesIDs) > 0 {
-			kind = "supersede"
-		} else if pol := normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence); pol == factPolarityNeg {
-			kind = "negative_fact"
+		kind := strings.TrimSpace(it.NotifyKind)
+		if kind == "" {
+			kind = "fact"
+			if len(it.ContradictsIDs) > 0 {
+				kind = "contradiction"
+			} else if len(it.SupersedesIDs) > 0 {
+				kind = "supersede"
+			} else if pol := normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence); pol == factPolarityNeg {
+				kind = "negative_fact"
+			}
 		}
 		t.notifyFact(kind, intent, id, it.Summary, pidList(it.AssetIDs))
 	}
@@ -4919,6 +4932,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// search_all_worker_traces 已能翻全量轨迹，默认不再重复给。
 		t.listWorkerTraces(),
 		t.listGoals(), t.addIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		// 依赖自救：改模式/拆边/重开失败意图。都是显式能力，不是新的默认闸门。
+		t.setDependencyMode(), t.dropDependency(), t.reopenIntent(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。
 		t.consumeHint(),
 		t.acceptArtifactRisk(),

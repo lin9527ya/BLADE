@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -236,19 +238,68 @@ func (t *ToolSet) proposeIntents() actool.CoreTool {
 			if len(out) == 0 {
 				return actool.Errorf("至少一条提案需要 summary"), nil
 			}
-			detail, _ := json.Marshal(map[string]any{"proposals": out})
+			// 与已有提案 fact 去重，避免同一条方向每次写回都刷一条新事实。
+			existing := map[string]bool{}
+			if facts, ferr := t.ts.ListByKind(db.KindFact, 500); ferr == nil {
+				for _, n := range facts {
+					var p struct {
+						Origin string `json:"origin"`
+						Detail string `json:"detail"`
+					}
+					_ = json.Unmarshal(n.Payload, &p)
+					if p.Origin != "proposal" || p.Detail == "" {
+						continue
+					}
+					var d struct {
+						Proposals []struct {
+							Summary    string  `json:"summary"`
+							Hypothesis string  `json:"hypothesis"`
+							Mechanism  string  `json:"mechanism"`
+							Route      string  `json:"route"`
+							AssetIDs   []int64 `json:"asset_ids"`
+						} `json:"proposals"`
+					}
+					_ = json.Unmarshal([]byte(p.Detail), &d)
+					for _, pr := range d.Proposals {
+						existing[proposalKey(pr.Summary, pr.Hypothesis, pr.Mechanism, pr.Route, pr.AssetIDs)] = true
+					}
+				}
+			}
+			const maxProposalBatch = 20
+			kept := make([]proposal, 0, len(out))
+			seen := map[string]bool{}
+			dropped := 0
+			for _, p := range out {
+				if len(kept) >= maxProposalBatch {
+					dropped++
+					continue
+				}
+				key := proposalKey(p.Summary, p.Hypothesis, p.Mechanism, p.Route, p.AssetIDs)
+				if existing[key] || seen[key] {
+					dropped++
+					continue
+				}
+				seen[key] = true
+				kept = append(kept, p)
+			}
+			if len(kept) == 0 {
+				return actool.Text(fmt.Sprintf("no new proposals: %d duplicate(s)", dropped)), nil
+			}
+			detail, _ := json.Marshal(map[string]any{"proposals": kept})
 			id, err := t.recordOneFact(factItem{
-				Summary:    fmt.Sprintf("[意图提案] %d 个下一步方向", len(out)),
+				Summary:    fmt.Sprintf("[意图提案] %d 个下一步方向", len(kept)),
 				Detail:     string(detail),
-				Confidence: "observed",
+				Confidence: "inferred",
 				Polarity:   "positive",
 				Enables:    []string{"info"},
+				Origin:     "proposal",
+				NotifyKind: "proposal",
 			}, 0)
 			if err != nil {
 				return actool.Errorf("记录意图提案失败：" + err.Error()), nil
 			}
 			return jsonResult(map[string]any{
-				"fact_id": id, "proposals": len(out), "status": "pending_planner_review",
+				"fact_id": id, "proposals": len(kept), "dropped": dropped, "status": "pending_planner_review",
 				"note": "提案只写入黑板，不会自动创建意图；planner 复核后决定。",
 			})
 		})
@@ -483,4 +534,20 @@ func (t *ToolSet) searchPrecedents() actool.CoreTool {
 			}
 			return jsonResult(out)
 		})
+}
+
+// proposalKey normalizes a proposed direction for proposal-only dedupe. It is
+// intentionally narrower than intent dedupe: summary/hypothesis/mechanism/route
+// plus sorted asset ids, so a materially different asset or mechanism survives.
+func proposalKey(summary, hypothesis, mechanism, route string, assets []int64) string {
+	ids := append([]int64(nil), assets...)
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	parts := []string{
+		normalizeFindingText(summary), normalizeFindingText(hypothesis),
+		normalizeFindingText(mechanism), normalizeFindingText(route),
+	}
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(parts, "|")
 }

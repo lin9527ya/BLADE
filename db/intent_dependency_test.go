@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -202,6 +203,66 @@ func TestStrictDependencyWaitsForActivePrerequisite(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("前置 done 后 strict 下游应可领")
+	}
+}
+
+// 依赖编辑：改模式与拆边必须同时更新图边和 payload。
+func TestEditIntentDependencyModeAndDropEdge(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTaskWithOptions(fmt.Sprintf("dep-edit-%d", time.Now().UnixNano()), "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	ts := d.Exploration(task.ExplorationID)
+
+	pre, err := ts.AddIntent(map[string]any{"summary": "前置"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := ts.AddIntentGraph(map[string]any{"summary": "下游", "depends_on": []int64{pre}, "depends_on_mode": "strict"}, 5, nil, "planner", []IntentEdge{{From: 0, To: pre, Rel: RelDependsOn}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := ts.SetIntentDependencyMode(down, DependencyModeAdvisory, "test mode"); err != nil || !changed {
+		t.Fatalf("set mode changed=%v err=%v", changed, err)
+	}
+	n, err := ts.GetNode(down)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p map[string]any
+	_ = json.Unmarshal(n.Payload, &p)
+	if p["depends_on_mode"] != DependencyModeAdvisory {
+		t.Fatalf("mode not persisted: %+v", p)
+	}
+	if changed, err := ts.DropIntentDependency(down, pre, "test drop"); err != nil || !changed {
+		t.Fatalf("drop dependency changed=%v err=%v", changed, err)
+	}
+	n, err = ts.GetNode(down)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.Unmarshal(n.Payload, &p)
+	if deps, _ := p["depends_on"].([]any); len(deps) != 0 {
+		t.Fatalf("depends_on payload not cleaned: %+v", p["depends_on"])
+	}
+	fr, err := ts.Frontier(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, n := range fr {
+		if n.ID == down {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("拆依赖后下游应可领")
 	}
 }
 

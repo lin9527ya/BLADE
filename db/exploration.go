@@ -715,6 +715,83 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent'
 	return n > 0, nil
 }
 
+// SetIntentDependencyMode updates one local open/paused intent's dependency mode.
+// The mode is stored in payload.depends_on_mode so Frontier/CountClaimable see it
+// without a schema migration. Running intents are rejected: changing the gate while
+// a worker is already executing would make the UI disagree with the actual run.
+func (s *ExplorationStore) SetIntentDependencyMode(id int64, mode, reason string) (bool, error) {
+	if mode != DependencyModeAdvisory && mode != DependencyModeStrict {
+		return false, fmt.Errorf("invalid dependency mode %q", mode)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := GraphOperationTx(tx, s.expID, "set_dependency_mode", reason); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`UPDATE exploration_nodes
+SET payload = jsonb_set(COALESCE(payload,'{}'::jsonb), '{depends_on_mode}', to_jsonb($3::text), true),
+    content_version = content_version+1
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state IN ('open','paused')`, id, s.expID, mode)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DropIntentDependency removes one depends_on edge and the matching payload
+// depends_on entry atomically. Leaving the payload entry behind would make the
+// intent detail and blocked-intent list show a dependency the frontier no longer
+// honors. Only open/paused source intents are editable.
+func (s *ExplorationStore) DropIntentDependency(id, prerequisiteID int64, reason string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := GraphOperationTx(tx, s.expID, "drop_dependency", reason); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`DELETE FROM exploration_edges
+WHERE exploration_id=$1 AND src_id=$2 AND dst_id=$3 AND rel='depends_on'`, s.expID, id, prerequisiteID)
+	if err != nil {
+		return false, err
+	}
+	edgeDeleted, _ := res.RowsAffected()
+	res, err = tx.Exec(`UPDATE exploration_nodes
+SET payload = CASE
+      WHEN jsonb_typeof(payload->'depends_on') = 'array' THEN
+        jsonb_set(payload, '{depends_on}', COALESCE((
+          SELECT jsonb_agg(v)
+          FROM jsonb_array_elements(payload->'depends_on') v
+          WHERE (v #>> '{}')::bigint <> $3
+        ), '[]'::jsonb), true)
+      ELSE payload
+    END,
+    content_version = content_version+1
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state IN ('open','paused')`, id, s.expID, prerequisiteID)
+	if err != nil {
+		return false, err
+	}
+	payloadChanged, _ := res.RowsAffected()
+	if edgeDeleted == 0 && payloadChanged == 0 {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ReopenBlockedIntents flips EVERY 'blocked' intent in this exploration back to 'open'
 // (batch rerun after e.g. an LLM/network outage that blocked many at once). Returns the
 // number reopened. Workers resume from their transcripts; kept graph writes remain.

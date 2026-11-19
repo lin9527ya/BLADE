@@ -397,6 +397,8 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 				n = 1
 			}
 			b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发因队列上限未展开；以当前 graph_overview 与 recent_facts 为准。", n))
+		case "proposal":
+			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）提交了意图提案 fact #%d：%s。提案只是候选方向，不会自动成为意图；先核对依据，再决定是否 add_intent。", ev.IntentID, intentSummary(ts, ev.IntentID), ev.FactID, clipLine(ev.Summary, 240)))
 		case "finding":
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 报告了一个 finding：%s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
 		case "cancelled":
@@ -712,6 +714,7 @@ const structuredIntentBlock = `
 【结构化意图与按需取景】
 - add_intent 的 summary/asset_ids/parent_ids 仍是必填核心；方向明确时建议补 hypothesis（若 X 则 Y）、success_criteria（什么算成功）、stop_condition（何时停）、mechanism（稳定打法键）、route（路线名）、produces/acceptance（产物与验收）、risk_area。它们都是可选的，不填不改变旧行为。
 - depends_on 默认是排序提示（advisory），不阻塞 worker 领取；只有确实需要串行强依赖时才设 depends_on_mode=strict。strict 也只在前置仍 open/running/paused 时暂缓派发；前置进入任何终态（done/negative，或 blocked/exhausted/stopped/out-of-scope/no_output）都会 fail-open，下游仍可领。串行链优先用分步派发 + TodoWrite，不把依赖边当安全锁。若 graph_health 出现 dead_dependency/dependency_cycle，用 node_detail 核对前置状态，重排/补前置/拆链，不要反复重派同一条。
+- 前置卡死或不再需要时可用 set_dependency_mode（advisory/strict）、drop_dependency（只拆一条边，保留下游意图）或 reopen_intent（重开 blocked/exhausted/stopped/no_output 的失败意图）。三者都必须写 reason；它们只改调度/意图状态，不放宽 RoE、授权范围或拦截规则。
 - 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
 - recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。
 - 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q, scope=auto|company|campaign|global)。默认只给脱敏摘要、不返回 evidence；跨任务节点通常不能直接 node_detail，先按摘要与 task id 判断，确需证据时才显式 scope + include_evidence 取脱敏片段。不要把先例直接当成本任务结论。

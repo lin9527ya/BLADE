@@ -31,6 +31,10 @@ var plannerDeferredTools = []string{
 	"record_playbook_feedback", // 727
 	"promote_knowledge",        // 1542
 	"merge_findings",           // 817
+	// 依赖自救是低频动作；schema 不常驻，避免每轮多付固定 token。
+	"set_dependency_mode",
+	"drop_dependency",
+	"reopen_intent",
 }
 
 // mergeDeferred 把内置 deferred 工具并入本轮 DeferredInfo：既要藏 schema、列进
