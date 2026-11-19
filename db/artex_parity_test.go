@@ -2,9 +2,9 @@ package db
 
 import "testing"
 
-// ARTEX has no structural dependency/requires gating: legacy edges/payloads remain
-// readable but every open intent is claimable in priority/id order.
-func TestFrontierIgnoresLegacyDependenciesAndRequires(t *testing.T) {
+// 显式 depends_on 现在参与领取门槛：前置没到 done/negative 时下游不进入
+// frontier；前置完成后自动 ready。没有依赖边的意图仍然立即可领。
+func TestFrontierHonorsExplicitDependencies(t *testing.T) {
 	_, s := intentLeaseFixture(t)
 	upstream, err := s.AddIntent(map[string]any{"summary": "upstream"}, 5, nil, "planner")
 	if err != nil {
@@ -30,13 +30,26 @@ func TestFrontierIgnoresLegacyDependenciesAndRequires(t *testing.T) {
 			seen = true
 		}
 	}
+	if seen {
+		t.Fatal("前置 exhausted 时下游不应进入 frontier")
+	}
+	if n, err := s.CountClaimableIntents(); err != nil || n != 0 {
+		t.Fatalf("claimable=%d err=%v, want 0", n, err)
+	}
+	if err := s.SetIntentState(upstream, "done"); err != nil {
+		t.Fatal(err)
+	}
+	frontier, err = s.Frontier(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen = false
+	for _, n := range frontier {
+		if n.ID == downstream {
+			seen = true
+		}
+	}
 	if !seen {
-		t.Fatal("legacy depends_on still gates the frontier")
-	}
-	if n, err := s.CountClaimableIntents(); err != nil || n != 1 {
-		t.Fatalf("claimable=%d err=%v, want 1", n, err)
-	}
-	if claimed, err := s.ClaimNode(t.Context(), downstream, "work#1", "open", IntentLeaseTTL, nil, false); err != nil || claimed == nil {
-		t.Fatalf("legacy requires still blocks claim: %v %v", claimed, err)
+		t.Fatal("前置 done 后下游应进入 frontier")
 	}
 }

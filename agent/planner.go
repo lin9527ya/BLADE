@@ -586,7 +586,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	out := body + promptExtras("planner") +
 		coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
 		artifactSpec(workDir) +
-		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock
 	return out
 }
 
@@ -613,6 +613,15 @@ const scopeExpansionBlock = `
 - 扩面即授权：新增范围立即对 RoE 生效，后续 worker 可直接测试。**只在有归属证据时使用**（whois、证书 SAN、ASN、ICP、页面互链、同一控制台/云账号、同一公司官网等），并在 reason 写清证据；不得凭名称相似或猜测扩到未归因的第三方根域。
 - 发现新主机/云资产先由 worker 用 insert_assets 登记（按精确主机自动入范围）；需要整域/整公司级别时才由 planner 调这两个工具。
 - worker 的 request_scope_expansion 只写一条 recent_fact（summary 以「[扩面请求]」开头），不会自动扩权；看到后核对 detail/evidence，证据充分再 add_task_scope/add_company_scope，否则忽略。`
+
+// structuredIntentBlock 是意图契约/依赖/按需查询的代码持有说明。正文可能被旧库
+// 或用户定制覆盖，但新字段和新工具必须始终能被 planner 发现。
+const structuredIntentBlock = `
+
+【结构化意图与按需取景】
+- add_intent 的 summary/asset_ids/parent_ids 仍是必填核心；方向明确时建议补 hypothesis（若 X 则 Y）、success_criteria（什么算成功）、stop_condition（何时停）、mechanism（稳定打法键）、route（路线名）、produces/acceptance（产物与验收）、risk_area。它们都是可选的，不填不改变旧行为。
+- depends_on 只用于强串行利用链：前置意图 done/negative 后本条才可被 worker 领取；没有真实前置就留空，平行方向不要互相挂依赖。前置失败/越界时依赖会阻塞，planner 应根据 graph_audit/事实重排或拆链。
+- 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经

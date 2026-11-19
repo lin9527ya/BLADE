@@ -575,6 +575,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.reseedPlannerPrompt()           // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
 	s.reseedPlannerBreadthPrompt()    // 放宽固定意图数量、鼓励按资产面并行(一次性)
 	s.reseedWorkerPrompt()            // worker 提示词:加否定结论证据门槛(一次性)
+	s.seedBlackboardReadTools()       // 新只读工具:资产档案/黑板过滤查询(存量库补绑)
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.reseedReporterPrompt()          // 报告模板:补详细利用过程/绝对路径/命令回显(一次性)
 	s.seedPlaybookAgent()             // 预置「打法沉淀」agent + report_foothold 触发器(一次性)
@@ -1500,6 +1501,27 @@ func (s *Server) reseedPlannerBreadthPrompt() {
 		return
 	}
 	log.Printf("[prompts] planner 已升级为广度优先提示（意图上限放宽到 8，鼓励多路线并行）")
+}
+
+// seedBlackboardReadTools binds the new read-only blackboard tools on existing
+// DBs. Fresh DBs get the bindings from BuiltinToolSeeds; this only backfills
+// tools rows that predate the tools, and is additive/one-shot so a user can
+// later unbind them without the next restart resurrecting the binding.
+func (s *Server) seedBlackboardReadTools() {
+	const flag = "blackboard_read_tools_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	keys := []string{"asset_dossier", "blackboard_query"}
+	for _, agentKey := range []string{"planner", "mainagent", "worker"} {
+		if err := s.m.pg.AddAgentToToolBinding(agentKey, keys); err != nil {
+			log.Printf("[tools] blackboard read tools 绑定 %s 失败: %v", agentKey, err)
+			return
+		}
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)
+	}
 }
 
 // plannerPromptIsCustom 与新 hash 迁移共用精确判定；用户正文保留旧特征词仍然是自定义。

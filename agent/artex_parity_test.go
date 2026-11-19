@@ -107,8 +107,8 @@ func TestAddIntentARTEXMinimalPayload(t *testing.T) {
 	}
 }
 
-// 旧 depends_on/requires 只保留为审计数据，不应在 planner 态势里继续表现为
-// “被阻塞”——否则模型会少派本可领取的方向。Frontier 语义由 db parity test 覆盖。
+// 旧 requires 只保留为审计数据；显式 depends_on 现在参与 frontier 门槛：前置
+// blocked 时下游不应被派，未带依赖的意图仍可领取。
 func TestOverviewDoesNotExposeLegacyBlockingSignals(t *testing.T) {
 	tools, ts, upstream := newToolWorker(t)
 	downstream, err := ts.AddIntent(map[string]any{"summary": "下游：提权"}, 5, nil, "planner")
@@ -149,8 +149,11 @@ func TestOverviewDoesNotExposeLegacyBlockingSignals(t *testing.T) {
 	for _, n := range frontier {
 		seen[n.ID] = true
 	}
-	if !seen[downstream] || !seen[required] {
-		t.Fatalf("legacy dependency/requires still blocking: frontier=%+v", seen)
+	if seen[downstream] {
+		t.Fatalf("前置 blocked 时下游不应进入 frontier: %+v", seen)
+	}
+	if !seen[required] {
+		t.Fatalf("无依赖意图应可领取: %+v", seen)
 	}
 }
 

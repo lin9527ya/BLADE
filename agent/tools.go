@@ -74,6 +74,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		if ra, _ := p["risk_area"].(string); strings.TrimSpace(ra) != "" {
 			m["risk_area"] = ra
 		}
+		if deps, ok := p["depends_on"]; ok {
+			m["depends_on"] = deps
+		}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true
@@ -2388,13 +2391,31 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 // --- planner write tools ---
 
 // intentItem 是 add_intent 批量/单条的一条探索方向。
-// ARTEX parity: 只有 summary / asset_ids / parent_ids / priority 会被读取；
-// 其它字段即使模型传来也不会落库，靠 schema 与本文档保持工具面最小。
+// 核心字段是 summary / asset_ids / parent_ids / priority；结构化契约字段全部可选，
+// 非空才落库，不改变旧的最小意图行为。
 type intentItem struct {
 	Summary   string            `json:"summary"`
 	AssetIDs  []json.RawMessage `json:"asset_ids"`
 	ParentIDs []json.RawMessage `json:"parent_ids"`
-	Priority  int               `json:"priority"`
+	// Optional structured contract. All fields are soft: empty values keep the
+	// old one-line intent behavior. They are persisted so worker acceptance,
+	// planner dedupe and route aggregation can use them.
+	Hypothesis      string            `json:"hypothesis,omitempty"`
+	SuccessCriteria string            `json:"success_criteria,omitempty"`
+	StopCondition   string            `json:"stop_condition,omitempty"`
+	Mechanism       string            `json:"mechanism,omitempty"`
+	Route           string            `json:"route,omitempty"`
+	Produces        []string          `json:"produces,omitempty"`
+	Acceptance      string            `json:"acceptance,omitempty"`
+	EstimatedTokens int64             `json:"estimated_tokens,omitempty"`
+	Class           any               `json:"class,omitempty"`
+	Variant         string            `json:"variant,omitempty"`
+	RiskArea        string            `json:"risk_area,omitempty"`
+	Techniques      []string          `json:"techniques,omitempty"`
+	ChangeEvidence  []json.RawMessage `json:"change_evidence,omitempty"`
+	RecheckOf       json.RawMessage   `json:"recheck_of,omitempty"`
+	DependsOn       []json.RawMessage `json:"depends_on,omitempty"`
+	Priority        int               `json:"priority"`
 }
 
 // intentContract 把「一句话方向」补成可去重、可验收的声明。所有字段都是软契约：
@@ -2434,6 +2455,33 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
 			return 0, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上", parent, n.Kind)
 		}
+	}
+	// Optional dependency edges: the new intent waits for each prerequisite to
+	// finish with a usable conclusion. No edge = immediately claimable, preserving
+	// the old behavior. Reject dangling/self/non-intent dependencies early so the
+	// scheduler never sees an impossible edge.
+	dependsOn := pidList(it.DependsOn)
+	depSeen := map[int64]bool{}
+	dependsUnique := make([]int64, 0, len(dependsOn))
+	for _, depID := range dependsOn {
+		if depID <= 0 || depSeen[depID] {
+			continue
+		}
+		depSeen[depID] = true
+		dep, err := t.ts.GetNodeWithSources(depID)
+		if err != nil || dep == nil {
+			return 0, fmt.Errorf("depends_on id %d 不存在于本任务或直接关联任务", depID)
+		}
+		if dep.Kind != db.KindIntent {
+			return 0, fmt.Errorf("depends_on id %d 是 %q 节点，只能依赖意图", depID, dep.Kind)
+		}
+		if dep.Inherited || dep.SourceTaskID != 0 {
+			return 0, fmt.Errorf("depends_on id %d 属于直接来源任务，只能作只读上下文，不能作为本任务的前置", depID)
+		}
+		if dep.State == db.StateIntentDeleted {
+			return 0, fmt.Errorf("depends_on id %d 已被删除，不能作为前置", depID)
+		}
+		dependsUnique = append(dependsUnique, depID)
 	}
 	priority := it.Priority
 	if priority == 0 {
@@ -2478,7 +2526,66 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
-	edges := make([]db.IntentEdge, 0, len(parents)+1)
+	if h := strings.TrimSpace(it.Hypothesis); h != "" {
+		payload["hypothesis"] = h
+	}
+	if sc := strings.TrimSpace(it.SuccessCriteria); sc != "" {
+		payload["success_criteria"] = sc
+	}
+	if stop := strings.TrimSpace(it.StopCondition); stop != "" {
+		payload["stop_condition"] = stop
+	}
+	if ra := strings.TrimSpace(it.RiskArea); ra != "" {
+		payload["risk_area"] = db.NormalizeRiskArea(ra)
+	}
+	if tech := db.NormalizeTechniques(it.Techniques); len(tech) > 0 {
+		payload["techniques"] = tech
+	}
+	contract := map[string]any{}
+	if m := strings.TrimSpace(it.Mechanism); m != "" {
+		contract["mechanism"] = m
+	}
+	if r := strings.TrimSpace(it.Route); r != "" {
+		contract["route"] = r
+	}
+	if len(it.Produces) > 0 {
+		produces := make([]string, 0, len(it.Produces))
+		for _, p := range it.Produces {
+			if p = strings.TrimSpace(p); p != "" {
+				produces = append(produces, p)
+			}
+		}
+		if len(produces) > 0 {
+			contract["produces"] = produces
+		}
+	}
+	if a := strings.TrimSpace(it.Acceptance); a != "" {
+		contract["acceptance"] = a
+	}
+	if it.EstimatedTokens > 0 {
+		contract["estimated_tokens"] = it.EstimatedTokens
+	}
+	if it.Class != nil {
+		contract["class"] = it.Class
+	}
+	if v := strings.TrimSpace(it.Variant); v != "" {
+		contract["variant"] = v
+	}
+	if len(it.ChangeEvidence) > 0 {
+		if ev := pidList(it.ChangeEvidence); len(ev) > 0 {
+			contract["change_evidence"] = ev
+		}
+	}
+	if recheck := pid(it.RecheckOf); recheck > 0 {
+		contract["recheck_of"] = recheck
+	}
+	if len(contract) > 0 {
+		payload["contract"] = contract
+	}
+	if len(dependsUnique) > 0 {
+		payload["depends_on"] = dependsUnique
+	}
+	edges := make([]db.IntentEdge, 0, len(parents)+len(dependsUnique)+1)
 	for _, parent := range parents {
 		edges = append(edges, db.IntentEdge{From: parent, Rel: db.RelDerivedFrom})
 	}
@@ -2487,17 +2594,36 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			edges = append(edges, db.IntentEdge{From: origin, Rel: db.RelDerivedFrom})
 		}
 	}
+	for _, depID := range dependsUnique {
+		// From=0 is filled with the new intent id by AddIntentGraph.
+		edges = append(edges, db.IntentEdge{From: 0, To: depID, Rel: db.RelDependsOn})
+	}
 	return t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
 	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向：summary 一句话写清要在哪个入口做什么、验证什么。优先把一轮筛出的多个方向放进 intents 数组一次提交；返回 ids 与 intents 等长同序，失败项 id=0 并带 errors。",
 		obj(map[string]any{
-			"intents":    map[string]any{"type": "array", "description": "要新增的探索方向数组。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。", "items": map[string]any{"type": "object"}},
-			"summary":    str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
-			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的已确认事实/发现节点 id；顶层全新方向留空，会自动挂到任务起点。"},
-			"priority":   intp("优先级 0-10，默认 5"),
+			"intents":          map[string]any{"type": "array", "description": "要新增的探索方向数组。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。", "items": map[string]any{"type": "object"}},
+			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
+			"asset_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
+			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的已确认事实/发现节点 id；顶层全新方向留空，会自动挂到任务起点。"},
+			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。只有串行强依赖才填；无依赖留空，立即可领。前置 done/negative 后本条才 ready。"},
+			"hypothesis":       str("可选：本方向的明确假设（若 X 则 Y），供复盘/去重/验收。"),
+			"success_criteria": str("可选：什么结果算成功，worker 会据此判断 done/no_output。"),
+			"stop_condition":   str("可选：什么证据出现就停止该方向，避免空转。"),
+			"mechanism":        str("可选：稳定打法键（如 shiro-deserialize），同目标同打法保持一致，用于去重。"),
+			"route":            str("可选：路线/链路名（如 auth-bypass->shiro-rce），用于态势聚合与并行调度。"),
+			"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：约定产物（rce/foothold/credential/...）。"},
+			"acceptance":       str("可选：产物验收条件（有命令回显/可重复/可读取等）。"),
+			"estimated_tokens": intp("可选：预估 token 成本，只作调度信号。"),
+			"risk_area":        str("可选：漏洞类别（sqli/xss/rce/ssrf/idor/authz/auth/logic/upload/traversal/disclosure/other）。"),
+			"variant":          str("可选：与已有方向的实质变化说明。"),
+			"class":            map[string]any{"description": "可选：0-3 或语义标签（auth/recon/web/...），原样记录。"},
+			"techniques":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：ATT&CK 技术 ID（T1190 等）。"},
+			"change_evidence":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：支持 variant 的事实/发现节点 id。"},
+			"recheck_of":       intp("可选：正在复核哪条已结束意图 id。"),
+			"priority":         intp("优先级 0-10，默认 5"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -4729,7 +4855,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listCompanies(),
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，
 		// 补上"按域名/指纹/端口/状态码等条件在整库里查"的能力）。
-		t.listAssets(), t.assetNeighbors(),
+		t.listAssets(), t.assetNeighbors(), t.assetDossier(), t.blackboardQuery(),
 		// add_task_scope / add_company_scope（上面的 PlannerTools 首行）是 ARTEX 的
 		// 扩面入口：planner 在有归属证据时可主动把根域/公司/子域/IP 纳入范围。
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。

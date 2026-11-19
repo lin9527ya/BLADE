@@ -85,3 +85,32 @@ func TestWorkerScopeRequestToolIsProposalOnly(t *testing.T) {
 		t.Fatalf("无任务上下文应拒绝: %s", out)
 	}
 }
+
+// P0 只读取景工具：planner/main/worker 都应能按资产/路线查看窗口外黑板。
+func TestBlackboardReadToolsSurface(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	surfaces := map[string]map[string]bool{
+		"planner":   namesOf(ts.PlannerTools()),
+		"mainagent": namesOf(ts.MainAgentTools()),
+		"worker":    namesOf(ts.WorkerTools()),
+	}
+	for agent, have := range surfaces {
+		for _, want := range []string{"asset_dossier", "blackboard_query"} {
+			if !have[want] {
+				t.Fatalf("%s 缺少只读取景工具 %s", agent, want)
+			}
+		}
+	}
+	out := callTool(t, ts.PlannerTools(), "blackboard_query", `{}`)
+	if !strings.Contains(out, "需要任务上下文") {
+		t.Fatalf("无任务上下文应拒绝: %s", out)
+	}
+}
+
+func namesOf(tools []actool.CoreTool) map[string]bool {
+	out := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		out[tool.Name()] = true
+	}
+	return out
+}

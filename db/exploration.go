@@ -1231,6 +1231,76 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 	return scanNodes(rows)
 }
 
+// BlackboardQuery is a read-side filter over exploration nodes. All fields are
+// optional; empty/zero means no filter. Route matches contract.route or legacy
+// risk_area. AssetID filters through exploration_anchors.
+type BlackboardQuery struct {
+	Kind    string
+	State   string
+	Route   string
+	Q       string
+	AssetID int64
+	Limit   int
+	Offset  int
+}
+
+// QueryBlackboard returns one newest-first page plus the exact total. It is a
+// read-only projection for agents that need an asset/route/hypothesis slice
+// beyond the bounded overview window.
+func (s *ExplorationStore) QueryBlackboard(q BlackboardQuery) ([]*Node, int, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	args := []any{s.expID}
+	where := []string{"n.exploration_id=$1"}
+	add := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if kind := strings.TrimSpace(q.Kind); kind != "" {
+		where = append(where, "n.kind="+add(kind))
+	}
+	if state := strings.TrimSpace(q.State); state != "" {
+		where = append(where, "n.state="+add(state))
+	}
+	if q.AssetID > 0 {
+		where = append(where, "EXISTS (SELECT 1 FROM exploration_anchors a WHERE a.node_id=n.id AND a.asset_id="+add(q.AssetID)+")")
+	}
+	if route := strings.TrimSpace(q.Route); route != "" {
+		ph := add(route)
+		where = append(where, "(COALESCE(n.payload->'contract'->>'route','')="+ph+" OR COALESCE(n.payload->>'risk_area','')="+ph+")")
+	}
+	if text := strings.TrimSpace(q.Q); text != "" {
+		ph := add("%" + text + "%")
+		where = append(where, "(COALESCE(n.payload->>'summary','') ILIKE "+ph+
+			" OR COALESCE(n.payload->>'detail','') ILIKE "+ph+
+			" OR COALESCE(n.payload->>'hypothesis','') ILIKE "+ph+")")
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM exploration_nodes n WHERE "+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	lim := add(limit)
+	off := add(offset)
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n WHERE `+whereSQL+
+		` ORDER BY n.id DESC LIMIT `+lim+` OFFSET `+off, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	nodes, err := scanNodes(rows)
+	return nodes, total, err
+}
+
 // ListByKindState lists nodes of a kind in one state (newest first).
 //
 // 先按状态过滤再截窗口：hint 里 consumed 的历史会越积越多，若先取最新 N 条再在内存里
@@ -1432,6 +1502,12 @@ func (d *DB) ClaimableIntentCountsForContext(ctx context.Context, explorationIDs
 	rows, err := d.QueryContext(ctx, `SELECT n.exploration_id, COUNT(*)
 FROM exploration_nodes n
 WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open'
+AND NOT EXISTS (
+  SELECT 1 FROM exploration_edges e
+  JOIN exploration_nodes prerequisite ON prerequisite.id=e.dst_id
+  WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+    AND prerequisite.state NOT IN ('done','negative')
+)
 GROUP BY n.exploration_id`, explorationIDs)
 	if err != nil {
 		return nil, err
@@ -1450,8 +1526,14 @@ GROUP BY n.exploration_id`, explorationIDs)
 
 func (s *ExplorationStore) CountClaimableIntents() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state='open'`, s.expID).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+AND NOT EXISTS (
+  SELECT 1 FROM exploration_edges e
+  JOIN exploration_nodes prerequisite ON prerequisite.id=e.dst_id
+  WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+    AND prerequisite.state NOT IN ('done','negative')
+)`, s.expID).Scan(&n)
 	return n, err
 }
 
@@ -1874,10 +1956,17 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	// ARTEX parity: every open intent is claimable; legacy depends_on/requires data
-	// is kept for display but no longer gates dispatch.
+	// Only open intents whose explicit depends_on prerequisites have reached a
+	// usable conclusion are dispatchable. No dependency edge = immediately ready,
+	// so this preserves the old behavior for ordinary/parallel exploration.
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
 WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+AND NOT EXISTS (
+  SELECT 1 FROM exploration_edges e
+  JOIN exploration_nodes prerequisite ON prerequisite.id=e.dst_id
+  WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+    AND prerequisite.state NOT IN ('done','negative')
+)
 ORDER BY (COALESCE(n.payload->>'resume_after_restart','false')='true') DESC, n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
@@ -1891,8 +1980,8 @@ ORDER BY (COALESCE(n.payload->>'resume_after_restart','false')='true') DESC, n.p
 // slot outside the current pool (worker count shrank / upgrade) are fair game.
 // Owned-by-this-slot rows sort first so a resumed intent is picked before new work.
 func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int) ([]*Node, error) {
-	// Worker slots keep their names/leases, but dispatch order is ARTEX's plain
-	// priority/id frontier: no owner affinity and no dependency filtering.
+	// Worker slots keep their names/leases. Dispatch order remains priority/id, but
+	// explicit depends_on prerequisites are honored by Frontier.
 	return s.Frontier(limit)
 }
 
