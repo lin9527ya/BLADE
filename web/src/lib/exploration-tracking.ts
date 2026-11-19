@@ -1,3 +1,5 @@
+export const LEAD_TRACE_PAGE_SIZE = 10;
+
 export interface ScheduleComponents {
   priority: number;
   dependency: number;

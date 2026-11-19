@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { trackingDuration, schedulingScore, scheduleWaitLabel, LEAD_TRACE_LABELS } from "./exploration-tracking.ts";
+import { trackingDuration, schedulingScore, scheduleWaitLabel, LEAD_TRACE_LABELS, LEAD_TRACE_PAGE_SIZE } from "./exploration-tracking.ts";
 
 test("unknown historical latency is not rendered as zero", () => {
   assert.equal(trackingDuration(undefined), "未知");
@@ -16,4 +16,8 @@ test("completed branch means associated execution ended, not proved vulnerabilit
   assert.equal(LEAD_TRACE_LABELS.completed, "关联执行结束");
   assert.match(LEAD_TRACE_LABELS.needs_follow_up, /跟进/);
   assert.match(LEAD_TRACE_LABELS.source_changed, /复核/);
+});
+
+test("lead trace pagination uses a compact ten-row default", () => {
+  assert.equal(LEAD_TRACE_PAGE_SIZE, 10);
 });

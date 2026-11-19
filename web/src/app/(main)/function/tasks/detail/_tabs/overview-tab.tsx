@@ -876,7 +876,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       <TaskLootExecCard taskId={taskId} enabled={task?.loot_exec_enabled} />
       <TaskCredentialBudgetCard taskId={taskId} budget={task?.credential_attempt_budget} />
       <TaskRuntimeCard task={task} />
-      <ExplorationTrackingCard taskId={taskId} />
+      <ExplorationTrackingCard key={taskId} taskId={taskId} />
       <TaskInterceptRulesCard taskId={taskId} />
       {coverage?.enabled && coverage.scope_rows > 0 && (
         <Card>

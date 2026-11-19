@@ -112,7 +112,7 @@ func (s *Server) taskLeadTraces(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
-	limit, err := trackingInt(r, "limit", 20, 1, 100)
+	limit, err := trackingInt(r, "limit", 10, 1, 100)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

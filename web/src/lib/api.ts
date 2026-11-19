@@ -3,7 +3,7 @@
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
 // are passed through and formatted at the call site.
 
-import type { SchedulingReport, LeadTraceReport } from "@/lib/exploration-tracking";
+import { LEAD_TRACE_PAGE_SIZE, type SchedulingReport, type LeadTraceReport } from "@/lib/exploration-tracking";
 import type { ChatMention } from "@/lib/chat-mentions";
 import type { CacheDiagnostics, CacheTraceState, RuntimeMetrics } from "@/lib/diagnostics";
 import { MOCK } from "@/lib/mock/enabled";
@@ -644,7 +644,7 @@ export const api = {
   taskScheduling: (id: string, intentId?: string) =>
     get<SchedulingReport>(`/tasks/${id}/scheduling${intentId ? `?intent_id=${encodeURIComponent(intentId)}` : ""}`),
   taskLeadTraces: (id: string, state = "", offset = 0) => {
-    const query = new URLSearchParams({ limit: "20", offset: String(offset) });
+    const query = new URLSearchParams({ limit: String(LEAD_TRACE_PAGE_SIZE), offset: String(offset) });
     if (state) query.set("state", state);
     return get<LeadTraceReport>(`/tasks/${id}/leads?${query}`);
   },

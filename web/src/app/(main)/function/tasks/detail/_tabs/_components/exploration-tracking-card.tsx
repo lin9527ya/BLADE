@@ -6,6 +6,7 @@ import { ClockIcon, GitBranchIcon, ListOrderedIcon, RefreshCwIcon } from "lucide
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,6 +14,7 @@ import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import {
   LEAD_TRACE_LABELS,
+  LEAD_TRACE_PAGE_SIZE,
   schedulingScore,
   scheduleWaitLabel,
   trackingDuration,
@@ -54,6 +56,7 @@ function ScoreDetails({ row }: { row: ScheduleExplanation }) {
 }
 
 export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
+  const [showSchedule, setShowSchedule] = React.useState(false);
   const [schedule, setSchedule] = React.useState<SchedulingReport | null>(null);
   const [leads, setLeads] = React.useState<LeadTraceReport | null>(null);
   const [error, setError] = React.useState("");
@@ -64,12 +67,14 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
   const [refresh, setRefresh] = React.useState(0);
   React.useEffect(() => {
     setSchedule(null);
+  }, [taskId, focus, state, offset, showSchedule]);
+  React.useEffect(() => {
     setLeads(null);
   }, [taskId, focus, state, offset]);
   usePolling(async (alive) => {
     try {
       const [nextSchedule, nextLeads] = await Promise.all([
-        api.taskScheduling(taskId, focus || undefined),
+        showSchedule ? api.taskScheduling(taskId, focus || undefined) : Promise.resolve(null),
         api.taskLeadTraces(taskId, state, offset),
       ]);
       if (alive()) { setSchedule(nextSchedule); setLeads(nextLeads); setError(""); }
@@ -77,7 +82,7 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
       if (alive()) setError((e as Error).message);
       throw e;
     }
-  }, 10_000, [taskId, focus, state, offset, refresh]);
+  }, 10_000, [taskId, focus, state, offset, refresh, showSchedule]);
 
   function search() {
     const value = focusDraft.trim();
@@ -88,44 +93,53 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
   return (
     <div className="space-y-4">
       {error && <p role="alert" className="text-sm text-muted-foreground">调度/追踪读取失败：{error}</p>}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base"><ListOrderedIcon className="size-4" /> 调度解释</CardTitle>
-          <CardDescription>与 worker 共用评分实现；当前快照不保证下一刻排名不变。候选排名与任务运行门分开显示。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input aria-label="查询意图 ID" placeholder="意图 ID；留空查看候选" className="h-8 w-52" value={focusDraft} onChange={(e) => setFocusDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
-            <Button size="sm" variant="outline" onClick={search}>查询</Button>
-            <Button size="sm" variant="ghost" onClick={() => setRefresh((n) => n + 1)}><RefreshCwIcon className="size-3.5" />刷新</Button>
-          </div>
-          {!schedule ? <p className="text-sm text-muted-foreground">正在读取…</p> : (
-            <>
-              <p className="text-sm">待领 {schedule.open_total} · 依赖条件满足 {schedule.claimable_total} · 本次评分候选 {schedule.candidate_count} · 工作中 {schedule.active_works}/{schedule.worker_slots || "—"}</p>
-              {schedule.gate_reason && <p className="text-sm text-muted-foreground">当前运行门：{scheduleWaitLabel(schedule.gate_reason)}。下方是常规候选排名，不代表现在会执行。</p>}
-              {schedule.dispatch_mode === "goal_drain" && <p className="text-sm text-muted-foreground">达标收尾：常规排名暂不用于领取，仅 #{schedule.continuation_ids?.join("、#") || "无"} 可续读原工作输出。</p>}
-              <Table>
-                <TableHeader><TableRow><TableHead>排名 / ID</TableHead><TableHead>方向</TableHead><TableHead>得分</TableHead><TableHead>等待与原因</TableHead></TableRow></TableHeader>
-                <TableBody>{schedule.rows.map((row) => (
-                  <TableRow key={row.intent_id}>
-                    <TableCell className="align-top font-mono text-xs">{row.rank ?? "—"} / #{row.intent_id}</TableCell>
-                    <TableCell className="min-w-48 whitespace-normal align-top">{row.summary || "(无摘要)"}<div className="mt-1"><Badge variant="outline">{row.state}</Badge></div></TableCell>
-                    <TableCell className="align-top tabular-nums">{schedulingScore(row)}</TableCell>
-                    <TableCell className="min-w-56 whitespace-normal align-top text-xs">
-                      <p>自创建：{trackingDuration(row.waiting_seconds)}</p>
-                      <p className="mt-1 text-muted-foreground">{row.wait_reasons?.length ? row.wait_reasons.map(scheduleWaitLabel).join("；") : "候选已就绪，等待空闲槽位领取"}</p>
-                      <details className="mt-2"><summary className="cursor-pointer">评分分解</summary><div className="mt-2"><ScoreDetails row={row} /></div></details>
-                    </TableCell>
-                  </TableRow>
-                ))}</TableBody>
-              </Table>
-              {!schedule.rows.length && <p className="text-sm text-muted-foreground">暂无待领候选。</p>}
-              {!focus && schedule.open_total > schedule.rows.length && <p className="text-xs text-muted-foreground">仅展示前 {schedule.rows.length} 条。用意图 ID 可查询窗口外、阻塞意图及历史快照。</p>}
-              {schedule.last_dispatch && <details><summary className="cursor-pointer text-sm">上次保存的常规领取评分（不是当前重算）</summary><div className="mt-2"><ScoreDetails row={schedule.last_dispatch} /></div></details>}
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <Collapsible open={showSchedule} onOpenChange={setShowSchedule}>
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 text-base"><ListOrderedIcon className="size-4" /> 调度解释</CardTitle>
+              <CollapsibleTrigger asChild>
+                <Button size="sm" variant="outline">{showSchedule ? "收起调度解释" : "查看调度解释"}</Button>
+              </CollapsibleTrigger>
+            </div>
+            <CardDescription>{showSchedule ? "与 worker 共用评分实现；当前快照不保证下一刻排名不变。候选排名与任务运行门分开显示。" : "默认收起，按需查看候选排名、评分分解与等待原因。"}</CardDescription>
+          </CardHeader>
+          <CollapsibleContent>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Input aria-label="查询意图 ID" placeholder="意图 ID；留空查看候选" className="h-8 w-52" value={focusDraft} onChange={(e) => setFocusDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+                <Button size="sm" variant="outline" onClick={search}>查询</Button>
+                <Button size="sm" variant="ghost" onClick={() => setRefresh((n) => n + 1)}><RefreshCwIcon className="size-3.5" />刷新</Button>
+              </div>
+              {!schedule ? <p className="text-sm text-muted-foreground">正在读取…</p> : (
+                <>
+                  <p className="text-sm">待领 {schedule.open_total} · 依赖条件满足 {schedule.claimable_total} · 本次评分候选 {schedule.candidate_count} · 工作中 {schedule.active_works}/{schedule.worker_slots || "—"}</p>
+                  {schedule.gate_reason && <p className="text-sm text-muted-foreground">当前运行门：{scheduleWaitLabel(schedule.gate_reason)}。下方是常规候选排名，不代表现在会执行。</p>}
+                  {schedule.dispatch_mode === "goal_drain" && <p className="text-sm text-muted-foreground">达标收尾：常规排名暂不用于领取，仅 #{schedule.continuation_ids?.join("、#") || "无"} 可续读原工作输出。</p>}
+                  <Table>
+                    <TableHeader><TableRow><TableHead>排名 / ID</TableHead><TableHead>方向</TableHead><TableHead>得分</TableHead><TableHead>等待与原因</TableHead></TableRow></TableHeader>
+                    <TableBody>{schedule.rows.map((row) => (
+                      <TableRow key={row.intent_id}>
+                        <TableCell className="align-top font-mono text-xs">{row.rank ?? "—"} / #{row.intent_id}</TableCell>
+                        <TableCell className="min-w-48 whitespace-normal align-top">{row.summary || "(无摘要)"}<div className="mt-1"><Badge variant="outline">{row.state}</Badge></div></TableCell>
+                        <TableCell className="align-top tabular-nums">{schedulingScore(row)}</TableCell>
+                        <TableCell className="min-w-56 whitespace-normal align-top text-xs">
+                          <p>自创建：{trackingDuration(row.waiting_seconds)}</p>
+                          <p className="mt-1 text-muted-foreground">{row.wait_reasons?.length ? row.wait_reasons.map(scheduleWaitLabel).join("；") : "候选已就绪，等待空闲槽位领取"}</p>
+                          <details className="mt-2"><summary className="cursor-pointer">评分分解</summary><div className="mt-2"><ScoreDetails row={row} /></div></details>
+                        </TableCell>
+                      </TableRow>
+                    ))}</TableBody>
+                  </Table>
+                  {!schedule.rows.length && <p className="text-sm text-muted-foreground">暂无待领候选。</p>}
+                  {!focus && schedule.open_total > schedule.rows.length && <p className="text-xs text-muted-foreground">仅展示前 {schedule.rows.length} 条。用意图 ID 可查询窗口外、阻塞意图及历史快照。</p>}
+                  {schedule.last_dispatch && <details><summary className="cursor-pointer text-sm">上次保存的常规领取评分（不是当前重算）</summary><div className="mt-2"><ScoreDetails row={schedule.last_dispatch} /></div></details>}
+                </>
+              )}
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base"><GitBranchIcon className="size-4" /> 分叉接手与执行追踪</CardTitle>
@@ -168,8 +182,8 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
               </Table>
               {!leads.rows.length && <p className="text-sm text-muted-foreground">当前筛选没有结构化分叉记录。普通 fact 中未拆出的文字不会被猜测成已追踪线索。</p>}
               <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>当前筛选 {leads.total} 条 · 第 {Math.floor(offset / 20) + 1} 页</span>
-                <div className="flex gap-2"><Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</Button><Button size="sm" variant="outline" disabled={!leads.has_more} onClick={() => setOffset(offset + 20)}>下一页</Button></div>
+                <span>当前筛选 {leads.total} 条 · 每页 {LEAD_TRACE_PAGE_SIZE} 条 · 第 {Math.floor(offset / LEAD_TRACE_PAGE_SIZE) + 1} 页</span>
+                <div className="flex gap-2"><Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LEAD_TRACE_PAGE_SIZE))}>上一页</Button><Button size="sm" variant="outline" disabled={!leads.has_more} onClick={() => setOffset(offset + LEAD_TRACE_PAGE_SIZE)}>下一页</Button></div>
               </div>
             </>
           )}

@@ -53,6 +53,11 @@ func TestSchedulingAndLeadTraceAPIAreTaskScoped(t *testing.T) {
 	if trace.Stats.Total != 1 || trace.Stats.Adopted != 1 {
 		t.Fatalf("bad trace %+v", trace)
 	}
+	defaultPage := request(http.MethodGet, fmt.Sprintf("/api/tasks/%d/leads", taskID), "")
+	var defaults db.LeadTraceReport
+	if defaultPage.Code != 200 || json.Unmarshal(defaultPage.Body.Bytes(), &defaults) != nil || defaults.Limit != 10 || defaults.Stats.Total != trace.Stats.Total {
+		t.Fatal("default pagination must be ten rows without changing totals")
+	}
 	other, err := s.m.CreateTask("other scheduling fixture", "g", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
