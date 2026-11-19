@@ -639,7 +639,8 @@ const structuredIntentBlock = `
 - add_intent 的 summary/asset_ids/parent_ids 仍是必填核心；方向明确时建议补 hypothesis（若 X 则 Y）、success_criteria（什么算成功）、stop_condition（何时停）、mechanism（稳定打法键）、route（路线名）、produces/acceptance（产物与验收）、risk_area。它们都是可选的，不填不改变旧行为。
 - depends_on 只用于强串行利用链：前置意图 done/negative 后本条才可被 worker 领取；没有真实前置就留空，平行方向不要互相挂依赖。前置失败/越界时依赖会阻塞，planner 应根据 graph_audit/事实重排或拆链。
 - 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
-- recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。`
+- recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。
+- 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q) 并核对原任务 node_detail，不要把先例直接当成本任务结论。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经

@@ -354,3 +354,105 @@ func (t *ToolSet) verifyEvidence() actool.CoreTool {
 			})
 		})
 }
+
+// routeDossier is a route-level subboard: the intents on one route, their
+// states, and the facts/findings they yielded. It complements blackboardRoutes
+// (which only gives counts/recent summaries).
+func (t *ToolSet) routeDossier() actool.CoreTool {
+	return t.readExpTool("route_dossier",
+		"查看一条探索路线（contract.route / risk_area）的完整子板：该路线上的意图、状态分布，以及它们产出的事实/发现。用于判断一条利用链已走到哪、是否还有未验证分支。",
+		obj(map[string]any{
+			"route": str("路线名（contract.route 或 risk_area）"),
+			"limit": intp("每类最多返回几条（默认 30，上限 100）"),
+		}, "route"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return actool.Errorf("route_dossier 需要任务上下文"), nil
+			}
+			var a struct {
+				Route string `json:"route"`
+				Limit int    `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			if strings.TrimSpace(a.Route) == "" {
+				return actool.Errorf("route 必填"), nil
+			}
+			limit := a.Limit
+			if limit <= 0 {
+				limit = 30
+			}
+			if limit > 100 {
+				limit = 100
+			}
+			intents, total, err := t.ts.QueryBlackboard(db.BlackboardQuery{Route: a.Route, Kind: db.KindIntent, Limit: 200})
+			if err != nil {
+				return actool.Errorf("route_dossier: " + err.Error()), nil
+			}
+			ids := make([]int64, 0, len(intents))
+			states := map[string]int{}
+			items := make([]map[string]any, 0, minInt(limit, len(intents)))
+			for _, n := range intents {
+				ids = append(ids, n.ID)
+				states[n.State]++
+				if len(items) < limit {
+					items = append(items, compactBlackboardNode(n))
+				}
+			}
+			yielded := map[int64]bool{}
+			if len(ids) > 0 {
+				edges, _ := t.ts.EdgesTouching(ids)
+				for _, e := range edges {
+					if e.Rel == db.RelYields {
+						yielded[e.To] = true
+					}
+				}
+			}
+			outputs := make([]map[string]any, 0, minInt(limit, len(yielded)))
+			for id := range yielded {
+				if len(outputs) >= limit {
+					break
+				}
+				n, err := t.ts.GetNode(id)
+				if err != nil || n == nil {
+					continue
+				}
+				outputs = append(outputs, compactBlackboardNode(n))
+			}
+			return jsonResult(map[string]any{
+				"route": a.Route, "intent_total": total, "intent_states": states,
+				"intents": items, "outputs": outputs, "note": "outputs 只含 yields 边指向的事实/发现，完整正文用 node_detail(id)。",
+			})
+		})
+}
+
+// searchPrecedents exposes cross-task fact/finding memory. Results always carry
+// task/node provenance; the planner must inspect evidence before reusing them.
+func (t *ToolSet) searchPrecedents() actool.CoreTool {
+	return t.readExpTool("search_precedents",
+		"跨任务检索历史事实/发现：有公司范围时只看同公司任务，否则做全库关键词搜索。用于复用已知 negative result、成功链和资产结论；结果只是先例，必须核对 node_detail 证据后才能采信。",
+		obj(map[string]any{
+			"q":     str("关键词（summary/detail/hypothesis/title）"),
+			"limit": intp("最多返回几条（默认 20，上限 100）"),
+		}, "q"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return actool.Errorf("search_precedents 需要任务上下文"), nil
+			}
+			var a struct {
+				Q     string `json:"q"`
+				Limit int    `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			if strings.TrimSpace(a.Q) == "" {
+				return actool.Errorf("q 必填"), nil
+			}
+			hits, err := t.ts.SearchPrecedents(a.Q, a.Limit)
+			if err != nil {
+				return actool.Errorf("search_precedents: " + err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"hits": hits, "count": len(hits),
+				"note": "跨任务先例只读；先核对 task/node 证据，再决定是否复用到本任务。",
+			})
+		})
+}

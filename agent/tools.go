@@ -4880,7 +4880,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listCompanies(),
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，
 		// 补上"按域名/指纹/端口/状态码等条件在整库里查"的能力）。
-		t.listAssets(), t.assetNeighbors(), t.assetDossier(), t.blackboardQuery(), t.verifyEvidence(),
+		t.listAssets(), t.assetNeighbors(), t.assetDossier(), t.blackboardQuery(), t.routeDossier(), t.searchPrecedents(), t.verifyEvidence(),
 		// add_task_scope / add_company_scope（上面的 PlannerTools 首行）是 ARTEX 的
 		// 扩面入口：planner 在有归属证据时可主动把根域/公司/子域/IP 纳入范围。
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。

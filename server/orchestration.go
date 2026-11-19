@@ -578,6 +578,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedBlackboardReadTools()       // 新只读工具:资产档案/黑板过滤查询(存量库补绑)
 	s.seedProposeIntentsTool()        // worker 意图提案工具(存量库补绑)
 	s.seedVerifyEvidenceTool()        // 独立证据核对工具(存量库补绑)
+	s.seedRoutePrecedentTools()       // 路线子板/跨任务先例(存量库补绑)
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.reseedReporterPrompt()          // 报告模板:补详细利用过程/绝对路径/命令回显(一次性)
 	s.seedPlaybookAgent()             // 预置「打法沉淀」agent + report_foothold 触发器(一次性)
@@ -1553,6 +1554,23 @@ func (s *Server) seedVerifyEvidenceTool() {
 	for _, agentKey := range []string{"planner", "mainagent", "worker"} {
 		if err := s.m.pg.AddAgentToToolBinding(agentKey, []string{"verify_evidence"}); err != nil {
 			log.Printf("[tools] verify_evidence 绑定 %s 失败: %v", agentKey, err)
+			return
+		}
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)
+	}
+}
+
+// seedRoutePrecedentTools binds the P2 route/precedent read tools on existing DBs.
+func (s *Server) seedRoutePrecedentTools() {
+	const flag = "blackboard_route_precedent_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	for _, agentKey := range []string{"planner", "mainagent", "worker"} {
+		if err := s.m.pg.AddAgentToToolBinding(agentKey, []string{"route_dossier", "search_precedents"}); err != nil {
+			log.Printf("[tools] route/precedent 绑定 %s 失败: %v", agentKey, err)
 			return
 		}
 	}

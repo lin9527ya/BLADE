@@ -95,7 +95,7 @@ func TestBlackboardReadToolsSurface(t *testing.T) {
 		"worker":    namesOf(ts.WorkerTools()),
 	}
 	for agent, have := range surfaces {
-		for _, want := range []string{"asset_dossier", "blackboard_query", "verify_evidence"} {
+		for _, want := range []string{"asset_dossier", "blackboard_query", "verify_evidence", "route_dossier", "search_precedents"} {
 			if !have[want] {
 				t.Fatalf("%s 缺少只读取景/核对工具 %s", agent, want)
 			}
