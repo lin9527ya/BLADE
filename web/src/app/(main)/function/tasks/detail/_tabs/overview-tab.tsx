@@ -243,6 +243,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const totalOpen = stats?.claimable_intents ?? open.length;
   const totalRunning = stats?.intent_states?.running ?? running.length;
   const totalBlocked = stats?.intent_states?.blocked ?? blocked.length;
+  // 依赖阻塞：open 但 strict 前置仍活跃；与 state=blocked（执行失败）分开说。
+  const blockedByDeps = stats?.blocked_intents ?? [];
+  const totalBlockedByDeps = stats?.blocked_open_intents ?? blockedByDeps.length;
 
   return (
     <div className="flex flex-col gap-4">
@@ -1217,6 +1220,42 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardContent>
         </Card>
       </div>
+
+      {/* 依赖阻塞：open 但 strict 前置仍活跃。它不是执行失败，不能和下面的
+          state=blocked（出错/被拦）混为一谈；planner 会被看门狗唤醒解阻。 */}
+      {blockedByDeps.length > 0 && (
+        <Card className="border-amber-500/30">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ClockIcon className="size-4 text-amber-500" /> 依赖阻塞意图
+              <span className="font-normal text-muted-foreground text-xs">
+                （共 {totalBlockedByDeps} 条，等待前置产出）
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {blockedByDeps.slice(0, 10).map((i) => (
+              <div key={i.intent_id} className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">#{i.intent_id}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm">{i.summary || "(无摘要)"}</span>
+                </div>
+                <div className="mt-1 text-muted-foreground text-xs">
+                  前置：{i.blockers?.length
+                    ? i.blockers.map((b) => `#${b.id} ${b.state}`).join("、")
+                    : "未知"}
+                  {i.depends_on?.length ? `（共 ${i.depends_on.length} 条依赖）` : ""}
+                </div>
+              </div>
+            ))}
+            {totalBlockedByDeps > blockedByDeps.length && (
+              <p className="text-muted-foreground text-xs">
+                仅显示前 {blockedByDeps.length} 条；其余等 planner 处理后刷新。
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Blocked intents — 出错/被拦(如 LLM 网络问题)的意图，可一键重跑：置回 open，
           worker 会重新认领、从头再跑（已写回图谱的数据保留）；任务若已终态/暂停会自动复活。 */}

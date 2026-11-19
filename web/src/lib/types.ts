@@ -2839,6 +2839,20 @@ export interface DashboardSummary {
 }
 
 // ---- Stats ----
+export interface BlockedIntentBlocker {
+  id: number;
+  state: string;
+}
+
+/** 依赖阻塞的 open 意图（strict 前置仍 open/running/paused），与 state=blocked 不同。 */
+export interface BlockedIntent {
+  intent_id: number;
+  summary: string;
+  mode?: string;
+  depends_on?: number[];
+  blockers?: BlockedIntentBlocker[];
+}
+
 export interface Stats {
   assets: number;
   engine_mode: EngineMode;
@@ -2852,6 +2866,11 @@ export interface Stats {
   intent_states?: Record<string, number>;
   /** 当前可被 worker 领取（前置已满足）的意图数。 */
   claimable_intents?: number;
+  /** open 但被 strict 活跃前置挡住的意图数；与 state=blocked 不同。 */
+  blocked_open_intents?: number;
+  strict_blocked_intents?: number;
+  /** 前 N 条依赖阻塞意图的明细（id/summary/blockers）。 */
+  blocked_intents?: BlockedIntent[];
   /**
    * 遗留物（P43）：我们留在目标上的东西。`uncleaned` 与 `unknown` **分开给**——
    * unknown 是"没去确认还在不在"，并进未清理会把"我们不知道"说成"我们确认它还留着"。

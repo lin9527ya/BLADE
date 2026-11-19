@@ -65,6 +65,17 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	if n, err := t.Store.CountClaimableIntents(); err == nil {
 		out["claimable_intents"] = n
 	}
+	// 依赖阻塞（strict 前置仍活跃）与 state=blocked 不是一回事：前者是排队等前置，
+	// 后者是执行失败/被拦。UI 分开展示，避免把“等前置”误读成“坏了”。
+	if snap, err := t.Store.IntentDispatchSnapshot(); err == nil {
+		out["blocked_open_intents"] = snap.Blocked
+		out["strict_blocked_intents"] = snap.Blocked
+		if snap.Blocked > 0 {
+			if blocked, berr := t.Store.ListBlockedOpenIntents(20); berr == nil {
+				out["blocked_intents"] = blocked
+			}
+		}
+	}
 
 	// 遗留物（P43）：我们留在目标上、还没清理的东西。任务页据此给一条内联提示——
 	// 这是任务收尾前最该被看见的一个数（没清掉的 webshell 就是留在客户系统上的后门）。

@@ -1198,6 +1198,11 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 		out["claimable_intents"] = snap.Claimable
 		out["blocked_open_intents"] = snap.Blocked
 		out["strict_blocked_intents"] = snap.Blocked
+		if snap.Blocked > 0 {
+			if blocked, berr := t.ts.ListBlockedOpenIntents(10); berr == nil && len(blocked) > 0 {
+				out["blocked_intents"] = blocked
+			}
+		}
 	} else if claimable, cerr := t.ts.CountClaimableIntents(); cerr == nil {
 		out["claimable_intents"] = claimable
 	}

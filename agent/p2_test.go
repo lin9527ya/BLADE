@@ -94,4 +94,8 @@ func TestOverviewShowsStrictBlockedIntents(t *testing.T) {
 	if got, _ := data["strict_blocked_intents"].(int); got != 1 {
 		t.Fatalf("strict_blocked_intents=%d, want 1", got)
 	}
+	items, _ := data["blocked_intents"].([]db.BlockedOpenIntent)
+	if len(items) != 1 || items[0].IntentID != down || len(items[0].Blockers) != 1 || items[0].Blockers[0].ID != upstream {
+		t.Fatalf("blocked_intents 明细不完整：%+v", items)
+	}
 }

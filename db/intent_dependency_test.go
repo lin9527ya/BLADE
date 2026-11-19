@@ -205,6 +205,47 @@ func TestStrictDependencyWaitsForActivePrerequisite(t *testing.T) {
 	}
 }
 
+// 依赖阻塞可见性：列出 open strict 意图与仍活跃的前置状态。
+func TestListBlockedOpenIntentsExposesBlockers(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTaskWithOptions(fmt.Sprintf("dep-list-%d", time.Now().UnixNano()), "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	ts := d.Exploration(task.ExplorationID)
+
+	pre, err := ts.AddIntent(map[string]any{"summary": "前置"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := ts.AddIntentGraph(map[string]any{"summary": "下游", "depends_on": []int64{pre}, "depends_on_mode": "strict"}, 5, nil, "planner", []IntentEdge{{From: 0, To: pre, Rel: RelDependsOn}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := ts.ListBlockedOpenIntents(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].IntentID != down || list[0].Summary != "下游" || len(list[0].Blockers) != 1 || list[0].Blockers[0].ID != pre || list[0].Blockers[0].State != "open" {
+		t.Fatalf("blocked list mismatch: %+v", list)
+	}
+	if err := ts.SetIntentState(pre, "done"); err != nil {
+		t.Fatal(err)
+	}
+	list, err = ts.ListBlockedOpenIntents(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("前置 done 后不应再列为 blocked：%+v", list)
+	}
+}
+
 // 看门狗签名：活跃前置/状态变化要改变签名，前置终结后签名清空。
 func TestBlockedIntentSignatureTracksActivePrerequisite(t *testing.T) {
 	d, err := Open(testDSN(t))

@@ -1495,6 +1495,96 @@ WHERE n.exploration_id=$1 AND n.kind='intent'`, s.expID).Scan(&out.Open, &out.Ru
 	return out, nil
 }
 
+// IntentBlocker is one live prerequisite holding an open intent back.
+type IntentBlocker struct {
+	ID    int64  `json:"id"`
+	State string `json:"state"`
+}
+
+// BlockedOpenIntent is the compact explanation the UI/planner needs for a
+// strict dependency that is waiting on a live prerequisite. It is read-only;
+// scheduling still follows FrontierForSlot.
+type BlockedOpenIntent struct {
+	IntentID  int64           `json:"intent_id"`
+	Summary   string          `json:"summary"`
+	Mode      string          `json:"mode,omitempty"`
+	DependsOn []int64         `json:"depends_on,omitempty"`
+	Blockers  []IntentBlocker `json:"blockers,omitempty"`
+}
+
+// ListBlockedOpenIntents returns up to limit open strict intents whose
+// prerequisites are still open/running/paused, with the blocker states. This
+// makes the "open but not claimable" state visible instead of leaving it only
+// as a difference between two counters.
+func (s *ExplorationStore) ListBlockedOpenIntents(limit int) ([]BlockedOpenIntent, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`WITH blocked AS (
+  SELECT n.id, n.payload
+  FROM exploration_nodes n
+  WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+    AND COALESCE(n.payload->>'depends_on_mode','advisory')='strict'
+    AND EXISTS (
+      SELECT 1 FROM exploration_edges e
+      JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+      WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+        AND d.state IN ('open','running','paused')
+    )
+  ORDER BY n.priority DESC, n.id ASC
+  LIMIT $2
+)
+SELECT b.id, b.payload, d.id, d.state
+FROM blocked b
+JOIN exploration_edges e
+  ON e.exploration_id=$1 AND e.src_id=b.id AND e.rel='depends_on'
+JOIN exploration_nodes d
+  ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+WHERE d.state IN ('open','running','paused')
+ORDER BY b.id, d.id`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := map[int64]*BlockedOpenIntent{}
+	order := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		var payload []byte
+		var blockerID int64
+		var blockerState string
+		if err := rows.Scan(&id, &payload, &blockerID, &blockerState); err != nil {
+			return nil, err
+		}
+		item := byID[id]
+		if item == nil {
+			var p struct {
+				Summary   string  `json:"summary"`
+				Mode      string  `json:"depends_on_mode"`
+				DependsOn []int64 `json:"depends_on"`
+			}
+			_ = json.Unmarshal(payload, &p)
+			item = &BlockedOpenIntent{
+				IntentID: id, Summary: p.Summary, Mode: p.Mode, DependsOn: p.DependsOn,
+			}
+			byID[id] = item
+			order = append(order, id)
+		}
+		item.Blockers = append(item.Blockers, IntentBlocker{ID: blockerID, State: blockerState})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]BlockedOpenIntent, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
+}
+
 // BlockedIntentSignature returns a stable fingerprint of open intents that are
 // currently blocked by a live prerequisite. The watchdog compares signatures so
 // a persistent strict cycle/paused prerequisite wakes the planner once, not every
