@@ -696,7 +696,7 @@ const structuredIntentBlock = `
 - depends_on 默认是排序提示（advisory），不阻塞 worker 领取；只有确实需要串行强依赖时才设 depends_on_mode=strict。strict 也只在前置仍 open/running/paused 时暂缓派发；前置进入任何终态（done/negative，或 blocked/exhausted/stopped/out-of-scope/no_output）都会 fail-open，下游仍可领。串行链优先用分步派发 + TodoWrite，不把依赖边当安全锁。若 graph_health 出现 dead_dependency/dependency_cycle，用 node_detail 核对前置状态，重排/补前置/拆链，不要反复重派同一条。
 - 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
 - recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。
-- 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q) 并核对原任务 node_detail，不要把先例直接当成本任务结论。
+- 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q, scope=auto|company|campaign|global)。默认只给脱敏摘要、不返回 evidence；跨任务节点通常不能直接 node_detail，先按摘要与 task id 判断，确需证据时才显式 scope + include_evidence 取脱敏片段。不要把先例直接当成本任务结论。
 - 态势里的 campaign 是战役/阶段策略上下文：按 campaign.goal/phase 调整探索优先级，但授权边界仍只看本任务操作约束与 asset_scope。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板

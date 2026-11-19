@@ -440,30 +440,41 @@ func (t *ToolSet) routeDossier() actool.CoreTool {
 // task/node provenance; the planner must inspect evidence before reusing them.
 func (t *ToolSet) searchPrecedents() actool.CoreTool {
 	return t.readExpTool("search_precedents",
-		"跨任务检索历史事实/发现：有公司范围时只看同公司任务，否则做全库关键词搜索。用于复用已知 negative result、成功链和资产结论；结果只是先例，必须核对 node_detail 证据后才能采信。",
+		"跨任务检索历史事实/发现。scope=auto（默认：有公司范围看同公司，其次同战役，否则全库脱敏）、company、campaign、global。当前任务永远排除。默认不返回 evidence，summary 做凭据脱敏；只有显式选择 company/campaign/global 且 include_evidence=true 才返回脱敏后的 evidence；auto 回退全库时仍不返回。结果只是先例，不能直接当成本任务结论。",
 		obj(map[string]any{
-			"q":     str("关键词（summary/detail/hypothesis/title）"),
-			"limit": intp("最多返回几条（默认 20，上限 100）"),
+			"q":                str("关键词（summary/detail/hypothesis/title）"),
+			"limit":            intp("最多返回几条（默认 20，上限 100）"),
+			"scope":            str("可选：auto | company | campaign | global。company/campaign 无对应范围时返回空，不静默回退全库。"),
+			"include_evidence": map[string]any{"type": "boolean", "description": "可选：是否返回 evidence；默认 false。auto 回退到 global 时即使为 true 也不返回。"},
 		}, "q"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
 				return actool.Errorf("search_precedents 需要任务上下文"), nil
 			}
 			var a struct {
-				Q     string `json:"q"`
-				Limit int    `json:"limit"`
+				Q               string `json:"q"`
+				Limit           int    `json:"limit"`
+				Scope           string `json:"scope"`
+				IncludeEvidence bool   `json:"include_evidence"`
 			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Q) == "" {
 				return actool.Errorf("q 必填"), nil
 			}
-			hits, err := t.ts.SearchPrecedents(a.Q, a.Limit)
+			res, err := t.ts.SearchPrecedents(a.Q, a.Limit, db.PrecedentSearchOptions{
+				Scope: a.Scope, IncludeEvidence: a.IncludeEvidence,
+			})
 			if err != nil {
 				return actool.Errorf("search_precedents: " + err.Error()), nil
 			}
-			return jsonResult(map[string]any{
-				"hits": hits, "count": len(hits),
-				"note": "跨任务先例只读；先核对 task/node 证据，再决定是否复用到本任务。",
-			})
+			out := map[string]any{
+				"hits": res.Hits, "count": len(res.Hits), "scope": res.Scope,
+				"evidence_omitted": res.EvidenceOmitted,
+				"note":             "跨任务先例只读；先核对摘要/证据，再决定是否复用到本任务。全局结果的 task_name 已别名化，不能据此反推客户。",
+			}
+			if res.Reason != "" {
+				out["reason"] = res.Reason
+			}
+			return jsonResult(out)
 		})
 }

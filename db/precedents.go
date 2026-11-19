@@ -1,11 +1,28 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+)
+
+// PrecedentScope controls which tasks a precedent search may read.
+//
+//   - auto (default): company scope if the current task has one, else campaign,
+//     else redacted global.
+//   - company: only tasks sharing a company scope; no fallback when absent.
+//   - campaign: only tasks in the same campaign; no fallback when absent.
+//   - global: explicitly cross the whole database. Evidence remains omitted
+//     unless the caller also sets IncludeEvidence.
+const (
+	PrecedentScopeAuto     = "auto"
+	PrecedentScopeCompany  = "company"
+	PrecedentScopeCampaign = "campaign"
+	PrecedentScopeGlobal   = "global"
 )
 
 // Precedent is a compact cross-task memory hit: a fact/finding from another
@@ -24,14 +41,45 @@ type Precedent struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// SearchPrecedents searches facts/findings across other tasks by keyword. When
-// the current task has company scopes, the search is restricted to tasks with
-// those companies; otherwise it is a global keyword search. Results are capped
-// and newest-first; callers must inspect evidence before using them.
-func (s *ExplorationStore) SearchPrecedents(query string, limit int) ([]Precedent, error) {
+// PrecedentSearchOptions carries the explicitly chosen scope and whether the
+// caller wants raw evidence. Evidence is omitted by default because it may hold
+// credentials, payloads or client data; Summary is always secret-redacted.
+type PrecedentSearchOptions struct {
+	Scope           string
+	IncludeEvidence bool
+}
+
+// PrecedentSearchResult includes the resolved scope so the planner can tell
+// whether it got company/campaign data or a redacted global fallback.
+type PrecedentSearchResult struct {
+	Hits            []Precedent `json:"hits"`
+	Scope           string      `json:"scope"`
+	Reason          string      `json:"reason,omitempty"`
+	EvidenceOmitted bool        `json:"evidence_omitted,omitempty"`
+}
+
+func normalizePrecedentScope(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case PrecedentScopeCompany:
+		return PrecedentScopeCompany
+	case PrecedentScopeCampaign:
+		return PrecedentScopeCampaign
+	case PrecedentScopeGlobal:
+		return PrecedentScopeGlobal
+	default:
+		return PrecedentScopeAuto
+	}
+}
+
+// SearchPrecedents searches facts/findings in other tasks by keyword. The
+// current exploration is always excluded. auto resolves to company when the
+// task has company scopes, then campaign, then redacted global; explicit
+// company/campaign never silently fall back to global.
+func (s *ExplorationStore) SearchPrecedents(query string, limit int, opts PrecedentSearchOptions) (PrecedentSearchResult, error) {
+	result := PrecedentSearchResult{Hits: []Precedent{}}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return []Precedent{}, nil
+		return result, nil
 	}
 	if limit <= 0 {
 		limit = 20
@@ -49,49 +97,73 @@ func (s *ExplorationStore) SearchPrecedents(query string, limit int) ([]Preceden
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
 	pattern := "%" + escaped + "%"
 
-	rows, err := s.db.Query(`
-SELECT DISTINCT ts.company_id FROM task_scope ts
-JOIN tasks t ON t.id=ts.task_id
-WHERE t.exploration_id=$1 AND ts.kind='company' AND ts.company_id IS NOT NULL`, s.expID)
+	var campaignID sql.NullInt64
+	if err := s.db.QueryRow(`SELECT campaign_id FROM tasks
+WHERE exploration_id=$1 AND deleted_at IS NULL LIMIT 1`, s.expID).Scan(&campaignID); err != nil && err != sql.ErrNoRows {
+		return result, err
+	}
+	companies, err := s.companyScopeIDs()
 	if err != nil {
-		return nil, err
-	}
-	var companies []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		companies = append(companies, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+		return result, err
 	}
 
-	args := []any{pattern}
-	companyFilter := ""
-	if len(companies) > 0 {
+	requested := normalizePrecedentScope(opts.Scope)
+	resolved := requested
+	switch requested {
+	case PrecedentScopeAuto:
+		switch {
+		case len(companies) > 0:
+			resolved = PrecedentScopeCompany
+		case campaignID.Valid && campaignID.Int64 > 0:
+			resolved = PrecedentScopeCampaign
+		default:
+			resolved = PrecedentScopeGlobal
+			result.Reason = "auto_fallback_global"
+		}
+	case PrecedentScopeCompany:
+		if len(companies) == 0 {
+			result.Scope = PrecedentScopeCompany
+			result.Reason = "no_company_scope"
+			return result, nil
+		}
+	case PrecedentScopeCampaign:
+		if !campaignID.Valid || campaignID.Int64 == 0 {
+			result.Scope = PrecedentScopeCampaign
+			result.Reason = "no_campaign"
+			return result, nil
+		}
+	}
+	result.Scope = resolved
+	explicitGlobal := requested == PrecedentScopeGlobal
+	includeEvidence := opts.IncludeEvidence && (resolved != PrecedentScopeGlobal || explicitGlobal)
+	result.EvidenceOmitted = !includeEvidence
+
+	args := []any{s.expID, pattern}
+	scopeFilter := ""
+	switch resolved {
+	case PrecedentScopeCompany:
 		args = append(args, companies)
-		companyFilter = ` AND EXISTS (
+		scopeFilter = fmt.Sprintf(` AND EXISTS (
   SELECT 1 FROM task_scope ts
-  WHERE ts.task_id=t.id AND ts.kind='company' AND ts.company_id=ANY($2::bigint[])
-)`
+  WHERE ts.task_id=t.id AND ts.kind='company' AND ts.company_id=ANY($%d::bigint[])
+)`, len(args))
+	case PrecedentScopeCampaign:
+		args = append(args, campaignID.Int64)
+		scopeFilter = fmt.Sprintf(` AND t.campaign_id=$%d`, len(args))
 	}
 	args = append(args, fetchLimit)
 	q := `SELECT t.id, COALESCE(NULLIF(t.name,''), t.description), n.id, n.kind, n.state, n.payload, n.created_at
 FROM exploration_nodes n
 JOIN tasks t ON t.exploration_id=n.exploration_id
-WHERE t.deleted_at IS NULL AND n.kind IN ('fact','finding')
-  AND (COALESCE(n.payload->>'summary','') ILIKE $1 ESCAPE '\'
-    OR COALESCE(n.payload->>'detail','') ILIKE $1 ESCAPE '\'
-    OR COALESCE(n.payload->>'hypothesis','') ILIKE $1 ESCAPE '\'
-    OR COALESCE(n.payload->>'title','') ILIKE $1 ESCAPE '\')` + companyFilter + `
+WHERE t.deleted_at IS NULL AND n.exploration_id <> $1 AND n.kind IN ('fact','finding')
+  AND (COALESCE(n.payload->>'summary','') ILIKE $2 ESCAPE '\'
+    OR COALESCE(n.payload->>'detail','') ILIKE $2 ESCAPE '\'
+    OR COALESCE(n.payload->>'hypothesis','') ILIKE $2 ESCAPE '\'
+    OR COALESCE(n.payload->>'title','') ILIKE $2 ESCAPE '\')` + scopeFilter + `
 ORDER BY n.created_at DESC, n.id DESC LIMIT $` + fmt.Sprint(len(args))
-	rows, err = s.db.Query(q, args...)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	defer rows.Close()
 	out := make([]Precedent, 0, limit)
@@ -99,25 +171,34 @@ ORDER BY n.created_at DESC, n.id DESC LIMIT $` + fmt.Sprint(len(args))
 		var p Precedent
 		var payload []byte
 		if err := rows.Scan(&p.TaskID, &p.TaskName, &p.NodeID, &p.Kind, &p.State, &payload, &p.CreatedAt); err != nil {
-			return nil, err
+			return result, err
 		}
 		var m map[string]any
 		_ = json.Unmarshal(payload, &m)
+		summary := ""
 		for _, k := range []string{"summary", "text", "title"} {
 			if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
-				p.Summary = v
+				summary = v
 				break
 			}
 		}
-		if v, ok := m["evidence"].(string); ok {
-			p.Evidence = v
-		}
+		evidence, _ := m["evidence"].(string)
 		detail, _ := m["detail"].(string)
-		p.Score = precedentScore(query, p.Summary, detail, p.Evidence)
+		// Score against the original text, then redact what leaves the DB layer.
+		p.Score = precedentScore(query, summary, detail, evidence)
+		p.Summary = redactPrecedentSecrets(summary)
+		if includeEvidence {
+			p.Evidence = redactPrecedentSecrets(evidence)
+		}
+		if resolved == PrecedentScopeGlobal {
+			p.TaskName = fmt.Sprintf("task#%d", p.TaskID)
+		} else {
+			p.TaskName = redactPrecedentSecrets(p.TaskName)
+		}
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return result, err
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
@@ -131,7 +212,46 @@ ORDER BY n.created_at DESC, n.id DESC LIMIT $` + fmt.Sprint(len(args))
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	return out, nil
+	result.Hits = out
+	return result, nil
+}
+
+func (s *ExplorationStore) companyScopeIDs() ([]int64, error) {
+	rows, err := s.db.Query(`
+SELECT DISTINCT ts.company_id FROM task_scope ts
+JOIN tasks t ON t.id=ts.task_id
+WHERE t.exploration_id=$1 AND ts.kind='company' AND ts.company_id IS NOT NULL`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+var (
+	precedentPrivateKeyRE = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
+	precedentBearerRE     = regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+`)
+	precedentSecretRE     = regexp.MustCompile(`(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|authorization)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)`)
+)
+
+// redactPrecedentSecrets is a conservative best-effort scrubber for values that
+// commonly appear in evidence text. It is not a substitute for scope choice.
+func redactPrecedentSecrets(s string) string {
+	if s == "" {
+		return s
+	}
+	s = precedentPrivateKeyRE.ReplaceAllString(s, "[REDACTED PRIVATE KEY]")
+	s = precedentBearerRE.ReplaceAllString(s, "${1}[REDACTED]")
+	s = precedentSecretRE.ReplaceAllString(s, "${1}=[REDACTED]")
+	return s
 }
 
 // precedentScore is a deliberately local relevance score: exact phrase + term
