@@ -223,8 +223,9 @@ type ToolSet struct {
 	notifyFact func(kind string, intentID, factID int64, summary string, assetIDs []int64)
 	// notifyAsset, if set, wakes the planner after insert_assets registers assets.
 	notifyAsset func(summary string)
-	// llmVerifier, if set, asks a separate one-shot model review for verify_evidence
-	// (deep=true). It receives only the evidence digest, not the worker transcript.
+	// llmVerifier, if set, asks a one-shot review for verify_evidence (deep=true).
+	// It receives only the evidence digest, not the worker transcript; the host may
+	// wrap it with task-provider accounting.
 	llmVerifier func(ctx context.Context, prompt string) (string, error)
 	// resumeTask, if set, revives the task after a graph change that should make a
 	// stopped task run again (currently: set_goals adds a goal). It flips a terminal/
@@ -276,8 +277,8 @@ func (t *ToolSet) SetNotifyFact(fn func(kind string, intentID, factID int64, sum
 // SetNotifyAsset wires a wakeup after insert_assets registers new assets.
 func (t *ToolSet) SetNotifyAsset(fn func(string)) { t.notifyAsset = fn }
 
-// SetLLMVerifier wires an optional independent model review for verify_evidence.
-// nil = deterministic checks only.
+// SetLLMVerifier wires an optional one-shot review for verify_evidence.
+// nil = deterministic checks only. The callback receives the caller's context.
 func (t *ToolSet) SetLLMVerifier(fn func(context.Context, string) (string, error)) {
 	t.llmVerifier = fn
 }

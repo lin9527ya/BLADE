@@ -72,6 +72,9 @@ type Planner struct {
 	// compactionLLM, when set, supplies an independent provider for context
 	// summarization (see InstallContextManager). nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
+	// llmVerifier optionally wraps the default verifyWithLLM with host accounting
+	// (BeginLLMCall/EndLLMCall, llmrec attribution). nil = use verifyWithLLM directly.
+	llmVerifier func(ctx context.Context, digest string) (string, error)
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
@@ -91,16 +94,17 @@ func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, 
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
 
-// verifyWithLLM asks the planner's provider for a tool-less, independent review
-// of an evidence digest. It deliberately receives only the digest, not the
-// worker transcript, so it cannot be swayed by the worker's narration.
+// verifyWithLLM asks the task provider for a tool-less, isolated review of an
+// evidence digest. It receives only the digest, not the worker transcript, so the
+// worker's narration cannot sway it. It is NOT a separate model/provider; the host
+// may wrap it with accounting via SetLLMVerifier.
 func (p *Planner) verifyWithLLM(ctx context.Context, digest string) (string, error) {
 	if p == nil || p.prov == nil {
 		return "", fmt.Errorf("verifier model unavailable")
 	}
 	temp := 0.0
 	msg, _, _, err := p.prov.Complete(ctx, llm.CompletionRequest{
-		System:      []string{`你是授权渗透测试系统的独立证据审查员。只依据用户提供的证据摘要，判断事实是否足以支持其结论；不要补充未给出的事实，不要执行任何命令。输出 JSON：{"verdict":"supported|weak|insufficient|contradicted","reason":"一句话"}。`},
+		System:      []string{`你是授权渗透测试系统的只读证据复核员。只依据用户提供的证据摘要，判断事实是否足以支持其结论；不要补充未给出的事实，不要执行任何命令。输出 JSON：{"verdict":"supported|weak|insufficient|contradicted","reason":"一句话"}。`},
 		Messages:    []llm.Message{llm.UserText(digest)},
 		MaxTokens:   500,
 		Temperature: &temp,
@@ -124,6 +128,20 @@ func (p *Planner) SetCompactor(c *Compactor) { p.compactor = c }
 // SetCompactionLLM supplies an optional independent provider for context
 // summarization. nil/false = keep using this agent's own provider.
 func (p *Planner) SetCompactionLLM(fn func() (CompactionLLM, bool)) { p.compactionLLM = fn }
+
+// SetLLMVerifier wraps the default one-shot evidence review with host accounting.
+// The wrapper must call VerifyWithLLM for the actual model call; it exists so the
+// server can attach BeginLLMCall/EndLLMCall and llmrec attribution without the
+// agent package depending on the engine.
+func (p *Planner) SetLLMVerifier(fn func(ctx context.Context, digest string) (string, error)) {
+	p.llmVerifier = fn
+}
+
+// VerifyWithLLM exposes the default one-shot evidence review to the host wrapper.
+// It deliberately does not invoke the SetLLMVerifier hook, avoiding recursion.
+func (p *Planner) VerifyWithLLM(ctx context.Context, digest string) (string, error) {
+	return p.verifyWithLLM(ctx, digest)
+}
 
 // WaitCompaction 等这个 planner 名下的后台压缩收尾（任务停止/删除时调用）。
 // 压缩不受单轮 ctx 约束，没有这一步它会在任务拆掉之后继续写探索图。
@@ -750,7 +768,11 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
 		t.SetFindingRecorder(p.findingRecorder)
-		t.SetLLMVerifier(p.verifyWithLLM)
+		verifier := p.verifyWithLLM
+		if p.llmVerifier != nil {
+			verifier = p.llmVerifier
+		}
+		t.SetLLMVerifier(verifier)
 		if as != nil {
 			t.SetAssetStore(as, as.Companies())
 		}

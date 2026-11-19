@@ -271,6 +271,23 @@ func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest
 	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
 }
 
+// taskLLMVerifier wraps the planner's default deep evidence review with the
+// task/exploration attribution and the engine's in-flight LLM accounting. The
+// actual provider call remains plannerRuntime -> completeTaskLLM, so the task
+// provider chain, rate limiter and llmrec usage row are preserved.
+func (s *Server) taskLLMVerifier(t *Task, pl *agent.Planner) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, digest string) (string, error) {
+		ctx = llmrec.WithTaskID(ctx, t.ID)
+		ctx = llmrec.WithWorker(ctx, "verify_evidence")
+		ctx = llmrec.WithExplorationID(ctx, t.ExpID)
+		if s != nil && s.engine != nil {
+			s.engine.BeginLLMCall(t.ID)
+			defer s.engine.EndLLMCall(t.ID)
+		}
+		return pl.VerifyWithLLM(ctx, digest)
+	}
+}
+
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
 	for {
 		selection, err := hooks.current()
@@ -640,6 +657,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
+	// verify_evidence(deep=true) 的复核走同一任务 provider chain，但必须接回
+	// 引擎的在飞调用计数、任务/探索归因；否则暂停/删除/预算视图都看不到它。
+	pl.SetLLMVerifier(s.taskLLMVerifier(t, pl))
 	pl.SetRoundSeconds(int64(s.agentRunSeconds("planner"))) // 单轮墙钟预算（到点进收尾，不是硬杀）
 	pl.SetNoaEnabled(s.m.NoaCompactionEnabled)              // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	pl.SetKillWork(s.engine.KillWork)
