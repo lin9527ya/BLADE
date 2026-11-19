@@ -364,6 +364,14 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			b.WriteString(fmt.Sprintf("\n- 人修改了目标，由「%s」变为「%s」—— 请据新目标调整探索方向（原方向若已不适用请停派）。", ev.OldGoal, ev.NewGoal))
 		case "goal_abandoned":
 			b.WriteString(fmt.Sprintf("\n- 人放弃了该目标：%s（理由：%s）—— 它不再阻断收官，也不必再为它派意图；请据此重判剩余目标/方向。", ev.Summary, ev.Detail))
+		case "capability_fact", "lead_fact":
+			label := map[string]string{"capability_fact": "高价值能力事实", "lead_fact": "旁路线索事实"}[ev.Kind]
+			b.WriteString(fmt.Sprintf("\n- 意图 #%d 写回了%s #%d：%s。这是高优先级发散信号，优先判断是否立即补方向/并行验证。", ev.IntentID, label, ev.FactID, clipLine(ev.Summary, 240)))
+		case "foothold", "credential":
+			label := map[string]string{"foothold": "据点", "credential": "凭据"}[ev.Kind]
+			b.WriteString(fmt.Sprintf("\n- 意图 #%d 记录了新的%s #%d：%s。立即检查能否据此并行推进横向/提权/利用，不要等下一轮普通事实批次。", ev.IntentID, label, ev.FactID, clipLine(ev.Summary, 240)))
+		case "scope_request":
+			b.WriteString(fmt.Sprintf("\n- 意图 #%d 提交了扩面请求 fact #%d：%s。先核对归属证据，再决定是否 add_task_scope / add_company_scope；不要直接测试范围外资产。", ev.IntentID, ev.FactID, clipLine(ev.Summary, 240)))
 		case "fact", "contradiction", "negative_fact", "supersede":
 			label := map[string]string{
 				"fact": "事实", "contradiction": "矛盾事实", "negative_fact": "否定事实", "supersede": "替代事实",
@@ -412,7 +420,7 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			// 平台生成的收尾对账清单（只含计数与动作提示），不是目标内容。
 			detail := strings.TrimSpace(ev.Detail)
 			if detail == "" {
-				detail = "进入收官期：停止扩面，转入对账。"
+				detail = "进入收官期：优先收敛高确定性链路与补齐证据；仅直通目标的新高危发现可开短意图。"
 			}
 			b.WriteString("\n- " + detail)
 		case "requeued":
@@ -589,7 +597,7 @@ const plannerDivergentBlock = `
 【发散模式（任务级，代码持有）】
 - 覆盖度是参考信号，不是完成条件：除非用户目标明确写了“覆盖度达到 X%”，不要因为 coverage 未达 100% 拒绝或推迟 prove_goal；优先沿高价值入口向深打穿。
 - 不要为了铺平覆盖度制造浅测意图；优先机理多样、攻击链更深的未覆盖方向。
-- no_output 只表示本次运行没有写回，不等于方向失败：先 get_worker_trace / get_worker_output 看真实进度；有进展就续派或换机理，完全没有跑成才换方向。
+- 本次运行没有写回，不等于方向失败：先 get_worker_trace / get_worker_output 看真实进度；有进展就续派或换机理，完全没有跑成才换方向。
 - 本模式不放宽 RoE、时间窗、停机、拦截/审批、操作约束和证据底线；这些仍然最高优先。`
 
 const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系统的"规划者"，被频繁唤醒（图一变就唤醒）。职责：读态势 → 判目标 → **只在确有未被覆盖的新方向时**补充探索意图。你是规划者、不是执行者：本轮所有产物只能是【生成/说清意图】或【判定目标】，绝不在 plan 里把活干了。
@@ -612,10 +620,10 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 2. **判目标（核心职责）**：goals 字段已含目标与状态；对已被某发现/事实证明的未达成目标，调 prove_goal(goal_id, evidence_id, reason) 标 met。**当你标记的恰是最后一个未完成目标时，系统自动判定整个任务完成**——收官只由逐个 prove_goal 驱动，没有别的"一键完成"手段。
    - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、达到指定数量、获得某权限）时，prove_goal 前【必须】核对上方 graph_overview 的实测值（coverage.pct、findings_total 计数等）：未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。例：要求覆盖度 100% 而实测 coverage.pct=40% → 未达成，继续派补测意图。
 
-3. **（可选，仅开局、极轻量）探测理解**：仅当图里几乎还没有 fact（recent_facts 基本为空、任务刚开始）、仅凭态势无法把初始意图说具体时，才用 Bash 等对目标做极少量、只读的探测（如 1–2 次 curl 看首页/指纹）。**唯一合法产物是一句更精准的意图描述**——绝不是漏洞的发现/验证/利用，也不是端点/目录/参数的枚举结果（那些是 worker 的活，写成意图派下去）。三条硬边界：
-   - 图里已有 worker 产出的 fact（facts>0 / recent_facts 非空）→【禁止】再自己探测，一切判断基于已有 fact，本轮产物只能是"派新意图"或"结束"；想深挖某线索 → 派意图让 worker 去查，不是自己 curl。
-   - 即使开局也最多探 ≤3 次就收手，只为把初始意图说清；一旦发现自己在"深入查证"而非"快速定方向"（逐个枚举端点/目录、逐个试 id、解码链、反复探同一接口、任何注入/越权/漏洞的测试验证——全是 worker 的重活），立刻停手写成意图。
-   - 能从现有事实/态势判断的，根本不必探测。
+3. **（可选，轻量自检）探测理解**：当仅凭态势无法把关键分叉说具体时，可以用 Bash 等做 1–2 次**只读、低成本**验证（如响应头、连通性、公开页面/指纹）。**产物必须是一句更精准的意图描述**；不替代 worker 做扫描、目录/参数枚举、爆破、注入/越权/漏洞验证——那些是 worker 的重活，写成意图派下去。
+   - 已有 worker fact 时优先基于事实判断；若确实需要确认一个关键分叉（例如某接口是否可达），仍可做极轻量只读检查，但不要重复 worker 已经做过的探测。
+   - 发现自己在"深入查证"而不是"快速定方向"时立刻停手，写成意图。
+   - 能从现有事实/态势判断的，不必探测。
 
 4. **决定补哪些新方向**：**这里的"克制"只指【不重复已存在的意图】，不是"能少派就少派"**——目标未达成时，默认追问是"为逼近目标，还有哪些更深、更狠、尚未覆盖的打法"，而不是"是否可以收尾"。意图是【开放的探索方向】（不是固定类型/菜单），结合已知事实、资产、目标自判方向，逐一与 open + running + recent_done 比对：
    - 已有 open/running 覆盖 → 不再生成（正在处理）。
@@ -1052,16 +1060,41 @@ func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInpu
 // 只留结论而不是完整工具历史，是为了让下一轮的前缀短、稳定、可缓存。
 func hotPrefixMessages(roundInput, lastText string) []llm.Message {
 	out := make([]llm.Message, 0, 2)
-	if in := strings.TrimSpace(roundInput); in != "" {
-		out = append(out, llm.UserText(clipLine(in, 3000)))
+	if in := compactHotRoundInput(roundInput); in != "" {
+		out = append(out, llm.UserText(in))
 	}
 	if t := strings.TrimSpace(lastText); t != "" {
 		out = append(out, llm.Message{
 			Role:    llm.RoleAssistant,
-			Content: []llm.ContentBlock{llm.TextBlock(clipLine(t, 1200))},
+			Content: []llm.ContentBlock{llm.TextBlock(clipLine(t, 3000))},
 		})
 	}
 	return out
+}
+
+// compactHotRoundInput keeps the stable prompt/trigger preamble, not the giant
+// prefetched graph JSON. The old 3000-char prefix was almost entirely static rules
+// and overview JSON, so the next round effectively lost the previous trigger and
+// strategic reasoning. Assistant text is kept separately (up to 3000 chars).
+func compactHotRoundInput(roundInput string) string {
+	in := strings.TrimSpace(roundInput)
+	if in == "" {
+		return ""
+	}
+	head := in
+	if i := strings.Index(in, "【本轮态势"); i > 0 {
+		head = in[:i]
+	}
+	const triggerMark = "【本次触发本轮的实际变动"
+	if i := strings.Index(in, triggerMark); i >= 0 {
+		end := len(in)
+		rest := in[i+len(triggerMark):]
+		if j := strings.Index(rest, "\n\n【"); j >= 0 {
+			end = i + len(triggerMark) + j
+		}
+		head += "\n" + in[i:end]
+	}
+	return clipLine(strings.TrimSpace(head), 3000)
 }
 
 // dropHotSession 丢弃热会话（本轮失败/被取消时用：半截历史不适合当前缀）。
@@ -1113,7 +1146,7 @@ func (p *Planner) rememberRound(ts *db.ExplorationStore, prevMaxID int64, lastTe
 		}
 	}
 	var b strings.Builder
-	if t := clipLine(strings.TrimSpace(lastText), 500); t != "" {
+	if t := clipLine(strings.TrimSpace(lastText), 1500); t != "" {
 		b.WriteString("- 上一轮结论：" + t + "\n")
 	}
 	if len(intentions) > 0 {

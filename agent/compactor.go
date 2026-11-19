@@ -177,8 +177,8 @@ type ContextIndexVars struct {
 	Clock TaskClock
 }
 
-// renderClockLine 渲染任务时限。收官期要明说"不再新开探索面"——只给一个剩余分钟数，
-// 模型仍会按开局的节奏继续发散；这一步是把"最后一小时"从模型自觉变成平台政策。
+// renderClockLine 渲染任务时限。收官期优先收敛高确定性链路，但不一刀切禁止新方向：
+// 若刚拿到直通目标的核心凭据/入口，仍允许开短平快意图完成临门一脚。
 func renderClockLine(tc TaskClock, now time.Time) string {
 	rem, ok := tc.Remaining(now)
 	if !ok {
@@ -189,7 +189,7 @@ func renderClockLine(tc TaskClock, now time.Time) string {
 		mins = 0
 	}
 	if tc.Endgame(now) {
-		return fmt.Sprintf("\n【收官期 · 剩余约 %d 分钟】不再新开探索面：把在跑方向推到结论，做收尾对账（未闭合候选 / 未销账遗留物 / 覆盖空白），再收笔。", mins)
+		return fmt.Sprintf("\n【收官期 · 剩余约 %d 分钟】优先收敛高确定性利用链并补齐证据，做收尾对账（未闭合候选 / 未销账遗留物 / 覆盖空白）。只有新发现高危/高确定性直通目标路径时才开短平快意图，不再大面积铺广。", mins)
 	}
 	return fmt.Sprintf("\n任务时限：剩余约 %d 分钟。", mins)
 }

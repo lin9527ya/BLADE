@@ -715,12 +715,12 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 		view.projectionContract(out)
 		return out
 	})
-	// 线索/未消费事实/冷区事实索引/能力/已否定方向是**规划层**的决策材料：
-	// worker 只该做手里这一条意图，看到这些会诱发自行扩面。显式过滤，避免
-	// 以后往 overview 加字段时又漏进 worker 上下文。
+	// 线索/未消费事实/冷区事实索引是规划层的派单待办队列：对 worker 过滤掉避免
+	// 诱发自行扩面；但保留 capabilities 与 ruled_out，让 worker 知道团队已解锁的
+	// 能力与已被实证排除的死路，避免重复踩坑。
 	for _, k := range []string{
 		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
-		"unconsumed_facts", "capabilities", "ruled_out", "folded_facts", "folded_facts_total",
+		"unconsumed_facts", "folded_facts", "folded_facts_total",
 	} {
 		delete(out, k)
 	}
@@ -745,7 +745,9 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 		limit = 100
 	}
 	out := t.graphOverviewData()
-	// Capture totals before pruning fields.
+	// Capture totals, full route aggregation, and compact related_tasks summary
+	// BEFORE pruning/truncating display windows so routes reflect the true graph
+	// rather than only the truncated window.
 	totals := map[string]any{}
 	if states, err := t.ts.CountIntentStates(); err == nil {
 		// deleted 是规划者主动丢弃的方向：保留在任务页/播报板审计，但不进入
@@ -777,6 +779,52 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 	if v, ok := out["claimable_intents"]; ok {
 		totals["claimable"] = v
 	}
+	routes := blackboardRoutes(out)
+	// blackboardRoutes only sees graphOverview's capped intent window. Replace the
+	// counts with a full graph GROUP BY so a long-running route cannot disappear
+	// from the route fairness view just because its recent intents fell outside the
+	// display window. Local summaries are merged back when available.
+	if stats, rerr := t.ts.RouteDistribution(20); rerr == nil && len(stats) > 0 {
+		local := map[string]map[string]any{}
+		for _, r := range routes {
+			if name, ok := r["route"].(string); ok {
+				local[name] = r
+			}
+		}
+		global := make([]map[string]any, 0, len(stats))
+		for _, st := range stats {
+			m := map[string]any{
+				"route": st.Route, "intents": st.Intents, "open": st.Open,
+				"running": st.Running, "done": st.Done,
+			}
+			if l := local[st.Route]; l != nil {
+				if summaries, ok := l["summaries"]; ok {
+					m["summaries"] = summaries
+				}
+			}
+			global = append(global, m)
+		}
+		routes = global
+	}
+	var relatedSummary []map[string]any
+	if rt, ok := out["related_tasks"].([]map[string]any); ok {
+		totals["related_tasks"] = len(rt)
+		totals["related_tasks_total"] = len(rt)
+		for _, item := range rt {
+			if len(relatedSummary) >= 8 {
+				break
+			}
+			brief := map[string]any{}
+			for _, field := range []string{"task_id", "name", "description", "findings_total", "footholds_total", "credentials_total", "facts"} {
+				if v, exists := item[field]; exists {
+					brief[field] = v
+				}
+			}
+			if len(brief) > 0 {
+				relatedSummary = append(relatedSummary, brief)
+			}
+		}
+	}
 
 	// Bulky/derived sections stay available through graph_overview(detail=true).
 	for _, k := range []string{
@@ -785,26 +833,38 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 	} {
 		delete(out, k)
 	}
+	if len(relatedSummary) > 0 {
+		out["related_tasks_summary"] = relatedSummary
+	}
 	truncateMaps := func(key string, n int) {
 		if arr, ok := out[key].([]map[string]any); ok && len(arr) > n {
 			out[key] = arr[:n]
 		}
 	}
-	truncateMaps("open_intents", 12)
-	truncateMaps("running_intents", 8)
+	truncateMaps("open_intents", 16)
+	truncateMaps("running_intents", 10)
 	truncateMaps("paused_intents", 8)
-	truncateMaps("recent_done_intents", 10)
-	truncateMaps("recent_facts", 10)
-	truncateMaps("finding_list", 5)
-	truncateMaps("footholds", 3)
-	truncateMaps("credentials", 3)
-	truncateMaps("cold_digests", 3)
+	truncateMaps("recent_done_intents", 12)
+	truncateMaps("recent_facts", 20)
+	truncateMaps("finding_list", 15)
+	truncateMaps("footholds", 10)
+	truncateMaps("credentials", 10)
+	truncateMaps("cold_digests", 5)
 	truncateMaps("hints", 20)
 	truncateMaps("goals", 20)
 	for _, key := range []string{"matching_playbooks", "matching_cves", "company_knowledge"} {
-		if arr, ok := out[key].([]string); ok && len(arr) > 3 {
-			out[key] = arr[:3]
+		if arr, ok := out[key].([]string); ok && len(arr) > 5 {
+			out[key] = arr[:5]
 		}
+	}
+
+	var changeCursor string
+	if len(cursor) > 0 {
+		changeCursor = cursor[0]
+	}
+	changes, cerr := t.ts.BlackboardChanges(context.Background(), changeCursor, limit)
+	if cerr != nil {
+		return map[string]any{"read_status": db.ReadStatus{State: "unknown"}, "error": cerr.Error()}
 	}
 
 	// Incremental events. With a cursor we page forward (oldest first) and ask
@@ -814,6 +874,8 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 	events := make([]map[string]any, 0, limit)
 	hasMore, hasEarlier := false, false
 	probe := limit + 1
+	nextCursor := after
+	eventsDeduped := false
 	nodes, err := t.ts.NodesChangedSince(after, probe)
 	if err == nil {
 		if len(nodes) > limit {
@@ -825,26 +887,30 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 				hasMore = true
 			}
 		}
-		for _, n := range nodes {
-			m := compactNode(n)
-			m["kind"] = n.Kind
-			if s, ok := m["summary"].(string); ok {
-				m["summary"] = clipLine(s, 80)
-			}
-			events = append(events, m)
+		if len(nodes) > 0 {
+			nextCursor = nodes[len(nodes)-1].ID
 		}
-	}
-	nextCursor := after
-	if len(events) > 0 {
-		if id, ok := events[len(events)-1]["id"].(int64); ok {
-			nextCursor = id
+		// When the caller asks for the default initial bounded view (after==0,
+		// limit>=10) and structured blackboard_events (changes) are already present,
+		// avoid duplicating 20 legacy node snapshots on top of changes.
+		if after == 0 && limit >= 10 && len(changes.Changes) > 0 {
+			eventsDeduped = true
+		} else {
+			for _, n := range nodes {
+				m := compactNode(n)
+				m["kind"] = n.Kind
+				if s, ok := m["summary"].(string); ok {
+					m["summary"] = clipLine(s, 80)
+				}
+				events = append(events, m)
+			}
 		}
 	}
 	revision, _ := t.ts.MaxNodeID()
 	out["totals"] = totals
 	out["events"] = events
-	out["routes"] = blackboardRoutes(out)
-	out["blackboard"] = map[string]any{
+	out["routes"] = routes
+	bbMeta := map[string]any{
 		"node_revision":      revision,
 		"revision":           out["revision"],
 		"legacy_node_cursor": true,
@@ -852,16 +918,12 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 		"has_more":           hasMore,
 		"has_earlier":        hasEarlier,
 		"next_cursor":        nextCursor,
-		"window_note":        "有界黑板视图：totals 是真实总数，意图/知识/事件与 routes 都是当前窗口；折叠列表已省略（计数看 folded_*_total）。更早的详情用 graph_overview(detail=true) 或 list_facts/list_worker_traces 翻页。",
+		"window_note":        "有界黑板视图：totals 与 routes 基于完整图统计，意图/知识列表是当前窗口；折叠列表已省略（计数看 folded_*_total），关联任务见 related_tasks_summary。更早详情用 graph_overview(detail=true) 或 list_facts/blackboard_query 查。",
 	}
-	var changeCursor string
-	if len(cursor) > 0 {
-		changeCursor = cursor[0]
+	if eventsDeduped {
+		bbMeta["events_omitted_in_favor_of_changes"] = true
 	}
-	changes, cerr := t.ts.BlackboardChanges(context.Background(), changeCursor, limit)
-	if cerr != nil {
-		return map[string]any{"read_status": db.ReadStatus{State: "unknown"}, "error": cerr.Error()}
-	}
+	out["blackboard"] = bbMeta
 	out["changes"] = changes.Changes
 	out["change_cursor"] = changes.Cursor
 	out["changes_status"] = changes.Status
@@ -1327,7 +1389,8 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	}
 	leadsTotal, leadsOpen, leadsConverted, leadsDismissed := 0, 0, 0, 0
 	recentLeads := make([]map[string]any, 0, 20)
-	unconsumed := make([]map[string]any, 0, 5)
+	unconsumedHigh := make([]map[string]any, 0, 12)
+	unconsumedOther := make([]map[string]any, 0, 12)
 	capCounts := map[string]int{}
 	for _, n := range factNodes {
 		if n.State == "origin" || n.State == "dismissed" {
@@ -1335,10 +1398,12 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 		}
 		var fp map[string]any
 		_ = json.Unmarshal(n.Payload, &fp)
+		var factEnables []string
 		if en, ok := fp["enables"].([]any); ok {
 			for _, v := range en {
 				if sv, ok := v.(string); ok {
 					capCounts[sv]++
+					factEnables = append(factEnables, sv)
 				}
 			}
 		}
@@ -1351,6 +1416,7 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 				}
 			}
 		}
+		factOpenLeads := 0
 		for i, raw := range leads {
 			lm, ok := raw.(map[string]any)
 			if !ok {
@@ -1368,6 +1434,7 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 				continue
 			}
 			leadsOpen++
+			factOpenLeads++
 			if len(recentLeads) < 20 {
 				item := map[string]any{"id": id, "text": asText(lm["text"]), "from_fact": n.ID}
 				if from := factFrom[n.ID]; from > 0 {
@@ -1380,18 +1447,39 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 				recentLeads = append(recentLeads, item)
 			}
 		}
-		// 未被接手、且不是否定收尾的事实：给 planner 一个「这些线索还没人接」的窗口。
+		// 未被接手、且不是否定收尾的事实：优先保留带高价值 enables/leads 的事实，避免被普通 info 事实挤出窗口。
 		pol, _ := fp["polarity"].(string)
-		if pol != factPolarityNeg && len(childIntents[n.ID]) == 0 && !hidden(n.ID) && len(unconsumed) < 5 {
-			item := map[string]any{
-				"id": n.ID, "summary": asText(fp["summary"]), "polarity": pol,
-				"confidence": asText(fp["confidence"]), "age_min": int(time.Since(n.CreatedAt).Minutes()),
+		if pol != factPolarityNeg && len(childIntents[n.ID]) == 0 && !hidden(n.ID) {
+			highValue := hasActionableEnable(factEnables) || factOpenLeads > 0 || strings.EqualFold(asText(fp["origin"]), "proposal")
+			if (highValue && len(unconsumedHigh) < 12) || (!highValue && len(unconsumedOther) < 12) {
+				item := map[string]any{
+					"id": n.ID, "summary": asText(fp["summary"]), "polarity": pol,
+					"confidence": asText(fp["confidence"]), "age_min": int(time.Since(n.CreatedAt).Minutes()),
+				}
+				if len(factEnables) > 0 {
+					item["enables"] = factEnables
+				}
+				if factOpenLeads > 0 {
+					item["open_leads"] = factOpenLeads
+				}
+				if d, ok := fp["detail"].(string); ok && strings.TrimSpace(d) != "" {
+					item["detail_excerpt"] = FenceUntrusted("事实详情", clipLine(d, 200))
+				}
+				if highValue {
+					unconsumedHigh = append(unconsumedHigh, item)
+				} else {
+					unconsumedOther = append(unconsumedOther, item)
+				}
 			}
-			if d, ok := fp["detail"].(string); ok && strings.TrimSpace(d) != "" {
-				item["detail_excerpt"] = FenceUntrusted("事实详情", clipLine(d, 200))
-			}
-			unconsumed = append(unconsumed, item)
 		}
+	}
+	unconsumed := unconsumedHigh
+	if len(unconsumed) < 12 {
+		rem := 12 - len(unconsumed)
+		if rem > len(unconsumedOther) {
+			rem = len(unconsumedOther)
+		}
+		unconsumed = append(unconsumed, unconsumedOther[:rem]...)
 	}
 	if len(recentLeads) > 0 {
 		out["recent_leads"] = recentLeads
@@ -2492,16 +2580,19 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, warnings, fmt.Errorf("summary 不能为空")
 	}
-	// ARTEX parity: parent links are optional; when present they must be existing
-	// fact/finding nodes of this task or a directly related task.
+	// 意图可以派生自事实/发现，也可以直接派生自战果（据点/凭据）与已摄入的
+	// AD/云对象：目标本身可能就是“拿到某台机器 Shell”或“拿到某条凭据”，强迫
+	// planner 先补一条重复 fact 既浪费一轮，也会把战果从血缘上割裂。
 	parents := pidList(it.ParentIDs)
 	for _, parent := range parents {
 		n, err := t.ts.GetNodeWithSources(parent)
 		if err != nil || n == nil {
-			return 0, warnings, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", parent)
+			return 0, warnings, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是事实(fact)/发现(finding)/据点(foothold)/凭据(credential)/AD对象/云对象 id；顶层全新方向请留空 parent_ids", parent)
 		}
-		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
-			return 0, warnings, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上", parent, n.Kind)
+		switch n.Kind {
+		case db.KindFact, db.KindFinding, db.KindFoothold, db.KindCredential, db.KindADObject, db.KindCloudObject:
+		default:
+			return 0, warnings, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：允许事实/发现/据点/凭据/AD对象/云对象", parent, n.Kind)
 		}
 	}
 	// Optional dependency edges: depends_on is advisory by default and only affects
@@ -2646,6 +2737,13 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	edges := make([]db.IntentEdge, 0, len(parents)+len(dependsUnique)+1)
 	for _, parent := range parents {
 		edges = append(edges, db.IntentEdge{From: parent, Rel: db.RelDerivedFrom})
+		// 以据点/凭据派生意图时，同时记一条 uses：这说明该战果已经被真正消费，
+		// 不只存在于 outstanding_loot 列表里。Bash 侧的消费无法逐命令追踪，但
+		// planner 显式把战果作为 parent 已经是最可靠的可审计信号。
+		if n, err := t.ts.GetNodeWithSources(parent); err == nil && n != nil &&
+			(n.Kind == db.KindFoothold || n.Kind == db.KindCredential) {
+			edges = append(edges, db.IntentEdge{From: 0, To: parent, Rel: db.RelUses})
+		}
 	}
 	if len(parents) == 0 {
 		if origin, err := t.ts.OriginFactID(); err == nil && origin > 0 {
@@ -2670,13 +2768,13 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。默认 advisory：只影响排序、不阻塞领取；只有 depends_on_mode=strict 才在前置仍 open/running/paused 时暂缓派发。"},
 			"depends_on_mode":  str("可选：advisory（默认，只排序）或 strict（强串行）。strict 也会在前置进入任何终态后 fail-open，不会永久卡死。"),
 			"hypothesis":       str("可选：本方向的明确假设（若 X 则 Y），供复盘/去重/验收。"),
-			"success_criteria": str("可选：什么结果算成功，worker 会据此判断 done/no_output。"),
+			"success_criteria": str("可选：什么结果算完成/无产出，供 worker 自检与规划复盘。"),
 			"stop_condition":   str("可选：什么证据出现就停止该方向，避免空转。"),
-			"mechanism":        str("可选：稳定打法键（如 shiro-deserialize），同目标同打法保持一致，用于去重。"),
+			"mechanism":        str("可选：稳定打法键（如 shiro-deserialize），用于态势聚合、人工去重参考；不再作为硬去重门。"),
 			"route":            str("可选：路线/链路名（如 auth-bypass->shiro-rce），用于态势聚合与并行调度。"),
 			"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：约定产物（rce/foothold/credential/...）。"},
 			"acceptance":       str("可选：产物验收条件（有命令回显/可重复/可读取等）。"),
-			"estimated_tokens": intp("可选：预估 token 成本，只作调度信号。"),
+			"estimated_tokens": intp("可选：预估 token 成本，仅记录，不参与当前调度评分。"),
 			"risk_area":        str("可选：漏洞类别（sqli/xss/rce/ssrf/idor/authz/auth/logic/upload/traversal/disclosure/other）。"),
 			"variant":          str("可选：与已有方向的实质变化说明。"),
 			"class":            map[string]any{"description": "可选：0-3 或语义标签（auth/recon/web/...），原样记录。"},
@@ -2715,6 +2813,11 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			if !batch {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
+				}
+				// 单条提交也必须走和批量相同的“新意图可能复活任务”路径；此前提前
+				// return 会漏掉 resumeTask，导致已完成/暂停任务里的单条补派不被拉起。
+				if created && t.resumeTask != nil {
+					t.resumeTask()
 				}
 				msg := fmt.Sprintf("intent created: %d", ids[0])
 				if w := warns["0"]; len(w) > 0 {
@@ -2768,8 +2871,13 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 				return actool.Errorf("goal_id 必须是本任务的目标节点（关联任务目标只读）"), nil
 			}
 			evidenceNode, err := t.ts.GetNodeWithSources(ev)
-			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
-				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞节点"), nil
+			if err != nil || evidenceNode == nil {
+				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞/据点/凭据节点"), nil
+			}
+			switch evidenceNode.Kind {
+			case db.KindFact, db.KindFinding, db.KindFoothold, db.KindCredential:
+			default:
+				return actool.Errorf("evidence_id 必须是事实/漏洞/据点/凭据节点"), nil
 			}
 			completionNotice := ""
 			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
@@ -3111,8 +3219,12 @@ const (
 	factPolarityMaybe = "inconclusive"
 )
 
-// normalizeFactPolarity 规范化 polarity；缺省按否定关键词与 confidence 兜底。
-func normalizeFactPolarity(raw, summary, confidence string) string {
+// normalizeFactPolarity 规范化 polarity；缺省按能力/线索信号与否定关键词兜底。
+//
+// 带 credential/foothold/access/surface 或 leads 的事实是“进攻面信号”，不能因为
+// summary 里出现“失败/拒绝/报错”等词就被机械降级为 negative——这类混合句式往往正是
+// 突破口（登录失败回显 SQL 报错、CORS 拒绝任意 Origin 但漏子域等）。
+func normalizeFactPolarity(raw, summary, confidence string, enables []string, leads []map[string]any) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case factPolarityPos:
 		return factPolarityPos
@@ -3122,16 +3234,49 @@ func normalizeFactPolarity(raw, summary, confidence string) string {
 		return factPolarityMaybe
 	}
 	low := strings.ToLower(summary)
+	hasSignal := hasCapabilityEnables(enables) || len(leads) > 0
+	if hasSignal {
+		if strings.EqualFold(strings.TrimSpace(confidence), "inferred") {
+			return factPolarityMaybe
+		}
+		return factPolarityPos
+	}
+	negativeHit := false
 	for _, w := range []string{"未发现", "不存在", "不可", "无法", "失败", "拒绝", "关闭", "均无", "全 404", "全部 404", "not found", "no "} {
 		if strings.Contains(low, w) {
-			return factPolarityNeg
+			negativeHit = true
+			break
 		}
+	}
+	if negativeHit {
+		// 混合句式：既出现否定词，又出现“从异常里拿到信息/能力”的正向信号时，
+		// 只能判存疑，不能直接塞进 ruled_out。
+		for _, w := range []string{"报错", "堆栈", "泄露", "回显", "绕过", "成功", "发现", "返回", "暴露", "语法", "sql", "token", "凭据", "口令"} {
+			if strings.Contains(low, w) {
+				return factPolarityMaybe
+			}
+		}
+		return factPolarityNeg
 	}
 	if strings.EqualFold(strings.TrimSpace(confidence), "inferred") {
 		return factPolarityMaybe
 	}
 	return factPolarityPos
 }
+
+func hasCapabilityEnables(enables []string) bool {
+	for _, e := range enables {
+		switch strings.ToLower(strings.TrimSpace(e)) {
+		case "credential", "foothold", "access", "surface":
+			return true
+		}
+	}
+	return false
+}
+
+// hasActionableEnable is the older name used by the bounded blackboard view.
+// Keep it as a thin alias so both call sites agree on which enables are actionable.
+func hasActionableEnable(enables []string) bool { return hasCapabilityEnables(enables) }
 
 // normalizeEnables 只保留词表内的能力标签。
 func normalizeEnables(raw []string) []string {
@@ -3187,6 +3332,8 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	if origin := strings.TrimSpace(it.Origin); origin != "" {
 		payload["origin"] = origin
 	}
+	enables := normalizeEnables(it.Enables)
+	leads := cleanLeads(it.Leads)
 	if err := t.ts.ValidateEvidenceMetadata(it.EvidenceMeta); err != nil {
 		return 0, err
 	}
@@ -3204,14 +3351,14 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	}
 	// 事实语义：polarity 决定这条事实还能不能开出下文（否定收尾不催办），
 	// enables 是「这条事实给了什么能力」，leads 是本意图之外的线索。
-	payload["polarity"] = normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence)
-	if en := normalizeEnables(it.Enables); len(en) > 0 {
-		payload["enables"] = en
+	payload["polarity"] = normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence, enables, leads)
+	if len(enables) > 0 {
+		payload["enables"] = enables
 	}
 	if lim := strings.TrimSpace(it.Limitations); lim != "" {
 		payload["limitations"] = lim
 	}
-	if leads := cleanLeads(it.Leads); len(leads) > 0 {
+	if len(leads) > 0 {
 		payload["leads"] = leads
 	}
 	intent := pid(it.IntentID)
@@ -3244,12 +3391,17 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		kind := strings.TrimSpace(it.NotifyKind)
 		if kind == "" {
 			kind = "fact"
+			pol := normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence, enables, leads)
 			if len(it.ContradictsIDs) > 0 {
 				kind = "contradiction"
 			} else if len(it.SupersedesIDs) > 0 {
 				kind = "supersede"
-			} else if pol := normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence); pol == factPolarityNeg {
+			} else if pol == factPolarityNeg {
 				kind = "negative_fact"
+			} else if hasCapabilityEnables(enables) {
+				kind = "capability_fact"
+			} else if len(leads) > 0 {
+				kind = "lead_fact"
 			}
 		}
 		t.notifyFact(kind, intent, id, it.Summary, pidList(it.AssetIDs))
@@ -3339,7 +3491,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			"detail":          str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
 			"evidence":        str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
 			"confidence":      str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
-			"polarity":        str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 summary 关键词与 confidence 推断。"),
+			"polarity":        str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 enables/leads、summary 与 confidence 推断；混合正负信号（失败但泄露报错/绕过）请显式填 inconclusive，不要机械写 negative。"),
 			"enables":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【能力标签】这条事实给了什么：credential | foothold | access | info | surface（可多选，没有就省略）"},
 			"limitations":     str("这条结论的适用边界/前提（可选）：在什么条件下不成立、还缺什么验证。"),
 			"leads":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "【本意图之外的线索】数组，元素 {text, asset_ids?}：看到的其它入口/参数/行为/资产，值得 planner 下一轮跟进。最多 8 条、每条 ≤300 字；线索不是结论，不需要 evidence。不要把线索塞进 summary。"},
@@ -3623,6 +3775,24 @@ func (t *ToolSet) recordLoot(kind string, base lootBase, extra map[string]any) (
 	return id, nil
 }
 
+// notifyLoot wakes the planner immediately for a new foothold/credential. These
+// are high-value capabilities: waiting for the next 45s fact batch would let the
+// planner keep dispatching peripheral work without knowing the team already has a
+// way in. Best-effort; a nil callback is fine in unit contexts.
+func (t *ToolSet) notifyLoot(kind string, intentRaw json.RawMessage, id int64, summary string, assets []json.RawMessage) {
+	iid, err := t.writeIntent(intentRaw)
+	if err != nil {
+		iid = 0
+	}
+	if t.notifyFact != nil {
+		t.notifyFact(kind, iid, id, summary, pidList(assets))
+		return
+	}
+	if t.notify != nil {
+		t.notify()
+	}
+}
+
 // reportFoothold 记录一个真正拿到手的据点。worker 侧。
 func (t *ToolSet) reportFoothold() actool.CoreTool {
 	return t.writeExpTool("report_foothold",
@@ -3661,6 +3831,7 @@ func (t *ToolSet) reportFoothold() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
+			t.notifyLoot("foothold", a.IntentID, id, a.Summary, a.AssetIDs)
 			t.writes.Footholds++
 			t.writes.noteValidationAssets(pidList(a.AssetIDs))
 			// 拿到了机器，域内图也要知道：把对应的 AD 计算机对象标成 owned，
@@ -3975,6 +4146,7 @@ func (t *ToolSet) reportCredential() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
+			t.notifyLoot("credential", a.IntentID, id, a.Summary, a.AssetIDs)
 			t.writes.Credentials++
 			t.writes.noteValidationAssets(pidList(a.AssetIDs))
 			// 能登哪 → 图上连一条 reaches（但**不**标 owned：能认证不等于机器已经在手）。
@@ -4802,7 +4974,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 // summaries (≤100 chars), each tagged with its intent_id for follow-up drill-down.
 func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 	return t.readExpTool("search_all_worker_traces",
-		"【通常不推荐使用，因为系统中已经给了大部分信息了】在【本任务其他 work 的执行过程】里按关键字(q)检索——用于找回某个 worker 见过、却没写进 fact 的东西（某路径/token/报错等）。"+
+		"在【本任务其他 work 的执行过程】里按关键字(q)检索——用于找回某个 worker 见过、却没写进 fact 的东西（某路径/token/报错等），尤其是跨 worker 的隐蔽关联线索。"+
 			"已自动排除你自己这条意图的步骤（那些本就在你上下文里）。"+
 			"只返回命中步骤的摘要(summary≤100字)，每条带 intent_id；据此再用 get_worker_trace(intent_id, step_ids=[...]) 取完整内容。",
 		obj(map[string]any{

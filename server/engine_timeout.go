@@ -146,7 +146,8 @@ func (e *Engine) clockCtx(base context.Context, t *Task, final bool) context.Con
 	return agent.WithTaskClock(base, agent.TaskClock{DeadlineUnix: dl, EndgameUnix: endgameStartUnix(dl, int64(t.TimeoutSeconds)), Final: final})
 }
 
-// 收官期（endgame）是任务的最后一段：不再新开探索面，只把在跑方向推到结论并做对账
+// 收官期（endgame）是任务的最后一段：优先收敛高确定性链路并做对账；只有直通目标的
+// 新高危发现才允许开短平快意图，不再大面积铺广
 // （未闭合候选、未销账遗留物、覆盖空白）。sapper 的战役复盘里，"最后 1/4 时间停止开新题 +
 // 收尾对账"是四个阶段的最后一击（收官清账比赶工值钱）。
 //
@@ -286,7 +287,7 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 			if eg := endgameStartUnix(dl, int64(t.TimeoutSeconds)); eg > 0 && time.Now().Unix() >= eg {
 				if _, loaded := e.endgameNotified.LoadOrStore(t.ID, true); !loaded {
 					e.emitActivity(t, db.Activity{Worker: "planner", Kind: "system",
-						Summary: "进入收官期：停止新开探索面，转入收尾与对账"})
+						Summary: "进入收官期：优先收敛高确定性链路并收尾；仅直通目标的新高危发现可开短意图"})
 					t.NotifyReconcile(e.reconcileChecklist(t))
 				}
 			}

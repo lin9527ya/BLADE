@@ -11,11 +11,26 @@ import (
 	"time"
 )
 
-func logicalSessionForClaim(n *Node, exploration int64, owner string) string {
+// PerIntentWorkerSession reports whether workers should isolate each intent in
+// its own logical session rather than sharing one transcript per worker slot.
+// BLADE_WORKER_PER_INTENT_SESSION explicitly forces on ("1"/"true"/"yes") or
+// off ("0"/"false"/"no"). When unset, divergent exploration defaults to
+// per-intent sessions to eliminate cross-intent anchoring bias.
+func PerIntentWorkerSession(explorationMode string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BLADE_WORKER_PER_INTENT_SESSION"))) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(explorationMode), "divergent")
+}
+
+func logicalSessionForClaim(n *Node, exploration int64, owner, explorationMode string) string {
 	if n.LogicalSessionID != "" {
 		return n.LogicalSessionID
 	}
-	if strings.TrimSpace(os.Getenv("BLADE_WORKER_PER_INTENT_SESSION")) == "1" {
+	if PerIntentWorkerSession(explorationMode) {
 		return fmt.Sprintf("exp%d-worker-i%d", exploration, n.ID)
 	}
 	var p struct {
@@ -47,7 +62,8 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 	}
 	defer tx.Rollback()
 	var task int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL`, s.expID).Scan(&task)
+	var explorationMode string
+	err = tx.QueryRowContext(ctx, `SELECT id, COALESCE(exploration_mode,'balanced') FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL`, s.expID).Scan(&task, &explorationMode)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -66,7 +82,7 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 	if n.State != expected {
 		return nil, nil
 	}
-	session := logicalSessionForClaim(n, s.expID, owner)
+	session := logicalSessionForClaim(n, s.expID, owner, explorationMode)
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "blade.logical-session:"+session); err != nil {
 		return nil, err
 	}

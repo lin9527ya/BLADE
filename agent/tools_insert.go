@@ -570,6 +570,7 @@ func (t *ToolSet) requestScopeExpansion() actool.CoreTool {
 				Confidence: "observed",
 				Polarity:   "inconclusive",
 				Enables:    []string{"info"},
+				NotifyKind: "scope_request",
 			}, 0)
 			if err != nil {
 				return actool.Errorf("记录扩面请求失败：" + err.Error()), nil
@@ -688,14 +689,14 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 func (t *ToolSet) listAssets() actool.CoreTool {
 	return readTool(
 		"list_assets",
-		"查询资产库：DSL 表达式搜索，或按 id/ids 直取；支持分页。只返回【本任务及直接关联任务】测试范围内的资产。\n"+
+		"查询资产库：DSL 表达式搜索、按 id/ids 直取，或按范围分页浏览；只返回【本任务及直接关联任务】测试范围内的资产。\n"+
 			"DSL：field=value 模糊(ILIKE) | field==value 精确 | field!=value 排除 | 数字字段支持 > >= < <= | 裸词=全文模糊；AND/OR 组合(AND 优先级高)，可用括号分组。资产类型用独立 type 参数，不写进 DSL。\n"+
-			"未传 id/ids 时 dsl 必须非空（不允许无条件全量查询）。\n"+
+			"不传 id/ids/dsl 时按 limit 返回范围内资产（默认 20，上限 50）；中小任务不必编造 dsl 绕过。\n"+
 			"可用字段：domain(根/子/服务域名)、root_domain、ip、url、page_title、icp、service_name、app_name、method(如 GET/POST)、service_type(http|other)、record_type(如 A/CNAME)、technology(数组，=模糊 ==精确)、port/status_code/company_id(整数)。\n"+
 			"示例：status_code>=400 AND technology=shiro ；(port==80 OR port==443) AND technology=nginx",
 		obj(map[string]any{
-			"dsl":    str(`DSL 查询表达式（语法/字段见工具描述）。未传 id/ids 时必须非空。`),
-			"type":   str("资产类型过滤：root_domain|ip|subdomain|app|service|endpoint（独立字段，可与 dsl 叠加；单独 type 不足以查询，仍需 dsl）"),
+			"dsl":    str(`DSL 查询表达式（语法/字段见工具描述）。可省略，省略时按 limit 浏览范围内资产。`),
+			"type":   str("资产类型过滤：root_domain|ip|subdomain|app|service|endpoint（独立字段，可与 dsl 叠加）"),
 			"id":     intp("直接按单个资产 id 取（可选，与 dsl/type 互斥）"),
 			"ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "直接按多个资产 id 取（可选，与 dsl/type 互斥）"},
 			"limit":  intp("返回上限，默认 10（可选）"),
@@ -715,7 +716,10 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			}
 			_ = json.Unmarshal(in, &a)
 			if a.Limit <= 0 {
-				a.Limit = 10
+				a.Limit = 20
+			}
+			if a.Limit > 50 {
+				a.Limit = 50
 			}
 
 			var assets []*db.Asset
@@ -728,7 +732,7 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			case a.DSL != "":
 				assets, err = t.as.QueryDSLInScope(a.DSL, a.Type, t.taskID, a.Limit, a.Offset)
 			default:
-				return actool.Errorf("未传 id/ids 时 dsl 不能为空：不允许无条件查询全部资产，请提供查询条件"), nil
+				assets, err = t.as.ListInScope(t.taskID, a.Type, a.Limit, a.Offset)
 			}
 			if err != nil {
 				return actool.Errorf("DSL 错误: " + err.Error()), nil
@@ -816,7 +820,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.reportFootprint(), t.listFootprints(), t.markFootprintCleaned(), t.markFootprintNotFound(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
 		// 重复 report 会多出一条凭据节点，图上就出现两条一样的凭据。
-		t.verifyCredential(), t.recordCredentialCheck(), t.markLootLost(), t.recordCredentialCheck(), t.markLootLost(),
+		t.verifyCredential(), t.recordCredentialCheck(), t.markLootLost(),
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		// 但 worker 发现范围外疑似目标资产时，可以用 request_scope_expansion 把证据交给 planner。

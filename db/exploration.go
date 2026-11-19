@@ -2229,6 +2229,55 @@ func (s *ExplorationStore) FindingIntentsTerminal() (map[int64]int64, error) {
 	return out, rows.Err()
 }
 
+// RouteStat is one route bucket over the complete intent graph (not the bounded
+// display window). route/open/running/done counts drive the planner's route
+// diversity view.
+type RouteStat struct {
+	Route   string
+	Intents int
+	Open    int
+	Running int
+	Done    int
+}
+
+// RouteDistribution aggregates every non-deleted intent by contract.route,
+// risk_area, or legacy route key. It is deliberately a COUNT/GROUP BY query so
+// routes stay honest even when open_intents/recent_done_intents are truncated.
+func (s *ExplorationStore) RouteDistribution(limit int) ([]RouteStat, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT
+  COALESCE(NULLIF(payload->'contract'->>'route',''), NULLIF(payload->>'risk_area',''), NULLIF(payload->>'route',''),
+    CASE WHEN jsonb_typeof(payload->'asset_ids')='array' AND jsonb_array_length(payload->'asset_ids')>0
+      THEN 'asset:' || (payload->'asset_ids'->>0) ELSE 'unrouted' END) AS route,
+  COUNT(*) AS intents,
+  COUNT(*) FILTER (WHERE state IN ('open','paused')) AS open,
+  COUNT(*) FILTER (WHERE state='running') AS running,
+  COUNT(*) FILTER (WHERE state NOT IN ('open','running','paused','deleted')) AS done
+FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state<>'deleted'
+GROUP BY route
+ORDER BY intents DESC, route
+LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RouteStat, 0, limit)
+	for rows.Next() {
+		var r RouteStat
+		if err := rows.Scan(&r.Route, &r.Intents, &r.Open, &r.Running, &r.Done); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // Frontier returns open intents ordered by priority desc then id (FIFO tiebreak).
 func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	if limit <= 0 {
@@ -2261,16 +2310,25 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 	if limit <= 0 {
 		limit = 20
 	}
-	candidateLimit := limit * 4
-	if candidateLimit < 40 {
-		candidateLimit = 40
+	candidateLimit := limit * 6
+	if candidateLimit < 120 {
+		candidateLimit = 120
 	}
-	if candidateLimit > 400 {
-		candidateLimit = 400
+	if candidateLimit > 500 {
+		candidateLimit = 500
 	}
 	candidates, err := s.Frontier(candidateLimit)
 	if err != nil {
 		return nil, err
+	}
+	// If the top-priority slice filled the candidate window, pull a bounded slice
+	// of the oldest/other-route claimable intents so a burst of high-priority work
+	// on one route cannot starve lower-priority divergent branches before scoring.
+	if len(candidates) == candidateLimit {
+		extra, _ := s.frontierDivergentTail(candidates, limit)
+		if len(extra) > 0 {
+			candidates = append(candidates, extra...)
+		}
 	}
 	if len(candidates) <= 1 {
 		return candidates, nil
@@ -2289,11 +2347,26 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 		}
 	}
 	routes := make(map[int64]string, len(candidates))
-	counts := map[string]int{}
+	unroutedIDs := make([]int64, 0)
 	for _, n := range candidates {
 		r := frontierRoute(n)
 		routes[n.ID] = r
-		counts[r]++
+		if r == "unrouted" {
+			unroutedIDs = append(unroutedIDs, n.ID)
+		}
+	}
+	if len(unroutedIDs) > 0 {
+		if parents, err := s.primaryDerivedParents(unroutedIDs); err == nil {
+			for id, pid := range parents {
+				if pid > 0 {
+					routes[id] = fmt.Sprintf("parent:%d", pid)
+				}
+			}
+		}
+	}
+	counts := map[string]int{}
+	for _, n := range candidates {
+		counts[routes[n.ID]]++
 	}
 	maxCount := 0
 	for _, n := range counts {
@@ -2345,7 +2418,9 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 }
 
 // frontierRoute extracts the soft route key used by scheduling and the blackboard
-// route projection. It is intentionally tolerant of old intents with no contract.
+// route projection. Minimal ARTEX intents often omit contract.route and risk_area;
+// falling back to the primary anchored asset keeps distinct attack surfaces from
+// collapsing into one "unrouted" bucket.
 func frontierRoute(n *Node) string {
 	if n == nil {
 		return "unrouted"
@@ -2363,7 +2438,69 @@ func frontierRoute(n *Node) string {
 	if r, _ := p["route"].(string); strings.TrimSpace(r) != "" {
 		return strings.TrimSpace(r)
 	}
+	if ids, ok := p["asset_ids"].([]any); ok && len(ids) > 0 {
+		switch v := ids[0].(type) {
+		case float64:
+			if int64(v) > 0 {
+				return fmt.Sprintf("asset:%d", int64(v))
+			}
+		case string:
+			if id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && id > 0 {
+				return fmt.Sprintf("asset:%d", id)
+			}
+		}
+	}
 	return "unrouted"
+}
+
+// primaryDerivedParents returns the earliest derived_from source node for each
+// intent id in ids. Used only as a fallback route bucket when an intent carries
+// neither route/risk_area nor asset_ids.
+func (s *ExplorationStore) primaryDerivedParents(ids []int64) (map[int64]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT dst_id, MIN(src_id)
+FROM exploration_edges
+WHERE exploration_id=$1 AND rel=$2 AND dst_id = ANY($3::bigint[])
+GROUP BY dst_id`, s.expID, RelDerivedFrom, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]int64, len(ids))
+	for rows.Next() {
+		var dst, src int64
+		if err := rows.Scan(&dst, &src); err == nil {
+			out[dst] = src
+		}
+	}
+	return out, rows.Err()
+}
+
+// frontierDivergentTail fetches up to limit oldest claimable intents not already
+// present in existing, preventing high-priority flooding on one route from hiding
+// older divergent branches beyond the initial priority slice.
+func (s *ExplorationStore) frontierDivergentTail(existing []*Node, limit int) ([]*Node, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	exclude := make([]int64, 0, len(existing))
+	for _, n := range existing {
+		if n != nil {
+			exclude = append(exclude, n.ID)
+		}
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND `+intentClaimableSQL+`
+  AND NOT (n.id = ANY($2::bigint[]))
+ORDER BY n.id ASC LIMIT $3`, s.expID, exclude, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
 }
 
 // ActiveSlotIntents returns the newest non-terminal intent per slot owner in pool

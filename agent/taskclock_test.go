@@ -37,7 +37,7 @@ func TestTaskClockRemainingAndEndgame(t *testing.T) {
 	}
 }
 
-// 常驻索引每请求现算：剩余时间要出现；收官期要明说"不再新开探索面"。
+// 常驻索引每请求现算：剩余时间要出现；收官期要优先收敛高确定性链路，只留短平快例外。
 func TestContextIndexShowsClockAndEndgame(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	_ = tools
@@ -50,7 +50,7 @@ func TestContextIndexShowsClockAndEndgame(t *testing.T) {
 	}
 	block = BuildContextIndex(ContextIndexVars{Store: ts,
 		Clock: TaskClock{DeadlineUnix: now.Add(5 * time.Minute).Unix(), EndgameUnix: now.Add(-time.Minute).Unix()}})
-	if !strings.Contains(block, "【收官期") || !strings.Contains(block, "不再新开探索面") {
+	if !strings.Contains(block, "【收官期") || !strings.Contains(block, "优先收敛高确定性") || !strings.Contains(block, "短平快意图") {
 		t.Fatalf("收官期提示缺失：\n%s", block)
 	}
 }

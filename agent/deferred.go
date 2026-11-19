@@ -76,10 +76,10 @@ func deferPlannerTools(base []actool.CoreTool) []string {
 
 // workerDeferredTools 是 worker 按需才用的内置工具：schema 不进每轮工具列表，
 // 只把名字列进 system 的 <available-deferred-tools>，模型需要时用 SearchExtraTools
-// 取 schema。挑的是**低频但 schema 大**的项：查询类（CVE/打法/AD/opsec/足迹）、
+// 取 schema。挑的是**低频但 schema 大**的项：查询类（CVE/AD/opsec/足迹）、
 // 清理销账类、执行台账的检索/取消、出口切换。高频写回（record_fact / report_finding /
-// report_credential / report_foothold / insert_assets）与长任务主路径（run/wait/get）
-// 保持 schema 常驻，避免每轮多一次「先查 schema」的往返。
+// report_credential / report_foothold / insert_assets）、候选闭合（close_candidate）与
+// 打法查询（lookup_playbooks）保持 schema 常驻，避免每轮多一次「先查 schema」的往返。
 var workerDeferredTools = []string{
 	"report_footprint",
 	"mark_footprint_cleaned",
@@ -88,7 +88,6 @@ var workerDeferredTools = []string{
 	"lookup_cves",
 	"cve_exploit",
 	"verify_credential",
-	"lookup_playbooks",
 	"record_playbook_feedback",
 	"ad_paths",
 	"opsec_notes",
@@ -98,7 +97,6 @@ var workerDeferredTools = []string{
 	"grep_execution",
 	"cancel_execution",
 	"report_detection_check",
-	"close_candidate",
 }
 
 func deferWorkerTools(base []actool.CoreTool) []string {

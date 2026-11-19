@@ -604,6 +604,37 @@ func (s *AssetStore) QueryDSLInScope(dsl, typ string, taskID int64, limit, offse
 // direct source tasks') declared scope, so an agent cannot reach out-of-scope
 // assets by id. taskID<=0 (non-task contexts) falls back to the global GetByIDs.
 // Out-of-scope ids are silently dropped from the result (not an error).
+// ListInScope returns assets in the task's visible scope without requiring a DSL
+// expression. It is the explicit "show me what is in scope" path for small and
+// medium tasks; it deliberately caps the page (20 default, 50 max) so it cannot
+// become an unbounded full-table dump.
+func (s *AssetStore) ListInScope(taskID int64, typ string, limit, offset int) ([]*Asset, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	args := []any{taskID}
+	where := "id IN (SELECT id FROM target)"
+	if typ != "" {
+		args = append(args, typ)
+		where += fmt.Sprintf(" AND type = $%d", len(args))
+	}
+	args = append(args, limit, offset)
+	q := `WITH ` + scopeTargetCTE + ` ` + assetSelectCols + " WHERE " + where +
+		fmt.Sprintf(" ORDER BY last_seen DESC, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAssets(rows)
+}
+
 func (s *AssetStore) GetByIDsInScope(taskID int64, ids []int64) ([]*Asset, error) {
 	if taskID <= 0 {
 		return s.GetByIDs(ids)
