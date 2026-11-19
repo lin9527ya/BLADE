@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +55,7 @@ type Planner struct {
 	hotTools          *ToolSet
 	hotRounds         int
 	hotLastUsed       time.Time
+	hotSurface        string
 	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
 	proxyCACert       string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn           func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
@@ -307,6 +310,15 @@ func renderPlannerTodos(items []actool.Todo) string {
 //	"facts_batch" — N ordinary fact writes were coalesced; Summary = most recent.
 //	"assets_batch" — N asset registrations/updates were coalesced; Summary = most recent.
 //	"triggers_dropped" — N older triggers exceeded the queue cap and were not expanded.
+//
+// TriggerFactRef keeps branch identity through ordinary-fact coalescing.
+type TriggerFactRef struct {
+	IntentID int64
+	FactID   int64
+	Summary  string
+	AssetIDs []int64
+}
+
 type TriggerEvent struct {
 	Kind     string
 	IntentID int64
@@ -321,6 +333,7 @@ type TriggerEvent struct {
 	Hints    []string // Kind=="hint" 专用：本次 add_hint 新增的提示文本（1 条或多条）
 	// Count 是 facts_batch/assets_batch/triggers_dropped 的聚合数量。
 	Count int
+	Facts []TriggerFactRef // facts_batch: bounded list of every fact in this batch
 }
 
 // renderTriggers spells out the change(s) that fired this round: for a finished
@@ -335,14 +348,12 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 	b.WriteString("\n\n【本次触发本轮的实际变动（先看这里，再决定是否补方向）】：")
 	const maxRenderedTriggers = 24
 	// 触发队列按时间追加，最新事件（done/finding/blocked 等）通常更值得看；
-	// 超限时保留末尾，而不是把最新事件截掉。溢出数量在文末显式说明。
-	start := 0
+	// 超限时优先保留目标/发现/能力事件，并在同优先级内保留最新；数量在文末说明。
+	omitted := len(evs) - maxRenderedTriggers
 	if len(evs) > maxRenderedTriggers {
-		start = len(evs) - maxRenderedTriggers
+		evs = selectTriggerWindow(evs, maxRenderedTriggers)
 	}
-	rendered := 0
-	for _, ev := range evs[start:] {
-		rendered++
+	for _, ev := range evs {
 		switch ev.Kind {
 		case "goal":
 			if len(ev.Goals) == 1 {
@@ -392,7 +403,10 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			if n <= 0 {
 				n = 1
 			}
-			b.WriteString(fmt.Sprintf("\n- worker 批量写回了 %d 条普通事实（最近一条：%s）。完整内容看 recent_facts；图已更新，不要因为这是摘要就当成没发生。", n, clipLine(ev.Summary, 240)))
+			b.WriteString(fmt.Sprintf("\n- worker 批量写回了 %d 条普通事实（最近一条：%s）。概览只是摘要，独立分叉按下方 id 核对，全文用 node_detail / list_facts。", n, clipLine(ev.Summary, 240)))
+			for _, fact := range ev.Facts {
+				b.WriteString(fmt.Sprintf("\n  · fact #%d（意图 #%d，资产 %v）：%s", fact.FactID, fact.IntentID, fact.AssetIDs, clipLine(fact.Summary, 160)))
+			}
 		case "assets_batch":
 			n := ev.Count
 			if n <= 0 {
@@ -404,7 +418,7 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			if n <= 0 {
 				n = 1
 			}
-			b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发因队列上限未展开；以当前 graph_overview 与 recent_facts 为准。", n))
+			b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发因队列上限未展开；请用 blackboard_view 的 changes 游标或 blackboard_query / list_facts 补查相关历史；概览窗口不保证包含所有丢弃事件。", n))
 		case "proposal":
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）提交了意图提案 fact #%d：%s。提案只是候选方向，不会自动成为意图；先核对依据，再决定是否 add_intent。", ev.IntentID, intentSummary(ts, ev.IntentID), ev.FactID, clipLine(ev.Summary, 240)))
 		case "finding":
@@ -449,8 +463,8 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			}
 		}
 	}
-	if omitted := len(evs) - rendered; omitted > 0 {
-		b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发未展开；以当前 graph_overview / recent_facts 为准。", omitted))
+	if omitted > 0 {
+		b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发未展开；概览仍是窗口，必要时用 blackboard_query / list_facts 补查。", omitted))
 	}
 	b.WriteString("\n（完整细节可 node_detail / get_worker_output / list_findings 再查。）")
 	return b.String()
@@ -583,12 +597,8 @@ func PlannerPromptBody() string { return plannerDefaultTmpl }
 // reviewed rather than silently ignored, and a denial must still leave an audit trail.
 const plannerScopeRequestBlock = `
 
-【扩面请求处理（任务级，代码持有）】
-- recent_facts 中出现 summary 以「[扩面请求]」开头的事实，说明 worker 在目标上发现了疑似属于目标、但当前不在授权范围的资产。它不是授权，也不是可直接测试的对象。
-- 先 node_detail(fact_id) 核对 detail/evidence：whois、证书 SAN、ASN、ICP、页面互链、同一控制台等归属证据是否成立。
-- 证据成立：调用 add_task_scope（或先 add_company_scope 再 add_task_scope company）扩面，然后才可派发相关意图；summary 里写清扩面依据。
-- 证据不足：不要扩面、不要派单；写一条 fact 说明拒绝理由（缺哪类归属证据），让 worker 继续补证。
-- 无论扩面与否，都不直接测试范围外资产；RoE、拦截规则与审批仍然是最高优先。`
+【扩面请求】
+- [扩面请求] 不是授权：先 node_detail 核验归属证据，充分时才 add_task_scope / add_company_scope；不足时在本轮结论说明缺口，不擅自扩面，不重复制造拒绝事实。`
 
 // plannerDivergentBlock is code-owned: editing the DB prompt cannot remove it.
 // It only changes exploration guidance, not authorization/approval boundaries.
@@ -628,7 +638,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 4. **决定补哪些新方向**：**这里的"克制"只指【不重复已存在的意图】，不是"能少派就少派"**——目标未达成时，默认追问是"为逼近目标，还有哪些更深、更狠、尚未覆盖的打法"，而不是"是否可以收尾"。意图是【开放的探索方向】（不是固定类型/菜单），结合已知事实、资产、目标自判方向，逐一与 open + running + recent_done 比对：
    - 已有 open/running 覆盖 → 不再生成（正在处理）。
    - 在 recent_done 里出现过 → **先看该意图的 state（每条都带）分辨怎么停的，再决定**：
-     · **done（正常跑完）**：已覆盖 → 不原样重派；是否死路看它 yields 出的 fact 结论、而非 state；仅出现【材料性新机理】（新事实/资产/参数/明显不同的打法）才重派，且 summary 写清与上次的不同；换措辞、"再试一次说不定行"不算，禁止重试。
+     · **done（执行正常结束）**：先看 yields 和证据判断具体问题是否已验证；没有结论不等于已覆盖。有新事实、独立分叉或验证缺口时可续派，说明这次要解决什么；不要只换措辞重复已经验证的同一个问题。
      · **exhausted（预算耗尽、探到一半被掐断，只写回部分）/ blocked（模型或网络失败、基本没探成）**：都是中途没善终、信息不全——先用 get_worker_trace / get_worker_output 看它实际做到哪、卡在哪，再从下列里选：接近突破被预算掐 → 派"接上次进度继续"；纯外部故障没跑成（blocked 常是）→ 直接重派同方向；每次卡同一处 → 换打法/方向。依据永远是 trace 里的真实进度，不是 state 本身。
    - 完全无任何意图覆盖的全新方向 → 生成。
    - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。
@@ -639,8 +649,8 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 5. **提交**：用【一次】add_intent 批量提交筛出的新方向（intents 数组；默认按价值选 2–6 个，覆盖面广或多组互不依赖的资产/入口时可到 8 个，不要为凑数硬塞，也不要逐条多次调）：
    - **summary**：一句话自然语言描述该方向（测试目标完整地址 + 做什么 + 为什么），不套固定分类；去重主要靠它与已有意图比对。
-   - **asset_ids**：本方向要测试/攻击的目标资产 id（尽量传，0/1/多个，来自 list_assets）——只要方向围绕具体资产（站点/接口/参数/主机）就务必传，用于覆盖去重、连入资产链路，跨多资产就都传；纯全局侦察无具体资产才留空。
-   - **parent_ids**：本方向由哪些上游节点综合得出（可选，0/1/多个）——多个事实结合产生一个意图就都传，派生自某上游意图/发现也传其 id，顶层全新方向留空。
+   - **asset_ids**：本方向要测试/攻击的目标资产 id（尽量传，0/1/多个，来自 list_assets）——只要方向围绕具体资产（站点/接口/参数/主机）可在已知 id 时附上，用于覆盖去重、连入资产链路，跨多资产就都传；纯全局侦察无具体资产才留空。
+   - **parent_ids**：本方向由哪些上游节点综合得出（可选，0/1/多个）——多个事实结合产生一个意图就都传，派生自某事实/发现也传其 id（意图前置用 depends_on，不放进 parent_ids），顶层全新方向留空。
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
@@ -696,48 +706,37 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 // front of the model without rewriting operator-edited prompts.
 const blackboardViewBlock = `
 
-【黑板视图（代码持有）】
-- 本轮预取的是有界视图：totals 是真实总数，open/running/recent 等列表只是窗口；窗口外的方向不等于没派过。
-- 需要完整态势（折叠区、继承任务、AD 图、检测热点等）时调 graph_overview(detail=true)；只看增量事件与路线用 blackboard_view(change_cursor=change_cursor)（旧 after 只跟踪节点新增，不代表全部图变化）。
-- 意图 summary 就是方向本身：写清入口、动作和验证目标；图中已有的 open/running/recent 意图决定是否重复。`
+【读取黑板】
+- 概览是窗口摘要，即使 detail=true 也不是全部原文。总数/读取状态与列表分开看；没显示不等于不存在。独立分叉看 recent_leads / branch_review_facts，全文用 node_detail；资产上下文用 asset_dossier，历史用 blackboard_query / route_dossier。
+- done 只表示执行结束，不证明方向已验证或整条路线已排除。`
 
 // scopeExpansionBlock 是资产范围扩张的**代码持有**纪律。ARTEX 把 add_task_scope /
 // add_company_scope 作为规划层的核心扩面入口；BLADE 保留了 RoE 强制门，因此必须把
 // 「什么证据下可以扩、扩了就等于授权」写死在系统提示里，避免模型凭名称相似乱扩。
 const scopeExpansionBlock = `
 
-【资产范围扩张（add_task_scope / add_company_scope）】
-- 本任务已有 asset_scope_policy 自动范围（target=同根域/同公司/本任务发现资产）。以下工具用于**发现新归属证据后主动扩面**，不是每轮必调。
-- add_company_scope：把域名 / 子域 / URL / IP / CIDR / ICP / 公司关键词写入某公司的资产范围；域名（根域）、IP/CIDR、ICP 会自动认领命中的资产并触发归属重算，关键词只作提示。
-- 仅定义公司范围还不够：要让**本任务**实际测试该公司资产，再调 add_task_scope(kind=company, value=公司名或 id)。
-- add_task_scope：写入本任务授权边界与覆盖度分母。kind=company（公司全部资产，可跨根域）/ root_domain（整个根域及所有子域）/ subdomain（精确主机）/ ip / cidr / icp / keyword。
-- 扩面即授权：新增范围立即对 RoE 生效，后续 worker 可直接测试。**只在有归属证据时使用**（whois、证书 SAN、ASN、ICP、页面互链、同一控制台/云账号、同一公司官网等），并在 reason 写清证据；不得凭名称相似或猜测扩到未归因的第三方根域。
-- 发现新主机/云资产先由 worker 用 insert_assets 登记（按精确主机自动入范围）；需要整域/整公司级别时才由 planner 调这两个工具。
-- worker 的 request_scope_expansion 只写一条 recent_fact（summary 以「[扩面请求]」开头），不会自动扩权；看到后核对 detail/evidence，证据充分再 add_task_scope/add_company_scope，否则忽略。`
+【范围】
+- asset_scope_policy 是当前边界。扩面即授权：整域/整公司扩面须有可审计的归属证据（whois/证书/ICP/同一控制台等）；先 add_company_scope 定义公司归属，公司范围还需 add_task_scope(kind=company) 才纳入本任务。reason 写清依据。
+- 新发现资产可 insert_assets 登记，但不得凭名称相似或猜测测试未归因的第三方。授权、审批和操作约束优先。`
 
 // structuredIntentBlock 是意图契约/依赖/按需查询的代码持有说明。正文可能被旧库
 // 或用户定制覆盖，但新字段和新工具必须始终能被 planner 发现。
 const structuredIntentBlock = `
 
-【结构化意图与按需取景】
-- add_intent 的 summary/asset_ids/parent_ids 仍是必填核心；方向明确时建议补 hypothesis（若 X 则 Y）、success_criteria（什么算成功）、stop_condition（何时停）、mechanism（稳定打法键）、route（路线名）、produces/acceptance（产物与验收）、risk_area。它们都是可选的，不填不改变旧行为。
-- depends_on 默认是排序提示（advisory），不阻塞 worker 领取；只有确实需要串行强依赖时才设 depends_on_mode=strict。strict 也只在前置仍 open/running/paused 时暂缓派发；前置进入任何终态（done/negative，或 blocked/exhausted/stopped/out-of-scope/no_output）都会 fail-open，下游仍可领。串行链优先用分步派发 + TodoWrite，不把依赖边当安全锁。若 graph_health 出现 dead_dependency/dependency_cycle，用 node_detail 核对前置状态，重排/补前置/拆链，不要反复重派同一条。
-- 前置卡死或不再需要时可用 set_dependency_mode（advisory/strict）、drop_dependency（只拆一条边，保留下游意图）或 reopen_intent（重开 blocked/exhausted/stopped/no_output 的失败意图）。三者都必须写 reason；它们只改调度/意图状态，不放宽 RoE、授权范围或拦截规则。
-- 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
-- recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。
-- 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q, scope=auto|company|campaign|global)。默认只给脱敏摘要、不返回 evidence；跨任务节点通常不能直接 node_detail，先按摘要与 task id 判断，确需证据时才显式 scope + include_evidence 取脱敏片段。不要把先例直接当成本任务结论。
-- 态势里的 campaign 是战役/阶段策略上下文：按 campaign.goal/phase 调整探索优先级，但授权边界仍只看本任务操作约束与 asset_scope。`
+【方向与连续研究】
+- add_intent 只需明确 summary；asset_ids / parent_ids 和 hypothesis / route / mechanism / success_criteria / stop_condition / produces / acceptance 都可选。知道资产和事实时附上；不要为填表延迟一个明确的方向。父节点用事实/发现/据点/凭据/AD/云对象，意图前置用 depends_on。
+- depends_on 默认 advisory，仅轻度排序；strict 才等待活跃前置，终态 fail-open，不是安全锁。解阻用 set_dependency_mode / drop_dependency / reopen_intent，写 reason，不改授权。
+- worker 的 [意图提案] 先核对再 add_intent；一条事实有子意图不代表所有分叉已接手，按 lead id 逐个处理。
+- route_dossier 看路线，search_precedents 取历史先验（不是本次结论）；campaign 提供策略上下文，不授权。
+- 需要跨轮保留的研究判断用 TodoWrite：记录待验证分叉、等待原因及什么新证据会改变结论，不必每轮复述全部历史。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经
 // 试过的方向当新方向重派。折叠只省上下文，不是删除——这句必须每轮都在。
 const coldArchiveBlock = `
 
-【冷区与 digest（折叠 ≠ 删除）】
-- graph_overview.cold_digests 是较早节点折成的摘要（id + body + member_count）；成员仍然存在，node_detail(id) 可查全文。
-- list_facts 的条目若带 folded_into_digest，说明它已折进该 digest；摘要没出现在 recent_facts，不代表这件事没发生过。
-- 更老的 digest 只给裸 id（cold_digests_more），用 expand_digest(id) 展开。
-- 判定「已覆盖/已经试过」时必须把冷区算上：折叠是上下文压缩，不是删除，也不是「没做过」。`
+【冷区】
+- cold_digests 是折叠摘要，不是删除或已排除。成员全文用 node_detail / expand_digest；更旧记录用 list_facts / blackboard_query 翻页。`
 
 // hintLifecycleBlock 是提示（hint）的**代码持有**纪律，追加在可编辑正文之后。
 //
@@ -935,6 +934,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
 	// 会话所有权：本轮成功且非 resume 模式时交给热会话（跨轮持有），否则本轮结束时关闭。
 	// 不能在这里 defer Close —— 成功路径会把同一个 Session 留在 p.hot 里继续用。
+	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(system, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%s", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, p.compactionWindow(), opts.WebFetchProxy, opts.WebFetchCACert), tools))
 	var s *agentcore.Session
 	keepSession := false
 	if resumePlannerSession() {
@@ -1159,4 +1159,75 @@ func (p *Planner) rememberRound(ts *db.ExplorationStore, prevMaxID int64, lastTe
 		b.WriteString("- 上一轮没有新增意图/结论。\n")
 	}
 	p.lastRoundNote = b.String()
+}
+
+// Include model-visible tool descriptions and schemas: a registry change must not
+// keep using closures/schemas from a prior hot session. Ordinary graph changes do
+// not invalidate it; they arrive through the turn input.
+func plannerSurfaceFingerprint(system string, tools []actool.CoreTool) string {
+	h := sha256.New()
+	h.Write([]byte(system))
+	parts := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		b, _ := json.Marshal(struct {
+			Name, Description string
+			Schema            any
+		}{tool.Name(), tool.Description(), tool.InputSchema()})
+		parts = append(parts, string(b))
+	}
+	sort.Strings(parts)
+	for _, part := range parts {
+		h.Write([]byte(part))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (p *Planner) invalidateHotSurface(surface string) {
+	p.hotMu.Lock()
+	defer p.hotMu.Unlock()
+	if p.hotSurface != "" && p.hotSurface != surface {
+		if p.hot != nil {
+			p.hot.Close()
+		}
+		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
+	}
+	p.hotSurface = surface
+}
+
+// Preserve event order after selecting priority; ordinary batches must not bury
+// human goals, new capabilities or contradictions during dense tool streams.
+func TriggerPriority(kind string) int {
+	switch kind {
+	case "goal", "goal_edited", "goal_deleted", "goal_abandoned", "hint", "finding", "contradiction", "scope_request":
+		return 3
+	case "capability_fact", "lead_fact", "proposal", "foothold", "credential", "supersede":
+		return 2
+	case "facts_batch", "assets_batch", "fact", "asset":
+		return 0
+	default:
+		return 1
+	}
+}
+
+func selectTriggerWindow(events []TriggerEvent, limit int) []TriggerEvent {
+	if len(events) <= limit {
+		return events
+	}
+	selected := make([]bool, len(events))
+	remaining := limit
+	for priority := 3; priority >= 0 && remaining > 0; priority-- {
+		for i := len(events) - 1; i >= 0 && remaining > 0; i-- {
+			if TriggerPriority(events[i].Kind) == priority {
+				selected[i] = true
+				remaining--
+			}
+		}
+	}
+	out := make([]TriggerEvent, 0, limit)
+	for i, event := range events {
+		if selected[i] {
+			out = append(out, event)
+		}
+	}
+	return out
 }

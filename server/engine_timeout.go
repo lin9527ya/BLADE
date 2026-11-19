@@ -40,6 +40,8 @@ func (e *Engine) isSettling(taskID string) bool {
 
 // markSettling flips settling on; returns true only for the first caller.
 func (e *Engine) markSettling(taskID string) bool {
+	e.dispatchMu.Lock()
+	defer e.dispatchMu.Unlock()
 	_, loaded := e.settling.LoadOrStore(taskID, true)
 	return !loaded
 }
@@ -296,6 +298,15 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 				nap = deadlineMaxSleep
 			}
 			if sleepCtx(ctx, nap) {
+				return
+			}
+			continue
+		}
+		// Goal drain may already own the barrier. Keep the deadline coordinator
+		// alive until it finishes or releases it (pause/new goals), rather than
+		// losing this task's timeout forever.
+		if e.isSettling(t.ID) {
+			if sleepCtx(ctx, deadlinePollInterval) {
 				return
 			}
 			continue

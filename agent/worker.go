@@ -416,7 +416,7 @@ const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 const writebackBaselineBlock = `
 
 【写回自检（代码持有）】
-- 收尾前自检：建了账号/拿到口令 → report_credential；拿到据点 → report_foothold；留下文件 → report_artifact；方向失败 → record_fact（polarity=negative）。
+- 收尾前自检：建了账号/拿到口令 → report_credential；拿到据点 → report_foothold；留下文件 → report_artifact；观察/线索 → record_fact；仅有证据支持排除的结论才标 negative，失败中的新入口或异常用 inconclusive + leads。
 - 被 WAF/登录墙/限速挡住 ≠ 已排除：记 blocked 或 open_proof_gap，不要记 negative。
 - 漏写等于没做——planner 看不到，下一轮只会再派一遍。`
 
@@ -472,10 +472,9 @@ func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 func taskOutDir(dir string) string { return filepath.Join(dir, "task-output") }
 
 // perIntentWorkerSession 是 worker 会话粒度的 A/B 开关：每个意图一条独立会话
-// （ARTEX 的做法），而不是按槽位跨意图复用历史。默认关闭——槽位复用是省缓存前缀的
-// 刻意设计，换默认要看实测数据（每条意图的工具调用数、否定结论的质量）。
+// （ARTEX 的做法），而不是按槽位跨意图复用历史。默认每意图隔离；显式关闭可恢复槽位复用。既有 logical session 仍保留以便续跑。
 func perIntentWorkerSession() bool {
-	return strings.TrimSpace(os.Getenv("BLADE_WORKER_PER_INTENT_SESSION")) == "1"
+	return db.PerIntentWorkerSession("")
 }
 
 func workerSystem(proxyAddr, caCert, dataDir string) string {

@@ -24,6 +24,9 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"00602dbb6b504b9a611c9311c22742756c06bf00720f3430b8c3e31f1c414384": true, // v0.8.7–v0.8.9
 	"5ca5b8b2147c6aa75ee0b02436b4aa4238e9bc07b03230a0946ee5f41c457f84": true, // v0.9.0–v0.9.2（重写前）
 	"7e178641779bc359ba32198ee15d4bfa0fda2d73814f322c85d00576af7dc24d": true, // 重写 v2（首版瘦身，缺态势语义）
+	"bf8ad2e280317c2110fcfbd50b342c28bae83e77cc053c2ce2dea50298b84109": true, // v0.9.19–20
+	"0ffa97062f5a4d92a2f117150fee63a85acf20ef620ffb81e003afd9a1643eea": true, // v0.9.21
+	"3ee238ddd5bf7088e89db620cc46f6e2178ab46d66ab7061077947cf439eb1d6": true, // v0.9.22
 	"6a832e1146013f13d6fceaca1d89be85bddc2cf7e5515b9b525d8da8bd4b8430": true, // ARTEX parity v3（扩面/瓶颈提示前）
 }
 
@@ -75,4 +78,61 @@ func migratePlannerPrompt(pg *db.DB) {
 		log.Printf("[prompts] planner 正文已被编辑，保留现状（旧正文备份见 docs/prompts/planner）")
 	}
 	_ = pg.SetSetting(settingPlannerPromptV3, "true")
+}
+
+// Refresh only byte-identical historical builtins, on every startup rather than
+// a once-only flag. A past migration flag does not pin a system default forever.
+// User bodies and append text survive; old versions remain in prompt history.
+var workerBuiltinPromptSHA256 = map[string]bool{
+	"7ba5df1b5c45fd3bfe0f638efc99a441c499a1d767a21961de0b13e1d16b812c": true,
+	"dc3878b69229870a0cd8a0cd96cb7c6f2e9007cdf5c3d3d6abc616c6a20e2c3c": true,
+}
+
+func migrateExplorationPrompts(pg *db.DB) {
+	if pg == nil {
+		return
+	}
+	migrateBuiltinPrompt(pg, "planner", plannerBuiltinPromptSHA256)
+	migrateBuiltinPrompt(pg, "worker", workerBuiltinPromptSHA256)
+	for _, seed := range agent.BuiltinToolSeeds() {
+		if seed.Key != "record_fact" {
+			continue
+		}
+		cur, err := pg.GetTool(seed.Key)
+		if err != nil || cur == nil || !cur.System || cur.Description == seed.Desc {
+			continue
+		}
+		sum := sha256.Sum256([]byte(cur.Description))
+		if hex.EncodeToString(sum[:]) == "8b9446c8c11a2cd45f6f5c45bb541a732c399415a718b44b69479e4619078593" {
+			if err := pg.UpdateToolDescriptionIfUnchanged(seed.Key, cur.Description, seed.Desc); err != nil {
+				log.Printf("[prompts] 更新 record_fact 默认说明失败: %v", err)
+			}
+		}
+	}
+}
+
+func migrateBuiltinPrompt(pg *db.DB, key string, hashes map[string]bool) {
+	a, err := pg.GetAgentByKey(key)
+	if err != nil || a == nil {
+		return
+	}
+	cur, err := pg.CurrentPrompt(a.ID)
+	if err != nil {
+		return
+	}
+	target := agent.BuiltinPromptSeeds()[key]
+	if target == "" || strings.TrimSpace(cur) == strings.TrimSpace(target) {
+		return
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(cur)))
+	if !hashes[hex.EncodeToString(sum[:])] {
+		return
+	}
+	extra, err := pg.CurrentPromptAppend(a.ID)
+	if err != nil {
+		return
+	}
+	if _, err := pg.SavePromptWithAppend(a.ID, target, extra, "探索闭环：统一内置协议", "system"); err != nil {
+		log.Printf("[prompts] 更新 %s 内置正文失败: %v", key, err)
+	}
 }

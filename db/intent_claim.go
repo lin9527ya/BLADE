@@ -14,16 +14,16 @@ import (
 // PerIntentWorkerSession reports whether workers should isolate each intent in
 // its own logical session rather than sharing one transcript per worker slot.
 // BLADE_WORKER_PER_INTENT_SESSION explicitly forces on ("1"/"true"/"yes") or
-// off ("0"/"false"/"no"). When unset, divergent exploration defaults to
-// per-intent sessions to eliminate cross-intent anchoring bias.
-func PerIntentWorkerSession(explorationMode string) bool {
+// off ("0"/"false"/"no"). When unset, every exploration mode defaults to
+// per-intent sessions; existing session IDs still resume without migration.
+func PerIntentWorkerSession(_ string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("BLADE_WORKER_PER_INTENT_SESSION"))) {
 	case "1", "true", "yes":
 		return true
 	case "0", "false", "no":
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(explorationMode), "divergent")
+	return true
 }
 
 func logicalSessionForClaim(n *Node, exploration int64, owner, explorationMode string) string {

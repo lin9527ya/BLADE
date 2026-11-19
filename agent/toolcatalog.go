@@ -124,6 +124,13 @@ func DecorateTool(t actool.CoreTool, desc string, schema map[string]any) actool.
 	return &overriddenTool{CoreTool: t, desc: desc, schema: schema}
 }
 
+// DecorateStoredTool applies database-editable annotations to the CURRENT
+// handler schema. Kept separate from DecorateTool: feature gates deliberately
+// strip fields and must not have those fields added back by this merge.
+func DecorateStoredTool(t actool.CoreTool, desc string, stored map[string]any) actool.CoreTool {
+	return DecorateTool(t, desc, mergeToolParameterOverrides(t.InputSchema(), stored))
+}
+
 // overriddenTool is a CoreTool decorator: it embeds the original (so all behavioral
 // methods — Prompt/IsReadOnly/IsConcurrencySafe/CheckPermissions/Name — delegate)
 // and overrides only the model-facing description/schema plus default injection.
@@ -202,4 +209,53 @@ func scalarDefaults(schema map[string]any) map[string]json.RawMessage {
 func isEmptyJSON(raw json.RawMessage) bool {
 	s := string(raw)
 	return s == "null" || s == `""`
+}
+
+// Parameter names/types/required belong to the handler, not the first seeded DB
+// schema. Preserve only operator-editable annotations, recursively, so upgrades
+// expose new fields without resetting user descriptions/defaults.
+func mergeToolParameterOverrides(code, stored map[string]any) map[string]any {
+	if len(code) == 0 {
+		return stored
+	}
+	if _, ok := code["properties"]; !ok {
+		// Some generic tools provide no structural schema; preserve legacy defaults.
+		if _, ok := code["type"]; !ok {
+			return stored
+		}
+	}
+	out := make(map[string]any, len(code))
+	for key, value := range code {
+		out[key] = value
+	}
+	for _, key := range []string{"description", "default"} {
+		if value, ok := stored[key]; ok {
+			// This exact historical builtin wording contradicts the new split-by-claim
+			// protocol; a genuinely edited description is kept.
+			if key == "description" && value == "本事实的相关细节：把这次探索的多个观察事实都写进这里" {
+				continue
+			}
+			out[key] = value
+		}
+	}
+	if properties, ok := code["properties"].(map[string]any); ok {
+		oldProps, _ := stored["properties"].(map[string]any)
+		merged := make(map[string]any, len(properties))
+		for name, raw := range properties {
+			current, cok := raw.(map[string]any)
+			previous, pok := oldProps[name].(map[string]any)
+			if cok && pok {
+				merged[name] = mergeToolParameterOverrides(current, previous)
+			} else {
+				merged[name] = raw
+			}
+		}
+		out["properties"] = merged
+	}
+	if item, ok := code["items"].(map[string]any); ok {
+		if old, ok := stored["items"].(map[string]any); ok {
+			out["items"] = mergeToolParameterOverrides(item, old)
+		}
+	}
+	return out
 }

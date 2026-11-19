@@ -2380,7 +2380,7 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 		resume, _ := p["resume_after_restart"].(bool)
 		base := float64(n.Priority) * 100
 		if activeDeps[n.ID] {
-			base -= 50000 // advisory: prefer ready work, but never hide this candidate
+			base -= 100 // advisory: one priority step, not a de facto hard gate
 		}
 		if resume {
 			base += 100000 // interrupted work must resume before new work
@@ -2404,7 +2404,17 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 		}
 		return base
 	}
+	now := time.Now()
 	sort.SliceStable(candidates, func(i, j int) bool {
+		// After a bounded wait, oldest claimable work wins over newly arriving
+		// high-priority work. strict candidates were already filtered by Frontier.
+		ai, aj := frontierOverdue(candidates[i], now), frontierOverdue(candidates[j], now)
+		if ai != aj {
+			return ai
+		}
+		if ai && !candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
+			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+		}
 		si, sj := score(candidates[i]), score(candidates[j])
 		if si != sj {
 			return si > sj
@@ -4282,4 +4292,26 @@ WHERE e.exploration_id=$1 AND e.rel='covers' AND d.kind='digest'
 		out[member] = digest
 	}
 	return out, rows.Err()
+}
+
+const frontierFairWait = 15 * time.Minute
+
+func frontierOverdue(n *Node, now time.Time) bool {
+	return n != nil && !n.CreatedAt.IsZero() && now.Sub(n.CreatedAt) >= frontierFairWait
+}
+
+// FrontierForIDs reuses the normal claimability predicate for the bounded
+// continuation set captured before goal drain. It does not bypass strict edges.
+func (s *ExplorationStore) FrontierForIDs(ids []int64) ([]*Node, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
+ WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND n.id=ANY($2::bigint[])
+ AND `+intentClaimableSQL+` ORDER BY n.priority DESC,n.id ASC`, s.expID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
 }

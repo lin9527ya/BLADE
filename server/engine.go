@@ -127,8 +127,9 @@ func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
 // (re)installed at runtime (LLM configured from the UI); the loops always run
 // but idle until an LLM is set.
 type Engine struct {
-	m        *Manager
-	debounce time.Duration
+	m          *Manager
+	debounce   time.Duration
+	dispatchMu sync.RWMutex // serializes claim with entering drain
 
 	// onStop 是 StopTask 在拆掉任务运行时之后调用的钩子（Server 用它等任务名下的
 	// 后台压缩收尾）。Engine 本身看不到 Planner，钩子把依赖方向留在 Server 侧。
@@ -203,6 +204,7 @@ type Engine struct {
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
+	goalDrainIntents sync.Map // taskID -> immutable ids already running at goal completion
 	settling         sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
 	deadline         sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
 	stamped          sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
@@ -490,6 +492,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.endgameNotified.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.settling.Delete(taskID)
+	e.goalDrainIntents.Delete(taskID)
 	e.deadline.Delete(taskID)
 	e.stamped.Delete(taskID)
 	e.inflight.Delete(taskID)
@@ -1288,20 +1291,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 					Summary: "目标状态已变化（出现新的未达成目标），本轮暂不收官"})
 				break
 			}
-			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
-			// 用 Guarded 版 CAS 落终态：与超时收尾/删除/暂停竞态时保留先到的终态语义。
-			if won, serr := e.m.SetTaskStatusGuarded(t.ID, "done"); serr != nil {
-				log.Printf("[planner] task %s 标记完成落库失败: %v", t.ID, serr)
-			} else if !won {
-				log.Printf("[planner] task %s 收官时已是终态，保留原状态", t.ID)
-			} else {
-				e.completionWarn.Delete(t.ID)
-				e.promoteTaskKnowledge(t)
-				// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
-				// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
-				// 归为 stopped(而非 blocked)。
-				e.cancelExec(t.ID, agent.AbortGoalMet)
-			}
+			e.startGoalDrain(ctx, t, reason)
 		default:
 			log.Printf("[planner] task %s 规划完成", t.ID)
 		}
@@ -1346,7 +1336,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		if e.IsDeleting(t.ID) {
 			return
 		}
-		if e.isSettling(t.ID) {
+		if e.isSettling(t.ID) && !e.isGoalDraining(t.ID) {
 			if sleepCtx(ctx, 1000*time.Millisecond) {
 				return
 			}
@@ -1691,7 +1681,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			log.Printf("[worker %s] task %s 意图 #%d 历史产出查询失败（按本次口径结算）: %v", name, t.ID, intent.ID, herr)
 		}
 	}
-	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior, true)
+	state := settleIntentState(err, reason, wrote, outcome, intentKind, prior)
 
 	if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		log.Printf("[worker %s] intent %d 撞步数上限或运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
@@ -1833,7 +1823,7 @@ type intentPriorOutput struct {
 	Validation bool
 }
 
-func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string, prior intentPriorOutput, classic bool) string {
+func settleIntentState(err error, reason harness.TerminalReason, wrote agent.WriteCounts, semanticOutcome, intentKind string, prior intentPriorOutput) string {
 	state := "done"
 	switch {
 	case err != nil:
@@ -1846,11 +1836,6 @@ func settleIntentState(err error, reason harness.TerminalReason, wrote agent.Wri
 	}
 	if semanticOutcome == "negative" || semanticOutcome == "out-of-scope" || semanticOutcome == "blocked" {
 		return semanticOutcome
-	}
-	// 经典模式：正常完成即 done，不把“零写回/verify 只登记资产”判成 no_output。
-	// no_output 是 BLADE 增强层的重派口径；ARTEX 没有它，保留会让 planner 反复重派。
-	if classic {
-		return "done"
 	}
 	// 本次没写回，但这条意图前几轮已经产出过 → 仍是 done（续跑不能抹掉前段成果）。
 	if wrote.Total() == 0 && !prior.Any {
@@ -1877,7 +1862,7 @@ func settleIntentState(err error, reason harness.TerminalReason, wrote agent.Wri
 // Factored out of runIntent so the acceptance suite can drive the decision against a
 // real ledger without a live LLM run.
 func (e *Engine) execGate(t *Task, intentID int64, worker string, authority ...db.WriteAuthority) bool {
-	if e.isSettling(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
+	if (e.isSettling(t.ID) && !e.isGoalDraining(t.ID)) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
 		return false
 	}
 	execs := e.m.Executions()
@@ -2144,8 +2129,24 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 }
 
 func (e *Engine) claimNextForSlot(t *Task, name string) *db.Node {
+	e.dispatchMu.RLock()
+	defer e.dispatchMu.RUnlock()
+	if e.IsPaused(t.ID) || e.IsDeleting(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		return nil
+	}
 	pool := slotPool(e.TaskWorkers(t.ID))
-	fr, _ := t.Store.FrontierForSlot(name, pool, 20)
+	var fr []*db.Node
+	if e.isSettling(t.ID) {
+		ids := e.goalDrainIDs(t.ID)
+		if len(ids) == 0 {
+			return nil
+		}
+		// Only requeued work that was already running may continue to collect its
+		// long-task output; fresh branches never enter this subset.
+		fr, _ = t.Store.FrontierForIDs(ids)
+	} else {
+		fr, _ = t.Store.FrontierForSlot(name, pool, 20)
+	}
 	for _, in := range fr {
 		if node, err := t.Store.ClaimNode(context.Background(), in.ID, name, "open", db.IntentLeaseTTL, pool, true); err == nil && node != nil {
 			return node

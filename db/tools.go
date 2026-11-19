@@ -230,3 +230,11 @@ UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5 WHERE key=$1`,
 		key, desc, schema, agents, enabled)
 	return err
 }
+
+// UpdateToolDescriptionIfUnchanged migrates a known builtin description without
+// resetting schema defaults, role bindings or enabled/deferred switches. The CAS
+// also preserves an operator edit racing with startup.
+func (d *DB) UpdateToolDescriptionIfUnchanged(key, old, next string) error {
+	_, err := d.Exec(`UPDATE tools SET description=$3,updated_at=now() WHERE key=$1 AND system AND description=$2`, key, old, next)
+	return err
+}

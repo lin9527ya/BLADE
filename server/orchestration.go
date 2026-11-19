@@ -787,19 +787,8 @@ func (s *Server) reseedWorkerPrompt() {
 	if err != nil || a == nil {
 		return // 全新库尚未建 agent 行时,seedPrompts 会直接 seed 最新默认,无需此迁移
 	}
-	tmpl := agent.BuiltinPromptSeeds()["worker"]
-	if tmpl == "" {
-		return
-	}
-	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
-		return
-	}
-	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
-		log.Printf("[prompts] worker 提示词重刷为新默认失败: %v", err)
-		return
-	}
-	log.Printf("[prompts] worker 提示词已追加新默认版本(加入 lookup_playbooks 打法复用,一次性)")
+	// Do not reset user bodies or append text during this legacy one-shot path.
+	migrateBuiltinPrompt(s.m.pg, "worker", workerBuiltinPromptSHA256)
 }
 
 // reporterToolCallMessage 必须无条件要求先读一次 get_finding_traffic 再写报告。

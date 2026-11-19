@@ -19,6 +19,7 @@ import (
 // fixed-slot design: two intents on the same work#1 use one slot transcript (and
 // one system prompt), instead of creating a new per-intent session each time.
 func TestWorkerSlotReusesTranscriptAcrossIntents(t *testing.T) {
+	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "0") // explicit legacy rollback
 	dsn, _, err := db.DSN()
 	if err != nil {
 		t.Skip("no test database configured")

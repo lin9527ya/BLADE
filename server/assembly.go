@@ -386,7 +386,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			if len(row.Schema) > 0 {
 				_ = json.Unmarshal(row.Schema, &schema)
 			}
-			return meterTool(agent.DecorateTool(t, row.Description, schema), pg, row.Key, agentKey, runInfo)
+			return meterTool(agent.DecorateStoredTool(t, row.Description, schema), pg, row.Key, agentKey, runInfo)
 		}
 		out := tools[:0:0]
 		for _, t := range tools {

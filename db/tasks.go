@@ -716,6 +716,16 @@ UPDATE tasks
 // Returns won=false (no error) when another terminal status already stuck — the
 // caller then leaves it alone. Non-terminal transitions / re-run still use SetStatus.
 func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err error) {
+	return d.setTerminalStatusGuarded(id, status, false)
+}
+
+// SetGoalsCompleteGuarded cannot complete a paused/deleted/queued task or one
+// whose goal set acquired a new open goal during worker drain.
+func (d *DB) SetGoalsCompleteGuarded(id int64) (bool, error) {
+	return d.setTerminalStatusGuarded(id, "done", true)
+}
+
+func (d *DB) setTerminalStatusGuarded(id int64, status string, goalsGuard bool) (won bool, err error) {
 	res, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
@@ -724,7 +734,9 @@ UPDATE tasks
                                  THEN active_run_seconds + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint)
                                  ELSE active_run_seconds END,
        run_segment_started_at = NULL
- WHERE id = $2 AND status NOT IN `+TerminalStatusSQL()+``, status, id)
+ WHERE id = $2 AND status NOT IN `+TerminalStatusSQL()+`
+ AND (NOT $3::boolean OR (NOT paused AND NOT queued AND deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM exploration_nodes g WHERE g.exploration_id=tasks.exploration_id AND g.kind='goal' AND g.state='open')))`, status, id, goalsGuard)
 	if err != nil {
 		return false, err
 	}

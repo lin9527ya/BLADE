@@ -71,6 +71,14 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
 		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
+		if n.State == "open" && !n.CreatedAt.IsZero() {
+			wait := int(time.Since(n.CreatedAt).Minutes())
+			if wait < 0 {
+				wait = 0
+			}
+			m["waiting_minutes"] = wait
+			m["priority"] = n.Priority
+		}
 		if ra, _ := p["risk_area"].(string); strings.TrimSpace(ra) != "" {
 			m["risk_area"] = ra
 		}
@@ -110,15 +118,14 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 				}
 			}
 		}
-		// 领取次数：升级阶梯的判据（第 2 次必须换角度，第 3 次不再原样重派）。
+		// 领取次数供判断续跑背景；重试是否换方向由新证据与实际进度决定。
 		if att := payloadAttempts(p); att > 0 {
 			m["attempts"] = att
 			if lo, _ := p["last_outcome"].(string); lo != "" {
 				m["last_outcome"] = lo
 			}
 		}
-		// 意图的假设与验收标准：复盘轮按它比较候选路线，worker 按 success_criteria
-		// 判 done/no_output。只带非空字段，避免把旧意图的输出撑大。
+		// 意图的假设与验收标准是可选研究信息，不是字段填写/字数验收门。
 		if h, _ := p["hypothesis"].(string); strings.TrimSpace(h) != "" {
 			m["hypothesis"] = clipLine(h, 200)
 		}
@@ -720,7 +727,7 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	// 能力与已被实证排除的死路，避免重复踩坑。
 	for _, k := range []string{
 		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
-		"unconsumed_facts", "folded_facts", "folded_facts_total",
+		"unconsumed_facts", "branch_review_facts", "folded_facts", "folded_facts_total",
 	} {
 		delete(out, k)
 	}
@@ -1351,6 +1358,9 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 			}
 			if d, ok := fp["detail"].(string); ok {
 				m["detail_len"] = len([]rune(d))
+				if strings.TrimSpace(d) != "" {
+					m["detail_excerpt"] = FenceUntrusted("事实观察", clipLine(d, 240))
+				}
 			}
 			if e, ok := fp["evidence"].(string); ok && strings.TrimSpace(e) != "" {
 				m["has_evidence"] = true
@@ -1388,6 +1398,7 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 		}
 	}
 	leadsTotal, leadsOpen, leadsConverted, leadsDismissed := 0, 0, 0, 0
+	var branchReview []map[string]any
 	recentLeads := make([]map[string]any, 0, 20)
 	unconsumedHigh := make([]map[string]any, 0, 12)
 	unconsumedOther := make([]map[string]any, 0, 12)
@@ -1447,6 +1458,16 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 				recentLeads = append(recentLeads, item)
 			}
 		}
+		// A linked child only consumes its own question, not all observations in a
+		// multi-branch fact. Keep a small review window instead of calling it wholly
+		// consumed; lead-level converted/dismissed markers remain authoritative.
+		if len(childIntents[n.ID]) > 0 && asText(fp["polarity"]) != factPolarityNeg && !hidden(n.ID) && len(branchReview) < 8 {
+			if detail := strings.TrimSpace(asText(fp["detail"])); detail != "" {
+				branchReview = append(branchReview, map[string]any{"id": n.ID, "summary": asText(fp["summary"]),
+					"child_intent_ids": childIntents[n.ID], "open_leads": factOpenLeads,
+					"detail_excerpt": FenceUntrusted("已部分接手的事实", clipLine(detail, 240))})
+			}
+		}
 		// 未被接手、且不是否定收尾的事实：优先保留带高价值 enables/leads 的事实，避免被普通 info 事实挤出窗口。
 		pol, _ := fp["polarity"].(string)
 		if pol != factPolarityNeg && len(childIntents[n.ID]) == 0 && !hidden(n.ID) {
@@ -1480,6 +1501,9 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 			rem = len(unconsumedOther)
 		}
 		unconsumed = append(unconsumed, unconsumedOther[:rem]...)
+	}
+	if len(branchReview) > 0 {
+		out["branch_review_facts"] = branchReview
 	}
 	if len(recentLeads) > 0 {
 		out["recent_leads"] = recentLeads
@@ -3475,7 +3499,7 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 
 func (t *ToolSet) recordFact() actool.CoreTool {
 	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。用于记录探索结果——包括指纹/枚举等【正向结论】，和'端口关闭'/'参数不可注入'/'未发现登录入口'等【否定结论】。\n"+
-		"⚠️一次探索的多个观察要【汇总成一条事实】，不要拆成多条，可以合并成一条事实的就尽量用一条事实表示：summary=对本次结论的总结性一句话，detail=相关细节（可含多个具体项）。例：指纹意图→一条事实 {summary:'识别了 X 站点的技术栈与响应特征', detail:'nginx 1.25 / Vue3 / 200 / title=.. / body_len=..'}，而不是状态码、指纹、标题各记一条。一条意图通常只产出一条事实，拆太碎会让图谱无限膨胀。\n"+
+		"同一结论的属性可合并在 detail；彼此独立的攻击面、验证结论和假设要分条，便于单独接手。不限制每意图的事实条数。summary 写清具体观察，不用一句泛泛总结掩盖独立分叉。旁路线索可用 leads（不要求证据），不要只藏在 detail。\n"+
 		"★facts 数组用于一次写多条【彼此不同】的结论（每条可省略 intent_id，默认用顶层 intent_id）。返回 ids 数组，与 facts 等长同序。\n"+
 		"⚠️只写你在工具输出里【真实看到】的结论，不要脑补。evidence 与 confidence 用来防止不准确的结论污染图谱：\n"+
 		"  · evidence=支撑本结论的【一行】关键证据（命令+最能证明的那一两行输出），**务必简洁**——细节已在 detail，这里不要再粘大段输出。\n"+
@@ -3488,7 +3512,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			"facts":           map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/polarity/enables/leads/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
 			"summary":         str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
 			"intent_id":       idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
-			"detail":          str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
+			"detail":          str("支撑同一结论的细节；独立结论用 facts 分条，旁路线索用 leads"),
 			"evidence":        str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
 			"confidence":      str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
 			"polarity":        str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 enables/leads、summary 与 confidence 推断；混合正负信号（失败但泄露报错/绕过）请显式填 inconclusive，不要机械写 negative。"),

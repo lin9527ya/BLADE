@@ -28,11 +28,11 @@ import (
 const (
 	// lowPriorityBatchDelay 是普通 fact/asset 写入的合并窗口。finding/矛盾/否定/
 	// done 等语义事件仍然即时唤醒；普通事实只做批量摘要，完整内容始终能从
-	// recent_facts/list_assets 读到，不会因为合并而丢失。
+	// list_facts/node_detail/list_assets 读到；批次保留事实 id 与来源。
 	lowPriorityBatchDelay = 45 * time.Second
 	lowPriorityFactBatch  = 25
 	lowPriorityAssetBatch = 10
-	// maxPendingTriggers 防止异常事件流把内存队列撑爆；超出时丢弃最旧的触发，
+	// maxPendingTriggers 防止异常事件流把内存队列撑爆；超出时优先丢低价值批次，
 	// 在下一轮提示里用 triggers_dropped 显式告知，而不是静默丢失。
 	maxPendingTriggers = 64
 )
@@ -105,6 +105,7 @@ type Task struct {
 	lowPriorityTimer    *time.Timer
 	pendingFactCount    int
 	pendingFactSummary  string
+	pendingFactRefs     []agent.TriggerFactRef
 	pendingAssetCount   int
 	pendingAssetSummary string
 	pendingDropped      int
@@ -2259,13 +2260,25 @@ func (m *Manager) FinalizeTaskRunSegment(id string) {
 // (resolves the completed↔timeout race — first terminal writer wins). Reflects the
 // won status on the live handle. won=false means another terminal already stuck.
 func (m *Manager) SetTaskStatusGuarded(id, status string) (won bool, err error) {
+	return m.setTaskStatusGuarded(id, status, false)
+}
+
+func (m *Manager) completeGoalsGuarded(id string) (bool, error) {
+	return m.setTaskStatusGuarded(id, "done", true)
+}
+
+func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard bool) (won bool, err error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return false, err
 	}
-	won, err = m.pg.SetTerminalStatusGuarded(n, status)
+	if goalsGuard {
+		won, err = m.pg.SetGoalsCompleteGuarded(n)
+	} else {
+		won, err = m.pg.SetTerminalStatusGuarded(n, status)
+	}
 	if err != nil || !won {
 		return won, err
 	}
@@ -2792,8 +2805,8 @@ func (t *Task) NotifyFinding(intentID int64, summary string) {
 
 // NotifyFact records a fact/contradiction/negative/supersede written by a worker.
 // Contradiction/negative/supersede wake the planner immediately; an ordinary
-// "fact" is coalesced into a facts_batch (25 entries or 45s) because the graph is
-// already updated and recent_facts carries the full text. This keeps a dense
+// "fact" is coalesced into a facts_batch (25 entries or 45s) with per-fact IDs.
+// Full text remains queryable through node_detail/list_facts. This keeps a dense
 // fact stream from turning every planner round into a 2–3s loop.
 func (t *Task) NotifyFact(kind string, intentID, factID int64, summary string, assetIDs []int64) {
 	if strings.TrimSpace(kind) == "" {
@@ -2803,9 +2816,11 @@ func (t *Task) NotifyFact(kind string, intentID, factID int64, summary string, a
 	t.trigMu.Lock()
 	if kind == "fact" {
 		// 普通事实是低优先级信号：图本身已经更新，planner 下一轮从 recent_facts
-		// 能读到全文。逐条唤醒只会在事实流密集时把规划轮打成 2–3 秒一次。
+		// 能读到摘要，批次保留逐条 id 供 node_detail。逐条唤醒会造成密集空转。
 		t.pendingFactCount++
 		t.pendingFactSummary = summary
+		ref := agent.TriggerFactRef{IntentID: intentID, FactID: factID, Summary: clipTriggerSummary(summary), AssetIDs: append([]int64(nil), assetIDs...)}
+		t.pendingFactRefs = append(t.pendingFactRefs, ref)
 		if t.pendingFactCount >= lowPriorityFactBatch {
 			wake = t.flushLowPriorityLocked()
 		} else if t.lowPriorityTimer == nil {
@@ -2847,14 +2862,25 @@ func (t *Task) NotifyAsset(summary string) {
 }
 
 // appendTriggerLocked appends one trigger under trigMu, keeping the newest
-// maxPendingTriggers events. Dropped events are counted and surfaced as a
+// maxPendingTriggers events, prioritizing human goals and actionable knowledge.
+// Dropped events are counted and surfaced as a
 // triggers_dropped notice on drain.
 func (t *Task) appendTriggerLocked(ev agent.TriggerEvent) {
 	if len(t.pendingTriggers) >= maxPendingTriggers {
-		copy(t.pendingTriggers, t.pendingTriggers[1:])
-		t.pendingTriggers[len(t.pendingTriggers)-1] = ev
+		// Evict the oldest event of the lowest priority. A low-priority incoming
+		// batch cannot displace an already queued human goal or capability.
+		victim := 0
+		for i := 1; i < len(t.pendingTriggers); i++ {
+			if agent.TriggerPriority(t.pendingTriggers[i].Kind) < agent.TriggerPriority(t.pendingTriggers[victim].Kind) {
+				victim = i
+			}
+		}
 		t.pendingDropped++
-		return
+		if agent.TriggerPriority(ev.Kind) < agent.TriggerPriority(t.pendingTriggers[victim].Kind) {
+			return
+		}
+		copy(t.pendingTriggers[victim:], t.pendingTriggers[victim+1:])
+		t.pendingTriggers = t.pendingTriggers[:len(t.pendingTriggers)-1]
 	}
 	t.pendingTriggers = append(t.pendingTriggers, ev)
 }
@@ -2870,9 +2896,10 @@ func (t *Task) flushLowPriorityLocked() bool {
 	changed := false
 	if t.pendingFactCount > 0 {
 		t.appendTriggerLocked(agent.TriggerEvent{
-			Kind: "facts_batch", Count: t.pendingFactCount, Summary: t.pendingFactSummary,
+			Kind: "facts_batch", Count: t.pendingFactCount, Summary: t.pendingFactSummary, Facts: t.pendingFactRefs,
 		})
 		t.pendingFactCount = 0
+		t.pendingFactRefs = nil
 		t.pendingFactSummary = ""
 		changed = true
 	}
@@ -2992,11 +3019,13 @@ func (t *Task) restoreTriggers(ev []agent.TriggerEvent) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(ev, t.pendingTriggers...)
-	if len(t.pendingTriggers) > maxPendingTriggers {
-		drop := len(t.pendingTriggers) - maxPendingTriggers
-		t.pendingTriggers = t.pendingTriggers[drop:]
-		t.pendingDropped += drop
+	newer := t.pendingTriggers
+	t.pendingTriggers = nil
+	for _, event := range ev {
+		t.appendTriggerLocked(event)
+	}
+	for _, event := range newer {
+		t.appendTriggerLocked(event)
 	}
 	t.trigMu.Unlock()
 }
@@ -3015,4 +3044,12 @@ func (t *Task) drainTriggers() []agent.TriggerEvent {
 	ev := t.pendingTriggers
 	t.pendingTriggers = nil
 	return ev
+}
+
+func clipTriggerSummary(s string) string {
+	r := []rune(s)
+	if len(r) > 200 {
+		return string(r[:200]) + "…"
+	}
+	return s
 }

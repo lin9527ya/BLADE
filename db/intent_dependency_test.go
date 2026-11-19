@@ -359,7 +359,7 @@ func TestBlockedIntentSignatureTracksActivePrerequisite(t *testing.T) {
 }
 
 // advisory 依赖只排序：前置仍活跃时下游不消失，但会排到就绪工作之后。
-func TestFrontierForSlotDeprioritizesAdvisoryDownstream(t *testing.T) {
+func TestFrontierForSlotAdvisoryIsOnlyLightBias(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
@@ -391,8 +391,8 @@ func TestFrontierForSlotDeprioritizesAdvisoryDownstream(t *testing.T) {
 	if len(fr) != 3 {
 		t.Fatalf("advisory 下游不应被剔除：%d", len(fr))
 	}
-	if fr[len(fr)-1].ID != down {
-		t.Fatalf("advisory 下游应排最后：got %v (pre=%d ready=%d down=%d)", nodeIDs(fr), pre, ready, down)
+	if fr[0].ID != down || fr[1].ID != pre || fr[2].ID != ready {
+		t.Fatalf("高价值 advisory 下游应保持执行机会，不能被低优先级 ready 永久压后：got %v", nodeIDs(fr))
 	}
 }
 
