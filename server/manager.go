@@ -2769,6 +2769,34 @@ func (t *Task) NotifyFinding(intentID int64, summary string) {
 	t.Notify()
 }
 
+// NotifyFact records a fact/contradiction/negative/supersede written by a worker
+// and wakes the planner. Semantic kind matters: a plain fact, a contradiction,
+// a negative result, or a superseding fact. The graph change itself also wakes
+// the bounded overview, but this event tells the planner what changed without
+// re-scanning the whole graph.
+func (t *Task) NotifyFact(kind string, intentID, factID int64, summary string, assetIDs []int64) {
+	if strings.TrimSpace(kind) == "" {
+		kind = "fact"
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{
+		Kind: kind, IntentID: intentID, FactID: factID, Summary: summary, AssetIDs: append([]int64(nil), assetIDs...),
+	})
+	t.trigMu.Unlock()
+	t.Notify()
+}
+
+// NotifyAsset records newly registered/updated assets and wakes the planner.
+func (t *Task) NotifyAsset(summary string) {
+	if strings.TrimSpace(summary) == "" {
+		summary = "资产图发生变化"
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "asset", Summary: summary})
+	t.trigMu.Unlock()
+	t.Notify()
+}
+
 // NotifyGoal records that one OR MORE goals were added in a single set_goals call —
 // by the human via the main agent — then wakes the planner, so the next round spells
 // out "人新增了 N 个目标：…" instead of the planner having to spot new open goals in

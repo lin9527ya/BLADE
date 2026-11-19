@@ -268,7 +268,9 @@ func renderPlannerTodos(items []actool.Todo) string {
 type TriggerEvent struct {
 	Kind     string
 	IntentID int64
+	FactID   int64
 	Detail   string
+	AssetIDs []int64  // Kind=="fact"/"contradiction"/"negative_fact"/"supersede" 专用
 	State    string   // Kind=="done" 专用：本次结算终态（done/negative/no_output/blocked/…）
 	Summary  string   // Kind=="cancelled" 专用：删除前捕获的意图摘要（真删除后节点已不存在，无法再查）
 	Goals    []string // Kind=="goal" 专用：本次 set_goals 新增的目标文本（1 条或多条）
@@ -309,6 +311,21 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			b.WriteString(fmt.Sprintf("\n- 人修改了目标，由「%s」变为「%s」—— 请据新目标调整探索方向（原方向若已不适用请停派）。", ev.OldGoal, ev.NewGoal))
 		case "goal_abandoned":
 			b.WriteString(fmt.Sprintf("\n- 人放弃了该目标：%s（理由：%s）—— 它不再阻断收官，也不必再为它派意图；请据此重判剩余目标/方向。", ev.Summary, ev.Detail))
+		case "fact", "contradiction", "negative_fact", "supersede":
+			label := map[string]string{
+				"fact": "事实", "contradiction": "矛盾事实", "negative_fact": "否定事实", "supersede": "替代事实",
+			}[ev.Kind]
+			head := fmt.Sprintf("\n- 意图 #%d 写回了%s", ev.IntentID, label)
+			if ev.FactID > 0 {
+				head += fmt.Sprintf(" #%d", ev.FactID)
+			}
+			head += "：" + clipLine(ev.Summary, 240)
+			if len(ev.AssetIDs) > 0 {
+				head += fmt.Sprintf("（相关资产：%v）", ev.AssetIDs)
+			}
+			b.WriteString(head + "。请结合证据判断是否需要补方向、复核或停止该分支。")
+		case "asset":
+			b.WriteString("\n- 新资产登记：" + clipLine(ev.Summary, 240) + "。请判断是否需要把该资产/邻域纳入探索方向。")
 		case "finding":
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 报告了一个 finding：%s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
 		case "cancelled":
@@ -621,7 +638,8 @@ const structuredIntentBlock = `
 【结构化意图与按需取景】
 - add_intent 的 summary/asset_ids/parent_ids 仍是必填核心；方向明确时建议补 hypothesis（若 X 则 Y）、success_criteria（什么算成功）、stop_condition（何时停）、mechanism（稳定打法键）、route（路线名）、produces/acceptance（产物与验收）、risk_area。它们都是可选的，不填不改变旧行为。
 - depends_on 只用于强串行利用链：前置意图 done/negative 后本条才可被 worker 领取；没有真实前置就留空，平行方向不要互相挂依赖。前置失败/越界时依赖会阻塞，planner 应根据 graph_audit/事实重排或拆链。
-- 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。`
+- 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
+- recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经

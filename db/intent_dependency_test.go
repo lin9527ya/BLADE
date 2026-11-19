@@ -95,3 +95,42 @@ func TestBlackboardQueryFiltersRouteAndKind(t *testing.T) {
 		t.Fatalf("route 过滤结果不符: total=%d nodes=%+v", total, nodes)
 	}
 }
+
+// 软调度：同优先级时， underrepresented route 应获得一定排序提升，但 priority 仍主导。
+func TestFrontierForSlotPrefersUnderrepresentedRoute(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTaskWithOptions(fmt.Sprintf("sched-%d", time.Now().UnixNano()), "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	ts := d.Exploration(task.ExplorationID)
+	for i := 0; i < 4; i++ {
+		if _, err := ts.AddIntent(map[string]any{"summary": fmt.Sprintf("same route %d", i), "contract": map[string]any{"route": "wide-route"}}, 8, nil, "planner"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rare, err := ts.AddIntent(map[string]any{"summary": "rare route", "contract": map[string]any{"route": "rare-route"}}, 8, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr, err := ts.FrontierForSlot("work#1", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr) == 0 || fr[0].ID != rare {
+		t.Fatalf("underrepresented route 应排前：rare=%d frontier=%+v", rare, idsOfNodes(fr))
+	}
+}
+
+func idsOfNodes(ns []*Node) []int64 {
+	out := make([]int64, len(ns))
+	for i, n := range ns {
+		out[i] = n.ID
+	}
+	return out
+}

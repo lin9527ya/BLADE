@@ -80,7 +80,9 @@ type Worker struct {
 	runTimeout time.Duration
 	// extraTools are host-provided tools (e.g. traffic query, oast) appended to
 	// the worker's graph write-back tools.
-	extraTools []actool.CoreTool
+	extraTools  []actool.CoreTool
+	notifyFact  func(kind string, intentID, factID int64, summary string, assetIDs []int64)
+	notifyAsset func(summary string)
 	// injectConstraints resolves whether this task's operation constraints get
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
@@ -288,6 +290,11 @@ func defaultToolsExcept(exclude ...string) []actool.CoreTool {
 	}
 	return out
 }
+
+func (w *Worker) SetNotifyFact(fn func(kind string, intentID, factID int64, summary string, assetIDs []int64)) {
+	w.notifyFact = fn
+}
+func (w *Worker) SetNotifyAsset(fn func(summary string)) { w.notifyAsset = fn }
 
 func (w *Worker) SetCompactionWindowResolver(fn func() int) { w.windowFn = fn }
 
@@ -635,6 +642,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx.SetRotateEgressHandler(w.rotateEgress) // WAF 封禁出口时切换 Clash 节点
 	tsx.SetEnrich(enr)                         // async DNS/HTTP auto-completion for assets this worker writes
 	tsx.SetNotifyFinding(notifyFinding)        // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
+	tsx.SetNotifyFact(w.notifyFact)            // 事实/矛盾/否定写回 → 语义触发
+	tsx.SetNotifyAsset(w.notifyAsset)          // 新资产登记 → 语义触发
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).

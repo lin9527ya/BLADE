@@ -627,6 +627,8 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
 	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
+	wk.SetNotifyFact(t.NotifyFact)
+	wk.SetNotifyAsset(t.NotifyAsset)
 	wk.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	wk.SetCompactionLLM(compactorRuntime.compactionLLM)
 	wk.SetWebSearch(s.webSearchFor("worker"))

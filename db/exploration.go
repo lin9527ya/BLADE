@@ -1980,9 +1980,100 @@ ORDER BY (COALESCE(n.payload->>'resume_after_restart','false')='true') DESC, n.p
 // slot outside the current pool (worker count shrank / upgrade) are fair game.
 // Owned-by-this-slot rows sort first so a resumed intent is picked before new work.
 func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int) ([]*Node, error) {
-	// Worker slots keep their names/leases. Dispatch order remains priority/id, but
-	// explicit depends_on prerequisites are honored by Frontier.
-	return s.Frontier(limit)
+	// Worker slots keep their names/leases. Candidate dependency filtering is done
+	// by Frontier; this layer adds a soft, explainable ordering on top: priority
+	// remains dominant, with aging and route-underrepresentation nudging the
+	// scheduler away from starving a low-priority branch. No hard quotas.
+	if limit <= 0 {
+		limit = 20
+	}
+	candidateLimit := limit * 4
+	if candidateLimit < 40 {
+		candidateLimit = 40
+	}
+	if candidateLimit > 400 {
+		candidateLimit = 400
+	}
+	candidates, err := s.Frontier(candidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) <= 1 {
+		return candidates, nil
+	}
+	routes := make(map[int64]string, len(candidates))
+	counts := map[string]int{}
+	for _, n := range candidates {
+		r := frontierRoute(n)
+		routes[n.ID] = r
+		counts[r]++
+	}
+	maxCount := 0
+	for _, n := range counts {
+		if n > maxCount {
+			maxCount = n
+		}
+	}
+	score := func(n *Node) float64 {
+		var p map[string]any
+		_ = json.Unmarshal(n.Payload, &p)
+		resume, _ := p["resume_after_restart"].(bool)
+		base := float64(n.Priority) * 100
+		if resume {
+			base += 100000 // interrupted work must resume before new work
+		}
+		route := routes[n.ID]
+		base += float64(maxCount-counts[route]) * 8 // under-represented route
+		if n.CreatedAt.IsZero() {
+			base += 0
+		} else {
+			age := time.Since(n.CreatedAt).Seconds() / 60
+			if age < 0 {
+				age = 0
+			}
+			if age > 30 {
+				age = 30
+			}
+			base += age // aging: old open intents get a small lift
+		}
+		if v, ok := p["attempts"].(float64); ok {
+			base -= v * 12 // repeated attempts should not monopolize slots
+		}
+		return base
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		si, sj := score(candidates[i]), score(candidates[j])
+		if si != sj {
+			return si > sj
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
+// frontierRoute extracts the soft route key used by scheduling and the blackboard
+// route projection. It is intentionally tolerant of old intents with no contract.
+func frontierRoute(n *Node) string {
+	if n == nil {
+		return "unrouted"
+	}
+	var p map[string]any
+	_ = json.Unmarshal(n.Payload, &p)
+	if c, ok := p["contract"].(map[string]any); ok {
+		if r, _ := c["route"].(string); strings.TrimSpace(r) != "" {
+			return strings.TrimSpace(r)
+		}
+	}
+	if r, _ := p["risk_area"].(string); strings.TrimSpace(r) != "" {
+		return strings.TrimSpace(r)
+	}
+	if r, _ := p["route"].(string); strings.TrimSpace(r) != "" {
+		return strings.TrimSpace(r)
+	}
+	return "unrouted"
 }
 
 // ActiveSlotIntents returns the newest non-terminal intent per slot owner in pool

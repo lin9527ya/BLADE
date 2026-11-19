@@ -215,6 +215,11 @@ type ToolSet struct {
 	// carrying (intentID, summary) so the round can spell out which intent found what.
 	// Wired for workers; nil elsewhere → falls back to notify (bare wake).
 	notifyFinding func(intentID int64, summary string)
+	// notifyFact, if set, wakes the planner with the semantic result of a fact write
+	// (kind, intent/fact ids, summary, asset ids); nil in contexts that don't need it.
+	notifyFact func(kind string, intentID, factID int64, summary string, assetIDs []int64)
+	// notifyAsset, if set, wakes the planner after insert_assets registers assets.
+	notifyAsset func(summary string)
 	// resumeTask, if set, revives the task after a graph change that should make a
 	// stopped task run again (currently: set_goals adds a goal). It flips a terminal/
 	// paused task back to running and (re)starts the engine loops — a plain notify()
@@ -255,6 +260,15 @@ func (t *ToolSet) SetNotify(fn func()) { t.notify = fn }
 
 // SetNotifyFinding wires the finding-wake callback (see ToolSet.notifyFinding).
 func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = fn }
+
+// SetNotifyFact wires semantic fact-write triggers (fact/contradiction/negative/
+// supersede). Set by the worker host; nil = no semantic wakeup.
+func (t *ToolSet) SetNotifyFact(fn func(kind string, intentID, factID int64, summary string, assetIDs []int64)) {
+	t.notifyFact = fn
+}
+
+// SetNotifyAsset wires a wakeup after insert_assets registers new assets.
+func (t *ToolSet) SetNotifyAsset(fn func(string)) { t.notifyAsset = fn }
 
 // SetRotateEgressHandler wires the host's Clash egress rotation callback.
 func (t *ToolSet) SetRotateEgressHandler(fn func(reason string) (string, error)) {
@@ -3159,6 +3173,17 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	if err != nil {
 		return 0, err
 	}
+	if t.notifyFact != nil {
+		kind := "fact"
+		if len(it.ContradictsIDs) > 0 {
+			kind = "contradiction"
+		} else if len(it.SupersedesIDs) > 0 {
+			kind = "supersede"
+		} else if pol := normalizeFactPolarity(it.Polarity, it.Summary, it.Confidence); pol == factPolarityNeg {
+			kind = "negative_fact"
+		}
+		t.notifyFact(kind, intent, id, it.Summary, pidList(it.AssetIDs))
+	}
 
 	t.writes.Facts++
 	t.writes.noteValidationAssets(pidList(it.AssetIDs))
@@ -4855,7 +4880,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listCompanies(),
 		// list_assets：规划时按 DSL 检索全资产库（配合 list_untested_assets 的"范围内未测"视角，
 		// 补上"按域名/指纹/端口/状态码等条件在整库里查"的能力）。
-		t.listAssets(), t.assetNeighbors(), t.assetDossier(), t.blackboardQuery(),
+		t.listAssets(), t.assetNeighbors(), t.assetDossier(), t.blackboardQuery(), t.verifyEvidence(),
 		// add_task_scope / add_company_scope（上面的 PlannerTools 首行）是 ARTEX 的
 		// 扩面入口：planner 在有归属证据时可主动把根域/公司/子域/IP 纳入范围。
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。

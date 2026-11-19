@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/db"
@@ -168,4 +169,188 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// proposeIntents lets a worker submit child directions discovered mid-run without
+// mutating the frontier directly. The proposal becomes a fact, which wakes the
+// planner; the planner can dedupe, add dependencies and decide what to dispatch.
+func (t *ToolSet) proposeIntents() actool.CoreTool {
+	return t.writeExpTool("propose_intents",
+		"把执行中发现、但当前意图范围外的下一步方向作为【提案】交给 planner。它只写一条事实，不会直接创建意图；planner 复核后会决定是否 add_intent。\n"+
+			"用于：利用链的下一步、发现的新入口/参数、值得复核的否定结论、需要扩面的新资产。\n"+
+			"不要用它重复当前意图已经做过的事；提案要写清依据和最小下一步。",
+		obj(map[string]any{
+			"proposals": map[string]any{
+				"type": "array",
+				"items": obj(map[string]any{
+					"summary":    str("一句话方向（必填）"),
+					"hypothesis": str("可选假设"),
+					"mechanism":  str("可选稳定打法键"),
+					"route":      str("可选路线名"),
+					"depends_on": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选前置意图 id"},
+					"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选目标资产 id"},
+					"reason":     str("为什么值得下一步（证据/观察）"),
+				}, "summary"),
+			},
+		}, "proposals"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Proposals []struct {
+					Summary    string            `json:"summary"`
+					Hypothesis string            `json:"hypothesis"`
+					Mechanism  string            `json:"mechanism"`
+					Route      string            `json:"route"`
+					DependsOn  []json.RawMessage `json:"depends_on"`
+					AssetIDs   []json.RawMessage `json:"asset_ids"`
+					Reason     string            `json:"reason"`
+				} `json:"proposals"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if len(a.Proposals) == 0 {
+				return actool.Errorf("proposals 不能为空"), nil
+			}
+			type proposal struct {
+				Summary    string  `json:"summary"`
+				Hypothesis string  `json:"hypothesis,omitempty"`
+				Mechanism  string  `json:"mechanism,omitempty"`
+				Route      string  `json:"route,omitempty"`
+				DependsOn  []int64 `json:"depends_on,omitempty"`
+				AssetIDs   []int64 `json:"asset_ids,omitempty"`
+				Reason     string  `json:"reason,omitempty"`
+			}
+			out := make([]proposal, 0, len(a.Proposals))
+			for _, p := range a.Proposals {
+				if strings.TrimSpace(p.Summary) == "" {
+					continue
+				}
+				out = append(out, proposal{
+					Summary: strings.TrimSpace(p.Summary), Hypothesis: strings.TrimSpace(p.Hypothesis),
+					Mechanism: strings.TrimSpace(p.Mechanism), Route: strings.TrimSpace(p.Route),
+					DependsOn: pidList(p.DependsOn), AssetIDs: pidList(p.AssetIDs),
+					Reason: strings.TrimSpace(p.Reason),
+				})
+			}
+			if len(out) == 0 {
+				return actool.Errorf("至少一条提案需要 summary"), nil
+			}
+			detail, _ := json.Marshal(map[string]any{"proposals": out})
+			id, err := t.recordOneFact(factItem{
+				Summary:    fmt.Sprintf("[意图提案] %d 个下一步方向", len(out)),
+				Detail:     string(detail),
+				Confidence: "observed",
+				Polarity:   "positive",
+				Enables:    []string{"info"},
+			}, 0)
+			if err != nil {
+				return actool.Errorf("记录意图提案失败：" + err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"fact_id": id, "proposals": len(out), "status": "pending_planner_review",
+				"note": "提案只写入黑板，不会自动创建意图；planner 复核后决定。",
+			})
+		})
+}
+
+// verifyEvidence is an independent, read-only evidence check. It does not ask the
+// worker whether it succeeded; it inspects the stored facts, their confidence,
+// evidence text, and contradicts/supersedes edges. The planner uses it before
+// proving a goal or trusting a negative conclusion.
+func (t *ToolSet) verifyEvidence() actool.CoreTool {
+	return t.readExpTool("verify_evidence",
+		"独立核对一个意图产出的证据（或指定事实）：检查 evidence 是否为空、confidence、polarity，以及是否被 contradicts/supersedes 边推翻。只返回判断与缺口，不改图、不替 worker 补证据。",
+		obj(map[string]any{
+			"intent_id": idp("要核对的意图 id（与 fact_id 二选一）"),
+			"fact_id":   idp("要核对的事实 id（与 intent_id 二选一）"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return actool.Errorf("verify_evidence 需要任务上下文"), nil
+			}
+			var a struct {
+				IntentID json.RawMessage `json:"intent_id"`
+				FactID   json.RawMessage `json:"fact_id"`
+			}
+			_ = json.Unmarshal(in, &a)
+			var ids []int64
+			intentID := pid(a.IntentID)
+			factID := pid(a.FactID)
+			if intentID > 0 {
+				var err error
+				ids, err = t.ts.FactsYielded(intentID)
+				if err != nil {
+					return actool.Errorf("读取意图产出失败：" + err.Error()), nil
+				}
+			} else if factID > 0 {
+				ids = []int64{factID}
+			} else {
+				return actool.Errorf("intent_id 或 fact_id 至少给一个"), nil
+			}
+			if len(ids) == 0 {
+				return jsonResult(map[string]any{"verdict": "insufficient", "reason": "没有可核对的事实产出", "intent_id": intentID})
+			}
+			edges, _ := t.ts.EdgesTouching(ids)
+			contradicted := map[int64]string{}
+			superseded := map[int64]bool{}
+			for _, e := range edges {
+				if e.Rel == db.RelContradicts {
+					contradicted[e.To] = fmt.Sprintf("%d --contradicts--> %d", e.From, e.To)
+				}
+				if e.Rel == db.RelSupersedes {
+					superseded[e.To] = true
+				}
+			}
+			type check struct {
+				ID         int64  `json:"id"`
+				Summary    string `json:"summary"`
+				Verdict    string `json:"verdict"`
+				Confidence string `json:"confidence,omitempty"`
+				Evidence   string `json:"evidence,omitempty"`
+				Note       string `json:"note,omitempty"`
+			}
+			checks := make([]check, 0, len(ids))
+			overall := "supported"
+			for _, id := range ids {
+				n, err := t.ts.GetNode(id)
+				if err != nil || n == nil || n.Kind != db.KindFact {
+					checks = append(checks, check{ID: id, Verdict: "insufficient", Note: "不是可核对的事实节点"})
+					overall = "insufficient"
+					continue
+				}
+				var p map[string]any
+				_ = json.Unmarshal(n.Payload, &p)
+				summary, _ := p["summary"].(string)
+				evidence, _ := p["evidence"].(string)
+				confidence, _ := p["confidence"].(string)
+				c := check{ID: id, Summary: clipLine(summary, 160), Confidence: confidence, Evidence: clipLine(evidence, 160)}
+				switch {
+				case contradicted[id] != "":
+					c.Verdict, c.Note = "contradicted", "存在矛盾边："+contradicted[id]
+					overall = "contradicted"
+				case superseded[id]:
+					c.Verdict, c.Note = "superseded", "已被后续事实替代"
+					if overall == "supported" {
+						overall = "insufficient"
+					}
+				case strings.TrimSpace(evidence) == "":
+					c.Verdict, c.Note = "insufficient", "缺少 evidence 原文"
+					if overall == "supported" {
+						overall = "insufficient"
+					}
+				case confidence == "inferred":
+					c.Verdict, c.Note = "weak", "只有推断 confidence=inferred"
+					if overall == "supported" {
+						overall = "weak"
+					}
+				default:
+					c.Verdict = "supported"
+				}
+				checks = append(checks, c)
+			}
+			return jsonResult(map[string]any{
+				"verdict": overall, "intent_id": intentID, "fact_id": factID,
+				"checks": checks, "note": "verdict=supported 仅表示证据形式满足；真实可复现仍需人工/独立复测。",
+			})
+		})
 }

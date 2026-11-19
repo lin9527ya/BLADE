@@ -95,11 +95,17 @@ func TestBlackboardReadToolsSurface(t *testing.T) {
 		"worker":    namesOf(ts.WorkerTools()),
 	}
 	for agent, have := range surfaces {
-		for _, want := range []string{"asset_dossier", "blackboard_query"} {
+		for _, want := range []string{"asset_dossier", "blackboard_query", "verify_evidence"} {
 			if !have[want] {
-				t.Fatalf("%s 缺少只读取景工具 %s", agent, want)
+				t.Fatalf("%s 缺少只读取景/核对工具 %s", agent, want)
 			}
 		}
+	}
+	if !surfaces["worker"]["propose_intents"] {
+		t.Fatal("worker 缺少 propose_intents 提案工具")
+	}
+	if surfaces["planner"]["propose_intents"] {
+		t.Fatal("propose_intents 只应给 worker，不应直接给 planner")
 	}
 	out := callTool(t, ts.PlannerTools(), "blackboard_query", `{}`)
 	if !strings.Contains(out, "需要任务上下文") {
