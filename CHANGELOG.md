@@ -4,6 +4,43 @@
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-11-19
+
+### 黑板与意图
+
+- `add_intent` 支持可选的 hypothesis / success_criteria / stop_condition / mechanism /
+  route / produces / acceptance / risk_area 等结构化契约字段；不填保持旧的最小意图行为。
+- 显式 `depends_on` 接入 Frontier 与 claimable 计数：前置 done/negative 后下游才可领取，
+  无依赖意图仍立即可领；跨任务只读意图不能作为本任务前置。
+- 新增 `asset_dossier`、`blackboard_query` 只读工具，支持按资产/路线/关键词查看窗口外黑板；
+  存量库自动补绑，planner/mainagent/worker 均可使用。
+- planner 增加结构化意图、依赖链和按需取景说明。
+
+### 调度与语义触发
+
+- `FrontierForSlot` 增加软评分：priority 仍主导，叠加 aging、route fairness、
+  attempt penalty；重启续跑意图仍最高优先。
+- worker 写回事实/否定/矛盾/替代事实以及登记资产时发出语义触发，planner 直接看到
+  “发生了什么”，不再只依赖图变更。
+- worker 新增 `propose_intents`：提案只写事实交给 planner 复核，不直接进入 frontier。
+- 新增只读 `verify_evidence`：核对 evidence/confidence 与 contradicts/supersedes；
+  `deep=true` 时额外调用一次只读独立模型审查证据摘要。
+
+### 路线与跨任务记忆
+
+- 新增 `route_dossier`：按 contract.route/risk_area 汇总意图状态与 yields 产出。
+- 新增 `search_precedents`：跨任务检索历史事实/发现；有公司范围时只看同公司任务，
+  返回相关性评分与来源 task/node。
+- `graph_overview` 增加 campaign/phase 上下文与同战役任务摘要；planner 将其作为策略上下文，
+  不改变授权边界。
+- planner 增加路线全貌、历史先例和战役上下文的使用纪律。
+
+### 修复
+
+- 修正老库迁移用例：降级旧 `ck_node_kind` 前按旧白名单清理所有新 kind 残留，
+  避免 ad_object/cloud_object 等节点让测试失败。
+- 补充结构化意图、依赖调度、语义触发、路线子板、跨任务先例和战役上下文测试。
+
 ## [0.9.19] - 2026-11-18
 
 ### 资产范围与扩面
