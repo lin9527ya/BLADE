@@ -78,6 +78,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 			}
 			m["waiting_minutes"] = wait
 			m["priority"] = n.Priority
+			if n.Schedule != nil {
+				m["schedule"] = n.Schedule
+			}
 		}
 		if ra, _ := p["risk_area"].(string); strings.TrimSpace(ra) != "" {
 			m["risk_area"] = ra
@@ -726,7 +729,7 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	// 诱发自行扩面；但保留 capabilities 与 ruled_out，让 worker 知道团队已解锁的
 	// 能力与已被实证排除的死路，避免重复踩坑。
 	for _, k := range []string{
-		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed",
+		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed", "lead_tracking", "lead_tracking_status", "dispatch_order",
 		"unconsumed_facts", "branch_review_facts", "folded_facts", "folded_facts_total",
 	} {
 		delete(out, k)
@@ -1210,8 +1213,18 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	}
 	hidden := func(id int64) bool { _, c := covered[id]; return c && !hotAtRender[id] }
 	const openIntentsCap = 30
-	fr, _ := t.ts.Frontier(openIntentsCap) // 可领的（前置已满足）；真实总数见 frontier_open
+	fr, _ := t.ts.FrontierForSlot("", nil, db.DispatchBatchSize) // 可领的（前置已满足）；真实总数见 frontier_open
 	all, _ := t.ts.ListByKind(db.KindIntent, 300)
+	scores := map[int64]*db.IntentScheduleExplanation{}
+	order := []int64{}
+	for _, n := range fr {
+		scores[n.ID] = n.Schedule
+		order = append(order, n.ID)
+	}
+	for _, n := range all {
+		n.Schedule = scores[n.ID]
+	}
+	out["dispatch_order"] = order
 	if total, ierr := t.ts.CountByKindExcludingState(db.KindIntent, db.StateIntentDeleted); ierr == nil {
 		out["intents_total"] = total
 		if total > len(all) {
@@ -1377,19 +1390,11 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 		out["recent_facts_note"] = "recent_facts 是最新一窗（已折叠进 digest 的不在此重复，见 cold_digests）。" +
 			"更旧的 facts 用 list_facts 翻页：传 before=recent_facts_next_before；全文用 node_detail(id)。"
 	}
-	// 线索账本：leads 存在 fact payload 里，id 由事实 id + 下标生成。
-	// converted 由意图 payload 的 converted_lead_ids 决定；dismissed 由事实 payload 的
-	// dismissed_leads 决定——都不靠「来源 fact 有没有子意图」猜。
-	convertedLeads := map[string]bool{}
-	for _, n := range all {
-		var p struct {
-			Converted []string `json:"converted_lead_ids"`
-		}
-		if json.Unmarshal(n.Payload, &p) == nil {
-			for _, id := range p.Converted {
-				convertedLeads[strings.ToUpper(strings.TrimSpace(id))] = true
-			}
-		}
+	// Full-task traces include both leads and proposal entries. A linked child
+	// alone never proves that every branch in a fact was adopted.
+	tracking, traceErr := t.ts.LeadTraceReport("", "", 20, 0)
+	if traceErr != nil {
+		out["lead_tracking_status"] = map[string]any{"state": "unknown", "error": traceErr.Error()}
 	}
 	childIntents := map[int64][]int64{}
 	for iid, ps := range parentsOf {
@@ -1397,9 +1402,24 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 			childIntents[pid] = append(childIntents[pid], iid)
 		}
 	}
-	leadsTotal, leadsOpen, leadsConverted, leadsDismissed := 0, 0, 0, 0
 	var branchReview []map[string]any
 	recentLeads := make([]map[string]any, 0, 20)
+	if tracking != nil {
+		for _, lead := range tracking.PendingPreview {
+			row := map[string]any{"id": lead.ID, "text": lead.Text, "from_fact": lead.FactID, "state": lead.State, "kind": lead.Kind, "asset_ids": lead.AssetIDs,
+				"age_min": int(time.Since(lead.FactCreatedAt).Minutes())}
+			if source := factFrom[lead.FactID]; source > 0 {
+				row["from_intent"] = source
+			}
+			recentLeads = append(recentLeads, row)
+		}
+		out["lead_tracking"] = tracking.Stats
+		out["leads_total"] = tracking.Stats.Total
+		out["leads_open"] = tracking.Stats.Pending
+		out["leads_converted"] = tracking.Stats.Adopted
+		out["leads_dismissed"] = tracking.Stats.Dismissed
+		out["lead_tracking_status"] = map[string]any{"state": "complete", "note": "计数覆盖本任务全部结构化线索与提案；列表是窗口，完成表示意图执行结束，不是已证明漏洞。"}
+	}
 	unconsumedHigh := make([]map[string]any, 0, 12)
 	unconsumedOther := make([]map[string]any, 0, 12)
 	capCounts := map[string]int{}
@@ -1418,45 +1438,9 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 				}
 			}
 		}
-		leads, _ := fp["leads"].([]any)
-		dismissed := map[string]bool{}
-		if arr, ok := fp["dismissed_leads"].([]any); ok {
-			for _, v := range arr {
-				if sv, ok := v.(string); ok {
-					dismissed[strings.ToUpper(strings.TrimSpace(sv))] = true
-				}
-			}
-		}
 		factOpenLeads := 0
-		for i, raw := range leads {
-			lm, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			id := leadID(n.ID, i)
-			key := strings.ToUpper(id)
-			leadsTotal++
-			switch {
-			case convertedLeads[key]:
-				leadsConverted++
-				continue
-			case dismissed[key]:
-				leadsDismissed++
-				continue
-			}
-			leadsOpen++
-			factOpenLeads++
-			if len(recentLeads) < 20 {
-				item := map[string]any{"id": id, "text": asText(lm["text"]), "from_fact": n.ID}
-				if from := factFrom[n.ID]; from > 0 {
-					item["from_intent"] = from
-				}
-				if ids, ok := lm["asset_ids"].([]any); ok && len(ids) > 0 {
-					item["asset_ids"] = ids
-				}
-				item["age_min"] = int(time.Since(n.CreatedAt).Minutes())
-				recentLeads = append(recentLeads, item)
-			}
+		if tracking != nil {
+			factOpenLeads = tracking.OpenByFact[n.ID]
 		}
 		// A linked child only consumes its own question, not all observations in a
 		// multi-branch fact. Keep a small review window instead of calling it wholly
@@ -1508,10 +1492,6 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	if len(recentLeads) > 0 {
 		out["recent_leads"] = recentLeads
 	}
-	out["leads_total"] = leadsTotal
-	out["leads_open"] = leadsOpen
-	out["leads_converted"] = leadsConverted
-	out["leads_dismissed"] = leadsDismissed
 	if len(unconsumed) > 0 {
 		out["unconsumed_facts"] = unconsumed
 	}
@@ -2287,8 +2267,6 @@ func detectionResults(nodes []*db.Node) map[string]int {
 	return out
 }
 
-func leadID(factID int64, index int) string { return fmt.Sprintf("L%d-%d", factID, index) }
-
 // lootOutstanding 报告一条战果是不是「在手、但还没有被真正动用过」。
 // 「算不算真动用」的判定在 db.LootConsumingIntentState（agent 与 server 共用一份口径）。
 // 已失效(state != active)的不算：不能用就不是机会。
@@ -2548,9 +2526,11 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 // 核心字段是 summary / asset_ids / parent_ids / priority；结构化契约字段全部可选，
 // 非空才落库，不改变旧的最小意图行为。
 type intentItem struct {
-	Summary   string            `json:"summary"`
-	AssetIDs  []json.RawMessage `json:"asset_ids"`
-	ParentIDs []json.RawMessage `json:"parent_ids"`
+	Summary          string            `json:"summary"`
+	AssetIDs         []json.RawMessage `json:"asset_ids"`
+	ParentIDs        []json.RawMessage `json:"parent_ids"`
+	LeadIDs          []string          `json:"lead_ids,omitempty"`
+	ConvertedLeadIDs []string          `json:"converted_lead_ids,omitempty"` // legacy alias
 	// Optional structured contract. All fields are soft: empty values keep the
 	// old one-line intent behavior. They are persisted so worker acceptance,
 	// planner dedupe and route aggregation can use them.
@@ -2608,6 +2588,22 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	// AD/云对象：目标本身可能就是“拿到某台机器 Shell”或“拿到某条凭据”，强迫
 	// planner 先补一条重复 fact 既浪费一轮，也会把战果从血缘上割裂。
 	parents := pidList(it.ParentIDs)
+	leadIDs := append(append([]string(nil), it.LeadIDs...), it.ConvertedLeadIDs...)
+	for _, lead := range leadIDs {
+		fact, _, err := db.ParseExplorationLeadID(lead)
+		if err != nil {
+			return 0, warnings, err
+		}
+		found := false
+		for _, parent := range parents {
+			if parent == fact {
+				found = true
+			}
+		}
+		if !found {
+			parents = append(parents, fact)
+		}
+	}
 	for _, parent := range parents {
 		n, err := t.ts.GetNodeWithSources(parent)
 		if err != nil || n == nil {
@@ -2691,6 +2687,9 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 		}
 	}
 	payload := map[string]any{"summary": it.Summary}
+	if len(leadIDs) > 0 {
+		payload["lead_ids"] = leadIDs
+	}
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
@@ -2788,6 +2787,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"intents":          map[string]any{"type": "array", "description": "要新增的探索方向数组。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。", "items": map[string]any{"type": "object"}},
 			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
 			"asset_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
+			"lead_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：接手的线索 L<fact>-<index> / 提案 P<fact>-<index>；自动附来源，不用重复填 parent_ids。原文明确匹配唯一父节点线索时会自动关联，不必为了追踪填表。"},
 			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的已确认事实/发现节点 id；顶层全新方向留空，会自动挂到任务起点。"},
 			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。默认 advisory：只影响排序、不阻塞领取；只有 depends_on_mode=strict 才在前置仍 open/running/paused 时暂缓派发。"},
 			"depends_on_mode":  str("可选：advisory（默认，只排序）或 strict（强串行）。strict 也会在前置进入任何终态后 fail-open，不会永久卡死。"),
@@ -3355,6 +3355,14 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	payload := map[string]any{"summary": it.Summary}
 	if origin := strings.TrimSpace(it.Origin); origin != "" {
 		payload["origin"] = origin
+		if origin == "proposal" {
+			var doc struct {
+				Proposals []json.RawMessage `json:"proposals"`
+			}
+			if json.Unmarshal([]byte(it.Detail), &doc) == nil && len(doc.Proposals) > 0 {
+				payload["proposals"] = doc.Proposals
+			}
+		}
 	}
 	enables := normalizeEnables(it.Enables)
 	leads := cleanLeads(it.Leads)

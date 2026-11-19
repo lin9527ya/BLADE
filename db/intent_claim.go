@@ -55,7 +55,18 @@ func logicalSessionForClaim(n *Node, exploration int64, owner, explorationMode s
 }
 
 // ClaimNode returns the post-CAS row. Callers must not use a frontier snapshot as authority.
-func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expected string, ttl time.Duration, pool []string, slotAffinity bool) (*Node, error) {
+func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expected string, ttl time.Duration, pool []string, slotAffinity bool, snapshots ...*IntentScheduleExplanation) (*Node, error) {
+	var snapshot any
+	if len(snapshots) > 0 && snapshots[0] != nil {
+		if snapshots[0].IntentID != id {
+			return nil, fmt.Errorf("dispatch snapshot belongs to another intent")
+		}
+		raw, err := json.Marshal(snapshots[0])
+		if err != nil {
+			return nil, err
+		}
+		snapshot = string(raw)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -91,8 +102,10 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
  heartbeat_at=now(),lease_expires_at=now()+($3*interval '1 second'),blocked_reason=NULL,completed_at=NULL,
  semantic_outcome='',semantic_note='',
  payload=(COALESCE(payload,'{}'::jsonb)-'resume_after_restart'-'resume_slot')||jsonb_build_object('attempts',
- CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$' THEN (payload->>'attempts')::int+1 ELSE 1 END)
- WHERE id=$4 AND exploration_id=$5 AND state=$6 RETURNING `+nodeCols, owner, session, int64(ttl/time.Second), id, s.expID, expected))
+ CASE WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$' THEN (payload->>'attempts')::int+1 ELSE 1 END,
+ 'first_claimed_at',COALESCE(NULLIF(payload->'first_claimed_at','null'::jsonb),to_jsonb(now())),
+ 'last_claimed_at',now()) || CASE WHEN $7::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('dispatch_snapshot',$7::jsonb) END
+ WHERE id=$4 AND exploration_id=$5 AND state=$6 RETURNING `+nodeCols, owner, session, int64(ttl/time.Second), id, s.expID, expected, snapshot))
 	if err != nil {
 		return nil, err
 	}

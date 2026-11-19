@@ -244,6 +244,7 @@ type taskRuntime struct {
 }
 
 type workExecution struct {
+	taskID     int64
 	generation int64
 	cancel     context.CancelCauseFunc
 	done       chan error
@@ -619,6 +620,7 @@ func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc, au
 	run := &workExecution{cancel: cancel, done: make(chan error, 1)}
 	if len(authority) > 0 {
 		run.generation = authority[0].Generation
+		run.taskID = authority[0].TaskID
 	}
 	e.work[intentID] = run
 	e.workMu.Unlock()
@@ -1501,6 +1503,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			e.emitActivity(t, boundary)
 		}
 	}
+	if err := store.RecordIntentStart(iid); err != nil {
+		log.Printf("[worker %s] task %s 首次执行时间记录失败: %v", name, t.ID, err)
+	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
@@ -2145,10 +2150,10 @@ func (e *Engine) claimNextForSlot(t *Task, name string) *db.Node {
 		// long-task output; fresh branches never enter this subset.
 		fr, _ = t.Store.FrontierForIDs(ids)
 	} else {
-		fr, _ = t.Store.FrontierForSlot(name, pool, 20)
+		fr, _ = t.Store.FrontierForSlot(name, pool, db.DispatchBatchSize)
 	}
 	for _, in := range fr {
-		if node, err := t.Store.ClaimNode(context.Background(), in.ID, name, "open", db.IntentLeaseTTL, pool, true); err == nil && node != nil {
+		if node, err := t.Store.ClaimNode(context.Background(), in.ID, name, "open", db.IntentLeaseTTL, pool, true, in.Schedule); err == nil && node != nil {
 			return node
 		}
 	}

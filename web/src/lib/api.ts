@@ -3,6 +3,7 @@
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
 // are passed through and formatted at the call site.
 
+import type { SchedulingReport, LeadTraceReport } from "@/lib/exploration-tracking";
 import type { ChatMention } from "@/lib/chat-mentions";
 import type { CacheDiagnostics, CacheTraceState, RuntimeMetrics } from "@/lib/diagnostics";
 import { MOCK } from "@/lib/mock/enabled";
@@ -640,6 +641,13 @@ export const api = {
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
+  taskScheduling: (id: string, intentId?: string) =>
+    get<SchedulingReport>(`/tasks/${id}/scheduling${intentId ? `?intent_id=${encodeURIComponent(intentId)}` : ""}`),
+  taskLeadTraces: (id: string, state = "", offset = 0) => {
+    const query = new URLSearchParams({ limit: "20", offset: String(offset) });
+    if (state) query.set("state", state);
+    return get<LeadTraceReport>(`/tasks/${id}/leads?${query}`);
+  },
   dashboardSummary: (signal?: AbortSignal) =>
     get<DashboardSummary>("/dashboard", { signal }).then((r) => ({
       ...r,

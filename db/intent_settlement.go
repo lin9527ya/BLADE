@@ -30,3 +30,23 @@ func (s *ExplorationStore) SettleIntent(id int64, state string, validated []int6
 	}
 	return tx.Commit()
 }
+
+// Written only after the session gate and pause checks, immediately before the
+// first Worker.Execute call. Reclaims/restarts never rewrite the first start.
+func (s *ExplorationStore) RecordIntentStart(id int64) error {
+	if s.db.authority == nil || s.db.authority.IntentID != id {
+		return ErrStaleExecution
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`UPDATE exploration_nodes SET payload=payload||jsonb_build_object(
+ 'first_started_at',COALESCE(NULLIF(payload->'first_started_at','null'::jsonb),to_jsonb(now())))
+ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'`, id, s.expID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}

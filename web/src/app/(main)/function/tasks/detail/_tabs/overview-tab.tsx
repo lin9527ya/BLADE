@@ -38,6 +38,7 @@ import { taskIsTerminal } from "@/lib/status";
 import { cacheHitRate } from "@/lib/token-stats";
 import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
+import { ExplorationTrackingCard } from "./_components/exploration-tracking-card";
 import { ArtifactPanel } from "./_components/artifact-panel";
 import {
   TaskAssetScopeCard,
@@ -875,6 +876,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       <TaskLootExecCard taskId={taskId} enabled={task?.loot_exec_enabled} />
       <TaskCredentialBudgetCard taskId={taskId} budget={task?.credential_attempt_budget} />
       <TaskRuntimeCard task={task} />
+      <ExplorationTrackingCard taskId={taskId} />
       <TaskInterceptRulesCard taskId={taskId} />
       {coverage?.enabled && coverage.scope_rows > 0 && (
         <Card>

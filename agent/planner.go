@@ -726,7 +726,7 @@ const structuredIntentBlock = `
 【方向与连续研究】
 - add_intent 只需明确 summary；asset_ids / parent_ids 和 hypothesis / route / mechanism / success_criteria / stop_condition / produces / acceptance 都可选。知道资产和事实时附上；不要为填表延迟一个明确的方向。父节点用事实/发现/据点/凭据/AD/云对象，意图前置用 depends_on。
 - depends_on 默认 advisory，仅轻度排序；strict 才等待活跃前置，终态 fail-open，不是安全锁。解阻用 set_dependency_mode / drop_dependency / reopen_intent，写 reason，不改授权。
-- worker 的 [意图提案] 先核对再 add_intent；一条事实有子意图不代表所有分叉已接手，按 lead id 逐个处理。
+- worker 的 [意图提案] 先核对再 add_intent；一条事实有子意图不代表所有分叉已接手，按 lead id 逐个处理；可选 lead_ids 关联，原文与唯一父节点线索明确一致时自动关联，不为追踪强制填表。
 - route_dossier 看路线，search_precedents 取历史先验（不是本次结论）；campaign 提供策略上下文，不授权。
 - 需要跨轮保留的研究判断用 TodoWrite：记录待验证分叉、等待原因及什么新证据会改变结论，不必每轮复述全部历史。`
 

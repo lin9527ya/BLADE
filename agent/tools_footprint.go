@@ -289,12 +289,14 @@ func (t *ToolSet) linkIntentSource() actool.CoreTool {
 			"补上真实来源后会自动去掉指向任务起点的兜底边，链路图才读得出真实因果。",
 		obj(map[string]any{
 			"intent_id":  idp("要补血缘的意图 id"),
+			"lead_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：关联线索/提案 ID（L.../P...），自动附来源事实，不改变执行状态。"},
 			"source_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "来源节点 id（事实/漏洞，0/1/多个）：这条意图是由哪些已确认结论综合出来的"},
-		}, "intent_id", "source_ids"),
+		}, "intent_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				IntentID  json.RawMessage   `json:"intent_id"`
 				SourceIDs []json.RawMessage `json:"source_ids"`
+				LeadIDs   []string          `json:"lead_ids"`
 			}
 			_ = json.Unmarshal(in, &a)
 			id := pid(a.IntentID)
@@ -302,8 +304,8 @@ func (t *ToolSet) linkIntentSource() actool.CoreTool {
 				return actool.Errorf("intent_id 必填"), nil
 			}
 			sources := pidList(a.SourceIDs)
-			if len(sources) == 0 {
-				return actool.Errorf("source_ids 必填：要给这条意图补的来源事实/漏洞 id"), nil
+			if len(sources) == 0 && len(a.LeadIDs) == 0 {
+				return actool.Errorf("source_ids 或 lead_ids 至少提供一个：补来源节点或具体分叉"), nil
 			}
 			linked := 0
 			for _, src := range sources {
@@ -314,6 +316,12 @@ func (t *ToolSet) linkIntentSource() actool.CoreTool {
 				if added {
 					linked++
 				}
+			}
+			if len(a.LeadIDs) > 0 {
+				if err := t.ts.LinkIntentLeads(id, a.LeadIDs); err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				return actool.Text(fmt.Sprintf("intent %d: 已补分叉关联 %v（来源自动附上），另补 %d 条显式来源边；执行状态未改变", id, a.LeadIDs, linked)), nil
 			}
 			return actool.Text(fmt.Sprintf("intent %d: 已补 %d 条血缘边（来源 %v）", id, linked, sources)), nil
 		})

@@ -94,6 +94,9 @@ func migrateExplorationPrompts(pg *db.DB) {
 	}
 	migrateBuiltinPrompt(pg, "planner", plannerBuiltinPromptSHA256)
 	migrateBuiltinPrompt(pg, "worker", workerBuiltinPromptSHA256)
+	if err := pg.BackfillProposalEntries(); err != nil {
+		log.Printf("[leads] 历史提案索引补全失败: %v", err)
+	}
 	for _, seed := range agent.BuiltinToolSeeds() {
 		if seed.Key != "record_fact" {
 			continue

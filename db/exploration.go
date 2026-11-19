@@ -66,21 +66,22 @@ func jsonbClean(b []byte) []byte {
 
 // Node is a typed reasoning node (= old task_nodes). kind ∈ goal|intent|finding|hint.
 type Node struct {
-	EvidenceState       *EvidenceState   `json:"evidence_state,omitempty"`
-	RequiresMissing     []map[string]any `json:"requires_missing,omitempty"`
-	LogicalSessionID    string           `json:"logical_session_id,omitempty"`
-	ExecutionGeneration int64            `json:"execution_generation,omitempty"`
-	ContentVersion      int64            `json:"content_version"`
-	FindingID           int64            `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
-	FindingNodeID       int64            `json:"finding_node_id,omitempty"`
-	TrafficCount        int              `json:"traffic_count,omitempty"`
-	ID                  int64            `json:"id"`
-	Kind                string           `json:"kind"`
-	Payload             json.RawMessage  `json:"payload"`
-	Priority            int              `json:"priority"`
-	State               string           `json:"state"`
-	Origin              string           `json:"origin,omitempty"`
-	Owner               string           `json:"owner,omitempty"`
+	Schedule            *IntentScheduleExplanation `json:"schedule,omitempty"` // transient candidate explanation; not a stored column
+	EvidenceState       *EvidenceState             `json:"evidence_state,omitempty"`
+	RequiresMissing     []map[string]any           `json:"requires_missing,omitempty"`
+	LogicalSessionID    string                     `json:"logical_session_id,omitempty"`
+	ExecutionGeneration int64                      `json:"execution_generation,omitempty"`
+	ContentVersion      int64                      `json:"content_version"`
+	FindingID           int64                      `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
+	FindingNodeID       int64                      `json:"finding_node_id,omitempty"`
+	TrafficCount        int                        `json:"traffic_count,omitempty"`
+	ID                  int64                      `json:"id"`
+	Kind                string                     `json:"kind"`
+	Payload             json.RawMessage            `json:"payload"`
+	Priority            int                        `json:"priority"`
+	State               string                     `json:"state"`
+	Origin              string                     `json:"origin,omitempty"`
+	Owner               string                     `json:"owner,omitempty"`
 	// WorkerSeq 是 intent 在【本任务内】的创建序号（1-based，按 id 升序），**仅供界面**
 	// 显示 "Worker #N"。它是唯一保留序号的地方：agent 侧（态势、常驻索引、去重回执、
 	// 报告引用）一律只用全局 id——两套编号同时出现会让模型拿序号去调工具、找错节点
@@ -304,6 +305,9 @@ VALUES ($1,$2,$3,$4) ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHIN
 			return 0, err
 		}
 	}
+	if err := s.linkIntentLeadsTx(tx, id, optionalLeadIDs(payload)); err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -413,6 +417,9 @@ VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, sourceID, RelDerivedFrom,
 	}
 	if origin, oerr := s.OriginFactID(); oerr == nil && origin > 0 && origin != sourceID {
 		_ = s.Unlink(origin, RelDerivedFrom, intentID)
+	}
+	if err := s.LinkIntentLeads(intentID, nil); err != nil {
+		return n > 0, err
 	}
 	return n > 0, nil
 }
@@ -2298,129 +2305,16 @@ ORDER BY (COALESCE(n.payload->>'resume_after_restart','false')='true') DESC, n.p
 	return scanNodes(rows)
 }
 
-// FrontierForSlot is Frontier with worker-slot affinity: an intent already owned by
-// a live slot is only visible to that slot; unowned intents and intents owned by a
-// slot outside the current pool (worker count shrank / upgrade) are fair game.
-// Owned-by-this-slot rows sort first so a resumed intent is picked before new work.
+// FrontierForSlot and ScheduleReport share the same candidate window, scores
+// and comparator. The explanation is not a second approximation of dispatch.
 func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int) ([]*Node, error) {
-	// Worker slots keep their names/leases. Candidate dependency filtering is done
-	// by Frontier; this layer adds a soft, explainable ordering on top: priority
-	// remains dominant, with aging and route-underrepresentation nudging the
-	// scheduler away from starving a low-priority branch. No hard quotas.
 	if limit <= 0 {
-		limit = 20
+		limit = DispatchBatchSize
 	}
-	candidateLimit := limit * 6
-	if candidateLimit < 120 {
-		candidateLimit = 120
-	}
-	if candidateLimit > 500 {
-		candidateLimit = 500
-	}
-	candidates, err := s.Frontier(candidateLimit)
+	candidates, err := s.rankedFrontier(limit, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	// If the top-priority slice filled the candidate window, pull a bounded slice
-	// of the oldest/other-route claimable intents so a burst of high-priority work
-	// on one route cannot starve lower-priority divergent branches before scoring.
-	if len(candidates) == candidateLimit {
-		extra, _ := s.frontierDivergentTail(candidates, limit)
-		if len(extra) > 0 {
-			candidates = append(candidates, extra...)
-		}
-	}
-	if len(candidates) <= 1 {
-		return candidates, nil
-	}
-	// Advisory dependencies do not remove candidates; they only push intents whose
-	// prerequisite is still live behind ready work. This is the soft successor to
-	// the old hard gate: no deadlock, but serial chains still tend to run in order.
-	activeDeps := map[int64]bool{}
-	{
-		ids := make([]int64, 0, len(candidates))
-		for _, n := range candidates {
-			ids = append(ids, n.ID)
-		}
-		if m, err := s.DependencyActiveSources(ids); err == nil {
-			activeDeps = m
-		}
-	}
-	routes := make(map[int64]string, len(candidates))
-	unroutedIDs := make([]int64, 0)
-	for _, n := range candidates {
-		r := frontierRoute(n)
-		routes[n.ID] = r
-		if r == "unrouted" {
-			unroutedIDs = append(unroutedIDs, n.ID)
-		}
-	}
-	if len(unroutedIDs) > 0 {
-		if parents, err := s.primaryDerivedParents(unroutedIDs); err == nil {
-			for id, pid := range parents {
-				if pid > 0 {
-					routes[id] = fmt.Sprintf("parent:%d", pid)
-				}
-			}
-		}
-	}
-	counts := map[string]int{}
-	for _, n := range candidates {
-		counts[routes[n.ID]]++
-	}
-	maxCount := 0
-	for _, n := range counts {
-		if n > maxCount {
-			maxCount = n
-		}
-	}
-	score := func(n *Node) float64 {
-		var p map[string]any
-		_ = json.Unmarshal(n.Payload, &p)
-		resume, _ := p["resume_after_restart"].(bool)
-		base := float64(n.Priority) * 100
-		if activeDeps[n.ID] {
-			base -= 100 // advisory: one priority step, not a de facto hard gate
-		}
-		if resume {
-			base += 100000 // interrupted work must resume before new work
-		}
-		route := routes[n.ID]
-		base += float64(maxCount-counts[route]) * 8 // under-represented route
-		if n.CreatedAt.IsZero() {
-			base += 0
-		} else {
-			age := time.Since(n.CreatedAt).Seconds() / 60
-			if age < 0 {
-				age = 0
-			}
-			if age > 30 {
-				age = 30
-			}
-			base += age // aging: old open intents get a small lift
-		}
-		if v, ok := p["attempts"].(float64); ok {
-			base -= v * 12 // repeated attempts should not monopolize slots
-		}
-		return base
-	}
-	now := time.Now()
-	sort.SliceStable(candidates, func(i, j int) bool {
-		// After a bounded wait, oldest claimable work wins over newly arriving
-		// high-priority work. strict candidates were already filtered by Frontier.
-		ai, aj := frontierOverdue(candidates[i], now), frontierOverdue(candidates[j], now)
-		if ai != aj {
-			return ai
-		}
-		if ai && !candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
-			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
-		}
-		si, sj := score(candidates[i]), score(candidates[j])
-		if si != sj {
-			return si > sj
-		}
-		return candidates[i].ID < candidates[j].ID
-	})
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
 	}

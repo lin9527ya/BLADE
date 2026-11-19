@@ -229,8 +229,10 @@ GET /api/tasks/{id}/hints	server.(*Server).listHints-fm
 GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
 GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
+GET /api/tasks/{id}/leads	server.(*Server).taskLeadTraces-fm
 GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
 GET /api/tasks/{id}/relations	server.(*Server).taskRelations-fm
+GET /api/tasks/{id}/scheduling	server.(*Server).taskScheduling-fm
 GET /api/tasks/{id}/scope	server.(*Server).taskScopeList-fm
 GET /api/tasks/{id}/src-batch	server.(*Server).getTaskSrcBatch-fm
 GET /api/tasks/{id}/src-report.zip	server.(*Server).getTaskSrcReportZip-fm
