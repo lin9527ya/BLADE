@@ -224,14 +224,25 @@ var IntentTerminalStatesSQL = func() string {
 	return "(" + strings.Join(q, ",") + ")"
 }()
 
-// IntentDeadStates 是「这条前置永远不会有结论」的状态：终态里除 done/negative 之外，
+// IntentDeadStates 是「这条前置不会再产出成功结论」的状态：终态里除 done/negative 之外，
 // 再加上 deleted（软删除不进终态清单，但对依赖方同样是死路）。
 //
-// 为什么单独列一份而不是“终态减 done/negative”：del 不在 IntentTerminalStates 里，
-// 两处各写一个集合、迟早漂移；串行链的“永远等不到”判断必须与 frontier 的口径一致。
+// 注意：死状态不再永久阻塞下游。新版 frontier 只在 strict 依赖的前置仍处于
+// open/running/paused 时阻塞；前置一旦进入这里的任一状态即 fail-open，下游可领，
+// 图体检仍会把这条死依赖作为 warn 报出来供 planner 重排。
 var IntentDeadStates = []string{"out-of-scope", "blocked", "exhausted", "stopped", "no_output", "deleted"}
 
-// IntentStateDead 报告一个前置意图状态是否意味着下游“永远等不到”。
+// DependencyMode 控制一条意图的 depends_on 如何参与调度。
+//
+//   - advisory（默认）：依赖只影响 FrontierForSlot 的排序，不阻止领取；可领集合与 ARTEX 一致。
+//   - strict：前置仍处于 open/running/paused 时暂不派发；前置进入任何终态（含死状态）即放行，
+//     避免前置失败后下游永久饿死。
+const (
+	DependencyModeAdvisory = "advisory"
+	DependencyModeStrict   = "strict"
+)
+
+// IntentStateDead 报告一个前置意图状态是否意味着它不会再产出成功结论。
 func IntentStateDead(state string) bool {
 	for _, st := range IntentDeadStates {
 		if state == st {
@@ -333,9 +344,11 @@ const (
 	// 收成一条 rel 而不是每种权限一条，是因为权限名是**开放集合**（BloodHound 每版都在加），
 	// 每加一个就改一次列级 CHECK 是不能接受的；attrs 就是留给它的扩展点。
 	RelCan = "can"
-	// RelDependsOn 是**意图之间**的前置依赖：src --depends_on--> dst 表示"src 要等 dst
-	// 有结论（done/negative）才该被派给 worker"。串行利用链靠它落进图里，而不是靠
-	// planner 的 TodoWrite 临时记忆——后者重启就没、worker 也看不见。
+	// RelDependsOn 是**意图之间**的前置依赖：src --depends_on--> dst 表示"src 在 dst
+	// 有结论后优先推进"。默认 advisory：只影响调度排序，不阻塞领取；意图 payload 可设
+	// depends_on_mode=strict 才在 dst 仍 open/running/paused 时暂缓派发。dst 进入任何终态
+	// 都放行，避免前置失败把下游永久饿死。串行链优先用分步派发 + TodoWrite，依赖边是
+	// 图上的可见化提示，不是安全锁。
 	RelDependsOn = "depends_on"
 	// RelReaches 是「这条战果能通到哪」：loot --reaches--> ad_object。据点/凭据与**资产**
 	// 的关系走 anchor（两套 id 空间），而 AD 对象是探索节点，用这条边，

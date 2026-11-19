@@ -20,7 +20,7 @@ func compactBlackboardNode(n *db.Node) map[string]any {
 	var p map[string]any
 	_ = json.Unmarshal(n.Payload, &p)
 	out := map[string]any{"id": n.ID, "kind": n.Kind, "state": n.State, "priority": n.Priority}
-	for _, k := range []string{"summary", "detail", "evidence", "confidence", "polarity", "hypothesis", "success_criteria", "stop_condition", "risk_area", "asset_ids", "depends_on"} {
+	for _, k := range []string{"summary", "detail", "evidence", "confidence", "polarity", "hypothesis", "success_criteria", "stop_condition", "risk_area", "asset_ids", "depends_on", "depends_on_mode"} {
 		if v, ok := p[k]; ok && v != nil {
 			if s, ok := v.(string); ok {
 				out[k] = clipLine(s, 300)

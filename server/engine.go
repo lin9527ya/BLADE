@@ -211,6 +211,7 @@ type Engine struct {
 	budgetStage     sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
 	budgetAck       sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
 	endgameNotified sync.Map // taskID -> bool, 收官期入口已提醒过(每任务一次)
+	blockedNudge    sync.Map // taskID -> int64 unix, blocked-only 唤醒节流(goalless 分支)
 	execWatch       sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
 	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
 	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
@@ -1056,14 +1057,43 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
 	}
 	e.startDeadlineCoordinator(ctx, t) // 任务级协调器(超时/预算/租约看门狗;去重,常开)
-	// 仅在「完全没有活动意图(open+running)」时才 kick 首轮规划。带种子意图的任务:种子已
-	// 是 open,或已被上面刚起的 worker 抢先 claim 成 running——两种都算「有活干」,一律跳过
-	// 首轮 planner,worker 直接领种子意图开跑,跑完由 NotifyDone/心跳唤醒 planner。
-	// ⚠️ 不能用 Frontier(只数 open):worker 领取(open→running)与本检查存在竞态,会误 kick。
-	// 重启自动恢复时也可能只剩 running 意图,同样应跳过。
-	if has, _ := t.Store.HasActiveIntent(); !has {
-		t.Notify() // kick the first planning round (acted on once LLM is ready)
+	// 只在「worker 现在确实有活可干」时才跳过首轮规划。不能只看 open：strict 依赖被
+	// 活跃前置挡住时 open 仍然存在，但没有任何 worker 能领；只看 open+running 的
+	// HasActiveIntent 会让这种情况静默等到 300s 心跳。HasDispatchableIntent 同时看
+	// running 与 claimable，种子意图被抢先 claim 成 running 时仍可安全跳过。
+	if snap, err := t.Store.IntentDispatchSnapshot(); err == nil {
+		if shouldKickPlanner(snap) {
+			t.Notify() // kick the first planning round (acted on once LLM is ready)
+		}
+	} else if has, herr := t.Store.HasActiveIntent(); herr == nil && !has {
+		t.Notify() // 快照失败时退回旧判定，避免启动时静默
 	}
+}
+
+// shouldKickPlanner reports whether the first planner round must be kicked: no
+// worker is currently running and no open intent is claimable. It is a pure
+// function so the regression (blocked-only task silently waiting for heartbeat)
+// can be tested without starting goroutines.
+func shouldKickPlanner(d db.IntentDispatch) bool {
+	return d.Running == 0 && d.Claimable == 0
+}
+
+// notifyBlockedPlanner wakes the planner when open intents exist but none are
+// claimable (strict dependency cycle/pause). The interval keeps goalless tasks
+// from re-arming a planner round every debounce window while the same block
+// persists.
+func (e *Engine) notifyBlockedPlanner(t *Task, interval time.Duration) {
+	if e == nil || t == nil || interval <= 0 {
+		return
+	}
+	now := time.Now().Unix()
+	if v, ok := e.blockedNudge.Load(t.ID); ok {
+		if last, ok := v.(int64); ok && now-last < int64(interval.Seconds()) {
+			return
+		}
+	}
+	e.blockedNudge.Store(t.ID, now)
+	t.Notify()
 }
 
 // plannerHeartbeatInterval 解析任务的 planner 心跳间隔。db.CreateTask 已归一
@@ -1165,7 +1195,18 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 整段纯 Go、不触发任何 LLM 调用，也不打规划轮 marker。
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
 			t.drainTriggers() // 丢弃累积的 done/finding 触发，避免 goalless 长会话里无界增长
-			if active, err := t.Store.HasActiveIntent(); err == nil && !active {
+			snap, serr := t.Store.IntentDispatchSnapshot()
+			if serr != nil {
+				// 快照失败时保守处理：读不到就不能把"不可读"误判成"已抽干"。
+				active, err := t.Store.HasActiveIntent()
+				if err != nil {
+					return // 两个读都失败：保持 running，等下次心跳/恢复
+				}
+				if active {
+					snap = db.IntentDispatch{Open: 1}
+				}
+			}
+			if snap.Open == 0 && snap.Running == 0 {
 				// frontier 抽干且无在跑意图 → 收尾。用 Guarded 版做 CAS，避免踩到并发的
 				// pause/delete/超时收尾的状态转换。
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
@@ -1190,6 +1231,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 					}
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: summary})
 				}
+			} else if snap.Running == 0 && snap.Claimable == 0 && snap.Open > 0 {
+				// open 但一条都领不了（strict 前置活跃/环/暂停）：不能落 done，也不能
+				// 静默等心跳。按 30s 节流唤醒 planner 解阻；同一阻塞不反复烧规划轮。
+				e.notifyBlockedPlanner(t, 30*time.Second)
 			}
 			return // goalless 分支永不进入 planner.Plan
 		}

@@ -542,8 +542,8 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 任务目标：{{.Goal}}
 
 **本轮该产出几个意图（先想清楚这条）**：
-- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 open 或 running 意图】（frontier_open=0 且 running_intents 为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。
-- 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
+- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 running 意图，也没有可领的 open 意图】（claimable_intents=0 且 running_intents 为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。**若 frontier_open>0 但 claimable_intents=0**，说明 open 意图被 strict 活跃前置/依赖环/暂停挡住：本轮是解阻轮，先看 graph_health 与相关 node_detail，拆链、补前置或改走独立方向，不能以"已有 open 意图"为由产出 0 意图。
+- 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖仍在 open/running/paused 的前置产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）；前置已经进入任何终态时不算等待，按 fail-open 继续推进或改方向。
 - 反过来：确有【未覆盖、且不依赖在跑 work】的新方向，或目标未达成且范围内仍有未测面，就该派——别把 0 意图当偷懒的默认。
 
 **每次唤醒的决策流程**：
@@ -658,7 +658,7 @@ const structuredIntentBlock = `
 
 【结构化意图与按需取景】
 - add_intent 的 summary/asset_ids/parent_ids 仍是必填核心；方向明确时建议补 hypothesis（若 X 则 Y）、success_criteria（什么算成功）、stop_condition（何时停）、mechanism（稳定打法键）、route（路线名）、produces/acceptance（产物与验收）、risk_area。它们都是可选的，不填不改变旧行为。
-- depends_on 只用于强串行利用链：前置意图 done/negative 后本条才可被 worker 领取；没有真实前置就留空，平行方向不要互相挂依赖。前置失败/越界时依赖会阻塞，planner 应根据 graph_audit/事实重排或拆链。
+- depends_on 默认是排序提示（advisory），不阻塞 worker 领取；只有确实需要串行强依赖时才设 depends_on_mode=strict。strict 也只在前置仍 open/running/paused 时暂缓派发；前置进入任何终态（done/negative，或 blocked/exhausted/stopped/out-of-scope/no_output）都会 fail-open，下游仍可领。串行链优先用分步派发 + TodoWrite，不把依赖边当安全锁。若 graph_health 出现 dead_dependency/dependency_cycle，用 node_detail 核对前置状态，重排/补前置/拆链，不要反复重派同一条。
 - 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
 - recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。
 - 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q) 并核对原任务 node_detail，不要把先例直接当成本任务结论。

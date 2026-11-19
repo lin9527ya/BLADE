@@ -107,16 +107,26 @@ func TestAddIntentARTEXMinimalPayload(t *testing.T) {
 	}
 }
 
-// 旧 requires 只保留为审计数据；显式 depends_on 现在参与 frontier 门槛：前置
-// blocked 时下游不应被派，未带依赖的意图仍可领取。
+// 旧 requires 只保留为审计数据；显式 depends_on 默认 advisory，不挡领取。
+// 只有 strict 才在活跃前置期间暂缓，且前置进入死状态后 fail-open。
 func TestOverviewDoesNotExposeLegacyBlockingSignals(t *testing.T) {
 	tools, ts, upstream := newToolWorker(t)
-	downstream, err := ts.AddIntent(map[string]any{"summary": "下游：提权"}, 5, nil, "planner")
+	downstream, err := ts.AddIntent(map[string]any{"summary": "下游：提权", "depends_on_mode": "strict"}, 5, nil, "planner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.Link(downstream, db.RelDependsOn, upstream); err != nil {
 		t.Fatal(err)
+	}
+	// 前置仍活跃（open）时 strict 下游不可领。
+	frontier, err := ts.Frontier(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range frontier {
+		if n.ID == downstream {
+			t.Fatal("前置 open 时 strict 下游不应进入 frontier")
+		}
 	}
 	if err := ts.SetIntentState(upstream, "blocked"); err != nil {
 		t.Fatal(err)
@@ -141,7 +151,7 @@ func TestOverviewDoesNotExposeLegacyBlockingSignals(t *testing.T) {
 			}
 		}
 	}
-	frontier, err := ts.Frontier(10)
+	frontier, err = ts.Frontier(10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,8 +159,8 @@ func TestOverviewDoesNotExposeLegacyBlockingSignals(t *testing.T) {
 	for _, n := range frontier {
 		seen[n.ID] = true
 	}
-	if seen[downstream] {
-		t.Fatalf("前置 blocked 时下游不应进入 frontier: %+v", seen)
+	if !seen[downstream] {
+		t.Fatalf("前置 blocked 后 strict 下游应 fail-open 可领: %+v", seen)
 	}
 	if !seen[required] {
 		t.Fatalf("无依赖意图应可领取: %+v", seen)

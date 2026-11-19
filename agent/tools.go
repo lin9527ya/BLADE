@@ -77,6 +77,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		if deps, ok := p["depends_on"]; ok {
 			m["depends_on"] = deps
 		}
+		if mode, ok := p["depends_on_mode"].(string); ok && strings.TrimSpace(mode) != "" {
+			m["depends_on_mode"] = mode
+		}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true
@@ -1188,8 +1191,13 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 		out["paused_intents"] = compactIntents(pausedIntents, parentsOf, yieldsOf, lineageKinds)
 	}
 	// 队列深度与容量：planner 判断"还能不能再派"唯一该看的数。
-	// frontier_open 仍保留（含被前置挡住的），但判定请用 claimable_intents。
-	if claimable, err := t.ts.CountClaimableIntents(); err == nil {
+	// frontier_open 是 open 总数；claimable_intents 是真正能派的数。
+	// blocked_open_intents 只在 strict 活跃前置/环/暂停时非零，是显性的"有 open 但领不了"信号。
+	if snap, err := t.ts.IntentDispatchSnapshot(); err == nil {
+		out["claimable_intents"] = snap.Claimable
+		out["blocked_open_intents"] = snap.Blocked
+		out["strict_blocked_intents"] = snap.Blocked
+	} else if claimable, cerr := t.ts.CountClaimableIntents(); cerr == nil {
 		out["claimable_intents"] = claimable
 	}
 	// done_intents_total：已结束意图（done/blocked/exhausted）总数，与 recent_done_intents
@@ -2443,7 +2451,12 @@ type intentItem struct {
 	ChangeEvidence  []json.RawMessage `json:"change_evidence,omitempty"`
 	RecheckOf       json.RawMessage   `json:"recheck_of,omitempty"`
 	DependsOn       []json.RawMessage `json:"depends_on,omitempty"`
-	Priority        int               `json:"priority"`
+	// DependsOnMode controls whether depends_on gates dispatch ("strict") or only
+	// orders candidates ("advisory", default). Strict still fail-opens once a
+	// prerequisite reaches any terminal state, so a failed upstream step cannot
+	// permanently starve the downstream chain.
+	DependsOnMode string `json:"depends_on_mode,omitempty"`
+	Priority      int    `json:"priority"`
 }
 
 // intentContract 把「一句话方向」补成可去重、可验收的声明。所有字段都是软契约：
@@ -2468,9 +2481,10 @@ type intentContract struct {
 //     意图本身始终从事实/漏洞派生，顶层意图兜底连 origin fact（与 ARTEX 一致）。
 //   - 战果轴：uses_loot_ids → uses（本条方向在动用哪次已得的访问：据点/凭据）。只接受本任务里
 //     仍在手(active)的战果；这条边是「哪些战果还没被推进过」的唯一依据。
-func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
+func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
+	warnings := make([]string, 0)
 	if strings.TrimSpace(it.Summary) == "" {
-		return 0, fmt.Errorf("summary 不能为空")
+		return 0, warnings, fmt.Errorf("summary 不能为空")
 	}
 	// ARTEX parity: parent links are optional; when present they must be existing
 	// fact/finding nodes of this task or a directly related task.
@@ -2478,16 +2492,17 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	for _, parent := range parents {
 		n, err := t.ts.GetNodeWithSources(parent)
 		if err != nil || n == nil {
-			return 0, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", parent)
+			return 0, warnings, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是已存在的【事实(fact)/发现(finding)】节点 id；顶层全新方向请留空 parent_ids", parent)
 		}
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
-			return 0, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上", parent, n.Kind)
+			return 0, warnings, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上", parent, n.Kind)
 		}
 	}
-	// Optional dependency edges: the new intent waits for each prerequisite to
-	// finish with a usable conclusion. No edge = immediately claimable, preserving
-	// the old behavior. Reject dangling/self/non-intent dependencies early so the
-	// scheduler never sees an impossible edge.
+	// Optional dependency edges: depends_on is advisory by default and only affects
+	// ordering. An intent explicitly marked strict waits while a prerequisite is
+	// still open/running/paused; terminal prerequisites (including failed ones) fail
+	// open. Invalid dependency ids are dropped with a warning instead of losing the
+	// whole exploration direction.
 	dependsOn := pidList(it.DependsOn)
 	depSeen := map[int64]bool{}
 	dependsUnique := make([]int64, 0, len(dependsOn))
@@ -2498,16 +2513,20 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 		depSeen[depID] = true
 		dep, err := t.ts.GetNodeWithSources(depID)
 		if err != nil || dep == nil {
-			return 0, fmt.Errorf("depends_on id %d 不存在于本任务或直接关联任务", depID)
+			warnings = append(warnings, fmt.Sprintf("depends_on id %d 不存在于本任务或直接关联任务，已忽略该依赖", depID))
+			continue
 		}
 		if dep.Kind != db.KindIntent {
-			return 0, fmt.Errorf("depends_on id %d 是 %q 节点，只能依赖意图", depID, dep.Kind)
+			warnings = append(warnings, fmt.Sprintf("depends_on id %d 是 %q 节点，只能依赖意图，已忽略该依赖", depID, dep.Kind))
+			continue
 		}
 		if dep.Inherited || dep.SourceTaskID != 0 {
-			return 0, fmt.Errorf("depends_on id %d 属于直接来源任务，只能作只读上下文，不能作为本任务的前置", depID)
+			warnings = append(warnings, fmt.Sprintf("depends_on id %d 属于直接来源任务，只能作只读上下文，已忽略该依赖", depID))
+			continue
 		}
 		if dep.State == db.StateIntentDeleted {
-			return 0, fmt.Errorf("depends_on id %d 已被删除，不能作为前置", depID)
+			warnings = append(warnings, fmt.Sprintf("depends_on id %d 已被删除，已忽略该依赖", depID))
+			continue
 		}
 		dependsUnique = append(dependsUnique, depID)
 	}
@@ -2530,16 +2549,16 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	if t.as != nil && t.taskID > 0 && len(anchors) > 0 {
 		visible, err := t.as.GetByIDsInScope(t.taskID, anchors)
 		if err != nil {
-			return 0, fmt.Errorf("资产可见范围校验失败：%w", err)
+			return 0, warnings, fmt.Errorf("资产可见范围校验失败：%w", err)
 		}
 		if len(visible) != len(anchors) {
-			return 0, fmt.Errorf("资产 %v 不在本任务可测范围内：先用 list_assets 确认。若确属目标：worker 侧先用 request_scope_expansion 记录归属证据；planner 复核后调用 add_task_scope（公司资产先 add_company_scope 再 add_task_scope company）扩面，再派发意图。不要直接测试范围外资产", anchors)
+			return 0, warnings, fmt.Errorf("资产 %v 不在本任务可测范围内：先用 list_assets 确认。若确属目标：worker 侧先用 request_scope_expansion 记录归属证据；planner 复核后调用 add_task_scope（公司资产先 add_company_scope 再 add_task_scope company）扩面，再派发意图。不要直接测试范围外资产", anchors)
 		}
 	}
 	if t.as != nil && len(anchors) > 0 {
 		hits, err := t.as.CheckAssetsIntercept(t.taskID, anchors)
 		if err != nil {
-			return 0, fmt.Errorf("资产拦截校验失败：%w", err)
+			return 0, warnings, fmt.Errorf("资产拦截校验失败：%w", err)
 		}
 		if len(hits) > 0 {
 			var b strings.Builder
@@ -2547,7 +2566,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			for _, h := range hits {
 				fmt.Fprintf(&b, "\n - %s", h.Describe())
 			}
-			return 0, fmt.Errorf("%s", b.String())
+			return 0, warnings, fmt.Errorf("%s", b.String())
 		}
 	}
 	payload := map[string]any{"summary": it.Summary}
@@ -2610,8 +2629,13 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	if len(contract) > 0 {
 		payload["contract"] = contract
 	}
+	depMode := strings.ToLower(strings.TrimSpace(it.DependsOnMode))
+	if depMode != db.DependencyModeStrict {
+		depMode = db.DependencyModeAdvisory
+	}
 	if len(dependsUnique) > 0 {
 		payload["depends_on"] = dependsUnique
+		payload["depends_on_mode"] = depMode
 	}
 	edges := make([]db.IntentEdge, 0, len(parents)+len(dependsUnique)+1)
 	for _, parent := range parents {
@@ -2626,7 +2650,8 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 		// From=0 is filled with the new intent id by AddIntentGraph.
 		edges = append(edges, db.IntentEdge{From: 0, To: depID, Rel: db.RelDependsOn})
 	}
-	return t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
+	id, err := t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
+	return id, warnings, err
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
@@ -2636,7 +2661,8 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
 			"asset_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
 			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的已确认事实/发现节点 id；顶层全新方向留空，会自动挂到任务起点。"},
-			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。只有串行强依赖才填；无依赖留空，立即可领。前置 done/negative 后本条才 ready。"},
+			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。默认 advisory：只影响排序、不阻塞领取；只有 depends_on_mode=strict 才在前置仍 open/running/paused 时暂缓派发。"},
+			"depends_on_mode":  str("可选：advisory（默认，只排序）或 strict（强串行）。strict 也会在前置进入任何终态后 fail-open，不会永久卡死。"),
 			"hypothesis":       str("可选：本方向的明确假设（若 X 则 Y），供复盘/去重/验收。"),
 			"success_criteria": str("可选：什么结果算成功，worker 会据此判断 done/no_output。"),
 			"stop_condition":   str("可选：什么证据出现就停止该方向，避免空转。"),
@@ -2666,25 +2692,36 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			}
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
+			warns := map[string][]string{}
 			created := false
 			for i, it := range items {
-				id, err := t.addOneIntent(it)
+				id, warnings, err := t.addOneIntent(it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
 				}
 				ids[i] = id
+				if len(warnings) > 0 {
+					warns[strconv.Itoa(i)] = warnings
+				}
 				created = true
 			}
 			if !batch {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
-				return actool.Text(fmt.Sprintf("intent created: %d", ids[0])), nil
+				msg := fmt.Sprintf("intent created: %d", ids[0])
+				if w := warns["0"]; len(w) > 0 {
+					msg += "\nwarnings: " + strings.Join(w, "; ")
+				}
+				return actool.Text(msg), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
+			}
+			if len(warns) > 0 {
+				out["warnings"] = warns
 			}
 			if created && t.resumeTask != nil {
 				t.resumeTask()

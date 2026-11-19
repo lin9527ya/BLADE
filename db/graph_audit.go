@@ -118,11 +118,12 @@ func (s *ExplorationStore) AuditGraph() (*GraphAuditReport, error) {
 		return nil, err
 	}
 
-	// ① depends_on 指向已软删除的意图：边不会被 FK 级联删（软删只改 state），
-	//    下游因此永远等不到「done/negative」。
+	// ① depends_on 指向已软删除的意图：边不会被 FK 级联删（软删只改 state）。
+	//    新版 frontier 对死前置 fail-open，下游仍可领；这条仍是数据完整性告警，
+	//    因为悬空依赖会让图语义失真，应当重派前置或清掉依赖边。
 	if err := s.eachEdge("depends_on", `d.state='deleted'`, func(src, dst int64) {
 		add(GraphIssue{Code: "deleted_prerequisite", Severity: "error", From: src, Rel: "depends_on", To: dst,
-			Detail: "前置意图已被软删除；下游永远不会 ready，需重派前置或用 unblock_intent 拆链"})
+			Detail: "前置意图已被软删除；下游按 fail-open 仍可领，但依赖边已失真，检查是否应重派前置或移除依赖"})
 	}); err != nil {
 		return nil, err
 	}
@@ -153,8 +154,8 @@ func (s *ExplorationStore) AuditGraph() (*GraphAuditReport, error) {
 		return nil, err
 	}
 
-	// ⑤b 前置已终态但不是 done/negative：这类前置永远不会再产出下游需要的结论，
-	// 下游会永久停在 open。它与「饥饿」不同——不是 worker 没领，是永远领不了。
+	// ⑤b 前置已终态但不是 done/negative：下游现在会 fail-open，但前置没有产出成功
+	// 结论这个事实仍值得显性化，供 planner 决定是否重派前置或去掉依赖。
 	if err := s.auditDeadDependencies(add); err != nil {
 		return nil, err
 	}
@@ -297,7 +298,8 @@ func (s *ExplorationStore) auditDependencyCycles(add func(GraphIssue)) error {
 	return nil
 }
 
-// auditStarvedIntents：open、无 owner、前置已全终态，却超过 2×租约 TTL 仍没被领取。
+// auditStarvedIntents：open、无 owner、没有活跃前置（即已可领），却超过 2×租约 TTL
+// 仍没被领取。注意：可领谓词只把 open/running/paused 的前置视为活跃；死前置已 fail-open。
 func (s *ExplorationStore) auditStarvedIntents(add func(GraphIssue)) error {
 	const q = `SELECT n.id FROM exploration_nodes n
 WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id) AND coalesce(n.owner,'')=''
@@ -306,7 +308,7 @@ WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_
   AND NOT EXISTS (
       SELECT 1 FROM exploration_edges e JOIN exploration_nodes d ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
       WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
-        AND d.state NOT IN ('done','negative'))
+        AND d.state IN ('open','running','paused'))
 ORDER BY n.id`
 	rows, err := s.db.Query(q, s.expID, int64((2 * IntentLeaseTTL).Seconds()))
 	if err != nil {
@@ -325,8 +327,9 @@ ORDER BY n.id`
 }
 
 // auditDeadDependencies：open 意图的前置已以非 done/negative 的终态收场。
-// 这些下游永远不会被 Frontier 派出去，也不会被 auditStarvedIntents 捕获（后者要求
-// 前置全是 done/negative）。必须在图体检里显式报出来，否则只能靠 planner 自己发现。
+// 新版 frontier 对这类死前置 fail-open，所以下游不会永久卡死；但"前置没成功、下游还
+// 在推进"仍是一个需要 planner 看见的策略信号（可能重复劳动或缺少前置产出），因此保留
+// warn 级告警。它不会被 auditStarvedIntents 捕获（后者只要求没有活跃前置）。
 func (s *ExplorationStore) auditDeadDependencies(add func(GraphIssue)) error {
 	const q = `SELECT n.id, d.id, d.state FROM exploration_nodes n
 JOIN exploration_edges e ON e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
@@ -346,7 +349,7 @@ ORDER BY n.id, d.id`
 			return err
 		}
 		add(GraphIssue{Code: "dead_dependency", Severity: "warn", NodeIDs: []int64{id, dep},
-			Detail: fmt.Sprintf("前置 #%d 以 %s 收场，永远不会满足；下游需重派前置、unblock_intent 或 drop_intent", dep, state)})
+			Detail: fmt.Sprintf("前置 #%d 以 %s 收场；下游已 fail-open 可领，确认是否仍需要该前置产出（补前置/改方向/移除依赖）", dep, state)})
 	}
 	return rows.Err()
 }

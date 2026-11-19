@@ -865,9 +865,9 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, []
 	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE intent_id=$1`, id); err != nil {
 		return "", nil, err
 	}
-	// 前置被删掉后，下游永远等不到"前置有结论"（Frontier 只认 done/negative）——同一事务里
-	// 拆掉依赖入边，并把受影响的下游返回给调用方重新规划。这是 UI 取消路径一直存在的暗坑：
-	// 删掉一条排队中的前置，会让依赖它的步骤永久卡在 frontier 之外。
+	// 前置被删掉后，下游仍会因为 strict 依赖而等不到活跃前置——同一事务里拆掉依赖入边，
+	// 并把受影响的下游返回给调用方重新规划。虽然死前置已 fail-open，但删除一条排队中的
+	// 前置仍然意味着"依赖关系本身已无意义"，拆边比留下悬空依赖更干净。
 	drows, derr := tx.Query(`DELETE FROM exploration_edges
 WHERE exploration_id=$1 AND dst_id=$2 AND rel=$3 RETURNING src_id`, s.expID, id, RelDependsOn)
 	if derr != nil {
@@ -1449,10 +1449,96 @@ WHERE exploration_id=$1 AND kind='intent' AND state='open'`, s.expID).Scan(&n)
 	return n, err
 }
 
-// CountClaimableIntents 数"现在就能被 worker 领走"的意图：与 Frontier 同一套条件
-// （open，且 depends_on 的前置都以 done/negative 收场）。
+// intentClaimableSQL 是 Frontier / CountClaimableIntents / 批量计数共用的可领谓词。
 //
-// 与 CountOpenIntents 的区别是队列背压要用的：被前置挡住的步骤不消耗 worker，
+// advisory（默认）永远可领；strict 只在前置仍处于 open/running/paused 时等待。
+// 前置进入任何终态（包括 blocked/exhausted/stopped/out-of-scope/no_output/deleted）
+// 即 fail-open：死前置不能被当成永久闸门，否则一次失败会把整条下游链饿死。
+// 所有引用处必须使用别名 n 指向 exploration_nodes。
+const intentClaimableSQL = `(
+  COALESCE(n.payload->>'depends_on_mode', 'advisory') <> 'strict'
+  OR NOT EXISTS (
+    SELECT 1 FROM exploration_edges e
+    JOIN exploration_nodes prerequisite
+      ON prerequisite.id=e.dst_id AND prerequisite.exploration_id=e.exploration_id
+    WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+      AND prerequisite.state IN ('open','running','paused')
+  )
+)`
+
+// IntentDispatch 是一次队列快照：Open/Running 是状态计数，Claimable 是按当前依赖语义
+// 真正能派给 worker 的 open 数，Blocked 是 open 中因 strict 活跃前置领不了的数。
+type IntentDispatch struct {
+	Open      int
+	Running   int
+	Claimable int
+	Blocked   int
+}
+
+// IntentDispatchSnapshot 用一条聚合查询给出队列快照，供首轮 kick、goalless 分支和态势
+// 计数使用，避免 open/running/claimable 分开查时互相漂移。
+func (s *ExplorationStore) IntentDispatchSnapshot() (IntentDispatch, error) {
+	var out IntentDispatch
+	err := s.db.QueryRow(`SELECT
+  COUNT(*) FILTER (WHERE n.state='open'),
+  COUNT(*) FILTER (WHERE n.state='running'),
+  COUNT(*) FILTER (WHERE n.state='open' AND `+intentClaimableSQL+`)
+FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.kind='intent'`, s.expID).Scan(&out.Open, &out.Running, &out.Claimable)
+	if err != nil {
+		return out, err
+	}
+	out.Blocked = out.Open - out.Claimable
+	if out.Blocked < 0 {
+		out.Blocked = 0
+	}
+	return out, nil
+}
+
+// HasDispatchableIntent reports whether a worker has anything it can do right now:
+// a running intent counts as work in progress, and an open intent that passes the
+// claimable predicate is immediately dispatchable. This is deliberately stricter
+// than HasActiveIntent: "open but strict-blocked" is not work, and must not suppress
+// the first planner round (or the goalless watchdog).
+func (s *ExplorationStore) HasDispatchableIntent() (bool, error) {
+	d, err := s.IntentDispatchSnapshot()
+	if err != nil {
+		return false, err
+	}
+	return d.Running > 0 || d.Claimable > 0, nil
+}
+
+// DependencyActiveSources returns the source intent ids whose depends_on prerequisite
+// is still live (open/running/paused). Only used for advisory soft ordering:
+// a candidate with a live prerequisite is still claimable, just later in the queue.
+func (s *ExplorationStore) DependencyActiveSources(sourceIDs []int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if len(sourceIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT DISTINCT e.src_id
+FROM exploration_edges e
+JOIN exploration_nodes p ON p.id=e.dst_id AND p.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.rel='depends_on' AND e.src_id = ANY($2)
+  AND p.state IN ('open','running','paused')`, s.expID, sourceIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// CountClaimableIntents 数"现在就能被 worker 领走"的意图：与 Frontier 同一谓词。
+// advisory 下等于所有 open；strict 下只排除前置仍活跃的意图。
+//
+// 与 CountOpenIntents 的区别是队列背压要用的：strict 被挡的步骤不消耗 worker，
 // 拿它们占额度会在 worker 全空闲时反而拒新活。
 // IntentStateCountsFor batches CountIntentStates for many explorations (the
 // metrics page lists every task). One GROUP BY replaces one query per task.
@@ -1502,12 +1588,7 @@ func (d *DB) ClaimableIntentCountsForContext(ctx context.Context, explorationIDs
 	rows, err := d.QueryContext(ctx, `SELECT n.exploration_id, COUNT(*)
 FROM exploration_nodes n
 WHERE n.exploration_id = ANY($1) AND n.kind='intent' AND n.state='open'
-AND NOT EXISTS (
-  SELECT 1 FROM exploration_edges e
-  JOIN exploration_nodes prerequisite ON prerequisite.id=e.dst_id
-  WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
-    AND prerequisite.state NOT IN ('done','negative')
-)
+  AND `+intentClaimableSQL+`
 GROUP BY n.exploration_id`, explorationIDs)
 	if err != nil {
 		return nil, err
@@ -1528,12 +1609,7 @@ func (s *ExplorationStore) CountClaimableIntents() (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes n
 WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
-AND NOT EXISTS (
-  SELECT 1 FROM exploration_edges e
-  JOIN exploration_nodes prerequisite ON prerequisite.id=e.dst_id
-  WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
-    AND prerequisite.state NOT IN ('done','negative')
-)`, s.expID).Scan(&n)
+  AND `+intentClaimableSQL, s.expID).Scan(&n)
 	return n, err
 }
 
@@ -1956,17 +2032,13 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	// Only open intents whose explicit depends_on prerequisites have reached a
-	// usable conclusion are dispatchable. No dependency edge = immediately ready,
-	// so this preserves the old behavior for ordinary/parallel exploration.
+	// ARTEX parity: all open intents are dispatchable. depends_on is advisory by
+	// default; only an intent explicitly marked strict waits for a live prerequisite
+	// (open/running/paused). Dead prerequisites fail open so a failed upstream step
+	// can never permanently starve the downstream chain.
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes n
 WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
-AND NOT EXISTS (
-  SELECT 1 FROM exploration_edges e
-  JOIN exploration_nodes prerequisite ON prerequisite.id=e.dst_id
-  WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
-    AND prerequisite.state NOT IN ('done','negative')
-)
+  AND `+intentClaimableSQL+`
 ORDER BY (COALESCE(n.payload->>'resume_after_restart','false')='true') DESC, n.priority DESC, n.id ASC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
@@ -2001,6 +2073,19 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 	if len(candidates) <= 1 {
 		return candidates, nil
 	}
+	// Advisory dependencies do not remove candidates; they only push intents whose
+	// prerequisite is still live behind ready work. This is the soft successor to
+	// the old hard gate: no deadlock, but serial chains still tend to run in order.
+	activeDeps := map[int64]bool{}
+	{
+		ids := make([]int64, 0, len(candidates))
+		for _, n := range candidates {
+			ids = append(ids, n.ID)
+		}
+		if m, err := s.DependencyActiveSources(ids); err == nil {
+			activeDeps = m
+		}
+	}
 	routes := make(map[int64]string, len(candidates))
 	counts := map[string]int{}
 	for _, n := range candidates {
@@ -2019,6 +2104,9 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 		_ = json.Unmarshal(n.Payload, &p)
 		resume, _ := p["resume_after_restart"].(bool)
 		base := float64(n.Priority) * 100
+		if activeDeps[n.ID] {
+			base -= 50000 // advisory: prefer ready work, but never hide this candidate
+		}
 		if resume {
 			base += 100000 // interrupted work must resume before new work
 		}
@@ -2144,10 +2232,10 @@ func (s *ExplorationStore) ClaimPausedIntent(id int64, fromState, slot string, t
 }
 
 // HasActiveIntent reports whether this exploration has any intent still in play
-// (state open OR running). Used to decide whether to kick the FIRST planner round:
-// a seeded task's intent may already have been claimed (open→running) by a worker
-// before the check, so counting only 'open' (Frontier) races with worker claim and
-// wrongly kicks a redundant first round. Counting open+running is race-proof.
+// (state open OR running). It is a liveness/terminal check, not the first-round
+// kick signal: with strict dependencies, "open" can exist while nothing is
+// claimable. Use HasDispatchableIntent for "worker has something to do"; this
+// method remains the fallback when the dispatch snapshot cannot be read.
 func (s *ExplorationStore) HasActiveIntent() (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes

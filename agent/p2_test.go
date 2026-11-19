@@ -72,3 +72,26 @@ func TestDeepSeekToolsGated(t *testing.T) {
 		t.Fatalf("开启时应注册 search/fetch：%+v", got)
 	}
 }
+
+// strict 依赖挡住下游时，overview 必须给出可领数与 blocked 数，而不是让 planner
+// 只看到 open 总数、误以为还有活。
+func TestOverviewShowsStrictBlockedIntents(t *testing.T) {
+	tools, ts, upstream := newToolWorker(t)
+	down, err := ts.AddIntent(map[string]any{"summary": "下游", "depends_on_mode": "strict"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Link(down, db.RelDependsOn, upstream); err != nil {
+		t.Fatal(err)
+	}
+	data := tools.graphOverviewData()
+	if got, _ := data["claimable_intents"].(int); got != 1 {
+		t.Fatalf("claimable_intents=%d, want 1 (upstream only)", got)
+	}
+	if got, _ := data["blocked_open_intents"].(int); got != 1 {
+		t.Fatalf("blocked_open_intents=%d, want 1", got)
+	}
+	if got, _ := data["strict_blocked_intents"].(int); got != 1 {
+		t.Fatalf("strict_blocked_intents=%d, want 1", got)
+	}
+}
