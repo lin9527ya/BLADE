@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-11-19
+
+### 黑板调度与依赖
+
+- `depends_on` 改为默认 `advisory`：只影响调度排序，不阻塞 worker 领取；单条意图可用
+  `depends_on_mode=strict` 选择强串行。strict 只在前置仍 open/running/paused 时暂缓，
+  前置进入任何终态（含失败/越界/删除）即 fail-open，不再永久饿死下游。
+- 新增 `set_dependency_mode`、`drop_dependency`、`reopen_intent` 三个 planner 工具：
+  可改依赖模式、只拆一条依赖边（同步 payload）、重开失败意图；均要求 reason 并写时间线。
+- 任务总览与 `graph_overview` 增加依赖阻塞意图明细，区分“等待前置”和
+  `state=blocked` 的执行失败；blocked-only 看门狗按签名变化唤醒 planner，不再静默等心跳。
+- 首轮 planner kick 改为看 `claimable_intents`，修复“有 open 但一条也领不了”时不规划。
+
+### 触发与上下文成本
+
+- 普通 fact/asset 改为 45s / 25 条 / 10 次合并成 `facts_batch` / `assets_batch`；
+  finding、矛盾、否定、替代、proposal、done 等语义事件仍即时唤醒。
+- 触发队列上限 64，溢出以 `triggers_dropped` 显式告知；触发渲染保留最新 24 条。
+- `propose_intents` 增加 `origin=proposal`、`confidence=inferred`，按方向去重、限批，
+  并以 `proposal` 触发即时唤醒，不再被普通 fact 合并吞掉。
+- `search_precedents` 支持 `auto/company/campaign/global`，始终排除当前任务；
+  默认不返回 evidence，摘要/证据做凭据脱敏，全库 task 名别名化。
+- `verify_evidence(deep=true)` 接回调用方 ctx（20s 超时），复核调用计入
+  `ActiveLLMCalls` 并补 task/worker/exploration 归因；表述明确为同一任务 provider 的隔离复核，
+  不再声称独立模型。
+
+### 测试
+
+- 补充依赖 advisory/strict、死前置 fail-open、strict 环、阻塞签名、触发合并/上限、
+  先例分域脱敏、deep 复核上下文与记账、依赖编辑和提案去重的回归用例。
+
 ## [0.9.20] - 2026-11-19
 
 ### 黑板与意图
