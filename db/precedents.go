@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,6 +20,7 @@ type Precedent struct {
 	State     string    `json:"state"`
 	Summary   string    `json:"summary"`
 	Evidence  string    `json:"evidence,omitempty"`
+	Score     float64   `json:"score,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -36,6 +38,13 @@ func (s *ExplorationStore) SearchPrecedents(query string, limit int) ([]Preceden
 	}
 	if limit > 100 {
 		limit = 100
+	}
+	fetchLimit := limit * 5
+	if fetchLimit < 100 {
+		fetchLimit = 100
+	}
+	if fetchLimit > 500 {
+		fetchLimit = 500
 	}
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
 	pattern := "%" + escaped + "%"
@@ -70,7 +79,7 @@ WHERE t.exploration_id=$1 AND ts.kind='company' AND ts.company_id IS NOT NULL`, 
   WHERE ts.task_id=t.id AND ts.kind='company' AND ts.company_id=ANY($2::bigint[])
 )`
 	}
-	args = append(args, limit)
+	args = append(args, fetchLimit)
 	q := `SELECT t.id, COALESCE(NULLIF(t.name,''), t.description), n.id, n.kind, n.state, n.payload, n.created_at
 FROM exploration_nodes n
 JOIN tasks t ON t.exploration_id=n.exploration_id
@@ -103,7 +112,61 @@ ORDER BY n.created_at DESC, n.id DESC LIMIT $` + fmt.Sprint(len(args))
 		if v, ok := m["evidence"].(string); ok {
 			p.Evidence = v
 		}
+		detail, _ := m["detail"].(string)
+		p.Score = precedentScore(query, p.Summary, detail, p.Evidence)
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].NodeID > out[j].NodeID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// precedentScore is a deliberately local relevance score: exact phrase + term
+// overlap over summary/detail/evidence, with summary weighted highest. It is not
+// an embedding model; it gives deterministic ranking without requiring an
+// external embedding provider or pgvector.
+func precedentScore(query, summary, detail, evidence string) float64 {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return 0
+	}
+	score := 0.0
+	fields := []struct {
+		text string
+		w    float64
+	}{
+		{summary, 3}, {detail, 1.5}, {evidence, 1},
+	}
+	for _, f := range fields {
+		text := strings.ToLower(f.text)
+		if text == "" {
+			continue
+		}
+		if strings.Contains(text, q) {
+			score += 10 * f.w
+		}
+	}
+	terms := strings.FieldsFunc(q, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == '-' || r == ':' || r == ',' || r == ';'
+	})
+	hay := strings.ToLower(summary + " " + detail + " " + evidence)
+	for _, term := range terms {
+		if strings.TrimSpace(term) != "" && strings.Contains(hay, term) {
+			score += 2
+		}
+	}
+	return score
 }

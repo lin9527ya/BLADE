@@ -259,10 +259,11 @@ func (t *ToolSet) proposeIntents() actool.CoreTool {
 // proving a goal or trusting a negative conclusion.
 func (t *ToolSet) verifyEvidence() actool.CoreTool {
 	return t.readExpTool("verify_evidence",
-		"独立核对一个意图产出的证据（或指定事实）：检查 evidence 是否为空、confidence、polarity，以及是否被 contradicts/supersedes 边推翻。只返回判断与缺口，不改图、不替 worker 补证据。",
+		"独立核对一个意图产出的证据（或指定事实）：检查 evidence 是否为空、confidence、polarity，以及是否被 contradicts/supersedes 边推翻。deep=true 时额外让一个只读独立模型审查证据摘要。只返回判断与缺口，不改图、不替 worker 补证据。",
 		obj(map[string]any{
 			"intent_id": idp("要核对的意图 id（与 fact_id 二选一）"),
 			"fact_id":   idp("要核对的事实 id（与 intent_id 二选一）"),
+			"deep":      map[string]any{"type": "boolean", "description": "true=额外调用一次独立模型审查，只给它证据摘要，不给 worker 对话"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
@@ -271,6 +272,7 @@ func (t *ToolSet) verifyEvidence() actool.CoreTool {
 			var a struct {
 				IntentID json.RawMessage `json:"intent_id"`
 				FactID   json.RawMessage `json:"fact_id"`
+				Deep     bool            `json:"deep"`
 			}
 			_ = json.Unmarshal(in, &a)
 			var ids []int64
@@ -348,10 +350,19 @@ func (t *ToolSet) verifyEvidence() actool.CoreTool {
 				}
 				checks = append(checks, c)
 			}
-			return jsonResult(map[string]any{
+			out := map[string]any{
 				"verdict": overall, "intent_id": intentID, "fact_id": factID,
 				"checks": checks, "note": "verdict=supported 仅表示证据形式满足；真实可复现仍需人工/独立复测。",
-			})
+			}
+			if a.Deep && t.llmVerifier != nil {
+				digest, _ := json.Marshal(out)
+				if review, err := t.llmVerifier(context.Background(), string(digest)); err == nil && strings.TrimSpace(review) != "" {
+					out["llm_review"] = clipLine(review, 2000)
+				} else if err != nil {
+					out["llm_review_error"] = err.Error()
+				}
+			}
+			return jsonResult(out)
 		})
 }
 

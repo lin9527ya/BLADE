@@ -220,6 +220,9 @@ type ToolSet struct {
 	notifyFact func(kind string, intentID, factID int64, summary string, assetIDs []int64)
 	// notifyAsset, if set, wakes the planner after insert_assets registers assets.
 	notifyAsset func(summary string)
+	// llmVerifier, if set, asks a separate one-shot model review for verify_evidence
+	// (deep=true). It receives only the evidence digest, not the worker transcript.
+	llmVerifier func(ctx context.Context, prompt string) (string, error)
 	// resumeTask, if set, revives the task after a graph change that should make a
 	// stopped task run again (currently: set_goals adds a goal). It flips a terminal/
 	// paused task back to running and (re)starts the engine loops — a plain notify()
@@ -269,6 +272,12 @@ func (t *ToolSet) SetNotifyFact(fn func(kind string, intentID, factID int64, sum
 
 // SetNotifyAsset wires a wakeup after insert_assets registers new assets.
 func (t *ToolSet) SetNotifyAsset(fn func(string)) { t.notifyAsset = fn }
+
+// SetLLMVerifier wires an optional independent model review for verify_evidence.
+// nil = deterministic checks only.
+func (t *ToolSet) SetLLMVerifier(fn func(context.Context, string) (string, error)) {
+	t.llmVerifier = fn
+}
 
 // SetRotateEgressHandler wires the host's Clash egress rotation callback.
 func (t *ToolSet) SetRotateEgressHandler(fn func(reason string) (string, error)) {
@@ -1740,6 +1749,11 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
 	// 丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、也不诱导
 	// 已隐藏的 add_task_scope/list_untested_assets。
+	if t.as != nil && t.ts != nil && t.taskID > 0 {
+		if cc, err := t.ts.CampaignContext(); err == nil && cc != nil {
+			out["campaign"] = cc
+		}
+	}
 	// asset_scope：本任务当前的资产范围策略与依据（root/company），让 planner 明确
 	// “哪些资产属于目标、可以自动测”，避免自己猜或把范围外的第三方根域派单。
 	if t.as != nil && t.taskID > 0 {

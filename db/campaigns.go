@@ -143,7 +143,72 @@ func (d *DB) DeleteCampaign(id int64) (int64, error) {
 	return bound, nil
 }
 
-// SetTaskCampaign 把任务归入/移出战役（campaignID 为 nil = 移出）。
+// CampaignContext is the campaign/phase context visible to an exploration. It is
+// optional: standalone tasks return nil. The planner uses it as strategy context
+// (campaign goal/phase), not as an authorization boundary.
+type CampaignContext struct {
+	CampaignID int64             `json:"campaign_id"`
+	Name       string            `json:"name"`
+	Goal       string            `json:"goal,omitempty"`
+	Phase      string            `json:"phase,omitempty"`
+	Status     string            `json:"status,omitempty"`
+	Scope      string            `json:"scope,omitempty"`
+	PhaseName  string            `json:"phase_name,omitempty"`
+	PhaseState string            `json:"phase_state,omitempty"`
+	TaskCount  int               `json:"task_count,omitempty"`
+	Tasks      []CampaignTaskRef `json:"tasks,omitempty"`
+}
+
+// CampaignTaskRef is a compact sibling task in the same campaign.
+type CampaignTaskRef struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
+// CampaignContext returns the campaign/phase bound to this exploration, or nil
+// for standalone tasks. Read-only; missing campaign rows are not an error.
+func (s *ExplorationStore) CampaignContext() (*CampaignContext, error) {
+	var c CampaignContext
+	var scope sql.NullString
+	var phaseName, phaseState sql.NullString
+	err := s.db.QueryRow(`
+SELECT t.campaign_id, c.name, COALESCE(c.goal,''), COALESCE(c.phase,''), COALESCE(c.status,''),
+       COALESCE(c.scope::text,'{}'), COALESCE(p.name,''), COALESCE(p.status,'')
+FROM tasks t
+JOIN campaigns c ON c.id=t.campaign_id
+LEFT JOIN campaign_phases p ON p.id=t.campaign_phase_id
+WHERE t.exploration_id=$1 AND t.deleted_at IS NULL
+LIMIT 1`, s.expID).Scan(&c.CampaignID, &c.Name, &c.Goal, &c.Phase, &c.Status, &scope, &phaseName, &phaseState)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.Scope = scope.String
+	c.PhaseName = phaseName.String
+	c.PhaseState = phaseState.String
+	if err := s.db.QueryRow(`SELECT count(*) FROM tasks WHERE campaign_id=$1 AND deleted_at IS NULL`, c.CampaignID).Scan(&c.TaskCount); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id, COALESCE(NULLIF(name,''), description), COALESCE(status,'') FROM tasks
+WHERE campaign_id=$1 AND deleted_at IS NULL ORDER BY id DESC LIMIT 8`, c.CampaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t CampaignTaskRef
+		if err := rows.Scan(&t.ID, &t.Name, &t.Status); err != nil {
+			return nil, err
+		}
+		c.Tasks = append(c.Tasks, t)
+	}
+	return &c, rows.Err()
+}
+
+// SetTaskCampaign 把任务归入/移出战役（campaignID 为 nil = 移出）。// SetTaskCampaign 把任务归入/移出战役（campaignID 为 nil = 移出）。
 // 任务必须存在且未删除——给不存在的任务挂战役会静默没效果，不如当场报错。
 func (d *DB) SetTaskCampaign(taskID int64, campaignID *int64) error {
 	res, err := d.Exec(`UPDATE tasks SET campaign_id=$2 WHERE id=$1 AND deleted_at IS NULL`, taskID, campaignID)

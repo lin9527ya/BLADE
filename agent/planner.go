@@ -91,6 +91,27 @@ func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, 
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
 
+// verifyWithLLM asks the planner's provider for a tool-less, independent review
+// of an evidence digest. It deliberately receives only the digest, not the
+// worker transcript, so it cannot be swayed by the worker's narration.
+func (p *Planner) verifyWithLLM(ctx context.Context, digest string) (string, error) {
+	if p == nil || p.prov == nil {
+		return "", fmt.Errorf("verifier model unavailable")
+	}
+	temp := 0.0
+	msg, _, _, err := p.prov.Complete(ctx, llm.CompletionRequest{
+		System:      []string{`你是授权渗透测试系统的独立证据审查员。只依据用户提供的证据摘要，判断事实是否足以支持其结论；不要补充未给出的事实，不要执行任何命令。输出 JSON：{"verdict":"supported|weak|insufficient|contradicted","reason":"一句话"}。`},
+		Messages:    []llm.Message{llm.UserText(digest)},
+		MaxTokens:   500,
+		Temperature: &temp,
+		Thinking:    "disabled",
+	})
+	if err != nil {
+		return "", err
+	}
+	return msg.Text(), nil
+}
+
 // SetRoundSeconds 注入单轮墙钟预算（秒；0 = 不限）。没有它，一次跑飞的规划会一直占着
 // 这个任务（只有任务总 deadline 能兜底，而很多任务并没有 deadline）。
 func (p *Planner) SetRoundSeconds(n int64) { p.roundDur = time.Duration(n) * time.Second }
@@ -640,7 +661,8 @@ const structuredIntentBlock = `
 - depends_on 只用于强串行利用链：前置意图 done/negative 后本条才可被 worker 领取；没有真实前置就留空，平行方向不要互相挂依赖。前置失败/越界时依赖会阻塞，planner 应根据 graph_audit/事实重排或拆链。
 - 需要看窗口外的历史时用 blackboard_query（按 kind/state/route/q/asset_id 过滤）；要深挖某个资产时先 asset_dossier（资产 + 邻域 + 已锚定的意图/事实/发现），不要靠翻 recent_facts 猜。
 - recent_facts 里 summary 以「[意图提案]」开头的是 worker 的候选方向，不会自动成为意图；核对理由与证据后，用 add_intent 去重/补依赖/决定是否派发。
-- 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q) 并核对原任务 node_detail，不要把先例直接当成本任务结论。`
+- 要判断一条利用链走到哪，用 route_dossier(route)；要复用历史 negative/成功链，用 search_precedents(q) 并核对原任务 node_detail，不要把先例直接当成本任务结论。
+- 态势里的 campaign 是战役/阶段策略上下文：按 campaign.goal/phase 调整探索优先级，但授权边界仍只看本任务操作约束与 asset_scope。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经
@@ -693,6 +715,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.SetExecService(p.execService)
 		t.SetRotateEgressHandler(p.rotateEgress)
 		t.SetFindingRecorder(p.findingRecorder)
+		t.SetLLMVerifier(p.verifyWithLLM)
 		if as != nil {
 			t.SetAssetStore(as, as.Companies())
 		}
