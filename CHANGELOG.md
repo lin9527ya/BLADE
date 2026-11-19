@@ -4,6 +4,46 @@
 
 ## [Unreleased]
 
+## [0.9.22] - 2026-11-19
+
+### 高价值写回与血缘
+
+- `report_foothold` / `report_credential` 成功后立即唤醒 planner；带
+  `credential/foothold/access/surface` 的事实与带 `leads` 的事实分别以
+  `capability_fact` / `lead_fact` 即时触发，不再落入普通 fact 的 45s 合并窗口。
+- `request_scope_expansion` 以 `scope_request` 即时唤醒，扩面请求不再延迟。
+- `add_intent.parent_ids` 允许据点/凭据/AD 对象/云对象；以据点或凭据作为 parent 时
+  自动补 `intent --uses--> loot`。`prove_goal` 允许据点/凭据直接作为目标证据。
+- 修复单条 `add_intent` 漏调 `resumeTask`；清理 WorkerTools 中重复注册的
+  `record_credential_check` / `mark_loot_lost`。
+
+### 判据与黑板视图
+
+- 修复 `normalizeFactPolarity` 对“登录失败返回 SQL 报错”等混合信号误判为 negative；
+  带能力/线索信号的事实不再被否定关键词机械降级，`record_fact` schema 引导显式填 polarity。
+- `routes` 改为基于完整意图图的 `RouteDistribution`，不再受有界视图 30 条窗口影响；
+  `related_tasks_total` 与会话摘要保留。
+- 领域模板改为结构化追加，不再依赖已删除的 HTML 标记，7 套模板恢复差异化，并清理
+  `add_intent.goal_id`、`no_output` 与“只派一条/只派前一步”等过时话术。
+
+### 上下文与会话
+
+- Planner 热会话改为保留静态规则 + 本轮触发摘要，不再把前 3000 字符都截成态势 JSON；
+  Assistant 推理上限 3000，`lastRoundNote` 1500。
+- divergent 任务默认按意图独立 Worker 会话；balanced 仍可用
+  `BLADE_WORKER_PER_INTENT_SESSION` 配置。
+- Worker Prompt 明确 `record_fact.leads`、`propose_intents`、`request_scope_expansion`
+  三条侧向通道；独立攻击面/假设可分条记录，不再全部压进一条 fact。
+- 收官期由硬禁止“新开探索面”改为弹性收敛：优先补齐高确定性链路，仅直通目标的新高危
+  发现可开短平快意图。
+
+### 工具面
+
+- `list_assets` 支持空 DSL 按范围内资产分页浏览（默认 20，上限 50）。
+- `lookup_playbooks`、`close_candidate` 从 Worker deferred 提升为核心工具。
+- 精简 `add_intent` 与 `search_all_worker_traces` 的误导性说明；Planner 开局探测改为
+  职责边界，不再写死 `facts>0` 禁令与 ≤3 次硬上限。
+
 ## [0.9.21] - 2026-11-19
 
 ### 黑板调度与依赖
