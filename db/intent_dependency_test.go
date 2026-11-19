@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -201,6 +202,57 @@ func TestStrictDependencyWaitsForActivePrerequisite(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("前置 done 后 strict 下游应可领")
+	}
+}
+
+// 看门狗签名：活跃前置/状态变化要改变签名，前置终结后签名清空。
+func TestBlockedIntentSignatureTracksActivePrerequisite(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTaskWithOptions(fmt.Sprintf("dep-sig-%d", time.Now().UnixNano()), "goal", TaskCreateOptions{AssetScopePolicy: AssetScopePolicyTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	ts := d.Exploration(task.ExplorationID)
+
+	pre, err := ts.AddIntent(map[string]any{"summary": "前置"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := ts.AddIntentGraph(map[string]any{"summary": "下游", "depends_on": []int64{pre}, "depends_on_mode": "strict"}, 5, nil, "planner", []IntentEdge{{From: 0, To: pre, Rel: RelDependsOn}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig1, err := ts.BlockedIntentSignature()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig1 == "" || !strings.Contains(sig1, fmt.Sprintf("%d=", down)) || !strings.Contains(sig1, fmt.Sprintf("%d:open", pre)) {
+		t.Fatalf("签名应包含 blocked 下游与前置状态：%q", sig1)
+	}
+	if err := ts.SetIntentState(pre, "running"); err != nil {
+		t.Fatal(err)
+	}
+	sig2, err := ts.BlockedIntentSignature()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig2 == sig1 || !strings.Contains(sig2, fmt.Sprintf("%d:running", pre)) {
+		t.Fatalf("前置状态变化应改变签名：before=%q after=%q", sig1, sig2)
+	}
+	if err := ts.SetIntentState(pre, "done"); err != nil {
+		t.Fatal(err)
+	}
+	sig3, err := ts.BlockedIntentSignature()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig3 != "" {
+		t.Fatalf("前置 done 后下游已可领，签名应为空：%q", sig3)
 	}
 }
 

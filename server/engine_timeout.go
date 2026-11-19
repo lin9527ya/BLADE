@@ -25,6 +25,9 @@ const (
 	// 证据，见 runIntent）；leaseSweepInterval 是租约看门狗的扫描节奏。
 	intentLeaseRenewInterval = db.IntentLeaseTTL / 3
 	leaseSweepInterval       = 30 * time.Second
+	// blockedSweepInterval 是 blocked-only 看门狗的采样节奏。签名不变不唤醒，
+	// 变化才唤醒 planner，避免 strict 环/暂停把任务拖成 5 分钟静默。
+	blockedSweepInterval = 30 * time.Second
 )
 
 // ---------- settling 状态 ----------
@@ -207,7 +210,8 @@ func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
 // deadlineCoordinator waits until the task's absolute deadline, then runs the settle
 // sequence. Absolute wall-clock: it keeps counting through pauses.
 func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
-	var lastLeaseSweep time.Time // 零值 → 首轮立即扫一次，之后按 leaseSweepInterval 节流
+	var lastLeaseSweep time.Time   // 零值 → 首轮立即扫一次，之后按 leaseSweepInterval 节流
+	var lastBlockedSweep time.Time // 零值 → 首轮立即扫一次；签名变化才唤醒 planner
 	for {
 		select {
 		case <-ctx.Done():
@@ -238,6 +242,13 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 		if time.Since(lastLeaseSweep) >= leaseSweepInterval && !e.isSettling(t.ID) {
 			lastLeaseSweep = time.Now()
 			e.sweepExpiredLeases(t)
+		}
+		// blocked-only 看门狗：open 意图全被 strict 活跃前置/环/暂停挡住时，
+		// worker 没有活可领，planner 也不会收到 worker done。30s 采样一次，
+		// 用签名去重，只在阻塞集合/前置状态变化时唤醒。
+		if time.Since(lastBlockedSweep) >= blockedSweepInterval && !e.isSettling(t.ID) && !e.IsPaused(t.ID) {
+			lastBlockedSweep = time.Now()
+			e.sweepBlockedIntents(t)
 		}
 		// token 预算护栏：70/85/95% 各投递一次收敛提示；达到 100% **暂停任务**，
 		// 不终止、不出终局报告——由人决定是否继续。用户继续后同一档预算不再重复打断；
@@ -329,6 +340,37 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 			Detail:  fmt.Sprintf("owner=%s 心跳停止超过 %s，意图已退回 open 重新领取（worker 从既有 transcript 续跑，已写入的产出保留）", l.Owner, db.IntentLeaseTTL)})
 		t.Notify() // 图里出现了重新可领的意图 → 唤醒 planner
 	}
+}
+
+// sweepBlockedIntents wakes the planner when open intents exist but none are
+// claimable (strict dependency cycle, paused prerequisite, or any other live
+// prerequisite combination). The signature includes the blocked intent ids and
+// their prerequisite states, so a persistent block wakes once instead of every
+// 30 seconds; a changed block wakes again.
+func (e *Engine) sweepBlockedIntents(t *Task) {
+	if e == nil || t == nil || e.IsPaused(t.ID) || e.IsDeleting(t.ID) {
+		return
+	}
+	snap, err := t.Store.IntentDispatchSnapshot()
+	if err != nil {
+		return
+	}
+	if snap.Open == 0 || snap.Running > 0 || snap.Claimable > 0 {
+		e.blockedSignature.Delete(t.ID)
+		return
+	}
+	sig, err := t.Store.BlockedIntentSignature()
+	if err != nil || sig == "" {
+		return
+	}
+	if last, ok := e.blockedSignature.Load(t.ID); ok {
+		if prev, ok := last.(string); ok && prev == sig {
+			return
+		}
+	}
+	e.blockedSignature.Store(t.ID, sig)
+	log.Printf("[blocked] task %s 有 %d 条 open 意图没有活跃前置可派，唤醒 planner 解阻", t.ID, snap.Open)
+	t.Notify()
 }
 
 // settleTask runs the ordered settle sequence once (§4 steps ①–⑥).

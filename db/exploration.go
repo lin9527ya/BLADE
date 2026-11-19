@@ -1495,6 +1495,41 @@ WHERE n.exploration_id=$1 AND n.kind='intent'`, s.expID).Scan(&out.Open, &out.Ru
 	return out, nil
 }
 
+// BlockedIntentSignature returns a stable fingerprint of open intents that are
+// currently blocked by a live prerequisite. The watchdog compares signatures so
+// a persistent strict cycle/paused prerequisite wakes the planner once, not every
+// 30 seconds. An empty signature means no open intent has a live prerequisite.
+func (s *ExplorationStore) BlockedIntentSignature() (string, error) {
+	rows, err := s.db.Query(`SELECT n.id,
+  COALESCE(string_agg(d.id::text || ':' || d.state, ',' ORDER BY d.id), '')
+FROM exploration_nodes n
+JOIN exploration_edges e
+  ON e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on'
+JOIN exploration_nodes d
+  ON d.id=e.dst_id AND d.exploration_id=e.exploration_id
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open'
+  AND d.state IN ('open','running','paused')
+GROUP BY n.id
+ORDER BY n.id`, s.expID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var id int64
+		var deps string
+		if err := rows.Scan(&id, &deps); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "%d=%s;", id, deps)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
 // HasDispatchableIntent reports whether a worker has anything it can do right now:
 // a running intent counts as work in progress, and an open intent that passes the
 // claimable predicate is immediately dispatchable. This is deliberately stricter

@@ -203,16 +203,16 @@ type Engine struct {
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
-	settling        sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
-	deadline        sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
-	stamped         sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
-	inflight        sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
-	coordStarted    sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
-	budgetStage     sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
-	budgetAck       sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
-	endgameNotified sync.Map // taskID -> bool, 收官期入口已提醒过(每任务一次)
-	blockedNudge    sync.Map // taskID -> int64 unix, blocked-only 唤醒节流(goalless 分支)
-	execWatch       sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
+	settling         sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
+	deadline         sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
+	stamped          sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
+	inflight         sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
+	coordStarted     sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
+	budgetStage      sync.Map // taskID -> string, token 预算提示已投递到的最高档(每档一次)
+	budgetAck        sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
+	endgameNotified  sync.Map // taskID -> bool, 收官期入口已提醒过(每任务一次)
+	blockedSignature sync.Map // taskID -> string, blocked-only 看门狗签名(避免每 30s 重复唤醒)
+	execWatch        sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
 	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
 	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
 	budgetPause func(*Task) error
@@ -1078,24 +1078,6 @@ func shouldKickPlanner(d db.IntentDispatch) bool {
 	return d.Running == 0 && d.Claimable == 0
 }
 
-// notifyBlockedPlanner wakes the planner when open intents exist but none are
-// claimable (strict dependency cycle/pause). The interval keeps goalless tasks
-// from re-arming a planner round every debounce window while the same block
-// persists.
-func (e *Engine) notifyBlockedPlanner(t *Task, interval time.Duration) {
-	if e == nil || t == nil || interval <= 0 {
-		return
-	}
-	now := time.Now().Unix()
-	if v, ok := e.blockedNudge.Load(t.ID); ok {
-		if last, ok := v.(int64); ok && now-last < int64(interval.Seconds()) {
-			return
-		}
-	}
-	e.blockedNudge.Store(t.ID, now)
-	t.Notify()
-}
-
 // plannerHeartbeatInterval 解析任务的 planner 心跳间隔。db.CreateTask 已归一
 // (低于 600 一律抬到 600);这里再兜一次底,防内存态异常值。
 func plannerHeartbeatInterval(t *Task) time.Duration {
@@ -1231,10 +1213,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 					}
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: summary})
 				}
-			} else if snap.Running == 0 && snap.Claimable == 0 && snap.Open > 0 {
-				// open 但一条都领不了（strict 前置活跃/环/暂停）：不能落 done，也不能
-				// 静默等心跳。按 30s 节流唤醒 planner 解阻；同一阻塞不反复烧规划轮。
-				e.notifyBlockedPlanner(t, 30*time.Second)
 			}
 			return // goalless 分支永不进入 planner.Plan
 		}

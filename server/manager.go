@@ -25,6 +25,18 @@ import (
 	"github.com/lin9527ya/blade/traffic"
 )
 
+const (
+	// lowPriorityBatchDelay 是普通 fact/asset 写入的合并窗口。finding/矛盾/否定/
+	// done 等语义事件仍然即时唤醒；普通事实只做批量摘要，完整内容始终能从
+	// recent_facts/list_assets 读到，不会因为合并而丢失。
+	lowPriorityBatchDelay = 45 * time.Second
+	lowPriorityFactBatch  = 25
+	lowPriorityAssetBatch = 10
+	// maxPendingTriggers 防止异常事件流把内存队列撑爆；超出时丢弃最旧的触发，
+	// 在下一轮提示里用 triggers_dropped 显式告知，而不是静默丢失。
+	maxPendingTriggers = 64
+)
+
 // Task is one engagement: a description + goal + its own exploration store,
 // sharing the process-wide asset store. ID is the PG task id as a string; ExpID
 // is the exploration the task owns.
@@ -87,6 +99,15 @@ type Task struct {
 	// a burst into one round, so several may pile up before drainTriggers() clears them.
 	trigMu          sync.Mutex
 	pendingTriggers []agent.TriggerEvent
+	// 普通 fact/asset 的合并窗口。它们不逐条 append/Notify：累计到阈值或 45s
+	// 定时器到点后合成一条 facts_batch/assets_batch；drainTriggers 也会先冲刷，
+	// 保证任何一轮 planner 都能看到这批信号。
+	lowPriorityTimer    *time.Timer
+	pendingFactCount    int
+	pendingFactSummary  string
+	pendingAssetCount   int
+	pendingAssetSummary string
+	pendingDropped      int
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task
@@ -2729,7 +2750,7 @@ func (t *Task) Notify() {
 func (t *Task) NotifyDone(intentID int64, state string) {
 	if intentID > 0 {
 		t.trigMu.Lock()
-		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "done", IntentID: intentID, State: state})
+		t.appendTriggerLocked(agent.TriggerEvent{Kind: "done", IntentID: intentID, State: state})
 		t.trigMu.Unlock()
 	}
 	t.Notify()
@@ -2742,7 +2763,7 @@ func (t *Task) NotifyReconcile(detail string) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "reconcile", Detail: detail})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "reconcile", Detail: detail})
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -2754,7 +2775,7 @@ func (t *Task) NotifyReconcile(detail string) {
 func (t *Task) NotifyRequeued(intentID int64, reason string) {
 	if intentID > 0 {
 		t.trigMu.Lock()
-		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "requeued", IntentID: intentID, Detail: reason})
+		t.appendTriggerLocked(agent.TriggerEvent{Kind: "requeued", IntentID: intentID, Detail: reason})
 		t.trigMu.Unlock()
 	}
 	t.Notify()
@@ -2764,37 +2785,116 @@ func (t *Task) NotifyRequeued(intentID int64, reason string) {
 // then wakes the planner — so the round spells out which intent found what.
 func (t *Task) NotifyFinding(intentID int64, summary string) {
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "finding", IntentID: intentID, Detail: summary})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "finding", IntentID: intentID, Detail: summary})
 	t.trigMu.Unlock()
 	t.Notify()
 }
 
-// NotifyFact records a fact/contradiction/negative/supersede written by a worker
-// and wakes the planner. Semantic kind matters: a plain fact, a contradiction,
-// a negative result, or a superseding fact. The graph change itself also wakes
-// the bounded overview, but this event tells the planner what changed without
-// re-scanning the whole graph.
+// NotifyFact records a fact/contradiction/negative/supersede written by a worker.
+// Contradiction/negative/supersede wake the planner immediately; an ordinary
+// "fact" is coalesced into a facts_batch (25 entries or 45s) because the graph is
+// already updated and recent_facts carries the full text. This keeps a dense
+// fact stream from turning every planner round into a 2–3s loop.
 func (t *Task) NotifyFact(kind string, intentID, factID int64, summary string, assetIDs []int64) {
 	if strings.TrimSpace(kind) == "" {
 		kind = "fact"
 	}
+	wake := false
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{
-		Kind: kind, IntentID: intentID, FactID: factID, Summary: summary, AssetIDs: append([]int64(nil), assetIDs...),
-	})
+	if kind == "fact" {
+		// 普通事实是低优先级信号：图本身已经更新，planner 下一轮从 recent_facts
+		// 能读到全文。逐条唤醒只会在事实流密集时把规划轮打成 2–3 秒一次。
+		t.pendingFactCount++
+		t.pendingFactSummary = summary
+		if t.pendingFactCount >= lowPriorityFactBatch {
+			wake = t.flushLowPriorityLocked()
+		} else if t.lowPriorityTimer == nil {
+			t.lowPriorityTimer = time.AfterFunc(lowPriorityBatchDelay, t.flushLowPriority)
+		}
+	} else {
+		// 矛盾/否定/替代等语义事件保持即时唤醒。
+		t.appendTriggerLocked(agent.TriggerEvent{
+			Kind: kind, IntentID: intentID, FactID: factID, Summary: summary, AssetIDs: append([]int64(nil), assetIDs...),
+		})
+		wake = true
+	}
 	t.trigMu.Unlock()
-	t.Notify()
+	if wake {
+		t.Notify()
+	}
 }
 
-// NotifyAsset records newly registered/updated assets and wakes the planner.
+// NotifyAsset records newly registered/updated assets. Asset bursts are low
+// priority too: the graph is already updated, and list_assets/asset_neighbors
+// give the full detail. Ten calls or 45 seconds trigger one assets_batch.
 func (t *Task) NotifyAsset(summary string) {
 	if strings.TrimSpace(summary) == "" {
 		summary = "资产图发生变化"
 	}
+	wake := false
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "asset", Summary: summary})
+	t.pendingAssetCount++
+	t.pendingAssetSummary = summary
+	if t.pendingAssetCount >= lowPriorityAssetBatch {
+		wake = t.flushLowPriorityLocked()
+	} else if t.lowPriorityTimer == nil {
+		t.lowPriorityTimer = time.AfterFunc(lowPriorityBatchDelay, t.flushLowPriority)
+	}
 	t.trigMu.Unlock()
-	t.Notify()
+	if wake {
+		t.Notify()
+	}
+}
+
+// appendTriggerLocked appends one trigger under trigMu, keeping the newest
+// maxPendingTriggers events. Dropped events are counted and surfaced as a
+// triggers_dropped notice on drain.
+func (t *Task) appendTriggerLocked(ev agent.TriggerEvent) {
+	if len(t.pendingTriggers) >= maxPendingTriggers {
+		copy(t.pendingTriggers, t.pendingTriggers[1:])
+		t.pendingTriggers[len(t.pendingTriggers)-1] = ev
+		t.pendingDropped++
+		return
+	}
+	t.pendingTriggers = append(t.pendingTriggers, ev)
+}
+
+// flushLowPriorityLocked materializes pending fact/asset batches into the trigger
+// queue and stops the timer. Caller must hold trigMu. Returns true when at least
+// one batch was added.
+func (t *Task) flushLowPriorityLocked() bool {
+	if t.lowPriorityTimer != nil {
+		t.lowPriorityTimer.Stop()
+		t.lowPriorityTimer = nil
+	}
+	changed := false
+	if t.pendingFactCount > 0 {
+		t.appendTriggerLocked(agent.TriggerEvent{
+			Kind: "facts_batch", Count: t.pendingFactCount, Summary: t.pendingFactSummary,
+		})
+		t.pendingFactCount = 0
+		t.pendingFactSummary = ""
+		changed = true
+	}
+	if t.pendingAssetCount > 0 {
+		t.appendTriggerLocked(agent.TriggerEvent{
+			Kind: "assets_batch", Count: t.pendingAssetCount, Summary: t.pendingAssetSummary,
+		})
+		t.pendingAssetCount = 0
+		t.pendingAssetSummary = ""
+		changed = true
+	}
+	return changed
+}
+
+// flushLowPriority is the timer callback: batch first, then wake the planner once.
+func (t *Task) flushLowPriority() {
+	t.trigMu.Lock()
+	changed := t.flushLowPriorityLocked()
+	t.trigMu.Unlock()
+	if changed {
+		t.Notify()
+	}
 }
 
 // NotifyGoal records that one OR MORE goals were added in a single set_goals call —
@@ -2808,7 +2908,7 @@ func (t *Task) NotifyGoal(texts []string) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "goal", Goals: texts})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal", Goals: texts})
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -2823,7 +2923,7 @@ func (t *Task) NotifyHint(texts []string) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "hint", Hints: texts})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "hint", Hints: texts})
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -2837,7 +2937,7 @@ func (t *Task) NotifyGoalDeleted(text string) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "goal_deleted", Detail: text})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal_deleted", Detail: text})
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -2851,7 +2951,7 @@ func (t *Task) NotifyGoalAbandoned(text, reason string) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "goal_abandoned", Detail: reason, Summary: text})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal_abandoned", Detail: reason, Summary: text})
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -2865,7 +2965,7 @@ func (t *Task) NotifyGoalEdited(oldText, newText string) {
 		return
 	}
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "goal_edited", OldGoal: oldText, NewGoal: newText})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal_edited", OldGoal: oldText, NewGoal: newText})
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -2878,7 +2978,7 @@ func (t *Task) NotifyGoalEdited(oldText, newText string) {
 func (t *Task) NotifyCancelled(intentID int64, summary, reason string) {
 	if intentID > 0 {
 		t.trigMu.Lock()
-		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "cancelled", IntentID: intentID, Summary: summary, Detail: reason})
+		t.appendTriggerLocked(agent.TriggerEvent{Kind: "cancelled", IntentID: intentID, Summary: summary, Detail: reason})
 		t.trigMu.Unlock()
 	}
 	t.Notify()
@@ -2893,12 +2993,25 @@ func (t *Task) restoreTriggers(ev []agent.TriggerEvent) {
 	}
 	t.trigMu.Lock()
 	t.pendingTriggers = append(ev, t.pendingTriggers...)
+	if len(t.pendingTriggers) > maxPendingTriggers {
+		drop := len(t.pendingTriggers) - maxPendingTriggers
+		t.pendingTriggers = t.pendingTriggers[drop:]
+		t.pendingDropped += drop
+	}
 	t.trigMu.Unlock()
 }
 
 func (t *Task) drainTriggers() []agent.TriggerEvent {
 	t.trigMu.Lock()
 	defer t.trigMu.Unlock()
+	// 任何一轮 planner 都要先把合并窗口里的普通 fact/asset 冲刷出来，
+	// 这样高价值事件触发时也不会把已积累的事实批次留到下一轮。
+	t.flushLowPriorityLocked()
+	if t.pendingDropped > 0 {
+		// 直接 append：这条通知本身不应再触发一次丢弃。
+		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "triggers_dropped", Count: t.pendingDropped})
+		t.pendingDropped = 0
+	}
 	ev := t.pendingTriggers
 	t.pendingTriggers = nil
 	return ev

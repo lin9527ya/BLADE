@@ -286,6 +286,9 @@ func renderPlannerTodos(items []actool.Todo) string {
 //	            stopped (not deleted) and the reason is attached to it as a fact.
 //	"requeued" — intent IntentID went back to open for resumption (long-running
 //	            executions settled, lease expired, pause/resume). Detail = why.
+//	"facts_batch" — N ordinary fact writes were coalesced; Summary = most recent.
+//	"assets_batch" — N asset registrations/updates were coalesced; Summary = most recent.
+//	"triggers_dropped" — N older triggers exceeded the queue cap and were not expanded.
 type TriggerEvent struct {
 	Kind     string
 	IntentID int64
@@ -298,6 +301,8 @@ type TriggerEvent struct {
 	OldGoal  string   // Kind=="goal_edited" 专用：修改前的目标文本
 	NewGoal  string   // Kind=="goal_edited" 专用：修改后的目标文本
 	Hints    []string // Kind=="hint" 专用：本次 add_hint 新增的提示文本（1 条或多条）
+	// Count 是 facts_batch/assets_batch/triggers_dropped 的聚合数量。
+	Count int
 }
 
 // renderTriggers spells out the change(s) that fired this round: for a finished
@@ -310,7 +315,16 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\n【本次触发本轮的实际变动（先看这里，再决定是否补方向）】：")
-	for _, ev := range evs {
+	const maxRenderedTriggers = 24
+	// 触发队列按时间追加，最新事件（done/finding/blocked 等）通常更值得看；
+	// 超限时保留末尾，而不是把最新事件截掉。溢出数量在文末显式说明。
+	start := 0
+	if len(evs) > maxRenderedTriggers {
+		start = len(evs) - maxRenderedTriggers
+	}
+	rendered := 0
+	for _, ev := range evs[start:] {
+		rendered++
 		switch ev.Kind {
 		case "goal":
 			if len(ev.Goals) == 1 {
@@ -347,6 +361,24 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			b.WriteString(head + "。请结合证据判断是否需要补方向、复核或停止该分支。")
 		case "asset":
 			b.WriteString("\n- 新资产登记：" + clipLine(ev.Summary, 240) + "。请判断是否需要把该资产/邻域纳入探索方向。")
+		case "facts_batch":
+			n := ev.Count
+			if n <= 0 {
+				n = 1
+			}
+			b.WriteString(fmt.Sprintf("\n- worker 批量写回了 %d 条普通事实（最近一条：%s）。完整内容看 recent_facts；图已更新，不要因为这是摘要就当成没发生。", n, clipLine(ev.Summary, 240)))
+		case "assets_batch":
+			n := ev.Count
+			if n <= 0 {
+				n = 1
+			}
+			b.WriteString(fmt.Sprintf("\n- 资产图发生 %d 次批量登记/更新（最近一次：%s）。具体资产用 list_assets / asset_neighbors 查看，不要只按这条摘要判断覆盖。", n, clipLine(ev.Summary, 240)))
+		case "triggers_dropped":
+			n := ev.Count
+			if n <= 0 {
+				n = 1
+			}
+			b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发因队列上限未展开；以当前 graph_overview 与 recent_facts 为准。", n))
 		case "finding":
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 报告了一个 finding：%s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
 		case "cancelled":
@@ -388,6 +420,9 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 				b.WriteString(fmt.Sprintf("；本意图新产生的事实 id：%s ", fids))
 			}
 		}
+	}
+	if omitted := len(evs) - rendered; omitted > 0 {
+		b.WriteString(fmt.Sprintf("\n- 另有 %d 条较早触发未展开；以当前 graph_overview / recent_facts 为准。", omitted))
 	}
 	b.WriteString("\n（完整细节可 node_detail / get_worker_output / list_findings 再查。）")
 	return b.String()

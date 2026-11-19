@@ -37,3 +37,23 @@ func TestRenderTriggersCarriesTerminalState(t *testing.T) {
 		t.Fatalf("stopped 应带中文标签：%s", got)
 	}
 }
+
+func TestRenderTriggersBatchesAndCapsOutput(t *testing.T) {
+	_, ts, _ := newToolWorker(t)
+	evs := []TriggerEvent{
+		{Kind: "facts_batch", Count: 7, Summary: "端口开放"},
+		{Kind: "assets_batch", Count: 3, Summary: "新增子域"},
+	}
+	out := renderTriggers(ts, evs)
+	if !strings.Contains(out, "7 条普通事实") || !strings.Contains(out, "3 次批量") {
+		t.Fatalf("batch triggers not rendered: %s", out)
+	}
+	many := make([]TriggerEvent, 0, 30)
+	for i := 0; i < 30; i++ {
+		many = append(many, TriggerEvent{Kind: "triggers_dropped", Count: 1})
+	}
+	out = renderTriggers(ts, many)
+	if !strings.Contains(out, "另有 6 条较早触发未展开") {
+		t.Fatalf("render cap missing: %s", out)
+	}
+}
