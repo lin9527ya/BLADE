@@ -26,19 +26,15 @@ func TestLootKindsReachPreExistingInstall(t *testing.T) {
 	// 被误读成"迁移块没生效"。本用例要能重复跑，这一步是前提。
 	// 同理：新加的 footprint kind 与 leaves 边也会让「降级回旧约束」这一步失败，
 	// 两个用例都要能重复跑。
-	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind IN ($1, $2, $3)`, KindFoothold, KindCredential, KindDetection); err != nil {
+	// 先清掉所有「战果之前那版约束不认识」的节点，而不是逐个点名 foothold/credential/
+	// detection/artifact/footprint：新版本还会不断加入 ad_object/cloud_object 等 kind，
+	// 逐个点名迟早漏掉一个，于是「降级约束」这一步又会被残留行拦下。这里按旧约束的
+	// 白名单反向清理，才是这个用例真正要模拟的“老库”。
+	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind NOT IN
+		('begin','goal','intent','fact','finding','hint','digest')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`DELETE FROM exploration_edges WHERE rel NOT IN ('spawns','derived_from','yields','proves','covers')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind=$1`, KindFootprint); err != nil {
-		t.Fatal(err)
-	}
-	// 遗留物（artifact）是同一类问题的第三个来源：降级回「战果之前」的约束时它同样越界。
-	// 只清本用例自己会碰到的残留不够——任何在测试库跑过 footprint/artifact 用例的人都会
-	// 撞上同一个报错，所以这里把两者都清干净。
-	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE kind=$1`, KindArtifact); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
