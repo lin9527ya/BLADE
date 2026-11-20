@@ -596,9 +596,7 @@ type createTaskReq struct {
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`
 	AssetScopePolicy     string   `json:"asset_scope_policy,omitempty"` // exact | target；空=新任务默认 target  // 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏 add_task_scope/list_untested_assets。company 关联不受影响。
-	// ExplorationMode 空=balanced；divergent 仅改变覆盖目标/黑板视图/no_output 语义。
-	ExplorationMode string `json:"exploration_mode,omitempty"`
-	LootExecEnabled bool   `json:"loot_exec_enabled,omitempty"`
+	LootExecEnabled      bool     `json:"loot_exec_enabled,omitempty"`
 	// CredentialAttemptBudget 任务级凭据尝试预算/30分钟；nil=继承全局，0=不限。
 	CredentialAttemptBudget *int `json:"credential_attempt_budget,omitempty"`
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。

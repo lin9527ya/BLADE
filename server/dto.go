@@ -82,7 +82,6 @@ type TaskDTO struct {
 	CompanyIDs              []int64            `json:"company_ids"`
 	CoverageEnabled         bool               `json:"coverage_enabled"`          // 资产覆盖度功能开关(创建时定)
 	AssetScopePolicy        string             `json:"asset_scope_policy"`        // exact | target
-	ExplorationMode         string             `json:"exploration_mode"`          // balanced | divergent
 	LootExecEnabled         bool               `json:"loot_exec_enabled"`         // 任务级后渗透执行 opt-in
 	CredentialAttemptBudget int                `json:"credential_attempt_budget"` // -1=继承全局；0=不限
 	WorkerCount             int                `json:"worker_count"`              // 每任务并发覆盖；0=跟随全局
@@ -166,7 +165,6 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CompanyIDs:              lifecycle.CompanyIDs,
 		CoverageEnabled:         t.CoverageEnabled,
 		AssetScopePolicy:        lifecycle.AssetScopePolicy,
-		ExplorationMode:         lifecycle.ExplorationMode,
 		LootExecEnabled:         lifecycle.LootExecEnabled,
 		CredentialAttemptBudget: lifecycle.CredentialAttemptBudget,
 		WorkerCount:             t.WorkerCount,

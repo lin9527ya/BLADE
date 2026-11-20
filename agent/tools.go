@@ -245,7 +245,8 @@ type ToolSet struct {
 	// paused task back to running and (re)starts the engine loops — a plain notify()
 	// can't, because the planner's terminal gate swallows wakes. Wired ONLY for the
 	// main agent (human steering); nil for the goals decomposer and workers.
-	resumeTask func()
+	resumeTask    func()
+	notifyWorkers func()
 	// notifyGoal, if set, wakes the planner AND records ONE "人新增了 N 个目标：…" trigger
 	// for a whole set_goals call (batch-aware — one call, one trigger, not one per goal)
 	// so the next round spells out the added goals (instead of the planner having to
@@ -277,6 +278,10 @@ func (t *ToolSet) SetResumeTask(fn func()) { t.resumeTask = fn }
 // SetNotify wires the planner-wake callback (see ToolSet.notify). Set by callers
 // that hold the task handle (main-agent chat, cross-task orchestration).
 func (t *ToolSet) SetNotify(fn func()) { t.notify = fn }
+
+// SetNotifyWorkers wakes the per-intent worker dispatcher immediately when
+// add_intent commits new claimable intents.
+func (t *ToolSet) SetNotifyWorkers(fn func()) { t.notifyWorkers = fn }
 
 // SetNotifyFinding wires the finding-wake callback (see ToolSet.notifyFinding).
 func (t *ToolSet) SetNotifyFinding(fn func(int64, string)) { t.notifyFinding = fn }
@@ -2885,6 +2890,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				if created && t.resumeTask != nil {
 					t.resumeTask()
 				}
+				if created && t.notifyWorkers != nil {
+					t.notifyWorkers()
+				}
 				msg := fmt.Sprintf("intent created: %d", ids[0])
 				if w := warns["0"]; len(w) > 0 {
 					msg += "\nwarnings: " + strings.Join(w, "; ")
@@ -2900,6 +2908,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			}
 			if created && t.resumeTask != nil {
 				t.resumeTask()
+			}
+			if created && t.notifyWorkers != nil {
+				t.notifyWorkers()
 			}
 			return jsonResult(out)
 		})

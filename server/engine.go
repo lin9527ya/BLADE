@@ -110,7 +110,6 @@ const (
 )
 
 var errWorkControlConflict = errors.New("work control conflict")
-var errSlotBusy = errors.New("worker slot busy")
 
 // retryableWorkerModelError excludes errors already handled by the task router.
 // In particular, a quota error after partial streaming advances the task cursor
@@ -167,16 +166,11 @@ type Engine struct {
 	// in inflight and every later writer is rejected.
 	deleteMu sync.RWMutex
 
-	// Every long-lived task goroutine (planner, workers and deadline coordinator)
+	// Every long-lived task goroutine (planner, dispatcher, and deadline coordinator)
 	// runs under one task-scoped context. Successful deletion cancels that context,
 	// waits for all goroutines, then releases every task-level Engine reference.
 	runtimeMu sync.Mutex
 	runtimes  map[string]*taskRuntime
-	// fallbackSlotLocks serializes detached runs for a task that has no live runtime
-	// (not started yet, or already torn down). Without it, a human resume on such a
-	// task would report every slot busy because slotLock returns nil.
-	fallbackSlotMu    sync.Mutex
-	fallbackSlotLocks map[string]*sync.Mutex
 
 	// per-task execution context: each planner.Plan / worker.Execute runs under it,
 	// so pausing can CANCEL an in-flight run (not just skip the next one). Recreated
@@ -233,14 +227,8 @@ type taskRuntime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-	// workers 是本任务**启动时**的 worker 池大小（队列背压用）。改设置只影响之后启动的
-	// 任务，所以不能让 planner 去读实时设置——那会按错误容量排队。
+	// workers 是本任务当前生效的并发 worker 上限（每个意图仍由独立 worker 执行）。
 	workers int
-	// slotLocks serializes one worker slot's runs. The N worker loops are already
-	// serial per slot; this additionally keeps a detached human-resume run from
-	// sharing the slot transcript concurrently with the pool.
-	slotMu    sync.Mutex
-	slotLocks map[string]*sync.Mutex
 }
 
 type workExecution struct {
@@ -313,7 +301,7 @@ func (e *Engine) registerTaskRoutines(parent context.Context, taskID string, cou
 	rt := e.runtimes[taskID]
 	if rt == nil {
 		ctx, cancel := context.WithCancel(parent)
-		rt = &taskRuntime{ctx: ctx, cancel: cancel, slotLocks: map[string]*sync.Mutex{}}
+		rt = &taskRuntime{ctx: ctx, cancel: cancel}
 		e.runtimes[taskID] = rt
 	}
 	rt.wg.Add(count)
@@ -324,7 +312,7 @@ func runTaskRoutine(rt *taskRuntime, fn func(context.Context)) {
 	goSafe("engine/task-routine", &rt.wg, func() { fn(rt.ctx) })
 }
 
-// setTaskWorkers 记录本任务的 worker 池大小（池在 Run 时定死）。
+// setTaskWorkers 记录本任务当前生效的并发 worker 上限。
 func (e *Engine) setTaskWorkers(taskID string, n int) {
 	e.runtimeMu.Lock()
 	defer e.runtimeMu.Unlock()
@@ -333,8 +321,7 @@ func (e *Engine) setTaskWorkers(taskID string, n int) {
 	}
 }
 
-// TaskWorkers 返回本任务启动时的 worker 池大小（0 = 未知：任务没启动或已拆除）。
-// planner 用它做队列背压；0 表示不启用上限。
+// TaskWorkers 返回本任务当前生效的并发 worker 上限（0 = 未知：任务没启动或已拆除）。
 func (e *Engine) TaskWorkers(taskID string) int {
 	e.runtimeMu.Lock()
 	defer e.runtimeMu.Unlock()
@@ -344,43 +331,40 @@ func (e *Engine) TaskWorkers(taskID string) int {
 	return 0
 }
 
-// slotLock returns the per-task mutex for one worker slot. nil when the task runtime
-// is already torn down (the caller should stop).
-func (e *Engine) slotLock(taskID, name string) *sync.Mutex {
-	e.runtimeMu.Lock()
-	rt := e.runtimes[taskID]
-	if rt == nil {
-		e.runtimeMu.Unlock()
-		// no pool is running, but detached human runs still share the transcript:
-		// serialize them per task+slot too.
-		e.fallbackSlotMu.Lock()
-		defer e.fallbackSlotMu.Unlock()
-		if e.fallbackSlotLocks == nil {
-			e.fallbackSlotLocks = map[string]*sync.Mutex{}
-		}
-		key := taskID + "|" + name
-		mu := e.fallbackSlotLocks[key]
-		if mu == nil {
-			mu = &sync.Mutex{}
-			e.fallbackSlotLocks[key] = mu
-		}
-		return mu
+func (e *Engine) taskConcurrencyLimit(t *Task) int {
+	if e == nil || e.m == nil || t == nil {
+		return 1
 	}
-	defer e.runtimeMu.Unlock()
-	rt.slotMu.Lock()
-	defer rt.slotMu.Unlock()
-	if rt.slotLocks == nil {
-		rt.slotLocks = map[string]*sync.Mutex{}
+	if override := e.m.TaskWorkerCount(t.ID); override > 0 {
+		return override
 	}
-	mu := rt.slotLocks[name]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		rt.slotLocks[name] = mu
+	if n := e.m.Workers(); n > 0 {
+		return n
 	}
-	return mu
+	return 1
 }
 
-// slotNumber parses work#N; 0 when the name is not a slot (e.g. legacy "chat").
+// tryBeginWorkerRoutine atomically installs a delete-barrier + WaitGroup admission
+// for one newly spawned independent per-intent worker goroutine.
+func (e *Engine) tryBeginWorkerRoutine(t *Task) (*taskRuntime, bool) {
+	e.deleteMu.RLock()
+	defer e.deleteMu.RUnlock()
+	if e.IsDeleting(t.ID) || !e.beginTaskOperation(t.ID) {
+		return nil, false
+	}
+	e.runtimeMu.Lock()
+	rt := e.runtimes[t.ID]
+	if rt == nil || rt.ctx.Err() != nil {
+		e.runtimeMu.Unlock()
+		e.decInflight(t.ID)
+		return nil, false
+	}
+	rt.wg.Add(1)
+	e.runtimeMu.Unlock()
+	return rt, true
+}
+
+// slotNumber parses legacy work#N worker names; 0 for per-intent worker#<id> names.
 func slotNumber(name string) int {
 	if !strings.HasPrefix(name, "work#") {
 		return 0
@@ -393,17 +377,6 @@ func slotNumber(name string) int {
 }
 
 func slotName(n int) string { return fmt.Sprintf("work#%d", n) }
-
-func slotPool(n int) []string {
-	if n <= 0 {
-		return nil
-	}
-	out := make([]string, 0, n)
-	for i := 1; i <= n; i++ {
-		out = append(out, slotName(i))
-	}
-	return out
-}
 
 // runtimeCtx returns the task's runtime context; when the task has no registered
 // runtime (never started, or already torn down) it falls back to the engine's
@@ -532,6 +505,7 @@ func (e *Engine) Resume(t *Task) {
 	// 恢复 = 重新开始计时（暂停时已经结算过，这里开新段）。
 	e.m.StartTaskRunSegment(t.ID)
 	t.Notify()
+	t.NotifyWorkers()
 }
 
 // execContextFor returns a live per-task context derived from parent, recreating
@@ -1029,17 +1003,11 @@ func (e *Engine) ReadyFor(t *Task) bool {
 	return p != nil && w != nil
 }
 
-// Run starts the planner loop + N worker loops for a task. The loops always run
-// but no-op until an LLM is configured (so a task created while idle picks up
-// automatically once LLM is set from the UI).
+// Run starts the planner loop + dynamic per-intent worker dispatcher for a task.
+// Concurrency is bounded dynamically by worker_count / global workers, while every
+// claimed intent gets its own independent worker goroutine and isolated session.
 func (e *Engine) Run(ctx context.Context, t *Task) {
-	// 每任务并发覆盖（worker_count）只在首次启动生效：已有槽位记录的任务沿用固化值，
-	// 中途改这个字段不会换槽位——那会打乱槽位会话亲和。
-	fallback := e.m.Workers()
-	if override := e.m.TaskWorkerCount(t.ID); override > 0 {
-		fallback = override
-	}
-	workers := e.m.EnsureTaskWorkerSlots(t.ID, fallback)
+	limit := e.taskConcurrencyLimit(t)
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
@@ -1048,19 +1016,17 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	if _, loaded := e.started.LoadOrStore(t.ID, true); loaded {
 		e.deleteMu.RUnlock()
 		t.Notify() // already running — just nudge a planning round
+		t.NotifyWorkers()
 		return
 	}
-	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
-	e.setTaskWorkers(t.ID, workers)
+	rt := e.registerTaskRoutines(ctx, t.ID, 2)
+	e.setTaskWorkers(t.ID, limit)
 	e.deleteMu.RUnlock()
 	// 真正开跑：开始（或续接）运行计时。暂停/排队期间不会开段，所以这里只需幂等调用。
 	e.m.StartTaskRunSegment(t.ID)
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
-	for i := 0; i < workers; i++ {
-		name := fmt.Sprintf("work#%d", i+1)
-		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
-	}
+	runTaskRoutine(rt, func(loopCtx context.Context) { e.workerDispatcher(loopCtx, t) })
 	e.startDeadlineCoordinator(ctx, t) // 任务级协调器(超时/预算/租约看门狗;去重,常开)
 	// 只在「worker 现在确实有活可干」时才跳过首轮规划。不能只看 open：strict 依赖被
 	// 活跃前置挡住时 open 仍然存在，但没有任何 worker 能领；只看 open+running 的
@@ -1070,8 +1036,14 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		if shouldKickPlanner(snap) {
 			t.Notify() // kick the first planning round (acted on once LLM is ready)
 		}
-	} else if has, herr := t.Store.HasActiveIntent(); herr == nil && !has {
-		t.Notify() // 快照失败时退回旧判定，避免启动时静默
+		if snap.Claimable > 0 {
+			t.NotifyWorkers()
+		}
+	} else {
+		if has, herr := t.Store.HasActiveIntent(); herr == nil && !has {
+			t.Notify() // 快照失败时退回旧判定，避免启动时静默
+		}
+		t.NotifyWorkers()
 	}
 }
 
@@ -1296,6 +1268,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			e.startGoalDrain(ctx, t, reason)
 		default:
 			log.Printf("[planner] task %s 规划完成", t.ID)
+			t.NotifyWorkers()
 		}
 		e.touch(t.ID)
 	}
@@ -1315,84 +1288,64 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	}
 }
 
-func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
+// workerDispatcher spawns one dedicated independent worker goroutine per claimed
+// intent (worker#<id>), gated dynamically by the task concurrency limit so
+// independent intents never reuse slots or block one another across sessions.
+func (e *Engine) workerDispatcher(ctx context.Context, t *Task) {
+	var active atomic.Int32
+	dispatchAvailable := func() {
+		for {
+			if ctx.Err() != nil || e.IsPaused(t.ID) || e.IsDeleting(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
+				return
+			}
+			if e.isSettling(t.ID) && !e.isGoalDraining(t.ID) {
+				return
+			}
+			_, worker := e.snapshotFor(t)
+			if worker == nil {
+				return
+			}
+			limit := e.taskConcurrencyLimit(t)
+			e.setTaskWorkers(t.ID, limit)
+			if int(active.Load()) >= limit {
+				return
+			}
+			intent := e.claimNextIntent(t)
+			if intent == nil {
+				return
+			}
+			rt, ok := e.tryBeginWorkerRoutine(t)
+			if !ok {
+				_ = transitionIntentState(t.Store, intent.ID, "running", "open")
+				return
+			}
+			active.Add(1)
+			workerName := fmt.Sprintf("worker#%d", intent.ID)
+			log.Printf("[worker %s] task %s 领取意图 #%d", workerName, t.ID, intent.ID)
+			runTaskRoutine(rt, func(loopCtx context.Context) {
+				defer func() {
+					active.Add(-1)
+					e.decInflight(t.ID)
+					t.NotifyWorkers()
+				}()
+				e.runIntent(loopCtx, t, workerName, worker, intent, "", "")
+			})
+		}
+	}
+
+	ticker := time.NewTicker(800 * time.Millisecond)
+	defer ticker.Stop()
+	dispatchAvailable()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-		}
-		_, worker := e.snapshotFor(t)
-		if worker == nil {
-			if sleepCtx(ctx, 1500*time.Millisecond) {
-				return
-			}
-			continue
-		}
-		if e.IsPaused(t.ID) {
-			if sleepCtx(ctx, 1000*time.Millisecond) {
-				return
-			}
-			continue // user-paused: don't claim/execute intents
-		}
-		if e.IsDeleting(t.ID) {
-			return
-		}
-		if e.isSettling(t.ID) && !e.isGoalDraining(t.ID) {
-			if sleepCtx(ctx, 1000*time.Millisecond) {
-				return
-			}
-			continue // 任务超时收尾中:不再领新意图(在跑的自行收尾,协调器等其 drain)
-		}
-		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
-			if sleepCtx(ctx, 1000*time.Millisecond) {
-				return
-			}
-			continue // 任务已终态(done/failed/timeout):停止领取遗留意图,别在完成后空跑 frontier
-		}
-		lock := e.slotLock(t.ID, name)
-		if lock == nil {
-			return
-		}
-		// 先占槽位锁再 claim：人工续跑可能正持有同一槽位的 transcript。
-		if !lock.TryLock() {
-			if sleepCtx(ctx, 200*time.Millisecond) {
-				return
-			}
-			continue
-		}
-		claimed := false
-		stop := false
-		func() {
-			// defer 兜底：runWorkerStep 内部 panic 会被最外层 goSafe 捕获，没有 defer 时
-			// 槽位锁与 inflight 永久泄漏，该槽位从此不再领活。
-			defer lock.Unlock()
-			if !e.beginTaskOperation(t.ID) {
-				stop = true
-				return
-			}
-			defer e.decInflight(t.ID)
-			claimed = e.runWorkerStep(ctx, t, name, worker)
-		}()
-		if stop {
-			return
-		}
-		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
-			return
+		case <-t.workerNotify:
+			dispatchAvailable()
+		case <-ticker.C:
+			dispatchAvailable()
 		}
 	}
-}
-
-// runWorkerStep claims one intent from the frontier and fully settles it via
-// runIntent. Returns false when nothing was claimable. The pool worker loop is its
-// only caller.
-func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
-	intent := e.claimNextForSlot(t, name)
-	if intent == nil {
-		return false
-	}
-	log.Printf("[worker %s] task %s 领取意图 #%d", name, t.ID, intent.ID)
-	return e.runIntent(ctx, t, name, worker, intent, "", "")
 }
 
 // runIntent executes and fully settles one already-claimed (state=running) intent.
@@ -2016,47 +1969,6 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	if node == nil || node.Kind != db.KindIntent {
 		return fmt.Errorf("intent not found")
 	}
-	workers := e.TaskWorkers(t.ID)
-	if workers <= 0 {
-		workers = e.m.TaskWorkerSlots(t.ID)
-	}
-	if workers <= 0 {
-		workers = 1
-	}
-	// Prefer the slot that last ran this intent so the slot transcript (and its
-	// cache) is resumed. If that slot is busy, fall back to any idle slot instead
-	// of failing: slot affinity is an optimization, not a correctness rule (the DB
-	// claim path now applies the same rule — an owner slot with no running intent
-	// no longer blocks other slots).
-	slot := ""
-	var lock *sync.Mutex
-	preferred := slotNumber(node.Owner)
-	if preferred > 0 && preferred <= workers {
-		if l := e.slotLock(t.ID, slotName(preferred)); l != nil && l.TryLock() {
-			slot, lock = slotName(preferred), l
-		}
-	}
-	if lock == nil {
-		for i := 1; i <= workers; i++ {
-			if i == preferred {
-				continue // 已尝试过首选槽位（被占）
-			}
-			l := e.slotLock(t.ID, slotName(i))
-			if l != nil && l.TryLock() {
-				slot, lock = slotName(i), l
-				break
-			}
-		}
-	}
-	if lock == nil {
-		return fmt.Errorf("%w: 所有 Worker 槽位都在运行，请稍后再继续", errSlotBusy)
-	}
-	lockHeld := true
-	defer func() {
-		if lockHeld {
-			lock.Unlock()
-		}
-	}()
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}
@@ -2070,7 +1982,8 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	if worker == nil {
 		return fmt.Errorf("worker 尚未就绪")
 	}
-	claimed, err := t.Store.ClaimNode(ctx, intentID, slot, fromState, db.IntentLeaseTTL, nil, false)
+	workerName := fmt.Sprintf("worker#%d", intentID)
+	claimed, err := t.Store.ClaimNode(ctx, intentID, workerName, fromState, db.IntentLeaseTTL, nil, false)
 	if err != nil {
 		return err
 	}
@@ -2083,14 +1996,11 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	// Keep the UI copy concise; ExecuteWithMessage writes the server-resolved
 	// reference snapshot into the intent transcript as the LLM input.
 	uid := intentID
-	sn := slotNumber(slot)
-	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message, SlotNo: &sn})
+	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message})
 	releaseAdmission = false // ownership of the admission passes to the goroutine
-	lockHeld = false         // ownership of the slot lock passes to the goroutine
-	goSafe("engine/run-intent-slot", nil, func() {
-		defer lock.Unlock()
+	goSafe("engine/intent-worker-detached", nil, func() {
 		defer e.decInflight(t.ID)
-		e.runIntent(ctx, t, slot, worker, node, requestID, agentMessage)
+		e.runIntent(ctx, t, workerName, worker, node, requestID, agentMessage)
 	})
 	return nil
 }
@@ -2133,13 +2043,12 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 	}
 }
 
-func (e *Engine) claimNextForSlot(t *Task, name string) *db.Node {
+func (e *Engine) claimNextIntent(t *Task) *db.Node {
 	e.dispatchMu.RLock()
 	defer e.dispatchMu.RUnlock()
 	if e.IsPaused(t.ID) || e.IsDeleting(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
 		return nil
 	}
-	pool := slotPool(e.TaskWorkers(t.ID))
 	var fr []*db.Node
 	if e.isSettling(t.ID) {
 		ids := e.goalDrainIDs(t.ID)
@@ -2150,10 +2059,11 @@ func (e *Engine) claimNextForSlot(t *Task, name string) *db.Node {
 		// long-task output; fresh branches never enter this subset.
 		fr, _ = t.Store.FrontierForIDs(ids)
 	} else {
-		fr, _ = t.Store.FrontierForSlot(name, pool, db.DispatchBatchSize)
+		fr, _ = t.Store.FrontierForSlot("", nil, db.DispatchBatchSize)
 	}
 	for _, in := range fr {
-		if node, err := t.Store.ClaimNode(context.Background(), in.ID, name, "open", db.IntentLeaseTTL, pool, true, in.Schedule); err == nil && node != nil {
+		workerName := fmt.Sprintf("worker#%d", in.ID)
+		if node, err := t.Store.ClaimNode(context.Background(), in.ID, workerName, "open", db.IntentLeaseTTL, nil, false, in.Schedule); err == nil && node != nil {
 			return node
 		}
 	}

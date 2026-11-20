@@ -11,11 +11,10 @@ import (
 	"time"
 )
 
-// PerIntentWorkerSession reports whether workers should isolate each intent in
-// its own logical session rather than sharing one transcript per worker slot.
+// PerIntentWorkerSession reports whether workers isolate each intent in its
+// own logical session rather than sharing one transcript per legacy slot.
 // BLADE_WORKER_PER_INTENT_SESSION explicitly forces on ("1"/"true"/"yes") or
-// off ("0"/"false"/"no"). When unset, every exploration mode defaults to
-// per-intent sessions; existing session IDs still resume without migration.
+// off ("0"/"false"/"no"). Defaults to true.
 func PerIntentWorkerSession(_ string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("BLADE_WORKER_PER_INTENT_SESSION"))) {
 	case "1", "true", "yes":
@@ -26,11 +25,11 @@ func PerIntentWorkerSession(_ string) bool {
 	return true
 }
 
-func logicalSessionForClaim(n *Node, exploration int64, owner, explorationMode string) string {
+func logicalSessionForClaim(n *Node, exploration int64, owner string) string {
 	if n.LogicalSessionID != "" {
 		return n.LogicalSessionID
 	}
-	if PerIntentWorkerSession(explorationMode) {
+	if PerIntentWorkerSession("") {
 		return fmt.Sprintf("exp%d-worker-i%d", exploration, n.ID)
 	}
 	var p struct {
@@ -73,8 +72,7 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 	}
 	defer tx.Rollback()
 	var task int64
-	var explorationMode string
-	err = tx.QueryRowContext(ctx, `SELECT id, COALESCE(exploration_mode,'balanced') FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL`, s.expID).Scan(&task, &explorationMode)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL`, s.expID).Scan(&task)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -93,7 +91,7 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 	if n.State != expected {
 		return nil, nil
 	}
-	session := logicalSessionForClaim(n, s.expID, owner, explorationMode)
+	session := logicalSessionForClaim(n, s.expID, owner)
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "blade.logical-session:"+session); err != nil {
 		return nil, err
 	}

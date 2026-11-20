@@ -530,6 +530,8 @@ func renderWorkerIntentTurnWithMode(intent *db.Node, assetsJSON, runDir string, 
 		} else {
 			b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本意图独立会话）", slot))
 		}
+	} else {
+		b.WriteString(fmt.Sprintf("\n执行身份: 独立 Worker #%d（本意图专属独立会话）", intent.ID))
 	}
 	if strings.TrimSpace(assetsJSON) != "" {
 		b.WriteString("\n本意图 asset_ids 对应的目标资产：\n" + SanitizeUntrusted(assetsJSON))

@@ -667,9 +667,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	pl.SetCompactionLLM(compactorRuntime.compactionLLM)
 	pl.SetWebSearch(s.webSearchFor("planner"))
-	pl.SetConstraintInject(s.constraintInjectPlanner)                        // 操作约束注入 planner(可配置,默认开)
-	pl.SetBoundedView(func() bool { return s.plannerBoundedViewForTask(t) }) // 默认态势：有界视图 / 全量；divergent 任务用全量
-	pl.SetExplorationModeResolver(func() string { return t.explorationModeSnapshot() })
+	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
+	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界黑板视图 / 全量
+	pl.SetNotifyWorkers(t.NotifyWorkers)                                          // add_intent 落库后立即唤醒独立 worker 调度
 	pl.SetExecService(s.m.Executions())                                           // P13 长任务托管执行(planner 也能起/查/停)
 	pl.SetPlannerPromptResolver(func() string { return t.PlannerPromptOverride }) // 任务级 planner 提示词快照
 	// 穷尽复核反馈：上一轮声明穷尽被复核员否掉时，把结论下发到下一轮规划输入。

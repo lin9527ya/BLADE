@@ -66,7 +66,7 @@ func TestGoalDrainKeepsWorkerAliveUntilWriteback(t *testing.T) {
 	if workCtx.Err() != nil {
 		t.Fatal("natural completion cancelled worker context")
 	}
-	if e.claimNextForSlot(task, "work#1") != nil {
+	if e.claimNextIntent(task) != nil {
 		t.Fatal("terminal drain still dispatches")
 	}
 }
@@ -140,11 +140,11 @@ func TestGoalDrainResumesOnlyCapturedLongTaskDirection(t *testing.T) {
 	if _, err := task.Store.CompareAndSetIntentState(captured, "running", "open"); err != nil {
 		t.Fatal(err)
 	}
-	got := e.claimNextForSlot(task, "work#1")
+	got := e.claimNextIntent(task)
 	if got == nil || got.ID != captured {
 		t.Fatalf("drain should resume captured direction, not fresh %d: %+v", fresh, got)
 	}
-	if e.claimNextForSlot(task, "work#2") != nil {
+	if e.claimNextIntent(task) != nil {
 		t.Fatal("drain dispatched a new direction")
 	}
 	if remaining, err := e.goalDrainRemaining(task); err != nil || remaining != 1 {

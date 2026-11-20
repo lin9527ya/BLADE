@@ -451,7 +451,6 @@ export const api = {
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
     assetScopePolicy?: "exact" | "target";
-    explorationMode?: "balanced" | "divergent";
     lootExecEnabled?: boolean;
     credentialAttemptBudget?: number; // -1=继承全局，0=不限
     interceptRules?: AssetInterceptRuleInput[];
@@ -476,7 +475,6 @@ export const api = {
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
       asset_scope_policy: input.assetScopePolicy ?? "target", // 默认 target：目标所属全资产自动可测
-      exploration_mode: input.explorationMode ?? "balanced",
       loot_exec_enabled: input.lootExecEnabled ?? false,
       credential_attempt_budget: input.credentialAttemptBudget,
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
@@ -493,7 +491,6 @@ export const api = {
       pinned?: boolean;
       remark?: string;
       asset_scope_policy?: "exact" | "target";
-      exploration_mode?: "balanced" | "divergent";
       loot_exec_enabled?: boolean;
       credential_attempt_budget?: number;
     },

@@ -31,11 +31,11 @@ import type {
   TaskLLMResolutions,
   TaskNode,
   TokenTotal,
-  WorkerSlot,
 } from "@/lib/types";
 
 import {
   emptyState,
+  intentToSession,
   isResumableWorkerStatus,
   keyForSession,
   MAIN_ID,
@@ -57,7 +57,6 @@ import {
   sessionKeyOf,
   workerMessageCharCount,
   workerSlotSessionId,
-  workerSlotToSession,
 } from "./session-helpers";
 
 // 会话页签的状态与取数：会话列表、分段消息、意图/资产、SSE、令牌与 LLM 解析。
@@ -128,9 +127,7 @@ export function useSessionsState(taskId: string) {
   const [listOpen, setListOpen] = React.useState(false);
   // Per-session lazily-loaded caches, keyed by session_key (main | plan | intent:<id>).
   const [store, setStore] = React.useState<SessionStore>({});
-  // Fixed worker slots (exactly N sessions; reused across intents).
-  const [workerSlots, setWorkerSlots] = React.useState<WorkerSlot[]>([]);
-  // Worker sessions derived from exploration intents (kept for intent metadata/history).
+  // Per-intent independent worker sessions (paged past the old 300 cap).
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [intentAssets, setIntentAssets] = React.useState<IntentAsset[]>([]);
   const [olderIntents, setOlderIntents] = React.useState<TaskNode[]>([]);
@@ -510,7 +507,6 @@ export function useSessionsState(taskId: string) {
   // ID) resumes from the DB, so a dropped realtime link self-heals; seq-merge dedups.
   React.useEffect(() => {
     setStore({});
-    setWorkerSlots([]);
     setIntents([]);
     setIntentAssets([]);
     setOlderIntents([]);
@@ -806,20 +802,6 @@ export function useSessionsState(taskId: string) {
     [taskId],
   );
 
-  usePolling(
-    (alive) =>
-      api
-        .workerSlots(taskId)
-        .then((r) => {
-          if (alive()) setWorkerSlots(r.slots);
-        })
-        .catch((e) => {
-          if (alive()) throw e;
-        }),
-    5000,
-    [taskId],
-  );
-
   const loadOlderIntents = React.useCallback(() => {
     if (loadingOlderIntents) return;
     const all = [...intents, ...olderIntents];
@@ -860,9 +842,9 @@ export function useSessionsState(taskId: string) {
     return grouped;
   }, [intentAssets]);
 
-  // Exactly the task's fixed N slots — never one session per intent.
-  const workerSessions = React.useMemo(() => workerSlots.map(workerSlotToSession), [workerSlots]);
-  const intentsHasMore = false; // legacy: the session list no longer pages per-intent
+  // One independent Worker session per intent (paged past 300).
+  const workerSessions = React.useMemo(() => allIntents.map(intentToSession), [allIntents]);
+  const intentsHasMore = hasLoadedOlderIntentsPage ? olderIntentsHasMore : firstIntentsHasMore;
 
   // For each worker session (intent), derive the display title from the intent
   // payload summary. Also store the full TaskNode for the hover-JSON tooltip.
@@ -897,9 +879,9 @@ export function useSessionsState(taskId: string) {
       if (!pendingIntercepts.length) return false;
       if (s.role === "mainagent") return pendingIntercepts.some((r) => r.agent_name === "mainagent");
       if (s.role === "planner") return pendingIntercepts.some((r) => r.agent_name === "planner");
-      // Worker: extract intent ID from "work#N · #<intentID>"
+      // Worker: extract intent ID from "worker#<intentID> · #<intentID>" / "work#N · #<intentID>" / "worker#<intentID>"
       return pendingIntercepts.some((r) => {
-        const m = r.agent_name.match(/·\s*#(\d+)$/);
+        const m = r.agent_name.match(/(?:·\s*#|^worker#)(\d+)$/);
         return m ? m[1] === s.intent_id : false;
       });
     },
@@ -1074,10 +1056,8 @@ export function useSessionsState(taskId: string) {
     // optimistic echo, hence no fabricated seq that could collide with real DB ids.
     if (isMain) return items;
     if (isPlanner || isSystem) return items;
-    // Slot sessions get a backend "intent" boundary row on each new intent, so the
-    // transcript already leads with the real objective. Only legacy intent-focused
-    // sessions still need the client-side synthetic bubble.
-    if (active.slot) return items;
+    // Skip synthetic header only when legacy slot rows already contain a backend "intent" boundary.
+    if (items.some((a) => a.kind === "intent")) return items;
     const intentTitle = sessionMeta.get(active.intent_id ?? "")?.title ?? active.title;
     const intentMsg: Activity = {
       seq: -1, // sorts/leads before any real step (real seq ≥ 0)
@@ -1100,7 +1080,6 @@ export function useSessionsState(taskId: string) {
     active.source_task_id,
     active.inherited,
     sessionMeta,
-    active.slot,
     active.intent_id,
   ]);
 

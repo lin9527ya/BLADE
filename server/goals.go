@@ -566,8 +566,7 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 }
 
 func shouldAutoAddCoverageGoal(t *Task, specs []goalSpec) bool {
-	return t.explorationModeSnapshot() != db.ExplorationModeDivergent &&
-		broadCoverageRequested(t.Goal+" "+t.Description) && !hasCoverageGoal(specs)
+	return broadCoverageRequested(t.Goal+" "+t.Description) && !hasCoverageGoal(specs)
 }
 
 // broadCoverageRequested 识别用户明确要求“测全”而不是只拿一个结果的描述。

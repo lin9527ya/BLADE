@@ -151,9 +151,6 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		nid := iid
 		act := db.Activity{NodeID: &nid, Worker: "user", Kind: "user", Summary: message, Detail: message}
-		if sn := slotNumber(node.Owner); sn > 0 {
-			act.SlotNo = &sn
-		}
 		s.engine.emitActivity(t, act)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":         iid,
@@ -176,7 +173,7 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	// while task pause/delete/shutdown still stop it.
 	if err := s.engine.runDetachedIntent(s.ctx, t, iid, node.State, requestID, message, agentMessage); err != nil {
 		switch {
-		case errors.Is(err, db.ErrIntentStateConflict), errors.Is(err, errSlotBusy):
+		case errors.Is(err, db.ErrIntentStateConflict):
 			writeErr(w, http.StatusConflict, err.Error())
 		default:
 			writeErr(w, http.StatusInternalServerError, err.Error())

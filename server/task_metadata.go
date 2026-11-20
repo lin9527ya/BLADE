@@ -32,7 +32,6 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		Pinned                  *bool   `json:"pinned"`
 		Remark                  *string `json:"remark"`
 		AssetScopePolicy        *string `json:"asset_scope_policy"`
-		ExplorationMode         *string `json:"exploration_mode"`
 		LootExecEnabled         *bool   `json:"loot_exec_enabled"`
 		CredentialAttemptBudget *int    `json:"credential_attempt_budget"`
 	}
@@ -45,8 +44,8 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if request.Name == nil && request.Pinned == nil && request.Remark == nil && request.AssetScopePolicy == nil && request.ExplorationMode == nil && request.LootExecEnabled == nil && request.CredentialAttemptBudget == nil {
-		writeErr(w, http.StatusBadRequest, "至少需要提供 name、pinned、remark、asset_scope_policy、exploration_mode 或 credential_attempt_budget")
+	if request.Name == nil && request.Pinned == nil && request.Remark == nil && request.AssetScopePolicy == nil && request.LootExecEnabled == nil && request.CredentialAttemptBudget == nil {
+		writeErr(w, http.StatusBadRequest, "至少需要提供 name、pinned、remark、asset_scope_policy、loot_exec_enabled 或 credential_attempt_budget")
 		return
 	}
 	if request.Name != nil {
@@ -68,15 +67,6 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		request.Remark = &remark
-	}
-	if request.ExplorationMode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*request.ExplorationMode))
-		if err := db.ValidateExplorationMode(mode); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		mode = db.NormalizeExplorationMode(mode)
-		request.ExplorationMode = &mode
 	}
 	if request.CredentialAttemptBudget != nil && *request.CredentialAttemptBudget < -1 {
 		writeErr(w, http.StatusBadRequest, "credential_attempt_budget 必须 >= -1（-1=继承全局，0=不限）")
@@ -109,7 +99,7 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		s.m.interceptor.InvalidateTaskScope(id)
 	}
 	task, err := s.m.UpdateTaskMetadata(taskID, db.TaskPatch{
-		Name: request.Name, Pinned: request.Pinned, Remark: request.Remark, ExplorationMode: request.ExplorationMode,
+		Name: request.Name, Pinned: request.Pinned, Remark: request.Remark,
 		LootExecEnabled:         request.LootExecEnabled,
 		CredentialAttemptBudget: request.CredentialAttemptBudget,
 	})

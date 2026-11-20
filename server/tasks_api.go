@@ -697,10 +697,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := db.ValidateExplorationMode(req.ExplorationMode); err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
 	if req.CredentialAttemptBudget != nil && *req.CredentialAttemptBudget < -1 {
 		writeErr(w, 400, "credential_attempt_budget 必须 >= -1（-1=继承全局，0=不限）")
 		return
@@ -742,7 +738,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		WorkerCount:             req.WorkerCount,
 		Remark:                  req.Remark,
 		AssetScopePolicy:        req.AssetScopePolicy,
-		ExplorationMode:         req.ExplorationMode,
 		LootExecEnabled:         req.LootExecEnabled,
 		CredentialAttemptBudget: req.CredentialAttemptBudget,
 	})

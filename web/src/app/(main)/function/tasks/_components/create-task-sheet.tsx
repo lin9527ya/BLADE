@@ -167,7 +167,6 @@ export function CreateTaskSheet({
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // 资产覆盖度功能;默认开。关闭=不计算/展示覆盖度、不累积范围、隐藏范围类工具(company 关联不受影响)
   const [assetScopePolicy, setAssetScopePolicy] = React.useState<"exact" | "target">("target"); // 资产范围策略;新任务默认 target=目标所属全资产自动可测
-  const [explorationMode, setExplorationMode] = React.useState<"balanced" | "divergent">("balanced"); // 发散模式;只影响覆盖目标/视图/no_output 语义
   const [lootExecEnabled, setLootExecEnabled] = React.useState(false); // 任务级后渗透执行 opt-in;默认关
   const [credentialBudget, setCredentialBudget] = React.useState(""); // 任务级凭据预算;-1/空=继承全局,0=不限
   // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
@@ -271,7 +270,6 @@ export function CreateTaskSheet({
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
         assetScopePolicy,
-        explorationMode,
         lootExecEnabled,
         credentialAttemptBudget: credBudget,
         workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
@@ -290,7 +288,6 @@ export function CreateTaskSheet({
       setSourceTaskIDs([]);
       setCompanyIDs([]);
       setLLMProfileIDs([]);
-      setExplorationMode("balanced");
       setLootExecEnabled(false);
       setCredentialBudget("");
       setTimeoutMin("");
@@ -541,7 +538,7 @@ export function CreateTaskSheet({
                     onChange={(e) => setWorkerCount(e.target.value)}
                   />
                   <p className="text-muted-foreground text-xs">
-                    只在该任务首次启动时生效（槽位一旦固化，改这里不会中途换槽位，避免打断槽位会话）。
+                    本任务的最大并发 Worker 数（留空则跟随全局设置）；每个意图都会创建各自独立的 Worker 与会话，互不复用上下文。
                   </p>
                 </div>
                 <div className="grid gap-2">
@@ -585,24 +582,6 @@ export function CreateTaskSheet({
                   <p className="text-muted-foreground text-xs">
                     target：通过目标获取到的、且属于目标的所有资产都可自动测试——同根域子域、同公司跨根域资产、本任务发现/锚定的云或第三方资产；
                     不会扩到未归因的第三方根域。exact：只测明确登记的主机（旧版行为）。
-                  </p>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="exploration-mode" className="text-sm">
-                    探索模式
-                  </Label>
-                  <NativeSelect
-                    id="exploration-mode"
-                    size="sm"
-                    value={explorationMode}
-                    onChange={(e) => setExplorationMode(e.target.value as "balanced" | "divergent")}
-                  >
-                    <NativeSelectOption value="balanced">均衡（现有行为）</NativeSelectOption>
-                    <NativeSelectOption value="divergent">发散（覆盖仅参考 / 完整态势）</NativeSelectOption>
-                  </NativeSelect>
-                  <p className="text-muted-foreground text-xs">
-                    发散模式不会自动追加 100% 覆盖目标，planner 使用完整黑板视图，no_output 可按执行轨迹续派； 不改变
-                    RoE、时间窗、审批和证据底线。
                   </p>
                 </div>
                 <div className="grid gap-2">

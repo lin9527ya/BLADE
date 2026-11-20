@@ -377,9 +377,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               {(() => {
                 const isWorker = active.role === "worker";
                 const meta = isWorker ? sessionMeta.get(active.intent_id ?? "") : undefined;
-                // Worker: the intent moved into the transcript as a message, so the
-                // header shows a stable generic label (intent JSON stays on hover).
-                const title = isWorker ? "Worker 执行会话" : active.title;
+                const title = isWorker
+                  ? `Worker #${active.worker_no ?? active.intent_id} · ${meta?.title ?? active.title}`
+                  : active.title;
                 const titleEl = <span className="min-w-0 truncate font-medium text-sm">{title}</span>;
                 return meta?.json ? (
                   <Tooltip>
@@ -781,10 +781,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   </InputGroupAddon>
                 </InputGroup>
               </div>
-            ) : active.role === "worker" && active.status === "idle" ? (
+            ) : active.role === "worker" && active.status === "pending" ? (
               <div className="flex items-center gap-1.5 border-t px-4 py-2 text-muted-foreground text-xs">
                 <ClockIcon className="size-3.5" />
-                等待下一个意图——planner 派发后本槽位复用同一会话继续执行
+                独立 Worker 已就绪，正在等待并发额度领取执行
               </div>
             ) : (
               <div className="flex items-center border-t px-4 py-2">

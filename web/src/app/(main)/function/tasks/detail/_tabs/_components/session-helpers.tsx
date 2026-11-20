@@ -14,7 +14,6 @@ import {
   Loader2Icon,
   PauseIcon,
   RadioIcon,
-  ShieldCheckIcon,
   UserIcon,
   ZapOffIcon,
 } from "lucide-react";
@@ -102,9 +101,10 @@ export function sessionKeyOf(a: Activity): string {
   if (a.worker === "system" || a.kind === "llm_switch" || a.kind === "llm_failover") return "system";
   if (a.worker === "mainagent") return `main:${a.main_seg ?? 0}`; // one key per conversation segment
   if (a.worker === "planner") return "plan";
-  // Fixed worker slots are the primary key; pre-upgrade rows fall back to intent.
-  if (a.slot_no) return `slot:${a.slot_no}`;
+  // Each intent has its own independent worker session; fall back to slot:<n> only
+  // for legacy slot-only rows without an intent_id.
   if (a.intent_id) return `intent:${a.intent_id}`;
+  if (a.slot_no) return `slot:${a.slot_no}`;
   return "unknown";
 }
 
@@ -280,8 +280,8 @@ export function keyForSession(s: Session): string {
   if (s.role === "mainagent") return `main:${s.seg ?? 0}`;
   if (s.role === "planner") return "plan";
   if (s.role === "system") return "system";
-  if (s.slot) return `slot:${s.slot}`;
-  return `intent:${s.intent_id}`;
+  if (s.intent_id) return `intent:${s.intent_id}`;
+  return `slot:${s.slot}`;
 }
 
 export const workerSlotSessionId = (slot: number) => `s-slot-${slot}`;

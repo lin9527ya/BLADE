@@ -42,7 +42,6 @@ import { ExplorationTrackingCard } from "./_components/exploration-tracking-card
 import { ArtifactPanel } from "./_components/artifact-panel";
 import {
   TaskAssetScopeCard,
-  TaskExplorationModeCard,
   TaskInterceptRulesCard,
   TaskLootExecCard,
   TaskCredentialBudgetCard,
@@ -872,7 +871,6 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         </CardContent>
       </Card>
       <TaskAssetScopeCard taskId={taskId} policy={task?.asset_scope_policy} />
-      <TaskExplorationModeCard taskId={taskId} mode={task?.exploration_mode} />
       <TaskLootExecCard taskId={taskId} enabled={task?.loot_exec_enabled} />
       <TaskCredentialBudgetCard taskId={taskId} budget={task?.credential_attempt_budget} />
       <TaskRuntimeCard task={task} />

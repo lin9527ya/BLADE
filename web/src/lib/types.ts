@@ -55,7 +55,6 @@ export interface Task {
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
   asset_scope_policy?: "exact" | "target"; // 资产范围策略：target=目标所属全资产(同根/同公司跨根/本任务发现)；exact=仅明确登记
-  exploration_mode?: "balanced" | "divergent"; // balanced=现有行为；divergent=覆盖仅参考/完整态势/no_output可续派
   loot_exec_enabled?: boolean; // 任务级后渗透执行 opt-in；默认关
   credential_attempt_budget?: number; // 任务级凭据尝试预算/30分钟：-1=继承全局，0=不限
 }

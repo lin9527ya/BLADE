@@ -42,21 +42,19 @@ func TestOverdueIntentWinsAgainstNewHighPriorityStream(t *testing.T) {
 
 func TestWorkerSessionDefaultsAndResumeCompatibility(t *testing.T) {
 	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "")
-	for _, mode := range []string{"balanced", "divergent", ""} {
-		if !PerIntentWorkerSession(mode) {
-			t.Fatalf("mode %s should isolate intents", mode)
-		}
+	if !PerIntentWorkerSession("") {
+		t.Fatal("default should isolate intents")
 	}
 	n := &Node{ID: 42}
-	if got := logicalSessionForClaim(n, 7, "work#1", "balanced"); got != "exp7-worker-i42" {
+	if got := logicalSessionForClaim(n, 7, "worker#42"); got != "exp7-worker-i42" {
 		t.Fatalf("session=%s", got)
 	}
 	n.LogicalSessionID = "exp7-worker-slot3"
-	if got := logicalSessionForClaim(n, 7, "work#1", "balanced"); got != n.LogicalSessionID {
+	if got := logicalSessionForClaim(n, 7, "work#1"); got != n.LogicalSessionID {
 		t.Fatal("lost existing restart transcript")
 	}
 	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "false")
-	if PerIntentWorkerSession("divergent") {
+	if PerIntentWorkerSession("") {
 		t.Fatal("explicit rollback ignored")
 	}
 }

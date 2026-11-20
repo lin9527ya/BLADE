@@ -213,8 +213,12 @@ func TestShutdownCancellationReopensRunningIntent(t *testing.T) {
 	if payload["resume_after_restart"] != true {
 		t.Fatalf("关停回退必须带 resume_after_restart，得到 %+v", payload)
 	}
-	if got, want := payload["resume_slot"], float64(slotNumber(node.Owner)); got != want {
-		t.Fatalf("resume_slot=%v，应为原槽位 %v（owner=%s，payload=%+v）", got, want, node.Owner, payload)
+	if wantSlot := slotNumber(node.Owner); wantSlot > 0 {
+		if got, want := payload["resume_slot"], float64(wantSlot); got != want {
+			t.Fatalf("resume_slot=%v，应为原槽位 %v（owner=%s，payload=%+v）", got, want, node.Owner, payload)
+		}
+	} else if _, hasSlot := payload["resume_slot"]; hasSlot {
+		t.Fatalf("独立 Worker（owner=%s）不应写入 legacy resume_slot，得到 payload=%+v", node.Owner, payload)
 	}
 }
 

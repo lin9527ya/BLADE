@@ -115,7 +115,7 @@ const WAIT_LABELS: Record<string, string> = {
   task_settling: "任务收尾中，不领新意图",
   llm_unavailable: "模型当前不可用",
   engine_not_started: "任务引擎尚未启动",
-  worker_slots_busy: "工作槽位正在使用，等待释放",
+  worker_slots_busy: "并发 Worker 已满，等待空闲额度",
   not_drain_continuation: "达标收尾只允许原在跑方向续读输出",
   not_open: "当前不是待领意图，不参与实时排序",
   read_unknown: "读取失败，暂不能判断",
