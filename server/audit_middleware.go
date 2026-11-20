@@ -83,10 +83,10 @@ func (s *Server) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="audit-events.csv"`)
 	_, _ = w.Write([]byte("\ufeff"))
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"id", "time", "actor", "method", "path", "status", "ip", "user_agent"})
+	_ = cw.Write(csvSafeRow([]string{"id", "time", "actor", "method", "path", "status", "ip", "user_agent"}))
 	for _, e := range items {
-		_ = cw.Write([]string{fmt.Sprint(e.ID), e.CreatedAt.Format(time.RFC3339), e.Actor, e.Method, e.Path,
-			fmt.Sprint(e.Status), e.IP, e.UserAgent})
+		_ = cw.Write(csvSafeRow([]string{fmt.Sprint(e.ID), e.CreatedAt.Format(time.RFC3339), e.Actor, e.Method, e.Path,
+			fmt.Sprint(e.Status), e.IP, e.UserAgent}))
 	}
 	cw.Flush()
 }

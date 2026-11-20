@@ -625,6 +625,10 @@ func (d *DB) ListFindingCaseRows(filter FindingFilter, page, size int) ([]Findin
 	if size > 200 {
 		size = 200
 	}
+	filter, err := d.applyAssetScope(filter)
+	if err != nil {
+		return nil, 0, err
+	}
 	where, args := filter.where()
 	base := `WITH matched AS (
 		SELECT f.id, f.severity, f.created_at, COALESCE(m.case_id,0) AS cid
@@ -676,13 +680,30 @@ func (d *DB) ListFindingCaseRows(filter FindingFilter, page, size int) ([]Findin
 	if err != nil {
 		return nil, 0, err
 	}
+	caseIDs := make([]int64, 0)
+	findingIDs := make([]int64, 0)
+	seenCase, seenFinding := map[int64]bool{}, map[int64]bool{}
+	for _, r := range raw {
+		if r.cid > 0 && !seenCase[r.cid] {
+			seenCase[r.cid] = true
+			caseIDs = append(caseIDs, r.cid)
+		} else if r.cid == 0 && !seenFinding[r.fid] {
+			seenFinding[r.fid] = true
+			findingIDs = append(findingIDs, r.fid)
+		}
+	}
+	cases, err := d.findingCaseMetaByIDs(caseIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	findings, err := d.findingsByIDs(findingIDs)
+	if err != nil {
+		return nil, 0, err
+	}
 	out := make([]FindingCaseListRow, 0, len(raw))
 	for _, r := range raw {
 		if r.cid > 0 {
-			c, err := d.getFindingCaseMeta(r.cid)
-			if err != nil {
-				return nil, 0, err
-			}
+			c := cases[r.cid]
 			if c == nil {
 				continue
 			}
@@ -691,10 +712,7 @@ func (d *DB) ListFindingCaseRows(filter FindingFilter, page, size int) ([]Findin
 			out = append(out, FindingCaseListRow{Case: c, MatchedIDs: r.matched})
 			continue
 		}
-		f, err := d.GetFinding(r.fid)
-		if err != nil {
-			return nil, 0, err
-		}
+		f := findings[r.fid]
 		if f == nil {
 			continue
 		}
@@ -703,21 +721,30 @@ func (d *DB) ListFindingCaseRows(filter FindingFilter, page, size int) ([]Findin
 	return out, total, nil
 }
 
-// getFindingCaseMeta 读取案例元信息，不加载成员；列表页一行一个案例时避免 N×成员。
-func (d *DB) getFindingCaseMeta(id int64) (*FindingCase, error) {
-	c := &FindingCase{}
-	err := d.QueryRow(`SELECT id, task_id, origin_task_id, title, reason, COALESCE(severity,''), COALESCE(severity_reason,''),
-COALESCE(report,''), version, report_version, active, created_at, updated_at,
-(SELECT count(*) FROM finding_case_members m WHERE m.case_id=finding_cases.id)
-FROM finding_cases WHERE id=$1`, id).Scan(&c.ID, &c.TaskID, &c.OriginTaskID, &c.Title, &c.Reason, &c.Severity, &c.SeverityReason,
-		&c.Report, &c.Version, &c.ReportVersion, &c.Active, &c.CreatedAt, &c.UpdatedAt, &c.MemberCount)
-	if err == sql.ErrNoRows {
-		return nil, nil
+// findingCaseMetaByIDs batches the list projection (no report body, member count
+// included) so a page of N cases does not issue N metadata queries.
+func (d *DB) findingCaseMetaByIDs(ids []int64) (map[int64]*FindingCase, error) {
+	out := map[int64]*FindingCase{}
+	if len(ids) == 0 {
+		return out, nil
 	}
+	rows, err := d.Query(`SELECT id, task_id, origin_task_id, title, reason, COALESCE(severity,''), COALESCE(severity_reason,''),
+version, report_version, active, created_at, updated_at,
+(SELECT count(*) FROM finding_case_members m WHERE m.case_id=finding_cases.id)
+FROM finding_cases WHERE id = ANY($1::bigint[])`, ids)
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	defer rows.Close()
+	for rows.Next() {
+		c := &FindingCase{}
+		if err := rows.Scan(&c.ID, &c.TaskID, &c.OriginTaskID, &c.Title, &c.Reason, &c.Severity, &c.SeverityReason,
+			&c.Version, &c.ReportVersion, &c.Active, &c.CreatedAt, &c.UpdatedAt, &c.MemberCount); err != nil {
+			return nil, err
+		}
+		out[c.ID] = c
+	}
+	return out, rows.Err()
 }
 
 // scanCase reads one finding_cases row (columns in GetFindingCase order).

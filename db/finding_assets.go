@@ -627,6 +627,61 @@ func (d *DB) applyAssetScope(f FindingFilter) (FindingFilter, error) {
 		f.assetNone = true
 		return f, nil
 	}
+	// Company/root scopes have a direct asset predicate. Avoid building the whole
+	// in-memory asset tree for these common cases; exact asset (a:) still needs
+	// descendant semantics and remains on the tree path.
+	if strings.HasPrefix(scope, "c:") {
+		id, err := strconv.ParseInt(strings.TrimPrefix(scope, "c:"), 10, 64)
+		if err != nil || id <= 0 {
+			f.assetMiss = true
+			return f, nil
+		}
+		rows, err := d.Query(`SELECT id FROM assets WHERE company_id=$1`, id)
+		if err != nil {
+			return f, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var assetID int64
+			if err := rows.Scan(&assetID); err != nil {
+				return f, err
+			}
+			f.assetIDs = append(f.assetIDs, assetID)
+		}
+		if err := rows.Err(); err != nil {
+			return f, err
+		}
+		if len(f.assetIDs) == 0 {
+			f.assetMiss = true
+		}
+		return f, nil
+	}
+	if strings.HasPrefix(scope, "r:") {
+		domain := strings.TrimSpace(strings.TrimPrefix(scope, "r:"))
+		if domain == "" {
+			f.assetMiss = true
+			return f, nil
+		}
+		rows, err := d.Query(`SELECT id FROM assets WHERE root_domain=$1 OR (type='root_domain' AND domain=$1)`, domain)
+		if err != nil {
+			return f, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var assetID int64
+			if err := rows.Scan(&assetID); err != nil {
+				return f, err
+			}
+			f.assetIDs = append(f.assetIDs, assetID)
+		}
+		if err := rows.Err(); err != nil {
+			return f, err
+		}
+		if len(f.assetIDs) == 0 {
+			f.assetMiss = true
+		}
+		return f, nil
+	}
 	// 不截断:被丢掉的 endpoint 同样要参与 id 收集,否则列表会少数据。
 	tree, err := d.buildFindingAssetTree(f, 0)
 	if err != nil {

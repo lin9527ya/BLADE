@@ -57,7 +57,7 @@ func (d *DB) ToolStats(expID *int64, q string) ([]ToolStat, error) {
 SELECT COALESCE(NULLIF(u.tool,''),'-') AS tool, COUNT(*) AS total,
        COUNT(*) FILTER (WHERE COALESCE(r.is_error,false)) AS errors
 FROM activity u
-LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
+LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result' AND r.exploration_id = u.exploration_id
 `+where+`
 GROUP BY 1
 ORDER BY total DESC, tool ASC`, args...)
@@ -103,7 +103,7 @@ func (d *DB) ListCommands(expID *int64, q string, page, size int) ([]CommandReco
 SELECT u.id, u.exploration_id, COALESCE(u.worker,''), COALESCE(u.tool,''), COALESCE(u.detail,''),
        COALESCE(r.detail,''), COALESCE(r.is_error, false), u.created_at
 FROM activity u
-LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
+LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result' AND r.exploration_id = u.exploration_id
 ` + where + `
 ORDER BY u.id DESC
 LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)

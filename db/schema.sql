@@ -558,6 +558,8 @@ CREATE INDEX IF NOT EXISTS idx_act_node  ON activity(exploration_id, node_id, id
 CREATE INDEX IF NOT EXISTS idx_act_since ON activity(exploration_id, id);
 CREATE INDEX IF NOT EXISTS idx_act_tool_call ON activity(exploration_id, tool_use_id, id)
   WHERE kind IN ('tool_use', 'tool_result');
+-- 全局命令视图按 tool_use_id 配对结果；前导 exploration_id 的索引在跨任务查询下用不上。
+CREATE INDEX IF NOT EXISTS idx_act_tool_result_id ON activity(tool_use_id) WHERE kind = 'tool_result';
 -- Main/Plan history pages filter by worker (both carry NULL node_id, so idx_act_node
 -- can't distinguish them); this covers reverse pagination of those sessions.
 CREATE INDEX IF NOT EXISTS idx_act_worker ON activity(exploration_id, worker, id);

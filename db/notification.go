@@ -333,15 +333,15 @@ WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 		}
 	}
 	if len(toInsert) > 0 {
-		var (
-			vals []string
-			args []any
-		)
-		for _, p := range toInsert {
-			vals = append(vals, fmt.Sprintf("($%d,$%d)", len(args)+1, len(args)+2))
-			args = append(args, p.eventID, p.channelID)
+		eventIDs := make([]int64, len(toInsert))
+		channelIDs := make([]int64, len(toInsert))
+		for i, p := range toInsert {
+			eventIDs[i], channelIDs[i] = p.eventID, p.channelID
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_deliveries(event_id,channel_id) VALUES `+strings.Join(vals, ","), args...); err != nil {
+		// Two array parameters instead of 2×N placeholders: a large fan-out can
+		// exceed PostgreSQL's 65,535 bind-parameter limit.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_deliveries(event_id,channel_id)
+SELECT * FROM unnest($1::bigint[], $2::bigint[])`, eventIDs, channelIDs); err != nil {
 			return 0, 0, err
 		}
 	}

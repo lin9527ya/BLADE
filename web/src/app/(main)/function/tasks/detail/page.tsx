@@ -436,7 +436,7 @@ function TaskDetailInner() {
               <TooltipContent>{archiveDisabledReason}</TooltipContent>
             </Tooltip>
           )}
-          <Button size="sm" variant={controlVariant} onClick={togglePause} disabled={terminal}>
+          <Button size="sm" variant={controlVariant} onClick={togglePause}>
             {controlIcon}
             {controlLabel}
           </Button>

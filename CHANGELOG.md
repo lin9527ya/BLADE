@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### P2 性能、连接与前端体验
+
+- Agent 原生 HTTP 请求按出口/TLS 模式复用受控 Transport，并在每次 Planner/Worker/MainAgent 运行结束时关闭空闲连接。
+- Worker 恢复意图时，若 transcript 已有意图轮次，不再重复注入全局态势与意图正文；人工消息只追加增量。
+- 统一 CSV 导出公式注入防护，覆盖任务、资产、战果、审批、审计、战役攻击链与检测矩阵。
+- 漏洞案例列表接入资产范围过滤，批量读取案例元数据与未归并漏洞，列表不再携带报告正文；
+  企业/根域资产范围改为 SQL 下推，减少每次查询构建全量资产树的成本。
+- 命令结果关联补 exploration_id 并增加全局局部索引；通知投递改用双数组 unnest，避免超参数上限。
+- 硬删除任务/探索时清理 blackboard_events/operations/outbox/versions。
+- 任务详情终态恢复按钮不再被禁用；system 会话改为一次有界后端查询；会话内存裁剪按 store 变化节流执行；
+  日志历史改用统一鉴权 API；图表内联 CSS 对 id/颜色做白名单校验。
+
 ### P1 安全边界与并发竞态修复
 
 - `operator` API Token 不再可写 `/api/cves`（含脚本上传/批量导入）；playbooks 仍作为业务知识内容保留操作员写权限。

@@ -641,6 +641,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	}
 	proxyAddr, proxyCA := w.proxySnapshot()
 	tsx := NewToolSet(ts, name)
+	defer tsx.CloseHTTP()
 	tsx.SetEgressProxy(proxyAddr, proxyCA)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -868,17 +869,21 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		if len(s.Messages()) > 0 {
 			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
 		}
-		if hasIntentTurn && message == "" {
+		if hasIntentTurn {
 			// 同一意图重跑：transcript 里已经有这条意图（含其卡点与工具历史），
-			// 不再重复追加整块意图，给一句继续执行即可。
+			// 不再重复注入整块 overview + 意图正文。人工 message 只追加增量。
 			input = fmt.Sprintf("继续执行当前意图 #%d。只做它、只产生事实、assets、finding、做完即停。", intent.ID)
+			if message != "" && !alreadyRecorded {
+				input += "\n\n" + workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
+					"\n\n请立即按这条人工输入执行，完成后再根据上下文决定原任务是否需要继续。"
+			}
 		}
 	}
-	if message != "" {
+	if message != "" && !hasIntentTurn {
 		if alreadyRecorded {
 			input = fmt.Sprintf("继续执行当前意图 #%d；上一次人工对话输入已记录，不要重复已经完成的动作。", intent.ID)
 		} else {
-			// 槽位里可能已有旧意图的历史：intentTurn 已带“历史仅参考”的边界句。
+			// 首次注入：intentTurn 随 overview 一起进入当前轮。
 			input += "\n\n" + workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
 				"\n\n请立即按这条人工输入执行，完成后再根据上下文决定原任务是否需要继续。"
 		}

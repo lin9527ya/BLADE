@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/lin9527ya/Norma/agentcore"
@@ -136,7 +137,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// worker="goals" tags the goal nodes' provenance; ts/taskID let set_goals link
 	// each goal under the task root. This is the catalog's real set_goals tool, so a
 	// web-edited description/schema on it applies here too.
-	tsx := &ToolSet{as: as, ts: ts, taskID: taskID, worker: "goals"}
+	tsx := &ToolSet{as: as, ts: ts, taskID: taskID, worker: "goals", httpPool: &httpTransportPool{transports: map[string]*http.Transport{}}}
 	// Description rides in the user message (same channel as the goal), NOT via the
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.

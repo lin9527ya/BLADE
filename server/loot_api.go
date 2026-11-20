@@ -80,18 +80,18 @@ func (s *Server) exportLoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	_ = cw.Write([]string{
+	_ = cw.Write(csvSafeRow([]string{
 		"kind", "state", "task_id", "task_name", "campaign_id", "summary", "host", "locator", "url",
 		"category", "exposure", "username", "fingerprint", "access", "privilege", "protocol", "port",
 		"where", "signals", "cleanup", "created_at", "secret",
-	})
+	}))
 	err := s.m.pg.IterateLootLedger(r.Context(), filter, func(it db.LootItem) error {
-		return cw.Write([]string{
+		return cw.Write(csvSafeRow([]string{
 			it.Kind, it.State, strconv.FormatInt(it.TaskID, 10), it.TaskName, strconv.FormatInt(it.CampaignID, 10),
 			it.Summary, it.Host, it.Locator, it.URL, it.Category, it.Exposure, it.Username, it.Fingerprint,
 			it.Access, it.Privilege, it.Protocol, strconv.Itoa(it.Port), it.Where, it.Signals, it.Cleanup,
 			it.CreatedAt.Format(time.RFC3339), it.Secret,
-		})
+		}))
 	})
 	if err != nil {
 		log.Printf("[loot] export csv: %v", err)
@@ -138,12 +138,12 @@ func (s *Server) listCredentialAttempts(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		cw := csv.NewWriter(w)
 		defer cw.Flush()
-		_ = cw.Write([]string{"id", "task_id", "host", "account", "tool", "command", "spray", "at"})
+		_ = cw.Write(csvSafeRow([]string{"id", "task_id", "host", "account", "tool", "command", "spray", "at"}))
 		err := s.m.pg.IterateCredentialAttempts(r.Context(), filter, func(a db.CredentialAttempt) error {
-			return cw.Write([]string{
+			return cw.Write(csvSafeRow([]string{
 				strconv.FormatInt(a.ID, 10), strconv.FormatInt(a.TaskID, 10), a.Host, a.Account, a.Tool,
 				a.Command, strconv.FormatBool(a.Spray), a.At.Format(time.RFC3339),
-			})
+			}))
 		})
 		if err != nil {
 			log.Printf("[loot] credential attempts csv: %v", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -177,6 +178,7 @@ type ToolSet struct {
 	// write here; empty = tool unavailable rather than writing to /tmp.
 	runDir   string
 	taskRoot string // explicit <workDir>/tasks/<taskID>; session/script sharing never guesses above it
+	httpPool *httpTransportPool
 	// Native HTTP tools (http_request/session_login) use the same egress proxy
 	// and CA as Bash/WebFetch so traffic capture and per-task egress still apply.
 	egressProxy string
@@ -386,7 +388,12 @@ func (w WriteCounts) String() string {
 func (t *ToolSet) Writes() WriteCounts { return t.writes }
 
 func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
-	return &ToolSet{ts: ts, worker: worker, evidenceVerifyMode: EvidenceVerifyWarn}
+	return &ToolSet{ts: ts, worker: worker, evidenceVerifyMode: EvidenceVerifyWarn, httpPool: &httpTransportPool{transports: map[string]*http.Transport{}}}
+}
+
+type httpTransportPool struct {
+	mu         sync.Mutex
+	transports map[string]*http.Transport
 }
 
 // SetRunDir binds the current run's working directory for script-staging tools.
@@ -396,6 +403,25 @@ func (t *ToolSet) SetRunDir(dir string) { t.runDir = strings.TrimSpace(dir) }
 // agent-specific (tasks/<id>/iN or tasks/<id>), so filepath.Dir(runDir) is not a
 // reliable way to find the task root.
 func (t *ToolSet) SetTaskRoot(dir string) { t.taskRoot = filepath.Clean(strings.TrimSpace(dir)) }
+
+// CloseHTTP releases idle connections held by this run's transport pool. The
+// ToolSet lifetime is one planner/worker/main-agent run; keeping transports
+// across runs would leak sockets between unrelated tasks.
+func (t *ToolSet) CloseHTTP() {
+	if t == nil {
+		return
+	}
+	if t.httpPool == nil {
+		return
+	}
+	t.httpPool.mu.Lock()
+	transports := t.httpPool.transports
+	t.httpPool.transports = map[string]*http.Transport{}
+	t.httpPool.mu.Unlock()
+	for _, tr := range transports {
+		tr.CloseIdleConnections()
+	}
+}
 
 func (t *ToolSet) taskRootDir() string {
 	if strings.TrimSpace(t.taskRoot) != "" {

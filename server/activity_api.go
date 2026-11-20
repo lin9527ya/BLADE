@@ -40,7 +40,9 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		cursor int64
 		err    error
 	)
-	if intentPtr != nil {
+	if r.URL.Query().Get("session") == "system" {
+		items, cursor, err = t.Store.ActivityListSystem(limit)
+	} else if intentPtr != nil {
 		items, cursor, err = t.Store.ActivityListWithSources(*intentPtr, since, limit)
 	} else {
 		items, cursor, err = t.Store.ActivityList(nil, since, limit)

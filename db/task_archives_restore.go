@@ -878,6 +878,10 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=$1`, expID); err != nil {
 		return err
 	}
+	// Graph delete triggers can publish a final blackboard event; clear after.
+	if err := deleteBlackboardStateTx(tx, expID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

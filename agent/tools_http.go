@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -298,6 +299,41 @@ type httpOutcome struct {
 }
 
 func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, timeout time.Duration) (*http.Client, error) {
+	key := t.egressProxy + "|" + t.egressCA + "|" + strconv.FormatBool(insecure)
+	if t.httpPool == nil {
+		t.httpPool = &httpTransportPool{transports: map[string]*http.Transport{}}
+	}
+	pool := t.httpPool
+	pool.mu.Lock()
+	tr := pool.transports[key]
+	pool.mu.Unlock()
+	if tr == nil {
+		tr = t.newHTTPTransport(insecure)
+		if tr == nil {
+			return nil, fmt.Errorf("出口代理解析失败")
+		}
+		pool.mu.Lock()
+		if existing := pool.transports[key]; existing != nil {
+			tr.CloseIdleConnections()
+			tr = existing
+		} else {
+			pool.transports[key] = tr
+		}
+		pool.mu.Unlock()
+	}
+	c := &http.Client{Transport: tr, Timeout: timeout}
+	if jar != nil {
+		c.Jar = jar
+	}
+	if !follow {
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	return c, nil
+}
+
+func (t *ToolSet) newHTTPTransport(insecure bool) *http.Transport {
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          32,
@@ -313,7 +349,7 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 		}
 		u, err := url.Parse(pu)
 		if err != nil {
-			return nil, fmt.Errorf("出口代理解析失败: %w", err)
+			return nil
 		}
 		tr.Proxy = http.ProxyURL(u)
 	}
@@ -330,16 +366,7 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 		}
 	}
 	tr.TLSClientConfig = tlsCfg
-	c := &http.Client{Transport: tr, Timeout: timeout}
-	if jar != nil {
-		c.Jar = jar
-	}
-	if !follow {
-		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	}
-	return c, nil
+	return tr
 }
 
 func parseHeaderLines(s string) [][2]string {

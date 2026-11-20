@@ -739,6 +739,29 @@ func (d *DB) FindingStats() (*FindingStats, error) {
 // GetFinding returns a single finding row (with task_description joined and the
 // full Markdown report), or nil when no row has that id. Unlike the list queries
 // it also selects `report` — that column is only needed on the detail page.
+// findingsByIDs is the list projection without the heavyweight report body.
+func (d *DB) findingsByIDs(ids []int64) (map[int64]*DBFinding, error) {
+	out := map[int64]*DBFinding{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := d.Query(`SELECT `+findingSelectCols+`
+		FROM findings f LEFT JOIN tasks t ON f.task_id = t.id
+		WHERE f.id = ANY($1::bigint[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items, err := scanFindings(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range items {
+		out[f.ID] = f
+	}
+	return out, nil
+}
+
 func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 	f := &DBFinding{}
 	var aidsJSON string

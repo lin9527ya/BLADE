@@ -389,11 +389,11 @@ func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // BOM：否则 Excel 会把中文读成乱码
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	_ = cw.Write([]string{
+	_ = cw.Write(csvSafeRow([]string{
 		"任务ID", "名称", "状态", "分类", "公司ID", "目标", "描述", "创建时间", "完成时间", "最后活动",
 		"目标达成", "目标总数", "运行中Worker", "严重", "高危", "中危", "低危",
 		"输入token", "输出token", "缓存读", "缓存写", "缓存命中率",
-	})
+	}))
 	for _, d := range s.taskDTOsFor(r.Context(), s.m.List()) {
 		last := ""
 		if d.LastActivity > 0 {
@@ -407,7 +407,7 @@ func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 		for _, id := range d.CompanyIDs {
 			companyIDs = append(companyIDs, strconv.FormatInt(id, 10))
 		}
-		_ = cw.Write([]string{
+		_ = cw.Write(csvSafeRow([]string{
 			d.ID, d.Name, d.Status, d.CategoryName, strings.Join(companyIDs, ";"), d.Goal, d.Description,
 			d.CreatedAt, d.CompletedAt, last,
 			strconv.Itoa(d.GoalsMet), strconv.Itoa(d.GoalsTotal), strconv.Itoa(d.InFlight),
@@ -415,7 +415,7 @@ func (s *Server) exportTasksCSV(w http.ResponseWriter, r *http.Request) {
 			strconv.Itoa(d.Findings.Medium), strconv.Itoa(d.Findings.Low),
 			strconv.Itoa(d.Tokens.InputTokens), strconv.Itoa(d.Tokens.OutputTokens),
 			strconv.Itoa(d.Tokens.CacheReadTokens), strconv.Itoa(d.Tokens.CacheWriteTokens), cache,
-		})
+		}))
 	}
 }
 

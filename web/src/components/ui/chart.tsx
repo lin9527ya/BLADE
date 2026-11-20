@@ -81,9 +81,17 @@ function ChartContainer({
   )
 }
 
+const SAFE_CHART_ID = /^[A-Za-z0-9_-]+$/
+const SAFE_CSS_COLOR =
+  /^(#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9.,%\s]+\)|[a-zA-Z]+|var\(--[A-Za-z0-9_-]+\))$/
+
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
+  if (!SAFE_CHART_ID.test(id)) return null
   const colorConfig = Object.entries(config).filter(
-    ([, config]) => config.theme ?? config.color
+    ([key, config]) =>
+      SAFE_CHART_ID.test(key) &&
+      Object.values(config.theme ?? {}).every((color) => !color || SAFE_CSS_COLOR.test(color)) &&
+      (!config.color || SAFE_CSS_COLOR.test(config.color))
   )
 
   if (!colorConfig.length) {

@@ -174,6 +174,7 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
 	proxyAddr, proxyCA := m.proxySnapshot()
 	tsx := NewToolSet(ts, "human")
+	defer tsx.CloseHTTP()
 	tsx.SetEgressProxy(proxyAddr, proxyCA)
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {

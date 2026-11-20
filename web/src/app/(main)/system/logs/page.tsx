@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { sseUrl } from "@/lib/api";
+import { api, sseUrl } from "@/lib/api";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -129,15 +129,12 @@ export default function LogsPage() {
     if (loadingHistory) return;
     setLoadingHistory(true);
     try {
-      const params = minDbId > 0 ? `?before=${minDbId}&limit=200` : `?limit=200`;
-      const res = await fetch(`/api/logs/history${params}`);
-      if (!res.ok) return;
-      const data = (await res.json()) as { items: LogLine[]; has_more: boolean };
+      const data = await api.logsHistory(minDbId, 200);
       if (data.items?.length) {
         // Assign synthetic seq numbers below current minimum to keep dedup working.
         setLines((prev) => {
           const minSeq = prev.reduce((m, l) => Math.min(m, l.seq ?? 0), 0);
-          const older = data.items.map((l, i) => ({
+          const older = (data.items as LogLine[]).map((l, i) => ({
             ...l,
             seq: minSeq - data.items.length + i,
           }));

@@ -283,20 +283,15 @@ export function useSessionsState(taskId: string) {
 
       if (key === "system") {
         void (async () => {
-          let since = 0;
-          let systemItems: Activity[] = [];
-          for (;;) {
-            const page = await api.activity(taskId, { since, limit: SYSTEM_SCAN_PAGE });
-            if (!request.alive()) return;
-            systemItems = mergeBySeq(
-              systemItems,
-              page.items.filter(
-                (item) => item.worker === "system" || item.kind === "llm_switch" || item.kind === "llm_failover",
-              ),
-            );
-            if (page.items.length < SYSTEM_SCAN_PAGE || page.cursor <= since) break;
-            since = page.cursor;
-          }
+          // One bounded backend query replaces the old ≤20-page full scan.
+          const page = await api.activity(taskId, { session: "system", limit: SYSTEM_SCAN_PAGE });
+          if (!request.alive()) return;
+          const systemItems = mergeBySeq(
+            [],
+            page.items.filter(
+              (item) => item.worker === "system" || item.kind === "llm_switch" || item.kind === "llm_failover",
+            ),
+          );
           patchStore(key, (s) => {
             const items = mergeBySeq(systemItems, s.items);
             return {
@@ -1017,7 +1012,7 @@ export function useSessionsState(taskId: string) {
     if (now - capCheckedAtRef.current < 2000) return;
     capCheckedAtRef.current = now;
     setStore((prev) => capSessionStore(prev, activeKeyRef.current));
-  }, []);
+  }, [store]);
 
   const focusKey = approvalFocus.state?.source?.session;
   const loadFocusPage = React.useCallback(

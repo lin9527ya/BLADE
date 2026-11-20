@@ -3185,6 +3185,41 @@ FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, 
 // 刻意新增而不是改 ActivityList：后者是 UI 的增量游标（id > sinceID 升序），语义不能动。
 // 但「这条 work 做到哪了」要的是尾部——超过一千步的意图，用升序前 N 条看到的永远是开头
 // 那几步，恰恰错过「卡在哪」和最终结论（get_worker_output 正是这么用的）。
+// ActivityListSystem returns the latest system/LLM audit activity for the
+// synthetic "system" session in one bounded query. Previously the UI scanned up
+// to twenty full activity pages just to recover sparse audit rows.
+func (s *ExplorationStore) ActivityListSystem(limit int) ([]Activity, int64, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, slot_no`
+	rows, err := s.db.Query(`SELECT `+cols+` FROM activity
+WHERE exploration_id=$1 AND (worker='system' OR kind IN ('llm_switch','llm_failover'))
+ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.SlotNo); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, a)
+	}
+	reverseActivities(out)
+	var cursor int64
+	if len(out) > 0 {
+		cursor = out[len(out)-1].ID
+	}
+	return out, cursor, rows.Err()
+}
+
 func (s *ExplorationStore) ActivityListTail(nodeID *int64, limit int) ([]Activity, error) {
 	if limit <= 0 {
 		limit = 300

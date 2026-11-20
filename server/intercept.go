@@ -444,7 +444,7 @@ func (s *Server) interceptHistoryCSV(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // Excel 读中文需要 BOM
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	_ = cw.Write([]string{"审批ID", "任务ID", "Agent", "工具", "状态", "判定来源", "规则", "理由", "创建时间", "决定时间", "调用参数"})
+	_ = cw.Write(csvSafeRow([]string{"审批ID", "任务ID", "Agent", "工具", "状态", "判定来源", "规则", "理由", "创建时间", "决定时间", "调用参数"}))
 	for _, row := range rows {
 		task := ""
 		if row.TaskID != nil {
@@ -454,11 +454,11 @@ func (s *Server) interceptHistoryCSV(w http.ResponseWriter, r *http.Request) {
 		if row.DecidedAt != nil {
 			decided = rfc3339(*row.DecidedAt)
 		}
-		_ = cw.Write([]string{
+		_ = cw.Write(csvSafeRow([]string{
 			strconv.FormatInt(row.ID, 10), task, row.AgentName, row.ToolName, row.Status,
 			row.DecisionSource, row.RuleName, row.Reason, rfc3339(row.CreatedAt), decided,
 			string(row.ToolInput),
-		})
+		}))
 	}
 }
 

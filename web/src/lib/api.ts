@@ -1826,10 +1826,15 @@ export const api = {
       size: r.size ?? query.size ?? 30,
     }));
   },
-  activity: (task?: string, opts?: { intent?: string; since?: number; limit?: number }) => {
+  logsHistory: (before = 0, limit = 200) =>
+    get<{ items: { seq?: number; db_id?: number; ts: string; level: string; tag: string; text: string }[]; has_more: boolean }>(
+      `/logs/history?${new URLSearchParams({ ...(before > 0 ? { before: String(before) } : {}), limit: String(limit) })}`,
+    ),
+  activity: (task?: string, opts?: { intent?: string; session?: string; since?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (task) q.set("task", task);
     if (opts?.intent) q.set("intent", opts.intent);
+    if (opts?.session) q.set("session", opts.session);
     if (opts?.since) q.set("since", String(opts.since));
     if (opts?.limit) q.set("limit", String(opts.limit));
     return get<{ items: Activity[]; cursor: number }>(`/exploration/activity?${q.toString()}`).then((r) => ({

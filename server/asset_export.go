@@ -121,7 +121,7 @@ func (s *Server) exportAssets(w http.ResponseWriter, r *http.Request) {
 				companyID = fmt.Sprint(*a.CompanyID)
 				company = companyNames[*a.CompanyID]
 			}
-			if err := cw.Write([]string{host, ip, a.URL, a.Type, title, company, companyID, a.Status, a.Provider, a.FirstSeen, a.LastSeen}); err != nil {
+			if err := cw.Write(csvSafeRow([]string{host, ip, a.URL, a.Type, title, company, companyID, a.Status, a.Provider, a.FirstSeen, a.LastSeen})); err != nil {
 				return
 			}
 		}

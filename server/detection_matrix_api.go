@@ -200,7 +200,7 @@ func (s *Server) detectionMatrix(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="detection-matrix.csv"`)
 		cw := csv.NewWriter(w)
-		_ = cw.Write(append([]string{"asset_id", "label"}, techniques...))
+		_ = cw.Write(csvSafeRow(append([]string{"asset_id", "label"}, techniques...)))
 		for _, row := range rows {
 			assetID, _ := row["asset_id"].(int64)
 			label, _ := row["label"].(string)
@@ -209,7 +209,7 @@ func (s *Server) detectionMatrix(w http.ResponseWriter, r *http.Request) {
 			for _, tech := range techniques {
 				line = append(line, cells[tech])
 			}
-			_ = cw.Write(line)
+			_ = cw.Write(csvSafeRow(line))
 		}
 		cw.Flush()
 		return

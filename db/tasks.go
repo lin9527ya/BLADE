@@ -900,6 +900,11 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=$1`, expID); err != nil {
 		return result, err
 	}
+	// Delete blackboard rows AFTER the graph cascade: delete triggers may publish
+	// one last event/version during exploration removal.
+	if err := deleteBlackboardStateTx(tx, expID); err != nil {
+		return result, err
+	}
 	return result, tx.Commit()
 }
 
@@ -929,4 +934,15 @@ WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&n); err != nil || n < 0 {
 		return 0, false
 	}
 	return n, true
+}
+
+// Blackboard journal/version rows have no FK to explorations; hard deletion must
+// remove them explicitly or they accumulate forever.
+func deleteBlackboardStateTx(tx *sql.Tx, expID int64) error {
+	for _, table := range []string{"blackboard_events", "blackboard_operations", "blackboard_outbox", "blackboard_versions"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE exploration_id=$1`, expID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
