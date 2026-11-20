@@ -14,6 +14,14 @@ func TestArchiveRejectsChildWrittenAfterSnapshot(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	t.Cleanup(func() { d.Close() })
+	// llm_records / llm_usage 由服务启动时惰性建表，CI 的全新库还没有它们；
+	// 归档快照会读取这两张表，测试必须先按生产启动顺序补建。
+	if err := d.EnsureLLMRecordsTable(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
 	task, err := d.CreateTaskWithOptions(fmt.Sprintf("archive-race-%d", time.Now().UnixNano()), "goal", TaskCreateOptions{})
 	if err != nil {
 		t.Fatal(err)
