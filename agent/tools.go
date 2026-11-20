@@ -44,7 +44,7 @@ func kindMap(ids []int64, kinds map[int64]string) map[string]string {
 
 func compactIntentContract(c map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"mechanism", "route", "class", "estimated_tokens", "variant", "recheck_of"} {
+	for _, k := range []string{"mechanism", "route"} {
 		if v, ok := c[k]; ok {
 			out[k] = v
 		}
@@ -54,9 +54,6 @@ func compactIntentContract(c map[string]any) map[string]any {
 	}
 	if s, ok := c["acceptance"].(string); ok && strings.TrimSpace(s) != "" {
 		out["acceptance"] = clipLine(s, 240)
-	}
-	if v, ok := c["change_evidence"]; ok {
-		out["change_evidence"] = v
 	}
 	return out
 }
@@ -2588,13 +2585,8 @@ type intentItem struct {
 	Route           string            `json:"route,omitempty"`
 	Produces        []string          `json:"produces,omitempty"`
 	Acceptance      string            `json:"acceptance,omitempty"`
-	EstimatedTokens int64             `json:"estimated_tokens,omitempty"`
-	Class           any               `json:"class,omitempty"`
-	Variant         string            `json:"variant,omitempty"`
 	RiskArea        string            `json:"risk_area,omitempty"`
 	Techniques      []string          `json:"techniques,omitempty"`
-	ChangeEvidence  []json.RawMessage `json:"change_evidence,omitempty"`
-	RecheckOf       json.RawMessage   `json:"recheck_of,omitempty"`
 	DependsOn       []json.RawMessage `json:"depends_on,omitempty"`
 	// DependsOnMode controls whether depends_on gates dispatch ("strict") or only
 	// orders candidates ("advisory", default). Strict still fail-opens once a
@@ -2607,15 +2599,10 @@ type intentItem struct {
 // intentContract 把「一句话方向」补成可去重、可验收的声明。所有字段都是软契约：
 // 缺省不改变旧 add_intent 行为；只有 mechanism 非空才计算 direction_key 去重。
 type intentContract struct {
-	Mechanism       string   `json:"mechanism,omitempty"`        // 稳定打法键：同目标同打法保持一致
-	Route           string   `json:"route,omitempty"`            // 路线/链路名，用于态势聚合
-	Produces        []string `json:"produces,omitempty"`         // 约定产物 claim
-	Acceptance      string   `json:"acceptance,omitempty"`       // 产物验收条件
-	Class           any      `json:"class,omitempty"`            // 0-3 或语义标签（auth/recon/web…），原样记录
-	EstimatedTokens int64    `json:"estimated_tokens,omitempty"` // 预估成本（只作信号）
-	Variant         string   `json:"variant,omitempty"`          // 已有方向的实质变化
-	ChangeEvidence  []int64  `json:"change_evidence,omitempty"`  // 支持 variant 的事实/发现 id
-	RecheckOf       int64    `json:"recheck_of,omitempty"`       // 复核哪条已结束意图
+	Mechanism  string   `json:"mechanism,omitempty"`  // 稳定打法键：同目标同打法保持一致
+	Route      string   `json:"route,omitempty"`      // 路线/链路名，用于态势聚合
+	Produces   []string `json:"produces,omitempty"`   // 约定产物 claim
+	Acceptance string   `json:"acceptance,omitempty"` // 产物验收条件
 }
 
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
@@ -2776,23 +2763,6 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	if a := strings.TrimSpace(it.Acceptance); a != "" {
 		contract["acceptance"] = a
 	}
-	if it.EstimatedTokens > 0 {
-		contract["estimated_tokens"] = it.EstimatedTokens
-	}
-	if it.Class != nil {
-		contract["class"] = it.Class
-	}
-	if v := strings.TrimSpace(it.Variant); v != "" {
-		contract["variant"] = v
-	}
-	if len(it.ChangeEvidence) > 0 {
-		if ev := pidList(it.ChangeEvidence); len(ev) > 0 {
-			contract["change_evidence"] = ev
-		}
-	}
-	if recheck := pid(it.RecheckOf); recheck > 0 {
-		contract["recheck_of"] = recheck
-	}
 	if len(contract) > 0 {
 		payload["contract"] = contract
 	}
@@ -2845,13 +2815,8 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"route":            str("可选：路线/链路名（如 auth-bypass->shiro-rce），用于态势聚合与并行调度。"),
 			"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：约定产物（rce/foothold/credential/...）。"},
 			"acceptance":       str("可选：产物验收条件（有命令回显/可重复/可读取等）。"),
-			"estimated_tokens": intp("可选：预估 token 成本，仅记录，不参与当前调度评分。"),
 			"risk_area":        str("可选：漏洞类别（sqli/xss/rce/ssrf/idor/authz/auth/logic/upload/traversal/disclosure/other）。"),
-			"variant":          str("可选：与已有方向的实质变化说明。"),
-			"class":            map[string]any{"description": "可选：0-3 或语义标签（auth/recon/web/...），原样记录。"},
 			"techniques":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：ATT&CK 技术 ID（T1190 等）。"},
-			"change_evidence":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：支持 variant 的事实/发现节点 id。"},
-			"recheck_of":       intp("可选：正在复核哪条已结束意图 id。"),
 			"priority":         intp("优先级 0-10，默认 5"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
