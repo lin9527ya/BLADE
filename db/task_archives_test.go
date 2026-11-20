@@ -197,7 +197,47 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.AddFinding(task.ID, nodeID, vulnclass, "archive finding", SeverityCritical, "summary", "evidence", "worker", []int64{assetID}); err != nil {
+	findingID, err := d.AddFinding(task.ID, nodeID, vulnclass, "archive finding", SeverityCritical, "summary", "evidence", "worker", []int64{assetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFindingID, err := d.AddFinding(task.ID, nodeID, vulnclass+"-2", "archive sibling", SeverityHigh, "summary2", "evidence2", "worker", []int64{assetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondFindingID < findingID {
+		findingID, secondFindingID = secondFindingID, findingID
+	}
+	if _, err := d.AddFindingComment(findingID, "operator", "archive comment"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO finding_retests(finding_id,status,snapshot,summary) VALUES($1,'pending','{}'::jsonb,'retest before archive')`, findingID); err != nil {
+		t.Fatal(err)
+	}
+	var caseID int64
+	if err := d.QueryRow(`INSERT INTO finding_cases(task_id,origin_task_id,title,reason) VALUES($1,$1,'archive case','fixture') RETURNING id`, task.ID).Scan(&caseID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO finding_case_members(finding_id,case_id) VALUES($1,$2),($3,$2)`, findingID, caseID, secondFindingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO finding_case_blocks(left_id,right_id,reason) VALUES($1,$2,'fixture block')`, findingID, secondFindingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO credential_checks(node_id,exploration_id,host,result,evidence) VALUES($1,$2,'archive.example','verified','fixture')`, nodeID, task.ExplorationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO main_sessions(exploration_id,seq) VALUES($1,7)`, task.ExplorationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO completion_waivers(exploration_id,scope,reason) VALUES($1,'coverage','fixture waiver')`, task.ExplorationID); err != nil {
+		t.Fatal(err)
+	}
+	var syncBatchID int64
+	if err := d.QueryRow(`INSERT INTO asset_sync_batches(source,status,total_count) VALUES('archive-fixture','completed',1) RETURNING id`).Scan(&syncBatchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE assets SET last_sync_batch_id=$2 WHERE id=$1`, assetID, syncBatchID); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := d.QueueTaskArchive(task.ID)
@@ -221,6 +261,16 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}
 	if snapshot.DataCounts["assets"] != 1 || snapshot.DataCounts["exploration_nodes"] < 2 {
 		t.Fatalf("unexpected snapshot counts: %#v", snapshot.DataCounts)
+	}
+	for table, want := range map[string]int64{"finding_comments": 1, "finding_retests": 1, "finding_case_members": 2, "finding_case_blocks": 1, "credential_checks": 1, "main_sessions": 1, "completion_waivers": 1} {
+		if snapshot.DataCounts[table] != want {
+			t.Fatalf("archive child %s count=%d want=%d", table, snapshot.DataCounts[table], want)
+		}
+	}
+	// The sync batch can be cleaned after the package is written; restore must
+	// null the dangling FK instead of failing.
+	if _, err := d.Exec(`DELETE FROM asset_sync_batches WHERE id=$1`, syncBatchID); err != nil {
+		t.Fatal(err)
 	}
 	if err := d.CompleteTaskArchive(archive.ID, snapshot, "/tmp/test-task.tar.zst", "abc", 100, 50); err != nil {
 		t.Fatal(err)
@@ -269,14 +319,17 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if err != nil {
 		t.Fatal(err)
 	}
-	warningFound := false
+	warningFound, batchWarningFound := false, false
 	for _, warning := range warnings {
 		if strings.Contains(warning, fmt.Sprintf("任务企业 %d 已删除", companyID)) {
 			warningFound = true
 		}
+		if strings.Contains(warning, "同步批次") {
+			batchWarningFound = true
+		}
 	}
-	if !warningFound {
-		t.Fatalf("missing deleted company warning: %v", warnings)
+	if !warningFound || !batchWarningFound {
+		t.Fatalf("missing deletion warnings: %v", warnings)
 	}
 	live, err := d.GetTask(task.ID)
 	if err != nil || live == nil {
@@ -296,6 +349,47 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}
 	if nodes < 2 || assets != 1 || usage != 1 {
 		t.Fatalf("restore incomplete nodes=%d assets=%d usage=%d", nodes, assets, usage)
+	}
+	for table, want := range map[string]int64{"finding_comments": 1, "finding_retests": 1, "finding_case_members": 2, "finding_case_blocks": 1, "credential_checks": 1, "main_sessions": 1, "completion_waivers": 1} {
+		var got int64
+		var query string
+		switch table {
+		case "finding_comments":
+			query = `SELECT count(*) FROM finding_comments c JOIN findings f ON f.id=c.finding_id WHERE f.task_id=$1`
+		case "finding_retests":
+			query = `SELECT count(*) FROM finding_retests r JOIN findings f ON f.id=r.finding_id WHERE f.task_id=$1`
+		case "finding_case_members":
+			query = `SELECT count(*) FROM finding_case_members m JOIN findings f ON f.id=m.finding_id WHERE f.task_id=$1`
+		case "finding_case_blocks":
+			query = `SELECT count(*) FROM finding_case_blocks b WHERE b.left_id IN (SELECT id FROM findings WHERE task_id=$1) OR b.right_id IN (SELECT id FROM findings WHERE task_id=$1)`
+		default:
+			query = `SELECT count(*) FROM ` + table + ` WHERE exploration_id=$1`
+		}
+		if err := d.QueryRow(query, task.ID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if table != "finding_comments" && table != "finding_retests" && table != "finding_case_members" && table != "finding_case_blocks" {
+			if err := d.QueryRow(query, task.ExplorationID).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got != want {
+			t.Fatalf("restored %s count=%d want=%d", table, got, want)
+		}
+	}
+	var restoredBatch *int64
+	if err := d.QueryRow(`SELECT last_sync_batch_id FROM assets WHERE id=$1`, assetID).Scan(&restoredBatch); err != nil {
+		t.Fatal(err)
+	}
+	if restoredBatch != nil {
+		t.Fatalf("dangling sync batch restored as %v", *restoredBatch)
+	}
+	var retestStatus string
+	if err := d.QueryRow(`SELECT status FROM finding_retests WHERE finding_id=$1`, findingID).Scan(&retestStatus); err != nil {
+		t.Fatal(err)
+	}
+	if retestStatus != "stopped" {
+		t.Fatalf("interrupted retest restored as %q", retestStatus)
 	}
 	var restoredRawRequest, restoredRawResponse string
 	if err := d.QueryRow(`SELECT COALESCE(raw_request,''),COALESCE(raw_response,'') FROM llm_records WHERE task_id=$1`, fmt.Sprint(task.ID)).

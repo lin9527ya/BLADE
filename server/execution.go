@@ -556,8 +556,9 @@ func (s *ExecutionService) Shutdown(reason string, wait time.Duration) int {
 	}
 	// 到点仍未收尾的，整组 SIGKILL，再等一小段让 reaper 落库（进程已死，Wait 立刻返回）。
 	remaining := 0
-	grace := time.NewTimer(execCancelGrace)
-	defer grace.Stop()
+	graceDone := make(chan struct{})
+	graceTimer := time.AfterFunc(execCancelGrace, func() { close(graceDone) })
+	defer graceTimer.Stop()
 	for _, run := range runs {
 		select {
 		case <-run.done:
@@ -569,7 +570,9 @@ func (s *ExecutionService) Shutdown(reason string, wait time.Duration) int {
 	for _, run := range runs {
 		select {
 		case <-run.done:
-		case <-grace.C:
+		case <-graceDone:
+			// Broadcast, not a one-shot timer: every later waiter sees the same
+			// closed channel instead of blocking forever on an already-fired C.
 		}
 	}
 	if remaining > 0 {

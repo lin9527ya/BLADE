@@ -52,10 +52,6 @@ type indexProjector struct {
 	ttl            time.Duration
 }
 
-func (p *indexProjector) block() string {
-	return p.blockFor(false)
-}
-
 func (p *indexProjector) blockFor(compacted bool) string {
 	if p.index == nil && p.indexWithState == nil {
 		return ""
@@ -76,12 +72,6 @@ func (p *indexProjector) blockFor(compacted bool) string {
 	p.hasCached = p.cached != ""
 	p.at = time.Now()
 	return p.cached
-}
-
-// appendTo 在请求投影尾部追加索引。总是复制到新切片：调用方（或内层压缩器）
-// 返回的切片可能共享历史数组，直接 append 会改写真实历史。
-func (p *indexProjector) appendTo(base []llm.Message) []llm.Message {
-	return p.appendToFor(base, false)
 }
 
 func (p *indexProjector) appendToFor(base []llm.Message, compacted bool) []llm.Message {
@@ -209,12 +199,6 @@ type ContextIndexVars struct {
 	// StabilizeClock buckets remaining time outside endgame into 5-minute steps
 	// to avoid minute-by-minute tail churn on otherwise unchanged turns.
 	StabilizeClock bool
-}
-
-// renderClockLine 渲染任务时限。收官期优先收敛高确定性链路，但不一刀切禁止新方向：
-// 若刚拿到直通目标的核心凭据/入口，仍允许开短平快意图完成临门一脚。
-func renderClockLine(tc TaskClock, now time.Time) string {
-	return renderClockLineWithOptions(tc, now, false)
 }
 
 func renderClockLineWithOptions(tc TaskClock, now time.Time, stabilize bool) string {
@@ -699,11 +683,6 @@ const (
 	compactStreamingRetries = 2
 	summarySystemPrompt     = "You are a helpful AI assistant tasked with summarizing conversations."
 )
-
-// summaryCall 发一次摘要请求；瞬时故障重试，溢出立即返回让调用方降级重试。
-func summaryCall(ctx context.Context, p llm.Provider, maxOut int, head []llm.Message, prompt string, nonStreaming bool) (string, error) {
-	return summaryCallWithPrefix(ctx, p, maxOut, head, prompt, nonStreaming, compaction.SummaryPrefix{})
-}
 
 func summaryCallWithPrefix(ctx context.Context, p llm.Provider, maxOut int, head []llm.Message, prompt string, nonStreaming bool, prefix compaction.SummaryPrefix) (string, error) {
 	if p == nil {

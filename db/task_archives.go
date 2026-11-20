@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	TaskArchiveFormatVersion       = 3
+	TaskArchiveFormatVersion       = 4
 	TaskArchiveLegacyFormatVersion = 1
 	TaskArchiveLLMRecordsPath      = "database/llm_records.ndjson"
 )
@@ -611,6 +611,13 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, []any{taskID}},
 		{"task_scope", `SELECT * FROM task_scope WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"finding_comments", `SELECT comment.* FROM finding_comments comment JOIN findings finding ON finding.id=comment.finding_id WHERE finding.task_id=$1 ORDER BY comment.id`, []any{taskID}},
+		{"finding_retests", `SELECT retest.* FROM finding_retests retest JOIN findings finding ON finding.id=retest.finding_id WHERE finding.task_id=$1 ORDER BY retest.id`, []any{taskID}},
+		{"finding_case_members", `SELECT member.* FROM finding_case_members member JOIN findings finding ON finding.id=member.finding_id WHERE finding.task_id=$1 ORDER BY member.finding_id`, []any{taskID}},
+		{"finding_case_blocks", `SELECT block.* FROM finding_case_blocks block WHERE block.left_id IN (SELECT id FROM findings WHERE task_id=$1) OR block.right_id IN (SELECT id FROM findings WHERE task_id=$1) ORDER BY block.left_id,block.right_id`, []any{taskID}},
+		{"credential_checks", `SELECT * FROM credential_checks WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
+		{"main_sessions", `SELECT * FROM main_sessions WHERE exploration_id=$1 ORDER BY seq`, []any{expID}},
+		{"completion_waivers", `SELECT * FROM completion_waivers WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
 		{"finding_traffic_bindings", `SELECT b.* FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE f.task_id=$1 ORDER BY b.finding_id,b.position,b.id`, []any{taskID}},
 		{"traffic_evidence_snapshots", `SELECT s.* FROM traffic_evidence_snapshots s WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=$1) ORDER BY s.id`, []any{taskID}},
 		{"llm_records", `SELECT * FROM llm_records WHERE task_id=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},

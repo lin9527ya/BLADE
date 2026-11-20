@@ -64,6 +64,14 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 	if _, err := tx.Exec(`LOCK TABLE assets, exploration_anchors IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`LOCK TABLE findings, exploration_nodes, finding_comments, finding_retests,
+finding_case_members, finding_case_blocks, credential_checks, main_sessions, completion_waivers
+IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return err
+	}
+	if err := assertArchiveSnapshotComplete(tx, taskID, expID, snapshot); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM intercept_pending WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(taskID, 10)); err != nil {
 		return err
 	}
@@ -94,6 +102,8 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 		{`DELETE FROM task_scope WHERE task_id=$1`, []any{taskID}},
 		{`DELETE FROM task_constraints WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM activity WHERE exploration_id=$1`, []any{expID}},
+		{`DELETE FROM main_sessions WHERE exploration_id=$1`, []any{expID}},
+		{`DELETE FROM completion_waivers WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM exploration_nodes WHERE exploration_id=$1`, []any{expID}},
 	} {
 		if _, err := tx.Exec(statement.query, statement.args...); err != nil {
@@ -291,6 +301,16 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
 	}
+	if findingWarnings, err := restoreFindingChildrenTx(tx, remappedTables); err != nil {
+		return nil, fmt.Errorf("restore finding children: %w", err)
+	} else {
+		warnings = append(warnings, findingWarnings...)
+	}
+	for _, table := range []string{"credential_checks", "main_sessions", "completion_waivers"} {
+		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
+			return nil, fmt.Errorf("restore %s: %w", table, err)
+		}
+	}
 	if err := restoreFindingTrafficTx(tx, snapshot); err != nil {
 		return nil, fmt.Errorf("restore finding traffic: %w", err)
 	}
@@ -377,7 +397,7 @@ func decodeArchiveRows(raw json.RawMessage) ([]map[string]any, error) {
 // category/company/profile references during a transient failure.
 func rowExists(tx *sql.Tx, table string, id int64) (bool, error) {
 	switch table {
-	case "task_categories", "llm_profiles", "companies", "tasks", "assets":
+	case "task_categories", "llm_profiles", "companies", "tasks", "assets", "asset_sync_batches", "conversations", "finding_cases", "findings":
 	default:
 		return false, fmt.Errorf("unsupported archive reference table %q", table)
 	}
@@ -435,7 +455,10 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 	allowed := map[string]bool{
 		"exploration_nodes": true, "exploration_edges": true, "exploration_anchors": true,
 		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
-		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
+		"finding_comments": true, "finding_retests": true, "finding_case_members": true,
+		"finding_case_blocks": true, "credential_checks": true, "main_sessions": true,
+		"completion_waivers": true,
+		"llm_records":        true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
 		"side_question_sessions": true, "side_question_requests": true,
 	}
 	if !allowed[table] {
@@ -499,6 +522,16 @@ func restoreArchiveAssets(tx *sql.Tx, taskID int64, raw json.RawMessage) (map[in
 				row["company_id"] = nil
 				row["company_source"] = "explicit"
 				warnings = append(warnings, fmt.Sprintf("资产 %d 的企业 %d 已删除，已恢复为未归属", oldID, companyID))
+			}
+		}
+		if batchID, ok := jsonInt64(row["last_sync_batch_id"]); ok && batchID > 0 {
+			exists, err := rowExists(tx, "asset_sync_batches", batchID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !exists {
+				row["last_sync_batch_id"] = nil
+				warnings = append(warnings, fmt.Sprintf("资产 %d 的同步批次 %d 已删除，已清空批次引用", oldID, batchID))
 			}
 		}
 		// Archived rows were written verbatim by older versions; strip URL
@@ -868,4 +901,126 @@ WHERE task.archived_at IS NOT NULL`)
 		out = append(out, raw)
 	}
 	return out, rows.Err()
+}
+
+// assertArchiveSnapshotComplete is the guard between "package written" and
+// "cascade-delete the hot rows". The manifest counts must match both the JSON
+// rows and the live rows under the same predicates; a concurrent human write
+// therefore fails the archive instead of silently dropping data.
+func assertArchiveSnapshotComplete(tx *sql.Tx, taskID, expID int64, snapshot *TaskArchiveSnapshot) error {
+	queries := map[string]struct {
+		query string
+		args  []any
+	}{
+		"finding_comments":     {`SELECT count(*) FROM finding_comments c JOIN findings f ON f.id=c.finding_id WHERE f.task_id=$1`, []any{taskID}},
+		"finding_retests":      {`SELECT count(*) FROM finding_retests r JOIN findings f ON f.id=r.finding_id WHERE f.task_id=$1`, []any{taskID}},
+		"finding_case_members": {`SELECT count(*) FROM finding_case_members m JOIN findings f ON f.id=m.finding_id WHERE f.task_id=$1`, []any{taskID}},
+		"finding_case_blocks":  {`SELECT count(*) FROM finding_case_blocks b WHERE b.left_id IN (SELECT id FROM findings WHERE task_id=$1) OR b.right_id IN (SELECT id FROM findings WHERE task_id=$1)`, []any{taskID}},
+		"credential_checks":    {`SELECT count(*) FROM credential_checks WHERE exploration_id=$1`, []any{expID}},
+		"main_sessions":        {`SELECT count(*) FROM main_sessions WHERE exploration_id=$1`, []any{expID}},
+		"completion_waivers":   {`SELECT count(*) FROM completion_waivers WHERE exploration_id=$1`, []any{expID}},
+	}
+	for table, item := range queries {
+		var live int64
+		if err := tx.QueryRow(item.query, item.args...).Scan(&live); err != nil {
+			return fmt.Errorf("archive completeness %s: %w", table, err)
+		}
+		manifest := snapshot.DataCounts[table]
+		if raw := rawRowCount(snapshot.Tables[table]); raw != manifest || live != manifest {
+			return fmt.Errorf("%w: %s live=%d manifest=%d rows=%d", ErrTaskArchiveState, table, live, manifest, raw)
+		}
+	}
+	return nil
+}
+
+// restoreFindingChildrenTx inserts task-owned finding children and tolerates
+// cross-task references that no longer exist. It never invents a missing peer.
+func restoreFindingChildrenTx(tx *sql.Tx, tables map[string]json.RawMessage) ([]string, error) {
+	warnings := []string{}
+	if err := insertArchiveRows(tx, "finding_comments", tables["finding_comments"]); err != nil {
+		return nil, err
+	}
+	retests, err := decodeArchiveRows(tables["finding_retests"])
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range retests {
+		if conversationID, ok := jsonInt64(row["conversation_id"]); ok && conversationID > 0 {
+			exists, err := rowExists(tx, "conversations", conversationID)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				row["conversation_id"] = nil
+			}
+		}
+		status, _ := row["status"].(string)
+		if status == "pending" || status == "running" {
+			row["status"] = "stopped"
+			row["error"] = "归档恢复：原复测已中断"
+			if row["finished_at"] == nil {
+				row["finished_at"] = time.Now().UTC()
+			}
+		}
+	}
+	if raw, err := json.Marshal(retests); err != nil {
+		return nil, err
+	} else if err := insertArchiveRows(tx, "finding_retests", raw); err != nil {
+		return nil, err
+	}
+	members, err := decodeArchiveRows(tables["finding_case_members"])
+	if err != nil {
+		return nil, err
+	}
+	keptMembers := make([]map[string]any, 0, len(members))
+	for _, row := range members {
+		findingID, _ := jsonInt64(row["finding_id"])
+		caseID, _ := jsonInt64(row["case_id"])
+		findingOK, err := rowExists(tx, "findings", findingID)
+		if err != nil {
+			return nil, err
+		}
+		caseOK, err := rowExists(tx, "finding_cases", caseID)
+		if err != nil {
+			return nil, err
+		}
+		if !findingOK || !caseOK {
+			warnings = append(warnings, fmt.Sprintf("漏洞 %d 的归并关系已跳过：对端记录不存在", findingID))
+			continue
+		}
+		keptMembers = append(keptMembers, row)
+	}
+	if raw, err := json.Marshal(keptMembers); err != nil {
+		return nil, err
+	} else if err := insertArchiveRows(tx, "finding_case_members", raw); err != nil {
+		return nil, err
+	}
+	blocks, err := decodeArchiveRows(tables["finding_case_blocks"])
+	if err != nil {
+		return nil, err
+	}
+	keptBlocks := make([]map[string]any, 0, len(blocks))
+	for _, row := range blocks {
+		left, _ := jsonInt64(row["left_id"])
+		right, _ := jsonInt64(row["right_id"])
+		leftOK, err := rowExists(tx, "findings", left)
+		if err != nil {
+			return nil, err
+		}
+		rightOK, err := rowExists(tx, "findings", right)
+		if err != nil {
+			return nil, err
+		}
+		if !leftOK || !rightOK {
+			warnings = append(warnings, fmt.Sprintf("漏洞 %d/%d 的归并阻断关系已跳过：对端记录不存在", left, right))
+			continue
+		}
+		keptBlocks = append(keptBlocks, row)
+	}
+	if raw, err := json.Marshal(keptBlocks); err != nil {
+		return nil, err
+	} else if err := insertArchiveRows(tx, "finding_case_blocks", raw); err != nil {
+		return nil, err
+	}
+	return warnings, nil
 }

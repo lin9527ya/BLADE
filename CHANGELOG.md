@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### P0 严重缺陷修复
+
+- 归档快照升级到格式 4，补齐 finding_comments、finding_retests、finding_case_members、
+  finding_case_blocks、credential_checks、main_sessions、completion_waivers；归档前校验
+  子表计数与快照一致，避免级联删除后永久丢失人工批注/复测/归并关系，旧格式包按空集合兼容恢复。
+- 恢复归并关系时只保留仍存在的对端 finding/case；中断的复测改为 stopped；资产恢复时清理
+  失效的 last_sync_batch_id，不再因同步批次清理而恢复失败。
+- 修复 ExecutionService.Shutdown 复用已触发定时器导致的停机永久阻塞；多个不响应 SIGTERM
+  的子进程会在共用宽限期后统一硬杀并返回。
+- 新任务异步目标拆解期间增加 decomposing 门控：setActive/Engine.Run 不会抢跑，planner
+  的 goalless 分支也不会把尚未落库目标的真实任务提前标为 done。
+- http_request/session_login/auth_request 的 Cookie Jar 与共享目录改为显式任务根目录
+  `<workDir>/tasks/<taskID>/shared`，Planner/MainAgent/Worker 不再逃逸到跨任务的 `tasks/shared`。
+- 增加归档子表往返、归档竞态拒绝、多进程停机、拆解抢跑和任务级 Cookie 路径回归测试。
+
 ## [0.9.23] - 2026-11-20
 
 ### 调度解释与分叉追踪

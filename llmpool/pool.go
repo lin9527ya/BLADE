@@ -176,10 +176,6 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 // equal-priority group so same-priority profiles share the load. Never returns an
 // empty slice — if everything is filtered out, the head of the chain is tried
 // anyway, since stalling the engine is worse than one more failed request.
-func (p *Pool) order(req llm.CompletionRequest) []*Member {
-	return p.orderFor("", req)
-}
-
 func (p *Pool) orderFor(sid string, req llm.CompletionRequest) []*Member {
 	est := estimateTokens(req)
 	var open []*Member

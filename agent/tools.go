@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -174,7 +175,8 @@ type ToolSet struct {
 	// runDir is the current run's task-scoped working directory. Domain tools
 	// that stage small helper scripts (http_probe/js_audit/diff/contract/poc)
 	// write here; empty = tool unavailable rather than writing to /tmp.
-	runDir string
+	runDir   string
+	taskRoot string // explicit <workDir>/tasks/<taskID>; session/script sharing never guesses above it
 	// Native HTTP tools (http_request/session_login) use the same egress proxy
 	// and CA as Bash/WebFetch so traffic capture and per-task egress still apply.
 	egressProxy string
@@ -389,6 +391,35 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 
 // SetRunDir binds the current run's working directory for script-staging tools.
 func (t *ToolSet) SetRunDir(dir string) { t.runDir = strings.TrimSpace(dir) }
+
+// SetTaskRoot binds the task directory explicitly. Run dirs are intent- or
+// agent-specific (tasks/<id>/iN or tasks/<id>), so filepath.Dir(runDir) is not a
+// reliable way to find the task root.
+func (t *ToolSet) SetTaskRoot(dir string) { t.taskRoot = filepath.Clean(strings.TrimSpace(dir)) }
+
+func (t *ToolSet) taskRootDir() string {
+	if strings.TrimSpace(t.taskRoot) != "" {
+		return t.taskRoot
+	}
+	return taskRootFromRunDir(t.runDir)
+}
+
+// taskRootFromRunDir accepts only the two known layouts:
+// <workDir>/tasks/<id> and <workDir>/tasks/<id>/<intent>. Anything else returns ""
+// so a cookie jar can never be written to a shared parent directory.
+func taskRootFromRunDir(runDir string) string {
+	clean := filepath.Clean(strings.TrimSpace(runDir))
+	if clean == "" || clean == "." || clean == string(filepath.Separator) {
+		return ""
+	}
+	if filepath.Base(filepath.Dir(clean)) == "tasks" {
+		return clean
+	}
+	if filepath.Base(filepath.Dir(filepath.Dir(clean))) == "tasks" {
+		return filepath.Dir(clean)
+	}
+	return ""
+}
 
 // SetEvidenceVerifyMode changes the evidence gate for this tool set. Warn is the
 // default; Block is deliberately opt-in to avoid rejecting legitimate non-HTTP
@@ -759,7 +790,9 @@ func (t *ToolSet) blackboardDeltaData(after int64, limit int, cursor ...string) 
 
 func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool, cursor ...string) map[string]any {
 	if !t.ts.InReadSnapshot() {
-		return t.snapshotProjection(func(view *ToolSet) map[string]any { return view.blackboardViewInternal(after, limit, deltaOnly, cursor...) })
+		return t.snapshotProjection(func(view *ToolSet) map[string]any {
+			return view.blackboardViewInternal(after, limit, deltaOnly, cursor...)
+		})
 	}
 	if after < 0 {
 		after = 0

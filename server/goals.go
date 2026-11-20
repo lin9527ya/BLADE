@@ -73,6 +73,9 @@ func (s *Server) startTaskEngine(t *Task) {
 	goals := s.createGoals(ctx, t, func(r db.Activity) {
 		s.engine.emitActivity(t, r)
 	})
+	// Goals (or the raw-goal fallback) are now persisted. Release the bootstrap
+	// gate before Run so setActive can no longer trigger a goalless completion.
+	s.engine.EndDecomposing(t.ID)
 	if ctx.Err() != nil || s.engine.IsDeleting(t.ID) {
 		return
 	}
@@ -370,8 +373,10 @@ func (s *Server) startAdmittedTask(t *Task, mode string) {
 		if s.engine.IsPaused(t.ID) {
 			s.engine.Resume(t)
 		}
+		s.engine.BeginDecomposing(t.ID)
 		goSafe("goals/start-engine", nil, func() {
 			defer s.engine.decInflight(t.ID)
+			defer s.engine.EndDecomposing(t.ID)
 			s.startTaskEngine(t)
 		})
 		return

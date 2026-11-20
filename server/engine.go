@@ -198,6 +198,7 @@ type Engine struct {
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
+	decomposing      sync.Map // taskID -> bool: bootstrap goal decomposition still running
 	goalDrainIntents sync.Map // taskID -> immutable ids already running at goal completion
 	settling         sync.Map // taskID -> bool, 任务已进入收尾时序(停止派/领新意图)
 	deadline         sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
@@ -465,6 +466,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.budgetAck.Delete(taskID)
 	e.endgameNotified.Delete(taskID)
 	e.plannerRound.Delete(taskID)
+	e.decomposing.Delete(taskID)
 	e.settling.Delete(taskID)
 	e.goalDrainIntents.Delete(taskID)
 	e.deadline.Delete(taskID)
@@ -1006,7 +1008,22 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // Run starts the planner loop + dynamic per-intent worker dispatcher for a task.
 // Concurrency is bounded dynamically by worker_count / global workers, while every
 // claimed intent gets its own independent worker goroutine and isolated session.
+func (e *Engine) BeginDecomposing(taskID string) { e.decomposing.Store(taskID, true) }
+func (e *Engine) EndDecomposing(taskID string)   { e.decomposing.Delete(taskID) }
+func (e *Engine) IsDecomposing(taskID string) bool {
+	v, ok := e.decomposing.Load(taskID)
+	b, _ := v.(bool)
+	return ok && b
+}
+
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	// A newly created task is admitted before its asynchronous goal decomposition
+	// finishes. setActive/Run may race that bootstrap; starting the planner here
+	// would see no goals and no intents, then close the task as goalless. The
+	// bootstrap owner clears this marker immediately after goals are persisted.
+	if e.IsDecomposing(t.ID) {
+		return
+	}
 	limit := e.taskConcurrencyLimit(t)
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
@@ -1153,6 +1170,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 还有 open/running 意图 → 保持 running、静默等待；意图已全部跑干 → 落 done。
 		// 整段纯 Go、不触发任何 LLM 调用，也不打规划轮 marker。
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
+			if e.IsDecomposing(t.ID) {
+				return // goals are still being materialized; bootstrap will Run again
+			}
 			t.drainTriggers() // 丢弃累积的 done/finding 触发，避免 goalless 长会话里无界增长
 			snap, serr := t.Store.IntentDispatchSnapshot()
 			if serr != nil {

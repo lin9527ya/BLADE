@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,13 +62,13 @@ type Planner struct {
 	hotExpID            int64
 	hotLastNodeCursor   int64
 	hotLastChangeCursor string
-	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
-	proxyCACert       string                  // recording proxy's CA cert path (HTTPS verify)
-	proxyFn           func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
-	webSearch         WebSearchOpts           // web_search tool backend selection (off by default)
-	workDir           string                  // shared work dir (surfaced in prompt as artifact-output target)
-	injectConstraints func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
-	nonStreamingFn    func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
+	proxyAddr           string                  // recording proxy for WebFetch (empty = direct)
+	proxyCACert         string                  // recording proxy's CA cert path (HTTPS verify)
+	proxyFn             func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
+	webSearch           WebSearchOpts           // web_search tool backend selection (off by default)
+	workDir             string                  // shared work dir (surfaced in prompt as artifact-output target)
+	injectConstraints   func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
+	nonStreamingFn      func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
 	execService  ExecService
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
@@ -786,6 +788,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			t.SetAssetStore(as, as.Companies())
 		}
 		t.SetTaskID(taskID)
+		t.SetTaskRoot(filepath.Join(p.workDir, "tasks", strconv.FormatInt(taskID, 10)))
 		t.SetTaskClock(taskClockFrom(ctx))
 		t.SetBoundedView(p.boundedView)
 		t.SetNotifyWorkers(p.notifyWorkers)
@@ -810,6 +813,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	tsx.SetRunDir(taskDir)
+	tsx.SetTaskRoot(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
 	sysBody += plannerScopeRequestBlock

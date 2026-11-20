@@ -261,7 +261,7 @@ func buildAuthCurl(rawURL, method, body, extraHeader string, e authEntry) (strin
 var _ = db.Asset{}
 
 // sessionJarPath 返回任务级 cookie jar 路径（tasks/<id>/shared/sessions/<name>.jar）。
-// 空 runDir / 非法会话名返回空串。跨意图复用同一任务目录，登录一次即可多处使用。
+// 空/无法识别的任务根或非法会话名返回空串。跨意图复用同一任务目录，登录一次即可多处使用。
 // （红队版 v0.7.0 同款实现，随 http_request/session_login 一并下放。）
 func (t *ToolSet) sessionJarPath(name string) string {
 	name = strings.TrimSpace(name)
@@ -278,9 +278,9 @@ func (t *ToolSet) sessionJarPath(name string) string {
 	if clean == "" || len(clean) > 64 {
 		return ""
 	}
-	root := filepath.Dir(t.runDir)
-	if filepath.Base(root) == "shared" {
-		root = filepath.Dir(root)
+	root := t.taskRootDir()
+	if root == "" {
+		return ""
 	}
 	dir := filepath.Join(root, "shared", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

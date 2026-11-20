@@ -7,14 +7,15 @@ import (
 )
 
 // sharedDir is the task-scoped directory shared by all intents:
-// <workDir>/tasks/<taskID>/shared. runDir is normally i<intentID> or a slot dir.
+// <workDir>/tasks/<taskID>/shared. The task root is explicit; an unknown run-dir
+// shape must not fall back to a process-wide parent directory.
 func (t *ToolSet) sharedDir() string {
 	if strings.TrimSpace(t.runDir) == "" {
 		return ""
 	}
-	root := filepath.Dir(t.runDir)
-	if filepath.Base(root) == "shared" {
-		root = filepath.Dir(root)
+	root := t.taskRootDir()
+	if root == "" {
+		return ""
 	}
 	dir := filepath.Join(root, "shared")
 	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
