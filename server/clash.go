@@ -430,7 +430,32 @@ func (m *Manager) TaskEgressProxy(taskID string) string {
 	if m == nil {
 		return ""
 	}
-	return m.egressProxyForGroup(m.TaskEgressGroup(taskID))
+	return m.egressProxyForGroup(m.PeekTaskEgressGroup(taskID))
+}
+
+// PeekTaskEgressProxy is the read-only listener lookup for a task. It never
+// allocates an egress slot; an unassigned task falls back to the global proxy.
+func (m *Manager) PeekTaskEgressProxy(taskID string) string {
+	if m == nil {
+		return ""
+	}
+	group := m.PeekTaskEgressGroup(taskID)
+	if group == "" {
+		return ""
+	}
+	return m.egressProxyForGroup(group)
+}
+
+// PeekTaskEgressGroup is the read-only half of TaskEgressGroup. Snapshot probes
+// must not allocate/persist a new exclusive slot merely by observing a task.
+func (m *Manager) PeekTaskEgressGroup(taskID string) string {
+	if m == nil || taskID == "" {
+		return ""
+	}
+	m.mu.Lock()
+	g := m.clashTaskGroups[taskID]
+	m.mu.Unlock()
+	return g
 }
 
 // egressProxyForGroup returns the dedicated listener for a group, or the global
@@ -548,8 +573,11 @@ func (m *Manager) defaultEgressGroup() string {
 // If the task group is exhausted, it falls back to the default all-nodes group
 // while avoiding regions already attempted in the task group.
 func (m *Manager) RotateEgressForTask(ctx context.Context, taskID, reason string) (ClashRotation, error) {
-	group := m.TaskEgressGroup(taskID)
-	res, tried, err := m.rotateEgressGroup(ctx, group, m.TaskEgressProxy(taskID), reason, nil)
+	group := m.PeekTaskEgressGroup(taskID)
+	if group == "" {
+		group = m.defaultEgressGroup()
+	}
+	res, tried, err := m.rotateEgressGroup(ctx, group, m.egressProxyForGroup(group), reason, nil)
 	if err == nil || !errors.Is(err, errClashGroupExhausted) {
 		return res, err
 	}

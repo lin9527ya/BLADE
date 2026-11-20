@@ -62,6 +62,7 @@ type Server struct {
 	cancel context.CancelFunc
 
 	queryCache   queryCacheState
+	liveInit     sync.Once
 	taskLive     *liveHub[TaskLiveEvent]
 	approvalLive *liveHub[ApprovalLiveEvent]
 }
@@ -244,18 +245,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 任务停止/删除时等它的后台冷节点压缩收尾：压缩刻意活过一轮 planner
 	// （context.WithoutCancel），不在这里等就会在任务拆掉之后继续写探索图。
 	s.engine.onStop = func(taskID string) {
-		if t := s.m.TaskByID(taskID); t != nil {
-			wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if pl := s.agentsForTask(t).pl; pl != nil {
-				if !pl.WaitCompaction(wctx) {
-					log.Printf("[compact] task %s 停止时后台压缩仍未结束（已放弃等待）", taskID)
-				}
-				// 规划热会话跨轮持有同一个 Session（含后台任务管理器），任务停止时
-				// 必须显式释放，否则它的临时目录与进程会跟着进程活到重启。
-				pl.CloseHotSession()
-			}
-		}
+		// The task may already be gone from Manager (DeleteTask forgets it
+		// before calling StopTask). The agent bundle is still owned until the
+		// delete handler removes it, so close that instead of looking up Task.
+		s.closeTaskAgentBundleFor(taskID)
 	}
 	s.engine.SetBudgetPauseHandler(func(t *Task) error {
 		_, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBudgetExhausted)

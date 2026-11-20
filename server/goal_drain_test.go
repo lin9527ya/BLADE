@@ -64,8 +64,11 @@ func TestGoalDrainKeepsWorkerAliveUntilWriteback(t *testing.T) {
 	if n, err := task.Store.GetNode(fid); err != nil || n == nil {
 		t.Fatal("final output lost")
 	}
-	if workCtx.Err() != nil {
-		t.Fatal("natural completion cancelled worker context")
+	if workCtx.Err() == nil {
+		t.Fatal("normal goal completion must retire the task execution context")
+	}
+	if cause := context.Cause(workCtx); !errors.Is(cause, agent.AbortGoalMet) {
+		t.Fatalf("normal completion cause = %v", cause)
 	}
 	if e.claimNextIntent(task) != nil {
 		t.Fatal("terminal drain still dispatches")

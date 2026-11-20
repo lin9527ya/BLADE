@@ -50,8 +50,9 @@ type Planner struct {
 	// （Session.AppendMessages），下一轮继续用同一个 Session：system prompt 与工具
 	// schema 的缓存前缀因此保持不变，而上下文体积不随轮数增长。
 	// 不用时（resume 模式 / 失败轮）为 nil。
-	hotMu sync.Mutex
-	hot   *agentcore.Session
+	hotMu  sync.Mutex
+	planMu sync.Mutex // serializes Plan; CloseHotSession waits for the active round
+	hot    *agentcore.Session
 	// hotTools 是热会话首轮创建、其工具闭包所绑定的那个 ToolSet。Session 的 registry
 	// 在 NewSession 时固定，所以后续轮次必须**在这个对象上**重置轮级状态；对每轮新建的
 	// ToolSet 调用 BeginRound 不会影响模型实际调用的工具。
@@ -754,6 +755,11 @@ const hintLifecycleBlock = `
 - consumed 的提示不再出现在态势里；**已采纳的提示不要重复执行**。删除提示是人的操作，planner 只 consume，不删除。`
 
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
+	// A timeout settlement may start its final round while the regular planner
+	// is still unwinding after cancellation. Serialize both and let CloseHotSession
+	// wait for the active round instead of racing p.hot / transcript state.
+	p.planMu.Lock()
+	defer p.planMu.Unlock()
 	proxyAddr, proxyCA := p.proxySnapshot()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
@@ -1158,7 +1164,11 @@ func (p *Planner) dropHotSession() {
 }
 
 // CloseHotSession 供任务停止/删除时释放（引擎侧调用，幂等）。
-func (p *Planner) CloseHotSession() { p.dropHotSession() }
+func (p *Planner) CloseHotSession() {
+	p.planMu.Lock()
+	defer p.planMu.Unlock()
+	p.dropHotSession()
+}
 
 // resumePlannerSession 是回滚开关：默认 false（每轮新会话 + 结论摘要），
 // BLADE_PLANNER_RESUME_SESSION=1/true 恢复旧的跨轮 transcript resume。

@@ -193,9 +193,14 @@ func (s *Server) taskLiveStream(w http.ResponseWriter, r *http.Request) {
 	if !sseWrite(w, flusher, "retry: 3000\n\n") {
 		return
 	}
-	if s.taskLive == nil {
-		s.taskLive = newLiveHub[TaskLiveEvent]()
-	}
+	s.liveInit.Do(func() {
+		if s.taskLive == nil {
+			s.taskLive = newLiveHub[TaskLiveEvent]()
+		}
+		if s.approvalLive == nil {
+			s.approvalLive = newLiveHub[ApprovalLiveEvent]()
+		}
+	})
 	ch, unsub := s.taskLive.subscribe(taskID, func() TaskLiveEvent { return s.taskLiveSnapshot(taskID) })
 	defer unsub()
 	ping := time.NewTicker(20 * time.Second)
@@ -229,9 +234,14 @@ func (s *Server) approvalLiveStream(w http.ResponseWriter, r *http.Request) {
 	if !sseWrite(w, flusher, "retry: 3000\n\n") {
 		return
 	}
-	if s.approvalLive == nil {
-		s.approvalLive = newLiveHub[ApprovalLiveEvent]()
-	}
+	s.liveInit.Do(func() {
+		if s.taskLive == nil {
+			s.taskLive = newLiveHub[TaskLiveEvent]()
+		}
+		if s.approvalLive == nil {
+			s.approvalLive = newLiveHub[ApprovalLiveEvent]()
+		}
+	})
 	ch, unsub := s.approvalLive.subscribe("pending", s.approvalLiveSnapshot)
 	defer unsub()
 	ping := time.NewTicker(20 * time.Second)

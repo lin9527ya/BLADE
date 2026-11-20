@@ -352,3 +352,16 @@ func TestOldGenerationCannotCancelOrDetachNewRun(t *testing.T) {
 	_, finish := e.detachWork(42, current)
 	finish(nil)
 }
+
+func TestExecContextRejectsSettlingAndTerminalTasks(t *testing.T) {
+	e := NewEngine(nil)
+	base := context.Background()
+	e.settling.Store("settling", true)
+	ctx := e.execContextFor(base, "settling")
+	if ctx.Err() == nil {
+		t.Fatal("settling task received a live execution context")
+	}
+	if cause := context.Cause(ctx); !errors.Is(cause, agent.AbortTaskNotRunning) {
+		t.Fatalf("settling cause = %v", cause)
+	}
+}

@@ -209,7 +209,7 @@ type Engine struct {
 	budgetAck        sync.Map // taskID -> int64, 用户已确认"超支后继续"的预算值（同档不再重复暂停）
 	endgameNotified  sync.Map // taskID -> bool, 收官期入口已提醒过(每任务一次)
 	blockedSignature sync.Map // taskID -> string, blocked-only 看门狗签名(避免每 30s 重复唤醒)
-	execWatch        sync.Map // intentID -> bool, P13 执行观察者已注册(去重;执行终态→意图退回 open)
+	execWatch        sync.Map // intentID -> *execWatchHandle, P13 execution watcher (control + dedupe)
 	// budgetPause 由 server 注入：预算耗尽时走完整的"任务暂停"路径（落库、取消主 Agent、
 	// 重新对账并发），而不是在引擎里只置一个内存标记。nil = 未接线（测试/旧构造）。
 	budgetPause func(*Task) error
@@ -230,6 +230,30 @@ type taskRuntime struct {
 	wg     sync.WaitGroup
 	// workers 是本任务当前生效的并发 worker 上限（每个意图仍由独立 worker 执行）。
 	workers int
+}
+
+type execWatchHandle struct {
+	generation int64
+	taskID     string
+	cancel     context.CancelFunc
+	done       chan struct{}
+	mu         sync.Mutex
+	action     string
+}
+
+func (h *execWatchHandle) setAction(action string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.action != "" && h.action != action {
+		return false
+	}
+	h.action = action
+	return true
+}
+func (h *execWatchHandle) getAction() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.action
 }
 
 type workExecution struct {
@@ -515,6 +539,11 @@ func (e *Engine) Resume(t *Task) {
 func (e *Engine) execContextFor(parent context.Context, taskID string) context.Context {
 	e.execMu.Lock()
 	defer e.execMu.Unlock()
+	if e.isSettling(taskID) || (e.m != nil && isTerminalStatus(e.m.TaskStatus(taskID))) {
+		c, cancel := context.WithCancelCause(parent)
+		cancel(agent.AbortTaskNotRunning)
+		return c
+	}
 	if e.IsPaused(taskID) {
 		// never hand out a live context while paused (guards the claim→Execute race)
 		c, cancel := context.WithCancelCause(parent)
@@ -657,7 +686,7 @@ func (e *Engine) ControlWork(ctx context.Context, intentID int64, action string)
 	run := e.work[intentID]
 	if run == nil {
 		e.workMu.Unlock()
-		return fmt.Errorf("%w: 意图 %d 当前没有运行中的 work（可能已结束或未被领取）", errWorkControlConflict, intentID)
+		return e.controlWatchedIntent(ctx, intentID, action)
 	}
 	if run.action != "" {
 		e.workMu.Unlock()
@@ -682,6 +711,45 @@ func (e *Engine) ControlWork(ctx context.Context, intentID int64, action string)
 		return fmt.Errorf("等待意图 %d %s 收尾: %w", intentID, action, ctx.Err())
 	case <-timer.C:
 		e.releaseWorkControl(intentID, run, action)
+		return fmt.Errorf("等待意图 %d %s 收尾: %w", intentID, action, context.DeadlineExceeded)
+	}
+}
+
+// controlWatchedIntent handles the execGate window: the worker has finished,
+// but its intent is still running while a hosted execution is pending. There is
+// no e.work handle, so use the execution watcher's cancellable handle.
+func (e *Engine) controlWatchedIntent(ctx context.Context, intentID int64, action string) error {
+	value, ok := e.execWatch.Load(intentID)
+	if !ok {
+		return fmt.Errorf("%w: 意图 %d 当前没有运行中的 work（可能已结束或未被领取）", errWorkControlConflict, intentID)
+	}
+	handle, ok := value.(*execWatchHandle)
+	if !ok || handle == nil || !handle.setAction(action) {
+		return fmt.Errorf("%w: 意图 %d 正在执行其它操作", errWorkControlConflict, intentID)
+	}
+	handle.cancel()
+	reason := agent.AbortWorkPausedByUser.Text
+	if action == "cancel" {
+		reason = agent.AbortWorkCancelledByUser.Text
+	}
+	if e.m != nil {
+		if execs := e.m.Executions(); execs != nil {
+			execs.CancelForIntent(ctx, intentID, reason)
+		}
+	}
+	timer := time.NewTimer(workControlWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-handle.done:
+		if e.m != nil {
+			if task := e.m.TaskByID(handle.taskID); task != nil {
+				_, _ = task.Store.CompareAndSetIntentState(intentID, "running", "paused")
+			}
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("等待意图 %d %s 收尾: %w", intentID, action, ctx.Err())
+	case <-timer.C:
 		return fmt.Errorf("等待意图 %d %s 收尾: %w", intentID, action, context.DeadlineExceeded)
 	}
 }
@@ -1252,7 +1320,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				break
 			}
 		}
-		if err != nil && ectx.Err() == nil {
+		if err != nil {
+			// A pause/delete/settle cancels ectx too. Restoring regardless of
+			// ectx keeps the completed-work/finding context for the next round.
 			t.restoreTriggers(triggers)
 		}
 		if err == nil {
@@ -1895,32 +1965,60 @@ func (e *Engine) watchExecutions(t *Task, intentID int64, authorities ...db.Writ
 		a = n.WriteAuthority(tidOfTask(t), t.ExpID)
 	}
 	store := t.Store.WithAuthority(a)
+	watchCtx, cancel := context.WithCancel(e.runtimeCtx(t.ID))
+	handle := &execWatchHandle{generation: a.Generation, taskID: t.ID, cancel: cancel, done: make(chan struct{})}
 	for {
-		previous, loaded := e.execWatch.LoadOrStore(intentID, a.Generation)
+		previous, loaded := e.execWatch.LoadOrStore(intentID, handle)
 		if !loaded {
 			break
 		}
-		if previous == a.Generation {
+		old, ok := previous.(*execWatchHandle)
+		if !ok {
+			e.execWatch.Store(intentID, handle)
+			break
+		}
+		if old.generation == a.Generation {
+			cancel()
 			return
 		}
-		if e.execWatch.CompareAndSwap(intentID, previous, a.Generation) {
+		if e.execWatch.CompareAndSwap(intentID, previous, handle) {
+			old.cancel()
 			break
 		}
 	}
 	goSafe("engine/execution-watch", nil, func() {
-		defer e.execWatch.CompareAndDelete(intentID, a.Generation)
+		defer close(handle.done)
+		defer cancel()
+		defer e.execWatch.CompareAndDelete(intentID, handle)
 		execs := e.m.Executions()
 		if execs == nil {
 			return
 		}
-		deadline := time.Now().Add(execWatchMax)
-		for time.Now().Before(deadline) {
+		deadline := time.NewTimer(execWatchMax)
+		defer deadline.Stop()
+		ticker := time.NewTicker(execWatchPoll)
+		defer ticker.Stop()
+	watchLoop:
+		for {
 			if len(execs.ActiveForIntent(intentID)) == 0 {
 				break
 			}
-			if sleepCtx(e.runtimeCtx(t.ID), execWatchPoll) {
-				return // 任务已停止/删除（rt.cancel）——观察者随之退出
+			select {
+			case <-watchCtx.Done():
+				e.settleControlledExecutionWatch(t, store, intentID, handle)
+				return
+			case <-ticker.C:
+			case <-deadline.C:
+				break watchLoop
 			}
+		}
+		if watchCtx.Err() != nil {
+			e.settleControlledExecutionWatch(t, store, intentID, handle)
+			return
+		}
+		if action := handle.getAction(); action != "" {
+			e.settleControlledExecutionWatch(t, store, intentID, handle)
+			return
 		}
 		rows, _ := execs.ListForIntent(intentID)
 		// 执行落终态 → 把这条意图交回可领取状态。CAS 失败（意图已被别的路径收走/
@@ -1941,6 +2039,29 @@ func (e *Engine) watchExecutions(t *Task, intentID int64, authorities ...db.Writ
 		e.touch(t.ID)
 		t.NotifyRequeued(intentID, "托管长任务执行收束")
 	})
+}
+
+// settleControlledExecutionWatch lets user pause/cancel win over the watcher's
+// normal "return to open" path. Pause keeps the intent recoverable; cancel parks
+// it as paused so the API's soft-delete cleanup can proceed.
+func (e *Engine) settleControlledExecutionWatch(t *Task, store *db.ExplorationStore, intentID int64, handle *execWatchHandle) {
+	action := handle.getAction()
+	if action == "" {
+		return
+	}
+	state := "paused"
+	if action == "cancel" {
+		state = "paused"
+	}
+	if changed, err := store.CompareAndSetIntentState(intentID, "running", state); err != nil {
+		log.Printf("[exec] task %s 意图 #%d 用户 %s 后状态落库失败: %v", t.ID, intentID, action, err)
+	} else if changed {
+		nid := intentID
+		e.emitActivity(t, db.Activity{NodeID: &nid, Worker: "system", Kind: "system",
+			Summary: "长任务等待期间用户" + map[string]string{"pause": "暂停", "cancel": "取消"}[action] + "了意图",
+			Detail:  "托管执行已取消；已写入的产出保留。"})
+		e.touch(t.ID)
+	}
 }
 
 // executionDigest renders the intent's executions as one readable block (the

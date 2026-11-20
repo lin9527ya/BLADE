@@ -170,6 +170,9 @@ type ProxyPool struct {
 	health     map[string]ProxyHealth
 	stop       chan struct{}
 	wg         sync.WaitGroup
+	applyMu    sync.Mutex
+	switchSeq  uint64
+	recheck    chan struct{}
 	// firstProbe 在第一次探测循环结束后关闭。run 启动时用它等首探完成，
 	// 避免把 fail-closed 的启动态（blockedProxyURL）快照进整轮运行环境。
 	firstProbe chan struct{}
@@ -183,7 +186,7 @@ func newProxyPool(cfg ProxyPoolConfig, probe proxyProbeFunc, apply func(string))
 	if apply == nil {
 		apply = func(string) {}
 	}
-	return &ProxyPool{cfg: cfg, probe: probe, apply: apply, health: map[string]ProxyHealth{}, firstProbe: make(chan struct{})}
+	return &ProxyPool{cfg: cfg, probe: probe, apply: apply, health: map[string]ProxyHealth{}, firstProbe: make(chan struct{}), recheck: make(chan struct{}, 1)}
 }
 
 // closeFirstProbe 标记首次探测已结束（关一个 channel，幂等）。
@@ -243,6 +246,8 @@ func (p *ProxyPool) run(stop <-chan struct{}) {
 		select {
 		case <-stop:
 			return
+		case <-p.recheck:
+			p.check()
 		case <-t.C:
 			p.check()
 		}
@@ -355,7 +360,21 @@ func (p *ProxyPool) switchTo(target string) {
 	p.active = target
 	p.failures = 0
 	p.lastSwitch = time.Now()
+	p.switchSeq++
+	seq := p.switchSeq
 	p.mu.Unlock()
+
+	// Apply is slower than the protected state update. If a newer switch won
+	// while this call waited, skip this stale apply so the live proxy can never
+	// be overwritten by an older target.
+	p.applyMu.Lock()
+	defer p.applyMu.Unlock()
+	p.mu.Lock()
+	current := p.switchSeq
+	p.mu.Unlock()
+	if seq != current {
+		return
+	}
 
 	if target == blockedProxyURL {
 		log.Printf("[proxy] 全部代理不可用（原 %s），出口已阻断：目标流量会失败，**不会直连**", previous)
@@ -635,4 +654,24 @@ func probeHTTPProxy(ctx context.Context, proxyURL, healthURL string, timeout tim
 		return fmt.Errorf("代理返回 HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// RequestCheck nudges the existing probe loop instead of spawning an unmanaged
+// goroutine. Close() -> wg.Wait therefore covers every health check.
+func (p *ProxyPool) RequestCheck() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	started := p.stop != nil
+	ch := p.recheck
+	p.mu.Unlock()
+	if !started || ch == nil {
+		p.check()
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
 }

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver ("pgx")
 	"github.com/lin9527ya/blade/config"
@@ -265,7 +266,7 @@ func ensureDatabase(dsn string) error {
 	var exists bool
 	_ = admin.QueryRow(`SELECT true FROM pg_database WHERE datname=$1`, dbName).Scan(&exists)
 	if !exists {
-		if _, err := admin.Exec(`CREATE DATABASE "` + dbName + `"`); err != nil {
+		if _, err := admin.Exec(`CREATE DATABASE ` + pgx.Identifier{dbName}.Sanitize()); err != nil {
 			return fmt.Errorf("create database %q: %w", dbName, err)
 		}
 	}
@@ -957,6 +958,15 @@ func withStatementTimeout(dsn, timeout string) string {
 		return dsn
 	}
 	opt := "-c statement_timeout=" + timeout
+	if !strings.Contains(dsn, "://") {
+		// libpq keyword DSN: appending ?options=... changes its grammar. Do not
+		// guess-merge an existing options value; skip the timeout rather than
+		// corrupting the connection string.
+		if strings.Contains(dsn, "options=") {
+			return dsn
+		}
+		return dsn + " options='-c statement_timeout=" + timeout + "'"
+	}
 	if i := strings.Index(dsn, "options="); i >= 0 {
 		// 已有 options：把新参数并进去（值需要 URL 编码，空格编码成 %20）。
 		rest := dsn[i+len("options="):]

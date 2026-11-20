@@ -167,6 +167,11 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
+	// Background compaction deliberately outlives a planner round. Close the
+	// task's agent bundle (waiting for compaction/hot-session teardown) BEFORE
+	// staged file removal and the cascade delete. The bundle stays cached until
+	// StopTask below, so onStop remains a second, idempotent safety net.
+	s.closeTaskAgentBundleFor(id)
 	result, err := s.m.DeleteTask(id, opts)
 	if err != nil {
 		var committed *taskDeleteCommittedError

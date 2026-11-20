@@ -77,3 +77,14 @@ func TestWorkerMessageRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestControlWorkReachesExecutionWatcherHandle(t *testing.T) {
+	e := NewEngine(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	e.execWatch.Store(int64(77), &execWatchHandle{generation: 1, taskID: "1", cancel: cancel, done: done})
+	go func() { <-ctx.Done(); close(done) }()
+	if err := e.ControlWork(context.Background(), 77, "pause"); err != nil {
+		t.Fatalf("ControlWork during execGate = %v", err)
+	}
+}

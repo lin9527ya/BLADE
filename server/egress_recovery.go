@@ -154,7 +154,7 @@ func (m *Manager) RecheckProxyPool() {
 	if pool == nil {
 		return
 	}
-	goSafe("server/proxy-recheck", nil, func() { pool.check() })
+	pool.RequestCheck()
 }
 
 // EgressProxy 之外的辅助：供测试与调用方判断"当前是不是阻断态"。

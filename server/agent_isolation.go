@@ -208,7 +208,7 @@ func agentPathGuard(abs string) error {
 		}
 	}
 	return fmt.Errorf("拒绝访问 %s：隔离模式下文件工具只允许访问 %s；其它路径请用 Bash 在任务目录内处理",
-		abs, strings.Join(agentIso.roots, "、"))
+		abs, strings.Join(fileGuard.roots, "、"))
 }
 
 // InstallFileRootGuard confines the agent's file tools to dataDir, skillDir and

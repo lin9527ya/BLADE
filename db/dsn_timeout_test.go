@@ -41,3 +41,18 @@ func TestWithStatementTimeout(t *testing.T) {
 		t.Fatalf("DSN 显式指定的超时被覆盖：%s", got)
 	}
 }
+
+func TestWithStatementTimeoutKeywordDSNStaysValidLibpq(t *testing.T) {
+	base := "host=localhost port=5432 user=blade dbname=blade sslmode=disable"
+	got := withStatementTimeout(base, "60s")
+	if !strings.Contains(got, "options='-c statement_timeout=60s'") {
+		t.Fatalf("keyword DSN timeout not injected: %q", got)
+	}
+	if strings.Contains(got, "?options=") || strings.Contains(got, "&options=") {
+		t.Fatalf("keyword DSN was corrupted with URL query syntax: %q", got)
+	}
+	explicit := "host=localhost dbname=blade options='-c statement_timeout=5s'"
+	if got := withStatementTimeout(explicit, "60s"); got != explicit {
+		t.Fatalf("explicit keyword options must be preserved: %q", got)
+	}
+}

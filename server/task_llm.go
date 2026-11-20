@@ -615,11 +615,34 @@ func tidOfTask(t *Task) int64 {
 
 func (s *Server) invalidateTaskAgents() {
 	s.agents.mu.Lock()
+	old := s.agents.bundles
 	s.agents.bundles = map[string]*taskAgentBundle{}
 	s.agents.mu.Unlock()
+	for taskID, bundle := range old {
+		s.closeTaskAgentBundle(taskID, bundle)
+	}
 	// agent 行缓存也一起失效：任务包的构造读的就是这些行，只清包不清行等于
 	// 「下次重建时又拿回旧配置」。
 	s.invalidateAgentRows()
+}
+
+func (s *Server) closeTaskAgentBundle(taskID string, bundle *taskAgentBundle) {
+	if bundle == nil || bundle.pl == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !bundle.pl.WaitCompaction(wctx) {
+		log.Printf("[compact] task %s 停止时后台压缩仍未结束（已放弃等待）", taskID)
+	}
+	bundle.pl.CloseHotSession()
+}
+
+func (s *Server) closeTaskAgentBundleFor(taskID string) {
+	s.agents.mu.Lock()
+	bundle := s.agents.bundles[taskID]
+	s.agents.mu.Unlock()
+	s.closeTaskAgentBundle(taskID, bundle)
 }
 
 func (s *Server) agentsForTask(t *Task) *taskAgentBundle {

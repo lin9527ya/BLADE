@@ -581,6 +581,19 @@ func (s *ExecutionService) Shutdown(reason string, wait time.Duration) int {
 	return len(runs)
 }
 
+// CancelForIntent cancels hosted executions for one intent. Used when a user
+// pauses/cancels an intent that is still waiting in execGate (no live work).
+func (s *ExecutionService) CancelForIntent(ctx context.Context, intentID int64, reason string) int {
+	rows := s.ActiveForIntent(intentID)
+	n := 0
+	for _, row := range rows {
+		if ok, _ := s.Cancel(ctx, row.ID, reason); ok {
+			n++
+		}
+	}
+	return n
+}
+
 // CancelAll cancels every in-flight execution of one task (task stop/delete).
 func (s *ExecutionService) CancelAll(taskID, reason string) int {
 	rows, err := s.pg.ListActiveExecutions(taskID)

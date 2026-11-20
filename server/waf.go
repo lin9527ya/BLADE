@@ -190,7 +190,7 @@ func (e *Engine) observeEgress(t *Task, r db.Activity) {
 		e.egressMu.Unlock()
 		return
 	}
-	group := e.m.TaskEgressGroup(t.ID)
+	group := e.m.PeekTaskEgressGroup(t.ID)
 	if group == "" {
 		group = "__default__"
 	}

@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### P1 安全边界与并发竞态修复
+
+- `operator` API Token 不再可写 `/api/cves`（含脚本上传/批量导入）；playbooks 仍作为业务知识内容保留操作员写权限。
+- 任务删除在文件和数据库级联删除前先关闭 Agent bundle：等待后台压缩、关闭 planner 热会话；
+  delete 路径不再依赖已被 Manager 摘除的任务查找 bundle，配置失效时也会逐个关闭旧 bundle。
+- `Compactor.Wait` 改为广播 idle 通道，ctx 到期不再留下永久阻塞的等待 goroutine。
+- 处于执行观察（execGate）等待的意图注册可取消句柄；用户暂停/取消不再返回 409，
+  watcher 取消该意图的托管执行并落地 paused，取消清理可继续。
+- Planner.Plan 串行化，超时收尾的终局轮不会与原规划轮并发修改热会话；
+  `CloseHotSession` 等待当前规划轮退出。
+- 达到目标正常收尾也撤销任务执行上下文；`execContextFor` 对收尾/终态任务拒绝发放新上下文；
+  planner 被暂停/取消中断时恢复已 drain 的触发事件。
+- ProxyPool 的 apply 按切换序号串行应用，旧切换不会覆盖新出口；健康重检改为探测循环信号，
+  不再启动脱离 WaitGroup 的 goroutine。任务代理快照改用只读 egress 查询，不再因观察任务分配出口组。
+  liveHub 使用 Once 预初始化，消除并发 SSE 首连竞态。
+- Guard 的命令提取覆盖 `run_execution`（代理旁路检测与审计）；G5 失败归因覆盖
+  `run_execution`/`http_request`/`session_login`；修正隔离日志使用 fileGuard.roots。
+- 数据库修复：CREATE DATABASE 使用 pgx 标识符转义、keyword DSN 不再拼坏、TEXT[] 先转义反斜杠、
+  `Row.Err()` 未 Scan 时回滚 authority 事务。
+
 ### P0 严重缺陷修复
 
 - 归档快照升级到格式 4，补齐 finding_comments、finding_retests、finding_case_members、

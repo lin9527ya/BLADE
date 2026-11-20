@@ -1397,7 +1397,7 @@ func (m *Manager) ProxySnapshotForTask(taskID string) (string, string) {
 	if tr := m.Traffic(); tr != nil && m.TrafficEnabled() {
 		return m.ProxySnapshot()
 	}
-	if p := m.TaskEgressProxy(taskID); p != "" {
+	if p := m.PeekTaskEgressProxy(taskID); p != "" {
 		return p, ""
 	}
 	return m.ProxySnapshot()
@@ -1411,7 +1411,7 @@ func (m *Manager) ProxyAddrForTask(taskID string) string {
 	if tr := m.Traffic(); tr != nil && m.TrafficEnabled() {
 		return tr.ProxyAddr()
 	}
-	if p := m.TaskEgressProxy(taskID); p != "" {
+	if p := m.PeekTaskEgressProxy(taskID); p != "" {
 		return p
 	}
 	return m.EgressProxy()

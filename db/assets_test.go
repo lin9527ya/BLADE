@@ -1159,3 +1159,11 @@ func TestUpsertRejectsPastedInstructions(t *testing.T) {
 	}
 	deleteAsset(as.db, id)
 }
+
+func TestMarshalStringArrayEscapesBackslash(t *testing.T) {
+	got := marshalStringArray([]string{`C:\temp\a"b`, `plain`})
+	want := `{"C:\\temp\\a\"b","plain"}`
+	if got != want {
+		t.Fatalf("marshalStringArray = %q want %q", got, want)
+	}
+}

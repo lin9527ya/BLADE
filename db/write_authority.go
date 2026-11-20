@@ -81,6 +81,7 @@ func (r *Row) Scan(values ...any) error {
 		} else {
 			err = r.tx.Commit()
 		}
+		r.tx = nil
 	}
 	return err
 }
@@ -88,7 +89,14 @@ func (r *Row) Err() error {
 	if r.err != nil {
 		return r.err
 	}
-	return r.row.Err()
+	err := r.row.Err()
+	// Callers that inspect Err() without Scan() must not leave the authority
+	// transaction open and holding row locks. There is no result to commit.
+	if r.tx != nil {
+		_ = r.tx.Rollback()
+		r.tx = nil
+	}
+	return err
 }
 
 // txRows adapts an already-owned transaction without taking commit ownership.

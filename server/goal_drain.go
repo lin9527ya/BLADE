@@ -16,7 +16,14 @@ import (
 // runtime owns the drain goroutine so shutdown/deletion also waits or cancels it.
 func (e *Engine) startGoalDrain(ctx context.Context, t *Task, reason string) {
 	e.deleteMu.RLock()
-	if e.IsDeleting(t.ID) || !e.markGoalDraining(t) {
+	if e.IsDeleting(t.ID) {
+		e.deleteMu.RUnlock()
+		return
+	}
+	// Capture the live context before the settling guard turns new contexts into
+	// cancelled ones; this context represents the work already in flight.
+	control := e.execContextFor(ctx, t.ID)
+	if !e.markGoalDraining(t) {
 		e.deleteMu.RUnlock()
 		return
 	}
@@ -25,7 +32,6 @@ func (e *Engine) startGoalDrain(ctx context.Context, t *Task, reason string) {
 	e.emitActivity(t, db.Activity{Worker: "system", Kind: "system",
 		Summary: "目标已达成：停止领新意图，等待当前工作收尾",
 		Detail:  fmt.Sprintf("%s；最多等待 %s。暂停、删除及授权停止仍立即生效；新增目标会撤销本次达标收官。", reason, settleDrainGrace)})
-	control := e.execContextFor(ctx, t.ID)
 	runTaskRoutine(rt, func(ctx context.Context) { e.finishGoalDrain(ctx, t, settleDrainGrace, control) })
 }
 
@@ -107,6 +113,9 @@ func (e *Engine) finishGoalDrain(ctx context.Context, t *Task, grace time.Durati
 		return
 	}
 	if won {
+		// Normal completion also retires the task execution context. This is the
+		// terminal cause; any late goroutine must not keep a live context.
+		e.cancelExec(t.ID, agent.AbortGoalMet)
 		e.completionWarn.Delete(t.ID)
 		e.emitPrunedIntentsOnGoalDone(t, pruned)
 		e.promoteTaskKnowledge(t)

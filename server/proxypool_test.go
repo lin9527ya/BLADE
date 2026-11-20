@@ -328,3 +328,40 @@ func mustURL(t *testing.T, raw string) *url.URL {
 	}
 	return u
 }
+
+func TestProxyPoolAppliesLatestSwitchAfterSlowPreviousApply(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var applied []string
+	p := newProxyPool(ProxyPoolConfig{}, nil, func(target string) {
+		if target == "http://a:1" {
+			close(started)
+			<-release
+		}
+		mu.Lock()
+		applied = append(applied, target)
+		mu.Unlock()
+	})
+	p.active = ""
+	doneA := make(chan struct{})
+	go func() { p.switchTo("http://a:1"); close(doneA) }()
+	<-started
+	doneB := make(chan struct{})
+	go func() { p.switchTo("http://b:1"); close(doneB) }()
+	close(release)
+	<-doneA
+	<-doneB
+	p.mu.Lock()
+	got := p.active
+	p.mu.Unlock()
+	if got != "http://b:1" {
+		t.Fatalf("active=%q", got)
+	}
+	mu.Lock()
+	last := applied[len(applied)-1]
+	mu.Unlock()
+	if last != "http://b:1" {
+		t.Fatalf("stale apply won: %v", applied)
+	}
+}

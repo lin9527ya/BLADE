@@ -43,9 +43,11 @@ type Compactor struct {
 	mu      sync.Mutex
 	running map[int64]bool
 	lastRun map[int64]time.Time
-	// wg 跟踪在跑的压缩 goroutine，供 Wait 等待。压缩刻意不挂在单轮 ctx 上
-	// （context.WithoutCancel），所以没有任何东西能替调用方判断「它还在写图」。
-	wg sync.WaitGroup
+	// wg 跟踪在跑的压缩 goroutine；idle 通过广播 close 让 Wait 可被 ctx
+	// 取消且不留下永远阻塞的等待 goroutine。
+	wg     sync.WaitGroup
+	active int
+	idle   chan struct{}
 }
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
@@ -61,6 +63,7 @@ func NewCompactor(prov llm.Provider, model string) *Compactor {
 		maxDur:   5 * time.Minute,
 		running:  map[int64]bool{},
 		lastRun:  map[int64]time.Time{},
+		idle:     closedCompactionIdle(),
 	}
 }
 
@@ -323,6 +326,10 @@ func (c *Compactor) tryStart(expID int64) bool {
 		return false
 	}
 	c.running[expID] = true
+	if c.active == 0 {
+		c.idle = make(chan struct{})
+	}
+	c.active++
 	return true
 }
 
@@ -332,17 +339,25 @@ func (c *Compactor) Wait(ctx context.Context) bool {
 	if c == nil {
 		return true
 	}
-	done := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
+	c.mu.Lock()
+	if c.active == 0 {
+		c.mu.Unlock()
+		return true
+	}
+	idle := c.idle
+	c.mu.Unlock()
 	select {
-	case <-done:
+	case <-idle:
 		return true
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func closedCompactionIdle() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
 }
 
 func (c *Compactor) finish(expID int64) {
@@ -350,6 +365,17 @@ func (c *Compactor) finish(expID int64) {
 	defer c.mu.Unlock()
 	c.running[expID] = false
 	c.lastRun[expID] = time.Now()
+	if c.active > 0 {
+		c.active--
+	}
+	if c.active == 0 && c.idle != nil {
+		select {
+		case <-c.idle:
+			// already closed
+		default:
+			close(c.idle)
+		}
+	}
 }
 
 // --- helpers: db ↔ coldgraph ---

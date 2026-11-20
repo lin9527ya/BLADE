@@ -59,26 +59,33 @@ func newGuard(ic *intercept.Interceptor, taskID int64) *Guard {
 // Hooks returns the hook registry to attach to an agent session.
 func (g *Guard) Hooks() *hook.Registry { return g.reg }
 
+// extractCommandFromToolInput returns the command surface the guard audits and
+// checks for proxy bypass. run_execution used to be omitted, so a long scan could
+// bypass the pre-tool audit and direct-proxy detection.
+func extractCommandFromToolInput(toolName string, input []byte) string {
+	switch toolName {
+	case "Bash", "shell_open", "run_execution":
+		var in struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return in.Command
+	case "shell_send":
+		var in struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(input, &in)
+		return in.Text
+	}
+	return ""
+}
+
 func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 	// Extract the shell-command surface for the audit log: Bash + the interactive-shell
 	// tools (shell_open's command, shell_send's text). Destructive/exfil gating is no
 	// longer hard-coded here — it now lives in the DB intercept rules, evaluated by
 	// applyIntercept below. Other tools record an empty command.
-	var cmd string
-	switch ev.ToolName {
-	case "Bash", "shell_open":
-		var in struct {
-			Command string `json:"command"`
-		}
-		_ = json.Unmarshal(ev.Input, &in)
-		cmd = in.Command
-	case "shell_send":
-		var in struct {
-			Text string `json:"text"`
-		}
-		_ = json.Unmarshal(ev.Input, &in)
-		cmd = in.Text
-	}
+	cmd := extractCommandFromToolInput(ev.ToolName, ev.Input)
 	// 直连防护（先于规则/范围判定）：显式绕过出口代理的命令会把本机真实 IP 暴露给
 	// 目标，并让流量绕开留痕。这里不硬拒，转人工审批——确有直连必要（内网目标/本地
 	// 调试）时由人放行；没有审批通道（无 interceptor 的宿主）时按拦截处理。
@@ -220,7 +227,9 @@ var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit
 // results into blocked / error / ok so the planner can change strategy instead
 // of giving up at a WAF.
 func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
-	if ev.ToolName != "Bash" {
+	switch ev.ToolName {
+	case "Bash", "run_execution", "http_request", "session_login":
+	default:
 		return hook.Result{}
 	}
 	class := "ok"

@@ -53,6 +53,8 @@ var (
 		"Worker 已正常结束，引擎在 detachWork 中释放其 context 资源。这不是运行中断；若它出现在中断消息中，说明取消与收场事件发生了竞态")
 	AbortWorkLeaseExpired = cause("work_lease_expired", "意图租约到期（心跳停止），看门狗回收重派",
 		"Worker 领取意图后超过租约 TTL 没有产生任何新活动（心跳停止），任务协调器判定该次运行卡死/僵死：取消本次运行并把意图退回 open 重新领取。Worker 会从既有 transcript 续跑，已写入的事实与产出全部保留")
+	AbortTaskNotRunning = cause("task_not_running", "任务已收尾或进入终态，拒绝启动新执行",
+		"任务已经进入收尾时序或终态，引擎不再为新的 Planner/Worker 发放执行上下文；已有运行的收尾结果仍按各自路径保留")
 	AbortPausedRaceGuard = cause("paused_race_guard", "任务暂停期间拒绝启动新运行",
 		"任务处于暂停状态时，引擎拒绝发出新的执行 context，用于防止 claim 与暂停之间的竞态导致 Worker 继续启动；已领取的意图会退回 frontier")
 
