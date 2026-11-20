@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.9.24] - 2026-11-20
+
 ### P2 性能、连接与前端体验
 
 - Agent 原生 HTTP 请求按出口/TLS 模式复用受控 Transport，并在每次 Planner/Worker/MainAgent 运行结束时关闭空闲连接。
