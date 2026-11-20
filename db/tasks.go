@@ -688,17 +688,40 @@ UPDATE tasks
 // Returns won=false (no error) when another terminal status already stuck — the
 // caller then leaves it alone. Non-terminal transitions / re-run still use SetStatus.
 func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err error) {
-	return d.setTerminalStatusGuarded(id, status, false)
+	won, _, err = d.setTerminalStatusGuarded(id, status, false, false)
+	return won, err
+}
+
+// SetTerminalStatusGuardedWithPruned behaves like SetTerminalStatusGuarded, and
+// when status=="done" atomically soft-deletes leftover non-cleanup open intents
+// in the same transaction so subsequent task revivals do not re-claim stale work.
+func (d *DB) SetTerminalStatusGuardedWithPruned(id int64, status string) (won bool, pruned []int64, err error) {
+	return d.setTerminalStatusGuarded(id, status, false, status == "done")
 }
 
 // SetGoalsCompleteGuarded cannot complete a paused/deleted/queued task or one
-// whose goal set acquired a new open goal during worker drain.
+// whose goal set acquired a new open goal during worker drain. When the task
+// transitions to done, leftover non-cleanup open intents are atomically soft-deleted.
 func (d *DB) SetGoalsCompleteGuarded(id int64) (bool, error) {
-	return d.setTerminalStatusGuarded(id, "done", true)
+	won, _, err := d.setTerminalStatusGuarded(id, "done", true, true)
+	return won, err
 }
 
-func (d *DB) setTerminalStatusGuarded(id int64, status string, goalsGuard bool) (won bool, err error) {
-	res, err := d.Exec(`
+// SetGoalsCompleteGuardedWithPruned behaves like SetGoalsCompleteGuarded and also
+// returns the intent IDs that were soft-deleted on completion.
+func (d *DB) SetGoalsCompleteGuardedWithPruned(id int64) (won bool, pruned []int64, err error) {
+	return d.setTerminalStatusGuarded(id, "done", true, true)
+}
+
+func (d *DB) setTerminalStatusGuarded(id int64, status string, goalsGuard, pruneOpen bool) (won bool, pruned []int64, err error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return false, nil, err
+	}
+	defer tx.Rollback()
+
+	var expID int64
+	err = tx.QueryRow(`
 UPDATE tasks
    SET status = $1,
        completed_at = COALESCE(completed_at, now()),
@@ -708,12 +731,24 @@ UPDATE tasks
        run_segment_started_at = NULL
  WHERE id = $2 AND status NOT IN `+TerminalStatusSQL()+`
  AND (NOT $3::boolean OR (NOT paused AND NOT queued AND deleted_at IS NULL
-  AND NOT EXISTS (SELECT 1 FROM exploration_nodes g WHERE g.exploration_id=tasks.exploration_id AND g.kind='goal' AND g.state='open')))`, status, id, goalsGuard)
-	if err != nil {
-		return false, err
+  AND NOT EXISTS (SELECT 1 FROM exploration_nodes g WHERE g.exploration_id=tasks.exploration_id AND g.kind='goal' AND g.state='open')))
+RETURNING COALESCE(exploration_id, 0)`, status, id, goalsGuard).Scan(&expID)
+	if err == sql.ErrNoRows {
+		return false, nil, nil
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	if err != nil {
+		return false, nil, err
+	}
+	if pruneOpen && status == "done" && expID > 0 {
+		pruned, err = d.Exploration(expID).softDeletePendingNonCleanupIntentsTx(tx, GoalDoneIntentDeleteReason)
+		if err != nil {
+			return false, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, nil, err
+	}
+	return true, pruned, nil
 }
 
 // StampFirstRun records a task's first-real-run moment and computes its absolute

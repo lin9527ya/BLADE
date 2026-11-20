@@ -102,16 +102,25 @@ func (e *Engine) taskDeadline(t *Task) int64 {
 	return 0
 }
 
+// resetTerminalRevival clears the per-run settle barriers when a non-timeout
+// terminal task (done/policy_blocked/failed) is revived back to running, so
+// plannerLoop, workerDispatcher and deadlineCoordinator resume instead of being
+// stranded behind the previous terminal settling latch.
+func (e *Engine) resetTerminalRevival(taskID string) {
+	e.settling.Delete(taskID)
+	e.goalDrainIntents.Delete(taskID)
+	e.coordStarted.Delete(taskID)
+}
+
 // resetTimeoutRevival clears only the per-run timeout state after PostgreSQL has
 // atomically committed timeout -> running and reset first_run_at/deadline_at. The
 // configured TimeoutSeconds remains on Task, so the next real Planner/Worker run
 // stamps a fresh full budget. coordStarted is reset because the coordinator that
 // produced the timeout has already completed (or is in its final return path).
 func (e *Engine) resetTimeoutRevival(taskID string) {
-	e.settling.Delete(taskID)
+	e.resetTerminalRevival(taskID)
 	e.deadline.Delete(taskID)
 	e.stamped.Delete(taskID)
-	e.coordStarted.Delete(taskID)
 	e.budgetStage.Delete(taskID)
 	e.endgameNotified.Delete(taskID) // 复活的任务会重新盖章 deadline，收官期要能再进一次
 }
@@ -201,13 +210,17 @@ func (e *Engine) startDeadlineCoordinator(ctx context.Context, t *Task) {
 		e.deleteMu.RUnlock()
 		return
 	}
-	if _, loaded := e.coordStarted.LoadOrStore(t.ID, true); loaded {
+	tok := new(byte)
+	if _, loaded := e.coordStarted.LoadOrStore(t.ID, tok); loaded {
 		e.deleteMu.RUnlock()
 		return
 	}
 	rt := e.registerTaskRoutines(ctx, t.ID, 1)
 	e.deleteMu.RUnlock()
-	runTaskRoutine(rt, func(loopCtx context.Context) { e.deadlineCoordinator(loopCtx, t) })
+	runTaskRoutine(rt, func(loopCtx context.Context) {
+		defer e.coordStarted.CompareAndDelete(t.ID, tok)
+		e.deadlineCoordinator(loopCtx, t)
+	})
 }
 
 // deadlineCoordinator waits until the task's absolute deadline, then runs the settle
@@ -440,16 +453,18 @@ func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback s
 	defer e.decInflight(t.ID)
 
 	// ⑥ 定终态(带守卫):met → done(completed);否则 timeout。若常规路径已先落 done,
-	// 守卫(SetTaskStatusGuarded)会拒绝覆盖,保留 completed 语义。
+	// 守卫(SetTaskStatusGuardedWithPruned)会拒绝覆盖,保留 completed 语义;若由本分支
+	// 落 done,同事务软删除遗留未执行(open)的非清理意图。
 	status := fallback
 	if met {
 		status = "done"
 	}
-	won, err := e.m.SetTaskStatusGuarded(t.ID, status)
+	won, pruned, err := e.m.SetTaskStatusGuardedWithPruned(t.ID, status)
 	switch {
 	case err != nil:
 		log.Printf("[deadline] task %s 落终态失败: %v", t.ID, err)
 	case won:
+		e.emitPrunedIntentsOnGoalDone(t, pruned)
 		log.Printf("[deadline] task %s 收尾完成,终态=%s", t.ID, status)
 	default:
 		log.Printf("[deadline] task %s 收尾时已是终态,保留原状态", t.ID)

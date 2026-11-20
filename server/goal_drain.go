@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/lin9527ya/blade/agent"
@@ -100,13 +101,14 @@ func (e *Engine) finishGoalDrain(ctx context.Context, t *Task, grace time.Durati
 			}
 		}
 	}
-	won, err := e.m.completeGoalsGuarded(t.ID)
+	won, pruned, err := e.m.completeGoalsGuardedWithPruned(t.ID)
 	if err != nil {
 		log.Printf("[goal-drain] task %s 完成落库失败: %v", t.ID, err)
 		return
 	}
 	if won {
 		e.completionWarn.Delete(t.ID)
+		e.emitPrunedIntentsOnGoalDone(t, pruned)
 		e.promoteTaskKnowledge(t)
 		summary := "目标已达成，当前工作已完成收尾，任务结束"
 		if timedOut {
@@ -114,6 +116,30 @@ func (e *Engine) finishGoalDrain(ctx context.Context, t *Task, grace time.Durati
 		}
 		e.emitActivity(t, db.Activity{Worker: "system", Kind: "system", Summary: summary})
 	}
+}
+
+func (e *Engine) emitPrunedIntentsOnGoalDone(t *Task, pruned []int64) {
+	if e == nil || t == nil || len(pruned) == 0 {
+		return
+	}
+	log.Printf("[goal-drain] task %s 目标达成，已自动取消 %d 条未执行意图 %v", t.ID, len(pruned), pruned)
+	const maxDetailIDs = 20
+	shown := pruned
+	suffix := ""
+	if len(shown) > maxDetailIDs {
+		shown = shown[:maxDetailIDs]
+		suffix = fmt.Sprintf(" 等共 %d 条", len(pruned))
+	}
+	parts := make([]string, len(shown))
+	for i, id := range shown {
+		parts[i] = fmt.Sprintf("#%d", id)
+	}
+	e.emitActivity(t, db.Activity{
+		Worker:  "system",
+		Kind:    "system",
+		Summary: fmt.Sprintf("目标已达成，已自动取消 %d 条未执行的排队意图", len(pruned)),
+		Detail:  fmt.Sprintf("已将剩余待领意图置为删除态（%s%s），后续因补充目标或单派意图恢复任务时不会重复探索旧队列；痕迹清理意图与历史血缘保留。", strings.Join(parts, "、"), suffix),
+	})
 }
 
 func (e *Engine) markGoalDraining(t *Task) bool {

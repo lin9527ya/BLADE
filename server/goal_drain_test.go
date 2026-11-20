@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,5 +194,134 @@ func TestGoalDrainTimeoutFencesLateWriteback(t *testing.T) {
 	}
 	if _, err := task.Store.WithAuthority(authority).AddNode(db.KindFact, map[string]any{"summary": "late stale output"}, 0, "confirmed", "worker", nil); !errors.Is(err, db.ErrStaleExecution) {
 		t.Fatalf("late write must be rejected by authority: %v", err)
+	}
+}
+
+func TestGoalDrainSoftDeletesLeftoverOpenIntentsOnDone(t *testing.T) {
+	e, task := goalDrainFixture(t)
+	if err := e.m.SetTaskStatus(task.ID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	runningID, err := task.Store.AddIntent(map[string]any{"summary": "正在收尾的意图"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := task.Store.ClaimNode(t.Context(), runningID, "work#1", "open", db.IntentLeaseTTL, nil, true); err != nil || n == nil {
+		t.Fatalf("claim running: %v", err)
+	}
+	stale1, err := task.Store.AddIntent(map[string]any{"summary": "旧队列方向1"}, 10, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale2, err := task.Store.AddIntent(map[string]any{"summary": "旧队列方向2", "resume_after_restart": true}, 20, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.markGoalDraining(task) {
+		t.Fatal("failed to start drain")
+	}
+	if ok, err := task.Store.CompareAndSetIntentState(runningID, "running", "done"); err != nil || !ok {
+		t.Fatalf("finish running intent: ok=%v err=%v", ok, err)
+	}
+
+	e.finishGoalDrain(t.Context(), task, time.Second)
+
+	if got := e.m.TaskStatus(task.ID); got != "done" {
+		t.Fatalf("task status=%q, want done", got)
+	}
+	for _, id := range []int64{stale1, stale2} {
+		n, err := task.Store.GetNode(id)
+		if err != nil || n == nil || n.State != db.StateIntentDeleted || n.DeleteReason != db.GoalDoneIntentDeleteReason {
+			t.Fatalf("stale open intent %d not soft-deleted cleanly: n=%+v err=%v", id, n, err)
+		}
+	}
+
+	acts, _, err := task.Store.ActivityList(nil, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPruneActivity := false
+	for _, a := range acts {
+		if strings.Contains(a.Summary, "已自动取消 2 条未执行的排队意图") {
+			foundPruneActivity = true
+			break
+		}
+	}
+	if !foundPruneActivity {
+		t.Fatalf("missing auto-prune activity in timeline: %+v", acts)
+	}
+
+	// Done task with only pruned stale intents must reject terminal resume, and
+	// reviving for a newly added intent must only claim the new one.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Server{m: e.m, engine: e, ctx: ctx}
+	if _, err := s.applyTaskControl(task, "resume"); err == nil || !strings.Contains(err.Error(), "set_goals") {
+		t.Fatalf("done task without remaining open intents must refuse resume: %v", err)
+	}
+
+	fresh, err := task.Store.AddIntent(map[string]any{"summary": "用户补充的新意图"}, 1, nil, "mainagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.applyTaskControl(task, "resume"); err != nil {
+		t.Fatalf("revive for new intent: %v", err)
+	}
+	claimed := e.claimNextIntent(task)
+	if claimed == nil || claimed.ID != fresh {
+		t.Fatalf("revived task should claim fresh intent #%d, got %+v", fresh, claimed)
+	}
+	if extra := e.claimNextIntent(task); extra != nil {
+		t.Fatalf("unexpected extra claim after fresh intent: %+v", extra)
+	}
+}
+
+func TestGoalDrainTimeoutPrunesUnstartedOpenIntentsOnly(t *testing.T) {
+	e, task := goalDrainFixture(t)
+	if err := e.m.SetTaskStatus(task.ID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := task.Store.AddIntent(map[string]any{"summary": "在跑的意图"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := task.Store.ClaimNode(t.Context(), captured, "work#1", "open", db.IntentLeaseTTL, nil, true); err != nil || n == nil {
+		t.Fatalf("claim captured: %v", err)
+	}
+	stale, err := task.Store.AddIntent(map[string]any{"summary": "尚未开始的方向"}, 1, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := e.execContextFor(t.Context(), task.ID)
+	if !e.markGoalDraining(task) {
+		t.Fatal("failed to start drain")
+	}
+	e.finishGoalDrain(t.Context(), task, 0, control)
+	if e.m.TaskStatus(task.ID) != "done" {
+		t.Fatalf("status=%q, want done", e.m.TaskStatus(task.ID))
+	}
+	if n, _ := task.Store.GetNode(captured); n == nil || n.State != "exhausted" {
+		t.Fatalf("captured running intent should become exhausted, got %+v", n)
+	}
+	if n, _ := task.Store.GetNode(stale); n == nil || n.State != db.StateIntentDeleted {
+		t.Fatalf("unstarted open intent should be soft-deleted, got %+v", n)
+	}
+}
+
+func TestSetTaskStatusGuardedWithPrunedPreservesTimeoutOpenIntents(t *testing.T) {
+	e, task := goalDrainFixture(t)
+	if err := e.m.SetTaskStatus(task.ID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := task.Store.AddIntent(map[string]any{"summary": "超时保留的意图"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	won, pruned, err := e.m.SetTaskStatusGuardedWithPruned(task.ID, "timeout")
+	if err != nil || !won || len(pruned) != 0 {
+		t.Fatalf("timeout terminal should not prune open intents: won=%v pruned=%v err=%v", won, pruned, err)
+	}
+	if n, _ := task.Store.GetNode(kept); n == nil || n.State != "open" {
+		t.Fatalf("timeout should keep open intent intact, got %+v", n)
 	}
 }

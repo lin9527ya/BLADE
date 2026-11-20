@@ -937,10 +937,6 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, []
 	}
 	defer tx.Rollback()
 
-	if _, err := GraphOperationTx(tx, s.expID, "delete_intent", reason); err != nil {
-		return "", nil, err
-	}
-
 	var state string
 	var rawPayload []byte
 	if err := tx.QueryRow(`SELECT state, payload FROM exploration_nodes
@@ -953,35 +949,8 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, []
 	if state != "running" && state != "paused" && state != "open" {
 		return "", nil, fmt.Errorf("%w: intent state %s cannot be deleted", ErrIntentStateConflict, state)
 	}
-	if _, err := tx.Exec(`UPDATE exploration_nodes
-		SET state='deleted', delete_reason=$3, blocked_reason=NULL,
-		    content_version=content_version+1, completed_at=now()
-		WHERE id=$1 AND exploration_id=$2`, id, s.expID, reason); err != nil {
-		return "", nil, err
-	}
-	// 主意图审计轨迹保留,但副问答会话随删除态原子清理(延迟快照会拒绝它)。
-	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE intent_id=$1`, id); err != nil {
-		return "", nil, err
-	}
-	// 前置被删掉后，下游仍会因为 strict 依赖而等不到活跃前置——同一事务里拆掉依赖入边，
-	// 并把受影响的下游返回给调用方重新规划。虽然死前置已 fail-open，但删除一条排队中的
-	// 前置仍然意味着"依赖关系本身已无意义"，拆边比留下悬空依赖更干净。
-	drows, derr := tx.Query(`DELETE FROM exploration_edges
-WHERE exploration_id=$1 AND dst_id=$2 AND rel=$3 RETURNING src_id`, s.expID, id, RelDependsOn)
-	if derr != nil {
-		return "", nil, derr
-	}
-	var dependents []int64
-	for drows.Next() {
-		var src int64
-		if err := drows.Scan(&src); err != nil {
-			drows.Close()
-			return "", nil, err
-		}
-		dependents = append(dependents, src)
-	}
-	drows.Close()
-	if err := drows.Err(); err != nil {
+	dependents, err := s.softDeleteIntentsTx(tx, []int64{id}, reason)
+	if err != nil {
 		return "", nil, err
 	}
 	var summary string
@@ -995,6 +964,84 @@ WHERE exploration_id=$1 AND dst_id=$2 AND rel=$3 RETURNING src_id`, s.expID, id,
 		return "", nil, err
 	}
 	return summary, dependents, nil
+}
+
+// softDeletePendingNonCleanupIntentsTx 假删除本探索图里所有尚未领取(open)的非清理类意图。
+// 用于目标达成落定 done 时与任务状态原子提交，避免遗留方向在后续补充目标/单派意图或
+// 痕迹清理恢复任务时再次被 worker 领取。痕迹清理意图(cleanup=true)由操作者显式提交，
+// 不在此自动清理范围内。
+func (s *ExplorationStore) softDeletePendingNonCleanupIntentsTx(tx *sql.Tx, reason string) ([]int64, error) {
+	rows, err := tx.Query(`SELECT id FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND state='open'
+  AND COALESCE(payload->>'cleanup','') <> 'true'
+ORDER BY id FOR UPDATE`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if _, err := s.softDeleteIntentsTx(tx, ids, reason); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// softDeleteIntentsTx applies the soft-delete transition inside tx for locked
+// intent IDs: marks state='deleted', cleans side-question sessions, and drops
+// incoming depends_on edges targeting any deleted intent.
+func (s *ExplorationStore) softDeleteIntentsTx(tx *sql.Tx, ids []int64, reason string) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if _, err := GraphOperationTx(tx, s.expID, "delete_intent", reason); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE exploration_nodes
+		SET state='deleted', delete_reason=$3, blocked_reason=NULL,
+		    content_version=content_version+1, completed_at=now()
+		WHERE exploration_id=$1 AND kind='intent' AND id=ANY($2::bigint[])`, s.expID, ids, reason); err != nil {
+		return nil, err
+	}
+	// 主意图审计轨迹保留,但副问答会话随删除态原子清理(延迟快照会拒绝它)。
+	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE intent_id=ANY($1::bigint[])`, ids); err != nil {
+		return nil, err
+	}
+	// 前置被删掉后，下游仍会因为 strict 依赖而等不到活跃前置——同一事务里拆掉依赖入边，
+	// 并把受影响的下游返回给调用方重新规划。虽然死前置已 fail-open，但删除一条排队中的
+	// 前置仍然意味着"依赖关系本身已无意义"，拆边比留下悬空依赖更干净。
+	drows, derr := tx.Query(`DELETE FROM exploration_edges
+WHERE exploration_id=$1 AND dst_id=ANY($2::bigint[]) AND rel=$3 RETURNING src_id`, s.expID, ids, RelDependsOn)
+	if derr != nil {
+		return nil, derr
+	}
+	defer drows.Close()
+	var dependents []int64
+	for drows.Next() {
+		var src int64
+		if err := drows.Scan(&src); err != nil {
+			return nil, err
+		}
+		dependents = append(dependents, src)
+	}
+	if err := drows.Err(); err != nil {
+		return nil, err
+	}
+	return dependents, nil
 }
 
 // CancelIntent 物理删除一个意图,以及"仅由该意图支撑"的全部独占子孙节点——从该意图沿

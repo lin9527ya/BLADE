@@ -317,6 +317,10 @@ const StateOrigin = "origin"
 // and full lineage. The delete reason lives in exploration_nodes.delete_reason.
 const StateIntentDeleted = "deleted"
 
+// GoalDoneIntentDeleteReason records the delete_reason when queued open intents
+// are automatically soft-deleted upon goal completion.
+const GoalDoneIntentDeleteReason = "任务目标已达成，自动取消未执行的排队意图"
+
 // Exploration edge relations (exploration_edges.rel).
 const (
 	RelContradicts = "contradicts"

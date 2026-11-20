@@ -219,3 +219,94 @@ func TestHardDeletePreservesLootAndEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestGoalCompletePrunesOpenNonCleanupIntents(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	tk, err := d.CreateTask("goal done prune", "测试达标清理待领意图", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(tk.ID)
+	es := d.Exploration(tk.ExplorationID)
+
+	if _, err := es.AddNode(KindGoal, map[string]any{"text": "target goal"}, 0, "met", "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	openA := mustIntent(t, es, "未执行方向A")
+	openB := mustIntent(t, es, "未执行方向B")
+	if err := es.Link(openB, RelDependsOn, openA); err != nil {
+		t.Fatal(err)
+	}
+	cleanupID, err := es.AddIntent(map[string]any{"summary": "清理痕迹", "cleanup": true}, 10, nil, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneID := mustIntent(t, es, "已完成方向")
+	if err := es.SetIntentState(doneID, "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Guard failure (e.g., paused) must NOT prune open intents.
+	if err := d.SetPaused(tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if won, pruned, err := d.SetGoalsCompleteGuardedWithPruned(tk.ID); err != nil || won || len(pruned) != 0 {
+		t.Fatalf("paused guard should fail without pruning: won=%v pruned=%v err=%v", won, pruned, err)
+	}
+	if n, _ := es.GetNode(openA); n == nil || n.State != "open" {
+		t.Fatalf("openA unexpectedly modified on refused completion: %+v", n)
+	}
+	if err := d.SetPaused(tk.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Guard success atomically marks task done and soft-deletes open non-cleanup intents.
+	won, pruned, err := d.SetGoalsCompleteGuardedWithPruned(tk.ID)
+	if err != nil || !won {
+		t.Fatalf("SetGoalsCompleteGuardedWithPruned failed: won=%v err=%v", won, err)
+	}
+	if len(pruned) != 2 || pruned[0] != openA || pruned[1] != openB {
+		t.Fatalf("pruned=%v, want [%d %d]", pruned, openA, openB)
+	}
+	for _, id := range []int64{openA, openB} {
+		n, err := es.GetNode(id)
+		if err != nil || n == nil {
+			t.Fatalf("get node %d: %+v %v", id, n, err)
+		}
+		if n.State != StateIntentDeleted || n.DeleteReason != GoalDoneIntentDeleteReason {
+			t.Fatalf("intent %d state=%q reason=%q, want deleted/%q", id, n.State, n.DeleteReason, GoalDoneIntentDeleteReason)
+		}
+	}
+	var edgeCount int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_edges WHERE exploration_id=$1 AND rel=$2 AND (dst_id=$3 OR dst_id=$4)`,
+		tk.ExplorationID, RelDependsOn, openA, openB).Scan(&edgeCount); err != nil || edgeCount != 0 {
+		t.Fatalf("depends_on edges should be cleaned up: count=%d err=%v", edgeCount, err)
+	}
+	if n, _ := es.GetNode(cleanupID); n == nil || n.State != "open" {
+		t.Fatalf("cleanup intent must remain open: %+v", n)
+	}
+	if n, _ := es.GetNode(doneID); n == nil || n.State != "done" {
+		t.Fatalf("finished intent state changed: %+v", n)
+	}
+
+	// Timeout / policy_blocked terminal statuses keep leftover open intents intact.
+	tkTimeout, err := d.CreateTask("timeout keep open", "测试超时保留待领意图", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(tkTimeout.ID)
+	esTimeout := d.Exploration(tkTimeout.ExplorationID)
+	kept := mustIntent(t, esTimeout, "超时时未领意图")
+	won, pruned, err = d.SetTerminalStatusGuardedWithPruned(tkTimeout.ID, "timeout")
+	if err != nil || !won || len(pruned) != 0 {
+		t.Fatalf("timeout terminal should not prune: won=%v pruned=%v err=%v", won, pruned, err)
+	}
+	if n, _ := esTimeout.GetNode(kept); n == nil || n.State != "open" {
+		t.Fatalf("open intent should remain open after timeout: %+v", n)
+	}
+}

@@ -312,11 +312,17 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 		}
 		return false, err
 	}
-	if lifecycle.Status == "timeout" && status == "running" {
-		// ApplyTaskAdmission reset this timed-out run's persisted clock. Clear the
-		// matching Engine gates before either parking it in FIFO or starting work;
-		// otherwise the old settling flag would make every worker skip forever.
-		s.engine.resetTimeoutRevival(t.ID)
+	if wasTerminal && status == "running" {
+		if lifecycle.Status == "timeout" {
+			// ApplyTaskAdmission reset this timed-out run's persisted clock. Clear the
+			// matching Engine gates before either parking it in FIFO or starting work;
+			// otherwise the old settling flag would make every worker skip forever.
+			s.engine.resetTimeoutRevival(t.ID)
+		} else {
+			// done/policy_blocked/failed 结束时 goalDrain / settleTask 仍将 settling 留在
+			// 内存中防晚到领取；复活时一并清掉，避免同一进程内继续任务被旧门禁锁死。
+			s.engine.resetTerminalRevival(t.ID)
+		}
 	}
 	if shouldQueue {
 		if !wasQueued {

@@ -2299,27 +2299,43 @@ func (m *Manager) FinalizeTaskRunSegment(id string) {
 // (resolves the completed↔timeout race — first terminal writer wins). Reflects the
 // won status on the live handle. won=false means another terminal already stuck.
 func (m *Manager) SetTaskStatusGuarded(id, status string) (won bool, err error) {
-	return m.setTaskStatusGuarded(id, status, false)
+	won, _, err = m.setTaskStatusGuarded(id, status, false, false)
+	return won, err
+}
+
+// SetTaskStatusGuardedWithPruned atomically completes status and, when
+// status=="done", soft-deletes leftover non-cleanup open intents, returning
+// the pruned intent IDs.
+func (m *Manager) SetTaskStatusGuardedWithPruned(id, status string) (won bool, pruned []int64, err error) {
+	return m.setTaskStatusGuarded(id, status, false, status == "done")
 }
 
 func (m *Manager) completeGoalsGuarded(id string) (bool, error) {
-	return m.setTaskStatusGuarded(id, "done", true)
+	won, _, err := m.setTaskStatusGuarded(id, "done", true, true)
+	return won, err
 }
 
-func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard bool) (won bool, err error) {
+func (m *Manager) completeGoalsGuardedWithPruned(id string) (won bool, pruned []int64, err error) {
+	return m.setTaskStatusGuarded(id, "done", true, true)
+}
+
+func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard, pruneOpen bool) (won bool, pruned []int64, err error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	if goalsGuard {
-		won, err = m.pg.SetGoalsCompleteGuarded(n)
-	} else {
+	switch {
+	case goalsGuard:
+		won, pruned, err = m.pg.SetGoalsCompleteGuardedWithPruned(n)
+	case pruneOpen:
+		won, pruned, err = m.pg.SetTerminalStatusGuardedWithPruned(n, status)
+	default:
 		won, err = m.pg.SetTerminalStatusGuarded(n, status)
 	}
 	if err != nil || !won {
-		return won, err
+		return won, nil, err
 	}
 	m.mu.Lock()
 	if t := m.tasks[id]; t != nil {
@@ -2332,7 +2348,7 @@ func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard bool) (won 
 	}
 	m.mu.Unlock()
 	m.ReleaseTaskEgress(id)
-	return true, nil
+	return true, pruned, nil
 }
 
 // SetTaskStatus persists a task's lifecycle status (e.g. "done") and reflects it
