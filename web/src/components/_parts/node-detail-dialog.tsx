@@ -6,7 +6,9 @@ import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
 import type { TaskNode } from "@/lib/types";
@@ -323,6 +325,8 @@ export function PayloadBeautified({ node }: { node: TaskNode }) {
   );
 }
 
+const FOLLOW_UP_KINDS = new Set(["finding", "credential", "foothold", "ad_object", "cloud_object", "detection"]);
+
 // 节点详情。原先是右侧抽屉，改成居中弹窗——全站统一：从右侧滑出的界面只剩移动端侧栏
 // 那一个（用户明确要求过），详情面板留着抽屉会显得像另一个应用。
 export function NodeDetailDialog({
@@ -343,6 +347,23 @@ export function NodeDetailDialog({
   // rawNodeId 同一个套路——用派生状态而不是 effect）。
   const [reveal, setReveal] = React.useState<{ id: string; secret: string } | null>(null);
   const [revealing, setRevealing] = React.useState(false);
+  const [followUpDraft, setFollowUpDraft] = React.useState<{ id: string; text: string }>({ id: "", text: "" });
+  const [followUpSending, setFollowUpSending] = React.useState(false);
+  const followUpText = node && followUpDraft.id === node.id ? followUpDraft.text : "";
+  const canFollowUp = Boolean(taskId && node && !node.inherited && FOLLOW_UP_KINDS.has(node.type) && Number(node.id) > 0);
+  const sendFollowUp = async () => {
+    if (!taskId || !node || !followUpText.trim() || followUpSending) return;
+    setFollowUpSending(true);
+    try {
+      const res = await api.taskFollowUpIntent(taskId, Number(node.id), followUpText.trim());
+      setFollowUpDraft({ id: node.id, text: "" });
+      toast.success(`已${res.queued ? "排队并" : ""}下发跟进意图 #${res.intent_id}`);
+    } catch (e: unknown) {
+      toast.error(`生成跟进意图失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setFollowUpSending(false);
+    }
+  };
   const revealedSecret = node && reveal && reveal.id === node.id ? reveal.secret : null;
   const plaintextInPayload = payloadHasPlaintextSecret(node);
   const displayNode = React.useMemo(() => withRevealedSecret(node, revealedSecret), [node, revealedSecret]);
@@ -494,6 +515,32 @@ export function NodeDetailDialog({
                     </>
                   )}
                 </section>
+
+                {canFollowUp && (
+                  <section className="border-t pt-3">
+                    <h4 className="mb-1.5 font-medium text-muted-foreground text-xs">派生人工跟进意图</h4>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={followUpText}
+                        onChange={(e) => node && setFollowUpDraft({ id: node.id, text: e.target.value })}
+                        placeholder="输入希望独立 Worker 深入验证的方向…"
+                        className="h-8 text-xs"
+                        disabled={followUpSending}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void sendFollowUp();
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={followUpSending || !followUpText.trim()}
+                        onClick={() => void sendFollowUp()}
+                      >
+                        {followUpSending ? "提交中…" : "下发意图"}
+                      </Button>
+                    </div>
+                  </section>
+                )}
 
                 {node.type === "digest" && (
                   <>

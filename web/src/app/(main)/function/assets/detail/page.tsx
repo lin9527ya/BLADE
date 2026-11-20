@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
 import { ArrowLeftIcon, ArrowUpRightIcon, BuildingIcon, NetworkIcon, ShieldAlertIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { CopyLinkButton } from "@/components/copy-link-button";
 import { StatusBadge } from "@/components/status-badge";
@@ -13,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
 import type { AssetDetail, AssetNeighbor, AssetRef } from "@/lib/types";
@@ -69,6 +71,7 @@ function AssetDetailInner() {
   const [detail, setDetail] = React.useState<AssetDetail | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [updatingStatus, setUpdatingStatus] = React.useState(false);
 
   React.useEffect(() => {
     if (!id) {
@@ -178,14 +181,33 @@ function AssetDetailInner() {
             </div>
             <div>
               <div className="text-muted-foreground text-xs">生命周期</div>
-              <div>
-                {a.status === "active"
-                  ? "活跃"
-                  : a.status === "archived"
-                    ? "已归档"
-                    : a.status === "stale"
-                      ? "过期"
-                      : "—"}
+              <div className="mt-1">
+                <Select
+                  value={a.status || "active"}
+                  disabled={updatingStatus}
+                  onValueChange={async (next) => {
+                    if (next === (a.status || "active")) return;
+                    setUpdatingStatus(true);
+                    try {
+                      await api.updateAssetLifecycle(a.id, { status: next });
+                      setDetail((cur) => (cur ? { ...cur, asset: { ...cur.asset, status: next } } : cur));
+                      toast.success("资产状态已更新");
+                    } catch (e) {
+                      toast.error(`更新失败：${String((e as Error)?.message ?? e)}`);
+                    } finally {
+                      setUpdatingStatus(false);
+                    }
+                  }}
+                >
+                  <SelectTrigger size="sm" className="h-7 w-28 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">活跃</SelectItem>
+                    <SelectItem value="stale">过期</SelectItem>
+                    <SelectItem value="archived">已归档</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <div>

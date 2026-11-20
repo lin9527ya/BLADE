@@ -164,6 +164,26 @@ export default function CampaignsPage() {
     }
   };
 
+  const cyclePhaseStatus = async (p: CampaignPhase) => {
+    if (!summary) return;
+    const order = ["planned", "active", "done"] as const;
+    const idx = order.indexOf((p.status || "planned") as (typeof order)[number]);
+    const next = order[(idx + 1) % order.length];
+    try {
+      await api.updateCampaignPhase(summary.campaign.id, p.id, {
+        name: p.name,
+        position: p.position,
+        status: next,
+        note: p.note,
+        starts_at: p.starts_at,
+        ends_at: p.ends_at,
+      });
+      setPhases(await api.campaignPhases(summary.campaign.id));
+    } catch (e) {
+      toast.error(`切换阶段状态失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
   const assignPhase = async (tid: number, phaseId: number) => {
     if (!summary) return;
     try {
@@ -501,8 +521,17 @@ export default function CampaignsPage() {
                     {phases.map((p) => (
                       <div key={p.id} className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs">
                         <span>{p.name}</span>
-                        <Badge variant="outline">{p.status}</Badge>
                         <button
+                          type="button"
+                          onClick={() => void cyclePhaseStatus(p)}
+                          title="点击切换阶段状态（planned → active → done）"
+                        >
+                          <Badge variant="outline" className="cursor-pointer hover:bg-accent">
+                            {p.status === "active" ? "进行中" : p.status === "done" ? "已完成" : "计划中"}
+                          </Badge>
+                        </button>
+                        <button
+                          type="button"
                           className="text-muted-foreground hover:text-destructive"
                           onClick={() => void dropPhase(p.id)}
                         >

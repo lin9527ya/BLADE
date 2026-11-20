@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { DownloadIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { HttpCodeBlock } from "@/components/http-code-block";
@@ -123,6 +124,38 @@ export function TrafficEvidenceViewer({
   );
 }
 
+export function extractTrafficBlobHash(raw: string): string | null {
+  const m = raw.match(/@blob sha256:([0-9a-f]{16,128})/i);
+  return m?.[1] ?? null;
+}
+
+export function TrafficBlobBar({ raw }: { raw: string }) {
+  const hash = extractTrafficBlobHash(raw);
+  const [downloading, setDownloading] = React.useState(false);
+  if (!hash) return null;
+  return (
+    <div className="mb-2 flex items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-1.5 text-xs">
+      <span className="text-muted-foreground">正文超出内联预览上限，完整内容已转存至 Blob（sha256:{hash.slice(0, 12)}…）</span>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 shrink-0"
+        disabled={downloading}
+        onClick={() => {
+          setDownloading(true);
+          void api
+            .downloadTrafficBlob(hash)
+            .catch((e: Error) => toast.error(e.message))
+            .finally(() => setDownloading(false));
+        }}
+      >
+        <DownloadIcon className="size-3.5" />
+        {downloading ? "下载中…" : "下载完整正文"}
+      </Button>
+    </div>
+  );
+}
+
 export function CapturedTrafficViewer({ id, onClose }: { id: string | null; onClose: () => void }) {
   const [detail, setDetail] = React.useState<TrafficDetail | null>(null);
   const [error, setError] = React.useState("");
@@ -166,9 +199,11 @@ export function CapturedTrafficViewer({ id, onClose }: { id: string | null; onCl
               <TabsTrigger value="response">响应 Response</TabsTrigger>
             </TabsList>
             <TabsContent value="request">
+              <TrafficBlobBar raw={detail.req} />
               <HttpCodeBlock raw={detail.req} />
             </TabsContent>
             <TabsContent value="response">
+              <TrafficBlobBar raw={detail.resp} />
               <HttpCodeBlock raw={detail.resp} />
             </TabsContent>
           </Tabs>

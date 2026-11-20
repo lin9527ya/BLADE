@@ -58,7 +58,6 @@ import type {
   CVE,
   CVEImportPreview,
   CVEInput,
-  DailyTokenBucket,
   DashboardSummary,
   DeleteTaskOptions,
   DeleteTaskResult,
@@ -70,11 +69,13 @@ import type {
   Edge,
   EgressStatus,
   EvidenceBodyPreview,
+  ExplorationLedgerResponse,
   ExplorationNodePage,
   ExplorationNodeQuery,
   Finding,
   FindingAssetTree,
   FindingCase,
+  FindingCaseCandidate,
   FindingCaseListPage,
   FindingCaseStats,
   FindingCaseSuggestion,
@@ -132,8 +133,6 @@ import type {
   PlannerTemplate,
   Playbook,
   PlaybookFingerprint,
-  PromptVar,
-  PromptVersion,
   ScheduleFrequency,
   ScheduleRun,
   ScheduleTaskSpec,
@@ -180,7 +179,6 @@ import type {
   UpdateCheck,
   UsageStats,
   VerificationLedgerRow,
-  WorkerSlot,
   WorkspaceFile,
   WorkspaceListing,
 } from "@/lib/types";
@@ -535,6 +533,10 @@ export const api = {
     del<{ ok: boolean }>(
       `/exploration/finding-cases/${caseId}/members/${findingId}?reason=${encodeURIComponent(reason)}`,
     ),
+  findingCaseCandidates: (findingId: string | number, taskId: string | number) =>
+    get<{ items: FindingCaseCandidate[]; count: number }>(
+      `/exploration/findings/${encodeURIComponent(String(findingId))}/case-candidates?task_id=${encodeURIComponent(String(taskId))}`,
+    ).then((r) => arr(r.items)),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
@@ -1276,6 +1278,7 @@ export const api = {
     ),
   updateAssetLifecycle: (id: number, fields: { status?: string; provider?: string }) =>
     patch<{ ok: boolean }>(`/assets/${id}`, fields),
+  reattributeCompanies: () => post<{ ok: boolean }>("/companies/reattribute", {}),
   downloadAssetsCSV: async (opts: { type?: string; dsl?: string; status?: string; provider?: string } = {}) => {
     const p = new URLSearchParams({ format: "csv" });
     if (opts.type) p.set("type", opts.type);
@@ -1749,10 +1752,6 @@ export const api = {
       remediation?: string;
     },
   ) => patch<Finding>(`/exploration/findings/${id}`, fields),
-  findingComments: (id: string) =>
-    get<{ comments: FindingComment[] }>(`/exploration/findings/${encodeURIComponent(id)}/comments`).then((r) =>
-      arr(r.comments),
-    ),
   addFindingComment: (id: string, body: string) =>
     post<FindingComment>(`/exploration/findings/${encodeURIComponent(id)}/comments`, { body }),
   deleteFindingComment: (id: string, commentId: number) =>
@@ -1779,12 +1778,13 @@ export const api = {
       total: r.total,
       snapshot_cursor: r.snapshot_cursor,
     })),
-  tokenDaily: (days = 30) => get<DailyTokenBucket[]>(`/tokens/daily?days=${days}`).then(arr),
   conversationTokens: () =>
     get<ConvTokenSummary[]>("/tokens/conversations")
       .then(arr)
       .catch(() => [] as ConvTokenSummary[]),
   explorationGraph: (task?: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/graph${tq(task)}`),
+  explorationLedger: (task: string) =>
+    get<ExplorationLedgerResponse>(`/exploration/ledger?task=${encodeURIComponent(task)}`),
   // 播报板:服务端按创建顺序分页的探索节点(默认最新在前)。
   explorationNodes: (task: string, query: ExplorationNodeQuery = {}) => {
     const q = new URLSearchParams();
@@ -1863,11 +1863,6 @@ export const api = {
     }));
   },
   // Fixed N worker slots: sessions are reused across intents (no per-intent session).
-  workerSlots: (task: string) =>
-    get<{ slots: WorkerSlot[]; count: number }>(`/tasks/${encodeURIComponent(task)}/worker-slots`).then((r) => ({
-      slots: arr(r.slots),
-      count: r.count ?? 0,
-    })),
   // Paged worker (intent) session list — reaches past the legacy fixed 300 cap.
   // before=0 → newest page; before=<id> → older page. has_more = older intents exist.
   intentsPage: (task: string, before = 0, limit = 300) => {
@@ -1943,6 +1938,25 @@ export const api = {
     URL.revokeObjectURL(url);
   },
   trafficExchange: (id: string) => get<TrafficDetail>(`/traffic/exchange?id=${encodeURIComponent(id)}`),
+  downloadTrafficBlob: async (hash: string) => {
+    const token = getToken();
+    const r = await fetch(`/api/traffic/blob?hash=${encodeURIComponent(hash)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: `下载失败 (${r.status})` }));
+      throw new Error(err.error ?? `下载失败 (${r.status})`);
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${hash}.bin`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   trafficHosts: () => get<{ hosts: TrafficHost[] }>(`/traffic/hosts`),
   trafficDeleteHost: (host: string) => del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
   trafficDeleteHosts: (hosts: string[]) => del<{ deleted: number }>(`/traffic/hosts`, { hosts }),
@@ -2228,30 +2242,6 @@ export const api = {
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),
 
   // ---- LLM ----
-  getLLM: () =>
-    get<{
-      configured: boolean;
-      provider: string;
-      model: string;
-      base_url: string;
-      proxy?: string;
-      key_set: boolean;
-      rate_per_second?: number;
-      rate_per_minute?: number;
-      context_window_k?: number;
-      thinking_type?: string;
-      reasoning_effort?: string;
-    }>("/llm"),
-  setLLM: (
-    provider: string,
-    model: string,
-    base_url: string,
-    api_key: string,
-    rate_per_second = 0,
-    rate_per_minute = 0,
-    proxy = "",
-    context_window_k = 0,
-  ) => post("/llm", { provider, model, base_url, proxy, api_key, rate_per_second, rate_per_minute, context_window_k }),
   testLLM: (
     provider: string,
     model: string,
@@ -2430,14 +2420,8 @@ export const api = {
       trigger_max_parallel?: number;
     },
   ) => put<{ ok: boolean }>(`/agents/${key}/config`, patch),
-  agentPromptVersions: (key: string) =>
-    get<{ versions: PromptVersion[] }>(`/agents/${key}/prompts`).then((r) => arr(r.versions)),
-  agentVariables: (key: string) =>
-    get<{ variables: PromptVar[] }>(`/agents/${key}/variables`).then((r) => arr(r.variables)),
   previewAgentPrompt: (key: string, template: string, sample?: Record<string, string>) =>
     post<{ rendered: string; error?: string }>(`/agents/${key}/prompt/preview`, { template, sample }),
-  getAgentVisibility: (key: string) =>
-    get<{ mcp: number[]; skill: string[]; skill_always?: string[] }>(`/agents/${key}/visibility`),
   // skillAlways：可见 skill 中的「常驻」子集（正文整段注入 system 稳定段，≤5 条，后端强制）。
   setAgentVisibility: (key: string, mcp: number[], skill: string[], skillAlways: string[] = []) =>
     put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill, skill_always: skillAlways }),
@@ -2553,7 +2537,6 @@ export const api = {
     meta: { mcps?: string[]; description?: string; license?: string; compatibility?: string },
   ) => put<{ ok: boolean }>(`/skills/${name}/meta`, meta),
   createSkillDir: (skill: string, path: string) => post<{ dir: string }>(`/skills/${skill}/dirs`, { path }),
-  skillFiles: (name: string) => get<{ files: string[] }>(`/skills/${name}/files`).then((r) => r.files),
   readSkillFile: (name: string, file: string) =>
     get<{ content: string; file: string }>(`/skills/${name}/files/${file}`).then((r) => r.content),
   writeSkillFile: (name: string, file: string, content: string) =>

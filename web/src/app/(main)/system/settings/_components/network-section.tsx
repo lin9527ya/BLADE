@@ -31,8 +31,12 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     setProxyHealthURL,
     proxyHealthTimeout,
     setProxyHealthTimeout,
+    proxyHealthInterval,
+    setProxyHealthInterval,
     proxyFailThreshold,
     setProxyFailThreshold,
+    proxySwitchCooldown,
+    setProxySwitchCooldown,
     proxyActive,
     proxyBlocked,
     proxyStatus,
@@ -137,7 +141,7 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             disabled={!loaded || savingGlobalProxy}
             onChange={(e) => setGlobalProxyPoolInput(e.target.value)}
           />
-          <div className="grid gap-3 md:grid-cols-[1fr_110px_110px]">
+          <div className="grid gap-3 md:grid-cols-[1fr_95px_105px_90px_105px]">
             <div className="space-y-1.5">
               <span className="text-muted-foreground text-xs">健康检查 URL</span>
               <Input
@@ -162,6 +166,18 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
               />
             </div>
             <div className="space-y-1.5">
+              <span className="text-muted-foreground text-xs">检查间隔（秒）</span>
+              <Input
+                id="proxy-health-interval"
+                type="number"
+                min={5}
+                max={600}
+                value={proxyHealthInterval}
+                disabled={!loaded || savingGlobalProxy}
+                onChange={(e) => setProxyHealthInterval(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
               <span className="text-muted-foreground text-xs">失败阈值</span>
               <Input
                 id="proxy-fail-threshold"
@@ -171,6 +187,18 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 value={proxyFailThreshold}
                 disabled={!loaded || savingGlobalProxy}
                 onChange={(e) => setProxyFailThreshold(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-muted-foreground text-xs">切换冷却（秒）</span>
+              <Input
+                id="proxy-switch-cooldown"
+                type="number"
+                min={0}
+                max={600}
+                value={proxySwitchCooldown}
+                disabled={!loaded || savingGlobalProxy}
+                onChange={(e) => setProxySwitchCooldown(e.target.value)}
               />
             </div>
           </div>

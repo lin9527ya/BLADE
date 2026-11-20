@@ -933,19 +933,6 @@ export interface TaskNode {
   finding_status?: string;
 }
 
-// GET /api/tasks/{id}/worker-slots — fixed N execution slots (sessions reused
-// across intents). state is running|paused|open when an intent is bound, idle otherwise.
-export interface WorkerSlot {
-  slot: number;
-  name: string;
-  session: string; // "slot:<n>"
-  state: string;
-  intent_id?: string;
-  summary?: string;
-  started_at?: string;
-  last_activity?: string;
-}
-
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
 // 这样每条播报都能说清「从哪来、产出了什么」,而不用把整张图拉下来。
 export interface ExplorationNodePage {
@@ -1508,6 +1495,51 @@ export interface FindingCaseStats {
   ungrouped: number;
   distinct: number;
   reports: number;
+}
+
+export interface FindingCaseCandidate {
+  finding: Finding;
+  score: number;
+  reasons: string[];
+}
+
+export interface ExplorationLedgerGap {
+  asset_id: number;
+  label: string;
+  risk_area: string;
+  status: string;
+}
+
+export interface ExplorationLedgerSummary {
+  assets: number;
+  cells_total: number;
+  counts: Record<string, number>;
+  waived: number;
+  gaps?: ExplorationLedgerGap[];
+  gaps_total: number;
+}
+
+export interface ExplorationChainRow {
+  loot_id: number;
+  kind: string;
+  label: string;
+  stage: string;
+  status: string;
+  declared_uses?: number[];
+  uses: number;
+  last_outcome?: string;
+  downstream?: number[];
+}
+
+export interface ExplorationChainReport {
+  rows: ExplorationChainRow[];
+  counts: Record<string, number>;
+}
+
+export interface ExplorationLedgerResponse {
+  task_id: string;
+  ledger: ExplorationLedgerSummary;
+  chains?: ExplorationChainReport;
 }
 
 export interface Finding {

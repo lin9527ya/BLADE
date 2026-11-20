@@ -125,7 +125,7 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
                         <TableCell className="align-top tabular-nums">{schedulingScore(row)}</TableCell>
                         <TableCell className="min-w-56 whitespace-normal align-top text-xs">
                           <p>自创建：{trackingDuration(row.waiting_seconds)}</p>
-                          <p className="mt-1 text-muted-foreground">{row.wait_reasons?.length ? row.wait_reasons.map(scheduleWaitLabel).join("；") : "候选已就绪，等待空闲槽位领取"}</p>
+                          <p className="mt-1 text-muted-foreground">{row.wait_reasons?.length ? row.wait_reasons.map(scheduleWaitLabel).join("；") : "候选已就绪，等待并发额度领取"}</p>
                           <details className="mt-2"><summary className="cursor-pointer">评分分解</summary><div className="mt-2"><ScoreDetails row={row} /></div></details>
                         </TableCell>
                       </TableRow>

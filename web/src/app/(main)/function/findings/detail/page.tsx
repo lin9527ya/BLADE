@@ -28,7 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { triageNoteLabel } from "@/lib/finding-triage";
 import { statusMeta } from "@/lib/status";
-import type { Finding, FindingStatus, Severity } from "@/lib/types";
+import type { Finding, FindingCaseCandidate, FindingStatus, Severity } from "@/lib/types";
 
 import { FindingLineageView } from "./lineage";
 
@@ -79,6 +79,7 @@ function FindingDetailInner() {
     : "/function/findings";
   const backLabel = contextTaskId ? (contextTab === "retests" ? "返回任务复测" : "返回任务发现") : "返回发现列表";
   const [finding, setFinding] = React.useState<Finding | null>(null);
+  const [candidates, setCandidates] = React.useState<FindingCaseCandidate[]>([]);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
   // SRC 交付件导出中（md/docx），用于禁用按钮。
@@ -97,8 +98,23 @@ function FindingDetailInner() {
     }
     api
       .getFinding(id, contextTaskId || undefined)
-      .then((f) => setFinding(f))
-      .catch(() => setFinding(null))
+      .then((f) => {
+        setFinding(f);
+        const fid = f.finding_id ?? f.id;
+        const tid = contextTaskId || f.task_id;
+        if (!f.inherited && fid && tid) {
+          void api
+            .findingCaseCandidates(fid, tid)
+            .then(setCandidates)
+            .catch(() => setCandidates([]));
+        } else {
+          setCandidates([]);
+        }
+      })
+      .catch(() => {
+        setFinding(null);
+        setCandidates([]);
+      })
       .finally(() => setLoaded(true));
   }, [contextTaskId, id]);
   React.useEffect(() => {
@@ -406,6 +422,37 @@ function FindingDetailInner() {
                   </FieldRow>
                 </CardContent>
               </Card>
+              {candidates.length > 0 && (
+                <Card className="h-fit">
+                  <CardHeader>
+                    <CardTitle className="text-sm">疑似同源候选 ({candidates.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-2 text-xs">
+                    {candidates.map((c) => {
+                      const cf = c.finding;
+                      const cid = cf.finding_id ?? cf.id;
+                      return (
+                        <div key={cid} className="space-y-1 rounded-md border p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <Link
+                              href={`/function/findings/detail?id=${encodeURIComponent(String(cid))}${contextTaskId ? `&context_task=${encodeURIComponent(contextTaskId)}` : ""}`}
+                              className="truncate font-medium text-primary hover:underline"
+                            >
+                              #{cid} {cf.name || cf.vulnclass || "未命名漏洞"}
+                            </Link>
+                            <Badge variant="secondary" className="shrink-0 tabular-nums">
+                              匹配 {c.score}
+                            </Badge>
+                          </div>
+                          {c.reasons?.length > 0 && (
+                            <p className="text-muted-foreground">{c.reasons.join("；")}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </CardContent>
+                </Card>
+              )}
               <FindingCollaborationPanel finding={finding} onChanged={load} />
             </div>
           </div>

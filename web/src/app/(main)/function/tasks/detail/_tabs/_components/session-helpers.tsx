@@ -20,7 +20,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { cacheHitRate } from "@/lib/token-stats";
-import type { Activity, Session, SessionStatus, TaskLLMResolution, TaskNode, WorkerSlot } from "@/lib/types";
+import type { Activity, Session, SessionStatus, TaskLLMResolution, TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // 会话页签的类型、常量与纯函数：会话键、消息合并、状态图标与意图映射。
@@ -285,23 +285,6 @@ export function keyForSession(s: Session): string {
 }
 
 export const workerSlotSessionId = (slot: number) => `s-slot-${slot}`;
-
-// Slot-derived sessions: exactly N, stable ids, and the current intent (if any)
-// supplies the status/title. An idle slot stays visible between intents.
-export function workerSlotToSession(w: WorkerSlot): Session {
-  const current = !!w.intent_id;
-  return {
-    id: workerSlotSessionId(w.slot),
-    role: "worker",
-    title: current ? w.summary || `Intent ${w.intent_id}` : `Worker #${w.slot} · 等待下一个意图`,
-    status: current ? intentStatus(w.state) : "idle",
-    live: current && w.state === "running",
-    last_activity: w.last_activity || w.started_at || "",
-    intent_id: w.intent_id,
-    worker_no: w.slot,
-    slot: w.slot,
-  };
-}
 
 // Map an exploration intent (TaskNode) state → a session status the UI renders.
 //

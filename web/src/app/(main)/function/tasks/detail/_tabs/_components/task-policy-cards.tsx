@@ -296,8 +296,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
   );
 }
 
-// TaskRuntimeCard 展示任务的并发与预算……这些值在创建任务时确定：
-// worker 槽位首次启动即固化；任务超时/心跳影响 coordinator 与 planner 节律。
+// TaskRuntimeCard 展示任务的并发上限与超时预算（创建时确定）。
 export function TaskRuntimeCard({ task }: { task?: Task | null }) {
   if (!task) return null;
   const workers = task.worker_count && task.worker_count > 0 ? String(task.worker_count) : "跟随全局";
@@ -331,8 +330,8 @@ export function TaskRuntimeCard({ task }: { task?: Task | null }) {
           <div className="font-medium">{heartbeat}</div>
         </div>
         <p className="text-muted-foreground text-xs sm:col-span-3">
-          并发槽位只在任务首次启动时固化；全局默认在「系统设置 →
-          执行与并发」调整。需要不同的并发/预算请在新建任务时设置。
+          每个意图分配独立 Worker 与会话，互不复用上下文；并发 Worker 上限全局默认可在「系统设置 →
+          执行与并发」调整，需要独立并发或超时预算请在新建任务时设置。
         </p>
       </CardContent>
     </Card>

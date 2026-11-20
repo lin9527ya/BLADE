@@ -19,7 +19,8 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sheet,
@@ -28,7 +29,13 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
-import type { CoverageAssetRef, CoverageAssetRefs, CoverageGraphEdge, CoverageGraphNode } from "@/lib/types";
+import type {
+  CoverageAssetRef,
+  CoverageAssetRefs,
+  CoverageGraphEdge,
+  CoverageGraphNode,
+  ExplorationLedgerResponse,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // 每个父节点下、同一类型的子节点默认展示的数量；超出折叠，"展示更多"每次再拉这么多。
@@ -722,13 +729,9 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
   }, [fetchGraph]);
 
   React.useEffect(() => {
-    let cancelled = false;
     setActivePath([]);
     setSelectedAsset(null);
     setSelectedFoldId(null);
-    return () => {
-      cancelled = true;
-    };
   }, [taskId]);
 
   const { renderNodes, renderEdges } = React.useMemo(
@@ -1140,14 +1143,133 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
   );
 }
 
+const CHAIN_STATUS_LABEL: Record<string, string> = {
+  unused: "未动用",
+  open: "待推进",
+  attempted: "尝试中",
+  advanced: "已推进",
+};
+
+function CoverageLedgerPanel({ taskId }: { taskId: string }) {
+  const [open, setOpen] = React.useState(false);
+  const [ledger, setLedger] = React.useState<ExplorationLedgerResponse | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    setError("");
+    api
+      .explorationLedger(taskId)
+      .then(setLedger)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [taskId]);
+
+  React.useEffect(() => {
+    if (open && !ledger && !loading) load();
+  }, [open, ledger, loading, load]);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <Card>
+        <CardHeader className="py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm">探索覆盖台账与战果通路</CardTitle>
+              <CardDescription className="text-xs">
+                按「资产 × 风险面」统计覆盖状态与未测缺口，并追踪活跃据点/凭据的下游推进情况。
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              {open && (
+                <Button size="sm" variant="ghost" onClick={load} disabled={loading}>
+                  <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> 刷新
+                </Button>
+              )}
+              <CollapsibleTrigger asChild>
+                <Button size="sm" variant="outline">
+                  {open ? "收起台账" : "查看台账"}
+                </Button>
+              </CollapsibleTrigger>
+            </div>
+          </div>
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent className="space-y-3 pt-0 text-xs">
+            {error && <p className="text-destructive">读取台账失败：{error}</p>}
+            {!ledger ? (
+              <p className="text-muted-foreground">{loading ? "正在读取台账…" : "暂无台账数据"}</p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">资产 {ledger.ledger.assets}</Badge>
+                  <Badge variant="outline">风险格 {ledger.ledger.cells_total}</Badge>
+                  <Badge variant="secondary">已测 {ledger.ledger.counts?.tested ?? 0}</Badge>
+                  <Badge variant="secondary">在跑 {ledger.ledger.counts?.inflight ?? 0}</Badge>
+                  <Badge variant="secondary">未测 {ledger.ledger.counts?.untested ?? 0}</Badge>
+                  <Badge variant="secondary">失败 {ledger.ledger.counts?.failed ?? 0}</Badge>
+                  <Badge variant="outline">豁免 {ledger.ledger.waived ?? 0}</Badge>
+                  <Badge variant="outline">待补缺口 {ledger.ledger.gaps_total ?? 0}</Badge>
+                </div>
+                {ledger.ledger.gaps && ledger.ledger.gaps.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="font-medium text-muted-foreground">待测缺口（前 {ledger.ledger.gaps.length} 项）</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {ledger.ledger.gaps.map((g, idx) => (
+                        <Badge key={`${g.asset_id}-${g.risk_area}-${idx}`} variant="outline" className="font-mono text-[11px]">
+                          {g.label} · {g.risk_area} ({g.status})
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {ledger.chains && (
+                  <div className="space-y-1.5 border-t pt-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-muted-foreground">战果通路台账</span>
+                      {(["unused", "open", "attempted", "advanced"] as const).map((st) => (
+                        <Badge key={st} variant="outline" className="text-[11px]">
+                          {CHAIN_STATUS_LABEL[st]} {ledger.chains?.counts?.[st] ?? 0}
+                        </Badge>
+                      ))}
+                    </div>
+                    {ledger.chains.rows.length > 0 && (
+                      <div className="grid gap-1.5 sm:grid-cols-2">
+                        {ledger.chains.rows.slice(0, 12).map((row) => (
+                          <div key={row.loot_id} className="flex items-center justify-between gap-2 rounded border px-2 py-1">
+                            <span className="truncate font-mono" title={row.label}>
+                              [{row.kind === "credential" ? "凭据" : "据点"}] {row.label}
+                            </span>
+                            <Badge variant="secondary" className="shrink-0 text-[10px]">
+                              {CHAIN_STATUS_LABEL[row.status] ?? row.status} · 动用 {row.uses}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
+  );
+}
+
 export function CoverageGraphTab({ taskId, coverageEnabled = true }: { taskId: string; coverageEnabled?: boolean }) {
   return (
-    <Card>
-      <CardContent className="p-0">
-        <div className="h-[72vh] w-full overflow-hidden rounded-xl">
-          <GraphInner taskId={taskId} coverageEnabled={coverageEnabled} />
-        </div>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-3">
+      <Card>
+        <CardContent className="p-0">
+          <div className="h-[72vh] w-full overflow-hidden rounded-xl">
+            <GraphInner taskId={taskId} coverageEnabled={coverageEnabled} />
+          </div>
+        </CardContent>
+      </Card>
+      <CoverageLedgerPanel key={taskId} taskId={taskId} />
+    </div>
   );
 }

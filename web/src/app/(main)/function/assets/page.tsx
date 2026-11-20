@@ -62,38 +62,6 @@ import {
   KIND_LABEL,
 } from "./_components/asset-parts";
 
-const METHOD_COLOR: Record<string, string> = {
-  GET: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
-  POST: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400",
-  PUT: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400",
-  PATCH: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400",
-  DELETE: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400",
-  HEAD: "bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-400",
-  OPTIONS: "bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400",
-};
-
-function _MethodBadge({ method }: { method: string }) {
-  const m = method.toUpperCase();
-  return (
-    <span
-      className={cn(
-        "inline-block rounded px-1.5 py-0.5 font-mono font-semibold text-[10px] leading-none",
-        METHOD_COLOR[m] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {m || "—"}
-    </span>
-  );
-}
-
-function _statusTone(code: number) {
-  if (code >= 500) return "text-red-500 dark:text-red-400";
-  if (code >= 400) return "text-amber-500 dark:text-amber-400";
-  if (code >= 300) return "text-blue-500 dark:text-blue-400";
-  if (code >= 200) return "text-emerald-500 dark:text-emerald-400";
-  return "text-muted-foreground";
-}
-
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   // P28：「全部」是默认档——6 类资产同在一张表里，类型降级为列 + 筛选，不再一类一个标签。
   { key: "all", label: "全部", icon: LayersIcon },
@@ -144,10 +112,11 @@ export default function AssetsPage() {
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
 
-  // company delete
+  // company delete / reattribute
   const [companyDeleteTarget, setCompanyDeleteTarget] = React.useState<Company | null>(null);
   const [companyDeleteAssets, setCompanyDeleteAssets] = React.useState(false);
   const [companyDeleting, setCompanyDeleting] = React.useState(false);
+  const [reattributing, setReattributing] = React.useState(false);
 
   // Companies + per-type counts (tab badges) — loaded on demand, no background polling.
   const loadMeta = React.useCallback(() => {
@@ -401,6 +370,19 @@ export default function AssetsPage() {
     }
   }
 
+  async function reattributeCompanies() {
+    setReattributing(true);
+    try {
+      await api.reattributeCompanies();
+      toast.success("已完成企业归因重算");
+      refresh();
+    } catch (e) {
+      toast.error(`重算失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setReattributing(false);
+    }
+  }
+
   return (
     <div className="flex h-[calc(100vh-6rem)] min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
@@ -448,6 +430,12 @@ export default function AssetsPage() {
             <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
           </Button>
           <AssetImportDialog onImported={refresh} />
+          {tab === "company" && (
+            <Button variant="outline" size="sm" onClick={() => void reattributeCompanies()} disabled={reattributing}>
+              <RefreshCwIcon className={cn("size-4", reattributing && "animate-spin")} />
+              {reattributing ? "重算归因中…" : "重新归因"}
+            </Button>
+          )}
           <CompanyDialog onSaved={refresh} />
         </div>
       </div>

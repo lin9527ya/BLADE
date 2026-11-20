@@ -20,6 +20,7 @@ import { CopyLinkButton } from "@/components/copy-link-button";
 import { HttpCodeBlock } from "@/components/http-code-block";
 import { LinkTrafficDialog } from "@/components/link-traffic-dialog";
 import { TablePagination } from "@/components/table-pagination";
+import { TrafficBlobBar } from "@/components/traffic-evidence-viewer";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -891,7 +892,10 @@ export default function TrafficPage() {
                       加载报文…
                     </div>
                   ) : (
-                    <HttpCodeBlock raw={requestWithHost(detail?.req ?? "", selected)} />
+                    <>
+                      <TrafficBlobBar raw={detail?.req ?? ""} />
+                      <HttpCodeBlock raw={requestWithHost(detail?.req ?? "", selected)} />
+                    </>
                   )}
                 </TabsContent>
                 <TabsContent value="response" className="min-h-0 overflow-auto">
@@ -901,7 +905,10 @@ export default function TrafficPage() {
                       加载报文…
                     </div>
                   ) : (
-                    <HttpCodeBlock raw={detail?.resp ?? ""} />
+                    <>
+                      <TrafficBlobBar raw={detail?.resp ?? ""} />
+                      <HttpCodeBlock raw={detail?.resp ?? ""} />
+                    </>
                   )}
                 </TabsContent>
               </Tabs>

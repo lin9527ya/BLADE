@@ -83,7 +83,9 @@ export function useSettingsState() {
   const [proxySavedPool, setProxySavedPool] = React.useState("");
   const [proxyHealthURL, setProxyHealthURL] = React.useState("");
   const [proxyHealthTimeout, setProxyHealthTimeout] = React.useState("5");
+  const [proxyHealthInterval, setProxyHealthInterval] = React.useState("30");
   const [proxyFailThreshold, setProxyFailThreshold] = React.useState("2");
+  const [proxySwitchCooldown, setProxySwitchCooldown] = React.useState("30");
   const [proxyActive, setProxyActive] = React.useState("");
   const [proxyBlocked, setProxyBlocked] = React.useState(false);
   const [proxyStatus, setProxyStatus] = React.useState<ProxyPoolHealth[]>([]);
@@ -220,7 +222,9 @@ export function useSettingsState() {
     setProxySavedPool(savedPool);
     setProxyHealthURL(s.proxy_health_url || "https://www.gstatic.com/generate_204");
     setProxyHealthTimeout(String(s.proxy_health_timeout_seconds ?? 5));
+    setProxyHealthInterval(String(s.proxy_health_interval_seconds ?? 30));
     setProxyFailThreshold(String(s.proxy_fail_threshold ?? 2));
+    setProxySwitchCooldown(String(s.proxy_switch_cooldown_seconds ?? 30));
     setProxyEgressIPURL(s.proxy_egress_ip_url || "https://api.ipify.org");
     setClashApiURL(s.clash_api_url ?? "");
     setClashSecretSet(!!s.clash_api_secret_set);
@@ -1010,13 +1014,23 @@ export function useSettingsState() {
 
   const saveGlobalProxy = () => {
     const timeout = Number.parseInt(proxyHealthTimeout, 10);
+    const interval = Number.parseInt(proxyHealthInterval, 10);
     const threshold = Number.parseInt(proxyFailThreshold, 10);
-    if (!Number.isFinite(timeout) || timeout <= 0) {
-      toast.error("健康检查超时必须大于 0 秒");
+    const cooldown = Number.parseInt(proxySwitchCooldown, 10);
+    if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 60) {
+      toast.error("健康检查超时需在 1–60 秒之间");
       return;
     }
-    if (!Number.isFinite(threshold) || threshold <= 0) {
-      toast.error("失败阈值必须大于 0");
+    if (!Number.isFinite(interval) || interval < 5 || interval > 600) {
+      toast.error("检查间隔需在 5–600 秒之间");
+      return;
+    }
+    if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 10) {
+      toast.error("失败阈值需在 1–10 之间");
+      return;
+    }
+    if (!Number.isFinite(cooldown) || cooldown < 0 || cooldown > 600) {
+      toast.error("切换冷却需在 0–600 秒之间");
       return;
     }
     setProxySaveError("");
@@ -1026,7 +1040,9 @@ export function useSettingsState() {
         global_proxy_pool: globalProxyPoolInput.trim(),
         proxy_health_url: proxyHealthURL.trim(),
         proxy_health_timeout_seconds: timeout,
+        proxy_health_interval_seconds: interval,
         proxy_fail_threshold: threshold,
+        proxy_switch_cooldown_seconds: cooldown,
         proxy_egress_ip_url: proxyEgressIPURL.trim(),
       })
       .then((s) => {
@@ -1135,8 +1151,12 @@ export function useSettingsState() {
     setProxyHealthURL,
     proxyHealthTimeout,
     setProxyHealthTimeout,
+    proxyHealthInterval,
+    setProxyHealthInterval,
     proxyFailThreshold,
     setProxyFailThreshold,
+    proxySwitchCooldown,
+    setProxySwitchCooldown,
     proxyActive,
     proxyBlocked,
     proxyStatus,
