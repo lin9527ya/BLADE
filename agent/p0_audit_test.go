@@ -113,7 +113,7 @@ func TestDomainTemplatesDistinctAndClean(t *testing.T) {
 			t.Fatalf("领域模板 %s 与其它模板完全相同", name)
 		}
 		seen[body] = true
-		for _, bad := range []string{"add_intent 的 goal_id", "no_output"} {
+		for _, bad := range []string{"add_intent 的 goal_id", "uses_loot_ids"} {
 			if strings.Contains(body, bad) {
 				t.Fatalf("领域模板 %s 仍引用已删除字段/状态 %q", name, bad)
 			}

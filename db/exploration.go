@@ -372,13 +372,15 @@ func (s *ExplorationStore) Unlink(from int64, rel string, to int64) error {
 	return tx.Commit()
 }
 
-// LinkIntentSource 给一条**已存在**的意图补「派生自哪条事实/漏洞」的血缘边。
+// LinkIntentSource 给一条**已存在**的意图补「派生自哪条来源节点」的血缘边（对齐 add_intent：
+// 支持 fact/finding/foothold/credential/ad_object/cloud_object，含直接关联上游任务继承的节点）。
 //
 // 为什么需要它：add_intent 的 parent_ids 是可选参数，模型漏传时意图会落到「兜底连任务
 // 起点」的分支——图上看起来连着，实际丢掉了真实因果链，后续 planner 读到的 parents 只有
 // origin，就以为这条方向是从起点凭空派生的。这个入口让漏传的血缘可以补回来，而不是只能
 // 重派一条意图（重派会丢掉已经跑出来的产出）。
 //
+// 当来源是据点(foothold)/凭据(credential)时，与 add_intent 一致同时补一条 uses 边；
 // 补上真实来源后会删掉 origin 兜底边：同时连起点和真实来源，图上反而更乱，也让
 // 「这条方向从哪来」重新变得不可读。
 func (s *ExplorationStore) LinkIntentSource(intentID, sourceID int64) (bool, error) {
@@ -396,15 +398,17 @@ WHERE id=$1 AND exploration_id=$2`, intentID, s.expID).Scan(&kind); err != nil {
 	if kind != KindIntent {
 		return false, fmt.Errorf("节点 %d 是 %q，不是意图", intentID, kind)
 	}
-	if err := s.db.QueryRow(`SELECT kind FROM exploration_nodes
-WHERE id=$1 AND exploration_id=$2`, sourceID, s.expID).Scan(&kind); err != nil {
-		if err == sql.ErrNoRows {
-			return false, fmt.Errorf("来源 %d 不存在于本任务", sourceID)
-		}
+	srcNode, err := s.GetNodeWithSources(sourceID)
+	if err != nil {
 		return false, err
 	}
-	if kind != KindFact && kind != KindFinding {
-		return false, fmt.Errorf("来源 %d 是 %q 节点：意图只能锚在事实(fact)/漏洞(finding)上", sourceID, kind)
+	if srcNode == nil {
+		return false, fmt.Errorf("来源 %d 不存在于本任务或直接关联任务", sourceID)
+	}
+	switch srcNode.Kind {
+	case KindFact, KindFinding, KindFoothold, KindCredential, KindADObject, KindCloudObject:
+	default:
+		return false, fmt.Errorf("来源 %d 是 %q 节点：意图只能锚在事实(fact)/漏洞(finding)/据点(foothold)/凭据(credential)/AD对象(ad_object)/云对象(cloud_object)上", sourceID, srcNode.Kind)
 	}
 	res, err := s.db.Exec(`INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id)
 VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, sourceID, RelDerivedFrom, intentID)
@@ -414,6 +418,16 @@ VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, sourceID, RelDerivedFrom,
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, err
+	}
+	if srcNode.Kind == KindFoothold || srcNode.Kind == KindCredential {
+		ures, uerr := s.db.Exec(`INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id)
+VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.expID, intentID, RelUses, sourceID)
+		if uerr != nil {
+			return false, uerr
+		}
+		if un, uerr := ures.RowsAffected(); uerr == nil && un > 0 {
+			n += un
+		}
 	}
 	if origin, oerr := s.OriginFactID(); oerr == nil && origin > 0 && origin != sourceID {
 		_ = s.Unlink(origin, RelDerivedFrom, intentID)

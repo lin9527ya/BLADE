@@ -285,12 +285,12 @@ func isCleanupIntentPayload(n *db.Node) bool {
 // 血缘，但会丢掉已经跑出来的产出；这个工具只补边、不动节点。
 func (t *ToolSet) linkIntentSource() actool.CoreTool {
 	return t.writeExpTool("link_intent_source",
-		"给一条已存在的意图补上「派生自哪条事实/漏洞」的血缘边（parent_ids 漏传时用）。"+
+		"给一条已存在的意图补上「派生自哪条事实/漏洞/据点/凭据/AD或云对象」的血缘边（parent_ids 漏传时用；来源为据点或凭据时同步补写 uses 边）。"+
 			"补上真实来源后会自动去掉指向任务起点的兜底边，链路图才读得出真实因果。",
 		obj(map[string]any{
 			"intent_id":  idp("要补血缘的意图 id"),
 			"lead_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：关联线索/提案 ID（L.../P...），自动附来源事实，不改变执行状态。"},
-			"source_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "来源节点 id（事实/漏洞，0/1/多个）：这条意图是由哪些已确认结论综合出来的"},
+			"source_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "来源节点 id（事实/漏洞/据点/凭据/AD对象/云对象，0/1/多个）：这条意图是由哪些已确认节点综合/派生出来的"},
 		}, "intent_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {

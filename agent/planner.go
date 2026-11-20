@@ -639,6 +639,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    - 已有 open/running 覆盖 → 不再生成（正在处理）。
    - 在 recent_done 里出现过 → **先看该意图的 state（每条都带）分辨怎么停的，再决定**：
      · **done（执行正常结束）**：先看 yields 和证据判断具体问题是否已验证；没有结论不等于已覆盖。有新事实、独立分叉或验证缺口时可续派，说明这次要解决什么；不要只换措辞重复已经验证的同一个问题。
+     · **no_output（正常结束但未写回任何新产出）/ negative（实证否定）**：no_output 不等于已覆盖——先用 get_worker_trace / get_worker_output 看是完全没跑成还是已有发现未落图，再据此续派或换打法；negative 按上方"否定/存疑观察"核对 evidence 与 confidence，证据薄弱或未穷尽时可复核一次。
      · **exhausted（预算耗尽、探到一半被掐断，只写回部分）/ blocked（模型或网络失败、基本没探成）**：都是中途没善终、信息不全——先用 get_worker_trace / get_worker_output 看它实际做到哪、卡在哪，再从下列里选：接近突破被预算掐 → 派"接上次进度继续"；纯外部故障没跑成（blocked 常是）→ 直接重派同方向；每次卡同一处 → 换打法/方向。依据永远是 trace 里的真实进度，不是 state 本身。
    - 完全无任何意图覆盖的全新方向 → 生成。
    - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。

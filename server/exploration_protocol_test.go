@@ -151,4 +151,16 @@ func TestHistoricalBuiltinPromptFingerprints(t *testing.T) {
 			}
 		}
 	}
+	// v0.9.23 planner snapshot must stay recognized so upgrades migrate smoothly.
+	v0923Body, err := os.ReadFile("testdata/prompts/planner-v0.9.23.body.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum0923 := sha256.Sum256([]byte(strings.TrimSpace(string(v0923Body))))
+	if !plannerBuiltinPromptSHA256[fmt.Sprintf("%x", sum0923[:])] {
+		t.Fatalf("lost builtin fingerprint planner v0.9.23")
+	}
+	if body := agent.PlannerPromptBody(); !strings.Contains(body, "no_output") {
+		t.Fatalf("builtin planner prompt missing no_output guidance")
+	}
 }

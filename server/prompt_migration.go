@@ -27,6 +27,7 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"bf8ad2e280317c2110fcfbd50b342c28bae83e77cc053c2ce2dea50298b84109": true, // v0.9.19–20
 	"0ffa97062f5a4d92a2f117150fee63a85acf20ef620ffb81e003afd9a1643eea": true, // v0.9.21
 	"3ee238ddd5bf7088e89db620cc46f6e2178ab46d66ab7061077947cf439eb1d6": true, // v0.9.22
+	"39ea4382dafe8a2e0b9b02f073ce6dbf9fd39cc7e97e8ff3743350e1f7472594": true, // v0.9.23
 	"6a832e1146013f13d6fceaca1d89be85bddc2cf7e5515b9b525d8da8bd4b8430": true, // ARTEX parity v3（扩面/瓶颈提示前）
 }
 

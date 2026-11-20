@@ -156,6 +156,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		if c, ok := p["contract"].(map[string]any); ok && len(c) > 0 {
 			m["contract"] = compactIntentContract(c)
 		}
+		if r, _ := p["route"].(string); strings.TrimSpace(r) != "" {
+			m["route"] = strings.TrimSpace(r)
+		}
 		out = append(out, m)
 	}
 	return out
@@ -808,8 +811,8 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 				"running": st.Running, "done": st.Done,
 			}
 			if l := local[st.Route]; l != nil {
-				if summaries, ok := l["summaries"]; ok {
-					m["summaries"] = summaries
+				if recent, ok := l["recent"]; ok {
+					m["recent"] = recent
 				}
 			}
 			global = append(global, m)
@@ -968,6 +971,14 @@ func blackboardRoutes(overview map[string]any) []map[string]any {
 				route, _ = it["risk_area"].(string)
 			}
 			if strings.TrimSpace(route) == "" {
+				route, _ = it["route"].(string)
+			}
+			if strings.TrimSpace(route) == "" {
+				if aid := firstAssetIDValue(it["asset_ids"]); aid > 0 {
+					route = fmt.Sprintf("asset:%d", aid)
+				}
+			}
+			if strings.TrimSpace(route) == "" {
 				route = "unrouted"
 			}
 			route = strings.TrimSpace(route)
@@ -1020,6 +1031,37 @@ func blackboardRoutes(overview map[string]any) []map[string]any {
 		})
 	}
 	return out
+}
+
+func firstAssetIDValue(raw any) int64 {
+	switch ids := raw.(type) {
+	case []int64:
+		if len(ids) > 0 && ids[0] > 0 {
+			return ids[0]
+		}
+	case []any:
+		if len(ids) > 0 {
+			switch v := ids[0].(type) {
+			case float64:
+				if int64(v) > 0 {
+					return int64(v)
+				}
+			case int64:
+				if v > 0 {
+					return v
+				}
+			case int:
+				if v > 0 {
+					return int64(v)
+				}
+			case string:
+				if id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && id > 0 {
+					return id
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // graphHealth 是图体检的轻量摘要：每 30 秒最多跑一次 AuditGraph（8 类检查），
@@ -1308,7 +1350,7 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	// 计数走 COUNT 而不是 len(列表)：ListByKind 有行数上限，任务超过上限后 len() 报的是
 	// 截断窗口的大小而不是总数——findings_total 是目标判定的依据，不能骗人。findings 列表
 	// 只取要展示的那一窗（findingListCap），也不必为此多拉行。
-	const findingListCap = 10
+	const findingListCap = 15
 	// 只数仍然有效的漏洞（撤回/误报/重复/排除已关闭）：findings_total 是目标判定的
 	// 依据，把被推翻的结论算进去会让 planner 误以为目标已达成。
 	vulnNodes, _ := t.ts.ListActiveFindings(findingListCap) // newest first
@@ -1647,7 +1689,7 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	//
 	// 计数按**全量**算（战果稀疏，一个任务通常就几条），只有展示窗口才截断——否则 outstanding
 	// 计数会和当年 findings_total 一样，在条目超过窗口后开始骗人。
-	const lootListCap = 8
+	const lootListCap = 10
 	allFootholds, _ := t.ts.ListByKind(db.KindFoothold, 1000) // newest first
 	allCreds, _ := t.ts.ListByKind(db.KindCredential, 1000)
 	if total, err := t.ts.CountByKind(db.KindFoothold); err == nil {
@@ -2788,7 +2830,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
 			"asset_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
 			"lead_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：接手的线索 L<fact>-<index> / 提案 P<fact>-<index>；自动附来源，不用重复填 parent_ids。原文明确匹配唯一父节点线索时会自动关联，不必为了追踪填表。"},
-			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的已确认事实/发现节点 id；顶层全新方向留空，会自动挂到任务起点。"},
+			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的事实/发现/据点/凭据/AD对象/云对象节点 id；顶层全新方向留空，会自动挂到任务起点。"},
 			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。默认 advisory：只影响排序、不阻塞领取；只有 depends_on_mode=strict 才在前置仍 open/running/paused 时暂缓派发。"},
 			"depends_on_mode":  str("可选：advisory（默认，只排序）或 strict（强串行）。strict 也会在前置进入任何终态后 fail-open，不会永久卡死。"),
 			"hypothesis":       str("可选：本方向的明确假设（若 X 则 Y），供复盘/去重/验收。"),

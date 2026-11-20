@@ -489,15 +489,21 @@ func workerSystem(proxyAddr, caCert, dataDir string) string {
 }
 
 // renderWorkerIntentTurn is the per-run user message for the claimed intent. It is
-// deliberately NOT in the system prompt: a slot transcript is resumed across
-// intents, and a changing system prompt would invalidate the provider's prefix
-// cache before the first message. The marker lets a retried/resumed run avoid
-// appending the same intent twice.
+// deliberately NOT in the system prompt so a reused slot keeps the same cached
+// prefix. When running in the default per-intent isolated session, cross-intent
+// history warnings are omitted.
 func renderWorkerIntentTurn(intent *db.Node, assetsJSON, runDir string, slot int) string {
+	slotShared := !perIntentWorkerSession() || (intent != nil && strings.Contains(intent.LogicalSessionID, "-slot"))
+	return renderWorkerIntentTurnWithMode(intent, assetsJSON, runDir, slot, slotShared)
+}
+
+func renderWorkerIntentTurnWithMode(intent *db.Node, assetsJSON, runDir string, slot int, slotShared bool) string {
 	var b strings.Builder
 	b.WriteString(workerIntentMarker(intent.ID))
-	b.WriteString("\n【当前意图（本次唯一任务：只做这一条、只产生事实、做完即停）】\n")
-	b.WriteString("以下历史对话属于此前已经结束的意图，仅作背景参考；不要继续旧目标，也不要把旧 intent id/旧工作目录用于本条写回。\n")
+	b.WriteString("\n【当前意图（本次唯一任务：聚焦这一条，及时写回发现、战果或旁路线索，做完即停）】\n")
+	if slotShared {
+		b.WriteString("以下历史对话属于此前已经结束的意图，仅作背景参考；不要继续旧目标，也不要把旧 intent id/旧工作目录用于本条写回。\n")
+	}
 	b.WriteString(SanitizeUntrusted(string(intent.Payload)))
 	// P0 契约：worker 看得到完整 payload，但契约里的 produces/acceptance 决定
 	// “什么算做完”，单独提一句，避免被长 payload 淹没。
@@ -519,13 +525,17 @@ func renderWorkerIntentTurn(intent *db.Node, assetsJSON, runDir string, slot int
 	}
 	b.WriteString(fmt.Sprintf("\n意图 id: %d（record_fact / report_finding 等写回时传它）", intent.ID))
 	if slot > 0 {
-		b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本槽位会话跨意图复用）", slot))
+		if slotShared {
+			b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本槽位会话跨意图复用）", slot))
+		} else {
+			b.WriteString(fmt.Sprintf("\n执行槽位: Worker #%d（本意图独立会话）", slot))
+		}
 	}
 	if strings.TrimSpace(assetsJSON) != "" {
 		b.WriteString("\n本意图 asset_ids 对应的目标资产：\n" + SanitizeUntrusted(assetsJSON))
 	}
 	b.WriteString(workerArtifactSpec(runDir))
-	b.WriteString("\n\n开始执行当前意图：只做它、只产生事实、assets、finding、做完即停。")
+	b.WriteString("\n\n开始执行当前意图：聚焦这一条，及时写回事实、资产、发现、战果或旁路线索，做完即停。")
 	return b.String()
 }
 
@@ -806,14 +816,14 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		}
 	}
 	// 启动 user 消息 = 可降级的全局态势 overview + 当前意图块（带 marker）。
-	// 同一槽位会话会跨意图复用；marker 让重跑/续跑不会重复追加同一条意图。
-	intentTurn := renderWorkerIntentTurn(intent, assetsJSON, runDir, slot)
+	// 仅在槽位复用模式下会跨意图携带历史对话；按实际 sessionID 渲染对应提示。
+	intentTurn := renderWorkerIntentTurnWithMode(intent, assetsJSON, runDir, slot, strings.Contains(sessionID, "-slot"))
 	if brief := tsx.playbookBriefForIntent(intent); brief != "" {
 		intentTurn += brief
 	}
 	input := overview
 	if strings.TrimSpace(input) == "" {
-		input = "开始执行下面这条意图：只做它、只产生事实、assets、finding、做完即停。"
+		input = "开始执行当前意图：聚焦这一条，及时写回事实、资产、发现、战果或旁路线索，做完即停。"
 	}
 	input += "\n\n" + intentTurn
 

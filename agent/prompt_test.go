@@ -87,14 +87,30 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 
 	// The intent turn carries the per-run anchors: marker, payload/id, assets,
 	// runDir/artifact spec and slot — and nothing per-intent leaks into system.
-	turn := renderWorkerIntentTurn(&db.Node{ID: 9, Payload: json.RawMessage(`{"task":"probe-api"}`)}, `[{"id":1,"url":"http://t.example"}]`, "/data/tasks/1/i9", 2)
-	for _, want := range []string{workerIntentMarker(9), "probe-api", "意图 id: 9", "http://t.example", "/data/tasks/1/i9", "中间产物输出规约", "Worker #2", "仅作背景参考"} {
+	// Default per-intent isolated session omits cross-intent reuse warnings.
+	intent := &db.Node{ID: 9, Payload: json.RawMessage(`{"task":"probe-api"}`)}
+	turn := renderWorkerIntentTurn(intent, `[{"id":1,"url":"http://t.example"}]`, "/data/tasks/1/i9", 2)
+	for _, want := range []string{workerIntentMarker(9), "probe-api", "意图 id: 9", "http://t.example", "/data/tasks/1/i9", "中间产物输出规约", "Worker #2", "本意图独立会话"} {
 		if !strings.Contains(turn, want) {
 			t.Fatalf("intent turn missing %q: %s", want, turn)
 		}
 	}
+	for _, unwanted := range []string{"仅作背景参考", "本槽位会话跨意图复用"} {
+		if strings.Contains(turn, unwanted) {
+			t.Fatalf("per-intent isolated turn unexpectedly contains %q: %s", unwanted, turn)
+		}
+	}
 	if strings.Contains(recording, "/data/tasks/1/i9") {
 		t.Fatalf("system leaked runDir: %q", recording)
+	}
+
+	// Legacy slot-reuse mode restores the cross-intent history warning.
+	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "0")
+	sharedTurn := renderWorkerIntentTurn(intent, `[{"id":1,"url":"http://t.example"}]`, "/data/tasks/1/i9", 2)
+	for _, want := range []string{"仅作背景参考", "本槽位会话跨意图复用"} {
+		if !strings.Contains(sharedTurn, want) {
+			t.Fatalf("slot-shared turn missing %q: %s", want, sharedTurn)
+		}
 	}
 }
 
