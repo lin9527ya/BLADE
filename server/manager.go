@@ -109,6 +109,65 @@ type Task struct {
 	pendingAssetCount   int
 	pendingAssetSummary string
 	pendingDropped      int
+
+	prefixMu     sync.Mutex    `json:"-"`
+	prefixState  uint8         `json:"-"` // 0=idle, 1=first-wave leader warming KV cache, 2=warmed
+	prefixWarmCh chan struct{} `json:"-"`
+}
+
+const workerPrefixWarmWindow = 2500 * time.Millisecond
+
+// acquirePrefixWarmSlot lets the very first dispatched worker start immediately at
+// t=0 to warm the shared system+tools KV prefix, while concurrent first-wave
+// siblings wait briefly until the leader receives its first response or the bounded
+// warmup window elapses. Zero-value safe; no-op once warmed.
+func (t *Task) acquirePrefixWarmSlot(ctx context.Context) (isLeader bool) {
+	if t == nil {
+		return false
+	}
+	t.prefixMu.Lock()
+	switch t.prefixState {
+	case 2:
+		t.prefixMu.Unlock()
+		return false
+	case 0:
+		t.prefixState = 1
+		t.prefixWarmCh = make(chan struct{})
+		t.prefixMu.Unlock()
+		return true
+	default:
+		ch := t.prefixWarmCh
+		t.prefixMu.Unlock()
+		if ch == nil {
+			return false
+		}
+		timer := time.NewTimer(workerPrefixWarmWindow)
+		defer timer.Stop()
+		select {
+		case <-ch:
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		return false
+	}
+}
+
+func (t *Task) markPrefixWarmed() {
+	if t == nil {
+		return
+	}
+	t.prefixMu.Lock()
+	if t.prefixState == 2 {
+		t.prefixMu.Unlock()
+		return
+	}
+	ch := t.prefixWarmCh
+	t.prefixState = 2
+	t.prefixWarmCh = nil
+	t.prefixMu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task

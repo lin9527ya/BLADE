@@ -137,6 +137,15 @@ func deferMainTools(base []actool.CoreTool) []string {
 }
 
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
+	return deferredSystemWithDynamic(sysText, def)
+}
+
+// deferredSystemWithDynamic builds the segmented system prompt with all shared
+// static blocks (base instructions, AlwaysSkills, CapabilityIndex, deferred tool
+// list) BEFORE DynamicBoundary, and any task-specific dynamicTail segments (such
+// as constraintBlock) AFTER DynamicBoundary so shared prefix caches stay intact
+// across tasks.
+func deferredSystemWithDynamic(sysText string, def DeferredInfo, dynamicTail ...string) (system []string, boundary int) {
 	sysText += def.FindingGuidance
 	// 出站产物语言（P41）：放在这里而不是各 agent 的拼装点——四个 agent（planner/worker/
 	// mainagent/chat）都从这里出 system 段，一处覆盖全部。与常驻技能同层：会话固定、随整段缓存。
@@ -147,11 +156,8 @@ func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
 	always := strings.TrimSpace(def.AlwaysSkills)
 	capabilities := strings.TrimSpace(def.CapabilityIndex)
-	if always == "" && capabilities == "" && block == "" {
-		return []string{sysText}, 1
-	}
-	// 分层注入：常量层（常驻技能正文）在前、能力速查/deferred 工具块在后，二者都是
-	// 会话固定的稳定段，随整段 system 一起被缓存（boundary 覆盖全部）。
+	// 分层注入：常量层（base + 常驻技能正文 + 能力速查 + deferred 工具块）在前，
+	// 随整段静态前缀一起被缓存；dynamicTail（如按任务变化的约束）置于其后。
 	system = []string{sysText}
 	if always != "" {
 		system = append(system, always)
@@ -162,7 +168,12 @@ func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary
 	if block != "" {
 		system = append(system, block)
 	}
-	boundary = len(system) // b >= len → whole system prompt cached (SDK guard)
+	boundary = len(system)
+	for _, seg := range dynamicTail {
+		if s := strings.TrimSpace(seg); s != "" {
+			system = append(system, s)
+		}
+	}
 	return system, boundary
 }
 

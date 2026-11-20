@@ -38,3 +38,8 @@ export const EFFORT_LEVELS: { value: string; label: string }[] = [
   { value: "xhigh", label: "xhigh" },
   { value: "max", label: "max" },
 ];
+
+export const CACHE_BREAKPOINT_MODES: { value: string; label: string }[] = [
+  { value: NONE, label: "仅系统前缀（默认）" },
+  { value: "rolling", label: "滚动多断点（工具+历史）" },
+];

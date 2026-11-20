@@ -36,11 +36,12 @@ func GenerateAutoTitle(ctx context.Context, prov llm.Provider, content string) (
 	}
 	temp := 0.0
 	req := llm.CompletionRequest{
-		System:      []string{autoTitleSystemPrompt},
-		Messages:    []llm.Message{llm.UserText(content)},
-		MaxTokens:   80,
-		Temperature: &temp,
-		Thinking:    "disabled",
+		System:          []string{autoTitleSystemPrompt},
+		DynamicBoundary: 1,
+		Messages:        []llm.Message{llm.UserText(content)},
+		MaxTokens:       80,
+		Temperature:     &temp,
+		Thinking:        "disabled",
 	}
 	msg, _, _, err := prov.Complete(ctx, req)
 	if err != nil {

@@ -763,6 +763,10 @@ type LLMProfileDTO struct {
 	SessionHeaderKey string `json:"session_header_key"`
 	// 固定附加到每个请求的自定义头（User-Agent 等）。空对象/缺省=不附加。
 	CustomHeaders map[string]string `json:"custom_headers,omitempty"`
+	// Anthropic KV 缓存兼容与滚动断点选项：
+	InputTokensIncludesCache bool   `json:"input_tokens_includes_cache"`
+	PreserveThinkingBlocks   bool   `json:"preserve_thinking_blocks"`
+	CacheBreakpoints         string `json:"cache_breakpoints"`
 	// 本配置对重试的覆盖(建连/空响应/同 provider 安全窗口)。每项 attempts:
 	// 0=继承全局策略 | -1=关闭该层重试 | >0=次数；interval_ms: 0=用默认指数退避 |
 	// >0=改用该固定毫秒间隔。全 0 = 完全跟随全局，即历史行为。
@@ -789,9 +793,12 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 		Streaming:        p.Streaming,
 		MaxTokens:        p.MaxTokens,
 		MaxTokensField:   p.MaxTokensField,
-		SessionHeaderKey: p.SessionHeaderKey,
-		CustomHeaders:    p.CustomHeaders,
-		Retry:            p.Retry,
+		SessionHeaderKey:         p.SessionHeaderKey,
+		CustomHeaders:            p.CustomHeaders,
+		InputTokensIncludesCache: p.InputTokensIncludesCache,
+		PreserveThinkingBlocks:   p.PreserveThinkingBlocks,
+		CacheBreakpoints:         p.CacheBreakpoints,
+		Retry:                    p.Retry,
 	}
 }
 

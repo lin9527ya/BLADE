@@ -2290,6 +2290,9 @@ export const api = {
     max_tokens_field?: string; // ""=max_tokens(默认) | "max_completion_tokens"（仅 openai 格式）
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送
     custom_headers?: Record<string, string>; // 固定附加的请求头（User-Agent 等）；{} = 不附加
+    input_tokens_includes_cache?: boolean;
+    preserve_thinking_blocks?: boolean;
+    cache_breakpoints?: string; // ""=仅系统前缀 | "rolling"=工具+历史滚动断点（仅 anthropic 格式）
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),

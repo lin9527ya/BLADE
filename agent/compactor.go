@@ -17,6 +17,7 @@ import (
 	"github.com/lin9527ya/Norma/compaction"
 	"github.com/lin9527ya/Norma/harness"
 	"github.com/lin9527ya/Norma/llm"
+	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/db"
 )
 
@@ -41,23 +42,38 @@ const contextIndexTTL = 3 * time.Second
 // 索引取的是库里的实时状态；TTL 内复用同一份，避免密集工具循环里反复查库。
 // index 返回空串表示本次不附索引。
 type indexProjector struct {
-	index  func() string
-	mu     sync.Mutex
-	cached string
-	at     time.Time
-	ttl    time.Duration
+	index          func() string
+	indexWithState func(compacted bool) string
+	mu             sync.Mutex
+	cached         string
+	cachedForState bool
+	hasCached      bool
+	at             time.Time
+	ttl            time.Duration
 }
 
 func (p *indexProjector) block() string {
-	if p.index == nil {
+	return p.blockFor(false)
+}
+
+func (p *indexProjector) blockFor(compacted bool) string {
+	if p.index == nil && p.indexWithState == nil {
 		return ""
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ttl > 0 && p.cached != "" && time.Since(p.at) < p.ttl {
+	if p.ttl > 0 && p.hasCached && p.cachedForState == compacted && time.Since(p.at) < p.ttl {
 		return p.cached
 	}
-	p.cached = strings.TrimSpace(p.index())
+	var raw string
+	if p.indexWithState != nil {
+		raw = p.indexWithState(compacted)
+	} else {
+		raw = p.index()
+	}
+	p.cached = strings.TrimSpace(raw)
+	p.cachedForState = compacted
+	p.hasCached = p.cached != ""
 	p.at = time.Now()
 	return p.cached
 }
@@ -65,7 +81,11 @@ func (p *indexProjector) block() string {
 // appendTo 在请求投影尾部追加索引。总是复制到新切片：调用方（或内层压缩器）
 // 返回的切片可能共享历史数组，直接 append 会改写真实历史。
 func (p *indexProjector) appendTo(base []llm.Message) []llm.Message {
-	block := p.block()
+	return p.appendToFor(base, false)
+}
+
+func (p *indexProjector) appendToFor(base []llm.Message, compacted bool) []llm.Message {
+	block := p.blockFor(compacted)
 	if block == "" {
 		return base
 	}
@@ -108,11 +128,12 @@ func (v *indexView) Reactive(ctx context.Context, msgs []llm.Message) ([]llm.Mes
 func (v *indexView) IsOverflow(err error) bool { return v.inner.IsOverflow(err) }
 
 func (v *indexView) View(ctx context.Context, msgs []llm.Message) []llm.Message {
+	compacted := llm.LastBoundaryIndex(msgs) >= 0
 	base := llm.MessagesForAPI(msgs)
 	if cv, ok := v.inner.(harness.ContextView); ok {
 		base = cv.View(ctx, msgs)
 	}
-	return v.index.appendTo(base)
+	return v.index.appendToFor(base, compacted)
 }
 
 var (
@@ -124,9 +145,13 @@ var (
 // boundaries, skill re-injection untouched) to an ARTeX summarizer and an optional
 // per-request index builder. index may be nil (no injection).
 func NewDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string, index func() string) *DomainCompactor {
+	return newDomainCompactor(cfg, prov, maxTokens, nonStreaming, dumpDir, compaction.SummaryPrefix{}, index, nil)
+}
+
+func newDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string, prefix compaction.SummaryPrefix, index func() string, indexWithState func(compacted bool) string) *DomainCompactor {
 	return &DomainCompactor{
-		inner: compaction.New(cfg, bladeSummarizer(prov, maxTokens, nonStreaming, dumpDir)),
-		index: indexProjector{index: index, ttl: contextIndexTTL},
+		inner: compaction.New(cfg, bladeSummarizerWithPrefix(prov, maxTokens, nonStreaming, dumpDir, prefix)),
+		index: indexProjector{index: index, indexWithState: indexWithState, ttl: contextIndexTTL},
 	}
 }
 
@@ -145,7 +170,8 @@ func (d *DomainCompactor) IsOverflow(err error) bool { return d.inner.IsOverflow
 // View 是纯投影（绝不改历史）：在默认投影之后附一条平台注入的常驻索引。
 // 返回的切片只用于本次请求，宿主的 l.messages 原样不动。
 func (d *DomainCompactor) View(_ context.Context, msgs []llm.Message) []llm.Message {
-	return d.index.appendTo(llm.MessagesForAPI(msgs))
+	compacted := llm.LastBoundaryIndex(msgs) >= 0
+	return d.index.appendToFor(llm.MessagesForAPI(msgs), compacted)
 }
 
 // ContextIndexVars 是常驻索引的构造输入。ts 为 nil（无探索图的自定义 agent）
@@ -175,11 +201,23 @@ type ContextIndexVars struct {
 	// Clock 是任务的截止/收官信息（可空）。倒计时放在索引里而不是系统提示：索引每个
 	// 请求现算，系统提示是稳定前缀——逐轮变化的数字会打掉 provider 的 prefix cache。
 	Clock TaskClock
+	// Uncompacted indicates conversation history has not yet hit a compaction
+	// boundary (Turn 1 is still visible in Messages). Lets BuildContextIndex omit
+	// bulky blocks already present verbatim in Turn 1 (single-intent worker payload/assets,
+	// or planner overview lists), recovering full content automatically after compaction.
+	Uncompacted bool
+	// StabilizeClock buckets remaining time outside endgame into 5-minute steps
+	// to avoid minute-by-minute tail churn on otherwise unchanged turns.
+	StabilizeClock bool
 }
 
 // renderClockLine 渲染任务时限。收官期优先收敛高确定性链路，但不一刀切禁止新方向：
 // 若刚拿到直通目标的核心凭据/入口，仍允许开短平快意图完成临门一脚。
 func renderClockLine(tc TaskClock, now time.Time) string {
+	return renderClockLineWithOptions(tc, now, false)
+}
+
+func renderClockLineWithOptions(tc TaskClock, now time.Time, stabilize bool) string {
 	rem, ok := tc.Remaining(now)
 	if !ok {
 		return ""
@@ -190,6 +228,9 @@ func renderClockLine(tc TaskClock, now time.Time) string {
 	}
 	if tc.Endgame(now) {
 		return fmt.Sprintf("\n【收官期 · 剩余约 %d 分钟】优先收敛高确定性利用链并补齐证据，做收尾对账（未闭合候选 / 未销账遗留物 / 覆盖空白）。只有新发现高危/高确定性直通目标路径时才开短平快意图，不再大面积铺广。", mins)
+	}
+	if stabilize && mins >= 10 {
+		mins = (mins / 5) * 5
 	}
 	return fmt.Sprintf("\n任务时限：剩余约 %d 分钟。", mins)
 }
@@ -262,8 +303,14 @@ func BuildContextIndex(v ContextIndexVars) string {
 		b.WriteString("\n操作约束（原文，最高优先级）：")
 		b.WriteString(cb)
 	}
-	if line := renderClockLine(v.Clock, time.Now()); line != "" {
+	if line := renderClockLineWithOptions(v.Clock, time.Now(), v.StabilizeClock); line != "" {
 		b.WriteString(line)
+	}
+	// Planner / MainAgent already have full prefetched overview (and incremental
+	// updates) in turn history prior to compaction; keep only goals/constraints/clock
+	// before compaction so ephemeral index size drops by ~2k+ tokens/turn.
+	if v.Uncompacted && v.HasOverview {
+		return b.String()
 	}
 	// 从这里开始都是**观测数据**：目标/历史/模型产出（公司沉淀、意图原文、发现、战果、
 	// 打法与 CVE 卡片）。目标/约束是操作者写的，留在围栏外；这一段统一包进围栏，模型
@@ -276,14 +323,19 @@ func BuildContextIndex(v ContextIndexVars) string {
 		if v.Slot > 0 {
 			b.WriteString(fmt.Sprintf("\n  执行槽位：Worker #%d（历史里其它意图仅作参考，只做当前意图）", v.Slot))
 		}
-		if p := clipBlock(string(v.Intent.Payload), 1600); p != "" {
-			b.WriteString("\n  意图原文：\n" + p)
-		}
-		if a := clipBlock(v.IntentAssets, 2400); a != "" {
-			b.WriteString("\n  意图目标资产：\n" + a)
-		}
-		if v.RunDir != "" {
-			b.WriteString("\n  本次工作目录：" + v.RunDir)
+		// Single-intent workers already carry full Payload / IntentAssets / RunDir verbatim
+		// in Turn 1 while uncompacted; only inject the bulky tail copies on slot reuse
+		// or after a compaction boundary discards Turn 1.
+		if !v.Uncompacted || v.Slot > 0 {
+			if p := clipBlock(string(v.Intent.Payload), 1600); p != "" {
+				b.WriteString("\n  意图原文：\n" + p)
+			}
+			if a := clipBlock(v.IntentAssets, 2400); a != "" {
+				b.WriteString("\n  意图目标资产：\n" + a)
+			}
+			if v.RunDir != "" {
+				b.WriteString("\n  本次工作目录：" + v.RunDir)
+			}
 		}
 	}
 	if intents, err := ts.ListNodeDigests(db.KindIntent, []string{"open", "running"}, 8); err == nil && len(intents) > 0 {
@@ -610,6 +662,10 @@ func compactionPromptTemplate(dumpPath string) string {
 // 形状与溢出重试，但 ① 摘要请求前把被压掉的原文落盘并把绝对路径写进提示词；
 // ② 用领域 7 段模板而不是 claude-code 的通用模板。
 func bladeSummarizer(prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string) compaction.Summarizer {
+	return bladeSummarizerWithPrefix(prov, maxTokens, nonStreaming, dumpDir, compaction.SummaryPrefix{})
+}
+
+func bladeSummarizerWithPrefix(prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string, prefix compaction.SummaryPrefix) compaction.Summarizer {
 	maxOut := 20000
 	if maxTokens > 0 && maxTokens < maxOut {
 		maxOut = maxTokens
@@ -620,7 +676,7 @@ func bladeSummarizer(prov llm.Provider, maxTokens int, nonStreaming bool, dumpDi
 		work := llm.PairToolBlocks(msgs)
 		var lastErr error
 		for attempt := 0; attempt <= compactPTLRetries; attempt++ {
-			raw, err := summaryCall(ctx, prov, maxOut, work, prompt, nonStreaming)
+			raw, err := summaryCallWithPrefix(ctx, prov, maxOut, work, prompt, nonStreaming, prefix)
 			if err == nil {
 				return formatSummary(raw), nil
 			}
@@ -646,6 +702,10 @@ const (
 
 // summaryCall 发一次摘要请求；瞬时故障重试，溢出立即返回让调用方降级重试。
 func summaryCall(ctx context.Context, p llm.Provider, maxOut int, head []llm.Message, prompt string, nonStreaming bool) (string, error) {
+	return summaryCallWithPrefix(ctx, p, maxOut, head, prompt, nonStreaming, compaction.SummaryPrefix{})
+}
+
+func summaryCallWithPrefix(ctx context.Context, p llm.Provider, maxOut int, head []llm.Message, prompt string, nonStreaming bool, prefix compaction.SummaryPrefix) (string, error) {
 	if p == nil {
 		return "", fmt.Errorf("compaction: provider 未接线")
 	}
@@ -653,10 +713,23 @@ func summaryCall(ctx context.Context, p llm.Provider, maxOut int, head []llm.Mes
 	reqMsgs = append(reqMsgs, head...)
 	reqMsgs = append(reqMsgs, llm.UserText(prompt))
 	req := llm.CompletionRequest{
-		System:    []string{summarySystemPrompt},
-		Messages:  reqMsgs,
-		MaxTokens: maxOut,
-		Thinking:  "disabled",
+		System:          []string{summarySystemPrompt},
+		DynamicBoundary: 1,
+		Messages:        reqMsgs,
+		MaxTokens:       maxOut,
+		Thinking:        "disabled",
+		PromptCacheKey:  prefix.PromptCacheKey,
+	}
+	hasCustomPrefix := len(prefix.System) > 0 || len(prefix.Tools) > 0
+	if len(prefix.System) > 0 {
+		req.System = prefix.System
+		req.DynamicBoundary = prefix.DynamicBoundary
+	}
+	if len(prefix.Tools) > 0 {
+		req.Tools = prefix.Tools
+	}
+	if prefix.PreserveThinking {
+		req.Thinking = ""
 	}
 	var lastErr error
 	for range compactStreamingRetries {
@@ -664,10 +737,12 @@ func summaryCall(ctx context.Context, p llm.Provider, maxOut int, head []llm.Mes
 			return "", ctx.Err()
 		}
 		var text string
+		var hasToolCalls bool
 		var callErr error
 		if nonStreaming {
 			msg, _, _, err := p.Complete(ctx, req)
 			text, callErr = msg.Text(), err
+			hasToolCalls = len(msg.ToolUses()) > 0
 		} else {
 			acc := llm.NewAccumulator()
 			for ev, err := range p.Stream(ctx, req) {
@@ -678,8 +753,17 @@ func summaryCall(ctx context.Context, p llm.Provider, maxOut int, head []llm.Mes
 				acc.Add(ev)
 			}
 			if callErr == nil {
-				text = acc.Message().Text()
+				msg := acc.Message()
+				text = msg.Text()
+				hasToolCalls = len(msg.ToolUses()) > 0
 			}
+		}
+		if callErr == nil && strings.TrimSpace(text) == "" && hasToolCalls && hasCustomPrefix {
+			req.System = []string{summarySystemPrompt}
+			req.DynamicBoundary = 1
+			req.Tools = nil
+			hasCustomPrefix = false
+			continue
 		}
 		if callErr == nil {
 			return text, nil
@@ -798,11 +882,25 @@ type CompactionLLM struct {
 // 可选的 override 只替换摘要调用使用的 provider/输出上限/流式档位；压缩时机与
 // 投影逻辑不变。
 func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func() string, override ...CompactionLLM) {
+	installContextManagerProjector(opts, windowTokens, maxTokens, dumpDir, index, nil, override...)
+}
+
+// InstallContextManagerDynamic mirrors InstallContextManager while passing whether
+// the conversation has already hit a compaction boundary so the uncompacted path can
+// omit redundant bulky sections already present in Turn 1.
+func InstallContextManagerDynamic(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func(compacted bool) string, override ...CompactionLLM) {
+	installContextManagerProjector(opts, windowTokens, maxTokens, dumpDir, nil, index, override...)
+}
+
+func installContextManagerProjector(opts *agentcore.Options, windowTokens, maxTokens int, dumpDir string, index func() string, indexWithState func(compacted bool) string, override ...CompactionLLM) {
 	if opts == nil {
 		return
 	}
 	if opts.Compactor != nil {
-		opts.Compactor = &indexView{inner: opts.Compactor, index: indexProjector{index: index, ttl: contextIndexTTL}}
+		opts.Compactor = &indexView{
+			inner: opts.Compactor,
+			index: indexProjector{index: index, indexWithState: indexWithState, ttl: contextIndexTTL},
+		}
 		return
 	}
 	cfg := compactionConfig(windowTokens, maxTokens)
@@ -810,12 +908,45 @@ func InstallContextManager(opts *agentcore.Options, windowTokens, maxTokens int,
 		cfg = &compaction.Config{}
 	}
 	prov, maxOut, nonStreaming := opts.Provider, opts.MaxTokens, opts.NonStreaming
+	useParentPrefix := true
 	if len(override) > 0 && override[0].Provider != nil {
 		prov = override[0].Provider
 		maxOut = override[0].MaxTokens
 		nonStreaming = override[0].NonStreaming
+		useParentPrefix = false
 	}
-	opts.Compactor = NewDomainCompactor(*cfg, prov, maxOut, nonStreaming, dumpDir, index)
+	var prefix compaction.SummaryPrefix
+	if useParentPrefix {
+		prefix = compaction.SummaryPrefix{
+			System:          opts.SystemPrompt,
+			DynamicBoundary: opts.DynamicBoundary,
+			Tools:           visibleToolSchemas(opts.Tools, opts.DeferredTools),
+			PromptCacheKey:  opts.PromptCacheKey,
+		}
+	}
+	opts.Compactor = newDomainCompactor(*cfg, prov, maxOut, nonStreaming, dumpDir, prefix, index, indexWithState)
 	// Compactor 与 Compaction 互斥（SDK 会告警并忽略后者），显式清掉。
 	opts.Compaction = nil
+}
+
+func visibleToolSchemas(tools []actool.CoreTool, deferred []string) []llm.ToolSchema {
+	if len(tools) == 0 {
+		return nil
+	}
+	blocked := make(map[string]bool, len(deferred))
+	for _, name := range deferred {
+		blocked[name] = true
+	}
+	reg := actool.NewRegistry(tools...)
+	all := reg.Schemas()
+	if len(blocked) == 0 {
+		return all
+	}
+	out := make([]llm.ToolSchema, 0, len(all))
+	for _, s := range all {
+		if !blocked[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
 }

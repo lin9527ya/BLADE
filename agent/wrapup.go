@@ -93,9 +93,10 @@ func resolveWrapupTurns(agentKey string) int {
 // (reads DB live), so edits apply on the next run without a restart.
 func wrapupSettlement(agentKey string, disabledTools []string) *harness.Settlement {
 	return &harness.Settlement{
-		Prompt:        resolveWrapup(agentKey),
-		DisabledTools: disabledTools,
-		MaxTurns:      resolveWrapupTurns(agentKey),
+		Prompt:          resolveWrapup(agentKey),
+		DisabledTools:   disabledTools,
+		KeepToolSchemas: true,
+		MaxTurns:        resolveWrapupTurns(agentKey),
 	}
 }
 
@@ -156,9 +157,10 @@ func resolveTaskTimeoutTurns(agentKey string) int {
 func wrapupSettlementForTask(agentKey string, disabledTools []string, clamped bool) *harness.Settlement {
 	perRun := resolveWrapup(agentKey)
 	st := &harness.Settlement{
-		Prompt:        perRun, // 兜底(也是非 clamped 时两种 reason 的取值)
-		DisabledTools: disabledTools,
-		MaxTurns:      resolveWrapupTurns(agentKey),
+		Prompt:          perRun, // 兜底(也是非 clamped 时两种 reason 的取值)
+		DisabledTools:   disabledTools,
+		KeepToolSchemas: true,
+		MaxTurns:        resolveWrapupTurns(agentKey),
 	}
 	if clamped {
 		if tt := resolveTaskTimeoutWrapup(agentKey); tt != "" {

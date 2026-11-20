@@ -1328,6 +1328,12 @@ func (e *Engine) workerDispatcher(ctx context.Context, t *Task) {
 					e.decInflight(t.ID)
 					t.NotifyWorkers()
 				}()
+				warmLeader := t.acquirePrefixWarmSlot(loopCtx)
+				defer func() {
+					if warmLeader {
+						t.markPrefixWarmed()
+					}
+				}()
 				e.runIntent(loopCtx, t, workerName, worker, intent, "", "")
 			})
 		}
@@ -1378,6 +1384,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	e.touch(t.ID)
 	slotNo := slotNumber(name)
 	emit := func(r db.Activity) {
+		t.markPrefixWarmed()
 		if r.SlotNo == nil && slotNo > 0 {
 			n := slotNo
 			r.SlotNo = &n

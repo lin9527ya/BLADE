@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"iter"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/Norma/transcript"
 )
 
 // Member is one LLM profile in the chain, already built into a provider (wrapped
@@ -46,10 +49,14 @@ var ErrExhausted = errors.New("LLM 轮询：所有配置均不可用")
 // It is safe for concurrent use: members are immutable after construction and
 // all mutable state lives in the shared Registry.
 type Pool struct {
-	members []*Member // in chain order (active first, then priority DESC)
-	health  *Registry
-	rr      atomic.Uint64 // rotates the starting point within an equal-priority group
+	members  []*Member // in chain order (active first, then priority DESC)
+	health   *Registry
+	rr       atomic.Uint64 // rotates the starting point within an equal-priority group when no session id exists
+	stickyMu sync.Mutex
+	sticky   map[string]int64 // sessionID -> last succeeded Member.ID for prefix KV cache affinity
 }
+
+const maxStickySessions = 4096
 
 // New builds a Pool over members (already in chain order). Returns nil when the
 // chain is empty. A single-member chain is still a valid Pool — it just behaves
@@ -80,7 +87,8 @@ func (p *Pool) Head() *Member { return p.members[0] }
 // credit, 401 bad key, 429, 5xx) all surface during request establishment,
 // before the body is read, so they always land in the safe window.
 func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	order := p.order(req)
+	sid := sessionKey(ctx, req)
+	order := p.orderFor(sid, req)
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var lastErr error
 		for i, m := range order {
@@ -101,6 +109,7 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			}
 			if failed == nil {
 				p.health.Pass(m.ID) // completed (or failed in a non-failover way)
+				p.pinSession(sid, m.ID)
 				return
 			}
 			lastErr = failed
@@ -128,12 +137,14 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 // tried without risk of duplicated output. Mirrors Stream's health-tripping and
 // chain-exhaustion behavior.
 func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	order := p.order(req)
+	sid := sessionKey(ctx, req)
+	order := p.orderFor(sid, req)
 	var lastErr error
 	for i, m := range order {
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
 		if err == nil {
 			p.health.Pass(m.ID)
+			p.pinSession(sid, m.ID)
 			return msg, sr, usage, nil
 		}
 		if !shouldFailover(ctx, err) {
@@ -166,6 +177,10 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 // empty slice — if everything is filtered out, the head of the chain is tried
 // anyway, since stalling the engine is worse than one more failed request.
 func (p *Pool) order(req llm.CompletionRequest) []*Member {
+	return p.orderFor("", req)
+}
+
+func (p *Pool) orderFor(sid string, req llm.CompletionRequest) []*Member {
 	est := estimateTokens(req)
 	var open []*Member
 	for _, m := range p.members {
@@ -180,13 +195,56 @@ func (p *Pool) order(req llm.CompletionRequest) []*Member {
 	if len(open) == 0 {
 		return p.members[:1] // last resort: probe the head rather than stall
 	}
-	return rotateGroups(open, p.rr.Add(1)-1)
+	if sid == "" {
+		return rotateGroups(open, p.rr.Add(1)-1)
+	}
+	return rotateGroupsSticky(open, sessionHash(sid), p.pinnedMember(sid))
+}
+
+func sessionKey(ctx context.Context, req llm.CompletionRequest) string {
+	if sid := transcript.SessionIDFrom(ctx); sid != "" {
+		return sid
+	}
+	return req.PromptCacheKey
+}
+
+func sessionHash(sid string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(sid))
+	return h.Sum64()
+}
+
+func (p *Pool) pinnedMember(sid string) int64 {
+	if sid == "" {
+		return 0
+	}
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	return p.sticky[sid]
+}
+
+func (p *Pool) pinSession(sid string, memberID int64) {
+	if sid == "" || memberID <= 0 {
+		return
+	}
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	if p.sticky == nil {
+		p.sticky = make(map[string]int64, 64)
+	} else if _, exists := p.sticky[sid]; !exists && len(p.sticky) >= maxStickySessions {
+		p.sticky = make(map[string]int64, 64)
+	}
+	p.sticky[sid] = memberID
 }
 
 // rotateGroups rotates each run of equal-ranked members by n, so profiles sharing
 // a priority take turns going first (free load-spreading across duplicate keys).
 // The chain head has its own Rank and always stays at the front.
 func rotateGroups(in []*Member, n uint64) []*Member {
+	return rotateGroupsSticky(in, n, 0)
+}
+
+func rotateGroupsSticky(in []*Member, n uint64, stickyID int64) []*Member {
 	out := make([]*Member, 0, len(in))
 	for i := 0; i < len(in); {
 		j := i + 1
@@ -195,9 +253,27 @@ func rotateGroups(in []*Member, n uint64) []*Member {
 		}
 		g := in[i:j]
 		if len(g) > 1 {
-			off := int(n % uint64(len(g)))
-			for k := range g {
-				out = append(out, g[(k+off)%len(g)])
+			pinIdx := -1
+			if stickyID > 0 {
+				for idx, m := range g {
+					if m.ID == stickyID {
+						pinIdx = idx
+						break
+					}
+				}
+			}
+			if pinIdx >= 0 {
+				out = append(out, g[pinIdx])
+				for k := range g {
+					if k != pinIdx {
+						out = append(out, g[k])
+					}
+				}
+			} else {
+				off := int(n % uint64(len(g)))
+				for k := range g {
+					out = append(out, g[(k+off)%len(g)])
+				}
 			}
 		} else {
 			out = append(out, g...)

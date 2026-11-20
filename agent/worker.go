@@ -722,8 +722,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// system 只放跨意图不变的内容；意图/资产/runDir 放进本次启动的 user turn，
 	// 否则同一槽位每条意图都会改写 system 前缀，provider 的前缀缓存直接失效。
 	sysBody := workerSystem(proxyAddr, proxyCA, w.workDir)
+	var constraintTail string
 	if w.wantConstraints() {
-		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
+		constraintTail = constraintBlock(ts) // 操作约束置于静态 AlwaysSkills/Capability/Deferred 段之后，保证跨任务静态前缀完整命中缓存
 	}
 	assetsJSON := ""
 	if as != nil {
@@ -746,24 +747,26 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			}
 		}
 	}
-	system, boundary := deferredSystem(sysBody, def)
+	system, boundary := deferredSystemWithDynamic(sysBody, def, constraintTail)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)
-	// 收尾阶段不再起新长任务（run_execution 收起），但 wait/get/cancel_execution
-	// 保留：收尾恰恰要把在跑的执行交代清楚（等它、读它的部分输出、或明确取消）。
+	// 收尾阶段保留完整 tool schemas（KeepToolSchemas=true）以免剥工具打穿 KV 缓存；
+	// 改在执行入口拦截 Bash / run_execution，继续保留 wait/get/cancel_execution。
 	settle := wrapupSettlement("worker", []string{"Bash", "run_execution"})
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("worker", []string{"Bash", "run_execution"}, clamped)
 	}
 	opts := agentcore.Options{
-		Provider:        w.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
+		Provider:                w.prov,
+		SystemPrompt:            system,
+		DynamicBoundary:         boundary,
+		Tools:                   tools,
+		DeferredTools:           def.Deferred,
+		UnlockSet:               def.Unlock,
+		PermissionMode:          permission.ModeBypass,
+		OmitCurrentDateReminder: true,
+		PromptCacheKey:          sessionID,
 		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
 		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
 		EnableWebFetch: true,
@@ -840,8 +843,12 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			compactionOverride = append(compactionOverride, c)
 		}
 	}
-	InstallContextManager(&opts, w.compactionWindow(), w.maxTokens(), ctxDir, func() string {
-		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: slot, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines()})
+	InstallContextManagerDynamic(&opts, w.compactionWindow(), w.maxTokens(), ctxDir, func(compacted bool) string {
+		indexSlot := slot
+		if !strings.Contains(sessionID, "-slot") {
+			indexSlot = 0
+		}
+		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: indexSlot, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), Uncompacted: !compacted, StabilizeClock: true})
 	}, compactionOverride...)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

@@ -19,6 +19,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	id, err := d.SaveProfile(&LLMProfile{
 		Name: "t-maxtok", Format: "openai", Model: "m", APIKey: "k",
 		MaxTokens: 8192, MaxTokensField: "max_completion_tokens",
+		InputTokensIncludesCache: true, PreserveThinkingBlocks: true, CacheBreakpoints: "rolling",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -30,8 +31,8 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if err != nil || p == nil {
 		t.Fatalf("ProfileByID: %v, p=%v", err, p)
 	}
-	if p.MaxTokens != 8192 || p.MaxTokensField != "max_completion_tokens" {
-		t.Fatalf("keyed load: max_tokens=%d field=%q", p.MaxTokens, p.MaxTokensField)
+	if p.MaxTokens != 8192 || p.MaxTokensField != "max_completion_tokens" || !p.InputTokensIncludesCache || !p.PreserveThinkingBlocks || p.CacheBreakpoints != "rolling" {
+		t.Fatalf("keyed load: max_tokens=%d field=%q cache=%+v", p.MaxTokens, p.MaxTokensField, p)
 	}
 
 	// List load (profileCols — the hint variant, a separate column list).
@@ -48,8 +49,8 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if found == nil {
 		t.Fatal("profile missing from ListProfiles")
 	}
-	if found.MaxTokens != 8192 || found.MaxTokensField != "max_completion_tokens" {
-		t.Fatalf("list load: max_tokens=%d field=%q", found.MaxTokens, found.MaxTokensField)
+	if found.MaxTokens != 8192 || found.MaxTokensField != "max_completion_tokens" || !found.InputTokensIncludesCache || !found.PreserveThinkingBlocks || found.CacheBreakpoints != "rolling" {
+		t.Fatalf("list load: max_tokens=%d field=%q cache=%+v", found.MaxTokens, found.MaxTokensField, found)
 	}
 
 	// Update with a blank key takes the "keep existing key" UPDATE branch, which
@@ -57,6 +58,9 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	p.APIKey = ""
 	p.MaxTokens = 4096
 	p.MaxTokensField = ""
+	p.InputTokensIncludesCache = false
+	p.PreserveThinkingBlocks = false
+	p.CacheBreakpoints = ""
 	if _, err := d.SaveProfile(p); err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +68,8 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if err != nil || after == nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if after.MaxTokens != 4096 || after.MaxTokensField != "" {
-		t.Fatalf("after update: max_tokens=%d field=%q", after.MaxTokens, after.MaxTokensField)
+	if after.MaxTokens != 4096 || after.MaxTokensField != "" || after.InputTokensIncludesCache || after.PreserveThinkingBlocks || after.CacheBreakpoints != "" {
+		t.Fatalf("after update: max_tokens=%d field=%q cache=%+v", after.MaxTokens, after.MaxTokensField, after)
 	}
 	if after.APIKey != "k" {
 		t.Fatalf("blank key on update must keep the stored one, got %q", after.APIKey)

@@ -42,12 +42,7 @@ func (s *Server) agentRunSeconds(key string) int {
 	return a.RunSecs
 }
 
-// loadLLMConfig reads the active LLM profile from PG (llm_profiles).
-func (s *Server) loadLLMConfig() (agent.Config, bool) {
-	p, err := s.m.pg.ActiveProfile()
-	if err != nil || p == nil {
-		return agent.Config{}, false
-	}
+func (s *Server) profileToAgentConfig(p *db.LLMProfile) agent.Config {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
@@ -57,7 +52,20 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	cfg.CustomHeaders = p.CustomHeaders
+	cfg.InputTokensIncludesCache = p.InputTokensIncludesCache
+	cfg.PreserveThinkingBlocks = p.PreserveThinkingBlocks
+	cfg.CacheBreakpoints = p.CacheBreakpoints
 	s.applyProfileRetry(&cfg, p)
+	return cfg
+}
+
+// loadLLMConfig reads the active LLM profile from PG (llm_profiles).
+func (s *Server) loadLLMConfig() (agent.Config, bool) {
+	p, err := s.m.pg.ActiveProfile()
+	if err != nil || p == nil {
+		return agent.Config{}, false
+	}
+	cfg := s.profileToAgentConfig(p)
 	if cfg.APIKey == "" {
 		return cfg, false
 	}
@@ -83,6 +91,8 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	var maxTokensField string
 	var sessionHeaderKey string
 	var customHeaders map[string]string
+	var inputTokensIncludesCache, preserveThinkingBlocks bool
+	var cacheBreakpoints string
 	var retry db.RetryOverride
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
 		for _, p := range profs {
@@ -91,6 +101,9 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
 				sessionHeaderKey = p.SessionHeaderKey
 				customHeaders = p.CustomHeaders
+				inputTokensIncludesCache = p.InputTokensIncludesCache
+				preserveThinkingBlocks = p.PreserveThinkingBlocks
+				cacheBreakpoints = p.CacheBreakpoints
 				retry = p.Retry
 				break
 			}
@@ -102,7 +115,8 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
-		CustomHeaders: customHeaders, Retry: retry,
+		CustomHeaders: customHeaders, InputTokensIncludesCache: inputTokensIncludesCache,
+		PreserveThinkingBlocks: preserveThinkingBlocks, CacheBreakpoints: cacheBreakpoints, Retry: retry,
 	})
 	if err != nil {
 		return err
@@ -222,16 +236,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
-	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
-	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ThinkingType = p.ThinkingType
-	cfg.ReasoningEffort = p.ReasoningEffort
-	cfg.Stream = p.Streaming
-	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
-	cfg.SessionHeaderKey = p.SessionHeaderKey
-	cfg.CustomHeaders = p.CustomHeaders
-	s.applyProfileRetry(&cfg, p)
+	cfg := s.profileToAgentConfig(p)
 	if cfg.APIKey == "" {
 		return cfg, false
 	}

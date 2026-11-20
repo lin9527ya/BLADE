@@ -98,7 +98,8 @@ func TestPlannerResumeSwitchRestoresOldBehavior(t *testing.T) {
 	}
 }
 
-// 热会话的上下文体积必须**有界**：轮数增加时历史不增长（每轮折叠成「输入 + 结论」）。
+// 热会话的上下文体积必须**有界**：在增量窗内追加游标变更以保留 Turn 1 缓存前缀，
+// 超过消息上限后再折叠回最小前缀并重置游标，轮数继续增加时历史不无限增长。
 func TestHotSessionStaysBounded(t *testing.T) {
 	d := testDB(t)
 	t.Cleanup(func() { d.Close() })
@@ -112,16 +113,28 @@ func TestHotSessionStaysBounded(t *testing.T) {
 	tx := transcript.NewStore(filepath.Join(t.TempDir(), "transcripts"))
 	p := NewPlanner(prov, "m", t.TempDir(), tx, 0, 4)
 	p.SetNonStreaming(func() bool { return true })
-	for r := 0; r < 5; r++ {
+	// Round 1 starts with full snapshot; Round 2..N should use incremental delta view until recycled.
+	if _, _, err := p.Plan(t.Context(), task.ID, d.Assets(), ts, "g", nil, nil); err != nil {
+		t.Fatalf("round 0: %v", err)
+	}
+	for r := 1; r < 10; r++ {
 		if _, _, err := p.Plan(t.Context(), task.ID, d.Assets(), ts, "g", nil, nil); err != nil {
 			t.Fatalf("round %d: %v", r, err)
 		}
 	}
-	if n := len(p.hot.Messages()); n > 4 {
-		t.Fatalf("热会话历史应保持有界（折叠成输入+结论），got %d 条", n)
+	if n := len(p.hot.Messages()); n > plannerHotMaxMessages+2 {
+		t.Fatalf("热会话历史应保持有界（<= %d），got %d 条", plannerHotMaxMessages+2, n)
 	}
-	if p.hotRounds < 4 {
-		t.Fatalf("应复用同一热会话，rounds=%d", p.hotRounds)
+	foundDelta := false
+	for _, req := range prov.reqs {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Text(), "【本轮增量态势") {
+				foundDelta = true
+			}
+		}
+	}
+	if !foundDelta {
+		t.Fatal("热会话第 2 轮起应走增量态势而不是每轮重发全量 snapshots")
 	}
 }
 

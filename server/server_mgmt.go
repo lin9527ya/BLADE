@@ -2032,6 +2032,13 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if p.Format != "openai" || p.MaxTokensField != llm.MaxTokensFieldCompletion {
 		p.MaxTokensField = ""
 	}
+	if p.Format != "anthropic" || p.CacheBreakpoints != "rolling" {
+		p.CacheBreakpoints = ""
+	}
+	if p.Format != "anthropic" {
+		p.InputTokensIncludesCache = false
+		p.PreserveThinkingBlocks = false
+	}
 	id, err := pg.SaveProfile(&p)
 	if err != nil {
 		writeErr(w, 500, err.Error())

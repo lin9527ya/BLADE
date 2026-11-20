@@ -747,8 +747,19 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 // totals separate from display windows, adds revision/event cursor/route
 // aggregation, and drops bulky derived sections that are one detail call away.
 func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) map[string]any {
+	return t.blackboardViewInternal(after, limit, false, cursor...)
+}
+
+// blackboardDeltaData builds a lightweight incremental projection for warm Planner
+// hot sessions whose Turn 1 already holds the full baseline snapshot. Falls back
+// seamlessly to the full view when change history requires a resync.
+func (t *ToolSet) blackboardDeltaData(after int64, limit int, cursor ...string) map[string]any {
+	return t.blackboardViewInternal(after, limit, true, cursor...)
+}
+
+func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool, cursor ...string) map[string]any {
 	if !t.ts.InReadSnapshot() {
-		return t.snapshotProjection(func(view *ToolSet) map[string]any { return view.blackboardViewData(after, limit, cursor...) })
+		return t.snapshotProjection(func(view *ToolSet) map[string]any { return view.blackboardViewInternal(after, limit, deltaOnly, cursor...) })
 	}
 	if after < 0 {
 		after = 0
@@ -946,7 +957,44 @@ func (t *ToolSet) blackboardViewData(after int64, limit int, cursor ...string) m
 	t.projectionContract(out)
 	// The forward page cursor is the last returned change, not the newest revision.
 	out["change_cursor"] = changes.Cursor
+	if deltaOnly && !changes.Resync {
+		slimBlackboardDelta(out)
+		bbMeta["incremental_delta"] = true
+	}
 	return out
+}
+
+func slimBlackboardDelta(out map[string]any) {
+	for _, k := range []string{
+		"company_knowledge", "company_knowledge_note",
+		"matching_playbooks", "matching_playbooks_note",
+		"matching_cves", "matching_cves_note",
+		"recent_facts", "folded_facts_total", "folded_facts_note",
+		"recent_done_intents", "done_intents_note", "folded_intents_total",
+		"blocked_intents", "paused_intents",
+		"finding_list", "footholds", "credentials",
+		"cold_digests", "cold_digests_note",
+		"related_tasks_summary", "dispatch_order",
+		"no_endpoint_sites", "endpoints_without_coverage",
+		"intents_window_note", "edges_window_note",
+	} {
+		delete(out, k)
+	}
+	for _, key := range []string{"open_intents", "running_intents"} {
+		items, ok := out[key].([]map[string]any)
+		if !ok {
+			continue
+		}
+		slim := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			entry := map[string]any{"id": it["id"], "state": it["state"]}
+			if s, ok := it["summary"].(string); ok {
+				entry["summary"] = clipLine(s, 100)
+			}
+			slim = append(slim, entry)
+		}
+		out[key] = slim
+	}
 }
 
 // blackboardRoutes groups the visible intents by contract.route (falling back to

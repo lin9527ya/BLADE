@@ -203,16 +203,18 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
 	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
 	opts := agentcore.Options{
-		Provider:        m.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
-		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   proxyAddr,
-		WebFetchCACert:  proxyCA,
+		Provider:                m.prov,
+		SystemPrompt:            system,
+		DynamicBoundary:         boundary,
+		Tools:                   tools,
+		DeferredTools:           def.Deferred,
+		UnlockSet:               def.Unlock,
+		PermissionMode:          permission.ModeBypass,
+		EnableWebFetch:          true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxy:           proxyAddr,
+		WebFetchCACert:          proxyCA,
+		OmitCurrentDateReminder: true,
+		PromptCacheKey:          MainSessionID(ts.ID(), mainSeg),
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
@@ -262,8 +264,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 			compactionOverride = append(compactionOverride, c)
 		}
 	}
-	InstallContextManager(&opts, m.compactionWindow(), m.maxTokens(), mainDir, func() string {
-		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true})
+	InstallContextManagerDynamic(&opts, m.compactionWindow(), m.maxTokens(), mainDir, func(compacted bool) string {
+		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true, Uncompacted: !compacted, StabilizeClock: true})
 	}, compactionOverride...)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

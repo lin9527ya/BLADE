@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/Norma/transcript"
 )
 
 // fakeProv is a scripted provider: script[i] is what the i-th call yields —
@@ -366,5 +367,33 @@ func TestExpiredWindowIsClosed(t *testing.T) {
 	reg.Restore(1, State{Trips: 1, OpenUntil: time.Now().Add(-time.Second)})
 	if reg.IsOpen(1) {
 		t.Fatal("expired window should read as closed")
+	}
+}
+
+func TestSessionStickyAffinityAndFailover(t *testing.T) {
+	a, b := okProv("a", "a"), okProv("b", "b")
+	p := New([]*Member{member(1, "a", 5, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+
+	ctx1 := transcript.WithSessionID(context.Background(), "worker-session-alpha")
+	firstChoice, err := drain(p.Stream(ctx1, llm.CompletionRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 6 {
+		got, err := drain(p.Stream(ctx1, llm.CompletionRequest{}))
+		if err != nil || got != firstChoice {
+			t.Fatalf("same session drifted across members: got=%q want=%q err=%v", got, firstChoice, err)
+		}
+	}
+
+	// If the pinned member trips, failover selects the healthy sibling and updates sticky pin.
+	flakyA := failProv("a", 429)
+	p2 := New([]*Member{member(1, "a", 5, flakyA), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+	ctx2 := transcript.WithSessionID(context.Background(), "worker-session-beta")
+	for range 3 {
+		got, err := drain(p2.Stream(ctx2, llm.CompletionRequest{}))
+		if err != nil || got != "b" {
+			t.Fatalf("expected failover to sticky healthy b, got=%q err=%v", got, err)
+		}
 	}
 }

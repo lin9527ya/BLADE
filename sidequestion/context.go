@@ -101,7 +101,7 @@ func (b *contextBuilder) summarize(ctx context.Context, prior, text string) (str
 		}
 		part := text[:n]
 		req := llm.CompletionRequest{
-			System: []string{summaryInstruction}, Thinking: "disabled", MaxTokens: 2048,
+			System: []string{summaryInstruction}, DynamicBoundary: 1, Thinking: "disabled", MaxTokens: 2048,
 			Messages: []llm.Message{llm.UserText("[此前摘要]\n" + prior + "\n[新材料片段]\n" + part)},
 		}
 		if EstimateInputTokens(req)+req.MaxTokens+512 > b.window {

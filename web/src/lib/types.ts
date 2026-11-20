@@ -2560,6 +2560,10 @@ export interface LLMProfile {
   session_header_key?: string;
   // 固定附加到每个 LLM 请求的自定义头（如 User-Agent）。空对象/缺省=不附加。
   custom_headers?: Record<string, string>;
+  // Anthropic 兼容与滚动缓存断点开关（仅 format="anthropic"）：
+  input_tokens_includes_cache?: boolean;
+  preserve_thinking_blocks?: boolean;
+  cache_breakpoints?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/compaction"
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
@@ -52,10 +53,13 @@ type Planner struct {
 	// hotTools 是热会话首轮创建、其工具闭包所绑定的那个 ToolSet。Session 的 registry
 	// 在 NewSession 时固定，所以后续轮次必须**在这个对象上**重置轮级状态；对每轮新建的
 	// ToolSet 调用 BeginRound 不会影响模型实际调用的工具。
-	hotTools          *ToolSet
-	hotRounds         int
-	hotLastUsed       time.Time
-	hotSurface        string
+	hotTools            *ToolSet
+	hotRounds           int
+	hotLastUsed         time.Time
+	hotSurface          string
+	hotExpID            int64
+	hotLastNodeCursor   int64
+	hotLastChangeCursor string
 	proxyAddr         string                  // recording proxy for WebFetch (empty = direct)
 	proxyCACert       string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn           func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
@@ -583,6 +587,14 @@ func renderGraphOverview(data map[string]any, bounded bool) string {
 	return header + string(b)
 }
 
+func renderGraphDeltaOverview(data map[string]any) string {
+	b, err := json.Marshal(SanitizeJSONStrings(data))
+	if err != nil {
+		return ""
+	}
+	return "\n\n【本轮增量态势（热会话延续：之前全量黑板快照已在上方对话中；以下仅含游标以来的变更、最新统计/目标/提示与活跃意图清单，如需未列节点详情调 node_detail 或 graph_overview）】：\n" + string(b)
+}
+
 // plannerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the planner prompt,
 // seeded into agent_prompts. Goal is a {{.Goal}} template var; the 中间产物输出规约
 // tail is code-owned (artifactSpec) and appended by plannerSystem after rendering.
@@ -795,53 +807,39 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 系统提示的 deferred 块里。planner 37 个工具的 schema 合计约 3.3 万字符，每轮都
 	// 随缓存前缀发送；这几项在绝大多数轮次里不会被调用（见 plannerDeferredTools）。
 	mergeDeferred(&def, deferPlannerTools(tools))
-	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
-	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
-	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
-	situation := ""
-	if p.useBoundedView() {
-		situation = renderGraphOverview(tsx.blackboardViewData(0, 20), true)
-	} else {
-		situation = renderGraphOverview(tsx.graphOverviewData(), false) // 有界视图关闭：预取完整态势
-	}
-	situational := renderTriggers(ts, triggers) + situation
-	// 穷尽复核反馈：上一轮 planner 声明穷尽、但复核员判定证据不足。必须放进本轮输入，
-	// 否则模型会拿着同一个结论再声明一次（它并不知道有人否过它）。
-	// 任务级 deadline / 终局模式(经 ctx 注入,见 taskclock.go)。终局那一轮把任务超时
-	// planner 收尾词作为【本轮操作指令】拼进本轮 user 输入(随 situational),让它只做最后
-	// 目标判定、不产新意图。
-	tc := taskClockFrom(ctx)
-	if tc.Final {
-		situational += "\n\n【任务终局收尾（本轮特殊指令，覆盖上面的常规规划流程）】：" + resolveTaskTimeoutWrapup("planner")
-	}
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
 	sysBody += plannerScopeRequestBlock
+	var constraintTail string
 	if p.wantConstraints() {
-		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
+		constraintTail = constraintBlock(ts) // 操作约束置于静态 AlwaysSkills/Capability/Deferred 段之后，避免打断跨任务静态前缀缓存
 	}
-	system, boundary := deferredSystem(sysBody, def)
+	system, boundary := deferredSystemWithDynamic(sysBody, def, constraintTail)
 	// 单轮墙钟预算：优先用 agent 配置的 run_seconds（默认 1200s），有任务 deadline 时
 	// 再夹逼到剩余时间。到点由 SDK 进收尾（不是硬杀），已想清楚的结论能落地。
+	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, p.roundDur)
 	settle := wrapupSettlement("planner", nil)
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("planner", nil, clamped)
 	}
+	plannerSID := PlannerSessionID(ts.ID())
 	opts := agentcore.Options{
-		Provider:        p.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
-		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   proxyAddr,
-		WebFetchCACert:  proxyCA,
+		Provider:                p.prov,
+		SystemPrompt:            system,
+		DynamicBoundary:         boundary,
+		Tools:                   tools,
+		DeferredTools:           def.Deferred,
+		UnlockSet:               def.Unlock,
+		PermissionMode:          permission.ModeBypass,
+		EnableWebFetch:          true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxy:           proxyAddr,
+		WebFetchCACert:          proxyCA,
+		OmitCurrentDateReminder: true,
+		PromptCacheKey:          plannerSID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
@@ -877,14 +875,15 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx
-		opts.SessionID = PlannerSessionID(ts.ID())
+		opts.SessionID = plannerSID
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	// 与 transcript 同一个 SessionID（见 PlannerSessionID）：历史与 noa 归档同源。
-	noaSession := PlannerSessionID(ts.ID())
+	noaSession := plannerSID
 	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
 	// P14 领域上下文（详见 agent/compactor.go）：规划者被压缩吃掉态势后，常驻索引仍带着
-	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。
+	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。未压缩前 HasOverview 仅保留目标/约束/时钟，
+	// 避免把 Turn 1 已预取的大段态势在尾部重发。
 	installClock := taskClockFrom(ctx)
 	var compactionOverride []CompactionLLM
 	if p.compactionLLM != nil {
@@ -892,56 +891,76 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			compactionOverride = append(compactionOverride, c)
 		}
 	}
-	InstallContextManager(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func() string {
+	InstallContextManagerDynamic(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func(compacted bool) string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
-		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true})
+		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true, Uncompacted: !compacted, StabilizeClock: true})
 	}, compactionOverride...)
-	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
-	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。
-	// 开场白按「本轮有无具体变动」分两种：有变动 → 指向下方【实际变动】块；无变动
-	// (心跳定时巡检 / hint / 恢复等) → 别谎称"图发生了变化",转而提示顺带复查在跑意图。
-	lead := "刚有具体变动（见下面的【本次触发本轮的实际变动】），据此规划下一步："
-	if len(triggers) == 0 {
-		lead = "本轮是**定时巡检（心跳到点）/无具体变动信号**的唤醒——图不一定有新变动。顺带复查在跑意图：长时间无进展或跑偏的用 steer_work 纠偏、方向整个错的用 kill_work 止损；再判定目标、决定是否补方向："
-	}
-	// 本轮输入的**分段顺序**是「稳定 → 易变」，见 composePlannerInput 的说明：
-	// 缓存按 token 前缀匹配，每轮都变的态势放在最前面会让整段前缀失效。
-	// 上一轮结论摘要与态势同属易变段，统一放进 volatile。
-	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。"
-	volatile := situational
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
 	// 规划会话形态（三选一）：
 	//   ① resume 模式（BLADE_PLANNER_RESUME_SESSION=1）——每轮从 transcript 全量恢复。
 	//      回滚开关；上下文会持续膨胀（任务 14 实测 26 万 token/轮）。
-	//   ② 热会话（默认）——复用同一个 Session，每轮结束后把历史折叠成两条消息。
-	//      system prompt + 工具 schema 的缓存前缀跨轮保持，上下文体积不随轮数增长。
+	//   ② 热会话（默认）——在有界窗口内追加增量游标变更，保留 Turn 1 完整黑板前缀吃满 KV 缓存；
+	//      达到上限后再折叠成「输入 + 结论」重新建基线，上下文体积有界。
 	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
-	// 会话所有权：本轮成功且非 resume 模式时交给热会话（跨轮持有），否则本轮结束时关闭。
-	// 不能在这里 defer Close —— 成功路径会把同一个 Session 留在 p.hot 里继续用。
 	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(system, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%s", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, p.compactionWindow(), opts.WebFetchProxy, opts.WebFetchCACert), tools))
 	var s *agentcore.Session
 	keepSession := false
+	useDelta := false
+	var prevNodeCursor int64
+	var prevChangeCursor string
+	notePrefix := ""
 	if resumePlannerSession() {
 		s = agentcore.NewSession(opts)
 		if p.tx != nil {
 			_ = s.Resume(opts.SessionID)
-			volatile = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n" + volatile
+			notePrefix = "【注意】下方态势是本轮刚从探索图取的**权威快照**；历史消息里的旧态势只作背景，冲突时一律以本轮为准。\n\n"
 		}
-	} else if hs, hts := p.takeHotSession(); hs != nil && hts != nil {
+	} else if hs, hts, hexp, hnode, hchange := p.takeHotSession(); hs != nil && hts != nil {
 		s = hs
 		// 复用会话的工具闭包绑定的是热会话首轮的 ToolSet：本轮在那个对象上重装依赖并
 		// 重置轮级状态，后续的 quota / GoalMet / 写回统计才属于「本轮」。
 		tsx = hts
 		wireToolSet(tsx)
 		keepSession = true
-		// 热会话里已经有「上一轮问过什么 + 结论」，本轮输入只需带态势与待办。
+		if p.useBoundedView() && hexp == ts.ID() && len(s.Messages()) > 0 && llm.LastBoundaryIndex(s.Messages()) < 0 && (hnode > 0 || hchange != "") {
+			useDelta = true
+			prevNodeCursor = hnode
+			prevChangeCursor = hchange
+		}
 	} else {
 		s = agentcore.NewSession(opts)
 		if note := strings.TrimSpace(p.lastRoundNote); note != "" {
-			volatile = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n" + volatile
+			notePrefix = "【上一轮结论摘要（本轮是独立会话，只承接结论，不承接旧对话；态势以下方本轮快照为准）】\n" + note + "\n\n"
 		}
 	}
+	var bb map[string]any
+	situation := ""
+	if useDelta {
+		bb = tsx.blackboardDeltaData(prevNodeCursor, 30, prevChangeCursor)
+		if resync, _ := bb["resync_required"].(bool); resync {
+			situation = renderGraphOverview(bb, true)
+		} else {
+			situation = renderGraphDeltaOverview(bb)
+		}
+	} else if p.useBoundedView() {
+		bb = tsx.blackboardViewData(0, 20)
+		situation = renderGraphOverview(bb, true)
+	} else {
+		bb = tsx.graphOverviewData() // 有界视图关闭：预取完整态势
+		situation = renderGraphOverview(bb, false)
+	}
+	nextNodeCursor, nextChangeCursor := extractBlackboardCursors(bb, prevNodeCursor, prevChangeCursor)
+	situational := renderTriggers(ts, triggers) + situation
+	if tc.Final {
+		situational += "\n\n【任务终局收尾（本轮特殊指令，覆盖上面的常规规划流程）】：" + resolveTaskTimeoutWrapup("planner")
+	}
+	lead := "刚有具体变动（见下面的【本次触发本轮的实际变动】），据此规划下一步："
+	if len(triggers) == 0 {
+		lead = "本轮是**定时巡检（心跳到点）/无具体变动信号**的唤醒——图不一定有新变动。顺带复查在跑意图：长时间无进展或跑偏的用 steer_work 纠偏、方向整个错的用 kill_work 止损；再判定目标、决定是否补方向："
+	}
+	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。"
+	volatile := notePrefix + situational
 	input := composePlannerInput(staticRules, lead, volatile, renderPlannerTodos(opts.Todos.List()))
 	prevMaxIntentID := latestIntentID(ts)
 	lastText := ""
@@ -958,11 +977,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		})
 	switch {
 	case err == nil && !resumePlannerSession():
-		// 成功：把历史折叠成「本轮输入 + 结论」，留作下一轮的前缀。
+		// 成功：保留增量热会话前缀（未超窗时不 Reset），超出消息/token 上限后折叠重置。
 		p.rememberRound(ts, prevMaxIntentID, lastText)
-		// 热会话的前缀用**本轮结论文本**（runText），不是逐段 emit 的片段：折叠后的
-		// 两条消息必须能让下一轮读懂"上一轮想清楚了什么"。
-		p.parkHotSession(s, tsx, input, runText)
+		p.parkHotSession(s, tsx, input, runText, ts.ID(), nextNodeCursor, nextChangeCursor)
 		keepSession = true
 	case err == nil:
 		p.rememberRound(ts, prevMaxIntentID, lastText)
@@ -995,12 +1012,41 @@ func composePlannerInput(staticRules, lead, volatile, todos string) string {
 // 规划热会话的保留策略。缓存前缀（system + 工具 schema）不随轮数变化，所以复用同一个
 // Session 的收益是**每轮固定**的；限制轮数与空闲时长是为了不让摘要层数与陈旧会话无限累积。
 const (
-	plannerHotMaxRounds = 8
-	plannerHotIdleTTL   = 10 * time.Minute
+	plannerHotMaxRounds   = 8
+	plannerHotMaxMessages = 14
+	plannerHotIdleTTL     = 10 * time.Minute
 )
 
+func extractBlackboardCursors(bb map[string]any, fallbackNode int64, fallbackChange string) (int64, string) {
+	if bb == nil {
+		return fallbackNode, fallbackChange
+	}
+	nodeCursor := fallbackNode
+	if meta, ok := bb["blackboard"].(map[string]any); ok {
+		switch v := meta["next_cursor"].(type) {
+		case int64:
+			if v > nodeCursor {
+				nodeCursor = v
+			}
+		case int:
+			if int64(v) > nodeCursor {
+				nodeCursor = int64(v)
+			}
+		case float64:
+			if int64(v) > nodeCursor {
+				nodeCursor = int64(v)
+			}
+		}
+	}
+	changeCursor := fallbackChange
+	if c, ok := bb["change_cursor"].(string); ok && c != "" {
+		changeCursor = c
+	}
+	return nodeCursor, changeCursor
+}
+
 // takeHotSession 取出可复用的热会话；没有 / 超轮数 / 超空闲 / 任务已暂停或删除时返回 nil。
-func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet) {
+func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet, int64, int64, string) {
 	p.hotMu.Lock()
 	defer p.hotMu.Unlock()
 	// 没有配套 ToolSet 的热会话不可复用：它的工具闭包绑定在哪个对象上无从得知，
@@ -1010,27 +1056,38 @@ func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet) {
 			p.hot.Close()
 		}
 		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-		return nil, nil
+		p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+		return nil, nil, 0, 0, ""
 	}
 	if p.hotRounds >= plannerHotMaxRounds || time.Since(p.hotLastUsed) > plannerHotIdleTTL {
 		p.hot.Close()
 		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-		return nil, nil
+		p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+		return nil, nil, 0, 0, ""
 	}
-	return p.hot, p.hotTools
+	return p.hot, p.hotTools, p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor
 }
 
-// parkHotSession 把本轮会话留作下一轮的前缀，并把历史折叠成「本轮输入 + 结论」两条。
-//
-// 折叠是热会话成立的前提：不折叠的话它就是一个不断变大的 transcript（等价于 resume
-// 全量），上下文成本会压过缓存收益。裁到两条消息后，下一轮请求 = system + 工具 schema +
-// 这两条 + 新输入，前缀稳定、体积有界。
-func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string) {
+// parkHotSession 保留或折叠热会话作为下一轮的前缀：在安全窗口内不调用 Reset()，
+// 保留 Turn 1 完整黑板前缀及后续增量对话吃满 KV 缓存；超出消息/token 阈值时折叠并重置游标，
+// 让下轮重建干净基准快照，确保上下文体积始终有界。
+func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string, expID, nextNodeCursor int64, nextChangeCursor string) {
 	if s == nil || tools == nil {
 		return
 	}
-	s.Reset()
-	s.AppendMessages(hotPrefixMessages(roundInput, lastText)...)
+	msgs := s.Messages()
+	compacted := llm.LastBoundaryIndex(msgs) >= 0
+	maxTok := p.compactionWindow() / 2
+	if maxTok <= 0 {
+		maxTok = 60000
+	}
+	withinWindow := !compacted && len(msgs) <= plannerHotMaxMessages && compaction.EstimateTokens(msgs) <= maxTok
+	if !withinWindow {
+		s.Reset()
+		s.AppendMessages(hotPrefixMessages(roundInput, lastText)...)
+		nextNodeCursor = 0
+		nextChangeCursor = ""
+	}
 	p.hotMu.Lock()
 	defer p.hotMu.Unlock()
 	p.hot = s
@@ -1039,6 +1096,9 @@ func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInpu
 	p.hotTools = tools
 	p.hotRounds++
 	p.hotLastUsed = time.Now()
+	p.hotExpID = expID
+	p.hotLastNodeCursor = nextNodeCursor
+	p.hotLastChangeCursor = nextChangeCursor
 }
 
 // hotPrefixMessages 是热会话在轮间保留的最小前缀：上一轮问了什么、最后结论是什么。
@@ -1090,6 +1150,7 @@ func (p *Planner) dropHotSession() {
 		p.hot.Close()
 	}
 	p.hot, p.hotTools, p.hotRounds = nil, nil, 0
+	p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
 }
 
 // CloseHotSession 供任务停止/删除时释放（引擎侧调用，幂等）。
@@ -1175,6 +1236,7 @@ func (p *Planner) invalidateHotSurface(surface string) {
 			p.hot.Close()
 		}
 		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
+		p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
 	}
 	p.hotSurface = surface
 }

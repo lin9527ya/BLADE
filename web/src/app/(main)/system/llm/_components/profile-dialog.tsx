@@ -18,6 +18,7 @@ import { api } from "@/lib/api";
 import type { LLMProfile, LLMRetryOverride } from "@/lib/types";
 
 import {
+  CACHE_BREAKPOINT_MODES,
   EFFORT_LEVELS,
   fromStore,
   MAX_TOKENS_FIELD_HINTS,
@@ -83,6 +84,9 @@ export function ProfileDialog({
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
   const [customHeaders, setCustomHeaders] = React.useState(""); // 固定请求头（每行 Name: Value）
+  const [inputTokensIncludesCache, setInputTokensIncludesCache] = React.useState(false);
+  const [preserveThinkingBlocks, setPreserveThinkingBlocks] = React.useState(false);
+  const [cacheBreakpoints, setCacheBreakpoints] = React.useState(NONE);
 
   // opencode zen 网关强制要求 x-opencode-session（缺了 400 MissingSessionID）：
   // 地址是 opencode.ai 且输入框留空时，测试/保存都自动按该头名走（后端也有同款兜底）。
@@ -119,6 +123,9 @@ export function ProfileDialog({
     setMaxTokensField(fromStore(profile?.max_tokens_field));
     setSessionHeaderKey(profile?.session_header_key ?? "");
     setCustomHeaders(headersToText(profile?.custom_headers));
+    setInputTokensIncludesCache(profile?.input_tokens_includes_cache ?? false);
+    setPreserveThinkingBlocks(profile?.preserve_thinking_blocks ?? false);
+    setCacheBreakpoints(fromStore(profile?.cache_breakpoints));
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
     setApiKey("");
     setKeyHint(profile?.api_key_hint ?? "");
@@ -216,6 +223,9 @@ export function ProfileDialog({
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
         session_header_key: effectiveSessionHeader(baseUrl, sessionHeaderKey),
         custom_headers: parsedHeaders,
+        input_tokens_includes_cache: format === "anthropic" ? inputTokensIncludesCache : false,
+        preserve_thinking_blocks: format === "anthropic" ? preserveThinkingBlocks : false,
+        cache_breakpoints: format === "anthropic" ? toStore(cacheBreakpoints) : "",
         retry,
       });
       if (isNew) toast.success(`已新建：${name.trim()}（在卡片上「设为激活」以启用）`);
@@ -588,6 +598,52 @@ export function ProfileDialog({
               </Select>
             </div>
           </div>
+
+          {format === "anthropic" && (
+            <div className="grid gap-3 rounded-lg border p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">Prompt Cache 断点策略</Label>
+                  <p className="text-muted-foreground text-xs">
+                    「仅系统前缀」只在系统段打断点；「滚动多断点」追加最后一个工具 schema 与滚动历史消息断点（适用于官方
+                    Claude / Bedrock）。
+                  </p>
+                </div>
+                <Select value={cacheBreakpoints} onValueChange={setCacheBreakpoints}>
+                  <SelectTrigger className="w-48 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CACHE_BREAKPOINT_MODES.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">input_tokens 已包含缓存（中转站兼容）</Label>
+                  <p className="text-muted-foreground text-xs">
+                    部分 DeepSeek/OpenAI 转 Anthropic 中转站会将总输入填进 input_tokens；开启后不再重复累加
+                    cache_read，避免统计与压缩阈值虚高。
+                  </p>
+                </div>
+                <Switch checked={inputTokensIncludesCache} onCheckedChange={setInputTokensIncludesCache} />
+              </div>
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">保留网关默认思考块</Label>
+                  <p className="text-muted-foreground text-xs">
+                    thinking.type
+                    留空但上游网关默认返回思考块时，重放历史思考块而不是强制剔除（摘要禁用思考时仍自动剥离）。
+                  </p>
+                </div>
+                <Switch checked={preserveThinkingBlocks} onCheckedChange={setPreserveThinkingBlocks} />
+              </div>
+            </div>
+          )}
 
           <ProfileRetryFields value={retry} onChange={setRetry} />
         </div>

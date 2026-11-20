@@ -7,7 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/compress v1.20.2
-	github.com/lin9527ya/Norma v0.5.13-0.20261112130025-de8aa8f206f9
+	github.com/lin9527ya/Norma v0.5.14
 	github.com/lqqyt2423/go-mitmproxy v1.9.2
 	github.com/miekg/dns v1.1.72
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2

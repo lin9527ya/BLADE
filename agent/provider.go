@@ -78,6 +78,16 @@ type Config struct {
 	// Unlike SessionHeaderKey their values do not depend on the conversation. The
 	// session header wins if both set the same name.
 	CustomHeaders map[string]string
+	// InputTokensIncludesCache tells the Anthropic adapter that raw
+	// usage.input_tokens from this endpoint already includes cached tokens, so it
+	// must not add cache_read + cache_creation again.
+	InputTokensIncludesCache bool
+	// PreserveThinkingBlocks keeps historical thinking blocks on Anthropic
+	// requests when ThinkingType is unset (for gateways that enable thinking on by default).
+	PreserveThinkingBlocks bool
+	// CacheBreakpoints controls extra Anthropic cache_control breakpoints
+	// ("" = system prefix only; "rolling" = last tool + rolling history messages).
+	CacheBreakpoints string
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
@@ -138,7 +148,11 @@ func compactionConfig(windowTokens, maxTokens int) *compaction.Config {
 	if windowTokens <= 0 {
 		windowTokens = defaultWindowK * 1000
 	}
-	return &compaction.Config{ContextWindow: windowTokens, MaxOutputTokens: maxTokens}
+	return &compaction.Config{
+		ContextWindow:        windowTokens,
+		MaxOutputTokens:      maxTokens,
+		MicroCompactMinClear: 8,
+	}
 }
 
 // FromEnv resolves the LLM provider config:
@@ -298,6 +312,11 @@ func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, e
 	// 输出上限的字段名选择(空 = 用 max_tokens)。上限的「值」不在这里:它每轮随
 	// agentcore.Options.MaxTokens 走,provider 只决定把它塞进哪个键。
 	lc.MaxTokensField = c.MaxTokensField
+	// KV cache 兼容选项与滚动断点：由 profile/endpoint 配置透传给 SDK，默认零值不变。
+	lc.InputTokensIncludesCache = c.InputTokensIncludesCache
+	lc.PreserveThinkingBlocks = c.PreserveThinkingBlocks
+	lc.CacheBreakpoints = c.CacheBreakpoints
+	lc.DisablePromptCacheKey = !supportsPromptCacheKey(c.Format, c.BaseURL)
 	// 重试参数与 SDK 同语义(次数 0=默认/负=关闭,间隔 0=指数退避/>0=固定),原样透传。
 	lc.MaxRetries = c.Retry.ConnectAttempts
 	lc.RetryInterval = c.Retry.ConnectInterval
@@ -307,6 +326,22 @@ func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, e
 	// 叠加成双重限流，且它不统计 SDK 内部重试，留着一个「看起来生效」的假护栏
 	// 比没有更糟——所以这里不再设置 lc.RateLimit。
 	return llm.NewProvider(lc)
+}
+
+// supportsPromptCacheKey reports whether sending OpenAI's "prompt_cache_key"
+// body parameter is known-safe for the target endpoint (Responses API, official
+// OpenAI, OpenRouter, or custom gateways that tolerate it without rejecting
+// unknown top-level parameters). Strict OpenAI-compat relays like Gemini/DeepSeek
+// can reject unknown body fields with HTTP 400, so leave them opted out.
+func supportsPromptCacheKey(format llm.Format, baseURL string) bool {
+	if format == llm.FormatOpenAIResponses {
+		return true
+	}
+	if format != llm.FormatOpenAI {
+		return false
+	}
+	u := strings.ToLower(strings.TrimSpace(baseURL))
+	return u == "" || strings.Contains(u, "api.openai.com") || strings.Contains(u, "openrouter.ai")
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
