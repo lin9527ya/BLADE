@@ -502,6 +502,17 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 	s.mu.Lock()
 	run := s.live[id]
 	s.mu.Unlock()
+	if run != nil && run.cancelled.Load() {
+		// A second cancel of an already-terminal row is a no-op; do not
+		// overwrite the original cancel reason with the retry's note.
+		row, err := s.pg.GetExecution(id)
+		if err != nil {
+			return true, err
+		}
+		if row == nil || !db.ExecutionActive(row.Status) {
+			return false, nil
+		}
+	}
 	if run != nil {
 		s.requestStop(run)
 	}
@@ -619,6 +630,9 @@ func (s *ExecutionService) CancelAll(taskID, reason string) int {
 }
 
 func (s *ExecutionService) cancelMatching(ctx context.Context, taskID string, intentID int64, reason string) int {
+	if strings.TrimSpace(reason) == "" {
+		reason = agent.AbortExecutionCancelledByUser.Text
+	}
 	ids := map[int64]bool{}
 	s.mu.Lock()
 	var local []*execRun
@@ -633,6 +647,10 @@ func (s *ExecutionService) cancelMatching(ctx context.Context, taskID string, in
 	for _, run := range local {
 		s.requestStop(run)
 		localIDs[run.id] = true
+		// Record the batch reason even if the process exits before Cancel runs.
+		if err := s.pg.SetExecutionCancelNote(run.id, reason); err != nil {
+			log.Printf("[exec] 执行 %d 批量停止理由记录: %v", run.id, err)
+		}
 	}
 	var rows []*db.ToolExecution
 	var err error
@@ -647,13 +665,13 @@ func (s *ExecutionService) cancelMatching(ctx context.Context, taskID string, in
 	for _, row := range rows {
 		ids[row.ID] = true
 	}
-	// Every local process was asked to stop even if it exits between the
-	// signal and Cancel. Ledger-only rows count only when Cancel transitions
-	// an active row; a row already final belongs to another owner.
 	n := len(localIDs)
 	for id := range ids {
+		if localIDs[id] {
+			continue // already requested and reason recorded above
+		}
 		ok, err := s.Cancel(ctx, id, reason)
-		if !localIDs[id] && ok {
+		if ok {
 			n++
 		}
 		if err != nil {
