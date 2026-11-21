@@ -270,6 +270,12 @@ func TestTimedOutTaskRevivalResetsClockAndSettlingAcrossFIFO(t *testing.T) {
 	if _, ok := s.engine.stamped.Load(task.ID); ok {
 		t.Fatal("timed-out task retained the old first-run stamp")
 	}
+	// The test server's root context is intentionally cancelled; a launched
+	// coordinator may exit immediately and delete its marker. Assert the stale
+	// marker was cleared before promotion rather than racing that goroutine.
+	if _, ok := s.engine.coordStarted.Load(task.ID); ok {
+		t.Fatal("timed-out task retained the old deadline coordinator marker")
+	}
 	stored, err := m.pg.GetTask(mustTaskID(t, task.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -292,9 +298,6 @@ func TestTimedOutTaskRevivalResetsClockAndSettlingAcrossFIFO(t *testing.T) {
 	}
 	if execCtx := s.engine.execContextFor(context.Background(), task.ID); execCtx.Err() != nil {
 		t.Fatalf("revived task did not receive a live execution context: %v", context.Cause(execCtx))
-	}
-	if _, ok := s.engine.coordStarted.Load(task.ID); !ok {
-		t.Fatal("revived timeout task did not start a fresh deadline coordinator")
 	}
 }
 
