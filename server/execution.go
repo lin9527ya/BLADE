@@ -513,6 +513,17 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 			return false, nil
 		}
 	}
+	if run == nil {
+		// No local process: a terminal ledger row is a no-op and must keep its
+		// original cancellation reason instead of taking this retry's note.
+		row, err := s.pg.GetExecution(id)
+		if err != nil {
+			return false, err
+		}
+		if row == nil || !db.ExecutionActive(row.Status) {
+			return false, nil
+		}
+	}
 	if run != nil {
 		s.requestStop(run)
 	}
