@@ -99,8 +99,17 @@ func (q *triggerQueue) nextLocked(agentKey string, cfg triggerBehavior) triggere
 		return qd[0]
 	}
 	if cfg.mergeMode == "all" {
-		q.queue[agentKey] = qd[:0:0]
-		return mergeAllRuns(qd)
+		group := []triggeredRun{qd[0]}
+		rest := qd[:0:0]
+		for _, it := range qd[1:] {
+			if it.principal == qd[0].principal {
+				group = append(group, it)
+			} else {
+				rest = append(rest, it)
+			}
+		}
+		q.queue[agentKey] = rest
+		return mergeAllRuns(group)
 	}
 	// by_task: head + same-task mergeable fires.
 	head := qd[0]
@@ -111,7 +120,7 @@ func (q *triggerQueue) nextLocked(agentKey string, cfg triggerBehavior) triggere
 	group := []triggeredRun{head}
 	rest := qd[:0:0] // keep non-matching items in order
 	for _, it := range qd[1:] {
-		if it.mergeable && it.taskID == head.taskID {
+		if it.mergeable && it.taskID == head.taskID && it.principal == head.principal {
 			group = append(group, it)
 		} else {
 			rest = append(rest, it)

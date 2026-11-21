@@ -33,10 +33,12 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
+	pg := s.m.pg.WithContext(r.Context())
+	store := pg.Exploration(t.ExpID)
 	const reportListLimit = 1000
 	var truncated []string
 	var dataGaps []string
-	findings, ferr := t.Store.ListByKind(db.KindFinding, reportListLimit) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	findings, ferr := store.ListByKind(db.KindFinding, reportListLimit) // 纯漏洞（事实是独立的 KindFact，不进报告）
 	if ferr != nil {
 		// 发现列表是报告正文的主体：读失败时输出一份「没有发现」的报告，比报错危险得多。
 		log.Printf("[report] 任务 %s 发现列表读取失败，拒绝生成貌似完整的报告：%v", t.ID, ferr)
@@ -48,7 +50,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 撤回(retracted)的漏洞出正文、进「已撤回」段；blocked/exhausted 的意图单列「未测成」。
 	tid, _ := strconv.ParseInt(t.ID, 10, 64)
-	meta, merr := s.m.pg.FindingMetaByNodeID(tid)
+	meta, merr := pg.FindingMetaByNodeID(tid)
 	if merr != nil {
 		// 处置状态/置信度是确认门的输入；降级会把已确认漏洞误打成待确认候选。
 		log.Printf("[report] 任务 %s 发现处置状态读取失败，无法判定确认门：%v", t.ID, merr)
@@ -62,7 +64,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	confidenceByNode := buckets.confidenceByNode
 	// 复核结论先读：正文的「确认」判定需要最近一次复测结论（reproduced/fixed 可以越过
 	// confidence 门槛），不能再等到写完 noEvidence 才加载。
-	verdicts, verr := s.m.pg.LatestRetestVerdicts(tid)
+	verdicts, verr := pg.LatestRetestVerdicts(tid)
 	if verr != nil {
 		log.Printf("[report] 任务 %s 复测结论读取失败，正文按 confidence/status 判定：%v", t.ID, verr)
 		verdicts = map[int64]string{}
@@ -82,7 +84,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	live = confirmedLive
-	intents, ierr := t.Store.ListByKind(db.KindIntent, reportListLimit)
+	intents, ierr := store.ListByKind(db.KindIntent, reportListLimit)
 	if ierr != nil {
 		// 意图列表驱动「未测成」、攻击链与技术统计：缺了它报告会假装所有方向都测完了。
 		log.Printf("[report] 任务 %s 意图列表读取失败，拒绝生成貌似完整的报告：%v", t.ID, ierr)
@@ -100,14 +102,14 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 同指纹的重复登记只在正文出现一次：同一件事数两遍会让客户以为洞很多，
 	// 也让严重度合计虚高。重复项挂在代表项下面点名。
-	live, duplicates := s.mergeDuplicateFindings(tid, live, meta)
+	live, duplicates := mergeDuplicateFindings(pg, tid, live, meta)
 	var noEvidence []*db.Node
 	for _, n := range live {
 		if m, ok := meta[n.ID]; !ok || m.TrafficCount == 0 {
 			noEvidence = append(noEvidence, n)
 		}
 	}
-	coverage, covErr := t.Store.CoverageMatrix(tid)
+	coverage, covErr := store.CoverageMatrix(tid)
 	if covErr != nil {
 		log.Printf("[report] 任务 %s 覆盖矩阵读取失败，报告将不含覆盖明细：%v", t.ID, covErr)
 		dataGaps = append(dataGaps, "覆盖矩阵读取失败：报告不含资产×风险类覆盖明细")
@@ -172,12 +174,12 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 报告 Agent 为每条发现写的详细分析：链路里最值钱的一段，此前完全没进总报告。
 	// 同时核对证据版本：写完之后又补了证据的分析要显式标「可能已过期」，不能拿旧结论当现状。
-	remediationByNode, remErr := s.m.pg.FindingRemediationByNode(tid)
+	remediationByNode, remErr := pg.FindingRemediationByNode(tid)
 	if remErr != nil {
 		log.Printf("[report] 任务 %s 整改建议读取失败：%v", t.ID, remErr)
 		dataGaps = append(dataGaps, "整改建议读取失败：报告正文不含人工整改建议")
 	}
-	reportDetails, rerr := s.m.pg.FindingReportsByNode(tid)
+	reportDetails, rerr := pg.FindingReportsByNode(tid)
 	findingReports := make(map[int64]string, len(reportDetails))
 	findingReportStale := map[int64]string{}
 	if rerr != nil {
@@ -199,16 +201,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 战果：据点与凭据各取全量（同 findings 的取法）。它们不进 digest（coldgraph 只折
 	// intent/fact），所以不会被折叠吞掉，按 kind 直取即可。
-	footholds, fhErr := t.Store.ListByKind(db.KindFoothold, 1000)
-	credentials, crErr := t.Store.ListByKind(db.KindCredential, 1000)
+	footholds, fhErr := store.ListByKind(db.KindFoothold, 1000)
+	credentials, crErr := store.ListByKind(db.KindCredential, 1000)
 	// 遗留物（P43）：我们留在目标上的东西。同样按 kind 直取全量。
-	artifacts, arErr := t.Store.ListByKind(db.KindArtifact, 1000)
+	artifacts, arErr := store.ListByKind(db.KindArtifact, 1000)
 	// 检测验证：同样按 kind 直取全量（也不进 digest）。
-	detections, dtErr := t.Store.ListByKind(db.KindDetection, 1000)
+	detections, dtErr := store.ListByKind(db.KindDetection, 1000)
 	// 目标侧痕迹：自动归纳与 Agent 补录共用同一节点 kind。来源（leaves 边）一并读，
 	// 报告要能回答"哪一步动作留下了这条痕迹"。
-	footprints, fpErr := t.Store.ListByKind(db.KindFootprint, 1000)
-	footprintSources, _ := t.Store.FootprintSourceNodes()
+	footprints, fpErr := store.ListByKind(db.KindFootprint, 1000)
+	footprintSources, _ := store.FootprintSourceNodes()
 	if fhErr != nil || crErr != nil || arErr != nil || dtErr != nil || fpErr != nil {
 		log.Printf("[report] 任务 %s 战果/遗留物/检测/痕迹读取失败：据点=%v 凭据=%v 遗留物=%v 检测=%v 痕迹=%v", t.ID, fhErr, crErr, arErr, dtErr, fpErr)
 		dataGaps = append(dataGaps, "战果/遗留物/检测/痕迹读取失败：对应段落可能不完整")
@@ -239,7 +241,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	techniqueTally := db.TechniqueTally(intents)
 	lootUsedBy := map[int64][]report.LootUse{}
 	var chains []report.AttackChain
-	if edges, edgeErr := t.Store.Edges(5000); edgeErr == nil {
+	if edges, edgeErr := store.Edges(5000); edgeErr == nil {
 		for _, e := range edges {
 			if e.Rel != db.RelUses || !db.LootConsumingIntentState(intentState[e.From]) {
 				continue
@@ -256,11 +258,11 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		dataGaps = append(dataGaps, "图边读取失败：攻击链与战果动用关系可能缺失")
 	}
 	// 域内路径（P32）：与任务页的「AD 攻击路径」同一份实现——报告里写的和页面看到的不该是两个答案。
-	adPaths := adPathsForReport(t.Store)
+	adPaths := adPathsForReport(store)
 
 	// 凭据尝试台账（P43）：报告要说清"动过谁的账号"——那是客户复盘时最想核对的一件事。
 	// 读不出来时记日志、**不静默略过**：报告里少一节，比让人以为"一次都没试过"安全得多。
-	credAttempts, err := s.m.pg.ListCredentialAttempts(tid)
+	credAttempts, err := pg.ListCredentialAttempts(tid)
 	if err != nil {
 		log.Printf("[report] 任务 %s 凭据尝试台账读取失败：%v", t.ID, err)
 		dataGaps = append(dataGaps, "凭据尝试台账读取失败：报告不含对账号的尝试记录")
@@ -269,7 +271,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	// 目标进度：报告必须如实呈现 met/unmet/abandoned。读失败时记数据缺项，
 	// 不伪造「全部达成」。
 	var reportGoals []report.GoalNote
-	goals, gerr := t.Store.ListByKind(db.KindGoal, 1000)
+	goals, gerr := store.ListByKind(db.KindGoal, 1000)
 	if gerr != nil {
 		log.Printf("[report] 任务 %s 目标列表读取失败：%v", t.ID, gerr)
 		dataGaps = append(dataGaps, "目标列表读取失败：报告不含目标达成情况")
@@ -285,8 +287,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 展示编号：任务内序号 + 全局 id。正文/附录写成「#3（id 659）」，
 	// 工具与 API 寻址仍用全局 id（同一数字在两种编号下含义不同）。
-	nodeOrd, _ := t.Store.NodeOrdinals(db.KindFinding, 0)
-	intentOrd, _ := t.Store.IntentOrdinals(0)
+	nodeOrd, _ := store.NodeOrdinals(db.KindFinding, 0)
+	intentOrd, _ := store.IntentOrdinals(0)
 	input := report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(), Goals: reportGoals,
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
@@ -300,6 +302,9 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		LootUsedBy:       lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
 		CredentialAttempts: credAttempts,
+	}
+	if r.Context().Err() != nil {
+		return
 	}
 	md := report.Markdown(input)
 	if template == "redteam" {
@@ -395,7 +400,7 @@ func findingClosedStatus(status string) bool {
 
 // mergeDuplicateFindings 按「漏洞类型 + 端点集合」的指纹把重复登记合并到代表项。
 // 没有绑定流量的发现没有指纹（无法判断是不是同一个洞），原样保留、不参与合并。
-func (s *Server) mergeDuplicateFindings(tid int64, live []*db.Node, meta map[int64]db.FindingMeta) ([]*db.Node, map[int64][]int64) {
+func mergeDuplicateFindings(pg *db.DB, tid int64, live []*db.Node, meta map[int64]db.FindingMeta) ([]*db.Node, map[int64][]int64) {
 	if len(live) < 2 {
 		return live, nil
 	}
@@ -408,7 +413,7 @@ func (s *Server) mergeDuplicateFindings(tid int64, live []*db.Node, meta map[int
 	if len(ids) == 0 {
 		return live, nil
 	}
-	endpoints, err := s.m.pg.FindingEndpoints(ids)
+	endpoints, err := pg.FindingEndpoints(ids)
 	if err != nil {
 		// 读不出来就不合并：宁可多列一条，也不要因为一次 DB 抖动把两条不同的洞并掉。
 		log.Printf("[report] 任务 %d 端点读取失败，本次跳过重复合并：%v", tid, err)

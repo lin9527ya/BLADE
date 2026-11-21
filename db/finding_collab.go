@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -83,23 +85,31 @@ func (d *DB) UpdateFindingCollab(id int64, patch FindingCollabPatch) (int64, err
 		}
 		cveJSON = string(raw)
 	}
-	res, err := d.Exec(`UPDATE findings SET
+	var n int64
+	err := d.withFindingMutation(context.Background(), id, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE findings SET
   assignee    = CASE WHEN $2::boolean THEN $3 ELSE assignee END,
   due_at      = CASE WHEN $4::boolean THEN $5 ELSE due_at END,
   cvss_score  = CASE WHEN $6::boolean THEN $7 ELSE cvss_score END,
   cve_ids     = CASE WHEN $8::boolean THEN $9::jsonb ELSE cve_ids END,
   remediation = CASE WHEN $10::boolean THEN $11 ELSE remediation END
 WHERE id=$1`,
-		id,
-		patch.Assignee != nil, stringPtr(patch.Assignee),
-		patch.SetDueAt, patch.DueAt,
-		patch.CVSSScore != nil, floatPtr(patch.CVSSScore),
-		patch.CVEIDs != nil, cveJSON,
-		patch.Remediation != nil, stringPtr(patch.Remediation))
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+			id,
+			patch.Assignee != nil, stringPtr(patch.Assignee),
+			patch.SetDueAt, patch.DueAt,
+			patch.CVSSScore != nil, floatPtr(patch.CVSSScore),
+			patch.CVEIDs != nil, cveJSON,
+			patch.Remediation != nil, stringPtr(patch.Remediation))
+		if err != nil {
+			if errors.Is(err, ErrFindingNotFound) {
+				return nil
+			}
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 func stringPtr(v *string) any {
@@ -144,9 +154,10 @@ func (d *DB) AddFindingComment(findingID int64, author, body string) (*FindingCo
 	if author == "" {
 		author = "operator"
 	}
-	c := &FindingComment{FindingID: findingID, Author: author, Body: body}
-	err := d.QueryRow(`INSERT INTO finding_comments(finding_id, author, body)
-VALUES($1,$2,$3) RETURNING id, created_at`, findingID, author, body).Scan(&c.ID, &c.CreatedAt)
+	c := &FindingComment{}
+	err := d.withFindingMutation(context.Background(), findingID, func(tx *sql.Tx) error {
+		return tx.QueryRow(`INSERT INTO finding_comments(finding_id,author,body) VALUES ($1,$2,$3) RETURNING id,finding_id,author,body,created_at`, findingID, author, body).Scan(&c.ID, &c.FindingID, &c.Author, &c.Body, &c.CreatedAt)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -154,11 +165,16 @@ VALUES($1,$2,$3) RETURNING id, created_at`, findingID, author, body).Scan(&c.ID,
 }
 
 func (d *DB) DeleteFindingComment(findingID, commentID int64) (int64, error) {
-	res, err := d.Exec(`DELETE FROM finding_comments WHERE id=$1 AND finding_id=$2`, commentID, findingID)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	var n int64
+	err := d.withFindingMutation(context.Background(), findingID, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`DELETE FROM finding_comments WHERE id=$1 AND finding_id=$2`, commentID, findingID)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 // FindingRemediationByNode returns the operator-maintained remediation note for

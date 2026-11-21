@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 )
@@ -326,5 +327,62 @@ func TestSetTaskStatusGuardedWithPrunedPreservesTimeoutOpenIntents(t *testing.T)
 	}
 	if n, _ := task.Store.GetNode(kept); n == nil || n.State != "open" {
 		t.Fatalf("timeout should keep open intent intact, got %+v", n)
+	}
+}
+
+func TestGoalDrainCapturedIntentActuallyExecutesAndWrites(t *testing.T) {
+	e, task := goalDrainFixture(t)
+	control := e.execContextFor(t.Context(), task.ID)
+	id, err := task.Store.AddIntent(map[string]any{"summary": "consume hosted output"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := task.Store.ClaimNode(t.Context(), id, "worker", "open", db.IntentLeaseTTL, nil, false); err != nil || n == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if !e.markGoalDraining(task) {
+		t.Fatal("drain failed")
+	}
+	defer e.goalDrainIntents.Delete(task.ID)
+	defer e.settling.Delete(task.ID)
+	if _, err := task.Store.CompareAndSetIntentState(id, "running", "open"); err != nil {
+		t.Fatal(err)
+	}
+	n := e.claimNextIntent(task)
+	if n == nil {
+		t.Fatal("captured intent not claimed")
+	}
+	a := n.WriteAuthority(tidOfTask(task), task.ExpID)
+	stale := a
+	stale.Generation++
+	if e.intentExecContextFor(t.Context(), task, stale).Err() == nil {
+		t.Fatal("stale authority allowed")
+	}
+	called := false
+	var factID int64
+	worker := agent.NewWorker(retestProvider{complete: func(ctx context.Context, _ llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+		called = true
+		if err := ctx.Err(); err != nil {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
+		var err error
+		factID, err = task.Store.WithAuthority(a).AddNode(db.KindFact, map[string]any{"summary": "hosted output collected"}, 0, "confirmed", n.Owner, nil)
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("collected")}}, "end_turn", llm.Usage{}, err
+	}}, "fixture", e.m.dir, nil, 10000, 1)
+	worker.SetNonStreaming(func() bool { return true })
+	e.runIntent(t.Context(), task, n.Owner, worker, n, "", "")
+	if !called || factID == 0 {
+		t.Fatal("claim succeeded but worker never consumed output")
+	}
+	if node, err := task.Store.GetNode(factID); err != nil || node == nil {
+		t.Fatal("writeback missing")
+	}
+	if e.execContextFor(t.Context(), task.ID).Err() == nil {
+		t.Fatal("ordinary settling context allowed")
+	}
+	e.Pause(task.ID, agent.AbortBudgetExhausted)
+	e.Resume(task)
+	if control.Err() == nil || e.intentExecContextFor(t.Context(), task, a).Err() == nil {
+		t.Fatal("paused drain control recreated")
 	}
 }

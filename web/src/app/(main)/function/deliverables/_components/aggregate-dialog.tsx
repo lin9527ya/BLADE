@@ -20,6 +20,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { aggregateOperation, completeAggregateOperation, type AggregateOperation } from "@/lib/aggregate-operation";
 import type { Campaign, Company } from "@/lib/types";
 
 const MAX_TASKS = 200;
@@ -41,15 +42,18 @@ export function AggregateDeliverableDialog({
   const [campaigns, setCampaigns] = React.useState<Campaign[]>([]);
   const [companies, setCompanies] = React.useState<Company[]>([]);
   const [busy, setBusy] = React.useState(false);
+  const [operationKey, setOperationKey] = React.useState("");
+  const operationRef = React.useRef<AggregateOperation | undefined>(undefined);
+  const controllerRef = React.useRef<AbortController | null>(null);
+  React.useEffect(() => () => controllerRef.current?.abort(), []);
   const [progress, setProgress] = React.useState(0);
   const [progressText, setProgressText] = React.useState("");
 
   React.useEffect(() => {
     if (!open) return;
-    setScopeID("");
-    setName("");
-    setKind("pentest");
-    setNote("");
+    if (!operationRef.current) {
+      setScopeID(""); setName(""); setKind("pentest"); setNote("");
+    }
     setProgress(0);
     setProgressText("");
     Promise.all([api.campaigns(), api.companies()])
@@ -63,6 +67,7 @@ export function AggregateDeliverableDialog({
   }, [open]);
 
   async function generate() {
+    if (busy || controllerRef.current) return;
     const id = Number(scopeID);
     if (!Number.isInteger(id) || id <= 0) {
       toast.error("请选择战役或公司");
@@ -72,24 +77,28 @@ export function AggregateDeliverableDialog({
       toast.error("请填写交付物名称");
       return;
     }
+    const controller = new AbortController();
+    controllerRef.current = controller;
     setBusy(true);
     setProgress(20);
     setProgressText("服务端生成中…");
     try {
-      await api.aggregateDeliverable({
-        scope_kind: scopeKind,
-        scope_id: id,
-        name: name.trim(),
-        kind,
-        note: note.trim(),
-      });
+      const payload = { scope_kind: scopeKind, scope_id: id, name: name.trim(), kind, note: note.trim() };
+      const operation = await aggregateOperation(JSON.stringify(payload), operationRef.current);
+      operationRef.current = operation;
+      setOperationKey(operation.key);
+      const result = await api.aggregateDeliverable({ ...payload, operation_key: operation.key }, controller.signal);
+      completeAggregateOperation(operation);
+      operationRef.current = undefined;
+      setOperationKey("");
       setProgress(100);
-      toast.success("已生成聚合交付物");
+      toast.success(result.replayed ? "已返回之前生成的交付物（未重复创建）" : "已生成聚合交付物");
       onOpenChange(false);
       onCreated();
     } catch (e) {
-      toast.error(`生成失败：${(e as Error).message}`);
+      toast.error(`结果未确认：${(e as Error).message}；相同参数重试会复用操作号，也可先检查交付物列表。`);
     } finally {
+      if (controllerRef.current === controller) controllerRef.current = null;
       setBusy(false);
       setProgressText("");
     }
@@ -101,7 +110,7 @@ export function AggregateDeliverableDialog({
       : companies.map((c) => ({ id: c.id, label: c.name }));
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) controllerRef.current?.abort(); onOpenChange(next); }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -189,7 +198,8 @@ export function AggregateDeliverableDialog({
             </div>
           ) : null}
         </FieldGroup>
-        <DialogFooter>
+        {operationKey && <p className="break-all text-muted-foreground text-xs">操作号：{operationKey}；结果未确认时请保持相同参数重试。</p>}
+      <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             取消
           </Button>

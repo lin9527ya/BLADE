@@ -2,7 +2,12 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -53,11 +58,12 @@ func (s *Server) aggregateDeliverable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ScopeKind string `json:"scope_kind"`
-		ScopeID   int64  `json:"scope_id"`
-		Name      string `json:"name"`
-		Kind      string `json:"kind"`
-		Note      string `json:"note"`
+		ScopeKind    string `json:"scope_kind"`
+		ScopeID      int64  `json:"scope_id"`
+		Name         string `json:"name"`
+		Kind         string `json:"kind"`
+		Note         string `json:"note"`
+		OperationKey string `json:"operation_key"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
@@ -74,6 +80,37 @@ func (s *Server) aggregateDeliverable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Note = strings.TrimSpace(req.Note)
+	req.OperationKey = strings.TrimSpace(req.OperationKey)
+	if len(req.OperationKey) > 128 {
+		writeErr(w, 400, "操作号最长128字节")
+		return
+	}
+	owner := principalFrom(r.Context()).ID
+	if req.OperationKey != "" && owner == "" {
+		writeErr(w, 401, "缺少可信操作主体")
+		return
+	}
+	encoded, _ := json.Marshal(struct {
+		ScopeKind        string
+		ScopeID          int64
+		Name, Kind, Note string
+	}{req.ScopeKind, req.ScopeID, req.Name, req.Kind, req.Note})
+	sum := sha256.Sum256(encoded)
+	requestHash := hex.EncodeToString(sum[:])
+	if req.OperationKey != "" {
+		detail, found, err := pg.AggregateRequest(r.Context(), owner, req.OperationKey, requestHash)
+		if err != nil {
+			writeAggregateError(w, err)
+			return
+		}
+		if found {
+			writeAggregateResult(w, 200, detail, req.OperationKey, true)
+			return
+		}
+	}
+	started := time.Now()
+	pg = pg.WithContext(r.Context())
 	ids := []int64{}
 	scopeName := ""
 	if req.ScopeKind == "campaign" {
@@ -127,6 +164,9 @@ func (s *Server) aggregateDeliverable(w http.ResponseWriter, r *http.Request) {
 	tasks := make([]aggregateTask, 0, len(ids))
 	reportOK := 0
 	for _, id := range ids {
+		if r.Context().Err() != nil {
+			return
+		}
 		t := s.m.ResolveTask(fmt.Sprint(id))
 		if t == nil {
 			tasks = append(tasks, aggregateTask{ID: id, Name: fmt.Sprintf("任务 #%d", id), Error: "任务未加载（可能已归档或删除）"})
@@ -156,6 +196,9 @@ func (s *Server) aggregateDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "所有任务报告都生成失败，未创建交付物")
 		return
 	}
+	if r.Context().Err() != nil {
+		return
+	}
 	md := buildAggregateMarkdown(req.Name, req.ScopeKind, scopeName, tasks)
 	actor := actorFrom(r)
 	if actor == "" {
@@ -167,15 +210,28 @@ func (s *Server) aggregateDeliverable(w http.ResponseWriter, r *http.Request) {
 	} else {
 		companyID = &req.ScopeID
 	}
-	detail, err := pg.CreateDeliverable(db.DeliverableInput{
-		Name: req.Name, Kind: req.Kind, CampaignID: campaignID, CompanyID: companyID,
-		ReportMD: md, Note: strings.TrimSpace(req.Note), CreatedBy: actor,
-	})
+	input := db.DeliverableInput{Name: req.Name, Kind: req.Kind, CampaignID: campaignID, CompanyID: companyID, ReportMD: md, Note: req.Note, CreatedBy: actor}
+	var detail *db.DeliverableDetail
+	var err error
+	replayed := false
+	if req.OperationKey == "" {
+		detail, err = pg.CreateDeliverableContext(r.Context(), input)
+	} else {
+		detail, replayed, err = pg.CreateAggregateDeliverable(r.Context(), input, owner, req.OperationKey, requestHash)
+	}
+	log.Printf("[aggregate] scope=%s id=%d reports=%d/%d ms=%d replayed=%t error=%t", req.ScopeKind, req.ScopeID, reportOK, len(tasks), time.Since(started).Milliseconds(), replayed, err != nil)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		if r.Context().Err() == nil {
+			writeAggregateError(w, err)
+		}
 		return
 	}
-	writeJSON(w, 201, detail)
+	status := 201
+	if replayed {
+		status = 200
+	}
+	writeAggregateResult(w, status, detail, req.OperationKey, replayed)
+
 }
 
 func buildAggregateMarkdown(name, scopeKind, scopeName string, tasks []aggregateTask) string {
@@ -211,4 +267,22 @@ func buildAggregateMarkdown(name, scopeKind, scopeName string, tasks []aggregate
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func writeAggregateError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, db.ErrDeliverableRequestConflict):
+		writeErr(w, 409, err.Error())
+	case errors.Is(err, db.ErrDeliverableRequestGone):
+		writeErr(w, 410, err.Error())
+	default:
+		writeErr(w, 503, "聚合结果未确认，请用相同操作号重试或查看交付物列表")
+	}
+}
+func writeAggregateResult(w http.ResponseWriter, status int, detail *db.DeliverableDetail, key string, replayed bool) {
+	writeJSON(w, status, struct {
+		*db.DeliverableDetail
+		OperationKey string `json:"operation_key,omitempty"`
+		Replayed     bool   `json:"replayed"`
+	}{detail, key, replayed})
 }

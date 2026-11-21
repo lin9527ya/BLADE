@@ -535,7 +535,7 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	// conv-<id>/), matching chatUpload's landing dir and agent/chat.go's sessionWorkDir
 	// — busyKey == convBusyKey(c.ID) == "conv-<id>" == that session id.
 	baseDir := filepath.Join(s.m.dir, "sessions", busyKey)
-	s.runConversation(c, composeAgentMessage(agentMessage, req.Attachments, baseDir), busyKey, msg)
+	s.runConversationAs(r.Context(), c, composeAgentMessage(agentMessage, req.Attachments, baseDir), busyKey, msg)
 	writeJSON(w, 202, map[string]any{"status": "accepted"})
 }
 
@@ -580,7 +580,14 @@ func (s *Server) autoTitleConversation(conversationID int64, agentKey string, pi
 // conversation_activities. Shared by the chat HTTP handler and the P3 scheduler.
 // busyKey clears when the run ends (best-effort in-flight marker).
 func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMessage ...string) {
+	s.runConversationAs(withPrincipal(s.ctx, systemPrincipal()), c, msg, busyKey, userMessage...)
+}
+
+func (s *Server) runConversationAs(parent context.Context, c *db.Conversation, msg, busyKey string, userMessage ...string) {
 	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
+	// Copy authority, not the HTTP cancellation: a completed response must not
+	// cancel the asynchronous turn or elevate its caller to the service principal.
+	ctx = withPrincipal(ctx, principalFrom(parent))
 	// Only the human-message handler supplies this field, before adding the
 	// attachment manifest. Scheduler/retest prompts must not be labelled as users.
 	if len(userMessage) == 1 {
@@ -593,8 +600,13 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 // run ends (clearing busyKey). runConversation wraps it in a goroutine for the
 // fire-and-forget chat path; the P3 trigger queue calls it directly so it can wait
 // for completion before starting the next queued fire for the same agent.
-func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, taskID int64) {
+func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, taskID int64, principals ...runPrincipal) {
 	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
+	p := systemPrincipal()
+	if len(principals) > 0 {
+		p = principals[0]
+	}
+	ctx = withPrincipal(ctx, p)
 	// 触发式运行（reporter/retester/playbook…）的会话名是 conv-<id>，台账解析不出
 	// task/worker；把任务上下文显式带上，否则这部分花费在 Token 视图里是「无归属」。
 	if taskID > 0 {
@@ -738,16 +750,21 @@ func (s *Server) readTriggerBehavior(agentKey string) triggerBehavior {
 // agent's策略 decides concurrency + merge: serial → run one at a time (optionally
 // merging by task / all / none); parallel → run each fire in its own concurrent
 // conversation up to trigger_max_parallel. Distinct agents always run concurrently.
-func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) {
-	if s.m.pg == nil || s.chatAgentRef() == nil {
-		return
+func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) bool {
+	return s.startTriggeredRunAs(systemPrincipal(), agentKey, title, message, taskID, mergeable, taskDesc, taskGoal)
+}
+
+func (s *Server) startTriggeredRunAs(principal runPrincipal, agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) bool {
+	if s.m.pg == nil || s.chatAgentRef() == nil || !s.triggerPumpAllowed() {
+		return false
 	}
 	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
 	batch := s.triggers.Enqueue(agentKey, triggeredRun{
 		agentKey: agentKey, title: title, message: message, taskID: taskID,
-		taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable,
+		taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable, principal: principal,
 	}, cfg, s.triggerPumpAllowed())
 	s.launchTriggered(agentKey, batch)
+	return true
 }
 
 // triggerPumpAllowed 是"现在还能不能起新 run"：调度器已取消就不再泵，
@@ -820,6 +837,7 @@ func mergeTriggeredRuns(items []triggeredRun) triggeredRun {
 		message:   b.String(),
 		taskID:    first.taskID,
 		mergeable: true,
+		principal: first.principal,
 		// taskDesc/taskGoal left empty: header already embedded above.
 	}
 }
@@ -862,6 +880,7 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		message:   b.String(),
 		taskID:    first.taskID,
 		mergeable: true,
+		principal: first.principal,
 		// taskDesc/taskGoal left empty: per-task headers already embedded above.
 	}
 }
@@ -889,7 +908,7 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 	s.chatRuns.mu.Lock()
 	s.chatRuns.busy[busyKey] = true
 	s.chatRuns.mu.Unlock()
-	s.runConversationSync(c, msg, busyKey, item.taskID)
+	s.runConversationSync(c, msg, busyKey, item.taskID, item.principal)
 }
 
 // firstLine returns a single-line, length-capped preview (shared with summaries).

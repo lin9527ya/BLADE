@@ -40,6 +40,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { usePolling } from "@/hooks/use-polling";
 import { useSSE } from "@/hooks/use-sse";
 import { api, sseUrl } from "@/lib/api";
+import { createLatestRequest, HttpError, runLatestRequest } from "@/lib/request-lifecycle";
+import { canonicalTaskID, failedTaskRead, type TaskReadState } from "@/lib/task-read-state";
 import { taskIsTerminal } from "@/lib/status";
 import type { LLMProfile, Task, TaskLiveEvent } from "@/lib/types";
 
@@ -84,7 +86,17 @@ function taskProfileIDs(task: Task): string[] {
   return task.llm_profile_id ? [String(task.llm_profile_id)] : [];
 }
 
-function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: LLMProfile[]; onUpdated: () => void }) {
+function TaskLLMControl({
+  task,
+  profiles,
+  onUpdated,
+  disabled = false,
+}: {
+  task: Task;
+  profiles: LLMProfile[];
+  onUpdated: () => void;
+  disabled?: boolean;
+}) {
   const [open, setOpen] = React.useState(false);
   const [profileIDs, setProfileIDs] = React.useState<string[]>(() => taskProfileIDs(task));
   const [activeProfileID, setActiveProfileID] = React.useState(
@@ -136,6 +148,7 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
   };
 
   const save = async () => {
+    if (disabled || saving) return;
     setSaving(true);
     try {
       const result = await api.updateTaskLLMProfiles(
@@ -167,6 +180,7 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
         <Button
           size="sm"
           variant={exhausted ? "destructive" : "outline"}
+          disabled={disabled}
           aria-label="查看或切换任务 LLM 配置"
           title={currentTitle}
         >
@@ -198,7 +212,7 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
           activeProfileId={activeProfileID}
           onActiveProfileChange={setActiveProfileID}
           inputId="task-llm-profiles"
-          disabled={saving}
+          disabled={saving || disabled}
           portalContainer={popoverContentRef}
         />
 
@@ -206,7 +220,7 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
           <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
             关闭
           </Button>
-          <Button type="button" size="sm" onClick={save} disabled={saving}>
+          <Button type="button" size="sm" onClick={save} disabled={saving || disabled}>
             {saving && <Spinner data-icon="inline-start" />}
             {saveLabel}
           </Button>
@@ -216,15 +230,20 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
   );
 }
 
-function TaskDetailInner() {
+function TaskDetailInner({ id }: { id: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const id = searchParams.get("id") ?? "";
   const tabParam = searchParams.get("tab") ?? "";
   const [task, setTask] = React.useState<Task | null>(null);
   const [paused, setPaused] = React.useState(false);
-  const [loaded, setLoaded] = React.useState(false);
+  const [readState, setReadState] = React.useState<TaskReadState>("loading");
+  const [readError, setReadError] = React.useState("");
+  const [controlling, setControlling] = React.useState(false);
+  const taskRef = React.useRef<Task | null>(null);
+  const [requestOwner] = React.useState(createLatestRequest);
+  const refreshRef = React.useRef<() => Promise<void>>(async () => {});
+  React.useEffect(() => () => requestOwner.cancel(), [requestOwner]);
   // 页签写进 URL（?tab=timeline），播报板/通知/文档可以直接跳到具体页签。
   const [tab, setTab] = React.useState(TABS.some((t) => t.value === tabParam) ? tabParam : "sessions");
   const [interceptPendingCount, setInterceptPendingCount] = React.useState(0);
@@ -235,13 +254,24 @@ function TaskDetailInner() {
     id ? sseUrl(`/api/tasks/${encodeURIComponent(id)}/events`) : null,
     "task",
     (event) => {
-      if (event.error) return;
-      setTask((current) => (current ? { ...current, ...event.task } : event.task));
+      if (event.error) {
+        setReadError(`实时状态读取失败：${event.error}`);
+        setReadState(taskRef.current ? "stale" : "error");
+        // An old not-found SSE frame is not proof of current non-existence.
+        // Verify through a fresh HTTP read before entering the 404 state.
+        void refreshRef.current();
+        return;
+      }
+      if (!event.task || canonicalTaskID(event.task.id) !== id) return;
+      requestOwner.cancel(); // a prior HTTP snapshot may not overwrite this frame
+      taskRef.current = event.task;
+      setTask(event.task);
       setPaused(event.stats.paused);
       setInterceptPendingCount(event.stats.pending_intercepts);
-      setLoaded(true);
+      setReadState("ready");
+      setReadError("");
     },
-    Boolean(id),
+    Boolean(id) && readState !== "notFound",
   );
 
   // 外部改 URL（前进/后退、从别处深链）时同步当前页签。只认 URL 真正变化的那一次：
@@ -269,51 +299,61 @@ function TaskDetailInner() {
 
   usePolling(
     (alive) =>
-      api
-        .interceptTaskCount(id)
-        .then((n) => {
-          if (alive()) setInterceptPendingCount(n);
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        }),
+      !id
+        ? Promise.resolve()
+        : api.interceptTaskCount(id).then((n) => {
+            if (alive()) setInterceptPendingCount(n);
+          }),
     taskSSE.connected ? 30000 : 5000,
     [id, taskSSE.connected],
   );
 
-  const taskLoadInFlight = React.useRef<string | null>(null);
   const load = React.useCallback(() => {
-    if (taskLoadInFlight.current === id) return Promise.resolve();
-    taskLoadInFlight.current = id;
-    return Promise.all([api.task(id), api.stats(id).catch(() => null)])
-      .then(([task, s]) => {
-        if (taskLoadInFlight.current !== id) return;
+    if (!id) return Promise.resolve();
+    return runLatestRequest(
+      requestOwner,
+      async (signal) => {
+        const [task, stats] = await Promise.all([api.task(id, signal), api.stats(id, signal).catch(() => null)]);
+        if (canonicalTaskID(task.id) !== id) throw new HttpError("响应任务身份不一致", 502);
         const base = { ...task };
-        const at = s?.active_task;
-        if (at) {
-          base.in_flight = at.in_flight;
-          base.goals_total = at.goals_total;
-          base.goals_met = at.goals_met;
-          base.engine_mode = s?.engine_mode ?? at.engine_mode;
-          base.paused = at.paused;
+        const active = stats?.active_task;
+        if (active) {
+          base.in_flight = active.in_flight;
+          base.goals_total = active.goals_total;
+          base.goals_met = active.goals_met;
+          base.engine_mode = stats?.engine_mode ?? active.engine_mode;
+          base.paused = active.paused;
         }
-        setTask(base);
-        setPaused(at?.paused ?? base.paused ?? false);
-      })
-      .catch(() => {
-        // Keep the last rendered task state during a transient poll failure.
-      })
-      .finally(() => {
-        if (taskLoadInFlight.current === id) {
-          taskLoadInFlight.current = null;
-          setLoaded(true);
-        }
-      });
-  }, [id]);
+        return base;
+      },
+      {
+        success: (next) => {
+          taskRef.current = next;
+          setTask(next);
+          setPaused(next.paused ?? false);
+          setReadState("ready");
+          setReadError("");
+        },
+        error: (error) => {
+          const state = failedTaskRead(error, taskRef.current !== null);
+          setReadState(state);
+          setReadError((error as Error).message || "任务读取失败");
+          if (state === "notFound") {
+            taskRef.current = null;
+            setTask(null);
+          }
+        },
+        settled: () => {},
+      },
+    );
+  }, [id, requestOwner]);
+  refreshRef.current = () => load().catch(() => undefined);
   usePolling(load, taskSSE.connected ? 30000 : 5000, [load, taskSSE.connected]);
+  const writable = readState === "ready" && task?.id === id;
 
   async function togglePause() {
-    if (!task) return;
+    if (!task || !writable || controlling) return;
+    setControlling(true);
     // 终态任务（done/failed/timeout/policy_blocked）→「继续运行」：若 frontier 里还有从未执行的
     // 意图，后端会复活任务让 worker 重新领取；没有遗留时后端拒绝并给出提示。
     const terminal = taskIsTerminal(task.status);
@@ -324,14 +364,16 @@ function TaskDetailInner() {
       if (!terminal) setPaused(action === "pause");
       if (terminal) toast.success("已继续运行：worker 将重新领取未执行的意图");
       else toast.success(action === "pause" ? "已暂停探索" : "已恢复探索");
-      await load();
+      await load().catch(() => undefined);
     } catch (e) {
       toast.error(`操作失败：${(e as Error).message}`);
+    } finally {
+      setControlling(false);
     }
   }
 
   async function archiveTask() {
-    if (!task || archiving) return;
+    if (!task || archiving || !writable) return;
     setArchiving(true);
     try {
       await api.archiveTask(task.id);
@@ -346,8 +388,21 @@ function TaskDetailInner() {
   if (!task) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
-        <p className="text-muted-foreground">{loaded ? `任务 ${id} 已被删除、归档或不存在` : "加载中…"}</p>
-        {loaded && (
+        <p role={readState === "error" ? "alert" : "status"} className="text-muted-foreground">
+          {!id
+            ? "未指定任务，请返回列表选择任务"
+            : readState === "notFound"
+              ? `任务 ${id} 已被删除、归档或不存在`
+              : readState === "error"
+                ? `任务读取失败：${readError}`
+                : "加载中…"}
+        </p>
+        {id && readState !== "loading" && (
+          <Button variant="outline" onClick={() => void refreshRef.current()}>
+            重新读取
+          </Button>
+        )}
+        {readState !== "loading" && (
           <Button asChild variant="outline">
             <Link href="/function/tasks">
               <ArrowLeftIcon /> 返回任务列表
@@ -360,7 +415,7 @@ function TaskDetailInner() {
 
   const terminal = taskIsTerminal(task.status);
   const archiveLifecycleEligible = terminal || paused || task.status === "paused";
-  const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
+  const canArchive = writable && archiveLifecycleEligible && !task.archive_blocked_by_task_id;
   let archiveDisabledReason = task.queued ? "排队中的任务必须先暂停" : "运行中的任务必须先暂停";
   if (archiveLifecycleEligible && task.archive_blocked_by_task_id) {
     archiveDisabledReason = `任务被未归档任务 #${task.archive_blocked_by_task_id} 直接继承，请先归档依赖任务`;
@@ -409,7 +464,12 @@ function TaskDetailInner() {
             {task.id}
           </code>
           <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
-          <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
+          <TaskLLMControl
+            task={task}
+            profiles={profiles}
+            disabled={!writable}
+            onUpdated={() => void refreshRef.current()}
+          />
           <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
           {canArchive ? (
             <AlertDialog>
@@ -436,12 +496,20 @@ function TaskDetailInner() {
               <TooltipContent>{archiveDisabledReason}</TooltipContent>
             </Tooltip>
           )}
-          <Button size="sm" variant={controlVariant} onClick={togglePause}>
+          <Button size="sm" variant={controlVariant} onClick={togglePause} disabled={!writable || controlling}>
             {controlIcon}
             {controlLabel}
           </Button>
         </div>
         <p className="truncate text-muted-foreground text-xs">{task.goal}</p>
+        {readState !== "ready" && (
+          <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-sm">
+            <span>当前显示上次快照，刷新失败：{readError}。任务控制暂不可用。</span>
+            <Button size="sm" variant="outline" onClick={() => void refreshRef.current()}>
+              重新读取
+            </Button>
+          </div>
+        )}
         {paused ? (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2.5 py-1.5 text-amber-700 text-xs dark:text-amber-300">
             <PauseIcon className="size-3.5 shrink-0" />
@@ -511,11 +579,18 @@ function TaskDetailInner() {
   );
 }
 
+function TaskDetailResource() {
+  const id = canonicalTaskID(useSearchParams().get("id") ?? "");
+  // A resource switch remounts every task-bound state/stream/request owner.
+  // A → B → A cannot reuse the first A's request identity.
+  return <TaskDetailInner key={id} id={id} />;
+}
+
 // useSearchParams must sit under a Suspense boundary for static export.
 export default function TaskDetailPage() {
   return (
     <React.Suspense fallback={null}>
-      <TaskDetailInner />
+      <TaskDetailResource />
     </React.Suspense>
   );
 }

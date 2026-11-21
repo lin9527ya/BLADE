@@ -80,6 +80,12 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 		return nil, nil, false, err
 	}
 	defer tx.Rollback()
+	if err := LockFindingEvidenceTx(tx, findingID, nil); err != nil {
+		if errors.Is(err, ErrFindingNotFound) {
+			return nil, nil, false, sql.ErrNoRows
+		}
+		return nil, nil, false, err
+	}
 	var title string
 	var snapshot []byte
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(f.name,''), NULLIF(f.vulnclass,''), '未分类'),
@@ -164,17 +170,29 @@ func (d *DB) FindingRetestForConversation(ctx context.Context, conversationID in
 // every later 发起复测 is deduped against a run that is not happening, with only
 // a process restart (RecoverFindingRetests) able to clear it.
 func (d *DB) FailPendingRetestForConversation(conversationID int64, reason string) error {
-	_, err := d.Exec(`UPDATE finding_retests SET status='failed', error=$2, finished_at=now()
-		WHERE conversation_id=$1 AND status IN ('pending','running')`, conversationID, reason)
+	err := d.withRetestMutation(context.Background(), "conversation_id", conversationID, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE finding_retests SET status='failed', error=$2, finished_at=now() WHERE conversation_id=$1 AND status IN ('pending','running')`, conversationID, reason)
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	return err
 }
 
 func (d *DB) StartFindingRetest(ctx context.Context, id int64) (bool, error) {
-	res, err := d.ExecContext(ctx, `UPDATE finding_retests SET status='running', started_at=now() WHERE id=$1 AND status='pending'`, id)
-	if err != nil {
-		return false, err
+	var n int64
+	err := d.withRetestMutation(ctx, "id", id, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE finding_retests SET status='running', started_at=now() WHERE id=$1 AND status='pending'`, id)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	n, err := res.RowsAffected()
 	return n == 1, err
 }
 
@@ -191,17 +209,23 @@ func (d *DB) RecordFindingRetestResult(ctx context.Context, conversationID int64
 	if len(summary) > 16000 || len(evidence) > 128000 {
 		return errors.New("复测结论过长（summary ≤ 16KB，evidence ≤ 128KB）")
 	}
-	res, err := d.ExecContext(ctx, `UPDATE finding_retests SET verdict=$2,summary=$3,evidence=$4
+	err := d.withRetestMutation(ctx, "conversation_id", conversationID, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE finding_retests SET verdict=$2,summary=$3,evidence=$4
 	WHERE conversation_id=$1 AND status='running' AND (verdict='' OR (verdict=$2 AND summary=$3 AND evidence=$4))`, conversationID, verdict, summary, evidence)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return ErrRetestNotRunning
+		}
+		return nil
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrRetestNotRunning
 	}
-	return nil
+	return err
 }
 
 // FinishFindingRetest seals the result. Cancellation/failure takes precedence
@@ -218,11 +242,17 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 	defer tx.Rollback()
 	// Lock the finding before the retest, matching creation and cascading deletion.
 	var findingID int64
-	err = tx.QueryRow(`SELECT f.id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) FOR UPDATE OF f`, id).Scan(&findingID)
+	err = tx.QueryRow(`SELECT f.id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) `, id).Scan(&findingID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // Finding/retest already deleted.
 	}
 	if err != nil {
+		return err
+	}
+	if err := LockFindingEvidenceTx(tx, findingID, nil); err != nil {
+		if errors.Is(err, ErrFindingNotFound) {
+			return nil
+		}
 		return err
 	}
 	var finalStatus, verdict string

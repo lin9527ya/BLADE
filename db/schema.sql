@@ -2340,3 +2340,42 @@ END $$;
 ALTER TABLE task_scope DROP CONSTRAINT IF EXISTS task_scope_source_check;
 ALTER TABLE task_scope ADD CONSTRAINT task_scope_source_check
     CHECK (source IN ('auto','agent','manual','policy'));
+
+-- Task timeout transitions are operational events, not task-creation watermarks.
+-- No historical backfill: installing a new trigger must not replay old actions.
+CREATE TABLE IF NOT EXISTS task_timeout_events (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_trigger_ids BIGINT[] NOT NULL DEFAULT '{}',
+    claim_token TEXT NOT NULL DEFAULT '',
+    lease_until TIMESTAMPTZ,
+    consumed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_task_timeout_events_pending ON task_timeout_events(id) WHERE consumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_task_timeout_events_task ON task_timeout_events(task_id);
+CREATE OR REPLACE FUNCTION record_task_timeout_transition() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status='timeout' AND OLD.status IS DISTINCT FROM NEW.status
+       AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NULL
+       AND OLD.archived_at IS NULL AND NEW.archived_at IS NULL THEN
+        INSERT INTO task_timeout_events(task_id,description,goal) VALUES(NEW.id,COALESCE(NEW.description,''),COALESCE(NEW.goal,''));
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS task_timeout_transition ON tasks;
+CREATE TRIGGER task_timeout_transition AFTER UPDATE OF status ON tasks FOR EACH ROW EXECUTE FUNCTION record_task_timeout_transition();
+
+-- Atomic completion receipts; deleting a document does not turn an old retry
+-- into a new creation. Old clients without an operation key remain compatible.
+CREATE TABLE IF NOT EXISTS aggregate_deliverable_requests (
+    owner TEXT NOT NULL,
+    operation_key TEXT NOT NULL,
+    request_sha TEXT NOT NULL,
+    deliverable_id BIGINT REFERENCES deliverables(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(owner,operation_key)
+);
+CREATE INDEX IF NOT EXISTS idx_aggregate_deliverable_requests_created ON aggregate_deliverable_requests(created_at);

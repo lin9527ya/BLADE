@@ -69,8 +69,15 @@ func (e *Engine) finishGoalDrain(ctx context.Context, t *Task, grace time.Durati
 			return
 		}
 		pending := 0
+		executionUnknown := false
 		if execs := e.m.Executions(); execs != nil {
-			pending = len(execs.ActiveForTask(t.ID))
+			active, err := execs.ActiveForTask(t.ID)
+			executionUnknown = err != nil
+			if executionUnknown {
+				pending = -1
+			} else {
+				pending = len(active)
+			}
 		}
 		remaining, err := e.goalDrainRemaining(t)
 		if err != nil {
@@ -84,6 +91,10 @@ func (e *Engine) finishGoalDrain(ctx context.Context, t *Task, grace time.Durati
 			timedOut = true
 			e.cancelExec(t.ID, agent.AbortSettleDrainTimeout)
 			e.m.CancelTaskExecutions(t.ID, "达标收官等待超时")
+			if executionUnknown {
+				log.Printf("[goal-drain] task %s 执行状态仍未知，撤销成功收官（已请求停止本地执行）", t.ID)
+				return
+			}
 			e.emitActivity(t, db.Activity{Worker: "system", Kind: "system", Summary: "达标收官等待超时：已请求停止剩余工作，保留已写回成果"})
 			if sleepCtx(ctx, 3*time.Second) {
 				return

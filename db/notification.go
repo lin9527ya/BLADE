@@ -481,6 +481,12 @@ func (d *DB) SetFindingStatusWithNotify(ctx context.Context, id int64, status st
 // 返回 from=变更前状态、found=漏洞是否存在、changed=状态是否真的变了、
 // notified=事件是否登记成功（登记失败不影响状态更新，见 RecordNotificationEventTx）。
 func SetFindingStatusTx(ctx context.Context, tx *sql.Tx, id int64, status string) (from string, found bool, changed bool, notified bool, err error) {
+	if err := LockFindingEvidenceTx(tx, id, nil); err != nil {
+		if errors.Is(err, ErrFindingNotFound) {
+			return "", false, false, false, nil
+		}
+		return "", false, false, false, err
+	}
 	var (
 		vulnclass, name, severity, summary string
 		taskID                             sql.NullInt64

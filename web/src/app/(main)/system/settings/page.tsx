@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { PageShell, SectionNav } from "@/components/page-sections";
 
 import { AdvancedSection } from "./_components/advanced-section";
@@ -16,7 +17,7 @@ import { SECTIONS, type SectionId, useSettingsState } from "./_components/use-se
 
 export default function SystemSettingsPage() {
   const s = useSettingsState();
-  const { section, setSection } = useSettingsState();
+  const { section, setSection } = s;
 
   return (
     <PageShell
@@ -34,19 +35,35 @@ export default function SystemSettingsPage() {
         <p className="text-muted-foreground text-sm">全局运行时开关</p>
       </div>
 
-      {section === "basic" && <BasicSection />}
+      {!s.loaded ? (
+        <div role={s.loadError ? "alert" : "status"} className="space-y-3 rounded-md border p-4 text-sm">
+          <p>{s.loadError ? `设置读取失败：${s.loadError}。尚未加载有效配置，不能保存默认值。` : "正在读取设置…"}</p>
+          {s.loadError && (
+            <Button variant="outline" disabled={s.loadingSettings} onClick={() => void s.loadSettings()}>
+              重新读取
+            </Button>
+          )}
+        </div>
+      ) : (
+        <>
+          {s.hasUnsavedChanges && (
+            <p className="text-muted-foreground text-sm">有未保存的草稿；保存其他分区不会覆盖它们。</p>
+          )}
+          {section === "basic" && <BasicSection />}
 
-      {section === "network" && <NetworkSection s={s} />}
+          {section === "network" && <NetworkSection s={s} />}
 
-      {section === "search" && <SearchSection s={s} />}
+          {section === "search" && <SearchSection s={s} />}
 
-      {section === "intel" && <IntelligenceSection s={s} />}
+          {section === "intel" && <IntelligenceSection s={s} />}
 
-      {section === "policy" && <PolicySection s={s} />}
+          {section === "policy" && <PolicySection s={s} />}
 
-      {section === "runtime" && <RuntimeSection s={s} />}
+          {section === "runtime" && <RuntimeSection s={s} />}
 
-      {section === "advanced" && <AdvancedSection s={s} />}
+          {section === "advanced" && <AdvancedSection s={s} />}
+        </>
+      )}
     </PageShell>
   );
 }

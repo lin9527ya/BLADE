@@ -235,6 +235,7 @@ type DB struct {
 	*sql.DB
 	readTx     *sql.Tx
 	readCtx    context.Context
+	queryCtx   context.Context // default for request-bound convenience reads
 	authority  *WriteAuthority
 	readErrors []error
 	// lock 持有实例独占锁的那条连接（见 instance_lock.go）。

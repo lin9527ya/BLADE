@@ -1483,7 +1483,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.observeEgressBlocked(t, r)
 		e.emitActivity(t, r)
 	}
-	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
+	ectx := e.clockCtx(e.intentExecContextFor(ctx, t, authority), t, false) // cancellable by Pause; 带任务 deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
 		// 关停取消也要带续跑标记：优雅关停会在退出前等 run 收尾，残留行不会停在
 		// running，启动时的 ResetRunningIntents 兜不到它们。
@@ -1924,7 +1924,12 @@ func (e *Engine) execGate(t *Task, intentID int64, worker string, authority ...d
 	if execs == nil {
 		return false
 	}
-	active := execs.ActiveForIntent(intentID)
+	active, queryErr := execs.ActiveForIntent(intentID)
+	if queryErr != nil {
+		log.Printf("[exec] task %s 意图 #%d 状态未知，保持 running 等待台账恢复: %v", t.ID, intentID, queryErr)
+		e.watchExecutions(t, intentID, authority...)
+		return true
+	}
 	if len(active) == 0 {
 		return false
 	}
@@ -1998,17 +2003,25 @@ func (e *Engine) watchExecutions(t *Task, intentID int64, authorities ...db.Writ
 		defer deadline.Stop()
 		ticker := time.NewTicker(execWatchPoll)
 		defer ticker.Stop()
+		timedOut := false
+		queryFailed := false
 	watchLoop:
 		for {
-			if len(execs.ActiveForIntent(intentID)) == 0 {
+			active, err := execs.ActiveForIntent(intentID)
+			if err == nil && len(active) == 0 {
 				break
 			}
+			if err != nil && !queryFailed {
+				log.Printf("[exec] task %s 意图 #%d 查询失败，禁止提前回队: %v", t.ID, intentID, err)
+			}
+			queryFailed = err != nil
 			select {
 			case <-watchCtx.Done():
 				e.settleControlledExecutionWatch(t, store, intentID, handle)
 				return
 			case <-ticker.C:
 			case <-deadline.C:
+				timedOut = true
 				break watchLoop
 			}
 		}
@@ -2020,7 +2033,16 @@ func (e *Engine) watchExecutions(t *Task, intentID int64, authorities ...db.Writ
 			e.settleControlledExecutionWatch(t, store, intentID, handle)
 			return
 		}
-		rows, _ := execs.ListForIntent(intentID)
+		if timedOut {
+			execs.CancelForIntent(watchCtx, intentID, "执行观察等待超时")
+			log.Printf("[exec] task %s 意图 #%d 未确认正常收束，保持 running 交由租约对账", t.ID, intentID)
+			return
+		}
+		rows, readErr := execs.ListForIntent(intentID)
+		if readErr != nil {
+			log.Printf("[exec] task %s 意图 #%d 收束摘要读取失败: %v", t.ID, intentID, readErr)
+			return
+		}
 		// 执行落终态 → 把这条意图交回可领取状态。CAS 失败（意图已被别的路径收走/
 		// 任务已停）只记一行日志：终态已有人负责，观察者静默退出。
 		reopened, err := store.CompareAndSetIntentState(intentID, "running", "open")
@@ -2059,7 +2081,7 @@ func (e *Engine) settleControlledExecutionWatch(t *Task, store *db.ExplorationSt
 		nid := intentID
 		e.emitActivity(t, db.Activity{NodeID: &nid, Worker: "system", Kind: "system",
 			Summary: "长任务等待期间用户" + map[string]string{"pause": "暂停", "cancel": "取消"}[action] + "了意图",
-			Detail:  "托管执行已取消；已写入的产出保留。"})
+			Detail:  "已请求停止托管执行，结果以执行台账为准；已写入的产出保留。"})
 		e.touch(t.ID)
 	}
 }

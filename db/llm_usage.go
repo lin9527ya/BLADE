@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"time"
@@ -13,9 +14,10 @@ import (
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
 type LLMUsage struct {
-	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
-	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
-	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
+	Surface       *RequestSurface `json:"request_surface,omitempty"`
+	TaskID        string          `json:"task_id"`        // task registry id (matches llm_records.task_id)
+	ExplorationID int64           `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
+	Worker        string          `json:"worker"`         // agent lane: worker / planner / mainagent / goals
 	// SessionID 是这次调用所属的会话（transcript session id）。用于把「首调零命中」
 	// 与「会话中途掉命中」分开——只看 worker 聚合会把两种完全不同的原因混在一起。
 	SessionID    string `json:"session_id"`
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 );
 -- 旧库补列：EnsureLLMUsageTable 在每次启动时执行，ALTER 必须是幂等的。
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS session_id TEXT;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS request_surface JSONB;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -96,11 +99,19 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 	if u.ExplorationID > 0 {
 		expID = u.ExplorationID
 	}
+	var surface any
+	if u.Surface != nil {
+		raw, err := json.Marshal(u.Surface)
+		if err != nil {
+			return err
+		}
+		surface = string(raw)
+	}
 	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, session_id, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,$11,$12)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, session_id, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, request_surface)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,$11,$12,$13::jsonb)`,
 		u.TaskID, expID, u.Worker, u.SessionID, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, surface)
 	return err
 }
 
@@ -363,4 +374,39 @@ func ParseExpID(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+type RequestSurfaceSummary struct {
+	Worker, Model, Format, BuildVersion             string
+	SystemSHA, ToolsSHA, ParametersSHA, EndpointSHA string
+	Calls                                           int64
+	ChangedCalls                                    int64
+	AvgInput, AvgOutput                             int64
+	CacheHitTokens                                  int64
+}
+
+// Only structural fields and numeric usage; no request/response content is read.
+func (d *DB) RequestSurfaceSummary(taskID string) ([]RequestSurfaceSummary, error) {
+	if taskID == "" {
+		return []RequestSurfaceSummary{}, nil
+	}
+	rows, err := d.Query(`SELECT COALESCE(worker,''),COALESCE(request_surface->>'model',''),COALESCE(request_surface->>'format',''),COALESCE(request_surface->>'build_version',''),
+      COALESCE(request_surface->>'system_sha',''),COALESCE(request_surface->>'tools_sha',''),COALESCE(request_surface->>'parameters_sha',''),COALESCE(request_surface->>'endpoint_sha',''),
+      count(*),count(*) FILTER (WHERE COALESCE((request_surface->>'changed_during_call')::boolean,false)),
+      COALESCE(sum(input_tokens),0)/GREATEST(count(*),1),COALESCE(sum(output_tokens),0)/GREATEST(count(*),1),COALESCE(sum(cache_read),0)
+      FROM llm_usage WHERE task_id=$1 AND COALESCE((request_surface->>'observed')::boolean,false)
+      GROUP BY 1,2,3,4,5,6,7,8 ORDER BY 1,9 DESC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RequestSurfaceSummary{}
+	for rows.Next() {
+		var s RequestSurfaceSummary
+		if err := rows.Scan(&s.Worker, &s.Model, &s.Format, &s.BuildVersion, &s.SystemSHA, &s.ToolsSHA, &s.ParametersSHA, &s.EndpointSHA, &s.Calls, &s.ChangedCalls, &s.AvgInput, &s.AvgOutput, &s.CacheHitTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

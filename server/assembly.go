@@ -374,7 +374,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		rows, err := pg.ListTools()
 		if err != nil {
 			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
-			return tools
+			return restrictManagementTools(ctx, tools)
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {
@@ -408,12 +408,15 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// Prefer a per-task registry when the run carries a task: the server-level
 		// copy has a nil exploration store, so record_fact/report_finding would
 		// answer "需要任务上下文" for triggered reporter/retester runs.
+		// Never replace the shared baseline: task-less and concurrent runs must
+		// not inherit another task's callable closures.
+		runDomainReg := domainReg
 		if ri := agent.RunInfoFrom(ctx); ri.TaskID > 0 && ri.ExplorationID > 0 {
 			if taskReg := buildTaskDomainReg(pg, ri.ExplorationID, ri.TaskID); len(taskReg) > 0 {
-				domainReg = taskReg
+				runDomainReg = taskReg
 			}
 		}
-		if len(domainReg) > 0 {
+		if len(runDomainReg) > 0 {
 			inList := make(map[string]bool, len(tools))
 			for _, t := range tools {
 				inList[t.Name()] = true
@@ -422,7 +425,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				if row.Kind == "shell" || !row.Enabled || !contains(row.Agents, agentKey) || inList[row.Key] {
 					continue
 				}
-				inst, ok := domainReg[row.Key]
+				inst, ok := runDomainReg[row.Key]
 				if !ok {
 					continue // not a domain tool; custom/host tools are injected via hostTools()
 				}
@@ -481,7 +484,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				break
 			}
 		}
-		return out
+		return restrictManagementTools(ctx, out)
 	}
 	o := agent.CurrentOverrides()
 	o.FindingTrafficBindingEnabled = bindingEnabled

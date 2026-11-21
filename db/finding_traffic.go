@@ -33,6 +33,7 @@ func (d *DB) WithEvidenceTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, findingEvidenceLockKey); err != nil {
 		return err
 	}
+	// BeginTx already checks any bound execution authority.
 	if err = fn(tx); err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -83,36 +84,44 @@ func normalizeDeliverableKind(kind string) string {
 }
 
 func (d *DB) CreateDeliverable(in DeliverableInput) (*DeliverableDetail, error) {
+	return d.CreateDeliverableContext(context.Background(), in)
+}
+func (d *DB) CreateDeliverableContext(ctx context.Context, in DeliverableInput) (*DeliverableDetail, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	id, err := insertDeliverableTx(ctx, tx, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.WithContext(ctx).GetDeliverable(id)
+}
+func insertDeliverableTx(ctx context.Context, tx *sql.Tx, in DeliverableInput) (int64, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		return nil, fmt.Errorf("交付物名称不能为空")
+		return 0, fmt.Errorf("交付物名称不能为空")
 	}
 	kind := normalizeDeliverableKind(in.Kind)
 	createdBy := strings.TrimSpace(in.CreatedBy)
 	if createdBy == "" {
 		createdBy = "operator"
 	}
-	tx, err := d.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback() //nolint:errcheck
 	var id int64
-	if err := tx.QueryRow(`INSERT INTO deliverables(name,kind,task_id,company_id,campaign_id)
-VALUES($1,$2,$3,$4,$5) RETURNING id`, name, kind, in.TaskID, in.CompanyID, in.CampaignID).Scan(&id); err != nil {
-		return nil, err
+	if err := tx.QueryRowContext(ctx, `INSERT INTO deliverables(name,kind,task_id,company_id,campaign_id) VALUES($1,$2,$3,$4,$5) RETURNING id`, name, kind, in.TaskID, in.CompanyID, in.CampaignID).Scan(&id); err != nil {
+		return 0, err
 	}
 	if strings.TrimSpace(in.ReportMD) != "" || strings.TrimSpace(in.Note) != "" {
 		report := strings.TrimSpace(in.ReportMD)
-		if _, err := tx.Exec(`INSERT INTO deliverable_versions(deliverable_id,version,report_md,sha256,note,created_by)
-VALUES($1,1,$2,$3,$4,$5)`, id, report, deliverableSHA(report), strings.TrimSpace(in.Note), createdBy); err != nil {
-			return nil, err
+		if _, err := tx.ExecContext(ctx, `INSERT INTO deliverable_versions(deliverable_id,version,report_md,sha256,note,created_by) VALUES($1,1,$2,$3,$4,$5)`, id, report, deliverableSHA(report), strings.TrimSpace(in.Note), createdBy); err != nil {
+			return 0, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return d.GetDeliverable(id)
+	return id, nil
 }
 
 func (d *DB) ListDeliverables() ([]*Deliverable, error) {

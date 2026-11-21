@@ -200,6 +200,7 @@ type provEntry struct {
 // taskID + mergeable let the drainer coalesce several event triggers (finding/goal)
 // from the SAME task into one conversation before it starts (interval fires don't merge).
 type triggeredRun struct {
+	principal runPrincipal // preserved across queueing/merging, never inferred from text
 	agentKey  string
 	title     string
 	message   string // 事件正文(触发语 + 工具/入参/返回等);不含任务描述/目标头

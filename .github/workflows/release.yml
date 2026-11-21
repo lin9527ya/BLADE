@@ -3,7 +3,13 @@ on:
   push:
     tags: ["v*"]
   # 手动 dry-run：构建/生成 SBOM/attestation/上传 workflow artifact，但不创建 Release、不推镜像。
+  # 分支 dry-run 没有 tag，必须显式给出正文/打包版本；正常 tag 发布不使用该输入。
   workflow_dispatch:
+    inputs:
+      version:
+        description: "dry-run 的正文与打包版本（如 v0.9.24）"
+        required: true
+        type: string
 
 permissions:
   contents: write # 创建 Release 需要
@@ -17,7 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Extract release notes from CHANGELOG
-        run: ./scripts/changelog-section.sh "${GITHUB_REF_NAME}" > release-notes.md
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: ./scripts/changelog-section.sh "${RELEASE_VERSION}" > release-notes.md
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-notes
@@ -124,7 +132,7 @@ jobs:
         env:
           BLADE_TARGET_OS: ${{ matrix.goos }}
           BLADE_TARGET_ARCH: ${{ matrix.goarch }}
-          BLADE_BUILD_VERSION: ${{ github.ref_name }}
+          BLADE_BUILD_VERSION: ${{ github.event.inputs.version || github.ref_name }}
           BLADE_SKIP_FRONTEND: "1"
           BLADE_SKIP_NPM_CI: "1"
           # UPX 自解压 ELF 在部分 Linux 内核、虚拟化和安全策略下会崩溃。
@@ -184,10 +192,12 @@ jobs:
         with:
           syft-version: v1.54.0
       - name: Generate CycloneDX SBOM
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          syft scan dir:sbom -o cyclonedx-json="dist/blade-${GITHUB_REF_NAME}.cdx.json"
-          grep -q 'pkg:golang/' "dist/blade-${GITHUB_REF_NAME}.cdx.json"
-          grep -q 'pkg:npm/' "dist/blade-${GITHUB_REF_NAME}.cdx.json"
+          syft scan dir:sbom -o cyclonedx-json="dist/blade-${RELEASE_VERSION}.cdx.json"
+          grep -q 'pkg:golang/' "dist/blade-${RELEASE_VERSION}.cdx.json"
+          grep -q 'pkg:npm/' "dist/blade-${RELEASE_VERSION}.cdx.json"
       # GitHub build provenance：用户可用 `gh attestation verify <zip> --repo <owner>/<repo>` 校验。
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

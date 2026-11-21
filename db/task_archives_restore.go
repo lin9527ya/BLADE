@@ -934,7 +934,7 @@ func assertArchiveSnapshotComplete(tx *sql.Tx, taskID, expID int64, snapshot *Ta
 			return fmt.Errorf("%w: %s live=%d manifest=%d rows=%d", ErrTaskArchiveState, table, live, manifest, raw)
 		}
 	}
-	return nil
+	return assertArchiveContentMatches(tx, taskID, expID, snapshot)
 }
 
 // restoreFindingChildrenTx inserts task-owned finding children and tolerates
@@ -1027,4 +1027,50 @@ func restoreFindingChildrenTx(tx *sql.Tx, tables map[string]json.RawMessage) ([]
 		return nil, err
 	}
 	return warnings, nil
+}
+
+// Counts cannot detect in-place changes or equal-count replacements. Recheck
+// the mutable finding payload and archived children while completion holds their
+// table locks; this also protects against old/low-level writers missing a fence.
+func assertArchiveContentMatches(tx *sql.Tx, taskID, expID int64, snapshot *TaskArchiveSnapshot) error {
+	checks := []struct {
+		name, query string
+		args        []any
+	}{
+		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"finding_comments", `SELECT c.* FROM finding_comments c JOIN findings f ON f.id=c.finding_id WHERE f.task_id=$1 ORDER BY c.id`, []any{taskID}},
+		{"finding_retests", `SELECT r.* FROM finding_retests r JOIN findings f ON f.id=r.finding_id WHERE f.task_id=$1 ORDER BY r.id`, []any{taskID}},
+		{"finding_case_members", `SELECT m.* FROM finding_case_members m JOIN findings f ON f.id=m.finding_id WHERE f.task_id=$1 ORDER BY m.finding_id`, []any{taskID}},
+		{"finding_case_blocks", `SELECT b.* FROM finding_case_blocks b WHERE b.left_id IN (SELECT id FROM findings WHERE task_id=$1) OR b.right_id IN (SELECT id FROM findings WHERE task_id=$1) ORDER BY b.left_id,b.right_id`, []any{taskID}},
+		{"credential_checks", `SELECT * FROM credential_checks WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
+		{"main_sessions", `SELECT * FROM main_sessions WHERE exploration_id=$1 ORDER BY seq`, []any{expID}},
+		{"completion_waivers", `SELECT * FROM completion_waivers WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
+	}
+	canonical := func(raw json.RawMessage) ([]byte, error) {
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		return json.Marshal(value)
+	}
+	for _, check := range checks {
+		live, _, err := queryArchiveRows(txRows{tx}, check.query, check.args...)
+		if err != nil {
+			return err
+		}
+		a, err := canonical(live)
+		if err != nil {
+			return err
+		}
+		b, err := canonical(snapshot.Tables[check.name])
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(a, b) {
+			return fmt.Errorf("%w: %s changed after snapshot", ErrTaskArchiveState, check.name)
+		}
+	}
+	return nil
 }

@@ -5,7 +5,7 @@ import "testing"
 func TestOperatorWritePolicyBlocksExecutableSurfaces(t *testing.T) {
 	for _, path := range []string{
 		"/api/cves", "/api/cves/import", "/api/cves/12/script",
-		"/api/custom-tools", "/api/tools/x", "/api/skills/x", "/api/mcp/x",
+		"/api/visibility/toggle", "/api/visibility/skill/toggle", "/api/triggers/1", "/api/custom-tools", "/api/tools/x", "/api/skills/x", "/api/mcp/x",
 		"/api/intercept/rules", "/api/intercept/rules/always-allow",
 	} {
 		if operatorWriteAllowed(path) {

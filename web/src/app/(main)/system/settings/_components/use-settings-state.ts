@@ -5,6 +5,9 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
+import { createLatestRequest } from "@/lib/request-lifecycle";
+import { createSettingsDrafts, type SettingsTicket } from "@/lib/settings-drafts";
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import type {
   ClashEgressStatus,
@@ -46,63 +49,184 @@ export function exposureWeight(exposure: string): number {
   return 0;
 }
 
+function useSettingsField<T>(
+  drafts: ReturnType<typeof createSettingsDrafts>,
+  key: string,
+  deps: string[],
+  initial: T,
+  writeOnly = false,
+): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [value, publish] = React.useState(initial);
+  drafts.register(key, initial, deps, publish as (value: unknown) => void, writeOnly);
+  const edit = React.useCallback<React.Dispatch<React.SetStateAction<T>>>(
+    (next) => {
+      drafts.edit(key, next as unknown);
+    },
+    [drafts, key],
+  );
+  return [value, edit];
+}
+
 export function useSettingsState() {
-  const [trafficCapture, setTrafficCapture] = React.useState(false);
-  const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
-  const [agentLootExec, setAgentLootExec] = React.useState(false);
-  const [agentAutoRetest, setAgentAutoRetest] = React.useState(false);
-  const [attackChainContinuation, setAttackChainContinuation] = React.useState(true);
+  const [draftRevision, changed] = React.useReducer((value: number) => value + 1, 0);
+  const [drafts] = React.useState(() => createSettingsDrafts(changed));
+  const [loadError, setLoadError] = React.useState("");
+  const [loadingSettings, setLoadingSettings] = React.useState(false);
+  const [loadOwner] = React.useState(createLatestRequest);
+  const [trafficCapture, setTrafficCapture] = useSettingsField(drafts, "trafficCapture", ["traffic_capture"], false);
+  const [agentTrafficBinding, setAgentTrafficBinding] = useSettingsField(
+    drafts,
+    "agentTrafficBinding",
+    ["agent_traffic_binding"],
+    false,
+  );
+  const [agentLootExec, setAgentLootExec] = useSettingsField(drafts, "agentLootExec", ["agent_loot_exec"], false);
+  const [agentAutoRetest, setAgentAutoRetest] = useSettingsField(
+    drafts,
+    "agentAutoRetest",
+    ["agent_auto_retest"],
+    false,
+  );
+  const [attackChainContinuation, setAttackChainContinuation] = useSettingsField(
+    drafts,
+    "attackChainContinuation",
+    ["attack_chain_continuation"],
+    true,
+  );
   const [savingAttackChain, setSavingAttackChain] = React.useState(false);
-  const [emptyReportPatrol, setEmptyReportPatrol] = React.useState(false);
+  const [emptyReportPatrol, setEmptyReportPatrol] = useSettingsField(
+    drafts,
+    "emptyReportPatrol",
+    ["empty_report_patrol"],
+    false,
+  );
   const [savingEmptyReportPatrol, setSavingEmptyReportPatrol] = React.useState(false);
-  const [credentialPlaintext, setCredentialPlaintext] = React.useState(true);
+  const [credentialPlaintext, setCredentialPlaintext] = useSettingsField(
+    drafts,
+    "credentialPlaintext",
+    ["credential_plaintext_fidelity"],
+    true,
+  );
   const [savingCredentialPlaintext, setSavingCredentialPlaintext] = React.useState(false);
-  const [compactorProfileID, setCompactorProfileID] = React.useState("0");
+  const [compactorProfileID, setCompactorProfileID] = useSettingsField(
+    drafts,
+    "compactorProfileID",
+    ["compactor_llm_profile_id"],
+    "0",
+  );
   const [llmProfiles, setLlmProfiles] = React.useState<LLMProfile[]>([]);
   const [savingCompactorProfile, setSavingCompactorProfile] = React.useState(false);
-  const [oastEnabled, setOastEnabled] = React.useState(false);
+  const [oastEnabled, setOastEnabled] = useSettingsField(drafts, "oastEnabled", ["oast_enabled"], false);
   const [oastTokenSet, setOastTokenSet] = React.useState(false);
-  const [oastTokenInput, setOastTokenInput] = React.useState("");
-  const [oastDomain, setOastDomain] = React.useState("requestrepo.com");
-  const [oastNucleiServer, setOastNucleiServer] = React.useState("oast.fun");
-  const [noiseLevel, setNoiseLevel] = React.useState("normal");
-  const [evidenceVerify, setEvidenceVerify] = React.useState<"off" | "warn" | "block">("warn");
+  const [oastTokenInput, setOastTokenInput] = useSettingsField(drafts, "oastTokenInput", ["oast_token"], "", true);
+  const [oastDomain, setOastDomain] = useSettingsField(drafts, "oastDomain", ["oast_domain"], "requestrepo.com");
+  const [oastNucleiServer, setOastNucleiServer] = useSettingsField(
+    drafts,
+    "oastNucleiServer",
+    ["oast_nuclei_server"],
+    "oast.fun",
+  );
+  const [noiseLevel, setNoiseLevel] = useSettingsField(drafts, "noiseLevel", ["opsec_noise_level"], "normal");
+  const [evidenceVerify, setEvidenceVerify] = useSettingsField<"off" | "warn" | "block">(
+    drafts,
+    "evidenceVerify",
+    ["finding_evidence_verify"],
+    "warn",
+  );
   const [savingEvidenceVerify, setSavingEvidenceVerify] = React.useState(false);
-  const [webSearch, setWebSearch] = React.useState(false);
-  const [backend, setBackend] = React.useState("ddgs");
+  const [webSearch, setWebSearch] = useSettingsField(drafts, "webSearch", ["web_search_enabled"], false);
+  const [backend, setBackend] = useSettingsField(drafts, "backend", ["web_search_backend"], "ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
-  const [braveKeyInput, setBraveKeyInput] = React.useState("");
+  const [braveKeyInput, setBraveKeyInput] = useSettingsField(
+    drafts,
+    "braveKeyInput",
+    ["brave_search_api_key"],
+    "",
+    true,
+  );
   const [tavilyKeySet, setTavilyKeySet] = React.useState(false);
-  const [tavilyKeyInput, setTavilyKeyInput] = React.useState("");
+  const [tavilyKeyInput, setTavilyKeyInput] = useSettingsField(
+    drafts,
+    "tavilyKeyInput",
+    ["tavily_search_api_key"],
+    "",
+    true,
+  );
   const [savingTavilyKey, setSavingTavilyKey] = React.useState(false);
-  const [proxyInput, setProxyInput] = React.useState("");
+  const [proxyInput, setProxyInput] = useSettingsField(drafts, "proxyInput", ["web_search_proxy"], "");
   const [savingProxy, setSavingProxy] = React.useState(false);
   // 代理池：每行一个候选（Clash 混合端口即可）；健康检查/切换在服务端运行。
-  const [globalProxyPoolInput, setGlobalProxyPoolInput] = React.useState("");
+  const [globalProxyPoolInput, setGlobalProxyPoolInput] = useSettingsField(
+    drafts,
+    "globalProxyPoolInput",
+    ["global_proxy_pool", "global_proxy"],
+    "",
+  );
   // 已保存的代理池（用于区分"输入了但还没保存"与"正在检测已保存的配置"）。
   const [proxySavedPool, setProxySavedPool] = React.useState("");
-  const [proxyHealthURL, setProxyHealthURL] = React.useState("");
-  const [proxyHealthTimeout, setProxyHealthTimeout] = React.useState("5");
-  const [proxyHealthInterval, setProxyHealthInterval] = React.useState("30");
-  const [proxyFailThreshold, setProxyFailThreshold] = React.useState("2");
-  const [proxySwitchCooldown, setProxySwitchCooldown] = React.useState("30");
+  const [proxyHealthURL, setProxyHealthURL] = useSettingsField(drafts, "proxyHealthURL", ["proxy_health_url"], "");
+  const [proxyHealthTimeout, setProxyHealthTimeout] = useSettingsField(
+    drafts,
+    "proxyHealthTimeout",
+    ["proxy_health_timeout_seconds"],
+    "5",
+  );
+  const [proxyHealthInterval, setProxyHealthInterval] = useSettingsField(
+    drafts,
+    "proxyHealthInterval",
+    ["proxy_health_interval_seconds"],
+    "30",
+  );
+  const [proxyFailThreshold, setProxyFailThreshold] = useSettingsField(
+    drafts,
+    "proxyFailThreshold",
+    ["proxy_fail_threshold"],
+    "2",
+  );
+  const [proxySwitchCooldown, setProxySwitchCooldown] = useSettingsField(
+    drafts,
+    "proxySwitchCooldown",
+    ["proxy_switch_cooldown_seconds"],
+    "30",
+  );
   const [proxyActive, setProxyActive] = React.useState("");
   const [proxyBlocked, setProxyBlocked] = React.useState(false);
   const [proxyStatus, setProxyStatus] = React.useState<ProxyPoolHealth[]>([]);
-  const [proxyEgressIPURL, setProxyEgressIPURL] = React.useState("https://api.ipify.org");
+  const [proxyEgressIPURL, setProxyEgressIPURL] = useSettingsField(
+    drafts,
+    "proxyEgressIPURL",
+    ["proxy_egress_ip_url"],
+    "https://api.ipify.org",
+  );
   const [proxyEgress, setProxyEgress] = React.useState<ProxyEgressResult[]>([]);
   const [checkingProxyEgress, setCheckingProxyEgress] = React.useState(false);
   const [proxySaveError, setProxySaveError] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
   // Clash 出口切换（WAF 封禁出口时换节点；服务端验证新出口 IP，绝不直连）。
-  const [clashApiURL, setClashApiURL] = React.useState("");
-  const [clashSecretInput, setClashSecretInput] = React.useState("");
+  const [clashApiURL, setClashApiURL] = useSettingsField(drafts, "clashApiURL", ["clash_api_url"], "");
+  const [clashSecretInput, setClashSecretInput] = useSettingsField(
+    drafts,
+    "clashSecretInput",
+    ["clash_api_secret"],
+    "",
+    true,
+  );
   const [clashSecretSet, setClashSecretSet] = React.useState(false);
-  const [clashGroup, setClashGroup] = React.useState("");
-  const [clashGroups, setClashGroups] = React.useState("");
-  const [clashTaskEndpoints, setClashTaskEndpoints] = React.useState("");
-  const [clashAuto, setClashAuto] = React.useState(true);
-  const [clashCooldown, setClashCooldown] = React.useState("120");
+  const [clashGroup, setClashGroup] = useSettingsField(drafts, "clashGroup", ["clash_proxy_group"], "");
+  const [clashGroups, setClashGroups] = useSettingsField(drafts, "clashGroups", ["clash_proxy_groups"], "");
+  const [clashTaskEndpoints, setClashTaskEndpoints] = useSettingsField(
+    drafts,
+    "clashTaskEndpoints",
+    ["clash_task_endpoints"],
+    "",
+  );
+  const [clashAuto, setClashAuto] = useSettingsField(drafts, "clashAuto", ["clash_auto_rotate"], true);
+  const [clashCooldown, setClashCooldown] = useSettingsField(
+    drafts,
+    "clashCooldown",
+    ["clash_rotate_cooldown_seconds"],
+    "120",
+  );
   const [clashStatus, setClashStatus] = React.useState<ClashEgressStatus | null>(null);
   const [savingClash, setSavingClash] = React.useState(false);
   const [rotatingClash, setRotatingClash] = React.useState(false);
@@ -118,72 +242,112 @@ export function useSettingsState() {
   const [savingWebSearch, setSavingWebSearch] = React.useState(false);
   const [savingPython, setSavingPython] = React.useState(false);
   const [savingKey, setSavingKey] = React.useState(false);
-  const [pyInterp, setPyInterp] = React.useState("");
-  const [workers, setWorkers] = React.useState("3");
+  const [pyInterp, setPyInterp] = useSettingsField(drafts, "pyInterp", ["python_interpreter"], "");
+  const [workers, setWorkers] = useSettingsField(drafts, "workers", ["workers"], "3");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   // 执行审核员：开关 + 周期（秒）。运行时每周期现读，改完对下一个周期生效。
   // 任务级 token 预算(0 = 关闭)。
-  const [tokenBudget, setTokenBudget] = React.useState("0");
-  const [tokenBudgetPause, setTokenBudgetPause] = React.useState(false);
+  const [tokenBudget, setTokenBudget] = useSettingsField(drafts, "tokenBudget", ["task_token_budget"], "0");
+  const [tokenBudgetPause, setTokenBudgetPause] = useSettingsField(
+    drafts,
+    "tokenBudgetPause",
+    ["task_token_budget_pause"],
+    false,
+  );
   const [savingBudget, setSavingBudget] = React.useState(false);
-  const [llmBudgetUSD, setLLMBudgetUSD] = React.useState("0");
-  const [llmBudgetAlertPct, setLLMBudgetAlertPct] = React.useState("80");
+  const [llmBudgetUSD, setLLMBudgetUSD] = useSettingsField(drafts, "llmBudgetUSD", ["llm_monthly_budget_usd"], "0");
+  const [llmBudgetAlertPct, setLLMBudgetAlertPct] = useSettingsField(
+    drafts,
+    "llmBudgetAlertPct",
+    ["llm_budget_alert_pct"],
+    "80",
+  );
   const [savingLLMBudget, setSavingLLMBudget] = React.useState(false);
   // 有界黑板视图：默认裁剪态势省 token；关掉后 planner 每轮预取完整态势。
-  const [boundedView, setBoundedView] = React.useState(true);
+  const [boundedView, setBoundedView] = useSettingsField(drafts, "boundedView", ["planner_bounded_view"], true);
   const [savingBoundedView, setSavingBoundedView] = React.useState(false);
   // P24 执行资源限额与外部 MCP 守卫（0 = 不限；保存即对之后提交的执行/调用生效）。
-  const [execCPU, setExecCPU] = React.useState("1800");
-  const [execMem, setExecMem] = React.useState("0");
-  const [execProcs, setExecProcs] = React.useState("0");
-  const [execMaxActive, setExecMaxActive] = React.useState("8");
+  const [execCPU, setExecCPU] = useSettingsField(drafts, "execCPU", ["exec_cpu_seconds"], "1800");
+  const [execMem, setExecMem] = useSettingsField(drafts, "execMem", ["exec_memory_mb"], "0");
+  const [execProcs, setExecProcs] = useSettingsField(drafts, "execProcs", ["exec_max_procs"], "0");
+  const [execMaxActive, setExecMaxActive] = useSettingsField(drafts, "execMaxActive", ["exec_max_active"], "8");
   // 单条托管执行的最大存活分钟数（默认 120，0 = 不限）。
-  const [execMaxAge, setExecMaxAge] = React.useState("120");
-  const [logLevel, setLogLevel] = React.useState<Settings["log_level"]>("info");
+  const [execMaxAge, setExecMaxAge] = useSettingsField(drafts, "execMaxAge", ["exec_max_age_minutes"], "120");
+  const [logLevel, setLogLevel] = useSettingsField<Settings["log_level"]>(drafts, "logLevel", ["log_level"], "info");
   const [savingLogLevel, setSavingLogLevel] = React.useState(false);
-  const [mcpConcurrent, setMcpConcurrent] = React.useState("2");
-  const [mcpBreakerFails, setMcpBreakerFails] = React.useState("5");
-  const [mcpBreakerCooldown, setMcpBreakerCooldown] = React.useState("60");
+  const [mcpConcurrent, setMcpConcurrent] = useSettingsField(
+    drafts,
+    "mcpConcurrent",
+    ["mcp_max_concurrent_per_server"],
+    "2",
+  );
+  const [mcpBreakerFails, setMcpBreakerFails] = useSettingsField(
+    drafts,
+    "mcpBreakerFails",
+    ["mcp_breaker_threshold"],
+    "5",
+  );
+  const [mcpBreakerCooldown, setMcpBreakerCooldown] = useSettingsField(
+    drafts,
+    "mcpBreakerCooldown",
+    ["mcp_breaker_cooldown_sec"],
+    "60",
+  );
   const [savingLimits, setSavingLimits] = React.useState(false);
   // P21 情报源（先接 FOFA）。key 只写不读：页面只显示"是否已配置"，输入框留空 = 不改。
-  const [intelKeyInput, setIntelKeyInput] = React.useState("");
+  const [intelKeyInput, setIntelKeyInput] = useSettingsField(drafts, "intelKeyInput", ["fofa_key"], "", true);
   const [intelKeySet, setIntelKeySet] = React.useState(false);
-  const [intelEmail, setIntelEmail] = React.useState("");
-  const [intelBaseURL, setIntelBaseURL] = React.useState("");
-  const [intelProxy, setIntelProxy] = React.useState("");
-  const [intelQuota, setIntelQuota] = React.useState("200");
+  const [intelEmail, setIntelEmail] = useSettingsField(drafts, "intelEmail", ["fofa_email"], "");
+  const [intelBaseURL, setIntelBaseURL] = useSettingsField(drafts, "intelBaseURL", ["fofa_base_url"], "");
+  const [intelProxy, setIntelProxy] = useSettingsField(drafts, "intelProxy", ["fofa_proxy"], "");
+  const [intelQuota, setIntelQuota] = useSettingsField(drafts, "intelQuota", ["intel_daily_quota"], "200");
   const [intelUsed, setIntelUsed] = React.useState(0);
   const [intelBusy, setIntelBusy] = React.useState(false);
   const [intelTesting, setIntelTesting] = React.useState(false);
   const [intelTestMsg, setIntelTestMsg] = React.useState("");
   const [intelRows, setIntelRows] = React.useState<IntelQueryRow[]>([]);
   // 操作约束注入范围(默认都开)。
-  const [injectPlanner, setInjectPlanner] = React.useState(true);
-  const [injectWorker, setInjectWorker] = React.useState(true);
+  const [injectPlanner, setInjectPlanner] = useSettingsField(
+    drafts,
+    "injectPlanner",
+    ["constraints_inject_planner"],
+    true,
+  );
+  const [injectWorker, setInjectWorker] = useSettingsField(drafts, "injectWorker", ["constraints_inject_worker"], true);
   // 实验功能:noa 上下文压缩(默认关)。
-  const [noaCompaction, setNoaCompaction] = React.useState(false);
-  const [chatAutoTitle, setChatAutoTitle] = React.useState(false);
+  const [noaCompaction, setNoaCompaction] = useSettingsField(drafts, "noaCompaction", ["noa_compaction"], false);
+  const [chatAutoTitle, setChatAutoTitle] = useSettingsField(drafts, "chatAutoTitle", ["chat_auto_title"], false);
   // 授权范围（RoE）：空间门模式 + 作业时间窗。模式回生效值，另存一个 env 覆盖标志。
-  const [scopeMode, setScopeMode] = React.useState("ask");
+  const [scopeMode, setScopeMode] = useSettingsField(drafts, "scopeMode", ["intercept_scope_mode"], "ask");
   const [scopeModeEnv, setScopeModeEnv] = React.useState(false);
-  const [scopeHours, setScopeHours] = React.useState("");
+  const [scopeHours, setScopeHours] = useSettingsField(drafts, "scopeHours", ["intercept_scope_hours"], "");
   // 作业时间窗的时区（IANA 名；空 = 跟随平台所在机器）。与窗口一起保存。
-  const [scopeHoursTZ, setScopeHoursTZ] = React.useState("");
+  const [scopeHoursTZ, setScopeHoursTZ] = useSettingsField(drafts, "scopeHoursTZ", ["intercept_scope_hours_tz"], "");
   // 服务器本地时间与时区名：页面据此提示"窗口按哪个时区算"，不必让人自己去对时。
   const [serverLocalTime, setServerLocalTime] = React.useState("");
   const [serverLocalZone, setServerLocalZone] = React.useState("");
   const [savingScope, setSavingScope] = React.useState(false);
   // P41 面向目标的产物语言（默认 zh = 不约束）。与界面语言是两件事，刻意分开放。
-  const [artifactLang, setArtifactLang] = React.useState<"zh" | "en">("zh");
+  const [artifactLang, setArtifactLang] = useSettingsField<"zh" | "en">(
+    drafts,
+    "artifactLang",
+    ["artifact_language"],
+    "zh",
+  );
   const [savingArtifactLang, setSavingArtifactLang] = React.useState(false);
   // P43 凭据尝试预算：窗口内对同一 (目标, 账号) 允许试几次（0 = 不限），超了怎么处置。
-  const [credBudget, setCredBudget] = React.useState("3");
-  const [credBudgetAction, setCredBudgetAction] = React.useState<"allow" | "ask" | "deny">("ask");
+  const [credBudget, setCredBudget] = useSettingsField(drafts, "credBudget", ["credential_attempt_budget"], "3");
+  const [credBudgetAction, setCredBudgetAction] = useSettingsField<"allow" | "ask" | "deny">(
+    drafts,
+    "credBudgetAction",
+    ["credential_attempt_budget_action"],
+    "ask",
+  );
   const [savingCredBudget, setSavingCredBudget] = React.useState(false);
   // P42 显示名（空 = 内置 BLADE）与 CORS 来源白名单（空 = 不发 CORS 头）。
-  const [siteName, setSiteName] = React.useState("");
+  const [siteName, setSiteName] = useSettingsField(drafts, "siteName", ["site_name"], "");
   const [savingSiteName, setSavingSiteName] = React.useState(false);
-  const [corsOrigins, setCorsOrigins] = React.useState("");
+  const [corsOrigins, setCorsOrigins] = useSettingsField(drafts, "corsOrigins", ["cors_allowed_origins"], "");
   const [savingCors, setSavingCors] = React.useState(false);
   // P35 停机开关与作业时间窗的**执行状态**（不是设置）：到点/停机时平台停到哪一步了。
   const [enforce, setEnforce] = React.useState<ScopeEnforcement | null>(null);
@@ -195,86 +359,123 @@ export function useSettingsState() {
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
 
-  const apply = React.useCallback((s: Settings) => {
-    setTrafficCapture(!!s.traffic_capture);
-    setAgentTrafficBinding(!!s.agent_traffic_binding);
-    setAgentLootExec(!!s.agent_loot_exec);
-    setAgentAutoRetest(!!s.agent_auto_retest);
-    setAttackChainContinuation(s.attack_chain_continuation !== false);
-    setEmptyReportPatrol(!!s.empty_report_patrol);
-    setCredentialPlaintext(s.credential_plaintext_fidelity !== false);
-    setCompactorProfileID(String(s.compactor_llm_profile_id ?? 0));
-    setOastEnabled(!!s.oast_enabled);
-    setOastTokenSet(!!s.oast_token_set);
-    setOastDomain(s.oast_domain || "requestrepo.com");
-    setOastNucleiServer(s.oast_nuclei_server || "oast.fun");
-    setNoiseLevel(s.opsec_noise_level === "quiet" ? "quiet" : "normal");
-    setEvidenceVerify(
-      s.finding_evidence_verify === "off" || s.finding_evidence_verify === "block" ? s.finding_evidence_verify : "warn",
-    );
-    setWebSearch(!!s.web_search_enabled);
-    setBackend(s.web_search_backend || "ddgs");
-    setBraveKeySet(!!s.brave_key_set);
-    setTavilyKeySet(!!s.tavily_key_set);
-    setProxyInput(s.web_search_proxy ?? "");
-    const savedPool = s.global_proxy_pool || s.global_proxy || "";
-    setGlobalProxyPoolInput(savedPool);
-    setProxySavedPool(savedPool);
-    setProxyHealthURL(s.proxy_health_url || "https://www.gstatic.com/generate_204");
-    setProxyHealthTimeout(String(s.proxy_health_timeout_seconds ?? 5));
-    setProxyHealthInterval(String(s.proxy_health_interval_seconds ?? 30));
-    setProxyFailThreshold(String(s.proxy_fail_threshold ?? 2));
-    setProxySwitchCooldown(String(s.proxy_switch_cooldown_seconds ?? 30));
-    setProxyEgressIPURL(s.proxy_egress_ip_url || "https://api.ipify.org");
-    setClashApiURL(s.clash_api_url ?? "");
-    setClashSecretSet(!!s.clash_api_secret_set);
-    setClashGroup(s.clash_proxy_group ?? "");
-    setClashGroups(s.clash_proxy_groups ?? "");
-    setClashTaskEndpoints(s.clash_task_endpoints ?? "");
-    setClashAuto(s.clash_auto_rotate !== false);
-    setClashCooldown(String(s.clash_rotate_cooldown_seconds ?? 120));
-    setClashStatus(s.clash_status ?? null);
-    setProxyActive(s.proxy_active ?? "");
-    setProxyBlocked(!!s.proxy_blocked);
-    setProxyStatus(s.proxy_status ?? []);
-    setPyInterp(s.python_interpreter ?? "");
-    setWorkers(String(s.workers ?? 3));
-    setTokenBudget(String(s.task_token_budget ?? 0));
-    setTokenBudgetPause(!!s.task_token_budget_pause);
-    setLLMBudgetUSD(String(s.llm_monthly_budget_usd ?? 0));
-    setLLMBudgetAlertPct(String(s.llm_budget_alert_pct ?? 80));
-    setBoundedView(s.planner_bounded_view !== false);
-    setInjectPlanner(s.constraints_inject_planner !== false);
-    setInjectWorker(s.constraints_inject_worker !== false);
-    setNoaCompaction(!!s.noa_compaction);
-    setChatAutoTitle(!!s.chat_auto_title);
-    setScopeMode(s.intercept_scope_mode ?? "ask");
-    setScopeModeEnv(!!s.intercept_scope_mode_env);
-    setScopeHours(s.intercept_scope_hours ?? "");
-    setScopeHoursTZ(s.intercept_scope_hours_tz ?? "");
-    setServerLocalTime(s.server_local_time ?? "");
-    setServerLocalZone(s.server_local_zone ?? "");
-    setArtifactLang(s.artifact_language === "en" ? "en" : "zh");
-    setCredBudget(String(s.credential_attempt_budget ?? 3));
-    setCredBudgetAction(s.credential_attempt_budget_action ?? "ask");
-    setSiteName(s.site_name ?? "");
-    setCorsOrigins(s.cors_allowed_origins ?? "");
-    setIntelKeySet(!!s.fofa_key_set);
-    setIntelEmail(s.fofa_email ?? "");
-    setIntelBaseURL(s.fofa_base_url ?? "");
-    setIntelProxy(s.fofa_proxy ?? "");
-    setIntelQuota(String(s.intel_daily_quota ?? 200));
-    setIntelUsed(s.intel_used_today ?? 0);
-    setExecCPU(String(s.exec_cpu_seconds ?? 1800));
-    setExecMem(String(s.exec_memory_mb ?? 0));
-    setExecProcs(String(s.exec_max_procs ?? 0));
-    setExecMaxActive(String(s.exec_max_active ?? 8));
-    setExecMaxAge(String(s.exec_max_age_minutes ?? 120));
-    setLogLevel(s.log_level ?? "info");
-    setMcpConcurrent(String(s.mcp_max_concurrent_per_server ?? 2));
-    setMcpBreakerFails(String(s.mcp_breaker_threshold ?? 5));
-    setMcpBreakerCooldown(String(s.mcp_breaker_cooldown_sec ?? 60));
-  }, []);
+  const apply = React.useCallback(
+    (s: Settings, ticket: SettingsTicket) => {
+      const applyReadonly = drafts.applyReadonly(ticket);
+      drafts.applyField("trafficCapture", !!s.traffic_capture, ticket);
+      drafts.applyField("agentTrafficBinding", !!s.agent_traffic_binding, ticket);
+      drafts.applyField("agentLootExec", !!s.agent_loot_exec, ticket);
+      drafts.applyField("agentAutoRetest", !!s.agent_auto_retest, ticket);
+      drafts.applyField("attackChainContinuation", s.attack_chain_continuation !== false, ticket);
+      drafts.applyField("emptyReportPatrol", !!s.empty_report_patrol, ticket);
+      drafts.applyField("credentialPlaintext", s.credential_plaintext_fidelity !== false, ticket);
+      drafts.applyField("compactorProfileID", String(s.compactor_llm_profile_id ?? 0), ticket);
+      drafts.applyField("oastEnabled", !!s.oast_enabled, ticket);
+      if (applyReadonly) setOastTokenSet(!!s.oast_token_set);
+      drafts.applyField("oastDomain", s.oast_domain || "requestrepo.com", ticket);
+      drafts.applyField("oastNucleiServer", s.oast_nuclei_server || "oast.fun", ticket);
+      drafts.applyField("noiseLevel", s.opsec_noise_level === "quiet" ? "quiet" : "normal", ticket);
+      drafts.applyField(
+        "evidenceVerify",
+        s.finding_evidence_verify === "off" || s.finding_evidence_verify === "block"
+          ? s.finding_evidence_verify
+          : "warn",
+        ticket,
+      );
+      drafts.applyField("webSearch", !!s.web_search_enabled, ticket);
+      drafts.applyField("backend", s.web_search_backend || "ddgs", ticket);
+      if (applyReadonly) setBraveKeySet(!!s.brave_key_set);
+      if (applyReadonly) setTavilyKeySet(!!s.tavily_key_set);
+      drafts.applyField("proxyInput", s.web_search_proxy ?? "", ticket);
+      const savedPool = s.global_proxy_pool || s.global_proxy || "";
+      drafts.applyField("globalProxyPoolInput", savedPool, ticket);
+      if (applyReadonly) setProxySavedPool(savedPool);
+      drafts.applyField("proxyHealthURL", s.proxy_health_url || "https://www.gstatic.com/generate_204", ticket);
+      drafts.applyField("proxyHealthTimeout", String(s.proxy_health_timeout_seconds ?? 5), ticket);
+      drafts.applyField("proxyHealthInterval", String(s.proxy_health_interval_seconds ?? 30), ticket);
+      drafts.applyField("proxyFailThreshold", String(s.proxy_fail_threshold ?? 2), ticket);
+      drafts.applyField("proxySwitchCooldown", String(s.proxy_switch_cooldown_seconds ?? 30), ticket);
+      drafts.applyField("proxyEgressIPURL", s.proxy_egress_ip_url || "https://api.ipify.org", ticket);
+      drafts.applyField("clashApiURL", s.clash_api_url ?? "", ticket);
+      if (applyReadonly) setClashSecretSet(!!s.clash_api_secret_set);
+      drafts.applyField("clashGroup", s.clash_proxy_group ?? "", ticket);
+      drafts.applyField("clashGroups", s.clash_proxy_groups ?? "", ticket);
+      drafts.applyField("clashTaskEndpoints", s.clash_task_endpoints ?? "", ticket);
+      drafts.applyField("clashAuto", s.clash_auto_rotate !== false, ticket);
+      drafts.applyField("clashCooldown", String(s.clash_rotate_cooldown_seconds ?? 120), ticket);
+      if (applyReadonly) setClashStatus(s.clash_status ?? null);
+      if (applyReadonly) setProxyActive(s.proxy_active ?? "");
+      if (applyReadonly) setProxyBlocked(!!s.proxy_blocked);
+      if (applyReadonly) setProxyStatus(s.proxy_status ?? []);
+      drafts.applyField("pyInterp", s.python_interpreter ?? "", ticket);
+      drafts.applyField("workers", String(s.workers ?? 3), ticket);
+      drafts.applyField("tokenBudget", String(s.task_token_budget ?? 0), ticket);
+      drafts.applyField("tokenBudgetPause", !!s.task_token_budget_pause, ticket);
+      drafts.applyField("llmBudgetUSD", String(s.llm_monthly_budget_usd ?? 0), ticket);
+      drafts.applyField("llmBudgetAlertPct", String(s.llm_budget_alert_pct ?? 80), ticket);
+      drafts.applyField("boundedView", s.planner_bounded_view !== false, ticket);
+      drafts.applyField("injectPlanner", s.constraints_inject_planner !== false, ticket);
+      drafts.applyField("injectWorker", s.constraints_inject_worker !== false, ticket);
+      drafts.applyField("noaCompaction", !!s.noa_compaction, ticket);
+      drafts.applyField("chatAutoTitle", !!s.chat_auto_title, ticket);
+      drafts.applyField("scopeMode", s.intercept_scope_mode ?? "ask", ticket);
+      if (applyReadonly) setScopeModeEnv(!!s.intercept_scope_mode_env);
+      drafts.applyField("scopeHours", s.intercept_scope_hours ?? "", ticket);
+      drafts.applyField("scopeHoursTZ", s.intercept_scope_hours_tz ?? "", ticket);
+      if (applyReadonly) setServerLocalTime(s.server_local_time ?? "");
+      if (applyReadonly) setServerLocalZone(s.server_local_zone ?? "");
+      drafts.applyField("artifactLang", s.artifact_language === "en" ? "en" : "zh", ticket);
+      drafts.applyField("credBudget", String(s.credential_attempt_budget ?? 3), ticket);
+      drafts.applyField("credBudgetAction", s.credential_attempt_budget_action ?? "ask", ticket);
+      drafts.applyField("siteName", s.site_name ?? "", ticket);
+      drafts.applyField("corsOrigins", s.cors_allowed_origins ?? "", ticket);
+      if (applyReadonly) setIntelKeySet(!!s.fofa_key_set);
+      drafts.applyField("intelEmail", s.fofa_email ?? "", ticket);
+      drafts.applyField("intelBaseURL", s.fofa_base_url ?? "", ticket);
+      drafts.applyField("intelProxy", s.fofa_proxy ?? "", ticket);
+      drafts.applyField("intelQuota", String(s.intel_daily_quota ?? 200), ticket);
+      if (applyReadonly) setIntelUsed(s.intel_used_today ?? 0);
+      drafts.applyField("execCPU", String(s.exec_cpu_seconds ?? 1800), ticket);
+      drafts.applyField("execMem", String(s.exec_memory_mb ?? 0), ticket);
+      drafts.applyField("execProcs", String(s.exec_max_procs ?? 0), ticket);
+      drafts.applyField("execMaxActive", String(s.exec_max_active ?? 8), ticket);
+      drafts.applyField("execMaxAge", String(s.exec_max_age_minutes ?? 120), ticket);
+      drafts.applyField("logLevel", s.log_level ?? "info", ticket);
+      drafts.applyField("mcpConcurrent", String(s.mcp_max_concurrent_per_server ?? 2), ticket);
+      drafts.applyField("mcpBreakerFails", String(s.mcp_breaker_threshold ?? 5), ticket);
+      drafts.applyField("mcpBreakerCooldown", String(s.mcp_breaker_cooldown_sec ?? 60), ticket);
+    },
+    [drafts],
+  );
+
+  const saveSettings = React.useCallback(
+    (patch: Record<string, unknown>) =>
+      drafts.submit(patch, async (payload, ticket) => {
+        const result = await api.setSettings(payload);
+        apply(result, ticket);
+        return result;
+      }),
+    [drafts, apply],
+  );
+
+  const loadSettings = React.useCallback(async () => {
+    const request = loadOwner.start();
+    const ticket = drafts.read();
+    setLoadingSettings(true);
+    setLoadError("");
+    try {
+      const result = await api.settings({ signal: request.signal });
+      if (!request.alive()) return;
+      apply(result, ticket);
+      setLoaded(true);
+    } catch (error) {
+      if (request.alive()) setLoadError((error as Error).message || "设置读取失败");
+    } finally {
+      if (request.alive()) setLoadingSettings(false);
+    }
+  }, [apply, drafts, loadOwner]);
+  const hasUnsavedChanges = drafts.dirty(draftRevision);
+  useUnsavedChanges(hasUnsavedChanges);
 
   // 全局默认策略：独立加载（不进 apply——它由 /api/settings 触发，而策略走自己的端点）。
 
@@ -303,9 +504,8 @@ export function useSettingsState() {
       };
       // 留空 = 不改 key（要清空就点"清除 Key"）。
       if (intelKeyInput.trim() !== "") patch.fofa_key = intelKeyInput.trim();
-      const s2 = await api.setSettings(patch);
-      apply(s2);
-      setIntelKeyInput("");
+      const s2 = await saveSettings(patch);
+
       toast.success("情报源设置已保存");
       loadIntelQueries();
     } catch (e) {
@@ -318,9 +518,8 @@ export function useSettingsState() {
   const clearIntelKey = async () => {
     setIntelBusy(true);
     try {
-      const s2 = await api.setSettings({ fofa_key: "" });
-      apply(s2);
-      setIntelKeyInput("");
+      const s2 = await saveSettings({ fofa_key: "" });
+
       toast.success("已清除情报源 API Key（情报查询工具会提示未配置）");
     } catch (e) {
       toast.error(`清除失败：${(e as Error).message}`);
@@ -356,7 +555,7 @@ export function useSettingsState() {
   const saveLimits = async () => {
     setSavingLimits(true);
     try {
-      const s2 = await api.setSettings({
+      const s2 = await saveSettings({
         exec_cpu_seconds: Math.max(0, Number(execCPU) || 0),
         exec_memory_mb: Math.max(0, Number(execMem) || 0),
         exec_max_procs: Math.max(0, Number(execProcs) || 0),
@@ -366,7 +565,7 @@ export function useSettingsState() {
         mcp_breaker_threshold: Math.max(0, Number(mcpBreakerFails) || 0),
         mcp_breaker_cooldown_sec: Math.max(0, Number(mcpBreakerCooldown) || 0),
       });
-      apply(s2);
+
       toast.success("已保存：对之后提交的长任务执行与 MCP 调用生效");
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`);
@@ -378,8 +577,8 @@ export function useSettingsState() {
   const saveLogLevel = async () => {
     setSavingLogLevel(true);
     try {
-      const s2 = await api.setSettings({ log_level: logLevel });
-      apply(s2);
+      const s2 = await saveSettings({ log_level: logLevel });
+
       toast.success("日志级别已切换（立即生效）");
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`);
@@ -395,10 +594,8 @@ export function useSettingsState() {
       return;
     }
     setSavingWorkers(true);
-    api
-      .setSettings({ workers: n })
+    saveSettings({ workers: n })
       .then((s) => {
-        apply(s);
         toast.success("已保存并发数");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -407,10 +604,8 @@ export function useSettingsState() {
 
   const saveBoundedView = () => {
     setSavingBoundedView(true);
-    api
-      .setSettings({ planner_bounded_view: boundedView })
+    saveSettings({ planner_bounded_view: boundedView })
       .then((s) => {
-        apply(s);
         toast.success(boundedView ? "已开启有界黑板视图（省 token）" : "已关闭有界视图：planner 每轮预取完整态势");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -424,10 +619,8 @@ export function useSettingsState() {
       return;
     }
     setSavingBudget(true);
-    api
-      .setSettings({ task_token_budget: n, task_token_budget_pause: tokenBudgetPause })
+    saveSettings({ task_token_budget: n, task_token_budget_pause: tokenBudgetPause })
       .then((s) => {
-        apply(s);
         toast.success(n > 0 ? `已保存任务 token 预算（${n}）` : "已关闭任务 token 预算护栏");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -438,10 +631,8 @@ export function useSettingsState() {
     const prev = tokenBudgetPause;
     setTokenBudgetPause(next);
     setSavingBudget(true);
-    api
-      .setSettings({ task_token_budget_pause: next })
+    saveSettings({ task_token_budget_pause: next })
       .then((s) => {
-        apply(s);
         toast.success(next ? "预算耗尽时将暂停任务" : "已改为仅告警，任务继续");
       })
       .catch((e) => {
@@ -463,10 +654,8 @@ export function useSettingsState() {
       return;
     }
     setSavingLLMBudget(true);
-    api
-      .setSettings({ llm_monthly_budget_usd: budget, llm_budget_alert_pct: alertPct })
+    saveSettings({ llm_monthly_budget_usd: budget, llm_budget_alert_pct: alertPct })
       .then((s) => {
-        apply(s);
         toast.success(budget > 0 ? "已保存 LLM 月度预算" : "已关闭 LLM 月度预算告警");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -475,10 +664,8 @@ export function useSettingsState() {
 
   const savePython = () => {
     setSavingPython(true);
-    api
-      .setSettings({ python_interpreter: pyInterp.trim() })
+    saveSettings({ python_interpreter: pyInterp.trim() })
       .then((s) => {
-        apply(s);
         toast.success("已保存 Python 解释器配置");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -494,23 +681,19 @@ export function useSettingsState() {
   };
 
   React.useEffect(() => {
-    api
-      .settings()
-      .then(apply)
-      .catch(() => undefined)
-      .finally(() => setLoaded(true));
+    void loadSettings();
     api
       .llmProfiles()
       .then(setLlmProfiles)
       .catch(() => undefined);
-  }, [apply]);
+    return () => loadOwner.cancel();
+  }, [loadSettings, loadOwner]);
 
   const toggleTraffic = (v: boolean) => {
     setTrafficCapture(v); // optimistic
     setSavingTraffic(true);
-    api
-      .setSettings({ traffic_capture: v })
-      .then(apply)
+    saveSettings({ traffic_capture: v })
+      .then(() => undefined)
       .catch((e) => {
         setTrafficCapture(!v); // revert on failure
         toast.error(`保存失败：${(e as Error).message}`);
@@ -520,9 +703,8 @@ export function useSettingsState() {
 
   const toggleInjectPlanner = (v: boolean) => {
     setInjectPlanner(v); // optimistic
-    api
-      .setSettings({ constraints_inject_planner: v })
-      .then(apply)
+    saveSettings({ constraints_inject_planner: v })
+      .then(() => undefined)
       .catch((e) => {
         setInjectPlanner(!v); // revert on failure
         toast.error(`保存失败：${(e as Error).message}`);
@@ -533,14 +715,12 @@ export function useSettingsState() {
   // 分开存会让用户停在"改了一半"的状态上。拦截层每调用现读，所以改完即时生效。
   const saveScope = () => {
     setSavingScope(true);
-    api
-      .setSettings({
-        intercept_scope_mode: scopeMode,
-        intercept_scope_hours: scopeHours.trim(),
-        intercept_scope_hours_tz: scopeHoursTZ.trim(),
-      })
+    saveSettings({
+      intercept_scope_mode: scopeMode,
+      intercept_scope_hours: scopeHours.trim(),
+      intercept_scope_hours_tz: scopeHoursTZ.trim(),
+    })
       .then((next) => {
-        apply(next);
         toast.success("已保存授权范围设置");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -551,10 +731,8 @@ export function useSettingsState() {
     const prev = artifactLang;
     setArtifactLang(next); // 乐观切换（与同页其它开关同一套纪律），失败回滚
     setSavingArtifactLang(true);
-    api
-      .setSettings({ artifact_language: next })
+    saveSettings({ artifact_language: next })
       .then((s) => {
-        apply(s);
         toast.success(next === "en" ? "已切换：面向目标的产物一律英文" : "已切换：不约束产物语言（可用中文）");
       })
       .catch((e) => {
@@ -573,10 +751,8 @@ export function useSettingsState() {
     const prevB = credBudget;
     const prevA = credBudgetAction;
     setSavingCredBudget(true);
-    api
-      .setSettings({ credential_attempt_budget: n, credential_attempt_budget_action: credBudgetAction })
+    saveSettings({ credential_attempt_budget: n, credential_attempt_budget_action: credBudgetAction })
       .then((s) => {
-        apply(s);
         toast.success(n === 0 ? "已保存：不限制凭据尝试次数" : `已保存：同一账号超过 ${n} 次转「${credBudgetAction}」`);
       })
       .catch((e) => {
@@ -589,10 +765,8 @@ export function useSettingsState() {
 
   const saveSiteName = () => {
     setSavingSiteName(true);
-    api
-      .setSettings({ site_name: siteName.trim() })
+    saveSettings({ site_name: siteName.trim() })
       .then((next) => {
-        apply(next);
         const name = siteName.trim();
         if (name) document.title = name;
         toast.success(`已保存显示名${name ? "" : "（回到内置名）"}`);
@@ -603,10 +777,8 @@ export function useSettingsState() {
 
   const saveCors = () => {
     setSavingCors(true);
-    api
-      .setSettings({ cors_allowed_origins: corsOrigins.trim() })
+    saveSettings({ cors_allowed_origins: corsOrigins.trim() })
       .then((next) => {
-        apply(next);
         toast.success(corsOrigins.trim() ? "已保存跨源白名单（60 秒内生效）" : "已清空跨源白名单（不再返回 CORS 头）");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -666,10 +838,8 @@ export function useSettingsState() {
   const toggleAgentTrafficBinding = (v: boolean) => {
     setAgentTrafficBinding(v);
     setSavingTraffic(true);
-    api
-      .setSettings({ agent_traffic_binding: v })
+    saveSettings({ agent_traffic_binding: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启 Agent 自动绑定流量" : "已关闭 Agent 自动绑定流量");
       })
       .catch((e) => {
@@ -682,10 +852,8 @@ export function useSettingsState() {
   const toggleAgentLootExec = (v: boolean) => {
     setAgentLootExec(v); // optimistic
     setSavingLootExec(true);
-    api
-      .setSettings({ agent_loot_exec: v })
+    saveSettings({ agent_loot_exec: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启战果直接执行" : "已关闭战果直接执行");
       })
       .catch((e) => {
@@ -698,10 +866,8 @@ export function useSettingsState() {
   const toggleAgentAutoRetest = (v: boolean) => {
     setAgentAutoRetest(v); // optimistic
     setSavingAutoRetest(true);
-    api
-      .setSettings({ agent_auto_retest: v })
+    saveSettings({ agent_auto_retest: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启自动复测" : "已关闭自动复测");
       })
       .catch((e) => {
@@ -714,10 +880,8 @@ export function useSettingsState() {
   const toggleAttackChainContinuation = (v: boolean) => {
     setAttackChainContinuation(v); // optimistic
     setSavingAttackChain(true);
-    api
-      .setSettings({ attack_chain_continuation: v })
+    saveSettings({ attack_chain_continuation: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启攻击链续跳提醒" : "已关闭攻击链续跳提醒");
       })
       .catch((e) => {
@@ -730,10 +894,8 @@ export function useSettingsState() {
   const toggleEmptyReportPatrol = (v: boolean) => {
     setEmptyReportPatrol(v); // optimistic
     setSavingEmptyReportPatrol(true);
-    api
-      .setSettings({ empty_report_patrol: v })
+    saveSettings({ empty_report_patrol: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启空报告巡检" : "已关闭空报告巡检");
       })
       .catch((e) => {
@@ -746,10 +908,8 @@ export function useSettingsState() {
   const toggleCredentialPlaintext = (v: boolean) => {
     setCredentialPlaintext(v); // optimistic
     setSavingCredentialPlaintext(true);
-    api
-      .setSettings({ credential_plaintext_fidelity: v })
+    saveSettings({ credential_plaintext_fidelity: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启凭据明文保真" : "已关闭凭据明文保真（改为指纹 + 受控查看）");
       })
       .catch((e) => {
@@ -762,10 +922,8 @@ export function useSettingsState() {
   const saveCompactorProfile = () => {
     const id = Number.parseInt(compactorProfileID, 10) || 0;
     setSavingCompactorProfile(true);
-    api
-      .setSettings({ compactor_llm_profile_id: id })
+    saveSettings({ compactor_llm_profile_id: id })
       .then((s) => {
-        apply(s);
         toast.success(id > 0 ? "已保存压缩摘要模型" : "已改为跟随任务链/角色绑定");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -776,10 +934,8 @@ export function useSettingsState() {
     const prev = noiseLevel;
     setNoiseLevel(v);
     setSavingOast(true);
-    api
-      .setSettings({ opsec_noise_level: v })
+    saveSettings({ opsec_noise_level: v })
       .then((s) => {
-        apply(s);
         toast.success(v === "quiet" ? "已切到静默模式（下一轮生效）" : "已切回常规模式");
       })
       .catch((e) => {
@@ -793,10 +949,8 @@ export function useSettingsState() {
     const prev = evidenceVerify;
     setEvidenceVerify(v);
     setSavingEvidenceVerify(true);
-    api
-      .setSettings({ finding_evidence_verify: v })
+    saveSettings({ finding_evidence_verify: v })
       .then((next) => {
-        apply(next);
         toast.success(
           v === "block"
             ? "已开启证据拦截：critical/high 的关键证据不通过将被拒收"
@@ -815,9 +969,8 @@ export function useSettingsState() {
   const toggleOast = (v: boolean) => {
     setOastEnabled(v); // optimistic
     setSavingOast(true);
-    api
-      .setSettings({ oast_enabled: v })
-      .then(apply)
+    saveSettings({ oast_enabled: v })
+      .then(() => undefined)
       .catch((e) => {
         setOastEnabled(!v);
         toast.error(`保存失败：${(e as Error).message}`);
@@ -833,11 +986,8 @@ export function useSettingsState() {
     };
     // token 只写：输入为空时不动已存的值（想清除用 clearOastToken）。
     if (oastTokenInput.trim()) payload.oast_token = oastTokenInput.trim();
-    api
-      .setSettings(payload)
+    saveSettings(payload)
       .then((s) => {
-        apply(s);
-        setOastTokenInput("");
         toast.success("已保存 OAST 配置");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -846,10 +996,8 @@ export function useSettingsState() {
 
   const clearOastToken = () => {
     setSavingOast(true);
-    api
-      .setSettings({ oast_token: "" })
+    saveSettings({ oast_token: "" })
       .then((s) => {
-        apply(s);
         toast.success("已清除 OAST token");
       })
       .catch((e) => toast.error(`清除失败：${(e as Error).message}`))
@@ -858,9 +1006,8 @@ export function useSettingsState() {
 
   const toggleInjectWorker = (v: boolean) => {
     setInjectWorker(v); // optimistic
-    api
-      .setSettings({ constraints_inject_worker: v })
-      .then(apply)
+    saveSettings({ constraints_inject_worker: v })
+      .then(() => undefined)
       .catch((e) => {
         setInjectWorker(!v); // revert on failure
         toast.error(`保存失败：${(e as Error).message}`);
@@ -869,10 +1016,8 @@ export function useSettingsState() {
 
   const toggleChatAutoTitle = (v: boolean) => {
     setChatAutoTitle(v); // optimistic
-    api
-      .setSettings({ chat_auto_title: v })
+    saveSettings({ chat_auto_title: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启新会话自动标题" : "已关闭新会话自动标题");
       })
       .catch((e) => {
@@ -883,10 +1028,8 @@ export function useSettingsState() {
 
   const toggleNoaCompaction = (v: boolean) => {
     setNoaCompaction(v); // optimistic
-    api
-      .setSettings({ noa_compaction: v })
+    saveSettings({ noa_compaction: v })
       .then((s) => {
-        apply(s);
         toast.success(v ? "已开启 noa 上下文压缩（对之后启动的运行生效）" : "已关闭 noa 上下文压缩（恢复内置压缩）");
       })
       .catch((e) => {
@@ -898,17 +1041,15 @@ export function useSettingsState() {
   // Persist a web-search patch (enable and/or backend). Optimistic with refetch.
   const saveWebSearch = (patch: Partial<Settings>) => {
     setSavingWebSearch(true);
-    api
-      .setSettings(patch)
+    saveSettings(patch)
       .then((s) => {
-        apply(s);
         toast.success("已保存网络搜索配置");
       })
       .catch((e) => {
         toast.error(`保存失败：${(e as Error).message}`);
         api
           .settings()
-          .then(apply)
+          .then(() => undefined)
           .catch(() => undefined);
       })
       .finally(() => setSavingWebSearch(false));
@@ -916,11 +1057,8 @@ export function useSettingsState() {
 
   const saveBraveKey = () => {
     setSavingKey(true);
-    api
-      .setSettings({ brave_search_api_key: braveKeyInput })
+    saveSettings({ brave_search_api_key: braveKeyInput })
       .then((s) => {
-        apply(s);
-        setBraveKeyInput("");
         toast.success("已保存 Brave API Key");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -929,11 +1067,8 @@ export function useSettingsState() {
 
   const saveTavilyKey = () => {
     setSavingTavilyKey(true);
-    api
-      .setSettings({ tavily_search_api_key: tavilyKeyInput })
+    saveSettings({ tavily_search_api_key: tavilyKeyInput })
       .then((s) => {
-        apply(s);
-        setTavilyKeyInput("");
         toast.success("已保存 Tavily API Key");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -942,10 +1077,8 @@ export function useSettingsState() {
 
   const saveProxy = () => {
     setSavingProxy(true);
-    api
-      .setSettings({ web_search_proxy: proxyInput.trim() })
+    saveSettings({ web_search_proxy: proxyInput.trim() })
       .then((s) => {
-        apply(s);
         toast.success(proxyInput.trim() ? "已保存出口代理" : "已清除出口代理（改为直连）");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
@@ -1035,18 +1168,16 @@ export function useSettingsState() {
     }
     setProxySaveError("");
     setSavingGlobalProxy(true);
-    api
-      .setSettings({
-        global_proxy_pool: globalProxyPoolInput.trim(),
-        proxy_health_url: proxyHealthURL.trim(),
-        proxy_health_timeout_seconds: timeout,
-        proxy_health_interval_seconds: interval,
-        proxy_fail_threshold: threshold,
-        proxy_switch_cooldown_seconds: cooldown,
-        proxy_egress_ip_url: proxyEgressIPURL.trim(),
-      })
+    saveSettings({
+      global_proxy_pool: globalProxyPoolInput.trim(),
+      proxy_health_url: proxyHealthURL.trim(),
+      proxy_health_timeout_seconds: timeout,
+      proxy_health_interval_seconds: interval,
+      proxy_fail_threshold: threshold,
+      proxy_switch_cooldown_seconds: cooldown,
+      proxy_egress_ip_url: proxyEgressIPURL.trim(),
+    })
       .then((s) => {
-        apply(s);
         toast.success(globalProxyPoolInput.trim() ? "已保存代理池" : "已清空代理池（改为直连）");
         pollProxyStatus(6);
       })
@@ -1065,19 +1196,16 @@ export function useSettingsState() {
       return;
     }
     setSavingClash(true);
-    api
-      .setSettings({
-        clash_api_url: clashApiURL.trim(),
-        clash_proxy_group: clashGroup.trim(),
-        clash_proxy_groups: clashGroups.trim(),
-        clash_task_endpoints: clashTaskEndpoints.trim(),
-        clash_auto_rotate: clashAuto,
-        clash_rotate_cooldown_seconds: cooldown,
-        ...(clashSecretInput.trim() ? { clash_api_secret: clashSecretInput.trim() } : {}),
-      })
+    saveSettings({
+      clash_api_url: clashApiURL.trim(),
+      clash_proxy_group: clashGroup.trim(),
+      clash_proxy_groups: clashGroups.trim(),
+      clash_task_endpoints: clashTaskEndpoints.trim(),
+      clash_auto_rotate: clashAuto,
+      clash_rotate_cooldown_seconds: cooldown,
+      ...(clashSecretInput.trim() ? { clash_api_secret: clashSecretInput.trim() } : {}),
+    })
       .then((s) => {
-        apply(s);
-        setClashSecretInput("");
         toast.success("已保存 Clash 出口切换配置");
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message || "未知错误"}`))
@@ -1122,6 +1250,10 @@ export function useSettingsState() {
   const braveNeedsKey = webSearch && backend === "brave-free" && !braveKeySet;
 
   return {
+    loadError,
+    loadingSettings,
+    loadSettings,
+    hasUnsavedChanges,
     trafficCapture,
     setTrafficCapture,
     agentTrafficBinding,

@@ -25,12 +25,12 @@ type Scheduler struct {
 	tick time.Duration
 	// lastEmptyReportPatrol throttles the opt-in empty-report scan.
 	lastEmptyReportPatrol time.Time
+	enqueueTimeout        func(*db.AgentTrigger, db.TaskTimeoutEvent, string) bool
 }
 
 const (
 	schedKeyLastFinding    = "last_finding_id"    // watermark: max finding node id fired for
 	schedKeyFiredGoals     = "fired_goals"        // JSON array of goal node ids already fired
-	schedKeyLastTimeout    = "last_timeout_id"    // watermark: max task id fired for task timeout
 	schedKeyLastToolCall   = "last_toolcall_id"   // watermark: max activity id fired for tool call
 	schedKeyLastTaskCreate = "last_taskcreate_id" // watermark: max task id fired for task create
 	// 攻击链续跳提醒独立水位：不依赖是否配置了自定义触发器。
@@ -124,17 +124,6 @@ func (sc *Scheduler) init() {
 		}
 		sc.setWatermark(schedKeyLastAttackChainFinding, maxID)
 	}
-	if sc.mustState(schedKeyLastTimeout) == "" {
-		var maxID int64
-		if evs, err := sc.pg.TimedOutTasksSince(0); err == nil {
-			for _, e := range evs {
-				if e.NodeID > maxID {
-					maxID = e.NodeID
-				}
-			}
-		}
-		sc.setWatermark(schedKeyLastTimeout, maxID)
-	}
 	if sc.mustState(schedKeyLastToolCall) == "" {
 		var maxID int64
 		if evs, err := sc.pg.NewToolCallsSince(0); err == nil {
@@ -165,6 +154,9 @@ func (sc *Scheduler) step() {
 		return
 	}
 	if len(triggers) == 0 {
+		if !sc.s.safetyAdmissionBlocked() {
+			sc.fireTaskTimeouts(nil)
+		}
 		return
 	}
 	// 每个「开始新工作」的入口前都**就近复查**一次停机开关 / 作业时间窗。
@@ -309,35 +301,74 @@ func (sc *Scheduler) fireGoals(triggers []*db.AgentTrigger) {
 	}
 }
 
-// fireTaskTimeouts fires on_task_timeout triggers for tasks that newly reached
-// status='timeout' above the persisted watermark (task id → no double-fire).
+// Each timeout transition has durable consumption and a short lease. Dispatch
+// is at-least-once across a crash between in-memory enqueue and the DB ack;
+// successfully acknowledged targets are not repeated on partial retries.
 func (sc *Scheduler) fireTaskTimeouts(triggers []*db.AgentTrigger) {
+	ctx := sc.s.ctx
 	var want []*db.AgentTrigger
 	for _, tr := range triggers {
 		if tr.OnTaskTimeout {
 			want = append(want, tr)
 		}
 	}
-	last, _ := strconv.ParseInt(sc.mustState(schedKeyLastTimeout), 10, 64)
-	events, err := sc.pg.TimedOutTasksSince(last)
-	if err != nil || len(events) == 0 {
+	events, err := sc.pg.ClaimTaskTimeoutEvents(ctx, 50)
+	if err != nil {
+		log.Printf("[trigger] 读取超时事件失败: %v", err)
 		return
 	}
-	// Advance the watermark even with no active trigger — see fireFindings.
-	maxID := last
 	for _, e := range events {
-		if e.NodeID > maxID {
-			maxID = e.NodeID
+		sc.dispatchTaskTimeoutEvent(ctx, e, want)
+	}
+}
+
+func (sc *Scheduler) dispatchTaskTimeoutEvent(ctx context.Context, e db.TaskTimeoutEvent, want []*db.AgentTrigger) {
+
+	complete := true
+	for _, tr := range want {
+		if !e.Live {
+			break
 		}
-		if len(want) == 0 {
+		delivered := false
+		for _, id := range e.DeliveredTriggerIDs {
+			if id == tr.ID {
+				delivered = true
+				break
+			}
+		}
+		if delivered {
 			continue
 		}
-		msgCtx := "\n\n【本次由任务超时触发】"
-		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+		if sc.s.safetyAdmissionBlocked() {
+			complete = false
+			break
+		}
+		renewed, err := sc.pg.RenewTaskTimeoutEvent(ctx, e)
+		if err != nil || !renewed {
+			complete = false
+			break
+		}
+		msg := fmt.Sprintf("\n\n【本次由任务超时事件 #%d 触发，发生于 %s；当前任务状态可能已变化，请核验；重试时按事件编号避免重复处理】", e.ID, e.At.Format(time.RFC3339))
+		queued := false
+		if sc.enqueueTimeout != nil {
+			queued = sc.enqueueTimeout(tr, e, msg)
+		} else {
+			queued = sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+msg, e.TaskID, true, e.Description, e.Goal)
+		}
+		if !queued {
+			complete = false
+			break
+		}
+		ok, err := sc.pg.AckTaskTimeoutTrigger(ctx, e, tr.ID)
+		if err != nil || !ok {
+			log.Printf("[trigger] 超时事件 #%d/触发器 #%d 已入队但确认失败，重试可能重复: %v", e.ID, tr.ID, err)
+			complete = false
+			break
 		}
 	}
-	sc.setWatermark(schedKeyLastTimeout, maxID)
+	if err := sc.pg.FinishTaskTimeoutEvent(ctx, e, complete); err != nil {
+		log.Printf("[trigger] 超时事件 #%d 消费确认失败: %v", e.ID, err)
+	}
 }
 
 // fireTaskCreates fires on_task_create triggers for tasks newly created above the

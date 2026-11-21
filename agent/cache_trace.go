@@ -38,7 +38,9 @@ type cacheSignature struct {
 func cachePartOf(raw json.RawMessage) cachePart {
 	// 保留数组顺序；编码 JSON 去掉无意义的对象键顺序/空白差异。
 	var value any
-	if len(raw) > 0 && json.Unmarshal(raw, &value) == nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if len(raw) > 0 && decoder.Decode(&value) == nil {
 		raw, _ = json.Marshal(value)
 	}
 	sum := sha256.Sum256(raw)
@@ -52,7 +54,7 @@ func requestCacheSignature(raw string) (cacheSignature, error) {
 		Tools        json.RawMessage   `json:"tools"`
 		Messages     []json.RawMessage `json:"messages"`
 		Instructions json.RawMessage   `json:"instructions"`
-		Input        []json.RawMessage `json:"input"`
+		Input        json.RawMessage   `json:"input"`
 	}
 	var out cacheSignature
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
@@ -62,7 +64,11 @@ func requestCacheSignature(raw string) (cacheSignature, error) {
 	if req.System == nil {
 		if req.Instructions != nil {
 			req.System = req.Instructions
-			req.Messages = req.Input
+			if len(req.Input) > 0 {
+				if err := json.Unmarshal(req.Input, &req.Messages); err != nil {
+					req.Messages = []json.RawMessage{req.Input}
+				}
+			}
 		} else {
 			var systems, messages []json.RawMessage
 			for _, raw := range req.Messages {

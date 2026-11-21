@@ -52,10 +52,13 @@ type ExecutionService struct {
 	onDone func(*db.ToolExecution)
 	// envFor 由 host 注入：托管执行必须拿到与 agent Bash 同一份环境（记录代理 +
 	// CA 信任），否则长任务的流量绕过 MITM——证据链断在这里，而且 TLS 会失败。
-	envFor func() []string
+	envFor            func() []string
+	activeIntentQuery func(int64) ([]*db.ToolExecution, error)
+	activeTaskQuery   func(string) ([]*db.ToolExecution, error)
 }
 
 type execRun struct {
+	processMu  sync.Mutex // serializes cmd.Start with signals to registered handles
 	id         int64
 	taskID     string
 	intentID   int64
@@ -222,12 +225,25 @@ func (s *ExecutionService) submitTool(ctx context.Context, taskID string, intent
 	s.mu.Lock()
 	s.live[id] = run
 	s.mu.Unlock()
-	if err := cmd.Start(); err != nil {
+	run.processMu.Lock()
+	var startErr error
+	if run.cancelled.Load() {
+		startErr = context.Canceled
+	} else {
+		startErr = cmd.Start()
+	}
+	run.processMu.Unlock()
+	if err := startErr; err != nil {
 		s.mu.Lock()
 		delete(s.live, id)
 		s.mu.Unlock()
 		logFile.Close()
-		_ = s.pg.FinishExecution(id, db.ExecFailed, -1, 0, "", "启动失败："+err.Error())
+		status := db.ExecFailed
+		if run.cancelled.Load() {
+			status = db.ExecCancelled
+		}
+		_ = s.pg.FinishExecution(id, status, -1, 0, "", "启动未完成："+err.Error())
+		close(run.done)
 		return agent.ExecStatus{}, err
 	}
 	if err := s.pg.MarkExecutionRunning(id); err != nil {
@@ -483,24 +499,19 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 	if strings.TrimSpace(reason) == "" {
 		reason = agent.AbortExecutionCancelledByUser.Text
 	}
-	if err := s.pg.SetExecutionCancelNote(id, reason); err != nil {
-		return false, err
-	}
 	s.mu.Lock()
 	run := s.live[id]
 	s.mu.Unlock()
 	if run != nil {
-		run.cancelled.Store(true)
-		killGroup(run.cmd)
-		goSafe("execution/cancel-grace", nil, func() {
-			select {
-			case <-run.done:
-			case <-time.After(execCancelGrace):
-				if run.cmd.Process != nil {
-					hardKillGroup(run.cmd)
-				}
-			}
-		})
+		s.requestStop(run)
+	}
+	if err := s.pg.SetExecutionCancelNote(id, reason); err != nil {
+		if run != nil {
+			return true, fmt.Errorf("执行已请求停止，但取消理由写入失败: %w", err)
+		}
+		return false, err
+	}
+	if run != nil {
 		return true, nil
 	}
 	row, err := s.pg.GetExecution(id)
@@ -508,14 +519,30 @@ func (s *ExecutionService) Cancel(ctx context.Context, id int64, reason string) 
 		return false, err
 	}
 	if row != nil && db.ExecutionActive(row.Status) {
-		// 活跃行但本进程没有对应进程（重启遗留）：无进程可杀，落 cancelled 而不是假装成功。
-		if ferr := s.pg.FinishExecution(id, db.ExecCancelled, -1, row.OutputBytes, row.PartialTail,
-			agent.AbortExecutionCancelledByUser.Text); ferr != nil {
-			return false, ferr
+		if err := s.pg.FinishExecution(id, db.ExecCancelled, -1, row.OutputBytes, row.PartialTail, agent.AbortExecutionCancelledByUser.Text); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
 	return false, nil
+}
+
+func (s *ExecutionService) requestStop(run *execRun) {
+	if !run.cancelled.CompareAndSwap(false, true) {
+		return
+	}
+	run.processMu.Lock()
+	killGroup(run.cmd)
+	run.processMu.Unlock()
+	goSafe("execution/cancel-grace", nil, func() {
+		select {
+		case <-run.done:
+		case <-time.After(execCancelGrace):
+			run.processMu.Lock()
+			hardKillGroup(run.cmd)
+			run.processMu.Unlock()
+		}
+	})
 }
 
 // Shutdown kills every live execution's process group and waits (bounded) for the
@@ -584,26 +611,53 @@ func (s *ExecutionService) Shutdown(reason string, wait time.Duration) int {
 // CancelForIntent cancels hosted executions for one intent. Used when a user
 // pauses/cancels an intent that is still waiting in execGate (no live work).
 func (s *ExecutionService) CancelForIntent(ctx context.Context, intentID int64, reason string) int {
-	rows := s.ActiveForIntent(intentID)
-	n := 0
-	for _, row := range rows {
-		if ok, _ := s.Cancel(ctx, row.ID, reason); ok {
-			n++
-		}
-	}
-	return n
+	return s.cancelMatching(ctx, "", intentID, reason)
 }
 
-// CancelAll cancels every in-flight execution of one task (task stop/delete).
 func (s *ExecutionService) CancelAll(taskID, reason string) int {
-	rows, err := s.pg.ListActiveExecutions(taskID)
-	if err != nil {
-		return 0
+	return s.cancelMatching(context.Background(), taskID, 0, reason)
+}
+
+func (s *ExecutionService) cancelMatching(ctx context.Context, taskID string, intentID int64, reason string) int {
+	ids := map[int64]bool{}
+	s.mu.Lock()
+	var local []*execRun
+	for id, run := range s.live {
+		if (taskID != "" && run.taskID == taskID) || (intentID > 0 && run.intentID == intentID) {
+			ids[id] = true
+			local = append(local, run)
+		}
 	}
-	n := 0
+	s.mu.Unlock()
+	localIDs := make(map[int64]bool, len(local))
+	for _, run := range local {
+		s.requestStop(run)
+		localIDs[run.id] = true
+	}
+	var rows []*db.ToolExecution
+	var err error
+	if taskID != "" {
+		rows, err = s.ActiveForTask(taskID)
+	} else {
+		rows, err = s.ActiveForIntent(intentID)
+	}
+	if err != nil {
+		log.Printf("[exec] 停止执行时台账读取失败（本地执行已请求停止）: %v", err)
+	}
 	for _, row := range rows {
-		if ok, _ := s.Cancel(context.Background(), row.ID, reason); ok {
+		ids[row.ID] = true
+	}
+	// Every local process was asked to stop even if it exits between the
+	// signal and Cancel. Ledger-only rows count only when Cancel transitions
+	// an active row; a row already final belongs to another owner.
+	n := len(localIDs)
+	for id := range ids {
+		ok, err := s.Cancel(ctx, id, reason)
+		if !localIDs[id] && ok {
 			n++
+		}
+		if err != nil {
+			log.Printf("[exec] 执行 %d 停止/台账记录: %v", id, err)
 		}
 	}
 	return n
@@ -621,21 +675,19 @@ func (s *ExecutionService) CountRanForIntent(intentID int64) (int64, error) {
 }
 
 // ActiveForIntent lists the in-flight executions of one intent (收尾门与看门狗共用).
-func (s *ExecutionService) ActiveForIntent(intentID int64) []*db.ToolExecution {
-	rows, err := s.pg.ListActiveExecutionsByIntent(intentID)
-	if err != nil {
-		return nil
+func (s *ExecutionService) ActiveForIntent(intentID int64) ([]*db.ToolExecution, error) {
+	if s.activeIntentQuery != nil {
+		return s.activeIntentQuery(intentID)
 	}
-	return rows
+	return s.pg.ListActiveExecutionsByIntent(intentID)
 }
 
-// ActiveForTask lists the in-flight executions of one task (settle drain 计入用).
-func (s *ExecutionService) ActiveForTask(taskID string) []*db.ToolExecution {
-	rows, err := s.pg.ListActiveExecutions(taskID)
-	if err != nil {
-		return nil
+// ActiveForTask never represents an unknown ledger as an empty result.
+func (s *ExecutionService) ActiveForTask(taskID string) ([]*db.ToolExecution, error) {
+	if s.activeTaskQuery != nil {
+		return s.activeTaskQuery(taskID)
 	}
-	return rows
+	return s.pg.ListActiveExecutions(taskID)
 }
 
 // ReconcileOrphaned marks in-flight ledger rows with no live process as orphaned

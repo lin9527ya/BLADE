@@ -72,7 +72,11 @@ func (e *Engine) reconcileChecklist(t *Task) string {
 	}
 
 	if x := e.m.Executions(); x != nil {
-		if n := len(x.ActiveForTask(t.ID)); n > 0 {
+		active, err := x.ActiveForTask(t.ID)
+		if err != nil {
+			lines = append(lines, "执行台账读取失败：尚未确认是否有执行在跑，不能视为零。")
+		}
+		if n := len(active); err == nil && n > 0 {
 			lines = append(lines, fmt.Sprintf("仍在跑的后台执行 %d 个：收尾会取消它们；有已落盘的部分结果，先 get_execution 取回再收笔。", n))
 		}
 	}

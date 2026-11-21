@@ -421,8 +421,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// 录制关闭时不要复制请求正文：一次模型请求的正文可能有数百 KB，热路径上
 	// 只为写进一个 nil Capture 而整份读一遍是纯浪费。capt 为 nil 即未录制。
 	capt := llmrec.CaptureFrom(req.Context())
-	if capt != nil {
-		capt.SetRequest(requestBodySnapshot(req))
+	surface := llmrec.SurfaceFrom(req.Context())
+	if capt != nil || surface != nil {
+		body := requestBodySnapshot(req)
+		capt.SetRequest(body)
+		if surface != nil {
+			surface.Set(observedRequestSurface(req, body))
+		}
 	}
 
 	traceCache := traceModelRequest(req)

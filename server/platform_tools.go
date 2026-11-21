@@ -79,7 +79,7 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 // ---- skills ----
 
 func (s *Server) toolCreateSkill() actool.CoreTool {
-	return wrTool("create_skill",
+	return managementTool("create_skill",
 		"创建一个新 skill(写 SKILL.md，agentskills.io 规范)。name 小写字母/数字/连字符。",
 		objSchema(map[string]any{
 			"name":         strParam("skill 名(小写字母开头，字母/数字/连字符)"),
@@ -121,7 +121,7 @@ func (s *Server) toolCreateSkill() actool.CoreTool {
 }
 
 func (s *Server) toolUpdateSkillFile() actool.CoreTool {
-	return wrTool("update_skill_file",
+	return managementTool("update_skill_file",
 		"写/覆盖某个 skill 内的一个文件(默认 SKILL.md)。用于修改技能内容或加脚本/引用。",
 		objSchema(map[string]any{
 			"name":    strParam("skill 名"),
@@ -195,7 +195,7 @@ func toDBTool(a customToolToolInput) *db.Tool {
 }
 
 func (s *Server) toolCreateCustomTool() actool.CoreTool {
-	return wrTool("create_custom_tool", "【重要】当安装一些平台没有的工具时，调用该工具将安装的工具放入平台中，让平台可以调用！创建一个自定义工具(shell/command/script/http)。shell=bash 环境声明，只需 key+description+agents，无需 exec/schema。",
+	return managementTool("create_custom_tool", "【重要】当安装一些平台没有的工具时，调用该工具将安装的工具放入平台中，让平台可以调用！创建一个自定义工具(shell/command/script/http)。shell=bash 环境声明，只需 key+description+agents，无需 exec/schema。",
 		customToolSchema("工具 key(小写字母开头，字母/数字/下划线)"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a customToolToolInput
@@ -221,7 +221,7 @@ func (s *Server) toolCreateCustomTool() actool.CoreTool {
 }
 
 func (s *Server) toolUpdateCustomTool() actool.CoreTool {
-	return wrTool("update_custom_tool", "修改一个已有的自定义工具(按 key)。",
+	return managementTool("update_custom_tool", "修改一个已有的自定义工具(按 key)。",
 		customToolSchema("要修改的自定义工具 key"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a customToolToolInput
@@ -295,7 +295,7 @@ func (a mcpToolInput) toDB() *db.MCPServer {
 }
 
 func (s *Server) toolCreateMCP() actool.CoreTool {
-	return wrTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。创建后其工具需按 agent 可见性授权。"+
+	return managementTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。创建后其工具需按 agent 可见性授权。"+
 		"stdio 传输默认不启用：它会以服务端身份启动你指定的命令，启用前需人确认。",
 		mcpSchema(false),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -314,7 +314,7 @@ func (s *Server) toolCreateMCP() actool.CoreTool {
 }
 
 func (s *Server) toolUpdateMCP() actool.CoreTool {
-	return wrTool("update_mcp", "修改一个已有的 MCP 服务器(按 id)。",
+	return managementTool("update_mcp", "修改一个已有的 MCP 服务器(按 id)。",
 		mcpSchema(true),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a mcpToolInput

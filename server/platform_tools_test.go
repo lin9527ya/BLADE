@@ -19,7 +19,7 @@ func TestSkillTools(t *testing.T) {
 	in, _ := json.Marshal(map[string]any{
 		"name": "my-skill", "description": "does X", "instructions": "## do\n1. a",
 	})
-	res, err := s.toolCreateSkill().Call(context.Background(), in, nil)
+	res, err := s.toolCreateSkill().Call(withPrincipal(context.Background(), runPrincipal{Role: "admin"}), in, nil)
 	if err != nil || res.IsError {
 		t.Fatalf("create_skill: err=%v result=%+v", err, res)
 	}
@@ -32,19 +32,19 @@ func TestSkillTools(t *testing.T) {
 	}
 
 	// creating the same skill again fails.
-	if r, _ := s.toolCreateSkill().Call(context.Background(), in, nil); !r.IsError {
+	if r, _ := s.toolCreateSkill().Call(withPrincipal(context.Background(), runPrincipal{Role: "admin"}), in, nil); !r.IsError {
 		t.Fatal("duplicate create should error")
 	}
 
 	// invalid name rejected.
 	bad, _ := json.Marshal(map[string]any{"name": "Bad Name", "description": "x"})
-	if r, _ := s.toolCreateSkill().Call(context.Background(), bad, nil); !r.IsError {
+	if r, _ := s.toolCreateSkill().Call(withPrincipal(context.Background(), runPrincipal{Role: "admin"}), bad, nil); !r.IsError {
 		t.Fatal("invalid skill name should error")
 	}
 
 	// update_skill_file writes a nested script; path traversal is rejected.
 	up, _ := json.Marshal(map[string]any{"name": "my-skill", "file": "scripts/run.py", "content": "print(1)"})
-	if r, err := s.toolUpdateSkillFile().Call(context.Background(), up, nil); err != nil || r.IsError {
+	if r, err := s.toolUpdateSkillFile().Call(withPrincipal(context.Background(), runPrincipal{Role: "admin"}), up, nil); err != nil || r.IsError {
 		t.Fatalf("update_skill_file: err=%v result=%+v", err, r)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "my-skill", "scripts", "run.py"))
@@ -52,7 +52,7 @@ func TestSkillTools(t *testing.T) {
 		t.Fatalf("nested file not written: %v %q", err, got)
 	}
 	evil, _ := json.Marshal(map[string]any{"name": "my-skill", "file": "../escape.txt", "content": "x"})
-	if r, _ := s.toolUpdateSkillFile().Call(context.Background(), evil, nil); !r.IsError {
+	if r, _ := s.toolUpdateSkillFile().Call(withPrincipal(context.Background(), runPrincipal{Role: "admin"}), evil, nil); !r.IsError {
 		t.Fatal("path traversal should be rejected")
 	}
 }

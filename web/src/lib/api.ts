@@ -427,7 +427,7 @@ export const api = {
       size: r.size,
     }));
   },
-  task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
+  task: (id: string, signal?: AbortSignal) => get<Task>(`/tasks/${encodeURIComponent(id)}`, { signal }),
   cloneTask: (id: string) => post<Task>(`/tasks/${encodeURIComponent(id)}/clone`, {}),
   saveTaskTemplate: (id: string) => post<TaskTemplate>(`/tasks/${encodeURIComponent(id)}/template`, {}),
   taskRelations: (id: string) =>
@@ -639,7 +639,7 @@ export const api = {
   rerunBlocked: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-blocked`),
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
-  stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
+  stats: (task?: string, signal?: AbortSignal) => get<Stats>(`/stats${tq(task)}`, { signal }),
   taskScheduling: (id: string, intentId?: string) =>
     get<SchedulingReport>(`/tasks/${id}/scheduling${intentId ? `?intent_id=${encodeURIComponent(intentId)}` : ""}`),
   taskLeadTraces: (id: string, state = "", offset = 0) => {
@@ -1827,7 +1827,10 @@ export const api = {
     }));
   },
   logsHistory: (before = 0, limit = 200) =>
-    get<{ items: { seq?: number; db_id?: number; ts: string; level: string; tag: string; text: string }[]; has_more: boolean }>(
+    get<{
+      items: { seq?: number; db_id?: number; ts: string; level: string; tag: string; text: string }[];
+      has_more: boolean;
+    }>(
       `/logs/history?${new URLSearchParams({ ...(before > 0 ? { before: String(before) } : {}), limit: String(limit) })}`,
     ),
   activity: (task?: string, opts?: { intent?: string; session?: string; since?: number; limit?: number }) => {
@@ -1970,7 +1973,7 @@ export const api = {
   trafficDeleteAll: () => del<{ deleted: number; reclaimed: number }>(`/traffic/all`),
 
   // ---- app settings (runtime toggles) ----
-  settings: () => get<Settings>(`/settings`),
+  settings: (options?: { signal?: AbortSignal }) => get<Settings>(`/settings`, options),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // 切换 Clash 出口节点（服务端只选非 DIRECT 节点、验证出口 IP 变化，绝不直连）。
   rotateEgress: (reason?: string) =>
@@ -2084,7 +2087,8 @@ export const api = {
     name: string;
     kind: string;
     note?: string;
-  }) => post<DeliverableDetail>("/deliverables/aggregate", body),
+    operation_key?: string;
+  }, signal?: AbortSignal) => http<DeliverableDetail & { replayed?: boolean; operation_key?: string }>("/deliverables/aggregate", { method: "POST", body: JSON.stringify(body), signal }),
   addDeliverableVersion: (id: number, report_md: string, note = "") =>
     post<DeliverableVersion>(`/deliverables/${id}/versions`, { report_md, note }),
   acceptDeliverable: (id: number, version_id: number, note = "") =>

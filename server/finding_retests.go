@@ -150,7 +150,7 @@ func (s *Server) startRetestForFinding(ctx context.Context, id int64, notes stri
 		s.chatRuns.mu.Lock()
 		s.chatRuns.busy[busyKey] = true
 		s.chatRuns.mu.Unlock()
-		s.runConversation(conv, retest.InitialMessage(), busyKey)
+		s.runConversationAs(ctx, conv, retest.InitialMessage(), busyKey)
 	}
 	return retest, created, nil
 }

@@ -1886,7 +1886,11 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	// 隧道：跨 worker 共享的能力——A 开的隧道 B 也能用，看不见就没人用得上。
 	// 从**在跑的执行**里挑出带登记标记的（隧道本身就是一条 ssh -D 长任务）。
 	if t.execService != nil && t.taskID > 0 {
-		if rows := t.execService.ActiveForTask(t.taskIDStr()); len(rows) > 0 {
+		rows, err := t.execService.ActiveForTask(t.taskIDStr())
+		if err != nil {
+			out["execution_state_unknown"] = true
+		}
+		if err == nil && len(rows) > 0 {
 			var tunnels []map[string]any
 			for _, r := range rows {
 				// 新执行带 tool=tunnel_open；旧台账只有描述前缀，保留兼容。
@@ -4224,8 +4228,13 @@ func (t *ToolSet) markLootLost() actool.CoreTool {
 			}
 			// 只提示关联隧道，不替操作者关闭：隧道可能正在被别的 worker 使用。
 			var tunnels []string
+			tunnelWarning := ""
 			if t.execService != nil && t.taskID > 0 {
-				for _, r := range t.execService.ActiveForTask(t.taskIDStr()) {
+				rows, queryErr := t.execService.ActiveForTask(t.taskIDStr())
+				if queryErr != nil {
+					tunnelWarning = "；执行台账读取失败：关联隧道状态未知，未自动关闭"
+				}
+				for _, r := range rows {
 					if r.Tool != "tunnel_open" && !strings.HasPrefix(r.Description, tunnelDescPrefix) {
 						continue
 					}
@@ -4245,6 +4254,7 @@ func (t *ToolSet) markLootLost() actool.CoreTool {
 			if len(tunnels) > 0 {
 				msg += "；仍在跑的相关隧道：" + strings.Join(tunnels, ", ") + "（未自动关闭，必要时 cancel_execution）"
 			}
+			msg += tunnelWarning
 			return actool.Text(msg), nil
 		})
 }

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -181,4 +182,31 @@ func (s *AssetStore) FinishAssetSyncBatch(id int64, status string, total, create
 status=$2, total_count=$3, created_count=$4, updated_count=$5, note=$6, finished_at=now()
 WHERE id=$1`, id, status, total, created, updated, note)
 	return err
+}
+
+// IterateFiltered scans one query under the caller's snapshot. It does not
+// count first, materialize all assets, or paginate by a mutable sort key.
+func (s *AssetStore) IterateFiltered(ctx context.Context, f AssetFilter, consume func(*Asset) error) error {
+	where, args, err := f.where()
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, assetSelectCols+" WHERE "+where+" ORDER BY last_seen DESC,id DESC", args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		a, err := scanAssetRow(rows)
+		if err != nil {
+			return err
+		}
+		if err := consume(a); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }

@@ -1643,72 +1643,80 @@ func scanTypeCounts(rows RowSet) (map[string]int, error) {
 func scanAssets(rows RowSet) ([]*Asset, error) {
 	var out []*Asset
 	for rows.Next() {
-		a := &Asset{}
-		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw []byte
-		var port, statusCode sql.NullInt64
-		var contentLength sql.NullInt64
-		var companyID, lastSyncBatchID sql.NullInt64
-		if err := rows.Scan(
-			&a.ID, &a.Type, &companyID, &taskIDsRaw,
-			&a.Domain, &a.RootDomain, &a.IP, &a.CSegment, &port,
-			&a.ICP, &boundDomainsRaw, &openPortsRaw, &a.RecordType,
-			&recordValueRaw, &a.BundleID, &a.AppName,
-			&a.Category, &a.AppDescription, &a.AppICP,
-			&a.URL, &a.ServiceType, &a.ServiceName,
-			&a.FaviconMMH3, &statusCode, &contentLength,
-			&a.PageTitle, &techsRaw, &authRaw,
-			&a.Method, &paramsRaw, &extraRaw, &a.FirstSeen, &a.LastSeen, &a.Status, &a.Provider, &lastSyncBatchID,
-		); err != nil {
+		a, err := scanAssetRow(rows)
+		if err != nil {
 			return nil, err
-		}
-		if companyID.Valid {
-			cid := companyID.Int64
-			a.CompanyID = &cid
-		}
-		if port.Valid {
-			p := int(port.Int64)
-			a.Port = &p
-		}
-		if statusCode.Valid {
-			sc := int(statusCode.Int64)
-			a.StatusCode = &sc
-		}
-		if contentLength.Valid {
-			cl := contentLength.Int64
-			a.ContentLength = &cl
-		}
-		if lastSyncBatchID.Valid {
-			bid := lastSyncBatchID.Int64
-			a.LastSyncBatchID = &bid
-		}
-		// parse arrays
-		if len(taskIDsRaw) > 0 {
-			_ = json.Unmarshal(taskIDsRaw, &a.TaskIDs)
-		}
-		if len(boundDomainsRaw) > 0 {
-			_ = json.Unmarshal(boundDomainsRaw, &a.BoundDomains)
-		}
-		if len(openPortsRaw) > 0 {
-			_ = json.Unmarshal(openPortsRaw, &a.OpenPorts)
-		}
-		if len(recordValueRaw) > 0 {
-			_ = json.Unmarshal(recordValueRaw, &a.RecordValue)
-		}
-		if len(techsRaw) > 0 {
-			_ = json.Unmarshal(techsRaw, &a.Technologies)
-		}
-		if len(authRaw) > 0 {
-			_ = json.Unmarshal(authRaw, &a.Auth)
-		}
-		if len(paramsRaw) > 0 {
-			_ = json.Unmarshal(paramsRaw, &a.Params)
-		}
-		if len(extraRaw) > 0 {
-			_ = json.Unmarshal(extraRaw, &a.Extra)
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+func scanAssetRow(rows interface{ Scan(...any) error }) (*Asset, error) {
+	a := &Asset{}
+	var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw []byte
+	var port, statusCode sql.NullInt64
+	var contentLength sql.NullInt64
+	var companyID, lastSyncBatchID sql.NullInt64
+	if err := rows.Scan(
+		&a.ID, &a.Type, &companyID, &taskIDsRaw,
+		&a.Domain, &a.RootDomain, &a.IP, &a.CSegment, &port,
+		&a.ICP, &boundDomainsRaw, &openPortsRaw, &a.RecordType,
+		&recordValueRaw, &a.BundleID, &a.AppName,
+		&a.Category, &a.AppDescription, &a.AppICP,
+		&a.URL, &a.ServiceType, &a.ServiceName,
+		&a.FaviconMMH3, &statusCode, &contentLength,
+		&a.PageTitle, &techsRaw, &authRaw,
+		&a.Method, &paramsRaw, &extraRaw, &a.FirstSeen, &a.LastSeen, &a.Status, &a.Provider, &lastSyncBatchID,
+	); err != nil {
+		return nil, err
+	}
+	if companyID.Valid {
+		cid := companyID.Int64
+		a.CompanyID = &cid
+	}
+	if port.Valid {
+		p := int(port.Int64)
+		a.Port = &p
+	}
+	if statusCode.Valid {
+		sc := int(statusCode.Int64)
+		a.StatusCode = &sc
+	}
+	if contentLength.Valid {
+		cl := contentLength.Int64
+		a.ContentLength = &cl
+	}
+	if lastSyncBatchID.Valid {
+		bid := lastSyncBatchID.Int64
+		a.LastSyncBatchID = &bid
+	}
+	// parse arrays
+	if len(taskIDsRaw) > 0 {
+		_ = json.Unmarshal(taskIDsRaw, &a.TaskIDs)
+	}
+	if len(boundDomainsRaw) > 0 {
+		_ = json.Unmarshal(boundDomainsRaw, &a.BoundDomains)
+	}
+	if len(openPortsRaw) > 0 {
+		_ = json.Unmarshal(openPortsRaw, &a.OpenPorts)
+	}
+	if len(recordValueRaw) > 0 {
+		_ = json.Unmarshal(recordValueRaw, &a.RecordValue)
+	}
+	if len(techsRaw) > 0 {
+		_ = json.Unmarshal(techsRaw, &a.Technologies)
+	}
+	if len(authRaw) > 0 {
+		_ = json.Unmarshal(authRaw, &a.Auth)
+	}
+	if len(paramsRaw) > 0 {
+		_ = json.Unmarshal(paramsRaw, &a.Params)
+	}
+	if len(extraRaw) > 0 {
+		_ = json.Unmarshal(extraRaw, &a.Extra)
+	}
+	return a, nil
 }
 
 // AssetNeighbor 是一个与目标资产直接相关的资产（横向/扩面时关心的"还连着谁"）。

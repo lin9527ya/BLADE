@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/lin9527ya/blade/db"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,6 +45,15 @@ func (s *Server) getCacheDiagnostics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "会话 ID 过长")
 		return
 	}
+	surfaces := []db.RequestSurfaceSummary{}
+	var err error
+	if task != "" {
+		surfaces, err = s.m.PG().RequestSurfaceSummary(task)
+		if err != nil {
+			writeErr(w, 503, "请求结构归因读取失败，请查看服务端日志")
+			return
+		}
+	}
 	rows, err := s.m.PG().UsageDiagnostics(r.Context(), task, worker, cache, session, before, 100)
 	if err != nil {
 		writeErr(w, 503, "调用计量读取失败，请查看服务端日志")
@@ -53,7 +63,7 @@ func (s *Server) getCacheDiagnostics(w http.ResponseWriter, r *http.Request) {
 	if len(rows) == 100 {
 		next = rows[len(rows)-1].ID
 	}
-	writeJSON(w, 200, map[string]any{"state": agent.CacheTraceState(), "requests": agent.CacheDiagnosticSnapshot(task, session, 100), "calls": rows, "next_before": next, "window_hours": 24})
+	writeJSON(w, 200, map[string]any{"state": agent.CacheTraceState(), "requests": agent.CacheDiagnosticSnapshot(task, session, 100), "calls": rows, "surfaces": surfaces, "next_before": next, "window_hours": 24})
 }
 
 func (s *Server) setCacheDiagnostics(w http.ResponseWriter, r *http.Request) {

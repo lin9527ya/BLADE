@@ -57,6 +57,7 @@ type Planner struct {
 	// 在 NewSession 时固定，所以后续轮次必须**在这个对象上**重置轮级状态；对每轮新建的
 	// ToolSet 调用 BeginRound 不会影响模型实际调用的工具。
 	hotTools            *ToolSet
+	hotCleanup          func() // resources owned by the retained registry
 	hotRounds           int
 	hotLastUsed         time.Time
 	hotSurface          string
@@ -767,7 +768,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
-	defer tsx.CloseHTTP()
+	createdTools := tsx
+	defer func() {
+		tsx.CloseHTTP() // tsx may have been replaced by the retained hot ToolSet
+		if createdTools != tsx {
+			createdTools.CloseHTTP()
+		}
+	}()
 	tsx.SetEgressProxy(proxyAddr, proxyCA)
 	// wireToolSet 把「本轮」依赖与轮级状态装到**本轮实际被调用的**那个 ToolSet 上。
 	//
@@ -809,7 +816,12 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "planner", base)
-	defer cleanup()
+	releaseRoundResources := true
+	defer func() {
+		if releaseRoundResources {
+			cleanup()
+		}
+	}()
 	if p.webSearch.Enabled {
 		tools = append(tools, NewWebSearchTool(p.webSearch))
 	}
@@ -922,6 +934,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	var prevChangeCursor string
 	notePrefix := ""
 	if resumePlannerSession() {
+		p.dropHotSession()
 		s = agentcore.NewSession(opts)
 		if p.tx != nil {
 			_ = s.Resume(opts.SessionID)
@@ -990,16 +1003,24 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	case err == nil && !resumePlannerSession():
 		// 成功：保留增量热会话前缀（未超窗时不 Reset），超出消息/token 上限后折叠重置。
 		p.rememberRound(ts, prevMaxIntentID, lastText)
-		p.parkHotSession(s, tsx, input, runText, ts.ID(), nextNodeCursor, nextChangeCursor)
+		var adoptedCleanup func()
+		if !keepSession {
+			adoptedCleanup = cleanup
+		}
+		p.parkHotSession(s, tsx, input, runText, ts.ID(), nextNodeCursor, nextChangeCursor, adoptedCleanup)
+		if adoptedCleanup != nil {
+			releaseRoundResources = false
+		}
 		keepSession = true
 	case err == nil:
 		p.rememberRound(ts, prevMaxIntentID, lastText)
 	case keepSession:
 		// 热会话上失败：半截历史不适合当前缀，丢弃，下一轮重新建。
 		p.dropHotSession()
+		s = nil // dropHotSession already closed the retained session
 		keepSession = false
 	}
-	if !keepSession {
+	if !keepSession && s != nil {
 		_ = s.Close()
 	}
 	return tsx.GoalMet, tsx.Reason, err
@@ -1063,17 +1084,11 @@ func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet, int64, int64, 
 	// 没有配套 ToolSet 的热会话不可复用：它的工具闭包绑定在哪个对象上无从得知，
 	// 无法重置本轮额度（见 Plan 里 wireToolSet 的说明）。直接丢弃、走冷路径。
 	if p.hot == nil || p.hotTools == nil {
-		if p.hot != nil {
-			p.hot.Close()
-		}
-		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-		p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+		p.closeHotLocked()
 		return nil, nil, 0, 0, ""
 	}
 	if p.hotRounds >= plannerHotMaxRounds || time.Since(p.hotLastUsed) > plannerHotIdleTTL {
-		p.hot.Close()
-		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-		p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+		p.closeHotLocked()
 		return nil, nil, 0, 0, ""
 	}
 	return p.hot, p.hotTools, p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor
@@ -1082,7 +1097,7 @@ func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet, int64, int64, 
 // parkHotSession 保留或折叠热会话作为下一轮的前缀：在安全窗口内不调用 Reset()，
 // 保留 Turn 1 完整黑板前缀及后续增量对话吃满 KV 缓存；超出消息/token 阈值时折叠并重置游标，
 // 让下轮重建干净基准快照，确保上下文体积始终有界。
-func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string, expID, nextNodeCursor int64, nextChangeCursor string) {
+func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string, expID, nextNodeCursor int64, nextChangeCursor string, cleanups ...func()) {
 	if s == nil || tools == nil {
 		return
 	}
@@ -1105,6 +1120,9 @@ func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInpu
 	// 连同工具绑定一起留存：下一轮必须在这个 ToolSet 上重置轮级状态，
 	// 新建的 ToolSet 并不会被复用会话里的工具闭包引用。
 	p.hotTools = tools
+	if len(cleanups) > 0 && cleanups[0] != nil {
+		p.hotCleanup = cleanups[0]
+	}
 	p.hotRounds++
 	p.hotLastUsed = time.Now()
 	p.hotExpID = expID
@@ -1157,11 +1175,7 @@ func compactHotRoundInput(roundInput string) string {
 func (p *Planner) dropHotSession() {
 	p.hotMu.Lock()
 	defer p.hotMu.Unlock()
-	if p.hot != nil {
-		p.hot.Close()
-	}
-	p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-	p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+	p.closeHotLocked()
 }
 
 // CloseHotSession 供任务停止/删除时释放（引擎侧调用，幂等）。
@@ -1247,11 +1261,7 @@ func (p *Planner) invalidateHotSurface(surface string) {
 	p.hotMu.Lock()
 	defer p.hotMu.Unlock()
 	if p.hotSurface != "" && p.hotSurface != surface {
-		if p.hot != nil {
-			p.hot.Close()
-		}
-		p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-		p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+		p.closeHotLocked()
 	}
 	p.hotSurface = surface
 }
@@ -1292,4 +1302,20 @@ func selectTriggerWindow(events []TriggerEvent, limit int) []TriggerEvent {
 		}
 	}
 	return out
+}
+
+// Caller holds hotMu; Plan/CloseHotSession additionally serialize through planMu.
+func (p *Planner) closeHotLocked() {
+	if p.hot != nil {
+		_ = p.hot.Close()
+	}
+	if p.hotCleanup != nil {
+		p.hotCleanup()
+	}
+	if p.hotTools != nil {
+		p.hotTools.CloseHTTP()
+	}
+	p.hotCleanup = nil
+	p.hot, p.hotTools, p.hotRounds = nil, nil, 0
+	p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
 }

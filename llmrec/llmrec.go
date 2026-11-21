@@ -90,10 +90,11 @@ func workerFrom(ctx context.Context) string {
 
 // Recorder wraps an llm.Provider and records every completion call.
 type Recorder struct {
-	inner llm.Provider
-	pg    *db.DB
-	model string // model name (from config, not in CompletionRequest)
-	prof  string // LLM profile name (from llm_profiles)
+	inner   llm.Provider
+	pg      *db.DB
+	model   string // model name (from config, not in CompletionRequest)
+	version string
+	prof    string // LLM profile name (from llm_profiles)
 	// thinkingType / reasoningEffort 是配置级思考参数(思考开关 / 思考强度)。它们在
 	// norma 的 buildBody() 里从 provider 配置注入真正的 HTTP body,不出现在
 	// CompletionRequest 上,故 Recorder 需在此单独带一份,序列化时写进录制。
@@ -106,9 +107,14 @@ type Recorder struct {
 // profName is the LLM profile name (e.g. "default"); may be empty. thinkingType /
 // reasoningEffort are the config-level thinking params actually sent to the API
 // (empty = not sent). A nil enabled predicate records unconditionally.
-func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasoningEffort string, enabled func() bool) *Recorder {
+func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasoningEffort string, enabled func() bool, versions ...string) *Recorder {
+	version := ""
+	if len(versions) > 0 {
+		version = versions[0]
+	}
 	return &Recorder{
-		inner: inner, pg: pg, model: model, prof: profName,
+		version: version,
+		inner:   inner, pg: pg, model: model, prof: profName,
 		thinkingType: thinkingType, reasoningEffort: reasoningEffort, enabled: enabled,
 	}
 }
@@ -149,6 +155,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	// stats and must be complete even for interrupted/failed runs, so it is NOT
 	// gated. Only body serialization + response accumulation are skipped when off.
 	recordBodies := r.enabled == nil || r.enabled()
+	ctx, surface := NewSurfaceCapture(ctx, r.version)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
 	parsedID, worker := parseSession(session)
@@ -200,7 +207,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, session, usage, int(time.Since(start).Milliseconds()), status)
+			r.recordUsage(taskID, expID, worker, session, usage, int(time.Since(start).Milliseconds()), status, surface.Snapshot())
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
@@ -256,6 +263,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	inFlight.Add(1)
 	defer inFlight.Add(-1)
 	recordBodies := r.enabled == nil || r.enabled()
+	ctx, surface := NewSurfaceCapture(ctx, r.version)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
 	parsedID, worker := parseSession(session)
@@ -283,7 +291,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	if err != nil {
 		status = "error"
 	}
-	r.recordUsage(taskID, expID, worker, session, usage, int(time.Since(start).Milliseconds()), status)
+	r.recordUsage(taskID, expID, worker, session, usage, int(time.Since(start).Milliseconds()), status, surface.Snapshot())
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
@@ -302,7 +310,7 @@ func thinkingText(msg llm.Message) string {
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker, session string, usage llm.Usage, latencyMs int, status string) {
+func (r *Recorder) recordUsage(taskID string, expID int64, worker, session string, usage llm.Usage, latencyMs int, status string, surface *db.RequestSurface) {
 	if r.pg == nil {
 		return
 	}
@@ -312,6 +320,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker, session strin
 	}
 	err := r.pg.InsertLLMUsage(&db.LLMUsage{
 		TaskID:        taskID,
+		Surface:       surface,
 		ExplorationID: expID,
 		Worker:        worker,
 		SessionID:     session,

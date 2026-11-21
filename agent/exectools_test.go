@@ -59,7 +59,7 @@ func (f *fakeExecService) CountRanForIntent(int64) (int64, error) { return 0, ni
 
 func (f *fakeExecService) ListForIntent(int64) ([]*db.ToolExecution, error) { return f.ledger, nil }
 
-func (f *fakeExecService) ActiveForTask(string) []*db.ToolExecution { return f.active }
+func (f *fakeExecService) ActiveForTask(string) ([]*db.ToolExecution, error) { return f.active, nil }
 
 func execTool(t *testing.T, tools []actool.CoreTool, name string) actool.CoreTool {
 	t.Helper()

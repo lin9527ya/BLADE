@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -560,7 +562,7 @@ func operatorWriteAllowed(path string) bool {
 	adminOnly := []string{
 		"/api/settings", "/api/api-tokens", "/api/audit", "/api/llm", "/api/agents",
 		"/api/mcp", "/api/skills", "/api/tools", "/api/custom-tools", "/api/cves", "/api/storage",
-		"/api/diagnostics", "/api/update", "/api/notify", "/api/system", "/api/sync",
+		"/api/visibility", "/api/triggers", "/api/diagnostics", "/api/update", "/api/notify", "/api/system", "/api/sync",
 		"/api/intercept/rules", "/api/asset-intercept", "/api/intercept/tool-config",
 		"/api/intercept/judge",
 	}
@@ -585,7 +587,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			return
 		}
 		if verifyJWT(tok, s.auth.signKey.get()) {
-			h.ServeHTTP(w, withActor(r, "admin"))
+			h.ServeHTTP(w, withActor(r.WithContext(withPrincipal(r.Context(), runPrincipal{Role: "admin", Actor: "admin", ID: "admin"})), "admin"))
 			return
 		}
 		// 长期 API 令牌（Prometheus/自动化）只存哈希；JWT 校验失败后再查一次。
@@ -600,7 +602,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 					writeErr(w, http.StatusForbidden, "操作员令牌不能修改系统配置")
 					return
 				}
-				h.ServeHTTP(w, withActor(r, "token:"+name))
+				h.ServeHTTP(w, withActor(r.WithContext(withPrincipal(r.Context(), runPrincipal{Role: scopes, Actor: "token:" + name, ID: tokenPrincipalID(tok)})), "token:"+name))
 				return
 			}
 		}
@@ -915,4 +917,9 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"token": tok})
+}
+
+func tokenPrincipalID(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "token:" + hex.EncodeToString(sum[:])
 }

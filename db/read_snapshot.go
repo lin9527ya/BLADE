@@ -49,7 +49,7 @@ func (d *DB) observeRead(err error) {
 	}
 }
 func (d *DB) Query(query string, args ...any) (*Rows, error) {
-	return d.QueryContext(context.Background(), query, args...)
+	return d.QueryContext(d.defaultContext(), query, args...)
 }
 func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*Rows, error) {
 	var rows *sql.Rows
@@ -75,7 +75,7 @@ func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*Rows
 	return &Rows{Rows: rows, tx: tx, observe: d.observeRead}, nil
 }
 func (d *DB) QueryRow(query string, args ...any) *Row {
-	return d.QueryRowContext(context.Background(), query, args...)
+	return d.QueryRowContext(d.defaultContext(), query, args...)
 }
 func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *Row {
 	if d.readTx != nil {
@@ -95,7 +95,7 @@ func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *Ro
 	return &Row{row: d.DB.QueryRowContext(ctx, query, args...)}
 }
 func (d *DB) Exec(query string, args ...any) (sql.Result, error) {
-	return d.ExecContext(context.Background(), query, args...)
+	return d.ExecContext(d.defaultContext(), query, args...)
 }
 func (d *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	if d.readTx != nil {
@@ -115,7 +115,7 @@ func (d *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Re
 	}
 	return d.DB.ExecContext(ctx, query, args...)
 }
-func (d *DB) Begin() (*sql.Tx, error) { return d.BeginTx(context.Background(), nil) }
+func (d *DB) Begin() (*sql.Tx, error) { return d.BeginTx(d.defaultContext(), nil) }
 func (d *DB) BeginTx(ctx context.Context, options *sql.TxOptions) (*sql.Tx, error) {
 	if d.readTx != nil {
 		return nil, errors.New("cannot write or nest a transaction in a read snapshot")
@@ -131,4 +131,19 @@ func (d *DB) BeginTx(ctx context.Context, options *sql.TxOptions) (*sql.Tx, erro
 		}
 	}
 	return tx, nil
+}
+
+// Context-bound views share the pool but never copy or own its instance lock.
+// An existing read snapshot already carries its own context and transaction.
+func (d *DB) WithContext(ctx context.Context) *DB {
+	if d.readTx != nil {
+		return d
+	}
+	return &DB{DB: d.DB, authority: d.authority, queryCtx: ctx}
+}
+func (d *DB) defaultContext() context.Context {
+	if d.queryCtx != nil {
+		return d.queryCtx
+	}
+	return context.Background()
 }

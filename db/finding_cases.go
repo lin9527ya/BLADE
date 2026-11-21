@@ -70,6 +70,9 @@ func (d *DB) CreateFindingCase(taskID, originTaskID int64, title, reason, severi
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := lockCaseMutationTx(tx, 0, taskID, findingIDs); err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(`SELECT id FROM findings WHERE id = ANY($1) AND task_id=$2 FOR UPDATE`, findingIDs, taskID)
 	if err != nil {
 		return nil, err
@@ -212,6 +215,9 @@ func (d *DB) AddFindingCaseMembers(caseID int64, findingIDs []int64, reason, act
 		return 0, err
 	}
 	defer tx.Rollback()
+	if err := lockCaseMutationTx(tx, caseID, 0, findingIDs); err != nil {
+		return 0, err
+	}
 	var taskID int64
 	if err := tx.QueryRow(`SELECT COALESCE(task_id,0) FROM finding_cases WHERE id=$1 AND active`, caseID).Scan(&taskID); err != nil {
 		if err == sql.ErrNoRows {
@@ -258,6 +264,9 @@ func (d *DB) RemoveFindingCaseMember(caseID, findingID int64, reason, actor stri
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockCaseMutationTx(tx, caseID, 0, []int64{findingID}); err != nil {
+		return err
+	}
 	res, err := tx.Exec(`DELETE FROM finding_case_members WHERE case_id=$1 AND finding_id=$2`, caseID, findingID)
 	if err != nil {
 		return err
@@ -287,6 +296,9 @@ func (d *DB) UpdateFindingCaseReport(ctx context.Context, id, version int64, tit
 		return nil, fmt.Errorf("severity 取值必须是 critical|high|medium|low")
 	}
 	err := d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		if err := lockCaseMutationTx(tx, id, 0, nil); err != nil {
+			return err
+		}
 		c, err := scanCase(tx.QueryRow(`SELECT id, task_id, origin_task_id, title, reason, COALESCE(severity,''), COALESCE(severity_reason,''),
 COALESCE(report,''), version, report_version, active, created_at, updated_at
 FROM finding_cases WHERE id=$1 FOR UPDATE`, id))
@@ -571,9 +583,14 @@ func (d *DB) BlockFindingCasePair(taskID, a, b int64, reason string) error {
 	if a > b {
 		a, b = b, a
 	}
-	_, err := d.Exec(`INSERT INTO finding_case_blocks(left_id, right_id, reason) VALUES ($1,$2,$3)
+	return d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := lockCaseMutationTx(tx, 0, taskID, []int64{a, b}); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`INSERT INTO finding_case_blocks(left_id, right_id, reason) VALUES ($1,$2,$3)
 ON CONFLICT (left_id,right_id) DO UPDATE SET reason=EXCLUDED.reason`, a, b, reason)
-	return err
+		return err
+	})
 }
 
 func caseLabel(f *DBFinding) string {
@@ -814,6 +831,9 @@ func (d *DB) MergeFindingCase(ctx context.Context, taskID int64, ids []int64, ti
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := lockCaseMutationTx(tx, 0, taskID, ids); err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(`SELECT id FROM findings WHERE id=ANY($1) AND task_id=$2 FOR UPDATE`, ids, taskID)
 	if err != nil {
 		return nil, err
@@ -940,6 +960,9 @@ func (d *DB) SuggestFindingCase(ctx context.Context, taskID int64, ids []int64, 
 		return 0, err
 	}
 	defer tx.Rollback()
+	if err := lockCaseMutationTx(tx, 0, taskID, ids); err != nil {
+		return 0, err
+	}
 	var count int
 	if err := tx.QueryRow(`SELECT count(*) FROM findings WHERE id=ANY($1) AND task_id=$2`, ids, taskID).Scan(&count); err != nil {
 		return 0, err

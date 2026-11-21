@@ -54,7 +54,7 @@ func TestArchiveRejectsChildWrittenAfterSnapshot(t *testing.T) {
 	}
 	// A human comment arrives after the package snapshot. The package must not
 	// cascade-delete it silently: completion fails before any destructive write.
-	if _, err := d.AddFindingComment(finding, "operator", "late comment"); err != nil {
+	if _, err := d.Exec(`INSERT INTO finding_comments(finding_id,author,body) VALUES ($1,'operator','late comment')`, finding); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.CompleteTaskArchive(archive.ID, snapshot, "/tmp/incomplete.tar.zst", "abc", 1, 1); !errors.Is(err, ErrTaskArchiveState) {

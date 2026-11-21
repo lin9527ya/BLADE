@@ -96,7 +96,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "主 Agent 正在处理上一条消息，请稍候")
 		return
 	}
-	ctx, cancel := context.WithCancelCause(s.ctx)
+	ctx, cancel := context.WithCancelCause(withPrincipal(s.ctx, principalFrom(r.Context())))
 	ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: req.Message})
 	s.chatRuns.busy[t.ID] = true
 	s.chatRuns.cancel[t.ID] = cancel

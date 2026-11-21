@@ -176,11 +176,16 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 		nid = &nodeID
 	}
 	var id int64
-	err := d.QueryRow(
-		`INSERT INTO findings (task_id, node_id, vulnclass, name, severity, summary, evidence, worker, asset_ids)
+	err := d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := LockTaskEvidenceTx(tx, taskID); err != nil {
+			return err
+		}
+		return tx.QueryRow(
+			`INSERT INTO findings (task_id, node_id, vulnclass, name, severity, summary, evidence, worker, asset_ids)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		tid, nid, vulnclass, name, severity, summary, evidence, worker, string(aidsJSON),
-	).Scan(&id)
+			tid, nid, vulnclass, name, severity, summary, evidence, worker, string(aidsJSON),
+		).Scan(&id)
+	})
 	return id, err
 }
 
@@ -828,11 +833,19 @@ func (d *DB) DeleteFindingsByTask(taskID int64) (int64, error) {
 // SetFindingStatusWithNotify —— 直接调本函数会让「状态变更推送」静默失效。
 // 保留它是为了让不关心通知的用例（参数校验、复测流程）能单独驱动状态。
 func (d *DB) SetFindingStatus(id int64, status string) (int64, error) {
-	res, err := d.Exec(`UPDATE findings SET status=$1 WHERE id=$2`, status, id)
-	if err != nil {
-		return 0, err
+	var n int64
+	err := d.withFindingMutation(context.Background(), id, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE findings SET status=$1 WHERE id=$2`, status, id)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	if errors.Is(err, ErrFindingNotFound) {
+		return 0, nil
 	}
-	return res.RowsAffected()
+	return n, err
 }
 
 // LatestRetestVerdicts maps finding NODE ids of one task to the verdict of the
@@ -889,11 +902,19 @@ func (d *DB) FindingConfirmationByNodeID(nodeID int64) (confidence, status, rete
 // SetFindingRetractReason records why a finding was retracted. Call it BEFORE
 // flipping status to retracted（先因后果：状态翻转会触发推送，原因应已就位）。
 func (d *DB) SetFindingRetractReason(id int64, reason string) (int64, error) {
-	res, err := d.Exec(`UPDATE findings SET retract_reason=$1 WHERE id=$2`, reason, id)
-	if err != nil {
-		return 0, err
+	var n int64
+	err := d.withFindingMutation(context.Background(), id, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE findings SET retract_reason=$1 WHERE id=$2`, reason, id)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	if errors.Is(err, ErrFindingNotFound) {
+		return 0, nil
 	}
-	return res.RowsAffected()
+	return n, err
 }
 
 // SetFindingReportByNodeID sets the Markdown report on the standalone finding row
@@ -911,8 +932,10 @@ func (d *DB) SetFindingReportByNodeID(nodeID int64, report string) (int64, error
 // pass user input.
 func (d *DB) setFindingCol(id int64, col, jsonKey, val string) (int64, error) {
 	var nodeID *int64
-	err := d.QueryRow(`UPDATE findings SET `+col+`=$1 WHERE id=$2 RETURNING node_id`, val, id).Scan(&nodeID)
-	if err == sql.ErrNoRows {
+	err := d.withFindingMutation(context.Background(), id, func(tx *sql.Tx) error {
+		return tx.QueryRow(`UPDATE findings SET `+col+`=$1 WHERE id=$2 RETURNING node_id`, val, id).Scan(&nodeID)
+	})
+	if err == sql.ErrNoRows || errors.Is(err, ErrFindingNotFound) {
 		return 0, nil
 	}
 	if err != nil {

@@ -55,7 +55,7 @@ type ExecService interface {
 	ListForIntent(intentID int64) ([]*db.ToolExecution, error)
 	// ActiveForTask 列出本任务**在跑**的执行台账：概览据此告诉规划层"现在有哪些隧道
 	// 是通的、SOCKS 地址是多少"——隧道是跨 worker 共享的能力，看不见就没人用得上。
-	ActiveForTask(taskID string) []*db.ToolExecution
+	ActiveForTask(taskID string) ([]*db.ToolExecution, error)
 }
 
 // ExecutionRowService 是执行服务对“完整台账行”的扩展能力（可选实现）。

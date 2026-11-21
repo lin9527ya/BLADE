@@ -20,7 +20,8 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { ScheduleFrequency, Task, TaskCategory, TaskSchedule, TaskTemplate } from "@/lib/types";
+import { applyScheduleTemplate, editScheduleSpec } from "@/lib/schedule-spec";
+import type { ScheduleFrequency, ScheduleTaskSpec, Task, TaskCategory, TaskSchedule, TaskTemplate } from "@/lib/types";
 
 /**
  * ScheduleTasksDialog 管理「计划任务」（P22）：按结构化频率到点自动建任务。
@@ -49,6 +50,7 @@ function dateInZone(zone: string): string {
 }
 
 const emptyForm = () => ({
+  taskSpec: {} as Partial<ScheduleTaskSpec>,
   name: "",
   description: "",
   goal: "",
@@ -135,10 +137,11 @@ export function ScheduleTasksDialog({
   function startEdit(s: TaskSchedule) {
     setEditingID(s.id);
     setForm({
+      taskSpec: structuredClone(s.task_spec),
       name: s.name,
       description: s.task_spec.description ?? "",
       goal: s.task_spec.goal ?? "",
-      categoryID: s.task_spec.category_id,
+      categoryID: s.task_spec.category_id ?? undefined,
       enabled: s.enabled,
       action: s.action ?? "create",
       targetTaskID: s.target_task_id ?? "",
@@ -160,6 +163,7 @@ export function ScheduleTasksDialog({
     if (!t) return;
     setForm((f) => ({
       ...f,
+      taskSpec: applyScheduleTemplate(f.taskSpec, t),
       name: f.name || t.name,
       description: t.description,
       goal: t.goal,
@@ -200,7 +204,9 @@ export function ScheduleTasksDialog({
       const payload: Parameters<typeof api.createTaskSchedule>[0] = {
         name:
           form.name.trim() ||
-          (form.action === "create" ? form.description.trim().slice(0, 40) : `${form.action === "pause" ? "暂停" : "继续"} #${form.targetTaskID}`),
+          (form.action === "create"
+            ? form.description.trim().slice(0, 40)
+            : `${form.action === "pause" ? "暂停" : "继续"} #${form.targetTaskID}`),
         enabled: form.enabled,
         action: form.action,
         target_task_id: form.action === "create" ? "" : form.targetTaskID,
@@ -210,11 +216,7 @@ export function ScheduleTasksDialog({
         frequency: buildFrequency(),
       };
       if (form.action === "create") {
-        payload.task_spec = {
-          description: form.description.trim(),
-          goal: form.goal.trim(),
-          category_id: form.categoryID,
-        };
+        payload.task_spec = editScheduleSpec(form.taskSpec, form.description, form.goal, form.categoryID);
       }
       if (editingID == null) {
         await api.createTaskSchedule(payload);
@@ -238,7 +240,9 @@ export function ScheduleTasksDialog({
       const updated = await api.updateTaskSchedule(s.id, { enabled });
       setRows((prev) => prev.map((x) => (x.id === s.id ? updated : x)));
       toast.success(
-        enabled ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at, updated.timezone)}）` : "已停用（排期已清空）",
+        enabled
+          ? `已启用：${updated.frequency_text}（下次 ${fmtLocal(updated.next_run_at, updated.timezone)}）`
+          : "已停用（排期已清空）",
       );
     } catch (e) {
       toast.error(`切换失败：${(e as Error).message}`);
@@ -250,7 +254,11 @@ export function ScheduleTasksDialog({
     setBusy(true);
     try {
       const r = await api.runTaskScheduleNow(s.id);
-      toast.success(s.action === "create" ? `已建任务 #${r.task_id}（不改排期）` : `已执行：${s.action_text} #${r.task_id}（不改排期）`);
+      toast.success(
+        s.action === "create"
+          ? `已建任务 #${r.task_id}（不改排期）`
+          : `已执行：${s.action_text} #${r.task_id}（不改排期）`,
+      );
       onCreated?.();
       await load();
     } catch (e) {
@@ -295,24 +303,24 @@ export function ScheduleTasksDialog({
             <div className="grid gap-4">
               {form.action === "create" ? (
                 <>
-                <div className="grid gap-2">
-                  <Label className="font-normal text-muted-foreground text-sm">从模板预填（可选）</Label>
-                  <NativeSelect
-                    size="sm"
-                    value=""
-                    onChange={(e) => {
-                      const id = Number(e.target.value);
-                      if (id) applyTemplate(id);
-                    }}
-                  >
-                    <NativeSelectOption value="">不预填</NativeSelectOption>
-                    {templates.map((t) => (
-                      <NativeSelectOption key={t.id} value={String(t.id)}>
-                        {t.name}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
-                </div>
+                  <div className="grid gap-2">
+                    <Label className="font-normal text-muted-foreground text-sm">从模板预填（可选）</Label>
+                    <NativeSelect
+                      size="sm"
+                      value=""
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        if (id) applyTemplate(id);
+                      }}
+                    >
+                      <NativeSelectOption value="">不预填</NativeSelectOption>
+                      {templates.map((t) => (
+                        <NativeSelectOption key={t.id} value={String(t.id)}>
+                          {t.name}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
                 </>
               ) : null}
               <div className="grid gap-2">
@@ -360,46 +368,46 @@ export function ScheduleTasksDialog({
               ) : null}
               {form.action === "create" ? (
                 <>
-                <div className="grid gap-2">
-                  <Label htmlFor="sched-desc">任务描述（必填）</Label>
-                  <Textarea
-                    id="sched-desc"
-                    rows={2}
-                    value={form.description}
-                    onChange={(e) => setForm({ ...form, description: e.target.value })}
-                    placeholder="如：example.com 主站与 API 只读复测"
-                    disabled={busy}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="sched-goal">任务目标（必填）</Label>
-                  <Textarea
-                    id="sched-goal"
-                    rows={2}
-                    value={form.goal}
-                    onChange={(e) => setForm({ ...form, goal: e.target.value })}
-                    placeholder="如：确认上周的越权读取已修复，并检查新上线的接口"
-                    disabled={busy}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="sched-cat">分类（可选）</Label>
-                  <NativeSelect
-                    size="sm"
-                    id="sched-cat"
-                    value={form.categoryID == null ? "" : String(form.categoryID)}
-                    onChange={(e) =>
-                      setForm({ ...form, categoryID: e.target.value ? Number(e.target.value) : undefined })
-                    }
-                  >
-                    <NativeSelectOption value="">无分类</NativeSelectOption>
-                    {categories.map((c) => (
-                      <NativeSelectOption key={c.id} value={String(c.id)}>
-                        {c.name}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
-                </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="sched-desc">任务描述（必填）</Label>
+                    <Textarea
+                      id="sched-desc"
+                      rows={2}
+                      value={form.description}
+                      onChange={(e) => setForm({ ...form, description: e.target.value })}
+                      placeholder="如：example.com 主站与 API 只读复测"
+                      disabled={busy}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="sched-goal">任务目标（必填）</Label>
+                    <Textarea
+                      id="sched-goal"
+                      rows={2}
+                      value={form.goal}
+                      onChange={(e) => setForm({ ...form, goal: e.target.value })}
+                      placeholder="如：确认上周的越权读取已修复，并检查新上线的接口"
+                      disabled={busy}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="sched-cat">分类（可选）</Label>
+                    <NativeSelect
+                      size="sm"
+                      id="sched-cat"
+                      value={form.categoryID == null ? "" : String(form.categoryID)}
+                      onChange={(e) =>
+                        setForm({ ...form, categoryID: e.target.value ? Number(e.target.value) : undefined })
+                      }
+                    >
+                      <NativeSelectOption value="">无分类</NativeSelectOption>
+                      {categories.map((c) => (
+                        <NativeSelectOption key={c.id} value={String(c.id)}>
+                          {c.name}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
                 </>
               ) : null}
               <div className="grid gap-2">
@@ -491,7 +499,8 @@ export function ScheduleTasksDialog({
                   ))}
                 </NativeSelect>
                 <p className="text-muted-foreground text-xs">
-                  当前 {form.timezone} 时间：{new Date().toLocaleString("zh-CN", { timeZone: form.timezone, hour12: false })}
+                  当前 {form.timezone} 时间：
+                  {new Date().toLocaleString("zh-CN", { timeZone: form.timezone, hour12: false })}
                 </p>
               </div>
               {form.action === "create" ? (
@@ -524,7 +533,8 @@ export function ScheduleTasksDialog({
                     </Button>
                   </div>
                   <p className="text-muted-foreground text-xs">
-                    任务创建后到该时区的指定日期/时间自动暂停；日期留空时按时间计算运行后的下一次。到点会生成一条一次性“自动暂停”计划，可在列表中查看。留空 = 不自动暂停。
+                    任务创建后到该时区的指定日期/时间自动暂停；日期留空时按时间计算运行后的下一次。到点会生成一条一次性“自动暂停”计划，可在列表中查看。留空
+                    = 不自动暂停。
                   </p>
                 </div>
               ) : null}
@@ -566,7 +576,11 @@ export function ScheduleTasksDialog({
                       <Switch checked={s.enabled} onCheckedChange={(v) => void toggle(s, v)} disabled={busy} />
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-                      <span>{s.action_text}{s.target_task_id ? ` #${s.target_task_id}` : ""} · {s.frequency_text} · {s.timezone}{s.auto_pause_at ? ` · 自动暂停 ${s.auto_pause_at}` : ""}</span>
+                      <span>
+                        {s.action_text}
+                        {s.target_task_id ? ` #${s.target_task_id}` : ""} · {s.frequency_text} · {s.timezone}
+                        {s.auto_pause_at ? ` · 自动暂停 ${s.auto_pause_at}` : ""}
+                      </span>
                       <span>下次 {s.enabled ? fmtLocal(s.next_run_at, s.timezone) : "（停用）"}</span>
                       <span>上次 {fmtLocal(s.last_run_at, s.timezone)}</span>
                       {s.last_task_id && (

@@ -374,8 +374,31 @@ class ArtexClient:
         vers = body.get("versions") or []
         if not vers:
             return ""
-        txt = vers[0].get("template_text") or ""
+        # The effective body is template + append. Hashing only the template
+        # cannot distinguish the empty-template + appended-benchmark setup.
+        txt = (vers[0].get("template_text") or "") + "\x00" + (vers[0].get("append_text") or "")
         return hashlib.sha256(txt.encode("utf-8")).hexdigest()[:16]
+
+    def request_surfaces(self, task_id):
+        """Normalized structure of real calls; no prompts, bodies or credentials."""
+        st, body = self._call("GET", f"/api/diagnostics/cache?task={task_id}")
+        if not (st and 200 <= st < 300 and isinstance(body, dict)):
+            return None
+        out = []
+        for row in body.get("surfaces") or []:
+            out.append({key: row.get(key, "") for key in (
+                "worker", "model", "format", "build_version", "system_sha", "tools_sha",
+                "parameters_sha", "endpoint_sha", "calls", "changed_calls",
+                "avg_input", "avg_output", "cache_hit_tokens")})
+        return out
+
+    def llm_profiles(self):
+        """Non-secret profile identity; api keys and full base URLs are omitted."""
+        st, body = self._call("GET", "/api/llm/profiles")
+        if not (st and 200 <= st < 300 and isinstance(body, dict)):
+            return []
+        return [{"name": p.get("name", ""), "format": p.get("format", ""), "model": p.get("model", "")}
+                for p in body.get("profiles") or []]
 
 
 def _to_epoch(v):
@@ -497,9 +520,9 @@ class RunMetrics:
             "metrics_missing": missing,
         }
         for k in self.NODE_KINDS:
-            row["n_" + k] = graph.get(k, 0)
+            row["n_" + k] = int(graph.get(k, 0) or 0)
         for s in self.INTENT_STATES:
-            row["n_intent_" + s] = states.get(s, 0)
+            row["n_intent_" + s] = int(states.get(s, 0) or 0)
         self.rows.append(row)
 
     def write(self, sched):
@@ -517,11 +540,31 @@ class RunMetrics:
                 policy = sched.a.policy_summary()
             except Exception:
                 pass
+        prompt_sha, profiles, surfaces = {}, [], {}
         if not self.simulate:
             try:
                 prompt_sha = {k: sched.a.prompt_sha(k) for k in ("planner", "worker")}
             except Exception:
                 pass
+            try:
+                profiles = sched.a.llm_profiles()
+            except Exception:
+                pass
+        surfaces_file = ""
+        if not self.simulate:
+            for row in self.rows:
+                if not row.get("task_id"):
+                    continue
+                try:
+                    found = sched.a.request_surfaces(row["task_id"])
+                except Exception:
+                    found = None
+                if found:
+                    surfaces[str(row["task_id"])] = found
+        if surfaces:
+            surfaces_file = "request-surfaces.json"
+            with open(os.path.join(self.dir, surfaces_file), "w", encoding="utf-8") as fh:
+                json.dump(surfaces, fh, ensure_ascii=False, indent=2)
         known = [r for r in self.rows if not r.get("metrics_missing")]
         totals = {
             "challenges": len(self.rows),
@@ -558,7 +601,10 @@ class RunMetrics:
                 "prompt_variant": PROMPT_VARIANT, "prompt_sha": prompt_sha,
                 "challenge_set": CHALLENGE_SET_ID,
                 "policy": policy if policy is not None else os.environ.get("BENCH_POLICY", ""),
-                "model": os.environ.get("LLM_MODEL", ""),
+                # Environment model names are hints only; call surfaces are authoritative.
+                "model_env": os.environ.get("LLM_MODEL", ""),
+                "llm_profiles": profiles,
+                "request_surfaces_file": surfaces_file,
             },
             "totals": totals,
         }

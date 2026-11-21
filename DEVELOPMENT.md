@@ -141,6 +141,24 @@ git tag -a v0.7.7 -m "BLADE v0.7.7" && git push origin main v0.7.7
 - 样本最多 256 条，仅返回近 30 分钟，每次最多 100 条；单请求 usage 最多 16 帧（保留首帧与最新帧）。只存哈希/长度/断点和白名单数值。关闭页面窗口会清空样本，计量台账不受影响。
 - `llm_usage` 的逐调用 ID 与结构请求 ID 不是同一编号。原始协议用量可能是累计值或不含缓存的 input，不要直接求和或拿它当 canonical input；结构变化只是相关证据，不等于根因。
 - 工作区既有文件写入要带读取返回的 `version`；同名上传通过 `/api/workspace/upload-check` 得到版本，在用户确认后随 multipart 的 `expected_versions` 提交。409 不自动强制覆盖。
+
+## 九、实验归因与规模基线
+
+- `/api/diagnostics/cache?task=<id>` 的 `surfaces` 来自 always-on `llm_usage.request_surface`：
+  只有实际模型、协议、system/tools/参数/路径的 SHA、字节量、调用次数、结构调用间变化和缓存命中
+  token；不保存提示词、正文、密钥、URL 查询串或认证头。它用于回答“两组实际跑的是不是同一配置”，
+  不能单独证明缓存命中原因或模型能力。
+- 聚合交付支持可选 `operation_key`（同一次界面操作重试复用；最多 128 字节）。同一可信主体和
+  operation_key 的成功回执与交付物同事务提交；同键不同参数返回 409，交付物已删除返回 410，
+  不会因响应丢失重试而多建一份。没有 operation_key 的旧客户端仍按原语义创建。
+- 规模基线：`bench/scale_baseline.sh` 只接受名字含 `test`/`acceptance` 的隔离库，运行资产导出
+  1k/10k 扫描、10k finding 分页和 1k/5k 黑板视图 benchmark。
+  ```bash
+  BLADE_PG_DSN='postgres://blade:blade@127.0.0.1:5432/blade_test?sslmode=disable' \
+    BLADE_BENCHTIME=1x BLADE_BENCH_COUNT=3 ./bench/scale_baseline.sh
+  ```
+  这是合成数据基线，不是容量承诺；比较优化前后必须保持机器、数据量和 PostgreSQL 状态一致，
+  同时看延迟、分配、SQL 次数和结果集正确性，而不是只看一个数字。
 - 文本使用内容哈希；超过在线编辑上限的文件使用大小/纳秒修改时间。API 写入串行化并再次复查后原子替换，但不能宣称对不遵守同一锁的外部进程提供完整跨进程 CAS。
 
 ## 黑板完整性、恢复栅栏与可选前置条件

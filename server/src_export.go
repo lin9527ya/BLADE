@@ -180,7 +180,11 @@ func (s *Server) srcWarnings(f *db.DBFinding, roles []string) []string {
 	// P13：所属任务还有长任务执行在跑 → 输出尚未落地，此刻的证据可能不完整。
 	if f.TaskID != nil {
 		if x := s.m.Executions(); x != nil {
-			if n := len(x.ActiveForTask(itoa64(*f.TaskID))); n > 0 {
+			active, err := x.ActiveForTask(itoa64(*f.TaskID))
+			if err != nil {
+				warnings = append(warnings, "所属任务执行台账读取失败，无法确认输出已全部落地。")
+			}
+			if n := len(active); err == nil && n > 0 {
 				warnings = append(warnings, fmt.Sprintf(
 					"所属任务仍有 %d 个长任务执行未结束（扫描/枚举输出未落地）：本次证据可能不完整，建议等执行收束后重新导出。", n))
 			}

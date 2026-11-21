@@ -165,6 +165,9 @@ func (s *Server) distillTaskPlaybook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg := playbookManualMessage + "\n\n（手动触发：即使目标尚未全部达成，也按已完成的部分判断；没有可复用的完整方法就说明“无新打法”。）"
-	s.StartTriggeredRun("playbook", "手动沉淀 · task#"+t.ID, msg, taskID, true, t.Description, t.Goal)
+	if !s.startTriggeredRunAs(principalFrom(r.Context()), "playbook", "手动沉淀 · task#"+t.ID, msg, taskID, true, t.Description, t.Goal) {
+		writeErr(w, 503, "Agent 暂不可用，未加入触发队列")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "status": "queued"})
 }

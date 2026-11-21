@@ -902,12 +902,13 @@ func (d *DB) SavePromptWithAppend(agentID int64, template, appendText, note, by 
 type PromptVersion struct {
 	Version   int       `json:"version"`
 	Template  string    `json:"template_text"`
+	Append    string    `json:"append_text,omitempty"`
 	Note      string    `json:"note,omitempty"`
 	CreatedAt time.Time `json:"ts"`
 }
 
 func (d *DB) ListPromptVersions(agentID int64) ([]PromptVersion, error) {
-	rows, err := d.Query(`SELECT version,template_text,COALESCE(note,''),created_at FROM agent_prompts WHERE agent_id=$1 ORDER BY version DESC`, agentID)
+	rows, err := d.Query(`SELECT version,template_text,COALESCE(append_text,''),COALESCE(note,''),created_at FROM agent_prompts WHERE agent_id=$1 ORDER BY version DESC`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -915,7 +916,7 @@ func (d *DB) ListPromptVersions(agentID int64) ([]PromptVersion, error) {
 	out := []PromptVersion{}
 	for rows.Next() {
 		var v PromptVersion
-		if err := rows.Scan(&v.Version, &v.Template, &v.Note, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.Version, &v.Template, &v.Append, &v.Note, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

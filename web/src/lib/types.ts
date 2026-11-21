@@ -1264,7 +1264,7 @@ export interface ScheduleTaskSpec {
   name?: string;
   description: string;
   goal: string;
-  category_id?: number;
+  category_id?: number | null;
   template_id?: number;
   llm_profile_ids?: number[];
   company_ids?: number[];
@@ -1272,6 +1272,8 @@ export interface ScheduleTaskSpec {
   plan_heartbeat_seconds?: number;
   coverage_enabled?: boolean;
   seed_first_intent?: boolean;
+  asset_scope_policy?: "exact" | "target";
+  intercept_rules?: AssetInterceptRuleInput[];
 }
 
 export interface TaskSchedule {
