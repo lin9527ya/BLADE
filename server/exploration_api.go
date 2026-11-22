@@ -237,9 +237,6 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 		States: states,
 		Query:  q.Get("q"),
 		Asc:    q.Get("order") == "asc",
-		// 默认只把「已确认存在」的 finding 当漏洞播报；显式按 state 过滤时尊重调用方
-		// （例如排查 open_proof_gap 候选），不额外收窄。
-		OnlyConfirmedFindings: len(states) == 0,
 	}
 	nodes, total, err := t.Store.NodesPage(filter, page, size)
 	if err != nil {
@@ -275,8 +272,8 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	// 未确认的 finding 也不该以「邻居」身份出现在行内引用里：播报板只展示
-	// 已确认漏洞，候选/已排除项留在「发现」页做 triage。同时丢掉指向隐藏节点的边。
+	// 播报板是时间线：pending / 候选 / 已排除都以 finding_status 徽标展示，
+	// 默认不静默丢掉；点进发现页再做 triage。隐藏节点的边仍要丢掉。
 	visible := make(map[int64]bool, len(nodes)+len(neighbours))
 	for _, n := range nodes {
 		visible[n.ID] = true
@@ -284,9 +281,6 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 	refs := make(map[string]TaskNodeDTO, len(neighbours))
 	visibleIDs := append([]int64(nil), ids...)
 	for _, n := range neighbours {
-		if n.Kind == db.KindFinding && !db.FindingConfirmedForDisplay(n.FindingStatus) {
-			continue
-		}
 		refs[i64s(n.ID)] = taskNodeDTO(n, s.credentialPlaintextEnabled())
 		visible[n.ID] = true
 		visibleIDs = append(visibleIDs, n.ID)

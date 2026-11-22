@@ -246,8 +246,9 @@ type TaskNodeDTO struct {
 	// SlotNo 是该意图当前绑定的固定执行槽位（owner=work#N）；0=未绑定。
 	SlotNo int `json:"slot_no,omitempty"`
 	// FindingStatus 是 kind=finding 节点的 findings.status 投影（pending/confirmed/
-	// ruled_out/open_proof_gap…）。播报板与探索链路据此只展示已确认漏洞；非 finding
-	// 节点为空。节点 state 只有四态，不能替代它。
+	// ruled_out/open_proof_gap…）。播报板与探索链路据此展示状态徽标（待处理/已确认/
+	// 候选/已排除），默认不再静默隐藏 pending；非 finding 节点为空。节点 state 只有
+	// 四态，不能替代它。
 	FindingStatus string `json:"finding_status,omitempty"`
 }
 

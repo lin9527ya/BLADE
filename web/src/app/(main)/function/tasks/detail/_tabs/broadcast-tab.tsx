@@ -186,10 +186,6 @@ const STATE_META: Record<string, Record<string, { label: string; tone: Tone }>> 
     confirmed: { label: "已确认", tone: "green" },
     dismissed: { label: "已否定", tone: "slate" },
   },
-  finding: {
-    confirmed: { label: "已确认", tone: "red" },
-    dismissed: { label: "已排除", tone: "slate" },
-  },
   hint: {
     active: { label: "待采纳", tone: "violet" },
     consumed: { label: "已采纳", tone: "slate" },
@@ -321,6 +317,12 @@ const clockFmt = new Intl.DateTimeFormat("zh-CN", {
 function NodeStateBadge({ node }: { node: TaskNode }) {
   if (node.type === "goal") return <StatusBadge domain="goal" value={node.state} dot />;
   if (node.type === "intent") return <StatusBadge domain="intent" value={node.state} dot />;
+  // finding 的节点 state 是 confirmed/open_proof_gap/ruled_out，但人的处置状态在
+  // findings.status（report_finding 默认 pending）。用 finding_status 才不会把
+  // 待处理漏洞显示成「已确认」。
+  if (node.type === "finding") {
+    return <StatusBadge domain="finding" value={node.finding_status || node.state} dot />;
+  }
   const meta = STATE_META[node.type]?.[node.state];
   if (!meta) return null;
   return (

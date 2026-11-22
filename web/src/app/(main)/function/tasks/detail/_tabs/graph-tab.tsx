@@ -6,11 +6,12 @@ import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react";
 
 import { ExplorationGraph } from "@/components/exploration-graph";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import { findingConfirmedForDisplay } from "@/lib/finding-status";
+import { findingVisibleInChain } from "@/lib/finding-status";
 import { graphAuditHeadline, graphAuditIssueLabel, graphAuditRefs, graphAuditSummary } from "@/lib/graph-audit";
 import type { Edge, GraphAuditReport, TaskNode } from "@/lib/types";
 
@@ -20,6 +21,9 @@ export function GraphTab({ taskId }: { taskId: string }) {
   // 图体检：只读报告。干净时不渲染任何东西——干净图不该占版面。
   const [audit, setAudit] = React.useState<GraphAuditReport | null>(null);
   const [auditOpen, setAuditOpen] = React.useState(false);
+  // 探索链路是研究过程：默认画全部 finding（pending/候选/已排除），用状态徽标区分。
+  // 需要一张“只看可交付漏洞”的干净图时，勾选隐藏候选/已排除项。
+  const [hideCandidates, setHideCandidates] = React.useState(false);
   const [auditBusy, setAuditBusy] = React.useState(false);
   // 上一次图数据的签名:轮询拿到相同数据时跳过 setState,避免整图无谓重建(拖动时
   // 才不会被 20s 轮询打断而顿挫)。只取影响渲染的字段。
@@ -55,14 +59,14 @@ export function GraphTab({ taskId }: { taskId: string }) {
           .explorationGraph(taskId)
           .then((g) => {
             if (!alive()) return;
-            // 探索链路只画「确认存在」的漏洞：pending / open_proof_gap / ruled_out /
-            // false_positive 等候选节点留在「发现」页做 triage。deleted 意图是规划者
-            // 主动丢弃的方向，保留在播报板/时间线做审计，不进入默认探索链路。API 仍返回
-            // 完整图，时间线要靠它按 id 打开这些节点，所以过滤放在显示层。
+            // 探索链路默认展示全部 finding，包括 pending 与候选/已排除项——它们
+            // 是研究过程的一部分，状态由 finding_status 徽标区分。只有用户显式勾选
+            // “隐藏候选/已排除”时才过滤 open_proof_gap / ruled_out 等。deleted 意图
+            // 是规划者主动丢弃的方向，仍不进入默认探索链路。
             const ns = (g.nodes ?? []).filter(
               (n) =>
                 n.state !== "deleted" &&
-                (n.type !== "finding" || findingConfirmedForDisplay(n.finding_status)),
+                (n.type !== "finding" || findingVisibleInChain(n.finding_status, hideCandidates)),
             );
             const visible = new Set(ns.map((n) => n.id));
             const es = (g.edges ?? []).filter((e) => visible.has(e.src) && visible.has(e.dst));
@@ -88,7 +92,7 @@ export function GraphTab({ taskId }: { taskId: string }) {
       ]).then(() => undefined);
     },
     20000,
-    [taskId],
+    [taskId, hideCandidates],
   );
 
   const summary = graphAuditSummary(audit);
@@ -147,6 +151,16 @@ export function GraphTab({ taskId }: { taskId: string }) {
       )}
       <Card>
         <CardContent className="p-0">
+          <div className="flex items-center justify-end border-b border-border/50 px-3 py-2">
+            <label className="flex cursor-pointer items-center gap-2 text-muted-foreground text-xs">
+              <Checkbox
+                checked={hideCandidates}
+                onCheckedChange={(checked) => setHideCandidates(checked === true)}
+                aria-label="隐藏候选/已排除漏洞"
+              />
+              隐藏候选/已排除漏洞
+            </label>
+          </div>
           <ExplorationGraph nodes={nodes} edges={edges} className="h-[72vh]" taskId={taskId} />
         </CardContent>
       </Card>

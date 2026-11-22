@@ -42,8 +42,9 @@ func queryUnixTime(raw string) time.Time {
 }
 
 // globalBroadcast 汇总所有未删除任务的探索节点（节点 id 全局有序，因此跨任务
-// 的游标/分页仍然稳定）。默认只播报已确认的 finding；按 state/finding_status
-// 显式筛选时尊重调用方，便于排查候选/待补证节点。
+// 的游标/分页仍然稳定）。默认不按 finding 状态收窄：report_finding 先写 pending，
+// 若默认只播报 confirmed，刚发现的漏洞会从播报板静默消失。状态由 finding_status
+// 徽标区分，调用方仍可按 finding_status 显式筛选候选/已排除项。
 func (s *Server) globalBroadcast(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page := atoiDefault(q.Get("page"), 1)
@@ -51,15 +52,14 @@ func (s *Server) globalBroadcast(w http.ResponseWriter, r *http.Request) {
 	states := csvValues(q.Get("state"))
 	findingStatuses := csvValues(q.Get("finding_status"))
 	filter := db.GlobalNodeFilter{
-		Kinds:                 csvValues(q.Get("kind")),
-		States:                states,
-		FindingStatuses:       findingStatuses,
-		TaskStates:            csvValues(q.Get("task_state")),
-		Query:                 q.Get("q"),
-		Asc:                   q.Get("order") == "asc",
-		OnlyConfirmedFindings: len(states) == 0 && len(findingStatuses) == 0,
-		Since:                 queryUnixTime(q.Get("since")),
-		Until:                 queryUnixTime(q.Get("until")),
+		Kinds:           csvValues(q.Get("kind")),
+		States:          states,
+		FindingStatuses: findingStatuses,
+		TaskStates:      csvValues(q.Get("task_state")),
+		Query:           q.Get("q"),
+		Asc:             q.Get("order") == "asc",
+		Since:           queryUnixTime(q.Get("since")),
+		Until:           queryUnixTime(q.Get("until")),
 	}
 	taskID := int64(atoiDefault(q.Get("task"), 0))
 	pg := s.m.PG()

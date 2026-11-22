@@ -244,8 +244,8 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
             </Badge>
           ) : showState ? (
             <StatusBadge
-              domain={n.type === "goal" ? "goal" : n.type === "footprint" ? "footprint" : "intent"}
-              value={n.state}
+              domain={n.type === "goal" ? "goal" : n.type === "footprint" ? "footprint" : n.type === "finding" ? "finding" : "intent"}
+              value={n.type === "finding" ? n.finding_status || n.state : n.state}
               dot
               className="px-1.5 py-0 text-[10px]"
             />

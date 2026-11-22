@@ -1,13 +1,5 @@
-// findings.status 中代表「漏洞已确认存在」的集合。report_finding 默认写 pending，
-// 候选闭合写 ruled_out/open_proof_gap；这些都不是可展示的漏洞。
-const CONFIRMED_FINDING_STATUSES = new Set(["confirmed", "resolved", "fixed", "risk_accepted"]);
-
-export function findingConfirmedForDisplay(status: string | undefined): boolean {
-  return !!status && CONFIRMED_FINDING_STATUSES.has(status);
-}
-
-// 候选闭合不是漏洞：ruled_out（已排除）/ open_proof_gap（存疑待补证）只留在
-// 报告与审计里，不进入发现页 / 案例成员列表。
+// findings.status 中属于「候选闭合/已被否定」的状态：这些记录只留在发现页/审计里，
+// 不作为当前漏洞进入案例成员、播报板或探索链路的默认视图。
 export function findingCandidateStatus(status: string | undefined): boolean {
   return (
     status === "ruled_out" ||
@@ -17,4 +9,10 @@ export function findingCandidateStatus(status: string | undefined): boolean {
     status === "retracted" ||
     status === "ignored"
   );
+}
+
+// 探索链路的显示口径：默认展示全部 finding（pending 也是真实上报），
+// 只有用户显式勾选“隐藏候选/已排除”时才排除候选闭合项。
+export function findingVisibleInChain(status: string | undefined, hideCandidates: boolean): boolean {
+  return !hideCandidates || !findingCandidateStatus(status);
 }
