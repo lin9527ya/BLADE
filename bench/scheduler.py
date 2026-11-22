@@ -233,6 +233,27 @@ class BenchClient:
         return _http("GET", f"{BENCH_BASE}/openapi/v1/challenges/hint?unique_code={code}", self.h)
 
 
+# ============================ ARTEX 请求结构归因契约 ============================
+# 字段名必须与 Go 的 db.RequestSurfaceSummary json tag 一一对应。之前没有 tag 时，
+# Go 输出 Worker/Model/SystemSHA 等字段名，这里 row.get(key, "") 会把真实归因读成
+# 空串/0，summary 看起来完整却无法解释分数变化。缺失或类型不符必须报错，不能补默认值。
+SURFACE_TEXT_FIELDS = (
+    "worker", "model", "format", "build_version",
+    "system_sha", "tools_sha", "parameters_sha", "endpoint_sha",
+)
+SURFACE_INT_FIELDS = ("calls", "changed_calls", "avg_input", "avg_output", "cache_hit_tokens")
+# observed=true 的行一定来自一次真实调用：这些字段为空说明归因链本身断了。
+# 四个 SHA 对空内容也会计算（hash 的是空字节），所以为空同样只可能是契约漂移。
+SURFACE_REQUIRED_TEXT = (
+    "worker", "model", "format",
+    "system_sha", "tools_sha", "parameters_sha", "endpoint_sha",
+)
+
+
+class SurfaceContractError(ValueError):
+    """诊断端点的请求结构归因不符合预期契约。"""
+
+
 # ============================ ARTEX 客户端 ============================
 class ArtexClient:
     def __init__(self):
@@ -380,16 +401,45 @@ class ArtexClient:
         return hashlib.sha256(txt.encode("utf-8")).hexdigest()[:16]
 
     def request_surfaces(self, task_id):
-        """Normalized structure of real calls; no prompts, bodies or credentials."""
+        """Normalized structure of real calls; no prompts, bodies or credentials.
+
+        归因字段缺失或类型不符时抛 SurfaceContractError，而不是补空串/0：
+        「读不到」必须区别于「为空」，否则 summary 会静默失去版本对比能力。
+        """
         st, body = self._call("GET", f"/api/diagnostics/cache?task={task_id}")
         if not (st and 200 <= st < 300 and isinstance(body, dict)):
-            return None
+            raise SurfaceContractError(f"诊断端点返回 {st}，无法读取请求结构")
+        if "surfaces" not in body:
+            raise SurfaceContractError("诊断响应缺少 surfaces 字段")
+        rows = body["surfaces"]
+        if not isinstance(rows, list):
+            raise SurfaceContractError(f"surfaces 不是数组（{type(rows).__name__}）")
         out = []
-        for row in body.get("surfaces") or []:
-            out.append({key: row.get(key, "") for key in (
-                "worker", "model", "format", "build_version", "system_sha", "tools_sha",
-                "parameters_sha", "endpoint_sha", "calls", "changed_calls",
-                "avg_input", "avg_output", "cache_hit_tokens")})
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise SurfaceContractError(f"surfaces[{i}] 不是对象（{type(row).__name__}）")
+            missing = [k for k in SURFACE_TEXT_FIELDS + SURFACE_INT_FIELDS if k not in row]
+            if missing:
+                raise SurfaceContractError(f"surfaces[{i}] 缺少字段: {', '.join(missing)}")
+            for key in SURFACE_TEXT_FIELDS:
+                if not isinstance(row[key], str):
+                    raise SurfaceContractError(
+                        f"surfaces[{i}].{key} 应为字符串，实际 {type(row[key]).__name__}")
+            for key in SURFACE_REQUIRED_TEXT:
+                if not row[key].strip():
+                    raise SurfaceContractError(f"surfaces[{i}].{key} 为空，无法归因")
+            for key in SURFACE_INT_FIELDS:
+                value = row[key]
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise SurfaceContractError(
+                        f"surfaces[{i}].{key} 应为整数，实际 {type(value).__name__}")
+                if value < 0:
+                    raise SurfaceContractError(f"surfaces[{i}].{key} 为负数: {value}")
+            if row["calls"] < 1:
+                raise SurfaceContractError(f"surfaces[{i}].calls 必须 >= 1")
+            if row["changed_calls"] > row["calls"]:
+                raise SurfaceContractError(f"surfaces[{i}].changed_calls 大于 calls")
+            out.append({key: row[key] for key in SURFACE_TEXT_FIELDS + SURFACE_INT_FIELDS})
         return out
 
     def llm_profiles(self):
@@ -525,6 +575,23 @@ class RunMetrics:
             row["n_intent_" + s] = int(states.get(s, 0) or 0)
         self.rows.append(row)
 
+    def _collect_surfaces(self, sched):
+        """读取每题的真实请求结构。失败或契约不符必须留下错误，不能静默当作没有数据。"""
+        surfaces, errors = {}, []
+        if self.simulate:
+            return surfaces, ""
+        for row in self.rows:
+            if not row.get("task_id"):
+                continue
+            try:
+                found = sched.a.request_surfaces(row["task_id"])
+            except Exception as exc:
+                errors.append(f"task {row['task_id']}: {exc}")
+                continue
+            if found:
+                surfaces[str(row["task_id"])] = found
+        return surfaces, "; ".join(errors)
+
     def write(self, sched):
         with open(os.path.join(self.dir, "challenges.csv"), "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=self.COLS, extrasaction="ignore")
@@ -550,21 +617,14 @@ class RunMetrics:
                 profiles = sched.a.llm_profiles()
             except Exception:
                 pass
+        surfaces, surfaces_error = self._collect_surfaces(sched)
         surfaces_file = ""
-        if not self.simulate:
-            for row in self.rows:
-                if not row.get("task_id"):
-                    continue
-                try:
-                    found = sched.a.request_surfaces(row["task_id"])
-                except Exception:
-                    found = None
-                if found:
-                    surfaces[str(row["task_id"])] = found
         if surfaces:
             surfaces_file = "request-surfaces.json"
             with open(os.path.join(self.dir, surfaces_file), "w", encoding="utf-8") as fh:
                 json.dump(surfaces, fh, ensure_ascii=False, indent=2)
+        if surfaces_error:
+            print(f"[metrics] 请求结构归因不完整: {surfaces_error}", file=sys.stderr)
         known = [r for r in self.rows if not r.get("metrics_missing")]
         totals = {
             "challenges": len(self.rows),
@@ -605,6 +665,9 @@ class RunMetrics:
                 "model_env": os.environ.get("LLM_MODEL", ""),
                 "llm_profiles": profiles,
                 "request_surfaces_file": surfaces_file,
+                "request_surfaces_tasks": len(surfaces),
+                # 空串=归因完整；非空=某些题的结构读取失败/契约不符。不能当作没有数据。
+                "request_surfaces_error": surfaces_error,
             },
             "totals": totals,
         }

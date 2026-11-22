@@ -376,13 +376,24 @@ func ParseExpID(s string) int64 {
 	return n
 }
 
+// RequestSurfaceSummary is the cross-language attribution contract consumed by
+// /api/diagnostics/cache and bench/scheduler.py. The json tags are explicit
+// because Go's default field names (Worker, SystemSHA, ...) silently produced an
+// empty attribution in the Python benchmark when tags were missing.
 type RequestSurfaceSummary struct {
-	Worker, Model, Format, BuildVersion             string
-	SystemSHA, ToolsSHA, ParametersSHA, EndpointSHA string
-	Calls                                           int64
-	ChangedCalls                                    int64
-	AvgInput, AvgOutput                             int64
-	CacheHitTokens                                  int64
+	Worker         string `json:"worker"`
+	Model          string `json:"model"`
+	Format         string `json:"format"`
+	BuildVersion   string `json:"build_version"`
+	SystemSHA      string `json:"system_sha"`
+	ToolsSHA       string `json:"tools_sha"`
+	ParametersSHA  string `json:"parameters_sha"`
+	EndpointSHA    string `json:"endpoint_sha"`
+	Calls          int64  `json:"calls"`
+	ChangedCalls   int64  `json:"changed_calls"`
+	AvgInput       int64  `json:"avg_input"`
+	AvgOutput      int64  `json:"avg_output"`
+	CacheHitTokens int64  `json:"cache_hit_tokens"`
 }
 
 // Only structural fields and numeric usage; no request/response content is read.

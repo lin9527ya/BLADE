@@ -104,3 +104,70 @@ func TestGoalStartsFromOriginAndProofConnectsEvidence(t *testing.T) {
 		t.Fatalf("goal 应为 met：node=%+v err=%v", node, err)
 	}
 }
+
+// prove_goal 的 reason 不是装饰：缺失时必须拒绝，且不得在回执里宣称成功。
+// 证据类型/归属不合法时同样不能留下「已 met」的假象——写入失败必须被看见。
+func TestProveGoalRequiresReasonAndDoesNotClaimSuccess(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	goal, err := ts.AddGoal(map[string]any{"text": "拿下后台"}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "管理员会话可用"}, 0, "confirmed", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callTool(t, tools.PlannerTools(), "prove_goal", fmt.Sprintf(
+		`{"goal_id":%d,"evidence_id":%d}`, goal, fact))
+	if !strings.Contains(out, "reason 必填") || strings.Contains(out, "marked met") {
+		t.Fatalf("缺 reason 应拒绝且不得宣称成功：%s", out)
+	}
+	if n, err := ts.GetNode(goal); err != nil || n == nil || n.State != "open" {
+		t.Fatalf("拒绝后目标必须仍是 open：node=%+v err=%v", n, err)
+	}
+	out = callTool(t, tools.PlannerTools(), "prove_goal", fmt.Sprintf(
+		`{"goal_id":%d,"evidence_id":%d,"reason":"用目标自证"}`, goal, goal))
+	if !strings.Contains(out, "事实/漏洞/据点/凭据") || strings.Contains(out, "marked met") {
+		t.Fatalf("非证据节点应拒绝：%s", out)
+	}
+	out = callTool(t, tools.PlannerTools(), "prove_goal", fmt.Sprintf(
+		`{"goal_id":%d,"evidence_id":%d,"reason":"管理员会话可直接登录后台"}`, goal, fact))
+	if !strings.Contains(out, "marked met") {
+		t.Fatalf("合法证明应成功：%s", out)
+	}
+	n, err := ts.GetNode(goal)
+	if err != nil || n == nil || n.State != "met" {
+		t.Fatalf("goal 应为 met：node=%+v err=%v", n, err)
+	}
+	if !strings.Contains(string(n.Payload), "管理员会话可直接登录后台") {
+		t.Fatalf("目标 payload 应保存证明理由：%s", n.Payload)
+	}
+}
+
+// 放弃不是达成：只剩「已达成 + 已放弃」时收官文案必须区分，不能把放弃算进 met。
+func TestProveGoalDistinguishesSettledFromAllMet(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	metGoal, err := ts.AddGoal(map[string]any{"text": "能达成的目标"}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandonedGoal, err := ts.AddGoal(map[string]any{"text": "放弃的目标"}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := ts.AbandonGoal(abandonedGoal, "客户取消"); err != nil || changed != 1 {
+		t.Fatalf("abandon: changed=%d err=%v", changed, err)
+	}
+	fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": "证据"}, 0, "confirmed", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := callTool(t, tools.PlannerTools(), "prove_goal", fmt.Sprintf(
+		`{"goal_id":%d,"evidence_id":%d,"reason":"证据充分"}`, metGoal, fact))
+	if !strings.Contains(out, "达成 1 / 放弃 1") || strings.Contains(out, "所有目标均已达成") {
+		t.Fatalf("放弃必须是「了结」而不是「全部达成」：%s", out)
+	}
+	if !tools.GoalMet {
+		t.Fatal("已无 open 目标时应触发收官")
+	}
+}

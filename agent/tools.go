@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -3002,12 +3001,12 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 }
 
 func (t *ToolSet) proveGoal() actool.CoreTool {
-	return t.writeExpTool("prove_goal", "当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。",
+	return t.writeExpTool("prove_goal", "把证据节点连到目标节点并标记 met。证据必须是本任务（或直接关联任务）的事实/漏洞/据点/凭据；reason 必填，写清它为什么满足该目标。证据边、理由与目标状态在同一事务里提交：写入失败会明确报错，不会假装成功。",
 		obj(map[string]any{
 			"goal_id":     idp("目标节点 id"),
-			"evidence_id": idp("证明它的发现/事实节点 id"),
-			"reason":      str("为什么这个证据满足该目标"),
-		}, "goal_id", "evidence_id"),
+			"evidence_id": idp("证明它的发现/事实/据点/凭据节点 id"),
+			"reason":      str("【必填】为什么这个证据满足该目标（随证据边与目标一起落库）"),
+		}, "goal_id", "evidence_id", "reason"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				GoalID     json.RawMessage `json:"goal_id"`
@@ -3019,44 +3018,25 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			if goal == 0 || ev == 0 {
 				return actool.Errorf("goal_id 和 evidence_id 必填"), nil
 			}
-			goalNode, err := t.ts.GetNode(goal)
-			if err != nil || goalNode == nil || goalNode.Kind != db.KindGoal {
-				return actool.Errorf("goal_id 必须是本任务的目标节点（关联任务目标只读）"), nil
+			out, err := t.ts.ProveGoal(goal, ev, a.Reason)
+			if err != nil {
+				return actool.Errorf("prove_goal: " + err.Error()), nil
 			}
-			evidenceNode, err := t.ts.GetNodeWithSources(ev)
-			if err != nil || evidenceNode == nil {
-				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞/据点/凭据节点"), nil
+			prefix := fmt.Sprintf("goal %d marked met", goal)
+			if out.AlreadyMet {
+				prefix = fmt.Sprintf("goal %d 原本已是 met（新证据已登记）", goal)
 			}
-			switch evidenceNode.Kind {
-			case db.KindFact, db.KindFinding, db.KindFoothold, db.KindCredential:
-			default:
-				return actool.Errorf("evidence_id 必须是事实/漏洞/据点/凭据节点"), nil
-			}
-			completionNotice := ""
-			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
-				log.Printf("[goal] 关联证据失败 goal=%d evidence=%d: %v", goal, ev, err)
-			}
-			if err := t.ts.SetNodeState(goal, "met"); err != nil {
-				// 没置成 met 会导致目标反复"已完成却没过"，比缺一条边更严重。
-				log.Printf("[goal] 标记目标 %d 为 met 失败: %v", goal, err)
-			}
-			// 每标记一个目标 met，就检查本任务是否【所有目标】都已 met；若是，自动判定
-			// 任务完成（置 GoalMet），无需再依赖模型显式调 goal_met。
-			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil && len(goals) > 0 {
-				allMet := true
-				for _, g := range goals {
-					if g.State != "met" {
-						allMet = false
-						break
-					}
+			// 目标全部了结（达成或放弃）时收官；放弃不是达成，文案必须分开。
+			if out.OpenGoals == 0 {
+				t.GoalMet = true
+				if out.AbandonedGoals > 0 {
+					t.Reason = fmt.Sprintf("所有目标均已了结（达成 %d / 放弃 %d，最后由 goal %d 触发）", out.MetGoals, out.AbandonedGoals, goal)
+					return actool.Text(fmt.Sprintf("%s；本任务已无未达成目标（达成 %d / 放弃 %d），按「已了结」收官", prefix, out.MetGoals, out.AbandonedGoals)), nil
 				}
-				if allMet {
-					t.GoalMet = true
-					t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", len(goals), goal)
-					return actool.Text(fmt.Sprintf("goal %d marked met；本任务所有目标均已达成，任务自动判定完成%s", goal, completionNotice)), nil
-				}
+				t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", out.MetGoals, goal)
+				return actool.Text(fmt.Sprintf("%s；本任务所有 %d 个目标均已达成，自动收官", prefix, out.MetGoals)), nil
 			}
-			return actool.Text(fmt.Sprintf("goal %d marked met%s", goal, completionNotice)), nil
+			return actool.Text(fmt.Sprintf("%s；仍有 %d 个未达成目标", prefix, out.OpenGoals)), nil
 		})
 }
 
