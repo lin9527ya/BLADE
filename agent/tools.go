@@ -2688,6 +2688,10 @@ type intentItem struct {
 	// Optional structured contract. All fields are soft: empty values keep the
 	// old one-line intent behavior. They are persisted so worker acceptance,
 	// planner dedupe and route aggregation can use them.
+	// Observation is a planning note from a lightweight read-only check. It is
+	// handed to the worker as something to verify, never persisted as a fact or
+	// finding on its own (research note ≠ observed evidence).
+	Observation     string            `json:"observation,omitempty"`
 	Hypothesis      string            `json:"hypothesis,omitempty"`
 	SuccessCriteria string            `json:"success_criteria,omitempty"`
 	StopCondition   string            `json:"stop_condition,omitempty"`
@@ -2837,6 +2841,9 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
+	if obs := strings.TrimSpace(it.Observation); obs != "" {
+		payload["planner_observation"] = obs
+	}
 	if h := strings.TrimSpace(it.Hypothesis); h != "" {
 		payload["hypothesis"] = h
 	}
@@ -2909,7 +2916,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向：summary 一句话写清要在哪个入口做什么、验证什么。优先把一轮筛出的多个方向放进 intents 数组一次提交；返回 ids 与 intents 等长同序，失败项 id=0 并带 errors。重试/复核已有方向时，summary 必须写清这次变化（身份/入口/手法/版本/新证据）并填 hypothesis/stop_condition；只换措辞不算新方向。",
+	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向：summary 一句话写清要在哪个入口做什么、验证什么。优先把一轮筛出的多个方向放进 intents 数组一次提交；返回 ids 与 intents 等长同序，失败项 id=0 并带 errors。规划者的轻量观察用 observation 交接（worker 会看到「待验证，不是证据」），不要写成事实。重试/复核已有方向时，summary 必须写清这次变化（身份/入口/手法/版本/新证据）并填 hypothesis/stop_condition；只换措辞不算新方向。",
 		obj(map[string]any{
 			"intents":          map[string]any{"type": "array", "description": "要新增的探索方向数组。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。", "items": map[string]any{"type": "object"}},
 			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。重试/复核已有方向时写清这次变了什么（身份/入口/手法/版本/新证据）。"),
@@ -2918,6 +2925,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的事实/发现/据点/凭据/AD对象/云对象节点 id；顶层全新方向留空，会自动挂到任务起点。"},
 			"depends_on":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：前置意图 id。默认 advisory：只影响排序、不阻塞领取；只有 depends_on_mode=strict 才在前置仍 open/running/paused 时暂缓派发。"},
 			"depends_on_mode":  str("可选：advisory（默认，只排序）或 strict（强串行）。strict 也会在前置进入任何终态后 fail-open，不会永久卡死。"),
+			"observation":      str("可选：规划者轻量自检中看到、但还不足以作为证据的观察/猜想；随意图交给 worker 验证，不写入事实图，也不能当已观察事实引用。"),
 			"hypothesis":       str("可选：本方向的明确假设（若 X 则 Y），供复盘/去重/验收。"),
 			"success_criteria": str("可选：什么结果算完成/无产出，供 worker 自检与规划复盘。"),
 			"stop_condition":   str("可选：什么证据出现就停止该方向，避免空转；重试/复核已有方向时应当填写，避免循环。"),
@@ -5263,9 +5271,10 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.abandonGoal(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// 执行类工具（run/wait/get/grep/cancel_execution、loot_*、foothold_exec、
-		// tunnel_open、oast_*、cve_exploit）与 report_finding 已从规划层移除：
-		// planner 只产意图、不亲自打；执行与写漏洞由 worker 做。规划层需要这些动作时
-		// 写进意图 summary，交给 worker 执行（见提示词）。
+		// tunnel_open、oast_*、cve_exploit）不在规划层：planner 不亲自打，执行写进
+		// 意图交给 worker。report_finding 是例外且**仍然绑定**：只用于规划者用极少量
+		// 只读检查直接、可复现地证实漏洞时（见 planner 正文）；其余观察用 add_intent
+		// 的 observation 交接给 worker 验证，不能写成事实或漏洞。
 		//
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。
 		t.listCompanies(),
@@ -5281,7 +5290,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// opsec_notes（P38）：派意图前查这一手预计会留下什么（事前知识库，与 P31 的实测分开）。
 		t.opsecNotes(),
 		// 只读知识查询留在规划层：开局就能按资产/指纹查已有打法与 CVE，避免重复探测。
-		// 写回打法（record_playbook / feedback）归 playbook agent 与 worker。
+		// record_playbook 归 playbook agent；record_playbook_feedback 保留在规划层，
+		// 但真正执行打法后的结果仍由 worker 回报（规划者只回报它实际核对过的结果）。
 		t.lookupPlaybooks(), t.recordPlaybookFeedback(), t.lookupCVEs(),
 		// SRC 领域工具（只组命令/落脚本，规划层可用；真正执行仍由 worker/Bash 完成）。
 		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),

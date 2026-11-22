@@ -506,6 +506,16 @@ func renderWorkerIntentTurnWithMode(intent *db.Node, assetsJSON, runDir string, 
 		b.WriteString("以下历史对话属于此前已经结束的意图，仅作背景参考；不要继续旧目标，也不要把旧 intent id/旧工作目录用于本条写回。\n")
 	}
 	b.WriteString(SanitizeUntrusted(string(intent.Payload)))
+	// Planner observations are research notes, not evidence. The full payload is
+	// already visible above; this label prevents a worker from treating a
+	// read-only glance as an observed fact it can just copy into record_fact.
+	var plannerNote struct {
+		Observation string `json:"planner_observation"`
+	}
+	if json.Unmarshal(intent.Payload, &plannerNote) == nil && strings.TrimSpace(plannerNote.Observation) != "" {
+		b.WriteString("\n【规划者观察（待验证，不是事实/证据）】" + clipLine(plannerNote.Observation, 500) +
+			"\n请用你自己的实测证实或推翻它；不要把它直接当结论写回，也不要引用为证据。")
+	}
 	// P0 契约：worker 看得到完整 payload，但契约里的 produces/acceptance 决定
 	// “什么算做完”，单独提一句，避免被长 payload 淹没。
 	var contractWrap struct {
