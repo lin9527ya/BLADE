@@ -29,6 +29,7 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"3ee238ddd5bf7088e89db620cc46f6e2178ab46d66ab7061077947cf439eb1d6": true, // v0.9.22
 	"39ea4382dafe8a2e0b9b02f073ce6dbf9fd39cc7e97e8ff3743350e1f7472594": true, // v0.9.23
 	"6a832e1146013f13d6fceaca1d89be85bddc2cf7e5515b9b525d8da8bd4b8430": true, // ARTEX parity v3（扩面/瓶颈提示前）
+	"918f3915a866fd650952a65b727cc03e3047ab298263637e07dc947472f36391": true, // v0.9.24–v0.9.25（复探条件化前）
 }
 
 const settingPlannerPromptV3 = "planner_prompt_v3"

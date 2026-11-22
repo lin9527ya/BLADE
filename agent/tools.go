@@ -2909,10 +2909,10 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向：summary 一句话写清要在哪个入口做什么、验证什么。优先把一轮筛出的多个方向放进 intents 数组一次提交；返回 ids 与 intents 等长同序，失败项 id=0 并带 errors。",
+	return t.writeExpTool("add_intent", "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向：summary 一句话写清要在哪个入口做什么、验证什么。优先把一轮筛出的多个方向放进 intents 数组一次提交；返回 ids 与 intents 等长同序，失败项 id=0 并带 errors。重试/复核已有方向时，summary 必须写清这次变化（身份/入口/手法/版本/新证据）并填 hypothesis/stop_condition；只换措辞不算新方向。",
 		obj(map[string]any{
 			"intents":          map[string]any{"type": "array", "description": "要新增的探索方向数组。每个元素字段同下方顶层字段（summary/asset_ids/parent_ids/priority）。", "items": map[string]any{"type": "object"}},
-			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。"),
+			"summary":          str("[单条] 一句话描述这个探索方向：在哪个具体入口（路径/主机/参数/版本）做什么 + 验证什么。重试/复核已有方向时写清这次变了什么（身份/入口/手法/版本/新证据）。"),
 			"asset_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "本方向针对的目标资产 id（list_assets 返回的资产 id，尽量传；全局侦察可留空）。"},
 			"lead_ids":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：接手的线索 L<fact>-<index> / 提案 P<fact>-<index>；自动附来源，不用重复填 parent_ids。原文明确匹配唯一父节点线索时会自动关联，不必为了追踪填表。"},
 			"parent_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：驱动本方向的事实/发现/据点/凭据/AD对象/云对象节点 id；顶层全新方向留空，会自动挂到任务起点。"},
@@ -2920,7 +2920,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"depends_on_mode":  str("可选：advisory（默认，只排序）或 strict（强串行）。strict 也会在前置进入任何终态后 fail-open，不会永久卡死。"),
 			"hypothesis":       str("可选：本方向的明确假设（若 X 则 Y），供复盘/去重/验收。"),
 			"success_criteria": str("可选：什么结果算完成/无产出，供 worker 自检与规划复盘。"),
-			"stop_condition":   str("可选：什么证据出现就停止该方向，避免空转。"),
+			"stop_condition":   str("可选：什么证据出现就停止该方向，避免空转；重试/复核已有方向时应当填写，避免循环。"),
 			"mechanism":        str("可选：稳定打法键（如 shiro-deserialize），用于态势聚合、人工去重参考；不再作为硬去重门。"),
 			"route":            str("可选：路线/链路名（如 auth-bypass->shiro-rce），用于态势聚合与并行调度。"),
 			"produces":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：约定产物（rce/foothold/credential/...）。"},

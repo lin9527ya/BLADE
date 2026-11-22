@@ -160,6 +160,17 @@ func TestHistoricalBuiltinPromptFingerprints(t *testing.T) {
 	if !plannerBuiltinPromptSHA256[fmt.Sprintf("%x", sum0923[:])] {
 		t.Fatalf("lost builtin fingerprint planner v0.9.23")
 	}
+	// v0.9.25 is the body current installs hold right before the
+	// evidence-conditioned re-probe rewrite; keep it recognized so upgrades
+	// replace it instead of silently leaving the mechanical rules in place.
+	v0925Body, err := os.ReadFile("testdata/prompts/planner-v0.9.25.body.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum0925 := sha256.Sum256([]byte(strings.TrimSpace(string(v0925Body))))
+	if !plannerBuiltinPromptSHA256[fmt.Sprintf("%x", sum0925[:])] {
+		t.Fatalf("lost builtin fingerprint planner v0.9.25")
+	}
 	if body := agent.PlannerPromptBody(); !strings.Contains(body, "no_output") {
 		t.Fatalf("builtin planner prompt missing no_output guidance")
 	}

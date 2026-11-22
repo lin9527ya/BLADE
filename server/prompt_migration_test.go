@@ -68,3 +68,35 @@ func TestMigratePlannerPrompt(t *testing.T) {
 		t.Fatalf("用户编辑不应被覆盖，得到 %q", cur)
 	}
 }
+
+// 0.9.25 的出厂 planner 正文必须能被升级迁移识别：否则已部署的库会继续使用
+// 「同一否定方向至多复核一次」的机械规则，代码里的新协议永远不生效。
+func TestMigrateCurrentBuiltinPlannerPrompt(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	a, err := m.pg.GetAgentByKey("planner")
+	if err != nil || a == nil {
+		t.Fatalf("planner agent: %v", err)
+	}
+	old, err := os.ReadFile("testdata/prompts/planner-v0.9.25.body.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = m.pg.SavePrompt(a.ID, agent.PlannerPromptBody(), "test cleanup", "test")
+	})
+	if _, err := m.pg.SavePrompt(a.ID, string(old), "test seed v0.9.25", "test"); err != nil {
+		t.Fatal(err)
+	}
+	migrateExplorationPrompts(m.pg)
+	cur, err := m.pg.CurrentPrompt(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur != agent.PlannerPromptBody() {
+		t.Fatalf("0.9.25 出厂正文应迁移到本轮正文（当前长度 %d，want %d）", len(cur), len(agent.PlannerPromptBody()))
+	}
+}
