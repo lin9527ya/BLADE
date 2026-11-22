@@ -18,6 +18,6 @@ test("completed branch means associated execution ended, not proved vulnerabilit
   assert.match(LEAD_TRACE_LABELS.source_changed, /复核/);
 });
 
-test("lead trace pagination uses a compact ten-row default", () => {
-  assert.equal(LEAD_TRACE_PAGE_SIZE, 10);
+test("lead trace pagination uses a compact five-row default", () => {
+  assert.equal(LEAD_TRACE_PAGE_SIZE, 5);
 });

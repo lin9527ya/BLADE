@@ -57,6 +57,7 @@ function ScoreDetails({ row }: { row: ScheduleExplanation }) {
 
 export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
   const [showSchedule, setShowSchedule] = React.useState(false);
+  const [showTracking, setShowTracking] = React.useState(false);
   const [schedule, setSchedule] = React.useState<SchedulingReport | null>(null);
   const [leads, setLeads] = React.useState<LeadTraceReport | null>(null);
   const [error, setError] = React.useState("");
@@ -70,19 +71,19 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
   }, [taskId, focus, state, offset, showSchedule]);
   React.useEffect(() => {
     setLeads(null);
-  }, [taskId, focus, state, offset]);
+  }, [taskId, focus, state, offset, showTracking]);
   usePolling(async (alive) => {
     try {
       const [nextSchedule, nextLeads] = await Promise.all([
         showSchedule ? api.taskScheduling(taskId, focus || undefined) : Promise.resolve(null),
-        api.taskLeadTraces(taskId, state, offset),
+        showTracking ? api.taskLeadTraces(taskId, state, offset) : Promise.resolve(null),
       ]);
       if (alive()) { setSchedule(nextSchedule); setLeads(nextLeads); setError(""); }
     } catch (e) {
       if (alive()) setError((e as Error).message);
       throw e;
     }
-  }, 10_000, [taskId, focus, state, offset, refresh, showSchedule]);
+  }, 10_000, [taskId, focus, state, offset, refresh, showSchedule, showTracking]);
 
   function search() {
     const value = focusDraft.trim();
@@ -140,12 +141,19 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
           </CollapsibleContent>
         </Card>
       </Collapsible>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base"><GitBranchIcon className="size-4" /> 分叉接手与执行追踪</CardTitle>
-          <CardDescription>L 为旁路线索，P 为意图提案；关联执行结束不等于漏洞已验证。历史缺时间时保持未知，不算作零延迟。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
+      <Collapsible open={showTracking} onOpenChange={setShowTracking}>
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 text-base"><GitBranchIcon className="size-4" /> 分叉接手与执行追踪</CardTitle>
+              <CollapsibleTrigger asChild>
+                <Button size="sm" variant="outline">{showTracking ? "收起分叉接手与执行追踪" : "查看分叉接手与执行追踪"}</Button>
+              </CollapsibleTrigger>
+            </div>
+            <CardDescription>{showTracking ? "L 为旁路线索，P 为意图提案；关联执行结束不等于漏洞已验证。历史缺时间时保持未知，不算作零延迟。" : "默认收起，按需查看旁路线索/提案的接手与执行时间；每页 5 条。"}</CardDescription>
+          </CardHeader>
+          <CollapsibleContent>
+            <CardContent className="space-y-3">
           <NativeSelect aria-label="筛选线索状态" value={state} onChange={(e) => { setState(e.target.value); setOffset(0); }} className="max-w-xs" size="sm">
             <NativeSelectOption value="">全部状态</NativeSelectOption>
             {Object.entries(LEAD_TRACE_LABELS).map(([value, label]) => <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>)}
@@ -187,8 +195,10 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
     </div>
   );
 }
