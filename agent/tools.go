@@ -782,7 +782,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 // coverage-matrix query for every worker run.
 func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	out := t.snapshotProjection(func(view *ToolSet) map[string]any {
-		out := view.graphOverviewDataInternal()
+		out := view.graphOverviewDataInternalWithAttention(false)
 		view.projectionContract(out)
 		return out
 	})
@@ -792,6 +792,7 @@ func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
 	for _, k := range []string{
 		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed", "lead_tracking", "lead_tracking_status", "dispatch_order",
 		"unconsumed_facts", "branch_review_facts", "folded_facts", "folded_facts_total",
+		"attention_oldest_leads", "attention_oldest_facts", "attention_oldest_unresolved", "attention_note", "attention_status",
 	} {
 		delete(out, k)
 	}
@@ -828,7 +829,11 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	if limit > 100 {
 		limit = 100
 	}
-	out := t.graphOverviewData()
+	// Delta rounds skip the attention recall queries: those windows are only
+	// rendered on the periodic full reconciliation (and would be stripped by
+	// slimBlackboardDelta anyway).
+	out := t.graphOverviewDataInternalWithAttention(!deltaOnly)
+	t.projectionContract(out)
 	// Capture totals, full route aggregation, and compact related_tasks summary
 	// BEFORE pruning/truncating display windows so routes reflect the true graph
 	// rather than only the truncated window.
@@ -1035,6 +1040,7 @@ func slimBlackboardDelta(out map[string]any) {
 		"related_tasks_summary", "dispatch_order",
 		"no_endpoint_sites", "endpoints_without_coverage",
 		"intents_window_note", "edges_window_note",
+		"attention_oldest_leads", "attention_oldest_facts", "attention_oldest_unresolved", "attention_note", "attention_status",
 	} {
 		delete(out, k)
 	}
@@ -1218,6 +1224,13 @@ func (t *ToolSet) graphHealth() map[string]any {
 }
 
 func (t *ToolSet) graphOverviewDataInternal() map[string]any {
+	return t.graphOverviewDataInternalWithAttention(true)
+}
+
+// graphOverviewDataInternalWithAttention is the same projection without the
+// planner-only attention recall queries for worker runs: those queries are cheap
+// but pointless when the resulting keys are stripped immediately afterwards.
+func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[string]any {
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
@@ -1644,6 +1657,9 @@ func (t *ToolSet) graphOverviewDataInternal() map[string]any {
 	}
 	if len(unconsumed) > 0 {
 		out["unconsumed_facts"] = unconsumed
+	}
+	if attention {
+		t.attentionWindows(out, tracking)
 	}
 	if len(capCounts) > 0 {
 		out["capabilities"] = capCounts

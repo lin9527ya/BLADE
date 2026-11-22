@@ -95,12 +95,16 @@ type Planner struct {
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
 	// session, but the shared store lets it record a serial exploit chain once and
 	// dispatch it step-by-step over rounds instead of front-loading it in parallel.
-	todoMu sync.Mutex
-	todos  map[int64]*actool.TodoStore
+	todoMu     sync.Mutex
+	todos      map[int64]*actool.TodoStore
+	todoLoaded map[int64]bool // 每进程只从 DB 恢复一次；模型主动清空后不再回填
 }
 
 func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *Planner {
-	return &Planner{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, todos: map[int64]*actool.TodoStore{}}
+	return &Planner{
+		prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns,
+		todos: map[int64]*actool.TodoStore{}, todoLoaded: map[int64]bool{},
+	}
 }
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
@@ -267,6 +271,79 @@ func (p *Planner) todoFor(expID int64) *actool.TodoStore {
 		p.todos[expID] = s
 	}
 	return s
+}
+
+// restorePlannerState loads the cross-process scratchpad once per Planner
+// instance. Norma's TodoStore has no public setter, so the stored list is fed
+// back through the same TodoWrite tool the model uses; that keeps one code path
+// for validation and status values.
+func (p *Planner) restorePlannerState(ctx context.Context, ts *db.ExplorationStore, taskID, expID int64) *actool.TodoStore {
+	store := p.todoFor(expID)
+	if taskID <= 0 {
+		return store
+	}
+	p.todoMu.Lock()
+	if p.todoLoaded[expID] {
+		p.todoMu.Unlock()
+		return store
+	}
+	p.todoLoaded[expID] = true
+	p.todoMu.Unlock()
+
+	state, found, err := ts.LoadPlannerState(taskID)
+	if err != nil {
+		// 读取失败不是「没有状态」：放开 loaded，让之后的轮次再试。
+		p.todoMu.Lock()
+		p.todoLoaded[expID] = false
+		p.todoMu.Unlock()
+		log.Printf("[planner] 读取持久化规划状态失败（本轮按空状态继续，下轮重试）: %v", err)
+		return store
+	}
+	if !found {
+		return store
+	}
+	if len(state.Todos) > 0 {
+		todos := make([]db.PlannerTodoItem, 0, len(state.Todos))
+		for _, it := range state.Todos {
+			content := strings.TrimSpace(it.Content)
+			if content == "" {
+				continue
+			}
+			todos = append(todos, db.PlannerTodoItem{Content: content, Status: it.Status})
+		}
+		if len(todos) > 0 {
+			payload, _ := json.Marshal(map[string]any{"todos": todos})
+			if _, err := store.Tool().Call(ctx, payload, nil); err != nil {
+				// 不重试：本轮模型可能马上写新的待办，下一轮再回填会覆盖它。
+				log.Printf("[planner] 恢复规划待办失败（本轮按空状态继续）: %v", err)
+			}
+		}
+	}
+	if strings.TrimSpace(p.lastRoundNote) == "" && strings.TrimSpace(state.LastRoundNote) != "" {
+		p.lastRoundNote = state.LastRoundNote
+	}
+	return store
+}
+
+// savePlannerState snapshots the scratchpad after a round. A crash mid-round can
+// lose that round's TodoWrite, but every completed round is durable; the point is
+// to survive process restart, not to make the tool call itself transactional.
+func (p *Planner) savePlannerState(ts *db.ExplorationStore, taskID, expID int64, store *actool.TodoStore) {
+	if taskID <= 0 || store == nil {
+		return
+	}
+	items := store.List()
+	todos := make([]db.PlannerTodoItem, 0, len(items))
+	for _, it := range items {
+		todos = append(todos, db.PlannerTodoItem{Content: it.Content, Status: string(it.Status)})
+	}
+	note := p.lastRoundNote
+	if len(note) > 8000 {
+		note = clipLine(note, 8000)
+	}
+	if err := ts.SavePlannerState(taskID, todos, note); err != nil {
+		log.Printf("[planner] 保存规划状态失败: %v", err)
+	}
 }
 
 // SetKillWork wires the engine's per-work terminate callback so the planner's
@@ -731,7 +808,8 @@ const structuredIntentBlock = `
 - depends_on 默认 advisory，仅轻度排序；strict 才等待活跃前置，终态 fail-open，不是安全锁。解阻用 set_dependency_mode / drop_dependency / reopen_intent，写 reason，不改授权。
 - worker 的 [意图提案] 先核对再 add_intent；一条事实有子意图不代表所有分叉已接手，按 lead id 逐个处理；可选 lead_ids 关联，原文与唯一父节点线索明确一致时自动关联，不为追踪强制填表。
 - route_dossier 看路线，search_precedents 取历史先验（不是本次结论）；campaign 提供策略上下文，不授权。
-- 需要跨轮保留的研究判断用 TodoWrite：记录待验证分叉、等待原因及什么新证据会改变结论，不必每轮复述全部历史。`
+- attention_oldest_leads / attention_oldest_facts / attention_oldest_unresolved 是全图召回窗口（各最多 5 条，不是全量）：主窗口没看到的老线索、未接手事实、blocked/exhausted/open_proof_gap 先看这里。changes 中带 summary/polarity/confidence/status 或 detail_required=true 的节点/漏洞变更，先用 node_detail 或 list_findings 核对再改判断。
+- 需要跨轮保留的研究判断用 TodoWrite：记录待验证分叉、等待原因及什么新证据会改变结论，不必每轮复述全部历史；该清单会随任务持久化，进程重启后恢复。`
 
 // coldArchiveBlock 是冷区（cold digest）的**代码持有**纪律：老库的正文与领域模板
 // 都不知道折叠机制，模型会把 recent_facts 的“最新一窗”当成全部历史，于是把已经
@@ -761,6 +839,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// wait for the active round instead of racing p.hot / transcript state.
 	p.planMu.Lock()
 	defer p.planMu.Unlock()
+	// 跨进程恢复：TodoWrite 清单与上一轮结论只在 Planner 对象里时，重启即丢；
+	// 每轮开始恢复一次、结束落库一次。恢复只影响规划便签，不写入事实图。
+	plannerTodos := p.restorePlannerState(ctx, ts, taskID, ts.ID())
+	defer p.savePlannerState(ts, taskID, ts.ID(), plannerTodos)
 	proxyAddr, proxyCA := p.proxySnapshot()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
@@ -885,7 +967,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		MaxTurns:      p.maxTurns, // 0 = unlimited (configurable in agent management)
 		MaxDuration:   maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
 		// 跨唤醒共享的规划待办：让串行链在多轮之间保留（session 是新的，store 不是）。
-		Todos: p.todoFor(ts.ID()),
+		Todos: plannerTodos,
 		// 命中【本轮】步数预算→ SDK 跑收尾:把本轮已想清楚的结论落地(该派的 add_intent、
 		// 能证的 prove_goal、串行链记 TodoWrite),而非停止规划——planner 之后仍会被反复唤醒。
 		// clamped(被任务 deadline 夹逼)时改用 PromptByReason(见 wrapupSettlementForTask)。
@@ -947,7 +1029,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		tsx = hts
 		wireToolSet(tsx)
 		keepSession = true
-		if p.useBoundedView() && hexp == ts.ID() && len(s.Messages()) > 0 && llm.LastBoundaryIndex(s.Messages()) < 0 && (hnode > 0 || hchange != "") {
+		if p.useBoundedView() && hexp == ts.ID() && len(s.Messages()) > 0 && llm.LastBoundaryIndex(s.Messages()) < 0 && (hnode > 0 || hchange != "") && p.shouldUseDelta() {
 			useDelta = true
 			prevNodeCursor = hnode
 			prevChangeCursor = hchange
@@ -1047,7 +1129,21 @@ const (
 	plannerHotMaxRounds   = 8
 	plannerHotMaxMessages = 14
 	plannerHotIdleTTL     = 10 * time.Minute
+	// plannerFullReconcileEvery 每 N 个热会话轮强制一次完整有界视图，而不是只看
+	// delta；否则落在 delta 字段索引之外的老项（attention 窗口）可能长期不再出现。
+	plannerFullReconcileEvery = 5
 )
+
+// shouldUseDelta lets the hot session use the cheap delta most rounds, but forces
+// a periodic full bounded snapshot for reconciliation. Callers hold hotMu.
+func (p *Planner) shouldUseDelta() bool {
+	p.hotMu.Lock()
+	defer p.hotMu.Unlock()
+	if p.hotRounds <= 0 {
+		return true
+	}
+	return p.hotRounds%plannerFullReconcileEvery != 0
+}
 
 func extractBlackboardCursors(bb map[string]any, fallbackNode int64, fallbackChange string) (int64, string) {
 	if bb == nil {

@@ -37,6 +37,14 @@ type BlackboardChange struct {
 	Fields         []string `json:"changed_fields"`
 	OperationID    string   `json:"operation_id,omitempty"`
 	ReasonCode     string   `json:"reason_code,omitempty"`
+	// Semantic patch for node changes: a short summary and the current polarity /
+	// confidence let the planner understand an update without a detail round-trip.
+	// DetailRequired marks changes whose content matters enough to read node_detail.
+	Summary        string `json:"summary,omitempty"`
+	Polarity       string `json:"polarity,omitempty"`
+	Confidence     string `json:"confidence,omitempty"`
+	Status         string `json:"status,omitempty"`
+	DetailRequired bool   `json:"detail_required,omitempty"`
 }
 
 type BlackboardChanges struct {
@@ -135,6 +143,7 @@ func (s *ExplorationStore) BlackboardChanges(ctx context.Context, cursor string,
 		}
 		out.Cursor = current.Cursor()
 	}
+	s.enrichChanges(ctx, out.Changes)
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM blackboard_events WHERE exploration_id=$1 AND epoch=$2 AND seq>$3 AND seq<=$4`, s.expID, version.Epoch, after, version.Revision).Scan(&total); err != nil {
 		return out, err
@@ -188,4 +197,111 @@ func (s *ExplorationStore) AllByKindState(kind, state string) ([]*Node, error) {
 	}
 	defer rows.Close()
 	return scanNodes(rows)
+}
+
+// enrichChanges attaches a compact semantic patch to node and finding changes.
+// It reads current payloads/rows in one query per entity for the change page
+// only; it never stores raw payloads in the journal. Deleted nodes have no row,
+// so their change keeps only the state transition recorded by the trigger.
+func (s *ExplorationStore) enrichChanges(ctx context.Context, changes []BlackboardChange) {
+	if len(changes) == 0 {
+		return
+	}
+	nodeIDs := make([]int64, 0, len(changes))
+	findingNodeIDs := make([]int64, 0, len(changes))
+	seenNodes, seenFindings := map[int64]bool{}, map[int64]bool{}
+	for _, c := range changes {
+		if c.NodeID == nil {
+			continue
+		}
+		switch c.Entity {
+		case "node":
+			if !seenNodes[*c.NodeID] {
+				seenNodes[*c.NodeID] = true
+				nodeIDs = append(nodeIDs, *c.NodeID)
+			}
+		case "finding":
+			if !seenFindings[*c.NodeID] {
+				seenFindings[*c.NodeID] = true
+				findingNodeIDs = append(findingNodeIDs, *c.NodeID)
+			}
+		}
+	}
+	payloads := map[int64]map[string]any{}
+	if len(nodeIDs) > 0 {
+		if rows, err := s.db.QueryContext(ctx, `SELECT id,payload FROM exploration_nodes
+WHERE exploration_id=$1 AND id=ANY($2::bigint[])`, s.expID, nodeIDs); err == nil {
+			for rows.Next() {
+				var id int64
+				var raw []byte
+				if rows.Scan(&id, &raw) != nil {
+					continue
+				}
+				var p map[string]any
+				if json.Unmarshal(raw, &p) == nil {
+					payloads[id] = p
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+	type findingPatch struct{ summary, status, confidence string }
+	findings := map[int64]findingPatch{}
+	if len(findingNodeIDs) > 0 {
+		if rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (node_id) node_id,summary,status,confidence
+FROM findings WHERE node_id=ANY($1::bigint[]) ORDER BY node_id,id DESC`, findingNodeIDs); err == nil {
+			for rows.Next() {
+				var nodeID int64
+				var p findingPatch
+				if rows.Scan(&nodeID, &p.summary, &p.status, &p.confidence) == nil {
+					findings[nodeID] = p
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+	for i := range changes {
+		c := &changes[i]
+		if c.NodeID == nil {
+			continue
+		}
+		switch c.Entity {
+		case "node":
+			p := payloads[*c.NodeID]
+			if p == nil {
+				continue
+			}
+			if v, ok := p["summary"].(string); ok {
+				c.Summary = truncateUTF8(strings.TrimSpace(v), 240)
+			}
+			if v, ok := p["polarity"].(string); ok {
+				c.Polarity = v
+			}
+			if v, ok := p["confidence"].(string); ok {
+				c.Confidence = v
+			}
+		case "finding":
+			p, ok := findings[*c.NodeID]
+			if !ok {
+				continue
+			}
+			c.Summary = truncateUTF8(strings.TrimSpace(p.summary), 240)
+			c.Status = p.status
+			c.Confidence = p.confidence
+		default:
+			continue
+		}
+		c.DetailRequired = changeNeedsDetail(*c)
+	}
+}
+
+func changeNeedsDetail(c BlackboardChange) bool {
+	for _, field := range c.Fields {
+		switch field {
+		case "payload", "state", "status", "confidence", "evidence_version",
+			"delete_reason", "semantic_outcome", "semantic_note":
+			return true
+		}
+	}
+	return false
 }

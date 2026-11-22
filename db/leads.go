@@ -268,15 +268,18 @@ type LeadTraceStats struct {
 }
 
 type LeadTraceReport struct {
-	PendingPreview []LeadTrace    `json:"-"`
-	OpenByFact     map[int64]int  `json:"-"`
-	Rows           []LeadTrace    `json:"rows"`
-	Stats          LeadTraceStats `json:"stats"`
-	Total          int            `json:"total"`
-	Limit          int            `json:"limit"`
-	Offset         int            `json:"offset"`
-	HasMore        bool           `json:"has_more"`
-	Status         ReadStatus     `json:"read_status"`
+	PendingPreview []LeadTrace `json:"-"`
+	// OldestPendingPreview 是最老的一批未处理线索（受 20 条上限）。查询按最新优先
+	// 扫描，所以这里在扫描中维护一个「保留最老 N 条」的小集合，避免二次全量查询。
+	OldestPendingPreview []LeadTrace    `json:"-"`
+	OpenByFact           map[int64]int  `json:"-"`
+	Rows                 []LeadTrace    `json:"rows"`
+	Stats                LeadTraceStats `json:"stats"`
+	Total                int            `json:"total"`
+	Limit                int            `json:"limit"`
+	Offset               int            `json:"offset"`
+	HasMore              bool           `json:"has_more"`
+	Status               ReadStatus     `json:"read_status"`
 }
 
 // Full-task aggregate and paged display are separate. The join reads all intent
@@ -437,7 +440,8 @@ func (s *ExplorationStore) LeadTraceReport(state, leadID string, limit, offset i
 				out.Stats.ExecutionSamples++
 			}
 		}
-		if lead.State == "pending" || lead.State == "needs_follow_up" || lead.State == "source_changed" {
+		openLead := openLeadState(lead.State)
+		if openLead {
 			out.OpenByFact[lead.FactID]++
 			if len(out.PendingPreview) < 20 {
 				out.PendingPreview = append(out.PendingPreview, lead)
@@ -448,6 +452,9 @@ func (s *ExplorationStore) LeadTraceReport(state, leadID string, limit, offset i
 			lead.Intents = lead.Intents[:20]
 			lead.HistoryTruncated = true
 		}
+		if openLead {
+			out.OldestPendingPreview = keepOldestLeads(out.OldestPendingPreview, lead, 20)
+		}
 		if (state == "" || lead.State == state) && (leadID == "" || lead.ID == leadID) {
 			filtered = append(filtered, lead)
 		}
@@ -455,6 +462,13 @@ func (s *ExplorationStore) LeadTraceReport(state, leadID string, limit, offset i
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	sort.Slice(out.OldestPendingPreview, func(i, j int) bool {
+		a, b := out.OldestPendingPreview[i], out.OldestPendingPreview[j]
+		if !a.FactCreatedAt.Equal(b.FactCreatedAt) {
+			return a.FactCreatedAt.Before(b.FactCreatedAt)
+		}
+		return a.ID < b.ID
+	})
 	if out.Stats.AdoptionSamples > 0 {
 		v := adoptionSum / float64(out.Stats.AdoptionSamples)
 		out.Stats.AverageAdoptionSeconds = &v
@@ -495,6 +509,36 @@ func earliestTraceTime(a, b *time.Time) *time.Time {
 	}
 	return a
 }
+
+func openLeadState(state string) bool {
+	switch state {
+	case "pending", "needs_follow_up", "source_changed":
+		return true
+	}
+	return false
+}
+
+// keepOldestLeads keeps the N oldest items seen so far. The report query scans
+// newest-first, so a plain append would surface the freshest leads instead.
+func keepOldestLeads(list []LeadTrace, lead LeadTrace, limit int) []LeadTrace {
+	if limit <= 0 {
+		return list
+	}
+	if len(list) < limit {
+		return append(list, lead)
+	}
+	newest := 0
+	for i := 1; i < len(list); i++ {
+		if list[i].FactCreatedAt.After(list[newest].FactCreatedAt) {
+			newest = i
+		}
+	}
+	if lead.FactCreatedAt.Before(list[newest].FactCreatedAt) {
+		list[newest] = lead
+	}
+	return list
+}
+
 func leadTraceState(refs []LeadIntentTrace, dismissed bool) string {
 	if len(refs) == 0 {
 		if dismissed {
