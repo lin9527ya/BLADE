@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+## [0.9.27] - 2026-11-23
+
+### 探索规划、实测规范与图谱演化回放
+
+- Planner 新增「广度查漏三对照」「裂变八算子」「盲态建预言机（Oracle）」与「四维等价防误删红线」（目标对象/接口 + 载体/HTTP方法 + 身份/前置状态 + 验证机理/假设四维全同或严格包含才算重复），7 套领域模板同步继承并保留既有 ARTEX 契约。
+- Worker 强化批量探测「先建基线指纹 + 正常样本签名聚合」与六维弱信号拆桶记录；`record_fact.summary` 对明显建议/推测词返回非阻断 `warning` 提示（引导改写进 `propose_intents` / `leads`），不拦截 `detail` / `evidence` 中的目标原始回显。
+- 漏洞报告与 `pentest-output-standards` 补充每步请求前「目的 + 前置依赖 + 预期结果 + 提取值后续用途」衔接要求，以及 HTTP 漏洞优先给出可粘贴进 Burp Repeater 的原始请求与状态行/关键头；`vuln-hunting` 增补「维度 8：解析歧义与下游组件链」。
+- 启动提示词/工具迁移纳入 `reporter` 与 `drop_intent` 按旧内置 SHA-256 的无损刷新；Web 探索图谱新增基于 `ts` 创建时间的演化回放控件（起点固定不跳动、逐卡高亮揭示、支持暂停与单步）。
+
+### 黑板并发锁粒度、轻量投影与生命周期治理
+
+- 数据库读取与常规写入分级引入 `FOR KEY SHARE` / `FOR UPDATE` 及只读免锁旁路，新增未执行启动前退出意图的 `RevertUnstartedClaim`；消除冷图折叠、需求依赖及关联边的 N+1 与截断隐患，豁免空变更事件。
+- 扩充 Planner 热会话窗口至 48 条并同步剥离历史态势片段；新增轻量增量 `blackboardDeltaCore` 与 `workerSituationData`，`record_fact` 同批写回聚拢触发一次最高语义优先级通知，引擎补充中优先 5s 短聚与 `goalless` / `goal_drain` / 暂停收敛护栏。
+- 后端 DTO 补充 `finding_id` / `blocked_reason` / `semantic_outcome` / `owner` 等字段并新增 `GET /api/exploration/nodes/{nid}` 与 `GET /api/tasks/{id}/planner-state`，对齐播报板、总览、探索图谱与详情弹窗状态展示。
+
+### 出站安全、边界隔离、容灾与质量修复
+
+- 为 HTTP 工具、`js_audit`（含非 HTTP 协议禁用与黑名单检查）与 MCP 客户端统一补齐出站重定向防护，阻断非授权内网/回环/云元数据跳转并对合规域外跳转剥离敏感认证头。
+- 将 MITM 私钥目录 `_ca/` 与只读公钥 `_public_ca/` 分离，扩展低权限隔离目录护栏；`/api/credentials` 与明文查看收敛至管理员，交付物记录 `actorFrom` 归因；修复 Planner 状态读取瞬态失败时覆写空态的问题。
+- 触发器队列新增每 Agent 深度上限并用 `defer` 避免 panic 卡死；Traffic `spill` 移出 `wmu` 写锁并防 `gcBlobs` 误删在途块，`pass` 映射引入 TTL 与容量淘汰；冷归档补齐 `task_planner_state` 与 `task_timeout_events` 并支持可配置保留策略。
+- LLM 池改进 CJK Token 估算、同协议优先保 KV Cache 与 `413` / `422` 分类容灾；`session_login.credential_id` 支持注入凭据而不回显密文，优化 `checkIntent` 查询性能。
+- 收紧命令拦截内置正则（含 `v8` 迁移），减少对自有 `.log`、`/tmp` 及普通 `dd` 读取的误判；系统设置补齐 Work Agent 并发数保存按钮；修复 `agent/outbound_redirect_test.go` 的 `staticcheck (S1021)` 阻塞项使 GitHub Actions `test` 全量通过。
+
 ## [0.9.26] - 2026-11-22
 
 ### 可信成功判定与探索自主性
