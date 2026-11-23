@@ -20,6 +20,7 @@ import {
   useEdgesState,
   useNodesState,
 } from "@xyflow/react";
+import { Pause, Play, SkipBack, SkipForward, Square } from "lucide-react";
 
 import { collapseDigestGraph, nodeSummary, prioTone, typeMeta, viewKind } from "./_parts/graph-helpers";
 import { NodeDetailDialog } from "./_parts/node-detail-dialog";
@@ -27,6 +28,7 @@ import "@xyflow/react/dist/style.css";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { buildReplayPlan, sliceGraphForReplay } from "@/lib/graph-replay";
 import { toneClasses } from "@/lib/status";
 import type { Edge, ExploreKind, TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -75,7 +77,7 @@ export const relColor: Record<string, string> = {
 const COL_W = 360;
 const ROW_H = 140;
 
-type ExploreNodeData = { node: TaskNode };
+type ExploreNodeData = { node: TaskNode; replayHighlight?: boolean };
 type ExploreRFNode = RFNode<ExploreNodeData, "explore">;
 
 function pushMap(m: Map<string, string[]>, k: string, v: string) {
@@ -200,14 +202,17 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
   const showState = n.type === "goal" || n.type === "intent" || n.type === "footprint" || n.type === "finding";
   const showPriority = (n.type === "goal" || n.type === "intent") && n.priority > 0;
   const isLive = !n.inherited && n.type === "intent" && n.state === "running";
+  let borderClass = "border-transparent";
+  if (selected) {
+    borderClass = "border-blue-500";
+  } else if (data.replayHighlight) {
+    borderClass = "border-amber-400 ring-2 ring-amber-400/35";
+  } else if (isLive) {
+    borderClass = "border-blue-400/70";
+  }
 
   return (
-    <div
-      className={cn(
-        "w-[240px] cursor-pointer rounded-2xl border-2 transition-colors",
-        selected ? "border-blue-500" : isLive ? "border-blue-400/70" : "border-transparent",
-      )}
-    >
+    <div className={cn("w-[240px] cursor-pointer rounded-2xl border-2 transition-colors", borderClass)}>
       <div className="group relative rounded-[14px] border border-black/[0.06] bg-white shadow-sm transition-shadow hover:shadow-lg dark:border-white/10 dark:bg-neutral-900">
         <Handle
           type="target"
@@ -248,7 +253,15 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
             </Badge>
           ) : showState ? (
             <StatusBadge
-              domain={n.type === "goal" ? "goal" : n.type === "footprint" ? "footprint" : n.type === "finding" ? "finding" : "intent"}
+              domain={
+                n.type === "goal"
+                  ? "goal"
+                  : n.type === "footprint"
+                    ? "footprint"
+                    : n.type === "finding"
+                      ? "finding"
+                      : "intent"
+              }
               value={n.type === "finding" ? n.finding_status || n.state : n.state}
               dot
               className="px-1.5 py-0 text-[10px]"
@@ -290,32 +303,83 @@ function ExplorationGraphInner({
   // 缩略图默认收起：它是绝对定位的浮层，贴住右下角就会在 pan 之后压住节点卡片（截图里就压着一张
   // 漏洞卡）。图小的时候它本来也没用——需要时一键展开，而不是让它常驻遮挡内容。
   const [showMiniMap, setShowMiniMap] = React.useState(false);
+  const [replayActive, setReplayActive] = React.useState(false);
+  const [replayPaused, setReplayPaused] = React.useState(false);
+  const [replayCount, setReplayCount] = React.useState(0);
   // Full node index (incl. folded members) so the digest drawer can resolve
   // covered members even though they are not rendered on the canvas.
   const nodesById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   // Collapsed view: folded members removed, their edges rewired onto the digest.
   const { viewNodes, viewEdges } = React.useMemo(() => collapseDigestGraph(nodes, edges), [nodes, edges]);
+  // 始终基于完整图预计算节点坐标：时间轴回放逐步揭示卡片时，旧卡片与整体位置零跳动。
+  const fullLayout = React.useMemo(() => computeLayout(viewNodes, viewEdges), [viewNodes, viewEdges]);
+  const replayPlan = React.useMemo(() => buildReplayPlan(viewNodes), [viewNodes]);
+  const totalReplaySteps = replayPlan.stepIds.length;
+  const replaySlice = React.useMemo(
+    () => (replayActive ? sliceGraphForReplay(viewNodes, viewEdges, replayPlan, replayCount) : null),
+    [replayActive, viewNodes, viewEdges, replayPlan, replayCount],
+  );
+  const displayNodes = replaySlice ? replaySlice.visibleNodes : viewNodes;
+  const displayEdges = replaySlice ? replaySlice.visibleEdges : viewEdges;
+  const latestReplayId = replaySlice ? replaySlice.latestId : null;
+  const replayFinished = Boolean(replaySlice && replaySlice.clampedCount >= totalReplaySteps);
+  let replayActionLabel = "暂停";
+  if (replayFinished) {
+    replayActionLabel = "重播";
+  } else if (replayPaused) {
+    replayActionLabel = "继续";
+  }
   const isEmpty = viewNodes.length === 0;
+
+  React.useEffect(() => {
+    if (!replayActive || replayPaused) return;
+    if (totalReplaySteps === 0 || replayCount >= totalReplaySteps) {
+      setReplayPaused(true);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setReplayCount((prev) => {
+        if (prev + 1 >= totalReplaySteps) {
+          setReplayPaused(true);
+          return totalReplaySteps;
+        }
+        return prev + 1;
+      });
+    }, 450);
+    return () => window.clearInterval(timer);
+  }, [replayActive, replayPaused, replayCount, totalReplaySteps]);
+
+  const startReplay = React.useCallback(() => {
+    if (totalReplaySteps === 0) return;
+    setReplayActive(true);
+    setReplayPaused(false);
+    setReplayCount(0);
+  }, [totalReplaySteps]);
+
+  const stopReplay = React.useCallback(() => {
+    setReplayActive(false);
+    setReplayPaused(false);
+    setReplayCount(0);
+  }, []);
 
   React.useEffect(() => {
     setSelected((cur) => (cur ? (nodesById.get(cur.id) ?? cur) : cur));
     const liveTargets = new Set(
-      viewNodes.filter((n) => !n.inherited && n.type === "intent" && n.state === "running").map((n) => n.id),
+      displayNodes.filter((n) => !n.inherited && n.type === "intent" && n.state === "running").map((n) => n.id),
     );
-    const layout = computeLayout(viewNodes, viewEdges);
     setRfNodes((prev) => {
       const prevPos = new Map(prev.map((p) => [p.id, p.position]));
-      return viewNodes.map((n) => ({
+      return displayNodes.map((n) => ({
         id: n.id,
         type: "explore" as const,
-        position: prevPos.get(n.id) ?? layout.get(n.id) ?? { x: 0, y: 0 },
-        data: { node: n },
+        position: prevPos.get(n.id) ?? fullLayout.get(n.id) ?? { x: 0, y: 0 },
+        data: { node: n, replayHighlight: latestReplayId === n.id },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
       }));
     });
     setRfEdges(
-      viewEdges.map((e, i) => {
+      displayEdges.map((e, i) => {
         const color = relColor[e.rel] ?? "#94a3b8";
         const animated = liveTargets.has(e.dst);
         // 痕迹/矛盾/替代边用虚线：同一张图上区分因果推进与质疑/替代边。
@@ -339,7 +403,7 @@ function ExplorationGraphInner({
         } satisfies RFEdge;
       }),
     );
-  }, [viewNodes, viewEdges, nodesById, setRfNodes, setRfEdges]);
+  }, [displayNodes, displayEdges, fullLayout, latestReplayId, nodesById, setRfNodes, setRfEdges]);
 
   return (
     <>
@@ -410,13 +474,85 @@ function ExplorationGraphInner({
                 </span>
               ))}
             </div>
-            <button
-              type="button"
-              onClick={() => setShowMiniMap((v) => !v)}
-              className="self-start text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            >
-              {showMiniMap ? "隐藏缩略图" : "显示缩略图"}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowMiniMap((v) => !v)}
+                className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                {showMiniMap ? "隐藏缩略图" : "显示缩略图"}
+              </button>
+              {totalReplaySteps > 0 && (
+                <div className="flex items-center gap-1.5 border-border/60 border-l pl-3">
+                  {!replayActive ? (
+                    <button
+                      type="button"
+                      onClick={startReplay}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      title="按节点创建时间顺序回放图谱演化"
+                    >
+                      <Play className="size-3" />
+                      时间回放
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (replaySlice && replaySlice.clampedCount >= totalReplaySteps) {
+                            setReplayCount(0);
+                            setReplayPaused(false);
+                          } else {
+                            setReplayPaused((p) => !p);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-accent"
+                        title={replayPaused ? "继续/重播" : "暂停"}
+                      >
+                        {replayPaused ? <Play className="size-3" /> : <Pause className="size-3" />}
+                        {replayActionLabel}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReplayPaused(true);
+                          setReplayCount((c) => Math.max(0, c - 1));
+                        }}
+                        disabled={!replaySlice || replaySlice.clampedCount <= 0}
+                        className="inline-flex items-center rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+                        title="上一步"
+                      >
+                        <SkipBack className="size-3" />
+                      </button>
+                      <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                        {replaySlice ? replaySlice.clampedCount : 0}/{totalReplaySteps}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReplayPaused(true);
+                          setReplayCount((c) => Math.min(totalReplaySteps, c + 1));
+                        }}
+                        disabled={!replaySlice || replaySlice.clampedCount >= totalReplaySteps}
+                        className="inline-flex items-center rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+                        title="下一步"
+                      >
+                        <SkipForward className="size-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={stopReplay}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        title="结束回放并显示完整图谱"
+                      >
+                        <Square className="size-2.5" />
+                        退出
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </Panel>
       </ReactFlow>

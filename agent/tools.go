@@ -3668,9 +3668,23 @@ func (t *ToolSet) concludeIntent() actool.CoreTool {
 	)
 }
 
+// factSummaryAdviceTokens 仅用于对面向规划层路由的 record_fact.summary 做温柔提示，
+// 引导执行 agent 将后续计划放到 propose_intents / leads；绝不作用于 detail / evidence，
+// 以免目标网页或接口原始回显中的“下一步”“建议”等词触发误报。
+var factSummaryAdviceTokens = []string{"建议", "下一步", "我的思路", "思路是", "推测", "猜测", "也许", "或许"}
+
+func factSummaryAdviceWarning(summary string) string {
+	for _, tok := range factSummaryAdviceTokens {
+		if strings.Contains(summary, tok) {
+			return fmt.Sprintf("summary 含建议/推测措辞 %q：summary 建议只写客观观测与基线差分结果，下一步方向请拆分写入 propose_intents 或 leads。", tok)
+		}
+	}
+	return ""
+}
+
 func (t *ToolSet) recordFact() actool.CoreTool {
 	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。用于记录探索结果——包括指纹/枚举等【正向结论】，和'端口关闭'/'参数不可注入'/'未发现登录入口'等【否定结论】。\n"+
-		"同一结论的属性可合并在 detail；彼此独立的攻击面、验证结论和假设要分条，便于单独接手。不限制每意图的事实条数。summary 写清具体观察，不用一句泛泛总结掩盖独立分叉。旁路线索可用 leads（不要求证据），不要只藏在 detail。\n"+
+		"同一结论的属性可合并在 detail（批量探测建议先写清基线指纹、正常样本聚合计数及状态码/体量/耗时/头/报错/输入变形等异常差分，附证据文件路径）；彼此独立的攻击面、验证结论和假设要分条，便于单独接手。不限制每意图的事实条数。summary 只写客观观测与基线差分结果（不写“建议/下一步/思路”），也不用一句泛泛总结掩盖独立分叉。旁路线索可用 leads（不要求证据）或 propose_intents，不要只藏在 detail。\n"+
 		"★facts 数组用于一次写多条【彼此不同】的结论（每条可省略 intent_id，默认用顶层 intent_id）。返回 ids 数组，与 facts 等长同序。\n"+
 		"⚠️只写你在工具输出里【真实看到】的结论，不要脑补。evidence 与 confidence 用来防止不准确的结论污染图谱：\n"+
 		"  · evidence=支撑本结论的【一行】关键证据（命令+最能证明的那一两行输出），**务必简洁**——细节已在 detail，这里不要再粘大段输出。\n"+
@@ -3719,6 +3733,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
+			warns := map[string]string{}
 			var bestNotify *pendingFactNotify
 			assetSeen := map[int64]bool{}
 			var mergedAssets []int64
@@ -3729,6 +3744,9 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 					continue
 				}
 				ids[i] = id
+				if w := factSummaryAdviceWarning(it.Summary); w != "" {
+					warns[strconv.Itoa(i)] = w
+				}
 				if ev != nil {
 					for _, aid := range ev.assetIDs {
 						if !assetSeen[aid] {
@@ -3749,11 +3767,18 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 				if e, bad := errs["0"]; bad {
 					return actool.Errorf(e), nil
 				}
-				return actool.Text(fmt.Sprintf("fact recorded: %d", ids[0])), nil
+				msg := fmt.Sprintf("fact recorded: %d", ids[0])
+				if w := warns["0"]; w != "" {
+					msg += "\nwarning: " + w
+				}
+				return actool.Text(msg), nil
 			}
 			out := map[string]any{"ids": ids}
 			if len(errs) > 0 {
 				out["errors"] = errs
+			}
+			if len(warns) > 0 {
+				out["warnings"] = warns
 			}
 			return jsonResult(out)
 		})

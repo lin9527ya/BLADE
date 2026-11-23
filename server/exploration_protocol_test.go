@@ -175,3 +175,103 @@ func TestHistoricalBuiltinPromptFingerprints(t *testing.T) {
 		t.Fatalf("builtin planner prompt missing no_output guidance")
 	}
 }
+
+func TestReporterAndDropIntentMigrationPreservesCustomizations(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+
+	// 1. reporter prompt migration: old builtin hash upgrades while custom prompt & append survive.
+	rep, _ := m.pg.GetAgentByKey("reporter")
+	if rep == nil {
+		rep, err = m.pg.CreateAgent("reporter", "报告撰写", "test reporter")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	origPrompt, _ := m.pg.CurrentPrompt(rep.ID)
+	origExtra, _ := m.pg.CurrentPromptAppend(rep.ID)
+	t.Cleanup(func() {
+		_, _ = m.pg.SavePromptWithAppend(rep.ID, origPrompt, origExtra, "restore fixture", "test")
+	})
+
+	// Test upgrading from the pre-v0.9.26 reporter default (SHA-256 = 1a02c50cb6...)
+	oldReporterPrompt := strings.Replace(
+		agent.ReporterDefaultPrompt,
+		"**可照做复现**的分步操作（请求/命令/参数/前置条件）。每一步请求/命令前用一句话写明「**目的 + 前置依赖（用了上一步哪个返回值） + 预期结果 + 提取值后续用途**」，禁止裸贴报文让人猜上下文；HTTP 类漏洞凡从 `get_finding_traffic` / `traffic_get` 或工具输出拿到完整原始报文的，**优先贴可直接粘贴进 Burp Repeater 重放的 HTTP 原始请求（请求行 + Host + 请求头 + 空行 + Body）与状态行/关键响应头**，禁止只用参数表或半截摘要替代（未采集到的字段绝不臆造）。",
+		"**可照做复现**的分步操作（请求/命令/参数/前置条件），能贴报文就贴。",
+		1,
+	)
+	oldReporterPrompt = strings.Replace(
+		oldReporterPrompt,
+		"证明漏洞真实存在的关键请求/响应片段（优先完整状态行与关键响应头）、命令输出、回显、日志——用代码块贴原文，不要转述或擅自裁掉关键头。",
+		"证明漏洞真实存在的关键请求/响应片段、命令输出、回显、日志——用代码块贴原文，不要转述。",
+		1,
+	)
+	// Verify fixture matches registered fingerprint before testing migration.
+	oldSum := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(oldReporterPrompt))))
+	if !reporterBuiltinPromptSHA256[oldSum] {
+		t.Fatalf("old reporter fixture hash %s missing from reporterBuiltinPromptSHA256", oldSum)
+	}
+	if _, err := m.pg.SavePromptWithAppend(rep.ID, oldReporterPrompt, "保留追加规则", "test", "test"); err != nil {
+		t.Fatal(err)
+	}
+	migrateExplorationPrompts(m.pg)
+	gotPrompt, _ := m.pg.CurrentPrompt(rep.ID)
+	if gotPrompt != agent.ReporterDefaultPrompt {
+		t.Fatalf("reporter prompt did not upgrade from known builtin hash")
+	}
+	if extra, _ := m.pg.CurrentPromptAppend(rep.ID); extra != "保留追加规则" {
+		t.Fatalf("reporter append lost: %q", extra)
+	}
+	customReporter := oldReporterPrompt + "\n自定义段落"
+	if _, err := m.pg.SavePromptWithAppend(rep.ID, customReporter, "保留追加规则", "test", "test"); err != nil {
+		t.Fatal(err)
+	}
+	migrateExplorationPrompts(m.pg)
+	if gotCustom, _ := m.pg.CurrentPrompt(rep.ID); gotCustom != customReporter {
+		t.Fatalf("custom reporter prompt overwritten: %q", gotCustom)
+	}
+
+	// 2. drop_intent tool description migration preserves policy and custom edits.
+	var dropSeed agent.ToolSeed
+	for _, s := range agent.BuiltinToolSeeds() {
+		if s.Key == "drop_intent" {
+			dropSeed = s
+		}
+	}
+	if err := m.pg.SeedTool(dropSeed.Key, dropSeed.Desc, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	row, err := m.pg.GetTool("drop_intent")
+	if err != nil || row == nil {
+		t.Fatalf("get drop_intent tool: %v", err)
+	}
+	origAgents, _ := json.Marshal(row.Agents)
+	t.Cleanup(func() {
+		_, _ = m.pg.Exec(`UPDATE tools SET description=$2,schema=$3,enabled=$4,agents=$5,deferred=$6 WHERE key=$1`,
+			row.Key, row.Description, row.Schema, row.Enabled, origAgents, row.Deferred)
+	})
+	oldDropDesc := "丢弃一条**还没被领走**的排队意图（软删除：保留节点与全部产出/血缘，理由进时间线）。" +
+		"\n★ 用途：队列已满或方向已被新事实覆盖时腾位置。**先看再删**——确已无价值才删，不要为\"整齐\"删。" +
+		"\n★ 只能删 open / paused；正在跑的意图先用 kill_work 停掉。" +
+		"\n★ 依赖它的下游会被一并解锁并在这里列出——那些步骤需要你重新规划（补前置或改方向）。"
+	if _, err := m.pg.Exec(`UPDATE tools SET description=$1,enabled=false,agents='["planner"]' WHERE key='drop_intent'`, oldDropDesc); err != nil {
+		t.Fatal(err)
+	}
+	migrateExplorationPrompts(m.pg)
+	gotDrop, _ := m.pg.GetTool("drop_intent")
+	if gotDrop.Description != dropSeed.Desc || gotDrop.Enabled || len(gotDrop.Agents) != 1 || gotDrop.Agents[0] != "planner" {
+		t.Fatalf("drop_intent migration unexpected result: %+v", gotDrop)
+	}
+	if err := m.pg.UpdateToolDescriptionIfUnchanged("drop_intent", dropSeed.Desc, "custom drop desc"); err != nil {
+		t.Fatal(err)
+	}
+	migrateExplorationPrompts(m.pg)
+	gotDrop, _ = m.pg.GetTool("drop_intent")
+	if gotDrop.Description != "custom drop desc" {
+		t.Fatalf("custom drop_intent description overwritten: %q", gotDrop.Description)
+	}
+}

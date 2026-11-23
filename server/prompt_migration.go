@@ -31,6 +31,7 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"6a832e1146013f13d6fceaca1d89be85bddc2cf7e5515b9b525d8da8bd4b8430": true, // ARTEX parity v3（扩面/瓶颈提示前）
 	"918f3915a866fd650952a65b727cc03e3047ab298263637e07dc947472f36391": true, // v0.9.24–v0.9.25（复探条件化前）
 	"07489799b5edcc9ebb5c30228b4941a6a7d960470b22628cd1da5d44770f53a5": true, // v0.9.25（复探条件化，角色对齐前）
+	"7a545d7c0f8e61fcfaa768e867ca45cd428aea0558828206de61cb8fb34a26ca": true, // v0.9.26（四维等价防误删与裂变算子前）
 }
 
 const settingPlannerPromptV3 = "planner_prompt_v3"
@@ -92,17 +93,37 @@ var workerBuiltinPromptSHA256 = map[string]bool{
 	"ecfc6637c257531ebd3e786fad28499f01a9bbaa8afbe844219df235135a5ca4": true, // v0.9.25（意图边界改为研究问题）
 }
 
+var reporterBuiltinPromptSHA256 = map[string]bool{
+	"1a02c50cb653942f6fd70fa649065c7fb676979125c0bdf47f373ccf7caeef32": true, // v0.9.26（复现步骤前后衔接与原始整包规范前）
+}
+
+var builtinToolDescSHA256 = map[string]map[string]bool{
+	"record_fact": {
+		"8b9446c8c11a2cd45f6f5c45bb541a732c399415a718b44b69479e4619078593": true, // v0.9.22
+		"09700ccb55aadbd553e3c38a7275d76a12801fc88f254e72cc0226e502bb14dd": true, // v0.9.26（基线聚合与纯观测 summary 说明前）
+	},
+	"drop_intent": {
+		"52c9b3c897d2a196421be3b5f0a2aa307d310bd405e3da3e32015f5770d36b31": true, // v0.9.26（防误删四维等价红线前）
+	},
+}
+
 func migrateExplorationPrompts(pg *db.DB) {
 	if pg == nil {
 		return
 	}
 	migrateBuiltinPrompt(pg, "planner", plannerBuiltinPromptSHA256)
 	migrateBuiltinPrompt(pg, "worker", workerBuiltinPromptSHA256)
+	migratePromptWithHashes(pg, "reporter", agent.ReporterDefaultPrompt, reporterBuiltinPromptSHA256)
 	if err := pg.BackfillProposalEntries(); err != nil {
 		log.Printf("[leads] 历史提案索引补全失败: %v", err)
 	}
+	migrateBuiltinToolDescriptions(pg, builtinToolDescSHA256)
+}
+
+func migrateBuiltinToolDescriptions(pg *db.DB, toolHashes map[string]map[string]bool) {
 	for _, seed := range agent.BuiltinToolSeeds() {
-		if seed.Key != "record_fact" {
+		hashes, ok := toolHashes[seed.Key]
+		if !ok {
 			continue
 		}
 		cur, err := pg.GetTool(seed.Key)
@@ -110,15 +131,19 @@ func migrateExplorationPrompts(pg *db.DB) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(cur.Description))
-		if hex.EncodeToString(sum[:]) == "8b9446c8c11a2cd45f6f5c45bb541a732c399415a718b44b69479e4619078593" {
+		if hashes[hex.EncodeToString(sum[:])] {
 			if err := pg.UpdateToolDescriptionIfUnchanged(seed.Key, cur.Description, seed.Desc); err != nil {
-				log.Printf("[prompts] 更新 record_fact 默认说明失败: %v", err)
+				log.Printf("[prompts] 更新 %s 默认说明失败: %v", seed.Key, err)
 			}
 		}
 	}
 }
 
 func migrateBuiltinPrompt(pg *db.DB, key string, hashes map[string]bool) {
+	migratePromptWithHashes(pg, key, agent.BuiltinPromptSeeds()[key], hashes)
+}
+
+func migratePromptWithHashes(pg *db.DB, key, target string, hashes map[string]bool) {
 	a, err := pg.GetAgentByKey(key)
 	if err != nil || a == nil {
 		return
@@ -127,8 +152,7 @@ func migrateBuiltinPrompt(pg *db.DB, key string, hashes map[string]bool) {
 	if err != nil {
 		return
 	}
-	target := agent.BuiltinPromptSeeds()[key]
-	if target == "" || strings.TrimSpace(cur) == strings.TrimSpace(target) {
+	if strings.TrimSpace(target) == "" || strings.TrimSpace(cur) == strings.TrimSpace(target) {
 		return
 	}
 	sum := sha256.Sum256([]byte(strings.TrimSpace(cur)))
