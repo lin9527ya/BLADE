@@ -249,6 +249,10 @@ export function RuntimeSection({ s }: { s: ReturnType<typeof useSettingsState> }
               disabled={!loaded || savingWorkers}
               onChange={(e) => setWorkers(e.target.value)}
             />
+            <Button type="button" size="sm" onClick={() => void saveWorkers()} disabled={!loaded || savingWorkers}>
+              {savingWorkers ? <Spinner data-icon="inline-start" /> : null}
+              保存
+            </Button>
           </div>
         </Field>
       </SubBlock>
