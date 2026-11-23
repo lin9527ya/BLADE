@@ -260,8 +260,7 @@ func TestJSAuditScriptBlocksFileSSRFAndBlacklist(t *testing.T) {
 	}))
 	defer forbiddenSrv.Close()
 
-	var targetSrv *httptest.Server
-	targetSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/index.html":
 			w.Header().Set("Content-Type", "text/html")
