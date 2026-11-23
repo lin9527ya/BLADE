@@ -121,6 +121,10 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 		{req.RetentionConvActivity, 3650, "对话活动流保留天数"},
 		{req.RetentionInterceptPend, 3650, "审批记录保留天数"},
 		{req.RetentionAuditEvents, 3650, "审计事件保留天数"},
+		{req.RetentionBBEventDays, 3650, "黑板变更事件保留天数"},
+		{req.RetentionBBOpsDays, 3650, "黑板操作日志保留天数"},
+		{req.RetentionTaskTimeoutDay, 3650, "超时状态事件保留天数"},
+		{req.RetentionAggReqDays, 3650, "汇总幂等回执保留天数"},
 	} {
 		if f.val == nil {
 			continue

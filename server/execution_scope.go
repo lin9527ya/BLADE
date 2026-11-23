@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/lin9527ya/blade/agent"
@@ -42,8 +43,16 @@ func (s *taskExecutionService) checkExecution(ctx context.Context, id int64) err
 	return s.checkTask(taskID)
 }
 func (s *taskExecutionService) checkIntent(id int64) error {
+	tid, err := strconv.ParseInt(s.taskID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("无效任务 ID")
+	}
 	var belongs bool
-	if err := s.svc.pg.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE n.id=$1 AND t.id::text=$2)`, id, s.taskID).Scan(&belongs); err != nil {
+	if err := s.svc.pg.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM exploration_nodes n
+		JOIN tasks t ON t.exploration_id=n.exploration_id
+		WHERE n.id=$1 AND t.id=$2 AND t.deleted_at IS NULL AND t.archived_at IS NULL
+	)`, id, tid).Scan(&belongs); err != nil {
 		return err
 	}
 	if !belongs {

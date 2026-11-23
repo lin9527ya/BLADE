@@ -65,7 +65,8 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 		return err
 	}
 	if _, err := tx.Exec(`LOCK TABLE findings, exploration_nodes, finding_comments, finding_retests,
-finding_case_members, finding_case_blocks, credential_checks, main_sessions, completion_waivers
+finding_case_members, finding_case_blocks, credential_checks, main_sessions, completion_waivers,
+task_planner_state, task_timeout_events
 IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return err
 	}
@@ -104,6 +105,8 @@ IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		{`DELETE FROM activity WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM main_sessions WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM completion_waivers WHERE exploration_id=$1`, []any{expID}},
+		{`DELETE FROM task_planner_state WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM task_timeout_events WHERE task_id=$1`, []any{taskID}},
 		{`DELETE FROM exploration_nodes WHERE exploration_id=$1`, []any{expID}},
 	} {
 		if _, err := tx.Exec(statement.query, statement.args...); err != nil {
@@ -306,7 +309,7 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	} else {
 		warnings = append(warnings, findingWarnings...)
 	}
-	for _, table := range []string{"credential_checks", "main_sessions", "completion_waivers"} {
+	for _, table := range []string{"credential_checks", "main_sessions", "completion_waivers", "task_planner_state", "task_timeout_events"} {
 		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
@@ -457,8 +460,8 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
 		"finding_comments": true, "finding_retests": true, "finding_case_members": true,
 		"finding_case_blocks": true, "credential_checks": true, "main_sessions": true,
-		"completion_waivers": true,
-		"llm_records":        true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
+		"completion_waivers": true, "task_planner_state": true, "task_timeout_events": true,
+		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
 		"side_question_sessions": true, "side_question_requests": true,
 	}
 	if !allowed[table] {
@@ -934,6 +937,27 @@ func assertArchiveSnapshotComplete(tx *sql.Tx, taskID, expID int64, snapshot *Ta
 			return fmt.Errorf("%w: %s live=%d manifest=%d rows=%d", ErrTaskArchiveState, table, live, manifest, raw)
 		}
 	}
+	// 新版快照补充了 task_planner_state / task_timeout_events；若存在则同口径校验，
+	// 兼容旧版或手工构造的历史 snapshot。
+	for table, item := range map[string]struct {
+		query string
+		args  []any
+	}{
+		"task_planner_state":  {`SELECT count(*) FROM task_planner_state WHERE task_id=$1`, []any{taskID}},
+		"task_timeout_events": {`SELECT count(*) FROM task_timeout_events WHERE task_id=$1`, []any{taskID}},
+	} {
+		if _, present := snapshot.Tables[table]; !present {
+			continue
+		}
+		var live int64
+		if err := tx.QueryRow(item.query, item.args...).Scan(&live); err != nil {
+			return fmt.Errorf("archive completeness %s: %w", table, err)
+		}
+		manifest := snapshot.DataCounts[table]
+		if raw := rawRowCount(snapshot.Tables[table]); raw != manifest || live != manifest {
+			return fmt.Errorf("%w: %s live=%d manifest=%d rows=%d", ErrTaskArchiveState, table, live, manifest, raw)
+		}
+	}
 	return assertArchiveContentMatches(tx, taskID, expID, snapshot)
 }
 
@@ -1045,6 +1069,18 @@ func assertArchiveContentMatches(tx *sql.Tx, taskID, expID int64, snapshot *Task
 		{"credential_checks", `SELECT * FROM credential_checks WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
 		{"main_sessions", `SELECT * FROM main_sessions WHERE exploration_id=$1 ORDER BY seq`, []any{expID}},
 		{"completion_waivers", `SELECT * FROM completion_waivers WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
+	}
+	if _, present := snapshot.Tables["task_planner_state"]; present {
+		checks = append(checks, struct {
+			name, query string
+			args        []any
+		}{"task_planner_state", `SELECT * FROM task_planner_state WHERE task_id=$1`, []any{taskID}})
+	}
+	if _, present := snapshot.Tables["task_timeout_events"]; present {
+		checks = append(checks, struct {
+			name, query string
+			args        []any
+		}{"task_timeout_events", `SELECT * FROM task_timeout_events WHERE task_id=$1 ORDER BY id`, []any{taskID}})
 	}
 	canonical := func(raw json.RawMessage) ([]byte, error) {
 		var value any

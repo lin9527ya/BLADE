@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,6 +43,7 @@ import (
 	"time"
 
 	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/blade/db"
 )
 
 // SetEgressProxy 注入出站代理（与 Bash 子进程的 HTTP_PROXY 同源）。
@@ -321,16 +323,236 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 		}
 		pool.mu.Unlock()
 	}
-	c := &http.Client{Transport: tr, Timeout: timeout}
+	c := &http.Client{
+		Transport:     tr,
+		Timeout:       timeout,
+		CheckRedirect: t.buildRedirectCheck(context.Background(), follow, nil, nil),
+	}
 	if jar != nil {
 		c.Jar = jar
 	}
-	if !follow {
-		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+	return c, nil
+}
+
+var (
+	_, cgnatNet, _ = net.ParseCIDR("100.64.0.0/10")
+	awsIPv6MetaIP  = net.ParseIP("fd00:ec2::254")
+)
+
+func effectivePort(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return "80"
+	}
+	return ""
+}
+
+func sameRedirectOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func isMetadataOrLoopbackHost(host string) bool {
+	h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	switch h {
+	case "localhost", "localhost.localdomain", "metadata", "metadata.google.internal", "instance-data":
+		return true
+	}
+	return strings.HasSuffix(h, ".localhost")
+}
+
+func isAlwaysBlockedRedirectIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
+		(awsIPv6MetaIP != nil && ip.Equal(awsIPv6MetaIP))
+}
+
+func isInternalRedirectIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return ip.IsPrivate() || (cgnatNet != nil && cgnatNet.Contains(ip))
+}
+
+func looksSensitiveAuthHeader(name string) bool {
+	low := strings.ToLower(strings.TrimSpace(name))
+	if low == "" {
+		return false
+	}
+	switch low {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key":
+		return true
+	}
+	for _, frag := range []string{"auth", "token", "key", "secret", "cookie", "session", "bearer", "pass", "cred", "jwt"} {
+		if strings.Contains(low, frag) {
+			return true
 		}
 	}
-	return c, nil
+	return false
+}
+
+func stripSensitiveHeadersOnRedirect(req *http.Request, customHeaders map[string]bool) {
+	if req == nil {
+		return
+	}
+	// 清空 Host 覆写，避免初始请求手工指定的 Host 粘滞到域外重定向目标。
+	req.Host = ""
+	for _, k := range []string{
+		"Authorization", "Proxy-Authorization", "Cookie",
+		"X-API-Key", "X-Auth-Token", "X-Access-Token", "X-Session-Token",
+		"X-CSRF-Token", "X-XSRF-Token", "X-Token", "Api-Key", "X-Api-Token",
+	} {
+		req.Header.Del(k)
+	}
+	for k := range req.Header {
+		if customHeaders[strings.ToLower(k)] || looksSensitiveAuthHeader(k) {
+			req.Header.Del(k)
+		}
+	}
+}
+
+func (t *ToolSet) isInternalRedirectScoped(host string, ips []net.IP) bool {
+	if t.as == nil || t.taskID <= 0 {
+		return false
+	}
+	scopes, err := t.as.ListTaskScope(t.taskID)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSpace(host))
+	for _, sc := range scopes {
+		dom := strings.ToLower(strings.TrimSpace(sc.Domain))
+		if dom != "" && (h == dom || strings.HasSuffix(h, "."+dom)) {
+			return true
+		}
+		val := strings.ToLower(strings.TrimSpace(sc.Value))
+		if val != "" && (h == val || strings.HasSuffix(h, "."+val)) {
+			return true
+		}
+		netStr := strings.TrimSpace(sc.Net)
+		if netStr == "" && (sc.Kind == "ip" || sc.Kind == "cidr") {
+			netStr = strings.TrimSpace(sc.Value)
+		}
+		if netStr != "" {
+			if _, cidr, err := net.ParseCIDR(netStr); err == nil {
+				for _, ip := range ips {
+					if cidr.Contains(ip) {
+						return true
+					}
+				}
+			} else if sip := net.ParseIP(strings.Split(netStr, "/")[0]); sip != nil {
+				for _, ip := range ips {
+					if sip.Equal(ip) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (t *ToolSet) validateRedirectTarget(ctx context.Context, initURL, target *url.URL) error {
+	if target == nil {
+		return fmt.Errorf("重定向目标为空")
+	}
+	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("重定向协议 %q 被拦截（仅允许 http/https）", target.Scheme)
+	}
+	host := strings.TrimSpace(target.Hostname())
+	if host == "" {
+		return fmt.Errorf("重定向缺少主机名")
+	}
+	if initURL == nil || !sameRedirectOrigin(initURL, target) {
+		if isMetadataOrLoopbackHost(host) {
+			return fmt.Errorf("重定向到本机/元数据主机 %q 被拦截", host)
+		}
+	}
+	var resolved []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		resolved = []net.IP{ip}
+	} else {
+		lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		addrs, err := net.DefaultResolver.LookupIPAddr(lctx, host)
+		cancel()
+		if err == nil {
+			for _, a := range addrs {
+				resolved = append(resolved, a.IP)
+			}
+		}
+	}
+	// 黑名单规则校验（asset_intercept_rules / task_intercept_rules block）
+	if t.as != nil && t.taskID > 0 {
+		if block, _, err := t.as.TaskInterceptRulesSplit(t.taskID); err == nil && len(block) > 0 {
+			ipStrs := make([]string, 0, len(resolved))
+			for _, ip := range resolved {
+				ipStrs = append(ipStrs, ip.String())
+			}
+			if rule, _, hit := db.MatchAssetInterceptRules(block, []string{host}, ipStrs, []string{target.String()}); hit {
+				return fmt.Errorf("重定向命中拦截规则 %s", rule.Reason())
+			}
+		}
+	}
+	// 同源重定向允许测试靶机自身路径跳转；跨源跳转阻断回环、元数据及未授权私网 IP。
+	if initURL == nil || !sameRedirectOrigin(initURL, target) {
+		for _, ip := range resolved {
+			if isAlwaysBlockedRedirectIP(ip) {
+				return fmt.Errorf("重定向目标 %q 解析到受限地址 %s（回环/链路本地/元数据）", target.String(), ip)
+			}
+			if isInternalRedirectIP(ip) && !t.isInternalRedirectScoped(host, resolved) {
+				return fmt.Errorf("重定向目标 %q 解析到未在任务范围内的内网地址 %s", target.String(), ip)
+			}
+		}
+	}
+	return nil
+}
+
+func (t *ToolSet) buildRedirectCheck(ctx context.Context, follow bool, initURL *url.URL, customHeaders map[string]bool) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if !follow {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("重定向超过最大跳数上限")
+		}
+		base := initURL
+		if base == nil && len(via) > 0 {
+			base = via[0].URL
+		}
+		if err := t.validateRedirectTarget(ctx, base, req.URL); err != nil {
+			return err
+		}
+		prev := base
+		if len(via) > 0 {
+			prev = via[len(via)-1].URL
+		}
+		if !sameRedirectOrigin(base, req.URL) || !sameRedirectOrigin(prev, req.URL) {
+			stripSensitiveHeadersOnRedirect(req, customHeaders)
+		}
+		return nil
+	}
 }
 
 func (t *ToolSet) newHTTPTransport(insecure bool) *http.Transport {
@@ -457,13 +679,16 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	if body != "" && a.BodyJSON != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	customHeaders := map[string]bool{}
 	for _, kv := range parseHeaderLines(a.Headers) {
 		if strings.EqualFold(kv[0], "Host") {
 			req.Host = kv[1]
 			continue
 		}
+		customHeaders[strings.ToLower(kv[0])] = true
 		req.Header.Set(kv[0], kv[1])
 	}
+	client.CheckRedirect = t.buildRedirectCheck(ctx, follow, u, customHeaders)
 	if a.BasicAuth != "" {
 		user, pass, _ := strings.Cut(a.BasicAuth, ":")
 		req.SetBasicAuth(user, pass)
@@ -620,31 +845,32 @@ func (t *ToolSet) httpRequest() actool.CoreTool {
 
 // sessionLogin 一次完成登录并把会话存进任务级 cookie jar。
 //
-// 凭据来源优先级：asset_id（资产上已登记，模型不接触明文）> 显式 username/password/token。
+// 凭据来源优先级：asset_id / credential_id（后台读取，模型不接触明文）> 显式 username/password/token。
 // 登录成功的判定交给调用方看 status/是否拿到 cookie——本工具不猜“成功/失败”。
 func (t *ToolSet) sessionLogin() actool.CoreTool {
 	return readTool(
 		"session_login",
 		"登录接口并把会话写进任务级 cookie jar（后续 http_request 用同名 session 复用）。\n"+
-			"凭据优先从资产上已登记的 auth 取（给 asset_id + auth_index），避免明文在对话里搬运；"+
-			"也可显式给 username/password 或 token。\n"+
+			"凭据优先从资产 auth（asset_id + auth_index）或凭据节点（credential_id，report_credential 返回）读取，"+
+			"避免明文在对话里搬运；也可显式给 username/password 或 token。\n"+
 			"支持 auth_mode：form（默认，application/x-www-form-urlencoded）、json、basic、bearer、cookie。\n"+
 			"返回 status、是否拿到 Set-Cookie（cookie_names）与正文片段——2xx 且 cookie_names 非空基本可判定登录成功；"+
 			"若返回登录页/401，换 auth_mode 或换资产上的另一条凭据（auth_index）。",
 		obj(map[string]any{
-			"session":      str("会话名（字母数字-_），后续请求用它复用登录态"),
-			"url":          str("登录接口绝对 URL"),
-			"method":       str("HTTP 方法，默认 POST"),
-			"asset_id":     intp("凭据登记在哪个资产上（可选；优先使用）"),
-			"auth_index":   intp("用该资产上的第几条凭据（从 0 开始）"),
-			"username":     str("用户名（可选，asset_id 为空时用）"),
-			"password":     str("密码（可选）"),
-			"token":        str("token/会话值（可选）"),
-			"auth_mode":    str("form|json|basic|bearer|cookie，默认 form"),
-			"user_field":   str("表单用户名字段名，默认 username"),
-			"pass_field":   str("表单密码字段名，默认 password"),
-			"extra_fields": str("额外字段，'k=v&k2=v2' 形式（可选）"),
-			"header":       str("附加请求头，每行 'Key: Value'（可选，如 X-Requested-With: XMLHttpRequest）"),
+			"session":       str("会话名（字母数字-_），后续请求用它复用登录态"),
+			"url":           str("登录接口绝对 URL"),
+			"method":        str("HTTP 方法，默认 POST"),
+			"asset_id":      intp("凭据登记在哪个资产上（可选；与 credential_id 二选一）"),
+			"credential_id": intp("本任务凭据节点 id（report_credential 返回；后台取密文注入，不明文回传模型）"),
+			"auth_index":    intp("用该资产上的第几条凭据（从 0 开始）"),
+			"username":      str("用户名（可选，asset_id/credential_id 为空时用）"),
+			"password":      str("密码（可选）"),
+			"token":         str("token/会话值（可选）"),
+			"auth_mode":     str("form|json|basic|bearer|cookie，默认 form"),
+			"user_field":    str("表单用户名字段名，默认 username"),
+			"pass_field":    str("表单密码字段名，默认 password"),
+			"extra_fields":  str("额外字段，'k=v&k2=v2' 形式（可选）"),
+			"header":        str("附加请求头，每行 'Key: Value'（可选，如 X-Requested-With: XMLHttpRequest）"),
 		}, "session", "url"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -673,6 +899,9 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 			}
 			user, pass, token := strings.TrimSpace(a.Username), a.Password, strings.TrimSpace(a.Token)
 			authKindLabel := "explicit"
+			if a.AssetID > 0 && a.CredentialID > 0 {
+				return actool.Errorf("asset_id 与 credential_id 请二选一"), nil
+			}
 			if a.AssetID > 0 {
 				if t.as == nil {
 					return actool.Errorf("asset_id 需要 AssetStore（当前环境未启用）"), nil
@@ -698,6 +927,40 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 				e := entries[idx]
 				user, pass, token = e.Username, e.Password, e.Token
 				authKindLabel = fmt.Sprintf("资产#%d 第 %d 条(%s)", a.AssetID, idx, authKind(e))
+			} else if a.CredentialID > 0 {
+				if t.ts == nil {
+					return actool.Errorf("credential_id 需要 ExplorationStore（当前环境未启用）"), nil
+				}
+				cred, err := t.ts.GetNode(a.CredentialID)
+				if err != nil || cred == nil || cred.Kind != db.KindCredential {
+					return actool.Errorf(fmt.Sprintf("credential_id %d 不是本任务的凭据节点", a.CredentialID)), nil
+				}
+				if cred.State != "" && cred.State != db.StateLootActive {
+					return actool.Errorf(fmt.Sprintf("凭据 %d 当前状态是 %q（已失效），不能用于登录", a.CredentialID, cred.State)), nil
+				}
+				cv := db.ParseCredential(cred)
+				if strings.TrimSpace(cv.Secret) == "" {
+					return actool.Errorf(fmt.Sprintf("凭据 %d 没有可用的口令/令牌内容", a.CredentialID)), nil
+				}
+				ck := strings.ToLower(strings.TrimSpace(cv.Kind))
+				switch {
+				case strings.Contains(ck, "cookie") || strings.Contains(ck, "session"):
+					user, token = strings.TrimSpace(cv.Username), strings.TrimSpace(cv.Secret)
+					if strings.TrimSpace(a.AuthMode) == "" {
+						a.AuthMode = "cookie"
+					}
+				case strings.Contains(ck, "token") || strings.Contains(ck, "bearer") || strings.Contains(ck, "jwt") || strings.Contains(ck, "api"):
+					user, token = strings.TrimSpace(cv.Username), strings.TrimSpace(cv.Secret)
+					if strings.TrimSpace(a.AuthMode) == "" {
+						a.AuthMode = "bearer"
+					}
+				default:
+					user, pass = strings.TrimSpace(cv.Username), cv.Secret
+					if ck == "" {
+						ck = "password"
+					}
+				}
+				authKindLabel = fmt.Sprintf("凭据#%d(%s)", a.CredentialID, ck)
 			}
 			mode := strings.ToLower(strings.TrimSpace(a.AuthMode))
 			if mode == "" {
@@ -754,7 +1017,11 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 					val = user
 				}
 				if !strings.Contains(val, "=") {
-					val = "session=" + val
+					if user != "" {
+						val = user + "=" + val
+					} else {
+						val = "session=" + val
+					}
 				}
 				args.Headers = strings.TrimSpace(a.Header + "\nCookie: " + val)
 			default: // form

@@ -163,3 +163,26 @@ func TestTriggerQueueCanceledDoesNotLaunch(t *testing.T) {
 		t.Fatalf("排队项应保留，实际 %d", len(q.queue["a"]))
 	}
 }
+
+func TestTriggerQueueCapsDepthAndClampsDone(t *testing.T) {
+	q := newTriggerQueue()
+	cfg := serial()
+	q.Enqueue("a", runOf(1, false), cfg, true) // takes active slot 1
+	for i := 0; i < maxTriggerQueuePerAgent+50; i++ {
+		q.Enqueue("a", runOf(int64(i+2), false), cfg, true)
+	}
+	if got := len(q.queue["a"]); got != maxTriggerQueuePerAgent {
+		t.Fatalf("待处理队列应截断在上限 %d，实际 %d", maxTriggerQueuePerAgent, got)
+	}
+	if first := q.queue["a"][0].taskID; first <= 2 {
+		t.Fatalf("队列超限应丢弃最旧项并保留最新项，head taskID=%d", first)
+	}
+	// 额外的 Done 不得让 active 变负数。
+	for len(q.queue["a"]) > 0 || q.Active("a") > 0 {
+		q.Done("a", true)
+	}
+	q.Done("a", true)
+	if n := q.Active("a"); n != 0 {
+		t.Fatalf("额外 Done 不应把 active 扣为负：%d", n)
+	}
+}

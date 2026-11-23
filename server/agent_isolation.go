@@ -31,9 +31,40 @@ var agentIso agentIsoState
 type fileGuardState struct {
 	installed bool
 	roots     []string // real paths (EvalSymlinks)
+	denied    []string // real paths inside dataDir forbidden even when dataDir is an allow root
 }
 
 var fileGuard fileGuardState
+
+var privilegedDataSubdirs = []string{
+	filepath.Join("traffic", "_ca"),
+	filepath.Join("traffic", "_index"),
+	filepath.Join("traffic", "_blobs"),
+	"archives",
+	"transcripts",
+}
+
+func agentDeniedSubpaths(realDataDir string) []string {
+	if realDataDir == "" {
+		return nil
+	}
+	out := make([]string, 0, len(privilegedDataSubdirs)+1)
+	for _, rel := range privilegedDataSubdirs {
+		out = append(out, filepath.Join(realDataDir, rel))
+	}
+	out = append(out, filepath.Join(realDataDir, jwtKeyFilename))
+	return out
+}
+
+func isUnderDeniedPath(abs string, denied []string) bool {
+	sep := string(os.PathSeparator)
+	for _, d := range denied {
+		if abs == d || strings.HasPrefix(abs, d+sep) {
+			return true
+		}
+	}
+	return false
+}
 
 const settingFileRootsOpenEnv = "BLADE_AGENT_FILE_ROOTS_OPEN"
 
@@ -92,11 +123,16 @@ func InstallAgentIsolation(dataDir, keyDir, skillDir string) error {
 	if err != nil {
 		return err
 	}
+	var denied []string
+	if len(roots) > 0 && strings.TrimSpace(dataDir) != "" {
+		denied = agentDeniedSubpaths(roots[0])
+	}
 	agentIso = agentIsoState{enabled: true, user: spec, uid: uid, gid: gid, home: home, roots: roots}
 	// Keep the file guard's roots identical to the isolation roots; the guard is
 	// installed by InstallFileRootGuard either before or after this call.
 	if fileGuard.installed {
 		fileGuard.roots = roots
+		fileGuard.denied = denied
 	}
 
 	if err := prepareAgentStateDirs(dataDir); err != nil {
@@ -109,17 +145,57 @@ func InstallAgentIsolation(dataDir, keyDir, skillDir string) error {
 	return nil
 }
 
-// prepareAgentStateDirs 把 dataDir 这棵子树交给 agent 用户：降权后 agent 的 run 目录
-// （<data>/tasks/<id>/i<n>）仍由服务端（root）创建，不改属主它连自己的产物目录都写不进去。
-//
-// 只动 dataDir：jwt.key 镜像与 config.json 在 baseDir（dataDir 的上一级），已经由
-// InstallAgentIsolation 的前置检查排除在 dataDir 之外，这里碰不到它们。
-// 用 Lchown 而不是 Chown——工作区里可能有 agent 建的软链，跟着软链 chown 会改到树外文件。
+// prepareAgentStateDirs 把 dataDir 下工作目录交给 agent 用户（如 tasks），但显式排除
+// 服务端特权目录（traffic/_ca 私钥、traffic/_index、traffic/_blobs、archives、transcripts
+// 以及可能遗留的 jwt.key），并将它们收紧到服务端进程用户与 0700/0600 权限。
 func prepareAgentStateDirs(dataDir string) error {
 	uid, gid := agentIso.uid, agentIso.gid
+	srvUID, srvGID := os.Geteuid(), os.Getegid()
+	denied := map[string]bool{}
+	for _, rel := range privilegedDataSubdirs {
+		p := filepath.Join(dataDir, rel)
+		denied[p] = true
+		if _, err := os.Lstat(p); err == nil {
+			_ = hardenServerOnlyTree(p, srvUID, srvGID)
+		}
+	}
+	trafficRoot := filepath.Join(dataDir, "traffic")
+	publicCADir := filepath.Join(trafficRoot, "_public_ca")
+	jwtLegacy := filepath.Join(dataDir, jwtKeyFilename)
+
 	return filepath.WalkDir(dataDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if denied[p] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// 保持 data/traffic 与只读公钥证书目录归服务端所有（仅授予遍历/只读权限）。
+		if p == trafficRoot || p == publicCADir {
+			_ = os.Lchown(p, srvUID, srvGID)
+			if d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			}
+			return nil
+		}
+		if strings.HasPrefix(p, publicCADir+string(os.PathSeparator)) {
+			_ = os.Lchown(p, srvUID, srvGID)
+			if d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			} else {
+				_ = os.Chmod(p, 0o644)
+			}
+			return nil
+		}
+		if p == jwtLegacy {
+			_ = os.Lchown(p, srvUID, srvGID)
+			if !d.IsDir() {
+				_ = os.Chmod(p, 0o600)
+			}
+			return nil
 		}
 		if err := os.Lchown(p, int(uid), int(gid)); err != nil {
 			return err
@@ -127,11 +203,27 @@ func prepareAgentStateDirs(dataDir string) error {
 		if d.IsDir() {
 			// setgid + 组可写：之后服务端在这个目录下新建的子目录继承 worker 组，
 			// 配合 0775 的创建模式，降权后的 agent 才写得进去。
-			// 注意 setgid 必须用 os.ModeSetgid 表达：os.Chmod 只认低 9 位权限，
-			// 写成 0o2775 的 02000 位会被丢掉（文件既不报错也不生效）。
 			if err := os.Chmod(p, 0o775|os.ModeSetgid); err != nil {
 				return err
 			}
+		}
+		return nil
+	})
+}
+
+func hardenServerOnlyTree(root string, uid, gid int) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		_ = os.Lchown(p, uid, gid)
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		} else {
+			_ = os.Chmod(p, 0o600)
 		}
 		return nil
 	})
@@ -202,6 +294,9 @@ func agentPathGuard(abs string) error {
 	if !fileGuard.installed {
 		return nil
 	}
+	if isUnderDeniedPath(abs, fileGuard.denied) {
+		return fmt.Errorf("拒绝访问受限系统目录 %s（私钥/流量索引/归档/转写受保护）", abs)
+	}
 	for _, root := range fileGuard.roots {
 		if abs == root || strings.HasPrefix(abs, root+string(os.PathSeparator)) {
 			return nil
@@ -229,9 +324,13 @@ func InstallFileRootGuard(dataDir, skillDir string) error {
 	if err != nil {
 		return err
 	}
-	fileGuard = fileGuardState{installed: true, roots: roots}
+	var denied []string
+	if len(roots) > 0 && strings.TrimSpace(dataDir) != "" {
+		denied = agentDeniedSubpaths(roots[0])
+	}
+	fileGuard = fileGuardState{installed: true, roots: roots, denied: denied}
 	actool.SetPathGuard(agentPathGuard)
-	log.Printf("[file-guard] 文件工具限制在：%s（Bash 仍可读全盘；这是工具层边界，不是沙箱）",
+	log.Printf("[file-guard] 文件工具限制在：%s（已排除 CA 私钥/索引/归档/转写；这是工具层边界，不是沙箱）",
 		strings.Join(roots, "、"))
 	return nil
 }

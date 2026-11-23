@@ -160,3 +160,23 @@ func sameOrigin(a, b *url.URL) bool {
 	}
 	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
+
+// checkRedirect 返回 MCP HTTP 客户端的 Redirect 守卫：限制最大跳数，校验每跳地址均通过
+// checkEndpointURL（含防环回/云元数据），并拒绝跨主机跳转（避免 Authorization / 自定义认证头外泄）。
+func checkRedirect(base *url.URL) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("MCP 重定向次数超过上限")
+		}
+		if req == nil || req.URL == nil {
+			return fmt.Errorf("MCP 重定向缺少目标地址")
+		}
+		if err := checkEndpointURL(req.URL.String()); err != nil {
+			return err
+		}
+		if base != nil && !sameOrigin(base, req.URL) {
+			return fmt.Errorf("MCP 重定向指向了不同主机（%s → %s），拒绝携带凭据跳转", base.Host, req.URL.Host)
+		}
+		return nil
+	}
+}

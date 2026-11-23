@@ -25,37 +25,180 @@ package agent
 // 自动生效（http(s)_proxy 环境变量让 python urllib 走记录代理）。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	actool "github.com/lin9527ya/Norma/tool"
+	"github.com/lin9527ya/blade/db"
 )
 
 const jsAuditScript = `#!/usr/bin/env python3
 """blade js_audit: SPA/webpack 前端源码泄露审计。
 
-用法: python3 blade-jsaudit.py --out <outdir> <url1> [url2 ...]
+用法: python3 blade-jsaudit.py --out <outdir> [--block-file <rules.json>] <url1> [url2 ...]
 url 可以是入口 HTML（提取 <script src>）或 .js 文件本体。
 每行输出一个 JSON 事件；最后一行 type=summary。仅标准库；
 http(s)_proxy 环境变量自动生效（流量走记录代理）；证书校验关闭（同 curl -k）。
 """
-import sys, os, json, re, base64, ssl, urllib.request, urllib.parse
+import sys, os, json, re, base64, ssl, socket, ipaddress, urllib.request, urllib.parse, urllib.error
 
 MAX_BYTES = 3_000_000
 MAX_MAP_BYTES = 12_000_000
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
       "Accept-Encoding": "identity"}
+SENSITIVE_HEADERS = {
+    "authorization", "proxy-authorization", "cookie",
+    "x-api-key", "x-auth-token", "x-access-token", "x-session-token",
+    "x-csrf-token", "x-xsrf-token", "x-token", "api-key",
+}
+META_HOSTS = {"localhost", "localhost.localdomain", "metadata", "metadata.google.internal", "instance-data"}
+CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+AWS_V6_META = ipaddress.ip_address("fd00:ec2::254")
+BLOCK_RULES = []
+INITIAL_ORIGINS = set()
+
+def _origin(url):
+    p = urllib.parse.urlparse(url)
+    port = p.port
+    if port is None:
+        port = 443 if p.scheme.lower() == "https" else (80 if p.scheme.lower() == "http" else None)
+    return (p.scheme.lower(), (p.hostname or "").lower().rstrip("."), port)
+
+def _has_proxy_env():
+    return any(os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"))
+
+def _norm_ip(ip):
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+def _is_always_blocked_ip(ip):
+    ip = _norm_ip(ip)
+    return (ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip == AWS_V6_META)
+
+def _is_internal_ip(ip):
+    ip = _norm_ip(ip)
+    return ip.is_private or ip.is_reserved or (ip.version == 4 and ip in CGNAT_NET)
+
+def _match_block_rule(url, host, ips):
+    low_host = host.lower()
+    low_url = url.lower()
+    for rule in BLOCK_RULES:
+        kind = (rule.get("kind") or "").strip()
+        pat = (rule.get("pattern") or "").strip()
+        if not pat:
+            continue
+        lpat = pat.lower()
+        if kind == "exact_domain" and low_host == lpat:
+            return f"{kind}: {pat}"
+        if kind == "fuzzy_domain" and lpat in low_host:
+            return f"{kind}: {pat}"
+        if kind == "exact_ip" and pat in ips:
+            return f"{kind}: {pat}"
+        if kind == "fuzzy_ip" and any(pat in ip_s for ip_s in ips):
+            return f"{kind}: {pat}"
+        if kind == "exact_url" and url.strip() == pat:
+            return f"{kind}: {pat}"
+        if kind == "fuzzy_url" and lpat in low_url:
+            return f"{kind}: {pat}"
+        if kind == "cidr":
+            try:
+                net = ipaddress.ip_network(pat, strict=False)
+                for ip_s in ips:
+                    if _norm_ip(ipaddress.ip_address(ip_s)) in net:
+                        return f"{kind}: {pat}"
+            except ValueError:
+                pass
+    return None
+
+def check_url_allowed(url, is_sub_or_redirect=False):
+    try:
+        p = urllib.parse.urlparse(url)
+    except Exception:
+        return False, "URL 解析失败"
+    scheme = (p.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False, f"禁止协议 {scheme or '<empty>'}"
+    host = (p.hostname or "").strip().rstrip(".")
+    if not host:
+        return False, "缺少主机名"
+    orig = _origin(url)
+    same_initial = orig in INITIAL_ORIGINS
+    if (is_sub_or_redirect or not same_initial) and (host.lower() in META_HOSTS or host.lower().endswith(".localhost")):
+        if not same_initial:
+            return False, f"禁止访问本机/元数据主机 {host}"
+    resolved = []
+    try:
+        resolved = [_norm_ip(ipaddress.ip_address(host))]
+    except ValueError:
+        if not _has_proxy_env():
+            port = orig[2] or (443 if scheme == "https" else 80)
+            try:
+                infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                seen_ip = set()
+                for info in infos:
+                    addr = info[4][0].split("%", 1)[0]
+                    if addr not in seen_ip:
+                        seen_ip.add(addr)
+                        resolved.append(_norm_ip(ipaddress.ip_address(addr)))
+            except OSError:
+                resolved = []
+    ip_strs = [str(ip) for ip in resolved]
+    hit = _match_block_rule(url, host, ip_strs)
+    if hit:
+        return False, f"命中黑名单规则 [{hit}]"
+    if not same_initial:
+        for ip in resolved:
+            if _is_always_blocked_ip(ip):
+                return False, f"目标解析到受限地址 {ip}（回环/链路本地/元数据）"
+            if is_sub_or_redirect and _is_internal_ip(ip):
+                return False, f"禁止跳转到未授权内网地址 {ip}"
+    return True, ""
+
+class _DisabledSchemesHandler(urllib.request.BaseHandler):
+    def file_open(self, req):
+        raise urllib.error.URLError("blocked file:// scheme")
+    def ftp_open(self, req):
+        raise urllib.error.URLError("blocked ftp:// scheme")
+    def data_open(self, req):
+        raise urllib.error.URLError("blocked data: scheme")
+    def unknown_open(self, req):
+        raise urllib.error.URLError(f"blocked unsupported scheme: {req.type}")
+
+class _ScopedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        ok, reason = check_url_allowed(target, is_sub_or_redirect=True)
+        if not ok:
+            raise urllib.error.URLError(f"blocked redirect to {target}: {reason}")
+        next_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if next_req is not None and _origin(req.full_url) != _origin(next_req.full_url):
+            for hdrs in (next_req.headers, next_req.unredirected_hdrs):
+                for k in list(hdrs.keys()):
+                    lk = k.lower()
+                    if lk == "host" or lk in SENSITIVE_HEADERS or any(w in lk for w in ("auth", "token", "secret", "cookie", "session", "key")):
+                        hdrs.pop(k, None)
+        return next_req
 
 _ctx = ssl.create_default_context()
 _ctx.check_hostname = False
 _ctx.verify_mode = ssl.CERT_NONE
-_opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ctx))
+_opener = urllib.request.build_opener(
+    _DisabledSchemesHandler(),
+    _ScopedRedirectHandler(),
+    urllib.request.HTTPSHandler(context=_ctx),
+)
 
 def fetch(url, cap=MAX_BYTES):
+    ok, reason = check_url_allowed(url, is_sub_or_redirect=False)
+    if not ok:
+        raise urllib.error.URLError(f"blocked {url}: {reason}")
     req = urllib.request.Request(url, headers=UA)
     with _opener.open(req, timeout=15) as r:
         return r.getcode(), r.read(cap + 1), r.geturl()
@@ -122,8 +265,11 @@ def chunk_candidates(js, base):
         if m in out or len(out) >= 8:
             continue
         u = urllib.parse.urljoin(base, m)
-        if u.startswith("http"):
-            out.append(u)
+        ok, reason = check_url_allowed(u, is_sub_or_redirect=True)
+        if not ok:
+            emit({"type": "blocked", "url": u, "reason": reason})
+            continue
+        out.append(u)
     return out
 
 def safe_name(src, i):
@@ -221,6 +367,28 @@ def audit_js(url, outdir, seen_dirs):
                 pass
         else:
             map_url = urllib.parse.urljoin(final, mu)
+            ok_u, reason = check_url_allowed(map_url, is_sub_or_redirect=True)
+            if not ok_u:
+                emit({"type": "blocked", "js": final, "url": map_url, "reason": reason})
+            else:
+                try:
+                    code, raw, _ = fetch(map_url, MAX_MAP_BYTES)
+                    if code == 200:
+                        ok, total_s = analyze_map(raw, final, map_url, outdir, tag)
+                        total += total_s
+                        found = found or ok
+                    else:
+                        emit({"type": "sourcemap", "found": False, "js": final, "map_url": map_url,
+                              "status": code})
+                except Exception as e:
+                    emit({"type": "sourcemap", "found": False, "js": final, "map_url": map_url,
+                          "error": str(e)[:120]})
+    if not found:
+        map_url = final + ".map"
+        ok_u, reason = check_url_allowed(map_url, is_sub_or_redirect=True)
+        if not ok_u:
+            emit({"type": "blocked", "js": final, "url": map_url, "reason": reason})
+        else:
             try:
                 code, raw, _ = fetch(map_url, MAX_MAP_BYTES)
                 if code == 200:
@@ -229,29 +397,17 @@ def audit_js(url, outdir, seen_dirs):
                     found = found or ok
                 else:
                     emit({"type": "sourcemap", "found": False, "js": final, "map_url": map_url,
-                          "status": code})
+                          "status": code, "note": "无 sourceMappingURL 提示，兜底探测 <js>.map"})
             except Exception as e:
                 emit({"type": "sourcemap", "found": False, "js": final, "map_url": map_url,
                       "error": str(e)[:120]})
-    if not found:
-        map_url = final + ".map"
-        try:
-            code, raw, _ = fetch(map_url, MAX_MAP_BYTES)
-            if code == 200:
-                ok, total_s = analyze_map(raw, final, map_url, outdir, tag)
-                total += total_s
-                found = found or ok
-            else:
-                emit({"type": "sourcemap", "found": False, "js": final, "map_url": map_url,
-                      "status": code, "note": "无 sourceMappingURL 提示，兜底探测 <js>.map"})
-        except Exception as e:
-            emit({"type": "sourcemap", "found": False, "js": final, "map_url": map_url,
-                  "error": str(e)[:120]})
     return (1 if found else 0), chunk_candidates(js, final), secrets_n + total, eps_n
 
 def main():
+    global BLOCK_RULES, INITIAL_ORIGINS
     args = sys.argv[1:]
     outdir = os.path.join(os.getcwd(), "jsmap")
+    block_file = ""
     urls = []
     i = 0
     while i < len(args):
@@ -259,14 +415,32 @@ def main():
             outdir = args[i + 1]
             i += 2
             continue
+        if args[i] == "--block-file" and i + 1 < len(args):
+            block_file = args[i + 1]
+            i += 2
+            continue
         urls.append(args[i])
         i += 1
+    if block_file and os.path.isfile(block_file):
+        try:
+            with open(block_file, "r", encoding="utf-8") as bf:
+                loaded = json.load(bf)
+                if isinstance(loaded, list):
+                    BLOCK_RULES = loaded
+        except Exception:
+            BLOCK_RULES = []
     if not urls:
         emit({"type": "summary", "error": "没有给 URL"})
         return
+    INITIAL_ORIGINS = set(_origin(u) for u in urls[:6])
     os.makedirs(outdir, exist_ok=True)
     queue, fetched, seen_dirs = [], set(), set()
-    queue.extend(urls[:6])
+    for u in urls[:6]:
+        ok_u, reason = check_url_allowed(u, is_sub_or_redirect=False)
+        if not ok_u:
+            emit({"type": "blocked", "url": u, "reason": reason})
+            continue
+        queue.append(u)
     maps = js_n = secrets_total = ep_total = 0
     html_urls = set(u for u in queue if not u.endswith(".js"))
     while queue and js_n < 12:
@@ -285,6 +459,10 @@ def main():
             found = 0
             for m in SCRIPT_RE.findall(html) + PRELOAD_RE.findall(html):
                 u = urllib.parse.urljoin(final, m)
+                ok_u, reason = check_url_allowed(u, is_sub_or_redirect=True)
+                if not ok_u:
+                    emit({"type": "blocked", "url": u, "reason": reason})
+                    continue
                 if u not in fetched and u not in queue and len(queue) < 14:
                     queue.append(u)
                     found += 1
@@ -307,16 +485,41 @@ if __name__ == "__main__":
     main()
 `
 
-// ensureJsAuditScript 幂等落盘审计脚本；失败返回空串（调用方退化为让模型手写）。
+// ensureJsAuditScript 幂等落盘审计脚本；内容变更时自动刷新（避免复用 runDir 时保留旧版本）。
 func (t *ToolSet) ensureJsAuditScript() string {
 	if strings.TrimSpace(t.runDir) == "" {
 		return ""
 	}
 	p := filepath.Join(t.runDir, "blade-jsaudit.py")
-	if _, err := os.Stat(p); err == nil {
+	if cur, err := os.ReadFile(p); err == nil && bytes.Equal(cur, []byte(jsAuditScript)) {
 		return p
 	}
 	if err := os.WriteFile(p, []byte(jsAuditScript), 0o755); err != nil {
+		return ""
+	}
+	return p
+}
+
+func (t *ToolSet) writeJsAuditBlockFile(rules []db.AssetInterceptRule) string {
+	type slimRule struct {
+		Kind    string `json:"kind"`
+		Pattern string `json:"pattern"`
+	}
+	var active []slimRule
+	for _, r := range rules {
+		if r.Enabled && strings.TrimSpace(r.Pattern) != "" {
+			active = append(active, slimRule{Kind: r.Kind, Pattern: strings.TrimSpace(r.Pattern)})
+		}
+	}
+	if len(active) == 0 || strings.TrimSpace(t.runDir) == "" {
+		return ""
+	}
+	raw, err := json.Marshal(active)
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(t.runDir, ".jsaudit-block.json")
+	if err := os.WriteFile(p, raw, 0o644); err != nil {
 		return ""
 	}
 	return p
@@ -344,15 +547,32 @@ func (t *ToolSet) jsAudit() actool.CoreTool {
 				URLs []string `json:"urls"`
 			}
 			_ = json.Unmarshal(in, &a)
+			var blockRules []db.AssetInterceptRule
+			if t.as != nil && t.taskID > 0 {
+				blockRules, _, _ = t.as.TaskInterceptRulesSplit(t.taskID)
+			}
 			urls := make([]string, 0, len(a.URLs))
 			seen := map[string]bool{}
-			for _, u := range a.URLs {
-				u = strings.TrimSpace(u)
-				if u == "" || seen[u] || (!strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://")) {
+			for _, rawU := range a.URLs {
+				rawU = strings.TrimSpace(rawU)
+				if rawU == "" || seen[rawU] {
 					continue
 				}
-				seen[u] = true
-				urls = append(urls, u)
+				pu, perr := url.Parse(rawU)
+				if perr != nil || (pu.Scheme != "http" && pu.Scheme != "https") || pu.Hostname() == "" {
+					continue
+				}
+				if len(blockRules) > 0 {
+					var ips []string
+					if ip := net.ParseIP(pu.Hostname()); ip != nil {
+						ips = []string{ip.String()}
+					}
+					if rule, _, hit := db.MatchAssetInterceptRules(blockRules, []string{pu.Hostname()}, ips, []string{rawU}); hit {
+						return actool.Errorf(fmt.Sprintf("url %s 命中拦截规则: %s", rawU, rule.Reason())), nil
+					}
+				}
+				seen[rawU] = true
+				urls = append(urls, rawU)
 				if len(urls) >= 6 {
 					break
 				}
@@ -369,8 +589,12 @@ func (t *ToolSet) jsAudit() actool.CoreTool {
 				quoted[i] = "'" + strings.ReplaceAll(u, "'", `'\''`) + "'"
 			}
 			out := filepath.Join(t.runDir, "jsmap")
+			blockArg := ""
+			if bf := t.writeJsAuditBlockFile(blockRules); bf != "" {
+				blockArg = " --block-file '" + strings.ReplaceAll(bf, "'", `'\''`) + "'"
+			}
 			return jsonResult(map[string]any{
-				"run_with_bash": fmt.Sprintf("python3 %s --out %s %s", script, out, strings.Join(quoted, " ")),
+				"run_with_bash": fmt.Sprintf("python3 %s --out %s%s %s", script, out, blockArg, strings.Join(quoted, " ")),
 				"count":         len(urls),
 				"note": "输出每行一个 JSON 事件（html/js/sourcemap/secrets/endpoints/summary）。" +
 					"sourcemap found=true → CWE-540：还原源码落盘在 --out 目录，save_evidence 后报 high；" +

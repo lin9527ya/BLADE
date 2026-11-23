@@ -45,6 +45,12 @@ const (
 	RetentionInterceptPending     RetentionTable = "intercept_pending"
 	// 安全审计事件同样只增不减；默认保留天数 0 = 不清理，避免误删合规证据。
 	RetentionAuditEvents RetentionTable = "audit_events"
+	// 黑板变更事件、操作日志、超时过渡事件与幂等回执同样默认 0 = 不清理，
+	// 仅在用户显式设置保留天数时分批回收，并保护非终态任务及其未消费记录。
+	RetentionBlackboardEvents     RetentionTable = "blackboard_events"
+	RetentionBlackboardOperations RetentionTable = "blackboard_operations"
+	RetentionTaskTimeoutEvents    RetentionTable = "task_timeout_events"
+	RetentionAggregateRequests    RetentionTable = "aggregate_deliverable_requests"
 )
 
 // RetentionStat 是一张表在一次体检里的计数与体积（试算：只读）。
@@ -118,8 +124,31 @@ func retentionFilter(
 		return "at",
 			"at < $1 AND NOT (task_id::text = ANY($2::text[]))",
 			[]any{cutoff, protectedTasks}, nil
+	case RetentionBlackboardEvents, RetentionBlackboardOperations:
+		return "created_at",
+			"created_at < $1 AND NOT (exploration_id = ANY($2::bigint[]))",
+			[]any{cutoff, protectedExplorations}, nil
+	case RetentionTaskTimeoutEvents:
+		// 只清理已被触发器消费过的超时过渡事件，且不碰非终态任务。
+		return "occurred_at",
+			"occurred_at < $1 AND consumed_at IS NOT NULL AND NOT (task_id::text = ANY($2::text[]))",
+			[]any{cutoff, protectedTasks}, nil
+	case RetentionAggregateRequests:
+		// 清理历史已解除关联或超期未交付的汇总幂等回执（保留仍关联有效交付物的记录）。
+		return "created_at",
+			"created_at < $1 AND deliverable_id IS NULL",
+			[]any{cutoff}, nil
 	}
 	return "", "", nil, fmt.Errorf("未知的清理目标表 %q", table)
+}
+
+func retentionKeyCol(table RetentionTable) string {
+	switch table {
+	case RetentionBlackboardEvents, RetentionAggregateRequests:
+		// 复合主键表没有 id 列，使用 PostgreSQL 系统行标识 ctid 分批删除。
+		return "ctid"
+	}
+	return "id"
 }
 
 // RetentionStats 统计一张表的总行数/过期行数/占用/可回收载荷（试算，只读，不动数据）。
@@ -183,17 +212,20 @@ SELECT (SELECT count(*) FROM llm_records WHERE %[1]s),
 }
 
 // purgeBatched 反复执行「删一批」直到没有可删的行，返回删除总数。
-// table/timeCol/where 都来自本文件的常量；batch 是本文件的取值。
-func (d *DB) purgeBatched(ctx context.Context, table, timeCol, where string, args []any, batch int) (int64, error) {
+// table/timeCol/keyCol/where 都来自本文件的常量；batch 是本文件的取值。
+func (d *DB) purgeBatched(ctx context.Context, table, keyCol, timeCol, where string, args []any, batch int) (int64, error) {
 	if batch <= 0 {
 		batch = defaultRetentionBatch
+	}
+	if keyCol == "" {
+		keyCol = "id"
 	}
 	var total int64
 	for {
 		// 按时间列排序取最旧的一批：与时间索引方向一致，避免每批都重新扫。
 		q := fmt.Sprintf(
-			`DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s WHERE %[2]s ORDER BY %[3]s LIMIT %[4]d)`,
-			table, where, timeCol, batch)
+			`DELETE FROM %[1]s WHERE %[2]s IN (SELECT %[2]s FROM %[1]s WHERE %[3]s ORDER BY %[4]s LIMIT %[5]d)`,
+			table, keyCol, where, timeCol, batch)
 		res, err := d.ExecContext(ctx, q, args...)
 		if err != nil {
 			return total, fmt.Errorf("清理 %s: %w", table, err)
@@ -209,14 +241,6 @@ func (d *DB) purgeBatched(ctx context.Context, table, timeCol, where string, arg
 	}
 }
 
-// PurgeActivityBefore 删除早于 cutoff、且不属于受保护探索的 activity 行。
-// PurgeTableBefore 清理任意已登记分类的过期行（条件来自 retentionFilter，
-// 表名与列名都只来自本文件的常量）。
-//
-// 为什么需要这一支：分类表在增长（长任务台账、凭据尝试、通知事件、对话活动流、
-// 审批记录），每加一张就在 server 侧补一个 switch 分支既啰嗦又容易漏——漏了的表现
-// 是"页面上有开关、点了报未知分类"。收敛成一个通用入口，新增分类只需实现
-// retentionFilter 的那一支。
 func (d *DB) PurgeTableBefore(
 	ctx context.Context, table RetentionTable, cutoff time.Time,
 	protectedTasks []string, protectedExplorations []int64, batch int,
@@ -225,7 +249,7 @@ func (d *DB) PurgeTableBefore(
 	if err != nil {
 		return 0, err
 	}
-	return d.purgeBatched(ctx, string(table), timeCol, where, args, batch)
+	return d.purgeBatched(ctx, string(table), retentionKeyCol(table), timeCol, where, args, batch)
 }
 
 func (d *DB) PurgeActivityBefore(
@@ -235,7 +259,7 @@ func (d *DB) PurgeActivityBefore(
 	if err != nil {
 		return 0, err
 	}
-	return d.purgeBatched(ctx, string(RetentionActivity), timeCol, where, args, batch)
+	return d.purgeBatched(ctx, string(RetentionActivity), "id", timeCol, where, args, batch)
 }
 
 // PurgeLLMUsageBefore 删除早于 cutoff、且不属于受保护任务的 llm_usage 行。
@@ -246,7 +270,7 @@ func (d *DB) PurgeLLMUsageBefore(
 	if err != nil {
 		return 0, err
 	}
-	return d.purgeBatched(ctx, string(RetentionLLMUsage), timeCol, where, args, batch)
+	return d.purgeBatched(ctx, string(RetentionLLMUsage), "id", timeCol, where, args, batch)
 }
 
 // PurgeServerLogsBefore 删除早于 cutoff 的 server_logs 行（不归属任务）。
@@ -255,7 +279,7 @@ func (d *DB) PurgeServerLogsBefore(ctx context.Context, cutoff time.Time, batch 
 	if err != nil {
 		return 0, err
 	}
-	return d.purgeBatched(ctx, string(RetentionServerLogs), timeCol, where, args, batch)
+	return d.purgeBatched(ctx, string(RetentionServerLogs), "id", timeCol, where, args, batch)
 }
 
 // PurgeLLMRecordsBefore 删除早于 cutoff、且不属于受保护任务的 llm_records 行。
@@ -266,7 +290,7 @@ func (d *DB) PurgeLLMRecordsBefore(
 	if err != nil {
 		return 0, err
 	}
-	return d.purgeBatched(ctx, string(RetentionLLMRecords), timeCol, where, args, batch)
+	return d.purgeBatched(ctx, string(RetentionLLMRecords), "id", timeCol, where, args, batch)
 }
 
 // StripLLMRecordBodiesBefore 把早于 cutoff 的 llm_records 行的四个大 TEXT 字段置空，

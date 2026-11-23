@@ -314,8 +314,11 @@ func (p *Planner) restorePlannerState(ctx context.Context, ts *db.ExplorationSto
 		if len(todos) > 0 {
 			payload, _ := json.Marshal(map[string]any{"todos": todos})
 			if _, err := store.Tool().Call(ctx, payload, nil); err != nil {
-				// 不重试：本轮模型可能马上写新的待办，下一轮再回填会覆盖它。
-				log.Printf("[planner] 恢复规划待办失败（本轮按空状态继续）: %v", err)
+				// 回填工具失败也不能标为已恢复：防止本轮结束时用空清单覆写库内记录。
+				p.todoMu.Lock()
+				p.todoLoaded[expID] = false
+				p.todoMu.Unlock()
+				log.Printf("[planner] 恢复规划待办失败（本轮不覆盖持久化状态，下轮重试）: %v", err)
 			}
 		}
 	}
@@ -330,6 +333,13 @@ func (p *Planner) restorePlannerState(ctx context.Context, ts *db.ExplorationSto
 // to survive process restart, not to make the tool call itself transactional.
 func (p *Planner) savePlannerState(ts *db.ExplorationStore, taskID, expID int64, store *actool.TodoStore) {
 	if taskID <= 0 || store == nil {
+		return
+	}
+	p.todoMu.Lock()
+	loaded := p.todoLoaded[expID]
+	p.todoMu.Unlock()
+	if !loaded {
+		log.Printf("[planner] 跳过保存规划状态：持久化状态尚未成功恢复，避免空状态覆盖已有记录")
 		return
 	}
 	items := store.List()

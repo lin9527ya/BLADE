@@ -2,6 +2,8 @@ package mcphttp
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -114,6 +116,48 @@ func TestNewRejectsInternalEndpoint(t *testing.T) {
 		}
 		if _, err := NewSSE(ctx, "probe", "http://169.254.169.254/sse", nil, false); err == nil {
 			t.Fatal("NewSSE 没有拒绝链路本地地址")
+		}
+	})
+}
+
+func TestRedirectGuardRejectsCrossOriginAndInternalRedirects(t *testing.T) {
+	var leakedHeader string
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leakedHeader = r.Header.Get("X-API-Key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer sink.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, sink.URL+"/leak", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	ctx := t.Context()
+	if _, err := New(ctx, "probe", redirector.URL+"/mcp", map[string]string{"X-API-Key": "secret-key"}, false); err == nil {
+		t.Fatal("New 必须拒绝 302 跨主机重定向")
+	}
+	if leakedHeader != "" {
+		t.Fatalf("跨主机重定向泄露了自定义认证头：%q", leakedHeader)
+	}
+	if _, err := NewSSE(ctx, "probe", redirector.URL+"/sse", map[string]string{"X-API-Key": "secret-key"}, false); err == nil {
+		t.Fatal("NewSSE 必须拒绝 302 跨主机重定向")
+	}
+	if leakedHeader != "" {
+		t.Fatalf("SSE 跨主机重定向泄露了自定义认证头：%q", leakedHeader)
+	}
+
+	metaRedirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer metaRedirector.Close()
+
+	withLocalBlocked(t, func() {
+		req, _ := http.NewRequest(http.MethodGet, metaRedirector.URL+"/sse", nil)
+		chk := checkRedirect(req.URL)
+		target, _ := http.NewRequest(http.MethodGet, "http://169.254.169.254/latest/meta-data/", nil)
+		if err := chk(target, []*http.Request{req}); err == nil || !strings.Contains(err.Error(), "拒绝连接") {
+			t.Fatalf("checkRedirect 必须拒绝链路本地重定向，got %v", err)
 		}
 	})
 }

@@ -397,3 +397,85 @@ func TestSessionStickyAffinityAndFailover(t *testing.T) {
 		}
 	}
 }
+
+func TestCJKTokenEstimationSkipsUndersizedWindow(t *testing.T) {
+	cjk := strings.Repeat("中文", 5000) // 10,000 runes (30,000 bytes -> ~16,000 est tokens, old bytes/3.5 was 8,571)
+	small, big := okProv("small", "s"), okProv("big", "b")
+	ms := member(1, "small", 10, small)
+	ms.WindowTokens = 12_000
+	mb := member(2, "big", 5, big)
+	mb.WindowTokens = 64_000
+	p := New([]*Member{ms, mb}, NewRegistry(nil, nil))
+
+	req := llm.CompletionRequest{Messages: []llm.Message{llm.UserText(cjk)}}
+	got, err := drain(p.Stream(context.Background(), req))
+	if err != nil || got != "b" {
+		t.Fatalf("got=%q err=%v, want big window member b", got, err)
+	}
+	if small.calls != 0 {
+		t.Fatalf("undersized window member was called %d times on CJK prompt", small.calls)
+	}
+}
+
+func TestAllWindowsTooSmallDoesNotProbeHead(t *testing.T) {
+	a := okProv("a", "should-not-run")
+	ma := member(1, "a", 10, a)
+	ma.WindowTokens = 100
+	p := New([]*Member{ma}, NewRegistry(nil, nil))
+
+	req := llm.CompletionRequest{Messages: []llm.Message{llm.UserText(strings.Repeat("x", 5000))}}
+	_, err := drain(p.Stream(context.Background(), req))
+	if !errors.Is(err, ErrExhausted) {
+		t.Fatalf("err=%v, want ErrExhausted", err)
+	}
+	if a.calls != 0 {
+		t.Fatalf("over-window request must not probe small head (calls=%d)", a.calls)
+	}
+}
+
+func TestSameFormatPreferredBeforeCrossFormatFallback(t *testing.T) {
+	head := member(1, "head", RankActive, failProv("head", 429))
+	head.Format = "anthropic"
+	cross := member(2, "openai-hi", 90, okProv("openai-hi", "openai"))
+	cross.Format = "openai"
+	same := member(3, "anth-lo", 50, okProv("anth-lo", "anth"))
+	same.Format = "anthropic"
+
+	p := New([]*Member{head, cross, same}, NewRegistry(nil, nil))
+	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	if err != nil || got != "anth" {
+		t.Fatalf("got=%q err=%v, want same-format backup 'anth' to win to preserve prompt cache", got, err)
+	}
+}
+
+func TestPayload413FailsOverToLargerWindowWithoutTrippingBreaker(t *testing.T) {
+	m1 := member(1, "small-128k", 10, failProv("small-128k", 413))
+	m1.WindowTokens = 128_000
+	m2 := member(2, "equal-64k", 8, okProv("equal-64k", "wrong"))
+	m2.WindowTokens = 64_000
+	m3 := member(3, "big-200k", 5, okProv("big-200k", "ok-200k"))
+	m3.WindowTokens = 200_000
+	reg := NewRegistry(nil, nil)
+	p := New([]*Member{m1, m2, m3}, reg)
+
+	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	if err != nil || got != "ok-200k" {
+		t.Fatalf("got=%q err=%v, want ok-200k", got, err)
+	}
+	if reg.Get(1).Fails != 0 {
+		t.Fatalf("413 must not accumulate breaker failures on profile 1, got %d", reg.Get(1).Fails)
+	}
+	if m2.Prov.(*fakeProv).calls != 0 {
+		t.Fatalf("413 must skip smaller/equal window backup (calls=%d)", m2.Prov.(*fakeProv).calls)
+	}
+}
+
+func TestStatus422FailsOverWithoutHardTrip(t *testing.T) {
+	err422 := fmt.Errorf("openai: status 422: unprocessable")
+	if !shouldFailover(context.Background(), err422) {
+		t.Fatal("422 should fail over")
+	}
+	if isHardFailure(err422) {
+		t.Fatal("422 must not trigger immediate permanent hard failure")
+	}
+}

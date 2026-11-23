@@ -772,18 +772,25 @@ func (s *Server) startTriggeredRunAs(principal runPrincipal, agentKey, title, me
 func (s *Server) triggerPumpAllowed() bool { return s.ctx.Err() == nil }
 
 // launchTriggered 在**锁外**启动队列交出来的一批 run；每个 run 结束时会回调 Done
-// 补位（runAndPump）。
+// 补位（runAndPump）。通过 s.loops.tryStart 纳入 Shutdown 等待生命周期，避免停机写库失败。
 func (s *Server) launchTriggered(agentKey string, batch []triggeredRun) {
 	for _, item := range batch {
-		goSafe("conversations/trigger-run", nil, func() { s.runAndPump(agentKey, item) })
+		it := item
+		if !s.loops.tryStart("conversations/trigger-run", func() { s.runAndPump(agentKey, it) }) {
+			// 已进入停机，把预扣的 active 配额归还。
+			s.triggers.Done(agentKey, false)
+		}
 	}
 }
 
 // runAndPump runs one fire to completion, then reports it done to the queue and
-// launches whatever the freed slot admits.
+// launches whatever the freed slot admits. defer 保证即使 runTriggeredRun 发生 panic
+// 也能释放占位并泵出后续排队项，不把队列永久卡死。
 func (s *Server) runAndPump(agentKey string, item triggeredRun) {
+	defer func() {
+		s.launchTriggered(agentKey, s.triggers.Done(agentKey, s.triggerPumpAllowed()))
+	}()
 	s.runTriggeredRun(item)
-	s.launchTriggered(agentKey, s.triggers.Done(agentKey, s.triggerPumpAllowed()))
 }
 
 // taskContextHeader renders a task's description/goal once. Same-task fires share

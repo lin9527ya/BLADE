@@ -2237,6 +2237,10 @@ export interface Settings {
   storage_retention_conversation_activity_days?: number;
   storage_retention_intercept_pending_days?: number;
   storage_retention_audit_events_days?: number;
+  storage_retention_blackboard_events_days?: number;
+  storage_retention_blackboard_operations_days?: number;
+  storage_retention_task_timeout_events_days?: number;
+  storage_retention_aggregate_requests_days?: number;
   // 自更新用的 GitHub token（私有发布源）：只回布尔"是否已配"，值不回显。
   update_token_set?: boolean;
   update_github_token?: string;

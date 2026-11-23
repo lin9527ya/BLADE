@@ -210,3 +210,80 @@ func TestPrepareAgentStateDirsHandsTreeToAgent(t *testing.T) {
 		t.Errorf("普通文件的权限不该被改动：%v %v", fi.Mode(), err)
 	}
 }
+
+func TestPrepareAgentStateDirsProtectsPrivilegedTreesAndGuardBlocksThem(t *testing.T) {
+	snapshotIso(t)
+	oldGuard := fileGuard
+	t.Cleanup(func() { fileGuard = oldGuard })
+
+	data := t.TempDir()
+	skills := t.TempDir()
+	caKey := filepath.Join(data, "traffic", "_ca", "mitmproxy-ca.pem")
+	pubCert := filepath.Join(data, "traffic", "_public_ca", "mitmproxy-ca-cert.pem")
+	idxFile := filepath.Join(data, "traffic", "_index", "index.sqlite")
+	arcFile := filepath.Join(data, "archives", "tasks", "task-1.tar.zst")
+	trFile := filepath.Join(data, "transcripts", "exp1-main.jsonl")
+	legacyJWT := filepath.Join(data, jwtKeyFilename)
+	taskFile := filepath.Join(data, "tasks", "1", "i1", "note.txt")
+
+	for _, f := range []string{caKey, pubCert, idxFile, arcFile, trFile, legacyJWT, taskFile} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	agentIso = agentIsoState{enabled: true, uid: uint32(os.Getuid()), gid: uint32(os.Getgid())}
+	if err := prepareAgentStateDirs(data); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, dir := range []string{
+		filepath.Join(data, "traffic", "_ca"),
+		filepath.Join(data, "traffic", "_index"),
+		filepath.Join(data, "archives"),
+		filepath.Join(data, "transcripts"),
+	} {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o700 {
+			t.Errorf("特权目录 %s 权限必须收敛为 0700，got %o", dir, fi.Mode().Perm())
+		}
+	}
+	for _, privFile := range []string{caKey, idxFile, arcFile, trFile, legacyJWT} {
+		fi, err := os.Stat(privFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("特权文件 %s 权限必须收敛为 0600，got %o", privFile, fi.Mode().Perm())
+		}
+	}
+	if fi, err := os.Stat(pubCert); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Errorf("公开证书 %s 应保持只读可读 0644：perm=%o err=%v", pubCert, fi.Mode().Perm(), err)
+	}
+
+	if err := InstallFileRootGuard(data, skills); err != nil {
+		t.Fatal(err)
+	}
+	realCAKey, _ := filepath.EvalSymlinks(caKey)
+	realPubCert, _ := filepath.EvalSymlinks(pubCert)
+	realArc, _ := filepath.EvalSymlinks(arcFile)
+	realTr, _ := filepath.EvalSymlinks(trFile)
+	realTask, _ := filepath.EvalSymlinks(taskFile)
+
+	for _, denied := range []string{realCAKey, realArc, realTr} {
+		if err := agentPathGuard(denied); err == nil {
+			t.Errorf("agentPathGuard 应阻止访问 %s", denied)
+		}
+	}
+	for _, allowed := range []string{realPubCert, realTask} {
+		if err := agentPathGuard(allowed); err != nil {
+			t.Errorf("agentPathGuard 不应误拦截 %s：%v", allowed, err)
+		}
+	}
+}

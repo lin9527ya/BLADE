@@ -1,9 +1,12 @@
 package server
 
 import (
+	"log"
 	"math"
 	"sync"
 )
+
+const maxTriggerQueuePerAgent = 256
 
 // triggerQueue 是 P3 触发器的运行队列：按 agent 分桶，每个 agent 受自己的策略约束。
 //
@@ -12,17 +15,19 @@ import (
 //
 // 锁纪律：状态只在 mu 下读写；取出的一批在**锁外**启动，避免在持锁期间起 goroutine。
 type triggerQueue struct {
-	mu     sync.Mutex
-	queue  map[string][]triggeredRun
-	active map[string]int
-	cfg    map[string]triggerBehavior
+	mu      sync.Mutex
+	queue   map[string][]triggeredRun
+	active  map[string]int
+	cfg     map[string]triggerBehavior
+	dropped map[string]int64
 }
 
 func newTriggerQueue() *triggerQueue {
 	return &triggerQueue{
-		queue:  map[string][]triggeredRun{},
-		active: map[string]int{},
-		cfg:    map[string]triggerBehavior{},
+		queue:   map[string][]triggeredRun{},
+		active:  map[string]int{},
+		cfg:     map[string]triggerBehavior{},
+		dropped: map[string]int64{},
 	}
 }
 
@@ -32,7 +37,18 @@ func (q *triggerQueue) Enqueue(agentKey string, item triggeredRun, cfg triggerBe
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.cfg[agentKey] = cfg
-	q.queue[agentKey] = append(q.queue[agentKey], item)
+	qd := q.queue[agentKey]
+	if len(qd) >= maxTriggerQueuePerAgent {
+		copy(qd, qd[1:])
+		qd[len(qd)-1] = item
+		q.queue[agentKey] = qd
+		q.dropped[agentKey]++
+		if n := q.dropped[agentKey]; n == 1 || n%50 == 0 {
+			log.Printf("[triggers] %s 待处理队列已达上限 %d，已丢弃最旧未执行触发（累计 %d 条）", agentKey, maxTriggerQueuePerAgent, n)
+		}
+	} else {
+		q.queue[agentKey] = append(qd, item)
+	}
 	if !pump {
 		return nil
 	}
@@ -40,15 +56,18 @@ func (q *triggerQueue) Enqueue(agentKey string, item triggeredRun, cfg triggerBe
 }
 
 // Done 记录一次 run 结束，返回为补满空位应启动的批次（pump=false 时返回 nil）。
-// 该 agent 彻底空闲时把它的三张表清掉——否则队列会随见过的 agent 数无限增长。
+// 该 agent 彻底空闲时把它的表清掉——否则队列会随见过的 agent 数无限增长。
 func (q *triggerQueue) Done(agentKey string, pump bool) []triggeredRun {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.active[agentKey]--
+	if q.active[agentKey] > 0 {
+		q.active[agentKey]--
+	}
 	if q.active[agentKey] <= 0 && len(q.queue[agentKey]) == 0 {
 		delete(q.active, agentKey)
 		delete(q.queue, agentKey)
 		delete(q.cfg, agentKey)
+		delete(q.dropped, agentKey)
 		return nil
 	}
 	if !pump {

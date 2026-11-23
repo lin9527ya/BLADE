@@ -95,20 +95,28 @@ func normalizeHeaders(headers map[string]string) (map[string]string, error) {
 // headers are sent on every request (Authorization, custom API keys, …).
 // When insecure is true, TLS certificate verification is skipped so servers that
 // present a self-signed certificate can still be reached (issue #108).
-func New(ctx context.Context, server, url string, headers map[string]string, insecure bool) (*Client, error) {
+func New(ctx context.Context, server, rawURL string, headers map[string]string, insecure bool) (*Client, error) {
 	cleanHeaders, err := normalizeHeaders(headers)
 	if err != nil {
 		return nil, err
 	}
 	// 出站目标守卫：MCP 地址由配置/模型给出，与通知渠道同一口径——默认拒绝环回、
 	// 链路本地（云元数据）与未指定地址；真正的强制点在拨号钩子上（覆盖 DNS 结果）。
-	if err := checkEndpointURL(url); err != nil {
+	if err := checkEndpointURL(rawURL); err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second, Transport: guardedTransport(insecure)}
+	baseURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, fmt.Errorf("MCP 地址不可解析")
+	}
+	hc := &http.Client{
+		Timeout:       120 * time.Second,
+		Transport:     guardedTransport(insecure),
+		CheckRedirect: checkRedirect(baseURL),
+	}
 	c := &Client{
 		server:   server,
-		url:      url,
+		url:      rawURL,
 		headers:  cleanHeaders,
 		http:     hc,
 		protocol: protocolVersion,
@@ -138,7 +146,10 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		return nil, err
 	}
 	tr := sseTransport(insecure)
-	hc := &http.Client{Transport: tr}
+	hc := &http.Client{
+		Transport:     tr,
+		CheckRedirect: checkRedirect(policy.base),
+	}
 	streamCtx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {

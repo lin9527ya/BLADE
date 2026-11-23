@@ -2367,6 +2367,7 @@ CREATE TABLE IF NOT EXISTS task_timeout_events (
 );
 CREATE INDEX IF NOT EXISTS idx_task_timeout_events_pending ON task_timeout_events(id) WHERE consumed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_task_timeout_events_task ON task_timeout_events(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_timeout_events_occurred ON task_timeout_events(occurred_at);
 CREATE OR REPLACE FUNCTION record_task_timeout_transition() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF NEW.status='timeout' AND OLD.status IS DISTINCT FROM NEW.status

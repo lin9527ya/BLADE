@@ -157,6 +157,9 @@ func TestRetentionCoversLedgerTables(t *testing.T) {
 	for _, table := range []RetentionTable{
 		RetentionToolExecutions, RetentionCredentialAttempts,
 		RetentionNotificationEvents, RetentionConversationActivity, RetentionInterceptPending,
+		RetentionAuditEvents,
+		RetentionBlackboardEvents, RetentionBlackboardOperations,
+		RetentionTaskTimeoutEvents, RetentionAggregateRequests,
 	} {
 		col, where, args, err := retentionFilter(table, cutoff, protected, expls)
 		if err != nil {
@@ -165,6 +168,25 @@ func TestRetentionCoversLedgerTables(t *testing.T) {
 		if col == "" || where == "" || len(args) == 0 {
 			t.Fatalf("%s 的清理条件不完整：col=%q where=%q", table, col, where)
 		}
+	}
+	for _, tc := range []struct {
+		table   RetentionTable
+		wantKey string
+	}{
+		{RetentionBlackboardEvents, "ctid"},
+		{RetentionAggregateRequests, "ctid"},
+		{RetentionBlackboardOperations, "id"},
+		{RetentionTaskTimeoutEvents, "id"},
+	} {
+		if got := retentionKeyCol(tc.table); got != tc.wantKey {
+			t.Fatalf("retentionKeyCol(%s)=%q want %q", tc.table, got, tc.wantKey)
+		}
+	}
+	if _, where, _, _ := retentionFilter(RetentionTaskTimeoutEvents, cutoff, protected, expls); !strings.Contains(where, "consumed_at IS NOT NULL") {
+		t.Fatalf("超时事件清理必须只清已消费记录：%s", where)
+	}
+	if _, where, _, _ := retentionFilter(RetentionAggregateRequests, cutoff, protected, expls); !strings.Contains(where, "deliverable_id IS NULL") {
+		t.Fatalf("汇总幂等回执应保留仍关联交付物的记录：%s", where)
 	}
 	// 长任务台账只清已落终态的行：queued/running 还在被 reaper 与收尾门引用。
 	_, where, _, _ := retentionFilter(RetentionToolExecutions, cutoff, protected, expls)
@@ -291,5 +313,46 @@ VALUES ('retention-test','POST','/api/test',200, now()) RETURNING id`).Scan(&fre
 	}
 	if oldLeft != 0 || freshLeft != 1 {
 		t.Fatalf("old=%d fresh=%d, want 0/1", oldLeft, freshLeft)
+	}
+}
+
+func TestRetentionBlackboardTimeoutAndAggregatePurge(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	ctx := context.Background()
+	cutoff := time.Now().AddDate(0, 0, -30)
+	oldTS := time.Now().AddDate(0, 0, -60)
+
+	// 1. blackboard_events (composite PK via ctid) & blackboard_operations
+	const freeExp, protExp int64 = 999001, 999002
+	_, _ = d.Exec(`INSERT INTO blackboard_events(exploration_id,seq,epoch,entity,object_key,operation,created_at)
+VALUES ($1,1,'e1','node','1','insert',$3),($2,1,'e2','node','2','insert',$3)`, freeExp, protExp, oldTS)
+	_, _ = d.Exec(`INSERT INTO blackboard_operations(id,exploration_id,reason_code,created_at)
+VALUES ('ret-op-free',$1,'test',$3),('ret-op-prot',$2,'test',$3)`, freeExp, protExp, oldTS)
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM blackboard_events WHERE exploration_id IN ($1,$2)`, freeExp, protExp)
+		_, _ = d.Exec(`DELETE FROM blackboard_operations WHERE id IN ('ret-op-free','ret-op-prot')`)
+	})
+	if n, err := d.PurgeTableBefore(ctx, RetentionBlackboardEvents, cutoff, nil, []int64{protExp}, 1); err != nil || n != 1 {
+		t.Fatalf("blackboard_events purge n=%d err=%v, want 1", n, err)
+	}
+	if n, err := d.PurgeTableBefore(ctx, RetentionBlackboardOperations, cutoff, nil, []int64{protExp}, 1); err != nil || n != 1 {
+		t.Fatalf("blackboard_operations purge n=%d err=%v, want 1", n, err)
+	}
+
+	// 2. aggregate_deliverable_requests (composite PK (owner,operation_key) via ctid)
+	_, _ = d.Exec(`INSERT INTO aggregate_deliverable_requests(owner,operation_key,request_sha,deliverable_id,created_at)
+VALUES ('ret-owner','unbound','sha1',NULL,$1)`, oldTS)
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM aggregate_deliverable_requests WHERE owner='ret-owner'`)
+	})
+	if st, err := d.RetentionStats(ctx, RetentionAggregateRequests, cutoff, nil, nil); err != nil || st.ExpiredRows < 1 {
+		t.Fatalf("RetentionStats aggregate_deliverable_requests st=%+v err=%v", st, err)
+	}
+	if n, err := d.PurgeTableBefore(ctx, RetentionAggregateRequests, cutoff, nil, nil, 10); err != nil || n < 1 {
+		t.Fatalf("aggregate_deliverable_requests purge n=%d err=%v", n, err)
 	}
 }

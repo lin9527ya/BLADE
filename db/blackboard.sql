@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS blackboard_operations (
  id TEXT PRIMARY KEY, exploration_id BIGINT NOT NULL, reason_code TEXT NOT NULL,
  detail TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_blackboard_operations_created ON blackboard_operations(created_at);
 CREATE TABLE IF NOT EXISTS blackboard_outbox (
  id BIGSERIAL PRIMARY KEY, transaction_id BIGINT NOT NULL,
  exploration_id BIGINT NOT NULL, entity TEXT NOT NULL, object_key TEXT NOT NULL,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS blackboard_events (
  changed_fields TEXT[] NOT NULL DEFAULT '{}', operation_id TEXT, reason_code TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(exploration_id,seq)
 );
+CREATE INDEX IF NOT EXISTS idx_blackboard_events_created ON blackboard_events(created_at);
 INSERT INTO blackboard_versions(exploration_id) SELECT id FROM explorations ON CONFLICT DO NOTHING;
 
 CREATE OR REPLACE FUNCTION blackboard_init_version() RETURNS trigger LANGUAGE plpgsql AS $$

@@ -52,3 +52,38 @@ func TestPlannerRestoresPersistentTodoAndConclusion(t *testing.T) {
 		t.Fatalf("same-process restore must not refill: %+v", again.List())
 	}
 }
+
+// 当 restorePlannerState 因瞬态数据库故障读失败时，todoLoaded 保持 false；
+// 此时回合结束的 savePlannerState 不得用空清单/空结论覆盖数据库中已有状态。
+func TestPlannerSaveSkipsWhenInitialRestoreFailed(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	brokenDB := testDB(t)
+	task, err := d.CreateTaskWithOptions("planner preserve", "goal", db.TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(task.ID)
+	tsGood := d.Exploration(task.ExplorationID)
+	tsBroken := brokenDB.Exploration(task.ExplorationID)
+
+	wantTodos := []db.PlannerTodoItem{{Content: "重要已持久化待办", Status: "in_progress"}}
+	if err := tsGood.SavePlannerState(task.ID, wantTodos, "已持久化结论"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 关闭 brokenDB 模拟读取阶段瞬态数据库连接错误。
+	_ = brokenDB.Close()
+
+	p := NewPlanner(nil, "", t.TempDir(), nil, 0, 1)
+	store := p.restorePlannerState(context.Background(), tsBroken, task.ID, task.ExplorationID)
+	p.savePlannerState(tsGood, task.ID, task.ExplorationID, store)
+
+	state, found, err := tsGood.LoadPlannerState(task.ID)
+	if err != nil || !found {
+		t.Fatalf("LoadPlannerState err=%v found=%v", err, found)
+	}
+	if len(state.Todos) != 1 || state.Todos[0].Content != "重要已持久化待办" || state.LastRoundNote != "已持久化结论" {
+		t.Fatalf("persisted planner state was overwritten: %+v", state)
+	}
+}

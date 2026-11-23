@@ -233,6 +233,12 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if _, err := d.Exec(`INSERT INTO completion_waivers(exploration_id,scope,reason) VALUES($1,'coverage','fixture waiver')`, task.ExplorationID); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SavePlannerState(task.ID, []PlannerTodoItem{{Content: "archived todo", Status: "in_progress"}}, "archived round note"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO task_timeout_events(task_id,description,goal) VALUES($1,'archive timeout desc','archive timeout goal')`, task.ID); err != nil {
+		t.Fatal(err)
+	}
 	var syncBatchID int64
 	if err := d.QueryRow(`INSERT INTO asset_sync_batches(source,status,total_count) VALUES('archive-fixture','completed',1) RETURNING id`).Scan(&syncBatchID); err != nil {
 		t.Fatal(err)
@@ -262,7 +268,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if snapshot.DataCounts["assets"] != 1 || snapshot.DataCounts["exploration_nodes"] < 2 {
 		t.Fatalf("unexpected snapshot counts: %#v", snapshot.DataCounts)
 	}
-	for table, want := range map[string]int64{"finding_comments": 1, "finding_retests": 1, "finding_case_members": 2, "finding_case_blocks": 1, "credential_checks": 1, "main_sessions": 1, "completion_waivers": 1} {
+	for table, want := range map[string]int64{"finding_comments": 1, "finding_retests": 1, "finding_case_members": 2, "finding_case_blocks": 1, "credential_checks": 1, "main_sessions": 1, "completion_waivers": 1, "task_planner_state": 1, "task_timeout_events": 1} {
 		if snapshot.DataCounts[table] != want {
 			t.Fatalf("archive child %s count=%d want=%d", table, snapshot.DataCounts[table], want)
 		}
@@ -350,7 +356,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if nodes < 2 || assets != 1 || usage != 1 {
 		t.Fatalf("restore incomplete nodes=%d assets=%d usage=%d", nodes, assets, usage)
 	}
-	for table, want := range map[string]int64{"finding_comments": 1, "finding_retests": 1, "finding_case_members": 2, "finding_case_blocks": 1, "credential_checks": 1, "main_sessions": 1, "completion_waivers": 1} {
+	for table, want := range map[string]int64{"finding_comments": 1, "finding_retests": 1, "finding_case_members": 2, "finding_case_blocks": 1, "credential_checks": 1, "main_sessions": 1, "completion_waivers": 1, "task_planner_state": 1, "task_timeout_events": 1} {
 		var got int64
 		var query string
 		switch table {
@@ -362,13 +368,15 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 			query = `SELECT count(*) FROM finding_case_members m JOIN findings f ON f.id=m.finding_id WHERE f.task_id=$1`
 		case "finding_case_blocks":
 			query = `SELECT count(*) FROM finding_case_blocks b WHERE b.left_id IN (SELECT id FROM findings WHERE task_id=$1) OR b.right_id IN (SELECT id FROM findings WHERE task_id=$1)`
+		case "task_planner_state", "task_timeout_events":
+			query = `SELECT count(*) FROM ` + table + ` WHERE task_id=$1`
 		default:
 			query = `SELECT count(*) FROM ` + table + ` WHERE exploration_id=$1`
 		}
 		if err := d.QueryRow(query, task.ID).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
-		if table != "finding_comments" && table != "finding_retests" && table != "finding_case_members" && table != "finding_case_blocks" {
+		if table != "finding_comments" && table != "finding_retests" && table != "finding_case_members" && table != "finding_case_blocks" && table != "task_planner_state" && table != "task_timeout_events" {
 			if err := d.QueryRow(query, task.ExplorationID).Scan(&got); err != nil {
 				t.Fatal(err)
 			}

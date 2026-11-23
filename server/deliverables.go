@@ -51,9 +51,13 @@ func (s *Server) createDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
+	actor := actorFrom(r)
+	if actor == "" {
+		actor = "unknown"
+	}
 	detail, err := s.m.PG().CreateDeliverable(db.DeliverableInput{
 		Name: req.Name, Kind: req.Kind, TaskID: req.TaskID, CompanyID: req.CompanyID,
-		CampaignID: req.CampaignID, ReportMD: req.ReportMD, Note: req.Note, CreatedBy: "operator",
+		CampaignID: req.CampaignID, ReportMD: req.ReportMD, Note: req.Note, CreatedBy: actor,
 	})
 	if err != nil {
 		writeErr(w, 400, err.Error())
@@ -95,7 +99,11 @@ func (s *Server) addDeliverableVersion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
-	version, err := s.m.PG().AddDeliverableVersion(id, req.ReportMD, req.Note, "operator")
+	actor := actorFrom(r)
+	if actor == "" {
+		actor = "unknown"
+	}
+	version, err := s.m.PG().AddDeliverableVersion(id, req.ReportMD, req.Note, actor)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

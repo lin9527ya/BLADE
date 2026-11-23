@@ -166,17 +166,39 @@ type archiveState struct {
 // `sql: database is closed`，在途的归档/检查点写入被静默丢掉）。Server.Shutdown
 // 在这里等一个统一的 WaitGroup，把「关池」排到「后台工作收尾」之后。
 type backgroundLoops struct {
-	wg sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // start 启动一个受 shutdown 等待的循环。fn 必须在 ctx 取消后返回。
 func (b *backgroundLoops) start(fn func()) {
+	_ = b.tryStart("server/background", fn)
+}
+
+// tryStart 在未进入停机阶段时登记并启动受 Shutdown 等待的后台工作；已停机则返回 false，
+// 确保 WaitGroup.Add 与 Shutdown 的 Wait 永不并发冲突。
+func (b *backgroundLoops) tryStart(name string, fn func()) bool {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return false
+	}
 	b.wg.Add(1)
-	goSafe("server/background", &b.wg, fn)
+	b.mu.Unlock()
+	goSafe(name, &b.wg, fn)
+	return true
+}
+
+func (b *backgroundLoops) close() {
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
 }
 
 // wait 等所有登记的循环退出，最多等到 ctx 到期；返回到期时仍在跑的数量。
 func (b *backgroundLoops) wait(ctx context.Context) int64 {
+	b.close()
 	done := make(chan struct{})
 	go func() {
 		b.wg.Wait()

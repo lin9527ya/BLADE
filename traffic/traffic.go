@@ -165,10 +165,15 @@ type Traffic struct {
 	// stopping() treats as "not closing".
 	closed    chan struct{}
 	closeOnce sync.Once
-	// pass is the set of hosts whose MITM interception failed for a proxy/protocol
-	// reason; connections to them are tunneled transparently (fail-open) so the
-	// request still reaches the target — unrecorded — instead of being killed.
-	pass sync.Map // hostname(string) -> struct{}
+	// pass records hosts whose MITM interception hit a proxy/protocol error, with
+	// a bounded entry cap and TTL cooldown so transient errors never cause permanent
+	// capture blindness or unbounded memory growth.
+	passMu sync.Mutex
+	pass   map[string]time.Time // hostname(string) -> bypass expiry
+	// inflightMu / inflightBlobs track hashes being spilled before tx.Commit registers
+	// blob_refs so concurrent gcBlobs() cannot delete newly spilled files mid-flight.
+	inflightMu    sync.Mutex
+	inflightBlobs map[string]int
 	// upstream is the global egress proxy every captured request is forwarded
 	// through (nil = dial targets directly). Both the intercepted and the
 	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
@@ -178,10 +183,20 @@ type Traffic struct {
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
 func Open(dir, addr string) (*Traffic, error) {
-	for _, d := range []string{dir, filepath.Join(dir, "_index"), filepath.Join(dir, "_blobs"), filepath.Join(dir, "_ca")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+	for _, spec := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{dir, 0o755},
+		{filepath.Join(dir, "_index"), 0o700},
+		{filepath.Join(dir, "_blobs"), 0o700},
+		{filepath.Join(dir, "_ca"), 0o700},
+		{filepath.Join(dir, "_public_ca"), 0o755},
+	} {
+		if err := os.MkdirAll(spec.path, spec.mode); err != nil {
 			return nil, err
 		}
+		_ = os.Chmod(spec.path, spec.mode)
 	}
 	// busy_timeout is a per-connection setting, so it belongs in the DSN rather
 	// than in a one-off Exec: the pool opens connections on demand, and an Exec
@@ -227,11 +242,11 @@ func Open(dir, addr string) (*Traffic, error) {
 	// can't intercept without breaking (see maybePassthrough). Those are tunneled
 	// transparently so the request still reaches the target instead of being killed.
 	p.SetShouldInterceptRule(func(req *http.Request) bool {
-		_, tunnel := t.pass.Load(hostOnly(req.Host))
-		return !tunnel
+		return !t.isPassthrough(hostOnly(req.Host))
 	})
 	p.AddAddon(&sink{t: t})
 	t.proxy = p
+	_ = t.syncPublicCACert()
 	return t, nil
 }
 
@@ -403,10 +418,52 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// CACertPath returns the PEM CA cert clients must trust to verify HTTPS through
-// the MITM proxy (go-mitmproxy writes it here on first start).
+// CACertPath returns the read-only public PEM CA cert clients must trust to verify
+// HTTPS through the MITM proxy, kept separate from _ca/ so agent processes never
+// receive access to the CA private key.
 func (t *Traffic) CACertPath() string {
+	pub := filepath.Join(t.dir, "_public_ca", "mitmproxy-ca-cert.pem")
+	if err := t.syncPublicCACert(); err == nil {
+		return pub
+	}
+	if _, err := os.Stat(pub); err == nil {
+		return pub
+	}
 	return filepath.Join(t.dir, "_ca", "mitmproxy-ca-cert.pem")
+}
+
+func (t *Traffic) syncPublicCACert() error {
+	src := filepath.Join(t.dir, "_ca", "mitmproxy-ca-cert.pem")
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	pubDir := filepath.Join(t.dir, "_public_ca")
+	if err := os.MkdirAll(pubDir, 0o755); err != nil {
+		return err
+	}
+	dst := filepath.Join(pubDir, "mitmproxy-ca-cert.pem")
+	if cur, err := os.ReadFile(dst); err == nil && string(cur) == string(raw) {
+		_ = os.Chmod(dst, 0o644)
+		return nil
+	}
+	tmp, err := os.CreateTemp(pubDir, ".ca-cert-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	_ = tmp.Close()
+	_ = os.Chmod(tmpPath, 0o644)
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // Start runs the proxy (blocking); run in a goroutine.
@@ -466,9 +523,58 @@ func (s *sink) Response(f *mproxy.Flow) {
 // transparent passthrough so future requests to it succeed instead of dying.
 func (s *sink) RequestError(f *mproxy.Flow, err error) { s.t.maybePassthrough(f, err) }
 
-// maybePassthrough marks a host to be tunneled transparently on the next
-// connection, but only for errors the proxy itself caused — a target that is
-// simply down/filtered would fail without us too, and must stay MITM'd+recorded.
+const (
+	passthroughTTL     = 10 * time.Minute
+	maxPassthroughHost = 4096
+)
+
+func (t *Traffic) isPassthrough(host string) bool {
+	if host == "" {
+		return false
+	}
+	now := time.Now()
+	t.passMu.Lock()
+	defer t.passMu.Unlock()
+	if t.pass == nil {
+		return false
+	}
+	exp, ok := t.pass[host]
+	if !ok {
+		return false
+	}
+	if !now.Before(exp) {
+		delete(t.pass, host)
+		return false
+	}
+	return true
+}
+
+func (t *Traffic) retainInflightBlob(hash string, delta int) {
+	if hash == "" {
+		return
+	}
+	t.inflightMu.Lock()
+	defer t.inflightMu.Unlock()
+	if t.inflightBlobs == nil {
+		t.inflightBlobs = make(map[string]int)
+	}
+	n := t.inflightBlobs[hash] + delta
+	if n <= 0 {
+		delete(t.inflightBlobs, hash)
+		return
+	}
+	t.inflightBlobs[hash] = n
+}
+
+func (t *Traffic) isInflightBlob(hash string) bool {
+	t.inflightMu.Lock()
+	defer t.inflightMu.Unlock()
+	return t.inflightBlobs[hash] > 0
+}
+
+// maybePassthrough marks a host to be tunneled transparently for a bounded
+// cooldown window, but only for errors the proxy itself caused — a target that
+// is simply down/filtered stays MITM'd+recorded, and entries expire by TTL.
 func (t *Traffic) maybePassthrough(f *mproxy.Flow, err error) {
 	if err == nil || f == nil || f.Request == nil || f.Request.URL == nil || !proxyCausedErr(err) {
 		return
@@ -477,8 +583,33 @@ func (t *Traffic) maybePassthrough(f *mproxy.Flow, err error) {
 	if host == "" {
 		return
 	}
-	if _, loaded := t.pass.LoadOrStore(host, struct{}{}); !loaded {
-		log.Printf("[traffic] 与 %s 的 MITM 出错，改为透传（该 host 后续直连目标、不再记录，但请求照常）：%v", host, err)
+	now := time.Now()
+	t.passMu.Lock()
+	if t.pass == nil {
+		t.pass = make(map[string]time.Time)
+	}
+	for k, exp := range t.pass {
+		if !now.Before(exp) {
+			delete(t.pass, k)
+		}
+	}
+	_, exists := t.pass[host]
+	if !exists && len(t.pass) >= maxPassthroughHost {
+		var oldestKey string
+		var oldestExp time.Time
+		for k, exp := range t.pass {
+			if oldestKey == "" || exp.Before(oldestExp) {
+				oldestKey, oldestExp = k, exp
+			}
+		}
+		if oldestKey != "" {
+			delete(t.pass, oldestKey)
+		}
+	}
+	t.pass[host] = now.Add(passthroughTTL)
+	t.passMu.Unlock()
+	if !exists {
+		log.Printf("[traffic] 与 %s 的 MITM 出错，临时透传 %s（到期自动恢复捕获）：%v", host, passthroughTTL, err)
 	}
 }
 
@@ -498,10 +629,6 @@ func proxyCausedErr(err error) bool {
 // full-text index. Nothing is written to a per-request directory — only bodies
 // above maxInlineBody spill to the content-addressed blob store.
 func (t *Traffic) record(f *mproxy.Flow) {
-	// The write lock covers blob + index writes, so DeleteHost (and its blob GC)
-	// can run under the same lock without racing a concurrent record.
-	t.wmu.Lock()
-	defer t.wmu.Unlock()
 	host := f.Request.URL.Hostname()
 	method := f.Request.Method
 	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
@@ -513,10 +640,20 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	url := f.Request.URL.String()
 	reqHead := fmt.Sprintf("%s %s %s\n%s", method, f.Request.URL.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request))
 	respHead := fmt.Sprintf("HTTP %d\n%s", f.Response.StatusCode, headerLines(f.Response.Header))
-	// Bodies are spilled before the transaction opens: blob writes are filesystem
-	// work and must not sit inside the SQLite write lock.
+	// Heavy disk I/O + fsync runs BEFORE taking wmu so concurrent HTTP flows spill
+	// bodies in parallel. In-flight hashes are pinned until blob_refs commits.
 	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
 	respB := t.spill(f.Response.Body, ct)
+	if reqB.hash != "" {
+		defer t.retainInflightBlob(reqB.hash, -1)
+	}
+	if respB.hash != "" {
+		defer t.retainInflightBlob(respB.hash, -1)
+	}
+
+	// Only serialize index/SQLite transaction commits with wmu.
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
 
 	tx, err := t.db.Begin()
 	if err != nil {
@@ -655,6 +792,7 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	}
 	if fi, err := os.Stat(blobPath); err == nil {
 		if fi.Size() == int64(len(body)) {
+			t.retainInflightBlob(h, 1)
 			return storedBody{hash: h, index: indexText(), state: "complete", storedLen: len(body)}
 		}
 		// A damaged/partial blob with the right name must be replaced. Windows
@@ -665,7 +803,9 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	} else if !os.IsNotExist(err) {
 		return partial(err)
 	}
+	t.retainInflightBlob(h, 1)
 	if err := os.Rename(tmpName, blobPath); err != nil {
+		t.retainInflightBlob(h, -1)
 		return partial(err)
 	}
 	cleanup = false
@@ -2070,8 +2210,11 @@ func (t *Traffic) gcBlobs() error {
 			}
 			return nil
 		}
+		if !strings.HasSuffix(d.Name(), ".bin") {
+			return nil
+		}
 		h := strings.TrimSuffix(d.Name(), ".bin")
-		if _, ok := refs[h]; !ok {
+		if _, ok := refs[h]; !ok && !t.isInflightBlob(h) {
 			os.Remove(p)
 		}
 		return nil

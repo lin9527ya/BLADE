@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
@@ -88,10 +89,18 @@ func (p *Pool) Head() *Member { return p.members[0] }
 // before the body is read, so they always land in the safe window.
 func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	sid := sessionKey(ctx, req)
-	order := p.orderFor(sid, req)
+	order, est := p.orderFor(sid, req)
 	return func(yield func(llm.StreamEvent, error) bool) {
+		if len(order) == 0 {
+			yield(llm.StreamEvent{}, fmt.Errorf("%w：请求估算约 %d tokens，超过所有配置的上下文窗口上限", ErrExhausted, est))
+			return
+		}
 		var lastErr error
+		minWindow := 0
 		for i, m := range order {
+			if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
+				continue
+			}
 			emitted := false
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
@@ -113,14 +122,21 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 				return
 			}
 			lastErr = failed
+			code := statusOf(failed)
+			if code == 413 {
+				if m.WindowTokens > minWindow {
+					minWindow = m.WindowTokens
+				}
+				log.Printf("[llmpool] %q(%s) 返回 413（载荷超限），跳过等长或更小窗口成员（不熔断）", m.Name, m.Model)
+				continue
+			}
 			hard := isHardFailure(failed)
 			if p.health.Trip(m.ID, trimErr(failed), hard) {
 				log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(failed))
 			}
-			if i+1 < len(order) {
-				n := order[i+1]
+			if next := nextEligible(order[i+1:], minWindow); next != nil {
 				log.Printf("[llmpool] LLM 故障转移：%q(%s) → %q(%s)，原因：%s",
-					m.Name, m.Model, n.Name, n.Model, trimErr(failed))
+					m.Name, m.Model, next.Name, next.Model, trimErr(failed))
 			}
 		}
 		if lastErr == nil {
@@ -138,9 +154,16 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 // chain-exhaustion behavior.
 func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	sid := sessionKey(ctx, req)
-	order := p.orderFor(sid, req)
+	order, est := p.orderFor(sid, req)
+	if len(order) == 0 {
+		return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w：请求估算约 %d tokens，超过所有配置的上下文窗口上限", ErrExhausted, est)
+	}
 	var lastErr error
+	minWindow := 0
 	for i, m := range order {
+		if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
+			continue
+		}
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
 		if err == nil {
 			p.health.Pass(m.ID)
@@ -154,14 +177,20 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 			return llm.Message{}, "", llm.Usage{}, err
 		}
 		lastErr = err
+		if statusOf(err) == 413 {
+			if m.WindowTokens > minWindow {
+				minWindow = m.WindowTokens
+			}
+			log.Printf("[llmpool] %q(%s) 返回 413（载荷超限），跳过等长或更小窗口成员（不熔断）", m.Name, m.Model)
+			continue
+		}
 		hard := isHardFailure(err)
 		if p.health.Trip(m.ID, trimErr(err), hard) {
 			log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(err))
 		}
-		if i+1 < len(order) {
-			n := order[i+1]
+		if next := nextEligible(order[i+1:], minWindow); next != nil {
 			log.Printf("[llmpool] LLM 故障转移：%q(%s) → %q(%s)，原因：%s",
-				m.Name, m.Model, n.Name, n.Model, trimErr(err))
+				m.Name, m.Model, next.Name, next.Model, trimErr(err))
 		}
 	}
 	if lastErr == nil {
@@ -171,30 +200,89 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w：%v", ErrExhausted, lastErr)
 }
 
-// order picks the members to try, in order: skip those in a cooling-off window
-// and those whose context window can't hold this request, then rotate within each
-// equal-priority group so same-priority profiles share the load. Never returns an
-// empty slice — if everything is filtered out, the head of the chain is tried
-// anyway, since stalling the engine is worse than one more failed request.
-func (p *Pool) orderFor(sid string, req llm.CompletionRequest) []*Member {
-	est := estimateTokens(req)
-	var open []*Member
-	for _, m := range p.members {
-		if p.health.IsOpen(m.ID) {
+func nextEligible(rest []*Member, minWindow int) *Member {
+	for _, m := range rest {
+		if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
 			continue
 		}
+		return m
+	}
+	return nil
+}
+
+// orderFor picks the members to try, in order: skip those in a cooling-off window
+// and those whose context window can't hold this request, rotate within equal-rank
+// groups with sticky affinity, and keep same-format profiles ahead of cross-format
+// ones so prompt KV cache stays hot. If every fitting member is tripped, probes
+// the first fitting member; never forces a guaranteed-400 over-window request.
+func (p *Pool) orderFor(sid string, req llm.CompletionRequest) ([]*Member, int) {
+	est := estimateTokens(req)
+	var open, fitting []*Member
+	for _, m := range p.members {
 		if m.WindowTokens > 0 && est > m.WindowTokens {
-			continue // would 400 on length — not a useful failover target
+			continue // would 400 on length — not a useful target
+		}
+		fitting = append(fitting, m)
+		if p.health.IsOpen(m.ID) {
+			continue
 		}
 		open = append(open, m)
 	}
 	if len(open) == 0 {
-		return p.members[:1] // last resort: probe the head rather than stall
+		if len(fitting) == 0 {
+			return nil, est
+		}
+		return fitting[:1], est // all fitting members tripped: probe first fitting member
 	}
+	var rotated []*Member
 	if sid == "" {
-		return rotateGroups(open, p.rr.Add(1)-1)
+		rotated = rotateGroups(open, p.rr.Add(1)-1)
+	} else {
+		rotated = rotateGroupsSticky(open, sessionHash(sid), p.pinnedMember(sid))
 	}
-	return rotateGroupsSticky(open, sessionHash(sid), p.pinnedMember(sid))
+	return preferSameFormat(rotated, p.preferredFormat(sid, open)), est
+}
+
+func normFormat(f string) string {
+	return strings.ToLower(strings.TrimSpace(f))
+}
+
+func (p *Pool) preferredFormat(sid string, open []*Member) string {
+	if sid != "" {
+		if pinID := p.pinnedMember(sid); pinID > 0 {
+			for _, m := range open {
+				if m.ID == pinID && normFormat(m.Format) != "" {
+					return normFormat(m.Format)
+				}
+			}
+		}
+	}
+	if len(p.members) > 0 && normFormat(p.members[0].Format) != "" {
+		return normFormat(p.members[0].Format)
+	}
+	return ""
+}
+
+func preferSameFormat(in []*Member, pref string) []*Member {
+	if pref == "" || len(in) <= 1 {
+		return in
+	}
+	var same, diff []*Member
+	for _, m := range in {
+		mf := normFormat(m.Format)
+		if mf == "" || mf == pref {
+			same = append(same, m)
+		} else {
+			diff = append(diff, m)
+		}
+	}
+	if len(same) == 0 || len(diff) == 0 {
+		return in
+	}
+	out := make([]*Member, 0, len(in))
+	out = append(out, same...)
+	out = append(out, diff...)
+	return out
 }
 
 func sessionKey(ctx context.Context, req llm.CompletionRequest) string {
@@ -312,7 +400,7 @@ func shouldFailover(ctx context.Context, err error) bool {
 		return true // no status → transport-level failure (reset / DNS / timeout)
 	case code == 400:
 		return false // bad or over-long request: identical everywhere
-	case code == 401, code == 402, code == 403, code == 404, code == 408, code == 429:
+	case code == 401, code == 402, code == 403, code == 404, code == 408, code == 413, code == 422, code == 429:
 		return true
 	case code >= 500:
 		return true
@@ -340,31 +428,53 @@ func trimErr(err error) string {
 	return s
 }
 
-// estimateTokens roughly sizes a request so members whose context window clearly
-// can't hold it are skipped. Deliberately crude (~3.5 chars/token) and biased to
-// over-estimate slightly; it only needs to tell "fits" from "nowhere near".
+// estimateTokens sizes a request conservatively for context-window filtering:
+// ASCII averages ~4 bytes/token while CJK/non-ASCII runes tokenize closer to
+// ~1.5-2 tokens per character. Counting non-ASCII runes avoids under-estimating
+// Chinese/mixed security reports by ~2x.
 func estimateTokens(req llm.CompletionRequest) int {
-	n := 0
+	tenths := 0
 	for _, s := range req.System {
-		n += len(s)
+		tenths += textTokenTenths(s)
 	}
 	for _, m := range req.Messages {
-		n += blocksLen(m.Content)
+		tenths += blocksTokenTenths(m.Content)
 	}
 	for _, t := range req.Tools {
-		// InputSchema is a decoded map, so its serialized size isn't available
-		// cheaply — charge a flat ~120 chars per top-level property instead.
-		n += len(t.Name) + len(t.Description) + len(t.InputSchema)*120
+		// InputSchema is a decoded map; charge ~35 tokens per top-level property.
+		tenths += textTokenTenths(t.Name) + textTokenTenths(t.Description) + len(t.InputSchema)*350
 	}
-	return n * 2 / 7 // ≈ len/3.5
+	if tenths <= 0 {
+		return 0
+	}
+	return (tenths + 9) / 10
 }
 
-func blocksLen(bs []llm.ContentBlock) int {
+func textTokenTenths(s string) int {
+	if s == "" {
+		return 0
+	}
+	asciiBytes, nonASCII := 0, 0
+	for i := 0; i < len(s); {
+		if s[i] < utf8.RuneSelf {
+			asciiBytes++
+			i++
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		nonASCII++
+		i += size
+	}
+	// Conservative weights in tenths of a token: ASCII ~0.28/byte, non-ASCII ~1.6/rune.
+	return (asciiBytes*28+9)/10 + nonASCII*16
+}
+
+func blocksTokenTenths(bs []llm.ContentBlock) int {
 	n := 0
 	for _, b := range bs {
-		n += len(b.Text) + len(b.Thinking) + len(b.Input) + len(b.Name)
+		n += textTokenTenths(b.Text) + textTokenTenths(b.Thinking) + textTokenTenths(string(b.Input)) + textTokenTenths(b.Name)
 		if len(b.Content) > 0 {
-			n += blocksLen(b.Content)
+			n += blocksTokenTenths(b.Content)
 		}
 	}
 	return n

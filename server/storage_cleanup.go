@@ -76,6 +76,10 @@ var storageCategories = []storageCategorySpec{
 	{Key: "db_conversation_activity", Label: "对话活动流（数据库）", SettingKey: settingRetentionConvActivity, DBTable: db.RetentionConversationActivity},
 	{Key: "db_intercept_pending", Label: "审批记录（数据库）", SettingKey: settingRetentionInterceptPending, DBTable: db.RetentionInterceptPending},
 	{Key: "db_audit_events", Label: "安全审计事件（数据库）", SettingKey: settingRetentionAuditEvents, DBTable: db.RetentionAuditEvents},
+	{Key: "db_blackboard_events", Label: "黑板变更事件（数据库）", SettingKey: settingRetentionBlackboardEvents, DBTable: db.RetentionBlackboardEvents},
+	{Key: "db_blackboard_operations", Label: "黑板操作日志（数据库）", SettingKey: settingRetentionBlackboardOps, DBTable: db.RetentionBlackboardOperations},
+	{Key: "db_task_timeout_events", Label: "超时状态事件（数据库）", SettingKey: settingRetentionTaskTimeouts, DBTable: db.RetentionTaskTimeoutEvents},
+	{Key: "db_aggregate_requests", Label: "汇总幂等回执（数据库）", SettingKey: settingRetentionAggregateRequests, DBTable: db.RetentionAggregateRequests},
 }
 
 // storageUnit 是一个可删单元（任务目录 / 会话目录 / 单个转写文件…）。
@@ -300,7 +304,8 @@ func (s *Server) purgeRetentionCategory(ctx context.Context, spec storageCategor
 		return s.m.pg.PurgeLLMRecordsBefore(ctx, cutoff, tasks, 0)
 	case db.RetentionToolExecutions, db.RetentionCredentialAttempts,
 		db.RetentionNotificationEvents, db.RetentionConversationActivity, db.RetentionInterceptPending,
-		db.RetentionAuditEvents:
+		db.RetentionAuditEvents, db.RetentionBlackboardEvents, db.RetentionBlackboardOperations,
+		db.RetentionTaskTimeoutEvents, db.RetentionAggregateRequests:
 		// 这几个走统一入口：条件由 db.retentionFilter 的一支给出（含按任务保护、
 		// 台账排除在跑的行、审批只清已判定）。新增分类时只需要实现 filter 那支。
 		return s.m.pg.PurgeTableBefore(ctx, spec.DBTable, cutoff, tasks, explorations, 0)
