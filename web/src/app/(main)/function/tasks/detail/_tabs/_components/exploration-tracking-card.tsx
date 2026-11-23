@@ -60,40 +60,58 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
   const [showTracking, setShowTracking] = React.useState(false);
   const [schedule, setSchedule] = React.useState<SchedulingReport | null>(null);
   const [leads, setLeads] = React.useState<LeadTraceReport | null>(null);
-  const [error, setError] = React.useState("");
+  const [scheduleError, setScheduleError] = React.useState("");
+  const [leadsError, setLeadsError] = React.useState("");
   const [focusDraft, setFocusDraft] = React.useState("");
   const [focus, setFocus] = React.useState("");
   const [state, setState] = React.useState("");
   const [offset, setOffset] = React.useState(0);
-  const [refresh, setRefresh] = React.useState(0);
+  const [refreshSchedule, setRefreshSchedule] = React.useState(0);
+  const [refreshLeads, setRefreshLeads] = React.useState(0);
   React.useEffect(() => {
+    void taskId;
+    void focus;
+    void showSchedule;
     setSchedule(null);
-  }, [taskId, focus, state, offset, showSchedule]);
+    setScheduleError("");
+  }, [taskId, focus, showSchedule]);
   React.useEffect(() => {
+    void taskId;
+    void state;
+    void offset;
+    void showTracking;
     setLeads(null);
-  }, [taskId, focus, state, offset, showTracking]);
+    setLeadsError("");
+  }, [taskId, state, offset, showTracking]);
   usePolling(async (alive) => {
+    if (!showSchedule) return;
     try {
-      const [nextSchedule, nextLeads] = await Promise.all([
-        showSchedule ? api.taskScheduling(taskId, focus || undefined) : Promise.resolve(null),
-        showTracking ? api.taskLeadTraces(taskId, state, offset) : Promise.resolve(null),
-      ]);
-      if (alive()) { setSchedule(nextSchedule); setLeads(nextLeads); setError(""); }
+      const nextSchedule = await api.taskScheduling(taskId, focus || undefined);
+      if (alive()) { setSchedule(nextSchedule); setScheduleError(""); }
     } catch (e) {
-      if (alive()) setError((e as Error).message);
+      if (alive()) setScheduleError((e as Error).message);
       throw e;
     }
-  }, 10_000, [taskId, focus, state, offset, refresh, showSchedule, showTracking]);
+  }, showSchedule ? 10_000 : 0, [taskId, focus, refreshSchedule, showSchedule]);
+  usePolling(async (alive) => {
+    if (!showTracking) return;
+    try {
+      const nextLeads = await api.taskLeadTraces(taskId, state, offset);
+      if (alive()) { setLeads(nextLeads); setLeadsError(""); }
+    } catch (e) {
+      if (alive()) setLeadsError((e as Error).message);
+      throw e;
+    }
+  }, showTracking ? 10_000 : 0, [taskId, state, offset, refreshLeads, showTracking]);
 
   function search() {
     const value = focusDraft.trim();
-    if (value && !/^[1-9]\d*$/.test(value)) { setError("意图 ID 必须是正整数"); return; }
+    if (value && !/^[1-9]\d*$/.test(value)) { setScheduleError("意图 ID 必须是正整数"); return; }
     setFocus(value);
-    setRefresh((n) => n + 1);
+    setRefreshSchedule((n) => n + 1);
   }
   return (
     <div className="space-y-4">
-      {error && <p role="alert" className="text-sm text-muted-foreground">调度/追踪读取失败：{error}</p>}
       <Collapsible open={showSchedule} onOpenChange={setShowSchedule}>
         <Card>
           <CardHeader>
@@ -107,10 +125,11 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
           </CardHeader>
           <CollapsibleContent>
             <CardContent className="space-y-3">
+              {scheduleError && <p role="alert" className="text-sm text-destructive">调度读取失败：{scheduleError}</p>}
               <div className="flex flex-wrap items-center gap-2">
                 <Input aria-label="查询意图 ID" placeholder="意图 ID；留空查看候选" className="h-8 w-52" value={focusDraft} onChange={(e) => setFocusDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
                 <Button size="sm" variant="outline" onClick={search}>查询</Button>
-                <Button size="sm" variant="ghost" onClick={() => setRefresh((n) => n + 1)}><RefreshCwIcon className="size-3.5" />刷新</Button>
+                <Button size="sm" variant="ghost" onClick={() => setRefreshSchedule((n) => n + 1)}><RefreshCwIcon className="size-3.5" />刷新</Button>
               </div>
               {!schedule ? <p className="text-sm text-muted-foreground">正在读取…</p> : (
                 <>
@@ -127,6 +146,14 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
                         <TableCell className="min-w-56 whitespace-normal align-top text-xs">
                           <p>自创建：{trackingDuration(row.waiting_seconds)}</p>
                           <p className="mt-1 text-muted-foreground">{row.wait_reasons?.length ? row.wait_reasons.map(scheduleWaitLabel).join("；") : "候选已就绪，等待并发额度领取"}</p>
+                          {row.blocked_reason && (
+                            <p className="mt-1 text-amber-600 dark:text-amber-400">阻塞原因：{row.blocked_reason}</p>
+                          )}
+                          {row.requires_missing && row.requires_missing.length > 0 && (
+                            <p className="mt-1 text-muted-foreground">
+                              待满足前提：{row.requires_missing.map((r) => r.key || `#${r.node_id || "?"}`).join("、")}
+                            </p>
+                          )}
                           <details className="mt-2"><summary className="cursor-pointer">评分分解</summary><div className="mt-2"><ScoreDetails row={row} /></div></details>
                         </TableCell>
                       </TableRow>
@@ -154,10 +181,14 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
           </CardHeader>
           <CollapsibleContent>
             <CardContent className="space-y-3">
+          {leadsError && <p role="alert" className="text-sm text-destructive">追踪读取失败：{leadsError}</p>}
+          <div className="flex flex-wrap items-center gap-2">
           <NativeSelect aria-label="筛选线索状态" value={state} onChange={(e) => { setState(e.target.value); setOffset(0); }} className="max-w-xs" size="sm">
             <NativeSelectOption value="">全部状态</NativeSelectOption>
             {Object.entries(LEAD_TRACE_LABELS).map(([value, label]) => <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>)}
           </NativeSelect>
+          <Button size="sm" variant="ghost" onClick={() => setRefreshLeads((n) => n + 1)}><RefreshCwIcon className="size-3.5" />刷新</Button>
+          </div>
           {!leads ? <p className="text-sm text-muted-foreground">正在读取…</p> : (
             <>
               <p className="text-sm">全任务 {leads.stats.total} 条 · 待接手 {leads.stats.pending} · 曾接手 {leads.stats.adopted} · 执行中 {leads.stats.running} · 需跟进 {leads.stats.needs_follow_up}</p>

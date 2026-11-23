@@ -173,7 +173,7 @@ func (e *Engine) budgetNotice(t *Task, stage string, used, budget int64) {
 		Summary: fmt.Sprintf("Token 预算 %s（%d/%d）", budgetStagePercent(stage), used, budget),
 		Detail:  text})
 	t.trigMu.Lock()
-	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "hint", Hints: []string{text}})
+	t.appendTriggerLocked(agent.TriggerEvent{Kind: "hint", Hints: []string{text}})
 	t.trigMu.Unlock()
 	t.Notify()
 	log.Printf("[budget] task %s %s (%d/%d)，已向 planner 投递预算提示", t.ID, stage, used, budget)

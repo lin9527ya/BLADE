@@ -166,14 +166,14 @@ export function TimelineTab({ taskId }: { taskId: string }) {
 
   const openNode = async (id: number) => {
     try {
-      if (!nodeCache.current) {
-        const g = await api.explorationGraph(taskId);
-        nodeCache.current = new Map(g.nodes.map((n) => [n.id, n]));
-      }
-      const node = nodeCache.current.get(String(id));
+      const key = String(id);
+      let node = nodeCache.current?.get(key);
       if (!node) {
-        toast.error("节点不存在或已不在当前图中");
-        return;
+        node = await api.explorationNode(key, taskId);
+        if (!nodeCache.current) {
+          nodeCache.current = new Map();
+        }
+        nodeCache.current.set(key, node);
       }
       setSelectedNode(node);
     } catch (e) {

@@ -27,9 +27,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { nodeSummary } from "@/components/_parts/graph-helpers";
 import { StatusBadge } from "@/components/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
@@ -123,11 +126,13 @@ function StatCard({
   );
 }
 
-export function OverviewTab({ taskId }: { taskId: string }) {
+export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; sseConnected?: boolean }) {
+  const [showPlannerState, setShowPlannerState] = React.useState(false);
   const {
     task,
     stats,
     intents,
+    plannerState,
     coverage,
     rerunning,
     resuming,
@@ -214,7 +219,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     tokenTotals,
     budgetUsed,
     budgetPct,
-  } = useOverviewState(taskId);
+  } = useOverviewState(taskId, sseConnected);
 
   // 手动沉淀：自动触发依赖调度水位，历史任务/漏触发时用它补一次。
   const [distilling, setDistilling] = React.useState(false);
@@ -243,6 +248,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const totalOpen = stats?.claimable_intents ?? open.length;
   const totalRunning = stats?.intent_states?.running ?? running.length;
   const totalBlocked = stats?.intent_states?.blocked ?? blocked.length;
+  const totalExhausted = stats?.intent_states?.exhausted ?? intents.filter((i) => i.state === "exhausted").length;
+  const totalStopped = stats?.intent_states?.stopped ?? intents.filter((i) => i.state === "stopped").length;
+  const totalNoOutput = stats?.intent_states?.no_output ?? intents.filter((i) => i.state === "no_output").length;
   // 依赖阻塞：open 但 strict 前置仍活跃；与 state=blocked（执行失败）分开说。
   const blockedByDeps = stats?.blocked_intents ?? [];
   const totalBlockedByDeps = stats?.blocked_open_intents ?? blockedByDeps.length;
@@ -874,6 +882,78 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       <TaskLootExecCard taskId={taskId} enabled={task?.loot_exec_enabled} />
       <TaskCredentialBudgetCard taskId={taskId} budget={task?.credential_attempt_budget} />
       <TaskRuntimeCard task={task} />
+      <Collapsible open={showPlannerState} onOpenChange={setShowPlannerState}>
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ListChecksIcon className="size-4" /> Planner 规划备忘
+                {plannerState?.found && (
+                  <span className="font-normal text-muted-foreground text-xs">
+                    （{plannerState.todos.length} 条 Todo）
+                  </span>
+                )}
+              </CardTitle>
+              <CollapsibleTrigger asChild>
+                <Button size="sm" variant="outline">
+                  {showPlannerState ? "收起规划备忘" : "查看规划备忘"}
+                </Button>
+              </CollapsibleTrigger>
+            </div>
+            <CardDescription>
+              {showPlannerState
+                ? "规划者跨轮次维护的 TodoWrite 清单与上轮结论摘要。"
+                : "默认收起，按需查看规划者 TodoWrite 进度与上轮结论。"}
+            </CardDescription>
+          </CardHeader>
+          <CollapsibleContent>
+            <CardContent className="space-y-3 text-sm">
+              {!plannerState?.found ? (
+                <p className="text-muted-foreground">规划者尚未写入备忘状态。</p>
+              ) : (
+                <>
+                  {plannerState.updated_at && (
+                    <p className="text-muted-foreground text-xs">
+                      最近更新：{new Date(plannerState.updated_at).toLocaleString("zh-CN")}
+                    </p>
+                  )}
+                  {plannerState.last_round_note && (
+                    <div className="rounded-md border bg-muted/30 p-3">
+                      <div className="mb-1 font-medium text-muted-foreground text-xs">上轮结论</div>
+                      <p className="whitespace-pre-wrap break-words text-xs leading-relaxed">
+                        {plannerState.last_round_note}
+                      </p>
+                    </div>
+                  )}
+                  {plannerState.todos.length > 0 ? (
+                    <ul className="space-y-1.5">
+                      {plannerState.todos.map((todo, idx) => (
+                        <li
+                          key={`${idx}-${todo.status}-${todo.content.slice(0, 24)}`}
+                          className="flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs"
+                        >
+                          <Badge variant="outline" className="shrink-0">
+                            {todo.status === "completed"
+                              ? "已完成"
+                              : todo.status === "in_progress"
+                                ? "进行中"
+                                : todo.status === "pending"
+                                  ? "待办"
+                                  : todo.status}
+                          </Badge>
+                          <span className="min-w-0 flex-1 break-words">{todo.content}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-muted-foreground text-xs">当前无 Todo 条目。</p>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
       <ExplorationTrackingCard key={taskId} taskId={taskId} />
       <TaskInterceptRulesCard taskId={taskId} />
       {coverage?.enabled && coverage.scope_rows > 0 && (
@@ -1170,7 +1250,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             {running.slice(0, 6).map((i) => (
               <div key={i.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="intent" value={i.state} />
-                <span className="min-w-0 flex-1 truncate">{i.payload}</span>
+                <span className="shrink-0 font-mono text-muted-foreground text-xs">#{i.id}</span>
+                <span className="min-w-0 flex-1 truncate">{nodeSummary(i) || "(无摘要)"}</span>
               </div>
             ))}
             {running.length === 0 && <p className="text-muted-foreground text-sm">暂无进行中意图</p>}
@@ -1183,23 +1264,32 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               <AlertTriangleIcon className="size-4 text-amber-500" /> 需要关注
             </CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <div className="font-semibold text-2xl text-red-600 tabular-nums">{totalFindings}</div>
-              <div className="text-muted-foreground text-xs">确认漏洞</div>
+          <CardContent className="space-y-2 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="font-semibold text-2xl text-red-600 tabular-nums">{totalFindings}</div>
+                <div className="text-muted-foreground text-xs">确认漏洞</div>
+              </div>
+              <div>
+                <div className="font-semibold text-2xl text-blue-600 tabular-nums">{totalRunning}</div>
+                <div className="text-muted-foreground text-xs">执行中</div>
+              </div>
+              <div>
+                <div className="font-semibold text-2xl tabular-nums">{totalOpen}</div>
+                <div className="text-muted-foreground text-xs">frontier 待领</div>
+              </div>
+              <div>
+                <div className="font-semibold text-2xl text-red-600 tabular-nums">
+                  {totalBlocked + totalExhausted + totalStopped + totalNoOutput}
+                </div>
+                <div className="text-muted-foreground text-xs">异常/中断意图</div>
+              </div>
             </div>
-            <div>
-              <div className="font-semibold text-2xl text-blue-600 tabular-nums">{totalRunning}</div>
-              <div className="text-muted-foreground text-xs">执行中</div>
-            </div>
-            <div>
-              <div className="font-semibold text-2xl tabular-nums">{totalOpen}</div>
-              <div className="text-muted-foreground text-xs">frontier 待领</div>
-            </div>
-            <div>
-              <div className="font-semibold text-2xl text-red-600 tabular-nums">{totalBlocked}</div>
-              <div className="text-muted-foreground text-xs">被拦意图</div>
-            </div>
+            {(totalBlocked > 0 || totalExhausted > 0 || totalStopped > 0 || totalNoOutput > 0) && (
+              <div className="border-t pt-2 text-muted-foreground text-xs">
+                出错 {totalBlocked} · 耗尽 {totalExhausted} · 停止 {totalStopped} · 无产出 {totalNoOutput}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -1275,7 +1365,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             {blocked.slice(0, 20).map((i) => (
               <div key={i.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="intent" value={i.state} />
-                <span className="min-w-0 flex-1 truncate">{i.payload}</span>
+                <span className="shrink-0 font-mono text-muted-foreground text-xs">#{i.id}</span>
+                <span className="min-w-0 flex-1 truncate">{nodeSummary(i) || "(无摘要)"}</span>
+                {i.blocked_reason && (
+                  <Badge variant="outline" className="shrink-0 text-[10px]">
+                    {i.blocked_reason}
+                  </Badge>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"

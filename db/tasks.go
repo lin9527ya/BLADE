@@ -713,6 +713,42 @@ func (d *DB) SetGoalsCompleteGuardedWithPruned(id int64) (won bool, pruned []int
 	return d.setTerminalStatusGuarded(id, "done", true, true)
 }
 
+// SetGoallessDoneGuarded completes a task whose goals have already drained (or
+// were never open) ONLY when it is not paused/queued/deleted AND still has no
+// open goals and no open/running/paused intents, closing the TOCTOU window with
+// concurrent addGoal / add_intent / pause.
+func (d *DB) SetGoallessDoneGuarded(id int64) (bool, error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var expID int64
+	err = tx.QueryRow(`
+UPDATE tasks
+   SET status = 'done',
+       completed_at = COALESCE(completed_at, now()),
+       active_run_seconds = CASE WHEN run_segment_started_at IS NOT NULL
+                                 THEN active_run_seconds + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint)
+                                 ELSE active_run_seconds END,
+       run_segment_started_at = NULL
+ WHERE id = $1 AND status NOT IN `+TerminalStatusSQL()+`
+   AND NOT paused AND NOT queued AND deleted_at IS NULL
+   AND NOT EXISTS (SELECT 1 FROM exploration_nodes g WHERE g.exploration_id=tasks.exploration_id AND g.kind='goal' AND g.state='open')
+   AND NOT EXISTS (SELECT 1 FROM exploration_nodes i WHERE i.exploration_id=tasks.exploration_id AND i.kind='intent' AND i.state IN ('open','running','paused'))
+RETURNING COALESCE(exploration_id, 0)`, id).Scan(&expID)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (d *DB) setTerminalStatusGuarded(id int64, status string, goalsGuard, pruneOpen bool) (won bool, pruned []int64, err error) {
 	tx, err := d.Begin()
 	if err != nil {

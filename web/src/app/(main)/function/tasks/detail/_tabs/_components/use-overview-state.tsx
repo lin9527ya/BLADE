@@ -17,16 +17,18 @@ import type {
   TaskGoal,
   TaskHint,
   TaskNode,
+  TaskPlannerState,
   TaskScopeRow,
 } from "@/lib/types";
 
 // 总览页签的状态与取数：任务/统计/意图/令牌/目标/约束/覆盖等。
 
-export function useOverviewState(taskId: string) {
+export function useOverviewState(taskId: string, sseConnected = false) {
   const [task, setTask] = React.useState<Task | null>(null);
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
+  const [plannerState, setPlannerState] = React.useState<TaskPlannerState | null>(null);
   const [coverage, setCoverage] = React.useState<{
     enabled: boolean;
     scope_rows: number;
@@ -521,6 +523,14 @@ export function useOverviewState(taskId: string) {
             .catch(() => {
               // A transient coverage failure is retried by the next poll.
             });
+          api
+            .taskPlannerState(taskId)
+            .then((ps) => {
+              if (alive()) setPlannerState(ps);
+            })
+            .catch(() => {
+              // Planner state is optional read-only metadata.
+            });
         } finally {
           loading = false;
         }
@@ -536,8 +546,8 @@ export function useOverviewState(taskId: string) {
         loadConstraints(),
       ]);
     },
-    3000,
-    [taskId, loadScope, loadTokens, loadGoals, loadHints, loadArtifacts, loadConstraints],
+    sseConnected ? 30_000 : 5_000,
+    [taskId, sseConnected, loadScope, loadTokens, loadGoals, loadHints, loadArtifacts, loadConstraints],
   );
 
   const running = intents.filter((i) => i.state === "running");
@@ -571,6 +581,7 @@ export function useOverviewState(taskId: string) {
     setIntents,
     findings,
     setFindings,
+    plannerState,
     coverage,
     setCoverage,
     rerunning,

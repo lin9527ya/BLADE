@@ -249,23 +249,35 @@ type TaskNodeDTO struct {
 	// ruled_out/open_proof_gap…）。播报板与探索链路据此展示状态徽标（待处理/已确认/
 	// 候选/已排除），默认不再静默隐藏 pending；非 finding 节点为空。节点 state 只有
 	// 四态，不能替代它。
-	FindingStatus string `json:"finding_status,omitempty"`
+	FindingStatus   string `json:"finding_status,omitempty"`
+	FindingID       string `json:"finding_id,omitempty"`
+	BlockedReason   string `json:"blocked_reason,omitempty"`
+	SemanticOutcome string `json:"semantic_outcome,omitempty"`
+	SemanticNote    string `json:"semantic_note,omitempty"`
+	Owner           string `json:"owner,omitempty"`
 }
 
 func taskNodeDTO(n *db.Node, plaintext ...bool) TaskNodeDTO {
 	d := TaskNodeDTO{
 		EvidenceState: n.EvidenceState, RequiresMissing: n.RequiresMissing, LogicalSessionID: n.LogicalSessionID,
-		ID:            i64s(n.ID),
-		Type:          n.Kind,
-		Payload:       rawString(n.Payload),
-		DeleteReason:  n.DeleteReason,
-		Priority:      n.Priority,
-		State:         n.State,
-		Origin:        n.Origin,
-		TS:            rfc3339(n.CreatedAt),
-		WorkerSeq:     n.WorkerSeq,
-		SlotNo:        slotNumber(n.Owner),
-		FindingStatus: n.FindingStatus,
+		ID:              i64s(n.ID),
+		Type:            n.Kind,
+		Payload:         rawString(n.Payload),
+		DeleteReason:    n.DeleteReason,
+		Priority:        n.Priority,
+		State:           n.State,
+		Origin:          n.Origin,
+		TS:              rfc3339(n.CreatedAt),
+		WorkerSeq:       n.WorkerSeq,
+		SlotNo:          slotNumber(n.Owner),
+		FindingStatus:   n.FindingStatus,
+		BlockedReason:   n.BlockedReason,
+		SemanticOutcome: n.SemanticOutcome,
+		SemanticNote:    n.SemanticNote,
+		Owner:           n.Owner,
+	}
+	if n.FindingID > 0 {
+		d.FindingID = i64s(n.FindingID)
 	}
 	if n.ExecutionGeneration > 0 {
 		d.ExecutionGeneration = i64s(n.ExecutionGeneration)

@@ -86,10 +86,12 @@ type Node struct {
 	// 显示 "Worker #N"。它是唯一保留序号的地方：agent 侧（态势、常驻索引、去重回执、
 	// 报告引用）一律只用全局 id——两套编号同时出现会让模型拿序号去调工具、找错节点
 	// （VPS 实测）。这个字段永远不进 agent 的输入，也不参与任何业务判定。
-	WorkerSeq     int64   `json:"worker_seq,omitempty"`
-	BlockedReason string  `json:"blocked_reason,omitempty"`
-	DeleteReason  string  `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
-	Anchors       []int64 `json:"anchors,omitempty"`
+	WorkerSeq       int64   `json:"worker_seq,omitempty"`
+	BlockedReason   string  `json:"blocked_reason,omitempty"`
+	DeleteReason    string  `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
+	SemanticOutcome string  `json:"semantic_outcome,omitempty"`
+	SemanticNote    string  `json:"semantic_note,omitempty"`
+	Anchors         []int64 `json:"anchors,omitempty"`
 	// FindingStatus 是 findings.status 的只读投影（仅 kind=finding 且由
 	// populateFindingStatuses 填充）。节点自身 state 只有 confirmed/dismissed/
 	// ruled_out/open_proof_gap 四态，无法区分 report_finding 产生的 pending 与真正
@@ -582,15 +584,16 @@ func (s *ExplorationStore) SetNodeState(id int64, state string) error {
 }
 
 // UpdateGoalPayload rewrites a goal node's payload text (and optional vulnclass);
-// scoped to kind='goal' so it can never mutate an intent/fact by id. Returns an
-// error if no such goal exists in this exploration.
+// scoped to kind='goal' so it can never mutate an intent/fact by id. Editing a
+// met goal reopens it to 'open' and bumps content_version so planners/projections
+// re-evaluate it. Returns an error if no such goal exists in this exploration.
 func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) error {
 	payload := map[string]any{"text": text}
 	if vulnclass != "" {
 		payload["vulnclass"] = vulnclass
 	}
 	raw, _ := json.Marshal(payload)
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET payload=$1 WHERE id=$2 AND exploration_id=$3 AND kind='goal'`, string(raw), id, s.expID)
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET payload=$1, state=CASE WHEN state='met' THEN 'open' ELSE state END, content_version=content_version+1 WHERE id=$2 AND exploration_id=$3 AND kind='goal'`, string(raw), id, s.expID)
 	if err != nil {
 		return err
 	}
@@ -708,6 +711,7 @@ func (s *ExplorationStore) ResetRunningIntents() (int64, error) {
 	// can resume the slot transcript that was active before shutdown. Owner is kept
 	// (existing affinity); resume_slot lets a changed worker pool still find it.
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL, lease_expires_at=NULL,
+content_version=content_version+1,
 payload = (COALESCE(payload,'{}'::jsonb) || jsonb_build_object('resume_after_restart', true)) ||
           CASE WHEN owner ~ '^work#[0-9]+$'
                THEN jsonb_build_object('resume_slot', substring(owner from 'work#([0-9]+)')::int)
@@ -726,7 +730,7 @@ WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 // done/open/running are left untouched. Returns whether a row changed. Used by "重跑".
 func (s *ExplorationStore) ReopenIntent(id int64) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state='open', completed_at=NULL, blocked_reason=NULL
+SET state='open', completed_at=NULL, blocked_reason=NULL, content_version=content_version+1
 WHERE id=$1 AND exploration_id=$2 AND kind='intent'
   AND state IN ('blocked','exhausted','stopped','no_output')`, id, s.expID)
 	if err != nil {
@@ -817,7 +821,7 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state IN ('open','paused
 // (batch rerun after e.g. an LLM/network outage that blocked many at once). Returns the
 // number reopened. Workers resume from their transcripts; kept graph writes remain.
 func (s *ExplorationStore) ReopenBlockedIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL, content_version=content_version+1
 WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
 	if err != nil {
 		return 0, err
@@ -966,13 +970,13 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, []
 	return summary, dependents, nil
 }
 
-// softDeletePendingNonCleanupIntentsTx 假删除本探索图里所有尚未领取(open)的非清理类意图。
+// softDeletePendingNonCleanupIntentsTx 假删除本探索图里所有尚未领取(open)或已暂停(paused)的非清理类意图。
 // 用于目标达成落定 done 时与任务状态原子提交，避免遗留方向在后续补充目标/单派意图或
-// 痕迹清理恢复任务时再次被 worker 领取。痕迹清理意图(cleanup=true)由操作者显式提交，
-// 不在此自动清理范围内。
+// 痕迹清理恢复任务时再次被 worker 领取或单独恢复回流。痕迹清理意图(cleanup=true)由操作者
+// 显式提交，不在此自动清理范围内。
 func (s *ExplorationStore) softDeletePendingNonCleanupIntentsTx(tx *sql.Tx, reason string) ([]int64, error) {
 	rows, err := tx.Query(`SELECT id FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state='open'
+WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','paused')
   AND COALESCE(payload->>'cleanup','') <> 'true'
 ORDER BY id FOR UPDATE`, s.expID)
 	if err != nil {
@@ -1213,23 +1217,18 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 	}
 
 	// finding 节点删除前先删 findings 表行(否则留 node_id=NULL 的孤儿)。
-	for _, fid := range findingIDs {
-		if _, err := tx.Exec(`DELETE FROM findings WHERE node_id=$1`, fid); err != nil {
+	if len(findingIDs) > 0 {
+		if _, err := tx.Exec(`DELETE FROM findings WHERE node_id=ANY($1::bigint[])`, findingIDs); err != nil {
 			return out, err
 		}
 	}
 
-	// 删节点(边随 CASCADE 清理)。逐个删并核对行数,防并发改动。
-	var removed int64
-	for _, nid := range ids {
-		res, err := tx.Exec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, nid, s.expID)
-		if err != nil {
-			return out, err
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			removed += n
-		}
+	// 批量删节点(边随 CASCADE 清理)并核对行数,防并发改动。
+	res, err := tx.Exec(`DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=ANY($2::bigint[])`, s.expID, ids)
+	if err != nil {
+		return out, err
 	}
+	removed, _ := res.RowsAffected()
 	if removed != int64(len(ids)) {
 		return out, fmt.Errorf("intent cleanup changed concurrently")
 	}
@@ -1338,12 +1337,12 @@ func (u *TokenUsage) add(other TokenUsage) {
 	u.CacheWriteTokens += other.CacheWriteTokens
 }
 
-const nodeCols = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), COALESCE(delete_reason,''), created_at, logical_session_id, execution_generation, content_version`
+const nodeCols = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), COALESCE(delete_reason,''), COALESCE(semantic_outcome,''), COALESCE(semantic_note,''), created_at, logical_session_id, execution_generation, content_version`
 
 func scanNode(sc interface{ Scan(...any) error }) (*Node, error) {
 	var n Node
 	var payload []byte
-	if err := sc.Scan(&n.ID, &n.Kind, &payload, &n.Priority, &n.State, &n.Origin, &n.Owner, &n.BlockedReason, &n.DeleteReason, &n.CreatedAt, &n.LogicalSessionID, &n.ExecutionGeneration, &n.ContentVersion); err != nil {
+	if err := sc.Scan(&n.ID, &n.Kind, &payload, &n.Priority, &n.State, &n.Origin, &n.Owner, &n.BlockedReason, &n.DeleteReason, &n.SemanticOutcome, &n.SemanticNote, &n.CreatedAt, &n.LogicalSessionID, &n.ExecutionGeneration, &n.ContentVersion); err != nil {
 		return nil, err
 	}
 	n.Payload = json.RawMessage(payload)
@@ -1611,11 +1610,12 @@ const intentClaimableSQL = `(
   )
 )`
 
-// IntentDispatch 是一次队列快照：Open/Running 是状态计数，Claimable 是按当前依赖语义
+// IntentDispatch 是一次队列快照：Open/Running/Paused 是状态计数，Claimable 是按当前依赖语义
 // 真正能派给 worker 的 open 数，Blocked 是 open 中因 strict 活跃前置领不了的数。
 type IntentDispatch struct {
 	Open      int
 	Running   int
+	Paused    int
 	Claimable int
 	Blocked   int
 }
@@ -1627,9 +1627,10 @@ func (s *ExplorationStore) IntentDispatchSnapshot() (IntentDispatch, error) {
 	err := s.db.QueryRow(`SELECT
   COUNT(*) FILTER (WHERE n.state='open'),
   COUNT(*) FILTER (WHERE n.state='running'),
+  COUNT(*) FILTER (WHERE n.state='paused'),
   COUNT(*) FILTER (WHERE n.state='open' AND `+intentClaimableSQL+`)
 FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent'`, s.expID).Scan(&out.Open, &out.Running, &out.Claimable)
+WHERE n.exploration_id=$1 AND n.kind='intent'`, s.expID).Scan(&out.Open, &out.Running, &out.Paused, &out.Claimable)
 	if err != nil {
 		return out, err
 	}
@@ -1967,6 +1968,32 @@ func (s *ExplorationStore) Nodes(limit int) ([]*Node, error) {
 	return scanNodes(rows)
 }
 
+// NodesNewest returns up to limit newest nodes (ordered ascending by id for
+// deterministic graph layout) along with the real total node count so graph UI
+// endpoints do not silently drop newest discoveries when graphs grow large.
+func (s *ExplorationStore) NodesNewest(limit int) ([]*Node, int64, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	var total int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE exploration_id=$1`, s.expID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	nodes, err := scanNodes(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i, j := 0, len(nodes)-1; i < j; i, j = i+1, j-1 {
+		nodes[i], nodes[j] = nodes[j], nodes[i]
+	}
+	return nodes, total, nil
+}
+
 // NodeFilter narrows a NodesPage query. Empty fields include every value.
 type NodeFilter struct {
 	Kinds  []string // exploration_nodes.kind
@@ -2146,7 +2173,111 @@ func (s *ExplorationStore) Edges(limit int) ([]Edge, error) {
 	if limit <= 0 {
 		limit = 5000
 	}
-	rows, err := s.db.Query(`SELECT src_id, rel, dst_id, COALESCE(attrs,'{}'::jsonb) FROM exploration_edges WHERE exploration_id=$1 LIMIT $2`, s.expID, limit)
+	rows, err := s.db.Query(`SELECT src_id, rel, dst_id, COALESCE(attrs,'{}'::jsonb) FROM exploration_edges WHERE exploration_id=$1 ORDER BY src_id, rel, dst_id LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Edge
+	for rows.Next() {
+		var e Edge
+		var attrs []byte
+		if err := rows.Scan(&e.From, &e.Rel, &e.To, &attrs); err != nil {
+			return nil, err
+		}
+		e.Attrs = json.RawMessage(attrs)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DerivedChildrenForNodes maps each source node id in srcIDs to child node ids
+// via RelDerivedFrom/RelSpawns without loading the full edge table.
+func (s *ExplorationStore) DerivedChildrenForNodes(srcIDs []int64) (map[int64][]int64, error) {
+	out := map[int64][]int64{}
+	if len(srcIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT src_id, dst_id FROM exploration_edges
+WHERE exploration_id=$1 AND src_id=ANY($2::bigint[]) AND rel IN ('derived_from','spawns')`, s.expID, srcIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var src, dst int64
+		if err := rows.Scan(&src, &dst); err != nil {
+			return nil, err
+		}
+		out[src] = append(out[src], dst)
+	}
+	return out, rows.Err()
+}
+
+// FactProducersForNodes maps each target node id in dstIDs to the producing
+// intent id via RelYields.
+func (s *ExplorationStore) FactProducersForNodes(dstIDs []int64) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	if len(dstIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT dst_id, src_id FROM exploration_edges
+WHERE exploration_id=$1 AND dst_id=ANY($2::bigint[]) AND rel='yields'`, s.expID, dstIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var dst, src int64
+		if err := rows.Scan(&dst, &src); err != nil {
+			return nil, err
+		}
+		out[dst] = src
+	}
+	return out, rows.Err()
+}
+
+// LootUsedMap reports which active loot IDs already have a RelUses edge from a
+// consuming intent state, without loading all task intents and 5000 edges.
+func (s *ExplorationStore) LootUsedMap(lootIDs []int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if len(lootIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT e.dst_id, u.state
+FROM exploration_edges e
+JOIN exploration_nodes u ON u.id=e.src_id AND u.exploration_id=e.exploration_id
+WHERE e.exploration_id=$1 AND e.dst_id=ANY($2::bigint[]) AND e.rel='uses'`, s.expID, lootIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var state string
+		if err := rows.Scan(&id, &state); err != nil {
+			return nil, err
+		}
+		if LootConsumingIntentState(state) {
+			out[id] = true
+		}
+	}
+	return out, rows.Err()
+}
+
+// EdgesForNodes returns edges whose endpoints both belong to nodeIDs, keeping
+// capped graph views free of dangling links.
+func (s *ExplorationStore) EdgesForNodes(nodeIDs []int64, limit int) ([]Edge, error) {
+	if len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5000
+	}
+	rows, err := s.db.Query(`SELECT src_id, rel, dst_id, COALESCE(attrs,'{}'::jsonb)
+FROM exploration_edges
+WHERE exploration_id=$1 AND src_id=ANY($2::bigint[]) AND dst_id=ANY($2::bigint[])
+ORDER BY src_id, rel, dst_id LIMIT $3`, s.expID, nodeIDs, limit)
 	if err != nil {
 		return nil, err
 	}

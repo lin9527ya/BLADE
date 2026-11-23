@@ -503,16 +503,14 @@ func (t *ToolSet) validateRedirectTarget(ctx context.Context, initURL, target *u
 			}
 		}
 	}
-	// 黑名单规则校验（asset_intercept_rules / task_intercept_rules block）
-	if t.as != nil && t.taskID > 0 {
-		if block, _, err := t.as.TaskInterceptRulesSplit(t.taskID); err == nil && len(block) > 0 {
-			ipStrs := make([]string, 0, len(resolved))
-			for _, ip := range resolved {
-				ipStrs = append(ipStrs, ip.String())
-			}
-			if rule, _, hit := db.MatchAssetInterceptRules(block, []string{host}, ipStrs, []string{target.String()}); hit {
-				return fmt.Errorf("重定向命中拦截规则 %s", rule.Reason())
-			}
+	// 黑名单规则校验（全局 asset_intercept_rules + 任务级 task_intercept_rules，allow 优先覆盖）
+	if t.as != nil {
+		ipStrs := make([]string, 0, len(resolved))
+		for _, ip := range resolved {
+			ipStrs = append(ipStrs, ip.String())
+		}
+		if reason, blocked, err := t.as.EvaluateInterceptGate(t.taskID, host, ipStrs, []string{target.String()}); err == nil && blocked {
+			return fmt.Errorf("重定向命中拦截规则 %s", reason)
 		}
 	}
 	// 同源重定向允许测试靶机自身路径跳转；跨源跳转阻断回环、元数据及未授权私网 IP。

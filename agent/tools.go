@@ -777,26 +777,12 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	})
 }
 
-// graphOverviewDataForWorker omits the coverage ledger: a worker acts on one
-// intent and must not try to widen its job. Skipping it also avoids a needless
-// coverage-matrix query for every worker run.
+// graphOverviewDataForWorker returns a lean worker-tailored situational slice
+// omitting planner-only scheduling queues, cold-graph digests, and full history.
 func (t *ToolSet) graphOverviewDataForWorker() map[string]any {
-	out := t.snapshotProjection(func(view *ToolSet) map[string]any {
-		out := view.graphOverviewDataInternalWithAttention(false)
-		view.projectionContract(out)
-		return out
+	return t.snapshotProjection(func(view *ToolSet) map[string]any {
+		return view.workerSituationData()
 	})
-	// 线索/未消费事实/冷区事实索引是规划层的派单待办队列：对 worker 过滤掉避免
-	// 诱发自行扩面；但保留 capabilities 与 ruled_out，让 worker 知道团队已解锁的
-	// 能力与已被实证排除的死路，避免重复踩坑。
-	for _, k := range []string{
-		"recent_leads", "leads_total", "leads_open", "leads_converted", "leads_dismissed", "lead_tracking", "lead_tracking_status", "dispatch_order",
-		"unconsumed_facts", "branch_review_facts", "folded_facts", "folded_facts_total",
-		"attention_oldest_leads", "attention_oldest_facts", "attention_oldest_unresolved", "attention_note", "attention_status",
-	} {
-		delete(out, k)
-	}
-	return out
 }
 
 // blackboardViewData is the bounded read-side projection used by the planner's
@@ -829,10 +815,19 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	if limit > 100 {
 		limit = 100
 	}
-	// Delta rounds skip the attention recall queries: those windows are only
-	// rendered on the periodic full reconciliation (and would be stripped by
-	// slimBlackboardDelta anyway).
-	out := t.graphOverviewDataInternalWithAttention(!deltaOnly)
+	var changeCursor string
+	if len(cursor) > 0 {
+		changeCursor = cursor[0]
+	}
+	changes, cerr := t.ts.BlackboardChanges(context.Background(), changeCursor, limit)
+	if cerr != nil {
+		return map[string]any{"read_status": db.ReadStatus{State: "unknown"}, "error": cerr.Error()}
+	}
+	if deltaOnly && !changes.Resync {
+		return t.blackboardDeltaCore(after, limit, changes)
+	}
+	// Full bounded path: used on Turn 1, explicit full view, resync, and every 5th reconcile round.
+	out := t.graphOverviewDataInternalWithAttention(true)
 	t.projectionContract(out)
 	// Capture totals, full route aggregation, and compact related_tasks summary
 	// BEFORE pruning/truncating display windows so routes reflect the true graph
@@ -945,15 +940,6 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 		if arr, ok := out[key].([]string); ok && len(arr) > 5 {
 			out[key] = arr[:5]
 		}
-	}
-
-	var changeCursor string
-	if len(cursor) > 0 {
-		changeCursor = cursor[0]
-	}
-	changes, cerr := t.ts.BlackboardChanges(context.Background(), changeCursor, limit)
-	if cerr != nil {
-		return map[string]any{"read_status": db.ReadStatus{State: "unknown"}, "error": cerr.Error()}
 	}
 
 	// Incremental events. With a cursor we page forward (oldest first) and ask
@@ -1707,12 +1693,19 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 			digestOf = m
 		}
 	}
+	factByID := make(map[int64]*db.Node, len(factNodes))
+	for _, n := range factNodes {
+		factByID[n.ID] = n
+	}
 	for _, id := range foldedFactIDs {
 		if len(foldedFacts) >= 50 {
 			break
 		}
-		n, err := t.ts.GetNode(id)
-		if err != nil || n == nil {
+		n := factByID[id]
+		if n == nil {
+			n, _ = t.ts.GetNode(id)
+		}
+		if n == nil {
 			continue
 		}
 		var fp map[string]any
@@ -3479,11 +3472,47 @@ func cleanLeads(raw []leadItem) []map[string]any {
 	return out
 }
 
+type pendingFactNotify struct {
+	kind     string
+	intentID int64
+	factID   int64
+	summary  string
+	assetIDs []int64
+}
+
+func factNotifyUrgency(kind string) int {
+	switch kind {
+	case "contradiction":
+		return 5
+	case "supersede":
+		return 4
+	case "scope_request":
+		return 3
+	case "capability_fact", "lead_fact", "proposal":
+		return 2
+	case "negative_fact":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
 // 批量时的默认意图（本条未给 intent_id 时用）。
 func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error) {
+	id, ev, err := t.recordOneFactDeferred(it, defaultIntent)
+	if err != nil {
+		return 0, err
+	}
+	if ev != nil && t.notifyFact != nil {
+		t.notifyFact(ev.kind, ev.intentID, ev.factID, ev.summary, ev.assetIDs)
+	}
+	return id, nil
+}
+
+func (t *ToolSet) recordOneFactDeferred(it factItem, defaultIntent int64) (int64, *pendingFactNotify, error) {
 	if strings.TrimSpace(it.Summary) == "" {
-		return 0, fmt.Errorf("summary 不能为空")
+		return 0, nil, fmt.Errorf("summary 不能为空")
 	}
 	payload := map[string]any{"summary": it.Summary}
 	if origin := strings.TrimSpace(it.Origin); origin != "" {
@@ -3500,7 +3529,7 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	enables := normalizeEnables(it.Enables)
 	leads := cleanLeads(it.Leads)
 	if err := t.ts.ValidateEvidenceMetadata(it.EvidenceMeta); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if it.EvidenceMeta != nil {
 		payload["evidence_meta"] = it.EvidenceMeta
@@ -3532,12 +3561,12 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	}
 	intent, err := t.writeIntentID(intent)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if intent > 0 {
 		node, err := t.ts.GetNode(intent)
 		if err != nil || node == nil || node.Kind != db.KindIntent {
-			return 0, fmt.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）")
+			return 0, nil, fmt.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）")
 		}
 	}
 	// a fact is its OWN node kind (distinct from a vuln finding).
@@ -3550,8 +3579,9 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	}
 	id, err := t.ts.AddFactGraph(payload, t.worker, pidList(it.AssetIDs), intent, relations)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
+	var notify *pendingFactNotify
 	if t.notifyFact != nil {
 		kind := strings.TrimSpace(it.NotifyKind)
 		if kind == "" {
@@ -3569,12 +3599,12 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 				kind = "lead_fact"
 			}
 		}
-		t.notifyFact(kind, intent, id, it.Summary, pidList(it.AssetIDs))
+		notify = &pendingFactNotify{kind: kind, intentID: intent, factID: id, summary: it.Summary, assetIDs: pidList(it.AssetIDs)}
 	}
 
 	t.writes.Facts++
 	t.writes.noteValidationAssets(pidList(it.AssetIDs))
-	return id, nil
+	return id, notify, nil
 }
 
 // concludeIntent 让 worker 对领到的意图声明【语义终态】：negative（探针确实发出且有回包，
@@ -3689,13 +3719,30 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
+			var bestNotify *pendingFactNotify
+			assetSeen := map[int64]bool{}
+			var mergedAssets []int64
 			for i, it := range items {
-				id, err := t.recordOneFact(it, defaultIntent)
+				id, ev, err := t.recordOneFactDeferred(it, defaultIntent)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
 				}
 				ids[i] = id
+				if ev != nil {
+					for _, aid := range ev.assetIDs {
+						if !assetSeen[aid] {
+							assetSeen[aid] = true
+							mergedAssets = append(mergedAssets, aid)
+						}
+					}
+					if bestNotify == nil || factNotifyUrgency(ev.kind) >= factNotifyUrgency(bestNotify.kind) {
+						bestNotify = ev
+					}
+				}
+			}
+			if bestNotify != nil && t.notifyFact != nil {
+				t.notifyFact(bestNotify.kind, bestNotify.intentID, bestNotify.factID, bestNotify.summary, mergedAssets)
 			}
 
 			if !batch { // 单条：保持原返回

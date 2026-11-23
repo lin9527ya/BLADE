@@ -18,6 +18,8 @@ import type { Edge, GraphAuditReport, TaskNode } from "@/lib/types";
 export function GraphTab({ taskId }: { taskId: string }) {
   const [nodes, setNodes] = React.useState<TaskNode[]>([]);
   const [edges, setEdges] = React.useState<Edge[]>([]);
+  const [totalNodes, setTotalNodes] = React.useState(0);
+  const [truncated, setTruncated] = React.useState(false);
   // 图体检：只读报告。干净时不渲染任何东西——干净图不该占版面。
   const [audit, setAudit] = React.useState<GraphAuditReport | null>(null);
   const [auditOpen, setAuditOpen] = React.useState(false);
@@ -32,10 +34,13 @@ export function GraphTab({ taskId }: { taskId: string }) {
   // 只在换任务时清空签名；此前写在轮询回调里，每轮都清空 → 相同数据也重新 setState，
   // 图在 20s 轮询时被无谓重建（拖动中的顿挫就是这么来的）。
   React.useEffect(() => {
+    void taskId;
     sigRef.current = "";
     setAudit(null);
     setAuditOpen(false);
-  }, []);
+    setTotalNodes(0);
+    setTruncated(false);
+  }, [taskId]);
 
   const refreshAudit = React.useCallback(() => {
     setAuditBusy(true);
@@ -70,8 +75,22 @@ export function GraphTab({ taskId }: { taskId: string }) {
             );
             const visible = new Set(ns.map((n) => n.id));
             const es = (g.edges ?? []).filter((e) => visible.has(e.src) && visible.has(e.dst));
+            setTotalNodes(g.total ?? ns.length);
+            setTruncated(Boolean(g.truncated));
             const sig = JSON.stringify([
-              ns.map((n) => [n.id, n.type, n.state, n.priority, n.payload]),
+              ns.map((n) => [
+                n.id,
+                n.type,
+                n.state,
+                n.finding_status,
+                n.finding_id,
+                n.blocked_reason,
+                n.semantic_outcome,
+                n.evidence_state,
+                n.requires_missing,
+                n.priority,
+                n.payload,
+              ]),
               es.map((e) => [e.src, e.dst, e.rel]),
             ]);
             if (sig === sigRef.current) return; // 无变化 → 不重建
@@ -151,7 +170,14 @@ export function GraphTab({ taskId }: { taskId: string }) {
       )}
       <Card>
         <CardContent className="p-0">
-          <div className="flex items-center justify-end border-b border-border/50 px-3 py-2">
+          <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
+            {truncated ? (
+              <span className="text-muted-foreground text-xs">
+                图规模较大：仅加载最新 {nodes.length} 个探索节点（共 {totalNodes} 个）；历史完整节点可在「播报板」检索。
+              </span>
+            ) : (
+              <span />
+            )}
             <label className="flex cursor-pointer items-center gap-2 text-muted-foreground text-xs">
               <Checkbox
                 checked={hideCandidates}

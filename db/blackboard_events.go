@@ -71,6 +71,19 @@ func (s *ExplorationStore) BlackboardChanges(ctx context.Context, cursor string,
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
+	if !s.InReadSnapshot() {
+		var out BlackboardChanges
+		err := s.ReadSnapshot(ctx, func(_ *DB, view *ExplorationStore) error {
+			var err error
+			out, err = view.BlackboardChanges(ctx, cursor, limit)
+			return err
+		})
+		if err != nil {
+			out.Status = ReadStatus{State: "unknown"}
+			return out, err
+		}
+		return out, nil
+	}
 	out := BlackboardChanges{Changes: []BlackboardChange{}}
 	version, err := s.BlackboardVersion(ctx)
 	if err != nil {
@@ -189,6 +202,43 @@ func (s *ExplorationStore) CountProjectionNodes(kind, state string, terminal boo
 	var n int64
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind=$2 AND ($3='' OR state=$3) AND (NOT $4 OR state IN ('done','negative','no_output','blocked','exhausted','stopped','out-of-scope'))`, s.expID, kind, state, terminal).Scan(&n)
 	return n, err
+}
+
+// CountAllProjectionNodes computes every read_status projection section total
+// in a single scan instead of issuing 10 separate COUNT queries per overview.
+func (s *ExplorationStore) CountAllProjectionNodes() (map[string]int64, error) {
+	var goals, hints, facts, findings, footholds, credentials, openI, runningI, pausedI, doneI int64
+	err := s.db.QueryRow(`SELECT
+  COUNT(*) FILTER (WHERE kind=$2),
+  COUNT(*) FILTER (WHERE kind=$3 AND state=$4),
+  COUNT(*) FILTER (WHERE kind=$5),
+  COUNT(*) FILTER (WHERE kind=$6),
+  COUNT(*) FILTER (WHERE kind=$7 AND state=$8),
+  COUNT(*) FILTER (WHERE kind=$9 AND state=$8),
+  COUNT(*) FILTER (WHERE kind=$10 AND state='open'),
+  COUNT(*) FILTER (WHERE kind=$10 AND state='running'),
+  COUNT(*) FILTER (WHERE kind=$10 AND state='paused'),
+  COUNT(*) FILTER (WHERE kind=$10 AND state IN ('done','negative','no_output','blocked','exhausted','stopped','out-of-scope'))
+FROM exploration_nodes
+WHERE exploration_id=$1`,
+		s.expID, KindGoal, KindHint, StateHintActive, KindFact, KindFinding,
+		KindFoothold, StateLootActive, KindCredential, KindIntent,
+	).Scan(&goals, &hints, &facts, &findings, &footholds, &credentials, &openI, &runningI, &pausedI, &doneI)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]int64{
+		"goals":               goals,
+		"hints":               hints,
+		"recent_facts":        facts,
+		"finding_list":        findings,
+		"footholds":           footholds,
+		"credentials":         credentials,
+		"open_intents":        openI,
+		"running_intents":     runningI,
+		"paused_intents":      pausedI,
+		"recent_done_intents": doneI,
+	}, nil
 }
 func (s *ExplorationStore) AllByKindState(kind, state string) ([]*Node, error) {
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes WHERE exploration_id=$1 AND kind=$2 AND ($3='' OR state=$3) ORDER BY id`, s.expID, kind, state)

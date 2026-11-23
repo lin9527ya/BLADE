@@ -169,6 +169,20 @@ func (s *AssetStore) AssetBlockedOverride(taskID int64, host string) (string, bo
 	if host == "" {
 		return "", false, nil
 	}
+	var ips []string
+	if net.ParseIP(host) != nil {
+		ips = []string{host}
+	}
+	return s.EvaluateInterceptGate(taskID, host, ips, nil)
+}
+
+// EvaluateInterceptGate checks enabled global asset_intercept_rules merged with
+// per-task task_intercept_rules (block & allow) via EvaluateAssetGate.
+func (s *AssetStore) EvaluateInterceptGate(taskID int64, host string, ips, urls []string) (string, bool, error) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return "", false, nil
+	}
 	blockRules, err := s.db.ListAssetInterceptRules()
 	if err != nil {
 		return "", false, err
@@ -185,12 +199,7 @@ func (s *AssetStore) AssetBlockedOverride(taskID int64, host string) (string, bo
 	if len(blockRules) == 0 && !hasEnabledRule(allowRules) {
 		return "", false, nil
 	}
-	domains := []string{host}
-	var ips []string
-	if net.ParseIP(host) != nil {
-		ips = []string{host}
-	}
-	dec := EvaluateAssetGate(blockRules, allowRules, domains, ips, nil)
+	dec := EvaluateAssetGate(blockRules, allowRules, []string{host}, ips, urls)
 	if dec.Allowed {
 		return "", false, nil
 	}

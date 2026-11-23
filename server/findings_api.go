@@ -395,6 +395,14 @@ func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if err := t.Store.PopulateEvidenceReadState(nodes); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := t.Store.PopulateFindingStatuses(nodes); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes, s.credentialPlaintextEnabled()), "edges": edgeDTOs(edges)})
 }
 

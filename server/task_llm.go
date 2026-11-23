@@ -645,6 +645,15 @@ func (s *Server) closeTaskAgentBundleFor(taskID string) {
 	s.closeTaskAgentBundle(taskID, bundle)
 }
 
+func (s *Server) closeHotSessionFor(taskID string) {
+	s.agents.mu.Lock()
+	bundle := s.agents.bundles[taskID]
+	s.agents.mu.Unlock()
+	if bundle != nil && bundle.pl != nil {
+		bundle.pl.CloseHotSession()
+	}
+}
+
 func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	s.agents.mu.Lock()
 	defer s.agents.mu.Unlock()

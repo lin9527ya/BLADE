@@ -386,11 +386,15 @@ BEGIN
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_expnodes_part     ON exploration_nodes(exploration_id, kind);
+CREATE INDEX IF NOT EXISTS idx_expnodes_exp_kind_state_id
+    ON exploration_nodes(exploration_id, kind, state, id DESC);
 -- 全局战果台账：跨任务按 kind 扫战果节点（partial index 避免把 fact/intent 也塞进来）。
 CREATE INDEX IF NOT EXISTS idx_expnodes_loot
     ON exploration_nodes(kind, id DESC)
     WHERE kind IN ('foothold','credential','artifact','footprint');
 CREATE INDEX IF NOT EXISTS idx_expnodes_frontier ON exploration_nodes(exploration_id, priority DESC)
+    WHERE kind='intent' AND state='open';
+CREATE INDEX IF NOT EXISTS idx_expnodes_frontier_order ON exploration_nodes(exploration_id, priority DESC, id ASC)
     WHERE kind='intent' AND state='open';
 DROP TRIGGER IF EXISTS trg_expnodes_upd ON exploration_nodes;
 CREATE TRIGGER trg_expnodes_upd BEFORE UPDATE ON exploration_nodes
@@ -452,6 +456,7 @@ CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
 -- 图体检与依赖解析都按 (exploration_id, rel) 过滤；没有它时每条检查都要走全表。
 CREATE INDEX IF NOT EXISTS idx_expedges_exp_rel ON exploration_edges(exploration_id, rel);
+CREATE INDEX IF NOT EXISTS idx_expedges_exp_rel_dst ON exploration_edges(exploration_id, rel, dst_id);
 
 -- 探索充分性豁免：收官审计与探索台账共用。
 -- 为什么不用 fact 承载：事实会被 recent_facts / unconsumed_facts / 证据门 / 覆盖矩阵的
@@ -1526,6 +1531,7 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS cve_ids     JSONB NOT NULL DEFAULT
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS remediation TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_node ON findings(node_id);
+CREATE INDEX IF NOT EXISTS idx_findings_node_id ON findings(node_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);
 -- 「按资产」视图靠 asset_ids @> '[<id>]' 反查发现,没有这个 GIN 索引就是全表扫。

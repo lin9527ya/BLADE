@@ -165,7 +165,7 @@ function Row({ item, now }: { item: GlobalBroadcastItem; now: number }) {
               </span>
             )}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{item.id}</code>
-            {item.finding_status && item.finding_status !== item.state && (
+            {item.type !== "finding" && item.finding_status && item.finding_status !== item.state && (
               <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-600 text-xs dark:text-amber-400">
                 finding: {item.finding_status}
               </span>

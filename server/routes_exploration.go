@@ -72,6 +72,7 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/exploration/intents", s.intents)
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/nodes", s.explorationNodes)
+	mux.HandleFunc("GET /api/exploration/nodes/{nid}", s.explorationNodeDetail)
 	// 全局播报板：跨任务汇总探索节点，任务详情页负责行内图/资产展开。
 	mux.HandleFunc("GET /api/broadcast", s.globalBroadcast)
 	mux.HandleFunc("GET /api/broadcast/stream", s.streamGlobalBroadcast)

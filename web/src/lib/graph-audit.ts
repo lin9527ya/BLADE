@@ -9,6 +9,7 @@ const ISSUE_LABELS: Record<string, string> = {
   dependency_not_intent: "依赖指向非意图节点",
   dependency_cycle: "依赖成环",
   digest_covers_deleted: "摘要覆盖已删除成员",
+  dead_dependency: "依赖已失效",
   starved_open_intent: "意图长期无人领取",
   expired_running_lease: "意图租约已过期",
   illegal_state: "节点状态非法",

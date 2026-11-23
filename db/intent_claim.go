@@ -77,7 +77,7 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 		return nil, err
 	}
 	if task > 0 {
-		if err := LockTaskEvidenceTx(tx, task); err != nil {
+		if err := LockTaskEvidenceSharedTx(tx, task); err != nil {
 			return nil, err
 		}
 	}
@@ -111,4 +111,25 @@ func (s *ExplorationStore) ClaimNode(ctx context.Context, id int64, owner, expec
 		return nil, err
 	}
 	return next, nil
+}
+
+// RevertUnstartedClaim rolls back a claim that aborted before running any LLM
+// turn (worker pool dispatch failure / pause before start), restoring attempts
+// so the intent does not eat a retry penalty (-12) for 0 executed turns.
+func (s *ExplorationStore) RevertUnstartedClaim(id int64, owner string, generation int64) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='open', owner=NULL, lease_expires_at=NULL, heartbeat_at=NULL, completed_at=NULL,
+    content_version=content_version+1,
+    payload=CASE
+      WHEN COALESCE(payload->>'attempts','') ~ '^[0-9]{1,6}$' AND (payload->>'attempts')::int > 0
+      THEN jsonb_set(payload, '{attempts}', to_jsonb(GREATEST(0, (payload->>'attempts')::int - 1)), true)
+      ELSE payload
+    END
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running'
+  AND COALESCE(owner,'')=$3 AND execution_generation=$4`, id, s.expID, owner, generation)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }

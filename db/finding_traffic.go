@@ -138,13 +138,24 @@ func TrafficSnapshotID(snapshot TrafficEvidenceSnapshot) string {
 }
 
 // LockTaskEvidenceTx serializes writes with archive queueing (which locks the
-// same task row). Once queued, its snapshot must not acquire new evidence.
+// same task row exclusively). Once queued, its snapshot must not acquire new evidence.
 func LockTaskEvidenceTx(tx *sql.Tx, taskID int64) error {
+	return lockTaskEvidenceModeTx(tx, taskID, "FOR UPDATE")
+}
+
+// LockTaskEvidenceSharedTx takes FOR KEY SHARE on the task row: it blocks
+// concurrent FOR UPDATE archive/delete transitions while allowing multiple
+// workers on distinct intents of the same task to write concurrently.
+func LockTaskEvidenceSharedTx(tx *sql.Tx, taskID int64) error {
+	return lockTaskEvidenceModeTx(tx, taskID, "FOR KEY SHARE")
+}
+
+func lockTaskEvidenceModeTx(tx *sql.Tx, taskID int64, lockClause string) error {
 	if taskID == 0 {
 		return nil
 	}
 	var deleted sql.NullTime
-	if err := tx.QueryRow(`SELECT deleted_at FROM tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&deleted); err != nil {
+	if err := tx.QueryRow(`SELECT deleted_at FROM tasks WHERE id=$1 `+lockClause, taskID).Scan(&deleted); err != nil {
 		return err
 	}
 	if deleted.Valid {
@@ -382,7 +393,7 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 			return nil, err
 		}
 	}
-	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
+	if err := LockTaskEvidenceSharedTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}
 	if in.TaskID > 0 {
@@ -488,7 +499,7 @@ func (s *ExplorationStore) PopulateFindingStatuses(nodes []*Node) error {
 	for i := range args {
 		marks[i] = "$" + fmt.Sprint(i+1)
 	}
-	rows, err := s.db.Query(`SELECT node_id, COALESCE(NULLIF(status,''),'pending') FROM findings
+	rows, err := s.db.Query(`SELECT node_id, id, COALESCE(NULLIF(status,''),'pending') FROM findings
 WHERE node_id IN (`+strings.Join(marks, ",")+`) ORDER BY id`, args...)
 	if err != nil {
 		return err
@@ -496,11 +507,13 @@ WHERE node_id IN (`+strings.Join(marks, ",")+`) ORDER BY id`, args...)
 	defer rows.Close()
 	for rows.Next() {
 		var nodeID int64
+		var findingID int64
 		var status string
-		if err := rows.Scan(&nodeID, &status); err != nil {
+		if err := rows.Scan(&nodeID, &findingID, &status); err != nil {
 			return err
 		}
 		if n := byID[nodeID]; n != nil {
+			n.FindingID = findingID
 			n.FindingStatus = status
 		}
 	}

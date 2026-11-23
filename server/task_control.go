@@ -261,6 +261,9 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 		}
 		out.State = "paused"
 	case "resume":
+		if isTerminalStatus(t.lifecycleSnapshot().Status) {
+			return out, fmt.Errorf("终态任务不能单独恢复意图（请先恢复或重开任务）")
+		}
 		if node.State != "paused" {
 			return out, fmt.Errorf("仅已暂停的意图可以恢复")
 		}

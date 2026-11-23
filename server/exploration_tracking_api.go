@@ -155,3 +155,31 @@ func trackingInt(r *http.Request, key string, fallback, min, max int) (int, erro
 	}
 	return n, nil
 }
+
+func (s *Server) taskPlannerState(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok || t == nil {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	taskID := tidOfTask(t)
+	st, found, err := t.Store.LoadPlannerState(taskID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	todos := st.Todos
+	if todos == nil {
+		todos = []db.PlannerTodoItem{}
+	}
+	updatedAt := ""
+	if found && !st.UpdatedAt.IsZero() {
+		updatedAt = rfc3339(st.UpdatedAt)
+	}
+	writeJSONETag(w, r, 200, map[string]any{
+		"found":           found,
+		"todos":           todos,
+		"last_round_note": st.LastRoundNote,
+		"updated_at":      updatedAt,
+	})
+}

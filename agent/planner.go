@@ -1137,7 +1137,7 @@ func composePlannerInput(staticRules, lead, volatile, todos string) string {
 // Session 的收益是**每轮固定**的；限制轮数与空闲时长是为了不让摘要层数与陈旧会话无限累积。
 const (
 	plannerHotMaxRounds   = 8
-	plannerHotMaxMessages = 14
+	plannerHotMaxMessages = 48
 	plannerHotIdleTTL     = 10 * time.Minute
 	// plannerFullReconcileEvery 每 N 个热会话轮强制一次完整有界视图，而不是只看
 	// delta；否则落在 delta 字段索引之外的老项（attention 窗口）可能长期不再出现。
@@ -1262,8 +1262,12 @@ func compactHotRoundInput(roundInput string) string {
 		return ""
 	}
 	head := in
-	if i := strings.Index(in, "【本轮态势"); i > 0 {
-		head = in[:i]
+	cut := strings.Index(in, "【本轮态势")
+	if d := strings.Index(in, "【本轮增量态势"); d > 0 && (cut < 0 || d < cut) {
+		cut = d
+	}
+	if cut > 0 {
+		head = in[:cut]
 	}
 	const triggerMark = "【本次触发本轮的实际变动"
 	if i := strings.Index(in, triggerMark); i >= 0 {

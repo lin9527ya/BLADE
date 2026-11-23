@@ -931,6 +931,23 @@ export interface TaskNode {
   // open_proof_gap…）。节点 state 只有四态，播报板/探索链路按这个字段只展示
   // 已确认漏洞；非 finding 节点为空。
   finding_status?: string;
+  finding_id?: string;
+  blocked_reason?: string;
+  semantic_outcome?: string;
+  semantic_note?: string;
+  owner?: string;
+}
+
+export interface PlannerTodoItem {
+  content: string;
+  status: string;
+}
+
+export interface TaskPlannerState {
+  found: boolean;
+  todos: PlannerTodoItem[];
+  last_round_note: string;
+  updated_at?: string;
 }
 
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),

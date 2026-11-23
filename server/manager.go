@@ -32,6 +32,12 @@ const (
 	lowPriorityBatchDelay = 45 * time.Second
 	lowPriorityFactBatch  = 25
 	lowPriorityAssetBatch = 10
+	// midPriorityCooldown 是非关键语义跃迁（done/capability_fact/lead_fact/proposal/
+	// negative_fact/supersede）的并发短聚窗口：首条（leading-edge）立即唤醒，5s 内
+	// 突发续增达 midPriorityMaxBatch 或窗口届满时再触发一轮。
+	midPriorityCooldown = 5 * time.Second
+	midPriorityMaxBatch = 5
+	workerCountCacheTTL = 30 * time.Second
 	// maxPendingTriggers 防止异常事件流把内存队列撑爆；超出时优先丢低价值批次，
 	// 在下一轮提示里用 triggers_dropped 显式告知，而不是静默丢失。
 	maxPendingTriggers = 64
@@ -102,13 +108,16 @@ type Task struct {
 	// 普通 fact/asset 的合并窗口。它们不逐条 append/Notify：累计到阈值或 45s
 	// 定时器到点后合成一条 facts_batch/assets_batch；drainTriggers 也会先冲刷，
 	// 保证任何一轮 planner 都能看到这批信号。
-	lowPriorityTimer    *time.Timer
-	pendingFactCount    int
-	pendingFactSummary  string
-	pendingFactRefs     []agent.TriggerFactRef
-	pendingAssetCount   int
-	pendingAssetSummary string
-	pendingDropped      int
+	lowPriorityTimer         *time.Timer
+	midPriorityTimer         *time.Timer
+	midPriorityCooldownUntil time.Time
+	midPriorityBatchCount    int
+	pendingFactCount         int
+	pendingFactSummary       string
+	pendingFactRefs          []agent.TriggerFactRef
+	pendingAssetCount        int
+	pendingAssetSummary      string
+	pendingDropped           int
 
 	prefixMu     sync.Mutex    `json:"-"`
 	prefixState  uint8         `json:"-"` // 0=idle, 1=first-wave leader warming KV cache, 2=warmed
@@ -122,7 +131,7 @@ const workerPrefixWarmWindow = 2500 * time.Millisecond
 // siblings wait briefly until the leader receives its first response or the bounded
 // warmup window elapses. Zero-value safe; no-op once warmed.
 func (t *Task) acquirePrefixWarmSlot(ctx context.Context) (isLeader bool) {
-	if t == nil {
+	if t == nil || pgdb.PerIntentWorkerSession("") {
 		return false
 	}
 	t.prefixMu.Lock()
@@ -396,6 +405,15 @@ type Manager struct {
 	// 不会随单个任务停止而取消。
 	closed     chan struct{}
 	closedOnce sync.Once
+
+	workerCountMu    sync.Mutex
+	workersCache     cachedWorkerInt
+	workerCountCache map[string]cachedWorkerInt
+}
+
+type cachedWorkerInt struct {
+	val       int
+	expiresAt time.Time
 }
 
 // Settings keys the UI toggles at runtime.
@@ -623,9 +641,18 @@ func (m *Manager) EnsureTaskWorkerSlots(taskID string, fallback int) int {
 
 // TaskWorkerCount 返回任务的并发覆盖值（0 = 未设置/跟随全局）。
 func (m *Manager) TaskWorkerCount(taskID string) int {
-	if m.pg == nil {
+	if m == nil || m.pg == nil {
 		return 0
 	}
+	now := time.Now()
+	m.workerCountMu.Lock()
+	if m.workerCountCache != nil {
+		if entry, ok := m.workerCountCache[taskID]; ok && now.Before(entry.expiresAt) {
+			m.workerCountMu.Unlock()
+			return entry.val
+		}
+	}
+	m.workerCountMu.Unlock()
 	n, err := strconv.ParseInt(taskID, 10, 64)
 	if err != nil || n <= 0 {
 		return 0
@@ -635,24 +662,53 @@ func (m *Manager) TaskWorkerCount(taskID string) int {
 		return 0
 	}
 	if count < 0 || count > pgdb.MaxTaskWorkerCount {
-		return 0
+		count = 0
 	}
+	m.workerCountMu.Lock()
+	if m.workerCountCache == nil {
+		m.workerCountCache = make(map[string]cachedWorkerInt)
+	}
+	m.workerCountCache[taskID] = cachedWorkerInt{val: count, expiresAt: now.Add(workerCountCacheTTL)}
+	m.workerCountMu.Unlock()
 	return count
+}
+
+// InvalidateTaskWorkerCount clears cached per-task concurrency limit after task updates/removal.
+func (m *Manager) InvalidateTaskWorkerCount(taskID string) {
+	if m == nil {
+		return
+	}
+	m.workerCountMu.Lock()
+	delete(m.workerCountCache, taskID)
+	m.workerCountMu.Unlock()
 }
 
 // Workers returns the configured fixed worker-slot count (default 3). Snapshot
 // into task_worker_slots at engine.Run; changing it only affects tasks started
 // afterwards.
 func (m *Manager) Workers() int {
+	if m == nil || m.pg == nil {
+		return defaultWorkers
+	}
+	now := time.Now()
+	m.workerCountMu.Lock()
+	if !m.workersCache.expiresAt.IsZero() && now.Before(m.workersCache.expiresAt) {
+		val := m.workersCache.val
+		m.workerCountMu.Unlock()
+		return val
+	}
+	m.workerCountMu.Unlock()
 	v, ok, err := m.pg.GetSetting(settingWorkers)
-	if err != nil || !ok {
-		return defaultWorkers
+	val := defaultWorkers
+	if err == nil && ok {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n > 0 {
+			val = n
+		}
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return defaultWorkers
-	}
-	return n
+	m.workerCountMu.Lock()
+	m.workersCache = cachedWorkerInt{val: val, expiresAt: now.Add(workerCountCacheTTL)}
+	m.workerCountMu.Unlock()
+	return val
 }
 
 // SetWorkers persists the concurrent work-agent count. Values <=0 are rejected.
@@ -660,7 +716,13 @@ func (m *Manager) SetWorkers(n int) error {
 	if n <= 0 {
 		return fmt.Errorf("workers 必须 >0")
 	}
-	return m.pg.SetSetting(settingWorkers, strconv.Itoa(n))
+	if err := m.pg.SetSetting(settingWorkers, strconv.Itoa(n)); err != nil {
+		return err
+	}
+	m.workerCountMu.Lock()
+	m.workersCache = cachedWorkerInt{val: n, expiresAt: time.Now().Add(workerCountCacheTTL)}
+	m.workerCountMu.Unlock()
+	return nil
 }
 
 // Enrich returns the asset auto-completion engine (may be nil if init failed).
@@ -1712,6 +1774,7 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 	m.mu.RLock()
 	task := m.tasks[taskID]
 	m.mu.RUnlock()
+	m.InvalidateTaskWorkerCount(taskID)
 	if task == nil {
 		return nil, nil
 	}
@@ -2323,6 +2386,38 @@ func (m *Manager) completeGoalsGuardedWithPruned(id string) (won bool, pruned []
 	return m.setTaskStatusGuarded(id, "done", true, true)
 }
 
+// SetGoallessDoneGuarded completes a goalless/all-resolved task only if it is
+// not paused/queued/deleted, has no open goal, and has no open/running/paused intent.
+func (m *Manager) SetGoallessDoneGuarded(id string) (bool, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	won, err := m.pg.SetGoallessDoneGuarded(n)
+	if err != nil || !won {
+		return won, err
+	}
+	var task *Task
+	m.mu.Lock()
+	if t := m.tasks[id]; t != nil {
+		task = t
+		t.updateLifecycle(func(state *taskLifecycleState) {
+			state.Status = "done"
+			if state.CompletedAt == 0 {
+				state.CompletedAt = time.Now().Unix()
+			}
+		})
+	}
+	m.mu.Unlock()
+	if task != nil {
+		task.StopTimers()
+	}
+	m.ReleaseTaskEgress(id)
+	return true, nil
+}
+
 func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard, pruneOpen bool) (won bool, pruned []int64, err error) {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
@@ -2341,8 +2436,10 @@ func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard, pruneOpen 
 	if err != nil || !won {
 		return won, nil, err
 	}
+	var task *Task
 	m.mu.Lock()
 	if t := m.tasks[id]; t != nil {
+		task = t
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Status = status
 			if state.CompletedAt == 0 {
@@ -2351,6 +2448,9 @@ func (m *Manager) setTaskStatusGuarded(id, status string, goalsGuard, pruneOpen 
 		})
 	}
 	m.mu.Unlock()
+	if task != nil {
+		task.StopTimers()
+	}
 	m.ReleaseTaskEgress(id)
 	return true, pruned, nil
 }
@@ -2496,6 +2596,7 @@ func rollbackTaskDelete(cause error, trafficStage *traffic.HostDeleteStage, file
 
 func (m *Manager) forgetTask(id string, numericID int64) {
 	m.ReleaseTaskEgress(id)
+	m.InvalidateTaskWorkerCount(id)
 	m.mu.Lock()
 	delete(m.tasks, id)
 	for _, task := range m.tasks {
@@ -2829,18 +2930,112 @@ func (t *Task) NotifyWorkers() {
 	}
 }
 
+// StopTimers cancels pending trigger coalescing timers on task stop/completion.
+func (t *Task) StopTimers() {
+	if t == nil {
+		return
+	}
+	t.trigMu.Lock()
+	if t.lowPriorityTimer != nil {
+		t.lowPriorityTimer.Stop()
+		t.lowPriorityTimer = nil
+	}
+	if t.midPriorityTimer != nil {
+		t.midPriorityTimer.Stop()
+		t.midPriorityTimer = nil
+	}
+	t.midPriorityBatchCount = 0
+	t.trigMu.Unlock()
+}
+
+func isCriticalTriggerKind(kind string) bool {
+	switch kind {
+	case "goal", "goal_deleted", "goal_abandoned", "goal_edited",
+		"hint", "finding", "contradiction", "foothold", "credential", "scope_request",
+		"reconcile", "requeued", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func (t *Task) flushMidPriority() {
+	if t == nil {
+		return
+	}
+	t.trigMu.Lock()
+	t.midPriorityTimer = nil
+	t.midPriorityBatchCount = 0
+	wake := len(t.pendingTriggers) > 0
+	if wake {
+		t.midPriorityCooldownUntil = time.Now().Add(midPriorityCooldown)
+	}
+	t.trigMu.Unlock()
+	if wake {
+		t.Notify()
+	}
+}
+
+func (t *Task) notifyMidPriorityTrigger(ev agent.TriggerEvent) {
+	wake := false
+	now := time.Now()
+	t.trigMu.Lock()
+	t.appendTriggerLocked(ev)
+	if !now.Before(t.midPriorityCooldownUntil) {
+		t.midPriorityCooldownUntil = now.Add(midPriorityCooldown)
+		t.midPriorityBatchCount = 0
+		if t.midPriorityTimer != nil {
+			t.midPriorityTimer.Stop()
+			t.midPriorityTimer = nil
+		}
+		wake = true
+	} else {
+		t.midPriorityBatchCount++
+		if t.midPriorityBatchCount >= midPriorityMaxBatch {
+			t.midPriorityCooldownUntil = now.Add(midPriorityCooldown)
+			t.midPriorityBatchCount = 0
+			if t.midPriorityTimer != nil {
+				t.midPriorityTimer.Stop()
+				t.midPriorityTimer = nil
+			}
+			wake = true
+		} else if t.midPriorityTimer == nil {
+			delay := time.Until(t.midPriorityCooldownUntil)
+			if delay < 10*time.Millisecond {
+				delay = 10 * time.Millisecond
+			}
+			t.midPriorityTimer = time.AfterFunc(delay, t.flushMidPriority)
+		}
+	}
+	t.trigMu.Unlock()
+	if wake {
+		t.Notify()
+	}
+}
+
+func (t *Task) notifyImmediateTrigger(ev agent.TriggerEvent) {
+	t.trigMu.Lock()
+	t.appendTriggerLocked(ev)
+	if t.midPriorityTimer != nil {
+		t.midPriorityTimer.Stop()
+		t.midPriorityTimer = nil
+	}
+	t.midPriorityBatchCount = 0
+	t.trigMu.Unlock()
+	t.Notify()
+}
+
 // NotifyDone is Notify plus a hint: a worker just settled intentID and that is
 // what triggered this wake-up. state is the settled terminal state (done /
 // negative / no_output / blocked / exhausted / stopped) — without it the planner
 // cannot tell "done" from "nothing was written", which are opposite signals for
-// the next round. Events pile up (debounce) until drainTriggers.
+// the next round. Mid-priority completion events use leading-edge + 5s coalescing.
 func (t *Task) NotifyDone(intentID int64, state string) {
-	if intentID > 0 {
-		t.trigMu.Lock()
-		t.appendTriggerLocked(agent.TriggerEvent{Kind: "done", IntentID: intentID, State: state})
-		t.trigMu.Unlock()
+	if intentID <= 0 {
+		t.Notify()
+		return
 	}
-	t.Notify()
+	t.notifyMidPriorityTrigger(agent.TriggerEvent{Kind: "done", IntentID: intentID, State: state})
 }
 
 // NotifyReconcile queues the endgame reconciliation checklist as a trigger for the
@@ -2849,10 +3044,7 @@ func (t *Task) NotifyReconcile(detail string) {
 	if strings.TrimSpace(detail) == "" {
 		return
 	}
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "reconcile", Detail: detail})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "reconcile", Detail: detail})
 }
 
 // NotifyRequeued records that intentID went back to open and will be claimed and
@@ -2861,35 +3053,29 @@ func (t *Task) NotifyReconcile(detail string) {
 // or fetch a non-existent output conclusion.
 func (t *Task) NotifyRequeued(intentID int64, reason string) {
 	if intentID > 0 {
-		t.trigMu.Lock()
-		t.appendTriggerLocked(agent.TriggerEvent{Kind: "requeued", IntentID: intentID, Detail: reason})
-		t.trigMu.Unlock()
+		t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "requeued", IntentID: intentID, Detail: reason})
+	} else {
+		t.Notify()
 	}
-	t.Notify()
 	t.NotifyWorkers()
 }
 
 // NotifyFinding records that a worker reported a finding on intentID (summary),
-// then wakes the planner — so the round spells out which intent found what.
+// then wakes the planner immediately — so the round spells out which intent found what.
 func (t *Task) NotifyFinding(intentID int64, summary string) {
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "finding", IntentID: intentID, Detail: summary})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "finding", IntentID: intentID, Detail: summary})
 }
 
-// NotifyFact records a fact/contradiction/negative/supersede written by a worker.
-// Contradiction/negative/supersede wake the planner immediately; an ordinary
-// "fact" is coalesced into a facts_batch (25 entries or 45s) with per-fact IDs.
-// Full text remains queryable through node_detail/list_facts. This keeps a dense
-// fact stream from turning every planner round into a 2–3s loop.
+// NotifyFact records a fact/contradiction/foothold/credential/capability/lead written by a worker.
+// Critical signals wake immediately; mid-priority semantic transitions coalesce on a
+// leading-edge 5s window; ordinary "fact" coalesces into a facts_batch (25 entries or 45s).
 func (t *Task) NotifyFact(kind string, intentID, factID int64, summary string, assetIDs []int64) {
 	if strings.TrimSpace(kind) == "" {
 		kind = "fact"
 	}
-	wake := false
-	t.trigMu.Lock()
 	if kind == "fact" {
+		wake := false
+		t.trigMu.Lock()
 		// 普通事实是低优先级信号：图本身已经更新，planner 下一轮从 recent_facts
 		// 能读到摘要，批次保留逐条 id 供 node_detail。逐条唤醒会造成密集空转。
 		t.pendingFactCount++
@@ -2901,17 +3087,20 @@ func (t *Task) NotifyFact(kind string, intentID, factID int64, summary string, a
 		} else if t.lowPriorityTimer == nil {
 			t.lowPriorityTimer = time.AfterFunc(lowPriorityBatchDelay, t.flushLowPriority)
 		}
-	} else {
-		// 矛盾/否定/替代等语义事件保持即时唤醒。
-		t.appendTriggerLocked(agent.TriggerEvent{
-			Kind: kind, IntentID: intentID, FactID: factID, Summary: summary, AssetIDs: append([]int64(nil), assetIDs...),
-		})
-		wake = true
+		t.trigMu.Unlock()
+		if wake {
+			t.Notify()
+		}
+		return
 	}
-	t.trigMu.Unlock()
-	if wake {
-		t.Notify()
+	ev := agent.TriggerEvent{
+		Kind: kind, IntentID: intentID, FactID: factID, Summary: summary, AssetIDs: append([]int64(nil), assetIDs...),
 	}
+	if isCriticalTriggerKind(kind) {
+		t.notifyImmediateTrigger(ev)
+		return
+	}
+	t.notifyMidPriorityTrigger(ev)
 }
 
 // NotifyAsset records newly registered/updated assets. Asset bursts are low
@@ -3009,10 +3198,7 @@ func (t *Task) NotifyGoal(texts []string) {
 	if len(texts) == 0 {
 		return
 	}
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal", Goals: texts})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "goal", Goals: texts})
 }
 
 // NotifyHint records that one OR MORE hints were added in a single add_hint call —
@@ -3024,10 +3210,7 @@ func (t *Task) NotifyHint(texts []string) {
 	if len(texts) == 0 {
 		return
 	}
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "hint", Hints: texts})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "hint", Hints: texts})
 }
 
 // NotifyGoalDeleted records that the human deleted a goal (via 总览的目标管理), then
@@ -3038,10 +3221,7 @@ func (t *Task) NotifyGoalDeleted(text string) {
 	if text == "" {
 		return
 	}
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal_deleted", Detail: text})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "goal_deleted", Detail: text})
 }
 
 // NotifyGoalAbandoned records that the human abandoned a goal (via 总览的目标管理),
@@ -3052,10 +3232,7 @@ func (t *Task) NotifyGoalAbandoned(text, reason string) {
 	if text == "" {
 		return
 	}
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal_abandoned", Detail: reason, Summary: text})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "goal_abandoned", Detail: reason, Summary: text})
 }
 
 // NotifyGoalEdited records that the human edited a goal (via 总览的目标管理), then wakes
@@ -3066,10 +3243,7 @@ func (t *Task) NotifyGoalEdited(oldText, newText string) {
 	if newText == "" {
 		return
 	}
-	t.trigMu.Lock()
-	t.appendTriggerLocked(agent.TriggerEvent{Kind: "goal_edited", OldGoal: oldText, NewGoal: newText})
-	t.trigMu.Unlock()
-	t.Notify()
+	t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "goal_edited", OldGoal: oldText, NewGoal: newText})
 }
 
 // NotifyCancelled records that the human deleted intentID (reason = 删除原因), then
@@ -3079,9 +3253,8 @@ func (t *Task) NotifyGoalEdited(oldText, newText string) {
 // soft (state='deleted') and hard (physical cascade) delete.
 func (t *Task) NotifyCancelled(intentID int64, summary, reason string) {
 	if intentID > 0 {
-		t.trigMu.Lock()
-		t.appendTriggerLocked(agent.TriggerEvent{Kind: "cancelled", IntentID: intentID, Summary: summary, Detail: reason})
-		t.trigMu.Unlock()
+		t.notifyImmediateTrigger(agent.TriggerEvent{Kind: "cancelled", IntentID: intentID, Summary: summary, Detail: reason})
+		return
 	}
 	t.Notify()
 }
@@ -3111,6 +3284,11 @@ func (t *Task) drainTriggers() []agent.TriggerEvent {
 	// 任何一轮 planner 都要先把合并窗口里的普通 fact/asset 冲刷出来，
 	// 这样高价值事件触发时也不会把已积累的事实批次留到下一轮。
 	t.flushLowPriorityLocked()
+	if t.midPriorityTimer != nil {
+		t.midPriorityTimer.Stop()
+		t.midPriorityTimer = nil
+	}
+	t.midPriorityBatchCount = 0
 	if t.pendingDropped > 0 {
 		// 直接 append：这条通知本身不应再触发一次丢弃。
 		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "triggers_dropped", Count: t.pendingDropped})

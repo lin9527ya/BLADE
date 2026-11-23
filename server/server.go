@@ -273,6 +273,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// delete handler removes it, so close that instead of looking up Task.
 		s.closeTaskAgentBundleFor(taskID)
 	}
+	s.engine.onTaskSettled = func(taskID string) {
+		s.closeHotSessionFor(taskID)
+	}
 	s.engine.SetBudgetPauseHandler(func(t *Task) error {
 		_, err := s.applyTaskControlWithCause(t, "pause", agent.AbortBudgetExhausted)
 		return err

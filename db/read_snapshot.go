@@ -4,7 +4,62 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
+	"strings"
 )
+
+var sqlWriteOrLockRe = regexp.MustCompile(`(?i)\b(insert|update|delete|merge|truncate|drop|alter|create|grant|revoke|lock|copy|call|do)\b|\bfor\s+(update|no\s+key\s+update|share|key\s+share)\b`)
+
+// stripSQLLiteralsAndComments replaces single-quoted strings, dollar-quoted
+// blocks, and comments with spaces so read-only detection only inspects SQL
+// keywords.
+func stripSQLLiteralsAndComments(q string) string {
+	var b strings.Builder
+	b.Grow(len(q))
+	for i := 0; i < len(q); i++ {
+		c := q[i]
+		if c == '-' && i+1 < len(q) && q[i+1] == '-' {
+			b.WriteByte(' ')
+			for i += 2; i < len(q) && q[i] != '\n'; i++ {
+			}
+			continue
+		}
+		if c == '/' && i+1 < len(q) && q[i+1] == '*' {
+			b.WriteByte(' ')
+			for i += 2; i+1 < len(q) && (q[i] != '*' || q[i+1] != '/'); i++ {
+			}
+			i++
+			continue
+		}
+		if c == '\'' {
+			b.WriteByte(' ')
+			for i++; i < len(q); i++ {
+				if q[i] == '\'' {
+					if i+1 < len(q) && q[i+1] == '\'' {
+						i++
+						continue
+					}
+					break
+				}
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func sqlIsReadOnly(query string) bool {
+	cleaned := strings.TrimSpace(stripSQLLiteralsAndComments(query))
+	if cleaned == "" {
+		return false
+	}
+	upper := strings.ToUpper(cleaned)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") && !strings.HasPrefix(upper, "(") {
+		return false
+	}
+	return !sqlWriteOrLockRe.MatchString(cleaned)
+}
 
 // ReadStatus distinguishes unknown totals from an empty, successfully-read set.
 type ReadStatus struct {
@@ -58,9 +113,15 @@ func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*Rows
 	if d.readTx != nil {
 		rows, err = d.readTx.QueryContext(d.readCtx, query, args...)
 	} else if d.authority != nil {
-		tx, err = d.BeginTx(ctx, nil)
-		if err == nil {
-			rows, err = tx.QueryContext(ctx, query, args...)
+		if sqlIsReadOnly(query) {
+			if err = CheckWriteAuthorityReadOnly(ctx, d.DB, *d.authority); err == nil {
+				rows, err = d.DB.QueryContext(ctx, query, args...)
+			}
+		} else {
+			tx, err = d.BeginTx(ctx, nil)
+			if err == nil {
+				rows, err = tx.QueryContext(ctx, query, args...)
+			}
 		}
 	} else {
 		rows, err = d.DB.QueryContext(ctx, query, args...)
@@ -86,6 +147,12 @@ func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *Ro
 		}}
 	}
 	if d.authority != nil {
+		if sqlIsReadOnly(query) {
+			if err := CheckWriteAuthorityReadOnly(ctx, d.DB, *d.authority); err != nil {
+				return &Row{err: err}
+			}
+			return &Row{row: d.DB.QueryRowContext(ctx, query, args...)}
+		}
 		tx, err := d.BeginTx(ctx, nil)
 		if err != nil {
 			return &Row{err: err}

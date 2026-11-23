@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -123,12 +124,42 @@ func (s *ExplorationStore) ValidateEvidenceMetadata(meta *EvidenceMetadata) erro
 }
 
 func (s *ExplorationStore) RequirementIssues(id int64) ([]map[string]any, error) {
-	var raw []byte
-	err := s.db.QueryRow(`SELECT blackboard_requirement_issues(payload,exploration_id) FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&raw)
+	m, err := s.BatchRequirementIssues([]int64{id})
 	if err != nil {
 		return nil, err
 	}
-	var out []map[string]any
-	err = json.Unmarshal(raw, &out)
-	return out, err
+	issues, ok := m[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return issues, nil
+}
+
+// BatchRequirementIssues evaluates blackboard_requirement_issues across many
+// intent IDs in a single query instead of issuing N+1 queries on graph load.
+func (s *ExplorationStore) BatchRequirementIssues(ids []int64) (map[int64][]map[string]any, error) {
+	out := map[int64][]map[string]any{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT id, blackboard_requirement_issues(payload,exploration_id)
+FROM exploration_nodes
+WHERE exploration_id=$1 AND id=ANY($2::bigint[])`, s.expID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		var issues []map[string]any
+		if err := json.Unmarshal(raw, &issues); err != nil {
+			return nil, err
+		}
+		out[id] = issues
+	}
+	return out, rows.Err()
 }

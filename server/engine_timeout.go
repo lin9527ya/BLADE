@@ -59,6 +59,11 @@ func (e *Engine) inflightCounter(taskID string) *int64 {
 func (e *Engine) beginTaskOperation(taskID string) bool {
 	e.deleteMu.RLock()
 	defer e.deleteMu.RUnlock()
+	return e.beginTaskOperationLocked(taskID)
+}
+
+// beginTaskOperationLocked registers an operation when the caller already holds deleteMu.RLock().
+func (e *Engine) beginTaskOperationLocked(taskID string) bool {
 	if e.IsDeleting(taskID) {
 		return false
 	}
@@ -291,7 +296,11 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 		}
 		dl := e.taskDeadline(t)
 		if dl <= 0 {
-			if sleepCtx(ctx, deadlinePollInterval) { // not yet stamped (task hasn't really run)
+			nap := deadlinePollInterval
+			if t.TimeoutSeconds <= 0 && e.tokenBudget() <= 0 {
+				nap = deadlineMaxSleep
+			}
+			if sleepCtx(ctx, nap) { // not yet stamped / no timeout & no token budget
 				return
 			}
 			continue
@@ -315,10 +324,9 @@ func (e *Engine) deadlineCoordinator(ctx context.Context, t *Task) {
 			}
 			continue
 		}
-		// Goal drain may already own the barrier. Keep the deadline coordinator
-		// alive until it finishes or releases it (pause/new goals), rather than
-		// losing this task's timeout forever.
-		if e.isSettling(t.ID) {
+		// Goal drain may already own the barrier, or the task may be paused right as
+		// deadline/goal_drain unwinds. Do not turn a paused task into timeout here.
+		if e.isSettling(t.ID) || e.IsPaused(t.ID) || t.lifecycleSnapshot().Paused {
 			if sleepCtx(ctx, deadlinePollInterval) {
 				return
 			}
@@ -375,6 +383,18 @@ func (e *Engine) sweepExpiredLeases(t *Task) {
 // prerequisite combination). The signature includes the blocked intent ids and
 // their prerequisite states, so a persistent block wakes once instead of every
 // 30 seconds; a changed block wakes again.
+type blockedWatchState struct {
+	sig      string
+	lastWake time.Time
+	retries  int
+}
+
+var blockedWatchBackoffs = [...]time.Duration{
+	2 * time.Minute,
+	5 * time.Minute,
+	10 * time.Minute,
+}
+
 func (e *Engine) sweepBlockedIntents(t *Task) {
 	if e == nil || t == nil || e.IsPaused(t.ID) || e.IsDeleting(t.ID) {
 		return
@@ -391,12 +411,30 @@ func (e *Engine) sweepBlockedIntents(t *Task) {
 	if err != nil || sig == "" {
 		return
 	}
+	now := time.Now()
 	if last, ok := e.blockedSignature.Load(t.ID); ok {
-		if prev, ok := last.(string); ok && prev == sig {
+		if prev, ok := last.(blockedWatchState); ok && prev.sig == sig {
+			if prev.retries >= len(blockedWatchBackoffs) || e.ActiveLLMCalls(t.ID) > 0 {
+				return
+			}
+			if e.m != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
+				return
+			}
+			wait := blockedWatchBackoffs[prev.retries]
+			if now.Sub(prev.lastWake) < wait {
+				return
+			}
+			e.blockedSignature.Store(t.ID, blockedWatchState{
+				sig:      sig,
+				lastWake: now,
+				retries:  prev.retries + 1,
+			})
+			log.Printf("[blocked] task %s 阻塞持续未解（%s 第 %d 次退避补唤），再次唤醒 planner", t.ID, sig, prev.retries+1)
+			t.Notify()
 			return
 		}
 	}
-	e.blockedSignature.Store(t.ID, sig)
+	e.blockedSignature.Store(t.ID, blockedWatchState{sig: sig, lastWake: now})
 	log.Printf("[blocked] task %s 有 %d 条 open 意图没有活跃前置可派，唤醒 planner 解阻", t.ID, snap.Open)
 	t.Notify()
 }
@@ -407,6 +445,9 @@ func (e *Engine) sweepBlockedIntents(t *Task) {
 // fallback 是非 met 时的终态（默认 timeout；策略停摆用 policy_blocked——
 // 把"策略封死"显示成"已超时"是事实错误，而本设计的全部价值就在理由明确）。
 func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback string) {
+	if e.IsPaused(t.ID) || t.lifecycleSnapshot().Paused {
+		return
+	}
 	if !e.markSettling(t.ID) {
 		return
 	}
@@ -476,6 +517,11 @@ func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback s
 	case err != nil:
 		log.Printf("[deadline] task %s 落终态失败: %v", t.ID, err)
 	case won:
+		e.cancelWatchersForTask(t.ID)
+		e.completionWarn.Delete(t.ID)
+		e.blockedSignature.Delete(t.ID)
+		e.budgetStage.Delete(t.ID)
+		e.notifyTaskSettled(t.ID)
 		e.emitPrunedIntentsOnGoalDone(t, pruned)
 		log.Printf("[deadline] task %s 收尾完成,终态=%s", t.ID, status)
 	default:

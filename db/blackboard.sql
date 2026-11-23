@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS blackboard_outbox (
  changed_fields TEXT[] NOT NULL DEFAULT '{}', operation_id TEXT, reason_code TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_blackboard_outbox_tx ON blackboard_outbox(transaction_id,exploration_id,id);
+CREATE INDEX IF NOT EXISTS idx_blackboard_outbox_exp ON blackboard_outbox(exploration_id);
 CREATE TABLE IF NOT EXISTS blackboard_events (
  exploration_id BIGINT NOT NULL, seq BIGINT NOT NULL, epoch TEXT NOT NULL,
  entity TEXT NOT NULL, object_key TEXT NOT NULL, operation TEXT NOT NULL,
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS blackboard_events (
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(exploration_id,seq)
 );
 CREATE INDEX IF NOT EXISTS idx_blackboard_events_created ON blackboard_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_blackboard_events_exp_epoch_seq ON blackboard_events(exploration_id,epoch,seq);
 INSERT INTO blackboard_versions(exploration_id) SELECT id FROM explorations ON CONFLICT DO NOTHING;
 
 CREATE OR REPLACE FUNCTION blackboard_init_version() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -47,8 +49,10 @@ END $$;
 
 -- Route child deletions before their parent disappears. No body or credential is duplicated.
 ALTER TABLE exploration_anchors ADD COLUMN IF NOT EXISTS exploration_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_expanchors_exp ON exploration_anchors(exploration_id);
 UPDATE exploration_anchors a SET exploration_id=n.exploration_id FROM exploration_nodes n WHERE a.node_id=n.id AND a.exploration_id IS NULL;
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS exploration_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_findings_exp ON findings(exploration_id);
 UPDATE findings f SET exploration_id=t.exploration_id FROM tasks t WHERE f.task_id=t.id AND f.exploration_id IS NULL;
 UPDATE findings f SET exploration_id=n.exploration_id FROM exploration_nodes n WHERE f.node_id=n.id AND f.exploration_id IS NULL;
 ALTER TABLE finding_traffic_bindings ADD COLUMN IF NOT EXISTS exploration_id BIGINT;
@@ -81,7 +85,7 @@ BEGIN
  END IF;
  IF TG_OP<>'INSERT' THEN before_row=to_jsonb(OLD); END IF;
  IF TG_OP<>'DELETE' THEN after_row=to_jsonb(NEW); END IF;
- IF TG_OP='UPDATE' AND (before_row - ARRAY['updated_at','heartbeat_at','lease_expires_at']) = (after_row - ARRAY['updated_at','heartbeat_at','lease_expires_at']) THEN RETURN NULL; END IF;
+ IF TG_OP='UPDATE' AND (before_row - ARRAY['updated_at','heartbeat_at','lease_expires_at','cold_since_round']) = (after_row - ARRAY['updated_at','heartbeat_at','lease_expires_at','cold_since_round']) THEN RETURN NULL; END IF;
  r=COALESCE(after_row,before_row);
  old_exp=NULLIF(before_row->>'exploration_id','')::bigint;
  new_exp=NULLIF(after_row->>'exploration_id','')::bigint;

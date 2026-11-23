@@ -59,29 +59,16 @@ func (t *ToolSet) projectionContract(out map[string]any) {
 	}
 
 	sections := map[string]db.ReadStatus{}
-	for key, kind := range map[string]string{"goals": db.KindGoal, "hints": db.KindHint, "recent_facts": db.KindFact, "finding_list": db.KindFinding, "footholds": db.KindFoothold, "credentials": db.KindCredential, "open_intents": db.KindIntent, "running_intents": db.KindIntent, "paused_intents": db.KindIntent, "recent_done_intents": db.KindIntent} {
-		state := ""
-		switch key {
-		case "hints":
-			state = db.StateHintActive
-		case "footholds", "credentials":
-			state = db.StateLootActive
-		case "open_intents":
-			state = "open"
-		case "running_intents":
-			state = "running"
-		case "paused_intents":
-			state = "paused"
-		}
-		total, err := t.ts.CountProjectionNodes(kind, state, key == "recent_done_intents")
+	counts, countErr := t.ts.CountAllProjectionNodes()
+	for _, key := range []string{"goals", "hints", "recent_facts", "finding_list", "footholds", "credentials", "open_intents", "running_intents", "paused_intents", "recent_done_intents"} {
 		n := 0
 		if rows, ok := out[key].([]map[string]any); ok {
 			n = len(rows)
 		}
-		if err != nil {
+		if countErr != nil {
 			sections[key] = db.ReadStatus{State: "unknown"}
 		} else {
-			sections[key] = db.ReadSetStatus(total, n, "node_detail / graph_overview(detail=true)")
+			sections[key] = db.ReadSetStatus(counts[key], n, "node_detail / graph_overview(detail=true)")
 		}
 	}
 	out["read_status"] = map[string]any{"state": "complete", "sections": sections, "note": "complete表示本快照读取成功，各节窗口完整性独立标注；不是探索已完成"}

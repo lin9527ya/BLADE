@@ -177,7 +177,7 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 	}
 	var id int64
 	err := d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
-		if err := LockTaskEvidenceTx(tx, taskID); err != nil {
+		if err := LockTaskEvidenceSharedTx(tx, taskID); err != nil {
 			return err
 		}
 		return tx.QueryRow(

@@ -40,6 +40,8 @@ export const relLabel: Record<string, string> = {
   covers: "压缩",
   depends_on: "依赖",
   reaches: "可达",
+  contradicts: "矛盾",
+  supersedes: "替代",
   // AD 域内拓扑（P32）：四条边各有各的走法，报告与页面必须是同一套词（report.ADRelLabel）。
   member_of: "成员",
   admin_to: "本机管理员",
@@ -59,6 +61,8 @@ export const relColor: Record<string, string> = {
   covers: "#14b8a6",
   depends_on: "#64748b",
   reaches: "#06b6d4",
+  contradicts: "#f97316",
+  supersedes: "#94a3b8",
   // AD 四边同色系（紫）：它们是一套东西——域内拓扑，与作业边（上面那些）区分开。
   member_of: "#8b5cf6",
   admin_to: "#a855f7",
@@ -192,8 +196,8 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
   const kind = viewKind(n);
   const meta = typeMeta[kind] ?? typeMeta.intent;
   const Icon = meta.icon;
-  // 痕迹的状态（未处置/已清理/接受风险…）在图上也要看得见：它决定这张卡要不要人去处理。
-  const showState = n.type === "goal" || n.type === "intent" || n.type === "footprint";
+  // 痕迹/漏洞状态（未处置/已清理/待处理/已确认…）在图上也要看得见：它决定这张卡要不要人去处理。
+  const showState = n.type === "goal" || n.type === "intent" || n.type === "footprint" || n.type === "finding";
   const showPriority = (n.type === "goal" || n.type === "intent") && n.priority > 0;
   const isLive = !n.inherited && n.type === "intent" && n.state === "running";
 
@@ -285,7 +289,7 @@ function ExplorationGraphInner({
   const [selected, setSelected] = React.useState<TaskNode | null>(null);
   // 缩略图默认收起：它是绝对定位的浮层，贴住右下角就会在 pan 之后压住节点卡片（截图里就压着一张
   // 漏洞卡）。图小的时候它本来也没用——需要时一键展开，而不是让它常驻遮挡内容。
-  const [showMiniMap, setShowMiniMap] = React.useState(true);
+  const [showMiniMap, setShowMiniMap] = React.useState(false);
   // Full node index (incl. folded members) so the digest drawer can resolve
   // covered members even though they are not rendered on the canvas.
   const nodesById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
@@ -314,9 +318,8 @@ function ExplorationGraphInner({
       viewEdges.map((e, i) => {
         const color = relColor[e.rel] ?? "#94a3b8";
         const animated = liveTargets.has(e.dst);
-        // 痕迹来源线用虚线：同一条图上既有「因果」（实线）也有「留下痕迹」（虚线），
-        // 光靠颜色在深色主题/色弱下不够，线型是第二条冗余线索。
-        const dashed = e.rel === "leaves";
+        // 痕迹/矛盾/替代边用虚线：同一张图上区分因果推进与质疑/替代边。
+        const dashed = e.rel === "leaves" || e.rel === "contradicts" || e.rel === "supersedes";
         return {
           id: `e${i}-${e.src}-${e.dst}`,
           source: e.src,

@@ -132,12 +132,27 @@ func (s *ExplorationStore) validateStoredRequires(payload map[string]any) error 
 
 func (s *ExplorationStore) PopulateEvidenceReadState(nodes []*Node) error {
 	var ids []int64
+	var reqIDs []int64
 	for _, n := range nodes {
-		if n != nil {
-			ids = append(ids, n.ID)
+		if n == nil {
+			continue
+		}
+		ids = append(ids, n.ID)
+		if n.Kind == KindIntent {
+			var p map[string]json.RawMessage
+			if err := json.Unmarshal(n.Payload, &p); err != nil {
+				return err
+			}
+			if _, ok := p["requires"]; ok {
+				reqIDs = append(reqIDs, n.ID)
+			}
 		}
 	}
 	states, err := s.EvidenceStates(ids)
+	if err != nil {
+		return err
+	}
+	issuesByID, err := s.BatchRequirementIssues(reqIDs)
 	if err != nil {
 		return err
 	}
@@ -149,18 +164,8 @@ func (s *ExplorationStore) PopulateEvidenceReadState(nodes []*Node) error {
 			v := states[n.ID]
 			n.EvidenceState = &v
 		}
-		if n.Kind == KindIntent {
-			var p map[string]json.RawMessage
-			if err := json.Unmarshal(n.Payload, &p); err != nil {
-				return err
-			}
-			if _, ok := p["requires"]; ok {
-				issues, err := s.RequirementIssues(n.ID)
-				if err != nil {
-					return err
-				}
-				n.RequiresMissing = issues
-			}
+		if issues, ok := issuesByID[n.ID]; ok {
+			n.RequiresMissing = issues
 		}
 	}
 	return nil

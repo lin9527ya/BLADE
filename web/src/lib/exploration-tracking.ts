@@ -26,6 +26,8 @@ export interface ScheduleExplanation {
   selection_reason: string;
   wait_reason?: string;
   wait_reasons?: string[];
+  blocked_reason?: string;
+  requires_missing?: { index: number; type?: string; node_id?: string; key?: string; reason: string }[];
 }
 export interface SchedulingReport {
   evaluated_at: string;

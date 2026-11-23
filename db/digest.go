@@ -66,20 +66,33 @@ func (s *ExplorationStore) ApplyStampOps(ops []StampOp) error {
 	if len(ops) == 0 {
 		return nil
 	}
+	var setIDs, setRounds, clearIDs []int64
+	for _, o := range ops {
+		if o.Set {
+			setIDs = append(setIDs, o.ID)
+			setRounds = append(setRounds, o.Round)
+		} else {
+			clearIDs = append(clearIDs, o.ID)
+		}
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, o := range ops {
-		if o.Set {
-			if _, err := tx.Exec(`UPDATE exploration_nodes SET cold_since_round=$1 WHERE id=$2 AND exploration_id=$3`, o.Round, o.ID, s.expID); err != nil {
-				return err
-			}
-		} else {
-			if _, err := tx.Exec(`UPDATE exploration_nodes SET cold_since_round=NULL WHERE id=$1 AND exploration_id=$2`, o.ID, s.expID); err != nil {
-				return err
-			}
+	if len(setIDs) > 0 {
+		if _, err := tx.Exec(`UPDATE exploration_nodes AS n
+			SET cold_since_round=v.round
+			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, round)
+			WHERE n.id=v.id AND n.exploration_id=$3`, setIDs, setRounds, s.expID); err != nil {
+			return err
+		}
+	}
+	if len(clearIDs) > 0 {
+		if _, err := tx.Exec(`UPDATE exploration_nodes
+			SET cold_since_round=NULL
+			WHERE id=ANY($1::bigint[]) AND exploration_id=$2`, clearIDs, s.expID); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()
@@ -234,15 +247,13 @@ func (s *ExplorationStore) SupersedeDigests(ids []int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, id := range ids {
-		if _, err := tx.Exec(`DELETE FROM exploration_edges
-			WHERE exploration_id=$1 AND src_id=$2 AND rel=$3`, s.expID, id, RelCovers); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE exploration_nodes SET state=$1 WHERE id=$2 AND exploration_id=$3 AND kind=$4`,
-			StateDigestSuperseded, id, s.expID, KindDigest); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(`DELETE FROM exploration_edges
+		WHERE exploration_id=$1 AND src_id=ANY($2::bigint[]) AND rel=$3`, s.expID, ids, RelCovers); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE exploration_nodes SET state=$1 WHERE id=ANY($2::bigint[]) AND exploration_id=$3 AND kind=$4`,
+		StateDigestSuperseded, ids, s.expID, KindDigest); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

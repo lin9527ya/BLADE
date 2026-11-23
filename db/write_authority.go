@@ -39,13 +39,55 @@ func CheckWriteAuthorityTx(ctx context.Context, tx *sql.Tx, a WriteAuthority) er
 		if !belongs {
 			return ErrStaleExecution
 		}
-		if err := LockTaskEvidenceTx(tx, task); err != nil {
+		if err := LockTaskEvidenceSharedTx(tx, task); err != nil {
 			return err
 		}
 	}
 	var state, owner, session string
 	var generation int64
 	err := tx.QueryRowContext(ctx, `SELECT state,COALESCE(owner,''),logical_session_id,execution_generation FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='intent' FOR UPDATE`, a.IntentID, a.ExplorationID).Scan(&state, &owner, &session, &generation)
+	if err != nil || state != "running" || owner != a.Owner || session != a.LogicalSessionID || generation != a.Generation {
+		return ErrStaleExecution
+	}
+	return nil
+}
+
+// CheckWriteAuthorityReadOnly verifies authority for read-only SELECT queries
+// without taking any tasks or exploration_nodes row locks, avoiding cross-worker
+// serialization and open-cursor transaction lock contention.
+func CheckWriteAuthorityReadOnly(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, a WriteAuthority) error {
+	if a.IntentID <= 0 || a.Generation <= 0 || a.Owner == "" || a.LogicalSessionID == "" {
+		return ErrStaleExecution
+	}
+	task := a.TaskID
+	if task == 0 {
+		if err := q.QueryRowContext(ctx, `SELECT id FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL`, a.ExplorationID).Scan(&task); err != nil && err != sql.ErrNoRows {
+			return err
+		}
+	}
+	if task > 0 {
+		var taskAlive bool
+		var deleted sql.NullTime
+		var archiveState sql.NullString
+		err := q.QueryRowContext(ctx, `SELECT t.exploration_id=$2, t.deleted_at, (SELECT ta.state FROM task_archives ta WHERE ta.task_id=t.id) FROM tasks t WHERE t.id=$1`, task, a.ExplorationID).Scan(&taskAlive, &deleted, &archiveState)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrStaleExecution
+			}
+			return err
+		}
+		if !taskAlive {
+			return ErrStaleExecution
+		}
+		if deleted.Valid || (archiveState.Valid && archiveState.String != ArchiveFailed) {
+			return ErrTaskArchiveState
+		}
+	}
+	var state, owner, session string
+	var generation int64
+	err := q.QueryRowContext(ctx, `SELECT state,COALESCE(owner,''),logical_session_id,execution_generation FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='intent'`, a.IntentID, a.ExplorationID).Scan(&state, &owner, &session, &generation)
 	if err != nil || state != "running" || owner != a.Owner || session != a.LogicalSessionID || generation != a.Generation {
 		return ErrStaleExecution
 	}

@@ -56,6 +56,7 @@ func (s *Server) registerTaskRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/tasks/{id}/events", s.taskLiveStream)
 	mux.HandleFunc("GET /api/tasks/{id}/scheduling", s.taskScheduling)
 	mux.HandleFunc("GET /api/tasks/{id}/leads", s.taskLeadTraces)
+	mux.HandleFunc("GET /api/tasks/{id}/planner-state", s.taskPlannerState)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// 任务级资产拦截/允许规则

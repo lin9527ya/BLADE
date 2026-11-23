@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import Link from "next/link";
+
 import {
   AnchorIcon,
   ArrowDownIcon,
@@ -34,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
@@ -176,7 +179,35 @@ const REL_LABEL: Record<string, string> = {
   depends_on: "依赖",
   reaches: "可达",
   leaves: "留下痕迹",
+  contradicts: "矛盾",
+  supersedes: "替代",
+  member_of: "成员",
+  admin_to: "本机管理员",
+  session_on: "有会话",
+  can: "权限",
 };
+
+const STATE_FILTER_OPTIONS = [
+  { value: "", label: "全部状态" },
+  { value: "open", label: "待领/未达成" },
+  { value: "running", label: "执行中" },
+  { value: "paused", label: "已暂停" },
+  { value: "done", label: "已完成" },
+  { value: "met", label: "已达成" },
+  { value: "abandoned", label: "已放弃" },
+  { value: "confirmed", label: "已确认" },
+  { value: "dismissed", label: "已排除/否定" },
+  { value: "ruled_out", label: "已排除" },
+  { value: "open_proof_gap", label: "待补证" },
+  { value: "negative", label: "已测（未发现）" },
+  { value: "blocked", label: "执行出错" },
+  { value: "exhausted", label: "预算耗尽" },
+  { value: "no_output", label: "无产出" },
+  { value: "deleted", label: "已删除" },
+  { value: "active", label: "在手/生效中" },
+  { value: "lost", label: "已丢失" },
+  { value: "cleaned", label: "已清理" },
+];
 
 // goal / intent 的状态语义由全局 status 表提供(StatusBadge);其余类型的状态只在
 // 图和播报里出现,这里补一份。
@@ -200,6 +231,36 @@ const STATE_META: Record<string, Record<string, { label: string; tone: Tone }>> 
     accepted: { label: "接受风险", tone: "violet" },
     cleaned: { label: "已清理", tone: "green" },
     not_found: { label: "未发现", tone: "slate" },
+  },
+  finding: {
+    confirmed: { label: "已确认", tone: "red" },
+    dismissed: { label: "已排除", tone: "slate" },
+    ruled_out: { label: "已排除", tone: "slate" },
+    open_proof_gap: { label: "待补证", tone: "amber" },
+  },
+  foothold: {
+    active: { label: "在手", tone: "green" },
+    lost: { label: "已丢失", tone: "slate" },
+  },
+  credential: {
+    active: { label: "在手", tone: "green" },
+    lost: { label: "已丢失", tone: "slate" },
+  },
+  artifact: {
+    active: { label: "未清理", tone: "amber" },
+    removed: { label: "已清理", tone: "green" },
+    unknown: { label: "未确认", tone: "slate" },
+  },
+  detection: {
+    triggered: { label: "已检出", tone: "amber" },
+    not_triggered: { label: "未检出", tone: "green" },
+    unknown: { label: "未知", tone: "slate" },
+  },
+  ad_object: {
+    active: { label: "在册", tone: "violet" },
+  },
+  cloud_object: {
+    active: { label: "在册", tone: "blue" },
   },
 };
 
@@ -456,6 +517,7 @@ function RelatedList({
 }
 
 function BroadcastRow({
+  taskId,
   node,
   edges,
   refs,
@@ -463,6 +525,7 @@ function BroadcastRow({
   now,
   fresh,
 }: {
+  taskId: string;
   node: TaskNode;
   edges: Edge[];
   refs: Record<string, TaskNode>;
@@ -538,7 +601,29 @@ function BroadcastRow({
               <span>类型 {meta.label}</span>
               <span>来源 {node.origin || "system"}</span>
               <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
+              {node.type === "intent" && !node.inherited && (
+                <Link
+                  href={`/function/tasks/detail?id=${encodeURIComponent(taskId)}&tab=sessions&session=${encodeURIComponent(`intent:${node.id}`)}`}
+                  className="text-primary underline underline-offset-2"
+                >
+                  打开会话 (#{node.id})
+                </Link>
+              )}
+              {node.type === "finding" && node.finding_id && (
+                <Link
+                  href={`/function/findings/detail?id=${encodeURIComponent(node.finding_id)}`}
+                  className="text-primary underline underline-offset-2"
+                >
+                  查看漏洞 #{node.finding_id}
+                </Link>
+              )}
             </div>
+            {node.blocked_reason && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+                <span className="font-medium text-amber-600 dark:text-amber-400">阻塞原因</span>
+                <span className="ml-2 break-words text-muted-foreground">{node.blocked_reason}</span>
+              </div>
+            )}
             {node.state === "deleted" && node.delete_reason && (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
                 <span className="font-medium text-destructive">删除原因</span>
@@ -564,6 +649,7 @@ function BroadcastRow({
 
 export function BroadcastTab({ taskId }: { taskId: string }) {
   const [kinds, setKinds] = React.useState<ExploreKind[]>([]);
+  const [stateFilter, setStateFilter] = React.useState("");
   const [queryInput, setQueryInput] = React.useState("");
   const [query, setQuery] = React.useState("");
   const [order, setOrder] = React.useState<"asc" | "desc">("desc");
@@ -608,13 +694,13 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: 这组依赖定义「播报流身份」，换流时清掉已渲染标记；effect 体内只写 ref、不读取它们。
   React.useEffect(() => {
     renderedRef.current = false;
-  }, [taskId, page, size, kinds, query, order, live, atLive]);
+  }, [taskId, page, size, kinds, stateFilter, query, order, live, atLive]);
 
   usePolling(
     (alive) => {
       // 换任务/筛选/排序 = 换了一条播报流:清掉「新」标记和未读基线。翻页不算换流,
       // 否则回到最新时就没有未读计数可算了。
-      const stream = `${taskId}|${kinds.join(",")}|${query}|${order}`;
+      const stream = `${taskId}|${kinds.join(",")}|${stateFilter}|${query}|${order}`;
       if (streamRef.current !== stream) {
         streamRef.current = stream;
         seenRef.current = new Set();
@@ -622,7 +708,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
         setPending(0);
       }
       return api
-        .explorationNodes(taskId, { page, size, kinds, q: query, order })
+        .explorationNodes(taskId, { page, size, kinds, states: stateFilter ? [stateFilter] : undefined, q: query, order })
         .then((r) => {
           if (!alive()) return;
           // 直播位每轮都刷新;其它位置只渲染第一次,之后轮询仅更新未读计数。
@@ -651,7 +737,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
         });
     },
     live ? POLL_MS : 0, // 非实时模式只拉一次
-    [taskId, page, size, kinds, query, order, live, atLive],
+    [taskId, page, size, kinds, stateFilter, query, order, live, atLive],
   );
 
   const toggleKind = (kind: ExploreKind) => {
@@ -723,13 +809,14 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
               </button>
             );
           })}
-          {kinds.length > 0 && (
+          {(kinds.length > 0 || stateFilter) && (
             <Button
               variant="ghost"
               size="sm"
               className="h-7 px-2 text-xs"
               onClick={() => {
                 setKinds([]);
+                setStateFilter("");
                 setPage(1);
               }}
             >
@@ -737,6 +824,22 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
             </Button>
           )}
         </div>
+        <NativeSelect
+          aria-label="按节点状态筛选"
+          size="sm"
+          value={stateFilter}
+          onChange={(e) => {
+            setStateFilter(e.target.value);
+            setPage(1);
+          }}
+          className="h-8 w-36"
+        >
+          {STATE_FILTER_OPTIONS.map((o) => (
+            <NativeSelectOption key={o.value || "all"} value={o.value}>
+              {o.label}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
         <div className="ml-auto flex items-center gap-2">
           <Button
             variant="outline"
@@ -785,7 +888,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
           </div>
         ) : items.length === 0 ? (
           <p className="py-10 text-center text-muted-foreground text-sm">
-            {query || kinds.length > 0 ? "没有符合条件的播报。" : "这个任务还没有产生探索节点。"}
+            {query || kinds.length > 0 || stateFilter ? "没有符合条件的播报。" : "这个任务还没有产生探索节点。"}
           </p>
         ) : (
           groups.map((group) => (
@@ -794,6 +897,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
               {group.rows.map((node) => (
                 <BroadcastRow
                   key={node.id}
+                  taskId={taskId}
                   node={node}
                   edges={edges}
                   refs={nodeIndex}

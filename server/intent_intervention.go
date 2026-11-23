@@ -173,7 +173,7 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	// while task pause/delete/shutdown still stop it.
 	if err := s.engine.runDetachedIntent(s.ctx, t, iid, node.State, requestID, message, agentMessage); err != nil {
 		switch {
-		case errors.Is(err, db.ErrIntentStateConflict):
+		case errors.Is(err, db.ErrIntentStateConflict), errors.Is(err, errTaskControlConflict):
 			writeErr(w, http.StatusConflict, err.Error())
 		default:
 			writeErr(w, http.StatusInternalServerError, err.Error())

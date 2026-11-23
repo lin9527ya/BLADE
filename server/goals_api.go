@@ -117,6 +117,7 @@ func (s *Server) editGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldText := goalDTO(node).Text
+	// 若被编辑的目标此前已是 met，UpdateGoalPayload 会在同条 SQL 中把状态重开为 open。
 	if err := t.Store.UpdateGoalPayload(gid, text, strings.TrimSpace(body.VulnClass)); err != nil {
 		writeErr(w, 500, err.Error())
 		return

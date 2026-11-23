@@ -37,6 +37,8 @@ type IntentScheduleExplanation struct {
 	FairWait          bool               `json:"fair_wait"`
 	SelectionReason   string             `json:"selection_reason"`
 	WaitReason        string             `json:"wait_reason,omitempty"`
+	BlockedReason     string             `json:"blocked_reason,omitempty"`
+	RequiresMissing   []map[string]any   `json:"requires_missing,omitempty"`
 }
 
 type SchedulingReport struct {
@@ -216,6 +218,7 @@ func (s *ExplorationStore) ScheduleReport(limit int, focusID int64) (*Scheduling
 			}
 		}
 		if len(out.Rows) == 0 {
+			_ = s.PopulateEvidenceReadState([]*Node{n})
 			out.Rows = append(out.Rows, s.unevaluatedSchedule(n, now))
 		}
 		out.Status = ReadSetStatus(1, 1, "")
@@ -232,13 +235,26 @@ func (s *ExplorationStore) ScheduleReport(limit int, focusID int64) (*Scheduling
 		if err != nil {
 			return nil, err
 		}
-		for _, b := range blocked {
-			n, err := s.GetNode(b.IntentID)
+		if len(blocked) > 0 {
+			blockedIDs := make([]int64, 0, len(blocked))
+			for _, b := range blocked {
+				blockedIDs = append(blockedIDs, b.IntentID)
+			}
+			nodes, err := s.NodesByIDs(blockedIDs)
 			if err != nil {
 				return nil, err
 			}
-			if n != nil {
-				out.Rows = append(out.Rows, s.unevaluatedSchedule(n, now))
+			_ = s.PopulateEvidenceReadState(nodes)
+			byID := make(map[int64]*Node, len(nodes))
+			for _, n := range nodes {
+				if n != nil {
+					byID[n.ID] = n
+				}
+			}
+			for _, b := range blocked {
+				if n := byID[b.IntentID]; n != nil {
+					out.Rows = append(out.Rows, s.unevaluatedSchedule(n, now))
+				}
 			}
 		}
 	}
@@ -267,5 +283,6 @@ func (s *ExplorationStore) unevaluatedSchedule(n *Node, now time.Time) IntentSch
 		}
 	}
 	return IntentScheduleExplanation{IntentID: n.ID, Summary: payloadSummary(n.Payload), State: n.State, EvaluatedAt: now,
-		Claimable: claimable, WaitingSeconds: int64(age), SelectionReason: reason, WaitReason: reason, WaitReasons: []string{reason}}
+		Claimable: claimable, WaitingSeconds: int64(age), SelectionReason: reason, WaitReason: reason, WaitReasons: []string{reason},
+		BlockedReason: n.BlockedReason, RequiresMissing: n.RequiresMissing}
 }

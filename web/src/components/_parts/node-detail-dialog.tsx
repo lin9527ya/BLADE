@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import Link from "next/link";
+
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -21,7 +23,7 @@ import { digestMemberIds, nodeSummary, typeMeta, viewKind } from "./graph-helper
 export function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-1.5 text-sm">
-      <span className="w-14 shrink-0 text-muted-foreground">{label}</span>
+      <span className="w-16 shrink-0 text-muted-foreground">{label}</span>
       <span className="min-w-0 flex-1 break-words text-foreground">{children}</span>
     </div>
   );
@@ -430,10 +432,18 @@ export function NodeDetailDialog({
                   <h4 className="mb-1 font-medium text-muted-foreground text-xs">属性</h4>
                   <DetailRow label="类型">{meta.label}</DetailRow>
                   <DetailRow label="状态">
-                    {node.type === "goal" || node.type === "intent" ? (
+                    {node.type === "goal" || node.type === "intent" || node.type === "footprint" || node.type === "finding" ? (
                       <StatusBadge
-                        domain={node.type === "goal" ? "goal" : "intent"}
-                        value={node.state}
+                        domain={
+                          node.type === "goal"
+                            ? "goal"
+                            : node.type === "footprint"
+                              ? "footprint"
+                              : node.type === "finding"
+                                ? "finding"
+                                : "intent"
+                        }
+                        value={node.type === "finding" ? node.finding_status || node.state : node.state}
                         dot
                         className="px-1.5 py-0 text-[10px]"
                       />
@@ -441,6 +451,44 @@ export function NodeDetailDialog({
                       <span className="font-mono text-xs">{node.state}</span>
                     )}
                   </DetailRow>
+                  {node.delete_reason && (
+                    <DetailRow label="删除原因">
+                      <span className="text-destructive text-xs">{node.delete_reason}</span>
+                    </DetailRow>
+                  )}
+                  {node.blocked_reason && (
+                    <DetailRow label="阻塞原因">
+                      <span className="text-amber-600 text-xs dark:text-amber-400">{node.blocked_reason}</span>
+                    </DetailRow>
+                  )}
+                  {node.semantic_outcome && (
+                    <DetailRow label="语义结论">
+                      <span className="text-xs">
+                        {node.semantic_outcome}
+                        {node.semantic_note ? `（${node.semantic_note}）` : ""}
+                      </span>
+                    </DetailRow>
+                  )}
+                  {taskId && node.type === "intent" && !node.inherited && (
+                    <DetailRow label="会话追踪">
+                      <Link
+                        href={`/function/tasks/detail?id=${encodeURIComponent(taskId)}&tab=sessions&session=${encodeURIComponent(`intent:${node.id}`)}`}
+                        className="text-primary text-xs underline underline-offset-2"
+                      >
+                        打开独立会话 (#{node.id})
+                      </Link>
+                    </DetailRow>
+                  )}
+                  {node.type === "finding" && node.finding_id && (
+                    <DetailRow label="漏洞详情">
+                      <Link
+                        href={`/function/findings/detail?id=${encodeURIComponent(node.finding_id)}`}
+                        className="text-primary text-xs underline underline-offset-2"
+                      >
+                        查看漏洞 #{node.finding_id}
+                      </Link>
+                    </DetailRow>
+                  )}
                   {node.logical_session_id && (
                     <DetailRow label="会话">
                       <span className="font-mono text-xs">

@@ -128,6 +128,9 @@ func (e *Engine) finishGoalDrain(ctx context.Context, t *Task, grace time.Durati
 		// terminal cause; any late goroutine must not keep a live context.
 		e.cancelExec(t.ID, agent.AbortGoalMet)
 		e.completionWarn.Delete(t.ID)
+		e.blockedSignature.Delete(t.ID)
+		e.budgetStage.Delete(t.ID)
+		e.notifyTaskSettled(t.ID)
 		e.emitPrunedIntentsOnGoalDone(t, pruned)
 		e.promoteTaskKnowledge(t)
 		summary := "目标已达成，当前工作已完成收尾，任务结束"

@@ -539,7 +539,7 @@ function TaskDetailInner({ id }: { id: string }) {
           <SessionsTab taskId={id} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
-          <OverviewTab taskId={id} />
+          <OverviewTab taskId={id} sseConnected={taskSSE.connected} />
         </TabsContent>
         <TabsContent value="graph" className="mt-0">
           <GraphTab taskId={id} />

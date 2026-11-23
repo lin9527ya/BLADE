@@ -154,18 +154,20 @@ func taskIntentHistoryPage(store *db.ExplorationStore, before int64, limit int, 
 	}
 }
 
-// explorationGraph returns the whole exploration chain (task graph) as nodes+edges.
+// explorationGraph returns up to 2000 newest nodes (with deterministic edges +
+// real total/truncated metadata) so large graphs do not silently drop recent discoveries.
 func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
-		writeJSON(w, 200, map[string]any{"nodes": []any{}, "edges": []any{}})
+		writeJSON(w, 200, map[string]any{"nodes": []any{}, "edges": []any{}, "total": 0, "truncated": false})
 		return
 	}
-	nodes, err := t.Store.Nodes(2000)
+	nodes, total, err := t.Store.NodesNewest(2000)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	truncated := int64(len(nodes)) < total
 	if err := t.Store.PopulateEvidenceReadState(nodes); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -174,7 +176,13 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	edges, err := t.Store.Edges(5000)
+	nodeIDs := make([]int64, 0, len(nodes))
+	for _, n := range nodes {
+		if n != nil {
+			nodeIDs = append(nodeIDs, n.ID)
+		}
+	}
+	edges, err := t.Store.EdgesForNodes(nodeIDs, 5000)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -185,22 +193,32 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, source := range sources {
-		sourceNodes, nodeErr := source.Store.Nodes(2000)
+		sourceNodes, srcTotal, nodeErr := source.Store.NodesNewest(2000)
 		if nodeErr != nil {
 			writeErr(w, 500, nodeErr.Error())
 			return
 		}
-		sourceEdges, edgeErr := source.Store.Edges(5000)
+		total += srcTotal
+		if int64(len(sourceNodes)) < srcTotal {
+			truncated = true
+		}
+		srcIDs := make([]int64, 0, len(sourceNodes))
+		for _, sn := range sourceNodes {
+			if sn != nil {
+				srcIDs = append(srcIDs, sn.ID)
+			}
+		}
+		sourceEdges, edgeErr := source.Store.EdgesForNodes(srcIDs, 5000)
 		if edgeErr != nil {
 			writeErr(w, 500, edgeErr.Error())
 			return
 		}
-		if err := source.Store.PopulateEvidenceReadState(sourceNodes); err != nil {
-			writeErr(w, 500, err.Error())
+		if pErr := source.Store.PopulateEvidenceReadState(sourceNodes); pErr != nil {
+			writeErr(w, 500, pErr.Error())
 			return
 		}
-		if err := source.Store.PopulateFindingStatuses(sourceNodes); err != nil {
-			writeErr(w, 500, err.Error())
+		if pErr := source.Store.PopulateFindingStatuses(sourceNodes); pErr != nil {
+			writeErr(w, 500, pErr.Error())
 			return
 		}
 		sourceNodes, sourceEdges = inheritedGraphSnapshot(sourceNodes, sourceEdges, source.Task.TaskID)
@@ -209,7 +227,12 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	// 这里保留完整图：探索链路的显示过滤在 GraphTab 做（只画 confirmed 漏洞），
 	// 而时间线还要用这个接口按 id 打开候选/已排除节点，不能在 API 层删掉它们。
-	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes, s.credentialPlaintextEnabled()), "edges": edgeDTOs(edges)})
+	writeJSON(w, 200, map[string]any{
+		"nodes":     taskNodeDTOs(nodes, s.credentialPlaintextEnabled()),
+		"edges":     edgeDTOs(edges),
+		"total":     total,
+		"truncated": truncated,
+	})
 }
 
 // explorationNodes serves the 播报板: this task's own exploration nodes as a
@@ -269,6 +292,22 @@ func (s *Server) explorationNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	neighbours, err := t.Store.NodesByIDs(neighbourIDs)
 	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := t.Store.PopulateEvidenceReadState(nodes); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := t.Store.PopulateFindingStatuses(nodes); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := t.Store.PopulateEvidenceReadState(neighbours); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := t.Store.PopulateFindingStatuses(neighbours); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -335,4 +374,38 @@ func csvValues(s string) []string {
 		}
 	}
 	return out
+}
+
+// explorationNodeDetail returns a single exploration node (including inherited read-only sources)
+// with its evidence_state and finding_status/finding_id populated for on-demand detail dialogs.
+func (s *Server) explorationNodeDetail(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	if t == nil {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	nid := int64(atoiDefault(r.PathValue("nid"), 0))
+	if nid <= 0 {
+		writeErr(w, 400, "bad node id")
+		return
+	}
+	n, err := t.Store.GetNodeWithSources(nid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if n == nil {
+		writeErr(w, 404, "node not found")
+		return
+	}
+	if n.Inherited && n.SourceTaskID > 0 {
+		if src := s.m.ResolveTask(i64s(n.SourceTaskID)); src != nil {
+			_ = src.Store.PopulateEvidenceReadState([]*db.Node{n})
+			_ = src.Store.PopulateFindingStatuses([]*db.Node{n})
+		}
+	} else {
+		_ = t.Store.PopulateEvidenceReadState([]*db.Node{n})
+		_ = t.Store.PopulateFindingStatuses([]*db.Node{n})
+	}
+	writeJSON(w, 200, taskNodeDTO(n, s.credentialPlaintextEnabled()))
 }

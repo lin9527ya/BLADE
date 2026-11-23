@@ -109,7 +109,10 @@ const (
 	execWatchMax  = 24 * time.Hour
 )
 
-var errWorkControlConflict = errors.New("work control conflict")
+var (
+	errWorkControlConflict = errors.New("work control conflict")
+	errTaskControlConflict = errors.New("task control conflict")
+)
 
 // retryableWorkerModelError excludes errors already handled by the task router.
 // In particular, a quota error after partial streaming advances the task cursor
@@ -132,7 +135,8 @@ type Engine struct {
 
 	// onStop 是 StopTask 在拆掉任务运行时之后调用的钩子（Server 用它等任务名下的
 	// 后台压缩收尾）。Engine 本身看不到 Planner，钩子把依赖方向留在 Server 侧。
-	onStop func(taskID string)
+	onStop        func(taskID string)
+	onTaskSettled func(taskID string)
 
 	// baseMu 保护 baseCtx：任务没有运行时条目时的兜底 ctx（见 runtimeCtx）。
 	baseMu  sync.RWMutex
@@ -183,9 +187,11 @@ type Engine struct {
 	// Per-work control lets the planner kill a worker and lets the UI pause/cancel
 	// one intent without pausing the whole task. The done channel closes only after
 	// runWorkerStep has stopped writing and committed its final state.
-	sessionLocks sync.Map // logical session -> cancellable semaphore
-	workMu       sync.Mutex
-	work         map[int64]*workExecution
+	sessionLocks   sync.Map // logical session -> cancellable semaphore
+	taskSessionsMu sync.Mutex
+	taskSessions   map[string]map[string]struct{}
+	workMu         sync.Mutex
+	work           map[int64]*workExecution
 
 	// steerBox queues mid-run instructions for a running work (keyed by intent id) —
 	// planner's steer_work and the operator's message from the sessions page.
@@ -374,7 +380,7 @@ func (e *Engine) taskConcurrencyLimit(t *Task) int {
 func (e *Engine) tryBeginWorkerRoutine(t *Task) (*taskRuntime, bool) {
 	e.deleteMu.RLock()
 	defer e.deleteMu.RUnlock()
-	if e.IsDeleting(t.ID) || !e.beginTaskOperation(t.ID) {
+	if !e.beginTaskOperationLocked(t.ID) {
 		return nil, false
 	}
 	e.runtimeMu.Lock()
@@ -488,7 +494,12 @@ func (e *Engine) StopTask(taskID string) {
 	e.paused.Delete(taskID)
 	e.dropCnt.Delete(taskID)
 	e.budgetAck.Delete(taskID)
+	e.budgetStage.Delete(taskID)
 	e.endgameNotified.Delete(taskID)
+	e.completionWarn.Delete(taskID)
+	e.egressWarn.Delete(taskID)
+	e.egressRecovery.Delete(taskID)
+	e.blockedSignature.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.decomposing.Delete(taskID)
 	e.settling.Delete(taskID)
@@ -497,9 +508,68 @@ func (e *Engine) StopTask(taskID string) {
 	e.stamped.Delete(taskID)
 	e.inflight.Delete(taskID)
 	e.coordStarted.Delete(taskID)
+	e.clearTaskSessions(taskID)
+	if e.m != nil {
+		if task := e.m.TaskByID(taskID); task != nil {
+			task.StopTimers()
+		}
+	}
 	e.deleteMu.Lock()
 	e.deleting.Delete(taskID)
 	e.deleteMu.Unlock()
+}
+
+func (e *Engine) trackTaskSession(taskID, sessionID string) {
+	if e == nil || taskID == "" || sessionID == "" {
+		return
+	}
+	e.taskSessionsMu.Lock()
+	if e.taskSessions == nil {
+		e.taskSessions = make(map[string]map[string]struct{})
+	}
+	set := e.taskSessions[taskID]
+	if set == nil {
+		set = make(map[string]struct{})
+		e.taskSessions[taskID] = set
+	}
+	set[sessionID] = struct{}{}
+	e.taskSessionsMu.Unlock()
+}
+
+func (e *Engine) clearTaskSessions(taskID string) {
+	if e == nil || taskID == "" {
+		return
+	}
+	e.taskSessionsMu.Lock()
+	set := e.taskSessions[taskID]
+	delete(e.taskSessions, taskID)
+	e.taskSessionsMu.Unlock()
+	for sid := range set {
+		e.sessionLocks.Delete(sid)
+	}
+}
+
+func (e *Engine) notifyTaskSettled(taskID string) {
+	if e == nil || e.onTaskSettled == nil || taskID == "" {
+		return
+	}
+	e.onTaskSettled(taskID)
+}
+
+func (e *Engine) cancelWatchersForTask(taskID string) {
+	if e == nil || taskID == "" {
+		return
+	}
+	var toCancel []*execWatchHandle
+	e.execWatch.Range(func(_, v any) bool {
+		if h, ok := v.(*execWatchHandle); ok && h != nil && h.taskID == taskID {
+			toCancel = append(toCancel, h)
+		}
+		return true
+	})
+	for _, h := range toCancel {
+		h.cancel()
+	}
 }
 
 // cancelExec cancels a task's current per-task exec context (any in-flight
@@ -511,6 +581,9 @@ func (e *Engine) cancelExec(taskID string, cause error) {
 		cancel(cause)
 	}
 	e.execMu.Unlock()
+	if !taskExecutionPaused(cause) {
+		e.cancelWatchersForTask(taskID)
+	}
 }
 
 // Resume un-pauses a task and nudges a fresh planning round. The next exec under
@@ -822,14 +895,15 @@ func (e *Engine) steer(intentID int64, msg steerMsg) error {
 		return fmt.Errorf("提示消息不能为空")
 	}
 	e.workMu.Lock()
-	running := e.work[intentID] != nil
-	e.workMu.Unlock()
-	if !running {
+	run := e.work[intentID]
+	if run == nil || run.action != "" {
+		e.workMu.Unlock()
 		return fmt.Errorf("意图 %d 当前没有运行中的 work（可能已结束或未被领取）", intentID)
 	}
 	e.steerMu.Lock()
 	e.steerBox[intentID] = append(e.steerBox[intentID], msg)
 	e.steerMu.Unlock()
+	e.workMu.Unlock()
 	return nil
 }
 
@@ -1235,7 +1309,8 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		// goalless（人工直投）分支：任务已无 open 目标时 planner 不跑——跑了会重判
 		// met→cancelExec 杀掉用户经主 agent 直投的意图。是否结束改由 frontier 决定：
-		// 还有 open/running 意图 → 保持 running、静默等待；意图已全部跑干 → 落 done。
+		// 还有 open/running/paused 意图 → 保持 running、静默等待；意图已全部跑干 → 落 done。
+		// 对从未写入目标且也未产生任何意图的空白任务，保持等待而不是误关。
 		// 整段纯 Go、不触发任何 LLM 调用，也不打规划轮 marker。
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
 			if e.IsDecomposing(t.ID) {
@@ -1253,23 +1328,36 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 					snap = db.IntentDispatch{Open: 1}
 				}
 			}
-			if snap.Open == 0 && snap.Running == 0 {
-				// frontier 抽干且无在跑意图 → 收尾。用 Guarded 版做 CAS，避免踩到并发的
-				// pause/delete/超时收尾的状态转换。
-				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
+			if snap.Open == 0 && snap.Running == 0 && snap.Paused == 0 {
+				goals, gerr := t.Store.ListByKind(db.KindGoal, 10000)
+				if gerr != nil {
+					return
+				}
+				if len(goals) == 0 {
+					intents, ierr := t.Store.ListByKind(db.KindIntent, 1)
+					if ierr != nil || len(intents) == 0 {
+						// 创建时允许无目标且尚未投放任何意图，不误判完成。
+						return
+					}
+				}
+				// frontier 抽干且无在跑/已暂停意图 → 用目标+意图互斥守卫原子落 done。
+				if won, err := e.m.SetGoallessDoneGuarded(t.ID); err != nil {
 					log.Printf("[goalless] task %s 收尾落 done 失败: %v", t.ID, err)
 				} else if won {
+					e.cancelExec(t.ID, agent.AbortGoalMet)
+					e.completionWarn.Delete(t.ID)
+					e.blockedSignature.Delete(t.ID)
+					e.budgetStage.Delete(t.ID)
+					e.notifyTaskSettled(t.ID)
 					e.promoteTaskKnowledge(t)
 					// 文案区分「全部达成」与「了结（含放弃）」：放弃不是达成，报告与时间线不能混为一谈。
 					met, abandoned := 0, 0
-					if goals, gerr := t.Store.ListByKind(db.KindGoal, 10000); gerr == nil {
-						for _, g := range goals {
-							switch g.State {
-							case "met":
-								met++
-							case "abandoned":
-								abandoned++
-							}
+					for _, g := range goals {
+						switch g.State {
+						case "met":
+							met++
+						case "abandoned":
+							abandoned++
 						}
 					}
 					summary := "目标已全部达成，直投意图已执行完毕，任务结束"
@@ -1404,13 +1492,15 @@ func (e *Engine) workerDispatcher(ctx context.Context, t *Task) {
 			if intent == nil {
 				return
 			}
+			workerName := fmt.Sprintf("worker#%d", intent.ID)
 			rt, ok := e.tryBeginWorkerRoutine(t)
 			if !ok {
-				_ = transitionIntentState(t.Store, intent.ID, "running", "open")
+				if reverted, rerr := t.Store.RevertUnstartedClaim(intent.ID, workerName, intent.ExecutionGeneration); rerr != nil || !reverted {
+					_ = transitionIntentState(t.Store, intent.ID, "running", "open")
+				}
 				return
 			}
 			active.Add(1)
-			workerName := fmt.Sprintf("worker#%d", intent.ID)
 			log.Printf("[worker %s] task %s 领取意图 #%d", workerName, t.ID, intent.ID)
 			runTaskRoutine(rt, func(loopCtx context.Context) {
 				defer func() {
@@ -1456,6 +1546,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	authority := intent.WriteAuthority(tidOfTask(t), t.ExpID)
 	store := t.Store.WithAuthority(authority)
 	if intent.LogicalSessionID != "" {
+		e.trackTaskSession(t.ID, intent.LogicalSessionID)
 		value, _ := e.sessionLocks.LoadOrStore(intent.LogicalSessionID, make(chan struct{}, 1))
 		gate := value.(chan struct{})
 		select {
@@ -1493,8 +1584,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			} else if changed {
 				log.Printf("[worker %s] task %s 意图 #%d 因进程关停结束，已标记重启续跑（槽位 %d）", name, t.ID, intent.ID, slotNo)
 			}
-		} else if err := transitionIntentState(store, intent.ID, "running", "open"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 领取后回退失败: %v", name, t.ID, intent.ID, err)
+		} else if reverted, rerr := store.RevertUnstartedClaim(intent.ID, name, intent.ExecutionGeneration); rerr != nil {
+			log.Printf("[worker %s] task %s 意图 #%d 领取后回退失败: %v", name, t.ID, intent.ID, rerr)
+		} else if !reverted {
+			if err := transitionIntentState(store, intent.ID, "running", "open"); err != nil {
+				log.Printf("[worker %s] task %s 意图 #%d 领取后回退失败: %v", name, t.ID, intent.ID, err)
+			}
 		}
 		return true
 	}
@@ -2007,6 +2102,9 @@ func (e *Engine) watchExecutions(t *Task, intentID int64, authorities ...db.Writ
 		queryFailed := false
 	watchLoop:
 		for {
+			if isTerminalStatus(e.m.TaskStatus(t.ID)) || (e.isSettling(t.ID) && !e.isGoalDraining(t.ID)) {
+				return
+			}
 			active, err := execs.ActiveForIntent(intentID)
 			if err == nil && len(active) == 0 {
 				break
@@ -2031,6 +2129,9 @@ func (e *Engine) watchExecutions(t *Task, intentID int64, authorities ...db.Writ
 		}
 		if action := handle.getAction(); action != "" {
 			e.settleControlledExecutionWatch(t, store, intentID, handle)
+			return
+		}
+		if isTerminalStatus(e.m.TaskStatus(t.ID)) || (e.isSettling(t.ID) && !e.isGoalDraining(t.ID)) {
 			return
 		}
 		if timedOut {
@@ -2139,27 +2240,51 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	if node == nil || node.Kind != db.KindIntent {
 		return fmt.Errorf("intent not found")
 	}
-	if !e.beginTaskOperation(t.ID) {
-		return fmt.Errorf("task is being deleted")
-	}
-	releaseAdmission := true
-	defer func() {
-		if releaseAdmission {
-			e.decInflight(t.ID)
-		}
-	}()
 	_, worker := e.snapshotFor(t)
 	if worker == nil {
 		return fmt.Errorf("worker 尚未就绪")
 	}
+
 	workerName := fmt.Sprintf("worker#%d", intentID)
-	claimed, err := t.Store.ClaimNode(ctx, intentID, workerName, fromState, db.IntentLeaseTTL, nil, false)
-	if err != nil {
-		return err
+	e.deleteMu.RLock()
+	e.dispatchMu.RLock()
+	if e.IsDeleting(t.ID) {
+		e.dispatchMu.RUnlock()
+		e.deleteMu.RUnlock()
+		return fmt.Errorf("%w: task is being deleted", errTaskControlConflict)
 	}
-	if claimed == nil {
+	if e.IsPaused(t.ID) {
+		e.dispatchMu.RUnlock()
+		e.deleteMu.RUnlock()
+		return fmt.Errorf("%w: 任务已暂停，无法向 Worker 发送消息", errTaskControlConflict)
+	}
+	if e.isSettling(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		e.dispatchMu.RUnlock()
+		e.deleteMu.RUnlock()
+		return fmt.Errorf("%w: 任务已进入收尾或终态，无法向 Worker 发送消息", errTaskControlConflict)
+	}
+	if !e.beginTaskOperationLocked(t.ID) {
+		e.dispatchMu.RUnlock()
+		e.deleteMu.RUnlock()
+		return fmt.Errorf("%w: task is being deleted", errTaskControlConflict)
+	}
+	releaseAdmission := true
+	claimed, err := t.Store.ClaimNode(ctx, intentID, workerName, fromState, db.IntentLeaseTTL, nil, false)
+	if err != nil || claimed == nil {
+		e.dispatchMu.RUnlock()
+		e.deleteMu.RUnlock()
+		if releaseAdmission {
+			e.decInflight(t.ID)
+		}
+		if err != nil {
+			return err
+		}
 		return fmt.Errorf("%w: 意图不再是 %s 状态", db.ErrIntentStateConflict, fromState)
 	}
+	rt := e.registerTaskRoutines(ctx, t.ID, 1)
+	e.dispatchMu.RUnlock()
+	e.deleteMu.RUnlock()
+
 	node = claimed
 	// Record the human turn as a visible activity BEFORE the run starts, so it is
 	// ordered ahead of any worker step and never appears without the run happening.
@@ -2168,9 +2293,9 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	uid := intentID
 	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message})
 	releaseAdmission = false // ownership of the admission passes to the goroutine
-	goSafe("engine/intent-worker-detached", nil, func() {
+	runTaskRoutine(rt, func(loopCtx context.Context) {
 		defer e.decInflight(t.ID)
-		e.runIntent(ctx, t, workerName, worker, node, requestID, agentMessage)
+		e.runIntent(loopCtx, t, workerName, worker, node, requestID, agentMessage)
 	})
 	return nil
 }

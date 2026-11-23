@@ -160,6 +160,7 @@ import type {
   TaskHint,
   TaskLLMResolutions,
   TaskNode,
+  TaskPlannerState,
   TaskRelationRef,
   TaskSchedule,
   TaskScopeRow,
@@ -642,6 +643,7 @@ export const api = {
   stats: (task?: string, signal?: AbortSignal) => get<Stats>(`/stats${tq(task)}`, { signal }),
   taskScheduling: (id: string, intentId?: string) =>
     get<SchedulingReport>(`/tasks/${id}/scheduling${intentId ? `?intent_id=${encodeURIComponent(intentId)}` : ""}`),
+  taskPlannerState: (id: string) => get<TaskPlannerState>(`/tasks/${encodeURIComponent(id)}/planner-state`),
   taskLeadTraces: (id: string, state = "", offset = 0) => {
     const query = new URLSearchParams({ limit: String(LEAD_TRACE_PAGE_SIZE), offset: String(offset) });
     if (state) query.set("state", state);
@@ -1782,7 +1784,10 @@ export const api = {
     get<ConvTokenSummary[]>("/tokens/conversations")
       .then(arr)
       .catch(() => [] as ConvTokenSummary[]),
-  explorationGraph: (task?: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/graph${tq(task)}`),
+  explorationGraph: (task?: string) =>
+    get<{ nodes: TaskNode[]; edges: Edge[]; total?: number; truncated?: boolean }>(`/exploration/graph${tq(task)}`),
+  explorationNode: (id: string, task?: string) =>
+    get<TaskNode>(`/exploration/nodes/${encodeURIComponent(id)}${tq(task)}`),
   explorationLedger: (task: string) =>
     get<ExplorationLedgerResponse>(`/exploration/ledger?task=${encodeURIComponent(task)}`),
   // 播报板:服务端按创建顺序分页的探索节点(默认最新在前)。

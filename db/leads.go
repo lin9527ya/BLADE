@@ -665,7 +665,7 @@ func (d *DB) BackfillProposalEntries() error {
 			return err
 		}
 		if task > 0 {
-			if err := LockTaskEvidenceTx(tx, task); err != nil {
+			if err := LockTaskEvidenceSharedTx(tx, task); err != nil {
 				tx.Rollback()
 				if errors.Is(err, ErrTaskArchiveState) {
 					continue

@@ -302,7 +302,7 @@ func (s *ExplorationStore) auditDependencyCycles(add func(GraphIssue)) error {
 // 仍没被领取。注意：可领谓词只把 open/running/paused 的前置视为活跃；死前置已 fail-open。
 func (s *ExplorationStore) auditStarvedIntents(add func(GraphIssue)) error {
 	const q = `SELECT n.id FROM exploration_nodes n
-WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND blackboard_intent_ready(n.payload,n.exploration_id) AND coalesce(n.owner,'')=''
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state='open' AND coalesce(n.owner,'')=''
   AND n.created_at < now() - make_interval(secs => $2)
   AND EXISTS (SELECT 1 FROM exploration_edges e WHERE e.exploration_id=n.exploration_id AND e.src_id=n.id AND e.rel='depends_on')
   AND NOT EXISTS (
