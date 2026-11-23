@@ -475,6 +475,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedDefaultInterceptRulesV7(); err != nil {
 		return fmt.Errorf("seed intercept rules v7: %w", err)
 	}
+	if err := d.seedDefaultInterceptRulesV8(); err != nil {
+		return fmt.Errorf("seed intercept rules v8: %w", err)
+	}
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
@@ -533,7 +536,14 @@ WHERE name=$1 AND task_id='' AND action='deny' AND enabled=true`, name); err != 
 // 逐条选择、审批后做定点清理，因此这里是 ask 而不是 deny：每次执行都要人确认，
 // 但不会把“按选择清理单条记录”本身判成违规。批量清空整份日志仍会被更严格的
 // 破坏性规则或人工审批拦住。
-const logTamperPattern = `(?i)(?:\bwevtutil\s+(?:cl|clear-log)\b|\bClear-EventLog\b|\bRemove-EventLog\b|\bauditpol\s+/clear\b|\bauditctl\s+(?:-D\b|-e\s*0\b)|\b(?:systemctl|service)\s+(?:stop|disable|mask)\s+(?:auditd|rsyslog|syslog-ng|systemd-journald)\b|\bjournalctl\s+--vacuum\w*|\btruncate\b[^\n;&|]{0,160}(?:/var/log|[^\s;&|"'<>]*\.log\b|[^\s;&|"'<>]*\.evtx\b|[^\s;&|"'<>]*_history\b)|\b(?:rm|del|Remove-Item)\b[^\n;&|]{0,160}(?:/var/log|winevt|[^\s;&|"'<>]*\.evtx\b|[^\s;&|"'<>]*_(?:bash|zsh)_history\b)|(?:>>?|:>)\s*(?:"[^"\n]*(?:/var/log|winevt|\.log\b|\.evtx\b|_history\b)[^"\n]*"|'[^'\n]*(?:/var/log|winevt|\.log\b|\.evtx\b|_history\b)[^'\n]*'|[^\s;&|<>]*(?:/var/log|winevt)[^\s;&|<>]*|[^\s;&|<>]*(?:\.log\b|\.evtx\b|_history\b))|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bHISTFILE\s*=\s*/dev/null\b|\bHISTFILESIZE\s*=\s*0\b|\blogrotate\s+-f\b|\b(?:touch|Set-ItemProperty)\b[^\n;&|]{0,160}(?:/var/log|[^\s;&|"'<>]*\.log\b|[^\s;&|"'<>]*\.evtx\b|LastWriteTime|CreationTime)|\btimestomp\b|\b(?:shred|wipe)\b[^\n;&|]{0,160}(?:/var/log|[^\s;&|"'<>]*\.log\b|[^\s;&|"'<>]*_history\b))`
+//
+// v8 收紧：只匹配系统日志目录 / Windows 事件日志 / 命令历史，不再把“任意 .log”
+// 当成目标日志。写自己的 build.log、nohup > scan.log、删 /tmp/out.log 都不再触发。
+const logTamperPattern = `(?i)(?:\bwevtutil\s+(?:cl|clear-log)\b|\bClear-EventLog\b|\bRemove-EventLog\b|\bauditpol\s+/clear\b|\bauditctl\s+(?:-D\b|-e\s*0\b)|\b(?:systemctl|service)\s+(?:stop|disable|mask)\s+(?:auditd|rsyslog|syslog-ng|systemd-journald)\b|\bjournalctl\s+--vacuum\w*|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bHISTFILE\s*=\s*/dev/null\b|\bHISTFILESIZE\s*=\s*0\b|\blogrotate\s+-f\b|\btimestomp\b|\bfind\b[^\n;&|]{0,160}(?:/var/log(?:/|\b)|/var/adm(?:/|\b))[^\n;&|]{0,160}\s-delete\b|\bdd\b[^\n;&|]{0,160}\bof=\s*(?:"[^"\n]*(?:/var/log|/var/adm|winevt)[^"\n]*"|'[^'\n]*(?:/var/log|/var/adm|winevt)[^'\n]*'|[^\s;&|<>]*(?:/var/log|/var/adm|winevt)[^\s;&|<>]*)|(?:>>?|:>)\s*(?:"[^"\n]*(?:/var/log|/var/adm|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b)[^"\n]*"|'[^'\n]*(?:/var/log|/var/adm|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b)[^'\n]*'|[^\s;&|<>]*(?:/var/log|/var/adm|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b)[^\s;&|<>]*)|\b(?:rm|del|Remove-Item)\b[^\n;&|]{0,160}(?:/var/log(?:/|\b)|/var/adm(?:/|\b)|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b)|\btruncate\b[^\n;&|]{0,160}(?:/var/log(?:/|\b)|/var/adm(?:/|\b)|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b)|\b(?:touch|Set-ItemProperty)\b[^\n;&|]{0,160}(?:/var/log(?:/|\b)|/var/adm(?:/|\b)|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b|LastWriteTime|CreationTime)|\b(?:shred|wipe)\b[^\n;&|]{0,160}(?:/var/log(?:/|\b)|/var/adm(?:/|\b)|/var/spool/syslog|/var/run/syslog|/run/log|winevt|[A-Za-z]:\\Windows\\Logs|\.(?:bash|zsh)_history\b|(?:^|[/\\\s])\.history\b|[/\\]fish_history\b))`
+
+// logTamperPatternV6 是 v6 种子写入、v8 之前的旧正则。仅用于 v8 迁移识别
+// “仍是出厂默认”的规则。
+const logTamperPatternV6 = `(?i)(?:\bwevtutil\s+(?:cl|clear-log)\b|\bClear-EventLog\b|\bRemove-EventLog\b|\bauditpol\s+/clear\b|\bauditctl\s+(?:-D\b|-e\s*0\b)|\b(?:systemctl|service)\s+(?:stop|disable|mask)\s+(?:auditd|rsyslog|syslog-ng|systemd-journald)\b|\bjournalctl\s+--vacuum\w*|\btruncate\b[^\n;&|]{0,160}(?:/var/log|[^\s;&|"'<>]*\.log\b|[^\s;&|"'<>]*\.evtx\b|[^\s;&|"'<>]*_history\b)|\b(?:rm|del|Remove-Item)\b[^\n;&|]{0,160}(?:/var/log|winevt|[^\s;&|"'<>]*\.evtx\b|[^\s;&|"'<>]*_(?:bash|zsh)_history\b)|(?:>>?|:>)\s*(?:"[^"\n]*(?:/var/log|winevt|\.log\b|\.evtx\b|_history\b)[^"\n]*"|'[^'\n]*(?:/var/log|winevt|\.log\b|\.evtx\b|_history\b)[^'\n]*'|[^\s;&|<>]*(?:/var/log|winevt)[^\s;&|<>]*|[^\s;&|<>]*(?:\.log\b|\.evtx\b|_history\b))|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bHISTFILE\s*=\s*/dev/null\b|\bHISTFILESIZE\s*=\s*0\b|\blogrotate\s+-f\b|\b(?:touch|Set-ItemProperty)\b[^\n;&|]{0,160}(?:/var/log|[^\s;&|"'<>]*\.log\b|[^\s;&|"'<>]*\.evtx\b|LastWriteTime|CreationTime)|\btimestomp\b|\b(?:shred|wipe)\b[^\n;&|]{0,160}(?:/var/log|[^\s;&|"'<>]*\.log\b|[^\s;&|"'<>]*_history\b))`
 
 // logTamperPatternV5 是 v5 种子写入的旧正则，仅用于 v6 迁移识别「仍是出厂默认」
 // 的规则；用户改过的规则不动。
@@ -602,6 +612,32 @@ WHERE name=$1 AND action='deny'`, name); err != nil {
 	return d.SetSetting("intercept_default_rules_v7", "done")
 }
 
+// seedDefaultInterceptRulesV8 收紧 4 条出厂规则：日志改动只认系统日志/事件日志/
+// 命令历史，不再把任意 .log 当目标；rm 系统目录不再误伤 /tmp；dd 只拦真实块设备；
+// 破坏性系统命令不再把普通 dd 读也判成破坏。只迁移仍与出厂旧正则逐字相同的行：
+// 用户编辑过的规则保持原样。
+func (d *DB) seedDefaultInterceptRulesV8() error {
+	if v, _, _ := d.GetSetting("intercept_default_rules_v8"); v == "done" {
+		return nil
+	}
+	updates := []struct {
+		name     string
+		old, new string
+	}{
+		{"[内置] 日志/审计记录修改（痕迹清理）", logTamperPatternV6, logTamperPattern},
+		{"[内置] 删除系统关键目录", deleteSystemPathPatternV1, deleteSystemPathPattern},
+		{"[内置] 覆写磁盘设备 dd", ddDevicePatternV1, ddDevicePattern},
+		{"[内置] 破坏性系统命令", destructiveSystemPatternV1, destructiveSystemPattern},
+	}
+	for _, u := range updates {
+		if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$3, updated_at=NOW()
+WHERE name=$1 AND pattern=$2`, u.name, u.old, u.new); err != nil {
+			return fmt.Errorf("rule %q v8 migrate: %w", u.name, err)
+		}
+	}
+	return d.SetSetting("intercept_default_rules_v8", "done")
+}
+
 // seedDefaultAssetInterceptRules inserts the built-in asset blocklist (fuzzy
 // domain matches for government / education sites) once on first startup. Gated
 // by a settings flag so a user's later disable/delete is never resurrected on
@@ -664,6 +700,22 @@ ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
 	return nil
 }
 
+// 以下 4 条正则在 v8 收紧过：早期版本用“任意 .log / 任意绝对路径 / 任意 dd if=”
+// 做粗匹配，会把写自己的 build.log、删 /tmp 产物、dd 到 /dev/null 也拖进审批/硬拒。
+// V1 常量仅用于识别“仍是出厂默认”的旧规则，用户改过的规则不迁移。
+
+const deleteSystemPathPatternV1 = `\brm\b[^"'\n]{0,60}["'\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)`
+
+const deleteSystemPathPattern = `\brm\b[^"'\n]{0,60}["'\s](?:/(?:etc|bin|sbin|usr|boot|var|lib(?:32|64)?|sys|proc|dev|root)(?:/|\s|$)|/(?:\s|$))`
+
+const ddDevicePatternV1 = `\bdd\b[^|\n]{0,100}\bof=\s*/dev/[a-zA-Z]`
+
+const ddDevicePattern = `\bdd\b[^|\n]{0,100}\bof=\s*/dev/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|disk/|mapper/|loop\d|md\d)`
+
+const destructiveSystemPatternV1 = `(?i)\b(rm\s+-rf\s+/|mkfs|dd\s+if=|:\(\)\s*\{|shutdown|reboot|>\s*/dev/sd)`
+
+const destructiveSystemPattern = `(?i)(?:\brm\s+-rf\s+/(?:\s|$)|\bmkfs\b|(?:^|[;&|]\s*):\(\)\s*\{|\bshutdown\b|\breboot\b|>\s*/dev/(?:sd|hd|vd|xvd|nvme|mmcblk))`
+
 // seedDefaultInterceptRules inserts built-in safety intercept rules once on
 // first startup. The seed is gated by a settings flag so user edits (disable,
 // delete, re-order) are never overwritten on subsequent restarts.
@@ -699,7 +751,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 			name:     "[内置] 删除系统关键目录",
 			target:   "tool_input",
 			typ:      "regex",
-			pattern:  `\brm\b[^"'\n]{0,60}["'\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)`,
+			pattern:  deleteSystemPathPattern,
 			action:   "deny",
 			message:  "禁止删除系统关键路径",
 			priority: 100,
@@ -717,7 +769,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 			name:     "[内置] 覆写磁盘设备 dd",
 			target:   "tool_input",
 			typ:      "regex",
-			pattern:  `\bdd\b[^|\n]{0,100}\bof=\s*/dev/[a-zA-Z]`,
+			pattern:  ddDevicePattern,
 			action:   "deny",
 			message:  "禁止使用 dd 覆写磁盘设备",
 			priority: 100,
@@ -884,7 +936,7 @@ func (d *DB) seedDefaultInterceptRulesV2() error {
 	}{
 		{
 			name:     "[内置] 破坏性系统命令",
-			pattern:  `(?i)\b(rm\s+-rf\s+/|mkfs|dd\s+if=|:\(\)\s*\{|shutdown|reboot|>\s*/dev/sd)`,
+			pattern:  destructiveSystemPattern,
 			action:   "deny",
 			message:  "破坏性命令被拒绝（rm -rf / / mkfs / dd / fork bomb / 关机重启 / 覆写磁盘设备）",
 			enabled:  true,
