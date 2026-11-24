@@ -31,6 +31,7 @@ type Server struct {
 	engine   *Engine
 	ctx      context.Context
 	sched    *Scheduler
+	imSvc    *imService
 	skillDir string // root directory for skill subdirectories
 	// sysMetrics 保存上一次 CPU 采样（/api/metrics 的 system 段用它算占用率）。
 	sysMetrics systemSamplerState
@@ -260,6 +261,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		taskLive:     newLiveHub[TaskLiveEvent](),
 		approvalLive: newLiveHub[ApprovalLiveEvent](),
 	}
+	s.imSvc = newIMService(s)
 	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。
 	// 用户继续后同一档预算不再打断；具体见 server/budget.go 的 pauseForBudget。
 	// 引擎级兜底 ctx：任务没有运行时条目时（还没启动/已拆掉），长生命周期助手
@@ -453,6 +455,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 			// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
 			s.loops.start(func() { newNotifier(s).Run(svcCtx) })
+			// IM 双向控制：钉钉 Stream / 飞书长连接。未配置连接时只是空转的 30s 配置轮询。
+			s.loops.start(func() { s.imSvc.Run(svcCtx) })
 			// Fill the tool cache for any enabled MCP that has none yet (notably the
 			// seeded browser MCP on first run). Async so it never blocks startup.
 			goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup(svcCtx) })
@@ -652,6 +656,7 @@ func (s *Server) registerRoutes(mux routeRegistrar) {
 	s.registerAgentRoutes(mux)
 	s.registerPlaybookRoutes(mux)
 	s.registerCVERoutes(mux)
+	s.registerIMRoutes(mux)
 }
 
 // --- handlers ---

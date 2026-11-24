@@ -563,7 +563,7 @@ func operatorWriteAllowed(path string) bool {
 		"/api/settings", "/api/api-tokens", "/api/audit", "/api/llm", "/api/agents",
 		"/api/mcp", "/api/skills", "/api/tools", "/api/custom-tools", "/api/cves", "/api/storage",
 		"/api/credentials",
-		"/api/visibility", "/api/triggers", "/api/diagnostics", "/api/update", "/api/notify", "/api/system", "/api/sync",
+		"/api/visibility", "/api/triggers", "/api/diagnostics", "/api/update", "/api/notify", "/api/system", "/api/sync", "/api/im",
 		"/api/intercept/rules", "/api/asset-intercept", "/api/intercept/tool-config",
 		"/api/intercept/judge",
 	}

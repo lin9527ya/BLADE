@@ -374,7 +374,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		rows, err := pg.ListTools()
 		if err != nil {
 			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
-			return restrictManagementTools(ctx, tools)
+			return restrictIMSurfaceTools(ctx, restrictManagementTools(ctx, tools))
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {
@@ -389,13 +389,18 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			return meterTool(agent.DecorateStoredTool(t, row.Description, schema), pg, row.Key, agentKey, runInfo)
 		}
 		out := tools[:0:0]
+		imPrincipal := principalFrom(ctx)
 		for _, t := range tools {
 			row, known := byKey[t.Name()]
 			if !known { // MCP/skill/host tool: no row → untouched
 				out = append(out, t)
 				continue
 			}
-			if !row.Enabled || !contains(row.Agents, agentKey) {
+			bound := contains(row.Agents, agentKey)
+			if !bound && row.Enabled && imPrincipal.Surface == "im" && imPrincipal.Role == "operator" && imSurfaceUnboundTools[t.Name()] {
+				bound = true // IM-only task-op tools; do not expand the Web Auto toolset
+			}
+			if !row.Enabled || !bound {
 				continue // disabled globally or not bound to this agent → drop
 			}
 			out = append(out, resolve(t, row))
@@ -484,7 +489,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				break
 			}
 		}
-		return restrictManagementTools(ctx, out)
+		return restrictIMSurfaceTools(ctx, restrictManagementTools(ctx, out))
 	}
 	o := agent.CurrentOverrides()
 	o.FindingTrafficBindingEnabled = bindingEnabled

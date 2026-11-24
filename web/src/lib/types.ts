@@ -3627,3 +3627,58 @@ export interface HostToolStatus {
   purpose: string;
   error?: string;
 }
+
+// ---- IM 双向控制 ----
+export type IMPlatform = "dingtalk" | "feishu";
+
+export interface IMConnection {
+  id: number;
+  name: string;
+  platform: IMPlatform;
+  enabled: boolean;
+  app_id: string;
+  app_secret: string; // 掩码值；回传掩码表示不修改
+  extra: { allow_group?: boolean; verification_token?: string; encrypt_key?: string };
+  status: "disabled" | "connecting" | "connected" | "error" | string;
+  last_error: string;
+  last_connected_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IMAllowedUser {
+  id: number;
+  platform: IMPlatform;
+  user_id: string;
+  display_name: string;
+  role: "viewer" | "operator";
+  enabled: boolean;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IMMessage {
+  id: number;
+  connection_id: number;
+  connection_name?: string;
+  platform_msg_id: string;
+  chat_id: string;
+  chat_type: string;
+  sender_id: string;
+  sender_name: string;
+  text: string;
+  state: string;
+  task_id?: number;
+  conversation_id?: number;
+  reply: string;
+  error: string;
+  created_at: string;
+  processed_at?: string;
+}
+
+export interface IMMeta {
+  platforms: { key: IMPlatform; label: string; fields: string[]; hint: string }[];
+  roles: string[];
+  note: string;
+}

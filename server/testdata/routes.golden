@@ -15,6 +15,8 @@ DELETE /api/exploration/finding-cases/{id}/members/{finding_id}	server.(*Server)
 DELETE /api/exploration/findings/{id}	server.(*Server).deleteFinding-fm
 DELETE /api/exploration/findings/{id}/comments/{comment_id}	server.(*Server).deleteFindingComment-fm
 DELETE /api/exploration/findings/{id}/traffic/{binding_id}	server.(*Server).editFindingTraffic-fm
+DELETE /api/im/connections/{id}	server.(*Server).imDeleteConnection-fm
+DELETE /api/im/users/{id}	server.(*Server).imDeleteUser-fm
 DELETE /api/intercept/rules/{id}	server.(*Server).interceptDeleteRule-fm
 DELETE /api/llm/profiles/{id}	server.(*Server).pgDeleteProfile-fm
 DELETE /api/llm/records	server.(*Server).pgDeleteLLMRecords-fm
@@ -146,6 +148,10 @@ GET /api/findings/{id}/src-report/check	server.(*Server).getFindingSrcReportChec
 GET /api/footholds	server.(*Server).listFootholdsWorkbench-fm
 GET /api/health	server.(*Server).health-fm
 GET /api/host-tools/inventory	server.(*Server).hostToolsInventory-fm
+GET /api/im/connections	server.(*Server).imListConnections-fm
+GET /api/im/messages	server.(*Server).imListMessages-fm
+GET /api/im/meta	server.(*Server).imMeta-fm
+GET /api/im/users	server.(*Server).imListUsers-fm
 GET /api/inbox	server.(*Server).inboxList-fm
 GET /api/intercept/history	server.(*Server).interceptHistory-fm
 GET /api/intercept/history.csv	server.(*Server).interceptHistoryCSV-fm
@@ -349,6 +355,9 @@ POST /api/exploration/main-session/new	server.(*Server).newMainSession-fm
 POST /api/findings/{id}/promote-knowledge	server.(*Server).promoteFindingKnowledge-fm
 POST /api/footholds/{id}/check-intent	server.(*Server).footholdCheckIntent-fm
 POST /api/footholds/{id}/lost	server.(*Server).markFootholdLost-fm
+POST /api/im/connections	server.(*Server).imCreateConnection-fm
+POST /api/im/connections/{id}/test	server.(*Server).imTestConnection-fm
+POST /api/im/users	server.(*Server).imCreateUser-fm
 POST /api/inbox/read	server.(*Server).inboxMarkRead-fm
 POST /api/intel/search	server.(*Server).searchIntelAssets-fm
 POST /api/intercept/pending/batch-decide	server.(*Server).interceptBatchDecide-fm
@@ -456,6 +465,8 @@ PUT /api/campaigns/{id}/tasks	server.(*Server).putCampaignTasks-fm
 PUT /api/cost-budgets	server.(*Server).saveCostBudget-fm
 PUT /api/cves/{id}	server.(*Server).updateCVE-fm
 PUT /api/exploration/findings/{id}/traffic/order	server.(*Server).editFindingTraffic-fm
+PUT /api/im/connections/{id}	server.(*Server).imUpdateConnection-fm
+PUT /api/im/users/{id}	server.(*Server).imUpdateUser-fm
 PUT /api/intercept/judge	server.(*Server).interceptSetJudgeConfig-fm
 PUT /api/intercept/rules/{id}	server.(*Server).interceptUpdateRule-fm
 PUT /api/intercept/tool-config	server.(*Server).interceptSetToolConfig-fm

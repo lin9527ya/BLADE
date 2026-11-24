@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -71,6 +72,9 @@ func (s *Server) orchestrationTools() []actool.CoreTool {
 		s.toolListLLMProfiles(),
 		s.toolSpawnTask(),
 		s.toolPauseTask(),
+		s.toolResumeTask(),
+		s.toolUpdateTaskMetadata(),
+		s.toolEditTaskScope(),
 		s.toolGetTaskGraph(),
 		s.toolListTaskFindings(),
 		s.toolAddHint(),
@@ -241,6 +245,108 @@ func (s *Server) toolListLLMProfiles() actool.CoreTool {
 		})
 }
 
+type spawnTaskArgs struct {
+	Description          string          `json:"description"`
+	Goal                 string          `json:"goal"`
+	ParentRef            string          `json:"parent_ref"`
+	SourceTaskIDs        []string        `json:"source_task_ids"`
+	LLMProfileID         json.RawMessage `json:"llm_profile_id"`
+	TimeoutSeconds       int             `json:"timeout_seconds"`
+	PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`
+	SeedFirstIntent      bool            `json:"seed_first_intent"`
+	AssetScopePolicy     string          `json:"asset_scope_policy"`
+	PlannerTemplateID    int64           `json:"planner_template_id"`
+	PlannerPrompt        string          `json:"planner_prompt"`
+	// Internal fields used by IM /new; deliberately not exposed in the tool schema.
+	Name   string `json:"-"`
+	Remark string `json:"-"`
+}
+
+// createTaskFromSpawn is the shared create+launch path for the spawn_task tool
+// and IM /new. beforeLaunch runs after the task row exists (so scopes can use its
+// id) but before launchTask(), so the first planning round already sees them.
+func (s *Server) createTaskFromSpawn(ctx context.Context, a spawnTaskArgs, beforeLaunch func(context.Context, *Task) error) (*Task, error) {
+	if strings.TrimSpace(a.Description) == "" {
+		a.Description = "未命名任务"
+	}
+	if strings.TrimSpace(a.Goal) == "" {
+		return nil, errors.New("goal 为必填")
+	}
+	if a.TimeoutSeconds < 0 {
+		a.TimeoutSeconds = 0
+	}
+	if err := db.ValidateAssetScopePolicy(a.AssetScopePolicy); err != nil {
+		return nil, err
+	}
+	// 只读继承来源任务：数量上限 + 每个 id 有效/去重/存在，校验规则与 HTTP 建任务一致。
+	if len(a.SourceTaskIDs) > db.MaxTaskSourceCount {
+		return nil, fmt.Errorf("关联任务最多选择 %d 个", db.MaxTaskSourceCount)
+	}
+	sourceIDs := make([]int64, 0, len(a.SourceTaskIDs))
+	seenSources := map[int64]bool{}
+	for _, raw := range a.SourceTaskIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil || id <= 0 || seenSources[id] {
+			return nil, errors.New("关联任务 id 无效或重复")
+		}
+		if _, ok := s.m.Task(strconv.FormatInt(id, 10)); !ok {
+			return nil, fmt.Errorf("关联任务 #%d 不存在", id)
+		}
+		seenSources[id] = true
+		sourceIDs = append(sourceIDs, id)
+	}
+	// LLM profile resolution: explicit id > inherit parent's pin > active(nil).
+	var pin *int64
+	if id := parseProfileID(a.LLMProfileID); id > 0 {
+		if _, ok := s.loadProfileConfig(id); !ok {
+			return nil, fmt.Errorf("LLM 配置 #%d 不存在或未设置 API Key", id)
+		}
+		pin = &id
+	} else if a.ParentRef != "" {
+		if pt, ok := s.m.Task(a.ParentRef); ok {
+			pin = pt.LLMProfileID
+		}
+	}
+	var llmIDs []int64
+	if pin != nil {
+		llmIDs = []int64{*pin}
+	}
+	plannerPrompt, perr := s.snapshotPlannerPrompt(a.PlannerPrompt, a.PlannerTemplateID)
+	if perr != nil {
+		return nil, fmt.Errorf("planner 提示词无效：%s", perr)
+	}
+	t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
+		Name:                 strings.TrimSpace(a.Name),
+		Remark:               strings.TrimSpace(a.Remark),
+		SourceTaskIDs:        sourceIDs,
+		LLMProfileIDs:        llmIDs,
+		TimeoutSeconds:       a.TimeoutSeconds,
+		PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
+		AssetScopePolicy:     a.AssetScopePolicy,
+		PlannerPrompt:        plannerPrompt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if a.ParentRef != "" {
+		t.ParentRef = a.ParentRef
+		if id, e := strconv.ParseInt(t.ID, 10, 64); e == nil {
+			if perr := s.m.PG().SetParentRef(id, a.ParentRef); perr != nil {
+				log.Printf("[orchestration] 记录父子任务关联失败 task=%d parent=%s: %v", id, a.ParentRef, perr)
+			}
+		}
+	}
+	if beforeLaunch != nil {
+		if err := beforeLaunch(ctx, t); err != nil {
+			return nil, fmt.Errorf("任务 #%s 已创建，但保存范围/元数据失败：%w", t.ID, err)
+		}
+	}
+	// 共享的建后流程,与 HTTP 建任务(server.go createTask)复用同一段 launchTask:
+	// seed + 后台可见地做目标分解(第0轮/LLM步骤/逐条goal) + engine.Run。
+	s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
+	return t, nil
+}
+
 func (s *Server) toolSpawnTask() actool.CoreTool {
 	return wrTool("spawn_task",
 		"新建一个子任务并启动探索引擎，返回 task_id。用于把一件事(如一道题/一个目标)派成独立任务。parent_ref 可选：填当前编排关联的父任务 id 做父子关联。",
@@ -257,93 +363,13 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"planner_template_id":    map[string]any{"type": "integer", "description": "可选：从 planner 模板库按 id 选模板，正文在创建时快照进子任务；与 planner_prompt 同传时 planner_prompt 优先"},
 			"planner_prompt":         strParam("可选：子任务 planner 提示词全文覆盖（上限 32KB），创建时快照，运行中不可改"),
 		}, "description", "goal"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			var a struct {
-				Description          string          `json:"description"`
-				Goal                 string          `json:"goal"`
-				ParentRef            string          `json:"parent_ref"`
-				SourceTaskIDs        []string        `json:"source_task_ids"`
-				LLMProfileID         json.RawMessage `json:"llm_profile_id"`
-				TimeoutSeconds       int             `json:"timeout_seconds"`
-				PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`
-				SeedFirstIntent      bool            `json:"seed_first_intent"`
-				AssetScopePolicy     string          `json:"asset_scope_policy"`
-				PlannerTemplateID    int64           `json:"planner_template_id"`
-				PlannerPrompt        string          `json:"planner_prompt"`
-			}
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			var a spawnTaskArgs
 			_ = json.Unmarshal(in, &a)
-			if strings.TrimSpace(a.Description) == "" {
-				a.Description = "未命名任务"
-			}
-			if strings.TrimSpace(a.Goal) == "" {
-				return actool.Errorf("goal 为必填"), nil
-			}
-			if a.TimeoutSeconds < 0 {
-				a.TimeoutSeconds = 0
-			}
-			if err := db.ValidateAssetScopePolicy(a.AssetScopePolicy); err != nil {
-				return actool.Errorf(err.Error()), nil
-			}
-			// 只读继承来源任务：数量上限 + 每个 id 有效/去重/存在，校验规则与 HTTP 建任务一致。
-			if len(a.SourceTaskIDs) > db.MaxTaskSourceCount {
-				return actool.Errorf(fmt.Sprintf("关联任务最多选择 %d 个", db.MaxTaskSourceCount)), nil
-			}
-			sourceIDs := make([]int64, 0, len(a.SourceTaskIDs))
-			seenSources := map[int64]bool{}
-			for _, raw := range a.SourceTaskIDs {
-				id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-				if err != nil || id <= 0 || seenSources[id] {
-					return actool.Errorf("关联任务 id 无效或重复"), nil
-				}
-				if _, ok := s.m.Task(strconv.FormatInt(id, 10)); !ok {
-					return actool.Errorf(fmt.Sprintf("关联任务 #%d 不存在", id)), nil
-				}
-				seenSources[id] = true
-				sourceIDs = append(sourceIDs, id)
-			}
-			// LLM profile resolution: explicit id > inherit parent's pin > active(nil).
-			var pin *int64
-			if id := parseProfileID(a.LLMProfileID); id > 0 {
-				if _, ok := s.loadProfileConfig(id); !ok {
-					return actool.Errorf(fmt.Sprintf("LLM 配置 #%d 不存在或未设置 API Key", id)), nil
-				}
-				pin = &id
-			} else if a.ParentRef != "" {
-				if pt, ok := s.m.Task(a.ParentRef); ok {
-					pin = pt.LLMProfileID
-				}
-			}
-			var llmIDs []int64
-			if pin != nil {
-				llmIDs = []int64{*pin}
-			}
-			plannerPrompt, perr := s.snapshotPlannerPrompt(a.PlannerPrompt, a.PlannerTemplateID)
-			if perr != nil {
-				return actool.Errorf("planner 提示词无效：" + perr.Error()), nil
-			}
-			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
-				SourceTaskIDs:        sourceIDs,
-				LLMProfileIDs:        llmIDs,
-				TimeoutSeconds:       a.TimeoutSeconds,
-				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
-				AssetScopePolicy:     a.AssetScopePolicy,
-				PlannerPrompt:        plannerPrompt,
-			})
+			t, err := s.createTaskFromSpawn(ctx, a, nil)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			if a.ParentRef != "" {
-				t.ParentRef = a.ParentRef
-				if id, e := strconv.ParseInt(t.ID, 10, 64); e == nil {
-					if perr := s.m.PG().SetParentRef(id, a.ParentRef); perr != nil {
-						log.Printf("[orchestration] 记录父子任务关联失败 task=%d parent=%s: %v", id, a.ParentRef, perr)
-					}
-				}
-			}
-			// 共享的建后流程,与 HTTP 建任务(server.go createTask)复用同一段 launchTask:
-			// seed + 后台可见地做目标分解(第0轮/LLM步骤/逐条goal) + engine.Run。
-			// seed_first_intent 默认 false(标准先规划再执行);简单任务可开启直接下发一 work 测试。
-			s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
 			return actool.Text(fmt.Sprintf("task created: %s", t.ID)), nil
 		})
 }
@@ -364,6 +390,132 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			return actool.Text("task paused: " + a.TaskID), nil
+		})
+}
+
+func (s *Server) toolResumeTask() actool.CoreTool {
+	return wrTool("resume_task", "继续已暂停的任务(恢复 planner/worker 循环)。",
+		objSchema(map[string]any{"task_id": strParam("要继续的任务 id")}, "task_id"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID string `json:"task_id"`
+			}
+			_ = json.Unmarshal(in, &a)
+			t, ok := s.m.Task(a.TaskID)
+			if !ok {
+				return actool.Errorf("task 不存在: " + a.TaskID), nil
+			}
+			if _, err := s.applyTaskControlWithCause(t, "resume", agent.AbortPausedByUser); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return actool.Text("task resumed: " + a.TaskID), nil
+		})
+}
+
+func (s *Server) toolUpdateTaskMetadata() actool.CoreTool {
+	return wrTool("update_task_metadata", "修改任务的列表元数据：名称、备注、资产范围策略、凭据尝试预算。不修改任务生命周期、目标或描述。",
+		objSchema(map[string]any{
+			"task_id":                   strParam("任务 id"),
+			"name":                      strParam("可选：新任务名称"),
+			"remark":                    strParam("可选：新任务备注"),
+			"asset_scope_policy":        strParam("可选：exact|target"),
+			"credential_attempt_budget": map[string]any{"type": "integer", "description": "可选：每 30 分钟凭据尝试预算；-1=继承全局，0=不限"},
+		}, "task_id"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID                  string  `json:"task_id"`
+				Name                    *string `json:"name"`
+				Remark                  *string `json:"remark"`
+				AssetScopePolicy        *string `json:"asset_scope_policy"`
+				CredentialAttemptBudget *int    `json:"credential_attempt_budget"`
+			}
+			_ = json.Unmarshal(in, &a)
+			t, status, err := s.updateTaskMetadataCore(a.TaskID, taskMetadataPatch{
+				Name: a.Name, Remark: a.Remark, AssetScopePolicy: a.AssetScopePolicy,
+				CredentialAttemptBudget: a.CredentialAttemptBudget,
+			})
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("%d: %s", status, err.Error())), nil
+			}
+			return actool.Text("task updated: " + t.ID), nil
+		})
+}
+
+func (s *Server) toolEditTaskScope() actool.CoreTool {
+	return wrTool("edit_task_scope", "查看或修改任务资产范围：operation=list|add|del；add 需要 kind/value，del 需要 scope_id。",
+		objSchema(map[string]any{
+			"task_id":   strParam("任务 id"),
+			"operation": strParam("list | add | del"),
+			"kind":      strParam("add 时必填：company|root_domain|subdomain|ip|cidr|icp"),
+			"value":     strParam("add 时的范围值"),
+			"scope_id":  map[string]any{"type": "integer", "description": "del 时的范围行 id"},
+		}, "task_id", "operation"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID    string          `json:"task_id"`
+				Operation string          `json:"operation"`
+				Kind      string          `json:"kind"`
+				Value     string          `json:"value"`
+				ScopeID   json.RawMessage `json:"scope_id"`
+			}
+			_ = json.Unmarshal(in, &a)
+			id, err := strconv.ParseInt(strings.TrimSpace(a.TaskID), 10, 64)
+			if err != nil || id <= 0 {
+				return actool.Errorf("task 不存在: " + a.TaskID), nil
+			}
+			if _, ok := s.m.Task(a.TaskID); !ok {
+				return actool.Errorf("task 不存在: " + a.TaskID), nil
+			}
+			as := s.m.Assets()
+			if as == nil {
+				return actool.Errorf("资产库未启用"), nil
+			}
+			switch strings.ToLower(strings.TrimSpace(a.Operation)) {
+			case "list":
+				rows, err := as.ListTaskScope(id)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				var b strings.Builder
+				for _, sc := range rows {
+					label := sc.Value
+					if sc.Domain != "" {
+						label = sc.Domain
+					}
+					if sc.Net != "" {
+						label = sc.Net
+					}
+					if sc.CompanyName != "" {
+						label = sc.CompanyName
+					}
+					fmt.Fprintf(&b, "#%d %s %s (%s)\n", sc.ID, sc.Kind, label, sc.Source)
+				}
+				if b.Len() == 0 {
+					return actool.Text("该任务暂无显式范围行"), nil
+				}
+				return actool.Text(strings.TrimRight(b.String(), "\n")), nil
+			case "add":
+				ts, err := as.AddAgentScope(id, strings.TrimSpace(a.Kind), strings.TrimSpace(a.Value), "IM/编排添加", "im")
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				return actool.Text(fmt.Sprintf("scope added: #%d %s", ts.ID, ts.Kind)), nil
+			case "del":
+				scopeID := parseProfileID(a.ScopeID)
+				if scopeID <= 0 {
+					return actool.Errorf("scope_id 为必填"), nil
+				}
+				ok, err := as.DeleteTaskScope(id, scopeID)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				if !ok {
+					return actool.Errorf("范围行不存在"), nil
+				}
+				return actool.Text(fmt.Sprintf("scope deleted: #%d", scopeID)), nil
+			default:
+				return actool.Errorf("operation 必须是 list|add|del"), nil
+			}
 		})
 }
 
@@ -529,8 +681,12 @@ func (s *Server) seedOrchestrationTools() {
 	for _, t := range s.orchestrationTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		bindings := autoAgents
-		if t.Name() == "bind_finding_traffic" {
+		switch t.Name() {
+		case "bind_finding_traffic":
 			bindings = json.RawMessage(`["reporter"]`)
+		case "update_task_metadata", "edit_task_scope":
+			// These are IM-surface tools; do not expand the default Auto toolset.
+			bindings = json.RawMessage(`[]`)
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
 	}
@@ -1436,7 +1592,11 @@ func (s *Server) seedAutoDefaultBindings() {
 		return
 	}
 	keys := make([]string, 0, len(platformToolKeys)+12)
+	imSurfaceOnly := map[string]bool{"update_task_metadata": true, "edit_task_scope": true}
 	for _, t := range s.orchestrationTools() {
+		if imSurfaceOnly[t.Name()] {
+			continue
+		}
 		keys = append(keys, t.Name())
 	}
 	keys = append(keys, platformToolKeys...)

@@ -143,6 +143,7 @@ export const sidebarItems: NavGroup[] = [
         liveBadge: "intercept_pending",
       },
       { id: "notify", title: "通知推送", url: "/system/notify", icon: BellRing },
+      { id: "im", title: "IM 控制", url: "/system/im", icon: MessageSquare },
       { id: "api-tokens", title: "API 令牌", url: "/system/api-tokens", icon: KeyRound },
       { id: "diagnostics", title: "运行体检", url: "/system/diagnostics", icon: Activity },
       { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },

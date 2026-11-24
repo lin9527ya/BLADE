@@ -636,7 +636,7 @@ func (s *Server) conversationRunContext(id int64, busyKey string) (context.Conte
 	return ctx, cancel
 }
 
-func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) {
+func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) (reply string) {
 	defer func() {
 		cancel(agent.AbortChatTurnFinished)
 		s.chatRuns.mu.Lock()
@@ -695,6 +695,11 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	if a, err := pg.GetAgentByKey(c.AgentKey); err == nil && a != nil {
 		webSearch = a.WebSearch
 	}
+	// IM runs have a hard tool allowlist; ChatAgent appends WebSearch after
+	// AugmentTools, which would bypass restrictIMSurfaceTools.
+	if principalFrom(ctx).Surface == "im" {
+		webSearch = false
+	}
 	sessionID := s.convBusyKey(c.ID) // "conv-<id>" transcript session
 	emit := func(rec db.Activity) {
 		if _, err := pg.AppendConvActivity(c.ID, rec); err != nil {
@@ -703,16 +708,19 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	}
 	// On a manual stop ctx is cancelled; Chat already emits a clean "已手动停止"
 	// step, so skip the raw-error entry — only surface genuine failures.
-	if _, err := ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit); err != nil {
-		finishReason = err.Error()
+	chatReply, chatErr := ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit)
+	if chatErr != nil {
+		finishReason = chatErr.Error()
 		if ctx.Err() == nil {
 			_, _ = pg.AppendConvActivity(c.ID, db.Activity{Worker: c.AgentKey, Kind: "text", IsError: true,
-				Summary: "（出错：" + err.Error() + "）", Detail: err.Error()})
+				Summary: "（出错：" + chatErr.Error() + "）", Detail: chatErr.Error()})
 		}
 	} else {
 		finishStatus, finishReason = "completed", ""
+		reply = chatReply
 	}
 	_ = pg.TouchConversation(c.ID)
+	return reply
 }
 
 // triggerBehavior is an agent's cached P3 trigger post-processing策略 (see the
@@ -928,4 +936,31 @@ func firstLine(s string, max int) string {
 		s = string([]rune(s)[:max]) + "…"
 	}
 	return s
+}
+
+var errIMConversationBusy = errors.New("该会话正在处理上一条消息")
+
+// runConversationForIM runs one synchronous auto-agent turn for an external IM
+// message and returns the final assistant text. It holds the same per-session
+// busy marker as the web chat, so a platform retry cannot run two turns on the
+// same conversation at once.
+func (s *Server) runConversationForIM(parent context.Context, c *db.Conversation, msg string, p runPrincipal) (string, error) {
+	if c == nil || s.resolveChatAgent(c) == nil {
+		return "", errors.New(s.chatUnavailableReason())
+	}
+	busyKey := s.convBusyKey(c.ID)
+	s.chatRuns.mu.Lock()
+	if s.chatRuns.busy[busyKey] {
+		s.chatRuns.mu.Unlock()
+		return "", errIMConversationBusy
+	}
+	s.chatRuns.busy[busyKey] = true
+	s.chatRuns.mu.Unlock()
+	ctx, cancel := context.WithCancelCause(intercept.WithConvID(parent, c.ID))
+	s.chatRuns.mu.Lock()
+	s.chatRuns.cancel[busyKey] = cancel
+	s.chatRuns.mu.Unlock()
+	ctx = withPrincipal(ctx, p)
+	ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: msg})
+	return s.runConversationTurn(ctx, cancel, c, msg, busyKey), nil
 }

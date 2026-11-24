@@ -48,6 +48,11 @@ import type {
   Conversation,
   ConvTokenSummary,
   CostBudget,
+  IMAllowedUser,
+  IMConnection,
+  IMMessage,
+  IMMeta,
+  IMPlatform,
   CostSummary,
   CoverageAssetRefs,
   CoverageGraphData,
@@ -2767,6 +2772,47 @@ export const api = {
   // 202 即返回，实际下载在后台跑，进度走 /api/update/stream。
   applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),
   rollbackUpdate: () => post<{ ok: boolean }>(`/update/rollback`),
+
+  // ---- IM 双向控制（钉钉 Stream / 飞书长连接）----
+  imMeta: () => get<IMMeta>(`/im/meta`),
+  imConnections: () => get<{ connections: IMConnection[] }>(`/im/connections`).then((r) => arr(r.connections)),
+  imCreateConnection: (payload: {
+    name?: string;
+    platform: IMPlatform;
+    app_id: string;
+    app_secret: string;
+    enabled: boolean;
+    extra: { allow_group?: boolean };
+  }) => post<IMConnection>(`/im/connections`, payload),
+  imUpdateConnection: (
+    id: number,
+    payload: {
+      name?: string;
+      platform: IMPlatform;
+      app_id: string;
+      app_secret: string;
+      enabled: boolean;
+      extra: { allow_group?: boolean };
+    },
+  ) => put<IMConnection>(`/im/connections/${id}`, payload),
+  imDeleteConnection: (id: number) => del<{ ok: boolean }>(`/im/connections/${id}`),
+  imTestConnection: (id: number) => post<{ ok: boolean; error?: string; message?: string }>(`/im/connections/${id}/test`),
+  imUsers: () => get<{ users: IMAllowedUser[] }>(`/im/users`).then((r) => arr(r.users)),
+  imCreateUser: (payload: {
+    platform: IMPlatform;
+    user_id: string;
+    display_name?: string;
+    role: "viewer" | "operator";
+    enabled: boolean;
+    note?: string;
+  }) => post<IMAllowedUser>(`/im/users`, payload),
+  imUpdateUser: (
+    id: number,
+    payload: { display_name?: string; role: "viewer" | "operator"; enabled: boolean; note?: string },
+  ) => put<IMAllowedUser>(`/im/users/${id}`, payload),
+  imDeleteUser: (id: number) => del<{ ok: boolean }>(`/im/users/${id}`),
+  imMessages: (limit = 100) =>
+    get<{ messages: IMMessage[] }>(`/im/messages?limit=${limit}`).then((r) => arr(r.messages)),
 };
 
 // 带鉴权的文件下载：fetch → blob → 临时 object URL；文件名优先用服务端

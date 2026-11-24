@@ -2397,3 +2397,90 @@ CREATE TABLE IF NOT EXISTS aggregate_deliverable_requests (
     PRIMARY KEY(owner,operation_key)
 );
 CREATE INDEX IF NOT EXISTS idx_aggregate_deliverable_requests_created ON aggregate_deliverable_requests(created_at);
+
+-- =====================================================================
+-- N. IM 双向控制（钉钉 Stream / 飞书长连接）
+--
+-- 连接凭据与允许用户分开：连接描述「机器人是谁」，允许用户描述「谁可以下指令」。
+-- 所有消息先落 im_messages 再处理，唯一键 (connection_id, platform_msg_id) 是平台
+-- 重试的幂等边界；im_actions 与 audit_events 共同保留可追溯的操作来源。
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS im_connections (
+    id                BIGSERIAL PRIMARY KEY,
+    name              TEXT NOT NULL,
+    platform          TEXT NOT NULL,
+    enabled           BOOLEAN NOT NULL DEFAULT false,
+    app_id            TEXT NOT NULL DEFAULT '',
+    app_secret        TEXT NOT NULL DEFAULT '',
+    extra             JSONB NOT NULL DEFAULT '{}',
+    status            TEXT NOT NULL DEFAULT 'disabled',
+    last_error        TEXT NOT NULL DEFAULT '',
+    last_connected_at TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(platform, app_id)
+);
+DROP TRIGGER IF EXISTS trg_im_connections_upd ON im_connections;
+CREATE TRIGGER trg_im_connections_upd BEFORE UPDATE ON im_connections
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS im_allowed_users (
+    id           BIGSERIAL PRIMARY KEY,
+    platform     TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    role         TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer','operator')),
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    note         TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(platform, user_id)
+);
+DROP TRIGGER IF EXISTS trg_im_allowed_users_upd ON im_allowed_users;
+CREATE TRIGGER trg_im_allowed_users_upd BEFORE UPDATE ON im_allowed_users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS im_messages (
+    id              BIGSERIAL PRIMARY KEY,
+    connection_id   BIGINT NOT NULL REFERENCES im_connections(id) ON DELETE CASCADE,
+    platform_msg_id TEXT NOT NULL,
+    chat_id         TEXT NOT NULL DEFAULT '',
+    chat_type       TEXT NOT NULL DEFAULT '',
+    sender_id       TEXT NOT NULL DEFAULT '',
+    sender_name     TEXT NOT NULL DEFAULT '',
+    text            TEXT NOT NULL DEFAULT '',
+    state           TEXT NOT NULL DEFAULT 'received',
+    task_id         BIGINT,
+    conversation_id BIGINT,
+    reply           TEXT NOT NULL DEFAULT '',
+    error           TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at    TIMESTAMPTZ,
+    UNIQUE(connection_id, platform_msg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_im_messages_created ON im_messages(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_im_messages_state ON im_messages(state, created_at);
+
+CREATE TABLE IF NOT EXISTS im_conversations (
+    id              BIGSERIAL PRIMARY KEY,
+    connection_id   BIGINT NOT NULL REFERENCES im_connections(id) ON DELETE CASCADE,
+    chat_id         TEXT NOT NULL,
+    sender_id       TEXT NOT NULL,
+    conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    last_message_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(connection_id, chat_id, sender_id)
+);
+CREATE INDEX IF NOT EXISTS idx_im_conversations_conv ON im_conversations(conversation_id);
+
+CREATE TABLE IF NOT EXISTS im_actions (
+    id         BIGSERIAL PRIMARY KEY,
+    message_id BIGINT NOT NULL REFERENCES im_messages(id) ON DELETE CASCADE,
+    action     TEXT NOT NULL,
+    task_id    BIGINT,
+    status     TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    actor      TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_im_actions_created ON im_actions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_im_actions_task ON im_actions(task_id) WHERE task_id IS NOT NULL;
