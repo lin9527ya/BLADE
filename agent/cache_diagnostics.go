@@ -31,13 +31,18 @@ type CacheDiagnostic struct {
 	ID               uint64            `json:"id"`
 	At               time.Time         `json:"at"`
 	Session          string            `json:"session"`
+	Role             string            `json:"role,omitempty"`
 	Model            string            `json:"model"`
 	Previous         bool              `json:"previous"`
+	SystemStaticSame bool              `json:"system_static_same"`
 	SystemSame       bool              `json:"system_same"`
 	ToolsSame        bool              `json:"tools_same"`
+	RolePrefixSame   bool              `json:"role_prefix_same"`
+	MissCause        string            `json:"miss_cause,omitempty"`
 	SharedMessages   int               `json:"shared_messages"`
 	Messages         int               `json:"messages"`
 	PreviousMessages int               `json:"previous_messages"`
+	SystemStatic     cachePart         `json:"system_static,omitempty"`
 	System           cachePart         `json:"system"`
 	Tools            cachePart         `json:"tools"`
 	Breakpoints      []string          `json:"breakpoints"`
@@ -80,6 +85,7 @@ func SetCacheTraceWindow(window time.Duration) {
 func ClearCacheDiagnostics() {
 	cacheTraceHistory.Lock()
 	cacheTraceHistory.last = map[string]cacheSignature{}
+	cacheTraceHistory.lastByRole = map[string]cacheSignature{}
 	cacheTraceHistory.Unlock()
 	cacheDiagnostics.Lock()
 	cacheDiagnostics.rows = nil

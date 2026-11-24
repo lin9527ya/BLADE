@@ -35,8 +35,8 @@ import (
 // 边界、技能重注入全不变），我们只换"怎么摘要"和"发出去之前投影成什么样"。
 
 // 常驻索引的重算节流：View 每个模型请求都会调，索引取的是库里的实时状态；
-// 3 秒内的重复请求复用同一份，避免密集工具循环里反复查库。
-const contextIndexTTL = 3 * time.Second
+// 15 秒内的重复请求复用同一份，避免密集工具循环里反复查库与重建动态尾块。
+const contextIndexTTL = 15 * time.Second
 
 // indexProjector 是「每请求常驻索引」的构造与节流。View 每个模型请求都会调，
 // 索引取的是库里的实时状态；TTL 内复用同一份，避免密集工具循环里反复查库。
@@ -81,7 +81,7 @@ func (p *indexProjector) appendToFor(base []llm.Message, compacted bool) []llm.M
 	}
 	out := make([]llm.Message, 0, len(base)+1)
 	out = append(out, base...)
-	out = append(out, llm.UserText(block))
+	out = append(out, llm.EphemeralUserText(block))
 	return out
 }
 
@@ -322,41 +322,43 @@ func BuildContextIndex(v ContextIndexVars) string {
 			}
 		}
 	}
-	if intents, err := ts.ListNodeDigests(db.KindIntent, []string{"open", "running"}, 8); err == nil && len(intents) > 0 {
-		open, running := []string{}, []string{}
-		for _, n := range intents {
-			line := fmt.Sprintf("intent-%d「%s」", n.ID, clipLine(n.Summary, 90))
-			if n.Attempts >= 2 {
-				line += fmt.Sprintf("（第 %d 次尝试）", n.Attempts)
+	if !(v.Uncompacted && !v.HasOverview) {
+		if intents, err := ts.ListNodeDigests(db.KindIntent, []string{"open", "running"}, 8); err == nil && len(intents) > 0 {
+			open, running := []string{}, []string{}
+			for _, n := range intents {
+				line := fmt.Sprintf("intent-%d「%s」", n.ID, clipLine(n.Summary, 90))
+				if n.Attempts >= 2 {
+					line += fmt.Sprintf("（第 %d 次尝试）", n.Attempts)
+				}
+				if n.State == "running" {
+					running = append(running, line)
+				} else {
+					open = append(open, line)
+				}
 			}
-			if n.State == "running" {
-				running = append(running, line)
-			} else {
-				open = append(open, line)
+			if len(running) > 0 {
+				b.WriteString("\n在跑方向：" + strings.Join(running, "、"))
+			}
+			if len(open) > 0 {
+				b.WriteString("\n待领方向：" + strings.Join(open, "、"))
 			}
 		}
-		if len(running) > 0 {
-			b.WriteString("\n在跑方向：" + strings.Join(running, "、"))
-		}
-		if len(open) > 0 {
-			b.WriteString("\n待领方向：" + strings.Join(open, "、"))
-		}
-	}
-	if findings, err := ts.ListNodeDigests(db.KindFinding, nil, 8); err == nil && len(findings) > 0 {
-		b.WriteString("\n已登记发现（最新在前）：")
-		for _, n := range findings {
-			st := n.State
-			if st == "" {
-				st = "pending"
+		if findings, err := ts.ListNodeDigests(db.KindFinding, nil, 8); err == nil && len(findings) > 0 {
+			b.WriteString("\n已登记发现（最新在前）：")
+			for _, n := range findings {
+				st := n.State
+				if st == "" {
+					st = "pending"
+				}
+				b.WriteString(fmt.Sprintf("\n  · finding-%d [%s] %s", n.ID, st, clipLine(n.Summary, 110)))
 			}
-			b.WriteString(fmt.Sprintf("\n  · finding-%d [%s] %s", n.ID, st, clipLine(n.Summary, 110)))
 		}
+		if st, err := ts.Stats(); err == nil {
+			b.WriteString(fmt.Sprintf("\n计数：意图 %d（含已结束）、事实 %d、发现 %d",
+				st[db.KindIntent], st[db.KindFact], st[db.KindFinding]))
+		}
+		b.WriteString(renderLootSection(ts, v.HasOverview))
 	}
-	if st, err := ts.Stats(); err == nil {
-		b.WriteString(fmt.Sprintf("\n计数：意图 %d（含已结束）、事实 %d、发现 %d",
-			st[db.KindIntent], st[db.KindFact], st[db.KindFinding]))
-	}
-	b.WriteString(renderLootSection(ts, v.HasOverview))
 	b.WriteString(renderPlaybookSection(v.PlaybookLines))
 	b.WriteString(renderCVESection(v.CVELines))
 	full := b.String()
@@ -692,12 +694,14 @@ func summaryCallWithPrefix(ctx context.Context, p llm.Provider, maxOut int, head
 	reqMsgs = append(reqMsgs, head...)
 	reqMsgs = append(reqMsgs, llm.UserText(prompt))
 	req := llm.CompletionRequest{
-		System:          []string{summarySystemPrompt},
-		DynamicBoundary: 1,
-		Messages:        reqMsgs,
-		MaxTokens:       maxOut,
-		Thinking:        "disabled",
-		PromptCacheKey:  prefix.PromptCacheKey,
+		System:               []string{summarySystemPrompt},
+		DynamicBoundary:      1,
+		Messages:             reqMsgs,
+		MaxTokens:            maxOut,
+		Thinking:             "disabled",
+		PromptCacheKey:       prefix.PromptCacheKey,
+		PromptCacheRetention: prefix.PromptCacheRetention,
+		CacheTTL:             prefix.CacheTTL,
 	}
 	hasCustomPrefix := len(prefix.System) > 0 || len(prefix.Tools) > 0
 	if len(prefix.System) > 0 {
@@ -848,9 +852,12 @@ var _ iter.Seq2[llm.StreamEvent, error]
 // agent's own provider remains the default; a host can bind a cheaper/faster
 // model here without changing the model that drives the tool loop.
 type CompactionLLM struct {
-	Provider     llm.Provider
-	MaxTokens    int
-	NonStreaming bool
+	Provider             llm.Provider
+	MaxTokens            int
+	NonStreaming         bool
+	PreserveThinking     bool
+	CacheTTL             string
+	PromptCacheRetention string
 }
 
 // InstallContextManager 在 opts 上装 P14 领域上下文管理器。调用点必须在 enableNoa 之后。
@@ -897,10 +904,20 @@ func installContextManagerProjector(opts *agentcore.Options, windowTokens, maxTo
 	var prefix compaction.SummaryPrefix
 	if useParentPrefix {
 		prefix = compaction.SummaryPrefix{
-			System:          opts.SystemPrompt,
-			DynamicBoundary: opts.DynamicBoundary,
-			Tools:           visibleToolSchemas(opts.Tools, opts.DeferredTools),
-			PromptCacheKey:  opts.PromptCacheKey,
+			System:               opts.SystemPrompt,
+			DynamicBoundary:      opts.DynamicBoundary,
+			Tools:                visibleToolSchemas(opts.Tools, opts.DeferredTools),
+			PromptCacheKey:       opts.PromptCacheKey,
+			PromptCacheRetention: opts.PromptCacheRetention,
+			CacheTTL:             opts.CacheTTL,
+			PreserveThinking:     opts.PreserveThinking || providerPreservesThinking(prov),
+		}
+	} else {
+		prefix = compaction.SummaryPrefix{
+			PromptCacheKey:       opts.PromptCacheKey,
+			PromptCacheRetention: override[0].PromptCacheRetention,
+			CacheTTL:             override[0].CacheTTL,
+			PreserveThinking:     override[0].PreserveThinking || providerPreservesThinking(prov),
 		}
 	}
 	opts.Compactor = newDomainCompactor(*cfg, prov, maxOut, nonStreaming, dumpDir, prefix, index, indexWithState)

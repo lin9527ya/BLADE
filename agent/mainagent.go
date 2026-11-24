@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/lin9527ya/Norma/agentcore"
 	"github.com/lin9527ya/Norma/hook"
@@ -37,6 +38,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts       cacheOptionResolvers                   // prompt-cache TTL/retention & thinking-preservation options
 	// compactionLLM optionally supplies an independent provider for context
 	// summarization. nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
@@ -94,6 +96,11 @@ func (m *MainAgent) SetMaxTokens(fn func() int) { m.maxTokensFn = fn }
 // SetCompactionLLM supplies an optional independent provider for context
 // summarization. nil/false = keep using this agent's own provider.
 func (m *MainAgent) SetCompactionLLM(fn func() (CompactionLLM, bool)) { m.compactionLLM = fn }
+
+// SetCacheOptions wires per-run resolvers for CacheTTL, PromptCacheRetention, and PreserveThinking.
+func (m *MainAgent) SetCacheOptions(ttlFn, retentionFn func() string, preserveThinkingFn func() bool) {
+	m.cacheOpts = cacheOptionResolvers{cacheTTLFn: ttlFn, retentionFn: retentionFn, preserveThinkingFn: preserveThinkingFn}
+}
 
 func (m *MainAgent) maxTokens() int {
 	if m.maxTokensFn == nil {
@@ -162,6 +169,29 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
 
 不要编造发现；只根据工具返回的真实数据回答。`
 
+// mainAgentSystemParts splits the main-agent prompt into the cross-task static
+// body (before DynamicBoundary) and the per-task Goal + workDir tail (after
+// DynamicBoundary) so tasks share the cached static system prefix.
+func mainAgentSystemParts(goal, dataDir, workDir string) (staticPart, dynamicPart string) {
+	staticTmpl := strings.Replace(mainAgentDefaultTmpl, "当前任务目标：{{.Goal}}", "当前任务目标见末尾动态上下文段。", 1)
+	usesDynamicVar := false
+	if PromptOverride != nil {
+		if t, ok := PromptOverride("mainagent"); ok && t != "" {
+			usesDynamicVar = strings.Contains(t, "{{.Goal}}") || strings.Contains(t, "{{.AssetSummary}}") || strings.Contains(t, "{{.FindingsSummary}}")
+		}
+	}
+	if !usesDynamicVar {
+		body := renderSystem("mainagent", staticTmpl, MainVars{DataDir: dataDir, Now: nowStr()})
+		staticPart = body + cveLookupBlock + egressDisciplineBlock(false) + untrustedDataBlock()
+		dynamicPart = "当前任务目标：" + strings.TrimSpace(goal) + artifactSpec(workDir)
+		return staticPart, dynamicPart
+	}
+	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+	staticPart = cveLookupBlock + egressDisciplineBlock(false) + untrustedDataBlock()
+	dynamicPart = body + artifactSpec(workDir)
+	return staticPart, dynamicPart
+}
+
 func mainAgentSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
 	return body + artifactSpec(workDir) + cveLookupBlock + egressDisciplineBlock(false) + untrustedDataBlock()
@@ -203,7 +233,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	tsx.SetRunDir(mainDir)
 	tsx.SetTaskRoot(mainDir)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
+	staticSys, dynamicSys := mainAgentSystemParts(goal, m.workDir, mainDir)
+	system, boundary := deferredSystemWithDynamic(staticSys, def, dynamicSys)
 	opts := agentcore.Options{
 		Provider:                m.prov,
 		SystemPrompt:            system,
@@ -243,6 +274,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    m.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
+	m.cacheOpts.apply(&opts)
 	if h := m.guardHooks(); h != nil {
 		opts.Hooks = h
 	}

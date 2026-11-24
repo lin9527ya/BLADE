@@ -12,21 +12,29 @@ import (
 // item can fall out of every window and never be seen again. These slots are
 // attention aids, not a second ledger: each is capped at 5 and points at the
 // normal node_detail / lead tools for content.
+// stabilizeAgeMinutes buckets volatile elapsed-minute integers into 5-minute
+// steps so consecutive requests within a window don't churn JSON fields and
+// bust prompt caches. Values under 5 collapse to 0; >=5 floor to multiples of 5.
+func stabilizeAgeMinutes(mins int) int {
+	if mins < 5 {
+		return 0
+	}
+	return (mins / 5) * 5
+}
+
+func ageMinutesStable(at time.Time) int {
+	if at.IsZero() {
+		return 0
+	}
+	return stabilizeAgeMinutes(int(time.Since(at).Minutes()))
+}
+
 func (t *ToolSet) attentionWindows(out map[string]any, tracking *db.LeadTraceReport) {
 	if t == nil || t.ts == nil {
 		return
 	}
 	errs := []string{}
-	ageMin := func(at time.Time) int {
-		if at.IsZero() {
-			return 0
-		}
-		n := int(time.Since(at).Minutes())
-		if n < 0 {
-			return 0
-		}
-		return n
-	}
+	ageMin := ageMinutesStable
 
 	if tracking != nil {
 		leads := make([]map[string]any, 0, 5)

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"iter"
+	"strings"
 	"testing"
 
 	"github.com/lin9527ya/Norma/llm"
@@ -34,14 +35,17 @@ func TestOneShotCompletionAttachesSessionID(t *testing.T) {
 		t.Fatal("one-shot completion must attach a session id for SessionHeaderKey")
 	}
 
-	// 已有会话 id（从任务/对话上下文进来）不能被覆盖。
+	// 已有会话 id（从任务/对话上下文进来）不能被覆盖；PromptCacheKey 则保持按系统提示哈希共享。
 	ctx := transcript.WithSessionID(context.Background(), "conv-42")
-	p = &sessionCaptureProvider{}
-	if _, err := streamCollectTextLimit(ctx, p, "s", "u", 16); err != nil {
+	op := &oneshotCaptureProvider{}
+	if _, err := streamCollectTextLimit(ctx, op, "judge-v1", "u", 16); err != nil {
 		t.Fatal(err)
 	}
-	if p.seen != "conv-42" {
-		t.Fatalf("existing session id overwritten: %q", p.seen)
+	if op.sids[0] != "conv-42" {
+		t.Fatalf("existing session id overwritten: %q", op.sids[0])
+	}
+	if !strings.HasPrefix(op.reqs[0].PromptCacheKey, "oneshot-") || op.reqs[0].PromptCacheKey == "conv-42" {
+		t.Fatalf("expected oneshot PromptCacheKey decoupled from caller session, got %q", op.reqs[0].PromptCacheKey)
 	}
 }
 

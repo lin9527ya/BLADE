@@ -308,6 +308,18 @@ func thinkingText(msg llm.Message) string {
 	return b.String()
 }
 
+// PreservesThinking delegates provider thinking-preservation detection through
+// the recording decorator when the wrapped provider implements it.
+func (r *Recorder) PreservesThinking() bool {
+	if r == nil || r.inner == nil {
+		return false
+	}
+	if p, ok := r.inner.(interface{ PreservesThinking() bool }); ok {
+		return p.PreservesThinking()
+	}
+	return false
+}
+
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
 func (r *Recorder) recordUsage(taskID string, expID int64, worker, session string, usage llm.Usage, latencyMs int, status string, surface *db.RequestSurface) {

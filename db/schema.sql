@@ -694,7 +694,15 @@ ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS preserve_thinking_blocks    BO
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS cache_breakpoints           TEXT    NOT NULL DEFAULT '';
 ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_cache_breakpoints_check;
 ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_cache_breakpoints_check
-    CHECK (cache_breakpoints IN ('','rolling'));
+    CHECK (cache_breakpoints IN ('','rolling','system'));
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS cache_ttl              TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_cache_ttl_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_cache_ttl_check
+    CHECK (cache_ttl IN ('','5m','1h'));
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS prompt_cache_retention TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_prompt_cache_retention_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_prompt_cache_retention_check
+    CHECK (prompt_cache_retention IN ('','in_memory','24h'));
 
 -- 单配置的重试覆盖（见 docs/LLM重试设计.md）。三组各自一对「次数 + 固定间隔」，
 -- 语义统一：次数 0=沿用全局默认、-1=关闭该层重试、>0=用该值；间隔 0=沿用该层的

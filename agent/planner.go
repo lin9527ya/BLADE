@@ -76,10 +76,11 @@ type Planner struct {
 	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
 	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
 	plannerPromptFn func() string
-	boundedView     func() bool // nil = 有界视图（默认）
-	notifyWorkers   func()      // 派发新意图后立即唤醒 worker 调度器
-	maxTokensFn     func() int  // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor       *Compactor  // cold-node compaction (§7); nil = disabled
+	boundedView     func() bool          // nil = 有界视图（默认）
+	notifyWorkers   func()               // 派发新意图后立即唤醒 worker 调度器
+	maxTokensFn     func() int           // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts       cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
+	compactor       *Compactor           // cold-node compaction (§7); nil = disabled
 	// compactionLLM, when set, supplies an independent provider for context
 	// summarization (see InstallContextManager). nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
@@ -119,11 +120,13 @@ func (p *Planner) verifyWithLLM(ctx context.Context, digest string) (string, err
 	}
 	temp := 0.0
 	msg, _, _, err := p.prov.Complete(ctx, llm.CompletionRequest{
-		System:      []string{`你是授权渗透测试系统的只读证据复核员。只依据用户提供的证据摘要，判断事实是否足以支持其结论；不要补充未给出的事实，不要执行任何命令。输出 JSON：{"verdict":"supported|weak|insufficient|contradicted","reason":"一句话"}。`},
-		Messages:    []llm.Message{llm.UserText(digest)},
-		MaxTokens:   500,
-		Temperature: &temp,
-		Thinking:    "disabled",
+		System:          []string{`你是授权渗透测试系统的只读证据复核员。只依据用户提供的证据摘要，判断事实是否足以支持其结论；不要补充未给出的事实，不要执行任何命令。输出 JSON：{"verdict":"supported|weak|insufficient|contradicted","reason":"一句话"}。`},
+		DynamicBoundary: 1,
+		Messages:        []llm.Message{llm.UserText(digest)},
+		MaxTokens:       500,
+		Temperature:     &temp,
+		Thinking:        "disabled",
+		PromptCacheKey:  "planner-evidence-verifier",
 	})
 	if err != nil {
 		return "", err
@@ -197,6 +200,11 @@ func (p *Planner) SetNoaEnabled(fn func() bool) { p.noaEnabledFn = fn }
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
 func (p *Planner) SetMaxTokens(fn func() int) { p.maxTokensFn = fn }
+
+// SetCacheOptions wires per-run resolvers for CacheTTL, PromptCacheRetention, and PreserveThinking.
+func (p *Planner) SetCacheOptions(ttlFn, retentionFn func() string, preserveThinkingFn func() bool) {
+	p.cacheOpts = cacheOptionResolvers{cacheTTLFn: ttlFn, retentionFn: retentionFn, preserveThinkingFn: preserveThinkingFn}
+}
 
 func (p *Planner) maxTokens() int {
 	if p.maxTokensFn == nil {
@@ -750,6 +758,56 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 // Wired at startup so the agent package stays free of DB imports.
 var PlannerTemplateDefault func() (string, bool)
 
+// plannerSystemParts splits the planner prompt into the cross-task static blocks
+// (placed BEFORE DynamicBoundary) and the per-task Goal + workDir blocks (placed
+// AFTER DynamicBoundary) so tasks share the cached static tools + system prefix.
+func plannerSystemParts(goal, dataDir, workDir, taskOverride string) (staticPart, dynamicPart string) {
+	codeStaticTail := coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock
+	fullVars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
+	staticVars := PlannerVars{DataDir: dataDir, Now: nowStr()}
+
+	// ① 任务级快照（tasks.planner_prompt_override）属于单任务定制段，放动态 boundary 之后，
+	//    code-owned 共享前缀块仍在 staticPart 内缓存。
+	if strings.TrimSpace(taskOverride) != "" {
+		if out, err := renderTmpl(taskOverride, fullVars); err == nil {
+			return codeStaticTail, out + promptExtras("planner") + artifactSpec(workDir)
+		}
+		log.Printf("[planner] 任务级 planner 提示词渲染失败，回退全局链")
+	}
+	// ② 全局覆盖（agent_prompts 当前版本）。仅当它不引用任务级模板变量时才能放进 staticPart。
+	if PromptOverride != nil {
+		if t, ok := PromptOverride("planner"); ok && t != "" && strings.TrimSpace(t) != strings.TrimSpace(plannerDefaultTmpl) {
+			hasTaskVars := strings.Contains(t, "{{.Goal}}") || strings.Contains(t, "{{.Scope}}") || strings.Contains(t, "{{.AssetSummary}}")
+			if !hasTaskVars {
+				if out, err := renderTmpl(t, staticVars); err == nil {
+					staticPart = out + promptExtras("planner") + codeStaticTail
+					if strings.TrimSpace(goal) != "" {
+						dynamicPart = "当前任务目标：" + strings.TrimSpace(goal)
+					}
+					dynamicPart += artifactSpec(workDir)
+					return staticPart, dynamicPart
+				}
+			} else if out, err := renderTmpl(t, fullVars); err == nil {
+				return codeStaticTail, out + promptExtras("planner") + artifactSpec(workDir)
+			}
+			log.Printf("[planner] 全局 planner 提示词渲染失败，回退内置模板")
+		}
+	}
+	// ④ 内置正文：将任务目标移到 DynamicBoundary 之后，静态主干完全跨任务一致。
+	staticTmpl := strings.Replace(plannerDefaultTmpl, "任务目标：{{.Goal}}", "任务目标见末尾动态上下文段。", 1)
+	body := staticTmpl
+	if out, err := renderTmpl(staticTmpl, staticVars); err == nil {
+		body = out
+	}
+	staticPart = body + promptExtras("planner") + codeStaticTail
+	if strings.TrimSpace(goal) != "" {
+		dynamicPart = "当前任务目标：" + strings.TrimSpace(goal)
+	}
+	dynamicPart += artifactSpec(workDir)
+	return staticPart, dynamicPart
+}
+
 func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	body := ""
@@ -928,13 +986,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.SetRunDir(taskDir)
 	tsx.SetTaskRoot(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir, p.plannerPromptOverride())
-	sysBody += plannerScopeRequestBlock
+	staticSys, dynamicSys := plannerSystemParts(goal, p.workDir, taskDir, p.plannerPromptOverride())
+	staticSys += plannerScopeRequestBlock
 	var constraintTail string
 	if p.wantConstraints() {
 		constraintTail = constraintBlock(ts) // 操作约束置于静态 AlwaysSkills/Capability/Deferred 段之后，避免打断跨任务静态前缀缓存
 	}
-	system, boundary := deferredSystemWithDynamic(sysBody, def, constraintTail)
+	system, boundary := deferredSystemWithDynamic(staticSys, def, dynamicSys, constraintTail)
 	// 单轮墙钟预算：优先用 agent 配置的 run_seconds（默认 1200s），有任务 deadline 时
 	// 再夹逼到剩余时间。到点由 SDK 进收尾（不是硬杀），已想清楚的结论能落地。
 	tc := taskClockFrom(ctx)
@@ -987,6 +1045,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		NonStreaming: p.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
+	p.cacheOpts.apply(&opts)
 	if p.guard != nil { // 与 worker/mainagent 同一把任务 Guard（拦截规则 + RoE 范围门 + 审批）
 		opts.Hooks = p.guard.Hooks()
 	}
@@ -1138,7 +1197,7 @@ func composePlannerInput(staticRules, lead, volatile, todos string) string {
 // 规划热会话的保留策略。缓存前缀（system + 工具 schema）不随轮数变化，所以复用同一个
 // Session 的收益是**每轮固定**的；限制轮数与空闲时长是为了不让摘要层数与陈旧会话无限累积。
 const (
-	plannerHotMaxRounds   = 8
+	plannerHotMaxRounds   = 16
 	plannerHotMaxMessages = 48
 	plannerHotIdleTTL     = 10 * time.Minute
 	// plannerFullReconcileEvery 每 N 个热会话轮强制一次完整有界视图，而不是只看

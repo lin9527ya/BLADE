@@ -40,6 +40,18 @@ export const EFFORT_LEVELS: { value: string; label: string }[] = [
 ];
 
 export const CACHE_BREAKPOINT_MODES: { value: string; label: string }[] = [
-  { value: NONE, label: "仅系统前缀（默认）" },
-  { value: "rolling", label: "滚动多断点（工具+历史）" },
+  { value: "rolling", label: "滚动多断点（工具+历史，默认）" },
+  { value: "system", label: "仅系统前缀" },
+];
+
+export const CACHE_TTLS: { value: string; label: string }[] = [
+  { value: NONE, label: "5m（默认）" },
+  { value: "5m", label: "5m（显式）" },
+  { value: "1h", label: "1h（仅静态前缀）" },
+];
+
+export const PROMPT_CACHE_RETENTIONS: { value: string; label: string }[] = [
+  { value: NONE, label: "默认（不发送）" },
+  { value: "in_memory", label: "in_memory" },
+  { value: "24h", label: "24h（延伸保留）" },
 ];

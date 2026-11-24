@@ -19,11 +19,13 @@ import type { LLMProfile, LLMRetryOverride } from "@/lib/types";
 
 import {
   CACHE_BREAKPOINT_MODES,
+  CACHE_TTLS,
   EFFORT_LEVELS,
   fromStore,
   MAX_TOKENS_FIELD_HINTS,
   MAX_TOKENS_FIELDS,
   NONE,
+  PROMPT_CACHE_RETENTIONS,
   THINKING_TYPES,
   toStore,
 } from "./llm-helpers";
@@ -86,7 +88,9 @@ export function ProfileDialog({
   const [customHeaders, setCustomHeaders] = React.useState(""); // 固定请求头（每行 Name: Value）
   const [inputTokensIncludesCache, setInputTokensIncludesCache] = React.useState(false);
   const [preserveThinkingBlocks, setPreserveThinkingBlocks] = React.useState(false);
-  const [cacheBreakpoints, setCacheBreakpoints] = React.useState(NONE);
+  const [cacheBreakpoints, setCacheBreakpoints] = React.useState("rolling");
+  const [cacheTTL, setCacheTTL] = React.useState(NONE);
+  const [promptCacheRetention, setPromptCacheRetention] = React.useState(NONE);
 
   // opencode zen 网关强制要求 x-opencode-session（缺了 400 MissingSessionID）：
   // 地址是 opencode.ai 且输入框留空时，测试/保存都自动按该头名走（后端也有同款兜底）。
@@ -125,7 +129,9 @@ export function ProfileDialog({
     setCustomHeaders(headersToText(profile?.custom_headers));
     setInputTokensIncludesCache(profile?.input_tokens_includes_cache ?? false);
     setPreserveThinkingBlocks(profile?.preserve_thinking_blocks ?? false);
-    setCacheBreakpoints(fromStore(profile?.cache_breakpoints));
+    setCacheBreakpoints(profile?.cache_breakpoints === "system" ? "system" : "rolling");
+    setCacheTTL(fromStore(profile?.cache_ttl));
+    setPromptCacheRetention(fromStore(profile?.prompt_cache_retention));
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
     setApiKey("");
     setKeyHint(profile?.api_key_hint ?? "");
@@ -225,7 +231,9 @@ export function ProfileDialog({
         custom_headers: parsedHeaders,
         input_tokens_includes_cache: format === "anthropic" ? inputTokensIncludesCache : false,
         preserve_thinking_blocks: format === "anthropic" ? preserveThinkingBlocks : false,
-        cache_breakpoints: format === "anthropic" ? toStore(cacheBreakpoints) : "",
+        cache_breakpoints: format === "anthropic" ? cacheBreakpoints : "",
+        cache_ttl: format === "anthropic" ? toStore(cacheTTL) : "",
+        prompt_cache_retention: format !== "anthropic" ? toStore(promptCacheRetention) : "",
         retry,
       });
       if (isNew) toast.success(`已新建：${name.trim()}（在卡片上「设为激活」以启用）`);
@@ -605,16 +613,35 @@ export function ProfileDialog({
                 <div className="grid gap-0.5">
                   <Label className="text-sm">Prompt Cache 断点策略</Label>
                   <p className="text-muted-foreground text-xs">
-                    「仅系统前缀」只在系统段打断点；「滚动多断点」追加最后一个工具 schema 与滚动历史消息断点（适用于官方
-                    Claude / Bedrock）。
+                    默认启用「滚动多断点」，在系统前缀之外自动追加最后一个工具 schema 与滚动历史消息断点；不支持多断点的中转可切换为「仅系统前缀」。
                   </p>
                 </div>
                 <Select value={cacheBreakpoints} onValueChange={setCacheBreakpoints}>
-                  <SelectTrigger className="w-48 shrink-0">
+                  <SelectTrigger className="w-52 shrink-0">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {CACHE_BREAKPOINT_MODES.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">静态前缀缓存 TTL</Label>
+                  <p className="text-muted-foreground text-xs">
+                    仅作用于静态 tools + system 前缀；1h 可覆盖长周期 idle / 多轮间隔，动态历史滚动断点仍保持 5m。
+                  </p>
+                </div>
+                <Select value={cacheTTL} onValueChange={setCacheTTL}>
+                  <SelectTrigger className="w-48 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CACHE_TTLS.map((o) => (
                       <SelectItem key={o.value} value={o.value}>
                         {o.label}
                       </SelectItem>
@@ -641,6 +668,31 @@ export function ProfileDialog({
                   </p>
                 </div>
                 <Switch checked={preserveThinkingBlocks} onCheckedChange={setPreserveThinkingBlocks} />
+              </div>
+            </div>
+          )}
+
+          {format !== "anthropic" && (
+            <div className="grid gap-3 rounded-lg border p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">Prompt Cache 保留策略（prompt_cache_retention）</Label>
+                  <p className="text-muted-foreground text-xs">
+                    OpenAI / Responses 兼容端点支持发送 prompt_cache_retention（如 24h）以延长前缀缓存保留时间。
+                  </p>
+                </div>
+                <Select value={promptCacheRetention} onValueChange={setPromptCacheRetention}>
+                  <SelectTrigger className="w-48 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROMPT_CACHE_RETENTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           )}

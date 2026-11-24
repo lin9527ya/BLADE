@@ -28,11 +28,12 @@ type cachePart struct {
 }
 
 type cacheSignature struct {
-	Model       string      `json:"model"`
-	System      cachePart   `json:"system"`
-	Tools       cachePart   `json:"tools"`
-	Messages    []cachePart `json:"messages"`
-	Breakpoints []string    `json:"breakpoints"`
+	Model        string      `json:"model"`
+	SystemStatic cachePart   `json:"system_static,omitempty"`
+	System       cachePart   `json:"system"`
+	Tools        cachePart   `json:"tools"`
+	Messages     []cachePart `json:"messages"`
+	Breakpoints  []string    `json:"breakpoints"`
 }
 
 func cachePartOf(raw json.RawMessage) cachePart {
@@ -90,6 +91,7 @@ func requestCacheSignature(raw string) (cacheSignature, error) {
 	}
 	out.Model = req.Model
 	out.System = cachePartOf(req.System)
+	out.SystemStatic = systemStaticPartOf(req.System, out.System)
 	out.Tools = cachePartOf(req.Tools)
 	for _, msg := range req.Messages {
 		out.Messages = append(out.Messages, cachePartOf(msg))
@@ -126,10 +128,79 @@ func requestCacheSignature(raw string) (cacheSignature, error) {
 // 有界保存上一份结构哈希。原文从不留在此 map 中，诊断不积累会话内容。
 var cacheTraceHistory = struct {
 	sync.Mutex
-	last map[string]cacheSignature
-}{last: map[string]cacheSignature{}}
+	last       map[string]cacheSignature
+	lastByRole map[string]cacheSignature
+}{last: map[string]cacheSignature{}, lastByRole: map[string]cacheSignature{}}
 
 var cacheTraceSequence atomic.Uint64
+
+func systemStaticPartOf(rawSystem json.RawMessage, full cachePart) cachePart {
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(rawSystem, &blocks) != nil || len(blocks) == 0 {
+		return full
+	}
+	lastCached := -1
+	for i, b := range blocks {
+		if _, ok := b["cache_control"]; ok {
+			lastCached = i
+		}
+	}
+	if lastCached < 0 {
+		return full
+	}
+	prefixRaw, err := json.Marshal(blocks[:lastCached+1])
+	if err != nil {
+		return full
+	}
+	return cachePartOf(prefixRaw)
+}
+
+func sessionRole(sid string) string {
+	if !strings.HasPrefix(sid, "exp") {
+		return ""
+	}
+	rest := sid[3:]
+	i := strings.IndexByte(rest, '-')
+	if i < 0 {
+		return ""
+	}
+	rest = rest[i+1:]
+	if j := strings.IndexByte(rest, '-'); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
+func classifyCacheMiss(seen bool, prev cacheSignature, roleSeen bool, rolePrev cacheSignature, sig cacheSignature, shared int) string {
+	if seen {
+		if prev.Tools != sig.Tools {
+			return "tools_changed"
+		}
+		if prev.SystemStatic != sig.SystemStatic {
+			return "system_static_changed"
+		}
+		if prev.System != sig.System {
+			return "system_dynamic_changed"
+		}
+		if shared == 0 {
+			return "history_rewritten"
+		}
+		return "prefix_hit"
+	}
+	if !roleSeen {
+		return "cold_role"
+	}
+	if rolePrev.Tools != sig.Tools {
+		return "tools_changed"
+	}
+	if rolePrev.SystemStatic != sig.SystemStatic {
+		return "system_static_changed"
+	}
+	if len(sig.Messages) > 0 && len(rolePrev.Messages) > 0 && sig.Messages[0] == rolePrev.Messages[0] {
+		return "cross_session_prefix_hit"
+	}
+	return "cross_session_turn1_diverged"
+}
 
 func traceModelRequest(req *http.Request) uint64 {
 	if !CacheTraceState().Enabled {
@@ -140,14 +211,26 @@ func traceModelRequest(req *http.Request) uint64 {
 		return 0
 	}
 	sid := transcript.SessionIDFrom(req.Context())
+	role := sessionRole(sid)
 	endpoint := sha256.Sum256([]byte(req.URL.String() + "|" + sid + "|" + sig.Model))
 	key := hex.EncodeToString(endpoint[:])
+	roleDigest := sha256.Sum256([]byte(req.URL.String() + "|role:" + role + "|" + sig.Model))
+	roleKey := hex.EncodeToString(roleDigest[:])
 	cacheTraceHistory.Lock()
 	previous, seen := cacheTraceHistory.last[key]
 	if !seen && len(cacheTraceHistory.last) >= 64 {
 		cacheTraceHistory.last = map[string]cacheSignature{}
 	}
 	cacheTraceHistory.last[key] = sig
+	var rolePrevious cacheSignature
+	var roleSeen bool
+	if role != "" {
+		rolePrevious, roleSeen = cacheTraceHistory.lastByRole[roleKey]
+		if !roleSeen && len(cacheTraceHistory.lastByRole) >= 64 {
+			cacheTraceHistory.lastByRole = map[string]cacheSignature{}
+		}
+		cacheTraceHistory.lastByRole[roleKey] = sig
+	}
 	cacheTraceHistory.Unlock()
 	shared := 0
 	if seen {
@@ -155,16 +238,21 @@ func traceModelRequest(req *http.Request) uint64 {
 			shared++
 		}
 	}
+	missCause := classifyCacheMiss(seen, previous, roleSeen, rolePrevious, sig, shared)
+	rolePrefixSame := roleSeen && rolePrevious.Tools == sig.Tools && rolePrevious.SystemStatic == sig.SystemStatic
 	traceID := cacheTraceSequence.Add(1)
 	addCacheDiagnostic(CacheDiagnostic{
-		ID: traceID, At: time.Now().UTC(), Session: sid, Model: sig.Model, Previous: seen,
-		SystemSame: seen && previous.System == sig.System, ToolsSame: seen && previous.Tools == sig.Tools,
+		ID: traceID, At: time.Now().UTC(), Session: sid, Role: role, Model: sig.Model, Previous: seen,
+		SystemStaticSame: seen && previous.SystemStatic == sig.SystemStatic,
+		SystemSame:       seen && previous.System == sig.System, ToolsSame: seen && previous.Tools == sig.Tools,
+		RolePrefixSame: rolePrefixSame, MissCause: missCause,
 		SharedMessages: shared, Messages: len(sig.Messages), PreviousMessages: len(previous.Messages),
-		System: sig.System, Tools: sig.Tools, Breakpoints: append([]string{}, sig.Breakpoints...), Frames: []CacheUsageFrame{},
+		SystemStatic: sig.SystemStatic, System: sig.System, Tools: sig.Tools,
+		Breakpoints: append([]string{}, sig.Breakpoints...), Frames: []CacheUsageFrame{},
 	})
 	encoded, _ := json.Marshal(sig)
-	log.Printf("[cache-trace] trace_id=%d session=%q previous=%t system_same=%t tools_same=%t shared_messages=%d structure=%s",
-		traceID, sid, seen, seen && previous.System == sig.System, seen && previous.Tools == sig.Tools, shared, encoded)
+	log.Printf("[cache-trace] trace_id=%d session=%q role=%q previous=%t system_static_same=%t system_same=%t tools_same=%t role_prefix_same=%t miss_cause=%s shared_messages=%d structure=%s",
+		traceID, sid, role, seen, seen && previous.SystemStatic == sig.SystemStatic, seen && previous.System == sig.System, seen && previous.Tools == sig.Tools, rolePrefixSame, missCause, shared, encoded)
 	return traceID
 }
 

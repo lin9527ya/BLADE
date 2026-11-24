@@ -149,3 +149,36 @@ func TestCacheTraceGatewayUsageCanExposeTopLevelMismatch(t *testing.T) {
 		t.Fatal("gateway metadata leaked")
 	}
 }
+
+func TestCacheTraceRoleCrossSessionDiagnostics(t *testing.T) {
+	t.Setenv(CacheTraceEnv, "1")
+	ClearCacheDiagnostics()
+	t.Cleanup(ClearCacheDiagnostics)
+
+	reqBody := `{"model":"claude-test","system":[{"type":"text","text":"STATIC","cache_control":{"type":"ephemeral"}},{"type":"text","text":"TASK_1"}],"tools":[{"name":"Bash","input_schema":{}}],"messages":[{"role":"user","content":"OVERVIEW_WAVE"}]}`
+	req1, _ := http.NewRequest("POST", "https://example.invalid/v1/messages", strings.NewReader(reqBody))
+	req1 = req1.WithContext(transcript.WithSessionID(context.Background(), "exp9-worker-i1"))
+	id1 := traceModelRequest(req1)
+
+	reqBody2 := `{"model":"claude-test","system":[{"type":"text","text":"STATIC","cache_control":{"type":"ephemeral"}},{"type":"text","text":"TASK_1"}],"tools":[{"name":"Bash","input_schema":{}}],"messages":[{"role":"user","content":"OVERVIEW_WAVE"}]}`
+	req2, _ := http.NewRequest("POST", "https://example.invalid/v1/messages", strings.NewReader(reqBody2))
+	req2 = req2.WithContext(transcript.WithSessionID(context.Background(), "exp9-worker-i2"))
+	id2 := traceModelRequest(req2)
+
+	reqBody3 := `{"model":"claude-test","system":[{"type":"text","text":"STATIC","cache_control":{"type":"ephemeral"}},{"type":"text","text":"TASK_2"}],"tools":[{"name":"Bash","input_schema":{}}],"messages":[{"role":"user","content":"DIFFERENT_TURN1"}]}`
+	req3, _ := http.NewRequest("POST", "https://example.invalid/v1/messages", strings.NewReader(reqBody3))
+	req3 = req3.WithContext(transcript.WithSessionID(context.Background(), "exp9-worker-i3"))
+	id3 := traceModelRequest(req3)
+
+	rows := CacheDiagnosticSnapshot("9", "", 10)
+	byID := map[uint64]CacheDiagnostic{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if byID[id1].MissCause != "cold_role" || byID[id2].MissCause != "cross_session_prefix_hit" || !byID[id2].RolePrefixSame {
+		t.Fatalf("unexpected cross-session hit diagnostic: d1=%+v d2=%+v", byID[id1], byID[id2])
+	}
+	if byID[id3].MissCause != "cross_session_turn1_diverged" || !byID[id3].RolePrefixSame {
+		t.Fatalf("expected system_static+tools match across dynamic tail change: d3=%+v", byID[id3])
+	}
+}

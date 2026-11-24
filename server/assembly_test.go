@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	actool "github.com/lin9527ya/Norma/tool"
@@ -92,5 +94,67 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	defer c2()
 	if !hasSkillTool(combined) {
 		t.Fatalf("AugmentTools should surface the Skill meta-tool")
+	}
+}
+
+// TestLazyMCPAssemblyUsesDBSchemasWithoutDial verifies that when MCP tool schemas
+// are already persisted in mcp_tools_cache, ToolAugment assembles deterministic
+// CoreTool proxies without spawning external stdio/HTTP MCP servers.
+func TestLazyMCPAssemblyUsesDBSchemasWithoutDial(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) — skipping", err)
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	t.Cleanup(func() { _ = pg.Close() })
+
+	srvName := "t-lazy-mcp"
+	mcpID, err := pg.SaveMCP(&db.MCPServer{
+		Name:      srvName,
+		Transport: "stdio",
+		Command:   "/nonexistent/should-never-spawn-at-assembly",
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.DeleteMCP(mcpID) })
+
+	if err := pg.SaveMCPTools(mcpID, []db.MCPTool{
+		{Name: "mcp__t-lazy-mcp__zebra", Description: "z tool", Schema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "mcp__t-lazy-mcp__alpha", Description: "a tool", Schema: json.RawMessage(`{"type":"object"}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ag, _ := pg.GetAgentByKey("planner")
+	if ag == nil {
+		t.Fatal("planner agent missing")
+	}
+	if err := pg.ToggleVisibility(ag.ID, "mcp", mcpID, true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.ToggleVisibility(ag.ID, "mcp", mcpID, false) })
+
+	wireAgentAugment(pg, t.TempDir(), nil)
+	t.Cleanup(func() { agent.ToolAugment = nil })
+
+	extra, def, cleanup := agent.ToolAugment(context.Background(), "planner")
+	defer cleanup()
+
+	var names []string
+	for _, tl := range extra {
+		if strings.HasPrefix(tl.Name(), "mcp__t-lazy-mcp__") {
+			names = append(names, tl.Name())
+		}
+	}
+	if len(names) != 2 || names[0] != "mcp__t-lazy-mcp__alpha" || names[1] != "mcp__t-lazy-mcp__zebra" {
+		t.Fatalf("expected sorted lazy MCP tools from DB cache without dialing binary, got %v", names)
+	}
+	if len(def.GlobalNames) < 2 || def.GlobalNames[0] != "mcp__t-lazy-mcp__alpha" {
+		t.Fatalf("expected sorted GlobalNames, got %v", def.GlobalNames)
 	}
 }

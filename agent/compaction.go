@@ -597,7 +597,7 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		Messages:        []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
 		MaxTokens:       1500,
 		Thinking:        "disabled",
-		PromptCacheKey:  transcript.SessionIDFrom(ctx),
+		PromptCacheKey:  "cold-compactor",
 	}
 	msg, _, _, err := c.prov.Complete(ctx, req)
 	if err != nil {

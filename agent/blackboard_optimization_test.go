@@ -87,9 +87,9 @@ func TestBlackboardDeltaCoreAndWorkerSituationData(t *testing.T) {
 			t.Fatalf("delta view missing %q", want)
 		}
 	}
-	for _, forbid := range []string{"cold_digests", "folded_intents", "related_tasks", "attention_status"} {
+	for _, forbid := range []string{"cold_digests", "folded_intents", "related_tasks", "attention_status", "task", "campaign", "asset_scope"} {
 		if _, ok := delta[forbid]; ok {
-			t.Fatalf("delta view leaked full-only key %q", forbid)
+			t.Fatalf("delta view leaked full-only/static key %q", forbid)
 		}
 	}
 

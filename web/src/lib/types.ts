@@ -2587,6 +2587,9 @@ export interface LLMProfile {
   input_tokens_includes_cache?: boolean;
   preserve_thinking_blocks?: boolean;
   cache_breakpoints?: string;
+  cache_ttl?: string;
+  // OpenAI Prompt Cache 保留策略（仅 openai / openai-responses）：
+  prompt_cache_retention?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
 }

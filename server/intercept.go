@@ -86,13 +86,14 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 // streamCollectTextLimit is the same bounded text collector with an explicit
 // output cap (CVE report extraction needs room for several records).
 func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user string, maxTokens int) (string, error) {
-	// 单发调用不经过 agent 会话循环；已有会话 id（从任务/对话上下文进来）保持不动，
-	// 缺省时按稳定 system 摘要生成一个确定性 id，既满足强制 session-id 头的网关
-	// （如 x-opencode-session），也让同一 judge/抽取模板在会话粘性路由下命中前缀缓存。
+	// 单发调用不经过 agent 会话循环；已有会话 id（从任务/对话上下文进来）保留在 ctx 上
+	// 用于 SessionHeaderKey / 用量归因，但 PromptCacheKey 单独按稳定 system 摘要生成，
+	// 避免把一次性评审/抽取绑定到短命 worker session，最大化跨任务前缀命中。
+	sum := sha256.Sum256([]byte(system))
+	cacheKey := "oneshot-" + hex.EncodeToString(sum[:8])
 	sid := transcript.SessionIDFrom(ctx)
 	if sid == "" {
-		sum := sha256.Sum256([]byte(system))
-		sid = "oneshot-" + hex.EncodeToString(sum[:8])
+		sid = cacheKey
 		ctx = transcript.WithSessionID(ctx, sid)
 	}
 	if maxTokens <= 0 {
@@ -106,7 +107,7 @@ func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user
 		MaxTokens:       maxTokens,
 		Temperature:     &temp,
 		Thinking:        "disabled",
-		PromptCacheKey:  sid,
+		PromptCacheKey:  cacheKey,
 	}
 	var sb strings.Builder
 	for ev, err := range prov.Stream(ctx, req) {

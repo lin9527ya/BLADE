@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/lin9527ya/Norma/permission"
 	"github.com/lin9527ya/Norma/skill"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/agent"
@@ -17,6 +20,190 @@ import (
 	"github.com/lin9527ya/blade/toolpolicy"
 	"github.com/lin9527ya/blade/traffic"
 )
+
+type cachedMCPToolDef struct {
+	name        string
+	description string
+	schema      map[string]any
+}
+
+const mcpSchemaCacheTTL = 5 * time.Minute
+
+var mcpSchemaCache = struct {
+	mu      sync.Mutex
+	entries map[string]mcpSchemaCacheEntry
+}{entries: map[string]mcpSchemaCacheEntry{}}
+
+type mcpSchemaCacheEntry struct {
+	expires time.Time
+	defs    []cachedMCPToolDef
+}
+
+func mcpServerCacheKey(m *db.MCPServer) string {
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%t|%s",
+		m.ID, m.Transport, m.Command, string(m.Args), string(m.Env), m.URL, m.Insecure, strings.Join(m.Tools, ","))
+}
+
+// lazyMCPServerSession defers dialing an external MCP server until a run
+// actually invokes one of its tools, letting schema assembly stay zero-spawn
+// and deterministic when schemas are already cached in DB or memory.
+type lazyMCPServerSession struct {
+	runCtx context.Context
+	srv    *db.MCPServer
+	mu     sync.Mutex
+	client mcpClient
+	byName map[string]actool.CoreTool
+}
+
+func (s *lazyMCPServerSession) call(ctx context.Context, toolName string, args json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+	s.mu.Lock()
+	if s.client == nil {
+		dialCtx := s.runCtx
+		if dialCtx == nil || dialCtx.Err() != nil {
+			dialCtx = ctx
+		}
+		cl, err := connectMCP(dialCtx, s.srv)
+		if err != nil {
+			s.mu.Unlock()
+			return actool.Errorf(fmt.Sprintf("mcp %s 连接失败: %v", s.srv.Name, err)), nil
+		}
+		ts, err := cl.Tools(dialCtx)
+		if err != nil {
+			_ = cl.Close()
+			s.mu.Unlock()
+			return actool.Errorf(fmt.Sprintf("mcp %s tools/list 失败: %v", s.srv.Name, err)), nil
+		}
+		byName := make(map[string]actool.CoreTool, len(ts))
+		for _, t := range ts {
+			byName[t.Name()] = t
+		}
+		s.client = cl
+		s.byName = byName
+	}
+	target := s.byName[toolName]
+	s.mu.Unlock()
+	if target == nil {
+		return actool.Errorf(fmt.Sprintf("mcp tool %s not found on %s", toolName, s.srv.Name)), nil
+	}
+	return target.Call(ctx, args, tc)
+}
+
+func (s *lazyMCPServerSession) Close() error {
+	s.mu.Lock()
+	cl := s.client
+	s.client = nil
+	s.byName = nil
+	s.mu.Unlock()
+	if cl != nil {
+		return cl.Close()
+	}
+	return nil
+}
+
+func newLazyMCPTool(def cachedMCPToolDef, session *lazyMCPServerSession) actool.CoreTool {
+	return actool.Build(actool.Spec{
+		Name:        def.name,
+		Description: def.description,
+		Schema:      def.schema,
+		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
+			return permission.AskUser("call MCP tool " + def.name + "?")
+		},
+		Run: func(ctx context.Context, args json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+			return session.call(ctx, def.name, args, tc)
+		},
+	})
+}
+
+func cachedMCPDefsFromDB(pg *db.DB, serverID int64) ([]cachedMCPToolDef, bool) {
+	rows, err := pg.MCPToolsDetailed(serverID)
+	if err != nil || len(rows) == 0 {
+		return nil, false
+	}
+	defs := make([]cachedMCPToolDef, 0, len(rows))
+	for _, r := range rows {
+		if !r.Enabled {
+			continue
+		}
+		if len(r.Schema) == 0 {
+			return nil, false
+		}
+		var sc map[string]any
+		if err := json.Unmarshal(r.Schema, &sc); err != nil || sc == nil {
+			return nil, false
+		}
+		defs = append(defs, cachedMCPToolDef{name: r.Name, description: r.Description, schema: sc})
+	}
+	if len(defs) == 0 {
+		// All cached tools explicitly disabled by the user -> zero enabled tools, no live connect needed.
+		return nil, true
+	}
+	sort.Slice(defs, func(i, j int) bool { return defs[i].name < defs[j].name })
+	return defs, true
+}
+
+func resolveMCPToolDefs(ctx context.Context, pg *db.DB, m *db.MCPServer) ([]actool.CoreTool, io.Closer, error) {
+	session := &lazyMCPServerSession{runCtx: ctx, srv: m}
+	if defs, ok := cachedMCPDefsFromDB(pg, m.ID); ok {
+		tools := make([]actool.CoreTool, 0, len(defs))
+		for _, d := range defs {
+			tools = append(tools, newLazyMCPTool(d, session))
+		}
+		return tools, session, nil
+	}
+
+	key := mcpServerCacheKey(m)
+	now := time.Now()
+	mcpSchemaCache.mu.Lock()
+	if ent, ok := mcpSchemaCache.entries[key]; ok && now.Before(ent.expires) {
+		mcpSchemaCache.mu.Unlock()
+		off, _ := pg.MCPDisabledTools(m.ID)
+		tools := make([]actool.CoreTool, 0, len(ent.defs))
+		for _, d := range ent.defs {
+			if off[d.name] {
+				continue
+			}
+			tools = append(tools, newLazyMCPTool(d, session))
+		}
+		return tools, session, nil
+	}
+	mcpSchemaCache.mu.Unlock()
+
+	cl, err := connectMCP(ctx, m)
+	if err != nil {
+		return nil, nil, err
+	}
+	ts, err := cl.Tools(ctx)
+	if err != nil {
+		_ = cl.Close()
+		return nil, nil, fmt.Errorf("tools/list: %w", err)
+	}
+	sort.Slice(ts, func(i, j int) bool { return ts[i].Name() < ts[j].Name() })
+	byName := make(map[string]actool.CoreTool, len(ts))
+	allDefs := make([]cachedMCPToolDef, 0, len(ts))
+	for _, t := range ts {
+		byName[t.Name()] = t
+		allDefs = append(allDefs, cachedMCPToolDef{
+			name:        t.Name(),
+			description: t.Description(),
+			schema:      t.InputSchema(),
+		})
+	}
+	mcpSchemaCache.mu.Lock()
+	mcpSchemaCache.entries[key] = mcpSchemaCacheEntry{expires: time.Now().Add(mcpSchemaCacheTTL), defs: allDefs}
+	mcpSchemaCache.mu.Unlock()
+
+	session.client = cl
+	session.byName = byName
+	off, _ := pg.MCPDisabledTools(m.ID)
+	tools := make([]actool.CoreTool, 0, len(allDefs))
+	for _, d := range allDefs {
+		if off[d.name] {
+			continue
+		}
+		tools = append(tools, newLazyMCPTool(d, session))
+	}
+	return tools, session, nil
+}
 
 // wireAgentAugment connects the PG agent_visibility table into the agent runtime:
 // an agent's visible skills are loaded from the filesystem and packed into one
@@ -113,25 +300,15 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectMCP(ctx, m)
+				lazyTools, cl, err := resolveMCPToolDefs(ctx, pg, m)
 				if err != nil {
 					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
 					continue
 				}
-				closers = append(closers, cl)
-				ts, err := cl.Tools(ctx)
-				if err != nil {
-					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
-					continue
+				if cl != nil {
+					closers = append(closers, cl)
 				}
-				// 工具级开关（全局）：关掉的工具在这里就被丢掉——收集 allNames /
-				// globalNames / serverTools 之前过滤一次，于是「直接可见 → 全局块」
-				// 与「skill-gated → 解锁」两条注入路径同时拿不到它。
-				off, _ := pg.MCPDisabledTools(m.ID)
-				for _, t := range ts {
-					if off[t.Name()] {
-						continue
-					}
+				for _, t := range lazyTools {
 					extra = append(extra, t)
 					allNames = append(allNames, t.Name())
 					serverTools[m.Name] = append(serverTools[m.Name], t.Name())
@@ -188,7 +365,13 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		if hostTools != nil {
 			ht, deferredBinds := hostTools()
 			extra = append(extra, ht...)
-			for name, boundAgents := range deferredBinds {
+			deferredKeys := make([]string, 0, len(deferredBinds))
+			for name := range deferredBinds {
+				deferredKeys = append(deferredKeys, name)
+			}
+			sort.Strings(deferredKeys)
+			for _, name := range deferredKeys {
+				boundAgents := deferredBinds[name]
 				if !contains(boundAgents, a.Key) {
 					continue // only defer names this agent is actually bound to
 				}
@@ -200,6 +383,8 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				}
 			}
 		}
+		sort.Strings(allNames)
+		sort.Strings(globalNames)
 
 		cleanup := func() {
 			for _, c := range closers {

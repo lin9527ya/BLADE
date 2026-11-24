@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lin9527ya/Norma/agentcore"
@@ -106,6 +109,27 @@ type Worker struct {
 	// compactionLLM optionally supplies an independent provider for context
 	// summarization. nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
+	cacheOpts     cacheOptionResolvers
+
+	// overviewCache freezes the rendered global worker overview briefly per wave
+	// so concurrent workers waking up together share identical Turn-1 prefixes.
+	overviewMu    sync.Mutex
+	overviewCache map[int64]*workerOverviewEntry
+}
+
+const workerOverviewTTL = 45 * time.Second
+
+type workerOverviewEntry struct {
+	epoch    string
+	at       time.Time
+	rendered string
+}
+
+// WorkerPromptCacheKey returns a task-scoped shared cache key across worker
+// runs so concurrent/sequential per-intent workers hit the same prefix cache
+// bucket and sticky routing affinity.
+func WorkerPromptCacheKey(explorationID int64) string {
+	return fmt.Sprintf("exp%d-worker", explorationID)
 }
 
 // WorkerSessionID is the legacy per-intent transcript key. New runs use
@@ -243,6 +267,11 @@ func (w *Worker) SetMaxTokens(fn func() int) { w.maxTokensFn = fn }
 // SetCompactionLLM supplies an optional independent provider for context
 // summarization. nil/false = keep using this agent's own provider.
 func (w *Worker) SetCompactionLLM(fn func() (CompactionLLM, bool)) { w.compactionLLM = fn }
+
+// SetCacheOptions wires per-run resolvers for CacheTTL, PromptCacheRetention, and PreserveThinking.
+func (w *Worker) SetCacheOptions(ttlFn, retentionFn func() string, preserveThinkingFn func() bool) {
+	w.cacheOpts = cacheOptionResolvers{cacheTTLFn: ttlFn, retentionFn: retentionFn, preserveThinkingFn: preserveThinkingFn}
+}
 
 func (w *Worker) maxTokens() int {
 	if w.maxTokensFn == nil {
@@ -732,7 +761,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
-	overview := renderWorkerGraphOverview(tsx.graphOverviewDataForWorker())
+	overview := w.cachedWorkerOverview(ts, coverageEnabled, func() string {
+		return renderWorkerGraphOverview(tsx.graphOverviewDataForWorker())
+	})
 	// system 只放跨意图不变的内容；意图/资产/runDir 放进本次启动的 user turn，
 	// 否则同一槽位每条意图都会改写 system 前缀，provider 的前缀缓存直接失效。
 	sysBody := workerSystem(proxyAddr, proxyCA, w.workDir)
@@ -780,7 +811,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		UnlockSet:               def.Unlock,
 		PermissionMode:          permission.ModeBypass,
 		OmitCurrentDateReminder: true,
-		PromptCacheKey:          sessionID,
+		PromptCacheKey:          WorkerPromptCacheKey(ts.ID()),
 		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
 		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
 		EnableWebFetch: true,
@@ -820,6 +851,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		NonStreaming:  w.nonStreaming(),      // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:     w.maxTokens(),         // 0 = 不发上限,由服务端默认值决定
 	}
+	w.cacheOpts.apply(&opts)
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
 	}
@@ -909,4 +941,71 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
 	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
 	return reason, tsx.Writes(), err
+}
+
+const workerOverviewMaxTasks = 64
+
+func (w *Worker) cachedWorkerOverview(ts *db.ExplorationStore, coverageEnabled bool, build func() string) string {
+	if w == nil || ts == nil {
+		return build()
+	}
+	expID := ts.ID()
+	epoch := workerOverviewEpoch(ts, coverageEnabled)
+	now := time.Now()
+	w.overviewMu.Lock()
+	defer w.overviewMu.Unlock()
+	if w.overviewCache == nil {
+		w.overviewCache = make(map[int64]*workerOverviewEntry)
+	}
+	if e := w.overviewCache[expID]; e != nil && e.epoch == epoch && now.Sub(e.at) < workerOverviewTTL {
+		return e.rendered
+	}
+	rendered := build()
+	if len(w.overviewCache) >= workerOverviewMaxTasks {
+		clear(w.overviewCache)
+	}
+	w.overviewCache[expID] = &workerOverviewEntry{
+		epoch:    epoch,
+		at:       now,
+		rendered: rendered,
+	}
+	return rendered
+}
+
+// workerOverviewEpoch hashes only slow-changing situational state (coverage flag,
+// goals, active hints, facts/findings/loot counts & latest ids) while ignoring
+// intent claim/running churn so concurrent workers in one wave share the same
+// frozen Turn-1 overview prefix.
+func workerOverviewEpoch(ts *db.ExplorationStore, coverageEnabled bool) string {
+	var digest string
+	_ = ts.ReadSnapshot(context.Background(), func(_ *db.DB, s *db.ExplorationStore) error {
+		h := sha256.New()
+		fmt.Fprintf(h, "cov=%t;", coverageEnabled)
+		if stats, err := s.Stats(); err == nil {
+			for _, kind := range []string{db.KindGoal, db.KindHint, db.KindFact, db.KindFinding, db.KindFoothold, db.KindCredential} {
+				fmt.Fprintf(h, "%s=%d;", kind, stats[kind])
+			}
+		}
+		if af, err := s.CountActiveFindings(); err == nil {
+			fmt.Fprintf(h, "af=%d;", af)
+		}
+		for _, kind := range []string{db.KindFact, db.KindFinding, db.KindFoothold, db.KindCredential} {
+			if latest, err := s.ListByKind(kind, 1); err == nil && len(latest) > 0 {
+				fmt.Fprintf(h, "top_%s=%d:%d:%s;", kind, latest[0].ID, latest[0].ContentVersion, latest[0].State)
+			}
+		}
+		if goals, err := s.ListByKind(db.KindGoal, 100); err == nil {
+			for _, g := range goals {
+				fmt.Fprintf(h, "g=%d:%s:%d;", g.ID, g.State, g.ContentVersion)
+			}
+		}
+		if hints, err := s.ListByKindState(db.KindHint, db.StateHintActive, db.MaxActiveHints); err == nil {
+			for _, ht := range hints {
+				fmt.Fprintf(h, "h=%d:%s:%d;", ht.ID, ht.State, ht.ContentVersion)
+			}
+		}
+		digest = hex.EncodeToString(h.Sum(nil))
+		return nil
+	})
+	return digest
 }

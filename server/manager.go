@@ -119,22 +119,30 @@ type Task struct {
 	pendingAssetSummary      string
 	pendingDropped           int
 
-	prefixMu     sync.Mutex    `json:"-"`
-	prefixState  uint8         `json:"-"` // 0=idle, 1=first-wave leader warming KV cache, 2=warmed
-	prefixWarmCh chan struct{} `json:"-"`
+	prefixMu       sync.Mutex    `json:"-"`
+	prefixState    uint8         `json:"-"` // 0=idle, 1=first-wave leader warming KV cache, 2=warmed
+	prefixWarmedAt time.Time     `json:"-"`
+	prefixWarmCh   chan struct{} `json:"-"`
 }
 
-const workerPrefixWarmWindow = 2500 * time.Millisecond
+const (
+	workerPrefixWarmWindow = 4 * time.Second
+	workerPrefixWarmTTL    = 4 * time.Minute
+)
 
-// acquirePrefixWarmSlot lets the very first dispatched worker start immediately at
-// t=0 to warm the shared system+tools KV prefix, while concurrent first-wave
-// siblings wait briefly until the leader receives its first response or the bounded
-// warmup window elapses. Zero-value safe; no-op once warmed.
+// acquirePrefixWarmSlot lets the very first dispatched worker in a cold or
+// expired window start immediately at t=0 to warm the shared system+tools KV
+// prefix, while concurrent siblings wait briefly until the leader receives its
+// first response or the bounded warmup window elapses. Re-arms after 4m idle so
+// 5m TTL caches get re-warmed cleanly. Zero-value safe.
 func (t *Task) acquirePrefixWarmSlot(ctx context.Context) (isLeader bool) {
-	if t == nil || pgdb.PerIntentWorkerSession("") {
+	if t == nil {
 		return false
 	}
 	t.prefixMu.Lock()
+	if t.prefixState == 2 && !t.prefixWarmedAt.IsZero() && time.Since(t.prefixWarmedAt) >= workerPrefixWarmTTL {
+		t.prefixState = 0
+	}
 	switch t.prefixState {
 	case 2:
 		t.prefixMu.Unlock()
@@ -166,12 +174,9 @@ func (t *Task) markPrefixWarmed() {
 		return
 	}
 	t.prefixMu.Lock()
-	if t.prefixState == 2 {
-		t.prefixMu.Unlock()
-		return
-	}
 	ch := t.prefixWarmCh
 	t.prefixState = 2
+	t.prefixWarmedAt = time.Now()
 	t.prefixWarmCh = nil
 	t.prefixMu.Unlock()
 	if ch != nil {

@@ -2320,7 +2320,9 @@ export const api = {
     custom_headers?: Record<string, string>; // 固定附加的请求头（User-Agent 等）；{} = 不附加
     input_tokens_includes_cache?: boolean;
     preserve_thinking_blocks?: boolean;
-    cache_breakpoints?: string; // ""=仅系统前缀 | "rolling"=工具+历史滚动断点（仅 anthropic 格式）
+    cache_breakpoints?: string; // ""/"rolling"=滚动多断点(默认) | "system"=仅系统前缀（仅 anthropic 格式）
+    cache_ttl?: string; // ""/"5m" | "1h"（仅 anthropic 静态前缀）
+    prompt_cache_retention?: string; // "" | "in_memory" | "24h"（openai / openai-responses）
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),

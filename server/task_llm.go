@@ -208,6 +208,33 @@ func (r *taskLLMRuntime) maxTokens() int {
 	return cfg.MaxTokens
 }
 
+func (r *taskLLMRuntime) cacheTTL() string {
+	cfg, ok := r.activeCfg()
+	if !ok {
+		return ""
+	}
+	return cfg.CacheTTL
+}
+
+func (r *taskLLMRuntime) promptCacheRetention() string {
+	cfg, ok := r.activeCfg()
+	if !ok {
+		return ""
+	}
+	return cfg.PromptCacheRetention
+}
+
+func (r *taskLLMRuntime) preserveThinking() bool {
+	cfg, ok := r.activeCfg()
+	return ok && cfg.PreservesThinking()
+}
+
+// PreservesThinking exposes thinking-preservation detection on taskLLMRuntime
+// so agentcore/compactor auto-detection works through the task router.
+func (r *taskLLMRuntime) PreservesThinking() bool {
+	return r != nil && r.preserveThinking()
+}
+
 // compactionLLM resolves the optional independent summary provider. It returns
 // false (use the agent's own provider) when no compactor profile is configured.
 func (r *taskLLMRuntime) compactionLLM() (agent.CompactionLLM, bool) {
@@ -222,7 +249,14 @@ func (r *taskLLMRuntime) compactionLLM() (agent.CompactionLLM, bool) {
 	if !ok {
 		return agent.CompactionLLM{}, false
 	}
-	return agent.CompactionLLM{Provider: prov, MaxTokens: cfg.MaxTokens, NonStreaming: !cfg.Stream}, true
+	return agent.CompactionLLM{
+		Provider:             prov,
+		MaxTokens:            cfg.MaxTokens,
+		NonStreaming:         !cfg.Stream,
+		PreserveThinking:     cfg.PreservesThinking(),
+		CacheTTL:             cfg.CacheTTL,
+		PromptCacheRetention: cfg.PromptCacheRetention,
+	}, true
 }
 
 func parseTaskID(id string) (int64, error) {
@@ -674,7 +708,8 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
 	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
-	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
+	wk.SetCacheOptions(workerRuntime.cacheTTL, workerRuntime.promptCacheRetention, workerRuntime.preserveThinking)
+	wk.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetNotifyFact(t.NotifyFact)
 	wk.SetNotifyAsset(t.NotifyAsset)
@@ -689,6 +724,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
+	pl.SetCacheOptions(plannerRuntime.cacheTTL, plannerRuntime.promptCacheRetention, plannerRuntime.preserveThinking)
 	// verify_evidence(deep=true) 的复核走同一任务 provider chain，但必须接回
 	// 引擎的在飞调用计数、任务/探索归因；否则暂停/删除/预算视图都看不到它。
 	pl.SetLLMVerifier(s.taskLLMVerifier(t, pl))
@@ -722,6 +758,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)
+	main.SetCacheOptions(mainRuntime.cacheTTL, mainRuntime.promptCacheRetention, mainRuntime.preserveThinking)
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	main.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	main.SetCompactionLLM(compactorRuntime.compactionLLM)

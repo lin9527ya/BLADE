@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/lin9527ya/blade/db"
 )
@@ -363,7 +362,6 @@ func slimIntentSummary(in map[string]any) map[string]any {
 func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.BlackboardChanges) map[string]any {
 	out := map[string]any{}
 	t.populateGoalsAndHints(out, 100)
-	t.populateTaskAndScope(out)
 	t.populateCoverageSummary(out)
 	if health := t.graphHealth(); len(health) > 0 {
 		out["graph_health"] = health
@@ -447,7 +445,7 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 		for _, lead := range tracking.PendingPreview {
 			row := map[string]any{
 				"id": lead.ID, "from_fact": lead.FactID, "state": lead.State,
-				"kind": lead.Kind, "asset_ids": lead.AssetIDs, "age_min": int(time.Since(lead.FactCreatedAt).Minutes()),
+				"kind": lead.Kind, "asset_ids": lead.AssetIDs, "age_min": ageMinutesStable(lead.FactCreatedAt),
 			}
 			addLeadTextPreview(row, lead.Text, lead.FactID)
 			if source := factProducers[lead.FactID]; source > 0 {
@@ -509,7 +507,7 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 			if (highValue && len(unconsumedHigh) < 12) || (!highValue && len(unconsumedOther) < 12) {
 				item := map[string]any{
 					"id": n.ID, "summary": asText(fp["summary"]), "polarity": pol,
-					"confidence": asText(fp["confidence"]), "age_min": int(time.Since(n.CreatedAt).Minutes()),
+					"confidence": asText(fp["confidence"]), "age_min": ageMinutesStable(n.CreatedAt),
 				}
 				if len(factEnables) > 0 {
 					item["enables"] = factEnables

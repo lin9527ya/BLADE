@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lin9527ya/Norma/agentcore"
@@ -32,14 +33,20 @@ type ChatAgent struct {
 	proxyCACert    string
 	proxyFn        func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
 	webSearch      WebSearchOpts
-	guard          *guard.Guard // optional; nil disables intercept hooks for chat
-	nonStreamingFn func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn   func() bool  // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn    func() int   // resolver: per-reply output cap (nil/0 = send no cap)
+	guard          *guard.Guard         // optional; nil disables intercept hooks for chat
+	nonStreamingFn func() bool          // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn   func() bool          // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn    func() int           // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts      cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
 }
 
 func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window int) *ChatAgent {
 	return &ChatAgent{prov: prov, model: model, workDir: workDir, tx: tx, window: window}
+}
+
+// SetCacheOptions wires per-run resolvers for CacheTTL, PromptCacheRetention, and PreserveThinking.
+func (c *ChatAgent) SetCacheOptions(ttlFn, retentionFn func() string, preserveThinkingFn func() bool) {
+	c.cacheOpts = cacheOptionResolvers{cacheTTLFn: ttlFn, retentionFn: retentionFn, preserveThinkingFn: preserveThinkingFn}
 }
 
 // SetNonStreaming wires a resolver deciding whether chat runs use the
@@ -94,10 +101,20 @@ func chatWorkDirSpec(workDir string) string {
 	return "\n\n**文件输出规约**：需要写文件时，一律写到工作目录 " + workDir + "（这是默认 CWD，相对路径即落在这里，也可用该绝对路径）——不要写 /tmp 或其他绝对路径。"
 }
 
+// chatSystemParts splits the chat prompt into the cross-session static body
+// (before DynamicBoundary) and the per-session working-directory spec (after
+// DynamicBoundary) so sessions sharing an agent key reuse the same system cache.
+func chatSystemParts(agentKey, dataDir, workDir string) (staticPart, dynamicPart string) {
+	staticPart = renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()})
+	dynamicPart = strings.TrimSpace(chatWorkDirSpec(workDir))
+	return staticPart, dynamicPart
+}
+
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have
 // no per-key in-code default, so DefaultAssistantPrompt is the render fallback.
 func chatSystem(agentKey, dataDir, workDir string) string {
-	return renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()}) + chatWorkDirSpec(workDir)
+	staticPart, _ := chatSystemParts(agentKey, dataDir, workDir)
+	return staticPart + chatWorkDirSpec(workDir)
 }
 
 // chatVars carries the runtime variables a custom agent's prompt may reference.
@@ -144,7 +161,8 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		tools = append(tools, NewWebSearchTool(ws))
 	}
 
-	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
+	staticSys, dynamicSys := chatSystemParts(agentKey, c.workDir, sessionWorkDir)
+	system, boundary := deferredSystemWithDynamic(staticSys, def, dynamicSys)
 	opts := agentcore.Options{
 		Provider:                c.prov,
 		SystemPrompt:            system,
@@ -188,6 +206,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		NonStreaming: c.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    c.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
+	c.cacheOpts.apply(&opts)
 	if c.guard != nil {
 		opts.Hooks = c.guard.Hooks()
 	}

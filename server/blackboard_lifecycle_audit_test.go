@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -85,24 +84,34 @@ func TestTriggerMidPriorityBatchAndCriticalImmediate(t *testing.T) {
 	}
 }
 
-func TestAcquirePrefixWarmSlotPerIntentNoStall(t *testing.T) {
+func TestAcquirePrefixWarmSlotPerIntentWarmsOnceAndUnblocks(t *testing.T) {
 	t.Setenv("BLADE_WORKER_PER_INTENT_SESSION", "true")
 	tk := &Task{ID: "9002", notify: make(chan struct{}, 1)}
 
-	start := time.Now()
-	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
+	if !tk.acquirePrefixWarmSlot(context.Background()) {
+		t.Fatal("expected first worker to become warmup leader under PerIntentWorkerSession")
+	}
+	waitersDone := make(chan bool, 3)
+	for i := 0; i < 3; i++ {
 		go func() {
-			defer wg.Done()
-			if tk.acquirePrefixWarmSlot(context.Background()) {
-				t.Error("expected PerIntentWorkerSession to skip warm slot serialization")
-			}
+			waitersDone <- tk.acquirePrefixWarmSlot(context.Background())
 		}()
 	}
-	wg.Wait()
+	// Once the leader marks the prefix warmed, queued siblings wake immediately.
+	time.Sleep(30 * time.Millisecond)
+	tk.markPrefixWarmed()
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		if <-waitersDone {
+			t.Fatal("expected waiting sibling not to become a second warmup leader")
+		}
+	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("acquirePrefixWarmSlot stalled for %v under PerIntentWorkerSession", elapsed)
+		t.Fatalf("siblings stalled after markPrefixWarmed: %v", elapsed)
+	}
+	// Subsequent calls while fresh are non-stalling non-leaders.
+	if tk.acquirePrefixWarmSlot(context.Background()) {
+		t.Fatal("already-warmed slot must not elect another leader within TTL")
 	}
 }
 

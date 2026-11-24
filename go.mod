@@ -8,7 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/compress v1.20.2
 	github.com/larksuite/oapi-sdk-go/v3 v3.13.0
-	github.com/lin9527ya/Norma v0.5.14
+	github.com/lin9527ya/Norma v0.5.15
 	github.com/lqqyt2423/go-mitmproxy v1.9.2
 	github.com/miekg/dns v1.1.72
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1

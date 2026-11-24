@@ -70,11 +70,7 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 		_ = json.Unmarshal(n.Payload, &p)
 		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
 		if n.State == "open" && !n.CreatedAt.IsZero() {
-			wait := int(time.Since(n.CreatedAt).Minutes())
-			if wait < 0 {
-				wait = 0
-			}
-			m["waiting_minutes"] = wait
+			m["waiting_minutes"] = ageMinutesStable(n.CreatedAt)
 			m["priority"] = n.Priority
 			if n.Schedule != nil {
 				m["schedule"] = n.Schedule
@@ -1575,7 +1571,7 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 	if tracking != nil {
 		for _, lead := range tracking.PendingPreview {
 			row := map[string]any{"id": lead.ID, "from_fact": lead.FactID, "state": lead.State, "kind": lead.Kind, "asset_ids": lead.AssetIDs,
-				"age_min": int(time.Since(lead.FactCreatedAt).Minutes())}
+				"age_min": ageMinutesStable(lead.FactCreatedAt)}
 			addLeadTextPreview(row, lead.Text, lead.FactID)
 			if source := factFrom[lead.FactID]; source > 0 {
 				row["from_intent"] = source
@@ -1628,7 +1624,7 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 			if (highValue && len(unconsumedHigh) < 12) || (!highValue && len(unconsumedOther) < 12) {
 				item := map[string]any{
 					"id": n.ID, "summary": asText(fp["summary"]), "polarity": pol,
-					"confidence": asText(fp["confidence"]), "age_min": int(time.Since(n.CreatedAt).Minutes()),
+					"confidence": asText(fp["confidence"]), "age_min": ageMinutesStable(n.CreatedAt),
 				}
 				if len(factEnables) > 0 {
 					item["enables"] = factEnables

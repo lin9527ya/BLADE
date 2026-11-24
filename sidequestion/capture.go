@@ -284,3 +284,15 @@ func (p *boundProvider) Complete(ctx context.Context, req llm.CompletionRequest)
 	}
 	return msg, stop, usage, err
 }
+
+// PreservesThinking delegates provider thinking-preservation detection through
+// the side-question capture wrapper.
+func (p *boundProvider) PreservesThinking() bool {
+	if p == nil || p.inner == nil {
+		return false
+	}
+	if inner, ok := p.inner.(interface{ PreservesThinking() bool }); ok {
+		return inner.PreservesThinking()
+	}
+	return false
+}

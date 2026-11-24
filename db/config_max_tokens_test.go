@@ -20,6 +20,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 		Name: "t-maxtok", Format: "openai", Model: "m", APIKey: "k",
 		MaxTokens: 8192, MaxTokensField: "max_completion_tokens",
 		InputTokensIncludesCache: true, PreserveThinkingBlocks: true, CacheBreakpoints: "rolling",
+		CacheTTL: "1h", PromptCacheRetention: "24h",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +32,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if err != nil || p == nil {
 		t.Fatalf("ProfileByID: %v, p=%v", err, p)
 	}
-	if p.MaxTokens != 8192 || p.MaxTokensField != "max_completion_tokens" || !p.InputTokensIncludesCache || !p.PreserveThinkingBlocks || p.CacheBreakpoints != "rolling" {
+	if p.MaxTokens != 8192 || p.MaxTokensField != "max_completion_tokens" || !p.InputTokensIncludesCache || !p.PreserveThinkingBlocks || p.CacheBreakpoints != "rolling" || p.CacheTTL != "1h" || p.PromptCacheRetention != "24h" {
 		t.Fatalf("keyed load: max_tokens=%d field=%q cache=%+v", p.MaxTokens, p.MaxTokensField, p)
 	}
 
@@ -49,7 +50,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if found == nil {
 		t.Fatal("profile missing from ListProfiles")
 	}
-	if found.MaxTokens != 8192 || found.MaxTokensField != "max_completion_tokens" || !found.InputTokensIncludesCache || !found.PreserveThinkingBlocks || found.CacheBreakpoints != "rolling" {
+	if found.MaxTokens != 8192 || found.MaxTokensField != "max_completion_tokens" || !found.InputTokensIncludesCache || !found.PreserveThinkingBlocks || found.CacheBreakpoints != "rolling" || found.CacheTTL != "1h" || found.PromptCacheRetention != "24h" {
 		t.Fatalf("list load: max_tokens=%d field=%q cache=%+v", found.MaxTokens, found.MaxTokensField, found)
 	}
 
@@ -60,7 +61,9 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	p.MaxTokensField = ""
 	p.InputTokensIncludesCache = false
 	p.PreserveThinkingBlocks = false
-	p.CacheBreakpoints = ""
+	p.CacheBreakpoints = "system"
+	p.CacheTTL = "5m"
+	p.PromptCacheRetention = "in_memory"
 	if _, err := d.SaveProfile(p); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +71,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if err != nil || after == nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if after.MaxTokens != 4096 || after.MaxTokensField != "" || after.InputTokensIncludesCache || after.PreserveThinkingBlocks || after.CacheBreakpoints != "" {
+	if after.MaxTokens != 4096 || after.MaxTokensField != "" || after.InputTokensIncludesCache || after.PreserveThinkingBlocks || after.CacheBreakpoints != "system" || after.CacheTTL != "5m" || after.PromptCacheRetention != "in_memory" {
 		t.Fatalf("after update: max_tokens=%d field=%q cache=%+v", after.MaxTokens, after.MaxTokensField, after)
 	}
 	if after.APIKey != "k" {

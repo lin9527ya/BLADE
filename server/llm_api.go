@@ -54,7 +54,13 @@ func (s *Server) profileToAgentConfig(p *db.LLMProfile) agent.Config {
 	cfg.CustomHeaders = p.CustomHeaders
 	cfg.InputTokensIncludesCache = p.InputTokensIncludesCache
 	cfg.PreserveThinkingBlocks = p.PreserveThinkingBlocks
-	cfg.CacheBreakpoints = p.CacheBreakpoints
+	if cfg.Format == llm.FormatAnthropic {
+		cfg.CacheBreakpoints = agent.ResolveAnthropicCacheBreakpoints(p.CacheBreakpoints)
+		cfg.CacheTTL = p.CacheTTL
+	} else {
+		cfg.CacheBreakpoints = p.CacheBreakpoints
+		cfg.PromptCacheRetention = p.PromptCacheRetention
+	}
 	s.applyProfileRetry(&cfg, p)
 	return cfg
 }
@@ -92,7 +98,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	var sessionHeaderKey string
 	var customHeaders map[string]string
 	var inputTokensIncludesCache, preserveThinkingBlocks bool
-	var cacheBreakpoints string
+	var cacheBreakpoints, cacheTTL, promptCacheRetention string
 	var retry db.RetryOverride
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
 		for _, p := range profs {
@@ -104,10 +110,15 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 				inputTokensIncludesCache = p.InputTokensIncludesCache
 				preserveThinkingBlocks = p.PreserveThinkingBlocks
 				cacheBreakpoints = p.CacheBreakpoints
+				cacheTTL = p.CacheTTL
+				promptCacheRetention = p.PromptCacheRetention
 				retry = p.Retry
 				break
 			}
 		}
+	}
+	if format == "anthropic" && cacheBreakpoints == "" {
+		cacheBreakpoints = "rolling"
 	}
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
 		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
@@ -116,7 +127,8 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
 		CustomHeaders: customHeaders, InputTokensIncludesCache: inputTokensIncludesCache,
-		PreserveThinkingBlocks: preserveThinkingBlocks, CacheBreakpoints: cacheBreakpoints, Retry: retry,
+		PreserveThinkingBlocks: preserveThinkingBlocks, CacheBreakpoints: cacheBreakpoints,
+		CacheTTL: cacheTTL, PromptCacheRetention: promptCacheRetention, Retry: retry,
 	})
 	if err != nil {
 		return err
@@ -215,6 +227,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	s.llm.chatAgent.SetGuard(s.chatGuard())
 	s.llm.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
 	s.llm.chatAgent.SetMaxTokens(maxTokensResolver(cfg))
+	s.llm.chatAgent.SetCacheOptions(func() string { return cfg.CacheTTL }, func() string { return cfg.PromptCacheRetention }, cfg.PreservesThinking)
 	s.llm.chatAgent.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
 	s.llm.prov = prov
 	s.llm.cfg = cfg
@@ -349,6 +362,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	ca.SetGuard(s.chatGuard())
 	ca.SetNonStreaming(nonStreamingResolver(cfg))
 	ca.SetMaxTokens(maxTokensResolver(cfg))
+	ca.SetCacheOptions(func() string { return cfg.CacheTTL }, func() string { return cfg.PromptCacheRetention }, cfg.PreservesThinking)
 	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
 	s.providers.mu.Lock()
 	if ex := s.providers.chatAgents[id]; ex != nil { // lost the race → keep the winner

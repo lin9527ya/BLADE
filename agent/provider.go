@@ -88,9 +88,72 @@ type Config struct {
 	// CacheBreakpoints controls extra Anthropic cache_control breakpoints
 	// ("" = system prefix only; "rolling" = last tool + rolling history messages).
 	CacheBreakpoints string
+	// CacheTTL sets optional Anthropic prompt cache TTL (""/"5m" or "1h") on the
+	// static tools + system prefix; dynamic rolling breakpoints remain default 5m.
+	CacheTTL string
+	// PromptCacheRetention sets OpenAI prompt_cache_retention (""/"in_memory"/"24h")
+	// on endpoints where supportsPromptCacheKey allows sending prompt cache body knobs.
+	PromptCacheRetention string
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
+}
+
+// ResolveAnthropicCacheBreakpoints normalizes persisted/configured breakpoint modes
+// for Anthropic profiles: unset/blank defaults to "rolling", while explicit "system"
+// opts out back to the single system-prefix breakpoint ("").
+func ResolveAnthropicCacheBreakpoints(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "system":
+		return ""
+	case "", "rolling":
+		return "rolling"
+	default:
+		return "rolling"
+	}
+}
+
+// PreservesThinking reports whether the configured Anthropic profile expects
+// historical thinking blocks to stay attached (either explicitly via ThinkingType
+// or via gateway default preserve_thinking_blocks).
+func (c Config) PreservesThinking() bool {
+	return c.PreserveThinkingBlocks || ((c.Format == "" || c.Format == llm.FormatAnthropic) && strings.EqualFold(strings.TrimSpace(c.ThinkingType), "enabled"))
+}
+
+func providerPreservesThinking(p llm.Provider) bool {
+	if p == nil {
+		return false
+	}
+	if pt, ok := p.(interface{ PreservesThinking() bool }); ok {
+		return pt.PreservesThinking()
+	}
+	return false
+}
+
+// cacheOptionResolvers lazily resolves endpoint-specific prompt-cache options
+// (CacheTTL, PromptCacheRetention, PreserveThinking) per run and applies them to
+// agentcore.Options so hot profile reloads take effect without rebuilding agents.
+type cacheOptionResolvers struct {
+	cacheTTLFn         func() string
+	retentionFn        func() string
+	preserveThinkingFn func() bool
+}
+
+func (r cacheOptionResolvers) apply(opts *agentcore.Options) {
+	if opts == nil {
+		return
+	}
+	if r.cacheTTLFn != nil {
+		opts.CacheTTL = r.cacheTTLFn()
+	}
+	if r.retentionFn != nil {
+		opts.PromptCacheRetention = r.retentionFn()
+	}
+	if r.preserveThinkingFn != nil {
+		opts.PreserveThinking = r.preserveThinkingFn()
+	} else if providerPreservesThinking(opts.Provider) {
+		opts.PreserveThinking = true
+	}
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -192,17 +255,27 @@ func FromEnv() (Config, bool) {
 		if c.Model == "" {
 			c.Model = "gpt-4o"
 		}
+		if r := strings.TrimSpace(os.Getenv("BLADE_LLM_PROMPT_CACHE_RETENTION")); r == "in_memory" || r == "24h" {
+			c.PromptCacheRetention = r
+		}
 	case "openai-responses":
 		c.Format = llm.FormatOpenAIResponses
 		c.APIKey = oaiKey
 		if c.Model == "" {
 			c.Model = "gpt-5"
 		}
+		if r := strings.TrimSpace(os.Getenv("BLADE_LLM_PROMPT_CACHE_RETENTION")); r == "in_memory" || r == "24h" {
+			c.PromptCacheRetention = r
+		}
 	default:
 		c.Format = llm.FormatAnthropic
 		c.APIKey = anthKey
 		if c.Model == "" {
 			c.Model = "claude-opus-4-8"
+		}
+		c.CacheBreakpoints = ResolveAnthropicCacheBreakpoints(os.Getenv("BLADE_LLM_CACHE_BREAKPOINTS"))
+		if ttl := strings.TrimSpace(os.Getenv("BLADE_LLM_CACHE_TTL")); ttl == "5m" || ttl == "1h" {
+			c.CacheTTL = ttl
 		}
 	}
 	if c.APIKey == "" {
@@ -316,6 +389,8 @@ func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, e
 	lc.InputTokensIncludesCache = c.InputTokensIncludesCache
 	lc.PreserveThinkingBlocks = c.PreserveThinkingBlocks
 	lc.CacheBreakpoints = c.CacheBreakpoints
+	lc.CacheTTL = c.CacheTTL
+	lc.PromptCacheRetention = c.PromptCacheRetention
 	lc.DisablePromptCacheKey = !supportsPromptCacheKey(c.Format, c.BaseURL)
 	// 重试参数与 SDK 同语义(次数 0=默认/负=关闭,间隔 0=指数退避/>0=固定),原样透传。
 	lc.MaxRetries = c.Retry.ConnectAttempts

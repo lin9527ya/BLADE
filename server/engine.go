@@ -1235,8 +1235,18 @@ func resetPlannerTimer(timer *time.Timer, d time.Duration) {
 	timer.Reset(d)
 }
 
+// plannerCacheSafeTimer leaves a ~45s buffer before the 300s Anthropic prompt
+// cache window expires (turning a nominal 300s interval into 255s so debounce
+// + turn latency don't push the request past t=300s and lose the hot prefix).
+func plannerCacheSafeTimer(interval time.Duration) time.Duration {
+	if interval == db.MinPlanHeartbeatSeconds*time.Second {
+		return 255 * time.Second
+	}
+	return interval
+}
+
 func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
-	interval := plannerHeartbeatInterval(t)
+	interval := plannerCacheSafeTimer(plannerHeartbeatInterval(t))
 	// 心跳定时器在 loop 入口臂 = 从任务 start 计时:即使是跳过首轮 planner 的 seed 任务
 	// (Run 里 frontier 非空不 kick 首轮)、这里一直阻塞,心跳也会在「任务 start + interval」
 	// 触发第一轮规划。之后每次唤醒(边沿/心跳)都重臂 = 距上次任意规划触发的时长。

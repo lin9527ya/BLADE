@@ -780,6 +780,8 @@ type LLMProfileDTO struct {
 	InputTokensIncludesCache bool   `json:"input_tokens_includes_cache"`
 	PreserveThinkingBlocks   bool   `json:"preserve_thinking_blocks"`
 	CacheBreakpoints         string `json:"cache_breakpoints"`
+	CacheTTL                 string `json:"cache_ttl"`
+	PromptCacheRetention     string `json:"prompt_cache_retention"`
 	// 本配置对重试的覆盖(建连/空响应/同 provider 安全窗口)。每项 attempts:
 	// 0=继承全局策略 | -1=关闭该层重试 | >0=次数；interval_ms: 0=用默认指数退避 |
 	// >0=改用该固定毫秒间隔。全 0 = 完全跟随全局，即历史行为。
@@ -811,6 +813,8 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 		InputTokensIncludesCache: p.InputTokensIncludesCache,
 		PreserveThinkingBlocks:   p.PreserveThinkingBlocks,
 		CacheBreakpoints:         p.CacheBreakpoints,
+		CacheTTL:                 p.CacheTTL,
+		PromptCacheRetention:     p.PromptCacheRetention,
 		Retry:                    p.Retry,
 	}
 }
