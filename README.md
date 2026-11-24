@@ -47,6 +47,14 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 [AegisHook 的审批详情组件](https://github.com/RuoJi6/AegisHook/blob/main/web/src/components/CallDetail.vue)，沿用 BLADE 的组件和主题：
 
 
+## IM 控制（钉钉 / 飞书）
+
+支持通过钉钉 Stream 模式、飞书长连接在手机上查看任务、创建任务、暂停/继续、编辑任务元数据与资产范围；不需要公网回调，BLADE 仍只监听本机。支持结构化命令与自然语言，按 viewer/operator 分离权限，并强制收紧 IM 运行的工具面。
+
+配置步骤、命令清单与排障见 **[`docs/IM控制使用说明.md`](docs/IM控制使用说明.md)**。
+
+---
+
 ## 资产同步（ScopeSentry）
 
 支持从 [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) 直接同步资产数据，免去重复收集：

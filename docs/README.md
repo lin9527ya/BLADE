@@ -80,6 +80,12 @@ CAS 防重与水位语义、create/start/pause/resume 动作、固定时区墙�
 `go.mod` 里 `github.com/lin9527ya/Norma` 的说明注释；差异账本在 Norma 仓库自己的
 `FORK.md`（不在本仓库）。
 
+## IM 控制（钉钉 / 飞书）
+
+面向使用者的接入与操作说明：`docs/IM控制使用说明.md`（应用创建、长连接、允许用户、命令、自然语言、安全边界与排障）。
+实现入口：`im/`（平台适配）、`db/im.go`（数据层）、`server/im_service.go` / `server/im_commands.go`（服务与命令）、
+`server/im_api.go`（管理 API）、`server/principal.go` / `server/assembly.go`（工具面收紧）。
+
 ## 开发与排障
 
 见根目录 `DEVELOPMENT.md`（构建、测试隔离、CI 门禁）与 `deploy/README.md`
