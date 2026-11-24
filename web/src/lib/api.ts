@@ -137,7 +137,9 @@ import type {
   OpsecKnowledgeResponse,
   PlannerTemplate,
   Playbook,
+  PlaybookDraft,
   PlaybookFingerprint,
+  PlaybookMDPreview,
   ScheduleFrequency,
   ScheduleRun,
   ScheduleTaskSpec,
@@ -821,6 +823,13 @@ export const api = {
   },
   importPlaybooks: (items: Playbook[]) =>
     post<{ created: number; updated: number; failed: number; errors?: string[] }>("/playbooks/import", { items }),
+  // Markdown 打法导入：先让当前激活 LLM 总结成草稿，人工确认后再落库。
+  playbooksImportMDPreview: (payload: { filename: string; content: string; llm_profile_id?: number }) =>
+    post<PlaybookMDPreview>("/playbooks/import-md/preview", payload),
+  playbooksImportMDCommit: (drafts: PlaybookDraft[]) =>
+    post<{ created: number; skipped: number; failed: number; errors?: string[] }>("/playbooks/import-md/commit", {
+      drafts,
+    }),
   // 手动让「打法沉淀」agent 复盘本任务（历史任务不会因触发水位补发）。
   distillTaskPlaybook: (id: string) => post<{ ok: boolean; status: string }>(`/tasks/${id}/distill-playbook`, {}),
   setPlaybookStatus: (id: number, status: "active" | "deprecated", reason = "") =>

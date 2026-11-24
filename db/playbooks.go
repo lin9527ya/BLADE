@@ -242,6 +242,45 @@ RETURNING `+playbookCols+`, (xmax = 0) AS inserted`,
 	return &p2, inserted, nil
 }
 
+// CreateImportedPlaybook inserts a card extracted from an external document.
+// It never updates an existing (fingerprint_key, technique_key) row: an imported
+// document must not overwrite a verified card or reset its verification state.
+// Imported cards are always low-confidence and start with last_verified_at NULL.
+// Returns inserted=false when the same fingerprint+technique already exists.
+func (s *AssetStore) CreateImportedPlaybook(p Playbook) (*Playbook, bool, error) {
+	fp := p.Fingerprint.Normalize()
+	key := fp.Key()
+	tech := NormalizeTechniqueKey(p.TechniqueKey)
+	if tech == "" {
+		tech = NormalizeTechniqueKey(p.Title)
+	}
+	if tech == "" {
+		return nil, false, fmt.Errorf("technique_key 或 title 至少给一个（用于去重）")
+	}
+	title := strings.TrimSpace(p.Title)
+	steps := strings.TrimSpace(p.Steps)
+	if title == "" || steps == "" {
+		return nil, false, fmt.Errorf("title 与 steps 必填")
+	}
+	raw, _ := json.Marshal(fp)
+	row := s.db.QueryRow(`
+INSERT INTO attack_playbooks
+  (fingerprint, fingerprint_key, technique_key, title, summary, steps, evidence, confidence,
+   source_task_id, source_node_id, source_company)
+VALUES ($1,$2,$3,$4,$5,$6,$7,'low','',0,'')
+ON CONFLICT (fingerprint_key, technique_key) DO NOTHING
+RETURNING `+playbookCols,
+		string(raw), key, tech, title, strings.TrimSpace(p.Summary), steps, strings.TrimSpace(p.Evidence))
+	out, err := scanPlaybook(row)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
 // ErrPlaybookConflict 表示编辑后的 (fingerprint_key, technique_key) 已被另一张卡占用。
 var ErrPlaybookConflict = errors.New("同指纹+手法的打法卡已存在")
 

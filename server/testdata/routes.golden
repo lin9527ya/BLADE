@@ -384,6 +384,8 @@ POST /api/planner-templates	server.(*Server).pgCreatePlannerTemplate-fm
 POST /api/planner-templates/validate	server.(*Server).pgValidatePlannerTemplate-fm
 POST /api/planner-templates/{id}/default	server.(*Server).pgSetDefaultPlannerTemplate-fm
 POST /api/playbooks/import	server.(*Server).importPlaybooks-fm
+POST /api/playbooks/import-md/commit	server.(*Server).commitPlaybookMDImport-fm
+POST /api/playbooks/import-md/preview	server.(*Server).previewPlaybookMDImport-fm
 POST /api/scope/kill-switch	server.(*Server).setKillSwitch-fm
 POST /api/scope/resume-all	server.(*Server).resumeAllTasks-fm
 POST /api/settings/intel/test	server.(*Server).testIntelSource-fm

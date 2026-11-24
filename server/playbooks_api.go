@@ -1,12 +1,17 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
+	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 )
 
@@ -16,6 +21,8 @@ func (s *Server) registerPlaybookRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/playbooks", s.listPlaybooks)
 	mux.HandleFunc("GET /api/playbooks/export", s.exportPlaybooks)
 	mux.HandleFunc("POST /api/playbooks/import", s.importPlaybooks)
+	mux.HandleFunc("POST /api/playbooks/import-md/preview", s.previewPlaybookMDImport)
+	mux.HandleFunc("POST /api/playbooks/import-md/commit", s.commitPlaybookMDImport)
 	mux.HandleFunc("GET /api/playbooks/{id}", s.getPlaybook)
 	mux.HandleFunc("PATCH /api/playbooks/{id}", s.patchPlaybook)
 	mux.HandleFunc("PUT /api/playbooks/{id}", s.updatePlaybook)
@@ -170,4 +177,129 @@ func (s *Server) distillTaskPlaybook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "status": "queued"})
+}
+
+const maxPlaybookMDRequestBytes = 512 << 10
+
+type playbookMDPreviewReq struct {
+	Filename     string `json:"filename"`
+	Content      string `json:"content"`
+	LLMProfileID *int64 `json:"llm_profile_id"`
+}
+
+type playbookMDCommitReq struct {
+	Drafts []agent.PlaybookDraft `json:"drafts"`
+}
+
+// previewPlaybookMDImport turns an admin-supplied Markdown document into
+// low-confidence card drafts. It deliberately does not write anything: the
+// external document is untrusted and the model may summarize it imperfectly,
+// so a human reviews the drafts before commit.
+func (s *Server) previewPlaybookMDImport(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxPlaybookMDRequestBytes)
+	var req playbookMDPreviewReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "Markdown 文件过大（最多 512KB）")
+		} else {
+			writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
+		}
+		return
+	}
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		writeErr(w, http.StatusBadRequest, "Markdown 内容为空")
+		return
+	}
+	if utf8.RuneCountInString(content) > 200000 {
+		writeErr(w, http.StatusBadRequest, "Markdown 内容最多 20 万字")
+		return
+	}
+	var prov llm.Provider
+	if req.LLMProfileID != nil && *req.LLMProfileID > 0 {
+		if p, _, ok := s.providerForProfile(*req.LLMProfileID); ok {
+			prov = p
+		}
+	} else if active, err := s.m.pg.ActiveProfile(); err == nil && active != nil {
+		if p, _, ok := s.providerForProfile(active.ID); ok {
+			prov = p
+		}
+	}
+	if prov == nil {
+		writeErr(w, http.StatusServiceUnavailable, "没有可用的 LLM 配置：请先在「LLM 配置」中设置激活配置")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	drafts, warnings, err := agent.ExtractPlaybooksFromMarkdown(ctx, prov, strings.TrimSpace(req.Filename), content)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeErr(w, http.StatusGatewayTimeout, "模型总结超时，请缩短文档或稍后重试")
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "总结失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"drafts": drafts, "warnings": warnings})
+}
+
+// commitPlaybookMDImport writes only the drafts the human kept. It uses an
+// insert-only path so importing a document can never overwrite an existing
+// verified card, and imported cards always remain low-confidence.
+func (s *Server) commitPlaybookMDImport(w http.ResponseWriter, r *http.Request) {
+	as := s.m.Assets()
+	if as == nil {
+		writeErr(w, http.StatusServiceUnavailable, "资产库未启用")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	var req playbookMDCommitReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "导入内容过大")
+		} else {
+			writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
+		}
+		return
+	}
+	if len(req.Drafts) == 0 {
+		writeErr(w, http.StatusBadRequest, "没有要导入的卡片")
+		return
+	}
+	if len(req.Drafts) > 20 {
+		writeErr(w, http.StatusBadRequest, "单次最多导入 20 张卡片")
+		return
+	}
+	created, skipped, failed := 0, 0, 0
+	var failures []string
+	for _, d := range req.Drafts {
+		_, inserted, err := as.CreateImportedPlaybook(db.Playbook{
+			Title: d.Title, Summary: d.Summary, TechniqueKey: d.TechniqueKey,
+			Steps: d.Steps, Evidence: d.Evidence, Confidence: "low",
+		})
+		if err != nil {
+			failed++
+			failures = append(failures, clipPlaybookImportLabel(d.Title)+": "+err.Error())
+			continue
+		}
+		if inserted {
+			created++
+		} else {
+			skipped++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": created, "skipped": skipped, "failed": failed, "errors": failures,
+	})
+}
+
+func clipPlaybookImportLabel(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) > 60 {
+		return string(r[:60]) + "…"
+	}
+	return s
 }

@@ -6,6 +6,7 @@ import { DownloadIcon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { PlaybookMDImport } from "@/components/playbook-md-import";
 import { api } from "@/lib/api";
 import type { CVE, Playbook } from "@/lib/types";
 
@@ -67,6 +68,7 @@ export function KnowledgeTransferButtons({ kind, onImported }: { kind: Knowledge
       <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}>
         <UploadIcon /> 导入
       </Button>
+      {kind === "playbooks" && <PlaybookMDImport onImported={onImported} />}
       <input
         ref={fileRef}
         type="file"

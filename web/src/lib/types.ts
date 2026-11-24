@@ -3682,3 +3682,18 @@ export interface IMMeta {
   roles: string[];
   note: string;
 }
+
+/** 从 Markdown 文档抽取出的打法草稿；没有指纹，导入后为低置信度参考卡。 */
+export interface PlaybookDraft {
+  title: string;
+  summary: string;
+  technique_key: string;
+  steps: string;
+  evidence: string;
+  confidence: "low" | "medium" | "high" | "";
+}
+
+export interface PlaybookMDPreview {
+  drafts: PlaybookDraft[];
+  warnings: string[];
+}
