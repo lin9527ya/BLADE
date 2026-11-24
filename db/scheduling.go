@@ -71,27 +71,16 @@ func (s *ExplorationStore) rankedFrontier(limit int, now time.Time) ([]*Node, er
 		candidates = append(candidates, extra...)
 	}
 	ids := make([]int64, 0, len(candidates))
-	unrouted := []int64{}
-	routes := map[int64]string{}
 	for _, n := range candidates {
 		ids = append(ids, n.ID)
-		routes[n.ID] = frontierRoute(n)
-		if routes[n.ID] == "unrouted" {
-			unrouted = append(unrouted, n.ID)
-		}
+	}
+	routes, err := s.IntentRoutes(ids)
+	if err != nil {
+		return nil, err
 	}
 	active, err := s.DependencyActiveSources(ids)
 	if err != nil {
 		return nil, err
-	}
-	parents, err := s.primaryDerivedParents(unrouted)
-	if err != nil {
-		return nil, err
-	}
-	for id, parent := range parents {
-		if parent > 0 {
-			routes[id] = fmt.Sprintf("parent:%d", parent)
-		}
 	}
 	counts := map[string]int{}
 	largest := 0

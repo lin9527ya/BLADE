@@ -179,7 +179,8 @@ func (t *ToolSet) workerSituationData() map[string]any {
 
 	// Teammate live runs: slim summaries prevent duplicate probing across concurrent intents.
 	if running, err := t.ts.ListByKindState(db.KindIntent, "running", 8); err == nil && len(running) > 0 {
-		out["running_intents"] = slimIntentNodes(running)
+		parents, _ := t.ts.DerivedParentsForNodes(intentNodeIDs(running))
+		out["running_intents"] = slimIntentNodes(running, parents)
 	}
 
 	// Findings window + authoritative total so worker avoids duplicate finding reports.
@@ -297,18 +298,63 @@ func (t *ToolSet) workerSituationData() map[string]any {
 	return out
 }
 
-func slimIntentNodes(nodes []*db.Node) []map[string]any {
+func intentNodeIDs(nodes []*db.Node) []int64 {
+	ids := make([]int64, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.ID)
+	}
+	return ids
+}
+
+func slimIntentNodes(nodes []*db.Node, parents map[int64][]int64) []map[string]any {
 	slim := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
 		var p map[string]any
-		_ = json.Unmarshal(n.Payload, &p)
-		entry := map[string]any{"id": n.ID, "state": n.State}
-		if s, ok := p["summary"].(string); ok {
-			entry["summary"] = clipLine(s, 100)
+		if json.Unmarshal(n.Payload, &p) != nil || p == nil {
+			p = map[string]any{}
 		}
-		slim = append(slim, entry)
+		p["id"], p["state"] = n.ID, n.State
+		if ids := parents[n.ID]; len(ids) > 0 {
+			p["parents"] = ids
+		}
+		slim = append(slim, slimIntentSummary(p))
 	}
 	return slim
+}
+
+// slimIntentSummary omits large result bodies, not the distinctions between
+// experiments. In particular, a long direction or hypothesis must not become
+// indistinguishable solely because its first 100 characters match a sibling.
+func slimIntentSummary(in map[string]any) map[string]any {
+	out := map[string]any{"id": in["id"], "state": in["state"]}
+	for _, field := range []string{
+		"summary", "asset_ids", "parents", "parent_ids", "parent_kinds", "hypothesis",
+		"success_criteria", "stop_condition", "risk_area", "route", "mechanism",
+		"depends_on", "depends_on_mode",
+	} {
+		if value, ok := in[field]; ok && value != nil {
+			out[field] = value
+		}
+	}
+	if _, ok := out["asset_ids"]; !ok {
+		if ids, ok := in["target_ids"]; ok && ids != nil {
+			out["asset_ids"] = ids
+		} else if id, ok := in["target_id"]; ok && id != nil && id != "" {
+			out["asset_ids"] = []any{id}
+		}
+	}
+	if contract, ok := in["contract"].(map[string]any); ok {
+		keys := map[string]any{}
+		for _, field := range []string{"route", "mechanism"} {
+			if value, ok := contract[field]; ok && value != nil {
+				keys[field] = value
+			}
+		}
+		if len(keys) > 0 {
+			out["contract"] = keys
+		}
+	}
+	return out
 }
 
 // blackboardDeltaCore builds a genuinely lightweight incremental projection for
@@ -325,8 +371,10 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 
 	openNodes, _ := t.ts.ListByKindState(db.KindIntent, "open", 16)
 	runNodes, _ := t.ts.ListByKindState(db.KindIntent, "running", 10)
-	out["open_intents"] = slimIntentNodes(openNodes)
-	out["running_intents"] = slimIntentNodes(runNodes)
+	parentIDs := append(intentNodeIDs(openNodes), intentNodeIDs(runNodes)...)
+	parents, _ := t.ts.DerivedParentsForNodes(parentIDs)
+	out["open_intents"] = slimIntentNodes(openNodes, parents)
+	out["running_intents"] = slimIntentNodes(runNodes, parents)
 
 	totals := map[string]any{}
 	if states, err := t.ts.CountIntentStates(); err == nil {
@@ -398,9 +446,10 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 		recentLeads := make([]map[string]any, 0, 20)
 		for _, lead := range tracking.PendingPreview {
 			row := map[string]any{
-				"id": lead.ID, "text": lead.Text, "from_fact": lead.FactID, "state": lead.State,
+				"id": lead.ID, "from_fact": lead.FactID, "state": lead.State,
 				"kind": lead.Kind, "asset_ids": lead.AssetIDs, "age_min": int(time.Since(lead.FactCreatedAt).Minutes()),
 			}
+			addLeadTextPreview(row, lead.Text, lead.FactID)
 			if source := factProducers[lead.FactID]; source > 0 {
 				row["from_intent"] = source
 			}

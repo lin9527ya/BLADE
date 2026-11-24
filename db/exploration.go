@@ -783,6 +783,50 @@ func (s *ExplorationStore) DropIntentDependency(id, prerequisiteID int64, reason
 		return false, err
 	}
 	defer tx.Rollback()
+
+	// ClaimNode locks this same source row. Check its current state before any
+	// edge side effect, not against the tool's earlier unlocked read.
+	var state string
+	var raw []byte
+	if err := tx.QueryRow(`SELECT state,payload FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' FOR UPDATE`, id, s.expID).Scan(&state, &raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if state != "open" && state != "paused" {
+		return false, fmt.Errorf("%w: intent %d is %s, dependency was not removed", ErrIntentStateConflict, id, state)
+	}
+
+	// RawMessage preserves unrelated integer values and payload fields. Legacy
+	// dependency arrays may contain string ids/nulls; do not cast every entry
+	// to bigint in SQL and fail the whole repair on one malformed entry.
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false, err
+	}
+	var deps []json.RawMessage
+	_ = json.Unmarshal(payload["depends_on"], &deps)
+	remaining := make([]json.RawMessage, 0, len(deps))
+	payloadChanged := false
+	for _, dep := range deps {
+		if dependencyIDMatches(dep, prerequisiteID) {
+			payloadChanged = true
+			continue
+		}
+		remaining = append(remaining, dep)
+	}
+	if payloadChanged {
+		payload["depends_on"], err = json.Marshal(remaining)
+		if err != nil {
+			return false, err
+		}
+		raw, err = json.Marshal(payload)
+		if err != nil {
+			return false, err
+		}
+	}
 	if _, err := GraphOperationTx(tx, s.expID, "drop_dependency", reason); err != nil {
 		return false, err
 	}
@@ -791,30 +835,46 @@ WHERE exploration_id=$1 AND src_id=$2 AND dst_id=$3 AND rel='depends_on'`, s.exp
 	if err != nil {
 		return false, err
 	}
-	edgeDeleted, _ := res.RowsAffected()
-	res, err = tx.Exec(`UPDATE exploration_nodes
-SET payload = CASE
-      WHEN jsonb_typeof(payload->'depends_on') = 'array' THEN
-        jsonb_set(payload, '{depends_on}', COALESCE((
-          SELECT jsonb_agg(v)
-          FROM jsonb_array_elements(payload->'depends_on') v
-          WHERE (v #>> '{}')::bigint <> $3
-        ), '[]'::jsonb), true)
-      ELSE payload
-    END,
-    content_version = content_version+1
-WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state IN ('open','paused')`, id, s.expID, prerequisiteID)
+	edgeDeleted, err := res.RowsAffected()
 	if err != nil {
 		return false, err
 	}
-	payloadChanged, _ := res.RowsAffected()
-	if edgeDeleted == 0 && payloadChanged == 0 {
+	if edgeDeleted == 0 && !payloadChanged {
 		return false, nil
+	}
+	res, err = tx.Exec(`UPDATE exploration_nodes
+SET payload=$3, content_version=content_version+1
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state IN ('open','paused')`, id, s.expID, string(raw))
+	if err != nil {
+		return false, err
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if updated != 1 {
+		return false, ErrIntentStateConflict
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func dependencyIDMatches(raw json.RawMessage, id int64) bool {
+	if id <= 0 {
+		return false
+	}
+	var n int64
+	if json.Unmarshal(raw, &n) == nil {
+		return n == id
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+	return err == nil && n == id
 }
 
 // ReopenBlockedIntents flips EVERY 'blocked' intent in this exploration back to 'open'
@@ -2439,9 +2499,9 @@ type RouteStat struct {
 	Done    int
 }
 
-// RouteDistribution aggregates every non-deleted intent by contract.route,
-// risk_area, or legacy route key. It is deliberately a COUNT/GROUP BY query so
-// routes stay honest even when open_intents/recent_done_intents are truncated.
+// RouteDistribution aggregates every non-deleted intent using the same route
+// key as dispatch (including asset and parent fallbacks). Counts come from the
+// full graph, even when open_intents/recent_done_intents are truncated.
 func (s *ExplorationStore) RouteDistribution(limit int) ([]RouteStat, error) {
 	if limit <= 0 {
 		limit = 20
@@ -2449,16 +2509,17 @@ func (s *ExplorationStore) RouteDistribution(limit int) ([]RouteStat, error) {
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT
-  COALESCE(NULLIF(payload->'contract'->>'route',''), NULLIF(payload->>'risk_area',''), NULLIF(payload->>'route',''),
-    CASE WHEN jsonb_typeof(payload->'asset_ids')='array' AND jsonb_array_length(payload->'asset_ids')>0
-      THEN 'asset:' || (payload->'asset_ids'->>0) ELSE 'unrouted' END) AS route,
+	rows, err := s.db.Query(`WITH parents AS (
+  SELECT dst_id, MIN(src_id) AS parent_id FROM exploration_edges
+  WHERE exploration_id=$1 AND rel='derived_from' GROUP BY dst_id
+)
+SELECT `+intentRouteSQL+` AS route,
   COUNT(*) AS intents,
-  COUNT(*) FILTER (WHERE state IN ('open','paused')) AS open,
-  COUNT(*) FILTER (WHERE state='running') AS running,
-  COUNT(*) FILTER (WHERE state NOT IN ('open','running','paused','deleted')) AS done
-FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state<>'deleted'
+  COUNT(*) FILTER (WHERE n.state IN ('open','paused')) AS open,
+  COUNT(*) FILTER (WHERE n.state='running') AS running,
+  COUNT(*) FILTER (WHERE n.state NOT IN ('open','running','paused','deleted')) AS done
+FROM exploration_nodes n LEFT JOIN parents p ON p.dst_id=n.id
+WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state<>'deleted'
 GROUP BY route
 ORDER BY intents DESC, route
 LIMIT $2`, s.expID, limit)
@@ -2511,67 +2572,6 @@ func (s *ExplorationStore) FrontierForSlot(slot string, pool []string, limit int
 		candidates = candidates[:limit]
 	}
 	return candidates, nil
-}
-
-// frontierRoute extracts the soft route key used by scheduling and the blackboard
-// route projection. Minimal ARTEX intents often omit contract.route and risk_area;
-// falling back to the primary anchored asset keeps distinct attack surfaces from
-// collapsing into one "unrouted" bucket.
-func frontierRoute(n *Node) string {
-	if n == nil {
-		return "unrouted"
-	}
-	var p map[string]any
-	_ = json.Unmarshal(n.Payload, &p)
-	if c, ok := p["contract"].(map[string]any); ok {
-		if r, _ := c["route"].(string); strings.TrimSpace(r) != "" {
-			return strings.TrimSpace(r)
-		}
-	}
-	if r, _ := p["risk_area"].(string); strings.TrimSpace(r) != "" {
-		return strings.TrimSpace(r)
-	}
-	if r, _ := p["route"].(string); strings.TrimSpace(r) != "" {
-		return strings.TrimSpace(r)
-	}
-	if ids, ok := p["asset_ids"].([]any); ok && len(ids) > 0 {
-		switch v := ids[0].(type) {
-		case float64:
-			if int64(v) > 0 {
-				return fmt.Sprintf("asset:%d", int64(v))
-			}
-		case string:
-			if id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && id > 0 {
-				return fmt.Sprintf("asset:%d", id)
-			}
-		}
-	}
-	return "unrouted"
-}
-
-// primaryDerivedParents returns the earliest derived_from source node for each
-// intent id in ids. Used only as a fallback route bucket when an intent carries
-// neither route/risk_area nor asset_ids.
-func (s *ExplorationStore) primaryDerivedParents(ids []int64) (map[int64]int64, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	rows, err := s.db.Query(`SELECT dst_id, MIN(src_id)
-FROM exploration_edges
-WHERE exploration_id=$1 AND rel=$2 AND dst_id = ANY($3::bigint[])
-GROUP BY dst_id`, s.expID, RelDerivedFrom, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[int64]int64, len(ids))
-	for rows.Next() {
-		var dst, src int64
-		if err := rows.Scan(&dst, &src); err == nil {
-			out[dst] = src
-		}
-	}
-	return out, rows.Err()
 }
 
 // frontierDivergentTail fetches up to limit oldest claimable intents not already

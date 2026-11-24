@@ -232,7 +232,8 @@ func mergeToolParameterOverrides(code, stored map[string]any) map[string]any {
 		if value, ok := stored[key]; ok {
 			// This exact historical builtin wording contradicts the new split-by-claim
 			// protocol; a genuinely edited description is kept.
-			if key == "description" && value == "本事实的相关细节：把这次探索的多个观察事实都写进这里" {
+			if key == "description" && (value == "本事实的相关细节：把这次探索的多个观察事实都写进这里" ||
+				value == "【本意图之外的线索】数组，元素 {text, asset_ids?}：看到的其它入口/参数/行为/资产，值得 planner 下一轮跟进。最多 8 条、每条 ≤300 字；线索不是结论，不需要 evidence。不要把线索塞进 summary。") {
 				continue
 			}
 			out[key] = value

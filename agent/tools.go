@@ -1037,14 +1037,28 @@ func slimBlackboardDelta(out map[string]any) {
 		}
 		slim := make([]map[string]any, 0, len(items))
 		for _, it := range items {
-			entry := map[string]any{"id": it["id"], "state": it["state"]}
-			if s, ok := it["summary"].(string); ok {
-				entry["summary"] = clipLine(s, 100)
-			}
-			slim = append(slim, entry)
+			slim = append(slim, slimIntentSummary(it))
 		}
 		out[key] = slim
 	}
+}
+
+func primaryParentIDValue(value any) int64 {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	var parents []json.RawMessage
+	if json.Unmarshal(raw, &parents) != nil {
+		return 0
+	}
+	var first int64
+	for _, raw := range parents {
+		if id := pid(raw); id > 0 && (first == 0 || id < first) {
+			first = id
+		}
+	}
+	return first
 }
 
 // blackboardRoutes groups the visible intents by contract.route (falling back to
@@ -1076,6 +1090,11 @@ func blackboardRoutes(overview map[string]any) []map[string]any {
 			if strings.TrimSpace(route) == "" {
 				if aid := firstAssetIDValue(it["asset_ids"]); aid > 0 {
 					route = fmt.Sprintf("asset:%d", aid)
+				}
+			}
+			if strings.TrimSpace(route) == "" {
+				if pid := primaryParentIDValue(it["parents"]); pid > 0 {
+					route = fmt.Sprintf("parent:%d", pid)
 				}
 			}
 			if strings.TrimSpace(route) == "" {
@@ -1555,8 +1574,9 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 	recentLeads := make([]map[string]any, 0, 20)
 	if tracking != nil {
 		for _, lead := range tracking.PendingPreview {
-			row := map[string]any{"id": lead.ID, "text": lead.Text, "from_fact": lead.FactID, "state": lead.State, "kind": lead.Kind, "asset_ids": lead.AssetIDs,
+			row := map[string]any{"id": lead.ID, "from_fact": lead.FactID, "state": lead.State, "kind": lead.Kind, "asset_ids": lead.AssetIDs,
 				"age_min": int(time.Since(lead.FactCreatedAt).Minutes())}
+			addLeadTextPreview(row, lead.Text, lead.FactID)
 			if source := factFrom[lead.FactID]; source > 0 {
 				row["from_intent"] = source
 			}
@@ -3361,9 +3381,6 @@ type leadItem struct {
 }
 
 const (
-	maxLeadsPerFact   = 8
-	maxLeadRunes      = 300
-	maxLeadsPerBatch  = 32
 	factPolarityPos   = "positive"
 	factPolarityNeg   = "negative"
 	factPolarityMaybe = "inconclusive"
@@ -3443,7 +3460,8 @@ func normalizeEnables(raw []string) []string {
 	return out
 }
 
-// cleanLeads 清洗线索：去空、截断、去重、限量。
+// cleanLeads keeps complete distinct leads. Only blanks and exact replays on the
+// same assets are removed; presentation limits belong to the read-side window.
 func cleanLeads(raw []leadItem) []map[string]any {
 	var out []map[string]any
 	seen := map[string]bool{}
@@ -3452,22 +3470,21 @@ func cleanLeads(raw []leadItem) []map[string]any {
 		if text == "" {
 			continue
 		}
-		if r := []rune(text); len(r) > maxLeadRunes {
-			text = string(r[:maxLeadRunes])
-		}
-		key := strings.ToLower(strings.Join(strings.Fields(text), " "))
+		assets := sortedUniqueIDs(pidList(l.AssetIDs))
+		raw, _ := json.Marshal(struct {
+			Text   string
+			Assets []int64
+		}{Text: text, Assets: assets})
+		key := string(raw)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		item := map[string]any{"text": text}
-		if ids := pidList(l.AssetIDs); len(ids) > 0 {
-			item["asset_ids"] = ids
+		if len(assets) > 0 {
+			item["asset_ids"] = assets
 		}
 		out = append(out, item)
-		if len(out) >= maxLeadsPerFact {
-			break
-		}
 	}
 	return out
 }
@@ -3703,7 +3720,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			"polarity":        str("【事实语义】positive（正向观察，能开出下文）| negative（否定收尾：不可注入/端口关闭/未发现入口等）| inconclusive（存疑）。缺省按 enables/leads、summary 与 confidence 推断；混合正负信号（失败但泄露报错/绕过）请显式填 inconclusive，不要机械写 negative。"),
 			"enables":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "【能力标签】这条事实给了什么：credential | foothold | access | info | surface（可多选，没有就省略）"},
 			"limitations":     str("这条结论的适用边界/前提（可选）：在什么条件下不成立、还缺什么验证。"),
-			"leads":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "【本意图之外的线索】数组，元素 {text, asset_ids?}：看到的其它入口/参数/行为/资产，值得 planner 下一轮跟进。最多 8 条、每条 ≤300 字；线索不是结论，不需要 evidence。不要把线索塞进 summary。"},
+			"leads":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "【本意图之外的线索】数组，元素 {text, asset_ids?}：完整保存看到的其它入口/参数/行为/资产，不按条数或字数裁剪写入；概览与线索工具分页展示。线索不是结论，不需要 evidence。不要把线索塞进 summary。"},
 			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -3716,18 +3733,6 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			items := a.Facts
 			if !batch {
 				items = []factItem{a.factItem}
-			}
-			// 一批事实的线索总量封顶，避免一次写回把态势撑爆。
-			leadBudget := maxLeadsPerBatch
-			for i := range items {
-				if leadBudget <= 0 {
-					items[i].Leads = nil
-					continue
-				}
-				if len(items[i].Leads) > leadBudget {
-					items[i].Leads = items[i].Leads[:leadBudget]
-				}
-				leadBudget -= len(items[i].Leads)
 			}
 			defaultIntent := pid(a.factItem.IntentID) // 顶层 intent_id = 批量默认
 

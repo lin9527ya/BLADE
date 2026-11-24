@@ -2,10 +2,10 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +31,33 @@ func compactBlackboardNode(n *db.Node) map[string]any {
 				out[k] = v
 			}
 		}
+	}
+	if leads, ok := p["leads"].([]any); ok {
+		preview := make([]map[string]any, 0, minInt(len(leads), maxLeadPreviewEntries))
+		for index, raw := range leads {
+			if len(preview) >= maxLeadPreviewEntries {
+				break
+			}
+			lead, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, ok := lead["text"].(string)
+			if !ok {
+				continue
+			}
+			item := map[string]any{}
+			if n.Kind == db.KindFact {
+				item["id"] = db.ExplorationLeadID(n.ID, index)
+			}
+			if ids, ok := lead["asset_ids"]; ok {
+				item["asset_ids"] = ids
+			}
+			addLeadTextPreview(item, text, n.ID)
+			preview = append(preview, item)
+		}
+		out["leads"] = preview
+		out["leads_read_status"] = db.ReadSetStatus(int64(len(leads)), len(preview), fmt.Sprintf("node_detail(id=%d)", n.ID))
 	}
 	if c, ok := p["contract"]; ok {
 		out["contract"] = c
@@ -174,6 +201,33 @@ func minInt(a, b int) int {
 	return b
 }
 
+const (
+	maxLeadPreviewEntries = 8
+	maxLeadPreviewRunes   = 300
+)
+
+// Read-side previews are bounded; the original is stored intact and remains
+// addressable through the fact id. Never reuse these limits in write-back.
+func addLeadTextPreview(out map[string]any, text string, factID int64) {
+	out["text"] = clipLine(text, maxLeadPreviewRunes)
+	if len([]rune(text)) > maxLeadPreviewRunes {
+		out["text_truncated"] = true
+		out["read_more"] = fmt.Sprintf("node_detail(id=%d)", factID)
+	}
+}
+
+// intentProposal is stored unchanged in the proposal fact; new conditions are
+// part of its identity, not just an annotation on an old direction.
+type intentProposal struct {
+	Summary    string  `json:"summary"`
+	Hypothesis string  `json:"hypothesis,omitempty"`
+	Mechanism  string  `json:"mechanism,omitempty"`
+	Route      string  `json:"route,omitempty"`
+	DependsOn  []int64 `json:"depends_on,omitempty"`
+	AssetIDs   []int64 `json:"asset_ids,omitempty"`
+	Reason     string  `json:"reason,omitempty"`
+}
+
 // proposeIntents lets a worker submit child directions discovered mid-run without
 // mutating the frontier directly. The proposal becomes a fact, which wakes the
 // planner; the planner can dedupe, add dependencies and decide what to dispatch.
@@ -214,21 +268,12 @@ func (t *ToolSet) proposeIntents() actool.CoreTool {
 			if len(a.Proposals) == 0 {
 				return actool.Errorf("proposals 不能为空"), nil
 			}
-			type proposal struct {
-				Summary    string  `json:"summary"`
-				Hypothesis string  `json:"hypothesis,omitempty"`
-				Mechanism  string  `json:"mechanism,omitempty"`
-				Route      string  `json:"route,omitempty"`
-				DependsOn  []int64 `json:"depends_on,omitempty"`
-				AssetIDs   []int64 `json:"asset_ids,omitempty"`
-				Reason     string  `json:"reason,omitempty"`
-			}
-			out := make([]proposal, 0, len(a.Proposals))
+			out := make([]intentProposal, 0, len(a.Proposals))
 			for _, p := range a.Proposals {
 				if strings.TrimSpace(p.Summary) == "" {
 					continue
 				}
-				out = append(out, proposal{
+				out = append(out, intentProposal{
 					Summary: strings.TrimSpace(p.Summary), Hypothesis: strings.TrimSpace(p.Hypothesis),
 					Mechanism: strings.TrimSpace(p.Mechanism), Route: strings.TrimSpace(p.Route),
 					DependsOn: pidList(p.DependsOn), AssetIDs: pidList(p.AssetIDs),
@@ -243,38 +288,32 @@ func (t *ToolSet) proposeIntents() actool.CoreTool {
 			if facts, ferr := t.ts.ListByKind(db.KindFact, 500); ferr == nil {
 				for _, n := range facts {
 					var p struct {
-						Origin string `json:"origin"`
-						Detail string `json:"detail"`
+						Origin    string           `json:"origin"`
+						Detail    string           `json:"detail"`
+						Proposals []intentProposal `json:"proposals"`
 					}
-					_ = json.Unmarshal(n.Payload, &p)
-					if p.Origin != "proposal" || p.Detail == "" {
+					if json.Unmarshal(n.Payload, &p) != nil || p.Origin != "proposal" {
 						continue
 					}
-					var d struct {
-						Proposals []struct {
-							Summary    string  `json:"summary"`
-							Hypothesis string  `json:"hypothesis"`
-							Mechanism  string  `json:"mechanism"`
-							Route      string  `json:"route"`
-							AssetIDs   []int64 `json:"asset_ids"`
-						} `json:"proposals"`
+					if len(p.Proposals) == 0 && p.Detail != "" {
+						var d struct {
+							Proposals []intentProposal `json:"proposals"`
+						}
+						_ = json.Unmarshal([]byte(p.Detail), &d)
+						p.Proposals = d.Proposals
 					}
-					_ = json.Unmarshal([]byte(p.Detail), &d)
-					for _, pr := range d.Proposals {
-						existing[proposalKey(pr.Summary, pr.Hypothesis, pr.Mechanism, pr.Route, pr.AssetIDs)] = true
+					for _, pr := range p.Proposals {
+						existing[proposalKey(pr)] = true
 					}
 				}
 			}
-			const maxProposalBatch = 20
-			kept := make([]proposal, 0, len(out))
+			// Storage is not a display window: every distinct proposal is kept. Trace
+			// and overview pagination still bound what is sent to the planner.
+			kept := make([]intentProposal, 0, len(out))
 			seen := map[string]bool{}
 			dropped := 0
 			for _, p := range out {
-				if len(kept) >= maxProposalBatch {
-					dropped++
-					continue
-				}
-				key := proposalKey(p.Summary, p.Hypothesis, p.Mechanism, p.Route, p.AssetIDs)
+				key := proposalKey(p)
 				if existing[key] || seen[key] {
 					dropped++
 					continue
@@ -299,7 +338,7 @@ func (t *ToolSet) proposeIntents() actool.CoreTool {
 				return actool.Errorf("记录意图提案失败：" + err.Error()), nil
 			}
 			return jsonResult(map[string]any{
-				"fact_id": id, "proposals": len(kept), "dropped": dropped, "status": "pending_planner_review",
+				"fact_id": id, "proposals": len(kept), "dropped": dropped, "duplicates": dropped, "status": "pending_planner_review",
 				"note": "提案只写入黑板，不会自动创建意图；planner 复核后决定。",
 			})
 		})
@@ -536,18 +575,29 @@ func (t *ToolSet) searchPrecedents() actool.CoreTool {
 		})
 }
 
-// proposalKey normalizes a proposed direction for proposal-only dedupe. It is
-// intentionally narrower than intent dedupe: summary/hypothesis/mechanism/route
-// plus sorted asset ids, so a materially different asset or mechanism survives.
-func proposalKey(summary, hypothesis, mechanism, route string, assets []int64) string {
-	ids := append([]int64(nil), assets...)
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	parts := []string{
-		normalizeFindingText(summary), normalizeFindingText(hypothesis),
-		normalizeFindingText(mechanism), normalizeFindingText(route),
+// proposalKey deduplicates a replay of the same proposal, not a new experiment
+// under changed evidence or prerequisites. Keep punctuation/case: those can
+// distinguish paths, carriers and credentials even when the prose looks similar.
+func proposalKey(p intentProposal) string {
+	p.Summary = strings.TrimSpace(p.Summary)
+	p.Hypothesis = strings.TrimSpace(p.Hypothesis)
+	p.Mechanism = strings.TrimSpace(p.Mechanism)
+	p.Route = strings.TrimSpace(p.Route)
+	p.Reason = strings.TrimSpace(p.Reason)
+	p.AssetIDs = sortedUniqueIDs(p.AssetIDs)
+	p.DependsOn = sortedUniqueIDs(p.DependsOn)
+	raw, _ := json.Marshal(p)
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
+
+func sortedUniqueIDs(ids []int64) []int64 {
+	out := append([]int64(nil), ids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	unique := out[:0]
+	for _, id := range out {
+		if id > 0 && (len(unique) == 0 || unique[len(unique)-1] != id) {
+			unique = append(unique, id)
+		}
 	}
-	for _, id := range ids {
-		parts = append(parts, strconv.FormatInt(id, 10))
-	}
-	return strings.Join(parts, "|")
+	return unique
 }
