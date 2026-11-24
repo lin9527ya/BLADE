@@ -20,13 +20,15 @@ import type { LLMProfile, LLMRetryOverride } from "@/lib/types";
 import {
   CACHE_BREAKPOINT_MODES,
   CACHE_TTLS,
-  EFFORT_LEVELS,
+  effortLevelsForFormat,
   fromStore,
   MAX_TOKENS_FIELD_HINTS,
   MAX_TOKENS_FIELDS,
   NONE,
   PROMPT_CACHE_RETENTIONS,
-  THINKING_TYPES,
+  REASONING_EFFORT_HINTS,
+  THINKING_TYPE_HINTS,
+  thinkingTypesForFormat,
   toStore,
 } from "./llm-helpers";
 import { ProfileRetryFields, ZERO_OVERRIDE } from "./retry";
@@ -78,6 +80,7 @@ export function ProfileDialog({
   const [rpm, setRpm] = React.useState("0");
   const [cw, setCw] = React.useState("0"); // 上下文窗口(K tokens);0=默认200K
   const [thinkingType, setThinkingType] = React.useState(NONE);
+  const [thinkingBudgetTokens, setThinkingBudgetTokens] = React.useState("0");
   const [effort, setEffort] = React.useState(NONE);
   const [priority, setPriority] = React.useState("0"); // 轮询顺位;越大越先
   const [poolExclude, setPoolExclude] = React.useState(false);
@@ -119,6 +122,7 @@ export function ProfileDialog({
     setRpm(String(profile?.rate_per_minute ?? 0));
     setCw(String(profile?.context_window_k ?? 0));
     setThinkingType(fromStore(profile?.thinking_type));
+    setThinkingBudgetTokens(String(profile?.thinking_budget_tokens ?? 0));
     setEffort(fromStore(profile?.reasoning_effort));
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
@@ -179,6 +183,16 @@ export function ProfileDialog({
         streaming,
         effectiveSessionHeader(baseUrl, sessionHeaderKey),
         textToHeaders(customHeaders),
+        {
+          max_tokens: Math.max(0, Number(maxTokens) || 0),
+          max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
+          thinking_budget_tokens:
+            format === "anthropic" ? Math.max(0, Math.floor(Number(thinkingBudgetTokens) || 0)) : 0,
+          cache_breakpoints: format === "anthropic" ? cacheBreakpoints : "",
+          cache_ttl: format === "anthropic" ? toStore(cacheTTL) : "",
+          prompt_cache_retention: format !== "anthropic" ? toStore(promptCacheRetention) : "",
+          preserve_thinking_blocks: format === "anthropic" ? preserveThinkingBlocks : false,
+        },
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
@@ -200,9 +214,21 @@ export function ProfileDialog({
     }
     if (saving) return;
     const cwK = Number(cw) || 0;
-    if (cwK > 1000) {
-      toast.error("上下文窗口的单位是 K（千 token）：384K 窗口填 384，不是 384000；上限 1000（1M）。");
+    if (cwK < 0 || cwK > 1000) {
+      toast.error("上下文窗口的单位是 K（千 token）：范围 0–1000（384K 填 384，不是 384000）。");
       return;
+    }
+    const maxTok = Math.max(0, Math.floor(Number(maxTokens) || 0));
+    const budgetTok = format === "anthropic" ? Math.max(0, Math.floor(Number(thinkingBudgetTokens) || 0)) : 0;
+    if (format === "anthropic" && thinkingType === "enabled" && budgetTok > 0) {
+      if (budgetTok < 1024) {
+        toast.error("Anthropic enabled 思考预算启用时至少为 1024（填 0 = 不发送）");
+        return;
+      }
+      if (maxTok > 0 && maxTok <= budgetTok) {
+        toast.error(`输出上限 (${maxTok}) 必须大于思考预算 (${budgetTok})`);
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -215,15 +241,16 @@ export function ProfileDialog({
         base_url: baseUrl.trim(),
         proxy: proxy.trim(),
         api_key: apiKey,
-        rate_per_second: Number(rps) || 0,
-        rate_per_minute: Number(rpm) || 0,
+        rate_per_second: Math.max(0, Number(rps) || 0),
+        rate_per_minute: Math.max(0, Number(rpm) || 0),
         context_window_k: cwK,
-        thinking_type: toStore(thinkingType),
+        thinking_type: format !== "anthropic" && thinkingType === "adaptive" ? "enabled" : toStore(thinkingType),
+        thinking_budget_tokens: budgetTok,
         reasoning_effort: toStore(effort),
         priority: Number(priority) || 0,
         pool_exclude: poolExclude,
         streaming,
-        max_tokens: Math.max(0, Number(maxTokens) || 0),
+        max_tokens: maxTok,
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
@@ -279,7 +306,16 @@ export function ProfileDialog({
             </div>
             <div className="grid gap-2">
               <Label>格式</Label>
-              <Select value={format} onValueChange={(v) => setFormat(v as "anthropic" | "openai" | "openai-responses")}>
+              <Select
+                value={format}
+                onValueChange={(v) => {
+                  const next = v as "anthropic" | "openai" | "openai-responses";
+                  setFormat(next);
+                  if (next !== "anthropic" && thinkingType === "adaptive") {
+                    setThinkingType("enabled");
+                  }
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="选择格式" />
                 </SelectTrigger>
@@ -566,17 +602,14 @@ export function ProfileDialog({
             <div className="flex items-center justify-between gap-4">
               <div className="grid gap-0.5">
                 <Label className="text-sm">思考开关 · thinking.type</Label>
-                <p className="text-muted-foreground text-xs">
-                  控制是否发送 thinking 字段。不发送=不带该字段（兼容 MiniMax 等不支持 的模型）；关闭=发
-                  disabled；开启=发 enabled。与下面的强度互相独立。
-                </p>
+                <p className="text-muted-foreground text-xs">{THINKING_TYPE_HINTS[format]}</p>
               </div>
               <Select value={thinkingType} onValueChange={setThinkingType}>
-                <SelectTrigger className="w-32 shrink-0">
+                <SelectTrigger className="w-40 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {THINKING_TYPES.map((o) => (
+                  {thinkingTypesForFormat(format).map((o) => (
                     <SelectItem key={o.value} value={o.value}>
                       {o.label}
                     </SelectItem>
@@ -584,20 +617,40 @@ export function ProfileDialog({
                 </SelectContent>
               </Select>
             </div>
+            {format === "anthropic" && thinkingType === "enabled" && (
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label htmlFor="p-thinking-budget" className="text-sm">
+                    思考预算 · budget_tokens
+                  </Label>
+                  <p className="text-muted-foreground text-xs">
+                    Anthropic <code>enabled</code> 模式可选预算（&gt;= 1024 且需小于上方 max_tokens；0 = 不发送，若未设
+                    max_tokens 将自动抬高默认上限）。Claude 4.6 建议改用自适应（adaptive）。
+                  </p>
+                </div>
+                <Input
+                  id="p-thinking-budget"
+                  type="number"
+                  min={0}
+                  step={1024}
+                  className="w-28 shrink-0"
+                  value={thinkingBudgetTokens}
+                  onChange={(e) => setThinkingBudgetTokens(e.target.value)}
+                  placeholder="0"
+                />
+              </div>
+            )}
             <div className="flex items-center justify-between gap-4 border-t pt-3">
               <div className="grid gap-0.5">
                 <Label className="text-sm">思考强度 · reasoning_effort</Label>
-                <p className="text-muted-foreground text-xs">
-                  独立的强度档位（OpenAI reasoning_effort / Anthropic output_config.effort）。 有些接口没有 thinking
-                  字段、只靠强度即可激活思考，故可单独设置、不发送思考开关。
-                </p>
+                <p className="text-muted-foreground text-xs">{REASONING_EFFORT_HINTS[format]}</p>
               </div>
               <Select value={effort} onValueChange={setEffort}>
-                <SelectTrigger className="w-32 shrink-0">
+                <SelectTrigger className="w-36 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {EFFORT_LEVELS.map((o) => (
+                  {effortLevelsForFormat(format, effort).map((o) => (
                     <SelectItem key={o.value} value={o.value}>
                       {o.label}
                     </SelectItem>
@@ -613,7 +666,8 @@ export function ProfileDialog({
                 <div className="grid gap-0.5">
                   <Label className="text-sm">Prompt Cache 断点策略</Label>
                   <p className="text-muted-foreground text-xs">
-                    默认启用「滚动多断点」，在系统前缀之外自动追加最后一个工具 schema 与滚动历史消息断点；不支持多断点的中转可切换为「仅系统前缀」。
+                    默认启用「滚动多断点」，在系统前缀之外自动追加最后一个工具 schema
+                    与滚动历史消息断点；不支持多断点的中转可切换为「仅系统前缀」。
                   </p>
                 </div>
                 <Select value={cacheBreakpoints} onValueChange={setCacheBreakpoints}>
@@ -678,7 +732,9 @@ export function ProfileDialog({
                 <div className="grid gap-0.5">
                   <Label className="text-sm">Prompt Cache 保留策略（prompt_cache_retention）</Label>
                   <p className="text-muted-foreground text-xs">
-                    OpenAI / Responses 兼容端点支持发送 prompt_cache_retention（如 24h）以延长前缀缓存保留时间。
+                    OpenAI / Responses 端点支持发送 prompt_cache_retention（如
+                    24h）以延长前缀缓存保留时间；选中后对自定义 OpenAI 反代也会一并放行
+                    prompt_cache_key（不支持该字段的严格第三方网关请保持默认）。
                   </p>
                 </div>
                 <Select value={promptCacheRetention} onValueChange={setPromptCacheRetention}>

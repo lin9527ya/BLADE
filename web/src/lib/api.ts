@@ -2282,6 +2282,15 @@ export const api = {
     streaming = true, // 用该配置真实的收发模式来测，别让"流式能通、非流式不通"漏到会话里
     session_header_key = "", // 非空=测试请求也带该自定义会话头（值为一次性 session id）
     custom_headers: Record<string, string> = {}, // 固定请求头（User-Agent 等），与保存后实际运行一致
+    extra: {
+      max_tokens?: number;
+      max_tokens_field?: string;
+      thinking_budget_tokens?: number;
+      cache_breakpoints?: string;
+      cache_ttl?: string;
+      prompt_cache_retention?: string;
+      preserve_thinking_blocks?: boolean;
+    } = {},
   ) =>
     // reply = 模型实际回复(已截断);一个字都不回的配置后端直接判失败
     post<{ ok: boolean; error?: string; latency_ms?: number; model?: string; reply?: string }>("/llm/test", {
@@ -2296,6 +2305,7 @@ export const api = {
       streaming,
       session_header_key,
       custom_headers,
+      ...extra,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
@@ -2309,8 +2319,9 @@ export const api = {
     rate_per_second?: number;
     rate_per_minute?: number;
     context_window_k?: number;
-    thinking_type?: string; // ""(不发送)|"disabled"|"enabled"
-    reasoning_effort?: string; // ""(不发送)|"low"|"medium"|"high"|"xhigh"|"max"
+    thinking_type?: string; // ""(不发送)|"disabled"|"enabled"|"adaptive"
+    thinking_budget_tokens?: number; // Anthropic enabled 可选预算；0=不发送
+    reasoning_effort?: string; // ""(不发送)|"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"
     priority?: number; // 轮询顺位，越大越先用
     pool_exclude?: boolean; // true=不作为故障转移目标
     streaming?: boolean; // true(默认)=流式 | false=非流式

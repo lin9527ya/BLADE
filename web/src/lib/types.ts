@@ -2561,9 +2561,11 @@ export interface LLMProfile {
   rate_per_second: number;
   rate_per_minute: number;
   context_window_k?: number;
-  // 思考开关(thinking.type): ""=不发送(默认) | "disabled"=关闭 | "enabled"=开启
+  // 思考开关(thinking.type): ""=不发送(默认) | "disabled"=关闭 | "enabled"=开启 | "adaptive"=自适应(anthropic)
   thinking_type?: string;
-  // 思考强度: ""=不发送(默认) | "low"/"medium"/"high"/"xhigh"/"max"
+  // Anthropic enabled 模式下可选 thinking.budget_tokens（0=不发送）
+  thinking_budget_tokens?: number;
+  // 思考强度: ""=不发送(默认) | "none"/"minimal"/"low"/"medium"/"high"/"xhigh"/"max"
   reasoning_effort?: string;
   is_default: boolean;
   // 轮询顺位：越大越先被选中。激活配置恒为链首，与本值无关。

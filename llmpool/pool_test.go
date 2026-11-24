@@ -479,3 +479,64 @@ func TestStatus422FailsOverWithoutHardTrip(t *testing.T) {
 		t.Fatal("422 must not trigger immediate permanent hard failure")
 	}
 }
+
+func TestPoolFailoverAdaptsNonStreamingAndCacheOptions(t *testing.T) {
+	head := member(1, "anth-stream", RankActive, failProv("anth", 402))
+	head.Format = "anthropic"
+	head.ProfileConfigured = true
+	head.CacheTTL = "1h"
+	head.PreserveThinking = true
+
+	var gotReq llm.CompletionRequest
+	backupProv := &fakeProv{
+		name: "oai-nonstream",
+		events: [][]llm.StreamEvent{{{
+			Type: llm.SEThinkingDelta, Text: "thought",
+		}, {
+			Type: llm.SETextDelta, Text: "answer",
+		}}},
+	}
+	wrappedBackup := backupProviderSpy{inner: backupProv, onCall: func(req llm.CompletionRequest) { gotReq = req }}
+	backup := member(2, "oai-nonstream", 10, wrappedBackup)
+	backup.Format = "openai"
+	backup.ProfileConfigured = true
+	backup.NonStreaming = true
+	backup.MaxTokens = 4096
+	backup.PromptCacheRetention = "24h"
+
+	reg := NewRegistry(nil, nil)
+	p := New([]*Member{head, backup}, reg)
+	if !p.PreservesThinking() {
+		t.Fatal("expected initial PreservesThinking=true from healthy head")
+	}
+
+	out, err := drain(p.Stream(context.Background(), llm.CompletionRequest{CacheTTL: "1h"}))
+	if err != nil || out != "answer" {
+		t.Fatalf("got=%q err=%v, want answer", out, err)
+	}
+	if gotReq.CacheTTL != "" || gotReq.PromptCacheRetention != "24h" || gotReq.MaxTokens != 4096 {
+		t.Fatalf("adapted backup request mismatch: %+v", gotReq)
+	}
+	if cur := p.CurrentMember(""); cur == nil || cur.ID != backup.ID {
+		t.Fatalf("expected CurrentMember to move to backup after trip, got %+v", cur)
+	}
+	if p.PreservesThinking() {
+		t.Fatal("expected PreservesThinking to reflect non-preserving backup after failover")
+	}
+}
+
+type backupProviderSpy struct {
+	inner  llm.Provider
+	onCall func(llm.CompletionRequest)
+}
+
+func (s backupProviderSpy) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return s.inner.Stream(ctx, req)
+}
+
+func (s backupProviderSpy) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	if s.onCall != nil {
+		s.onCall(req)
+	}
+	return s.inner.Complete(ctx, req)
+}

@@ -89,10 +89,13 @@ type LLMProfile struct {
 	// compaction thresholds. 0 = use a 200K default; capped at 1000 (1M).
 	ContextWindowK int `json:"context_window_k"`
 	// ThinkingType 独立控制思考「开关」(thinking.type):"" = 不发送(默认);
-	// "disabled" = 显式关闭; "enabled" = 开启. 与 ReasoningEffort 解耦.
+	// "disabled" = 显式关闭; "enabled" = 开启; "adaptive" = 自适应(anthropic).
 	ThinkingType string `json:"thinking_type"`
+	// ThinkingBudgetTokens optionally sets Anthropic's "thinking.budget_tokens"
+	// when ThinkingType == "enabled" (0 = omit).
+	ThinkingBudgetTokens int `json:"thinking_budget_tokens"`
 	// ReasoningEffort 独立控制思考「强度」:"" = 不发送(默认);
-	// "low"/"medium"/"high"/"xhigh"/"max" = 对应强度. 见 agent.Config.NewProvider.
+	// "none"/"minimal"/"low"/"medium"/"high"/"xhigh"/"max" = 对应强度.
 	ReasoningEffort string `json:"reasoning_effort"`
 	IsDefault       bool   `json:"is_default"`
 	// Priority orders the failover chain: higher goes first. The ACTIVE profile
@@ -155,15 +158,15 @@ type RetryOverride struct {
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
 const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(custom_headers,'{}'::jsonb)::text,COALESCE(input_tokens_includes_cache,false),COALESCE(preserve_thinking_blocks,false),COALESCE(cache_breakpoints,''),COALESCE(cache_ttl,''),COALESCE(prompt_cache_retention,''),` + profileRetryCols
-const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(custom_headers,'{}'::jsonb)::text,COALESCE(input_tokens_includes_cache,false),COALESCE(preserve_thinking_blocks,false),COALESCE(cache_breakpoints,''),COALESCE(cache_ttl,''),COALESCE(prompt_cache_retention,''),` + profileRetryCols
+const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(thinking_budget_tokens,0),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(custom_headers,'{}'::jsonb)::text,COALESCE(input_tokens_includes_cache,false),COALESCE(preserve_thinking_blocks,false),COALESCE(cache_breakpoints,''),COALESCE(cache_ttl,''),COALESCE(prompt_cache_retention,''),` + profileRetryCols
+const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(thinking_budget_tokens,0),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(custom_headers,'{}'::jsonb)::text,COALESCE(input_tokens_includes_cache,false),COALESCE(preserve_thinking_blocks,false),COALESCE(cache_breakpoints,''),COALESCE(cache_ttl,''),COALESCE(prompt_cache_retention,''),` + profileRetryCols
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
 func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile) error {
 	var customJSON string
 	if err := sc.Scan(&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.Proxy, &p.Model, into,
-		&p.RatePerSecond, &p.RatePerMinute, &p.ContextWindowK, &p.ReasoningEffort, &p.IsDefault, &p.Priority, &p.PoolExclude, &p.ThinkingType, &p.Streaming,
+		&p.RatePerSecond, &p.RatePerMinute, &p.ContextWindowK, &p.ReasoningEffort, &p.IsDefault, &p.Priority, &p.PoolExclude, &p.ThinkingType, &p.ThinkingBudgetTokens, &p.Streaming,
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey, &customJSON,
 		&p.InputTokensIncludesCache, &p.PreserveThinkingBlocks, &p.CacheBreakpoints, &p.CacheTTL, &p.PromptCacheRetention,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
@@ -272,20 +275,20 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	r := p.Retry.Clamped()
 	if p.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,thinking_type,streaming,max_tokens,max_tokens_field,session_header_key,custom_headers,input_tokens_includes_cache,preserve_thinking_blocks,cache_breakpoints,cache_ttl,prompt_cache_retention,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms)
-VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30) RETURNING id`,
-			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, string(customJSON), p.InputTokensIncludesCache, p.PreserveThinkingBlocks, p.CacheBreakpoints, p.CacheTTL, p.PromptCacheRetention,
+		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,thinking_type,thinking_budget_tokens,streaming,max_tokens,max_tokens_field,session_header_key,custom_headers,input_tokens_includes_cache,preserve_thinking_blocks,cache_breakpoints,cache_ttl,prompt_cache_retention,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms)
+VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) RETURNING id`,
+			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.ThinkingBudgetTokens, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, string(customJSON), p.InputTokensIncludesCache, p.PreserveThinkingBlocks, p.CacheBreakpoints, p.CacheTTL, p.PromptCacheRetention,
 			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS).Scan(&id)
 		return id, err
 	}
 	if p.APIKey == "" {
-		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,streaming=$13,max_tokens=$14,max_tokens_field=$15,session_header_key=$16,custom_headers=$17::jsonb,input_tokens_includes_cache=$18,preserve_thinking_blocks=$19,cache_breakpoints=$20,cache_ttl=$21,prompt_cache_retention=$22,retry_connect_attempts=$23,retry_connect_interval_ms=$24,retry_empty_attempts=$25,retry_empty_interval_ms=$26,retry_stream_attempts=$27,retry_stream_interval_ms=$28 WHERE id=$29`,
-			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, string(customJSON), p.InputTokensIncludesCache, p.PreserveThinkingBlocks, p.CacheBreakpoints, p.CacheTTL, p.PromptCacheRetention,
+		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,thinking_budget_tokens=$13,streaming=$14,max_tokens=$15,max_tokens_field=$16,session_header_key=$17,custom_headers=$18::jsonb,input_tokens_includes_cache=$19,preserve_thinking_blocks=$20,cache_breakpoints=$21,cache_ttl=$22,prompt_cache_retention=$23,retry_connect_attempts=$24,retry_connect_interval_ms=$25,retry_empty_attempts=$26,retry_empty_interval_ms=$27,retry_stream_attempts=$28,retry_stream_interval_ms=$29 WHERE id=$30`,
+			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.ThinkingBudgetTokens, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, string(customJSON), p.InputTokensIncludesCache, p.PreserveThinkingBlocks, p.CacheBreakpoints, p.CacheTTL, p.PromptCacheRetention,
 			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
 		return p.ID, err
 	}
-	_, err = d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,api_key=$6,api_key_hint=$7,rate_per_second=$8,rate_per_minute=$9,context_window_k=$10,reasoning_effort=$11,priority=$12,pool_exclude=$13,thinking_type=$14,streaming=$15,max_tokens=$16,max_tokens_field=$17,session_header_key=$18,custom_headers=$19::jsonb,input_tokens_includes_cache=$20,preserve_thinking_blocks=$21,cache_breakpoints=$22,cache_ttl=$23,prompt_cache_retention=$24,retry_connect_attempts=$25,retry_connect_interval_ms=$26,retry_empty_attempts=$27,retry_empty_interval_ms=$28,retry_stream_attempts=$29,retry_stream_interval_ms=$30 WHERE id=$31`,
-		p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, string(customJSON), p.InputTokensIncludesCache, p.PreserveThinkingBlocks, p.CacheBreakpoints, p.CacheTTL, p.PromptCacheRetention,
+	_, err = d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,api_key=$6,api_key_hint=$7,rate_per_second=$8,rate_per_minute=$9,context_window_k=$10,reasoning_effort=$11,priority=$12,pool_exclude=$13,thinking_type=$14,thinking_budget_tokens=$15,streaming=$16,max_tokens=$17,max_tokens_field=$18,session_header_key=$19,custom_headers=$20::jsonb,input_tokens_includes_cache=$21,preserve_thinking_blocks=$22,cache_breakpoints=$23,cache_ttl=$24,prompt_cache_retention=$25,retry_connect_attempts=$26,retry_connect_interval_ms=$27,retry_empty_attempts=$28,retry_empty_interval_ms=$29,retry_stream_attempts=$30,retry_stream_interval_ms=$31 WHERE id=$32`,
+		p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.ThinkingBudgetTokens, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, string(customJSON), p.InputTokensIncludesCache, p.PreserveThinkingBlocks, p.CacheBreakpoints, p.CacheTTL, p.PromptCacheRetention,
 		r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
 	return p.ID, err
 }
@@ -459,6 +462,11 @@ ORDER BY x.task_id`, id)
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_profiles WHERE id=$1`, id); err != nil {
+		return false, err
+	}
+	// Clear optional compactor setting if it pointed at the deleted profile so
+	// settings never retain an orphaned id.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key='compactor_llm_profile_id' AND BTRIM(value)=$1`, fmt.Sprintf("%d", id)); err != nil {
 		return false, err
 	}
 	// Only a successor after the deleted cursor is eligible. If there is none,

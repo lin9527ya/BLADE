@@ -63,6 +63,21 @@ func newLLMHealthRegistry(pg *db.DB, wg *sync.WaitGroup) *llmpool.Registry {
 	return reg
 }
 
+func newPoolMember(p *db.LLMProfile, cfg agent.Config, prov llm.Provider, rank int) *llmpool.Member {
+	return &llmpool.Member{
+		ID: p.ID, Name: p.Name, Model: p.Model, Format: p.Format,
+		Priority: p.Priority, Active: p.IsDefault, Rank: rank,
+		WindowTokens:         cfg.CompactionWindow(),
+		ProfileConfigured:    true,
+		NonStreaming:         !cfg.Stream,
+		MaxTokens:            cfg.MaxTokens,
+		CacheTTL:             cfg.CacheTTL,
+		PromptCacheRetention: cfg.PromptCacheRetention,
+		PreserveThinking:     cfg.PreservesThinking(),
+		Prov:                 prov,
+	}
+}
+
 // poolMember builds one chain member from a profile, reusing the per-profile
 // provider cache so every agent pointing at the same profile shares one provider
 // (hence one rate limiter). Returns nil when the profile can't be built.
@@ -71,11 +86,7 @@ func (s *Server) poolMember(p *db.LLMProfile, rank int) *llmpool.Member {
 	if !ok {
 		return nil
 	}
-	return &llmpool.Member{
-		ID: p.ID, Name: p.Name, Model: p.Model, Format: p.Format,
-		Priority: p.Priority, Active: p.IsDefault, Rank: rank,
-		WindowTokens: cfg.CompactionWindow(), Prov: prov,
-	}
+	return newPoolMember(p, cfg, prov, rank)
 }
 
 // poolChain reads the failover chain from the DB. headID/headProv/headCfg describe
@@ -109,11 +120,7 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 			return nil
 		}
 	}
-	members := []*llmpool.Member{{
-		ID: head.ID, Name: head.Name, Model: head.Model, Format: head.Format,
-		Priority: head.Priority, Active: head.IsDefault, Rank: llmpool.RankActive,
-		WindowTokens: headCfg.CompactionWindow(), Prov: headProv,
-	}}
+	members := []*llmpool.Member{newPoolMember(head, headCfg, headProv, llmpool.RankActive)}
 	for _, p := range profs {
 		if p.ID == headID {
 			continue

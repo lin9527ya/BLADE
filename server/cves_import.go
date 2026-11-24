@@ -194,7 +194,7 @@ func (s *Server) previewCVEImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 413, fmt.Sprintf("报告过长：最多 %d 字符，请先精简或分段导入", maxCVEReportRunes))
 		return
 	}
-	prov, ok := s.globalLLMProvider()
+	prov, cfg, ok := s.globalLLMConfig()
 	if !ok {
 		writeErr(w, 503, "未配置可用的 LLM，无法解析报告")
 		return
@@ -204,7 +204,11 @@ func (s *Server) previewCVEImport(w http.ResponseWriter, r *http.Request) {
 		user += "文件名：" + fn + "\n"
 	}
 	user += "<report>\n" + text + "\n</report>"
-	raw, err := streamCollectTextLimit(r.Context(), prov, cveImportSystemPrompt, user, 8192)
+	maxTok := 8192
+	if cfg.MaxTokens > 0 && cfg.MaxTokens < maxTok {
+		maxTok = cfg.MaxTokens
+	}
+	raw, err := collectOneShotText(r.Context(), prov, cveImportSystemPrompt, user, maxTok, !cfg.Stream, cfg.CacheTTL, cfg.PromptCacheRetention)
 	if err != nil {
 		writeErr(w, 502, "LLM 解析失败: "+err.Error())
 		return

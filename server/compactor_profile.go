@@ -66,5 +66,8 @@ func (s *Server) validateCompactorProfile(id int64) error {
 	if p == nil {
 		return fmt.Errorf("压缩器 LLM 配置不存在")
 	}
+	if strings.TrimSpace(p.APIKey) == "" {
+		return fmt.Errorf("压缩器 LLM 配置未设置 API Key")
+	}
 	return nil
 }

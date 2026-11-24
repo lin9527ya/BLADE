@@ -36,7 +36,15 @@ type Member struct {
 	// WindowTokens is the profile's context window in tokens. A member whose
 	// window can't hold the request is skipped rather than made to fail on it.
 	WindowTokens int
-	Prov         llm.Provider
+	// ProfileConfigured indicates runtime option fields below came from a real
+	// profile config (zero-valued test Members leave request options untouched).
+	ProfileConfigured    bool
+	NonStreaming         bool
+	MaxTokens            int
+	CacheTTL             string
+	PromptCacheRetention string
+	PreserveThinking     bool
+	Prov                 llm.Provider
 }
 
 // RankActive is the Rank the caller gives the chain head (the active profile, or
@@ -78,6 +86,90 @@ func (p *Pool) Members() []*Member { return p.members }
 // Head returns the first member of the chain.
 func (p *Pool) Head() *Member { return p.members[0] }
 
+// CurrentMember returns the member preferred right now for sid (honoring sticky
+// affinity when healthy, otherwise the first non-tripped member, falling back
+// to Head). Used by outer resolvers (e.g. ChatAgent) so runtime options follow
+// failover rather than staying pinned to the tripped head profile.
+func (p *Pool) CurrentMember(sid string) *Member {
+	if p == nil || len(p.members) == 0 {
+		return nil
+	}
+	if sid != "" {
+		if pinID := p.pinnedMember(sid); pinID > 0 {
+			for _, m := range p.members {
+				if m.ID == pinID && !p.health.IsOpen(m.ID) {
+					return m
+				}
+			}
+		}
+	}
+	for _, m := range p.members {
+		if !p.health.IsOpen(m.ID) {
+			return m
+		}
+	}
+	return p.members[0]
+}
+
+// PreservesThinking delegates thinking-block preservation to the currently
+// preferred member so upstream agents stay aligned after failover.
+func (p *Pool) PreservesThinking() bool {
+	if m := p.CurrentMember(""); m != nil {
+		if m.ProfileConfigured {
+			return m.PreserveThinking
+		}
+		if pt, ok := m.Prov.(interface{ PreservesThinking() bool }); ok {
+			return pt.PreservesThinking()
+		}
+	}
+	return false
+}
+
+func (m *Member) adaptedRequest(req llm.CompletionRequest) llm.CompletionRequest {
+	if !m.ProfileConfigured {
+		return req
+	}
+	out := req
+	out.CacheTTL = m.CacheTTL
+	out.PromptCacheRetention = m.PromptCacheRetention
+	if out.MaxTokens == 0 && m.MaxTokens > 0 {
+		out.MaxTokens = m.MaxTokens
+	}
+	return out
+}
+
+func emitCompleteAsStream(yield func(llm.StreamEvent, error) bool, msg llm.Message, stopReason string, usage llm.Usage) bool {
+	if !yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil) {
+		return false
+	}
+	for _, b := range msg.Content {
+		switch b.Type {
+		case llm.BlockThinking:
+			if b.Thinking != "" && !yield(llm.StreamEvent{Type: llm.SEThinkingDelta, Text: b.Thinking}, nil) {
+				return false
+			}
+			if b.Signature != "" && !yield(llm.StreamEvent{Type: llm.SEThinkingSignature, Text: b.Signature}, nil) {
+				return false
+			}
+		case llm.BlockText:
+			if b.Text != "" && !yield(llm.StreamEvent{Type: llm.SETextDelta, Text: b.Text}, nil) {
+				return false
+			}
+		case llm.BlockToolUse:
+			if !yield(llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: b.ID, ToolName: b.Name}, nil) {
+				return false
+			}
+			if len(b.Input) > 0 && !yield(llm.StreamEvent{Type: llm.SEToolInputJSON, Text: string(b.Input)}, nil) {
+				return false
+			}
+		}
+	}
+	if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: stopReason, Usage: usage}, nil) {
+		return false
+	}
+	return yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
+}
+
 // Stream implements llm.Provider with failover.
 //
 // The one hard rule: a member may only be abandoned BEFORE it has yielded any
@@ -103,23 +195,42 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			}
 			emitted := false
 			var failed error
-			for ev, err := range m.Prov.Stream(ctx, req) {
-				if err != nil && !emitted && shouldFailover(ctx, err) {
-					failed = err
-					break // safe window: nothing reached the caller yet
-				}
-				emitted = true
-				if !yield(ev, err) {
-					return // caller stopped consuming (cancel / early exit)
-				}
+			mReq := m.adaptedRequest(req)
+			if m.NonStreaming {
+				msg, sr, usage, err := m.Prov.Complete(ctx, mReq)
 				if err != nil {
-					return // terminal error already handed to the caller
+					if shouldFailover(ctx, err) {
+						failed = err
+					} else {
+						p.health.Pass(m.ID)
+						yield(llm.StreamEvent{}, err)
+						return
+					}
+				} else {
+					p.health.Pass(m.ID)
+					p.pinSession(sid, m.ID)
+					emitCompleteAsStream(yield, msg, sr, usage)
+					return
 				}
-			}
-			if failed == nil {
-				p.health.Pass(m.ID) // completed (or failed in a non-failover way)
-				p.pinSession(sid, m.ID)
-				return
+			} else {
+				for ev, err := range m.Prov.Stream(ctx, mReq) {
+					if err != nil && !emitted && shouldFailover(ctx, err) {
+						failed = err
+						break // safe window: nothing reached the caller yet
+					}
+					emitted = true
+					if !yield(ev, err) {
+						return // caller stopped consuming (cancel / early exit)
+					}
+					if err != nil {
+						return // terminal error already handed to the caller
+					}
+				}
+				if failed == nil {
+					p.health.Pass(m.ID) // completed (or failed in a non-failover way)
+					p.pinSession(sid, m.ID)
+					return
+				}
 			}
 			lastErr = failed
 			code := statusOf(failed)
@@ -164,7 +275,7 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
 			continue
 		}
-		msg, sr, usage, err := m.Prov.Complete(ctx, req)
+		msg, sr, usage, err := m.Prov.Complete(ctx, m.adaptedRequest(req))
 		if err == nil {
 			p.health.Pass(m.ID)
 			p.pinSession(sid, m.ID)

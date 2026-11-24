@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import type { LLMPoolMember, LLMPoolStatus, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { cooldownText } from "./_components/llm-helpers";
+import { cooldownText, formatThinkingSummary } from "./_components/llm-helpers";
 import { PoolDialog } from "./_components/pool-dialog";
 import { LLMPriceTab } from "./_components/price-tab";
 import { ProfileDialog } from "./_components/profile-dialog";
@@ -210,9 +210,12 @@ export default function LLMPage() {
                         {p.rate_per_second}/s · {p.rate_per_minute}/min
                       </span>
                       {p.proxy && <span className="truncate">代理 {p.proxy}</span>}
-                      {p.reasoning_effort && (
-                        <span>思考 {p.reasoning_effort === "off" ? "关" : p.reasoning_effort}</span>
-                      )}
+                      {(() => {
+                        const summary = formatThinkingSummary(p);
+                        return summary ? <span>{summary}</span> : null;
+                      })()}
+                      {p.streaming === false && <span>非流式</span>}
+                      {(p.max_tokens ?? 0) > 0 && <span>上限 {p.max_tokens}</span>}
                       {/* 轮询相关的两个字段只在轮询开着时才有意义，关着时不占版面 */}
                       {poolOn &&
                         !p.is_default &&

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,12 +48,15 @@ type Config struct {
 	ContextWindowK int
 	// ThinkingType 独立控制思考「开关」字段(thinking.type):
 	//   "" = 不发送(默认,兼容不支持该字段的模型); "disabled" = 显式关闭;
-	//   "enabled" = 开启. 与 ReasoningEffort 完全解耦——有些接口没有 thinking 字段、
-	//   只靠强度参数就能激活思考,故两者可各自单独设置.
+	//   "enabled" = 开启; "adaptive" = 自适应(anthropic Claude 4.6+).
 	ThinkingType string
+	// ThinkingBudgetTokens 可选设置 Anthropic enabled 模式下的思考预算
+	// ("thinking.budget_tokens")。0 = 不发送; 仅对 format=anthropic 且
+	// ThinkingType="enabled" 生效。
+	ThinkingBudgetTokens int
 	// ReasoningEffort 独立控制思考「强度」字段:
-	//   "" = 不发送(默认); "low"/"medium"/"high"/"xhigh"/"max" = 对应强度.
-	//   OpenAI 映射为顶层 reasoning_effort;Anthropic 映射为 output_config.effort.
+	//   "" = 不发送(默认); "none"/"minimal"/"low"/"medium"/"high"/"xhigh"/"max" = 对应强度.
+	//   OpenAI 映射为顶层 reasoning_effort; Anthropic 为 output_config.effort; Responses 为 reasoning.effort.
 	ReasoningEffort string
 	// Stream 控制该 profile 是否使用流式(SSE)接口。true(默认)= 流式;false = 真·
 	// 非流式(发 stream:false,一次性拿完整 JSON,走 Provider.Complete)。非流式可绕开
@@ -113,11 +117,24 @@ func ResolveAnthropicCacheBreakpoints(v string) string {
 	}
 }
 
-// PreservesThinking reports whether the configured Anthropic profile expects
-// historical thinking blocks to stay attached (either explicitly via ThinkingType
-// or via gateway default preserve_thinking_blocks).
+// PreservesThinking reports whether the configured profile expects historical
+// thinking blocks / reasoning content to stay attached. Always false when
+// ThinkingType is "disabled" or on OpenAI Responses (stateless replay drops them).
 func (c Config) PreservesThinking() bool {
-	return c.PreserveThinkingBlocks || ((c.Format == "" || c.Format == llm.FormatAnthropic) && strings.EqualFold(strings.TrimSpace(c.ThinkingType), "enabled"))
+	switch strings.ToLower(strings.TrimSpace(c.ThinkingType)) {
+	case "disabled":
+		return false
+	case "enabled", "adaptive":
+		return c.Format == "" || c.Format == llm.FormatAnthropic || c.Format == llm.FormatOpenAI
+	default:
+		if c.Format == llm.FormatOpenAI {
+			return strings.TrimSpace(c.ReasoningEffort) != ""
+		}
+		if c.Format == "" || c.Format == llm.FormatAnthropic {
+			return c.PreserveThinkingBlocks
+		}
+		return false
+	}
 }
 
 func providerPreservesThinking(p llm.Provider) bool {
@@ -220,11 +237,22 @@ func compactionConfig(windowTokens, maxTokens int) *compaction.Config {
 
 // FromEnv resolves the LLM provider config:
 //
-//	BLADE_LLM_PROVIDER = anthropic|openai (default: inferred from keys)
+//	BLADE_LLM_PROVIDER = anthropic|openai|openai-responses (default: inferred from keys)
 //	BLADE_LLM_MODEL    = model id        (default: per provider)
 //	BLADE_LLM_BASE_URL = endpoint        (optional)
-//	BLADE_LLM_PROXY    = proxy URL        (optional; http/https/socks5)
-//	ANTHROPIC_API_KEY / OPENAI_API_KEY         = credentials
+//	BLADE_LLM_PROXY    = proxy URL       (optional; http/https/socks5)
+//	BLADE_LLM_STREAM   = true|false      (default: true)
+//	BLADE_LLM_THINKING_TYPE          = disabled|enabled|adaptive (optional)
+//	BLADE_LLM_THINKING_BUDGET_TOKENS = int >= 0 (anthropic enabled only)
+//	BLADE_LLM_REASONING_EFFORT       = none|minimal|low|medium|high|xhigh|max
+//	BLADE_LLM_MAX_TOKENS             = int >= 0 (optional)
+//	BLADE_LLM_MAX_TOKENS_FIELD       = max_completion_tokens (openai only)
+//	BLADE_LLM_CONTEXT_WINDOW_K       = 0..1000 (optional)
+//	BLADE_LLM_RATE_PER_SECOND / BLADE_LLM_RATE_PER_MINUTE = float >= 0
+//	BLADE_LLM_SESSION_HEADER_KEY     = custom HTTP session header name
+//	BLADE_LLM_CACHE_BREAKPOINTS / BLADE_LLM_CACHE_TTL / BLADE_LLM_PROMPT_CACHE_RETENTION
+//	BLADE_LLM_INPUT_TOKENS_INCLUDES_CACHE / BLADE_LLM_PRESERVE_THINKING_BLOCKS = bool
+//	ANTHROPIC_API_KEY / OPENAI_API_KEY = credentials
 func FromEnv() (Config, bool) {
 	prov := os.Getenv("BLADE_LLM_PROVIDER")
 	anthKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -242,11 +270,29 @@ func FromEnv() (Config, bool) {
 	}
 
 	c := Config{
-		BaseURL: os.Getenv("BLADE_LLM_BASE_URL"),
-		Model:   os.Getenv("BLADE_LLM_MODEL"),
-		Proxy:   strings.TrimSpace(os.Getenv("BLADE_LLM_PROXY")),
+		BaseURL:          strings.TrimSpace(os.Getenv("BLADE_LLM_BASE_URL")),
+		Model:            strings.TrimSpace(os.Getenv("BLADE_LLM_MODEL")),
+		Proxy:            strings.TrimSpace(os.Getenv("BLADE_LLM_PROXY")),
+		ThinkingType:     strings.TrimSpace(os.Getenv("BLADE_LLM_THINKING_TYPE")),
+		ReasoningEffort:  strings.TrimSpace(os.Getenv("BLADE_LLM_REASONING_EFFORT")),
+		SessionHeaderKey: strings.TrimSpace(os.Getenv("BLADE_LLM_SESSION_HEADER_KEY")),
 		// 默认流式;BLADE_LLM_STREAM=false/0/off 显式关闭走非流式。
 		Stream: !isFalsy(os.Getenv("BLADE_LLM_STREAM")),
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BLADE_LLM_MAX_TOKENS"))); err == nil && n > 0 {
+		c.MaxTokens = n
+	}
+	if cw, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BLADE_LLM_CONTEXT_WINDOW_K"))); err == nil && cw > 0 {
+		if cw > 1000 {
+			cw = 1000
+		}
+		c.ContextWindowK = cw
+	}
+	if rps, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("BLADE_LLM_RATE_PER_SECOND")), 64); err == nil && rps > 0 {
+		c.RatePerSecond = rps
+	}
+	if rpm, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("BLADE_LLM_RATE_PER_MINUTE")), 64); err == nil && rpm > 0 {
+		c.RatePerMinute = rpm
 	}
 	switch prov {
 	case "openai":
@@ -254,6 +300,9 @@ func FromEnv() (Config, bool) {
 		c.APIKey = oaiKey
 		if c.Model == "" {
 			c.Model = "gpt-4o"
+		}
+		if f := strings.TrimSpace(os.Getenv("BLADE_LLM_MAX_TOKENS_FIELD")); f == llm.MaxTokensFieldCompletion {
+			c.MaxTokensField = f
 		}
 		if r := strings.TrimSpace(os.Getenv("BLADE_LLM_PROMPT_CACHE_RETENTION")); r == "in_memory" || r == "24h" {
 			c.PromptCacheRetention = r
@@ -273,6 +322,11 @@ func FromEnv() (Config, bool) {
 		if c.Model == "" {
 			c.Model = "claude-opus-4-8"
 		}
+		if b, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BLADE_LLM_THINKING_BUDGET_TOKENS"))); err == nil && b > 0 {
+			c.ThinkingBudgetTokens = b
+		}
+		c.InputTokensIncludesCache = isTruthy(os.Getenv("BLADE_LLM_INPUT_TOKENS_INCLUDES_CACHE"))
+		c.PreserveThinkingBlocks = isTruthy(os.Getenv("BLADE_LLM_PRESERVE_THINKING_BLOCKS"))
 		c.CacheBreakpoints = ResolveAnthropicCacheBreakpoints(os.Getenv("BLADE_LLM_CACHE_BREAKPOINTS"))
 		if ttl := strings.TrimSpace(os.Getenv("BLADE_LLM_CACHE_TTL")); ttl == "5m" || ttl == "1h" {
 			c.CacheTTL = ttl
@@ -332,6 +386,14 @@ func isFalsy(s string) bool {
 	return false
 }
 
+func isTruthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
 // Provider returns the short provider name ("anthropic"/"openai").
 func (c Config) Provider() string {
 	switch c.Format {
@@ -381,6 +443,7 @@ func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, e
 	// 思考开关与强度两个字段各自透传(空 = 该字段不发送)。二者解耦:
 	// 可只发 thinking.type、只发 effort、都发、或都不发。
 	lc.ThinkingType = c.ThinkingType
+	lc.ThinkingBudgetTokens = c.ThinkingBudgetTokens
 	lc.ReasoningEffort = c.ReasoningEffort
 	// 输出上限的字段名选择(空 = 用 max_tokens)。上限的「值」不在这里:它每轮随
 	// agentcore.Options.MaxTokens 走,provider 只决定把它塞进哪个键。
@@ -391,7 +454,10 @@ func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, e
 	lc.CacheBreakpoints = c.CacheBreakpoints
 	lc.CacheTTL = c.CacheTTL
 	lc.PromptCacheRetention = c.PromptCacheRetention
-	lc.DisablePromptCacheKey = !supportsPromptCacheKey(c.Format, c.BaseURL)
+	// Explicit prompt_cache_retention on custom OpenAI endpoints implies the target
+	// gateway accepts OpenAI prompt cache body parameters.
+	lc.DisablePromptCacheKey = !(supportsPromptCacheKey(c.Format, c.BaseURL) ||
+		(c.Format == llm.FormatOpenAI && strings.TrimSpace(c.PromptCacheRetention) != ""))
 	// 重试参数与 SDK 同语义(次数 0=默认/负=关闭,间隔 0=指数退避/>0=固定),原样透传。
 	lc.MaxRetries = c.Retry.ConnectAttempts
 	lc.RetryInterval = c.Retry.ConnectInterval
@@ -646,13 +712,22 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 就撞到输出上限(finish=length)、被截断,连接测试虽仍算通(err=nil)但显示成
 	// "已中断/length/resume" 一团糟。给足预算让它把 OK 干净吐完(finish=stop)。
 	// EscalateMaxTokens 保持 false:不因截断而抬额重试,避免 resume 循环空烧。
+	maxTok := 8192
+	if c.MaxTokens > 0 {
+		maxTok = c.MaxTokens
+	} else if c.Format == llm.FormatAnthropic && c.ThinkingType == "enabled" && c.ThinkingBudgetTokens >= maxTok {
+		maxTok = c.ThinkingBudgetTokens + 4096
+	}
 	reply, err := agentcore.Run(ctx, agentcore.Options{
-		Provider:       prov,
-		SystemPrompt:   []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
-		PermissionMode: acperm.ModeBypass,
-		MaxTurns:       1,
-		MaxTokens:      8192,
-		NonStreaming:   !c.Stream, // 用该 profile 的真实收发模式做连接测试
+		Provider:             prov,
+		SystemPrompt:         []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
+		PermissionMode:       acperm.ModeBypass,
+		MaxTurns:             1,
+		MaxTokens:            maxTok,
+		NonStreaming:         !c.Stream, // 用该 profile 的真实收发模式做连接测试
+		CacheTTL:             c.CacheTTL,
+		PromptCacheRetention: c.PromptCacheRetention,
+		PreserveThinking:     c.PreservesThinking(),
 	}, "ping")
 	lat := time.Since(start)
 	if err != nil {

@@ -216,23 +216,30 @@ func (s *Server) previewPlaybookMDImport(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "Markdown 内容最多 20 万字")
 		return
 	}
-	var prov llm.Provider
+	var (
+		prov llm.Provider
+		cfg  agent.Config
+	)
 	if req.LLMProfileID != nil && *req.LLMProfileID > 0 {
-		if p, _, ok := s.providerForProfile(*req.LLMProfileID); ok {
-			prov = p
+		if p, c, ok := s.providerForProfile(*req.LLMProfileID); ok {
+			prov, cfg = p, c
 		}
 	} else if active, err := s.m.pg.ActiveProfile(); err == nil && active != nil {
-		if p, _, ok := s.providerForProfile(active.ID); ok {
-			prov = p
+		if p, c, ok := s.providerForProfile(active.ID); ok {
+			prov, cfg = p, c
 		}
 	}
 	if prov == nil {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用的 LLM 配置：请先在「LLM 配置」中设置激活配置")
 		return
 	}
+	maxTok := 8192
+	if cfg.MaxTokens > 0 && cfg.MaxTokens < maxTok {
+		maxTok = cfg.MaxTokens
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	drafts, warnings, err := agent.ExtractPlaybooksFromMarkdown(ctx, prov, strings.TrimSpace(req.Filename), content)
+	drafts, warnings, err := agent.ExtractPlaybooksFromMarkdownWithLimit(ctx, prov, strings.TrimSpace(req.Filename), content, maxTok)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			writeErr(w, http.StatusGatewayTimeout, "模型总结超时，请缩短文档或稍后重试")

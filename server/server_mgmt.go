@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/skill"
 	"github.com/lin9527ya/blade/agent"
@@ -1994,6 +1996,117 @@ func (s *Server) pgListProfiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"profiles": llmProfileDTOs(ps)})
 }
 
+func parseLLMProxyURL(raw string) (*url.URL, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("代理地址格式错误: %q", s)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+		return u, nil
+	default:
+		return nil, fmt.Errorf("不支持的代理协议 %q（仅支持 http/https/socks5）", u.Scheme)
+	}
+}
+
+func validateAndNormalizeProfile(p *db.LLMProfile) (int, error) {
+	p.Name = strings.TrimSpace(p.Name)
+	if p.Name == "" {
+		return 400, fmt.Errorf("配置名称不能为空")
+	}
+	p.Model = strings.TrimSpace(p.Model)
+	if p.Model == "" {
+		return 400, fmt.Errorf("模型名称不能为空")
+	}
+	p.Format = strings.TrimSpace(p.Format)
+	switch p.Format {
+	case "openai", "anthropic", "openai-responses":
+	default:
+		return 400, fmt.Errorf("不支持的格式 %q（必须是 anthropic / openai / openai-responses）", p.Format)
+	}
+	p.BaseURL = strings.TrimSpace(p.BaseURL)
+	if p.BaseURL != "" {
+		bu, err := url.Parse(p.BaseURL)
+		if err != nil || bu.Host == "" || (bu.Scheme != "http" && bu.Scheme != "https") {
+			return 400, fmt.Errorf("Base URL 格式错误（需以 http:// 或 https:// 开头）")
+		}
+	}
+	p.Proxy = strings.TrimSpace(p.Proxy)
+	if _, err := parseLLMProxyURL(p.Proxy); err != nil {
+		return 400, err
+	}
+	if math.IsNaN(p.RatePerSecond) || math.IsInf(p.RatePerSecond, 0) || p.RatePerSecond < 0 ||
+		math.IsNaN(p.RatePerMinute) || math.IsInf(p.RatePerMinute, 0) || p.RatePerMinute < 0 {
+		return 400, fmt.Errorf("限速必须是非负有限数字")
+	}
+	if p.ContextWindowK < 0 || p.ContextWindowK > 1000 {
+		return 400, fmt.Errorf("上下文窗口(K)必须在 0 到 1000 之间")
+	}
+	p.ThinkingType = strings.TrimSpace(p.ThinkingType)
+	switch p.ThinkingType {
+	case "", "disabled", "enabled", "adaptive":
+	default:
+		return 400, fmt.Errorf("思考开关 thinking_type 取值无效: %q", p.ThinkingType)
+	}
+	if p.ThinkingType == "adaptive" && p.Format != "anthropic" {
+		return 400, fmt.Errorf("仅 anthropic 格式支持 adaptive 自适应思考")
+	}
+	if p.ThinkingBudgetTokens < 0 {
+		p.ThinkingBudgetTokens = 0
+	}
+	p.ReasoningEffort = strings.TrimSpace(p.ReasoningEffort)
+	switch p.ReasoningEffort {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+	default:
+		return 400, fmt.Errorf("思考强度 reasoning_effort 取值无效: %q", p.ReasoningEffort)
+	}
+	if p.MaxTokens < 0 {
+		p.MaxTokens = 0
+	}
+	p.MaxTokensField = strings.TrimSpace(p.MaxTokensField)
+	if p.Format != "openai" || p.MaxTokensField != llm.MaxTokensFieldCompletion {
+		p.MaxTokensField = ""
+	}
+	p.CacheBreakpoints = strings.TrimSpace(p.CacheBreakpoints)
+	p.CacheTTL = strings.TrimSpace(p.CacheTTL)
+	p.PromptCacheRetention = strings.TrimSpace(p.PromptCacheRetention)
+	if p.Format == "anthropic" {
+		switch p.CacheBreakpoints {
+		case "system":
+		case "", "rolling":
+			p.CacheBreakpoints = "rolling"
+		default:
+			p.CacheBreakpoints = "rolling"
+		}
+		if p.CacheTTL != "5m" && p.CacheTTL != "1h" {
+			p.CacheTTL = ""
+		}
+		p.PromptCacheRetention = ""
+		if p.ThinkingType == "enabled" && p.ThinkingBudgetTokens > 0 {
+			if p.ThinkingBudgetTokens < 1024 {
+				return 400, fmt.Errorf("思考预算 thinking_budget_tokens 启用时至少为 1024（0 = 不发送）")
+			}
+			if p.MaxTokens > 0 && p.MaxTokens <= p.ThinkingBudgetTokens {
+				return 400, fmt.Errorf("输出上限 (max_tokens=%d) 必须大于思考预算 (thinking_budget_tokens=%d)", p.MaxTokens, p.ThinkingBudgetTokens)
+			}
+		}
+	} else {
+		p.ThinkingBudgetTokens = 0
+		p.CacheBreakpoints = ""
+		p.CacheTTL = ""
+		p.InputTokensIncludesCache = false
+		p.PreserveThinkingBlocks = false
+		if p.PromptCacheRetention != "in_memory" && p.PromptCacheRetention != "24h" {
+			p.PromptCacheRetention = ""
+		}
+	}
+	return 0, nil
+}
+
 func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
@@ -2014,7 +2127,7 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := body.LLMProfile
-	p.APIKey = body.APIKey
+	p.APIKey = strings.TrimSpace(body.APIKey)
 	p.Streaming = body.Streaming == nil || *body.Streaming
 	// An absent custom_headers field (older client) must preserve the saved map;
 	// an explicit {} clears it. Validate here so a bad header name is a 400, not a
@@ -2028,38 +2141,17 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
-	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
-	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。
-	if p.MaxTokens < 0 {
-		p.MaxTokens = 0
-	}
-	if p.Format != "openai" || p.MaxTokensField != llm.MaxTokensFieldCompletion {
-		p.MaxTokensField = ""
-	}
-	if p.Format == "anthropic" {
-		switch p.CacheBreakpoints {
-		case "system":
-		case "", "rolling":
-			p.CacheBreakpoints = "rolling"
-		default:
-			p.CacheBreakpoints = "rolling"
-		}
-		if p.CacheTTL != "5m" && p.CacheTTL != "1h" {
-			p.CacheTTL = ""
-		}
-		p.PromptCacheRetention = ""
-	} else {
-		p.CacheBreakpoints = ""
-		p.CacheTTL = ""
-		p.InputTokensIncludesCache = false
-		p.PreserveThinkingBlocks = false
-		if p.PromptCacheRetention != "in_memory" && p.PromptCacheRetention != "24h" {
-			p.PromptCacheRetention = ""
-		}
+	if status, err := validateAndNormalizeProfile(&p); err != nil {
+		writeErr(w, status, err.Error())
+		return
 	}
 	id, err := pg.SaveProfile(&p)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeErr(w, 409, fmt.Sprintf("配置名称 %q 已存在", p.Name))
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -2169,7 +2261,24 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	p, err := pg.ProfileByID(body.ID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if p == nil {
+		writeErr(w, 404, "LLM 配置不存在")
+		return
+	}
+	if strings.TrimSpace(p.APIKey) == "" {
+		writeErr(w, 400, "该配置未填写 API Key，无法设为激活")
+		return
+	}
 	if err := pg.SetActiveProfile(body.ID); err != nil {
+		if errors.Is(err, db.ErrLLMProfileNotFound) {
+			writeErr(w, 404, "LLM 配置不存在")
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -2300,12 +2409,15 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build HTTP client with optional proxy.
+	// Build HTTP client with optional proxy (fail closed on malformed proxy URL).
+	proxyURL, err := parseLLMProxyURL(req.Proxy)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
 	transport := &http.Transport{}
-	if p := strings.TrimSpace(req.Proxy); p != "" {
-		if pu, err := url.Parse(p); err == nil {
-			transport.Proxy = http.ProxyURL(pu)
-		}
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
 
@@ -2321,7 +2433,10 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		for k, v := range headers {
 			httpReq.Header.Set(k, v)
 		}
-		httpReq.Header = c.hdr
+		// Apply auth/protocol headers without discarding profile custom_headers.
+		for k, vals := range c.hdr {
+			httpReq.Header[k] = append([]string(nil), vals...)
+		}
 		resp, err := client.Do(httpReq)
 		if err != nil {
 			lastErr = "请求失败: " + err.Error()

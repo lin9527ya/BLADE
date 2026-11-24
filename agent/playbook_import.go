@@ -59,6 +59,12 @@ type playbookImportResponse struct {
 // database and never gives the model tools. The caller shows the drafts to a
 // human before committing them.
 func ExtractPlaybooksFromMarkdown(ctx context.Context, prov llm.Provider, filename, content string) ([]PlaybookDraft, []string, error) {
+	return ExtractPlaybooksFromMarkdownWithLimit(ctx, prov, filename, content, 8192)
+}
+
+// ExtractPlaybooksFromMarkdownWithLimit mirrors ExtractPlaybooksFromMarkdown with
+// an optional per-reply output token limit (<=0 defaults to 8192).
+func ExtractPlaybooksFromMarkdownWithLimit(ctx context.Context, prov llm.Provider, filename, content string, maxTokens int) ([]PlaybookDraft, []string, error) {
 	if prov == nil {
 		return nil, nil, errors.New("没有可用的 LLM 配置")
 	}
@@ -73,13 +79,16 @@ func ExtractPlaybooksFromMarkdown(ctx context.Context, prov llm.Provider, filena
 	if filename == "" {
 		filename = "未命名文档.md"
 	}
+	if maxTokens <= 0 {
+		maxTokens = 8192
+	}
 	user := "文档名：" + filename + "\n\n" + FenceUntrusted("Markdown 文档", content)
 	temp := 0.1
 	req := llm.CompletionRequest{
 		System:          []string{playbookImportSystemPrompt},
 		DynamicBoundary: 1,
 		Messages:        []llm.Message{llm.UserText(user)},
-		MaxTokens:       8192,
+		MaxTokens:       maxTokens,
 		Temperature:     &temp,
 		Thinking:        "disabled",
 	}

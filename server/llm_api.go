@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/llmpool"
 	"github.com/lin9527ya/blade/llmrec"
 )
 
@@ -47,6 +49,7 @@ func (s *Server) profileToAgentConfig(p *db.LLMProfile) agent.Config {
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
+	cfg.ThinkingBudgetTokens = p.ThinkingBudgetTokens
 	cfg.ReasoningEffort = p.ReasoningEffort
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
@@ -175,6 +178,49 @@ func maxTokensResolver(cfg agent.Config) func() int {
 	return func() int { return maxTokens }
 }
 
+func (s *Server) newConfiguredChatAgent(prov llm.Provider, cfg agent.Config) *agent.ChatAgent {
+	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
+	ca := agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
+	ca.SetProxyFunc(s.m.ProxySnapshot)
+	ca.SetWebSearch(s.m.WebSearchOpts())
+	ca.SetGuard(s.chatGuard())
+	if pool, ok := prov.(*llmpool.Pool); ok && pool != nil {
+		ca.SetNonStreaming(func() bool {
+			if m := pool.CurrentMember(""); m != nil {
+				return m.NonStreaming
+			}
+			return !cfg.Stream
+		})
+		ca.SetMaxTokens(func() int {
+			if m := pool.CurrentMember(""); m != nil {
+				return m.MaxTokens
+			}
+			return cfg.MaxTokens
+		})
+		ca.SetCacheOptions(
+			func() string {
+				if m := pool.CurrentMember(""); m != nil && m.ProfileConfigured {
+					return m.CacheTTL
+				}
+				return cfg.CacheTTL
+			},
+			func() string {
+				if m := pool.CurrentMember(""); m != nil && m.ProfileConfigured {
+					return m.PromptCacheRetention
+				}
+				return cfg.PromptCacheRetention
+			},
+			pool.PreservesThinking,
+		)
+	} else {
+		ca.SetNonStreaming(nonStreamingResolver(cfg))
+		ca.SetMaxTokens(maxTokensResolver(cfg))
+		ca.SetCacheOptions(func() string { return cfg.CacheTTL }, func() string { return cfg.PromptCacheRetention }, cfg.PreservesThinking)
+	}
+	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
+	return ca
+}
+
 // applyLLM (re)builds the planner/worker/main-agent from cfg and installs them on
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
@@ -212,23 +258,17 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// (agentsForTask), resolved through the engine's authoritative resolver. Global
 	// readiness (Ready()/llm_configured) is reported from s.llm.on, set below.
 
-	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	win := cfg.CompactionWindow()
+	_ = win
 	// chat stays the GLOBAL fallback since one ChatAgent serves many agent keys — its
 	// per-agent binding is resolved at Chat time (runConversationSync →
 	// chatAgentForProfile). The main-agent has no global instance: each task builds its
 	// own via agentsForTask (task-routed), so nothing is constructed for it here.
+	ca := s.newConfiguredChatAgent(prov, cfg)
 	s.llm.mu.Lock()
 	// chat agent serves MANY custom agents by key → it holds the GLOBAL opts
 	// (backend/key) and gates Enabled per-conversation-agent at Chat time. 对话始终用激活配置。
-	s.llm.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
-	s.llm.chatAgent.SetProxyFunc(s.m.ProxySnapshot)
-	s.llm.chatAgent.SetWebSearch(s.m.WebSearchOpts())
-	s.llm.chatAgent.SetGuard(s.chatGuard())
-	s.llm.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
-	s.llm.chatAgent.SetMaxTokens(maxTokensResolver(cfg))
-	s.llm.chatAgent.SetCacheOptions(func() string { return cfg.CacheTTL }, func() string { return cfg.PromptCacheRetention }, cfg.PreservesThinking)
-	s.llm.chatAgent.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
+	s.llm.chatAgent = ca // chat page runner
 	s.llm.prov = prov
 	s.llm.cfg = cfg
 	s.llm.on = true
@@ -355,15 +395,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	if !ok {
 		return nil
 	}
-	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
-	ca.SetProxyFunc(s.m.ProxySnapshot)
-	ca.SetWebSearch(s.m.WebSearchOpts())
-	ca.SetGuard(s.chatGuard())
-	ca.SetNonStreaming(nonStreamingResolver(cfg))
-	ca.SetMaxTokens(maxTokensResolver(cfg))
-	ca.SetCacheOptions(func() string { return cfg.CacheTTL }, func() string { return cfg.PromptCacheRetention }, cfg.PreservesThinking)
-	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
+	ca := s.newConfiguredChatAgent(s.poolForBinding(id, prov, cfg), cfg)
 	s.providers.mu.Lock()
 	if ex := s.providers.chatAgents[id]; ex != nil { // lost the race → keep the winner
 		ca = ex
@@ -416,20 +448,25 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 // calls (e.g. CVE report extraction). It never builds a new provider: if no LLM
 // is configured it returns false so callers can report "先配置 LLM".
 func (s *Server) globalLLMProvider() (llm.Provider, bool) {
+	p, _, ok := s.globalLLMConfig()
+	return p, ok
+}
+
+// globalLLMConfig returns both the global provider and its effective agent.Config.
+func (s *Server) globalLLMConfig() (llm.Provider, agent.Config, bool) {
 	s.llm.mu.Lock()
 	if s.llm.direct != nil {
-		p := s.llm.direct
+		p, cfg := s.llm.direct, s.llm.cfg
 		s.llm.mu.Unlock()
-		return p, true
+		return p, cfg, true
 	}
 	s.llm.mu.Unlock()
 	// 启动早期 direct 可能尚未赋值；退回当前激活 profile 的缓存 provider。
 	active, err := s.m.pg.ActiveProfile()
 	if err != nil || active == nil {
-		return nil, false
+		return nil, agent.Config{}, false
 	}
-	prov, _, ok := s.providerForProfile(active.ID)
-	return prov, ok
+	return s.providerForProfile(active.ID)
 }
 
 // getLLM returns the current LLM config (key never exposed).
@@ -513,59 +550,134 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 // testLLM makes a real minimal completion to verify the config works.
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider         string            `json:"provider"`
-		Model            string            `json:"model"`
-		BaseURL          string            `json:"base_url"`
-		Proxy            string            `json:"proxy"`
-		APIKey           string            `json:"api_key"`
-		ThinkingType     string            `json:"thinking_type"`
-		ReasoningEffort  string            `json:"reasoning_effort"`
-		ProfileID        *int64            `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
-		Streaming        *bool             `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
-		SessionHeaderKey string            `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
-		CustomHeaders    map[string]string `json:"custom_headers"`     // 固定请求头（User-Agent 等），与保存后实际运行一致
+		Provider               string            `json:"provider"`
+		Model                  string            `json:"model"`
+		BaseURL                string            `json:"base_url"`
+		Proxy                  *string           `json:"proxy"`
+		APIKey                 string            `json:"api_key"`
+		ThinkingType           string            `json:"thinking_type"`
+		ThinkingBudgetTokens   *int              `json:"thinking_budget_tokens"`
+		ReasoningEffort        string            `json:"reasoning_effort"`
+		ProfileID              *int64            `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
+		Streaming              *bool             `json:"streaming"`  // 省略=流式，与保存 profile 时同一套默认
+		MaxTokens              *int              `json:"max_tokens"`
+		MaxTokensField         *string           `json:"max_tokens_field"`
+		SessionHeaderKey       string            `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
+		CustomHeaders          map[string]string `json:"custom_headers"`     // 固定请求头（User-Agent 等），与保存后实际运行一致
+		CacheBreakpoints       *string           `json:"cache_breakpoints"`
+		CacheTTL               *string           `json:"cache_ttl"`
+		PromptCacheRetention   *string           `json:"prompt_cache_retention"`
+		PreserveThinkingBlocks *bool             `json:"preserve_thinking_blocks"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
-	// mirror production: send the SAME thinking params so a provider that rejects the
-	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
-	cfg.ThinkingType = req.ThinkingType
-	cfg.ReasoningEffort = req.ReasoningEffort
-	// 同理，收发模式也照该 profile 的选择来：只支持其中一种通道的端点必须在这里就
-	// 暴露，而不是等会话里才发现"测试通过的配置根本跑不动"。
-	if req.Streaming != nil {
-		cfg.Stream = *req.Streaming
+	var saved *db.LLMProfile
+	if req.ProfileID != nil {
+		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+			saved = p
+		}
 	}
-	// 自定义会话头名照该配置来：非空则测试请求也发这个头(值为一次性随机 session id，
-	// 见 TestConnection)。opencode zen 等强制要求 x-opencode-session 的端点，缺了它
-	// 直接 400，必须在测试路径上也带上，否则"对话通、测试 400"。表单没填时按端点补
-	// 默认头名(opencode.ai ⇒ x-opencode-session)，保证"没填也能测通"。
-	cfg.SessionHeaderKey = db.DefaultSessionHeaderKey(req.BaseURL, req.SessionHeaderKey)
-	headers, err := db.NormalizeCustomHeaders(req.CustomHeaders)
+	var proxyStr string
+	if req.Proxy != nil {
+		proxyStr = *req.Proxy
+	} else if saved != nil {
+		proxyStr = saved.Proxy
+	}
+	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, proxyStr)
+	// Build a temporary profile representation so validation/normalization
+	// mirrors pgSaveProfile identically.
+	tmp := db.LLMProfile{
+		Format:                 cfg.Provider(),
+		Model:                  cfg.Model,
+		BaseURL:                cfg.BaseURL,
+		Proxy:                  cfg.Proxy,
+		ThinkingType:           req.ThinkingType,
+		ReasoningEffort:        req.ReasoningEffort,
+		Streaming:              req.Streaming == nil || *req.Streaming,
+		SessionHeaderKey:       req.SessionHeaderKey,
+		CustomHeaders:          req.CustomHeaders,
+		MaxTokensField:         "",
+		CacheBreakpoints:       "",
+		CacheTTL:               "",
+		PromptCacheRetention:   "",
+		PreserveThinkingBlocks: false,
+	}
+	if req.ThinkingBudgetTokens != nil {
+		tmp.ThinkingBudgetTokens = *req.ThinkingBudgetTokens
+	} else if saved != nil {
+		tmp.ThinkingBudgetTokens = saved.ThinkingBudgetTokens
+	}
+	if req.MaxTokens != nil {
+		tmp.MaxTokens = *req.MaxTokens
+	} else if saved != nil {
+		tmp.MaxTokens = saved.MaxTokens
+	}
+	if req.MaxTokensField != nil {
+		tmp.MaxTokensField = *req.MaxTokensField
+	} else if saved != nil {
+		tmp.MaxTokensField = saved.MaxTokensField
+	}
+	if req.CacheBreakpoints != nil {
+		tmp.CacheBreakpoints = *req.CacheBreakpoints
+	} else if saved != nil {
+		tmp.CacheBreakpoints = saved.CacheBreakpoints
+	}
+	if req.CacheTTL != nil {
+		tmp.CacheTTL = *req.CacheTTL
+	} else if saved != nil {
+		tmp.CacheTTL = saved.CacheTTL
+	}
+	if req.PromptCacheRetention != nil {
+		tmp.PromptCacheRetention = *req.PromptCacheRetention
+	} else if saved != nil {
+		tmp.PromptCacheRetention = saved.PromptCacheRetention
+	}
+	if req.PreserveThinkingBlocks != nil {
+		tmp.PreserveThinkingBlocks = *req.PreserveThinkingBlocks
+	} else if saved != nil {
+		tmp.PreserveThinkingBlocks = saved.PreserveThinkingBlocks
+	}
+	if saved != nil && req.Streaming == nil {
+		tmp.Streaming = saved.Streaming
+	}
+	if saved != nil {
+		if cfg.APIKey == "" {
+			cfg.APIKey = saved.APIKey
+		}
+		if strings.TrimSpace(tmp.SessionHeaderKey) == "" {
+			tmp.SessionHeaderKey = saved.SessionHeaderKey
+		}
+		if tmp.CustomHeaders == nil {
+			tmp.CustomHeaders = saved.CustomHeaders
+		}
+	}
+	tmp.Name = "connection-test" // satisfy shared profile validator
+	if _, err := validateAndNormalizeProfile(&tmp); err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	cfg.ThinkingType = tmp.ThinkingType
+	cfg.ThinkingBudgetTokens = tmp.ThinkingBudgetTokens
+	cfg.ReasoningEffort = tmp.ReasoningEffort
+	cfg.Stream = tmp.Streaming
+	cfg.MaxTokens = tmp.MaxTokens
+	cfg.MaxTokensField = tmp.MaxTokensField
+	cfg.SessionHeaderKey = db.DefaultSessionHeaderKey(cfg.BaseURL, tmp.SessionHeaderKey)
+	cfg.PreserveThinkingBlocks = tmp.PreserveThinkingBlocks
+	if cfg.Format == llm.FormatAnthropic {
+		cfg.CacheBreakpoints = agent.ResolveAnthropicCacheBreakpoints(tmp.CacheBreakpoints)
+		cfg.CacheTTL = tmp.CacheTTL
+	} else {
+		cfg.PromptCacheRetention = tmp.PromptCacheRetention
+	}
+	headers, err := db.NormalizeCustomHeaders(tmp.CustomHeaders)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	cfg.CustomHeaders = headers
-	// API Key 解析优先级：表单输入 > 指定 profile 存的 key > 全局配置的 key。
-	// 已存 profile 的 key 不回传浏览器，所以测试已存配置时表单为空，需从 DB 取。
-	// 会话头名同理：表单未带时用已存 profile 的值兜底。
-	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "" || req.CustomHeaders == nil) {
-		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if cfg.APIKey == "" {
-				cfg.APIKey = p.APIKey
-			}
-			if cfg.SessionHeaderKey == "" {
-				cfg.SessionHeaderKey = p.SessionHeaderKey
-			}
-			if req.CustomHeaders == nil {
-				cfg.CustomHeaders = p.CustomHeaders
-			}
-		}
-	}
 	if cfg.APIKey == "" {
 		s.llm.mu.Lock()
 		cfg.APIKey = s.llm.cfg.APIKey

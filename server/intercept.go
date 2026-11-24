@@ -16,6 +16,7 @@ import (
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
+	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/guard"
 	"github.com/lin9527ya/blade/intercept"
@@ -46,14 +47,14 @@ func (s *Server) wireInterceptReviewer() {
 		if profileID == 0 {
 			return intercept.Decision{}, fmt.Errorf("未配置可用的裁判模型")
 		}
-		prov, _, ok := s.providerForProfile(profileID)
+		prov, cfg, ok := s.providerForProfile(profileID)
 		if !ok {
 			return intercept.Decision{ProfileID: profileID}, fmt.Errorf("裁判模型 profile %d 不可用", profileID)
 		}
 		// Tag this call's usage as the "judge" lane so the config page can report
 		// how much the fallback approval has spent, separate from model profiles.
 		ctx = llmrec.WithWorker(ctx, judgeWorkerLane)
-		text, err := reviewCompletion(ctx, prov, prompt, input)
+		text, err := reviewCompletionWithConfig(ctx, prov, cfg, prompt, input)
 		if err != nil {
 			return intercept.Decision{ProfileID: profileID}, err
 		}
@@ -69,14 +70,18 @@ func (s *Server) wireInterceptReviewer() {
 }
 
 func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, input intercept.ReviewInput) (string, error) {
+	return reviewCompletionWithConfig(ctx, prov, agent.Config{Stream: true}, prompt, input)
+}
+
+func reviewCompletionWithConfig(ctx context.Context, prov llm.Provider, cfg agent.Config, prompt string, input intercept.ReviewInput) (string, error) {
 	user, err := json.Marshal(input)
 	if err != nil {
 		return "", err
 	}
-	return streamCollectText(ctx, prov, prompt, string(user))
+	return collectOneShotText(ctx, prov, prompt, string(user), 1024, !cfg.Stream, cfg.CacheTTL, cfg.PromptCacheRetention)
 }
 
-// streamCollectText runs a single non-streaming-style completion (thinking off,
+// streamCollectText runs a single one-shot completion (thinking off,
 // low temperature, bounded output) and returns the concatenated text. The
 // budget includes the explanation and complete closing JSON delimiters.
 func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
@@ -86,6 +91,10 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 // streamCollectTextLimit is the same bounded text collector with an explicit
 // output cap (CVE report extraction needs room for several records).
 func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user string, maxTokens int) (string, error) {
+	return collectOneShotText(ctx, prov, system, user, maxTokens, false, "", "")
+}
+
+func collectOneShotText(ctx context.Context, prov llm.Provider, system, user string, maxTokens int, nonStreaming bool, cacheTTL, promptCacheRetention string) (string, error) {
 	// 单发调用不经过 agent 会话循环；已有会话 id（从任务/对话上下文进来）保留在 ctx 上
 	// 用于 SessionHeaderKey / 用量归因，但 PromptCacheKey 单独按稳定 system 摘要生成，
 	// 避免把一次性评审/抽取绑定到短命 worker session，最大化跨任务前缀命中。
@@ -101,13 +110,22 @@ func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user
 	}
 	temp := 0.0
 	req := llm.CompletionRequest{
-		System:          []string{system},
-		DynamicBoundary: 1,
-		Messages:        []llm.Message{llm.UserText(user)},
-		MaxTokens:       maxTokens,
-		Temperature:     &temp,
-		Thinking:        "disabled",
-		PromptCacheKey:  cacheKey,
+		System:               []string{system},
+		DynamicBoundary:      1,
+		Messages:             []llm.Message{llm.UserText(user)},
+		MaxTokens:            maxTokens,
+		Temperature:          &temp,
+		Thinking:             "disabled",
+		PromptCacheKey:       cacheKey,
+		CacheTTL:             cacheTTL,
+		PromptCacheRetention: promptCacheRetention,
+	}
+	if nonStreaming {
+		msg, _, _, err := prov.Complete(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		return msg.Text(), nil
 	}
 	var sb strings.Builder
 	for ev, err := range prov.Stream(ctx, req) {

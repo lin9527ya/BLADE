@@ -616,10 +616,12 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
     rate_per_second  DOUBLE PRECISION NOT NULL DEFAULT 0,
     rate_per_minute  DOUBLE PRECISION NOT NULL DEFAULT 0,
     context_window_k INTEGER NOT NULL DEFAULT 0,
-    -- 思考参数拆成两个独立字段：thinking_type=思考开关(''/disabled/enabled)，
-    -- reasoning_effort=思考强度(''/low/medium/high/xhigh/max)，互不牵连。
-    reasoning_effort TEXT NOT NULL DEFAULT '',
-    thinking_type    TEXT NOT NULL DEFAULT '',
+    -- 思考参数拆成独立字段：thinking_type=思考开关(''/disabled/enabled/adaptive)，
+    -- thinking_budget_tokens=anthropic enabled 时的可选预算(>0 发送)，
+    -- reasoning_effort=思考强度(''/none/minimal/low/medium/high/xhigh/max)，互不牵连。
+    reasoning_effort       TEXT NOT NULL DEFAULT '',
+    thinking_type          TEXT NOT NULL DEFAULT '',
+    thinking_budget_tokens INTEGER NOT NULL DEFAULT 0,
     is_default       BOOLEAN NOT NULL DEFAULT false,
     -- 轮询(故障转移)参数，见 docs/LLM轮询设计.md：
     --   priority     顺位，越大越先被选中；激活配置(is_default)永远排链首，与本值无关。
@@ -741,6 +743,18 @@ BEGIN
             WHERE reasoning_effort = 'off';
     END IF;
 END $$;
+-- 思考预算与合法枚举约束；幂等重建。在建约束前先把可能残留的旧哨兵 'off' 收敛掉。
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS thinking_budget_tokens INTEGER NOT NULL DEFAULT 0;
+UPDATE llm_profiles SET thinking_type = 'disabled', reasoning_effort = '' WHERE reasoning_effort = 'off';
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_thinking_type_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_thinking_type_check
+    CHECK (thinking_type IN ('','disabled','enabled','adaptive'));
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_reasoning_effort_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_reasoning_effort_check
+    CHECK (reasoning_effort IN ('','none','minimal','low','medium','high','xhigh','max'));
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_thinking_budget_tokens_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_thinking_budget_tokens_check
+    CHECK (thinking_budget_tokens >= 0);
 
 -- LLM 轮询熔断状态：某个配置连续失败(余额不足/key 失效/限流)后进入冷却，冷却期内
 -- 轮询直接跳过它。内存态为准，这里落库只为重启后不丢冷却窗口——加载时只取尚未

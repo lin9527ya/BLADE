@@ -276,3 +276,61 @@ func TestStabilizeAgeMinutesBucketing(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigPreservesThinkingMatrix(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"anthropic disabled overrides preserve", Config{Format: llm.FormatAnthropic, ThinkingType: "disabled", PreserveThinkingBlocks: true}, false},
+		{"anthropic enabled", Config{Format: llm.FormatAnthropic, ThinkingType: "enabled"}, true},
+		{"anthropic adaptive", Config{Format: llm.FormatAnthropic, ThinkingType: "adaptive"}, true},
+		{"anthropic unset preserve=true", Config{Format: llm.FormatAnthropic, PreserveThinkingBlocks: true}, true},
+		{"openai disabled overrides effort", Config{Format: llm.FormatOpenAI, ThinkingType: "disabled", ReasoningEffort: "high"}, false},
+		{"openai unset with effort", Config{Format: llm.FormatOpenAI, ReasoningEffort: "high"}, true},
+		{"responses never replays thinking", Config{Format: llm.FormatOpenAIResponses, ThinkingType: "enabled", ReasoningEffort: "high"}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.cfg.PreservesThinking(); got != tc.want {
+			t.Fatalf("%s: PreservesThinking()=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestFromEnvExtendedThinkingAndCustomRetention(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant")
+	t.Setenv("BLADE_LLM_PROVIDER", "anthropic")
+	t.Setenv("BLADE_LLM_THINKING_TYPE", "enabled")
+	t.Setenv("BLADE_LLM_THINKING_BUDGET_TOKENS", "4096")
+	t.Setenv("BLADE_LLM_REASONING_EFFORT", "high")
+	t.Setenv("BLADE_LLM_MAX_TOKENS", "12000")
+	t.Setenv("BLADE_LLM_CONTEXT_WINDOW_K", "1500") // clamps to 1000
+	t.Setenv("BLADE_LLM_SESSION_HEADER_KEY", "x-session")
+	t.Setenv("BLADE_LLM_INPUT_TOKENS_INCLUDES_CACHE", "true")
+	t.Setenv("BLADE_LLM_PRESERVE_THINKING_BLOCKS", "1")
+	cfg, ok := FromEnv()
+	if !ok {
+		t.Fatal("FromEnv ok=false")
+	}
+	if cfg.ThinkingType != "enabled" || cfg.ThinkingBudgetTokens != 4096 || cfg.ReasoningEffort != "high" ||
+		cfg.MaxTokens != 12000 || cfg.ContextWindowK != 1000 || cfg.SessionHeaderKey != "x-session" ||
+		!cfg.InputTokensIncludesCache || !cfg.PreserveThinkingBlocks {
+		t.Fatalf("unexpected FromEnv anthropic cfg: %+v", cfg)
+	}
+
+	// Custom OpenAI proxy with explicit PromptCacheRetention must keep PromptCacheRetention wired.
+	t.Setenv("OPENAI_API_KEY", "sk-oai")
+	t.Setenv("BLADE_LLM_PROVIDER", "openai")
+	t.Setenv("BLADE_LLM_BASE_URL", "https://custom-proxy.example.com/v1")
+	t.Setenv("BLADE_LLM_MAX_TOKENS_FIELD", "max_completion_tokens")
+	t.Setenv("BLADE_LLM_PROMPT_CACHE_RETENTION", "24h")
+	oaiCfg, ok := FromEnv()
+	if !ok || oaiCfg.MaxTokensField != "max_completion_tokens" || oaiCfg.PromptCacheRetention != "24h" {
+		t.Fatalf("unexpected FromEnv openai cfg: %+v (ok=%v)", oaiCfg, ok)
+	}
+	prov, err := oaiCfg.NewProvider()
+	if err != nil || prov == nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+}
