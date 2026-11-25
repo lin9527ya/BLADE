@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
 import { workerOriginHref } from "@/lib/broadcast-format";
+import { LOOT_KIND_LABELS } from "@/lib/exploration-layout";
 import type { TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -144,27 +145,12 @@ const confidenceLabel: Record<string, string> = {
   low: "低（据指纹/版本推断）",
 };
 
-// 凭据/遗留物的 kind 是封闭词表，直接显示英文枚举对人不友好。
-const lootKindLabel: Record<string, string> = {
-  password: "口令",
-  hash: "哈希",
-  key: "私钥/密钥",
-  token: "令牌",
-  webshell: "Webshell",
-  upload: "上传文件",
-  account: "账号",
-  scheduled_task: "计划任务",
-  config_change: "配置变更",
-  service: "服务",
-  other: "其它",
-};
-
 export function PayloadValue({ k, v }: { k: string; v: unknown }) {
   if (v === null || v === undefined || v === "") {
     return <span className="text-muted-foreground text-xs">—</span>;
   }
-  if (k === "kind" && typeof v === "string" && lootKindLabel[v]) {
-    return <span className="text-xs">{lootKindLabel[v]}</span>;
+  if (k === "kind" && typeof v === "string" && LOOT_KIND_LABELS[v]) {
+    return <span className="text-xs">{LOOT_KIND_LABELS[v]}</span>;
   }
   if (k === "verified" && typeof v === "boolean") {
     return <span className="text-xs">{v ? "是（实测登入成功）" : "否"}</span>;
@@ -353,7 +339,9 @@ export function NodeDetailDialog({
   const [followUpDraft, setFollowUpDraft] = React.useState<{ id: string; text: string }>({ id: "", text: "" });
   const [followUpSending, setFollowUpSending] = React.useState(false);
   const followUpText = node && followUpDraft.id === node.id ? followUpDraft.text : "";
-  const canFollowUp = Boolean(taskId && node && !node.inherited && FOLLOW_UP_KINDS.has(node.type) && Number(node.id) > 0);
+  const canFollowUp = Boolean(
+    taskId && node && !node.inherited && FOLLOW_UP_KINDS.has(node.type) && Number(node.id) > 0,
+  );
   const sendFollowUp = async () => {
     if (!taskId || !node || !followUpText.trim() || followUpSending) return;
     setFollowUpSending(true);
@@ -434,17 +422,14 @@ export function NodeDetailDialog({
                   <h4 className="mb-1 font-medium text-muted-foreground text-xs">属性</h4>
                   <DetailRow label="类型">{meta.label}</DetailRow>
                   <DetailRow label="状态">
-                    {node.type === "goal" || node.type === "intent" || node.type === "footprint" || node.type === "finding" ? (
+                    {node.type === "goal" ||
+                    node.type === "intent" ||
+                    node.type === "footprint" ||
+                    node.type === "finding" ||
+                    node.type === "hint" ||
+                    node.type === "artifact" ? (
                       <StatusBadge
-                        domain={
-                          node.type === "goal"
-                            ? "goal"
-                            : node.type === "footprint"
-                              ? "footprint"
-                              : node.type === "finding"
-                                ? "finding"
-                                : "intent"
-                        }
+                        domain={node.type}
                         value={node.type === "finding" ? node.finding_status || node.state : node.state}
                         dot
                         className="px-1.5 py-0 text-[10px]"

@@ -6,9 +6,9 @@ import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react";
 
 import { ExplorationGraph } from "@/components/exploration-graph";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { findingVisibleInChain } from "@/lib/finding-status";
@@ -170,24 +170,28 @@ export function GraphTab({ taskId }: { taskId: string }) {
       )}
       <Card>
         <CardContent className="p-0">
-          <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
-            {truncated ? (
-              <span className="text-muted-foreground text-xs">
-                图规模较大：仅加载最新 {nodes.length} 个探索节点（共 {totalNodes} 个）；历史完整节点可在「播报板」检索。
-              </span>
-            ) : (
-              <span />
-            )}
-            <label className="flex cursor-pointer items-center gap-2 text-muted-foreground text-xs">
-              <Checkbox
-                checked={hideCandidates}
-                onCheckedChange={(checked) => setHideCandidates(checked === true)}
-                aria-label="隐藏候选/已排除漏洞"
-              />
-              隐藏候选/已排除漏洞
-            </label>
-          </div>
-          <ExplorationGraph nodes={nodes} edges={edges} className="h-[72vh]" taskId={taskId} />
+          {truncated && (
+            <div className="border-border/50 border-b bg-amber-500/5 px-3 py-1.5 text-muted-foreground text-xs">
+              图规模较大：仅加载最新 {nodes.length} 个探索节点（共 {totalNodes} 个）；历史完整节点可在「播报板」检索。
+            </div>
+          )}
+          <ExplorationGraph
+            key={taskId}
+            nodes={nodes}
+            edges={edges}
+            className="h-[72vh]"
+            taskId={taskId}
+            toolbarExtra={
+              <label className="flex cursor-pointer items-center gap-1.5 border-border/60 border-r pr-2 text-muted-foreground text-xs">
+                <Checkbox
+                  checked={hideCandidates}
+                  onCheckedChange={(checked) => setHideCandidates(checked === true)}
+                  aria-label="隐藏候选/已排除漏洞"
+                />
+                隐藏候选/已排除漏洞
+              </label>
+            }
+          />
         </CardContent>
       </Card>
     </div>

@@ -78,9 +78,9 @@ export const typeMeta: Record<ExploreKind, TypeMeta> = {
   finding: {
     label: "漏洞",
     icon: Bug,
-    iconBg: "bg-rose-500",
-    chip: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
-    hex: "#f43f5e",
+    iconBg: "bg-red-500",
+    chip: "bg-red-500/15 text-red-600 dark:text-red-400",
+    hex: "#ef4444",
   },
   digest: {
     label: "压缩",
@@ -116,18 +116,18 @@ export const typeMeta: Record<ExploreKind, TypeMeta> = {
   artifact: {
     label: "遗留物",
     icon: PackageOpen,
-    iconBg: "bg-violet-500",
-    chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
-    hex: "#8b5cf6",
+    iconBg: "bg-fuchsia-600",
+    chip: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400",
+    hex: "#c026d3",
   },
   // 目标侧痕迹：预期/观察到的可检出信号（日志、EDR、访问记录…）。与遗留物相反：
   // 遗留物是我们放上去的对象，痕迹是目标自己可能记下的"我们来过"。
   footprint: {
     label: "痕迹",
     icon: Footprints,
-    iconBg: "bg-rose-500",
+    iconBg: "bg-rose-600",
     chip: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
-    hex: "#f43f5e",
+    hex: "#e11d48",
   },
   // AD 对象：域内采集来的对象（用户/组/机器/域…），具体是哪一类写在 payload.category 上。
   ad_object: {
@@ -141,9 +141,9 @@ export const typeMeta: Record<ExploreKind, TypeMeta> = {
   cloud_object: {
     label: "云对象",
     icon: Cloud,
-    iconBg: "bg-sky-500",
-    chip: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
-    hex: "#0ea5e9",
+    iconBg: "bg-indigo-500",
+    chip: "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400",
+    hex: "#6366f1",
   },
 };
 
