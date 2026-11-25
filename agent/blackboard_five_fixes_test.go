@@ -278,7 +278,8 @@ func TestDeltaIntentSummaryPreservesBranchDimensions(t *testing.T) {
 		t.Fatalf("worker frozen overview should omit volatile running_intents (4.A): %v", worker["running_intents"])
 	}
 	peersText := renderWorkerRunningPeers(ts, second)
-	if !strings.Contains(peersText, fmt.Sprintf("#%d", first)) || !strings.Contains(peersText, hypothesis) {
+	wantHyp := "hypothesis=" + clipLine(hypothesis, 80)
+	if !strings.Contains(peersText, fmt.Sprintf("#%d", first)) || !strings.Contains(peersText, wantHyp) || !strings.Contains(peersText, "(asset_ids=[42])") {
 		t.Fatalf("live peer helper missing running teammate or hypothesis: %s", peersText)
 	}
 	if strings.Contains(renderWorkerRunningPeers(ts, first), fmt.Sprintf("#%d", first)) {
