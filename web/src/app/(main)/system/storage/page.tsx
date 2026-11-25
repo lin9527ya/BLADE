@@ -34,6 +34,7 @@ type RetentionPatch = {
   storage_retention_sessions_days: number;
   storage_retention_drafts_days: number;
   storage_retention_transcripts_days: number;
+  storage_retention_noa_days: number;
   storage_retention_binary_days: number;
   storage_retention_llm_usage_days: number;
   storage_retention_activity_days: number;
@@ -59,6 +60,7 @@ const RETENTION_KEYS: Record<string, keyof RetentionPatch> = {
   sessions: "storage_retention_sessions_days",
   drafts: "storage_retention_drafts_days",
   transcripts: "storage_retention_transcripts_days",
+  noa: "storage_retention_noa_days",
   binary: "storage_retention_binary_days",
   db_llm_usage: "storage_retention_llm_usage_days",
   db_activity: "storage_retention_activity_days",
@@ -84,6 +86,7 @@ const ZERO_DAYS: RetentionPatch = {
   storage_retention_sessions_days: 0,
   storage_retention_drafts_days: 0,
   storage_retention_transcripts_days: 0,
+  storage_retention_noa_days: 0,
   storage_retention_binary_days: 0,
   storage_retention_llm_usage_days: 0,
   storage_retention_activity_days: 0,
@@ -113,6 +116,7 @@ type TaskCleanScopeDef = {
 const TASK_CLEAN_SCOPES: TaskCleanScopeDef[] = [
   { key: "files", label: "任务产物目录", hint: "data/tasks/<id> 磁盘工作区与下载物" },
   { key: "transcripts", label: "会话转写", hint: "data/transcripts/exp*-*.jsonl" },
+  { key: "noa", label: "noa 压缩归档", hint: "data/noa/exp*-* 块级压缩状态与归档原文" },
   { key: "activity", label: "执行活动流", hint: "数据库 activity 步骤流" },
   { key: "side_questions", label: "旁路问答快照", hint: "数据库 side_question_sessions (/btw 快照)" },
   { key: "llm_record_bodies", label: "LLM 录制载荷", hint: "仅置空请求/响应大文本，保留元数据" },
@@ -122,7 +126,7 @@ const TASK_CLEAN_SCOPES: TaskCleanScopeDef[] = [
   { key: "llm_usage", label: "LLM 用量账单", hint: "慎选：删除后该任务历史 token 统计归零" },
 ];
 
-const DEFAULT_TASK_SCOPES = ["files", "transcripts", "activity", "side_questions", "llm_record_bodies"];
+const DEFAULT_TASK_SCOPES = ["files", "transcripts", "noa", "activity", "side_questions", "llm_record_bodies"];
 
 function fmtBytes(n: number): string {
   if (!n) return "0 B";
@@ -147,6 +151,7 @@ function estimateTaskScopedBytes(task: StorageTaskItem, scopes: string[]): numbe
   const set = new Set(scopes);
   if (set.has("files")) sum += task.files_bytes;
   if (set.has("transcripts")) sum += task.transcripts_bytes;
+  if (set.has("noa")) sum += task.noa_bytes ?? 0;
   if (set.has("activity")) sum += task.activity_bytes;
   if (set.has("side_questions")) sum += task.side_question_bytes;
   if (set.has("llm_records")) sum += task.llm_record_bytes;
@@ -249,6 +254,7 @@ export default function StoragePage() {
         storage_retention_sessions_days: s.storage_retention_sessions_days ?? 0,
         storage_retention_drafts_days: s.storage_retention_drafts_days ?? 0,
         storage_retention_transcripts_days: s.storage_retention_transcripts_days ?? 0,
+        storage_retention_noa_days: s.storage_retention_noa_days ?? 0,
         storage_retention_binary_days: s.storage_retention_binary_days ?? 0,
         storage_retention_llm_usage_days: s.storage_retention_llm_usage_days ?? 0,
         storage_retention_activity_days: s.storage_retention_activity_days ?? 0,
@@ -509,6 +515,11 @@ export default function StoragePage() {
                         <span>
                           转写 {fmtBytes(t.transcripts_bytes)} ({t.transcripts_count})
                         </span>
+                        {((t.noa_bytes ?? 0) > 0 || (t.noa_count ?? 0) > 0) && (
+                          <span>
+                            noa 归档 {fmtBytes(t.noa_bytes ?? 0)} ({t.noa_count ?? 0})
+                          </span>
+                        )}
                         <span>
                           活动流 {fmtBytes(t.activity_bytes)} ({t.activity_rows})
                         </span>

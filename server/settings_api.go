@@ -244,6 +244,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"storage_retention_sessions_days":    s.storageRetentionDays(settingStorageRetentionSessions),
 		"storage_retention_drafts_days":      s.storageRetentionDays(settingStorageRetentionDrafts),
 		"storage_retention_transcripts_days": s.storageRetentionDays(settingStorageRetentionTranscript),
+		"storage_retention_noa_days":         s.storageRetentionDays(settingStorageRetentionNoa),
 		"storage_retention_binary_days":      s.storageRetentionDays(settingStorageRetentionBinary),
 		// 数据库侧同一套保留契约。前三个是 always-on 写的表（无限增长主力）。
 		"storage_retention_llm_usage_days":             s.storageRetentionDays(settingRetentionLLMUsage),
@@ -416,6 +417,7 @@ type settingsRequest struct {
 	StorageRetentionSessions   *int `json:"storage_retention_sessions_days"`
 	StorageRetentionDrafts     *int `json:"storage_retention_drafts_days"`
 	StorageRetentionTranscript *int `json:"storage_retention_transcripts_days"`
+	StorageRetentionNoa        *int `json:"storage_retention_noa_days"`
 	StorageRetentionBinary     *int `json:"storage_retention_binary_days"`
 	// 数据库侧保留天数（同一套 0 = 不清理）。改完由后台清理器按日生效。
 	RetentionLLMUsage       *int `json:"storage_retention_llm_usage_days"`
@@ -623,6 +625,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingStorageRetentionSessions, req.StorageRetentionSessions, 3650, "会话目录保留天数"},
 		{settingStorageRetentionDrafts, req.StorageRetentionDrafts, 3650, "草稿保留天数"},
 		{settingStorageRetentionTranscript, req.StorageRetentionTranscript, 3650, "转写保留天数"},
+		{settingStorageRetentionNoa, req.StorageRetentionNoa, 3650, "noa 压缩归档保留天数"},
 		{settingStorageRetentionBinary, req.StorageRetentionBinary, 3650, "更新残留保留天数"},
 		// 数据库侧保留天数（同一套 0 = 不清理、上限 10 年）
 		{settingRetentionLLMUsage, req.RetentionLLMUsage, 3650, "LLM 用量台账保留天数"},

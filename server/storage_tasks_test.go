@@ -87,6 +87,20 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 		longAgo := time.Now().Add(-60 * 24 * time.Hour)
 		_ = os.Chtimes(p, longAgo, longAgo)
 	}
+	idleNoaDir := filepath.Join(s.m.dir, "noa", "exp"+strconv.FormatInt(taskIdle.ExplorationID, 10)+"-planner")
+	activeNoaDir := filepath.Join(s.m.dir, "noa", "exp"+strconv.FormatInt(taskActive.ExplorationID, 10)+"-planner")
+	orphanNoaDir := filepath.Join(s.m.dir, "noa", "exp999999-planner")
+	for _, dir := range []string{idleNoaDir, activeNoaDir, orphanNoaDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		statePath := filepath.Join(dir, "state.json")
+		if err := os.WriteFile(statePath, make([]byte, 256), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		longAgo := time.Now().Add(-60 * 24 * time.Hour)
+		_ = os.Chtimes(statePath, longAgo, longAgo)
+	}
 	orphanDir := filepath.Join(s.m.dir, "tasks", "999998")
 	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -100,6 +114,9 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 		_ = os.RemoveAll(idleTranscript)
 		_ = os.RemoveAll(activeTranscript)
 		_ = os.RemoveAll(orphanTranscript)
+		_ = os.RemoveAll(idleNoaDir)
+		_ = os.RemoveAll(activeNoaDir)
+		_ = os.RemoveAll(orphanNoaDir)
 	})
 
 	// Seed DB activity, side_question, and preserved finding for idle task.
@@ -120,6 +137,7 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 		t.Fatalf("storageReport: %v", err)
 	}
 	foundProtectedTranscript := false
+	foundProtectedNoa := false
 	foundSideQCategory := false
 	for _, c := range rep.Categories {
 		if c.Key == "db_side_question_sessions" {
@@ -132,9 +150,19 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 				}
 			}
 		}
+		if c.Key == "noa" {
+			for _, u := range c.Items {
+				if strings.HasPrefix(u.Name, "exp"+strconv.FormatInt(taskActive.ExplorationID, 10)+"-") && u.Protected != "" {
+					foundProtectedNoa = true
+				}
+			}
+		}
 	}
 	if !foundProtectedTranscript {
 		t.Fatal("active task transcript must be marked Protected in storageReport")
+	}
+	if !foundProtectedNoa {
+		t.Fatal("active task noa archive must be marked Protected in storageReport")
 	}
 	if !foundSideQCategory {
 		t.Fatal("db_side_question_sessions must appear in global storageReport")
@@ -157,11 +185,11 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 	for _, it := range listResp.Report.Tasks {
 		switch it.TaskID {
 		case idleID:
-			gotIdle = it.FilesBytes == 2048 && it.TranscriptsBytes == 512 && it.ActivityRows == 1 && it.SideQuestionRows == 1 && !it.ActiveRunning
+			gotIdle = it.FilesBytes == 2048 && it.TranscriptsBytes == 512 && it.NoaBytes == 256 && it.NoaCount == 1 && it.ActivityRows == 1 && it.SideQuestionRows == 1 && !it.ActiveRunning
 		case "999998":
 			gotOrphanDir = it.Orphan && it.FilesBytes == 1024
 		case "exp-999999":
-			gotOrphanTranscript = it.Orphan && it.TranscriptsBytes == 512
+			gotOrphanTranscript = it.Orphan && it.TranscriptsBytes == 512 && it.NoaBytes == 256
 		}
 	}
 	if !gotIdle || !gotOrphanDir || !gotOrphanTranscript {
@@ -170,7 +198,7 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 	}
 
 	// Clean idle + orphan + attempt active task: active must fail cleanly while idle & orphans are removed.
-	cleanBody := `{"task_ids":["` + idleID + `","` + activeID + `","999998","exp-999999"],"scopes":["files","transcripts","activity","side_questions"]}`
+	cleanBody := `{"task_ids":["` + idleID + `","` + activeID + `","999998","exp-999999"],"scopes":["files","transcripts","noa","activity","side_questions"]}`
 	creq := httptest.NewRequest(http.MethodPost, "/api/storage/tasks/clean", strings.NewReader(cleanBody))
 	crec := httptest.NewRecorder()
 	s.cleanStorageTasks(crec, creq)
@@ -199,6 +227,15 @@ func TestStorageTasksInspectAndScopedClean(t *testing.T) {
 	}
 	if _, err := os.Stat(orphanTranscript); !os.IsNotExist(err) {
 		t.Fatalf("orphan transcript should be removed: %v", err)
+	}
+	if _, err := os.Stat(idleNoaDir); !os.IsNotExist(err) {
+		t.Fatalf("idle noa archive should be removed: %v", err)
+	}
+	if _, err := os.Stat(orphanNoaDir); !os.IsNotExist(err) {
+		t.Fatalf("orphan noa archive should be removed: %v", err)
+	}
+	if _, err := os.Stat(activeNoaDir); err != nil {
+		t.Fatalf("active task noa archive must stay untouched: %v", err)
 	}
 	if _, err := os.Stat(activeTranscript); err != nil {
 		t.Fatalf("active task transcript must stay untouched: %v", err)

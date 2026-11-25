@@ -3,10 +3,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/lin9527ya/Norma/llm"
+)
+
+var (
+	autoTitleThinkBlockRe     = regexp.MustCompile(`(?is)<(?:think|thinking|reasoning|analysis)>.*?</(?:think|thinking|reasoning|analysis)>`)
+	autoTitleUnclosedThinkRe  = regexp.MustCompile(`(?is)<(?:think|thinking|reasoning|analysis)>.*$`)
+	autoTitleMarkdownPrefixRe = regexp.MustCompile(`^(?:#{1,6}\s+|>\s*|[-*+•]\s+|\d+[.)]\s+)`)
 )
 
 // 会话自动标题：用一次有界、非流式、关闭思考的模型调用，把用户的第一句话
@@ -34,14 +41,24 @@ func GenerateAutoTitle(ctx context.Context, prov llm.Provider, content string) (
 	if n := utf8.RuneCountInString(content); n > 1000 {
 		content = string([]rune(content)[:1000])
 	}
-	temp := 0.0
+	// Reasoning relays that ignore thinking="disabled" can exhaust small output
+	// budgets inside internal reasoning tokens before emitting visible text;
+	// keep enough headroom and avoid forcing temperature=0 on thinking endpoints.
+	preserveThinking := providerPreservesThinking(prov)
+	maxTokens := 512
+	if preserveThinking {
+		maxTokens = 2048
+	}
 	req := llm.CompletionRequest{
 		System:          []string{autoTitleSystemPrompt},
 		DynamicBoundary: 1,
 		Messages:        []llm.Message{llm.UserText(content)},
-		MaxTokens:       80,
-		Temperature:     &temp,
+		MaxTokens:       maxTokens,
 		Thinking:        "disabled",
+	}
+	if !preserveThinking {
+		temp := 0.0
+		req.Temperature = &temp
 	}
 	msg, _, _, err := prov.Complete(ctx, req)
 	if err != nil {
@@ -56,18 +73,15 @@ func GenerateAutoTitle(ctx context.Context, prov llm.Provider, content string) (
 
 // cleanAutoTitle 把模型输出清洗成一行可展示的标题。
 func cleanAutoTitle(raw string) string {
+	// Strip leaked inline reasoning tags before picking the first non-empty line
+	// so truncated <think> fragments never surface in the conversation sidebar.
+	cleaned := autoTitleThinkBlockRe.ReplaceAllString(raw, "")
+	cleaned = autoTitleUnclosedThinkRe.ReplaceAllString(cleaned, "")
 	// 逐行处理：先去掉前缀与引号，再取**第一个非空行**——模型常写成
 	// "标题：\n后台入口排查"，先取首行会得到空串。
 	var s string
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.Trim(line, " \t\"'“”‘’《》「」")
-		for _, prefix := range []string{"标题：", "标题:", "Title:", "title:"} {
-			if strings.HasPrefix(line, prefix) {
-				line = strings.TrimSpace(strings.TrimPrefix(line, prefix))
-				line = strings.Trim(line, " \t\"'“”‘’《》「」")
-			}
-		}
+	for _, line := range strings.Split(cleaned, "\n") {
+		line = cleanAutoTitleLine(line)
 		if line != "" {
 			s = line
 			break
@@ -76,6 +90,39 @@ func cleanAutoTitle(raw string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if n := utf8.RuneCountInString(s); n > autoTitleMaxRunes {
 		s = string([]rune(s)[:autoTitleMaxRunes])
+	}
+	return s
+}
+
+func cleanAutoTitleLine(line string) string {
+	const quoteAndCodeTrim = " \t\"'“”‘’《》「」`"
+	for range 4 {
+		prev := line
+		line = strings.TrimSpace(line)
+		line = autoTitleMarkdownPrefixRe.ReplaceAllString(line, "")
+		line = trimMarkdownEmphasis(line)
+		line = strings.Trim(line, quoteAndCodeTrim)
+		for _, prefix := range []string{"标题：", "标题:", "Title:", "title:"} {
+			if strings.HasPrefix(line, prefix) {
+				line = strings.TrimPrefix(line, prefix)
+				break
+			}
+		}
+		line = trimMarkdownEmphasis(line)
+		line = strings.Trim(line, quoteAndCodeTrim)
+		if line == prev {
+			break
+		}
+	}
+	return line
+}
+
+func trimMarkdownEmphasis(s string) string {
+	s = strings.TrimSpace(s)
+	for _, marker := range []string{"**", "__"} {
+		if len(s) > 2*len(marker) && strings.HasPrefix(s, marker) && strings.HasSuffix(s, marker) {
+			s = strings.TrimSpace(s[len(marker) : len(s)-len(marker)])
+		}
 	}
 	return s
 }

@@ -18,11 +18,15 @@ func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	explorationID := int64(73)
 	taskFile := filepath.Join(dataDir, "tasks", taskID, "uploads", "evidence.txt")
 	transcriptFile := filepath.Join(dataDir, "transcripts", "exp73-worker-1.jsonl")
+	noaFile := filepath.Join(dataDir, "noa", "exp73-planner", "state.json")
 	unrelatedTranscript := filepath.Join(dataDir, "transcripts", "exp74-worker-1.jsonl")
+	unrelatedNoa := filepath.Join(dataDir, "noa", "exp74-planner", "state.json")
 	for path, body := range map[string]string{
 		taskFile:            "task evidence",
 		transcriptFile:      "transcript",
+		noaFile:             `{"version":1}`,
 		unrelatedTranscript: "leave me hot",
+		unrelatedNoa:        "leave noa hot",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -42,8 +46,14 @@ func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	if _, err := os.Stat(transcriptFile); !os.IsNotExist(err) {
 		t.Fatalf("task transcript still hot after staging: %v", err)
 	}
+	if _, err := os.Stat(noaFile); !os.IsNotExist(err) {
+		t.Fatalf("task noa state still hot after staging: %v", err)
+	}
 	if _, err := os.Stat(unrelatedTranscript); err != nil {
 		t.Fatalf("unrelated transcript was staged: %v", err)
+	}
+	if _, err := os.Stat(unrelatedNoa); err != nil {
+		t.Fatalf("unrelated noa file was staged: %v", err)
 	}
 
 	archivePath := taskArchivePath(dataDir, 1, taskID)
@@ -83,7 +93,7 @@ func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	if err := installed.commit(); err != nil {
 		t.Fatal(err)
 	}
-	for path, want := range map[string]string{taskFile: "task evidence", transcriptFile: "transcript"} {
+	for path, want := range map[string]string{taskFile: "task evidence", transcriptFile: "transcript", noaFile: `{"version":1}`} {
 		got, err := os.ReadFile(path)
 		if err != nil || string(got) != want {
 			t.Fatalf("restored %s = %q, %v; want %q", path, got, err, want)

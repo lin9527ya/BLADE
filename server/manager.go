@@ -90,13 +90,13 @@ type Task struct {
 	// CredentialAttemptBudget 是任务级凭据尝试预算/30分钟：-1=继承全局，0=不限。
 	CredentialAttemptBudget int                    `json:"credential_attempt_budget"`
 	FirstRunAt              int64                  `json:"first_run_at,omitempty"`
-	DeadlineAt            int64                  `json:"deadline_at,omitempty"`
-	Store                 *pgdb.ExplorationStore `json:"-"`
-	Guard                 *guard.Guard           `json:"-"`
-	notify                chan struct{}
-	workerNotify          chan struct{}
-	lifecycleMu           sync.RWMutex
-	llmMu                 sync.RWMutex
+	DeadlineAt              int64                  `json:"deadline_at,omitempty"`
+	Store                   *pgdb.ExplorationStore `json:"-"`
+	Guard                   *guard.Guard           `json:"-"`
+	notify                  chan struct{}
+	workerNotify            chan struct{}
+	lifecycleMu             sync.RWMutex
+	llmMu                   sync.RWMutex
 
 	// pendingTriggers accumulates the concrete changes (worker done / finding) that
 	// fired planning rounds since the last one consumed them. The debounce coalesces
@@ -528,6 +528,7 @@ const (
 	settingStorageRetentionSessions   = "storage_retention_sessions_days"
 	settingStorageRetentionDrafts     = "storage_retention_drafts_days"
 	settingStorageRetentionTranscript = "storage_retention_transcripts_days"
+	settingStorageRetentionNoa        = "storage_retention_noa_days"
 	settingStorageRetentionBinary     = "storage_retention_binary_days"
 	// 数据库侧的数据保留，同一套契约（0/未设 = 不清理）。前三个是 always-on 写的表，
 	// 也是无限增长的主力；llm_records 默认不写（llm_record 开关），所以放在后面。
@@ -1279,9 +1280,11 @@ func (m *Manager) syncBrowserMCPProxy() {
 		return // user removed/renamed it — leave it alone
 	}
 
-	proxy := m.ProxyAddr()  // "" when capture off
+	proxy := m.ProxyAddr()  // MITM when capture on; global egress proxy (or "") when off
 	cert := m.ProxyCACert() // "" when capture off
 
+	oldArgs := string(srv.Args)
+	oldEnv := string(srv.Env)
 	args := stripProxyArgs(decodeStrSlice(srv.Args))
 	env := decodeStrMap(srv.Env)
 	delete(env, "NODE_EXTRA_CA_CERTS")
@@ -1291,16 +1294,24 @@ func (m *Manager) syncBrowserMCPProxy() {
 			env["NODE_EXTRA_CA_CERTS"] = cert
 		}
 	}
-	srv.Args = encodeJSON(args)
-	srv.Env = encodeJSON(env)
+	nextArgs := encodeJSON(args)
+	nextEnv := encodeJSON(env)
+	if string(nextArgs) == oldArgs && string(nextEnv) == oldEnv {
+		return
+	}
+	srv.Args = nextArgs
+	srv.Env = nextEnv
 	if _, err := m.pg.SaveMCP(srv); err != nil {
 		log.Printf("[mcp] browser 代理同步失败: %v", err)
 		return
 	}
-	if proxy != "" {
-		log.Printf("[mcp] browser MCP 已挂捕获代理 %s (CA %s)", proxy, cert)
-	} else {
-		log.Printf("[mcp] browser MCP 已移除捕获代理配置")
+	switch {
+	case proxy != "" && cert != "":
+		log.Printf("[mcp] browser MCP 已挂流量捕获代理 %s (CA %s)", proxy, cert)
+	case proxy != "":
+		log.Printf("[mcp] browser MCP 已挂全局出口代理 %s（未开启流量捕获）", proxy)
+	default:
+		log.Printf("[mcp] browser MCP 已移除代理配置")
 	}
 }
 
@@ -2679,6 +2690,21 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 			continue
 		}
 		targets = append(targets, filepath.Join(transcriptDir, name))
+	}
+
+	noaDir := filepath.Join(dataDir, "noa")
+	noaEntries, err := os.ReadDir(noaDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		noaEntries = nil
+	}
+	for _, entry := range noaEntries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		targets = append(targets, filepath.Join(noaDir, entry.Name()))
 	}
 	if len(targets) == 0 {
 		stage.done = true

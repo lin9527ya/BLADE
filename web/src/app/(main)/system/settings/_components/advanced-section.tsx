@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { FlaskConicalIcon, KeyboardIcon } from "lucide-react";
 
 import { Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
@@ -41,13 +43,16 @@ export function AdvancedSection({ s }: { s: ReturnType<typeof useSettingsState> 
               尚在验证中的机制，默认关闭。可能改变 Agent 行为或影响稳定性，请在了解影响后启用。
               <br />
               <b>noa 上下文压缩</b>：由模型主动压缩长对话历史（norma v0.4.0）。开启后平台接入的四类 Agent（
-              <b>规划者 / 执行者 / 主 Agent / 对话</b>）改用 noa
-              接管上下文，取代内置压缩，压缩原文会归档到任务工作目录下便于回溯。
-              切换即时生效（对之后启动的运行生效），无需重建 Agent；关闭后立即恢复内置压缩。
+              <b>规划者 / 执行者 / 主 Agent / 对话</b>）改用 noa 块级压缩与按需回放，压缩原文持久化在{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">data/noa/</code> 下（可在{" "}
+              <Link href="/system/storage" className="underline underline-offset-4 hover:text-foreground">
+                存储管理
+              </Link>{" "}
+              查看占用的目录或配置保留天数）。切换即时生效（对之后启动的运行生效）；中途关闭后会在恢复历史时自动物化已压缩的块，平滑退回默认压缩器。
               <br />
-              <b>注意（与 P14 领域化压缩互斥）</b>：默认走的是「领域化压缩 + 常驻索引」（7
-              段渗透领域摘要、压缩前原文落盘可回读、每轮附目标/约束/活跃方向索引）。 开启 noa
-              后这一层整体让位——两者抢同一个上下文管理器槽位，不会叠加。
+              <b>注意（与 P14 领域化压缩分工）</b>：开启 noa 后仅将默认的 <b>7 段渗透领域摘要压缩器</b> 替换为
+              noa；外层的<b>常驻上下文索引</b>（目标 / 约束 / 活跃方向 / 战果摘要）仍保留在每轮请求中，并自动随 noa
+              压缩状态补全完整索引。
             </>
           }
         />
@@ -59,8 +64,11 @@ export function AdvancedSection({ s }: { s: ReturnType<typeof useSettingsState> 
           onChange={toggleChatAutoTitle}
           hint={
             <>
-              默认关闭。开启后，会话的第一条消息落地时异步生成一个短标题（只读你的输入，不读
-              Agent 输出）。生成失败保持默认标题；你手动改过名之后不会再被覆盖。
+              默认关闭。开启后，仅针对<b>对话页面（/chat）</b>
+              的新会话首条消息（含纯附件消息）在落库时使用当前会话绑定模型异步生成一个短标题（只读你的输入，不读 Agent
+              输出）；若开启了 LLM
+              号池会自动兼容故障转移，生成失败保留首行/附件名兜底标题，手动改名后不会被覆盖（任务内主 Agent
+              线程不受此开关影响）。
             </>
           }
         />

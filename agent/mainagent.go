@@ -289,7 +289,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// 与 transcript 同一个 SessionID（同一规则、同一分段）：恢复历史与 noa 归档
 	// 永远指向同一次会话，不会一套分段落一套不分段。
 	noaSession := MainSessionID(ts.ID(), mainSeg)
-	enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, noaWarn(noaSession))
+	win := m.compactionWindow()
+	noaSt := enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, win, noaWarn(noaSession))
 	// P14 领域上下文：主 agent 与人的长对话最容易被压缩吃掉"人说过什么"——领域摘要模板
 	// 强制逐字保留所有用户消息，常驻索引另外带上目标/约束/图状态。
 	var compactionOverride []CompactionLLM
@@ -298,9 +299,10 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 			compactionOverride = append(compactionOverride, c)
 		}
 	}
-	InstallContextManagerDynamic(&opts, m.compactionWindow(), m.maxTokens(), mainDir, func(compacted bool) string {
+	InstallContextManagerDynamic(&opts, win, m.maxTokens(), mainDir, func(compacted bool) string {
 		return BuildContextIndex(ContextIndexVars{Store: ts, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true, Uncompacted: !compacted, StabilizeClock: true})
 	}, compactionOverride...)
+	attachNoaState(opts.Compactor, noaSt)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()

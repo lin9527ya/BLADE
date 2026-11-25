@@ -55,6 +55,7 @@ var storageCategories = []storageCategorySpec{
 	{Key: "sessions", Label: "会话工作目录", SettingKey: settingStorageRetentionSessions},
 	{Key: "drafts", Label: "草稿暂存", SettingKey: settingStorageRetentionDrafts},
 	{Key: "transcripts", Label: "会话转写", SettingKey: settingStorageRetentionTranscript},
+	{Key: "noa", Label: "noa 压缩归档", SettingKey: settingStorageRetentionNoa},
 	{Key: "binary", Label: "更新残留（旧二进制）", SettingKey: settingStorageRetentionBinary},
 	// 流量归档此后可清：traffic.DeleteOlderThan 在同一个写锁下同时删索引行、正文行、
 	// blob 引用与磁盘上的 blob/遗留目录，并按"该 host 还有没有新流量"决定目录去留。
@@ -417,10 +418,13 @@ func (s *Server) scanStorageCategory(
 		if spec.Key == "tasks" && protectedTasks[e.Name()] {
 			u.Protected = "任务未到终态（在跑/排队/暂停）"
 		}
-		if spec.Key == "transcripts" {
+		if spec.Key == "transcripts" || spec.Key == "noa" {
 			if eid, ok := parseTranscriptExpID(e.Name()); ok && protectedExps[eid] {
 				u.Protected = "任务未到终态（在跑/排队/暂停）"
 			}
+		}
+		if spec.Key == "noa" && u.Protected == "" && s.isBusyNoaChatDir(e.Name()) {
+			u.Protected = "对话正在运行中"
 		}
 		// 更新残留分类只认白名单里的条目：同目录还住着 jwt.key / config.json /
 		// data / skills / 正在运行的二进制，它们**永远**不该出现在可清理列表里。
@@ -450,10 +454,21 @@ func (s *Server) scanStorageCategory(
 	return rep, nil
 }
 
+func (s *Server) isBusyNoaChatDir(name string) bool {
+	if !strings.HasPrefix(name, "chat-conv-") {
+		return false
+	}
+	busyKey := strings.TrimPrefix(name, "chat-")
+	s.chatRuns.mu.Lock()
+	busy := s.chatRuns.busy[busyKey]
+	s.chatRuns.mu.Unlock()
+	return busy
+}
+
 // storageCategoryRoot 返回分类对应的目录；"" = 该分类没有目录（如二进制残留由扫描器自己找）。
 func (s *Server) storageCategoryRoot(key string) string {
 	switch key {
-	case "tasks", "sessions", "drafts", "transcripts", "traffic":
+	case "tasks", "sessions", "drafts", "transcripts", "noa", "traffic":
 		return filepath.Join(s.m.dir, key)
 	case "binary":
 		exe, err := os.Executable()

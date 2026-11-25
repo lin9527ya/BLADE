@@ -1022,7 +1022,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	// 与 transcript 同一个 SessionID（见 PlannerSessionID）：历史与 noa 归档同源。
 	noaSession := plannerSID
-	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
+	win := p.compactionWindow()
+	noaSt := enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, win, noaWarn(noaSession))
 	// P14 领域上下文（详见 agent/compactor.go）：规划者被压缩吃掉态势后，常驻索引仍带着
 	// 目标/约束原文与活跃方向；摘要也走渗透领域模板。未压缩前 HasOverview 仅保留目标/约束/时钟，
 	// 避免把 Turn 1 已预取的大段态势在尾部重发。
@@ -1033,10 +1034,11 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			compactionOverride = append(compactionOverride, c)
 		}
 	}
-	InstallContextManagerDynamic(&opts, p.compactionWindow(), p.maxTokens(), taskDir, func(compacted bool) string {
+	InstallContextManagerDynamic(&opts, win, p.maxTokens(), taskDir, func(compacted bool) string {
 		// P23：同公司其它任务的沉淀（只读先验）也进常驻索引——被压缩吃掉态势后仍看得见。
 		return BuildContextIndex(ContextIndexVars{Store: ts, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), HasOverview: true, Uncompacted: !compacted, StabilizeClock: true})
 	}, compactionOverride...)
+	attachNoaState(opts.Compactor, noaSt)
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
 	// 规划会话形态（三选一）：
@@ -1045,7 +1047,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	//   ② 热会话（默认）——在有界窗口内追加增量游标变更，保留 Turn 1 完整黑板前缀吃满 KV 缓存；
 	//      达到上限后再折叠成「输入 + 结论」重新建基线，上下文体积有界。
 	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
-	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(system, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%s", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, p.compactionWindow(), opts.WebFetchProxy, opts.WebFetchCACert), tools))
+	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(opts.SystemPrompt, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%s|%t", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, win, opts.WebFetchProxy, opts.WebFetchCACert, noaSt.enabled), opts.Tools))
 	var s *agentcore.Session
 	keepSession := false
 	useDelta := false

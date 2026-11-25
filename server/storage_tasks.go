@@ -29,6 +29,8 @@ type storageTaskItem struct {
 	FilesUnits         int       `json:"files_units"`
 	TranscriptsBytes   int64     `json:"transcripts_bytes"`
 	TranscriptsCount   int       `json:"transcripts_count"`
+	NoaBytes           int64     `json:"noa_bytes"`
+	NoaCount           int       `json:"noa_count"`
 	ActivityRows       int64     `json:"activity_rows"`
 	ActivityBytes      int64     `json:"activity_bytes"`
 	SideQuestionRows   int64     `json:"side_question_rows"`
@@ -162,51 +164,15 @@ func (s *Server) buildStorageTasksReport(ctx context.Context) (*storageTasksRepo
 		}
 	}
 
-	// Scan data/transcripts/exp<eid>-*
-	transcriptsRoot := filepath.Join(s.m.dir, "transcripts")
-	if entries, rerr := os.ReadDir(transcriptsRoot); rerr == nil {
-		for _, e := range entries {
-			eid, ok := parseTranscriptExpID(e.Name())
-			if !ok {
-				continue
-			}
-			p := filepath.Join(transcriptsRoot, e.Name())
-			var sz int64
-			var mod time.Time
-			var serr error
-			if e.IsDir() {
-				sz, mod, serr = scanStorageUnit(p)
-			} else if info, ierr := e.Info(); ierr == nil {
-				sz, mod = info.Size(), info.ModTime()
-			} else {
-				serr = ierr
-			}
-			if serr != nil {
-				continue
-			}
-			key, known := taskByExp[eid]
-			if !known {
-				key = fmt.Sprintf("exp-%d", eid)
-			}
-			item, exists := itemsMap[key]
-			if !exists {
-				item = &storageTaskItem{
-					TaskID:        key,
-					Name:          fmt.Sprintf("孤儿转写残留 (exp %d)", eid),
-					Status:        "orphan",
-					ExplorationID: eid,
-					Orphan:        true,
-					UpdatedAt:     mod,
-				}
-				itemsMap[key] = item
-			}
-			item.TranscriptsBytes += sz
-			item.TranscriptsCount++
-			if mod.After(item.UpdatedAt) {
-				item.UpdatedAt = mod
-			}
-		}
-	}
+	// Scan data/transcripts/exp<eid>-* and data/noa/exp<eid>-*
+	scanExpRoot(filepath.Join(s.m.dir, "transcripts"), itemsMap, taskByExp, "孤儿转写残留 (exp %d)", func(item *storageTaskItem, sz int64) {
+		item.TranscriptsBytes += sz
+		item.TranscriptsCount++
+	})
+	scanExpRoot(filepath.Join(s.m.dir, "noa"), itemsMap, taskByExp, "孤儿 noa 归档残留 (exp %d)", func(item *storageTaskItem, sz int64) {
+		item.NoaBytes += sz
+		item.NoaCount++
+	})
 
 	dbStats, err := s.m.pg.TaskStorageStats(ctx, taskIDs, expByTask)
 	if err != nil {
@@ -235,7 +201,7 @@ func (s *Server) buildStorageTasksReport(ctx context.Context) (*storageTasksRepo
 				item.BlackboardLogBytes = st.BlackboardLogBytes
 			}
 		}
-		item.TotalBytes = item.FilesBytes + item.TranscriptsBytes +
+		item.TotalBytes = item.FilesBytes + item.TranscriptsBytes + item.NoaBytes +
 			item.ActivityBytes + item.SideQuestionBytes +
 			item.LLMRecordBytes + item.LLMUsageBytes +
 			item.ToolExecutionBytes + item.BlackboardLogBytes
@@ -254,6 +220,53 @@ func (s *Server) buildStorageTasksReport(ctx context.Context) (*storageTasksRepo
 	return rep, nil
 }
 
+func scanExpRoot(root string, itemsMap map[string]*storageTaskItem, taskByExp map[int64]string, orphanLabelFmt string, accum func(*storageTaskItem, int64)) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		eid, ok := parseTranscriptExpID(e.Name())
+		if !ok {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		var sz int64
+		var mod time.Time
+		var serr error
+		if e.IsDir() {
+			sz, mod, serr = scanStorageUnit(p)
+		} else if info, ierr := e.Info(); ierr == nil {
+			sz, mod = info.Size(), info.ModTime()
+		} else {
+			serr = ierr
+		}
+		if serr != nil {
+			continue
+		}
+		key, known := taskByExp[eid]
+		if !known {
+			key = fmt.Sprintf("exp-%d", eid)
+		}
+		item, exists := itemsMap[key]
+		if !exists {
+			item = &storageTaskItem{
+				TaskID:        key,
+				Name:          fmt.Sprintf(orphanLabelFmt, eid),
+				Status:        "orphan",
+				ExplorationID: eid,
+				Orphan:        true,
+				UpdatedAt:     mod,
+			}
+			itemsMap[key] = item
+		}
+		accum(item, sz)
+		if mod.After(item.UpdatedAt) {
+			item.UpdatedAt = mod
+		}
+	}
+}
+
 func (s *Server) getStorageTasks(w http.ResponseWriter, r *http.Request) {
 	if s.m == nil || s.m.pg == nil {
 		writeErr(w, 503, "database unavailable")
@@ -267,9 +280,9 @@ func (s *Server) getStorageTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"report": rep})
 }
 
-func parseStorageCleanScopes(raw []string) (files, transcripts bool, dbScopes db.TaskCleanScopes, err error) {
+func parseStorageCleanScopes(raw []string) (files, transcripts, noa bool, dbScopes db.TaskCleanScopes, err error) {
 	if len(raw) == 0 {
-		return false, false, dbScopes, errors.New("scopes 不能为空")
+		return false, false, false, dbScopes, errors.New("scopes 不能为空")
 	}
 	for _, s := range raw {
 		switch strings.TrimSpace(s) {
@@ -277,6 +290,8 @@ func parseStorageCleanScopes(raw []string) (files, transcripts bool, dbScopes db
 			files = true
 		case "transcripts":
 			transcripts = true
+		case "noa":
+			noa = true
 		case "activity":
 			dbScopes.Activity = true
 		case "side_questions":
@@ -292,10 +307,10 @@ func parseStorageCleanScopes(raw []string) (files, transcripts bool, dbScopes db
 		case "blackboard_logs":
 			dbScopes.BlackboardLogs = true
 		default:
-			return false, false, dbScopes, fmt.Errorf("未知清理范围 %q", s)
+			return false, false, false, dbScopes, fmt.Errorf("未知清理范围 %q", s)
 		}
 	}
-	return files, transcripts, dbScopes, nil
+	return files, transcripts, noa, dbScopes, nil
 }
 
 func safeStorageTaskToken(id string) bool {
@@ -310,6 +325,7 @@ type storageTaskCleanEntry struct {
 	FreedBytes    int64  `json:"freed_bytes"`
 	FilesRemoved  bool   `json:"files_removed,omitempty"`
 	Transcripts   int    `json:"transcripts_removed,omitempty"`
+	NoaRemoved    int    `json:"noa_removed,omitempty"`
 	DBRowsDeleted int64  `json:"db_rows_deleted,omitempty"`
 }
 
@@ -330,7 +346,7 @@ func (s *Server) cleanStorageTasks(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Sprintf("task_ids 数量需为 1-%d", maxStorageTaskCleanBatch))
 		return
 	}
-	cleanFiles, cleanTranscripts, dbScopes, err := parseStorageCleanScopes(req.Scopes)
+	cleanFiles, cleanTranscripts, cleanNoa, dbScopes, err := parseStorageCleanScopes(req.Scopes)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -353,6 +369,7 @@ func (s *Server) cleanStorageTasks(w http.ResponseWriter, r *http.Request) {
 
 	tasksRoot := filepath.Join(s.m.dir, "tasks")
 	transcriptsRoot := filepath.Join(s.m.dir, "transcripts")
+	noaRoot := filepath.Join(s.m.dir, "noa")
 
 	for _, rawID := range req.TaskIDs {
 		id := strings.TrimSpace(rawID)
@@ -392,26 +409,21 @@ func (s *Server) cleanStorageTasks(w http.ResponseWriter, r *http.Request) {
 
 		if cleanTranscripts && item.ExplorationID > 0 {
 			prefix := fmt.Sprintf("exp%d-", item.ExplorationID)
-			if entries, rerr := os.ReadDir(transcriptsRoot); rerr == nil {
-				removedCount := 0
-				for _, e := range entries {
-					if !strings.HasPrefix(e.Name(), prefix) {
-						continue
-					}
-					p := filepath.Join(transcriptsRoot, e.Name())
-					if !pathWithin(transcriptsRoot, p) {
-						continue
-					}
-					if rerr := os.RemoveAll(p); rerr != nil {
-						failures = append(failures, fmt.Sprintf("#%s 转写 %s：%v", id, e.Name(), rerr))
-						continue
-					}
-					removedCount++
-				}
-				if removedCount > 0 {
-					entry.Transcripts = removedCount
-					entry.FreedBytes += item.TranscriptsBytes
-				}
+			removedCount, remErrs := removeExpPrefixedEntries(transcriptsRoot, prefix, fmt.Sprintf("#%s 转写", id))
+			failures = append(failures, remErrs...)
+			if removedCount > 0 {
+				entry.Transcripts = removedCount
+				entry.FreedBytes += item.TranscriptsBytes
+			}
+		}
+
+		if cleanNoa && item.ExplorationID > 0 {
+			prefix := fmt.Sprintf("exp%d-", item.ExplorationID)
+			removedCount, remErrs := removeExpPrefixedEntries(noaRoot, prefix, fmt.Sprintf("#%s noa 归档", id))
+			failures = append(failures, remErrs...)
+			if removedCount > 0 {
+				entry.NoaRemoved = removedCount
+				entry.FreedBytes += item.NoaBytes
 			}
 		}
 
@@ -463,6 +475,30 @@ func (s *Server) cleanStorageTasks(w http.ResponseWriter, r *http.Request) {
 		"tasks_report":  afterTasks,
 		"global_report": afterGlobal,
 	})
+}
+
+func removeExpPrefixedEntries(root, prefix, errLabel string) (int, []string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, nil
+	}
+	removed := 0
+	var failures []string
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		if !pathWithin(root, p) {
+			continue
+		}
+		if rerr := os.RemoveAll(p); rerr != nil {
+			failures = append(failures, fmt.Sprintf("%s %s：%v", errLabel, e.Name(), rerr))
+			continue
+		}
+		removed++
+	}
+	return removed, failures
 }
 
 func (s *Server) vacuumStorage(w http.ResponseWriter, r *http.Request) {

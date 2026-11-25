@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lin9527ya/Norma/agentcore"
@@ -87,8 +88,11 @@ func (p *indexProjector) appendToFor(base []llm.Message, compacted bool) []llm.M
 
 // DomainCompactor 实现 harness.Compactor + harness.ContextView。
 type DomainCompactor struct {
-	inner *compaction.Compactor
-	index indexProjector
+	inner           *compaction.Compactor
+	index           indexProjector
+	materialize     func([]llm.Message) ([]llm.Message, bool)
+	materializeOnce sync.Once
+	materialized    atomic.Bool
 }
 
 // indexView 把「每请求常驻索引」包在任意宿主压缩器外层。
@@ -98,8 +102,9 @@ type DomainCompactor struct {
 // 压缩策略（怎么压）与请求投影（必须始终可见的职责）是两件事：这里只加投影，
 // Pre/Reactive/IsOverflow 原样委托；内层若自己也实现 ContextView，先取它的投影再接索引。
 type indexView struct {
-	inner harness.Compactor
-	index indexProjector
+	inner       harness.Compactor
+	index       indexProjector
+	compactedFn func() bool
 }
 
 var (
@@ -118,11 +123,11 @@ func (v *indexView) Reactive(ctx context.Context, msgs []llm.Message) ([]llm.Mes
 func (v *indexView) IsOverflow(err error) bool { return v.inner.IsOverflow(err) }
 
 func (v *indexView) View(ctx context.Context, msgs []llm.Message) []llm.Message {
-	compacted := llm.LastBoundaryIndex(msgs) >= 0
 	base := llm.MessagesForAPI(msgs)
 	if cv, ok := v.inner.(harness.ContextView); ok {
 		base = cv.View(ctx, msgs)
 	}
+	compacted := llm.LastBoundaryIndex(msgs) >= 0 || (v.compactedFn != nil && v.compactedFn())
 	return v.index.appendToFor(base, compacted)
 }
 
@@ -146,8 +151,17 @@ func newDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int,
 }
 
 // Pre/Reactive/IsOverflow 全部委托：本类型只改"摘要内容"与"请求投影"，
-// 不碰压缩时机与阈值。
+// 不碰压缩时机与阈值。若会话曾启用过 noa 后被关闭且尚未跨过 built-in 边界，
+// 首次 Pre 会先调用只读物化把历史恢复为已压缩视图，避免全量原始记录瞬间溢窗。
 func (d *DomainCompactor) Pre(ctx context.Context, msgs []llm.Message, lastInputTokens int) []llm.Message {
+	if d.materialize != nil && llm.LastBoundaryIndex(msgs) < 0 {
+		d.materializeOnce.Do(func() {
+			if out, changed := d.materialize(msgs); changed {
+				msgs = out
+				d.materialized.Store(true)
+			}
+		})
+	}
 	return d.inner.Pre(ctx, msgs, lastInputTokens)
 }
 
@@ -160,8 +174,19 @@ func (d *DomainCompactor) IsOverflow(err error) bool { return d.inner.IsOverflow
 // View 是纯投影（绝不改历史）：在默认投影之后附一条平台注入的常驻索引。
 // 返回的切片只用于本次请求，宿主的 l.messages 原样不动。
 func (d *DomainCompactor) View(_ context.Context, msgs []llm.Message) []llm.Message {
-	compacted := llm.LastBoundaryIndex(msgs) >= 0
+	compacted := llm.LastBoundaryIndex(msgs) >= 0 || d.materialized.Load()
 	return d.index.appendToFor(llm.MessagesForAPI(msgs), compacted)
+}
+
+// attachNoaState links runtime noa hooks (compacted probe or off-switch
+// materialization) onto the installed context manager after InstallContextManager*.
+func attachNoaState(c harness.Compactor, st noaState) {
+	switch cm := c.(type) {
+	case *indexView:
+		cm.compactedFn = st.compactedFn
+	case *DomainCompactor:
+		cm.materialize = st.materialize
+	}
 }
 
 // ContextIndexVars 是常驻索引的构造输入。ts 为 nil（无探索图的自定义 agent）

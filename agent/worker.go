@@ -918,9 +918,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	}
 
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	enableNoa(&opts, w.noaEnabledFn, w.workDir, sessionID, noaWarn(sessionID))
+	win := w.compactionWindow()
+	noaSt := enableNoa(&opts, w.noaEnabledFn, w.workDir, sessionID, win, noaWarn(sessionID))
 	// P14 领域上下文：领域化摘要（7 段 + 原文落盘回读）+ 每请求附常驻索引（目标/约束/
-	// 活跃方向/发现一行式）。noa 开启时它已占 Compactor 槽位，这里自动让位（互斥）。
+	// 活跃方向/发现一行式）。noa 开启时仅取代 7 段摘要器，外层 indexView 常驻索引仍保留。
 	installClock := taskClockFrom(ctx)
 	var compactionOverride []CompactionLLM
 	if w.compactionLLM != nil {
@@ -928,13 +929,14 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			compactionOverride = append(compactionOverride, c)
 		}
 	}
-	InstallContextManagerDynamic(&opts, w.compactionWindow(), w.maxTokens(), ctxDir, func(compacted bool) string {
+	InstallContextManagerDynamic(&opts, win, w.maxTokens(), ctxDir, func(compacted bool) string {
 		indexSlot := slot
 		if !strings.Contains(sessionID, "-slot") {
 			indexSlot = 0
 		}
 		return BuildContextIndex(ContextIndexVars{Store: ts, Intent: intent, IntentAssets: assetsJSON, RunDir: runDir, Slot: indexSlot, Clock: installClock, CompanyLines: tsx.companyKnowledgeLines(), PlaybookLines: tsx.playbookLines(), CVELines: tsx.cveLines(), Uncompacted: !compacted, StabilizeClock: true})
 	}, compactionOverride...)
+	attachNoaState(opts.Compactor, noaSt)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)

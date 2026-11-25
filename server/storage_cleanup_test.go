@@ -112,3 +112,84 @@ func TestScanStorageUnit(t *testing.T) {
 		t.Fatal("空目录也要给出时间（目录自身 mtime），否则它永远不过期")
 	}
 }
+
+func TestScanNoaStorageCategoryAndScopedHelpers(t *testing.T) {
+	dataDir := t.TempDir()
+	old := time.Now().Add(-10 * 24 * time.Hour)
+	seedFile := func(rel string) {
+		t.Helper()
+		p := filepath.Join(dataDir, "noa", rel, "state.json")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, make([]byte, 128), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Chtimes(p, old, old)
+	}
+	seedFile("exp12-planner")
+	seedFile("exp13-planner")
+	seedFile("chat-conv-7")
+	seedFile("chat-conv-8")
+
+	s := &Server{m: &Manager{dir: dataDir}}
+	s.chatRuns.busy = map[string]bool{"conv-7": true}
+
+	spec, ok := storageCategorySpecByKey("noa")
+	if !ok || spec.SettingKey != settingStorageRetentionNoa {
+		t.Fatalf("unexpected noa storage category spec: ok=%v spec=%+v", ok, spec)
+	}
+	if root := s.storageCategoryRoot("noa"); root != filepath.Join(dataDir, "noa") {
+		t.Fatalf("storageCategoryRoot(noa) = %q", root)
+	}
+
+	rep, err := s.scanStorageCategory(spec, 7, nil, map[int64]bool{12: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Units != 4 || rep.Protected != 2 || rep.ExpiredUnits != 2 || rep.ExpiredBytes != 256 {
+		t.Fatalf("noa category scan mismatch: %+v", rep)
+	}
+	byName := make(map[string]storageUnit, len(rep.Items))
+	for _, item := range rep.Items {
+		byName[item.Name] = item
+	}
+	if byName["exp12-planner"].Protected == "" || byName["chat-conv-7"].Protected == "" {
+		t.Fatalf("expected active exploration & busy conversation protected: %+v", byName)
+	}
+	if byName["exp13-planner"].Protected != "" || byName["chat-conv-8"].Protected != "" {
+		t.Fatalf("expected finished exploration & idle conversation cleanable: %+v", byName)
+	}
+
+	// Verify per-task noa scope parsing, scanExpRoot, removeExpPrefixedEntries and conv cleanup.
+	_, _, noaScope, _, err := parseStorageCleanScopes([]string{"noa"})
+	if err != nil || !noaScope {
+		t.Fatalf("parseStorageCleanScopes(noa) = noa:%v err:%v", noaScope, err)
+	}
+	items := map[string]*storageTaskItem{}
+	scanExpRoot(filepath.Join(dataDir, "noa"), items, map[int64]string{13: "99"}, "孤儿 noa (%d)", func(it *storageTaskItem, sz int64) {
+		it.NoaBytes += sz
+		it.NoaCount++
+	})
+	if items["exp-12"] == nil || items["exp-12"].NoaBytes != 128 {
+		t.Fatalf("expected orphan exp-12 stats, got %+v", items["exp-12"])
+	}
+	if items["99"] == nil || items["99"].NoaBytes != 128 {
+		t.Fatalf("expected mapped task 99 stats, got %+v", items["99"])
+	}
+	removed, errs := removeExpPrefixedEntries(filepath.Join(dataDir, "noa"), "exp13-", "task #99 noa")
+	if removed != 1 || len(errs) != 0 {
+		t.Fatalf("removeExpPrefixedEntries = %d, errs=%v", removed, errs)
+	}
+	s.removeConversationNoaDir(8)
+	for _, gone := range []string{"exp13-planner", "chat-conv-8"} {
+		if _, err := os.Stat(filepath.Join(dataDir, "noa", gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed, got %v", gone, err)
+		}
+	}
+	for _, kept := range []string{"exp12-planner", "chat-conv-7"} {
+		if _, err := os.Stat(filepath.Join(dataDir, "noa", kept)); err != nil {
+			t.Fatalf("expected %s kept, got %v", kept, err)
+		}
+	}
+}

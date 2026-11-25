@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lin9527ya/Norma/llm"
+	"github.com/lin9527ya/Norma/transcript"
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
@@ -296,6 +298,7 @@ func (s *Server) pgDeleteConversation(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.removeConversationNoaDir(c.ID)
 	writeJSON(w, 200, map[string]any{"deleted": c.ID})
 }
 
@@ -360,6 +363,7 @@ func (s *Server) pgDeleteConversationsBatch(w http.ResponseWriter, r *http.Reque
 	deletedSet := make(map[int64]struct{}, len(deleted))
 	for _, id := range deleted {
 		deletedSet[id] = struct{}{}
+		s.removeConversationNoaDir(id)
 	}
 	items := make([]conversationDeleteItem, 0, len(ids))
 	for _, id := range ids {
@@ -371,6 +375,20 @@ func (s *Server) pgDeleteConversationsBatch(w http.ResponseWriter, r *http.Reque
 		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) removeConversationNoaDir(id int64) {
+	if s.m == nil || s.m.dir == "" || id <= 0 {
+		return
+	}
+	noaRoot := filepath.Join(s.m.dir, "noa")
+	target := filepath.Join(noaRoot, "chat-"+s.convBusyKey(id))
+	if !pathWithin(noaRoot, target) {
+		return
+	}
+	if err := os.RemoveAll(target); err != nil {
+		log.Printf("[conv %d] remove noa archive %s failed: %v", id, target, err)
+	}
 }
 
 func (s *Server) convBusyKey(id int64) string { return "conv-" + strconv.FormatInt(id, 10) }
@@ -518,14 +536,16 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	}
 	if c.Title == "" || c.Title == "新对话" {
 		title := firstLine(msg, 40)
+		titleContent := msg
 		if title == "" {
-			title = "附件消息"
+			title = attachmentDefaultTitle(req.Attachments)
+			titleContent = attachmentTitlePromptSeed(req.Attachments)
 		}
 		_ = pg.RenameConversation(c.ID, title)
 		// 自动标题（可选）：先落一个可用的默认标题，再异步换成更好的；生成失败就
 		// 保持默认值——标题是便利功能，不能影响会话本身。
 		if pg.GetBool(settingChatAutoTitle, false) {
-			s.autoTitleConversation(c.ID, c.AgentKey, c.LLMProfileID, msg, title)
+			s.autoTitleConversation(c.ID, c.AgentKey, c.LLMProfileID, titleContent, title)
 		}
 	}
 	_ = pg.TouchConversation(c.ID)
@@ -539,27 +559,78 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 202, map[string]any{"status": "accepted"})
 }
 
+func attachmentNames(atts []chatAttachment) []string {
+	names := make([]string, 0, len(atts))
+	for _, a := range atts {
+		name := strings.TrimSpace(filepath.Base(strings.TrimSpace(a.Name)))
+		if name == "" || name == "." || name == string(filepath.Separator) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+func attachmentDefaultTitle(atts []chatAttachment) string {
+	names := attachmentNames(atts)
+	if len(names) == 0 {
+		return "附件消息"
+	}
+	if len(names) == 1 {
+		return firstLine(names[0], 40)
+	}
+	return firstLine(fmt.Sprintf("%s 等 %d 个附件", names[0], len(names)), 40)
+}
+
+func attachmentTitlePromptSeed(atts []chatAttachment) string {
+	names := attachmentNames(atts)
+	if len(names) == 0 {
+		return ""
+	}
+	if len(names) > 6 {
+		names = names[:6]
+	}
+	return "用户上传了以下附件发起对话：" + strings.Join(names, ", ")
+}
+
+func (s *Server) resolveAutoTitleProvider(agentKey string, pinnedProfile *int64) llm.Provider {
+	if id := s.effectiveProfileForAgent(agentKey, pinnedProfile); id != nil {
+		if prov, cfg, ok := s.providerForProfile(*id); ok {
+			return s.poolForBinding(*id, prov, cfg)
+		}
+	}
+	if s.m != nil && s.m.pg != nil {
+		if active, err := s.m.pg.ActiveProfile(); err == nil && active != nil {
+			if prov, cfg, ok := s.providerForProfile(active.ID); ok {
+				return s.poolForActive(active.ID, prov, cfg)
+			}
+		}
+	}
+	if prov, _, ok := s.globalProvider(); ok {
+		return prov
+	}
+	return nil
+}
+
 // autoTitleConversation 异步生成会话标题并写回。
 //
 // 三条纪律：只读用户输入（不读 agent 输出，那里可能有目标侧回显）、只在标题仍是
-// 默认值时写入（CAS，避免覆盖用户手动改名）、失败静默。
+// 默认值时写入（CAS，避免覆盖用户手动改名）、失败记录日志不打断会话。
 func (s *Server) autoTitleConversation(conversationID int64, agentKey string, pinnedProfile *int64, msg, expectedTitle string) {
 	content := strings.TrimSpace(msg)
 	if content == "" {
 		return
 	}
 	goSafe("conversations/auto-title", nil, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		parent := s.ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
-		var prov llm.Provider
-		if id := s.effectiveProfileForAgent(agentKey, pinnedProfile); id != nil {
-			prov, _, _ = s.providerForProfile(*id)
-		}
-		if prov == nil {
-			if active, err := s.m.pg.ActiveProfile(); err == nil && active != nil {
-				prov, _, _ = s.providerForProfile(active.ID)
-			}
-		}
+		ctx = transcript.WithSessionID(ctx, s.convBusyKey(conversationID))
+		ctx = llmrec.WithWorker(ctx, "auto-title")
+		prov := s.resolveAutoTitleProvider(agentKey, pinnedProfile)
 		if prov == nil {
 			log.Printf("[auto-title] conversation %d: no available profile", conversationID)
 			return

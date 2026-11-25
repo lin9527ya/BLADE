@@ -138,6 +138,20 @@ func stageTaskArchiveFiles(dataDir string, archiveID int64, taskID string, explo
 			Source: filepath.Join(transcriptDir, name), Relative: filepath.Join("files", "transcripts", name),
 		})
 	}
+	noaDir := filepath.Join(dataDir, "noa")
+	noaEntries, err := os.ReadDir(noaDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, entry := range noaEntries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		targets = append(targets, archiveFileMove{
+			Source: filepath.Join(noaDir, name), Relative: filepath.Join("files", "noa", name),
+		})
+	}
 	// Persist the complete plan before the first rename. Recovery can therefore
 	// roll back any prefix of the moves after an abrupt process termination.
 	stage.journal.Moves = targets
@@ -248,6 +262,16 @@ func installTaskArchiveFiles(dataDir, extractedDir, taskID string, archiveID int
 	for _, entry := range entries {
 		sources = append(sources, restoredArchivePath{
 			Source: filepath.Join(transcripts, entry.Name()), Destination: filepath.Join(dataDir, "transcripts", entry.Name()),
+		})
+	}
+	noaRoot := filepath.Join(extractedDir, "files", "noa")
+	noaEntries, err := os.ReadDir(noaRoot)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, entry := range noaEntries {
+		sources = append(sources, restoredArchivePath{
+			Source: filepath.Join(noaRoot, entry.Name()), Destination: filepath.Join(dataDir, "noa", entry.Name()),
 		})
 	}
 	for _, move := range sources {

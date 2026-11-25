@@ -62,6 +62,8 @@ func TestDeleteTaskFilesRemovesOnlyOwnedWorkspaceAndTranscripts(t *testing.T) {
 		{path: filepath.Join("transcripts", "exp12-worker-i9.jsonl")},
 		{path: filepath.Join("transcripts", "exp12-main"), isDir: true},
 		{path: filepath.Join("transcripts", "exp12-worker-i9"), isDir: true},
+		{path: filepath.Join("noa", "exp12-main"), isDir: true},
+		{path: filepath.Join("noa", "exp12-planner"), isDir: true},
 	}
 	kept := []struct {
 		path  string
@@ -76,6 +78,9 @@ func TestDeleteTaskFilesRemovesOnlyOwnedWorkspaceAndTranscripts(t *testing.T) {
 		{path: filepath.Join("transcripts", "exp12-main.txt")},
 		{path: filepath.Join("transcripts", "conv-12.jsonl")},
 		{path: filepath.Join("transcripts", "unrelated-session"), isDir: true},
+		{path: filepath.Join("noa", "exp123-main"), isDir: true},
+		{path: filepath.Join("noa", "exp1-main"), isDir: true},
+		{path: filepath.Join("noa", "chat-conv-12"), isDir: true},
 	}
 
 	for _, fixture := range append(removed, kept...) {
@@ -128,6 +133,7 @@ func TestStageTaskFilesRollbackRestoresWorkspaceAndTranscripts(t *testing.T) {
 		filepath.Join("tasks", "77", "notes.txt"),
 		filepath.Join("transcripts", "exp12-main.jsonl"),
 		filepath.Join("transcripts", "exp12-worker-i9", "sidechain.jsonl"),
+		filepath.Join("noa", "exp12-planner", "state.json"),
 	}
 	for _, path := range paths {
 		createDeleteFixture(t, dataDir, path, false)

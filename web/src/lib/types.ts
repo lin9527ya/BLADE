@@ -2227,6 +2227,7 @@ export interface Settings {
   storage_retention_sessions_days?: number;
   storage_retention_drafts_days?: number;
   storage_retention_transcripts_days?: number;
+  storage_retention_noa_days?: number;
   storage_retention_binary_days?: number;
   storage_retention_llm_usage_days?: number;
   storage_retention_activity_days?: number;
@@ -2838,6 +2839,8 @@ export interface StorageTaskItem {
   files_units: number;
   transcripts_bytes: number;
   transcripts_count: number;
+  noa_bytes?: number;
+  noa_count?: number;
   activity_rows: number;
   activity_bytes: number;
   side_question_rows: number;
@@ -3638,7 +3641,17 @@ export interface AttackCoverage {
   note: string;
 }
 
-// GET /api/egress/status：出口只读视图（代理池健康 + Clash 最近轮换 + 任务绑定）。
+// GET /api/egress/status：出口只读视图（代理池健康 + Clash 最近轮换 + 任务绑定 + 流量捕获概况）。
+export interface EgressTrafficStatus {
+  capture_enabled: boolean;
+  auto_binding_enabled: boolean;
+  proxy_listening: boolean;
+  proxy_addr?: string;
+  ca_ready: boolean;
+  recorded_count: number;
+  clash_isolation_overridden: boolean;
+}
+
 export interface EgressStatus {
   proxy: {
     active: string;
@@ -3656,6 +3669,7 @@ export interface EgressStatus {
     last_reason?: string;
   };
   tasks: { task_id: number; name?: string; group: string }[];
+  traffic?: EgressTrafficStatus;
   note?: string;
 }
 
