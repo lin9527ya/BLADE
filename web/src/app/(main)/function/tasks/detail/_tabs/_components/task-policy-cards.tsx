@@ -24,6 +24,8 @@ import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import type { AssetInterceptKind, AssetInterceptRule, Task } from "@/lib/types";
 
+import { CollapsibleOverviewCard } from "./collapsible-overview-card";
+
 // 任务级资产拦截规则卡片（自带编辑表单与保存逻辑）。
 
 const TASK_RULE_KIND_OPTIONS: { value: AssetInterceptKind; label: string; placeholder: string }[] = [
@@ -55,6 +57,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
   const [editKind, setEditKind] = React.useState<AssetInterceptKind>("fuzzy_domain");
   const [editPattern, setEditPattern] = React.useState("");
   const [editNote, setEditNote] = React.useState("");
+  const [open, setOpen] = React.useState(true);
 
   const load = React.useCallback(async () => {
     try {
@@ -142,160 +145,159 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
   const rulesPager = useClientPagination(rules, 5, taskId);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <ShieldCheckIcon className="size-4 text-sky-500" /> 任务级资产拦截 / 允许
-          <span className="font-normal text-muted-foreground text-xs">
-            （仅本任务生效，不进全局；先拦截后允许，共 {rules.length} 条）
-          </span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {/* 新增表单 */}
-        <div className="flex flex-wrap items-center gap-2">
-          <NativeSelect size="sm" value={newAction} onChange={(e) => setNewAction(e.target.value as "block" | "allow")}>
-            <NativeSelectOption value="block">拦截</NativeSelectOption>
-            <NativeSelectOption value="allow">允许</NativeSelectOption>
-          </NativeSelect>
-          <NativeSelect size="sm" value={newKind} onChange={(e) => setNewKind(e.target.value as AssetInterceptKind)}>
-            {TASK_RULE_KIND_OPTIONS.map((o) => (
-              <NativeSelectOption key={o.value} value={o.value}>
-                {o.label}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <Input
-            className="h-7 min-w-56 flex-1 text-sm"
-            placeholder={placeholder}
-            value={newPattern}
-            onChange={(e) => setNewPattern(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void add();
-            }}
-            disabled={busy}
-          />
-          <Input
-            className="h-7 w-36 text-sm"
-            placeholder="备注(可选)"
-            value={newNote}
-            onChange={(e) => setNewNote(e.target.value)}
-            disabled={busy}
-          />
-          <Button size="sm" variant="outline" disabled={busy || !newPattern.trim()} onClick={() => void add()}>
-            <PlusIcon className="size-3.5" /> 添加
-          </Button>
-          {err && <span className="text-red-500 text-xs">{err}</span>}
+    <CollapsibleOverviewCard
+      title="任务级资产拦截 / 允许"
+      icon={<ShieldCheckIcon className="size-4 text-sky-500" />}
+      meta={<span className="font-normal text-muted-foreground text-xs">（共 {rules.length} 条）</span>}
+      description={open ? "仅本任务生效，不进全局；先拦截后允许。" : "已收起，点击右侧「查看规则」展开。"}
+      open={open}
+      onOpenChange={setOpen}
+      openLabel="收起规则"
+      closedLabel="查看规则"
+    >
+      {/* 新增表单 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <NativeSelect size="sm" value={newAction} onChange={(e) => setNewAction(e.target.value as "block" | "allow")}>
+          <NativeSelectOption value="block">拦截</NativeSelectOption>
+          <NativeSelectOption value="allow">允许</NativeSelectOption>
+        </NativeSelect>
+        <NativeSelect size="sm" value={newKind} onChange={(e) => setNewKind(e.target.value as AssetInterceptKind)}>
+          {TASK_RULE_KIND_OPTIONS.map((o) => (
+            <NativeSelectOption key={o.value} value={o.value}>
+              {o.label}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+        <Input
+          className="h-7 min-w-56 flex-1 text-sm"
+          placeholder={placeholder}
+          value={newPattern}
+          onChange={(e) => setNewPattern(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void add();
+          }}
+          disabled={busy}
+        />
+        <Input
+          className="h-7 w-36 text-sm"
+          placeholder="备注(可选)"
+          value={newNote}
+          onChange={(e) => setNewNote(e.target.value)}
+          disabled={busy}
+        />
+        <Button size="sm" variant="outline" disabled={busy || !newPattern.trim()} onClick={() => void add()}>
+          <PlusIcon className="size-3.5" /> 添加
+        </Button>
+        {err && <span className="text-red-500 text-xs">{err}</span>}
+      </div>
+      {/* 规则列表 */}
+      {rules.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {rulesPager.pageItems.map((r) =>
+            editId === r.id ? (
+              <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+                <NativeSelect
+                  size="sm"
+                  value={editAction}
+                  onChange={(e) => setEditAction(e.target.value as "block" | "allow")}
+                >
+                  <NativeSelectOption value="block">拦截</NativeSelectOption>
+                  <NativeSelectOption value="allow">允许</NativeSelectOption>
+                </NativeSelect>
+                <NativeSelect
+                  size="sm"
+                  value={editKind}
+                  onChange={(e) => setEditKind(e.target.value as AssetInterceptKind)}
+                >
+                  {TASK_RULE_KIND_OPTIONS.map((o) => (
+                    <NativeSelectOption key={o.value} value={o.value}>
+                      {o.label}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <Input
+                  className="h-7 min-w-56 flex-1 text-sm"
+                  value={editPattern}
+                  onChange={(e) => setEditPattern(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveEdit(r);
+                    if (e.key === "Escape") setEditId(null);
+                  }}
+                  disabled={busy}
+                  autoFocus
+                />
+                <Input
+                  className="h-7 w-36 text-sm"
+                  placeholder="备注(可选)"
+                  value={editNote}
+                  onChange={(e) => setEditNote(e.target.value)}
+                  disabled={busy}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-1.5"
+                  disabled={busy || !editPattern.trim()}
+                  onClick={() => void saveEdit(r)}
+                >
+                  <CheckIcon className="size-3.5 text-emerald-500" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-1.5"
+                  disabled={busy}
+                  onClick={() => setEditId(null)}
+                >
+                  <XIcon className="size-3.5" />
+                </Button>
+              </div>
+            ) : (
+              <div key={r.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+                    r.action === "allow"
+                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                      : "bg-red-500/15 text-red-600 dark:text-red-400"
+                  }`}
+                >
+                  {r.action === "allow" ? "允许" : "拦截"}
+                </span>
+                <span className="shrink-0 text-muted-foreground text-xs">{TASK_RULE_KIND_LABEL[r.kind]}</span>
+                <code className="min-w-0 flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs">{r.pattern}</code>
+                {r.note && (
+                  <span className="max-w-[120px] shrink-0 truncate text-muted-foreground text-xs">{r.note}</span>
+                )}
+                <Switch checked={r.enabled} onCheckedChange={() => void toggle(r)} />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-1.5"
+                  disabled={busy}
+                  onClick={() => startEdit(r)}
+                >
+                  <PencilIcon className="size-3.5" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-1.5"
+                  disabled={busy}
+                  onClick={() => void remove(r)}
+                >
+                  <Trash2Icon className="size-3.5 text-red-500" />
+                </Button>
+              </div>
+            ),
+          )}
+          <TablePagination {...rulesPager.paginationProps} />
         </div>
-        {/* 规则列表 */}
-        {rules.length > 0 ? (
-          <div className="flex flex-col gap-1.5">
-            {rulesPager.pageItems.map((r) =>
-              editId === r.id ? (
-                <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
-                  <NativeSelect
-                    size="sm"
-                    value={editAction}
-                    onChange={(e) => setEditAction(e.target.value as "block" | "allow")}
-                  >
-                    <NativeSelectOption value="block">拦截</NativeSelectOption>
-                    <NativeSelectOption value="allow">允许</NativeSelectOption>
-                  </NativeSelect>
-                  <NativeSelect
-                    size="sm"
-                    value={editKind}
-                    onChange={(e) => setEditKind(e.target.value as AssetInterceptKind)}
-                  >
-                    {TASK_RULE_KIND_OPTIONS.map((o) => (
-                      <NativeSelectOption key={o.value} value={o.value}>
-                        {o.label}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
-                  <Input
-                    className="h-7 min-w-56 flex-1 text-sm"
-                    value={editPattern}
-                    onChange={(e) => setEditPattern(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void saveEdit(r);
-                      if (e.key === "Escape") setEditId(null);
-                    }}
-                    disabled={busy}
-                    autoFocus
-                  />
-                  <Input
-                    className="h-7 w-36 text-sm"
-                    placeholder="备注(可选)"
-                    value={editNote}
-                    onChange={(e) => setEditNote(e.target.value)}
-                    disabled={busy}
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 shrink-0 px-1.5"
-                    disabled={busy || !editPattern.trim()}
-                    onClick={() => void saveEdit(r)}
-                  >
-                    <CheckIcon className="size-3.5 text-emerald-500" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 shrink-0 px-1.5"
-                    disabled={busy}
-                    onClick={() => setEditId(null)}
-                  >
-                    <XIcon className="size-3.5" />
-                  </Button>
-                </div>
-              ) : (
-                <div key={r.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                  <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
-                      r.action === "allow"
-                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                        : "bg-red-500/15 text-red-600 dark:text-red-400"
-                    }`}
-                  >
-                    {r.action === "allow" ? "允许" : "拦截"}
-                  </span>
-                  <span className="shrink-0 text-muted-foreground text-xs">{TASK_RULE_KIND_LABEL[r.kind]}</span>
-                  <code className="min-w-0 flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs">{r.pattern}</code>
-                  {r.note && (
-                    <span className="max-w-[120px] shrink-0 truncate text-muted-foreground text-xs">{r.note}</span>
-                  )}
-                  <Switch checked={r.enabled} onCheckedChange={() => void toggle(r)} />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 shrink-0 px-1.5"
-                    disabled={busy}
-                    onClick={() => startEdit(r)}
-                  >
-                    <PencilIcon className="size-3.5" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 shrink-0 px-1.5"
-                    disabled={busy}
-                    onClick={() => void remove(r)}
-                  >
-                    <Trash2Icon className="size-3.5 text-red-500" />
-                  </Button>
-                </div>
-              ),
-            )}
-            <TablePagination {...rulesPager.paginationProps} />
-          </div>
-        ) : (
-          <p className="text-muted-foreground text-sm">
-            暂无任务级规则。「拦截」命中即禁止测试；「允许」为白名单——配置后本任务只允许命中允许规则的资产（未配置则不启用白名单）。
-          </p>
-        )}
-      </CardContent>
-    </Card>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          暂无任务级规则。「拦截」命中即禁止测试；「允许」为白名单——配置后本任务只允许命中允许规则的资产（未配置则不启用白名单）。
+        </p>
+      )}
+    </CollapsibleOverviewCard>
   );
 }
 
@@ -473,7 +475,13 @@ export function TaskCredentialBudgetCard({ taskId, budget }: { taskId: string; b
     setBusy(true);
     try {
       await api.updateTask(taskId, { credential_attempt_budget: n });
-      toast.success(n < 0 ? "已改为继承全局凭据预算" : n === 0 ? "本任务凭据尝试已不限次数（仍记账）" : `本任务凭据预算：${n} 次/30 分钟`);
+      toast.success(
+        n < 0
+          ? "已改为继承全局凭据预算"
+          : n === 0
+            ? "本任务凭据尝试已不限次数（仍记账）"
+            : `本任务凭据预算：${n} 次/30 分钟`,
+      );
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`);
     } finally {

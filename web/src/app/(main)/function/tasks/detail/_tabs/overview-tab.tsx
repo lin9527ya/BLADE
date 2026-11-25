@@ -43,6 +43,7 @@ import { cacheHitRate, fmtCostUSD } from "@/lib/token-stats";
 import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
 import { ArtifactPanel } from "./_components/artifact-panel";
+import { CollapsibleOverviewCard } from "./_components/collapsible-overview-card";
 import { ExplorationTrackingCard } from "./_components/exploration-tracking-card";
 import {
   TaskAssetScopeCard,
@@ -68,52 +69,6 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return String(n);
-}
-
-function CollapsibleOverviewCard({
-  title,
-  icon,
-  meta,
-  description,
-  open,
-  onOpenChange,
-  openLabel,
-  closedLabel,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  meta?: React.ReactNode;
-  description?: React.ReactNode;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  openLabel: string;
-  closedLabel: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Collapsible open={open} onOpenChange={onOpenChange}>
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle className="flex items-center gap-2 text-base">
-              {icon} {title}
-              {meta}
-            </CardTitle>
-            <CollapsibleTrigger asChild>
-              <Button size="sm" variant="outline">
-                {open ? openLabel : closedLabel}
-              </Button>
-            </CollapsibleTrigger>
-          </div>
-          {description && <CardDescription>{description}</CardDescription>}
-        </CardHeader>
-        <CollapsibleContent>
-          <CardContent className="flex flex-col gap-3">{children}</CardContent>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
-  );
 }
 
 // 测试范围一条的显示值：域名 / 网段 / 公司。
