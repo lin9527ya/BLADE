@@ -735,10 +735,10 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	pl.SetCompactionLLM(compactorRuntime.compactionLLM)
 	pl.SetWebSearch(s.webSearchFor("planner"))
-	pl.SetConstraintInject(s.constraintInjectPlanner)                             // 操作约束注入 planner(可配置,默认开)
-	pl.SetBoundedView(s.plannerBoundedView)                                       // 默认态势：有界黑板视图 / 全量
-	pl.SetNotifyWorkers(t.NotifyWorkers)                                          // add_intent 落库后立即唤醒独立 worker 调度
-	pl.SetExecService(s.m.Executions().ForTask(t.ID))                             // P13 长任务托管执行(planner 也能起/查/停)
+	pl.SetConstraintInject(s.constraintInjectPlanner) // 操作约束注入 planner(可配置,默认开)
+	pl.SetBoundedView(s.plannerBoundedView)           // 默认态势：有界黑板视图 / 全量
+	pl.SetNotifyWorkers(t.NotifyWorkers)              // add_intent 落库后立即唤醒独立 worker 调度
+	pl.SetExecService(s.m.Executions().ForTask(t.ID)) // P13 长任务托管执行(planner 也能起/查/停)
 	// 穷尽复核反馈：上一轮声明穷尽被复核员否掉时，把结论下发到下一轮规划输入。
 	// cold-digest §7: 冷节点后台压缩。引擎经权威解析器实际驱动的就是这套 per-task planner
 	// (agentsForTask),Compactor 必须接在这里。走任务路由的 planner provider(§4:与 agent

@@ -81,13 +81,6 @@ func reviewCompletionWithConfig(ctx context.Context, prov llm.Provider, cfg agen
 	return collectOneShotText(ctx, prov, prompt, string(user), 1024, !cfg.Stream, cfg.CacheTTL, cfg.PromptCacheRetention)
 }
 
-// streamCollectText runs a single one-shot completion (thinking off,
-// low temperature, bounded output) and returns the concatenated text. The
-// budget includes the explanation and complete closing JSON delimiters.
-func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
-	return streamCollectTextLimit(ctx, prov, system, user, 1024)
-}
-
 // streamCollectTextLimit is the same bounded text collector with an explicit
 // output cap (CVE report extraction needs room for several records).
 func streamCollectTextLimit(ctx context.Context, prov llm.Provider, system, user string, maxTokens int) (string, error) {

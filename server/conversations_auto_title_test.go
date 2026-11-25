@@ -248,7 +248,10 @@ func TestAutoTitleConversationSendsSessionHeaderUsesPoolAndRecordsWorker(t *test
 		time.Sleep(50 * time.Millisecond)
 	}
 	if updatedTitle != "登录接口越权排查" {
-		t.Fatalf("auto-title result = %q, want 登录接口越权排查 (primaryHits=%d backupHits=%d headers=%v)", updatedTitle, primaryHits, backupHits, seenHeaders)
+		mu.Lock()
+		ph, bh, sh := primaryHits, backupHits, append([]string(nil), seenHeaders...)
+		mu.Unlock()
+		t.Fatalf("auto-title result = %q, want 登录接口越权排查 (primaryHits=%d backupHits=%d headers=%v)", updatedTitle, ph, bh, sh)
 	}
 
 	mu.Lock()

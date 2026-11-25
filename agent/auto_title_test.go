@@ -14,20 +14,20 @@ import (
 // 它会直接出现在侧栏里。
 func TestCleanAutoTitle(t *testing.T) {
 	cases := map[string]string{
-		`"Web 登录口 SQL 注入"`:                      "Web 登录口 SQL 注入",
-		"标题：后台弱口令排查":                            "后台弱口令排查",
-		"Title:   API 越权验证  ":                   "API 越权验证",
-		"第一行\n第二行":                              "第一行",
-		"“内网上线前资产梳理”":                           "内网上线前资产梳理",
+		`"Web 登录口 SQL 注入"`:    "Web 登录口 SQL 注入",
+		"标题：后台弱口令排查":          "后台弱口令排查",
+		"Title:   API 越权验证  ": "API 越权验证",
+		"第一行\n第二行":            "第一行",
+		"“内网上线前资产梳理”":         "内网上线前资产梳理",
 		"<think>内部推理\n第二行</think>\n### **标题：Web 后台弱口令排查**\n附注": "Web 后台弱口令排查",
-		"<thinking>思考内容</thinking>\n- `API 越权漏洞测试`":           "API 越权漏洞测试",
-		"1. Kubernetes 集群基线检查":                                "Kubernetes 集群基线检查",
-		"192.168.1.10 端口扫描与指纹识别":                              "192.168.1.10 端口扫描与指纹识别",
-		"-h 参数模糊测试排查":                                         "-h 参数模糊测试排查",
-		"<think>截断前未输出正文":                                     "",
-		strings.Repeat("长", 60):                 strings.Repeat("长", autoTitleMaxRunes),
-		"  多个   空格  合并 ":                        "多个 空格 合并",
-		"":                                      "",
+		"<thinking>思考内容</thinking>\n- `API 越权漏洞测试`":            "API 越权漏洞测试",
+		"1. Kubernetes 集群基线检查":                                 "Kubernetes 集群基线检查",
+		"192.168.1.10 端口扫描与指纹识别":                               "192.168.1.10 端口扫描与指纹识别",
+		"-h 参数模糊测试排查":                                          "-h 参数模糊测试排查",
+		"<think>截断前未输出正文":                                      "",
+		strings.Repeat("长", 60):                                strings.Repeat("长", autoTitleMaxRunes),
+		"  多个   空格  合并 ":                                       "多个 空格 合并",
+		"":                                                     "",
 	}
 	for in, want := range cases {
 		if got := cleanAutoTitle(in); got != want {

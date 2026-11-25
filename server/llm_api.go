@@ -444,14 +444,6 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 	return s.llm.chatAgent
 }
 
-// globalLLMProvider returns the configured global provider for one-shot utility
-// calls (e.g. CVE report extraction). It never builds a new provider: if no LLM
-// is configured it returns false so callers can report "先配置 LLM".
-func (s *Server) globalLLMProvider() (llm.Provider, bool) {
-	p, _, ok := s.globalLLMConfig()
-	return p, ok
-}
-
 // globalLLMConfig returns both the global provider and its effective agent.Config.
 func (s *Server) globalLLMConfig() (llm.Provider, agent.Config, bool) {
 	s.llm.mu.Lock()

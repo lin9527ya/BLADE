@@ -158,25 +158,8 @@ func (s *Server) storageRetentionDays(key string) int {
 	return n
 }
 
-// protectedTaskIDs 返回**非终态**任务的 id 集合：这些任务的产物一律不动。
-// 读库失败返回错误而不是空集合——空集合会让"在跑的任务"变成可删，方向反了。
-func (s *Server) protectedTaskIDs() (map[string]bool, error) {
-	tasks, err := s.m.pg.ListTasks()
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]bool{}
-	for _, t := range tasks {
-		if t != nil && !db.IsTerminal(t.Status) {
-			out[strconv.FormatInt(t.ID, 10)] = true
-		}
-	}
-	return out, nil
-}
-
 // retentionProtection 返回受保护的任务 id 与其探索 id：**非终态任务**的记录一律不动。
-// 与 protectedTaskIDs 同源（都读 ListTasks 判终态），但这里额外要探索 id——
-// activity 是按 exploration_id 归属任务的，只拿任务 id 保护不了它。
+// 读 ListTasks 判终态，并同时带出探索 id——activity 按 exploration_id 归属任务。
 // 读库失败返回错误而不是空集合——空集合会让"在跑的任务"变成可删，方向反了。
 func (s *Server) retentionProtection() (tasks []string, explorations []int64, err error) {
 	all, err := s.m.pg.ListTasks()

@@ -72,13 +72,13 @@ type Planner struct {
 	injectConstraints   func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
 	nonStreamingFn      func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
-	execService  ExecService
-	noaEnabledFn  func() bool // resolver: use experimental noa compaction? (nil = off)
-	boundedView   func() bool // nil = 有界视图（默认）
-	notifyWorkers   func()               // 派发新意图后立即唤醒 worker 调度器
-	maxTokensFn     func() int           // resolver: per-reply output cap (nil/0 = send no cap)
-	cacheOpts       cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
-	compactor       *Compactor           // cold-node compaction (§7); nil = disabled
+	execService   ExecService
+	noaEnabledFn  func() bool          // resolver: use experimental noa compaction? (nil = off)
+	boundedView   func() bool          // nil = 有界视图（默认）
+	notifyWorkers func()               // 派发新意图后立即唤醒 worker 调度器
+	maxTokensFn   func() int           // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts     cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
+	compactor     *Compactor           // cold-node compaction (§7); nil = disabled
 	// compactionLLM, when set, supplies an independent provider for context
 	// summarization (see InstallContextManager). nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)

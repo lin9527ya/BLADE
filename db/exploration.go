@@ -83,10 +83,10 @@ type Node struct {
 	Origin              string                     `json:"origin,omitempty"`
 	Owner               string                     `json:"owner,omitempty"`
 	BlockedReason       string                     `json:"blocked_reason,omitempty"`
-	DeleteReason    string  `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
-	SemanticOutcome string  `json:"semantic_outcome,omitempty"`
-	SemanticNote    string  `json:"semantic_note,omitempty"`
-	Anchors         []int64 `json:"anchors,omitempty"`
+	DeleteReason        string                     `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
+	SemanticOutcome     string                     `json:"semantic_outcome,omitempty"`
+	SemanticNote        string                     `json:"semantic_note,omitempty"`
+	Anchors             []int64                    `json:"anchors,omitempty"`
 	// FindingStatus 是 findings.status 的只读投影（仅 kind=finding 且由
 	// populateFindingStatuses 填充）。节点自身 state 只有 confirmed/dismissed/
 	// ruled_out/open_proof_gap 四态，无法区分 report_finding 产生的 pending 与真正
