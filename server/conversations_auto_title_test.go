@@ -204,6 +204,8 @@ func TestAutoTitleConversationSendsSessionHeaderUsesPoolAndRecordsWorker(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		cancel()
+		m.bgWG.Wait()
 		_, _ = m.pg.Exec(`DELETE FROM llm_health WHERE profile_id IN ($1,$2)`, primaryID, backupID)
 		_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id IN ($1,$2)`, primaryID, backupID)
 		_ = m.pg.DeleteProfile(primaryID)

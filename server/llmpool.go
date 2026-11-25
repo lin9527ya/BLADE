@@ -32,18 +32,20 @@ func newLLMHealthRegistry(pg *db.DB, wg *sync.WaitGroup) *llmpool.Registry {
 		}
 		// 登记到 Manager 的 WaitGroup：这是 fire-and-forget 的写库，关停时可能在
 		// 连接池关闭之后才执行（日志里变成 `sql: database is closed`）。
-		wg.Add(1)
+		if wg != nil {
+			wg.Add(1)
+		}
 		goSafe("llmpool/save-health", wg, func() {
-			defer wg.Done()
 			if err := pg.SaveLLMHealth(h); err != nil {
 				log.Printf("[llmpool] 熔断状态落库失败: %v", err)
 			}
 		})
 	}
 	forget := func(id int64) {
-		wg.Add(1)
+		if wg != nil {
+			wg.Add(1)
+		}
 		goSafe("llmpool/clear-health", wg, func() {
-			defer wg.Done()
 			_ = pg.ClearLLMHealth(id)
 		})
 	}
