@@ -549,6 +549,7 @@ const (
 	settingRetentionBlackboardOps      = "storage_retention_blackboard_operations_days"
 	settingRetentionTaskTimeouts       = "storage_retention_task_timeout_events_days"
 	settingRetentionAggregateRequests  = "storage_retention_aggregate_requests_days"
+	settingRetentionSideQuestions      = "storage_retention_side_question_sessions_days"
 	// 流量归档的保留天数。它不在数据库里而在流量记录器自己的 SQLite + blob 目录里，
 	// 删除必须走 traffic 包的 API（见 traffic.DeleteOlderThan）。
 	settingRetentionTraffic = "storage_retention_traffic_days"

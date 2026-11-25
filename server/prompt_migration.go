@@ -166,3 +166,43 @@ func migratePromptWithHashes(pg *db.DB, key, target string, hashes map[string]bo
 		log.Printf("[prompts] 更新 %s 内置正文失败: %v", key, err)
 	}
 }
+
+const settingPruneDomainCategoriesV1 = "prune_domain_categories_v1"
+
+// removedDomainTaskCategoryNames lists the 7 legacy built-in planner domain
+// categories seeded by earlier releases.
+var removedDomainTaskCategoryNames = []string{
+	"代码审计",
+	"云上渗透",
+	"移动端",
+	"内网渗透",
+	"权限提升",
+	"漏洞利用",
+	"漏洞挖掘",
+}
+
+// pruneRemovedDomainTaskCategories performs a one-time cleanup of unused legacy
+// domain template categories on upgraded databases while preserving any category
+// still assigned to a live task or task template.
+func pruneRemovedDomainTaskCategories(pg *db.DB) {
+	if pg == nil {
+		return
+	}
+	if v, ok, err := pg.GetSetting(settingPruneDomainCategoriesV1); err != nil || (ok && v == "true") {
+		return
+	}
+	res, err := pg.Exec(`
+DELETE FROM task_categories tc
+WHERE tc.nkey = ANY($1::text[])
+  AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.category_id = tc.id AND t.deleted_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM task_templates tt WHERE tt.category_id = tc.id)`,
+		removedDomainTaskCategoryNames)
+	if err != nil {
+		log.Printf("[categories] 清理历史领域分类失败: %v", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		log.Printf("[categories] 已清理 %d 个历史内置模板分类", n)
+	}
+	_ = pg.SetSetting(settingPruneDomainCategoriesV1, "true")
+}

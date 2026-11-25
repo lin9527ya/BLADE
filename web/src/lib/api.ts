@@ -152,6 +152,8 @@ import type {
   Stats,
   StorageCleanResult,
   StorageReport,
+  StorageTaskCleanResult,
+  StorageTasksReport,
   Task,
   TaskArchive,
   TaskArchivePage,
@@ -2503,9 +2505,17 @@ export const api = {
       fields: opts?.fields ?? [],
     }),
 
-  // P28：存储体检（试算，只读）与清理（只删过期且未受保护的单元）。
+  // P28：存储体检（试算，只读）与清理（只删过期且未受保护的单元），以及按任务精确清理与数据库空洞回收。
   storageReport: () => get<{ report: StorageReport; last_clean?: Record<string, unknown> }>("/storage/report"),
   storageClean: (categories: string[]) => post<StorageCleanResult>("/storage/clean", { categories }),
+  storageTasks: () => get<{ report: StorageTasksReport }>("/storage/tasks"),
+  storageCleanTasks: (task_ids: string[], scopes: string[]) =>
+    post<StorageTaskCleanResult>("/storage/tasks/clean", { task_ids, scopes }),
+  storageVacuum: (full = false, tables?: string[]) =>
+    post<{ vacuumed: string[]; full: boolean; report?: StorageReport }>("/storage/vacuum", {
+      full,
+      ...(tables && tables.length > 0 ? { tables } : {}),
+    }),
 
   // ---- 资产同步 (ScopeSentry 数据源) ----
   ssStatus: () =>

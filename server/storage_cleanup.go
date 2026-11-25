@@ -80,6 +80,7 @@ var storageCategories = []storageCategorySpec{
 	{Key: "db_blackboard_operations", Label: "黑板操作日志（数据库）", SettingKey: settingRetentionBlackboardOps, DBTable: db.RetentionBlackboardOperations},
 	{Key: "db_task_timeout_events", Label: "超时状态事件（数据库）", SettingKey: settingRetentionTaskTimeouts, DBTable: db.RetentionTaskTimeoutEvents},
 	{Key: "db_aggregate_requests", Label: "汇总幂等回执（数据库）", SettingKey: settingRetentionAggregateRequests, DBTable: db.RetentionAggregateRequests},
+	{Key: "db_side_question_sessions", Label: "旁路问答快照（数据库）", SettingKey: settingRetentionSideQuestions, DBTable: db.RetentionSideQuestionSessions},
 }
 
 // storageUnit 是一个可删单元（任务目录 / 会话目录 / 单个转写文件…）。
@@ -199,7 +200,10 @@ func (s *Server) retentionProtection() (tasks []string, explorations []int64, er
 //
 // 与文件分类同一套口径：保留天数 0 = **不标记任何可删项**（但表的总占用照常显示——
 // "这张表现在多大"是独立于保留策略的信息，也是发现无限增长的入口）。
-func (s *Server) scanRetentionCategory(ctx context.Context, spec storageCategorySpec, days int) (storageCategoryReport, error) {
+func (s *Server) scanRetentionCategory(
+	ctx context.Context, spec storageCategorySpec, days int,
+	tasks []string, explorations []int64,
+) (storageCategoryReport, error) {
 	rep := storageCategoryReport{Key: spec.Key, Label: spec.Label, RetentionDays: days}
 	now := time.Now()
 	if spec.TrafficIndex {
@@ -218,10 +222,6 @@ func (s *Server) scanRetentionCategory(ctx context.Context, spec storageCategory
 			rep.ExpiredUnits, rep.ExpiredBytes = int(st.ExpiredExchanges), st.ExpiredBytes
 		}
 		return rep, nil
-	}
-	tasks, explorations, err := s.retentionProtection()
-	if err != nil {
-		return rep, fmt.Errorf("读取任务状态失败（拿不到'哪些任务在跑'就不该开始清理）：%w", err)
 	}
 	if spec.DBBodies {
 		// 第一级回收自己的视图：还有载荷可清的行。两档保留期不同，所以分开统计。
@@ -305,7 +305,7 @@ func (s *Server) purgeRetentionCategory(ctx context.Context, spec storageCategor
 	case db.RetentionToolExecutions, db.RetentionCredentialAttempts,
 		db.RetentionNotificationEvents, db.RetentionConversationActivity, db.RetentionInterceptPending,
 		db.RetentionAuditEvents, db.RetentionBlackboardEvents, db.RetentionBlackboardOperations,
-		db.RetentionTaskTimeoutEvents, db.RetentionAggregateRequests:
+		db.RetentionTaskTimeoutEvents, db.RetentionAggregateRequests, db.RetentionSideQuestionSessions:
 		// 这几个走统一入口：条件由 db.retentionFilter 的一支给出（含按任务保护、
 		// 台账排除在跑的行、审批只清已判定）。新增分类时只需要实现 filter 那支。
 		return s.m.pg.PurgeTableBefore(ctx, spec.DBTable, cutoff, tasks, explorations, 0)
@@ -361,8 +361,29 @@ func storageUnitExpired(u storageUnit, retentionDays int, now time.Time) bool {
 	return now.Sub(u.ModTime) > time.Duration(retentionDays)*24*time.Hour
 }
 
+// parseTranscriptExpID extracts the exploration ID from transcript entry names
+// matching the canonical "exp<id>-..." naming convention.
+func parseTranscriptExpID(name string) (int64, bool) {
+	if !strings.HasPrefix(name, "exp") {
+		return 0, false
+	}
+	rest := name[len("exp"):]
+	dash := strings.IndexByte(rest, '-')
+	if dash <= 0 {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest[:dash], 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
 // scanStorageCategory 扫一个分类：列出单元、算大小与年龄、标出受保护的。
-func (s *Server) scanStorageCategory(spec storageCategorySpec, days int, protected map[string]bool) (storageCategoryReport, error) {
+func (s *Server) scanStorageCategory(
+	spec storageCategorySpec, days int,
+	protectedTasks map[string]bool, protectedExps map[int64]bool,
+) (storageCategoryReport, error) {
 	rep := storageCategoryReport{Key: spec.Key, Label: spec.Label, StatsOnly: spec.StatsOnly, RetentionDays: days}
 	root := s.storageCategoryRoot(spec.Key)
 	if root == "" {
@@ -393,8 +414,13 @@ func (s *Server) scanStorageCategory(spec storageCategorySpec, days int, protect
 			bytes, mod = info.Size(), info.ModTime()
 		}
 		u := storageUnit{Name: e.Name(), Path: p, Bytes: bytes, ModTime: mod}
-		if spec.Key == "tasks" && protected[e.Name()] {
+		if spec.Key == "tasks" && protectedTasks[e.Name()] {
 			u.Protected = "任务未到终态（在跑/排队/暂停）"
+		}
+		if spec.Key == "transcripts" {
+			if eid, ok := parseTranscriptExpID(e.Name()); ok && protectedExps[eid] {
+				u.Protected = "任务未到终态（在跑/排队/暂停）"
+			}
 		}
 		// 更新残留分类只认白名单里的条目：同目录还住着 jwt.key / config.json /
 		// data / skills / 正在运行的二进制，它们**永远**不该出现在可清理列表里。
@@ -441,9 +467,17 @@ func (s *Server) storageCategoryRoot(key string) string {
 
 // storageReport 生成整份体检报告（试算：只读，不动盘）。
 func (s *Server) storageReport(ctx context.Context) (*storageReport, error) {
-	protected, err := s.protectedTaskIDs()
+	protectedList, protectedExpList, err := s.retentionProtection()
 	if err != nil {
 		return nil, fmt.Errorf("读取任务状态失败（拿不到'哪些任务在跑'就不该开始清理）：%w", err)
+	}
+	protectedTasks := make(map[string]bool, len(protectedList))
+	for _, id := range protectedList {
+		protectedTasks[id] = true
+	}
+	protectedExps := make(map[int64]bool, len(protectedExpList))
+	for _, eid := range protectedExpList {
+		protectedExps[eid] = true
 	}
 	rep := &storageReport{Dir: s.m.dir, ScannedAt: time.Now()}
 	rep.DiskTotal, rep.DiskFree = diskUsage(s.m.dir)
@@ -452,9 +486,9 @@ func (s *Server) storageReport(ctx context.Context) (*storageReport, error) {
 		var cat storageCategoryReport
 		var cerr error
 		if spec.DBTable != "" || spec.TrafficIndex {
-			cat, cerr = s.scanRetentionCategory(ctx, spec, days)
+			cat, cerr = s.scanRetentionCategory(ctx, spec, days, protectedList, protectedExpList)
 		} else {
-			cat, cerr = s.scanStorageCategory(spec, days, protected)
+			cat, cerr = s.scanStorageCategory(spec, days, protectedTasks, protectedExps)
 		}
 		if cerr != nil {
 			return nil, fmt.Errorf("扫描 %s 失败：%w", spec.Label, cerr)

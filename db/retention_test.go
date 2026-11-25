@@ -160,6 +160,7 @@ func TestRetentionCoversLedgerTables(t *testing.T) {
 		RetentionAuditEvents,
 		RetentionBlackboardEvents, RetentionBlackboardOperations,
 		RetentionTaskTimeoutEvents, RetentionAggregateRequests,
+		RetentionSideQuestionSessions,
 	} {
 		col, where, args, err := retentionFilter(table, cutoff, protected, expls)
 		if err != nil {
@@ -177,6 +178,7 @@ func TestRetentionCoversLedgerTables(t *testing.T) {
 		{RetentionAggregateRequests, "ctid"},
 		{RetentionBlackboardOperations, "id"},
 		{RetentionTaskTimeoutEvents, "id"},
+		{RetentionSideQuestionSessions, "session_key"},
 	} {
 		if got := retentionKeyCol(tc.table); got != tc.wantKey {
 			t.Fatalf("retentionKeyCol(%s)=%q want %q", tc.table, got, tc.wantKey)

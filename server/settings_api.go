@@ -261,6 +261,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"storage_retention_blackboard_operations_days": s.storageRetentionDays(settingRetentionBlackboardOps),
 		"storage_retention_task_timeout_events_days":   s.storageRetentionDays(settingRetentionTaskTimeouts),
 		"storage_retention_aggregate_requests_days":    s.storageRetentionDays(settingRetentionAggregateRequests),
+		"storage_retention_side_question_sessions_days": s.storageRetentionDays(settingRetentionSideQuestions),
 		"storage_retention_traffic_days":               s.storageRetentionDays(settingRetentionTraffic),
 		// P24 长任务执行的资源限额（0 = 该轴不限）与外部 MCP 的并发/熔断。
 		"exec_cpu_seconds":              execLimitsFromSettings(s.m.pg).CPUSeconds,
@@ -433,6 +434,7 @@ type settingsRequest struct {
 	RetentionBBOpsDays      *int `json:"storage_retention_blackboard_operations_days"`
 	RetentionTaskTimeoutDay *int `json:"storage_retention_task_timeout_events_days"`
 	RetentionAggReqDays     *int `json:"storage_retention_aggregate_requests_days"`
+	RetentionSideQuestions  *int `json:"storage_retention_side_question_sessions_days"`
 	ExecMemoryMB            *int `json:"exec_memory_mb"`
 	ExecMaxProcs            *int `json:"exec_max_procs"`
 	ExecMaxActive           *int `json:"exec_max_active"`
@@ -639,6 +641,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{settingRetentionBlackboardOps, req.RetentionBBOpsDays, 3650, "黑板操作日志保留天数"},
 		{settingRetentionTaskTimeouts, req.RetentionTaskTimeoutDay, 3650, "超时状态事件保留天数"},
 		{settingRetentionAggregateRequests, req.RetentionAggReqDays, 3650, "汇总幂等回执保留天数"},
+		{settingRetentionSideQuestions, req.RetentionSideQuestions, 3650, "旁路问答快照保留天数"},
 	} {
 		if f.val == nil {
 			continue

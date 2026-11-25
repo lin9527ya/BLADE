@@ -124,5 +124,8 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/intel/search", s.searchIntelAssets)         // P28 资产页 FOFA 检索（与工具同一执行路径）
 	mux.HandleFunc("GET /api/storage/report", s.getStorageReport)         // P28 存储体检（试算，只读）
 	mux.HandleFunc("POST /api/storage/clean", s.cleanStorage)             // P28 存储清理（只删过期且未受保护的单元）
+	mux.HandleFunc("GET /api/storage/tasks", s.getStorageTasks)           // 按任务聚合磁盘+数据库占用体检
+	mux.HandleFunc("POST /api/storage/tasks/clean", s.cleanStorageTasks)  // 按任务精确清理（保留任务、漏洞、资产与图谱）
+	mux.HandleFunc("POST /api/storage/vacuum", s.vacuumStorage)           // 回收已删除行的数据库空闲页
 	mux.HandleFunc("GET /api/settings/intel/queries", s.listIntelQueries) // P21 情报源:查询台账与今日用量
 }

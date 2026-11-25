@@ -102,23 +102,6 @@ FROM inserted`, name, nkey, preset.SeedFirstIntent, preset.DefaultCoverageEnable
 	return &category, nil
 }
 
-// SeedTaskCategoryWithPresetIfEmpty 首插入一个带预设的分类（nkey 已存在即 no-op），
-// 用于内置场景分类的播种：用户改过预设不会被重启覆盖。
-func (d *DB) SeedTaskCategoryWithPresetIfEmpty(name string, preset TaskCategoryPreset) (bool, error) {
-	name, nkey, err := normalizeTaskCategoryName(name)
-	if err != nil {
-		return false, err
-	}
-	res, err := d.Exec(`INSERT INTO task_categories(name, nkey, seed_first_intent, default_coverage_enabled)
-VALUES ($1,$2,$3,$4)
-ON CONFLICT (nkey) DO NOTHING`, name, nkey, preset.SeedFirstIntent, preset.DefaultCoverageEnabled)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
-}
-
 func (d *DB) ListTaskCategories() ([]*TaskCategory, error) {
 	rows, err := d.Query(`
 SELECT ` + taskCategoryCols + `
@@ -148,23 +131,6 @@ FROM task_categories category
 LEFT JOIN tasks task ON task.category_id=category.id
 WHERE category.id=$1
 GROUP BY category.id`, id))
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &category, nil
-}
-
-// GetTaskCategoryByNKey 按 nkey 查分类（播种与按名解析用）。
-func (d *DB) GetTaskCategoryByNKey(nkey string) (*TaskCategory, error) {
-	category, err := scanTaskCategory(d.QueryRow(`
-SELECT `+taskCategoryCols+`
-FROM task_categories category
-LEFT JOIN tasks task ON task.category_id=category.id
-WHERE category.nkey=$1
-GROUP BY category.id`, nkey))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

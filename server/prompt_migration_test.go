@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/lin9527ya/blade/agent"
+	"github.com/lin9527ya/blade/db"
 )
 
 // 迁移只在"库里仍是旧内置正文"时生效；用户编辑过的正文必须保留。
@@ -98,5 +99,74 @@ func TestMigrateCurrentBuiltinPlannerPrompt(t *testing.T) {
 	}
 	if cur != agent.PlannerPromptBody() {
 		t.Fatalf("0.9.25 出厂正文应迁移到本轮正文（当前长度 %d，want %d）", len(cur), len(agent.PlannerPromptBody()))
+	}
+}
+
+func TestPruneRemovedDomainTaskCategories(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	t.Cleanup(func() {
+		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPruneDomainCategoriesV1)
+	})
+
+	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingPruneDomainCategoriesV1)
+	keepCat, err := m.pg.CreateTaskCategory("custom-keep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.pg.DeleteTaskCategory(keepCat.ID) })
+
+	for _, name := range removedDomainTaskCategoryNames {
+		if _, err := m.pg.Exec(`INSERT INTO task_categories(name, nkey) VALUES ($1, $1) ON CONFLICT (nkey) DO NOTHING`, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Keep one referenced by a live task so we verify referenced rows are preserved.
+	var busyID int64
+	if err := m.pg.QueryRow(`SELECT id FROM task_categories WHERE nkey=$1`, "云上渗透").Scan(&busyID); err != nil {
+		t.Fatal(err)
+	}
+	task, err := m.pg.CreateTaskWithOptions("prune-cat-guard", "guard", db.TaskCreateOptions{CategoryID: &busyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = m.pg.DeleteTask(task.ID)
+		_, _ = m.pg.DeleteTaskCategory(busyID)
+	})
+
+	pruneRemovedDomainTaskCategories(m.pg)
+
+	if cat, err := m.pg.GetTaskCategory(keepCat.ID); err != nil || cat == nil {
+		t.Fatalf("custom category should remain: cat=%+v err=%v", cat, err)
+	}
+	if cat, err := m.pg.GetTaskCategory(busyID); err != nil || cat == nil {
+		t.Fatalf("referenced category should remain: cat=%+v err=%v", cat, err)
+	}
+	for _, name := range removedDomainTaskCategoryNames {
+		if name == "云上渗透" {
+			continue
+		}
+		var cnt int
+		if err := m.pg.QueryRow(`SELECT count(*) FROM task_categories WHERE nkey=$1`, name).Scan(&cnt); err != nil {
+			t.Fatal(err)
+		}
+		if cnt != 0 {
+			t.Fatalf("unreferenced legacy domain category %q should be deleted", name)
+		}
+	}
+
+	// Subsequent re-runs stay no-op once marked complete, so user-recreated names survive.
+	recreated, err := m.pg.CreateTaskCategory("代码审计")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.pg.DeleteTaskCategory(recreated.ID) })
+	pruneRemovedDomainTaskCategories(m.pg)
+	if got, err := m.pg.GetTaskCategory(recreated.ID); err != nil || got == nil {
+		t.Fatalf("recreated category after migration flag should remain: got=%+v err=%v", got, err)
 	}
 }

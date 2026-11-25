@@ -51,6 +51,7 @@ const (
 	RetentionBlackboardOperations RetentionTable = "blackboard_operations"
 	RetentionTaskTimeoutEvents    RetentionTable = "task_timeout_events"
 	RetentionAggregateRequests    RetentionTable = "aggregate_deliverable_requests"
+	RetentionSideQuestionSessions RetentionTable = "side_question_sessions"
 )
 
 // RetentionStat 是一张表在一次体检里的计数与体积（试算：只读）。
@@ -138,6 +139,11 @@ func retentionFilter(
 		return "created_at",
 			"created_at < $1 AND deliverable_id IS NULL",
 			[]any{cutoff}, nil
+	case RetentionSideQuestionSessions:
+		// 旁路会话快照：保护非终态任务及其关联探索，且跳过当前仍在回答中的会话（不用表名限定，兼容 RetentionStats 别名 x）。
+		return "updated_at",
+			"updated_at < $1 AND (task_id IS NULL OR NOT (task_id::text = ANY($2::text[]))) AND (exploration_id IS NULL OR NOT (exploration_id = ANY($3::bigint[]))) AND session_key NOT IN (SELECT r.session_key FROM side_question_requests r WHERE r.status='running')",
+			[]any{cutoff, protectedTasks, protectedExplorations}, nil
 	}
 	return "", "", nil, fmt.Errorf("未知的清理目标表 %q", table)
 }
@@ -147,6 +153,8 @@ func retentionKeyCol(table RetentionTable) string {
 	case RetentionBlackboardEvents, RetentionAggregateRequests:
 		// 复合主键表没有 id 列，使用 PostgreSQL 系统行标识 ctid 分批删除。
 		return "ctid"
+	case RetentionSideQuestionSessions:
+		return "session_key"
 	}
 	return "id"
 }

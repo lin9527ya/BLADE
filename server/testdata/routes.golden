@@ -204,6 +204,7 @@ GET /api/skills/{name}/files/{file...}	server.(*Server).fsReadFile-fm
 GET /api/skills/{name}/usage	server.(*Server).fsSkillUsage-fm
 GET /api/stats	server.(*Server).stats-fm
 GET /api/storage/report	server.(*Server).getStorageReport-fm
+GET /api/storage/tasks	server.(*Server).getStorageTasks-fm
 GET /api/sync/scopesentry/projects	server.(*Server).syncSSProjects-fm
 GET /api/sync/scopesentry/status	server.(*Server).syncSSStatus-fm
 GET /api/sync/scopesentry/tasks	server.(*Server).syncSSTasks-fm
@@ -392,6 +393,8 @@ POST /api/skills	server.(*Server).fsCreateSkill-fm
 POST /api/skills/upload	server.(*Server).fsUploadSkill-fm
 POST /api/skills/{name}/dirs	server.(*Server).fsCreateDir-fm
 POST /api/storage/clean	server.(*Server).cleanStorage-fm
+POST /api/storage/tasks/clean	server.(*Server).cleanStorageTasks-fm
+POST /api/storage/vacuum	server.(*Server).vacuumStorage-fm
 POST /api/sync/scopesentry/datasource	server.(*Server).syncSSDatasource-fm
 POST /api/sync/scopesentry/sync	server.(*Server).syncSSRun-fm
 POST /api/task-archives/delete/batch	server.(*Server).deleteTaskArchivesBatch-fm

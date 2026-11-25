@@ -2246,6 +2246,7 @@ export interface Settings {
   storage_retention_blackboard_operations_days?: number;
   storage_retention_task_timeout_events_days?: number;
   storage_retention_aggregate_requests_days?: number;
+  storage_retention_side_question_sessions_days?: number;
   // 自更新用的 GitHub token（私有发布源）：只回布尔"是否已配"，值不回显。
   update_token_set?: boolean;
   update_github_token?: string;
@@ -2826,6 +2827,56 @@ export interface StorageCleanResult {
   failures: string[];
   report: StorageReport;
   last_clean: Record<string, unknown>;
+}
+
+export interface StorageTaskItem {
+  task_id: string;
+  name: string;
+  status: string;
+  exploration_id: number;
+  orphan: boolean;
+  active_running: boolean;
+  files_bytes: number;
+  files_units: number;
+  transcripts_bytes: number;
+  transcripts_count: number;
+  activity_rows: number;
+  activity_bytes: number;
+  side_question_rows: number;
+  side_question_bytes: number;
+  llm_record_rows: number;
+  llm_record_bytes: number;
+  llm_record_body_rows: number;
+  llm_record_body_bytes: number;
+  llm_usage_rows: number;
+  llm_usage_bytes: number;
+  tool_execution_rows: number;
+  tool_execution_bytes: number;
+  blackboard_log_rows: number;
+  blackboard_log_bytes: number;
+  total_bytes: number;
+  updated_at: string;
+}
+
+export interface StorageTasksReport {
+  scanned_at: string;
+  total_bytes: number;
+  orphan_bytes: number;
+  tasks: StorageTaskItem[];
+}
+
+export interface StorageTaskCleanResult {
+  cleaned: {
+    task_id: string;
+    freed_bytes: number;
+    files_removed?: boolean;
+    transcripts_removed?: number;
+    db_rows_deleted?: number;
+  }[];
+  freed_bytes: number;
+  failures: string[];
+  tasks_report?: StorageTasksReport;
+  global_report?: StorageReport;
 }
 
 // SkillCall 是一次 Skill() 调用（单个 skill 的最近调用列表）。

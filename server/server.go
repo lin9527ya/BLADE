@@ -402,8 +402,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg)      // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
-		seedPrompts(m.pg)               // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
-		migratePlannerPrompt(m.pg)      // planner 正文 v2：仅当库里仍是旧内置正文时迁移
+		seedPrompts(m.pg)                    // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
+		migratePlannerPrompt(m.pg)           // planner 正文 v2：仅当库里仍是旧内置正文时迁移
+		pruneRemovedDomainTaskCategories(m.pg) // 一次性清理历史内置领域模板分类（仅未关联任务/模板时）
 		s.seedOrchestrationTools()      // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
 		migrateExplorationPrompts(m.pg) // 精确刷新历史内置协议，保留真正自定义与追加段
 		if err := s.seedFindingRetester(); err != nil {
