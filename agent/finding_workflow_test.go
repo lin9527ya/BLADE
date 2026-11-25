@@ -65,4 +65,21 @@ func TestFindingWorkflowSharedAssemblyAndSwitch(t *testing.T) {
 	if len(out) != 0 || def.FindingGuidance != "" {
 		t.Fatal("reintroduced disabled tool or its guidance")
 	}
+
+	// Capture-off / no traffic_search+traffic_get for reporter must never reference missing search tools (§14.1/§14.2).
+	on = true
+	ToolResolve = nil
+	reporterBase := []actool.CoreTool{
+		actool.Build(actool.Spec{Name: "update_finding_report"}),
+		actool.Build(actool.Spec{Name: "bind_finding_traffic"}),
+		actool.Build(actool.Spec{Name: "get_finding_traffic"}),
+	}
+	_, repDef, repCleanup := AugmentTools(t.Context(), "reporter", reporterBase)
+	defer repCleanup()
+	if !strings.Contains(repDef.FindingGuidance, "bind_finding_traffic") || !strings.Contains(repDef.FindingGuidance, "evidence_version") {
+		t.Fatalf("reporter without capture tools missing bind/version guidance: %s", repDef.FindingGuidance)
+	}
+	if strings.Contains(repDef.FindingGuidance, "traffic_search") || strings.Contains(repDef.FindingGuidance, "traffic_get") {
+		t.Fatalf("reporter without search/get tools received phantom tool guidance: %s", repDef.FindingGuidance)
+	}
 }

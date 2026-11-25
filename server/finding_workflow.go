@@ -14,23 +14,72 @@ import (
 	"github.com/lin9527ya/blade/traffic"
 )
 
-func (s *Server) seedFindingWorkflowTools() {
+func (s *Server) migrateTrafficSearchToolCatalog() {
+	const v2LegacyDesc = "查询记录代理已抓取的目标流量（必须指定 host，可再按 URL 子串或正文关键词过滤）。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符），可用来找响应里的密码、密钥、报错、内网地址等。仅返回极轻量索引(id/method/url/status/resp_len)，不含任何响应内容。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页（page=0 起）；要看某条的请求/响应原文用 traffic_get(id)。回看已访问资源、找端点先用它，避免重复 curl 同一 URL。"
+	const v3Desc = "查询记录代理已抓取的目标流量（必须指定 host；支持裸主机、主机:端口或完整 URL，可再按 URL 子串或正文关键词过滤）。指定端口时只返回该服务的流量，避免同一 IP 的不同端口串包。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符）。仅返回极轻量索引(id/method/url/status/resp_len)，不含响应内容；结果非空后必须用 traffic_get 逐条核实请求/响应，再把确实支持当前漏洞的 ID 交给 bind_finding_traffic。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页。"
+
 	const hostSearchDescriptionFlag = "finding_workflow_tools_v3_host_search_description"
 	if value, _, _ := s.m.pg.GetSetting(hostSearchDescriptionFlag); value != "true" {
-		// Only replace the original built-in text. A user-edited description is
-		// authoritative and must survive upgrades.
-		legacy := "查询记录代理已抓取的目标流量（必须指定 host，可再按 URL 子串或正文关键词过滤）。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符），可用来找响应里的密码、密钥、报错、内网地址等。仅返回极轻量索引(id/method/url/status/resp_len)，不含任何响应内容。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页（page=0 起）；要看某条的请求/响应原文用 traffic_get(id)。回看已访问资源、找端点先用它，避免重复 curl 同一 URL。"
-		if _, err := s.m.pg.Exec(`UPDATE tools SET description=$1,updated_at=now() WHERE key='traffic_search' AND system AND description=$2`, traffic.TrafficSearchDescription, legacy); err != nil {
-			// Log and leave the flag unset so the next startup retries; do not
-			// return, or a transient error here would also skip the reporter
-			// migration below — the two are independent.
+		if _, err := s.m.pg.Exec(`UPDATE tools SET description=$1,updated_at=now() WHERE key='traffic_search' AND system AND description=$2`, v3Desc, v2LegacyDesc); err != nil {
 			log.Printf("[evidence] upgrade traffic_search description: %v", err)
-		} else {
-			if err := s.m.pg.SetSetting(hostSearchDescriptionFlag, "true"); err != nil {
-				log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", hostSearchDescriptionFlag, err)
+		} else if err := s.m.pg.SetSetting(hostSearchDescriptionFlag, "true"); err != nil {
+			log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", hostSearchDescriptionFlag, err)
+		}
+	}
+
+	const searchFiltersFlag = "finding_workflow_tools_v4_search_filters"
+	if value, _, _ := s.m.pg.GetSetting(searchFiltersFlag); value == "true" {
+		return
+	}
+	row, err := s.m.pg.GetTool("traffic_search")
+	if err != nil {
+		log.Printf("[evidence] load traffic_search: %v", err)
+		return
+	}
+	if row != nil && row.System {
+		desc := row.Description
+		if desc == v2LegacyDesc || desc == v3Desc {
+			desc = traffic.TrafficSearchDescription
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(row.Schema, &schema); err != nil || schema == nil {
+			log.Printf("[evidence] invalid schema for traffic_search: %v", err)
+			return
+		}
+		props := objectProperty(schema, "properties")
+		var seedProps map[string]any
+		for _, meta := range traffic.SeedToolMetas() {
+			if meta.Name() == "traffic_search" {
+				seedProps, _ = meta.InputSchema()["properties"].(map[string]any)
+				break
+			}
+		}
+		changed := desc != row.Description
+		for _, key := range []string{"method", "status", "since", "until"} {
+			if _, exists := props[key]; !exists && seedProps[key] != nil {
+				props[key] = seedProps[key]
+				changed = true
+			}
+		}
+		if changed {
+			raw, _ := json.Marshal(schema)
+			res, err := s.m.pg.Exec(`UPDATE tools SET description=$1,schema=$2::jsonb,updated_at=now() WHERE key='traffic_search' AND system AND description=$3 AND schema=$4::jsonb`, desc, string(raw), row.Description, string(row.Schema))
+			if err != nil {
+				log.Printf("[evidence] upgrade traffic_search filters: %v", err)
+				return
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				return
 			}
 		}
 	}
+	if err := s.m.pg.SetSetting(searchFiltersFlag, "true"); err != nil {
+		log.Printf("[migrate] 记录一次性迁移标记 %s 失败: %v（下次启动会重跑，操作本身幂等）", searchFiltersFlag, err)
+	}
+}
+
+func (s *Server) seedFindingWorkflowTools() {
+	s.migrateTrafficSearchToolCatalog()
 	const flag = "finding_workflow_tools_v2_reporter"
 	if value, _, _ := s.m.pg.GetSetting(flag); value == "true" {
 		return

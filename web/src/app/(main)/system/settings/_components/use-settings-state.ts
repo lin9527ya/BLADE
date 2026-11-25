@@ -4,13 +4,14 @@ import * as React from "react";
 
 import { toast } from "sonner";
 
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { api } from "@/lib/api";
+import { useChatSendMode } from "@/lib/chat-send-mode";
 import { createLatestRequest } from "@/lib/request-lifecycle";
 import { createSettingsDrafts, type SettingsTicket } from "@/lib/settings-drafts";
-import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
-import { useChatSendMode } from "@/lib/chat-send-mode";
 import type {
   ClashEgressStatus,
+  EgressStatus,
   IntelQueryRow,
   LLMProfile,
   OpsecKnowledgeResponse,
@@ -228,6 +229,7 @@ export function useSettingsState() {
     "120",
   );
   const [clashStatus, setClashStatus] = React.useState<ClashEgressStatus | null>(null);
+  const [egress, setEgress] = React.useState<EgressStatus | null>(null);
   const [savingClash, setSavingClash] = React.useState(false);
   const [rotatingClash, setRotatingClash] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
@@ -236,6 +238,7 @@ export function useSettingsState() {
   const [section, setSection] = React.useState<SectionId>("basic");
   // 曾经的共享 `saving` 会让流量捕获 / 网络搜索 / Python 三处互相禁用控件——按用途拆开。
   const [savingTraffic, setSavingTraffic] = React.useState(false);
+  const [savingAgentBinding, setSavingAgentBinding] = React.useState(false);
   const [savingLootExec, setSavingLootExec] = React.useState(false);
   const [savingAutoRetest, setSavingAutoRetest] = React.useState(false);
   const [savingOast, setSavingOast] = React.useState(false);
@@ -680,20 +683,31 @@ export function useSettingsState() {
       .finally(() => setSavingPython(false));
   };
 
+  const refreshEgress = React.useCallback(() => {
+    api
+      .egressStatus()
+      .then(setEgress)
+      .catch(() => undefined);
+  }, []);
+
   React.useEffect(() => {
     void loadSettings();
+    refreshEgress();
     api
       .llmProfiles()
       .then(setLlmProfiles)
       .catch(() => undefined);
     return () => loadOwner.cancel();
-  }, [loadSettings, loadOwner]);
+  }, [loadSettings, loadOwner, refreshEgress]);
 
   const toggleTraffic = (v: boolean) => {
     setTrafficCapture(v); // optimistic
     setSavingTraffic(true);
     saveSettings({ traffic_capture: v })
-      .then(() => undefined)
+      .then(() => {
+        toast.success(v ? "已开启流量捕获" : "已关闭流量捕获");
+        refreshEgress();
+      })
       .catch((e) => {
         setTrafficCapture(!v); // revert on failure
         toast.error(`保存失败：${(e as Error).message}`);
@@ -837,16 +851,17 @@ export function useSettingsState() {
 
   const toggleAgentTrafficBinding = (v: boolean) => {
     setAgentTrafficBinding(v);
-    setSavingTraffic(true);
+    setSavingAgentBinding(true);
     saveSettings({ agent_traffic_binding: v })
       .then((s) => {
         toast.success(v ? "已开启 Agent 自动绑定流量" : "已关闭 Agent 自动绑定流量");
+        refreshEgress();
       })
       .catch((e) => {
         setAgentTrafficBinding(!v);
         toast.error(`保存失败：${(e as Error).message}`);
       })
-      .finally(() => setSavingTraffic(false));
+      .finally(() => setSavingAgentBinding(false));
   };
 
   const toggleAgentLootExec = (v: boolean) => {
@@ -1139,6 +1154,7 @@ export function useSettingsState() {
   };
 
   const refreshProxyStatus = () => {
+    refreshEgress();
     api
       .settings()
       .then(applyProxyStatus)
@@ -1180,6 +1196,7 @@ export function useSettingsState() {
       .then((s) => {
         toast.success(globalProxyPoolInput.trim() ? "已保存代理池" : "已清空代理池（改为直连）");
         pollProxyStatus(6);
+        refreshEgress();
       })
       .catch((e) => {
         const msg = (e as Error).message || "未知错误";
@@ -1207,6 +1224,7 @@ export function useSettingsState() {
     })
       .then((s) => {
         toast.success("已保存 Clash 出口切换配置");
+        refreshEgress();
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message || "未知错误"}`))
       .finally(() => setSavingClash(false));
@@ -1218,6 +1236,7 @@ export function useSettingsState() {
       .rotateEgress("设置页手动切换")
       .then((r) => {
         setClashStatus(r.status);
+        refreshEgress();
         toast.success(
           r.rotation ? `${r.rotation.from} → ${r.rotation.to}（出口 IP ${r.rotation.egress_ip}）` : "已切换",
         );
@@ -1317,6 +1336,8 @@ export function useSettingsState() {
     clashCooldown,
     setClashCooldown,
     clashStatus,
+    egress,
+    refreshEgress,
     savingClash,
     rotatingClash,
     saveClash,
@@ -1329,6 +1350,7 @@ export function useSettingsState() {
     setSection,
     savingTraffic,
     setSavingTraffic,
+    savingAgentBinding,
     agentLootExec,
     setAgentLootExec,
     savingLootExec,

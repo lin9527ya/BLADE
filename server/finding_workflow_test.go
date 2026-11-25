@@ -227,7 +227,11 @@ func TestFindingWorkflowMigrationPreservesUserConfiguration(t *testing.T) {
 	// 一次性迁移标记是全局的：不恢复的话后续每个 server.New 都会重跑迁移，
 	// 把别的用例刻意解绑的工具重新绑上。
 	restoreSetting(t, pg, "finding_workflow_tools_v2_reporter")
+	restoreSetting(t, pg, "finding_workflow_tools_v4_search_filters")
 	if err := pg.SetSetting("finding_workflow_tools_v2_reporter", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.SetSetting("finding_workflow_tools_v4_search_filters", "false"); err != nil {
 		t.Fatal(err)
 	}
 	s.seedFindingWorkflowTools()
@@ -251,6 +255,11 @@ func TestFindingWorkflowMigrationPreservesUserConfiguration(t *testing.T) {
 	get, _ := pg.GetTool("traffic_get")
 	if !strings.Contains(search.Description, "支持裸主机、主机:端口或完整 URL") {
 		t.Fatal("traffic_search description migration missing host/port guidance")
+	}
+	for _, prop := range []string{`"method"`, `"status"`, `"since"`, `"until"`} {
+		if !strings.Contains(string(search.Schema), prop) {
+			t.Fatalf("traffic_search schema missing migrated property %s: %s", prop, string(search.Schema))
+		}
 	}
 	if search.Enabled || !contains(search.Agents, "reporter") || get.Enabled || len(get.Agents) != 1 || get.Agents[0] != "custom-agent" {
 		t.Fatal("default/custom reader binding migration incorrect")
@@ -328,4 +337,40 @@ func TestFindingWorkflowReporterBindsBeforeWritingReport(t *testing.T) {
 	}
 	workflowCall(t, ctx, workflowTool(t, off, "get_finding_traffic"), map[string]any{"finding_id": f.FindingID}, false)
 	workflowTool(t, off, "update_finding_report")
+
+	// Enabling auto-binding while traffic_capture is off must omit phantom search/get tools from guidance,
+	// and /api/egress/status must report the traffic readiness summary accurately.
+	if err := s.m.SetTrafficEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if r := request("PUT", "/api/settings", `{"agent_traffic_binding":true}`); r.Code != 200 {
+		t.Fatal(r.Code, r.Body)
+	}
+	noCapTools, noCapDef, closeNoCap := agent.AugmentTools(ctx, "reporter", nil)
+	defer closeNoCap()
+	for _, tool := range noCapTools {
+		if tool.Name() == "traffic_search" || tool.Name() == "traffic_get" || tool.Name() == "traffic_blob" {
+			t.Fatal("traffic reader tool exposed when capture is off", tool.Name())
+		}
+	}
+	if strings.Contains(noCapDef.FindingGuidance, "traffic_search") || strings.Contains(noCapDef.FindingGuidance, "traffic_get") {
+		t.Fatalf("capture-off reporter received phantom search tool guidance: %s", noCapDef.FindingGuidance)
+	}
+	egressRes := request("GET", "/api/egress/status", "")
+	if egressRes.Code != 200 {
+		t.Fatalf("egress status HTTP %d: %s", egressRes.Code, egressRes.Body)
+	}
+	var egressBody struct {
+		Traffic struct {
+			CaptureEnabled     bool `json:"capture_enabled"`
+			AutoBindingEnabled bool `json:"auto_binding_enabled"`
+			ProxyListening     bool `json:"proxy_listening"`
+		} `json:"traffic"`
+	}
+	if err := json.Unmarshal(egressRes.Body.Bytes(), &egressBody); err != nil {
+		t.Fatal(err)
+	}
+	if egressBody.Traffic.CaptureEnabled || !egressBody.Traffic.AutoBindingEnabled || !egressBody.Traffic.ProxyListening {
+		t.Fatalf("unexpected /api/egress/status traffic summary: %+v", egressBody.Traffic)
+	}
 }

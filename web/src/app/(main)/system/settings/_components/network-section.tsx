@@ -1,26 +1,19 @@
 "use client";
 
-import * as React from "react";
+import Link from "next/link";
 
-import { RadioTowerIcon } from "lucide-react";
+import { AlertTriangleIcon, ArrowUpRightIcon, Link2Icon, RadioTowerIcon } from "lucide-react";
 
 import { Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-import { api } from "@/lib/api";
-import type { EgressStatus } from "@/lib/types";
-
 import type { useSettingsState } from "./use-settings-state";
 
 // 系统配置 · 网络与代理。
 
 export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }) {
-  const [egress, setEgress] = React.useState<EgressStatus | null>(null);
-  React.useEffect(() => {
-    api.egressStatus().then(setEgress).catch(() => undefined);
-  }, []);
   const {
     trafficCapture,
     agentTrafficBinding,
@@ -64,19 +57,33 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     clashCooldown,
     setClashCooldown,
     clashStatus,
+    egress,
     savingClash,
     rotatingClash,
     saveClash,
     rotateClash,
     loaded,
     savingTraffic,
+    savingAgentBinding,
     toggleTraffic,
     toggleAgentTrafficBinding,
     saveGlobalProxy,
   } = s;
 
+  const trafficInfo = egress?.traffic;
+  const clashIsolationOverridden =
+    trafficCapture &&
+    (trafficInfo?.clash_isolation_overridden || (Boolean(clashGroups.trim()) && Boolean(clashTaskEndpoints.trim())));
+  let autoBindLabel = "已关闭 · 可继续人工绑定";
+  if (agentTrafficBinding) {
+    autoBindLabel = trafficCapture ? "已开启 · 会增加 Token 消耗" : "已开启 · 当前未开流量捕获（仅可关联已有 ID）";
+  }
+
   return (
-    <Section title="网络与代理" hint="本区改动会重建 Agent 生效（运行中的任务不受影响）。">
+    <Section
+      title="网络与代理"
+      hint="流量捕获 / 代理池改动会重置任务 Agent 缓存并在下一轮与后续命令行生效（已启动的长驻子进程不受影响）；Agent 自动绑定修改后立即拦截新写入并于下一轮 Agent 生效。"
+    >
       <SubBlock title="流量捕获" icon={<RadioTowerIcon className="size-4 text-muted-foreground" />}>
         <SwitchRow
           id="traffic-capture"
@@ -86,34 +93,88 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
           onChange={toggleTraffic}
           hint={
             <>
-              开启后，所有 Agent 的 HTTP 流量经记录代理全量落库，并向 Agent 注入 traffic_search / traffic_get
-              工具与代理配置（提示词含代理说明）。
+              开启后，所有 Agent 的 HTTP 流量经记录代理全量落库，并向 Agent 注入 traffic_search / traffic_get /
+              traffic_blob 工具与代理配置（提示词含代理说明）。
               <br />
               关闭（默认）时不记录任何流量：Agent
               <b>不会</b>拿到代理配置与流量工具，提示词也<b>不含</b>代理相关内容。
             </>
           }
         />
+        {trafficInfo && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+            <span className={trafficInfo.proxy_listening ? "text-foreground" : "text-destructive"}>
+              {trafficInfo.proxy_listening ? `录制代理 ${trafficInfo.proxy_addr || ":9899"} 监听中` : "录制代理未启动"}
+            </span>
+            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">{trafficInfo.ca_ready ? "MITM CA 已就绪" : "MITM CA 未就绪"}</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">
+              已录制 <strong className="font-mono text-foreground">{trafficInfo.recorded_count}</strong> 条
+            </span>
+            <Link
+              href="/function/traffic"
+              className="ml-auto inline-flex items-center gap-1 font-medium text-primary hover:underline"
+            >
+              查看流量
+              <ArrowUpRightIcon className="size-3.5" />
+            </Link>
+          </div>
+        )}
+        {clashIsolationOverridden && (
+          <div className="mt-2.5 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800 text-xs leading-relaxed dark:text-amber-300">
+            <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              当前已开启流量捕获：进程级录制代理会接管所有任务 HTTP 流量并共用全局出口，下方配置的「Clash
+              按任务独立出口隔离」在捕获期间暂不生效。
+            </span>
+          </div>
+        )}
       </SubBlock>
 
-      <SubBlock title="Agent 自动绑定流量" icon={<RadioTowerIcon className="size-4 text-muted-foreground" />}>
+      <SubBlock title="Agent 自动绑定流量" icon={<Link2Icon className="size-4 text-muted-foreground" />}>
         <SwitchRow
           id="agent-traffic-binding"
           describedBy="agent-traffic-binding-description"
-          label={agentTrafficBinding ? "已开启 · 会增加 Token 消耗" : "已关闭 · 可继续人工绑定"}
+          label={autoBindLabel}
           checked={agentTrafficBinding}
-          disabled={!loaded || savingTraffic}
+          disabled={!loaded || savingAgentBinding}
           onChange={toggleAgentTrafficBinding}
           hint={
             <>
               默认关闭。开启后，漏洞入库时触发的报告 Agent 会核对已有 HTTP 请求/响应，关联对应流量后再编写报告。
               <b>查阅数据包及额外的工具调用会增加 Token 消耗。</b>
               <br />
-              TCP、未抓包或没有匹配流量时仍可正常上报。此开关不影响流量捕获、人工绑定及已保存证据的查看。 对下一轮 Agent
-              生效；关闭后会立即拒绝新的自动绑定。
+              TCP、未抓包或没有匹配流量时仍可正常上报。此开关不影响流量捕获、人工绑定及已保存证据的查看；对下一轮 Agent
+              生效，关闭后会立即拒绝新的自动绑定。
             </>
           }
         />
+        {loaded && agentTrafficBinding && !trafficCapture && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-amber-800 text-xs dark:text-amber-300">
+            <div className="flex min-w-0 items-start gap-2">
+              <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+              <span className="leading-relaxed">
+                未开启「流量捕获」：Agent 不会录制新 HTTP 请求，也不会注入 <code>traffic_search</code> /{" "}
+                <code>traffic_get</code> 检索工具，当前仅对已明确交接的历史 <code>traffic_id</code> 有效。
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button type="button" size="xs" disabled={savingTraffic} onClick={() => toggleTraffic(true)}>
+                开启流量捕获
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={savingAgentBinding}
+                onClick={() => toggleAgentTrafficBinding(false)}
+              >
+                关闭自动绑定
+              </Button>
+            </div>
+          </div>
+        )}
       </SubBlock>
 
       <SubBlock title="全局代理池" icon={<RadioTowerIcon className="size-4 text-muted-foreground" />}>
@@ -127,8 +188,8 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
               <br />
               服务端按健康检查自动切换；<b>全部不可用时出口会被阻断（不会直连）</b>，避免泄漏真实 IP。
               <br />
-              代理池只切换你填的多个地址；Clash <b>内部节点的按任务切换</b>在下方「Clash 出口切换」里配置。
-              LLM 的代理在各自 profile 里配置，不在此池内。
+              代理池只切换你填的多个地址；Clash <b>内部节点的按任务切换</b>在下方「Clash 出口切换」里配置。 LLM
+              的代理在各自 profile 里配置，不在此池内。
             </>
           }
         >
@@ -358,8 +419,8 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             <p className="text-muted-foreground text-xs leading-relaxed">
               每个组必须在 Clash 里是独立的 <code>Selector</code>，组内节点互不重叠；BLADE 会把任务稳定绑定到
               空闲的组，任务之间不会互抢出口 IP。只有同时配置了任务专属 listener 的组才算可用组；
-              可用组数就是独占运行的任务上限，超出部分自动排队，任务暂停/结束立即让出组并补位。
-              未配置 listener 的组仅用于节点轮换，不参与独占调度；开启流量捕获时按任务出口隔离不可用。
+              可用组数就是独占运行的任务上限，超出部分自动排队，任务暂停/结束立即让出组并补位。 未配置 listener
+              的组仅用于节点轮换，不参与独占调度；开启流量捕获时按任务出口隔离不可用。
             </p>
           </div>
           <div className="space-y-1.5">
@@ -375,8 +436,8 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
               onChange={(e) => setClashTaskEndpoints(e.target.value)}
             />
             <p className="text-muted-foreground text-xs leading-relaxed">
-              在 Clash 配置里给每个组建一个独立 <code>mixed</code> listener，并设置{" "}
-              <code>proxy: 组名</code>，再把 listener 地址填到这里。只填组池不填 listener 时，任务仍共用
+              在 Clash 配置里给每个组建一个独立 <code>mixed</code> listener，并设置 <code>proxy: 组名</code>，再把
+              listener 地址填到这里。只填组池不填 listener 时，任务仍共用
               全局代理端口，只能隔离“切换哪个组”，不能同时给不同任务不同 IP。
             </p>
           </div>

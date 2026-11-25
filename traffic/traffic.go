@@ -135,7 +135,7 @@ const (
 // TrafficSearchDescription is persisted into the tool catalog for new and
 // upgraded installations. Keep it in the traffic package so the runtime tool
 // and the catalog migration cannot drift apart.
-const TrafficSearchDescription = "查询记录代理已抓取的目标流量（必须指定 host；支持裸主机、主机:端口或完整 URL，可再按 URL 子串或正文关键词过滤）。指定端口时只返回该服务的流量，避免同一 IP 的不同端口串包。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符）。仅返回极轻量索引(id/method/url/status/resp_len)，不含响应内容；结果非空后必须用 traffic_get 逐条核实请求/响应，再把确实支持当前漏洞的 ID 交给 bind_finding_traffic。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页。"
+const TrafficSearchDescription = "查询记录代理已抓取的目标流量（必须指定 host；支持裸主机、主机:端口或完整 URL，可再按 URL 子串、HTTP 方法、状态码、时间范围或正文关键词过滤）。指定端口时只返回该服务的流量，避免同一 IP 的不同端口串包。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符）。仅返回极轻量索引(id/ts/method/url/status/resp_len)，不含响应内容；结果非空后必须用 traffic_get 逐条核实请求/响应，再把确实支持当前漏洞的 ID 交给 bind_finding_traffic。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页。"
 
 // Traffic runs the recording proxy and owns the file tree + index.
 type Traffic struct {
@@ -2270,23 +2270,50 @@ func (t *Traffic) legacyBlobRefs(refs map[string]struct{}) error {
 	})
 }
 
+type searchQuery struct {
+	Host         string
+	Contains     string
+	BodyContains string
+	Method       string
+	Status       string
+	Since        int64
+	Until        int64
+	Page         int
+	Limit        int
+}
+
 // query returns one page of exchange metadata filtered by host and/or a url
 // substring. Default page size is intentionally small (3) to keep tool results
 // lightweight and capped at 10; page is 0-based (page*limit offset).
 func (t *Traffic) query(host, contains, bodyContains string, page, limit int) ([]ExchangeMeta, error) {
+	return t.queryWithFilter(searchQuery{
+		Host:         host,
+		Contains:     contains,
+		BodyContains: bodyContains,
+		Page:         page,
+		Limit:        limit,
+	})
+}
+
+func (t *Traffic) queryWithFilter(sq searchQuery) ([]ExchangeMeta, error) {
+	limit := sq.Limit
 	if limit <= 0 {
 		limit = 3
 	}
 	if limit > 10 {
 		limit = 10
 	}
+	page := sq.Page
 	if page < 0 {
 		page = 0
 	}
+	if sq.Since > 0 && sq.Until > 0 && sq.Since > sq.Until {
+		return nil, fmt.Errorf("时间范围无效：since(%d) 不能大于 until(%d)", sq.Since, sq.Until)
+	}
 	q := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges WHERE 1=1`
 	args := []any{}
-	if host != "" {
-		hostName, port, err := normalizeSearchHost(host)
+	if sq.Host != "" {
+		hostName, port, err := normalizeSearchHost(sq.Host)
 		if err != nil {
 			return nil, err
 		}
@@ -2305,11 +2332,31 @@ func (t *Traffic) query(host, contains, bodyContains string, page, limit int) ([
 			)
 		}
 	}
-	if contains != "" {
-		q += ` AND (url LIKE ? OR url_template LIKE ?)`
-		args = append(args, "%"+contains+"%", "%"+contains+"%")
+	if m := strings.ToUpper(strings.TrimSpace(sq.Method)); m != "" {
+		q += ` AND method=?`
+		args = append(args, m)
 	}
-	if b := strings.TrimSpace(bodyContains); b != "" {
+	if st := strings.TrimSpace(sq.Status); st != "" {
+		cond, sargs, ok := statusFilter(st)
+		if !ok {
+			return nil, fmt.Errorf("status 过滤无效（%q）：请传精确状态码如 200 或状态段如 4xx / 5xx", sq.Status)
+		}
+		q += ` AND ` + cond
+		args = append(args, sargs...)
+	}
+	if sq.Since > 0 {
+		q += ` AND ts>=?`
+		args = append(args, sq.Since)
+	}
+	if sq.Until > 0 {
+		q += ` AND ts<=?`
+		args = append(args, sq.Until)
+	}
+	if sq.Contains != "" {
+		q += ` AND (url LIKE ? OR url_template LIKE ?)`
+		args = append(args, "%"+sq.Contains+"%", "%"+sq.Contains+"%")
+	}
+	if b := strings.TrimSpace(sq.BodyContains); b != "" {
 		cond, arg, ok := t.ftsFilter(b)
 		if !ok {
 			if !t.fts {
@@ -2391,6 +2438,10 @@ func (t *Traffic) Tools() []actool.CoreTool {
 				"host":          map[string]any{"type": "string", "description": "按主机过滤（必填；如 '107.172.96.177'、'107.172.96.177:8082' 或 'http://107.172.96.177:8082/path'）"},
 				"contains":      map[string]any{"type": "string", "description": "URL 子串过滤（可选，如 'api' / 'login'）"},
 				"body_contains": map[string]any{"type": "string", "description": "正文全文搜索（可选，至少 3 个字符），匹配请求/响应的头与正文，如 'password' / 'root:x:0' / '内网测试'"},
+				"method":        map[string]any{"type": "string", "description": "HTTP 方法过滤（可选，如 'GET' / 'POST'）"},
+				"status":        map[string]any{"type": "string", "description": "响应状态码过滤（可选，如 '200' / '500' 或状态段 '4xx' / '5xx'）"},
+				"since":         map[string]any{"type": "integer", "description": "起始 Unix 时间戳（秒，可选；结合执行记录时间范围缩小结果）"},
+				"until":         map[string]any{"type": "integer", "description": "结束 Unix 时间戳（秒，可选）"},
 				"limit":         map[string]any{"type": "integer", "description": "每页条数，默认 3，最大 10"},
 				"page":          map[string]any{"type": "integer", "description": "页码，从 0 开始，默认 0（按 ts 倒序分页）"},
 			},
@@ -2400,25 +2451,37 @@ func (t *Traffic) Tools() []actool.CoreTool {
 		Permissions: allow,
 		Run: func(_ context.Context, in json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
 			var a struct {
-				Host, Contains string
-				BodyContains   string `json:"body_contains"`
-				Limit          int
-				Page           int
+				Host, Contains, Method, Status string
+				BodyContains                   string `json:"body_contains"`
+				Since, Until                   int64
+				Limit                          int
+				Page                           int
 			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Host) == "" {
 				return actool.Errorf("host 为必填参数：请指定裸主机、主机:端口或完整 URL，避免全库扫描。"), nil
 			}
-			rows, err := t.query(a.Host, a.Contains, a.BodyContains, a.Page, a.Limit)
+			rows, err := t.queryWithFilter(searchQuery{
+				Host:         a.Host,
+				Contains:     a.Contains,
+				BodyContains: a.BodyContains,
+				Method:       a.Method,
+				Status:       a.Status,
+				Since:        a.Since,
+				Until:        a.Until,
+				Page:         a.Page,
+				Limit:        a.Limit,
+			})
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			if len(rows) == 0 {
 				return actool.Text("无匹配流量。"), nil
 			}
-			// 精简为最小索引：仅保留定位所需字段 + 响应码/长度，不带任何响应内容。
+			// 精简为最小索引：仅保留定位所需字段 + 时间戳/响应码/长度，不带任何响应内容。
 			type liteRow struct {
 				ID      string `json:"id"`
+				TS      int64  `json:"ts"`
 				Method  string `json:"method"`
 				URL     string `json:"url"`
 				Status  int    `json:"status"`
@@ -2426,7 +2489,7 @@ func (t *Traffic) Tools() []actool.CoreTool {
 			}
 			lite := make([]liteRow, 0, len(rows))
 			for _, r := range rows {
-				lite = append(lite, liteRow{ID: r.ID, Method: r.Method, URL: r.URL, Status: r.Status, RespLen: r.RespLen})
+				lite = append(lite, liteRow{ID: r.ID, TS: r.TS, Method: r.Method, URL: r.URL, Status: r.Status, RespLen: r.RespLen})
 			}
 			b, _ := json.Marshal(lite)
 			return actool.Text(string(b)), nil

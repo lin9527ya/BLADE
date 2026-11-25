@@ -90,7 +90,12 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 		}
 	}
 	if has["update_finding_report"] && has["bind_finding_traffic"] && has["get_finding_traffic"] {
-		guidance += "\n\n**报告前自动关联流量（已开启）**：你负责为本次触发的漏洞核对并绑定流量，再撰写报告。先从 report_finding 返回 JSON 或 get_task_node_detail / list_task_findings 取得明确的 finding_id 与 finding_node_id。读取漏洞详情、对应意图的执行记录及已有证据清单，优先使用上报者交接的真实 ID。若本次验证为 HTTP 且流量工具可用，用 traffic_search 筛选候选，再用 traffic_get 逐条核实请求/响应确实支持该漏洞；域名和时间只用于筛选，不证明归属。将确认的证据按复现顺序用 bind_finding_traffic(finding_id, traffic_refs) 关联，选择 baseline / proof / verification / supporting 并说明用途。只能操作本次漏洞，不重复创建漏洞或重新探测目标。绑定成功后重新调用 get_finding_traffic 获取最新 version，读取所需正文，再将实际读取的 version 作为 evidence_version 传给 update_finding_report（其 finding_id 参数仍用 finding_node_id）。已有绑定不必重复追加。TCP、未采集、工具不可用或没有确切匹配时，跳过自动绑定，依据文字/命令证据正常写报告并说明原因，不得为凑齐流量而猜测。绑定失败不宣称成功；保留已有证据并在报告说明未绑定原因。"
+		if has["traffic_search"] && has["traffic_get"] {
+			guidance += "\n\n**报告前自动关联流量（已开启）**：你负责为本次触发的漏洞核对并绑定流量，再撰写报告。先从 report_finding 返回 JSON 或 get_task_node_detail / list_task_findings 取得明确的 finding_id 与 finding_node_id。读取漏洞详情、对应意图的执行记录及已有证据清单，优先使用上报者交接的真实 ID。若本次验证为 HTTP，优先使用交接 ID，或用 traffic_search(可按 method / status / since / until 缩小范围) 筛选候选，再用 traffic_get 逐条核实请求/响应确实支持该漏洞；域名和时间只用于筛选，不证明归属。将确认的证据按复现顺序用 bind_finding_traffic(finding_id, traffic_refs) 关联，选择 baseline / proof / verification / supporting 并说明用途。只能操作本次漏洞，不重复创建漏洞或重新探测目标。绑定成功后重新调用 get_finding_traffic 获取最新 version，读取所需正文，再将实际读取的 version 作为 evidence_version 传给 update_finding_report（其 finding_id 参数仍用 finding_node_id）。已有绑定不必重复追加。TCP、未采集或没有确切匹配时，跳过自动绑定，依据文字/命令证据正常写报告并说明原因，不得为凑齐流量而猜测。绑定失败不宣称成功；保留已有证据并在报告说明未绑定原因。"
+		} else {
+			// §14.1/§14.2：未开启流量捕获或未向 reporter 注入检索工具时，绝不提示不存在的 traffic_search / traffic_get。
+			guidance += "\n\n**报告前自动关联流量（已开启，未注入流量检索工具）**：当前未开启流量捕获或未分配流量检索工具。先从 report_finding 返回 JSON 或 get_task_node_detail / list_task_findings 取得明确的 finding_id 与 finding_node_id，并用 get_finding_traffic(finding_id) 读取已有证据清单及 version。仅当上报者已明确交接并核实了历史真实 traffic_id 时，才用 bind_finding_traffic(finding_id, traffic_refs) 关联并在绑定成功后重新调用 get_finding_traffic 获取最新 version；未采集、无交接 ID 或 TCP 漏洞时跳过绑定，直接依据文字/命令证据写报告并把读取到的 version 作为 evidence_version 传给 update_finding_report（其 finding_id 参数仍用 finding_node_id）。"
+		}
 	}
 	guidance += findingCaseGuidance(agentKey, has)
 	if guidance != "" || has["get_finding_traffic"] || has["update_finding_report"] {

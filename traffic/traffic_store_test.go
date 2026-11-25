@@ -1,6 +1,8 @@
 package traffic
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -525,4 +527,73 @@ func TestRecordConcurrent(t *testing.T) {
 	if exchanges != n || bodies != n {
 		t.Fatalf("并发写入后 exchanges=%d bodies=%d，应各为 %d", exchanges, bodies, n)
 	}
+}
+
+func TestTrafficSearchToolFiltersAndTS(t *testing.T) {
+	tr, _ := openTraffic(t)
+	type rowSeed struct {
+		id, method, path string
+		ts               int64
+		status           int
+	}
+	seeds := []rowSeed{
+		{id: "100-1", method: "GET", path: "/api/items", ts: 100, status: 200},
+		{id: "200-2", method: "POST", path: "/api/login", ts: 200, status: 403},
+		{id: "300-3", method: "POST", path: "/api/export", ts: 300, status: 500},
+		{id: "400-4", method: "GET", path: "/api/export", ts: 400, status: 404},
+	}
+	for _, s := range seeds {
+		if _, err := tr.DB().Exec(
+			`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			s.id, s.ts, "target.test", s.method, s.path, "http://target.test"+s.path, s.status, "application/json", 0, 128, "",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	searchTool := tr.Tools()[0]
+	if searchTool.Name() != "traffic_search" {
+		t.Fatalf("unexpected first tool: %s", searchTool.Name())
+	}
+	call := func(args map[string]any, wantErr bool) []struct {
+		ID     string `json:"id"`
+		TS     int64  `json:"ts"`
+		Method string `json:"method"`
+		Status int    `json:"status"`
+	} {
+		t.Helper()
+		raw, _ := json.Marshal(args)
+		res, err := searchTool.Call(context.Background(), raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.IsError != wantErr {
+			t.Fatalf("traffic_search(%v): isError=%v, want %v (%s)", args, res.IsError, wantErr, res.Flatten())
+		}
+		if wantErr {
+			return nil
+		}
+		var out []struct {
+			ID     string `json:"id"`
+			TS     int64  `json:"ts"`
+			Method string `json:"method"`
+			Status int    `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(res.Flatten()), &out); err != nil {
+			t.Fatalf("decode %s: %v", res.Flatten(), err)
+		}
+		return out
+	}
+
+	got := call(map[string]any{"host": "target.test", "method": "post", "status": "500"}, false)
+	if len(got) != 1 || got[0].ID != "300-3" || got[0].TS != 300 {
+		t.Fatalf("method+status exact filter = %+v", got)
+	}
+	gotClass := call(map[string]any{"host": "target.test", "status": "4xx", "since": 150, "until": 350}, false)
+	if len(gotClass) != 1 || gotClass[0].ID != "200-2" || gotClass[0].TS != 200 {
+		t.Fatalf("status class + time window filter = %+v", gotClass)
+	}
+	call(map[string]any{"host": "target.test", "status": "bogus"}, true)
+	call(map[string]any{"host": "target.test", "since": 500, "until": 100}, true)
 }
