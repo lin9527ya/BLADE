@@ -25,7 +25,7 @@ import { digestMemberIds, nodeSummary, typeMeta, viewKind } from "./graph-helper
 export function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-1.5 text-sm">
-      <span className="w-16 shrink-0 text-muted-foreground">{label}</span>
+      <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <span className="min-w-0 flex-1 break-words text-foreground">{children}</span>
     </div>
   );
@@ -394,7 +394,7 @@ export function NodeDetailDialog({
 
   return (
     <Dialog open={node !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl lg:max-w-5xl">
         {node && meta && Icon && (
           <>
             <DialogHeader className="border-b p-4">
