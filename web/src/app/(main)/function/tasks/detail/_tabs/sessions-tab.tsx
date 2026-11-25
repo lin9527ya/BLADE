@@ -99,6 +99,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     controlWorker,
     sseLive,
     liveTaskTokens,
+    taskCost,
     retrySession,
     loadOlderIntents,
     workerSessions,
@@ -263,6 +264,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                       input={liveTaskTokens.input_tokens}
                       cache={liveTaskTokens.cache_read_tokens}
                       output={liveTaskTokens.output_tokens}
+                      cost={taskCost}
                     />
                   </div>
                 </TooltipTrigger>
@@ -270,7 +272,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   输入 {liveTaskTokens.input_tokens.toLocaleString()} · 输出{" "}
                   {liveTaskTokens.output_tokens.toLocaleString()} · 缓存读取{" "}
                   {liveTaskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
-                  {liveTaskTokens.cache_write_tokens.toLocaleString()}
+                  {liveTaskTokens.cache_write_tokens.toLocaleString()} · LLM 成本 {taskCost.text}
                 </TooltipContent>
               </Tooltip>
             )}

@@ -77,6 +77,21 @@ export const relColor: Record<string, string> = {
 const COL_W = 360;
 const ROW_H = 140;
 
+const BASE_LEGEND_KINDS: ExploreKind[] = [
+  "begin",
+  "goal",
+  "intent",
+  "fact",
+  "finding",
+  "hint",
+  "digest",
+  "foothold",
+  "credential",
+  "detection",
+  "artifact",
+  "footprint",
+];
+
 type ExploreNodeData = { node: TaskNode; replayHighlight?: boolean };
 type ExploreRFNode = RFNode<ExploreNodeData, "explore">;
 
@@ -311,6 +326,18 @@ function ExplorationGraphInner({
   const nodesById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   // Collapsed view: folded members removed, their edges rewired onto the digest.
   const { viewNodes, viewEdges } = React.useMemo(() => collapseDigestGraph(nodes, edges), [nodes, edges]);
+  const legendKinds = React.useMemo(() => {
+    const out: ExploreKind[] = [...BASE_LEGEND_KINDS];
+    const seen = new Set<ExploreKind>(out);
+    for (const n of viewNodes) {
+      const k = viewKind(n);
+      if (typeMeta[k] && !seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    return out;
+  }, [viewNodes]);
   // 始终基于完整图预计算节点坐标：时间轴回放逐步揭示卡片时，旧卡片与整体位置零跳动。
   const fullLayout = React.useMemo(() => computeLayout(viewNodes, viewEdges), [viewNodes, viewEdges]);
   const replayPlan = React.useMemo(() => buildReplayPlan(viewNodes), [viewNodes]);
@@ -451,20 +478,18 @@ function ExplorationGraphInner({
           <div className="flex flex-col gap-2.5 rounded-lg border bg-card/95 p-3 text-xs shadow-sm backdrop-blur">
             {isEmpty && <span className="text-muted-foreground">{emptyHint}</span>}
             <div className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest", "footprint"] as ExploreKind[]).map(
-                (k) => {
-                  const m = typeMeta[k];
-                  const Icon = m.icon;
-                  return (
-                    <span key={k} className="inline-flex items-center gap-1.5 text-foreground">
-                      <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
-                        <Icon className="size-2.5 text-white" />
-                      </span>
-                      {m.label}
+              {legendKinds.map((k) => {
+                const m = typeMeta[k];
+                const Icon = m.icon;
+                return (
+                  <span key={k} className="inline-flex items-center gap-1.5 text-foreground">
+                    <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
+                      <Icon className="size-2.5 text-white" />
                     </span>
-                  );
-                },
-              )}
+                    {m.label}
+                  </span>
+                );
+              })}
             </div>
             <div className="flex flex-wrap gap-x-3 gap-y-1.5 border-border/60 border-t pt-2 text-muted-foreground">
               {Object.entries(relLabel).map(([k, v]) => (

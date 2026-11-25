@@ -180,9 +180,10 @@ export const TokenMetrics = React.forwardRef<
     input: number;
     cache: number;
     output: number;
+    cost?: { text: string; title?: string };
     labels?: "short" | "long";
   }
->(({ input, cache, output, labels = "short", className, ...props }, ref) => {
+>(({ input, cache, output, cost, labels = "short", className, ...props }, ref) => {
   const names = labels === "short" ? ["入", "缓", "出"] : ["input", "cache", "output"];
   const values = [input, cache, output];
   return (
@@ -204,6 +205,14 @@ export const TokenMetrics = React.forwardRef<
       <Badge variant="secondary" className="h-5 px-1.5 font-mono tabular-nums" title="缓存命中率 = 缓存读 / 输入">
         {cacheHitRate(cache, input)}
       </Badge>
+      {cost && (
+        <>
+          <span>LLM 成本</span>
+          <Badge variant="secondary" className="h-5 px-1.5 font-mono tabular-nums" title={cost.title}>
+            {cost.text}
+          </Badge>
+        </>
+      )}
     </span>
   );
 });

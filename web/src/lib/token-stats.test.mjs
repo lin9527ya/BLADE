@@ -1,4 +1,4 @@
-import { cacheHitRate, fmtCostUSD } from "./token-stats.ts";
+import { cacheHitRate, fmtCostUSD, formatTaskCostSummary, summarizeModelTokens } from "./token-stats.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -32,4 +32,48 @@ test("LLM 成本格式化区分未定价、微小金额与常规金额", () => {
   assert.equal(fmtCostUSD(1.236, true), "$1.24");
   assert.equal(fmtCostUSD(128.4, true), "$128");
   assert.equal(fmtCostUSD(NaN, true), "—");
+});
+
+test("summarizeModelTokens 与 formatTaskCostSummary 正确聚合已定价与未定价模型", () => {
+  assert.equal(formatTaskCostSummary(summarizeModelTokens([])).text, "—");
+
+  const unpriced = summarizeModelTokens([
+    {
+      model: "m1",
+      calls: 2,
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 500,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      priced: false,
+    },
+  ]);
+  assert.equal(formatTaskCostSummary(unpriced).text, "未定价");
+
+  const mixed = summarizeModelTokens([
+    {
+      model: "m1",
+      calls: 3,
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 500,
+      cache_write_tokens: 0,
+      cost_usd: 1.25,
+      priced: true,
+    },
+    {
+      model: "m2",
+      calls: 1,
+      input_tokens: 500,
+      output_tokens: 100,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      priced: false,
+    },
+  ]);
+  assert.equal(mixed.calls, 4);
+  assert.equal(mixed.costUsd, 1.25);
+  assert.equal(formatTaskCostSummary(mixed).text, "$1.25（含未定价）");
+  assert.equal(formatTaskCostSummary(mixed, { compact: true }).text, "$1.25+");
 });

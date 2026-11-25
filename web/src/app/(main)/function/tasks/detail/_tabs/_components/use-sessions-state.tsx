@@ -20,11 +20,13 @@ import {
   emptyTokenAccounting,
   projectTokenAccounting,
 } from "@/lib/token-accounting";
+import { formatTaskCostSummary, summarizeModelTokens } from "@/lib/token-stats";
 import type {
   Activity,
   ChatAttachment,
   IntentAsset,
   InterceptApprovalRow,
+  ModelTokenStat,
   Session,
   TaskLiveEvent,
   TaskLLMResolution,
@@ -242,6 +244,7 @@ export function useSessionsState(taskId: string) {
   const [sseLive, setSseLive] = React.useState(false);
   // Whole-task token total (all agents), polled from the backend aggregate.
   const [tokenAccounting, setTokenAccounting] = React.useState(emptyTokenAccounting);
+  const [modelTokens, setModelTokens] = React.useState<ModelTokenStat[]>([]);
   const [llmResolutions, setLLMResolutions] = React.useState<TaskLLMResolutions | null>(null);
   // Pending intercept requests for this task — used to show warning icons on sessions.
   const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
@@ -408,7 +411,7 @@ export function useSessionsState(taskId: string) {
   // ── task token total (whole task, all agents) ───────────────────────────────────
   usePolling(
     async (alive) => {
-      const load = () =>
+      await Promise.all([
         api
           .tokenStats(taskId)
           .then((r) => {
@@ -417,8 +420,17 @@ export function useSessionsState(taskId: string) {
           })
           .catch((e) => {
             if (alive()) throw e;
-          });
-      await load();
+          }),
+        api
+          .tokensByModel(taskId)
+          .then((r) => {
+            if (!alive()) return;
+            setModelTokens(r.models);
+          })
+          .catch(() => {
+            // 按模型计费台账不可用时保留现有成本，不阻断 token 快照轮询。
+          }),
+      ]);
     },
     5000,
     [taskId],
@@ -510,6 +522,7 @@ export function useSessionsState(taskId: string) {
     firstIntentsRef.current = []; // 别拿上个任务的首页快照去算 displaced
     setHasLoadedOlderIntentsPage(false);
     setTokenAccounting(emptyTokenAccounting());
+    setModelTokens([]);
     setLLMResolutions(null);
     setSseLive(false);
     setActiveId(MAIN_ID); // a stale worker id from the previous task must not leak in
@@ -1106,6 +1119,10 @@ export function useSessionsState(taskId: string) {
   );
   const activeTokens = tokenForSession(activeKey);
   const liveTaskTokens = liveAccounting.total;
+  const taskCost = React.useMemo(
+    () => formatTaskCostSummary(summarizeModelTokens(modelTokens), { compact: true }),
+    [modelTokens],
+  );
   const tokenTotal = {
     i: activeTokens.input_tokens,
     o: activeTokens.output_tokens,
@@ -1372,6 +1389,7 @@ export function useSessionsState(taskId: string) {
     setSseLive,
     taskTokens,
     liveTaskTokens,
+    taskCost,
     sessionTokens,
     llmResolutions,
     setLLMResolutions,

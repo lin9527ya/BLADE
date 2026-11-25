@@ -39,7 +39,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { taskIsTerminal } from "@/lib/status";
-import { cacheHitRate, fmtCostUSD } from "@/lib/token-stats";
+import { cacheHitRate, fmtCostUSD, formatTaskCostSummary } from "@/lib/token-stats";
 import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
 import { ArtifactPanel } from "./_components/artifact-panel";
@@ -1080,20 +1080,14 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 </span>
                 <span className="tabular-nums">
                   <span className="text-muted-foreground">LLM 成本 </span>
-                  <span
-                    className="font-semibold"
-                    title={
-                      tokenTotals.unpricedCount > 0
-                        ? "存在未配置单价的模型，可在「系统 → LLM 配置」中补充费用单价"
-                        : "按模型配置单价（含峰/谷时段）估算"
-                    }
-                  >
-                    {tokenTotals.pricedCount === 0
-                      ? "未定价"
-                      : tokenTotals.unpricedCount > 0
-                        ? `${fmtCostUSD(tokenTotals.costUsd, true)}（含未定价）`
-                        : fmtCostUSD(tokenTotals.costUsd, true)}
-                  </span>
+                  {(() => {
+                    const summary = formatTaskCostSummary(tokenTotals);
+                    return (
+                      <span className="font-semibold" title={summary.title}>
+                        {summary.text}
+                      </span>
+                    );
+                  })()}
                 </span>
               </div>
               <p className="text-[10px] text-muted-foreground">

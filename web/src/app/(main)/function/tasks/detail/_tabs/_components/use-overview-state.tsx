@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { summarizeModelTokens } from "@/lib/token-stats";
 import type {
   ConstraintCompileResult,
   Finding,
@@ -556,23 +557,7 @@ export function useOverviewState(taskId: string, sseConnected = false) {
   const taskFindings = findings.filter((f) => f.task_id === taskId);
   const goalsPct = task?.goals_total ? Math.round(((task.goals_met ?? 0) / task.goals_total) * 100) : 0;
   // token 合计（跨全部模型），用于卡片头部总览。
-  const tokenTotals = modelTokens.reduce(
-    (acc, m) => {
-      acc.input += m.input_tokens;
-      acc.output += m.output_tokens;
-      acc.cacheRead += m.cache_read_tokens;
-      acc.cacheWrite += m.cache_write_tokens;
-      acc.calls += m.calls;
-      if (m.priced) {
-        acc.costUsd += m.cost_usd ?? 0;
-        acc.pricedCount += 1;
-      } else {
-        acc.unpricedCount += 1;
-      }
-      return acc;
-    },
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0, costUsd: 0, pricedCount: 0, unpricedCount: 0 },
-  );
+  const tokenTotals = summarizeModelTokens(modelTokens);
 
   // 预算对照：用量 = 输入+输出（与后端 BudgetStage 的计量口径一致）。
   const budgetUsed = tokenTotals.input + tokenTotals.output;
