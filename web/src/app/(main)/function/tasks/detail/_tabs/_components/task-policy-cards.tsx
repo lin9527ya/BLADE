@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { TablePagination, useClientPagination } from "@/components/table-pagination";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -138,6 +139,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
   }
 
   const placeholder = TASK_RULE_KIND_OPTIONS.find((o) => o.value === newKind)?.placeholder ?? "";
+  const rulesPager = useClientPagination(rules, 5, taskId);
 
   return (
     <Card>
@@ -188,7 +190,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
         {/* 规则列表 */}
         {rules.length > 0 ? (
           <div className="flex flex-col gap-1.5">
-            {rules.map((r) =>
+            {rulesPager.pageItems.map((r) =>
               editId === r.id ? (
                 <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
                   <NativeSelect
@@ -285,6 +287,7 @@ export function TaskInterceptRulesCard({ taskId }: { taskId: string }) {
                 </div>
               ),
             )}
+            <TablePagination {...rulesPager.paginationProps} />
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">

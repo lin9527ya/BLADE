@@ -29,6 +29,7 @@ import { toast } from "sonner";
 
 import { nodeSummary } from "@/components/_parts/graph-helpers";
 import { StatusBadge } from "@/components/status-badge";
+import { TablePagination, useClientPagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,23 +68,6 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return String(n);
-}
-
-const OVERVIEW_LIST_LIMIT = 5;
-const SCOPE_LIST_LIMIT = 10;
-
-// 按预览上限切片；若当前正展开行内编辑/编译，保证该条目即使超出上限也保留可见。
-function previewList<T extends { id: string | number }>(
-  items: readonly T[],
-  limit: number,
-  expanded: boolean,
-  pinnedId?: string | number | null,
-): T[] {
-  if (expanded || items.length <= limit) return [...items];
-  const head = items.slice(0, limit);
-  if (pinnedId == null || head.some((item) => item.id === pinnedId)) return head;
-  const pinned = items.find((item) => item.id === pinnedId);
-  return pinned ? [...head, pinned] : head;
 }
 
 function CollapsibleOverviewCard({
@@ -129,28 +113,6 @@ function CollapsibleOverviewCard({
         </CollapsibleContent>
       </Card>
     </Collapsible>
-  );
-}
-
-function ListLimitToggle({
-  total,
-  limit,
-  expanded,
-  onToggle,
-}: {
-  total: number;
-  limit: number;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  if (total <= limit) return null;
-  return (
-    <div className="flex items-center justify-between pt-1 text-muted-foreground text-xs">
-      <span>{expanded ? `已显示全部 ${total} 条` : `默认显示前 ${limit} 条，共 ${total} 条`}</span>
-      <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={onToggle}>
-        {expanded ? `收起至前 ${limit} 条` : `展开全部（其余 ${total - limit} 条）`}
-      </Button>
-    </div>
   );
 }
 
@@ -214,13 +176,9 @@ function StatCard({
 export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; sseConnected?: boolean }) {
   const [showPlannerState, setShowPlannerState] = React.useState(false);
   const [showGoals, setShowGoals] = React.useState(true);
-  const [showAllGoals, setShowAllGoals] = React.useState(false);
   const [showHints, setShowHints] = React.useState(true);
-  const [showAllHints, setShowAllHints] = React.useState(false);
   const [showConstraints, setShowConstraints] = React.useState(true);
-  const [showAllConstraints, setShowAllConstraints] = React.useState(false);
   const [showScope, setShowScope] = React.useState(true);
-  const [showAllScope, setShowAllScope] = React.useState(false);
   const {
     task,
     stats,
@@ -347,16 +305,16 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
   // 依赖阻塞：open 但 strict 前置仍活跃；与 state=blocked（执行失败）分开说。
   const blockedByDeps = stats?.blocked_intents ?? [];
   const totalBlockedByDeps = stats?.blocked_open_intents ?? blockedByDeps.length;
-  const visibleGoals = previewList(goals, OVERVIEW_LIST_LIMIT, showAllGoals, editingGoalId);
   const sortedHints = [...hints].sort((a, b) => (a.state === b.state ? 0 : a.state === "active" ? -1 : 1));
-  const visibleHints = previewList(sortedHints, OVERVIEW_LIST_LIMIT, showAllHints, editingHintId);
-  const visibleConstraints = previewList(
-    constraints,
-    OVERVIEW_LIST_LIMIT,
-    showAllConstraints,
-    editingConId ?? compileFor,
-  );
-  const visibleScope = previewList(scope, SCOPE_LIST_LIMIT, showAllScope);
+  const goalsPager = useClientPagination(goals, 5, taskId);
+  const hintsPager = useClientPagination(sortedHints, 5, taskId);
+  const constraintsPager = useClientPagination(constraints, 5, taskId);
+  const todoPager = useClientPagination(plannerState?.todos ?? [], 10, taskId);
+  const scopePager = useClientPagination(scope, 10, taskId);
+  const runningPager = useClientPagination(running, 6, taskId);
+  const findingsPager = useClientPagination(taskFindings, 6, taskId);
+  const blockedByDepsPager = useClientPagination(blockedByDeps, 5, taskId);
+  const blockedPager = useClientPagination(blocked, 10, taskId);
 
   return (
     <div className="flex flex-col gap-4">
@@ -478,7 +436,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
         {/* 目标列表 */}
         {goals.length > 0 ? (
           <div className="flex flex-col gap-1.5">
-            {visibleGoals.map((g) =>
+            {goalsPager.pageItems.map((g) =>
               editingGoalId === g.id ? (
                 <div key={g.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
                   <Input
@@ -577,12 +535,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 </div>
               ),
             )}
-            <ListLimitToggle
-              total={goals.length}
-              limit={OVERVIEW_LIST_LIMIT}
-              expanded={showAllGoals}
-              onToggle={() => setShowAllGoals((v) => !v)}
-            />
+            <TablePagination {...goalsPager.paginationProps} />
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">暂无目标，添加后规划者会据此派发探索意图并判定达成。</p>
@@ -625,7 +578,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
         )}
         {sortedHints.length > 0 ? (
           <div className="flex flex-col gap-1.5">
-            {visibleHints.map((h) => (
+            {hintsPager.pageItems.map((h) => (
               <div
                 key={h.id}
                 className={`rounded-md border px-2.5 py-1.5 text-sm ${
@@ -749,12 +702,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 )}
               </div>
             ))}
-            <ListLimitToggle
-              total={sortedHints.length}
-              limit={OVERVIEW_LIST_LIMIT}
-              expanded={showAllHints}
-              onToggle={() => setShowAllHints((v) => !v)}
-            />
+            <TablePagination {...hintsPager.paginationProps} />
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">暂无提示</p>
@@ -815,7 +763,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
         {/* 约束列表 */}
         {constraints.length > 0 ? (
           <div className="flex flex-col gap-1.5">
-            {visibleConstraints.map((c) =>
+            {constraintsPager.pageItems.map((c) =>
               editingConId === c.id ? (
                 <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
                   <NativeSelect
@@ -987,12 +935,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 </div>
               ),
             )}
-            <ListLimitToggle
-              total={constraints.length}
-              limit={OVERVIEW_LIST_LIMIT}
-              expanded={showAllConstraints}
-              onToggle={() => setShowAllConstraints((v) => !v)}
-            />
+            <TablePagination {...constraintsPager.paginationProps} />
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">
@@ -1048,25 +991,28 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                     </div>
                   )}
                   {plannerState.todos.length > 0 ? (
-                    <ul className="space-y-1.5">
-                      {plannerState.todos.map((todo, idx) => (
-                        <li
-                          key={`${idx}-${todo.status}-${todo.content.slice(0, 24)}`}
-                          className="flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs"
-                        >
-                          <Badge variant="outline" className="shrink-0">
-                            {todo.status === "completed"
-                              ? "已完成"
-                              : todo.status === "in_progress"
-                                ? "进行中"
-                                : todo.status === "pending"
-                                  ? "待办"
-                                  : todo.status}
-                          </Badge>
-                          <span className="min-w-0 flex-1 break-words">{todo.content}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="space-y-2">
+                      <ul className="space-y-1.5">
+                        {todoPager.pageItems.map((todo, idx) => (
+                          <li
+                            key={`${todoPager.page}-${idx}-${todo.status}-${todo.content.slice(0, 24)}`}
+                            className="flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs"
+                          >
+                            <Badge variant="outline" className="shrink-0">
+                              {todo.status === "completed"
+                                ? "已完成"
+                                : todo.status === "in_progress"
+                                  ? "进行中"
+                                  : todo.status === "pending"
+                                    ? "待办"
+                                    : todo.status}
+                            </Badge>
+                            <span className="min-w-0 flex-1 break-words">{todo.content}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <TablePagination {...todoPager.paginationProps} />
+                    </div>
                   ) : (
                     <p className="text-muted-foreground text-xs">当前无 Todo 条目。</p>
                   )}
@@ -1314,7 +1260,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
         {/* 范围列表 */}
         {scope.length > 0 ? (
           <div className="flex flex-col gap-1.5">
-            {visibleScope.map((row) => (
+            {scopePager.pageItems.map((row) => (
               <div key={row.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
                 <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
                   {SCOPE_KIND_LABELS[row.kind]}
@@ -1335,12 +1281,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 )}
               </div>
             ))}
-            <ListLimitToggle
-              total={scope.length}
-              limit={SCOPE_LIST_LIMIT}
-              expanded={showAllScope}
-              onToggle={() => setShowAllScope((v) => !v)}
-            />
+            <TablePagination {...scopePager.paginationProps} />
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">暂无测试范围，添加后可作为资产覆盖度的分母。</p>
@@ -1398,10 +1339,13 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
               <TargetIcon className="size-4" /> 进行中意图
+              {running.length > 0 && (
+                <span className="font-normal text-muted-foreground text-xs">（{running.length}）</span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {running.slice(0, 6).map((i) => (
+            {runningPager.pageItems.map((i) => (
               <div key={i.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="intent" value={i.state} />
                 <span className="shrink-0 font-mono text-muted-foreground text-xs">#{i.id}</span>
@@ -1409,6 +1353,11 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
               </div>
             ))}
             {running.length === 0 && <p className="text-muted-foreground text-sm">暂无进行中意图</p>}
+            <TablePagination
+              {...runningPager.paginationProps}
+              compactNumbers
+              summaryLabel={`共 ${running.length} 条`}
+            />
           </CardContent>
         </Card>
 
@@ -1451,16 +1400,24 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
               <BugIcon className="size-4 text-red-500" /> 最近发现
+              {totalFindings > 0 && (
+                <span className="font-normal text-muted-foreground text-xs">（{totalFindings}）</span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {taskFindings.slice(0, 6).map((f) => (
+            {findingsPager.pageItems.map((f) => (
               <div key={f.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="severity" value={f.severity} dot />
                 <span className="min-w-0 flex-1 truncate">{f.summary}</span>
               </div>
             ))}
             {totalFindings === 0 && <p className="text-muted-foreground text-sm">暂无发现</p>}
+            <TablePagination
+              {...findingsPager.paginationProps}
+              compactNumbers
+              summaryLabel={`共 ${totalFindings} 条`}
+            />
           </CardContent>
         </Card>
       </div>
@@ -1478,7 +1435,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {blockedByDeps.slice(0, 10).map((i) => (
+            {blockedByDepsPager.pageItems.map((i) => (
               <div key={i.intent_id} className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
                 <div className="flex items-center gap-2">
                   <span className="shrink-0 font-mono text-xs text-muted-foreground">#{i.intent_id}</span>
@@ -1490,9 +1447,10 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 </div>
               </div>
             ))}
+            <TablePagination {...blockedByDepsPager.paginationProps} />
             {totalBlockedByDeps > blockedByDeps.length && (
               <p className="text-muted-foreground text-xs">
-                仅显示前 {blockedByDeps.length} 条；其余等 planner 处理后刷新。
+                统计接口仅返回前 {blockedByDeps.length} 条依赖阻塞样本；其余等 planner 处理后刷新。
               </p>
             )}
           </CardContent>
@@ -1514,7 +1472,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
             </Button>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {blocked.slice(0, 20).map((i) => (
+            {blockedPager.pageItems.map((i) => (
               <div key={i.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="intent" value={i.state} />
                 <span className="shrink-0 font-mono text-muted-foreground text-xs">#{i.id}</span>
@@ -1536,11 +1494,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                 </Button>
               </div>
             ))}
-            {blocked.length > 20 && (
-              <p className="text-muted-foreground text-xs">
-                仅显示前 20 条，点「全部重跑」处理剩余 {blocked.length - 20} 条。
-              </p>
-            )}
+            <TablePagination {...blockedPager.paginationProps} />
           </CardContent>
         </Card>
       )}

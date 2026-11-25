@@ -3,8 +3,9 @@
 import * as React from "react";
 import { ClockIcon, GitBranchIcon, ListOrderedIcon, RefreshCwIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { TablePagination, useClientPagination } from "@/components/table-pagination";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -104,6 +105,7 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
     }
   }, showTracking ? 10_000 : 0, [taskId, state, offset, refreshLeads, showTracking]);
 
+  const schedulePager = useClientPagination(schedule?.rows ?? [], 5, `${taskId}:${focus}`);
   function search() {
     const value = focusDraft.trim();
     if (value && !/^[1-9]\d*$/.test(value)) { setScheduleError("意图 ID 必须是正整数"); return; }
@@ -138,7 +140,7 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
                   {schedule.dispatch_mode === "goal_drain" && <p className="text-sm text-muted-foreground">达标收尾：常规排名暂不用于领取，仅 #{schedule.continuation_ids?.join("、#") || "无"} 可续读原工作输出。</p>}
                   <Table>
                     <TableHeader><TableRow><TableHead>排名 / ID</TableHead><TableHead>方向</TableHead><TableHead>得分</TableHead><TableHead>等待与原因</TableHead></TableRow></TableHeader>
-                    <TableBody>{schedule.rows.map((row) => (
+                    <TableBody>{schedulePager.pageItems.map((row) => (
                       <TableRow key={row.intent_id}>
                         <TableCell className="align-top font-mono text-xs">{row.rank ?? "—"} / #{row.intent_id}</TableCell>
                         <TableCell className="min-w-48 whitespace-normal align-top">{row.summary || "(无摘要)"}<div className="mt-1"><Badge variant="outline">{row.state}</Badge></div></TableCell>
@@ -160,6 +162,7 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
                     ))}</TableBody>
                   </Table>
                   {!schedule.rows.length && <p className="text-sm text-muted-foreground">暂无待领候选。</p>}
+                  <TablePagination {...schedulePager.paginationProps} />
                   {!focus && schedule.open_total > schedule.rows.length && <p className="text-xs text-muted-foreground">仅展示前 {schedule.rows.length} 条。用意图 ID 可查询窗口外、阻塞意图及历史快照。</p>}
                   {schedule.last_dispatch && <details><summary className="cursor-pointer text-sm">上次保存的常规领取评分（不是当前重算）</summary><div className="mt-2"><ScoreDetails row={schedule.last_dispatch} /></div></details>}
                 </>
@@ -220,10 +223,16 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
                 ))}</TableBody>
               </Table>
               {!leads.rows.length && <p className="text-sm text-muted-foreground">当前筛选没有结构化分叉记录。普通 fact 中未拆出的文字不会被猜测成已追踪线索。</p>}
-              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>当前筛选 {leads.total} 条 · 每页 {LEAD_TRACE_PAGE_SIZE} 条 · 第 {Math.floor(offset / LEAD_TRACE_PAGE_SIZE) + 1} 页</span>
-                <div className="flex gap-2"><Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LEAD_TRACE_PAGE_SIZE))}>上一页</Button><Button size="sm" variant="outline" disabled={!leads.has_more} onClick={() => setOffset(offset + LEAD_TRACE_PAGE_SIZE)}>下一页</Button></div>
-              </div>
+              <TablePagination
+                variant="inline"
+                page={Math.floor(offset / LEAD_TRACE_PAGE_SIZE) + 1}
+                pageSize={LEAD_TRACE_PAGE_SIZE}
+                total={leads.total}
+                hasNext={leads.has_more}
+                showJump
+                summaryLabel={`当前筛选 ${leads.total} 条 · 每页 ${LEAD_TRACE_PAGE_SIZE} 条 · 第 ${Math.floor(offset / LEAD_TRACE_PAGE_SIZE) + 1} 页`}
+                onPageChange={(p) => setOffset((p - 1) * LEAD_TRACE_PAGE_SIZE)}
+              />
             </>
           )}
             </CardContent>
