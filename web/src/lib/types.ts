@@ -2045,6 +2045,8 @@ export interface ModelTokenStat {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  cost_usd?: number;
+  priced?: boolean;
 }
 
 export interface Session {

@@ -38,16 +38,16 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { taskIsTerminal } from "@/lib/status";
-import { cacheHitRate } from "@/lib/token-stats";
+import { cacheHitRate, fmtCostUSD } from "@/lib/token-stats";
 import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 
-import { ExplorationTrackingCard } from "./_components/exploration-tracking-card";
 import { ArtifactPanel } from "./_components/artifact-panel";
+import { ExplorationTrackingCard } from "./_components/exploration-tracking-card";
 import {
   TaskAssetScopeCard,
+  TaskCredentialBudgetCard,
   TaskInterceptRulesCard,
   TaskLootExecCard,
-  TaskCredentialBudgetCard,
   TaskRuntimeCard,
 } from "./_components/task-policy-cards";
 import { TaskRelationsCard } from "./_components/task-relations-card";
@@ -67,6 +67,91 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return String(n);
+}
+
+const OVERVIEW_LIST_LIMIT = 5;
+const SCOPE_LIST_LIMIT = 10;
+
+// 按预览上限切片；若当前正展开行内编辑/编译，保证该条目即使超出上限也保留可见。
+function previewList<T extends { id: string | number }>(
+  items: readonly T[],
+  limit: number,
+  expanded: boolean,
+  pinnedId?: string | number | null,
+): T[] {
+  if (expanded || items.length <= limit) return [...items];
+  const head = items.slice(0, limit);
+  if (pinnedId == null || head.some((item) => item.id === pinnedId)) return head;
+  const pinned = items.find((item) => item.id === pinnedId);
+  return pinned ? [...head, pinned] : head;
+}
+
+function CollapsibleOverviewCard({
+  title,
+  icon,
+  meta,
+  description,
+  open,
+  onOpenChange,
+  openLabel,
+  closedLabel,
+  children,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  meta?: React.ReactNode;
+  description?: React.ReactNode;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  openLabel: string;
+  closedLabel: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange}>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              {icon} {title}
+              {meta}
+            </CardTitle>
+            <CollapsibleTrigger asChild>
+              <Button size="sm" variant="outline">
+                {open ? openLabel : closedLabel}
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+          {description && <CardDescription>{description}</CardDescription>}
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent className="flex flex-col gap-3">{children}</CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
+  );
+}
+
+function ListLimitToggle({
+  total,
+  limit,
+  expanded,
+  onToggle,
+}: {
+  total: number;
+  limit: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  if (total <= limit) return null;
+  return (
+    <div className="flex items-center justify-between pt-1 text-muted-foreground text-xs">
+      <span>{expanded ? `已显示全部 ${total} 条` : `默认显示前 ${limit} 条，共 ${total} 条`}</span>
+      <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={onToggle}>
+        {expanded ? `收起至前 ${limit} 条` : `展开全部（其余 ${total - limit} 条）`}
+      </Button>
+    </div>
+  );
 }
 
 // 测试范围一条的显示值：域名 / 网段 / 公司。
@@ -128,6 +213,14 @@ function StatCard({
 
 export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; sseConnected?: boolean }) {
   const [showPlannerState, setShowPlannerState] = React.useState(false);
+  const [showGoals, setShowGoals] = React.useState(true);
+  const [showAllGoals, setShowAllGoals] = React.useState(false);
+  const [showHints, setShowHints] = React.useState(true);
+  const [showAllHints, setShowAllHints] = React.useState(false);
+  const [showConstraints, setShowConstraints] = React.useState(true);
+  const [showAllConstraints, setShowAllConstraints] = React.useState(false);
+  const [showScope, setShowScope] = React.useState(true);
+  const [showAllScope, setShowAllScope] = React.useState(false);
   const {
     task,
     stats,
@@ -254,6 +347,16 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
   // 依赖阻塞：open 但 strict 前置仍活跃；与 state=blocked（执行失败）分开说。
   const blockedByDeps = stats?.blocked_intents ?? [];
   const totalBlockedByDeps = stats?.blocked_open_intents ?? blockedByDeps.length;
+  const visibleGoals = previewList(goals, OVERVIEW_LIST_LIMIT, showAllGoals, editingGoalId);
+  const sortedHints = [...hints].sort((a, b) => (a.state === b.state ? 0 : a.state === "active" ? -1 : 1));
+  const visibleHints = previewList(sortedHints, OVERVIEW_LIST_LIMIT, showAllHints, editingHintId);
+  const visibleConstraints = previewList(
+    constraints,
+    OVERVIEW_LIST_LIMIT,
+    showAllConstraints,
+    editingConId ?? compileFor,
+  );
+  const visibleScope = previewList(scope, SCOPE_LIST_LIMIT, showAllScope);
 
   return (
     <div className="flex flex-col gap-4">
@@ -333,77 +436,222 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
       </Card>
       {/* 目标管理：查看/新增/修改/删除本任务的探索目标。新增与修改会通知规划者并复活任务，
           删除仅通知规划者（不复活）。目标 = 最终可交付/可核验的结果，不是攻击步骤或侦察动作。 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ListChecksIcon className="size-4 text-primary" /> 目标管理
-            <span className="font-normal text-muted-foreground text-xs">
-              （最终可核验的目标，共 {goals.length} 条；新增/修改会通知规划者并复活任务）
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {/* 新增表单 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              className="h-7 min-w-56 flex-1 text-sm"
-              placeholder="新增目标，如『拿到管理员账号的越权访问』"
-              value={goalText}
-              onChange={(e) => setGoalText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addGoal();
-              }}
-              disabled={goalBusy}
+      <CollapsibleOverviewCard
+        title="目标管理"
+        icon={<ListChecksIcon className="size-4 text-primary" />}
+        meta={<span className="font-normal text-muted-foreground text-xs">（共 {goals.length} 条）</span>}
+        description={
+          showGoals ? "最终可核验的目标；新增/修改会通知规划者并复活任务。" : "已收起，点击右侧「查看目标管理」展开。"
+        }
+        open={showGoals}
+        onOpenChange={setShowGoals}
+        openLabel="收起目标管理"
+        closedLabel="查看目标管理"
+      >
+        {/* 新增表单 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            className="h-7 min-w-56 flex-1 text-sm"
+            placeholder="新增目标，如『拿到管理员账号的越权访问』"
+            value={goalText}
+            onChange={(e) => setGoalText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void addGoal();
+            }}
+            disabled={goalBusy}
+          />
+          <Input
+            className="h-7 w-32 text-sm"
+            placeholder="漏洞类(可选)"
+            value={goalVuln}
+            onChange={(e) => setGoalVuln(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void addGoal();
+            }}
+            disabled={goalBusy}
+          />
+          <Button size="sm" variant="outline" disabled={goalBusy || !goalText.trim()} onClick={() => void addGoal()}>
+            <PlusIcon className="size-3.5" /> 添加
+          </Button>
+          {goalErr && <span className="text-red-500 text-xs">{goalErr}</span>}
+        </div>
+        {/* 目标列表 */}
+        {goals.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {visibleGoals.map((g) =>
+              editingGoalId === g.id ? (
+                <div key={g.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+                  <Input
+                    className="h-7 min-w-56 flex-1 text-sm"
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void saveEditGoal(g);
+                      if (e.key === "Escape") cancelEditGoal();
+                    }}
+                    disabled={goalBusy}
+                    autoFocus
+                  />
+                  <Input
+                    className="h-7 w-32 text-sm"
+                    placeholder="漏洞类(可选)"
+                    value={editVuln}
+                    onChange={(e) => setEditVuln(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void saveEditGoal(g);
+                      if (e.key === "Escape") cancelEditGoal();
+                    }}
+                    disabled={goalBusy}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    disabled={goalBusy || !editText.trim()}
+                    onClick={() => void saveEditGoal(g)}
+                  >
+                    <CheckIcon className="size-3.5 text-emerald-500" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    disabled={goalBusy}
+                    onClick={cancelEditGoal}
+                  >
+                    <XIcon className="size-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <div key={g.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                  <StatusBadge domain="goal" value={g.state} />
+                  <span className="min-w-0 flex-1 break-words">{g.text}</span>
+                  {g.vulnclass && (
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
+                      {g.vulnclass}
+                    </span>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    disabled={goalBusy}
+                    onClick={() => startEditGoal(g)}
+                  >
+                    <PencilIcon className="size-3.5" />
+                  </Button>
+                  {g.state === "open" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={goalBusy}
+                      title="放弃目标（不可达/已下线/客户取消），需要写明理由"
+                      onClick={() => {
+                        const reason = window.prompt(
+                          `放弃目标「${g.text}」的理由（必填）：不可达 / 已下线 / 客户取消 / 超出授权范围…\n放弃后目标保留在图上，但不再阻断收官，报告会区分「已放弃」与「已达成」。`,
+                        );
+                        if (reason?.trim()) void abandonGoal(g, reason.trim());
+                      }}
+                    >
+                      <BanIcon className="size-3.5 text-amber-500" />
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    disabled={goalBusy}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `删除目标「${g.text}」？删除后规划者不再向它派发意图，也不会再判定它达成；此操作不可撤销。`,
+                        )
+                      ) {
+                        void removeGoal(g);
+                      }
+                    }}
+                  >
+                    <Trash2Icon className="size-3.5 text-red-500" />
+                  </Button>
+                </div>
+              ),
+            )}
+            <ListLimitToggle
+              total={goals.length}
+              limit={OVERVIEW_LIST_LIMIT}
+              expanded={showAllGoals}
+              onToggle={() => setShowAllGoals((v) => !v)}
             />
-            <Input
-              className="h-7 w-32 text-sm"
-              placeholder="漏洞类(可选)"
-              value={goalVuln}
-              onChange={(e) => setGoalVuln(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addGoal();
-              }}
-              disabled={goalBusy}
-            />
-            <Button size="sm" variant="outline" disabled={goalBusy || !goalText.trim()} onClick={() => void addGoal()}>
-              <PlusIcon className="size-3.5" /> 添加
-            </Button>
-            {goalErr && <span className="text-red-500 text-xs">{goalErr}</span>}
           </div>
-          {/* 目标列表 */}
-          {goals.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
-              {goals.map((g) =>
-                editingGoalId === g.id ? (
-                  <div key={g.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+        ) : (
+          <p className="text-muted-foreground text-sm">暂无目标，添加后规划者会据此派发探索意图并判定达成。</p>
+        )}
+      </CollapsibleOverviewCard>
+      {/* 战略提示：操作者在任务运行中直接给规划者一句话方向。新增立即唤醒 planner，
+          采纳后由它 consume（状态变「已采纳」），不再每轮反复出现。不自动复活任务。 */}
+      <CollapsibleOverviewCard
+        title="战略提示 / 测试方向"
+        icon={<LightbulbIcon className="size-4 text-amber-500" />}
+        meta={<span className="font-normal text-muted-foreground text-xs">（共 {hints.length} 条）</span>}
+        description={
+          showHints
+            ? "给规划者一句话方向；采纳后标记「已采纳」，不再反复出现。"
+            : "已收起，点击右侧「查看战略提示」展开。"
+        }
+        open={showHints}
+        onOpenChange={setShowHints}
+        openLabel="收起战略提示"
+        closedLabel="查看战略提示"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            className="h-7 min-w-56 flex-1 text-sm"
+            placeholder="如『重点看认证后的越权接口』"
+            value={hintText}
+            onChange={(e) => setHintText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void addHint();
+            }}
+            disabled={hintBusy}
+          />
+          <Button size="sm" variant="outline" disabled={hintBusy || !hintText.trim()} onClick={() => void addHint()}>
+            <PlusIcon className="size-3.5" /> 发送
+          </Button>
+          {hintErr && <span className="text-red-500 text-xs">{hintErr}</span>}
+        </div>
+        {task && task.status !== "running" && (
+          <p className="text-muted-foreground text-xs">任务当前未运行，提示会在下次规划时生效（不会自动恢复任务）。</p>
+        )}
+        {sortedHints.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {visibleHints.map((h) => (
+              <div
+                key={h.id}
+                className={`rounded-md border px-2.5 py-1.5 text-sm ${
+                  h.state === "consumed" ? "opacity-60" : ""
+                } ${hintIsStale(h) ? "border-amber-500/50 bg-amber-500/5" : ""}`}
+              >
+                {editingHintId === h.id && h.state === "active" ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <StatusBadge domain="hint" value={h.state} />
                     <Input
                       className="h-7 min-w-56 flex-1 text-sm"
-                      value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
+                      value={editHintText}
+                      onChange={(e) => setEditHintText(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") void saveEditGoal(g);
-                        if (e.key === "Escape") cancelEditGoal();
+                        if (e.key === "Enter") void saveEditHint(h);
+                        if (e.key === "Escape") cancelEditHint();
                       }}
-                      disabled={goalBusy}
+                      disabled={hintBusy}
                       autoFocus
-                    />
-                    <Input
-                      className="h-7 w-32 text-sm"
-                      placeholder="漏洞类(可选)"
-                      value={editVuln}
-                      onChange={(e) => setEditVuln(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void saveEditGoal(g);
-                        if (e.key === "Escape") cancelEditGoal();
-                      }}
-                      disabled={goalBusy}
                     />
                     <Button
                       size="sm"
                       variant="ghost"
                       className="h-6 shrink-0 px-1.5"
-                      disabled={goalBusy || !editText.trim()}
-                      onClick={() => void saveEditGoal(g)}
+                      disabled={hintBusy || !editHintText.trim()}
+                      onClick={() => void saveEditHint(h)}
                     >
                       <CheckIcon className="size-3.5 text-emerald-500" />
                     </Button>
@@ -411,473 +659,347 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                       size="sm"
                       variant="ghost"
                       className="h-6 shrink-0 px-1.5"
-                      disabled={goalBusy}
-                      onClick={cancelEditGoal}
+                      disabled={hintBusy}
+                      onClick={cancelEditHint}
                     >
                       <XIcon className="size-3.5" />
                     </Button>
                   </div>
                 ) : (
-                  <div key={g.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                    <StatusBadge domain="goal" value={g.state} />
-                    <span className="min-w-0 flex-1 break-words">{g.text}</span>
-                    {g.vulnclass && (
-                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
-                        {g.vulnclass}
-                      </span>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={goalBusy}
-                      onClick={() => startEditGoal(g)}
-                    >
-                      <PencilIcon className="size-3.5" />
-                    </Button>
-                    {g.state === "open" && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 shrink-0 px-1.5"
-                        disabled={goalBusy}
-                        title="放弃目标（不可达/已下线/客户取消），需要写明理由"
-                        onClick={() => {
-                          const reason = window.prompt(
-                            `放弃目标「${g.text}」的理由（必填）：不可达 / 已下线 / 客户取消 / 超出授权范围…\n放弃后目标保留在图上，但不再阻断收官，报告会区分「已放弃」与「已达成」。`,
-                          );
-                          if (reason?.trim()) void abandonGoal(g, reason.trim());
-                        }}
-                      >
-                        <BanIcon className="size-3.5 text-amber-500" />
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={goalBusy}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `删除目标「${g.text}」？删除后规划者不再向它派发意图，也不会再判定它达成；此操作不可撤销。`,
-                          )
-                        ) {
-                          void removeGoal(g);
-                        }
-                      }}
-                    >
-                      <Trash2Icon className="size-3.5 text-red-500" />
-                    </Button>
-                  </div>
-                ),
-              )}
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm">暂无目标，添加后规划者会据此派发探索意图并判定达成。</p>
-          )}
-        </CardContent>
-      </Card>
-      {/* 战略提示：操作者在任务运行中直接给规划者一句话方向。新增立即唤醒 planner，
-          采纳后由它 consume（状态变「已采纳」），不再每轮反复出现。不自动复活任务。 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <LightbulbIcon className="size-4 text-amber-500" /> 战略提示 / 测试方向
-            <span className="font-normal text-muted-foreground text-xs">
-              （给规划者一句话方向；采纳后标记「已采纳」，不再反复出现）
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              className="h-7 min-w-56 flex-1 text-sm"
-              placeholder="如『重点看认证后的越权接口』"
-              value={hintText}
-              onChange={(e) => setHintText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addHint();
-              }}
-              disabled={hintBusy}
-            />
-            <Button size="sm" variant="outline" disabled={hintBusy || !hintText.trim()} onClick={() => void addHint()}>
-              <PlusIcon className="size-3.5" /> 发送
-            </Button>
-            {hintErr && <span className="text-red-500 text-xs">{hintErr}</span>}
-          </div>
-          {task && task.status !== "running" && (
-            <p className="text-muted-foreground text-xs">
-              任务当前未运行，提示会在下次规划时生效（不会自动恢复任务）。
-            </p>
-          )}
-          {hints.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
-              {[...hints]
-                .sort((a, b) => (a.state === b.state ? 0 : a.state === "active" ? -1 : 1))
-                .map((h) => (
-                  <div
-                    key={h.id}
-                    className={`rounded-md border px-2.5 py-1.5 text-sm ${
-                      h.state === "consumed" ? "opacity-60" : ""
-                    } ${hintIsStale(h) ? "border-amber-500/50 bg-amber-500/5" : ""}`}
-                  >
-                    {editingHintId === h.id && h.state === "active" ? (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <StatusBadge domain="hint" value={h.state} />
-                        <Input
-                          className="h-7 min-w-56 flex-1 text-sm"
-                          value={editHintText}
-                          onChange={(e) => setEditHintText(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void saveEditHint(h);
-                            if (e.key === "Escape") cancelEditHint();
-                          }}
-                          disabled={hintBusy}
-                          autoFocus
-                        />
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 shrink-0 px-1.5"
-                          disabled={hintBusy || !editHintText.trim()}
-                          onClick={() => void saveEditHint(h)}
-                        >
-                          <CheckIcon className="size-3.5 text-emerald-500" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 shrink-0 px-1.5"
-                          disabled={hintBusy}
-                          onClick={cancelEditHint}
-                        >
-                          <XIcon className="size-3.5" />
-                        </Button>
+                  <div className="flex items-start gap-2">
+                    <StatusBadge domain="hint" value={h.state} />
+                    <div className="min-w-0 flex-1">
+                      <span className="block break-words">{h.text}</span>
+                      {h.note && (
+                        <span className="mt-0.5 block break-words text-muted-foreground text-xs">
+                          采纳说明：{h.note}
+                        </span>
+                      )}
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                        <span className="tabular-nums" title={h.ts}>
+                          {new Date(h.ts).toLocaleString("zh-CN", { hour12: false })}
+                        </span>
+                        {(h.asset_ids ?? []).map((id) => (
+                          <span key={id} className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+                            资产 #{id}
+                          </span>
+                        ))}
+                        {hintIsStale(h) && (
+                          <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                            <ClockIcon className="size-3" />
+                            超过 24 小时未采纳，规划者可能漏看
+                          </span>
+                        )}
                       </div>
-                    ) : (
-                      <div className="flex items-start gap-2">
-                        <StatusBadge domain="hint" value={h.state} />
-                        <div className="min-w-0 flex-1">
-                          <span className="block break-words">{h.text}</span>
-                          {h.note && (
-                            <span className="mt-0.5 block break-words text-muted-foreground text-xs">
-                              采纳说明：{h.note}
-                            </span>
-                          )}
-                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                            <span className="tabular-nums" title={h.ts}>
-                              {new Date(h.ts).toLocaleString("zh-CN", { hour12: false })}
-                            </span>
-                            {(h.asset_ids ?? []).map((id) => (
-                              <span key={id} className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                                资产 #{id}
-                              </span>
-                            ))}
-                            {hintIsStale(h) && (
-                              <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                                <ClockIcon className="size-3" />
-                                超过 24 小时未采纳，规划者可能漏看
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          {h.state === "active" ? (
-                            <>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-6 shrink-0 px-1.5"
-                                title="编辑提示（会重新唤醒规划者）"
-                                disabled={hintBusy}
-                                onClick={() => startEditHint(h)}
-                              >
-                                <PencilIcon className="size-3.5" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-6 shrink-0 px-1.5"
-                                title="再次提醒规划者"
-                                disabled={hintBusy}
-                                onClick={() => void remindHint(h)}
-                              >
-                                <BellRingIcon className="size-3.5" />
-                              </Button>
-                            </>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-6 shrink-0 px-1.5"
-                              title="撤销采纳（回到待采纳，规划者下一轮重新看到）"
-                              disabled={hintBusy}
-                              onClick={() => void restoreHint(h)}
-                            >
-                              <RotateCcwIcon className="size-3.5" />
-                            </Button>
-                          )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {h.state === "active" ? (
+                        <>
                           <Button
                             size="sm"
                             variant="ghost"
                             className="h-6 shrink-0 px-1.5"
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `删除提示「${h.text}」？删除后规划者下一轮不再看到它；已进入本轮触发的仍可能被看到一次。`,
-                                )
-                              ) {
-                                void removeHint(h);
-                              }
-                            }}
+                            title="编辑提示（会重新唤醒规划者）"
+                            disabled={hintBusy}
+                            onClick={() => startEditHint(h)}
                           >
-                            <Trash2Icon className="size-3.5 text-red-500" />
+                            <PencilIcon className="size-3.5" />
                           </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm">暂无提示</p>
-          )}
-          <p className="text-muted-foreground text-xs leading-relaxed">
-            {task && task.status === "running" ? "发送后立即唤醒规划者。" : "任务运行后，规划者下一轮会读到。"}
-            它把方向派成意图（或判断与现状重复/不适用）后会标记「已采纳」；
-            未被采纳的提示会一直留在待采纳列表，可随时删除。提示只是测试方向，优先级低于操作约束与授权范围。
-          </p>
-        </CardContent>
-      </Card>
-      {/* 操作约束管理：allow=允许 / deny=禁止。约束会在下一轮规划时注入 planner/worker 的系统
-          提示以框定探索边界（注入范围可在 系统设置 里按 planner/worker 开关）。改动不即时打断，
-          下一轮规划自然读到。 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldAlertIcon className="size-4 text-amber-500" /> 操作约束
-            <span className="font-normal text-muted-foreground text-xs">
-              （共 {constraints.length} 条；默认只作提示词约束注入 planner/worker，改动下一轮规划生效。
-              点盾牌图标可把它编译成任务级拦截规则 —— 抽得到目标/工具名的约束会变成硬拦截，只对本任务生效）
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {/* 新增表单 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <NativeSelect
-              size="sm"
-              value={conKind}
-              onChange={(e) => setConKind(e.target.value as TaskConstraint["kind"])}
-            >
-              <NativeSelectOption value="deny">禁止</NativeSelectOption>
-              <NativeSelectOption value="allow">允许</NativeSelectOption>
-            </NativeSelect>
-            <Input
-              className="h-7 min-w-56 flex-1 text-sm"
-              placeholder="一条操作约束，如『仅测当前端口，不扫其他端口』"
-              value={conText}
-              onChange={(e) => setConText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addConstraint();
-              }}
-              disabled={conBusy}
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={conBusy || !conText.trim()}
-              onClick={() => void addConstraint()}
-            >
-              <PlusIcon className="size-3.5" /> 添加
-            </Button>
-            {conErr && <span className="text-red-500 text-xs">{conErr}</span>}
-          </div>
-          {/* 约束列表 */}
-          {constraints.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
-              {constraints.map((c) =>
-                editingConId === c.id ? (
-                  <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
-                    <NativeSelect
-                      size="sm"
-                      value={editConKind}
-                      onChange={(e) => setEditConKind(e.target.value as TaskConstraint["kind"])}
-                    >
-                      <NativeSelectOption value="deny">禁止</NativeSelectOption>
-                      <NativeSelectOption value="allow">允许</NativeSelectOption>
-                    </NativeSelect>
-                    <Input
-                      className="h-7 min-w-56 flex-1 text-sm"
-                      value={editConText}
-                      onChange={(e) => setEditConText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void saveEditConstraint(c);
-                        if (e.key === "Escape") cancelEditConstraint();
-                      }}
-                      disabled={conBusy}
-                      autoFocus
-                    />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy || !editConText.trim()}
-                      onClick={() => void saveEditConstraint(c)}
-                    >
-                      <CheckIcon className="size-3.5 text-emerald-500" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy}
-                      onClick={cancelEditConstraint}
-                    >
-                      <XIcon className="size-3.5" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div key={c.id} className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                      <span
-                        className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
-                          c.kind === "allow"
-                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                            : "bg-red-500/15 text-red-600 dark:text-red-400"
-                        }`}
-                      >
-                        {c.kind === "allow" ? "允许" : "禁止"}
-                      </span>
-                      <span className="min-w-0 flex-1 break-words">{c.text}</span>
-                      {c.compiled_rules ? (
-                        <span
-                          className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-600 text-xs dark:text-sky-400"
-                          title="已编译为任务级拦截规则，只对本任务生效"
-                        >
-                          已生效 {c.compiled_rules} 条
-                        </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 shrink-0 px-1.5"
+                            title="再次提醒规划者"
+                            disabled={hintBusy}
+                            onClick={() => void remindHint(h)}
+                          >
+                            <BellRingIcon className="size-3.5" />
+                          </Button>
+                        </>
                       ) : (
-                        <span
-                          className="shrink-0 text-muted-foreground text-xs"
-                          title="当前只作为提示词约束注入 planner/worker（建议，不是硬拦截）"
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          title="撤销采纳（回到待采纳，规划者下一轮重新看到）"
+                          disabled={hintBusy}
+                          onClick={() => void restoreHint(h)}
                         >
-                          仅提示词
-                        </span>
+                          <RotateCcwIcon className="size-3.5" />
+                        </Button>
                       )}
                       <Button
                         size="sm"
                         variant="ghost"
                         className="h-6 shrink-0 px-1.5"
-                        disabled={conBusy || compileBusy}
-                        title="编译为任务级拦截规则（先预览再应用）"
-                        onClick={() => void openCompile(c)}
-                      >
-                        <ShieldCheckIcon className="size-3.5" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 shrink-0 px-1.5"
-                        disabled={conBusy}
-                        onClick={() => startEditConstraint(c)}
-                      >
-                        <PencilIcon className="size-3.5" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 shrink-0 px-1.5"
-                        disabled={conBusy}
-                        onClick={() => void removeConstraint(c)}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `删除提示「${h.text}」？删除后规划者下一轮不再看到它；已进入本轮触发的仍可能被看到一次。`,
+                            )
+                          ) {
+                            void removeHint(h);
+                          }
+                        }}
                       >
                         <Trash2Icon className="size-3.5 text-red-500" />
                       </Button>
                     </div>
-                    {compileFor === c.id ? (
-                      <div className="flex flex-col gap-2 rounded-md border border-dashed bg-muted/30 p-2.5 text-xs">
-                        <div className="text-muted-foreground">
-                          {compileBusy && !compileResult ? "编译中…" : (compileResult?.note ?? "")}
-                        </div>
-                        {compileResult?.rules?.length ? (
-                          <div className="flex flex-col gap-1">
-                            <span className="font-medium">
-                              将生成 {compileResult.rules.length} 条拦截规则（只对本任务生效）：
-                            </span>
-                            {compileResult.rules.map((r) => {
-                              const pv = compileResult.preview?.find((x) => x.pattern === r.pattern);
-                              return (
-                                <div
-                                  key={r.pattern}
-                                  className="flex flex-col gap-0.5 rounded border bg-background px-2 py-1"
-                                >
-                                  <span className="break-all font-mono">
-                                    {r.action} · {r.pattern}
-                                  </span>
-                                  {pv ? (
-                                    <span className="text-muted-foreground">
-                                      会命中最近 {pv.total} 次工具调用中的 {pv.matched} 次
-                                      {pv.samples.length > 0 ? `（如：${pv.samples[0]}）` : ""}
-                                    </span>
-                                  ) : (
-                                    <span className="text-muted-foreground">本任务还没有可对照的历史调用</span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                        {compileResult?.scope?.length ? (
-                          <div className="flex flex-col gap-1">
-                            <span className="font-medium">
-                              将加入本任务授权范围（RoE 允许面）{compileResult.scope.length} 条：
-                            </span>
-                            {compileResult.scope.map((sc) => (
-                              <span key={`${sc.kind}:${sc.value}`} className="break-all font-mono">
-                                {sc.kind} · {sc.value}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            disabled={
-                              compileBusy ||
-                              !((compileResult?.rules?.length ?? 0) + (compileResult?.scope?.length ?? 0))
-                            }
-                            onClick={() => void applyCompile(c)}
-                          >
-                            应用
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-6 px-2 text-xs"
-                            disabled={compileBusy}
-                            onClick={() => {
-                              setCompileFor(null);
-                              setCompileResult(null);
-                            }}
-                          >
-                            取消
-                          </Button>
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
-                ),
-              )}
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm">
-              暂无操作约束。建任务时会自动从描述/目标抽取；也可在此手动增删改，用来框定「允许/禁止做哪些操作」。
-            </p>
-          )}
-        </CardContent>
-      </Card>
+                )}
+              </div>
+            ))}
+            <ListLimitToggle
+              total={sortedHints.length}
+              limit={OVERVIEW_LIST_LIMIT}
+              expanded={showAllHints}
+              onToggle={() => setShowAllHints((v) => !v)}
+            />
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm">暂无提示</p>
+        )}
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          {task && task.status === "running" ? "发送后立即唤醒规划者。" : "任务运行后，规划者下一轮会读到。"}
+          它把方向派成意图（或判断与现状重复/不适用）后会标记「已采纳」；
+          未被采纳的提示会一直留在待采纳列表，可随时删除。提示只是测试方向，优先级低于操作约束与授权范围。
+        </p>
+      </CollapsibleOverviewCard>
+      {/* 操作约束管理：allow=允许 / deny=禁止。约束会在下一轮规划时注入 planner/worker 的系统
+          提示以框定探索边界（注入范围可在 系统设置 里按 planner/worker 开关）。改动不即时打断，
+          下一轮规划自然读到。 */}
+      <CollapsibleOverviewCard
+        title="操作约束"
+        icon={<ShieldAlertIcon className="size-4 text-amber-500" />}
+        meta={<span className="font-normal text-muted-foreground text-xs">（共 {constraints.length} 条）</span>}
+        description={
+          showConstraints
+            ? "默认只作提示词约束注入 planner/worker，改动下一轮规划生效；点盾牌图标可编译为任务级硬拦截规则。"
+            : "已收起，点击右侧「查看操作约束」展开。"
+        }
+        open={showConstraints}
+        onOpenChange={setShowConstraints}
+        openLabel="收起操作约束"
+        closedLabel="查看操作约束"
+      >
+        {/* 新增表单 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <NativeSelect
+            size="sm"
+            value={conKind}
+            onChange={(e) => setConKind(e.target.value as TaskConstraint["kind"])}
+          >
+            <NativeSelectOption value="deny">禁止</NativeSelectOption>
+            <NativeSelectOption value="allow">允许</NativeSelectOption>
+          </NativeSelect>
+          <Input
+            className="h-7 min-w-56 flex-1 text-sm"
+            placeholder="一条操作约束，如『仅测当前端口，不扫其他端口』"
+            value={conText}
+            onChange={(e) => setConText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void addConstraint();
+            }}
+            disabled={conBusy}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={conBusy || !conText.trim()}
+            onClick={() => void addConstraint()}
+          >
+            <PlusIcon className="size-3.5" /> 添加
+          </Button>
+          {conErr && <span className="text-red-500 text-xs">{conErr}</span>}
+        </div>
+        {/* 约束列表 */}
+        {constraints.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {visibleConstraints.map((c) =>
+              editingConId === c.id ? (
+                <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+                  <NativeSelect
+                    size="sm"
+                    value={editConKind}
+                    onChange={(e) => setEditConKind(e.target.value as TaskConstraint["kind"])}
+                  >
+                    <NativeSelectOption value="deny">禁止</NativeSelectOption>
+                    <NativeSelectOption value="allow">允许</NativeSelectOption>
+                  </NativeSelect>
+                  <Input
+                    className="h-7 min-w-56 flex-1 text-sm"
+                    value={editConText}
+                    onChange={(e) => setEditConText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void saveEditConstraint(c);
+                      if (e.key === "Escape") cancelEditConstraint();
+                    }}
+                    disabled={conBusy}
+                    autoFocus
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    disabled={conBusy || !editConText.trim()}
+                    onClick={() => void saveEditConstraint(c)}
+                  >
+                    <CheckIcon className="size-3.5 text-emerald-500" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    disabled={conBusy}
+                    onClick={cancelEditConstraint}
+                  >
+                    <XIcon className="size-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <div key={c.id} className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+                        c.kind === "allow"
+                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                          : "bg-red-500/15 text-red-600 dark:text-red-400"
+                      }`}
+                    >
+                      {c.kind === "allow" ? "允许" : "禁止"}
+                    </span>
+                    <span className="min-w-0 flex-1 break-words">{c.text}</span>
+                    {c.compiled_rules ? (
+                      <span
+                        className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-600 text-xs dark:text-sky-400"
+                        title="已编译为任务级拦截规则，只对本任务生效"
+                      >
+                        已生效 {c.compiled_rules} 条
+                      </span>
+                    ) : (
+                      <span
+                        className="shrink-0 text-muted-foreground text-xs"
+                        title="当前只作为提示词约束注入 planner/worker（建议，不是硬拦截）"
+                      >
+                        仅提示词
+                      </span>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy || compileBusy}
+                      title="编译为任务级拦截规则（先预览再应用）"
+                      onClick={() => void openCompile(c)}
+                    >
+                      <ShieldCheckIcon className="size-3.5" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy}
+                      onClick={() => startEditConstraint(c)}
+                    >
+                      <PencilIcon className="size-3.5" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy}
+                      onClick={() => void removeConstraint(c)}
+                    >
+                      <Trash2Icon className="size-3.5 text-red-500" />
+                    </Button>
+                  </div>
+                  {compileFor === c.id ? (
+                    <div className="flex flex-col gap-2 rounded-md border border-dashed bg-muted/30 p-2.5 text-xs">
+                      <div className="text-muted-foreground">
+                        {compileBusy && !compileResult ? "编译中…" : (compileResult?.note ?? "")}
+                      </div>
+                      {compileResult?.rules?.length ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium">
+                            将生成 {compileResult.rules.length} 条拦截规则（只对本任务生效）：
+                          </span>
+                          {compileResult.rules.map((r) => {
+                            const pv = compileResult.preview?.find((x) => x.pattern === r.pattern);
+                            return (
+                              <div
+                                key={r.pattern}
+                                className="flex flex-col gap-0.5 rounded border bg-background px-2 py-1"
+                              >
+                                <span className="break-all font-mono">
+                                  {r.action} · {r.pattern}
+                                </span>
+                                {pv ? (
+                                  <span className="text-muted-foreground">
+                                    会命中最近 {pv.total} 次工具调用中的 {pv.matched} 次
+                                    {pv.samples.length > 0 ? `（如：${pv.samples[0]}）` : ""}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground">本任务还没有可对照的历史调用</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                      {compileResult?.scope?.length ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium">
+                            将加入本任务授权范围（RoE 允许面）{compileResult.scope.length} 条：
+                          </span>
+                          {compileResult.scope.map((sc) => (
+                            <span key={`${sc.kind}:${sc.value}`} className="break-all font-mono">
+                              {sc.kind} · {sc.value}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          disabled={
+                            compileBusy || !((compileResult?.rules?.length ?? 0) + (compileResult?.scope?.length ?? 0))
+                          }
+                          onClick={() => void applyCompile(c)}
+                        >
+                          应用
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-xs"
+                          disabled={compileBusy}
+                          onClick={() => {
+                            setCompileFor(null);
+                            setCompileResult(null);
+                          }}
+                        >
+                          取消
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ),
+            )}
+            <ListLimitToggle
+              total={constraints.length}
+              limit={OVERVIEW_LIST_LIMIT}
+              expanded={showAllConstraints}
+              onToggle={() => setShowAllConstraints((v) => !v)}
+            />
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            暂无操作约束。建任务时会自动从描述/目标抽取；也可在此手动增删改，用来框定「允许/禁止做哪些操作」。
+          </p>
+        )}
+      </CollapsibleOverviewCard>
       <TaskAssetScopeCard taskId={taskId} policy={task?.asset_scope_policy} />
       <TaskLootExecCard taskId={taskId} enabled={task?.loot_exec_enabled} />
       <TaskCredentialBudgetCard taskId={taskId} budget={task?.credential_attempt_budget} />
@@ -1055,10 +1177,27 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                     {cacheHitRate(tokenTotals.cacheRead, tokenTotals.input)}
                   </span>
                 </span>
+                <span className="tabular-nums">
+                  <span className="text-muted-foreground">LLM 成本 </span>
+                  <span
+                    className="font-semibold"
+                    title={
+                      tokenTotals.unpricedCount > 0
+                        ? "存在未配置单价的模型，可在「系统 → LLM 配置」中补充费用单价"
+                        : "按模型配置单价（含峰/谷时段）估算"
+                    }
+                  >
+                    {tokenTotals.pricedCount === 0
+                      ? "未定价"
+                      : tokenTotals.unpricedCount > 0
+                        ? `${fmtCostUSD(tokenTotals.costUsd, true)}（含未定价）`
+                        : fmtCostUSD(tokenTotals.costUsd, true)}
+                  </span>
+                </span>
               </div>
               <p className="text-[10px] text-muted-foreground">
                 「输入」已包含缓存读；DeepSeek 为自动前缀缓存，没有缓存写入计费（cache write 恒为 0）。命中率 = 缓存读 /
-                输入。
+                输入；成本按「系统 → LLM 配置」模型单价（含峰/谷时段）估算。
               </p>
               {/* 按模型明细表 */}
               <div className="overflow-x-auto">
@@ -1071,7 +1210,8 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                       <th className="py-1.5 pr-3 text-right font-medium">输出</th>
                       <th className="py-1.5 pr-3 text-right font-medium">缓存读</th>
                       <th className="py-1.5 pr-3 text-right font-medium">未命中</th>
-                      <th className="py-1.5 text-right font-medium">命中率</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">命中率</th>
+                      <th className="py-1.5 text-right font-medium">成本</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1087,8 +1227,17 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                         <td className="py-1.5 pr-3 text-right tabular-nums">
                           {fmtTokens(Math.max(0, m.input_tokens - m.cache_read_tokens))}
                         </td>
-                        <td className="py-1.5 text-right text-emerald-500 tabular-nums">
+                        <td className="py-1.5 pr-3 text-right text-emerald-500 tabular-nums">
                           {cacheHitRate(m.cache_read_tokens, m.input_tokens)}
+                        </td>
+                        <td className="py-1.5 text-right font-medium tabular-nums">
+                          {m.priced ? (
+                            fmtCostUSD(m.cost_usd ?? 0, true)
+                          ) : (
+                            <span className="font-normal text-muted-foreground" title="未配置模型单价">
+                              未定价
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1102,96 +1251,101 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
         </CardContent>
       </Card>
       {/* 测试范围：覆盖度分母 + 授权边界，可手动增删。 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheckIcon className="size-4 text-emerald-500" /> 测试范围
-            <span className="font-normal text-muted-foreground text-xs">
-              （覆盖度分母 + 授权边界，共 {scope.length} 条）
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {/* 新增表单 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <NativeSelect
-              size="sm"
-              value={scopeKind}
-              onChange={(e) => setScopeKind(e.target.value as TaskScopeRow["kind"])}
-            >
-              <NativeSelectOption value="root_domain">根域名</NativeSelectOption>
-              <NativeSelectOption value="subdomain">子域名</NativeSelectOption>
-              <NativeSelectOption value="ip">IP</NativeSelectOption>
-              <NativeSelectOption value="cidr">网段</NativeSelectOption>
-              <NativeSelectOption value="icp">ICP</NativeSelectOption>
-              <NativeSelectOption value="keyword">关键词</NativeSelectOption>
-              <NativeSelectOption value="company">公司</NativeSelectOption>
-            </NativeSelect>
-            <Input
-              className="h-7 w-56 text-sm"
-              placeholder={
-                scopeKind === "company"
-                  ? "公司名或 id"
-                  : scopeKind === "ip" || scopeKind === "cidr"
-                    ? "IP：10.0.0.1；网段：10.0.0.0/24"
-                    : scopeKind === "icp"
-                      ? "如 京ICP备12345678号-1"
-                      : scopeKind === "keyword"
-                        ? "如 企业名称关键词"
-                        : "如 example.com"
-              }
-              value={scopeValueInput}
-              onChange={(e) => setScopeValueInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addScope();
-              }}
-              disabled={scopeBusy}
+      <CollapsibleOverviewCard
+        title="测试范围"
+        icon={<ShieldCheckIcon className="size-4 text-emerald-500" />}
+        meta={<span className="font-normal text-muted-foreground text-xs">（共 {scope.length} 条）</span>}
+        description={showScope ? "覆盖度分母与授权边界，可手动增删。" : "已收起，点击右侧「查看测试范围」展开。"}
+        open={showScope}
+        onOpenChange={setShowScope}
+        openLabel="收起测试范围"
+        closedLabel="查看测试范围"
+      >
+        {/* 新增表单 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <NativeSelect
+            size="sm"
+            value={scopeKind}
+            onChange={(e) => setScopeKind(e.target.value as TaskScopeRow["kind"])}
+          >
+            <NativeSelectOption value="root_domain">根域名</NativeSelectOption>
+            <NativeSelectOption value="subdomain">子域名</NativeSelectOption>
+            <NativeSelectOption value="ip">IP</NativeSelectOption>
+            <NativeSelectOption value="cidr">网段</NativeSelectOption>
+            <NativeSelectOption value="icp">ICP</NativeSelectOption>
+            <NativeSelectOption value="keyword">关键词</NativeSelectOption>
+            <NativeSelectOption value="company">公司</NativeSelectOption>
+          </NativeSelect>
+          <Input
+            className="h-7 w-56 text-sm"
+            placeholder={
+              scopeKind === "company"
+                ? "公司名或 id"
+                : scopeKind === "ip" || scopeKind === "cidr"
+                  ? "IP：10.0.0.1；网段：10.0.0.0/24"
+                  : scopeKind === "icp"
+                    ? "如 京ICP备12345678号-1"
+                    : scopeKind === "keyword"
+                      ? "如 企业名称关键词"
+                      : "如 example.com"
+            }
+            value={scopeValueInput}
+            onChange={(e) => setScopeValueInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void addScope();
+            }}
+            disabled={scopeBusy}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={scopeBusy || !scopeValueInput.trim()}
+            onClick={() => void addScope()}
+          >
+            <PlusIcon className="size-3.5" /> 添加
+          </Button>
+          {scopeErr && <span className="text-red-500 text-xs">{scopeErr}</span>}
+        </div>
+        {(scopeKind === "ip" || scopeKind === "cidr") && (
+          <p className="text-muted-foreground text-xs">
+            IP 保存为单主机 /32；网段按网络地址保存（192.168.1.1/24 → 192.168.1.0/24）。
+          </p>
+        )}
+        {/* 范围列表 */}
+        {scope.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {visibleScope.map((row) => (
+              <div key={row.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
+                  {SCOPE_KIND_LABELS[row.kind]}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs">{scopeValue(row)}</span>
+                <span className="shrink-0 text-muted-foreground text-xs">{SCOPE_SOURCE_LABELS[row.source]}</span>
+                {row.task_id.toString() === taskId ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 shrink-0 px-1.5"
+                    onClick={() => void removeScope(row)}
+                  >
+                    <Trash2Icon className="size-3.5 text-red-500" />
+                  </Button>
+                ) : (
+                  <span className="shrink-0 text-muted-foreground text-xs">继承</span>
+                )}
+              </div>
+            ))}
+            <ListLimitToggle
+              total={scope.length}
+              limit={SCOPE_LIST_LIMIT}
+              expanded={showAllScope}
+              onToggle={() => setShowAllScope((v) => !v)}
             />
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={scopeBusy || !scopeValueInput.trim()}
-              onClick={() => void addScope()}
-            >
-              <PlusIcon className="size-3.5" /> 添加
-            </Button>
-            {scopeErr && <span className="text-red-500 text-xs">{scopeErr}</span>}
           </div>
-          {(scopeKind === "ip" || scopeKind === "cidr") && (
-            <p className="text-muted-foreground text-xs">
-              IP 保存为单主机 /32；网段按网络地址保存（192.168.1.1/24 → 192.168.1.0/24）。
-            </p>
-          )}
-          {/* 范围列表 */}
-          {scope.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
-              {scope.map((row) => (
-                <div key={row.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
-                    {SCOPE_KIND_LABELS[row.kind]}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{scopeValue(row)}</span>
-                  <span className="shrink-0 text-muted-foreground text-xs">{SCOPE_SOURCE_LABELS[row.source]}</span>
-                  {row.task_id.toString() === taskId ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      onClick={() => void removeScope(row)}
-                    >
-                      <Trash2Icon className="size-3.5 text-red-500" />
-                    </Button>
-                  ) : (
-                    <span className="shrink-0 text-muted-foreground text-xs">继承</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm">暂无测试范围，添加后可作为资产覆盖度的分母。</p>
-          )}
-        </CardContent>
-      </Card>
+        ) : (
+          <p className="text-muted-foreground text-sm">暂无测试范围，添加后可作为资产覆盖度的分母。</p>
+        )}
+      </CollapsibleOverviewCard>
       {/* Heartbeat */}
       <Card>
         <CardHeader>
@@ -1331,9 +1485,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                   <span className="min-w-0 flex-1 truncate text-sm">{i.summary || "(无摘要)"}</span>
                 </div>
                 <div className="mt-1 text-muted-foreground text-xs">
-                  前置：{i.blockers?.length
-                    ? i.blockers.map((b) => `#${b.id} ${b.state}`).join("、")
-                    : "未知"}
+                  前置：{i.blockers?.length ? i.blockers.map((b) => `#${b.id} ${b.state}`).join("、") : "未知"}
                   {i.depends_on?.length ? `（共 ${i.depends_on.length} 条依赖）` : ""}
                 </div>
               </div>

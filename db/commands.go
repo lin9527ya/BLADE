@@ -295,12 +295,14 @@ func (d *DB) ListLLMRecords(model, session, task, cache string, page, size int) 
 // llm_usage metering ledger (see db/llm_usage.go). Calls is the number of LLM calls
 // that hit this model.
 type ModelTokenStat struct {
-	Model            string `json:"model"`
-	Calls            int    `json:"calls"`
-	InputTokens      int    `json:"input_tokens"`
-	OutputTokens     int    `json:"output_tokens"`
-	CacheReadTokens  int    `json:"cache_read_tokens"`
-	CacheWriteTokens int    `json:"cache_write_tokens"`
+	Model            string  `json:"model"`
+	Calls            int     `json:"calls"`
+	InputTokens      int     `json:"input_tokens"`
+	OutputTokens     int     `json:"output_tokens"`
+	CacheReadTokens  int     `json:"cache_read_tokens"`
+	CacheWriteTokens int     `json:"cache_write_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+	Priced           bool    `json:"priced"`
 }
 
 // LLMTask is one distinct task with its LLM-record count.

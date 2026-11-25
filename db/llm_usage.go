@@ -115,10 +115,11 @@ VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,'')
 	return err
 }
 
-// TokenByModel aggregates a task's LLM token usage grouped by model, most-used
-// first, from the always-on llm_usage ledger. taskID is the task registry id.
-// Accurate even with per-agent model bindings, pool rotation/failover, and
-// interrupted runs, since every call (success or error) is metered.
+// TokenByModel aggregates a task's LLM token usage and estimated USD cost grouped
+// by model, most-used first, from the always-on llm_usage ledger. taskID is the
+// task registry id. Accurate even with per-agent model bindings, pool
+// rotation/failover, and interrupted runs, since every call (success or error) is
+// metered, and applies the same peak/off-peak price rules as CostSummary.
 //
 // 同 TokenUsedByTask：空 taskID 短路（空值存为 NULL），比较用裸列以命中
 // idx_llm_usage_model(task_id, model)。
@@ -126,28 +127,64 @@ func (d *DB) TokenByModel(taskID string) ([]ModelTokenStat, error) {
 	if taskID == "" {
 		return []ModelTokenStat{}, nil
 	}
+	prices, err := d.llmPriceMap()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.Query(`
-SELECT COALESCE(NULLIF(model,''),'(unknown)') AS model, COUNT(*) AS calls,
-       COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
-FROM llm_usage
-WHERE task_id = $1
-GROUP BY model
-ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
+SELECT COALESCE(NULLIF(u.model,''),'(unknown)') AS model,
+       `+costPeriodExprSQL+`,
+       COUNT(*) AS calls,
+       COALESCE(SUM(u.input_tokens),0), COALESCE(SUM(u.output_tokens),0),
+       COALESCE(SUM(u.cache_read),0), COALESCE(SUM(u.cache_write),0)
+FROM llm_usage u
+`+costPriceJoinSQL+`
+WHERE u.task_id = $1
+GROUP BY 1, 2`, taskID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []ModelTokenStat{}
+	byModel := map[string]*ModelTokenStat{}
 	for rows.Next() {
-		var m ModelTokenStat
-		if err := rows.Scan(&m.Model, &m.Calls, &m.InputTokens, &m.OutputTokens,
-			&m.CacheReadTokens, &m.CacheWriteTokens); err != nil {
+		var model, period string
+		var calls int
+		var inTok, outTok, crTok, cwTok int64
+		if err := rows.Scan(&model, &period, &calls, &inTok, &outTok, &crTok, &cwTok); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		stat := byModel[model]
+		if stat == nil {
+			stat = &ModelTokenStat{Model: model}
+			byModel[model] = stat
+		}
+		stat.Calls += calls
+		stat.InputTokens += int(inTok)
+		stat.OutputTokens += int(outTok)
+		stat.CacheReadTokens += int(crTok)
+		stat.CacheWriteTokens += int(cwTok)
+		if p, priced := pricedFor(model, prices, period); priced {
+			stat.Priced = true
+			cost, _ := usageCostUSD(inTok, outTok, crTok, cwTok, p)
+			stat.CostUSD += cost
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]ModelTokenStat, 0, len(byModel))
+	for _, m := range byModel {
+		out = append(out, *m)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].InputTokens + out[i].OutputTokens
+		tj := out[j].InputTokens + out[j].OutputTokens
+		if ti != tj {
+			return ti > tj
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out, nil
 }
 
 // ProfileUsage aggregates the whole ledger's token spend for one LLM profile

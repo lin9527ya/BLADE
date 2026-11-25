@@ -563,9 +563,15 @@ export function useOverviewState(taskId: string, sseConnected = false) {
       acc.cacheRead += m.cache_read_tokens;
       acc.cacheWrite += m.cache_write_tokens;
       acc.calls += m.calls;
+      if (m.priced) {
+        acc.costUsd += m.cost_usd ?? 0;
+        acc.pricedCount += 1;
+      } else {
+        acc.unpricedCount += 1;
+      }
       return acc;
     },
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 },
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0, costUsd: 0, pricedCount: 0, unpricedCount: 0 },
   );
 
   // 预算对照：用量 = 输入+输出（与后端 BudgetStage 的计量口径一致）。

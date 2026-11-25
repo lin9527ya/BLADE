@@ -1602,6 +1602,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
           output_tokens: 86000,
           cache_read_tokens: 940000,
           cache_write_tokens: 120000,
+          cost_usd: 11.45,
+          priced: true,
         },
         {
           model: "claude-haiku-4-5",
@@ -1610,6 +1612,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
           output_tokens: 24000,
           cache_read_tokens: 180000,
           cache_write_tokens: 20000,
+          cost_usd: 0.27,
+          priced: true,
         },
       ],
     };

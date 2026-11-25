@@ -265,6 +265,29 @@ type costUsageRow struct {
 	CacheWrite   int64
 }
 
+const (
+	// 按模型匹配价格（精确行优先，回退到 default），以及判断每条 usage 命中的峰/谷时段。
+	// CostSummary 与单任务 TokenByModel 共用这套规则，保证两处口径一致。
+	costPriceJoinSQL = `LEFT JOIN LATERAL (
+  SELECT p.* FROM llm_prices p
+  WHERE p.model = COALESCE(NULLIF(u.model,''), '(unknown)') OR p.model = 'default'
+  ORDER BY (p.model = 'default') ASC
+  LIMIT 1
+) pr ON true`
+
+	costPeriodExprSQL = `CASE WHEN EXISTS (
+  SELECT 1 FROM llm_price_offpeak_windows w
+  WHERE w.model = pr.model AND (
+    CASE WHEN w.start_time < w.end_time
+      THEN (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= w.start_time
+           AND (u.ts AT TIME ZONE pr.offpeak_timezone)::time < w.end_time
+      ELSE (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= w.start_time
+           OR (u.ts AT TIME ZONE pr.offpeak_timezone)::time < w.end_time
+    END
+  )
+) THEN 'offpeak' ELSE 'peak' END`
+)
+
 func (d *DB) costRows(days int) ([]costUsageRow, error) {
 	if days <= 0 {
 		days = 30
@@ -276,17 +299,7 @@ func (d *DB) costRows(days int) ([]costUsageRow, error) {
 SELECT to_char(u.ts AT TIME ZONE 'UTC','YYYY-MM-DD'),
        COALESCE(NULLIF(u.model,''), '(unknown)'),
        COALESCE(u.profile_name,''),
-       CASE WHEN EXISTS (
-         SELECT 1 FROM llm_price_offpeak_windows w
-         WHERE w.model = pr.model AND (
-           CASE WHEN w.start_time < w.end_time
-             THEN (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= w.start_time
-                  AND (u.ts AT TIME ZONE pr.offpeak_timezone)::time < w.end_time
-             ELSE (u.ts AT TIME ZONE pr.offpeak_timezone)::time >= w.start_time
-                  OR (u.ts AT TIME ZONE pr.offpeak_timezone)::time < w.end_time
-           END
-         )
-       ) THEN 'offpeak' ELSE 'peak' END,
+       `+costPeriodExprSQL+`,
        COALESCE(t.company_id, tc.company_id, 0), COALESCE(c.name,''),
        COALESCE(t.campaign_id,0), COALESCE(cp.name,''),
        COALESCE(SUM(u.input_tokens),0), COALESCE(SUM(u.output_tokens),0),
@@ -300,12 +313,7 @@ LEFT JOIN LATERAL (
 ) tc ON true
 LEFT JOIN companies c ON c.id = COALESCE(t.company_id, tc.company_id)
 LEFT JOIN campaigns cp ON cp.id = t.campaign_id
-LEFT JOIN LATERAL (
-  SELECT p.* FROM llm_prices p
-  WHERE p.model = COALESCE(NULLIF(u.model,''), '(unknown)') OR p.model = 'default'
-  ORDER BY (p.model = 'default') ASC
-  LIMIT 1
-) pr ON true
+`+costPriceJoinSQL+`
 WHERE u.ts >= now() - ($1 * interval '1 day')
 GROUP BY 1,2,3,4,5,6,7,8
 ORDER BY 1`, days)
@@ -379,6 +387,21 @@ func pricedFor(model string, prices map[string]LLMPrice, period string) (LLMPric
 	return p, true
 }
 
+func usageCostUSD(input, output, cacheRead, cacheWrite int64, p LLMPrice) (costUSD, cacheSavingsUSD float64) {
+	uncached := input - cacheRead
+	if uncached < 0 {
+		uncached = 0
+	}
+	costUSD = (float64(uncached)*p.InputPerMillion +
+		float64(cacheRead)*p.CacheReadPerMillion +
+		float64(cacheWrite)*p.CacheWritePerMillion +
+		float64(output)*p.OutputPerMillion) / 1e6
+	if p.CacheReadPerMillion < p.InputPerMillion {
+		cacheSavingsUSD = float64(cacheRead) * (p.InputPerMillion - p.CacheReadPerMillion) / 1e6
+	}
+	return costUSD, cacheSavingsUSD
+}
+
 func addCost(t *CostTotals, r costUsageRow, p LLMPrice, priced bool) {
 	t.InputTokens += r.Input
 	t.OutputTokens += r.Output
@@ -388,23 +411,14 @@ func addCost(t *CostTotals, r costUsageRow, p LLMPrice, priced bool) {
 		t.UnpricedTokens += r.Input + r.Output
 		return
 	}
-	uncached := r.Input - r.CacheRead
-	if uncached < 0 {
-		uncached = 0
-	}
-	cost := (float64(uncached)*p.InputPerMillion +
-		float64(r.CacheRead)*p.CacheReadPerMillion +
-		float64(r.CacheWrite)*p.CacheWritePerMillion +
-		float64(r.Output)*p.OutputPerMillion) / 1e6
+	cost, savings := usageCostUSD(r.Input, r.Output, r.CacheRead, r.CacheWrite, p)
 	t.CostUSD += cost
 	if r.Period == "offpeak" {
 		t.OffpeakCostUSD += cost
 	} else {
 		t.PeakCostUSD += cost
 	}
-	if p.CacheReadPerMillion < p.InputPerMillion {
-		t.CacheSavingsUSD += float64(r.CacheRead) * (p.InputPerMillion - p.CacheReadPerMillion) / 1e6
-	}
+	t.CacheSavingsUSD += savings
 }
 
 // CostSummary computes estimated spend from the live llm_usage ledger plus

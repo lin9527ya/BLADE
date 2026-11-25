@@ -310,3 +310,73 @@ func TestCostSummaryMultipleOffpeakWindows(t *testing.T) {
 		t.Fatalf("multi-window peak/offpeak = %.4f/%.4f, want 20/16 (%+v)", row.PeakCostUSD, row.OffpeakCostUSD, row)
 	}
 }
+
+func TestTokenByModelIncludesCostAndUnpriced(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer d.Close()
+
+	taskID := "cost-test-by-model-task"
+	pricedModel := "cost-test-by-model-priced"
+	unpricedModel := "cost-test-by-model-unpriced"
+	cleanup := func() {
+		_, _ = d.Exec(`DELETE FROM llm_usage WHERE task_id=$1`, taskID)
+		_, _ = d.Exec(`DELETE FROM llm_prices WHERE model = ANY($1::text[])`, []string{pricedModel, "default"})
+	}
+	cleanup()
+	defer cleanup()
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peakAt := time.Date(2026, 11, 16, 10, 0, 0, 0, loc).UTC()
+	offpeakAt := time.Date(2026, 11, 16, 3, 0, 0, 0, loc).UTC()
+
+	for _, entry := range []struct {
+		worker string
+		model  string
+		inTok  int
+		outTok int
+		crTok  int
+		at     time.Time
+	}{
+		{"w-peak", pricedModel, 1_000_000, 500_000, 200_000, peakAt},
+		{"w-offpeak", pricedModel, 1_000_000, 500_000, 0, offpeakAt},
+		{"w-unpriced", unpricedModel, 200_000, 100_000, 0, peakAt},
+	} {
+		if err := d.InsertLLMUsage(&LLMUsage{
+			TaskID: taskID, Worker: entry.worker, Model: entry.model,
+			InputTokens: entry.inTok, OutputTokens: entry.outTok, CacheRead: entry.crTok,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`UPDATE llm_usage SET ts=$1 WHERE task_id=$2 AND worker=$3`, entry.at, taskID, entry.worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.ReplaceLLMPrices([]LLMPrice{{
+		Model: pricedModel, InputPerMillion: 10, OutputPerMillion: 20, CacheReadPerMillion: 1,
+		OffpeakWindows:  []LLMOffpeakWindow{{Start: "00:30", End: "08:30"}},
+		OffpeakTimezone: "Asia/Shanghai", OffpeakInputPerMillion: 4, OffpeakOutputPerMillion: 8,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.TokenByModel(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(TokenByModel) = %d, want 2 (%+v)", len(got), got)
+	}
+	// Peak: (800k*10 + 200k*1 + 500k*20)/1e6 = 18.2; Offpeak: (1M*4 + 500k*8)/1e6 = 8.0 => total 26.2.
+	if got[0].Model != pricedModel || got[0].Calls != 2 || !got[0].Priced || math.Abs(got[0].CostUSD-26.2) > 0.0001 {
+		t.Fatalf("priced row = %+v, want model=%s calls=2 priced=true cost=26.2", got[0], pricedModel)
+	}
+	if got[1].Model != unpricedModel || got[1].Calls != 1 || got[1].Priced || got[1].CostUSD != 0 {
+		t.Fatalf("unpriced row = %+v, want model=%s calls=1 priced=false cost=0", got[1], unpricedModel)
+	}
+}
