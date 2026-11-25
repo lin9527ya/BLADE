@@ -49,7 +49,7 @@ func RedTeamMarkdown(in Input) string {
 		for i, ch := range in.Chains {
 			fmt.Fprintf(&b, "### 链 %d：%s\n\n", i+1, ch.Head)
 			for _, step := range ch.Steps {
-				fmt.Fprintf(&b, "- %s「%s」", intentRef(in.IntentOrdinal, step.IntentID), clipRunes(step.Summary, 100))
+				fmt.Fprintf(&b, "- %s「%s」", intentRef(step.IntentID), clipRunes(step.Summary, 100))
 				if len(step.Techniques) > 0 {
 					fmt.Fprintf(&b, "（%s）", strings.Join(step.Techniques, ", "))
 				}
@@ -73,7 +73,7 @@ func RedTeamMarkdown(in Input) string {
 			b.WriteString("（已失效）")
 		}
 		b.WriteString("\n")
-		writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive, in.IntentOrdinal)
+		writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 	}
 	for _, n := range in.Credentials {
 		label := nodeLabel(n)
@@ -85,7 +85,7 @@ func RedTeamMarkdown(in Input) string {
 			b.WriteString("（已失效）")
 		}
 		b.WriteString("\n")
-		writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive, in.IntentOrdinal)
+		writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 	}
 	b.WriteString("\n")
 

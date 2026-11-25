@@ -124,3 +124,19 @@ export function prettyBroadcastPayload(raw?: string): string {
     return raw;
   }
 }
+
+const WORKER_ORIGIN_RE = /^worker#([1-9]\d*)$/;
+
+/** 从 "worker#<intent_id>" 来源标记提取全局意图 id；其它来源返回 undefined。 */
+export function workerOriginIntentId(origin?: string): string | undefined {
+  const m = WORKER_ORIGIN_RE.exec((origin ?? "").trim());
+  return m?.[1];
+}
+
+/** 构造跳转到对应 Worker 会话页签的 URL；继承节点、非 Worker 来源或缺 taskId 时返回 undefined。 */
+export function workerOriginHref(taskId: string, origin?: string, inherited?: boolean): string | undefined {
+  if (!taskId || inherited) return undefined;
+  const intentId = workerOriginIntentId(origin);
+  if (!intentId) return undefined;
+  return `/function/tasks/detail?id=${encodeURIComponent(taskId)}&tab=sessions&session=${encodeURIComponent(`intent:${intentId}`)}`;
+}

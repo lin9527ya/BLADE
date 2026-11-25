@@ -54,6 +54,7 @@ import {
   MAX_WORKER_MESSAGE_CHARS,
   resolutionLabel,
   roleMeta,
+  sessionWorkerNo,
   TokenMetrics,
   workerMessageCharCount,
 } from "./_components/session-helpers";
@@ -364,9 +365,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         <SideQuestionWorkspace
           side={side}
           label={
-            active.role === "worker"
-              ? `Worker #${active.worker_no ?? active.intent_id} · ${activeDisplayTitle}`
-              : activeDisplayTitle
+            active.role === "worker" ? `Worker #${sessionWorkerNo(active)} · ${activeDisplayTitle}` : activeDisplayTitle
           }
         >
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card">
@@ -375,7 +374,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 const isWorker = active.role === "worker";
                 const meta = isWorker ? sessionMeta.get(active.intent_id ?? "") : undefined;
                 const title = isWorker
-                  ? `Worker #${active.worker_no ?? active.intent_id} · ${meta?.title ?? active.title}`
+                  ? `Worker #${sessionWorkerNo(active)} · ${meta?.title ?? active.title}`
                   : active.title;
                 const titleEl = <span className="min-w-0 truncate font-medium text-sm">{title}</span>;
                 return meta?.json ? (
@@ -667,15 +666,15 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   <MentionTextarea
                     inputGroup
                     rows={1}
-                    aria-label={`给 Worker #${active.worker_no ?? active.intent_id} 发消息`}
+                    aria-label={`给 Worker #${sessionWorkerNo(active)} 发消息`}
                     title="↑/↓ 翻阅已发送消息"
                     historyKey={`task:${taskId}:${active.id}`}
                     placeholder={
                       active.status === "running"
-                        ? `给运行中的 Worker #${active.worker_no ?? active.intent_id} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`
+                        ? `给运行中的 Worker #${sessionWorkerNo(active)} 发提示（下一次动作前生效），@ 引用记录，/btw 旁路提问…`
                         : active.status === "paused"
-                          ? `给已暂停的 Worker #${active.worker_no ?? active.intent_id} 发消息，@ 引用记录，调整执行方向…`
-                          : `给已中断的 Worker #${active.worker_no ?? active.intent_id} 发消息，从原会话继续执行；@ 引用记录…`
+                          ? `给已暂停的 Worker #${sessionWorkerNo(active)} 发消息，@ 引用记录，调整执行方向…`
+                          : `给已中断的 Worker #${sessionWorkerNo(active)} 发消息，从原会话继续执行；@ 引用记录…`
                     }
                     value={workerMessage}
                     onValueChange={(value) => {
@@ -805,7 +804,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         >
           <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
             <AlertDialogHeader>
-              <AlertDialogTitle>删除 Worker #{cancelIntent?.worker_no ?? cancelIntent?.intent_id}？</AlertDialogTitle>
+              <AlertDialogTitle>
+                删除 Worker #{cancelIntent ? sessionWorkerNo(cancelIntent) : undefined}？
+              </AlertDialogTitle>
               <AlertDialogDescription className="whitespace-normal break-words">
                 {deleteMode === "hard" ? (
                   <>

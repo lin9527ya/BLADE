@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
+import { workerOriginHref } from "@/lib/broadcast-format";
 import type { TaskNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -394,6 +395,7 @@ export function NodeDetailDialog({
   const raw = displayNode ? JSON.stringify(displayNode, null, 2) : "";
   const memberIds = node ? digestMemberIds(node) : [];
   const members = memberIds.map((id) => nodesById.get(id)).filter((m): m is TaskNode => !!m);
+  const originHref = taskId && node ? workerOriginHref(taskId, node.origin, node.inherited) : undefined;
 
   const copy = () => {
     void navigator.clipboard?.writeText(raw).then(() => {
@@ -523,7 +525,17 @@ export function NodeDetailDialog({
                     <span className="tabular-nums">{node.priority}</span>
                   </DetailRow>
                   <DetailRow label="来源">
-                    <span className="font-mono text-xs">{node.origin}</span>
+                    {originHref ? (
+                      <Link
+                        href={originHref}
+                        title="跳转到对应 Worker 会话"
+                        className="font-mono text-primary text-xs underline underline-offset-2"
+                      >
+                        {node.origin}
+                      </Link>
+                    ) : (
+                      <span className="font-mono text-xs">{node.origin || "system"}</span>
+                    )}
                   </DetailRow>
                   {node.inherited && node.source_task_id && (
                     <DetailRow label="来源任务">

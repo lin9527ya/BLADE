@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestIntentsExposePerTaskWorkerSeq：会话列表的 Worker 编号来自 worker_seq（任务内
-// 1-based），不是全局意图 id；两个任务的编号都从 1 开始。
-func TestIntentsExposePerTaskWorkerSeq(t *testing.T) {
+// TestIntentsExposeGlobalIDs：全站统一使用全局递增意图 id，不再额外计算任务内
+// worker_seq 局部序号，确保会话列表、播报板与工具寻址始终同一套编号。
+func TestIntentsExposeGlobalIDs(t *testing.T) {
 	s, _, request := trafficEvidenceServer(t)
 
 	mkTask := func(title string, n int) (string, []int64) {
@@ -37,6 +37,23 @@ func TestIntentsExposePerTaskWorkerSeq(t *testing.T) {
 		t.Fatalf("fixture 前提不成立：第二个任务的意图 id 应更大（%v vs %v）", ids2, ids1)
 	}
 
+	assertGlobalItems := func(taskID string, rawItems []map[string]any, ids []int64) {
+		t.Helper()
+		seen := map[string]bool{}
+		for _, item := range rawItems {
+			id, _ := item["id"].(string)
+			seen[id] = true
+			if _, hasSeq := item["worker_seq"]; hasSeq {
+				t.Fatalf("task %s id=%s 不应再返回 worker_seq: %+v", taskID, id, item)
+			}
+		}
+		for _, id := range ids {
+			if !seen[fmt.Sprint(id)] {
+				t.Fatalf("task %s 缺少全局意图 id=%d（items=%+v）", taskID, id, rawItems)
+			}
+		}
+	}
+
 	check := func(taskID string, ids []int64) {
 		t.Helper()
 		// 分页形态（会话列表实际走的路径）。
@@ -45,25 +62,24 @@ func TestIntentsExposePerTaskWorkerSeq(t *testing.T) {
 			t.Fatalf("intents page: %d %s", w.Code, w.Body)
 		}
 		var page struct {
-			Items []struct {
-				ID        string `json:"id"`
-				WorkerSeq int64  `json:"worker_seq"`
-			} `json:"items"`
+			Items []map[string]any `json:"items"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
 			t.Fatal(err)
 		}
-		got := map[string]int64{}
-		for _, item := range page.Items {
-			got[item.ID] = item.WorkerSeq
+		assertGlobalItems(taskID, page.Items, ids)
+
+		// 非分页形态同样不应返回 worker_seq。
+		wBare := request("GET", fmt.Sprintf("/api/exploration/intents?task=%s&limit=50", taskID), "")
+		if wBare.Code != 200 {
+			t.Fatalf("intents list: %d %s", wBare.Code, wBare.Body)
 		}
-		for i, id := range ids {
-			if got[fmt.Sprint(id)] != int64(i+1) {
-				t.Fatalf("task %s 第 %d 条意图 worker_seq=%d，want %d（items=%+v）",
-					taskID, i+1, got[fmt.Sprint(id)], i+1, page.Items)
-			}
+		var bare []map[string]any
+		if err := json.Unmarshal(wBare.Body.Bytes(), &bare); err != nil {
+			t.Fatal(err)
 		}
+		assertGlobalItems(taskID, bare, ids)
 	}
-	check(t1, ids1) // 3 条 → 1,2,3
-	check(t2, ids2) // 全局 id 更大，但仍是 1,2
+	check(t1, ids1)
+	check(t2, ids2)
 }

@@ -40,6 +40,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { workerOriginHref } from "@/lib/broadcast-format";
 import { type Tone, toneClasses, toneDot } from "@/lib/status";
 import { taskAssetTypeLabel } from "@/lib/task-assets";
 import type { Edge, ExploreKind, FindingAsset, NewAssetType, TaskNode } from "@/lib/types";
@@ -437,9 +438,36 @@ function AssetList({ assets, dense = false }: { assets: FindingAsset[]; dense?: 
   );
 }
 
+function OriginLabel({
+  taskId,
+  origin,
+  inherited,
+  className,
+}: {
+  taskId: string;
+  origin?: string;
+  inherited?: boolean;
+  className?: string;
+}) {
+  const text = origin || "system";
+  const href = workerOriginHref(taskId, origin, inherited);
+  if (!href) {
+    return <span className={cn("text-muted-foreground", className)}>{text}</span>;
+  }
+  return (
+    <Link
+      href={href}
+      title="跳转到对应 Worker 会话"
+      className={cn("font-mono text-primary underline-offset-2 hover:underline", className)}
+    >
+      {text}
+    </Link>
+  );
+}
+
 // 悬停在上下游条目上时弹出的节点名片:类型/状态/来源/时间 + 摘要 + payload 片段 + 涉及资产。
 // 数据来自本页已经拿到的 refs,不额外发请求——播报接口已经把邻居节点整份带回来了。
-function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsset[] }) {
+function RelatedNodeCard({ taskId, node, assets }: { taskId: string; node: TaskNode; assets: FindingAsset[] }) {
   const kind = viewKind(node);
   const meta = KIND_META[kind] ?? KIND_META.fact;
   const ts = Date.parse(node.ts);
@@ -456,7 +484,9 @@ function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsse
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground text-xs">
         <span>类型 {meta.label}</span>
-        <span>来源 {node.origin || "system"}</span>
+        <span>
+          来源 <OriginLabel taskId={taskId} origin={node.origin} inherited={node.inherited} />
+        </span>
         <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
       </div>
       <p className="line-clamp-4 break-words text-xs">{summary || "（无摘要）"}</p>
@@ -468,11 +498,13 @@ function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsse
 
 // 一条播报涉及的上下游:上游 = 指向本节点的边,下游 = 本节点指出去的边。
 function RelatedList({
+  taskId,
   title,
   rows,
   refs,
   assets,
 }: {
+  taskId: string;
   title: string;
   rows: Array<{ rel: string; id: string }>;
   refs: Record<string, TaskNode>;
@@ -502,7 +534,7 @@ function RelatedList({
                     </button>
                   </HoverCardTrigger>
                   <HoverCardContent align="start" className="w-96">
-                    <RelatedNodeCard node={node} assets={assets[node.id] ?? []} />
+                    <RelatedNodeCard taskId={taskId} node={node} assets={assets[node.id] ?? []} />
                   </HoverCardContent>
                 </HoverCard>
               ) : (
@@ -565,16 +597,17 @@ function BroadcastRow({
 
       {/* 内容列 */}
       <div className="min-w-0 border-b py-3 pr-1 last:border-b-0">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex w-full min-w-0 items-start gap-2 text-left"
-        >
-          <ChevronRightIcon
-            className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <div className="flex min-w-0 items-start gap-2">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          >
+            <ChevronRightIcon
+              className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+            />
+            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
               <KindChip kind={kind} />
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{node.id}</code>
               <NodeStateBadge node={node} />
@@ -586,10 +619,17 @@ function BroadcastRow({
                   新
                 </span>
               )}
-              <span className="ml-auto shrink-0 text-muted-foreground text-xs">{node.origin || "system"}</span>
-            </div>
-            <p className={cn("mt-1 text-sm", !open && "line-clamp-2")}>{summary || `节点 #${node.id}`}</p>
-          </div>
+            </span>
+          </button>
+          <OriginLabel taskId={taskId} origin={node.origin} inherited={node.inherited} className="shrink-0 text-xs" />
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="mt-1 block w-full pl-[22px] text-left"
+        >
+          <p className={cn("text-sm", !open && "line-clamp-2")}>{summary || `节点 #${node.id}`}</p>
         </button>
 
         {open && (
@@ -599,7 +639,9 @@ function BroadcastRow({
                 节点 <code className="font-mono">#{node.id}</code>
               </span>
               <span>类型 {meta.label}</span>
-              <span>来源 {node.origin || "system"}</span>
+              <span>
+                来源 <OriginLabel taskId={taskId} origin={node.origin} inherited={node.inherited} />
+              </span>
               <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
               {node.type === "intent" && !node.inherited && (
                 <Link
@@ -633,8 +675,8 @@ function BroadcastRow({
             <AssetList assets={assets[node.id] ?? []} />
             {(upstream.length > 0 || downstream.length > 0) && (
               <div className="flex flex-col gap-3 sm:flex-row">
-                <RelatedList title="上游 · 由此而来" rows={upstream} refs={refs} assets={assets} />
-                <RelatedList title="下游 · 由此产生" rows={downstream} refs={refs} assets={assets} />
+                <RelatedList taskId={taskId} title="上游 · 由此而来" rows={upstream} refs={refs} assets={assets} />
+                <RelatedList taskId={taskId} title="下游 · 由此产生" rows={downstream} refs={refs} assets={assets} />
               </div>
             )}
             <div>

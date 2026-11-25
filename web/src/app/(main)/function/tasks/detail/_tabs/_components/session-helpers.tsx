@@ -286,6 +286,13 @@ export function keyForSession(s: Session): string {
 
 export const workerSlotSessionId = (slot: number) => `s-slot-${slot}`;
 
+/** 统一的 Worker 编号：始终使用全局 intent_id，仅旧版固定槽位深链（slot:N）回退到 slot。 */
+export function sessionWorkerNo(s: Pick<Session, "intent_id" | "slot">): string | undefined {
+  if (s.intent_id) return s.intent_id;
+  if (typeof s.slot === "number" && s.slot > 0) return String(s.slot);
+  return undefined;
+}
+
 // Map an exploration intent (TaskNode) state → a session status the UI renders.
 //
 // **必须覆盖 exploration_nodes.state 的全部取值**（db/schema.sql 里 kind='intent' 的
@@ -341,7 +348,6 @@ export function intentToSession(n: TaskNode): Session {
     live: !n.inherited && state === "running",
     last_activity: n.ts,
     intent_id: n.id,
-    worker_no: n.worker_seq,
     source_task_id: n.source_task_id,
     inherited: n.inherited,
   };

@@ -31,6 +31,7 @@ import {
   broadcastSummary,
   broadcastViewKind,
   prettyBroadcastPayload,
+  workerOriginHref,
 } from "@/lib/broadcast-format";
 import type { ExploreKind, GlobalBroadcastItem, Task } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -141,6 +142,7 @@ function Row({ item, now }: { item: GlobalBroadcastItem; now: number }) {
   const ts = Date.parse(item.ts);
   const summary = broadcastSummary(item);
   const href = itemHref(item);
+  const originHref = workerOriginHref(item.task_id, item.origin);
   const boardHref = `/function/tasks/detail?id=${encodeURIComponent(item.task_id)}&tab=broadcast`;
 
   return (
@@ -189,7 +191,20 @@ function Row({ item, now }: { item: GlobalBroadcastItem; now: number }) {
             {summary || `节点 #${item.id}`}
           </Link>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-            <span>来源 {item.origin || "system"}</span>
+            <span>
+              来源{" "}
+              {originHref ? (
+                <Link
+                  href={originHref}
+                  title="跳转到对应 Worker 会话"
+                  className="font-mono text-primary underline-offset-2 hover:underline"
+                >
+                  {item.origin}
+                </Link>
+              ) : (
+                item.origin || "system"
+              )}
+            </span>
             {item.session_key && (
               <Link href={href} className="inline-flex items-center gap-0.5 text-primary hover:underline">
                 查看会话 <ArrowUpRightIcon className="size-3" />

@@ -535,7 +535,6 @@ func TestMarkdownFootprintSources(t *testing.T) {
 		Title: "t", Goal: "g", GeneratedAt: time.Unix(0, 0),
 		Footprints:       []*db.Node{fp},
 		FootprintSources: map[int64][]*db.Node{fp.ID: {intent, fact}},
-		IntentOrdinal:    map[int64]int64{intent.ID: 3},
 	})
 	for _, want := range []string{
 		"- 来自：",

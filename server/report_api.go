@@ -285,10 +285,6 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			reportGoals = append(reportGoals, report.GoalNote{Text: p.Text, VulnClass: p.VulnClass, State: n.State})
 		}
 	}
-	// 展示编号：任务内序号 + 全局 id。正文/附录写成「#3（id 659）」，
-	// 工具与 API 寻址仍用全局 id（同一数字在两种编号下含义不同）。
-	nodeOrd, _ := store.NodeOrdinals(db.KindFinding, 0)
-	intentOrd, _ := store.IntentOrdinals(0)
 	input := report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(), Goals: reportGoals,
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
@@ -296,7 +292,6 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		Scope: scope, Duplicates: duplicates, Truncated: truncated,
 		DataGaps:         dataGaps,
 		ConfidenceByNode: confidenceByNode, RuledOut: ruledOut, ProofGaps: proofGaps,
-		NodeOrdinal: nodeOrd, IntentOrdinal: intentOrd,
 		Footholds: footholds, Credentials: credentials, Artifacts: artifacts, Footprints: footprints,
 		FootprintSources: footprintSources,
 		LootUsedBy:       lootUsedBy, Chains: chains, ADPaths: adPaths,

@@ -9,7 +9,7 @@ import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
 import type { IntentAsset, Session } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { statusIcon } from "./session-helpers";
+import { sessionWorkerNo, statusIcon } from "./session-helpers";
 
 // 会话列表的条目与 worker 资产徽标。
 
@@ -63,7 +63,7 @@ export function SessionItem({
         {icon ?? <span className="size-3.5 shrink-0" />}
         {s.intent_id && (
           <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
-            #{s.worker_no ?? s.intent_id}
+            #{sessionWorkerNo(s)}
           </span>
         )}
         {s.inherited && s.source_task_id && (

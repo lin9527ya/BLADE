@@ -46,11 +46,6 @@ type Input struct {
 	// ConfidenceByNode carries the honest-calibration label (high/medium/low) for
 	// in-body findings keyed by finding node id; "" = 未标定 (named in the report).
 	ConfidenceByNode map[int64]string
-	// NodeOrdinal / IntentOrdinal 把全局节点 id 映射到**任务内序号**（1-based），
-	// 只用于展示：报告里写成「#3（id 659）」——序号便于人读，id 便于定位与回查。
-	// 工具/API 寻址仍用全局 id；缺映射时退回只打印 id。
-	NodeOrdinal   map[int64]int64
-	IntentOrdinal map[int64]int64
 	// RuledOut lists candidates closed with counterevidence (status ruled_out):
 	// 不进正文，但留档——"没找到控制点 ≠ 安全" 的对账面。
 	RuledOut []CandidateNote
@@ -426,25 +421,20 @@ func clipRunes(s string, n int) string {
 	return string([]rune(s)[:n]) + "…"
 }
 
-// nodeRef 渲染节点引用：#<任务内序号>（id <全局 id>）。没有序号时退回 #<id>。
-// nodeRef 渲染节点引用：只用全局 id。
-//
-// 曾经写成「#序号（id 全局id）」两个数——序号是给人看的、id 是给机器寻址的，看起来
-// 两全，实际是混淆源：同一句话里两个编号，读者与模型都得先判断该用哪个。节点标识
-// 只有一种，就是全局 id（与工具参数、API、时间线完全一致）。
-func nodeRef(_ map[int64]int64, id int64) string { return fmt.Sprintf("#%d", id) }
+// nodeRef 渲染节点引用：只用全局 id（与工具参数、API、时间线及界面保持一致）。
+func nodeRef(id int64) string { return fmt.Sprintf("#%d", id) }
 
-// intentRef 渲染意图引用：intent-<全局 id>（同上，不再给任务内序号）。
-func intentRef(_ map[int64]int64, id int64) string { return fmt.Sprintf("intent-%d", id) }
+// intentRef 渲染意图引用：intent-<全局 id>。
+func intentRef(id int64) string { return fmt.Sprintf("intent-%d", id) }
 
 // writeLootUses 渲染「这条战果被用在了哪一步」——交付物里的作业叙述靠它串起来。
 // 已失效又没用过的什么都不写：它已经不是一个机会了，占一行只是噪声。
-func writeLootUses(b *strings.Builder, uses []LootUse, active bool, intentOrd map[int64]int64) {
+func writeLootUses(b *strings.Builder, uses []LootUse, active bool) {
 	switch {
 	case len(uses) > 0:
 		parts := make([]string, 0, len(uses))
 		for _, u := range uses {
-			parts = append(parts, fmt.Sprintf("%s「%s」", intentRef(intentOrd, u.IntentID), clipRunes(u.Summary, 60)))
+			parts = append(parts, fmt.Sprintf("%s「%s」", intentRef(u.IntentID), clipRunes(u.Summary, 60)))
 		}
 		fmt.Fprintf(b, "- 动用于：%s\n", strings.Join(parts, "；"))
 	case active:
@@ -565,7 +555,7 @@ func Markdown(in Input) string {
 					PrefixIf("权限", v.Privilege),
 					lootStateLabel(n.State),
 				})
-				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive, in.IntentOrdinal)
+				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 				if v.Detail != "" {
 					fmt.Fprintf(&b, "- 细节：%s\n", v.Detail)
 				}
@@ -607,7 +597,7 @@ func Markdown(in Input) string {
 						fmt.Fprintf(&b, "- 验证证据（%s）：`%s`\n", t.Label(), t.Evidence)
 					}
 				}
-				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive, in.IntentOrdinal)
+				writeLootUses(&b, in.LootUsedBy[n.ID], n.State == db.StateLootActive)
 				if v.Evidence != "" {
 					fmt.Fprintf(&b, "- 证据：`%s`\n", v.Evidence)
 				}
@@ -622,7 +612,7 @@ func Markdown(in Input) string {
 		writeArtifacts(&b, in.Artifacts)
 	}
 	if len(in.Footprints) > 0 {
-		writeFootprints(&b, in.Footprints, in.FootprintSources, in.IntentOrdinal)
+		writeFootprints(&b, in.Footprints, in.FootprintSources)
 	}
 
 	// 凭据尝试台账（P43）：与「战果」是两个方向——战果说"拿到了什么"，这里说"动过谁"。
@@ -638,7 +628,7 @@ func Markdown(in Input) string {
 		for i, c := range in.Chains {
 			fmt.Fprintf(&b, "**路径 %d**：起点 %s\n\n", i+1, c.Head)
 			for _, s := range c.Steps {
-				fmt.Fprintf(&b, "- %s「%s」", intentRef(in.IntentOrdinal, s.IntentID), clipRunes(s.Summary, 80))
+				fmt.Fprintf(&b, "- %s「%s」", intentRef(s.IntentID), clipRunes(s.Summary, 80))
 				if len(s.Techniques) > 0 {
 					fmt.Fprintf(&b, " [%s]", strings.Join(s.Techniques, " "))
 				}
@@ -770,7 +760,7 @@ func Markdown(in Input) string {
 			if dups := in.Duplicates[r.node.ID]; len(dups) > 0 {
 				ids := make([]string, 0, len(dups))
 				for _, id := range dups {
-					ids = append(ids, nodeRef(in.NodeOrdinal, id))
+					ids = append(ids, nodeRef(id))
 				}
 				fmt.Fprintf(&b, "**同指纹的重复登记**：%s（同一漏洞的多次登记，只在此计一次）\n\n", strings.Join(ids, "、"))
 			}
@@ -795,7 +785,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, n := range in.Unconfirmed {
 			f := parseFinding(n)
-			fmt.Fprintf(&b, "- %s [%s] %s（置信度：%s）\n", nodeRef(in.NodeOrdinal, n.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), confidenceLabel(in.ConfidenceByNode[n.ID]))
+			fmt.Fprintf(&b, "- %s [%s] %s（置信度：%s）\n", nodeRef(n.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), confidenceLabel(in.ConfidenceByNode[n.ID]))
 		}
 		b.WriteString("\n_这些条目尚未达到确认门（high 置信 / 处置确认 / 复测 reproduced|fixed）；不得当作已确认漏洞，也不得当作安全。_\n\n")
 	}
@@ -807,7 +797,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, n := range in.NoEvidence {
 			f := parseFinding(n)
-			fmt.Fprintf(&b, "- %s [%s] %s\n", nodeRef(in.NodeOrdinal, n.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
+			fmt.Fprintf(&b, "- %s [%s] %s\n", nodeRef(n.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
 		}
 		b.WriteString("\n")
 	}
@@ -819,7 +809,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, c := range in.RuledOut {
 			f := parseFinding(c.Node)
-			fmt.Fprintf(&b, "- %s [%s] %s — 反证：%s（置信度：%s）\n", nodeRef(in.NodeOrdinal, c.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.Counterevidence, "（未记录）"), confidenceLabel(c.Confidence))
+			fmt.Fprintf(&b, "- %s [%s] %s — 反证：%s（置信度：%s）\n", nodeRef(c.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.Counterevidence, "（未记录）"), confidenceLabel(c.Confidence))
 		}
 		b.WriteString("\n")
 	}
@@ -831,7 +821,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, c := range in.ProofGaps {
 			f := parseFinding(c.Node)
-			fmt.Fprintf(&b, "- %s [%s] %s — 缺口：%s（置信度：%s）\n", nodeRef(in.NodeOrdinal, c.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.ProofGap, "（未记录）"), confidenceLabel(c.Confidence))
+			fmt.Fprintf(&b, "- %s [%s] %s — 缺口：%s（置信度：%s）\n", nodeRef(c.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(c.ProofGap, "（未记录）"), confidenceLabel(c.Confidence))
 		}
 		b.WriteString("\n")
 	}
@@ -844,7 +834,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, c := range in.Closed {
 			f := parseFinding(c.Node)
-			fmt.Fprintf(&b, "- %s [%s] %s — 状态：%s（置信度：%s）\n", nodeRef(in.NodeOrdinal, c.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), closedStatusLabel(c.Status), confidenceLabel(c.Confidence))
+			fmt.Fprintf(&b, "- %s [%s] %s — 状态：%s（置信度：%s）\n", nodeRef(c.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), closedStatusLabel(c.Status), confidenceLabel(c.Confidence))
 		}
 		b.WriteString("\n")
 	}
@@ -919,7 +909,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, rn := range in.Retests {
 			f := parseFinding(rn.Node)
-			fmt.Fprintf(&b, "- %s [%s] %s — 复测结论：%s\n", nodeRef(in.NodeOrdinal, rn.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), retestVerdictLabel(rn.Verdict))
+			fmt.Fprintf(&b, "- %s [%s] %s — 复测结论：%s\n", nodeRef(rn.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), retestVerdictLabel(rn.Verdict))
 		}
 		b.WriteString("\n")
 	}
@@ -938,7 +928,7 @@ func Markdown(in Input) string {
 			if label == "" {
 				label = "（无标题）"
 			}
-			fmt.Fprintf(&b, "- %s [%s] %s%s\n", nodeRef(in.NodeOrdinal, np.Node.ID), np.Node.State, label, reason)
+			fmt.Fprintf(&b, "- %s [%s] %s%s\n", nodeRef(np.Node.ID), np.Node.State, label, reason)
 		}
 		b.WriteString("\n")
 	}
@@ -950,7 +940,7 @@ func Markdown(in Input) string {
 	} else {
 		for _, r := range in.Retracted {
 			f := parseFinding(r.Node)
-			fmt.Fprintf(&b, "- %s [%s] %s — 原因：%s\n", nodeRef(in.NodeOrdinal, r.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(r.Reason, "（未记录）"))
+			fmt.Fprintf(&b, "- %s [%s] %s — 原因：%s\n", nodeRef(r.Node.ID), strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")), nz(r.Reason, "（未记录）"))
 		}
 		b.WriteString("\n")
 	}
@@ -1143,7 +1133,7 @@ func footprintExposureRank(e string) int {
 
 // writeFootprints 渲染「测试痕迹与清理」。自动归纳是**预期**不是实测，报告必须
 // 写明来源；cleaned/not_found/accepted 三态分别成词，不能合并成“已处理”。
-func writeFootprints(b *strings.Builder, nodes []*db.Node, sources map[int64][]*db.Node, intentOrd map[int64]int64) {
+func writeFootprints(b *strings.Builder, nodes []*db.Node, sources map[int64][]*db.Node) {
 	type row struct {
 		n *db.Node
 		f db.Footprint
@@ -1194,7 +1184,7 @@ func writeFootprints(b *strings.Builder, nodes []*db.Node, sources map[int64][]*
 			fmt.Fprintf(b, "- 具体信号：%s\n", strings.Join(f.Signals, "；"))
 		}
 		if srcs := sources[r.n.ID]; len(srcs) > 0 {
-			fmt.Fprintf(b, "- 来自：%s\n", footprintSourceText(srcs, intentOrd))
+			fmt.Fprintf(b, "- 来自：%s\n", footprintSourceText(srcs))
 		}
 		if f.Occurrences > 1 {
 			fmt.Fprintf(b, "- 出现次数：%d\n", f.Occurrences)
@@ -1221,9 +1211,9 @@ func writeFootprints(b *strings.Builder, nodes []*db.Node, sources map[int64][]*
 	}
 }
 
-// footprintSourceText 把一条痕迹的来源节点写成一句话：意图按任务内序号指认
-// （与正文其它地方一致），事实/漏洞/战果用类型 + 编号 + 摘要，读的人能回图里找到。
-func footprintSourceText(sources []*db.Node, intentOrd map[int64]int64) string {
+// footprintSourceText 把一条痕迹的来源节点写成一句话：意图按全局 id（intent-<id>）指认
+// （与正文其它地方及界面一致），事实/漏洞/战果用类型 + 编号 + 摘要，读的人能回图里找到。
+func footprintSourceText(sources []*db.Node) string {
 	parts := make([]string, 0, len(sources))
 	for _, n := range sources {
 		if n == nil {
@@ -1231,7 +1221,7 @@ func footprintSourceText(sources []*db.Node, intentOrd map[int64]int64) string {
 		}
 		switch n.Kind {
 		case db.KindIntent:
-			parts = append(parts, intentRef(intentOrd, n.ID)+" "+clipRunes(nodeSummary(n), 60))
+			parts = append(parts, intentRef(n.ID)+" "+clipRunes(nodeSummary(n), 60))
 		case db.KindFact:
 			parts = append(parts, "事实 #"+fmt.Sprint(n.ID)+" "+clipRunes(nodeSummary(n), 60))
 		case db.KindFinding:

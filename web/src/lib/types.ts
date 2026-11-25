@@ -910,9 +910,6 @@ export interface TaskNode {
   source_task_id?: string;
   inherited?: boolean;
   delete_reason?: string; // 意图假删除(state='deleted')时的删除原因
-  // 意图在本任务内的创建序号（1-based）。意图 id 是全局序列（任务 2 会从 21 继续），
-  // 界面上的 "Worker #N" 用这个序号，而不是 id。
-  worker_seq?: number;
   // 当前绑定的固定执行槽位（owner=work#N）；0/缺省=未绑定。
   slot_no?: number;
   // kind=finding 节点的 findings.status 投影（pending/confirmed/ruled_out/
@@ -2058,7 +2055,6 @@ export interface Session {
   live: boolean;
   last_activity: string;
   intent_id?: string;
-  worker_no?: number; // 任务内序号（"Worker #N"）；缺省时回退到 intent_id
   source_task_id?: string;
   inherited?: boolean;
   seg?: number; // main-agent session: which conversation segment (0 = original)
