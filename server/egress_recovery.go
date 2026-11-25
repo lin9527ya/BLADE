@@ -3,11 +3,13 @@ package server
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/traffic"
 )
 
 // 出口代理自愈：代理池把 active 置为 blockedProxyURL（本机关闭端口 127.0.0.1:9）时，
@@ -37,10 +39,11 @@ var egressBlockedMarkers = []string{
 }
 
 const (
-	// egressBlockedProbeInterval 是"当前出口是黑洞"时触发复查的最小间隔。健康检查
-	// 本身就是每 30 秒一次，这里只负责把"明显已经坏了"的时刻提前到秒级，同时避免
-	// 每个工具输出都打一次复查。
+	// egressBlockedProbeInterval 是触发立即复查的最小间隔。健康检查本身每 30 秒一轮，
+	// 这里只负责把"黑洞或活跃代理明显报错"的时刻提前到秒级，同时避免每个工具输出都打一次复查。
 	egressBlockedProbeInterval = 5 * time.Second
+	// egressActiveProbeInterval 是活跃代理突发拒绝连接/407 时触发被动复查的最小间隔。
+	egressActiveProbeInterval = 3 * time.Second
 	// egressBlockedNotifyInterval 是"出口阻断"提示写进时间线的最小间隔：同一次故障
 	// 只该留一条，而不是每条失败命令一条。
 	egressBlockedNotifyInterval = 2 * time.Minute
@@ -54,11 +57,12 @@ type egressRecovery struct {
 	blockedSeen bool
 }
 
-// observeEgressBlocked 在工具输出显示"当前出口是平台黑洞"时调用。
+// observeEgressBlocked 在工具输出显示"当前出口是平台黑洞"或"当前活跃代理本身拒绝连接/认证失败"时调用。
 //
-// 判据刻意收得很窄：**输出里出现本机黑洞地址**，或 curl 的 `exit 7` 且目标不是本机。
-// 普通的连接超时/拒绝连接可能是目标侧行为，不该触发平台自愈（那会把"目标不通"误判成
-// "平台出口坏了"，然后反复重启代理池）。
+// 判据刻意收得很窄：
+//  1. 出口确为 blockedProxyURL（127.0.0.1:9）且工具输出出现黑洞特征；
+//  2. 或出口为正常活跃代理时，工具输出直接命中当前活跃代理 host:port 的代理层故障（如 proxyconnect/407/连接拒绝）。
+// 普通的远端目标连接超时/拒绝连接不会触发代理池重查（以免把目标侧不通误判成平台出口坏了）。
 func (e *Engine) observeEgressBlocked(t *Task, r db.Activity) {
 	if e == nil || t == nil || e.m == nil || r.Kind != "tool_result" {
 		return
@@ -67,9 +71,16 @@ func (e *Engine) observeEgressBlocked(t *Task, r db.Activity) {
 	if strings.TrimSpace(text) == "" {
 		text = r.Summary
 	}
-	// 判据用**主机:端口**而不是完整 URL：curl 的报错是
-	// `Failed to connect to 127.0.0.1 port 9`，环境变量里是 `http://127.0.0.1:9`，
-	// 用完整 URL 匹配会漏掉前者（任务 25 实测：worker 卡了 26 分钟没被识别）。
+	active := e.m.EgressProxy()
+	if active == "" {
+		return
+	}
+	if active != blockedProxyURL {
+		if activeProxyFailureInText(active, text) {
+			e.m.ObserveProxyFailure(active, fmt.Errorf("tool_result matched active proxy failure"))
+		}
+		return
+	}
 	hit := false
 	for _, m := range egressBlockedMarkers {
 		if strings.Contains(text, m) {
@@ -78,11 +89,6 @@ func (e *Engine) observeEgressBlocked(t *Task, r db.Activity) {
 		}
 	}
 	if !hit {
-		return
-	}
-	// 只有平台**当前**出口确实是黑洞时才自愈。worker 命令里残留的旧值（会话里写死的
-	// 变量、上一轮的 env 快照）不该触发——那会让"平台明明正常"时也反复复查。
-	if active := e.m.EgressProxy(); active != blockedProxyURL {
 		return
 	}
 	rec := e.taskEgressRecovery(t.ID)
@@ -163,6 +169,71 @@ func (m *Manager) EgressBlocked() bool {
 		return false
 	}
 	return m.EgressProxy() == blockedProxyURL
+}
+
+// ObserveProxyFailure 在工具或 MITM 上游遇到代理层连接/鉴权报错时触发（带节流，绝不阻塞调用方）。
+func (m *Manager) ObserveProxyFailure(proxyURL string, err error) {
+	if m == nil || err == nil {
+		return
+	}
+	active := strings.TrimSpace(m.EgressProxy())
+	if active == "" || active == blockedProxyURL {
+		return
+	}
+	if !sameProxyTarget(active, proxyURL) {
+		return
+	}
+	now := time.Now()
+	m.proxyFailMu.Lock()
+	if now.Sub(m.lastProxyFailProbe) < egressActiveProbeInterval {
+		m.proxyFailMu.Unlock()
+		return
+	}
+	m.lastProxyFailProbe = now
+	m.proxyFailMu.Unlock()
+	log.Printf("[egress] 检测到当前活跃代理 %s 报错，提前触发健康复查：%s",
+		traffic.RedactProxyURL(active), traffic.SanitizeProxyError(active, err))
+	m.RecheckProxyPool()
+}
+
+func sameProxyTarget(a, b string) bool {
+	if strings.TrimSpace(b) == "" {
+		return false
+	}
+	ua, ea := url.Parse(strings.TrimSpace(a))
+	ub, eb := url.Parse(strings.TrimSpace(b))
+	if ea != nil || eb != nil {
+		return strings.TrimSpace(a) == strings.TrimSpace(b)
+	}
+	return strings.EqualFold(ua.Host, ub.Host)
+}
+
+func activeProxyFailureInText(active, text string) bool {
+	if strings.TrimSpace(active) == "" || strings.TrimSpace(text) == "" {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(active))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	hostPort := strings.ToLower(u.Host)
+	curlHostPort := hostPort
+	if h, p, serr := strings.Cut(hostPort, ":"); serr {
+		curlHostPort = h + " port " + p
+	}
+	mentionsProxy := strings.Contains(lower, hostPort) || strings.Contains(lower, curlHostPort)
+	if !mentionsProxy {
+		return strings.Contains(lower, "proxyconnect") ||
+			strings.Contains(lower, "proxy authentication required") ||
+			strings.Contains(lower, "received http code 407 from proxy")
+	}
+	for _, m := range []string{"connection refused", "couldn't connect", "failed to connect", "connection reset", "407", "socks", "proxyconnect", "timed out", "reset by peer"} {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // notifyEgressRestoredAll 在出口恢复时给所有在跑任务留一条提示（由 Manager 回调）。

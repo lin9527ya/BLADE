@@ -151,7 +151,7 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 	}
 	if req.GlobalProxy != nil || req.GlobalProxyPool != nil || req.ProxyHealthURL != nil ||
 		req.ProxyHealthTimeout != nil || req.ProxyHealthInterval != nil ||
-		req.ProxyFailThreshold != nil || req.ProxySwitchCooldown != nil {
+		req.ProxyFailThreshold != nil || req.ProxySwitchCooldown != nil || req.ProxyStrategy != nil {
 		// 与写库分支同样的「未给字段用当前值兜底」构造，只做校验、不落库。
 		cfg := s.m.ProxyPoolConfig()
 		switch {
@@ -174,6 +174,9 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 		}
 		if req.ProxySwitchCooldown != nil {
 			cfg.Cooldown = time.Duration(*req.ProxySwitchCooldown) * time.Second
+		}
+		if req.ProxyStrategy != nil {
+			cfg.Strategy = ProxyStrategy(strings.TrimSpace(*req.ProxyStrategy))
 		}
 		if _, err := NormalizeProxyPoolConfig(cfg); err != nil {
 			return err

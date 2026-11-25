@@ -1,6 +1,9 @@
 package traffic
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateProxyURL(t *testing.T) {
 	ok := []string{
@@ -16,8 +19,14 @@ func TestValidateProxyURL(t *testing.T) {
 			t.Errorf("ValidateProxyURL(%q) unexpected error: %v", raw, err)
 			continue
 		}
-		if u.Scheme == "socks5h" {
-			t.Errorf("ValidateProxyURL(%q) 应把 socks5h 归一为 socks5", raw)
+		if raw == "socks5h://127.0.0.1:7891" {
+			if u.Scheme != "socks5h" {
+				t.Errorf("ValidateProxyURL(%q) 应保留 socks5h 给外部工具，实际 %q", raw, u.Scheme)
+			}
+			tu, err := TransportProxyURL(raw)
+			if err != nil || tu.Scheme != "socks5" {
+				t.Errorf("TransportProxyURL(%q) = %v, %v; want socks5", raw, tu, err)
+			}
 		}
 	}
 	bad := []string{
@@ -84,3 +93,36 @@ func TestProxyAddr(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyRedactionAndUpstreamErrorHook(t *testing.T) {
+	raw := "socks5h://alice:s3cr3t@10.0.0.1:1080"
+	if got := RedactProxyURL(raw); got != "socks5h://10.0.0.1:1080" {
+		t.Fatalf("RedactProxyURL = %q", got)
+	}
+	scrubbed := SanitizeProxyError(raw, contextError("proxyconnect tcp: dial tcp "+raw+": connection refused"))
+	if strings.Contains(scrubbed, "s3cr3t") || strings.Contains(scrubbed, "alice") {
+		t.Fatalf("SanitizeProxyError leaked credentials: %q", scrubbed)
+	}
+
+	tr := &Traffic{}
+	if err := tr.SetUpstreamProxy(raw); err != nil {
+		t.Fatalf("SetUpstreamProxy(socks5h): %v", err)
+	}
+	if got := tr.upstream.Load(); got == nil || got.Scheme != "socks5" {
+		t.Fatalf("upstream should map socks5h to socks5 for go-mitmproxy, got %v", got)
+	}
+
+	var hookProxy string
+	var hookErr error
+	tr.SetUpstreamErrorHook(func(p string, err error) {
+		hookProxy, hookErr = p, err
+	})
+	tr.notifyUpstreamError(contextError("proxyconnect tcp: dial tcp 10.0.0.1:1080: connection refused"))
+	if hookProxy == "" || hookErr == nil {
+		t.Fatalf("expected upstream error hook to fire, got proxy=%q err=%v", hookProxy, hookErr)
+	}
+}
+
+type contextError string
+
+func (e contextError) Error() string { return string(e) }

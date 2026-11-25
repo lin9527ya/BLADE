@@ -179,6 +179,10 @@ type Traffic struct {
 	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
 	// so no host escapes it. Hot-swappable at runtime via SetUpstreamProxy.
 	upstream atomic.Pointer[url.URL]
+	// upstreamErrHook fires (non-blocking callers) when go-mitmproxy hits an
+	// upstream proxy connection/auth error so the proxy pool can probe immediately.
+	upstreamErrMu sync.RWMutex
+	onUpstreamErr func(proxyURL string, err error)
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -374,17 +378,69 @@ func (t *Traffic) ProxyAddr() string {
 	return "http://" + t.addr
 }
 
+// SetUpstreamErrorHook registers a callback triggered when the MITM upstream
+// proxy fails a connection or auth handshake. Pass nil to clear.
+func (t *Traffic) SetUpstreamErrorHook(fn func(proxyURL string, err error)) {
+	if t == nil {
+		return
+	}
+	t.upstreamErrMu.Lock()
+	t.onUpstreamErr = fn
+	t.upstreamErrMu.Unlock()
+}
+
+func (t *Traffic) notifyUpstreamError(err error) {
+	if t == nil || err == nil {
+		return
+	}
+	u := t.upstream.Load()
+	if u == nil {
+		return
+	}
+	if !isUpstreamProxyError(err) {
+		return
+	}
+	t.upstreamErrMu.RLock()
+	fn := t.onUpstreamErr
+	t.upstreamErrMu.RUnlock()
+	if fn != nil {
+		fn(u.String(), err)
+	}
+}
+
+func isUpstreamProxyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, m := range []string{
+		"proxyconnect",
+		"proxy authentication",
+		"407",
+		"socks",
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+		"eof",
+	} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // SetUpstreamProxy points every captured request at a global egress proxy
-// (http/https/socks5, optional user:pass in the URL). An empty raw string clears
-// it, restoring direct dialing. The change is atomic and takes effect on the next
-// connection — no restart, no proxy rebuild. go-mitmproxy dials all three schemes
-// itself, so socks5 works uniformly here regardless of the target tool.
+// (http/https/socks5/socks5h, optional user:pass in the URL). An empty raw string
+// clears it, restoring direct dialing. The change is atomic and takes effect on
+// the next connection — no restart, no proxy rebuild. go-mitmproxy dials all
+// schemes itself, mapping socks5h to socks5 (Go's SOCKS5 dialer passes hostnames).
 func (t *Traffic) SetUpstreamProxy(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		t.upstream.Store(nil)
 		return nil
 	}
-	u, err := ValidateProxyURL(raw)
+	u, err := TransportProxyURL(raw)
 	if err != nil {
 		return err
 	}
@@ -392,30 +448,85 @@ func (t *Traffic) SetUpstreamProxy(raw string) error {
 	return nil
 }
 
-// ValidateProxyURL parses and checks a proxy URL (http/https/socks5, optional
-// user:pass), returning the parsed URL. Exposed so callers can validate a global
-// proxy before persisting it even when the traffic proxy itself is disabled.
+// ValidateProxyURL parses and checks a proxy URL (http/https/socks5/socks5h,
+// optional user:pass), returning the parsed URL while preserving socks5h vs
+// socks5 so external CLI/Python tools do not fall back to local DNS resolution.
 func ValidateProxyURL(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("解析代理地址 %q: %w", raw, err)
+		return nil, fmt.Errorf("解析代理地址 %q: %w", RedactProxyURL(raw), err)
 	}
+	u.Scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
 	switch u.Scheme {
-	case "http", "https", "socks5":
-	case "socks5h":
-		// Clash/curl 常用 socks5h 表示"域名交给代理解析"。Go 的 socks5 拨号器本来就
-		// 发送域名、由代理远端解析，所以等价映射成 socks5（保留远端 DNS，不泄漏）。
-		u.Scheme = "socks5"
+	case "http", "https", "socks5", "socks5h":
 	case "":
-		return nil, fmt.Errorf("代理 %q 缺少协议(用 http://、https://、socks5:// 或 socks5h://)", raw)
+		return nil, fmt.Errorf("代理 %q 缺少协议(用 http://、https://、socks5:// 或 socks5h://)", RedactProxyURL(raw))
 	default:
 		return nil, fmt.Errorf("不支持的代理协议 %q(用 http、https、socks5 或 socks5h)", u.Scheme)
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("代理 %q 缺少主机地址", raw)
+		return nil, fmt.Errorf("代理 %q 缺少主机地址", RedactProxyURL(raw))
 	}
 	return u, nil
+}
+
+// TransportProxyURL validates raw via ValidateProxyURL and normalizes socks5h
+// to socks5 for Go net/http.Transport and go-mitmproxy, which already perform
+// remote DNS resolution over SOCKS5 without leaking local DNS queries.
+func TransportProxyURL(raw string) (*url.URL, error) {
+	u, err := ValidateProxyURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "socks5h" {
+		cp := *u
+		cp.Scheme = "socks5"
+		return &cp, nil
+	}
+	return u, nil
+}
+
+// RedactProxyURL removes userinfo (user:pass@) from a proxy URL for logs/API.
+func RedactProxyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
+
+// SanitizeProxyError scrubs any proxy credentials embedded in err text (Go's
+// net/http wraps the proxy URL inside *url.Error on dial failures).
+func SanitizeProxyError(proxyURL string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	raw := strings.TrimSpace(proxyURL)
+	if raw == "" {
+		return msg
+	}
+	redacted := RedactProxyURL(raw)
+	if redacted != "" && redacted != raw {
+		msg = strings.ReplaceAll(msg, raw, redacted)
+	}
+	if u, perr := url.Parse(raw); perr == nil && u.User != nil {
+		if u.Scheme == "socks5h" {
+			cp := *u
+			cp.Scheme = "socks5"
+			msg = strings.ReplaceAll(msg, cp.String(), redacted)
+		}
+		if pw, ok := u.User.Password(); ok && pw != "" {
+			msg = strings.ReplaceAll(msg, ":"+pw+"@", ":***@")
+		}
+	}
+	return msg
 }
 
 // CACertPath returns the read-only public PEM CA cert clients must trust to verify
@@ -521,7 +632,10 @@ func (s *sink) Response(f *mproxy.Flow) {
 // the failure looks proxy/protocol-caused (h2 quirks, HEAD-with-body, protocol
 // errors) — not a plain target-unreachable error — we flag the host for
 // transparent passthrough so future requests to it succeed instead of dying.
-func (s *sink) RequestError(f *mproxy.Flow, err error) { s.t.maybePassthrough(f, err) }
+func (s *sink) RequestError(f *mproxy.Flow, err error) {
+	s.t.notifyUpstreamError(err)
+	s.t.maybePassthrough(f, err)
+}
 
 const (
 	passthroughTTL     = 10 * time.Minute

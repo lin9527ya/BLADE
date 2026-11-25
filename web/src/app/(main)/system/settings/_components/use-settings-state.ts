@@ -17,6 +17,8 @@ import type {
   OpsecKnowledgeResponse,
   ProxyEgressResult,
   ProxyPoolHealth,
+  ProxyPoolStatusPayload,
+  ProxyPoolStrategy,
   ScopeEnforcement,
   Settings,
 } from "@/lib/types";
@@ -190,8 +192,18 @@ export function useSettingsState() {
     ["proxy_switch_cooldown_seconds"],
     "30",
   );
+  const [proxyStrategy, setProxyStrategy] = useSettingsField<ProxyPoolStrategy>(
+    drafts,
+    "proxyStrategy",
+    ["proxy_strategy"],
+    "ordered",
+  );
   const [proxyActive, setProxyActive] = React.useState("");
   const [proxyBlocked, setProxyBlocked] = React.useState(false);
+  const [proxyPinned, setProxyPinned] = React.useState("");
+  const [proxyProbing, setProxyProbing] = React.useState(false);
+  const [probingProxy, setProbingProxy] = React.useState(false);
+  const [pinningProxy, setPinningProxy] = React.useState("");
   const [proxyStatus, setProxyStatus] = React.useState<ProxyPoolHealth[]>([]);
   const [proxyEgressIPURL, setProxyEgressIPURL] = useSettingsField(
     drafts,
@@ -398,6 +410,7 @@ export function useSettingsState() {
       drafts.applyField("proxyHealthInterval", String(s.proxy_health_interval_seconds ?? 30), ticket);
       drafts.applyField("proxyFailThreshold", String(s.proxy_fail_threshold ?? 2), ticket);
       drafts.applyField("proxySwitchCooldown", String(s.proxy_switch_cooldown_seconds ?? 30), ticket);
+      drafts.applyField("proxyStrategy", s.proxy_strategy || "ordered", ticket);
       drafts.applyField("proxyEgressIPURL", s.proxy_egress_ip_url || "https://api.ipify.org", ticket);
       drafts.applyField("clashApiURL", s.clash_api_url ?? "", ticket);
       if (applyReadonly) setClashSecretSet(!!s.clash_api_secret_set);
@@ -407,9 +420,13 @@ export function useSettingsState() {
       drafts.applyField("clashAuto", s.clash_auto_rotate !== false, ticket);
       drafts.applyField("clashCooldown", String(s.clash_rotate_cooldown_seconds ?? 120), ticket);
       if (applyReadonly) setClashStatus(s.clash_status ?? null);
-      if (applyReadonly) setProxyActive(s.proxy_active ?? "");
-      if (applyReadonly) setProxyBlocked(!!s.proxy_blocked);
-      if (applyReadonly) setProxyStatus(s.proxy_status ?? []);
+      if (applyReadonly) {
+        setProxyActive(s.proxy_active ?? "");
+        setProxyBlocked(!!s.proxy_blocked);
+        setProxyPinned(s.proxy_pinned ?? "");
+        setProxyProbing(!!s.proxy_probing);
+        setProxyStatus(s.proxy_status ?? []);
+      }
       drafts.applyField("pyInterp", s.python_interpreter ?? "", ticket);
       drafts.applyField("workers", String(s.workers ?? 3), ticket);
       drafts.applyField("tokenBudget", String(s.task_token_budget ?? 0), ticket);
@@ -1102,37 +1119,51 @@ export function useSettingsState() {
 
   // 只更新运行时状态，不回写输入框——手动刷新/轮询不能把用户正在编辑、尚未保存的
   // 代理池文本冲掉。
+  const applyPoolStatus = (st: ProxyPoolStatusPayload) => {
+    setProxyActive(st.active ?? "");
+    setProxyBlocked(!!st.blocked);
+    setProxyPinned(st.pinned ?? "");
+    setProxyProbing(!!st.probing);
+    setProxyStatus(st.candidates ?? []);
+  };
+
   const applyProxyStatus = (s: Settings) => {
     setProxyActive(s.proxy_active ?? "");
     setProxyBlocked(!!s.proxy_blocked);
+    setProxyPinned(s.proxy_pinned ?? "");
+    setProxyProbing(!!s.proxy_probing);
     setProxyStatus(s.proxy_status ?? []);
     setClashStatus(s.clash_status ?? null);
   };
 
-  // 代理健康探测是异步的。保存后轮询几次状态，让"正在检测代理…"能自然收敛；
-  // 探测较慢（多个候选 × 超时）时也不会让页面一直停在检测中而不给操作入口。
-  const pollProxyStatus = (remaining: number) => {
+  // 代理健康探测是异步的。保存后轮询直到探测完成且收敛，不再在仅有 1 条结果时早退。
+  const pollProxyStatus = (remaining: number, expectedCandidates?: number) => {
     if (remaining <= 0) return;
     window.setTimeout(() => {
       api
         .settings()
         .then((s) => {
           applyProxyStatus(s);
-          if ((s.proxy_status ?? []).length === 0 && remaining > 1) pollProxyStatus(remaining - 1);
+          const count = (s.proxy_status ?? []).length;
+          const stillPending = !!s.proxy_probing || (expectedCandidates ? count < expectedCandidates : count === 0);
+          if (stillPending && remaining > 1) pollProxyStatus(remaining - 1, expectedCandidates);
         })
         .catch(() => {
-          // 下一次进入设置页会重新拉取；手动刷新按钮也可重试。
+          // 下一次进入设置页会重新拉取；手动探测按钮也可重试。
         });
-    }, 2000);
+    }, 1500);
   };
+
+  const parsePoolInput = () =>
+    globalProxyPoolInput
+      .split(/[\n,]/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
 
   // 检测出口 IP：只经候选代理查询（后端不发起直连对比），结果显示每个候选的出口 IP；
   // 出口 IP 与本机网卡地址相同时后端标记 leaked。
   const checkProxyEgress = () => {
-    const proxies = globalProxyPoolInput
-      .split(/[\n,]/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#"));
+    const proxies = parsePoolInput();
     if (proxies.length === 0) {
       toast.error("先填写代理池（每行一个代理地址）");
       return;
@@ -1153,12 +1184,53 @@ export function useSettingsState() {
       .finally(() => setCheckingProxyEgress(false));
   };
 
+  const checkSingleProxyEgress = (proxy: string) => {
+    setCheckingProxyEgress(true);
+    api
+      .proxyEgressIPs([proxy])
+      .then((r) => {
+        const res = r.results?.[0];
+        if (!res) return;
+        setProxyEgress((prev) => {
+          const rest = prev.filter((item) => item.proxy !== res.proxy);
+          return [...rest, res];
+        });
+        if (res.leaked) {
+          toast.error(`代理 ${res.proxy} 出口 IP 与本机相同，疑似规则直连`);
+        } else if (res.error) {
+          toast.error(`检测失败：${res.error}`);
+        } else {
+          toast.success(`${res.proxy} 出口 IP：${res.ip ?? "-"}`);
+        }
+      })
+      .catch((e) => toast.error(`检测失败：${(e as Error).message}`))
+      .finally(() => setCheckingProxyEgress(false));
+  };
+
   const refreshProxyStatus = () => {
+    setProbingProxy(true);
     refreshEgress();
     api
-      .settings()
-      .then(applyProxyStatus)
-      .catch((e) => toast.error(`刷新代理状态失败：${(e as Error).message}`));
+      .proxyProbe()
+      .then((res) => {
+        applyPoolStatus(res.status);
+        toast.success(res.status.blocked ? "探测完成：全部代理当前不可用" : "代理池实测完成");
+      })
+      .catch((e) => toast.error(`探测代理状态失败：${(e as Error).message}`))
+      .finally(() => setProbingProxy(false));
+  };
+
+  const pinProxy = (proxy: string) => {
+    setPinningProxy(proxy || "__unpin__");
+    api
+      .proxyPin(proxy)
+      .then((res) => {
+        applyPoolStatus(res.status);
+        refreshEgress();
+        toast.success(proxy ? `已固定出口为 ${proxy}` : "已取消固定，恢复自动策略调度");
+      })
+      .catch((e) => toast.error((e as Error).message || "切换失败"))
+      .finally(() => setPinningProxy(""));
   };
 
   const saveGlobalProxy = () => {
@@ -1184,6 +1256,7 @@ export function useSettingsState() {
     }
     setProxySaveError("");
     setSavingGlobalProxy(true);
+    const expectedCount = parsePoolInput().length;
     saveSettings({
       global_proxy_pool: globalProxyPoolInput.trim(),
       proxy_health_url: proxyHealthURL.trim(),
@@ -1191,11 +1264,15 @@ export function useSettingsState() {
       proxy_health_interval_seconds: interval,
       proxy_fail_threshold: threshold,
       proxy_switch_cooldown_seconds: cooldown,
+      proxy_strategy: proxyStrategy,
       proxy_egress_ip_url: proxyEgressIPURL.trim(),
     })
       .then((s) => {
-        toast.success(globalProxyPoolInput.trim() ? "已保存代理池" : "已清空代理池（改为直连）");
-        pollProxyStatus(6);
+        const nextSaved = s.global_proxy_pool || s.global_proxy || "";
+        setProxySavedPool(nextSaved);
+        applyProxyStatus(s);
+        toast.success(nextSaved ? "已保存代理池（支持无中断热更新）" : "已清空代理池（改为直连）");
+        if (expectedCount > 0) pollProxyStatus(8, expectedCount);
         refreshEgress();
       })
       .catch((e) => {
@@ -1308,8 +1385,14 @@ export function useSettingsState() {
     setProxyFailThreshold,
     proxySwitchCooldown,
     setProxySwitchCooldown,
+    proxyStrategy,
+    setProxyStrategy,
     proxyActive,
     proxyBlocked,
+    proxyPinned,
+    proxyProbing,
+    probingProxy,
+    pinningProxy,
     proxyStatus,
     proxySaveError,
     proxyEgressIPURL,
@@ -1317,7 +1400,9 @@ export function useSettingsState() {
     proxyEgress,
     checkingProxyEgress,
     checkProxyEgress,
+    checkSingleProxyEgress,
     refreshProxyStatus,
+    pinProxy,
     savingGlobalProxy,
     setSavingGlobalProxy,
     clashApiURL,

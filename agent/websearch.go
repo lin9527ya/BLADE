@@ -34,6 +34,16 @@ func WebSearchProbeContext(ctx context.Context, o WebSearchOpts, query string, l
 	return o.search(ctx, query, limit)
 }
 
+func (o WebSearchOpts) effectiveProxy() string {
+	if p := strings.TrimSpace(o.Proxy); p != "" {
+		return p
+	}
+	if o.ProxyFunc != nil {
+		return strings.TrimSpace(o.ProxyFunc())
+	}
+	return ""
+}
+
 func (o WebSearchOpts) search(ctx context.Context, query string, limit int) ([]actool.SearchResult, string, string, error) {
 	primary := strings.ToLower(strings.TrimSpace(o.Backend))
 	if primary == "" {
@@ -42,6 +52,7 @@ func (o WebSearchOpts) search(ctx context.Context, query string, limit int) ([]a
 	if primary == "opencode" {
 		primary = "deepseek"
 	}
+	searchProxy := o.effectiveProxy()
 	var primaryErr error
 	if primary != "brave-html" {
 		cfg := actool.WebSearchConfig{
@@ -49,7 +60,7 @@ func (o WebSearchOpts) search(ctx context.Context, query string, limit int) ([]a
 			DeepSeekBaseURL: o.DeepSeekBaseURL, DeepSeekAPIKey: o.DeepSeekAPIKey,
 			DeepSeekModel: o.DeepSeekModel, DeepSeekHeaders: o.Headers,
 			CommandCodeBaseURL: o.CommandCodeBaseURL, CommandCodeAPIKey: o.CommandCodeAPIKey,
-			Proxy: o.Proxy,
+			Proxy: searchProxy,
 		}
 		res, err := actool.WebSearchProbe(ctx, cfg, query, limit)
 		if err == nil && len(res) > 0 {
@@ -61,7 +72,7 @@ func (o WebSearchOpts) search(ctx context.Context, query string, limit int) ([]a
 		primaryErr = err
 	}
 
-	brave, braveErr := braveHTMLSearch(ctx, query, limit, o.Proxy)
+	brave, braveErr := braveHTMLSearch(ctx, query, limit, searchProxy)
 	if braveErr == nil && len(brave) > 0 {
 		return brave, "brave-html", primary, nil
 	}
@@ -72,7 +83,7 @@ func (o WebSearchOpts) search(ctx context.Context, query string, limit int) ([]a
 	// Last resort. DDG itself is subject to 202; the caller gets every error
 	// when no source can serve the query.
 	if primary != "ddgs" {
-		cfg := actool.WebSearchConfig{Backend: "ddgs", Proxy: o.Proxy}
+		cfg := actool.WebSearchConfig{Backend: "ddgs", Proxy: searchProxy}
 		res, err := actool.WebSearchProbe(ctx, cfg, query, limit)
 		if err == nil && len(res) > 0 {
 			return res, "ddgs", primary, nil
@@ -307,7 +318,12 @@ func searchHTTPClient(proxyAddr string) (*http.Client, error) {
 		case "http", "https":
 			tr.Proxy = http.ProxyURL(u)
 		case "socks5", "socks5h":
-			d, err := proxy.SOCKS5("tcp", u.Host, nil, proxy.Direct)
+			var auth *proxy.Auth
+			if u.User != nil {
+				pw, _ := u.User.Password()
+				auth = &proxy.Auth{User: u.User.Username(), Password: pw}
+			}
+			d, err := proxy.SOCKS5("tcp", u.Host, auth, proxy.Direct)
 			if err != nil {
 				return nil, err
 			}

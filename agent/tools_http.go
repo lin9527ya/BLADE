@@ -49,7 +49,29 @@ import (
 // SetEgressProxy 注入出站代理（与 Bash 子进程的 HTTP_PROXY 同源）。
 // caCert 是记录代理的 CA 证书路径——加载后经 MITM 重签的 HTTPS 才能正常校验。
 func (t *ToolSet) SetEgressProxy(addr, caCert string) {
-	t.egressProxy, t.egressCA = strings.TrimSpace(addr), strings.TrimSpace(caCert)
+	t.egressProxy, t.egressCA, t.egressProxyFn = strings.TrimSpace(addr), strings.TrimSpace(caCert), nil
+}
+
+// SetEgressProxyFunc 让内置 HTTP 工具在长 run 中每次发请求时现取出口代理与 CA，
+// 代理池切换后无需等待本轮结束或重建 agent 即可热切。
+func (t *ToolSet) SetEgressProxyFunc(fn func() (string, string)) {
+	t.egressProxyFn = fn
+}
+
+// SetProxyFailureHook 注册出站代理传输报错时的宿主回调（触发被动复查）。
+func (t *ToolSet) SetProxyFailureHook(fn func(proxyURL string, err error)) {
+	t.proxyFailureFn = fn
+}
+
+func (t *ToolSet) currentEgressProxy() (string, string) {
+	if t != nil && t.egressProxyFn != nil {
+		addr, ca := t.egressProxyFn()
+		return strings.TrimSpace(addr), strings.TrimSpace(ca)
+	}
+	if t == nil {
+		return "", ""
+	}
+	return t.egressProxy, t.egressCA
 }
 
 // ── 任务级 cookie jar（Netscape 格式，与 curl 互通）─────────────────────────
@@ -301,7 +323,13 @@ type httpOutcome struct {
 }
 
 func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, timeout time.Duration) (*http.Client, error) {
-	key := t.egressProxy + "|" + t.egressCA + "|" + strconv.FormatBool(insecure)
+	c, _, err := t.buildHTTPClientWithProxy(jar, follow, insecure, timeout)
+	return c, err
+}
+
+func (t *ToolSet) buildHTTPClientWithProxy(jar http.CookieJar, follow, insecure bool, timeout time.Duration) (*http.Client, string, error) {
+	proxyAddr, caCert := t.currentEgressProxy()
+	key := proxyAddr + "|" + caCert + "|" + strconv.FormatBool(insecure)
 	if t.httpPool == nil {
 		t.httpPool = &httpTransportPool{transports: map[string]*http.Transport{}}
 	}
@@ -310,16 +338,25 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 	tr := pool.transports[key]
 	pool.mu.Unlock()
 	if tr == nil {
-		tr = t.newHTTPTransport(insecure)
+		tr = newHTTPTransportFor(proxyAddr, caCert, insecure)
 		if tr == nil {
-			return nil, fmt.Errorf("出口代理解析失败")
+			return nil, proxyAddr, fmt.Errorf("出口代理解析失败")
 		}
 		pool.mu.Lock()
 		if existing := pool.transports[key]; existing != nil {
 			tr.CloseIdleConnections()
 			tr = existing
 		} else {
+			if len(pool.order) >= 8 {
+				evict := pool.order[0]
+				pool.order = pool.order[1:]
+				if old := pool.transports[evict]; old != nil {
+					old.CloseIdleConnections()
+					delete(pool.transports, evict)
+				}
+			}
 			pool.transports[key] = tr
+			pool.order = append(pool.order, key)
 		}
 		pool.mu.Unlock()
 	}
@@ -331,7 +368,7 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 	if jar != nil {
 		c.Jar = jar
 	}
-	return c, nil
+	return c, proxyAddr, nil
 }
 
 var (
@@ -553,7 +590,7 @@ func (t *ToolSet) buildRedirectCheck(ctx context.Context, follow bool, initURL *
 	}
 }
 
-func (t *ToolSet) newHTTPTransport(insecure bool) *http.Transport {
+func newHTTPTransportFor(proxyAddr, caCert string, insecure bool) *http.Transport {
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          32,
@@ -562,8 +599,8 @@ func (t *ToolSet) newHTTPTransport(insecure bool) *http.Transport {
 		ExpectContinueTimeout: 2 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
-	if t.egressProxy != "" {
-		pu := t.egressProxy
+	if proxyAddr != "" {
+		pu := proxyAddr
 		if !strings.Contains(pu, "://") {
 			pu = "http://" + pu
 		}
@@ -571,11 +608,14 @@ func (t *ToolSet) newHTTPTransport(insecure bool) *http.Transport {
 		if err != nil {
 			return nil
 		}
+		if strings.EqualFold(u.Scheme, "socks5h") {
+			u.Scheme = "socks5"
+		}
 		tr.Proxy = http.ProxyURL(u)
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}
-	if t.egressCA != "" {
-		if pem, err := os.ReadFile(t.egressCA); err == nil {
+	if caCert != "" {
+		if pem, err := os.ReadFile(caCert); err == nil {
 			pool, _ := x509.SystemCertPool()
 			if pool == nil {
 				pool = x509.NewCertPool()
@@ -662,7 +702,7 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	if a.Insecure != nil {
 		insecure = *a.Insecure
 	}
-	client, err := t.buildHTTPClient(jar, follow, insecure, time.Duration(timeout)*time.Second)
+	client, usedProxy, err := t.buildHTTPClientWithProxy(jar, follow, insecure, time.Duration(timeout)*time.Second)
 	if err != nil {
 		out.Err = err
 		return out
@@ -695,6 +735,9 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	resp, err := client.Do(req)
 	out.Millis = time.Since(start).Milliseconds()
 	if err != nil {
+		if usedProxy != "" && t.proxyFailureFn != nil {
+			t.proxyFailureFn(usedProxy, err)
+		}
 		out.Err = err
 		return out
 	}

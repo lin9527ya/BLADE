@@ -776,6 +776,9 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetRotateEgressHandler(rotateEgress)
 	pl.SetRotateEgressHandler(rotateEgress)
 	main.SetRotateEgressHandler(rotateEgress)
+	wk.SetProxyFailureHook(s.m.ObserveProxyFailure)
+	pl.SetProxyFailureHook(s.m.ObserveProxyFailure)
+	main.SetProxyFailureHook(s.m.ObserveProxyFailure)
 	bundle := &taskAgentBundle{
 		runtime: goalRuntime, plannerRuntime: plannerRuntime, workerRuntime: workerRuntime,
 		mainRuntime: mainRuntime, pl: pl, wk: wk, main: main,

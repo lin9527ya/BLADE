@@ -2125,12 +2125,32 @@ export interface ProxyEgressResult {
   error?: string;
 }
 
+export type ProxyPoolStrategy = "ordered" | "sticky" | "fastest";
+
+export type ProxyErrorKind = "proxy_auth" | "proxy_connect" | "probe_timeout" | "probe_target_http" | "other" | "";
+
 export interface ProxyPoolHealth {
   proxy: string;
   ok: boolean;
   latency_ms?: number;
+  avg_latency_ms?: number;
   checked_at?: string;
   error?: string;
+  error_kind?: ProxyErrorKind;
+  fail_count?: number;
+  consecutive_ok?: number;
+  pinned?: boolean;
+}
+
+export interface ProxyPoolStatusPayload {
+  active: string;
+  blocked: boolean;
+  strategy: ProxyPoolStrategy;
+  pinned?: string;
+  probing: boolean;
+  fail_threshold: number;
+  cooldown_remaining_seconds?: number;
+  candidates?: ProxyPoolHealth[];
 }
 
 export interface ClashEgressStatus {
@@ -2196,9 +2216,12 @@ export interface Settings {
   proxy_health_interval_seconds?: number;
   proxy_fail_threshold?: number;
   proxy_switch_cooldown_seconds?: number;
+  proxy_strategy?: ProxyPoolStrategy;
   // 运行时状态（只读）。
   proxy_active?: string;
   proxy_blocked?: boolean;
+  proxy_pinned?: string;
+  proxy_probing?: boolean;
   proxy_status?: ProxyPoolHealth[];
   proxy_egress_ip_url?: string;
   // Clash 出口切换：secret 只写不回显（clash_api_secret_set 表示是否已配置）。
@@ -3653,11 +3676,7 @@ export interface EgressTrafficStatus {
 }
 
 export interface EgressStatus {
-  proxy: {
-    active: string;
-    blocked: boolean;
-    candidates?: { proxy: string; ok: boolean; latency_ms?: number; error?: string }[];
-  };
+  proxy: ProxyPoolStatusPayload;
   clash: {
     configured: boolean;
     auto?: boolean;

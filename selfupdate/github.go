@@ -100,6 +100,9 @@ func NewClient(proxy string, token ...string) *http.Client {
 	}
 	if p := strings.TrimSpace(proxy); p != "" {
 		if pu, err := url.Parse(p); err == nil {
+			if strings.EqualFold(pu.Scheme, "socks5h") {
+				pu.Scheme = "socks5"
+			}
 			tr.Proxy = http.ProxyURL(pu)
 		}
 	}

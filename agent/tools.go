@@ -176,8 +176,10 @@ type ToolSet struct {
 	httpPool *httpTransportPool
 	// Native HTTP tools (http_request/session_login) use the same egress proxy
 	// and CA as Bash/WebFetch so traffic capture and per-task egress still apply.
-	egressProxy string
-	egressCA    string
+	egressProxy    string
+	egressCA       string
+	egressProxyFn  func() (string, string)
+	proxyFailureFn func(proxyURL string, err error)
 	clock       TaskClock
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
@@ -389,6 +391,7 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 type httpTransportPool struct {
 	mu         sync.Mutex
 	transports map[string]*http.Transport
+	order      []string
 }
 
 // SetRunDir binds the current run's working directory for script-staging tools.

@@ -61,10 +61,12 @@ func (f *fofa) newClient() (*http.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("代理地址不合法：%v", err)
 		}
-		switch pu.Scheme {
+		switch strings.ToLower(pu.Scheme) {
 		case "http", "https", "socks5":
+		case "socks5h":
+			pu.Scheme = "socks5"
 		default:
-			return nil, fmt.Errorf("代理只支持 http/https/socks5，收到 %q", p)
+			return nil, fmt.Errorf("代理只支持 http/https/socks5/socks5h，收到 %q", p)
 		}
 		transport.Proxy = http.ProxyURL(pu)
 	}

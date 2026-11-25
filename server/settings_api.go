@@ -55,6 +55,33 @@ func (s *Server) proxyEgressIPs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// proxyProbe 触发一次代理池全量并发健康探测并返回脱敏后的最新状态。
+func (s *Server) proxyProbe(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	status := redactProxyStatus(s.m.ProbeProxyPool(ctx))
+	writeJSON(w, 200, map[string]any{"status": status})
+}
+
+// proxyPin 手动固定某个候选代理（传空串取消固定），固定前会实时探测确认可用。
+func (s *Server) proxyPin(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var req struct {
+		Proxy string `json:"proxy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "请求体必须是合法 JSON")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if err := s.m.PinProxy(ctx, req.Proxy); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": redactProxyStatus(s.m.ProxyStatus())})
+}
+
 // getSettings returns the runtime app settings the UI toggles. The Brave API key
 // is returned as a boolean presence flag (brave_key_set), never the value itself,
 // so the UI can show "configured" without echoing the secret back.
@@ -135,7 +162,7 @@ func (s *Server) settingsPayload() map[string]any {
 		concLimit = defaultConcurrencyLimit // 关闭时也回显一个合理默认值给 UI
 	}
 	proxyCfg := s.m.ProxyPoolConfig()
-	proxyStatus := s.m.ProxyStatus()
+	proxyStatus := redactProxyStatus(s.m.ProxyStatus())
 	clashCfg := s.m.ClashEgressConfig()
 	oastNuclei := "oast.fun"
 	if v, ok, err := s.m.pg.GetSetting(settingOASTNucleiServer); err == nil && ok && strings.TrimSpace(v) != "" {
@@ -180,8 +207,11 @@ func (s *Server) settingsPayload() map[string]any {
 		"proxy_health_interval_seconds": int(proxyCfg.Interval.Seconds()),
 		"proxy_fail_threshold":          proxyCfg.FailThreshold,
 		"proxy_switch_cooldown_seconds": int(proxyCfg.Cooldown.Seconds()),
+		"proxy_strategy":                string(proxyCfg.Strategy),
 		"proxy_active":                  proxyStatus.Active,
 		"proxy_blocked":                 proxyStatus.Blocked,
+		"proxy_pinned":                  proxyStatus.Pinned,
+		"proxy_probing":                 proxyStatus.Probing,
 		"proxy_status":                  proxyStatus.Candidates,
 		"proxy_egress_ip_url":           s.m.EgressIPURL(),
 		// Clash 出口切换：secret 只回 *_set 布尔，绝不回显。
@@ -354,6 +384,7 @@ type settingsRequest struct {
 	ProxyHealthInterval *int    `json:"proxy_health_interval_seconds"`
 	ProxyFailThreshold  *int    `json:"proxy_fail_threshold"`
 	ProxySwitchCooldown *int    `json:"proxy_switch_cooldown_seconds"`
+	ProxyStrategy       *string `json:"proxy_strategy"`
 	ProxyEgressIPURL    *string `json:"proxy_egress_ip_url"`
 	// Clash 出口切换：URL/组/自动/冷却；secret 只写不回显（null=不改，""=清空）。
 	ClashAPIURL         *string `json:"clash_api_url"`
@@ -815,7 +846,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.GlobalProxy != nil || req.GlobalProxyPool != nil || req.ProxyHealthURL != nil ||
 		req.ProxyHealthTimeout != nil || req.ProxyHealthInterval != nil ||
-		req.ProxyFailThreshold != nil || req.ProxySwitchCooldown != nil {
+		req.ProxyFailThreshold != nil || req.ProxySwitchCooldown != nil || req.ProxyStrategy != nil {
 		// Fill unspecified fields from current state so a partial PUT (e.g. only
 		// changing the health timeout) does not wipe the candidate list.
 		cfg := s.m.ProxyPoolConfig()
@@ -840,7 +871,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.ProxySwitchCooldown != nil {
 			cfg.Cooldown = time.Duration(*req.ProxySwitchCooldown) * time.Second
 		}
-		// Validation failure (bad scheme/host/health URL) is a client error, not a 500.
+		if req.ProxyStrategy != nil {
+			cfg.Strategy = ProxyStrategy(strings.TrimSpace(*req.ProxyStrategy))
+		}
+		// Validation failure (bad scheme/host/health URL/strategy) is a client error, not a 500.
 		norm, err := NormalizeProxyPoolConfig(cfg)
 		if err != nil {
 			writeErr(w, 400, err.Error())
@@ -857,8 +891,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		pending[settingProxyHealthInterval] = strconv.Itoa(int(norm.Interval.Seconds()))
 		pending[settingProxyFailThreshold] = strconv.Itoa(norm.FailThreshold)
 		pending[settingProxySwitchCooldown] = strconv.Itoa(int(norm.Cooldown.Seconds()))
-		runtimeApplies = append(runtimeApplies, func() error { return s.m.SetProxyPool(cfg) })
-		changed = true
+		pending[settingProxyStrategy] = string(norm.Strategy)
+		// 仅更新代理池参数不重置或重建 LLM agent（agent/search 运行时通过 ProxySnapshot 与
+		// ProxyFunc 动态取值，且 ApplyProxyPoolConfig 支持健康 active 零中断原地热更新）。
+		runtimeApplies = append(runtimeApplies, func() error { return s.m.ApplyProxyPoolConfig(norm) })
 	}
 	if req.ProxyEgressIPURL != nil {
 		u, err := normalizeEgressIPURL(*req.ProxyEgressIPURL)

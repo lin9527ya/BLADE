@@ -49,6 +49,9 @@ type WebSearchOpts struct {
 	BraveKey  string
 	TavilyKey string
 	Proxy     string
+	// ProxyFunc resolves the egress proxy per search call when Proxy is empty,
+	// so long-running sessions follow proxy-pool failovers automatically.
+	ProxyFunc func() string
 	// DeepSeek* 优先来自名为 deepseek/Deepseek（或 deepseek-*）的配置；没有时
 	// 回退当前激活配置。仅 anthropic 格式的 DeepSeek 官方端点支持服务端 web_search。
 	DeepSeekBaseURL string
@@ -72,6 +75,7 @@ type Worker struct {
 	proxyAddr       string
 	proxyCACert     string                  // recording proxy's CA cert path (for WebFetch HTTPS verify)
 	proxyFn         func() (string, string) // dynamic proxy resolver (proxy-pool failover); nil = static
+	proxyFailureFn  func(proxyURL string, err error)
 	webSearch       WebSearchOpts           // web_search tool backend selection (off by default)
 	tx              *transcript.Store       // raw LLM conversation persistence (nil = off)
 	window          int                     // context window in tokens (for compaction)
@@ -345,6 +349,10 @@ func (w *Worker) SetProxy(addr, caCert string) {
 // proxy-pool failover takes effect without rebuilding the agent. The fallback is
 // the static SetProxy value when fn is nil.
 func (w *Worker) SetProxyFunc(fn func() (string, string)) { w.proxyFn = fn }
+
+// SetProxyFailureHook registers a host callback invoked when native HTTP tools
+// hit a transport error on the active egress proxy.
+func (w *Worker) SetProxyFailureHook(fn func(proxyURL string, err error)) { w.proxyFailureFn = fn }
 
 func (w *Worker) proxySnapshot() (string, string) {
 	if w.proxyFn != nil {
@@ -719,7 +727,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	proxyAddr, proxyCA := w.proxySnapshot()
 	tsx := NewToolSet(ts, name)
 	defer tsx.CloseHTTP()
-	tsx.SetEgressProxy(proxyAddr, proxyCA)
+	tsx.SetEgressProxyFunc(w.proxySnapshot)
+	tsx.SetProxyFailureHook(w.proxyFailureFn)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
 	coverageEnabled := as == nil || as.CoverageEnabled(taskID)
@@ -850,9 +859,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		PromptCacheKey:          WorkerPromptCacheKey(ts.ID()),
 		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
 		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
-		EnableWebFetch: true,
-		WebFetchProxy:  proxyAddr,
-		WebFetchCACert: proxyCA,
+		EnableWebFetch:                true,
+		WebFetchProxyFunc:             w.proxySnapshot,
+		WebFetchCACert:                proxyCA,
+		WebFetchDisableDirectFallback: true,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里

@@ -2,16 +2,72 @@
 
 import Link from "next/link";
 
-import { AlertTriangleIcon, ArrowUpRightIcon, Link2Icon, RadioTowerIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  ArrowUpRightIcon,
+  Link2Icon,
+  PinIcon,
+  PinOffIcon,
+  RadioTowerIcon,
+  RefreshCwIcon,
+} from "lucide-react";
 
 import { Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { ProxyErrorKind, ProxyPoolStrategy } from "@/lib/types";
 
 import type { useSettingsState } from "./use-settings-state";
 
 // 系统配置 · 网络与代理。
+
+const ERROR_KIND_LABELS: Record<Exclude<ProxyErrorKind, "">, string> = {
+  proxy_auth: "代理鉴权失败",
+  proxy_connect: "代理连接拒绝",
+  probe_timeout: "探测超时",
+  probe_target_http: "探测目标 5xx",
+  other: "探测异常",
+};
+
+function formatCheckedAt(ts?: string): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function proxySummaryText(opts: {
+  dirty: boolean;
+  probing: boolean;
+  blocked: boolean;
+  active: string;
+  pinned: string;
+  cooldownRem: number;
+  hasInput: boolean;
+}): string {
+  if (opts.dirty) return "有未保存的修改 · 点「保存」生效";
+  if (opts.probing) return "正在并发探测全部候选节点…";
+  if (opts.blocked) return "全部代理不可用：出口已阻断（不会直连）";
+  if (opts.active) {
+    const pinnedTag = opts.pinned ? "（已固定）" : "";
+    const cooldownTag = opts.cooldownRem > 0 ? ` · 冷却剩余 ${opts.cooldownRem}s` : "";
+    return `当前出口：${opts.active}${pinnedTag}${cooldownTag}`;
+  }
+  return opts.hasInput ? "正在初始化探测…" : "未配置 · 目标流量直连";
+}
+
+function pinButtonLabel(pinningProxy: string, candidate: string, isPinned: boolean): string {
+  if (pinningProxy === candidate) return "切换中…";
+  return isPinned ? "取消固定" : "固定使用";
+}
+
+function egressLineIcon(leaked?: boolean, error?: string): string {
+  if (leaked) return "⚠";
+  return error ? "✗" : "✓";
+}
 
 export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }) {
   const {
@@ -30,8 +86,14 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     setProxyFailThreshold,
     proxySwitchCooldown,
     setProxySwitchCooldown,
+    proxyStrategy,
+    setProxyStrategy,
     proxyActive,
     proxyBlocked,
+    proxyPinned,
+    proxyProbing,
+    probingProxy,
+    pinningProxy,
     proxyStatus,
     proxySaveError,
     proxyEgressIPURL,
@@ -39,7 +101,9 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
     proxyEgress,
     checkingProxyEgress,
     checkProxyEgress,
+    checkSingleProxyEgress,
     refreshProxyStatus,
+    pinProxy,
     savingGlobalProxy,
     clashApiURL,
     setClashApiURL,
@@ -71,6 +135,11 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
   } = s;
 
   const trafficInfo = egress?.traffic;
+  const failThreshold = egress?.proxy?.fail_threshold || Number.parseInt(proxyFailThreshold, 10) || 2;
+  const cooldownRem = egress?.proxy?.cooldown_remaining_seconds ?? 0;
+  const egressByProxy = new Map(proxyEgress.map((item) => [item.proxy, item]));
+  const statusProxies = new Set(proxyStatus.map((h) => h.proxy));
+  const extraEgressResults = proxyEgress.filter((r) => !statusProxies.has(r.proxy));
   const clashIsolationOverridden =
     trafficCapture &&
     (trafficInfo?.clash_isolation_overridden || (Boolean(clashGroups.trim()) && Boolean(clashTaskEndpoints.trim())));
@@ -82,7 +151,7 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
   return (
     <Section
       title="网络与代理"
-      hint="流量捕获 / 代理池改动会重置任务 Agent 缓存并在下一轮与后续命令行生效（已启动的长驻子进程不受影响）；Agent 自动绑定修改后立即拦截新写入并于下一轮 Agent 生效。"
+      hint="代理池支持原地热更新与运行时动态切换，不打断已有健康的任务运行；流量捕获切换会重置任务 Agent 缓存并在下一轮生效；Agent 自动绑定修改后立即拦截新写入并于下一轮 Agent 生效。"
     >
       <SubBlock title="流量捕获" icon={<RadioTowerIcon className="size-4 text-muted-foreground" />}>
         <SwitchRow
@@ -197,23 +266,45 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
             id="global-proxy-pool"
             rows={4}
             autoComplete="off"
-            placeholder={"http://127.0.0.1:7890\nsocks5://127.0.0.1:7891"}
+            placeholder={"http://127.0.0.1:7890\nsocks5h://127.0.0.1:7891"}
             value={globalProxyPoolInput}
             disabled={!loaded || savingGlobalProxy}
             onChange={(e) => setGlobalProxyPoolInput(e.target.value)}
           />
-          <div className="grid gap-3 md:grid-cols-[1fr_95px_105px_90px_105px]">
+          <div className="grid gap-3 md:grid-cols-[1fr_190px]">
             <div className="space-y-1.5">
-              <span className="text-muted-foreground text-xs">健康检查 URL</span>
-              <Input
+              <span className="text-muted-foreground text-xs">
+                健康检查 URL（支持多条，每行或逗号分隔，任一通畅即判节点健康）
+              </span>
+              <Textarea
                 id="proxy-health-url"
+                rows={2}
                 autoComplete="off"
-                placeholder="https://www.gstatic.com/generate_204"
+                placeholder={"https://www.gstatic.com/generate_204\nhttps://cp.cloudflare.com/generate_204"}
                 value={proxyHealthURL}
                 disabled={!loaded || savingGlobalProxy}
                 onChange={(e) => setProxyHealthURL(e.target.value)}
               />
             </div>
+            <div className="space-y-1.5">
+              <span className="text-muted-foreground text-xs">调度与回切策略</span>
+              <Select
+                value={proxyStrategy}
+                disabled={!loaded || savingGlobalProxy}
+                onValueChange={(v) => setProxyStrategy(v as ProxyPoolStrategy)}
+              >
+                <SelectTrigger id="proxy-strategy" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ordered">主备优先（恢复后回切）</SelectItem>
+                  <SelectItem value="sticky">粘性转移（可用不切）</SelectItem>
+                  <SelectItem value="fastest">最低延迟（平滑择优）</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <div className="space-y-1.5">
               <span className="text-muted-foreground text-xs">超时（秒）</span>
               <Input
@@ -282,37 +373,121 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
                 onClick={checkProxyEgress}
                 disabled={!loaded || checkingProxyEgress}
               >
-                {checkingProxyEgress ? "检测中…" : "检测出口 IP"}
+                {checkingProxyEgress ? "检测中…" : "检测全部出口 IP"}
               </Button>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button type="button" onClick={saveGlobalProxy} disabled={!loaded || savingGlobalProxy}>
               保存
             </Button>
-            <Button type="button" variant="outline" onClick={refreshProxyStatus} disabled={!loaded}>
-              刷新状态
+            <Button type="button" variant="outline" onClick={refreshProxyStatus} disabled={!loaded || probingProxy}>
+              <RefreshCwIcon className={probingProxy ? "mr-1 size-3.5 animate-spin" : "mr-1 size-3.5"} />
+              {probingProxy ? "探测中…" : "立即探测"}
             </Button>
+            {proxyPinned && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!loaded || pinningProxy !== ""}
+                onClick={() => pinProxy("")}
+              >
+                <PinOffIcon className="mr-1 size-3.5" />
+                取消固定
+              </Button>
+            )}
             <span className={proxyBlocked ? "text-destructive text-xs" : "text-muted-foreground text-xs"}>
-              {globalProxyPoolInput.trim() !== proxySavedPool.trim()
-                ? "有未保存的修改 · 点「保存」生效"
-                : globalProxyPoolInput.trim() && proxyStatus.length === 0
-                  ? "正在检测代理…"
-                  : proxyBlocked
-                    ? "全部代理不可用：出口已阻断（不会直连）"
-                    : proxyActive
-                      ? `当前出口：${proxyActive}`
-                      : globalProxyPoolInput.trim()
-                        ? "正在检测代理…"
-                        : "未配置 · 目标流量直连"}
+              {proxySummaryText({
+                dirty: globalProxyPoolInput.trim() !== proxySavedPool.trim(),
+                probing: proxyProbing || probingProxy,
+                blocked: proxyBlocked,
+                active: proxyActive,
+                pinned: proxyPinned,
+                cooldownRem,
+                hasInput: Boolean(globalProxyPoolInput.trim()),
+              })}
             </span>
           </div>
           {proxySaveError && <p className="text-destructive text-xs">保存失败：{proxySaveError}</p>}
-          {proxyEgress.length > 0 && (
+          {proxyStatus.length > 0 && (
+            <div className="space-y-1.5 rounded-md border bg-muted/20 p-2.5">
+              {proxyStatus.map((h) => {
+                const isCurrent = !proxyBlocked && proxyActive === h.proxy;
+                const isPinned = Boolean(h.pinned || (proxyPinned && proxyPinned === h.proxy));
+                const eg = egressByProxy.get(h.proxy);
+                const checkedAt = formatCheckedAt(h.checked_at);
+                const errKindLabel = h.error_kind ? ERROR_KIND_LABELS[h.error_kind] : "";
+                return (
+                  <div
+                    key={h.proxy}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded border bg-background px-2.5 py-2 text-xs"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={h.ok ? "font-mono text-foreground" : "font-mono text-destructive"}>
+                          {h.ok ? "✓" : "✗"} {h.proxy}
+                        </span>
+                        {isCurrent && <Badge variant="secondary">当前生效</Badge>}
+                        {isPinned && (
+                          <Badge variant="outline">
+                            <PinIcon className="mr-0.5 size-3" />
+                            已固定
+                          </Badge>
+                        )}
+                        {!h.ok && (h.fail_count ?? 0) > 0 && (
+                          <Badge variant="destructive">
+                            失败 {h.fail_count}/{failThreshold}
+                          </Badge>
+                        )}
+                        {errKindLabel && <Badge variant="outline">{errKindLabel}</Badge>}
+                        {eg?.leaked && <Badge variant="destructive">出口与本机同 IP</Badge>}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-muted-foreground">
+                        {h.ok && typeof h.latency_ms === "number" && (
+                          <span>
+                            延迟 {h.latency_ms}ms
+                            {typeof h.avg_latency_ms === "number" && h.avg_latency_ms > 0
+                              ? `（均 ${h.avg_latency_ms}ms）`
+                              : ""}
+                          </span>
+                        )}
+                        {checkedAt && <span>探测于 {checkedAt}</span>}
+                        {eg?.ip && !eg.error && <span>出口 IP {eg.ip}</span>}
+                        {!h.ok && h.error && <span className="text-destructive">{h.error}</span>}
+                        {eg?.error && <span className="text-destructive">出口 IP 查询：{eg.error}</span>}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        disabled={!loaded || checkingProxyEgress}
+                        onClick={() => checkSingleProxyEgress(h.proxy)}
+                      >
+                        测出口 IP
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant={isPinned ? "secondary" : "outline"}
+                        disabled={!loaded || pinningProxy !== ""}
+                        onClick={() => pinProxy(isPinned ? "" : h.proxy)}
+                      >
+                        {pinButtonLabel(pinningProxy, h.proxy, isPinned)}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {extraEgressResults.length > 0 && (
             <ul className="space-y-0.5 text-xs">
-              {proxyEgress.map((r) => (
+              {extraEgressResults.map((r) => (
                 <li key={r.proxy} className={r.error || r.leaked ? "text-destructive" : "text-muted-foreground"}>
-                  {r.leaked ? "⚠" : r.error ? "✗" : "✓"} {r.proxy}
+                  {egressLineIcon(r.leaked, r.error)} {r.proxy}
                   {r.ip ? ` · 出口 IP ${r.ip}` : ""}
                   {r.leaked ? " · 与本机网卡地址相同（疑似未走代理）" : ""}
                   {r.error ? ` · ${r.error}` : ""}
@@ -323,17 +498,6 @@ export function NetworkSection({ s }: { s: ReturnType<typeof useSettingsState> }
           <p className="text-muted-foreground text-xs">
             出口 IP 检测只经候选代理发起，不会直连；若结果与你的真实出口不一致，请检查 Clash 规则/节点。
           </p>
-          {proxyStatus.length > 0 && (
-            <ul className="space-y-0.5 text-xs">
-              {proxyStatus.map((h) => (
-                <li key={h.proxy} className={h.ok ? "text-muted-foreground" : "text-destructive"}>
-                  {h.ok ? "✓" : "✗"} {h.proxy}
-                  {h.ok && h.latency_ms ? ` · ${h.latency_ms}ms` : ""}
-                  {!h.ok && h.error ? ` · ${h.error}` : ""}
-                </li>
-              ))}
-            </ul>
-          )}
         </Field>
       </SubBlock>
 

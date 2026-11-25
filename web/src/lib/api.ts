@@ -3,9 +3,9 @@
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
 // are passed through and formatted at the call site.
 
-import { LEAD_TRACE_PAGE_SIZE, type SchedulingReport, type LeadTraceReport } from "@/lib/exploration-tracking";
 import type { ChatMention } from "@/lib/chat-mentions";
 import type { CacheDiagnostics, CacheTraceState, RuntimeMetrics } from "@/lib/diagnostics";
+import { LEAD_TRACE_PAGE_SIZE, type LeadTraceReport, type SchedulingReport } from "@/lib/exploration-tracking";
 import { MOCK } from "@/lib/mock/enabled";
 import { HttpError } from "@/lib/request-lifecycle";
 import type {
@@ -48,11 +48,6 @@ import type {
   Conversation,
   ConvTokenSummary,
   CostBudget,
-  IMAllowedUser,
-  IMConnection,
-  IMMessage,
-  IMMeta,
-  IMPlatform,
   CostSummary,
   CoverageAssetRefs,
   CoverageGraphData,
@@ -101,6 +96,11 @@ import type {
   GlobalSearchResponse,
   GraphAuditReport,
   HostToolStatus,
+  IMAllowedUser,
+  IMConnection,
+  IMMessage,
+  IMMeta,
+  IMPlatform,
   InboxPage,
   IntelQueryList,
   IntelSearchResult,
@@ -139,6 +139,7 @@ import type {
   PlaybookDraft,
   PlaybookFingerprint,
   PlaybookMDPreview,
+  ProxyPoolStatusPayload,
   ScheduleFrequency,
   ScheduleRun,
   ScheduleTaskSpec,
@@ -544,10 +545,8 @@ export const api = {
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
-  updateTaskCategoryPreset: (
-    id: number,
-    preset: { seed_first_intent?: boolean; default_coverage_enabled?: boolean },
-  ) => patch<TaskCategory>(`/task-categories/${id}/preset`, preset),
+  updateTaskCategoryPreset: (id: number, preset: { seed_first_intent?: boolean; default_coverage_enabled?: boolean }) =>
+    patch<TaskCategory>(`/task-categories/${id}/preset`, preset),
   renameTaskCategory: (id: number, name: string) => patch<TaskCategory>(`/task-categories/${id}`, { name }),
   deleteTaskCategory: (id: number) => del<{ deleted: number }>(`/task-categories/${id}`),
   updateTaskCategory: (taskId: string, categoryId?: number) =>
@@ -1993,6 +1992,8 @@ export const api = {
     post<{ results: { proxy: string; ip?: string; leaked?: boolean; error?: string }[] }>(`/settings/proxy/egress-ip`, {
       proxies,
     }),
+  proxyProbe: () => post<{ status: ProxyPoolStatusPayload }>(`/settings/proxy/probe`, {}),
+  proxyPin: (proxy: string) => post<{ status: ProxyPoolStatusPayload }>(`/settings/proxy/pin`, { proxy }),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;
@@ -2089,14 +2090,22 @@ export const api = {
     report_md?: string;
     note?: string;
   }) => post<DeliverableDetail>("/deliverables", input),
-  aggregateDeliverable: (body: {
-    scope_kind: "campaign" | "company";
-    scope_id: number;
-    name: string;
-    kind: string;
-    note?: string;
-    operation_key?: string;
-  }, signal?: AbortSignal) => http<DeliverableDetail & { replayed?: boolean; operation_key?: string }>("/deliverables/aggregate", { method: "POST", body: JSON.stringify(body), signal }),
+  aggregateDeliverable: (
+    body: {
+      scope_kind: "campaign" | "company";
+      scope_id: number;
+      name: string;
+      kind: string;
+      note?: string;
+      operation_key?: string;
+    },
+    signal?: AbortSignal,
+  ) =>
+    http<DeliverableDetail & { replayed?: boolean; operation_key?: string }>("/deliverables/aggregate", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
   addDeliverableVersion: (id: number, report_md: string, note = "") =>
     post<DeliverableVersion>(`/deliverables/${id}/versions`, { report_md, note }),
   acceptDeliverable: (id: number, version_id: number, note = "") =>
@@ -2815,7 +2824,8 @@ export const api = {
     },
   ) => put<IMConnection>(`/im/connections/${id}`, payload),
   imDeleteConnection: (id: number) => del<{ ok: boolean }>(`/im/connections/${id}`),
-  imTestConnection: (id: number) => post<{ ok: boolean; error?: string; message?: string }>(`/im/connections/${id}/test`),
+  imTestConnection: (id: number) =>
+    post<{ ok: boolean; error?: string; message?: string }>(`/im/connections/${id}/test`),
   imUsers: () => get<{ users: IMAllowedUser[] }>(`/im/users`).then((r) => arr(r.users)),
   imCreateUser: (payload: {
     platform: IMPlatform;

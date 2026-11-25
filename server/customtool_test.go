@@ -246,3 +246,41 @@ func procWithTag(tag string) bool {
 	}
 	return false
 }
+
+func TestHTTPToolUsesGlobalProxyWithoutDoubleScheme(t *testing.T) {
+	var proxyHits int
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits++
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"via":"proxy"}`))
+	}))
+	defer proxySrv.Close()
+
+	m := &Manager{egressProxy: proxySrv.URL}
+	s := &Server{m: m}
+	execRaw, _ := json.Marshal(map[string]any{
+		"method":              "GET",
+		"url":                 "http://example.invalid/check",
+		"use_recording_proxy": true,
+	})
+	res, err := s.runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("runHTTPTool: %v", err)
+	}
+	if res.IsError || proxyHits != 1 {
+		t.Fatalf("expected request via ProxyAddr without double scheme, proxyHits=%d out=%s", proxyHits, res.Flatten())
+	}
+
+	// When neither spec.Proxy nor UseRecordingProxy is set, still honors global proxy.
+	execFallback, _ := json.Marshal(map[string]any{
+		"method": "GET",
+		"url":    "http://example.invalid/fallback",
+	})
+	res2, err := s.runHTTPTool(context.Background(), execFallback, map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("runHTTPTool fallback: %v", err)
+	}
+	if res2.IsError || proxyHits != 2 {
+		t.Fatalf("expected global proxy fallback when spec.Proxy is empty, proxyHits=%d out=%s", proxyHits, res2.Flatten())
+	}
+}

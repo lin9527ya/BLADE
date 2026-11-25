@@ -393,6 +393,8 @@ type Manager struct {
 	// direct connection and leak the real source IP.
 	egressProxy string
 	proxyPool   *ProxyPool
+	proxyFailMu sync.Mutex
+	lastProxyFailProbe time.Time
 	// Clash 出口切换按任务隔离：每个候选 Selector 组是一口独立的出口 IP，
 	// clashTaskGroups 固定「任务 → 组」，clashStates 按组保存切换节点/出口 IP/冷却。
 	// 设置页只读默认组的缓存，不在 GET 时实时请求控制器。
@@ -458,6 +460,7 @@ const (
 	settingProxyHealthInterval = "proxy_health_interval_seconds"
 	settingProxyFailThreshold  = "proxy_fail_threshold"
 	settingProxySwitchCooldown = "proxy_switch_cooldown_seconds"
+	settingProxyStrategy       = "proxy_strategy"
 	settingProxyEgressIPURL    = "proxy_egress_ip_url"
 	settingWorkers             = "workers"
 	settingLLMRecord           = "llm_record"
@@ -830,6 +833,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			}
 		}
 		if tr != nil {
+			tr.SetUpstreamErrorHook(m.ObserveProxyFailure)
 			m.mu.Lock()
 			m.traffic = tr
 			m.mu.Unlock()
@@ -1020,6 +1024,10 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	if (o.Backend == defaultWebSearchBackend || o.Backend == "brave-html") && strings.TrimSpace(o.Proxy) == "" {
 		m.WaitProxyReady(proxyFirstProbeWait)
 		o.Proxy = m.usableEgressProxy()
+		o.ProxyFunc = func() string {
+			m.WaitProxyReady(proxyFirstProbeWait)
+			return m.usableEgressProxy()
+		}
 	}
 	if r.FallbackFrom != "" {
 		log.Printf("[websearch] %s 端点不提供服务端搜索，已回退 DuckDuckGo（proxy=%q）", r.FallbackFrom, o.Proxy)
@@ -1073,11 +1081,11 @@ func isOpencodeGateway(base string) bool {
 	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
 }
 
-// usableEgressProxy returns the active proxy only when it is not the fail-closed
-// blackhole. Search must never dial direct just because the pool is down.
+// usableEgressProxy returns the active egress proxy (including blockedProxyURL when
+// all candidates are down). Search must never dial direct just because the pool is down.
 func (m *Manager) usableEgressProxy() string {
 	p := strings.TrimSpace(m.EgressProxy())
-	if p == "" || p == blockedProxyURL {
+	if p == "" {
 		return ""
 	}
 	return p
@@ -1439,6 +1447,12 @@ func (m *Manager) EgressProxy() string {
 // WaitProxyReady blocks until the current pool has completed its first probe
 // (bounded by timeout). No pool or no candidates → returns immediately.
 func (m *Manager) WaitProxyReady(timeout time.Duration) {
+	m.WaitProxyReadyCtx(context.Background(), timeout)
+}
+
+// WaitProxyReadyCtx is WaitProxyReady bound to a caller context so canceled
+// requests/runs do not block waiting on an initial probe.
+func (m *Manager) WaitProxyReadyCtx(ctx context.Context, timeout time.Duration) {
 	if m == nil {
 		return
 	}
@@ -1448,9 +1462,9 @@ func (m *Manager) WaitProxyReady(timeout time.Duration) {
 	if pool == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	pool.WaitReady(ctx)
+	pool.WaitReady(waitCtx)
 }
 
 // ProxySnapshot resolves the egress proxy + CA for an agent run or a single tool
@@ -1533,7 +1547,7 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 }
 
 // SetProxyPool validates, persists and applies a proxy pool. Candidates are
-// http/https/socks5 URLs (Clash's mixed port works as http://127.0.0.1:7890).
+// http/https/socks5/socks5h URLs (Clash's mixed port works as http://127.0.0.1:7890).
 // An empty candidate list is an explicit direct mode; while candidates exist the
 // egress is fail-closed (blocked, never direct) if all of them are down.
 func (m *Manager) SetProxyPool(cfg ProxyPoolConfig) error {
@@ -1546,7 +1560,7 @@ func (m *Manager) SetProxyPool(cfg ProxyPoolConfig) error {
 	if len(norm.Candidates) > 0 {
 		primary = norm.Candidates[0]
 	}
-	for key, val := range map[string]string{
+	if err := m.pg.SetSettings(map[string]string{
 		settingGlobalProxyPool:     poolRaw,
 		settingGlobalProxy:         primary,
 		settingProxyHealthURL:      norm.HealthURL,
@@ -1554,18 +1568,64 @@ func (m *Manager) SetProxyPool(cfg ProxyPoolConfig) error {
 		settingProxyHealthInterval: strconv.Itoa(int(norm.Interval.Seconds())),
 		settingProxyFailThreshold:  strconv.Itoa(norm.FailThreshold),
 		settingProxySwitchCooldown: strconv.Itoa(int(norm.Cooldown.Seconds())),
-	} {
-		if err := m.pg.SetSetting(key, val); err != nil {
-			return err
-		}
+		settingProxyStrategy:       string(norm.Strategy),
+	}); err != nil {
+		return err
+	}
+	return m.ApplyProxyPoolConfig(norm)
+}
+
+// ApplyProxyPoolConfig applies an already-persisted proxy pool config live
+// without tearing down a healthy active proxy (zero-downtime reload).
+func (m *Manager) ApplyProxyPoolConfig(cfg ProxyPoolConfig) error {
+	norm, err := NormalizeProxyPoolConfig(cfg)
+	if err != nil {
+		return err
+	}
+	primary := ""
+	if len(norm.Candidates) > 0 {
+		primary = norm.Candidates[0]
 	}
 	m.mu.Lock()
 	m.globalProxy = primary
+	pool := m.proxyPool
 	m.mu.Unlock()
-	log.Printf("[proxy] 保存代理池：%d 个候选（健康检查 %s，超时 %s，失败阈值 %d）",
-		len(norm.Candidates), norm.HealthURL, norm.Timeout, norm.FailThreshold)
-	m.startProxyPool()
+	log.Printf("[proxy] 应用代理池：%d 个候选（策略 %s，健康检查 %d 条，超时 %s，失败阈值 %d）",
+		len(norm.Candidates), norm.Strategy, len(norm.HealthURLs), norm.Timeout, norm.FailThreshold)
+	if pool != nil {
+		pool.ReloadConfig(norm)
+		return nil
+	}
+	m.startProxyPoolWithConfig(norm)
 	return nil
+}
+
+// ProbeProxyPool runs an immediate concurrent health probe of all configured candidates.
+func (m *Manager) ProbeProxyPool(ctx context.Context) ProxyPoolStatus {
+	if m == nil {
+		return ProxyPoolStatus{}
+	}
+	m.mu.RLock()
+	pool := m.proxyPool
+	m.mu.RUnlock()
+	if pool == nil {
+		return ProxyPoolStatus{}
+	}
+	return pool.CheckNow(ctx)
+}
+
+// PinProxy manually pins (or unpins when candidate == "") a candidate proxy.
+func (m *Manager) PinProxy(ctx context.Context, candidate string) error {
+	if m == nil {
+		return errors.New("代理池未就绪")
+	}
+	m.mu.RLock()
+	pool := m.proxyPool
+	m.mu.RUnlock()
+	if pool == nil {
+		return errors.New("代理池未启用")
+	}
+	return pool.Pin(ctx, candidate)
 }
 
 // loadProxyPoolConfig reads the persisted pool + health settings. A stored
@@ -1600,6 +1660,7 @@ func (m *Manager) loadProxyPoolConfig() ProxyPoolConfig {
 		Interval:      time.Duration(getInt(settingProxyHealthInterval, int(defaultProxyHealthInterval.Seconds()))) * time.Second,
 		Cooldown:      time.Duration(getInt(settingProxySwitchCooldown, int(defaultProxySwitchCooldown.Seconds()))) * time.Second,
 		FailThreshold: getInt(settingProxyFailThreshold, defaultProxyFailThreshold),
+		Strategy:      ProxyStrategy(get(settingProxyStrategy, string(defaultProxyStrategy))),
 	})
 	if err != nil {
 		log.Printf("[proxy] 代理池配置无效（%v）：保持原配置，出口按 fail-closed 处理", err)
@@ -1609,11 +1670,12 @@ func (m *Manager) loadProxyPoolConfig() ProxyPoolConfig {
 	return cfg
 }
 
-// startProxyPool (re)starts the health-check loop. The old pool is stopped only
-// after egressProxy is switched to a blocked fallback, so a settings change can
-// never open a direct-egress window.
+// startProxyPool initializes the health-check loop during Manager construction.
 func (m *Manager) startProxyPool() {
-	cfg := m.loadProxyPoolConfig()
+	m.startProxyPoolWithConfig(m.loadProxyPoolConfig())
+}
+
+func (m *Manager) startProxyPoolWithConfig(cfg ProxyPoolConfig) {
 	m.mu.Lock()
 	old := m.proxyPool
 	m.proxyPool = nil

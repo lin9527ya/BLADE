@@ -120,6 +120,8 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/proxy/egress-ip", s.proxyEgressIPs)
 	mux.HandleFunc("POST /api/settings/proxy/egress/rotate", s.proxyRotateEgress)
+	mux.HandleFunc("POST /api/settings/proxy/pin", s.proxyPin)
+	mux.HandleFunc("POST /api/settings/proxy/probe", s.proxyProbe)
 	mux.HandleFunc("POST /api/settings/intel/test", s.testIntelSource)    // P21 情报源:测试连接(回显账号/剩余额度,不回显 key)
 	mux.HandleFunc("POST /api/intel/search", s.searchIntelAssets)         // P28 资产页 FOFA 检索（与工具同一执行路径）
 	mux.HandleFunc("GET /api/storage/report", s.getStorageReport)         // P28 存储体检（试算，只读）

@@ -67,6 +67,7 @@ type Planner struct {
 	proxyAddr           string                  // recording proxy for WebFetch (empty = direct)
 	proxyCACert         string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn             func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
+	proxyFailureFn      func(proxyURL string, err error)
 	webSearch           WebSearchOpts           // web_search tool backend selection (off by default)
 	workDir             string                  // shared work dir (surfaced in prompt as artifact-output target)
 	injectConstraints   func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
@@ -226,6 +227,10 @@ func (p *Planner) SetProxy(addr, caCert string) {
 
 // SetProxyFunc resolves egress per run (proxy-pool failover without a rebuild).
 func (p *Planner) SetProxyFunc(fn func() (string, string)) { p.proxyFn = fn }
+
+// SetProxyFailureHook registers a host callback invoked when native HTTP tools
+// hit a transport error on the active egress proxy.
+func (p *Planner) SetProxyFailureHook(fn func(proxyURL string, err error)) { p.proxyFailureFn = fn }
 
 func (p *Planner) proxySnapshot() (string, string) {
 	if p.proxyFn != nil {
@@ -879,7 +884,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 每轮开始恢复一次、结束落库一次。恢复只影响规划便签，不写入事实图。
 	plannerTodos := p.restorePlannerState(ctx, ts, taskID, ts.ID())
 	defer p.savePlannerState(ts, taskID, ts.ID(), plannerTodos)
-	proxyAddr, proxyCA := p.proxySnapshot()
+	_, proxyCA := p.proxySnapshot()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -893,7 +898,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			createdTools.CloseHTTP()
 		}
 	}()
-	tsx.SetEgressProxy(proxyAddr, proxyCA)
 	// wireToolSet 把「本轮」依赖与轮级状态装到**本轮实际被调用的**那个 ToolSet 上。
 	//
 	// 热会话复用时，模型调用的工具闭包绑定的是热会话首轮的 ToolSet（agentcore.Session
@@ -903,6 +907,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 事实触发一次，两次之间至少 3 个普通轮。计数器放在 Planner 上，按任务隔离。
 	wireToolSet := func(t *ToolSet) {
 		t.ts = ts // 任务存储指针跨轮不变；重装一遍以防替换
+		t.SetEgressProxyFunc(p.proxySnapshot)
+		t.SetProxyFailureHook(p.proxyFailureFn)
 		originNode := int64(0)
 		if origin, _ := ts.OriginFactID(); origin > 0 {
 			originNode = origin
@@ -976,9 +982,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeferredTools:           def.Deferred,
 		UnlockSet:               def.Unlock,
 		PermissionMode:          permission.ModeBypass,
-		EnableWebFetch:          true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:           proxyAddr,
-		WebFetchCACert:          proxyCA,
+		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxyFunc:             p.proxySnapshot,
+		WebFetchCACert:                proxyCA,
+		WebFetchDisableDirectFallback: true,
 		OmitCurrentDateReminder: true,
 		PromptCacheKey:          plannerSID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
@@ -1047,7 +1054,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	//   ② 热会话（默认）——在有界窗口内追加增量游标变更，保留 Turn 1 完整黑板前缀吃满 KV 缓存；
 	//      达到上限后再折叠成「输入 + 结论」重新建基线，上下文体积有界。
 	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
-	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(opts.SystemPrompt, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%s|%t", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, win, opts.WebFetchProxy, opts.WebFetchCACert, noaSt.enabled), opts.Tools))
+	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(opts.SystemPrompt, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%t", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, win, opts.WebFetchCACert, noaSt.enabled), opts.Tools))
 	var s *agentcore.Session
 	keepSession := false
 	useDelta := false

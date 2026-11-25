@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -363,5 +364,180 @@ func TestProxyPoolAppliesLatestSwitchAfterSlowPreviousApply(t *testing.T) {
 	mu.Unlock()
 	if last != "http://b:1" {
 		t.Fatalf("stale apply won: %v", applied)
+	}
+}
+
+func TestNormalizeProxyPoolLimitsAndMultiHealthAndStrategy(t *testing.T) {
+	// Rejects >20 candidates instead of silently dropping entries.
+	var many []string
+	for i := 1; i <= maxProxyCandidates+1; i++ {
+		many = append(many, "http://127.0.0.1:"+strconv.Itoa(10000+i))
+	}
+	if _, err := NormalizeProxyPoolConfig(ProxyPoolConfig{Candidates: many}); err == nil {
+		t.Fatal("超过 maxProxyCandidates 时应拒绝保存而不是静默截断")
+	}
+
+	// Rejects invalid strategy.
+	if _, err := NormalizeProxyPoolConfig(ProxyPoolConfig{Strategy: "random"}); err == nil {
+		t.Fatal("未知调度策略应拒绝")
+	}
+
+	// Supports multiline/comma fallback HealthURLs and preserves socks5h.
+	cfg, err := NormalizeProxyPoolConfig(ProxyPoolConfig{
+		Candidates: []string{"socks5h://u:p@127.0.0.1:7891"},
+		HealthURL:  "https://a.example/204, https://b.example/204\n# comment\nhttps://a.example/204",
+		Strategy:   "fastest",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.HealthURLs) != 2 || cfg.Candidates[0] != "socks5h://u:p@127.0.0.1:7891" || cfg.Strategy != ProxyStrategyFastest {
+		t.Fatalf("normalized config mismatch: %+v", cfg)
+	}
+}
+
+func TestProxyPoolConcurrentProbingAndFullCandidateStatus(t *testing.T) {
+	cfg := mustNormalizePool(t, ProxyPoolConfig{
+		Candidates: []string{"http://slow1:1", "http://slow2:2", "http://fast3:3"},
+		Timeout:    time.Second, Interval: time.Hour,
+	})
+	p := newProxyPool(cfg, func(ctx context.Context, proxy, _ string, _ time.Duration) error {
+		if proxy != "http://fast3:3" {
+			select {
+			case <-time.After(350 * time.Millisecond):
+				return errors.New("timeout")
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}, nil)
+	start := time.Now()
+	p.Start()
+	defer p.Close()
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p.WaitReady(waitCtx)
+	if elapsed := time.Since(start); elapsed >= 700*time.Millisecond {
+		t.Fatalf("并发探测耗时长于单轮并发上限：%s", elapsed)
+	}
+	if p.Active() != "http://fast3:3" {
+		t.Fatalf("应切到第3个健康候选，实际 %q", p.Active())
+	}
+	st := p.Status()
+	if len(st.Candidates) != 3 {
+		t.Fatalf("所有 3 个候选都应有最近健康记录，实际 %d: %+v", len(st.Candidates), st.Candidates)
+	}
+}
+
+func TestProxyPoolOrderedFailbackFastFailoverAndPin(t *testing.T) {
+	cfg := mustNormalizePool(t, ProxyPoolConfig{
+		Candidates: []string{"http://p1:1", "http://p2:2", "http://p3:3"},
+		HealthURL:  "https://primary.example/204\nhttps://backup.example/204",
+		Timeout:    200 * time.Millisecond, Interval: time.Hour, FailThreshold: 3, Cooldown: 0, Strategy: ProxyStrategyOrdered,
+	})
+	var mu sync.Mutex
+	errFor := map[string]error{}
+	primaryDown := false
+	p := newProxyPool(cfg, func(_ context.Context, proxy, healthURL string, _ time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if primaryDown && healthURL == "https://primary.example/204" {
+			return errors.New("primary health url timeout")
+		}
+		return errFor[proxy]
+	}, nil)
+	p.Start()
+	defer p.Close()
+	waitPool(t, "ordered init", func() bool { return p.Active() == "http://p1:1" })
+
+	// 单个健康检查 URL 挂了但备用 HealthURL 存活：不应误判阻断。
+	mu.Lock()
+	primaryDown = true
+	mu.Unlock()
+	p.check()
+	if p.Active() != "http://p1:1" {
+		t.Fatalf("备用 HealthURL 可达时不应切走，实际 %q", p.Active())
+	}
+
+	// p1 触发确定性代理端口拒绝（connection refused）：立刻快切到 p2，不死等 3 次。
+	mu.Lock()
+	errFor["http://p1:1"] = errors.New("proxyconnect tcp: dial tcp p1:1: connection refused")
+	mu.Unlock()
+	p.check()
+	if p.Active() != "http://p2:2" {
+		t.Fatalf("确定性 proxy_connect 错误应立即快切到 p2，实际 %q", p.Active())
+	}
+
+	// p1 恢复：需连续 defaultProxyRecoverThreshold(2) 轮健康才平滑回切。
+	mu.Lock()
+	errFor["http://p1:1"] = nil
+	mu.Unlock()
+	p.check()
+	if p.Active() != "http://p2:2" {
+		t.Fatalf("第 1 次恢复后不应立即抖动回切，实际 %q", p.Active())
+	}
+	p.check()
+	if p.Active() != "http://p1:1" {
+		t.Fatalf("连续两次健康后应回切主节点 p1，实际 %q", p.Active())
+	}
+
+	// 手动固定失效节点被拒绝；固定健康节点 p3 成功并切换。
+	mu.Lock()
+	errFor["http://p2:2"] = errors.New("407 Proxy Authentication Required")
+	mu.Unlock()
+	if err := p.Pin(context.Background(), "http://p2:2"); err == nil {
+		t.Fatal("固定不可用节点应返回错误")
+	}
+	if err := p.Pin(context.Background(), "http://p3:3"); err != nil {
+		t.Fatalf("固定健康节点失败: %v", err)
+	}
+	if p.Active() != "http://p3:3" || p.Status().Pinned != "http://p3:3" {
+		t.Fatalf("固定 p3 后状态不对: %+v", p.Status())
+	}
+
+	// ReloadConfig 新增候选且保留 p3 时，不得闪断为 blockedProxyURL。
+	reloaded := mustNormalizePool(t, ProxyPoolConfig{
+		Candidates: []string{"http://p1:1", "http://p2:2", "http://p3:3", "http://p4:4"},
+		Interval:   time.Hour,
+	})
+	p.ReloadConfig(reloaded)
+	if p.Active() == blockedProxyURL {
+		t.Fatal("ReloadConfig 保留活跃节点时不应出现黑洞闪断")
+	}
+}
+
+func TestProxyPoolFastestStrategyHysteresis(t *testing.T) {
+	cfg := mustNormalizePool(t, ProxyPoolConfig{
+		Candidates: []string{"http://p1:1", "http://p2:2"},
+		Timeout:    time.Second, Interval: time.Hour, Cooldown: 0, Strategy: ProxyStrategyFastest,
+	})
+	var mu sync.Mutex
+	delays := map[string]time.Duration{
+		"http://p1:1": 2 * time.Millisecond,
+		"http://p2:2": 120 * time.Millisecond,
+	}
+	p := newProxyPool(cfg, func(_ context.Context, proxy, _ string, _ time.Duration) error {
+		mu.Lock()
+		d := delays[proxy]
+		mu.Unlock()
+		time.Sleep(d)
+		return nil
+	}, nil)
+	p.Start()
+	defer p.Close()
+	waitPool(t, "fastest init", func() bool { return p.Active() == "http://p1:1" })
+
+	// 反转延迟，使 p2 远快于 p1（触发 >=50ms & >=30% 门槛 + 2 轮确认）。
+	mu.Lock()
+	delays["http://p1:1"] = 120 * time.Millisecond
+	delays["http://p2:2"] = 1 * time.Millisecond
+	mu.Unlock()
+	for i := 0; i < 6 && p.Active() != "http://p2:2"; i++ {
+		p.check()
+	}
+	if p.Active() != "http://p2:2" {
+		t.Fatalf("fastest 策略应在持续显著更低延迟后切到 p2，实际 %q (%+v)", p.Active(), p.Status())
 	}
 }

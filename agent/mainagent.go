@@ -31,6 +31,7 @@ type MainAgent struct {
 	proxyAddr       string                                 // recording proxy for WebFetch (empty = direct)
 	proxyCACert     string                                 // recording proxy's CA cert path (HTTPS verify)
 	proxyFn         func() (string, string)                // dynamic resolver (proxy-pool failover); nil = static
+	proxyFailureFn  func(proxyURL string, err error)       // host callback on proxy dial/auth failure
 	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
@@ -131,6 +132,10 @@ func (m *MainAgent) SetProxy(addr, caCert string) {
 // SetProxyFunc resolves egress per run (proxy-pool failover without a rebuild).
 func (m *MainAgent) SetProxyFunc(fn func() (string, string)) { m.proxyFn = fn }
 
+// SetProxyFailureHook registers a host callback invoked when native HTTP tools
+// hit a transport error on the active egress proxy.
+func (m *MainAgent) SetProxyFailureHook(fn func(proxyURL string, err error)) { m.proxyFailureFn = fn }
+
 func (m *MainAgent) proxySnapshot() (string, string) {
 	if m.proxyFn != nil {
 		return m.proxyFn()
@@ -202,10 +207,11 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // text / result) so the main-agent session shows its work — exactly like the
 // worker/planner sessions — not just the final answer.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
-	proxyAddr, proxyCA := m.proxySnapshot()
+	_, proxyCA := m.proxySnapshot()
 	tsx := NewToolSet(ts, "human")
 	defer tsx.CloseHTTP()
-	tsx.SetEgressProxy(proxyAddr, proxyCA)
+	tsx.SetEgressProxyFunc(m.proxySnapshot)
+	tsx.SetProxyFailureHook(m.proxyFailureFn)
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
@@ -243,9 +249,10 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeferredTools:           def.Deferred,
 		UnlockSet:               def.Unlock,
 		PermissionMode:          permission.ModeBypass,
-		EnableWebFetch:          true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:           proxyAddr,
-		WebFetchCACert:          proxyCA,
+		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxyFunc:             m.proxySnapshot,
+		WebFetchCACert:                proxyCA,
+		WebFetchDisableDirectFallback: true,
 		OmitCurrentDateReminder: true,
 		PromptCacheKey:          MainSessionID(ts.ID(), mainSeg),
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。

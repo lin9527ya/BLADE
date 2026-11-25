@@ -139,7 +139,14 @@ func buildClient(proxy func() string) *http.Client {
 			if p == "" {
 				return nil, nil // direct
 			}
-			return url.Parse(p)
+			u, err := url.Parse(p)
+			if err != nil {
+				return nil, err
+			}
+			if strings.EqualFold(u.Scheme, "socks5h") {
+				u.Scheme = "socks5"
+			}
+			return u, nil
 		}
 	}
 	return &http.Client{

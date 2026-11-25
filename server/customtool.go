@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/traffic"
 )
 
 // 本文件实现自定义工具执行器(docs/README.md「自定义工具」)。system=false 的 tools 行按
@@ -511,20 +511,24 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 }
 
 // httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its CA.
+// (direct). When UseRecordingProxy is set or no explicit custom Proxy is given,
+// it follows the platform ProxyAddr (recording MITM or global egress proxy) + CA.
 func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 	proxyStr := strings.TrimSpace(spec.Proxy)
 	var caFile string
-	if spec.UseRecordingProxy {
-		if addr := s.m.ProxyAddr(); addr != "" {
-			proxyStr = "http://" + addr
-			caFile = s.m.ProxyCACert()
+	if s != nil && s.m != nil && (spec.UseRecordingProxy || proxyStr == "") {
+		if addr := strings.TrimSpace(s.m.ProxyAddr()); addr != "" {
+			proxyStr = addr
+			caFile = strings.TrimSpace(s.m.ProxyCACert())
 		}
 	}
 	if proxyStr == "" {
 		return nil
 	}
-	pu, err := url.Parse(proxyStr)
+	if !strings.Contains(proxyStr, "://") {
+		proxyStr = "http://" + proxyStr
+	}
+	pu, err := traffic.TransportProxyURL(proxyStr)
 	if err != nil {
 		return nil
 	}

@@ -2,10 +2,11 @@ package server
 
 import (
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/lin9527ya/blade/traffic"
 )
 
 // GET /api/egress/status：出口只读视图。
@@ -16,11 +17,7 @@ func (s *Server) egressStatus(w http.ResponseWriter, r *http.Request) {
 	if s.pg(w) == nil {
 		return
 	}
-	proxy := s.m.ProxyStatus()
-	for i := range proxy.Candidates {
-		proxy.Candidates[i].Proxy = redactProxyURL(proxy.Candidates[i].Proxy)
-	}
-	proxy.Active = redactProxyURL(proxy.Active)
+	proxy := redactProxyStatus(s.m.ProxyStatus())
 
 	type taskBinding struct {
 		TaskID int64  `json:"task_id"`
@@ -70,19 +67,18 @@ func (s *Server) egressStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// redactProxyURL 去掉代理 URL 里的 userinfo（http://user:pass@host）。
 func redactProxyURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return raw
+	return traffic.RedactProxyURL(raw)
+}
+
+func redactProxyStatus(st ProxyPoolStatus) ProxyPoolStatus {
+	st.Active = traffic.RedactProxyURL(st.Active)
+	st.Pinned = traffic.RedactProxyURL(st.Pinned)
+	cands := make([]ProxyHealth, len(st.Candidates))
+	for i, c := range st.Candidates {
+		c.Proxy = traffic.RedactProxyURL(c.Proxy)
+		cands[i] = c
 	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
-	}
-	if u.User == nil {
-		return raw
-	}
-	u.User = nil
-	return u.String()
+	st.Candidates = cands
+	return st
 }

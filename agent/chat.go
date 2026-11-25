@@ -133,7 +133,7 @@ type chatVars struct{ DataDir, Now string }
 // tool_use / tool_result / text / result), tagged with the agent key as the
 // worker lane.
 func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message string, maxTurns int, maxDuration time.Duration, webSearch bool, emit func(db.Activity)) (string, error) {
-	proxyAddr, proxyCA := c.proxySnapshot()
+	_, proxyCA := c.proxySnapshot()
 	// gate the global web-search opts by this agent's own flag.
 	ws := c.webSearch
 	if !webSearch {
@@ -171,9 +171,10 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeferredTools:           def.Deferred,
 		UnlockSet:               def.Unlock,
 		PermissionMode:          permission.ModeBypass,
-		EnableWebFetch:          true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:           proxyAddr,
-		WebFetchCACert:          proxyCA,
+		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxyFunc:             c.proxySnapshot,
+		WebFetchCACert:                proxyCA,
+		WebFetchDisableDirectFallback: true,
 		OmitCurrentDateReminder: true,
 		PromptCacheKey:          sessionID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。

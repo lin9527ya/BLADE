@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lin9527ya/blade/db"
 )
@@ -133,5 +136,65 @@ func TestEgressRestoredNotifies(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("恢复后应提示可以继续：%+v", acts)
+	}
+}
+
+func TestObserveActiveProxyFailureTriggersRecheck(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+	task, err := m.CreateTask("active proxy fail", "x", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tid, _ := strconv.ParseInt(task.ID, 10, 64)
+	defer m.pg.DeleteTask(tid)
+	e := NewEngine(m)
+
+	var probes atomic.Int32
+	cfg, _ := NormalizeProxyPoolConfig(ProxyPoolConfig{
+		Candidates: []string{"http://127.0.0.1:7890"},
+		Interval:   time.Hour,
+	})
+	pool := newProxyPool(cfg, func(context.Context, string, string, time.Duration) error {
+		probes.Add(1)
+		return nil
+	}, nil)
+	pool.Start()
+	defer pool.Close()
+
+	// Wait for initial probe so active becomes http://127.0.0.1:7890.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && pool.Active() != "http://127.0.0.1:7890" {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pool.Active() != "http://127.0.0.1:7890" {
+		t.Fatalf("pool did not become ready: %q", pool.Active())
+	}
+	before := probes.Load()
+
+	m.mu.Lock()
+	oldPool := m.proxyPool
+	m.proxyPool = pool
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.proxyPool = oldPool
+		m.mu.Unlock()
+	}()
+
+	// Tool result hits connection refused specifically on active proxy 127.0.0.1:7890.
+	e.observeEgressBlocked(task, db.Activity{
+		Kind:   "tool_result",
+		Detail: "curl: (7) Failed to connect to 127.0.0.1 port 7890 after 0 ms: Connection refused",
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && probes.Load() <= before {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if probes.Load() <= before {
+		t.Fatalf("active proxy connection refused should trigger immediate recheck (before=%d after=%d)", before, probes.Load())
 	}
 }

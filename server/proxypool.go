@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,64 +18,104 @@ import (
 	"github.com/lin9527ya/blade/traffic"
 )
 
-// 全局出口代理池：多个代理 URL（Clash 的 http/socks5 混合端口即可），按健康检查
+// 全局出口代理池：多个代理 URL（http/https/socks5/socks5h），按并发健康检查与调度策略
 // 自动切换。核心约束是**绝不直连**：配置了候选时 active 永不为空——全部失败就切到
-// 一个 loopback 关闭端口（`blockedProxyURL`），让流量失败，而不是泄漏真实 IP。
+// 本机关闭端口（blockedProxyURL），让目标流量失败，而不是泄漏真实 IP。
 //
 // 探测本身也经候选代理完成（Transport.Proxy 显式设置，不读 NO_PROXY、没有直连分支）。
+
+// ProxyStrategy 定义代理池在多健康节点之间的选路策略。
+type ProxyStrategy string
+
+const (
+	// ProxyStrategyOrdered 按候选顺序主备优先；高优先级节点恢复并连续健康后平滑回切。
+	ProxyStrategyOrdered ProxyStrategy = "ordered"
+	// ProxyStrategySticky 粘性故障转移：当前节点可用时不主动切换，失效后顺延下一个。
+	ProxyStrategySticky ProxyStrategy = "sticky"
+	// ProxyStrategyFastest 基于 EMA 平滑延迟 + 迟滞阈值选择延迟最低的健康节点。
+	ProxyStrategyFastest ProxyStrategy = "fastest"
+)
+
+// ProxyErrorKind 对探测错误进行分类，以区分确定性的代理层不可用与目标/瞬态超时。
+type ProxyErrorKind string
+
+const (
+	ProxyErrNone       ProxyErrorKind = ""
+	ProxyErrAuth       ProxyErrorKind = "proxy_auth"        // 407 / SOCKS5 认证失败
+	ProxyErrConnect    ProxyErrorKind = "proxy_connect"     // 代理端连接被拒/重置/域名解析或握手失败
+	ProxyErrTimeout    ProxyErrorKind = "probe_timeout"     // 探测超时
+	ProxyErrTargetHTTP ProxyErrorKind = "probe_target_http" // 经代理访问目标返回 5xx 等服务端错误
+	ProxyErrOther      ProxyErrorKind = "other"
+)
 
 const (
 	// blockedProxyURL 是"全部代理不可用"时的黑洞：本机关闭端口，连接立即失败。
 	// 它必须是一个合法的代理 URL（会喂给 MITM 的 upstream），而不是空串——空串=直连。
 	blockedProxyURL = "http://127.0.0.1:9"
 
-	defaultProxyHealthURL      = "https://www.gstatic.com/generate_204"
-	defaultProxyEgressIPURL    = "https://api.ipify.org"
-	defaultProxyHealthTimeout  = 5 * time.Second
-	defaultProxyHealthInterval = 30 * time.Second
-	defaultProxyFailThreshold  = 2
-	defaultProxySwitchCooldown = 30 * time.Second
-	// proxyFirstProbeWait 是 run 启动/每次工具调用等待代理池首探的上限。首探正常在
-	// ~1 秒内完成；10 秒覆盖多候选逐个探测（每个默认 5 秒）的最坏情况，同时不至于
-	// 让一次真正的全网故障把每个 run 拖住太久。
+	defaultProxyHealthURL        = "https://www.gstatic.com/generate_204"
+	defaultProxyEgressIPURL      = "https://api.ipify.org"
+	defaultProxyHealthTimeout    = 5 * time.Second
+	defaultProxyHealthInterval   = 30 * time.Second
+	defaultProxyFailThreshold    = 2
+	defaultProxySwitchCooldown   = 30 * time.Second
+	defaultProxyRecoverThreshold = 2
+	defaultProxyStrategy         = ProxyStrategyOrdered
+	// proxyFirstProbeWait 是 run 启动/每次工具调用等待代理池首探的上限。并发探测下
+	// 一轮最坏耗时不超过单节点 Timeout（默认 5s），正常在 ~1s 内放行。
 	proxyFirstProbeWait      = 10 * time.Second
 	maxProxyCandidates       = 20
+	maxProxyHealthURLs       = 5
 	maxEgressIPChecks        = 20
+	defaultProbeConcurrency  = 6
 	egressIPCheckConcurrency = 4
+	fastestSwitchRatio       = 0.70
+	fastestSwitchMinDeltaMS  = int64(50)
 )
 
 // ProxyPoolConfig 是代理池的完整配置（设置页保存 / Manager 加载）。
 type ProxyPoolConfig struct {
-	Candidates []string
-	HealthURL  string
-	Timeout    time.Duration
-	Interval   time.Duration
-	Cooldown   time.Duration
-	// FailThreshold 是 active 连续失败几次后切换。
+	Candidates    []string
+	HealthURL     string
+	HealthURLs    []string
+	Timeout       time.Duration
+	Interval      time.Duration
+	Cooldown      time.Duration
 	FailThreshold int
+	Strategy      ProxyStrategy
 	// configured 表示用户确实配了代理（哪怕全是非法项）。用于"配置了但不合法"时
 	// fail-closed，而不是悄悄退回直连。
 	configured bool
 }
 
-// ProxyHealth 是一个候选的最近探测结果（设置页展示）。
+// ProxyHealth 是一个候选的最近探测结果与累计指标（设置页展示）。
 type ProxyHealth struct {
-	Proxy     string    `json:"proxy"`
-	OK        bool      `json:"ok"`
-	LatencyMS int64     `json:"latency_ms,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
-	Error     string    `json:"error,omitempty"`
+	Proxy         string         `json:"proxy"`
+	OK            bool           `json:"ok"`
+	LatencyMS     int64          `json:"latency_ms,omitempty"`
+	AvgLatencyMS  int64          `json:"avg_latency_ms,omitempty"`
+	CheckedAt     time.Time      `json:"checked_at"`
+	Error         string         `json:"error,omitempty"`
+	ErrorKind     ProxyErrorKind `json:"error_kind,omitempty"`
+	FailCount     int            `json:"fail_count,omitempty"`
+	ConsecutiveOK int            `json:"consecutive_ok,omitempty"`
+	Pinned        bool           `json:"pinned,omitempty"`
 }
 
 // ProxyPoolStatus 是设置页要的运行时状态。
 type ProxyPoolStatus struct {
-	Active     string        `json:"active"`
-	Blocked    bool          `json:"blocked"`
-	Candidates []ProxyHealth `json:"candidates"`
+	Active               string        `json:"active"`
+	Blocked              bool          `json:"blocked"`
+	Strategy             ProxyStrategy `json:"strategy"`
+	Pinned               string        `json:"pinned,omitempty"`
+	Probing              bool          `json:"probing"`
+	FailThreshold        int           `json:"fail_threshold"`
+	CooldownRemainingSec int           `json:"cooldown_remaining_seconds,omitempty"`
+	Candidates           []ProxyHealth `json:"candidates"`
 }
 
-// splitProxyCandidates 解析设置里的代理列表：换行或逗号分隔，忽略空行与 # 注释。
-func splitProxyCandidates(raw string) []string {
+// splitProxyList 解析多值列表（代理池/健康检查 URL）：支持换行或逗号，忽略空行与 # 注释。
+func splitProxyList(raw string) []string {
 	out := make([]string, 0, 4)
 	for _, line := range strings.FieldsFunc(raw, func(r rune) bool {
 		return r == '\n' || r == '\r' || r == ','
@@ -88,19 +129,33 @@ func splitProxyCandidates(raw string) []string {
 	return out
 }
 
-// NormalizeProxyPoolConfig 校验并归一配置。非法代理直接报错（设置页应当拒绝保存），
-// 而不是悄悄丢掉——丢掉后用户以为配了，实际流量可能走了别的出口。
+// splitProxyCandidates 是候选列表解析的别名。
+func splitProxyCandidates(raw string) []string { return splitProxyList(raw) }
+
+// NormalizeProxyPoolConfig 校验并归一配置。非法代理/超限/非法策略直接报错（设置页应当
+// 拒绝保存），而不是悄悄丢掉——丢掉后用户以为配了，实际流量可能走了别的出口。
 func NormalizeProxyPoolConfig(c ProxyPoolConfig) (ProxyPoolConfig, error) {
+	strategy := ProxyStrategy(strings.ToLower(strings.TrimSpace(string(c.Strategy))))
+	if strategy == "" {
+		strategy = defaultProxyStrategy
+	}
+	switch strategy {
+	case ProxyStrategyOrdered, ProxyStrategySticky, ProxyStrategyFastest:
+	default:
+		return ProxyPoolConfig{}, fmt.Errorf("未知代理调度策略 %q（可选 ordered / sticky / fastest）", c.Strategy)
+	}
+
 	out := ProxyPoolConfig{
 		HealthURL:     strings.TrimSpace(c.HealthURL),
 		Timeout:       c.Timeout,
 		Interval:      c.Interval,
 		Cooldown:      c.Cooldown,
 		FailThreshold: c.FailThreshold,
+		Strategy:      strategy,
 	}
 	seen := map[string]bool{}
 	for _, raw := range c.Candidates {
-		for _, line := range splitProxyCandidates(raw) {
+		for _, line := range splitProxyList(raw) {
 			u, err := traffic.ValidateProxyURL(line)
 			if err != nil {
 				return out, err
@@ -109,20 +164,21 @@ func NormalizeProxyPoolConfig(c ProxyPoolConfig) (ProxyPoolConfig, error) {
 			if seen[key] {
 				continue
 			}
+			if len(out.Candidates) >= maxProxyCandidates {
+				return out, fmt.Errorf("代理池最多支持 %d 个候选代理", maxProxyCandidates)
+			}
 			seen[key] = true
 			out.Candidates = append(out.Candidates, key)
-			if len(out.Candidates) >= maxProxyCandidates {
-				break
-			}
 		}
 	}
-	if out.HealthURL == "" {
-		out.HealthURL = defaultProxyHealthURL
+
+	urls, err := normalizeHealthURLs(out.HealthURL)
+	if err != nil {
+		return out, err
 	}
-	hu, err := url.Parse(out.HealthURL)
-	if err != nil || hu.Host == "" || (hu.Scheme != "http" && hu.Scheme != "https") {
-		return out, fmt.Errorf("健康检查 URL 必须是 http(s) 绝对地址：%q", out.HealthURL)
-	}
+	out.HealthURLs = urls
+	out.HealthURL = strings.Join(urls, "\n")
+
 	if out.Timeout <= 0 {
 		out.Timeout = defaultProxyHealthTimeout
 	}
@@ -155,24 +211,55 @@ func NormalizeProxyPoolConfig(c ProxyPoolConfig) (ProxyPoolConfig, error) {
 	return out, nil
 }
 
+func normalizeHealthURLs(raw string) ([]string, error) {
+	items := splitProxyList(raw)
+	if len(items) == 0 {
+		return []string{defaultProxyHealthURL}, nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		hu, err := url.Parse(item)
+		if err != nil || hu.Host == "" || (hu.Scheme != "http" && hu.Scheme != "https") {
+			return nil, fmt.Errorf("健康检查 URL 必须是 http(s) 绝对地址：%q", item)
+		}
+		if seen[item] {
+			continue
+		}
+		if len(out) >= maxProxyHealthURLs {
+			return nil, fmt.Errorf("健康检查 URL 最多支持 %d 条", maxProxyHealthURLs)
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 type proxyProbeFunc func(ctx context.Context, proxyURL, healthURL string, timeout time.Duration) error
 
-// ProxyPool 维护候选代理、active 与每个候选的健康状态。
+// ProxyPool 维护候选代理、active、固定选择与每个候选的健康状态。
 type ProxyPool struct {
-	cfg   ProxyPoolConfig
 	probe proxyProbeFunc
 	apply func(active string)
 
+	checkMu sync.Mutex // 串行化完整探测轮次（后台 tick / RequestCheck / CheckNow / Pin）
+
 	mu         sync.Mutex
+	cfg        ProxyPoolConfig
 	active     string
+	pinned     string
 	failures   int
 	lastSwitch time.Time
+	probing    bool
 	health     map[string]ProxyHealth
-	stop       chan struct{}
-	wg         sync.WaitGroup
+	emaLatency map[string]int64
+	stop        chan struct{}
+	loopRunning bool
+	wg          sync.WaitGroup
 	applyMu    sync.Mutex
 	switchSeq  uint64
 	recheck    chan struct{}
+	reload     chan struct{}
 	// firstProbe 在第一次探测循环结束后关闭。run 启动时用它等首探完成，
 	// 避免把 fail-closed 的启动态（blockedProxyURL）快照进整轮运行环境。
 	firstProbe chan struct{}
@@ -186,7 +273,27 @@ func newProxyPool(cfg ProxyPoolConfig, probe proxyProbeFunc, apply func(string))
 	if apply == nil {
 		apply = func(string) {}
 	}
-	return &ProxyPool{cfg: cfg, probe: probe, apply: apply, health: map[string]ProxyHealth{}, firstProbe: make(chan struct{}), recheck: make(chan struct{}, 1)}
+	if len(cfg.HealthURLs) == 0 && cfg.HealthURL != "" {
+		if urls, err := normalizeHealthURLs(cfg.HealthURL); err == nil {
+			cfg.HealthURLs = urls
+		}
+	}
+	if len(cfg.HealthURLs) == 0 {
+		cfg.HealthURLs = []string{defaultProxyHealthURL}
+	}
+	if cfg.Strategy == "" {
+		cfg.Strategy = defaultProxyStrategy
+	}
+	return &ProxyPool{
+		cfg:        cfg,
+		probe:      probe,
+		apply:      apply,
+		health:     map[string]ProxyHealth{},
+		emaLatency: map[string]int64{},
+		firstProbe: make(chan struct{}),
+		recheck:    make(chan struct{}, 1),
+		reload:     make(chan struct{}, 1),
+	}
 }
 
 // closeFirstProbe 标记首次探测已结束（关一个 channel，幂等）。
@@ -207,7 +314,7 @@ func (p *ProxyPool) WaitReady(ctx context.Context) {
 }
 
 // Start 启动探测循环。配了候选时**先把出口置为阻断**，第一次探测成功后才放行，
-// 避免启动窗口直连；没配候选（用户显式选择直连）则直接置空。
+// 避免启动窗口直连；没配候选（用户显式选择直连）时不启动后台协程（Zero-leak）。
 func (p *ProxyPool) Start() {
 	p.mu.Lock()
 	if p.stop != nil {
@@ -216,102 +323,406 @@ func (p *ProxyPool) Start() {
 	}
 	stop := make(chan struct{})
 	p.stop = stop
-	if len(p.cfg.Candidates) == 0 {
+	hasCandidates := len(p.cfg.Candidates) > 0
+	configured := p.cfg.configured
+	if !hasCandidates {
 		p.active = ""
+		if configured {
+			p.active = blockedProxyURL
+		}
+		target := p.active
 		p.mu.Unlock()
 		p.closeFirstProbe()
-		if p.cfg.configured {
-			// 配了但全是非法项：fail-closed（正常保存路径会拒绝非法项，这里兜手工改库）。
+		if configured {
 			log.Printf("[proxy] 代理配置存在但无有效候选，出口已阻断（不会直连）")
-			p.apply(blockedProxyURL)
-			return
 		}
-		p.apply("")
+		p.apply(target)
 		return
 	}
 	p.active = blockedProxyURL
+	p.loopRunning = true
+	p.wg.Add(1)
 	p.mu.Unlock()
 	p.apply(blockedProxyURL)
-	p.wg.Add(1)
 	go p.run(stop)
 }
 
 func (p *ProxyPool) run(stop <-chan struct{}) {
-	defer p.wg.Done()
-	p.check()
-	p.closeFirstProbe()
-	t := time.NewTicker(p.cfg.Interval)
+	p.runLoop(stop, true)
+}
+
+func (p *ProxyPool) runLoop(stop <-chan struct{}, runInitial bool) {
+	defer func() {
+		p.mu.Lock()
+		p.loopRunning = false
+		p.mu.Unlock()
+		p.wg.Done()
+	}()
+	if runInitial {
+		p.checkContext(context.Background())
+		p.closeFirstProbe()
+	}
+	p.mu.Lock()
+	interval := p.cfg.Interval
+	p.mu.Unlock()
+	if interval <= 0 {
+		interval = defaultProxyHealthInterval
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-stop:
 			return
+		case <-p.reload:
+			p.mu.Lock()
+			nextInterval := p.cfg.Interval
+			hasCandidates := len(p.cfg.Candidates) > 0
+			p.mu.Unlock()
+			if !hasCandidates {
+				return
+			}
+			if nextInterval > 0 && nextInterval != interval {
+				interval = nextInterval
+				t.Reset(interval)
+			}
+			p.checkContext(context.Background())
 		case <-p.recheck:
-			p.check()
+			p.checkContext(context.Background())
 		case <-t.C:
-			p.check()
+			p.checkContext(context.Background())
 		}
 	}
 }
 
-// check 探测 active；失败达到阈值后按顺序找下一个健康的；全部失败则阻断。
+type probeCandidateResult struct {
+	proxy   string
+	ok      bool
+	latency time.Duration
+	err     error
+	kind    ProxyErrorKind
+}
+
 func (p *ProxyPool) check() {
+	p.checkContext(context.Background())
+}
+
+// checkContext 并发探测所有候选代理并汇总状态，依据当前策略与故障分级决策切线。
+func (p *ProxyPool) checkContext(ctx context.Context) {
+	p.checkMu.Lock()
+	defer p.checkMu.Unlock()
+
 	p.mu.Lock()
 	candidates := append([]string(nil), p.cfg.Candidates...)
-	active := p.active
-	p.mu.Unlock()
+	healthURLs := append([]string(nil), p.cfg.HealthURLs...)
+	timeout := p.cfg.Timeout
+	configured := p.cfg.configured
+	stopCh := p.stop
 	if len(candidates) == 0 {
+		p.mu.Unlock()
+		if configured {
+			p.switchTo(blockedProxyURL)
+		} else {
+			p.switchTo("")
+		}
 		return
 	}
+	p.probing = true
+	p.mu.Unlock()
 
-	probe := func(proxy string) (bool, time.Duration, error) {
-		// 每个候选独立超时：探测多个候选时不能共用一个 deadline，否则后面的候选
-		// 会因为前面的耗时被"秒判失败"。
-		ctx, cancel := context.WithTimeout(context.Background(), p.cfg.Timeout)
-		defer cancel()
-		start := time.Now()
-		err := p.probe(ctx, proxy, p.cfg.HealthURL, p.cfg.Timeout)
-		return err == nil, time.Since(start), err
-	}
-
-	if active != "" && active != blockedProxyURL {
-		ok, latency, err := probe(active)
-		p.record(active, ok, latency, err)
+	defer func() {
 		p.mu.Lock()
-		if ok {
-			p.failures = 0
-			p.mu.Unlock()
-			return
-		}
-		p.failures++
-		failures := p.failures
-		cooldownPassed := time.Since(p.lastSwitch) >= p.cfg.Cooldown
+		p.probing = false
 		p.mu.Unlock()
-		if failures < p.cfg.FailThreshold {
-			return
-		}
-		if !cooldownPassed {
-			// 防抖：刚切过就再等等，避免两个抖动的代理来回跳。
-			return
-		}
+	}()
+
+	if len(healthURLs) == 0 {
+		healthURLs = []string{defaultProxyHealthURL}
 	}
 
-	// active 已阻断，或连续失败达到阈值：按顺序探测其它候选（从 active 之后开始，
-	// 避免每次都先撞一个刚失败的）。全部失败 → 阻断（不是直连）。
-	best := ""
-	for _, cand := range rotateCandidates(candidates, active) {
-		ok, latency, err := probe(cand)
-		p.record(cand, ok, latency, err)
-		if ok {
-			best = cand
+	var cancelWg sync.WaitGroup
+	defer cancelWg.Wait()
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if stopCh != nil {
+		cancelWg.Add(1)
+		go func() {
+			defer cancelWg.Done()
+			select {
+			case <-stopCh:
+				cancel()
+			case <-probeCtx.Done():
+			}
+		}()
+	}
+
+	results := p.probeAllConcurrently(probeCtx, candidates, healthURLs, timeout)
+	resMap := make(map[string]probeCandidateResult, len(results))
+	for _, r := range results {
+		resMap[r.proxy] = r
+	}
+
+	p.mu.Lock()
+	// 仅合并仍处于最新配置中的候选结果（防止 check 进行期间发生 ReloadConfig 删改）。
+	activeSet := make(map[string]bool, len(p.cfg.Candidates))
+	for _, c := range p.cfg.Candidates {
+		activeSet[c] = true
+	}
+	now := time.Now()
+	for _, c := range candidates {
+		if !activeSet[c] {
+			continue
+		}
+		r := resMap[c]
+		p.recordLocked(c, r.ok, r.latency, r.err, r.kind, now)
+	}
+	target, changed := p.evaluateSwitchLocked(resMap, now)
+	p.mu.Unlock()
+
+	if changed {
+		p.switchTo(target)
+	}
+}
+
+func (p *ProxyPool) probeAllConcurrently(ctx context.Context, candidates, healthURLs []string, timeout time.Duration) []probeCandidateResult {
+	results := make([]probeCandidateResult, len(candidates))
+	workers := len(candidates)
+	if workers > defaultProbeConcurrency {
+		workers = defaultProbeConcurrency
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, c := range candidates {
+		wg.Add(1)
+		go func(idx int, proxy string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[idx] = probeCandidateResult{proxy: proxy, err: ctx.Err(), kind: ProxyErrTimeout}
+				return
+			}
+			ok, lat, kind, err := p.probeOne(ctx, proxy, healthURLs, timeout)
+			results[idx] = probeCandidateResult{proxy: proxy, ok: ok, latency: lat, kind: kind, err: err}
+		}(i, c)
+	}
+	wg.Wait()
+	return results
+}
+
+func (p *ProxyPool) probeOne(ctx context.Context, proxyURL string, healthURLs []string, timeout time.Duration) (bool, time.Duration, ProxyErrorKind, error) {
+	var (
+		lastErr  error
+		lastKind ProxyErrorKind
+		lastLat  time.Duration
+	)
+	for _, hu := range healthURLs {
+		start := time.Now()
+		err := p.probe(ctx, proxyURL, hu, timeout)
+		lat := time.Since(start)
+		if err == nil {
+			return true, lat, ProxyErrNone, nil
+		}
+		kind := classifyProxyError(proxyURL, err)
+		lastErr, lastKind, lastLat = err, kind, lat
+		// 代理自身的鉴权拒绝或端口拒绝不会因换另一个健康检查 URL 而恢复，立刻返回以便快切。
+		if isFastFailoverError(kind) {
 			break
 		}
 	}
-	if best == "" {
-		p.switchTo(blockedProxyURL)
-		return
+	return false, lastLat, lastKind, lastErr
+}
+
+func (p *ProxyPool) recordLocked(proxy string, ok bool, latency time.Duration, err error, kind ProxyErrorKind, now time.Time) {
+	prev := p.health[proxy]
+	latMS := latency.Milliseconds()
+	h := ProxyHealth{
+		Proxy:        proxy,
+		OK:           ok,
+		LatencyMS:    latMS,
+		AvgLatencyMS: prev.AvgLatencyMS,
+		CheckedAt:    now,
+		Pinned:       p.pinned != "" && p.pinned == proxy,
 	}
-	p.switchTo(best)
+	if ok {
+		h.ConsecutiveOK = prev.ConsecutiveOK + 1
+		h.FailCount = 0
+		ema := p.emaLatency[proxy]
+		if ema <= 0 {
+			ema = latMS
+		} else {
+			ema = (ema*7 + latMS*3) / 10
+			if latMS > 0 && ema == 0 {
+				ema = latMS
+			}
+		}
+		p.emaLatency[proxy] = ema
+		h.AvgLatencyMS = ema
+	} else {
+		h.ConsecutiveOK = 0
+		h.FailCount = prev.FailCount + 1
+		h.ErrorKind = kind
+		if err != nil {
+			h.Error = clipProxyError(proxy, err)
+		}
+	}
+	p.health[proxy] = h
+}
+
+func (p *ProxyPool) evaluateSwitchLocked(resMap map[string]probeCandidateResult, now time.Time) (string, bool) {
+	candidates := p.cfg.Candidates
+	if len(candidates) == 0 {
+		target := ""
+		if p.cfg.configured {
+			target = blockedProxyURL
+		}
+		p.failures = 0
+		return target, target != p.active
+	}
+
+	isHealthy := func(c string) bool {
+		if r, ok := resMap[c]; ok {
+			return r.ok
+		}
+		return p.health[c].OK
+	}
+
+	activeInPool := containsString(candidates, p.active)
+	cooldownPassed := p.cfg.Cooldown <= 0 || p.lastSwitch.IsZero() || now.Sub(p.lastSwitch) >= p.cfg.Cooldown
+
+	// 手动固定节点：固定项健康时无视策略优先级切入/保持；固定项异常时按故障转移逻辑临时降级。
+	if p.pinned != "" && containsString(candidates, p.pinned) && isHealthy(p.pinned) {
+		if p.active == p.pinned {
+			p.failures = 0
+			return p.active, false
+		}
+		if p.active == "" || p.active == blockedProxyURL || !activeInPool || !isHealthy(p.active) || cooldownPassed {
+			return p.pinned, true
+		}
+		return p.active, false
+	}
+
+	// 启动态、黑洞阻断态或原活跃节点已被删除：立刻从健康候选中选优。
+	if p.active == "" || p.active == blockedProxyURL || !activeInPool {
+		p.failures = 0
+		best := p.pickBestHealthyLocked(candidates, resMap, "", isHealthy)
+		if best == "" {
+			best = blockedProxyURL
+		}
+		return best, best != p.active
+	}
+
+	// 当前活跃代理本轮探测健康：检查是否触发高优先级回切或延迟择优。
+	if isHealthy(p.active) {
+		p.failures = 0
+		if !cooldownPassed {
+			return p.active, false
+		}
+		switch p.cfg.Strategy {
+		case ProxyStrategyOrdered:
+			for _, c := range candidates {
+				if c == p.active {
+					break
+				}
+				if isHealthy(c) && p.health[c].ConsecutiveOK >= defaultProxyRecoverThreshold {
+					return c, true
+				}
+			}
+		case ProxyStrategyFastest:
+			activeEMA := p.effectiveLatencyLocked(p.active)
+			if activeEMA > 0 {
+				var bestFast string
+				bestEMA := activeEMA
+				for _, c := range candidates {
+					if c == p.active || !isHealthy(c) || p.health[c].ConsecutiveOK < defaultProxyRecoverThreshold {
+						continue
+					}
+					ema := p.effectiveLatencyLocked(c)
+					if ema <= 0 {
+						continue
+					}
+					if float64(ema) <= float64(activeEMA)*fastestSwitchRatio && activeEMA-ema >= fastestSwitchMinDeltaMS && ema < bestEMA {
+						bestFast, bestEMA = c, ema
+					}
+				}
+				if bestFast != "" {
+					return bestFast, true
+				}
+			}
+		}
+		return p.active, false
+	}
+
+	// 当前活跃代理本轮失败：区分确定性代理错误（快切）与普通/超时错误（阈值 + 冷却防抖）。
+	p.failures++
+	fastFail := false
+	if r, ok := resMap[p.active]; ok && isFastFailoverError(r.kind) {
+		for _, c := range candidates {
+			if c != p.active && isHealthy(c) {
+				fastFail = true
+				break
+			}
+		}
+	}
+	if !fastFail && (p.failures < p.cfg.FailThreshold || !cooldownPassed) {
+		return p.active, false
+	}
+
+	best := p.pickBestHealthyLocked(candidates, resMap, p.active, isHealthy)
+	if best == "" {
+		best = blockedProxyURL
+	}
+	return best, best != p.active
+}
+
+func (p *ProxyPool) effectiveLatencyLocked(proxy string) int64 {
+	if ema := p.emaLatency[proxy]; ema > 0 {
+		return ema
+	}
+	return p.health[proxy].LatencyMS
+}
+
+func (p *ProxyPool) pickBestHealthyLocked(candidates []string, resMap map[string]probeCandidateResult, skip string, isHealthy func(string) bool) string {
+	switch p.cfg.Strategy {
+	case ProxyStrategyFastest:
+		best := ""
+		bestLat := int64(1<<62 - 1)
+		for _, c := range candidates {
+			if c == skip || !isHealthy(c) {
+				continue
+			}
+			lat := p.effectiveLatencyLocked(c)
+			if lat < 0 {
+				lat = 0
+			}
+			if best == "" || lat < bestLat {
+				best, bestLat = c, lat
+			}
+		}
+		return best
+	case ProxyStrategySticky:
+		order := candidates
+		if skip != "" {
+			order = rotateCandidates(candidates, skip)
+		}
+		for _, c := range order {
+			if c != skip && isHealthy(c) {
+				return c
+			}
+		}
+		return ""
+	default: // ordered
+		for _, c := range candidates {
+			if c != skip && isHealthy(c) {
+				return c
+			}
+		}
+		return ""
+	}
 }
 
 func rotateCandidates(candidates []string, active string) []string {
@@ -333,21 +744,61 @@ func rotateCandidates(candidates []string, active string) []string {
 }
 
 func (p *ProxyPool) record(proxy string, ok bool, latency time.Duration, err error) {
-	h := ProxyHealth{Proxy: proxy, OK: ok, LatencyMS: latency.Milliseconds(), CheckedAt: time.Now()}
-	if err != nil {
-		h.Error = clipProxyError(err)
-	}
 	p.mu.Lock()
-	p.health[proxy] = h
+	p.recordLocked(proxy, ok, latency, err, classifyProxyError(proxy, err), time.Now())
 	p.mu.Unlock()
 }
 
-func clipProxyError(err error) string {
-	s := strings.TrimSpace(err.Error())
+func clipProxyError(proxyURL string, err error) string {
+	s := traffic.SanitizeProxyError(proxyURL, err)
 	if len([]rune(s)) > 200 {
 		s = string([]rune(s)[:200]) + "…"
 	}
 	return s
+}
+
+func classifyProxyError(proxyURL string, err error) ProxyErrorKind {
+	if err == nil {
+		return ProxyErrNone
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "407") || strings.Contains(s, "proxy auth") ||
+		strings.Contains(s, "authentication failed") || strings.Contains(s, "authentication required") {
+		return ProxyErrAuth
+	}
+	if strings.Contains(s, "socks") && (strings.Contains(s, "auth") || strings.Contains(s, "username/password")) {
+		return ProxyErrAuth
+	}
+	if strings.Contains(s, "proxyconnect") || strings.Contains(s, "socks connect") {
+		if strings.Contains(s, "timeout") || strings.Contains(s, "deadline exceeded") {
+			return ProxyErrTimeout
+		}
+		return ProxyErrConnect
+	}
+	var hostPort string
+	if u, perr := url.Parse(strings.TrimSpace(proxyURL)); perr == nil && u.Host != "" {
+		hostPort = strings.ToLower(u.Host)
+	}
+	if hostPort != "" && strings.Contains(s, hostPort) &&
+		(strings.Contains(s, "connection refused") || strings.Contains(s, "connection reset") || strings.Contains(s, "no such host")) {
+		return ProxyErrConnect
+	}
+	if strings.Contains(s, "proxy") && strings.Contains(s, "http 5") {
+		return ProxyErrTargetHTTP
+	}
+	if errors.Is(err, context.DeadlineExceeded) || osIsTimeout(err) || strings.Contains(s, "timeout") || strings.Contains(s, "deadline exceeded") {
+		return ProxyErrTimeout
+	}
+	return ProxyErrOther
+}
+
+func osIsTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func isFastFailoverError(kind ProxyErrorKind) bool {
+	return kind == ProxyErrAuth || kind == ProxyErrConnect
 }
 
 func (p *ProxyPool) switchTo(target string) {
@@ -377,11 +828,169 @@ func (p *ProxyPool) switchTo(target string) {
 	}
 
 	if target == blockedProxyURL {
-		log.Printf("[proxy] 全部代理不可用（原 %s），出口已阻断：目标流量会失败，**不会直连**", previous)
+		log.Printf("[proxy] 全部代理不可用（原 %s），出口已阻断：目标流量会失败，**不会直连**", traffic.RedactProxyURL(previous))
 	} else {
-		log.Printf("[proxy] 出口切换：%s → %s", previous, target)
+		log.Printf("[proxy] 出口切换：%s → %s", traffic.RedactProxyURL(previous), traffic.RedactProxyURL(target))
 	}
 	p.apply(target)
+}
+
+// ReloadConfig 原地热更新代理池配置，保留仍存在且健康的 active 与历史探测数据，避免
+// 每次保存设置都引发全平台闪断为 blockedProxyURL。
+func (p *ProxyPool) ReloadConfig(norm ProxyPoolConfig) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.cfg = norm
+	keep := make(map[string]bool, len(norm.Candidates))
+	for _, c := range norm.Candidates {
+		keep[c] = true
+	}
+	for k := range p.health {
+		if !keep[k] {
+			delete(p.health, k)
+		}
+	}
+	for k := range p.emaLatency {
+		if !keep[k] {
+			delete(p.emaLatency, k)
+		}
+	}
+	if p.pinned != "" && !keep[p.pinned] {
+		p.pinned = ""
+	}
+	for c, h := range p.health {
+		h.Pinned = p.pinned != "" && p.pinned == c
+		p.health[c] = h
+	}
+
+	prev := p.active
+	needSwitch := false
+	nextTarget := prev
+	switch {
+	case len(norm.Candidates) == 0:
+		nextTarget = ""
+		if norm.configured {
+			nextTarget = blockedProxyURL
+		}
+		needSwitch = nextTarget != prev
+		p.failures = 0
+	case keep[prev]:
+		// 当前活跃节点仍在新列表中：继续无中断运行，并发起一次后台复查更新其余节点。
+	default:
+		// 当前活跃节点被移除或原本为空：先从已有健康记录中择优接管，全未知则 fail-closed 并立刻复查。
+		best := p.pickBestHealthyLocked(norm.Candidates, nil, "", func(c string) bool {
+			h, ok := p.health[c]
+			return ok && h.OK
+		})
+		if best == "" {
+			best = blockedProxyURL
+		}
+		nextTarget = best
+		needSwitch = nextTarget != prev
+		p.failures = 0
+	}
+	reloadCh := p.reload
+	recheckCh := p.recheck
+	var spawnStop chan struct{}
+	if p.stop != nil && len(norm.Candidates) > 0 && !p.loopRunning {
+		p.loopRunning = true
+		p.wg.Add(1)
+		spawnStop = p.stop
+	}
+	p.mu.Unlock()
+
+	if len(norm.Candidates) == 0 {
+		p.closeFirstProbe()
+	}
+	if needSwitch {
+		p.switchTo(nextTarget)
+	}
+	if spawnStop != nil {
+		go p.runLoop(spawnStop, false)
+	}
+	if reloadCh != nil && spawnStop == nil {
+		select {
+		case reloadCh <- struct{}{}:
+		default:
+		}
+	}
+	if len(norm.Candidates) > 0 && recheckCh != nil && spawnStop == nil {
+		select {
+		case recheckCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// CheckNow 同步执行一轮全量并发探测并返回最新状态。
+func (p *ProxyPool) CheckNow(ctx context.Context) ProxyPoolStatus {
+	if p == nil {
+		return ProxyPoolStatus{}
+	}
+	p.checkContext(ctx)
+	p.closeFirstProbe()
+	return p.Status()
+}
+
+// Pin 手动固定某个候选节点（传入空串则取消固定）。固定前会实时探测确认其确实可用，
+// 不可用时返回可读错误而不把在线流量切向死节点。
+func (p *ProxyPool) Pin(ctx context.Context, candidate string) error {
+	if p == nil {
+		return errors.New("代理池未启用")
+	}
+	raw := strings.TrimSpace(candidate)
+	if raw == "" {
+		p.mu.Lock()
+		p.pinned = ""
+		for c, h := range p.health {
+			h.Pinned = false
+			p.health[c] = h
+		}
+		p.mu.Unlock()
+		p.RequestCheck()
+		return nil
+	}
+	u, err := traffic.ValidateProxyURL(raw)
+	if err != nil {
+		return err
+	}
+	target := u.String()
+
+	p.mu.Lock()
+	var matched string
+	for _, c := range p.cfg.Candidates {
+		if c == target || traffic.RedactProxyURL(c) == target {
+			matched = c
+			break
+		}
+	}
+	healthURLs := append([]string(nil), p.cfg.HealthURLs...)
+	timeout := p.cfg.Timeout
+	p.mu.Unlock()
+	if matched == "" {
+		return fmt.Errorf("代理 %s 不在当前候选列表中", traffic.RedactProxyURL(target))
+	}
+	if len(healthURLs) == 0 {
+		healthURLs = []string{defaultProxyHealthURL}
+	}
+	ok, lat, kind, perr := p.probeOne(ctx, matched, healthURLs, timeout)
+
+	p.mu.Lock()
+	p.recordLocked(matched, ok, lat, perr, kind, time.Now())
+	if !ok {
+		p.mu.Unlock()
+		return fmt.Errorf("固定节点失败（%s 不可用）：%s", traffic.RedactProxyURL(matched), clipProxyError(matched, perr))
+	}
+	p.pinned = matched
+	for c, h := range p.health {
+		h.Pinned = c == matched
+		p.health[c] = h
+	}
+	p.mu.Unlock()
+	p.switchTo(matched)
+	return nil
 }
 
 // Active 返回当前出口。配了候选时永不为空（全挂=blockedProxyURL）；没配=空（直连）。
@@ -400,15 +1009,30 @@ func (p *ProxyPool) Active() string {
 	return p.active
 }
 
-// Status 给设置页展示。
+// Status 给设置页与出口只读视图展示。
 func (p *ProxyPool) Status() ProxyPoolStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	st := ProxyPoolStatus{Active: p.active, Blocked: p.active == blockedProxyURL}
+	cooldownRem := 0
+	if p.cfg.Cooldown > 0 && !p.lastSwitch.IsZero() {
+		if rem := p.cfg.Cooldown - time.Since(p.lastSwitch); rem > 0 {
+			cooldownRem = int(rem.Seconds()) + 1
+		}
+	}
+	st := ProxyPoolStatus{
+		Active:               p.active,
+		Blocked:              p.active == blockedProxyURL,
+		Strategy:             p.cfg.Strategy,
+		Pinned:               p.pinned,
+		Probing:              p.probing,
+		FailThreshold:        p.cfg.FailThreshold,
+		CooldownRemainingSec: cooldownRem,
+	}
 	// 只回**已经探测过**的候选：设置页据此区分"正在检测"与"确实全挂"，
 	// 刚保存、第一次探测还没回来时不会先闪一下红色的"全部不可用"。
 	for _, c := range p.cfg.Candidates {
 		if h, ok := p.health[c]; ok {
+			h.Pinned = p.pinned != "" && p.pinned == c
 			st.Candidates = append(st.Candidates, h)
 		}
 	}
@@ -421,6 +1045,7 @@ func (p *ProxyPool) Config() ProxyPoolConfig {
 	defer p.mu.Unlock()
 	c := p.cfg
 	c.Candidates = append([]string(nil), p.cfg.Candidates...)
+	c.HealthURLs = append([]string(nil), p.cfg.HealthURLs...)
 	return c
 }
 
@@ -493,7 +1118,7 @@ func checkProxyEgressIPs(ctx context.Context, proxies []string, ipURL string, ti
 			ip, err := probeEgressIP(ctx, proxy, ipURL, timeout)
 			res := ProxyEgress{Proxy: proxy, IP: ip}
 			if err != nil {
-				res.Error = clipProxyError(err)
+				res.Error = clipProxyError(proxy, err)
 				results[i] = res
 				return
 			}
@@ -514,11 +1139,12 @@ func checkProxyEgressIPs(ctx context.Context, proxies []string, ipURL string, ti
 // probeEgressIP 经代理 GET 一个返回出口 IP 的服务。Transport.Proxy 显式设置，
 // 代理失败即失败，**没有直连回退**。
 func probeEgressIP(ctx context.Context, proxyURL, ipURL string, timeout time.Duration) (string, error) {
-	u, err := url.Parse(proxyURL)
+	u, err := traffic.TransportProxyURL(proxyURL)
 	if err != nil {
 		return "", err
 	}
 	tr := probeTransport(u, timeout)
+	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: probeRedirectPolicy}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipURL, nil)
 	if err != nil {
@@ -630,13 +1256,14 @@ func parseEgressIP(body []byte) (string, error) {
 
 // probeHTTPProxy 经候选代理访问健康检查 URL。Transport.Proxy 显式指向该代理：
 // 代理挂了请求就失败，**没有直连回退**（不读 NO_PROXY，也不用 ProxyFromEnvironment）。
-// HTTP 代理用 CONNECT 域名、SOCKS5 由代理侧解析域名，目标 DNS 不在本机泄漏。
+// HTTP 代理用 CONNECT 域名、SOCKS5/SOCKS5H 由代理侧解析域名，目标 DNS 不在本机泄漏。
 func probeHTTPProxy(ctx context.Context, proxyURL, healthURL string, timeout time.Duration) error {
-	u, err := url.Parse(proxyURL)
+	u, err := traffic.TransportProxyURL(proxyURL)
 	if err != nil {
 		return err
 	}
 	tr := probeTransport(u, timeout)
+	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: probeRedirectPolicy}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
@@ -663,7 +1290,7 @@ func (p *ProxyPool) RequestCheck() {
 		return
 	}
 	p.mu.Lock()
-	started := p.stop != nil
+	started := p.loopRunning
 	ch := p.recheck
 	p.mu.Unlock()
 	if !started || ch == nil {
