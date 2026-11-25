@@ -57,10 +57,9 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
-import type { Company, PlannerTemplate, Task, TaskCategory } from "@/lib/types";
+import type { Company, Task, TaskCategory } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // 任务分类：分类选择器、公司选择器、拖拽落点与分类管理弹窗。
@@ -386,7 +385,6 @@ export function CategoryManagementDialog({
   const [draftName, setDraftName] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [presetSaving, setPresetSaving] = React.useState(false);
-  const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [movingTaskID, setMovingTaskID] = React.useState<string | null>(null);
@@ -396,14 +394,6 @@ export function CategoryManagementDialog({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor),
   );
-
-  React.useEffect(() => {
-    if (!open) return;
-    void api
-      .plannerTemplates()
-      .then(setPlannerTemplates)
-      .catch(() => setPlannerTemplates([]));
-  }, [open]);
 
   React.useEffect(() => {
     if (open && !wasOpen.current) {
@@ -476,11 +466,10 @@ export function CategoryManagementDialog({
     }
   }
 
-  // 场景预设：选中已有分类时，三个开关即时保存（不依赖"保存名称"按钮）。
+  // 场景预设：选中已有分类时，开关即时保存（不依赖"保存名称"按钮）。
   async function savePreset(patch: {
     seed_first_intent?: boolean;
     default_coverage_enabled?: boolean;
-    default_planner_template_id?: number;
   }) {
     if (!selectedCategory || presetSaving) return;
     setPresetSaving(true);
@@ -651,28 +640,6 @@ export function CategoryManagementDialog({
                           />
                           默认启用资产覆盖度
                         </label>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-muted-foreground text-xs">默认 planner 模板</span>
-                          <Select
-                            value={String(selectedCategory.default_planner_template_id ?? 0)}
-                            onValueChange={(value) => void savePreset({ default_planner_template_id: Number(value) })}
-                            disabled={presetSaving}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="跟随全局" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                <SelectItem value="0">跟随全局</SelectItem>
-                                {plannerTemplates.map((tpl) => (
-                                  <SelectItem key={tpl.id} value={String(tpl.id)}>
-                                    {tpl.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                        </div>
                       </div>
                     </Field>
                   )}

@@ -18,7 +18,7 @@ func TestPlannerFullReconcileCadence(t *testing.T) {
 }
 
 func TestPlannerPromptMentionsAttentionAndPersistence(t *testing.T) {
-	body := plannerSystem("g", "/d", "/w", "")
+	body := plannerSystem("g", "/d", "/w")
 	for _, want := range []string{
 		"attention_oldest_leads", "attention_oldest_facts", "attention_oldest_unresolved",
 		"detail_required=true", "进程重启后恢复",

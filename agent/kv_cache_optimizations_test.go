@@ -202,8 +202,8 @@ func TestSystemPartsSplitPerTaskFieldsAfterBoundary(t *testing.T) {
 	t.Cleanup(func() { PromptOverride = prev })
 
 	def := DeferredInfo{AlwaysSkills: "ALWAYS"}
-	s1, d1 := plannerSystemParts("Goal Alpha", "/data", "/data/tasks/1", "")
-	s2, d2 := plannerSystemParts("Goal Beta", "/data", "/data/tasks/2", "")
+	s1, d1 := plannerSystemParts("Goal Alpha", "/data", "/data/tasks/1")
+	s2, d2 := plannerSystemParts("Goal Beta", "/data", "/data/tasks/2")
 	if s1 != s2 || strings.Contains(s1, "Goal Alpha") || strings.Contains(s1, "/data/tasks/1") {
 		t.Fatalf("planner staticPart must be identical across tasks and free of goal/taskDir")
 	}
@@ -215,6 +215,23 @@ func TestSystemPartsSplitPerTaskFieldsAfterBoundary(t *testing.T) {
 	if b1 != b2 || sys1[0] != sys2[0] || !strings.Contains(sys1[b1], "Goal Alpha") {
 		t.Fatalf("deferredSystemWithDynamic failed to align static prefix before boundary (%d vs %d)", b1, b2)
 	}
+
+	// 3.A: Custom PromptOverride with standard "任务目标：{{.Goal}}" still splits static body before boundary.
+	PromptOverride = func(k string) (string, bool) {
+		if k == "planner" {
+			return "定制共享规则主体\n任务目标：{{.Goal}}\n后续规则", true
+		}
+		return "", false
+	}
+	ps1, pd1 := plannerSystemParts("Goal One", "/data", "/data/tasks/11")
+	ps2, pd2 := plannerSystemParts("Goal Two", "/data", "/data/tasks/12")
+	if ps1 != ps2 || !strings.Contains(ps1, "定制共享规则主体") || strings.Contains(ps1, "Goal One") {
+		t.Fatalf("custom planner prompt static body should match across tasks before boundary: ps1=%q", ps1)
+	}
+	if !strings.Contains(pd1, "Goal One") || !strings.Contains(pd2, "Goal Two") {
+		t.Fatalf("custom planner prompt goal should remain in dynamicPart: pd1=%q pd2=%q", pd1, pd2)
+	}
+	PromptOverride = nil
 
 	ms1, md1 := mainAgentSystemParts("MainGoal A", "/data", "/data/tasks/10")
 	ms2, md2 := mainAgentSystemParts("MainGoal B", "/data", "/data/tasks/20")

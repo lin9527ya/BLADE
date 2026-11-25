@@ -56,7 +56,6 @@ func (s *Server) cloneTask(w http.ResponseWriter, r *http.Request) {
 		PlanHeartbeatSeconds: t.PlanHeartbeatSeconds,
 		CoverageEnabled:      &coverage,
 		InterceptRules:       inputs,
-		PlannerPrompt:        t.PlannerPromptOverride,
 		WorkerCount:          t.WorkerCount,
 		Remark:               t.Remark,
 		AssetScopePolicy:     t.AssetScopePolicy,

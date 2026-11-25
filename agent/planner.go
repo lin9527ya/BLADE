@@ -73,10 +73,8 @@ type Planner struct {
 	nonStreamingFn      func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
 	execService  ExecService
-	noaEnabledFn func() bool // resolver: use experimental noa compaction? (nil = off)
-	// plannerPromptFn 返回任务级 planner 提示词快照（nil/空 = 走全局/默认链）。
-	plannerPromptFn func() string
-	boundedView     func() bool          // nil = 有界视图（默认）
+	noaEnabledFn  func() bool // resolver: use experimental noa compaction? (nil = off)
+	boundedView   func() bool // nil = 有界视图（默认）
 	notifyWorkers   func()               // 派发新意图后立即唤醒 worker 调度器
 	maxTokensFn     func() int           // resolver: per-reply output cap (nil/0 = send no cap)
 	cacheOpts       cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
@@ -257,16 +255,6 @@ func (p *Planner) SetNotifyWorkers(fn func()) { p.notifyWorkers = fn }
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || p.injectConstraints() }
-
-// SetPlannerPromptResolver wires the task-level planner prompt snapshot.
-func (p *Planner) SetPlannerPromptResolver(fn func() string) { p.plannerPromptFn = fn }
-
-func (p *Planner) plannerPromptOverride() string {
-	if p.plannerPromptFn == nil {
-		return ""
-	}
-	return p.plannerPromptFn()
-}
 
 // todoFor returns the task's persistent planning todo store, creating it on first
 // use. Shared across all of this task's planner wake-ups.
@@ -754,86 +742,64 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
-// PlannerTemplateDefault returns the DB default template body ("" when none).
-// Wired at startup so the agent package stays free of DB imports.
-var PlannerTemplateDefault func() (string, bool)
+func splitPlannerPromptStatic(raw, goal, dataDir, workDir, codeStaticTail string) (staticPart, dynamicPart string, ok bool) {
+	hasPerTaskVars := strings.Contains(raw, "{{.Scope}}") || strings.Contains(raw, "{{.AssetSummary}}")
+	normalized := strings.Replace(raw, "任务目标：{{.Goal}}", "任务目标见末尾动态上下文段。", 1)
+	if !hasPerTaskVars && !strings.Contains(normalized, "{{.Goal}}") {
+		if out, err := renderTmpl(normalized, PlannerVars{DataDir: dataDir, Now: nowStr()}); err == nil {
+			staticPart = out + promptExtras("planner") + codeStaticTail
+			if g := strings.TrimSpace(goal); g != "" {
+				dynamicPart = "当前任务目标：" + g
+			}
+			dynamicPart += artifactSpec(workDir)
+			return staticPart, dynamicPart, true
+		}
+	}
+	return "", "", false
+}
 
 // plannerSystemParts splits the planner prompt into the cross-task static blocks
 // (placed BEFORE DynamicBoundary) and the per-task Goal + workDir blocks (placed
 // AFTER DynamicBoundary) so tasks share the cached static tools + system prefix.
-func plannerSystemParts(goal, dataDir, workDir, taskOverride string) (staticPart, dynamicPart string) {
+func plannerSystemParts(goal, dataDir, workDir string) (staticPart, dynamicPart string) {
 	codeStaticTail := coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
 		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock
 	fullVars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
-	staticVars := PlannerVars{DataDir: dataDir, Now: nowStr()}
 
-	// ① 任务级快照（tasks.planner_prompt_override）属于单任务定制段，放动态 boundary 之后，
-	//    code-owned 共享前缀块仍在 staticPart 内缓存。
-	if strings.TrimSpace(taskOverride) != "" {
-		if out, err := renderTmpl(taskOverride, fullVars); err == nil {
-			return codeStaticTail, out + promptExtras("planner") + artifactSpec(workDir)
-		}
-		log.Printf("[planner] 任务级 planner 提示词渲染失败，回退全局链")
-	}
-	// ② 全局覆盖（agent_prompts 当前版本）。仅当它不引用任务级模板变量时才能放进 staticPart。
+	// ① 全局覆盖（agent_prompts 当前版本）。先剥离标准「任务目标：{{.Goal}}」使主干留在
+	//    DynamicBoundary 之前的跨任务缓存前缀里；只有嵌入其它逐任务变量时才退回动态段。
 	if PromptOverride != nil {
 		if t, ok := PromptOverride("planner"); ok && t != "" && strings.TrimSpace(t) != strings.TrimSpace(plannerDefaultTmpl) {
-			hasTaskVars := strings.Contains(t, "{{.Goal}}") || strings.Contains(t, "{{.Scope}}") || strings.Contains(t, "{{.AssetSummary}}")
-			if !hasTaskVars {
-				if out, err := renderTmpl(t, staticVars); err == nil {
-					staticPart = out + promptExtras("planner") + codeStaticTail
-					if strings.TrimSpace(goal) != "" {
-						dynamicPart = "当前任务目标：" + strings.TrimSpace(goal)
-					}
-					dynamicPart += artifactSpec(workDir)
-					return staticPart, dynamicPart
-				}
-			} else if out, err := renderTmpl(t, fullVars); err == nil {
+			if sPart, dPart, splitOK := splitPlannerPromptStatic(t, goal, dataDir, workDir, codeStaticTail); splitOK {
+				return sPart, dPart
+			}
+			if out, err := renderTmpl(t, fullVars); err == nil {
 				return codeStaticTail, out + promptExtras("planner") + artifactSpec(workDir)
 			}
 			log.Printf("[planner] 全局 planner 提示词渲染失败，回退内置模板")
 		}
 	}
-	// ④ 内置正文：将任务目标移到 DynamicBoundary 之后，静态主干完全跨任务一致。
-	staticTmpl := strings.Replace(plannerDefaultTmpl, "任务目标：{{.Goal}}", "任务目标见末尾动态上下文段。", 1)
-	body := staticTmpl
-	if out, err := renderTmpl(staticTmpl, staticVars); err == nil {
-		body = out
+	// ② 内置默认正文：将任务目标移到 DynamicBoundary 之后，静态主干完全跨任务一致。
+	if sPart, dPart, splitOK := splitPlannerPromptStatic(plannerDefaultTmpl, goal, dataDir, workDir, codeStaticTail); splitOK {
+		return sPart, dPart
 	}
-	staticPart = body + promptExtras("planner") + codeStaticTail
-	if strings.TrimSpace(goal) != "" {
-		dynamicPart = "当前任务目标：" + strings.TrimSpace(goal)
-	}
-	dynamicPart += artifactSpec(workDir)
-	return staticPart, dynamicPart
+	return plannerDefaultTmpl + promptExtras("planner") + codeStaticTail, artifactSpec(workDir)
 }
 
-func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
+func plannerSystem(goal, dataDir, workDir string) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	body := ""
-	// ① 任务级快照（tasks.planner_prompt_override）
-	if strings.TrimSpace(taskOverride) != "" {
-		if out, err := renderTmpl(taskOverride, vars); err == nil {
-			body = out
-		} else {
-			log.Printf("[planner] 任务级 planner 提示词渲染失败，回退全局链: %v", err)
-		}
-	}
-	// ② 全局覆盖（agent_prompts 当前版本）。**内容仍等于出厂正文时视同未覆盖**：
-	// agent_prompts 在首次启动时就被 seed 成内置正文，若照字面当覆盖，③ 永远轮不到，
-	// 模板库的「默认模板」就成了摆设。因此「系统 → Agent → planner」里改过正文才压过
-	// 模板库；点「恢复为内置默认」后正文回到出厂内容，模板库默认重新接手——这正是
-	// 「恢复默认」该有的含义：回到平台当前认定的默认，而不是钉死在某一版代码文本上。
-	if body == "" && PromptOverride != nil {
+	// ① 全局覆盖（agent_prompts 当前版本）。内容仍等于出厂正文时走内置默认。
+	if PromptOverride != nil {
 		if t, ok := PromptOverride("planner"); ok && t != "" && strings.TrimSpace(t) != strings.TrimSpace(plannerDefaultTmpl) {
 			if out, err := renderTmpl(t, vars); err == nil {
 				body = out
 			} else {
-				log.Printf("[planner] 全局 planner 提示词渲染失败，回退模板库默认: %v", err)
+				log.Printf("[planner] 全局 planner 提示词渲染失败，回退内置模板: %v", err)
 			}
 		}
 	}
-	// ④ 内置正文。这里直接渲染，不走 renderSystem——否则会二次套用 ② 与 extras。
+	// ② 内置正文。这里直接渲染，不走 renderSystem——否则会二次套用覆盖与 extras。
 	if body == "" {
 		if out, err := renderTmpl(plannerDefaultTmpl, vars); err == nil {
 			body = out
@@ -857,7 +823,7 @@ func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 const blackboardViewBlock = `
 
 【读取黑板】
-- 概览是窗口摘要，即使 detail=true 也不是全部原文。总数/读取状态与列表分开看；没显示不等于不存在。独立分叉看 recent_leads / branch_review_facts，全文用 node_detail；资产上下文用 asset_dossier，历史用 blackboard_query / route_dossier。
+- 概览是窗口摘要，即使 detail=true 也不是全部原文。总数/读取状态与列表分开看；没显示不等于不存在。独立分叉看 recent_leads / branch_review_facts，leads_open > 20 时用 list_leads 分页；全文用 node_detail；资产上下文用 asset_dossier，历史用 blackboard_query / route_dossier。
 - done 只表示执行结束，不证明方向已验证或整条路线已排除。`
 
 // scopeExpansionBlock 是资产范围扩张的**代码持有**纪律。ARTEX 把 add_task_scope /
@@ -986,7 +952,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	tsx.SetRunDir(taskDir)
 	tsx.SetTaskRoot(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	staticSys, dynamicSys := plannerSystemParts(goal, p.workDir, taskDir, p.plannerPromptOverride())
+	staticSys, dynamicSys := plannerSystemParts(goal, p.workDir, taskDir)
 	staticSys += plannerScopeRequestBlock
 	var constraintTail string
 	if p.wantConstraints() {

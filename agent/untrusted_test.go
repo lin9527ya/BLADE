@@ -86,7 +86,7 @@ func TestSanitizeJSONStringsRecurses(t *testing.T) {
 // 否则旧库里的可编辑正文（写于这条边界存在之前）会让它静默失效。
 func TestUntrustedDoctrineIsCodeOwnedInAllSystems(t *testing.T) {
 	for name, sys := range map[string]string{
-		"planner":   plannerSystem("g", "/d", "/w", ""),
+		"planner":   plannerSystem("g", "/d", "/w"),
 		"worker":    workerSystem("", "", "/d"),
 		"mainagent": mainAgentSystem("g", "/d", "/w"),
 	} {

@@ -274,9 +274,15 @@ func TestDeltaIntentSummaryPreservesBranchDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := tools.graphOverviewDataForWorker()
-	peers, _ := worker["running_intents"].([]map[string]any)
-	if len(peers) != 1 || peers[0]["hypothesis"] != hypothesis || !reflect.DeepEqual(peers[0]["parents"], []int64{parent}) {
-		t.Fatalf("worker peer window lost branch dimensions: %v", peers)
+	if _, leaked := worker["running_intents"]; leaked {
+		t.Fatalf("worker frozen overview should omit volatile running_intents (4.A): %v", worker["running_intents"])
+	}
+	peersText := renderWorkerRunningPeers(ts, second)
+	if !strings.Contains(peersText, fmt.Sprintf("#%d", first)) || !strings.Contains(peersText, hypothesis) {
+		t.Fatalf("live peer helper missing running teammate or hypothesis: %s", peersText)
+	}
+	if strings.Contains(renderWorkerRunningPeers(ts, first), fmt.Sprintf("#%d", first)) {
+		t.Fatalf("live peer helper should exclude self intent #%d", first)
 	}
 }
 
@@ -287,14 +293,12 @@ func TestSlimDeltaDoesNotRecutBranchSummary(t *testing.T) {
 		"asset_ids": []int64{42}, "parents": []int64{3}, "depends_on": []int64{4},
 		"detail": "large result body", "evidence": "raw output",
 	}
-	view := map[string]any{"open_intents": []map[string]any{row}}
-	slimBlackboardDelta(view)
-	rows := view["open_intents"].([]map[string]any)
-	if rows[0]["summary"] != summary || rows[0]["hypothesis"] != "身份 A" || !reflect.DeepEqual(rows[0]["parents"], []int64{3}) {
-		t.Fatal("legacy slim path cut branch dimensions")
+	slim := slimIntentSummary(row)
+	if slim["summary"] != summary || slim["hypothesis"] != "身份 A" || !reflect.DeepEqual(slim["parents"], []int64{3}) {
+		t.Fatal("slimIntentSummary cut branch dimensions")
 	}
-	if rows[0]["detail"] != nil || rows[0]["evidence"] != nil {
-		t.Fatal("slim path should still omit result bodies")
+	if slim["detail"] != nil || slim["evidence"] != nil {
+		t.Fatal("slimIntentSummary should still omit result bodies")
 	}
 }
 

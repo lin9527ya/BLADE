@@ -1002,41 +1002,7 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	t.projectionContract(out)
 	// The forward page cursor is the last returned change, not the newest revision.
 	out["change_cursor"] = changes.Cursor
-	if deltaOnly && !changes.Resync {
-		slimBlackboardDelta(out)
-		bbMeta["incremental_delta"] = true
-	}
 	return out
-}
-
-func slimBlackboardDelta(out map[string]any) {
-	for _, k := range []string{
-		"company_knowledge", "company_knowledge_note",
-		"matching_playbooks", "matching_playbooks_note",
-		"matching_cves", "matching_cves_note",
-		"recent_facts", "folded_facts_total", "folded_facts_note",
-		"recent_done_intents", "done_intents_note", "folded_intents_total",
-		"blocked_intents", "paused_intents",
-		"finding_list", "footholds", "credentials",
-		"cold_digests", "cold_digests_note",
-		"related_tasks_summary", "dispatch_order",
-		"no_endpoint_sites", "endpoints_without_coverage",
-		"intents_window_note", "edges_window_note",
-		"attention_oldest_leads", "attention_oldest_facts", "attention_oldest_unresolved", "attention_note", "attention_status",
-	} {
-		delete(out, k)
-	}
-	for _, key := range []string{"open_intents", "running_intents"} {
-		items, ok := out[key].([]map[string]any)
-		if !ok {
-			continue
-		}
-		slim := make([]map[string]any, 0, len(items))
-		for _, it := range items {
-			slim = append(slim, slimIntentSummary(it))
-		}
-		out[key] = slim
-	}
 }
 
 func primaryParentIDValue(value any) int64 {
@@ -1187,6 +1153,13 @@ type graphHealthEntry struct {
 }
 
 var graphHealthCache sync.Map // exploration id → graphHealthEntry
+
+// DeleteGraphHealth clears cached health stats when a task/exploration is removed.
+func DeleteGraphHealth(expID int64) {
+	if expID > 0 {
+		graphHealthCache.Delete(expID)
+	}
+}
 
 func (t *ToolSet) graphHealth() map[string]any {
 	if t.ts == nil {
@@ -5337,7 +5310,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 // PlannerTools is the read + intent-generation + goal-judgement tool set.
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	tools := []actool.CoreTool{
-		t.graphOverview(), t.blackboardView(), t.listFindings(), t.listFacts(), t.nodeDetail(),
+		t.graphOverview(), t.blackboardView(), t.listFindings(), t.listFacts(), t.listLeads(), t.nodeDetail(),
 		// ARTEX planner exploration entries: the planner may register a finding it
 		// already verified and widen task/company scope when the model decides to.
 		t.addFinding(), t.addTaskScope(), t.addCompanyScope(),

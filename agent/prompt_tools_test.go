@@ -13,7 +13,7 @@ func TestPlannerPromptToolReferencesExist(t *testing.T) {
 		have[tl.Name()] = true
 	}
 	for _, name := range []string{
-		"list_facts", "list_findings", "node_detail", "list_assets", "asset_neighbors",
+		"list_facts", "list_findings", "list_leads", "node_detail", "list_assets", "asset_neighbors",
 		"get_worker_output", "get_worker_trace", "lookup_playbooks", "record_playbook_feedback",
 		"add_intent", "prove_goal", "kill_work", "steer_work", "abandon_goal",
 	} {

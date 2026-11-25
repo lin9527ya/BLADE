@@ -25,14 +25,6 @@ func TestPromptsUseEvidenceConditionedReprobe(t *testing.T) {
 	if strings.Contains(planner, "同一否定方向至多复核一次") {
 		t.Error("planner 提示词仍保留固定复核次数")
 	}
-	for name, body := range PlannerDomainSeeds() {
-		if strings.Contains(body, "同一否定方向至多复核一次") {
-			t.Errorf("领域模板 %s 仍保留固定复核次数", name)
-		}
-		if !strings.Contains(body, "是否重新实验由证据条件决定") {
-			t.Errorf("领域模板 %s 缺少证据条件化复探规则", name)
-		}
-	}
 	for _, want := range []string{
 		"一个可解释的研究问题",
 		"同一目标、同一授权范围、同一预算内",

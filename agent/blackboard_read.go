@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -325,12 +326,39 @@ func (t *ToolSet) proposeIntents() actool.CoreTool {
 				return actool.Text(fmt.Sprintf("no new proposals: %d duplicate(s)", dropped)), nil
 			}
 			detail, _ := json.Marshal(map[string]any{"proposals": kept})
+			var rawAssets []int64
+			for _, pr := range kept {
+				rawAssets = append(rawAssets, pr.AssetIDs...)
+			}
+			uniqueAssets := sortedUniqueIDs(rawAssets)
+			var factAssets []json.RawMessage
+			if t.as != nil && len(uniqueAssets) > 0 {
+				if visible, verr := t.as.GetByIDsInScope(t.taskID, uniqueAssets); verr == nil {
+					for _, asset := range visible {
+						factAssets = append(factAssets, json.RawMessage(strconv.AppendInt(nil, asset.ID, 10)))
+					}
+				}
+			}
+			previews := make([]string, 0, 3)
+			for i, pr := range kept {
+				if i >= 3 {
+					break
+				}
+				if s := clipLine(pr.Summary, 48); s != "" {
+					previews = append(previews, s)
+				}
+			}
+			summary := fmt.Sprintf("[意图提案] %d 个方向", len(kept))
+			if len(previews) > 0 {
+				summary = clipLine(summary+"："+strings.Join(previews, "；"), 180)
+			}
 			id, err := t.recordOneFact(factItem{
-				Summary:    fmt.Sprintf("[意图提案] %d 个下一步方向", len(kept)),
+				Summary:    summary,
 				Detail:     string(detail),
 				Confidence: "inferred",
 				Polarity:   "positive",
 				Enables:    []string{"info"},
+				AssetIDs:   factAssets,
 				Origin:     "proposal",
 				NotifyKind: "proposal",
 			}, 0)
@@ -570,6 +598,79 @@ func (t *ToolSet) searchPrecedents() actool.CoreTool {
 			}
 			if res.Reason != "" {
 				out["reason"] = res.Reason
+			}
+			return jsonResult(out)
+		})
+}
+
+func (t *ToolSet) listLeads() actool.CoreTool {
+	return t.readExpTool("list_leads",
+		"分页查询本任务的结构化线索与意图提案（L<fact>-<index> / P<fact>-<index>），支持按状态与 lead_id 过滤；概览只放前 20 条 pending，leads_open 超过 20 时用它翻页。",
+		obj(map[string]any{
+			"state":   str("可选状态过滤：pending | queued | running | paused | completed | needs_follow_up | dismissed | source_changed"),
+			"lead_id": str("可选：只查单条线索或提案 id（如 L12-0 / P15-0）"),
+			"limit":   intp("每页条数，默认 20，上限 50"),
+			"offset":  intp("偏移量，默认 0"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return actool.Errorf("list_leads 需要任务上下文"), nil
+			}
+			var a struct {
+				State  string `json:"state"`
+				LeadID string `json:"lead_id"`
+				Limit  int    `json:"limit"`
+				Offset int    `json:"offset"`
+			}
+			_ = json.Unmarshal(in, &a)
+			limit := a.Limit
+			if limit <= 0 {
+				limit = 20
+			}
+			if limit > 50 {
+				limit = 50
+			}
+			offset := a.Offset
+			if offset < 0 {
+				offset = 0
+			}
+			rep, err := t.ts.LeadTraceReport(strings.TrimSpace(a.State), strings.TrimSpace(a.LeadID), limit, offset)
+			if err != nil {
+				return actool.Errorf("list_leads: " + err.Error()), nil
+			}
+			rows := make([]map[string]any, 0, len(rep.Rows))
+			for _, lead := range rep.Rows {
+				row := map[string]any{
+					"id":        lead.ID,
+					"from_fact": lead.FactID,
+					"kind":      lead.Kind,
+					"state":     lead.State,
+					"age_min":   ageMinutesStable(lead.FactCreatedAt),
+				}
+				if len(lead.AssetIDs) > 0 {
+					row["asset_ids"] = lead.AssetIDs
+				}
+				if lead.SourceRetired {
+					row["source_retired"] = true
+				}
+				addLeadTextPreview(row, lead.Text, lead.FactID)
+				if len(lead.Intents) > 0 {
+					row["intents"] = lead.Intents
+					row["intent_total"] = lead.IntentTotal
+				}
+				rows = append(rows, row)
+			}
+			out := map[string]any{
+				"stats":       rep.Stats,
+				"rows":        rows,
+				"total":       rep.Total,
+				"limit":       rep.Limit,
+				"offset":      rep.Offset,
+				"has_more":    rep.HasMore,
+				"read_status": rep.Status,
+			}
+			if rep.HasMore {
+				out["next_offset"] = rep.Offset + len(rows)
 			}
 			return jsonResult(out)
 		})

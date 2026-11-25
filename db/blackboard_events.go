@@ -25,6 +25,7 @@ func (v BlackboardVersion) Cursor() string {
 type BlackboardChange struct {
 	Sequence       string   `json:"seq"`
 	Entity         string   `json:"entity"`
+	Kind           string   `json:"kind,omitempty"`
 	ObjectKey      string   `json:"object_key"`
 	Operation      string   `json:"operation"`
 	NodeID         *int64   `json:"node_id,omitempty"`
@@ -277,16 +278,19 @@ func (s *ExplorationStore) enrichChanges(ctx context.Context, changes []Blackboa
 			}
 		}
 	}
+	kinds := map[int64]string{}
 	payloads := map[int64]map[string]any{}
 	if len(nodeIDs) > 0 {
-		if rows, err := s.db.QueryContext(ctx, `SELECT id,payload FROM exploration_nodes
+		if rows, err := s.db.QueryContext(ctx, `SELECT id,kind,payload FROM exploration_nodes
 WHERE exploration_id=$1 AND id=ANY($2::bigint[])`, s.expID, nodeIDs); err == nil {
 			for rows.Next() {
 				var id int64
+				var kind string
 				var raw []byte
-				if rows.Scan(&id, &raw) != nil {
+				if rows.Scan(&id, &kind, &raw) != nil {
 					continue
 				}
+				kinds[id] = kind
 				var p map[string]any
 				if json.Unmarshal(raw, &p) == nil {
 					payloads[id] = p
@@ -317,6 +321,9 @@ FROM findings WHERE node_id=ANY($1::bigint[]) ORDER BY node_id,id DESC`, finding
 		}
 		switch c.Entity {
 		case "node":
+			if k := kinds[*c.NodeID]; k != "" {
+				c.Kind = k
+			}
 			p := payloads[*c.NodeID]
 			if p == nil {
 				continue
@@ -331,6 +338,7 @@ FROM findings WHERE node_id=ANY($1::bigint[]) ORDER BY node_id,id DESC`, finding
 				c.Confidence = v
 			}
 		case "finding":
+			c.Kind = KindFinding
 			p, ok := findings[*c.NodeID]
 			if !ok {
 				continue

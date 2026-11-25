@@ -135,7 +135,6 @@ import type {
   NotificationFilter,
   NotificationMeta,
   OpsecKnowledgeResponse,
-  PlannerTemplate,
   Playbook,
   PlaybookDraft,
   PlaybookFingerprint,
@@ -460,9 +459,6 @@ export const api = {
     lootExecEnabled?: boolean;
     credentialAttemptBudget?: number; // -1=继承全局，0=不限
     interceptRules?: AssetInterceptRuleInput[];
-    // planner 模板：显式正文优先于模板 id；两者都会在创建时快照进任务。
-    plannerPrompt?: string;
-    plannerTemplateId?: number;
     // 每任务并发覆盖（0/省略 = 跟随全局）；只在首次启动固化。
     workerCount?: number;
     // 任务备注（≤2000 字）。
@@ -484,8 +480,6 @@ export const api = {
       loot_exec_enabled: input.lootExecEnabled ?? false,
       credential_attempt_budget: input.credentialAttemptBudget,
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
-      planner_prompt: input.plannerPrompt ?? "",
-      planner_template_id: input.plannerTemplateId ?? 0,
       worker_count: input.workerCount ?? 0,
       remark: input.remark ?? "",
     }),
@@ -550,15 +544,8 @@ export const api = {
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
   updateTaskCategoryPreset: (
     id: number,
-    preset: { seed_first_intent?: boolean; default_coverage_enabled?: boolean; default_planner_template_id?: number },
+    preset: { seed_first_intent?: boolean; default_coverage_enabled?: boolean },
   ) => patch<TaskCategory>(`/task-categories/${id}/preset`, preset),
-  plannerTemplates: () => get<{ templates: PlannerTemplate[] }>("/planner-templates").then((r) => arr(r.templates)),
-  createPlannerTemplate: (name: string, body: string) => post<PlannerTemplate>("/planner-templates", { name, body }),
-  updatePlannerTemplate: (id: number, name: string, body: string) =>
-    patch<PlannerTemplate>(`/planner-templates/${id}`, { name, body }),
-  deletePlannerTemplate: (id: number) => del<{ deleted: boolean }>(`/planner-templates/${id}`),
-  setDefaultPlannerTemplate: (id: number) => post<PlannerTemplate>(`/planner-templates/${id}/default`, {}),
-  validatePlannerTemplate: (body: string) => post<{ ok: boolean }>("/planner-templates/validate", { body }),
   renameTaskCategory: (id: number, name: string) => patch<TaskCategory>(`/task-categories/${id}`, { name }),
   deleteTaskCategory: (id: number) => del<{ deleted: number }>(`/task-categories/${id}`),
   updateTaskCategory: (taskId: string, categoryId?: number) =>

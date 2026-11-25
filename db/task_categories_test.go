@@ -193,7 +193,7 @@ func TestSeedTaskCategoryWithPresetIfEmpty(t *testing.T) {
 	name := fmt.Sprintf("seedcat-%d", time.Now().UnixNano())
 	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM task_categories WHERE nkey=$1`, strings.ToLower(name)) })
 
-	preset := TaskCategoryPreset{DefaultCoverageEnabled: true, DefaultPlannerTemplateID: 42}
+	preset := TaskCategoryPreset{DefaultCoverageEnabled: true}
 	if inserted, err := d.SeedTaskCategoryWithPresetIfEmpty(name, preset); err != nil || !inserted {
 		t.Fatalf("首插应成功: inserted=%v err=%v", inserted, err)
 	}
@@ -212,7 +212,7 @@ func TestSeedTaskCategoryWithPresetIfEmpty(t *testing.T) {
 	if err != nil || again == nil {
 		t.Fatal(err)
 	}
-	if again.DefaultCoverageEnabled || again.DefaultPlannerTemplateID != 0 {
+	if again.DefaultCoverageEnabled {
 		t.Fatalf("用户预设被覆盖: %+v", again)
 	}
 }

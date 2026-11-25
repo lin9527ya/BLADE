@@ -8,7 +8,7 @@ import (
 )
 
 func TestArgusInspiredPromptContracts(t *testing.T) {
-	planner := plannerSystem("目标", "/data", "/work", "")
+	planner := plannerSystem("目标", "/data", "/work")
 	for _, want := range []string{
 		"广度查漏与深度裂变",
 		"盲态建预言机（Oracle）",
@@ -16,11 +16,6 @@ func TestArgusInspiredPromptContracts(t *testing.T) {
 	} {
 		if !strings.Contains(planner, want) {
 			t.Fatalf("planner system missing %q", want)
-		}
-	}
-	for name, body := range PlannerDomainSeeds() {
-		if !strings.Contains(body, "防误删红线（四维等价判定）") {
-			t.Fatalf("domain planner template %s missing four-dimensional dedup guardrail", name)
 		}
 	}
 

@@ -88,10 +88,8 @@ type Task struct {
 	AssetScopePolicy     string `json:"asset_scope_policy"`     // exact | target（目标所属全资产）
 	LootExecEnabled      bool   `json:"loot_exec_enabled"`      // 任务级后渗透执行 opt-in；默认关
 	// CredentialAttemptBudget 是任务级凭据尝试预算/30分钟：-1=继承全局，0=不限。
-	CredentialAttemptBudget int `json:"credential_attempt_budget"`
-	// PlannerPromptOverride 是创建时快照的 planner 提示词（空=走全局/默认链）。
-	PlannerPromptOverride string                 `json:"planner_prompt_override,omitempty"`
-	FirstRunAt            int64                  `json:"first_run_at,omitempty"`
+	CredentialAttemptBudget int                    `json:"credential_attempt_budget"`
+	FirstRunAt              int64                  `json:"first_run_at,omitempty"`
 	DeadlineAt            int64                  `json:"deadline_at,omitempty"`
 	Store                 *pgdb.ExplorationStore `json:"-"`
 	Guard                 *guard.Guard           `json:"-"`
@@ -1757,7 +1755,6 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		AssetScopePolicy:        pt.AssetScopePolicy,
 		LootExecEnabled:         pt.LootExecEnabled,
 		CredentialAttemptBudget: pt.CredentialAttemptBudget,
-		PlannerPromptOverride:   pt.PlannerPromptOverride,
 		FirstRunAt:              unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1), workerNotify: make(chan struct{}, 1),
 	}
@@ -2566,6 +2563,9 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 		}
 	}
 	m.forgetTask(id, n)
+	if registered != nil {
+		agent.DeleteGraphHealth(registered.ExplorationID)
+	}
 	if err := errors.Join(finalizeErrs...); err != nil {
 		return result, &taskDeleteCommittedError{err: err}
 	}
@@ -2603,6 +2603,9 @@ func (m *Manager) forgetTask(id string, numericID int64) {
 	m.ReleaseTaskEgress(id)
 	m.InvalidateTaskWorkerCount(id)
 	m.mu.Lock()
+	if task := m.tasks[id]; task != nil && task.Store != nil {
+		agent.DeleteGraphHealth(task.Store.ID())
+	}
 	delete(m.tasks, id)
 	for _, task := range m.tasks {
 		task.updateLifecycle(func(state *taskLifecycleState) {

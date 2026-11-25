@@ -11,7 +11,7 @@ import (
 // The default planner flow is ARTEX's: exploration guidance lives in the prompt,
 // not in code-held constraint blocks.
 func TestPlannerPromptARTEXParity(t *testing.T) {
-	p := plannerSystem("g", "/d", "/w", "")
+	p := plannerSystem("g", "/d", "/w")
 	for _, want := range []string{"硬底线（最高优先）", "产出 0 个意图是正常结果", "深度优先于覆盖度", "保持路线多样", "TodoWrite",
 		"add_task_scope", "add_company_scope", "扩面即授权", "可到 8 个", "至少 2–3 条"} {
 		if !strings.Contains(p, want) {
@@ -167,20 +167,9 @@ func TestOverviewDoesNotExposeLegacyBlockingSignals(t *testing.T) {
 	}
 }
 
-func TestPlannerTemplateLibraryDoesNotOverrideARTEX(t *testing.T) {
-	old := PlannerTemplateDefault
-	t.Cleanup(func() { PlannerTemplateDefault = old })
-	PlannerTemplateDefault = func() (string, bool) { return "旧模板：槽位补满、广度债、复盘轮", true }
-	p := plannerSystem("g", "/d", "/w", "")
-	if strings.Contains(p, "旧模板") || strings.Contains(p, "广度债") {
-		t.Fatalf("planner template library must not reintroduce BLADE constraints: %s", p[:200])
-	}
+func TestPlannerBuiltinBodyKeepsARTEX(t *testing.T) {
+	p := plannerSystem("g", "/d", "/w")
 	if !strings.Contains(p, "硬底线（最高优先）") {
 		t.Fatal("ARTEX built-in body missing")
-	}
-	// Task-level snapshots still win, matching the documented override path.
-	got := plannerSystem("g", "/d", "/w", "任务自定义 {{.Goal}}")
-	if !strings.HasPrefix(got, "任务自定义 g") {
-		t.Fatalf("task snapshot should still win: %q", got[:80])
 	}
 }

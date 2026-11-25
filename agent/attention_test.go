@@ -67,23 +67,33 @@ func TestGraphOverviewAttentionWindows(t *testing.T) {
 	}
 }
 
-// delta 轮不应反复重发全图召回窗口；它们只随周期性全量对账出现。
-func TestSlimBlackboardDeltaDropsAttentionWindows(t *testing.T) {
-	out := map[string]any{
-		"attention_oldest_leads":      []map[string]any{{"id": "L1-0"}},
-		"attention_oldest_facts":      []map[string]any{{"id": int64(1)}},
-		"attention_oldest_unresolved": []map[string]any{{"id": int64(2)}},
-		"attention_note":              "note",
-		"attention_status":            map[string]any{"state": "complete"},
-		"totals":                      map[string]any{"facts": 1},
+// delta 轮不应反复重发周期性全图召回窗口；它们只随周期性全量对账出现。
+func TestBlackboardDeltaOmitsPeriodicAttentionWindows(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	task, err := d.CreateTaskWithOptions("attention-delta", "goal", db.TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	slimBlackboardDelta(out)
-	for _, key := range []string{"attention_oldest_leads", "attention_oldest_facts", "attention_oldest_unresolved", "attention_note", "attention_status"} {
-		if _, ok := out[key]; ok {
-			t.Fatalf("delta kept %q", key)
+	defer d.DeleteTask(task.ID)
+	ts := d.Exploration(task.ExplorationID)
+	if _, err := ts.AddNode(db.KindFact, map[string]any{
+		"summary": "有线索的事实", "polarity": "positive", "confidence": "observed",
+		"leads": []map[string]any{{"text": "旁路线索"}},
+	}, 0, "confirmed", "worker", nil); err != nil {
+		t.Fatal(err)
+	}
+	v, err := ts.BlackboardVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta := NewToolSet(ts, "planner").blackboardDeltaData(0, 20, v.Cursor())
+	for _, key := range []string{"attention_oldest_leads", "attention_oldest_unresolved", "attention_note", "attention_status"} {
+		if _, ok := delta[key]; ok {
+			t.Fatalf("delta kept periodic attention key %q", key)
 		}
 	}
-	if _, ok := out["totals"]; !ok {
+	if _, ok := delta["totals"]; !ok {
 		t.Fatal("delta dropped totals")
 	}
 }

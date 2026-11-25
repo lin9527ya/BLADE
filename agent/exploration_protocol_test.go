@@ -10,7 +10,7 @@ import (
 )
 
 func TestExplorationProtocolHasNoConflictingInstructions(t *testing.T) {
-	body := plannerSystem("goal", "/d", "/w", "") + plannerScopeRequestBlock
+	body := plannerSystem("goal", "/d", "/w") + plannerScopeRequestBlock
 	for _, old := range []string{"仍是必填核心", "本轮预取的是有界视图", "否则忽略", "写一条 fact 说明拒绝"} {
 		if strings.Contains(body, old) {
 			t.Fatalf("stale instruction %q", old)

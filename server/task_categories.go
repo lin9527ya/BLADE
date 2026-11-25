@@ -105,9 +105,8 @@ func (s *Server) pgRenameTaskCategory(w http.ResponseWriter, r *http.Request) {
 // taskCategoryPresetRequest carries the scenario defaults. Pointers distinguish
 // "leave unchanged" from an explicit false/0.
 type taskCategoryPresetRequest struct {
-	SeedFirstIntent          *bool  `json:"seed_first_intent"`
-	DefaultCoverageEnabled   *bool  `json:"default_coverage_enabled"`
-	DefaultPlannerTemplateID *int64 `json:"default_planner_template_id"`
+	SeedFirstIntent        *bool `json:"seed_first_intent"`
+	DefaultCoverageEnabled *bool `json:"default_coverage_enabled"`
 }
 
 func (s *Server) pgUpdateTaskCategoryPreset(w http.ResponseWriter, r *http.Request) {
@@ -136,25 +135,14 @@ func (s *Server) pgUpdateTaskCategoryPreset(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	preset := db.TaskCategoryPreset{
-		SeedFirstIntent:          current.SeedFirstIntent,
-		DefaultCoverageEnabled:   current.DefaultCoverageEnabled,
-		DefaultPlannerTemplateID: current.DefaultPlannerTemplateID,
+		SeedFirstIntent:        current.SeedFirstIntent,
+		DefaultCoverageEnabled: current.DefaultCoverageEnabled,
 	}
 	if req.SeedFirstIntent != nil {
 		preset.SeedFirstIntent = *req.SeedFirstIntent
 	}
 	if req.DefaultCoverageEnabled != nil {
 		preset.DefaultCoverageEnabled = *req.DefaultCoverageEnabled
-	}
-	if req.DefaultPlannerTemplateID != nil {
-		if *req.DefaultPlannerTemplateID > 0 {
-			tpl, err := pg.GetPlannerTemplate(*req.DefaultPlannerTemplateID)
-			if err != nil || tpl == nil {
-				writeErr(w, http.StatusBadRequest, "planner 模板不存在")
-				return
-			}
-		}
-		preset.DefaultPlannerTemplateID = *req.DefaultPlannerTemplateID
 	}
 	category, err := pg.UpdateTaskCategoryPreset(id, preset)
 	if err != nil {

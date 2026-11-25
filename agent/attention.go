@@ -29,6 +29,23 @@ func ageMinutesStable(at time.Time) int {
 	return stabilizeAgeMinutes(int(time.Since(at).Minutes()))
 }
 
+func formatOldestUnconsumedFacts(facts []db.AttentionFact) []map[string]any {
+	rows := make([]map[string]any, 0, len(facts))
+	for _, f := range facts {
+		row := map[string]any{
+			"id": f.ID, "state": f.State, "summary": clipLine(f.Summary, 160), "age_min": ageMinutesStable(f.CreatedAt),
+		}
+		if f.Polarity != "" {
+			row["polarity"] = f.Polarity
+		}
+		if f.Confidence != "" {
+			row["confidence"] = f.Confidence
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 func (t *ToolSet) attentionWindows(out map[string]any, tracking *db.LeadTraceReport) {
 	if t == nil || t.ts == nil {
 		return
@@ -55,20 +72,7 @@ func (t *ToolSet) attentionWindows(out map[string]any, tracking *db.LeadTraceRep
 	if facts, err := t.ts.OldestUnconsumedFacts(5); err != nil {
 		errs = append(errs, "oldest_facts: "+err.Error())
 	} else if len(facts) > 0 {
-		rows := make([]map[string]any, 0, len(facts))
-		for _, f := range facts {
-			row := map[string]any{
-				"id": f.ID, "state": f.State, "summary": clipLine(f.Summary, 160), "age_min": ageMin(f.CreatedAt),
-			}
-			if f.Polarity != "" {
-				row["polarity"] = f.Polarity
-			}
-			if f.Confidence != "" {
-				row["confidence"] = f.Confidence
-			}
-			rows = append(rows, row)
-		}
-		out["attention_oldest_facts"] = rows
+		out["attention_oldest_facts"] = formatOldestUnconsumedFacts(facts)
 	}
 
 	if unresolved, err := t.ts.OldestUnresolved(5); err != nil {

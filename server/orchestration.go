@@ -255,8 +255,6 @@ type spawnTaskArgs struct {
 	PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`
 	SeedFirstIntent      bool            `json:"seed_first_intent"`
 	AssetScopePolicy     string          `json:"asset_scope_policy"`
-	PlannerTemplateID    int64           `json:"planner_template_id"`
-	PlannerPrompt        string          `json:"planner_prompt"`
 	// Internal fields used by IM /new; deliberately not exposed in the tool schema.
 	Name   string `json:"-"`
 	Remark string `json:"-"`
@@ -311,10 +309,6 @@ func (s *Server) createTaskFromSpawn(ctx context.Context, a spawnTaskArgs, befor
 	if pin != nil {
 		llmIDs = []int64{*pin}
 	}
-	plannerPrompt, perr := s.snapshotPlannerPrompt(a.PlannerPrompt, a.PlannerTemplateID)
-	if perr != nil {
-		return nil, fmt.Errorf("planner 提示词无效：%s", perr)
-	}
 	t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
 		Name:                 strings.TrimSpace(a.Name),
 		Remark:               strings.TrimSpace(a.Remark),
@@ -323,7 +317,6 @@ func (s *Server) createTaskFromSpawn(ctx context.Context, a spawnTaskArgs, befor
 		TimeoutSeconds:       a.TimeoutSeconds,
 		PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
 		AssetScopePolicy:     a.AssetScopePolicy,
-		PlannerPrompt:        plannerPrompt,
 	})
 	if err != nil {
 		return nil, err
@@ -360,8 +353,6 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
 			"asset_scope_policy":     strParam("可选：资产范围策略 exact|target；target(默认)=目标所属全资产(同根域、同公司跨根域、本任务发现/锚定资产)自动可测，exact=仅明确登记主机。"),
-			"planner_template_id":    map[string]any{"type": "integer", "description": "可选：从 planner 模板库按 id 选模板，正文在创建时快照进子任务；与 planner_prompt 同传时 planner_prompt 优先"},
-			"planner_prompt":         strParam("可选：子任务 planner 提示词全文覆盖（上限 32KB），创建时快照，运行中不可改"),
 		}, "description", "goal"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a spawnTaskArgs

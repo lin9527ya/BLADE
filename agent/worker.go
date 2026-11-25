@@ -620,6 +620,42 @@ func intentAssetIDs(intent *db.Node) []int64 {
 	return p.AssetIDs
 }
 
+func renderWorkerRunningPeers(ts *db.ExplorationStore, selfIntentID int64) string {
+	if ts == nil {
+		return ""
+	}
+	running, err := ts.ListByKindState(db.KindIntent, "running", 8)
+	if err != nil || len(running) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(running))
+	for _, n := range running {
+		if n == nil || n.ID == selfIntentID {
+			continue
+		}
+		var p map[string]any
+		if json.Unmarshal(n.Payload, &p) != nil {
+			continue
+		}
+		summary := clipLine(SanitizeUntrusted(asText(p["summary"])), 100)
+		if summary == "" {
+			continue
+		}
+		line := fmt.Sprintf("  · #%d %s", n.ID, summary)
+		if hyp := clipLine(SanitizeUntrusted(asText(p["hypothesis"])), 80); hyp != "" {
+			line += " | hypothesis=" + hyp
+		}
+		if ids := intentAssetIDs(n); len(ids) > 0 {
+			line += fmt.Sprintf(" (asset_ids=%v)", ids)
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "【当前并发在跑的同伴意图（实时参考，勿重复探测同入口）】\n" + strings.Join(lines, "\n")
+}
+
 // renderWorkerGraphOverview folds the global situational snapshot into the worker's
 // launch USER message for AWARENESS ONLY. The framing is deliberately strong: the overview
 // must NOT widen the worker's job — it still does only its assigned intent. Its sole
@@ -877,6 +913,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		input = "开始执行当前意图：聚焦这一条，及时写回事实、资产、发现、战果或旁路线索，做完即停。"
 	}
 	input += "\n\n" + intentTurn
+	if peers := renderWorkerRunningPeers(ts, intent.ID); peers != "" {
+		input += "\n\n" + peers
+	}
 
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	enableNoa(&opts, w.noaEnabledFn, w.workDir, sessionID, noaWarn(sessionID))

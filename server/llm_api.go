@@ -732,11 +732,6 @@ type createTaskReq struct {
 	CredentialAttemptBudget *int `json:"credential_attempt_budget,omitempty"`
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
-	// PlannerPrompt 任务级 planner 提示词全文（创建时快照，上限 32KB）。
-	// 与 PlannerTemplateID 同传时本字段优先。
-	PlannerPrompt string `json:"planner_prompt,omitempty"`
-	// PlannerTemplateID 从模板库按 id 取正文并快照；省略/0 = 不覆盖。
-	PlannerTemplateID int64 `json:"planner_template_id,omitempty"`
 	// WorkerCount 是每任务并发覆盖（0 = 跟随全局 workers，上限 50）。
 	// 只在任务首次启动时固化，之后改它不影响已在跑的槽位。
 	WorkerCount int `json:"worker_count,omitempty"`

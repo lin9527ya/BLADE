@@ -709,7 +709,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	// 场景预设：分类未显式指定的项按分类默认值带出；显式值优先。
 	seedFirstIntent := req.SeedFirstIntent
 	coverageEnabled := req.CoverageEnabled
-	plannerTemplateID := req.PlannerTemplateID
 	if req.CategoryID != nil {
 		if category, cerr := s.m.pg.GetTaskCategory(*req.CategoryID); cerr == nil && category != nil {
 			if seedFirstIntent == nil {
@@ -718,15 +717,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			if coverageEnabled == nil {
 				coverageEnabled = &category.DefaultCoverageEnabled
 			}
-			if plannerTemplateID <= 0 {
-				plannerTemplateID = category.DefaultPlannerTemplateID
-			}
 		}
-	}
-	plannerPrompt, err := s.snapshotPlannerPrompt(req.PlannerPrompt, plannerTemplateID)
-	if err != nil {
-		writeErr(w, 400, err.Error())
-		return
 	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
@@ -734,7 +725,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled:         coverageEnabled,
 		InterceptRules:          interceptRules,
-		PlannerPrompt:           plannerPrompt,
 		WorkerCount:             req.WorkerCount,
 		Remark:                  req.Remark,
 		AssetScopePolicy:        req.AssetScopePolicy,

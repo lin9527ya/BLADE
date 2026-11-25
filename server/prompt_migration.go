@@ -47,8 +47,7 @@ func plannerPromptIsBuiltin(cur string) bool {
 }
 
 // migratePlannerPrompt 把旧版内置 planner 正文升级到 v3（经典瘦身 + 态势语义）。
-// 只执行一次（settings 旗标）；领域模板不在这里处理——planner_templates 的内置行
-// 每次启动都会被 SeedPlannerTemplateIfEmpty 刷新正文，用户自建模板不受影响。
+// 只执行一次（settings 旗标）。
 func migratePlannerPrompt(pg *db.DB) {
 	if pg == nil {
 		return

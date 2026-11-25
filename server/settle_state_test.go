@@ -81,7 +81,7 @@ func TestIntentKindOf(t *testing.T) {
 	}
 }
 
-// verify 意图收尾时把真实验证过的资产写进 payload；非终态或非 verify 不写。
+// verify 意图通过 SettleIntent 原子提交把真实验证过的资产写进 payload；blocked 传 nil 不记录。
 func TestRecordValidatedAssets(t *testing.T) {
 	s, _, _ := trafficEvidenceServer(t)
 	task, err := s.m.CreateTask("validated-assets", "g", nil, 0, 0)
@@ -117,16 +117,19 @@ func TestRecordValidatedAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent, err := st.GetNode(intentID)
-	if err != nil || intent == nil {
-		t.Fatal(err)
+	claimed, err := st.ClaimNode(t.Context(), intentID, "worker#1", "open", db.IntentLeaseTTL, nil, false)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim intent: %+v %v", claimed, err)
 	}
 	wrote := agent.WriteCounts{Facts: 1, ValidationAssets: map[int64]bool{a1: true}}
-	recordValidatedAssets(pgTask, intent, "verify", "done", wrote)
+	if err := st.WithAuthority(claimed.WriteAuthority(tid, expID)).SettleIntent(intentID, "done", wrote.ValidationAssetIDs(), ""); err != nil {
+		t.Fatal(err)
+	}
 	reloaded, err := st.GetNode(intentID)
 	if err != nil || reloaded == nil {
 		t.Fatal(err)
 	}
+	logUnvalidatedBoundAssets(pgTask, reloaded, wrote.ValidationAssetIDs())
 	var p struct {
 		Validated []int64 `json:"validated_asset_ids"`
 	}
@@ -134,11 +137,22 @@ func TestRecordValidatedAssets(t *testing.T) {
 		t.Fatalf("validated_asset_ids = %v (err %v), payload=%s", p.Validated, err, reloaded.Payload)
 	}
 
-	// 非终态不写。
-	recordValidatedAssets(pgTask, intent, "verify", "blocked", agent.WriteCounts{ValidationAssets: map[int64]bool{a2: true}})
-	reloaded, _ = st.GetNode(intentID)
-	_ = json.Unmarshal(reloaded.Payload, &p)
-	if len(p.Validated) != 1 {
+	// blocked 终态不传 validated，不写 validated_asset_ids。
+	bID, err := st.AddIntent(map[string]any{"summary": "b", "risk_area": "auth", "intent_kind": "verify", "asset_ids": []int64{a2}}, 5, []int64{a2}, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bClaimed, err := st.ClaimNode(t.Context(), bID, "worker#2", "open", db.IntentLeaseTTL, nil, false)
+	if err != nil || bClaimed == nil {
+		t.Fatalf("claim blocked intent: %+v %v", bClaimed, err)
+	}
+	if err := st.WithAuthority(bClaimed.WriteAuthority(tid, expID)).SettleIntent(bID, "blocked", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	bReloaded, _ := st.GetNode(bID)
+	p.Validated = nil
+	_ = json.Unmarshal(bReloaded.Payload, &p)
+	if len(p.Validated) != 0 {
 		t.Fatalf("blocked intent must not record validated assets: %v", p.Validated)
 	}
 }

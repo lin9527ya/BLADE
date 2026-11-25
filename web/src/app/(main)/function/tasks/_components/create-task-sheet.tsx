@@ -37,11 +37,10 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { AssetInterceptRuleInput, Company, LLMProfile, PlannerTemplate, Task, TaskCategory } from "@/lib/types";
+import type { AssetInterceptRuleInput, Company, LLMProfile, Task, TaskCategory } from "@/lib/types";
 
 import { CategoryPicker, CompanyPicker } from "./task-categories";
 import { appendUploads, MAX_SOURCE_TASKS } from "./task-helpers";
@@ -171,11 +170,6 @@ export function CreateTaskSheet({
   const [credentialBudget, setCredentialBudget] = React.useState(""); // 任务级凭据预算;-1/空=继承全局,0=不限
   // 场景预设：选中分类后带出默认值（仍可手动覆盖）。
   const [presetAppliedFor, setPresetAppliedFor] = React.useState<number | undefined>(undefined);
-  const [plannerTemplates, setPlannerTemplates] = React.useState<PlannerTemplate[]>([]);
-  const [plannerTemplateID, setPlannerTemplateID] = React.useState<number>(0);
-  // 用户是否手动选过模板。没选过时，切换分类会跟着分类默认走（含归零）；
-  // 选过就保留用户的选择，不被分类预设覆盖。选「跟随全局 / 分类默认」视为没选过。
-  const plannerTemplateTouched = React.useRef(false);
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // 任务级资产拦截规则(仅本任务生效,不进全局表)
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
@@ -190,10 +184,6 @@ export function CreateTaskSheet({
       .llmProfiles()
       .then(setProfiles)
       .catch(() => setProfiles([]));
-    api
-      .plannerTemplates()
-      .then(setPlannerTemplates)
-      .catch(() => setPlannerTemplates([]));
     api
       .companies()
       .then(setCompanies)
@@ -231,11 +221,6 @@ export function CreateTaskSheet({
     setPresetAppliedFor(categoryID);
     setSeedFirstIntent(category.seed_first_intent);
     setCoverageEnabled(category.default_coverage_enabled);
-    // 分类没配默认模板时归零，而不是留着上一个分类带出的模板（否则「先选内网渗透、
-    // 再切到无模板分类」会静默沿用上一个分类的模板）。用户手选过则不覆盖。
-    if (!plannerTemplateTouched.current) {
-      setPlannerTemplateID(category.default_planner_template_id ?? 0);
-    }
   }, [open, categoryID, categories, presetAppliedFor]);
 
   async function createTask() {
@@ -274,7 +259,6 @@ export function CreateTaskSheet({
         credentialAttemptBudget: credBudget,
         workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
         remark: remark.trim(),
-        plannerTemplateId: plannerTemplateID > 0 ? plannerTemplateID : undefined,
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -295,8 +279,6 @@ export function CreateTaskSheet({
       setSeedFirstIntent(false);
       setCoverageEnabled(true);
       setAssetScopePolicy("target");
-      setPlannerTemplateID(0);
-      plannerTemplateTouched.current = false;
       setPresetAppliedFor(undefined);
       setInterceptRules([]);
       setUploadCount(0);
@@ -364,37 +346,8 @@ export function CreateTaskSheet({
                 portalContainer={sheetContentRef}
               />
               <FieldDescription>
-                可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。分类配置了场景预设时会带出种子意图 / 覆盖度 /
-                planner 模板。
+                可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。分类配置了场景预设时会带出种子意图 / 覆盖度。
               </FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="planner-template">planner 模板</FieldLabel>
-              <Select
-                value={String(plannerTemplateID)}
-                onValueChange={(v) => {
-                  const id = Number(v);
-                  // 选「跟随全局 / 分类默认」= 交还给分类预设，不算手选。
-                  plannerTemplateTouched.current = id > 0;
-                  setPlannerTemplateID(id);
-                }}
-              >
-                <SelectTrigger id="planner-template" className="w-full">
-                  <SelectValue placeholder="跟随全局 / 分类默认" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="0">跟随全局 / 分类默认</SelectItem>
-                    {plannerTemplates.map((tpl) => (
-                      <SelectItem key={tpl.id} value={String(tpl.id)}>
-                        {tpl.name}
-                        {tpl.is_default ? "（默认）" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>创建时把模板正文快照进任务；之后修改模板不影响已建任务。</FieldDescription>
             </Field>
             <div className="grid gap-2">
               <Label htmlFor="description">描述</Label>

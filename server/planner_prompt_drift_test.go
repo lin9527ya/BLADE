@@ -8,10 +8,10 @@ import (
 )
 
 // add_intent 已不再接受 uses_loot_ids（ARTEX 对齐时移除）。提示词若继续教模型传它，
-// 模型每轮都会白试一次。这里扫描**现役提示词源**（agent/planner.go 的内置正文与领域模板），
+// 模型每轮都会白试一次。这里扫描**现役提示词源**（agent/planner.go 的内置正文），
 // 命中即失败。docs/prompts/planner 是历史正文备份，迁移测试依赖其原文，不参与本检查。
 func TestPlannerPromptsDoNotReferenceRemovedFields(t *testing.T) {
-	paths := []string{filepath.Join("..", "agent", "planner.go"), filepath.Join("..", "agent", "planner_domain_templates.go")}
+	paths := []string{filepath.Join("..", "agent", "planner.go")}
 	for _, path := range paths {
 		b, err := os.ReadFile(path)
 		if err != nil {

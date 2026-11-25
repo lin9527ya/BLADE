@@ -69,7 +69,6 @@ type Task struct {
 	AssetScopePolicy        string `json:"asset_scope_policy"`
 	LootExecEnabled         bool   `json:"loot_exec_enabled"`
 	CredentialAttemptBudget int    `json:"credential_attempt_budget"` // -1=继承全局；0=不限；>0=本任务预算
-	PlannerPromptOverride   string `json:"planner_prompt_override,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -193,9 +192,6 @@ type TaskCreateOptions struct {
 	CoverageEnabled *bool
 	// InterceptRules 是任务级资产拦截规则,创建时随任务在同一事务内写入 task_intercept_rules。
 	InterceptRules []TaskInterceptRuleInput
-	// PlannerPrompt is the task-level planner prompt snapshot (empty = use the
-	// global prompt chain). Captured at creation, detached from the template library.
-	PlannerPrompt string
 	// WorkerCount 是每任务并发覆盖（0 = 跟随全局 workers，上限 MaxTaskWorkerCount）。
 	// 只在任务首次启动时固化进 task_worker_slots。
 	WorkerCount int
@@ -366,12 +362,11 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CredentialAttemptBudget: credentialBudget,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, remark, asset_scope_policy, loot_exec_enabled, credential_attempt_budget)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, strings.TrimSpace(opts.PlannerPrompt), opts.WorkerCount, opts.Remark, policy, opts.LootExecEnabled, credentialBudget).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, worker_count, remark, asset_scope_policy, loot_exec_enabled, credential_attempt_budget)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.WorkerCount, opts.Remark, policy, opts.LootExecEnabled, credentialBudget).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
-	t.PlannerPromptOverride = strings.TrimSpace(opts.PlannerPrompt)
 	t.WorkerCount, t.Remark = opts.WorkerCount, opts.Remark
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
 		return nil, err
@@ -486,11 +481,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(loot_exec_enabled,false), COALESCE(credential_attempt_budget,-1)`
+description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(loot_exec_enabled,false), COALESCE(credential_attempt_budget,-1)`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.LootExecEnabled, &t.CredentialAttemptBudget); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.LootExecEnabled, &t.CredentialAttemptBudget); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil

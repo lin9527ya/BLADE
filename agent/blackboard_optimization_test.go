@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
@@ -63,29 +65,59 @@ func TestHotSessionSurvivesBeyond14MessagesWithoutReset(t *testing.T) {
 
 func TestBlackboardDeltaCoreAndWorkerSituationData(t *testing.T) {
 	tools, ts, intent := newToolWorker(t)
+	baseVer, err := ts.BlackboardVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := ts.AddIntent(map[string]any{"summary": "SQLi probe", "route": "login-sqli"}, 6, nil, "planner"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.AddFactGraph(map[string]any{"summary": "found admin endpoint", "enables": []string{"surface"}}, "work#1", nil, intent, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.AddNode(db.KindFoothold, map[string]any{"summary": "ssh root@host", "access": "ssh", "privilege": "root"}, 0, db.StateLootActive, "worker", nil); err != nil {
+	fhID, err := ts.AddNode(db.KindFoothold, map[string]any{"summary": "ssh root@host", "access": "ssh", "privilege": "root"}, 0, db.StateLootActive, "worker", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := ts.BlackboardVersion(t.Context())
+	crID, err := ts.AddNode(db.KindCredential, map[string]any{"summary": "admin token", "kind": "token", "username": "root"}, 0, db.StateLootActive, "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fnID, err := ts.AddNode(db.KindFinding, map[string]any{"summary": "RCE on /upload", "vulnclass": "rce", "severity": "critical"}, 0, "confirmed", "worker", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	delta := tools.blackboardDeltaData(0, 20, v.Cursor())
+	delta := tools.blackboardDeltaData(0, 20, baseVer.Cursor())
 	bb, _ := delta["blackboard"].(map[string]any)
 	if bb == nil || bb["incremental_delta"] != true {
 		t.Fatalf("expected incremental_delta=true, got %+v", bb)
 	}
-	for _, want := range []string{"totals", "routes", "capabilities", "open_intents", "changes", "read_status"} {
+	for _, want := range []string{"totals", "routes", "capabilities", "open_intents", "changes", "read_status", "delta_footholds", "delta_credentials", "delta_findings"} {
 		if _, ok := delta[want]; !ok {
 			t.Fatalf("delta view missing %q", want)
 		}
+	}
+	changes, _ := delta["changes"].([]db.BlackboardChange)
+	seenKinds := map[string]bool{}
+	for _, c := range changes {
+		if c.Kind != "" {
+			seenKinds[c.Kind] = true
+		}
+	}
+	for _, wantKind := range []string{db.KindIntent, db.KindFact, db.KindFoothold, db.KindCredential, db.KindFinding} {
+		if !seenKinds[wantKind] {
+			t.Fatalf("BlackboardChange missing kind=%q in changes=%+v", wantKind, changes)
+		}
+	}
+	if df, _ := delta["delta_footholds"].([]map[string]any); len(df) != 1 || df[0]["id"] != fhID {
+		t.Fatalf("unexpected delta_footholds: %+v", delta["delta_footholds"])
+	}
+	if dc, _ := delta["delta_credentials"].([]map[string]any); len(dc) != 1 || dc[0]["id"] != crID {
+		t.Fatalf("unexpected delta_credentials: %+v", delta["delta_credentials"])
+	}
+	if dv, _ := delta["delta_findings"].([]map[string]any); len(dv) != 1 || dv[0]["id"] != fnID {
+		t.Fatalf("unexpected delta_findings: %+v", delta["delta_findings"])
 	}
 	for _, forbid := range []string{"cold_digests", "folded_intents", "related_tasks", "attention_status", "task", "campaign", "asset_scope"} {
 		if _, ok := delta[forbid]; ok {
@@ -99,9 +131,9 @@ func TestBlackboardDeltaCoreAndWorkerSituationData(t *testing.T) {
 			t.Fatalf("worker situation missing %q", want)
 		}
 	}
-	for _, forbid := range []string{"branch_review_facts", "attention_status", "cold_digests", "folded_intents", "related_tasks", "open_intents", "recent_done_intents"} {
+	for _, forbid := range []string{"running_intents", "branch_review_facts", "attention_status", "cold_digests", "folded_intents", "related_tasks", "open_intents", "recent_done_intents"} {
 		if _, ok := worker[forbid]; ok {
-			t.Fatalf("worker situation leaked planner-only key %q", forbid)
+			t.Fatalf("worker situation leaked forbidden/planner-only key %q", forbid)
 		}
 	}
 }
@@ -132,4 +164,92 @@ func TestRecordFactBatchCoalescesNotification(t *testing.T) {
 		t.Fatalf("got low-priority kind %q instead of high-priority batch event", gotKind)
 	}
 	_ = gotAssets
+}
+
+func TestListLeadsToolAndProposeIntentsSummary(t *testing.T) {
+	d := testDB(t)
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTaskWithOptions("leads task", "验证线索分页", db.TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	a1, err := d.Assets().UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://one.leads-test.example", TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := d.Assets().UpsertHTTPService(db.UpsertHTTPServiceReq{URL: "https://two.leads-test.example", TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM assets WHERE url LIKE '%leads-test.example%' OR domain LIKE '%leads-test.example%'`)
+	})
+	ts := d.Exploration(task.ExplorationID)
+	tools := NewToolSet(ts, "work#1")
+	tools.SetTaskID(task.ID)
+	tools.SetAssetStore(d.Assets(), nil)
+
+	propOut := callTool(t, tools.WorkerTools(), "propose_intents", fmt.Sprintf(`{"proposals":[
+		{"summary":"测 /upload 双写绕过","asset_ids":[%d,%d,99999999]},
+		{"summary":"复核 /admin 越权删除","asset_ids":[%d]},
+		{"summary":"验证导出接口 SSRF"}
+	]}`, a1, a2, a2))
+	var propRes struct {
+		FactID    int64 `json:"fact_id"`
+		Proposals int   `json:"proposals"`
+	}
+	if err := json.Unmarshal([]byte(propOut), &propRes); err != nil || propRes.FactID <= 0 || propRes.Proposals != 3 {
+		t.Fatalf("unexpected propose_intents result: %s (err=%v)", propOut, err)
+	}
+	n, err := ts.GetNode(propRes.FactID)
+	if err != nil || n == nil {
+		t.Fatalf("proposal fact missing: %v", err)
+	}
+	var fp map[string]any
+	if err := json.Unmarshal(n.Payload, &fp); err != nil {
+		t.Fatal(err)
+	}
+	propSummary, _ := fp["summary"].(string)
+	if !strings.Contains(propSummary, "测 /upload 双写绕过") || !strings.Contains(propSummary, "3 个方向") {
+		t.Fatalf("proposal summary should include concrete directions: %q", propSummary)
+	}
+
+	page1Raw := callTool(t, tools.PlannerTools(), "list_leads", `{"state":"pending","limit":2,"offset":0}`)
+	var page1 struct {
+		Total      int              `json:"total"`
+		HasMore    bool             `json:"has_more"`
+		NextOffset int              `json:"next_offset"`
+		Rows       []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(page1Raw), &page1); err != nil {
+		t.Fatalf("list_leads invalid JSON: %v\n%s", err, page1Raw)
+	}
+	if page1.Total != 3 || !page1.HasMore || page1.NextOffset != 2 || len(page1.Rows) != 2 {
+		t.Fatalf("unexpected page1 pagination: %+v", page1)
+	}
+	page2Raw := callTool(t, tools.PlannerTools(), "list_leads", fmt.Sprintf(`{"state":"pending","limit":2,"offset":%d}`, page1.NextOffset))
+	var page2 struct {
+		HasMore bool             `json:"has_more"`
+		Rows    []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(page2Raw), &page2); err != nil {
+		t.Fatalf("list_leads page2 invalid JSON: %v", err)
+	}
+	if page2.HasMore || len(page2.Rows) != 1 {
+		t.Fatalf("unexpected page2 pagination: %+v", page2)
+	}
+}
+
+func TestDeleteGraphHealthEvictsCache(t *testing.T) {
+	expID := int64(987654321)
+	graphHealthCache.Store(expID, graphHealthEntry{at: time.Now(), data: map[string]any{"issues": 1}})
+	t.Cleanup(func() { DeleteGraphHealth(expID) })
+	if _, ok := graphHealthCache.Load(expID); !ok {
+		t.Fatal("expected cache entry before delete")
+	}
+	DeleteGraphHealth(expID)
+	if _, ok := graphHealthCache.Load(expID); ok {
+		t.Fatal("DeleteGraphHealth did not evict entry")
+	}
 }

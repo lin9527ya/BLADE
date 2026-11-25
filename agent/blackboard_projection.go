@@ -176,12 +176,6 @@ func (t *ToolSet) workerSituationData() map[string]any {
 	t.populateTaskAndScope(out)
 	t.populateActiveTunnels(out)
 
-	// Teammate live runs: slim summaries prevent duplicate probing across concurrent intents.
-	if running, err := t.ts.ListByKindState(db.KindIntent, "running", 8); err == nil && len(running) > 0 {
-		parents, _ := t.ts.DerivedParentsForNodes(intentNodeIDs(running))
-		out["running_intents"] = slimIntentNodes(running, parents)
-	}
-
 	// Findings window + authoritative total so worker avoids duplicate finding reports.
 	const workerFindingCap = 12
 	vulnNodes, _ := t.ts.ListActiveFindings(workerFindingCap)
@@ -359,6 +353,92 @@ func slimIntentSummary(in map[string]any) map[string]any {
 // blackboardDeltaCore builds a genuinely lightweight incremental projection for
 // warm Planner hot sessions without running full-graph coldGraph/AD/related_tasks/
 // 5000-edge queries first and throwing them away afterwards.
+func appendUniqueCap(ids []int64, seen map[int64]bool, id int64, capLimit int) []int64 {
+	if id <= 0 || seen[id] || len(ids) >= capLimit {
+		return ids
+	}
+	seen[id] = true
+	return append(ids, id)
+}
+
+func (t *ToolSet) populateDeltaChangedEntities(out map[string]any, changes db.BlackboardChanges) {
+	if len(changes.Changes) == 0 {
+		return
+	}
+	const deltaEntityCap = 8
+	var findingIDs, footholdIDs, credentialIDs []int64
+	seenFinding, seenFoothold, seenCred := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}
+	for _, c := range changes.Changes {
+		if c.NodeID == nil || c.Operation == "delete" {
+			continue
+		}
+		kind := c.Kind
+		if c.Entity == "finding" {
+			kind = db.KindFinding
+		}
+		switch kind {
+		case db.KindFinding:
+			findingIDs = appendUniqueCap(findingIDs, seenFinding, *c.NodeID, deltaEntityCap)
+		case db.KindFoothold:
+			footholdIDs = appendUniqueCap(footholdIDs, seenFoothold, *c.NodeID, deltaEntityCap)
+		case db.KindCredential:
+			credentialIDs = appendUniqueCap(credentialIDs, seenCred, *c.NodeID, deltaEntityCap)
+		}
+	}
+	if len(findingIDs) > 0 {
+		if nodes, err := t.ts.NodesByIDs(findingIDs); err == nil && len(nodes) > 0 {
+			producers, _ := t.ts.FactProducersForNodes(findingIDs)
+			rows := make([]map[string]any, 0, len(nodes))
+			for _, n := range nodes {
+				row := compactFinding(n)
+				if from := producers[n.ID]; from > 0 {
+					row["from_intent"] = from
+				}
+				rows = append(rows, row)
+			}
+			out["delta_findings"] = rows
+		}
+	}
+	lootIDs := make([]int64, 0, len(footholdIDs)+len(credentialIDs))
+	lootIDs = append(lootIDs, footholdIDs...)
+	lootIDs = append(lootIDs, credentialIDs...)
+	if len(lootIDs) == 0 {
+		return
+	}
+	nodes, err := t.ts.NodesByIDs(lootIDs)
+	if err != nil || len(nodes) == 0 {
+		return
+	}
+	byID := make(map[int64]*db.Node, len(nodes))
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	producers, _ := t.ts.FactProducersForNodes(lootIDs)
+	usedLoot, _ := t.ts.LootUsedMap(lootIDs)
+	if len(footholdIDs) > 0 {
+		var fhNodes []*db.Node
+		for _, id := range footholdIDs {
+			if n := byID[id]; n != nil {
+				fhNodes = append(fhNodes, n)
+			}
+		}
+		if len(fhNodes) > 0 {
+			out["delta_footholds"] = compactLoot(fhNodes, producers, usedLoot, "access", "privilege", "protocol", "host", "port", "url")
+		}
+	}
+	if len(credentialIDs) > 0 {
+		var crNodes []*db.Node
+		for _, id := range credentialIDs {
+			if n := byID[id]; n != nil {
+				crNodes = append(crNodes, n)
+			}
+		}
+		if len(crNodes) > 0 {
+			out["delta_credentials"] = compactCredentials(crNodes, producers, usedLoot)
+		}
+	}
+}
+
 func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.BlackboardChanges) map[string]any {
 	out := map[string]any{}
 	t.populateGoalsAndHints(out, 100)
@@ -398,7 +478,11 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 		out["findings_total"] = total
 		totals["findings"] = total
 	}
+	var factsTotal int
+	hasFactsTotal := false
 	if total, err := t.ts.CountByKind(db.KindFact); err == nil {
+		factsTotal = total
+		hasFactsTotal = true
 		out["facts"] = total
 		totals["facts"] = total
 	}
@@ -549,7 +633,12 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 	}
 	if len(unconsumed) > 0 {
 		out["unconsumed_facts"] = unconsumed
+	} else if hasFactsTotal && factsTotal > len(factNodes) {
+		if oldestFacts, err := t.ts.OldestUnconsumedFacts(5); err == nil && len(oldestFacts) > 0 {
+			out["attention_oldest_facts"] = formatOldestUnconsumedFacts(oldestFacts)
+		}
 	}
+	t.populateDeltaChangedEntities(out, changes)
 	if len(capCounts) > 0 {
 		out["capabilities"] = capCounts
 	}

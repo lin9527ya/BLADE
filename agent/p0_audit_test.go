@@ -102,21 +102,11 @@ func TestPolarityMixedSignals(t *testing.T) {
 	}
 }
 
-func TestDomainTemplatesDistinctAndClean(t *testing.T) {
-	seeds := PlannerDomainSeeds()
-	if len(seeds) < 7 {
-		t.Fatalf("want 7 domain templates, got %d", len(seeds))
-	}
-	seen := map[string]bool{}
-	for name, body := range seeds {
-		if seen[body] {
-			t.Fatalf("领域模板 %s 与其它模板完全相同", name)
-		}
-		seen[body] = true
-		for _, bad := range []string{"add_intent 的 goal_id", "uses_loot_ids"} {
-			if strings.Contains(body, bad) {
-				t.Fatalf("领域模板 %s 仍引用已删除字段/状态 %q", name, bad)
-			}
+func TestBuiltinPlannerPromptIsClean(t *testing.T) {
+	body := PlannerPromptBody()
+	for _, bad := range []string{"add_intent 的 goal_id", "uses_loot_ids"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("默认正文仍引用已删除字段/状态 %q", bad)
 		}
 	}
 }

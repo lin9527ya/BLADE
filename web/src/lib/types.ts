@@ -80,18 +80,6 @@ export interface TaskCategory {
   /** 场景预设：建任务未显式指定时按分类带出。 */
   seed_first_intent: boolean;
   default_coverage_enabled: boolean;
-  default_planner_template_id: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface PlannerTemplate {
-  id: number;
-  name: string;
-  nkey: string;
-  body: string;
-  builtin: boolean;
-  is_default: boolean;
   created_at: string;
   updated_at: string;
 }
