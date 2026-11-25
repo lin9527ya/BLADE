@@ -1,4 +1,6 @@
 import {
+  COVERAGE_FOLD_LIMIT,
+  COVERAGE_FOLD_STEP,
   collectCoverageLineage,
   computeVisibleCoverageNodes,
   filterCoverageGraphByStatus,
@@ -103,4 +105,25 @@ test("collectCoverageLineage 双向追踪上下游与 findMatchingCoverageKeys �
 
   const { renderNodes } = computeVisibleCoverageNodes(nodes, edges, new Map(), false);
   assert.deepEqual(findMatchingCoverageKeys(renderNodes, "8443"), ["svc:1"]);
+});
+
+test("computeVisibleCoverageNodes 按 COVERAGE_FOLD_STEP 步进展开折叠的 19 个端点", () => {
+  const nodes = [
+    asset("svc:1", "service", "https://target.test"),
+    ...Array.from({ length: 31 }, (_, i) => asset(`ep:${i + 1}`, "endpoint", `/p${i + 1}`)),
+  ];
+  const edges = nodes.slice(1).map((n) => ({ src: n.key, dst: "svc:1" }));
+
+  const initial = computeVisibleCoverageNodes(nodes, edges, new Map(), false);
+  const foldInit = initial.renderNodes.find((n) => n.fold);
+  assert.ok(foldInit && foldInit.fold);
+  assert.equal(foldInit.hidden.length, 31 - COVERAGE_FOLD_LIMIT);
+
+  const expanded = new Map([[foldInit.groupId, COVERAGE_FOLD_LIMIT + COVERAGE_FOLD_STEP]]);
+  const next = computeVisibleCoverageNodes(nodes, edges, expanded, false);
+  assert.equal(
+    next.renderNodes.some((n) => n.fold),
+    false,
+  );
+  assert.equal(next.renderNodes.filter((n) => !n.fold && n.kind === "endpoint").length, 31);
 });

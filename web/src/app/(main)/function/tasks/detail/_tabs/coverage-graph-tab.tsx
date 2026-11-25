@@ -87,11 +87,11 @@ const kindMeta: Record<CoverageKind, KindMeta> = {
   endpoint: { label: "端点", icon: Link2, iconBg: "bg-rose-500", hex: "#f43f5e", size: 22 },
 };
 
-// G6 节点图标用平台一致的 lucide 图标：把 lucide 的 SVG 路径渲染成白色描边 data URI。
-function svgUri(inner: string, filled = false): string {
+// G6 节点图标用平台一致的 lucide 图标：把 lucide 的 SVG 路径渲染成指定颜色描边 data URI。
+function svgUri(inner: string, filled = false, color = "#fff"): string {
   const attrs = filled
-    ? 'fill="#fff" stroke="none"'
-    : 'fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+    ? `fill="${color}" stroke="none"`
+    : `fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ${attrs}>${inner}</svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
@@ -142,10 +142,9 @@ function databaseEngine(node: CoverageGraphNode): DatabaseEngine | null {
   return null;
 }
 
-const FOLD_ICON = svgUri(
-  '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
-  true,
-);
+const FOLD_DOTS = '<circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/>';
+const FOLD_ICON_LIGHT = svgUri(FOLD_DOTS, true, "#334155");
+const FOLD_ICON_DARK = svgUri(FOLD_DOTS, true, "#e2e8f0");
 
 type G6NodeDatum = {
   id: string;
@@ -212,6 +211,7 @@ function toG6Nodes(
   activeKeys: Set<string>,
   searchHitKey: string | null,
   viewMode: CoverageViewMode,
+  isDark: boolean,
 ): G6NodeDatum[] {
   return renderNodes.map((rn) => {
     const position = positions.get(rn.key) ?? { x: 400, y: 300 };
@@ -223,10 +223,10 @@ function toG6Nodes(
         tested: false,
         inScope: false,
         lbl: `还有 ${rn.hidden.length} 个${kindMeta[rn.kind].label}`,
-        size: 24,
+        size: 28,
         active: activeKeys.has(rn.key),
         searchHit: searchHitKey === rn.key,
-        iconSrc: FOLD_ICON,
+        iconSrc: isDark ? FOLD_ICON_DARK : FOLD_ICON_LIGHT,
         style: { x: position.x, y: position.y },
         ...position,
       };
@@ -324,10 +324,18 @@ function RefList({ title, items }: { title: string; items: CoverageAssetRef[] })
 function AssetSheet({
   node,
   taskId,
+  foldedChildren,
+  onShowMore,
+  onShowAll,
+  onOpenFold,
   onOpenChange,
 }: {
   node: CoverageGraphNode | null;
   taskId: string;
+  foldedChildren: CoverageFoldNode[];
+  onShowMore: (groupId: string) => void;
+  onShowAll: (groupId: string, hiddenCount: number) => void;
+  onOpenFold: (foldKey: string) => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const meta = node ? kindMeta[node.kind] : null;
@@ -402,6 +410,37 @@ function AssetSheet({
                     {node.asset_id ? <span className="font-mono text-xs">{node.asset_id}</span> : undefined}
                   </DetailRow>
                 </section>
+                {foldedChildren.length > 0 && (
+                  <section className="flex flex-col gap-2 border-t pt-3">
+                    <h4 className="font-medium text-muted-foreground text-xs">已折叠子资产</h4>
+                    {foldedChildren.map((f) => (
+                      <div
+                        key={f.key}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-2.5 py-2 text-xs"
+                      >
+                        <span className="text-foreground">
+                          还有 <strong>{f.hidden.length}</strong> 个{kindMeta[f.kind].label}未展开
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <Button type="button" size="xs" variant="outline" onClick={() => onOpenFold(f.key)}>
+                            查看列表
+                          </Button>
+                          <Button type="button" size="xs" variant="outline" onClick={() => onShowMore(f.groupId)}>
+                            +{COVERAGE_FOLD_STEP}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="xs"
+                            variant="secondary"
+                            onClick={() => onShowAll(f.groupId, f.hidden.length)}
+                          >
+                            全部展开
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </section>
+                )}
                 {refs && (refs.intents.length > 0 || refs.facts.length > 0 || refs.findings.length > 0) && (
                   <section className="flex flex-col gap-3 border-t pt-3">
                     <RefList title="关联意图" items={refs.intents} />
@@ -428,11 +467,13 @@ function FoldSheet({
   fold,
   onOpenChange,
   onShowMore,
+  onShowAll,
   onPick,
 }: {
   fold: CoverageFoldNode | null;
   onOpenChange: (open: boolean) => void;
   onShowMore: (groupId: string) => void;
+  onShowAll: (groupId: string, hiddenCount: number) => void;
   onPick: (n: CoverageGraphNode) => void;
 }) {
   const meta = fold ? kindMeta[fold.kind] : null;
@@ -446,7 +487,7 @@ function FoldSheet({
               <SheetTitle className="text-base">
                 未展示的{meta.label}（{fold.hidden.length}）
               </SheetTitle>
-              <p className="text-muted-foreground text-xs">已测优先展示。点「展示更多」把下一批拉进图里。</p>
+              <p className="text-muted-foreground text-xs">已测优先展示。在画布单击「⋯」也可直接展开更多。</p>
             </SheetHeader>
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex flex-col gap-1 p-3">
@@ -473,9 +514,19 @@ function FoldSheet({
                 ))}
               </div>
             </ScrollArea>
-            <div className="border-t p-3">
-              <Button className="w-full" variant="outline" onClick={() => onShowMore(fold.groupId)}>
+            <div className="flex items-center gap-2 border-t p-3">
+              <Button className="flex-1" variant="outline" onClick={() => onShowMore(fold.groupId)}>
                 展示更多（+{COVERAGE_FOLD_STEP}）
+              </Button>
+              <Button
+                className="flex-1"
+                variant="secondary"
+                onClick={() => {
+                  onShowAll(fold.groupId, fold.hidden.length);
+                  onOpenChange(false);
+                }}
+              >
+                全部展开（{fold.hidden.length}）
               </Button>
             </div>
           </>
@@ -663,7 +714,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
       `${renderNodes
         .map((n) => {
           let tag = "u";
-          if (n.fold) tag = "f";
+          if (n.fold) tag = `f${n.hidden.length}`;
           else if (n.node.tested) tag = "t";
           return `${n.key}:${tag}`;
         })
@@ -679,7 +730,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
   );
 
   gDataRef.current = {
-    nodes: toG6Nodes(renderNodes, layoutResult.positions, effectiveActiveKeys, activeSearchKey, viewMode),
+    nodes: toG6Nodes(renderNodes, layoutResult.positions, effectiveActiveKeys, activeSearchKey, viewMode, isDark),
     edges: displayEdges.map((e) => ({
       source: e.dst,
       target: e.src,
@@ -693,13 +744,35 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
 
   const displayEdgesRef = React.useRef(displayEdges);
   displayEdgesRef.current = displayEdges;
+  const structuralSigRef = React.useRef(structuralSig);
+  structuralSigRef.current = structuralSig;
+
+  const showMore = React.useCallback((groupId: string) => {
+    setExpanded((prev) => {
+      const m = new Map(prev);
+      m.set(groupId, (m.get(groupId) ?? COVERAGE_FOLD_LIMIT) + COVERAGE_FOLD_STEP);
+      return m;
+    });
+  }, []);
+
+  const showAll = React.useCallback((groupId: string, hiddenCount: number) => {
+    setExpanded((prev) => {
+      const m = new Map(prev);
+      m.set(groupId, (m.get(groupId) ?? COVERAGE_FOLD_LIMIT) + hiddenCount);
+      return m;
+    });
+  }, []);
+
+  const showMoreRef = React.useRef(showMore);
+  showMoreRef.current = showMore;
 
   const applyData = React.useCallback(() => {
     const graph = graphRef.current;
     if (!graph || graph.destroyed) return;
     graph.setData(gDataRef.current);
-    const shouldAutoFit = lastFittedStructuralSigRef.current !== structuralSig;
-    lastFittedStructuralSigRef.current = structuralSig;
+    const curSig = structuralSigRef.current;
+    const shouldAutoFit = lastFittedStructuralSigRef.current !== curSig;
+    lastFittedStructuralSigRef.current = curSig;
 
     void graph
       .render()
@@ -717,7 +790,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
       .catch((err) => {
         if (!graph.destroyed) console.error("[coverage-graph] render:", err);
       });
-  }, [structuralSig, fitNetworkView, syncViewport]);
+  }, [fitNetworkView, syncViewport]);
 
   // 搜索词变更时聚焦第一个命中节点。
   React.useEffect(() => {
@@ -818,13 +891,22 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
         if (!rn) return;
         setHighlightedKind(null);
         if (rn.fold) {
-          setSelectedFoldId(rn.key);
+          showMoreRef.current(rn.groupId);
           return;
         }
         setSelectedAsset(rn.node);
         const { activeKeys } = collectCoverageLineage(rn.node.key, displayEdgesRef.current);
         setActivePath(activeKeys);
         void graph?.focusElement(activeKeys).then(() => syncViewport());
+      });
+      graph.on("node:contextmenu", (evt: unknown) => {
+        const eventObj = evt as { target?: { id?: string }; preventDefault?: () => void };
+        const id = eventObj.target?.id;
+        if (!id) return;
+        const rn = renderMapRef.current.get(id);
+        if (!rn || !rn.fold) return;
+        eventObj.preventDefault?.();
+        setSelectedFoldId(rn.key);
       });
       graphRef.current = graph;
       applyData();
@@ -847,18 +929,17 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
     applyData();
   }, [renderSig, applyData]);
 
-  const showMore = React.useCallback((groupId: string) => {
-    setExpanded((prev) => {
-      const m = new Map(prev);
-      m.set(groupId, (m.get(groupId) ?? COVERAGE_FOLD_LIMIT) + COVERAGE_FOLD_STEP);
-      return m;
-    });
-  }, []);
-
   const selectedFold =
     selectedFoldId != null
       ? ((renderNodes.find((n) => n.fold && n.key === selectedFoldId) as CoverageFoldNode | undefined) ?? null)
       : null;
+  const selectedAssetFolds = React.useMemo(
+    () =>
+      selectedAsset
+        ? renderNodes.filter((n): n is CoverageFoldNode => n.fold && n.parentKey === selectedAsset.key)
+        : [],
+    [selectedAsset, renderNodes],
+  );
   React.useEffect(() => {
     if (selectedFoldId != null && !selectedFold) setSelectedFoldId(null);
   }, [selectedFoldId, selectedFold]);
@@ -1181,7 +1262,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
                 <p className="border-border/60 border-t pt-2 text-muted-foreground/80 leading-relaxed">
                   {viewMode === "network"
                     ? "图中仅展示有资产证据的节点；虚线表示归属/关联关系，不代表已验证网络连通性。"
-                    : "资产关系图实时读取资产库；点击节点高亮完整归属与下游资产并查看详情，点击「⋯」可展开更多。"}
+                    : "资产关系图实时读取资产库；点击节点高亮链路并查看详情，点击「⋯」节点直接展开更多（右键可查看列表）。"}
                 </p>
               </>
             )}
@@ -1277,11 +1358,23 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
         )}
       </div>
 
-      <AssetSheet node={selectedAsset} taskId={taskId} onOpenChange={(o) => !o && setSelectedAsset(null)} />
+      <AssetSheet
+        node={selectedAsset}
+        taskId={taskId}
+        foldedChildren={selectedAssetFolds}
+        onShowMore={showMore}
+        onShowAll={showAll}
+        onOpenFold={(foldKey) => {
+          setSelectedAsset(null);
+          setSelectedFoldId(foldKey);
+        }}
+        onOpenChange={(o) => !o && setSelectedAsset(null)}
+      />
       <FoldSheet
         fold={selectedFold}
         onOpenChange={(o) => !o && setSelectedFoldId(null)}
         onShowMore={showMore}
+        onShowAll={showAll}
         onPick={(n) => {
           setSelectedFoldId(null);
           setSelectedAsset(n);

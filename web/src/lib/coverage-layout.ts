@@ -4,7 +4,7 @@ import type { CoverageGraphEdge, CoverageGraphNode } from "./types";
 // 与 G6 / React 解耦，便于在 Node 环境下直接做确定性单元测试。
 
 export const COVERAGE_FOLD_LIMIT = 12;
-export const COVERAGE_FOLD_STEP = 12;
+export const COVERAGE_FOLD_STEP = 20;
 
 export const ASSET_COL_W = 250;
 export const ASSET_ROW_H = 88;
