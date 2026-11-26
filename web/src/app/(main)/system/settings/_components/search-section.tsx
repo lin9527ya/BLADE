@@ -15,6 +15,7 @@ import {
 } from "@/lib/search-helpers";
 import type { WebSearchTestResult } from "@/lib/types";
 
+import { SearxngCard } from "./searxng-card";
 import type { useSettingsState } from "./use-settings-state";
 
 // 系统配置 · 联网搜索。
@@ -362,6 +363,8 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
           </div>
         )}
       </SubBlock>
+
+      <SearxngCard onSearchActivated={() => void s.loadSettings()} />
     </Section>
   );
 }

@@ -340,3 +340,24 @@ func TestNewWebSearchToolWithResolver(t *testing.T) {
 		t.Fatalf("expected disabled resolver call to return error: res=%+v err=%v", res2, err)
 	}
 }
+
+func TestWebSearchLocalSearxngBypassesProxy(t *testing.T) {
+	InvalidateWebSearchCache()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"results":[{"title":"LocalHit","url":"https://local.example/1","content":"ok"}]}`)
+	}))
+	defer srv.Close()
+
+	// srv.URL 是 127.0.0.1:<port>；即便配置了一个不可达独立搜索代理，访问本机 SearXNG 仍应直连成功。
+	opts := WebSearchOpts{
+		Enabled:     true,
+		Backend:     "searxng",
+		SearxngURL:  srv.URL,
+		Proxy:       "http://127.0.0.1:1",
+		BypassCache: true,
+	}
+	out, err := WebSearchProbeDetailed(context.Background(), opts, "local searxng", 3)
+	if err != nil || out.Backend != "searxng" || len(out.Results) != 1 || out.Results[0].Title != "LocalHit" {
+		t.Fatalf("expected loopback SearXNG to bypass dead proxy: out=%+v err=%v", out, err)
+	}
+}

@@ -421,6 +421,9 @@ type Manager struct {
 	workerCountMu    sync.Mutex
 	workersCache     cachedWorkerInt
 	workerCountCache map[string]cachedWorkerInt
+
+	searxngOnce sync.Once
+	searxngSvc  *searxngService
 }
 
 type cachedWorkerInt struct {
@@ -1322,27 +1325,33 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	if backend == "" {
 		backend = defaultWebSearchBackend
 	}
-	if err := m.pg.SetBool(settingWebSearchOn, on); err != nil {
-		return err
-	}
-	if err := m.pg.SetSetting(settingWebSearchBackend, backend); err != nil {
-		return err
+	if m.pg != nil {
+		if err := m.pg.SetBool(settingWebSearchOn, on); err != nil {
+			return err
+		}
+		if err := m.pg.SetSetting(settingWebSearchBackend, backend); err != nil {
+			return err
+		}
 	}
 	m.mu.Lock()
 	m.webSearchOn = on
 	m.webSearchBackend = backend
 	m.mu.Unlock()
 	if braveKey != nil {
-		if err := m.pg.SetSetting(settingBraveKey, *braveKey); err != nil {
-			return err
+		if m.pg != nil {
+			if err := m.pg.SetSetting(settingBraveKey, *braveKey); err != nil {
+				return err
+			}
 		}
 		m.mu.Lock()
 		m.braveKey = *braveKey
 		m.mu.Unlock()
 	}
 	if tavilyKey != nil {
-		if err := m.pg.SetSetting(settingTavilyKey, *tavilyKey); err != nil {
-			return err
+		if m.pg != nil {
+			if err := m.pg.SetSetting(settingTavilyKey, *tavilyKey); err != nil {
+				return err
+			}
 		}
 		m.mu.Lock()
 		m.tavilyKey = *tavilyKey
@@ -1350,8 +1359,10 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	}
 	if proxy != nil {
 		p := strings.TrimSpace(*proxy)
-		if err := m.pg.SetSetting(settingWebSearchProxy, p); err != nil {
-			return err
+		if m.pg != nil {
+			if err := m.pg.SetSetting(settingWebSearchProxy, p); err != nil {
+				return err
+			}
 		}
 		m.mu.Lock()
 		m.webSearchProxy = p
@@ -1826,6 +1837,9 @@ func (m *Manager) applyEgressProxy(active string) {
 func (m *Manager) Close() error {
 	if m.closed != nil {
 		m.closedOnce.Do(func() { close(m.closed) })
+	}
+	if m.searxngSvc != nil {
+		m.searxngSvc.CancelPendingOps()
 	}
 	// 释放实例锁：先解 advisory lock 再关池，让"同进程重建 Manager"（测试/热重启）
 	// 能立刻重新拿到它。

@@ -43,6 +43,28 @@ const mockInterceptHistory = structuredClone(D.interceptHistory);
 const mockInterceptPending = structuredClone(D.interceptPending);
 const mockInterceptDetails = structuredClone(D.interceptDetails);
 const mockTasks = structuredClone(D.tasks);
+let mockSearxngRunning = true;
+let mockSearxngConfig: {
+  enabled: boolean;
+  port: number;
+  proxy_mode: "inherit" | "custom" | "direct";
+  custom_proxy: string;
+  engines_preset: "security" | "default" | "cn_friendly";
+  repo_url: string;
+  pypi_index: string;
+  install_proxy: string;
+  auto_switch: boolean;
+} = {
+  enabled: true,
+  port: 8888,
+  proxy_mode: "inherit",
+  custom_proxy: "",
+  engines_preset: "security",
+  repo_url: "https://github.com/searxng/searxng.git",
+  pypi_index: "",
+  install_proxy: "",
+  auto_switch: true,
+};
 const mockFindings = structuredClone(D.findings);
 const mockLLMRecords = structuredClone(D.llmRecords);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
@@ -2287,6 +2309,38 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       elapsed_ms: 42,
       sample: { title: "Example Search Result", url: "https://example.com" },
     };
+  if (path.startsWith("/settings/searxng")) {
+    const url = `http://127.0.0.1:${mockSearxngConfig.port}`;
+    if (path === "/settings/searxng" && m === "PUT") {
+      mockSearxngConfig = {
+        ...mockSearxngConfig,
+        ...(b as Partial<typeof mockSearxngConfig>),
+        enabled: mockSearxngConfig.enabled,
+      };
+    } else if (path === "/settings/searxng/start" && m === "POST") {
+      mockSearxngRunning = true;
+      mockSearxngConfig = { ...mockSearxngConfig, enabled: true };
+    } else if (path === "/settings/searxng/stop" && m === "POST") {
+      mockSearxngRunning = false;
+      mockSearxngConfig = { ...mockSearxngConfig, enabled: false };
+    }
+    const active = mockSearxngRunning && mockSearxngConfig.auto_switch;
+    return {
+      mode: "host_venv",
+      state: mockSearxngRunning ? "running" : "stopped",
+      installed: true,
+      running: mockSearxngRunning,
+      healthy: mockSearxngRunning,
+      pid: mockSearxngRunning ? 4242 : 0,
+      url,
+      python_bin: "/usr/bin/python3",
+      python_version: "3.13.12",
+      effective_proxy: mockSearxngConfig.proxy_mode === "custom" ? mockSearxngConfig.custom_proxy : "",
+      data_dir: "/app/data/searxng",
+      active_in_search: path === "/settings/searxng/activate" || active,
+      config: mockSearxngConfig,
+    };
+  }
   if (path === "/settings/python/detect") return { python_interpreter: "/usr/bin/python3" };
   if (path === "/chat")
     return { reply: "（demo）我已把该建议注入为一条高优意图，work agent 会尽快执行。", mode: "hint" };

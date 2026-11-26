@@ -30,6 +30,8 @@ services:
       BLADE_LLM_MODEL: ${BLADE_LLM_MODEL:-}
       BLADE_LLM_BASE_URL: ${BLADE_LLM_BASE_URL:-}
       BLADE_LLM_PROXY: ${BLADE_LLM_PROXY:-}
+      BLADE_SEARXNG_MANAGED_MODE: compose
+      BLADE_SEARXNG_COMPANION_URL: http://searxng:8080
     ports:
       # 只映射到宿主 loopback（P42）：公网访问请走 Cloudflare Tunnel 或 SSH 隧道（见 deploy/）。
       # 真要直连公网，也请配合防火墙只放行 Cloudflare 来源段，别裸奔。
@@ -68,6 +70,30 @@ services:
       # 把项目根目录的 skills 挂进容器（覆盖镜像内置的 /app/skills）；
       # 改 skill 无需重建镜像，容器读的就是宿主机这份。
       - ./skills:/app/skills
+    restart: unless-stopped
+
+  searxng:
+    # 默认伴生启动的自建 SearXNG（由 blade 启动期在 ./data/searxng/settings.yml 写入启用 JSON 与限流放开配置）。
+    image: ${SEARXNG_IMAGE_PREFIX:-docker.io/}searxng/searxng:${SEARXNG_TAG:-latest}
+    depends_on:
+      blade:
+        condition: service_healthy
+    environment:
+      SEARXNG_BASE_URL: http://127.0.0.1:${SEARXNG_PORT:-8888}/
+      HTTP_PROXY: ${SEARXNG_HTTP_PROXY:-}
+      HTTPS_PROXY: ${SEARXNG_HTTPS_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,postgres,blade,searxng
+    ports:
+      # 只映射到宿主 loopback（P42）：避免公网直接暴露搜索服务。
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
+    volumes:
+      - ./data/searxng:/etc/searxng
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
     restart: unless-stopped
 
 volumes:

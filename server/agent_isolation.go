@@ -48,10 +48,11 @@ func agentDeniedSubpaths(realDataDir string) []string {
 	if realDataDir == "" {
 		return nil
 	}
-	out := make([]string, 0, len(privilegedDataSubdirs)+1)
+	out := make([]string, 0, len(privilegedDataSubdirs)+2)
 	for _, rel := range privilegedDataSubdirs {
 		out = append(out, filepath.Join(realDataDir, rel))
 	}
+	out = append(out, filepath.Join(realDataDir, "searxng"))
 	out = append(out, filepath.Join(realDataDir, jwtKeyFilename))
 	return out
 }
@@ -151,7 +152,9 @@ func InstallAgentIsolation(dataDir, keyDir, skillDir string) error {
 func prepareAgentStateDirs(dataDir string) error {
 	uid, gid := agentIso.uid, agentIso.gid
 	srvUID, srvGID := os.Geteuid(), os.Getegid()
-	denied := map[string]bool{}
+	denied := map[string]bool{
+		filepath.Join(dataDir, "searxng"): true,
+	}
 	for _, rel := range privilegedDataSubdirs {
 		p := filepath.Join(dataDir, rel)
 		denied[p] = true

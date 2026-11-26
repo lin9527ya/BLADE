@@ -2202,6 +2202,42 @@ export interface WebSearchTestResult {
   };
 }
 
+export type SearxngProxyMode = "inherit" | "custom" | "direct";
+export type SearxngEnginesPreset = "security" | "default" | "cn_friendly";
+export type SearxngLifecycleState = "not_installed" | "installing" | "starting" | "running" | "stopped" | "error";
+
+export interface SearxngManagedConfig {
+  enabled: boolean;
+  port: number;
+  proxy_mode: SearxngProxyMode;
+  custom_proxy: string;
+  engines_preset: SearxngEnginesPreset;
+  repo_url: string;
+  pypi_index: string;
+  install_proxy: string;
+  auto_switch: boolean;
+}
+
+export interface SearxngStatus {
+  mode: "host_venv" | "compose";
+  state: SearxngLifecycleState;
+  installed: boolean;
+  running: boolean;
+  healthy: boolean;
+  pid?: number;
+  url: string;
+  python_bin?: string;
+  python_version?: string;
+  effective_proxy?: string;
+  install_step?: string;
+  last_error?: string;
+  install_log_tail?: string;
+  log_tail?: string;
+  data_dir?: string;
+  active_in_search: boolean;
+  config: SearxngManagedConfig;
+}
+
 export interface Settings {
   traffic_capture: boolean;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定

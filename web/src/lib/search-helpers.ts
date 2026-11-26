@@ -1,4 +1,11 @@
-import type { WebSearchProxyMode, WebSearchStats, WebSearchTestResult } from "./types";
+import type {
+  SearxngEnginesPreset,
+  SearxngManagedConfig,
+  SearxngStatus,
+  WebSearchProxyMode,
+  WebSearchStats,
+  WebSearchTestResult,
+} from "./types";
 
 export interface WebSearchBackendOption {
   value: string;
@@ -209,4 +216,124 @@ export function formatWebSearchStats(stats: WebSearchStats | null | undefined): 
     summary,
     lastLine: parts.length > 0 ? parts.join(" · ") : null,
   };
+}
+
+export const SEARXNG_PYPI_PRESETS: readonly { label: string; url: string }[] = [
+  { label: "官方 PyPI", url: "" },
+  { label: "清华 TUNA", url: "https://pypi.tuna.tsinghua.edu.cn/simple" },
+  { label: "阿里云镜像", url: "https://mirrors.aliyun.com/pypi/simple/" },
+];
+
+export const SEARXNG_ENGINE_PRESETS: readonly {
+  value: SearxngEnginesPreset;
+  label: string;
+  desc: string;
+}[] = [
+  {
+    value: "security",
+    label: "安全与技术推荐（Google / Bing / DDG / Brave / GitHub / SO / Wiki）",
+    desc: "适合漏洞研究、组件检索、公开情报与代码排查；海外引擎建议配合出口代理使用。",
+  },
+  {
+    value: "default",
+    label: "上游默认精简（Google / Bing / DuckDuckGo / Brave）",
+    desc: "响应快、请求扇出适中，兼顾通用检索准确率与延迟。",
+  },
+  {
+    value: "cn_friendly",
+    label: "国内直连友好（Bing / 百度 / DuckDuckGo / GitHub / Wikipedia）",
+    desc: "无海外代理环境优先依赖 Bing 与百度，减少海外引擎连续超时。",
+  },
+];
+
+export interface SearxngStateBadge {
+  badge: string;
+  tone: "ok" | "warn" | "info" | "error";
+  summary: string;
+}
+
+/** Formats bundled SearXNG status into a concise UI badge and status line. */
+export function describeSearxngState(st: SearxngStatus | null | undefined): SearxngStateBadge {
+  if (!st) {
+    return { badge: "未加载", tone: "info", summary: "正在读取本地 SearXNG 状态…" };
+  }
+  if (st.mode === "compose") {
+    if (st.healthy) {
+      return {
+        badge: "Compose 运行正常",
+        tone: "ok",
+        summary: `Docker Compose 伴生容器已就绪（${st.url}，JSON 接口正常）。`,
+      };
+    }
+    if (st.running) {
+      return {
+        badge: "Compose 异常",
+        tone: "warn",
+        summary: st.last_error || `伴生容器可达但 JSON 探测未通过（${st.url}）。`,
+      };
+    }
+    return {
+      badge: "Compose 等待就绪",
+      tone: "info",
+      summary: st.last_error || `等待伴生容器启动或检查 docker compose ps searxng（${st.url}）。`,
+    };
+  }
+  switch (st.state) {
+    case "installing":
+      return {
+        badge: "安装部署中…",
+        tone: "info",
+        summary: st.install_step || "正在克隆源码并准备 Python venv 依赖…",
+      };
+    case "starting":
+      return {
+        badge: "启动中…",
+        tone: "info",
+        summary: st.install_step || `正在启动 Granian 服务并探测 ${st.url} JSON 健康检查…`,
+      };
+    case "running":
+      return {
+        badge: `运行中 · 127.0.0.1:${st.config.port}`,
+        tone: "ok",
+        summary: `宿主 Python venv sidecar 常驻运行中（PID ${st.pid ?? "-"}，JSON 接口正常，不随 ./blade 重启中断）。`,
+      };
+    case "error":
+      return {
+        badge: "异常",
+        tone: "error",
+        summary: st.last_error || "安装或启动失败，请查看下方日志并检查代理/镜像配置。",
+      };
+    case "stopped":
+      return {
+        badge: "已停止",
+        tone: "info",
+        summary: `已完成 Python venv 部署（${st.python_bin || "python3"}），点击「启动」即可拉起。`,
+      };
+    default:
+      return {
+        badge: "未安装 · 宿主 venv",
+        tone: "info",
+        summary: "BLADE 将在本机 data/searxng 目录拉取上游源码并构建独立 Python 虚拟环境（无需 Docker）。",
+      };
+  }
+}
+
+/** Validates bundled SearXNG form fields before saving configuration. */
+export function validateSearxngForm(portText: string, cfg: SearxngManagedConfig): string | null {
+  const port = Number.parseInt(portText.trim(), 10);
+  if (!Number.isFinite(port) || port < 1024 || port > 65535) {
+    return "监听端口需在 1024 到 65535 之间（仅绑定 127.0.0.1）";
+  }
+  if (cfg.proxy_mode === "custom" && !cfg.custom_proxy.trim()) {
+    return "选择「自定义代理」时请填写 SearXNG 出海代理地址";
+  }
+  const repo = cfg.repo_url.trim();
+  if (repo && !/^https?:\/\/\S+/i.test(repo)) {
+    return "Git 仓库地址需以 http:// 或 https:// 开头";
+  }
+  const pypi = cfg.pypi_index.trim();
+  if (pypi && !/^https?:\/\/\S+/i.test(pypi)) {
+    return "PyPI 镜像源需以 http:// 或 https:// 开头";
+  }
+  return null;
 }

@@ -196,6 +196,7 @@ GET /api/scope/enforcement	server.(*Server).scopeEnforcementStatus-fm
 GET /api/search	server.(*Server).globalSearch-fm
 GET /api/settings	server.(*Server).getSettings-fm
 GET /api/settings/intel/queries	server.(*Server).listIntelQueries-fm
+GET /api/settings/searxng	server.(*Server).getSearxngStatus-fm
 GET /api/side-questions/{requestID}/events	server.(*Server).sideEvents-fm
 GET /api/skills	server.(*Server).fsListSkills-fm
 GET /api/skills/missing	server.(*Server).fsMissingSkills-fm
@@ -390,6 +391,10 @@ POST /api/settings/proxy/egress/rotate	server.(*Server).proxyRotateEgress-fm
 POST /api/settings/proxy/pin	server.(*Server).proxyPin-fm
 POST /api/settings/proxy/probe	server.(*Server).proxyProbe-fm
 POST /api/settings/python/detect	server.(*Server).pgDetectPython-fm
+POST /api/settings/searxng/activate	server.(*Server).activateSearxngInWebSearch-fm
+POST /api/settings/searxng/install	server.(*Server).installSearxng-fm
+POST /api/settings/searxng/start	server.(*Server).startSearxng-fm
+POST /api/settings/searxng/stop	server.(*Server).stopSearxng-fm
 POST /api/settings/web-search/test	server.(*Server).testWebSearch-fm
 POST /api/side-questions/{requestID}/cancel	server.(*Server).cancelSideRequest-fm
 POST /api/skills	server.(*Server).fsCreateSkill-fm
@@ -475,6 +480,7 @@ PUT /api/intercept/tool-config	server.(*Server).interceptSetToolConfig-fm
 PUT /api/llm/prices	server.(*Server).saveLLMPrices-fm
 PUT /api/playbooks/{id}	server.(*Server).updatePlaybook-fm
 PUT /api/settings	server.(*Server).putSettings-fm
+PUT /api/settings/searxng	server.(*Server).putSearxngConfig-fm
 PUT /api/skills/{name}/files/{file...}	server.(*Server).fsWriteFile-fm
 PUT /api/skills/{name}/meta	server.(*Server).fsUpdateSkillMeta-fm
 PUT /api/tasks/{id}/intercept-rules/{rid}	server.(*Server).taskInterceptUpdateRule-fm

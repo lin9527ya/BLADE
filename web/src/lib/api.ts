@@ -146,6 +146,8 @@ import type {
   ScheduleRun,
   ScheduleTaskSpec,
   ScopeEnforcement,
+  SearxngManagedConfig,
+  SearxngStatus,
   Settings,
   Severity,
   SkillCall,
@@ -2006,6 +2008,13 @@ export const api = {
     brave_search_api_key?: string;
     tavily_search_api_key?: string;
   }) => post<WebSearchTestResult>(`/settings/web-search/test`, patch),
+  searxngStatus: () => get<SearxngStatus>(`/settings/searxng`),
+  saveSearxngConfig: (cfg: SearxngManagedConfig) => put<SearxngStatus>(`/settings/searxng`, cfg),
+  installSearxng: (reinstall = false) => post<SearxngStatus>(`/settings/searxng/install`, { reinstall }),
+  startSearxng: (opts?: { auto_install?: boolean; reinstall?: boolean }) =>
+    post<SearxngStatus>(`/settings/searxng/start`, opts ?? { auto_install: true }),
+  stopSearxng: () => post<SearxngStatus>(`/settings/searxng/stop`, {}),
+  activateSearxng: () => post<SearxngStatus>(`/settings/searxng/activate`, {}),
 
   // ---- 漏洞 IM 推送 ----
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，

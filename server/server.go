@@ -453,6 +453,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			// Fill the tool cache for any enabled MCP that has none yet (notably the
 			// seeded browser MCP on first run). Async so it never blocks startup.
 			goSafe("server/discover-mcps", nil, func() { s.discoverEmptyMCPsOnStartup(svcCtx) })
+			// Compose 伴生模式在启动期间先同步写入 settings.yml，保证 searxng 容器首次拉起即启用 JSON。
+			s.m.searxng().EnsureComposeBootConfig()
+			goSafe("server/searxng-autostart", nil, func() { s.m.searxng().AutoResume(svcCtx) })
 		}
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}

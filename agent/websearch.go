@@ -858,6 +858,18 @@ func commandCodeSearch(ctx context.Context, baseURL, apiKey, query string, limit
 	return results, nil
 }
 
+func isLocalSearxngHost(host string) bool {
+	h := strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if h == "" {
+		return false
+	}
+	if h == "localhost" || h == "searxng" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
 func searxngSearch(ctx context.Context, baseURL, query string, limit int, proxyAddr string) ([]actool.SearchResult, error) {
 	rawBase := strings.TrimSpace(baseURL)
 	if rawBase == "" {
@@ -867,7 +879,13 @@ func searxngSearch(ctx context.Context, baseURL, query string, limit int, proxyA
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return nil, fmt.Errorf("web_search: 无效的 SearXNG 实例地址 %q", rawBase)
 	}
-	client, err := searchHTTPClient(proxyAddr)
+	// 本机回环或 Docker Compose 同网络伴生 searxng 服务必须直连，
+	// 避免用户配置了独立搜索代理（用于 ddgs/brave）后把本机流量误转发到远端代理。
+	effectiveProxy := proxyAddr
+	if isLocalSearxngHost(parsed.Hostname()) {
+		effectiveProxy = ""
+	}
+	client, err := searchHTTPClient(effectiveProxy)
 	if err != nil {
 		return nil, err
 	}

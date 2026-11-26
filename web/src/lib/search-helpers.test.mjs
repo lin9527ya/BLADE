@@ -1,9 +1,13 @@
 import {
   backendLabel,
   describeChannelBackend,
+  describeSearxngState,
   describeWebSearchProxyMode,
   formatWebSearchStats,
   formatWebSearchTestToast,
+  SEARXNG_ENGINE_PRESETS,
+  SEARXNG_PYPI_PRESETS,
+  validateSearxngForm,
   WEB_SEARCH_BACKEND_OPTIONS,
 } from "./search-helpers.ts";
 import assert from "node:assert/strict";
@@ -108,4 +112,71 @@ test("formatWebSearchStats handles empty and populated snapshots", () => {
   assert.equal(formatted.lastLine?.includes("最近通道: Brave HTML"), true);
   assert.equal(formatted.lastLine?.includes("触发兜底自: DuckDuckGo (ddgs)"), true);
   assert.equal(formatted.lastLine?.includes("HTTP 429"), true);
+});
+
+test("describeSearxngState and validateSearxngForm handle lifecycle and validation cleanly", () => {
+  assert.equal(SEARXNG_PYPI_PRESETS.length >= 3, true);
+  assert.equal(SEARXNG_ENGINE_PRESETS.length >= 3, true);
+
+  const running = describeSearxngState({
+    mode: "host_venv",
+    state: "running",
+    installed: true,
+    running: true,
+    healthy: true,
+    pid: 1234,
+    url: "http://127.0.0.1:8888",
+    active_in_search: true,
+    config: {
+      enabled: true,
+      port: 8888,
+      proxy_mode: "inherit",
+      custom_proxy: "",
+      engines_preset: "security",
+      repo_url: "https://github.com/searxng/searxng.git",
+      pypi_index: "",
+      install_proxy: "",
+      auto_switch: true,
+    },
+  });
+  assert.equal(running.tone, "ok");
+  assert.equal(running.badge.includes("8888"), true);
+
+  const composeBad = describeSearxngState({
+    mode: "compose",
+    state: "error",
+    installed: true,
+    running: true,
+    healthy: false,
+    url: "http://searxng:8080",
+    active_in_search: false,
+    last_error: "HTTP 403",
+    config: {
+      enabled: false,
+      port: 8888,
+      proxy_mode: "inherit",
+      custom_proxy: "",
+      engines_preset: "security",
+      repo_url: "",
+      pypi_index: "",
+      install_proxy: "",
+      auto_switch: true,
+    },
+  });
+  assert.equal(composeBad.tone, "warn");
+
+  const baseCfg = {
+    enabled: false,
+    port: 8888,
+    proxy_mode: "custom",
+    custom_proxy: "",
+    engines_preset: "security",
+    repo_url: "https://github.com/searxng/searxng.git",
+    pypi_index: "https://pypi.tuna.tsinghua.edu.cn/simple",
+    install_proxy: "",
+    auto_switch: true,
+  };
+  assert.ok(validateSearxngForm("80", baseCfg)?.includes("1024"));
+  assert.ok(validateSearxngForm("8888", baseCfg)?.includes("自定义代理"));
+  assert.equal(validateSearxngForm("8888", { ...baseCfg, custom_proxy: "socks5h://127.0.0.1:7897" }), null);
 });
