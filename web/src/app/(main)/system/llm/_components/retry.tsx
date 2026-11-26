@@ -19,6 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import type { LLMRetryOverride, LLMRetryPolicy, LLMRetryRule } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+import { estimateWorstCaseRetry, validateRetryRule } from "./llm-helpers";
 
 export const ZERO_RULE: LLMRetryRule = { attempts: 0, interval_ms: 0 };
 export const ZERO_OVERRIDE: LLMRetryOverride = {
@@ -131,12 +134,16 @@ function NumField({
   onChange,
   placeholder,
   min,
+  max,
+  invalid,
 }: {
   id: string;
   value: number;
   onChange: (n: number) => void;
   placeholder: string;
   min: number;
+  max?: number;
+  invalid?: boolean;
 }) {
   const [text, setText] = React.useState(value === 0 ? "" : String(value));
   // 父级换了一整套值（读取到策略、切换配置）时跟上；自己敲字时不会走到这里，
@@ -150,7 +157,9 @@ function NumField({
       id={id}
       type="number"
       min={min}
-      className="w-28 shrink-0"
+      max={max}
+      aria-invalid={invalid || undefined}
+      className={cn("w-28 shrink-0", invalid && "border-destructive focus-visible:ring-destructive/40")}
       value={text}
       placeholder={placeholder}
       onChange={(e) => {
@@ -179,6 +188,7 @@ export function RetryRuleFields({
 }) {
   const meta = RETRY_LAYERS[layer];
   const human = humanMs(value.interval_ms);
+  const errs = validateRetryRule(value);
   return (
     <div className={compact ? "grid gap-2" : "grid gap-3 rounded-lg border p-3"}>
       <div className="grid gap-0.5">
@@ -205,6 +215,8 @@ export function RetryRuleFields({
           <NumField
             id={`${idPrefix}-${layer}-n`}
             min={-1}
+            max={20}
+            invalid={Boolean(errs.attemptsError)}
             value={value.attempts}
             placeholder={`默认 ${meta.defAttempts}`}
             onChange={(n) => onChange({ ...value, attempts: n })}
@@ -217,6 +229,8 @@ export function RetryRuleFields({
           <NumField
             id={`${idPrefix}-${layer}-ms`}
             min={0}
+            max={3_600_000}
+            invalid={Boolean(errs.intervalError)}
             value={value.interval_ms}
             placeholder="默认退避"
             onChange={(n) => onChange({ ...value, interval_ms: n })}
@@ -224,6 +238,9 @@ export function RetryRuleFields({
           <span className="text-muted-foreground text-xs">{human ? `固定 ${human}` : meta.defInterval}</span>
         </div>
       </div>
+      {(errs.attemptsError || errs.intervalError) && (
+        <p className="text-destructive text-xs">{errs.attemptsError ?? errs.intervalError}</p>
+      )}
       {!compact && <p className="text-muted-foreground text-xs">留空 = 用默认；{meta.offHint}。</p>}
     </div>
   );
@@ -262,7 +279,7 @@ export function ProfileRetryFields({
 }
 
 /** 「重试与退避」tab：五层的全局默认值。 */
-export function RetryPolicyPanel() {
+export function RetryPolicyPanel({ activeChainCount = 1 }: { activeChainCount?: number }) {
   const [policy, setPolicy] = React.useState<LLMRetryPolicy>(ZERO_POLICY);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -308,15 +325,41 @@ export function RetryPolicyPanel() {
     );
   }
 
+  const worst = estimateWorstCaseRetry(policy, activeChainCount);
+
   return (
     <div className="grid gap-4">
       <div className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs leading-relaxed">
-        一次模型调用的失败会依次经过五层重试，由内到外：
-        <span className="text-foreground"> 建连 → 空响应 → 同 provider 安全窗口 → 轮询熔断 → 意图重跑</span>
-        。内层用尽才轮到外层，所以次数是
-        <span className="text-foreground">相乘</span>
-        的——把每层都拉满，一次抖动能烧掉几十次请求。
-        全部留空即当前默认值，与没有这页时的行为完全一致。前三层可以在每个模型配置里单独覆盖。
+        一次模型调用的失败会依次经过五层重试：
+        <span className="text-foreground"> 建连 → 空响应 → 单节点安全窗口 → 轮询故障转移 → 意图重跑</span>
+        。安全窗口已收口在单个轮询成员内部完成，不再在外层整链重扫；所有退避默认叠加随机抖动并遵循上游{" "}
+        <code>Retry-After</code>，避免多 Worker 并发撞峰。全部留空即默认策略，前三层也可在单个模型配置里覆盖。
+      </div>
+
+      <div
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-xs",
+          worst.highRisk ? "border-amber-500/50 bg-amber-500/5" : "bg-card",
+        )}
+      >
+        <div className="grid gap-0.5">
+          <span className="font-medium text-foreground text-sm">最坏调用放大估算</span>
+          <span className="text-muted-foreground">
+            单成员上限 (1+{worst.connect}) 建连 × (1+{worst.stream}) 安全窗口 ={" "}
+            <b className="text-foreground">{worst.perMember} 次/成员</b> · 轮询 {worst.members} 个成员 × (1+
+            {worst.intent}) 意图重跑
+          </span>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="text-right">
+            <div className="font-mono font-semibold text-base text-foreground">{worst.totalWithIntent}×</div>
+            <div className="text-muted-foreground">总请求上限</div>
+          </div>
+          <div className="text-right">
+            <div className="font-mono font-semibold text-base text-foreground">~{worst.maxWaitSecs}s</div>
+            <div className="text-muted-foreground">理论最大退避</div>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

@@ -257,6 +257,35 @@ ORDER BY is_default DESC, priority DESC, id ASC`)
 	return out, rows.Err()
 }
 
+// PoolMemberUpdate updates priority and pool exclusion for an existing LLM profile.
+type PoolMemberUpdate struct {
+	ID          int64
+	Priority    int
+	PoolExclude bool
+}
+
+// UpdatePoolMembers atomically updates priority and pool_exclude for multiple profiles.
+func (d *DB) UpdatePoolMembers(items []PoolMemberUpdate) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, it := range items {
+		if it.ID <= 0 {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE llm_profiles SET priority=$1, pool_exclude=$2 WHERE id=$3`,
+			it.Priority, it.PoolExclude, it.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // SaveProfile inserts (id==0) or updates a profile. Empty apiKey on update keeps existing.
 func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	p.SessionHeaderKey = DefaultSessionHeaderKey(p.BaseURL, p.SessionHeaderKey)

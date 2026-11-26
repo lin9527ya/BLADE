@@ -8,10 +8,13 @@ import (
 	"iter"
 	"log"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lin9527ya/Norma/llm"
@@ -44,6 +47,7 @@ type Member struct {
 	CacheTTL             string
 	PromptCacheRetention string
 	PreserveThinking     bool
+	Retry                StreamPolicy
 	Prov                 llm.Provider
 }
 
@@ -54,18 +58,42 @@ const RankActive = int(^uint(0)>>1) - 1
 // ErrExhausted is returned when every member of the chain failed.
 var ErrExhausted = errors.New("LLM 轮询：所有配置均不可用")
 
+type stickyEntry struct {
+	memberID int64
+	seq      uint64
+}
+
 // Pool is an llm.Provider that fails over across an ordered chain of members.
 // It is safe for concurrent use: members are immutable after construction and
 // all mutable state lives in the shared Registry.
 type Pool struct {
-	members  []*Member // in chain order (active first, then priority DESC)
-	health   *Registry
-	rr       atomic.Uint64 // rotates the starting point within an equal-priority group when no session id exists
-	stickyMu sync.Mutex
-	sticky   map[string]int64 // sessionID -> last succeeded Member.ID for prefix KV cache affinity
+	members   []*Member // in chain order (active first, then priority DESC)
+	health    *Registry
+	rr        atomic.Uint64 // rotates the starting point within an equal-priority group when no session id exists
+	stickySeq atomic.Uint64
+	stickyMu  sync.Mutex
+	sticky    map[string]stickyEntry // sessionID -> last succeeded Member.ID for prefix KV cache affinity
 }
 
 const maxStickySessions = 4096
+
+// HandlesStreamRetry reports that Pool applies per-member StreamAttempts retries
+// internally before failing over, avoiding outer whole-chain multiplication.
+func (p *Pool) HandlesStreamRetry() bool { return true }
+
+// StickyCounts returns the number of active sticky session pins per member ID.
+func (p *Pool) StickyCounts() map[int64]int {
+	out := make(map[int64]int)
+	if p == nil {
+		return out
+	}
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	for _, e := range p.sticky {
+		out[e.memberID]++
+	}
+	return out
+}
 
 // New builds a Pool over members (already in chain order). Returns nil when the
 // chain is empty. A single-member chain is still a valid Pool — it just behaves
@@ -170,6 +198,45 @@ func emitCompleteAsStream(yield func(llm.StreamEvent, error) bool, msg llm.Messa
 	return yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
 }
 
+func (p *Pool) tryEnterMember(order []*Member, idx, minWindow int) (skip, acquiredProbe bool) {
+	m := order[idx]
+	halfOpen, acquired := p.health.TryBeginProbe(m.ID)
+	if !halfOpen {
+		return false, false
+	}
+	if acquired {
+		return false, true
+	}
+	// Another goroutine is actively half-open probing this backend; skip it
+	// whenever any healthy/eligible alternative remains in the ordered chain.
+	for _, cand := range order[idx+1:] {
+		if minWindow > 0 && cand.WindowTokens > 0 && cand.WindowTokens <= minWindow {
+			continue
+		}
+		if !p.health.IsOpen(cand.ID) && !p.health.IsProbing(cand.ID) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func (m *Member) hasStreamRetryConfig() bool {
+	return m.ProfileConfigured || m.Retry != (StreamPolicy{})
+}
+
+func hasOtherFormat(rest []*Member, minWindow int, curFmt string) bool {
+	cf := normFormat(curFmt)
+	for _, m := range rest {
+		if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
+			continue
+		}
+		if normFormat(m.Format) != cf {
+			return true
+		}
+	}
+	return false
+}
+
 // Stream implements llm.Provider with failover.
 //
 // The one hard rule: a member may only be abandoned BEFORE it has yielded any
@@ -180,6 +247,7 @@ func emitCompleteAsStream(yield func(llm.StreamEvent, error) bool, msg llm.Messa
 // credit, 401 bad key, 429, 5xx) all surface during request establishment,
 // before the body is read, so they always land in the safe window.
 func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	ctx, _ = WithRetryHint(ctx)
 	sid := sessionKey(ctx, req)
 	order, est := p.orderFor(sid, req)
 	return func(yield func(llm.StreamEvent, error) bool) {
@@ -193,16 +261,41 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
 				continue
 			}
+			skip, probeAcquired := p.tryEnterMember(order, i, minWindow)
+			if skip {
+				continue
+			}
+			releaseProbe := func() {
+				if probeAcquired {
+					p.health.ReleaseProbe(m.ID)
+					probeAcquired = false
+				}
+			}
 			emitted := false
 			var failed error
 			mReq := m.adaptedRequest(req)
+			tag := "llmpool:" + m.Name
 			if m.NonStreaming {
-				msg, sr, usage, err := m.Prov.Complete(ctx, mReq)
+				var (
+					msg   llm.Message
+					sr    string
+					usage llm.Usage
+					err   error
+				)
+				if m.hasStreamRetryConfig() {
+					msg, sr, usage, err = RunCompleteWithRetry(ctx, m.Prov, mReq, m.Retry, tag, nil)
+				} else {
+					msg, sr, usage, err = m.Prov.Complete(ctx, mReq)
+				}
 				if err != nil {
-					if shouldFailover(ctx, err) {
+					if shouldFailover(ctx, err) || (isCrossFormatCompatError(err) && hasOtherFormat(order[i+1:], minWindow, m.Format)) {
 						failed = err
 					} else {
-						p.health.Pass(m.ID)
+						if ctx.Err() != nil {
+							releaseProbe()
+						} else {
+							p.health.Pass(m.ID)
+						}
 						yield(llm.StreamEvent{}, err)
 						return
 					}
@@ -213,21 +306,33 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 					return
 				}
 			} else {
-				for ev, err := range m.Prov.Stream(ctx, mReq) {
-					if err != nil && !emitted && shouldFailover(ctx, err) {
+				var seq iter.Seq2[llm.StreamEvent, error]
+				if m.hasStreamRetryConfig() {
+					seq = RunStreamWithRetry(ctx, m.Prov, mReq, m.Retry, tag, nil)
+				} else {
+					seq = m.Prov.Stream(ctx, mReq)
+				}
+				for ev, err := range seq {
+					if err != nil && !emitted && (shouldFailover(ctx, err) || (isCrossFormatCompatError(err) && hasOtherFormat(order[i+1:], minWindow, m.Format))) {
 						failed = err
 						break // safe window: nothing reached the caller yet
 					}
 					emitted = true
 					if !yield(ev, err) {
+						releaseProbe()
 						return // caller stopped consuming (cancel / early exit)
 					}
 					if err != nil {
+						if ctx.Err() != nil {
+							releaseProbe()
+						} else {
+							p.health.Pass(m.ID)
+						}
 						return // terminal error already handed to the caller
 					}
 				}
 				if failed == nil {
-					p.health.Pass(m.ID) // completed (or failed in a non-failover way)
+					p.health.Pass(m.ID) // completed cleanly
 					p.pinSession(sid, m.ID)
 					return
 				}
@@ -235,10 +340,18 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			lastErr = failed
 			code := statusOf(failed)
 			if code == 413 {
+				releaseProbe()
 				if m.WindowTokens > minWindow {
 					minWindow = m.WindowTokens
 				}
 				log.Printf("[llmpool] %q(%s) 返回 413（载荷超限），跳过等长或更小窗口成员（不熔断）", m.Name, m.Model)
+				continue
+			}
+			if isCrossFormatCompatError(failed) && hasOtherFormat(order[i+1:], minWindow, m.Format) {
+				releaseProbe()
+				if next := nextEligible(order[i+1:], minWindow); next != nil {
+					log.Printf("[llmpool] %q(%s) 协议参数不兼容(400)，不熔断切换 → %q(%s)", m.Name, m.Model, next.Name, next.Model)
+				}
 				continue
 			}
 			hard := isHardFailure(failed)
@@ -264,6 +377,7 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 // tried without risk of duplicated output. Mirrors Stream's health-tripping and
 // chain-exhaustion behavior.
 func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	ctx, _ = WithRetryHint(ctx)
 	sid := sessionKey(ctx, req)
 	order, est := p.orderFor(sid, req)
 	if len(order) == 0 {
@@ -275,24 +389,55 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		if minWindow > 0 && m.WindowTokens > 0 && m.WindowTokens <= minWindow {
 			continue
 		}
-		msg, sr, usage, err := m.Prov.Complete(ctx, m.adaptedRequest(req))
+		skip, probeAcquired := p.tryEnterMember(order, i, minWindow)
+		if skip {
+			continue
+		}
+		releaseProbe := func() {
+			if probeAcquired {
+				p.health.ReleaseProbe(m.ID)
+				probeAcquired = false
+			}
+		}
+		mReq := m.adaptedRequest(req)
+		var (
+			msg   llm.Message
+			sr    string
+			usage llm.Usage
+			err   error
+		)
+		if m.hasStreamRetryConfig() {
+			msg, sr, usage, err = RunCompleteWithRetry(ctx, m.Prov, mReq, m.Retry, "llmpool:"+m.Name, nil)
+		} else {
+			msg, sr, usage, err = m.Prov.Complete(ctx, mReq)
+		}
 		if err == nil {
 			p.health.Pass(m.ID)
 			p.pinSession(sid, m.ID)
 			return msg, sr, usage, nil
 		}
-		if !shouldFailover(ctx, err) {
-			// Non-failover error (e.g. ctx cancel, deterministic 4xx): surface as-is
-			// without tripping health, matching Stream's non-failover path.
-			p.health.Pass(m.ID)
+		if !shouldFailover(ctx, err) && !(isCrossFormatCompatError(err) && hasOtherFormat(order[i+1:], minWindow, m.Format)) {
+			if ctx.Err() != nil {
+				releaseProbe()
+			} else {
+				p.health.Pass(m.ID)
+			}
 			return llm.Message{}, "", llm.Usage{}, err
 		}
 		lastErr = err
 		if statusOf(err) == 413 {
+			releaseProbe()
 			if m.WindowTokens > minWindow {
 				minWindow = m.WindowTokens
 			}
 			log.Printf("[llmpool] %q(%s) 返回 413（载荷超限），跳过等长或更小窗口成员（不熔断）", m.Name, m.Model)
+			continue
+		}
+		if isCrossFormatCompatError(err) && hasOtherFormat(order[i+1:], minWindow, m.Format) {
+			releaseProbe()
+			if next := nextEligible(order[i+1:], minWindow); next != nil {
+				log.Printf("[llmpool] %q(%s) 协议参数不兼容(400)，不熔断切换 → %q(%s)", m.Name, m.Model, next.Name, next.Model)
+			}
 			continue
 		}
 		hard := isHardFailure(err)
@@ -322,10 +467,11 @@ func nextEligible(rest []*Member, minWindow int) *Member {
 }
 
 // orderFor picks the members to try, in order: skip those in a cooling-off window
+// (and half-open backends already being probed elsewhere while healthy ones exist)
 // and those whose context window can't hold this request, rotate within equal-rank
 // groups with sticky affinity, and keep same-format profiles ahead of cross-format
 // ones so prompt KV cache stays hot. If every fitting member is tripped, probes
-// the first fitting member; never forces a guaranteed-400 over-window request.
+// ordered by earliest cooldown recovery; never forces a guaranteed-400 over-window request.
 func (p *Pool) orderFor(sid string, req llm.CompletionRequest) ([]*Member, int) {
 	est := estimateTokens(req)
 	var open, fitting []*Member
@@ -334,7 +480,7 @@ func (p *Pool) orderFor(sid string, req llm.CompletionRequest) ([]*Member, int) 
 			continue // would 400 on length — not a useful target
 		}
 		fitting = append(fitting, m)
-		if p.health.IsOpen(m.ID) {
+		if p.health.IsOpen(m.ID) || p.health.IsProbing(m.ID) {
 			continue
 		}
 		open = append(open, m)
@@ -343,7 +489,7 @@ func (p *Pool) orderFor(sid string, req llm.CompletionRequest) ([]*Member, int) 
 		if len(fitting) == 0 {
 			return nil, est
 		}
-		return fitting[:1], est // all fitting members tripped: probe first fitting member
+		return p.allTrippedOrder(fitting), est
 	}
 	var rotated []*Member
 	if sid == "" {
@@ -352,6 +498,48 @@ func (p *Pool) orderFor(sid string, req llm.CompletionRequest) ([]*Member, int) 
 		rotated = rotateGroupsSticky(open, sessionHash(sid), p.pinnedMember(sid))
 	}
 	return preferSameFormat(rotated, p.preferredFormat(sid, open)), est
+}
+
+func (p *Pool) allTrippedOrder(fitting []*Member) []*Member {
+	out := slices.Clone(fitting)
+	states := make(map[int64]State, len(out))
+	probing := make(map[int64]bool, len(out))
+	for _, m := range out {
+		states[m.ID] = p.health.Get(m.ID)
+		probing[m.ID] = p.health.IsProbing(m.ID)
+	}
+	tierOf := func(m *Member) (tier int, until time.Time) {
+		st := states[m.ID]
+		if !st.Open() {
+			if probing[m.ID] {
+				return 2, st.OpenUntil
+			}
+			return 0, st.OpenUntil // idle half-open ready to probe
+		}
+		if isHardFailureMsg(st.LastError) {
+			return 3, st.OpenUntil
+		}
+		return 1, st.OpenUntil // soft trip cooling; try earliest-expiring first
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, ui := tierOf(out[i])
+		tj, uj := tierOf(out[j])
+		if ti != tj {
+			return ti < tj
+		}
+		if !ui.Equal(uj) {
+			return ui.Before(uj)
+		}
+		return false
+	})
+	return out
+}
+
+func isHardFailureMsg(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	return isHardFailure(errors.New(msg))
 }
 
 func normFormat(f string) string {
@@ -415,21 +603,35 @@ func (p *Pool) pinnedMember(sid string) int64 {
 	}
 	p.stickyMu.Lock()
 	defer p.stickyMu.Unlock()
-	return p.sticky[sid]
+	return p.sticky[sid].memberID
 }
 
 func (p *Pool) pinSession(sid string, memberID int64) {
 	if sid == "" || memberID <= 0 {
 		return
 	}
+	seq := p.stickySeq.Add(1)
 	p.stickyMu.Lock()
 	defer p.stickyMu.Unlock()
 	if p.sticky == nil {
-		p.sticky = make(map[string]int64, 64)
+		p.sticky = make(map[string]stickyEntry, 64)
 	} else if _, exists := p.sticky[sid]; !exists && len(p.sticky) >= maxStickySessions {
-		p.sticky = make(map[string]int64, 64)
+		// Evict the oldest 25% of sticky pins instead of wiping all 4096 active sessions.
+		type kv struct {
+			k   string
+			seq uint64
+		}
+		entries := make([]kv, 0, len(p.sticky))
+		for k, v := range p.sticky {
+			entries = append(entries, kv{k: k, seq: v.seq})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].seq < entries[j].seq })
+		drop := max(len(entries)/4, 1)
+		for i := range drop {
+			delete(p.sticky, entries[i].k)
+		}
 	}
-	p.sticky[sid] = memberID
+	p.sticky[sid] = stickyEntry{memberID: memberID, seq: seq}
 }
 
 // rotateGroups rotates each run of equal-ranked members by n, so profiles sharing
@@ -495,20 +697,22 @@ func statusOf(err error) int {
 
 // shouldFailover reports whether err justifies trying the next profile.
 //
-// Never fails over on context cancellation — that's the user stopping a task or a
-// task-level timeout, and burning a backup key on it would both waste credit and
-// pollute the run's termination diagnosis. Never on 400 either: a malformed or
-// over-long request fails identically everywhere.
+// Never fails over on caller context cancellation — that's the user stopping a
+// task or an outer task-level deadline, and burning a backup key on it would
+// waste credit. Transport-level timeouts (while ctx.Err() == nil) DO fail over.
 func shouldFailover(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if (ctx != nil && ctx.Err() != nil) || errors.Is(err, context.Canceled) {
 		return false
+	}
+	if isQuotaError(err) {
+		return true
 	}
 	switch code := statusOf(err); {
 	case code == 0:
-		return true // no status → transport-level failure (reset / DNS / timeout)
+		return true // no status → transport-level failure (reset / DNS / timeout / stream drop)
 	case code == 400:
 		return false // bad or over-long request: identical everywhere
 	case code == 401, code == 402, code == 403, code == 404, code == 408, code == 413, code == 422, code == 429:
@@ -519,10 +723,30 @@ func shouldFailover(ctx context.Context, err error) bool {
 	return false
 }
 
+// isCrossFormatCompatError matches parameter-rejection 400s (such as OpenAI
+// max_tokens vs max_completion_tokens or unknown provider-specific fields) that
+// may succeed on a backup profile using another API format.
+func isCrossFormatCompatError(err error) bool {
+	if err == nil || statusOf(err) != 400 {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "unsupported_parameter") ||
+		strings.Contains(s, "unknown parameter") ||
+		strings.Contains(s, "unrecognized request argument") ||
+		strings.Contains(s, "unsupported value")
+}
+
 // isHardFailure reports whether the failure is deterministic (the profile will
 // keep failing until a human fixes it) rather than transient. Hard failures open
 // the breaker on the first occurrence.
 func isHardFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isQuotaError(err) {
+		return true
+	}
 	switch statusOf(err) {
 	case 401, 402, 403, 404:
 		return true

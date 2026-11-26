@@ -23,31 +23,56 @@ import (
 // a PURE ASSISTANT — base tools are the SDK DefaultTools (Bash/Read/Write/Edit/
 // LS/Glob/Grep) plus whatever skills/MCP the key is made visible; NO pentest
 // graph/task context is injected (that stays exclusive to MainAgent).
+// MemberRuntimeOptions captures the per-profile options resolved dynamically
+// from an active or failover-selected pool member for a given session.
+type MemberRuntimeOptions struct {
+	WindowTokens         int
+	MaxTokens            int
+	NonStreaming         bool
+	CacheTTL             string
+	PromptCacheRetention string
+	PreserveThinking     bool
+}
+
 type ChatAgent struct {
-	prov           llm.Provider
-	model          string
-	workDir        string
-	tx             *transcript.Store
-	window         int
-	windowFn       func() int // dynamic resolver (e.g. active llmpool member)
-	proxyAddr      string
-	proxyCACert    string
-	proxyFn        func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
-	webSearch      WebSearchOpts
-	webSearchFn    func() WebSearchOpts // dynamic resolver so settings updates apply without cache invalidation
-	guard          *guard.Guard         // optional; nil disables intercept hooks for chat
-	nonStreamingFn func() bool          // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn   func() bool          // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn    func() int           // resolver: per-reply output cap (nil/0 = send no cap)
-	cacheOpts      cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
+	prov               llm.Provider
+	model              string
+	workDir            string
+	tx                 *transcript.Store
+	window             int
+	windowFn           func() int // dynamic resolver (e.g. active llmpool member)
+	proxyAddr          string
+	proxyCACert        string
+	proxyFn            func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
+	webSearch          WebSearchOpts
+	webSearchFn        func() WebSearchOpts // dynamic resolver so settings updates apply without cache invalidation
+	guard              *guard.Guard         // optional; nil disables intercept hooks for chat
+	nonStreamingFn     func() bool          // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn       func() bool          // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn        func() int           // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts          cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
+	memberOptsFn       func(sessionID string) (MemberRuntimeOptions, bool)
+	customWindow       bool
+	customNonStreaming bool
+	customMaxTokens    bool
+	customCache        bool
 }
 
 func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window int) *ChatAgent {
 	return &ChatAgent{prov: prov, model: model, workDir: workDir, tx: tx, window: window}
 }
 
+// SetMemberOptionsResolver wires a per-session pool member options resolver so
+// sticky failover members drive runtime options without overriding explicit test setters.
+func (c *ChatAgent) SetMemberOptionsResolver(fn func(sessionID string) (MemberRuntimeOptions, bool)) {
+	c.memberOptsFn = fn
+}
+
 // SetCompactionWindowResolver wires a dynamic context window resolver (in tokens).
-func (c *ChatAgent) SetCompactionWindowResolver(fn func() int) { c.windowFn = fn }
+func (c *ChatAgent) SetCompactionWindowResolver(fn func() int) {
+	c.windowFn = fn
+	c.customWindow = true
+}
 
 func (c *ChatAgent) compactionWindow() int {
 	if c.windowFn != nil {
@@ -61,11 +86,15 @@ func (c *ChatAgent) compactionWindow() int {
 // SetCacheOptions wires per-run resolvers for CacheTTL, PromptCacheRetention, and PreserveThinking.
 func (c *ChatAgent) SetCacheOptions(ttlFn, retentionFn func() string, preserveThinkingFn func() bool) {
 	c.cacheOpts = cacheOptionResolvers{cacheTTLFn: ttlFn, retentionFn: retentionFn, preserveThinkingFn: preserveThinkingFn}
+	c.customCache = true
 }
 
 // SetNonStreaming wires a resolver deciding whether chat runs use the
 // non-streaming model path (true = non-streaming). nil/unset = streaming.
-func (c *ChatAgent) SetNonStreaming(fn func() bool) { c.nonStreamingFn = fn }
+func (c *ChatAgent) SetNonStreaming(fn func() bool) {
+	c.nonStreamingFn = fn
+	c.customNonStreaming = true
+}
 
 func (c *ChatAgent) nonStreaming() bool { return c.nonStreamingFn != nil && c.nonStreamingFn() }
 
@@ -76,7 +105,10 @@ func (c *ChatAgent) SetNoaEnabled(fn func() bool) { c.noaEnabledFn = fn }
 
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
-func (c *ChatAgent) SetMaxTokens(fn func() int) { c.maxTokensFn = fn }
+func (c *ChatAgent) SetMaxTokens(fn func() int) {
+	c.maxTokensFn = fn
+	c.customMaxTokens = true
+}
 
 func (c *ChatAgent) maxTokens() int {
 	if c.maxTokensFn == nil {
@@ -231,7 +263,24 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		NonStreaming: c.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    c.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
-	c.cacheOpts.apply(&opts)
+	var mo MemberRuntimeOptions
+	var hasMO bool
+	if c.memberOptsFn != nil {
+		mo, hasMO = c.memberOptsFn(sessionID)
+	}
+	if !c.customNonStreaming && hasMO {
+		opts.NonStreaming = mo.NonStreaming
+	}
+	if !c.customMaxTokens && hasMO {
+		opts.MaxTokens = mo.MaxTokens
+	}
+	if !c.customCache && hasMO {
+		opts.CacheTTL = mo.CacheTTL
+		opts.PromptCacheRetention = mo.PromptCacheRetention
+		opts.PreserveThinking = mo.PreserveThinking
+	} else {
+		c.cacheOpts.apply(&opts)
+	}
 	if c.guard != nil {
 		opts.Hooks = c.guard.Hooks()
 	}
@@ -242,10 +291,13 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	noaSession := "chat-" + sessionID
 	win := c.compactionWindow()
+	if !c.customWindow && hasMO && mo.WindowTokens > 0 {
+		win = mo.WindowTokens
+	}
 	noaSt := enableNoa(&opts, c.noaEnabledFn, c.workDir, noaSession, win, noaWarn(noaSession))
 	// P14 领域上下文：独立会话没有探索图（index 传 nil），收益在摘要侧——领域模板强制
 	// 逐字保留"所有用户消息"，原文落盘可回读。
-	InstallContextManager(&opts, win, c.maxTokens(), sessionWorkDir, nil)
+	InstallContextManager(&opts, win, opts.MaxTokens, sessionWorkDir, nil)
 	attachNoaState(opts.Compactor, noaSt)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

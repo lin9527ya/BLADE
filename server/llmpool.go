@@ -65,6 +65,10 @@ func newLLMHealthRegistry(pg *db.DB, wg *sync.WaitGroup) *llmpool.Registry {
 	return reg
 }
 
+func toPoolStreamPolicy(r agent.RetryConfig) llmpool.StreamPolicy {
+	return llmpool.StreamPolicy{Attempts: r.StreamAttempts, Interval: r.StreamInterval}
+}
+
 func newPoolMember(p *db.LLMProfile, cfg agent.Config, prov llm.Provider, rank int) *llmpool.Member {
 	return &llmpool.Member{
 		ID: p.ID, Name: p.Name, Model: p.Model, Format: p.Format,
@@ -76,6 +80,7 @@ func newPoolMember(p *db.LLMProfile, cfg agent.Config, prov llm.Provider, rank i
 		CacheTTL:             cfg.CacheTTL,
 		PromptCacheRetention: cfg.PromptCacheRetention,
 		PreserveThinking:     cfg.PreservesThinking(),
+		Retry:                toPoolStreamPolicy(cfg.Retry),
 		Prov:                 prov,
 	}
 }
@@ -181,23 +186,45 @@ type LLMPoolMemberStatus struct {
 	Priority  int    `json:"priority"`
 	Active    bool   `json:"active"`   // is the globally-activated profile
 	Excluded  bool   `json:"excluded"` // pool_exclude — not a failover target
-	// Health: state is "ok" | "degraded" (failing but not tripped) | "tripped".
-	State        string `json:"state"`
-	Fails        int    `json:"fails"`
-	Trips        int    `json:"trips"`
-	CooldownSecs int    `json:"cooldown_secs"` // remaining cooling-off seconds; 0 = none
-	LastError    string `json:"last_error,omitempty"`
-	LastAt       string `json:"last_at,omitempty"`
+	// Health: state is "ok" | "degraded" | "half_open" | "tripped".
+	State          string `json:"state"`
+	HalfOpen       bool   `json:"half_open"`
+	StickySessions int    `json:"sticky_sessions"`
+	Fails          int    `json:"fails"`
+	Trips          int    `json:"trips"`
+	CooldownSecs   int    `json:"cooldown_secs"` // remaining cooling-off seconds; 0 = none
+	LastError      string `json:"last_error,omitempty"`
+	LastAt         string `json:"last_at,omitempty"`
+}
+
+func (s *Server) activePoolStickyCounts() map[int64]int {
+	if s == nil {
+		return nil
+	}
+	s.llm.mu.Lock()
+	prov := s.llm.prov
+	s.llm.mu.Unlock()
+	if pool, ok := prov.(*llmpool.Pool); ok && pool != nil {
+		return pool.StickyCounts()
+	}
+	return nil
 }
 
 // llmPoolStatus reports the whole picture for the LLM page: whether failover is
-// on, the resolved chain order, and each profile's breaker state. Excluded
-// profiles are listed too (flagged), so the user can see why one isn't in line.
+// on, the resolved chain order, policy thresholds, and each profile's breaker
+// state. Excluded profiles are listed too (flagged), so the user can see why
+// one isn't in line.
 func (s *Server) llmPoolStatus() map[string]any {
+	softTrip, ladderSecs, fixedCooldown := s.providers.health.PolicySnapshot()
 	out := map[string]any{
 		"enabled":       false,
 		"bind_fallback": false,
-		"chain":         []LLMPoolMemberStatus{},
+		"policy": map[string]any{
+			"soft_trip":      softTrip,
+			"cooldown_secs":  ladderSecs,
+			"fixed_cooldown": fixedCooldown,
+		},
+		"chain": []LLMPoolMemberStatus{},
 	}
 	if s.m == nil || s.m.pg == nil {
 		return out
@@ -210,6 +237,7 @@ func (s *Server) llmPoolStatus() map[string]any {
 		return out
 	}
 	health := s.providers.health.Snapshot()
+	stickyCounts := s.activePoolStickyCounts()
 	now := time.Now()
 	// Chain order: active first, then priority DESC / id ASC — the same ordering
 	// PoolProfiles applies, recomputed here so excluded ones can be shown in place.
@@ -219,12 +247,14 @@ func (s *Server) llmPoolStatus() map[string]any {
 		m := LLMPoolMemberStatus{
 			ProfileID: i64s(p.ID), Name: p.Name, Model: p.Model, Format: p.Format,
 			Priority: p.Priority, Active: p.IsDefault, Excluded: p.PoolExclude,
-			State: "ok", Fails: st.Fails, Trips: st.Trips,
-			LastError: st.LastError,
+			State: "ok", HalfOpen: st.HalfOpen, StickySessions: stickyCounts[p.ID],
+			Fails: st.Fails, Trips: st.Trips, LastError: st.LastError,
 		}
 		if st.Open() {
 			m.State = "tripped"
 			m.CooldownSecs = int(st.OpenUntil.Sub(now).Seconds()) + 1
+		} else if st.HalfOpen {
+			m.State = "half_open"
 		} else if st.Fails > 0 {
 			m.State = "degraded"
 		}

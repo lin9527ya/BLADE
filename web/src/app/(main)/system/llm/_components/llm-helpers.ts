@@ -110,3 +110,93 @@ export const PROMPT_CACHE_RETENTIONS: { value: string; label: string }[] = [
   { value: "in_memory", label: "in_memory" },
   { value: "24h", label: "24h（延伸保留）" },
 ];
+
+export interface PoolPolicyHint {
+  soft_trip: number;
+  cooldown_secs: number[];
+  fixed_cooldown?: boolean;
+}
+
+export function formatBreakerPolicySummary(policy?: PoolPolicyHint): string {
+  const ladder = policy?.cooldown_secs && policy.cooldown_secs.length > 0 ? policy.cooldown_secs : [60, 300, 1800];
+  const ladderStr =
+    ladder
+      .map((s) => cooldownText(s))
+      .filter(Boolean)
+      .join(" → ") || "1min → 5min → 30min";
+  const cooldownDesc = policy?.fixed_cooldown ? `固定冷却 ${ladderStr}` : `按梯度冷却（${ladderStr}）`;
+  if (!policy) {
+    return `连续瞬时失败 3 次（或确定性失败 1 次）熔断，${cooldownDesc}`;
+  }
+  if (policy.soft_trip <= 0) {
+    return `仅确定性失败（401 / 402 / 403 / 404）立即熔断，瞬时失败不软熔断，${cooldownDesc}`;
+  }
+  return `连续瞬时失败 ${policy.soft_trip} 次（或确定性失败 1 次）熔断，${cooldownDesc}`;
+}
+
+export function validateRetryRule(rule: { attempts: number; interval_ms: number }): {
+  attemptsError?: string;
+  intervalError?: string;
+} {
+  const out: { attemptsError?: string; intervalError?: string } = {};
+  if (!Number.isFinite(rule.attempts) || rule.attempts < -1 || rule.attempts > 20) {
+    out.attemptsError = "次数有效范围为 -1（关闭）到 20，保存时超出将被截断";
+  }
+  if (!Number.isFinite(rule.interval_ms) || rule.interval_ms < 0 || rule.interval_ms > 3_600_000) {
+    out.intervalError = "间隔有效范围为 0（默认指数退避）到 3600000ms（1 小时）";
+  }
+  return out;
+}
+
+function effectiveAttempts(raw: number, def: number): number {
+  if (raw < 0) return 0;
+  if (raw === 0) return def;
+  return Math.min(raw, 20);
+}
+
+function sumExpBackoffMs(attempts: number, baseMs: number, capMs: number, fixedMs: number): number {
+  if (attempts <= 0) return 0;
+  if (fixedMs > 0) return attempts * Math.min(fixedMs, 3_600_000);
+  let total = 0;
+  for (let i = 0; i < attempts; i++) {
+    total += Math.min(baseMs * 2 ** i, capMs);
+  }
+  return total;
+}
+
+export function estimateWorstCaseRetry(
+  policy: {
+    connect: { attempts: number; interval_ms: number };
+    stream: { attempts: number; interval_ms: number };
+    intent: { attempts: number; interval_ms: number };
+  },
+  activeChainCount: number,
+) {
+  const connect = effectiveAttempts(policy.connect.attempts, 3);
+  const stream = effectiveAttempts(policy.stream.attempts, 2);
+  const intent = effectiveAttempts(policy.intent.attempts, 2);
+  const members = Math.max(activeChainCount, 1);
+
+  const perMember = (1 + connect) * (1 + stream);
+  const perLogicalCall = perMember * members;
+  const totalWithIntent = perLogicalCall * (1 + intent);
+
+  const singleAttemptSleepMs = sumExpBackoffMs(connect, 500, 8000, policy.connect.interval_ms);
+  const perMemberWaitMs =
+    singleAttemptSleepMs * (1 + stream) + sumExpBackoffMs(stream, 500, 4000, policy.stream.interval_ms);
+  const intentWaitMs = intent * (policy.intent.interval_ms > 0 ? Math.min(policy.intent.interval_ms, 3_600_000) : 3000);
+  const maxWaitSecs = Math.round((perMemberWaitMs * members * (1 + intent) + intentWaitMs) / 1000);
+  const highRisk: boolean = totalWithIntent >= 24 || maxWaitSecs >= 90;
+
+  return {
+    connect,
+    stream,
+    intent,
+    members,
+    perMember,
+    perLogicalCall,
+    totalWithIntent,
+    maxWaitSecs,
+    highRisk,
+  };
+}

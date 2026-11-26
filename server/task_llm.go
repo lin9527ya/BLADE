@@ -8,6 +8,8 @@ import (
 	"iter"
 	"log"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/lin9527ya/Norma/transcript"
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/llmpool"
 	"github.com/lin9527ya/blade/llmrec"
 )
 
@@ -99,10 +102,65 @@ type taskLLMSelection struct {
 	retry agent.RetryConfig
 }
 
+type taskChainCandidate struct {
+	profileID int64
+	provider  llm.Provider
+	cfg       agent.Config
+}
+
 type taskLLMStreamHooks struct {
-	current    func() (taskLLMSelection, error)
-	exhaust    func(taskLLMSelection, error) (db.TaskLLMTransition, error)
-	transition func(taskLLMSelection, db.TaskLLMTransition, error)
+	current         func() (taskLLMSelection, error)
+	exhaust         func(taskLLMSelection, error) (db.TaskLLMTransition, error)
+	transition      func(taskLLMSelection, db.TaskLLMTransition, error)
+	health          *llmpool.Registry
+	chainCandidates func(taskLLMSelection) ([]taskChainCandidate, error)
+}
+
+func (s *Server) healthRegistry() *llmpool.Registry {
+	if s == nil {
+		return nil
+	}
+	return s.providers.health
+}
+
+func (r *taskLLMRuntime) poolSessionHint() string {
+	if r == nil || r.s == nil || r.s.m == nil {
+		return ""
+	}
+	if t, _ := r.s.m.Task(r.taskID); t != nil && t.ExpID > 0 {
+		switch r.agentKey {
+		case "planner":
+			return agent.PlannerSessionID(t.ExpID)
+		}
+	}
+	return ""
+}
+
+func (r *taskLLMRuntime) resolvePoolConfig(prov llm.Provider, fallback agent.Config) agent.Config {
+	pool, ok := prov.(*llmpool.Pool)
+	if !ok || pool == nil {
+		return fallback
+	}
+	cur := pool.CurrentMember(r.poolSessionHint())
+	if cur == nil {
+		return fallback
+	}
+	if cfg, ok := r.s.loadProfileConfig(cur.ID); ok {
+		return cfg
+	}
+	if !cur.ProfileConfigured {
+		return fallback
+	}
+	out := fallback
+	if cur.WindowTokens > 0 {
+		out.ContextWindowK = cur.WindowTokens / 1000
+	}
+	out.Stream = !cur.NonStreaming
+	out.MaxTokens = cur.MaxTokens
+	out.CacheTTL = cur.CacheTTL
+	out.PromptCacheRetention = cur.PromptCacheRetention
+	out.PreserveThinkingBlocks = cur.PreserveThinking
+	return out
 }
 
 // current resolves the provider this role runs on, by precedence:
@@ -129,14 +187,14 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	if r.forcedProfileFn != nil {
 		if id := r.forcedProfileFn(); id > 0 {
 			if prov, cfg, ok := r.s.providerForProfile(id); ok {
-				sel.provider, sel.retry = prov, cfg.Retry
+				sel.provider, sel.retry = llmpool.WithStreamRetry(prov, toPoolStreamPolicy(cfg.Retry)), cfg.Retry
 				return sel, nil
 			}
 			log.Printf("[compactor] task %s: forced LLM profile #%d is unavailable; falling back to the task chain", r.taskID, id)
 		}
 	}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
-		sel.provider, sel.retry = prov, cfg.Retry
+		sel.provider, sel.retry = llmpool.WithStreamRetry(prov, toPoolStreamPolicy(cfg.Retry)), cfg.Retry
 		return sel, nil
 	}
 	if len(pt.LLMProfileIDs) > 0 {
@@ -148,22 +206,20 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 		if !ok {
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
-		sel.provider, sel.retry = prov, cfg.Retry
+		sel.provider, sel.retry = llmpool.WithStreamRetry(prov, toPoolStreamPolicy(cfg.Retry)), cfg.Retry
 		return sel, nil
 	}
 	prov, cfg, ok := r.s.globalProvider()
 	if !ok {
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
-	sel.provider, sel.retry = prov, cfg.Retry
+	sel.provider, sel.retry = llmpool.WithStreamRetry(prov, toPoolStreamPolicy(cfg.Retry)), cfg.Retry
 	return sel, nil
 }
 
 // activeCfg resolves the task's currently-active LLM config, mirroring current()'s
-// source precedence (agent binding → active chain profile → global). Read-only and
-// best-effort: ok=false when nothing resolves, leaving the per-setting fallback to
-// the caller. If failover switches profiles, the change takes effect on the next
-// agent run (a fresh Session is built per run in captureRun).
+// source precedence (agent binding → active chain profile → global), and tracks
+// live failover members when running through *llmpool.Pool or temporary chain bypass.
 func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
@@ -180,16 +236,36 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 			}
 		}
 	}
-	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
-		return cfg, true
+	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
+		return r.resolvePoolConfig(prov, cfg), true
 	}
 	if len(pt.LLMProfileIDs) > 0 && pt.ActiveLLMProfileID != nil {
-		if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
+		health := r.s.healthRegistry()
+		curID := *pt.ActiveLLMProfileID
+		if health == nil || !health.IsOpen(curID) {
+			if _, cfg, ok := r.s.providerForProfile(curID); ok {
+				return cfg, true
+			}
+		}
+		if entries, e := r.s.m.pg.TaskLLMProfiles(taskNum); e == nil {
+			for _, entry := range entries {
+				if strings.EqualFold(entry.Status, "exhausted") || strings.EqualFold(entry.Status, "quota_exhausted") {
+					continue
+				}
+				if health != nil && health.IsOpen(entry.ProfileID) {
+					continue
+				}
+				if _, cfg, ok := r.s.providerForProfile(entry.ProfileID); ok {
+					return cfg, true
+				}
+			}
+		}
+		if _, cfg, ok := r.s.providerForProfile(curID); ok {
 			return cfg, true
 		}
 	}
-	if _, cfg, ok := r.s.globalProvider(); ok {
-		return cfg, true
+	if prov, cfg, ok := r.s.globalProvider(); ok {
+		return r.resolvePoolConfig(prov, cfg), true
 	}
 	return agent.Config{}, false
 }
@@ -269,7 +345,7 @@ func parseTaskID(id string) (int64, error) {
 
 // streamHooks builds the failover/exhaustion callbacks shared by Stream and
 // Complete: how to read the current profile selection, how to mark it quota
-// exhausted, and how to emit a failover transition.
+// exhausted, how to emit a failover transition, and how to walk explicit chain candidates.
 func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 	return taskLLMStreamHooks{
 		current: r.current,
@@ -286,6 +362,39 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 		},
 		transition: func(selection taskLLMSelection, transition db.TaskLLMTransition, cause error) {
 			r.s.emitTaskLLMTransition(selection.task, transition, cause)
+		},
+		health: r.s.healthRegistry(),
+		chainCandidates: func(selection taskLLMSelection) ([]taskChainCandidate, error) {
+			taskNum, err := parseTaskID(r.taskID)
+			if err != nil {
+				return nil, err
+			}
+			entries, err := r.s.m.pg.TaskLLMProfiles(taskNum)
+			if err != nil {
+				return nil, err
+			}
+			var ready []taskChainCandidate
+			cursorIdx := -1
+			for _, e := range entries {
+				if strings.EqualFold(e.Status, "exhausted") || strings.EqualFold(e.Status, "quota_exhausted") {
+					continue
+				}
+				prov, cfg, ok := r.s.providerForProfile(e.ProfileID)
+				if !ok {
+					continue
+				}
+				if e.ProfileID == selection.profileID {
+					cursorIdx = len(ready)
+				}
+				ready = append(ready, taskChainCandidate{profileID: e.ProfileID, provider: prov, cfg: cfg})
+			}
+			if cursorIdx > 0 {
+				ordered := make([]taskChainCandidate, 0, len(ready))
+				ordered = append(ordered, ready[cursorIdx:]...)
+				ordered = append(ordered, ready[:cursorIdx]...)
+				return ordered, nil
+			}
+			return ready, nil
 		},
 	}
 }
@@ -323,38 +432,50 @@ func (s *Server) taskLLMVerifier(t *Task, pl *agent.Planner) func(context.Contex
 }
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
+	ctx, hint := agent.WithRetryHint(ctx)
+	selection, err := hooks.current()
+	if err != nil {
+		return llm.Message{}, "", llm.Usage{}, err
+	}
+	if hooks.chainCandidates != nil && selection.profileID > 0 {
+		return completeExplicitChain(ctx, taskID, req, selection, hooks)
+	}
 	for {
-		selection, err := hooks.current()
-		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
-		}
 		var (
 			msg     llm.Message
 			sr      string
 			usage   llm.Usage
 			callErr error
 		)
-		// 同 provider 安全窗口重试:非流式调用要么整体成功、要么整体失败,没有
-		// 中途已交付输出的问题,所以任何瞬时失败都可原样重试。
-		retries, backoffOf := sameProviderRetryPolicy(selection.retry)
-		for attempt := 0; ; attempt++ {
+		if llmpool.ProviderHandlesStreamRetry(selection.provider) {
+			// Pool / WithStreamRetry handles per-member retries internally; avoid outer multiplier.
 			msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
-			if callErr != nil && ctx.Err() == nil &&
-				attempt < retries && isRetryableStreamError(callErr) {
-				backoff := backoffOf(attempt)
-				log.Printf("[task-llm] task %s 非流式调用失败,%v 后同 provider 重试 (%d/%d): %v",
-					taskID, backoff, attempt+1, retries, callErr)
-				if sleepCtx(ctx, backoff) {
-					break // 退避期间 ctx 取消 → 停止重试
+		} else {
+			retries, backoffOf := sameProviderRetryPolicy(selection.retry)
+			for attempt := 0; ; attempt++ {
+				_ = hint.Take()
+				msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
+				if callErr != nil && ctx.Err() == nil &&
+					attempt < retries && isRetryableStreamError(callErr) {
+					base := backoffOf(attempt)
+					ra := max(hint.Take(), agent.RetryAfterOf(callErr))
+					var backoff time.Duration
+					if base > 0 || ra > 0 {
+						backoff = agent.EffectiveBackoff(base, ra, 60*time.Second)
+					}
+					log.Printf("[task-llm] task %s 非流式调用失败,%v 后同 provider 重试 (%d/%d): %v",
+						taskID, backoff, attempt+1, retries, callErr)
+					if sleepCtx(ctx, backoff) {
+						break
+					}
+					continue
 				}
-				continue
+				break
 			}
-			break
 		}
 		if callErr == nil {
 			return msg, sr, usage, nil
 		}
-		// profileID=0: 显式链已被清空;非额度错误:透传。二者都不改任务 failover 状态。
 		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
 			return llm.Message{}, "", llm.Usage{}, callErr
 		}
@@ -368,29 +489,30 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		if !transition.Stale && transition.NextProfileID == nil {
 			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
 		}
-		// 没有任何输出交付给调用方,换下一个 profile 重放同一逻辑请求是安全的。
+		selection, err = hooks.current()
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
 	}
 }
 
 func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
+		ctx, hint := agent.WithRetryHint(ctx)
+		selection, err := hooks.current()
+		if err != nil {
+			yield(llm.StreamEvent{}, err)
+			return
+		}
+		if hooks.chainCandidates != nil && selection.profileID > 0 {
+			streamExplicitChain(ctx, taskID, req, selection, hooks, yield)
+			return
+		}
 		for {
-			selection, err := hooks.current()
-			if err != nil {
-				yield(llm.StreamEvent{}, err)
-				return
-			}
 			committed := false
 			var pending []llm.StreamEvent
 			var streamErr error
-			retries, backoffOf := sameProviderRetryPolicy(selection.retry)
-			// 同 provider 安全窗口重试:committed 之前(还没向调用方交付任何输出)
-			// 的瞬时失败可以原样重放,不会重复模型输出或工具执行。committed 之后、
-			// ctx 取消、或确定性/额度错误则跳出,交给下方原有的透传/故障转移逻辑。
-			for attempt := 0; ; attempt++ {
-				committed = false
-				pending = nil
-				streamErr = nil
+			if llmpool.ProviderHandlesStreamRetry(selection.provider) {
 				for event, err := range selection.provider.Stream(ctx, req) {
 					if err != nil {
 						streamErr = err
@@ -413,17 +535,52 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 						return
 					}
 				}
-				if streamErr != nil && !committed && ctx.Err() == nil &&
-					attempt < retries && isRetryableStreamError(streamErr) {
-					backoff := backoffOf(attempt)
-					log.Printf("[task-llm] task %s 提交前流失败,%v 后同 provider 重试 (%d/%d): %v",
-						taskID, backoff, attempt+1, retries, streamErr)
-					if sleepCtx(ctx, backoff) {
-						break // 退避期间 ctx 取消 → 停止重试
+			} else {
+				retries, backoffOf := sameProviderRetryPolicy(selection.retry)
+				for attempt := 0; ; attempt++ {
+					_ = hint.Take()
+					committed = false
+					pending = nil
+					streamErr = nil
+					for event, err := range selection.provider.Stream(ctx, req) {
+						if err != nil {
+							streamErr = err
+							break
+						}
+						if !committed && !streamEventCommitsOutput(event) {
+							pending = append(pending, event)
+							continue
+						}
+						if !committed {
+							for _, buffered := range pending {
+								if !yield(buffered, nil) {
+									return
+								}
+							}
+							pending = nil
+							committed = true
+						}
+						if !yield(event, nil) {
+							return
+						}
 					}
-					continue
+					if streamErr != nil && !committed && ctx.Err() == nil &&
+						attempt < retries && isRetryableStreamError(streamErr) {
+						base := backoffOf(attempt)
+						ra := max(hint.Take(), agent.RetryAfterOf(streamErr))
+						var backoff time.Duration
+						if base > 0 || ra > 0 {
+							backoff = agent.EffectiveBackoff(base, ra, 60*time.Second)
+						}
+						log.Printf("[task-llm] task %s 提交前流失败,%v 后同 provider 重试 (%d/%d): %v",
+							taskID, backoff, attempt+1, retries, streamErr)
+						if sleepCtx(ctx, backoff) {
+							break
+						}
+						continue
+					}
+					break
 				}
-				break
 			}
 			if streamErr == nil {
 				for _, buffered := range pending {
@@ -433,9 +590,6 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				}
 				return
 			}
-			// profileID=0 means the explicit chain was cleared while this stable task
-			// bundle was still in use. Agent/global fallback errors follow the legacy
-			// behavior and never mutate task failover state.
 			if selection.profileID == 0 || !isQuotaExhaustedError(streamErr) {
 				for _, buffered := range pending {
 					if !yield(buffered, nil) {
@@ -449,9 +603,6 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			if markErr != nil {
 				cause := fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr)
 				if committed {
-					// Output may already have driven tool execution. Report the persistence
-					// failure, but classify it as router-handled so the worker does not
-					// replay the entire intent and duplicate those side effects.
 					yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: cause})
 				} else {
 					yield(llm.StreamEvent{}, cause)
@@ -465,10 +616,464 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
 				return
 			}
-			// No event reached the caller, so replaying the same logical request on
-			// the next profile cannot duplicate model output or tool execution.
+			selection, err = hooks.current()
+			if err != nil {
+				yield(llm.StreamEvent{}, err)
+				return
+			}
 		}
 	}
+}
+
+func adaptTaskRequest(req llm.CompletionRequest, cfg agent.Config) llm.CompletionRequest {
+	out := req
+	out.CacheTTL = cfg.CacheTTL
+	out.PromptCacheRetention = cfg.PromptCacheRetention
+	if out.MaxTokens == 0 && cfg.MaxTokens > 0 {
+		out.MaxTokens = cfg.MaxTokens
+	}
+	return out
+}
+
+func sortExplicitCandidates(in []taskChainCandidate, health *llmpool.Registry) []taskChainCandidate {
+	if health == nil || len(in) <= 1 {
+		return in
+	}
+	out := slices.Clone(in)
+	tierOf := func(id int64) (int, time.Time) {
+		st := health.Get(id)
+		if !st.Open() {
+			if health.IsProbing(id) {
+				return 2, st.OpenUntil
+			}
+			return 0, time.Time{}
+		}
+		if isHardTaskError(errors.New(st.LastError)) {
+			return 3, st.OpenUntil
+		}
+		return 1, st.OpenUntil
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, ui := tierOf(out[i].profileID)
+		tj, uj := tierOf(out[j].profileID)
+		if ti != tj {
+			return ti < tj
+		}
+		if !ui.IsZero() && !uj.IsZero() && !ui.Equal(uj) {
+			return ui.Before(uj)
+		}
+		return false
+	})
+	return out
+}
+
+func hasHealthyUntriedCandidate(rest []taskChainCandidate, health *llmpool.Registry) bool {
+	for _, c := range rest {
+		if health == nil || (!health.IsOpen(c.profileID) && !health.IsProbing(c.profileID)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAlternateTaskFormat(rest []taskChainCandidate, curFormat llm.Format) bool {
+	for _, c := range rest {
+		if c.cfg.Format != curFormat {
+			return true
+		}
+	}
+	return false
+}
+
+func isHardTaskError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isQuotaExhaustedError(err) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	for _, code := range []string{"status 401", "status 402", "status 403", "status 404"} {
+		if strings.Contains(s, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCrossFormatTaskCompatError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	if !strings.Contains(s, "status 400") {
+		return false
+	}
+	return strings.Contains(s, "unsupported_parameter") ||
+		strings.Contains(s, "unknown parameter") ||
+		strings.Contains(s, "unrecognized request argument") ||
+		strings.Contains(s, "unsupported value")
+}
+
+func isTaskChainFailoverError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if (ctx != nil && ctx.Err() != nil) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if isQuotaExhaustedError(err) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "status 400") {
+		return false
+	}
+	return true
+}
+
+func completeExplicitChain(ctx context.Context, taskID string, req llm.CompletionRequest, selection taskLLMSelection, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
+	tried := map[int64]bool{}
+	minWindow := 0
+	var lastErr error
+	for {
+		cands, err := hooks.chainCandidates(selection)
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
+		var eligible []taskChainCandidate
+		for _, c := range cands {
+			if tried[c.profileID] {
+				continue
+			}
+			if w := c.cfg.CompactionWindow(); minWindow > 0 && w > 0 && w <= minWindow {
+				continue
+			}
+			eligible = append(eligible, c)
+		}
+		if len(eligible) == 0 {
+			nextSel, selErr := hooks.current()
+			if selErr == nil && nextSel.revision != selection.revision && nextSel.profileID > 0 {
+				selection = nextSel
+				tried = map[int64]bool{}
+				continue
+			}
+			if lastErr != nil {
+				return llm.Message{}, "", llm.Usage{}, lastErr
+			}
+			return llm.Message{}, "", llm.Usage{}, selErr
+		}
+		ordered := sortExplicitCandidates(eligible, hooks.health)
+		progressed := false
+		for i, cand := range ordered {
+			probeAcquired := false
+			if hooks.health != nil {
+				ho, acq := hooks.health.TryBeginProbe(cand.profileID)
+				if ho && !acq && hasHealthyUntriedCandidate(ordered[i+1:], hooks.health) {
+					continue
+				}
+				probeAcquired = acq
+			}
+			releaseProbe := func() {
+				if probeAcquired && hooks.health != nil {
+					hooks.health.ReleaseProbe(cand.profileID)
+					probeAcquired = false
+				}
+			}
+			prov := llmpool.WithStreamRetry(cand.provider, toPoolStreamPolicy(cand.cfg.Retry))
+			msg, sr, usage, callErr := prov.Complete(ctx, adaptTaskRequest(req, cand.cfg))
+			if callErr == nil {
+				if hooks.health != nil {
+					hooks.health.Pass(cand.profileID)
+				}
+				return msg, sr, usage, nil
+			}
+			tried[cand.profileID] = true
+			lastErr = callErr
+			candSel := taskLLMSelection{task: selection.task, profileID: cand.profileID, revision: selection.revision, provider: cand.provider, retry: cand.cfg.Retry}
+			if isQuotaExhaustedError(callErr) {
+				if hooks.health != nil {
+					hooks.health.Trip(cand.profileID, trimTaskErr(callErr), true)
+				}
+				transition, markErr := hooks.exhaust(candSel, callErr)
+				if markErr != nil {
+					return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
+				}
+				if transition.Advanced && !transition.Stale && hooks.transition != nil {
+					hooks.transition(candSel, transition, callErr)
+				}
+				if !transition.Stale && transition.ChainExhausted {
+					return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: true, cause: callErr}
+				}
+				progressed = true
+				break
+			}
+			if !isTaskChainFailoverError(ctx, callErr) {
+				if isCrossFormatTaskCompatError(callErr) && hasAlternateTaskFormat(ordered[i+1:], cand.cfg.Format) {
+					releaseProbe()
+					continue
+				}
+				if ctx.Err() != nil {
+					releaseProbe()
+				} else if hooks.health != nil {
+					hooks.health.Pass(cand.profileID)
+				}
+				return llm.Message{}, "", llm.Usage{}, callErr
+			}
+			if strings.Contains(strings.ToLower(callErr.Error()), "status 413") {
+				releaseProbe()
+				if w := cand.cfg.CompactionWindow(); w > minWindow {
+					minWindow = w
+				}
+				continue
+			}
+			if hooks.health != nil {
+				hooks.health.Trip(cand.profileID, trimTaskErr(callErr), isHardTaskError(callErr))
+			}
+			log.Printf("[task-llm] task %s 显式链成员 #%d(%s) 故障，单次调用顺延下一健康配置（不改游标）: %v",
+				taskID, cand.profileID, cand.cfg.Model, callErr)
+		}
+		if !progressed {
+			if lastErr == nil {
+				lastErr = llmpool.ErrExhausted
+			}
+			return llm.Message{}, "", llm.Usage{}, lastErr
+		}
+	}
+}
+
+func streamExplicitChain(ctx context.Context, taskID string, req llm.CompletionRequest, selection taskLLMSelection, hooks taskLLMStreamHooks, yield func(llm.StreamEvent, error) bool) {
+	tried := map[int64]bool{}
+	minWindow := 0
+	var lastErr error
+	for {
+		cands, err := hooks.chainCandidates(selection)
+		if err != nil {
+			yield(llm.StreamEvent{}, err)
+			return
+		}
+		var eligible []taskChainCandidate
+		for _, c := range cands {
+			if tried[c.profileID] {
+				continue
+			}
+			if w := c.cfg.CompactionWindow(); minWindow > 0 && w > 0 && w <= minWindow {
+				continue
+			}
+			eligible = append(eligible, c)
+		}
+		if len(eligible) == 0 {
+			nextSel, selErr := hooks.current()
+			if selErr == nil && nextSel.revision != selection.revision && nextSel.profileID > 0 {
+				selection = nextSel
+				tried = map[int64]bool{}
+				continue
+			}
+			if lastErr != nil {
+				yield(llm.StreamEvent{}, lastErr)
+			} else {
+				yield(llm.StreamEvent{}, selErr)
+			}
+			return
+		}
+		ordered := sortExplicitCandidates(eligible, hooks.health)
+		progressed := false
+		for i, cand := range ordered {
+			probeAcquired := false
+			if hooks.health != nil {
+				ho, acq := hooks.health.TryBeginProbe(cand.profileID)
+				if ho && !acq && hasHealthyUntriedCandidate(ordered[i+1:], hooks.health) {
+					continue
+				}
+				probeAcquired = acq
+			}
+			releaseProbe := func() {
+				if probeAcquired && hooks.health != nil {
+					hooks.health.ReleaseProbe(cand.profileID)
+					probeAcquired = false
+				}
+			}
+			prov := llmpool.WithStreamRetry(cand.provider, toPoolStreamPolicy(cand.cfg.Retry))
+			cReq := adaptTaskRequest(req, cand.cfg)
+			committed := false
+			var pending []llm.StreamEvent
+			var streamErr error
+			if !cand.cfg.Stream {
+				msg, sr, usage, err := prov.Complete(ctx, cReq)
+				if err != nil {
+					streamErr = err
+				} else {
+					if hooks.health != nil {
+						hooks.health.Pass(cand.profileID)
+					}
+					emitTaskCompleteAsStream(yield, msg, sr, usage)
+					return
+				}
+			} else {
+				for event, err := range prov.Stream(ctx, cReq) {
+					if err != nil {
+						streamErr = err
+						break
+					}
+					if !committed && !streamEventCommitsOutput(event) {
+						pending = append(pending, event)
+						continue
+					}
+					if !committed {
+						for _, buffered := range pending {
+							if !yield(buffered, nil) {
+								releaseProbe()
+								return
+							}
+						}
+						pending = nil
+						committed = true
+					}
+					if !yield(event, nil) {
+						releaseProbe()
+						return
+					}
+				}
+			}
+			if streamErr == nil {
+				if hooks.health != nil {
+					hooks.health.Pass(cand.profileID)
+				}
+				for _, buffered := range pending {
+					if !yield(buffered, nil) {
+						return
+					}
+				}
+				return
+			}
+			candSel := taskLLMSelection{task: selection.task, profileID: cand.profileID, revision: selection.revision, provider: cand.provider, retry: cand.cfg.Retry}
+			if committed {
+				if isQuotaExhaustedError(streamErr) {
+					if hooks.health != nil {
+						hooks.health.Trip(cand.profileID, trimTaskErr(streamErr), true)
+					}
+					transition, markErr := hooks.exhaust(candSel, streamErr)
+					if markErr != nil {
+						yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr)})
+						return
+					}
+					if transition.Advanced && !transition.Stale && hooks.transition != nil {
+						hooks.transition(candSel, transition, streamErr)
+					}
+					yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
+					return
+				}
+				if ctx.Err() != nil {
+					releaseProbe()
+				} else if hooks.health != nil {
+					hooks.health.Pass(cand.profileID)
+				}
+				yield(llm.StreamEvent{}, streamErr)
+				return
+			}
+			tried[cand.profileID] = true
+			lastErr = streamErr
+			if isQuotaExhaustedError(streamErr) {
+				if hooks.health != nil {
+					hooks.health.Trip(cand.profileID, trimTaskErr(streamErr), true)
+				}
+				transition, markErr := hooks.exhaust(candSel, streamErr)
+				if markErr != nil {
+					yield(llm.StreamEvent{}, fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr))
+					return
+				}
+				if transition.Advanced && !transition.Stale && hooks.transition != nil {
+					hooks.transition(candSel, transition, streamErr)
+				}
+				if !transition.Stale && transition.ChainExhausted {
+					yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: true, cause: streamErr})
+					return
+				}
+				progressed = true
+				break
+			}
+			if !isTaskChainFailoverError(ctx, streamErr) {
+				if isCrossFormatTaskCompatError(streamErr) && hasAlternateTaskFormat(ordered[i+1:], cand.cfg.Format) {
+					releaseProbe()
+					continue
+				}
+				if ctx.Err() != nil {
+					releaseProbe()
+				} else if hooks.health != nil {
+					hooks.health.Pass(cand.profileID)
+				}
+				for _, buffered := range pending {
+					if !yield(buffered, nil) {
+						return
+					}
+				}
+				yield(llm.StreamEvent{}, streamErr)
+				return
+			}
+			if strings.Contains(strings.ToLower(streamErr.Error()), "status 413") {
+				releaseProbe()
+				if w := cand.cfg.CompactionWindow(); w > minWindow {
+					minWindow = w
+				}
+				continue
+			}
+			if hooks.health != nil {
+				hooks.health.Trip(cand.profileID, trimTaskErr(streamErr), isHardTaskError(streamErr))
+			}
+			log.Printf("[task-llm] task %s 显式链成员 #%d(%s) 故障，单次调用顺延下一健康配置（不改游标）: %v",
+				taskID, cand.profileID, cand.cfg.Model, streamErr)
+		}
+		if !progressed {
+			if lastErr == nil {
+				lastErr = llmpool.ErrExhausted
+			}
+			yield(llm.StreamEvent{}, lastErr)
+			return
+		}
+	}
+}
+
+func emitTaskCompleteAsStream(yield func(llm.StreamEvent, error) bool, msg llm.Message, stopReason string, usage llm.Usage) {
+	if !yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil) {
+		return
+	}
+	for _, b := range msg.Content {
+		switch b.Type {
+		case llm.BlockThinking:
+			if b.Thinking != "" && !yield(llm.StreamEvent{Type: llm.SEThinkingDelta, Text: b.Thinking}, nil) {
+				return
+			}
+			if b.Signature != "" && !yield(llm.StreamEvent{Type: llm.SEThinkingSignature, Text: b.Signature}, nil) {
+				return
+			}
+		case llm.BlockText:
+			if b.Text != "" && !yield(llm.StreamEvent{Type: llm.SETextDelta, Text: b.Text}, nil) {
+				return
+			}
+		case llm.BlockToolUse:
+			if !yield(llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: b.ID, ToolName: b.Name}, nil) {
+				return
+			}
+			if len(b.Input) > 0 && !yield(llm.StreamEvent{Type: llm.SEToolInputJSON, Text: string(b.Input)}, nil) {
+				return
+			}
+		}
+	}
+	if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: stopReason, Usage: usage}, nil) {
+		return
+	}
+	yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
+}
+
+func trimTaskErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.TrimSpace(strings.ReplaceAll(err.Error(), "\n", " "))
+	if len(s) > 300 {
+		return s[:300] + "…"
+	}
+	return s
 }
 
 func streamEventCommitsOutput(event llm.StreamEvent) bool {
@@ -517,30 +1122,11 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 //   - 上下文过长:相同请求重放也没用,交给 harness 的 reactive 压缩兜底
 //   - 4xx 确定性拒绝(400/401/403/404/422):到哪个 provider 都一样会失败
 func isRetryableStreamError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if isQuotaExhaustedError(err) {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	if strings.Contains(s, "too long") || strings.Contains(s, "context length") ||
-		strings.Contains(s, "context_length") || strings.Contains(s, "maximum context") ||
-		strings.Contains(s, "status 413") {
-		return false
-	}
-	for _, code := range []string{"status 400", "status 401", "status 403", "status 404", "status 422"} {
-		if strings.Contains(s, code) {
-			return false
-		}
-	}
-	// 其余(传输 reset/EOF/timeout、408/429/5xx、流内 error 事件如 anthropic
-	// overloaded_error 等)一律视为瞬时,允许重试。
-	return true
+	return llmpool.IsRetryableStreamError(err)
 }
 
 // CompactionWindow mirrors current()'s precedence so the context window always
-// matches the provider the role will actually stream on.
+// matches the provider (and active/sticky pool member) the role runs on.
 func (r *taskLLMRuntime) CompactionWindow() int {
 	if r.forcedProfileFn != nil {
 		if id := r.forcedProfileFn(); id > 0 {
@@ -549,15 +1135,35 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 			}
 		}
 	}
-	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
-		return cfg.CompactionWindow()
+	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
+		return r.resolvePoolConfig(prov, cfg).CompactionWindow()
 	}
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
 		return (agent.Config{}).CompactionWindow()
 	}
 	if pt, getErr := r.s.m.pg.GetTask(taskNum); getErr == nil && pt != nil && pt.ActiveLLMProfileID != nil {
-		if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
+		health := r.s.healthRegistry()
+		curID := *pt.ActiveLLMProfileID
+		if health == nil || !health.IsOpen(curID) {
+			if _, cfg, ok := r.s.providerForProfile(curID); ok {
+				return cfg.CompactionWindow()
+			}
+		}
+		if entries, e := r.s.m.pg.TaskLLMProfiles(taskNum); e == nil {
+			for _, entry := range entries {
+				if strings.EqualFold(entry.Status, "exhausted") || strings.EqualFold(entry.Status, "quota_exhausted") {
+					continue
+				}
+				if health != nil && health.IsOpen(entry.ProfileID) {
+					continue
+				}
+				if _, cfg, ok := r.s.providerForProfile(entry.ProfileID); ok {
+					return cfg.CompactionWindow()
+				}
+			}
+		}
+		if _, cfg, ok := r.s.providerForProfile(curID); ok {
 			return cfg.CompactionWindow()
 		}
 	}
@@ -566,8 +1172,8 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 		return (agent.Config{}).CompactionWindow()
 	}
 	if len(chain) == 0 {
-		if _, cfg, ok := r.s.globalProvider(); ok {
-			return cfg.CompactionWindow()
+		if prov, cfg, ok := r.s.globalProvider(); ok {
+			return r.resolvePoolConfig(prov, cfg).CompactionWindow()
 		}
 		return (agent.Config{}).CompactionWindow()
 	}

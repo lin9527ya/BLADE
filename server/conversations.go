@@ -18,6 +18,7 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/llmpool"
 	"github.com/lin9527ya/blade/llmrec"
 	"github.com/lin9527ya/blade/sidequestion"
 )
@@ -596,18 +597,18 @@ func attachmentTitlePromptSeed(atts []chatAttachment) string {
 func (s *Server) resolveAutoTitleProvider(agentKey string, pinnedProfile *int64) llm.Provider {
 	if id := s.effectiveProfileForAgent(agentKey, pinnedProfile); id != nil {
 		if prov, cfg, ok := s.providerForProfile(*id); ok {
-			return s.poolForBinding(*id, prov, cfg)
+			return llmpool.WithStreamRetry(s.poolForBinding(*id, prov, cfg), toPoolStreamPolicy(cfg.Retry))
 		}
 	}
 	if s.m != nil && s.m.pg != nil {
 		if active, err := s.m.pg.ActiveProfile(); err == nil && active != nil {
 			if prov, cfg, ok := s.providerForProfile(active.ID); ok {
-				return s.poolForActive(active.ID, prov, cfg)
+				return llmpool.WithStreamRetry(s.poolForActive(active.ID, prov, cfg), toPoolStreamPolicy(cfg.Retry))
 			}
 		}
 	}
-	if prov, _, ok := s.globalProvider(); ok {
-		return prov
+	if prov, cfg, ok := s.globalProvider(); ok {
+		return llmpool.WithStreamRetry(prov, toPoolStreamPolicy(cfg.Retry))
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/llmpool"
 )
 
 // isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE
@@ -114,11 +115,41 @@ var (
 	errTaskControlConflict = errors.New("task control conflict")
 )
 
-// retryableWorkerModelError excludes errors already handled by the task router.
-// In particular, a quota error after partial streaming advances the task cursor
-// for the next LLM call but must not replay this whole intent on the backup.
+// retryableWorkerModelError excludes errors already handled by the task router
+// or deterministic failures (over-window exhaustion, invalid auth/bad params)
+// that cannot heal by blindly re-running the entire intent after a few seconds.
 func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
-	return reason == harness.ReasonModelError && !isTaskLLMRuntimeError(err)
+	if reason != harness.ReasonModelError || isTaskLLMRuntimeError(err) {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if errors.Is(err, llmpool.ErrExhausted) {
+		if strings.Contains(msg, "超过所有配置的上下文窗口上限") {
+			return false
+		}
+		// If every failed member ended cleanly with deterministic hard rejections
+		// (401/402/403/404) and no transient marker is present, don't stall on Intent replay.
+		hasTransient := strings.Contains(msg, "status 429") ||
+			strings.Contains(msg, "status 408") ||
+			strings.Contains(msg, "status 5") ||
+			strings.Contains(msg, "overloaded") ||
+			strings.Contains(msg, "timeout") ||
+			strings.Contains(msg, "connection") ||
+			strings.Contains(msg, "eof")
+		if !hasTransient && (strings.Contains(msg, "status 401") || strings.Contains(msg, "status 402") || strings.Contains(msg, "status 403") || strings.Contains(msg, "status 404")) {
+			return false
+		}
+		return true
+	}
+	for _, marker := range []string{"status 400", "status 401", "status 403", "status 404"} {
+		if strings.Contains(msg, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // Engine drives the event-driven exploration loop with real LLM agents
@@ -1406,15 +1437,18 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		var err error
 		// 规划失败重试：一次瞬时的模型/网络错误此前会让任务空转十分钟（等心跳），
 		// 而这一轮的触发事件已经被 drain 掉了——"哪个 work 完成了"的信息随之丢失。
+		planCtx, planRetryHint := agent.WithRetryHint(ectx)
 		for attempt := 1; attempt <= plannerAttempts; attempt++ {
+			_ = planRetryHint.Take()
 			e.BeginLLMCall(t.ID)
-			met, reason, err = planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+			met, reason, err = planner.Plan(planCtx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 			e.EndLLMCall(t.ID)
 			if err == nil || ectx.Err() != nil || attempt == plannerAttempts {
 				break
 			}
-			log.Printf("[planner] task %s 规划出错（第 %d/%d 次）: %v", t.ID, attempt, plannerAttempts, err)
-			if sleepCtx(ectx, plannerRetryBackoff) {
+			wait := agent.EffectiveBackoff(plannerRetryBackoff, max(planRetryHint.Take(), agent.RetryAfterOf(err)), 60*time.Second)
+			log.Printf("[planner] task %s 规划出错（第 %d/%d 次，%v 后重试）: %v", t.ID, attempt, plannerAttempts, wait, err)
+			if sleepCtx(ectx, wait) {
 				break
 			}
 		}
@@ -1665,6 +1699,8 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		log.Printf("[worker %s] task %s 首次执行时间记录失败: %v", name, t.ID, err)
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	var intentRetryHint *agent.RetryHint
+	workCtx, intentRetryHint = agent.WithRetryHint(workCtx)
 	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
@@ -1675,21 +1711,22 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emitRenew, e.m.enrich, t.NotifyFinding)
 	}
 	e.EndLLMCall(t.ID)
-	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
-	// 未暂停/未终止/未取消【且未进入收尾】时重试；否则让位给对应分支处理(收尾期不
-	// 再重试,避免退避挤占其他 worker 的优雅收尾窗口)。
+	// model_error 收场 → 额外重跑几次（带抖动与 Retry-After 的退避后再试）。仅在意图仍属本 work、
+	// 任务未暂停/未终止/未取消【且未进入收尾】时重试；否则让位给对应分支处理。
 	maxRetries, retryBackoff := e.modelErrorRetryPolicy()
 	for attempt := 1; attempt <= maxRetries &&
 		retryableWorkerModelError(reason, err) &&
 		workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.isSettling(t.ID); attempt++ {
+		wait := agent.EffectiveBackoff(retryBackoff, max(intentRetryHint.Take(), agent.RetryAfterOf(err)), 60*time.Second)
 		// 重试是**警告**不是错误：以前因「重试」二字被判成 error，而这条恰恰说明
 		// 平台正在按预期自愈。
 		slogFor("worker").Warn("model_error 收场，稍后重试",
 			"worker", name, "task", t.ID, "intent", intent.ID,
-			"backoff", retryBackoff.String(), "attempt", attempt, "max", maxRetries)
-		if sleepCtx(workCtx, retryBackoff) {
+			"backoff", wait.String(), "attempt", attempt, "max", maxRetries)
+		if sleepCtx(workCtx, wait) {
 			break // 退避期间被取消（终止/暂停）→ 交给下方分支处理
 		}
+		_ = intentRetryHint.Take()
 		e.BeginLLMCall(t.ID)
 		if hasChatMessage {
 			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emitRenew, e.m.enrich, t.NotifyFinding, requestID, message)

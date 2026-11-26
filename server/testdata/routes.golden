@@ -367,7 +367,9 @@ POST /api/intercept/rules/test	server.(*Server).interceptTestRule-fm
 POST /api/intercept/rules/{id}/toggle	server.(*Server).interceptToggleRule-fm
 POST /api/llm	server.(*Server).setLLM-fm
 POST /api/llm/models	server.(*Server).pgListModels-fm
+POST /api/llm/pool/members	server.(*Server).pgLLMPoolUpdateMembers-fm
 POST /api/llm/pool/reset	server.(*Server).pgLLMPoolReset-fm
+POST /api/llm/pool/test-chain	server.(*Server).pgLLMPoolTestChain-fm
 POST /api/llm/profiles	server.(*Server).pgSaveProfile-fm
 POST /api/llm/profiles/active	server.(*Server).pgActivateProfile-fm
 POST /api/llm/retry-policy	server.(*Server).pgSaveLLMRetryPolicy-fm

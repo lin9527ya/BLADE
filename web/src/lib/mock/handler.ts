@@ -2382,7 +2382,43 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/llm/profiles/active") return { ok: true };
   if (path === "/llm/pool" && m === "GET") return D.llmPool;
   if (path === "/llm/pool/reset")
-    return { ...D.llmPool, chain: D.llmPool.chain.map((c) => ({ ...c, state: "ok", fails: 0, cooldown_secs: 0 })) };
+    return {
+      ...D.llmPool,
+      chain: D.llmPool.chain.map((c) => ({ ...c, state: "ok", half_open: false, fails: 0, cooldown_secs: 0 })),
+    };
+  if (path === "/llm/pool/members") {
+    const items = (b.members as { profile_id?: string; priority?: number; pool_exclude?: boolean }[] | undefined) ?? [];
+    const byId = new Map(items.map((x) => [String(x.profile_id ?? ""), x]));
+    const nextChain = D.llmPool.chain
+      .map((c) => {
+        const patch = byId.get(c.profile_id);
+        return patch ? { ...c, priority: patch.priority ?? c.priority, excluded: patch.pool_exclude ?? c.excluded } : c;
+      })
+      .sort((a, z) => {
+        if (a.active !== z.active) return a.active ? -1 : 1;
+        return z.priority - a.priority;
+      });
+    return { ...D.llmPool, chain: nextChain };
+  }
+  if (path === "/llm/pool/test-chain") {
+    return {
+      tested_at: new Date().toISOString(),
+      results: D.llmPool.chain
+        .filter((c) => c.active || !c.excluded)
+        .map((c, idx) => ({
+          profile_id: c.profile_id,
+          name: c.name,
+          model: c.model,
+          format: c.format,
+          order: idx + 1,
+          active: c.active,
+          ok: c.state !== "tripped",
+          latency_ms: c.state === "tripped" ? 95 : 140,
+          reply: c.state === "tripped" ? undefined : "OK",
+          error: c.state === "tripped" ? c.last_error || "status 402" : undefined,
+        })),
+    };
+  }
   if (seg[0] === "llm" && seg[1] === "profiles" && seg.length === 3 && m === "DELETE")
     return { deleted: Number(seg[2]) };
 

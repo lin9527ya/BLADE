@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import type { LLMPoolMember, LLMPoolStatus, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -37,18 +38,27 @@ function healthOf(p: LLMProfile, m?: LLMPoolMember): Health {
       hint: "未填 API Key，无法调用",
     };
   }
+  const tripsNote = m && m.trips > 0 ? `累计熔断 ${m.trips} 次` : "";
+  const hint = [tripsNote, m?.last_error].filter(Boolean).join(" · ") || undefined;
   if (m?.state === "tripped") {
     return {
       label: m.cooldown_secs > 0 ? `已熔断 · ${cooldownText(m.cooldown_secs)}` : "已熔断",
       cls: "border-destructive/50 text-destructive",
-      hint: m.last_error,
+      hint,
+    };
+  }
+  if (m?.state === "half_open" || m?.half_open) {
+    return {
+      label: "半开探活中",
+      cls: "border-amber-500/50 text-amber-600 dark:text-amber-400",
+      hint,
     };
   }
   if (m?.state === "degraded") {
     return {
       label: `异常 · 失败 ${m.fails} 次`,
       cls: "border-amber-500/50 text-amber-600 dark:text-amber-400",
-      hint: m.last_error,
+      hint,
     };
   }
   return { label: "正常", cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400" };
@@ -91,6 +101,20 @@ export default function LLMPage() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // 开启轮询或存在熔断/降级/半开节点时自动刷新，保证主页卡片冷却倒计时实时跳动。
+  const hasUnhealthy = (pool?.chain ?? []).some((m) => m.state !== "ok" || m.half_open);
+  usePolling(() => loadPool(), !poolOpen && (pool?.enabled || hasUnhealthy) ? 10_000 : 0, [
+    poolOpen,
+    pool?.enabled,
+    hasUnhealthy,
+    loadPool,
+  ]);
+
+  const activeChainCount = React.useMemo(
+    () => (pool?.enabled ? (pool.chain ?? []).filter((m) => m.active || !m.excluded).length : 1),
+    [pool],
+  );
 
   // 卡片上的健康徽章按 profile id 取轮询状态。
   const health = React.useMemo(() => {
@@ -220,6 +244,12 @@ export default function LLMPage() {
                       {poolOn &&
                         !p.is_default &&
                         (p.pool_exclude ? <span>不参与轮询</span> : <span>优先级 {p.priority ?? 0}</span>)}
+                      {(() => {
+                        const member = health.get(p.id);
+                        return (member?.sticky_sessions ?? 0) > 0 ? (
+                          <span>Sticky {member?.sticky_sessions}</span>
+                        ) : null;
+                      })()}
                     </div>
 
                     <div className="mt-1 flex gap-2">
@@ -260,12 +290,12 @@ export default function LLMPage() {
         </TabsContent>
 
         <TabsContent value="retry" className="mt-4">
-          <RetryPolicyPanel />
+          <RetryPolicyPanel activeChainCount={activeChainCount} />
         </TabsContent>
       </Tabs>
 
       <ProfileDialog profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
-      <PoolDialog open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
+      <PoolDialog open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} onMembersChanged={load} />
     </div>
   );
 }

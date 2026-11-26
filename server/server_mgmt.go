@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"text/template/parse"
 	"time"
@@ -2592,6 +2593,132 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, s.llmPoolStatus())
+}
+
+// pgLLMPoolUpdateMembers atomically updates priority and pool_exclude for a
+// batch of LLM profiles, then rebuilds the shared failover pool once.
+func (s *Server) pgLLMPoolUpdateMembers(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	var body struct {
+		Members []struct {
+			ProfileID   json.RawMessage `json:"profile_id"`
+			ID          json.RawMessage `json:"id"`
+			Priority    int             `json:"priority"`
+			PoolExclude bool            `json:"pool_exclude"`
+		} `json:"members"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if len(body.Members) == 0 {
+		writeErr(w, 400, "members cannot be empty")
+		return
+	}
+	updates := make([]db.PoolMemberUpdate, 0, len(body.Members))
+	for _, m := range body.Members {
+		raw := m.ProfileID
+		if len(raw) == 0 {
+			raw = m.ID
+		}
+		var id int64
+		if len(raw) > 0 {
+			trimmed := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+			parsed, err := strconv.ParseInt(trimmed, 10, 64)
+			if err != nil || parsed <= 0 {
+				writeErr(w, 400, fmt.Sprintf("invalid profile id %s", string(raw)))
+				return
+			}
+			id = parsed
+		}
+		if id <= 0 {
+			writeErr(w, 400, "profile_id must be positive")
+			return
+		}
+		updates = append(updates, db.PoolMemberUpdate{
+			ID:          id,
+			Priority:    m.Priority,
+			PoolExclude: m.PoolExclude,
+		})
+	}
+	if err := pg.UpdatePoolMembers(updates); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	s.invalidateProfileAgents()
+	s.reapplyActiveProfile()
+	writeJSON(w, 200, s.llmPoolStatus())
+}
+
+type poolChainTestResult struct {
+	ProfileID string `json:"profile_id"`
+	Name      string `json:"name"`
+	Model     string `json:"model"`
+	Format    string `json:"format"`
+	Order     int    `json:"order"`
+	Active    bool   `json:"active"`
+	OK        bool   `json:"ok"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Reply     string `json:"reply,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// pgLLMPoolTestChain probes every enabled member in the active failover chain
+// (active first, then non-excluded keyed profiles) to verify end-to-end backup readiness.
+func (s *Server) pgLLMPoolTestChain(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	profs, err := pg.PoolProfiles()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	results := make([]poolChainTestResult, len(profs))
+	if len(profs) > 0 {
+		sem := make(chan struct{}, 4)
+		var wg sync.WaitGroup
+		for i, p := range profs {
+			i, p := i, p
+			results[i] = poolChainTestResult{
+				ProfileID: i64s(p.ID),
+				Name:      p.Name,
+				Model:     p.Model,
+				Format:    p.Format,
+				Order:     i + 1,
+				Active:    p.IsDefault,
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-r.Context().Done():
+					results[i].Error = r.Context().Err().Error()
+					return
+				}
+				cfg := s.profileToAgentConfig(p)
+				lat, reply, testErr := agent.TestConnection(r.Context(), cfg)
+				results[i].LatencyMS = lat.Milliseconds()
+				if testErr != nil {
+					results[i].Error = testErr.Error()
+					return
+				}
+				results[i].OK = true
+				results[i].Reply = truncateReply(reply)
+			}()
+		}
+		wg.Wait()
+	}
+	writeJSON(w, 200, map[string]any{
+		"tested_at": time.Now().UTC().Format(time.RFC3339),
+		"results":   results,
+	})
 }
 
 // pgListModels fetches available models from the provider's API endpoint.

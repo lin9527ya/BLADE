@@ -59,6 +59,8 @@ func (s *Server) registerAgentRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/llm/retry-policy", s.pgSaveLLMRetryPolicy)
 	mux.HandleFunc("GET /api/llm/pool", s.pgLLMPoolStatus)
 	mux.HandleFunc("POST /api/llm/pool/reset", s.pgLLMPoolReset)
+	mux.HandleFunc("POST /api/llm/pool/members", s.pgLLMPoolUpdateMembers)
+	mux.HandleFunc("POST /api/llm/pool/test-chain", s.pgLLMPoolTestChain)
 	mux.HandleFunc("POST /api/llm/models", s.pgListModels)
 
 	// 拦截规则管理

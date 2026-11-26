@@ -186,39 +186,23 @@ func (s *Server) newConfiguredChatAgent(prov llm.Provider, cfg agent.Config) *ag
 	ca.SetWebSearchFunc(s.m.WebSearchOpts)
 	ca.SetGuard(s.chatGuard())
 	if pool, ok := prov.(*llmpool.Pool); ok && pool != nil {
-		ca.SetCompactionWindowResolver(func() int {
-			if m := pool.CurrentMember(""); m != nil && m.WindowTokens > 0 {
-				return m.WindowTokens
-			}
-			return cfg.CompactionWindow()
-		})
-		ca.SetNonStreaming(func() bool {
-			if m := pool.CurrentMember(""); m != nil {
-				return m.NonStreaming
-			}
-			return !cfg.Stream
-		})
-		ca.SetMaxTokens(func() int {
-			if m := pool.CurrentMember(""); m != nil {
-				return m.MaxTokens
-			}
-			return cfg.MaxTokens
-		})
-		ca.SetCacheOptions(
-			func() string {
-				if m := pool.CurrentMember(""); m != nil && m.ProfileConfigured {
-					return m.CacheTTL
+		ca.SetMemberOptionsResolver(func(sessionID string) (agent.MemberRuntimeOptions, bool) {
+			if m := pool.CurrentMember(sessionID); m != nil {
+				opts := agent.MemberRuntimeOptions{
+					WindowTokens:         m.WindowTokens,
+					MaxTokens:            m.MaxTokens,
+					NonStreaming:         m.NonStreaming,
+					CacheTTL:             m.CacheTTL,
+					PromptCacheRetention: m.PromptCacheRetention,
+					PreserveThinking:     m.PreserveThinking,
 				}
-				return cfg.CacheTTL
-			},
-			func() string {
-				if m := pool.CurrentMember(""); m != nil && m.ProfileConfigured {
-					return m.PromptCacheRetention
+				if !m.ProfileConfigured {
+					opts.PreserveThinking = pool.PreservesThinking()
 				}
-				return cfg.PromptCacheRetention
-			},
-			pool.PreservesThinking,
-		)
+				return opts, true
+			}
+			return agent.MemberRuntimeOptions{}, false
+		})
 	} else {
 		ca.SetNonStreaming(nonStreamingResolver(cfg))
 		ca.SetMaxTokens(maxTokensResolver(cfg))
@@ -261,6 +245,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	if act, err := s.m.pg.ActiveProfile(); err == nil && act != nil {
 		prov = s.poolForActive(act.ID, prov, cfg)
 	}
+	prov = llmpool.WithStreamRetry(prov, toPoolStreamPolicy(cfg.Retry))
 	// No global planner/worker pair: every task runs on its own task-routed pair
 	// (agentsForTask), resolved through the engine's authoritative resolver. Global
 	// readiness (Ready()/llm_configured) is reported from s.llm.on, set below.
@@ -402,7 +387,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	if !ok {
 		return nil
 	}
-	ca := s.newConfiguredChatAgent(s.poolForBinding(id, prov, cfg), cfg)
+	ca := s.newConfiguredChatAgent(llmpool.WithStreamRetry(s.poolForBinding(id, prov, cfg), toPoolStreamPolicy(cfg.Retry)), cfg)
 	s.providers.mu.Lock()
 	if ex := s.providers.chatAgents[id]; ex != nil { // lost the race → keep the winner
 		ca = ex

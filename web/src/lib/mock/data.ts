@@ -3391,6 +3391,11 @@ export const settings: Settings = {
 export const llmPool: LLMPoolStatus = {
   enabled: true,
   bind_fallback: false,
+  policy: {
+    soft_trip: 3,
+    cooldown_secs: [60, 300, 1800],
+    fixed_cooldown: false,
+  },
   chain: [
     {
       profile_id: "1",
@@ -3401,6 +3406,8 @@ export const llmPool: LLMPoolStatus = {
       active: true,
       excluded: false,
       state: "ok",
+      half_open: false,
+      sticky_sessions: 2,
       fails: 0,
       trips: 0,
       cooldown_secs: 0,
@@ -3414,6 +3421,8 @@ export const llmPool: LLMPoolStatus = {
       active: false,
       excluded: false,
       state: "tripped",
+      half_open: false,
+      sticky_sessions: 0,
       fails: 0,
       trips: 1,
       cooldown_secs: 42,

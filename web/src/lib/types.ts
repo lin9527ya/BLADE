@@ -2701,9 +2701,10 @@ export interface LLMRetryPolicy extends LLMRetryOverride {
 
 // ---- LLM 轮询（故障转移）----
 // 一个配置在轮询链中的位置与健康状态。state:
-//   ok       正常
-//   degraded 有连续失败但未达熔断阈值
-//   tripped  已熔断，冷却期内被跳过（cooldown_secs 为剩余秒数）
+//   ok        正常
+//   degraded  有连续失败但未达熔断阈值
+//   half_open 冷却窗口已到期，等待单飞探活
+//   tripped   已熔断，冷却期内被跳过（cooldown_secs 为剩余秒数）
 export interface LLMPoolMember {
   profile_id: string;
   name: string;
@@ -2712,7 +2713,9 @@ export interface LLMPoolMember {
   priority: number;
   active: boolean; // 是否为当前激活配置（恒为链首）
   excluded: boolean; // pool_exclude：不参与轮询
-  state: "ok" | "degraded" | "tripped";
+  state: "ok" | "degraded" | "half_open" | "tripped";
+  half_open?: boolean;
+  sticky_sessions?: number;
   fails: number;
   trips: number;
   cooldown_secs: number;
@@ -2720,9 +2723,29 @@ export interface LLMPoolMember {
   last_at?: string;
 }
 
+export interface LLMPoolPolicySummary {
+  soft_trip: number;
+  cooldown_secs: number[];
+  fixed_cooldown?: boolean;
+}
+
+export interface LLMPoolChainTestResult {
+  profile_id: string;
+  name: string;
+  model: string;
+  format: string;
+  order: number;
+  active: boolean;
+  ok: boolean;
+  latency_ms?: number;
+  reply?: string;
+  error?: string;
+}
+
 export interface LLMPoolStatus {
   enabled: boolean;
   bind_fallback: boolean;
+  policy?: LLMPoolPolicySummary;
   chain: LLMPoolMember[];
 }
 

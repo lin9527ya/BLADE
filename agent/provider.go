@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +25,7 @@ import (
 	"github.com/lin9527ya/Norma/llm"
 	acperm "github.com/lin9527ya/Norma/permission"
 	"github.com/lin9527ya/Norma/transcript"
+	"github.com/lin9527ya/blade/llmpool"
 	"github.com/lin9527ya/blade/llmrec"
 )
 
@@ -488,40 +488,8 @@ func supportsPromptCacheKey(format llm.Format, baseURL string) bool {
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
 // billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
 // authentication failures, network errors, and server failures are excluded.
-var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
-var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
-
 func IsQuotaExhaustedMessage(message string) bool {
-	message = strings.ToLower(message)
-	// Authentication/authorization and provider-side 5xx failures never rotate,
-	// even when a gateway happens to echo a quota-looking phrase in the body.
-	if nonFailoverHTTPStatus.MatchString(message) {
-		return false
-	}
-	// Provider APIs frequently describe an ordinary rate limit as "quota
-	// exceeded", especially Google-style responses containing a quota metric.
-	// These limits recover with time and must stay on the current provider.
-	if transientQuotaLimit.MatchString(message) {
-		return false
-	}
-	markers := []string{
-		"insufficient_quota", "quota_exceeded", "quota exceeded", "quota exhausted",
-		"exceeded your current quota", "billing_hard_limit_reached",
-		"billing hard limit", "billing_not_active", "credit balance", "insufficient credit",
-		"insufficient balance", "balance is too low", "payment required", "status 402",
-		"余额不足", "额度不足", "额度已用尽", "欠费",
-	}
-	for _, marker := range markers {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	// gRPC RESOURCE_EXHAUSTED is overloaded for both account quota and ordinary
-	// request-rate limiting. Preserve it as an explicit exhaustion signal only
-	// when the same error does not identify a transient rate limit.
-	return strings.Contains(message, "resource_exhausted") &&
-		!strings.Contains(message, "rate limit") &&
-		!strings.Contains(message, "too many requests")
+	return llmpool.IsQuotaExhaustedMessage(message)
 }
 
 // quotaAwareTransport preserves Norma's normal retry behavior except for a 429
@@ -585,19 +553,33 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// capture before being replaced.
 	resp.Body = capt.TeeResponse(resp.StatusCode, resp.Body)
 
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		if ra := ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now()); ra > 0 {
+			RetryHintFrom(req.Context()).Record(ra)
+		}
+		return resp, nil
+	}
 	if resp.StatusCode != http.StatusTooManyRequests {
 		return resp, nil
 	}
+	ra := ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 	body, readErr := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	if readErr != nil {
+		if ra > 0 {
+			RetryHintFrom(req.Context()).Record(ra)
+		}
 		return resp, nil
 	}
 	if IsQuotaExhaustedMessage(string(body)) {
 		resp.StatusCode = http.StatusPaymentRequired
 		resp.Status = "402 Payment Required"
+		return resp, nil
+	}
+	if ra > 0 {
+		RetryHintFrom(req.Context()).Record(ra)
 	}
 	return resp, nil
 }
