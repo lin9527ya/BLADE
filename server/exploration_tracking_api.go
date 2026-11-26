@@ -11,11 +11,13 @@ import (
 
 type taskSchedulingReport struct {
 	*db.SchedulingReport
-	DispatchMode    string  `json:"dispatch_mode"`
-	GateReason      string  `json:"gate_reason,omitempty"`
-	WorkerSlots     int     `json:"worker_slots"`
-	ActiveWorks     int     `json:"active_works"`
-	ContinuationIDs []int64 `json:"continuation_ids,omitempty"`
+	DispatchMode        string               `json:"dispatch_mode"`
+	GateReason          string               `json:"gate_reason,omitempty"`
+	WorkerSlots         int                  `json:"worker_slots"`
+	ActiveWorks         int                  `json:"active_works"`
+	ContinuationIDs     []int64              `json:"continuation_ids,omitempty"`
+	ExplorationFocus    *db.ExplorationFocus `json:"exploration_focus,omitempty"`
+	DeferredParkedTotal int                  `json:"deferred_parked_total,omitempty"`
 }
 
 func (s *Server) taskScheduling(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +54,12 @@ func (s *Server) taskScheduling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := taskSchedulingReport{SchedulingReport: view, DispatchMode: "regular", WorkerSlots: s.engine.TaskWorkers(t.ID)}
+	if ef, ferr := t.Store.GetExplorationFocus(); ferr == nil {
+		out.ExplorationFocus = &ef
+	}
+	if parked, perr := t.Store.CountDeferredParkedIntents(); perr == nil && parked > 0 {
+		out.DeferredParkedTotal = parked
+	}
 	state := t.lifecycleSnapshot()
 	switch {
 	case s.engine.IsDeleting(t.ID):

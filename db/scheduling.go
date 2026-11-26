@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 )
@@ -11,12 +12,15 @@ import (
 const DispatchBatchSize = 20
 
 type ScheduleComponents struct {
-	Priority   float64 `json:"priority"`
-	Dependency float64 `json:"dependency"`
-	Restart    float64 `json:"restart"`
-	Route      float64 `json:"route"`
-	Aging      float64 `json:"aging"`
-	Retries    float64 `json:"retries"`
+	Priority      float64 `json:"priority"`
+	Focus         float64 `json:"focus"`
+	YieldMomentum float64 `json:"yield_momentum"`
+	Dependency    float64 `json:"dependency"`
+	Restart       float64 `json:"restart"`
+	Congestion    float64 `json:"congestion"`
+	Route         float64 `json:"route"`
+	Aging         float64 `json:"aging"`
+	Retries       float64 `json:"retries"`
 }
 
 type IntentScheduleExplanation struct {
@@ -82,6 +86,8 @@ func (s *ExplorationStore) rankedFrontier(limit int, now time.Time) ([]*Node, er
 	if err != nil {
 		return nil, err
 	}
+	focus, _ := s.GetExplorationFocus()
+	signals, _ := s.IntentDispatchSignals(ids, routes)
 	counts := map[string]int{}
 	largest := 0
 	for _, route := range routes {
@@ -90,11 +96,19 @@ func (s *ExplorationStore) rankedFrontier(limit int, now time.Time) ([]*Node, er
 			largest = counts[route]
 		}
 	}
+	tiers := make(map[int64]int, len(candidates))
 	for _, n := range candidates {
-		n.Schedule = scoreIntent(n, now, routes[n.ID], counts[routes[n.ID]], largest, active[n.ID])
+		r := routes[n.ID]
+		sc, tier := scoreIntentWithSignals(n, now, r, counts[r], largest, active[n.ID], focus, signals)
+		n.Schedule = sc
+		tiers[n.ID] = tier
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
+		ta, tb := tiers[a.ID], tiers[b.ID]
+		if ta != tb {
+			return ta > tb
+		}
 		if a.Schedule.FairWait != b.Schedule.FairWait {
 			return a.Schedule.FairWait
 		}
@@ -118,18 +132,65 @@ func (s *ExplorationStore) rankedFrontier(limit int, now time.Time) ([]*Node, er
 	return candidates, nil
 }
 
-func scoreIntent(n *Node, now time.Time, route string, count, largest int, activeDependency bool) *IntentScheduleExplanation {
+func payloadAssetIDs(p map[string]any) []int64 {
+	raw, ok := p["asset_ids"].([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(raw))
+	for _, item := range raw {
+		switch v := item.(type) {
+		case float64:
+			if int64(v) > 0 {
+				out = append(out, int64(v))
+			}
+		case int64:
+			if v > 0 {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+func scoreIntentWithSignals(n *Node, now time.Time, route string, count, largest int, activeDependency bool, focus ExplorationFocus, signals IntentDispatchSignals) (*IntentScheduleExplanation, int) {
 	var p map[string]any
 	_ = json.Unmarshal(n.Payload, &p)
 	age := now.Sub(n.CreatedAt).Minutes()
 	if n.CreatedAt.IsZero() || age < 0 {
 		age = 0
 	}
-	aging := age
-	if aging > 30 {
-		aging = 30
+	// Bounded aging caps at +80 so old low-priority breadth intents never outrank
+	// higher priority / focused deep chains, while still breaking same-tier ties.
+	aging := age * 2.5
+	if aging > 80 {
+		aging = 80
 	}
-	c := ScheduleComponents{Priority: float64(n.Priority) * 100, Route: float64(largest-count) * 8, Aging: aging}
+	c := ScheduleComponents{
+		Priority: float64(n.Priority) * 100,
+		Aging:    aging,
+	}
+	assetIDs := payloadAssetIDs(p)
+	if focus.HasTargets() {
+		if focus.Matches(route, assetIDs) {
+			if focus.Mode == ExploreModeDeepen {
+				c.Focus = 200
+			} else {
+				c.Focus = 100
+			}
+		} else if focus.Mode == ExploreModeDeepen {
+			c.Focus = -80
+		}
+	}
+	c.YieldMomentum = signals.AncestryBonus[n.ID] + signals.RouteMomentum[route]
+	if running := signals.RunningByRoute[route]; running > 0 {
+		c.Congestion = -float64(running) * 25
+	}
+	// Only spread unexplored equal routes in pure explore mode; never penalize
+	// depth on a focused or high-momentum chain.
+	if focus.Mode != ExploreModeDeepen && c.Focus == 0 && c.YieldMomentum <= 0 {
+		c.Route = float64(largest-count) * 4
+	}
 	if activeDependency {
 		c.Dependency = -100
 	}
@@ -139,14 +200,27 @@ func scoreIntent(n *Node, now time.Time, route string, count, largest int, activ
 	if attempts, ok := p["attempts"].(float64); ok {
 		c.Retries = -attempts * 12
 	}
-	reason := "score_then_id"
+	totalScore := c.Priority + c.Focus + c.YieldMomentum + c.Dependency + c.Restart + c.Congestion + c.Route + c.Aging + c.Retries
+	// Quantize structural value into 100-pt tiers so same-tier FairWait imposes a
+	// strict weak order without ever allowing stale low-priority items to preempt
+	// focused or high-priority deep-exploitation steps.
+	tier := int(math.Floor((c.Priority + c.Focus + c.YieldMomentum + c.Dependency + c.Restart) / 100.0))
+
 	fair := frontierOverdue(n, now)
-	if fair {
-		reason = "overdue_oldest_first"
+	reason := "score_then_id"
+	switch {
+	case fair:
+		reason = "same_tier_fair_wait"
+	case c.Focus > 0:
+		reason = "focus_deepen"
+	case c.YieldMomentum > 0:
+		reason = "yield_momentum"
 	}
-	return &IntentScheduleExplanation{IntentID: n.ID, Summary: payloadSummary(n.Payload), State: n.State, EvaluatedAt: now, Evaluated: true,
-		Claimable: true, Score: c.Priority + c.Dependency + c.Restart + c.Route + c.Aging + c.Retries, Components: c, Route: route,
-		RouteCount: count, LargestRouteCount: largest, WaitingSeconds: int64(age * 60), FairWait: fair, SelectionReason: reason}
+	return &IntentScheduleExplanation{
+		IntentID: n.ID, Summary: payloadSummary(n.Payload), State: n.State, EvaluatedAt: now, Evaluated: true,
+		Claimable: true, Score: totalScore, Components: c, Route: route,
+		RouteCount: count, LargestRouteCount: largest, WaitingSeconds: int64(age * 60), FairWait: fair, SelectionReason: reason,
+	}, tier
 }
 
 func payloadSummary(raw json.RawMessage) string {

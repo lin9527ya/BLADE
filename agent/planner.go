@@ -68,18 +68,19 @@ type Planner struct {
 	proxyCACert         string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn             func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
 	proxyFailureFn      func(proxyURL string, err error)
-	webSearch           WebSearchOpts           // web_search tool backend selection (off by default)
-	workDir             string                  // shared work dir (surfaced in prompt as artifact-output target)
-	injectConstraints   func() bool             // resolver: inject task operation constraints into system prompt? (nil = yes)
-	nonStreamingFn      func() bool             // resolver: use non-streaming (Complete) path? (nil = streaming)
+	webSearch           WebSearchOpts // web_search tool backend selection (off by default)
+	workDir             string        // shared work dir (surfaced in prompt as artifact-output target)
+	injectConstraints   func() bool   // resolver: inject task operation constraints into system prompt? (nil = yes)
+	nonStreamingFn      func() bool   // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
-	execService   ExecService
-	noaEnabledFn  func() bool          // resolver: use experimental noa compaction? (nil = off)
-	boundedView   func() bool          // nil = 有界视图（默认）
-	notifyWorkers func()               // 派发新意图后立即唤醒 worker 调度器
-	maxTokensFn   func() int           // resolver: per-reply output cap (nil/0 = send no cap)
-	cacheOpts     cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
-	compactor     *Compactor           // cold-node compaction (§7); nil = disabled
+	execService       ExecService
+	noaEnabledFn      func() bool          // resolver: use experimental noa compaction? (nil = off)
+	boundedView       func() bool          // nil = 有界视图（默认）
+	workerConcurrency func() int           // resolver: task worker concurrency for queue budget caps
+	notifyWorkers     func()               // 派发新意图后立即唤醒 worker 调度器
+	maxTokensFn       func() int           // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts         cacheOptionResolvers // prompt-cache TTL/retention & thinking-preservation options
+	compactor         *Compactor           // cold-node compaction (§7); nil = disabled
 	// compactionLLM, when set, supplies an independent provider for context
 	// summarization (see InstallContextManager). nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
@@ -195,6 +196,9 @@ func PlannerSessionID(explorationID int64) string {
 // context-compression mechanism. nil/unset = off (built-in compaction). Read per
 // run so the settings toggle takes effect without rebuilding the agent.
 func (p *Planner) SetNoaEnabled(fn func() bool) { p.noaEnabledFn = fn }
+
+// SetWorkerConcurrency wires a resolver for the task's configured worker pool concurrency.
+func (p *Planner) SetWorkerConcurrency(fn func() int) { p.workerConcurrency = fn }
 
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
@@ -725,22 +729,25 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
    - 发现自己在"深入查证"而不是"快速定方向"时立刻停手，写成意图。
    - 能从现有事实/态势判断的，不必探测。
 
-4. **决定补哪些新方向**：**这里的"克制"只指【不重复已存在的意图】，不是"能少派就少派"**——目标未达成时，默认追问是"为逼近目标，还有哪些更深、更狠、尚未覆盖的打法"，而不是"是否可以收尾"。意图是【开放的探索方向】（不是固定类型/菜单），结合已知事实、资产、目标自判方向，逐一与 open + running + recent_done 比对：
+4. **决定先调优队列还是补新方向（先选优收敛，再按预算增量）**：**这里的"克制"只指【不重复已存在的意图】，不是"能少派就少派"——但绝不脱离队列预算铺散低价值泛探索**，目标未达成时，默认追问是"当前哪条线索最有希望逼近目标，应该如何集中算力往深打穿"，而不是"机械按顺序多派几条"。意图是【开放的探索方向】（不是固定类型/菜单），每轮先看 exploration_focus、frontier_budget、route_scorecard 与 open_intents（已按实际执行顺位排序），再决定策略：
+   - **发现高价值突破立刻聚焦收敛（Explore → Deepen）**：一旦在 finding / foothold / credential / capability_fact 或事实详情里看到可利用迹象/直通目标线索，先调 set_exploration_focus(mode="deepen", focus_routes=[...])，并用 reprioritize_intents 把主攻路径提至 priority=8–10、把外围暂不紧急的泛侦察降到 priority=1–3 或 action="park" 暂缓，集中全部并发打穿这一条链，避免同时堆积无关广度。
+   - **纯重排轮同样是好决策**：若当前已有合理的高优 claimable/在跑方向，本轮只做 reprioritize_intents / set_exploration_focus / drop_intent 优化队列、不再新增任何 add_intent，直接结束本轮即可。
    - 已有 open/running 覆盖 → 不再生成（正在处理）。
    - 在 recent_done 里出现过 → **先看该意图的 state（每条都带）分辨怎么停的，再决定**：
      · **done（执行正常结束）**：先看 yields 和证据判断具体问题是否已验证；没有结论不等于已覆盖。有新事实、独立分叉或验证缺口时可续派，说明这次要解决什么；不要只换措辞重复已经验证的同一个问题。
      · **no_output（正常结束但未写回任何新产出）/ negative（实证否定）**：no_output 不等于已覆盖——先用 get_worker_trace / get_worker_output 看是完全没跑成还是已有发现未落图，再据此续派或换打法；negative 按上方"否定/存疑观察"判断：条件已变或证据不足就派新实验（写清这次变化与停止条件），条件未变且证据扎实就尊重结论，不要机械复核。
-     · **exhausted（预算耗尽、探到一半被掐断，只写回部分）/ blocked（模型或网络失败、基本没探成）**：都是中途没善终、信息不全——先用 get_worker_trace / get_worker_output 看它实际做到哪、卡在哪，再从下列里选：接近突破被预算掐 → 派"接上次进度继续"；纯外部故障没跑成（blocked 常是）→ 直接重派同方向；每次卡同一处 → 换打法/方向。依据永远是 trace 里的真实进度，不是 state 本身。
-   - 完全无任何意图覆盖的全新方向 → 生成。
-   - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。
-   - **深度优先于覆盖度**：coverage 是下限/验收项、不是探索目标本身；发现高价值入口（可能通向 RCE/提权/数据外泄）后，优先派意图把那条路【往深打穿】，而不是为拉平覆盖度去铺广、逐个资产浅测。
-   - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是至少 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），资产面广或有多组互不依赖的入口时可以并行更多独立路线，不必刻意压到 2–3 条；某条交出【目标逼近】的证据后才把资源集中过去。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
-   - **广度查漏与深度裂变**（思路启发，不改滚动节奏）：① **查漏三对照**：排查整类空白资产/入口区、recent_leads 中断掉尚未立项的线索尾巴、以及因缺登录态/前置条件被跳过的高价值面（标明前提待解锁，勿直接丢弃）；② **裂变八算子**：盯住单条 fact 从「同族外推（旧版/移动端/管理端/导出）、数据流追踪（落盘/缓存/异步/二次渲染）、同芯异壳（换入口/方法/Content-Type/协议通道）、同物异态（同一对象的读/改/删/分享/并发）、边界穿越（前端→网关→解析器→DB→内网解析差）、时间折叠（重放/延后/单包并发）、跨层降维（媒体库/反代/原生组件/客户端/云编排）、模式迁移（已验证手法复用到兄弟接口或兄弟资产）」推演新方向；③ **盲态建预言机（Oracle）**：遇 403/500/无回显黑盒时先构造微小扰动差分或时间/OOB 侧信道探测不变量破坏，不做相同 payload 盲重试。
-   - **防误删红线（四维等价判定）**：严禁仅凭标题相似或落在同一接口就用 drop_intent 合并或删除细微差异。仅当「① 目标对象/接口 + ② 载体（Query/Body/Header/Cookie）/HTTP方法 + ③ 身份/前置状态 + ④ 验证机理/攻击假设」四维全同或被严格包含时才算重复；任一维度不同均属独立分叉，拿不准默认保留并用 priority 排先后。确需合并类似排队方向时，必须先将独特测试点写进保留方向的 summary/hypothesis 再 drop_intent。
+     · **exhausted（预算耗尽、探到一半被掐断，只写回部分）/ blocked（模型或网络失败、基本没探成）**：都是中途没善终、信息不全——先用 get_worker_trace / get_worker_output 看它实际做到哪、卡在哪，再从下列里选：接近突破被预算掐 → 派"接上次进度继续"（并给高 priority）；纯外部故障没跑成（blocked 常是）→ 直接重派同方向；每次卡同一处 → 换打法/方向。依据永远是 trace 里的真实进度，不是 state 本身。
+   - **线索漏斗筛选**：recent_leads 与 [意图提案] 是候选池，不是每条都必须转 open；队列已过载或已锁定深挖链时，只挑最逼近目标或能与现有战果成链的 Top-K 转成高优意图，其余边缘线索留在 leads 待聚焦链收尾或受阻后回溯。
+   - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 若存在被暂缓支线先恢复或回到 explore、按顶部硬底线另开或续派。
+   - **深度优先于覆盖度**：coverage 是下限/验收项、不是探索目标本身；发现高价值入口（可能通向 RCE/提权/数据外泄）后，优先派高优意图（8–10）并聚焦把那条路【往深打穿】，而不是为拉平覆盖度去铺广、逐个资产浅测。
+   - **保持路线多样、别过早收敛**：处于 explore 探索期、队列未过载且目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是至少 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），资产面广或有多组互不依赖的入口且队列空闲时可并行更多独立路线；一旦某条交出【目标逼近】的证据，立即切换 deepen 把资源集中过去，主链打穿或受阻后再恢复次优分支。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
+   - **广度查漏与深度裂变**（思路启发，按预算定量选用）：① **查漏三对照**：排查整类空白资产/入口区、recent_leads 中高价值的未立项线索、以及因缺登录态/前置条件被跳过的高价值面（标明前提待解锁，勿直接丢弃）；② **裂变八算子**：盯住单条 fact 从「同族外推（旧版/移动端/管理端/导出）、数据流追踪（落盘/缓存/异步/二次渲染）、同芯异壳（换入口/方法/Content-Type/协议通道）、同物异态（同一对象的读/改/删/分享/并发）、边界穿越（前端→网关→解析器→DB→内网解析差）、时间折叠（重放/延后/单包并发）、跨层降维（媒体库/反代/原生组件/客户端/云编排）、模式迁移（已验证手法复用到兄弟接口或兄弟资产）」推演新方向；③ **盲态建预言机（Oracle）**：遇 403/500/无回显黑盒时先构造微小扰动差分或时间/OOB 侧信道探测不变量破坏，不做相同 payload 盲重试。
+   - **防误删红线（四维等价判定）**：严禁仅凭标题相似或落在同一接口就用 drop_intent 合并或删除细微差异。仅当「① 目标对象/接口 + ② 载体（Query/Body/Header/Cookie）/HTTP方法 + ③ 身份/前置状态 + ④ 验证机理/攻击假设」四维全同或被严格包含时才算重复；任一维度不同均属独立分叉，拿不准默认保留并用 reprioritize_intents 拉开 priority 或暂缓（park）分批次跑。确需合并类似排队方向时，必须先将独特测试点写进保留方向的 summary/hypothesis 再 drop_intent。
 
-   **串行利用链：分步派，别拆成并行。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：不要一次性并行下发（下游拿不到还不存在的前置只会重复/空转）；用 TodoWrite 把整条链记成待办（每步一条），本轮只派"前置已满足"的那步（通常第一步），待它产出 fact 后下次唤醒（提示会带上待办清单）再派下一步并把已满足的标 completed。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才用多意图并行。
+   **串行利用链：分步派，别拆成并行。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：不要一次性并行下发（下游拿不到还不存在的前置只会重复/空转）；用 TodoWrite 把整条链记成待办（每步一条），本轮只派"前置已满足"的那步（通常第一步），待它产出 fact 后下次唤醒（提示会带上待办清单）再派下一步并把已满足的标 completed。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才在队列余量允许时并行。
 
-5. **提交**：用【一次】add_intent 批量提交筛出的新方向（intents 数组；默认按价值选 2–6 个，覆盖面广或多组互不依赖的资产/入口时可到 8 个，不要为凑数硬塞，也不要逐条多次调）：
+5. **提交**：先调用 reprioritize_intents / set_exploration_focus 理顺存量排队与聚焦，再用【一次】add_intent 批量提交确实新增的高价值方向（intents 数组；正常情况下精挑 1–4 个；仅开局冷启动且多组互不依赖入口时可到 8 个，队列已过载 frontier_budget.overloaded=true 时严禁继续硬凑泛广度）：
+   - **priority**：必须按价值明确分级——8–10=直通目标/漏洞利用/战果推进/关键绕过深挖；5–7=常规有明确假设的独立入口；1–4=仅作备用的低优外围探索（勿全部默认 5，否则退化为平均排队）。
    - **summary**：一句话自然语言描述该方向（测试目标完整地址 + 做什么 + 为什么），不套固定分类；去重主要靠它与已有意图比对。**重试/复核已有方向时，必须写清这次变了什么**（身份/入口/手法/版本/新证据），并用 hypothesis/stop_condition 写明验证与停止条件；只换措辞的重复视为已覆盖。规划者自检看到、但未直接复现的观察，写进 observation，不要塞进 summary 当已观察事实。
    - **asset_ids**：本方向要测试/攻击的目标资产 id（尽量传，0/1/多个，来自 list_assets）——只要方向围绕具体资产（站点/接口/参数/主机）可在已知 id 时附上，用于覆盖去重、连入资产链路，跨多资产就都传；纯全局侦察无具体资产才留空。
    - **parent_ids**：本方向由哪些上游节点综合得出（可选，0/1/多个）——多个事实结合产生一个意图就都传，派生自某事实/发现也传其 id（意图前置用 depends_on，不放进 parent_ids），顶层全新方向留空。
@@ -768,7 +775,7 @@ func splitPlannerPromptStatic(raw, goal, dataDir, workDir, codeStaticTail string
 // AFTER DynamicBoundary) so tasks share the cached static tools + system prefix.
 func plannerSystemParts(goal, dataDir, workDir string) (staticPart, dynamicPart string) {
 	codeStaticTail := coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
-		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock + adaptiveFocusBlock
 	fullVars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 
 	// ① 全局覆盖（agent_prompts 当前版本）。先剥离标准「任务目标：{{.Goal}}」使主干留在
@@ -818,9 +825,16 @@ func plannerSystem(goal, dataDir, workDir string) string {
 	out := body + promptExtras("planner") +
 		coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
 		artifactSpec(workDir) +
-		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock + adaptiveFocusBlock
 	return out
 }
+
+const adaptiveFocusBlock = `
+
+【选优深挖与队列收敛（代码持有）】
+- open_intents 已按调度器真实顺位（priority + focus + yield_momentum）排序。规划前先看 exploration_focus、frontier_budget 与 route_scorecard（各路线产果与空转对比）。
+- 一旦出现漏洞/战果/高价值能力突破，立即调用 set_exploration_focus(mode="deepen", ...) 锁定热链，并用 reprioritize_intents 将深挖链提到 priority=8-10、将无关外围侦察降权(1-3)或暂缓(action="park")，把并发算力集中打穿最优链路，避免无休止铺开广度。
+- 若 frontier_budget.overloaded=true（或达到硬上限），严禁继续堆叠常规泛侦察：仅挑选能直接成链的 Top-K 突破入队，其余边缘线索留在 leads；本轮只做 reprioritize_intents / focus 收敛不调用 add_intent 是标准正确做法。焦点链路耗尽且目标未达成时，切回 mode="explore" 并恢复备份支线。`
 
 // blackboardViewBlock is code-owned: the editable body predates the bounded view
 // and still says the situation is the complete graph. Keep the distinction in
@@ -929,6 +943,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		t.SetTaskRoot(filepath.Join(p.workDir, "tasks", strconv.FormatInt(taskID, 10)))
 		t.SetTaskClock(taskClockFrom(ctx))
 		t.SetBoundedView(p.boundedView)
+		if p.workerConcurrency != nil {
+			t.SetWorkerConcurrency(p.workerConcurrency())
+		}
 		t.SetNotifyWorkers(p.notifyWorkers)
 		t.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
 		t.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
@@ -975,19 +992,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	plannerSID := PlannerSessionID(ts.ID())
 	opts := agentcore.Options{
-		Provider:                p.prov,
-		SystemPrompt:            system,
-		DynamicBoundary:         boundary,
-		Tools:                   tools,
-		DeferredTools:           def.Deferred,
-		UnlockSet:               def.Unlock,
-		PermissionMode:          permission.ModeBypass,
+		Provider:                      p.prov,
+		SystemPrompt:                  system,
+		DynamicBoundary:               boundary,
+		Tools:                         tools,
+		DeferredTools:                 def.Deferred,
+		UnlockSet:                     def.Unlock,
+		PermissionMode:                permission.ModeBypass,
 		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
 		WebFetchProxyFunc:             p.proxySnapshot,
 		WebFetchCACert:                proxyCA,
 		WebFetchDisableDirectFallback: true,
-		OmitCurrentDateReminder: true,
-		PromptCacheKey:          plannerSID,
+		OmitCurrentDateReminder:       true,
+		PromptCacheKey:                plannerSID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
@@ -1103,7 +1120,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		situation = renderGraphOverview(bb, false)
 	}
 	nextNodeCursor, nextChangeCursor := extractBlackboardCursors(bb, prevNodeCursor, prevChangeCursor)
-	situational := renderTriggers(ts, triggers) + situation
+	budgetBanner := renderFrontierBudgetBanner(bb)
+	situational := renderTriggers(ts, triggers) + budgetBanner + situation
 	if tc.Final {
 		situational += "\n\n【任务终局收尾（本轮特殊指令，覆盖上面的常规规划流程）】：" + resolveTaskTimeoutWrapup("planner")
 	}
@@ -1167,6 +1185,27 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 
 func composePlannerInput(staticRules, lead, volatile, todos string) string {
 	return staticRules + "\n\n" + lead + "\n\n" + volatile + "\n" + todos
+}
+
+func renderFrontierBudgetBanner(bb map[string]any) string {
+	if bb == nil {
+		return ""
+	}
+	budget, _ := bb["frontier_budget"].(map[string]any)
+	if budget == nil {
+		return ""
+	}
+	atHard, _ := budget["at_hard_cap"].(bool)
+	overloaded, _ := budget["overloaded"].(bool)
+	if !atHard && !overloaded {
+		return ""
+	}
+	if atHard {
+		return fmt.Sprintf("\n\n【队列背压警示（已达硬上限 claimable=%v / hard_cap=%v）】：禁止继续追加常规泛广度意图（priority<=6 将被拦截）。请立即用 reprioritize_intents（提权最优链、park 暂缓无关支线）或 drop_intent 收敛队列，仅提交直通目标的突破方向（priority>=8）或直接专注收拢。",
+			budget["claimable"], budget["hard_cap"])
+	}
+	return fmt.Sprintf("\n\n【队列背压提示（负载偏高 claimable=%v / soft_cap=%v）】：当前排队较多，请先看 route_scorecard 与 open_intents 队头，优先调用 set_exploration_focus(deepen) + reprioritize_intents 聚焦打穿高收益路线，减少铺散泛探索。",
+		budget["claimable"], budget["soft_cap"])
 }
 
 // 规划热会话的保留策略。缓存前缀（system + 工具 schema）不随轮数变化，所以复用同一个

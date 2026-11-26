@@ -60,3 +60,24 @@ func TestTriggerQueueCapAndDroppedNotice(t *testing.T) {
 		t.Fatalf("dropped notice mismatch: %+v", last)
 	}
 }
+
+func TestHighQueueWatermarkThrottlesRoutineDoneWakes(t *testing.T) {
+	tk := &Task{ID: "9002", notify: make(chan struct{}, 1)}
+	t.Cleanup(tk.StopTimers)
+	tk.UpdateQueueWatermark(10, 2) // busyThreshold = max(6, 4) = 6; 10 >= 6 -> throttle routine done
+
+	tk.NotifyDone(1, "done")
+	select {
+	case <-tk.notify:
+		t.Fatal("routine done under high claimable backlog should defer instead of waking planner immediately")
+	default:
+	}
+
+	// capability_fact stays unthrottled on leading edge so breakthroughs trigger prompt focus.
+	tk.NotifyFact("capability_fact", 1, 20, "discovered webshell endpoint", nil)
+	select {
+	case <-tk.notify:
+	default:
+		t.Fatal("capability_fact breakthrough should wake immediately even when queue is busy")
+	}
+}

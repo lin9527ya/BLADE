@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	actool "github.com/lin9527ya/Norma/tool"
@@ -35,9 +36,11 @@ const (
 	// midPriorityCooldown 是非关键语义跃迁（done/capability_fact/lead_fact/proposal/
 	// negative_fact/supersede）的并发短聚窗口：首条（leading-edge）立即唤醒，5s 内
 	// 突发续增达 midPriorityMaxBatch 或窗口届满时再触发一轮。
-	midPriorityCooldown = 5 * time.Second
-	midPriorityMaxBatch = 5
-	workerCountCacheTTL = 30 * time.Second
+	midPriorityCooldown     = 5 * time.Second
+	midPriorityMaxBatch     = 5
+	midPriorityBusyCooldown = 25 * time.Second
+	midPriorityBusyMaxBatch = 10
+	workerCountCacheTTL     = 30 * time.Second
 	// maxPendingTriggers 防止异常事件流把内存队列撑爆；超出时优先丢低价值批次，
 	// 在下一轮提示里用 triggers_dropped 显式告知，而不是静默丢失。
 	maxPendingTriggers = 64
@@ -110,12 +113,15 @@ type Task struct {
 	midPriorityTimer         *time.Timer
 	midPriorityCooldownUntil time.Time
 	midPriorityBatchCount    int
+	midPrioritySuppressed    bool
 	pendingFactCount         int
 	pendingFactSummary       string
 	pendingFactRefs          []agent.TriggerFactRef
 	pendingAssetCount        int
 	pendingAssetSummary      string
 	pendingDropped           int
+	claimableHint            atomic.Int32
+	workerCapHint            atomic.Int32
 
 	prefixMu       sync.Mutex    `json:"-"`
 	prefixState    uint8         `json:"-"` // 0=idle, 1=first-wave leader warming KV cache, 2=warmed
@@ -391,9 +397,9 @@ type Manager struct {
 	// candidate, or blockedProxyURL when every candidate is down. It is never an
 	// empty string while candidates are configured — clearing it would mean a
 	// direct connection and leak the real source IP.
-	egressProxy string
-	proxyPool   *ProxyPool
-	proxyFailMu sync.Mutex
+	egressProxy        string
+	proxyPool          *ProxyPool
+	proxyFailMu        sync.Mutex
 	lastProxyFailProbe time.Time
 	// Clash 出口切换按任务隔离：每个候选 Selector 组是一口独立的出口 IP，
 	// clashTaskGroups 固定「任务 → 组」，clashStates 按组保存切换节点/出口 IP/冷却。
@@ -3042,6 +3048,7 @@ func (t *Task) StopTimers() {
 		t.midPriorityTimer = nil
 	}
 	t.midPriorityBatchCount = 0
+	t.midPrioritySuppressed = false
 	t.trigMu.Unlock()
 }
 
@@ -3063,6 +3070,7 @@ func (t *Task) flushMidPriority() {
 	t.trigMu.Lock()
 	t.midPriorityTimer = nil
 	t.midPriorityBatchCount = 0
+	t.midPrioritySuppressed = false
 	wake := len(t.pendingTriggers) > 0
 	if wake {
 		t.midPriorityCooldownUntil = time.Now().Add(midPriorityCooldown)
@@ -3073,24 +3081,81 @@ func (t *Task) flushMidPriority() {
 	}
 }
 
+// UpdateQueueWatermark refreshes cached claimable backlog and concurrency hints used
+// to adapt planner wakeup coalescing under heavy open queues. When the backlog
+// drops low while a deferred mid-priority flush timer is pending, flush early.
+func (t *Task) UpdateQueueWatermark(claimable, workers int) {
+	if t == nil {
+		return
+	}
+	if claimable < 0 {
+		claimable = 0
+	}
+	if workers <= 0 {
+		workers = 4
+	}
+	t.claimableHint.Store(int32(claimable))
+	t.workerCapHint.Store(int32(workers))
+	lowWater := workers
+	if lowWater < 2 {
+		lowWater = 2
+	}
+	if claimable <= lowWater {
+		t.trigMu.Lock()
+		flush := t.midPriorityTimer != nil && len(t.pendingTriggers) > 0
+		t.trigMu.Unlock()
+		if flush {
+			t.flushMidPriority()
+		}
+	}
+}
+
+func (t *Task) effectiveMidPriorityPolicy(ev agent.TriggerEvent) (cooldown time.Duration, maxBatch int, suppressLeading bool) {
+	workers := int(t.workerCapHint.Load())
+	if workers <= 0 {
+		workers = 4
+	}
+	claimable := int(t.claimableHint.Load())
+	busyThreshold := workers * 2
+	if busyThreshold < 6 {
+		busyThreshold = 6
+	}
+	isRoutine := (ev.Kind == "done" && (ev.State == "done" || ev.State == "no_output")) || ev.Kind == "lead_fact"
+	if claimable >= busyThreshold && isRoutine {
+		return midPriorityBusyCooldown, midPriorityBusyMaxBatch, true
+	}
+	return midPriorityCooldown, midPriorityMaxBatch, false
+}
+
 func (t *Task) notifyMidPriorityTrigger(ev agent.TriggerEvent) {
 	wake := false
 	now := time.Now()
+	cooldown, maxBatch, suppressLeading := t.effectiveMidPriorityPolicy(ev)
 	t.trigMu.Lock()
 	t.appendTriggerLocked(ev)
-	if !now.Before(t.midPriorityCooldownUntil) {
-		t.midPriorityCooldownUntil = now.Add(midPriorityCooldown)
+	// Grant immediate leading-edge wake when either the cooldown window expired
+	// (without suppression) OR an unsuppressed breakthrough arrives while only a
+	// suppressed routine-completion window was holding the planner back.
+	if (!now.Before(t.midPriorityCooldownUntil) && !suppressLeading) || (!suppressLeading && t.midPrioritySuppressed) {
+		t.midPriorityCooldownUntil = now.Add(cooldown)
 		t.midPriorityBatchCount = 0
+		t.midPrioritySuppressed = false
 		if t.midPriorityTimer != nil {
 			t.midPriorityTimer.Stop()
 			t.midPriorityTimer = nil
 		}
 		wake = true
 	} else {
-		t.midPriorityBatchCount++
-		if t.midPriorityBatchCount >= midPriorityMaxBatch {
-			t.midPriorityCooldownUntil = now.Add(midPriorityCooldown)
+		if !now.Before(t.midPriorityCooldownUntil) && suppressLeading && t.midPriorityTimer == nil {
+			t.midPriorityCooldownUntil = now.Add(cooldown)
 			t.midPriorityBatchCount = 0
+			t.midPrioritySuppressed = true
+		}
+		t.midPriorityBatchCount++
+		if t.midPriorityBatchCount >= maxBatch {
+			t.midPriorityCooldownUntil = now.Add(cooldown)
+			t.midPriorityBatchCount = 0
+			t.midPrioritySuppressed = false
 			if t.midPriorityTimer != nil {
 				t.midPriorityTimer.Stop()
 				t.midPriorityTimer = nil
@@ -3118,6 +3183,8 @@ func (t *Task) notifyImmediateTrigger(ev agent.TriggerEvent) {
 		t.midPriorityTimer = nil
 	}
 	t.midPriorityBatchCount = 0
+	t.midPrioritySuppressed = false
+	t.midPrioritySuppressed = false
 	t.trigMu.Unlock()
 	t.Notify()
 }
@@ -3386,6 +3453,7 @@ func (t *Task) drainTriggers() []agent.TriggerEvent {
 		t.midPriorityTimer = nil
 	}
 	t.midPriorityBatchCount = 0
+	t.midPrioritySuppressed = false
 	if t.pendingDropped > 0 {
 		// 直接 append：这条通知本身不应再触发一次丢弃。
 		t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "triggers_dropped", Count: t.pendingDropped})

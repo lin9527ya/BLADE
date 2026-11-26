@@ -1500,6 +1500,9 @@ func (e *Engine) workerDispatcher(ctx context.Context, t *Task) {
 			}
 			intent := e.claimNextIntent(t)
 			if intent == nil {
+				if active.Load() == 0 && e.tryUnparkDeferredForFocus(t, limit) {
+					continue
+				}
 				return
 			}
 			workerName := fmt.Sprintf("worker#%d", intent.ID)
@@ -2304,6 +2307,44 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 	}
 }
 
+func (e *Engine) tryUnparkDeferredForFocus(t *Task, limit int) bool {
+	if e == nil || t == nil || t.Store == nil {
+		return false
+	}
+	if e.IsPaused(t.ID) || e.IsDeleting(t.ID) || isTerminalStatus(e.m.TaskStatus(t.ID)) || e.isSettling(t.ID) {
+		return false
+	}
+	snap, err := t.Store.IntentDispatchSnapshot()
+	if err != nil || snap.Claimable > 0 || snap.Running > 0 {
+		return false
+	}
+	parked, err := t.Store.CountDeferredParkedIntents()
+	if err != nil || parked <= 0 {
+		return false
+	}
+	if focus, ferr := t.Store.GetExplorationFocus(); ferr == nil && focus.Mode == db.ExploreModeDeepen {
+		_ = t.Store.SetExplorationFocus(db.ExplorationFocus{
+			Mode:   db.ExploreModeExplore,
+			Reason: "焦点路径暂无可执行工作，切回探索模式",
+		})
+	}
+	if limit < 2 {
+		limit = 2
+	}
+	ids, err := t.Store.AutoUnparkDeferred(limit)
+	if err != nil || len(ids) == 0 {
+		return false
+	}
+	log.Printf("[worker] task %s 焦点队列已排干，自动恢复 %d 条暂缓支线（%v）", t.ID, len(ids), ids)
+	e.emitActivity(t, db.Activity{
+		Worker:  "system",
+		Kind:    "text",
+		Summary: fmt.Sprintf("当前聚焦队列已排干，自动唤醒 %d 条暂缓支线并触发重规划", len(ids)),
+	})
+	t.Notify()
+	return true
+}
+
 func (e *Engine) claimNextIntent(t *Task) *db.Node {
 	e.dispatchMu.RLock()
 	defer e.dispatchMu.RUnlock()
@@ -2321,6 +2362,7 @@ func (e *Engine) claimNextIntent(t *Task) *db.Node {
 		fr, _ = t.Store.FrontierForIDs(ids)
 	} else {
 		fr, _ = t.Store.FrontierForSlot("", nil, db.DispatchBatchSize)
+		t.UpdateQueueWatermark(len(fr), e.taskConcurrencyLimit(t))
 	}
 	for _, in := range fr {
 		workerName := fmt.Sprintf("worker#%d", in.ID)

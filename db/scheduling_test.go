@@ -37,9 +37,17 @@ func TestSchedulingComponentsAndDispatchShareOrder(t *testing.T) {
 	if r.IntentID != down || r.Components.Priority != 800 || r.Components.Dependency != -100 || r.Components.Restart != 100000 || r.Components.Retries != -24 {
 		t.Fatalf("incorrect components: %+v", r)
 	}
-	sum := r.Components.Priority + r.Components.Dependency + r.Components.Restart + r.Components.Route + r.Components.Aging + r.Components.Retries
+	sum := r.Components.Priority + r.Components.Focus + r.Components.YieldMomentum +
+		r.Components.Dependency + r.Components.Restart + r.Components.Congestion +
+		r.Components.Route + r.Components.Aging + r.Components.Retries
 	if math.Abs(sum-r.Score) > 0.00001 {
 		t.Fatal("total not equal to displayed components")
+	}
+	// Aging an unrelated lower-tier open intent past 15m must NOT overtake a restart+P8 chain,
+	// whereas among same-tier peers (pre vs sameTier) the overdue peer wins fairly.
+	sameTier, err := s.AddIntent(map[string]any{"summary": "same tier new peer", "contract": map[string]any{"route": "common"}}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
 	}
 	if _, err := d.Exec(`UPDATE exploration_nodes SET created_at=now()-interval '16 minutes' WHERE id=$1`, pre); err != nil {
 		t.Fatal(err)
@@ -48,8 +56,20 @@ func TestSchedulingComponentsAndDispatchShareOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fr[0].ID != pre || fr[0].Schedule.SelectionReason != "overdue_oldest_first" {
-		t.Fatal("fairness not explained independently of numeric score")
+	if fr[0].ID != down {
+		t.Fatalf("aged lower-priority intent hijacked restart+P8 intent: got head #%d", fr[0].ID)
+	}
+	var posPre, posNew int = -1, -1
+	for i, n := range fr {
+		if n.ID == pre {
+			posPre = i
+		}
+		if n.ID == sameTier {
+			posNew = i
+		}
+	}
+	if posPre < 0 || posNew < 0 || posPre > posNew || fr[posPre].Schedule.SelectionReason != "same_tier_fair_wait" {
+		t.Fatalf("same-tier overdue intent did not win fairly: posPre=%d posNew=%d reason=%s", posPre, posNew, fr[posPre].Schedule.SelectionReason)
 	}
 }
 

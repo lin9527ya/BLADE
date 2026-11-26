@@ -75,6 +75,11 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64, kindMa
 			if n.Schedule != nil {
 				m["schedule"] = n.Schedule
 			}
+		} else if n.Priority > 0 {
+			m["priority"] = n.Priority
+		}
+		if parkReason, _ := p["park_reason"].(string); strings.TrimSpace(parkReason) != "" {
+			m["park_reason"] = parkReason
 		}
 		if ra, _ := p["risk_area"].(string); strings.TrimSpace(ra) != "" {
 			m["risk_area"] = ra
@@ -180,7 +185,7 @@ type ToolSet struct {
 	egressCA       string
 	egressProxyFn  func() (string, string)
 	proxyFailureFn func(proxyURL string, err error)
-	clock       TaskClock
+	clock          TaskClock
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops the coverage block, the
@@ -189,7 +194,8 @@ type ToolSet struct {
 	coverageDisabled bool
 	// boundedView 决定 graph_overview/planner 预取默认走有界黑板视图还是完整态势。
 	// nil = true（保持 0.9.2 默认）；server 注入设置项，每轮现读。
-	boundedView func() bool
+	boundedView       func() bool
+	workerConcurrency int // host worker pool limit; drives frontier soft/hard backpressure caps
 	// execService（P13）由 host 注入：长任务执行的托管后端。nil = 未接线，
 	// 四个执行工具会返回可读拒绝而不是静默消失。
 	execService ExecService
@@ -919,6 +925,7 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	if len(relatedSummary) > 0 {
 		out["related_tasks_summary"] = relatedSummary
 	}
+	t.populatePortfolioSignals(out)
 	truncateMaps := func(key string, n int) {
 		if arr, ok := out[key].([]map[string]any); ok && len(arr) > n {
 			out[key] = arr[:n]
@@ -1373,6 +1380,11 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 	}
 	// 展示用「全部 open」而不是 frontier：被前置挡住的意图**也是 planner 要看见的**
 	// ——它得知道"我派了、但它在等谁"，否则只会反复重派或以为系统没跑。
+	// 排序与生产调度对齐：已进入 rankedFrontier 的队头按 dispatch rank 排最前，其余按 priority/id 兜底。
+	rankOf := make(map[int64]int, len(order))
+	for i, id := range order {
+		rankOf[id] = i + 1
+	}
 	var openIntents []*db.Node
 	for _, n := range all {
 		if n.State == "open" {
@@ -1380,6 +1392,13 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 		}
 	}
 	sort.SliceStable(openIntents, func(i, j int) bool {
+		ri, rj := rankOf[openIntents[i].ID], rankOf[openIntents[j].ID]
+		if (ri > 0) != (rj > 0) {
+			return ri > 0
+		}
+		if ri > 0 && rj > 0 && ri != rj {
+			return ri < rj
+		}
 		if openIntents[i].Priority != openIntents[j].Priority {
 			return openIntents[i].Priority > openIntents[j].Priority
 		}
@@ -1389,6 +1408,7 @@ func (t *ToolSet) graphOverviewDataInternalWithAttention(attention bool) map[str
 		openIntents = openIntents[:openIntentsCap]
 	}
 	out["open_intents"] = compactIntents(openIntents, parentsOf, yieldsOf, lineageKinds)
+	t.populatePortfolioSignals(out)
 	var running, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
@@ -2720,18 +2740,16 @@ type intentContract struct {
 	Acceptance string   `json:"acceptance,omitempty"` // 产物验收条件
 }
 
-// addOneIntent 创建一条意图节点并连上游血缘，返回 id 与一条可选的目标挂载提示。
-// 血缘有三条正交的轴：
-//   - 知识轴：parent_ids → derived_from（只能锚已确认的 fact/finding），顶层留空时兜底连 origin fact；
-//   - 目标归属：goal_id 只作为意图的归属记录，不再写「目标→意图」边。目标只保留
-//     origin→goal 的初始派生链；目标达成后由 prove_goal 写证据→目标的 proves 边。
-//     意图本身始终从事实/漏洞派生，顶层意图兜底连 origin fact（与 ARTEX 一致）。
-//   - 战果轴：uses_loot_ids → uses（本条方向在动用哪次已得的访问：据点/凭据）。只接受本任务里
-//     仍在手(active)的战果；这条边是「哪些战果还没被推进过」的唯一依据。
 func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
+	id, warnings, _, err := t.addOneIntentWithBudget(it, -1)
+	return id, warnings, err
+}
+
+// addOneIntent 创建一条意图节点并连上游血缘，返回 id、告警与是否计入普通队列占用。
+func (t *ToolSet) addOneIntentWithBudget(it intentItem, claimableOverride int) (int64, []string, bool, error) {
 	warnings := make([]string, 0)
 	if strings.TrimSpace(it.Summary) == "" {
-		return 0, warnings, fmt.Errorf("summary 不能为空")
+		return 0, warnings, false, fmt.Errorf("summary 不能为空")
 	}
 	// 意图可以派生自事实/发现，也可以直接派生自战果（据点/凭据）与已摄入的
 	// AD/云对象：目标本身可能就是“拿到某台机器 Shell”或“拿到某条凭据”，强迫
@@ -2741,7 +2759,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	for _, lead := range leadIDs {
 		fact, _, err := db.ParseExplorationLeadID(lead)
 		if err != nil {
-			return 0, warnings, err
+			return 0, warnings, false, err
 		}
 		found := false
 		for _, parent := range parents {
@@ -2753,15 +2771,18 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 			parents = append(parents, fact)
 		}
 	}
+	breakthroughParent := false
 	for _, parent := range parents {
 		n, err := t.ts.GetNodeWithSources(parent)
 		if err != nil || n == nil {
-			return 0, warnings, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是事实(fact)/发现(finding)/据点(foothold)/凭据(credential)/AD对象/云对象 id；顶层全新方向请留空 parent_ids", parent)
+			return 0, warnings, false, fmt.Errorf("parent_id %d 不存在于本任务或直接关联任务：parent_ids 必须是事实(fact)/发现(finding)/据点(foothold)/凭据(credential)/AD对象/云对象 id；顶层全新方向请留空 parent_ids", parent)
 		}
 		switch n.Kind {
-		case db.KindFact, db.KindFinding, db.KindFoothold, db.KindCredential, db.KindADObject, db.KindCloudObject:
+		case db.KindFinding, db.KindFoothold, db.KindCredential:
+			breakthroughParent = true
+		case db.KindFact, db.KindADObject, db.KindCloudObject:
 		default:
-			return 0, warnings, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：允许事实/发现/据点/凭据/AD对象/云对象", parent, n.Kind)
+			return 0, warnings, false, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：允许事实/发现/据点/凭据/AD对象/云对象", parent, n.Kind)
 		}
 	}
 	// Optional dependency edges: depends_on is advisory by default and only affects
@@ -2815,16 +2836,16 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 	if t.as != nil && t.taskID > 0 && len(anchors) > 0 {
 		visible, err := t.as.GetByIDsInScope(t.taskID, anchors)
 		if err != nil {
-			return 0, warnings, fmt.Errorf("资产可见范围校验失败：%w", err)
+			return 0, warnings, false, fmt.Errorf("资产可见范围校验失败：%w", err)
 		}
 		if len(visible) != len(anchors) {
-			return 0, warnings, fmt.Errorf("资产 %v 不在本任务可测范围内：先用 list_assets 确认。若确属目标：worker 侧先用 request_scope_expansion 记录归属证据；planner 复核后调用 add_task_scope（公司资产先 add_company_scope 再 add_task_scope company）扩面，再派发意图。不要直接测试范围外资产", anchors)
+			return 0, warnings, false, fmt.Errorf("资产 %v 不在本任务可测范围内：先用 list_assets 确认。若确属目标：worker 侧先用 request_scope_expansion 记录归属证据；planner 复核后调用 add_task_scope（公司资产先 add_company_scope 再 add_task_scope company）扩面，再派发意图。不要直接测试范围外资产", anchors)
 		}
 	}
 	if t.as != nil && len(anchors) > 0 {
 		hits, err := t.as.CheckAssetsIntercept(t.taskID, anchors)
 		if err != nil {
-			return 0, warnings, fmt.Errorf("资产拦截校验失败：%w", err)
+			return 0, warnings, false, fmt.Errorf("资产拦截校验失败：%w", err)
 		}
 		if len(hits) > 0 {
 			var b strings.Builder
@@ -2832,7 +2853,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 			for _, h := range hits {
 				fmt.Fprintf(&b, "\n - %s", h.Describe())
 			}
-			return 0, warnings, fmt.Errorf("%s", b.String())
+			return 0, warnings, false, fmt.Errorf("%s", b.String())
 		}
 	}
 	payload := map[string]any{"summary": it.Summary}
@@ -2912,8 +2933,31 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, []string, error) {
 		// From=0 is filled with the new intent id by AddIntentGraph.
 		edges = append(edges, db.IntentEdge{From: 0, To: depID, Rel: db.RelDependsOn})
 	}
+	// 方案 A（队列分级软/硬背压）：
+	//   - 高优突破方向（priority >= 8、直接派生自 finding/foothold/credential/hint、或响应用户 hint）始终豁免硬上限，可直接插队；
+	//   - 普通泛广度探索（priority <= 6 且无突破血缘）在超 softCap 时附带收敛提醒，在达 hardCap 时拒绝继续堆积。
+	isHighPriorityBreakthrough := priority >= 8 || breakthroughParent || strings.Contains(it.Summary, "按提示")
+	if t.ts != nil {
+		softCap, hardCap := t.frontierBudgetCaps()
+		claimable := claimableOverride
+		if claimable < 0 {
+			if snap, serr := t.ts.IntentDispatchSnapshot(); serr == nil {
+				claimable = snap.Claimable
+			}
+		}
+		if claimable >= hardCap && !isHighPriorityBreakthrough {
+			return 0, warnings, false, fmt.Errorf(
+				"活跃队列已达硬上限 (%d >= %d)：禁止继续堆积常规广度意图（priority=%d）。请先调用 reprioritize_intents 降权/暂缓(park)外围支线或 drop_intent 清理低效分支；仅高价值突破方向(priority >= 8 或直接派生自发现/战果)允许入队",
+				claimable, hardCap, priority)
+		}
+		if claimable >= softCap && !isHighPriorityBreakthrough {
+			warnings = append(warnings, fmt.Sprintf(
+				"活跃队列偏高 (%d >= soft_cap %d)：建议先用 set_exploration_focus(deepen) + reprioritize_intents 集中打穿高价值路线并暂缓边缘分支，避免无休止发散",
+				claimable, softCap))
+		}
+	}
 	id, err := t.ts.AddIntentGraph(payload, priority, anchors, "planner", edges)
-	return id, warnings, err
+	return id, warnings, err == nil, err
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
@@ -2936,7 +2980,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"acceptance":       str("可选：产物验收条件（有命令回显/可重复/可读取等）。"),
 			"risk_area":        str("可选：漏洞类别（sqli/xss/rce/ssrf/idor/authz/auth/logic/upload/traversal/disclosure/other）。"),
 			"techniques":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选：ATT&CK 技术 ID（T1190 等）。"},
-			"priority":         intp("优先级 0-10，默认 5"),
+			"priority":         intp("优先级 0-10，默认 5（8-10=高危突破/战果利用/直通目标深挖，5-7=常规探索，1-4=低优外围备份）"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2949,15 +2993,22 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			if !batch {
 				items = []intentItem{a.intentItem}
 			}
+			claimable := -1
+			if budget, err := t.frontierBudgetSnapshot(); err == nil {
+				claimable = budget.Claimable
+			}
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			warns := map[string][]string{}
 			created := false
 			for i, it := range items {
-				id, warnings, err := t.addOneIntent(it)
+				id, warnings, counted, err := t.addOneIntentWithBudget(it, claimable)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
+				}
+				if counted && claimable >= 0 {
+					claimable++
 				}
 				ids[i] = id
 				if len(warnings) > 0 {
@@ -5323,7 +5374,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// list_worker_traces 只作工具目录保留（defaultUnbound）：规划者用
 		// search_all_worker_traces 已能翻全量轨迹，默认不再重复给。
 		t.listWorkerTraces(),
-		t.listGoals(), t.addIntent(), t.dropIntent(), t.proveGoal(), t.goalMet(),
+		t.listGoals(), t.addIntent(), t.dropIntent(), t.reprioritizeIntents(), t.setExplorationFocus(), t.proveGoal(), t.goalMet(),
 		// 依赖自救：改模式/拆边/重开失败意图。都是显式能力，不是新的默认闸门。
 		t.setDependencyMode(), t.dropDependency(), t.reopenIntent(),
 		// consume_hint：采纳战略提示后把它移出 active 窗口（否则每轮重复出现）。

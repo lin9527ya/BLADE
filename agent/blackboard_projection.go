@@ -306,7 +306,13 @@ func slimIntentNodes(nodes []*db.Node, parents map[int64][]int64) []map[string]a
 		if json.Unmarshal(n.Payload, &p) != nil || p == nil {
 			p = map[string]any{}
 		}
-		p["id"], p["state"] = n.ID, n.State
+		p["id"], p["state"], p["priority"] = n.ID, n.State, n.Priority
+		if n.State == "open" && !n.CreatedAt.IsZero() {
+			p["waiting_minutes"] = ageMinutesStable(n.CreatedAt)
+		}
+		if n.Schedule != nil {
+			p["schedule"] = n.Schedule
+		}
 		if ids := parents[n.ID]; len(ids) > 0 {
 			p["parents"] = ids
 		}
@@ -321,7 +327,8 @@ func slimIntentNodes(nodes []*db.Node, parents map[int64][]int64) []map[string]a
 func slimIntentSummary(in map[string]any) map[string]any {
 	out := map[string]any{"id": in["id"], "state": in["state"]}
 	for _, field := range []string{
-		"summary", "asset_ids", "parents", "parent_ids", "parent_kinds", "hypothesis",
+		"summary", "priority", "waiting_minutes", "schedule", "attempts", "last_outcome", "park_reason",
+		"asset_ids", "parents", "parent_ids", "parent_kinds", "hypothesis",
 		"success_criteria", "stop_condition", "risk_area", "route", "mechanism",
 		"depends_on", "depends_on_mode",
 	} {
@@ -447,12 +454,13 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 		out["graph_health"] = health
 	}
 
-	openNodes, _ := t.ts.ListByKindState(db.KindIntent, "open", 16)
+	openNodes := t.openIntentWindow(16)
 	runNodes, _ := t.ts.ListByKindState(db.KindIntent, "running", 10)
 	parentIDs := append(intentNodeIDs(openNodes), intentNodeIDs(runNodes)...)
 	parents, _ := t.ts.DerivedParentsForNodes(parentIDs)
 	out["open_intents"] = slimIntentNodes(openNodes, parents)
 	out["running_intents"] = slimIntentNodes(runNodes, parents)
+	t.populatePortfolioSignals(out)
 
 	totals := map[string]any{}
 	if states, err := t.ts.CountIntentStates(); err == nil {

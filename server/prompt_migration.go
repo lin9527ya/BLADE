@@ -32,6 +32,7 @@ var plannerBuiltinPromptSHA256 = map[string]bool{
 	"918f3915a866fd650952a65b727cc03e3047ab298263637e07dc947472f36391": true, // v0.9.24–v0.9.25（复探条件化前）
 	"07489799b5edcc9ebb5c30228b4941a6a7d960470b22628cd1da5d44770f53a5": true, // v0.9.25（复探条件化，角色对齐前）
 	"7a545d7c0f8e61fcfaa768e867ca45cd428aea0558828206de61cb8fb34a26ca": true, // v0.9.26（四维等价防误删与裂变算子前）
+	"44086fe39fa2524897ab4cd9bf0e9b3e23b4a33d8e1b2fcce7d2ca5de6009b1c": true, // v0.9.30（Best-First 深挖与队列收敛重构前）
 }
 
 const settingPlannerPromptV3 = "planner_prompt_v3"
@@ -90,6 +91,7 @@ var workerBuiltinPromptSHA256 = map[string]bool{
 	"7ba5df1b5c45fd3bfe0f638efc99a441c499a1d767a21961de0b13e1d16b812c": true,
 	"dc3878b69229870a0cd8a0cd96cb7c6f2e9007cdf5c3d3d6abc616c6a20e2c3c": true,
 	"ecfc6637c257531ebd3e786fad28499f01a9bbaa8afbe844219df235135a5ca4": true, // v0.9.25（意图边界改为研究问题）
+	"adce58d0bda08c784cc750cd3619118ae56eda05191453f2b6f91e90a150883a": true, // v0.9.30（就地纵向打穿边界增强前）
 }
 
 var reporterBuiltinPromptSHA256 = map[string]bool{

@@ -15,7 +15,7 @@ func TestPlannerPromptToolReferencesExist(t *testing.T) {
 	for _, name := range []string{
 		"list_facts", "list_findings", "list_leads", "node_detail", "list_assets", "asset_neighbors",
 		"get_worker_output", "get_worker_trace", "lookup_playbooks", "record_playbook_feedback",
-		"add_intent", "prove_goal", "kill_work", "steer_work", "abandon_goal",
+		"add_intent", "drop_intent", "reprioritize_intents", "set_exploration_focus", "prove_goal", "kill_work", "steer_work", "abandon_goal",
 	} {
 		if !have[name] {
 			t.Fatalf("提示词让模型调 %s，但它不在 PlannerTools 里——模型会拿到「未知工具」并浪费一轮", name)

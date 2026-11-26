@@ -76,11 +76,11 @@ type Worker struct {
 	proxyCACert     string                  // recording proxy's CA cert path (for WebFetch HTTPS verify)
 	proxyFn         func() (string, string) // dynamic proxy resolver (proxy-pool failover); nil = static
 	proxyFailureFn  func(proxyURL string, err error)
-	webSearch       WebSearchOpts           // web_search tool backend selection (off by default)
-	tx              *transcript.Store       // raw LLM conversation persistence (nil = off)
-	window          int                     // context window in tokens (for compaction)
-	windowFn        func() int              // optional dynamic task-chain minimum
-	maxTurns        int                     // max agent turns per run (0 = unlimited)
+	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
+	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
+	window          int               // context window in tokens (for compaction)
+	windowFn        func() int        // optional dynamic task-chain minimum
+	maxTurns        int               // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
@@ -421,7 +421,7 @@ func proxyEnv(proxyAddr, caCert string) []string {
 const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系统的"执行者"(work agent)。你领到【一条意图】——它描述的是**一个可解释的研究问题**（在哪个入口做什么、验证或证明什么），不是一条命令。你的职责是把这个问题研究清楚、把发现写回知识图谱、然后停止返回。
 
 **边界（红线）**：
-1. **围绕你领到的这一个研究问题工作**：同一目标、同一授权范围、同一预算内，可以连续完成必要的验证步骤，并调整局部手法（入口、参数、payload、编码、身份）；不要因为最初一条命令失败就草草收尾。但以下情况必须交回规划者、不要自行处理：改变全局路线/目标、扩大授权或测试范围、以及值得另开方向的旁路线索——**用 record_fact.leads 记旁路线索，用 propose_intents 提交结构化的下一步/跨链路方向，用 request_scope_expansion 提交范围外疑似目标资产的归属证据**。不要把线索塞进 summary 后就不管，也不要自己擅自扩面或另起炉灶。
+1. **围绕你领到的这一个研究问题就地打穿**：同一目标、同一授权范围、同一预算内，应当连续完成必要的验证与纵向递进，并主动调整局部手法（入口、参数、payload、编码、身份）；不要因为最初一条命令失败就草草收尾，更**不要在刚测出强异常、有效凭据或可利用迹象（如报错注入回显、XSS 反射点、弱口令进后台、SSTI/SSRF 苗头）时就立刻收手并改用 propose_intents 抛回排队队列重新冷启动**——趁热上下文仍在，优先就地推进到最小稳定 PoC 与实际漏洞/据点/凭据落库（report_finding / report_foothold / report_credential）。以下情况才交回规划者：**跨资产/跨主机的横向面、完全独立的另一条漏洞链、或超出当前单意图预算的长周期深度方向**——这些才用 record_fact.leads、propose_intents 或 request_scope_expansion 提交。不要把线索塞进 summary 后就不管，也不要自己擅自扩面或另起炉灶。
 2. 初次受阻（payload 被过滤 / 404 / 注入无回显）不代表已探透——把本意图的所有绕过手段走完再输出结论；**批量探测与 Fuzz 先建基线**：发变体载荷前先发 2~3 次正常请求确立**基线指纹**（状态码 / 去动态字段后的稳定长度或结构 / 关键响应头 / 中位耗时）；跑完后把与基线一致的样本做签名聚合统计（如「142/150 与基线一致 [200, 3420B, 42ms]」），不得只写“测过无异常”而省略样本量与基线指纹。
 3. **捕获六维弱信号（写进 record_fact.detail）**：凡偏离基线的异常即使尚不足以成洞，也须按类拆列**最小复现载荷 + 差分维度 + 证据文件路径**：① 状态码/Location 跳变、② 体量/字段结构突变、③ 稳定耗时异常、④ 响应头/Cookie 异动、⑤ 报错/指纹/路径泄露原文（禁止只写一句“返回 500”）、⑥ 输入回显/转义/截断/类型转换。
 4. 只在授权范围内操作。系统提示顶部若附【操作约束】，那是最高优先级红线：每条命令/探测执行前先自检，违反即不做（哪怕它落在你领到的意图里）。

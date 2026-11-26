@@ -30,26 +30,29 @@ function traceTime(value?: string): string {
   return new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 }
 function ScoreDetails({ row }: { row: ScheduleExplanation }) {
-  const names = {
-    priority: "优先级 ×100",
-    dependency: "advisory 依赖",
-    restart: "重启续跑",
-    route: "路线均衡",
-    aging: "等待加分",
-    retries: "重试扣分",
-  };
+  const names: [keyof typeof row.components, string][] = [
+    ["priority", "优先级 ×100"],
+    ["focus", "聚焦加权"],
+    ["yield_momentum", "产果动量"],
+    ["dependency", "advisory 依赖"],
+    ["restart", "重启续跑"],
+    ["congestion", "路线拥堵调减"],
+    ["route", "路线均衡"],
+    ["aging", "有限等待(封顶80)"],
+    ["retries", "重试扣分"],
+  ];
   return (
     <div className="space-y-1 text-xs">
       <p>评分时间：{traceTime(row.evaluated_at)}（北京时间）</p>
       {row.evaluated ? (
         <>
           <div className="flex flex-wrap gap-x-3 gap-y-1">
-            {Object.entries(names).map(([key, label]) => (
-              <span key={key}>{label}：<b className="tabular-nums">{row.components[key as keyof typeof names].toFixed(1)}</b></span>
+            {names.map(([key, label]) => (
+              <span key={key}>{label}：<b className="tabular-nums">{(row.components?.[key] ?? 0).toFixed(1)}</b></span>
             ))}
           </div>
           <p>路线：{row.route || "—"}；本次候选中 {row.route_count}/{row.largest_route_count}（该路线数/最多路线数）</p>
-          <p>{row.fair_wait ? "等待已超过 15 分钟：先按最老方向排序，再比较分值。" : "常规按总分降序，同分按 ID 排序。"}</p>
+          <p>{row.fair_wait ? "等待已超过 15 分钟：同价值档位内优先出队（不跨级抢占高优深挖链）。" : "按 Best-First 综合分降序（优先打穿高价值与聚焦链路），同分按 ID 排序。"}</p>
         </>
       ) : <p>未进入本次评分，不用 0 分表示未知或阻塞。</p>}
     </div>
@@ -135,7 +138,21 @@ export function ExplorationTrackingCard({ taskId }: { taskId: string }) {
               </div>
               {!schedule ? <p className="text-sm text-muted-foreground">正在读取…</p> : (
                 <>
-                  <p className="text-sm">待领 {schedule.open_total} · 依赖条件满足 {schedule.claimable_total} · 本次评分候选 {schedule.candidate_count} · 工作中 {schedule.active_works}/{schedule.worker_slots || "—"}</p>
+                  <p className="text-sm">
+                    待领 {schedule.open_total} · 依赖条件满足 {schedule.claimable_total} · 本次评分候选 {schedule.candidate_count} · 工作中 {schedule.active_works}/{schedule.worker_slots || "—"}
+                    {(schedule.deferred_parked_total ?? 0) > 0 && ` · 聚焦暂缓 ${schedule.deferred_parked_total}`}
+                  </p>
+                  {schedule.exploration_focus && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant={schedule.exploration_focus.mode === "deepen" ? "default" : "outline"}>
+                        {schedule.exploration_focus.mode === "deepen" ? "聚焦深挖 (deepen)" : "广度探索 (explore)"}
+                      </Badge>
+                      {schedule.exploration_focus.focus_routes && schedule.exploration_focus.focus_routes.length > 0 && (
+                        <span>聚焦路线：{schedule.exploration_focus.focus_routes.join("、")}</span>
+                      )}
+                      {schedule.exploration_focus.focus_note && <span>（{schedule.exploration_focus.focus_note}）</span>}
+                    </div>
+                  )}
                   {schedule.gate_reason && <p className="text-sm text-muted-foreground">当前运行门：{scheduleWaitLabel(schedule.gate_reason)}。下方是常规候选排名，不代表现在会执行。</p>}
                   {schedule.dispatch_mode === "goal_drain" && <p className="text-sm text-muted-foreground">达标收尾：常规排名暂不用于领取，仅 #{schedule.continuation_ids?.join("、#") || "无"} 可续读原工作输出。</p>}
                   <Table>

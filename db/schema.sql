@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS explorations (
 -- planner wakes and processes a round. Drives the ≥R cold-node debounce (measured in
 -- this exploration's own rounds, not global node ids or wall-clock).
 ALTER TABLE explorations ADD COLUMN IF NOT EXISTS round_no BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE explorations ADD COLUMN IF NOT EXISTS exploration_focus JSONB NOT NULL DEFAULT '{}'::jsonb;
 DROP TRIGGER IF EXISTS trg_exp_upd ON explorations;
 CREATE TRIGGER trg_exp_upd BEFORE UPDATE ON explorations
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

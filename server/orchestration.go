@@ -726,6 +726,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedProposeIntentsTool()        // worker 意图提案工具(存量库补绑)
 	s.seedVerifyEvidenceTool()        // 独立证据核对工具(存量库补绑)
 	s.seedRoutePrecedentTools()       // 路线子板/跨任务先例(存量库补绑)
+	s.seedPortfolioTools()            // 队列重排/焦点切换工具(存量库补绑)
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.reseedReporterPrompt()          // 报告模板:补详细利用过程/绝对路径/命令回显(一次性)
 	s.seedPlaybookAgent()             // 预置「打法沉淀」agent + report_foothold 触发器(一次性)
@@ -1713,6 +1714,21 @@ func (s *Server) seedRoutePrecedentTools() {
 			log.Printf("[tools] route/precedent 绑定 %s 失败: %v", agentKey, err)
 			return
 		}
+	}
+	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)
+	}
+}
+
+// seedPortfolioTools binds reprioritize_intents / set_exploration_focus for planner on upgraded DBs.
+func (s *Server) seedPortfolioTools() {
+	const flag = "blackboard_portfolio_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"reprioritize_intents", "set_exploration_focus"}); err != nil {
+		log.Printf("[tools] portfolio tools 绑定 planner 失败: %v", err)
+		return
 	}
 	if err := s.m.pg.SetSetting(flag, "true"); err != nil {
 		log.Printf("[migrate] 记录 %s 失败: %v", flag, err)

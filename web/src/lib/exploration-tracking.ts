@@ -2,11 +2,22 @@ export const LEAD_TRACE_PAGE_SIZE = 5;
 
 export interface ScheduleComponents {
   priority: number;
+  focus?: number;
+  yield_momentum?: number;
   dependency: number;
   restart: number;
+  congestion?: number;
   route: number;
   aging: number;
   retries: number;
+}
+export interface ExplorationFocusInfo {
+  mode: "explore" | "deepen" | string;
+  focus_routes?: string[];
+  focus_asset_ids?: number[];
+  focus_note?: string;
+  reason?: string;
+  updated_at?: string;
 }
 export interface ScheduleExplanation {
   intent_id: number;
@@ -41,6 +52,8 @@ export interface SchedulingReport {
   worker_slots: number;
   active_works: number;
   continuation_ids?: number[];
+  exploration_focus?: ExplorationFocusInfo;
+  deferred_parked_total?: number;
 }
 export type LeadTraceState = "pending" | "queued" | "running" | "paused" | "completed" | "needs_follow_up" | "dismissed" | "source_changed";
 export interface LeadIntentTrace {
