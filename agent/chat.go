@@ -29,6 +29,7 @@ type ChatAgent struct {
 	workDir        string
 	tx             *transcript.Store
 	window         int
+	windowFn       func() int // dynamic resolver (e.g. active llmpool member)
 	proxyAddr      string
 	proxyCACert    string
 	proxyFn        func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
@@ -42,6 +43,18 @@ type ChatAgent struct {
 
 func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window int) *ChatAgent {
 	return &ChatAgent{prov: prov, model: model, workDir: workDir, tx: tx, window: window}
+}
+
+// SetCompactionWindowResolver wires a dynamic context window resolver (in tokens).
+func (c *ChatAgent) SetCompactionWindowResolver(fn func() int) { c.windowFn = fn }
+
+func (c *ChatAgent) compactionWindow() int {
+	if c.windowFn != nil {
+		if win := c.windowFn(); win > 0 {
+			return win
+		}
+	}
+	return c.window
 }
 
 // SetCacheOptions wires per-run resolvers for CacheTTL, PromptCacheRetention, and PreserveThinking.
@@ -217,10 +230,11 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	noaSession := "chat-" + sessionID
-	noaSt := enableNoa(&opts, c.noaEnabledFn, c.workDir, noaSession, c.window, noaWarn(noaSession))
+	win := c.compactionWindow()
+	noaSt := enableNoa(&opts, c.noaEnabledFn, c.workDir, noaSession, win, noaWarn(noaSession))
 	// P14 领域上下文：独立会话没有探索图（index 传 nil），收益在摘要侧——领域模板强制
 	// 逐字保留"所有用户消息"，原文落盘可回读。
-	InstallContextManager(&opts, c.window, c.maxTokens(), sessionWorkDir, nil)
+	InstallContextManager(&opts, win, c.maxTokens(), sessionWorkDir, nil)
 	attachNoaState(opts.Compactor, noaSt)
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

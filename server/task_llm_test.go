@@ -715,3 +715,43 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 		t.Fatalf("task did not return to fallback state: %+v", state)
 	}
 }
+
+func TestTaskLLMRuntimeCompactionWindowUsesActiveProfile(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+
+	pBig, err := m.pg.SaveProfile(&db.LLMProfile{
+		Name: "cw-big", Format: "openai", Model: "m-big", APIKey: "k1", ContextWindowK: 800,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.pg.DeleteProfile(pBig) }()
+	pSmall, err := m.pg.SaveProfile(&db.LLMProfile{
+		Name: "cw-small", Format: "openai", Model: "m-small", APIKey: "k2", ContextWindowK: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.pg.DeleteProfile(pSmall) }()
+
+	task, err := m.CreateTask("cw chain", "active window wins", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	taskID, _ := parseTaskID(task.ID)
+	if err := m.pg.ReplaceTaskLLMProfiles(taskID, []int64{pBig, pSmall}, pBig); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newAdmissionTestServer(m, nil)
+	s.providers.byProfile = map[int64]*provEntry{}
+	rt := &taskLLMRuntime{s: s, taskID: task.ID, agentKey: "planner"}
+	if got := rt.CompactionWindow(); got != 800_000 {
+		t.Fatalf("CompactionWindow() with active 800K + ready 200K fallback = %d, want 800000", got)
+	}
+}

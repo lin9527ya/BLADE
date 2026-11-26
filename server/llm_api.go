@@ -185,6 +185,12 @@ func (s *Server) newConfiguredChatAgent(prov llm.Provider, cfg agent.Config) *ag
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())
 	if pool, ok := prov.(*llmpool.Pool); ok && pool != nil {
+		ca.SetCompactionWindowResolver(func() int {
+			if m := pool.CurrentMember(""); m != nil && m.WindowTokens > 0 {
+				return m.WindowTokens
+			}
+			return cfg.CompactionWindow()
+		})
 		ca.SetNonStreaming(func() bool {
 			if m := pool.CurrentMember(""); m != nil {
 				return m.NonStreaming

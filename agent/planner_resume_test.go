@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/transcript"
 )
 
@@ -159,5 +161,71 @@ func TestHotSessionRecyclesAtRoundLimit(t *testing.T) {
 	}
 	if p.hotRounds > plannerHotMaxRounds {
 		t.Fatalf("到上限后应重建热会话，rounds=%d > %d", p.hotRounds, plannerHotMaxRounds)
+	}
+}
+
+// 800K/200K 等窗口在过半（55%–60%）时不应被旧的「compactionWindow/2」半窗砍断折叠。
+func TestHotSessionPreservesAboveHalfWindow(t *testing.T) {
+	d := testDB(t)
+	t.Cleanup(func() { d.Close() })
+	task, err := d.CreateTask("hot window", "x", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	ts := d.Exploration(task.ExplorationID)
+	prov := &recordingProvider{text: "结论：继续深挖"}
+	tx := transcript.NewStore(filepath.Join(t.TempDir(), "transcripts"))
+	p := NewPlanner(prov, "m", t.TempDir(), tx, 200_000, 4)
+	p.SetNonStreaming(func() bool { return true })
+
+	if _, _, err := p.Plan(t.Context(), task.ID, d.Assets(), ts, "g", nil, nil); err != nil {
+		t.Fatalf("round 1: %v", err)
+	}
+	// 将热会话填充到 110K tokens（200K 的 55%：高于旧 100K 半窗，低于新 150K 3/4 窗），验证 parkHotSession 不 Reset。
+	p.hot.Reset()
+	p.hot.AppendMessages(
+		prov.reqs[0].Messages[0],
+		assistantMsg(strings.Repeat("x", 440_000)), // 110K tokens
+	)
+	beforeLen := len(p.hot.Messages())
+	p.parkHotSession(p.hot, p.hotTools, "round-in", "ok", ts.ID(), 1, "ev1:1")
+	if len(p.hot.Messages()) != beforeLen {
+		t.Fatalf("110K/200K (55%%) 热会话不应被提前 Reset（len %d -> %d）", beforeLen, len(p.hot.Messages()))
+	}
+	if p.hotExpID != ts.ID() {
+		t.Fatalf("hotExpID=%d, want %d", p.hotExpID, ts.ID())
+	}
+}
+
+// 无数据库回归：直接验证 parkHotSession 在 55%（>50% 旧半窗，<=75% 新阈值）保留热会话，超过 75% 时正常折叠。
+func TestParkHotSessionAboveHalfWindow(t *testing.T) {
+	prov := &recordingProvider{text: "ok"}
+	tx := transcript.NewStore(filepath.Join(t.TempDir(), "transcripts"))
+	p := NewPlanner(prov, "m", t.TempDir(), tx, 200_000, 4)
+	s := agentcore.NewSession(agentcore.Options{Provider: prov})
+	tools := &ToolSet{}
+
+	// 110K ASCII tokens（200K 的 55%，高于旧 100K 半窗，低于新 150K 3/4 窗）必须保留。
+	s.AppendMessages(
+		llm.UserText("round-1-input"),
+		assistantMsg(strings.Repeat("x", 440_000)),
+	)
+	p.parkHotSession(s, tools, "round-1-input", "round-1-out", 42, 1, "ev1:1")
+	if p.hot != s || len(p.hot.Messages()) != 2 {
+		t.Fatalf("110K/200K (55%%) 热会话应保留，hot=%v len=%d", p.hot == s, len(p.hot.Messages()))
+	}
+	if p.hotExpID != 42 {
+		t.Fatalf("hotExpID=%d, want 42", p.hotExpID)
+	}
+
+	// 再追加 200KB（+50K tokens，累计 ~160K > 150K 3/4 窗）后，再次 park 应触发 Reset + 折叠成「本轮输入 + 结论」两条消息。
+	p.hot.AppendMessages(assistantMsg(strings.Repeat("y", 200_000)))
+	p.parkHotSession(p.hot, p.hotTools, "round-2-input", "round-2-out", 42, 2, "ev2:1")
+	if len(p.hot.Messages()) != 2 {
+		t.Fatalf("超过 75%% 上限后应折叠成 2 条消息，got %d", len(p.hot.Messages()))
+	}
+	if !strings.Contains(p.hot.Messages()[0].Text(), "round-2-input") || !strings.Contains(p.hot.Messages()[1].Text(), "round-2-out") {
+		t.Fatalf("折叠后的热会话消息内容不符合预期: %q / %q", p.hot.Messages()[0].Text(), p.hot.Messages()[1].Text())
 	}
 }

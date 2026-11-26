@@ -556,6 +556,11 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 	if err != nil {
 		return (agent.Config{}).CompactionWindow()
 	}
+	if pt, getErr := r.s.m.pg.GetTask(taskNum); getErr == nil && pt != nil && pt.ActiveLLMProfileID != nil {
+		if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
+			return cfg.CompactionWindow()
+		}
+	}
 	chain, err := r.s.m.pg.TaskLLMProfiles(taskNum)
 	if err != nil {
 		return (agent.Config{}).CompactionWindow()
@@ -568,6 +573,9 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 	}
 	minimum := 0
 	for _, entry := range chain {
+		if strings.EqualFold(entry.Status, "exhausted") {
+			continue
+		}
 		if cfg, ok := r.s.loadProfileConfig(entry.ProfileID); ok {
 			window := cfg.CompactionWindow()
 			if minimum == 0 || window < minimum {

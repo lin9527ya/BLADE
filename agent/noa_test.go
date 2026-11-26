@@ -226,3 +226,29 @@ func TestEnableNoaOffMaterializesPriorBlocksIdempotently(t *testing.T) {
 		t.Fatalf("second Pre must not alter already-materialized slice: %d != %d", len(afterSecond), len(afterPre))
 	}
 }
+
+func TestScaledNoaConfigLargeWindow(t *testing.T) {
+	for _, limit := range []int{32_000, 200_000, 400_000, 800_000, 1_000_000} {
+		cfg := scaledNoaConfig(limit)
+		if warns := noa.ValidateConfig(cfg); len(warns) > 0 {
+			t.Fatalf("limit=%d ValidateConfig warnings: %v", limit, warns)
+		}
+	}
+	cfg800 := scaledNoaConfig(800_000)
+	if cfg800.Nudge.MinContextLimitPct != 0.65 || cfg800.Nudge.MaxContextLimitPct != 0.85 {
+		t.Fatalf("800K nudge band = (%.2f, %.2f), want (0.65, 0.85)", cfg800.Nudge.MinContextLimitPct, cfg800.Nudge.MaxContextLimitPct)
+	}
+	if cfg800.Nudge.GrowthCap < 100_000 || cfg800.Nudge.MinGrowthFloor < 40_000 {
+		t.Fatalf("800K growth scaling too small: cap=%d minFloor=%d", cfg800.Nudge.GrowthCap, cfg800.Nudge.MinGrowthFloor)
+	}
+	d := noa.DecideNudge(noa.DecideNudgeInput{
+		Config:     cfg800,
+		TokenCount: 400_000, // 50% of 800K — should not nudge yet (default 45% would)
+		Recommendation: noa.Recommendation{
+			CompressibleRanges: []noa.RangeInfo{{Chars: 240_000, Tokens: 60_000}},
+		},
+	})
+	if d.ShouldInject {
+		t.Fatalf("800K window at 50%% usage must not trigger early nudge: %s", d.Reason)
+	}
+}

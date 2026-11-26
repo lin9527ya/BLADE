@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lin9527ya/Norma/agentcore"
 	"github.com/lin9527ya/Norma/compaction"
@@ -88,6 +89,7 @@ func (p *indexProjector) appendToFor(base []llm.Message, compacted bool) []llm.M
 
 // DomainCompactor 实现 harness.Compactor + harness.ContextView。
 type DomainCompactor struct {
+	cfg             compaction.Config
 	inner           *compaction.Compactor
 	index           indexProjector
 	materialize     func([]llm.Message) ([]llm.Message, bool)
@@ -144,15 +146,193 @@ func NewDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int,
 }
 
 func newDomainCompactor(cfg compaction.Config, prov llm.Provider, maxTokens int, nonStreaming bool, dumpDir string, prefix compaction.SummaryPrefix, index func() string, indexWithState func(compacted bool) string) *DomainCompactor {
+	cfg = normalizedCompactionConfig(cfg)
 	return &DomainCompactor{
+		cfg:   cfg,
 		inner: compaction.New(cfg, bladeSummarizerWithPrefix(prov, maxTokens, nonStreaming, dumpDir, prefix)),
 		index: indexProjector{index: index, indexWithState: indexWithState, ttl: contextIndexTTL},
 	}
 }
 
-// Pre/Reactive/IsOverflow 全部委托：本类型只改"摘要内容"与"请求投影"，
-// 不碰压缩时机与阈值。若会话曾启用过 noa 后被关闭且尚未跨过 built-in 边界，
-// 首次 Pre 会先调用只读物化把历史恢复为已压缩视图，避免全量原始记录瞬间溢窗。
+const (
+	domainMicroKeepRecent   = 5
+	domainMicroClearedText  = "[Old tool result content cleared]"
+	domainTurnGrowthGuess   = 15000
+	domainMicroThresholdPct = 75
+)
+
+var domainCompactableTools = map[string]bool{
+	"Read": true, "Bash": true, "Grep": true, "Glob": true,
+	"WebFetch": true, "WebSearch": true, "Edit": true, "Write": true,
+}
+
+func normalizedCompactionConfig(cfg compaction.Config) compaction.Config {
+	if cfg.ContextWindow == 0 {
+		cfg.ContextWindow = defaultWindowK * 1000
+	}
+	if cfg.MaxOutputTokens == 0 {
+		cfg.MaxOutputTokens = 8000
+	}
+	if cfg.KeepRecent == 0 {
+		cfg.KeepRecent = 8
+	}
+	return cfg
+}
+
+func summaryReserveTokens(cfg compaction.Config) int {
+	r := cfg.MaxOutputTokens
+	if r <= 0 || r > 20000 {
+		return 20000
+	}
+	return r
+}
+
+func effectiveCompactionWindow(cfg compaction.Config) int {
+	return cfg.ContextWindow - summaryReserveTokens(cfg)
+}
+
+func compactionAutoBuffer(cfg compaction.Config) int {
+	switch ew := effectiveCompactionWindow(cfg); {
+	case ew >= 800000:
+		return 50000
+	case ew >= 400000:
+		return 30000
+	default:
+		return 13000
+	}
+}
+
+func domainAutoThreshold(cfg compaction.Config) int {
+	return effectiveCompactionWindow(cfg) - compactionAutoBuffer(cfg)
+}
+
+func domainMicroThreshold(cfg compaction.Config) int {
+	return effectiveCompactionWindow(cfg) * domainMicroThresholdPct / 100
+}
+
+func domainPredictiveOver(cfg compaction.Config, tok int) bool {
+	return tok+summaryReserveTokens(cfg)+domainTurnGrowthGuess > effectiveCompactionWindow(cfg)
+}
+
+func isCJKRune(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3040 && r <= 0x30FF) ||
+		(r >= 0xAC00 && r <= 0xD7AF)
+}
+
+// stringTokenEstimate estimates BPE tokens across mixed CJK/ASCII text without
+// the 4/3 pessimism multiplier that turns 3-byte Chinese UTF-8 into 1.33x.
+func stringTokenEstimate(s string) int {
+	if s == "" {
+		return 0
+	}
+	cjkRunes, cjkBytes := 0, 0
+	for _, r := range s {
+		if isCJKRune(r) {
+			cjkRunes++
+			cjkBytes += utf8.RuneLen(r)
+		}
+	}
+	otherBytes := len(s) - cjkBytes
+	return cjkRunes + (otherBytes+3)/4
+}
+
+func blockTokenEstimate(b llm.ContentBlock) int {
+	switch b.Type {
+	case llm.BlockText:
+		return stringTokenEstimate(b.Text)
+	case llm.BlockThinking:
+		return stringTokenEstimate(b.Thinking)
+	case llm.BlockToolUse:
+		return stringTokenEstimate(b.Name) + stringTokenEstimate(string(b.Input))
+	case llm.BlockToolResult:
+		n := 0
+		for _, cb := range b.Content {
+			n += blockTokenEstimate(cb)
+		}
+		return n
+	default:
+		return stringTokenEstimate(b.Text)
+	}
+}
+
+func estimateTokensCalibrated(msgs []llm.Message) int {
+	total := 0
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			total += blockTokenEstimate(b)
+		}
+	}
+	return total
+}
+
+func isMicroCleared(blocks []llm.ContentBlock) bool {
+	return len(blocks) == 1 && blocks[0].Type == llm.BlockText && blocks[0].Text == domainMicroClearedText
+}
+
+// microCompactMessages clears compactable tool results older than the most recent
+// domainMicroKeepRecent and reports the calibrated token count reclaimed.
+func microCompactMessages(msgs []llm.Message, minClear int) ([]llm.Message, bool, int) {
+	var ids []string
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == llm.BlockToolUse && domainCompactableTools[b.Name] {
+				ids = append(ids, b.ID)
+			}
+		}
+	}
+	if len(ids) <= domainMicroKeepRecent {
+		return msgs, false, 0
+	}
+	clearSet := make(map[string]bool, len(ids)-domainMicroKeepRecent)
+	for _, id := range ids[:len(ids)-domainMicroKeepRecent] {
+		clearSet[id] = true
+	}
+	if minClear > 1 {
+		pending := 0
+		for i := range msgs {
+			for _, b := range msgs[i].Content {
+				if b.Type == llm.BlockToolResult && clearSet[b.ToolUseID] && !isMicroCleared(b.Content) {
+					pending++
+				}
+			}
+		}
+		if pending < minClear {
+			return msgs, false, 0
+		}
+	}
+	clearedPlaceholderTok := stringTokenEstimate(domainMicroClearedText)
+	savedTok := 0
+	changed := false
+	out := append([]llm.Message(nil), msgs...)
+	for i := range out {
+		var nc []llm.ContentBlock
+		for j, b := range out[i].Content {
+			if b.Type == llm.BlockToolResult && clearSet[b.ToolUseID] && !isMicroCleared(b.Content) {
+				if nc == nil {
+					nc = append([]llm.ContentBlock(nil), out[i].Content...)
+				}
+				oldTok := blockTokenEstimate(b)
+				if oldTok > clearedPlaceholderTok {
+					savedTok += oldTok - clearedPlaceholderTok
+				}
+				nc[j].Content = []llm.ContentBlock{llm.TextBlock(domainMicroClearedText)}
+				changed = true
+			}
+		}
+		if nc != nil {
+			out[i].Content = nc
+		}
+	}
+	if !changed {
+		return msgs, false, 0
+	}
+	return out, true, savedTok
+}
+
+// Pre 先执行微压缩与经 CJK/UTF-8 校准后的自动压缩门控，再按需委托给 SDK 摘要器：
+// SDK 原生在微压缩清理后会丢失实报 lastInputTokens 并退回 len(bytes)/3 虚估，
+// 对中文+JSON 会高估 30%–50%，导致大窗口在远低于上限时就提前 AutoCompact。
 func (d *DomainCompactor) Pre(ctx context.Context, msgs []llm.Message, lastInputTokens int) []llm.Message {
 	if d.materialize != nil && llm.LastBoundaryIndex(msgs) < 0 {
 		d.materializeOnce.Do(func() {
@@ -162,7 +342,33 @@ func (d *DomainCompactor) Pre(ctx context.Context, msgs []llm.Message, lastInput
 			}
 		})
 	}
-	return d.inner.Pre(ctx, msgs, lastInputTokens)
+	cfg := normalizedCompactionConfig(d.cfg)
+	if cfg.ContextWindow <= 0 {
+		return msgs
+	}
+	tok := estimateTokensCalibrated(llm.MessagesForAPI(msgs))
+	if lastInputTokens > tok {
+		tok = lastInputTokens
+	}
+	if tok <= domainMicroThreshold(cfg) {
+		return msgs
+	}
+	if out, changed, clearedTok := microCompactMessages(msgs, cfg.MicroCompactMinClear); changed {
+		msgs = out
+		estAfter := estimateTokensCalibrated(llm.MessagesForAPI(msgs))
+		tok = max(estAfter, tok-clearedTok)
+	}
+	if cfg.MicroCompactMinClear > 1 && (tok >= domainAutoThreshold(cfg) || domainPredictiveOver(cfg, tok)) {
+		if out, changed, clearedTok := microCompactMessages(msgs, 0); changed {
+			msgs = out
+			estAfter := estimateTokensCalibrated(llm.MessagesForAPI(msgs))
+			tok = max(estAfter, tok-clearedTok)
+		}
+	}
+	if tok >= domainAutoThreshold(cfg) || domainPredictiveOver(cfg, tok) {
+		return d.inner.Pre(ctx, msgs, tok)
+	}
+	return msgs
 }
 
 func (d *DomainCompactor) Reactive(ctx context.Context, msgs []llm.Message) ([]llm.Message, bool) {

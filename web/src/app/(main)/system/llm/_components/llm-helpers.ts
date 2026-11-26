@@ -30,8 +30,9 @@ export const THINKING_TYPE_HINTS: Record<string, string> = {
 export const REASONING_EFFORT_HINTS: Record<string, string> = {
   anthropic: "映射为 output_config.effort（low/medium/high/max）。当上方设为「关闭」或后台禁思考调用时会自动抑制。",
   "openai-responses":
-    "映射为 reasoning.effort（none/minimal/low/medium/high/xhigh）。Responses API 主要靠本项控制推理开关与深度。",
-  openai: "映射为 reasoning_effort（none/minimal/low/medium/high/xhigh）。当上方设为「关闭」时会自动抑制不发。",
+    "映射为 reasoning.effort（none/minimal/low/medium/high/xhigh/max；DeepSeek 等模型支持 max，OpenAI 官方最高 xhigh）。Responses API 主要靠本项控制推理开关与深度。",
+  openai:
+    "映射为 reasoning_effort（none/minimal/low/medium/high/xhigh/max；DeepSeek 等支持 max，OpenAI 官方最高 xhigh）。当上方设为「关闭」时会自动抑制不发。",
 };
 
 export function thinkingTypesForFormat(format: string): { value: string; label: string }[] {
@@ -54,7 +55,7 @@ export function effortLevelsForFormat(format: string, current?: string): { value
   const allowed =
     format === "anthropic"
       ? new Set([NONE, "low", "medium", "high", "max"])
-      : new Set([NONE, "none", "minimal", "low", "medium", "high", "xhigh"]);
+      : new Set([NONE, "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
   const base = EFFORT_LEVELS.filter((o) => allowed.has(o.value));
   if (current && current !== NONE && !allowed.has(current)) {
     return [...base, { value: current, label: `${current}（旧值）` }];

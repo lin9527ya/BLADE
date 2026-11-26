@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/lin9527ya/Norma/agentcore"
-	"github.com/lin9527ya/Norma/compaction"
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
@@ -1211,8 +1210,8 @@ func renderFrontierBudgetBanner(bb map[string]any) string {
 // 规划热会话的保留策略。缓存前缀（system + 工具 schema）不随轮数变化，所以复用同一个
 // Session 的收益是**每轮固定**的；限制轮数与空闲时长是为了不让摘要层数与陈旧会话无限累积。
 const (
-	plannerHotMaxRounds   = 16
-	plannerHotMaxMessages = 48
+	plannerHotMaxRounds   = 32
+	plannerHotMaxMessages = 120
 	plannerHotIdleTTL     = 10 * time.Minute
 	// plannerFullReconcileEvery 每 N 个热会话轮强制一次完整有界视图，而不是只看
 	// delta；否则落在 delta 字段索引之外的老项（attention 窗口）可能长期不再出现。
@@ -1284,11 +1283,11 @@ func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInpu
 	}
 	msgs := s.Messages()
 	compacted := llm.LastBoundaryIndex(msgs) >= 0
-	maxTok := p.compactionWindow() / 2
+	maxTok := p.compactionWindow() * 3 / 4
 	if maxTok <= 0 {
-		maxTok = 60000
+		maxTok = defaultWindowK * 1000 * 3 / 4
 	}
-	withinWindow := !compacted && len(msgs) <= plannerHotMaxMessages && compaction.EstimateTokens(msgs) <= maxTok
+	withinWindow := !compacted && len(msgs) <= plannerHotMaxMessages && estimateTokensCalibrated(msgs) <= maxTok
 	if !withinWindow {
 		s.Reset()
 		s.AppendMessages(hotPrefixMessages(roundInput, lastText)...)

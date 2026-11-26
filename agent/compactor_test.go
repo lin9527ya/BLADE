@@ -354,3 +354,77 @@ func TestInstallContextManagerKeepsIndexOverExistingCompactor(t *testing.T) {
 		t.Fatalf("Pre must delegate to the host compactor: %+v", got)
 	}
 }
+
+func TestDomainCompactorCalibratedTokensPreventPrematureAutoCompact(t *testing.T) {
+	prov := &recordingProvider{text: "## 1. 授权范围与约束\n（无）"}
+	// 800K 窗口、MaxOutputTokens=120K: reserved=20K, eff=780K, micro(75%)=585K, predictive=745K, auto=750K.
+	d := NewDomainCompactor(compaction.Config{
+		ContextWindow:        800000,
+		MaxOutputTokens:      120000,
+		MicroCompactMinClear: 8,
+	}, prov, 0, true, t.TempDir(), nil)
+
+	// 构造 ~2.2MB CJK+JSON 历史（Norma 原生 bytes/3 ≈ 733K+，但校准后约 ~550K）并带 10 个可清工具输出。
+	var msgs []llm.Message
+	cjk := strings.Repeat("这是真实测试上下文与响应摘要记录", 3200) // 16*3200 = 51,200 CJK chars (153.6KB UTF-8)
+	for i := 0; i < 14; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		msgs = append(msgs, toolUseMsg(id, "Bash", `{"command":"curl -s https://example.com"}`))
+		msgs = append(msgs, llm.Message{
+			Role: llm.RoleUser,
+			Content: []llm.ContentBlock{
+				llm.ToolResultText(id, cjk, false),
+			},
+		})
+	}
+	// 场景 1: lastInputTokens=560K（低于 75% microThreshold=585K）时不得提前微压缩或 AutoCompact。
+	out1 := d.Pre(context.Background(), msgs, 560000)
+	if len(prov.reqs) != 0 {
+		t.Fatalf("expected 0 auto-compaction calls at 560K/800K, got %d", len(prov.reqs))
+	}
+	if len(out1) != len(msgs) || strings.Contains(out1[1].Text(), domainMicroClearedText) {
+		t.Fatal("below 75% microThreshold must not clear tool results prematurely")
+	}
+
+	// 场景 2: lastInputTokens=620K（超过 75% microThreshold=585K）时只做 MicroCompact，绝不因 bytes/3 误触发 AutoCompact。
+	out2 := d.Pre(context.Background(), msgs, 620000)
+	if len(prov.reqs) != 0 {
+		t.Fatalf("MicroCompact should prevent premature AutoCompact at 620K/800K, got %d summary calls", len(prov.reqs))
+	}
+	clearedCount := 0
+	for _, m := range out2 {
+		for _, b := range m.Content {
+			if b.Type == llm.BlockToolResult && isMicroCleared(b.Content) {
+				clearedCount++
+			}
+		}
+	}
+	if clearedCount != 14-domainMicroKeepRecent {
+		t.Fatalf("expected %d old compactable results cleared, got %d", 14-domainMicroKeepRecent, clearedCount)
+	}
+
+	// 场景 3: 实际接近上限（755K >= 750K autoThreshold）时正常触发一次 AutoCompact。
+	out3 := d.Pre(context.Background(), out2, 755000)
+	if len(prov.reqs) != 1 {
+		t.Fatalf("expected 1 auto-compaction call at 755K/800K, got %d", len(prov.reqs))
+	}
+	if llm.LastBoundaryIndex(out3) < 0 {
+		t.Fatal("expected compact boundary after AutoCompact")
+	}
+}
+
+func TestChatAgentDynamicCompactionWindow(t *testing.T) {
+	ca := NewChatAgent(nil, "m", t.TempDir(), nil, 200_000)
+	if got := ca.compactionWindow(); got != 200_000 {
+		t.Fatalf("static window=%d, want 200000", got)
+	}
+	win := 800_000
+	ca.SetCompactionWindowResolver(func() int { return win })
+	if got := ca.compactionWindow(); got != 800_000 {
+		t.Fatalf("resolved window=%d, want 800000", got)
+	}
+	win = 0
+	if got := ca.compactionWindow(); got != 200_000 {
+		t.Fatalf("zero resolver should fall back to static window 200000, got %d", got)
+	}
+}

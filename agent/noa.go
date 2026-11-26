@@ -26,6 +26,30 @@ type noaState struct {
 	materialize func([]llm.Message) ([]llm.Message, bool)
 }
 
+// scaledNoaConfig tunes noa thresholds proportionally to the model window.
+// noa.DefaultConfig was tuned for ~200K windows (45%/75%, 50K growth cap -> 22.5K
+// cadence step); on 400K-1M models that triggers nudges way too early and every
+// couple of tool turns.
+func scaledNoaConfig(contextLimit int) noa.Config {
+	if contextLimit <= 0 {
+		contextLimit = defaultWindowK * 1000
+	}
+	cfg := noa.DefaultConfig(contextLimit)
+	switch {
+	case contextLimit >= 400_000:
+		cfg.Nudge.MinContextLimitPct = 0.65
+		cfg.Nudge.MaxContextLimitPct = 0.85
+		cfg.Nudge.GrowthRatio = 0.08
+		cfg.Nudge.GrowthCap = max(50_000, contextLimit*15/100)
+		cfg.Nudge.MinGrowthFloor = max(20_000, contextLimit/20)
+	case contextLimit >= 100_000:
+		cfg.Nudge.MinContextLimitPct = 0.55
+		cfg.Nudge.MaxContextLimitPct = 0.80
+		cfg.Nudge.GrowthCap = max(50_000, contextLimit/4)
+	}
+	return cfg
+}
+
 // enableNoa attaches noa context compression when enabled() reports true, or
 // prepares a read-only Materialize fallback when switching off a session that
 // already holds persisted noa blocks on disk.
@@ -42,9 +66,11 @@ func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessio
 	origAppendLen := len(opts.AppendSystemPrompt)
 	origBoundary := opts.DynamicBoundary
 
+	cfg := scaledNoaConfig(contextLimit)
 	sess, err := noaadapter.EnableWithSession(opts, noaadapter.Options{
 		ArchiveBaseDir:    filepath.Join(archiveRoot, "noa"),
 		SessionID:         sessionID,
+		Config:            &cfg,
 		ModelContextLimit: contextLimit,
 		OnWarn:            onWarn,
 	})
