@@ -207,3 +207,98 @@ func TestDeepSeekSearchPrefersNamedProfile(t *testing.T) {
 		t.Fatalf("deepseek 解析错误: %+v", res)
 	}
 }
+
+func TestSearchBackendDeepSeekRejectsOpenAIFormat(t *testing.T) {
+	m := searchTestManager(t)
+	oldActive, _ := m.pg.ActiveProfile()
+	id, err := m.pg.SaveProfile(&db.LLMProfile{
+		Name:    "deepseek-openai-test",
+		Format:  "openai-responses",
+		BaseURL: "https://api.deepseek.com/v1",
+		Model:   "deepseek-reasoner",
+		APIKey:  "ds-test-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if oldActive != nil {
+			_ = m.pg.SetActiveProfile(oldActive.ID)
+		} else {
+			_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id)
+		}
+		_ = m.pg.DeleteProfile(id)
+	})
+	if err := m.pg.SetActiveProfile(id); err != nil {
+		t.Fatal(err)
+	}
+
+	res := m.searchBackendForSDK(deepSeekWebSearchBackend)
+	if res.Backend != defaultWebSearchBackend || res.FallbackFrom != deepSeekWebSearchBackend {
+		t.Fatalf("expected fallback to ddgs on openai-responses format, got %+v", res)
+	}
+	if res.DiagnosticError == "" || res.FallbackReason == "" {
+		t.Fatalf("expected explicit DiagnosticError for openai-responses DeepSeek profile, got %+v", res)
+	}
+}
+
+func TestManagerWebSearchOptsDynamicProxyAndFallbackFunc(t *testing.T) {
+	m := &Manager{
+		webSearchOn:      true,
+		webSearchBackend: "tavily",
+		tavilyKey:        "tvly-test",
+		egressProxy:      "http://127.0.0.1:7890",
+	}
+	opts := m.WebSearchOpts()
+	if opts.Proxy != "" {
+		t.Fatalf("expected static Proxy to remain empty when webSearchProxy unset so FallbackProxyFunc runs, got %q", opts.Proxy)
+	}
+	if opts.ProxyFunc != nil {
+		t.Fatalf("expected tavily primary ProxyFunc nil under 1.A, got non-nil")
+	}
+	if opts.FallbackProxyFunc == nil {
+		t.Fatal("expected FallbackProxyFunc to be non-nil")
+	}
+	if got := opts.FallbackProxyFunc(); got != "http://127.0.0.1:7890" {
+		t.Fatalf("expected FallbackProxyFunc to track manager egress proxy, got %q", got)
+	}
+
+	m.mu.Lock()
+	m.egressProxy = "http://127.0.0.1:7891"
+	m.mu.Unlock()
+	if got := opts.FallbackProxyFunc(); got != "http://127.0.0.1:7891" {
+		t.Fatalf("FallbackProxyFunc must reflect updated egress proxy live, got %q", got)
+	}
+
+	m.mu.Lock()
+	m.webSearchBackend = "ddgs"
+	m.mu.Unlock()
+	ddgOpts := m.WebSearchOpts()
+	if ddgOpts.Proxy != "" || ddgOpts.ProxyFunc == nil || ddgOpts.ProxyFunc() != "http://127.0.0.1:7891" {
+		t.Fatalf("ddgs must resolve egress dynamically via ProxyFunc without static Proxy shadow: %+v", ddgOpts)
+	}
+}
+
+func TestNormalizeSearxngURLAndProxyMode(t *testing.T) {
+	if got, err := normalizeSearxngURL("http://127.0.0.1:8888/"); err != nil || got != "http://127.0.0.1:8888" {
+		t.Fatalf("unexpected normalizeSearxngURL: got=%q err=%v", got, err)
+	}
+	if _, err := normalizeSearxngURL("ftp://127.0.0.1:8888"); err == nil {
+		t.Fatal("expected ftp scheme to be rejected")
+	}
+	m := &Manager{egressProxy: "http://127.0.0.1:7890"}
+	if got := m.proxyModeForSearchProxy("socks5://127.0.0.1:1080"); got != "custom" {
+		t.Fatalf("proxyMode(custom)=%q", got)
+	}
+	if got := m.proxyModeForSearchProxy(""); got != "egress_pool" {
+		t.Fatalf("proxyMode(egress_pool)=%q", got)
+	}
+	m.egressProxy = blockedProxyURL
+	if got := m.proxyModeForSearchProxy(""); got != "proxy_blocked" {
+		t.Fatalf("proxyMode(proxy_blocked)=%q", got)
+	}
+	m.egressProxy = ""
+	if got := m.proxyModeForSearchProxy(""); got != "direct" {
+		t.Fatalf("proxyMode(direct)=%q", got)
+	}
+}

@@ -197,7 +197,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"web_search_backend":            backend,
 		"brave_key_set":                 strings.TrimSpace(braveKey) != "",
 		"tavily_key_set":                strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":              proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"web_search_proxy":              proxy, // 独立出口代理(http/https/socks5)，空=直连
+		"web_search_searxng_url":        s.m.SearxngURL(),
+		"web_search_proxy_mode":         s.m.webSearchProxyMode(),
+		"web_search_stats":              agent.GetWebSearchStats(),
 		"global_proxy":                  s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
 		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
 		// 全部候选都不可用、出口已阻断（**不会直连**）。
@@ -376,9 +379,10 @@ type settingsRequest struct {
 	WebSearchBackend    *string `json:"web_search_backend"`
 	BraveKey            *string `json:"brave_search_api_key"`
 	TavilyKey           *string `json:"tavily_search_api_key"`
-	WebSearchProxy      *string `json:"web_search_proxy"`  // 独立出口代理(http/https/socks5)；null=不改，""=清空
-	GlobalProxy         *string `json:"global_proxy"`      // 兼容旧字段：单代理；null=不改，""=清空(直连)
-	GlobalProxyPool     *string `json:"global_proxy_pool"` // 代理池（每行一个）；null=不改，""=清空
+	WebSearchProxy      *string `json:"web_search_proxy"`       // 独立出口代理(http/https/socks5)；null=不改，""=清空
+	SearxngURL          *string `json:"web_search_searxng_url"` // 自建 SearXNG URL；null=不改，""=清空
+	GlobalProxy         *string `json:"global_proxy"`           // 兼容旧字段：单代理；null=不改，""=清空(直连)
+	GlobalProxyPool     *string `json:"global_proxy_pool"`      // 代理池（每行一个）；null=不改，""=清空
 	ProxyHealthURL      *string `json:"proxy_health_url"`
 	ProxyHealthTimeout  *int    `json:"proxy_health_timeout_seconds"`
 	ProxyHealthInterval *int    `json:"proxy_health_interval_seconds"`
@@ -960,7 +964,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
+	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil || req.SearxngURL != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.
 		on, backend, _, _, _ := s.m.WebSearch()
 		if req.WebSearchEnabled != nil {
@@ -983,8 +987,24 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.WebSearchProxy != nil {
 			pending[settingWebSearchProxy] = strings.TrimSpace(*req.WebSearchProxy)
 		}
+		var normalizedSearxng *string
+		if req.SearxngURL != nil {
+			u, err := normalizeSearxngURL(*req.SearxngURL)
+			if err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			pending[settingSearxngURL] = u
+			normalizedSearxng = &u
+		}
 		runtimeApplies = append(runtimeApplies, func() error {
-			return s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy)
+			if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy); err != nil {
+				return err
+			}
+			if normalizedSearxng != nil {
+				return s.m.SetSearxngURL(*normalizedSearxng)
+			}
+			return nil
 		})
 		changed = true
 	}
@@ -1005,6 +1025,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if changed {
+		// 无论是否启用全局默认 LLM，都清掉逐 Profile 缓存的 ChatAgent；
+		// 动态 SetWebSearchFunc 会在下一轮立即读取新设置。
+		s.invalidateProfileChatAgents()
 		// rebuild agents so the new proxy/tools/prompt/web-search take hold (only if LLM configured).
 		s.llm.mu.Lock()
 		cfg, on := s.llm.cfg, s.llm.on
@@ -1015,36 +1038,35 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, 500, "设置已保存，但运行态重建失败（新配置尚未生效）："+err.Error())
 				return
 			}
+		} else {
+			s.invalidateTaskAgents()
 		}
 	}
 	writeJSON(w, 200, s.settingsPayload())
 }
 
 // testWebSearch runs a real "test" search with the given (or currently saved)
-// backend/proxy/key to verify the config can actually reach a search backend —
-// mirroring testLLM. Backend/proxy come from the request (so the form's unsaved
-// edits are tested); empty API keys fall back to stored values so the user need
-// not retype them. Always 200 with {ok, error?, count?, backend?}.
+// backend/proxy/key/searxng_url to verify the config can actually reach a search backend —
+// mirroring testLLM. Always 200 with {ok, error?, count?, backend?, elapsed_ms, proxy_mode, sample?}.
 func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Backend   string `json:"web_search_backend"`
-		Proxy     string `json:"web_search_proxy"`
-		BraveKey  string `json:"brave_search_api_key"`
-		TavilyKey string `json:"tavily_search_api_key"`
+		Backend    string `json:"web_search_backend"`
+		Proxy      string `json:"web_search_proxy"`
+		BraveKey   string `json:"brave_search_api_key"`
+		TavilyKey  string `json:"tavily_search_api_key"`
+		SearxngURL string `json:"web_search_searxng_url"`
 	}
 	// Empty body is fine — fall back entirely to the saved config below.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	started := time.Now()
 	_, backend, storedBraveKey, storedTavilyKey, _ := s.m.WebSearch()
 	if strings.TrimSpace(req.Backend) != "" {
-		backend = req.Backend
+		backend = strings.TrimSpace(req.Backend)
 	}
-	// Proxy is taken from the form as-is. Empty means "use the platform egress proxy"
-	// for DDG (direct DDG is routinely 202-rate-limited); other backends stay direct.
 	proxy := strings.TrimSpace(req.Proxy)
-	// API keys are secrets the form omits when already saved, so fall back to stored.
 	braveKey := storedBraveKey
 	if strings.TrimSpace(req.BraveKey) != "" {
 		braveKey = req.BraveKey
@@ -1053,44 +1075,105 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.TavilyKey) != "" {
 		tavilyKey = req.TavilyKey
 	}
-	// 与线上工具**同一套解析**（后端归一 + 凭据 + 路由头）——自己拼一份的话，
-	// "测试通过但工具不能用"是迟早的事（opencode 的 x-opencode-session 就是这么漏的）。
+	searxngURL := s.m.SearxngURL()
+	if strings.TrimSpace(req.SearxngURL) != "" {
+		u, err := normalizeSearxngURL(req.SearxngURL)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{
+				"ok":         false,
+				"error":      err.Error(),
+				"backend":    backend,
+				"proxy_mode": s.m.proxyModeForSearchProxy(proxy),
+				"elapsed_ms": time.Since(started).Milliseconds(),
+			})
+			return
+		}
+		searxngURL = u
+	}
+
+	proxyMode := s.m.proxyModeForSearchProxy(proxy)
+	// 与线上工具同一套解析（后端归一 + 凭据 + 路由头 + 协议诊断）。
 	res := s.m.searchBackendForSDK(backend)
-	backend = res.Backend
-	// DDG 直连经常 202；用户没单独填搜索代理时，测试与线上工具一样走平台出口代理。
-	if (backend == defaultWebSearchBackend || backend == "brave-html") && strings.TrimSpace(proxy) == "" {
+	if backend == searxngWebSearchBackend && searxngURL != "" {
+		res.Backend = searxngWebSearchBackend
+		res.SearxngURL = searxngURL
+		res.FallbackFrom = ""
+		res.FallbackReason = ""
+		res.DiagnosticError = ""
+	}
+	// 按 2.A：DeepSeek / SearXNG 等若配置本身即不兼容或缺少前置（如协议为 openai-responses），
+	// 在「测试搜索」阶段明确报错失败，不用 DDG 兜底掩盖真实配置错误。
+	if strings.TrimSpace(res.DiagnosticError) != "" {
+		writeJSON(w, 200, map[string]any{
+			"ok":         false,
+			"error":      res.DiagnosticError,
+			"backend":    backend,
+			"proxy_mode": proxyMode,
+			"elapsed_ms": time.Since(started).Milliseconds(),
+		})
+		return
+	}
+
+	dynamicEgress := func() string {
 		s.m.WaitProxyReady(proxyFirstProbeWait)
-		proxy = s.m.usableEgressProxy()
+		return s.m.usableEgressProxy()
 	}
 	probeOpts := agent.WebSearchOpts{
-		Enabled: true, Backend: res.Backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy,
-		DeepSeekBaseURL: res.BaseURL, DeepSeekAPIKey: res.APIKey, DeepSeekModel: res.Model,
-		Headers: res.Headers, CommandCodeBaseURL: res.CCBaseURL, CommandCodeAPIKey: res.CCAPIKey,
+		Enabled:            true,
+		Backend:            res.Backend,
+		BraveKey:           braveKey,
+		TavilyKey:          tavilyKey,
+		Proxy:              proxy,
+		SearxngURL:         searxngURL,
+		DeepSeekBaseURL:    res.BaseURL,
+		DeepSeekAPIKey:     res.APIKey,
+		DeepSeekModel:      res.Model,
+		DeepSeekFormat:     res.Format,
+		Headers:            res.Headers,
+		CommandCodeBaseURL: res.CCBaseURL,
+		CommandCodeAPIKey:  res.CCAPIKey,
+		BypassCache:        true,
 	}
-	// Hard cap so a slow/blocked proxy can't hang the request.
+	if proxy == "" {
+		if probeOpts.Backend == defaultWebSearchBackend || probeOpts.Backend == "brave-html" {
+			probeOpts.ProxyFunc = dynamicEgress
+		}
+		probeOpts.FallbackProxyFunc = dynamicEgress
+	}
 	wall := 30 * time.Second
-	// deepseek 的凭据不在表单里，来自当前激活的 LLM 配置；同时它每次搜索都跑一次
-	// 模型推理，30s 的通用上限偏紧，单独放宽。这里不预判配置能不能用——测这一下
-	// 本来就是给用户自己确认的手段，真跑不通时下面的报错比预判更有信息量。
 	probeQuery := "test"
-	if strings.TrimSpace(backend) == deepSeekWebSearchBackend {
+	if strings.TrimSpace(res.Backend) == deepSeekWebSearchBackend {
 		wall = 120 * time.Second
-		// 搜索词由 DeepSeek 端的模型自行决定，"test" 太空泛会让它跳过搜索直接作答。
 		probeQuery = "DeepSeek company official website"
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wall)
 	defer cancel()
-	results, actual, fallback, err := agent.WebSearchProbeContext(ctx, probeOpts, probeQuery, 3)
-	if actual != "" {
-		backend = actual
+	outcome, err := agent.WebSearchProbeDetailed(ctx, probeOpts, probeQuery, 3)
+	actualBackend := res.Backend
+	if outcome.Backend != "" {
+		actualBackend = outcome.Backend
 	}
-	if fallback != "" {
-		res.FallbackFrom = fallback
+	fallbackFrom := res.FallbackFrom
+	if outcome.FallbackFrom != "" {
+		fallbackFrom = outcome.FallbackFrom
+	}
+	fallbackReason := res.FallbackReason
+	if outcome.FallbackReason != "" {
+		fallbackReason = outcome.FallbackReason
 	}
 	fail := func(msg string) {
-		out := map[string]any{"ok": false, "error": msg, "backend": backend}
-		if res.FallbackFrom != "" {
-			out["fallback_from"] = res.FallbackFrom
+		out := map[string]any{
+			"ok":         false,
+			"error":      msg,
+			"backend":    actualBackend,
+			"proxy_mode": proxyMode,
+			"elapsed_ms": time.Since(started).Milliseconds(),
+		}
+		if fallbackFrom != "" {
+			out["fallback_from"] = fallbackFrom
+		}
+		if fallbackReason != "" {
+			out["fallback_reason"] = fallbackReason
 		}
 		writeJSON(w, 200, out)
 	}
@@ -1098,13 +1181,26 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 		fail(err.Error())
 		return
 	}
-	if len(results) == 0 {
+	if len(outcome.Results) == 0 {
 		fail("搜索返回 0 条结果（可能被限流或代理不通）")
 		return
 	}
-	out := map[string]any{"ok": true, "count": len(results), "backend": backend}
-	if res.FallbackFrom != "" {
-		out["fallback_from"] = res.FallbackFrom
+	out := map[string]any{
+		"ok":         true,
+		"count":      len(outcome.Results),
+		"backend":    actualBackend,
+		"proxy_mode": proxyMode,
+		"elapsed_ms": time.Since(started).Milliseconds(),
+		"sample": map[string]string{
+			"title": outcome.Results[0].Title,
+			"url":   outcome.Results[0].URL,
+		},
+	}
+	if fallbackFrom != "" {
+		out["fallback_from"] = fallbackFrom
+	}
+	if fallbackReason != "" {
+		out["fallback_reason"] = fallbackReason
 	}
 	writeJSON(w, 200, out)
 }

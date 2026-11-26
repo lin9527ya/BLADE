@@ -18,6 +18,7 @@ func (s *Server) registerAgentRoutes(mux routeRegistrar) {
 	// MCP CRUD
 	mux.HandleFunc("GET /api/mcp", s.pgListMCP)
 	mux.HandleFunc("POST /api/mcp", s.pgSaveMCP)
+	mux.HandleFunc("POST /api/mcp/test", s.pgTestMCP)
 	mux.HandleFunc("DELETE /api/mcp/{id}", s.pgDeleteMCP)
 	mux.HandleFunc("GET /api/mcp/{id}/tools", s.pgMCPTools)
 	mux.HandleFunc("POST /api/mcp/{id}/refresh", s.pgRefreshMCP)

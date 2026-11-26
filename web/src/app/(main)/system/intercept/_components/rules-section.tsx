@@ -51,7 +51,9 @@ const SDK_WRITE: Tool[] = [
   sdkTool("MultiEdit", "批量编辑文件"),
 ];
 
-const SDK_KEYS = new Set([...SDK_EXEC, ...SDK_WRITE].map((t) => t.key));
+const SDK_MCP: Tool[] = [sdkTool("mcp__*", "全部外部 MCP 工具（mcp__<server>__<tool>）")];
+
+const SDK_KEYS = new Set([...SDK_EXEC, ...SDK_WRITE, ...SDK_MCP].map((t) => t.key));
 
 function groupTools(dbTools: Tool[]) {
   const sys: Tool[] = [],
@@ -64,6 +66,7 @@ function groupTools(dbTools: Tool[]) {
   return [
     { label: "执行类", tools: SDK_EXEC },
     { label: "写入/编辑类", tools: SDK_WRITE },
+    { label: "外部扩展（MCP）", tools: SDK_MCP },
     { label: "系统工具", tools: sys },
     { label: "自定义工具", tools: custom },
   ].filter((g) => g.tools.length > 0);
@@ -515,7 +518,9 @@ export function RulesSection() {
 
             <Field label="模式">
               <Input
-                placeholder={form.match_type === "regex" ? "^Bash$" : form.match_type === "argv" ? '["git","push"]' : "rm -rf"}
+                placeholder={
+                  form.match_type === "regex" ? "^Bash$" : form.match_type === "argv" ? '["git","push"]' : "rm -rf"
+                }
                 value={form.pattern}
                 onChange={(e) => set({ pattern: e.target.value })}
                 className={regexErr ? "border-destructive focus-visible:ring-destructive" : ""}

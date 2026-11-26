@@ -18,7 +18,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MCP_CATALOG } from "@/lib/mcp-catalog";
-import type { MCPServer } from "@/lib/types";
+import type { MCPServer, MCPTestResult } from "@/lib/types";
+
+import { MCPTestBanner } from "./mcp-parts";
 
 // MCP 页尾部的三个弹窗：推荐目录（只预填不安装）、添加/编辑服务器、删除确认。
 // 抽出来是为了让页面本体只剩列表与明细两栏。
@@ -30,10 +32,13 @@ export function MCPDialogs({
   setOpen,
   editing,
   saving,
+  testing,
+  testResult,
   pendingDelete,
   setPendingDelete,
   addFromCatalog,
   renderForm,
+  testConnection,
   saveForm,
   removeServer,
 }: {
@@ -43,10 +48,13 @@ export function MCPDialogs({
   setOpen: React.Dispatch<React.SetStateAction<boolean>>;
   editing: MCPServer | null;
   saving: boolean;
+  testing: boolean;
+  testResult: MCPTestResult | null;
   pendingDelete: MCPServer | null;
   setPendingDelete: React.Dispatch<React.SetStateAction<MCPServer | null>>;
   addFromCatalog: (item: (typeof MCP_CATALOG)[number]) => void;
   renderForm: () => React.ReactNode;
+  testConnection: () => void;
   saveForm: () => void;
   removeServer: (s: MCPServer) => void;
 }) {
@@ -100,11 +108,14 @@ export function MCPDialogs({
         <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>{editing ? editing.name : "添加 MCP 服务器"}</DialogTitle>
-            <DialogDescription>stdio（本地起进程）或 http（远程 Streamable HTTP）</DialogDescription>
+            <DialogDescription>stdio（本地起进程）、http（Streamable HTTP）或 sse（Legacy SSE）</DialogDescription>
           </DialogHeader>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">{renderForm()}</div>
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-3">
+            {renderForm()}
+            {testResult && <MCPTestBanner result={testResult} />}
+          </div>
           <div className="flex items-center gap-2 border-t px-4 py-3">
-            <Button onClick={saveForm} disabled={saving}>
+            <Button onClick={saveForm} disabled={saving || testing}>
               {editing ? (
                 "保存"
               ) : (
@@ -112,6 +123,9 @@ export function MCPDialogs({
                   <PlusIcon /> 添加
                 </>
               )}
+            </Button>
+            <Button variant="outline" onClick={testConnection} disabled={saving || testing}>
+              {testing ? "测试中…" : "测试连接"}
             </Button>
             <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
               取消

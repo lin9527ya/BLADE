@@ -739,6 +739,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedFindingCaseTools()
 	s.seedCVEInterceptTool() // 老库已保存 intercept_enabled_tools 时补 cve_exploit(一次性)
 	s.seedSRCInterceptTools()
+	s.seedMCPInterceptTool()
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
 	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
@@ -1293,6 +1294,38 @@ func (s *Server) seedSRCInterceptTools() {
 		}
 		log.Printf("[intercept] 已把 http_request/session_login 追加到已启用工具列表")
 	}
+}
+
+// seedMCPInterceptTool ensures existing DBs that previously persisted
+// intercept_enabled_tools include the dynamic mcp__* wildcard unless all tools
+// were deliberately disabled ([]).
+func (s *Server) seedMCPInterceptTool() {
+	const flag = "intercept_mcp_wildcard_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() {
+		if err := s.m.pg.SetSetting(flag, "true"); err != nil {
+			log.Printf("[intercept] 记录一次性迁移标记 %s 失败: %v", flag, err)
+		}
+	}()
+	if _, ok, _ := s.m.pg.GetSetting("intercept_enabled_tools"); !ok {
+		return
+	}
+	names, err := s.m.interceptor.GetEnabledTools()
+	if err != nil || len(names) == 0 {
+		return
+	}
+	for _, n := range names {
+		if n == "mcp__*" {
+			return
+		}
+	}
+	if err := s.m.interceptor.SetEnabledTools(append(names, "mcp__*")); err != nil {
+		log.Printf("[intercept] 追加 mcp__* 失败: %v", err)
+		return
+	}
+	log.Printf("[intercept] 已把 mcp__* 追加到已启用工具列表")
 }
 
 // reseedPentestPrompt 把 pentest（独立渗透 agent）的提示词刷成当前代码默认——

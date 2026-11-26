@@ -166,7 +166,7 @@ func (i *Interceptor) SetReviewer(r Reviewer) {
 // （见 guard.applyIntercept 的排序），但这条仍必须在此，否则破坏性/外泄规则看不住它。
 // 由 toolpolicy.Registry 派生：新增执行类工具在登记表里标 InterceptDefault 即可，
 // 不再维护第二份字符串列表。
-var defaultEnabledTools = toolpolicy.DefaultEnabledTools()
+var defaultEnabledTools = append(toolpolicy.DefaultEnabledTools(), "mcp__*")
 
 // New creates an Interceptor backed by d. The rule cache is lazy-loaded on
 // first use.
@@ -261,13 +261,33 @@ func (i *Interceptor) rules() ([]compiledRule, error) {
 	return i.cached, nil
 }
 
+func matchEnabledTool(enabled map[string]bool, name string) bool {
+	if len(enabled) == 0 || name == "" {
+		return false
+	}
+	if enabled[name] {
+		return true
+	}
+	if !strings.HasPrefix(name, "mcp__") {
+		return false
+	}
+	if enabled["mcp__*"] {
+		return true
+	}
+	rest := strings.TrimPrefix(name, "mcp__")
+	if idx := strings.Index(rest, "__"); idx > 0 {
+		return enabled["mcp__"+rest[:idx]+"__*"]
+	}
+	return false
+}
+
 // IsToolEnabled returns true if the named tool is in the intercept-enabled set
 // (i.e. it should enter the rule-matching path). Uses the same double-check lock
 // pattern as rules().
 func (i *Interceptor) IsToolEnabled(name string) bool {
 	i.mu.RLock()
 	if i.enabledTools != nil {
-		v := i.enabledTools[name]
+		v := matchEnabledTool(i.enabledTools, name)
 		i.mu.RUnlock()
 		return v
 	}
@@ -279,15 +299,14 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 		if err := i.loadLocked(); err != nil {
 			// 失效安全（P12）：设置读不出来时退回硬编码默认集——配了拦截面的工具
 			// 不能因为一次 DB 抖动就整体退出拦截面（宁可多拦，不可漏拦）。
+			fallback := make(map[string]bool, len(defaultEnabledTools))
 			for _, n := range defaultEnabledTools {
-				if n == name {
-					return true
-				}
+				fallback[n] = true
 			}
-			return false
+			return matchEnabledTool(fallback, name)
 		}
 	}
-	return i.enabledTools[name]
+	return matchEnabledTool(i.enabledTools, name)
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently

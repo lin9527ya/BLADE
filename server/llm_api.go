@@ -183,6 +183,7 @@ func (s *Server) newConfiguredChatAgent(prov llm.Provider, cfg agent.Config) *ag
 	ca := agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
 	ca.SetProxyFunc(s.m.ProxySnapshot)
 	ca.SetWebSearch(s.m.WebSearchOpts())
+	ca.SetWebSearchFunc(s.m.WebSearchOpts)
 	ca.SetGuard(s.chatGuard())
 	if pool, ok := prov.(*llmpool.Pool); ok && pool != nil {
 		ca.SetCompactionWindowResolver(func() int {
@@ -442,6 +443,14 @@ func (s *Server) invalidateProfileAgents() {
 	s.providers.byProfile = map[int64]*provEntry{}
 	s.providers.cacheMu.Unlock()
 	s.invalidateTaskAgents()
+}
+
+// invalidateProfileChatAgents clears per-profile ChatAgent wrappers without
+// discarding cached LLM providers / request rate limiters.
+func (s *Server) invalidateProfileChatAgents() {
+	s.providers.mu.Lock()
+	s.providers.chatAgents = map[int64]*agent.ChatAgent{}
+	s.providers.mu.Unlock()
 }
 
 func (s *Server) chatAgentRef() *agent.ChatAgent {

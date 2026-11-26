@@ -232,3 +232,48 @@ func TestGuardStatusesAndReset(t *testing.T) {
 		}
 	}
 }
+
+func TestAcquireGuardAndDeleteGuard(t *testing.T) {
+	SetGuardConfigResolver(func(string) GuardConfig {
+		return GuardConfig{MaxConcurrent: 1, BreakerThreshold: 2, BreakerCooldown: time.Second}
+	})
+	t.Cleanup(func() { SetGuardConfigResolver(nil) })
+
+	const srv = "acquire-delete-test"
+	t.Cleanup(func() { DeleteGuard(srv) })
+
+	rel, rec, err := AcquireGuard(context.Background(), srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec(fmt.Errorf("broken pipe"), false)
+	rel()
+
+	// Context cancellation must release slot without opening breaker.
+	rel, rec, err = AcquireGuard(context.Background(), srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec(context.Canceled, true)
+	rel()
+	if guardFor(srv).status(srv, guardConfigFor(srv)).Open {
+		t.Fatal("canceled call should not trip breaker")
+	}
+
+	// Second real failure trips breaker; DeleteGuard removes ghost state.
+	rel, rec, err = AcquireGuard(context.Background(), srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec(fmt.Errorf("eof"), false)
+	rel()
+	if _, _, err := AcquireGuard(context.Background(), srv); err == nil || !strings.Contains(err.Error(), "熔断冷却") {
+		t.Fatalf("expected breaker open error, got %v", err)
+	}
+	DeleteGuard(srv)
+	for _, st := range GuardStatuses() {
+		if st.Server == srv {
+			t.Fatalf("DeleteGuard should remove server %q from GuardStatuses", srv)
+		}
+	}
+}

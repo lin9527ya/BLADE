@@ -428,3 +428,79 @@ func TestChatAgentDynamicCompactionWindow(t *testing.T) {
 		t.Fatalf("zero resolver should fall back to static window 200000, got %d", got)
 	}
 }
+
+func TestDomainCompactorClearsWebSearchToolResults(t *testing.T) {
+	if !domainCompactableTools["web_search"] {
+		t.Fatal("domainCompactableTools must include lowercase web_search")
+	}
+	msgs := make([]llm.Message, 0, 16)
+	big := strings.Repeat("search result snippet\n", 120)
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("ws_%d", i)
+		msgs = append(msgs, toolUseMsg(id, "web_search", `{"query":"nginx cve"}`))
+		msgs = append(msgs, llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{llm.ToolResultText(id, big, false)},
+		})
+	}
+	out, changed, saved := microCompactMessages(msgs, 1)
+	if !changed || saved <= 0 {
+		t.Fatalf("expected web_search tool results to be micro-compacted, changed=%v saved=%d", changed, saved)
+	}
+	cleared := 0
+	for _, m := range out {
+		for _, b := range m.Content {
+			if b.Type == llm.BlockToolResult && isMicroCleared(b.Content) {
+				cleared++
+			}
+		}
+	}
+	if cleared != 8-5 {
+		t.Fatalf("expected %d cleared web_search results, got %d", 8-5, cleared)
+	}
+}
+
+func TestDomainCompactorClearsOldLargeMCPResults(t *testing.T) {
+	msgs := make([]llm.Message, 0, 18)
+	bigSnapshot := strings.Repeat("<div>DOM snapshot line</div>\n", 80)
+	// First 2 large MCP snapshots + 1 small MCP confirmation, followed by 5 recent Bash calls.
+	for i := 0; i < 2; i++ {
+		id := fmt.Sprintf("mcp_big_%d", i)
+		msgs = append(msgs, toolUseMsg(id, "ExecuteExtraTool", `{"tool_name":"mcp__browser__snapshot","params":{}}`))
+		msgs = append(msgs, llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{llm.ToolResultText(id, bigSnapshot, false)},
+		})
+	}
+	msgs = append(msgs, toolUseMsg("mcp_small", "ExecuteExtraTool", `{"tool_name":"mcp__browser__click","params":{"ref":"btn"}}`))
+	msgs = append(msgs, llm.Message{
+		Role:    llm.RoleUser,
+		Content: []llm.ContentBlock{llm.ToolResultText("mcp_small", "ok", false)},
+	})
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("bash_%d", i)
+		msgs = append(msgs, toolUseMsg(id, "Bash", `{"command":"echo ok"}`))
+		msgs = append(msgs, llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{llm.ToolResultText(id, "ok\n", false)},
+		})
+	}
+	out, changed, saved := microCompactMessages(msgs, 1)
+	if !changed || saved <= 0 {
+		t.Fatalf("expected old large MCP results to be micro-compacted, changed=%v saved=%d", changed, saved)
+	}
+	clearedByID := map[string]bool{}
+	for _, m := range out {
+		for _, b := range m.Content {
+			if b.Type == llm.BlockToolResult {
+				clearedByID[b.ToolUseID] = isMicroCleared(b.Content)
+			}
+		}
+	}
+	if !clearedByID["mcp_big_0"] || !clearedByID["mcp_big_1"] {
+		t.Fatalf("expected old large MCP results cleared, got %+v", clearedByID)
+	}
+	if clearedByID["mcp_small"] {
+		t.Fatalf("small MCP confirmation must stay intact, got %+v", clearedByID)
+	}
+}

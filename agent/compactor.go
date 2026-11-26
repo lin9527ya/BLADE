@@ -159,11 +159,46 @@ const (
 	domainMicroClearedText  = "[Old tool result content cleared]"
 	domainTurnGrowthGuess   = 15000
 	domainMicroThresholdPct = 75
+	domainMCPMicroMinBytes  = 1024
 )
 
 var domainCompactableTools = map[string]bool{
 	"Read": true, "Bash": true, "Grep": true, "Glob": true,
-	"WebFetch": true, "WebSearch": true, "Edit": true, "Write": true,
+	"WebFetch": true, "WebSearch": true, "web_search": true,
+	"Edit": true, "Write": true,
+}
+
+func toolResultSizes(msgs []llm.Message) map[string]int {
+	sizes := map[string]int{}
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type != llm.BlockToolResult || b.ToolUseID == "" {
+				continue
+			}
+			n := 0
+			for _, cb := range b.Content {
+				n += len(cb.Text)
+			}
+			sizes[b.ToolUseID] = n
+		}
+	}
+	return sizes
+}
+
+func isCompactableToolUse(b llm.ContentBlock, resultBytes map[string]int) bool {
+	if domainCompactableTools[b.Name] {
+		return true
+	}
+	if b.Name != actool.ExecuteExtraToolName {
+		return false
+	}
+	var env struct {
+		ToolName string `json:"tool_name"`
+	}
+	if json.Unmarshal(b.Input, &env) != nil || !strings.HasPrefix(env.ToolName, "mcp__") {
+		return false
+	}
+	return resultBytes[b.ID] > domainMCPMicroMinBytes
 }
 
 func normalizedCompactionConfig(cfg compaction.Config) compaction.Config {
@@ -273,10 +308,11 @@ func isMicroCleared(blocks []llm.ContentBlock) bool {
 // microCompactMessages clears compactable tool results older than the most recent
 // domainMicroKeepRecent and reports the calibrated token count reclaimed.
 func microCompactMessages(msgs []llm.Message, minClear int) ([]llm.Message, bool, int) {
+	resultBytes := toolResultSizes(msgs)
 	var ids []string
 	for _, m := range msgs {
 		for _, b := range m.Content {
-			if b.Type == llm.BlockToolUse && domainCompactableTools[b.Name] {
+			if b.Type == llm.BlockToolUse && isCompactableToolUse(b, resultBytes) {
 				ids = append(ids, b.ID)
 			}
 		}

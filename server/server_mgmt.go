@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -958,6 +959,147 @@ func (s *Server) pgResetTool(w http.ResponseWriter, r *http.Request) {
 
 // ---------- mcp ----------
 
+func validateMCPName(name string) error {
+	rs := []rune(name)
+	if len(rs) == 0 || !utf8.ValidString(name) {
+		return errors.New("请填写合法的 MCP 服务器名称")
+	}
+	if len(rs) > 48 {
+		return errors.New("MCP 名称长度不能超过 48 个字符")
+	}
+	if strings.Contains(name, "__") {
+		return errors.New("MCP 名称不能包含双下划线 __")
+	}
+	for _, r := range rs {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == '/' || r == '\\' || r == ',' {
+			return fmt.Errorf("MCP 名称不能包含空白、斜杠、逗号或控制字符：%q", name)
+		}
+	}
+	return nil
+}
+
+func validateMCPServer(m *db.MCPServer) error {
+	m.Name = strings.TrimSpace(m.Name)
+	if err := validateMCPName(m.Name); err != nil {
+		return err
+	}
+	m.Transport = strings.ToLower(strings.TrimSpace(m.Transport))
+	switch m.Transport {
+	case "stdio":
+		m.Command = strings.TrimSpace(m.Command)
+		if m.Command == "" {
+			return errors.New("stdio 传输必须填写启动命令")
+		}
+		m.URL = ""
+		m.Insecure = false
+	case "http", "sse":
+		m.URL = strings.TrimSpace(m.URL)
+		if m.URL == "" {
+			return fmt.Errorf("%s 传输必须填写远程 URL", m.Transport)
+		}
+		u, err := url.Parse(m.URL)
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("MCP URL 不可解析：%q", m.URL)
+		}
+		scheme := strings.ToLower(u.Scheme)
+		if scheme != "http" && scheme != "https" {
+			return fmt.Errorf("MCP URL 仅支持 http/https，收到 %q", u.Scheme)
+		}
+		m.Command = ""
+		m.Args = json.RawMessage("[]")
+	default:
+		return fmt.Errorf("未知传输方式 %q（仅支持 stdio / http / sse）", m.Transport)
+	}
+	return nil
+}
+
+func mcpDiagnosticHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(msg, mcphttp.AllowLocalEnv):
+		return fmt.Sprintf("默认禁止连接本机回环或链路本地地址；若确需连接本机 MCP（如 Burp/本地 ScopeSentry），请在启动环境设置 %s=1 后重启服务端。", mcphttp.AllowLocalEnv)
+	case strings.Contains(low, "x509") || strings.Contains(low, "tls:"):
+		return "TLS 证书校验失败；若远端使用自签证书，请勾选「跳过 TLS 证书校验（自签证书）」。"
+	case strings.Contains(low, "http 401") || strings.Contains(low, "http 403"):
+		return "远端返回鉴权失败（401/403），请检查请求头中的 Authorization 或 X-API-Key。"
+	case strings.Contains(low, "executable file not found") || strings.Contains(low, "no such file"):
+		return "服务端未找到目标可执行文件，请检查命令名（如 npx / uvx）是否已在 PATH 中或改填绝对路径。"
+	case strings.Contains(msg, "熔断冷却"):
+		return "该 MCP 服务器已触发熔断保护；修复底层连通问题后可点「重置熔断」立即恢复试探。"
+	case strings.Contains(low, "mcp sse"):
+		return "Legacy SSE 握手或事件流失败，请确认 URL 与传输协议（http / sse）是否匹配。"
+	}
+	return ""
+}
+
+func strSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func strMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+func mcpEndpointChanged(prev, next *db.MCPServer) bool {
+	if prev == nil || next == nil {
+		return true
+	}
+	if prev.Transport != next.Transport ||
+		prev.Command != next.Command ||
+		prev.URL != next.URL ||
+		prev.Insecure != next.Insecure {
+		return true
+	}
+	if !strSlicesEqual(jsonStrSlice(prev.Args), jsonStrSlice(next.Args)) {
+		return true
+	}
+	return !strMapsEqual(jsonStrMap(prev.Env), jsonStrMap(next.Env))
+}
+
+func collectSkillMCPGates(skillDir string) map[string][]string {
+	out := map[string][]string{}
+	if strings.TrimSpace(skillDir) == "" {
+		return out
+	}
+	reg, err := skill.LoadDir(skillDir)
+	if err != nil || reg == nil {
+		return out
+	}
+	for _, sk := range reg.List() {
+		for _, srv := range sk.MCPs {
+			srv = strings.TrimSpace(srv)
+			if srv == "" {
+				continue
+			}
+			out[srv] = append(out[srv], sk.Name)
+		}
+	}
+	for srv := range out {
+		sort.Strings(out[srv])
+	}
+	return out
+}
+
 func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
@@ -982,7 +1124,11 @@ func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	for _, st := range mcphttp.GuardStatuses() {
 		guards[st.Server] = st
 	}
-	writeJSON(w, 200, map[string]any{"servers": ms, "guards": guards})
+	writeJSON(w, 200, map[string]any{
+		"servers":     ms,
+		"guards":      guards,
+		"skill_gates": collectSkillMCPGates(s.skillDir),
+	})
 }
 
 // pgResetMCPGuard 手动重置某个 MCP server 的熔断（人修好配置/服务恢复后用）。
@@ -1013,7 +1159,100 @@ func (s *Server) pgResetMCPGuard(w http.ResponseWriter, r *http.Request) {
 		"note": "熔断已重置：下一次调用会真实打服务端；若仍不健康会重新计数。"})
 }
 
+func (s *Server) saveMCPAndRefresh(ctx context.Context, m *db.MCPServer) (id int64, toolCount int, discoveryErr string, statusCode int, err error) {
+	pg := s.m.pg
+	if pg == nil {
+		return 0, 0, "", 500, errors.New("数据库未初始化")
+	}
+	isNew := m.ID == 0
+	var prev *db.MCPServer
+	if !isNew {
+		var perr error
+		prev, perr = pg.MCPByID(m.ID)
+		if perr != nil {
+			return 0, 0, "", 500, perr
+		}
+		if prev == nil {
+			return 0, 0, "", 404, errors.New("MCP 不存在")
+		}
+		m.Env = mergeMaskedEnv(prev.Env, m.Env)
+	}
+	if err := validateMCPServer(m); err != nil {
+		return 0, 0, "", 400, err
+	}
+	id, err = pg.SaveMCP(m)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return 0, 0, "", 400, fmt.Errorf("MCP 名称 %q 已存在", m.Name)
+		}
+		return 0, 0, "", 500, err
+	}
+	m.ID = id
+
+	renamed := prev != nil && prev.Name != m.Name
+	endpointChanged := prev == nil || mcpEndpointChanged(prev, m)
+	if prev != nil {
+		if endpointChanged {
+			_ = pg.ClearMCPTools(id)
+		} else if renamed {
+			_ = pg.RenameMCPToolsPrefix(id, prev.Name, m.Name)
+		}
+		if renamed || endpointChanged {
+			mcphttp.DeleteGuard(prev.Name)
+		}
+	}
+	InvalidateMCPSchemaCache(id)
+	bumpMCPConfigEpoch()
+
+	needDiscover := false
+	if m.Enabled {
+		if isNew || endpointChanged {
+			needDiscover = true
+		} else {
+			summary, _, _ := pg.MCPToolSummary(id)
+			needDiscover = len(summary) == 0
+		}
+	}
+	if needDiscover {
+		dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		n, derr := s.discoverAndCacheMCPCount(dctx, m)
+		cancel()
+		if derr != nil {
+			discoveryErr = derr.Error()
+			if hint := mcpDiagnosticHint(derr); hint != "" {
+				discoveryErr += "（" + hint + "）"
+			}
+			log.Printf("[mcp] %s 工具发现失败: %v", m.Name, derr)
+		} else {
+			toolCount = n
+		}
+	}
+	return id, toolCount, discoveryErr, 200, nil
+}
+
 func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	var m db.MCPServer
+	if err := decode(r, &m); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	id, toolCount, discoveryErr, code, err := s.saveMCPAndRefresh(r.Context(), &m)
+	if err != nil {
+		writeErr(w, code, err.Error())
+		return
+	}
+	out := map[string]any{"id": id, "tool_count": toolCount}
+	if discoveryErr != "" {
+		out["discovery_error"] = discoveryErr
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) pgTestMCP(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -1023,10 +1262,7 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	isNew := m.ID == 0
-	// 掩码值 = "没改"。读取接口回显的是掩码，前端原样提交回来时必须换回库中原值，
-	// 否则一次「只改描述」的保存会把真凭据覆盖成字面量 __masked__:…。
-	if !isNew {
+	if m.ID > 0 {
 		prev, perr := pg.MCPByID(m.ID)
 		if perr != nil {
 			writeErr(w, 500, perr.Error())
@@ -1036,23 +1272,48 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 			m.Env = mergeMaskedEnv(prev.Env, m.Env)
 		}
 	}
-	id, err := pg.SaveMCP(&m)
-	if err != nil {
-		writeErr(w, 500, err.Error())
+	if err := validateMCPServer(&m); err != nil {
+		writeJSON(w, 200, map[string]any{
+			"ok":         false,
+			"error":      err.Error(),
+			"elapsed_ms": 0,
+		})
 		return
 	}
-	// On initial add, auto-discover + cache the tool list so the UI shows it right
-	// away (bounded so a slow/broken server can't hang the request). Skipped on
-	// plain updates (e.g. enable toggles) to avoid re-spawning the server each time.
-	if isNew && m.Enabled {
-		m.ID = id
-		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-		if derr := s.discoverAndCacheMCP(ctx, &m); derr != nil {
-			log.Printf("[mcp] %s 添加后工具发现失败: %v", m.Name, derr)
-		}
-		cancel()
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	cl, err := connectMCP(ctx, &m)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{
+			"ok":         false,
+			"error":      err.Error(),
+			"hint":       mcpDiagnosticHint(err),
+			"elapsed_ms": time.Since(started).Milliseconds(),
+		})
+		return
 	}
-	writeJSON(w, 200, map[string]any{"id": id})
+	defer cl.Close()
+	ts, err := cl.Tools(ctx)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{
+			"ok":         false,
+			"error":      err.Error(),
+			"hint":       mcpDiagnosticHint(err),
+			"elapsed_ms": time.Since(started).Milliseconds(),
+		})
+		return
+	}
+	samples := make([]string, 0, min(len(ts), 10))
+	for i := 0; i < len(ts) && i < 10; i++ {
+		samples = append(samples, ts[i].Name())
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok":           true,
+		"tool_count":   len(ts),
+		"sample_tools": samples,
+		"elapsed_ms":   time.Since(started).Milliseconds(),
+	})
 }
 
 func (s *Server) pgDeleteMCP(w http.ResponseWriter, r *http.Request) {
@@ -1061,9 +1322,15 @@ func (s *Server) pgDeleteMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
+	prev, _ := pg.MCPByID(id)
 	if err := pg.DeleteMCP(id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	InvalidateMCPSchemaCache(id)
+	bumpMCPConfigEpoch()
+	if prev != nil {
+		mcphttp.DeleteGuard(prev.Name)
 	}
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
@@ -1095,9 +1362,14 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	if err := s.discoverAndCacheMCP(ctx, target); err != nil {
-		writeErr(w, 502, "工具发现失败："+err.Error())
+		msg := "工具发现失败：" + err.Error()
+		if h := mcpDiagnosticHint(err); h != "" {
+			msg += "（" + h + "）"
+		}
+		writeErr(w, 502, msg)
 		return
 	}
+	bumpMCPConfigEpoch()
 	tools, _ := pg.MCPToolsDetailed(id)
 	writeJSON(w, 200, map[string]any{"tools": tools})
 }
@@ -1131,6 +1403,7 @@ func (s *Server) pgToggleMCPTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	bumpMCPConfigEpoch()
 	writeJSON(w, 200, map[string]any{"ok": true, "name": body.Name, "enabled": body.Enabled})
 }
 

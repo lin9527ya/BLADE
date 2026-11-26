@@ -5,6 +5,7 @@ import * as React from "react";
 import {
   ChevronRightIcon,
   PencilIcon,
+  PlugZapIcon,
   PlusIcon,
   RefreshCwIcon,
   RotateCcwIcon,
@@ -26,16 +27,18 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { MCP_CATALOG } from "@/lib/mcp-catalog";
-import type { Agent, MCPGuardStatus, MCPServer, MCPTool } from "@/lib/types";
+import { formatShellArgs, parseShellArgs, transportLabel, validateMcpForm } from "@/lib/mcp-helpers";
+import type { Agent, MCPGuardStatus, MCPServer, MCPTestResult, MCPTool } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { MCPDialogs } from "./_components/mcp-dialogs";
-import { bareToolName, emptyForm, type FormState, InfoRow, ToolParams } from "./_components/mcp-parts";
+import { bareToolName, emptyForm, type FormState, InfoRow, MCPTestBanner, ToolParams } from "./_components/mcp-parts";
 
 export default function MCPPage() {
   const [servers, setServers] = React.useState<MCPServer[]>([]);
-  // P24 守卫快照（按 server 名）：熔断中/并发占用/最后错误，供列表与明细展示、手动重置。
+  // P24 守卫快照（按 server 名）：全传输（stdio/http/sse）均共享并发上限、连续失败与熔断状态。
   const [guards, setGuards] = React.useState<Record<string, MCPGuardStatus>>({});
+  const [skillGates, setSkillGates] = React.useState<Record<string, string[]>>({});
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [visibility, setVisibility] = React.useState<Record<number, string[]>>({});
 
@@ -46,6 +49,10 @@ export default function MCPPage() {
   const [editing, setEditing] = React.useState<MCPServer | null>(null); // null = add mode
   const [form, setForm] = React.useState<FormState>(emptyForm);
   const [saving, setSaving] = React.useState(false);
+  const [testingModal, setTestingModal] = React.useState(false);
+  const [modalTestResult, setModalTestResult] = React.useState<MCPTestResult | null>(null);
+  const [testingDetail, setTestingDetail] = React.useState(false);
+  const [detailTestResult, setDetailTestResult] = React.useState<MCPTestResult | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<MCPServer | null>(null);
 
   const [tools, setTools] = React.useState<MCPTool[]>([]);
@@ -62,9 +69,10 @@ export default function MCPPage() {
       .catch(() => {});
     api
       .mcpServersWithGuards()
-      .then(({ servers: ss, guards: gs }) => {
+      .then(({ servers: ss, guards: gs, skillGates: sg }) => {
         setServers(ss);
         setGuards(gs);
+        setSkillGates(sg);
         // 选中的 server 被删掉后（别处删除/刷新后消失）右栏退回空态。
         setSelectedId((prev) => (prev !== null && ss.some((s) => s.id === prev) ? prev : null));
         ss.forEach((s) => {
@@ -107,6 +115,7 @@ export default function MCPPage() {
     setSelectedId(s.id);
     setToolQuery("");
     setExpandedTools(new Set());
+    setDetailTestResult(null);
     void loadTools(s.id);
   }
 
@@ -137,9 +146,10 @@ export default function MCPPage() {
   }
 
   // addFromCatalog 把推荐项**预填**进「添加 MCP」弹窗：仍然由人确认后保存，
-  // 不会自动创建任何东西（"由我决定是否默认安装"）。
+  // 不会自动创建任何东西（不影响右栏当前已选服务器的工具视图）。
   function addFromCatalog(item: (typeof MCP_CATALOG)[number]) {
     setEditing(null);
+    setModalTestResult(null);
     setForm({
       name: item.name,
       transport: item.transport,
@@ -149,24 +159,25 @@ export default function MCPPage() {
       env: item.env ?? "",
       insecure: false,
     });
-    setTools([]);
     setCatalogOpen(false);
     setOpen(true);
   }
 
   function openAdd() {
     setEditing(null);
+    setModalTestResult(null);
     setForm(emptyForm);
     setOpen(true);
   }
 
   function openEdit(s: MCPServer) {
     setEditing(s);
+    setModalTestResult(null);
     setForm({
       name: s.name,
       transport: s.transport,
       command: s.command ?? "",
-      args: (s.args ?? []).join(" "),
+      args: formatShellArgs(s.args),
       url: s.url ?? "",
       env: envToText(s.env),
       insecure: s.insecure ?? false,
@@ -185,48 +196,98 @@ export default function MCPPage() {
     }
   }
 
-  async function saveForm() {
-    if (!form.name.trim()) {
-      toast.error("请填写名称");
-      return;
-    }
-    if (form.transport === "stdio" && !form.command.trim()) {
-      toast.error("请填写命令");
-      return;
-    }
-    if (form.transport !== "stdio" && !form.url.trim()) {
-      toast.error("请填写远程 URL");
-      return;
-    }
-    setSaving(true);
-    try {
-      const base =
-        form.transport !== "stdio"
-          ? {
-              transport: form.transport,
-              url: form.url.trim(),
-              command: "",
-              args: [] as string[],
-              env: parseEnv(form.env), // 远程模式下 env 即请求头
-              insecure: form.insecure,
-            }
-          : {
-              transport: "stdio" as const,
-              command: form.command.trim(),
-              args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
-              env: parseEnv(form.env),
-              insecure: false,
-            };
-      await api.saveMcpServer({
+  function buildFormDraft(): { payload?: Partial<MCPServer>; error?: string } {
+    const err = validateMcpForm(form);
+    if (err) return { error: err };
+    const base =
+      form.transport !== "stdio"
+        ? {
+            transport: form.transport,
+            url: form.url.trim(),
+            command: "",
+            args: [] as string[],
+            env: parseEnv(form.env), // 远程模式下 env 即请求头
+            insecure: form.insecure,
+          }
+        : {
+            transport: "stdio" as const,
+            command: form.command.trim(),
+            args: parseShellArgs(form.args),
+            env: parseEnv(form.env),
+            insecure: false,
+          };
+    return {
+      payload: {
         ...(editing ? { id: editing.id } : {}),
         name: form.name.trim(),
         enabled: editing ? editing.enabled : true,
         ...base,
-      });
-      toast.success(editing ? "已保存" : "已添加 MCP 服务器");
-      setOpen(false);
-      if (!editing) setSelectedId(null); // 新加的服务器让用户自己在左栏点
+      },
+    };
+  }
+
+  async function testModalConnection() {
+    const { payload, error } = buildFormDraft();
+    if (error || !payload) {
+      toast.error(error || "配置不完整");
+      return;
+    }
+    setTestingModal(true);
+    setModalTestResult(null);
+    try {
+      const res = await api.testMcpServer(payload);
+      setModalTestResult(res);
+      if (res.ok) toast.success(`连接成功：发现 ${res.tool_count ?? 0} 个工具`);
+      else toast.error(res.error || "连接失败");
+    } catch (e) {
+      const msg = (e as Error).message || "请求失败";
+      setModalTestResult({ ok: false, error: msg });
+      toast.error(`测试失败：${msg}`);
+    } finally {
+      setTestingModal(false);
+    }
+  }
+
+  async function testSelectedServer(s: MCPServer) {
+    setTestingDetail(true);
+    setDetailTestResult(null);
+    try {
+      const res = await api.testMcpServer(s);
+      setDetailTestResult(res);
+      if (res.ok) toast.success(`连接正常：${s.name} 返回 ${res.tool_count ?? 0} 个工具`);
+      else toast.error(`连接失败：${res.error || "未知错误"}`);
       load();
+    } catch (e) {
+      const msg = (e as Error).message || "请求失败";
+      setDetailTestResult({ ok: false, error: msg });
+      toast.error(`测试失败：${msg}`);
+    } finally {
+      setTestingDetail(false);
+    }
+  }
+
+  async function saveForm() {
+    const { payload, error } = buildFormDraft();
+    if (error || !payload) {
+      toast.error(error || "配置不完整");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await api.saveMcpServer(payload);
+      if (res.discovery_error) {
+        toast.warning(`已保存「${payload.name}」，但工具发现失败：${res.discovery_error}`);
+      } else if (typeof res.tool_count === "number" && res.tool_count > 0) {
+        toast.success(`${editing ? "已保存" : "已添加 MCP 服务器"} · 发现 ${res.tool_count} 个工具`);
+      } else {
+        toast.success(editing ? "已保存" : "已添加 MCP 服务器");
+      }
+      setOpen(false);
+      setDetailTestResult(null);
+      setSelectedId(res.id);
+      setExpandedTools(new Set());
+      load();
+      void loadTools(res.id);
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`);
     } finally {
@@ -256,6 +317,7 @@ export default function MCPPage() {
       if (selectedId === s.id) {
         setSelectedId(null);
         setTools([]);
+        setDetailTestResult(null);
       }
       load();
     } catch (e) {
@@ -265,8 +327,14 @@ export default function MCPPage() {
 
   async function toggleEnabled(s: MCPServer) {
     try {
-      await api.saveMcpServer({ ...s, enabled: !s.enabled });
+      const res = await api.saveMcpServer({ ...s, enabled: !s.enabled });
+      if (res.discovery_error) {
+        toast.warning(`已启用「${s.name}」，但工具发现失败：${res.discovery_error}`);
+      }
       load();
+      if (selectedId === s.id) {
+        void loadTools(s.id);
+      }
     } catch (e) {
       toast.error(`操作失败：${(e as Error).message}`);
     }
@@ -342,7 +410,7 @@ export default function MCPPage() {
           </div>
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="m-name">名称</Label>
+          <Label htmlFor="m-name">名称（不可含空格或 __）</Label>
           <Input
             id="m-name"
             placeholder="filesystem"
@@ -363,11 +431,11 @@ export default function MCPPage() {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="m-args">参数（空格分隔）</Label>
+              <Label htmlFor="m-args">参数（支持引号包裹含空格参数）</Label>
               <Input
                 id="m-args"
                 className="font-mono"
-                placeholder="-y @modelcontextprotocol/server-filesystem /data"
+                placeholder='-y @modelcontextprotocol/server-filesystem "/data/my dir"'
                 value={form.args}
                 onChange={(e) => setF({ args: e.target.value })}
               />
@@ -409,11 +477,74 @@ export default function MCPPage() {
 
   function renderDetail(s: MCPServer) {
     const g = guards[s.name];
-    const envKeys = Object.keys(s.env ?? {});
+    const gates = skillGates[s.name] ?? [];
+    const envKeys = Object.keys(s.env);
     const vis = visibility[s.id] ?? [];
+
+    function renderToolsBody() {
+      if (toolsLoading) {
+        return <p className="text-muted-foreground text-sm">加载中…</p>;
+      }
+      if (tools.length === 0) {
+        return (
+          <p className="text-muted-foreground text-sm">尚未发现工具，点「刷新」重新获取（需服务器可达且已启用）。</p>
+        );
+      }
+      if (filteredTools.length === 0) {
+        return <p className="text-muted-foreground text-sm">没有匹配「{toolQuery}」的工具。</p>;
+      }
+      return (
+        <div className="flex flex-col divide-y">
+          {filteredTools.map((t) => (
+            <div key={t.name} className="py-2.5">
+              <div className="flex items-start gap-3">
+                <button
+                  type="button"
+                  onClick={() => toggleToolRow(t.name)}
+                  aria-expanded={expandedTools.has(t.name)}
+                  title="展开参数表"
+                  className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                >
+                  <ChevronRightIcon
+                    className={cn(
+                      "mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform",
+                      expandedTools.has(t.name) && "rotate-90",
+                    )}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className={cn("font-mono text-sm", !t.enabled && "text-muted-foreground")} title={t.name}>
+                        {bareToolName(s.name, t.name)}
+                      </code>
+                      {!t.enabled && (
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                          已停用
+                        </Badge>
+                      )}
+                    </div>
+                    {t.description && (
+                      <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">{t.description}</p>
+                    )}
+                  </div>
+                </button>
+                <Switch
+                  checked={t.enabled}
+                  disabled={togglingTool === t.name}
+                  onCheckedChange={(v) => void toggleTool(t, v)}
+                  aria-label={`启用工具 ${t.name}`}
+                  title="关掉后该工具不注入任何 Agent 的工具面（全局，与 Agent 无关）"
+                />
+              </div>
+              {expandedTools.has(t.name) && <ToolParams schema={t.schema} />}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
     return (
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 p-4 lg:p-6">
-        {/* 标题 + 动作（启用 / 编辑 / 删除 都在这里，列表行保持只读） */}
+        {/* 标题 + 动作（启用 / 测试 / 编辑 / 删除 都在这里，列表行保持只读） */}
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -434,7 +565,7 @@ export default function MCPPage() {
               )}
             </div>
             <p className="text-muted-foreground text-xs">
-              外部 MCP 工具服务器 · 工具可被按 Agent 授权可见；停用后不再进入任何 Agent 的工具面。
+              外部 MCP 工具服务器 · 工具受停机开关 / 授权范围 / 拦截规则管控；停用后不再进入任何 Agent 的工具面。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -442,6 +573,9 @@ export default function MCPPage() {
               <Switch checked={s.enabled} onCheckedChange={() => void toggleEnabled(s)} aria-label="启用" />
               启用
             </label>
+            <Button size="sm" variant="outline" disabled={testingDetail} onClick={() => void testSelectedServer(s)}>
+              <PlugZapIcon className="size-3.5" /> {testingDetail ? "测试中…" : "测试连接"}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => openEdit(s)}>
               <PencilIcon className="size-3.5" /> 编辑
             </Button>
@@ -451,11 +585,13 @@ export default function MCPPage() {
           </div>
         </div>
 
+        {detailTestResult && <MCPTestBanner result={detailTestResult} />}
+
         <SubBlock title="连接信息">
           <div className="flex flex-col gap-3">
             <InfoRow label="传输方式">
               <span className="font-mono">{s.transport}</span>
-              {s.transport === "stdio" ? "（本地起进程）" : "（远程 Streamable HTTP）"}
+              {transportLabel(s.transport)}
             </InfoRow>
             {s.transport === "stdio" ? (
               <>
@@ -463,7 +599,7 @@ export default function MCPPage() {
                   <span className="font-mono">{s.command || "（未设置）"}</span>
                 </InfoRow>
                 <InfoRow label="参数">
-                  <span className="font-mono">{s.args && s.args.length > 0 ? s.args.join(" ") : "（无）"}</span>
+                  <span className="font-mono">{s.args.length > 0 ? formatShellArgs(s.args) : "（无）"}</span>
                 </InfoRow>
               </>
             ) : (
@@ -520,8 +656,9 @@ export default function MCPPage() {
               </InfoRow>
             )}
             <p className="text-muted-foreground text-xs leading-relaxed">
-              守卫由平台按 server 名维护：只有传输层失败（连不上/超时/5xx）计数，工具返回的业务错误不算；
-              连续失败达阈值即开闸，冷却后自动半开重试。上限与阈值在「系统配置 → 运行时」。
+              守卫覆盖 stdio / http / sse
+              全传输：只有传输层失败（启动报错/断流/连不上/超时/5xx）计数，工具返回业务错误不算；
+              连续失败达阈值即开闸，冷却后自动半开探测恢复。上限与阈值在「系统配置 → 运行时」。
             </p>
           </div>
         </SubBlock>
@@ -545,62 +682,7 @@ export default function MCPPage() {
             </>
           }
         >
-          {toolsLoading ? (
-            <p className="text-muted-foreground text-sm">加载中…</p>
-          ) : tools.length === 0 ? (
-            <p className="text-muted-foreground text-sm">尚未发现工具，点「刷新」重新获取（需服务器可达且已启用）。</p>
-          ) : filteredTools.length === 0 ? (
-            <p className="text-muted-foreground text-sm">没有匹配「{toolQuery}」的工具。</p>
-          ) : (
-            <div className="flex flex-col divide-y">
-              {filteredTools.map((t) => (
-                <div key={t.name} className="py-2.5">
-                  <div className="flex items-start gap-3">
-                    <button
-                      type="button"
-                      onClick={() => toggleToolRow(t.name)}
-                      aria-expanded={expandedTools.has(t.name)}
-                      title="展开参数表"
-                      className="flex min-w-0 flex-1 items-start gap-2 text-left"
-                    >
-                      <ChevronRightIcon
-                        className={cn(
-                          "mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform",
-                          expandedTools.has(t.name) && "rotate-90",
-                        )}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <code
-                            className={cn("font-mono text-sm", !t.enabled && "text-muted-foreground")}
-                            title={t.name}
-                          >
-                            {bareToolName(s.name, t.name)}
-                          </code>
-                          {!t.enabled && (
-                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                              已停用
-                            </Badge>
-                          )}
-                        </div>
-                        {t.description && (
-                          <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">{t.description}</p>
-                        )}
-                      </div>
-                    </button>
-                    <Switch
-                      checked={t.enabled}
-                      disabled={togglingTool === t.name}
-                      onCheckedChange={(v) => void toggleTool(t, v)}
-                      aria-label={`启用工具 ${t.name}`}
-                      title="关掉后该工具不注入任何 Agent 的工具面（全局，与 Agent 无关）"
-                    />
-                  </div>
-                  {expandedTools.has(t.name) && <ToolParams schema={t.schema} />}
-                </div>
-              ))}
-            </div>
-          )}
+          {renderToolsBody()}
         </SubBlock>
 
         <SubBlock title="按 Agent 可见性">
@@ -617,8 +699,14 @@ export default function MCPPage() {
                 </label>
               ))}
             </div>
+            {gates.length > 0 && (
+              <p className="text-amber-600 text-xs leading-relaxed dark:text-amber-400">
+                技能门控提示：该服务器被技能 {gates.map((gName) => `「${gName}」`).join("、")} 通过 <code>mcps:</code>{" "}
+                声明绑定。拥有该可见技能的 Agent 在未调用对应技能前，其工具保持锁定状态。
+              </p>
+            )}
             <p className="text-muted-foreground text-xs leading-relaxed">
-              未勾选的 Agent 看不到这台服务器的任何工具；勾选即时生效（下一次构建工具面时）。
+              未勾选的 Agent（且无对应技能声明时）看不到这台服务器的任何工具；勾选即时生效（下一次构建工具面时）。
             </p>
           </div>
         </SubBlock>
@@ -672,7 +760,7 @@ export default function MCPPage() {
             <div className="flex flex-col gap-1 p-2">
               {servers.length === 0 && (
                 <p className="p-3 text-muted-foreground text-xs leading-relaxed">
-                  还没有 MCP 服务器。点右上角「添加 MCP」接入 stdio（本地起进程）或 http（远程）。
+                  还没有 MCP 服务器。点右上角「添加 MCP」接入 stdio（本地起进程）或 http/sse（远程）。
                 </p>
               )}
               {servers.map((s) => {
@@ -746,11 +834,14 @@ export default function MCPPage() {
         setOpen={setOpen}
         editing={editing}
         saving={saving}
+        testing={testingModal}
+        testResult={modalTestResult}
         pendingDelete={pendingDelete}
         setPendingDelete={setPendingDelete}
         addFromCatalog={addFromCatalog}
         renderForm={renderForm}
-        saveForm={saveForm}
+        testConnection={() => void testModalConnection()}
+        saveForm={() => void saveForm()}
         removeServer={removeServer}
       />
     </div>

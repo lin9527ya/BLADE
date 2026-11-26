@@ -48,15 +48,19 @@ type WebSearchOpts struct {
 	Backend   string
 	BraveKey  string
 	TavilyKey string
-	Proxy     string
-	// ProxyFunc resolves the egress proxy per search call when Proxy is empty,
+	// Proxy 仅用于显式配置独立搜索代理；留空时由 ProxyFunc / FallbackProxyFunc 动态取平台出口代理。
+	Proxy string
+	// ProxyFunc resolves the egress proxy per search call for ddgs/brave-html when Proxy is empty,
 	// so long-running sessions follow proxy-pool failovers automatically.
 	ProxyFunc func() string
-	// DeepSeek* 优先来自名为 deepseek/Deepseek（或 deepseek-*）的配置；没有时
-	// 回退当前激活配置。仅 anthropic 格式的 DeepSeek 官方端点支持服务端 web_search。
-	DeepSeekBaseURL string
-	DeepSeekAPIKey  string
-	DeepSeekModel   string
+	// FallbackProxyFunc resolves the egress proxy per search call when any primary backend
+	// falls back to brave-html or ddgs and Proxy is empty (fail-closed, never direct when pool exists).
+	FallbackProxyFunc func() string
+	SearxngURL        string
+	DeepSeekBaseURL   string
+	DeepSeekAPIKey    string
+	DeepSeekModel     string
+	DeepSeekFormat    string
 	// CommandCodeBaseURL / CommandCodeAPIKey 配置 commandcode 的**原生**搜索通道
 	// （/alpha/web-search）：与模型无关、与 LLM 配额解耦——它的 /messages 只服务
 	// Claude 系、deepseek 只在 /responses 上且拒收内置 web_search 工具。
@@ -65,6 +69,11 @@ type WebSearchOpts struct {
 	// Headers 是这次搜索要额外带的 HTTP 头（可空）：有些中转端点强制要求路由头
 	// （如 opencode zen 的 x-opencode-session），缺了直接 400。由宿主按配置决定。
 	Headers map[string]string
+	// BypassCache forces a live network probe (used by the settings "test search" endpoint).
+	BypassCache bool
+	// DiagnosticError carries a server-side validation error (e.g. DeepSeek profile format
+	// mismatch) so diagnostics fail explicitly instead of hitting an incompatible endpoint.
+	DiagnosticError string
 }
 
 type Worker struct {
@@ -76,11 +85,12 @@ type Worker struct {
 	proxyCACert     string                  // recording proxy's CA cert path (for WebFetch HTTPS verify)
 	proxyFn         func() (string, string) // dynamic proxy resolver (proxy-pool failover); nil = static
 	proxyFailureFn  func(proxyURL string, err error)
-	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
-	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
-	window          int               // context window in tokens (for compaction)
-	windowFn        func() int        // optional dynamic task-chain minimum
-	maxTurns        int               // max agent turns per run (0 = unlimited)
+	webSearch       WebSearchOpts        // web_search tool backend selection (off by default)
+	webSearchFn     func() WebSearchOpts // optional dynamic resolver (hot settings reload without rebuild)
+	tx              *transcript.Store    // raw LLM conversation persistence (nil = off)
+	window          int                  // context window in tokens (for compaction)
+	windowFn        func() int           // optional dynamic task-chain minimum
+	maxTurns        int                  // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
@@ -363,6 +373,10 @@ func (w *Worker) proxySnapshot() (string, string) {
 
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
+
+// SetWebSearchFunc wires a per-run dynamic resolver so settings/agent switches
+// take effect immediately on the next worker run without rebuilding bundles.
+func (w *Worker) SetWebSearchFunc(fn func() WebSearchOpts) { w.webSearchFn = fn }
 
 // ProxyEnv exposes proxyEnv to the host: a command the host launches on the agent's
 // behalf (P13 托管长任务) must get the SAME env as the agent's own Bash tool, or its
@@ -755,8 +769,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
 	defer cleanup()
 	mergeDeferred(&def, deferWorkerTools(tools))
-	if w.webSearch.Enabled {
-		tools = append(tools, NewWebSearchTool(w.webSearch))
+	ws := resolveWebSearchOpts(w.webSearch, w.webSearchFn)
+	if ws.Enabled {
+		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
+			return resolveWebSearchOpts(w.webSearch, w.webSearchFn)
+		}))
 	}
 
 	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同启动指令、意图锚定的目标资产
@@ -865,14 +882,17 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebFetchDisableDirectFallback: true,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
-		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
-		WebSearchBackend:      w.webSearch.Backend,
-		BraveSearchAPIKey:     w.webSearch.BraveKey,
-		TavilySearchAPIKey:    w.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: w.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: w.webSearch.Headers, CommandCodeSearchBaseURL: w.webSearch.CommandCodeBaseURL, CommandCodeSearchAPIKey: w.webSearch.CommandCodeAPIKey,
-		DeepSeekSearchAPIKey: w.webSearch.DeepSeekAPIKey,
-		DeepSeekSearchModel:  w.webSearch.DeepSeekModel,
-		WebSearchProxy:       w.webSearch.Proxy,
+		EnableWebSearch:          false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
+		WebSearchBackend:         ws.Backend,
+		BraveSearchAPIKey:        ws.BraveKey,
+		TavilySearchAPIKey:       ws.TavilyKey,
+		DeepSeekSearchBaseURL:    ws.DeepSeekBaseURL,
+		DeepSeekSearchHeaders:    ws.Headers,
+		CommandCodeSearchBaseURL: ws.CommandCodeBaseURL,
+		CommandCodeSearchAPIKey:  ws.CommandCodeAPIKey,
+		DeepSeekSearchAPIKey:     ws.DeepSeekAPIKey,
+		DeepSeekSearchModel:      ws.DeepSeekModel,
+		WebSearchProxy:           ws.Proxy,
 		// Bash 子命令的 HTTP 默认走记录代理 + 信任其 CA（工具无需 -x/-k）。
 		// 每次工具调用现取：出口在 run 中途恢复/切换时，下一条命令立刻用上新值，
 		// 而不是把启动瞬间的快照（可能是 fail-closed 的黑洞）冻结一整轮。

@@ -2278,7 +2278,15 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/traffic/exchange") return D.trafficDetail;
   if (path === "/settings" && m === "GET") return D.settings;
   if (path === "/settings" && m === "PUT") return { ...D.settings, ...b };
-  if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };
+  if (path === "/settings/web-search/test")
+    return {
+      ok: true,
+      count: 5,
+      backend: (b.web_search_backend as string) || D.settings.web_search_backend,
+      proxy_mode: (b.web_search_proxy as string) ? "custom" : "direct",
+      elapsed_ms: 42,
+      sample: { title: "Example Search Result", url: "https://example.com" },
+    };
   if (path === "/settings/python/detect") return { python_interpreter: "/usr/bin/python3" };
   if (path === "/chat")
     return { reply: "（demo）我已把该建议注入为一条高优意图，work agent 会尽快执行。", mode: "hint" };
@@ -2430,8 +2438,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/tools/custom/test") return { output: "（demo）工具执行输出示例。", is_error: false };
 
   // ── mcp ──
-  if (path === "/mcp" && m === "GET") return { servers: D.mcpServers };
-  if (path === "/mcp" && m === "POST") return { id: 3 };
+  if (path === "/mcp" && m === "GET")
+    return { servers: D.mcpServers, guards: {}, skill_gates: { playwright: ["playwright-cli"] } };
+  if (path === "/mcp/test" && m === "POST")
+    return { ok: true, tool_count: 3, sample_tools: ["host_info", "search", "dns_resolve"], elapsed_ms: 35 };
+  if (path === "/mcp" && m === "POST") return { id: Number(b.id) || 3, tool_count: 3 };
+  if (seg[0] === "mcp" && seg[2] === "guard" && seg[3] === "reset")
+    return { reset: true, server: "mock", note: "（demo）已重置熔断状态。" };
   // P25：工具级开关（demo 里直接改内存 mock，开关手感真实）
   if (seg[0] === "mcp" && seg[2] === "tools" && seg[3] === "toggle") {
     const list = D.mcpToolsById[Number(seg[1])] ?? [];

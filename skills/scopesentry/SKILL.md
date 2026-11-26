@@ -1,7 +1,7 @@
 ---
 name: scopesentry
 description: 通过 ScopeSentry MCP 管理安全扫描平台（项目、任务、模板、资产、节点）。在用户提到 ScopeSentry、MCP、API Key、扫描任务、资产查询时使用。
-mcps: browser
+mcps: ScopeSentry
 tags:
   class: [platform-integration, helper]
 ---

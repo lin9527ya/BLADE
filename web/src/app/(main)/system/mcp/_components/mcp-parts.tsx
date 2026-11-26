@@ -2,7 +2,7 @@
 
 import type * as React from "react";
 
-import type { MCPToolSchema, MCPToolSchemaProp } from "@/lib/types";
+import type { MCPTestResult, MCPToolSchema, MCPToolSchemaProp } from "@/lib/types";
 
 // MCP 页的类型与展示基件：传输方式、表单状态、参数行解析与信息行。
 
@@ -115,6 +115,41 @@ export function InfoRow({ label, children }: { label: string; children: React.Re
     <div className="grid gap-1 sm:grid-cols-[8rem_1fr] sm:items-baseline sm:gap-3">
       <span className="text-muted-foreground text-xs">{label}</span>
       <div className="min-w-0 break-all text-sm">{children}</div>
+    </div>
+  );
+}
+
+// MCPTestBanner：在编辑弹窗与右栏明细共用一次测试连接的诊断反馈条。
+export function MCPTestBanner({ result }: { result: MCPTestResult }) {
+  return (
+    <div
+      className={
+        result.ok
+          ? "flex flex-col gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs"
+          : "flex flex-col gap-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span
+          className={result.ok ? "font-medium text-emerald-600 dark:text-emerald-400" : "font-medium text-destructive"}
+        >
+          {result.ok ? `连接成功 · 发现 ${result.tool_count ?? 0} 个工具` : "连接测试失败"}
+        </span>
+        {typeof result.elapsed_ms === "number" && <span className="text-muted-foreground">{result.elapsed_ms} ms</span>}
+      </div>
+      {result.ok && result.sample_tools && result.sample_tools.length > 0 && (
+        <p className="break-all font-mono text-[11px] text-muted-foreground">
+          示例工具：{result.sample_tools.join("、")}
+        </p>
+      )}
+      {!result.ok && result.error && (
+        <p className="break-all rounded bg-background/60 px-2 py-1 font-mono text-[11px] text-destructive">
+          {result.error}
+        </p>
+      )}
+      {!result.ok && result.hint && (
+        <p className="text-amber-600 leading-relaxed dark:text-amber-400">排查建议：{result.hint}</p>
+      )}
     </div>
   );
 }

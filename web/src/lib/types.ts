@@ -2173,6 +2173,35 @@ export interface ClashRotation {
   egress_ip: string;
 }
 
+export type WebSearchProxyMode = "custom" | "egress_pool" | "direct" | "proxy_blocked";
+
+export interface WebSearchStats {
+  requests: number;
+  cache_hits: number;
+  primary_ok: number;
+  fallback_ok: number;
+  failures: number;
+  last_backend?: string;
+  last_fallback_from?: string;
+  last_error?: string;
+  last_at?: string;
+}
+
+export interface WebSearchTestResult {
+  ok: boolean;
+  error?: string;
+  count?: number;
+  backend?: string;
+  fallback_from?: string;
+  fallback_reason?: string;
+  proxy_mode?: WebSearchProxyMode | string;
+  elapsed_ms?: number;
+  sample?: {
+    title: string;
+    url: string;
+  };
+}
+
 export interface Settings {
   traffic_capture: boolean;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
@@ -2198,14 +2227,17 @@ export interface Settings {
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.
   web_search_enabled: boolean;
-  web_search_backend: string; // "ddgs" | "brave-html" | "brave-free" | "tavily" | "deepseek" | "opencode" | "commandcode"
+  web_search_backend: string; // "ddgs" | "brave-html" | "searxng" | "brave-free" | "tavily" | "deepseek" | "opencode" | "commandcode"
   brave_key_set: boolean;
   tavily_key_set: boolean;
   // write-only: only sent on PUT to store/clear the key.
   brave_search_api_key?: string;
   tavily_search_api_key?: string;
-  // 独立出口代理(http/https/socks5)，用于访问搜索端点；与记录流量的 MITM 代理无关。空=直连。
+  // 独立出口代理(http/https/socks5)，用于访问搜索端点；与记录流量的 MITM 代理无关。空=直连或跟随平台出口代理池。
   web_search_proxy?: string;
+  web_search_searxng_url?: string;
+  web_search_proxy_mode?: WebSearchProxyMode;
+  web_search_stats?: WebSearchStats;
   // 全局出口代理（兼容旧字段：代理池第一项）。空=未配置。
   global_proxy?: string;
   // 代理池：每行一个 http/https/socks5 URL（Clash 混合端口即可）。配了候选时若全部不可用，
@@ -2755,6 +2787,21 @@ export interface MCPToolSchema {
   type?: string;
   properties?: Record<string, MCPToolSchemaProp>;
   required?: string[];
+}
+
+export interface SaveMCPResult {
+  id: number;
+  tool_count?: number;
+  discovery_error?: string;
+}
+
+export interface MCPTestResult {
+  ok: boolean;
+  tool_count?: number;
+  sample_tools?: string[];
+  error?: string;
+  hint?: string;
+  elapsed_ms?: number;
 }
 
 export interface MCPToolSchemaProp {

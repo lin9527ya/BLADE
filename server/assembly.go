@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lin9527ya/Norma/permission"
@@ -17,6 +20,7 @@ import (
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/mcphttp"
 	"github.com/lin9527ya/blade/toolpolicy"
 	"github.com/lin9527ya/blade/traffic"
 )
@@ -28,6 +32,24 @@ type cachedMCPToolDef struct {
 }
 
 const mcpSchemaCacheTTL = 5 * time.Minute
+
+var mcpConfigEpoch atomic.Int64
+
+func bumpMCPConfigEpoch() int64 {
+	return mcpConfigEpoch.Add(1)
+}
+
+// InvalidateMCPSchemaCache evicts in-memory cached MCP schemas for serverID.
+func InvalidateMCPSchemaCache(serverID int64) {
+	prefix := fmt.Sprintf("%d|", serverID)
+	mcpSchemaCache.mu.Lock()
+	for k := range mcpSchemaCache.entries {
+		if serverID <= 0 || strings.HasPrefix(k, prefix) {
+			delete(mcpSchemaCache.entries, k)
+		}
+	}
+	mcpSchemaCache.mu.Unlock()
+}
 
 var mcpSchemaCache = struct {
 	mu      sync.Mutex
@@ -50,42 +72,151 @@ func mcpServerCacheKey(m *db.MCPServer) string {
 type lazyMCPServerSession struct {
 	runCtx context.Context
 	srv    *db.MCPServer
+	dialMu sync.Mutex
 	mu     sync.Mutex
 	client mcpClient
 	byName map[string]actool.CoreTool
 }
 
-func (s *lazyMCPServerSession) call(ctx context.Context, toolName string, args json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+func (s *lazyMCPServerSession) currentTarget(toolName string) (mcpClient, actool.CoreTool) {
 	s.mu.Lock()
-	if s.client == nil {
-		dialCtx := s.runCtx
-		if dialCtx == nil || dialCtx.Err() != nil {
-			dialCtx = ctx
-		}
-		cl, err := connectMCP(dialCtx, s.srv)
-		if err != nil {
-			s.mu.Unlock()
-			return actool.Errorf(fmt.Sprintf("mcp %s 连接失败: %v", s.srv.Name, err)), nil
-		}
-		ts, err := cl.Tools(dialCtx)
-		if err != nil {
-			_ = cl.Close()
-			s.mu.Unlock()
-			return actool.Errorf(fmt.Sprintf("mcp %s tools/list 失败: %v", s.srv.Name, err)), nil
-		}
-		byName := make(map[string]actool.CoreTool, len(ts))
-		for _, t := range ts {
-			byName[t.Name()] = t
-		}
-		s.client = cl
-		s.byName = byName
+	defer s.mu.Unlock()
+	if s.client == nil || s.byName == nil {
+		return nil, nil
 	}
-	target := s.byName[toolName]
+	if ac, ok := s.client.(mcpAliveChecker); ok && !ac.Alive() {
+		return nil, nil
+	}
+	return s.client, s.byName[toolName]
+}
+
+func (s *lazyMCPServerSession) resetIfSame(old mcpClient) {
+	s.mu.Lock()
+	if old == nil || s.client == old {
+		prev := s.client
+		s.client = nil
+		s.byName = nil
+		s.mu.Unlock()
+		if prev != nil {
+			_ = prev.Close()
+		}
+		return
+	}
 	s.mu.Unlock()
-	if target == nil {
-		return actool.Errorf(fmt.Sprintf("mcp tool %s not found on %s", toolName, s.srv.Name)), nil
+}
+
+func (s *lazyMCPServerSession) ensureTarget(ctx context.Context, toolName string) (mcpClient, actool.CoreTool, error) {
+	if cl, tgt := s.currentTarget(toolName); cl != nil {
+		return cl, tgt, nil
 	}
-	return target.Call(ctx, args, tc)
+	s.dialMu.Lock()
+	defer s.dialMu.Unlock()
+	if cl, tgt := s.currentTarget(toolName); cl != nil {
+		return cl, tgt, nil
+	}
+	// Evict any dead client before opening a fresh connection.
+	s.mu.Lock()
+	dead := s.client
+	s.client = nil
+	s.byName = nil
+	s.mu.Unlock()
+	if dead != nil {
+		_ = dead.Close()
+	}
+
+	dialCtx := ctx
+	if dialCtx == nil || dialCtx.Err() != nil {
+		dialCtx = s.runCtx
+	}
+	if dialCtx == nil {
+		dialCtx = context.Background()
+	}
+	boundedCtx, cancel := withBoundedDialTimeout(dialCtx, stdioDialTimeout)
+	defer cancel()
+
+	cl, err := connectMCP(boundedCtx, s.srv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mcp %s 连接失败: %w", s.srv.Name, err)
+	}
+	ts, err := cl.Tools(boundedCtx)
+	if err != nil {
+		_ = cl.Close()
+		return nil, nil, fmt.Errorf("mcp %s tools/list 失败: %w", s.srv.Name, err)
+	}
+	byName := make(map[string]actool.CoreTool, len(ts))
+	for _, t := range ts {
+		byName[t.Name()] = t
+	}
+	s.mu.Lock()
+	s.client = cl
+	s.byName = byName
+	tgt := byName[toolName]
+	s.mu.Unlock()
+	return cl, tgt, nil
+}
+
+func resultErrorText(res actool.Result, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if !res.IsError {
+		return ""
+	}
+	var b strings.Builder
+	for _, blk := range res.Content {
+		if blk.Text != "" {
+			b.WriteString(blk.Text)
+		}
+	}
+	return b.String()
+}
+
+func isMCPTransportBroken(ctx context.Context, res actool.Result, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if err != nil && (errors.Is(err, mcphttp.ErrSessionExpired) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+		return true
+	}
+	msg := resultErrorText(res, err)
+	if msg == "" || strings.Contains(msg, "熔断冷却") || strings.Contains(msg, "mcp rpc error") {
+		return false
+	}
+	low := strings.ToLower(msg)
+	for _, needle := range []string{
+		strings.ToLower(mcphttp.ErrSessionExpired.Error()),
+		"connection closed",
+		"mcp sse stream",
+		"broken pipe",
+		"process already finished",
+		"no matching response in event stream",
+		"use of closed network connection",
+		": eof",
+	} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *lazyMCPServerSession) call(ctx context.Context, toolName string, args json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		cl, target, err := s.ensureTarget(ctx, toolName)
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		if target == nil {
+			return actool.Errorf(fmt.Sprintf("mcp tool %s not found on %s", toolName, s.srv.Name)), nil
+		}
+		res, callErr := target.Call(ctx, args, tc)
+		if attempt == 0 && isMCPTransportBroken(ctx, res, callErr) {
+			s.resetIfSame(cl)
+			continue
+		}
+		return res, callErr
+	}
+	return actool.Errorf(fmt.Sprintf("mcp %s 重连后仍失败", s.srv.Name)), nil
 }
 
 func (s *lazyMCPServerSession) Close() error {
@@ -168,11 +299,13 @@ func resolveMCPToolDefs(ctx context.Context, pg *db.DB, m *db.MCPServer) ([]acto
 	}
 	mcpSchemaCache.mu.Unlock()
 
-	cl, err := connectMCP(ctx, m)
+	dialCtx, cancel := withBoundedDialTimeout(ctx, stdioDialTimeout)
+	defer cancel()
+	cl, err := connectMCP(dialCtx, m)
 	if err != nil {
 		return nil, nil, err
 	}
-	ts, err := cl.Tools(ctx)
+	ts, err := cl.Tools(dialCtx)
 	if err != nil {
 		_ = cl.Close()
 		return nil, nil, fmt.Errorf("tools/list: %w", err)
@@ -398,6 +531,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			UnlockSkill:     unlockSkill,
 			AlwaysSkills:    alwaysText,
 			CapabilityIndex: renderCapabilityIndex(reg, serverTools),
+			SurfaceSalt:     strconv.FormatInt(mcpConfigEpoch.Load(), 10),
 		}
 		return extra, def, cleanup
 	}

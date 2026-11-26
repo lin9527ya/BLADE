@@ -105,3 +105,52 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 		t.Fatalf("Call() = %q, %v", got, err)
 	}
 }
+
+func TestStreamableHTTPContentTypeCaseSSEMultilineAnd404SessionExpired(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if req.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}`))
+			return
+		}
+		calls++
+		if calls == 1 {
+			// Mixed-case Content-Type + multi-line SSE data payload with string containing newline escape / multi-chunk JSON
+			w.Header().Set("Content-Type", "Text/Event-Stream; charset=utf-8")
+			fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\n", req.ID)
+			fmt.Fprintf(w, "data: \"result\":{\"content\":[{\"type\":\"text\",\"text\":\"line1 line2\"}]}}\n\n")
+			return
+		}
+		// Second call simulates lost session -> 404 ErrSessionExpired
+		http.Error(w, "session lost", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := New(ctx, "http-multiline-test", srv.URL, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	got, err := c.Call(ctx, "demo", map[string]any{})
+	if err != nil || got != "line1 line2" {
+		t.Fatalf("multiline mixed-case SSE Call = (%q, %v)", got, err)
+	}
+	_, err = c.Call(ctx, "demo", map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), ErrSessionExpired.Error()) {
+		t.Fatalf("expected ErrSessionExpired on 404 with session id, got %v", err)
+	}
+}

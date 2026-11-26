@@ -127,6 +127,7 @@ import type {
   LootItem,
   MCPGuardStatus,
   MCPServer,
+  MCPTestResult,
   MCPTool,
   MissingSkill,
   ModelTokenStat,
@@ -140,6 +141,7 @@ import type {
   PlaybookFingerprint,
   PlaybookMDPreview,
   ProxyPoolStatusPayload,
+  SaveMCPResult,
   ScheduleFrequency,
   ScheduleRun,
   ScheduleTaskSpec,
@@ -189,6 +191,7 @@ import type {
   UpdateCheck,
   UsageStats,
   VerificationLedgerRow,
+  WebSearchTestResult,
   WorkspaceFile,
   WorkspaceListing,
 } from "@/lib/types";
@@ -1999,13 +2002,10 @@ export const api = {
   testWebSearch: (patch: {
     web_search_backend?: string;
     web_search_proxy?: string;
+    web_search_searxng_url?: string;
     brave_search_api_key?: string;
     tavily_search_api_key?: string;
-  }) =>
-    post<{ ok: boolean; error?: string; count?: number; backend?: string; fallback_from?: string }>(
-      `/settings/web-search/test`,
-      patch,
-    ),
+  }) => post<WebSearchTestResult>(`/settings/web-search/test`, patch),
 
   // ---- 漏洞 IM 推送 ----
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
@@ -2489,15 +2489,19 @@ export const api = {
 
   // ---- mcp ----
   mcpServers: () => get<{ servers: MCPServer[] }>("/mcp").then((r) => arr(r.servers)),
-  // P24：MCP 列表 + 每个 server 的并发/熔断快照（只给 MCP 页用；其它页面只关心列表）。
+  // P24：MCP 列表 + 每个 server 的并发/熔断快照 + 技能门控信息。
   mcpServersWithGuards: () =>
-    get<{ servers: MCPServer[]; guards?: Record<string, MCPGuardStatus> }>("/mcp").then((r) => ({
+    get<{ servers: MCPServer[]; guards?: Record<string, MCPGuardStatus>; skill_gates?: Record<string, string[]> }>(
+      "/mcp",
+    ).then((r) => ({
       servers: arr(r.servers),
       guards: r.guards ?? {},
+      skillGates: r.skill_gates ?? {},
     })),
   // P24：手动重置某个 MCP server 的熔断（修好配置/服务恢复后用）。
   resetMcpGuard: (id: number) => post<{ reset: boolean; server: string; note: string }>(`/mcp/${id}/guard/reset`, {}),
-  saveMcpServer: (m: Partial<MCPServer>) => post<{ id: number }>("/mcp", m),
+  saveMcpServer: (m: Partial<MCPServer>) => post<SaveMCPResult>("/mcp", m),
+  testMcpServer: (m: Partial<MCPServer>) => post<MCPTestResult>("/mcp/test", m),
   deleteMcpServer: (id: number) => del<{ deleted: number }>(`/mcp/${id}`),
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),
   refreshMcpServer: (id: number) => post<{ tools: MCPTool[] }>(`/mcp/${id}/refresh`, {}).then((r) => arr(r.tools)),
@@ -2529,9 +2533,16 @@ export const api = {
 
   // ---- 资产同步 (ScopeSentry 数据源) ----
   ssStatus: () =>
-    get<{ exists: boolean; configured: boolean; enabled: boolean; reachable: boolean; url?: string; tools: string[] }>(
-      "/sync/scopesentry/status",
-    ),
+    get<{
+      exists: boolean;
+      configured: boolean;
+      enabled: boolean;
+      reachable: boolean;
+      url?: string;
+      tools: string[];
+      error?: string;
+      hint?: string;
+    }>("/sync/scopesentry/status"),
   ssDatasource: (body: { url?: string; api_key?: string }) =>
     post<{ id: number; enabled: boolean }>("/sync/scopesentry/datasource", body),
   ssProjects: (page = 1, size = 50, search = "") =>

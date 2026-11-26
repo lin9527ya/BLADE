@@ -34,6 +34,7 @@ type ChatAgent struct {
 	proxyCACert    string
 	proxyFn        func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
 	webSearch      WebSearchOpts
+	webSearchFn    func() WebSearchOpts // dynamic resolver so settings updates apply without cache invalidation
 	guard          *guard.Guard         // optional; nil disables intercept hooks for chat
 	nonStreamingFn func() bool          // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn   func() bool          // resolver: use experimental noa compaction? (nil = off)
@@ -103,6 +104,10 @@ func (c *ChatAgent) proxySnapshot() (string, string) {
 // SetWebSearch selects the web_search backend for the chat agent (off by default).
 func (c *ChatAgent) SetWebSearch(o WebSearchOpts) { c.webSearch = o }
 
+// SetWebSearchFunc wires a per-turn dynamic resolver so settings/agent switches
+// take effect immediately on the next chat turn without cache invalidation.
+func (c *ChatAgent) SetWebSearchFunc(fn func() WebSearchOpts) { c.webSearchFn = fn }
+
 // SetGuard attaches a guard (with user-configured intercept rules) to this chat
 // agent. Must be called before Chat; safe to call multiple times.
 func (c *ChatAgent) SetGuard(g *guard.Guard) { c.guard = g }
@@ -148,7 +153,7 @@ type chatVars struct{ DataDir, Now string }
 func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message string, maxTurns int, maxDuration time.Duration, webSearch bool, emit func(db.Activity)) (string, error) {
 	_, proxyCA := c.proxySnapshot()
 	// gate the global web-search opts by this agent's own flag.
-	ws := c.webSearch
+	ws := resolveWebSearchOpts(c.webSearch, c.webSearchFn)
 	if !webSearch {
 		ws.Enabled = false
 	}
@@ -171,7 +176,13 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
 	if ws.Enabled {
-		tools = append(tools, NewWebSearchTool(ws))
+		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
+			resolved := resolveWebSearchOpts(c.webSearch, c.webSearchFn)
+			if !webSearch {
+				resolved.Enabled = false
+			}
+			return resolved
+		}))
 	}
 
 	staticSys, dynamicSys := chatSystemParts(agentKey, c.workDir, sessionWorkDir)

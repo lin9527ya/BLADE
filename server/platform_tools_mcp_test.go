@@ -48,6 +48,15 @@ func TestMCPMutationToolsAreActionTools(t *testing.T) {
 	}
 }
 
+func TestStripReservedHostEnvJSON(t *testing.T) {
+	if _, err := stripReservedHostEnvJSON([]byte(`{"BLADE_JWT_SECRET":"x"}`)); err == nil {
+		t.Fatal("expected reserved BLADE_* key to be rejected")
+	}
+	if _, err := stripReservedHostEnvJSON([]byte(`{"SHODAN_API_KEY":"abc"}`)); err != nil {
+		t.Fatalf("expected MCP-specific token allowed, got %v", err)
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 func actionToolForTest(key string) bool { return intercept.BuiltinActionTool(key) }

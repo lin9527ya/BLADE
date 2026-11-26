@@ -186,9 +186,14 @@ func (s *Server) validateSettingsRequest(req settingsRequest) error {
 		// 未知后端此前会被原样存下、运行期再静默失效；保存时当场拒掉。
 		switch strings.TrimSpace(*req.WebSearchBackend) {
 		case "", defaultWebSearchBackend, "brave-html", "brave-free", "tavily",
-			deepSeekWebSearchBackend, opencodeWebSearchBackend, commandCodeWebSearchBackend:
+			searxngWebSearchBackend, deepSeekWebSearchBackend, opencodeWebSearchBackend, commandCodeWebSearchBackend:
 		default:
 			return fmt.Errorf("未知的搜索后端 %q", strings.TrimSpace(*req.WebSearchBackend))
+		}
+	}
+	if req.SearxngURL != nil {
+		if _, err := normalizeSearxngURL(*req.SearxngURL); err != nil {
+			return err
 		}
 	}
 	return nil

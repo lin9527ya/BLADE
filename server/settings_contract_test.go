@@ -233,4 +233,6 @@ var settingsReadOnly = map[string]string{
 	"compaction_prompt":        "P14 领域压缩模板：刻意只读——设置页不暴露编辑框，覆盖走 API/DB（CompactionPromptOverride）",
 	"server_local_time":        "后端进程当前本地时间，运行时算出，只读",
 	"server_local_zone":        "后端进程本地时区名，运行时算出，只读",
+	"web_search_proxy_mode":    "运行时算出当前搜索出口形态（custom/egress_pool/direct/proxy_blocked），只读",
+	"web_search_stats":         "运行时联网搜索命中/兜底/缓存统计快照，只读",
 }

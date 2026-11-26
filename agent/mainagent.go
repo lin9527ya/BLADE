@@ -33,6 +33,7 @@ type MainAgent struct {
 	proxyFn         func() (string, string)                // dynamic resolver (proxy-pool failover); nil = static
 	proxyFailureFn  func(proxyURL string, err error)       // host callback on proxy dial/auth failure
 	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
+	webSearchFn     func() WebSearchOpts                   // optional dynamic resolver (hot settings reload without rebuild)
 	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
 	rotateEgress    func(reason string) (string, error)    // host callback: switch Clash egress node
@@ -146,6 +147,10 @@ func (m *MainAgent) proxySnapshot() (string, string) {
 // SetWebSearch selects the web_search backend for the main agent (off by default).
 func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 
+// SetWebSearchFunc wires a per-run dynamic resolver so settings/agent switches
+// take effect immediately on the next run without rebuilding agent instances.
+func (m *MainAgent) SetWebSearchFunc(fn func() WebSearchOpts) { m.webSearchFn = fn }
+
 // SetSteerWork wires the engine callback that lets the main agent's steer_work
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
@@ -230,8 +235,11 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
-	if m.webSearch.Enabled {
-		tools = append(tools, NewWebSearchTool(m.webSearch))
+	ws := resolveWebSearchOpts(m.webSearch, m.webSearchFn)
+	if ws.Enabled {
+		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
+			return resolveWebSearchOpts(m.webSearch, m.webSearchFn)
+		}))
 	}
 	mergeDeferred(&def, deferMainTools(tools))
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
@@ -257,14 +265,17 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		PromptCacheKey:                MainSessionID(ts.ID(), mainSeg),
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
-		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
-		WebSearchBackend:      m.webSearch.Backend,
-		BraveSearchAPIKey:     m.webSearch.BraveKey,
-		TavilySearchAPIKey:    m.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: m.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: m.webSearch.Headers, CommandCodeSearchBaseURL: m.webSearch.CommandCodeBaseURL, CommandCodeSearchAPIKey: m.webSearch.CommandCodeAPIKey,
-		DeepSeekSearchAPIKey: m.webSearch.DeepSeekAPIKey,
-		DeepSeekSearchModel:  m.webSearch.DeepSeekModel,
-		WebSearchProxy:       m.webSearch.Proxy,
+		EnableWebSearch:          false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
+		WebSearchBackend:         ws.Backend,
+		BraveSearchAPIKey:        ws.BraveKey,
+		TavilySearchAPIKey:       ws.TavilyKey,
+		DeepSeekSearchBaseURL:    ws.DeepSeekBaseURL,
+		DeepSeekSearchHeaders:    ws.Headers,
+		CommandCodeSearchBaseURL: ws.CommandCodeBaseURL,
+		CommandCodeSearchAPIKey:  ws.CommandCodeAPIKey,
+		DeepSeekSearchAPIKey:     ws.DeepSeekAPIKey,
+		DeepSeekSearchModel:      ws.DeepSeekModel,
+		WebSearchProxy:           ws.Proxy,
 		// Bash 子命令默认走代理+信任 CA。每次工具调用现取（出口可能在 run 中途
 		// 恢复/切换），不把启动瞬间的快照冻结整轮。
 		BashEnvFunc: func() []string {

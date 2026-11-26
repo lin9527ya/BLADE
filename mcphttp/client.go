@@ -27,6 +27,10 @@ import (
 	actool "github.com/lin9527ya/Norma/tool"
 )
 
+// ErrSessionExpired indicates the remote Streamable HTTP server rejected or forgot
+// an active Mcp-Session-Id (typically HTTP 404 after a server restart).
+var ErrSessionExpired = errors.New("mcp session expired")
+
 const protocolVersion = "2025-06-18"
 const legacySSEProtocolVersion = "2024-11-05"
 
@@ -122,6 +126,7 @@ func New(ctx context.Context, server, rawURL string, headers map[string]string, 
 		protocol: protocolVersion,
 	}
 	if err := c.initialize(ctx); err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 	return c, nil
@@ -253,26 +258,20 @@ func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 	}
 }
 
-func (c *Client) readLegacySSE(r *bufio.Reader) {
+func (c *Client) readLegacySSE(r io.Reader) {
 	defer close(c.streamDone)
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				select {
-				case c.streamErr <- err:
-				default:
-				}
-			}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var dataBuf strings.Builder
+	dispatch := func() {
+		if dataBuf.Len() == 0 {
 			return
 		}
-		line = strings.TrimRight(line, "\r\n")
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
+		payload := dataBuf.String()
+		dataBuf.Reset()
 		var response rpcResponse
-		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &response); err != nil || response.ID == 0 {
-			continue
+		if err := json.Unmarshal([]byte(payload), &response); err != nil || response.ID == 0 {
+			return
 		}
 		c.pendingMu.Lock()
 		ch := c.pending[response.ID]
@@ -280,6 +279,30 @@ func (c *Client) readLegacySSE(r *bufio.Reader) {
 		c.pendingMu.Unlock()
 		if ch != nil {
 			ch <- &response
+		}
+	}
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		if line == "" {
+			dispatch()
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	dispatch()
+	err := sc.Err()
+	if err == nil {
+		err = io.EOF
+	}
+	if !errors.Is(err, context.Canceled) {
+		select {
+		case c.streamErr <- err:
+		default:
 		}
 	}
 }
@@ -395,6 +418,21 @@ func (c *Client) Call(ctx context.Context, tool string, args any) (string, error
 		return text.String(), fmt.Errorf("mcp tool %q error: %s", tool, text.String())
 	}
 	return text.String(), nil
+}
+
+// Alive reports whether the underlying transport session is still live.
+func (c *Client) Alive() bool {
+	if c == nil {
+		return false
+	}
+	if c.legacySSE && c.streamDone != nil {
+		select {
+		case <-c.streamDone:
+			return false
+		default:
+		}
+	}
+	return true
 }
 
 // Close terminates the MCP session best-effort (DELETE with the session id, per the
@@ -527,13 +565,22 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 		}
 	}
 
+	if resp.StatusCode == http.StatusNotFound && sid != "" {
+		c.mu.Lock()
+		if c.sessionID == sid {
+			c.sessionID = ""
+		}
+		c.mu.Unlock()
+		return nil, fmt.Errorf("%w: http 404 (%s)", ErrSessionExpired, readSnippet(resp.Body))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("mcp http %d: %s", resp.StatusCode, readSnippet(resp.Body))
 	}
 	if !expectResp {
 		return nil, nil // notification — no JSON-RPC body to parse
 	}
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if strings.HasPrefix(ct, "text/event-stream") {
 		return parseSSE(resp.Body, body.ID)
 	}
 	var out rpcResponse
@@ -627,6 +674,9 @@ func parseSSE(r io.Reader, wantID int) (*rpcResponse, error) {
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
 			dataBuf.WriteString(strings.TrimSpace(line[len("data:"):]))
 		}
 	}

@@ -67,10 +67,11 @@ type Planner struct {
 	proxyCACert         string                  // recording proxy's CA cert path (HTTPS verify)
 	proxyFn             func() (string, string) // dynamic resolver (proxy-pool failover); nil = static
 	proxyFailureFn      func(proxyURL string, err error)
-	webSearch           WebSearchOpts // web_search tool backend selection (off by default)
-	workDir             string        // shared work dir (surfaced in prompt as artifact-output target)
-	injectConstraints   func() bool   // resolver: inject task operation constraints into system prompt? (nil = yes)
-	nonStreamingFn      func() bool   // resolver: use non-streaming (Complete) path? (nil = streaming)
+	webSearch           WebSearchOpts        // web_search tool backend selection (off by default)
+	webSearchFn         func() WebSearchOpts // optional dynamic resolver (hot settings reload without rebuild)
+	workDir             string               // shared work dir (surfaced in prompt as artifact-output target)
+	injectConstraints   func() bool          // resolver: inject task operation constraints into system prompt? (nil = yes)
+	nonStreamingFn      func() bool          // resolver: use non-streaming (Complete) path? (nil = streaming)
 	// execService（P13）由 host 注入：planner 也能查看/发起长任务执行。
 	execService       ExecService
 	noaEnabledFn      func() bool          // resolver: use experimental noa compaction? (nil = off)
@@ -244,6 +245,10 @@ func (p *Planner) proxySnapshot() (string, string) {
 
 // SetWebSearch selects the web_search backend for the planner (off by default).
 func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
+
+// SetWebSearchFunc wires a per-round dynamic resolver so settings/agent switches
+// take effect immediately on the next planner round without rebuilding bundles.
+func (p *Planner) SetWebSearchFunc(fn func() WebSearchOpts) { p.webSearchFn = fn }
 
 // SetConstraintInject wires a resolver deciding whether this task's operation
 // constraints get injected into the planner system prompt. Read per round so the
@@ -962,8 +967,11 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			cleanup()
 		}
 	}()
-	if p.webSearch.Enabled {
-		tools = append(tools, NewWebSearchTool(p.webSearch))
+	ws := resolveWebSearchOpts(p.webSearch, p.webSearchFn)
+	if ws.Enabled {
+		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
+			return resolveWebSearchOpts(p.webSearch, p.webSearchFn)
+		}))
 	}
 	// 工具 schema 瘦身：把低频内置工具的 schema 从每轮工具列表里摘出去，只留名字在
 	// 系统提示的 deferred 块里。planner 37 个工具的 schema 合计约 3.3 万字符，每轮都
@@ -1006,14 +1014,17 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		PromptCacheKey:                plannerSID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
-		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
-		WebSearchBackend:      p.webSearch.Backend,
-		BraveSearchAPIKey:     p.webSearch.BraveKey,
-		TavilySearchAPIKey:    p.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: p.webSearch.DeepSeekBaseURL, DeepSeekSearchHeaders: p.webSearch.Headers, CommandCodeSearchBaseURL: p.webSearch.CommandCodeBaseURL, CommandCodeSearchAPIKey: p.webSearch.CommandCodeAPIKey,
-		DeepSeekSearchAPIKey: p.webSearch.DeepSeekAPIKey,
-		DeepSeekSearchModel:  p.webSearch.DeepSeekModel,
-		WebSearchProxy:       p.webSearch.Proxy,
+		EnableWebSearch:          false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
+		WebSearchBackend:         ws.Backend,
+		BraveSearchAPIKey:        ws.BraveKey,
+		TavilySearchAPIKey:       ws.TavilyKey,
+		DeepSeekSearchBaseURL:    ws.DeepSeekBaseURL,
+		DeepSeekSearchHeaders:    ws.Headers,
+		CommandCodeSearchBaseURL: ws.CommandCodeBaseURL,
+		CommandCodeSearchAPIKey:  ws.CommandCodeAPIKey,
+		DeepSeekSearchAPIKey:     ws.DeepSeekAPIKey,
+		DeepSeekSearchModel:      ws.DeepSeekModel,
+		WebSearchProxy:           ws.Proxy,
 		// Bash 子命令默认走代理+信任 CA。每次工具调用现取（出口可能在 run 中途
 		// 恢复/切换），不把启动瞬间的快照冻结整轮。
 		BashEnvFunc: func() []string {
@@ -1070,7 +1081,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	//   ② 热会话（默认）——在有界窗口内追加增量游标变更，保留 Turn 1 完整黑板前缀吃满 KV 缓存；
 	//      达到上限后再折叠成「输入 + 结论」重新建基线，上下文体积有界。
 	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
-	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(opts.SystemPrompt, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%t", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, win, opts.WebFetchCACert, noaSt.enabled), opts.Tools))
+	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(opts.SystemPrompt, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%t|%s", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, win, opts.WebFetchCACert, noaSt.enabled, def.SurfaceSalt), opts.Tools))
 	var s *agentcore.Session
 	keepSession := false
 	useDelta := false

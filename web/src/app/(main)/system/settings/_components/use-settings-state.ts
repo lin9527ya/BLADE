@@ -8,6 +8,7 @@ import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { api } from "@/lib/api";
 import { useChatSendMode } from "@/lib/chat-send-mode";
 import { createLatestRequest } from "@/lib/request-lifecycle";
+import { formatWebSearchTestToast } from "@/lib/search-helpers";
 import { createSettingsDrafts, type SettingsTicket } from "@/lib/settings-drafts";
 import type {
   ClashEgressStatus,
@@ -21,6 +22,9 @@ import type {
   ProxyPoolStrategy,
   ScopeEnforcement,
   Settings,
+  WebSearchProxyMode,
+  WebSearchStats,
+  WebSearchTestResult,
 } from "@/lib/types";
 
 // 系统配置页的状态与全部读写操作（抓包/搜索/代理/限额/情报/策略/运行时等）。
@@ -158,6 +162,11 @@ export function useSettingsState() {
   const [savingTavilyKey, setSavingTavilyKey] = React.useState(false);
   const [proxyInput, setProxyInput] = useSettingsField(drafts, "proxyInput", ["web_search_proxy"], "");
   const [savingProxy, setSavingProxy] = React.useState(false);
+  const [searxngURL, setSearxngURL] = useSettingsField(drafts, "searxngURL", ["web_search_searxng_url"], "");
+  const [savingSearxngURL, setSavingSearxngURL] = React.useState(false);
+  const [webSearchProxyMode, setWebSearchProxyMode] = React.useState<WebSearchProxyMode>("direct");
+  const [webSearchStats, setWebSearchStats] = React.useState<WebSearchStats | null>(null);
+  const [lastSearchTest, setLastSearchTest] = React.useState<WebSearchTestResult | null>(null);
   // 代理池：每行一个候选（Clash 混合端口即可）；健康检查/切换在服务端运行。
   const [globalProxyPoolInput, setGlobalProxyPoolInput] = useSettingsField(
     drafts,
@@ -402,6 +411,9 @@ export function useSettingsState() {
       if (applyReadonly) setBraveKeySet(!!s.brave_key_set);
       if (applyReadonly) setTavilyKeySet(!!s.tavily_key_set);
       drafts.applyField("proxyInput", s.web_search_proxy ?? "", ticket);
+      drafts.applyField("searxngURL", s.web_search_searxng_url ?? "", ticket);
+      if (applyReadonly) setWebSearchProxyMode(s.web_search_proxy_mode ?? "direct");
+      if (applyReadonly) setWebSearchStats(s.web_search_stats ?? null);
       const savedPool = s.global_proxy_pool || s.global_proxy || "";
       drafts.applyField("globalProxyPoolInput", savedPool, ticket);
       if (applyReadonly) setProxySavedPool(savedPool);
@@ -1107,11 +1119,29 @@ export function useSettingsState() {
       .finally(() => setSavingTavilyKey(false));
   };
 
+  const saveSearxngURL = () => {
+    setSavingSearxngURL(true);
+    saveSettings({ web_search_searxng_url: searxngURL.trim() })
+      .then(() => {
+        toast.success(searxngURL.trim() ? "已保存 SearXNG 实例地址" : "已清除 SearXNG 实例地址");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingSearxngURL(false));
+  };
+
   const saveProxy = () => {
     setSavingProxy(true);
     saveSettings({ web_search_proxy: proxyInput.trim() })
       .then((s) => {
-        toast.success(proxyInput.trim() ? "已保存出口代理" : "已清除出口代理（改为直连）");
+        if (proxyInput.trim()) {
+          toast.success("已保存独立搜索代理");
+        } else if (s.web_search_proxy_mode === "egress_pool") {
+          toast.success("已清除独立搜索代理（ddgs / brave-html 将自动跟随平台出口代理池）");
+        } else if (s.web_search_proxy_mode === "proxy_blocked") {
+          toast.warning("已清除独立搜索代理（平台出口代理池当前已阻断，ddgs / brave-html 暂不可用）");
+        } else {
+          toast.success("已清除独立搜索代理（当前无平台出口代理，将本机直连）");
+        }
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingProxy(false));
@@ -1323,27 +1353,35 @@ export function useSettingsState() {
   };
 
   // Run a real "test" search ("test") against the CURRENT form values (backend +
-  // proxy + entered key), falling back to saved values server-side. Toasts result.
+  // proxy + SearXNG URL + entered key), bypassing cache server-side.
   const runTest = () => {
     setTesting(true);
     api
       .testWebSearch({
         web_search_backend: backend,
         web_search_proxy: proxyInput.trim(),
+        web_search_searxng_url: searxngURL.trim(),
         brave_search_api_key: braveKeyInput,
         tavily_search_api_key: tavilyKeyInput,
       })
       .then((r) => {
-        const fallback = r.fallback_from ? `（${r.fallback_from} 端点不支持服务端搜索，已回退）` : "";
-        if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果${fallback}`);
-        else toast.error(`搜索测试失败：${r.error || "未知错误"}${fallback}`);
+        setLastSearchTest(r);
+        const msg = formatWebSearchTestToast(r);
+        if (r.ok) toast.success(msg);
+        else toast.error(msg);
       })
-      .catch((e) => toast.error(`搜索测试失败：${(e as Error).message}`))
+      .catch((e) => {
+        const errMsg = (e as Error).message || "未知错误";
+        setLastSearchTest({ ok: false, backend, error: errMsg });
+        toast.error(`搜索测试失败：${errMsg}`);
+      })
       .finally(() => setTesting(false));
   };
 
-  // brave-free selected but no key stored and none being entered → tool stays off.
+  // Missing required credential/URL for the selected primary backend.
   const braveNeedsKey = webSearch && backend === "brave-free" && !braveKeySet;
+  const tavilyNeedsKey = webSearch && backend === "tavily" && !tavilyKeySet;
+  const searxngNeedsURL = webSearch && backend === "searxng" && searxngURL.trim() === "";
 
   return {
     loadError,
@@ -1623,6 +1661,13 @@ export function useSettingsState() {
     toggleAgentTrafficBinding,
     toggleInjectWorker,
     toggleNoaCompaction,
+    searxngURL,
+    setSearxngURL,
+    savingSearxngURL,
+    saveSearxngURL,
+    webSearchProxyMode,
+    webSearchStats,
+    lastSearchTest,
     saveWebSearch,
     saveBraveKey,
     saveTavilyKey,
@@ -1630,5 +1675,7 @@ export function useSettingsState() {
     saveGlobalProxy,
     runTest,
     braveNeedsKey,
+    tavilyNeedsKey,
+    searxngNeedsURL,
   };
 }

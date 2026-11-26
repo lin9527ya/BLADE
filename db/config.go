@@ -1137,6 +1137,70 @@ ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.descriptio
 	return tx.Commit()
 }
 
+// ClearMCPTools removes all cached tools for a server (e.g. after endpoint or command edits).
+func (d *DB) ClearMCPTools(serverID int64) error {
+	_, err := d.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID)
+	return err
+}
+
+// RenameMCPToolsPrefix rewrites cached mcp__<old>__<tool> rows after a server rename
+// while preserving per-tool enabled toggles.
+func (d *DB) RenameMCPToolsPrefix(serverID int64, oldName, newName string) error {
+	if oldName == "" || newName == "" || oldName == newName {
+		return nil
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT tool_name, COALESCE(description,''), enabled, COALESCE(schema,'null'::jsonb) FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	if err != nil {
+		return err
+	}
+	var current []MCPTool
+	for rows.Next() {
+		var t MCPTool
+		var schema []byte
+		if err := rows.Scan(&t.Name, &t.Description, &t.Enabled, &schema); err != nil {
+			rows.Close()
+			return err
+		}
+		if string(schema) != "null" {
+			t.Schema = json.RawMessage(schema)
+		}
+		current = append(current, t)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(current) == 0 {
+		return tx.Commit()
+	}
+	oldPrefix := "mcp__" + oldName + "__"
+	newPrefix := "mcp__" + newName + "__"
+	if _, err := tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID); err != nil {
+		return err
+	}
+	for _, t := range current {
+		name := t.Name
+		if strings.HasPrefix(name, oldPrefix) {
+			name = newPrefix + strings.TrimPrefix(name, oldPrefix)
+		}
+		schema := string(t.Schema)
+		if schema == "" {
+			schema = "null"
+		}
+		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description, enabled, schema) VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description, enabled=EXCLUDED.enabled, schema=EXCLUDED.schema`,
+			serverID, name, t.Description, t.Enabled, schema); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (d *DB) SaveMCP(m *MCPServer) (int64, error) {
 	args, env := string(m.Args), string(m.Env)
 	if args == "" {

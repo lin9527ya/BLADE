@@ -372,6 +372,7 @@ POST /api/llm/profiles/active	server.(*Server).pgActivateProfile-fm
 POST /api/llm/retry-policy	server.(*Server).pgSaveLLMRetryPolicy-fm
 POST /api/llm/test	server.(*Server).testLLM-fm
 POST /api/mcp	server.(*Server).pgSaveMCP-fm
+POST /api/mcp/test	server.(*Server).pgTestMCP-fm
 POST /api/mcp/{id}/guard/reset	server.(*Server).pgResetMCPGuard-fm
 POST /api/mcp/{id}/refresh	server.(*Server).pgRefreshMCP-fm
 POST /api/mcp/{id}/tools/toggle	server.(*Server).pgToggleMCPTool-fm

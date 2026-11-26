@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/lin9527ya/Norma/mcp"
 	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/mcphttp"
@@ -21,6 +20,10 @@ type mcpClient interface {
 	Close() error
 }
 
+type mcpAliveChecker interface {
+	Alive() bool
+}
+
 // connectMCP dials one MCP server per its transport. Callers must Close the client.
 func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 	switch m.Transport {
@@ -28,7 +31,7 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 		if m.Command == "" {
 			return nil, fmt.Errorf("stdio 传输缺少命令")
 		}
-		return mcp.NewStdioClient(ctx, m.Name, m.Command, jsonStrMap(m.Env), jsonStrSlice(m.Args)...)
+		return dialStdioMCP(ctx, m.Name, m.Command, jsonStrMap(m.Env), jsonStrSlice(m.Args)...)
 	case "http":
 		if m.URL == "" {
 			return nil, fmt.Errorf("http 传输缺少 URL")
@@ -48,14 +51,19 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 // discoverAndCacheMCP connects to one MCP, lists its tools, and persists the tool
 // names to mcp_tools_cache so the UI shows them without a live connection.
 func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
+	_, err := s.discoverAndCacheMCPCount(ctx, m)
+	return err
+}
+
+func (s *Server) discoverAndCacheMCPCount(ctx context.Context, m *db.MCPServer) (int, error) {
 	cl, err := connectMCP(ctx, m)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer cl.Close()
 	ts, err := cl.Tools(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tools := make([]db.MCPTool, 0, len(ts))
 	for _, t := range ts {
@@ -69,10 +77,11 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description(), Schema: schema})
 	}
 	if err := s.m.pg.SaveMCPTools(m.ID, tools); err != nil {
-		return err
+		return 0, err
 	}
+	InvalidateMCPSchemaCache(m.ID)
 	log.Printf("[mcp] %s 发现 %d 个工具并已缓存", m.Name, len(tools))
-	return nil
+	return len(tools), nil
 }
 
 // discoverEmptyMCPsOnStartup fills the tool cache for any enabled MCP that has none

@@ -724,6 +724,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	wk.SetCompactionLLM(compactorRuntime.compactionLLM)
 	wk.SetWebSearch(s.webSearchFor("worker"))
+	wk.SetWebSearchFunc(func() agent.WebSearchOpts { return s.webSearchFor("worker") })
 	wk.SetConstraintInject(s.constraintInjectWorker)  // 操作约束注入 worker(可配置,默认开)
 	wk.SetExecService(s.m.Executions().ForTask(t.ID)) // P13 长任务托管执行(活过 run;nil=工具显式报未接线)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
@@ -743,6 +744,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	pl.SetCompactionLLM(compactorRuntime.compactionLLM)
 	pl.SetWebSearch(s.webSearchFor("planner"))
+	pl.SetWebSearchFunc(func() agent.WebSearchOpts { return s.webSearchFor("planner") })
 	pl.SetConstraintInject(s.constraintInjectPlanner)                               // 操作约束注入 planner(可配置,默认开)
 	pl.SetBoundedView(s.plannerBoundedView)                                         // 默认态势：有界黑板视图 / 全量
 	pl.SetWorkerConcurrency(func() int { return s.engine.taskConcurrencyLimit(t) }) // 队列背压与预算跟随任务并发槽
@@ -771,6 +773,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetProxyFunc(func() (string, string) { return s.m.ProxySnapshotForTask(t.ID) })
 	main.SetCompactionLLM(compactorRuntime.compactionLLM)
 	main.SetWebSearch(s.webSearchFor("mainagent"))
+	main.SetWebSearchFunc(func() agent.WebSearchOpts { return s.webSearchFor("mainagent") })
 	main.SetSteerWork(s.engine.SteerWork) // steer_work：人对运行中 work 实时纠偏
 	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。
 	// 任务只切自己绑定的 Selector 组，不会移动其它任务的出口 IP；真正的安全校验

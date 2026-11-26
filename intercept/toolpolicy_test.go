@@ -53,3 +53,24 @@ func TestToolpolicySurfaceMatchesLegacy(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchEnabledToolMCPWildcards(t *testing.T) {
+	defaultSet := map[string]bool{}
+	for _, n := range defaultEnabledTools {
+		defaultSet[n] = true
+	}
+	if !matchEnabledTool(defaultSet, "mcp__browser__navigate") {
+		t.Fatal("defaultEnabledTools must cover dynamic mcp__* tools")
+	}
+
+	perServer := map[string]bool{"mcp__browser__*": true}
+	if !matchEnabledTool(perServer, "mcp__browser__click") {
+		t.Fatal("per-server wildcard mcp__browser__* should match mcp__browser__click")
+	}
+	if matchEnabledTool(perServer, "mcp__other__click") {
+		t.Fatal("mcp__browser__* must not match other MCP servers")
+	}
+	if matchEnabledTool(map[string]bool{}, "mcp__browser__click") {
+		t.Fatal("empty enabled map must disable all rules")
+	}
+}

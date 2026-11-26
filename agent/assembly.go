@@ -30,6 +30,9 @@ type DeferredInfo struct {
 	// servers (name + one-line purpose). It rides in the system prefix so the
 	// model can see what is available without first probing the Skill tool.
 	CapabilityIndex string
+	// SurfaceSalt contributes non-prompt runtime state (e.g. MCP config epoch)
+	// to Planner's local hot-session fingerprint without altering SystemPrompt bytes.
+	SurfaceSalt string
 }
 
 // ToolAugment, if set, returns the EXTRA tools an agent should see beyond its

@@ -227,6 +227,33 @@ func GuardStatuses() []GuardStatus {
 	return out
 }
 
+// AcquireGuard enforces the per-server concurrency limit and circuit breaker
+// for external transports (e.g. stdio) using the shared guard registry.
+func AcquireGuard(ctx context.Context, server string) (release func(), record func(err error, ctxCanceled bool), err error) {
+	cfg := guardConfigFor(server)
+	g := guardFor(server)
+	if err := g.acquire(ctx, server, cfg); err != nil {
+		return nil, nil, err
+	}
+	var once sync.Once
+	release = func() { once.Do(g.release) }
+	record = func(callErr error, ctxCanceled bool) {
+		if callErr != nil {
+			if !ctxCanceled {
+				g.failure(callErr, guardConfigFor(server))
+			}
+			return
+		}
+		g.success()
+	}
+	return release, record, nil
+}
+
+// DeleteGuard removes a server's guard entry (called on rename/delete).
+func DeleteGuard(server string) {
+	guardReg.Delete(server)
+}
+
 // ResetGuard 手动重置某个 server 的熔断（保留并发槽计数；人修好配置后用）。
 func ResetGuard(server string) {
 	if v, ok := guardReg.Load(server); ok {

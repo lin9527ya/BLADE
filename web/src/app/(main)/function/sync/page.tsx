@@ -24,6 +24,8 @@ type SSStatus = {
   reachable: boolean;
   url?: string;
   tools: string[];
+  error?: string;
+  hint?: string;
 };
 
 type Dimension = "project" | "task";
@@ -165,6 +167,12 @@ function DataSourceCard({
             )}
             {status.configured && !status.enabled && (
               <p className="text-amber-600 text-sm dark:text-amber-500">数据源已配置但未启用，保存后将自动启用。</p>
+            )}
+            {status.configured && status.enabled && !status.reachable && (status.error || status.hint) && (
+              <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+                {status.error && <p className="break-all font-mono text-destructive">{status.error}</p>}
+                {status.hint && <p className="text-amber-600 dark:text-amber-400">排查建议：{status.hint}</p>}
+              </div>
             )}
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">

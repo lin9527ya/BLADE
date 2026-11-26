@@ -294,37 +294,107 @@ func (a mcpToolInput) toDB() *db.MCPServer {
 	}
 }
 
+func stripReservedHostEnvJSON(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw, nil
+	}
+	for k := range m {
+		if isReservedHostEnvKey(k) {
+			return nil, fmt.Errorf("禁止覆盖受保护的宿主机环境变量 %q", k)
+		}
+	}
+	return raw, nil
+}
+
 func (s *Server) toolCreateMCP() actool.CoreTool {
 	return managementTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。创建后其工具需按 agent 可见性授权。"+
 		"stdio 传输默认不启用：它会以服务端身份启动你指定的命令，启用前需人确认。",
 		mcpSchema(false),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a mcpToolInput
-			_ = json.Unmarshal(in, &a)
-			a.ID = 0
-			if strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Transport) == "" {
-				return actool.Errorf("name / transport 必填"), nil
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("参数解析失败: " + err.Error()), nil
 			}
-			id, err := s.m.pg.SaveMCP(a.toDB())
+			a.ID = 0
+			cleanEnv, rerr := stripReservedHostEnvJSON(a.Env)
+			if rerr != nil {
+				return actool.Errorf(rerr.Error()), nil
+			}
+			a.Env = cleanEnv
+			m := a.toDB()
+			id, toolCount, discoveryErr, _, err := s.saveMCPAndRefresh(ctx, m)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("mcp created: id=%d name=%s", id, a.Name)), nil
+			msg := fmt.Sprintf("mcp created: id=%d name=%s enabled=%t tools=%d", id, m.Name, m.Enabled, toolCount)
+			if discoveryErr != "" {
+				msg += " (tool discovery note: " + discoveryErr + ")"
+			}
+			return actool.Text(msg), nil
 		})
 }
 
 func (s *Server) toolUpdateMCP() actool.CoreTool {
 	return managementTool("update_mcp", "修改一个已有的 MCP 服务器(按 id)。",
 		mcpSchema(true),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a mcpToolInput
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("参数解析失败: " + err.Error()), nil
+			}
 			if a.ID == 0 {
 				return actool.Errorf("id 必填"), nil
 			}
-			if _, err := s.m.pg.SaveMCP(a.toDB()); err != nil {
+			prev, err := s.m.pg.MCPByID(a.ID)
+			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("mcp updated: id=%d", a.ID)), nil
+			if prev == nil {
+				return actool.Errorf(fmt.Sprintf("MCP id=%d 不存在", a.ID)), nil
+			}
+			var rawFields map[string]json.RawMessage
+			_ = json.Unmarshal(in, &rawFields)
+			next := *prev
+			if _, ok := rawFields["name"]; ok {
+				next.Name = a.Name
+			}
+			if _, ok := rawFields["transport"]; ok {
+				next.Transport = a.Transport
+			}
+			if _, ok := rawFields["command"]; ok {
+				next.Command = a.Command
+			}
+			if _, ok := rawFields["args"]; ok {
+				next.Args = a.Args
+			}
+			if _, ok := rawFields["env"]; ok {
+				cleanEnv, rerr := stripReservedHostEnvJSON(a.Env)
+				if rerr != nil {
+					return actool.Errorf(rerr.Error()), nil
+				}
+				next.Env = cleanEnv
+			}
+			if _, ok := rawFields["url"]; ok {
+				next.URL = a.URL
+			}
+			if a.Enabled != nil {
+				next.Enabled = *a.Enabled
+			}
+			if a.Insecure != nil {
+				next.Insecure = *a.Insecure
+			}
+			id, toolCount, discoveryErr, _, err := s.saveMCPAndRefresh(ctx, &next)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			msg := fmt.Sprintf("mcp updated: id=%d name=%s enabled=%t tools=%d", id, next.Name, next.Enabled, toolCount)
+			if discoveryErr != "" {
+				msg += " (tool discovery note: " + discoveryErr + ")"
+			}
+			return actool.Text(msg), nil
 		})
 }

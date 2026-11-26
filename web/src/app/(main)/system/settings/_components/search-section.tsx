@@ -6,10 +6,79 @@ import { Advanced, Field, Section, SubBlock, SwitchRow } from "@/components/page
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  backendLabel,
+  describeChannelBackend,
+  describeWebSearchProxyMode,
+  formatWebSearchStats,
+  WEB_SEARCH_BACKEND_OPTIONS,
+} from "@/lib/search-helpers";
+import type { WebSearchTestResult } from "@/lib/types";
 
 import type { useSettingsState } from "./use-settings-state";
 
 // 系统配置 · 联网搜索。
+
+function proxyToneClass(tone: "ok" | "warn" | "info"): string {
+  switch (tone) {
+    case "ok":
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+    case "warn":
+      return "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400";
+    default:
+      return "border-border bg-muted/50 text-muted-foreground";
+  }
+}
+
+function SearchTestResultCard({ result }: { result: WebSearchTestResult }) {
+  const proxyInfo = result.proxy_mode ? describeWebSearchProxyMode(result.proxy_mode) : null;
+  const ok = result.ok;
+
+  return (
+    <div
+      className={
+        ok
+          ? "flex flex-col gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs"
+          : "flex flex-col gap-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className={ok ? "font-medium text-emerald-600 dark:text-emerald-400" : "font-medium text-destructive"}>
+          {ok ? `测试成功 · 返回 ${result.count ?? 0} 条结果` : "测试失败"}
+        </span>
+        <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+          {result.backend && <span>执行通道：{backendLabel(result.backend)}</span>}
+          {proxyInfo && (
+            <span className={`rounded border px-1.5 py-0.5 text-[11px] ${proxyToneClass(proxyInfo.tone)}`}>
+              {proxyInfo.badge}
+            </span>
+          )}
+          {typeof result.elapsed_ms === "number" && <span>{result.elapsed_ms} ms</span>}
+        </div>
+      </div>
+
+      {result.fallback_from && (
+        <p className="text-amber-600 dark:text-amber-400">
+          已由 <b>{backendLabel(result.fallback_from)}</b> 自动兜底
+          {result.fallback_reason ? `：${result.fallback_reason}` : ""}
+        </p>
+      )}
+
+      {!ok && result.error && (
+        <p className="break-all rounded bg-background/60 px-2 py-1 font-mono text-[11px] text-destructive">
+          {result.error}
+        </p>
+      )}
+
+      {ok && result.sample && (
+        <div className="rounded bg-background/60 px-2 py-1.5 text-muted-foreground">
+          <div className="truncate font-medium text-foreground">{result.sample.title || "(无标题)"}</div>
+          <div className="break-all font-mono text-[11px]">{result.sample.url}</div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> }) {
   const {
@@ -27,6 +96,14 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
     proxyInput,
     setProxyInput,
     savingProxy,
+    searxngURL,
+    setSearxngURL,
+    savingSearxngURL,
+    saveSearxngURL,
+    webSearchProxyMode,
+    webSearchStats,
+    lastSearchTest,
+    proxyActive,
     testing,
     loaded,
     savingWebSearch,
@@ -37,10 +114,16 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
     saveProxy,
     runTest,
     braveNeedsKey,
+    tavilyNeedsKey,
+    searxngNeedsURL,
   } = s;
 
+  const channelInfo = describeChannelBackend(backend);
+  const proxyModeInfo = describeWebSearchProxyMode(webSearchProxyMode, { activeProxy: proxyActive });
+  const statsSummary = formatWebSearchStats(webSearchStats);
+
   return (
-    <Section title="联网搜索" hint="这是网络搜索的总开关 + 来源配置；开关与来源改动会重建 Agent，Key 与代理立即生效。">
+    <Section title="联网搜索" hint="联网搜索总开关、来源与独立出口代理配置；保存后实时生效，运行中 Agent 同步热更新。">
       <SubBlock title="网络搜索" icon={<SearchIcon className="size-4 text-muted-foreground" />}>
         <SwitchRow
           id="web-search"
@@ -54,12 +137,11 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
           hint={
             <>
               开启后，才能在<b>每个 Agent 的配置</b>里单独选择是否启用 <b>web_search</b>
-              （仅返回标题/链接/摘要，不抓取正文；抓取由 WebFetch 负责）。网络搜索<b>不走</b>
-              记录代理，独立于流量捕获。
+              （返回标题/链接/摘要，正文抓取由 WebFetch 负责）。网络搜索<b>不走</b>记录流量的 MITM
+              代理，独立于流量捕获。
               <br />
-              来源可选 <b>DuckDuckGo（ddgs）</b>（无需 Key）、<b>Brave（免费版）</b>（需填写 Brave API Key）、
-              <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（复用当前 LLM 配置）。 总开关关闭时，各 Agent
-              的网络搜索开关不可用。
+              免费免 Key 可选 <b>DuckDuckGo（ddgs）</b>、<b>Brave 网页</b> 或 <b>自建 SearXNG</b>；API 通道可选{" "}
+              <b>Brave API</b> / <b>Tavily</b> / <b>DeepSeek</b> / <b>OpenCode</b> / <b>Command Code</b>。
             </>
           }
         />
@@ -74,76 +156,72 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
                 saveWebSearch({ web_search_backend: v });
               }}
             >
-              <SelectTrigger className="w-72">
+              <SelectTrigger className="w-full max-w-md">
                 <SelectValue placeholder="选择来源" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="ddgs">DuckDuckGo（ddgs · 免费无 Key）</SelectItem>
-                <SelectItem value="brave-html">Brave 网页（免费无 Key · DDG 202 时自动兜底）</SelectItem>
-                <SelectItem value="brave-free">Brave（免费版 · 需 Key）</SelectItem>
-                <SelectItem value="tavily">Tavily（需 Key）</SelectItem>
-                <SelectItem value="deepseek">DeepSeek（官方 · 复用激活配置）</SelectItem>
-                <SelectItem value="opencode">opencode（借用同名 LLM 配置 · flash）</SelectItem>
-                <SelectItem value="commandcode">commandcode（原生搜索通道）</SelectItem>
+                {WEB_SEARCH_BACKEND_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </Field>
         )}
 
-        {webSearch && (backend === "deepseek" || backend === "opencode" || backend === "commandcode") && (
-          <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-3">
-            <p className="font-medium text-sm">
-              {backend === "deepseek" ? "DeepSeek 官方联网搜索" : `${backend} 联网搜索`}
-            </p>
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              {backend === "deepseek" ? (
-                <>
-                  优先使用<b>名为 deepseek / Deepseek（或 deepseek-*）的 LLM 配置</b>；没有时才复用
-                  <b>当前激活配置</b>。因此可以专门建一个低成本的 DeepSeek 搜索配置，不影响 planner 的激活模型。
-                  该配置<b>必须使用 anthropic 协议</b>，且指向 <b>DeepSeek 官方端点</b>——官方端点支持服务端
-                  <code>web_search</code>；opencode Go 等网关不执行该工具，会自动回退到
-                  <b>Brave 网页 / DuckDuckGo</b>。
-                </>
-              ) : backend === "opencode" ? (
-                <>
-                  借用<b>名为 opencode（或 opencode-*）的 LLM 配置</b>的端点与 Key，走 Anthropic 兼容的
-                  <code> /v1/messages</code> + 服务端 <code>web_search</code> 工具。配置里
-                  <b>必须填会话头名字</b>（opencode 要求
-                  <code> x-opencode-session</code>）且<b>协议为 anthropic</b>。opencode Go 目前
-                  <b>不执行服务端搜索</b>：命中原生网关时会自动回退到
-                  <b>DuckDuckGo（经平台出口代理）</b>，不会再让工具静默消失；未配置该名称的
-                  LLM 配置时同样回退。
-                </>
-              ) : (
-                <>
-                  走 commandcode 的<b>原生搜索通道</b>（<code>/alpha/web-search</code>）：
-                  <b>与模型无关、与 LLM 配额解耦</b>——它没有"消息 + 工具"这条路 （<code>/messages</code> 只服务 Claude
-                  系，deepseek 只在
-                  <code>/responses</code> 上且拒收内置 web_search 工具）。只需该配置的 端点与 Key 可用，
-                  <b>不用管它选的模型与协议</b>；未配置 commandcode 配置时自动回退 DuckDuckGo。
-                </>
-              )}
-            </p>
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              与其它来源不同，搜索由 <b>DeepSeek 服务端执行</b>：每次搜索会额外消耗一次模型调用（产生 Token
-              费用），搜索请求<b>不经过上面的出口代理</b>，也<b>不计入流量留痕</b>；返回结果
-              <b>只有标题和链接</b>（无摘要），需要正文时由 WebFetch 抓取。
-            </p>
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              是否满足上述条件由你自行确认，系统不做拦截；可用下方「测试搜索」按钮实际跑一次来验证。
-            </p>
+        {webSearch && channelInfo && (
+          <div className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 p-3">
+            <p className="font-medium text-sm">{channelInfo.title}</p>
+            <p className="text-muted-foreground text-xs leading-relaxed">{channelInfo.detail}</p>
+            {channelInfo.warning && (
+              <p className="text-amber-600 text-xs leading-relaxed dark:text-amber-400">{channelInfo.warning}</p>
+            )}
           </div>
         )}
 
         {webSearch && backend === "brave-html" && (
-          <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-3">
-            <p className="font-medium text-sm">Brave 网页（免费无 Key）</p>
+          <div className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 p-3">
+            <p className="font-medium text-sm">Brave 网页抓取（免费无 Key）</p>
             <p className="text-muted-foreground text-xs leading-relaxed">
-              抓取 Brave 公开搜索结果页，<b>不是官方 API</b>，可能被限流或随页面改版失效。
-              DDG 202 或主搜索源失败时会自动用它兜底；要稳定长期使用，请选
-              <b>Brave（免费版）</b>并填写官方 API Key。
+              抓取 Brave 公开搜索结果页，<b>不是官方 API</b>，可能触发反爬验证或限流。 DDG
+              限流或主通道失败时会自动用它兜底，并且默认跟随平台出口代理池；如需高稳定性建议配置 <b>Brave Search API</b>
+              、<b>Tavily</b> 或 <b>自建 SearXNG</b>。
             </p>
           </div>
+        )}
+
+        {webSearch && backend === "searxng" && (
+          <Field
+            label="SearXNG 实例地址"
+            htmlFor="searxng-url"
+            hint={
+              <>
+                填写自建 SearXNG 根地址（如 <code>http://127.0.0.1:8888</code>），将调用{" "}
+                <code>/search?format=json</code>（请确保 SearXNG 配置的 <code>search.formats</code> 已启用{" "}
+                <code>json</code>）。默认直连实例或仅使用上方独立搜索代理，不经过全局出口代理池。
+              </>
+            }
+          >
+            <div className="flex items-center gap-2">
+              <Input
+                id="searxng-url"
+                autoComplete="off"
+                placeholder="http://127.0.0.1:8888"
+                value={searxngURL}
+                disabled={!loaded || savingSearxngURL}
+                onChange={(e) => setSearxngURL(e.target.value)}
+              />
+              <Button type="button" onClick={saveSearxngURL} disabled={!loaded || savingSearxngURL}>
+                保存
+              </Button>
+            </div>
+            {searxngNeedsURL && (
+              <p className="text-amber-500 text-xs">
+                已选择 SearXNG 但尚未填写实例地址 —— 保存前主搜索将失败并尝试回落到兜底引擎。
+              </p>
+            )}
+          </Field>
         )}
 
         {webSearch && backend === "brave-free" && (
@@ -177,7 +255,7 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
             </div>
             {braveNeedsKey && (
               <p className="text-amber-500 text-xs">
-                已选择 Brave 但尚未配置 Key —— 在保存 Key 之前，搜索工具不会启用。
+                已选择 Brave API 但尚未配置 Key —— 请保存 Key，否则测试会报错、运行时将回落兜底引擎。
               </p>
             )}
           </Field>
@@ -212,26 +290,46 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
                 保存
               </Button>
             </div>
-            {!tavilyKeySet && (
+            {tavilyNeedsKey && (
               <p className="text-amber-500 text-xs">
-                已选择 Tavily 但尚未配置 Key —— 在保存 Key 之前，搜索工具不会启用。
+                已选择 Tavily 但尚未配置 Key —— 请保存 Key，否则测试会报错、运行时将回落兜底引擎。
               </p>
             )}
           </Field>
         )}
 
         {webSearch && (
-          <Advanced title="高级：出口代理">
+          <div className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/20 p-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium text-foreground">当前搜索出口策略</span>
+              <span
+                className={`rounded border px-2 py-0.5 font-medium text-[11px] ${proxyToneClass(proxyModeInfo.tone)}`}
+              >
+                {proxyModeInfo.badge}
+              </span>
+            </div>
+            <p className="text-muted-foreground leading-relaxed">{proxyModeInfo.detail}</p>
+            {statsSummary && (
+              <div className="mt-1 border-border/50 border-t pt-1.5 text-[11px] text-muted-foreground">
+                <div>{statsSummary.summary}</div>
+                {statsSummary.lastLine && <div className="mt-0.5 break-all">{statsSummary.lastLine}</div>}
+              </div>
+            )}
+          </div>
+        )}
+
+        {webSearch && (
+          <Advanced title="高级：独立出口代理">
             <Field
-              label="出口代理（可选）"
+              label="独立搜索代理（可选）"
               htmlFor="ws-proxy"
-              hint="独立出口代理，仅用于访问搜索端点（VPN/SOCKS 等）。与记录流量的 MITM 代理无关。留空时 DuckDuckGo / Brave 网页优先使用平台出口代理——直连 DDG 很容易被 202 限流。"
+              hint="仅用于覆盖搜索请求的代理（http/https/socks5）。留空时，ddgs / brave-html 与失败兜底抓取自动跟随平台出口代理池；带 Key / 自定义端点后端按独立代理或直连访问，均不走 MITM 流量代理。"
             >
               <div className="flex items-center gap-2">
                 <Input
                   id="ws-proxy"
                   autoComplete="off"
-                  placeholder="http://host:port 或 socks5://host:port（留空=平台出口代理）"
+                  placeholder="http://host:port 或 socks5://host:port（留空=自动策略）"
                   value={proxyInput}
                   disabled={!loaded || savingProxy}
                   onChange={(e) => setProxyInput(e.target.value)}
@@ -245,19 +343,22 @@ export function SearchSection({ s }: { s: ReturnType<typeof useSettingsState> })
         )}
 
         {webSearch && (
-          <div className="flex flex-wrap items-center justify-between gap-4 border-t pt-4">
-            <p className="text-muted-foreground text-xs">
-              用当前配置（来源 + 代理 + Key）实际搜索一次「test」，验证是否可用。
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={runTest}
-              disabled={!loaded || testing}
-              className="shrink-0"
-            >
-              {testing ? "测试中…" : "测试搜索"}
-            </Button>
+          <div className="flex flex-col gap-3 border-t pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <p className="text-muted-foreground text-xs">
+                用当前表单配置（来源 + 地址/Key + 代理）实时绕过缓存探测一次，查看实际执行通道、代理模式与耗时。
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={runTest}
+                disabled={!loaded || testing}
+                className="shrink-0"
+              >
+                {testing ? "测试中…" : "测试搜索"}
+              </Button>
+            </div>
+            {lastSearchTest && <SearchTestResultCard result={lastSearchTest} />}
           </div>
         )}
       </SubBlock>

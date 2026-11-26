@@ -102,9 +102,20 @@ func (s *Server) syncSSStatus(w http.ResponseWriter, r *http.Request) {
 	if configured && m.Enabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
-		if cl, cerr := mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure); cerr == nil {
+		cl, cerr := mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure)
+		if cerr != nil {
+			resp["error"] = cerr.Error()
+			if h := mcpDiagnosticHint(cerr); h != "" {
+				resp["hint"] = h
+			}
+		} else {
 			if _, terr := cl.Tools(ctx); terr == nil {
 				resp["reachable"] = true
+			} else {
+				resp["error"] = terr.Error()
+				if h := mcpDiagnosticHint(terr); h != "" {
+					resp["hint"] = h
+				}
 			}
 			_ = cl.Close()
 		}
@@ -152,6 +163,8 @@ func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ID = id
+	InvalidateMCPSchemaCache(id)
+	bumpMCPConfigEpoch()
 	// Best-effort tool discovery so the status card shows tools right away.
 	if m.Enabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

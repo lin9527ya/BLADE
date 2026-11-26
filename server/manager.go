@@ -389,6 +389,7 @@ type Manager struct {
 	braveKey         string
 	tavilyKey        string
 	webSearchProxy   string
+	searxngURL       string
 	// globalProxy is the **configured** egress proxy (first pool entry; legacy
 	// single value). Empty = user explicitly chose direct. Runtime egress goes
 	// through the proxy pool (egressProxy / proxyPool below).
@@ -456,6 +457,7 @@ const (
 	settingBraveKey            = "brave_search_api_key"
 	settingTavilyKey           = "tavily_search_api_key"
 	settingWebSearchProxy      = "web_search_proxy"
+	settingSearxngURL          = "web_search_searxng_url"
 	// settingGlobalProxy is the legacy single global egress proxy (first pool
 	// entry). settingGlobalProxyPool is the real config: newline-separated list.
 	// Distinct from web_search_proxy (search backend only) and per-profile LLM proxy.
@@ -587,6 +589,7 @@ const (
 	// 模型**固定** searchBackendModel：这两个中转站上服务端 web_search 用 flash 档。
 	opencodeWebSearchBackend    = "opencode"
 	commandCodeWebSearchBackend = "commandcode"
+	searxngWebSearchBackend     = "searxng"
 	// 实测（2026-10-15，对 opencode /zen/go/v1 + x-opencode-session）：
 	//   deepseek-v4-flash   → stop_reason=end_turn，返回 server_tool_use{name:"web_search"} ✓ 真搜
 	//   deepseek-v4.1-flash → 只有 thinking、一个工具调用都没有（该中转上不执行服务端工具）
@@ -872,6 +875,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingWebSearchProxy); ok {
 		m.webSearchProxy = v
 	}
+	if v, ok, _ := pg.GetSetting(settingSearxngURL); ok {
+		m.searxngURL = strings.TrimSpace(v)
+	}
 	// Global egress proxy (default: direct). When capture is on, feed it to the
 	// MITM as its upstream so recorded traffic exits through it; when capture is
 	// off, ProxyAddr hands it to agents directly (bash env / WebFetch).
@@ -996,9 +1002,9 @@ func (m *Manager) SetLLMPoolBindFallback(on bool) error {
 }
 
 // WebSearch returns the current web-search config: whether it is enabled, the
-// backend ("ddgs" | "brave-free" | "tavily" | "deepseek" | "opencode" |
-// "commandcode"), the Brave/Tavily keys, and the dedicated search proxy. For
-// ddgs an empty proxy is filled from the platform egress proxy by WebSearchOpts.
+// backend ("ddgs" | "brave-html" | "brave-free" | "tavily" | "searxng" |
+// "deepseek" | "opencode" | "commandcode"), the Brave/Tavily keys, and the
+// dedicated search proxy.
 func (m *Manager) WebSearch() (on bool, backend, braveKey, tavilyKey, proxy string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1009,65 +1015,129 @@ func (m *Manager) WebSearch() (on bool, backend, braveKey, tavilyKey, proxy stri
 	return m.webSearchOn, backend, m.braveKey, m.tavilyKey, m.webSearchProxy
 }
 
+// SearxngURL returns the configured SearXNG base URL (empty if unset).
+func (m *Manager) SearxngURL() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return strings.TrimSpace(m.searxngURL)
+}
+
+func normalizeSearxngURL(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", nil
+	}
+	v = strings.TrimRight(v, "/")
+	u, err := url.Parse(v)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("SearXNG 实例地址必须是 http(s) 绝对地址，例如 http://127.0.0.1:8888")
+	}
+	return v, nil
+}
+
+// SetSearxngURL persists and applies the optional SearXNG instance base URL.
+func (m *Manager) SetSearxngURL(raw string) error {
+	v, err := normalizeSearxngURL(raw)
+	if err != nil {
+		return err
+	}
+	if m.pg != nil {
+		if err := m.pg.SetSetting(settingSearxngURL, v); err != nil {
+			return err
+		}
+	}
+	m.mu.Lock()
+	m.searxngURL = v
+	m.mu.Unlock()
+	agent.InvalidateWebSearchCache()
+	return nil
+}
+
+func (m *Manager) webSearchProxyMode() string {
+	_, _, _, _, proxy := m.WebSearch()
+	return m.proxyModeForSearchProxy(proxy)
+}
+
+func (m *Manager) proxyModeForSearchProxy(proxy string) string {
+	if strings.TrimSpace(proxy) != "" {
+		return "custom"
+	}
+	ep := strings.TrimSpace(m.usableEgressProxy())
+	if ep == "" {
+		return "direct"
+	}
+	if ep == blockedProxyURL {
+		return "proxy_blocked"
+	}
+	return "egress_pool"
+}
+
 // WebSearchOpts returns the config as the agent-package struct the server pushes
-// into each agent. Disabled when off, or when a keyed backend is selected without
-// its key (so a half-configured backend never silently drops the tool at session build).
+// into each agent. Disabled when off, or when a required key / URL is missing.
 func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	on, backend, braveKey, tavilyKey, proxy := m.WebSearch()
+	searxngURL := m.SearxngURL()
 	if on && backend == "brave-free" && strings.TrimSpace(braveKey) == "" {
 		on = false
 	}
 	if on && backend == "tavily" && strings.TrimSpace(tavilyKey) == "" {
 		on = false
 	}
-	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
+	if on && backend == searxngWebSearchBackend && strings.TrimSpace(searxngURL) == "" {
+		on = false
+	}
+	o := agent.WebSearchOpts{
+		Enabled:    on,
+		Backend:    backend,
+		BraveKey:   braveKey,
+		TavilyKey:  tavilyKey,
+		Proxy:      strings.TrimSpace(proxy),
+		SearxngURL: searxngURL,
+	}
 	r := m.searchBackendForSDK(backend)
-	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.Headers = r.Backend, r.BaseURL, r.APIKey, r.Model, r.Headers
+	o.Backend, o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel, o.DeepSeekFormat, o.Headers =
+		r.Backend, r.BaseURL, r.APIKey, r.Model, r.Format, r.Headers
 	o.CommandCodeBaseURL, o.CommandCodeAPIKey = r.CCBaseURL, r.CCAPIKey
-	// DuckDuckGo 直连很容易被 202 限流；用户没单独填搜索代理时，优先走平台出口代理。
-	// 代理池是 fail-closed 的：启动瞬间 active 还是黑洞地址，先等首探完成再取，
-	// 否则会把空代理冻结进这一轮 agent，之后即使代理恢复也只能直连。
-	if (o.Backend == defaultWebSearchBackend || o.Backend == "brave-html") && strings.TrimSpace(o.Proxy) == "" {
-		m.WaitProxyReady(proxyFirstProbeWait)
-		o.Proxy = m.usableEgressProxy()
-		o.ProxyFunc = func() string {
+	if r.SearxngURL != "" {
+		o.SearxngURL = r.SearxngURL
+	}
+	o.DiagnosticError = r.DiagnosticError
+	// 遵守 1.A 且不以静态值覆盖 o.Proxy（避免架空 ProxyFunc 热切换）：
+	// 专用搜索代理留空时，ddgs/brave-html 主端及任意主源失败后的 brave-html/ddgs 兜底
+	// 每次检索动态现取平台出口代理（代理池故障切换立刻生效）。
+	if o.Proxy == "" {
+		dynamicEgress := func() string {
 			m.WaitProxyReady(proxyFirstProbeWait)
 			return m.usableEgressProxy()
 		}
+		if o.Backend == defaultWebSearchBackend || o.Backend == "brave-html" {
+			o.ProxyFunc = dynamicEgress
+		}
+		o.FallbackProxyFunc = dynamicEgress
 	}
 	if r.FallbackFrom != "" {
-		log.Printf("[websearch] %s 端点不提供服务端搜索，已回退 DuckDuckGo（proxy=%q）", r.FallbackFrom, o.Proxy)
+		if r.FallbackReason != "" {
+			log.Printf("[websearch] %s 无法提供服务端搜索（%s），已回退 %s", r.FallbackFrom, r.FallbackReason, o.Backend)
+		} else {
+			log.Printf("[websearch] %s 端点不提供服务端搜索，已回退 DuckDuckGo", r.FallbackFrom)
+		}
 	}
 	return o
 }
 
-// deepSeekSearchCreds resolves the credentials the "deepseek" search backend
-// borrows from the active LLM profile (it has no key of its own). Whether that
-// profile can actually drive server-side search — DeepSeek exposes it only on
-// the Anthropic-format endpoint — is deliberately NOT validated here: the UI
-// states the requirement and the user decides. A profile that can't serve it
-// simply fails at search time (or at the settings page's 测试 button), which is
-// the same feedback every other backend gives for a bad key.
-// searchBackendForSDK 把 UI 侧的后端名解析成 **SDK 能用的那份配置**：
-// 归一后的后端名 + 凭据（激活配置或同名配置）+ 路由头。线上工具（WebSearchOpts）与
-// 设置页的「测试搜索」**共用这一个函数**——各写一份的代价是实打实的：opencode 的路由头
-// 就是这么被漏掉的（测试打的是激活配置、不带头，于是"测试报 400、工具也不可能通"）。
-//
-// 三个"服务端搜索"后端共用同一组载体字段（DeepSeek* 是历史命名，实际含义是
-// "这次搜索打到哪个端点、用哪个 key 与模型"）。SDK 的白名单只认
-// ddgs / brave-free / tavily / deepseek——它区分的是"哪套搜索机制"，不区分端点，
-// 所以 opencode / commandcode 面向 SDK **归一为 deepseek**；库里与 UI 保留真名。
 type searchBackendResolution struct {
-	Backend   string // 面向 SDK 的后端名
-	BaseURL   string // 服务端搜索端点（deepseek 机制用）
-	APIKey    string
-	Model     string
-	Headers   map[string]string
-	CCBaseURL string // commandcode 原生通道
-	CCAPIKey  string
-	// FallbackFrom 非空表示原后端在当前端点无法搜索，已回退到 Backend（目前是 ddgs）。
-	// 仅用于设置页测试回执与日志；面向 SDK 的 Backend 已经是真正会跑的实现。
-	FallbackFrom string
+	Backend         string // 面向 SDK 的后端名
+	BaseURL         string // 服务端搜索端点（deepseek 机制用）
+	APIKey          string
+	Model           string
+	Format          string
+	Headers         map[string]string
+	SearxngURL      string
+	CCBaseURL       string // commandcode 原生通道
+	CCAPIKey        string
+	FallbackFrom    string
+	FallbackReason  string
+	DiagnosticError string
 }
 
 func fallbackDDGS(from string) searchBackendResolution {
@@ -1100,51 +1170,77 @@ func (m *Manager) usableEgressProxy() string {
 func (m *Manager) searchBackendForSDK(backend string) searchBackendResolution {
 	switch backend {
 	case deepSeekWebSearchBackend:
-		base, key, model, headers := m.deepSeekSearchCreds()
-		if strings.TrimSpace(base) == "" || strings.TrimSpace(key) == "" || strings.TrimSpace(model) == "" || isOpencodeGateway(base) {
-			return fallbackDDGS(deepSeekWebSearchBackend)
+		if m.pg == nil {
+			res := fallbackDDGS(deepSeekWebSearchBackend)
+			res.DiagnosticError = "未配置数据库，无法读取 DeepSeek LLM 配置"
+			res.FallbackReason = res.DiagnosticError
+			return res
 		}
-		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model, Headers: headers}
+		base, key, model, format, profName, headers := m.deepSeekSearchProfile()
+		if isOpencodeGateway(base) {
+			res := fallbackDDGS(deepSeekWebSearchBackend)
+			res.DiagnosticError = fmt.Sprintf("当前匹配的 LLM 配置 %q 指向 opencode 网关，不支持 DeepSeek 服务端 web_search", profName)
+			res.FallbackReason = res.DiagnosticError
+			return res
+		}
+		if strings.TrimSpace(base) == "" || strings.TrimSpace(key) == "" || strings.TrimSpace(model) == "" {
+			res := fallbackDDGS(deepSeekWebSearchBackend)
+			res.DiagnosticError = "未找到可用的 DeepSeek（或已激活）LLM 配置，缺少端点、API Key 或模型"
+			res.FallbackReason = res.DiagnosticError
+			return res
+		}
+		if format != "" && format != "anthropic" {
+			res := fallbackDDGS(deepSeekWebSearchBackend)
+			res.DiagnosticError = fmt.Sprintf("DeepSeek 服务端 web_search 仅支持 anthropic 协议与 /anthropic 端点；当前匹配配置 %q 使用的是 %s 协议，请新建或切换到 anthropic 协议的 DeepSeek 配置", profName, format)
+			res.FallbackReason = res.DiagnosticError
+			return res
+		}
+		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model, Format: format, Headers: headers}
 	case opencodeWebSearchBackend:
-		// opencode Go 只提供模型推理，不执行服务端 web_search；若端点不是 opencode
-		// 网关（自建兼容端点），仍按 deepseek 的服务端工具机制尝试。
+		if m.pg == nil {
+			return fallbackDDGS(opencodeWebSearchBackend)
+		}
 		base, key, model, headers := m.namedProfileSearchCreds(backend)
 		if base == "" || isOpencodeGateway(base) {
 			return fallbackDDGS(opencodeWebSearchBackend)
 		}
 		return searchBackendResolution{Backend: deepSeekWebSearchBackend, BaseURL: base, APIKey: key, Model: model, Headers: headers}
 	case commandCodeWebSearchBackend:
-		// commandcode 走**它自己的原生搜索通道**（/alpha/web-search）：与模型无关、
-		// 与 LLM 配额解耦。配置缺失时不要静默把工具摘掉，回退到真实可用的 DDG。
+		if m.pg == nil {
+			return fallbackDDGS(commandCodeWebSearchBackend)
+		}
 		p, err := m.profileForSearch(backend)
 		if err != nil || p == nil || strings.TrimSpace(p.APIKey) == "" || strings.TrimSpace(p.BaseURL) == "" {
 			return fallbackDDGS(commandCodeWebSearchBackend)
 		}
 		return searchBackendResolution{Backend: commandCodeWebSearchBackend,
 			CCBaseURL: strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), CCAPIKey: p.APIKey}
+	case searxngWebSearchBackend:
+		raw := m.SearxngURL()
+		if raw == "" {
+			res := fallbackDDGS(searxngWebSearchBackend)
+			res.DiagnosticError = "未配置 SearXNG 实例地址（请填写 http(s)://...）"
+			res.FallbackReason = res.DiagnosticError
+			return res
+		}
+		return searchBackendResolution{Backend: searxngWebSearchBackend, SearxngURL: raw}
 	default:
 		return searchBackendResolution{Backend: backend}
 	}
 }
 
-// namedProfileSearchCreds 借用一个**具名** LLM 配置（opencode / commandcode）的端点与 key。
-// 模型固定为 searchBackendModel，不跟随配置里写的模型——搜索链路的模型是产品决定，不是
-// 用户在该配置里选的那个。
-// 配置不存在时返回空串：与 deepseek 那边同一处置——设置页会提示、搜索时报明确的错，
-// 而不是在这里偷偷回退到别的配置（那会让"我明明选了 opencode"变成打到别处）。
 func (m *Manager) namedProfileSearchCreds(name string) (baseURL, apiKey, model string, headers map[string]string) {
 	p, err := m.profileForSearch(name)
 	if err != nil || p == nil {
 		return "", "", "", nil
 	}
-	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, searchBackendModel, profileSearchHeaders(p, name)
+	pickedModel := strings.TrimSpace(p.Model)
+	if pickedModel == "" {
+		pickedModel = searchBackendModel
+	}
+	return strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"), p.APIKey, pickedModel, profileSearchHeaders(p, name)
 }
 
-// profileForSearch resolves a search backend's named profile. Exact name wins;
-// otherwise a name with the backend prefix (opencode-*, commandcode-*) is used,
-// so an installation that calls its profile opencode-gs1 keeps working. The
-// prefix lookup is deliberately not a silent fallback to the active profile: a
-// wrong endpoint should fail visibly, not send search traffic elsewhere.
 func (m *Manager) profileForSearch(name string) (*pgdb.LLMProfile, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -1157,8 +1253,6 @@ func (m *Manager) profileForSearch(name string) (*pgdb.LLMProfile, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Names are case-sensitive in the DB, but operators write "Deepseek" /
-	// "deepseek" interchangeably. Treat those as the same search profile.
 	for _, p := range profiles {
 		if strings.EqualFold(strings.TrimSpace(p.Name), name) {
 			return m.pg.ProfileByID(p.ID)
@@ -1190,9 +1284,6 @@ func (m *Manager) profileForSearch(name string) (*pgdb.LLMProfile, error) {
 	return m.pg.ProfileByID(best.ID)
 }
 
-// profileSearchHeaders adds the route/session headers a gateway requires. The
-// value is stable per profile: it only affects routing/cache affinity, and a
-// stable value is friendlier to the endpoint's prompt cache.
 func profileSearchHeaders(p *pgdb.LLMProfile, label string) map[string]string {
 	headers := make(map[string]string, len(p.CustomHeaders)+1)
 	for k, v := range p.CustomHeaders {
@@ -1207,24 +1298,25 @@ func profileSearchHeaders(p *pgdb.LLMProfile, label string) map[string]string {
 	return headers
 }
 
-func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string, headers map[string]string) {
-	// Prefer a dedicated profile named deepseek/Deepseek (or deepseek-*): it lets
-	// operators keep a cheap search-only profile without making it the active
-	// planner model. Fall back to the active profile for old installations.
+func (m *Manager) deepSeekSearchProfile() (baseURL, apiKey, model, format, profName string, headers map[string]string) {
 	p, err := m.profileForSearch("deepseek")
 	if err != nil || p == nil {
 		p, err = m.pg.ActiveProfile()
 	}
 	if err != nil || p == nil {
-		return "", "", "", nil
+		return "", "", "", "", "", nil
 	}
-	return p.BaseURL, p.APIKey, p.Model, profileSearchHeaders(p, strings.TrimSpace(p.Name))
+	return p.BaseURL, p.APIKey, p.Model, strings.ToLower(strings.TrimSpace(p.Format)), strings.TrimSpace(p.Name), profileSearchHeaders(p, strings.TrimSpace(p.Name))
+}
+
+func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string, headers map[string]string) {
+	baseURL, apiKey, model, _, _, headers = m.deepSeekSearchProfile()
+	return baseURL, apiKey, model, headers
 }
 
 // SetWebSearch persists and applies the web-search settings. braveKey, tavilyKey, and
 // proxy are each left untouched when nil (so toggling the switch doesn't wipe a saved
-// key/proxy; pass a pointer to "" to clear). Callers must rebuild agents (applyLLM)
-// afterwards so the settings take effect.
+// key/proxy; pass a pointer to "" to clear). Callers should invalidate chatAgents if not rebuilding.
 func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, proxy *string) error {
 	backend = strings.TrimSpace(backend)
 	if backend == "" {
@@ -1265,6 +1357,7 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 		m.webSearchProxy = p
 		m.mu.Unlock()
 	}
+	agent.InvalidateWebSearchCache()
 	return nil
 }
 
@@ -1319,6 +1412,8 @@ func (m *Manager) syncBrowserMCPProxy() {
 		log.Printf("[mcp] browser 代理同步失败: %v", err)
 		return
 	}
+	InvalidateMCPSchemaCache(srv.ID)
+	bumpMCPConfigEpoch()
 	switch {
 	case proxy != "" && cert != "":
 		log.Printf("[mcp] browser MCP 已挂流量捕获代理 %s (CA %s)", proxy, cert)

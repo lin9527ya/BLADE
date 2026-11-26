@@ -9,6 +9,7 @@
 package guard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"regexp"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/Norma/hook"
+	actool "github.com/lin9527ya/Norma/tool"
 	"github.com/lin9527ya/blade/intercept"
 )
 
@@ -80,18 +82,56 @@ func extractCommandFromToolInput(toolName string, input []byte) string {
 	return ""
 }
 
+type deferredCallEnvelope struct {
+	ToolName string          `json:"tool_name"`
+	Params   json.RawMessage `json:"params"`
+}
+
+// unwrapDeferredEvent resolves ExecuteExtraTool calls back to the inner deferred
+// tool name (e.g. mcp__server__tool) and params so safety gates, RoE scope,
+// intercept rules, narrow-edits, and audit logging see the real target action.
+func unwrapDeferredEvent(ev hook.Event) (hook.Event, bool) {
+	if ev.ToolName != actool.ExecuteExtraToolName {
+		return ev, false
+	}
+	var env deferredCallEnvelope
+	if json.Unmarshal(ev.Input, &env) != nil || strings.TrimSpace(env.ToolName) == "" {
+		return ev, false
+	}
+	params := env.Params
+	if len(bytes.TrimSpace(params)) == 0 {
+		params = json.RawMessage(`{}`)
+	}
+	return hook.Event{ToolName: strings.TrimSpace(env.ToolName), Input: params}, true
+}
+
+func wrapDeferredUpdatedInput(toolName string, inner []byte) []byte {
+	if len(inner) == 0 {
+		return nil
+	}
+	wrapped, err := json.Marshal(deferredCallEnvelope{
+		ToolName: toolName,
+		Params:   json.RawMessage(inner),
+	})
+	if err != nil {
+		return nil
+	}
+	return wrapped
+}
+
 func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
+	innerEv, unwrapped := unwrapDeferredEvent(ev)
 	// Extract the shell-command surface for the audit log: Bash + the interactive-shell
 	// tools (shell_open's command, shell_send's text). Destructive/exfil gating is no
 	// longer hard-coded here — it now lives in the DB intercept rules, evaluated by
 	// applyIntercept below. Other tools record an empty command.
-	cmd := extractCommandFromToolInput(ev.ToolName, ev.Input)
+	cmd := extractCommandFromToolInput(innerEv.ToolName, innerEv.Input)
 	// 直连防护（先于规则/范围判定）：显式绕过出口代理的命令会把本机真实 IP 暴露给
 	// 目标，并让流量绕开留痕。这里不硬拒，转人工审批——确有直连必要（内网目标/本地
 	// 调试）时由人放行；没有审批通道（无 interceptor 的宿主）时按拦截处理。
 	if reason, hit := detectProxyBypass(cmd); hit {
 		if g.interceptor != nil {
-			return g.settle(ctx, ev, intercept.Decision{
+			res := g.settle(ctx, innerEv, intercept.Decision{
 				Action:         "ask",
 				RuleName:       "[内置] 直连代理绕过",
 				Message:        reason,
@@ -99,14 +139,25 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 				TimeoutSeconds: 120,
 				TimeoutAction:  "deny",
 			})
+			if unwrapped && len(res.UpdatedInput) > 0 {
+				if wrapped := wrapDeferredUpdatedInput(innerEv.ToolName, res.UpdatedInput); len(wrapped) > 0 {
+					res.UpdatedInput = wrapped
+				}
+			}
+			return res
 		}
-		return g.block(ev.ToolName, systemBlockMessage(reason), cmd)
+		return g.block(innerEv.ToolName, systemBlockMessage(reason), cmd)
 	}
 	// Audit only after the verdict: recording "allow" up front produced a second
 	// (wrong) audit entry for every blocked call.
-	result := g.applyIntercept(ctx, ev)
+	result := g.applyIntercept(ctx, innerEv)
 	if result.Decision != "block" {
-		g.record(ev.ToolName, "allow", "", cmd)
+		g.record(innerEv.ToolName, "allow", "", cmd)
+		if unwrapped && len(result.UpdatedInput) > 0 {
+			if wrapped := wrapDeferredUpdatedInput(innerEv.ToolName, result.UpdatedInput); len(wrapped) > 0 {
+				result.UpdatedInput = wrapped
+			}
+		}
 	}
 	return result
 }
@@ -227,7 +278,8 @@ var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit
 // results into blocked / error / ok so the planner can change strategy instead
 // of giving up at a WAF.
 func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
-	switch ev.ToolName {
+	innerEv, _ := unwrapDeferredEvent(ev)
+	switch innerEv.ToolName {
 	case "Bash", "run_execution", "http_request", "session_login":
 	default:
 		return hook.Result{}
