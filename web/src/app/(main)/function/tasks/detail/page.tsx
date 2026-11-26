@@ -41,8 +41,8 @@ import { usePolling } from "@/hooks/use-polling";
 import { useSSE } from "@/hooks/use-sse";
 import { api, sseUrl } from "@/lib/api";
 import { createLatestRequest, HttpError, runLatestRequest } from "@/lib/request-lifecycle";
-import { canonicalTaskID, failedTaskRead, type TaskReadState } from "@/lib/task-read-state";
 import { taskIsTerminal } from "@/lib/status";
+import { canonicalTaskID, failedTaskRead, type TaskReadState } from "@/lib/task-read-state";
 import type { LLMProfile, Task, TaskLiveEvent } from "@/lib/types";
 
 import { ADPathsTab } from "./_tabs/ad-paths-tab";
@@ -52,6 +52,7 @@ import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
 import { FootprintsTab } from "./_tabs/footprints-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
+import { MobileWorkbenchTab } from "./_tabs/mobile-workbench-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
@@ -72,6 +73,7 @@ const TABS = [
   { value: "findings", label: "发现" },
   { value: "retests", label: "复测" },
   { value: "assets", label: "测试资产" },
+  { value: "mobile", label: "移动端" },
   { value: "coverage", label: "资产覆盖图" },
   { value: "ad", label: "攻击路径（域内/云上）" },
   { value: "intercept", label: "拦截审批" },
@@ -558,6 +560,9 @@ function TaskDetailInner({ id }: { id: string }) {
         </TabsContent>
         <TabsContent value="assets" className="mt-0">
           <AssetsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="mobile" className="mt-0">
+          <MobileWorkbenchTab taskId={id} />
         </TabsContent>
         <TabsContent value="coverage" className="mt-0">
           <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />

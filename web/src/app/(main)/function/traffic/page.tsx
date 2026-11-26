@@ -12,6 +12,8 @@ import {
   Loader2Icon,
   RadioTowerIcon,
   SearchIcon,
+  ShieldAlertIcon,
+  SmartphoneIcon,
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -45,8 +47,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { trafficSourceLabel } from "@/lib/mobile-utils";
 import { useStoredSortPreference } from "@/lib/sort-preference";
-import type { TrafficDetail, TrafficExchange, TrafficHost, TrafficResp } from "@/lib/types";
+import type {
+  MobileSetupInfo,
+  PinningAlert,
+  TrafficDetail,
+  TrafficExchange,
+  TrafficHost,
+  TrafficResp,
+} from "@/lib/types";
 import { readUrlView, useUrlViewPopState, useUrlViewSync } from "@/lib/url-view";
 import { cn } from "@/lib/utils";
 
@@ -101,7 +111,7 @@ function requestWithHost(raw: string, exchange: TrafficExchange): string {
 
 // Fixed method set (server filters exact-match); avoids deriving options from a
 // single page, which would only ever list the methods on that page.
-const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "WS", "SSE"];
 const PAGE_SIZES = [25, 50, 100, 200];
 type HostCountSortDirection = "asc" | "desc";
 
@@ -152,6 +162,12 @@ export default function TrafficPage() {
   const [path, setPath] = React.useState("");
   const [pathQ, setPathQ] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState("all");
+  const [sourceFilter, setSourceFilter] = React.useState("all");
+  const [excludeNoise, setExcludeNoise] = React.useState(false);
+  const [mobileModalOpen, setMobileModalOpen] = React.useState(false);
+  const [mobileSetup, setMobileSetup] = React.useState<MobileSetupInfo | null>(null);
+  const [mobileProxyBusy, setMobileProxyBusy] = React.useState(false);
+  const [pinningAlerts, setPinningAlerts] = React.useState<PinningAlert[]>([]);
   const [respMin, setRespMin] = React.useState("");
   const [respMinQ, setRespMinQ] = React.useState("");
   const [respMax, setRespMax] = React.useState("");
@@ -231,13 +247,16 @@ export default function TrafficPage() {
     return () => clearTimeout(t);
   }, [respMax]);
 
-  const hasAdvancedFilter = Boolean(bodyQ || pathQ || respMinQ || respMaxQ) || statusFilter !== "all";
+  const hasAdvancedFilter =
+    Boolean(bodyQ || pathQ || respMinQ || respMaxQ) || statusFilter !== "all" || sourceFilter !== "all" || excludeNoise;
   const resetAdvancedFilters = () => {
     setBody("");
     setBodyQ("");
     setPath("");
     setPathQ("");
     setStatusFilter("all");
+    setSourceFilter("all");
+    setExcludeNoise(false);
     setRespMin("");
     setRespMinQ("");
     setRespMax("");
@@ -253,7 +272,21 @@ export default function TrafficPage() {
       return;
     }
     setPage(0);
-  }, [hostQ, queryQ, method, size, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, urlHydrated]);
+  }, [
+    hostQ,
+    queryQ,
+    method,
+    size,
+    bodyQ,
+    pathQ,
+    statusFilter,
+    sourceFilter,
+    excludeNoise,
+    respMinQ,
+    respMaxQ,
+    sort,
+    urlHydrated,
+  ]);
 
   useUrlViewSync(
     {
@@ -315,6 +348,8 @@ export default function TrafficPage() {
             body: bodyQ,
             path: pathQ,
             status: statusFilter,
+            source: sourceFilter,
+            excludeNoise,
             respMin: respMinQ,
             respMax: respMaxQ,
             sort: sort.field,
@@ -336,11 +371,33 @@ export default function TrafficPage() {
             // Keep the last successful host list, but let usePolling back off.
             if (alive()) throw e;
           }),
+        api
+          .trafficPinningAlerts()
+          .then((r) => {
+            if (alive()) setPinningAlerts(r.alerts ?? []);
+          })
+          .catch(() => {}),
       ]);
     },
     // 只在最新页自动刷新；往回翻历史不该被脚下抽走。
     page === 0 ? 5000 : 0,
-    [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick, urlHydrated],
+    [
+      page,
+      size,
+      hostQ,
+      method,
+      queryQ,
+      bodyQ,
+      pathQ,
+      statusFilter,
+      sourceFilter,
+      excludeNoise,
+      respMinQ,
+      respMaxQ,
+      sort,
+      reloadTick,
+      urlHydrated,
+    ],
   );
 
   // Delete traffic for the current host filter (substring) or the checked
@@ -447,7 +504,21 @@ export default function TrafficPage() {
           <h1 className="font-semibold text-xl tracking-tight">流量</h1>
           <p className="text-muted-foreground text-sm">全局录制代理 · 所有 HTTP 往来</p>
         </div>
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-3 text-sm">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setMobileModalOpen(true);
+              void api
+                .trafficMobileSetup()
+                .then(setMobileSetup)
+                .catch((e: Error) => toast.error(e.message));
+            }}
+          >
+            <SmartphoneIcon className="size-3.5" />
+            移动端接入 / CA 证书
+          </Button>
           <span
             className={cn(
               "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 font-medium text-xs",
@@ -466,6 +537,33 @@ export default function TrafficPage() {
           </span>
         </div>
       </div>
+
+      {pinningAlerts.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+          <div className="flex items-center gap-2">
+            <ShieldAlertIcon className="size-4 shrink-0" />
+            <span>
+              捕获到 {pinningAlerts.length} 个域名的 TLS Pinning / CA 拒绝（
+              <span className="font-mono">
+                {pinningAlerts
+                  .slice(0, 3)
+                  .map((a) => `${a.host}×${a.count}`)
+                  .join(", ")}
+              </span>
+              ），可在任务「移动端」工作台注入 Frida ssl_unpinning 绕过。
+            </span>
+          </div>
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => {
+              void api.clearTrafficPinningAlerts().then(() => setPinningAlerts([]));
+            }}
+          >
+            忽略告警
+          </Button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
@@ -662,6 +760,24 @@ export default function TrafficPage() {
             ))}
           </SelectContent>
         </Select>
+        <Select value={sourceFilter} onValueChange={setSourceFilter}>
+          <SelectTrigger size="sm" className="w-28">
+            <SelectValue placeholder="来源" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部来源</SelectItem>
+            <SelectItem value="mobile">仅移动端</SelectItem>
+            <SelectItem value="web">仅 Web/工具</SelectItem>
+          </SelectContent>
+        </Select>
+        <label htmlFor="traffic-exclude-noise" className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+          <Checkbox
+            id="traffic-exclude-noise"
+            checked={excludeNoise}
+            onCheckedChange={(checked) => setExcludeNoise(checked === true)}
+          />
+          过滤第三方埋点噪音
+        </label>
         <div className="flex items-center gap-1 text-muted-foreground text-xs">
           <span>响应长度</span>
           <Input
@@ -820,7 +936,14 @@ export default function TrafficPage() {
                     <TableCell className="text-muted-foreground text-xs tabular-nums">{fmtTime(e.ts)}</TableCell>
                     <TableCell className="font-mono text-xs">{e.host}</TableCell>
                     <TableCell>
-                      <MethodBadge method={e.method} />
+                      <div className="flex items-center gap-1">
+                        <MethodBadge method={e.method} />
+                        {trafficSourceLabel(e) && (
+                          <Badge variant="outline" className="text-[10px]">
+                            {trafficSourceLabel(e)}
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="max-w-0">
                       <span className="block truncate font-mono text-xs">{e.url}</span>
@@ -881,9 +1004,12 @@ export default function TrafficPage() {
                 <DialogDescription className="break-all font-mono">{selected.url}</DialogDescription>
               </DialogHeader>
               <Tabs defaultValue="request" className="min-h-0 flex-1 gap-0">
-                <TabsList className="mx-5 mt-4 grid w-auto grid-cols-2">
+                <TabsList
+                  className={cn("mx-5 mt-4 grid w-auto", detail?.protobuf_preview ? "grid-cols-3" : "grid-cols-2")}
+                >
                   <TabsTrigger value="request">请求 Request</TabsTrigger>
                   <TabsTrigger value="response">响应 Response</TabsTrigger>
+                  {detail?.protobuf_preview && <TabsTrigger value="protobuf">Protobuf 解析</TabsTrigger>}
                 </TabsList>
                 <TabsContent value="request" className="min-h-0 overflow-auto">
                   {detailLoading ? (
@@ -911,9 +1037,128 @@ export default function TrafficPage() {
                     </>
                   )}
                 </TabsContent>
+                {detail?.protobuf_preview && (
+                  <TabsContent value="protobuf" className="min-h-0 overflow-auto p-5">
+                    <pre className="rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap">
+                      {detail.protobuf_preview}
+                    </pre>
+                  </TabsContent>
+                )}
               </Tabs>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={mobileModalOpen} onOpenChange={setMobileModalOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <SmartphoneIcon className="size-4" />
+              移动端接入与 CA 证书部署
+            </DialogTitle>
+            <DialogDescription>
+              默认通过 USB adb reverse 零暴露接入；如需在 Wi-Fi 真机抓包，可启用下方带强制认证的局域网移动代理。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 text-xs">
+            <div className="grid gap-2 rounded-md border p-3">
+              <div className="font-medium text-sm">1. 下载 MITM Root CA 证书</div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => void api.downloadTrafficCA("crt")}>
+                  下载 Android / 通用 (.crt)
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void api.downloadTrafficCA("mobileconfig")}>
+                  下载 iOS Profile (.mobileconfig)
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void api.downloadTrafficCA("android")}>
+                  下载 Root 系统证书 ({mobileSetup?.ca_hash_android || "hash"}.0)
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void api.downloadTrafficCA("pem")}>
+                  下载 PEM
+                </Button>
+              </div>
+              <div className="text-muted-foreground">
+                iOS 提示：安装描述文件后，需前往「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。
+              </div>
+            </div>
+
+            <div className="grid gap-1.5 rounded-md border p-3 font-mono">
+              <div className="font-sans font-medium text-sm">2. USB 零暴露命令行接入（推荐）</div>
+              <div className="rounded bg-muted p-2">
+                {mobileSetup?.usb_reverse_cmd ?? "adb reverse tcp:9899 tcp:9899"}
+              </div>
+              <div className="rounded bg-muted p-2">
+                {mobileSetup?.usb_proxy_set_cmd ?? "adb shell settings put global http_proxy 127.0.0.1:9899"}
+              </div>
+              <div className="text-muted-foreground text-[11px]">
+                卸载恢复：{mobileSetup?.usb_proxy_clear_cmd ?? "adb shell settings delete global http_proxy"}
+              </div>
+            </div>
+
+            <div className="grid gap-2 rounded-md border p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-medium text-sm">3. 认证局域网移动代理（Wi-Fi 真机）</div>
+                  <div className="text-muted-foreground">
+                    强制 Basic Auth + 来源 CIDR 白名单校验（未通过拒绝 407/403），不会开放公网匿名代理
+                  </div>
+                </div>
+                {mobileSetup?.enabled ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={mobileProxyBusy}
+                    onClick={() => {
+                      setMobileProxyBusy(true);
+                      void api
+                        .controlTrafficMobileProxy("stop")
+                        .then((s) => {
+                          setMobileSetup(s);
+                          toast.success("已停止 LAN 移动代理");
+                        })
+                        .catch((e: Error) => toast.error(e.message))
+                        .finally(() => setMobileProxyBusy(false));
+                    }}
+                  >
+                    停止服务
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    disabled={mobileProxyBusy}
+                    onClick={() => {
+                      setMobileProxyBusy(true);
+                      void api
+                        .controlTrafficMobileProxy("start", "0.0.0.0:19899")
+                        .then((s) => {
+                          setMobileSetup(s);
+                          toast.success("LAN 移动代理已启动");
+                        })
+                        .catch((e: Error) => toast.error(e.message))
+                        .finally(() => setMobileProxyBusy(false));
+                    }}
+                  >
+                    启动 LAN 代理
+                  </Button>
+                )}
+              </div>
+              {mobileSetup?.enabled && (
+                <div className="grid gap-1 rounded bg-muted/60 p-2.5 font-mono">
+                  <div>代理端点: {mobileSetup.recommended_urls?.join(" , ") || mobileSetup.listen_addr}</div>
+                  <div>
+                    认证凭据: <strong>{mobileSetup.username}</strong> / <strong>{mobileSetup.password}</strong>
+                  </div>
+                  <div>允许来源段: {mobileSetup.allow_cidrs?.join(", ")}</div>
+                  {mobileSetup.ca_token && mobileSetup.recommended_urls?.[0] && (
+                    <div className="break-all text-sky-600 dark:text-sky-400">
+                      手机浏览器免密领证书: http://{mobileSetup.recommended_urls[0]}/ca?token={mobileSetup.ca_token}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

@@ -5412,6 +5412,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// SRC 领域工具（只组命令/落脚本，规划层可用；真正执行仍由 worker/Bash 完成）。
 		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),
 		t.diffResponses(), t.apiContractTool(),
+		// 移动设备只读态检测（未绑定设备或非移动任务时由 server/assembly.go 剔除）。
+		t.mobileDeviceStatus(),
 		// record_playbook 只作工具目录保留（defaultUnbound）：默认绑在 playbook agent，
 		// 需要时可在工具页改绑；不放给 planner 默认使用。
 		t.recordPlaybook(),

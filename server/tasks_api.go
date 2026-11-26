@@ -719,6 +719,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	appMode := strings.ToLower(strings.TrimSpace(req.AppMode))
+	if appMode != "mobile" && (len(req.AppSamplePaths) > 0 || strings.TrimSpace(req.MobileDeviceID) != "") {
+		appMode = "mobile"
+	}
+	if appMode != "mobile" {
+		appMode = "standard"
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
@@ -730,6 +737,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		AssetScopePolicy:        req.AssetScopePolicy,
 		LootExecEnabled:         req.LootExecEnabled,
 		CredentialAttemptBudget: req.CredentialAttemptBudget,
+		AppMode:                 appMode,
+		MobileProxyMode:         req.MobileProxyMode,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {
@@ -744,6 +753,26 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
+	if appMode == "mobile" {
+		s.prepareTaskMobileSamples(t, req.AppSamplePaths, req.AppExtraHosts)
+		if serial := strings.TrimPrefix(strings.TrimSpace(req.MobileDeviceID), "adb:"); serial != "" {
+			if tid, perr := strconv.ParseInt(t.ID, 10, 64); perr == nil && tid > 0 {
+				if err := s.m.Mobile().BindTask(tid, serial); err == nil {
+					if berr := s.m.pg.BindTaskMobileDevice(tid, serial, req.MobileProxyMode); berr != nil {
+						s.m.Mobile().UnbindTask(tid)
+						log.Printf("[mobile] 建任务绑定设备 %s 失败: %v", serial, berr)
+					} else {
+						t.updateLifecycle(func(st *taskLifecycleState) {
+							st.MobileDeviceID = serial
+							if req.MobileProxyMode != "" {
+								st.MobileProxyMode = req.MobileProxyMode
+							}
+						})
+					}
+				}
+			}
+		}
+	}
 	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。
 	// launchTask 内部异步,不阻塞 UI —— 目标分解在后台可见地进行。
 	s.launchTask(t, req.Description+" "+req.Goal, seedFirstIntent != nil && *seedFirstIntent)
@@ -1006,7 +1035,13 @@ func (s *Server) seedFirstIntent(t *Task) {
 	// 种子意图不再写「完成任务目标：…」这种泛化目标：那会让 worker 直接开跑、
 	// planner 首轮被跳过（engine 见 active intent 就不 kick），开局摸底协议形同虚设。
 	// 改成一条 discovery 开局意图，让它产出的指纹/入口/资产正好喂给下一轮 planner。
-	summary := fmt.Sprintf("开局摸底：对 %s 做只读侦察——首页响应头与跳转、robots.txt/sitemap、首页 script 与 API 前缀、登录口/后台入口跳转（/admin /login /manage 等）；把指纹、入口与资产写回，不做目录枚举/注入/爆破", strings.TrimSpace(t.Description))
+	st := t.lifecycleSnapshot()
+	var summary string
+	if st.AppMode == "mobile" {
+		summary = fmt.Sprintf("移动端开局摸底：对工作目录 samples/ 下应用 %s (%s) 做静态逆向梳理（Manifest 导出组件、DeepLink、硬编码 API 与签名算法），确认后端域名范围；若已绑定测试机，检查 Root/CA/代理/Frida 状态并开展动态抓包", fallbackStr(st.AppPackageName, strings.TrimSpace(t.Description)), fallbackStr(st.AppPlatform, "android"))
+	} else {
+		summary = fmt.Sprintf("开局摸底：对 %s 做只读侦察——首页响应头与跳转、robots.txt/sitemap、首页 script 与 API 前缀、登录口/后台入口跳转（/admin /login /manage 等）；把指纹、入口与资产写回，不做目录枚举/注入/爆破", strings.TrimSpace(t.Description))
+	}
 	id, err := t.Store.AddIntent(map[string]any{"summary": summary, "intent_kind": "discovery"}, 8, nil, "seed")
 	if err != nil {
 		log.Printf("[seed] task %s: 下发种子意图失败: %v", t.ID, err)

@@ -21,6 +21,7 @@ DELETE /api/intercept/rules/{id}	server.(*Server).interceptDeleteRule-fm
 DELETE /api/llm/profiles/{id}	server.(*Server).pgDeleteProfile-fm
 DELETE /api/llm/records	server.(*Server).pgDeleteLLMRecords-fm
 DELETE /api/mcp/{id}	server.(*Server).pgDeleteMCP-fm
+DELETE /api/mobile/devices/{serial}	server.(*Server).deleteMobileDevice-fm
 DELETE /api/notify/channels/{id}	server.(*Server).notifyDeleteChannel-fm
 DELETE /api/skills/{name}	server.(*Server).fsDeleteSkill-fm
 DELETE /api/skills/{name}/files/{file...}	server.(*Server).fsDeletePath-fm
@@ -41,6 +42,7 @@ DELETE /api/tools/custom/{key}	server.(*Server).pgDeleteCustomTool-fm
 DELETE /api/traffic	server.(*Server).deleteTraffic-fm
 DELETE /api/traffic/all	server.(*Server).deleteAllTraffic-fm
 DELETE /api/traffic/hosts	server.(*Server).deleteTrafficHosts-fm
+DELETE /api/traffic/pinning-alerts	server.(*Server).clearTrafficPinningAlerts-fm
 DELETE /api/triggers/{id}	server.(*Server).pgDeleteTrigger-fm
 DELETE /api/workspace/delete	server.(*Server).wsDelete-fm
 GET /api/agents	server.(*Server).pgListAgents-fm
@@ -183,6 +185,8 @@ GET /api/mcp	server.(*Server).pgListMCP-fm
 GET /api/mcp/{id}/tools	server.(*Server).pgMCPTools-fm
 GET /api/metrics	server.(*Server).metrics-fm
 GET /api/metrics.prometheus	server.(*Server).metricsPrometheus-fm
+GET /api/mobile/devices	server.(*Server).listMobileDevices-fm
+GET /api/mobile/frida/scripts	server.(*Server).listFridaScripts-fm
 GET /api/notify/channels	server.(*Server).notifyListChannels-fm
 GET /api/notify/deliveries	server.(*Server).notifyListDeliveries-fm
 GET /api/notify/meta	server.(*Server).notifyMeta-fm
@@ -238,6 +242,9 @@ GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRo
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
 GET /api/tasks/{id}/leads	server.(*Server).taskLeadTraces-fm
 GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
+GET /api/tasks/{id}/mobile/sandbox	server.(*Server).browseTaskMobileSandbox-fm
+GET /api/tasks/{id}/mobile/screen	server.(*Server).getTaskMobileScreen-fm
+GET /api/tasks/{id}/mobile/state	server.(*Server).getTaskMobileState-fm
 GET /api/tasks/{id}/planner-state	server.(*Server).taskPlannerState-fm
 GET /api/tasks/{id}/relations	server.(*Server).taskRelations-fm
 GET /api/tasks/{id}/scheduling	server.(*Server).taskScheduling-fm
@@ -253,9 +260,12 @@ GET /api/tokens/usage	server.(*Server).pgUsageStats-fm
 GET /api/tools	server.(*Server).pgListTools-fm
 GET /api/traffic	server.(*Server).getTraffic-fm
 GET /api/traffic/blob	server.(*Server).getTrafficBlob-fm
+GET /api/traffic/ca	server.(*Server).getTrafficCA-fm
 GET /api/traffic/exchange	server.(*Server).getTrafficExchange-fm
 GET /api/traffic/export	server.(*Server).trafficExport-fm
 GET /api/traffic/hosts	server.(*Server).getTrafficHosts-fm
+GET /api/traffic/mobile-setup	server.(*Server).getTrafficMobileSetup-fm
+GET /api/traffic/pinning-alerts	server.(*Server).getTrafficPinningAlerts-fm
 GET /api/tunnels	server.(*Server).listTunnels-fm
 GET /api/update/check	server.(*Server).updateCheck-fm
 GET /api/update/stream	server.(*Server).updateStream-fm
@@ -299,6 +309,7 @@ POST /api/agents/{key}/triggers	server.(*Server).pgCreateTrigger-fm
 POST /api/agents/{key}/wrapup/reset	server.(*Server).pgResetWrapup-fm
 POST /api/agents/{key}/wrapup/task-timeout/reset	server.(*Server).pgResetTaskTimeoutWrapup-fm
 POST /api/api-tokens	server.(*Server).createAPIToken-fm
+POST /api/apps/upload	server.(*Server).appUpload-fm
 POST /api/asset-intercept/rules	server.(*Server).assetInterceptCreateRule-fm
 POST /api/asset-intercept/rules/{id}/toggle	server.(*Server).assetInterceptToggleRule-fm
 POST /api/assets	server.(*Server).insertAssets-fm
@@ -379,6 +390,7 @@ POST /api/mcp/test	server.(*Server).pgTestMCP-fm
 POST /api/mcp/{id}/guard/reset	server.(*Server).pgResetMCPGuard-fm
 POST /api/mcp/{id}/refresh	server.(*Server).pgRefreshMCP-fm
 POST /api/mcp/{id}/tools/toggle	server.(*Server).pgToggleMCPTool-fm
+POST /api/mobile/devices/connect	server.(*Server).connectMobileDevice-fm
 POST /api/notify/channels	server.(*Server).notifyCreateChannel-fm
 POST /api/notify/channels/{id}/test	server.(*Server).notifyTestChannel-fm
 POST /api/notify/deliveries/{id}/retry	server.(*Server).notifyRetryDelivery-fm
@@ -449,6 +461,18 @@ POST /api/tasks/{id}/intents/{iid}/rerun	server.(*Server).rerunIntent-fm
 POST /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 POST /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptCreateRule-fm
 POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskInterceptToggleRule-fm
+POST /api/tasks/{id}/mobile/bind	server.(*Server).bindTaskMobileDevice-fm
+POST /api/tasks/{id}/mobile/ca-push	server.(*Server).pushTaskMobileCA-fm
+POST /api/tasks/{id}/mobile/extract-session	server.(*Server).extractTaskMobileSession-fm
+POST /api/tasks/{id}/mobile/frida/server	server.(*Server).startTaskFridaServer-fm
+POST /api/tasks/{id}/mobile/frida/start	server.(*Server).startTaskFridaSession-fm
+POST /api/tasks/{id}/mobile/frida/stop	server.(*Server).stopTaskFridaSession-fm
+POST /api/tasks/{id}/mobile/install	server.(*Server).installTaskMobileApp-fm
+POST /api/tasks/{id}/mobile/ipc-probe	server.(*Server).runTaskMobileIPCProbe-fm
+POST /api/tasks/{id}/mobile/proxy	server.(*Server).toggleTaskMobileProxy-fm
+POST /api/tasks/{id}/mobile/scope-approve	server.(*Server).approveTaskMobileScope-fm
+POST /api/tasks/{id}/mobile/ui	server.(*Server).runTaskMobileUI-fm
+POST /api/tasks/{id}/mobile/unbind	server.(*Server).unbindTaskMobileDevice-fm
 POST /api/tasks/{id}/nodes/{nid}/follow-up-intent	server.(*Server).taskFollowUpIntent-fm
 POST /api/tasks/{id}/nodes/{nid}/techniques	server.(*Server).setIntentTechniques-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm
@@ -456,6 +480,7 @@ POST /api/tasks/{id}/template	server.(*Server).taskToTemplate-fm
 POST /api/tools/custom	server.(*Server).pgCreateCustomTool-fm
 POST /api/tools/custom/test	server.(*Server).pgTestCustomTool-fm
 POST /api/tools/{key}/reset	server.(*Server).pgResetTool-fm
+POST /api/traffic/mobile-proxy	server.(*Server).controlTrafficMobileProxy-fm
 POST /api/update/apply	server.(*Server).updateApply-fm
 POST /api/update/rollback	server.(*Server).updateRollback-fm
 POST /api/visibility/skill/toggle	server.(*Server).pgToggleSkillVisibility-fm

@@ -984,6 +984,11 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	staticSys, dynamicSys := plannerSystemParts(goal, p.workDir, taskDir)
 	staticSys += plannerScopeRequestBlock
+	if TaskMobileInfo != nil {
+		if mobSummary, hasApp, hasDev := TaskMobileInfo(taskID); hasApp || hasDev {
+			dynamicSys += mobilePlannerContextBlock(mobSummary, hasDev)
+		}
+	}
 	var constraintTail string
 	if p.wantConstraints() {
 		constraintTail = constraintBlock(ts) // 操作约束置于静态 AlwaysSkills/Capability/Deferred 段之后，避免打断跨任务静态前缀缓存

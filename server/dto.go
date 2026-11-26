@@ -87,6 +87,13 @@ type TaskDTO struct {
 	WorkerCount             int                `json:"worker_count"`              // 每任务并发覆盖；0=跟随全局
 	TimeoutSeconds          int                `json:"timeout_seconds"`           // 任务级超时；0=不限时
 	PlanHeartbeatSeconds    int                `json:"plan_heartbeat_seconds"`
+	AppMode                 string             `json:"app_mode,omitempty"`
+	AppPlatform             string             `json:"app_platform,omitempty"`
+	AppPackageName          string             `json:"app_package_name,omitempty"`
+	AppSamplePaths          []string           `json:"app_sample_paths,omitempty"`
+	AppManifestJSON         json.RawMessage    `json:"app_manifest_json,omitempty"`
+	MobileDeviceID          string             `json:"mobile_device_id,omitempty"`
+	MobileProxyMode         string             `json:"mobile_proxy_mode,omitempty"`
 }
 
 // FindingSeverityDTO 是任务列表里按严重度分档的漏洞计数（严重/高/中/低）。
@@ -170,6 +177,13 @@ func taskDTO(t *Task, status string) TaskDTO {
 		WorkerCount:             t.WorkerCount,
 		TimeoutSeconds:          t.TimeoutSeconds,
 		PlanHeartbeatSeconds:    t.PlanHeartbeatSeconds,
+		AppMode:                 lifecycle.AppMode,
+		AppPlatform:             lifecycle.AppPlatform,
+		AppPackageName:          lifecycle.AppPackageName,
+		AppSamplePaths:          append([]string(nil), lifecycle.AppSamplePaths...),
+		AppManifestJSON:         append([]byte(nil), lifecycle.AppManifestJSON...),
+		MobileDeviceID:          lifecycle.MobileDeviceID,
+		MobileProxyMode:         lifecycle.MobileProxyMode,
 	}
 }
 
@@ -197,6 +211,8 @@ type TrafficExchangeDTO struct {
 	RespState     string `json:"resp_state,omitempty"`
 	ReqStoredLen  int    `json:"req_stored_len,omitempty"`
 	RespStoredLen int    `json:"resp_stored_len,omitempty"`
+	Source        string `json:"source,omitempty"`
+	IsNoise       bool   `json:"is_noise,omitempty"`
 }
 
 func trafficDTOs(ex []traffic.ExchangeMeta) []TrafficExchangeDTO {
@@ -216,6 +232,8 @@ func trafficDTOs(ex []traffic.ExchangeMeta) []TrafficExchangeDTO {
 			RespState:     e.RespState,
 			ReqStoredLen:  e.ReqStoredLen,
 			RespStoredLen: e.RespStoredLen,
+			Source:        e.Source,
+			IsNoise:       e.IsNoise,
 		})
 	}
 	return out

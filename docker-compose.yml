@@ -32,6 +32,12 @@ services:
       BLADE_LLM_PROXY: ${BLADE_LLM_PROXY:-}
       BLADE_SEARXNG_MANAGED_MODE: compose
       BLADE_SEARXNG_COMPANION_URL: http://searxng:8080
+      # 容器接入宿主机 USB/模拟器真机：取消注释并在宿主机运行 adb -a -P 5037 nodaemon server
+      # ADB_SERVER_SOCKET: tcp:host.docker.internal:5037
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    # devices:
+    #   - "/dev/bus/usb:/dev/bus/usb"
     ports:
       # 只映射到宿主 loopback（P42）：公网访问请走 Cloudflare Tunnel 或 SSH 隧道（见 deploy/）。
       # 真要直连公网，也请配合防火墙只放行 Cloudflare 来源段，别裸奔。

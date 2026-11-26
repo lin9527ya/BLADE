@@ -864,6 +864,39 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS exploration_mode TEXT NOT NULL DEFAUL
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loot_exec_enabled BOOLEAN NOT NULL DEFAULT false;
 -- 凭据尝试预算/30分钟：-1=继承全局，0=不限，>0=本任务窗口内允许次数。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS credential_attempt_budget INTEGER NOT NULL DEFAULT -1;
+-- 移动 APP 安全测试维度（默认 standard，移动任务为 mobile）。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS app_mode TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS app_platform TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS app_package_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS app_sample_paths JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS app_manifest_json JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mobile_device_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mobile_proxy_mode TEXT NOT NULL DEFAULT 'usb_reverse';
+
+CREATE TABLE IF NOT EXISTS mobile_devices (
+    id               TEXT PRIMARY KEY,
+    serial           TEXT NOT NULL UNIQUE,
+    platform         TEXT NOT NULL DEFAULT 'android',
+    connection_type  TEXT NOT NULL DEFAULT 'usb',
+    endpoint         TEXT NOT NULL DEFAULT '',
+    model            TEXT NOT NULL DEFAULT '',
+    os_version       TEXT NOT NULL DEFAULT '',
+    api_level        INTEGER NOT NULL DEFAULT 0,
+    abi              TEXT NOT NULL DEFAULT '',
+    rooted           BOOLEAN NOT NULL DEFAULT false,
+    root_method      TEXT NOT NULL DEFAULT '',
+    system_ca_status TEXT NOT NULL DEFAULT 'none',
+    frida_server     TEXT NOT NULL DEFAULT 'missing',
+    proxy_mode       TEXT NOT NULL DEFAULT 'none',
+    bound_task_id    BIGINT REFERENCES tasks(id) ON DELETE SET NULL,
+    last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mobile_devices_bound_task ON mobile_devices(bound_task_id) WHERE bound_task_id IS NOT NULL;
+DROP TRIGGER IF EXISTS trg_mobile_devices_upd ON mobile_devices;
+CREATE TRIGGER trg_mobile_devices_upd BEFORE UPDATE ON mobile_devices
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 -- 任务首次启动时固定 worker 槽位数；后续 intent 在这些槽位内复用会话。

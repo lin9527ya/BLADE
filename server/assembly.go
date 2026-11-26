@@ -618,6 +618,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		ri := agent.RunInfoFrom(ctx)
 		return ri.TaskID > 0 && pg.TaskLootExecEnabled(ri.TaskID)
 	}
+	taskMobileBound := func(ctx context.Context) bool {
+		ri := agent.RunInfoFrom(ctx)
+		return ri.TaskID > 0 && pg.TaskHasMobileDevice(ri.TaskID)
+	}
 	// OAST：总开关 + token 都在设置里；token 为空等于没配。
 	oastConfig := func() (string, string, bool) {
 		if !pg.GetBool(settingOASTEnabled, false) {
@@ -766,6 +770,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// OAST 未配置时同样从工具面移除：让模型看见一个永远拒绝的工具只会浪费调用。
 		if _, _, on := oastConfig(); !on {
 			out = dropToolByName(out, "oast_mint", "oast_poll")
+		}
+		// 移动设备工具组：仅绑定移动设备时动态开启，不污染常规 Web 任务工具面。
+		if !taskMobileBound(ctx) {
+			out = dropToolByName(out, toolpolicy.GatedTools("task_mobile_device")...)
 		}
 		// 已下线的 BLADE 探索约束工具：DB 旧绑定也不允许重新注入任何 agent。
 		out = dropRetiredConstraintTools(out)

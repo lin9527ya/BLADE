@@ -935,6 +935,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 启动 user 消息 = 可降级的全局态势 overview + 当前意图块（带 marker）。
 	// 仅在槽位复用模式下会跨意图携带历史对话；按实际 sessionID 渲染对应提示。
 	intentTurn := renderWorkerIntentTurnWithMode(intent, assetsJSON, runDir, slot, strings.Contains(sessionID, "-slot"))
+	if TaskMobileInfo != nil {
+		if mobSummary, hasApp, hasDev := TaskMobileInfo(taskID); hasApp || hasDev {
+			intentTurn += mobileWorkerContextBlock(mobSummary, hasDev)
+		}
+	}
 	if brief := tsx.playbookBriefForIntent(intent); brief != "" {
 		intentTurn += brief
 	}

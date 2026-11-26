@@ -66,9 +66,16 @@ type Task struct {
 	// AssetScopePolicy 决定任务可测资产面：exact=明确登记主机；target=目标所属
 	// 全资产（同根域 + 同公司跨根域 + 本任务发现/锚定）。默认 exact（旧任务），
 	// 新任务由 CreateTask 默认 target。
-	AssetScopePolicy        string `json:"asset_scope_policy"`
-	LootExecEnabled         bool   `json:"loot_exec_enabled"`
-	CredentialAttemptBudget int    `json:"credential_attempt_budget"` // -1=继承全局；0=不限；>0=本任务预算
+	AssetScopePolicy        string          `json:"asset_scope_policy"`
+	LootExecEnabled         bool            `json:"loot_exec_enabled"`
+	CredentialAttemptBudget int             `json:"credential_attempt_budget"` // -1=继承全局；0=不限；>0=本任务预算
+	AppMode                 string          `json:"app_mode"`                  // standard | mobile
+	AppPlatform             string          `json:"app_platform,omitempty"`
+	AppPackageName          string          `json:"app_package_name,omitempty"`
+	AppSamplePaths          []string        `json:"app_sample_paths,omitempty"`
+	AppManifestJSON         json.RawMessage `json:"app_manifest_json,omitempty"`
+	MobileDeviceID          string          `json:"mobile_device_id,omitempty"`
+	MobileProxyMode         string          `json:"mobile_proxy_mode,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -203,6 +210,13 @@ type TaskCreateOptions struct {
 	LootExecEnabled bool
 	// CredentialAttemptBudget 是任务级凭据尝试预算/30分钟：nil=继承全局，0=不限。
 	CredentialAttemptBudget *int
+	AppMode                 string
+	AppPlatform             string
+	AppPackageName          string
+	AppSamplePaths          []string
+	AppManifestJSON         json.RawMessage
+	MobileDeviceID          string
+	MobileProxyMode         string
 }
 
 // MaxTaskWorkerCount 是每任务并发覆盖的硬上限。
@@ -349,6 +363,21 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 			credentialBudget = -1
 		}
 	}
+	appMode := strings.ToLower(strings.TrimSpace(opts.AppMode))
+	if appMode != "mobile" {
+		appMode = "standard"
+	}
+	mobileProxyMode := normalizeMobileProxyMode(opts.MobileProxyMode)
+	samplePathsRaw, _ := json.Marshal(opts.AppSamplePaths)
+	if len(opts.AppSamplePaths) == 0 {
+		samplePathsRaw = []byte("[]")
+	}
+	manifestRaw := opts.AppManifestJSON
+	if len(manifestRaw) == 0 {
+		manifestRaw = json.RawMessage(`{}`)
+	}
+	mobileDev := strings.TrimPrefix(strings.TrimSpace(opts.MobileDeviceID), "adb:")
+
 	t := &Task{
 		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
 		Description: description, Goal: goal, ExplorationID: expID,
@@ -360,11 +389,18 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CoverageEnabled: coverageEnabled, AssetScopePolicy: policy,
 		LootExecEnabled:         opts.LootExecEnabled,
 		CredentialAttemptBudget: credentialBudget,
+		AppMode:                 appMode,
+		AppPlatform:             strings.TrimSpace(opts.AppPlatform),
+		AppPackageName:          strings.TrimSpace(opts.AppPackageName),
+		AppSamplePaths:          append([]string(nil), opts.AppSamplePaths...),
+		AppManifestJSON:         manifestRaw,
+		MobileDeviceID:          mobileDev,
+		MobileProxyMode:         mobileProxyMode,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, worker_count, remark, asset_scope_policy, loot_exec_enabled, credential_attempt_budget)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.WorkerCount, opts.Remark, policy, opts.LootExecEnabled, credentialBudget).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, worker_count, remark, asset_scope_policy, loot_exec_enabled, credential_attempt_budget, app_mode, app_platform, app_package_name, app_sample_paths, app_manifest_json, mobile_device_id, mobile_proxy_mode)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb,$20,$21)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.WorkerCount, opts.Remark, policy, opts.LootExecEnabled, credentialBudget, appMode, t.AppPlatform, t.AppPackageName, string(samplePathsRaw), string(manifestRaw), mobileDev, mobileProxyMode).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	t.WorkerCount, t.Remark = opts.WorkerCount, opts.Remark
@@ -481,12 +517,19 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(loot_exec_enabled,false), COALESCE(credential_attempt_budget,-1)`
+description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), COALESCE(egress_group,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, active_run_seconds, run_segment_started_at, COALESCE(worker_count,0), COALESCE(remark,''), COALESCE(asset_scope_policy,'exact'), COALESCE(loot_exec_enabled,false), COALESCE(credential_attempt_budget,-1), COALESCE(app_mode,'standard'), COALESCE(app_platform,''), COALESCE(app_package_name,''), COALESCE(app_sample_paths,'[]'::jsonb), COALESCE(app_manifest_json,'{}'::jsonb), COALESCE(mobile_device_id,''), COALESCE(mobile_proxy_mode,'usb_reverse')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.LootExecEnabled, &t.CredentialAttemptBudget); err != nil {
+	var sampleRaw, manRaw []byte
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.EgressGroup, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.WorkerCount, &t.Remark, &t.AssetScopePolicy, &t.LootExecEnabled, &t.CredentialAttemptBudget, &t.AppMode, &t.AppPlatform, &t.AppPackageName, &sampleRaw, &manRaw, &t.MobileDeviceID, &t.MobileProxyMode); err != nil {
 		return nil, err
+	}
+	if len(sampleRaw) > 0 {
+		_ = json.Unmarshal(sampleRaw, &t.AppSamplePaths)
+	}
+	if len(manRaw) > 0 {
+		t.AppManifestJSON = json.RawMessage(manRaw)
 	}
 	t.Pinned = t.PinnedAt != nil
 	return &t, nil

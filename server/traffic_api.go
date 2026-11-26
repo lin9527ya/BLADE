@@ -24,16 +24,18 @@ func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
 	page := atoiDefault(q.Get("page"), 0)
 	size := atoiDefault(q.Get("size"), 100)
 	ex, matched, _ := tr.Page(traffic.PageQuery{
-		Host:    q.Get("host"),
-		Method:  q.Get("method"),
-		Query:   q.Get("q"),
-		Body:    q.Get("body"),
-		Path:    q.Get("path"),
-		Status:  q.Get("status"),
-		RespMin: int64(atoiDefault(q.Get("resp_min"), -1)),
-		RespMax: int64(atoiDefault(q.Get("resp_max"), -1)),
-		Sort:    q.Get("sort"),
-		Order:   q.Get("order"),
+		Host:         q.Get("host"),
+		Method:       q.Get("method"),
+		Query:        q.Get("q"),
+		Body:         q.Get("body"),
+		Path:         q.Get("path"),
+		Status:       q.Get("status"),
+		Source:       q.Get("source"),
+		ExcludeNoise: q.Get("exclude_noise") == "1" || strings.EqualFold(q.Get("exclude_noise"), "true"),
+		RespMin:      int64(atoiDefault(q.Get("resp_min"), -1)),
+		RespMax:      int64(atoiDefault(q.Get("resp_max"), -1)),
+		Sort:         q.Get("sort"),
+		Order:        q.Get("order"),
 	}, page, size)
 	count, _ := tr.Count() // global total, for the stat card
 	writeJSON(w, 200, map[string]any{
@@ -159,7 +161,11 @@ func (s *Server) getTrafficExchange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"req": req, "resp": resp})
+	out := map[string]any{"req": req, "resp": resp}
+	if preview := tr.ProtobufPreviewForExchange(id); preview != "" {
+		out["protobuf_preview"] = preview
+	}
+	writeJSON(w, 200, out)
 }
 
 // getTrafficBlob streams one oversized body by its sha256. Bodies past the inline
@@ -189,4 +195,106 @@ func (s *Server) getTrafficBlob(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, f); err != nil {
 		log.Printf("[traffic] 下载 blob %s 中断：%v", hash, err)
 	}
+}
+
+func (s *Server) getTrafficCA(w http.ResponseWriter, r *http.Request) {
+	tr := s.m.Traffic()
+	if tr == nil {
+		writeErr(w, 404, "traffic disabled")
+		return
+	}
+	fmtType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("fmt")))
+	switch fmtType {
+	case "", "pem":
+		data, err := tr.CACertPEM()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Header().Set("Content-Disposition", `attachment; filename="blade-mitm-ca.pem"`)
+		_, _ = w.Write(data)
+	case "crt", "der":
+		data, err := tr.CACertDER()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+		w.Header().Set("Content-Disposition", `attachment; filename="blade-mitm-ca.crt"`)
+		_, _ = w.Write(data)
+	case "android", "0":
+		hash, err := tr.CASubjectHash()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		data, err := tr.CACertPEM()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.0"`, hash))
+		_, _ = w.Write(data)
+	case "mobileconfig", "ios":
+		data, err := tr.AppleMobileConfig("BLADE")
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-apple-aspen-config")
+		w.Header().Set("Content-Disposition", `attachment; filename="blade-mitm-ca.mobileconfig"`)
+		_, _ = w.Write(data)
+	default:
+		writeErr(w, 400, "fmt 必须为 pem / crt / android / mobileconfig")
+	}
+}
+
+func (s *Server) getTrafficMobileSetup(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.buildMobileSetupInfo(r.Host))
+}
+
+func (s *Server) controlTrafficMobileProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action     string   `json:"action"` // start | stop
+		ListenAddr string   `json:"listen_addr"`
+		CIDRs      []string `json:"allow_cidrs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid json")
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "start":
+		if err := s.m.StartMobileProxy(req.ListenAddr, req.CIDRs); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	case "stop":
+		if err := s.m.StopMobileProxy(); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	default:
+		writeErr(w, 400, "action 必须是 start 或 stop")
+		return
+	}
+	writeJSON(w, 200, s.buildMobileSetupInfo(r.Host))
+}
+
+func (s *Server) getTrafficPinningAlerts(w http.ResponseWriter, _ *http.Request) {
+	tr := s.m.Traffic()
+	if tr == nil {
+		writeJSON(w, 200, map[string]any{"alerts": []any{}})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"alerts": tr.PinningAlerts()})
+}
+
+func (s *Server) clearTrafficPinningAlerts(w http.ResponseWriter, _ *http.Request) {
+	if tr := s.m.Traffic(); tr != nil {
+		tr.ClearPinningAlerts()
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }

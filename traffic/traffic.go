@@ -53,13 +53,16 @@ CREATE TABLE IF NOT EXISTS exchanges (
   resp_state   TEXT NOT NULL DEFAULT 'legacy',
   req_stored_len  INTEGER NOT NULL DEFAULT -1,
   resp_stored_len INTEGER NOT NULL DEFAULT -1,
-  path         TEXT
+  source          TEXT NOT NULL DEFAULT 'web',
+  is_noise        INTEGER NOT NULL DEFAULT 0,
+  path            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ex_host ON exchanges(host);
 CREATE INDEX IF NOT EXISTS idx_ex_tmpl ON exchanges(host, url_template);
 CREATE INDEX IF NOT EXISTS idx_ex_ts   ON exchanges(ts);
 CREATE INDEX IF NOT EXISTS idx_ex_status ON exchanges(status);
 CREATE INDEX IF NOT EXISTS idx_ex_resp   ON exchanges(resp_len);
+CREATE INDEX IF NOT EXISTS idx_ex_source ON exchanges(source);
 
 CREATE TABLE IF NOT EXISTS exchange_bodies (
   id        TEXT PRIMARY KEY,
@@ -183,6 +186,11 @@ type Traffic struct {
 	// upstream proxy connection/auth error so the proxy pool can probe immediately.
 	upstreamErrMu sync.RWMutex
 	onUpstreamErr func(proxyURL string, err error)
+	// Mobile proxy source tracking & TLS certificate pinning telemetry.
+	mobileAddrMu  sync.RWMutex
+	mobileAddrs   map[string]struct{}
+	pinningMu     sync.Mutex
+	pinningAlerts map[string]*PinningAlert
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -348,6 +356,8 @@ func ensureExchangeStateColumns(ctx context.Context, conn *sql.Conn) error {
 		{"resp_state", "TEXT NOT NULL DEFAULT 'legacy'"},
 		{"req_stored_len", "INTEGER NOT NULL DEFAULT -1"},
 		{"resp_stored_len", "INTEGER NOT NULL DEFAULT -1"},
+		{"source", "TEXT NOT NULL DEFAULT 'web'"},
+		{"is_noise", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, col := range cols {
 		if have[col.name] {
@@ -634,6 +644,16 @@ func (s *sink) Response(f *mproxy.Flow) {
 // transparent passthrough so future requests to it succeed instead of dying.
 func (s *sink) RequestError(f *mproxy.Flow, err error) {
 	s.t.notifyUpstreamError(err)
+	if isLikelyPinningErr(err) && f != nil && f.Request != nil {
+		host := ""
+		if f.Request.URL != nil {
+			host = f.Request.URL.Hostname()
+		}
+		if host == "" {
+			host = f.Request.Raw().Host
+		}
+		s.t.RecordPinningAlert(host, err.Error(), s.t.flowSource(f))
+	}
 	s.t.maybePassthrough(f, err)
 }
 
@@ -776,12 +796,18 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
 
+	src := t.flowSource(f)
+	noise := 0
+	if IsNoiseHost(host) {
+		noise = 1
+	}
+
 	// path stays empty for db-resident exchanges; a non-empty path marks a legacy
 	// row whose bodies still live in the old on-disk tree (see Get).
-	res, err := tx.Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')`,
+	res, err := tx.Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,source,is_noise,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')`,
 		id, now.Unix(), host, method, tmpl, url, f.Response.StatusCode, ct,
-		len(f.Request.Body), len(f.Response.Body), reqB.state, respB.state, reqB.storedLen, respB.storedLen)
+		len(f.Request.Body), len(f.Response.Body), reqB.state, respB.state, reqB.storedLen, respB.storedLen, src, noise)
 	if err != nil {
 		log.Printf("[traffic] 记录 %s 失败（写索引）：%v", url, err)
 		return
@@ -1136,6 +1162,8 @@ type ExchangeMeta struct {
 	RespState     string `json:"resp_state,omitempty"`
 	ReqStoredLen  int    `json:"req_stored_len,omitempty"`
 	RespStoredLen int    `json:"resp_stored_len,omitempty"`
+	Source        string `json:"source,omitempty"`
+	IsNoise       bool   `json:"is_noise,omitempty"`
 	Path          string `json:"path"`
 }
 
@@ -1143,12 +1171,14 @@ type ExchangeMeta struct {
 // the canonical URL/method/status without re-parsing the raw request line.
 func (t *Traffic) Meta(id string) (*ExchangeMeta, error) {
 	var m ExchangeMeta
-	err := t.db.QueryRow(`SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path
+	var noiseInt int
+	err := t.db.QueryRow(`SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,COALESCE(source,'web'),COALESCE(is_noise,0),path
 FROM exchanges WHERE id=?`, id).Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status,
-		&m.ContentType, &m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Path)
+		&m.ContentType, &m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Source, &noiseInt, &m.Path)
 	if err != nil {
 		return nil, err
 	}
+	m.IsNoise = noiseInt != 0
 	return &m, nil
 }
 
@@ -1157,7 +1187,7 @@ func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
 	if size <= 0 || size > 500 {
 		size = 100
 	}
-	q := `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path FROM exchanges`
+	q := `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,COALESCE(source,'web'),COALESCE(is_noise,0),path FROM exchanges`
 	args := []any{}
 	if host != "" {
 		q += ` WHERE host=?`
@@ -1173,10 +1203,12 @@ func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
 	var out []ExchangeMeta
 	for rows.Next() {
 		var m ExchangeMeta
+		var noiseInt int
 		if err := rows.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType,
-			&m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Path); err != nil {
+			&m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Source, &noiseInt, &m.Path); err != nil {
 			return nil, err
 		}
+		m.IsNoise = noiseInt != 0
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -1206,16 +1238,18 @@ func ftsQuote(s string) string {
 // of -1 skip the response-size bounds. An empty Sort/Order defaults to
 // newest-first by timestamp.
 type PageQuery struct {
-	Host    string // host substring
-	Method  string // exact method (case-insensitive)
-	Query   string // broad search box: metadata columns OR captured text
-	Body    string // content box: captured request/response text only (full-text)
-	Path    string // url_template substring — the vulnerability's path
-	Status  string // exact code ("404") or class bucket ("4xx")
-	RespMin int64  // minimum resp_len, or -1 when unset
-	RespMax int64  // maximum resp_len, or -1 when unset
-	Sort    string // ts | status | resp_len (default ts)
-	Order   string // asc | desc (default desc)
+	Host         string // host substring
+	Method       string // exact method (case-insensitive)
+	Query        string // broad search box: metadata columns OR captured text
+	Body         string // content box: captured request/response text only (full-text)
+	Path         string // url_template substring — the vulnerability's path
+	Status       string // exact code ("404") or class bucket ("4xx")
+	Source       string // web | mobile | "" (all)
+	ExcludeNoise bool   // filter out CDN/analytics/telemetry hosts
+	RespMin      int64  // minimum resp_len, or -1 when unset
+	RespMax      int64  // maximum resp_len, or -1 when unset
+	Sort         string // ts | status | resp_len (default ts)
+	Order        string // asc | desc (default desc)
 }
 
 // sortColumns whitelists the columns Page may order by, so the caller-supplied
@@ -1283,6 +1317,12 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	if f.RespMax >= 0 {
 		add("resp_len<=?", f.RespMax)
 	}
+	if s := strings.ToLower(strings.TrimSpace(f.Source)); s != "" {
+		add("COALESCE(source,'web')=?", s)
+	}
+	if f.ExcludeNoise {
+		add("COALESCE(is_noise,0)=0")
+	}
 	if s := strings.TrimSpace(f.Query); s != "" {
 		like := "%" + s + "%"
 		const meta = "host LIKE ? OR url LIKE ? OR url_template LIKE ? OR method LIKE ? OR content_type LIKE ? OR CAST(status AS TEXT) LIKE ?"
@@ -1316,7 +1356,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	}
 	// id embeds capture timestamp + sequence, so a trailing id DESC makes the order
 	// total and pagination stable even when the sort column has many ties.
-	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,path FROM exchanges` +
+	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,req_state,resp_state,req_stored_len,resp_stored_len,COALESCE(source,'web'),COALESCE(is_noise,0),path FROM exchanges` +
 		where + ` ORDER BY ` + col + ` ` + dir + `, id DESC LIMIT ? OFFSET ?`
 	qargs := append(append([]any{}, args...), size, page*size)
 	rs, err := t.db.Query(sel, qargs...)
@@ -1326,10 +1366,12 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	defer rs.Close()
 	for rs.Next() {
 		var m ExchangeMeta
+		var noiseInt int
 		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType,
-			&m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Path); err != nil {
+			&m.ReqLen, &m.RespLen, &m.ReqState, &m.RespState, &m.ReqStoredLen, &m.RespStoredLen, &m.Source, &noiseInt, &m.Path); err != nil {
 			return nil, 0, err
 		}
+		m.IsNoise = noiseInt != 0
 		rows = append(rows, m)
 	}
 	return rows, total, rs.Err()
@@ -2627,7 +2669,11 @@ func (t *Traffic) Tools() []actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return actool.Text("=== REQUEST ===\n" + clip(req, 2500) + "\n\n=== RESPONSE ===\n" + clip(resp, 4000)), nil
+			extra := ""
+			if preview := t.ProtobufPreviewForExchange(a.ID); preview != "" {
+				extra = "\n\n=== PROTOBUF WIRE PREVIEW ===\n" + preview
+			}
+			return actool.Text("=== REQUEST ===\n" + clip(req, 2500) + "\n\n=== RESPONSE ===\n" + clip(resp, 4000) + extra), nil
 		},
 	})
 

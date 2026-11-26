@@ -103,6 +103,11 @@ func (s *Server) registerExplorationRoutes(mux routeRegistrar) {
 	mux.HandleFunc("DELETE /api/traffic/all", s.deleteAllTraffic)
 	mux.HandleFunc("GET /api/traffic/exchange", s.getTrafficExchange)
 	mux.HandleFunc("GET /api/traffic/blob", s.getTrafficBlob)
+	mux.HandleFunc("GET /api/traffic/ca", s.getTrafficCA)
+	mux.HandleFunc("GET /api/traffic/mobile-setup", s.getTrafficMobileSetup)
+	mux.HandleFunc("POST /api/traffic/mobile-proxy", s.controlTrafficMobileProxy)
+	mux.HandleFunc("GET /api/traffic/pinning-alerts", s.getTrafficPinningAlerts)
+	mux.HandleFunc("DELETE /api/traffic/pinning-alerts", s.clearTrafficPinningAlerts)
 	mux.HandleFunc("GET /api/commands", s.pgListCommands)
 	mux.HandleFunc("GET /api/commands/stats", s.pgToolStats) // 按工具聚合调用次数
 	mux.HandleFunc("GET /api/llm/records", s.pgListLLMRecords)

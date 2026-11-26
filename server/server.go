@@ -401,7 +401,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		})
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
 		domainReg := buildDomainReg(m.Assets())
-		wireTools(m.pg, domainReg)             // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
+		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
+		{
+			o := agent.CurrentOverrides()
+			o.Mobile = &mobileBridgeAdapter{s: s}
+			o.TaskMobileInfo = s.taskMobilePromptSummary
+			agent.SetOverrides(o)
+		}
 		seedPrompts(m.pg)                      // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		migratePlannerPrompt(m.pg)             // planner 正文 v2：仅当库里仍是旧内置正文时迁移
 		pruneRemovedDomainTaskCategories(m.pg) // 一次性清理历史内置领域模板分类（仅未关联任务/模板时）
@@ -653,6 +659,7 @@ func (s *Server) registerRoutes(mux routeRegistrar) {
 	s.registerPlaybookRoutes(mux)
 	s.registerCVERoutes(mux)
 	s.registerIMRoutes(mux)
+	s.registerMobileRoutes(mux)
 }
 
 // --- handlers ---

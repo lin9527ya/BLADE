@@ -94,6 +94,8 @@ func run() int {
 		proxy   = flag.String("proxy", "127.0.0.1:9899", "traffic recording proxy address (empty to disable)")
 		// 只在明确知道自己在做什么时才允许把流量代理开成对外——见下面 run() 里的护栏。
 		allowOpenProxy = flag.Bool("allow-open-proxy", false, "allow binding the traffic proxy to a non-loopback address (turns this host into an unauthenticated open proxy)")
+		mobileProxy    = flag.String("mobile-proxy", "", "optional authenticated LAN mobile proxy listen address (e.g. 0.0.0.0:19899)")
+		mobileCIDRs    = flag.String("mobile-proxy-cidrs", "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16", "comma-separated allowed client CIDRs for -mobile-proxy")
 	)
 	flag.Parse()
 
@@ -167,6 +169,12 @@ func run() int {
 		log.Fatalf("open stores: %v", err)
 	}
 	defer mgr.Close()
+	if strings.TrimSpace(*mobileProxy) != "" {
+		cidrs := strings.Split(*mobileCIDRs, ",")
+		if err := mgr.StartMobileProxy(strings.TrimSpace(*mobileProxy), cidrs); err != nil {
+			log.Fatalf("[mobile-proxy] start failed: %v", err)
+		}
+	}
 
 	skillDir := config.SkillDir()
 	if abs, err := filepath.Abs(skillDir); err == nil {

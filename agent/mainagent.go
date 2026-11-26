@@ -248,6 +248,11 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	tsx.SetTaskRoot(mainDir)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
 	staticSys, dynamicSys := mainAgentSystemParts(goal, m.workDir, mainDir)
+	if TaskMobileInfo != nil {
+		if mobSummary, hasApp, hasDev := TaskMobileInfo(taskID); hasApp || hasDev {
+			dynamicSys += mobilePlannerContextBlock(mobSummary, hasDev)
+		}
+	}
 	system, boundary := deferredSystemWithDynamic(staticSys, def, dynamicSys)
 	opts := agentcore.Options{
 		Provider:                      m.prov,

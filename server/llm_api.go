@@ -729,4 +729,10 @@ type createTaskReq struct {
 	WorkerCount int `json:"worker_count,omitempty"`
 	// Remark 是任务备注（≤2000 字），给操作者记上下文用。
 	Remark string `json:"remark,omitempty"`
+	// 移动 APP 测试扩展字段。
+	AppMode         string   `json:"app_mode,omitempty"`
+	AppSamplePaths  []string `json:"app_sample_paths,omitempty"`
+	AppExtraHosts   []string `json:"app_extra_hosts,omitempty"`
+	MobileDeviceID  string   `json:"mobile_device_id,omitempty"`
+	MobileProxyMode string   `json:"mobile_proxy_mode,omitempty"`
 }

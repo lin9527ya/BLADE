@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { ChevronRightIcon, Loader2Icon, PaperclipIcon, PlusIcon } from "lucide-react";
+import { ChevronRightIcon, Loader2Icon, PaperclipIcon, PlusIcon, SmartphoneIcon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-editor";
@@ -40,7 +40,16 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { AssetInterceptRuleInput, Company, LLMProfile, Task, TaskCategory } from "@/lib/types";
+import { formatSampleBytes, parseCandidateDomainInput } from "@/lib/mobile-utils";
+import type {
+  AssetInterceptRuleInput,
+  Company,
+  LLMProfile,
+  MobileDevice,
+  MobilePackageMetadata,
+  Task,
+  TaskCategory,
+} from "@/lib/types";
 
 import { CategoryPicker, CompanyPicker } from "./task-categories";
 import { appendUploads, MAX_SOURCE_TASKS } from "./task-helpers";
@@ -174,6 +183,15 @@ export function CreateTaskSheet({
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
+  // 移动 APP 模式：安装包流式上传 (<=1024 MiB)、预解析、候选域名与设备绑定
+  const [appMode, setAppMode] = React.useState<"standard" | "mobile">("standard");
+  const [appSamplePaths, setAppSamplePaths] = React.useState<string[]>([]);
+  const [appManifest, setAppManifest] = React.useState<MobilePackageMetadata | null>(null);
+  const [appUploadPct, setAppUploadPct] = React.useState<number | null>(null);
+  const [appExtraHostsInput, setAppExtraHostsInput] = React.useState("");
+  const [mobileDevices, setMobileDevices] = React.useState<MobileDevice[]>([]);
+  const [mobileDeviceID, setMobileDeviceID] = React.useState("");
+  const appInputRef = React.useRef<HTMLInputElement>(null);
   const draftIdRef = React.useRef<string>("");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const sheetContentRef = React.useRef<HTMLDivElement>(null);
@@ -189,6 +207,50 @@ export function CreateTaskSheet({
       .then(setCompanies)
       .catch(() => setCompanies([]));
   }, []);
+
+  React.useEffect(() => {
+    if (!open || appMode !== "mobile") return;
+    api
+      .mobileDevices()
+      .then((r) => setMobileDevices(r.devices ?? []))
+      .catch(() => setMobileDevices([]));
+  }, [open, appMode]);
+
+  async function pickAppPackage(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    if (!draftIdRef.current) {
+      draftIdRef.current =
+        globalThis.crypto?.randomUUID?.() ?? `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    }
+    setAppUploadPct(0);
+    try {
+      const res = await api.uploadAppPackage("staging", draftIdRef.current, file, (pct) => setAppUploadPct(pct));
+      const path = res.primary?.sample_path;
+      if (path) setAppSamplePaths((prev) => [...new Set([...prev, path])]);
+      const man = res.samples?.[0]?.manifest;
+      if (man) {
+        setAppManifest(man);
+        if (!name.trim() && (man.app_name || man.package_name)) {
+          setName(`${man.app_name || man.package_name} 安全测试`);
+        }
+        if (!description.trim()) {
+          setDescription(
+            `移动应用样本：${man.package_name} (${man.platform} v${man.version_name || "?"})，路径 ${path}`,
+          );
+        }
+        if (man.candidate_domains?.length) {
+          setAppExtraHostsInput((prev) => (prev.trim() ? prev : (man.candidate_domains ?? []).slice(0, 6).join(", ")));
+        }
+      }
+      toast.success(`已完成上传与预解析：${file.name}`);
+    } catch (e) {
+      toast.error(`安装包上传失败：${(e as Error).message}`);
+    } finally {
+      setAppUploadPct(null);
+      if (appInputRef.current) appInputRef.current.value = "";
+    }
+  }
 
   // pickFiles uploads the chosen files into this draft's staging dir and appends their
   // absolute paths to the description; the task's agents open them by path via Read/Bash.
@@ -259,6 +321,10 @@ export function CreateTaskSheet({
         credentialAttemptBudget: credBudget,
         workerCount: Math.max(0, Math.min(50, Math.floor(Number(workerCount) || 0))),
         remark: remark.trim(),
+        appMode,
+        appSamplePaths: appMode === "mobile" ? appSamplePaths : [],
+        appExtraHosts: appMode === "mobile" ? parseCandidateDomainInput(appExtraHostsInput) : [],
+        mobileDeviceId: appMode === "mobile" ? mobileDeviceID : "",
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -282,6 +348,11 @@ export function CreateTaskSheet({
       setPresetAppliedFor(undefined);
       setInterceptRules([]);
       setUploadCount(0);
+      setAppMode("standard");
+      setAppSamplePaths([]);
+      setAppManifest(null);
+      setAppExtraHostsInput("");
+      setMobileDeviceID("");
       draftIdRef.current = "";
       setOpen(false);
       onCreated();
@@ -311,6 +382,97 @@ export function CreateTaskSheet({
 
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           <div className="grid gap-5">
+            {/* 目标形态切换：常规目标 vs 移动 APP */}
+            <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant={appMode === "standard" ? "default" : "ghost"}
+                onClick={() => setAppMode("standard")}
+              >
+                常规目标 (Web / 内网)
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={appMode === "mobile" ? "default" : "ghost"}
+                onClick={() => setAppMode("mobile")}
+              >
+                <SmartphoneIcon className="size-3.5" />
+                移动 APP（APK / AAB / XAPK / IPA）
+              </Button>
+            </div>
+            {appMode === "mobile" && (
+              <div className="grid gap-3 rounded-md border border-sky-500/30 bg-sky-500/5 p-4 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-sm">移动应用样本与设备绑定</div>
+                    <div className="text-muted-foreground">
+                      流式上传支持最大 1024 MiB（1 GiB）安装包并即时提取包名、框架、加壳及后端域名
+                    </div>
+                  </div>
+                  <input
+                    ref={appInputRef}
+                    type="file"
+                    accept=".apk,.aab,.xapk,.apkm,.apks,.ipa"
+                    className="hidden"
+                    onChange={(e) => void pickAppPackage(e.target.files)}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={appUploadPct !== null}
+                    onClick={() => appInputRef.current?.click()}
+                  >
+                    <UploadIcon className="size-3.5" />
+                    {appUploadPct !== null ? `上传解析中 ${appUploadPct}%` : "上传 APK / IPA"}
+                  </Button>
+                </div>
+                {appManifest && (
+                  <div className="grid gap-1.5 rounded border bg-background p-2.5 font-mono">
+                    <div>
+                      包名: <strong>{appManifest.package_name}</strong> · 平台: {appManifest.platform} · 版本:{" "}
+                      {appManifest.version_name || "-"} · 大小: {formatSampleBytes(appManifest.size_bytes)}
+                    </div>
+                    <div className="text-muted-foreground">
+                      框架: {appManifest.frameworks?.join(", ") || "原生"} · 加壳:{" "}
+                      {appManifest.packers?.join(", ") || "未见明显加壳"} · Schemes:{" "}
+                      {appManifest.url_schemes?.join(", ") || "无"}
+                    </div>
+                  </div>
+                )}
+                <div className="grid gap-1.5">
+                  <Label htmlFor="mobile-extra-hosts" className="text-xs">
+                    关联后端 API 域名 / IP（逗号分隔，自动纳入任务授权范围）
+                  </Label>
+                  <Input
+                    id="mobile-extra-hosts"
+                    placeholder="如 api.acme-shop.cn, auth.acme-shop.cn"
+                    value={appExtraHostsInput}
+                    onChange={(e) => setAppExtraHostsInput(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="mobile-device-select" className="text-xs">
+                    绑定移动测试设备（可选，绑定后将动态激活 Frida / UI 探索 / 代理控制工具）
+                  </Label>
+                  <NativeSelect
+                    id="mobile-device-select"
+                    size="sm"
+                    value={mobileDeviceID}
+                    onChange={(e) => setMobileDeviceID(e.target.value)}
+                  >
+                    <NativeSelectOption value="">暂不绑定（仅做静态逆向 + 后端 API 评估）</NativeSelectOption>
+                    {mobileDevices.map((d) => (
+                      <NativeSelectOption key={d.serial} value={d.serial}>
+                        {d.model || d.serial} ({d.serial}) · {d.state} {d.rooted ? "[Root]" : ""}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+              </div>
+            )}
             <TaskTemplateControls
               description={description}
               goal={goal}
@@ -491,7 +653,8 @@ export function CreateTaskSheet({
                     onChange={(e) => setWorkerCount(e.target.value)}
                   />
                   <p className="text-muted-foreground text-xs">
-                    本任务的最大并发 Worker 数（留空则跟随全局设置）；每个意图都会创建各自独立的 Worker 与会话，互不复用上下文。
+                    本任务的最大并发 Worker 数（留空则跟随全局设置）；每个意图都会创建各自独立的 Worker
+                    与会话，互不复用上下文。
                   </p>
                 </div>
                 <div className="grid gap-2">

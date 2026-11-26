@@ -50,6 +50,7 @@ func TestSetOverridesReplacesEveryHook(t *testing.T) {
 		ToolAugment: func(context.Context, string) ([]actool.CoreTool, DeferredInfo, func()) {
 			return nil, DeferredInfo{}, nil
 		},
+		TaskMobileInfo: func(int64) (string, bool, bool) { return "mob", true, false },
 	}
 	SetOverrides(all)
 	t.Cleanup(func() { SetOverrides(Overrides{}) })
@@ -59,7 +60,7 @@ func TestSetOverridesReplacesEveryHook(t *testing.T) {
 		got.ArtifactLanguage == nil || got.WrapupOverride == nil ||
 		got.WrapupMaxTurnsOverride == nil || got.WrapupTaskTimeoutOverride == nil ||
 		got.WrapupTaskTimeoutTurnsOverride == nil || got.FindingTrafficBindingEnabled == nil ||
-		got.ToolResolve == nil || got.ToolAugment == nil {
+		got.ToolResolve == nil || got.ToolAugment == nil || got.TaskMobileInfo == nil {
 		t.Fatalf("CurrentOverrides 丢了字段：%+v", got)
 	}
 

@@ -19,6 +19,7 @@ import type {
   AgentDetail,
   AgentTrigger,
   APIToken,
+  AppUploadResp,
   ArchiveBatchItem,
   Asset,
   AssetDetail,
@@ -91,6 +92,8 @@ import type {
   FindingTraffic,
   FindingTrafficDetail,
   FootholdWorkbenchItem,
+  FridaScriptSpec,
+  FridaSession,
   GlobalBroadcastPage,
   GlobalBroadcastQuery,
   GlobalSearchResponse,
@@ -131,12 +134,17 @@ import type {
   MCPTestResult,
   MCPTool,
   MissingSkill,
+  MobileDevice,
+  MobileIPCProbeResult,
+  MobileSandboxEntry,
+  MobileSetupInfo,
   ModelTokenStat,
   NotificationChannel,
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
   OpsecKnowledgeResponse,
+  PinningAlert,
   Playbook,
   PlaybookDraft,
   PlaybookFingerprint,
@@ -173,6 +181,7 @@ import type {
   TaskGoal,
   TaskHint,
   TaskLLMResolutions,
+  TaskMobileState,
   TaskNode,
   TaskPlannerState,
   TaskRelationRef,
@@ -472,6 +481,11 @@ export const api = {
     workerCount?: number;
     // 任务备注（≤2000 字）。
     remark?: string;
+    appMode?: "standard" | "mobile";
+    appSamplePaths?: string[];
+    appExtraHosts?: string[];
+    mobileDeviceId?: string;
+    mobileProxyMode?: string;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -491,6 +505,11 @@ export const api = {
       intercept_rules: input.interceptRules ?? [], // 任务级资产拦截规则
       worker_count: input.workerCount ?? 0,
       remark: input.remark ?? "",
+      app_mode: input.appMode ?? "standard",
+      app_sample_paths: input.appSamplePaths ?? [],
+      app_extra_hosts: input.appExtraHosts ?? [],
+      mobile_device_id: input.mobileDeviceId ?? "",
+      mobile_proxy_mode: input.mobileProxyMode ?? "usb_reverse",
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (
@@ -1920,6 +1939,8 @@ export const api = {
       body?: string;
       path?: string;
       status?: string;
+      source?: string;
+      excludeNoise?: boolean;
       respMin?: string;
       respMax?: string;
       sort?: string;
@@ -1934,6 +1955,8 @@ export const api = {
         (opts.body ? `&body=${encodeURIComponent(opts.body)}` : "") +
         (opts.path ? `&path=${encodeURIComponent(opts.path)}` : "") +
         (opts.status && opts.status !== "all" ? `&status=${encodeURIComponent(opts.status)}` : "") +
+        (opts.source && opts.source !== "all" ? `&source=${encodeURIComponent(opts.source)}` : "") +
+        (opts.excludeNoise ? `&exclude_noise=1` : "") +
         (opts.respMin ? `&resp_min=${encodeURIComponent(opts.respMin)}` : "") +
         (opts.respMax ? `&resp_max=${encodeURIComponent(opts.respMax)}` : "") +
         (opts.sort ? `&sort=${encodeURIComponent(opts.sort)}` : "") +
@@ -2869,6 +2892,164 @@ export const api = {
   imDeleteUser: (id: number) => del<{ ok: boolean }>(`/im/users/${id}`),
   imMessages: (limit = 100) =>
     get<{ messages: IMMessage[] }>(`/im/messages?limit=${limit}`).then((r) => arr(r.messages)),
+
+  // ---- 移动 APP 测试 & CA 接入 ----
+  uploadAppPackage: (
+    scope: "staging" | "task",
+    id: string,
+    file: File,
+    onProgress?: (pct: number) => void,
+  ): Promise<AppUploadResp> => {
+    if (MOCK) {
+      onProgress?.(100);
+      return Promise.resolve({
+        samples: [
+          {
+            sample_path: `drafts/${id}/samples/${file.name}`,
+            name: file.name,
+            size_bytes: file.size,
+            manifest: {
+              sample_name: file.name,
+              sha256: "mock",
+              size_bytes: file.size,
+              platform: file.name.endsWith(".ipa") ? "ios" : "android",
+              file_type: file.name.endsWith(".ipa") ? "ipa" : "apk",
+              package_name: "com.acme.shop",
+              app_name: "Acme Shop",
+              version_name: "3.2.0",
+              debuggable: true,
+              frameworks: ["Flutter"],
+              candidate_domains: ["api.acme-shop.cn"],
+              url_schemes: ["acmeshop"],
+              inspected_at_unix: Math.floor(Date.now() / 1000),
+            },
+          },
+        ],
+        primary: { sample_path: `drafts/${id}/samples/${file.name}`, name: file.name, size_bytes: file.size },
+      });
+    }
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/apps/upload?scope=${scope}&id=${encodeURIComponent(id)}`);
+      const token = getToken();
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && onProgress) {
+          onProgress(Math.round((ev.loaded / ev.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as AppUploadResp);
+          } catch (e) {
+            reject(e);
+          }
+        } else {
+          try {
+            const parsed = JSON.parse(xhr.responseText) as { error?: string };
+            reject(new Error(parsed.error || `上传失败 (${xhr.status})`));
+          } catch {
+            reject(new Error(`上传失败 (${xhr.status}) ${xhr.responseText}`));
+          }
+        }
+      };
+      xhr.onerror = () => reject(new Error("网络错误：安装包上传中断"));
+      xhr.send(fd);
+    });
+  },
+  mobileDevices: () => get<{ devices: MobileDevice[]; adb_warning?: string }>(`/mobile/devices`),
+  connectMobileDevice: (input: { endpoint?: string; pair_endpoint?: string; pair_code?: string }) =>
+    post<{ ok: boolean; message: string }>(`/mobile/devices/connect`, input),
+  deleteMobileDevice: (serial: string) => del<{ ok: boolean }>(`/mobile/devices/${encodeURIComponent(serial)}`),
+  fridaScripts: () => get<{ scripts: FridaScriptSpec[] }>(`/mobile/frida/scripts`).then((r) => arr(r.scripts)),
+  taskMobileState: (taskId: string) => get<TaskMobileState>(`/tasks/${encodeURIComponent(taskId)}/mobile/state`),
+  bindTaskMobileDevice: (taskId: string, serial: string, proxyMode = "usb_reverse") =>
+    post<{ ok: boolean; mobile_device_id: string; proxy_mode: string }>(
+      `/tasks/${encodeURIComponent(taskId)}/mobile/bind`,
+      { serial, proxy_mode: proxyMode },
+    ),
+  unbindTaskMobileDevice: (taskId: string) =>
+    post<{ ok: boolean; unbound: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/unbind`, {}),
+  installTaskMobileApp: (taskId: string) =>
+    post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/install`, {}),
+  pushTaskMobileCA: (taskId: string) =>
+    post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/ca-push`, {}),
+  toggleTaskMobileProxy: (taskId: string, action: "enable_usb" | "enable_lan" | "disable") =>
+    post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/proxy`, { action }),
+  startTaskFridaServer: (taskId: string) =>
+    post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/frida/server`, {}),
+  startTaskFridaSession: (
+    taskId: string,
+    input: { package?: string; mode?: string; modules: string[]; custom_js?: string },
+  ) => post<{ ok: boolean; session: FridaSession }>(`/tasks/${encodeURIComponent(taskId)}/mobile/frida/start`, input),
+  stopTaskFridaSession: (taskId: string, sessionId?: string) =>
+    post<{ ok: boolean; stopped: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/frida/stop`, {
+      session_id: sessionId ?? "",
+    }),
+  taskMobileScreen: (taskId: string) =>
+    get<{
+      png_base64: string;
+      ui_tree?: { elements: import("@/lib/types").MobileUIElement[]; foreground_pkg?: string };
+    }>(`/tasks/${encodeURIComponent(taskId)}/mobile/screen`),
+  runTaskMobileUI: (
+    taskId: string,
+    input: {
+      action: string;
+      x?: number;
+      y?: number;
+      x2?: number;
+      y2?: number;
+      text?: string;
+      key_code?: number;
+      package?: string;
+      activity?: string;
+      uri?: string;
+    },
+  ) => post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/ui`, input),
+  runTaskMobileIPCProbe: (
+    taskId: string,
+    input: {
+      kind: string;
+      package?: string;
+      component?: string;
+      uri?: string;
+      action?: string;
+      extras?: Record<string, string>;
+    },
+  ) => post<MobileIPCProbeResult>(`/tasks/${encodeURIComponent(taskId)}/mobile/ipc-probe`, input),
+  taskMobileSandbox: (taskId: string, path = "", pkg = "") =>
+    get<{ package: string; path: string; entries?: MobileSandboxEntry[]; preview?: string }>(
+      `/tasks/${encodeURIComponent(taskId)}/mobile/sandbox?path=${encodeURIComponent(path)}${
+        pkg ? `&pkg=${encodeURIComponent(pkg)}` : ""
+      }`,
+    ),
+  extractTaskMobileSession: (taskId: string, host = "") =>
+    post<{
+      ok: boolean;
+      count: number;
+      extracted: { host: string; header: string; value: string; exchange_id: string }[];
+    }>(`/tasks/${encodeURIComponent(taskId)}/mobile/extract-session`, { host }),
+  approveTaskMobileScope: (taskId: string, domains: string[]) =>
+    post<{ ok: boolean; added: number }>(`/tasks/${encodeURIComponent(taskId)}/mobile/scope-approve`, { domains }),
+  trafficMobileSetup: () => get<MobileSetupInfo>(`/traffic/mobile-setup`),
+  controlTrafficMobileProxy: (action: "start" | "stop", listenAddr = "0.0.0.0:19899", allowCidrs?: string[]) =>
+    post<MobileSetupInfo>(`/traffic/mobile-proxy`, { action, listen_addr: listenAddr, allow_cidrs: allowCidrs }),
+  trafficPinningAlerts: () => get<{ alerts: PinningAlert[] }>(`/traffic/pinning-alerts`),
+  clearTrafficPinningAlerts: () => del<{ ok: boolean }>(`/traffic/pinning-alerts`),
+  downloadTrafficCA: (fmt: "pem" | "crt" | "android" | "mobileconfig") => {
+    const fallback =
+      fmt === "mobileconfig"
+        ? "blade-mitm-ca.mobileconfig"
+        : fmt === "crt"
+          ? "blade-mitm-ca.crt"
+          : fmt === "android"
+            ? "blade-android.0"
+            : "blade-mitm-ca.pem";
+    return downloadAuthedBlob(`/api/traffic/ca?fmt=${fmt}`, fallback);
+  },
 };
 
 // 带鉴权的文件下载：fetch → blob → 临时 object URL；文件名优先用服务端

@@ -23,6 +23,7 @@ import (
 	"github.com/lin9527ya/blade/enrich"
 	"github.com/lin9527ya/blade/guard"
 	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/mobile"
 	"github.com/lin9527ya/blade/traffic"
 )
 
@@ -92,6 +93,13 @@ type Task struct {
 	LootExecEnabled      bool   `json:"loot_exec_enabled"`      // 任务级后渗透执行 opt-in；默认关
 	// CredentialAttemptBudget 是任务级凭据尝试预算/30分钟：-1=继承全局，0=不限。
 	CredentialAttemptBudget int                    `json:"credential_attempt_budget"`
+	AppMode                 string                 `json:"app_mode"`
+	AppPlatform             string                 `json:"app_platform,omitempty"`
+	AppPackageName          string                 `json:"app_package_name,omitempty"`
+	AppSamplePaths          []string               `json:"app_sample_paths,omitempty"`
+	AppManifestJSON         json.RawMessage        `json:"app_manifest_json,omitempty"`
+	MobileDeviceID          string                 `json:"mobile_device_id,omitempty"`
+	MobileProxyMode         string                 `json:"mobile_proxy_mode,omitempty"`
 	FirstRunAt              int64                  `json:"first_run_at,omitempty"`
 	DeadlineAt              int64                  `json:"deadline_at,omitempty"`
 	Store                   *pgdb.ExplorationStore `json:"-"`
@@ -212,6 +220,13 @@ type taskLifecycleState struct {
 	AssetScopePolicy        string
 	LootExecEnabled         bool
 	CredentialAttemptBudget int
+	AppMode                 string
+	AppPlatform             string
+	AppPackageName          string
+	AppSamplePaths          []string
+	AppManifestJSON         json.RawMessage
+	MobileDeviceID          string
+	MobileProxyMode         string
 	// ActiveRunSeconds 是已结算的实际运行秒数；RunSegmentStartedAt 是当前段起点
 	// （0 = 当前没有在计时）。暂停与排队期间不计入。
 	ActiveRunSeconds    int64
@@ -250,6 +265,13 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		AssetScopePolicy:        t.AssetScopePolicy,
 		LootExecEnabled:         t.LootExecEnabled,
 		CredentialAttemptBudget: t.CredentialAttemptBudget,
+		AppMode:                 t.AppMode,
+		AppPlatform:             t.AppPlatform,
+		AppPackageName:          t.AppPackageName,
+		AppSamplePaths:          append([]string(nil), t.AppSamplePaths...),
+		AppManifestJSON:         append([]byte(nil), t.AppManifestJSON...),
+		MobileDeviceID:          t.MobileDeviceID,
+		MobileProxyMode:         t.MobileProxyMode,
 	}
 }
 
@@ -288,6 +310,13 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CategoryName = state.CategoryName
 	t.LootExecEnabled = state.LootExecEnabled
 	t.CredentialAttemptBudget = state.CredentialAttemptBudget
+	t.AppMode = state.AppMode
+	t.AppPlatform = state.AppPlatform
+	t.AppPackageName = state.AppPackageName
+	t.AppSamplePaths = append([]string(nil), state.AppSamplePaths...)
+	t.AppManifestJSON = append([]byte(nil), state.AppManifestJSON...)
+	t.MobileDeviceID = state.MobileDeviceID
+	t.MobileProxyMode = state.MobileProxyMode
 	t.lifecycleMu.Unlock()
 }
 
@@ -365,6 +394,8 @@ type Manager struct {
 	pg          *pgdb.DB
 	assets      *pgdb.AssetStore
 	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
+	mobile      *mobile.Manager        // Android/iOS ADB & Frida device controller
+	mobileProxy *traffic.MobileProxy   // optional authenticated LAN mobile proxy
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 	execs       *ExecutionService      // P13 长任务执行台账（托管进程活过 agent run）
@@ -792,7 +823,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), closed: make(chan struct{})}
+	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), mobile: mobile.NewManager(""), tasks: map[string]*Task{}, interceptor: intercept.New(pg), closed: make(chan struct{})}
 	// P13：执行服务在建 Manager 时就位（不启后台协程——巡检由 RestoreTaskRuntimes 拉起，
 	// 与"构造器不做后台工作"的既有纪律一致）。
 	m.execs = NewExecutionService(pg, dir)
@@ -1849,10 +1880,15 @@ func (m *Manager) Close() error {
 	m.mu.Lock()
 	pool := m.proxyPool
 	m.proxyPool = nil
+	mobileProxy := m.mobileProxy
+	m.mobileProxy = nil
 	trafficProxy := m.traffic
 	enrichEngine := m.enrich
 	execs := m.execs
 	m.mu.Unlock()
+	if mobileProxy != nil {
+		_ = mobileProxy.Close()
+	}
 	// 托管的长任务进程是 Setsid 出来的，**不会随本进程退出而死**：不在这里整组杀，
 	// 每次重启/更新都会留下还在跑的 nmap/nuclei。必须在关连接池之前杀——reaper 要把
 	// 终态与取消理由写进 tool_executions，池子一关那些写入就变成 "database is closed"。
@@ -1944,6 +1980,13 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		AssetScopePolicy:        pt.AssetScopePolicy,
 		LootExecEnabled:         pt.LootExecEnabled,
 		CredentialAttemptBudget: pt.CredentialAttemptBudget,
+		AppMode:                 pt.AppMode,
+		AppPlatform:             pt.AppPlatform,
+		AppPackageName:          pt.AppPackageName,
+		AppSamplePaths:          append([]string(nil), pt.AppSamplePaths...),
+		AppManifestJSON:         append([]byte(nil), pt.AppManifestJSON...),
+		MobileDeviceID:          pt.MobileDeviceID,
+		MobileProxyMode:         pt.MobileProxyMode,
 		FirstRunAt:              unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic, pt.ID), notify: make(chan struct{}, 1), workerNotify: make(chan struct{}, 1),
 	}
@@ -2698,6 +2741,16 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	if registered == nil {
 		m.forgetTask(id, n)
 		return result, nil
+	}
+	if m.mobile != nil {
+		if serial := m.mobile.UnbindTask(n); serial != "" {
+			_ = m.mobile.ClearProxy(context.Background(), serial)
+		}
+		for _, sess := range m.mobile.ListFridaSessions(n) {
+			if sess.Running {
+				_ = m.mobile.StopFridaSession(sess.ID)
+			}
+		}
 	}
 
 	var fileStage *taskFileDeleteStage

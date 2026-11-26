@@ -50,6 +50,10 @@ type Overrides struct {
 	// EvidenceVerifyModeFn 返回证据闸档位（off/warn/block）。每轮现读，改设置后
 	// 下一次 report_finding 生效。
 	EvidenceVerifyModeFn func() EvidenceVerifyMode
+	// Mobile provides runtime mobile device orchestration & Frida hooks for bound tasks.
+	Mobile MobileBridge
+	// TaskMobileInfo returns condensed mobile sample/device context for planner/worker/mainagent prompts.
+	TaskMobileInfo func(taskID int64) (summary string, hasApp bool, hasDevice bool)
 }
 
 // SetOverrides 用 o **整体替换**当前这套 hook；nil 字段表示把那一项关掉。
@@ -74,6 +78,8 @@ func SetOverrides(o Overrides) {
 	OASTConfig = o.OASTConfig
 	NoiseLevel = o.NoiseLevel
 	EvidenceVerifyModeFn = o.EvidenceVerifyModeFn
+	Mobile = o.Mobile
+	TaskMobileInfo = o.TaskMobileInfo
 }
 
 // CurrentOverrides 返回当前生效的一整套 hook（读取 / 保存 / 恢复用）。
@@ -95,6 +101,8 @@ func CurrentOverrides() Overrides {
 		OASTConfig:                     OASTConfig,
 		NoiseLevel:                     NoiseLevel,
 		EvidenceVerifyModeFn:           EvidenceVerifyModeFn,
+		Mobile:                         Mobile,
+		TaskMobileInfo:                 TaskMobileInfo,
 	}
 }
 

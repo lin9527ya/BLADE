@@ -2651,6 +2651,68 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (m === "POST") throw new Error("演示模式不支持旁路提问");
   }
 
+  // ── 移动 APP 测试与设备工作台（demo mock） ──
+  if (path === "/apps/upload" && m === "POST") {
+    return {
+      samples: [
+        {
+          sample_path: "drafts/mock/samples/demo.apk",
+          name: "demo.apk",
+          size_bytes: 24 * 1024 * 1024,
+          manifest: {
+            sample_name: "demo.apk",
+            sha256: "mock",
+            size_bytes: 24 * 1024 * 1024,
+            platform: "android",
+            file_type: "apk",
+            package_name: "com.acme.shop",
+            app_name: "Acme Shop",
+            version_name: "3.2.0",
+            debuggable: true,
+            frameworks: ["Flutter"],
+            candidate_domains: ["api.acme-shop.cn"],
+            url_schemes: ["acmeshop"],
+            inspected_at_unix: Math.floor(Date.now() / 1000),
+          },
+        },
+      ],
+      primary: {
+        sample_path: "drafts/mock/samples/demo.apk",
+        name: "demo.apk",
+        size_bytes: 24 * 1024 * 1024,
+      },
+    };
+  }
+  if (path === "/mobile/devices" && m === "GET") return { devices: [], adb_warning: "" };
+  if (path === "/mobile/frida/scripts" && m === "GET") return { scripts: [] };
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "state" && m === "GET") {
+    return {
+      task_id: seg[1],
+      app_mode: "standard",
+      app_sample_paths: [],
+      frida_sessions: [],
+      pinning_alerts: [],
+      scope_hosts: [],
+      setup_info: {
+        enabled: false,
+        usb_reverse_cmd: "adb reverse tcp:9899 tcp:9899",
+        usb_proxy_set_cmd: "adb shell settings put global http_proxy 127.0.0.1:9899",
+        usb_proxy_clear_cmd: "adb shell settings delete global http_proxy && adb reverse --remove-all",
+        local_mitm_port: 9899,
+      },
+    };
+  }
+  if (path === "/traffic/mobile-setup" && m === "GET") {
+    return {
+      enabled: false,
+      usb_reverse_cmd: "adb reverse tcp:9899 tcp:9899",
+      usb_proxy_set_cmd: "adb shell settings put global http_proxy 127.0.0.1:9899",
+      usb_proxy_clear_cmd: "adb shell settings delete global http_proxy && adb reverse --remove-all",
+      local_mitm_port: 9899,
+    };
+  }
+  if (path === "/traffic/pinning-alerts" && m === "GET") return { alerts: [] };
+
   // ── 写操作兜底：成功但不落库 ──
   if (["POST", "PUT", "PATCH", "DELETE"].includes(m)) return { ok: true };
 

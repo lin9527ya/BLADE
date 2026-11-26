@@ -57,6 +57,13 @@ export interface Task {
   asset_scope_policy?: "exact" | "target"; // 资产范围策略：target=目标所属全资产(同根/同公司跨根/本任务发现)；exact=仅明确登记
   loot_exec_enabled?: boolean; // 任务级后渗透执行 opt-in；默认关
   credential_attempt_budget?: number; // 任务级凭据尝试预算/30分钟：-1=继承全局，0=不限
+  app_mode?: "standard" | "mobile";
+  app_platform?: string;
+  app_package_name?: string;
+  app_sample_paths?: string[];
+  app_manifest_json?: MobilePackageMetadata;
+  mobile_device_id?: string;
+  mobile_proxy_mode?: string;
 }
 
 export interface TaskRelationRef {
@@ -2093,6 +2100,8 @@ export interface TrafficExchange {
   resp_state?: string;
   req_stored_len?: number;
   resp_stored_len?: number;
+  source?: string;
+  is_noise?: boolean;
 }
 
 export interface TrafficResp {
@@ -2109,6 +2118,7 @@ export interface TrafficResp {
 export interface TrafficDetail {
   req: string;
   resp: string;
+  protobuf_preview?: string;
 }
 
 // One distinct recorded host with its exchange count (target picker).
@@ -3877,4 +3887,204 @@ export interface PlaybookDraft {
 export interface PlaybookMDPreview {
   drafts: PlaybookDraft[];
   warnings: string[];
+}
+
+// ---- 移动 APP 测试与真机设备管理 ----
+export interface MobilePermissionSummary {
+  name: string;
+  dangerous?: boolean;
+}
+
+export interface MobileIntentFilter {
+  actions?: string[];
+  categories?: string[];
+  schemes?: string[];
+  hosts?: string[];
+  path_prefix?: string;
+}
+
+export interface MobileComponentSummary {
+  type: "activity" | "service" | "receiver" | "provider" | string;
+  name: string;
+  exported: boolean;
+  implicit_exported?: boolean;
+  permission?: string;
+  authorities?: string;
+  filters?: MobileIntentFilter[];
+}
+
+export interface MobilePackageMetadata {
+  sample_name: string;
+  sample_path?: string;
+  sha256: string;
+  size_bytes: number;
+  platform: "android" | "ios" | string;
+  file_type: string;
+  package_name: string;
+  app_name?: string;
+  version_name?: string;
+  version_code?: string;
+  min_sdk?: number;
+  target_sdk?: number;
+  debuggable?: boolean;
+  allow_backup?: boolean;
+  cleartext_traffic?: boolean;
+  network_security_config?: string;
+  fairplay_encrypted?: boolean;
+  ats?: { allows_arbitrary_loads: boolean; exception_domains?: string[] };
+  frameworks?: string[];
+  packers?: string[];
+  native_abis?: string[];
+  permissions?: MobilePermissionSummary[];
+  exported_components?: MobileComponentSummary[];
+  url_schemes?: string[];
+  candidate_domains?: string[];
+  candidate_urls?: string[];
+  third_party_sdk_hosts?: string[];
+  hardcoded_hints?: string[];
+  warnings?: string[];
+  inspected_at_unix: number;
+  split_apk_names?: string[];
+  network_sec_trust_user?: boolean;
+}
+
+export interface AppUploadItem {
+  sample_path: string;
+  name: string;
+  size_bytes: number;
+  manifest?: MobilePackageMetadata;
+}
+
+export interface AppUploadResp {
+  samples: AppUploadItem[];
+  primary: AppUploadItem;
+}
+
+export interface MobileDevice {
+  id: string;
+  serial: string;
+  platform: "android" | "ios" | string;
+  connection_type: "usb" | "wifi" | string;
+  endpoint?: string;
+  model?: string;
+  manufacturer?: string;
+  os_version?: string;
+  api_level?: number;
+  abi?: string;
+  state: "online" | "offline" | "unauthorized" | "disconnected" | string;
+  rooted: boolean;
+  root_method?: string;
+  system_ca_status?: "none" | "user" | "system_apex" | "system_legacy" | string;
+  frida_server?: "missing" | "stopped" | "running" | string;
+  frida_pid?: number;
+  proxy_mode?: string;
+  proxy_addr?: string;
+  foreground_pkg?: string;
+  bound_task_id?: number | null;
+  locked_by_task_id?: number;
+  last_seen_at: string;
+}
+
+export interface FridaScriptSpec {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  frameworks?: string[];
+  source: string;
+}
+
+export interface FridaSession {
+  id: string;
+  task_id?: number;
+  serial: string;
+  package: string;
+  mode: string;
+  modules: string[];
+  running: boolean;
+  started_at: string;
+  ended_at?: string;
+  exit_error?: string;
+  log_count: number;
+  last_logs?: string[];
+}
+
+export interface PinningAlert {
+  host: string;
+  reason: string;
+  source: string;
+  count: number;
+  first_seen_unix: number;
+  last_seen_unix: number;
+}
+
+export interface MobileSetupInfo {
+  enabled: boolean;
+  listen_addr?: string;
+  username?: string;
+  password?: string;
+  allow_cidrs?: string[];
+  ca_token?: string;
+  ca_hash_android?: string;
+  usb_reverse_cmd: string;
+  usb_proxy_set_cmd: string;
+  usb_proxy_clear_cmd: string;
+  local_mitm_port: number;
+  recommended_urls?: string[];
+}
+
+export interface MobileUIElement {
+  index: number;
+  class: string;
+  text?: string;
+  content_desc?: string;
+  resource_id?: string;
+  clickable?: boolean;
+  enabled: boolean;
+  editable?: boolean;
+  password?: boolean;
+  bounds: string;
+  center_x: number;
+  center_y: number;
+}
+
+export interface MobileUIDump {
+  serial: string;
+  foreground_pkg?: string;
+  element_count: number;
+  elements: MobileUIElement[];
+  raw_truncated?: boolean;
+}
+
+export interface MobileIPCProbeResult {
+  kind: string;
+  command: string;
+  success: boolean;
+  exit_code: number;
+  output: string;
+  crash_log?: string;
+}
+
+export interface MobileSandboxEntry {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size?: number;
+  preview?: string;
+}
+
+export interface TaskMobileState {
+  task_id: string;
+  app_mode: string;
+  app_platform?: string;
+  app_package_name?: string;
+  app_sample_paths?: string[];
+  manifest?: MobilePackageMetadata;
+  mobile_device_id?: string;
+  proxy_mode?: string;
+  bound_device?: MobileDevice;
+  frida_sessions?: FridaSession[];
+  pinning_alerts?: PinningAlert[];
+  scope_hosts?: string[];
+  setup_info?: MobileSetupInfo;
 }

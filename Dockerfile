@@ -23,6 +23,8 @@ ARG PLAYWRIGHT_CLI_VERSION=0.1.22
 # 重建镜像不会悄悄换掉 agent 手里的 adb/jadx/apktool 行为。
 ARG JADX_VERSION=1.5.6
 ARG APKTOOL_VERSION=2.11.1
+ARG FRIDA_VERSION=16.7.19
+ARG FRIDA_TOOLS_VERSION=13.7.1
 # 上游产物校验值（升级版本时一并更新）。jadx-1.5.6.zip 由发布方在本地下载后核对。
 ARG JADX_SHA256=545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974
 ARG APKTOOL_SHA256=56d59c524fc764263ba8d345754d8daf55b1887818b15cd3b594f555d249e2db
@@ -42,7 +44,8 @@ ARG NODE_SHA256_ARM64=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip xz-utils \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
-      adb openjdk-17-jre-headless \
+      adb apksigner aapt zipalign radare2 libimobiledevice-utils openjdk-17-jre-headless \
+    && pip install --no-cache-dir frida==${FRIDA_VERSION} frida-tools==${FRIDA_TOOLS_VERSION} \
     && rm -rf /var/lib/apt/lists/*
 # Node（官方二进制，按目标架构校验 sha256）。
 RUN set -eux; \

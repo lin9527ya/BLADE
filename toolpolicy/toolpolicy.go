@@ -94,6 +94,19 @@ func targetArgs(input []byte) string {
 	return strings.TrimSpace(in.Target + " " + strings.Join(in.Args, " "))
 }
 
+func mobileIPCSurface(input []byte) string {
+	var in struct {
+		URI string `json:"uri"`
+	}
+	_ = json.Unmarshal(input, &in)
+	u := strings.TrimSpace(in.URI)
+	lower := strings.ToLower(u)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return u
+	}
+	return ""
+}
+
 // Registry 是唯一的动作类工具清单。新增 Action 工具必须加到这里，否则
 // server/toolpolicy_test.go 会失败并指出要改的位置。
 var Registry = []Tool{
@@ -134,6 +147,15 @@ var Registry = []Tool{
 	{Name: "mark_loot_lost", Class: LocalWrite},
 	{Name: "oast_mint", Class: LocalWrite},
 	{Name: "oast_poll", Class: LocalWrite},
+
+	// 移动设备测试工具组：仅当任务绑定移动设备时动态注入，普通 Web 任务不可见。
+	{Name: "mobile_device_status", Class: Read, RequiresSetting: "task_mobile_device"},
+	{Name: "mobile_app_ctrl", Class: Action, InterceptDefault: true, Footprint: true, RequiresSetting: "task_mobile_device"},
+	{Name: "mobile_proxy_ctrl", Class: Action, InterceptDefault: true, RequiresSetting: "task_mobile_device"},
+	{Name: "mobile_ui_explore", Class: Action, InterceptDefault: true, RequiresSetting: "task_mobile_device"},
+	{Name: "mobile_frida_hook", Class: Action, InterceptDefault: true, Footprint: true, RequiresSetting: "task_mobile_device"},
+	{Name: "mobile_rpc_sign", Class: Action, InterceptDefault: true, RequiresSetting: "task_mobile_device"},
+	{Name: "mobile_ipc_probe", Class: Action, Surface: mobileIPCSurface, InterceptDefault: true, Footprint: true, RequiresSetting: "task_mobile_device"},
 }
 
 var byName = func() map[string]Tool {
