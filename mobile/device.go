@@ -43,6 +43,18 @@ type Manager struct {
 	fridaMu      sync.Mutex
 	fridaSess    map[string]*fridaSessionHandle
 	fridaByTask  map[int64]string // taskID -> latest active session ID
+	captureHook  func(taskID int64, payload map[string]any)
+}
+
+// SetCaptureHook registers an optional callback invoked when Frida scripts emit
+// plaintext HTTP/socket capture payloads (tag="http_capture").
+func (m *Manager) SetCaptureHook(fn func(taskID int64, payload map[string]any)) {
+	if m == nil {
+		return
+	}
+	m.fridaMu.Lock()
+	m.captureHook = fn
+	m.fridaMu.Unlock()
 }
 
 // NewManager creates a mobile device manager. Empty adbSocket inherits ADB_SERVER_SOCKET.
@@ -407,13 +419,56 @@ func (m *Manager) SetupProxy(ctx context.Context, serial, mode string, localProx
 		m.mu.Lock()
 		m.reversePorts[serial] = devicePort
 		m.mu.Unlock()
+	case "transparent":
+		// Root-only iptables NAT transparent redirect + QUIC UDP 443 fallback into host transparent SNI bridge.
+		if localProxyPort <= 0 || localProxyPort > 65535 {
+			return "", fmt.Errorf("invalid transparent bridge port %d", localProxyPort)
+		}
+		devicePort := localProxyPort
+		revSpec := fmt.Sprintf("tcp:%d", devicePort)
+		hostSpec := fmt.Sprintf("tcp:%d", localProxyPort)
+		if out, stderr, code, err := m.runADBDevice(ctx, serial, "reverse", revSpec, hostSpec); err != nil || code != 0 {
+			return "", fmt.Errorf("adb reverse transparent bridge failed: %s %s (%v)", out, stderr, err)
+		}
+		iptablesScript := fmt.Sprintf(`
+set -e
+PORT=%d
+iptables -t nat -D OUTPUT -j BLADE_PROXY 2>/dev/null || true
+iptables -t nat -F BLADE_PROXY 2>/dev/null || true
+iptables -t nat -N BLADE_PROXY 2>/dev/null || true
+iptables -t nat -A BLADE_PROXY -o lo -j RETURN
+iptables -t nat -A BLADE_PROXY -d 127.0.0.0/8 -j RETURN
+iptables -t nat -A BLADE_PROXY -d 10.0.0.0/8 -j RETURN
+iptables -t nat -A BLADE_PROXY -d 172.16.0.0/12 -j RETURN
+iptables -t nat -A BLADE_PROXY -d 192.168.0.0/16 -j RETURN
+iptables -t nat -A BLADE_PROXY -p tcp --dport 80 -j REDIRECT --to-ports "$PORT"
+iptables -t nat -A BLADE_PROXY -p tcp --dport 443 -j REDIRECT --to-ports "$PORT"
+iptables -t nat -A OUTPUT -j BLADE_PROXY
+
+iptables -D OUTPUT -j BLADE_QUIC 2>/dev/null || true
+iptables -F BLADE_QUIC 2>/dev/null || true
+iptables -N BLADE_QUIC 2>/dev/null || true
+iptables -A BLADE_QUIC -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable
+iptables -A OUTPUT -j BLADE_QUIC
+echo "transparent_ready:$PORT"
+`, devicePort)
+		out, stderr, code, err := m.runRootShell(ctx, serial, iptablesScript)
+		if err != nil || code != 0 {
+			_, _, _, _ = m.runADBDevice(ctx, serial, "reverse", "--remove", revSpec)
+			return "", fmt.Errorf("transparent iptables redirect failed (root required): %s %s (%v)", strings.TrimSpace(out), strings.TrimSpace(stderr), err)
+		}
+		m.mu.Lock()
+		m.reversePorts[serial] = devicePort
+		m.activeProxy[serial] = "transparent"
+		m.mu.Unlock()
+		return fmt.Sprintf("transparent:127.0.0.1:%d (iptables + QUIC fallback)", devicePort), nil
 	case "lan":
 		if strings.TrimSpace(lanProxyAddr) == "" {
 			return "", fmt.Errorf("lan proxy address required for lan mode")
 		}
 		targetProxy = strings.TrimSpace(lanProxyAddr)
 	default:
-		return "", fmt.Errorf("unsupported proxy mode %q (use usb_reverse or lan)", mode)
+		return "", fmt.Errorf("unsupported proxy mode %q (use usb_reverse, transparent, or lan)", mode)
 	}
 
 	if out, stderr, code, err := m.runADBDevice(ctx, serial, "shell", "settings", "put", "global", "http_proxy", targetProxy); err != nil || code != 0 {
@@ -425,7 +480,7 @@ func (m *Manager) SetupProxy(ctx context.Context, serial, mode string, localProx
 	return targetProxy, nil
 }
 
-// ClearProxy removes adb reverse mappings and restores the prior global http_proxy value.
+// ClearProxy removes adb reverse mappings, transparent iptables chains, and restores global http_proxy.
 func (m *Manager) ClearProxy(ctx context.Context, serial string) error {
 	if err := ValidateDeviceSerial(serial); err != nil {
 		return err
@@ -433,6 +488,7 @@ func (m *Manager) ClearProxy(ctx context.Context, serial string) error {
 	m.mu.Lock()
 	revPort := m.reversePorts[serial]
 	prev, hadPrev := m.origProxy[serial]
+	wasMode := m.activeProxy[serial]
 	delete(m.reversePorts, serial)
 	delete(m.origProxy, serial)
 	delete(m.activeProxy, serial)
@@ -440,6 +496,17 @@ func (m *Manager) ClearProxy(ctx context.Context, serial string) error {
 
 	if revPort > 0 {
 		_, _, _, _ = m.runADBDevice(ctx, serial, "reverse", "--remove", fmt.Sprintf("tcp:%d", revPort))
+	}
+	if wasMode == "transparent" {
+		cleanIPT := `
+iptables -t nat -D OUTPUT -j BLADE_PROXY 2>/dev/null || true
+iptables -t nat -F BLADE_PROXY 2>/dev/null || true
+iptables -t nat -X BLADE_PROXY 2>/dev/null || true
+iptables -D OUTPUT -j BLADE_QUIC 2>/dev/null || true
+iptables -F BLADE_QUIC 2>/dev/null || true
+iptables -X BLADE_QUIC 2>/dev/null || true
+`
+		_, _, _, _ = m.runRootShell(ctx, serial, cleanIPT)
 	}
 	if hadPrev && prev != "" && prev != "null" && prev != ":0" {
 		_, _, _, err := m.runADBDevice(ctx, serial, "shell", "settings", "put", "global", "http_proxy", prev)

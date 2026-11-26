@@ -767,6 +767,7 @@ export default function TrafficPage() {
           <SelectContent>
             <SelectItem value="all">全部来源</SelectItem>
             <SelectItem value="mobile">仅移动端</SelectItem>
+            <SelectItem value="mobile_hook">Frida Hook</SelectItem>
             <SelectItem value="web">仅 Web/工具</SelectItem>
           </SelectContent>
         </Select>

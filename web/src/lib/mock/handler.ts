@@ -2712,6 +2712,25 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
   }
   if (path === "/traffic/pinning-alerts" && m === "GET") return { alerts: [] };
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "ipc-fuzz" && m === "POST") {
+    return {
+      serial: "mock-usb",
+      package: "com.acme.shop",
+      probed_count: 2,
+      accessible_count: 1,
+      denied_count: 1,
+      results: [],
+    };
+  }
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "storage-audit" && m === "POST") {
+    return { serial: "mock-usb", package: "com.acme.shop", sqlite_files: [], findings: [] };
+  }
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "logcat" && m === "GET") {
+    return { serial: "mock-usb", package: "com.acme.shop", scanned_lines: 0, findings: [] };
+  }
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "ui-crawl" && m === "POST") {
+    return { serial: "mock-usb", package: "com.acme.shop", steps_executed: 0, unique_screens_visited: 0, screens: [] };
+  }
 
   // ── 写操作兜底：成功但不落库 ──
   if (["POST", "PUT", "PATCH", "DELETE"].includes(m)) return { ok: true };

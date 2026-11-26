@@ -86,6 +86,11 @@ CAS 防重与水位语义、create/start/pause/resume 动作、固定时区墙�
 实现入口：`im/`（平台适配）、`db/im.go`（数据层）、`server/im_service.go` / `server/im_commands.go`（服务与命令）、
 `server/im_api.go`（管理 API）、`server/principal.go` / `server/assembly.go`（工具面收紧）。
 
+## 移动 APP 安全测试
+
+使用与架构总览：`docs/移动APP安全测试使用与架构说明.md`（Android/iOS 上传与原生 SAST/ELF/Mach-O/Hermes 画像、USB `adb reverse` / LAN 鉴权代理 / Root `iptables` 透明代理、10 套 Frida 模板与 `http_request` RPC 自动签名联动、IPC Fuzz / UI 状态机爬虫 / Root 沙箱与 Logcat 审计）。
+实现入口：`mobile/`（解包、SAST、设备与 Frida/审计控制）、`traffic/mobile_*.go`（`MobileProxy`、`MobileTransparentBridge`、CA 分发与 `mobile_hook` 合成流记录）、`db/mobile.go`、`toolpolicy/toolpolicy.go`（`task_mobile_device` 门控）、`agent/mobile.go` / `agent/tools_http.go`、`server/app_upload.go` / `server/mobile_api.go`。
+
 ## 开发与排障
 
 见根目录 `DEVELOPMENT.md`（构建、测试隔离、CI 门禁）与 `deploy/README.md`

@@ -3913,6 +3913,41 @@ export interface MobileComponentSummary {
   filters?: MobileIntentFilter[];
 }
 
+export interface MobileProvisioningSummary {
+  team_name?: string;
+  app_id?: string;
+  get_task_allow?: boolean;
+  provisions_all_devices?: boolean;
+  associated_domains?: string[];
+  keychain_access_groups?: string[];
+}
+
+export interface BinarySecurityReport {
+  path: string;
+  format: "elf" | "macho" | string;
+  arch?: string;
+  pie: boolean;
+  nx: boolean;
+  stack_canary: boolean;
+  relro?: string;
+  arc?: boolean;
+  fairplay_encrypted?: boolean;
+  rpath?: string;
+  jni_onload?: boolean;
+  jni_functions?: string[];
+}
+
+export interface MobileStaticFinding {
+  id: string;
+  category: string;
+  severity: "high" | "medium" | "low" | "info" | string;
+  masvs?: string;
+  title: string;
+  location?: string;
+  evidence?: string;
+  recommendation?: string;
+}
+
 export interface MobilePackageMetadata {
   sample_name: string;
   sample_path?: string;
@@ -3929,9 +3964,17 @@ export interface MobilePackageMetadata {
   debuggable?: boolean;
   allow_backup?: boolean;
   cleartext_traffic?: boolean;
+  request_legacy_storage?: boolean;
+  task_affinity?: string;
   network_security_config?: string;
   fairplay_encrypted?: boolean;
   ats?: { allows_arbitrary_loads: boolean; exception_domains?: string[] };
+  provisioning?: MobileProvisioningSummary;
+  signature_schemes?: string[];
+  native_binaries?: BinarySecurityReport[];
+  static_findings?: MobileStaticFinding[];
+  sbom_hints?: string[];
+  hermes_bytecode?: boolean;
   frameworks?: string[];
   packers?: string[];
   native_abis?: string[];
@@ -4071,6 +4114,71 @@ export interface MobileSandboxEntry {
   is_dir: boolean;
   size?: number;
   preview?: string;
+}
+
+export interface MobileIPCFuzzResult {
+  kind: string;
+  target: string;
+  command: string;
+  accessible: boolean;
+  denied?: boolean;
+  exit_code: number;
+  summary: string;
+  severity?: string;
+}
+
+export interface MobileIPCFuzzReport {
+  serial: string;
+  package: string;
+  probed_count: number;
+  accessible_count: number;
+  denied_count: number;
+  results: MobileIPCFuzzResult[];
+}
+
+export interface MobileStorageFinding {
+  location: string;
+  kind: string;
+  severity: string;
+  summary: string;
+  evidence?: string;
+}
+
+export interface MobileStorageAuditReport {
+  serial: string;
+  package: string;
+  sqlite_files?: string[];
+  sqlcipher_files?: string[];
+  shared_pref_files?: string[];
+  findings: MobileStorageFinding[];
+}
+
+export interface MobileLogcatFinding {
+  kind: string;
+  severity: string;
+  line: string;
+}
+
+export interface MobileLogcatAuditReport {
+  serial: string;
+  package: string;
+  scanned_lines: number;
+  findings: MobileLogcatFinding[];
+}
+
+export interface MobileUICrawlResult {
+  serial: string;
+  package: string;
+  steps_executed: number;
+  unique_screens_visited: number;
+  traffic_delta?: number;
+  screens: {
+    screen_hash: string;
+    foreground_pkg: string;
+    element_count: number;
+    sample_text?: string;
+    clicked_label?: string;
+  }[];
 }
 
 export interface TaskMobileState {

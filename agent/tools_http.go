@@ -292,17 +292,19 @@ func (j *jarStore) Cookies(u *url.URL) []*http.Cookie {
 // ── 请求执行 ────────────────────────────────────────────────────────────────
 
 type httpArgs struct {
-	URL         string `json:"url"`
-	Method      string `json:"method"`
-	Headers     string `json:"headers"`
-	Body        string `json:"body"`
-	BodyJSON    string `json:"body_json"`
-	Session     string `json:"session"`
-	Follow      *bool  `json:"follow_redirects"`
-	Insecure    *bool  `json:"insecure"`
-	TimeoutSec  int    `json:"timeout"`
-	MaxBodyChar int    `json:"max_body_chars"`
-	BasicAuth   string `json:"basic_auth"`
+	URL               string `json:"url"`
+	Method            string `json:"method"`
+	Headers           string `json:"headers"`
+	Body              string `json:"body"`
+	BodyJSON          string `json:"body_json"`
+	Session           string `json:"session"`
+	Follow            *bool  `json:"follow_redirects"`
+	Insecure          *bool  `json:"insecure"`
+	TimeoutSec        int    `json:"timeout"`
+	MaxBodyChar       int    `json:"max_body_chars"`
+	BasicAuth         string `json:"basic_auth"`
+	MobileSignMethod  string `json:"mobile_sign_method"`
+	MobileSignSession string `json:"mobile_sign_session"`
 }
 
 type httpOutcome struct {
@@ -683,6 +685,36 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	if strings.TrimSpace(a.BodyJSON) != "" {
 		body = a.BodyJSON
 	}
+	// Optional Frida RPC request auto-signing middleware when testing mobile APIs with signatures.
+	if signMethod := strings.TrimSpace(a.MobileSignMethod); signMethod != "" {
+		if Mobile == nil {
+			out.Err = fmt.Errorf("mobile_sign_method=%q 需要已连接移动测试机与活跃 Frida 会话", signMethod)
+			return out
+		}
+		tid := RunInfoFrom(ctx).TaskID
+		if tid <= 0 {
+			tid = t.taskID
+		}
+		hdrMap := map[string]string{}
+		for _, kv := range parseHeaderLines(a.Headers) {
+			hdrMap[kv[0]] = kv[1]
+		}
+		reqSpec := map[string]any{
+			"method":  method,
+			"url":     u.String(),
+			"headers": hdrMap,
+			"body":    body,
+		}
+		rawRes, signErr := Mobile.RPCSign(ctx, tid, strings.TrimSpace(a.MobileSignSession), signMethod, []any{reqSpec})
+		if signErr != nil {
+			out.Err = fmt.Errorf("Frida RPC 签名 (%s) 失败: %w", signMethod, signErr)
+			return out
+		}
+		if err := applyMobileRPCSignResult(rawRes, &u, &a.Headers, &body); err != nil {
+			out.Err = fmt.Errorf("解析 Frida RPC 签名输出失败: %w", err)
+			return out
+		}
+	}
 	var rdr io.Reader
 	if body != "" {
 		rdr = strings.NewReader(body)
@@ -825,17 +857,19 @@ func (t *ToolSet) httpRequest() actool.CoreTool {
 			"大响应：正文超过 max_body_chars 时只回片段，完整内容落盘并在 body_file 给出路径（可用 Bash grep/读取）。\n"+
 			"适合：接口探测、参数 fuzz、回显验证、改价/越权回读；批量探活仍用 http_probe。",
 		obj(map[string]any{
-			"url":              str("绝对 URL（http/https）"),
-			"method":           str("HTTP 方法，默认 GET"),
-			"headers":          str("请求头，每行一条 'Key: Value'（可选）"),
-			"body":             str("请求体原文（可选）"),
-			"body_json":        str("请求体 JSON（可选，设置后自动带 Content-Type: application/json；与 body 二选一）"),
-			"session":          str("会话名：复用任务级 cookie jar（可选）"),
-			"follow_redirects": map[string]any{"type": "boolean", "description": "是否跟随重定向，默认 true"},
-			"insecure":         map[string]any{"type": "boolean", "description": "跳过 TLS 校验，默认 true（对齐 curl -k）"},
-			"timeout":          intp("超时秒数，默认 20，最大 120"),
-			"max_body_chars":   intp("正文内联片段上限（字符），默认 6000，最大 32000"),
-			"basic_auth":       str("Basic 认证 user:pass（可选）"),
+			"url":                 str("绝对 URL（http/https）"),
+			"method":              str("HTTP 方法，默认 GET"),
+			"headers":             str("请求头，每行一条 'Key: Value'（可选）"),
+			"body":                str("请求体原文（可选）"),
+			"body_json":           str("请求体 JSON（可选，设置后自动带 Content-Type: application/json；与 body 二选一）"),
+			"session":             str("会话名：复用任务级 cookie jar（可选）"),
+			"follow_redirects":    map[string]any{"type": "boolean", "description": "是否跟随重定向，默认 true"},
+			"insecure":            map[string]any{"type": "boolean", "description": "跳过 TLS 校验，默认 true（对齐 curl -k）"},
+			"timeout":             intp("超时秒数，默认 20，最大 120"),
+			"max_body_chars":      intp("正文内联片段上限（字符），默认 6000，最大 32000"),
+			"basic_auth":          str("Basic 认证 user:pass（可选）"),
+			"mobile_sign_method":  str("可选：发包前调用活跃 Frida 会话 rpc.exports.<method> 对 {method,url,headers,body} 自动加签/加密"),
+			"mobile_sign_session": str("可选：指定 Frida 会话 ID（省略取任务最近会话）"),
 		}, "url"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a httpArgs

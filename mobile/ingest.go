@@ -156,6 +156,9 @@ func InspectPackage(path string) (*PackageMetadata, error) {
 		if err := inspectAPKArchive(&zr.Reader, meta); err != nil {
 			return nil, err
 		}
+		if fileType == "apk" {
+			InspectAPKSignatures(&zr.Reader, path, meta)
+		}
 	case "xapk", "apkm":
 		meta.Platform = PlatformAndroid
 		if err := inspectXAPKArchive(&zr.Reader, meta); err != nil {
@@ -165,6 +168,8 @@ func InspectPackage(path string) (*PackageMetadata, error) {
 		return nil, fmt.Errorf("unsupported mobile sample extension %q (expected .apk/.aab/.xapk/.ipa)", ext)
 	}
 
+	RunStaticSAST(meta, nil)
+
 	sort.Strings(meta.Frameworks)
 	sort.Strings(meta.Packers)
 	sort.Strings(meta.NativeABIs)
@@ -172,6 +177,7 @@ func InspectPackage(path string) (*PackageMetadata, error) {
 	sort.Strings(meta.CandidateDomains)
 	sort.Strings(meta.CandidateURLs)
 	sort.Strings(meta.ThirdPartySDKHosts)
+	sort.Strings(meta.SBOMHints)
 	if len(meta.CandidateURLs) > maxURLsExtracted {
 		meta.CandidateURLs = meta.CandidateURLs[:maxURLsExtracted]
 	}
@@ -184,6 +190,7 @@ func InspectPackage(path string) (*PackageMetadata, error) {
 func inspectAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	var manifestBytes []byte
 	var netSecBytes []byte
+	var codeBufs []NamedBuffer
 	for _, f := range zr.File {
 		if !isSafeZipEntryName(f.Name) {
 			meta.Warnings = appendUnique(meta.Warnings, "archive contains unsafe path traversal entry: "+f.Name)
@@ -201,9 +208,24 @@ func inspectAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 		case "res/xml/network_security_config.xml", "base/res/xml/network_security_config.xml":
 			netSecBytes, _ = readBoundedZipFile(f, 512<<10)
 		}
-		if strings.HasSuffix(lower, ".dex") || strings.HasSuffix(lower, "index.android.bundle") || strings.HasSuffix(lower, ".json") && strings.Contains(lower, "assets/") {
+		switch {
+		case strings.HasSuffix(lower, ".so") && strings.Contains(lower, "lib/"):
 			if raw, err := readBoundedZipFile(f, maxZIPScanEntryBytes); err == nil && len(raw) > 0 {
-				scanTextBufferForEndpoints(raw, meta)
+				InspectELFBinary(f.Name, raw, meta)
+			}
+		case strings.HasSuffix(lower, ".dex") ||
+			strings.HasSuffix(lower, "index.android.bundle") ||
+			strings.HasSuffix(lower, "global-metadata.dat") ||
+			(strings.Contains(lower, "assets/") && (strings.HasSuffix(lower, ".json") || strings.HasSuffix(lower, ".js") || strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".properties") || strings.HasSuffix(lower, ".yaml"))) ||
+			(strings.HasPrefix(lower, "res/xml/") && strings.HasSuffix(lower, ".xml")):
+			if raw, err := readBoundedZipFile(f, maxZIPScanEntryBytes); err == nil && len(raw) > 0 {
+				if !ExtractHermesStrings(raw, meta) {
+					scanTextBufferForEndpoints(raw, meta)
+					extractSBOMHints(raw, meta)
+				}
+				if len(codeBufs) < 16 {
+					codeBufs = append(codeBufs, NamedBuffer{Name: f.Name, Data: raw})
+				}
 			}
 		}
 	}
@@ -216,6 +238,7 @@ func inspectAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	if len(netSecBytes) > 0 {
 		inspectNetworkSecurityXML(netSecBytes, meta)
 	}
+	RunStaticSAST(meta, codeBufs)
 	return nil
 }
 
@@ -296,10 +319,19 @@ func mergeSubAPKMeta(dst, src *PackageMetadata) {
 	for _, w := range src.Warnings {
 		dst.Warnings = appendUnique(dst.Warnings, w)
 	}
+	for _, sb := range src.SBOMHints {
+		dst.SBOMHints = appendUnique(dst.SBOMHints, sb)
+	}
+	dst.NativeBinaries = append(dst.NativeBinaries, src.NativeBinaries...)
+	dst.StaticFindings = append(dst.StaticFindings, src.StaticFindings...)
+	if src.HermesBytecode {
+		dst.HermesBytecode = true
+	}
 }
 
 func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	var plistBytes []byte
+	var provBytes []byte
 	var appDir string
 	var machOExec []byte
 	var execName string
@@ -313,9 +345,13 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 		scanPackerAndFramework(lower, meta)
 		// Match top-level Payload/<AppName>.app/Info.plist (not embedded frameworks/plugins)
 		parts := strings.Split(f.Name, "/")
-		if len(parts) == 3 && strings.EqualFold(parts[0], "Payload") && strings.HasSuffix(strings.ToLower(parts[1]), ".app") && strings.EqualFold(parts[2], "Info.plist") {
-			appDir = parts[0] + "/" + parts[1] + "/"
-			plistBytes, _ = readBoundedZipFile(f, maxPlistDecodeBytes)
+		if len(parts) == 3 && strings.EqualFold(parts[0], "Payload") && strings.HasSuffix(strings.ToLower(parts[1]), ".app") {
+			if strings.EqualFold(parts[2], "Info.plist") {
+				appDir = parts[0] + "/" + parts[1] + "/"
+				plistBytes, _ = readBoundedZipFile(f, maxPlistDecodeBytes)
+			} else if strings.EqualFold(parts[2], "embedded.mobileprovision") {
+				provBytes, _ = readBoundedZipFile(f, maxPlistDecodeBytes)
+			}
 		}
 	}
 	if len(plistBytes) == 0 {
@@ -324,6 +360,9 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	if err := ParseInfoPlist(plistBytes, meta); err != nil {
 		return err
 	}
+	if len(provBytes) > 0 {
+		_ = ParseMobileProvision(provBytes, meta)
+	}
 	if dictRaw, err := decodePlistExecutableName(plistBytes); err == nil && dictRaw != "" {
 		execName = dictRaw
 	}
@@ -331,11 +370,15 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 		if !isSafeZipEntryName(f.Name) {
 			continue
 		}
+		lower := strings.ToLower(f.Name)
 		if appDir != "" && execName != "" && f.Name == appDir+execName {
 			machOExec, _ = readBoundedZipFile(f, maxZIPScanEntryBytes)
-		} else if strings.HasSuffix(strings.ToLower(f.Name), ".jsbundle") || strings.HasSuffix(strings.ToLower(f.Name), "main.jsbundle") {
+		} else if strings.HasSuffix(lower, ".jsbundle") || strings.HasSuffix(lower, "main.jsbundle") || strings.HasSuffix(lower, "googleservice-info.plist") || strings.HasSuffix(lower, ".plist") && strings.HasPrefix(lower, strings.ToLower(appDir)) {
 			if raw, err := readBoundedZipFile(f, maxZIPScanEntryBytes); err == nil {
-				scanTextBufferForEndpoints(raw, meta)
+				if !ExtractHermesStrings(raw, meta) {
+					scanTextBufferForEndpoints(raw, meta)
+					extractSBOMHints(raw, meta)
+				}
 			}
 		}
 	}
@@ -346,7 +389,9 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 				meta.Warnings = appendUnique(meta.Warnings, "Mach-O binary has cryptid!=0 (FairPlay DRM encrypted); dump-decrypted required for class-dump/reversing")
 			}
 		}
+		InspectMachOBinary(appDir+execName, machOExec, meta)
 		scanTextBufferForEndpoints(machOExec, meta)
+		extractSBOMHints(machOExec, meta)
 	}
 	return nil
 }

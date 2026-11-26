@@ -32,11 +32,28 @@ import { deviceCapabilitySummary, formatSampleBytes, uiElementDisplayLabel } fro
 import type {
   FridaScriptSpec,
   MobileDevice,
+  MobileIPCFuzzReport,
   MobileIPCProbeResult,
+  MobileLogcatAuditReport,
   MobileSandboxEntry,
+  MobileStorageAuditReport,
+  MobileUICrawlResult,
   MobileUIElement,
   TaskMobileState,
 } from "@/lib/types";
+
+function staticSeverityVariant(sev: string): "destructive" | "default" | "outline" {
+  if (sev === "high") return "destructive";
+  if (sev === "medium") return "default";
+  return "outline";
+}
+
+function ipcKindForType(type: string): string {
+  if (type === "provider") return "provider";
+  if (type === "receiver") return "broadcast";
+  if (type === "service") return "service";
+  return "activity";
+}
 
 export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const [state, setState] = React.useState<TaskMobileState | null>(null);
@@ -63,6 +80,9 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const [fridaMode, setFridaMode] = React.useState<"spawn" | "attach">("spawn");
   const [fridaModules, setFridaModules] = React.useState<string[]>(["ssl_unpinning", "crypto_monitor"]);
   const [fridaCustomJS, setFridaCustomJS] = React.useState("");
+  const [rpcMethod, setRpcMethod] = React.useState("");
+  const [rpcArgsText, setRpcArgsText] = React.useState("[]");
+  const [rpcOutput, setRpcOutput] = React.useState("");
 
   // Screen & UI automation
   const [screenPng, setScreenPng] = React.useState("");
@@ -70,14 +90,18 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const [uiElements, setUIElements] = React.useState<MobileUIElement[]>([]);
   const [uiInputText, setUIInputText] = React.useState("");
   const [deeplinkInput, setDeeplinkInput] = React.useState("");
+  const [crawlResult, setCrawlResult] = React.useState<MobileUICrawlResult | null>(null);
 
-  // IPC probe result
+  // IPC probe & fuzz results
   const [ipcResult, setIPCResult] = React.useState<MobileIPCProbeResult | null>(null);
+  const [ipcFuzz, setIPCFuzz] = React.useState<MobileIPCFuzzReport | null>(null);
 
-  // Sandbox browser
+  // Sandbox browser, storage & logcat audits
   const [sandboxPath, setSandboxPath] = React.useState("");
   const [sandboxEntries, setSandboxEntries] = React.useState<MobileSandboxEntry[]>([]);
   const [sandboxPreview, setSandboxPreview] = React.useState("");
+  const [storageAudit, setStorageAudit] = React.useState<MobileStorageAuditReport | null>(null);
+  const [logcatAudit, setLogcatAudit] = React.useState<MobileLogcatAuditReport | null>(null);
 
   const refreshState = React.useCallback(async () => {
     try {
@@ -210,7 +234,22 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
               </CardTitle>
               <CardDescription>支持最大 1024 MiB APK / AAB / XAPK / IPA 流式上传与纯原生解析</CardDescription>
             </div>
-            <div>
+            <div className="flex items-center gap-1.5">
+              {manifest && state?.app_sample_paths?.length ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy !== ""}
+                  onClick={() =>
+                    void runAction("SAST 复检", async () => {
+                      await api.runTaskMobileStaticAudit(taskId);
+                      toast.success("已完成深度静态 SAST/二进制安全体检");
+                    })
+                  }
+                >
+                  深度 SAST 体检
+                </Button>
+              ) : null}
               <input
                 ref={sampleInputRef}
                 type="file"
@@ -252,7 +291,58 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                   {manifest.debuggable && <Badge variant="destructive">debuggable=true</Badge>}
                   {manifest.cleartext_traffic && <Badge variant="destructive">cleartext=true</Badge>}
                   {manifest.fairplay_encrypted && <Badge variant="secondary">FairPlay 加密</Badge>}
+                  {manifest.hermes_bytecode && <Badge variant="secondary">Hermes Bytecode</Badge>}
+                  {manifest.signature_schemes && manifest.signature_schemes.length > 0 && (
+                    <Badge variant="outline">签名: {manifest.signature_schemes.join("/")}</Badge>
+                  )}
                 </div>
+
+                {manifest.static_findings && manifest.static_findings.length > 0 && (
+                  <div className="grid gap-1.5 rounded-md border p-2.5">
+                    <div className="flex items-center justify-between text-xs font-medium">
+                      <span>静态 SAST 与二进制安全审计 ({manifest.static_findings.length})</span>
+                      {manifest.sbom_hints && manifest.sbom_hints.length > 0 && (
+                        <span className="truncate font-mono text-[10px] text-muted-foreground">
+                          SBOM: {manifest.sbom_hints.slice(0, 4).join(", ")}
+                        </span>
+                      )}
+                    </div>
+                    <div className="max-h-40 space-y-1 overflow-auto">
+                      {manifest.static_findings.map((sf) => (
+                        <div
+                          key={`${sf.id}:${sf.location ?? ""}`}
+                          className="flex items-start justify-between gap-2 rounded bg-muted/40 px-2 py-1 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Badge variant={staticSeverityVariant(sf.severity)} className="text-[10px] uppercase">
+                                {sf.severity}
+                              </Badge>
+                              {sf.masvs && (
+                                <span className="font-mono text-[10px] text-muted-foreground">{sf.masvs}</span>
+                              )}
+                              <span className="font-medium">{sf.title}</span>
+                            </div>
+                            {sf.recommendation && (
+                              <div className="mt-0.5 text-[11px] text-muted-foreground">{sf.recommendation}</div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {manifest.native_binaries && manifest.native_binaries.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
+                        {manifest.native_binaries.slice(0, 8).map((nb) => (
+                          <Badge key={nb.path} variant="outline" className="font-mono text-[10px]">
+                            {nb.path.split("/").pop()} [{nb.format.toUpperCase()} {nb.pie ? "PIE" : "NoPIE"}{" "}
+                            {nb.nx ? "NX" : "NoNX"} {nb.stack_canary ? "Canary" : "NoCanary"}
+                            {nb.relro ? ` RELRO:${nb.relro}` : ""}]
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {manifest.warnings && manifest.warnings.length > 0 && (
                   <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-700 dark:text-amber-300">
@@ -335,6 +425,22 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                         >
                           调起 DeepLink
                         </Button>
+                        <Button
+                          size="xs"
+                          variant="secondary"
+                          disabled={!state?.mobile_device_id || busy !== ""}
+                          onClick={() =>
+                            void runAction("批量 IPC Fuzz", async () => {
+                              const rep = await api.runTaskMobileIPCFuzz(taskId, 25);
+                              setIPCFuzz(rep);
+                              toast.success(
+                                `IPC 批量探测完成：共 ${rep.probed_count} 项，可直接访问 ${rep.accessible_count} 项`,
+                              );
+                            })
+                          }
+                        >
+                          一键批量 Fuzz
+                        </Button>
                       </div>
                     </div>
                     <div className="max-h-44 space-y-1 overflow-auto rounded-md border p-2">
@@ -346,19 +452,17 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                             </Badge>
                             {c.name}
                           </div>
-                          {(c.type === "activity" || c.type === "provider" || c.type === "receiver") && (
+                          {(c.type === "activity" ||
+                            c.type === "service" ||
+                            c.type === "provider" ||
+                            c.type === "receiver") && (
                             <Button
                               size="xs"
                               variant="ghost"
                               disabled={!state?.mobile_device_id || busy !== ""}
                               onClick={() =>
                                 void runAction("IPC 探测", async () => {
-                                  const kind =
-                                    c.type === "provider"
-                                      ? "provider"
-                                      : c.type === "receiver"
-                                        ? "broadcast"
-                                        : "activity";
+                                  const kind = ipcKindForType(c.type);
                                   const res = await api.runTaskMobileIPCProbe(taskId, {
                                     kind,
                                     component: kind === "provider" ? undefined : c.name,
@@ -372,6 +476,29 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                               探测
                             </Button>
                           )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {ipcFuzz && (
+                  <div className="rounded-md border bg-muted/30 p-2.5 text-xs">
+                    <div className="mb-1 flex items-center justify-between font-medium">
+                      <span>
+                        批量 IPC 边界测试：已测 {ipcFuzz.probed_count} · 可访问 {ipcFuzz.accessible_count} · 拒绝{" "}
+                        {ipcFuzz.denied_count}
+                      </span>
+                    </div>
+                    <div className="max-h-32 space-y-1 overflow-auto font-mono text-[11px]">
+                      {ipcFuzz.results.map((r) => (
+                        <div key={`${r.kind}:${r.target}`} className="flex items-center justify-between gap-2">
+                          <span className="truncate">
+                            [{r.kind}] {r.target}
+                          </span>
+                          <Badge variant={r.accessible ? "destructive" : "secondary"} className="text-[10px]">
+                            {r.accessible ? "暴露可调起" : "受限/拒绝"}
+                          </Badge>
                         </div>
                       ))}
                     </div>
@@ -485,6 +612,48 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
 
             {state?.frida_sessions && state.frida_sessions.length > 0 && (
               <div className="space-y-2">
+                <div className="grid gap-1.5 rounded-md border bg-muted/20 p-2 text-xs">
+                  <div className="font-medium">Frida rpc.exports 在线签名/函数调用测试</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Input
+                      className="h-7 w-36 font-mono text-xs"
+                      placeholder="导出方法名 (如 calcSign)"
+                      value={rpcMethod}
+                      onChange={(e) => setRpcMethod(e.target.value)}
+                    />
+                    <Input
+                      className="h-7 flex-1 font-mono text-xs"
+                      placeholder='JSON 参数列表 (如 ["arg1"])'
+                      value={rpcArgsText}
+                      onChange={(e) => setRpcArgsText(e.target.value)}
+                    />
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={!rpcMethod.trim() || busy !== ""}
+                      onClick={() =>
+                        void runAction("Frida RPC 调用", async () => {
+                          let args: unknown[] = [];
+                          try {
+                            const parsed = JSON.parse(rpcArgsText || "[]");
+                            if (Array.isArray(parsed)) args = parsed;
+                          } catch {
+                            throw new Error("RPC 参数必须是合法 JSON 数组");
+                          }
+                          const res = await api.invokeTaskMobileFridaRPC(taskId, { method: rpcMethod.trim(), args });
+                          setRpcOutput(res.raw);
+                        })
+                      }
+                    >
+                      执行 RPC
+                    </Button>
+                  </div>
+                  {rpcOutput && (
+                    <pre className="max-h-24 overflow-auto rounded bg-muted/40 p-1.5 font-mono text-[11px]">
+                      {rpcOutput}
+                    </pre>
+                  )}
+                </div>
                 {state.frida_sessions.map((sess) => (
                   <div key={sess.id} className="rounded-md border p-2.5 text-xs">
                     <div className="mb-1 flex items-center justify-between gap-2">
@@ -535,7 +704,35 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                 检查 SharedPreferences 明文 Token、SQLite 本地库、webview 缓存等存储风险
               </CardDescription>
             </div>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
+              <Button
+                size="xs"
+                variant="default"
+                disabled={!bound?.rooted || busy !== ""}
+                onClick={() =>
+                  void runAction("沙箱隐私体检", async () => {
+                    const rep = await api.runTaskMobileStorageAudit(taskId);
+                    setStorageAudit(rep);
+                    toast.success(`沙箱体检完成：发现 ${rep.findings.length} 项存储隐患`);
+                  })
+                }
+              >
+                一键隐私体检
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!state?.mobile_device_id || busy !== ""}
+                onClick={() =>
+                  void runAction("Logcat 审计", async () => {
+                    const rep = await api.taskMobileLogcat(taskId);
+                    setLogcatAudit(rep);
+                    toast.success(`Logcat 扫描 ${rep.scanned_lines} 行，命中 ${rep.findings.length} 项线索`);
+                  })
+                }
+              >
+                Logcat 泄露检查
+              </Button>
               <Button
                 size="xs"
                 variant="outline"
@@ -585,6 +782,34 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
               <pre className="max-h-44 overflow-auto rounded border bg-muted/40 p-2 font-mono text-[11px] whitespace-pre-wrap">
                 {sandboxPreview}
               </pre>
+            )}
+            {storageAudit && (
+              <div className="space-y-1 rounded border bg-muted/20 p-2">
+                <div className="font-medium">
+                  沙箱自动化审计：明文 SQLite {storageAudit.sqlite_files?.length ?? 0} 个 · SQLCipher{" "}
+                  {storageAudit.sqlcipher_files?.length ?? 0} 个 · 风险 {storageAudit.findings.length} 项
+                </div>
+                {storageAudit.findings.map((f) => (
+                  <div
+                    key={`${f.kind}:${f.location}:${f.summary}`}
+                    className="rounded bg-muted/40 px-2 py-1 font-mono text-[11px]"
+                  >
+                    [{f.severity.toUpperCase()}] {f.summary} {f.evidence ? `· ${f.evidence}` : ""}
+                  </div>
+                ))}
+              </div>
+            )}
+            {logcatAudit && (
+              <div className="space-y-1 rounded border bg-muted/20 p-2">
+                <div className="font-medium">Logcat 敏感信息审计（扫描 {logcatAudit.scanned_lines} 行）</div>
+                <div className="max-h-28 space-y-1 overflow-auto font-mono text-[11px]">
+                  {logcatAudit.findings.map((lf) => (
+                    <div key={`${lf.kind}:${lf.line}`} className="truncate rounded bg-muted/40 px-2 py-0.5">
+                      [{lf.severity}/{lf.kind}] {lf.line}
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -768,6 +993,19 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                   </Button>
                   <Button
                     size="xs"
+                    variant="outline"
+                    disabled={!bound.rooted || busy !== ""}
+                    onClick={() =>
+                      void runAction("开启 Root 透明代理", async () => {
+                        const r = await api.toggleTaskMobileProxy(taskId, "enable_transparent");
+                        toast.success(r.message);
+                      })
+                    }
+                  >
+                    透明分流 (iptables+QUIC)
+                  </Button>
+                  <Button
+                    size="xs"
                     variant="ghost"
                     disabled={busy !== ""}
                     onClick={() =>
@@ -850,7 +1088,30 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
               >
                 返回键
               </Button>
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={!state?.mobile_device_id || busy !== ""}
+                onClick={() =>
+                  void runAction("自主界面遍历", async () => {
+                    const rep = await api.runTaskMobileUICrawl(taskId, 12);
+                    setCrawlResult(rep);
+                    toast.success(
+                      `遍历完成：访问 ${rep.unique_screens_visited} 个不重复页面，新增抓包 ${rep.traffic_delta ?? 0} 条`,
+                    );
+                    await refreshScreen();
+                  })
+                }
+              >
+                自主界面遍历 (Crawl)
+              </Button>
             </div>
+            {crawlResult && (
+              <div className="rounded border bg-muted/20 p-2 font-mono text-[11px]">
+                UI 状态机覆盖：执行 {crawlResult.steps_executed} 步 · 不重复页面 {crawlResult.unique_screens_visited} 个
+                · 新增流量 {crawlResult.traffic_delta ?? 0} 条
+              </div>
+            )}
 
             {screenPng && (
               <div className="grid gap-2 sm:grid-cols-2">

@@ -1,10 +1,14 @@
 package traffic
 
 import (
+	"bufio"
+	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -163,4 +167,90 @@ func TestOpenMigratesLegacySQLiteIndex(t *testing.T) {
 		t.Fatalf("Open on legacy SQLite index failed: %v", err)
 	}
 	defer tr.Close()
+}
+
+func TestTransparentBridgeSNIAndSyntheticHookCapture(t *testing.T) {
+	// 1. Verify ExtractTLSSNI parses real ClientHello produced by crypto/tls
+	c1, c2 := net.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		defer c1.Close()
+		tc := tls.Client(c1, &tls.Config{ServerName: "api.transparent-test.cn", InsecureSkipVerify: true})
+		_ = tc.Handshake()
+		errCh <- nil
+	}()
+	rec := make([]byte, 2048)
+	n, _ := c2.Read(rec)
+	_ = c2.Close()
+	<-errCh
+	if sni := ExtractTLSSNI(rec[:n]); sni != "api.transparent-test.cn" {
+		t.Fatalf("ExtractTLSSNI got %q, want api.transparent-test.cn", sni)
+	}
+
+	// 2. Mock upstream MITM listener answering HTTP 200 CONNECT and verify TransparentBridge forwards SNI CONNECT cleanly.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	gotConnect := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		req, err := http.ReadRequest(br)
+		if err == nil {
+			gotConnect <- req.Host
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		}
+	}()
+
+	tr, err := Open(t.TempDir(), ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	bridge, err := NewMobileTransparentBridge(tr, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan struct{})
+	go func() { _ = bridge.StartWithReady(ready) }()
+	<-ready
+	defer bridge.Close()
+
+	cli, err := net.DialTimeout("tcp", bridge.Addr(), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		tc := tls.Client(cli, &tls.Config{ServerName: "flutter.backend.local", InsecureSkipVerify: true})
+		_ = tc.Handshake()
+		_ = tc.Close()
+	}()
+	select {
+	case host := <-gotConnect:
+		if host != "flutter.backend.local:443" {
+			t.Fatalf("expected CONNECT flutter.backend.local:443, got %q", host)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for transparent SNI CONNECT")
+	}
+
+	// 3. Synthetic mobile_hook capture + Count()
+	before, _ := tr.Count()
+	tr.RecordSyntheticMobileExchange("api.hook.local", "POST", "https://api.hook.local/v1/login", 200,
+		"POST /v1/login HTTP/1.1\nHost: api.hook.local", `{"u":"a"}`,
+		"HTTP/1.1 200 OK\nContent-Type: application/json", `{"token":"xyz"}`, "mobile_hook")
+	if after, _ := tr.Count(); after != before+1 {
+		t.Fatalf("expected traffic Count increment after RecordSyntheticMobileExchange (%d -> %d)", before, after)
+	}
+	rows, total, err := tr.Page(PageQuery{Source: "mobile_hook", RespMin: -1, RespMax: -1}, 0, 10)
+	if err != nil || total != 1 || len(rows) != 1 || rows[0].Host != "api.hook.local" {
+		t.Fatalf("unexpected synthetic mobile_hook query result: total=%d rows=%+v err=%v", total, rows, err)
+	}
 }

@@ -21,10 +21,10 @@ func FridaCatalog() []FridaScriptSpec {
 	return []FridaScriptSpec{
 		{
 			ID:          "ssl_unpinning",
-			Name:        "SSL/TLS Pinning Bypass",
+			Name:        "SSL/TLS Pinning Bypass (Java + ProGuard)",
 			Category:    "ssl",
-			Description: "Neutralizes TrustManager, OkHttp CertificatePinner, Conscrypt TrustManagerImpl, and WebViewClient SSL error handlers to enable authorized MITM inspection.",
-			Frameworks:  []string{"Android Java", "OkHttp", "Conscrypt", "WebView"},
+			Description: "Bypass TrustManager, OkHttp CertificatePinner, Conscrypt, NetworkSecurityConfig, HostnameVerifier, and ProGuard-obfuscated SSL pinners.",
+			Frameworks:  []string{"Android Java", "OkHttp", "Conscrypt", "WebView", "ProGuard"},
 			Source: `Java.perform(function() {
   try {
     var X509TM = Java.use('javax.net.ssl.X509TrustManager');
@@ -44,10 +44,29 @@ func FridaCatalog() []FridaScriptSpec {
     send({tag: 'ssl_unpinning', msg: 'SSLContext hooked'});
   } catch (e) {}
   try {
+    var HttpsURLConnection = Java.use('javax.net.ssl.HttpsURLConnection');
+    var AllowAllHV = Java.registerClass({
+      name: 'com.blade.AllowAllHV',
+      implements: [Java.use('javax.net.ssl.HostnameVerifier')],
+      methods: { verify: function(host, sess) { return true; } }
+    });
+    HttpsURLConnection.setDefaultHostnameVerifier.implementation = function(hv) {
+      return this.setDefaultHostnameVerifier(AllowAllHV.$new());
+    };
+    HttpsURLConnection.setHostnameVerifier.implementation = function(hv) {
+      return this.setHostnameVerifier(AllowAllHV.$new());
+    };
+  } catch (e) {}
+  try {
     var CertificatePinner = Java.use('okhttp3.CertificatePinner');
     CertificatePinner.check.overload('java.lang.String', 'java.util.List').implementation = function(host, certs) {
-      send({tag: 'ssl_unpinning', msg: 'OkHttp check bypassed: ' + host});
+      send({tag: 'ssl_unpinning', msg: 'OkHttp3 check bypassed: ' + host});
     };
+    try {
+      CertificatePinner['check$okhttp'].implementation = function(host, certs) {
+        send({tag: 'ssl_unpinning', msg: 'OkHttp4 check$okhttp bypassed: ' + host});
+      };
+    } catch (e2) {}
   } catch (e) {}
   try {
     var TrustManagerImpl = Java.use('com.android.org.conscrypt.TrustManagerImpl');
@@ -62,14 +81,174 @@ func FridaCatalog() []FridaScriptSpec {
       handler.proceed();
     };
   } catch (e) {}
+  // Dynamic ProGuard/R8 HostnameVerifier & CertificatePinner signature scan fallback
+  setTimeout(function() {
+    Java.perform(function() {
+      try {
+        var HV = Java.use('javax.net.ssl.HostnameVerifier');
+        Java.enumerateLoadedClasses({
+          onMatch: function(name) {
+            if (name.indexOf('java.') === 0 || name.indexOf('android.') === 0 || name.indexOf('com.blade.') === 0) return;
+            try {
+              var cls = Java.use(name);
+              if (HV.class.isAssignableFrom(cls.class) && cls.verify) {
+                cls.verify.implementation = function(h, s) { return true; };
+              }
+            } catch (e) {}
+          },
+          onComplete: function() { send({tag: 'ssl_unpinning', msg: 'Dynamic HostnameVerifier scan done'}); }
+        });
+      } catch (e) {}
+    });
+  }, 1500);
 });`,
 		},
 		{
+			ID:          "flutter_ssl_bypass",
+			Name:        "Flutter BoringSSL Bypass (Cross-Arch)",
+			Category:    "ssl",
+			Description: "Locates ssl_crypto_x509_session_verify_cert_chain in libflutter.so via ARM64/ARMv7/x86_64 pattern heuristics and forces TLS verification pass.",
+			Frameworks:  []string{"Flutter", "BoringSSL"},
+			Source: `(function() {
+  var hooked = false;
+  function tryPatchFlutter() {
+    if (hooked) return;
+    var m = Process.findModuleByName('libflutter.so');
+    if (!m) return;
+    // Try exported or internal symbol match first
+    var exps = Module.enumerateExportsSync('libflutter.so').concat(Module.enumerateSymbolsSync('libflutter.so'));
+    for (var i = 0; i < exps.length; i++) {
+      if (exps[i].name.indexOf('ssl_crypto_x509_session_verify_cert_chain') !== -1 ||
+          exps[i].name.indexOf('ssl_verify_peer_cert') !== -1) {
+        Interceptor.replace(exps[i].address, new NativeCallback(function() { return 1; }, 'int', ['pointer', 'pointer']));
+        hooked = true;
+        send({tag: 'flutter_ssl', status: 'hooked_symbol', sym: exps[i].name, addr: exps[i].address.toString()});
+        return;
+      }
+    }
+    var patterns = Process.arch === 'arm64'
+      ? ['FF 03 05 D1 FC 6F 0F A9 F8 5F 10 A9 F6 57 11 A9 F4 4F 12 A9 FD 7B 13 A9 FD C3 04 91', 'F6 57 BD A9 F4 4F 01 A9 FD 7B 02 A9 FD 83 00 91']
+      : Process.arch === 'arm'
+        ? ['2D E9 F0 4F 85 B0', '2D E9 F8 4F 83 B0']
+        : ['55 41 57 41 56 41 55 41 54 53 48 83 EC'];
+    var ranges = m.enumerateRanges('r-x');
+    for (var r = 0; r < ranges.length && !hooked; r++) {
+      for (var p = 0; p < patterns.length && !hooked; p++) {
+        try {
+          var hits = Memory.scanSync(ranges[r].base, ranges[r].size, patterns[p]);
+          if (hits.length > 0 && hits.length <= 4) {
+            Interceptor.attach(hits[0].address, {
+              onLeave: function(retval) { retval.replace(0x1); }
+            });
+            hooked = true;
+            send({tag: 'flutter_ssl', status: 'hooked_pattern', arch: Process.arch, addr: hits[0].address.toString()});
+            return;
+          }
+        } catch (e) {}
+      }
+    }
+    send({tag: 'flutter_ssl', status: 'loaded_unmatched', arch: Process.arch, base: m.base.toString(), size: m.size});
+  }
+  setTimeout(tryPatchFlutter, 1200);
+  setTimeout(tryPatchFlutter, 3500);
+})();`,
+		},
+		{
+			ID:          "native_tls_hook",
+			Name:        "Native TLS Unpinning & Socket Plaintext Capture",
+			Category:    "network",
+			Description: "Hooks libssl.so / libboringssl.so SSL_CTX_set_verify and captures HTTP requests/responses via SSL_write/SSL_read directly into BLADE Traffic.",
+			Frameworks:  []string{"Native C/C++", "Cronet", "BoringSSL", "OpenSSL"},
+			Source: `(function() {
+  var libs = ['libssl.so', 'libboringssl.so', 'libcronet.so'];
+  function readBufStr(ptr, len) {
+    try { return ptr.readUtf8String(Math.min(len, 16384)); } catch (e) { return ''; }
+  }
+  function parseHTTPReqLine(txt) {
+    var m = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s]+)\s+HTTP\/[0-9.]+\r\n([\s\S]*)/i.exec(txt);
+    if (!m) return null;
+    var hostMatch = /\r\nHost:\s*([^\r\n]+)/i.exec(txt) || /^Host:\s*([^\r\n]+)/im.exec(m[3]);
+    var host = hostMatch ? hostMatch[1].trim() : '';
+    var idx = txt.indexOf('\r\n\r\n');
+    return {
+      method: m[1].toUpperCase(),
+      url: host ? ('https://' + host + m[2]) : m[2],
+      host: host.split(':')[0],
+      head: idx > 0 ? txt.slice(0, idx) : txt,
+      body: idx > 0 ? txt.slice(idx + 4) : ''
+    };
+  }
+  var pendingReq = {};
+  libs.forEach(function(lib) {
+    var mod = Process.findModuleByName(lib);
+    if (!mod) return;
+    var setCustom = Module.findExportByName(lib, 'SSL_CTX_set_custom_verify');
+    if (setCustom) {
+      Interceptor.attach(setCustom, {
+        onEnter: function(args) {
+          args[1] = ptr(0);
+          args[2] = new NativeCallback(function(ssl, alert) { return 0; }, 'int', ['pointer', 'pointer']);
+        }
+      });
+      send({tag: 'native_tls', msg: 'Hooked SSL_CTX_set_custom_verify in ' + lib});
+    }
+    var setVerify = Module.findExportByName(lib, 'SSL_CTX_set_verify');
+    if (setVerify) {
+      Interceptor.attach(setVerify, { onEnter: function(args) { args[1] = ptr(0); args[2] = ptr(0); } });
+    }
+    var sslWrite = Module.findExportByName(lib, 'SSL_write');
+    if (sslWrite) {
+      Interceptor.attach(sslWrite, {
+        onEnter: function(args) {
+          var n = args[2].toInt32();
+          if (n <= 12) return;
+          var s = readBufStr(args[1], n);
+          var req = parseHTTPReqLine(s);
+          if (req) {
+            pendingReq[args[0].toString()] = req;
+          }
+        }
+      });
+    }
+    var sslRead = Module.findExportByName(lib, 'SSL_read');
+    if (sslRead) {
+      Interceptor.attach(sslRead, {
+        onEnter: function(args) { this.ssl = args[0].toString(); this.buf = args[1]; },
+        onLeave: function(retval) {
+          var n = retval.toInt32();
+          var req = pendingReq[this.ssl];
+          if (n > 12 && req) {
+            var s = readBufStr(this.buf, n);
+            var sm = /^HTTP\/[0-9.]+\s+(\d{3})/i.exec(s);
+            if (sm) {
+              var idx = s.indexOf('\r\n\r\n');
+              delete pendingReq[this.ssl];
+              send({
+                tag: 'http_capture',
+                source: 'mobile_hook',
+                host: req.host,
+                method: req.method,
+                url: req.url,
+                status: parseInt(sm[1], 10),
+                req_head: req.head,
+                req_body: req.body,
+                resp_head: idx > 0 ? s.slice(0, idx) : s,
+                resp_body: idx > 0 ? s.slice(idx + 4) : ''
+              });
+            }
+          }
+        }
+      });
+    }
+  });
+})();`,
+		},
+		{
 			ID:          "anti_detection",
-			Name:        "Environment Check Bypass (Root/Debug)",
+			Name:        "Environment Check Bypass (Java + Native libc)",
 			Category:    "bypass",
-			Description: "Masks common root file probes, Debug.isDebuggerConnected, and build tags during authorized dynamic assessment.",
-			Frameworks:  []string{"Android Java"},
+			Description: "Masks root checks, Debug flags, Magisk packages, /proc/self/maps frida entries, TracerPid, and system props.",
+			Frameworks:  []string{"Android Java", "Native libc"},
 			Source: `Java.perform(function() {
   try {
     var Debug = Java.use('android.os.Debug');
@@ -77,24 +256,51 @@ func FridaCatalog() []FridaScriptSpec {
   } catch (e) {}
   try {
     var File = Java.use('java.io.File');
-    var origExists = File.exists.implementation;
-    var rootPaths = ['/su', '/sbin/su', '/system/bin/su', '/system/xbin/su', '/data/local/xbin/su', '/data/local/bin/su'];
+    var origExists = File.exists;
+    var badPaths = ['/su', '/sbin/su', '/system/bin/su', '/system/xbin/su', '/data/local/xbin/su', '/data/local/bin/su', '/sbin/.magisk', '/data/local/tmp/frida-server'];
     File.exists.implementation = function() {
       var p = this.getAbsolutePath();
-      for (var i = 0; i < rootPaths.length; i++) {
-        if (p === rootPaths[i]) return false;
+      for (var i = 0; i < badPaths.length; i++) {
+        if (p === badPaths[i]) return false;
       }
       return origExists.call(this);
     };
   } catch (e) {}
-  send({tag: 'anti_detection', msg: 'Environment hooks ready'});
-});`,
+  send({tag: 'anti_detection', msg: 'Java environment hooks active'});
+});
+(function() {
+  var strstr = Module.findExportByName('libc.so', 'strstr');
+  if (strstr) {
+    Interceptor.attach(strstr, {
+      onEnter: function(args) {
+        this.hide = false;
+        try {
+          var n = args[1].readUtf8String();
+          if (n && (n.indexOf('frida') !== -1 || n.indexOf('LIBFRIDA') !== -1 || n.indexOf('magisk') !== -1)) {
+            this.hide = true;
+          }
+        } catch (e) {}
+      },
+      onLeave: function(retval) { if (this.hide) retval.replace(ptr(0)); }
+    });
+  }
+  var propGet = Module.findExportByName('libc.so', '__system_property_get');
+  if (propGet) {
+    Interceptor.attach(propGet, {
+      onEnter: function(args) { this.name = args[0].readUtf8String(); this.val = args[1]; },
+      onLeave: function() {
+        if (this.name === 'ro.debuggable') this.val.writeUtf8String('0');
+        else if (this.name === 'ro.secure') this.val.writeUtf8String('1');
+      }
+    });
+  }
+})();`,
 		},
 		{
 			ID:          "crypto_monitor",
 			Name:        "Crypto & Signature Monitor",
 			Category:    "crypto",
-			Description: "Logs javax.crypto.Cipher keys/IVs/plaintext and MessageDigest inputs to inspect custom API request signing.",
+			Description: "Logs javax.crypto.Cipher keys/IVs/plaintext and MessageDigest/Mac inputs to inspect custom API request signing.",
 			Frameworks:  []string{"Android Java", "javax.crypto"},
 			Source: `Java.perform(function() {
   function toHex(arr) {
@@ -152,9 +358,9 @@ func FridaCatalog() []FridaScriptSpec {
 		},
 		{
 			ID:          "webview_bridge",
-			Name:        "WebView JS Bridge & URL Monitor",
+			Name:        "WebView JSBridge & Security Auditor",
 			Category:    "webview",
-			Description: "Logs loadUrl calls and addJavascriptInterface bridges exposed to WebViews.",
+			Description: "Audits loadUrl, evaluateJavascript, WebSettings file access flags, and enumerates @JavascriptInterface methods exposed to JS.",
 			Frameworks:  []string{"Android WebView"},
 			Source: `Java.perform(function() {
   try {
@@ -164,23 +370,97 @@ func FridaCatalog() []FridaScriptSpec {
       return this.loadUrl(u);
     };
     WebView.addJavascriptInterface.implementation = function(obj, name) {
-      send({tag: 'webview', op: 'addJavascriptInterface', name: name, cls: obj.getClass().getName()});
+      var methods = [];
+      try {
+        var ms = obj.getClass().getMethods();
+        for (var i = 0; i < ms.length && methods.length < 30; i++) {
+          if (ms[i].getDeclaringClass().getName() === obj.getClass().getName()) {
+            methods.push(ms[i].getName());
+          }
+        }
+      } catch (e) {}
+      send({tag: 'webview', op: 'addJavascriptInterface', name: name, cls: obj.getClass().getName(), methods: methods});
       return this.addJavascriptInterface(obj, name);
+    };
+    var WebSettings = Java.use('android.webkit.WebSettings');
+    ['setJavaScriptEnabled', 'setAllowFileAccess', 'setAllowFileAccessFromFileURLs', 'setAllowUniversalAccessFromFileURLs'].forEach(function(fn) {
+      try {
+        WebSettings[fn].implementation = function(b) {
+          send({tag: 'webview', op: fn, value: b});
+          return this[fn](b);
+        };
+      } catch (e) {}
+    });
+  } catch (e) {}
+});`,
+		},
+		{
+			ID:          "storage_crypto_audit",
+			Name:        "Storage, SQLCipher & Keystore Runtime Auditor",
+			Category:    "storage",
+			Description: "Monitors SharedPreferences writes, SQLite/SQLCipher database opens (passphrases), and Android Keystore security parameters.",
+			Frameworks:  []string{"Android Storage", "SQLCipher", "Keystore"},
+			Source: `Java.perform(function() {
+  try {
+    var Ed = Java.use('android.app.SharedPreferencesImpl$EditorImpl');
+    Ed.putString.implementation = function(k, v) {
+      send({tag: 'storage', op: 'SharedPrefs.putString', key: k, val_len: v ? v.length : 0, preview: v ? String(v).slice(0, 64) : ''});
+      return this.putString(k, v);
+    };
+  } catch (e) {}
+  try {
+    var SC = Java.use('net.sqlcipher.database.SQLiteDatabase');
+    SC.openOrCreateDatabase.overload('java.lang.String', 'java.lang.String', 'net.sqlcipher.database.SQLiteDatabase$CursorFactory').implementation = function(path, pass, f) {
+      send({tag: 'storage', op: 'SQLCipher.open', path: path, passphrase_len: pass ? pass.length : 0});
+      return this.openOrCreateDatabase(path, pass, f);
+    };
+  } catch (e) {}
+  try {
+    var KGB = Java.use('android.security.keystore.KeyGenParameterSpec$Builder');
+    KGB.build.implementation = function() {
+      var spec = this.build();
+      send({tag: 'keystore', op: 'KeyGenSpec.build', alias: spec.getKeystoreAlias(), user_auth_req: spec.isUserAuthenticationRequired()});
+      return spec;
     };
   } catch (e) {}
 });`,
 		},
 		{
-			ID:          "flutter_ssl_bypass",
-			Name:        "Flutter BoringSSL Bypass (arm64 heuristic)",
-			Category:    "ssl",
-			Description: "Attempts pattern scan on libflutter.so ssl_crypto_x509_session_verify_cert_chain on arm64-v8a devices.",
-			Frameworks:  []string{"Flutter"},
-			Source: `setTimeout(function() {
-  var m = Process.findModuleByName('libflutter.so');
-  if (!m) { send({tag: 'flutter_ssl', msg: 'libflutter.so not loaded'}); return; }
-  send({tag: 'flutter_ssl', msg: 'libflutter.so base=' + m.base + ' size=' + m.size});
-}, 1500);`,
+			ID:          "flag_secure_bypass",
+			Name:        "FLAG_SECURE Screenshot Unlocker",
+			Category:    "bypass",
+			Description: "Clears WindowManager FLAG_SECURE so authorized workbench UI snapshots can inspect protected login/payment screens.",
+			Frameworks:  []string{"Android UI"},
+			Source: `Java.perform(function() {
+  try {
+    var Win = Java.use('android.view.Window');
+    Win.setFlags.implementation = function(flags, mask) {
+      flags = flags & ~0x2000;
+      mask = mask & ~0x2000;
+      return this.setFlags(flags, mask);
+    };
+    Win.addFlags.implementation = function(flags) {
+      return this.addFlags(flags & ~0x2000);
+    };
+    send({tag: 'flag_secure', msg: 'Window FLAG_SECURE cleared'});
+  } catch (e) {}
+});`,
+		},
+		{
+			ID:          "socket_traffic_tap",
+			Name:        "Non-Proxy Direct Socket Telemetry",
+			Category:    "network",
+			Description: "Logs Java Socket / Native libc connect() destinations to catch direct TCP connections bypassing global http_proxy.",
+			Frameworks:  []string{"Java Socket", "Native libc"},
+			Source: `Java.perform(function() {
+  try {
+    var Sock = Java.use('java.net.Socket');
+    Sock.connect.overload('java.net.SocketAddress', 'int').implementation = function(addr, to) {
+      send({tag: 'socket', op: 'JavaSocket.connect', addr: addr ? addr.toString() : ''});
+      return this.connect(addr, to);
+    };
+  } catch (e) {}
+});`,
 		},
 	}
 }
@@ -461,7 +741,22 @@ func (m *Manager) pumpFridaStdout(h *fridaSessionHandle, r io.Reader, readyCh ch
 			}
 			continue
 		}
-		h.appendLog(strings.TrimPrefix(line, "MSG:"))
+		rawMsg := strings.TrimPrefix(line, "MSG:")
+		h.appendLog(rawMsg)
+		var env struct {
+			Type    string         `json:"type"`
+			Payload map[string]any `json:"payload"`
+		}
+		if json.Unmarshal([]byte(rawMsg), &env) == nil && env.Payload != nil {
+			if tag, _ := env.Payload["tag"].(string); tag == "http_capture" {
+				m.fridaMu.Lock()
+				cb := m.captureHook
+				m.fridaMu.Unlock()
+				if cb != nil {
+					cb(h.info.TaskID, env.Payload)
+				}
+			}
+		}
 	}
 	if !sentReady {
 		readyCh <- fmt.Errorf("frida bridge ended before attachment (ensure frida Python package and device frida-server are installed)")

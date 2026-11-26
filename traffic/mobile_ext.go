@@ -11,6 +11,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -642,4 +643,54 @@ func ioReadFile(path string) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, 1<<20))
+}
+
+// proxyHostPort returns the normalized host:port target of Traffic's HTTP proxy listener.
+func (t *Traffic) proxyHostPort() string {
+	if t == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(t.ProxyAddr())
+	if strings.Contains(raw, "://") {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" {
+			return u.Host
+		}
+	}
+	raw = strings.TrimPrefix(raw, "http://")
+	raw = strings.TrimPrefix(raw, "https://")
+	return strings.TrimSuffix(raw, "/")
+}
+
+// RecordSyntheticMobileExchange records plaintext HTTP/HTTPS captures from Frida hooks
+// (e.g. native SSL_write/SSL_read or OkHttp interceptors bypassing proxy paths).
+func (t *Traffic) RecordSyntheticMobileExchange(host, method, rawURL string, status int, reqHead, reqBody, respHead, respBody, source string) {
+	if t == nil || t.db == nil || strings.TrimSpace(rawURL) == "" {
+		return
+	}
+	if source == "" {
+		source = "mobile_hook"
+	}
+	if method == "" {
+		method = "GET"
+	}
+	tmpl := "/"
+	if u, err := url.Parse(rawURL); err == nil {
+		if host == "" {
+			host = u.Hostname()
+		}
+		if u.EscapedPath() != "" {
+			tmpl = db.TemplatePath(u.EscapedPath())
+		}
+	}
+	host = hostOnly(host)
+	ct := "text/plain"
+	for _, ln := range strings.Split(respHead, "\n") {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(ln)), "content-type:") {
+			_, v, _ := strings.Cut(ln, ":")
+			ct = strings.TrimSpace(v)
+			break
+		}
+	}
+	t.recordSyntheticExchange(host, strings.ToUpper(method), tmpl, rawURL, status, ct, source,
+		reqHead, []byte(reqBody), respHead, []byte(respBody))
 }

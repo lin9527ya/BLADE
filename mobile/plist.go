@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"bytes"
+	"debug/macho"
 	"encoding/binary"
 	"encoding/xml"
 	"fmt"
@@ -170,6 +171,139 @@ func CheckMachOFairPlayEncrypted(raw []byte) (encrypted bool, detected bool) {
 		off += cmdsize
 	}
 	return false, true
+}
+
+// ParseMobileProvision extracts embedded XML entitlements & team metadata from iOS embedded.mobileprovision.
+func ParseMobileProvision(raw []byte, meta *PackageMetadata) error {
+	start := bytes.Index(raw, []byte("<?xml"))
+	if start < 0 {
+		start = bytes.Index(raw, []byte("<plist"))
+	}
+	end := bytes.LastIndex(raw, []byte("</plist>"))
+	if start < 0 || end <= start {
+		return fmt.Errorf("plist payload not found in mobileprovision")
+	}
+	plistSlice := raw[start : end+len("</plist>")]
+	root, err := parseXMLPlist(plistSlice)
+	if err != nil {
+		return err
+	}
+	dict, ok := root.(map[string]any)
+	if !ok {
+		return fmt.Errorf("mobileprovision root is not dict")
+	}
+	prov := &ProvisioningSummary{}
+	if tn, ok := dict["TeamName"].(string); ok {
+		prov.TeamName = strings.TrimSpace(tn)
+	}
+	if all, ok := dict["ProvisionsAllDevices"].(bool); ok {
+		prov.ProvisionsAll = all
+	}
+	if ents, ok := dict["Entitlements"].(map[string]any); ok {
+		if aid, ok := ents["application-identifier"].(string); ok {
+			prov.AppID = strings.TrimSpace(aid)
+		}
+		if gta, ok := ents["get-task-allow"].(bool); ok {
+			prov.GetTaskAllow = gta
+			if gta {
+				meta.Warnings = appendUnique(meta.Warnings, "iOS embedded.mobileprovision sets get-task-allow=true (debugger attachment permitted)")
+			}
+		}
+		if kags, ok := ents["keychain-access-groups"].([]any); ok {
+			for _, v := range kags {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					prov.KeychainAccessGroup = appendUnique(prov.KeychainAccessGroup, strings.TrimSpace(s))
+				}
+			}
+		}
+		if doms, ok := ents["com.apple.developer.associated-domains"].([]any); ok {
+			for _, v := range doms {
+				s, ok := v.(string)
+				if !ok || strings.TrimSpace(s) == "" {
+					continue
+				}
+				s = strings.TrimSpace(s)
+				prov.AssociatedDomains = appendUnique(prov.AssociatedDomains, s)
+				// Extract bare domain from applinks:api.example.com / webcredentials:...
+				_, hostPart, hasPrefix := strings.Cut(s, ":")
+				if !hasPrefix {
+					hostPart = s
+				}
+				if h := sanitizeCandidateHost(hostPart); h != "" {
+					meta.CandidateDomains = appendUnique(meta.CandidateDomains, h)
+				}
+			}
+		}
+	}
+	meta.Provisioning = prov
+	return nil
+}
+
+// InspectMachOBinary performs pure-Go Mach-O binary hardening and ObjC/Swift endpoint inspection.
+func InspectMachOBinary(path string, raw []byte, meta *PackageMetadata) {
+	if len(raw) < 32 {
+		return
+	}
+	const (
+		machoFlagAllowStackExec = 0x20000
+		machoFlagPIE            = 0x200000
+	)
+	inspectSlice := func(mf *macho.File, enc *bool) BinarySecurityReport {
+		rep := BinarySecurityReport{
+			Path:              path,
+			Format:            "macho",
+			Arch:              mf.Cpu.String(),
+			PIE:               mf.Flags&machoFlagPIE != 0,
+			NX:                mf.Flags&machoFlagAllowStackExec == 0,
+			FairPlayEncrypted: enc,
+		}
+		var arc bool
+		if syms, err := mf.ImportedSymbols(); err == nil {
+			for _, s := range syms {
+				switch s {
+				case "_objc_release", "_swift_release":
+					arc = true
+				case "___stack_chk_fail", "__stack_chk_fail":
+					rep.StackCanary = true
+				}
+			}
+		}
+		if mf.Symtab != nil {
+			for _, s := range mf.Symtab.Syms {
+				switch s.Name {
+				case "_objc_release", "_swift_release":
+					arc = true
+				case "___stack_chk_fail", "__stack_chk_fail":
+					rep.StackCanary = true
+				}
+			}
+		}
+		rep.ARC = &arc
+		for _, secName := range []string{"__cstring", "__objc_methname", "__objc_classname"} {
+			if sec := mf.Section(secName); sec != nil && sec.Size > 0 && sec.Size <= 16<<20 {
+				if data, err := sec.Data(); err == nil && len(data) > 0 {
+					scanTextBufferForEndpoints(data, meta)
+					extractSBOMHints(data, meta)
+				}
+			}
+		}
+		return rep
+	}
+
+	var encPtr *bool
+	if enc, ok := CheckMachOFairPlayEncrypted(raw); ok {
+		encPtr = &enc
+	}
+	if ff, err := macho.NewFatFile(bytes.NewReader(raw)); err == nil && len(ff.Arches) > 0 {
+		defer ff.Close()
+		rep := inspectSlice(ff.Arches[0].File, encPtr)
+		meta.NativeBinaries = append(meta.NativeBinaries, rep)
+		return
+	}
+	if mf, err := macho.NewFile(bytes.NewReader(raw)); err == nil {
+		defer mf.Close()
+		meta.NativeBinaries = append(meta.NativeBinaries, inspectSlice(mf, encPtr))
+	}
 }
 
 func parseXMLPlist(raw []byte) (any, error) {

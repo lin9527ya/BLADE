@@ -135,9 +135,14 @@ import type {
   MCPTool,
   MissingSkill,
   MobileDevice,
+  MobileIPCFuzzReport,
   MobileIPCProbeResult,
+  MobileLogcatAuditReport,
+  MobilePackageMetadata,
   MobileSandboxEntry,
   MobileSetupInfo,
+  MobileStorageAuditReport,
+  MobileUICrawlResult,
   ModelTokenStat,
   NotificationChannel,
   NotificationDelivery,
@@ -2977,8 +2982,24 @@ export const api = {
     post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/install`, {}),
   pushTaskMobileCA: (taskId: string) =>
     post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/ca-push`, {}),
-  toggleTaskMobileProxy: (taskId: string, action: "enable_usb" | "enable_lan" | "disable") =>
+  toggleTaskMobileProxy: (taskId: string, action: "enable_usb" | "enable_transparent" | "enable_lan" | "disable") =>
     post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/proxy`, { action }),
+  runTaskMobileStaticAudit: (taskId: string, samplePath = "") =>
+    post<{ ok: boolean; manifest: MobilePackageMetadata }>(`/tasks/${encodeURIComponent(taskId)}/mobile/static-audit`, {
+      sample_path: samplePath,
+    }),
+  runTaskMobileIPCFuzz: (taskId: string, maxProbes = 25) =>
+    post<MobileIPCFuzzReport>(`/tasks/${encodeURIComponent(taskId)}/mobile/ipc-fuzz`, { max_probes: maxProbes }),
+  runTaskMobileStorageAudit: (taskId: string, pkg = "") =>
+    post<MobileStorageAuditReport>(`/tasks/${encodeURIComponent(taskId)}/mobile/storage-audit`, { package: pkg }),
+  taskMobileLogcat: (taskId: string, lines = 500, pkg = "") =>
+    get<MobileLogcatAuditReport>(
+      `/tasks/${encodeURIComponent(taskId)}/mobile/logcat?lines=${lines}${pkg ? `&pkg=${encodeURIComponent(pkg)}` : ""}`,
+    ),
+  runTaskMobileUICrawl: (taskId: string, maxSteps = 12) =>
+    post<MobileUICrawlResult>(`/tasks/${encodeURIComponent(taskId)}/mobile/ui-crawl`, { max_steps: maxSteps }),
+  invokeTaskMobileFridaRPC: (taskId: string, input: { session_id?: string; method: string; args?: unknown[] }) =>
+    post<{ ok: boolean; raw: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/frida/rpc`, input),
   startTaskFridaServer: (taskId: string) =>
     post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/frida/server`, {}),
   startTaskFridaSession: (

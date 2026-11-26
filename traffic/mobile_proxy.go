@@ -348,7 +348,7 @@ func (mp *MobileProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "hijack unsupported", http.StatusInternalServerError)
 		return
 	}
-	upConn, err := net.DialTimeout("tcp", mp.traffic.ProxyAddr(), 10*time.Second)
+	upConn, err := net.DialTimeout("tcp", mp.traffic.proxyHostPort(), 10*time.Second)
 	if err != nil {
 		http.Error(w, "upstream MITM dial failed", http.StatusBadGateway)
 		return
@@ -412,7 +412,7 @@ func (mp *MobileProxy) handleHTTPForward(w http.ResponseWriter, r *http.Request)
 	outReq.Header.Set("X-Blade-Traffic-Source", "mobile")
 
 	proxyDial := func(req *http.Request) (*http.Response, error) {
-		pURL, _ := url.Parse("http://" + mp.traffic.ProxyAddr())
+		pURL, _ := url.Parse("http://" + mp.traffic.proxyHostPort())
 		tr := &http.Transport{
 			Proxy: http.ProxyURL(pURL),
 		}

@@ -418,6 +418,12 @@ func applyManifestToMeta(root *axmlElement, meta *PackageMetadata) {
 			if v, ok := child.attr("networkSecurityConfig"); ok && v != "" {
 				meta.NetworkSecurityCfg = v
 			}
+			if v, ok := child.attr("requestLegacyExternalStorage"); ok && v == "true" {
+				meta.RequestLegacyStorage = true
+			}
+			if v, ok := child.attr("taskAffinity"); ok && v != "" {
+				meta.TaskAffinity = v
+			}
 			for _, comp := range child.children {
 				parseComponentElement(comp, meta)
 			}
@@ -444,6 +450,11 @@ func parseComponentElement(el *axmlElement, meta *PackageMetadata) {
 		return
 	}
 	perm, _ := el.attr("permission")
+	readPerm, _ := el.attr("readPermission")
+	writePerm, _ := el.attr("writePermission")
+	grantURI, _ := el.attr("grantUriPermissions")
+	launchMode, _ := el.attr("launchMode")
+	taskAffinity, _ := el.attr("taskAffinity")
 	auth, _ := el.attr("authorities")
 	expStr, hasExp := el.attr("exported")
 
@@ -492,13 +503,18 @@ func parseComponentElement(el *axmlElement, meta *PackageMetadata) {
 	}
 	if exported || len(filters) > 0 {
 		meta.ExportedComponents = append(meta.ExportedComponents, ComponentSummary{
-			Type:        compType,
-			Name:        name,
-			Exported:    exported,
-			Implicit:    implicit,
-			Permission:  perm,
-			Authorities: auth,
-			Filters:     filters,
+			Type:                compType,
+			Name:                name,
+			Exported:            exported,
+			Implicit:            implicit,
+			Permission:          perm,
+			ReadPermission:      readPerm,
+			WritePermission:     writePerm,
+			GrantURIPermissions: grantURI == "true",
+			Authorities:         auth,
+			LaunchMode:          launchMode,
+			TaskAffinity:        taskAffinity,
+			Filters:             filters,
 		})
 	}
 }

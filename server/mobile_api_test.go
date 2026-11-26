@@ -110,16 +110,20 @@ func TestAppUploadCreateTaskAndDynamicToolGating(t *testing.T) {
 		Primary struct {
 			SamplePath string `json:"sample_path"`
 			Manifest   struct {
-				PackageName string   `json:"package_name"`
-				Frameworks  []string `json:"frameworks"`
+				PackageName    string   `json:"package_name"`
+				Frameworks     []string `json:"frameworks"`
+				StaticFindings []struct {
+					ID       string `json:"id"`
+					Severity string `json:"severity"`
+				} `json:"static_findings"`
 			} `json:"manifest"`
 		} `json:"primary"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &upResp); err != nil {
 		t.Fatal(err)
 	}
-	if upResp.Primary.Manifest.PackageName != "com.test.mobileapp" || !slices.Contains(upResp.Primary.Manifest.Frameworks, "Flutter") {
-		t.Fatalf("unexpected upload inspect result: %+v", upResp)
+	if upResp.Primary.Manifest.PackageName != "com.test.mobileapp" || !slices.Contains(upResp.Primary.Manifest.Frameworks, "Flutter") || len(upResp.Primary.Manifest.StaticFindings) == 0 {
+		t.Fatalf("unexpected upload inspect result (expected static_findings): %+v", upResp)
 	}
 
 	// 2. Create mobile task without binding a device -> mobile_* tools must be dynamically hidden!
@@ -217,6 +221,22 @@ func TestAppUploadCreateTaskAndDynamicToolGating(t *testing.T) {
 	srv.controlTrafficMobileProxy(mpStopRR, mpStopReq)
 	if mpStopRR.Code != 200 {
 		t.Fatalf("controlTrafficMobileProxy stop status=%d body=%s", mpStopRR.Code, mpStopRR.Body.String())
+	}
+
+	// 5. Verify static-audit refresh endpoint & transparent bridge start/stop (clean under goleak)
+	saReq := httptest.NewRequest(http.MethodPost, "/api/tasks/"+created.ID+"/mobile/static-audit", bytes.NewReader([]byte(`{}`)))
+	saReq.SetPathValue("id", created.ID)
+	saRR := httptest.NewRecorder()
+	srv.handleTaskMobileStaticAudit(saRR, saReq)
+	if saRR.Code != 200 || !bytes.Contains(saRR.Body.Bytes(), []byte("manifest-debuggable")) {
+		t.Fatalf("handleTaskMobileStaticAudit failed: code=%d body=%s", saRR.Code, saRR.Body.String())
+	}
+	tpPort, err := m.StartTransparentProxy()
+	if err != nil || tpPort <= 0 {
+		t.Fatalf("StartTransparentProxy failed: port=%d err=%v", tpPort, err)
+	}
+	if err := m.StopTransparentProxy(); err != nil {
+		t.Fatalf("StopTransparentProxy failed: %v", err)
 	}
 
 	// Also ensure db.TaskHasMobileDevice returns false for bogus/web task.

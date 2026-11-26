@@ -242,6 +242,7 @@ GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRo
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
 GET /api/tasks/{id}/leads	server.(*Server).taskLeadTraces-fm
 GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
+GET /api/tasks/{id}/mobile/logcat	server.(*Server).getTaskMobileLogcat-fm
 GET /api/tasks/{id}/mobile/sandbox	server.(*Server).browseTaskMobileSandbox-fm
 GET /api/tasks/{id}/mobile/screen	server.(*Server).getTaskMobileScreen-fm
 GET /api/tasks/{id}/mobile/state	server.(*Server).getTaskMobileState-fm
@@ -464,14 +465,19 @@ POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskIntercept
 POST /api/tasks/{id}/mobile/bind	server.(*Server).bindTaskMobileDevice-fm
 POST /api/tasks/{id}/mobile/ca-push	server.(*Server).pushTaskMobileCA-fm
 POST /api/tasks/{id}/mobile/extract-session	server.(*Server).extractTaskMobileSession-fm
+POST /api/tasks/{id}/mobile/frida/rpc	server.(*Server).invokeTaskMobileFridaRPC-fm
 POST /api/tasks/{id}/mobile/frida/server	server.(*Server).startTaskFridaServer-fm
 POST /api/tasks/{id}/mobile/frida/start	server.(*Server).startTaskFridaSession-fm
 POST /api/tasks/{id}/mobile/frida/stop	server.(*Server).stopTaskFridaSession-fm
 POST /api/tasks/{id}/mobile/install	server.(*Server).installTaskMobileApp-fm
+POST /api/tasks/{id}/mobile/ipc-fuzz	server.(*Server).runTaskMobileIPCFuzz-fm
 POST /api/tasks/{id}/mobile/ipc-probe	server.(*Server).runTaskMobileIPCProbe-fm
 POST /api/tasks/{id}/mobile/proxy	server.(*Server).toggleTaskMobileProxy-fm
 POST /api/tasks/{id}/mobile/scope-approve	server.(*Server).approveTaskMobileScope-fm
+POST /api/tasks/{id}/mobile/static-audit	server.(*Server).handleTaskMobileStaticAudit-fm
+POST /api/tasks/{id}/mobile/storage-audit	server.(*Server).runTaskMobileStorageAudit-fm
 POST /api/tasks/{id}/mobile/ui	server.(*Server).runTaskMobileUI-fm
+POST /api/tasks/{id}/mobile/ui-crawl	server.(*Server).runTaskMobileUICrawl-fm
 POST /api/tasks/{id}/mobile/unbind	server.(*Server).unbindTaskMobileDevice-fm
 POST /api/tasks/{id}/nodes/{nid}/follow-up-intent	server.(*Server).taskFollowUpIntent-fm
 POST /api/tasks/{id}/nodes/{nid}/techniques	server.(*Server).setIntentTechniques-fm

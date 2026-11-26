@@ -390,15 +390,16 @@ type DeleteTaskResult struct {
 // Manager owns the PostgreSQL data source (asset graph + every task's exploration
 // graph + config) and the in-memory set of task handles.
 type Manager struct {
-	dir         string
-	pg          *pgdb.DB
-	assets      *pgdb.AssetStore
-	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
-	mobile      *mobile.Manager        // Android/iOS ADB & Frida device controller
-	mobileProxy *traffic.MobileProxy   // optional authenticated LAN mobile proxy
-	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
-	interceptor *intercept.Interceptor // user-configured tool-call interception rules
-	execs       *ExecutionService      // P13 长任务执行台账（托管进程活过 agent run）
+	dir              string
+	pg               *pgdb.DB
+	assets           *pgdb.AssetStore
+	traffic          *traffic.Traffic                 // process-wide recording proxy (may be nil)
+	mobile           *mobile.Manager                  // Android/iOS ADB & Frida device controller
+	mobileProxy      *traffic.MobileProxy             // optional authenticated LAN mobile proxy
+	transparentProxy *traffic.MobileTransparentBridge // optional loopback SNI/HTTP bridge for iptables REDIRECT
+	enrich           *enrich.Engine                   // engine-side asset auto-completion (DNS/HTTP)
+	interceptor      *intercept.Interceptor           // user-configured tool-call interception rules
+	execs            *ExecutionService                // P13 长任务执行台账（托管进程活过 agent run）
 	// onEgressRestored 在出口从阻断恢复时被调用（由 Server 接线到 Engine），
 	// 用来给正在等网络的任务留一条「可以继续了」的提示。nil = 不通知。
 	onEgressRestored func(active string)
@@ -880,6 +881,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			m.mu.Lock()
 			m.traffic = tr
 			m.mu.Unlock()
+			m.wireMobileCaptureHook()
 			goSafe("manager/traffic-proxy", nil, func() {
 				log.Printf("[traffic] recording proxy on %s (set HTTP_PROXY=%s + trust _ca CA)", proxyAddr, tr.ProxyAddr())
 				if err := tr.Start(); err != nil {
@@ -1882,12 +1884,17 @@ func (m *Manager) Close() error {
 	m.proxyPool = nil
 	mobileProxy := m.mobileProxy
 	m.mobileProxy = nil
+	transparentProxy := m.transparentProxy
+	m.transparentProxy = nil
 	trafficProxy := m.traffic
 	enrichEngine := m.enrich
 	execs := m.execs
 	m.mu.Unlock()
 	if mobileProxy != nil {
 		_ = mobileProxy.Close()
+	}
+	if transparentProxy != nil {
+		_ = transparentProxy.Close()
 	}
 	// 托管的长任务进程是 Setsid 出来的，**不会随本进程退出而死**：不在这里整组杀，
 	// 每次重启/更新都会留下还在跑的 nmap/nuclei。必须在关连接池之前杀——reaper 要把

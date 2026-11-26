@@ -292,6 +292,15 @@ func BuildIPCProbeArgs(req IPCProbeRequest) ([]string, string, error) {
 			comp = req.Package + "/" + comp
 		}
 		args = append(args, "am", "start", "-W", "-n", comp)
+	case "service":
+		if !safeToken(req.Component) {
+			return nil, "", fmt.Errorf("valid component required for service probe")
+		}
+		comp := req.Component
+		if !strings.Contains(comp, "/") && req.Package != "" {
+			comp = req.Package + "/" + comp
+		}
+		args = append(args, "am", "startservice", "-n", comp)
 	case "deeplink":
 		if !safeToken(req.URI) {
 			return nil, "", fmt.Errorf("valid URI required for deeplink probe")

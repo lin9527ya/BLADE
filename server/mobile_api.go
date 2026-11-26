@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -72,6 +73,93 @@ func (m *Manager) StopMobileProxy() error {
 	return nil
 }
 
+// wireMobileCaptureHook forwards plaintext HTTP captures sent by Frida native/SSL hooks
+// directly into BLADE's recording traffic index under source="mobile_hook".
+func (m *Manager) wireMobileCaptureHook() {
+	if m == nil || m.mobile == nil {
+		return
+	}
+	m.mobile.SetCaptureHook(func(_ int64, payload map[string]any) {
+		tr := m.Traffic()
+		if tr == nil || payload == nil {
+			return
+		}
+		strField := func(k string) string {
+			v, _ := payload[k].(string)
+			return v
+		}
+		status := 200
+		if f, ok := payload["status"].(float64); ok && int(f) > 0 {
+			status = int(f)
+		}
+		tr.RecordSyntheticMobileExchange(
+			strField("host"),
+			strField("method"),
+			strField("url"),
+			status,
+			strField("req_head"),
+			strField("req_body"),
+			strField("resp_head"),
+			strField("resp_body"),
+			strField("source"),
+		)
+	})
+}
+
+// TransparentProxy returns any active loopback SNI/HTTP bridge for iptables REDIRECT.
+func (m *Manager) TransparentProxy() *traffic.MobileTransparentBridge {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.transparentProxy
+}
+
+// StartTransparentProxy ensures the loopback SNI/HTTP transparent bridge is listening and returns its TCP port.
+func (m *Manager) StartTransparentProxy() (int, error) {
+	tr := m.Traffic()
+	if tr == nil {
+		return 0, fmt.Errorf("请先启动流量录制代理（-proxy），再开启 Root 透明代理分流")
+	}
+	m.wireMobileCaptureHook()
+	m.mu.RLock()
+	cur := m.transparentProxy
+	m.mu.RUnlock()
+	if cur != nil && cur.Running() && cur.Port() > 0 {
+		return cur.Port(), nil
+	}
+	bridge, err := traffic.NewMobileTransparentBridge(tr, "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	if err := bridge.Bind(); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	old := m.transparentProxy
+	m.transparentProxy = bridge
+	m.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	ready := make(chan struct{})
+	goSafe("manager/mobile-transparent-bridge", nil, func() {
+		_ = bridge.StartWithReady(ready)
+	})
+	<-ready
+	return bridge.Port(), nil
+}
+
+// StopTransparentProxy stops the loopback SNI/HTTP transparent bridge if running.
+func (m *Manager) StopTransparentProxy() error {
+	m.mu.Lock()
+	b := m.transparentProxy
+	m.transparentProxy = nil
+	m.mu.Unlock()
+	if b != nil {
+		return b.Close()
+	}
+	return nil
+}
+
 func (s *Server) taskMobilePromptSummary(taskID int64) (string, bool, bool) {
 	if s == nil || s.m == nil || s.m.pg == nil || taskID <= 0 {
 		return "", false, false
@@ -107,6 +195,32 @@ func (s *Server) taskMobilePromptSummary(taskID int64) (string, bool, bool) {
 			}
 			if meta.Debuggable {
 				b.WriteString("- 警告: Manifest debuggable=true\n")
+			}
+			if len(meta.SignatureSchemes) > 0 {
+				fmt.Fprintf(&b, "- 签名方案: %s\n", strings.Join(meta.SignatureSchemes, ", "))
+			}
+			if meta.HermesBytecode {
+				b.WriteString("- 跨端字节码: 检测到 Hermes JS Bytecode (已自动提取字串表)\n")
+			}
+			if len(meta.NativeBinaries) > 0 {
+				fmt.Fprintf(&b, "- 原生二进制: %d 个 ELF/Mach-O 镜像已审计\n", len(meta.NativeBinaries))
+			}
+			if len(meta.SBOMHints) > 0 {
+				fmt.Fprintf(&b, "- 三方库版本线索 (SBOM): %s\n", strings.Join(meta.SBOMHints[:min(len(meta.SBOMHints), 8)], ", "))
+			}
+			if len(meta.StaticFindings) > 0 {
+				var hi []string
+				for _, sf := range meta.StaticFindings {
+					if sf.Severity == "high" || sf.Severity == "medium" {
+						hi = append(hi, fmt.Sprintf("[%s/%s] %s", strings.ToUpper(sf.Severity), sf.MASVS, sf.Title))
+					}
+					if len(hi) >= 6 {
+						break
+					}
+				}
+				if len(hi) > 0 {
+					fmt.Fprintf(&b, "- SAST 高中危命中 (%d 项摘要): %s\n", len(meta.StaticFindings), strings.Join(hi, " ; "))
+				}
 			}
 		}
 	}
@@ -223,6 +337,16 @@ func (a *mobileBridgeAdapter) ProxyControl(ctx context.Context, taskID int64, ac
 			return "", err
 		}
 		return "已开启 ADB 反向隧道代理：" + p, nil
+	case "enable_transparent":
+		transPort, err := a.s.m.StartTransparentProxy()
+		if err != nil {
+			return "", err
+		}
+		p, err := mob.SetupProxy(ctx, cfg.MobileDeviceID, "transparent", transPort, "")
+		if err != nil {
+			return "", err
+		}
+		return "已开启 Root iptables 透明代理（含 UDP 443 QUIC 降级）：" + p, nil
 	case "enable_lan":
 		mp := a.s.m.MobileProxy()
 		if mp == nil || !mp.Running() {
@@ -238,10 +362,12 @@ func (a *mobileBridgeAdapter) ProxyControl(ctx context.Context, taskID int64, ac
 		}
 		return "已切换设备全局代理为局域网认证代理：" + p, nil
 	case "disable":
-		if err := mob.ClearProxy(ctx, cfg.MobileDeviceID); err != nil {
+		err := mob.ClearProxy(ctx, cfg.MobileDeviceID)
+		_ = a.s.m.StopTransparentProxy()
+		if err != nil {
 			return "", err
 		}
-		return "已清理设备 ADB 反向隧道与全局代理设置", nil
+		return "已清理设备 ADB 反向隧道、透明代理规则与全局代理设置", nil
 	case "pinning_alerts":
 		tr := a.s.m.Traffic()
 		if tr == nil {
@@ -322,6 +448,7 @@ func (a *mobileBridgeAdapter) FridaHook(ctx context.Context, taskID int64, actio
 	case "start_server":
 		return mob.StartFridaServer(ctx, cfg.MobileDeviceID, "")
 	case "start":
+		a.s.m.wireMobileCaptureHook()
 		sess, err := mob.StartFridaSession(ctx, taskID, cfg.MobileDeviceID, pkg, mode, modules, customJS)
 		if err != nil {
 			return "", err
@@ -330,6 +457,108 @@ func (a *mobileBridgeAdapter) FridaHook(ctx context.Context, taskID int64, actio
 		return string(b), nil
 	default:
 		return "", fmt.Errorf("不支持的 mobile_frida_hook action: %q", action)
+	}
+}
+
+func (a *mobileBridgeAdapter) Audit(ctx context.Context, taskID int64, kind string, opts json.RawMessage) (string, error) {
+	mob := a.s.m.Mobile()
+	cfg, err := a.s.m.pg.TaskMobileInfo(taskID)
+	if err != nil {
+		return "", err
+	}
+	var params struct {
+		Package     string `json:"package"`
+		MaxProbes   int    `json:"max_probes"`
+		MaxSteps    int    `json:"max_steps"`
+		StepDelayMs int    `json:"step_delay_ms"`
+		Lines       int    `json:"lines"`
+	}
+	if len(opts) > 0 {
+		_ = json.Unmarshal(opts, &params)
+	}
+	pkg := strings.TrimSpace(params.Package)
+	if pkg == "" {
+		pkg = cfg.AppPackageName
+	}
+
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "static_audit":
+		meta, err := a.s.runTaskStaticAudit(taskID, "")
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.MarshalIndent(map[string]any{
+			"package_name":      meta.PackageName,
+			"platform":          meta.Platform,
+			"signature_schemes": meta.SignatureSchemes,
+			"hermes_bytecode":   meta.HermesBytecode,
+			"native_binaries":   meta.NativeBinaries,
+			"sbom_hints":        meta.SBOMHints,
+			"provisioning":      meta.Provisioning,
+			"static_findings":   meta.StaticFindings,
+		}, "", "  ")
+		return string(b), nil
+	case "sandbox_audit":
+		if strings.TrimSpace(cfg.MobileDeviceID) == "" {
+			return "", fmt.Errorf("任务 #%d 未绑定移动测试机", taskID)
+		}
+		rep, err := mob.AuditSandboxStorage(ctx, cfg.MobileDeviceID, pkg)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		return string(b), nil
+	case "logcat_audit":
+		if strings.TrimSpace(cfg.MobileDeviceID) == "" {
+			return "", fmt.Errorf("任务 #%d 未绑定移动测试机", taskID)
+		}
+		rep, err := mob.CaptureLogcatAudit(ctx, cfg.MobileDeviceID, pkg, params.Lines)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		return string(b), nil
+	case "ipc_fuzz":
+		if strings.TrimSpace(cfg.MobileDeviceID) == "" {
+			return "", fmt.Errorf("任务 #%d 未绑定移动测试机", taskID)
+		}
+		var meta mobile.PackageMetadata
+		if len(cfg.AppManifestJSON) > 2 {
+			_ = json.Unmarshal(cfg.AppManifestJSON, &meta)
+		}
+		if meta.PackageName == "" {
+			meta.PackageName = pkg
+		}
+		rep, err := mob.FuzzIPC(ctx, cfg.MobileDeviceID, pkg, &meta, params.MaxProbes)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		return string(b), nil
+	case "ui_crawl":
+		if strings.TrimSpace(cfg.MobileDeviceID) == "" {
+			return "", fmt.Errorf("任务 #%d 未绑定移动测试机", taskID)
+		}
+		trCount := func() int64 {
+			if tr := a.s.m.Traffic(); tr != nil {
+				n, _ := tr.Count()
+				return int64(n)
+			}
+			return 0
+		}
+		rep, err := mob.CrawlUI(ctx, cfg.MobileDeviceID, mobile.UICrawlRequest{
+			Package:     pkg,
+			MaxSteps:    params.MaxSteps,
+			StepDelayMs: params.StepDelayMs,
+			SafeMode:    true,
+		}, trCount)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		return string(b), nil
+	default:
+		return "", fmt.Errorf("不支持的移动审计动作 %q", kind)
 	}
 }
 
@@ -378,6 +607,7 @@ func (s *Server) registerMobileRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/mobile/frida/scripts", s.listFridaScripts)
 
 	mux.HandleFunc("GET /api/tasks/{id}/mobile/state", s.getTaskMobileState)
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/static-audit", s.handleTaskMobileStaticAudit)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/bind", s.bindTaskMobileDevice)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/unbind", s.unbindTaskMobileDevice)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/install", s.installTaskMobileApp)
@@ -386,10 +616,15 @@ func (s *Server) registerMobileRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/frida/server", s.startTaskFridaServer)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/frida/start", s.startTaskFridaSession)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/frida/stop", s.stopTaskFridaSession)
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/frida/rpc", s.invokeTaskMobileFridaRPC)
 	mux.HandleFunc("GET /api/tasks/{id}/mobile/screen", s.getTaskMobileScreen)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/ui", s.runTaskMobileUI)
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/ui-crawl", s.runTaskMobileUICrawl)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/ipc-probe", s.runTaskMobileIPCProbe)
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/ipc-fuzz", s.runTaskMobileIPCFuzz)
 	mux.HandleFunc("GET /api/tasks/{id}/mobile/sandbox", s.browseTaskMobileSandbox)
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/storage-audit", s.runTaskMobileStorageAudit)
+	mux.HandleFunc("GET /api/tasks/{id}/mobile/logcat", s.getTaskMobileLogcat)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/extract-session", s.extractTaskMobileSession)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/scope-approve", s.approveTaskMobileScope)
 }
@@ -882,6 +1117,8 @@ func (s *Server) extractTaskMobileSession(w http.ResponseWriter, r *http.Request
 		Host:         strings.TrimSpace(req.HostFilter),
 		Source:       "mobile",
 		ExcludeNoise: true,
+		RespMin:      -1,
+		RespMax:      -1,
 	}, 0, 40)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -892,6 +1129,8 @@ func (s *Server) extractTaskMobileSession(w http.ResponseWriter, r *http.Request
 		rows, _, _ = tr.Page(traffic.PageQuery{
 			Host:         strings.TrimSpace(req.HostFilter),
 			ExcludeNoise: true,
+			RespMin:      -1,
+			RespMax:      -1,
 		}, 0, 25)
 	}
 
@@ -1035,6 +1274,12 @@ func (s *Server) buildMobileSetupInfo(reqHost string) traffic.MobileSetupInfo {
 }
 
 func proxyPortFromAddr(addr string, def int) int {
+	addr = strings.TrimSpace(addr)
+	addr = strings.TrimPrefix(addr, "http://")
+	addr = strings.TrimPrefix(addr, "https://")
+	if hostPort, _, hasSlash := strings.Cut(addr, "/"); hasSlash {
+		addr = hostPort
+	}
 	if _, portStr, err := net.SplitHostPort(addr); err == nil {
 		if p, perr := strconv.Atoi(portStr); perr == nil && p > 0 {
 			return p
@@ -1077,4 +1322,200 @@ func fallbackStr(s, def string) string {
 		return def
 	}
 	return s
+}
+
+func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobile.PackageMetadata, error) {
+	cfg, err := s.m.pg.TaskMobileInfo(taskID)
+	if err != nil {
+		return nil, err
+	}
+	sampleRel := strings.TrimSpace(requestedSample)
+	if sampleRel == "" && len(cfg.AppSamplePaths) > 0 {
+		sampleRel = cfg.AppSamplePaths[0]
+	}
+	if sampleRel == "" {
+		return nil, fmt.Errorf("任务 #%d 暂无可审计的安装包样本", taskID)
+	}
+	baseAbs, _ := filepath.Abs(s.m.dir)
+	targetAbs := sampleRel
+	if !filepath.IsAbs(targetAbs) {
+		targetAbs = filepath.Join(s.m.dir, filepath.FromSlash(sampleRel))
+	}
+	targetAbs, err = filepath.Abs(targetAbs)
+	if err != nil || !strings.HasPrefix(targetAbs, baseAbs+string(filepath.Separator)) {
+		return nil, fmt.Errorf("非法样本路径")
+	}
+	if _, err := os.Stat(targetAbs); err != nil {
+		return nil, fmt.Errorf("样本文件不存在或已清理: %v", err)
+	}
+	meta, err := mobile.InspectPackage(targetAbs)
+	if err != nil {
+		return nil, err
+	}
+	rel, _ := filepath.Rel(s.m.dir, targetAbs)
+	meta.SamplePath = filepath.ToSlash(rel)
+	manRaw, _ := json.Marshal(meta)
+	_ = s.m.pg.UpdateTaskAppMetadata(taskID, cfg.AppSamplePaths, manRaw, string(meta.Platform), meta.PackageName)
+	if t, ok := s.m.Task(strconv.FormatInt(taskID, 10)); ok && t != nil {
+		t.updateLifecycle(func(st *taskLifecycleState) {
+			st.AppMode = "mobile"
+			st.AppPlatform = string(meta.Platform)
+			st.AppPackageName = meta.PackageName
+			st.AppManifestJSON = manRaw
+		})
+	}
+	return meta, nil
+}
+
+func (s *Server) handleTaskMobileStaticAudit(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		SamplePath string `json:"sample_path"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	meta, err := s.runTaskStaticAudit(taskID, req.SamplePath)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "manifest": meta})
+}
+
+func (s *Server) runTaskMobileIPCFuzz(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Package   string `json:"package"`
+		MaxProbes int    `json:"max_probes"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	cfg, _ := s.m.pg.TaskMobileInfo(taskID)
+	if cfg.MobileDeviceID == "" {
+		writeErr(w, 400, "请先绑定移动测试机")
+		return
+	}
+	pkg := strings.TrimSpace(req.Package)
+	if pkg == "" {
+		pkg = cfg.AppPackageName
+	}
+	var meta mobile.PackageMetadata
+	if len(cfg.AppManifestJSON) > 2 {
+		_ = json.Unmarshal(cfg.AppManifestJSON, &meta)
+	}
+	if meta.PackageName == "" {
+		meta.PackageName = pkg
+	}
+	rep, err := s.m.Mobile().FuzzIPC(r.Context(), cfg.MobileDeviceID, pkg, &meta, req.MaxProbes)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, rep)
+}
+
+func (s *Server) runTaskMobileStorageAudit(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Package string `json:"package"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	cfg, _ := s.m.pg.TaskMobileInfo(taskID)
+	if cfg.MobileDeviceID == "" {
+		writeErr(w, 400, "请先绑定移动测试机")
+		return
+	}
+	pkg := strings.TrimSpace(req.Package)
+	if pkg == "" {
+		pkg = cfg.AppPackageName
+	}
+	rep, err := s.m.Mobile().AuditSandboxStorage(r.Context(), cfg.MobileDeviceID, pkg)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, rep)
+}
+
+func (s *Server) getTaskMobileLogcat(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	cfg, _ := s.m.pg.TaskMobileInfo(taskID)
+	if cfg.MobileDeviceID == "" {
+		writeErr(w, 400, "请先绑定移动测试机")
+		return
+	}
+	pkg := strings.TrimSpace(r.URL.Query().Get("pkg"))
+	if pkg == "" {
+		pkg = cfg.AppPackageName
+	}
+	lines, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("lines")))
+	rep, err := s.m.Mobile().CaptureLogcatAudit(r.Context(), cfg.MobileDeviceID, pkg, lines)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, rep)
+}
+
+func (s *Server) runTaskMobileUICrawl(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	var req mobile.UICrawlRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	cfg, _ := s.m.pg.TaskMobileInfo(taskID)
+	if cfg.MobileDeviceID == "" {
+		writeErr(w, 400, "请先绑定移动测试机")
+		return
+	}
+	if req.Package == "" {
+		req.Package = cfg.AppPackageName
+	}
+	req.SafeMode = true
+	trCount := func() int64 {
+		if tr := s.m.Traffic(); tr != nil {
+			n, _ := tr.Count()
+			return int64(n)
+		}
+		return 0
+	}
+	rep, err := s.m.Mobile().CrawlUI(r.Context(), cfg.MobileDeviceID, req, trCount)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, rep)
+}
+
+func (s *Server) invokeTaskMobileFridaRPC(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Method    string `json:"method"`
+		Args      []any  `json:"args"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json")
+		return
+	}
+	out, err := (&mobileBridgeAdapter{s: s}).RPCSign(r.Context(), taskID, req.SessionID, req.Method, req.Args)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "raw": out})
 }

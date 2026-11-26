@@ -337,8 +337,25 @@ func (s *Server) prepareTaskMobileSamples(t *Task, draftPaths, extraHosts []stri
 
 	// Emit a structured mobile static summary fact right under origin so Planner sees it cleanly.
 	if primaryMeta != nil && t.Store != nil {
-		summary := fmt.Sprintf("移动样本预解析完成：%s (%s v%s)，框架=%v，壳=%v，候选域名=%v，DeepLink=%v",
+		highCount, medCount := 0, 0
+		var topTitles []string
+		for _, sf := range primaryMeta.StaticFindings {
+			switch sf.Severity {
+			case "high":
+				highCount++
+				if len(topTitles) < 5 {
+					topTitles = append(topTitles, "[HIGH] "+sf.Title)
+				}
+			case "medium":
+				medCount++
+				if len(topTitles) < 5 {
+					topTitles = append(topTitles, "[MED] "+sf.Title)
+				}
+			}
+		}
+		summary := fmt.Sprintf("移动样本预解析完成：%s (%s v%s)，签名=%v，原生库=%d，SAST 发现高=%d/中=%d，框架=%v，壳=%v，候选域名=%v，DeepLink=%v",
 			primaryMeta.PackageName, primaryMeta.Platform, primaryMeta.VersionName,
+			primaryMeta.SignatureSchemes, len(primaryMeta.NativeBinaries), highCount, medCount,
 			primaryMeta.Frameworks, primaryMeta.Packers, primaryMeta.CandidateDomains, primaryMeta.URLSchemes)
 		_, _ = t.Store.AddLinkedNode(db.KindFact, map[string]any{
 			"summary":  summary,
@@ -346,6 +363,13 @@ func (s *Server) prepareTaskMobileSamples(t *Task, draftPaths, extraHosts []stri
 			"category": "mobile_manifest",
 			"sample":   primaryMeta.SamplePath,
 		}, 0, "confirmed", "system", nil, beginFact, db.RelYields)
+		if len(topTitles) > 0 {
+			_, _ = t.Store.AddLinkedNode(db.KindFact, map[string]any{
+				"summary":  fmt.Sprintf("移动端静态 SAST 预检命中高危/中危风险项（共 高%d / 中%d 条）：%s", highCount, medCount, strings.Join(topTitles, "；")),
+				"category": "mobile_sast",
+				"sample":   primaryMeta.SamplePath,
+			}, 0, "confirmed", "system", nil, beginFact, db.RelYields)
+		}
 	}
 }
 
