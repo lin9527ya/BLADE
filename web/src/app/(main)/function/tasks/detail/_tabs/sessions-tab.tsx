@@ -102,7 +102,6 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     taskCost,
     retrySession,
     loadOlderIntents,
-    workerSessions,
     intentsHasMore,
     sessionMeta,
     hasPendingForSession,
@@ -356,7 +355,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   </div>
                 );
               })}
-              {mainLoaded && !workerSessions.length && (
+              {mainLoaded && !grouped.worker.length && (
                 <div className="px-2 py-1 text-muted-foreground text-xs">暂无运行中的 Worker 会话。</div>
               )}
             </div>

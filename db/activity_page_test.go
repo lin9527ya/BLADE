@@ -176,3 +176,41 @@ func TestListByKindPage(t *testing.T) {
 		t.Fatalf("expected ≥3 pages for %d items at size 10, got %d", total, pages)
 	}
 }
+
+func TestListByKindPageExcludingDeleted(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	expID, err := d.CreateExploration("test", "意图分页过滤已删除")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	es := d.Exploration(expID)
+
+	keepID, err := es.AddIntent(map[string]any{"summary": "keep-older"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delID, err := es.AddIntent(map[string]any{"summary": "drop-newer"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := es.SoftDeleteIntent(delID, "redundant"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, hasMore, err := es.ListByKindPageExcludingState(KindIntent, "deleted", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore {
+		t.Fatalf("expected hasMore=false when only 1 non-deleted intent remains, got true (%+v)", items)
+	}
+	if len(items) != 1 || items[0].ID != keepID {
+		t.Fatalf("expected [%d], got %+v", keepID, items)
+	}
+}

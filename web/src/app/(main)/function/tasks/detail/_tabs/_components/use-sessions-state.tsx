@@ -14,6 +14,7 @@ import { rememberInputHistory } from "@/lib/input-history";
 import { MOCK } from "@/lib/mock/enabled";
 import { createSessionRequests } from "@/lib/request-lifecycle";
 import { capSessionStore } from "@/lib/session-cache";
+import { buildSessionList, visibleWorkerIntents } from "@/lib/session-list";
 import {
   acceptTokenEvent,
   acceptTokenSnapshot,
@@ -113,6 +114,7 @@ export function useSessionsState(taskId: string) {
   }, [approvalFocus.state?.source]);
   // Keep a located archived/older session selectable after leaving focus mode.
   const [locatedSession, setLocatedSession] = React.useState<{ taskId: string; session: Session }>();
+  const [locatedNode, setLocatedNode] = React.useState<{ taskId: string; node: TaskNode }>();
   React.useEffect(() => {
     if (focusSession) setLocatedSession({ taskId, session: focusSession });
   }, [taskId, focusSession]);
@@ -196,6 +198,7 @@ export function useSessionsState(taskId: string) {
       state
         ? rows.map((row) => (row.id === intentId ? { ...row, state } : row))
         : rows.filter((row) => row.id !== intentId);
+    firstIntentsRef.current = patch(firstIntentsRef.current);
     setIntents(patch);
     setOlderIntents(patch);
   }, []);
@@ -216,18 +219,30 @@ export function useSessionsState(taskId: string) {
         } else if (action === "resume") {
           patchIntentState(session.intent_id, "open");
           toast.success(`Worker #${sessionWorkerNo(session)} 已恢复，等待重新领取`);
-        } else if (mode === "hard") {
-          // 真删除:意图及独占下游已物理移除,从列表剔除该行。
-          patchIntentState(session.intent_id);
-          const d = res.deleted;
-          const extra = d ? `（含 ${d.intents} 意图 / ${d.facts} 事实 / ${d.findings} 漏洞）` : "";
-          toast.success(`Worker #${sessionWorkerNo(session)} 及其独占下游已彻底删除${extra}`);
-          setCancelReason("");
         } else {
-          // 假删除:意图置 deleted、记录删除原因,保留节点与产出。
-          patchIntentState(session.intent_id, "deleted");
-          toast.success(`Worker #${sessionWorkerNo(session)} 已删除（原因已记录，规划者将据此重新规划）`);
-          setCancelReason("");
+          // 无论真/假删除，立即从左侧 Workers 列表移除；若正在查看该会话则回落到当前主会话。
+          if (locatedSession?.taskId === taskId && locatedSession.session.id === session.id) {
+            setLocatedSession(undefined);
+          }
+          if (locatedNode?.taskId === taskId && locatedNode.node.id === session.intent_id) {
+            setLocatedNode(undefined);
+          }
+          if (selectedSessionId === session.id) {
+            setActiveId(mainSessionId(currentSeg));
+          }
+          if (mode === "hard") {
+            // 真删除:意图及独占下游已物理移除,从列表剔除该行。
+            patchIntentState(session.intent_id);
+            const d = res.deleted;
+            const extra = d ? `（含 ${d.intents} 意图 / ${d.facts} 事实 / ${d.findings} 漏洞）` : "";
+            toast.success(`Worker #${sessionWorkerNo(session)} 及其独占下游已彻底删除${extra}`);
+            setCancelReason("");
+          } else {
+            // 假删除:意图置 deleted、记录删除原因,保留节点与产出。
+            patchIntentState(session.intent_id, "deleted");
+            toast.success(`Worker #${sessionWorkerNo(session)} 已删除（原因已记录，规划者将据此重新规划）`);
+            setCancelReason("");
+          }
         }
       } catch (error) {
         toast.error(`Worker 操作失败：${(error as Error).message}`);
@@ -236,7 +251,7 @@ export function useSessionsState(taskId: string) {
         setCancelIntent(null);
       }
     },
-    [controllingIntent, patchIntentState, taskId],
+    [controllingIntent, currentSeg, locatedNode, locatedSession, patchIntentState, selectedSessionId, taskId],
   );
 
   // SSE connection state — surfaced so a dropped realtime link is visible, never
@@ -517,6 +532,7 @@ export function useSessionsState(taskId: string) {
     setIntents([]);
     setIntentAssets([]);
     setOlderIntents([]);
+    setLocatedNode(undefined);
     setFirstIntentsHasMore(false);
     setOlderIntentsHasMore(false);
     firstIntentsRef.current = []; // 别拿上个任务的首页快照去算 displaced
@@ -850,15 +866,52 @@ export function useSessionsState(taskId: string) {
     return grouped;
   }, [intentAssets]);
 
-  // One independent Worker session per intent (paged past 300).
-  const workerSessions = React.useMemo(() => allIntents.map(intentToSession), [allIntents]);
+  const rawLocated = focusSession ?? retainedSession;
+  React.useEffect(() => {
+    if (MOCK || rawLocated?.role !== "worker" || !rawLocated.intent_id) return;
+    if (allIntents.some((n) => n.id === rawLocated.intent_id)) return;
+    if (locatedNode?.taskId === taskId && locatedNode.node.id === rawLocated.intent_id) return;
+    let cancelled = false;
+    api
+      .explorationNode(rawLocated.intent_id, taskId)
+      .then((node) => {
+        if (!cancelled && node?.id === rawLocated.intent_id) setLocatedNode({ taskId, node });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [allIntents, locatedNode, rawLocated, taskId]);
+
+  const activeLocatedNode =
+    locatedNode?.taskId === taskId && locatedNode.node.id === rawLocated?.intent_id ? locatedNode.node : undefined;
+  const resolvedLocated = React.useMemo(
+    () =>
+      rawLocated && activeLocatedNode
+        ? {
+            ...intentToSession(activeLocatedNode),
+            id: rawLocated.id,
+            live: false,
+          }
+        : rawLocated,
+    [rawLocated, activeLocatedNode],
+  );
+
+  const visibleIntents = React.useMemo(() => visibleWorkerIntents(allIntents), [allIntents]);
+  // One independent Worker session per intent (paged past 300), excluding deleted intents.
+  const workerSessions = React.useMemo(() => visibleIntents.map(intentToSession), [visibleIntents]);
   const intentsHasMore = hasLoadedOlderIntentsPage ? olderIntentsHasMore : firstIntentsHasMore;
+
+  const metaIntents = React.useMemo(() => {
+    if (!activeLocatedNode || allIntents.some((n) => n.id === activeLocatedNode.id)) return allIntents;
+    return [...allIntents, activeLocatedNode];
+  }, [allIntents, activeLocatedNode]);
 
   // For each worker session (intent), derive the display title from the intent
   // payload summary. Also store the full TaskNode for the hover-JSON tooltip.
   const sessionMeta = React.useMemo(() => {
     const map = new Map<string, { title: string; json: unknown; deleted: boolean; deleteReason: string }>();
-    for (const node of allIntents) {
+    for (const node of metaIntents) {
       let title = `Intent ${node.id}`;
       let parsedPayload: unknown = node.payload;
       // 假删除:意图 state='deleted',删除原因在独立字段 delete_reason 上。
@@ -877,7 +930,7 @@ export function useSessionsState(taskId: string) {
       map.set(node.id, { title, json, deleted, deleteReason });
     }
     return map;
-  }, [allIntents]);
+  }, [metaIntents]);
 
   // Returns true if any pending intercept belongs to this session.
   // Worker agent_name format: "work#N · #intentID". Main/planner match by role key.
@@ -958,19 +1011,17 @@ export function useSessionsState(taskId: string) {
     [mainSegs, liveMainSeg],
   );
 
-  const sessions = React.useMemo(() => {
-    const items = [...mainSessions, { ...PLANNER_SESSION, live: plannerLive }, ...workerSessions, SYSTEM_SESSION];
-    const located = focusSession ?? retainedSession;
-    if (located && !items.some((s) => s.id === located.id)) items.push(located);
-    return items;
-  }, [mainSessions, workerSessions, plannerLive, focusSession, retainedSession]);
-
-  const grouped = {
-    mainagent: sessions.filter((s) => s.role === "mainagent"),
-    planner: sessions.filter((s) => s.role === "planner"),
-    worker: sessions.filter((s) => s.role === "worker"),
-    system: sessions.filter((s) => s.role === "system"),
-  };
+  const { sessions, grouped } = React.useMemo(
+    () =>
+      buildSessionList({
+        mainSessions,
+        plannerSession: { ...PLANNER_SESSION, live: plannerLive },
+        workerSessions,
+        systemSession: SYSTEM_SESSION,
+        locatedSession: resolvedLocated,
+      }),
+    [mainSessions, plannerLive, workerSessions, resolvedLocated],
+  );
 
   const active = sessions.find((s) => s.id === activeId) ?? MAIN_SESSION;
   const side = useSideQuestions(

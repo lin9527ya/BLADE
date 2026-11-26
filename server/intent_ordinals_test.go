@@ -82,4 +82,30 @@ func TestIntentsExposeGlobalIDs(t *testing.T) {
 	}
 	check(t1, ids1)
 	check(t2, ids2)
+
+	// 验证 exclude_deleted=1 过滤已假删除的意图（不影响默认不带参数的全量返回）。
+	t1Task := s.m.ResolveTask(t1)
+	if t1Task == nil {
+		t.Fatal("resolve t1 failed")
+	}
+	deletedID := ids1[len(ids1)-1]
+	if _, _, err := t1Task.Store.SoftDeleteIntent(deletedID, "noise"); err != nil {
+		t.Fatalf("SoftDeleteIntent: %v", err)
+	}
+	wFiltered := request("GET", fmt.Sprintf("/api/exploration/intents?task=%s&limit=50&before=0&page=1&exclude_deleted=1", t1), "")
+	if wFiltered.Code != 200 {
+		t.Fatalf("intents exclude_deleted=1: %d %s", wFiltered.Code, wFiltered.Body)
+	}
+	var filtered struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(wFiltered.Body.Bytes(), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	assertGlobalItems(t1, filtered.Items, ids1[:len(ids1)-1])
+	for _, item := range filtered.Items {
+		if item["id"] == fmt.Sprint(deletedID) {
+			t.Fatalf("exclude_deleted=1 不应再返回已删除意图 #%d", deletedID)
+		}
+	}
 }

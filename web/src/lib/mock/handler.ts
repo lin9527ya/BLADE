@@ -2173,6 +2173,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       const before = Number(q.get("before") ?? 0);
       const limit = Math.max(1, Number(q.get("limit") ?? 300));
       let list = mockIntents;
+      if (q.get("exclude_deleted") === "1") list = list.filter((intent) => intent.state !== "deleted");
       if (before > 0) list = list.filter((intent) => Number(intent.id.replace(/\D/g, "") || intent.id) < before);
       return { items: list.slice(0, limit), has_more: list.length > limit };
     }

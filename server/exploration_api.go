@@ -20,6 +20,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := min(atoiDefault(q.Get("limit"), 300), 500)
+	excludeDeleted := q.Get("exclude_deleted") == "1"
 	// No paging params → preserve the legacy bare-array response so existing callers
 	// (and the poll) keep working unchanged.
 	if q.Get("before") == "" && q.Get("page") == "" {
@@ -29,6 +30,15 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+		if excludeDeleted {
+			filtered := make([]*db.Node, 0, len(in))
+			for _, node := range in {
+				if node != nil && node.State != "deleted" {
+					filtered = append(filtered, node)
+				}
+			}
+			in = filtered
+		}
 		writeJSON(w, 200, taskNodeDTOs(in, s.credentialPlaintextEnabled()))
 		return
 	}
@@ -37,7 +47,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 	// also includes immutable intent results from directly related tasks; those
 	// rows never participate in this task's frontier or claim path.
 	before := int64(atoiDefault(q.Get("before"), 0))
-	in, hasMore, err := taskIntentHistoryPage(t.Store, before, limit, false, 0)
+	in, hasMore, err := taskIntentHistoryPage(t.Store, before, limit, false, 0, excludeDeleted)
 	if err != nil {
 		log.Printf("[intents] task=%s before=%d limit=%d: %v", t.ID, before, limit, err)
 		writeErr(w, 500, err.Error())
@@ -49,7 +59,7 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, source := range sources {
-		items, sourceMore, sourceErr := taskIntentHistoryPage(source.Store, before, limit, true, source.Task.TaskID)
+		items, sourceMore, sourceErr := taskIntentHistoryPage(source.Store, before, limit, true, source.Task.TaskID, excludeDeleted)
 		if sourceErr != nil {
 			writeErr(w, 500, sourceErr.Error())
 			return
@@ -98,15 +108,19 @@ func inheritedGraphSnapshot(nodes []*db.Node, edges []db.Edge, sourceTaskID int6
 // taskIntentHistoryPage returns one newest-first page for an exploration.
 // A source may have many open/running intents, so keep paging until enough
 // historical results are collected instead of leaking its frontier into the UI.
-func taskIntentHistoryPage(store *db.ExplorationStore, before int64, limit int, inherited bool, sourceTaskID int64) ([]*db.Node, bool, error) {
+func taskIntentHistoryPage(store *db.ExplorationStore, before int64, limit int, inherited bool, sourceTaskID int64, excludeDeleted bool) ([]*db.Node, bool, error) {
+	excludeState := ""
+	if excludeDeleted {
+		excludeState = "deleted"
+	}
 	if !inherited {
-		return store.ListByKindPage(db.KindIntent, before, limit)
+		return store.ListByKindPageExcludingState(db.KindIntent, excludeState, before, limit)
 	}
 	batch := max(limit, 300)
 	cursor := before
 	out := make([]*db.Node, 0, limit+1)
 	for {
-		page, more, err := store.ListByKindPage(db.KindIntent, cursor, batch)
+		page, more, err := store.ListByKindPageExcludingState(db.KindIntent, excludeState, cursor, batch)
 		if err != nil {
 			return nil, false, err
 		}

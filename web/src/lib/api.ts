@@ -1880,11 +1880,12 @@ export const api = {
   // Fixed N worker slots: sessions are reused across intents (no per-intent session).
   // Paged worker (intent) session list — reaches past the legacy fixed 300 cap.
   // before=0 → newest page; before=<id> → older page. has_more = older intents exist.
-  intentsPage: (task: string, before = 0, limit = 300) => {
+  intentsPage: (task: string, before = 0, limit = 300, options?: { excludeDeleted?: boolean }) => {
     const q = new URLSearchParams({ limit: String(limit) });
     if (task) q.set("task", task);
     q.set("before", String(before > 0 ? before : 0));
     q.set("page", "1"); // marker so the backend returns the paged {items,has_more} shape
+    if (options?.excludeDeleted !== false) q.set("exclude_deleted", "1");
     return get<{ items: TaskNode[]; has_more: boolean }>(`/exploration/intents?${q.toString()}`).then((r) => ({
       items: arr(r.items),
       hasMore: !!r.has_more,

@@ -1532,12 +1532,25 @@ WHERE exploration_id=$1 AND kind=$2 AND state=$3`, s.expID, kind, state).Scan(&n
 // hasMore reports whether still-older nodes exist, so a client (e.g. the worker
 // session list) can page past the old fixed cap instead of losing older intents.
 func (s *ExplorationStore) ListByKindPage(kind string, before int64, limit int) ([]*Node, bool, error) {
+	return s.ListByKindPageExcludingState(kind, "", before, limit)
+}
+
+// ListByKindPageExcludingState behaves like ListByKindPage, optionally omitting
+// rows matching `excludeState` (for example `"deleted"` when populating the
+// active worker session list) so soft-deleted rows do not crowd active pages.
+func (s *ExplorationStore) ListByKindPageExcludingState(kind, excludeState string, before int64, limit int) ([]*Node, bool, error) {
 	if limit <= 0 {
 		limit = 300
 	}
+	where := `exploration_id=$1 AND kind=$2 AND ($3 <= 0 OR id < $3)`
+	args := []any{s.expID, kind, before}
+	if excludeState != "" {
+		args = append(args, excludeState)
+		where += fmt.Sprintf(` AND state <> $%d`, len(args))
+	}
+	args = append(args, limit+1)
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
-WHERE exploration_id=$1 AND kind=$2 AND ($3 <= 0 OR id < $3)
-ORDER BY id DESC LIMIT $4`, s.expID, kind, before, limit+1)
+WHERE `+where+` ORDER BY id DESC LIMIT $`+fmt.Sprintf("%d", len(args)), args...)
 	if err != nil {
 		return nil, false, err
 	}
