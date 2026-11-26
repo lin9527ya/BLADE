@@ -244,22 +244,22 @@ type ProxyPool struct {
 
 	checkMu sync.Mutex // 串行化完整探测轮次（后台 tick / RequestCheck / CheckNow / Pin）
 
-	mu         sync.Mutex
-	cfg        ProxyPoolConfig
-	active     string
-	pinned     string
-	failures   int
-	lastSwitch time.Time
-	probing    bool
-	health     map[string]ProxyHealth
-	emaLatency map[string]int64
+	mu          sync.Mutex
+	cfg         ProxyPoolConfig
+	active      string
+	pinned      string
+	failures    int
+	lastSwitch  time.Time
+	probing     bool
+	health      map[string]ProxyHealth
+	emaLatency  map[string]int64
 	stop        chan struct{}
 	loopRunning bool
 	wg          sync.WaitGroup
-	applyMu    sync.Mutex
-	switchSeq  uint64
-	recheck    chan struct{}
-	reload     chan struct{}
+	applyMu     sync.Mutex
+	switchSeq   uint64
+	recheck     chan struct{}
+	reload      chan struct{}
 	// firstProbe 在第一次探测循环结束后关闭。run 启动时用它等首探完成，
 	// 避免把 fail-closed 的启动态（blockedProxyURL）快照进整轮运行环境。
 	firstProbe chan struct{}
@@ -741,12 +741,6 @@ func rotateCandidates(candidates []string, active string) []string {
 		out = append(out, candidates[(start+i)%len(candidates)])
 	}
 	return out
-}
-
-func (p *ProxyPool) record(proxy string, ok bool, latency time.Duration, err error) {
-	p.mu.Lock()
-	p.recordLocked(proxy, ok, latency, err, classifyProxyError(proxy, err), time.Now())
-	p.mu.Unlock()
 }
 
 func clipProxyError(proxyURL string, err error) string {

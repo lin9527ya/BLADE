@@ -164,19 +164,19 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	staticSys, dynamicSys := chatSystemParts(agentKey, c.workDir, sessionWorkDir)
 	system, boundary := deferredSystemWithDynamic(staticSys, def, dynamicSys)
 	opts := agentcore.Options{
-		Provider:                c.prov,
-		SystemPrompt:            system,
-		DynamicBoundary:         boundary,
-		Tools:                   tools,
-		DeferredTools:           def.Deferred,
-		UnlockSet:               def.Unlock,
-		PermissionMode:          permission.ModeBypass,
+		Provider:                      c.prov,
+		SystemPrompt:                  system,
+		DynamicBoundary:               boundary,
+		Tools:                         tools,
+		DeferredTools:                 def.Deferred,
+		UnlockSet:                     def.Unlock,
+		PermissionMode:                permission.ModeBypass,
 		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
 		WebFetchProxyFunc:             c.proxySnapshot,
 		WebFetchCACert:                proxyCA,
 		WebFetchDisableDirectFallback: true,
-		OmitCurrentDateReminder: true,
-		PromptCacheKey:          sessionID,
+		OmitCurrentDateReminder:       true,
+		PromptCacheKey:                sessionID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里

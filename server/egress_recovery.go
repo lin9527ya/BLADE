@@ -62,6 +62,7 @@ type egressRecovery struct {
 // 判据刻意收得很窄：
 //  1. 出口确为 blockedProxyURL（127.0.0.1:9）且工具输出出现黑洞特征；
 //  2. 或出口为正常活跃代理时，工具输出直接命中当前活跃代理 host:port 的代理层故障（如 proxyconnect/407/连接拒绝）。
+//
 // 普通的远端目标连接超时/拒绝连接不会触发代理池重查（以免把目标侧不通误判成平台出口坏了）。
 func (e *Engine) observeEgressBlocked(t *Task, r db.Activity) {
 	if e == nil || t == nil || e.m == nil || r.Kind != "tool_result" {
