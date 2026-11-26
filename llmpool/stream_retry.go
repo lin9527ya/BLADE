@@ -173,8 +173,9 @@ func RunCompleteWithRetry(ctx context.Context, prov llm.Provider, req llm.Comple
 	retries, backoffOf := StreamRetryPolicy(retry)
 	for attempt := 0; ; attempt++ {
 		_ = hint.Take()
+		hint.BeginAttempt()
 		msg, sr, usage, callErr := prov.Complete(ctx, req)
-		if callErr != nil && ctx.Err() == nil && attempt < retries && IsRetryableStreamError(callErr) {
+		if callErr != nil && ctx.Err() == nil && attempt < retries && !hint.TransportRetriesExhausted() && IsRetryableStreamError(callErr) {
 			wait := backoffOf(attempt, hint, callErr)
 			if onRetry != nil {
 				onRetry(attempt+1, retries, wait, callErr)
@@ -206,6 +207,7 @@ func RunStreamWithRetry(ctx context.Context, prov llm.Provider, req llm.Completi
 		retries, backoffOf := StreamRetryPolicy(retry)
 		for attempt := 0; ; attempt++ {
 			_ = hint.Take()
+			hint.BeginAttempt()
 			committed := false
 			var pending []llm.StreamEvent
 			var streamErr error
@@ -231,7 +233,7 @@ func RunStreamWithRetry(ctx context.Context, prov llm.Provider, req llm.Completi
 					return
 				}
 			}
-			if streamErr != nil && !committed && ctx.Err() == nil && attempt < retries && IsRetryableStreamError(streamErr) {
+			if streamErr != nil && !committed && ctx.Err() == nil && attempt < retries && !hint.TransportRetriesExhausted() && IsRetryableStreamError(streamErr) {
 				wait := backoffOf(attempt, hint, streamErr)
 				if onRetry != nil {
 					onRetry(attempt+1, retries, wait, streamErr)

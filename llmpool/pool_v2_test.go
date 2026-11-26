@@ -279,3 +279,78 @@ func (s slowProbeProv) Complete(ctx context.Context, req llm.CompletionRequest) 
 	}
 	return llm.Message{Content: []llm.ContentBlock{{Type: llm.BlockText, Text: "probed"}}}, "stop", llm.Usage{}, nil
 }
+
+type hintAwareCompleteProv struct {
+	calls        int
+	failuresEach int
+	saw200       bool
+	err          error
+}
+
+func (p *hintAwareCompleteProv) Stream(ctx context.Context, _ llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		p.calls++
+		h := RetryHintFrom(ctx)
+		for range p.failuresEach {
+			h.RecordTransportFailure()
+		}
+		if p.saw200 {
+			h.RecordTransportSuccess()
+		}
+		yield(llm.StreamEvent{}, p.err)
+	}
+}
+
+func (p *hintAwareCompleteProv) Complete(ctx context.Context, _ llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p.calls++
+	h := RetryHintFrom(ctx)
+	for range p.failuresEach {
+		h.RecordTransportFailure()
+	}
+	if p.saw200 {
+		h.RecordTransportSuccess()
+	}
+	return llm.Message{}, "", llm.Usage{}, p.err
+}
+
+func TestPoolDoesNotMultiplyRetriesAfterSDKConnectExhaustion(t *testing.T) {
+	defer withZeroPoolBackoff()()
+
+	p1 := &hintAwareCompleteProv{
+		failuresEach: 4, // simulates SDK ConnectAttempts=3 (4 HTTP 429 round trips, no 200 OK)
+		err:          errors.New("openai: status 429: rate limit"),
+	}
+	p2 := okProv("backup", "from-backup")
+	m1 := member(1, "primary", RankActive, p1)
+	m1.ProfileConfigured = true
+	m1.Retry = StreamPolicy{Attempts: 2}
+	m2 := member(2, "backup", 10, p2)
+	m2.ProfileConfigured = true
+	m2.Retry = StreamPolicy{Attempts: 2}
+
+	pool := New([]*Member{m1, m2}, NewRegistry(nil, nil))
+	msg, _, _, err := pool.Complete(context.Background(), llm.CompletionRequest{})
+	if err != nil || len(msg.Content) == 0 || msg.Content[0].Text != "from-backup" {
+		t.Fatalf("expected failover to backup, got msg=%+v err=%v", msg, err)
+	}
+	if p1.calls != 1 {
+		t.Fatalf("primary Complete calls=%d, want 1 (must not multiply Layer 1 x Layer 3)", p1.calls)
+	}
+	if p2.calls != 1 {
+		t.Fatalf("backup calls=%d, want 1", p2.calls)
+	}
+
+	// Single-shot transport failure (ConnectAttempts=-1) and mid-stream drop after 200 OK
+	// must still run Layer 3 stream retries.
+	singleShot := &hintAwareCompleteProv{failuresEach: 1, err: errors.New("openai: status 429: rate limit")}
+	_, err = drain(WithStreamRetry(singleShot, StreamPolicy{Attempts: 2}).Stream(context.Background(), llm.CompletionRequest{}))
+	if err == nil || singleShot.calls != 3 {
+		t.Fatalf("single-shot HTTP failure should still get Layer 3 retries (calls=%d want 3)", singleShot.calls)
+	}
+
+	midStreamDrop := &hintAwareCompleteProv{failuresEach: 1, saw200: true, err: errors.New("stream closed unexpectedly")}
+	_, err = drain(WithStreamRetry(midStreamDrop, StreamPolicy{Attempts: 2}).Stream(context.Background(), llm.CompletionRequest{}))
+	if err == nil || midStreamDrop.calls != 3 {
+		t.Fatalf("post-200 mid-stream failure should still get Layer 3 retries (calls=%d want 3)", midStreamDrop.calls)
+	}
+}

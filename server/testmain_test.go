@@ -27,6 +27,11 @@ func degrade(step string, err error) {
 // server test suite so cross-package DELETE cleanup races with db/agent
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	// 子进程辅助测试（stdio MCP helper、SearXNG mock sidecar）由父测试拉起，不能再次争抢
+	// 跨包 advisory lock（父进程持有同一把锁会直接死锁至超时），也不能清理 llm_profiles 或做 goleak。
+	if os.Getenv("GO_WANT_STDIO_MCP_HELPER") == "1" || os.Getenv("BLADE_SEARXNG_TEST_HELPER") == "1" {
+		os.Exit(m.Run())
+	}
 	requireDB := os.Getenv("BLADE_PG_DSN") != "" || os.Getenv("BLADE_REQUIRE_TESTS") == "1"
 	fail := func(step string, err error) {
 		if requireDB {

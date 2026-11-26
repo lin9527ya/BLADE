@@ -454,9 +454,10 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			retries, backoffOf := sameProviderRetryPolicy(selection.retry)
 			for attempt := 0; ; attempt++ {
 				_ = hint.Take()
+				hint.BeginAttempt()
 				msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
 				if callErr != nil && ctx.Err() == nil &&
-					attempt < retries && isRetryableStreamError(callErr) {
+					attempt < retries && !hint.TransportRetriesExhausted() && isRetryableStreamError(callErr) {
 					base := backoffOf(attempt)
 					ra := max(hint.Take(), agent.RetryAfterOf(callErr))
 					var backoff time.Duration
@@ -539,6 +540,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				retries, backoffOf := sameProviderRetryPolicy(selection.retry)
 				for attempt := 0; ; attempt++ {
 					_ = hint.Take()
+					hint.BeginAttempt()
 					committed = false
 					pending = nil
 					streamErr = nil
@@ -565,7 +567,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 						}
 					}
 					if streamErr != nil && !committed && ctx.Err() == nil &&
-						attempt < retries && isRetryableStreamError(streamErr) {
+						attempt < retries && !hint.TransportRetriesExhausted() && isRetryableStreamError(streamErr) {
 						base := backoffOf(attempt)
 						ra := max(hint.Take(), agent.RetryAfterOf(streamErr))
 						var backoff time.Duration
@@ -726,10 +728,7 @@ func isTaskChainFailoverError(ctx context.Context, err error) bool {
 		return true
 	}
 	s := strings.ToLower(err.Error())
-	if strings.Contains(s, "status 400") {
-		return false
-	}
-	return true
+	return !strings.Contains(s, "status 400")
 }
 
 func completeExplicitChain(ctx context.Context, taskID string, req llm.CompletionRequest, selection taskLLMSelection, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {

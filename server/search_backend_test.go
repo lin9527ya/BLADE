@@ -103,7 +103,7 @@ func TestSearchBackendFallbacks(t *testing.T) {
 		t.Fatalf("deepseek + opencode 应回退 ddgs: %+v", res)
 	}
 
-	// 回退后 DDG 没填搜索代理时应走平台出口代理（直连 DDG 容易 202）。
+	// 回退后 DDG 没填搜索代理时应动态绑定平台出口代理（不静态写入 o.Proxy，以免架空热切换；直连 DDG 容易 202）。
 	m.mu.Lock()
 	m.webSearchOn = true
 	m.webSearchBackend = opencodeWebSearchBackend
@@ -112,8 +112,8 @@ func TestSearchBackendFallbacks(t *testing.T) {
 	m.proxyPool = nil
 	m.mu.Unlock()
 	o := m.WebSearchOpts()
-	if o.Backend != defaultWebSearchBackend || o.Proxy != "http://127.0.0.1:7898" {
-		t.Fatalf("回退后应使用出口代理: %+v", o)
+	if o.Backend != defaultWebSearchBackend || o.Proxy != "" || o.ProxyFunc == nil || o.ProxyFunc() != "http://127.0.0.1:7898" || o.FallbackProxyFunc == nil || o.FallbackProxyFunc() != "http://127.0.0.1:7898" {
+		t.Fatalf("回退后应通过动态回调使用出口代理: %+v", o)
 	}
 }
 

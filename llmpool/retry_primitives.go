@@ -49,12 +49,15 @@ func IsQuotaExhaustedMessage(message string) bool {
 
 type retryHintCtxKey struct{}
 
-// RetryHint records upstream Retry-After hints observed on HTTP 429/503 responses
-// during a single logical model call so outer backoff loops (which only see
-// opaque SDK errors) can honor server-requested delays.
+// RetryHint records upstream Retry-After hints and per-attempt HTTP transport
+// observations observed on HTTP 429/503/network responses during a single
+// logical model call so outer backoff loops can honor Retry-After delays and
+// avoid re-multiplying HTTP-level ConnectAttempts retries.
 type RetryHint struct {
-	mu   sync.Mutex
-	wait time.Duration
+	mu             sync.Mutex
+	wait           time.Duration
+	transportFails int
+	saw200OK       bool
 }
 
 // WithRetryHint attaches (or reuses an existing) RetryHint on ctx.
@@ -73,6 +76,54 @@ func RetryHintFrom(ctx context.Context) *RetryHint {
 	}
 	h, _ := ctx.Value(retryHintCtxKey{}).(*RetryHint)
 	return h
+}
+
+// BeginAttempt resets the per-attempt transport observation counters before
+// issuing a provider call.
+func (h *RetryHint) BeginAttempt() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.transportFails = 0
+	h.saw200OK = false
+	h.mu.Unlock()
+}
+
+// RecordTransportFailure notes a failed or >=400 HTTP round trip within the
+// current logical provider attempt.
+func (h *RetryHint) RecordTransportFailure() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.transportFails++
+	h.mu.Unlock()
+}
+
+// RecordTransportSuccess notes that an HTTP 200 OK response was received
+// during the current logical provider attempt (any later failure happened inside
+// body/stream delivery rather than before connection establishment).
+func (h *RetryHint) RecordTransportSuccess() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.saw200OK = true
+	h.mu.Unlock()
+}
+
+// TransportRetriesExhausted reports whether the underlying HTTP transport
+// already performed multiple failed round trips without ever reaching 200 OK
+// in the current attempt — meaning Layer 1 (SDK ConnectAttempts) already
+// retried this failure and Layer 3 (StreamAttempts) must not multiply it.
+func (h *RetryHint) TransportRetriesExhausted() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.saw200OK && h.transportFails > 1
 }
 
 // Record stores an upstream retry delay, clamped to [0, maxRetryAfterWait].

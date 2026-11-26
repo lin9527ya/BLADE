@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -19,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -480,22 +478,6 @@ func readSearxngPIDFile(pidPath string) int {
 	return pid
 }
 
-func isSearxngProcessAlive(pid int) bool {
-	if pid <= 1 {
-		return false
-	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		return false
-	}
-	// Linux 下校对 /proc/<pid>/cmdline，避免 PID 复用到其它进程后误杀或误判运行中。
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err == nil {
-		flat := strings.ToLower(string(bytes.ReplaceAll(cmdline, []byte{0}, []byte{' '})))
-		return strings.Contains(flat, "searx") || strings.Contains(flat, "granian")
-	}
-	return true
-}
-
 func probeSearxngEndpoint(ctx context.Context, baseURL string) (reachable, healthy bool, detail string) {
 	probeURL := strings.TrimRight(baseURL, "/") + "/search?q=blade_probe&format=json"
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -935,9 +917,7 @@ func (sx *searxngService) stopProcessOnly() error {
 		_ = os.Remove(sx.pidPath())
 		return nil
 	}
-	// Setsid 启动时 pid == pgid，先发 SIGTERM 给进程组以优雅停掉 granian worker。
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	signalSearxngProcess(pid, false)
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if !isSearxngProcessAlive(pid) {
@@ -946,8 +926,7 @@ func (sx *searxngService) stopProcessOnly() error {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	signalSearxngProcess(pid, true)
 	time.Sleep(150 * time.Millisecond)
 	_ = os.Remove(sx.pidPath())
 	return nil
@@ -992,9 +971,9 @@ func (sx *searxngService) startSidecarSync(ctx context.Context, cfg SearxngManag
 	}, proxy)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
-	// Setsid: true 让宿主 SearXNG 作为常驻 sidecar 独立于 BLADE 进程组生命周期，
+	// Setsid / 新进程组让宿主 SearXNG 作为常驻 sidecar 独立于 BLADE 进程组生命周期，
 	// ./blade 重启或一键更新换装时不断开服务。
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	startDetached(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = lf.Close()
 		return fmt.Errorf("启动 granian 失败：%w", err)

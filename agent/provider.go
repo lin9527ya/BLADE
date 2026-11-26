@@ -540,10 +540,17 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 
 	traceCache := traceModelRequest(req)
+	hint := RetryHintFrom(req.Context())
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
+		hint.RecordTransportFailure()
 		updateCacheDiagnostic(traceCache, func(row *CacheDiagnostic) { row.Complete = true })
 		return resp, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		hint.RecordTransportSuccess()
+	} else if resp.StatusCode >= http.StatusBadRequest {
+		hint.RecordTransportFailure()
 	}
 	if traceCache != 0 {
 		wrapCacheTraceResponse(req, resp, traceCache)

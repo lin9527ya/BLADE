@@ -50,7 +50,6 @@ func TestActiveProfileHeadsStatusList(t *testing.T) {
 	}
 }
 
-
 func TestLLMPoolStatusIncludesPolicyHalfOpenAndStickyCounts(t *testing.T) {
 	reg := llmpool.NewRegistry(nil, nil)
 	reg.SetPolicy(4, 2*time.Minute)

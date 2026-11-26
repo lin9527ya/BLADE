@@ -193,8 +193,8 @@ func TestRetryableWorkerModelErrorSkipsDeterministicFailures(t *testing.T) {
 	if retryableWorkerModelError(harness.ReasonModelError, errors.New("openai: status 401: bad key")) {
 		t.Fatal("401 should not trigger Worker Intent retry")
 	}
-	if retryableWorkerModelError(harness.ReasonModelError, llmpool.ErrExhausted) {
-		// Plain ErrExhausted without deterministic marker could be allowed; over-window must skip:
+	if !retryableWorkerModelError(harness.ReasonModelError, llmpool.ErrExhausted) {
+		t.Fatal("plain ErrExhausted without deterministic marker should allow Worker Intent retry")
 	}
 	if retryableWorkerModelError(harness.ReasonModelError, errors.Join(llmpool.ErrExhausted, errors.New("请求估算约 900000 tokens，超过所有配置的上下文窗口上限"))) {
 		t.Fatal("over-window ErrExhausted must not trigger Worker Intent retry")

@@ -125,3 +125,63 @@ func TestQuotaAwareTransportRecordsRetryAfterExceptQuota402(t *testing.T) {
 		t.Fatalf("503 Retry-After = %v, want 6s", got)
 	}
 }
+
+func TestQuotaAwareTransportTracksConnectRetries(t *testing.T) {
+	t.Parallel()
+
+	ctx, hint := WithRetryHint(context.Background())
+	// 1 transport failure alone (e.g. ConnectAttempts=-1) must NOT suppress Layer 3 retry.
+	hint.BeginAttempt()
+	rt429 := quotaAwareTransport{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"message":"rate limit"}`)),
+		}, nil
+	})}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.invalid", nil)
+	resp, err := rt429.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if hint.TransportRetriesExhausted() {
+		t.Fatal("single failed transport round trip must not mark ConnectAttempts exhausted")
+	}
+
+	// >=2 failed round trips without 200 OK means SDK ConnectAttempts already retried.
+	resp, err = rt429.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !hint.TransportRetriesExhausted() {
+		t.Fatal("multiple failed round trips without 200 OK should mark TransportRetriesExhausted=true")
+	}
+
+	// If 200 OK was reached (e.g. attempt 1 got 429, attempt 2 got 200 OK and stream dropped),
+	// Layer 3 stream retry must stay enabled.
+	hint.BeginAttempt()
+	_, _ = rt429.RoundTrip(req)
+	resp, _ = rt429.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	rtOK := quotaAwareTransport{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}
+	okResp, err := rtOK.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	okResp.Body.Close()
+	if hint.TransportRetriesExhausted() {
+		t.Fatal("200 OK followed by mid-stream drop must allow Layer 3 stream retry")
+	}
+}
