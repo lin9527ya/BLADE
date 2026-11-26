@@ -2,10 +2,12 @@ package traffic
 
 import (
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -126,4 +128,39 @@ func TestMobileProxyAuthCIDRAndCAToken(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for invalid CA token, got %d", rr.Code)
 	}
+}
+
+func TestOpenMigratesLegacySQLiteIndex(t *testing.T) {
+	dir := t.TempDir()
+	idxDir := filepath.Join(dir, "_index")
+	if err := os.MkdirAll(idxDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyDB, err := sql.Open("sqlite", filepath.Join(idxDir, "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacyDB.Exec(`CREATE TABLE exchanges (
+		id TEXT PRIMARY KEY,
+		ts INTEGER NOT NULL,
+		host TEXT NOT NULL,
+		method TEXT NOT NULL,
+		url_template TEXT NOT NULL,
+		url TEXT NOT NULL,
+		status INTEGER,
+		content_type TEXT,
+		req_len INTEGER,
+		resp_len INTEGER,
+		path TEXT
+	);`)
+	_ = legacyDB.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tr, err := Open(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Open on legacy SQLite index failed: %v", err)
+	}
+	defer tr.Close()
 }

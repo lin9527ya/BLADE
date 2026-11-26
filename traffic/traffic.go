@@ -62,7 +62,6 @@ CREATE INDEX IF NOT EXISTS idx_ex_tmpl ON exchanges(host, url_template);
 CREATE INDEX IF NOT EXISTS idx_ex_ts   ON exchanges(ts);
 CREATE INDEX IF NOT EXISTS idx_ex_status ON exchanges(status);
 CREATE INDEX IF NOT EXISTS idx_ex_resp   ON exchanges(resp_len);
-CREATE INDEX IF NOT EXISTS idx_ex_source ON exchanges(source);
 
 CREATE TABLE IF NOT EXISTS exchange_bodies (
   id        TEXT PRIMARY KEY,
@@ -366,6 +365,9 @@ func ensureExchangeStateColumns(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, `ALTER TABLE exchanges ADD COLUMN `+col.name+` `+col.decl); err != nil {
 			return fmt.Errorf("add exchanges.%s: %w", col.name, err)
 		}
+	}
+	if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_ex_source ON exchanges(source)`); err != nil {
+		return fmt.Errorf("create idx_ex_source: %w", err)
 	}
 	return nil
 }
