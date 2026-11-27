@@ -1779,44 +1779,85 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
   }
 
-  // ── 全局 llm_usage 聚合（仪表盘新版视图，demo）──
-  if (path === "/tokens/usage")
+  // ── 全局 llm_usage 聚合（仪表盘唯一计量台账，demo）──
+  if (path === "/tokens/usage") {
+    const reqDays = Number(q.get("days") ?? 365);
+    const utcDay = (offset: number) => {
+      const now = new Date();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - offset))
+        .toISOString()
+        .slice(0, 10);
+    };
+    const cutoff = Number.isFinite(reqDays) && reqDays > 0 && reqDays < 3650 ? utcDay(Math.floor(reqDays) - 1) : "";
+    const opusSeries: [number, number, number, number][] = [
+      [6, 140000, 9000, 100000],
+      [5, 165000, 11000, 120000],
+      [4, 180000, 12500, 135000],
+      [3, 195000, 14000, 150000],
+      [2, 175000, 12000, 130000],
+      [1, 210000, 15000, 165000],
+      [0, 185000, 12500, 140000],
+    ];
+    const deepSeekSeries: [number, number, number, number][] = [
+      [6, 35000, 2500, 18000],
+      [5, 42000, 3000, 23000],
+      [4, 48000, 3500, 27000],
+      [3, 55000, 4200, 32000],
+      [2, 40000, 3100, 22000],
+      [1, 52000, 4000, 30000],
+      [0, 48000, 3700, 28000],
+    ];
+    const rows = [
+      ...opusSeries.map(([off, inp, out, cr]) => ({
+        profile_name: "Claude Opus 4.8",
+        date: utcDay(off),
+        input_tokens: inp,
+        output_tokens: out,
+        cache_read_tokens: cr,
+      })),
+      ...deepSeekSeries.map(([off, inp, out, cr]) => ({
+        profile_name: "DeepSeek V4",
+        date: utcDay(off),
+        input_tokens: inp,
+        output_tokens: out,
+        cache_read_tokens: cr,
+      })),
+    ]
+      .filter((r) => !cutoff || r.date >= cutoff)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.profile_name.localeCompare(b.profile_name));
+
     return {
       by_profile: [
         {
-          profile_name: "default",
-          calls: 60,
-          tasks: 4,
-          input_tokens: 1570000,
-          output_tokens: 110000,
-          cache_read_tokens: 1120000,
-          cache_write_tokens: 140000,
+          profile_name: "Claude Opus 4.8",
+          calls: 42,
+          tasks: 3,
+          input_tokens: 1250000,
+          output_tokens: 86000,
+          cache_read_tokens: 940000,
+          cache_write_tokens: 120000,
+        },
+        {
+          profile_name: "DeepSeek V4",
+          calls: 18,
+          tasks: 2,
+          input_tokens: 320000,
+          output_tokens: 24000,
+          cache_read_tokens: 180000,
+          cache_write_tokens: 20000,
         },
       ],
-      daily: [
-        {
-          profile_name: "default",
-          date: "2026-08-18",
-          input_tokens: 520000,
-          output_tokens: 38000,
-          cache_read_tokens: 370000,
-        },
-        {
-          profile_name: "default",
-          date: "2026-08-19",
-          input_tokens: 640000,
-          output_tokens: 45000,
-          cache_read_tokens: 460000,
-        },
-        {
-          profile_name: "default",
-          date: "2026-08-20",
-          input_tokens: 410000,
-          output_tokens: 27000,
-          cache_read_tokens: 290000,
-        },
-      ],
+      daily: rows,
+      summary: {
+        calls: 60,
+        tasks: 4,
+        input_tokens: 1570000,
+        output_tokens: 110000,
+        cache_read_tokens: 1120000,
+        cache_write_tokens: 140000,
+      },
     };
+  }
 
   // ── 按模型 token 用量（demo：一条示例）──
   if (path === "/llm/records/by-model")

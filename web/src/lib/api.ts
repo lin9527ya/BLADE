@@ -715,8 +715,13 @@ export const api = {
     }>(`/tasks/${id}/coverage`),
   // 资产覆盖图：范围内全部资产 + 连接用的根域名/公司节点，含 tested/in_scope。
   taskCoverageGraph: (id: string) => get<CoverageGraphData>(`/tasks/${id}/coverage-graph`),
-  // 全局 llm_usage 聚合（仪表盘新版 token 视图）：按 profile 总量 + 按天分桶。
-  usageStats: (days = 365) => get<UsageStats>(`/tokens/usage?days=${days}`),
+  // 全局 llm_usage 聚合（仪表盘唯一 token 计量台账）：按 profile 总量 + 按 UTC 日分桶 + 精确总计。
+  usageStats: (days = 365) =>
+    get<UsageStats>(`/tokens/usage?days=${days}`).then((r) => ({
+      by_profile: arr(r?.by_profile),
+      daily: arr(r?.daily),
+      summary: r?.summary,
+    })),
   costs: (days = 30) => get<CostSummary>(`/costs?days=${days}`),
   costBudgets: () => get<{ items: CostBudget[] }>("/cost-budgets").then((r) => arr(r.items)),
   saveCostBudget: (body: {

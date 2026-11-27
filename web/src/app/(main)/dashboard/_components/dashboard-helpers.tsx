@@ -12,14 +12,28 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 export {
+  buildDailyUsageSeries,
+  buildUsageByProfileMap,
+  collectExtraUsageProfiles,
   computePercent,
+  type DailyUsagePoint,
+  type DailyUsageTotals,
   type DashboardTaskFilter,
   daysAgoDateKey,
+  type ExtraUsageProfile,
   fmtBytes,
   fmtDurationSeconds,
   localDateKey,
   matchesTaskFilter,
+  profileTabKey,
   resolveTaskElapsedSeconds,
+  selectUsageProfileBucket,
+  summarizeAllUsageTokens,
+  summarizeDailyUsage,
+  TOKEN_TAB_ALL,
+  type UsageBucket,
+  utcDateKey,
+  utcUsageWindowStartKey,
 } from "@/lib/dashboard-format";
 
 export function fmtRel(ts?: string | number): string {

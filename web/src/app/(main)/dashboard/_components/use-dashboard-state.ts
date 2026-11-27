@@ -6,18 +6,24 @@ import { toast } from "sonner";
 
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import { type DashboardTaskFilter, daysAgoDateKey } from "@/lib/dashboard-format";
+import {
+  buildDailyUsageSeries,
+  buildUsageByProfileMap,
+  collectExtraUsageProfiles,
+  type DashboardTaskFilter,
+  selectUsageProfileBucket,
+  summarizeAllUsageTokens,
+  summarizeDailyUsage,
+  TOKEN_TAB_ALL,
+} from "@/lib/dashboard-format";
 import type {
   Activity,
-  ConvTokenSummary,
   CostSummary,
   DashboardLLMPoolSummary,
   DashboardMobileSummary,
   DashboardOpsSummary,
   DashboardRuntimeSummary,
   DashboardSystemSummary,
-  DashboardTaskTokenDay,
-  DashboardTaskTokenProfile,
   Finding,
   FindingStats,
   InterceptPending,
@@ -30,6 +36,7 @@ import type {
 } from "@/lib/types";
 
 export type ActivityRoleFilter = "all" | "planner" | "mainagent" | "worker";
+export type TokenRangeDays = 7 | 30 | 90 | 180 | 365 | 3650;
 
 function kindLabel(a: Activity): string {
   if (a.kind === "tool_use") return a.tool ?? "tool_use";
@@ -53,8 +60,6 @@ export function useDashboardState() {
   const [recentTasks, setRecentTasks] = React.useState<Task[]>([]);
   const [taskTotal, setTaskTotal] = React.useState(0);
   const [tasksByStatus, setTasksByStatus] = React.useState<Record<string, number>>({});
-  const [taskTokenProfiles, setTaskTokenProfiles] = React.useState<DashboardTaskTokenProfile[]>([]);
-  const [taskTokenDaily, setTaskTokenDaily] = React.useState<DashboardTaskTokenDay[]>([]);
   const [ops, setOps] = React.useState<DashboardOpsSummary | undefined>(undefined);
   const [system, setSystem] = React.useState<DashboardSystemSummary | undefined>(undefined);
   const [runtime, setRuntime] = React.useState<DashboardRuntimeSummary | undefined>(undefined);
@@ -68,7 +73,6 @@ export function useDashboardState() {
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
   const [pendingTotal, setPendingTotal] = React.useState(0);
   const [activity, setActivity] = React.useState<Activity[]>([]);
-  const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
   const [costs, setCosts] = React.useState<CostSummary | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
@@ -76,15 +80,15 @@ export function useDashboardState() {
   const [trafficTotal, setTrafficTotal] = React.useState(0);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
 
-  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
-  const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
-  const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
+  const [tokenTab, setTokenTab] = React.useState<string>(TOKEN_TAB_ALL);
+  const [tokenDays, setTokenDays] = React.useState<TokenRangeDays>(30);
   const [taskFilter, setTaskFilter] = React.useState<DashboardTaskFilter>("all");
   const [activityRole, setActivityRole] = React.useState<ActivityRoleFilter>("all");
 
   const [autoRefresh, setAutoRefresh] = React.useState(true);
   const [summaryReady, setSummaryReady] = React.useState(false);
   const [fastReady, setFastReady] = React.useState(false);
+  const [slowReady, setSlowReady] = React.useState(false);
   const [lastSyncAt, setLastSyncAt] = React.useState<number | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
   const [controllingTaskId, setControllingTaskId] = React.useState<string | null>(null);
@@ -96,8 +100,6 @@ export function useDashboardState() {
       summary.task_total,
       summary.tasks_by_status,
       summary.recent_tasks,
-      summary.token_by_profile,
-      summary.daily_tokens,
       summary.ops,
       summary.system,
       summary.runtime,
@@ -109,8 +111,6 @@ export function useDashboardState() {
       setRecentTasks(summary.recent_tasks);
       setTaskTotal(summary.task_total);
       setTasksByStatus(summary.tasks_by_status);
-      setTaskTokenProfiles(summary.token_by_profile);
-      setTaskTokenDaily(summary.daily_tokens);
       setOps(summary.ops);
       setSystem(summary.system);
       setRuntime(summary.runtime);
@@ -138,16 +138,14 @@ export function useDashboardState() {
 
   const fetchFastBatchOnce = React.useCallback(async (alive?: () => boolean) => {
     try {
-      const [recentPage, nextStats, nextSettings, pendingRecent, nextActivity, conversationTokens, findingTotals] =
-        await Promise.all([
-          api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
-          api.stats(),
-          api.settings(),
-          api.interceptPendingRecent(3),
-          api.activity(undefined, { limit: 30 }),
-          api.conversationTokens(),
-          api.findingStats(),
-        ]);
+      const [recentPage, nextStats, nextSettings, pendingRecent, nextActivity, findingTotals] = await Promise.all([
+        api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
+        api.stats(),
+        api.settings(),
+        api.interceptPendingRecent(3),
+        api.activity(undefined, { limit: 30 }),
+        api.findingStats(),
+      ]);
       if (alive && !alive()) return;
       setFindings(recentPage.items);
       setFindingStats(findingTotals);
@@ -156,7 +154,6 @@ export function useDashboardState() {
       setPending(pendingRecent.pending);
       setPendingTotal(pendingRecent.total);
       setActivity(nextActivity.items);
-      setConvTokens(conversationTokens);
       setLastSyncAt(Date.now());
     } finally {
       if (!alive || alive()) setFastReady(true);
@@ -164,24 +161,27 @@ export function useDashboardState() {
   }, []);
 
   const fetchSlowBatchOnce = React.useCallback(
-    async (alive?: () => boolean, wantUsageOverride?: boolean) => {
-      const wantUsage = wantUsageOverride ?? tokenVersion === "new";
-      const [traf, counts, profileList, usage, costSummary] = await Promise.all([
-        api.traffic(0, 50),
-        api.assetCounts(),
-        api.llmProfiles(),
-        wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
-        api.costs(30),
-      ]);
-      if (alive && !alive()) return;
-      setTraffic(traf.exchanges ?? []);
-      setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
-      setAssetCounts(counts ?? {});
-      setLLMProfiles(profileList);
-      if (usage) setUsageStats(usage);
-      setCosts(costSummary);
+    async (alive?: () => boolean) => {
+      try {
+        const [traf, counts, profileList, usage, costSummary] = await Promise.all([
+          api.traffic(0, 50),
+          api.assetCounts(),
+          api.llmProfiles(),
+          api.usageStats(tokenDays),
+          api.costs(30),
+        ]);
+        if (alive && !alive()) return;
+        setTraffic(traf.exchanges ?? []);
+        setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
+        setAssetCounts(counts ?? {});
+        setLLMProfiles(profileList);
+        setUsageStats(usage);
+        setCosts(costSummary);
+      } finally {
+        if (!alive || alive()) setSlowReady(true);
+      }
     },
-    [tokenVersion, tokenDays],
+    [tokenDays],
   );
 
   usePolling(
@@ -202,10 +202,10 @@ export function useDashboardState() {
 
   usePolling(
     async (alive) => {
-      await fetchSlowBatchOnce(alive, tokenVersion === "new");
+      await fetchSlowBatchOnce(alive);
     },
     autoRefresh ? 15000 : 0,
-    [autoRefresh, tokenVersion, tokenDays, fetchSlowBatchOnce],
+    [autoRefresh, tokenDays, fetchSlowBatchOnce],
   );
 
   const refreshNow = React.useCallback(async () => {
@@ -238,7 +238,7 @@ export function useDashboardState() {
 
   // ── derived ───────────────────────────────────────────────────────────────
 
-  const initialLoading = !(summaryReady && fastReady);
+  const initialLoading = !(summaryReady && fastReady && slowReady);
 
   const findingsBySev = React.useMemo(() => {
     const m = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -301,133 +301,35 @@ export function useDashboardState() {
 
   const activeProfile = React.useMemo(() => llmProfiles.find((p) => p.is_default), [llmProfiles]);
   const pendingCount = pendingTotal;
-  const defaultProfileId = activeProfile ? Number(activeProfile.id) : null;
 
-  const profileIdByName = React.useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of llmProfiles) m.set(p.name, Number(p.id));
-    return m;
-  }, [llmProfiles]);
+  // llm_usage single-source attribution (exact profile_name match; zero cross-profile absorption)
+  const usageByProfile = React.useMemo(() => buildUsageByProfileMap(usageStats), [usageStats]);
+  const allUsageTokens = React.useMemo(() => summarizeAllUsageTokens(usageStats), [usageStats]);
+  const extraUsageProfiles = React.useMemo(
+    () => collectExtraUsageProfiles(usageStats, llmProfiles),
+    [usageStats, llmProfiles],
+  );
 
-  type Bucket = { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number };
+  React.useEffect(() => {
+    if (tokenTab === TOKEN_TAB_ALL || !usageStats) return;
+    const valid = new Set<string>([
+      ...llmProfiles.map((p) => `profile:${p.name}`),
+      ...extraUsageProfiles.map((e) => e.tabKey),
+    ]);
+    if (!valid.has(tokenTab)) setTokenTab(TOKEN_TAB_ALL);
+  }, [tokenTab, llmProfiles, extraUsageProfiles, usageStats]);
 
-  const tokenByProfileOld = React.useMemo<Map<number | null, Bucket>>(() => {
-    const m = new Map<number | null, Bucket>();
-    const fold = (key: number | null, inp: number, out: number, cr: number, cw: number, tasks: number) => {
-      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
-      m.set(key, {
-        input: prev.input + inp,
-        output: prev.output + out,
-        cacheRead: prev.cacheRead + cr,
-        cacheWrite: prev.cacheWrite + cw,
-        taskCount: prev.taskCount + tasks,
-      });
-    };
-    for (const p of taskTokenProfiles) {
-      fold(
-        p.profile_id ?? defaultProfileId,
-        p.input_tokens,
-        p.output_tokens,
-        p.cache_read_tokens,
-        p.cache_write_tokens,
-        p.task_count,
-      );
-    }
-    for (const c of convTokens) {
-      fold(
-        c.llm_profile_id ?? defaultProfileId,
-        c.input_tokens,
-        c.output_tokens,
-        c.cache_read_tokens,
-        c.cache_write_tokens,
-        0,
-      );
-    }
-    return m;
-  }, [taskTokenProfiles, convTokens, defaultProfileId]);
+  const selectedAllTimeTokens = React.useMemo(
+    () => selectUsageProfileBucket(usageByProfile, usageStats, tokenTab),
+    [usageByProfile, usageStats, tokenTab],
+  );
 
-  const tokenByProfileNew = React.useMemo<Map<number | null, Bucket>>(() => {
-    const m = new Map<number | null, Bucket>();
-    for (const p of usageStats?.by_profile ?? []) {
-      const key = profileIdByName.get(p.profile_name) ?? defaultProfileId;
-      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
-      m.set(key, {
-        input: prev.input + p.input_tokens,
-        output: prev.output + p.output_tokens,
-        cacheRead: prev.cacheRead + p.cache_read_tokens,
-        cacheWrite: prev.cacheWrite + p.cache_write_tokens,
-        taskCount: prev.taskCount + p.tasks,
-      });
-    }
-    return m;
-  }, [usageStats, profileIdByName, defaultProfileId]);
+  const dailyTokenData = React.useMemo(
+    () => buildDailyUsageSeries(usageStats, tokenTab, tokenDays),
+    [usageStats, tokenTab, tokenDays],
+  );
 
-  const tokenByProfile = tokenVersion === "new" ? tokenByProfileNew : tokenByProfileOld;
-
-  const displayedTokens = React.useMemo(() => {
-    if (tokenTab === "all") {
-      let input = 0,
-        output = 0,
-        cacheRead = 0,
-        cacheWrite = 0,
-        taskCount = 0;
-      for (const v of tokenByProfile.values()) {
-        input += v.input;
-        output += v.output;
-        cacheRead += v.cacheRead;
-        cacheWrite += v.cacheWrite;
-        taskCount += v.taskCount;
-      }
-      return { input, output, cacheRead, cacheWrite, taskCount };
-    }
-    const v = tokenByProfile.get(tokenTab as number | null);
-    return v
-      ? { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheWrite: v.cacheWrite, taskCount: v.taskCount }
-      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
-  }, [tokenTab, tokenByProfile]);
-
-  const dailyTokenDataOld = React.useMemo(() => {
-    const cutoff = daysAgoDateKey(tokenDays);
-    const m = new Map<string, { input: number; miss: number; output: number; cacheRead: number }>();
-    const fold = (date: string, inp: number, out: number, cr: number) => {
-      if (date < cutoff) return;
-      const prev = m.get(date) ?? { input: 0, miss: 0, output: 0, cacheRead: 0 };
-      m.set(date, {
-        input: prev.input + inp,
-        miss: prev.miss + Math.max(0, inp - cr),
-        output: prev.output + out,
-        cacheRead: prev.cacheRead + cr,
-      });
-    };
-    for (const row of taskTokenDaily) {
-      if (tokenTab !== "all" && (row.profile_id ?? defaultProfileId) !== tokenTab) continue;
-      fold(row.date, row.input_tokens, row.output_tokens, row.cache_read_tokens);
-    }
-    for (const c of convTokens) {
-      if (tokenTab !== "all" && (c.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
-      fold(c.created_at.slice(0, 10), c.input_tokens, c.output_tokens, c.cache_read_tokens);
-    }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
-  }, [taskTokenDaily, convTokens, tokenDays, tokenTab, defaultProfileId]);
-
-  const dailyTokenDataNew = React.useMemo(() => {
-    const cutoff = daysAgoDateKey(tokenDays);
-    const m = new Map<string, { input: number; miss: number; output: number; cacheRead: number }>();
-    for (const d of usageStats?.daily ?? []) {
-      if (d.date < cutoff) continue;
-      if (tokenTab !== "all" && (profileIdByName.get(d.profile_name) ?? defaultProfileId) !== tokenTab) continue;
-      const prev = m.get(d.date) ?? { input: 0, miss: 0, output: 0, cacheRead: 0 };
-      m.set(d.date, {
-        input: prev.input + d.input_tokens,
-        miss: prev.miss + Math.max(0, d.input_tokens - d.cache_read_tokens),
-        output: prev.output + d.output_tokens,
-        cacheRead: prev.cacheRead + d.cache_read_tokens,
-      });
-    }
-    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
-  }, [usageStats, tokenDays, tokenTab, profileIdByName, defaultProfileId]);
-
-  const dailyTokenData = tokenVersion === "new" ? dailyTokenDataNew : dailyTokenDataOld;
+  const windowTokens = React.useMemo(() => summarizeDailyUsage(dailyTokenData), [dailyTokenData]);
 
   // ── 面板切片 ───────────────────────────────────────────────────────────────
 
@@ -473,7 +375,7 @@ export function useDashboardState() {
       totalAssets,
       trafficTotal,
       settings,
-      displayedTokens,
+      allUsageTokens,
       costs,
       ops,
       mobile,
@@ -488,7 +390,7 @@ export function useDashboardState() {
       totalAssets,
       trafficTotal,
       settings,
-      displayedTokens,
+      allUsageTokens,
       costs,
       ops,
       mobile,
@@ -538,27 +440,26 @@ export function useDashboardState() {
   const telemetryPanel = React.useMemo(
     () => ({
       llmProfiles,
-      defaultProfileId,
-      tokenVersion,
-      setTokenVersion,
+      extraUsageProfiles,
       tokenTab,
       setTokenTab,
       tokenDays,
       setTokenDays,
-      tokenByProfile,
-      displayedTokens,
+      usageByProfile,
+      selectedAllTimeTokens,
+      windowTokens,
       dailyTokenData,
       costs,
       llmPool,
     }),
     [
       llmProfiles,
-      defaultProfileId,
-      tokenVersion,
+      extraUsageProfiles,
       tokenTab,
       tokenDays,
-      tokenByProfile,
-      displayedTokens,
+      usageByProfile,
+      selectedAllTimeTokens,
+      windowTokens,
       dailyTokenData,
       costs,
       llmPool,

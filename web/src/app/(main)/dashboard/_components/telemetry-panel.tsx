@@ -13,10 +13,26 @@ import { Progress } from "@/components/ui/progress";
 import { cacheHitRate } from "@/lib/token-stats";
 import { cn } from "@/lib/utils";
 
-import { costTrendConfig, dailyTrendConfig, fmtTokens, localDateKey } from "./dashboard-helpers";
-import type { useDashboardState } from "./use-dashboard-state";
+import {
+  costTrendConfig,
+  dailyTrendConfig,
+  fmtTokens,
+  profileTabKey,
+  TOKEN_TAB_ALL,
+  utcDateKey,
+} from "./dashboard-helpers";
+import type { TokenRangeDays, useDashboardState } from "./use-dashboard-state";
 
 type TelemetryMode = "tokens" | "costs";
+
+const RANGE_OPTIONS: readonly { days: TokenRangeDays; label: string; headline: string }[] = [
+  { days: 7, label: "7天", headline: "近 7 天 (输入+输出)" },
+  { days: 30, label: "30天", headline: "近 30 天 (输入+输出)" },
+  { days: 90, label: "3月", headline: "近 3 月 (输入+输出)" },
+  { days: 180, label: "6月", headline: "近 6 月 (输入+输出)" },
+  { days: 365, label: "一年", headline: "近一年 (输入+输出)" },
+  { days: 3650, label: "全部", headline: "全量累计 (输入+输出)" },
+];
 
 function usd(n: number): string {
   if (!Number.isFinite(n)) return "—";
@@ -52,21 +68,29 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
 
   const {
     llmProfiles,
-    defaultProfileId,
-    tokenVersion,
-    setTokenVersion,
+    extraUsageProfiles,
     tokenTab,
     setTokenTab,
     tokenDays,
     setTokenDays,
-    tokenByProfile,
-    displayedTokens,
+    usageByProfile,
+    selectedAllTimeTokens,
+    windowTokens,
     dailyTokenData,
     costs,
     llmPool,
   } = s;
 
-  const todayKey = localDateKey();
+  const isAllTimeRange = tokenDays >= 3650;
+  const activeRange = RANGE_OPTIONS.find((opt) => opt.days === tokenDays) ?? RANGE_OPTIONS[1];
+  const primaryMetrics = isAllTimeRange ? selectedAllTimeTokens : windowTokens;
+  const primaryTotal = primaryMetrics.input + primaryMetrics.output;
+  const primaryMiss = isAllTimeRange
+    ? Math.max(0, selectedAllTimeTokens.input - selectedAllTimeTokens.cacheRead)
+    : windowTokens.miss;
+  const allTimeTotal = selectedAllTimeTokens.input + selectedAllTimeTokens.output;
+
+  const todayKey = utcDateKey();
   const todayCost = costs?.daily.find((d) => d.date === todayKey)?.cost_usd ?? 0;
   const monthCost = costs?.month.cost_usd ?? 0;
   const budget = costs?.budget_usd ?? 0;
@@ -126,35 +150,12 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
             ))}
           </div>
 
-          {mode === "tokens" && (
-            <div className="flex gap-0.5 rounded-md border bg-muted/30 p-0.5">
-              {(
-                [
-                  { v: "old", label: "旧版 activity" },
-                  { v: "new", label: "新版 llm_usage" },
-                ] as const
-              ).map(({ v, label }) => (
-                <button
-                  type="button"
-                  key={v}
-                  onClick={() => setTokenVersion(v)}
-                  title={
-                    v === "new"
-                      ? "新版：来自 llm_usage 计量账本，逐次调用精确、含中断消耗"
-                      : "旧版：来自 activity 统计（含历史任务）"
-                  }
-                  className={cn(
-                    "rounded px-2 py-0.5 font-medium text-[9px] transition-colors",
-                    tokenVersion === v
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+          <span
+            title="单一精准计量来源：llm_usage 常驻账本，含全部成功、失败、中断及独立对话调用，按 UTC 自然日汇总"
+            className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] text-emerald-500"
+          >
+            llm_usage 账本
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -162,10 +163,10 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
             <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
-                onClick={() => setTokenTab("all")}
+                onClick={() => setTokenTab(TOKEN_TAB_ALL)}
                 className={cn(
                   "rounded-md px-2.5 py-1 font-medium text-[10px] transition-colors",
-                  tokenTab === "all"
+                  tokenTab === TOKEN_TAB_ALL
                     ? "bg-foreground text-background"
                     : "bg-muted/30 text-muted-foreground hover:text-foreground",
                 )}
@@ -173,21 +174,22 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                 全部
               </button>
               {llmProfiles.map((p) => {
-                const key = Number(p.id);
-                const hasData = tokenByProfile.has(key) || (p.is_default && tokenByProfile.has(defaultProfileId));
-                let resolvedKey: number | null = key;
-                if (!tokenByProfile.has(key) && p.is_default) resolvedKey = defaultProfileId;
+                const key = profileTabKey(p.name);
+                const bucket = usageByProfile.get(p.name);
+                const hasData = Boolean(
+                  bucket && (bucket.calls > 0 || bucket.input > 0 || bucket.output > 0 || bucket.cacheRead > 0),
+                );
                 return (
                   <button
                     type="button"
                     key={p.id}
-                    onClick={() => setTokenTab(resolvedKey)}
+                    onClick={() => setTokenTab(key)}
                     className={cn(
                       "flex items-center gap-1 rounded-md px-2.5 py-1 font-medium text-[10px] transition-colors",
-                      tokenTab === resolvedKey
+                      tokenTab === key
                         ? "bg-foreground text-background"
                         : "bg-muted/30 text-muted-foreground hover:text-foreground",
-                      !hasData && "opacity-40",
+                      !hasData && "opacity-45",
                     )}
                   >
                     {p.name}
@@ -195,9 +197,7 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                       <span
                         className={cn(
                           "rounded px-1 py-0 text-[8px]",
-                          tokenTab === resolvedKey
-                            ? "bg-background/20 text-background"
-                            : "bg-emerald-500/20 text-emerald-400",
+                          tokenTab === key ? "bg-background/20 text-background" : "bg-emerald-500/20 text-emerald-400",
                         )}
                       >
                         默认
@@ -206,10 +206,33 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                   </button>
                 );
               })}
+              {extraUsageProfiles.map((extra) => (
+                <button
+                  type="button"
+                  key={extra.tabKey}
+                  onClick={() => setTokenTab(extra.tabKey)}
+                  title={
+                    extra.isUnattributed
+                      ? "历史环境变量或未指定 profile_name 的调用"
+                      : `已删除或重命名配置 "${extra.profileName}" 的历史消耗`
+                  }
+                  className={cn(
+                    "flex items-center gap-1 rounded-md px-2.5 py-1 font-medium text-[10px] transition-colors",
+                    tokenTab === extra.tabKey
+                      ? "bg-foreground text-background"
+                      : "bg-muted/30 text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {extra.label}
+                  {!extra.isUnattributed && (
+                    <span className="rounded bg-muted px-1 py-0 text-[8px] text-muted-foreground">历史</span>
+                  )}
+                </button>
+              ))}
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-muted-foreground">按模型价格估算 · 近 30 天</span>
+              <span className="text-[10px] text-muted-foreground">按模型价格估算 · 近 30 天 (UTC)</span>
               <span className={cn("rounded-md border px-2 py-0.5 font-medium text-[10px]", badge.cls)}>
                 {badge.text}
               </span>
@@ -220,77 +243,96 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
 
       {/* Main Content */}
       {mode === "tokens" ? (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_1fr]">
-          <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[248px_1fr]">
+          <div className="flex flex-col gap-3.5">
             <div>
-              <div className="text-[10px] text-muted-foreground">合计 (输入+输出)</div>
-              <div className="mt-0.5 font-bold text-3xl tabular-nums tracking-tight">
-                {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <span>{activeRange.headline}</span>
+                {!isAllTimeRange && <span className="font-mono text-[9px]">UTC</span>}
               </div>
-              <div className="mt-0.5 text-[10px] text-muted-foreground">{displayedTokens.taskCount} 个任务</div>
+              <div className="mt-0.5 font-bold text-3xl tabular-nums tracking-tight">
+                {primaryTotal > 0 ? fmtTokens(primaryTotal) : "0"}
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground tabular-nums">
+                {isAllTimeRange
+                  ? `${selectedAllTimeTokens.calls} 次调用 · ${selectedAllTimeTokens.taskCount} 个任务`
+                  : `${dailyTokenData.length} 个有记录自然日 · 窗口合计与右图对齐`}
+              </div>
             </div>
 
-            <div className="space-y-3">
-              {(() => {
-                const total = displayedTokens.input + displayedTokens.output;
-                return [
-                  {
-                    label: "输入(未命中)",
-                    value: Math.max(0, displayedTokens.input - displayedTokens.cacheRead),
-                    barColor: dailyTrendConfig.input.color,
-                    text: "text-blue-400",
-                  },
-                  {
-                    label: "缓存命中",
-                    value: displayedTokens.cacheRead,
-                    barColor: dailyTrendConfig.cacheRead.color,
-                    text: "text-emerald-400",
-                  },
-                  {
-                    label: "输出",
-                    value: displayedTokens.output,
-                    barColor: dailyTrendConfig.output.color,
-                    text: "text-violet-400",
-                  },
-                ].map(({ label, value, barColor, text }) => {
-                  const pct = total > 0 ? (value / total) * 100 : 0;
-                  return (
-                    <div key={label}>
-                      <div className="mb-1 flex items-center justify-between text-[10px]">
-                        <span className="text-muted-foreground">{label}</span>
-                        <span className={cn("font-mono font-semibold tabular-nums", text)}>{fmtTokens(value)}</span>
-                      </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full transition-all duration-500"
-                          style={{ width: `${pct}%`, background: barColor }}
-                        />
-                      </div>
+            <div className="space-y-2.5">
+              {[
+                {
+                  label: "输入(未命中)",
+                  value: primaryMiss,
+                  barColor: dailyTrendConfig.input.color,
+                  text: "text-blue-400",
+                },
+                {
+                  label: "缓存命中",
+                  value: primaryMetrics.cacheRead,
+                  barColor: dailyTrendConfig.cacheRead.color,
+                  text: "text-emerald-400",
+                },
+                {
+                  label: "输出",
+                  value: primaryMetrics.output,
+                  barColor: dailyTrendConfig.output.color,
+                  text: "text-violet-400",
+                },
+              ].map(({ label, value, barColor, text }) => {
+                const pct = primaryTotal > 0 ? Math.min(100, (value / primaryTotal) * 100) : 0;
+                return (
+                  <div key={label}>
+                    <div className="mb-1 flex items-center justify-between text-[10px]">
+                      <span className="text-muted-foreground">{label}</span>
+                      <span className={cn("font-mono font-semibold tabular-nums", text)}>{fmtTokens(value)}</span>
                     </div>
-                  );
-                });
-              })()}
+                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{ width: `${pct}%`, background: barColor }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             {(() => {
-              const denominator = displayedTokens.input;
-              const hitPct = denominator > 0 ? (displayedTokens.cacheRead / denominator) * 100 : 0;
+              const denominator = primaryMetrics.input;
+              const hitPct = denominator > 0 ? (primaryMetrics.cacheRead / denominator) * 100 : 0;
               return (
                 <div className="flex items-center justify-between rounded-lg border bg-muted/20 px-3 py-2 text-[10px]">
                   <span className="text-muted-foreground">缓存命中率</span>
                   <span
                     className={cn("font-semibold tabular-nums", hitPct > 50 ? "text-emerald-400" : "text-amber-400")}
                   >
-                    {cacheHitRate(displayedTokens.cacheRead, denominator)}
+                    {cacheHitRate(primaryMetrics.cacheRead, denominator)}
                   </span>
                 </div>
               );
             })()}
+
+            <div className="rounded-lg border border-dashed bg-muted/10 px-3 py-2 text-[10px] text-muted-foreground">
+              <div className="flex items-center justify-between">
+                <span>全量台账累计</span>
+                <span className="font-mono font-semibold text-foreground tabular-nums">
+                  {fmtTokens(allTimeTotal)} tok
+                </span>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-1 text-[9px] tabular-nums">
+                <span>
+                  {selectedAllTimeTokens.calls} 次调用 · {selectedAllTimeTokens.taskCount} 任务
+                </span>
+                <span>写入 {fmtTokens(selectedAllTimeTokens.cacheWrite)}</span>
+              </div>
+            </div>
           </div>
 
           <div className="flex min-h-0 flex-col">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex gap-3 text-[9px] text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-3 text-[9px] text-muted-foreground">
                 {(["miss", "output", "cacheRead"] as const).map((k) => (
                   <span key={k} className="flex items-center gap-1">
                     <span
@@ -300,17 +342,10 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                     {dailyTrendConfig[k].label}
                   </span>
                 ))}
+                <span>· 按 UTC 自然日</span>
               </div>
               <div className="flex gap-0.5 rounded-md border bg-muted/30 p-0.5">
-                {(
-                  [
-                    { days: 7, label: "7天" },
-                    { days: 30, label: "30天" },
-                    { days: 90, label: "3月" },
-                    { days: 180, label: "6月" },
-                    { days: 365, label: "一年" },
-                  ] as const
-                ).map(({ days, label }) => (
+                {RANGE_OPTIONS.map(({ days, label }) => (
                   <button
                     type="button"
                     key={days}
@@ -333,10 +368,12 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                 className="flex flex-1 items-center justify-center rounded-lg border bg-muted/10 text-muted-foreground text-xs"
                 style={{ minHeight: 200 }}
               >
-                暂无 Token 统计数据
+                {allTimeTotal > 0
+                  ? "所选时间窗口内暂无 Token 记录，可切换更长周期或「全部」"
+                  : "暂无 llm_usage Token 统计数据"}
               </div>
             ) : (
-              <ChartContainer config={dailyTrendConfig} className="h-[205px] w-full">
+              <ChartContainer config={dailyTrendConfig} className="h-[225px] w-full">
                 <BarChart data={dailyTokenData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }} maxBarSize={40}>
                   <CartesianGrid vertical={false} />
                   <XAxis
@@ -359,6 +396,10 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                     content={
                       <ChartTooltipContent
                         indicator="line"
+                        labelFormatter={(label, payload) => {
+                          const full = (payload?.[0]?.payload as { fullDate?: string } | undefined)?.fullDate;
+                          return full ? `${full} (UTC)` : String(label);
+                        }}
                         formatter={(value, name) => (
                           <div className="flex w-full items-center justify-between gap-4">
                             <span>
@@ -384,7 +425,7 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-[10px] text-muted-foreground">今日</div>
+                <div className="text-[10px] text-muted-foreground">今日 (UTC)</div>
                 <div className="font-bold text-2xl tabular-nums">{usd(todayCost)}</div>
               </div>
               <div>
@@ -479,6 +520,10 @@ export function TelemetryPanel({ s }: { s: ReturnType<typeof useDashboardState>[
                   <ChartTooltip
                     content={
                       <ChartTooltipContent
+                        labelFormatter={(label, payload) => {
+                          const full = (payload?.[0]?.payload as { fullDate?: string } | undefined)?.fullDate;
+                          return full ? `${full} (UTC)` : String(label);
+                        }}
                         formatter={(value) => (
                           <div className="flex w-full items-center justify-between gap-4">
                             <span>每日成本</span>

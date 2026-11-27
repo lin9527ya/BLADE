@@ -1,6 +1,40 @@
-import type { Task } from "@/lib/types";
+import type { LLMProfile, Task, UsageStats } from "./types.ts";
 
 export type DashboardTaskFilter = "all" | "running" | "paused" | "done" | "mobile";
+
+export const TOKEN_TAB_ALL = "all" as const;
+
+export interface UsageBucket {
+  calls: number;
+  taskCount: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface DailyUsagePoint {
+  fullDate: string;
+  date: string;
+  input: number;
+  miss: number;
+  output: number;
+  cacheRead: number;
+}
+
+export interface DailyUsageTotals {
+  input: number;
+  miss: number;
+  output: number;
+  cacheRead: number;
+}
+
+export interface ExtraUsageProfile {
+  tabKey: string;
+  profileName: string;
+  label: string;
+  isUnattributed: boolean;
+}
 
 /**
  * localDateKey formats a Date as local YYYY-MM-DD (avoiding UTC midnight shift).
@@ -19,6 +53,197 @@ export function daysAgoDateKey(days: number, base: Date = new Date()): string {
   const d = new Date(base);
   d.setDate(d.getDate() - days);
   return localDateKey(d);
+}
+
+/**
+ * utcDateKey formats a Date as UTC YYYY-MM-DD, matching Postgres AT TIME ZONE 'UTC' buckets.
+ */
+export function utcDateKey(d: Date = new Date()): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * utcUsageWindowStartKey returns the inclusive UTC YYYY-MM-DD start date covering `days`
+ * complete UTC calendar days ending today (`base`), matching db.UsageDaily 1:1.
+ * Returns empty string for unbounded/all-time windows (`days <= 0` or `days >= 3650`).
+ */
+export function utcUsageWindowStartKey(days: number, base: Date = new Date()): string {
+  if (!Number.isFinite(days) || days <= 0 || days >= 3650) return "";
+  const wholeDays = Math.floor(days);
+  const start = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() - (wholeDays - 1)));
+  return utcDateKey(start);
+}
+
+export function profileTabKey(profileName: string): string {
+  return `profile:${profileName}`;
+}
+
+export function parseProfileTabKey(tab: string): string | null {
+  if (tab === TOKEN_TAB_ALL) return null;
+  if (tab.startsWith("profile:")) return tab.slice("profile:".length);
+  return tab;
+}
+
+function emptyUsageBucket(): UsageBucket {
+  return { calls: 0, taskCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+/**
+ * buildUsageByProfileMap aggregates llm_usage profile rows keyed strictly by exact profile_name,
+ * without absorbing unknown/deleted/empty profiles into the default profile.
+ */
+export function buildUsageByProfileMap(usageStats: UsageStats | null): Map<string, UsageBucket> {
+  const map = new Map<string, UsageBucket>();
+  for (const row of usageStats?.by_profile ?? []) {
+    const name = row.profile_name ?? "";
+    const prev = map.get(name) ?? emptyUsageBucket();
+    map.set(name, {
+      calls: prev.calls + row.calls,
+      taskCount: prev.taskCount + row.tasks,
+      input: prev.input + row.input_tokens,
+      output: prev.output + row.output_tokens,
+      cacheRead: prev.cacheRead + row.cache_read_tokens,
+      cacheWrite: prev.cacheWrite + row.cache_write_tokens,
+    });
+  }
+  return map;
+}
+
+/**
+ * summarizeAllUsageTokens returns the global all-profile llm_usage totals, using exact
+ * backend distinct-task count when available.
+ */
+export function summarizeAllUsageTokens(usageStats: UsageStats | null): UsageBucket {
+  if (!usageStats) return emptyUsageBucket();
+  let calls = 0;
+  let taskSum = 0;
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  for (const row of usageStats.by_profile ?? []) {
+    calls += row.calls;
+    taskSum += row.tasks;
+    input += row.input_tokens;
+    output += row.output_tokens;
+    cacheRead += row.cache_read_tokens;
+    cacheWrite += row.cache_write_tokens;
+  }
+  return {
+    calls,
+    taskCount: usageStats.summary?.tasks ?? taskSum,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+  };
+}
+
+/**
+ * selectUsageProfileBucket picks either global totals ("all") or one exact profile bucket.
+ */
+export function selectUsageProfileBucket(
+  byProfileMap: Map<string, UsageBucket>,
+  usageStats: UsageStats | null,
+  tokenTab: string,
+): UsageBucket {
+  if (tokenTab === TOKEN_TAB_ALL) {
+    return summarizeAllUsageTokens(usageStats);
+  }
+  const targetName = parseProfileTabKey(tokenTab);
+  if (targetName === null) return summarizeAllUsageTokens(usageStats);
+  return byProfileMap.get(targetName) ?? emptyUsageBucket();
+}
+
+/**
+ * collectExtraUsageProfiles returns non-empty historical or unattributed profile names present
+ * in llm_usage but absent from active configured LLM profiles so every token stays inspectable.
+ */
+export function collectExtraUsageProfiles(
+  usageStats: UsageStats | null,
+  configuredProfiles: readonly Pick<LLMProfile, "name">[],
+): ExtraUsageProfile[] {
+  const configuredNames = new Set(configuredProfiles.map((p) => p.name));
+  const activeExtras = new Set<string>();
+  for (const p of usageStats?.by_profile ?? []) {
+    const name = p.profile_name ?? "";
+    const total = p.calls + p.input_tokens + p.output_tokens + p.cache_read_tokens + p.cache_write_tokens;
+    if (total > 0 && !configuredNames.has(name)) {
+      activeExtras.add(name);
+    }
+  }
+  for (const d of usageStats?.daily ?? []) {
+    const name = d.profile_name ?? "";
+    const total = d.input_tokens + d.output_tokens + d.cache_read_tokens;
+    if (total > 0 && !configuredNames.has(name)) {
+      activeExtras.add(name);
+    }
+  }
+  return [...activeExtras]
+    .sort((a, b) => {
+      if (a === "" && b !== "") return 1;
+      if (b === "" && a !== "") return -1;
+      return a.localeCompare(b);
+    })
+    .map((profileName) => ({
+      tabKey: profileTabKey(profileName),
+      profileName,
+      label: profileName === "" ? "未归属/默认环境" : profileName,
+      isUnattributed: profileName === "",
+    }));
+}
+
+/**
+ * buildDailyUsageSeries produces sorted UTC daily chart points filtered by profile and window.
+ */
+export function buildDailyUsageSeries(
+  usageStats: UsageStats | null,
+  tokenTab: string,
+  days: number,
+  baseDate: Date = new Date(),
+): DailyUsagePoint[] {
+  const cutoff = utcUsageWindowStartKey(days, baseDate);
+  const targetName = parseProfileTabKey(tokenTab);
+  const byDate = new Map<string, DailyUsageTotals>();
+  for (const d of usageStats?.daily ?? []) {
+    if (cutoff && d.date < cutoff) continue;
+    const rowProfile = d.profile_name ?? "";
+    if (targetName !== null && rowProfile !== targetName) continue;
+    const prev = byDate.get(d.date) ?? { input: 0, miss: 0, output: 0, cacheRead: 0 };
+    byDate.set(d.date, {
+      input: prev.input + d.input_tokens,
+      miss: prev.miss + Math.max(0, d.input_tokens - d.cache_read_tokens),
+      output: prev.output + d.output_tokens,
+      cacheRead: prev.cacheRead + d.cache_read_tokens,
+    });
+  }
+  return [...byDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([fullDate, vals]) => ({
+      fullDate,
+      date: fullDate.slice(5),
+      ...vals,
+    }));
+}
+
+/**
+ * summarizeDailyUsage sums the visible daily series so left window totals match bars 1:1.
+ */
+export function summarizeDailyUsage(series: readonly DailyUsagePoint[]): DailyUsageTotals {
+  let input = 0;
+  let miss = 0;
+  let output = 0;
+  let cacheRead = 0;
+  for (const point of series) {
+    input += point.input;
+    miss += point.miss;
+    output += point.output;
+    cacheRead += point.cacheRead;
+  }
+  return { input, miss, output, cacheRead };
 }
 
 /**

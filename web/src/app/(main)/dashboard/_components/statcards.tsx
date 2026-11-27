@@ -16,7 +16,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cacheHitRate } from "@/lib/token-stats";
 import { cn } from "@/lib/utils";
 
-import { computePercent, fmtTokens, LiveDot, localDateKey } from "./dashboard-helpers";
+import { computePercent, fmtTokens, LiveDot, utcDateKey } from "./dashboard-helpers";
 import type { useDashboardState } from "./use-dashboard-state";
 
 function compactUsd(n: number): string {
@@ -35,7 +35,7 @@ export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["s
     totalAssets,
     trafficTotal,
     settings,
-    displayedTokens,
+    allUsageTokens,
     costs,
     ops,
     mobile,
@@ -54,12 +54,12 @@ export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["s
   const lowCount = findingStats?.low ?? findingsBySev.low;
   const pendingFindings = findingStats?.pending ?? 0;
 
-  const todayKey = localDateKey();
+  const todayKey = utcDateKey();
   const todayCost = costs?.daily.find((d) => d.date === todayKey)?.cost_usd ?? 0;
   const monthCost = costs?.month.cost_usd ?? 0;
   const budget = costs?.budget_usd ?? 0;
   const budgetPct = budget > 0 ? computePercent(monthCost, budget) : 0;
-  const totalTokens = displayedTokens.input + displayedTokens.output;
+  const totalTokens = allUsageTokens.input + allUsageTokens.output;
   const hasCostData = monthCost > 0 || todayCost > 0 || budget > 0;
 
   let budgetBarClass = "bg-emerald-500";
@@ -291,10 +291,15 @@ export function RowStatCards({ s }: { s: ReturnType<typeof useDashboardState>["s
                 {hasCostData && <span className="mr-1.5 tabular-nums">今日 {compactUsd(todayCost)} ·</span>}
                 命中{" "}
                 <strong className="text-emerald-400">
-                  {cacheHitRate(displayedTokens.cacheRead, displayedTokens.input)}
+                  {cacheHitRate(allUsageTokens.cacheRead, allUsageTokens.input)}
                 </strong>
               </span>
-              <span className="tabular-nums">{fmtTokens(totalTokens)} tok</span>
+              <span
+                className="tabular-nums"
+                title={`llm_usage 全量台账：${allUsageTokens.calls} 次调用 · 写入 ${fmtTokens(allUsageTokens.cacheWrite)}`}
+              >
+                {fmtTokens(totalTokens)} tok
+              </span>
             </div>
           </CardContent>
         </Card>

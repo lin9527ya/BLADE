@@ -1966,10 +1966,22 @@ export interface ProfileDayUsage {
   cache_read_tokens: number;
 }
 
-// Response of GET /api/tokens/usage — the dashboard's "new" (llm_usage) token view.
+// Aggregate summary across all llm_usage rows (distinct task count without
+// double-counting multi-profile tasks).
+export interface UsageSummary {
+  calls: number;
+  tasks: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
+// Response of GET /api/tokens/usage — the dashboard's single llm_usage ledger source.
 export interface UsageStats {
   by_profile: ProfileUsage[];
   daily: ProfileDayUsage[];
+  summary?: UsageSummary;
 }
 
 // ---- LLM 成本与价格 ----

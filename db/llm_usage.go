@@ -188,7 +188,7 @@ GROUP BY 1, 2`, taskID)
 }
 
 // ProfileUsage aggregates the whole ledger's token spend for one LLM profile
-// (global, all tasks). Powers the dashboard's per-profile token card (new source).
+// (global, all tasks). Powers the dashboard's per-profile token card.
 type ProfileUsage struct {
 	ProfileName      string `json:"profile_name"`
 	Calls            int    `json:"calls"`
@@ -199,9 +199,36 @@ type ProfileUsage struct {
 	CacheWriteTokens int    `json:"cache_write_tokens"`
 }
 
+// UsageSummary aggregates exact ledger-wide totals without double-counting tasks
+// that invoked multiple profiles (e.g. per-agent bindings or failover).
+type UsageSummary struct {
+	Calls            int `json:"calls"`
+	Tasks            int `json:"tasks"`
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+}
+
+// UsageSnapshot bundles all consistent global llm_usage views for GET /api/tokens/usage
+// from one shared archive pass.
+type UsageSnapshot struct {
+	ByProfile []ProfileUsage    `json:"by_profile"`
+	Daily     []ProfileDayUsage `json:"daily"`
+	Summary   UsageSummary      `json:"summary"`
+}
+
 // UsageByProfile returns global token spend grouped by profile name, most-used
 // first. profile_name may be empty for calls made on env/non-persisted configs.
 func (d *DB) UsageByProfile() ([]ProfileUsage, error) {
+	archived, err := d.archivedTaskAggregates()
+	if err != nil {
+		return nil, err
+	}
+	return d.usageByProfileWithArchived(archived)
+}
+
+func (d *DB) usageByProfileWithArchived(archived []taskArchiveAggregate) ([]ProfileUsage, error) {
 	rows, err := d.Query(`
 SELECT COALESCE(profile_name,'') AS profile_name, COUNT(*) AS calls,
        COUNT(DISTINCT task_id) AS tasks,
@@ -224,10 +251,6 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	archived, err := d.archivedTaskAggregates()
-	if err != nil {
 		return nil, err
 	}
 	byName := make(map[string]ProfileUsage, len(out))
@@ -273,20 +296,41 @@ type ProfileDayUsage struct {
 	CacheReadTokens int    `json:"cache_read_tokens"`
 }
 
-// UsageDaily returns per-(profile, day) token buckets for the past `days` days
-// (default 365 when days<=0), so the dashboard can slice by profile + range.
-func (d *DB) UsageDaily(days int) ([]ProfileDayUsage, error) {
+// usageDailyStartUTC computes the inclusive midnight-UTC boundary for the last `days`
+// complete UTC calendar days (ending today), matching archive cutoffs 1:1.
+func usageDailyStartUTC(now time.Time, days int) time.Time {
 	if days <= 0 {
 		days = 365
 	}
+	if days > 3660 {
+		days = 3660
+	}
+	utc := now.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -(days - 1))
+}
+
+// UsageDaily returns per-(profile, day) token buckets for the past `days` complete
+// UTC calendar days (default 365 when days<=0), so live rows and archived tasks share
+// the exact same day boundary without partial first-day truncation.
+func (d *DB) UsageDaily(days int) ([]ProfileDayUsage, error) {
+	archived, err := d.archivedTaskAggregates()
+	if err != nil {
+		return nil, err
+	}
+	return d.usageDailyWithArchived(days, time.Now(), archived)
+}
+
+func (d *DB) usageDailyWithArchived(days int, now time.Time, archived []taskArchiveAggregate) ([]ProfileDayUsage, error) {
+	startUTC := usageDailyStartUTC(now, days)
+	cutoff := startUTC.Format("2006-01-02")
 	rows, err := d.Query(`
 SELECT COALESCE(profile_name,'') AS profile_name,
        to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_read),0)
 FROM llm_usage
-WHERE ts >= now() - ($1 * interval '1 day')
+WHERE ts >= $1
 GROUP BY profile_name, day
-ORDER BY day`, days)
+ORDER BY day`, startUTC)
 	if err != nil {
 		return nil, err
 	}
@@ -302,11 +346,6 @@ ORDER BY day`, days)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	archived, err := d.archivedTaskAggregates()
-	if err != nil {
-		return nil, err
-	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 	byKey := make(map[string]ProfileDayUsage, len(out))
 	for _, current := range out {
 		byKey[current.ProfileName+"\x00"+current.Date] = current
@@ -337,6 +376,46 @@ ORDER BY day`, days)
 		return out[i].ProfileName < out[j].ProfileName
 	})
 	return out, nil
+}
+
+// UsageSnapshot returns all-time per-profile usage, daily buckets for the past
+// `days` UTC calendar days, and exact ledger-wide summary (with true distinct
+// task count across multi-profile tasks and cold archives).
+func (d *DB) UsageSnapshot(days int) (UsageSnapshot, error) {
+	archived, err := d.archivedTaskAggregates()
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	byProfile, err := d.usageByProfileWithArchived(archived)
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	daily, err := d.usageDailyWithArchived(days, time.Now(), archived)
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	var distinctLiveTasks int
+	if err := d.QueryRow(`SELECT COUNT(DISTINCT task_id) FROM llm_usage`).Scan(&distinctLiveTasks); err != nil {
+		return UsageSnapshot{}, err
+	}
+	summary := UsageSummary{Tasks: distinctLiveTasks}
+	for _, p := range byProfile {
+		summary.Calls += p.Calls
+		summary.InputTokens += p.InputTokens
+		summary.OutputTokens += p.OutputTokens
+		summary.CacheReadTokens += p.CacheReadTokens
+		summary.CacheWriteTokens += p.CacheWriteTokens
+	}
+	for _, aggregate := range archived {
+		if len(aggregate.TokenProfiles) > 0 {
+			summary.Tasks++
+		}
+	}
+	return UsageSnapshot{
+		ByProfile: byProfile,
+		Daily:     daily,
+		Summary:   summary,
+	}, nil
 }
 
 // JudgeDayUsage is one UTC-day token bucket for the intercept fallback judge,
