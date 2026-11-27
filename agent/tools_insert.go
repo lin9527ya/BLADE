@@ -876,6 +876,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),
 		// steer_work：人可对某条正在运行的意图(work)实时注入纠偏指令（不打断、不丢进展）。
 		t.steerWorkTool(),
+		// reset_planner_context：清空规划者本轮上下文记忆，保留黑板图谱与在跑 Worker 并以干净上下文继续规划。
+		t.resetPlannerContextTool(),
 		// set_goals：人可在运行时给本任务补一个新的最终目标（规划者据此重判是否达成）。
 		t.setGoals(),
 		// set_constraints：人可在运行时给本任务补/改操作约束（allow/deny），约束 planner/worker 的探索边界。

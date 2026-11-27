@@ -10,6 +10,7 @@ import {
   Loader2Icon,
   PaperclipIcon,
   PlusIcon,
+  RotateCcwIcon,
   RotateCwIcon,
   SquareIcon,
   Trash2Icon,
@@ -35,6 +36,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
@@ -73,6 +75,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     creatingMain,
     confirmNewMain,
     setConfirmNewMain,
+    confirmResetPlanner,
+    setConfirmResetPlanner,
+    resettingPlanner,
+    clearPlannerTodos,
+    setClearPlannerTodos,
     listOpen,
     setListOpen,
     store,
@@ -131,6 +138,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     plannerStopping,
     sendPlannerChat,
     stopPlanner,
+    resetPlannerContext,
     sendWorkerChat,
     mainLoaded,
     sendMode,
@@ -317,6 +325,23 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                             <PlusIcon className="size-3.5" />
                           )}
                           新建
+                        </button>
+                      )}
+                      {role === "planner" && (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmResetPlanner(true)}
+                          disabled={resettingPlanner}
+                          title="清空 Planner 上下文记忆，以干净上下文继续规划（探索图谱与任务状态保留）"
+                          aria-label="清空 Planner 上下文"
+                          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-50"
+                        >
+                          {resettingPlanner ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <RotateCcwIcon className="size-3.5" />
+                          )}
+                          清空
                         </button>
                       )}
                     </div>
@@ -797,16 +822,31 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               </div>
             ) : isPlanner ? (
               <div className="border-t p-3">
-                <div className="mb-2 flex items-center justify-between gap-2 text-muted-foreground text-xs">
+                <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
                   <TodoPopover
                     seq={latestTodoSeq}
                     fetchDetail={(seq) => api.activityDetail(seq, taskId).then((r) => r.detail ?? "")}
                   />
-                  <span className="truncate">
+                  <span className="min-w-0 flex-1 truncate">
                     {plannerBusy
                       ? "Planner 规划轮次进行中：发送消息将在下一步动作前或本轮收束前注入"
                       : "直接与 Planner 对话：微调优先级、补充约束或提问（不直接派发 Worker）"}
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmResetPlanner(true)}
+                    disabled={resettingPlanner}
+                    title="清空 Planner 上下文记忆，以干净上下文继续规划"
+                    aria-label="清空 Planner 上下文记忆"
+                    className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-50"
+                  >
+                    {resettingPlanner ? (
+                      <Loader2Icon className="size-3 animate-spin" />
+                    ) : (
+                      <RotateCcwIcon className="size-3" />
+                    )}
+                    清空上下文
+                  </button>
                 </div>
                 <InputGroup className="min-h-9 has-disabled:opacity-100">
                   <MentionTextarea
@@ -976,6 +1016,44 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               <AlertDialogCancel disabled={creatingMain}>取消</AlertDialogCancel>
               <AlertDialogAction disabled={creatingMain} onClick={() => void createMainSession()}>
                 {creatingMain ? "开启中…" : "开启新会话"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
+          open={confirmResetPlanner}
+          onOpenChange={(open) => {
+            if (!open && !resettingPlanner) {
+              setConfirmResetPlanner(false);
+              setClearPlannerTodos(false);
+            }
+          }}
+        >
+          <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
+            <AlertDialogHeader>
+              <AlertDialogTitle>清空 Planner 上下文记忆？</AlertDialogTitle>
+              <AlertDialogDescription className="whitespace-normal break-words">
+                将清空本轮热对话历史、上一轮结论摘要并切换至全新底层上下文片段。探索图谱、目标、资产、战略提示和在跑
+                Worker 均保留；若任务正在运行，将立即唤醒 Planner 基于最新黑板快照以干净上下文继续规划。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <label
+              htmlFor="clear-planner-todos"
+              className="flex cursor-pointer items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs select-none"
+            >
+              <Checkbox
+                id="clear-planner-todos"
+                checked={clearPlannerTodos}
+                disabled={resettingPlanner}
+                onCheckedChange={(checked) => setClearPlannerTodos(checked === true)}
+              />
+              <span>同时清空 Planner 待办清单（TodoWrite）</span>
+            </label>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={resettingPlanner}>取消</AlertDialogCancel>
+              <AlertDialogAction disabled={resettingPlanner} onClick={() => void resetPlannerContext()}>
+                {resettingPlanner ? "清空中…" : "确认清空"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

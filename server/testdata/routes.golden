@@ -482,6 +482,7 @@ POST /api/tasks/{id}/mobile/ui-crawl	server.(*Server).runTaskMobileUICrawl-fm
 POST /api/tasks/{id}/mobile/unbind	server.(*Server).unbindTaskMobileDevice-fm
 POST /api/tasks/{id}/nodes/{nid}/follow-up-intent	server.(*Server).taskFollowUpIntent-fm
 POST /api/tasks/{id}/nodes/{nid}/techniques	server.(*Server).setIntentTechniques-fm
+POST /api/tasks/{id}/planner/context/reset	server.(*Server).resetPlannerContext-fm
 POST /api/tasks/{id}/planner/messages	server.(*Server).sendPlannerMessage-fm
 POST /api/tasks/{id}/planner/stop	server.(*Server).stopPlannerTurn-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm

@@ -1533,6 +1533,18 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };
   if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "status") return { running: false, queued: 0 };
   if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "stop") return { status: "stopped" };
+  if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "context" && seg[4] === "reset" && m === "POST") {
+    const task = mockTasks.find((item) => item.id === seg[1]);
+    const active = Boolean(task && task.status === "running" && !task.paused);
+    return {
+      ok: true,
+      context_seg: 1,
+      cleared_todos: Boolean(b.clear_todos),
+      was_running: false,
+      woken: active,
+      running: active,
+    };
+  }
   if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "messages" && m === "POST") {
     return { accepted: true, mode: "interactive", running: false };
   }

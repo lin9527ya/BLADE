@@ -530,3 +530,194 @@ func TestPlannerStopTurnDoesNotAutoRetryAndValidation(t *testing.T) {
 		t.Fatalf("deleting task message HTTP %d, want 409", w.Code)
 	}
 }
+
+func postResetPlannerContextHTTP(s *Server, taskID, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "/api/tasks/"+taskID+"/planner/context/reset", strings.NewReader(body))
+	r.SetPathValue("id", taskID)
+	w := httptest.NewRecorder()
+	s.resetPlannerContext(w, r)
+	return w
+}
+
+func TestPlannerResetContextAPIAndWakesCleanRound(t *testing.T) {
+	inCall1 := make(chan struct{})
+	call2Req := make(chan llm.CompletionRequest, 1)
+	var causeMu sync.Mutex
+	var call1Cause error
+
+	prov := &plannerChatTestProvider{
+		complete: func(ctx context.Context, callIdx int, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+			if callIdx == 0 {
+				close(inCall1)
+				<-ctx.Done()
+				causeMu.Lock()
+				call1Cause = context.Cause(ctx)
+				causeMu.Unlock()
+				return llm.Message{}, "", llm.Usage{}, ctx.Err()
+			}
+			select {
+			case call2Req <- req:
+			default:
+			}
+			return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("已切换干净上下文，重新评估目标。")}}, "end_turn", llm.Usage{}, nil
+		},
+	}
+	s, task, planner, cancel := setupPlannerChatServer(t, prov, 4, true)
+	s.engine.debounce = 2 * time.Second
+	if err := task.Store.SavePlannerState(tidOfTask(task), []db.PlannerTodoItem{{Content: "保留待办", Status: "pending"}}, "应被清空的旧结论ABC"); err != nil {
+		t.Fatal(err)
+	}
+
+	if w := postResetPlannerContextHTTP(s, "missing-task-id", `{}`); w.Code != 404 {
+		t.Fatalf("missing task reset HTTP %d, want 404", w.Code)
+	}
+	if w := postResetPlannerContextHTTP(s, task.ID, `{bad`); w.Code != 400 {
+		t.Fatalf("bad json reset HTTP %d, want 400", w.Code)
+	}
+
+	s.engine.started.Store(task.ID, true)
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		s.engine.plannerLoop(s.ctx, task)
+	}()
+	defer func() {
+		cancel()
+		<-loopDone
+	}()
+
+	task.Notify()
+	select {
+	case <-inCall1:
+	case <-time.After(4 * time.Second):
+		t.Fatal("round 1 did not start")
+	}
+
+	// Queue a mid-round steer that belongs to the dirty round and should be dropped on reset.
+	if w := postPlannerMsgHTTP(s, task.ID, "旧上下文的过时提示"); w.Code != 200 {
+		t.Fatalf("steer HTTP %d: %s", w.Code, w.Body.String())
+	}
+
+	start := time.Now()
+	resetW := postResetPlannerContextHTTP(s, task.ID, `{"clear_todos":false,"reason":"聚焦鉴权链"}`)
+	if resetW.Code != 200 {
+		t.Fatalf("resetPlannerContext HTTP %d: %s", resetW.Code, resetW.Body.String())
+	}
+	var res PlannerContextResetResult
+	if err := json.Unmarshal(resetW.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || res.ContextSeg != 1 || !res.WasRunning || !res.Woken || !res.Running || res.ClearedTodos {
+		t.Fatalf("unexpected reset response: %+v", res)
+	}
+	causeMu.Lock()
+	gotCause := call1Cause
+	causeMu.Unlock()
+	if !errors.Is(gotCause, agent.AbortPlannerContextReset) {
+		t.Fatalf("expected AbortPlannerContextReset, got %v", gotCause)
+	}
+
+	select {
+	case req2 := <-call2Req:
+		if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+			t.Fatalf("clean follow-up round took too long (%v), expected urgent wake bypassing debounce", elapsed)
+		}
+		if reqHasSubstring(req2, "应被清空的旧结论ABC") || reqHasSubstring(req2, "旧上下文的过时提示") {
+			t.Fatal("follow-up clean round leaked old conclusion or dropped steer")
+		}
+		if !reqHasSubstring(req2, "已清空 Planner 先前上下文记忆") || !reqHasSubstring(req2, "聚焦鉴权链") {
+			t.Fatal("follow-up clean round missing context_reset trigger guidance")
+		}
+		if !reqHasSubstring(req2, "保留待办") {
+			t.Fatal("clear_todos=false should preserve TodoWrite item")
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("clean follow-up round did not run after reset")
+	}
+
+	// Paused reset should NOT wake a new round and clear_todos=true wipes TodoWrite.
+	s.engine.paused.Store(task.ID, true)
+	pauseResetW := postResetPlannerContextHTTP(s, task.ID, `{"clear_todos":true}`)
+	if pauseResetW.Code != 200 {
+		t.Fatalf("paused reset HTTP %d: %s", pauseResetW.Code, pauseResetW.Body.String())
+	}
+	var res2 PlannerContextResetResult
+	_ = json.Unmarshal(pauseResetW.Body.Bytes(), &res2)
+	if res2.ContextSeg != 2 || !res2.ClearedTodos || res2.Woken || res2.Running {
+		t.Fatalf("unexpected paused reset result: %+v", res2)
+	}
+	stDB, _, _ := task.Store.LoadPlannerState(tidOfTask(task))
+	if stDB.ContextSeg != 2 || len(stDB.Todos) != 0 || stDB.LastRoundNote != "" {
+		t.Fatalf("expected DB todos cleared and context_seg=2, got %+v", stDB)
+	}
+	acts, _, err := task.Store.ActivityPage(db.ActivitySessionFilter{Worker: "planner"}, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundBoundary bool
+	for _, a := range acts {
+		if a.Kind == "round" && strings.Contains(a.Summary, "已清空 Planner 上下文记忆") {
+			foundBoundary = true
+		}
+	}
+	if !foundBoundary {
+		t.Fatalf("expected planner activity boundary divider, got %+v", acts)
+	}
+	_ = planner
+
+	if !s.engine.BeginDelete(task.ID) {
+		t.Fatal("BeginDelete returned false")
+	}
+	if w := postResetPlannerContextHTTP(s, task.ID, `{}`); w.Code != 409 {
+		t.Fatalf("deleting task reset HTTP %d, want 409", w.Code)
+	}
+}
+
+func TestMainAgentResetPlannerContextToolEndToEnd(t *testing.T) {
+	prov := &plannerChatTestProvider{
+		complete: func(_ context.Context, callIdx int, _ llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+			if callIdx == 0 {
+				return llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentBlock{{
+						Type:  llm.BlockToolUse,
+						ID:    "toolu_reset_1",
+						Name:  "reset_planner_context",
+						Input: json.RawMessage(`{"clear_todos":false,"reason":"主Agent要求重置"}`),
+					}},
+				}, "tool_use", llm.Usage{}, nil
+			}
+			return llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentBlock{llm.TextBlock("已清空 Planner 上下文，后续将从干净上下文继续规划。")},
+			}, "end_turn", llm.Usage{}, nil
+		},
+	}
+	s, task, _, _ := setupPlannerChatServer(t, prov, 4, true)
+	s.agents.bundles = map[string]*taskAgentBundle{}
+	if err := task.Store.SavePlannerState(tidOfTask(task), []db.PlannerTodoItem{{Content: "keep", Status: "pending"}}, "应被清空的旧摘要"); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := s.agentsForTask(task)
+	if got := bundle.plannerRuntime.poolSessionHint(); got != agent.PlannerSessionID(task.ExpID, 0) {
+		t.Fatalf("initial poolSessionHint=%q, want exp%d-planner", got, task.ExpID)
+	}
+	reply, err := bundle.main.Chat(t.Context(), tidOfTask(task), 0, s.m.Assets(), task.Store, task.Goal, "帮我清空 planner 上下文", nil, task.Notify, func() {}, task.NotifyGoal, task.NotifyHint)
+	if err != nil {
+		t.Fatalf("main.Chat failed: %v", err)
+	}
+	if !strings.Contains(reply, "已清空") {
+		t.Fatalf("unexpected reply: %s", reply)
+	}
+	st, found, err := task.Store.LoadPlannerState(tidOfTask(task))
+	if err != nil || !found {
+		t.Fatalf("LoadPlannerState err=%v found=%v", err, found)
+	}
+	if st.ContextSeg != 1 || st.LastRoundNote != "" || len(st.Todos) != 1 {
+		t.Fatalf("expected context_seg=1, empty note, preserved todo; got %+v", st)
+	}
+	if got := bundle.plannerRuntime.poolSessionHint(); got != agent.PlannerSessionID(task.ExpID, 1) {
+		t.Fatalf("post-reset poolSessionHint=%q, want exp%d-planner-s1", got, task.ExpID)
+	}
+}

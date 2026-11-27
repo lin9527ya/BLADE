@@ -223,6 +223,10 @@ type ToolSet struct {
 	// intent id (engine callback, wired by the planner): the worker injects it before
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.
 	steerWork func(intentID int64, msg string) error
+	// resetPlannerContext, if set, clears the task planner's accumulated context
+	// memory (hot session / last_round_note / transcript+noa segment) and wakes a
+	// clean planning round when active. Wired only for MainAgent.
+	resetPlannerContext func(ctx context.Context, clearTodos bool, reason string) (PlannerContextResetResult, error)
 	// rotateEgressFn 是「切换 Clash 出口」的宿主回调；nil = 未配置（工具返回可读拒绝）。
 	rotateEgressFn func(reason string) (string, error)
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
@@ -4981,6 +4985,55 @@ func (t *ToolSet) killWorkTool() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			return actool.Text(fmt.Sprintf("已向意图 %d 的 work 发送终止信号", id)), nil
+		})
+}
+
+// PlannerContextResetResult reports the outcome of clearing Planner context memory.
+type PlannerContextResetResult struct {
+	ContextSeg   int  `json:"context_seg"`
+	ClearedTodos bool `json:"cleared_todos"`
+	WasRunning   bool `json:"was_running"`
+	Woken        bool `json:"woken"`
+}
+
+// resetPlannerContextTool lets MainAgent wipe Planner's current context memory
+// (hot session, last_round_note, transcript/noa segment, optional todos) so
+// subsequent planning resumes cleanly from the authoritative blackboard state.
+func (t *ToolSet) resetPlannerContextTool() actool.CoreTool {
+	return t.writeExpTool("reset_planner_context",
+		"清空当前任务 Planner 的本轮及跨轮上下文记忆（内存热会话历史、上轮结论摘要 last_round_note、底层 transcript/noa 分段），让后续规划基于最新黑板快照以干净上下文重新开始；探索图谱、目标、资产、战略提示和在跑 Worker 均保留不受影响。当 Planner 陷入重复死循环、被旧错误假设误导或上下文过脏时调用。",
+		obj(map[string]any{
+			"clear_todos": map[string]any{"type": "boolean", "description": "是否同时清空 Planner 的 TodoWrite 持久化待办清单（默认 false，仅清上下文对话与摘要）"},
+			"reason":      str("清空上下文的原因或对下一轮干净规划的聚焦提示（可选，会写入交接提示）"),
+		}),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.resetPlannerContext == nil {
+				return actool.Errorf("reset_planner_context 当前不可用"), nil
+			}
+			var a struct {
+				ClearTodos bool   `json:"clear_todos"`
+				Reason     string `json:"reason"`
+			}
+			_ = json.Unmarshal(in, &a)
+			res, err := t.resetPlannerContext(ctx, a.ClearTodos, strings.TrimSpace(a.Reason))
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("reset_planner_context 失败: %v", err)), nil
+			}
+			msg := fmt.Sprintf("已清空 Planner 上下文记忆并切换至干净上下文 #%d（探索图谱、目标、资产与在跑 Worker 均保留）。", res.ContextSeg)
+			if res.ClearedTodos {
+				msg += " 已同时清空 Planner TodoWrite 待办清单。"
+			} else {
+				msg += " 已保留 Planner TodoWrite 待办清单。"
+			}
+			if res.WasRunning {
+				msg += " 已中断当前进行中的规划轮。"
+			}
+			if res.Woken {
+				msg += " 已立即唤醒 Planner 基于最新黑板快照继续规划。"
+			} else {
+				msg += " Planner 将在下次唤醒或收到消息时以干净上下文启动。"
+			}
+			return actool.Text(msg), nil
 		})
 }
 

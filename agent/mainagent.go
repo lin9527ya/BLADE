@@ -21,26 +21,27 @@ import (
 // (→planner) or direct high-priority intents (→frontier). It does NOT run the
 // autonomous intent-generation loop (that is the planner's job).
 type MainAgent struct {
-	findingRecorder FindingRecorder
-	prov            llm.Provider
-	model           string
-	tx              *transcript.Store                      // raw LLM conversation persistence (nil = off)
-	window          int                                    // context window in tokens (for compaction)
-	windowFn        func() int                             // optional dynamic task-chain minimum
-	maxTurns        int                                    // max agent turns per run (0 = unlimited)
-	proxyAddr       string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert     string                                 // recording proxy's CA cert path (HTTPS verify)
-	proxyFn         func() (string, string)                // dynamic resolver (proxy-pool failover); nil = static
-	proxyFailureFn  func(proxyURL string, err error)       // host callback on proxy dial/auth failure
-	webSearch       WebSearchOpts                          // web_search tool backend selection (off by default)
-	webSearchFn     func() WebSearchOpts                   // optional dynamic resolver (hot settings reload without rebuild)
-	workDir         string                                 // shared work dir (surfaced in prompt as artifact-output target)
-	steerWork       func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
-	rotateEgress    func(reason string) (string, error)    // host callback: switch Clash egress node
-	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
-	cacheOpts       cacheOptionResolvers                   // prompt-cache TTL/retention & thinking-preservation options
+	findingRecorder     FindingRecorder
+	prov                llm.Provider
+	model               string
+	tx                  *transcript.Store                                                                            // raw LLM conversation persistence (nil = off)
+	window              int                                                                                          // context window in tokens (for compaction)
+	windowFn            func() int                                                                                   // optional dynamic task-chain minimum
+	maxTurns            int                                                                                          // max agent turns per run (0 = unlimited)
+	proxyAddr           string                                                                                       // recording proxy for WebFetch (empty = direct)
+	proxyCACert         string                                                                                       // recording proxy's CA cert path (HTTPS verify)
+	proxyFn             func() (string, string)                                                                      // dynamic resolver (proxy-pool failover); nil = static
+	proxyFailureFn      func(proxyURL string, err error)                                                             // host callback on proxy dial/auth failure
+	webSearch           WebSearchOpts                                                                                // web_search tool backend selection (off by default)
+	webSearchFn         func() WebSearchOpts                                                                         // optional dynamic resolver (hot settings reload without rebuild)
+	workDir             string                                                                                       // shared work dir (surfaced in prompt as artifact-output target)
+	steerWork           func(intentID int64, msg string) error                                                       // engine callback: steer a running work (nil = off)
+	resetPlannerContext func(ctx context.Context, clearTodos bool, reason string) (PlannerContextResetResult, error) // engine callback: reset planner context (nil = off)
+	rotateEgress        func(reason string) (string, error)                                                          // host callback: switch Clash egress node
+	nonStreamingFn      func() bool                                                                                  // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn        func() bool                                                                                  // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn         func() int                                                                                   // resolver: per-reply output cap (nil/0 = send no cap)
+	cacheOpts           cacheOptionResolvers                                                                         // prompt-cache TTL/retention & thinking-preservation options
 	// compactionLLM optionally supplies an independent provider for context
 	// summarization. nil = use this agent's provider.
 	compactionLLM func() (CompactionLLM, bool)
@@ -155,6 +156,12 @@ func (m *MainAgent) SetWebSearchFunc(fn func() WebSearchOpts) { m.webSearchFn = 
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
 
+// SetResetPlannerContext wires the engine callback that lets the main agent's
+// reset_planner_context tool wipe the task planner's context memory and resume cleanly.
+func (m *MainAgent) SetResetPlannerContext(fn func(ctx context.Context, clearTodos bool, reason string) (PlannerContextResetResult, error)) {
+	m.resetPlannerContext = fn
+}
+
 // SetRotateEgressHandler wires the Clash egress rotation callback.
 func (m *MainAgent) SetRotateEgressHandler(fn func(reason string) (string, error)) {
 	m.rotateEgress = fn
@@ -171,6 +178,7 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
    - 人想"立刻测某个具体目标" → 用 add_intent 直接注入一条高优先级意图（priority 8-10）。系统会自动把已完成的任务拉回运行态、让 worker 领这条意图执行，跑完即回到已完成状态。
      **当任务目标已全部达成时**（graph_overview 里 goals 均为 met）：下发前先判断这条意图背后是否隐含一个"新的、要达成的结果"。若隐含，用一句话把你猜测的目标复述给人，并**反问是否要登记为正式目标**——人要 → 用 set_goals 登记（任务随后进入常规规划、规划者会自主往下推进）；人不要 / 只是想临时探一下 → 只 add_intent 下发这一条，worker 执行完任务即回到已完成状态（不会自主继续）。若这条意图明显只是一次性查证、不隐含新目标，直接 add_intent 即可，不必每次都问。
    - 人想"对某条正在运行的意图(work)实时纠偏（别再走 X、聚焦 Y）" → 用 steer_work（不打断、不丢已有进展，worker 下一步动作前生效）；先用 get_worker_output 看它在干嘛。方向整个错了则改用 add_intent 另下新意图。
+   - 人想"清空 Planner 上下文/让规划者忘掉旧对话和偏见、从干净上下文重新规划" → 用 reset_planner_context（不删图谱/资产/目标/在跑 Worker；默认保留 TodoWrite，仅当人明确要求连待办一起清空时传 clear_todos=true）。
    - 人想"新增一个要达成的最终目标" → 用 set_goals 增补目标。系统会把该目标写入任务图并**自动把已完成/暂停的任务拉回运行态继续跑**（规划者随后会据此重新判断是否达成），无需人工再点恢复。
    - 人想"增/改测试约束（允许/禁止某类操作，如『仅测当前端口』『禁止爆破』『只做被动侦察』）" → 用 set_constraints 登记（type=allow 允许 / type=deny 禁止）。约束会在下一轮规划时注入 planner/worker 的提示词以框定探索边界；也可在总览「约束管理」里增删改。
 3. 用人话简洁回复，说明你做了什么。
@@ -223,12 +231,13 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	}
 	tsx.SetTaskID(taskID)
 	tsx.SetCoverageEnabled(as == nil || as.CoverageEnabled(taskID))
-	tsx.SetNotify(notify)                      // 通用唤醒（无专用回调的写操作走它，debounced）
-	tsx.SetResumeTask(resume)                  // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
-	tsx.SetNotifyGoal(notifyGoal)              // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
-	tsx.SetNotifyHint(notifyHint)              // add_hint 新增提示 → 给 planner 记一条「人新增了 N 条战略提示：…」触发
-	tsx.steerWork = m.steerWork                // enable steer_work tool (nil = unavailable)
-	tsx.SetRotateEgressHandler(m.rotateEgress) // WAF 封禁出口时切换 Clash 节点
+	tsx.SetNotify(notify)                           // 通用唤醒（无专用回调的写操作走它，debounced）
+	tsx.SetResumeTask(resume)                       // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
+	tsx.SetNotifyGoal(notifyGoal)                   // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
+	tsx.SetNotifyHint(notifyHint)                   // add_hint 新增提示 → 给 planner 记一条「人新增了 N 条战略提示：…」触发
+	tsx.steerWork = m.steerWork                     // enable steer_work tool (nil = unavailable)
+	tsx.resetPlannerContext = m.resetPlannerContext // enable reset_planner_context tool (nil = unavailable)
+	tsx.SetRotateEgressHandler(m.rotateEgress)      // WAF 封禁出口时切换 Clash 节点
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), actool.DefaultTools()...)

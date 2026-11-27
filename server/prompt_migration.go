@@ -98,6 +98,10 @@ var reporterBuiltinPromptSHA256 = map[string]bool{
 	"1a02c50cb653942f6fd70fa649065c7fb676979125c0bdf47f373ccf7caeef32": true, // v0.9.26（复现步骤前后衔接与原始整包规范前）
 }
 
+var mainagentBuiltinPromptSHA256 = map[string]bool{
+	"12bb69ee0886c4fb9beb936d882021a91104860f1da69a5e3eda3d9e345cd399": true, // v0.9.33（加入 reset_planner_context 工具前）
+}
+
 var builtinToolDescSHA256 = map[string]map[string]bool{
 	"record_fact": {
 		"8b9446c8c11a2cd45f6f5c45bb541a732c399415a718b44b69479e4619078593": true, // v0.9.22
@@ -114,6 +118,7 @@ func migrateExplorationPrompts(pg *db.DB) {
 	}
 	migrateBuiltinPrompt(pg, "planner", plannerBuiltinPromptSHA256)
 	migrateBuiltinPrompt(pg, "worker", workerBuiltinPromptSHA256)
+	migrateBuiltinPrompt(pg, "mainagent", mainagentBuiltinPromptSHA256)
 	migratePromptWithHashes(pg, "reporter", agent.ReporterDefaultPrompt, reporterBuiltinPromptSHA256)
 	if err := pg.BackfillProposalEntries(); err != nil {
 		log.Printf("[leads] 历史提案索引补全失败: %v", err)

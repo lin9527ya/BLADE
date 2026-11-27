@@ -35,6 +35,7 @@ func (s *Server) registerChatRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/planner/messages", s.sendPlannerMessage)
 	mux.HandleFunc("GET /api/tasks/{id}/planner/status", s.plannerChatStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/planner/stop", s.stopPlannerTurn)
+	mux.HandleFunc("POST /api/tasks/{id}/planner/context/reset", s.resetPlannerContext)
 
 	// --- 管理后台 API (PostgreSQL 数据源; 新版数据库与管理后台方案) ---
 	mux.HandleFunc("DELETE /api/tasks/{id}", s.pgDeleteTask)

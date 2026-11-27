@@ -188,6 +188,7 @@ func (s *Server) taskPlannerState(w http.ResponseWriter, r *http.Request) {
 		"found":           found,
 		"todos":           todos,
 		"last_round_note": st.LastRoundNote,
+		"context_seg":     st.ContextSeg,
 		"updated_at":      updatedAt,
 	})
 }

@@ -911,11 +911,13 @@ CREATE TABLE IF NOT EXISTS task_worker_slots (
 -- 热会话/Planner 对象只在进程内有效；重启后靠它恢复串行链与等待理由，
 -- 不把便签写成事实，也不复制探索图。
 CREATE TABLE IF NOT EXISTS task_planner_state (
-    task_id        BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    todos          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    task_id         BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    todos           JSONB NOT NULL DEFAULT '[]'::jsonb,
     last_round_note TEXT NOT NULL DEFAULT '',
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    context_seg     INTEGER NOT NULL DEFAULT 0,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE task_planner_state ADD COLUMN IF NOT EXISTS context_seg INTEGER NOT NULL DEFAULT 0;
 
 -- 任务所属战役（0/1，可为空）。删战役只解绑任务、不删任务——任务是被归档与交付的单位，
 -- 不该因为"把作业归错了组"而消失。

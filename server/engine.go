@@ -237,6 +237,7 @@ type Engine struct {
 	planExecMu     sync.Mutex
 	plannerRunning map[string]bool
 	plannerCancel  map[string]context.CancelCauseFunc
+	plannerDone    map[string]chan struct{}
 	plannerRunSeq  map[string]uint64
 	plannerSteer   map[string][]string
 
@@ -751,6 +752,9 @@ func (e *Engine) ensurePlannerMapsLocked() {
 	if e.plannerCancel == nil {
 		e.plannerCancel = map[string]context.CancelCauseFunc{}
 	}
+	if e.plannerDone == nil {
+		e.plannerDone = map[string]chan struct{}{}
+	}
 	if e.plannerRunSeq == nil {
 		e.plannerRunSeq = map[string]uint64{}
 	}
@@ -787,6 +791,7 @@ func (e *Engine) beginPlannerRun(taskID string, parent context.Context) (context
 	e.plannerRunSeq[taskID] = seq
 	e.plannerRunning[taskID] = true
 	e.plannerCancel[taskID] = cancel
+	e.plannerDone[taskID] = make(chan struct{})
 	e.planExecMu.Unlock()
 	return runCtx, seq, cancel
 }
@@ -795,6 +800,10 @@ func (e *Engine) endPlannerRun(taskID string, seq uint64, cancel context.CancelC
 	cancel(nil)
 	e.planExecMu.Lock()
 	if e.plannerRunSeq[taskID] == seq {
+		if ch := e.plannerDone[taskID]; ch != nil {
+			close(ch)
+			delete(e.plannerDone, taskID)
+		}
 		delete(e.plannerRunning, taskID)
 		delete(e.plannerCancel, taskID)
 	}
@@ -815,6 +824,36 @@ func (e *Engine) cancelPlannerRun(taskID string, cause error, dropState bool) bo
 		return false
 	}
 	cancel(cause)
+	return true
+}
+
+func (e *Engine) cancelAndWaitPlannerRun(ctx context.Context, taskID string, cause error, dropState bool) bool {
+	if e == nil || taskID == "" {
+		return false
+	}
+	e.planExecMu.Lock()
+	cancel := e.plannerCancel[taskID]
+	done := e.plannerDone[taskID]
+	if dropState {
+		delete(e.plannerSteer, taskID)
+	}
+	e.planExecMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel(cause)
+	if done != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		timer := time.NewTimer(15 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+	}
 	return true
 }
 
@@ -864,6 +903,10 @@ func (e *Engine) clearPlannerState(taskID string) {
 	}
 	e.cancelPlannerRun(taskID, agent.AbortTaskDeleted, true)
 	e.planExecMu.Lock()
+	if ch := e.plannerDone[taskID]; ch != nil {
+		close(ch)
+		delete(e.plannerDone, taskID)
+	}
 	delete(e.plannerRunning, taskID)
 	delete(e.plannerCancel, taskID)
 	delete(e.plannerRunSeq, taskID)
@@ -880,6 +923,89 @@ func nonHumanChatTriggers(evs []agent.TriggerEvent) []agent.TriggerEvent {
 		out = append(out, ev)
 	}
 	return out
+}
+
+func nonPlannerControlTriggers(evs []agent.TriggerEvent) []agent.TriggerEvent {
+	var out []agent.TriggerEvent
+	for _, ev := range evs {
+		if ev.Kind == "human_chat" || ev.Kind == "context_reset" {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// PlannerContextResetResult reports the outcome of ResetPlannerContext.
+type PlannerContextResetResult struct {
+	OK           bool `json:"ok"`
+	ContextSeg   int  `json:"context_seg"`
+	ClearedTodos bool `json:"cleared_todos"`
+	WasRunning   bool `json:"was_running"`
+	Woken        bool `json:"woken"`
+	Running      bool `json:"running"`
+}
+
+// ResetPlannerContext interrupts any active Planner round (without pausing the task
+// or stopping workers), wipes Planner's accumulated context memory, advances the
+// persistent context segment, emits a timeline boundary, and immediately wakes a
+// clean planning round when the task is active.
+func (e *Engine) ResetPlannerContext(ctx context.Context, t *Task, planner *agent.Planner, clearTodos bool, reason string) (PlannerContextResetResult, error) {
+	if e == nil || t == nil {
+		return PlannerContextResetResult{}, fmt.Errorf("task unavailable")
+	}
+	if !e.beginTaskOperation(t.ID) {
+		return PlannerContextResetResult{}, errTaskControlConflict
+	}
+	defer e.decInflight(t.ID)
+
+	wasRunning := e.cancelAndWaitPlannerRun(ctx, t.ID, agent.AbortPlannerContextReset, true)
+	taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+	state, err := planner.ResetContext(t.Store, taskIDInt, clearTodos)
+	if err != nil {
+		return PlannerContextResetResult{}, err
+	}
+
+	summary := fmt.Sprintf("已清空 Planner 上下文记忆 · 切换至干净上下文 #%d", state.ContextSeg)
+	if clearTodos {
+		summary += "（含待办清单）"
+	}
+	detail := summary
+	if r := strings.TrimSpace(reason); r != "" {
+		detail += "\n原因/聚焦提示：" + r
+	}
+	e.emitActivity(t, db.Activity{
+		Worker:  "planner",
+		Kind:    "round",
+		Summary: summary,
+		Detail:  detail,
+	})
+	e.touch(t.ID)
+
+	lifecycle := t.lifecycleSnapshot()
+	paused := lifecycle.Paused || e.IsPaused(t.ID)
+	terminal := isTerminalStatus(lifecycle.Status)
+	settling := e.isSettling(t.ID)
+	openGoal := true
+	if hasOpen, gerr := t.Store.HasOpenGoal(); gerr == nil {
+		openGoal = hasOpen
+	}
+	woken := false
+	if planner != nil && !paused && !terminal && !settling && openGoal && e.Started(t.ID) && !e.IsDeleting(t.ID) {
+		t.NotifyUrgentTrigger(agent.TriggerEvent{
+			Kind:   "context_reset",
+			Detail: strings.TrimSpace(reason),
+		})
+		woken = true
+	}
+	return PlannerContextResetResult{
+		OK:           true,
+		ContextSeg:   state.ContextSeg,
+		ClearedTodos: clearTodos,
+		WasRunning:   wasRunning,
+		Woken:        woken,
+		Running:      woken || e.IsPlannerRunning(t.ID),
+	}, nil
 }
 
 // SendPlannerMessage records an operator message into the Planner session and
@@ -977,14 +1103,15 @@ func (e *Engine) SendPlannerMessage(t *Task, planner *agent.Planner, rawMsg, age
 			_, _, err := planner.Plan(curCtx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 			e.EndLLMCall(t.ID)
 			stoppedByUser := err != nil && errors.Is(context.Cause(curCtx), agent.AbortPlannerStoppedByUser)
+			contextReset := err != nil && errors.Is(context.Cause(curCtx), agent.AbortPlannerContextReset)
 			if stoppedByUser {
 				e.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: "（本轮规划已停止，可继续发送下一条提示）"})
-			} else if err != nil && curCtx.Err() == nil {
+			} else if !contextReset && err != nil && curCtx.Err() == nil {
 				e.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", IsError: true, Summary: "（Planner 回复出错：" + err.Error() + "）"})
 			}
 			e.touch(t.ID)
 
-			if stoppedByUser || err != nil || baseCtx.Err() != nil || e.IsDeleting(t.ID) {
+			if stoppedByUser || contextReset || err != nil || baseCtx.Err() != nil || e.IsDeleting(t.ID) {
 				break
 			}
 			leftover := e.drainAllPlannerSteer(t.ID)
@@ -1756,14 +1883,15 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				break
 			}
 		}
-		e.endPlannerRun(t.ID, roundSeq, roundCancel)
-		stoppedByUser := err != nil && errors.Is(context.Cause(roundCtx), agent.AbortPlannerStoppedByUser)
+		cause := context.Cause(roundCtx)
+		stoppedByUser := err != nil && errors.Is(cause, agent.AbortPlannerStoppedByUser)
+		contextReset := err != nil && errors.Is(cause, agent.AbortPlannerContextReset)
 		if err != nil {
 			// A pause/delete/settle cancels ectx too. Restoring regardless of
 			// ectx keeps the completed-work/finding context for the next round.
-			// 手动点停只中止当轮对话，不回填该轮触发的 human_chat。
-			if stoppedByUser {
-				t.restoreTriggers(nonHumanChatTriggers(triggers))
+			// 手动点停或清空上下文只中止当轮，不回填旧轮的 human_chat / context_reset。
+			if stoppedByUser || contextReset {
+				t.restoreTriggers(nonPlannerControlTriggers(triggers))
 			} else {
 				t.restoreTriggers(triggers)
 			}
@@ -1776,6 +1904,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			plannerFailRetries = 0
 			log.Printf("[planner] task %s 本轮规划已由操作员手动停止", t.ID)
 			e.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: "（本轮规划已停止，可继续发送下一条提示）"})
+		case contextReset:
+			plannerFailRetries = 0
+			log.Printf("[planner] task %s 本轮规划已因清空上下文记忆中断，等待干净上下文继续", t.ID)
 		case err != nil && ectx.Err() == nil:
 			if plannerFailRetries < 1 {
 				plannerFailRetries++
@@ -1807,7 +1938,8 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			log.Printf("[planner] task %s 规划完成", t.ID)
 			t.NotifyWorkers()
 		}
-		if leftover := e.drainAllPlannerSteer(t.ID); len(leftover) > 0 && !stoppedByUser && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID) {
+		e.endPlannerRun(t.ID, roundSeq, roundCancel)
+		if leftover := e.drainAllPlannerSteer(t.ID); len(leftover) > 0 && !stoppedByUser && !contextReset && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID) {
 			t.NotifyUrgentTrigger(agent.TriggerEvent{
 				Kind:         "human_chat",
 				HumanMessage: strings.Join(leftover, "\n"),

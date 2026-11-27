@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -44,6 +45,7 @@ type Planner struct {
 	// lastRoundNote 是上一轮的结论摘要。默认每轮开新会话（不 resume 全量 transcript），
 	// 用它承接「上一轮想清楚了什么、派了哪些意图、产出了哪些事实」，避免上下文膨胀。
 	lastRoundNote string
+	contextSeg    int
 	// lastYieldTotal / lowYieldStreak：收成（finding+foothold+credential）连续不增长时
 	// 强制复盘一次——比"每 5 轮"更贴近"卡住了"的真实信号。
 	// hot 是跨轮复用的规划会话。每轮结束后把历史折叠成「本轮输入 + 结论」两条消息
@@ -62,6 +64,7 @@ type Planner struct {
 	hotLastUsed         time.Time
 	hotSurface          string
 	hotExpID            int64
+	hotContextSeg       int
 	hotLastNodeCursor   int64
 	hotLastChangeCursor string
 	proxyAddr           string                  // recording proxy for WebFetch (empty = direct)
@@ -190,8 +193,17 @@ func (p *Planner) SetRotateEgressHandler(fn func(reason string) (string, error))
 func (p *Planner) nonStreaming() bool { return p.nonStreamingFn != nil && p.nonStreamingFn() }
 
 // PlannerSessionID is the transcript AND noa-archive session id of a task's planner
-// session (one accumulating conversation per task, shared by both stores).
-func PlannerSessionID(explorationID int64) string {
+// context segment. Segment 0 keeps the legacy "exp<N>-planner" name so existing
+// histories still load; each reset advances seg so transcript, noa archive, and
+// prompt cache prefix start completely clean.
+func PlannerSessionID(explorationID int64, seg ...int) string {
+	s := 0
+	if len(seg) > 0 && seg[0] > 0 {
+		s = seg[0]
+	}
+	if s > 0 {
+		return fmt.Sprintf("exp%d-planner-s%d", explorationID, s)
+	}
 	return fmt.Sprintf("exp%d-planner", explorationID)
 }
 
@@ -549,6 +561,13 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 	}
 	for _, ev := range evs {
 		switch ev.Kind {
+		case "context_reset":
+			line := "\n- 【已清空 Planner 先前上下文记忆（全新干净上下文）】"
+			if r := strings.TrimSpace(ev.Detail); r != "" {
+				line += "原因/聚焦提示：「" + clipLine(r, 300) + "」。"
+			}
+			line += "请忽略此前未落入黑板的旧推理包袱，直接依据下方权威探索图快照与当前目标队列继续规划下一步。"
+			b.WriteString(line)
 		case "human_chat":
 			msg := strings.TrimSpace(ev.HumanMessage)
 			if msg == "" {
@@ -1014,8 +1033,15 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	defer p.planMu.Unlock()
 	// 跨进程恢复：TodoWrite 清单与上一轮结论只在 Planner 对象里时，重启即丢；
 	// 每轮开始恢复一次、结束落库一次。恢复只影响规划便签，不写入事实图。
+	// 若本轮因清空上下文（AbortPlannerContextReset）而退出，跳过 savePlannerState，
+	// 防止并发退出时把旧摘要或旧清单重新写回数据库。
+	contextSeg := p.resolveContextSeg(ts, taskID)
 	plannerTodos := p.restorePlannerState(ctx, ts, taskID, ts.ID())
-	defer p.savePlannerState(ts, taskID, ts.ID(), plannerTodos)
+	defer func() {
+		if !errors.Is(context.Cause(ctx), AbortPlannerContextReset) {
+			p.savePlannerState(ts, taskID, ts.ID(), plannerTodos)
+		}
+	}()
 	_, proxyCA := p.proxySnapshot()
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
@@ -1117,7 +1143,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("planner", nil, clamped)
 	}
-	plannerSID := PlannerSessionID(ts.ID())
+	plannerSID := PlannerSessionID(ts.ID(), contextSeg)
 	opts := agentcore.Options{
 		Provider:                p.prov,
 		SystemPrompt:            system,
@@ -1208,6 +1234,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	//      达到上限后再折叠成「输入 + 结论」重新建基线，上下文体积有界。
 	//   ③ 冷会话（热会话不可用时兜底）——每轮新建，只带上一轮结论摘要。
 	p.invalidateHotSurface(plannerSurfaceFingerprint(strings.Join(opts.SystemPrompt, "\x00")+fmt.Sprintf("|%d|%s|%t|%d|%d|%s|%t|%s", opts.MaxTurns, opts.MaxDuration, opts.NonStreaming, opts.MaxTokens, win, opts.WebFetchCACert, noaSt.enabled, def.SurfaceSalt), opts.Tools))
+	p.invalidateHotContextSeg(ts.ID(), contextSeg)
 	var s *agentcore.Session
 	keepSession := false
 	useDelta := false
@@ -1283,7 +1310,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 				emit(r)
 			}
 		})
+	contextReset := errors.Is(context.Cause(ctx), AbortPlannerContextReset)
 	switch {
+	case contextReset:
+		// 清空上下文中断的半轮结果绝不能污染新上下文或回填 hot / lastRoundNote。
+		p.dropHotSession()
+		s = nil
+		keepSession = false
 	case err == nil && !resumePlannerSession():
 		// 成功：保留增量热会话前缀（未超窗时不 Reset），超出消息/token 上限后折叠重置。
 		p.rememberRound(ts, prevMaxIntentID, lastText)
@@ -1291,7 +1324,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if !keepSession {
 			adoptedCleanup = cleanup
 		}
-		p.parkHotSession(s, tsx, input, runText, ts.ID(), nextNodeCursor, nextChangeCursor, adoptedCleanup)
+		p.parkHotSession(s, tsx, input, runText, ts.ID(), contextSeg, nextNodeCursor, nextChangeCursor, adoptedCleanup)
 		if adoptedCleanup != nil {
 			releaseRoundResources = false
 		}
@@ -1416,7 +1449,7 @@ func (p *Planner) takeHotSession() (*agentcore.Session, *ToolSet, int64, int64, 
 // parkHotSession 保留或折叠热会话作为下一轮的前缀：在安全窗口内不调用 Reset()，
 // 保留 Turn 1 完整黑板前缀及后续增量对话吃满 KV 缓存；超出消息/token 阈值时折叠并重置游标，
 // 让下轮重建干净基准快照，确保上下文体积始终有界。
-func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string, expID, nextNodeCursor int64, nextChangeCursor string, cleanups ...func()) {
+func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInput, lastText string, expID int64, contextSeg int, nextNodeCursor int64, nextChangeCursor string, cleanups ...func()) {
 	if s == nil || tools == nil {
 		return
 	}
@@ -1445,6 +1478,7 @@ func (p *Planner) parkHotSession(s *agentcore.Session, tools *ToolSet, roundInpu
 	p.hotRounds++
 	p.hotLastUsed = time.Now()
 	p.hotExpID = expID
+	p.hotContextSeg = contextSeg
 	p.hotLastNodeCursor = nextNodeCursor
 	p.hotLastChangeCursor = nextChangeCursor
 }
@@ -1506,6 +1540,57 @@ func (p *Planner) CloseHotSession() {
 	p.planMu.Lock()
 	defer p.planMu.Unlock()
 	p.dropHotSession()
+}
+
+// resolveContextSeg returns the task's current persisted context segment under
+// planMu so transcript/noa/cache keys match DB across resets and planner rebuilds.
+func (p *Planner) resolveContextSeg(ts *db.ExplorationStore, taskID int64) int {
+	if taskID > 0 && ts != nil {
+		if st, found, err := ts.LoadPlannerState(taskID); err == nil {
+			if !found {
+				p.contextSeg = 0
+				return 0
+			}
+			p.contextSeg = st.ContextSeg
+			return st.ContextSeg
+		}
+	}
+	return p.contextSeg
+}
+
+// ResetContext drops the planner's in-memory hot session and cross-round conclusion
+// summary, optionally clears persisted TodoWrite items, and advances the DB context
+// segment so subsequent rounds start cleanly from the authoritative blackboard view.
+func (p *Planner) ResetContext(ts *db.ExplorationStore, taskID int64, clearTodos bool) (db.PlannerState, error) {
+	if p == nil {
+		if ts == nil || taskID <= 0 {
+			return db.PlannerState{}, nil
+		}
+		return ts.ResetPlannerContext(taskID, clearTodos)
+	}
+	p.planMu.Lock()
+	defer p.planMu.Unlock()
+	p.dropHotSession()
+	p.lastRoundNote = ""
+	if ts != nil {
+		expID := ts.ID()
+		if clearTodos {
+			p.todoMu.Lock()
+			p.todos[expID] = actool.NewTodoStore()
+			p.todoLoaded[expID] = true
+			p.todoMu.Unlock()
+		}
+		if taskID > 0 {
+			st, err := ts.ResetPlannerContext(taskID, clearTodos)
+			if err != nil {
+				return db.PlannerState{}, err
+			}
+			p.contextSeg = st.ContextSeg
+			return st, nil
+		}
+	}
+	p.contextSeg++
+	return db.PlannerState{ContextSeg: p.contextSeg}, nil
 }
 
 // resumePlannerSession 是回滚开关：默认 false（每轮新会话 + 结论摘要），
@@ -1589,13 +1674,21 @@ func (p *Planner) invalidateHotSurface(surface string) {
 	p.hotSurface = surface
 }
 
+func (p *Planner) invalidateHotContextSeg(expID int64, seg int) {
+	p.hotMu.Lock()
+	defer p.hotMu.Unlock()
+	if p.hot != nil && p.hotExpID == expID && p.hotContextSeg != seg {
+		p.closeHotLocked()
+	}
+}
+
 // Preserve event order after selecting priority; ordinary batches must not bury
 // human goals, new capabilities or contradictions during dense tool streams.
 func TriggerPriority(kind string) int {
 	switch kind {
 	case "human_chat":
 		return 4
-	case "goal", "goal_edited", "goal_deleted", "goal_abandoned", "hint", "finding", "contradiction", "scope_request":
+	case "context_reset", "goal", "goal_edited", "goal_deleted", "goal_abandoned", "hint", "finding", "contradiction", "scope_request":
 		return 3
 	case "capability_fact", "lead_fact", "proposal", "foothold", "credential", "supersede":
 		return 2
@@ -1642,5 +1735,5 @@ func (p *Planner) closeHotLocked() {
 	}
 	p.hotCleanup = nil
 	p.hot, p.hotTools, p.hotRounds = nil, nil, 0
-	p.hotExpID, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, ""
+	p.hotExpID, p.hotContextSeg, p.hotLastNodeCursor, p.hotLastChangeCursor = 0, 0, 0, ""
 }

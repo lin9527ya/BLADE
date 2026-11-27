@@ -16,33 +16,42 @@ type PlannerTodoItem struct {
 }
 
 // PlannerState is the planner's cross-process scratchpad. It deliberately holds
-// only planning notes and the last conclusion — never facts, findings or evidence.
+// only planning notes, todo items, and the active context segment — never facts,
+// findings or evidence.
 type PlannerState struct {
 	Todos         []PlannerTodoItem
 	LastRoundNote string
+	ContextSeg    int
 	UpdatedAt     time.Time
 }
 
-// LoadPlannerState reads the planner scratchpad for a task in this exploration.
-// found=false means no round has been persisted yet (a new task), not an error.
-func (s *ExplorationStore) LoadPlannerState(taskID int64) (PlannerState, bool, error) {
+func scanPlannerState(scan func(...any) error) (PlannerState, error) {
 	var out PlannerState
 	var raw []byte
-	err := s.db.QueryRow(`SELECT p.todos, p.last_round_note, p.updated_at
-FROM task_planner_state p
-JOIN tasks t ON t.id=p.task_id AND t.exploration_id=$2 AND t.deleted_at IS NULL
-WHERE p.task_id=$1`, taskID, s.expID).Scan(&raw, &out.LastRoundNote, &out.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return PlannerState{}, false, nil
-		}
-		return PlannerState{}, false, err
+	if err := scan(&raw, &out.LastRoundNote, &out.ContextSeg, &out.UpdatedAt); err != nil {
+		return PlannerState{}, err
 	}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &out.Todos)
 	}
 	if out.Todos == nil {
 		out.Todos = []PlannerTodoItem{}
+	}
+	return out, nil
+}
+
+// LoadPlannerState reads the planner scratchpad for a task in this exploration.
+// found=false means no round has been persisted yet (a new task), not an error.
+func (s *ExplorationStore) LoadPlannerState(taskID int64) (PlannerState, bool, error) {
+	out, err := scanPlannerState(s.db.QueryRow(`SELECT p.todos, p.last_round_note, COALESCE(p.context_seg, 0), p.updated_at
+FROM task_planner_state p
+JOIN tasks t ON t.id=p.task_id AND t.exploration_id=$2 AND t.deleted_at IS NULL
+WHERE p.task_id=$1`, taskID, s.expID).Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PlannerState{}, false, nil
+		}
+		return PlannerState{}, false, err
 	}
 	return out, true, nil
 }
@@ -64,4 +73,26 @@ ON CONFLICT (task_id) DO UPDATE SET
   todos=EXCLUDED.todos, last_round_note=EXCLUDED.last_round_note, updated_at=now()`,
 		taskID, string(raw), lastRoundNote, s.expID)
 	return err
+}
+
+// ResetPlannerContext advances context_seg, clears last_round_note, and optionally
+// clears persisted todos for taskID while keeping the exploration graph intact.
+func (s *ExplorationStore) ResetPlannerContext(taskID int64, clearTodos bool) (PlannerState, error) {
+	out, err := scanPlannerState(s.db.QueryRow(`INSERT INTO task_planner_state(task_id, todos, last_round_note, context_seg, updated_at)
+SELECT $1, '[]'::jsonb, '', 1, now()
+WHERE EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND exploration_id=$2 AND deleted_at IS NULL)
+ON CONFLICT (task_id) DO UPDATE SET
+  todos = CASE WHEN $3 THEN '[]'::jsonb ELSE task_planner_state.todos END,
+  last_round_note = '',
+  context_seg = COALESCE(task_planner_state.context_seg, 0) + 1,
+  updated_at = now()
+RETURNING todos, last_round_note, COALESCE(context_seg, 0), updated_at`,
+		taskID, s.expID, clearTodos).Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PlannerState{}, nil
+		}
+		return PlannerState{}, err
+	}
+	return out, nil
 }

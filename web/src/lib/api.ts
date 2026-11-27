@@ -150,6 +150,7 @@ import type {
   NotificationMeta,
   OpsecKnowledgeResponse,
   PinningAlert,
+  PlannerContextResetResult,
   PlannerMessageResult,
   Playbook,
   PlaybookDraft,
@@ -666,6 +667,11 @@ export const api = {
   plannerStatus: (taskId: string) =>
     get<{ running: boolean; queued: number }>(`/tasks/${encodeURIComponent(taskId)}/planner/status`),
   stopPlanner: (taskId: string) => post<{ status: string }>(`/tasks/${encodeURIComponent(taskId)}/planner/stop`, {}),
+  resetPlannerContext: (taskId: string, clearTodos = false, reason = "") =>
+    post<PlannerContextResetResult>(`/tasks/${encodeURIComponent(taskId)}/planner/context/reset`, {
+      clear_todos: clearTodos,
+      reason,
+    }),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
   // 重跑一条没跑成功的意图(blocked/exhausted/stopped/no_output)：置回 open，worker 会重新认领、从头再跑。
   rerunIntent: (taskId: string, intentId: string) =>

@@ -415,6 +415,15 @@ export interface PlannerMessageResult {
   paused?: boolean;
 }
 
+export interface PlannerContextResetResult {
+  ok: boolean;
+  context_seg: number;
+  cleared_todos: boolean;
+  was_running: boolean;
+  woken: boolean;
+  running: boolean;
+}
+
 export interface TaskLiveEvent {
   task: Task;
   stats: TaskLiveStats;

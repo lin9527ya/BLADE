@@ -189,7 +189,7 @@ func TestHotSessionPreservesAboveHalfWindow(t *testing.T) {
 		assistantMsg(strings.Repeat("x", 440_000)), // 110K tokens
 	)
 	beforeLen := len(p.hot.Messages())
-	p.parkHotSession(p.hot, p.hotTools, "round-in", "ok", ts.ID(), 1, "ev1:1")
+	p.parkHotSession(p.hot, p.hotTools, "round-in", "ok", ts.ID(), 0, 1, "ev1:1")
 	if len(p.hot.Messages()) != beforeLen {
 		t.Fatalf("110K/200K (55%%) 热会话不应被提前 Reset（len %d -> %d）", beforeLen, len(p.hot.Messages()))
 	}
@@ -211,7 +211,7 @@ func TestParkHotSessionAboveHalfWindow(t *testing.T) {
 		llm.UserText("round-1-input"),
 		assistantMsg(strings.Repeat("x", 440_000)),
 	)
-	p.parkHotSession(s, tools, "round-1-input", "round-1-out", 42, 1, "ev1:1")
+	p.parkHotSession(s, tools, "round-1-input", "round-1-out", 42, 0, 1, "ev1:1")
 	if p.hot != s || len(p.hot.Messages()) != 2 {
 		t.Fatalf("110K/200K (55%%) 热会话应保留，hot=%v len=%d", p.hot == s, len(p.hot.Messages()))
 	}
@@ -221,7 +221,7 @@ func TestParkHotSessionAboveHalfWindow(t *testing.T) {
 
 	// 再追加 200KB（+50K tokens，累计 ~160K > 150K 3/4 窗）后，再次 park 应触发 Reset + 折叠成「本轮输入 + 结论」两条消息。
 	p.hot.AppendMessages(assistantMsg(strings.Repeat("y", 200_000)))
-	p.parkHotSession(p.hot, p.hotTools, "round-2-input", "round-2-out", 42, 2, "ev2:1")
+	p.parkHotSession(p.hot, p.hotTools, "round-2-input", "round-2-out", 42, 0, 2, "ev2:1")
 	if len(p.hot.Messages()) != 2 {
 		t.Fatalf("超过 75%% 上限后应折叠成 2 条消息，got %d", len(p.hot.Messages()))
 	}

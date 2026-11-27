@@ -125,6 +125,9 @@ export function useSessionsState(taskId: string) {
   const [currentSeg, setCurrentSeg] = React.useState(0);
   const [creatingMain, setCreatingMain] = React.useState(false);
   const [confirmNewMain, setConfirmNewMain] = React.useState(false);
+  const [confirmResetPlanner, setConfirmResetPlanner] = React.useState(false);
+  const [resettingPlanner, setResettingPlanner] = React.useState(false);
+  const [clearPlannerTodos, setClearPlannerTodos] = React.useState(false);
   // 手机端（<lg）会话列表默认折叠：屏幕高度本就紧张，列表若固定占掉 10~15rem，
   // 下方的会话记录会被挤到只剩标题与输入框。折叠后记录区拿到几乎全部高度，
   // 点标题栏可展开选会话，选完自动收起。桌面端不受影响（lg 起始终展开）。
@@ -555,6 +558,9 @@ export function useSessionsState(taskId: string) {
     setPlannerSending(false);
     setPlannerStopping(false);
     setPlannerRunningState(null);
+    setConfirmResetPlanner(false);
+    setResettingPlanner(false);
+    setClearPlannerTodos(false);
     plannerStatusRequestRef.current++;
     setActiveId(MAIN_ID); // a stale worker id from the previous task must not leak in
     // 全局播报/任务链接的 ?session=intent:<id> 深链：首屏定位到产生该节点的会话。
@@ -1354,6 +1360,28 @@ export function useSessionsState(taskId: string) {
       .finally(() => setPlannerStopping(false));
   }
 
+  async function resetPlannerContext() {
+    if (resettingPlanner) return;
+    setResettingPlanner(true);
+    plannerStatusRequestRef.current++;
+    try {
+      const res = await api.resetPlannerContext(taskId, clearPlannerTodos);
+      plannerStatusRequestRef.current++;
+      setPlannerRunningState(res.running);
+      setConfirmResetPlanner(false);
+      setClearPlannerTodos(false);
+      if (res.woken) {
+        toast.success(`已清空 Planner 上下文（#${res.context_seg}），正在以干净上下文继续规划`);
+      } else {
+        toast.success(`已清空 Planner 上下文（#${res.context_seg}），后续将以干净上下文启动`);
+      }
+    } catch (e) {
+      toast.error(`清空失败：${(e as Error).message || "请稍后重试"}`);
+    } finally {
+      setResettingPlanner(false);
+    }
+  }
+
   function sendPlannerChat() {
     const message = plannerMessage.trim();
     if (!message || plannerSending) return;
@@ -1455,6 +1483,11 @@ export function useSessionsState(taskId: string) {
     setCreatingMain,
     confirmNewMain,
     setConfirmNewMain,
+    confirmResetPlanner,
+    setConfirmResetPlanner,
+    resettingPlanner,
+    clearPlannerTodos,
+    setClearPlannerTodos,
     listOpen,
     setListOpen,
     store,
@@ -1573,6 +1606,7 @@ export function useSessionsState(taskId: string) {
     plannerStopping,
     sendPlannerChat,
     stopPlanner,
+    resetPlannerContext,
     sendWorkerChat,
     mainLoaded,
     sendMode,

@@ -130,7 +130,13 @@ func (r *taskLLMRuntime) poolSessionHint() string {
 	if t, _ := r.s.m.Task(r.taskID); t != nil && t.ExpID > 0 {
 		switch r.agentKey {
 		case "planner":
-			return agent.PlannerSessionID(t.ExpID)
+			seg := 0
+			if t.Store != nil {
+				if st, found, err := t.Store.LoadPlannerState(tidOfTask(t)); err == nil && found {
+					seg = st.ContextSeg
+				}
+			}
+			return agent.PlannerSessionID(t.ExpID, seg)
 		}
 	}
 	return ""
@@ -1380,6 +1386,25 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetWebSearchFunc(func() agent.WebSearchOpts { return s.webSearchFor("mainagent") })
 	main.SetSteerWork(s.engine.SteerWork) // steer_work：人对运行中 work 实时纠偏
+	main.SetResetPlannerContext(func(ctx context.Context, clearTodos bool, reason string) (agent.PlannerContextResetResult, error) {
+		if t == nil {
+			return agent.PlannerContextResetResult{}, fmt.Errorf("当前任务不可用")
+		}
+		var pl *agent.Planner
+		if s.taskRuntimeAvailable(t, "planner") {
+			pl, _ = s.engine.snapshotFor(t)
+		}
+		res, err := s.engine.ResetPlannerContext(ctx, t, pl, clearTodos, reason)
+		if err != nil {
+			return agent.PlannerContextResetResult{}, err
+		}
+		return agent.PlannerContextResetResult{
+			ContextSeg:   res.ContextSeg,
+			ClearedTodos: res.ClearedTodos,
+			WasRunning:   res.WasRunning,
+			Woken:        res.Woken,
+		}, nil
+	})
 	// Clash 出口切换：WAF 封禁出口时，worker/planner/主 Agent 都能调用 rotate_egress。
 	// 任务只切自己绑定的 Selector 组，不会移动其它任务的出口 IP；真正的安全校验
 	// （只选非 DIRECT 节点、验证出口 IP 变化、失败不直连）在 Manager.RotateEgressForTask。

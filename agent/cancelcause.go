@@ -67,6 +67,8 @@ var (
 		"本轮对话已正常结束，服务端正在释放该轮 context 资源。这不是运行中断；若它出现在中断消息中，说明取消与收场事件发生了竞态")
 	AbortPlannerStoppedByUser = cause("planner_stopped_by_user", "用户停止了本轮规划",
 		"用户在会话页点击了停止，主动中止本轮 Planner 思考与工具执行。已经写入的意图与活动记录保留，任务和 Worker 不受影响，可继续向 Planner 发送消息")
+	AbortPlannerContextReset = cause("planner_context_reset", "清空了 Planner 上下文记忆",
+		"操作者或主 Agent 清空了 Planner 当前上下文记忆，主动中断本轮思考与工具调用，随后将以干净上下文重新研判。已经写入的意图、事实、目标与在跑 Worker 均保留不受影响")
 
 	// 托管长任务（P13 执行台账）。这三个原因也写进 tool_executions 台账的
 	// error/cancel_note 字段——同一个解释只维护一份，工具回给模型看的就是它。

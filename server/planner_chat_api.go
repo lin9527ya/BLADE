@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -97,4 +98,46 @@ func (s *Server) stopPlannerTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopping"})
+}
+
+func (s *Server) resetPlannerContext(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.PathValue("id"))
+	if t == nil {
+		writeErr(w, http.StatusNotFound, "task not found")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkerMessageBytes)
+	var req struct {
+		ClearTodos bool   `json:"clear_todos"`
+		Reason     string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大")
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
+		return
+	}
+	if s.engine.IsDeleting(t.ID) {
+		writeErr(w, http.StatusConflict, "任务正在删除，无法清空 Planner 上下文")
+		return
+	}
+	lifecycle := t.lifecycleSnapshot()
+	if lifecycle.Queued {
+		writeErr(w, http.StatusConflict, "排队中的任务尚未启动，无法操作 Planner 上下文")
+		return
+	}
+	planner, _ := s.engine.snapshotFor(t)
+	res, err := s.engine.ResetPlannerContext(r.Context(), t, planner, req.ClearTodos, req.Reason)
+	if err != nil {
+		if errors.Is(err, errTaskControlConflict) {
+			writeErr(w, http.StatusConflict, "任务正在删除或状态变更，无法清空 Planner 上下文")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
