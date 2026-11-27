@@ -69,6 +69,53 @@ func TestPGListModelsPreservesCustomHeadersAndRejectsBadProxy(t *testing.T) {
 	}
 }
 
+func TestPGListModelsAnthropicStripsV1AndFallsBackToBearer(t *testing.T) {
+	s := &Server{m: &Manager{}}
+
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-relay" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"bearer required"}`))
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4-6"}]}`))
+	}))
+	defer upstream.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"provider": "anthropic",
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "sk-relay",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/models", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.pgListModels(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pgListModels status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var res struct {
+		OK     bool     `json:"ok"`
+		Models []string `json:"models"`
+		Error  string   `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if !res.OK || len(res.Models) != 1 || res.Models[0] != "claude-sonnet-4-6" {
+		t.Fatalf("unexpected pgListModels response: %+v (paths=%v)", res, paths)
+	}
+	for _, p := range paths {
+		if strings.Contains(p, "/v1/v1/") {
+			t.Fatalf("pgListModels produced double /v1 path: %v", paths)
+		}
+	}
+}
+
 func TestTestLLMForwardsMaxTokensFieldAndCustomMaxTokens(t *testing.T) {
 	s := &Server{m: &Manager{}}
 

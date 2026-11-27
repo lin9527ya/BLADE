@@ -412,10 +412,17 @@ export function ProfileDialog({
             <Input
               id="p-base-url"
               className="font-mono"
-              placeholder="https://api.openai.com/v1"
+              placeholder={
+                format === "anthropic" ? "https://api.anthropic.com（或 https://域名/v1）" : "https://api.openai.com/v1"
+              }
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
             />
+            {format === "anthropic" && /\/v1(?:\/messages)?\/?$/i.test(baseUrl.trim()) && (
+              <p className="text-muted-foreground text-xs">
+                已自动兼容末尾路径，请求时将规范化并发送至 <code>/v1/messages</code>（无需手动删除 <code>/v1</code>）。
+              </p>
+            )}
           </div>
 
           <div className="grid gap-2">

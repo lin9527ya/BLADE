@@ -2791,14 +2791,17 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		b := strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(baseURL, "/chat/completions"), "/responses"), "/")
+		b := agent.NormalizeBaseURL(provider, baseURL)
 		candidates = append(candidates, candidate{b + "/models", bearerHdr()})
 	default: // anthropic
 		if baseURL == "" {
 			baseURL = "https://api.anthropic.com"
 		}
-		b := strings.TrimRight(strings.TrimSuffix(baseURL, "/v1/messages"), "/")
-		candidates = append(candidates, candidate{b + "/v1/models", anthropicHdr()})
+		b := agent.NormalizeBaseURL("anthropic", baseURL)
+		candidates = append(candidates,
+			candidate{b + "/v1/models", anthropicHdr()},
+			candidate{b + "/v1/models", bearerHdr()},
+		)
 		// Fallback for Anthropic-compatible third parties whose model list lives on
 		// the OpenAI path: strip a trailing /anthropic and try the OpenAI endpoint.
 		if root := strings.TrimRight(strings.TrimSuffix(b, "/anthropic"), "/"); root != b {

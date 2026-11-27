@@ -270,7 +270,7 @@ func FromEnv() (Config, bool) {
 	}
 
 	c := Config{
-		BaseURL:          strings.TrimSpace(os.Getenv("BLADE_LLM_BASE_URL")),
+		BaseURL:          NormalizeBaseURL(prov, os.Getenv("BLADE_LLM_BASE_URL")),
 		Model:            strings.TrimSpace(os.Getenv("BLADE_LLM_MODEL")),
 		Proxy:            strings.TrimSpace(os.Getenv("BLADE_LLM_PROXY")),
 		ThinkingType:     strings.TrimSpace(os.Getenv("BLADE_LLM_THINKING_TYPE")),
@@ -338,6 +338,27 @@ func FromEnv() (Config, bool) {
 	return c, true
 }
 
+// NormalizeBaseURL trims whitespace/trailing slashes and strips known endpoint
+// path suffixes so ConfigFrom, FromEnv, and model probing accept either a root
+// base URL or a full/versioned URL (including Anthropic URLs ending in /v1).
+func NormalizeBaseURL(provider, baseURL string) string {
+	b := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if b == "" {
+		return ""
+	}
+	switch strings.TrimSpace(provider) {
+	case "openai":
+		return strings.TrimRight(strings.TrimSuffix(b, "/chat/completions"), "/")
+	case "openai-responses":
+		return strings.TrimRight(strings.TrimSuffix(b, "/responses"), "/")
+	default:
+		// Norma's anthropic provider appends "/v1/messages", so tolerate either a
+		// pasted full /v1/messages endpoint or an OpenAI-style /v1 base URL.
+		b = strings.TrimRight(strings.TrimSuffix(b, "/v1/messages"), "/")
+		return strings.TrimRight(strings.TrimSuffix(b, "/v1"), "/")
+	}
+}
+
 // ConfigFrom builds a Config from UI-provided strings (provider defaults to
 // anthropic; model defaults per provider). Inputs are trimmed and the base URL
 // is normalized to the API base the provider expects (the provider appends the
@@ -345,7 +366,7 @@ func FromEnv() (Config, bool) {
 func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 	c := Config{
 		Model:   strings.TrimSpace(model),
-		BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		BaseURL: NormalizeBaseURL(provider, baseURL),
 		APIKey:  strings.TrimSpace(apiKey),
 		Proxy:   strings.TrimSpace(proxy),
 		Stream:  true, // 默认流式;调用方按 profile 覆盖
@@ -353,22 +374,16 @@ func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 	switch strings.TrimSpace(provider) {
 	case "openai":
 		c.Format = llm.FormatOpenAI
-		// provider appends "/chat/completions"; tolerate a full endpoint URL.
-		c.BaseURL = strings.TrimRight(strings.TrimSuffix(c.BaseURL, "/chat/completions"), "/")
 		if c.Model == "" {
 			c.Model = "gpt-4o"
 		}
 	case "openai-responses":
 		c.Format = llm.FormatOpenAIResponses
-		// provider appends "/responses"; tolerate a full endpoint URL.
-		c.BaseURL = strings.TrimRight(strings.TrimSuffix(c.BaseURL, "/responses"), "/")
 		if c.Model == "" {
 			c.Model = "gpt-5"
 		}
 	default:
 		c.Format = llm.FormatAnthropic
-		// provider appends "/v1/messages".
-		c.BaseURL = strings.TrimRight(strings.TrimSuffix(c.BaseURL, "/v1/messages"), "/")
 		if c.Model == "" {
 			c.Model = "claude-opus-4-8"
 		}
