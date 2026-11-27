@@ -32,6 +32,9 @@ func (s *Server) registerChatRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/chat/upload", s.chatUpload) // 方式1 文件上传:落到会话/任务工作目录 uploads/
 	mux.HandleFunc("GET /api/tasks/{id}/chat/status", s.taskChatStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/chat/stop", s.stopChat)
+	mux.HandleFunc("POST /api/tasks/{id}/planner/messages", s.sendPlannerMessage)
+	mux.HandleFunc("GET /api/tasks/{id}/planner/status", s.plannerChatStatus)
+	mux.HandleFunc("POST /api/tasks/{id}/planner/stop", s.stopPlannerTurn)
 
 	// --- 管理后台 API (PostgreSQL 数据源; 新版数据库与管理后台方案) ---
 	mux.HandleFunc("DELETE /api/tasks/{id}", s.pgDeleteTask)

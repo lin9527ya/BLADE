@@ -65,6 +65,8 @@ var (
 		"用户暂停任务时，正在运行的主 Agent 对话也被同步取消。已经产生的活动记录会保留；恢复任务后不会自动重放本轮消息")
 	AbortChatTurnFinished = cause("chat_turn_finished", "本轮对话已正常结束并释放 context",
 		"本轮对话已正常结束，服务端正在释放该轮 context 资源。这不是运行中断；若它出现在中断消息中，说明取消与收场事件发生了竞态")
+	AbortPlannerStoppedByUser = cause("planner_stopped_by_user", "用户停止了本轮规划",
+		"用户在会话页点击了停止，主动中止本轮 Planner 思考与工具执行。已经写入的意图与活动记录保留，任务和 Worker 不受影响，可继续向 Planner 发送消息")
 
 	// 托管长任务（P13 执行台账）。这三个原因也写进 tool_executions 台账的
 	// error/cancel_note 字段——同一个解释只维护一份，工具回给模型看的就是它。

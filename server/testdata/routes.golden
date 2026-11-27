@@ -247,6 +247,7 @@ GET /api/tasks/{id}/mobile/sandbox	server.(*Server).browseTaskMobileSandbox-fm
 GET /api/tasks/{id}/mobile/screen	server.(*Server).getTaskMobileScreen-fm
 GET /api/tasks/{id}/mobile/state	server.(*Server).getTaskMobileState-fm
 GET /api/tasks/{id}/planner-state	server.(*Server).taskPlannerState-fm
+GET /api/tasks/{id}/planner/status	server.(*Server).plannerChatStatus-fm
 GET /api/tasks/{id}/relations	server.(*Server).taskRelations-fm
 GET /api/tasks/{id}/scheduling	server.(*Server).taskScheduling-fm
 GET /api/tasks/{id}/scope	server.(*Server).taskScopeList-fm
@@ -481,6 +482,8 @@ POST /api/tasks/{id}/mobile/ui-crawl	server.(*Server).runTaskMobileUICrawl-fm
 POST /api/tasks/{id}/mobile/unbind	server.(*Server).unbindTaskMobileDevice-fm
 POST /api/tasks/{id}/nodes/{nid}/follow-up-intent	server.(*Server).taskFollowUpIntent-fm
 POST /api/tasks/{id}/nodes/{nid}/techniques	server.(*Server).setIntentTechniques-fm
+POST /api/tasks/{id}/planner/messages	server.(*Server).sendPlannerMessage-fm
+POST /api/tasks/{id}/planner/stop	server.(*Server).stopPlannerTurn-fm
 POST /api/tasks/{id}/scope	server.(*Server).taskScopeAdd-fm
 POST /api/tasks/{id}/template	server.(*Server).taskToTemplate-fm
 POST /api/tools/custom	server.(*Server).pgCreateCustomTool-fm

@@ -234,6 +234,12 @@ type Engine struct {
 
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
+	planExecMu     sync.Mutex
+	plannerRunning map[string]bool
+	plannerCancel  map[string]context.CancelCauseFunc
+	plannerRunSeq  map[string]uint64
+	plannerSteer   map[string][]string
+
 	// 任务级超时(见 docs/README.md「任务级超时与收尾」):
 	decomposing      sync.Map // taskID -> bool: bootstrap goal decomposition still running
 	goalDrainIntents sync.Map // taskID -> immutable ids already running at goal completion
@@ -329,6 +335,7 @@ func (e *Engine) BeginDelete(taskID string) bool {
 	e.paused.Store(taskID, true)
 	e.deleteMu.Unlock()
 	e.cancelExec(taskID, agent.AbortTaskDeleted)
+	e.cancelPlannerRun(taskID, agent.AbortTaskDeleted, true)
 	return true
 }
 
@@ -490,6 +497,7 @@ func (e *Engine) StopTask(taskID string) {
 	}
 
 	e.cancelExec(taskID, agent.AbortTaskDeleted)
+	e.cancelPlannerRun(taskID, agent.AbortTaskDeleted, true)
 	e.runtimeMu.Lock()
 	rt := e.runtimes[taskID]
 	if rt != nil {
@@ -540,6 +548,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.inflight.Delete(taskID)
 	e.coordStarted.Delete(taskID)
 	e.clearTaskSessions(taskID)
+	e.clearPlannerState(taskID)
 	if e.m != nil {
 		if task := e.m.TaskByID(taskID); task != nil {
 			task.StopTimers()
@@ -720,7 +729,291 @@ func NewEngine(m *Manager) *Engine {
 	return &Engine{m: m, debounce: 800 * time.Millisecond, bc: NewBroadcaster(),
 		execCancel: map[string]context.CancelCauseFunc{}, execCtx: map[string]context.Context{},
 		work: map[int64]*workExecution{}, steerBox: map[int64][]steerMsg{},
+		plannerRunning: map[string]bool{}, plannerCancel: map[string]context.CancelCauseFunc{},
+		plannerRunSeq: map[string]uint64{}, plannerSteer: map[string][]string{},
 		runtimes: map[string]*taskRuntime{}}
+}
+
+// PlannerMessageResult describes how a direct operator message to a task's Planner was dispatched.
+type PlannerMessageResult struct {
+	Accepted bool   `json:"accepted"`
+	Mode     string `json:"mode"` // "steered" | "woken" | "interactive"
+	Steered  bool   `json:"steered,omitempty"`
+	Running  bool   `json:"running"`
+	Queued   int    `json:"queued,omitempty"`
+	Paused   bool   `json:"paused,omitempty"`
+}
+
+func (e *Engine) ensurePlannerMapsLocked() {
+	if e.plannerRunning == nil {
+		e.plannerRunning = map[string]bool{}
+	}
+	if e.plannerCancel == nil {
+		e.plannerCancel = map[string]context.CancelCauseFunc{}
+	}
+	if e.plannerRunSeq == nil {
+		e.plannerRunSeq = map[string]uint64{}
+	}
+	if e.plannerSteer == nil {
+		e.plannerSteer = map[string][]string{}
+	}
+}
+
+// IsPlannerRunning reports whether a planning round (autonomous or interactive) is in flight.
+func (e *Engine) IsPlannerRunning(taskID string) bool {
+	if e == nil || taskID == "" {
+		return false
+	}
+	e.planExecMu.Lock()
+	defer e.planExecMu.Unlock()
+	return e.plannerRunning[taskID]
+}
+
+// PlannerSteerCount reports how many operator messages are queued for an active planner round.
+func (e *Engine) PlannerSteerCount(taskID string) int {
+	if e == nil || taskID == "" {
+		return 0
+	}
+	e.planExecMu.Lock()
+	defer e.planExecMu.Unlock()
+	return len(e.plannerSteer[taskID])
+}
+
+func (e *Engine) beginPlannerRun(taskID string, parent context.Context) (context.Context, uint64, context.CancelCauseFunc) {
+	runCtx, cancel := context.WithCancelCause(parent)
+	e.planExecMu.Lock()
+	e.ensurePlannerMapsLocked()
+	seq := e.plannerRunSeq[taskID] + 1
+	e.plannerRunSeq[taskID] = seq
+	e.plannerRunning[taskID] = true
+	e.plannerCancel[taskID] = cancel
+	e.planExecMu.Unlock()
+	return runCtx, seq, cancel
+}
+
+func (e *Engine) endPlannerRun(taskID string, seq uint64, cancel context.CancelCauseFunc) {
+	cancel(nil)
+	e.planExecMu.Lock()
+	if e.plannerRunSeq[taskID] == seq {
+		delete(e.plannerRunning, taskID)
+		delete(e.plannerCancel, taskID)
+	}
+	e.planExecMu.Unlock()
+}
+
+func (e *Engine) cancelPlannerRun(taskID string, cause error, dropState bool) bool {
+	if e == nil || taskID == "" {
+		return false
+	}
+	e.planExecMu.Lock()
+	cancel := e.plannerCancel[taskID]
+	if dropState {
+		delete(e.plannerSteer, taskID)
+	}
+	e.planExecMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel(cause)
+	return true
+}
+
+func (e *Engine) drainPlannerSteer(taskIDInt int64) (string, bool) {
+	if e == nil || taskIDInt <= 0 {
+		return "", false
+	}
+	taskID := strconv.FormatInt(taskIDInt, 10)
+	e.planExecMu.Lock()
+	defer e.planExecMu.Unlock()
+	q := e.plannerSteer[taskID]
+	if len(q) == 0 {
+		return "", false
+	}
+	msg := q[0]
+	if len(q) == 1 {
+		delete(e.plannerSteer, taskID)
+	} else {
+		e.plannerSteer[taskID] = q[1:]
+	}
+	return msg, true
+}
+
+func (e *Engine) drainAllPlannerSteer(taskID string) []string {
+	if e == nil || taskID == "" {
+		return nil
+	}
+	e.planExecMu.Lock()
+	defer e.planExecMu.Unlock()
+	q := e.plannerSteer[taskID]
+	if len(q) == 0 {
+		return nil
+	}
+	delete(e.plannerSteer, taskID)
+	return q
+}
+
+// StopPlannerTurn cancels the active planner LLM round for taskID without
+// pausing the task or cancelling running workers.
+func (e *Engine) StopPlannerTurn(taskID string) bool {
+	return e.cancelPlannerRun(taskID, agent.AbortPlannerStoppedByUser, true)
+}
+
+func (e *Engine) clearPlannerState(taskID string) {
+	if e == nil || taskID == "" {
+		return
+	}
+	e.cancelPlannerRun(taskID, agent.AbortTaskDeleted, true)
+	e.planExecMu.Lock()
+	delete(e.plannerRunning, taskID)
+	delete(e.plannerCancel, taskID)
+	delete(e.plannerRunSeq, taskID)
+	delete(e.plannerSteer, taskID)
+	e.planExecMu.Unlock()
+}
+
+func nonHumanChatTriggers(evs []agent.TriggerEvent) []agent.TriggerEvent {
+	var out []agent.TriggerEvent
+	for _, ev := range evs {
+		if ev.Kind == "human_chat" {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// SendPlannerMessage records an operator message into the Planner session and
+// routes it either as live mid-round steering, urgent debounce-free wake, or a
+// paused/terminal interactive Planner turn without waking workers.
+func (e *Engine) SendPlannerMessage(t *Task, planner *agent.Planner, rawMsg, agentMsg string) (PlannerMessageResult, error) {
+	if e == nil || t == nil || planner == nil {
+		return PlannerMessageResult{}, fmt.Errorf("planner unavailable")
+	}
+	if !e.beginTaskOperation(t.ID) {
+		return PlannerMessageResult{}, errTaskControlConflict
+	}
+	keepInflight := false
+	defer func() {
+		if !keepInflight {
+			e.decInflight(t.ID)
+		}
+	}()
+
+	planner.SetHumanSteerDrain(e.drainPlannerSteer)
+
+	e.emitActivity(t, db.Activity{
+		Worker:  "planner",
+		Kind:    "user",
+		Summary: rawMsg,
+		Detail:  rawMsg,
+	})
+
+	e.planExecMu.Lock()
+	e.ensurePlannerMapsLocked()
+	if e.plannerRunning[t.ID] {
+		e.plannerSteer[t.ID] = append(e.plannerSteer[t.ID], agentMsg)
+		qLen := len(e.plannerSteer[t.ID])
+		e.planExecMu.Unlock()
+		return PlannerMessageResult{
+			Accepted: true,
+			Mode:     "steered",
+			Steered:  true,
+			Running:  true,
+			Queued:   qLen,
+		}, nil
+	}
+
+	lifecycle := t.lifecycleSnapshot()
+	paused := lifecycle.Paused || e.IsPaused(t.ID)
+	terminal := isTerminalStatus(lifecycle.Status)
+	settling := e.isSettling(t.ID)
+	openGoal := true
+	if hasOpen, err := t.Store.HasOpenGoal(); err == nil {
+		openGoal = hasOpen
+	}
+	if !paused && !terminal && !settling && openGoal && e.Started(t.ID) {
+		e.planExecMu.Unlock()
+		t.NotifyUrgentTrigger(agent.TriggerEvent{
+			Kind:         "human_chat",
+			HumanMessage: agentMsg,
+		})
+		return PlannerMessageResult{
+			Accepted: true,
+			Mode:     "woken",
+			Running:  true,
+		}, nil
+	}
+
+	// Paused, goalless, terminal, or not-yet-looped task: launch an isolated interactive
+	// Planner turn inside planExecMu so concurrent sends queue onto steerBox cleanly.
+	baseCtx := e.runtimeCtx(t.ID)
+	runCtx, cancel := context.WithCancelCause(baseCtx)
+	seq := e.plannerRunSeq[t.ID] + 1
+	e.plannerRunSeq[t.ID] = seq
+	e.plannerRunning[t.ID] = true
+	e.plannerCancel[t.ID] = cancel
+	keepInflight = true
+	e.planExecMu.Unlock()
+
+	interactiveTerminal := !openGoal || terminal
+	goSafe("engine/planner-interactive", nil, func() {
+		curSeq, curCtx, curCancel := seq, runCtx, cancel
+		defer e.decInflight(t.ID)
+		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		emit := func(r db.Activity) { e.emitActivity(t, r) }
+		triggers := []agent.TriggerEvent{{
+			Kind:                "human_chat",
+			HumanMessage:        agentMsg,
+			InteractivePaused:   paused,
+			InteractiveTerminal: interactiveTerminal,
+		}}
+		for {
+			e.emitActivity(t, db.Activity{
+				Worker:  "planner",
+				Kind:    "round",
+				Summary: fmt.Sprintf("第 %d 轮规划（对话）", e.nextPlannerRound(t.ID)),
+			})
+			e.BeginLLMCall(t.ID)
+			_, _, err := planner.Plan(curCtx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+			e.EndLLMCall(t.ID)
+			stoppedByUser := err != nil && errors.Is(context.Cause(curCtx), agent.AbortPlannerStoppedByUser)
+			if stoppedByUser {
+				e.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: "（本轮规划已停止，可继续发送下一条提示）"})
+			} else if err != nil && curCtx.Err() == nil {
+				e.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", IsError: true, Summary: "（Planner 回复出错：" + err.Error() + "）"})
+			}
+			e.touch(t.ID)
+
+			if stoppedByUser || err != nil || baseCtx.Err() != nil || e.IsDeleting(t.ID) {
+				break
+			}
+			leftover := e.drainAllPlannerSteer(t.ID)
+			if len(leftover) == 0 {
+				break
+			}
+			curCancel(nil)
+			curCtx, curCancel = context.WithCancelCause(baseCtx)
+			e.planExecMu.Lock()
+			e.plannerRunSeq[t.ID]++
+			curSeq = e.plannerRunSeq[t.ID]
+			e.plannerCancel[t.ID] = curCancel
+			e.planExecMu.Unlock()
+			triggers = []agent.TriggerEvent{{
+				Kind:                "human_chat",
+				HumanMessage:        strings.Join(leftover, "\n"),
+				InteractivePaused:   paused,
+				InteractiveTerminal: interactiveTerminal,
+			}}
+		}
+		e.endPlannerRun(t.ID, curSeq, curCancel)
+	})
+
+	return PlannerMessageResult{
+		Accepted: true,
+		Mode:     "interactive",
+		Running:  true,
+		Paused:   paused,
+	}, nil
 }
 
 // registerWork records the cancel for the work currently running intentID.
@@ -1158,6 +1451,9 @@ func (e *Engine) snapshotFor(t *Task) (*agent.Planner, *agent.Worker) {
 	if e.resolve != nil {
 		p, w := e.resolve(t)
 		if (p != nil && w != nil) || e.resolveAuthoritative {
+			if p != nil {
+				p.SetHumanSteerDrain(e.drainPlannerSteer)
+			}
 			return p, w
 		}
 	}
@@ -1299,32 +1595,39 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if debounce < 2*time.Second {
 			debounce = 2 * time.Second
 		}
-		timer := time.NewTimer(debounce)
-		deadline := time.Now().Add(plannerDebounceMax)
-	drain:
-		for {
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-t.notify:
-				remain := time.Until(deadline)
-				if remain <= 0 {
+		urgent := t.urgentWake.Swap(false) || t.HasUrgentTrigger()
+		if !urgent {
+			timer := time.NewTimer(debounce)
+			deadline := time.Now().Add(plannerDebounceMax)
+		drain:
+			for {
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-t.notify:
+					if t.urgentWake.Swap(false) || t.HasUrgentTrigger() {
+						timer.Stop()
+						break drain
+					}
+					remain := time.Until(deadline)
+					if remain <= 0 {
+						break drain
+					}
+					wait := debounce
+					if wait > remain {
+						wait = remain
+					}
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(wait)
+				case <-timer.C:
 					break drain
 				}
-				wait := debounce
-				if wait > remain {
-					wait = remain
-				}
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(wait)
-			case <-timer.C:
-				break drain
 			}
 		}
 		planner, _ := e.snapshotFor(t)
@@ -1437,30 +1740,42 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		var err error
 		// 规划失败重试：一次瞬时的模型/网络错误此前会让任务空转十分钟（等心跳），
 		// 而这一轮的触发事件已经被 drain 掉了——"哪个 work 完成了"的信息随之丢失。
-		planCtx, planRetryHint := agent.WithRetryHint(ectx)
+		roundCtx, roundSeq, roundCancel := e.beginPlannerRun(t.ID, ectx)
+		planCtx, planRetryHint := agent.WithRetryHint(roundCtx)
 		for attempt := 1; attempt <= plannerAttempts; attempt++ {
 			_ = planRetryHint.Take()
 			e.BeginLLMCall(t.ID)
 			met, reason, err = planner.Plan(planCtx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 			e.EndLLMCall(t.ID)
-			if err == nil || ectx.Err() != nil || attempt == plannerAttempts {
+			if err == nil || roundCtx.Err() != nil || attempt == plannerAttempts {
 				break
 			}
 			wait := agent.EffectiveBackoff(plannerRetryBackoff, max(planRetryHint.Take(), agent.RetryAfterOf(err)), 60*time.Second)
 			log.Printf("[planner] task %s 规划出错（第 %d/%d 次，%v 后重试）: %v", t.ID, attempt, plannerAttempts, wait, err)
-			if sleepCtx(ectx, wait) {
+			if sleepCtx(roundCtx, wait) {
 				break
 			}
 		}
+		e.endPlannerRun(t.ID, roundSeq, roundCancel)
+		stoppedByUser := err != nil && errors.Is(context.Cause(roundCtx), agent.AbortPlannerStoppedByUser)
 		if err != nil {
 			// A pause/delete/settle cancels ectx too. Restoring regardless of
 			// ectx keeps the completed-work/finding context for the next round.
-			t.restoreTriggers(triggers)
+			// 手动点停只中止当轮对话，不回填该轮触发的 human_chat。
+			if stoppedByUser {
+				t.restoreTriggers(nonHumanChatTriggers(triggers))
+			} else {
+				t.restoreTriggers(triggers)
+			}
 		}
 		if err == nil {
 			plannerFailRetries = 0
 		}
 		switch {
+		case stoppedByUser:
+			plannerFailRetries = 0
+			log.Printf("[planner] task %s 本轮规划已由操作员手动停止", t.ID)
+			e.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: "（本轮规划已停止，可继续发送下一条提示）"})
 		case err != nil && ectx.Err() == nil:
 			if plannerFailRetries < 1 {
 				plannerFailRetries++
@@ -1491,6 +1806,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		default:
 			log.Printf("[planner] task %s 规划完成", t.ID)
 			t.NotifyWorkers()
+		}
+		if leftover := e.drainAllPlannerSteer(t.ID); len(leftover) > 0 && !stoppedByUser && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID) {
+			t.NotifyUrgentTrigger(agent.TriggerEvent{
+				Kind:         "human_chat",
+				HumanMessage: strings.Join(leftover, "\n"),
+			})
 		}
 		e.touch(t.ID)
 	}

@@ -403,6 +403,16 @@ export interface TaskLiveStats {
   stalled: boolean;
   pending_intercepts: number;
   chat_running: boolean;
+  planner_running?: boolean;
+}
+
+export interface PlannerMessageResult {
+  accepted: boolean;
+  mode: "steered" | "woken" | "interactive";
+  steered?: boolean;
+  running: boolean;
+  queued?: number;
+  paused?: boolean;
 }
 
 export interface TaskLiveEvent {

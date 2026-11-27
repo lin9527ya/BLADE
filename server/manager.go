@@ -130,6 +130,7 @@ type Task struct {
 	pendingDropped           int
 	claimableHint            atomic.Int32
 	workerCapHint            atomic.Int32
+	urgentWake               atomic.Bool
 
 	prefixMu       sync.Mutex    `json:"-"`
 	prefixState    uint8         `json:"-"` // 0=idle, 1=first-wave leader warming KV cache, 2=warmed
@@ -3353,9 +3354,42 @@ func (t *Task) notifyImmediateTrigger(ev agent.TriggerEvent) {
 	}
 	t.midPriorityBatchCount = 0
 	t.midPrioritySuppressed = false
-	t.midPrioritySuppressed = false
 	t.trigMu.Unlock()
 	t.Notify()
+}
+
+// NotifyUrgentTrigger records an urgent human_chat trigger and sets urgentWake so
+// plannerLoop bypasses its 2-3s coalescing debounce and reacts immediately.
+func (t *Task) NotifyUrgentTrigger(ev agent.TriggerEvent) {
+	if t == nil {
+		return
+	}
+	t.trigMu.Lock()
+	t.appendTriggerLocked(ev)
+	if t.midPriorityTimer != nil {
+		t.midPriorityTimer.Stop()
+		t.midPriorityTimer = nil
+	}
+	t.midPriorityBatchCount = 0
+	t.midPrioritySuppressed = false
+	t.trigMu.Unlock()
+	t.urgentWake.Store(true)
+	t.Notify()
+}
+
+// HasUrgentTrigger reports whether pendingTriggers holds an interactive human_chat turn.
+func (t *Task) HasUrgentTrigger() bool {
+	if t == nil {
+		return false
+	}
+	t.trigMu.Lock()
+	defer t.trigMu.Unlock()
+	for _, ev := range t.pendingTriggers {
+		if ev.Kind == "human_chat" {
+			return true
+		}
+	}
+	return false
 }
 
 // NotifyDone is Notify plus a hint: a worker just settled intentID and that is

@@ -1531,6 +1531,11 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "status") return { running: false };
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };
+  if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "status") return { running: false, queued: 0 };
+  if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "stop") return { status: "stopped" };
+  if (seg[0] === "tasks" && seg[2] === "planner" && seg[3] === "messages" && m === "POST") {
+    return { accepted: true, mode: "interactive", running: false };
+  }
   if (path === "/active") {
     const id = String(b.id ?? mockActiveTask);
     if (mockTasks.some((item) => item.id === id)) {

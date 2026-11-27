@@ -92,6 +92,7 @@ type TaskLiveStats struct {
 	Stalled           bool   `json:"stalled"`
 	PendingIntercepts int    `json:"pending_intercepts"`
 	ChatRunning       bool   `json:"chat_running"`
+	PlannerRunning    bool   `json:"planner_running"`
 }
 
 type TaskLiveEvent struct {
@@ -147,6 +148,7 @@ func (s *Server) taskLiveSnapshot(taskID string) TaskLiveEvent {
 	s.chatRuns.mu.Lock()
 	stats.ChatRunning = s.chatRuns.busy[t.ID]
 	s.chatRuns.mu.Unlock()
+	stats.PlannerRunning = s.engine.IsPlannerRunning(t.ID)
 	return TaskLiveEvent{Task: taskDTO(t, status), Stats: stats, At: time.Now().Unix()}
 }
 

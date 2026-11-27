@@ -143,6 +143,10 @@ export function useSessionsState(taskId: string) {
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
   const [mainChatRunning, setMainChatRunning] = React.useState<boolean | null>(null);
+  const [plannerMessage, setPlannerMessage] = React.useState("");
+  const [plannerSending, setPlannerSending] = React.useState(false);
+  const [plannerStopping, setPlannerStopping] = React.useState(false);
+  const [plannerRunningState, setPlannerRunningState] = React.useState<boolean | null>(null);
   const [controllingIntent, setControllingIntent] = React.useState<string | null>(null);
   const [cancelIntent, setCancelIntent] = React.useState<Session | null>(null);
   const [cancelReason, setCancelReason] = React.useState("");
@@ -271,6 +275,7 @@ export function useSessionsState(taskId: string) {
   const atBottomRef = React.useRef(true); // transcript pinned to bottom?
   const llmToastSeqRef = React.useRef<Set<number>>(new Set());
   const chatStatusRequestRef = React.useRef(0);
+  const plannerStatusRequestRef = React.useRef(0);
   const firstIntentsRef = React.useRef<TaskNode[]>([]);
   // 每个历史请求各持有 owner；切任务时统一取消，迟到成功/失败/滚动回调都不能写入新任务。
   // 不复用归零后的数字 token，以免 main:0 / plan 在不同任务之间碰撞。
@@ -457,6 +462,9 @@ export function useSessionsState(taskId: string) {
     (event) => {
       if (event.error) return;
       setMainChatRunning(event.stats.chat_running);
+      if (typeof event.stats.planner_running === "boolean") {
+        setPlannerRunningState(event.stats.planner_running);
+      }
     },
   );
 
@@ -464,18 +472,20 @@ export function useSessionsState(taskId: string) {
     async (alive) => {
       // 不在这里把 running 置回 null：每 2 秒置一次会让「运行中」徽标灭一下再亮，
       // liveMainSeg / anyLive 也跟着抖。失败时保留上一次的权威值（见下方 catch）。
-      const load = () => {
-        const request = ++chatStatusRequestRef.current;
-        return api
-          .chatStatus(taskId)
-          .then(({ running }) => {
-            if (alive() && chatStatusRequestRef.current === request) setMainChatRunning(running);
-          })
-          .catch((e) => {
-            // Keep the last authoritative value. Before the first success, recent
-            // activity remains a conservative fallback; let the hook back off.
-            if (alive()) throw e;
-          });
+      const load = async () => {
+        const chatRequest = ++chatStatusRequestRef.current;
+        const plannerRequest = ++plannerStatusRequestRef.current;
+        const [chatRes, plannerRes] = await Promise.allSettled([api.chatStatus(taskId), api.plannerStatus(taskId)]);
+        if (alive() && chatRes.status === "fulfilled" && chatStatusRequestRef.current === chatRequest) {
+          setMainChatRunning(chatRes.value.running);
+        }
+        if (alive() && plannerRes.status === "fulfilled" && plannerStatusRequestRef.current === plannerRequest) {
+          setPlannerRunningState(plannerRes.value.running);
+        }
+        if (alive()) {
+          if (chatRes.status === "rejected") throw chatRes.reason;
+          if (plannerRes.status === "rejected") throw plannerRes.reason;
+        }
       };
       await load();
     },
@@ -541,6 +551,11 @@ export function useSessionsState(taskId: string) {
     setModelTokens([]);
     setLLMResolutions(null);
     setSseLive(false);
+    setPlannerMessage("");
+    setPlannerSending(false);
+    setPlannerStopping(false);
+    setPlannerRunningState(null);
+    plannerStatusRequestRef.current++;
     setActiveId(MAIN_ID); // a stale worker id from the previous task must not leak in
     // 全局播报/任务链接的 ?session=intent:<id> 深链：首屏定位到产生该节点的会话。
     // 片段/槽位/意图 key 与 approval 深链共用同一套还原逻辑；用户随后点其它会话
@@ -960,7 +975,7 @@ export function useSessionsState(taskId: string) {
     [store],
   );
   const currentMainKey = mainSessionKey(currentSeg);
-  const plannerLive = recentLive("plan");
+  const plannerLive = plannerRunningState ?? recentLive("plan");
 
   // 只在「有东西正在流式」时才需要周期性重渲染：没有活的会话时，「活」这个渲染期判断
   // （recentLive 读 Date.now()）不会随时间改变，周期重渲染纯属浪费。此前是无条件每 1.5
@@ -968,7 +983,11 @@ export function useSessionsState(taskId: string) {
   // 是没东西在跑的。
   // intervalMs=0 是 usePolling 的「只跑一次不重复」：不排下一次，也就彻底不再重渲染。
   // 有新活动进来（store 变化）会重新渲染，那时 anyLive 转真、那个 1.5 秒的 tick 自己接回来。
-  const anyLive = sending || mainChatRunning === true || Object.keys(store).some((k) => recentLive(k));
+  const anyLive =
+    sending ||
+    mainChatRunning === true ||
+    plannerRunningState === true ||
+    Object.keys(store).some((k) => recentLive(k));
   usePolling(() => setTick((t) => t + 1), anyLive ? 1500 : 0);
 
   // Which main segment is streaming RIGHT NOW. A main turn is serialized per task, so at
@@ -1045,6 +1064,7 @@ export function useSessionsState(taskId: string) {
   const activeSettled =
     !!activeLast && (activeLast.kind === "result" || (activeLast.kind === "text" && activeLast.is_error));
   const mainBusy = isMain && (sending || (!activeSettled && (mainChatRunning ?? recentLive(activeKey))));
+  const plannerBusy = isPlanner && (plannerSending || (plannerRunningState ?? recentLive("plan")));
   // 折叠态（手机端）标题栏要替代整张列表：显示当前会话名 + 其它会话的未读合计，
   // 否则收起后既不知道自己在看哪个会话，也看不到别处有新消息。
   const activeDisplayTitle =
@@ -1316,6 +1336,52 @@ export function useSessionsState(taskId: string) {
       .finally(() => setSending(false));
   }
 
+  function stopPlanner() {
+    if (plannerStopping) return;
+    setPlannerStopping(true);
+    plannerStatusRequestRef.current++;
+    void api
+      .stopPlanner(taskId)
+      .then((res) => {
+        if (res.status === "idle") {
+          plannerStatusRequestRef.current++;
+          setPlannerRunningState(false);
+        }
+      })
+      .catch((e) => {
+        toast.error(`停止失败：${(e as Error).message || "请稍后重试"}`);
+      })
+      .finally(() => setPlannerStopping(false));
+  }
+
+  function sendPlannerChat() {
+    const message = plannerMessage.trim();
+    if (!message || plannerSending) return;
+    if (workerMessageCharCount(message) > MAX_WORKER_MESSAGE_CHARS) {
+      toast.error(`消息不能超过 ${MAX_WORKER_MESSAGE_CHARS} 个字符`);
+      return;
+    }
+    rememberInputHistory(`task:${taskId}:planner`, message);
+    const reqId = newWorkerMessageRequestID();
+    setPlannerMessage("");
+    setPlannerSending(true);
+    plannerStatusRequestRef.current++;
+    api
+      .sendPlannerMessage(taskId, message, reqId)
+      .then((result) => {
+        plannerStatusRequestRef.current++;
+        setPlannerRunningState(result.running);
+        if (result.steered) {
+          toast.success("实时提示已投递：Planner 将在下一步动作前或本轮收束前读取并调整");
+        }
+      })
+      .catch((e) => {
+        setPlannerMessage(message);
+        toast.error(`发送失败：${(e as Error).message || "请稍后重试"}`);
+      })
+      .finally(() => setPlannerSending(false));
+  }
+
   function sendWorkerChat() {
     const intentId = active.intent_id;
     const message = workerMessage.trim();
@@ -1484,6 +1550,7 @@ export function useSessionsState(taskId: string) {
     activeLast,
     activeSettled,
     mainBusy,
+    plannerBusy,
     activeDisplayTitle,
     hiddenUnread,
     focusKey,
@@ -1500,6 +1567,12 @@ export function useSessionsState(taskId: string) {
     viewport,
     stop,
     send,
+    plannerMessage,
+    setPlannerMessage,
+    plannerSending,
+    plannerStopping,
+    sendPlannerChat,
+    stopPlanner,
     sendWorkerChat,
     mainLoaded,
     sendMode,

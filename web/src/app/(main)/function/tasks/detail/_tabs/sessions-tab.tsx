@@ -109,9 +109,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     active,
     side,
     isMain,
+    isPlanner,
     activeKey,
     activeState,
     mainBusy,
+    plannerBusy,
     activeDisplayTitle,
     hiddenUnread,
     focusHistory,
@@ -123,6 +125,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     contentRef,
     stop,
     send,
+    plannerMessage,
+    setPlannerMessage,
+    plannerSending,
+    plannerStopping,
+    sendPlannerChat,
+    stopPlanner,
     sendWorkerChat,
     mainLoaded,
     sendMode,
@@ -481,7 +489,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     {fmtDuration(runDuration)}
                   </span>
                 )}
-                {isMain && <span>可交互</span>}
+                {(isMain || isPlanner) && <span>可交互</span>}
               </div>
             </div>
             {(() => {
@@ -553,12 +561,16 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                     activity={activity}
                     live={active.live}
                     taskId={taskId}
-                    chat={isMain}
+                    chat={isMain || isPlanner}
                     focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined}
                   />
                 ) : (
                   <div className="pl-9 text-muted-foreground text-xs">
-                    {isMain ? "还没有对话。在下方给主 Agent 发消息，引导探索方向或介入流程。" : "暂无活动记录。"}
+                    {isMain
+                      ? "还没有对话。在下方给主 Agent 发消息，引导探索方向或介入流程。"
+                      : isPlanner
+                        ? "Planner 还没有规划记录，或在下方直接给 Planner 发消息开启沟通。"
+                        : "暂无活动记录。"}
                   </div>
                 )}
               </div>
@@ -782,6 +794,82 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               <div className="flex items-center gap-1.5 border-t px-4 py-2 text-muted-foreground text-xs">
                 <ClockIcon className="size-3.5" />
                 独立 Worker 已就绪，正在等待并发额度领取执行
+              </div>
+            ) : isPlanner ? (
+              <div className="border-t p-3">
+                <div className="mb-2 flex items-center justify-between gap-2 text-muted-foreground text-xs">
+                  <TodoPopover
+                    seq={latestTodoSeq}
+                    fetchDetail={(seq) => api.activityDetail(seq, taskId).then((r) => r.detail ?? "")}
+                  />
+                  <span className="truncate">
+                    {plannerBusy
+                      ? "Planner 规划轮次进行中：发送消息将在下一步动作前或本轮收束前注入"
+                      : "直接与 Planner 对话：微调优先级、补充约束或提问（不直接派发 Worker）"}
+                  </span>
+                </div>
+                <InputGroup className="min-h-9 has-disabled:opacity-100">
+                  <MentionTextarea
+                    inputGroup
+                    rows={1}
+                    aria-label="给 Planner 发消息"
+                    title="↑/↓ 翻阅已发送消息"
+                    historyKey={`task:${taskId}:planner`}
+                    placeholder={
+                      plannerBusy
+                        ? "Planner 正在规划中，输入实时引导提示，@ 引用记录…"
+                        : "向 Planner 提问、补充约束或调整下一步探测方向，@ 引用记录…"
+                    }
+                    value={plannerMessage}
+                    onValueChange={setPlannerMessage}
+                    onKeyDown={(event) => {
+                      if (!shouldSubmitOnKey(event, sendMode)) return;
+                      event.preventDefault();
+                      sendPlannerChat();
+                    }}
+                    disabled={plannerSending}
+                    aria-invalid={workerMessageCharCount(plannerMessage) > MAX_WORKER_MESSAGE_CHARS}
+                    className="max-h-36 min-h-9 overflow-y-auto"
+                  />
+                  <InputGroupAddon align="block-end">
+                    <span
+                      className={cn(
+                        "px-1 text-[10px] text-muted-foreground tabular-nums",
+                        workerMessageCharCount(plannerMessage) > MAX_WORKER_MESSAGE_CHARS && "text-destructive",
+                      )}
+                    >
+                      {workerMessageCharCount(plannerMessage)}/{MAX_WORKER_MESSAGE_CHARS}
+                    </span>
+                    <div className="ml-auto flex items-center gap-1">
+                      {plannerBusy && (
+                        <InputGroupButton
+                          size="icon-xs"
+                          variant="destructive"
+                          onClick={stopPlanner}
+                          disabled={plannerStopping}
+                          title="停止本轮规划"
+                          aria-label="停止本轮规划"
+                        >
+                          {plannerStopping ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+                        </InputGroupButton>
+                      )}
+                      <InputGroupButton
+                        size="icon-xs"
+                        variant="default"
+                        onClick={sendPlannerChat}
+                        disabled={
+                          plannerSending ||
+                          !plannerMessage.trim() ||
+                          workerMessageCharCount(plannerMessage) > MAX_WORKER_MESSAGE_CHARS
+                        }
+                        title={plannerBusy ? "发送实时提示给运行中的 Planner" : "发送消息给 Planner"}
+                        aria-label={plannerBusy ? "发送实时提示给运行中的 Planner" : "发送消息给 Planner"}
+                      >
+                        {plannerSending ? <Spinner /> : <ArrowUpIcon />}
+                      </InputGroupButton>
+                    </div>
+                  </InputGroupAddon>
+                </InputGroup>
               </div>
             ) : (
               <div className="flex items-center border-t px-4 py-2">

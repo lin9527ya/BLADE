@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/Norma/agentcore"
+	"github.com/lin9527ya/Norma/harness"
 	"github.com/lin9527ya/Norma/llm"
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
@@ -90,7 +91,9 @@ type Planner struct {
 	// guard is the SAME per-task Guard workers use (intercept rules + LLM judge +
 	// RoE scope gate). Planner can call Bash/default tools during its light opening
 	// probe; without this it bypassed every command-level boundary.
-	guard *guard.Guard
+	guard           *guard.Guard
+	humanSteerMu    sync.RWMutex
+	humanSteerDrain func(taskID int64) (string, bool)
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -373,6 +376,85 @@ func (p *Planner) SetKillWork(fn func(intentID int64) error) { p.killWork = fn }
 // steer_work tool can inject a mid-run course-correction into a running worker.
 func (p *Planner) SetSteerWork(fn func(intentID int64, msg string) error) { p.steerWork = fn }
 
+// SetHumanSteerDrain wires the callback that pops queued mid-round operator
+// messages for taskID so the planner reacts before its next tool call or turn exit.
+func (p *Planner) SetHumanSteerDrain(fn func(taskID int64) (string, bool)) {
+	if p == nil {
+		return
+	}
+	p.humanSteerMu.Lock()
+	p.humanSteerDrain = fn
+	p.humanSteerMu.Unlock()
+}
+
+func (p *Planner) popHumanSteer(taskID int64) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	p.humanSteerMu.RLock()
+	fn := p.humanSteerDrain
+	p.humanSteerMu.RUnlock()
+	if fn == nil {
+		return "", false
+	}
+	return fn(taskID)
+}
+
+func (p *Planner) hasHumanSteerHook() bool {
+	if p == nil {
+		return false
+	}
+	p.humanSteerMu.RLock()
+	has := p.humanSteerDrain != nil
+	p.humanSteerMu.RUnlock()
+	return has
+}
+
+type plannerSteerHooks struct {
+	inner harness.HookRunner
+	drain func() (string, bool)
+}
+
+func formatPlannerHumanSteer(msg string) string {
+	return "【操作者实时对话提示】" + strings.TrimSpace(msg) +
+		"\n（这是操作者在 Planner 对话框刚发送的实时指令/提问；当前计划调用的工具尚未执行，请立即结合该提示调整决策，并直接回应操作者。）"
+}
+
+func (h plannerSteerHooks) PreToolUse(ctx context.Context, name string, input []byte) (bool, string, []byte) {
+	if h.drain != nil {
+		if msg, ok := h.drain(); ok && strings.TrimSpace(msg) != "" {
+			return true, formatPlannerHumanSteer(msg), nil
+		}
+	}
+	if h.inner != nil {
+		return h.inner.PreToolUse(ctx, name, input)
+	}
+	return false, "", nil
+}
+
+func (h plannerSteerHooks) PostToolUse(ctx context.Context, name string, input, result []byte, isErr bool) {
+	if h.inner != nil {
+		h.inner.PostToolUse(ctx, name, input, result, isErr)
+	}
+}
+
+func (h plannerSteerHooks) Stop(ctx context.Context, messages []llm.Message) (bool, []string, string) {
+	var (
+		prevent  bool
+		blocking []string
+		msg      string
+	)
+	if h.inner != nil {
+		prevent, blocking, msg = h.inner.Stop(ctx, messages)
+	}
+	if !prevent && len(blocking) == 0 && h.drain != nil {
+		if steer, ok := h.drain(); ok && strings.TrimSpace(steer) != "" {
+			return false, []string{formatPlannerHumanSteer(steer)}, ""
+		}
+	}
+	return prevent, blocking, msg
+}
+
 // renderPlannerTodos formats the persistent planning todo for injection into the
 // wake-up prompt (empty when there are no todos yet — first wake-up).
 func renderPlannerTodos(items []actool.Todo) string {
@@ -420,20 +502,32 @@ type TriggerFactRef struct {
 }
 
 type TriggerEvent struct {
-	Kind     string
-	IntentID int64
-	FactID   int64
-	Detail   string
-	AssetIDs []int64  // Kind=="fact"/"contradiction"/"negative_fact"/"supersede" 专用
-	State    string   // Kind=="done" 专用：本次结算终态（done/negative/no_output/blocked/…）
-	Summary  string   // Kind=="cancelled" 专用：删除前捕获的意图摘要（真删除后节点已不存在，无法再查）
-	Goals    []string // Kind=="goal" 专用：本次 set_goals 新增的目标文本（1 条或多条）
-	OldGoal  string   // Kind=="goal_edited" 专用：修改前的目标文本
-	NewGoal  string   // Kind=="goal_edited" 专用：修改后的目标文本
-	Hints    []string // Kind=="hint" 专用：本次 add_hint 新增的提示文本（1 条或多条）
+	Kind                string
+	IntentID            int64
+	FactID              int64
+	Detail              string
+	AssetIDs            []int64  // Kind=="fact"/"contradiction"/"negative_fact"/"supersede" 专用
+	State               string   // Kind=="done" 专用：本次结算终态（done/negative/no_output/blocked/…）
+	Summary             string   // Kind=="cancelled" 专用：删除前捕获的意图摘要（真删除后节点已不存在，无法再查）
+	Goals               []string // Kind=="goal" 专用：本次 set_goals 新增的目标文本（1 条或多条）
+	OldGoal             string   // Kind=="goal_edited" 专用：修改前的目标文本
+	NewGoal             string   // Kind=="goal_edited" 专用：修改后的目标文本
+	Hints               []string // Kind=="hint" 专用：本次 add_hint 新增的提示文本（1 条或多条）
+	HumanMessage        string   // Kind=="human_chat" 专用：操作者在 Planner 对话框直接发来的提示/提问
+	InteractivePaused   bool     // Kind=="human_chat" 专用：任务处于 paused 状态下的对话
+	InteractiveTerminal bool     // Kind=="human_chat" 专用：任务已无 open 目标 / 终态下的对话
 	// Count 是 facts_batch/assets_batch/triggers_dropped 的聚合数量。
 	Count int
 	Facts []TriggerFactRef // facts_batch: bounded list of every fact in this batch
+}
+
+func hasHumanChatTrigger(evs []TriggerEvent) bool {
+	for _, ev := range evs {
+		if ev.Kind == "human_chat" && strings.TrimSpace(ev.HumanMessage) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // renderTriggers spells out the change(s) that fired this round: for a finished
@@ -455,6 +549,21 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 	}
 	for _, ev := range evs {
 		switch ev.Kind {
+		case "human_chat":
+			msg := strings.TrimSpace(ev.HumanMessage)
+			if msg == "" {
+				continue
+			}
+			note := "\n- 【操作者直接在 Planner 对话框对你说话】：「" + msg + "」\n" +
+				"  处理要求：① 先用清晰直接的自然语言正面回答操作者的问题、解释当前规划理由或复述你的理解；" +
+				"② 若操作者在补充线索/要求改方向/调整优先级或增删意图，本轮立即调用 add_intent / reprioritize_intents / drop_intent / set_exploration_focus / TodoWrite 落实并写明变化；" +
+				"③ 仍须遵守授权范围与顶部操作约束。"
+			if ev.InteractivePaused {
+				note += "\n  【当前任务已暂停】：你可以查图、答疑、调整 TodoWrite、重排或增删 open 意图（新意图会在操作者点击恢复任务后再执行）；禁止擅自调用 prove_goal / goal_met 结束暂停中的任务。"
+			} else if ev.InteractiveTerminal {
+				note += "\n  【当前任务已无未完成目标】：请优先解答疑问与复盘证据；仅当操作者明确指示立刻做某项查证或补充时再调 add_intent。"
+			}
+			b.WriteString(note)
 		case "goal":
 			if len(ev.Goals) == 1 {
 				b.WriteString(fmt.Sprintf("\n- 人（主 agent）新增了一个目标：%s —— 新的待达成目标，请据此补充探索方向（若尚无对应意图）。", ev.Goals[0]))
@@ -779,7 +888,7 @@ func splitPlannerPromptStatic(raw, goal, dataDir, workDir, codeStaticTail string
 // AFTER DynamicBoundary) so tasks share the cached static tools + system prefix.
 func plannerSystemParts(goal, dataDir, workDir string) (staticPart, dynamicPart string) {
 	codeStaticTail := coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
-		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock + adaptiveFocusBlock
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock + adaptiveFocusBlock + plannerDialogueBlock
 	fullVars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 
 	// ① 全局覆盖（agent_prompts 当前版本）。先剥离标准「任务目标：{{.Goal}}」使主干留在
@@ -829,9 +938,14 @@ func plannerSystem(goal, dataDir, workDir string) string {
 	out := body + promptExtras("planner") +
 		coldArchiveBlock + egressDisciplineBlock(false) + hintLifecycleBlock + cveLookupBlock +
 		artifactSpec(workDir) +
-		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock + adaptiveFocusBlock
+		untrustedDataBlock() + blackboardViewBlock + scopeExpansionBlock + structuredIntentBlock + adaptiveFocusBlock + plannerDialogueBlock
 	return out
 }
+
+const plannerDialogueBlock = `
+
+【与操作者直接对话（代码持有）】
+- 当本轮触发出现【操作者直接在 Planner 对话框对你说话】或运行中出现【操作者实时对话提示】时，说明操作者正在「规划 Planner」会话与你直接交流。请用自然语言直接、正面回应问题与解释思路，并在授权范围与操作约束内当轮用 add_intent / reprioritize_intents / drop_intent / set_exploration_focus / TodoWrite 落实对方需求，不要沉默跳过。`
 
 const adaptiveFocusBlock = `
 
@@ -1051,8 +1165,16 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		MaxTokens:    p.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
 	p.cacheOpts.apply(&opts)
+	var innerHooks harness.HookRunner
 	if p.guard != nil { // 与 worker/mainagent 同一把任务 Guard（拦截规则 + RoE 范围门 + 审批）
-		opts.Hooks = p.guard.Hooks()
+		innerHooks = p.guard.Hooks()
+	}
+	if p.hasHumanSteerHook() || innerHooks != nil {
+		tid := taskID
+		opts.Hooks = plannerSteerHooks{
+			inner: innerHooks,
+			drain: func() (string, bool) { return p.popHumanSteer(tid) },
+		}
 	}
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx
@@ -1141,7 +1263,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		situational += "\n\n【任务终局收尾（本轮特殊指令，覆盖上面的常规规划流程）】：" + resolveTaskTimeoutWrapup("planner")
 	}
 	lead := "刚有具体变动（见下面的【本次触发本轮的实际变动】），据此规划下一步："
-	if len(triggers) == 0 {
+	if hasHumanChatTrigger(triggers) {
+		lead = "操作者正在 Planner 会话内直接与你对话（见下面的【本次触发本轮的实际变动】），请先正面回应操作者并按需调整规划："
+	} else if len(triggers) == 0 {
 		lead = "本轮是**定时巡检（心跳到点）/无具体变动信号**的唤醒——图不一定有新变动。顺带复查在跑意图：长时间无进展或跑偏的用 steer_work 纠偏、方向整个错的用 kill_work 止损；再判定目标、决定是否补方向："
 	}
 	staticRules := "据下面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。"
@@ -1470,6 +1594,8 @@ func (p *Planner) invalidateHotSurface(surface string) {
 // human goals, new capabilities or contradictions during dense tool streams.
 func TriggerPriority(kind string) int {
 	switch kind {
+	case "human_chat":
+		return 4
 	case "goal", "goal_edited", "goal_deleted", "goal_abandoned", "hint", "finding", "contradiction", "scope_request":
 		return 3
 	case "capability_fact", "lead_fact", "proposal", "foothold", "credential", "supersede":
@@ -1487,7 +1613,7 @@ func selectTriggerWindow(events []TriggerEvent, limit int) []TriggerEvent {
 	}
 	selected := make([]bool, len(events))
 	remaining := limit
-	for priority := 3; priority >= 0 && remaining > 0; priority-- {
+	for priority := 4; priority >= 0 && remaining > 0; priority-- {
 		for i := len(events) - 1; i >= 0 && remaining > 0; i-- {
 			if TriggerPriority(events[i].Kind) == priority {
 				selected[i] = true

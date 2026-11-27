@@ -150,6 +150,7 @@ import type {
   NotificationMeta,
   OpsecKnowledgeResponse,
   PinningAlert,
+  PlannerMessageResult,
   Playbook,
   PlaybookDraft,
   PlaybookFingerprint,
@@ -657,6 +658,14 @@ export const api = {
       steered?: boolean;
       request_id: string;
     }>(`/tasks/${taskId}/intents/${intentId}/messages`, { message, request_id: requestId }),
+  sendPlannerMessage: (taskId: string, message: string, requestId?: string) =>
+    post<PlannerMessageResult>(`/tasks/${encodeURIComponent(taskId)}/planner/messages`, {
+      message,
+      request_id: requestId ?? "",
+    }),
+  plannerStatus: (taskId: string) =>
+    get<{ running: boolean; queued: number }>(`/tasks/${encodeURIComponent(taskId)}/planner/status`),
+  stopPlanner: (taskId: string) => post<{ status: string }>(`/tasks/${encodeURIComponent(taskId)}/planner/stop`, {}),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
   // 重跑一条没跑成功的意图(blocked/exhausted/stopped/no_output)：置回 open，worker 会重新认领、从头再跑。
   rerunIntent: (taskId: string, intentId: string) =>
