@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [0.9.33] - 2026-11-27
+
+### 对外测试指纹与流量隐蔽性优化
+
+- 引入按任务维度一致的浏览器身份画像（`agent/outbound_profile.go`），统一对外 HTTP 请求、`web_fetch`、`websearch` 与子进程环境的请求头特征（`User-Agent`、`Accept`、`Accept-Language`、`Accept-Encoding` 与 `Sec-CH-UA` 等）。
+- 优化 OAST 带外探测与代理流量特征：使用不透明随机 OAST Token 并隔离控制面请求头，代理出口剥离内部标记头并将自签 Root CA 主体中性化，同时收敛浏览器 MCP 启动参数、PoC 脚手架与侦察脚本中的默认识别特征。
+
+### Planner 实时对话引导与 LLM 协议兼容
+
+- 支持在任务运行中或空闲时直接与 Planner 对话及实时纠偏：通过任务详情会话页及 `SetHumanSteerDrain` 钩子在工具调用前与回合退出前实时注入操作者提示。
+- 新增 `NormalizeBaseURL` 统一规范化 Anthropic / OpenAI / OpenAI Responses 协议的 Base URL，兼容带 `/v1` 或 `/v1/messages` 后缀的 Anthropic 兼容端点，补充模型列表多鉴权头探测并优化配置页提示。
+
+### 依赖安全与工程规范修复
+
+- 将 `github.com/andybalholm/brotli` 从 `v1.2.1` 升级至 `v1.2.8`，解决 `govulncheck` 检出的 `GO-2026-6888` 漏洞。
+- 修复部分 Go 文件未按 `gofmt` 对齐的问题，确保 CI 全流程通过。
+
 ## [0.9.32] - 2026-11-27
 
 ### 自建 SearXNG 兼容性修复
