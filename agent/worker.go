@@ -769,6 +769,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
 	defer cleanup()
 	mergeDeferred(&def, deferWorkerTools(tools))
+	tools = append(tools, newBLADEWebFetch(w.proxySnapshot, proxyCA, taskID))
 	ws := resolveWebSearchOpts(w.webSearch, w.webSearchFn)
 	if ws.Enabled {
 		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
@@ -874,12 +875,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		PermissionMode:          permission.ModeBypass,
 		OmitCurrentDateReminder: true,
 		PromptCacheKey:          WorkerPromptCacheKey(ts.ID()),
-		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
-		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
-		EnableWebFetch:                true,
-		WebFetchProxyFunc:             w.proxySnapshot,
-		WebFetchCACert:                proxyCA,
-		WebFetchDisableDirectFallback: true,
+		EnableWebFetch: false, // BLADE-owned WebFetch（带任务拟真 UA + 记录代理 + CA 校验）挂在 Tools 里
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:          false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
@@ -898,7 +894,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// 而不是把启动瞬间的快照（可能是 fail-closed 的黑洞）冻结一整轮。
 		BashEnvFunc: func() []string {
 			addr, ca := w.proxySnapshot()
-			return proxyEnv(addr, ca)
+			taskRoot := filepath.Join(w.workDir, "tasks", strconv.FormatInt(taskID, 10))
+			return append(proxyEnv(addr, ca), TaskSubprocessEnv(taskRoot, taskID)...)
 		},
 		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)

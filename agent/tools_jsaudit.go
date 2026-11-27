@@ -40,19 +40,23 @@ import (
 )
 
 const jsAuditScript = `#!/usr/bin/env python3
-"""blade js_audit: SPA/webpack 前端源码泄露审计。
+"""js_audit: SPA/webpack 前端源码泄露审计。
 
-用法: python3 blade-jsaudit.py --out <outdir> [--block-file <rules.json>] <url1> [url2 ...]
+用法: python3 jsaudit.py --out <outdir> [--block-file <rules.json>] <url1> [url2 ...]
 url 可以是入口 HTML（提取 <script src>）或 .js 文件本体。
 每行输出一个 JSON 事件；最后一行 type=summary。仅标准库；
 http(s)_proxy 环境变量自动生效（流量走记录代理）；证书校验关闭（同 curl -k）。
 """
-import sys, os, json, re, base64, ssl, socket, ipaddress, urllib.request, urllib.parse, urllib.error
+import sys, os, json, re, base64, ssl, socket, ipaddress, gzip, zlib, urllib.request, urllib.parse, urllib.error
 
 MAX_BYTES = 3_000_000
 MAX_MAP_BYTES = 12_000_000
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
-      "Accept-Encoding": "identity"}
+UA = {
+    "User-Agent": os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": os.environ.get("TARGET_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
+    "Accept-Encoding": "gzip, deflate",
+}
 SENSITIVE_HEADERS = {
     "authorization", "proxy-authorization", "cookie",
     "x-api-key", "x-auth-token", "x-access-token", "x-session-token",
@@ -195,13 +199,32 @@ _opener = urllib.request.build_opener(
     urllib.request.HTTPSHandler(context=_ctx),
 )
 
+def _decode_resp(raw, encoding):
+    enc = (encoding or "").lower().strip()
+    if enc == "gzip":
+        try:
+            return gzip.decompress(raw)
+        except Exception:
+            return raw
+    if enc == "deflate":
+        try:
+            return zlib.decompress(raw)
+        except Exception:
+            try:
+                return zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception:
+                return raw
+    return raw
+
 def fetch(url, cap=MAX_BYTES):
     ok, reason = check_url_allowed(url, is_sub_or_redirect=False)
     if not ok:
         raise urllib.error.URLError(f"blocked {url}: {reason}")
     req = urllib.request.Request(url, headers=UA)
     with _opener.open(req, timeout=15) as r:
-        return r.getcode(), r.read(cap + 1), r.geturl()
+        raw = r.read(cap + 1)
+        data = _decode_resp(raw, r.headers.get("Content-Encoding", ""))
+        return r.getcode(), data[:cap + 1], r.geturl()
 
 def emit(obj):
     print(json.dumps(obj, ensure_ascii=False))

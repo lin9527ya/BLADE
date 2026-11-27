@@ -17,7 +17,6 @@ import (
 	"github.com/lin9527ya/Norma/permission"
 	actool "github.com/lin9527ya/Norma/tool"
 	"golang.org/x/net/html"
-	"golang.org/x/net/proxy"
 )
 
 var (
@@ -35,7 +34,7 @@ const (
 	webSearchHTMLMaxBytes     = 4 << 20
 	webSearchCacheTTL         = 3 * time.Minute
 	webSearchCacheMaxEntries  = 128
-	webSearchDefaultBrowserUA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+	webSearchDefaultBrowserUA = "Mozilla/5.0 (X11; Linux x86_64; rv:152.0) Gecko/20100101 Firefox/152.0"
 )
 
 // WebSearchOutcome carries rich result + diagnostic metadata from a search probe.
@@ -562,6 +561,8 @@ func ddgsSearch(ctx context.Context, query string, limit int, proxyAddr string) 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", webSearchDefaultBrowserUA)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Referer", "https://html.duckduckgo.com/")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -814,7 +815,7 @@ func commandCodeSearch(ctx context.Context, baseURL, apiKey, query string, limit
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("User-Agent", "artex-web-search/1.0")
+	req.Header.Set("User-Agent", DefaultOutboundUserAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -959,7 +960,8 @@ func braveHTMLSearch(ctx context.Context, query string, limit int, proxyAddr str
 		return nil, err
 	}
 	req.Header.Set("User-Agent", webSearchDefaultBrowserUA)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -1121,37 +1123,6 @@ func nodeText(n *html.Node) string {
 }
 
 func searchHTTPClient(proxyAddr string) (*http.Client, error) {
-	proxyAddr = strings.TrimSpace(proxyAddr)
 	// 显式置 nil Proxy，杜绝未配搜索代理时隐式读取进程 HTTP_PROXY 环境变量越权出网。
-	tr := &http.Transport{Proxy: nil}
-	if proxyAddr != "" {
-		u, err := url.Parse(proxyAddr)
-		if err != nil || u.Host == "" {
-			return nil, fmt.Errorf("invalid search proxy %q", proxyAddr)
-		}
-		switch strings.ToLower(u.Scheme) {
-		case "http", "https":
-			tr.Proxy = http.ProxyURL(u)
-		case "socks5", "socks5h":
-			var auth *proxy.Auth
-			if u.User != nil {
-				pw, _ := u.User.Password()
-				auth = &proxy.Auth{User: u.User.Username(), Password: pw}
-			}
-			d, err := proxy.SOCKS5("tcp", u.Host, auth, proxy.Direct)
-			if err != nil {
-				return nil, err
-			}
-			cd, ok := d.(proxy.ContextDialer)
-			if !ok {
-				return nil, fmt.Errorf("socks5 proxy does not support context")
-			}
-			tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return cd.DialContext(ctx, network, addr)
-			}
-		default:
-			return nil, fmt.Errorf("unsupported search proxy scheme %q", u.Scheme)
-		}
-	}
-	return &http.Client{Transport: tr, Timeout: 30 * time.Second}, nil
+	return newProxyAwareHTTPClient(proxyAddr, 30*time.Second)
 }

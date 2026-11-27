@@ -207,6 +207,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	ctx = WithRunInfo(ctx, ri)
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
+	tools = append(tools, newBLADEWebFetch(c.proxySnapshot, proxyCA, ri.TaskID))
 	if ws.Enabled {
 		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
 			resolved := resolveWebSearchOpts(c.webSearch, c.webSearchFn)
@@ -227,11 +228,8 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeferredTools:                 def.Deferred,
 		UnlockSet:                     def.Unlock,
 		PermissionMode:                permission.ModeBypass,
-		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxyFunc:             c.proxySnapshot,
-		WebFetchCACert:                proxyCA,
-		WebFetchDisableDirectFallback: true,
-		OmitCurrentDateReminder:       true,
+		EnableWebFetch:          false, // BLADE-owned WebFetch（带拟真 UA + 记录代理 + CA 校验）挂在 Tools 里
+		OmitCurrentDateReminder: true,
 		PromptCacheKey:                sessionID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
@@ -247,7 +245,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		// 恢复/切换），不把启动瞬间的快照冻结整轮。
 		BashEnvFunc: func() []string {
 			addr, ca := c.proxySnapshot()
-			return proxyEnv(addr, ca)
+			return append(proxyEnv(addr, ca), TaskSubprocessEnv(sessionWorkDir, ri.TaskID)...)
 		},
 		WorkingDir:  sessionWorkDir,
 		MaxTurns:    maxTurns,

@@ -20,6 +20,7 @@ package agent
 // 代理，流量照常进流量查看器；没有则直连，与手写 curl -k 行为一致。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,10 +32,12 @@ import (
 )
 
 const httpProbeScript = `#!/usr/bin/env bash
-# blade http_probe: 对每个 URL 输出一行紧凑 JSON（url/status/bytes/time_ms/title/server/content_type/redirect）
+# batch probe: 对每个 URL 输出一行紧凑 JSON（url/status/bytes/time_ms/title/server/content_type/redirect）
+_ua="${TARGET_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36}"
+_al="${TARGET_ACCEPT_LANGUAGE:-zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7}"
 for u in "$@"; do
   f=$(mktemp); h=$(mktemp)
-  out=$(curl -sS -k -L --max-time 10 -w '%{http_code} %{time_total}' -o "$f" -D "$h" "$u" 2>/dev/null)
+  out=$(curl -sS -k -L --max-time 10 -A "$_ua" -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8' -H "Accept-Language: $_al" -w '%{http_code} %{time_total}' -o "$f" -D "$h" "$u" 2>/dev/null)
   code=${out%% *}; tt=${out##* }
   bytes=$(wc -c < "$f" | tr -d ' ')
   ms=$(awk -v t="$tt" 'BEGIN{printf "%d", t*1000}')
@@ -76,7 +79,7 @@ func (t *ToolSet) ensureProbeScript() string {
 		return ""
 	}
 	p := filepath.Join(t.runDir, "blade-probe.sh")
-	if _, err := os.Stat(p); err == nil {
+	if cur, err := os.ReadFile(p); err == nil && bytes.Equal(cur, []byte(httpProbeScript)) {
 		return p
 	}
 	if err := os.WriteFile(p, []byte(httpProbeScript), 0o755); err != nil {

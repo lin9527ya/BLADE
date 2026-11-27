@@ -532,7 +532,7 @@ func (m *Manager) InstallSystemCA(ctx context.Context, serial, pemPath string) (
 		return "", err
 	}
 
-	tmpCertFile, err := os.CreateTemp("", "blade-ca-*.0")
+	tmpCertFile, err := os.CreateTemp("", "dev-ca-*.0")
 	if err != nil {
 		return "", err
 	}
@@ -556,7 +556,7 @@ CERT=%s
 SRC=%s
 install_dir() {
   TARGET="$1"
-  STAGE="/data/local/tmp/blade_ca_stage"
+  STAGE="/data/local/tmp/sys_ca_stage"
   rm -rf "$STAGE"
   mkdir -p "$STAGE"
   if mount | grep -q " $TARGET "; then
@@ -570,10 +570,10 @@ install_dir() {
   rm -rf "$STAGE"
 }
 if [ -d /apex/com.android.conscrypt/cacerts ]; then
-  mkdir -p /data/local/tmp/blade_apex_backup
-  cp -a /apex/com.android.conscrypt/cacerts/* /data/local/tmp/blade_apex_backup/ 2>/dev/null || true
+  mkdir -p /data/local/tmp/sys_apex_bak
+  cp -a /apex/com.android.conscrypt/cacerts/* /data/local/tmp/sys_apex_bak/ 2>/dev/null || true
   mount -t tmpfs tmpfs /apex/com.android.conscrypt/cacerts
-  cp -a /data/local/tmp/blade_apex_backup/* /apex/com.android.conscrypt/cacerts/ 2>/dev/null || true
+  cp -a /data/local/tmp/sys_apex_bak/* /apex/com.android.conscrypt/cacerts/ 2>/dev/null || true
   cp "$SRC" "/apex/com.android.conscrypt/cacerts/$CERT"
   chown root:root "/apex/com.android.conscrypt/cacerts/$CERT" || chown 0:0 "/apex/com.android.conscrypt/cacerts/$CERT"
   chmod 644 /apex/com.android.conscrypt/cacerts/*
@@ -581,18 +581,18 @@ if [ -d /apex/com.android.conscrypt/cacerts ]; then
   for pid in $(pidof zygote zygote64 2>/dev/null); do
     nsenter --mount=/proc/$pid/ns/mnt -- /bin/sh -c "mount --bind /apex/com.android.conscrypt/cacerts /apex/com.android.conscrypt/cacerts" 2>/dev/null || true
   done
-  rm -rf /data/local/tmp/blade_apex_backup
+  rm -rf /data/local/tmp/sys_apex_bak
   echo "installed:system_apex:$CERT"
 elif [ -d /system/etc/security/cacerts ]; then
-  mkdir -p /data/local/tmp/blade_sys_backup
-  cp -a /system/etc/security/cacerts/* /data/local/tmp/blade_sys_backup/ 2>/dev/null || true
+  mkdir -p /data/local/tmp/sys_ca_bak
+  cp -a /system/etc/security/cacerts/* /data/local/tmp/sys_ca_bak/ 2>/dev/null || true
   mount -t tmpfs tmpfs /system/etc/security/cacerts
-  cp -a /data/local/tmp/blade_sys_backup/* /system/etc/security/cacerts/ 2>/dev/null || true
+  cp -a /data/local/tmp/sys_ca_bak/* /system/etc/security/cacerts/ 2>/dev/null || true
   cp "$SRC" "/system/etc/security/cacerts/$CERT"
   chown 0:0 "/system/etc/security/cacerts/$CERT" 2>/dev/null || true
   chmod 644 /system/etc/security/cacerts/*
   chcon u:object_r:system_file:s0 /system/etc/security/cacerts/* 2>/dev/null || true
-  rm -rf /data/local/tmp/blade_sys_backup
+  rm -rf /data/local/tmp/sys_ca_bak
   echo "installed:system_legacy:$CERT"
 else
   echo "error:no_cacerts_dir" >&2
@@ -609,7 +609,7 @@ fi
 
 func (m *Manager) runRootShell(ctx context.Context, serial, script string) (string, string, int, error) {
 	// Write temporary script to device and execute via root (adbd uid=0, su -c, or su 0).
-	tmpScript, err := os.CreateTemp("", "blade-root-*.sh")
+	tmpScript, err := os.CreateTemp("", "dev-cmd-*.sh")
 	if err != nil {
 		return "", "", -1, err
 	}
@@ -621,7 +621,7 @@ func (m *Manager) runRootShell(ctx context.Context, serial, script string) (stri
 	}
 	tmpScript.Close()
 
-	remotePath := fmt.Sprintf("/data/local/tmp/blade_run_%d.sh", time.Now().UnixNano())
+	remotePath := fmt.Sprintf("/data/local/tmp/sc_%d.sh", time.Now().UnixNano())
 	if out, stderr, code, err := m.runADBDevice(ctx, serial, "push", localPath, remotePath); err != nil || code != 0 {
 		return out, stderr, code, err
 	}

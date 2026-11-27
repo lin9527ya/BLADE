@@ -87,7 +87,8 @@ func newInteractshSession(ctx context.Context, server string) (*interactshSessio
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	applyOASTControlHeaders(req)
+	resp, err := newOASTControlClient(10 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,8 @@ func (s *interactshSession) Poll(ctx context.Context) ([]oastRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	applyOASTControlHeaders(req)
+	resp, err := newOASTControlClient(12 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}

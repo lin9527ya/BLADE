@@ -67,6 +67,7 @@ massdns -r /path/to/resolvers.txt -t A -o S -w output.txt \
 
 # ffuf for subdomain brute:
 ffuf -w subdomains-wordlist.txt -u https://FUZZ.target.com \
+  -H "User-Agent: $TARGET_USER_AGENT" \
   -mc 200,301,302,403 -H "Host: FUZZ.target.com"
 
 # DNSx for bulk resolution:
@@ -79,10 +80,11 @@ cat subdomains.txt | dnsx -a -resp -o resolved.txt
 ```bash
 # ffuf vhost mode:
 ffuf -w wordlist.txt -u https://target.com \
+  -H "User-Agent: $TARGET_USER_AGENT" \
   -H "Host: FUZZ.target.com" -mc 200,301,403
 
 # gobuster vhost:
-gobuster vhost -u https://target.com -w wordlist.txt
+gobuster vhost -u https://target.com -a "$TARGET_USER_AGENT" -w wordlist.txt
 ```
 
 ---
@@ -97,7 +99,7 @@ nmap -T4 -F target.com -oN ports.txt
 cat resolved_ips.txt | nmap -iL - --open -p 80,443,8080,8443,8888,3000,5000 -oG scan.txt
 
 # httpx for HTTP probing:
-cat subdomains.txt | httpx -title -tech-detect -status-code -o live_hosts.txt
+cat subdomains.txt | httpx -H "User-Agent: $TARGET_USER_AGENT" -title -tech-detect -status-code -o live_hosts.txt
 
 # masscan for speed on large IP ranges:
 masscan -p 80,443,8080,8443 10.0.0.0/8 --rate=1000
@@ -112,10 +114,10 @@ masscan -p 80,443,8080,8443 10.0.0.0/8 --rate=1000
 whatweb https://target.com
 
 # httpx with tech detection:
-httpx -u https://target.com -tech-detect
+httpx -u https://target.com -H "User-Agent: $TARGET_USER_AGENT" -tech-detect
 
 # Check headers manually:
-curl -sI https://target.com | grep -i "server\|x-powered-by\|x-generator\|cf-ray"
+curl -sI -A "$TARGET_USER_AGENT" https://target.com | grep -i "server\|x-powered-by\|x-generator\|cf-ray"
 
 # Fingerprint from:
 - Server header: nginx/1.18, Apache/2.4, IIS/10.0

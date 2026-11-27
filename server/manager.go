@@ -9,7 +9,10 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -927,6 +930,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		m.egressProxy = blockedProxyURL
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
+	agent.OASTProxyFunc = m.EgressProxy
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
 	// restart with capture already on keeps Playwright routed through the proxy.
 	m.syncBrowserMCPProxy()
@@ -1406,66 +1410,254 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	return nil
 }
 
-// browserMCPName is the seeded Playwright MCP whose proxy args + CA env are kept
-// in sync with the traffic-capture toggle.
+// browserMCPName is the legacy seeded Playwright MCP name kept for compatibility.
 const browserMCPName = "browser"
 
-// syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
-// the current traffic-capture state: capture on → route Playwright through the
-// recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
-func (m *Manager) syncBrowserMCPProxy() {
-	servers, err := m.pg.ListMCP()
-	if err != nil {
-		log.Printf("[mcp] browser 代理同步: 读取 MCP 列表失败: %v", err)
-		return
+// browserMCPKind classifies stdio browser-automation MCP servers so proxy, CA,
+// and anti-detection flags stay synchronized across "browser", "playwright", and
+// "chrome-devtools" entries rather than hardcoding only "browser".
+func browserMCPKind(s *pgdb.MCPServer) string {
+	if s == nil || !strings.EqualFold(strings.TrimSpace(s.Transport), "stdio") {
+		return ""
 	}
-	var srv *pgdb.MCPServer
-	for _, s := range servers {
-		if s.Name == browserMCPName {
-			srv = s
-			break
+	name := strings.ToLower(strings.TrimSpace(s.Name))
+	args := decodeStrSlice(s.Args)
+	joined := strings.ToLower(s.Command + " " + strings.Join(args, " "))
+	switch {
+	case name == "chrome-devtools" || strings.Contains(joined, "chrome-devtools-mcp"):
+		return "chrome-devtools"
+	case name == browserMCPName || name == "playwright" || strings.Contains(joined, "@playwright/mcp") || strings.Contains(joined, "playwright"):
+		return "playwright"
+	default:
+		return ""
+	}
+}
+
+// ensureBrowserStealthProfile writes neutral anti-detection helper files under
+// <dataDir>/browser_profile with 0755/0644 permissions so isolated MCP worker
+// users can read them. Returns ("", "") if dataDir is empty or write fails.
+func ensureBrowserStealthProfile(dataDir string) (initScriptPath, configPath string) {
+	if strings.TrimSpace(dataDir) == "" {
+		return "", ""
+	}
+	profDir := filepath.Join(dataDir, "browser_profile")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		return "", ""
+	}
+	_ = os.Chmod(profDir, 0o755)
+
+	initPath := filepath.Join(profDir, "init-stealth.js")
+	const initJS = `(() => {
+  try {
+    Object.defineProperty(Navigator.prototype, 'webdriver', {
+      get: () => undefined,
+      configurable: true
+    });
+  } catch {}
+  try {
+    if (!window.chrome) {
+      Object.defineProperty(window, 'chrome', {
+        value: { runtime: {} },
+        writable: true,
+        configurable: true
+      });
+    }
+  } catch {}
+  try {
+    if (!navigator.languages || navigator.languages.length === 0) {
+      Object.defineProperty(Navigator.prototype, 'languages', {
+        get: () => ['zh-CN', 'zh', 'en-US', 'en'],
+        configurable: true
+      });
+    }
+  } catch {}
+})();
+`
+	if cur, err := os.ReadFile(initPath); err != nil || string(cur) != initJS {
+		if err := os.WriteFile(initPath, []byte(initJS), 0o644); err != nil {
+			initPath = ""
+		} else {
+			_ = os.Chmod(initPath, 0o644)
 		}
 	}
-	if srv == nil {
-		return // user removed/renamed it — leave it alone
+
+	cfgPath := filepath.Join(profDir, "mcp-config.json")
+	const cfgJSON = "{\n  \"browser\": {\n    \"launchOptions\": {\n      \"args\": [\n        \"--disable-blink-features=AutomationControlled\"\n      ]\n    }\n  }\n}\n"
+	if cur, err := os.ReadFile(cfgPath); err != nil || string(cur) != cfgJSON {
+		if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+			cfgPath = ""
+		} else {
+			_ = os.Chmod(cfgPath, 0o644)
+		}
+	}
+	return initPath, cfgPath
+}
+
+var (
+	playwrightBrowserOnce sync.Once
+	playwrightBrowserUA   string
+	reChromeMajorVersion  = regexp.MustCompile(`\b(\d{2,3})\.\d+\.\d+\.\d+\b`)
+)
+
+// browserPlaywrightUserAgent synthesizes a Chromium User-Agent that matches the
+// host OS token and installed Chrome/Chromium major version so wire Sec-CH-UA /
+// Sec-CH-UA-Platform never contradict the --user-agent flag while removing HeadlessChrome.
+func browserPlaywrightUserAgent() string {
+	playwrightBrowserOnce.Do(func() {
+		major := "157"
+		for _, bin := range []string{"google-chrome", "chromium", "chromium-browser"} {
+			p, err := exec.LookPath(bin)
+			if err != nil {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			out, cmdErr := exec.CommandContext(ctx, p, "--version").CombinedOutput()
+			cancel()
+			if cmdErr == nil {
+				if m := reChromeMajorVersion.FindStringSubmatch(string(out)); len(m) == 2 {
+					major = m[1]
+					break
+				}
+			}
+		}
+		osToken := "X11; Linux x86_64"
+		switch runtime.GOOS {
+		case "darwin":
+			osToken = "Macintosh; Intel Mac OS X 10_15_7"
+		case "windows":
+			osToken = "Windows NT 10.0; Win64; x64"
+		}
+		playwrightBrowserUA = fmt.Sprintf(
+			"Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s.0.0.0 Safari/537.36",
+			osToken, major,
+		)
+	})
+	return playwrightBrowserUA
+}
+
+func hasMCPFlag(args []string, flag string) bool {
+	prefix := flag + "="
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceManagedFileFlag strips stale entries pointing inside any browser_profile/
+// directory for flag and ensures desiredPath is present if no custom override exists.
+func applyManagedFileFlag(args []string, flag, desiredPath string) []string {
+	if desiredPath == "" {
+		return args
+	}
+	prefix := flag + "="
+	marker := string(filepath.Separator) + "browser_profile" + string(filepath.Separator)
+	out := make([]string, 0, len(args)+2)
+	hasCustom := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == flag && i+1 < len(args) {
+			val := args[i+1]
+			if strings.Contains(val, marker) {
+				i++
+				continue
+			}
+			hasCustom = true
+			out = append(out, a, val)
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, prefix) {
+			val := strings.TrimPrefix(a, prefix)
+			if strings.Contains(val, marker) {
+				continue
+			}
+			hasCustom = true
+			out = append(out, a)
+			continue
+		}
+		out = append(out, a)
+	}
+	if !hasCustom {
+		out = append(out, flag, desiredPath)
+	}
+	return out
+}
+
+func reconcileBrowserMCPArgsEnv(kind, dataDir, proxy, cert string, rawArgs, rawEnv json.RawMessage) (nextArgs, nextEnv json.RawMessage, changed bool) {
+	oldArgs := string(rawArgs)
+	oldEnv := string(rawEnv)
+
+	args := stripProxyArgs(decodeStrSlice(rawArgs))
+	env := decodeStrMap(rawEnv)
+	delete(env, "NODE_EXTRA_CA_CERTS")
+
+	if kind == "playwright" {
+		if cert != "" && !hasMCPFlag(args, "--ignore-https-errors") {
+			args = append(args, "--ignore-https-errors")
+		}
+		if !hasMCPFlag(args, "--user-agent") {
+			args = append(args, "--user-agent", browserPlaywrightUserAgent())
+		}
+		if !hasMCPFlag(args, "--viewport-size") && !hasMCPFlag(args, "--device") && !hasMCPFlag(args, "--mobile") {
+			args = append(args, "--viewport-size", "1440x900")
+		}
+		initPath, cfgPath := ensureBrowserStealthProfile(dataDir)
+		args = applyManagedFileFlag(args, "--init-script", initPath)
+		args = applyManagedFileFlag(args, "--config", cfgPath)
 	}
 
-	proxy := m.ProxyAddr()  // MITM when capture on; global egress proxy (or "") when off
-	cert := m.ProxyCACert() // "" when capture off
-
-	oldArgs := string(srv.Args)
-	oldEnv := string(srv.Env)
-	args := stripProxyArgs(decodeStrSlice(srv.Args))
-	env := decodeStrMap(srv.Env)
-	delete(env, "NODE_EXTRA_CA_CERTS")
 	if proxy != "" {
 		args = append(args, "--proxy-server", proxy)
 		if cert != "" {
 			env["NODE_EXTRA_CA_CERTS"] = cert
 		}
 	}
-	nextArgs := encodeJSON(args)
-	nextEnv := encodeJSON(env)
-	if string(nextArgs) == oldArgs && string(nextEnv) == oldEnv {
+
+	nextArgs = encodeJSON(args)
+	nextEnv = encodeJSON(env)
+	return nextArgs, nextEnv, string(nextArgs) != oldArgs || string(nextEnv) != oldEnv
+}
+
+// syncBrowserMCPProxy reconciles all stdio browser-automation MCP entries
+// ("browser", "playwright", "chrome-devtools", or @playwright/mcp / chrome-devtools-mcp)
+// with the current proxy, CA, and stealth configuration.
+// Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
+func (m *Manager) syncBrowserMCPProxy() {
+	servers, err := m.pg.ListMCP()
+	if err != nil {
+		log.Printf("[mcp] browser 代理同步: 读取 MCP 列表失败: %v", err)
 		return
 	}
-	srv.Args = nextArgs
-	srv.Env = nextEnv
-	if _, err := m.pg.SaveMCP(srv); err != nil {
-		log.Printf("[mcp] browser 代理同步失败: %v", err)
-		return
-	}
-	InvalidateMCPSchemaCache(srv.ID)
-	bumpMCPConfigEpoch()
-	switch {
-	case proxy != "" && cert != "":
-		log.Printf("[mcp] browser MCP 已挂流量捕获代理 %s (CA %s)", proxy, cert)
-	case proxy != "":
-		log.Printf("[mcp] browser MCP 已挂全局出口代理 %s（未开启流量捕获）", proxy)
-	default:
-		log.Printf("[mcp] browser MCP 已移除代理配置")
+	proxy := m.ProxyAddr()  // MITM when capture on; global egress proxy (or "") when off
+	cert := m.ProxyCACert() // "" when capture off
+
+	for _, srv := range servers {
+		kind := browserMCPKind(srv)
+		if kind == "" {
+			continue
+		}
+		nextArgs, nextEnv, changed := reconcileBrowserMCPArgsEnv(kind, m.dir, proxy, cert, srv.Args, srv.Env)
+		if !changed {
+			continue
+		}
+		srv.Args = nextArgs
+		srv.Env = nextEnv
+		if _, err := m.pg.SaveMCP(srv); err != nil {
+			log.Printf("[mcp] %s 代理/隐身同步失败: %v", srv.Name, err)
+			continue
+		}
+		InvalidateMCPSchemaCache(srv.ID)
+		bumpMCPConfigEpoch()
+		switch {
+		case proxy != "" && cert != "":
+			log.Printf("[mcp] %s MCP 已同步流量捕获代理 %s (CA %s)", srv.Name, proxy, cert)
+		case proxy != "":
+			log.Printf("[mcp] %s MCP 已同步全局出口代理 %s（未开启流量捕获）", srv.Name, proxy)
+		default:
+			log.Printf("[mcp] %s MCP 已更新隐身参数并移除代理配置", srv.Name)
+		}
 	}
 }
 

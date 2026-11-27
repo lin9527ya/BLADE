@@ -7,15 +7,21 @@ package traffic
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -188,8 +194,15 @@ type Traffic struct {
 	// Mobile proxy source tracking & TLS certificate pinning telemetry.
 	mobileAddrMu  sync.RWMutex
 	mobileAddrs   map[string]struct{}
+	flowSrcMu     sync.Mutex
+	flowSrc       map[*mproxy.Flow]flowSrcEntry
 	pinningMu     sync.Mutex
 	pinningAlerts map[string]*PinningAlert
+}
+
+type flowSrcEntry struct {
+	source    string
+	expiresAt time.Time
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -231,10 +244,14 @@ func Open(dir, addr string) (*Traffic, error) {
 		return nil, err
 	}
 
+	caDir := filepath.Join(dir, "_ca")
+	if err := ensureNeutralRootCA(caDir); err != nil {
+		log.Printf("[traffic] 预置中性根证书失败，回退默认生成器: %v", err)
+	}
 	p, err := mproxy.NewProxy(&mproxy.Options{
 		Addr:        addr,
 		SslInsecure: true,
-		CaRootPath:  filepath.Join(dir, "_ca"),
+		CaRootPath:  caDir,
 	})
 	if err != nil {
 		db.Close()
@@ -544,6 +561,129 @@ func SanitizeProxyError(proxyURL string, err error) string {
 // CACertPath returns the read-only public PEM CA cert clients must trust to verify
 // HTTPS through the MITM proxy, kept separate from _ca/ so agent processes never
 // receive access to the CA private key.
+// ensureNeutralRootCA pre-generates a generic corporate-style root CA in caDir
+// on first initialization so mobile/browser environments do not expose a default
+// "mitmproxy" Subject/Issuer CN. Existing CA directories are preserved verbatim.
+func ensureNeutralRootCA(caDir string) error {
+	caFile := filepath.Join(caDir, "mitmproxy-ca.pem")
+	certFile := filepath.Join(caDir, "mitmproxy-ca-cert.pem")
+	if _, err := os.Stat(caFile); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 62))
+	if err != nil || serial.Sign() <= 0 {
+		serial = big.NewInt(time.Now().UnixNano())
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   "Enterprise Network Root CA",
+			Organization: []string{"Trust Services"},
+		},
+		NotBefore:             now.Add(-48 * time.Hour),
+		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		SignatureAlgorithm:    x509.SHA256WithRSA,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+			x509.ExtKeyUsageClientAuth,
+			x509.ExtKeyUsageEmailProtection,
+			x509.ExtKeyUsageTimeStamping,
+			x509.ExtKeyUsageCodeSigning,
+		},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	var combined bytes.Buffer
+	if err := pem.Encode(&combined, &pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}); err != nil {
+		return err
+	}
+	if err := pem.Encode(&combined, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	if err := os.WriteFile(caFile, combined.Bytes(), 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(certFile, certPEM, 0o644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *Traffic) stashFlowSource(f *mproxy.Flow, src string) {
+	if t == nil || f == nil {
+		return
+	}
+	src = strings.ToLower(strings.TrimSpace(src))
+	if src == "" {
+		return
+	}
+	now := time.Now()
+	t.flowSrcMu.Lock()
+	defer t.flowSrcMu.Unlock()
+	if t.flowSrc == nil {
+		t.flowSrc = make(map[*mproxy.Flow]flowSrcEntry)
+	}
+	if len(t.flowSrc) >= 2048 {
+		for k, v := range t.flowSrc {
+			if !now.Before(v.expiresAt) {
+				delete(t.flowSrc, k)
+			}
+		}
+		if len(t.flowSrc) >= 4096 {
+			clear(t.flowSrc)
+		}
+	}
+	t.flowSrc[f] = flowSrcEntry{source: src, expiresAt: now.Add(10 * time.Minute)}
+}
+
+func (t *Traffic) peekFlowSource(f *mproxy.Flow) string {
+	if t == nil || f == nil {
+		return ""
+	}
+	t.flowSrcMu.Lock()
+	defer t.flowSrcMu.Unlock()
+	if t.flowSrc == nil {
+		return ""
+	}
+	e, ok := t.flowSrc[f]
+	if !ok {
+		return ""
+	}
+	if !time.Now().Before(e.expiresAt) {
+		delete(t.flowSrc, f)
+		return ""
+	}
+	return e.source
+}
+
+func (t *Traffic) clearFlowSource(f *mproxy.Flow) {
+	if t == nil || f == nil {
+		return
+	}
+	t.flowSrcMu.Lock()
+	if t.flowSrc != nil {
+		delete(t.flowSrc, f)
+	}
+	t.flowSrcMu.Unlock()
+}
+
 func (t *Traffic) CACertPath() string {
 	pub := filepath.Join(t.dir, "_public_ca", "mitmproxy-ca-cert.pem")
 	if err := t.syncPublicCACert(); err == nil {
@@ -633,7 +773,24 @@ type sink struct {
 	t *Traffic
 }
 
+func (s *sink) Requestheaders(f *mproxy.Flow) {
+	if s == nil || s.t == nil || f == nil || f.Request == nil {
+		return
+	}
+	if src := strings.TrimSpace(f.Request.Header.Get("X-Blade-Traffic-Source")); src != "" {
+		s.t.stashFlowSource(f, src)
+	}
+	// Strip internal proxy source tag before go-mitmproxy copies f.Request.Header to the target request.
+	f.Request.Header.Del("X-Blade-Traffic-Source")
+}
+
 func (s *sink) Response(f *mproxy.Flow) {
+	if f == nil {
+		return
+	}
+	if f.Response == nil || !strings.Contains(strings.ToLower(f.Response.Header.Get("Content-Type")), "text/event-stream") {
+		defer s.t.clearFlowSource(f)
+	}
 	if f.Request == nil || f.Response == nil {
 		return
 	}
@@ -645,6 +802,9 @@ func (s *sink) Response(f *mproxy.Flow) {
 // errors) — not a plain target-unreachable error — we flag the host for
 // transparent passthrough so future requests to it succeed instead of dying.
 func (s *sink) RequestError(f *mproxy.Flow, err error) {
+	if f != nil {
+		defer s.t.clearFlowSource(f)
+	}
 	s.t.notifyUpstreamError(err)
 	if isLikelyPinningErr(err) && f != nil && f.Request != nil {
 		host := ""

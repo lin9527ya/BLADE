@@ -186,6 +186,9 @@ func (t *Traffic) UnregisterMobileClientAddr(remoteAddr string) {
 }
 
 func (t *Traffic) flowSource(f *mproxy.Flow) string {
+	if src := t.peekFlowSource(f); src == "mobile" {
+		return "mobile"
+	}
 	if f != nil && f.Request != nil && strings.EqualFold(f.Request.Header.Get("X-Blade-Traffic-Source"), "mobile") {
 		return "mobile"
 	}
@@ -350,11 +353,11 @@ func (t *Traffic) ServeCertPortal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, fmt.Sprintf(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BLADE MITM CA Certificate</title>
+<title>Network CA Certificate</title>
 <style>body{font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;padding:0 1rem;line-height:1.5}
 .btn{display:block;padding:.8rem 1rem;margin:.6rem 0;border-radius:8px;background:#111827;color:#fff;text-decoration:none;text-align:center;font-weight:600}
 small{color:#6b7280}</style></head><body>
-<h2>BLADE Mobile CA Portal</h2>
+<h2>Device CA Setup</h2>
 <p>Install this Root CA on authorized test devices to inspect HTTPS API traffic.</p>
 <a class="btn" href="?fmt=crt">Download Android / Generic CA (.crt)</a>
 <a class="btn" href="?fmt=mobileconfig">Download iOS Profile (.mobileconfig)</a>
@@ -371,6 +374,7 @@ func (s *sink) HTTPConnectError(f *mproxy.Flow, err error) {
 	if f == nil || f.Request == nil || err == nil {
 		return
 	}
+	defer s.t.clearFlowSource(f)
 	host := ""
 	if f.Request.URL != nil {
 		host = f.Request.URL.Hostname()
@@ -384,14 +388,22 @@ func (s *sink) HTTPConnectError(f *mproxy.Flow, err error) {
 }
 
 func (s *sink) WebSocketEnd(f *mproxy.Flow) {
-	if f == nil || f.Request == nil || f.WebScoket == nil || len(f.WebScoket.Messages) == 0 {
+	if f == nil {
+		return
+	}
+	defer s.t.clearFlowSource(f)
+	if f.Request == nil || f.WebScoket == nil || len(f.WebScoket.Messages) == 0 {
 		return
 	}
 	s.t.recordWebSocket(f)
 }
 
 func (s *sink) SSEEnd(f *mproxy.Flow) {
-	if f == nil || f.Request == nil || f.SSE == nil || len(f.SSE.Events) == 0 {
+	if f == nil {
+		return
+	}
+	defer s.t.clearFlowSource(f)
+	if f.Request == nil || f.SSE == nil || len(f.SSE.Events) == 0 {
 		return
 	}
 	s.t.recordSSE(f)

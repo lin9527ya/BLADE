@@ -199,16 +199,22 @@ func (s *ExecutionService) submitTool(ctx context.Context, taskID string, intent
 	cmd := exec.Command(argv[0], argv[1:]...)
 	startDetached(cmd)
 	cmd.WaitDelay = execWaitDelay // 见常量注释：后台子进程握着 stdout 时不要卡死 Wait
-	// 与 agent Bash 同环境同目录：走记录代理、信任 CA、相对产物落在本意图目录。
+	// 与 agent Bash 同环境同目录：走记录代理、信任 CA、默认拟真 UA、相对产物落在本意图目录。
+	var taskRoot string
 	if taskID != "" {
 		cmd.Dir = agent.EnsureRunDir(s.dir, taskID, intentID)
+		taskRoot = filepath.Join(s.dir, "tasks", taskID)
 	}
 	s.mu.Lock()
 	envFor := s.envFor
 	s.mu.Unlock()
+	baseEnv := os.Environ()
 	if envFor != nil {
-		cmd.Env = append(os.Environ(), envFor()...)
+		baseEnv = append(baseEnv, envFor()...)
 	}
+	tid, _ := strconv.ParseInt(taskID, 10, 64)
+	baseEnv = append(baseEnv, agent.TaskSubprocessEnv(taskRoot, tid)...)
+	cmd.Env = baseEnv
 	// 与 agent Bash 同一套隔离：降权到 BLADE_AGENT_USER + 清洗疑似凭据的环境变量
 	// （未启用时 no-op）。放在 env 拼好之后，清洗看到的就是子进程最终会拿到的那份。
 	hardenAgentCmd(cmd)

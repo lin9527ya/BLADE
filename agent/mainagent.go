@@ -235,6 +235,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
+	tools = append(tools, newBLADEWebFetch(m.proxySnapshot, proxyCA, taskID))
 	ws := resolveWebSearchOpts(m.webSearch, m.webSearchFn)
 	if ws.Enabled {
 		tools = append(tools, NewWebSearchToolWithResolver(func() WebSearchOpts {
@@ -262,11 +263,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeferredTools:                 def.Deferred,
 		UnlockSet:                     def.Unlock,
 		PermissionMode:                permission.ModeBypass,
-		EnableWebFetch:                true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxyFunc:             m.proxySnapshot,
-		WebFetchCACert:                proxyCA,
-		WebFetchDisableDirectFallback: true,
-		OmitCurrentDateReminder:       true,
+		EnableWebFetch:          false, // BLADE-owned WebFetch（带任务拟真 UA + 记录代理 + CA 校验）挂在 Tools 里
+		OmitCurrentDateReminder: true,
 		PromptCacheKey:                MainSessionID(ts.ID(), mainSeg),
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
@@ -285,7 +283,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		// 恢复/切换），不把启动瞬间的快照冻结整轮。
 		BashEnvFunc: func() []string {
 			addr, ca := m.proxySnapshot()
-			return proxyEnv(addr, ca)
+			return append(proxyEnv(addr, ca), TaskSubprocessEnv(mainDir, taskID)...)
 		},
 		WorkingDir:    mainDir, // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir: cmdOutDir(mainDir),

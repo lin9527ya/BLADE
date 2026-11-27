@@ -16,17 +16,35 @@ Static SPA bundle harvester. Framework-agnostic; tuned for webpack + Vite.
 
 Stdlib only. TLS verification is disabled (recon against self-signed/internal hosts).
 """
-import sys, os, re, ssl, json, urllib.request, urllib.parse
+import sys, os, re, ssl, json, gzip, zlib, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-UA = os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+UA = os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36")
+HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": os.environ.get("TARGET_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
+    "Accept-Encoding": "gzip, deflate",
+}
+
+def _decode(raw, enc):
+    e = (enc or "").lower().strip()
+    if e == "gzip":
+        try: return gzip.decompress(raw)
+        except Exception: return raw
+    if e == "deflate":
+        try: return zlib.decompress(raw)
+        except Exception:
+            try: return zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception: return raw
+    return raw
 
 def fetch(url, binary=False):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, context=CTX, timeout=25) as r:
-            data = r.read()
+            data = _decode(r.read(), r.headers.get("Content-Encoding", ""))
             return (data if binary else data.decode("utf-8", "ignore")), r.status
     except Exception as e:
         code = getattr(e, "code", 0)

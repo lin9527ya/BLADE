@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,10 +38,19 @@ var OASTInteractshServers = func() []string {
 	return []string{"oast.fun", "oast.pro", "oast.live", "oast.site", "oast.online"}
 }
 
+// OASTProxyFunc optionally returns the non-MITM egress proxy for OAST control
+// requests (register / poll) so control calls do not reveal the host IP when a
+// global proxy is active and never pass the OAST JWT through the traffic recorder.
+var OASTProxyFunc func() string
+
 var (
 	oastSessionMu   sync.Mutex
 	oastSessions    = map[int64][]*interactshSession{}
 	oastRRDownUntil time.Time
+
+	oastTokenMu     sync.Mutex
+	oastTaskTokens  = map[string]map[string]string{} // scopeKey -> token -> local label
+	oastFileSaveMu  sync.Mutex
 )
 
 func oastEnabled() bool {
@@ -114,11 +125,7 @@ func oastCfg() (string, string, bool) {
 	return strings.TrimSpace(token), strings.TrimSpace(domain), true
 }
 
-// oastMarker 是本任务的回调标记。带任务 id：同一账号下的多个任务共用一个子域，
-// 只有靠标记才分得清哪条回调是哪个任务的。
-//
-// 标记会出现在目标侧（payload 里的回调 URL），因此不能带平台名；用中性的 cb
-// 前缀，避免把作业归属写成"这台机器属于哪个平台"。
+// oastMarker 是旧版任务的回调兼容前缀（仅用于存量任务迁移期匹配；新签发不再放入 URL）。
 func (t *ToolSet) oastMarker() string {
 	if t.taskID <= 0 {
 		return "cbtask"
@@ -126,17 +133,113 @@ func (t *ToolSet) oastMarker() string {
 	return fmt.Sprintf("cb%d", t.taskID)
 }
 
-// oastMint 生成一个带任务标记的回调地址。
+func (t *ToolSet) oastScopeKey() string {
+	expID := int64(0)
+	if t != nil && t.ts != nil {
+		expID = t.ts.ID()
+	}
+	return fmt.Sprintf("%d:%d", t.taskID, expID)
+}
+
+func (t *ToolSet) oastTokensFile() string {
+	if t == nil {
+		return ""
+	}
+	if root := strings.TrimSpace(t.taskRoot); root != "" {
+		return filepath.Join(root, "shared", "oast_tokens.json")
+	}
+	if rd := strings.TrimSpace(t.runDir); rd != "" {
+		return filepath.Join(rd, "oast_tokens.json")
+	}
+	return ""
+}
+
+func randomOASTToken() string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	// First char always a letter so tokens work uniformly in URL paths & DNS labels.
+	b := randomToken(1)
+	if b != "" {
+		// Ensure alpha start
+		idx := int(b[0]) % len(letters)
+		return string(letters[idx]) + randomToken(9)
+	}
+	return "a" + randomToken(9)
+}
+
+func (t *ToolSet) mintOASTToken(label string) string {
+	key := t.oastScopeKey()
+	tok := randomOASTToken()
+
+	oastTokenMu.Lock()
+	if len(oastTaskTokens) > 512 {
+		clear(oastTaskTokens)
+	}
+	if oastTaskTokens[key] == nil {
+		oastTaskTokens[key] = map[string]string{}
+	}
+	for oastTaskTokens[key][tok] != "" {
+		tok = randomOASTToken()
+	}
+	oastTaskTokens[key][tok] = label
+	oastTokenMu.Unlock()
+
+	if path := t.oastTokensFile(); path != "" {
+		oastFileSaveMu.Lock()
+		merged := readOASTTokensFile(path)
+		merged[tok] = label
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
+			if raw, err := json.Marshal(merged); err == nil {
+				tmp := path + ".tmp"
+				if os.WriteFile(tmp, raw, 0o600) == nil {
+					_ = os.Rename(tmp, path)
+				}
+			}
+		}
+		oastFileSaveMu.Unlock()
+	}
+	return tok
+}
+
+func (t *ToolSet) lookupOASTTokens() map[string]string {
+	out := map[string]string{}
+	if path := t.oastTokensFile(); path != "" {
+		oastFileSaveMu.Lock()
+		for k, v := range readOASTTokensFile(path) {
+			out[k] = v
+		}
+		oastFileSaveMu.Unlock()
+	}
+	oastTokenMu.Lock()
+	for k, v := range oastTaskTokens[t.oastScopeKey()] {
+		if _, exists := out[k]; !exists || v != "" {
+			out[k] = v
+		}
+	}
+	oastTokenMu.Unlock()
+	return out
+}
+
+func readOASTTokensFile(path string) map[string]string {
+	out := map[string]string{}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+// oastMint 生成一个带不透明随机令牌的回调地址（不暴露任务 ID 或测试意图关键词）。
 func (t *ToolSet) oastMint() actool.CoreTool {
 	return readTool("oast_mint",
-		"生成一个**唯一回调地址**（requestrepo，外部托管，平台不开入站端口），用于确认盲打类漏洞："+
+		"生成一个**唯一不透明回调地址**（requestrepo / 自定义 OAST 服务，平台不开入站端口），用于确认盲打类漏洞："+
 			"SSRF 打过去、命令注入里 curl/wget 它、盲 XSS 的 src 指向它、反序列化里发起请求……目标真的执行了，"+
 			"回调就会被记录。\n"+
-			"★ 地址里带本任务标记；命中后用 oast_poll 取记录（会自动记成一条事实）。\n"+
-			"★ 同一地址可重复使用；想要分辨是哪条 payload 命中的，用 label 区分。\n"+
+			"★ 外发 URL 仅包含随机令牌，不泄露任务编号或漏洞标签；命中后用 oast_poll 取记录并自动对照原标签。\n"+
+			"★ 提示：公共 oast.fun 等域易被企业 WAF/DNS 防火墙阻断；高敏目标建议在设置中配置私有 OAST 域名。\n"+
 			"★ 回调只能证明「目标访问了这个地址」，不能证明是哪段代码执行的——结论里如实写。",
 		obj(map[string]any{
-			"label": str("可选：给这次回调起个短标签（如 ssrf-admin、rce-ping），便于分辨是哪条 payload 命中的"),
+			"label": str("可选：本地语义标签（如 ssrf-admin、rce-ping），仅存于本地对照命中来源，不会拼入外发 URL"),
 		}),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			if !oastEnabled() {
@@ -146,24 +249,26 @@ func (t *ToolSet) oastMint() actool.CoreTool {
 				Label string `json:"label"`
 			}
 			_ = json.Unmarshal(in, &a)
-			marker := t.oastMarker()
-			if label := sanitizeOASTLabel(a.Label); label != "" {
-				marker += "-" + label
+			label := sanitizeOASTLabel(a.Label)
+			tok := t.mintOASTToken(label)
+			localNote := ""
+			if label != "" {
+				localNote = fmt.Sprintf("（本地标签: %s，不出现在外发 URL 中）", label)
 			}
 			token, domain, rrOK := oastCfg()
-			// requestrepo 可用且近 5 分钟没失败过 → 优先它；否则回退 interactsh（oast.fun 等）。
+			// requestrepo 可用且近 5 分钟没失败过 → 优先它；否则回退 interactsh。
 			if rrOK && time.Now().After(oastRRDownUntil) {
 				if sub := oastSubdomain(token); sub != "" {
-					callback := fmt.Sprintf("http://%s.%s/%s", sub, domain, marker)
-					return actool.Text(fmt.Sprintf("callback url: %s（requestrepo）\n把它放进 payload；目标执行后调 oast_poll 取命中记录。", callback)), nil
+					callback := fmt.Sprintf("http://%s.%s/%s", sub, domain, tok)
+					return actool.Text(fmt.Sprintf("callback url: %s（requestrepo）%s\n把它放进 payload；目标执行后调 oast_poll 取命中记录。", callback, localNote)), nil
 				}
 			}
 			session, err := t.interactshSessionFor(ctx)
 			if err != nil {
 				return actool.Errorf("oast_mint: requestrepo 不可用，interactsh 回退也失败：" + err.Error()), nil
 			}
-			callback := fmt.Sprintf("http://%s/%s", session.URL(), marker)
-			return actool.Text(fmt.Sprintf("callback url: %s（interactsh %s）\n把它放进 payload；目标执行后调 oast_poll 取命中记录。", callback, session.Server)), nil
+			callback := fmt.Sprintf("http://%s/%s", session.URL(), tok)
+			return actool.Text(fmt.Sprintf("callback url: %s（interactsh %s）%s\n把它放进 payload；目标执行后调 oast_poll 取命中记录。", callback, session.Server, localNote)), nil
 		})
 }
 
@@ -195,17 +300,26 @@ func (t *ToolSet) oastPoll() actool.CoreTool {
 				return actool.Errorf("oast_poll: requestrepo 与 interactsh 都不可用：requestrepo=" + rrErr.Error() + "; interactsh=" + ierr.Error()), nil
 			}
 			marker := t.oastMarker()
+			tokens := t.lookupOASTTokens()
 			known := t.knownOASTRequestIDs()
 			fresh := make([]map[string]any, 0, 4)
 			for _, it := range items {
-				if it.ID == "" || known[it.ID] || !oastMatches(it, marker) {
+				if it.ID == "" || known[it.ID] {
+					continue
+				}
+				matched, label := oastMatchesRequest(it, marker, tokens)
+				if !matched {
 					continue
 				}
 				known[it.ID] = true
+				summary := oastHitSummary(it, label)
 				fact := map[string]any{
-					"summary":         oastHitSummary(it),
+					"summary":         summary,
 					"oast_request_id": it.ID,
 					"confidence":      "observed",
+				}
+				if label != "" {
+					fact["label"] = label
 				}
 				if it.Type != "" {
 					fact["kind"] = it.Type
@@ -226,10 +340,14 @@ func (t *ToolSet) oastPoll() actool.CoreTool {
 					continue
 				}
 				t.writes.Facts++
-				fresh = append(fresh, map[string]any{
+				row := map[string]any{
 					"fact_id": id, "summary": fact["summary"], "ip": it.IP, "country": it.Country,
 					"path": it.Path, "url": it.URL, "method": it.Method,
-				})
+				}
+				if label != "" {
+					row["label"] = label
+				}
+				fresh = append(fresh, row)
 			}
 			if len(fresh) == 0 {
 				return actool.Text(fmt.Sprintf("no new callbacks（已记录 %d 条，可稍后再轮询）", len(known))), nil
@@ -252,6 +370,26 @@ type oastRequest struct {
 	Country string `json:"country"`
 }
 
+func newOASTControlClient(timeout time.Duration) *http.Client {
+	proxyAddr := ""
+	if OASTProxyFunc != nil {
+		proxyAddr = strings.TrimSpace(OASTProxyFunc())
+	}
+	if c, err := newProxyAwareHTTPClient(proxyAddr, timeout); err == nil && c != nil {
+		return c
+	}
+	return &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: timeout}
+}
+
+func applyOASTControlHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("User-Agent", DefaultOutboundUserAgent())
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+}
+
 // fetchOASTRequests 取最近的记录（一次 50 条足够：更早的命中早已被轮询记下）。
 func fetchOASTRequests(ctx context.Context, token string) ([]oastRequest, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, OASTBaseURL+"/api/v2/requests?limit=50", nil)
@@ -259,8 +397,8 @@ func fetchOASTRequests(ctx context.Context, token string) ([]oastRequest, error)
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	client := &http.Client{Timeout: oastHTTPTimeout}
+	applyOASTControlHeaders(req)
+	client := newOASTControlClient(oastHTTPTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -279,7 +417,51 @@ func fetchOASTRequests(ctx context.Context, token string) ([]oastRequest, error)
 	return payload.Requests, nil
 }
 
-// oastMatches 判断一条记录是不是本任务的回调（HTTP 看 path/query/url，DNS 看域名）。
+func isOASTAlnumByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+func oastTokenMatches(it oastRequest, token string) bool {
+	token = strings.ToLower(strings.TrimSpace(token))
+	if token == "" {
+		return false
+	}
+	for _, v := range []string{it.Path, it.Query, it.URL, it.Domain} {
+		lower := strings.ToLower(v)
+		if lower == "" {
+			continue
+		}
+		for offset := 0; offset < len(lower); {
+			i := strings.Index(lower[offset:], token)
+			if i < 0 {
+				break
+			}
+			start := offset + i
+			end := start + len(token)
+			leftOK := start == 0 || !isOASTAlnumByte(lower[start-1])
+			rightOK := end >= len(lower) || !isOASTAlnumByte(lower[end])
+			if leftOK && rightOK {
+				return true
+			}
+			offset = end
+		}
+	}
+	return false
+}
+
+func oastMatchesRequest(it oastRequest, legacyMarker string, tokens map[string]string) (bool, string) {
+	for tok, lbl := range tokens {
+		if oastTokenMatches(it, tok) {
+			return true, lbl
+		}
+	}
+	if oastMatches(it, legacyMarker) {
+		return true, ""
+	}
+	return false, ""
+}
+
+// oastMatches 判断一条记录是不是本任务的回调（兼容旧版 cb<taskID> 标记）。
 func oastMatches(it oastRequest, marker string) bool {
 	marker = strings.ToLower(strings.TrimSpace(marker))
 	if marker == "" {
@@ -307,9 +489,13 @@ func oastMatches(it oastRequest, marker string) bool {
 	return false
 }
 
-func oastHitSummary(it oastRequest) string {
+func oastHitSummary(it oastRequest, label string) string {
+	tagNote := ""
+	if strings.TrimSpace(label) != "" {
+		tagNote = fmt.Sprintf(" [tag: %s]", label)
+	}
 	if it.Type == "dns" {
-		return fmt.Sprintf("OAST 回连（DNS）：%s 解析请求，来自 %s（%s）", it.Domain, it.IP, it.Country)
+		return fmt.Sprintf("OAST 回连（DNS）%s：%s 解析请求，来自 %s（%s）", tagNote, it.Domain, it.IP, it.Country)
 	}
 	target := it.Path
 	if it.Query != "" {
@@ -318,7 +504,7 @@ func oastHitSummary(it oastRequest) string {
 	if target == "" {
 		target = it.URL
 	}
-	return fmt.Sprintf("OAST 回连（%s %s）：来自 %s（%s）", strings.ToUpper(nzStr(it.Method, "GET")), target, it.IP, it.Country)
+	return fmt.Sprintf("OAST 回连（%s %s）%s：来自 %s（%s）", strings.ToUpper(nzStr(it.Method, "GET")), target, tagNote, it.IP, it.Country)
 }
 
 // knownOASTRequestIDs 已登记的回调请求 id（去重：同一次回调不重复记事实）。

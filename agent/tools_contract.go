@@ -89,7 +89,7 @@ func (t *ToolSet) apiContractTool() actool.CoreTool {
 				return actool.Errorf("写出契约解析脚本失败: " + err.Error()), nil
 			}
 			paths := resolveContractPaths(a.Paths)
-			cmd := buildContractCmd(base, paths, scriptPath, workDir)
+			cmd := buildContractCmd(base, paths, scriptPath, workDir, OutboundProfileForTask(t.taskID))
 			return jsonResult(map[string]any{
 				"run_with_bash": cmd,
 				"script_path":   scriptPath,
@@ -148,17 +148,20 @@ func resolveContractPaths(custom string) []string {
 //
 // 流程：逐个路径 curl 探测（只看 200）→ 第一个命中的下载下来 → 交给解析脚本。
 // 契约文件落在工作目录（不是 /tmp——平台规约）。
-func buildContractCmd(base string, paths []string, scriptPath, workDir string) string {
+func buildContractCmd(base string, paths []string, scriptPath, workDir string, prof OutboundProfile) string {
 	quoted := make([]string, 0, len(paths))
 	for _, p := range paths {
 		quoted = append(quoted, quoteShell(base+p))
 	}
 	contractFile := filepath.Join(workDir, "api_contract.json")
+	uaArg := quoteShell(prof.UserAgent)
+	accArg := quoteShell("Accept: " + prof.AcceptAPI)
+	langArg := quoteShell("Accept-Language: " + prof.AcceptLanguage)
 	// 第一步：逐个探测，命中就下载到工作目录并停。
 	probe := fmt.Sprintf(
-		"for u in %s; do code=$(curl -sS -o %s -w '%%{http_code}' --max-time 20 \"$u\"); "+
+		"for u in %s; do code=$(curl -sS -A %s -H %s -H %s -o %s -w '%%{http_code}' --max-time 20 \"$u\"); "+
 			"if [ \"$code\" = \"200\" ]; then echo \"CONTRACT $u\"; break; fi; done",
-		strings.Join(quoted, " "), quoteShell(contractFile))
+		strings.Join(quoted, " "), uaArg, accArg, langArg, quoteShell(contractFile))
 	// 第二步：交给解析脚本。
 	return probe + " ; " + fmt.Sprintf("python3 %s %s", quoteShell(scriptPath), quoteShell(contractFile))
 }
@@ -191,7 +194,7 @@ func WriteContractScript(dir string) (string, error) {
 // 为什么把「需要鉴权的接口」单列：越权/未授权挖掘的入口就是这批接口。
 // 混在几百个接口里，模型大概率只看前几个。
 const contractScriptSource = `#!/usr/bin/env python3
-"""API 契约解析（POJUN agent 工具 api_contract 的执行端）。
+"""API 契约解析（api_contract 执行端）。
 
 用法: api_contract.py <契约文件>
 支持 OpenAPI 3 / Swagger 2.0（JSON）；YAML 不解析（需要额外依赖），

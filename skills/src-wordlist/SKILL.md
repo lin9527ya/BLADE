@@ -64,12 +64,12 @@ ffuf -u https://target/FUZZ -w wordlists/api-paths-top200.txt -rate 20 -mc 200,3
 
 ## 五、命令模板（速率参数是纪律的一部分）
 
-| 工具 | 模板 | 速率纪律 |
+| 工具 | 模板 | 速率与 UA 纪律 |
 |---|---|---|
-| ffuf | `ffuf -u URL/FUZZ -w dict -rate 20 -mc 200,301,302,401,403 -fs 0` | `-rate` 必填；禁 `-t 100` |
-| dirsearch | `dirsearch -u URL -w dict --random-agent -t 10 --delay 0.2` | `-t ≤10` |
-| feroxbuster | `feroxbuster -u URL -w dict --rate-limit 20 --scan-limit 2` | `--rate-limit` 必填 |
-| gobuster | `gobuster dir -u URL -w dict -t 10 --delay 100ms` | `-t ≤10` |
+| ffuf | `ffuf -u URL/FUZZ -w dict -H "User-Agent: $TARGET_USER_AGENT" -rate 20 -mc 200,301,302,401,403 -fs 0` | `-rate` 与自定义 UA 必填；禁 `-t 100` |
+| dirsearch | `dirsearch -u URL -w dict --random-agent -t 10 --delay 0.2` | `-t ≤10`、`--random-agent` |
+| feroxbuster | `feroxbuster -u URL -w dict -H "User-Agent: $TARGET_USER_AGENT" --rate-limit 20 --scan-limit 2` | `--rate-limit` 与自定义 UA 必填 |
+| gobuster | `gobuster dir -u URL -w dict -a "$TARGET_USER_AGENT" -t 10 --delay 100ms` | `-t ≤10`、带 `-a` |
 | hydra（授权内） | `hydra -L users -P pass -t 2 -W 3 -f host http-post-form "..."` | **`-t 2`、`-f` 命中即停** |
 
 ## 六、与相邻技能的关系

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,5 +253,109 @@ func TestTransparentBridgeSNIAndSyntheticHookCapture(t *testing.T) {
 	rows, total, err := tr.Page(PageQuery{Source: "mobile_hook", RespMin: -1, RespMax: -1}, 0, 10)
 	if err != nil || total != 1 || len(rows) != 1 || rows[0].Host != "api.hook.local" {
 		t.Fatalf("unexpected synthetic mobile_hook query result: total=%d rows=%+v err=%v", total, rows, err)
+	}
+}
+
+func TestMobileProxyStripsInternalHeaderAndNeutralCA(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	tr, err := Open(t.TempDir(), proxyAddr)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer tr.Close()
+
+	// Fresh CA must not contain "mitmproxy" in Subject/Issuer.
+	der, err := tr.CACertDER()
+	if err != nil {
+		t.Fatalf("CACertDER: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if strings.Contains(strings.ToLower(caCert.Subject.String()), "mitmproxy") ||
+		strings.Contains(strings.ToLower(caCert.Issuer.String()), "mitmproxy") {
+		t.Fatalf("root CA still exposes mitmproxy brand: subj=%q issuer=%q", caCert.Subject.String(), caCert.Issuer.String())
+	}
+
+	go func() { _ = tr.Start() }()
+	// Wait briefly until proxy listener binds.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c, dialErr := net.DialTimeout("tcp", proxyAddr, 50*time.Millisecond)
+		if dialErr == nil {
+			_ = c.Close()
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	// Upstream target inspects every header received over the wire.
+	var gotHeader string
+	gotHit := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Blade-Traffic-Source")
+		select {
+		case gotHit <- struct{}{}:
+		default:
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+
+	mp, err := NewMobileProxy(tr, "127.0.0.1:0", []string{"127.0.0.1/32"}, "u1", "secret99")
+	if err != nil {
+		t.Fatalf("NewMobileProxy: %v", err)
+	}
+	mpSrv := httptest.NewServer(mp)
+	defer mpSrv.Close()
+
+	mpURL, err := url.Parse(mpSrv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mpURL.User = url.UserPassword("u1", "secret99")
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(mpURL)},
+		Timeout:   5 * time.Second,
+	}
+	resp, err := client.Get(target.URL + "/api/v1/ping")
+	if err != nil {
+		t.Fatalf("GET via MobileProxy failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected target status: %d", resp.StatusCode)
+	}
+	select {
+	case <-gotHit:
+	case <-time.After(2 * time.Second):
+		t.Fatal("target did not receive request")
+	}
+	if gotHeader != "" {
+		t.Fatalf("X-Blade-Traffic-Source leaked upstream over wire: %q", gotHeader)
+	}
+
+	// Verify local SQLite still attributed the exchange to mobile AND didn't store the internal header.
+	var storedSrc, reqHead string
+	rows, total, err := tr.Page(PageQuery{Source: "mobile", RespMin: -1, RespMax: -1}, 0, 10)
+	if err != nil || total != 1 || len(rows) != 1 {
+		t.Fatalf("expected 1 mobile-attributed exchange, got total=%d rows=%+v err=%v", total, rows, err)
+	}
+	storedSrc = rows[0].Source
+	if storedSrc != "mobile" {
+		t.Fatalf("expected source=mobile, got %q", storedSrc)
+	}
+	if err := tr.DB().QueryRow(`SELECT req_head FROM exchange_bodies WHERE id=?`, rows[0].ID).Scan(&reqHead); err != nil {
+		t.Fatalf("query exchange_bodies: %v", err)
+	}
+	if strings.Contains(strings.ToLower(reqHead), "x-blade-traffic-source") {
+		t.Fatalf("req_head retained stripped internal header:\n%s", reqHead)
 	}
 }

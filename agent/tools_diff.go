@@ -500,7 +500,7 @@ func (t *ToolSet) diffResponses() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("写出差分脚本失败: " + err.Error()), nil
 			}
-			cmd := buildDiffScript(a, scriptPath, workDir)
+			cmd := buildDiffScript(a, scriptPath, workDir, OutboundProfileForTask(t.taskID))
 			return jsonResult(map[string]any{
 				"run_with_bash": cmd,
 				"script_path":   scriptPath,
@@ -577,11 +577,22 @@ const diffScriptName = "resp_diff.py"
 //   - 响应体落到**工作目录**下的文件（不是 /tmp——平台规约：中间产物不落 /tmp）。
 //   - 状态码由 curl 的 -w '%{http_code}' 拿到，作为脚本参数传入。
 //   - URL/认证头都做 POSIX 单引号转义——认证头里常带引号。
-func buildDiffScript(a diffArgs, scriptPath, workDir string) string {
+func buildDiffScript(a diffArgs, scriptPath, workDir string, prof OutboundProfile) string {
 	bodyA := filepath.Join(workDir, "resp_a_body")
 	bodyB := filepath.Join(workDir, "resp_b_body")
 	fetch := func(url, header, out string) string {
-		parts := []string{"curl", "-sS", "--max-time", "20", "-o", quoteShell(out), "-w", "%{http_code}", quoteShell(url)}
+		parts := []string{"curl", "-sS", "--max-time", "20"}
+		lowHdr := strings.ToLower(strings.TrimSpace(header))
+		if !strings.HasPrefix(lowHdr, "user-agent:") && prof.UserAgent != "" {
+			parts = append(parts, "-A", quoteShell(prof.UserAgent))
+		}
+		if !strings.HasPrefix(lowHdr, "accept:") && prof.AcceptAPI != "" {
+			parts = append(parts, "-H", quoteShell("Accept: "+prof.AcceptAPI))
+		}
+		if !strings.HasPrefix(lowHdr, "accept-language:") && prof.AcceptLanguage != "" {
+			parts = append(parts, "-H", quoteShell("Accept-Language: "+prof.AcceptLanguage))
+		}
+		parts = append(parts, "-o", quoteShell(out), "-w", "%{http_code}", quoteShell(url))
 		if strings.TrimSpace(header) != "" {
 			parts = append(parts, "-H", quoteShell(header))
 		}
@@ -615,7 +626,7 @@ func WriteDiffScript(dir string) (string, error) {
 
 // diffScriptSource 是差分脚本的源码（与 Go 侧逻辑等价）。
 const diffScriptSource = `#!/usr/bin/env python3
-"""响应结构化差分（POJUN agent 工具 diff_responses 的执行端）。
+"""响应结构化差分（diff_responses 执行端）。
 
 用法: resp_diff.py <文件A> <文件B> [状态码A] [状态码B]
 文件内容是响应体（或 curl -i 的完整响应，会自动剥头）；状态码可选。

@@ -95,14 +95,14 @@ func (m *Manager) FuzzIPC(ctx context.Context, serial, pkg string, meta *Package
 				Kind:      "activity",
 				Package:   pkg,
 				Component: c.Name,
-				Extras:    map[string]string{"blade_ipc_probe": "1", "url": "https://example.invalid/blade-canary"},
+				Extras:    map[string]string{"ipc_check": "1", "url": "https://example.invalid/check"},
 			})
 		case "service":
 			addProbe(c.Name, sev, IPCProbeRequest{
 				Kind:      "service",
 				Package:   pkg,
 				Component: c.Name,
-				Extras:    map[string]string{"blade_ipc_probe": "1"},
+				Extras:    map[string]string{"ipc_check": "1"},
 			})
 		case "receiver":
 			act := ""
@@ -114,7 +114,7 @@ func (m *Manager) FuzzIPC(ctx context.Context, serial, pkg string, meta *Package
 				Package:   pkg,
 				Component: c.Name,
 				Action:    act,
-				Extras:    map[string]string{"blade_ipc_probe": "1"},
+				Extras:    map[string]string{"ipc_check": "1"},
 			})
 		case "provider":
 			if c.Authorities == "" {
@@ -147,7 +147,7 @@ func (m *Manager) FuzzIPC(ctx context.Context, serial, pkg string, meta *Package
 		if scheme == "" || scheme == "http" || scheme == "https" {
 			continue
 		}
-		uri := scheme + "://blade-probe.invalid/open?url=https://blade-canary.invalid/"
+		uri := scheme + "://app-test.invalid/open?url=https://example.invalid/check"
 		addProbe(uri, "medium", IPCProbeRequest{
 			Kind:    "deeplink",
 			Package: pkg,

@@ -123,7 +123,7 @@ func (t *ToolSet) authRequest() actool.CoreTool {
 			if method == "" {
 				method = "GET"
 			}
-			cmd, err := buildAuthCurl(a.URL, method, a.Body, a.Header, entry)
+			cmd, err := buildAuthCurl(a.URL, method, a.Body, a.Header, entry, OutboundProfileForTask(t.taskID))
 			if err != nil {
 				return actool.Errorf("组装命令失败: " + err.Error()), nil
 			}
@@ -213,7 +213,7 @@ func authKind(e authEntry) string {
 //
 // 转义：凭据与 URL 里的引号、反斜杠、$ 都要处理——凭据里出现 `'` 或 `$` 是
 // 常态（密码生成器出来的），不做转义命令会跑错。
-func buildAuthCurl(rawURL, method, body, extraHeader string, e authEntry) (string, error) {
+func buildAuthCurl(rawURL, method, body, extraHeader string, e authEntry, prof OutboundProfile) (string, error) {
 	// 全部值用单引号包裹并转义内部单引号（POSIX sh 的标准做法：
 	// ' -> '\''）。这样凭据里的 $ ` " \ 都不会被 shell 解释。
 	q := func(s string) string {
@@ -223,7 +223,35 @@ func buildAuthCurl(rawURL, method, body, extraHeader string, e authEntry) (strin
 	if method == "" {
 		method = "GET"
 	}
+	var customLines []string
+	hasUA, hasAccept, hasLang := false, false, false
+	if strings.TrimSpace(extraHeader) != "" {
+		for _, line := range strings.Split(extraHeader, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			customLines = append(customLines, line)
+			low := strings.ToLower(line)
+			if strings.HasPrefix(low, "user-agent:") {
+				hasUA = true
+			} else if strings.HasPrefix(low, "accept:") {
+				hasAccept = true
+			} else if strings.HasPrefix(low, "accept-language:") {
+				hasLang = true
+			}
+		}
+	}
 	parts := []string{"curl", "-sS", "-i", "--max-time", "20"}
+	if !hasUA && prof.UserAgent != "" {
+		parts = append(parts, "-A", q(prof.UserAgent))
+	}
+	if !hasAccept && prof.AcceptAPI != "" {
+		parts = append(parts, "-H", q("Accept: "+prof.AcceptAPI))
+	}
+	if !hasLang && prof.AcceptLanguage != "" {
+		parts = append(parts, "-H", q("Accept-Language: "+prof.AcceptLanguage))
+	}
 	parts = append(parts, "-X", q(method))
 	parts = append(parts, q(rawURL))
 
@@ -242,14 +270,8 @@ func buildAuthCurl(rawURL, method, body, extraHeader string, e authEntry) (strin
 		parts = append(parts, "-u", q(e.Username))
 	}
 
-	if strings.TrimSpace(extraHeader) != "" {
-		for _, line := range strings.Split(extraHeader, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts = append(parts, "-H", q(line))
-		}
+	for _, line := range customLines {
+		parts = append(parts, "-H", q(line))
 	}
 	if strings.TrimSpace(body) != "" {
 		parts = append(parts, "--data-raw", q(body))

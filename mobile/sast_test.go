@@ -168,7 +168,7 @@ func TestIPCFuzzSandboxAuditLogcatCrawlAndTransparentProxy(t *testing.T) {
 			return "Row: 0 id=1, path=/data/secret", "", 0, nil
 		case strings.Contains(joined, "am start"):
 			return "Status: ok", "", 0, nil
-		case strings.Contains(joined, "cat /data/local/tmp/blade_ui.xml"):
+		case strings.Contains(joined, "cat /data/local/tmp/ui_dump.xml"):
 			uiStep++
 			if uiStep == 1 {
 				return `<hierarchy><node class="android.widget.Button" text="订单详情" resource-id="com.demo:id/btn_orders" clickable="true" enabled="true" bounds="[10,10][200,80]"/></hierarchy>`, "", 0, nil
@@ -180,7 +180,7 @@ func TestIPCFuzzSandboxAuditLogcatCrawlAndTransparentProxy(t *testing.T) {
 			return "userId=10245\n", "", 0, nil
 		case strings.Contains(joined, "logcat -d"):
 			return "D/Net(10245): Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig123456\nI/Net(10245): https://api.demo.cn/v1/user", "", 0, nil
-		case strings.Contains(joined, "sh /data/local/tmp/blade_run_"):
+		case strings.Contains(joined, "sh /data/local/tmp/sc_"):
 			// Could be sandbox audit OR transparent iptables setup.
 			return `===PERMS===
 -rw-rw-rw- 1 u0_a100 u0_a100 128 2026-11-26 10:00 auth.xml

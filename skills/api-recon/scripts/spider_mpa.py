@@ -14,23 +14,41 @@ the same origin and extracts:
 
 Stdlib only. Same-origin, bounded, polite. Provide --cookie for an authed crawl.
 """
-import sys, os, re, ssl, argparse, urllib.request, urllib.parse, time
+import sys, os, re, ssl, argparse, gzip, zlib, urllib.request, urllib.parse, time
 from html.parser import HTMLParser
 from collections import deque
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-UA = os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+UA = os.environ.get("TARGET_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36")
 SKIP_EXT = re.compile(r'\.(css|png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip|mp4|webp|js)(\?|$)', re.I)
 API_HINT = re.compile(r'/(?:api|rest|service|ajax|action|do|rpc|graphql|v\d|admin|backend)\b', re.I)
 
+def _decode(raw, enc):
+    e = (enc or "").lower().strip()
+    if e == "gzip":
+        try: return gzip.decompress(raw)
+        except Exception: return raw
+    if e == "deflate":
+        try: return zlib.decompress(raw)
+        except Exception:
+            try: return zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception: return raw
+    return raw
+
 def fetch(url, cookie):
-    h = {"User-Agent": UA}
+    h = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": os.environ.get("TARGET_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "Accept-Encoding": "gzip, deflate",
+    }
     if cookie: h["Cookie"] = cookie
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=h), context=CTX, timeout=20) as r:
             ct = r.headers.get("Content-Type", "")
             if "html" not in ct and "xml" not in ct: return "", ct
-            return r.read().decode("utf-8", "ignore"), ct
+            raw = _decode(r.read(), r.headers.get("Content-Encoding", ""))
+            return raw.decode("utf-8", "ignore"), ct
     except Exception:
         return "", ""
 

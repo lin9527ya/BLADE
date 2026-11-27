@@ -185,6 +185,7 @@ type ToolSet struct {
 	egressCA       string
 	egressProxyFn  func() (string, string)
 	proxyFailureFn func(proxyURL string, err error)
+	directTLSFn    DialTLSContextFunc
 	clock          TaskClock
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the

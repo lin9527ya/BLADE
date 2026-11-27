@@ -542,8 +542,8 @@ These are typically NOT in the cache key: `X-Forwarded-Host`, `X-Forwarded-Schem
 
 ```bash
 ### Test if X-Forwarded-Host is reflected but not keyed:
-curl -H "X-Forwarded-Host: evil.com" https://target.com/page
-### If response contains evil.com and caches → poisonable
+curl -H "X-Forwarded-Host: static-edge.example" https://target.com/page
+### If response contains static-edge.example and caches → poisonable
 ```
 
 ### Common Unkeyed Headers
@@ -796,13 +796,13 @@ curl -v https://target.com/ 2>&1 | grep -i "x-cache\|age\|via\|cf-cache"
 
 ### Step 2: Find reflected unkeyed headers
 ### Send request with unique header values:
-curl -H "X-Forwarded-Host: canary123.com" https://target.com/ | grep "canary123"
-curl -H "X-Forwarded-Scheme: canary" https://target.com/ | grep "canary"
-curl -H "X-Original-URL: /canary" https://target.com/ | grep "canary"
+curl -H "X-Forwarded-Host: static-cdn-test.example" https://target.com/ | grep "static-cdn-test"
+curl -H "X-Forwarded-Scheme: https-alt" https://target.com/ | grep "https-alt"
+curl -H "X-Original-URL: /health-check" https://target.com/ | grep "health-check"
 
 ### Step 3: Verify it's unkeyed
-### Send normal request → check if canary value is in cached response:
-curl https://target.com/ | grep "canary123"
+### Send normal request → check if test marker value is in cached response:
+curl https://target.com/ | grep "static-cdn-test"
 ### If found → successfully poisoned
 
 ### Tool: Param Miner (Burp extension) automates unkeyed header discovery

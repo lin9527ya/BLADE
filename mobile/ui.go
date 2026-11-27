@@ -107,7 +107,7 @@ func (m *Manager) UIDump(ctx context.Context, serial string) (*UIDumpResult, err
 	if err := ValidateDeviceSerial(serial); err != nil {
 		return nil, err
 	}
-	remoteXML := "/data/local/tmp/blade_ui.xml"
+	remoteXML := "/data/local/tmp/ui_dump.xml"
 	_, _, _, _ = m.runADBDevice(ctx, serial, "shell", "uiautomator", "dump", remoteXML)
 	rawOut, stderr, code, err := m.runADBDevice(ctx, serial, "shell", "cat", remoteXML)
 	if err != nil || code != 0 || !strings.Contains(rawOut, "<hierarchy") {
@@ -142,11 +142,11 @@ func (m *Manager) Screenshot(ctx context.Context, serial string) ([]byte, error)
 	if err := ValidateDeviceSerial(serial); err != nil {
 		return nil, err
 	}
-	remotePNG := "/data/local/tmp/blade_screen.png"
+	remotePNG := "/data/local/tmp/scr_cap.png"
 	if out, stderr, code, err := m.runADBDevice(ctx, serial, "shell", "screencap", "-p", remotePNG); err != nil || code != 0 {
 		return nil, fmt.Errorf("screencap failed: %s %s (%v)", out, stderr, err)
 	}
-	tmp, err := os.CreateTemp("", "blade-screen-*.png")
+	tmp, err := os.CreateTemp("", "dev-scr-*.png")
 	if err != nil {
 		return nil, err
 	}

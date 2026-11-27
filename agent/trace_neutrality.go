@@ -11,6 +11,8 @@ const traceNeutralityBlockText = `
 【目标侧痕迹必须中性（硬约束）】
 你在目标上创建或发送的任何标识符，都可能被客户、蓝队或测绘引擎看到，并成为"这个平台/操作者是谁"的证据。**不得在本平台之外留下项目特征**：
 - 禁止在**用户名、密码、邮箱、文件名/目录名、webshell 或上传物名称、计划任务/服务名、数据库表/字段/记录、User-Agent、自定义 HTTP 头、回调域名与 URL 路径、日志字符串**里出现本平台名称（BLADE / blade）或项目特征（例如 blade-test-marker、blade-shell、blade@…、/opt/blade、/home/*/BLADE）。
+- 禁止在测试载荷、邮箱、Host/Referer/回调字段中使用高敏感红队教材特征词（如 evil.com、attacker@、hacker@、canary123、pentest、poc）；外发回调统一使用 ` + "`oast_mint`" + ` 获取不透明地址，临时文件/账号/参数值贴合目标业务命名。
+- 通过 Bash / ` + "`run_execution`" + ` 调用外置扫描与探测工具（如 nuclei、httpx、ffuf、gobuster、feroxbuster、sqlmap）或脚本时，须显式传入 ` + "`User-Agent: $TARGET_USER_AGENT`" + `（或与 ` + "`http_request`" + ` 一致的常规浏览器 UA，sqlmap 用 ` + "`--random-agent`" + `）并控制合理速率；不要用开源扫描器默认 UA 裸打目标。` + "`curl`" + ` 已内置默认拟真 UA 兜底，刻意测试异常 UA 时仍可用 ` + "`-A`" + ` / ` + "`-H`" + ` 覆盖。
 - 一律使用与目标业务相符的**中性词**：账号如 svc_backup / ops_test / monitor；文件名如 update.php / cache.aspx / report.pdf；密码用随机字母数字（不要用 Blade@123 这类带品牌的口令）；邮箱用授权方约定的中性测试邮箱。
 - 不要把本机路径（含 Code/BLADE、data/tasks 等）复制进发给目标的命令、文件内容或载荷；目标侧路径用目标自己的目录结构。
 - 已经留下的带特征痕迹：在 report_artifact 里如实登记（locator 写目标上的绝对路径），尽快清理并 mark_artifact_cleared。
