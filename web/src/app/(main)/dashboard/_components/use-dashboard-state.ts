@@ -2,12 +2,20 @@
 
 import * as React from "react";
 
+import { toast } from "sonner";
+
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { type DashboardTaskFilter, daysAgoDateKey } from "@/lib/dashboard-format";
 import type {
   Activity,
   ConvTokenSummary,
   CostSummary,
+  DashboardLLMPoolSummary,
+  DashboardMobileSummary,
+  DashboardOpsSummary,
+  DashboardRuntimeSummary,
+  DashboardSystemSummary,
   DashboardTaskTokenDay,
   DashboardTaskTokenProfile,
   Finding,
@@ -21,13 +29,8 @@ import type {
   UsageStats,
 } from "@/lib/types";
 
-// 仪表盘的状态与取数：任务/发现/统计/活动/流量/Agent 等面板的数据源与轮询。
-//
-// 抽成 hook 是为了让页面本体只剩五行面板的 JSX。
-// 各面板通过 `ReturnType<typeof useDashboardState>` 拿到同一份状态。
+export type ActivityRoleFilter = "all" | "planner" | "mainagent" | "worker";
 
-// 这几个助手是**纯函数**（只看入参），所以放在模块作用域。写成 hook 内的函数声明会
-// 每次渲染都拿到新身份，任何把它们放进依赖数组的 useMemo 都会因此永远失效。
 function kindLabel(a: Activity): string {
   if (a.kind === "tool_use") return a.tool ?? "tool_use";
   if (a.kind === "tool_result") return "tool_result";
@@ -40,22 +43,29 @@ function workerBg(w: string): string {
   return "bg-blue-500/10 text-blue-400 border-blue-500/20";
 }
 
+function matchesActivityRole(a: Activity, role: ActivityRoleFilter): boolean {
+  if (role === "all") return true;
+  if (role === "worker") return a.worker !== "planner" && a.worker !== "mainagent";
+  return a.worker === role;
+}
+
 export function useDashboardState() {
-  // data state
-  // Only the recent window is needed for the table; counts and token aggregates
-  // come from the server summary instead of downloading every task DTO.
   const [recentTasks, setRecentTasks] = React.useState<Task[]>([]);
   const [taskTotal, setTaskTotal] = React.useState(0);
   const [tasksByStatus, setTasksByStatus] = React.useState<Record<string, number>>({});
   const [taskTokenProfiles, setTaskTokenProfiles] = React.useState<DashboardTaskTokenProfile[]>([]);
   const [taskTokenDaily, setTaskTokenDaily] = React.useState<DashboardTaskTokenDay[]>([]);
+  const [ops, setOps] = React.useState<DashboardOpsSummary | undefined>(undefined);
+  const [system, setSystem] = React.useState<DashboardSystemSummary | undefined>(undefined);
+  const [runtime, setRuntime] = React.useState<DashboardRuntimeSummary | undefined>(undefined);
+  const [llmPool, setLLMPool] = React.useState<DashboardLLMPoolSummary | undefined>(undefined);
+  const [mobile, setMobile] = React.useState<DashboardMobileSummary | undefined>(undefined);
+
   const [findings, setFindings] = React.useState<Finding[]>([]);
-  // 发现总数与严重度分布走 findingStats 的 COUNT(*)；findings 只是最近窗口（500）。
   const [findingStats, setFindingStats] = React.useState<FindingStats | null>(null);
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
-  // 待审批总数与「前 3 条」分开：列表只取 3 条用于展示，徽章数字必须是精确总数。
   const [pendingTotal, setPendingTotal] = React.useState(0);
   const [activity, setActivity] = React.useState<Activity[]>([]);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
@@ -63,115 +73,172 @@ export function useDashboardState() {
   const [costs, setCosts] = React.useState<CostSummary | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
-  // 流量总条数（服务端 count 是 COUNT(*)，不是当前 50 行窗口）。
   const [trafficTotal, setTrafficTotal] = React.useState(0);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
-  // 数据源开关：旧版 = activity（task.tokens + 会话），新版 = llm_usage 计量账本。
-  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
-  // selected profile tab: "all" = 全部; number = specific profile id
-  const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
-  // day range for the daily bar chart
-  const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
 
-  // The task list is the most expensive dashboard source. Poll it independently
-  // so a large history cannot hold back every other dashboard panel.
-  // 去重用的 signature 必须**跨轮询持久**：hook 的回调每次渲染重建，写成回调里的
-  // `let signature` 会随渲染重置，去重就失效了（每次轮询都重新 setTasks）。
+  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
+  const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
+  const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
+  const [taskFilter, setTaskFilter] = React.useState<DashboardTaskFilter>("all");
+  const [activityRole, setActivityRole] = React.useState<ActivityRoleFilter>("all");
+
+  const [autoRefresh, setAutoRefresh] = React.useState(true);
+  const [summaryReady, setSummaryReady] = React.useState(false);
+  const [fastReady, setFastReady] = React.useState(false);
+  const [lastSyncAt, setLastSyncAt] = React.useState<number | null>(null);
+  const [refreshing, setRefreshing] = React.useState(false);
+  const [controllingTaskId, setControllingTaskId] = React.useState<string | null>(null);
+
   const taskSignatureRef = React.useRef("");
-  usePolling(async (alive) => {
-    // 失败由 hook 接住并退避重试。
-    const summary = await api.dashboardSummary();
-    if (!alive()) return;
+
+  const applySummary = React.useCallback((summary: Awaited<ReturnType<typeof api.dashboardSummary>>) => {
     const nextSignature = JSON.stringify([
       summary.task_total,
       summary.tasks_by_status,
       summary.recent_tasks,
       summary.token_by_profile,
       summary.daily_tokens,
+      summary.ops,
+      summary.system,
+      summary.runtime,
+      summary.llm_pool,
+      summary.mobile,
     ]);
-    if (nextSignature === taskSignatureRef.current) return;
-    taskSignatureRef.current = nextSignature;
-    setRecentTasks(summary.recent_tasks);
-    setTaskTotal(summary.task_total);
-    setTasksByStatus(summary.tasks_by_status);
-    setTaskTokenProfiles(summary.token_by_profile);
-    setTaskTokenDaily(summary.daily_tokens);
-  }, 5000);
+    if (nextSignature !== taskSignatureRef.current) {
+      taskSignatureRef.current = nextSignature;
+      setRecentTasks(summary.recent_tasks);
+      setTaskTotal(summary.task_total);
+      setTasksByStatus(summary.tasks_by_status);
+      setTaskTokenProfiles(summary.token_by_profile);
+      setTaskTokenDaily(summary.daily_tokens);
+      setOps(summary.ops);
+      setSystem(summary.system);
+      setRuntime(summary.runtime);
+      setLLMPool(summary.llm_pool);
+      setMobile(summary.mobile);
+    }
+    setSummaryReady(true);
+    setLastSyncAt(Date.now());
+  }, []);
 
-  // The remaining fast sources stay batched so one poll causes a single render.
-  usePolling(
-    async (alive) => {
-      let loading = false;
-      const load = async () => {
-        if (loading) return;
-        loading = true;
-        try {
-          const [recentPage, stats, settings, pendingRecent, activity, conversationTokens, findingTotals] =
-            await Promise.all([
-              // 仪表盘只渲染最近 8 条；此前拉 500 条再截断，等于每 5 秒搬一整页。
-              api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
-              api.stats(),
-              api.settings(),
-              api.interceptPendingRecent(3),
-              api.activity(undefined, { limit: 30 }),
-              api.conversationTokens(),
-              api.findingStats(),
-            ]);
-          if (!alive()) return;
-          setFindings(recentPage.items);
-          setFindingStats(findingTotals);
-          setStats(stats);
-          setSettings(settings);
-          setPending(pendingRecent.pending);
-          setPendingTotal(pendingRecent.total);
-          setActivity(activity.items);
-          setConvTokens(conversationTokens);
-        } finally {
-          loading = false;
-        }
-      };
-      await load();
+  const fetchSummaryOnce = React.useCallback(
+    async (alive?: () => boolean) => {
+      try {
+        const summary = await api.dashboardSummary();
+        if (alive && !alive()) return;
+        applySummary(summary);
+      } catch (err) {
+        if (alive && !alive()) return;
+        setSummaryReady(true);
+        throw err;
+      }
     },
-    5000,
-    [],
+    [applySummary],
   );
 
-  // slow poll: traffic, assets, system-static (every 15s)
-  //
-  // `usageStats` 只服务「新版」token 视图：旧版（默认）读的是 activity 侧的 task.tokens 与
-  // 会话用量，这份数据在旧版下一个字段都没人读。而它的后端是 by_profile 全表 GROUP BY +
-  // 按日聚合，随表增长线性变贵——所以只在「新版」时才拉，天数按用户选的窗口收敛（不再固定
-  // 365）。切到新版 / 改天数会重建轮询、立即按新参数拉一次（deps 见下）。
-  usePolling(
-    async (alive) => {
-      const load = async () => {
-        // 只取**真正会被渲染**的东西。此前这里还拉了 agents / mcpServers /
-        // skills / tools，但 dashboard 上没有任何面板读它们（唯一的 tools 下游
-        // enabledTools 自己也是死的）——等于每 15 秒白发四个请求。要加相关面板时
-        // 再把对应的源加回来。
-        const wantUsage = tokenVersion === "new";
-        const [traf, counts, profileList, usage, costSummary] = await Promise.all([
-          api.traffic(0, 50),
-          api.assetCounts(),
-          api.llmProfiles(),
-          wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
-          api.costs(30),
+  const fetchFastBatchOnce = React.useCallback(async (alive?: () => boolean) => {
+    try {
+      const [recentPage, nextStats, nextSettings, pendingRecent, nextActivity, conversationTokens, findingTotals] =
+        await Promise.all([
+          api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
+          api.stats(),
+          api.settings(),
+          api.interceptPendingRecent(3),
+          api.activity(undefined, { limit: 30 }),
+          api.conversationTokens(),
+          api.findingStats(),
         ]);
-        if (!alive()) return;
-        setTraffic(traf.exchanges ?? []);
-        setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
-        setAssetCounts(counts ?? {});
-        setLLMProfiles(profileList);
-        if (usage) setUsageStats(usage);
-        setCosts(costSummary);
-      };
-      await load();
+      if (alive && !alive()) return;
+      setFindings(recentPage.items);
+      setFindingStats(findingTotals);
+      setStats(nextStats);
+      setSettings(nextSettings);
+      setPending(pendingRecent.pending);
+      setPendingTotal(pendingRecent.total);
+      setActivity(nextActivity.items);
+      setConvTokens(conversationTokens);
+      setLastSyncAt(Date.now());
+    } finally {
+      if (!alive || alive()) setFastReady(true);
+    }
+  }, []);
+
+  const fetchSlowBatchOnce = React.useCallback(
+    async (alive?: () => boolean, wantUsageOverride?: boolean) => {
+      const wantUsage = wantUsageOverride ?? tokenVersion === "new";
+      const [traf, counts, profileList, usage, costSummary] = await Promise.all([
+        api.traffic(0, 50),
+        api.assetCounts(),
+        api.llmProfiles(),
+        wantUsage ? api.usageStats(tokenDays) : Promise.resolve(null),
+        api.costs(30),
+      ]);
+      if (alive && !alive()) return;
+      setTraffic(traf.exchanges ?? []);
+      setTrafficTotal(traf.count ?? traf.total ?? traf.exchanges?.length ?? 0);
+      setAssetCounts(counts ?? {});
+      setLLMProfiles(profileList);
+      if (usage) setUsageStats(usage);
+      setCosts(costSummary);
     },
-    15000,
     [tokenVersion, tokenDays],
   );
 
+  usePolling(
+    async (alive) => {
+      await fetchSummaryOnce(alive);
+    },
+    autoRefresh ? 5000 : 0,
+    [autoRefresh, fetchSummaryOnce],
+  );
+
+  usePolling(
+    async (alive) => {
+      await fetchFastBatchOnce(alive);
+    },
+    autoRefresh ? 5000 : 0,
+    [autoRefresh, fetchFastBatchOnce],
+  );
+
+  usePolling(
+    async (alive) => {
+      await fetchSlowBatchOnce(alive, tokenVersion === "new");
+    },
+    autoRefresh ? 15000 : 0,
+    [autoRefresh, tokenVersion, tokenDays, fetchSlowBatchOnce],
+  );
+
+  const refreshNow = React.useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.allSettled([fetchSummaryOnce(), fetchFastBatchOnce(), fetchSlowBatchOnce()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, fetchSummaryOnce, fetchFastBatchOnce, fetchSlowBatchOnce]);
+
+  const controlTask = React.useCallback(
+    async (taskId: string, action: "pause" | "resume") => {
+      if (controllingTaskId) return;
+      setControllingTaskId(taskId);
+      try {
+        await api.controlTask(taskId, action);
+        toast.success(action === "pause" ? `已暂停任务 #${taskId}` : `已恢复任务 #${taskId}`);
+        taskSignatureRef.current = "";
+        await fetchSummaryOnce();
+      } catch (err) {
+        toast.error(`任务操作失败：${(err as Error).message}`);
+      } finally {
+        setControllingTaskId(null);
+      }
+    },
+    [controllingTaskId, fetchSummaryOnce],
+  );
+
   // ── derived ───────────────────────────────────────────────────────────────
+
+  const initialLoading = !(summaryReady && fastReady);
 
   const findingsBySev = React.useMemo(() => {
     const m = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -183,9 +250,9 @@ export function useDashboardState() {
 
   const sortedTasks = React.useMemo(
     () =>
-      [...recentTasks]
-        .sort((a, b) => (b.last_activity_unix ?? b.created_unix ?? 0) - (a.last_activity_unix ?? a.created_unix ?? 0))
-        .slice(0, 5),
+      [...recentTasks].sort(
+        (a, b) => (b.last_activity_unix ?? b.created_unix ?? 0) - (a.last_activity_unix ?? a.created_unix ?? 0),
+      ),
     [recentTasks],
   );
 
@@ -194,18 +261,17 @@ export function useDashboardState() {
     [findings],
   );
 
-  const recentActivity = React.useMemo(
+  const filteredActivity = React.useMemo(
     () =>
       [...activity]
-        .filter((a) => a.kind !== "usage")
+        .filter((a) => a.kind !== "usage" && matchesActivityRole(a, activityRole))
         .sort((a, b) => b.seq - a.seq)
-        .slice(0, 6),
-    [activity],
+        .slice(0, 8),
+    [activity, activityRole],
   );
 
   const totalAssets = React.useMemo(() => Object.values(assetCounts).reduce((a, b) => a + b, 0), [assetCounts]);
 
-  // asset type breakdown
   const assetByType = React.useMemo(() => {
     return Object.entries(assetCounts)
       .filter(([, n]) => n > 0)
@@ -215,7 +281,6 @@ export function useDashboardState() {
 
   const assetMax = React.useMemo(() => assetByType[0]?.[1] ?? 1, [assetByType]);
 
-  // traffic status code breakdown
   const trafficByCodes = React.useMemo(() => {
     const m: Record<number, number> = {};
     for (const e of traffic) {
@@ -228,22 +293,16 @@ export function useDashboardState() {
   }, [traffic]);
 
   const trafficMax = React.useMemo(() => Math.max(...trafficByCodes.map((x) => x.n), 1), [trafficByCodes]);
-  // 这两个此前每次渲染都重跑：recentTraffic 尤其贵（整份 traffic 拷贝 + 排序 + 切片），
-  // 而 dashboard 每 5 秒就因轮询重渲染一次，成本会一直累积。
+
   const recentTraffic = React.useMemo(
     () => [...traffic].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 5),
     [traffic],
   );
 
-  // system
   const activeProfile = React.useMemo(() => llmProfiles.find((p) => p.is_default), [llmProfiles]);
   const pendingCount = pendingTotal;
-
-  // ── token stats per LLM profile ──────────────────────────────────────────
-  // tasks whose llm_profile_id is null/undefined used the active default profile
   const defaultProfileId = activeProfile ? Number(activeProfile.id) : null;
 
-  // profile 名 → id，用于把 llm_usage 的 profile_name 映射到现有 profile 分栏。
   const profileIdByName = React.useMemo(() => {
     const m = new Map<string, number>();
     for (const p of llmProfiles) m.set(p.name, Number(p.id));
@@ -252,7 +311,6 @@ export function useDashboardState() {
 
   type Bucket = { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number };
 
-  // 旧版：按 profile 归桶（来自 activity 的 task.tokens + 会话用量）。
   const tokenByProfileOld = React.useMemo<Map<number | null, Bucket>>(() => {
     const m = new Map<number | null, Bucket>();
     const fold = (key: number | null, inp: number, out: number, cr: number, cw: number, tasks: number) => {
@@ -288,11 +346,9 @@ export function useDashboardState() {
     return m;
   }, [taskTokenProfiles, convTokens, defaultProfileId]);
 
-  // 新版：按 profile 归桶（来自 llm_usage 全局聚合，逐次调用精确）。
   const tokenByProfileNew = React.useMemo<Map<number | null, Bucket>>(() => {
     const m = new Map<number | null, Bucket>();
     for (const p of usageStats?.by_profile ?? []) {
-      // 未匹配到现有 profile（改名/删除/空名）→ 落到默认桶，仍计入「全部」。
       const key = profileIdByName.get(p.profile_name) ?? defaultProfileId;
       const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
       m.set(key, {
@@ -330,11 +386,8 @@ export function useDashboardState() {
       : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
   }, [tokenTab, tokenByProfile]);
 
-  // 旧版每日：把任务/会话的总量按其创建日期归桶（近似，非真实每日消耗）。
   const dailyTokenDataOld = React.useMemo(() => {
-    const now = new Date();
-    now.setDate(now.getDate() - tokenDays);
-    const cutoff = now.toISOString().slice(0, 10);
+    const cutoff = daysAgoDateKey(tokenDays);
     const m = new Map<string, { input: number; miss: number; output: number; cacheRead: number }>();
     const fold = (date: string, inp: number, out: number, cr: number) => {
       if (date < cutoff) return;
@@ -357,11 +410,8 @@ export function useDashboardState() {
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
   }, [taskTokenDaily, convTokens, tokenDays, tokenTab, defaultProfileId]);
 
-  // 新版每日：来自 llm_usage 的真实每日消耗（ts 是实际调用时刻）。
   const dailyTokenDataNew = React.useMemo(() => {
-    const now = new Date();
-    now.setDate(now.getDate() - tokenDays);
-    const cutoff = now.toISOString().slice(0, 10);
+    const cutoff = daysAgoDateKey(tokenDays);
     const m = new Map<string, { input: number; miss: number; output: number; cacheRead: number }>();
     for (const d of usageStats?.daily ?? []) {
       if (d.date < cutoff) continue;
@@ -380,39 +430,113 @@ export function useDashboardState() {
   const dailyTokenData = tokenVersion === "new" ? dailyTokenDataNew : dailyTokenDataOld;
 
   // ── 面板切片 ───────────────────────────────────────────────────────────────
-  // 此前页面把整个返回对象交给 5 个面板，而那个对象**每次渲染都是新的**——任何一个
-  // 字段变了，5 个面板全部重渲染（dashboard 每 5 秒轮询一次，成本一直累积）。切成
-  // 按面板的稳定对象后，只有真正用到变化字段的那个面板会重渲染。
-  // 纯拆分：数据获取与派生逻辑一行没动。
+
+  const headerSlice = React.useMemo(
+    () => ({
+      stats,
+      tasksByStatus,
+      taskTotal,
+      pending,
+      pendingCount,
+      ops,
+      llmPool,
+      mobile,
+      autoRefresh,
+      setAutoRefresh,
+      refreshing,
+      refreshNow,
+      lastSyncAt,
+    }),
+    [
+      stats,
+      tasksByStatus,
+      taskTotal,
+      pending,
+      pendingCount,
+      ops,
+      llmPool,
+      mobile,
+      autoRefresh,
+      refreshing,
+      refreshNow,
+      lastSyncAt,
+    ],
+  );
+
   const statCards = React.useMemo(
     () => ({
       taskTotal,
+      tasksByStatus,
       findings,
       findingStats,
-      settings,
-      traffic,
-      trafficTotal,
-      tasksByStatus,
       findingsBySev,
       totalAssets,
+      trafficTotal,
+      settings,
       displayedTokens,
+      costs,
+      ops,
+      mobile,
+      runtime,
     }),
     [
       taskTotal,
+      tasksByStatus,
       findings,
       findingStats,
-      settings,
-      traffic,
-      trafficTotal,
-      tasksByStatus,
       findingsBySev,
       totalAssets,
+      trafficTotal,
+      settings,
       displayedTokens,
+      costs,
+      ops,
+      mobile,
+      runtime,
     ],
   );
-  const tokenCard = React.useMemo(
+
+  const opsWorkspace = React.useMemo(
     () => ({
+      tasks: recentTasks,
+      taskTotal,
+      tasksByStatus,
+      sortedTasks,
+      taskFilter,
+      setTaskFilter,
+      controllingTaskId,
+      controlTask,
+      findings,
+      recentFindings,
+      findingStats,
+      findingsBySev,
       activity,
+      recentActivity: filteredActivity,
+      activityRole,
+      setActivityRole,
+      kindLabel,
+      workerBg,
+    }),
+    [
+      recentTasks,
+      taskTotal,
+      tasksByStatus,
+      sortedTasks,
+      taskFilter,
+      controllingTaskId,
+      controlTask,
+      findings,
+      recentFindings,
+      findingStats,
+      findingsBySev,
+      activity,
+      filteredActivity,
+      activityRole,
+    ],
+  );
+
+  const telemetryPanel = React.useMemo(
+    () => ({
       llmProfiles,
       defaultProfileId,
       tokenVersion,
@@ -424,9 +548,10 @@ export function useDashboardState() {
       tokenByProfile,
       displayedTokens,
       dailyTokenData,
+      costs,
+      llmPool,
     }),
     [
-      activity,
       llmProfiles,
       defaultProfileId,
       tokenVersion,
@@ -435,24 +560,18 @@ export function useDashboardState() {
       tokenByProfile,
       displayedTokens,
       dailyTokenData,
+      costs,
+      llmPool,
     ],
   );
-  const costCard = React.useMemo(() => ({ costs }), [costs]);
-  // kindLabel / workerBg 现在是模块级纯函数，身份恒定，放进切片不会导致失效。
-  const activityRow = React.useMemo(
-    () => ({ findings, activity, recentFindings, recentActivity, kindLabel, workerBg }),
-    [findings, activity, recentFindings, recentActivity],
-  );
-  const taskTable = React.useMemo(
-    () => ({ tasks: recentTasks, taskTotal, sortedTasks }),
-    [recentTasks, taskTotal, sortedTasks],
-  );
-  const assetTraffic = React.useMemo(
+
+  const infraGrid = React.useMemo(
     () => ({
       stats,
       settings,
       pending,
       traffic,
+      trafficTotal,
       totalAssets,
       assetByType,
       assetMax,
@@ -461,13 +580,17 @@ export function useDashboardState() {
       recentTraffic,
       activeProfile,
       pendingCount,
-      pendingTotal,
+      ops,
+      system,
+      runtime,
+      mobile,
     }),
     [
       stats,
       settings,
       pending,
       traffic,
+      trafficTotal,
       totalAssets,
       assetByType,
       assetMax,
@@ -476,9 +599,12 @@ export function useDashboardState() {
       recentTraffic,
       activeProfile,
       pendingCount,
-      pendingTotal,
+      ops,
+      system,
+      runtime,
+      mobile,
     ],
   );
 
-  return { statCards, tokenCard, costCard, activityRow, taskTable, assetTraffic };
+  return { initialLoading, headerSlice, statCards, opsWorkspace, telemetryPanel, infraGrid };
 }

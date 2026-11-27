@@ -38,9 +38,9 @@ export function SafetyBanner() {
 
   if (!st) return null;
 
-  const killed = st.kill_switch.on;
-  const outsideWindow = !!st.window.window && !st.window.in_window;
-  if (!killed && !outsideWindow && !st.window.parse_error) return null;
+  const killed = !!st.kill_switch?.on;
+  const outsideWindow = !!st.window?.window && !st.window?.in_window;
+  if (!killed && !outsideWindow && !st.window?.parse_error) return null;
 
   const tone = killed
     ? "border-destructive/40 bg-destructive/10 text-destructive"

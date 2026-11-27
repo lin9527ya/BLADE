@@ -14,6 +14,7 @@ import (
 const (
 	lastActivityCacheTTL = 5 * time.Second
 	dashboardTokenTTL    = 15 * time.Second
+	dashboardOpsTTL      = 15 * time.Second
 )
 
 type queryCacheState struct {
@@ -24,6 +25,9 @@ type queryCacheState struct {
 
 	dashboardTokens   db.DashboardTaskTokens
 	dashboardTokensAt time.Time
+
+	dashboardOps   db.DashboardOpsSummary
+	dashboardOpsAt time.Time
 }
 
 func (s *Server) cachedLastActivity(ctx context.Context) map[int64]int64 {
@@ -85,6 +89,38 @@ func (s *Server) cachedDashboardTokens(ctx context.Context) (db.DashboardTaskTok
 	s.queryCache.mu.Lock()
 	s.queryCache.dashboardTokens = value
 	s.queryCache.dashboardTokensAt = time.Now()
+	s.queryCache.mu.Unlock()
+	return value, nil
+}
+
+func (s *Server) cachedDashboardOps(ctx context.Context) (db.DashboardOpsSummary, error) {
+	s.queryCache.mu.Lock()
+	if !s.queryCache.dashboardOpsAt.IsZero() && time.Since(s.queryCache.dashboardOpsAt) < dashboardOpsTTL {
+		value := s.queryCache.dashboardOps
+		s.queryCache.mu.Unlock()
+		return value, nil
+	}
+	stale := s.queryCache.dashboardOps
+	hadValue := !s.queryCache.dashboardOpsAt.IsZero()
+	s.queryCache.mu.Unlock()
+
+	if s.m == nil {
+		return stale, nil
+	}
+	pg := s.m.PG()
+	if pg == nil {
+		return stale, nil
+	}
+	value, err := pg.DashboardOpsSummaryContext(ctx)
+	if err != nil {
+		if hadValue {
+			return stale, nil
+		}
+		return db.DashboardOpsSummary{}, err
+	}
+	s.queryCache.mu.Lock()
+	s.queryCache.dashboardOps = value
+	s.queryCache.dashboardOpsAt = time.Now()
 	s.queryCache.mu.Unlock()
 	return value, nil
 }

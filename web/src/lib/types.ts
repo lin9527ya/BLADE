@@ -3091,12 +3091,88 @@ export interface DashboardTaskTokenDay {
   cache_read_tokens: number;
   cache_write_tokens: number;
 }
+export interface DashboardOpsSummary {
+  footholds_total: number;
+  footholds_active: number;
+  credentials_total: number;
+  artifacts_uncleaned: number;
+  artifacts_unknown: number;
+  schedules_total: number;
+  schedules_enabled: number;
+  schedules_error: number;
+  next_schedule_name?: string;
+  next_schedule_action?: string;
+  next_schedule_at_unix?: number;
+  mobile_devices_total: number;
+  mobile_devices_bound: number;
+  mobile_devices_rooted: number;
+}
+
+export interface DashboardSystemValue {
+  used_bytes: number;
+  total_bytes: number;
+  percent: number;
+}
+
+export interface DashboardSystemSummary {
+  scope?: string;
+  supported: boolean;
+  cpu: DashboardSystemValue;
+  memory: DashboardSystemValue;
+  disk?: DashboardSystemValue;
+  data_disk: DashboardSystemValue;
+  cpu_limit_cores?: number;
+}
+
+export interface DashboardRuntimeSummary {
+  uptime_seconds: number;
+  llm_in_flight: number;
+  goroutines: number;
+  heap_alloc_bytes: number;
+}
+
+export interface DashboardLLMPoolMember {
+  profile_id: string;
+  name: string;
+  model: string;
+  state: "ok" | "degraded" | "half_open" | "tripped" | string;
+  active: boolean;
+  excluded: boolean;
+  cooldown_secs?: number;
+}
+
+export interface DashboardLLMPoolSummary {
+  enabled: boolean;
+  bind_fallback: boolean;
+  ok_count: number;
+  degraded_count: number;
+  tripped_count: number;
+  half_open_count: number;
+  members: DashboardLLMPoolMember[];
+}
+
+export interface DashboardMobileSummary {
+  devices_total: number;
+  devices_bound: number;
+  devices_rooted: number;
+  mobile_tasks_total: number;
+  mobile_tasks_running: number;
+  proxy_lan_running: boolean;
+  proxy_transparent_running: boolean;
+  pinning_alerts_count: number;
+}
+
 export interface DashboardSummary {
   task_total: number;
   tasks_by_status: Record<string, number>;
   recent_tasks: Task[];
   token_by_profile: DashboardTaskTokenProfile[];
   daily_tokens: DashboardTaskTokenDay[];
+  ops?: DashboardOpsSummary;
+  system?: DashboardSystemSummary;
+  runtime?: DashboardRuntimeSummary;
+  llm_pool?: DashboardLLMPoolSummary;
+  mobile?: DashboardMobileSummary;
 }
 
 // ---- Stats ----

@@ -20,6 +20,7 @@ func TestHotReadsHonorCanceledContext(t *testing.T) {
 		run  func() error
 	}{
 		{"dashboard tokens", func() error { _, err := d.DashboardTaskTokensContext(ctx); return err }},
+		{"dashboard ops", func() error { _, err := d.DashboardOpsSummaryContext(ctx); return err }},
 		{"task metrics", func() error { _, err := d.TaskListMetricsForContext(ctx, []int64{1}); return err }},
 		{"archive blockers", func() error { _, err := d.TaskArchiveBlockersForContext(ctx, []int64{1}); return err }},
 		{"last activity", func() error { _, err := d.LastActivityAllContext(ctx); return err }},

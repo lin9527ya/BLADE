@@ -696,6 +696,12 @@ export const api = {
       recent_tasks: arr(r.recent_tasks),
       token_by_profile: arr(r.token_by_profile),
       daily_tokens: arr(r.daily_tokens),
+      llm_pool: r.llm_pool
+        ? {
+            ...r.llm_pool,
+            members: arr(r.llm_pool.members),
+          }
+        : undefined,
     })),
   // 资产测试覆盖度(粗估，供参考)：范围内资产被 fact 碰过的占比 + 按类型的 总数/已测。
   taskCoverage: (id: string) =>

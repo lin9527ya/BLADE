@@ -48,12 +48,22 @@ VALUES ($1,'result',10,3), ($2,'result',20,4)`, one.ExpID, two.ExpID); err != ni
 		RecentTasks    []TaskDTO                      `json:"recent_tasks"`
 		TokenByProfile []db.DashboardTaskTokenProfile `json:"token_by_profile"`
 		DailyTokens    []db.DashboardTaskTokenDay     `json:"daily_tokens"`
+		Ops            *db.DashboardOpsSummary        `json:"ops"`
+		Runtime        map[string]any                 `json:"runtime"`
+		LLMPool        *dashboardLLMPoolSummary       `json:"llm_pool"`
+		Mobile         map[string]any                 `json:"mobile"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v %s", err, w.Body)
 	}
 	if out.TaskTotal < 2 || len(out.RecentTasks) == 0 || out.TasksByStatus == nil {
 		t.Fatalf("summary = %+v", out)
+	}
+	if out.Ops == nil || out.Runtime == nil || out.LLMPool == nil || out.Mobile == nil {
+		t.Fatalf("expected extended ops/runtime/llm_pool/mobile fields, got %+v", out)
+	}
+	if len(out.LLMPool.Members) == 0 {
+		t.Fatalf("expected llm_pool members to include created profile, got %+v", out.LLMPool)
 	}
 	var profileRow *db.DashboardTaskTokenProfile
 	for i := range out.TokenByProfile {

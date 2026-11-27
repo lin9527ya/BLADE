@@ -1081,6 +1081,40 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/auth/login" || path === "/auth/init") return { token: "mock-demo" };
   if (path === "/auth/change-password") return { ok: true };
   if (path === "/auth/account") return { username: "BLADE" };
+  if (path === "/system/info") return { ok: true, service: "blade", version: "0.9.33-demo" };
+  if (path === "/update/check") return { current: "0.9.33-demo", latest: "0.9.33-demo", has_update: false };
+  if (path === "/inbox" && m === "GET") {
+    return {
+      items: [
+        {
+          id: "demo-1",
+          kind: "finding",
+          title: "高危漏洞待研判",
+          subtitle: "admin.acme.com 存在未授权后台接口访问",
+          url: "/function/findings",
+          severity: "high",
+          created_at: new Date().toISOString(),
+        },
+      ],
+      unread: 1,
+      read_at: new Date(Date.now() - 3600_000).toISOString(),
+    };
+  }
+  if (path === "/inbox/read" && m === "POST") return { ok: true, read_at: new Date().toISOString() };
+  if (path === "/scope/enforcement" && m === "GET") {
+    return {
+      kill_switch: { on: false, history: [] },
+      kill_switch_forced_by_env: false,
+      window: {
+        in_window: true,
+        window: "",
+        at: new Date().toISOString(),
+        paused_now: 0,
+        paused_total: 0,
+      },
+      paused_tasks: 0,
+    };
+  }
   if (path === "/auth/change-username") return { ok: true, username: "BLADE", token: "mock-demo" };
 
   // ── task cold archives ──
@@ -1589,6 +1623,160 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       (mockTaskScopes.get(seg[1]) ?? []).filter((row) => row.id !== id),
     );
     return { ok: true };
+  }
+
+  // ── 仪表盘作战态势总览 (demo) ──
+  if (path === "/dashboard") {
+    const statuses: Record<string, number> = {};
+    for (const task of mockTasks) statuses[task.status] = (statuses[task.status] ?? 0) + 1;
+    const recent = [...mockTasks]
+      .sort((a, b) => (b.last_activity_unix ?? b.created_unix ?? 0) - (a.last_activity_unix ?? a.created_unix ?? 0))
+      .slice(0, 10);
+    const todayDate = new Date().toISOString().slice(0, 10);
+    return {
+      task_total: mockTasks.length,
+      tasks_by_status: statuses,
+      recent_tasks: recent,
+      token_by_profile: [
+        {
+          profile_id: 1,
+          input_tokens: 1570000,
+          output_tokens: 110000,
+          cache_read_tokens: 1120000,
+          cache_write_tokens: 140000,
+          task_count: mockTasks.length,
+        },
+      ],
+      daily_tokens: [
+        {
+          date: todayDate,
+          profile_id: 1,
+          input_tokens: 640000,
+          output_tokens: 45000,
+          cache_read_tokens: 460000,
+          cache_write_tokens: 50000,
+        },
+      ],
+      ops: {
+        footholds_total: 2,
+        footholds_active: 1,
+        credentials_total: 4,
+        artifacts_uncleaned: 1,
+        artifacts_unknown: 0,
+        schedules_total: 2,
+        schedules_enabled: 1,
+        schedules_error: 0,
+        next_schedule_name: "每日核心资产巡检",
+        next_schedule_action: "create",
+        next_schedule_at_unix: Math.floor(Date.now() / 1000) + 3600,
+        mobile_devices_total: 1,
+        mobile_devices_bound: 0,
+        mobile_devices_rooted: 1,
+      },
+      system: {
+        scope: "host",
+        supported: true,
+        cpu: { used_bytes: 0, total_bytes: 0, percent: 18.4 },
+        memory: { used_bytes: 3_400_000_000, total_bytes: 16_000_000_000, percent: 21.2 },
+        data_disk: { used_bytes: 18_000_000_000, total_bytes: 120_000_000_000, percent: 15.0 },
+        cpu_limit_cores: 8,
+      },
+      runtime: {
+        uptime_seconds: 14280,
+        llm_in_flight: 1,
+        goroutines: 46,
+        heap_alloc_bytes: 68 * 1024 * 1024,
+      },
+      llm_pool: {
+        enabled: true,
+        bind_fallback: false,
+        ok_count: D.llmProfiles.length,
+        degraded_count: 0,
+        tripped_count: 0,
+        half_open_count: 0,
+        members: D.llmProfiles.map((p) => ({
+          profile_id: String(p.id),
+          name: p.name,
+          model: p.model,
+          state: "ok",
+          active: p.is_default,
+          excluded: false,
+          cooldown_secs: 0,
+        })),
+      },
+      mobile: {
+        devices_total: 1,
+        devices_bound: 0,
+        devices_rooted: 1,
+        mobile_tasks_total: mockTasks.filter((t) => t.app_mode === "mobile").length,
+        mobile_tasks_running: mockTasks.filter((t) => t.app_mode === "mobile" && t.status === "running").length,
+        proxy_lan_running: false,
+        proxy_transparent_running: false,
+        pinning_alerts_count: 0,
+      },
+    };
+  }
+
+  // ── 成本预算汇总 (demo) ──
+  if (path === "/costs") {
+    const today = new Date();
+    const daily = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(today.getDate() - (6 - i));
+      const cost = Number((0.4 + ((i * 7) % 5) * 0.35).toFixed(2));
+      return {
+        date: d.toISOString().slice(0, 10),
+        input_tokens: 220000 + i * 35000,
+        output_tokens: 18000 + i * 2500,
+        cost_usd: cost,
+        unpriced_tokens: 0,
+      };
+    });
+    return {
+      days: 30,
+      daily,
+      by_model: [
+        {
+          model: "claude-opus-4-6",
+          input_tokens: 1250000,
+          output_tokens: 86000,
+          cache_read_tokens: 940000,
+          cost_usd: 11.45,
+          peak_cost_usd: 8.2,
+          offpeak_cost_usd: 3.25,
+          unpriced_tokens: 0,
+          priced: true,
+        },
+      ],
+      by_profile: [],
+      by_company: [],
+      by_campaign: [],
+      total: {
+        input_tokens: 1570000,
+        output_tokens: 110000,
+        cache_read_tokens: 1120000,
+        cache_write_tokens: 140000,
+        cost_usd: 11.72,
+        cache_savings_usd: 4.18,
+        peak_cost_usd: 8.4,
+        offpeak_cost_usd: 3.32,
+        unpriced_tokens: 0,
+      },
+      month: {
+        input_tokens: 1570000,
+        output_tokens: 110000,
+        cache_read_tokens: 1120000,
+        cache_write_tokens: 140000,
+        cost_usd: 11.72,
+        cache_savings_usd: 4.18,
+        peak_cost_usd: 8.4,
+        offpeak_cost_usd: 3.32,
+        unpriced_tokens: 0,
+      },
+      budget_usd: 50,
+      alert_pct: 80,
+      budget_status: "ok",
+    };
   }
 
   // ── 全局 llm_usage 聚合（仪表盘新版视图，demo）──

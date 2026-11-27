@@ -133,12 +133,26 @@ export function CreateTaskSheet({
   categories,
   onCreated,
   onCategoriesChanged,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
 }: {
   categories: TaskCategory[];
   onCreated: () => void;
   onCategoriesChanged: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
 }) {
-  const [open, setOpen] = React.useState(false);
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = React.useCallback(
+    (next: boolean) => {
+      if (controlledOpen === undefined) setInternalOpen(next);
+      onOpenChange?.(next);
+    },
+    [controlledOpen, onOpenChange],
+  );
   // 关联任务选择器需要**全量**任务，而列表页现在是服务端分页、只持有当页数据。
   // 打开表单时单独拉一次全量（不带 page/size），只用于这个选择器。
   const [tasks, setTasks] = React.useState<Task[]>([]);
@@ -365,11 +379,13 @@ export function CreateTaskSheet({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <PlusIcon /> 新建任务
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button size="sm">
+            <PlusIcon /> 新建任务
+          </Button>
+        </DialogTrigger>
+      )}
       {/* 居中弹窗:内容为 flex 列——头/脚固定,中间字段区 flex-1 独立滚动,高度上限 88vh。 */}
       <DialogContent
         ref={sheetContentRef}

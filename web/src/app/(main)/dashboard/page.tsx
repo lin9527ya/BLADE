@@ -1,54 +1,82 @@
 "use client";
 
+import * as React from "react";
+
 import dynamic from "next/dynamic";
 
-import { RowActivity } from "./_components/activityrow";
+import { Skeleton } from "@/components/ui/skeleton";
+import { api } from "@/lib/api";
+import type { TaskCategory } from "@/lib/types";
+
 import { RowAssetTraffic } from "./_components/assettrafficrow";
-import { RowCostCard } from "./_components/costcard";
+import { CommandHeader } from "./_components/command-header";
+import { DashboardSkeleton } from "./_components/dashboard-helpers";
+import { OpsWorkspace } from "./_components/ops-workspace";
 import { RowStatCards } from "./_components/statcards";
-import { RowTaskTable } from "./_components/tasktable";
 import { useDashboardState } from "./_components/use-dashboard-state";
 
-// RowTokenCard 是整站唯一用 recharts 的地方，而 recharts 会打进首屏 chunk
-// （实测 372KB）。图表在首屏下方、不是立刻可见，所以懒加载：首屏不再背这个包。
-// ssr:false 在静态导出下是安全的——本组件不在构建期渲染。
-const RowTokenCard = dynamic(() => import("./_components/tokencard").then((m) => m.RowTokenCard), { ssr: false });
+const TelemetryPanel = dynamic(() => import("./_components/telemetry-panel").then((m) => m.TelemetryPanel), {
+  ssr: false,
+  loading: () => <Skeleton className="h-[310px] w-full rounded-xl" />,
+});
 
-// ── chart constants ───────────────────────────────────────────────────────────
-
-// ── helpers ──────────────────────────────────────────────────────────────────
+const CreateTaskSheet = dynamic(
+  () => import("../function/tasks/_components/create-task-sheet").then((m) => m.CreateTaskSheet),
+  { ssr: false },
+);
 
 export default function DashboardPage() {
-  // 每个面板拿自己那份切片（hook 里按面板 memo 过）。此前页面把整个返回对象交给
-  // 5 个面板，任一字段变化都会让它们**全部**重渲染；切成切片后只有受影响的那个重渲染。
-  const { statCards, tokenCard, costCard, activityRow, taskTable, assetTraffic } = useDashboardState();
+  const { initialLoading, headerSlice, statCards, opsWorkspace, telemetryPanel, infraGrid } = useDashboardState();
+  const [createMounted, setCreateMounted] = React.useState(false);
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [categories, setCategories] = React.useState<TaskCategory[]>([]);
 
-  // ── render ────────────────────────────────────────────────────────────────
+  const loadCategories = React.useCallback(() => {
+    api
+      .taskCategories()
+      .then(setCategories)
+      .catch(() => setCategories([]));
+  }, []);
+
+  const handleOpenCreate = React.useCallback(() => {
+    if (!createMounted) {
+      setCreateMounted(true);
+      loadCategories();
+    }
+    setCreateOpen(true);
+  }, [createMounted, loadCategories]);
+
+  if (initialLoading) {
+    return <DashboardSkeleton />;
+  }
 
   return (
     <div className="flex flex-1 flex-col gap-4 pb-6">
-      {/* ── Header ── */}
-      <div>
-        <h1 className="font-semibold text-xl tracking-tight">总览</h1>
-        <p className="text-muted-foreground text-sm">系统全局状态 · 实时刷新</p>
-      </div>
+      {/* Band 0: 指挥台顶栏 & 条件态势告警带 */}
+      <CommandHeader s={headerSlice} onOpenCreate={handleOpenCreate} />
 
-      {/* ── Row 1: 5 stat cards ── */}
+      {/* Band 1: 5 张可钻取 KPI 态势卡 */}
       <RowStatCards s={statCards} />
 
-      {/* ── Row 2: LLM Token 消耗 ── */}
-      <RowTokenCard s={tokenCard} />
+      {/* Band 2: 任务矩阵 + 发现/活动流工作区 */}
+      <OpsWorkspace s={opsWorkspace} />
 
-      {/* ── Row 2.5: LLM 成本与预算 ── */}
-      <RowCostCard s={costCard} />
+      {/* Band 3: 统一 LLM 用量 / 成本 / 故障转移池中心 */}
+      <TelemetryPanel s={telemetryPanel} />
 
-      {/* ── Row 3: 活动流 | 发现 ── */}
-      <RowActivity s={activityRow} />
-      {/* ── Row 4: 任务表格 ── */}
-      <RowTaskTable s={taskTable} />
+      {/* Band 4: 资产 · 流量 · 移动与排期 · 系统基座与审批 */}
+      <RowAssetTraffic s={infraGrid} />
 
-      {/* ── Row 5: 资产分布 | 流量状态码 | 拦截 & 待审批 ── */}
-      <RowAssetTraffic s={assetTraffic} />
+      {createMounted && (
+        <CreateTaskSheet
+          hideTrigger
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          categories={categories}
+          onCreated={() => void headerSlice.refreshNow()}
+          onCategoriesChanged={loadCategories}
+        />
+      )}
     </div>
   );
 }

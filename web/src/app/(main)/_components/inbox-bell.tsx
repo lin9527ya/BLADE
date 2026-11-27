@@ -57,8 +57,8 @@ export function InboxBell() {
     try {
       const page = await api.inbox(100);
       if (!alive()) return;
-      setItems(page.items);
-      setUnread(page.unread);
+      setItems(page.items ?? []);
+      setUnread(page.unread ?? 0);
       setReadAt(page.read_at ?? "");
     } catch {
       // Keep the previous snapshot; the bell is not allowed to nag on transient failures.

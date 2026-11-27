@@ -23,4 +23,10 @@ func TestQueryCacheServesFreshCopiesWithoutDB(t *testing.T) {
 	if err != nil || len(tokens.ByProfile) != 1 || tokens.ByProfile[0].InputTokens != 7 {
 		t.Fatalf("dashboard token cache = %+v err=%v", tokens, err)
 	}
+	s.queryCache.dashboardOps = db.DashboardOpsSummary{FootholdsActive: 3, MobileDevicesTotal: 2}
+	s.queryCache.dashboardOpsAt = time.Now()
+	ops, err := s.cachedDashboardOps(context.Background())
+	if err != nil || ops.FootholdsActive != 3 || ops.MobileDevicesTotal != 2 {
+		t.Fatalf("dashboard ops cache = %+v err=%v", ops, err)
+	}
 }
