@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -15,10 +17,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lin9527ya/blade/traffic"
 )
 
 const (
@@ -582,8 +588,10 @@ func resolveHostPython(configured string) (binPath, version string, err error) {
 			continue
 		}
 		if venvOut, venvErr := exec.Command(p, "-m", "venv", "--help").CombinedOutput(); venvErr != nil {
-			lastErr = fmt.Sprintf("%s 缺少 venv 模块（Debian/Ubuntu/Kali 请安装 python3-venv）：%s (%v)", p, strings.TrimSpace(string(venvOut)), venvErr)
-			continue
+			if _, virtErr := exec.Command(p, "-m", "virtualenv", "--version").CombinedOutput(); virtErr != nil {
+				lastErr = fmt.Sprintf("%s 缺少 venv/virtualenv 模块（Debian/Ubuntu/Kali 可安装 python3-venv 或 virtualenv）：%s (%v)", p, strings.TrimSpace(string(venvOut)), venvErr)
+				continue
+			}
 		}
 		return p, ver, nil
 	}
@@ -591,6 +599,528 @@ func resolveHostPython(configured string) (binPath, version string, err error) {
 		lastErr = "宿主未检测到可用的 Python 3.10+ 解释器，请在 PATH 中安装 python3 与 python3-venv，或在设置页填写「Python 解释器路径」"
 	}
 	return "", "", errors.New(lastErr)
+}
+
+var (
+	pypiSimpleBaseURL   = "https://pypi.org/simple/"
+	defaultPipZipappURL = "https://bootstrap.pypa.io/pip/pip.pyz"
+	localPipWheelGlobs  = []string{
+		"/usr/share/python-wheels/pip-*.whl",
+		"/usr/lib/python*/ensurepip/_bundled/pip-*.whl",
+		"/usr/local/lib/python*/ensurepip/_bundled/pip-*.whl",
+	}
+
+	pipSimpleAnchorRe = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
+	pipHrefAttrRe     = regexp.MustCompile(`(?is)(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	pipReqPyAttrRe    = regexp.MustCompile(`(?is)(?:^|\s)data-requires-python\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	pipYankedAttrRe   = regexp.MustCompile(`(?is)(?:^|\s)data-yanked(?:\s*=|\s|$)`)
+	pipWheelFileRe    = regexp.MustCompile(`^pip-(\d+(?:\.\d+)*)-py3-none-any\.whl$`)
+)
+
+type pipWheelCandidate struct {
+	URL      string
+	Filename string
+	SHA256   string
+	Version  []int
+}
+
+func logSearxngNote(lf io.Writer, format string, args ...any) {
+	if lf == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(lf, "\n[blade-searxng] "+format+"\n", args...)
+}
+
+func withEnvOverrides(env []string, extra map[string]string) []string {
+	if len(extra) == 0 {
+		return env
+	}
+	out := append([]string(nil), env...)
+	for k, v := range extra {
+		prefix := k + "="
+		replaced := false
+		for i, entry := range out {
+			if strings.HasPrefix(entry, prefix) {
+				out[i] = prefix + v
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, prefix+v)
+		}
+	}
+	return out
+}
+
+func findHostExecutable(name string) string {
+	if p, err := exec.LookPath(name); err == nil && p != "" {
+		return p
+	}
+	cands := []string{
+		filepath.Join("/usr/local/bin", name),
+		filepath.Join("/usr/bin", name),
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		cands = append(cands,
+			filepath.Join(home, ".local", "bin", name),
+			filepath.Join(home, ".cargo", "bin", name),
+		)
+	}
+	for _, p := range cands {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
+}
+
+func parseNumericVersion(raw string) ([]int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	parts := strings.Split(raw, ".")
+	nums := make([]int, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			return nil, false
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, false
+		}
+		nums = append(nums, n)
+	}
+	return nums, true
+}
+
+func compareIntSlices(a, b []int) int {
+	n := len(a)
+	if len(b) > n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		var av, bv int
+		if i < len(a) {
+			av = a[i]
+		}
+		if i < len(b) {
+			bv = b[i]
+		}
+		if av < bv {
+			return -1
+		}
+		if av > bv {
+			return 1
+		}
+	}
+	return 0
+}
+
+func pythonVersionSatisfies(pyVer, reqExpr string) bool {
+	reqExpr = strings.TrimSpace(reqExpr)
+	if reqExpr == "" {
+		return true
+	}
+	pyNums, ok := parseNumericVersion(pyVer)
+	if !ok {
+		return true
+	}
+	for _, clause := range strings.Split(reqExpr, ",") {
+		c := strings.TrimSpace(clause)
+		if c == "" {
+			continue
+		}
+		var op, rhs string
+		for _, candOp := range []string{">=", "<=", "==", "!=", ">", "<"} {
+			if strings.HasPrefix(c, candOp) {
+				op = candOp
+				rhs = strings.TrimSpace(strings.TrimPrefix(c, candOp))
+				break
+			}
+		}
+		if op == "" || strings.Contains(rhs, "*") {
+			continue
+		}
+		reqNums, ok := parseNumericVersion(rhs)
+		if !ok {
+			continue
+		}
+		cmp := compareIntSlices(pyNums, reqNums)
+		switch op {
+		case ">=":
+			if cmp < 0 {
+				return false
+			}
+		case ">":
+			if cmp <= 0 {
+				return false
+			}
+		case "<=":
+			if cmp > 0 {
+				return false
+			}
+		case "<":
+			if cmp >= 0 {
+				return false
+			}
+		case "==":
+			if cmp != 0 {
+				return false
+			}
+		case "!=":
+			if cmp == 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func extractHTMLAttr(attrs string, re *regexp.Regexp) string {
+	m := re.FindStringSubmatch(attrs)
+	if len(m) < 4 {
+		return ""
+	}
+	for i := 1; i <= 3; i++ {
+		if m[i] != "" {
+			return strings.TrimSpace(html.UnescapeString(m[i]))
+		}
+	}
+	return ""
+}
+
+func pypiSimplePackageURL(indexURL, pkg string) string {
+	base := strings.TrimRight(strings.TrimSpace(indexURL), "/")
+	if base == "" {
+		base = strings.TrimRight(pypiSimpleBaseURL, "/")
+	}
+	return base + "/" + strings.Trim(pkg, "/") + "/"
+}
+
+func newSearxngInstallHTTPClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
+	// 显式置 nil Proxy，避免未配置安装代理时隐式读取进程环境变量出网。
+	tr := &http.Transport{
+		Proxy:               nil,
+		TLSHandshakeTimeout: 20 * time.Second,
+	}
+	if raw := strings.TrimSpace(proxyURL); raw != "" {
+		u, err := traffic.TransportProxyURL(raw)
+		if err != nil {
+			return nil, err
+		}
+		tr.Proxy = http.ProxyURL(u)
+	}
+	return &http.Client{Transport: tr, Timeout: timeout}, nil
+}
+
+func pickPipWheelFromSimpleHTML(baseURL, htmlBody, pyVer string) (*pipWheelCandidate, error) {
+	baseParsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("无效索引地址 %q: %w", baseURL, err)
+	}
+	var best *pipWheelCandidate
+	for _, match := range pipSimpleAnchorRe.FindAllStringSubmatch(htmlBody, -1) {
+		attrs, text := match[1], strings.TrimSpace(html.UnescapeString(match[2]))
+		if pipYankedAttrRe.MatchString(attrs) {
+			continue
+		}
+		rawHref := extractHTMLAttr(attrs, pipHrefAttrRe)
+		if rawHref == "" {
+			continue
+		}
+		reqPy := extractHTMLAttr(attrs, pipReqPyAttrRe)
+		if !pythonVersionSatisfies(pyVer, reqPy) {
+			continue
+		}
+		refURL, parseErr := url.Parse(rawHref)
+		if parseErr != nil {
+			continue
+		}
+		resolved := baseParsed.ResolveReference(refURL)
+		filename := filepath.Base(resolved.Path)
+		if filename == "" || filename == "." || filename == "/" {
+			filename = text
+		}
+		verMatch := pipWheelFileRe.FindStringSubmatch(filename)
+		if len(verMatch) != 2 {
+			continue
+		}
+		verNums, ok := parseNumericVersion(verMatch[1])
+		if !ok {
+			continue
+		}
+		var sha string
+		if frag := resolved.Fragment; strings.HasPrefix(strings.ToLower(frag), "sha256=") {
+			candSHA := strings.TrimSpace(frag[len("sha256="):])
+			if len(candSHA) == 64 {
+				sha = candSHA
+			}
+		}
+		resolved.Fragment = ""
+		cand := &pipWheelCandidate{
+			URL:      resolved.String(),
+			Filename: filename,
+			SHA256:   sha,
+			Version:  verNums,
+		}
+		if best == nil || compareIntSlices(cand.Version, best.Version) > 0 {
+			best = cand
+		}
+	}
+	if best == nil {
+		return nil, fmt.Errorf("索引页 %s 未找到适用于 Python %s 的 pip-*.whl", baseURL, pyVer)
+	}
+	return best, nil
+}
+
+func downloadVerifiedFile(ctx context.Context, client *http.Client, rawURL, destPath, expectedSHA256 string, maxBytes int64) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), ".dl-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	hasher := sha256.New()
+	limited := io.LimitReader(resp.Body, maxBytes+1)
+	n, err := io.Copy(io.MultiWriter(tmp, hasher), limited)
+	if err != nil {
+		return err
+	}
+	if n > maxBytes {
+		return fmt.Errorf("下载文件 %s 超过大小上限 (%d bytes)", rawURL, maxBytes)
+	}
+	if expectedSHA256 != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, expectedSHA256) {
+			return fmt.Errorf("下载校验失败 (%s): sha256 got %s want %s", filepath.Base(destPath), got, expectedSHA256)
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func findLocalPipWheels() []string {
+	type item struct {
+		path string
+		ver  []int
+	}
+	seen := map[string]bool{}
+	var found []item
+	for _, pat := range localPipWheelGlobs {
+		matches, _ := filepath.Glob(pat)
+		for _, m := range matches {
+			if seen[m] || !fileExists(m) {
+				continue
+			}
+			seen[m] = true
+			var ver []int
+			if vm := pipWheelFileRe.FindStringSubmatch(filepath.Base(m)); len(vm) == 2 {
+				ver, _ = parseNumericVersion(vm[1])
+			}
+			found = append(found, item{path: m, ver: ver})
+		}
+	}
+	sort.Slice(found, func(i, j int) bool {
+		if c := compareIntSlices(found[i].ver, found[j].ver); c != 0 {
+			return c > 0
+		}
+		return found[i].path > found[j].path
+	})
+	out := make([]string, len(found))
+	for i, it := range found {
+		out[i] = it.path
+	}
+	return out
+}
+
+func (sx *searxngService) fetchPipBootstrapWheel(ctx context.Context, lf io.Writer, cfg SearxngManagedConfig, pyVer, bootstrapDir, proxyURL string) (string, error) {
+	client, err := newSearxngInstallHTTPClient(proxyURL, 2*time.Minute)
+	if err != nil {
+		return "", fmt.Errorf("构建安装 HTTP 客户端失败：%s", traffic.SanitizeProxyError(proxyURL, err))
+	}
+	defer client.CloseIdleConnections()
+
+	indexURL := pypiSimplePackageURL(cfg.PyPIIndex, "pip")
+	logSearxngNote(lf, "从 PyPI 索引获取 pip 引导包元信息：%s", indexURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, indexURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", errors.New(traffic.SanitizeProxyError(proxyURL, err))
+	}
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("PyPI 索引 %s 返回 HTTP %d", indexURL, resp.StatusCode)
+	}
+	if readErr != nil {
+		return "", readErr
+	}
+
+	resolvedBase := indexURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		resolvedBase = resp.Request.URL.String()
+	}
+	cand, err := pickPipWheelFromSimpleHTML(resolvedBase, string(bodyBytes), pyVer)
+	if err != nil {
+		return "", err
+	}
+	destPath := filepath.Join(bootstrapDir, cand.Filename)
+	logSearxngNote(lf, "下载 pip 引导 wheel：%s", cand.URL)
+	if err := downloadVerifiedFile(ctx, client, cand.URL, destPath, cand.SHA256, 64<<20); err != nil {
+		return "", errors.New(traffic.SanitizeProxyError(proxyURL, err))
+	}
+	return destPath, nil
+}
+
+func (sx *searxngService) ensureVenvDir(ctx context.Context, lf io.Writer, pyBin, venvDir string, cmdEnv []string) error {
+	_ = os.RemoveAll(venvDir)
+	firstErr := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, pyBin, "-m", "venv", venvDir)
+	if firstErr == nil && fileExists(sx.venvPythonPath()) {
+		return nil
+	}
+
+	// Debian/Ubuntu 等系统拆分了 python3.X-venv (ensurepip)，无 root 时改用 --without-pip。
+	logSearxngNote(lf, "标准 venv 初始化失败（常见于受限环境缺少 ensurepip / python3-venv），改用 --without-pip 创建并无特权引导 pip")
+	_ = os.RemoveAll(venvDir)
+	noPipErr := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, pyBin, "-m", "venv", "--without-pip", venvDir)
+	if noPipErr == nil && fileExists(sx.venvPythonPath()) {
+		return nil
+	}
+
+	_ = os.RemoveAll(venvDir)
+	if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, pyBin, "-m", "virtualenv", venvDir); err == nil && fileExists(sx.venvPythonPath()) {
+		return nil
+	}
+	if virtBin := findHostExecutable("virtualenv"); virtBin != "" {
+		_ = os.RemoveAll(venvDir)
+		if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, virtBin, "-p", pyBin, venvDir); err == nil && fileExists(sx.venvPythonPath()) {
+			return nil
+		}
+	}
+	if uvBin := findHostExecutable("uv"); uvBin != "" {
+		_ = os.RemoveAll(venvDir)
+		if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, uvBin, "venv", "--seed", "--python", pyBin, venvDir); err == nil && fileExists(sx.venvPythonPath()) {
+			return nil
+		}
+	}
+	return fmt.Errorf("创建 Python venv 失败：%w（--without-pip 回退亦失败：%v）", firstErr, noPipErr)
+}
+
+func (sx *searxngService) ensureVenvPip(ctx context.Context, lf io.Writer, cfg SearxngManagedConfig, pyVer, proxyURL string, cmdEnv []string, pipArgs func(...string) []string) error {
+	if fileExists(sx.venvPipPath()) {
+		return nil
+	}
+	sx.setProgress("installing", "无特权引导 venv 内 pip（跳过系统 ensurepip）", "")
+	venvPy := sx.venvPythonPath()
+	bootstrapDir := filepath.Join(sx.rootDir(), ".bootstrap")
+	_ = os.MkdirAll(bootstrapDir, 0o755)
+	defer func() { _ = os.RemoveAll(bootstrapDir) }()
+
+	installFromWheel := func(whlPath, label string) bool {
+		logSearxngNote(lf, "使用%s引导安装 venv pip：%s", label, filepath.Base(whlPath))
+		whlEnv := withEnvOverrides(cmdEnv, map[string]string{"PYTHONPATH": whlPath})
+		if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), whlEnv, venvPy, "-m", "pip", "install", "--no-index", "--no-deps", "--ignore-installed", whlPath); err == nil && fileExists(sx.venvPipPath()) {
+			return true
+		}
+		return false
+	}
+
+	for _, localWhl := range findLocalPipWheels() {
+		if installFromWheel(localWhl, "本地 wheel ") {
+			return nil
+		}
+	}
+
+	var bootstrapErr error
+	if whlPath, err := sx.fetchPipBootstrapWheel(ctx, lf, cfg, pyVer, bootstrapDir, proxyURL); err == nil {
+		if installFromWheel(whlPath, "PyPI 镜像 wheel ") {
+			return nil
+		}
+		bootstrapErr = errors.New("通过下载的 pip wheel 写入 venv/bin/pip 失败")
+	} else {
+		bootstrapErr = err
+		logSearxngNote(lf, "PyPI wheel 引导失败（%v），尝试 pip.pyz 回退", err)
+	}
+
+	if zipURL := strings.TrimSpace(defaultPipZipappURL); zipURL != "" {
+		if client, err := newSearxngInstallHTTPClient(proxyURL, 2*time.Minute); err == nil {
+			pyzPath := filepath.Join(bootstrapDir, "pip.pyz")
+			logSearxngNote(lf, "下载 pip.pyz 引导包：%s", zipURL)
+			dlErr := downloadVerifiedFile(ctx, client, zipURL, pyzPath, "", 64<<20)
+			client.CloseIdleConnections()
+			if dlErr == nil {
+				pyzArgs := append([]string{pyzPath}, pipArgs("install", "--no-deps", "--ignore-installed", "pip")...)
+				if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, venvPy, pyzArgs...); err == nil && fileExists(sx.venvPipPath()) {
+					return nil
+				} else {
+					bootstrapErr = err
+				}
+			} else {
+				logSearxngNote(lf, "pip.pyz 下载失败：%s", traffic.SanitizeProxyError(proxyURL, dlErr))
+			}
+		}
+	}
+
+	if uvBin := findHostExecutable("uv"); uvBin != "" {
+		logSearxngNote(lf, "尝试使用 %s 安装 venv pip", uvBin)
+		uvArgs := []string{"pip", "install", "--python", venvPy}
+		if idx := strings.TrimSpace(cfg.PyPIIndex); idx != "" {
+			uvArgs = append(uvArgs, "--index-url", idx)
+		}
+		uvArgs = append(uvArgs, "pip")
+		if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, uvBin, uvArgs...); err == nil && fileExists(sx.venvPipPath()) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("venv 已使用 --without-pip 创建，但无特权引导 pip 失败（请检查出网/安装代理/PyPI 镜像，或在宿主机安装 python3-venv）：%w", bootstrapErr)
+}
+
+func (sx *searxngService) ensureVenvAndPip(ctx context.Context, lf io.Writer, cfg SearxngManagedConfig, pyBin, pyVer, proxyURL string, cmdEnv []string, forceReinstall bool, pipArgs func(...string) []string) error {
+	venvDir := sx.venvDir()
+	if forceReinstall || !fileExists(sx.venvPipPath()) || !fileExists(sx.venvPythonPath()) {
+		if err := sx.ensureVenvDir(ctx, lf, pyBin, venvDir, cmdEnv); err != nil {
+			return err
+		}
+	}
+	return sx.ensureVenvPip(ctx, lf, cfg, pyVer, proxyURL, cmdEnv, pipArgs)
 }
 
 func buildSearxngChildEnv(baseEnv []string, extra map[string]string, proxyURL string) []string {
@@ -801,7 +1331,14 @@ func (sx *searxngService) installSync(ctx context.Context, cfg SearxngManagedCon
 	fmt.Fprintf(lf, "[blade-searxng] python=%s (%s) git=%s\n", pyBin, pyVer, gitBin)
 
 	proxy := sx.resolveInstallProxy(cfg)
+	cacheRoot := filepath.Join(sx.rootDir(), ".cache")
+	pipCacheDir := filepath.Join(cacheRoot, "pip")
+	_ = os.MkdirAll(pipCacheDir, 0o755)
 	cmdEnv := buildSearxngChildEnv(nil, map[string]string{
+		"HOME":                          sx.rootDir(),
+		"XDG_CACHE_HOME":                cacheRoot,
+		"PIP_CACHE_DIR":                 pipCacheDir,
+		"PIP_PREFER_BINARY":             "1",
 		"PIP_DISABLE_PIP_VERSION_CHECK": "1",
 		"PIP_NO_INPUT":                  "1",
 		"GIT_TERMINAL_PROMPT":           "0",
@@ -828,18 +1365,6 @@ func (sx *searxngService) installSync(ctx context.Context, cfg SearxngManagedCon
 		}
 	}
 
-	sx.setProgress("installing", "初始化 Python 虚拟环境 (venv)", "")
-	venvDir := sx.venvDir()
-	if forceReinstall || !fileExists(sx.venvPipPath()) {
-		if forceReinstall {
-			_ = os.RemoveAll(venvDir)
-		}
-		if err := sx.runLoggedCmd(ctx, lf, sx.rootDir(), cmdEnv, pyBin, "-m", "venv", venvDir); err != nil {
-			return fmt.Errorf("创建 Python venv 失败：%w", err)
-		}
-	}
-
-	pipBin := sx.venvPipPath()
 	pipArgs := func(base ...string) []string {
 		out := append([]string(nil), base...)
 		if idx := strings.TrimSpace(cfg.PyPIIndex); idx != "" {
@@ -851,6 +1376,12 @@ func (sx *searxngService) installSync(ctx context.Context, cfg SearxngManagedCon
 		return out
 	}
 
+	sx.setProgress("installing", "初始化 Python 虚拟环境 (venv)", "")
+	if err := sx.ensureVenvAndPip(ctx, lf, cfg, pyBin, pyVer, proxy, cmdEnv, forceReinstall, pipArgs); err != nil {
+		return err
+	}
+
+	pipBin := sx.venvPipPath()
 	sx.setProgress("installing", "安装基础打包工具 (pip / setuptools / wheel)", "")
 	if err := sx.runLoggedCmd(ctx, lf, srcDir, cmdEnv, pipBin, pipArgs("install", "--upgrade", "pip", "setuptools", "wheel")...); err != nil {
 		return fmt.Errorf("升级 pip 工具链失败：%w", err)
