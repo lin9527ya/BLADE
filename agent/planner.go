@@ -1119,17 +1119,17 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	plannerSID := PlannerSessionID(ts.ID())
 	opts := agentcore.Options{
-		Provider:                      p.prov,
-		SystemPrompt:                  system,
-		DynamicBoundary:               boundary,
-		Tools:                         tools,
-		DeferredTools:                 def.Deferred,
-		UnlockSet:                     def.Unlock,
-		PermissionMode:                permission.ModeBypass,
+		Provider:                p.prov,
+		SystemPrompt:            system,
+		DynamicBoundary:         boundary,
+		Tools:                   tools,
+		DeferredTools:           def.Deferred,
+		UnlockSet:               def.Unlock,
+		PermissionMode:          permission.ModeBypass,
 		EnableWebFetch:          false, // BLADE-owned WebFetch（带任务拟真 UA + 记录代理 + CA 校验）挂在 Tools 里
 		WebFetchCACert:          proxyCA,
 		OmitCurrentDateReminder: true,
-		PromptCacheKey:                plannerSID,
+		PromptCacheKey:          plannerSID,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:          false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里

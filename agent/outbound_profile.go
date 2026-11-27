@@ -144,7 +144,7 @@ func OutboundProfileForTask(taskID int64) OutboundProfile {
 	if taskID <= 0 {
 		return outboundProfiles[0]
 	}
-	idx := int(uint64(taskID)*0x9e3779b97f4a7c15%uint64(len(outboundProfiles)))
+	idx := int(uint64(taskID) * 0x9e3779b97f4a7c15 % uint64(len(outboundProfiles)))
 	return outboundProfiles[idx]
 }
 

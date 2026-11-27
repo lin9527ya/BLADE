@@ -48,9 +48,9 @@ var (
 	oastSessions    = map[int64][]*interactshSession{}
 	oastRRDownUntil time.Time
 
-	oastTokenMu     sync.Mutex
-	oastTaskTokens  = map[string]map[string]string{} // scopeKey -> token -> local label
-	oastFileSaveMu  sync.Mutex
+	oastTokenMu    sync.Mutex
+	oastTaskTokens = map[string]map[string]string{} // scopeKey -> token -> local label
+	oastFileSaveMu sync.Mutex
 )
 
 func oastEnabled() bool {

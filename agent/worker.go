@@ -875,7 +875,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		PermissionMode:          permission.ModeBypass,
 		OmitCurrentDateReminder: true,
 		PromptCacheKey:          WorkerPromptCacheKey(ts.ID()),
-		EnableWebFetch: false, // BLADE-owned WebFetch（带任务拟真 UA + 记录代理 + CA 校验）挂在 Tools 里
+		EnableWebFetch:          false, // BLADE-owned WebFetch（带任务拟真 UA + 记录代理 + CA 校验）挂在 Tools 里
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:          false, // BLADE-owned web_search（含 Brave HTML 回退）挂在 Tools 里
