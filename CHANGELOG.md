@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.9.32] - 2026-11-27
+
+### 自建 SearXNG 兼容性修复
+
+- 修复 BLADE 以非特权用户运行（如 systemd 降权、`ProtectHome=true` 或 Debian/Ubuntu 缺少 `python3-venv` / `ensurepip`）时 `python -m venv` 安装失败的问题：自动清理残缺虚拟环境目录并回退至 `python -m venv --without-pip`（及 `virtualenv` / `uv`），随后按「本地系统 wheel → PyPI / 已配置镜像 PEP 503 wheel（含 `#sha256=` 校验与安装代理支持）→ `pip.pyz` → `uv pip`」链式无特权引导 `pip`。
+- 安装阶段子进程环境显式隔离 `HOME`、`XDG_CACHE_HOME`、`PIP_CACHE_DIR` 到本地 `data/searxng/.cache` 并设置 `PIP_PREFER_BINARY=1`，规避受限主目录访问权限限制与无编译链环境的源码编译失败。
+
+### 移动应用安全测试工作台与流量增强
+
+- 接入移动 APP 样本画像（APK `AndroidManifest` / `plist` 解析、真机/模拟器控制、Frida 直采与脚本注入、认证抓包与自动化全链路测试工作台）。
+- 扩展移动端动静态测试面（SAST 静态分析、透明代理捕获、RPC 自动签名调用、IPC Fuzz 与 UI 自动化爬虫）及相关架构说明文档。
+- 修复旧版 SQLite 流量索引库在补齐 `source` 列前提前建索引导致的升级报错。
+
 ## [0.9.31] - 2026-11-26
 
 ### 网络代理、搜索与 MCP 安全
