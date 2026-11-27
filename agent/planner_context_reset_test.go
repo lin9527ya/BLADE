@@ -15,7 +15,7 @@ import (
 )
 
 type blockingPlannerProvider struct {
-	started chan struct{}
+	started  chan struct{}
 	complete func(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error)
 }
 
