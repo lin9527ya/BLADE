@@ -61,9 +61,11 @@ type WxapkgArchive struct {
 func ExtractWeChatAppID(candidates ...string) string {
 	for _, c := range candidates {
 		low := strings.ToLower(strings.TrimSpace(c))
-		if low == "" || strings.Contains(low, "wxid_") {
-			// Still search if a valid wx<16hex> sits elsewhere in path segments.
+		if low == "" {
+			continue
 		}
+		// Scan path segments even when a sibling folder contains a personal `wxid_...` ID;
+		// reWeChatAppID (`wx[0-9a-f]{16}`) only matches real Mini Program AppIDs.
 		for _, m := range reWeChatAppID.FindAllString(low, -1) {
 			if len(m) == 18 {
 				return m

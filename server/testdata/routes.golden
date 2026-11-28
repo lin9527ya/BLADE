@@ -245,6 +245,7 @@ GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
 GET /api/tasks/{id}/mobile/logcat	server.(*Server).getTaskMobileLogcat-fm
 GET /api/tasks/{id}/mobile/sandbox	server.(*Server).browseTaskMobileSandbox-fm
 GET /api/tasks/{id}/mobile/screen	server.(*Server).getTaskMobileScreen-fm
+GET /api/tasks/{id}/mobile/screenshots/{name}	server.(*Server).getTaskMobileScreenshot-fm
 GET /api/tasks/{id}/mobile/state	server.(*Server).getTaskMobileState-fm
 GET /api/tasks/{id}/planner-state	server.(*Server).taskPlannerState-fm
 GET /api/tasks/{id}/planner/status	server.(*Server).plannerChatStatus-fm
@@ -465,6 +466,7 @@ POST /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptCreateRule-fm
 POST /api/tasks/{id}/intercept-rules/{rid}/toggle	server.(*Server).taskInterceptToggleRule-fm
 POST /api/tasks/{id}/mobile/bind	server.(*Server).bindTaskMobileDevice-fm
 POST /api/tasks/{id}/mobile/ca-push	server.(*Server).pushTaskMobileCA-fm
+POST /api/tasks/{id}/mobile/decompile-audit	server.(*Server).handleTaskMobileDecompileAudit-fm
 POST /api/tasks/{id}/mobile/extract-session	server.(*Server).extractTaskMobileSession-fm
 POST /api/tasks/{id}/mobile/frida/rpc	server.(*Server).invokeTaskMobileFridaRPC-fm
 POST /api/tasks/{id}/mobile/frida/server	server.(*Server).startTaskFridaServer-fm
